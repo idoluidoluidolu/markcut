@@ -41,16 +41,6 @@ workflows:
         script: |
           cd ios
           pod install
-      # 必須在 pod install 之後：pod install 會重寫 Xcode 專案設定，
-      # 先套用會被蓋掉 → 封裝時報 "requires a provisioning profile"
-      - name: 套用描述檔到 Xcode 專案
-        script: |
-          xcode-project use-profiles
-          echo "=== 專案簽章設定 ==="
-          xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner \
-            -showBuildSettings 2>/dev/null \
-            | grep -E "CODE_SIGN_STYLE|PROVISIONING_PROFILE|DEVELOPMENT_TEAM|CODE_SIGN_IDENTITY" \
-            || true
       # 兩段式建置：flutter 只編譯不簽章，簽章交給 xcode-project
       # （flutter build ipa 會去找「開發憑證」，但我們只有發布憑證，
       #   直接用會失敗：No development certificates available）
@@ -59,8 +49,17 @@ workflows:
         script: |
           flutter build ios --release --no-codesign \
             --build-number=$PROJECT_BUILD_NUMBER
-      - name: 封裝 IPA（簽章）
+      # use-profiles 與 build-ipa 必須綁在一起：
+      # pod install（flutter build ios 內部也會跑）會重寫 Xcode 專案設定，
+      # 中間插任何步驟都會把簽章設定洗掉 → requires a provisioning profile
+      - name: 套用描述檔＋封裝 IPA
         script: |
+          xcode-project use-profiles
+          echo "=== 專案簽章設定 ==="
+          xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner \
+            -showBuildSettings 2>/dev/null \
+            | grep -E "CODE_SIGN_STYLE|PROVISIONING_PROFILE|DEVELOPMENT_TEAM|CODE_SIGN_IDENTITY" \
+            || true
           xcode-project build-ipa \
             --workspace ios/Runner.xcworkspace \
             --scheme Runner
