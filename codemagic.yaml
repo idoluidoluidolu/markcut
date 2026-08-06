@@ -6,7 +6,7 @@
 # 3. App Store Connect → 使用者與存取 → 整合 → App Store Connect API
 #    建立金鑰（角色需 App Manager 或 Admin），下載 .p8
 # 4. Codemagic → Teams → Integrations → App Store Connect
-#    貼上 Issuer ID / Key ID / .p8，integration 名稱取「markcut」
+#    貼上 Issuer ID / Key ID / .p8，integration 名稱取「watermark」
 # 5. Start new build → 選 ios-testflight
 workflows:
   ios-testflight:
@@ -14,7 +14,7 @@ workflows:
     instance_type: mac_mini_m2
     max_build_duration: 60
     integrations:
-      app_store_connect: markcut # ← 對應 Codemagic 上的 integration 名稱
+      app_store_connect: watermark # ← 對應 Codemagic 上的 integration 名稱
     environment:
       vars:
         BUNDLE_ID: "com.idoluidoluidolu.watermark"
