@@ -24,20 +24,33 @@ workflows:
     scripts:
       # 簽章：--create 會在憑證/描述檔不存在時自動建立
       # （不要再用 ios_signing 區塊，那只會抓現有的、不會建）
-      - name: 設定簽章
+      - name: 抓取／建立簽章檔
         script: |
           keychain initialize
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
             --type IOS_APP_STORE \
             --create
           keychain add-certificates
-          xcode-project use-profiles
+          echo "=== 已安裝的簽章憑證 ==="
+          security find-identity -v -p codesigning
+          echo "=== 已下載的描述檔 ==="
+          ls -la "$HOME/Library/MobileDevice/Provisioning Profiles/" || true
       - name: Flutter 依賴
         script: flutter pub get
       - name: CocoaPods
         script: |
           cd ios
           pod install
+      # 必須在 pod install 之後：pod install 會重寫 Xcode 專案設定，
+      # 先套用會被蓋掉 → 封裝時報 "requires a provisioning profile"
+      - name: 套用描述檔到 Xcode 專案
+        script: |
+          xcode-project use-profiles
+          echo "=== 專案簽章設定 ==="
+          xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner \
+            -showBuildSettings 2>/dev/null \
+            | grep -E "CODE_SIGN_STYLE|PROVISIONING_PROFILE|DEVELOPMENT_TEAM|CODE_SIGN_IDENTITY" \
+            || true
       # 兩段式建置：flutter 只編譯不簽章，簽章交給 xcode-project
       # （flutter build ipa 會去找「開發憑證」，但我們只有發布憑證，
       #   直接用會失敗：No development certificates available）
