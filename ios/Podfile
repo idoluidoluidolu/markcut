@@ -39,5 +39,10 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
+    # 所有 Pod 一律對齊 iOS 14（ffmpeg_kit_flutter_new 的下限），
+    # 版本不一致會讓 Xcode 的 Target Integrity 檢查擋下建置
+    target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '14.0'
+    end
   end
 end
