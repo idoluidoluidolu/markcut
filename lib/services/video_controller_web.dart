@@ -36,6 +36,11 @@ class PlayerX {
 
   void dispose() => _c.dispose();
 
+  /// 診斷用
+  String get debugInfo =>
+      'size=${_c.value.size.width.round()}x${_c.value.size.height.round()} '
+      '(video_player web)';
+
   /// 預覽畫面
   Widget view({Key? key}) => VideoPlayer(_c, key: key);
 }

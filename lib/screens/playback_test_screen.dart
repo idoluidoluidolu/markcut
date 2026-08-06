@@ -86,9 +86,10 @@ class _PlaybackTestScreenState extends State<PlaybackTestScreen> {
                     child: Text(
                       '${c.value.size.width.round()}x'
                       '${c.value.size.height.round()}  '
-                      '${c.value.duration.inSeconds}s',
+                      '${c.value.duration.inSeconds}s\n'
+                      '${c.debugInfo}',
                       style:
-                          const TextStyle(fontSize: 12, color: kText),
+                          const TextStyle(fontSize: 11, color: kText),
                     ),
                   ),
                 ),

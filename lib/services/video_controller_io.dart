@@ -47,38 +47,89 @@ class PlayerX {
           .firstWhere((d) => d > Duration.zero)
           .timeout(const Duration(seconds: 10));
     }
-    // 尺寸：優先用完整影片參數（含旋轉角度）。
-    // 手機直式影片常是「橫式畫面＋rotate=90 metadata」，
-    // 紋理會被轉正、但 w/h 回報的是未旋轉尺寸——不對調就會壓扁
-    mk.VideoParams? vp = _p.state.videoParams;
-    if ((vp.w ?? 0) <= 0) {
-      try {
-        vp = await _p.stream.videoParams
-            .firstWhere((v) => (v.w ?? 0) > 0)
-            .timeout(const Duration(milliseconds: 3000));
-      } catch (_) {
-        vp = null;
+    // 尺寸真相來源＝渲染紋理的實際大小（VideoController.rect）。
+    // 紋理一定是「轉正後」的樣子——裸播放器看起來正確就是因為它
+    // 用這個；metadata（videoParams 的 w/h/rotate）在不同影片上
+    // 語意不一，猜測會踩雷
+    Size? texSize;
+    try {
+      final r0 = _vc.rect.value;
+      if (r0 != null && r0.width > 0 && r0.height > 0) {
+        texSize = r0.size;
+      } else {
+        final done = Completer<Size>();
+        void onRect() {
+          final r = _vc.rect.value;
+          if (r != null &&
+              r.width > 0 &&
+              r.height > 0 &&
+              !done.isCompleted) {
+            done.complete(r.size);
+          }
+        }
+
+        _vc.rect.addListener(onRect);
+        try {
+          texSize =
+              await done.future.timeout(const Duration(seconds: 4));
+        } finally {
+          _vc.rect.removeListener(onRect);
+        }
       }
+    } catch (_) {
+      texSize = null; // 純音訊或紋理還沒起來 → 走後備
     }
-    if (vp != null && (vp.w ?? 0) > 0 && (vp.h ?? 0) > 0) {
-      var w = (vp.dw ?? vp.w)!;
-      var h = (vp.dh ?? vp.h)!;
-      final rot = vp.rotate ?? 0;
-      if (rot % 180 != 0) {
-        final t = w;
-        w = h;
-        h = t;
-      }
-      _size = Size(w.toDouble(), h.toDouble());
+
+    if (texSize != null) {
+      _size = texSize;
+      _dbgSizeFrom = 'texture';
     } else {
-      // 後備：舊路徑（純音訊會走到這裡且拿不到，維持 0）
-      final w = await waitInt(_p.stream.width, _p.state.width);
-      final h = await waitInt(_p.stream.height, _p.state.height);
-      if ((w ?? 0) > 0 && (h ?? 0) > 0) {
-        _size = Size(w!.toDouble(), h!.toDouble());
+      // 後備：影片參數（dw/dh ＋ rotate 對調）
+      mk.VideoParams? vp = _p.state.videoParams;
+      if ((vp.w ?? 0) <= 0) {
+        try {
+          vp = await _p.stream.videoParams
+              .firstWhere((v) => (v.w ?? 0) > 0)
+              .timeout(const Duration(milliseconds: 3000));
+        } catch (_) {
+          vp = null;
+        }
+      }
+      if (vp != null && (vp.w ?? 0) > 0 && (vp.h ?? 0) > 0) {
+        var w = (vp.dw ?? vp.w)!;
+        var h = (vp.dh ?? vp.h)!;
+        final rot = vp.rotate ?? 0;
+        if (rot % 180 != 0) {
+          final t = w;
+          w = h;
+          h = t;
+        }
+        _size = Size(w.toDouble(), h.toDouble());
+        _dbgSizeFrom = 'videoParams';
+      } else {
+        final w = await waitInt(_p.stream.width, _p.state.width);
+        final h = await waitInt(_p.stream.height, _p.state.height);
+        if ((w ?? 0) > 0 && (h ?? 0) > 0) {
+          _size = Size(w!.toDouble(), h!.toDouble());
+          _dbgSizeFrom = 'w/h streams';
+        }
       }
     }
     _inited = true;
+  }
+
+  String _dbgSizeFrom = 'none';
+
+  /// 診斷用：引擎回報的所有尺寸相關參數
+  String get debugInfo {
+    final vp = _p.state.videoParams;
+    final r = _vc.rect.value;
+    return 'size=${_size.width.round()}x${_size.height.round()} '
+        '(from $_dbgSizeFrom)\n'
+        'rect=${r == null ? 'null' : '${r.width.round()}x${r.height.round()}'}  '
+        'w/h=${_p.state.width}x${_p.state.height}\n'
+        'params w/h=${vp.w}x${vp.h} dw/dh=${vp.dw}x${vp.dh} '
+        'rotate=${vp.rotate} aspect=${vp.aspect}';
   }
 
   PlayerValueX get value => PlayerValueX(
