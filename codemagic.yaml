@@ -3,7 +3,7 @@
 # 使用前置（一次性設定，都在 Codemagic 網站上做）：
 # 1. codemagic.io 註冊，連結這個 GitHub repo
 # 2. Apple Developer 帳號（US$99/年）→ App Store Connect 建立 App，
-#    Bundle ID 用 com.lesucre.markcut
+#    Bundle ID 用 com.idoluidoluidolu.watermark
 # 3. App Store Connect → 使用者與存取 → 金鑰 → 建立 API Key，
 #    在 Codemagic 的 Team settings → Integrations → App Store Connect
 #    貼上 Issuer ID / Key ID / .p8 私鑰（下方 integration 名稱要對上）
@@ -18,7 +18,7 @@ workflows:
     environment:
       ios_signing:
         distribution_type: app_store
-        bundle_identifier: com.lesucre.markcut
+        bundle_identifier: com.idoluidoluidolu.watermark
       flutter: stable
       xcode: latest
       cocoapods: default

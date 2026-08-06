@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "com.lesucre.markcut"
+    namespace = "com.idoluidoluidolu.watermark"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -16,7 +16,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.lesucre.markcut"
+        applicationId = "com.idoluidoluidolu.watermark"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 24 // ffmpeg_kit_flutter_new requires 24+

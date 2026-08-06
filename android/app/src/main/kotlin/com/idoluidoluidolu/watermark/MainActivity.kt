@@ -1,4 +1,4 @@
-package com.lesucre.markcut
+package com.idoluidoluidolu.watermark
 
 import io.flutter.embedding.android.FlutterActivity
 
