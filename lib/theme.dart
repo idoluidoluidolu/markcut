@@ -1,0 +1,370 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+
+/// 效能檢測模式（關於頁開關）：顯示 Flutter 的 UI/Raster 執行緒圖表，
+/// 卡頓時截圖就能判斷瓶頸在哪一層
+final ValueNotifier<bool> kPerfOverlay = ValueNotifier(false);
+
+// ===== 「黑白 Mono Dark」設計系統 =====
+// 碳黑面板、無彩色：強調一律用純白（選取／把手／主行動）
+const kBg = Color(0xFF141416); // 底
+const kPanel = Color(0xFF1D1D21); // 卡片/面板
+const kPanelHi = Color(0xFF26262C); // 面板亮階（icon 磚、選中底）
+const kBorder = Color(0xFF2A2A30); // 邊線
+const kClipBorder = Color(0xFF34343C); // 時間軸片段邊線
+const kAmber = Color(0xFFFFFFFF); // 強調色＝純白（沿用變數名，全 App 通用）
+const kSelect = Color(0xFFFFC24B); // 時間軸選取/拖放專用琥珀（白框疊白縮圖看不清）
+const kText = Color(0xFFE8E8EA);
+const kTextDim = Color(0xFF8B8B95);
+const kIcon = Color(0xFFB9B9C2);
+
+ThemeData buildStudioTheme() {
+  const scheme = ColorScheme.dark(
+    primary: kAmber,
+    onPrimary: kBg,
+    secondary: kAmber,
+    onSecondary: kBg,
+    surface: kBg,
+    onSurface: kText,
+    surfaceContainerHighest: kPanelHi,
+    outline: kBorder,
+    error: Color(0xFFFF6B6B),
+  );
+
+  final radius6 = RoundedRectangleBorder(borderRadius: BorderRadius.circular(6));
+  final radius8 = RoundedRectangleBorder(borderRadius: BorderRadius.circular(8));
+
+  return ThemeData(
+    useMaterial3: true,
+    colorScheme: scheme,
+    fontFamily: 'NotoSansTC',
+    scaffoldBackgroundColor: kBg,
+    appBarTheme: const AppBarTheme(
+      backgroundColor: kBg,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      centerTitle: false,
+      titleTextStyle: TextStyle(
+        fontFamily: 'NotoSansTC',
+        fontSize: 17,
+        fontWeight: FontWeight.w800,
+        letterSpacing: 1.0,
+        color: kText,
+      ),
+      iconTheme: IconThemeData(color: kIcon, size: 22),
+      actionsIconTheme: IconThemeData(color: kIcon, size: 22),
+    ),
+    iconTheme: const IconThemeData(color: kIcon),
+    cardTheme: CardThemeData(
+      color: kPanel,
+      elevation: 0,
+      shape: radius8.copyWith(side: const BorderSide(color: kBorder)),
+      margin: EdgeInsets.zero,
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        backgroundColor: kAmber,
+        foregroundColor: kBg,
+        shape: radius6,
+        textStyle: const TextStyle(
+            fontWeight: FontWeight.w700, fontSize: 14, fontFamily: 'NotoSansTC'),
+      ),
+    ),
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(foregroundColor: kAmber, shape: radius6),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        foregroundColor: kText,
+        side: const BorderSide(color: kBorder),
+        shape: radius6,
+      ),
+    ),
+    chipTheme: ChipThemeData(
+      backgroundColor: kPanel,
+      selectedColor: kPanelHi,
+      side: const BorderSide(color: kBorder),
+      shape: radius6,
+      labelStyle: const TextStyle(
+          fontSize: 12, color: kText, fontFamily: 'NotoSansTC'),
+      secondaryLabelStyle: const TextStyle(
+          fontSize: 12, color: kAmber, fontFamily: 'NotoSansTC'),
+      checkmarkColor: kAmber,
+      showCheckmark: false,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    ),
+    tabBarTheme: const TabBarThemeData(
+      labelColor: kAmber,
+      unselectedLabelColor: kTextDim,
+      indicatorColor: kAmber,
+      indicatorSize: TabBarIndicatorSize.label,
+      dividerColor: kBorder,
+      labelStyle: TextStyle(
+          fontSize: 12, fontWeight: FontWeight.w700, fontFamily: 'NotoSansTC'),
+      unselectedLabelStyle: TextStyle(fontSize: 12, fontFamily: 'NotoSansTC'),
+    ),
+    sliderTheme: const SliderThemeData(
+      activeTrackColor: kAmber,
+      inactiveTrackColor: kPanelHi,
+      thumbColor: kAmber,
+      overlayColor: Color(0x33FFC24B),
+      rangeThumbShape: RoundRangeSliderThumbShape(enabledThumbRadius: 8),
+      trackHeight: 3,
+    ),
+    switchTheme: SwitchThemeData(
+      thumbColor: WidgetStateProperty.resolveWith((s) =>
+          s.contains(WidgetState.selected) ? kBg : kTextDim),
+      trackColor: WidgetStateProperty.resolveWith((s) =>
+          s.contains(WidgetState.selected) ? kAmber : kPanelHi),
+      trackOutlineColor: const WidgetStatePropertyAll(kBorder),
+    ),
+    radioTheme: RadioThemeData(
+      fillColor: WidgetStateProperty.resolveWith((s) =>
+          s.contains(WidgetState.selected) ? kAmber : kTextDim),
+    ),
+    dividerTheme: const DividerThemeData(color: kBorder, thickness: 1),
+    dialogTheme: DialogThemeData(
+      // 底色比面板亮一階＋真實陰影，跟壓暗的背景拉開層次
+      backgroundColor: const Color(0xFF232329),
+      barrierColor: Colors.black.withValues(alpha: 0.85),
+      elevation: 24,
+      shadowColor: Colors.black,
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+          side: const BorderSide(color: Color(0xFF3A3A42))),
+      titleTextStyle: const TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w700,
+          color: kText,
+          fontFamily: 'NotoSansTC'),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      backgroundColor: kPanelHi,
+      contentTextStyle:
+          const TextStyle(color: kText, fontFamily: 'NotoSansTC'),
+      shape: radius6,
+      behavior: SnackBarBehavior.floating,
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      isDense: true,
+      filled: true,
+      fillColor: kBg,
+      enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(6),
+          borderSide: const BorderSide(color: kBorder)),
+      focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(6),
+          borderSide: const BorderSide(color: kAmber, width: 1.5)),
+      labelStyle: const TextStyle(color: kTextDim, fontSize: 13),
+    ),
+    listTileTheme: const ListTileThemeData(
+      iconColor: kIcon,
+      textColor: kText,
+    ),
+    // 抽屜：亮一階底＋深遮罩＋描邊＋把手（把手由各呼叫端開）
+    bottomSheetTheme: BottomSheetThemeData(
+      backgroundColor: kPanelHi,
+      modalBackgroundColor: kPanelHi,
+      modalBarrierColor: Colors.black.withValues(alpha: 0.6),
+      elevation: 12,
+      dragHandleColor: const Color(0xFF6A6A74),
+      dragHandleSize: const Size(34, 4),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
+        side: BorderSide(color: Color(0xFF4A4A52)),
+      ),
+    ),
+    progressIndicatorTheme: const ProgressIndicatorThemeData(
+      color: kAmber,
+      linearTrackColor: kPanelHi,
+    ),
+  );
+}
+
+// ===== 提示訊息（使用者選定的「預覽下緣＋琥珀邊條」樣式）=====
+
+OverlayEntry? _hintEntry;
+Timer? _hintTimer;
+
+/// 精緻提示（取代預設 SnackBar）：貼在預覽畫面下緣的小卡，
+/// 左側一條琥珀直線（error 時轉紅）。有 anchor 就錨定該區塊下緣，
+/// 沒有就落在畫面下方置中。
+void showHint(BuildContext context, String message,
+    {bool error = false, GlobalKey? anchor, Duration? duration}) {
+  _hintTimer?.cancel();
+  _hintEntry?.remove();
+  _hintEntry = null;
+
+  double? top;
+  final anchorCtx = anchor?.currentContext;
+  if (anchorCtx != null) {
+    final box = anchorCtx.findRenderObject();
+    if (box is RenderBox && box.hasSize) {
+      // 預覽下緣往上留 10px
+      top = box.localToGlobal(Offset.zero).dy + box.size.height - 44;
+    }
+  }
+
+  final entry = OverlayEntry(
+    builder: (context) => _HintToast(message: message, error: error, top: top),
+  );
+  _hintEntry = entry;
+  Overlay.of(context, rootOverlay: true).insert(entry);
+  _hintTimer = Timer(duration ?? const Duration(milliseconds: 2400), () {
+    _hintEntry?.remove();
+    _hintEntry = null;
+  });
+}
+
+class _HintToast extends StatelessWidget {
+  final String message;
+  final bool error;
+  final double? top;
+
+  const _HintToast({required this.message, required this.error, this.top});
+
+  @override
+  Widget build(BuildContext context) {
+    final pill = IgnorePointer(
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: 1),
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeOutCubic,
+        builder: (context, v, child) => Opacity(
+          opacity: v,
+          child: Transform.translate(
+              offset: Offset(0, (1 - v) * 6), child: child),
+        ),
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 320),
+          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
+          decoration: BoxDecoration(
+            // 近黑底＋濃陰影，才不會跟深色面板糊在一起
+            color: const Color(0xFF0A0A0C).withValues(alpha: 0.98),
+            border: Border(
+              left: BorderSide(
+                  color: error ? const Color(0xFFFF6B6B) : kAmber,
+                  width: 3),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.9),
+                blurRadius: 22,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          child: Text(
+            message,
+            style: const TextStyle(
+                fontSize: 13,
+                color: kText,
+                height: 1.35,
+                decoration: TextDecoration.none,
+                fontWeight: FontWeight.w400,
+                fontFamily: 'NotoSansTC'),
+          ),
+        ),
+      ),
+    );
+
+    if (top != null) {
+      return Positioned(
+          top: top, left: 0, right: 0, child: Center(child: pill));
+    }
+    // 預設落在畫面下方的空白區（工具列上方）
+    return Positioned(
+        bottom: 150, left: 0, right: 0, child: Center(child: pill));
+  }
+}
+
+/// 確認對話框（使用者選定 C 款直排大按鈕）：
+/// 置中標題＋一行後果說明＋整寬主行動鈕＋文字取消。回傳 true=執行。
+Future<bool> showConfirm(
+  BuildContext context, {
+  required String title,
+  required String message,
+  required String action,
+}) async {
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (context) => Dialog(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: kBorder),
+      ),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 260),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 26, 20, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(title,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      fontSize: 15.5,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.3,
+                      color: kText)),
+              const SizedBox(height: 8),
+              Text(message,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      fontSize: 12.5, color: kTextDim, height: 1.55)),
+              const SizedBox(height: 20),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(44),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                  textStyle: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      fontFamily: 'NotoSansTC'),
+                ),
+                onPressed: () => Navigator.pop(context, true),
+                child: Text(action),
+              ),
+              const SizedBox(height: 4),
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                style: TextButton.styleFrom(
+                  foregroundColor: kTextDim,
+                  minimumSize: const Size.fromHeight(40),
+                ),
+                child: const Text('取消',
+                    style: TextStyle(fontSize: 13)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+  return ok == true;
+}
+
+/// 區塊小標（灰字、寬字距，如「開始新專案」）
+class SectionLabel extends StatelessWidget {
+  final String text;
+  const SectionLabel(this.text, {super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(2, 18, 2, 8),
+      child: Text(
+        text,
+        style: const TextStyle(
+          fontSize: 11,
+          letterSpacing: 3,
+          color: kTextDim,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}

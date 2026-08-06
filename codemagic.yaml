@@ -1,0 +1,57 @@
+# Codemagic 雲端建置：iOS → TestFlight
+#
+# 使用前置（一次性設定，都在 Codemagic 網站上做）：
+# 1. codemagic.io 註冊，連結這個 GitHub repo
+# 2. Apple Developer 帳號（US$99/年）→ App Store Connect 建立 App，
+#    Bundle ID 用 com.lesucre.markcut
+# 3. App Store Connect → 使用者與存取 → 金鑰 → 建立 API Key，
+#    在 Codemagic 的 Team settings → Integrations → App Store Connect
+#    貼上 Issuer ID / Key ID / .p8 私鑰（下方 integration 名稱要對上）
+# 4. 按 Start new build 選 ios-testflight workflow
+workflows:
+  ios-testflight:
+    name: iOS → TestFlight
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    integrations:
+      app_store_connect: markcut # ← Codemagic 上取的 integration 名稱
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.lesucre.markcut
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Flutter 依賴
+        script: flutter pub get
+      - name: CocoaPods
+        script: |
+          cd ios
+          pod install
+      - name: 建置 IPA
+        script: |
+          flutter build ipa --release \
+            --export-options-plist=/Users/builder/export_options.plist
+    artifacts:
+      - build/ios/ipa/*.ipa
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+
+  # Android 順手也放一條（可選）：產出 release APK 當備份
+  android-apk:
+    name: Android APK
+    instance_type: mac_mini_m2
+    max_build_duration: 45
+    environment:
+      flutter: stable
+      java: 17
+    scripts:
+      - name: Flutter 依賴
+        script: flutter pub get
+      - name: 建置 APK
+        script: flutter build apk --release --split-per-abi
+    artifacts:
+      - build/app/outputs/flutter-apk/*.apk
