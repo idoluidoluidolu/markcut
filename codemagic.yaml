@@ -1,49 +1,62 @@
 # Codemagic 雲端建置：iOS → TestFlight
 #
-# 使用前置（一次性設定，都在 Codemagic 網站上做）：
-# 1. codemagic.io 註冊，連結這個 GitHub repo
-# 2. Apple Developer 帳號（US$99/年）→ App Store Connect 建立 App，
-#    Bundle ID 用 com.idoluidoluidolu.watermark
-# 3. App Store Connect → 使用者與存取 → 金鑰 → 建立 API Key，
-#    在 Codemagic 的 Team settings → Integrations → App Store Connect
-#    貼上 Issuer ID / Key ID / .p8 私鑰（下方 integration 名稱要對上）
-# 4. 按 Start new build 選 ios-testflight workflow
+# 前置（一次性，都在網站上做）：
+# 1. codemagic.io 用 GitHub 登入，加入這個 repo
+# 2. App Store Connect 已建立 App，Bundle ID：com.idoluidoluidolu.watermark
+# 3. App Store Connect → 使用者與存取 → 整合 → App Store Connect API
+#    建立金鑰（角色需 App Manager 或 Admin），下載 .p8
+# 4. Codemagic → Teams → Integrations → App Store Connect
+#    貼上 Issuer ID / Key ID / .p8，integration 名稱取「markcut」
+# 5. Start new build → 選 ios-testflight
 workflows:
   ios-testflight:
     name: iOS → TestFlight
     instance_type: mac_mini_m2
     max_build_duration: 60
     integrations:
-      app_store_connect: markcut # ← Codemagic 上取的 integration 名稱
+      app_store_connect: markcut # ← 對應 Codemagic 上的 integration 名稱
     environment:
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.idoluidoluidolu.watermark
+      vars:
+        BUNDLE_ID: "com.idoluidoluidolu.watermark"
       flutter: stable
       xcode: latest
       cocoapods: default
     scripts:
+      # 簽章：--create 會在憑證/描述檔不存在時自動建立
+      # （不要再用 ios_signing 區塊，那只會抓現有的、不會建）
+      - name: 設定簽章
+        script: |
+          keychain initialize
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --create
+          keychain add-certificates
+          xcode-project use-profiles
       - name: Flutter 依賴
         script: flutter pub get
       - name: CocoaPods
         script: |
           cd ios
           pod install
+      # PROJECT_BUILD_NUMBER 由 Codemagic 遞增，避免 TestFlight
+      # 拒收重複的 build number
       - name: 建置 IPA
         script: |
           flutter build ipa --release \
+            --build-number=$PROJECT_BUILD_NUMBER \
             --export-options-plist=/Users/builder/export_options.plist
     artifacts:
       - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
     publishing:
       app_store_connect:
         auth: integration
         submit_to_testflight: true
 
-  # Android 順手也放一條（可選）：產出 release APK 當備份
+  # Android：產出 release APK 當備份（可選）
   android-apk:
     name: Android APK
-    instance_type: mac_mini_m2
+    instance_type: linux_x2
     max_build_duration: 45
     environment:
       flutter: stable
