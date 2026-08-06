@@ -1,20 +1,20 @@
 # Codemagic 雲端建置：iOS → TestFlight
 #
-# 前置（一次性，都在網站上做）：
-# 1. codemagic.io 用 GitHub 登入，加入這個 repo
-# 2. App Store Connect 已建立 App，Bundle ID：com.idoluidoluidolu.watermark
-# 3. App Store Connect → 使用者與存取 → 整合 → App Store Connect API
-#    建立金鑰（角色需 App Manager 或 Admin），下載 .p8
-# 4. Codemagic → Teams → Integrations → App Store Connect
-#    貼上 Issuer ID / Key ID / .p8，integration 名稱取「watermark」
-# 5. Start new build → 選 ios-testflight
+# 前置（一次性）：
+# 1. App Store Connect 已建 App，Bundle ID：com.idoluidoluidolu.watermark
+# 2. Codemagic → Integrations → App Store Connect：
+#    integration 名稱「watermark」，API 金鑰角色需 App Manager/Admin
+# 3. Start new build → ios-testflight
+#
+# 流程採「每站硬驗證」：任何一站的產出缺失就立刻失敗並印出死因，
+# 不讓問題漂到後面的站才爆
 workflows:
   ios-testflight:
     name: iOS → TestFlight
     instance_type: mac_mini_m2
     max_build_duration: 60
     integrations:
-      app_store_connect: watermark # ← 對應 Codemagic 上的 integration 名稱
+      app_store_connect: watermark
     environment:
       vars:
         BUNDLE_ID: "com.idoluidoluidolu.watermark"
@@ -22,44 +22,63 @@ workflows:
       xcode: latest
       cocoapods: default
     scripts:
-      # 簽章：--create 會在憑證/描述檔不存在時自動建立
-      # （不要再用 ios_signing 區塊，那只會抓現有的、不會建）
-      - name: 抓取／建立簽章檔
+      - name: 1 抓取／建立簽章檔
         script: |
           keychain initialize
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
             --type IOS_APP_STORE \
             --create
           keychain add-certificates
-          echo "=== 已安裝的簽章憑證 ==="
-          security find-identity -v -p codesigning
-          echo "=== 已下載的描述檔 ==="
-          ls -la "$HOME/Library/MobileDevice/Provisioning Profiles/" || true
-      - name: Flutter 依賴
+      - name: 2 驗證簽章檔真的存在
+        script: |
+          echo "=== 憑證（keychain）==="
+          security find-identity -v -p codesigning || true
+          P1="$HOME/Library/MobileDevice/Provisioning Profiles"
+          P2="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+          echo "=== 描述檔（舊路徑）==="; ls -la "$P1" 2>/dev/null || echo "(空)"
+          echo "=== 描述檔（Xcode 16+ 路徑）==="; ls -la "$P2" 2>/dev/null || echo "(空)"
+          C1=$(ls "$P1"/*.mobileprovision 2>/dev/null | wc -l | tr -d ' ')
+          C2=$(ls "$P2"/*.mobileprovision 2>/dev/null | wc -l | tr -d ' ')
+          TOTAL=$((C1 + C2))
+          echo "描述檔數量：$TOTAL"
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "❌ 死因：fetch-signing-files 沒抓到也沒建立任何描述檔"
+            echo "   最可能：API 金鑰角色不是 App Manager/Admin，"
+            echo "   或 Apple Developer Portal 沒有這個 Bundle ID 的 App ID"
+            exit 1
+          fi
+          if ! security find-identity -v -p codesigning | grep -q "Apple Distribution"; then
+            echo "❌ 死因：keychain 裡沒有 Apple Distribution 發布憑證"
+            exit 1
+          fi
+      - name: 3 Flutter 依賴
         script: flutter pub get
-      - name: CocoaPods
+      - name: 4 CocoaPods
         script: |
           cd ios
           pod install
-      # 兩段式建置：flutter 只編譯不簽章，簽章交給 xcode-project
-      # （flutter build ipa 會去找「開發憑證」，但我們只有發布憑證，
-      #   直接用會失敗：No development certificates available）
-      # PROJECT_BUILD_NUMBER 由 Codemagic 遞增，避免 TestFlight 拒收重複編號
-      - name: 編譯（不簽章）
+      - name: 5 編譯（不簽章）
         script: |
           flutter build ios --release --no-codesign \
             --build-number=$PROJECT_BUILD_NUMBER
-      # use-profiles 與 build-ipa 必須綁在一起：
-      # pod install（flutter build ios 內部也會跑）會重寫 Xcode 專案設定，
-      # 中間插任何步驟都會把簽章設定洗掉 → requires a provisioning profile
-      - name: 套用描述檔＋封裝 IPA
+      # use-profiles 必須緊貼封裝：flutter build ios 內部會重跑
+      # pod install，會把先套好的簽章設定洗掉
+      - name: 6 套用描述檔並驗證
         script: |
           xcode-project use-profiles
-          echo "=== 專案簽章設定 ==="
-          xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner \
-            -showBuildSettings 2>/dev/null \
-            | grep -E "CODE_SIGN_STYLE|PROVISIONING_PROFILE|DEVELOPMENT_TEAM|CODE_SIGN_IDENTITY" \
-            || true
+          echo "=== 專案內的簽章設定 ==="
+          grep -n "PROVISIONING_PROFILE_SPECIFIER\|DEVELOPMENT_TEAM\|CODE_SIGN_IDENTITY" \
+            ios/Runner.xcodeproj/project.pbxproj || true
+          if ! grep -q "PROVISIONING_PROFILE_SPECIFIER" \
+              ios/Runner.xcodeproj/project.pbxproj; then
+            echo "❌ 死因：use-profiles 沒把描述檔寫進 Xcode 專案"
+            echo "   （描述檔的 Bundle ID 跟專案對不上？下面是專案的識別碼）"
+            grep -n "PRODUCT_BUNDLE_IDENTIFIER" \
+              ios/Runner.xcodeproj/project.pbxproj
+            exit 1
+          fi
+      - name: 7 封裝 IPA
+        script: |
           xcode-project build-ipa \
             --workspace ios/Runner.xcworkspace \
             --scheme Runner
