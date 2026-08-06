@@ -1,5 +1,5 @@
-# ffmpeg_kit_flutter_new 需要 iOS 14 以上
-platform :ios, '14.0'
+# 最低 iOS 15（Apple 2027 春起強制；機型涵蓋與 14 相同）
+platform :ios, '15.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -42,7 +42,7 @@ post_install do |installer|
     # 所有 Pod 一律對齊 iOS 14（ffmpeg_kit_flutter_new 的下限），
     # 版本不一致會讓 Xcode 的 Target Integrity 檢查擋下建置
     target.build_configurations.each do |config|
-      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '14.0'
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
     end
   end
 end

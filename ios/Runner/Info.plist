@@ -12,6 +12,12 @@
 	<string>需要存取相簿以選取要加浮水印或剪輯的影片與照片</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>需要將處理完成的影片與照片儲存到您的相簿</string>
+	<key>NSCameraUsageDescription</key>
+	<string>拍攝新的照片或影片來加上浮水印時使用相機</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>錄製影片時使用麥克風收音</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>讀取媒體檔案內附的拍攝位置資訊時使用；本 App 不會上傳或蒐集位置資料</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
