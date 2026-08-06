@@ -38,13 +38,19 @@ workflows:
         script: |
           cd ios
           pod install
-      # PROJECT_BUILD_NUMBER 由 Codemagic 遞增，避免 TestFlight
-      # 拒收重複的 build number
-      - name: 建置 IPA
+      # 兩段式建置：flutter 只編譯不簽章，簽章交給 xcode-project
+      # （flutter build ipa 會去找「開發憑證」，但我們只有發布憑證，
+      #   直接用會失敗：No development certificates available）
+      # PROJECT_BUILD_NUMBER 由 Codemagic 遞增，避免 TestFlight 拒收重複編號
+      - name: 編譯（不簽章）
         script: |
-          flutter build ipa --release \
-            --build-number=$PROJECT_BUILD_NUMBER \
-            --export-options-plist=/Users/builder/export_options.plist
+          flutter build ios --release --no-codesign \
+            --build-number=$PROJECT_BUILD_NUMBER
+      - name: 封裝 IPA（簽章）
+        script: |
+          xcode-project build-ipa \
+            --workspace ios/Runner.xcworkspace \
+            --scheme Runner
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
