@@ -1,16 +1,18 @@
 # Codemagic 雲端建置：iOS → TestFlight
 #
-# 簽章採全自動模式（ios_signing）：憑證與描述檔由 Codemagic
-# 透過 App Store Connect integration 自動建立與管理，
-# 包含它內部保管的憑證私鑰——不要改成手動 fetch-signing-files，
-# 那條路需要另外提供 CERTIFICATE_PRIVATE_KEY，缺了就會
-# 「Cannot save Signing Certificates without certificate private key」
+# 簽章流程（Codemagic 官方手動流程）：
+#   fetch-signing-files --create 用 CERTIFICATE_PRIVATE_KEY（安全變數）
+#   在 Apple 端自動建立 Apple Distribution 憑證＋App Store 描述檔。
+#   ⚠ 自動模式（ios_signing）只會「抓」現有描述檔、不會建——
+#     帳號還沒有簽章檔時會報 No matching profiles found
 #
 # 前置（一次性）：
 # 1. Apple Developer Portal 已註冊 App ID：com.idoluidoluidolu.watermark
 # 2. App Store Connect 已建立對應的 App
-# 3. Codemagic → Integrations → App Store Connect：
-#    integration 名稱「watermark」，API 金鑰角色 App Manager/Admin
+# 3. Codemagic → Integrations → App Store Connect：名稱「watermark」
+# 4. Codemagic 的 App settings → Environment variables：
+#    群組 appstore，變數 CERTIFICATE_PRIVATE_KEY（勾 Secure），
+#    值＝專案根目錄 ios_cert_key.pem 的完整內容
 workflows:
   ios-testflight:
     name: iOS → TestFlight
@@ -19,35 +21,72 @@ workflows:
     integrations:
       app_store_connect: watermark
     environment:
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.idoluidoluidolu.watermark
+      groups:
+        - appstore # 內含 CERTIFICATE_PRIVATE_KEY
+      vars:
+        BUNDLE_ID: "com.idoluidoluidolu.watermark"
       flutter: stable
       xcode: latest
       cocoapods: default
     scripts:
-      - name: 1 驗證自動簽章已就緒
+      - name: 1 抓取／建立簽章檔
+        script: |
+          if [ -z "$CERTIFICATE_PRIVATE_KEY" ]; then
+            echo "❌ 死因：CERTIFICATE_PRIVATE_KEY 環境變數不存在"
+            echo "   → Codemagic App settings → Environment variables"
+            echo "     群組名稱 appstore、變數勾 Secure"
+            exit 1
+          fi
+          keychain initialize
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --create
+          keychain add-certificates
+      - name: 2 驗證簽章檔真的存在
         script: |
           echo "=== 憑證（keychain）==="
           security find-identity -v -p codesigning || true
-          echo "=== export_options.plist ==="
-          if [ ! -f /Users/builder/export_options.plist ]; then
-            echo "❌ 死因：自動簽章沒有產生 export_options.plist"
-            echo "   → 檢查 ios_signing 區塊與 integration 權限"
+          P1="$HOME/Library/MobileDevice/Provisioning Profiles"
+          P2="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+          C1=$(ls "$P1"/*.mobileprovision 2>/dev/null | wc -l | tr -d ' ')
+          C2=$(ls "$P2"/*.mobileprovision 2>/dev/null | wc -l | tr -d ' ')
+          TOTAL=$((C1 + C2))
+          echo "描述檔數量：$TOTAL"
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "❌ 死因：沒有描述檔（fetch --create 失敗）"
             exit 1
           fi
-          cat /Users/builder/export_options.plist
-      - name: 2 Flutter 依賴
+          if ! security find-identity -v -p codesigning | grep -q "Apple Distribution"; then
+            echo "❌ 死因：keychain 裡沒有 Apple Distribution 憑證"
+            exit 1
+          fi
+      - name: 3 Flutter 依賴
         script: flutter pub get
-      - name: 3 CocoaPods
+      - name: 4 CocoaPods
         script: |
           cd ios
           pod install
-      - name: 4 建置 IPA
+      - name: 5 編譯（不簽章）
         script: |
-          flutter build ipa --release \
-            --build-number=$PROJECT_BUILD_NUMBER \
-            --export-options-plist=/Users/builder/export_options.plist
+          flutter build ios --release --no-codesign \
+            --build-number=$PROJECT_BUILD_NUMBER
+      # use-profiles 必須緊貼封裝：flutter build ios 內部會重跑
+      # pod install，會把先套好的簽章設定洗掉
+      - name: 6 套用描述檔並驗證
+        script: |
+          xcode-project use-profiles
+          if ! grep -q "PROVISIONING_PROFILE_SPECIFIER" \
+              ios/Runner.xcodeproj/project.pbxproj; then
+            echo "❌ 死因：use-profiles 沒把描述檔寫進 Xcode 專案"
+            grep -n "PRODUCT_BUNDLE_IDENTIFIER" \
+              ios/Runner.xcodeproj/project.pbxproj
+            exit 1
+          fi
+      - name: 7 封裝 IPA
+        script: |
+          xcode-project build-ipa \
+            --workspace ios/Runner.xcworkspace \
+            --scheme Runner
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
