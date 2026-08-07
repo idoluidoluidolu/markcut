@@ -14,7 +14,7 @@ void main() {
   PaintingBinding.instance.imageCache
     ..maximumSize = 900
     ..maximumSizeBytes = 320 << 20; // 320MB
-  // 內建字型的 OFL 與 FFmpeg 的 GPL 聲明，登錄到系統授權清單
+  // 內建字型的 OFL 與 FFmpeg 的 LGPL 聲明，登錄到系統授權清單
   LicenseRegistry.addLicense(() async* {
     yield const LicenseEntryWithLineBreaks(
       ['內建字型'],
@@ -31,8 +31,7 @@ void main() {
       ['FFmpeg'],
       '本程式使用 FFmpeg（LGPL v2.1 或後續版本授權）進行影音處理，'
       'H.264 編碼使用裝置的硬體編碼器。\n'
-      '浮水印 本身的程式碼以 GNU General Public License v3 '
-      '或後續版本散布。\n\n'
+      '浮水印 本身的程式碼以 Mozilla Public License 2.0 散布。\n\n'
       'FFmpeg 為其各自作者所有，詳見 https://ffmpeg.org',
     );
   });

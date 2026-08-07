@@ -5,7 +5,7 @@ import '../services/store_links.dart';
 import '../theme.dart';
 import 'playback_test_screen.dart';
 
-/// 原始碼位置（GPL 要求提供取得方式）
+/// 原始碼位置（MPL 要求提供取得方式）
 const kSourceUrl = 'https://github.com/idoluidoluidolu/markcut';
 const kAppVersion = '1.0.0';
 
@@ -163,7 +163,7 @@ class AboutScreen extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           const Text(
-            '依 GPL v3 散布 · FFmpeg LGPL v2.1+',
+            '依 MPL 2.0 散布 · FFmpeg LGPL v2.1+',
             style: TextStyle(fontSize: 11, color: kTextDim),
           ),
         ],
@@ -199,10 +199,11 @@ class AboutScreen extends StatelessWidget {
           sections: const [
             (
               '本程式',
-              '浮水印 是自由軟體，依 GNU 通用公共授權條款第三版'
-                  '（GPL v3）或後續版本散布。\n\n'
-                  '你可以自由使用、修改與再散布本程式，但衍生作品必須'
-                  '以相同授權釋出並公開原始碼。本程式不提供任何擔保。',
+              '浮水印 是自由軟體，依 Mozilla Public License 2.0 散布。\n\n'
+                  '你可以自由使用、修改與再散布本程式；'
+                  '改動到的原始檔必須以相同授權公開，'
+                  '但可以跟其他授權的程式碼整合在同一個專案裡。'
+                  '本程式不提供任何擔保。',
             ),
             (
               '影音處理',
@@ -359,7 +360,7 @@ class _InfoPage extends StatelessWidget {
                 context: context,
                 applicationName: '浮水印',
                 applicationVersion: kAppVersion,
-                applicationLegalese: '依 GPL v3 散布',
+                applicationLegalese: '依 MPL 2.0 散布',
               ),
               style: OutlinedButton.styleFrom(
                 minimumSize: const Size.fromHeight(44),

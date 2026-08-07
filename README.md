@@ -20,12 +20,15 @@ flutter build apk --release --split-per-abi
 
 ## 授權
 
-本程式為自由軟體，依 **GNU General Public License v3**（或後續版本）散布，
+本程式為自由軟體，依 **Mozilla Public License 2.0** 散布，
 授權全文見 [LICENSE](LICENSE)。
 
-之所以採用 GPL，是因為影音處理使用了包含 GPL 元件（x264）的 FFmpeg。
-你可以自由使用、修改、再散布本程式，但衍生作品必須以相同授權釋出並公開原始碼。
+MPL 是檔案層級的 copyleft：你改到的原始檔必須以相同授權公開，
+但可以跟其他授權（含閉源）的程式碼整合在同一個專案裡。
 本程式不提供任何擔保。
+
+影音處理使用 FFmpeg 的 **LGPL v2.1+** 建置版（不含 x264），
+H.264 編碼改用裝置的硬體編碼器（Android MediaCodec／iOS VideoToolbox）。
 
 內建字型皆為 SIL Open Font License 1.1：思源黑體／思源宋體、jf open 粉圓、
 LXGW 文楷 TC、朱古力黑體、Montserrat、Playfair Display、Pacifico、
