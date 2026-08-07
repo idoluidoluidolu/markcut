@@ -49,6 +49,15 @@ class TimelineEditor extends StatefulWidget {
   final void Function(int from, int to) onReorderTrack; // 整條軌道換順序
   final Set<int> mutedTracks; // 靜音的軌道
   final ValueChanged<int> onToggleMute; // 點標籤喇叭切換整軌靜音
+
+  /// 預備好的旁白軌：這一軌的標籤變成紅色錄音鈕
+  final int? voiceTrack;
+
+  /// 正在錄旁白（鈕變成停止）
+  final bool voiceRecording;
+
+  /// 按下紅鈕：開始／停止錄旁白
+  final VoidCallback? onVoiceRecordTap;
   final void Function(int id, Offset globalPos) onLongPressClip; // 長按選單
   /// 點一下「已經選取」的片段（例如文字片段點兩下進編輯）
   final ValueChanged<int>? onTapSelectedClip;
@@ -91,6 +100,9 @@ class TimelineEditor extends StatefulWidget {
     required this.onReorderTrack,
     this.mutedTracks = const {},
     required this.onToggleMute,
+    this.voiceTrack,
+    this.voiceRecording = false,
+    this.onVoiceRecordTap,
     required this.onLongPressClip,
     required this.onLongPressEmpty,
     this.onTapSelectedClip,
@@ -138,7 +150,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
   double get rowStride => trackH + TimelineEditor.gap;
 
   /// 畫出來的軌數：有內容的 + 一條永遠留著的空軌
-  int get _rows => timeline.usedTracks + 1;
+  // 永遠多一列空軌可放東西；預備中的旁白軌也要有位置顯示
+  int get _rows => math.max(
+      timeline.usedTracks + 1, (widget.voiceTrack ?? -1) + 1);
 
   /// 浮水印軌佔掉的高度（含間距）
   double get _wmExtra => widget.watermark == null
@@ -768,20 +782,25 @@ class _TimelineEditorState extends State<TimelineEditor> {
 
   Widget _trackLabel(int t) {
     final isEmptyRow = t >= timeline.usedTracks;
+    final isVoice = widget.voiceTrack == t;
     return _TrackLabel(
       index: t,
       height: trackH,
       rowStride: rowStride,
-      canDrag: !isEmptyRow && timeline.usedTracks > 1,
+      canDrag: !isEmptyRow && timeline.usedTracks > 1 && !isVoice,
       isEmptyRow: isEmptyRow,
       muted: widget.mutedTracks.contains(t),
+      isVoice: isVoice,
+      isRecording: isVoice && widget.voiceRecording,
       isDragging: _dragTrack == t,
       dragDy: _dragTrack == t ? _dragDy : 0,
       maxTrack: timeline.usedTracks - 1,
-      // 空軌點了加素材；有內容的軌點了切換整軌靜音
-      onTap: () => isEmptyRow
-          ? widget.onAddMedia(t)
-          : widget.onToggleMute(t),
+      // 旁白軌＝錄音鈕；空軌點了加素材；有內容的軌切換整軌靜音
+      onTap: () => isVoice
+          ? widget.onVoiceRecordTap?.call()
+          : (isEmptyRow
+              ? widget.onAddMedia(t)
+              : widget.onToggleMute(t)),
       onDragUpdate: (dy) => setState(() {
         _dragTrack = t;
         _dragDy = dy;
@@ -1027,6 +1046,8 @@ class _TrackLabel extends StatefulWidget {
   final bool canDrag;
   final bool isEmptyRow;
   final bool muted;
+  final bool isVoice; // 旁白軌：標籤變紅色錄音鈕
+  final bool isRecording;
   final bool isDragging;
   final double dragDy;
   final int maxTrack;
@@ -1041,6 +1062,8 @@ class _TrackLabel extends StatefulWidget {
     required this.canDrag,
     required this.isEmptyRow,
     this.muted = false,
+    this.isVoice = false,
+    this.isRecording = false,
     required this.isDragging,
     required this.dragDy,
     required this.maxTrack,
@@ -1064,13 +1087,17 @@ class _TrackLabelState extends State<_TrackLabel> {
       height: widget.height,
       margin: const EdgeInsets.only(right: 6),
       decoration: BoxDecoration(
-        color: kPanel,
+        color: widget.isRecording ? const Color(0x33FF3B30) : kPanel,
         borderRadius: BorderRadius.circular(4),
         border: Border.all(
-          color: widget.isDragging
-              ? kSelect
-              : (widget.isEmptyRow ? kSelect.withValues(alpha: 0.55) : kBorder),
-          width: widget.isDragging ? 2 : 1,
+          color: widget.isVoice
+              ? const Color(0xFFFF3B30)
+              : (widget.isDragging
+                  ? kSelect
+                  : (widget.isEmptyRow
+                      ? kSelect.withValues(alpha: 0.55)
+                      : kBorder)),
+          width: (widget.isDragging || widget.isVoice) ? 2 : 1,
         ),
         boxShadow: widget.isDragging
             ? [
@@ -1084,15 +1111,32 @@ class _TrackLabelState extends State<_TrackLabel> {
       ),
       // 只放一個圖示，乾淨就好（整條軌道仍可上下拖曳換順序）
       child: Center(
-        child: Icon(
-          widget.isEmptyRow
-              ? Icons.add
-              : (widget.muted ? Icons.volume_off : Icons.volume_up),
-          size: 15,
-          color: widget.muted
-              ? kSelect
-              : (amber ? kSelect : kTextDim),
-        ),
+        child: widget.isVoice
+            // 旁白軌：紅色圓鈕，錄音中變成方形停止
+            ? Container(
+                width: 22,
+                height: 22,
+                decoration: const BoxDecoration(
+                  color: Color(0xFFFF3B30),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  widget.isRecording
+                      ? Icons.stop_rounded
+                      : Icons.mic,
+                  size: 14,
+                  color: Colors.white,
+                ),
+              )
+            : Icon(
+                widget.isEmptyRow
+                    ? Icons.add
+                    : (widget.muted ? Icons.volume_off : Icons.volume_up),
+                size: 15,
+                color: widget.muted
+                    ? kSelect
+                    : (amber ? kSelect : kTextDim),
+              ),
       ),
     );
 

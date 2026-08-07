@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -10,6 +11,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/timeline.dart';
@@ -22,7 +25,6 @@ import '../services/video_processor.dart';
 import '../services/watermark_renderer.dart';
 import '../theme.dart';
 import '../widgets/timeline_editor.dart';
-import '../widgets/voice_recorder_sheet.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
 
@@ -698,12 +700,72 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (mounted) setState(() => _sel = clip.id);
   }
 
-  /// 錄旁白：錄完直接放到播放頭位置的空白軌
+  // ===== 旁白：邊看影片邊錄 =====
+  // 選了「錄旁白」＝準備一條旁白軌，軌道標籤變成紅色錄音鈕；
+  // 按下去＝影片從播放頭開始播、同時錄音；再按一次停止並落成片段。
+  final _recorder = AudioRecorder();
+  int? _voTrack; // 預備好的旁白軌
+  bool _voRecording = false;
+  double _voStartPos = 0; // 開始錄的時間軸位置
+  String? _voPath;
+  DateTime? _voStartAt;
+
+  /// 選單選了「錄旁白」：準備一條軌，實際錄音等使用者按紅鈕
   Future<void> _recordVoice(int track) async {
     _pause();
-    final got = await VoiceRecorderSheet.show(context);
-    if (got == null || !mounted) return;
-    final c = makeVideoController(got.path);
+    if (!await _recorder.hasPermission()) {
+      if (mounted) showHint(context, '需要麥克風權限才能錄旁白', error: true);
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _voTrack = track);
+    showHint(context, '按軌道上的紅色按鈕，就會一邊播影片一邊錄');
+  }
+
+  /// 紅鈕：開始／停止錄旁白
+  Future<void> _toggleVoiceRecord() async {
+    if (_voRecording) {
+      await _finishVoiceRecord();
+      return;
+    }
+    final track = _voTrack;
+    if (track == null) return;
+    try {
+      final dir = await getTemporaryDirectory();
+      final path = '${dir.path}${Platform.pathSeparator}voice_'
+          '${DateTime.now().millisecondsSinceEpoch}.m4a';
+      await _recorder.start(
+        const RecordConfig(encoder: AudioEncoder.aacLc, bitRate: 128000),
+        path: path,
+      );
+      _voPath = path;
+      _voStartPos = _position;
+      _voStartAt = DateTime.now();
+      setState(() => _voRecording = true);
+      _play(); // 影片跟著跑，才能對著畫面講
+    } catch (e) {
+      if (mounted) showHint(context, '無法開始錄音：$e', error: true);
+    }
+  }
+
+  /// 停止錄音，把錄好的旁白落成片段
+  Future<void> _finishVoiceRecord() async {
+    if (!_voRecording) return;
+    _pause();
+    setState(() => _voRecording = false);
+    String? path;
+    try {
+      path = await _recorder.stop();
+    } catch (_) {}
+    path ??= _voPath;
+    final elapsed = _voStartAt == null
+        ? 0.0
+        : DateTime.now().difference(_voStartAt!).inMilliseconds / 1000.0;
+    if (path == null || elapsed < 0.3) {
+      if (mounted) showHint(context, '錄得太短了，再試一次', error: true);
+      return;
+    }
+    final c = makeVideoController(path);
     try {
       await c.initialize();
     } catch (_) {
@@ -711,13 +773,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (mounted) showHint(context, '錄音檔讀不到，再錄一次', error: true);
       return;
     }
-    // 錄音檔的時長優先用播放器回報的，讀不到就用計時器的秒數
     final reported = c.value.duration.inMilliseconds / 1000.0;
-    final dur = reported > 0.05 ? reported : got.seconds;
+    final dur = reported > 0.05 ? reported : elapsed;
     _pushUndo();
     final srcIndex = _tl.sources.length;
     _tl.sources.add(MediaSource(
-      path: got.path,
+      path: path,
       name: '旁白',
       kind: ClipKind.audio,
       duration: dur,
@@ -727,15 +788,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       sourceIndex: srcIndex,
       trimStart: 0,
       trimEnd: dur,
-      offset: _position, // 從播放頭開始
-      track: track,
+      offset: _voStartPos, // 對齊開始錄的位置
+      track: _voTrack ?? _tl.usedTracks,
     );
     _ctrls[clip.id] = c;
     setState(() {
       _tl.clips.add(clip);
       _sel = clip.id;
+      _voTrack = null; // 錄完收起紅鈕
     });
     _saveDraft();
+    if (mounted) showHint(context, '旁白已加入時間軸');
   }
 
   /// 素材選單（影片／圖片／文字／音樂／錄旁白）
@@ -1733,6 +1796,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _frameSettle?.cancel();
     _scrubSettleTimer?.cancel();
     _scrubEndTimer?.cancel();
+    _recorder.dispose();
     _ticker.dispose();
     for (final c in _ctrls.values) {
       c.dispose();
@@ -2691,6 +2755,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     }
                   },
                   onLiftChanged: (v) => _lifting = v,
+                  // 旁白軌：標籤變紅色錄音鈕，按了邊播邊錄
+                  voiceTrack: _voTrack,
+                  voiceRecording: _voRecording,
+                  onVoiceRecordTap: _toggleVoiceRecord,
                   // 捏合由外層偵測，這裡只用來鎖住橫向捲動
                   pinching: _tlPinching,
                   // 桌面滾輪縮放：下限 1px/秒，長片也能整條盡收眼底
