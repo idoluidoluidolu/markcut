@@ -58,6 +58,12 @@ class TimelineEditor extends StatefulWidget {
 
   /// 按下紅鈕：開始／停止錄旁白
   final VoidCallback? onVoiceRecordTap;
+
+  /// 開始錄音的時間軸位置（錄音中的紅色波形從這裡往右長）
+  final double voiceStart;
+
+  /// 錄音中的即時音量取樣（0~1）
+  final ValueListenable<List<double>>? voiceLevels;
   final void Function(int id, Offset globalPos) onLongPressClip; // 長按選單
   /// 點一下「已經選取」的片段（例如文字片段點兩下進編輯）
   final ValueChanged<int>? onTapSelectedClip;
@@ -103,6 +109,8 @@ class TimelineEditor extends StatefulWidget {
     this.voiceTrack,
     this.voiceRecording = false,
     this.onVoiceRecordTap,
+    this.voiceStart = 0,
+    this.voiceLevels,
     required this.onLongPressClip,
     required this.onLongPressEmpty,
     this.onTapSelectedClip,
@@ -600,6 +608,39 @@ class _TimelineEditorState extends State<TimelineEditor> {
             onLiftUpdate: _liftUpdate,
             onLiftEnd: _liftEnd,
           ),
+        // 錄音中：從起錄點往右長的紅色即時波形，長度跟著播放頭
+        if (widget.voiceRecording && widget.voiceTrack == track)
+          Positioned(
+            left: widget.voiceStart * pxPerSec,
+            top: 0,
+            bottom: 0,
+            child: IgnorePointer(
+              child: ValueListenableBuilder<double>(
+                valueListenable: widget.playhead,
+                builder: (context, pos, child) => SizedBox(
+                  width:
+                      ((pos - widget.voiceStart) * pxPerSec).clamp(3.0, 1e6),
+                  child: child,
+                ),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: kRecord.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: kRecord, width: 1.5),
+                  ),
+                  child: ValueListenableBuilder<List<double>>(
+                    valueListenable:
+                        widget.voiceLevels ?? _emptyLevels,
+                    builder: (context, levels, _) => CustomPaint(
+                      size: Size.infinite,
+                      painter: _WavePainter(
+                          peaks: levels, color: kRecord, live: true),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -819,6 +860,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
     );
   }
 }
+
+/// voiceLevels 沒給時的替身，省去到處判空
+final _emptyLevels = ValueNotifier<List<double>>(const []);
 
 /// 片段內容：影片/圖片是 filmstrip、音訊是波形、文字是字卡
 Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
@@ -1247,17 +1291,45 @@ class _WavePainter extends CustomPainter {
   final List<double>? peaks;
   final double start; // trim 範圍（0~1，相對整個音檔）
   final double end;
+  final Color? color;
 
-  _WavePainter({this.peaks, this.start = 0, this.end = 1});
+  /// 錄音中的即時波形：沒有取樣時畫平線（而不是示意波形），
+  /// 不然一開錄就滿滿假波形，反而看不出有沒有收到聲音
+  final bool live;
+
+  _WavePainter(
+      {this.peaks, this.start = 0, this.end = 1, this.color, this.live = false});
 
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = kAudioBorder.withValues(alpha: 0.55)
+      ..color = (color ?? kAudioBorder).withValues(alpha: color != null ? 0.9 : 0.55)
       ..strokeWidth = 1.5;
     const step = 3.0;
     final mid = size.height / 2;
     final p = peaks;
+
+    if (live) {
+      if (p == null || p.isEmpty) {
+        canvas.drawLine(Offset(2, mid), Offset(size.width - 2, mid), paint);
+        return;
+      }
+      // 取樣是等時間間隔累積的，寬度也隨播放頭等速長，所以平均鋪滿即可
+      final cols = ((size.width - 4) / step).floor().clamp(1, 100000);
+      for (var c = 0; c < cols; c++) {
+        final a = c * p.length ~/ cols;
+        final b = ((c + 1) * p.length ~/ cols).clamp(a + 1, p.length);
+        var m = 0.0;
+        for (var i = a; i < b; i++) {
+          if (p[i] > m) m = p[i];
+        }
+        final h = (m * size.height * 0.86).clamp(1.5, size.height - 2);
+        final x = 2.0 + c * step;
+        canvas.drawLine(
+            Offset(x, mid - h / 2), Offset(x, mid + h / 2), paint);
+      }
+      return;
+    }
 
     if (p == null || p.isEmpty || end <= start) {
       // 示意波形：用位置產生穩定的偽隨機高度（不能用 Random，保持重繪一致）
@@ -1291,7 +1363,10 @@ class _WavePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_WavePainter old) =>
-      old.peaks != peaks || old.start != start || old.end != end;
+      old.peaks != peaks ||
+      old.start != start ||
+      old.end != end ||
+      old.color != color;
 }
 
 /// 時間刻度尺

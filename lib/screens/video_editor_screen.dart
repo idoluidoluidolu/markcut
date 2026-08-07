@@ -19,6 +19,7 @@ import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
 import '../services/audio_picker.dart';
 import '../services/file_reader.dart';
+import '../services/screen_awake.dart';
 import '../services/video_controller.dart';
 import '../services/video_engine.dart' as engine;
 import '../services/video_processor.dart';
@@ -533,12 +534,31 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   final Map<int, List<Uint8List?>> _scrubFrames = {};
 
   /// 每張快取幀的時間間隔（秒）：專業剪輯 App 的拖曳之所以絲滑，
-  /// 是因為幀夠密（我們用 8fps）；太疏就只能拿舊幀湊，看起來一段段跳
-  static const _scrubFps = 8.0;
+  /// 是因為幀夠密；太疏就只能拿舊幀湊，看起來一段段跳
+  static const _scrubFps = 14.0;
 
   /// 快取幀解析度（長邊）。密度提高後張數變多，
-  /// 解析度相對降一階換記憶體與解碼速度——拖曳中肉眼看不出差別
-  static const _scrubLongSide = 720;
+  /// 解析度相對降一階換記憶體與解碼速度——拖曳中肉眼看不出差別。
+  /// 540 之下每張解碼後約 0.65MB，窗內留 64 張也才 40 幾 MB
+  static const _scrubLongSide = 540;
+
+  /// 已解碼的幀（每個素材一份）
+  final Map<int, _ScrubDecoder> _scrubDecoders = {};
+
+  _ScrubDecoder _decoderFor(int srcIndex, List<Uint8List?> frames) {
+    final existing = _scrubDecoders[srcIndex];
+    if (existing != null && identical(existing.frames, frames)) {
+      return existing;
+    }
+    existing?.dispose();
+    return _scrubDecoders[srcIndex] = _ScrubDecoder(
+      frames,
+      // 停在原地時晚一步解好的圖也要補畫上去
+      onReady: () {
+        if (mounted && _scrubbing) _frameVN.value = _posVN.value;
+      },
+    );
+  }
 
   bool _scrubbing = false;
   Timer? _scrubEndTimer;
@@ -571,24 +591,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       // 段落之間喘口氣，把 CPU 讓給 UI
       await Future<void>.delayed(const Duration(milliseconds: 120));
-    }
-  }
-
-  /// 拖曳時預熱鄰近幀的解碼：手指到之前圖已經在快取裡，換圖零延遲。
-  /// 幀變密後預熱範圍跟著加大（涵蓋約前後半秒的滑動距離）
-  void _prewarmScrubFrames(List<Uint8List?> frames, int fi) {
-    for (var d = 1; d <= 6; d++) {
-      for (final i in [fi - d, fi + d]) {
-        if (i >= 0 && i < frames.length) {
-          final b = frames[i];
-          if (b != null) {
-            precacheImage(
-              ResizeImage(MemoryImage(b), width: _scrubLongSide),
-              context,
-            );
-          }
-        }
-      }
     }
   }
 
@@ -709,17 +711,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   double _voStartPos = 0; // 開始錄的時間軸位置
   String? _voPath;
   DateTime? _voStartAt;
+  /// 錄音中的即時音量取樣（0~1），時間軸上畫成紅色波形
+  final _voLevels = ValueNotifier<List<double>>(const []);
+  StreamSubscription<Amplitude>? _voAmpSub;
 
-  /// 選單選了「錄旁白」：準備一條軌，實際錄音等使用者按紅鈕
+  /// 選單選了「錄旁白」：先把軌道準備好，紅鈕按下去才要權限
+  ///（瀏覽器要求麥克風權限必須在使用者操作的當下請求）
   Future<void> _recordVoice(int track) async {
     _pause();
-    if (!await _recorder.hasPermission()) {
-      if (mounted) showHint(context, '需要麥克風權限才能錄旁白', error: true);
-      return;
-    }
-    if (!mounted) return;
     setState(() => _voTrack = track);
-    showHint(context, '按軌道上的紅色按鈕，就會一邊播影片一邊錄');
+    showHint(context, '按軌道左邊的紅色按鈕，就會一邊播影片一邊錄');
   }
 
   /// 紅鈕：開始／停止錄旁白
@@ -731,9 +732,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final track = _voTrack;
     if (track == null) return;
     try {
-      final dir = await getTemporaryDirectory();
-      final path = '${dir.path}${Platform.pathSeparator}voice_'
-          '${DateTime.now().millisecondsSinceEpoch}.m4a';
+      // 權限在這裡要（使用者剛按下按鈕，瀏覽器才准跳詢問）
+      if (!await _recorder.hasPermission()) {
+        if (mounted) {
+          showHint(context, '需要麥克風權限才能錄旁白', error: true);
+        }
+        return;
+      }
+      // Web 不能寫檔案路徑，交給套件自己處理
+      final path = kIsWeb
+          ? ''
+          : '${(await getTemporaryDirectory()).path}'
+              '${Platform.pathSeparator}voice_'
+              '${DateTime.now().millisecondsSinceEpoch}.m4a';
       await _recorder.start(
         const RecordConfig(encoder: AudioEncoder.aacLc, bitRate: 128000),
         path: path,
@@ -741,6 +752,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _voPath = path;
       _voStartPos = _position;
       _voStartAt = DateTime.now();
+      // 即時波形：訂閱麥克風音量，一路累積成峰值陣列
+      _voLevels.value = const [];
+      _voAmpSub?.cancel();
+      _voAmpSub = _recorder
+          .onAmplitudeChanged(const Duration(milliseconds: 60))
+          .listen((amp) {
+        // dBFS（-160~0）轉 0~1；-50dB 以下當作靜音。
+        // 開根號是音量表的慣例，小聲講話才看得出起伏
+        final db = amp.current.isFinite ? amp.current : -50.0;
+        final v = math.sqrt(((db + 50) / 50).clamp(0.0, 1.0));
+        // 一定要換成新的 List，CustomPainter 才知道要重畫
+        _voLevels.value = [..._voLevels.value, v];
+      });
       setState(() => _voRecording = true);
       _play(); // 影片跟著跑，才能對著畫面講
     } catch (e) {
@@ -752,6 +776,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _finishVoiceRecord() async {
     if (!_voRecording) return;
     _pause();
+    await _voAmpSub?.cancel();
+    _voAmpSub = null;
     setState(() => _voRecording = false);
     String? path;
     try {
@@ -797,6 +823,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _sel = clip.id;
       _voTrack = null; // 錄完收起紅鈕
     });
+    // 錄音波形交棒給真正的音檔波形
+    _voLevels.value = const [];
     _saveDraft();
     if (mounted) showHint(context, '旁白已加入時間軸');
   }
@@ -1796,6 +1824,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _frameSettle?.cancel();
     _scrubSettleTimer?.cancel();
     _scrubEndTimer?.cancel();
+    for (final d in _scrubDecoders.values) {
+      d.dispose();
+    }
+    _voAmpSub?.cancel();
+    _voLevels.dispose();
     _recorder.dispose();
     _ticker.dispose();
     for (final c in _ctrls.values) {
@@ -1866,6 +1899,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ),
     );
 
+    // 高畫質編碼跑很久，螢幕一關系統就可能凍結或回收 App
+    await keepScreenAwake(true);
+
     String message;
     bool ok = false;
     var cancelled = false;
@@ -1918,6 +1954,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     } catch (e) {
       message = '匯出失敗：$e';
     }
+    await keepScreenAwake(false);
 
     if (mounted) {
       Navigator.of(context).pop();
@@ -2282,8 +2319,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     frames.length)
                                 .floor()
                                 .clamp(0, frames.length - 1);
+                            final dec = _decoderFor(c.sourceIndex, frames);
+                            dec.focus(fi);
+                            // 已經解好的：直接貼材質，UI 執行緒零解碼
+                            final img = dec[fi];
+                            if (img != null) {
+                              return RawImage(
+                                image: img,
+                                fit: BoxFit.fill,
+                                filterQuality: FilterQuality.medium,
+                              );
+                            }
+                            // 還沒解好（剛拖到很遠的位置）先用位元組頂著
                             final f = _nearestFrame(frames, fi);
-                            _prewarmScrubFrames(frames, fi);
                             if (f == null) {
                               return const SizedBox.shrink();
                             }
@@ -2291,8 +2339,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 fit: BoxFit.fill,
                                 gaplessPlayback: true,
                                 filterQuality: FilterQuality.medium,
-                                // 以顯示尺寸解碼：省解碼時間與記憶體，
-                                // 快取命中率大增
                                 cacheWidth: _scrubLongSide);
                           },
                         ),
@@ -2759,6 +2805,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   voiceTrack: _voTrack,
                   voiceRecording: _voRecording,
                   onVoiceRecordTap: _toggleVoiceRecord,
+                  voiceStart: _voStartPos,
+                  voiceLevels: _voLevels,
                   // 捏合由外層偵測，這裡只用來鎖住橫向捲動
                   pinching: _tlPinching,
                   // 桌面滾輪縮放：下限 1px/秒，長片也能整條盡收眼底
@@ -3326,4 +3374,84 @@ class _SelectionFramePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_SelectionFramePainter oldDelegate) => false;
+}
+
+/// 拖曳預覽用的「已解碼幀」快取。
+///
+/// 之前每張都交給 Image.memory 現解，ImageCache 一沒命中就是一次 JPEG 解碼
+/// 卡在 UI 執行緒上；手指一快就整片 miss，於是怎麼加幀都還是頓。
+/// 改成事先把播放頭附近的幀解成 ui.Image 放著，畫的時候只是貼一張材質。
+class _ScrubDecoder {
+  /// 播放頭前後各先解好幾張
+  static const _window = 18;
+
+  /// 最多留幾張已解碼的（超過就丟離播放頭最遠的）
+  static const _capacity = 64;
+
+  final List<Uint8List?> frames;
+  final VoidCallback onReady;
+
+  final Map<int, ui.Image> _decoded = {};
+  final Set<int> _pending = {};
+  int _center = -1;
+  bool _disposed = false;
+
+  _ScrubDecoder(this.frames, {required this.onReady});
+
+  ui.Image? operator [](int i) => _decoded[i];
+
+  /// 把窗口中心移到 [fi]：補解窗內缺的，丟掉離太遠的
+  void focus(int fi) {
+    if (_disposed || fi == _center) return; // 沒移動就什麼都不用做
+    _center = fi;
+    _evictFar();
+    for (var d = 0; d <= _window; d++) {
+      for (final i in d == 0 ? [fi] : [fi + d, fi - d]) {
+        if (i < 0 || i >= frames.length) continue;
+        if (_decoded.containsKey(i) || _pending.contains(i)) continue;
+        final b = frames[i];
+        if (b == null) continue;
+        _pending.add(i);
+        _decode(i, b);
+      }
+    }
+  }
+
+  Future<void> _decode(int i, Uint8List bytes) async {
+    try {
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      codec.dispose();
+      if (_disposed) {
+        frame.image.dispose();
+        return;
+      }
+      _decoded[i] = frame.image;
+      // 只有「現在正要顯示的那張」才值得觸發重畫，
+      // 不然一次解 37 張就是 37 次重畫
+      if (i == _center) onReady();
+    } catch (_) {
+      // 解不開就算了，顯示端會退回用位元組畫
+    } finally {
+      _pending.remove(i);
+    }
+  }
+
+  void _evictFar() {
+    if (_decoded.length <= _capacity) return;
+    final keys = _decoded.keys.toList()
+      ..sort((a, b) => (b - _center).abs().compareTo((a - _center).abs()));
+    for (final k in keys) {
+      if (_decoded.length <= _capacity) break;
+      _decoded.remove(k)?.dispose();
+    }
+  }
+
+  void dispose() {
+    _disposed = true;
+    for (final img in _decoded.values) {
+      img.dispose();
+    }
+    _decoded.clear();
+  }
 }

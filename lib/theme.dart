@@ -18,6 +18,7 @@ const kSelect = Color(0xFFFFC24B); // 時間軸選取/拖放專用琥珀（白�
 const kText = Color(0xFFE8E8EA);
 const kTextDim = Color(0xFF8B8B95);
 const kIcon = Color(0xFFB9B9C2);
+const kRecord = Color(0xFFFF3B30); // 錄音中：紅鈕與即時波形
 
 ThemeData buildStudioTheme() {
   const scheme = ColorScheme.dark(

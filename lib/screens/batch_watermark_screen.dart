@@ -8,6 +8,7 @@ import 'package:image_picker/image_picker.dart';
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
 import '../services/photo_saver.dart';
+import '../services/screen_awake.dart';
 import '../services/video_controller.dart';
 import '../services/video_engine.dart' as engine;
 import '../services/video_processor.dart';
@@ -30,11 +31,13 @@ class BatchWatermarkScreen extends StatefulWidget {
 }
 
 /// 批次清單裡的一個檔案（縮圖與尺寸載入後補上）
+///
+/// 這裡只留「小縮圖」——原檔 bytes 一律不留，要用的時候（大預覽、匯出）
+/// 才回頭讀。一張 12MP 照片解出來是 48MB 的點陣圖，全部留著幾十張就爆了
 class _BatchItem {
   final XFile file;
   Uint8List? thumb;
   (int, int)? dims;
-  Uint8List? photoBytes;
   _BatchItem(this.file);
 }
 
@@ -66,6 +69,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     super.initState();
     _initialJson = jsonEncode(_settings.toJson());
     _loadPreviews();
+    _loadPreviewFull();
   }
 
   bool get _dirty =>
@@ -114,33 +118,107 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     });
   }
 
+  /// 條列縮圖的長邊：條列格子只有 56dp，160px 在高 DPR 螢幕也夠銳利
+  static const _thumbLongSide = 160;
+
+  /// 只讀檔頭拿長寬，不解整張圖
+  static Future<(int, int)?> _dimsOf(Uint8List bytes) async {
+    ui.ImmutableBuffer? buf;
+    ui.ImageDescriptor? desc;
+    try {
+      buf = await ui.ImmutableBuffer.fromUint8List(bytes);
+      desc = await ui.ImageDescriptor.encoded(buf);
+      return (desc.width, desc.height);
+    } catch (_) {
+      return null;
+    } finally {
+      desc?.dispose();
+      buf?.dispose();
+    }
+  }
+
+  /// 解成小圖再重新編碼，這樣留在記憶體的是縮圖不是原檔
+  static Future<Uint8List?> _shrink(Uint8List src, int longSide) async {
+    ui.ImmutableBuffer? buf;
+    ui.ImageDescriptor? desc;
+    try {
+      buf = await ui.ImmutableBuffer.fromUint8List(src);
+      desc = await ui.ImageDescriptor.encoded(buf);
+      final w = desc.width, h = desc.height;
+      if (w == 0 || h == 0) return null;
+      final long = w > h ? w : h;
+      if (long <= longSide) return src; // 本來就夠小，不用多做一手
+      final scale = longSide / long;
+      final codec = await desc.instantiateCodec(
+        targetWidth: (w * scale).round().clamp(1, longSide),
+        targetHeight: (h * scale).round().clamp(1, longSide),
+      );
+      final frame = await codec.getNextFrame();
+      final png =
+          await frame.image.toByteData(format: ui.ImageByteFormat.png);
+      frame.image.dispose();
+      codec.dispose();
+      return png?.buffer.asUint8List();
+    } catch (_) {
+      return null;
+    } finally {
+      desc?.dispose();
+      buf?.dispose();
+    }
+  }
+
+  /// 一次把每個檔案的小縮圖備好；原檔讀完就丟
   Future<void> _loadPreviews() async {
     for (final item in _items) {
+      if (!mounted) return;
       final f = item.file;
       try {
         if (_isVideo(f)) {
-          // 720p 高清格：預覽不會糊
-          final t =
-              await engine.makeThumbnails(f.path, 1, 1, height: 720);
+          // 條列用的小格，抽小的就好（大預覽另外抽 720p）
+          final t = await engine.makeThumbnails(f.path, 1, 1, height: 240);
           if (t.isNotEmpty) {
             item.thumb = t.first;
-            final codec = await ui.instantiateImageCodec(t.first);
-            final frame = await codec.getNextFrame();
-            item.dims = (frame.image.width, frame.image.height);
-            frame.image.dispose();
+            item.dims = await _dimsOf(t.first);
           }
         } else {
           final bytes = await f.readAsBytes();
-          item.photoBytes = bytes;
-          item.thumb = bytes;
-          final codec = await ui.instantiateImageCodec(bytes);
-          final frame = await codec.getNextFrame();
-          item.dims = (frame.image.width, frame.image.height);
-          frame.image.dispose();
+          item.dims = await _dimsOf(bytes);
+          item.thumb = await _shrink(bytes, _thumbLongSide);
+          // bytes 到這裡就沒人參考了，交給 GC
         }
       } catch (_) {}
       if (mounted) setState(() {});
     }
+  }
+
+  // 大預覽只留「目前這一張」的高解析度，換張就換掉
+  Uint8List? _previewBytes;
+  int _previewLoadedFor = -1;
+
+  Future<void> _loadPreviewFull() async {
+    final i = _previewIndex;
+    if (i == _previewLoadedFor || i < 0 || i >= _items.length) return;
+    _previewLoadedFor = i;
+    final f = _items[i].file;
+    Uint8List? bytes;
+    try {
+      if (_isVideo(f)) {
+        final t = await engine.makeThumbnails(f.path, 1, 1, height: 720);
+        if (t.isNotEmpty) bytes = t.first;
+      } else {
+        bytes = await f.readAsBytes();
+      }
+    } catch (_) {}
+    if (!mounted || _previewIndex != i) return;
+    setState(() => _previewBytes = bytes);
+  }
+
+  void _selectPreview(int i) {
+    setState(() {
+      _previewIndex = i;
+      _previewBytes = null; // 先清掉舊的，別讓兩張同時佔記憶體
+    });
+    _loadPreviewFull();
   }
 
   /// 把目前選中的檔案丟進完整編輯器（帶著現在的浮水印設定）
@@ -177,7 +255,10 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       if (_previewIndex >= _items.length) {
         _previewIndex = _items.length - 1;
       }
+      _previewBytes = null;
+      _previewLoadedFor = -1; // 索引整個位移了，大預覽要重讀
     });
+    _loadPreviewFull();
   }
 
   // ===== 批次匯出 =====
@@ -231,6 +312,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       ),
     );
 
+    // 整批跑很久，螢幕一關系統就可能凍結或回收 App，匯出會斷在中間
+    await keepScreenAwake(true);
+
     var done = 0;
     var failed = 0;
     for (var i = 0; i < _items.length; i++) {
@@ -246,7 +330,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
           });
           ok ? done++ : failed++;
         } else {
-          final bytes = item.photoBytes ?? await f.readAsBytes();
+          final bytes = await f.readAsBytes();
           final png = await WatermarkRenderer.renderPhotoComposite(
               bytes, _settings);
           await savePhotoPng(png,
@@ -259,6 +343,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       overall.value = (i + 1) / total;
     }
 
+    await keepScreenAwake(false);
     if (done > 0) _exported = true; // 有輸出成功，離開不用再問
     if (mounted) {
       Navigator.of(context).pop();
@@ -374,7 +459,13 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                       child: Stack(
                         fit: StackFit.expand,
                         children: [
-                          if (_items[_previewIndex].thumb != null)
+                          // 大圖還在讀的時候先用小縮圖頂著，不要閃黑
+                          if (_previewBytes != null)
+                            Image.memory(_previewBytes!,
+                                fit: BoxFit.contain,
+                                cacheWidth: 1280,
+                                gaplessPlayback: true)
+                          else if (_items[_previewIndex].thumb != null)
                             Image.memory(_items[_previewIndex].thumb!,
                                 fit: BoxFit.contain),
                           WatermarkLayer(
@@ -401,7 +492,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
               separatorBuilder: (_, i) => const SizedBox(width: 6),
               itemBuilder: (context, i) => InkWell(
                 borderRadius: BorderRadius.circular(6),
-                onTap: () => setState(() => _previewIndex = i),
+                onTap: () => _selectPreview(i),
                 onLongPress: () {
                   _removeItem(i);
                   showHint(context, '已從批次移除');
@@ -422,7 +513,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                     children: [
                       if (_items[i].thumb != null)
                         Image.memory(_items[i].thumb!,
-                            fit: BoxFit.cover, gaplessPlayback: true),
+                            fit: BoxFit.cover,
+                            cacheWidth: _thumbLongSide,
+                            gaplessPlayback: true),
                       if (_isVideo(_items[i].file))
                         const Align(
                           alignment: Alignment.bottomRight,
