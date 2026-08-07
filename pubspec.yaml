@@ -46,6 +46,8 @@ dependencies:
   path_provider: ^2.1.6
   web: ^1.1.1
   file_picker: 10.3.10
+  # 錄音（旁白）
+  record: ^6.1.2
   # 測試中的替代播放引擎（video_player 在 Pixel 上影格傳遞卡頓）
   media_kit: ^1.1.11
   media_kit_video: ^1.2.5

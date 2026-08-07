@@ -22,8 +22,12 @@ import '../services/video_processor.dart';
 import '../services/watermark_renderer.dart';
 import '../theme.dart';
 import '../widgets/timeline_editor.dart';
+import '../widgets/voice_recorder_sheet.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
+
+/// 「加素材」選單的項目（錄旁白不是一種素材類型，所以另立一個 enum）
+enum _AddKind { video, image, text, audio, record }
 
 const kSpeedOptions = <double>[0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
 
@@ -694,9 +698,49 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (mounted) setState(() => _sel = clip.id);
   }
 
-  /// 素材選單（影片／圖片／文字／音樂）
-  Future<ClipKind?> _askKind({String? title}) {
-    return showModalBottomSheet<ClipKind>(
+  /// 錄旁白：錄完直接放到播放頭位置的空白軌
+  Future<void> _recordVoice(int track) async {
+    _pause();
+    final got = await VoiceRecorderSheet.show(context);
+    if (got == null || !mounted) return;
+    final c = makeVideoController(got.path);
+    try {
+      await c.initialize();
+    } catch (_) {
+      c.dispose();
+      if (mounted) showHint(context, '錄音檔讀不到，再錄一次', error: true);
+      return;
+    }
+    // 錄音檔的時長優先用播放器回報的，讀不到就用計時器的秒數
+    final reported = c.value.duration.inMilliseconds / 1000.0;
+    final dur = reported > 0.05 ? reported : got.seconds;
+    _pushUndo();
+    final srcIndex = _tl.sources.length;
+    _tl.sources.add(MediaSource(
+      path: got.path,
+      name: '旁白',
+      kind: ClipKind.audio,
+      duration: dur,
+    ));
+    final clip = TimelineClip(
+      id: _tl.nextId(),
+      sourceIndex: srcIndex,
+      trimStart: 0,
+      trimEnd: dur,
+      offset: _position, // 從播放頭開始
+      track: track,
+    );
+    _ctrls[clip.id] = c;
+    setState(() {
+      _tl.clips.add(clip);
+      _sel = clip.id;
+    });
+    _saveDraft();
+  }
+
+  /// 素材選單（影片／圖片／文字／音樂／錄旁白）
+  Future<_AddKind?> _askKind({String? title}) {
+    return showModalBottomSheet<_AddKind>(
       context: context,
       builder: (context) => SafeArea(
         child: Column(
@@ -714,22 +758,27 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             ListTile(
               leading: const Icon(Icons.videocam_outlined, color: kAmber),
               title: const Text('影片'),
-              onTap: () => Navigator.pop(context, ClipKind.video),
+              onTap: () => Navigator.pop(context, _AddKind.video),
             ),
             ListTile(
               leading: const Icon(Icons.image_outlined, color: kAmber),
               title: const Text('圖片'),
-              onTap: () => Navigator.pop(context, ClipKind.image),
+              onTap: () => Navigator.pop(context, _AddKind.image),
             ),
             ListTile(
               leading: const Icon(Icons.title, color: kAmber),
               title: const Text('文字'),
-              onTap: () => Navigator.pop(context, ClipKind.text),
+              onTap: () => Navigator.pop(context, _AddKind.text),
             ),
             ListTile(
               leading: const Icon(Icons.music_note, color: kAmber),
-              title: const Text('音樂 / 旁白'),
-              onTap: () => Navigator.pop(context, ClipKind.audio),
+              title: const Text('音樂'),
+              onTap: () => Navigator.pop(context, _AddKind.audio),
+            ),
+            ListTile(
+              leading: const Icon(Icons.mic, color: kAmber),
+              title: const Text('錄旁白'),
+              onTap: () => Navigator.pop(context, _AddKind.record),
             ),
             const SizedBox(height: 8),
           ],
@@ -738,16 +787,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
   }
 
-  Future<void> _dispatchAdd(ClipKind? kind, int track) async {
+  Future<void> _dispatchAdd(_AddKind? kind, int track) async {
     switch (kind) {
-      case ClipKind.video:
+      case _AddKind.video:
         await _pickVideo(track);
-      case ClipKind.image:
+      case _AddKind.image:
         await _pickImage(track);
-      case ClipKind.text:
+      case _AddKind.text:
         await _addTextClip(track);
-      case ClipKind.audio:
+      case _AddKind.audio:
         await _pickAudio(track);
+      case _AddKind.record:
+        await _recordVoice(track);
       case null:
         break;
     }
@@ -756,10 +807,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 工具列的「＋」
   Future<void> _addMediaChoice() async {
     final kind = await _askKind();
-    // 影片接在目前軌道後面；圖片/文字/音樂放到新的一層
+    // 影片接在目前軌道後面；圖片/文字/音樂/旁白放到新的一層
     await _dispatchAdd(
         kind,
-        kind == ClipKind.video
+        kind == _AddKind.video
             ? (_selClip?.track ?? 0)
             : _tl.usedTracks);
   }
@@ -2152,13 +2203,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               final frames = _scrubbing ? _scrubFrames[c.sourceIndex] : null;
               children.add(Positioned.fromRect(
                 rect: r,
-                child: GestureDetector(
-                  // 點畫面上的影片＝選取它（等同在時間軸點該片段）
-                  onTap: () => setState(() {
-                    _sel = c.id;
-                    _wmSel = false;
-                  }),
-                  child: Opacity(
+                child: Opacity(
                   opacity: c.fadeFactorAt(_position),
                   child: Stack(fit: StackFit.expand, children: [
                     ctrl.view(key: ValueKey('pv-${c.id}')),
@@ -2188,8 +2233,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                           },
                         ),
                       ),
+                    // 點擊層必須疊在影片「上面」：影片是平台原生元件
+                    // （Web 是 HTML video），會吃掉底下的點擊事件
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      // 點畫面上的影片＝選取它（等同在時間軸點該片段）
+                      onTap: () => setState(() {
+                        _sel = c.id;
+                        _wmSel = false;
+                      }),
+                      child: const SizedBox.expand(),
+                    ),
                   ]),
-                  ),
                 ),
               ));
               if (c.id == _sel) {
@@ -2212,18 +2267,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 final r = layerBox(c, src.aspect);
                 children.add(Positioned.fromRect(
                   rect: r,
-                  child: GestureDetector(
-                    // 點圖片圖層＝選取
-                    onTap: () => setState(() {
-                      _sel = c.id;
-                      _wmSel = false;
-                    }),
-                    child: Opacity(
+                  child: Stack(fit: StackFit.expand, children: [
+                    Opacity(
                       opacity: c.fadeFactorAt(_position),
                       child: Image.memory(_thumbs[c.sourceIndex]![0],
                           fit: BoxFit.fill, gaplessPlayback: true),
                     ),
-                  ),
+                    // 點擊層疊最上面，確保收得到（跟影片圖層同一套）
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => setState(() {
+                        _sel = c.id;
+                        _wmSel = false;
+                      }),
+                      child: const SizedBox.expand(),
+                    ),
+                  ]),
                 ));
                 if (c.id == _sel) {
                   selRect = r;
@@ -2325,7 +2384,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               children.add(Positioned.fromRect(
                 rect: selRect,
                 child: GestureDetector(
-                  behavior: HitTestBehavior.translucent,
+                  behavior: HitTestBehavior.opaque,
+                  // 已選取時再點一次＝維持選取（不要漏到底層變成取消選取）
+                  onTap: () => setState(() {
+                    _sel = sc.id;
+                    _wmSel = false;
+                  }),
                   // 雙擊＝回正中央、恢復原始大小（不小心拖歪的救援）
                   onDoubleTap: () {
                     _pushUndo();
