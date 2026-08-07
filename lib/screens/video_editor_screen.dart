@@ -70,7 +70,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   set _position(double v) {
     _posVN.value = v; // 播放頭線與時間碼照舊即時（很便宜）
     final now = DateTime.now();
-    if (now.difference(_lastFramePush).inMilliseconds >= 33) {
+    // 播放中 30fps 就夠（影片畫面走原生 texture 本來就滿速）；
+    // 拖曳（暫停）時提高到 60fps，快取幀跟手感明顯變好
+    final interval = _playing ? 33 : 16;
+    if (now.difference(_lastFramePush).inMilliseconds >= interval) {
       _lastFramePush = now;
       _frameVN.value = v;
     } else {
@@ -505,6 +508,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       // 段落之間喘口氣，把 CPU 讓給 UI
       await Future<void>.delayed(const Duration(milliseconds: 120));
+    }
+  }
+
+  /// 拖曳時預熱鄰近幀的解碼：手指到之前圖已經在快取裡，換圖零延遲
+  void _prewarmScrubFrames(List<Uint8List?> frames, int fi) {
+    for (var d = 1; d <= 3; d++) {
+      for (final i in [fi - d, fi + d]) {
+        if (i >= 0 && i < frames.length) {
+          final b = frames[i];
+          if (b != null) {
+            precacheImage(
+              ResizeImage(MemoryImage(b), width: 1024),
+              context,
+            );
+          }
+        }
+      }
     }
   }
 
@@ -2037,29 +2057,41 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               final ctrl = _ctrls[c.id];
               if (ctrl == null || !ctrl.value.isInitialized) continue;
               final r = layerBox(c, ctrl.value.aspectRatio);
-              // 拖曳中：真影片上面疊快取幀（換圖瞬間完成，不用等解碼）
+              // 拖曳中：真影片上面疊快取幀。獨立小元件直接聽 _posVN
+              // 全速換圖（不吃 30fps 節流），搭配鄰近幀預熱解碼＝跟手
               final frames = _scrubbing ? _scrubFrames[c.sourceIndex] : null;
-              Uint8List? scrubFrame;
-              if (frames != null && frames.isNotEmpty) {
-                final src = _tl.sourceOf(c);
-                final srcT = c.sourceTimeAt(_position);
-                final fi = (srcT / math.max(0.01, src.duration) *
-                        frames.length)
-                    .floor()
-                    .clamp(0, frames.length - 1);
-                scrubFrame = _nearestFrame(frames, fi);
-              }
               children.add(Positioned.fromRect(
                 rect: r,
                 child: Opacity(
                   opacity: c.fadeFactorAt(_position),
                   child: Stack(fit: StackFit.expand, children: [
                     ctrl.view(key: ValueKey('pv-${c.id}')),
-                    if (scrubFrame != null)
-                      Image.memory(scrubFrame,
-                          fit: BoxFit.fill,
-                          gaplessPlayback: true,
-                          filterQuality: FilterQuality.medium),
+                    if (frames != null && frames.isNotEmpty)
+                      IgnorePointer(
+                        child: ValueListenableBuilder<double>(
+                          valueListenable: _posVN,
+                          builder: (context, pos, _) {
+                            final src = _tl.sourceOf(c);
+                            final fi = (c.sourceTimeAt(pos) /
+                                    math.max(0.01, src.duration) *
+                                    frames.length)
+                                .floor()
+                                .clamp(0, frames.length - 1);
+                            final f = _nearestFrame(frames, fi);
+                            _prewarmScrubFrames(frames, fi);
+                            if (f == null) {
+                              return const SizedBox.shrink();
+                            }
+                            return Image.memory(f,
+                                fit: BoxFit.fill,
+                                gaplessPlayback: true,
+                                filterQuality: FilterQuality.medium,
+                                // 以顯示尺寸解碼：省一半解碼時間與
+                                // 三倍記憶體，快取命中率大增
+                                cacheWidth: 1024);
+                          },
+                        ),
+                      ),
                   ]),
                 ),
               ));
