@@ -20,6 +20,11 @@
 	<string>拍攝新的照片或影片來加上浮水印時使用相機</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>錄製旁白配音時使用麥克風收音</string>
+	<!-- 本 App 不會主動取用位置，但相簿選取器等相依函式庫的二進位裡
+	     引用了 CoreLocation，Apple 的靜態檢查（ITMS-90683）要求一定要有
+	     用途字串，拿掉會被退。 -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>讀取媒體檔案內附的拍攝位置資訊時使用；本 App 不會上傳或蒐集位置資料</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
