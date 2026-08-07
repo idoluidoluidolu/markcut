@@ -65,11 +65,18 @@ dev_dependencies:
   flutter_lints: ^6.0.0
 
 # App 圖示：使用者的寶寶像素圖（三隻並排、由亮到暗）
+#
+# iOS 26 的 Liquid Glass 會自動幫「只有預設圖示」的 App 加上鏡面反光
+# （邊緣呼吸感）。提供深色／單色變體後，系統改用我們給的圖，
+# 深色模式下就是乾淨的純黑底
 flutter_launcher_icons:
   android: true
   ios: true
   remove_alpha_ios: true # App Store 圖示不能帶透明通道
   image_path: "assets/icon/icon.png"
+  image_path_ios_dark_transparent: "assets/icon/icon.png"
+  image_path_ios_tinted_grayscale: "assets/icon/icon.png"
+  desaturate_tinted_to_grayscale_ios: true
   adaptive_icon_background: "#000000"
   adaptive_icon_foreground: "assets/icon/icon_foreground.png"
   web:

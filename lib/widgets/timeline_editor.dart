@@ -60,8 +60,8 @@ class TimelineEditor extends StatefulWidget {
   /// 片段拖曳開始/結束（拖曳期間父層要暫停「捲動＝移動播放頭」的同步）
   final ValueChanged<bool>? onLiftChanged;
 
-  /// 雙指縮放中（外層拿去暫停垂直捲動，不然縮放手勢被搶走）
-  final ValueChanged<bool>? onPinchChanged;
+  /// 外層偵測到的雙指縮放狀態：true 時鎖住橫向捲動
+  final bool pinching;
 
   /// 雙指縮放時間軸：回傳新的 pxPerSec（父層負責 clamp 後重繪與對位）
   final ValueChanged<double>? onZoom;
@@ -95,7 +95,7 @@ class TimelineEditor extends StatefulWidget {
     required this.onLongPressEmpty,
     this.onTapSelectedClip,
     this.onLiftChanged,
-    this.onPinchChanged,
+    this.pinching = false,
     this.onZoom,
     this.watermark,
     this.wmLabel = '浮水印',
@@ -123,46 +123,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
   Timer? _autoScrollTimer;
   double _autoScrollSpeed = 0;
 
-  // 雙指捏合縮放：用 Listener 自己數手指，兩指按住時鎖捲動、改縮放
-  final Map<int, Offset> _pinchPointers = {};
-  double? _pinchBaseDist;
-  double _pinchBasePx = 0;
-  bool get _pinching => _pinchBaseDist != null;
-
-  void _pinchDown(PointerDownEvent e) {
-    _pinchPointers[e.pointer] = e.position;
-    if (_pinchPointers.length == 2 &&
-        widget.onZoom != null &&
-        _lift == null) {
-      final pts = _pinchPointers.values.toList();
-      final d = (pts[0] - pts[1]).distance;
-      if (d > 20) {
-        setState(() {
-          _pinchBaseDist = d;
-          _pinchBasePx = pxPerSec;
-        });
-        widget.onPinchChanged?.call(true);
-      }
-    }
-  }
-
-  void _pinchMove(PointerMoveEvent e) {
-    if (!_pinchPointers.containsKey(e.pointer)) return;
-    _pinchPointers[e.pointer] = e.position;
-    if (_pinching && _pinchPointers.length >= 2) {
-      final pts = _pinchPointers.values.toList();
-      final d = (pts[0] - pts[1]).distance;
-      widget.onZoom!(_pinchBasePx * d / _pinchBaseDist!);
-    }
-  }
-
-  void _pinchUp(int pointer) {
-    _pinchPointers.remove(pointer);
-    if (_pinching && _pinchPointers.length < 2) {
-      setState(() => _pinchBaseDist = null);
-      widget.onPinchChanged?.call(false);
-    }
-  }
+  // 雙指捏合縮放由外層（編輯器分頁）偵測，範圍才能涵蓋整個分頁的空白處；
+  // 這裡只需要知道「正在捏合」好鎖住捲動
+  bool get _pinching => widget.pinching;
 
   // 長按偵測：按住不動 0.45 秒 → 取消拖曳、打開選單
   Timer? _pressTimer;
@@ -446,12 +409,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
               final leadPad = cons.maxWidth * 0.35;
               final totalW =
                   timeline.duration * pxPerSec + cons.maxWidth * 0.7;
-              return Listener(
-              onPointerDown: _pinchDown,
-              onPointerMove: _pinchMove,
-              onPointerUp: (e) => _pinchUp(e.pointer),
-              onPointerCancel: (e) => _pinchUp(e.pointer),
-              child: SingleChildScrollView(
+              return SingleChildScrollView(
               controller: widget.scrollController,
               scrollDirection: Axis.horizontal,
               physics: _pinching
@@ -570,7 +528,6 @@ class _TimelineEditorState extends State<TimelineEditor> {
                 ),
               ),
               ],
-              ),
               ),
               ),
               );

@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
@@ -112,7 +113,57 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _exporting = false;
 
   TimelineClip? _clipboard; // 複製的片段（貼上時以播放頭為起點）
-  bool _tlPinching = false; // 時間軸雙指縮放中（暫停垂直捲動）
+  // 時間軸雙指縮放：在整個分頁層級偵測，空白處一樣能捏
+  bool _tlPinching = false;
+  final Map<int, Offset> _pinchPts = {};
+  double? _pinchBaseDist;
+  double _pinchBasePx = 0;
+
+  void _pinchDown(PointerDownEvent e) {
+    _pinchPts[e.pointer] = e.position;
+    if (_pinchPts.length == 2 && !_lifting) {
+      final p = _pinchPts.values.toList();
+      final d = (p[0] - p[1]).distance;
+      if (d > 20) {
+        _pinchBaseDist = d;
+        _pinchBasePx = _pxPerSec;
+        setState(() => _tlPinching = true);
+      }
+    }
+  }
+
+  void _pinchMove(PointerMoveEvent e) {
+    if (!_pinchPts.containsKey(e.pointer)) return;
+    _pinchPts[e.pointer] = e.position;
+    if (_tlPinching && _pinchPts.length >= 2) {
+      final p = _pinchPts.values.toList();
+      final d = (p[0] - p[1]).distance;
+      setState(() =>
+          _pxPerSec = (_pinchBasePx * d / _pinchBaseDist!).clamp(1.0, 200.0));
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _syncScrollToPosition());
+    }
+  }
+
+  void _pinchUp(int pointer) {
+    _pinchPts.remove(pointer);
+    if (_tlPinching && _pinchPts.length < 2) {
+      _pinchBaseDist = null;
+      setState(() => _tlPinching = false);
+    }
+  }
+
+  /// 桌面滾輪縮放時間軸（時間軸分頁內任何位置都有效）
+  void _wheelZoom(PointerSignalEvent e) {
+    if (e is! PointerScrollEvent) return;
+    GestureBinding.instance.pointerSignalResolver.register(e, (event) {
+      final dy = (event as PointerScrollEvent).scrollDelta.dy;
+      setState(() => _pxPerSec =
+          (_pxPerSec * math.exp(-dy * 0.002)).clamp(1.0, 200.0));
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _syncScrollToPosition());
+    });
+  }
 
   /// 靜音的軌道（點軌道標籤的喇叭切換）
   final Set<int> _mutedTracks = {};
@@ -471,25 +522,32 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   // seek；放手才真正 seek 到最終位置。這是專業剪輯 App 拖曳滑順的
   // 真正做法——live seek 再怎麼節流都追不上手指。
 
-  /// sourceIndex → 等距格子（每 0.5 秒一格、最多 180 格），
-  /// 分段漸進填滿：抽好第一段（幾秒內）就能順順拖那一段
+  /// sourceIndex → 等距格子，分段漸進填滿：
+  /// 抽好第一段（幾秒內）就能順順拖那一段
   final Map<int, List<Uint8List?>> _scrubFrames = {};
+
+  /// 每張快取幀的時間間隔（秒）：專業剪輯 App 的拖曳之所以絲滑，
+  /// 是因為幀夠密（我們用 8fps）；太疏就只能拿舊幀湊，看起來一段段跳
+  static const _scrubFps = 8.0;
+
+  /// 快取幀解析度（長邊）。密度提高後張數變多，
+  /// 解析度相對降一階換記憶體與解碼速度——拖曳中肉眼看不出差別
+  static const _scrubLongSide = 720;
+
   bool _scrubbing = false;
   Timer? _scrubEndTimer;
 
   Future<void> _makeScrubCache(
       int srcIndex, String path, double dur) async {
     if (dur <= 0) return;
-    // 甜蜜點＝長邊 1280（720p 級）：手機預覽區實際只有約
-    // 1000px 寬，再高肉眼沒差、解碼反而變重；橫式直式都吃長邊
-    final n = (dur * 2).ceil().clamp(4, 180);
+    // 上限 2400 張（8fps 約 5 分鐘）；更長的片自動降密度保住記憶體
+    final n = (dur * _scrubFps).ceil().clamp(4, 2400);
     final step = dur / n;
     final slots = List<Uint8List?>.filled(n, null);
     _scrubFrames[srcIndex] = slots;
-    // 每段約 6 秒（手機上一段幾秒就完），抽完立刻可用、逐段補滿。
-    // 播放或拖曳中先暫停：抽幀跟播放搶 CPU 會讓畫面跳針，
-    // 段落切短＝按下播放時最多只剩一小段還在跑
-    const segFrames = 12;
+    // 每段約 6 秒，抽完立刻可用、逐段補滿。
+    // 播放或拖曳中先暫停：抽幀跟播放搶 CPU 會讓畫面跳針
+    final segFrames = (_scrubFps * 6).round();
     // 剛匯入先讓 UI 安頓，再開始背景抽
     await Future<void>.delayed(const Duration(milliseconds: 1500));
     for (var s = 0; s < n; s += segFrames) {
@@ -499,8 +557,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (!mounted || !identical(_scrubFrames[srcIndex], slots)) return;
       final count = math.min(segFrames, n - s);
       final t = await engine.makeThumbnails(path, count * step, count,
-          height: 1280, longSide: true, startAt: s * step,
-          fastDecode: true);
+          height: _scrubLongSide, longSide: true, startAt: s * step);
       // 畫面關了或素材被換掉就停
       if (!mounted || !identical(_scrubFrames[srcIndex], slots)) return;
       for (var i = 0; i < t.length && s + i < n; i++) {
@@ -511,15 +568,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
   }
 
-  /// 拖曳時預熱鄰近幀的解碼：手指到之前圖已經在快取裡，換圖零延遲
+  /// 拖曳時預熱鄰近幀的解碼：手指到之前圖已經在快取裡，換圖零延遲。
+  /// 幀變密後預熱範圍跟著加大（涵蓋約前後半秒的滑動距離）
   void _prewarmScrubFrames(List<Uint8List?> frames, int fi) {
-    for (var d = 1; d <= 3; d++) {
+    for (var d = 1; d <= 6; d++) {
       for (final i in [fi - d, fi + d]) {
         if (i >= 0 && i < frames.length) {
           final b = frames[i];
           if (b != null) {
             precacheImage(
-              ResizeImage(MemoryImage(b), width: 1024),
+              ResizeImage(MemoryImage(b), width: _scrubLongSide),
               context,
             );
           }
@@ -2091,9 +2149,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 fit: BoxFit.fill,
                                 gaplessPlayback: true,
                                 filterQuality: FilterQuality.medium,
-                                // 以顯示尺寸解碼：省一半解碼時間與
-                                // 三倍記憶體，快取命中率大增
-                                cacheWidth: 1024);
+                                // 以顯示尺寸解碼：省解碼時間與記憶體，
+                                // 快取命中率大增
+                                cacheWidth: _scrubLongSide);
                           },
                         ),
                       ),
@@ -2407,7 +2465,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         children: [
           // 時間軸（需要時自己捲動；下方空白區的橫滑也捲時間軸）
           Expanded(
-            child: GestureDetector(
+            child: Listener(
+              // 捏合偵測放在整個分頁最外層：空白處一樣能縮放
+              onPointerDown: _pinchDown,
+              onPointerMove: _pinchMove,
+              onPointerUp: (e) => _pinchUp(e.pointer),
+              onPointerCancel: (e) => _pinchUp(e.pointer),
+              child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               // 點時間軸區域的任何空白＝取消所有選取
               onTap: () => setState(() {
@@ -2415,6 +2479,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 _wmSel = false;
               }),
               onHorizontalDragUpdate: (d) {
+                if (_tlPinching) return; // 縮放中不搶橫向捲動
                 if (_tlScroll.hasClients) {
                   _tlScroll.jumpTo((_tlScroll.offset - d.delta.dx)
                       .clamp(0.0, _tlScroll.position.maxScrollExtent));
@@ -2425,6 +2490,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               physics: _tlPinching
                   ? const NeverScrollableScrollPhysics()
                   : null,
+              // 滾輪縮放要放在捲動容器「內側」才搶得贏：
+              // PointerSignal 是最內層先註冊先贏，放外面會被垂直捲動吃掉。
+              // opaque 讓上下留白區也吃得到滾輪
+              child: Listener(
+              behavior: HitTestBehavior.opaque,
+              onPointerSignal: _wheelZoom,
               // 內容比視口矮時直向置中（CapCut 版型），不要貼著頂
               child: ConstrainedBox(
                 constraints: BoxConstraints(
@@ -2466,12 +2537,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     }
                   },
                   onLiftChanged: (v) => _lifting = v,
-                  // 雙指縮放中暫停外層垂直捲動，手勢才不會被搶走
-                  onPinchChanged: (v) =>
-                      setState(() => _tlPinching = v),
-                  // 雙指捏合縮放：改完立刻把播放頭對回視口固定點
+                  // 捏合由外層偵測，這裡只用來鎖住橫向捲動
+                  pinching: _tlPinching,
+                  // 桌面滾輪縮放：下限 1px/秒，長片也能整條盡收眼底
                   onZoom: (v) {
-                    // 下限放寬到 1px/秒：長片也能整條盡收眼底
                     setState(() => _pxPerSec = v.clamp(1.0, 200.0));
                     WidgetsBinding.instance.addPostFrameCallback(
                         (_) => _syncScrollToPosition());
@@ -2514,6 +2583,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               ),
                 ),
               ),
+            ),
+            ),
             ),
             ),
           ),
