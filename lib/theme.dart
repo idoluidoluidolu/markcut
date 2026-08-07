@@ -240,12 +240,15 @@ class _HintToast extends StatelessWidget {
           constraints: const BoxConstraints(maxWidth: 320),
           padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
           decoration: BoxDecoration(
-            // 近黑底＋濃陰影，才不會跟深色面板糊在一起
-            color: const Color(0xFF0A0A0C).withValues(alpha: 0.98),
+            // 純黑不透明＋整圈亮邊＋濃陰影：跟深色面板拉開最大對比
+            color: Colors.black,
             border: Border(
               left: BorderSide(
                   color: error ? const Color(0xFFFF6B6B) : kAmber,
                   width: 3),
+              top: const BorderSide(color: Color(0xFF4A4A52)),
+              right: const BorderSide(color: Color(0xFF4A4A52)),
+              bottom: const BorderSide(color: Color(0xFF4A4A52)),
             ),
             boxShadow: [
               BoxShadow(

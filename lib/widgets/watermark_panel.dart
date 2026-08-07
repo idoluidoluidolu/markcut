@@ -219,9 +219,14 @@ class _WatermarkPanelState extends State<WatermarkPanel> {
     }
   }
 
+  /// 動畫卡的位置：選了動畫後自動捲過去，讓微調滑桿露臉
+  final _animCardKey = GlobalKey();
+
   @override
   Widget build(BuildContext context) {
     return ListView(
+      // 往下滑清單就收鍵盤（打完字回不去的解法）
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       children: [
         // ===== 選擇範本：亮階底＋琥珀圖示＋下拉箭頭，按了彈窗挑 =====
@@ -257,7 +262,9 @@ class _WatermarkPanelState extends State<WatermarkPanel> {
 
         // ===== 動畫（影片專用）=====
         if (widget.showAnimation)
-          _card(Column(
+          KeyedSubtree(
+          key: _animCardKey,
+          child: _card(Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Text('動畫',
@@ -277,7 +284,26 @@ class _WatermarkPanelState extends State<WatermarkPanel> {
                   for (final a in WmAnimation.values)
                     InkWell(
                       borderRadius: BorderRadius.circular(6),
-                      onTap: () => _update(() => s.animation = a),
+                      onTap: () {
+                        _update(() => s.animation = a);
+                        // 微調滑桿在下面才展開：自動捲過去，
+                        // 暗示使用者有這些選項能調
+                        if (a != WmAnimation.none) {
+                          WidgetsBinding.instance
+                              .addPostFrameCallback((_) {
+                            final ctx = _animCardKey.currentContext;
+                            if (ctx != null) {
+                              Scrollable.ensureVisible(
+                                ctx,
+                                duration:
+                                    const Duration(milliseconds: 350),
+                                curve: Curves.easeOutCubic,
+                                alignment: 0.05,
+                              );
+                            }
+                          });
+                        }
+                      },
                       child: Container(
                         alignment: Alignment.center,
                         decoration: BoxDecoration(
@@ -336,6 +362,7 @@ class _WatermarkPanelState extends State<WatermarkPanel> {
               ],
             ],
           )),
+          ),
 
         // ===== 卡片 2：文字 =====
         _card(Column(
@@ -397,7 +424,11 @@ class _WatermarkPanelState extends State<WatermarkPanel> {
                       icon: const Icon(Icons.expand_more,
                           size: 16, color: kTextDim),
                       style: const TextStyle(fontSize: 13, color: kText),
-                      dropdownColor: kPanel,
+                      // 選單跟 App 同風格：面板色、圓角、限高
+                      dropdownColor: kPanelHi,
+                      borderRadius: BorderRadius.circular(12),
+                      menuMaxHeight: 320,
+                      itemHeight: 48,
                       items: [
                         for (final f in kFontOptions)
                           DropdownMenuItem(

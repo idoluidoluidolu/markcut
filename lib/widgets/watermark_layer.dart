@@ -6,10 +6,10 @@ import 'package:flutter/material.dart';
 
 import '../models/watermark_settings.dart';
 
-/// 疊在預覽畫面上的浮水印圖層，文字和 Logo 都可以直接用手指拖曳調整位置。
+/// 疊在預覽畫面上的浮水印圖層：單指拖曳調位置、雙指捏合調大小。
 /// 大小以「佔畫面寬度比例」計算，跟輸出時的算法一致，所見即所得。
 /// 元素會自動夾在畫面內：太長的文字靠邊也不會超出去（匯出同一套規則）。
-class WatermarkLayer extends StatelessWidget {
+class WatermarkLayer extends StatefulWidget {
   final WatermarkSettings settings;
   final VoidCallback onChanged;
 
@@ -40,8 +40,17 @@ class WatermarkLayer extends StatelessWidget {
     this.time,
   });
 
+  @override
+  State<WatermarkLayer> createState() => _WatermarkLayerState();
+}
+
+class _WatermarkLayerState extends State<WatermarkLayer> {
+  // 捏合縮放的起點值
+  double _baseTextSize = 0;
+  double _baseLogoSize = 0;
+
   /// 選取框
-  BoxDecoration? get _selDeco => selected
+  BoxDecoration? get _selDeco => widget.selected
       ? BoxDecoration(
           border: Border.all(
               color: Colors.white.withValues(alpha: 0.9), width: 1.2),
@@ -50,13 +59,19 @@ class WatermarkLayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final settings = widget.settings;
+    final onChanged = widget.onChanged;
+    final onDragStart = widget.onDragStart;
+    final onTap = widget.onTap;
+    final onTapText = widget.onTapText;
+    final time = widget.time;
     return LayoutBuilder(builder: (context, box) {
       final w = box.maxWidth;
       final h = box.maxHeight;
       // 動畫（只在有時間軸的畫面生效）
       final anim = time == null
           ? (dx: 0.0, dy: 0.0, alpha: 1.0)
-          : settings.animAt(time!);
+          : settings.animAt(time);
       final pad = w * 0.012;
       final children = <Widget>[];
 
@@ -82,10 +97,20 @@ class WatermarkLayer extends StatelessWidget {
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: onTap,
-            onPanStart: (_) => onDragStart?.call(),
-            onPanUpdate: (d) {
-              logo.x = ((logo.x * w + d.delta.dx) / w).clamp(0.0, 1.0);
-              logo.y = ((logo.y * h + d.delta.dy) / h).clamp(0.0, 1.0);
+            // 單指拖＝移動、雙指捏＝調大小
+            onScaleStart: (_) {
+              onDragStart?.call();
+              _baseLogoSize = logo.sizeFrac;
+            },
+            onScaleUpdate: (d) {
+              logo.x = ((logo.x * w + d.focalPointDelta.dx) / w)
+                  .clamp(0.0, 1.0);
+              logo.y = ((logo.y * h + d.focalPointDelta.dy) / h)
+                  .clamp(0.0, 1.0);
+              if (d.pointerCount > 1) {
+                logo.sizeFrac =
+                    (_baseLogoSize * d.scale).clamp(0.03, 0.9);
+              }
               onChanged();
             },
             child: Container(
@@ -173,10 +198,20 @@ class WatermarkLayer extends StatelessWidget {
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: onTapText ?? onTap,
-            onPanStart: (_) => onDragStart?.call(),
-            onPanUpdate: (d) {
-              t.x = ((t.x * w + d.delta.dx) / w).clamp(0.0, 1.0);
-              t.y = ((t.y * h + d.delta.dy) / h).clamp(0.0, 1.0);
+            // 單指拖＝移動、雙指捏＝調字級
+            onScaleStart: (_) {
+              onDragStart?.call();
+              _baseTextSize = t.sizeFrac;
+            },
+            onScaleUpdate: (d) {
+              t.x = ((t.x * w + d.focalPointDelta.dx) / w)
+                  .clamp(0.0, 1.0);
+              t.y = ((t.y * h + d.focalPointDelta.dy) / h)
+                  .clamp(0.0, 1.0);
+              if (d.pointerCount > 1) {
+                t.sizeFrac =
+                    (_baseTextSize * d.scale).clamp(0.015, 0.4);
+              }
               onChanged();
             },
             child: Transform.rotate(

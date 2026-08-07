@@ -109,6 +109,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _exporting = false;
 
   TimelineClip? _clipboard; // 複製的片段（貼上時以播放頭為起點）
+  bool _tlPinching = false; // 時間軸雙指縮放中（暫停垂直捲動）
 
   /// 靜音的軌道（點軌道標籤的喇叭切換）
   final Set<int> _mutedTracks = {};
@@ -754,6 +755,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
+      // 視窗最多佔半個螢幕：上半留給預覽，邊調邊看即時效果
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.5,
+      ),
       builder: (context) => StatefulBuilder(
         builder: (context, setSheet) {
           void both(VoidCallback fn) {
@@ -863,6 +868,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 bottom: MediaQuery.of(context).viewInsets.bottom),
             child: SafeArea(
               child: SingleChildScrollView(
+                // 往下滑清單就收鍵盤（打完字回不去的解法）
+                keyboardDismissBehavior:
+                    ScrollViewKeyboardDismissBehavior.onDrag,
                 padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -872,6 +880,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       controller: ctrl,
                       autofocus: false,
                       textAlign: TextAlign.center,
+                      textInputAction: TextInputAction.done,
                       style: TextStyle(
                         fontFamily: st.fontFamily,
                         fontSize: 20,
@@ -901,7 +910,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 value: st.fontFamily,
                                 icon: const Icon(Icons.expand_more,
                                     size: 16, color: kTextDim),
-                                dropdownColor: kPanel,
+                                // 選單跟 App 同風格：面板色、圓角、
+                                // 限高（蓋滿全螢幕太生硬）
+                                dropdownColor: kPanelHi,
+                                borderRadius: BorderRadius.circular(12),
+                                menuMaxHeight: 320,
+                                itemHeight: 48,
                                 items: [
                                   for (final f in kFontOptions)
                                     DropdownMenuItem(
@@ -1549,7 +1563,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       trimStart: cb.trimStart,
       trimEnd: cb.trimEnd,
       offset: at ?? _position,
-      track: (track ?? cb.track).clamp(0, _tl.usedTracks),
+      // 沒指定軌道時：優先貼到目前選取片段的那一軌
+      //（長按時間軸空白處＝貼到指定軌道與位置）
+      track: (track ?? _selClipById(_sel)?.track ?? cb.track)
+          .clamp(0, _tl.usedTracks),
       volume: cb.volume,
     );
     final src = _tl.sources[cb.sourceIndex];
@@ -2210,7 +2227,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     });
                   },
                   onScaleEnd: (_) => _saveDraft(),
-                  child: CustomPaint(painter: _SelectionFramePainter()),
+                  // 文字素材有旋轉時，選取框跟著轉
+                  child: Transform.rotate(
+                    angle: (_tl.sourceOf(sc).kind == ClipKind.text
+                            ? (_tl.sourceOf(sc).textStyle?.rotation ?? 0)
+                            : 0.0) *
+                        math.pi /
+                        180,
+                    child:
+                        CustomPaint(painter: _SelectionFramePainter()),
+                  ),
                 ),
               ));
             }
@@ -2358,6 +2384,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 }
               },
               child: SingleChildScrollView(
+              // 雙指縮放時間軸時暫停垂直捲動，縮放手勢才吃得到
+              physics: _tlPinching
+                  ? const NeverScrollableScrollPhysics()
+                  : null,
               // 內容比視口矮時直向置中（CapCut 版型），不要貼著頂
               child: ConstrainedBox(
                 constraints: BoxConstraints(
@@ -2399,6 +2429,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     }
                   },
                   onLiftChanged: (v) => _lifting = v,
+                  // 雙指縮放中暫停外層垂直捲動，手勢才不會被搶走
+                  onPinchChanged: (v) =>
+                      setState(() => _tlPinching = v),
                   // 雙指捏合縮放：改完立刻把播放頭對回視口固定點
                   onZoom: (v) {
                     setState(() => _pxPerSec = v.clamp(3.0, 200.0));

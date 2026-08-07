@@ -60,6 +60,9 @@ class TimelineEditor extends StatefulWidget {
   /// 片段拖曳開始/結束（拖曳期間父層要暫停「捲動＝移動播放頭」的同步）
   final ValueChanged<bool>? onLiftChanged;
 
+  /// 雙指縮放中（外層拿去暫停垂直捲動，不然縮放手勢被搶走）
+  final ValueChanged<bool>? onPinchChanged;
+
   /// 雙指縮放時間軸：回傳新的 pxPerSec（父層負責 clamp 後重繪與對位）
   final ValueChanged<double>? onZoom;
 
@@ -92,6 +95,7 @@ class TimelineEditor extends StatefulWidget {
     required this.onLongPressEmpty,
     this.onTapSelectedClip,
     this.onLiftChanged,
+    this.onPinchChanged,
     this.onZoom,
     this.watermark,
     this.wmLabel = '浮水印',
@@ -137,6 +141,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
           _pinchBaseDist = d;
           _pinchBasePx = pxPerSec;
         });
+        widget.onPinchChanged?.call(true);
       }
     }
   }
@@ -155,6 +160,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
     _pinchPointers.remove(pointer);
     if (_pinching && _pinchPointers.length < 2) {
       setState(() => _pinchBaseDist = null);
+      widget.onPinchChanged?.call(false);
     }
   }
 
@@ -992,13 +998,6 @@ class _ClipBlock extends StatelessWidget {
                     left: 5,
                     top: 4,
                     child: Icon(icon, size: 10, color: Colors.white70),
-                  ),
-                  Positioned(
-                    right: 6,
-                    bottom: 3,
-                    child: Text('${clip.length.toStringAsFixed(1)}s',
-                        style: const TextStyle(
-                            fontSize: 9, color: Colors.white70)),
                   ),
                   if (isSelected && !lifted) ...[
                     Align(
