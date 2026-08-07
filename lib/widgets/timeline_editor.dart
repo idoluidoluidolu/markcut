@@ -885,20 +885,32 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
           child: Icon(Icons.movie, size: 18, color: Colors.white38)),
     );
   }
+  // 縮圖磚固定尺寸（不隨縮放拉伸變形），縮放只改變「放幾塊磚」
   final n = strip.length;
   final i0 = (clip.trimStart / src.duration * n).floor().clamp(0, n - 1);
   final i1 = (clip.trimEnd / src.duration * n).ceil().clamp(i0 + 1, n);
-  return Row(
-    children: [
-      for (var i = i0; i < i1; i++)
-        Expanded(
-          child: Image.memory(strip[i],
+  final span = i1 - i0;
+  return LayoutBuilder(builder: (context, cons) {
+    final tileW = cons.maxHeight; // 磚寬＝軌高（近方形）
+    final count = (cons.maxWidth / tileW).ceil().clamp(1, 400);
+    return Stack(
+      clipBehavior: Clip.hardEdge,
+      children: [
+        for (var k = 0; k < count; k++)
+          Positioned(
+            left: k * tileW,
+            top: 0,
+            bottom: 0,
+            width: tileW,
+            child: Image.memory(
+              strip[(i0 + (k * span ~/ count)).clamp(0, n - 1)],
               fit: BoxFit.cover,
-              height: double.infinity,
-              gaplessPlayback: true),
-        ),
-    ],
-  );
+              gaplessPlayback: true,
+            ),
+          ),
+      ],
+    );
+  });
 }
 
 /// 一按下就立刻贏得競技場的 pan，
@@ -999,6 +1011,27 @@ class _ClipBlock extends StatelessWidget {
                     top: 4,
                     child: Icon(icon, size: 10, color: Colors.white70),
                   ),
+                  // 變速片段掛倍速小標
+                  if ((clip.speed - 1.0).abs() > 0.01)
+                    Positioned(
+                      right: 5,
+                      top: 3,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 4, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          '${clip.speed % 1 == 0 ? clip.speed.toInt() : clip.speed}x',
+                          style: const TextStyle(
+                              fontSize: 8.5,
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ),
                   if (isSelected && !lifted) ...[
                     Align(
                       alignment: Alignment.centerLeft,

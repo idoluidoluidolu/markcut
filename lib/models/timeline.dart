@@ -78,6 +78,10 @@ class TimelineClip {
   double fadeIn;
   double fadeOut;
 
+  /// 這個片段的播放速度（1 = 原速）。
+  /// 變速會反映在時間軸長度上：2x 的片段佔的軸長是素材長的一半
+  double speed;
+
   TimelineClip({
     required this.id,
     required this.sourceIndex,
@@ -91,15 +95,22 @@ class TimelineClip {
     this.scale = 1.0,
     this.fadeIn = 0,
     this.fadeOut = 0,
+    this.speed = 1.0,
   });
 
-  double get length => math.max(0.0, trimEnd - trimStart);
+  /// 素材端長度（trim 掉頭尾後的原始秒數）
+  double get srcLength => math.max(0.0, trimEnd - trimStart);
+
+  /// 時間軸上佔的長度（變速後）
+  double get length => srcLength / speed.clamp(0.1, 16.0);
+
   double get end => offset + length;
 
   bool covers(double t) => t >= offset && t < end;
 
-  /// 時間軸時間 → 這份素材內部的時間
-  double sourceTimeAt(double t) => trimStart + (t - offset);
+  /// 時間軸時間 → 這份素材內部的時間（含變速換算）
+  double sourceTimeAt(double t) =>
+      trimStart + (t - offset) * speed.clamp(0.1, 16.0);
 
   /// 淡入淡出在 t 時刻的係數（0~1）
   double fadeFactorAt(double t) {
@@ -122,6 +133,7 @@ class TimelineClip {
         'scale': scale,
         'fadeIn': fadeIn,
         'fadeOut': fadeOut,
+        'speed': speed,
       };
 
   factory TimelineClip.fromJson(Map<String, dynamic> j) => TimelineClip(
@@ -137,6 +149,7 @@ class TimelineClip {
         scale: (j['scale'] ?? 1.0).toDouble(),
         fadeIn: (j['fadeIn'] ?? 0).toDouble(),
         fadeOut: (j['fadeOut'] ?? 0).toDouble(),
+        speed: (j['speed'] ?? 1.0).toDouble(),
       );
 
   TimelineClip copy() => TimelineClip.fromJson(toJson());
@@ -264,6 +277,10 @@ class TimelineModel {
       offset: t,
       track: c.track,
       volume: c.volume,
+      speed: c.speed, // 切割後兩段維持相同變速
+      px: c.px,
+      py: c.py,
+      scale: c.scale,
     );
     c.trimEnd = srcT;
     clips.add(second);

@@ -540,20 +540,29 @@ class _WatermarkPanelState extends State<WatermarkPanel> {
         _card(Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-        Row(
-          children: [
-            const Text('圖片',
-                style: TextStyle(
-                    fontSize: 13, fontWeight: FontWeight.w700, color: kText)),
-            const Spacer(),
-            if (!s.logo.enabled || s.logo.bytes == null)
-              IconButton(
-                tooltip: '加入圖片',
-                visualDensity: VisualDensity.compact,
-                onPressed: _pickLogo,
-                icon: const Icon(Icons.add, size: 20, color: kIcon),
-              ),
-          ],
+        // 還沒有圖片時整行都能點（不用精準戳 + 號）
+        InkWell(
+          onTap: (!s.logo.enabled || s.logo.bytes == null)
+              ? _pickLogo
+              : null,
+          borderRadius: BorderRadius.circular(8),
+          child: Row(
+            children: [
+              const Text('圖片',
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: kText)),
+              const Spacer(),
+              if (!s.logo.enabled || s.logo.bytes == null)
+                IconButton(
+                  tooltip: '加入圖片',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: _pickLogo,
+                  icon: const Icon(Icons.add, size: 20, color: kIcon),
+                ),
+            ],
+          ),
         ),
         if (s.logo.enabled && s.logo.bytes != null) ...[
           const SizedBox(height: 6),

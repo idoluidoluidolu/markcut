@@ -232,7 +232,8 @@ Future<String> _buildCommand(ExportSpec spec, String? wmPath,
     final (w2, h2, x, y) = layerBox(c, src.aspect);
     fc.write('[$label]'
         'trim=start=${_f(c.trimStart)}:end=${_f(c.trimEnd)},'
-        'setpts=(PTS-STARTPTS)/${_f(sp)}+${_f(start)}/TB,'
+        // 全域速度 × 每片段速度一起壓進 PTS
+        'setpts=(PTS-STARTPTS)/${_f(sp * c.speed)}+${_f(start)}/TB,'
         'scale=$w2:$h2:flags=lanczos'
         '${vFades(c)}'
         '[lv$k];');
@@ -321,7 +322,8 @@ Future<String> _buildCommand(ExportSpec spec, String? wmPath,
     fc.write('[$label]'
         'atrim=start=${_f(c.trimStart)}:end=${_f(c.trimEnd)},'
         'asetpts=PTS-STARTPTS,'
-        '${_atempoChain(sp)}'
+        // 全域速度 × 每片段速度
+        '${_atempoChain(sp * c.speed)}'
         '$fades,'
         'volume=${c.volume.toStringAsFixed(2)},'
         'adelay=$delayMs:all=1,'

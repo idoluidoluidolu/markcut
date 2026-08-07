@@ -1248,7 +1248,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       if (_playing) {
         if (!c.value.isPlaying) {
-          c.setPlaybackSpeed(_speed);
+          c.setPlaybackSpeed(_speed * clip.speed);
           c.play();
         }
       } else if (c.value.isPlaying) {
@@ -1320,12 +1320,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       for (final c in _tl.clips) {
         if (c.id != id) continue;
         final src = _tl.sourceOf(c);
+        // 把手拖的是「時間軸秒」，變速片段要換算回素材秒
+        final dSrc = dSec * c.speed;
         if (fromLeft) {
-          final ns = (c.trimStart + dSec).clamp(0.0, c.trimEnd - 0.3);
-          c.offset = (c.offset + (ns - c.trimStart)).clamp(0.0, 1e6);
+          final ns = (c.trimStart + dSrc).clamp(0.0, c.trimEnd - 0.3);
+          // offset 位移用時間軸秒（素材差 ÷ 速度）
+          c.offset = (c.offset + (ns - c.trimStart) / c.speed)
+              .clamp(0.0, 1e6);
           c.trimStart = ns;
         } else {
-          c.trimEnd = (c.trimEnd + dSec).clamp(c.trimStart + 0.3, src.duration);
+          c.trimEnd =
+              (c.trimEnd + dSrc).clamp(c.trimStart + 0.3, src.duration);
         }
       }
     });
@@ -2466,7 +2471,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       setState(() => _tlPinching = v),
                   // 雙指捏合縮放：改完立刻把播放頭對回視口固定點
                   onZoom: (v) {
-                    setState(() => _pxPerSec = v.clamp(3.0, 200.0));
+                    // 下限放寬到 1px/秒：長片也能整條盡收眼底
+                    setState(() => _pxPerSec = v.clamp(1.0, 200.0));
                     WidgetsBinding.instance.addPostFrameCallback(
                         (_) => _syncScrollToPosition());
                   },
@@ -2780,8 +2786,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     ).whenComplete(_saveDraft);
   }
 
-  /// 播放速度選單（從工具列的碼錶圖示開）
+  /// 速度選單：選了片段＝調「那個片段」的速度（時間軸長度跟著縮放、
+  /// 匯出同步生效）；沒選片段＝調整條影片的播放速度
   void _openSpeedSheet() {
+    final sel = _selClipById(_sel);
+    final selSrc = sel == null ? null : _tl.sourceOf(sel);
+    // 只有影片/音訊能變速（圖片、文字的長度直接拖把手就好）
+    final clipMode = sel != null &&
+        selSrc != null &&
+        (selSrc.isVideo || selSrc.kind == ClipKind.audio);
+    var pushed = false; // 這次選單只拍一次快照
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
@@ -2796,9 +2810,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 Row(
                   children: [
                     const Icon(Icons.speed, size: 18, color: kAmber),
+                    const SizedBox(width: 8),
+                    Text(
+                      clipMode ? '片段速度' : '整體速度',
+                      style: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w700),
+                    ),
                     const Spacer(),
                     Text(
-                      _fmt(_tl.duration / _speed),
+                      clipMode
+                          ? '這段 ${sel.length.toStringAsFixed(1)}s'
+                          : _fmt(_tl.duration / _speed),
                       style: const TextStyle(
                         color: kTextDim,
                         fontSize: 12,
@@ -2815,25 +2837,43 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     for (final sp in kSpeedOptions)
                       ChoiceChip(
                         label: Text('${sp}x'),
-                        selected: _speed == sp,
+                        selected: clipMode
+                            ? sel.speed == sp
+                            : _speed == sp,
                         onSelected: (s) {
-                          if (s) {
+                          if (!s) return;
+                          if (clipMode) {
+                            if (!pushed) {
+                              _pushUndo();
+                              pushed = true;
+                            }
+                            setState(() => sel.speed = sp);
+                            _ctrls[sel.id]
+                                ?.setPlaybackSpeed(_speed * sp);
+                          } else {
                             setState(() => _speed = sp);
-                            setSheet(() {});
-                            for (final c in _ctrls.values) {
-                              c.setPlaybackSpeed(sp);
+                            for (final e in _tl.clips) {
+                              _ctrls[e.id]
+                                  ?.setPlaybackSpeed(sp * e.speed);
                             }
                           }
+                          setSheet(() {});
                         },
                       ),
                   ],
                 ),
+                if (clipMode) ...[
+                  const SizedBox(height: 8),
+                  const Text('時間軸上的長度會跟著速度縮放',
+                      style:
+                          TextStyle(fontSize: 10.5, color: kTextDim)),
+                ],
               ],
             ),
           ),
         ),
       ),
-    );
+    ).whenComplete(_saveDraft);
   }
 
   /// 匯出頁（使用者選定 B 款極簡設定列）：
