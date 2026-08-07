@@ -132,6 +132,49 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     setState(() => _exporting = false);
   }
 
+  /// 底部「儲存範本」鈕要觸發面板裡的儲存流程
+  final _panelKey = GlobalKey<WatermarkPanelState>();
+
+  // ===== 預覽區雙指縮放（照片上的浮水印）=====
+  final Map<int, Offset> _pvPts = {};
+  double? _pvBaseDist;
+  double _pvBaseText = 0;
+  double _pvBaseLogo = 0;
+
+  void _pinchDown(PointerDownEvent e) {
+    _pvPts[e.pointer] = e.position;
+    if (_pvPts.length != 2) return;
+    final p = _pvPts.values.toList();
+    final d = (p[0] - p[1]).distance;
+    if (d <= 20) return;
+    _pvBaseDist = d;
+    _pvBaseText = _settings.text.sizeFrac;
+    _pvBaseLogo = _settings.logo.sizeFrac;
+    _pushUndo();
+  }
+
+  void _pinchMove(PointerMoveEvent e) {
+    if (!_pvPts.containsKey(e.pointer)) return;
+    _pvPts[e.pointer] = e.position;
+    if (_pvBaseDist == null || _pvPts.length < 2) return;
+    final p = _pvPts.values.toList();
+    final f = (p[0] - p[1]).distance / _pvBaseDist!;
+    setState(() {
+      final t = _settings.text;
+      if (t.enabled && t.text.trim().isNotEmpty) {
+        t.sizeFrac = (_pvBaseText * f).clamp(0.015, 0.8);
+      }
+      if (_settings.logo.enabled) {
+        _settings.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
+      }
+    });
+  }
+
+  void _pinchUp(int pointer) {
+    _pvPts.remove(pointer);
+    if (_pvBaseDist != null && _pvPts.length < 2) _pvBaseDist = null;
+  }
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
@@ -148,11 +191,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             icon: const Icon(Icons.undo),
             onPressed: _undoStack.isEmpty ? null : _undoLast,
           ),
-          IconButton(
-            onPressed: _exporting ? null : _export,
-            icon: const Icon(Icons.ios_share),
-            tooltip: '儲存',
-          ),
         ],
       ),
       body: _photoBytes == null || _aspect == null
@@ -161,7 +199,17 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               children: [
                 Expanded(
                   flex: 5,
-                  child: Container(
+                  // 雙指縮放浮水印（用 Listener 不搶單指拖曳手勢）
+                  child: Listener(
+                    onPointerDown: _pinchDown,
+                    onPointerMove: _pinchMove,
+                    onPointerUp: (e) => _pinchUp(e.pointer),
+                    onPointerCancel: (e) => _pinchUp(e.pointer),
+                    child: GestureDetector(
+                    // 點空白＝收鍵盤
+                    onTap: () =>
+                        FocusManager.instance.primaryFocus?.unfocus(),
+                    child: Container(
                     color: Colors.black,
                     alignment: Alignment.center,
                     child: AspectRatio(
@@ -178,15 +226,58 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                         ],
                       ),
                     ),
+                    ),
+                    ),
                   ),
                 ),
                 Expanded(
                   flex: 4,
                   child: WatermarkPanel(
+                    key: _panelKey,
                     settings: _settings,
                     onChanged: () => setState(() {}),
                     onBeforeChange: _pushUndo,
                     syncVersion: _sync,
+                    // 儲存鈕移到底部跟「輸出」並排
+                    hideSaveButton: true,
+                  ),
+                ),
+                // 底部雙鍵：儲存範本（次要）＋輸出（主要）
+                SafeArea(
+                  top: false,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () =>
+                                _panelKey.currentState?.savePreset(),
+                            style: OutlinedButton.styleFrom(
+                              minimumSize: const Size.fromHeight(46),
+                              side: const BorderSide(color: kClipBorder),
+                              foregroundColor: kText,
+                            ),
+                            icon: const Icon(Icons.bookmark_add_outlined,
+                                size: 17),
+                            label: const Text('儲存範本',
+                                style: TextStyle(fontSize: 13.5)),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: _exporting ? null : _export,
+                            style: FilledButton.styleFrom(
+                              minimumSize: const Size.fromHeight(46),
+                            ),
+                            icon: const Icon(Icons.ios_share, size: 17),
+                            label: const Text('輸出',
+                                style: TextStyle(fontSize: 13.5)),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ],

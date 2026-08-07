@@ -113,13 +113,9 @@ class WatermarkRenderer {
       }
 
       // 夾在畫面內，太靠邊不會被裁掉
-      final pad = w * 0.012;
-      final left = (logo.x * w - targetW / 2)
-          .clamp(pad, math.max(pad, w - targetW - pad))
-          .toDouble();
-      final top = (logo.y * h - targetH / 2)
-          .clamp(pad, math.max(pad, h - targetH - pad))
-          .toDouble();
+      // 不夾限：允許放大到超出畫面（跟預覽同一套規則）
+      final left = logo.x * w - targetW / 2;
+      final top = logo.y * h - targetH / 2;
       final rect = ui.Rect.fromLTWH(left, top, targetW, targetH);
       final paint = ui.Paint()
         ..filterQuality = ui.FilterQuality.high
@@ -157,26 +153,9 @@ class WatermarkRenderer {
       ui.Canvas canvas, WatermarkSettings s, double w, double h) {
     final t = s.text;
     if (t.enabled && t.text.trim().isNotEmpty) {
-      // 不自動換行：過寬時整段等比縮小字級（明確換行 \n 仍有效）
-      var fontSize = t.sizeFrac * w;
-      final maxW = w * 0.96;
-
-      TextPainter measure(double fs) => TextPainter(
-            text: TextSpan(
-              text: t.text,
-              style: TextStyle(
-                  fontFamily: t.fontFamily,
-                  fontSize: fs,
-                  letterSpacing: fs * t.spacing),
-            ),
-            textDirection: TextDirection.ltr,
-          )..layout();
-
-      var probe = measure(fontSize);
-      if (probe.width > maxW) {
-        fontSize *= maxW / probe.width;
-        probe = measure(fontSize);
-      }
+      // 不自動換行、也不自動縮小：使用者調多大就多大，
+      // 超出畫面是允許的（明確換行 \n 仍有效）
+      final fontSize = t.sizeFrac * w;
 
       final shadows = t.shadow
           ? [
@@ -257,14 +236,9 @@ class WatermarkRenderer {
         return;
       }
 
-      // 夾在畫面內，靠邊也不會被裁
-      final pad = w * 0.012;
-      final left = (t.x * w - painter.width / 2)
-          .clamp(pad, math.max(pad, w - painter.width - pad))
-          .toDouble();
-      final top = (t.y * h - painter.height / 2)
-          .clamp(pad, math.max(pad, h - painter.height - pad))
-          .toDouble();
+      // 不夾限：允許放大到超出畫面（跟預覽同一套規則）
+      final left = t.x * w - painter.width / 2;
+      final top = t.y * h - painter.height / 2;
 
       // 旋轉：整組（底色＋描邊＋文字）以文字中心為軸
       canvas.save();

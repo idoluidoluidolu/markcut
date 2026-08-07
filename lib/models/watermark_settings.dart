@@ -50,7 +50,7 @@ class TextMark {
     this.colorValue = 0xFFFFFFFF,
     // 預設：置中、大字、較透明（一眼看得出浮水印在哪、怎麼調）
     this.opacity = 0.55,
-    this.sizeFrac = 0.12,
+    this.sizeFrac = 0.12, // 上限見面板滑桿（可放到超出畫面）
     this.spacing = 0,
     this.x = 0.5,
     this.y = 0.5,

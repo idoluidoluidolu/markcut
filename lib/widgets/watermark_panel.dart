@@ -27,6 +27,12 @@ class WatermarkPanel extends StatefulWidget {
   /// 一進來就當作在編輯這個範本（儲存鈕預選它）
   final String? initialPresetName;
 
+  /// 存成範本後通知父層（重設「有沒有改過」的基準，離開才不會問放棄）
+  final VoidCallback? onSaved;
+
+  /// 隱藏面板內的「儲存範本」鈕（父層自己在底部放）
+  final bool hideSaveButton;
+
   const WatermarkPanel({
     super.key,
     required this.settings,
@@ -35,13 +41,18 @@ class WatermarkPanel extends StatefulWidget {
     this.showAnimation = false,
     this.syncVersion = 0,
     this.initialPresetName,
+    this.onSaved,
+    this.hideSaveButton = false,
   });
 
   @override
-  State<WatermarkPanel> createState() => _WatermarkPanelState();
+  State<WatermarkPanel> createState() => WatermarkPanelState();
 }
 
-class _WatermarkPanelState extends State<WatermarkPanel> {
+class WatermarkPanelState extends State<WatermarkPanel> {
+  /// 父層（例如照片編輯器把儲存鈕放在底部）可以呼叫這個開儲存流程
+  Future<void> savePreset() => _savePreset();
+
   late final TextEditingController _textCtrl;
 
   WatermarkSettings get s => widget.settings;
@@ -87,9 +98,9 @@ class _WatermarkPanelState extends State<WatermarkPanel> {
   }
 
   @override
-  void didUpdateWidget(WatermarkPanel old) {
-    super.didUpdateWidget(old);
-    if (widget.syncVersion != old.syncVersion) {
+  void didUpdateWidget(WatermarkPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.syncVersion != oldWidget.syncVersion) {
       // 父層剛做了復原：把輸入框文字對回 settings
       _textCtrl.text = s.text.text;
       _presetSel = null;
@@ -214,6 +225,8 @@ class _WatermarkPanelState extends State<WatermarkPanel> {
     final existed = _presets.any((p) => p.name == name);
     await PresetStore.add(WatermarkPreset(name: name, settings: s.copy()));
     _presetSel = name;
+    await _loadPresets();
+    widget.onSaved?.call(); // 父層拿去重設「有沒有改過」的基準
     if (mounted) {
       showHint(context, existed ? '已更新範本「$name」' : '已儲存範本「$name」');
     }
@@ -461,7 +474,7 @@ class _WatermarkPanelState extends State<WatermarkPanel> {
             ],
           ),
           const SizedBox(height: 2),
-          _sliderRow('大小', s.text.sizeFrac, 0.015, 0.25,
+          _sliderRow('大小', s.text.sizeFrac, 0.015, 0.8,
               (v) => _update(() => s.text.sizeFrac = v)),
           _sliderRow('透明', s.text.opacity, 0.05, 1,
               (v) => _update(() => s.text.opacity = v)),
@@ -589,7 +602,7 @@ class _WatermarkPanelState extends State<WatermarkPanel> {
             ],
           ),
           const SizedBox(height: 4),
-          _sliderRow('大小', s.logo.sizeFrac, 0.05, 0.6,
+          _sliderRow('大小', s.logo.sizeFrac, 0.05, 2.0,
               (v) => _update(() => s.logo.sizeFrac = v)),
           _sliderRow('透明', s.logo.opacity, 0.05, 1,
               (v) => _update(() => s.logo.opacity = v)),
@@ -611,20 +624,20 @@ class _WatermarkPanelState extends State<WatermarkPanel> {
         )),
 
         // ===== 儲存範本（更新選中的範本，或另存新範本）=====
-        const SizedBox(height: 4),
-        FilledButton.icon(
-          onPressed: () async {
-            await _savePreset();
-            await _loadPresets();
-          },
-          icon: const Icon(Icons.bookmark_add_outlined, size: 18),
-          label: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            child: Text(
-                _presetSel == null ? '儲存範本' : '儲存範本「$_presetSel」',
-                style: const TextStyle(fontSize: 14)),
+        // 照片編輯器把這顆移到底部跟「輸出」並排，所以這裡可隱藏
+        if (!widget.hideSaveButton) ...[
+          const SizedBox(height: 4),
+          FilledButton.icon(
+            onPressed: _savePreset,
+            icon: const Icon(Icons.bookmark_add_outlined, size: 18),
+            label: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: Text(
+                  _presetSel == null ? '儲存範本' : '儲存範本「$_presetSel」',
+                  style: const TextStyle(fontSize: 14)),
+            ),
           ),
-        ),
+        ],
       ],
     );
   }

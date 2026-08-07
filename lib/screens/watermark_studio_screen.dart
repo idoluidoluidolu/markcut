@@ -245,6 +245,9 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
               onBeforeChange: _pushUndo,
               syncVersion: _sync,
               initialPresetName: widget.edit?.name,
+              // 存過就把基準對齊現況：沒再改動的話離開不用問放棄
+              onSaved: () =>
+                  _initialJson = jsonEncode(_settings.toJson()),
             ),
           ),
         ],

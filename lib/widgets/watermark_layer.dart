@@ -46,8 +46,6 @@ class WatermarkLayer extends StatefulWidget {
 
 class _WatermarkLayerState extends State<WatermarkLayer> {
   // 捏合縮放的起點值
-  double _baseTextSize = 0;
-  double _baseLogoSize = 0;
 
   /// 選取框
   BoxDecoration? get _selDeco => widget.selected
@@ -72,7 +70,6 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
       final anim = time == null
           ? (dx: 0.0, dy: 0.0, alpha: 1.0)
           : settings.animAt(time);
-      final pad = w * 0.012;
       final children = <Widget>[];
 
       final logo = settings.logo;
@@ -84,33 +81,21 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
         ));
       } else if (logo.enabled && logoBytes != null) {
         final logoW = logo.sizeFrac * w;
-        // 高度未知（解碼是非同步的），用寬度近似做垂直夾限；匯出端會精準夾
-        final left = (logo.x * w - logoW / 2)
-            .clamp(pad, math.max(pad, w - logoW - pad))
-            .toDouble();
-        final top = (logo.y * h - logoW / 2)
-            .clamp(-logoW / 2, h - logoW / 2)
-            .toDouble();
+        // 不夾限：允許放大到超出畫面（跟匯出同一套規則）
+        final left = logo.x * w - logoW / 2;
+        final top = logo.y * h - logoW / 2;
         children.add(Positioned(
           left: left,
           top: top,
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: onTap,
-            // 單指拖＝移動、雙指捏＝調大小
-            onScaleStart: (_) {
-              onDragStart?.call();
-              _baseLogoSize = logo.sizeFrac;
-            },
-            onScaleUpdate: (d) {
-              logo.x = ((logo.x * w + d.focalPointDelta.dx) / w)
-                  .clamp(0.0, 1.0);
-              logo.y = ((logo.y * h + d.focalPointDelta.dy) / h)
-                  .clamp(0.0, 1.0);
-              if (d.pointerCount > 1) {
-                logo.sizeFrac =
-                    (_baseLogoSize * d.scale).clamp(0.03, 0.9);
-              }
+            // 單指拖＝移動（雙指縮放由預覽層的 Listener 處理：
+            // 元素本身範圍太小，兩指張開時第二指會落在範圍外）
+            onPanStart: (_) => onDragStart?.call(),
+            onPanUpdate: (d) {
+              logo.x = ((logo.x * w + d.delta.dx) / w).clamp(0.0, 1.0);
+              logo.y = ((logo.y * h + d.delta.dy) / h).clamp(0.0, 1.0);
               onChanged();
             },
             child: Container(
@@ -141,9 +126,9 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
           ),
         ));
       } else if (t.enabled && t.text.trim().isNotEmpty) {
-        // 不自動換行：過寬時整段等比縮小字級（跟匯出同一套規則）
-        var fontSize = t.sizeFrac * w;
-        final maxW = w * 0.96;
+        // 不自動換行、也不自動縮小：使用者調多大就多大，
+        // 超出畫面是允許的（跟匯出同一套規則）
+        final fontSize = t.sizeFrac * w;
 
         TextPainter measure(double fs) => TextPainter(
               text: TextSpan(
@@ -156,11 +141,7 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
               textDirection: TextDirection.ltr,
             )..layout();
 
-        var probe = measure(fontSize);
-        if (probe.width > maxW) {
-          fontSize *= maxW / probe.width;
-          probe = measure(fontSize);
-        }
+        final probe = measure(fontSize);
 
         final style = TextStyle(
           fontFamily: t.fontFamily,
@@ -177,12 +158,9 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                 ]
               : null,
         );
-        final left = (t.x * w - probe.width / 2)
-            .clamp(pad, math.max(pad, w - probe.width - pad))
-            .toDouble();
-        final top = (t.y * h - probe.height / 2)
-            .clamp(pad, math.max(pad, h - probe.height - pad))
-            .toDouble();
+        // 不夾限：允許放大到超出畫面（跟匯出同一套規則）
+        final left = t.x * w - probe.width / 2;
+        final top = t.y * h - probe.height / 2;
 
         Widget textWidget(TextStyle st) => Text(
               t.text,
@@ -198,20 +176,11 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: onTapText ?? onTap,
-            // 單指拖＝移動、雙指捏＝調字級
-            onScaleStart: (_) {
-              onDragStart?.call();
-              _baseTextSize = t.sizeFrac;
-            },
-            onScaleUpdate: (d) {
-              t.x = ((t.x * w + d.focalPointDelta.dx) / w)
-                  .clamp(0.0, 1.0);
-              t.y = ((t.y * h + d.focalPointDelta.dy) / h)
-                  .clamp(0.0, 1.0);
-              if (d.pointerCount > 1) {
-                t.sizeFrac =
-                    (_baseTextSize * d.scale).clamp(0.015, 0.4);
-              }
+            // 單指拖＝移動（雙指縮放由預覽層的 Listener 處理）
+            onPanStart: (_) => onDragStart?.call(),
+            onPanUpdate: (d) {
+              t.x = ((t.x * w + d.delta.dx) / w).clamp(0.0, 1.0);
+              t.y = ((t.y * h + d.delta.dy) / h).clamp(0.0, 1.0);
               onChanged();
             },
             child: Transform.rotate(

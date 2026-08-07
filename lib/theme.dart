@@ -157,6 +157,8 @@ ThemeData buildStudioTheme() {
           borderRadius: BorderRadius.circular(6),
           borderSide: const BorderSide(color: kAmber, width: 1.5)),
       labelStyle: const TextStyle(color: kTextDim, fontSize: 13),
+      // 提示文字用灰字，才不會被誤認成已輸入的內容
+      hintStyle: const TextStyle(color: kTextDim, fontSize: 13),
     ),
     listTileTheme: const ListTileThemeData(
       iconColor: kIcon,

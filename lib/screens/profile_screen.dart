@@ -100,7 +100,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('個人中心')),
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        title: const Text('個人中心'),
+      ),
       body: Column(
         children: [
           // 兩張大卡：佔滿剩餘空間並垂直置中

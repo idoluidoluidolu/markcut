@@ -51,6 +51,13 @@ class MarkCutApp extends StatelessWidget {
         debugShowCheckedModeBanner: false,
         showPerformanceOverlay: perf,
         theme: buildStudioTheme(),
+        // 點任何非輸入元件的地方就收鍵盤（全 App 生效）。
+        // translucent＋不吃掉事件：底下的按鈕照樣正常反應
+        builder: (context, child) => GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+          child: child,
+        ),
         home: const HomeScreen(),
       ),
     );

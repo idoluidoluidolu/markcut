@@ -646,7 +646,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   Future<void> _pickAudio(int track) async {
-    final picked = await pickAudioFile();
+    ({String url, String name})? picked;
+    try {
+      picked = await pickAudioFile();
+    } catch (e) {
+      if (mounted) showHint(context, '無法開啟檔案選擇器：$e', error: true);
+      return;
+    }
     if (picked == null) return;
     _pause();
     final c = makeVideoController(picked.url);
@@ -660,6 +666,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     final dur = c.value.duration.inMilliseconds / 1000.0;
+    if (dur <= 0) {
+      c.dispose();
+      if (mounted) {
+        showHint(context, '讀不到這個音訊的長度，換一個試試', error: true);
+      }
+      return;
+    }
     _pushUndo();
     final srcIndex = _tl.sources.length;
     _tl.sources.add(MediaSource(
@@ -704,17 +717,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               onTap: () => Navigator.pop(context, ClipKind.video),
             ),
             ListTile(
-              leading: const Icon(Icons.image_outlined, color: kVideoBorder),
+              leading: const Icon(Icons.image_outlined, color: kAmber),
               title: const Text('圖片'),
               onTap: () => Navigator.pop(context, ClipKind.image),
             ),
             ListTile(
-              leading: const Icon(Icons.title, color: kText),
+              leading: const Icon(Icons.title, color: kAmber),
               title: const Text('文字'),
               onTap: () => Navigator.pop(context, ClipKind.text),
             ),
             ListTile(
-              leading: const Icon(Icons.music_note, color: kAudioBorder),
+              leading: const Icon(Icons.music_note, color: kAmber),
               title: const Text('音樂 / 旁白'),
               onTap: () => Navigator.pop(context, ClipKind.audio),
             ),
@@ -2059,12 +2072,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 畫布比例：選了固定比例就用它（跟匯出一致）
     final canvasAspect = _canvasRatio.value ?? baseAspect;
 
-    return GestureDetector(
-      // 點預覽區任何空白（含畫布外的灰邊）＝取消所有選取
-      onTap: () => setState(() {
-        _sel = -1;
-        _wmSel = false;
-      }),
+    return Listener(
+      // 雙指縮放選取中的元素（浮水印／片段）。
+      // 用 Listener 不搶手勢：元素本身的觸控範圍太小，
+      // 兩指張開時第二指會落在範圍外，改在整個預覽區偵測
+      onPointerDown: _previewPinchDown,
+      onPointerMove: _previewPinchMove,
+      onPointerUp: (e) => _previewPinchUp(e.pointer),
+      onPointerCancel: (e) => _previewPinchUp(e.pointer),
+      child: GestureDetector(
+      // 點預覽區任何空白（含畫布外的灰邊）＝取消所有選取＋收鍵盤
+      onTap: () {
+        FocusManager.instance.primaryFocus?.unfocus();
+        setState(() {
+          _sel = -1;
+          _wmSel = false;
+        });
+      },
       child: Container(
       key: _previewKey,
       // 預覽區背景比純黑亮一點，黑色畫布靠對比自己浮出來（CapCut 式）
@@ -2074,12 +2098,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       child: AspectRatio(
         aspectRatio: canvasAspect,
         child: Stack(fit: StackFit.expand, children: [
-          // 點預覽空白處＝取消所有選取
+          // 點預覽空白處＝取消所有選取＋收鍵盤
           GestureDetector(
-            onTap: () => setState(() {
-              _sel = -1;
-              _wmSel = false;
-            }),
+            onTap: () {
+              FocusManager.instance.primaryFocus?.unfocus();
+              setState(() {
+                _sel = -1;
+                _wmSel = false;
+              });
+            },
             child: Container(color: Colors.black),
           ),
           // RepaintBoundary：預覽圖層重繪不波及頁面其他部分
@@ -2125,7 +2152,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               final frames = _scrubbing ? _scrubFrames[c.sourceIndex] : null;
               children.add(Positioned.fromRect(
                 rect: r,
-                child: Opacity(
+                child: GestureDetector(
+                  // 點畫面上的影片＝選取它（等同在時間軸點該片段）
+                  onTap: () => setState(() {
+                    _sel = c.id;
+                    _wmSel = false;
+                  }),
+                  child: Opacity(
                   opacity: c.fadeFactorAt(_position),
                   child: Stack(fit: StackFit.expand, children: [
                     ctrl.view(key: ValueKey('pv-${c.id}')),
@@ -2156,6 +2189,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         ),
                       ),
                   ]),
+                  ),
                 ),
               ));
               if (c.id == _sel) {
@@ -2376,7 +2410,60 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _canvasHint(),
       ]),
       ),
+      ),
     );
+  }
+
+  // ===== 預覽區雙指縮放（選取中的浮水印或片段）=====
+  final Map<int, Offset> _pvPts = {};
+  double? _pvBaseDist;
+  double _pvBaseText = 0;
+  double _pvBaseLogo = 0;
+  double _pvBaseClip = 1;
+
+  void _previewPinchDown(PointerDownEvent e) {
+    _pvPts[e.pointer] = e.position;
+    if (_pvPts.length != 2) return;
+    final p = _pvPts.values.toList();
+    final d = (p[0] - p[1]).distance;
+    if (d <= 20) return;
+    _pvBaseDist = d;
+    _pvBaseText = _settings.text.sizeFrac;
+    _pvBaseLogo = _settings.logo.sizeFrac;
+    _pvBaseClip = _selClipById(_sel)?.scale ?? 1.0;
+    _pushUndo();
+  }
+
+  void _previewPinchMove(PointerMoveEvent e) {
+    if (!_pvPts.containsKey(e.pointer)) return;
+    _pvPts[e.pointer] = e.position;
+    if (_pvBaseDist == null || _pvPts.length < 2) return;
+    final p = _pvPts.values.toList();
+    final f = (p[0] - p[1]).distance / _pvBaseDist!;
+    setState(() {
+      if (_wmSel) {
+        // 浮水印：文字與圖片一起等比縮放
+        final t = _settings.text;
+        if (t.enabled && t.text.trim().isNotEmpty) {
+          t.sizeFrac = (_pvBaseText * f).clamp(0.015, 0.5);
+        }
+        if (_settings.logo.enabled) {
+          _settings.logo.sizeFrac =
+              (_pvBaseLogo * f).clamp(0.03, 0.9);
+        }
+      } else {
+        _selClipById(_sel)?.scale =
+            (_pvBaseClip * f).clamp(0.05, 3.0);
+      }
+    });
+  }
+
+  void _previewPinchUp(int pointer) {
+    _pvPts.remove(pointer);
+    if (_pvBaseDist != null && _pvPts.length < 2) {
+      _pvBaseDist = null;
+      _saveDraft();
+    }
   }
 
   /// 右上角比例小標籤：常駐顯示目前畫面比例，點了直接開比例選單
@@ -2473,11 +2560,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               onPointerCancel: (e) => _pinchUp(e.pointer),
               child: GestureDetector(
               behavior: HitTestBehavior.opaque,
-              // 點時間軸區域的任何空白＝取消所有選取
-              onTap: () => setState(() {
-                _sel = -1;
-                _wmSel = false;
-              }),
+              // 點時間軸區域的任何空白＝取消所有選取＋收鍵盤
+              onTap: () {
+                FocusManager.instance.primaryFocus?.unfocus();
+                setState(() {
+                  _sel = -1;
+                  _wmSel = false;
+                });
+              },
               onHorizontalDragUpdate: (d) {
                 if (_tlPinching) return; // 縮放中不搶橫向捲動
                 if (_tlScroll.hasClients) {
