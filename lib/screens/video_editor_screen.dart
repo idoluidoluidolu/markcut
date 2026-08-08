@@ -1859,82 +1859,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     setState(() => _sel = second.id);
   }
 
-  /// 點畫面上的浮水印文字＝直接改字（C 款彈窗、自動聚焦鍵盤）
-  Future<void> _editWmText() async {
-    _pushWmUndo();
-    final ctrl = TextEditingController(text: _settings.text.text);
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => Dialog(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: kBorder),
-        ),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 280),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 24, 20, 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                TextField(
-                  controller: ctrl,
-                  autofocus: true,
-                  textAlign: TextAlign.center,
-                  maxLines: null,
-                  style: TextStyle(
-                    fontFamily: _settings.text.fontFamily,
-                    fontSize: 20,
-                    color: _settings.text.color,
-                  ),
-                  decoration: const InputDecoration(
-                    hintText: '浮水印文字',
-                    filled: true,
-                    fillColor: Color(0xFF0F0F11),
-                  ),
-                  onSubmitted: (_) => Navigator.pop(context, true),
-                ),
-                const SizedBox(height: 16),
-                FilledButton(
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size.fromHeight(44),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    textStyle: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      fontFamily: 'NotoSansTC',
-                    ),
-                  ),
-                  onPressed: () => Navigator.pop(context, true),
-                  child: const Text('確定'),
-                ),
-                const SizedBox(height: 4),
-                TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  style: TextButton.styleFrom(
-                    foregroundColor: kTextDim,
-                    minimumSize: const Size.fromHeight(40),
-                  ),
-                  child: const Text('取消', style: TextStyle(fontSize: 13)),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-    if (ok == true && mounted) {
-      setState(() {
-        _settings.text.text = ctrl.text;
-        if (ctrl.text.trim().isNotEmpty) _settings.text.enabled = true;
-        _wmSync++; // 面板輸入框同步
-      });
-      _saveDraft();
-    }
-  }
 
   /// 刪除浮水印（整組文字＋圖片清空；按復原可以救回）
   void _deleteWatermark() {
@@ -3108,14 +3032,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           });
                                           _tabs.animateTo(1);
                                         },
-                                        // 點浮水印文字＝直接跳出輸入框改字
+                                        // 點浮水印文字＝跟點 Logo 一樣，
+                                        // 只切到浮水印分頁。要改字在
+                                        // 面板裡改，不要一點就跳鍵盤
                                         onTapText: () {
                                           setState(() {
                                             _wmSel = true;
                                             _sel = -1;
                                           });
                                           _tabs.animateTo(1);
-                                          _editWmText();
                                         },
                                       ),
                                     );
