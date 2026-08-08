@@ -116,8 +116,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   double get _wmEndEff => (_wmEnd ?? _tl.duration).clamp(0.0, _tl.duration);
 
-  /// 點浮水印軌標籤可以暫時藏起來看下面的畫面。
-  /// 只影響預覽——匯出照樣有浮水印，不然很容易做白工
+  /// 浮水印選到哪個部件（文字或圖片）。縮放只動被選的那個
+  WmPart _wmPart = WmPart.none;
+
+  /// 點浮水印軌標籤＝關掉浮水印。預覽和匯出一起關，
+  /// 不然「看起來沒有、匯出卻有」更容易做白工
   bool _wmHidden = false;
 
   bool get _wmVisibleNow =>
@@ -129,8 +132,57 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _ready = false;
   bool _exporting = false;
 
-  /// 右滑上一步：這次拖曳累積的水平位移
-  double _backSwipeDx = 0;
+  // ===== 右滑＝上一步 =====
+  //
+  // 用原始指標事件判斷，不走手勢競技場——時間軸、滑桿、浮水印都有自己的
+  // 拖曳處理，走競技場的話這些地方永遠搶不到。
+  // 條件抓得嚴一點，才不會把「橫向捲時間軸」誤判成返回：
+  // 單指、往右超過 110px、水平位移是垂直的 2 倍以上，
+  // 而且要在 450ms 內完成（是「甩」不是「慢慢拖」——慢拖是在捲時間軸）
+  int? _backPointer;
+  Offset _backStart = Offset.zero;
+  DateTime _backStartAt = DateTime.fromMillisecondsSinceEpoch(0);
+  double _backMaxDy = 0;
+  bool _backFired = false;
+
+  void _backSwipeDown(PointerDownEvent e) {
+    // 多指（捏合縮放）就整個放棄，不要跟縮放打架
+    if (_backPointer != null) {
+      _backPointer = null;
+      _backFired = true; // 這一輪不再判定
+      return;
+    }
+    _backPointer = e.pointer;
+    _backStart = e.position;
+    _backStartAt = DateTime.now();
+    _backMaxDy = 0;
+    _backFired = false;
+  }
+
+  void _backSwipeMove(PointerMoveEvent e) {
+    if (_backFired || e.pointer != _backPointer) return;
+    final d = e.position - _backStart;
+    _backMaxDy = math.max(_backMaxDy, d.dy.abs());
+    final ms = DateTime.now().difference(_backStartAt).inMilliseconds;
+    if (ms > 450) {
+      _backFired = true; // 拖太久＝不是甩，這一輪放棄
+      return;
+    }
+    if (d.dx > 110 && d.dx > _backMaxDy * 2) {
+      _backFired = true;
+      _backPointer = null;
+      _handleBack();
+    }
+  }
+
+  void _backSwipeUp(PointerUpEvent e) {
+    if (e.pointer == _backPointer) _backSwipeReset();
+  }
+
+  void _backSwipeReset() {
+    _backPointer = null;
+    _backFired = false;
+  }
 
   TimelineClip? _clipboard; // 複製的片段（貼上時以播放頭為起點）
   // 時間軸雙指縮放：在整個分頁層級偵測，空白處一樣能捏
@@ -616,7 +668,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 剛匯入先讓 UI 安頓，再開始背景抽
     await Future<void>.delayed(const Duration(milliseconds: 1500));
     for (var s = 0; s < n; s += segFrames) {
-      while (mounted && (_playing || _scrubbing)) {
+      // 匯出中一定要停：抽幀的 FFmpeg 跟匯出的 FFmpeg 同時跑，
+      // 記憶體疊加會把整個 App 弄死（OOM 直接閃退）
+      while (mounted && (_playing || _scrubbing || _exporting)) {
         await Future<void>.delayed(const Duration(milliseconds: 400));
       }
       if (!mounted || !identical(_scrubFrames[srcIndex], slots)) return;
@@ -1977,6 +2031,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     _pause();
+    // 匯出前把所有快取放掉：已解碼的幀（幾十 MB）、壓縮的抽幀
+    // （長片可到 ~80MB）、ImageCache。匯出本身就要吃大量記憶體，
+    // 疊上這些很容易被系統 OOM 直接殺掉。
+    // 清掉 _scrubFrames 也會讓進行中的抽幀迴圈自動收工（identical 檢查）
+    for (final d in _scrubDecoders.values) {
+      d.dispose();
+    }
+    _scrubDecoders.clear();
+    _scrubFrames.clear();
+    PaintingBinding.instance.imageCache.clear();
+    PaintingBinding.instance.imageCache.clearLiveImages();
+
     setState(() => _exporting = true);
 
     final progress = ValueNotifier<double>(0);
@@ -2040,7 +2106,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     try {
       final (outW, outH) = computeCanvasSize(_tl, _resolution, _canvasRatio);
       Uint8List? wmPng;
-      if (_settings.hasAnyMark) {
+      // 浮水印軌關掉時匯出也不要有——所見即所得
+      if (!_wmHidden && _settings.hasAnyMark) {
         wmPng = await WatermarkRenderer.renderOverlayPng(_settings, outW, outH);
       }
       // 文字素材 → 渲染成整版透明 PNG
@@ -2112,6 +2179,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       );
     }
     setState(() => _exporting = false);
+    // 匯出前把抽幀快取清光了，現在重新抽回來（拖曳預覽要用）
+    for (var i = 0; i < _tl.sources.length; i++) {
+      final s = _tl.sources[i];
+      if (s.isVideo && s.duration > 0) {
+        _makeScrubCache(i, s.path, s.duration);
+      }
+    }
   }
 
   // ===== 畫面 =====
@@ -2233,20 +2307,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         appBar: AppBar(title: const Text('影片編輯')),
         body: !_ready
             ? const Center(child: CircularProgressIndicator())
-            // 右滑＝上一步。放在最外層（最淺），所以只要內層有人
-            // 認領橫向拖曳（時間軸捲動、面板滑桿）就讓給它們，
-            // 其餘地方一律吃得到——比 iOS 那條 20pt 的邊緣寬太多了
-            : GestureDetector(
-                onHorizontalDragStart: (_) => _backSwipeDx = 0,
-                onHorizontalDragUpdate: (d) => _backSwipeDx += d.delta.dx,
-                onHorizontalDragEnd: (d) {
-                  final v = d.primaryVelocity ?? 0;
-                  // 甩一下、或慢慢推超過 80px 都算
-                  if (v > 300 || (_backSwipeDx > 80 && v >= 0)) {
-                    _handleBack();
-                  }
-                  _backSwipeDx = 0;
-                },
+            // 右滑＝上一步。用 Listener 而不是 GestureDetector：
+            // Listener 不進手勢競技場，所以不管底下是時間軸、滑桿還是
+            // 浮水印，這裡都收得到——真的任何地方都能滑。
+            // 代價是要自己判斷「這是不是一次右滑」，見 _backSwipe*
+            : Listener(
+                onPointerDown: _backSwipeDown,
+                onPointerMove: _backSwipeMove,
+                onPointerUp: _backSwipeUp,
+                onPointerCancel: (_) => _backSwipeReset(),
                 child: Column(
                   children: [
                     Expanded(flex: 5, child: _buildPreview()),
@@ -2887,7 +2956,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         settings: _settings,
                                         onChanged: () => setState(() {}),
                                         onDragStart: _pushWmUndo,
-                                        selected: _wmSel,
+                                        selectedPart: _wmSel
+                                            ? _wmPart
+                                            : WmPart.none,
+                                        onSelectPart: (p) =>
+                                            setState(() => _wmPart = p),
                                         time: pos, // 動畫跟著播放頭走
                                         // 點浮水印 Logo＝選取＋切到浮水印分頁
                                         onTap: () {
@@ -2970,22 +3043,32 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final t = _settings.text;
     final hasText = t.enabled && t.text.trim().isNotEmpty;
     final hasLogo = _settings.logo.enabled;
+    // 只有一個存在就不用選，直接動它
     if (!hasText || !hasLogo) {
       _pvHitText = hasText;
       _pvHitLogo = hasLogo;
       return;
     }
-    final p = _canvasPoint(mid);
-    if (p == null) {
-      // 位置算不出來就兩個都動，至少不會沒反應
+    // 有選取就以選取為準（畫面上有白框，使用者知道會動到誰）
+    if (_wmPart == WmPart.text) {
       _pvHitText = true;
+      _pvHitLogo = false;
+      return;
+    }
+    if (_wmPart == WmPart.logo) {
+      _pvHitText = false;
       _pvHitLogo = true;
       return;
     }
-    final dText = (p - Offset(t.x, t.y)).distance;
-    final dLogo = (p - Offset(_settings.logo.x, _settings.logo.y)).distance;
-    _pvHitText = dText <= dLogo;
-    _pvHitLogo = !_pvHitText;
+    // 還沒選過：用兩指中點離誰近來猜，並把選取設過去讓框顯示出來
+    final p = _canvasPoint(mid);
+    final nearText = p == null
+        ? true
+        : (p - Offset(t.x, t.y)).distance <=
+              (p - Offset(_settings.logo.x, _settings.logo.y)).distance;
+    _pvHitText = nearText;
+    _pvHitLogo = !nearText;
+    _wmPart = nearText ? WmPart.text : WmPart.logo;
   }
 
   bool _pvHitText = true;
@@ -3013,13 +3096,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final f = (p[0] - p[1]).distance / _pvBaseDist!;
     setState(() {
       if (_wmSel) {
-        // 只縮放手指所在的那一個（文字或圖片），兩者大小各自獨立
+        // 只縮放「被選取」的那個部件。文字和圖片是兩個獨立的東西，
+        // 一起縮放會把已經調好的搭配弄壞
         final t = _settings.text;
         if (_pvHitText && t.enabled && t.text.trim().isNotEmpty) {
-          t.sizeFrac = (_pvBaseText * f).clamp(0.015, 0.5);
+          t.sizeFrac = (_pvBaseText * f).clamp(0.015, 0.8);
         }
         if (_pvHitLogo && _settings.logo.enabled) {
-          _settings.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 0.9);
+          _settings.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
         }
       } else {
         _selClipById(_sel)?.scale = (_pvBaseClip * f).clamp(0.05, 3.0);
@@ -3245,13 +3329,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     : '浮水印',
                                 wmSelected: _wmSel,
                                 wmHidden: _wmHidden,
-                                onToggleWmVisible: () {
-                                  setState(() => _wmHidden = !_wmHidden);
-                                  showHint(
-                                    context,
-                                    _wmHidden ? '預覽已隱藏浮水印（匯出還是會有）' : '浮水印已顯示',
-                                  );
-                                },
+                                onToggleWmVisible: () =>
+                                    setState(() => _wmHidden = !_wmHidden),
                                 // 點浮水印軌＝選取＋自動切到浮水印分頁
                                 onSelectWm: () {
                                   final wasSel = _wmSel;
@@ -3799,6 +3878,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     _pause();
+    // 播放頭不在這個片段上的話先跳進去。不然畫面顯示的是別的素材，
+    // 拉滑桿完全看不到變化，會以為調色壞掉
+    if (!sel.covers(_position)) {
+      _seekScrub(sel.offset + math.min(0.15, sel.length / 2));
+      // 時間軸也跟著捲過去，播放頭才不會跑到看不見的地方
+      if (_tlScroll.hasClients) {
+        _tlScroll.jumpTo(
+          (_position * _pxPerSec).clamp(
+            0.0,
+            _tlScroll.position.maxScrollExtent,
+          ),
+        );
+      }
+    }
     setState(() {
       _colorMode = true;
       _colorClipId = sel.id;

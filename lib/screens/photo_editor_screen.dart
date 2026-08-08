@@ -44,6 +44,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 按住「原圖」比對中：先不要套調色
   bool _colorCompare = false;
 
+  /// 浮水印選到哪個部件（文字或圖片）。縮放只動被選的那個
+  WmPart _wmPart = WmPart.none;
+
   /// 進來時的設定快照＋是否已輸出，決定離開要不要問
   late String _initialJson;
   bool _saved = false;
@@ -243,10 +246,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     final f = (p[0] - p[1]).distance / _pvBaseDist!;
     setState(() {
       final t = _settings.text;
-      if (t.enabled && t.text.trim().isNotEmpty) {
-        t.sizeFrac = (_pvBaseText * f).clamp(0.015, 0.8);
-      }
-      if (_settings.logo.enabled) {
+      final hasText = t.enabled && t.text.trim().isNotEmpty;
+      final hasLogo = _settings.logo.enabled;
+      // 有選取就只動被選的那個（畫面上有白框）；
+      // 都沒選而兩個都在，才一起動
+      final doText = hasText && (_wmPart != WmPart.logo || !hasLogo);
+      final doLogo = hasLogo && (_wmPart != WmPart.text || !hasText);
+      if (doText) t.sizeFrac = (_pvBaseText * f).clamp(0.015, 0.8);
+      if (doLogo) {
         _settings.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
       }
     });
@@ -310,6 +317,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                   settings: _settings,
                                   onChanged: () => setState(() {}),
                                   onDragStart: _pushUndo,
+                                  selectedPart: _wmPart,
+                                  onSelectPart: (p) =>
+                                      setState(() => _wmPart = p),
                                 ),
                               ],
                             ),
