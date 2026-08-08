@@ -32,7 +32,7 @@ import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
 
 /// 「加素材」選單的項目（錄旁白不是一種素材類型，所以另立一個 enum）
-enum _AddKind { video, image, text, audio, record }
+enum _AddKind { video, image, text, wm, audio, record }
 
 const kSpeedOptions = <double>[0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
 
@@ -432,7 +432,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final deadSources = <int>{};
     for (var i = 0; i < _tl.sources.length; i++) {
       final s = _tl.sources[i];
-      if (s.kind == ClipKind.text) continue; // 文字素材沒有檔案
+      if (s.kind == ClipKind.text || s.kind == ClipKind.wm) {
+        continue; // 這兩種素材沒有檔案
+      }
       if (s.kind == ClipKind.image) {
         final bytes = await readFileBytes(s.path);
         if (bytes != null) {
@@ -964,6 +966,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               onTap: () => Navigator.pop(context, _AddKind.text),
             ),
             ListTile(
+              leading: const Icon(Icons.branding_watermark, color: kAmber),
+              title: const Text('浮水印'),
+              subtitle: const Text(
+                '可以放很多個、放不同軌，也能切割移動',
+                style: TextStyle(fontSize: 11),
+              ),
+              onTap: () => Navigator.pop(context, _AddKind.wm),
+            ),
+            ListTile(
               leading: const Icon(Icons.music_note, color: kAmber),
               title: const Text('音樂'),
               onTap: () => Navigator.pop(context, _AddKind.audio),
@@ -988,6 +999,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         await _pickImage(track);
       case _AddKind.text:
         await _addTextClip(track);
+      case _AddKind.wm:
+        _addWmClip(track);
       case _AddKind.audio:
         await _pickAudio(track);
       case _AddKind.record:
@@ -1489,6 +1502,90 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     });
   }
 
+  /// 浮水印素材：一個完整的浮水印（文字＋Logo）當成時間軸元素。
+  /// 跟最上面那條全域浮水印軌不同——這種可以放很多個、放不同軌、
+  /// 切割、移動，跟一般素材完全一樣
+  void _addWmClip(int track) {
+    _pause();
+    _pushUndo();
+    // 起手用目前浮水印的設定當底（沒設定就給一個預設文字），
+    // 點兩下隨時可以改
+    // 動畫要剝掉：素材是烘成靜態 PNG 匯出的，預覽會動但成品不會，
+    // 那種落差比沒有動畫更糟
+    final style = _settings.hasAnyMark
+        ? (_settings.copy()..animation = WmAnimation.none)
+        : (WatermarkSettings()
+            ..text = TextMark(
+              text: '@浮水印',
+              sizeFrac: 0.08,
+              colorValue: 0xFFFFFFFF,
+              opacity: 0.8,
+              shadow: true,
+            ));
+    final srcIndex = _tl.sources.length;
+    _tl.sources.add(
+      MediaSource(
+        path: '',
+        name: style.text.enabled && style.text.text.trim().isNotEmpty
+            ? style.text.text
+            : '浮水印',
+        kind: ClipKind.wm,
+        duration: 3600,
+        wmStyle: style,
+      ),
+    );
+    // 預設從播放頭鋪到影片結尾（浮水印通常要蓋整段）
+    final len = (_tl.duration - _position).clamp(3.0, 3600.0);
+    final clip = TimelineClip(
+      id: _tl.nextId(),
+      sourceIndex: srcIndex,
+      trimStart: 0,
+      trimEnd: len,
+      offset: _position,
+      track: track,
+    );
+    setState(() {
+      _tl.clips.add(clip);
+      _sel = clip.id;
+    });
+    _saveDraft();
+  }
+
+  /// 點選已選取的浮水印片段 → 用浮水印面板改樣式
+  Future<void> _editWmClip(TimelineClip clip) async {
+    final src = _tl.sourceOf(clip);
+    if (src.kind != ClipKind.wm) return;
+    src.wmStyle ??= WatermarkSettings();
+    _pushUndo();
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      // 最多半個螢幕：上半留給預覽，邊調邊看
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.5,
+      ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) => WatermarkPanel(
+          settings: src.wmStyle!,
+          onChanged: () {
+            setSheet(() {});
+            setState(() {
+              // 名字跟著文字內容走，時間軸上才認得出來
+              src.name =
+                  src.wmStyle!.text.enabled &&
+                      src.wmStyle!.text.text.trim().isNotEmpty
+                  ? src.wmStyle!.text.text
+                  : '浮水印';
+            });
+          },
+          hideSaveButton: true,
+        ),
+      ),
+    );
+    _saveDraft();
+  }
+
   /// 複製浮水印：把浮水印「文字」複製成獨立的時間軸文字素材——
   /// 等於第二個浮水印，可以有自己的時間範圍、位置、大小
   void _duplicateWatermark() {
@@ -1901,7 +1998,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
     switch (action) {
       case 'edit':
-        await _editTextClip(clip);
+        if (_tl.sourceOf(clip).kind == ClipKind.wm) {
+          await _editWmClip(clip);
+        } else {
+          await _editTextClip(clip);
+        }
       case 'copy':
         setState(() => _clipboard = clip.copy());
       case 'paste':
@@ -2123,6 +2224,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             c.px,
             c.py,
             c.scale,
+            outW,
+            outH,
+          );
+        } else if (src.kind == ClipKind.wm) {
+          overlayPngs[c.id] = await WatermarkRenderer.renderOverlayPng(
+            src.wmStyle ?? WatermarkSettings(),
             outW,
             outH,
           );
@@ -2739,6 +2846,34 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         selRect = r;
                                         selVisual = c;
                                       }
+                                    } else if (src.kind == ClipKind.wm) {
+                                      final st =
+                                          src.wmStyle ?? WatermarkSettings();
+                                      children.add(
+                                        Positioned.fill(
+                                          child: Opacity(
+                                            opacity: c.fadeFactorAt(_position),
+                                            child: WatermarkLayer(
+                                              settings: st,
+                                              onChanged: () => setState(() {}),
+                                              onDragStart: _pushUndo,
+                                              time: pos,
+                                              panLocked: () =>
+                                                  _pvPts.length >= 2,
+                                              // 點浮水印片段的元素＝選取
+                                              // 它（等同在時間軸點它）
+                                              onTap: () => setState(() {
+                                                _sel = c.id;
+                                                _wmSel = false;
+                                              }),
+                                              onTapText: () => setState(() {
+                                                _sel = c.id;
+                                                _wmSel = false;
+                                              }),
+                                            ),
+                                          ),
+                                        ),
+                                      );
                                     } else if (src.kind == ClipKind.text) {
                                       final st =
                                           src.textStyle ??
@@ -2961,6 +3096,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             : WmPart.none,
                                         onSelectPart: (p) =>
                                             setState(() => _wmPart = p),
+                                        // 捏合期間鎖拖曳，手指滑過別的
+                                        // 元素才不會把它拖走
+                                        panLocked: () => _pvPts.length >= 2,
                                         time: pos, // 動畫跟著播放頭走
                                         // 點浮水印 Logo＝選取＋切到浮水印分頁
                                         onTap: () {
@@ -3106,7 +3244,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           _settings.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
         }
       } else {
-        _selClipById(_sel)?.scale = (_pvBaseClip * f).clamp(0.05, 3.0);
+        final c = _selClipById(_sel);
+        if (c != null) {
+          final maxS = _tl.sourceOf(c).kind == ClipKind.text ? 12.0 : 3.0;
+          c.scale = (_pvBaseClip * f).clamp(0.05, maxS);
+        }
       }
     });
   }
@@ -3296,9 +3438,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 onLongPressEmpty: _showEmptyMenu,
                                 onTapSelectedClip: (id) {
                                   final c = _selClipById(id);
-                                  if (c != null &&
-                                      _tl.sourceOf(c).kind == ClipKind.text) {
+                                  if (c == null) return;
+                                  final k = _tl.sourceOf(c).kind;
+                                  if (k == ClipKind.text) {
                                     _editTextClip(c);
+                                  } else if (k == ClipKind.wm) {
+                                    _editWmClip(c);
                                   }
                                 },
                                 onLiftChanged: (v) => _lifting = v,
@@ -3548,6 +3693,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 縮放物件大小（影片/圖片/文字在畫面上的尺寸；跟預覽雙指縮放同一個值）
   void _openScaleSheet(TimelineClip clip) {
     _pushUndo();
+    // 文字的底字級小，3 倍看起來還是小；放寬到 12 倍，允許超出畫面
+    final maxScale = _tl.sourceOf(clip).kind == ClipKind.text ? 12.0 : 3.0;
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
@@ -3577,9 +3724,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               ),
               const SizedBox(height: 6),
               Slider(
-                value: clip.scale.clamp(0.05, 3.0),
+                value: clip.scale.clamp(0.05, maxScale),
                 min: 0.05,
-                max: 3.0,
+                max: maxScale,
                 onChanged: (v) {
                   setSheet(() {});
                   setState(() => clip.scale = v);

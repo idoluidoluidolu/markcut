@@ -929,6 +929,14 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
       child: const Icon(Icons.title, size: 14, color: Colors.white70),
     );
   }
+  if (src.kind == ClipKind.wm) {
+    // 浮水印片段：琥珀色小卡，跟最上面那條全域浮水印軌同一個語彙
+    return Container(
+      color: const Color(0xFF4A4230),
+      alignment: Alignment.center,
+      child: const Icon(Icons.branding_watermark, size: 14, color: kSelect),
+    );
+  }
   if (src.kind == ClipKind.image && strip.isNotEmpty) {
     return Image.memory(strip[0], fit: BoxFit.cover, gaplessPlayback: true);
   }
@@ -1027,6 +1035,12 @@ class _ClipBlock extends StatelessWidget {
         const Color(0xFF2E2A38),
         const Color(0xFF8A7BB8),
         Icons.title,
+      ),
+      // 浮水印片段：琥珀色系，跟全域浮水印軌同一個語彙
+      ClipKind.wm => (
+        const Color(0xFF3A3324),
+        kSelect,
+        Icons.branding_watermark,
       ),
     };
     final w = (clip.length * pxPerSec).clamp(22.0, double.infinity).toDouble();

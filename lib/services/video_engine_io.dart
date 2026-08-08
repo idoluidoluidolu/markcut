@@ -131,16 +131,17 @@ Future<String> _buildCommand(
       }
     }
   }
-  // 輸入編號：文字來源不佔輸入（改成每個文字片段一張烘好的 PNG），
+  // 輸入編號：文字／浮水印來源不佔輸入（每個片段各自一張烘好的 PNG），
   // 所以要建立「來源 → 輸入編號」對照表
+  bool isPngClip(ClipKind k) => k == ClipKind.text || k == ClipKind.wm;
   final srcIn = <int, int>{};
   var nextInput = 0;
   for (var i = 0; i < spec.sources.length; i++) {
-    if (spec.sources[i].kind != ClipKind.text) srcIn[i] = nextInput++;
+    if (!isPngClip(spec.sources[i].kind)) srcIn[i] = nextInput++;
   }
   final textClipInput = <int, int>{}; // clip id → input index
   for (final c in spec.clips) {
-    if (spec.sources[c.sourceIndex].kind == ClipKind.text) {
+    if (isPngClip(spec.sources[c.sourceIndex].kind)) {
       textClipInput[c.id] = nextInput++;
     }
   }
@@ -279,7 +280,7 @@ Future<String> _buildCommand(
         'eof_action=pass[ov$k];',
       );
     } else {
-      // 文字：整版透明 PNG（位置/縮放已烘進圖），每個片段一個輸入
+      // 文字／浮水印：整版透明 PNG（位置/縮放已烘進圖），每片段一個輸入
       final inputIdx = textClipInput[c.id]!;
       fc.write(
         '[$inputIdx:v]'
@@ -387,12 +388,12 @@ Future<String> _buildCommand(
           '-loop 1 -framerate ${fps.toStringAsFixed(3)} '
           '-t ${_f(stillNeed[i] ?? 1)} -i "${s.path}" ',
         );
-      case ClipKind.text:
-        break; // 文字改成每個片段一張 PNG，在下面接續
+      case ClipKind.text || ClipKind.wm:
+        break; // 每個片段一張 PNG，在下面接續
     }
   }
   for (final c in spec.clips) {
-    if (spec.sources[c.sourceIndex].kind == ClipKind.text) {
+    if (isPngClip(spec.sources[c.sourceIndex].kind)) {
       cmd.write(
         '-loop 1 -framerate ${fps.toStringAsFixed(3)} '
         '-t ${_f(c.length / sp + 0.5)} -i "${overlayFiles[c.id]}" ',

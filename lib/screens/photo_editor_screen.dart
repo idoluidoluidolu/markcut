@@ -320,6 +320,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                   selectedPart: _wmPart,
                                   onSelectPart: (p) =>
                                       setState(() => _wmPart = p),
+                                  panLocked: () => _pvPts.length >= 2,
                                 ),
                               ],
                             ),

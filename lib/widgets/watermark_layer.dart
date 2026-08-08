@@ -36,6 +36,11 @@ class WatermarkLayer extends StatefulWidget {
   /// 目前播放時間（秒）；動畫預覽用，靜態畫面給 null
   final double? time;
 
+  /// 回傳 true 時暫停單指拖曳。
+  /// 兩指捏合縮放時，其中一指滑過另一個元素會把它拖走——
+  /// 捏合期間要把拖曳整個鎖住
+  final bool Function()? panLocked;
+
   const WatermarkLayer({
     super.key,
     required this.settings,
@@ -46,6 +51,7 @@ class WatermarkLayer extends StatefulWidget {
     this.onTap,
     this.onTapText,
     this.time,
+    this.panLocked,
   });
 
   @override

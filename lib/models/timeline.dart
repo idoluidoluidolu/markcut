@@ -4,7 +4,8 @@ import 'color_grade.dart';
 import 'watermark_settings.dart';
 
 /// 素材種類。軌道本身不分種類，是「素材」有種類之分。
-enum ClipKind { video, audio, image, text }
+// wm 一定要加在最尾端：kind 是用 index 序列化的，插中間會毀掉舊草稿
+enum ClipKind { video, audio, image, text, wm }
 
 /// 一份匯入的素材（影片或音訊），可被多個片段引用
 class MediaSource {
@@ -18,6 +19,10 @@ class MediaSource {
   /// 文字素材的樣式（字型、顏色、效果；位置用 clip 的 px/py）
   TextMark? textStyle;
 
+  /// 浮水印素材的完整設定（文字＋Logo；位置存在設定自己的 x/y 裡）。
+  /// 這讓浮水印變成一般的時間軸元素：可多軌、可切割、可移動
+  WatermarkSettings? wmStyle;
+
   MediaSource({
     required this.path,
     required this.name,
@@ -26,12 +31,14 @@ class MediaSource {
     this.w = 0,
     this.h = 0,
     this.textStyle,
+    this.wmStyle,
   });
 
   bool get isVideo => kind == ClipKind.video;
 
-  /// 疊在畫面上的靜態素材（圖片、文字）
-  bool get isOverlay => kind == ClipKind.image || kind == ClipKind.text;
+  /// 疊在畫面上的靜態素材（圖片、文字、浮水印）
+  bool get isOverlay =>
+      kind == ClipKind.image || kind == ClipKind.text || kind == ClipKind.wm;
   double get aspect => (w == 0 || h == 0) ? 16 / 9 : w / h;
 
   Map<String, dynamic> toJson() => {
@@ -42,6 +49,7 @@ class MediaSource {
     'h': h,
     'duration': duration,
     if (textStyle != null) 'textStyle': textStyle!.toJson(),
+    if (wmStyle != null) 'wmStyle': wmStyle!.toJson(),
   };
 
   factory MediaSource.fromJson(Map<String, dynamic> j) => MediaSource(
@@ -54,6 +62,11 @@ class MediaSource {
     textStyle: j['textStyle'] == null
         ? null
         : TextMark.fromJson(Map<String, dynamic>.from(j['textStyle'] as Map)),
+    wmStyle: j['wmStyle'] == null
+        ? null
+        : WatermarkSettings.fromJson(
+            Map<String, dynamic>.from(j['wmStyle'] as Map),
+          ),
   );
 }
 
