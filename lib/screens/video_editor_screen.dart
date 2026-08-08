@@ -968,10 +968,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             ListTile(
               leading: const Icon(Icons.branding_watermark, color: kAmber),
               title: const Text('浮水印'),
-              subtitle: const Text(
-                '可以放很多個、放不同軌，也能切割移動',
-                style: TextStyle(fontSize: 11),
-              ),
               onTap: () => Navigator.pop(context, _AddKind.wm),
             ),
             ListTile(
@@ -1551,39 +1547,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _saveDraft();
   }
 
-  /// 點選已選取的浮水印片段 → 用浮水印面板改樣式
+  /// 編輯浮水印片段＝選取它並切到浮水印分頁（跟全域浮水印同一套，
+  /// 不開抽屜）
   Future<void> _editWmClip(TimelineClip clip) async {
     final src = _tl.sourceOf(clip);
     if (src.kind != ClipKind.wm) return;
     src.wmStyle ??= WatermarkSettings();
-    _pushUndo();
-    await showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      // 最多半個螢幕：上半留給預覽，邊調邊看
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.5,
-      ),
-      builder: (context) => StatefulBuilder(
-        builder: (context, setSheet) => WatermarkPanel(
-          settings: src.wmStyle!,
-          onChanged: () {
-            setSheet(() {});
-            setState(() {
-              // 名字跟著文字內容走，時間軸上才認得出來
-              src.name =
-                  src.wmStyle!.text.enabled &&
-                      src.wmStyle!.text.text.trim().isNotEmpty
-                  ? src.wmStyle!.text.text
-                  : '浮水印';
-            });
-          },
-          hideSaveButton: true,
-        ),
-      ),
-    );
-    _saveDraft();
+    setState(() {
+      _sel = clip.id;
+      _wmSel = false;
+    });
+    _tabs.animateTo(1);
   }
 
   /// 複製浮水印：把浮水印「文字」複製成獨立的時間軸文字素材——
@@ -2361,12 +2335,36 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         children: [
                           // 調色模式接管下半部，預覽照常在上面看得到
                           _colorMode ? _buildColorPanel() : _buildTimelineTab(),
-                          WatermarkPanel(
-                            settings: _settings,
-                            onChanged: () => setState(() {}),
-                            onBeforeChange: _pushWmUndo,
-                            syncVersion: _wmSync,
-                            showAnimation: true,
+                          // 浮水印分頁認選取目標：選中的是浮水印素材
+                          // 就編它，否則編全域浮水印。key 綁目標，
+                          // 切換目標時面板內部狀態才會重置
+                          Builder(
+                            builder: (context) {
+                              final c = _selClipById(_sel);
+                              final src = c == null ? null : _tl.sourceOf(c);
+                              final isClipWm =
+                                  src != null && src.kind == ClipKind.wm;
+                              if (isClipWm) src.wmStyle ??= WatermarkSettings();
+                              return WatermarkPanel(
+                                key: ValueKey(isClipWm ? _sel : -1),
+                                settings: isClipWm ? src.wmStyle! : _settings,
+                                onChanged: () => setState(() {
+                                  if (isClipWm) {
+                                    // 名字跟著文字走，時間軸上才認得出來
+                                    final st = src.wmStyle!;
+                                    src.name =
+                                        st.text.enabled &&
+                                            st.text.text.trim().isNotEmpty
+                                        ? st.text.text
+                                        : '浮水印';
+                                  }
+                                }),
+                                onBeforeChange: _pushWmUndo,
+                                syncVersion: _wmSync,
+                                // 素材是靜態 PNG 匯出，動畫只給全域浮水印
+                                showAnimation: !isClipWm,
+                              );
+                            },
                           ),
                           _buildExportTab(),
                         ],
@@ -2785,16 +2783,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               time: pos,
                                               panLocked: () =>
                                                   _pvPts.length >= 2,
-                                              // 點浮水印片段的元素＝選取
-                                              // 它（等同在時間軸點它）
-                                              onTap: () => setState(() {
-                                                _sel = c.id;
-                                                _wmSel = false;
-                                              }),
-                                              onTapText: () => setState(() {
-                                                _sel = c.id;
-                                                _wmSel = false;
-                                              }),
+                                              // 點浮水印片段的元素＝
+                                              // 選取＋進浮水印分頁編輯
+                                              onTap: () {
+                                                setState(() {
+                                                  _sel = c.id;
+                                                  _wmSel = false;
+                                                });
+                                                _tabs.animateTo(1);
+                                              },
+                                              onTapText: () {
+                                                setState(() {
+                                                  _sel = c.id;
+                                                  _wmSel = false;
+                                                });
+                                                _tabs.animateTo(1);
+                                              },
                                             ),
                                           ),
                                         ),
