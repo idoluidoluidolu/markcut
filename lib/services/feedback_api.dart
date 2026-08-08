@@ -19,7 +19,7 @@ Future<String?> sendFeedback({
   required String appVersion,
 }) async {
   final content = message.trim();
-  if (content.isEmpty) return '先寫點內容再送出唷';
+  if (content.isEmpty) return '您還沒有輸入任何訊息';
   try {
     final res = await http
         .post(

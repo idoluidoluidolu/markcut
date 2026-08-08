@@ -5,10 +5,12 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../models/color_grade.dart';
 import '../models/watermark_settings.dart';
 import '../services/photo_saver.dart';
 import '../theme.dart';
 import '../services/watermark_renderer.dart';
+import '../widgets/color_grade_panel.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
 
@@ -16,8 +18,11 @@ class PhotoEditorScreen extends StatefulWidget {
   final XFile photo;
   final WatermarkSettings? initialWatermark;
 
-  const PhotoEditorScreen(
-      {super.key, required this.photo, this.initialWatermark});
+  const PhotoEditorScreen({
+    super.key,
+    required this.photo,
+    this.initialWatermark,
+  });
 
   @override
   State<PhotoEditorScreen> createState() => _PhotoEditorScreenState();
@@ -30,6 +35,15 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   double? _aspect; // 照片長寬比
   bool _exporting = false;
 
+  /// 調色（跟影片編輯共用同一組模型與面板）
+  final _grade = ColorGrade();
+
+  /// 底部分頁：0 浮水印、1 調色（輸出是動作不是分頁）
+  int _tab = 0;
+
+  /// 按住「原圖」比對中：先不要套調色
+  bool _colorCompare = false;
+
   /// 進來時的設定快照＋是否已輸出，決定離開要不要問
   late String _initialJson;
   bool _saved = false;
@@ -37,12 +51,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   @override
   void initState() {
     super.initState();
-    _initialJson = jsonEncode(_settings.toJson());
+    _initialJson = _stateJson;
     _load();
   }
 
-  bool get _dirty =>
-      !_saved && jsonEncode(_settings.toJson()) != _initialJson;
+  String get _stateJson =>
+      jsonEncode({..._settings.toJson(), 'color': _grade.toJson()});
+
+  bool get _dirty => !_saved && _stateJson != _initialJson;
 
   /// 離開保護：調過浮水印但沒輸出就問一下
   Future<void> _confirmLeave() async {
@@ -64,27 +80,47 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   DateTime _lastPush = DateTime.fromMillisecondsSinceEpoch(0);
   int _sync = 0; // 通知面板同步內部狀態
 
+  /// 重做堆疊：只要有新的編輯就作廢（分支掉的未來留著只會搞混）
+  final List<String> _redoStack = [];
+
   void _pushUndo() {
     final now = DateTime.now();
     if (now.difference(_lastPush).inMilliseconds < 700) return;
     _lastPush = now;
-    _undoStack.add(jsonEncode(_settings.toJson()));
+    _undoStack.add(_stateJson);
     if (_undoStack.length > 60) _undoStack.removeAt(0);
+    _redoStack.clear();
     setState(() {}); // 讓上一步鈕亮起來
   }
 
-  void _undoLast() {
-    if (_undoStack.isEmpty) return;
-    final wm = WatermarkSettings.fromJson(
-        jsonDecode(_undoStack.removeLast()) as Map<String, dynamic>);
+  /// 把某個快照套回目前狀態
+  void _applyState(String json) {
+    final j = jsonDecode(json) as Map<String, dynamic>;
+    final wm = WatermarkSettings.fromJson(j);
     setState(() {
       _settings.text = wm.text;
       _settings.logo = wm.logo;
       _settings.animation = wm.animation;
       _settings.animSpeed = wm.animSpeed;
       _settings.animRange = wm.animRange;
+      _grade.copyFrom(
+        ColorGrade.fromJson(Map<String, dynamic>.from(j['color'] as Map)),
+      );
       _sync++;
     });
+  }
+
+  void _redoLast() {
+    if (_redoStack.isEmpty) return;
+    _undoStack.add(_stateJson);
+    _applyState(_redoStack.removeLast());
+  }
+
+  void _undoLast() {
+    if (_undoStack.isEmpty) return;
+    // 撤銷之前先把現況存進重做堆疊，才回得來
+    _redoStack.add(_stateJson);
+    _applyState(_undoStack.removeLast());
   }
 
   Future<void> _load() async {
@@ -98,6 +134,45 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     frame.image.dispose();
   }
 
+  /// 預覽與面板之間的控制列：上一步／重做。
+  /// 左邊刻意留白——尺寸那類數字對使用者不構成任何決定
+  Widget _buildControlBar() {
+    Widget btn(IconData icon, String tip, VoidCallback? onTap) {
+      final on = onTap != null;
+      return IconButton(
+        tooltip: tip,
+        icon: Icon(icon, size: 19, color: on ? kIcon : kBorder),
+        onPressed: onTap,
+        visualDensity: VisualDensity.compact,
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 2, 8, 2),
+      decoration: const BoxDecoration(
+        color: kBg,
+        border: Border(
+          top: BorderSide(color: kBorder),
+          bottom: BorderSide(color: kBorder),
+        ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          btn(Icons.undo, '上一步', _undoStack.isEmpty ? null : _undoLast),
+          btn(Icons.redo, '重做', _redoStack.isEmpty ? null : _redoLast),
+        ],
+      ),
+    );
+  }
+
+  /// 輸出前先問一次——匯出是會寫進相簿的動作，不該一按就發生
+  Future<void> _confirmExport() async {
+    if (_exporting) return;
+    final ok = await showConfirm(context, title: '輸出到相簿？', action: '確認');
+    if (ok && mounted) await _export();
+  }
+
   Future<void> _export() async {
     if (_exporting || _photoBytes == null) return;
     setState(() => _exporting = true);
@@ -107,7 +182,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       builder: (context) => const AlertDialog(
         title: Text('輸出中…'),
         content: SizedBox(
-            height: 48, child: Center(child: CircularProgressIndicator())),
+          height: 48,
+          child: Center(child: CircularProgressIndicator()),
+        ),
       ),
     );
 
@@ -116,9 +193,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     try {
       // 以原始解析度合成，輸出 PNG 完全不壓畫質
       final png = await WatermarkRenderer.renderPhotoComposite(
-          _photoBytes!, _settings);
+        _photoBytes!,
+        _settings,
+        grade: _grade,
+      );
       message = await savePhotoPng(
-          png, 'markcut_${DateTime.now().millisecondsSinceEpoch}');
+        png,
+        'markcut_${DateTime.now().millisecondsSinceEpoch}',
+      );
     } catch (e) {
       message = '輸出失敗：$e';
       ok = false;
@@ -183,105 +265,151 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         if (!didPop) _confirmLeave();
       },
       child: Scaffold(
-      appBar: AppBar(
-        title: const Text('照片浮水印'),
-        actions: [
-          IconButton(
-            tooltip: '上一步',
-            icon: const Icon(Icons.undo),
-            onPressed: _undoStack.isEmpty ? null : _undoLast,
-          ),
-        ],
-      ),
-      body: _photoBytes == null || _aspect == null
-          ? const Center(child: CircularProgressIndicator())
-          : Column(
-              children: [
-                Expanded(
-                  flex: 5,
-                  // 雙指縮放浮水印（用 Listener 不搶單指拖曳手勢）
-                  child: Listener(
-                    onPointerDown: _pinchDown,
-                    onPointerMove: _pinchMove,
-                    onPointerUp: (e) => _pinchUp(e.pointer),
-                    onPointerCancel: (e) => _pinchUp(e.pointer),
-                    child: GestureDetector(
-                    // 點空白＝收鍵盤
-                    onTap: () =>
-                        FocusManager.instance.primaryFocus?.unfocus(),
-                    child: Container(
-                    color: Colors.black,
-                    alignment: Alignment.center,
-                    child: AspectRatio(
-                      aspectRatio: _aspect!,
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          Image.memory(_photoBytes!, fit: BoxFit.contain),
-                          WatermarkLayer(
-                            settings: _settings,
-                            onChanged: () => setState(() {}),
-                            onDragStart: _pushUndo,
+        appBar: AppBar(title: const Text('照片浮水印')),
+        body: _photoBytes == null || _aspect == null
+            ? const Center(child: CircularProgressIndicator())
+            : Column(
+                children: [
+                  Expanded(
+                    flex: 5,
+                    // 雙指縮放浮水印（用 Listener 不搶單指拖曳手勢）
+                    child: Listener(
+                      onPointerDown: _pinchDown,
+                      onPointerMove: _pinchMove,
+                      onPointerUp: (e) => _pinchUp(e.pointer),
+                      onPointerCancel: (e) => _pinchUp(e.pointer),
+                      child: GestureDetector(
+                        // 點空白＝收鍵盤
+                        onTap: () =>
+                            FocusManager.instance.primaryFocus?.unfocus(),
+                        child: Container(
+                          color: Colors.black,
+                          alignment: Alignment.center,
+                          child: AspectRatio(
+                            aspectRatio: _aspect!,
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                // 調色即時反映在預覽上
+                                if (_grade.hasColor && !_colorCompare)
+                                  ColorFiltered(
+                                    colorFilter: ColorFilter.matrix(
+                                      _grade.matrix,
+                                    ),
+                                    child: Image.memory(
+                                      _photoBytes!,
+                                      fit: BoxFit.contain,
+                                    ),
+                                  )
+                                else
+                                  Image.memory(
+                                    _photoBytes!,
+                                    fit: BoxFit.contain,
+                                  ),
+                                WatermarkLayer(
+                                  settings: _settings,
+                                  onChanged: () => setState(() {}),
+                                  onDragStart: _pushUndo,
+                                ),
+                              ],
+                            ),
                           ),
-                        ],
+                        ),
                       ),
                     ),
-                    ),
-                    ),
                   ),
-                ),
-                Expanded(
-                  flex: 4,
-                  child: WatermarkPanel(
-                    key: _panelKey,
-                    settings: _settings,
-                    onChanged: () => setState(() {}),
-                    onBeforeChange: _pushUndo,
-                    syncVersion: _sync,
-                    // 儲存鈕移到底部跟「輸出」並排
-                    hideSaveButton: true,
+                  // 控制列：跟影片編輯的控制列同一個位置，
+                  // 固定不動也不擋畫面
+                  _buildControlBar(),
+                  Expanded(
+                    flex: 4,
+                    child: switch (_tab) {
+                      1 => ColorGradePanel(
+                        grade: _grade,
+                        onChanged: () => setState(() {}),
+                        onBeforeChange: _pushUndo,
+                        onCompare: (on) => setState(() => _colorCompare = on),
+                      ),
+                      _ => WatermarkPanel(
+                        key: _panelKey,
+                        settings: _settings,
+                        onChanged: () => setState(() {}),
+                        onBeforeChange: _pushUndo,
+                        syncVersion: _sync,
+                        // 儲存範本跟著面板捲到最後面，不釘在底部
+                        hideSaveButton: false,
+                      ),
+                    },
                   ),
+                ],
+              ),
+        // 底部分頁：跟影片編輯同一套（浮水印／調色／輸出）
+        bottomNavigationBar: _photoBytes == null
+            ? null
+            : Container(
+                decoration: const BoxDecoration(
+                  color: kBg,
+                  border: Border(top: BorderSide(color: kBorder)),
                 ),
-                // 底部雙鍵：儲存範本（次要）＋輸出（主要）
-                SafeArea(
+                child: SafeArea(
                   top: false,
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: () =>
-                                _panelKey.currentState?.savePreset(),
-                            style: OutlinedButton.styleFrom(
-                              minimumSize: const Size.fromHeight(46),
-                              side: const BorderSide(color: kClipBorder),
-                              foregroundColor: kText,
-                            ),
-                            icon: const Icon(Icons.bookmark_add_outlined,
-                                size: 17),
-                            label: const Text('儲存範本',
-                                style: TextStyle(fontSize: 13.5)),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: FilledButton.icon(
-                            onPressed: _exporting ? null : _export,
-                            style: FilledButton.styleFrom(
-                              minimumSize: const Size.fromHeight(46),
-                            ),
-                            icon: const Icon(Icons.ios_share, size: 17),
-                            label: const Text('輸出',
-                                style: TextStyle(fontSize: 13.5)),
-                          ),
-                        ),
-                      ],
-                    ),
+                  child: Row(
+                    children: [
+                      _tabBtn(0, Icons.branding_watermark, '浮水印'),
+                      _tabBtn(1, Icons.tune, '調色'),
+                      // 輸出是動作不是分頁。只有一種格式沒得選，
+                      // 中間再插一個視窗只是多一次點擊
+                      _tabBtn(
+                        -1,
+                        Icons.ios_share,
+                        '輸出',
+                        // 一定要給非 null，不然 ?? 會掉回分頁切換
+                        onTap: _confirmExport,
+                      ),
+                    ],
                   ),
                 ),
-              ],
-            ),
+              ),
+      ),
+    );
+  }
+
+  /// i < 0 代表這一格是動作（例如輸出），不是分頁
+  Widget _tabBtn(int i, IconData icon, String label, {VoidCallback? onTap}) {
+    final on = _tab == i;
+    // 調色調過但現在不在那個分頁時，圖示留一點顏色提示
+    final hint = i == 1 && !on && _grade.hasColor;
+    return Expanded(
+      child: InkWell(
+        onTap:
+            onTap ??
+            () => setState(() {
+              _tab = i;
+              if (i != 1) _colorCompare = false;
+            }),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                icon,
+                size: 20,
+                color: on ? kAmber : (hint ? kSelect : kIcon),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: on ? FontWeight.w700 : FontWeight.w400,
+                  letterSpacing: 0.3,
+                  color: on ? kText : kTextDim,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

@@ -290,7 +290,8 @@ class _HintToast extends StatelessWidget {
 Future<bool> showConfirm(
   BuildContext context, {
   required String title,
-  required String message,
+  /// 補充說明；不給就只顯示標題和按鈕
+  String message = '',
   required String action,
 }) async {
   final ok = await showDialog<bool>(
@@ -315,11 +316,13 @@ Future<bool> showConfirm(
                       fontWeight: FontWeight.w700,
                       letterSpacing: 0.3,
                       color: kText)),
-              const SizedBox(height: 8),
-              Text(message,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                      fontSize: 12.5, color: kTextDim, height: 1.55)),
+              if (message.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(message,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        fontSize: 12.5, color: kTextDim, height: 1.55)),
+              ],
               const SizedBox(height: 20),
               FilledButton(
                 style: FilledButton.styleFrom(

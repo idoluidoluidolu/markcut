@@ -70,7 +70,7 @@ class TimelineEditor extends StatefulWidget {
 
   /// 長按軌道空白處（貼上用）：軌道、該處的時間、選單位置
   final void Function(int track, double timeSec, Offset globalPos)
-      onLongPressEmpty;
+  onLongPressEmpty;
 
   /// 片段拖曳開始/結束（拖曳期間父層要暫停「捲動＝移動播放頭」的同步）
   final ValueChanged<bool>? onLiftChanged;
@@ -85,6 +85,10 @@ class TimelineEditor extends StatefulWidget {
   final ({double start, double end})? watermark;
   final String wmLabel; // 顯示在浮水印塊上的內容（例如浮水印文字）
   final bool wmSelected;
+
+  /// 預覽時暫時藏起浮水印（只影響預覽，匯出照樣有）
+  final bool wmHidden;
+  final VoidCallback? onToggleWmVisible;
   final VoidCallback onSelectWm;
   final ValueChanged<double> onMoveWm; // 新的起點
   final void Function(double deltaSec, bool fromLeft) onTrimWm;
@@ -120,6 +124,8 @@ class TimelineEditor extends StatefulWidget {
     this.watermark,
     this.wmLabel = '浮水印',
     this.wmSelected = false,
+    this.wmHidden = false,
+    this.onToggleWmVisible,
     required this.onSelectWm,
     required this.onMoveWm,
     required this.onTrimWm,
@@ -159,23 +165,18 @@ class _TimelineEditorState extends State<TimelineEditor> {
 
   /// 畫出來的軌數：有內容的 + 一條永遠留著的空軌
   // 永遠多一列空軌可放東西；預備中的旁白軌也要有位置顯示
-  int get _rows => math.max(
-      timeline.usedTracks + 1, (widget.voiceTrack ?? -1) + 1);
+  int get _rows =>
+      math.max(timeline.usedTracks + 1, (widget.voiceTrack ?? -1) + 1);
 
   /// 浮水印軌佔掉的高度（含間距）
-  double get _wmExtra => widget.watermark == null
-      ? 0
-      : TimelineEditor.wmH + TimelineEditor.gap;
+  double get _wmExtra =>
+      widget.watermark == null ? 0 : TimelineEditor.wmH + TimelineEditor.gap;
 
   /// 刻度尺和軌道之間的間距（比一般 gap 大，讓版面透氣）
   static const double _rulerGap = 10;
 
   double get totalHeight =>
-      TimelineEditor.rulerH +
-      _rulerGap +
-      _wmExtra +
-      _rows * rowStride +
-      4;
+      TimelineEditor.rulerH + _rulerGap + _wmExtra + _rows * rowStride + 4;
 
   @override
   void dispose() {
@@ -227,8 +228,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
       _pressTimer?.cancel();
     }
     final minDy = -(l.startTrack + 0.45) * rowStride;
-    final maxDy =
-        (timeline.usedTracks - l.startTrack + 0.45) * rowStride;
+    final maxDy = (timeline.usedTracks - l.startTrack + 0.45) * rowStride;
     setState(() {
       _lift = (
         clipId: l.clipId,
@@ -267,15 +267,21 @@ class _TimelineEditorState extends State<TimelineEditor> {
     if (clip == null) return null;
 
     final want = l.startOffset + l.dx / pxPerSec;
-    final offset =
-        timeline.snapOffset(clip, want, widget.playhead.value, pxPerSec);
+    final offset = timeline.snapOffset(
+      clip,
+      want,
+      widget.playhead.value,
+      pxPerSec,
+    );
     final len = clip.length;
 
-    bool collide(int track) => timeline.clips.any((c) =>
-        c.id != clip.id &&
-        c.track == track &&
-        c.offset < offset + len &&
-        c.end > offset);
+    bool collide(int track) => timeline.clips.any(
+      (c) =>
+          c.id != clip.id &&
+          c.track == track &&
+          c.offset < offset + len &&
+          c.end > offset,
+    );
 
     final maxTrack = timeline.usedTracks; // 最底下的空軌
     // 垂直沒怎麼動 → 留在原軌，只移位置
@@ -284,7 +290,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
         offset: offset,
         track: l.startTrack,
         insert: false,
-        insertLine: null
+        insertLine: null,
       );
     }
     final raw = (l.startTrack * rowStride + l.dy) / rowStride;
@@ -292,12 +298,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
     final frac = raw - raw.round();
     // 大部分範圍都是「放進這一層」；貼近交界且會撞到才是插入
     if (frac.abs() <= 0.42 || !collide(nearest)) {
-      return (
-        offset: offset,
-        track: nearest,
-        insert: false,
-        insertLine: null
-      );
+      return (offset: offset, track: nearest, insert: false, insertLine: null);
     }
     final at = (frac < 0 ? raw.round() : raw.round() + 1).clamp(0, maxTrack);
     return (offset: offset, track: at, insert: true, insertLine: at);
@@ -324,7 +325,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
       _autoScrollTimer = null;
     } else {
       _autoScrollTimer ??= Timer.periodic(
-          const Duration(milliseconds: 16), (_) => _stepAutoScroll());
+        const Duration(milliseconds: 16),
+        (_) => _stepAutoScroll(),
+      );
     }
   }
 
@@ -333,8 +336,10 @@ class _TimelineEditorState extends State<TimelineEditor> {
     final l = _lift;
     if (!sc.hasClients || _autoScrollSpeed == 0 || l == null) return;
     final pos = sc.position;
-    final next =
-        (pos.pixels + _autoScrollSpeed).clamp(0.0, pos.maxScrollExtent);
+    final next = (pos.pixels + _autoScrollSpeed).clamp(
+      0.0,
+      pos.maxScrollExtent,
+    );
     var moved = next - pos.pixels;
     if (moved != 0) sc.jumpTo(next);
     // 往右捲到底時幽靈還是要前進（內容會加寬，下一幀就捲得動）
@@ -427,133 +432,145 @@ class _TimelineEditorState extends State<TimelineEditor> {
           // 可捲動的軌道區。播放頭固定在畫面上，捲動內容＝移動播放位置，
           // 所以內容前面要留「前導空白」讓時間 0 能對齊播放頭。
           Expanded(
-            child: LayoutBuilder(builder: (context, cons) {
-              final leadPad = cons.maxWidth * 0.35;
-              final totalW =
-                  timeline.duration * pxPerSec + cons.maxWidth * 0.7;
-              return SingleChildScrollView(
-              controller: widget.scrollController,
-              scrollDirection: Axis.horizontal,
-              physics: _pinching
-                  ? const NeverScrollableScrollPhysics()
-                  : null,
-              // 桌面：滾輪＝縮放時間軸（在內層搶先註冊，蓋掉捲動的滾輪行為）
-              child: Listener(
-              onPointerSignal: (e) {
-                if (e is PointerScrollEvent && widget.onZoom != null) {
-                  GestureBinding.instance.pointerSignalResolver.register(
-                      e, (event) {
-                    final dy =
-                        (event as PointerScrollEvent).scrollDelta.dy;
-                    widget.onZoom!(pxPerSec * math.exp(-dy * 0.002));
-                  });
-                }
-              },
-              child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-              SizedBox(width: leadPad),
-              SizedBox(
-                width: totalW,
-                child: Stack(
-                  children: [
-                    // RepaintBoundary：縮圖/波形/刻度是重內容，
-                    // 隔進自己的圖層——播放頭線每格重繪時
-                    // 才不會拖著整條時間軸一起重新光柵化（手機卡爆主因）
-                    RepaintBoundary(
-                    child: Column(
+            child: LayoutBuilder(
+              builder: (context, cons) {
+                final leadPad = cons.maxWidth * 0.35;
+                final totalW =
+                    timeline.duration * pxPerSec + cons.maxWidth * 0.7;
+                return SingleChildScrollView(
+                  controller: widget.scrollController,
+                  scrollDirection: Axis.horizontal,
+                  physics: _pinching
+                      ? const NeverScrollableScrollPhysics()
+                      : null,
+                  // 桌面：滾輪＝縮放時間軸（在內層搶先註冊，蓋掉捲動的滾輪行為）
+                  child: Listener(
+                    onPointerSignal: (e) {
+                      if (e is PointerScrollEvent && widget.onZoom != null) {
+                        GestureBinding.instance.pointerSignalResolver.register(
+                          e,
+                          (event) {
+                            final dy =
+                                (event as PointerScrollEvent).scrollDelta.dy;
+                            widget.onZoom!(pxPerSec * math.exp(-dy * 0.002));
+                          },
+                        );
+                      }
+                    },
+                    child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // 時間刻度尺（可點、可拖播放頭）
-                        GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTapDown: (d) =>
-                              widget.onSeek(d.localPosition.dx / pxPerSec),
-                          onHorizontalDragUpdate: (d) =>
-                              widget.onSeek(d.localPosition.dx / pxPerSec),
-                          child: CustomPaint(
-                            size: Size(totalW, rulerH),
-                            painter: _RulerPainter(
-                              pxPerSec: pxPerSec,
-                              color: kTextDim.withValues(alpha: 0.7),
-                            ),
-                          ),
-                        ),
-                        // 刻度尺和軌道之間留口氣（CapCut 版型）
-                        const SizedBox(height: _rulerGap),
-                        if (widget.watermark != null) ...[
-                          SizedBox(
-                            height: TimelineEditor.wmH,
-                            width: totalW,
-                            child: _wmRow(),
-                          ),
-                          const SizedBox(height: gap),
-                        ],
-                        for (var t = 0; t < _rows; t++) ...[
-                          _shifted(
-                            t,
-                            SizedBox(
-                              height: trackH,
-                              width: totalW,
-                              child: _trackRow(t, spec),
-                            ),
-                          ),
-                          const SizedBox(height: gap),
-                        ],
-                      ],
-                    ),
-                    ),
-                    // 插入線
-                    if (spec?.insertLine != null)
-                      Positioned(
-                        left: 0,
-                        right: 0,
-                        top: rulerH +
-                            _rulerGap +
-                            _wmExtra +
-                            spec!.insertLine! * rowStride -
-                            gap / 2 -
-                            1.5,
-                        child: IgnorePointer(
-                          child: Container(
-                            height: 3,
-                            decoration: BoxDecoration(
-                              color: kSelect,
-                              borderRadius: BorderRadius.circular(2),
-                            ),
-                          ),
-                        ),
-                      ),
-                    // 幽靈：拖曳中的片段，自由跟著手指
-                    if (_lift != null && spec != null) _ghost(spec),
-                    // 拖曳浮水印範圍時的即時外框由 _wmRow 自己畫
-                    // 播放頭：一條直線（只有它隨播放位置重繪）
-                    Positioned.fill(
-                      child: IgnorePointer(
-                        child: ValueListenableBuilder<double>(
-                          valueListenable: widget.playhead,
-                          builder: (context, pos, _) => Stack(
+                        SizedBox(width: leadPad),
+                        SizedBox(
+                          width: totalW,
+                          child: Stack(
                             children: [
-                              Positioned(
-                                left: pos * pxPerSec - 1,
-                                top: 0,
-                                bottom: 0,
-                                child:
-                                    Container(width: 2, color: kText),
+                              // RepaintBoundary：縮圖/波形/刻度是重內容，
+                              // 隔進自己的圖層——播放頭線每格重繪時
+                              // 才不會拖著整條時間軸一起重新光柵化（手機卡爆主因）
+                              RepaintBoundary(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    // 時間刻度尺（可點、可拖播放頭）
+                                    GestureDetector(
+                                      behavior: HitTestBehavior.opaque,
+                                      onTapDown: (d) => widget.onSeek(
+                                        d.localPosition.dx / pxPerSec,
+                                      ),
+                                      onHorizontalDragUpdate: (d) =>
+                                          widget.onSeek(
+                                            d.localPosition.dx / pxPerSec,
+                                          ),
+                                      child: CustomPaint(
+                                        size: Size(totalW, rulerH),
+                                        painter: _RulerPainter(
+                                          pxPerSec: pxPerSec,
+                                          color: kTextDim.withValues(
+                                            alpha: 0.7,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                    // 刻度尺和軌道之間留口氣（CapCut 版型）
+                                    const SizedBox(height: _rulerGap),
+                                    if (widget.watermark != null) ...[
+                                      SizedBox(
+                                        height: TimelineEditor.wmH,
+                                        width: totalW,
+                                        child: _wmRow(),
+                                      ),
+                                      const SizedBox(height: gap),
+                                    ],
+                                    for (var t = 0; t < _rows; t++) ...[
+                                      _shifted(
+                                        t,
+                                        SizedBox(
+                                          height: trackH,
+                                          width: totalW,
+                                          child: _trackRow(t, spec),
+                                        ),
+                                      ),
+                                      const SizedBox(height: gap),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                              // 插入線
+                              if (spec?.insertLine != null)
+                                Positioned(
+                                  left: 0,
+                                  right: 0,
+                                  top:
+                                      rulerH +
+                                      _rulerGap +
+                                      _wmExtra +
+                                      spec!.insertLine! * rowStride -
+                                      gap / 2 -
+                                      1.5,
+                                  child: IgnorePointer(
+                                    child: Container(
+                                      height: 3,
+                                      decoration: BoxDecoration(
+                                        color: kSelect,
+                                        borderRadius: BorderRadius.circular(2),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              // 幽靈：拖曳中的片段，自由跟著手指
+                              if (_lift != null && spec != null) _ghost(spec),
+                              // 拖曳浮水印範圍時的即時外框由 _wmRow 自己畫
+                              // 播放頭：一條直線（只有它隨播放位置重繪）
+                              Positioned.fill(
+                                child: IgnorePointer(
+                                  child: ValueListenableBuilder<double>(
+                                    valueListenable: widget.playhead,
+                                    builder: (context, pos, _) => Stack(
+                                      children: [
+                                        Positioned(
+                                          left: pos * pxPerSec - 1,
+                                          top: 0,
+                                          bottom: 0,
+                                          child: Container(
+                                            width: 2,
+                                            color: kText,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
                               ),
                             ],
                           ),
                         ),
-                      ),
+                      ],
                     ),
-                  ],
-                ),
-              ),
-              ],
-              ),
-              ),
-              );
-            }),
+                  ),
+                );
+              },
+            ),
           ),
         ],
       ),
@@ -561,7 +578,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
   }
 
   Widget _trackRow(
-      int track, ({double offset, int track, bool insert, int? insertLine})? spec) {
+    int track,
+    ({double offset, int track, bool insert, int? insertLine})? spec,
+  ) {
     final isEmptyRow = track >= timeline.usedTracks;
     final clips = timeline.onTrack(track);
     final isDropTarget = spec != null && !spec.insert && spec.track == track;
@@ -574,9 +593,10 @@ class _TimelineEditorState extends State<TimelineEditor> {
             // 點空白處＝取消所有選取
             onTap: () => widget.onSelect(-1),
             onLongPressStart: (d) => widget.onLongPressEmpty(
-                track,
-                (d.localPosition.dx / pxPerSec).clamp(0.0, 1e6),
-                d.globalPosition),
+              track,
+              (d.localPosition.dx / pxPerSec).clamp(0.0, 1e6),
+              d.globalPosition,
+            ),
             // CapCut 式：整條灰底橫帶，不描邊；拖放目標才亮框
             child: Container(
               decoration: BoxDecoration(
@@ -618,8 +638,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
               child: ValueListenableBuilder<double>(
                 valueListenable: widget.playhead,
                 builder: (context, pos, child) => SizedBox(
-                  width:
-                      ((pos - widget.voiceStart) * pxPerSec).clamp(3.0, 1e6),
+                  width: ((pos - widget.voiceStart) * pxPerSec).clamp(3.0, 1e6),
                   child: child,
                 ),
                 child: DecoratedBox(
@@ -629,12 +648,14 @@ class _TimelineEditorState extends State<TimelineEditor> {
                     border: Border.all(color: kRecord, width: 1.5),
                   ),
                   child: ValueListenableBuilder<List<double>>(
-                    valueListenable:
-                        widget.voiceLevels ?? _emptyLevels,
+                    valueListenable: widget.voiceLevels ?? _emptyLevels,
                     builder: (context, levels, _) => CustomPaint(
                       size: Size.infinite,
                       painter: _WavePainter(
-                          peaks: levels, color: kRecord, live: true),
+                        peaks: levels,
+                        color: kRecord,
+                        live: true,
+                      ),
                     ),
                   ),
                 ),
@@ -645,21 +666,30 @@ class _TimelineEditorState extends State<TimelineEditor> {
     );
   }
 
-  /// 浮水印軌的左側標籤
+  /// 浮水印軌的左側標籤：點一下切換預覽時要不要顯示浮水印
   Widget _wmLabel() {
-    return Container(
-      height: TimelineEditor.wmH,
-      margin: const EdgeInsets.only(right: 6),
-      decoration: BoxDecoration(
-        color: kPanel,
-        borderRadius: BorderRadius.circular(4),
-        border: Border.all(
+    final hidden = widget.wmHidden;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: widget.onToggleWmVisible,
+      child: Container(
+        height: TimelineEditor.wmH,
+        margin: const EdgeInsets.only(right: 6),
+        decoration: BoxDecoration(
+          color: kPanel,
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(
             color: widget.wmSelected ? kSelect : kBorder,
-            width: widget.wmSelected ? 1.5 : 1),
+            width: widget.wmSelected ? 1.5 : 1,
+          ),
+        ),
+        alignment: Alignment.center,
+        child: Icon(
+          hidden ? Icons.visibility_off_outlined : Icons.branding_watermark,
+          size: 11,
+          color: hidden ? kTextDim : (widget.wmSelected ? kSelect : kTextDim),
+        ),
       ),
-      alignment: Alignment.center,
-      child: Icon(Icons.branding_watermark,
-          size: 11, color: widget.wmSelected ? kSelect : kTextDim),
     );
   }
 
@@ -686,12 +716,12 @@ class _TimelineEditorState extends State<TimelineEditor> {
             gestures: {
               _EagerPanRecognizer:
                   GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
-                () => _EagerPanRecognizer(),
-                (r) => r
-                  ..onStart = ((_) => widget.onSelectWm())
-                  ..onUpdate =
-                      ((d) => widget.onMoveWm(wm.start + d.delta.dx / pxPerSec)),
-              ),
+                    () => _EagerPanRecognizer(),
+                    (r) => r
+                      ..onStart = ((_) => widget.onSelectWm())
+                      ..onUpdate = ((d) =>
+                          widget.onMoveWm(wm.start + d.delta.dx / pxPerSec)),
+                  ),
             },
             child: GestureDetector(
               onTap: widget.onSelectWm,
@@ -716,8 +746,11 @@ class _TimelineEditorState extends State<TimelineEditor> {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.branding_watermark,
-                              size: 10, color: kSelect),
+                          const Icon(
+                            Icons.branding_watermark,
+                            size: 10,
+                            color: kSelect,
+                          ),
                           const SizedBox(width: 4),
                           Flexible(
                             child: Text(
@@ -725,9 +758,10 @@ class _TimelineEditorState extends State<TimelineEditor> {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
-                                  fontSize: 9,
-                                  color: kSelect,
-                                  fontWeight: FontWeight.w600),
+                                fontSize: 9,
+                                color: kSelect,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
                         ],
@@ -762,7 +796,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
   }
 
   /// 拖曳中的幽靈片段
-  Widget _ghost(({double offset, int track, bool insert, int? insertLine}) spec) {
+  Widget _ghost(
+    ({double offset, int track, bool insert, int? insertLine}) spec,
+  ) {
     final l = _lift!;
     final clip = _clipById(l.clipId);
     if (clip == null) return const SizedBox.shrink();
@@ -770,7 +806,8 @@ class _TimelineEditorState extends State<TimelineEditor> {
     final w = (clip.length * pxPerSec).clamp(22.0, double.infinity).toDouble();
     return Positioned(
       left: spec.offset * pxPerSec,
-      top: TimelineEditor.rulerH +
+      top:
+          TimelineEditor.rulerH +
           _rulerGap +
           _wmExtra +
           l.startTrack * rowStride +
@@ -780,8 +817,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
           width: w,
           height: trackH,
           decoration: BoxDecoration(
-            color: (src.isVideo ? kVideoFill : kAudioFill)
-                .withValues(alpha: 0.92),
+            color: (src.isVideo ? kVideoFill : kAudioFill).withValues(
+              alpha: 0.92,
+            ),
             borderRadius: BorderRadius.circular(5),
             border: Border.all(color: kSelect, width: 2),
             boxShadow: [
@@ -789,7 +827,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
                 color: Colors.black.withValues(alpha: 0.55),
                 blurRadius: 10,
                 offset: const Offset(0, 4),
-              )
+              ),
             ],
           ),
           clipBehavior: Clip.antiAlias,
@@ -799,8 +837,10 @@ class _TimelineEditorState extends State<TimelineEditor> {
               _clipFill(clip, src, widget.thumbs[clip.sourceIndex] ?? const []),
               Center(
                 child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.black54,
                     borderRadius: BorderRadius.circular(3),
@@ -808,9 +848,10 @@ class _TimelineEditorState extends State<TimelineEditor> {
                   child: Text(
                     spec.insert ? '插入成新的一層' : '第 ${spec.track + 1} 層',
                     style: const TextStyle(
-                        fontSize: 10,
-                        color: kSelect,
-                        fontWeight: FontWeight.bold),
+                      fontSize: 10,
+                      color: kSelect,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
               ),
@@ -839,9 +880,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
       // 旁白軌＝錄音鈕；空軌點了加素材；有內容的軌切換整軌靜音
       onTap: () => isVoice
           ? widget.onVoiceRecordTap?.call()
-          : (isEmptyRow
-              ? widget.onAddMedia(t)
-              : widget.onToggleMute(t)),
+          : (isEmptyRow ? widget.onAddMedia(t) : widget.onToggleMute(t)),
       onDragUpdate: (dy) => setState(() {
         _dragTrack = t;
         _dragDy = dy;
@@ -891,8 +930,7 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
     );
   }
   if (src.kind == ClipKind.image && strip.isNotEmpty) {
-    return Image.memory(strip[0],
-        fit: BoxFit.cover, gaplessPlayback: true);
+    return Image.memory(strip[0], fit: BoxFit.cover, gaplessPlayback: true);
   }
   if (strip.isEmpty) {
     return Container(
@@ -902,7 +940,8 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
         ),
       ),
       child: const Center(
-          child: Icon(Icons.movie, size: 18, color: Colors.white38)),
+        child: Icon(Icons.movie, size: 18, color: Colors.white38),
+      ),
     );
   }
   // 縮圖磚固定尺寸（不隨縮放拉伸變形），縮放只改變「放幾塊磚」
@@ -910,27 +949,29 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
   final i0 = (clip.trimStart / src.duration * n).floor().clamp(0, n - 1);
   final i1 = (clip.trimEnd / src.duration * n).ceil().clamp(i0 + 1, n);
   final span = i1 - i0;
-  return LayoutBuilder(builder: (context, cons) {
-    final tileW = cons.maxHeight; // 磚寬＝軌高（近方形）
-    final count = (cons.maxWidth / tileW).ceil().clamp(1, 400);
-    return Stack(
-      clipBehavior: Clip.hardEdge,
-      children: [
-        for (var k = 0; k < count; k++)
-          Positioned(
-            left: k * tileW,
-            top: 0,
-            bottom: 0,
-            width: tileW,
-            child: Image.memory(
-              strip[(i0 + (k * span ~/ count)).clamp(0, n - 1)],
-              fit: BoxFit.cover,
-              gaplessPlayback: true,
+  return LayoutBuilder(
+    builder: (context, cons) {
+      final tileW = cons.maxHeight; // 磚寬＝軌高（近方形）
+      final count = (cons.maxWidth / tileW).ceil().clamp(1, 400);
+      return Stack(
+        clipBehavior: Clip.hardEdge,
+        children: [
+          for (var k = 0; k < count; k++)
+            Positioned(
+              left: k * tileW,
+              top: 0,
+              bottom: 0,
+              width: tileW,
+              child: Image.memory(
+                strip[(i0 + (k * span ~/ count)).clamp(0, n - 1)],
+                fit: BoxFit.cover,
+                gaplessPlayback: true,
+              ),
             ),
-          ),
-      ],
-    );
-  });
+        ],
+      );
+    },
+  );
 }
 
 /// 一按下就立刻贏得競技場的 pan，
@@ -981,13 +1022,14 @@ class _ClipBlock extends StatelessWidget {
     final (fill, borderColor, icon) = switch (source.kind) {
       ClipKind.video => (kVideoFill, kVideoBorder, Icons.movie_outlined),
       ClipKind.audio => (kAudioFill, kAudioBorder, Icons.music_note),
-      ClipKind.image =>
-        (kVideoFill, kVideoBorder, Icons.image_outlined),
-      ClipKind.text =>
-        (const Color(0xFF2E2A38), const Color(0xFF8A7BB8), Icons.title),
+      ClipKind.image => (kVideoFill, kVideoBorder, Icons.image_outlined),
+      ClipKind.text => (
+        const Color(0xFF2E2A38),
+        const Color(0xFF8A7BB8),
+        Icons.title,
+      ),
     };
-    final w =
-        (clip.length * pxPerSec).clamp(22.0, double.infinity).toDouble();
+    final w = (clip.length * pxPerSec).clamp(22.0, double.infinity).toDouble();
 
     return Positioned(
       left: clip.offset * pxPerSec,
@@ -999,14 +1041,14 @@ class _ClipBlock extends StatelessWidget {
           gestures: {
             _EagerPanRecognizer:
                 GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
-              () => _EagerPanRecognizer(),
-              (r) => r
-                ..onStart = ((d) => onLiftStart(d.globalPosition))
-                ..onUpdate = ((d) =>
-                    onLiftUpdate(d.delta.dx, d.delta.dy, d.globalPosition))
-                ..onEnd = ((_) => onLiftEnd())
-                ..onCancel = onLiftEnd,
-            ),
+                  () => _EagerPanRecognizer(),
+                  (r) => r
+                    ..onStart = ((d) => onLiftStart(d.globalPosition))
+                    ..onUpdate = ((d) =>
+                        onLiftUpdate(d.delta.dx, d.delta.dy, d.globalPosition))
+                    ..onEnd = ((_) => onLiftEnd())
+                    ..onCancel = onLiftEnd,
+                ),
           },
           child: GestureDetector(
             onTap: () => onSelect(clip.id),
@@ -1038,7 +1080,9 @@ class _ClipBlock extends StatelessWidget {
                       top: 3,
                       child: Container(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 4, vertical: 1),
+                          horizontal: 4,
+                          vertical: 1,
+                        ),
                         decoration: BoxDecoration(
                           color: Colors.black54,
                           borderRadius: BorderRadius.circular(4),
@@ -1046,9 +1090,10 @@ class _ClipBlock extends StatelessWidget {
                         child: Text(
                           '${clip.speed % 1 == 0 ? clip.speed.toInt() : clip.speed}x',
                           style: const TextStyle(
-                              fontSize: 8.5,
-                              color: Colors.white,
-                              fontWeight: FontWeight.w700),
+                            fontSize: 8.5,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                       ),
                     ),
@@ -1137,10 +1182,10 @@ class _TrackLabelState extends State<_TrackLabel> {
           color: widget.isVoice
               ? const Color(0xFFFF3B30)
               : (widget.isDragging
-                  ? kSelect
-                  : (widget.isEmptyRow
-                      ? kSelect.withValues(alpha: 0.55)
-                      : kBorder)),
+                    ? kSelect
+                    : (widget.isEmptyRow
+                          ? kSelect.withValues(alpha: 0.55)
+                          : kBorder)),
           width: (widget.isDragging || widget.isVoice) ? 2 : 1,
         ),
         boxShadow: widget.isDragging
@@ -1149,7 +1194,7 @@ class _TrackLabelState extends State<_TrackLabel> {
                   color: Colors.black.withValues(alpha: 0.55),
                   blurRadius: 8,
                   offset: const Offset(0, 3),
-                )
+                ),
               ]
             : null,
       ),
@@ -1165,9 +1210,7 @@ class _TrackLabelState extends State<_TrackLabel> {
                   shape: BoxShape.circle,
                 ),
                 child: Icon(
-                  widget.isRecording
-                      ? Icons.stop_rounded
-                      : Icons.mic,
+                  widget.isRecording ? Icons.stop_rounded : Icons.mic,
                   size: 14,
                   color: Colors.white,
                 ),
@@ -1177,9 +1220,7 @@ class _TrackLabelState extends State<_TrackLabel> {
                     ? Icons.add
                     : (widget.muted ? Icons.volume_off : Icons.volume_up),
                 size: 15,
-                color: widget.muted
-                    ? kSelect
-                    : (amber ? kSelect : kTextDim),
+                color: widget.muted ? kSelect : (amber ? kSelect : kTextDim),
               ),
       ),
     );
@@ -1197,38 +1238,38 @@ class _TrackLabelState extends State<_TrackLabel> {
         gestures: {
           _EagerPanRecognizer:
               GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
-            () => _EagerPanRecognizer(),
-            (r) => r
-              ..onStart = (_) {
-                _dy = 0;
-                _moved = false;
-              }
-              ..onUpdate = (d) {
-                _dy = (_dy + d.delta.dy).clamp(
-                  -widget.index * widget.rowStride,
-                  (widget.maxTrack - widget.index) * widget.rowStride,
-                );
-                if (_dy.abs() > 4) _moved = true;
-                widget.onDragUpdate(_dy);
-              }
-              ..onEnd = (_) {
-                if (_moved) {
-                  widget.onDragEnd();
-                } else {
-                  widget.onDragUpdate(0);
-                  widget.onDragEnd();
-                  widget.onTap();
-                }
-                _dy = 0;
-                _moved = false;
-              }
-              ..onCancel = () {
-                widget.onDragUpdate(0);
-                widget.onDragEnd();
-                _dy = 0;
-                _moved = false;
-              },
-          ),
+                () => _EagerPanRecognizer(),
+                (r) => r
+                  ..onStart = (_) {
+                    _dy = 0;
+                    _moved = false;
+                  }
+                  ..onUpdate = (d) {
+                    _dy = (_dy + d.delta.dy).clamp(
+                      -widget.index * widget.rowStride,
+                      (widget.maxTrack - widget.index) * widget.rowStride,
+                    );
+                    if (_dy.abs() > 4) _moved = true;
+                    widget.onDragUpdate(_dy);
+                  }
+                  ..onEnd = (_) {
+                    if (_moved) {
+                      widget.onDragEnd();
+                    } else {
+                      widget.onDragUpdate(0);
+                      widget.onDragEnd();
+                      widget.onTap();
+                    }
+                    _dy = 0;
+                    _moved = false;
+                  }
+                  ..onCancel = () {
+                    widget.onDragUpdate(0);
+                    widget.onDragEnd();
+                    _dy = 0;
+                    _moved = false;
+                  },
+              ),
         },
         child: Transform.translate(
           offset: Offset(0, widget.dragDy),
@@ -1262,11 +1303,11 @@ class _TrimHandle extends StatelessWidget {
       gestures: {
         _EagerPanRecognizer:
             GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
-          () => _EagerPanRecognizer(),
-          (r) => r
-            ..onStart = ((_) => onStart?.call())
-            ..onUpdate = ((d) => onDrag(d.delta.dx / pxPerSec)),
-        ),
+              () => _EagerPanRecognizer(),
+              (r) => r
+                ..onStart = ((_) => onStart?.call())
+                ..onUpdate = ((d) => onDrag(d.delta.dx / pxPerSec)),
+            ),
       },
       child: Container(
         width: 13,
@@ -1297,13 +1338,20 @@ class _WavePainter extends CustomPainter {
   /// 不然一開錄就滿滿假波形，反而看不出有沒有收到聲音
   final bool live;
 
-  _WavePainter(
-      {this.peaks, this.start = 0, this.end = 1, this.color, this.live = false});
+  _WavePainter({
+    this.peaks,
+    this.start = 0,
+    this.end = 1,
+    this.color,
+    this.live = false,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = (color ?? kAudioBorder).withValues(alpha: color != null ? 0.9 : 0.55)
+      ..color = (color ?? kAudioBorder).withValues(
+        alpha: color != null ? 0.9 : 0.55,
+      )
       ..strokeWidth = 1.5;
     const step = 3.0;
     final mid = size.height / 2;
@@ -1325,8 +1373,7 @@ class _WavePainter extends CustomPainter {
         }
         final h = (m * size.height * 0.86).clamp(1.5, size.height - 2);
         final x = 2.0 + c * step;
-        canvas.drawLine(
-            Offset(x, mid - h / 2), Offset(x, mid + h / 2), paint);
+        canvas.drawLine(Offset(x, mid - h / 2), Offset(x, mid + h / 2), paint);
       }
       return;
     }
@@ -1334,10 +1381,8 @@ class _WavePainter extends CustomPainter {
     if (p == null || p.isEmpty || end <= start) {
       // 示意波形：用位置產生穩定的偽隨機高度（不能用 Random，保持重繪一致）
       for (var x = 2.0; x < size.width - 2; x += step) {
-        final h =
-            (((x * 7919).toInt() % 17) / 17) * (size.height * 0.55) + 2;
-        canvas.drawLine(
-            Offset(x, mid - h / 2), Offset(x, mid + h / 2), paint);
+        final h = (((x * 7919).toInt() % 17) / 17) * (size.height * 0.55) + 2;
+        canvas.drawLine(Offset(x, mid - h / 2), Offset(x, mid + h / 2), paint);
       }
       return;
     }
@@ -1356,8 +1401,7 @@ class _WavePainter extends CustomPainter {
       }
       final h = (m * size.height * 0.86).clamp(1.5, size.height - 2);
       final x = 2.0 + c * step;
-      canvas.drawLine(
-          Offset(x, mid - h / 2), Offset(x, mid + h / 2), paint);
+      canvas.drawLine(Offset(x, mid - h / 2), Offset(x, mid + h / 2), paint);
     }
   }
 
@@ -1379,8 +1423,10 @@ class _RulerPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     const steps = [0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0];
-    final step =
-        steps.firstWhere((s) => s * pxPerSec >= 56, orElse: () => steps.last);
+    final step = steps.firstWhere(
+      (s) => s * pxPerSec >= 56,
+      orElse: () => steps.last,
+    );
 
     final paint = Paint()
       ..color = color
@@ -1399,7 +1445,9 @@ class _RulerPainter extends CustomPainter {
         final s = (t % 60).toStringAsFixed(step < 1 ? 1 : 0).padLeft(2, '0');
         final tp = TextPainter(
           text: TextSpan(
-              text: '$m:$s', style: TextStyle(fontSize: 9, color: color)),
+            text: '$m:$s',
+            style: TextStyle(fontSize: 9, color: color),
+          ),
           textDirection: TextDirection.ltr,
         )..layout();
         tp.paint(canvas, Offset(x + 3, 0));

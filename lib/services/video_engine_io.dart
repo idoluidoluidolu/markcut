@@ -67,12 +67,19 @@ Future<_SourceProbe> _probe(String path) async {
 
 String _f(double v) => v.toStringAsFixed(3);
 
+/// 片段調色 → FFmpeg 濾鏡（沒調過回空字串）
+String _eq(TimelineClip c) => c.color.ffmpeg;
+
 /// 組出通用圖層的 FFmpeg 指令：
 /// 黑色畫布 → 由下層往上把每個影片片段 overlay 上去（各自只在自己的時間區間顯示）
 /// → 疊浮水印；所有帶聲音的片段 delay 對位後 amix 混成一軌。
 /// 高畫質策略：libx264 CRF 17 + lanczos 縮放。
-Future<String> _buildCommand(ExportSpec spec, String? wmPath,
-    Map<int, String> overlayFiles, String outPath) async {
+Future<String> _buildCommand(
+  ExportSpec spec,
+  String? wmPath,
+  Map<int, String> overlayFiles,
+  String outPath,
+) async {
   final probes = <int, _SourceProbe>{};
   for (var i = 0; i < spec.sources.length; i++) {
     final s = spec.sources[i];
@@ -146,23 +153,29 @@ Future<String> _buildCommand(ExportSpec spec, String? wmPath,
   vNeed.forEach((idx, n) {
     final ii = srcIn[idx]!;
     final labels = [for (var k = 0; k < n; k++) 'sv${idx}x$k'];
-    fc.write(n == 1
-        ? '[$ii:v]null[${labels[0]}];'
-        : '[$ii:v]split=$n${labels.map((l) => '[$l]').join()};');
+    fc.write(
+      n == 1
+          ? '[$ii:v]null[${labels[0]}];'
+          : '[$ii:v]split=$n${labels.map((l) => '[$l]').join()};',
+    );
     vPool[idx] = labels;
   });
   aNeed.forEach((idx, n) {
     final ii = srcIn[idx]!;
     final labels = [for (var k = 0; k < n; k++) 'sa${idx}x$k'];
-    fc.write(n == 1
-        ? '[$ii:a]anull[${labels[0]}];'
-        : '[$ii:a]asplit=$n${labels.map((l) => '[$l]').join()};');
+    fc.write(
+      n == 1
+          ? '[$ii:a]anull[${labels[0]}];'
+          : '[$ii:a]asplit=$n${labels.map((l) => '[$l]').join()};',
+    );
     aPool[idx] = labels;
   });
 
   // ===== 畫面：黑畫布 + 由下而上疊圖層 =====
-  fc.write('color=c=black:s=${spec.outW}x${spec.outH}:'
-      'r=${fps.toStringAsFixed(3)}:d=${_f(outDur)}[base];');
+  fc.write(
+    'color=c=black:s=${spec.outW}x${spec.outH}:'
+    'r=${fps.toStringAsFixed(3)}:d=${_f(outDur)}[base];',
+  );
 
   // 疊放順序：track 大的是下層先疊；同一層時，清單裡較後面的疊在上面
   final clipOrder = <int, int>{};
@@ -171,20 +184,16 @@ Future<String> _buildCommand(ExportSpec spec, String? wmPath,
   }
   int cmpLayer(TimelineClip a, TimelineClip b) {
     final t = b.track.compareTo(a.track);
-    return t != 0
-        ? t
-        : (clipOrder[a.id] ?? 0).compareTo(clipOrder[b.id] ?? 0);
+    return t != 0 ? t : (clipOrder[a.id] ?? 0).compareTo(clipOrder[b.id] ?? 0);
   }
 
-  final videoClips = spec.clips
-      .where((c) => spec.sources[c.sourceIndex].isVideo)
-      .toList()
-    ..sort(cmpLayer);
+  final videoClips =
+      spec.clips.where((c) => spec.sources[c.sourceIndex].isVideo).toList()
+        ..sort(cmpLayer);
   // 圖片/文字永遠疊在影片上面（跟預覽一致）
-  final stillClips = spec.clips
-      .where((c) => spec.sources[c.sourceIndex].isOverlay)
-      .toList()
-    ..sort(cmpLayer);
+  final stillClips =
+      spec.clips.where((c) => spec.sources[c.sourceIndex].isOverlay).toList()
+        ..sort(cmpLayer);
 
   // 依片段的位置/縮放算出圖層的框（像素座標）
   (int, int, int, int) layerBox(TimelineClip c, double srcAspect) {
@@ -230,16 +239,21 @@ Future<String> _buildCommand(ExportSpec spec, String? wmPath,
     final start = c.offset / sp;
     final end = c.end / sp;
     final (w2, h2, x, y) = layerBox(c, src.aspect);
-    fc.write('[$label]'
-        'trim=start=${_f(c.trimStart)}:end=${_f(c.trimEnd)},'
-        // 全域速度 × 每片段速度一起壓進 PTS
-        'setpts=(PTS-STARTPTS)/${_f(sp * c.speed)}+${_f(start)}/TB,'
-        'scale=$w2:$h2:flags=lanczos'
-        '${vFades(c)}'
-        '[lv$k];');
-    fc.write('[$cur][lv$k]overlay=$x:$y:'
-        'enable=between(t\\,${_f(start)}\\,${_f(end)}):'
-        'eof_action=pass[ov$k];');
+    fc.write(
+      '[$label]'
+      'trim=start=${_f(c.trimStart)}:end=${_f(c.trimEnd)},'
+      // 全域速度 × 每片段速度一起壓進 PTS
+      'setpts=(PTS-STARTPTS)/${_f(sp * c.speed)}+${_f(start)}/TB,'
+      'scale=$w2:$h2:flags=lanczos'
+      '${_eq(c)}'
+      '${vFades(c)}'
+      '[lv$k];',
+    );
+    fc.write(
+      '[$cur][lv$k]overlay=$x:$y:'
+      'enable=between(t\\,${_f(start)}\\,${_f(end)}):'
+      'eof_action=pass[ov$k];',
+    );
     cur = 'ov$k';
   }
   for (final c in stillClips) {
@@ -250,24 +264,34 @@ Future<String> _buildCommand(ExportSpec spec, String? wmPath,
     if (src.kind == ClipKind.image) {
       final label = vPool[c.sourceIndex]!.removeLast();
       final (w2, h2, x, y) = layerBox(c, src.aspect);
-      fc.write('[$label]'
-          'scale=$w2:$h2:flags=lanczos,format=rgba,'
-          'setpts=PTS-STARTPTS+${_f(start)}/TB'
-          '${vFades(c)}'
-          '[lv$k];');
-      fc.write('[$cur][lv$k]overlay=$x:$y:'
-          'enable=between(t\\,${_f(start)}\\,${_f(end)}):'
-          'eof_action=pass[ov$k];');
+      fc.write(
+        '[$label]'
+        'scale=$w2:$h2:flags=lanczos'
+        '${_eq(c)}'
+        ',format=rgba,'
+        'setpts=PTS-STARTPTS+${_f(start)}/TB'
+        '${vFades(c)}'
+        '[lv$k];',
+      );
+      fc.write(
+        '[$cur][lv$k]overlay=$x:$y:'
+        'enable=between(t\\,${_f(start)}\\,${_f(end)}):'
+        'eof_action=pass[ov$k];',
+      );
     } else {
       // 文字：整版透明 PNG（位置/縮放已烘進圖），每個片段一個輸入
       final inputIdx = textClipInput[c.id]!;
-      fc.write('[$inputIdx:v]'
-          'setpts=PTS-STARTPTS+${_f(start)}/TB'
-          '${vFades(c)}'
-          '[lv$k];');
-      fc.write('[$cur][lv$k]overlay=0:0:'
-          'enable=between(t\\,${_f(start)}\\,${_f(end)}):'
-          'eof_action=pass[ov$k];');
+      fc.write(
+        '[$inputIdx:v]'
+        'setpts=PTS-STARTPTS+${_f(start)}/TB'
+        '${vFades(c)}'
+        '[lv$k];',
+      );
+      fc.write(
+        '[$cur][lv$k]overlay=0:0:'
+        'enable=between(t\\,${_f(start)}\\,${_f(end)}):'
+        'eof_action=pass[ov$k];',
+      );
     }
     cur = 'ov$k';
   }
@@ -285,7 +309,8 @@ Future<String> _buildCommand(ExportSpec spec, String? wmPath,
       case WmAnimation.none:
         break;
       case WmAnimation.blink:
-        enable = '$enable*lt(mod(t\\,${_f(spec.wmCycle)})'
+        enable =
+            '$enable*lt(mod(t\\,${_f(spec.wmCycle)})'
             '\\,${_f(spec.wmOn)})';
       case WmAnimation.drift:
         final f = _f(1.3 * spec.wmSpeed);
@@ -297,8 +322,10 @@ Future<String> _buildCommand(ExportSpec spec, String? wmPath,
         final c = _f(spec.wmCycle);
         pos = "x='W-mod(t\\,$c)*2*W/$c':y=0";
     }
-    fc.write('[$cur][$wmInputIdx:v]overlay=$pos:eval=frame:'
-        'enable=$enable[vout];');
+    fc.write(
+      '[$cur][$wmInputIdx:v]overlay=$pos:eval=frame:'
+      'enable=$enable[vout];',
+    );
     cur = 'vout';
   }
 
@@ -316,18 +343,21 @@ Future<String> _buildCommand(ExportSpec spec, String? wmPath,
       fades += ',afade=t=in:st=0:d=${_f(c.fadeIn / sp)}';
     }
     if (c.fadeOut > 0.01) {
-      fades += ',afade=t=out:st=${_f(math.max(0, lenOut - c.fadeOut / sp))}'
+      fades +=
+          ',afade=t=out:st=${_f(math.max(0, lenOut - c.fadeOut / sp))}'
           ':d=${_f(c.fadeOut / sp)}';
     }
-    fc.write('[$label]'
-        'atrim=start=${_f(c.trimStart)}:end=${_f(c.trimEnd)},'
-        'asetpts=PTS-STARTPTS,'
-        // 全域速度 × 每片段速度
-        '${_atempoChain(sp * c.speed)}'
-        '$fades,'
-        'volume=${c.volume.toStringAsFixed(2)},'
-        'adelay=$delayMs:all=1,'
-        'aresample=44100,aformat=channel_layouts=stereo[la$k];');
+    fc.write(
+      '[$label]'
+      'atrim=start=${_f(c.trimStart)}:end=${_f(c.trimEnd)},'
+      'asetpts=PTS-STARTPTS,'
+      // 全域速度 × 每片段速度
+      '${_atempoChain(sp * c.speed)}'
+      '$fades,'
+      'volume=${c.volume.toStringAsFixed(2)},'
+      'adelay=$delayMs:all=1,'
+      'aresample=44100,aformat=channel_layouts=stereo[la$k];',
+    );
     audioLabels.add('la$k');
   }
 
@@ -335,8 +365,10 @@ Future<String> _buildCommand(ExportSpec spec, String? wmPath,
   if (audioLabels.length == 1) {
     aLabel = audioLabels.first;
   } else if (audioLabels.length > 1) {
-    fc.write('${audioLabels.map((l) => '[$l]').join()}'
-        'amix=inputs=${audioLabels.length}:duration=longest:normalize=0[aout];');
+    fc.write(
+      '${audioLabels.map((l) => '[$l]').join()}'
+      'amix=inputs=${audioLabels.length}:duration=longest:normalize=0[aout];',
+    );
     aLabel = 'aout';
   }
 
@@ -351,16 +383,20 @@ Future<String> _buildCommand(ExportSpec spec, String? wmPath,
       case ClipKind.video || ClipKind.audio:
         cmd.write('-i "${s.path}" ');
       case ClipKind.image:
-        cmd.write('-loop 1 -framerate ${fps.toStringAsFixed(3)} '
-            '-t ${_f(stillNeed[i] ?? 1)} -i "${s.path}" ');
+        cmd.write(
+          '-loop 1 -framerate ${fps.toStringAsFixed(3)} '
+          '-t ${_f(stillNeed[i] ?? 1)} -i "${s.path}" ',
+        );
       case ClipKind.text:
         break; // 文字改成每個片段一張 PNG，在下面接續
     }
   }
   for (final c in spec.clips) {
     if (spec.sources[c.sourceIndex].kind == ClipKind.text) {
-      cmd.write('-loop 1 -framerate ${fps.toStringAsFixed(3)} '
-          '-t ${_f(c.length / sp + 0.5)} -i "${overlayFiles[c.id]}" ');
+      cmd.write(
+        '-loop 1 -framerate ${fps.toStringAsFixed(3)} '
+        '-t ${_f(c.length / sp + 0.5)} -i "${overlayFiles[c.id]}" ',
+      );
     }
   }
   if (hasWm) cmd.write('-i "$wmPath" ');
@@ -376,9 +412,11 @@ Future<String> _buildCommand(ExportSpec spec, String? wmPath,
     ..write('-t ${_f(outDur)} ')
     // LGPL 版沒有 x264：H.264 用手機的硬體編碼器（更快、更省電），
     // 畫質用位元率控制（硬體編碼器不吃 CRF）
-    ..write('-c:v ${_hwEncoder()} -b:v ${_kbpsFor(spec)}k '
-        '-maxrate ${(_kbpsFor(spec) * 1.4).round()}k '
-        '-bufsize ${_kbpsFor(spec) * 2}k -pix_fmt nv12 ')
+    ..write(
+      '-c:v ${_hwEncoder()} -b:v ${_kbpsFor(spec)}k '
+      '-maxrate ${(_kbpsFor(spec) * 1.4).round()}k '
+      '-bufsize ${_kbpsFor(spec) * 2}k -pix_fmt nv12 ',
+    )
     ..write('-movflags +faststart ')
     ..write('"$outPath"');
   return cmd.toString();
@@ -479,20 +517,19 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   }
   await Gal.putVideo(outPath, album: '浮水印');
   cleanupTemp();
-  return (
-    ok: true,
-    message: '完成！影片已儲存到相簿（浮水印 相簿）',
-    cancelled: false,
-  );
+  return (ok: true, message: '完成！影片已儲存到相簿（浮水印 相簿）', cancelled: false);
 }
 
 /// 產生時間軸縮圖（height 可調：filmstrip 用 200、批次預覽用 720）
 Future<List<Uint8List>> makeThumbnails(
-    String inputPath, double durationSec, int count,
-    {int height = 200,
-    bool longSide = false,
-    double startAt = 0,
-    bool fastDecode = false}) async {
+  String inputPath,
+  double durationSec,
+  int count, {
+  int height = 200,
+  bool longSide = false,
+  double startAt = 0,
+  bool fastDecode = false,
+}) async {
   if (durationSec <= 0) return [];
   final dir = await getTemporaryDirectory();
   final ts = DateTime.now().millisecondsSinceEpoch;
@@ -519,7 +556,8 @@ Future<List<Uint8List>> makeThumbnails(
   final result = <Uint8List>[];
   for (var i = 1; i <= count; i++) {
     final f = File(
-        '${dir.path}${Platform.pathSeparator}mkthumb_${ts}_${i.toString().padLeft(2, '0')}.jpg');
+      '${dir.path}${Platform.pathSeparator}mkthumb_${ts}_${i.toString().padLeft(2, '0')}.jpg',
+    );
     if (f.existsSync()) {
       result.add(await f.readAsBytes());
       try {

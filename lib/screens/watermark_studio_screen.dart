@@ -204,13 +204,8 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
                         clipBehavior: Clip.none,
                         fit: StackFit.expand,
                         children: [
-                          Center(
-                            child: Icon(Icons.landscape_outlined,
-                                size: 56,
-                                color: _lightBg
-                                    ? Colors.black12
-                                    : Colors.white12),
-                          ),
+                          // 底就是純色，不放示意圖示——那個山形圖案
+                          // 會被誤認成浮水印的一部分
                           WatermarkLayer(
                             settings: _settings,
                             onChanged: () => setState(() {}),

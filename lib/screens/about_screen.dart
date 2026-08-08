@@ -3,7 +3,6 @@ import 'package:flutter/services.dart';
 
 import '../services/store_links.dart';
 import '../theme.dart';
-import 'playback_test_screen.dart';
 
 /// 原始碼位置（MPL 要求提供取得方式）
 const kSourceUrl = 'https://github.com/idoluidoluidolu/markcut';
@@ -100,41 +99,7 @@ class AboutScreen extends StatelessWidget {
                 ),
               ),
             ),
-            const SizedBox(height: 22),
-            // 除錯工具：卡頓時要你截圖回報用的，平常不會動到
-            _card('除錯', [
-              ValueListenableBuilder<bool>(
-                valueListenable: kPerfOverlay,
-                builder: (context, v, _) => Row(
-                  children: [
-                    const Expanded(
-                      child: Text(
-                        '效能檢測模式',
-                        style: TextStyle(fontSize: 12.5, color: kTextDim),
-                      ),
-                    ),
-                    Switch(
-                      value: v,
-                      onChanged: (nv) => kPerfOverlay.value = nv,
-                    ),
-                  ],
-                ),
-              ),
-              InkWell(
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const PlaybackTestScreen()),
-                ),
-                child: const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 8),
-                  child: Text(
-                    '影片純播放測試',
-                    style: TextStyle(fontSize: 12.5, color: kTextDim),
-                  ),
-                ),
-              ),
-            ]),
-            const SizedBox(height: 20),
+            const SizedBox(height: 28),
             _footer(context),
           ],
         ),

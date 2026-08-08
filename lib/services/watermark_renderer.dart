@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/painting.dart';
 
+import '../models/color_grade.dart';
 import '../models/watermark_settings.dart';
 
 /// 把浮水印設定畫成點陣圖。
@@ -13,7 +14,10 @@ class WatermarkRenderer {
   /// 產生一張透明背景、大小等於輸出解析度的浮水印圖層 PNG，
   /// 之後交給 FFmpeg overlay 疊到影片上。
   static Future<Uint8List> renderOverlayPng(
-      WatermarkSettings s, int outW, int outH) async {
+    WatermarkSettings s,
+    int outW,
+    int outH,
+  ) async {
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(recorder);
     await drawMarks(canvas, s, outW.toDouble(), outH.toDouble());
@@ -26,7 +30,10 @@ class WatermarkRenderer {
 
   /// 照片浮水印：以原始解析度合成照片 + 浮水印，輸出 PNG（無損）。
   static Future<Uint8List> renderPhotoComposite(
-      Uint8List photoBytes, WatermarkSettings s) async {
+    Uint8List photoBytes,
+    WatermarkSettings s, {
+    ColorGrade? grade,
+  }) async {
     final codec = await ui.instantiateImageCodec(photoBytes);
     final frame = await codec.getNextFrame();
     final photo = frame.image;
@@ -35,7 +42,12 @@ class WatermarkRenderer {
 
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(recorder);
-    canvas.drawImage(photo, ui.Offset.zero, ui.Paint());
+    // 調色只套在照片上，浮水印不跟著變色（下面 drawMarks 是另一支畫筆）
+    canvas.drawImage(
+      photo,
+      ui.Offset.zero,
+      ui.Paint()..colorFilter = grade?.filter,
+    );
     await drawMarks(canvas, s, w.toDouble(), h.toDouble());
     final picture = recorder.endRecording();
     final image = await picture.toImage(w, h);
@@ -46,8 +58,14 @@ class WatermarkRenderer {
   }
 
   /// 文字素材：以完整樣式＋位置＋縮放渲染成整版透明 PNG（匯出 overlay 用）
-  static Future<Uint8List> renderTextClipPng(TextMark style, double px,
-      double py, double scale, int outW, int outH) async {
+  static Future<Uint8List> renderTextClipPng(
+    TextMark style,
+    double px,
+    double py,
+    double scale,
+    int outW,
+    int outH,
+  ) async {
     final t = style.copy()
       ..enabled = true
       ..x = px
@@ -59,7 +77,11 @@ class WatermarkRenderer {
 
   /// 在指定大小的畫布上畫出文字與 Logo 浮水印
   static Future<void> drawMarks(
-      ui.Canvas canvas, WatermarkSettings s, double w, double h) async {
+    ui.Canvas canvas,
+    WatermarkSettings s,
+    double w,
+    double h,
+  ) async {
     // Logo 先畫（讓文字可以壓在 Logo 上面）
     final logo = s.logo;
     final logoBytes = logo.bytes;
@@ -71,7 +93,11 @@ class WatermarkRenderer {
       final targetW = logo.sizeFrac * w;
       final targetH = targetW * img.height / img.width;
       final srcRect = ui.Rect.fromLTWH(
-          0, 0, img.width.toDouble(), img.height.toDouble());
+        0,
+        0,
+        img.width.toDouble(),
+        img.height.toDouble(),
+      );
 
       // Logo 滿版平鋪（棋盤格）：整面交錯重複，忽略 x/y
       if (logo.tiled) {
@@ -79,8 +105,7 @@ class WatermarkRenderer {
         final stepY = targetH * 1.9;
         final tilePaint = ui.Paint()
           ..filterQuality = ui.FilterQuality.high
-          ..color =
-              const ui.Color(0xFFFFFFFF).withValues(alpha: logo.opacity);
+          ..color = const ui.Color(0xFFFFFFFF).withValues(alpha: logo.opacity);
         canvas.save();
         canvas.clipRect(ui.Rect.fromLTWH(0, 0, w, h));
         if (logo.rotation.abs() > 0.01) {
@@ -96,8 +121,9 @@ class WatermarkRenderer {
             if (logo.corner > 0.01) {
               final r = logo.corner * math.min(targetW, targetH) / 2;
               canvas.save();
-              canvas.clipRRect(ui.RRect.fromRectAndRadius(
-                  rect, ui.Radius.circular(r)));
+              canvas.clipRRect(
+                ui.RRect.fromRectAndRadius(rect, ui.Radius.circular(r)),
+              );
               canvas.drawImageRect(img, srcRect, rect, tilePaint);
               canvas.restore();
             } else {
@@ -133,7 +159,8 @@ class WatermarkRenderer {
       if (logo.corner > 0.01) {
         final r = logo.corner * math.min(targetW, targetH) / 2;
         canvas.clipRRect(
-            ui.RRect.fromRectAndRadius(rect, ui.Radius.circular(r)));
+          ui.RRect.fromRectAndRadius(rect, ui.Radius.circular(r)),
+        );
       }
       canvas.drawImageRect(
         img,
@@ -150,7 +177,11 @@ class WatermarkRenderer {
 
   /// 文字浮水印（含平鋪、底色、描邊、旋轉）
   static void _drawText(
-      ui.Canvas canvas, WatermarkSettings s, double w, double h) {
+    ui.Canvas canvas,
+    WatermarkSettings s,
+    double w,
+    double h,
+  ) {
     final t = s.text;
     if (t.enabled && t.text.trim().isNotEmpty) {
       // 不自動換行、也不自動縮小：使用者調多大就多大，
@@ -160,8 +191,9 @@ class WatermarkRenderer {
       final shadows = t.shadow
           ? [
               Shadow(
-                color: const ui.Color(0xFF000000)
-                    .withValues(alpha: 0.55 * t.opacity),
+                color: const ui.Color(
+                  0xFF000000,
+                ).withValues(alpha: 0.55 * t.opacity),
                 blurRadius: fontSize * 0.08,
                 offset: ui.Offset(fontSize * 0.03, fontSize * 0.03),
               ),
@@ -220,12 +252,15 @@ class WatermarkRenderer {
             if (t.bg) {
               canvas.drawRRect(
                 ui.RRect.fromRectAndRadius(
-                  ui.Rect.fromLTWH(x - padH, y - padV,
-                      painter.width + padH * 2, painter.height + padV * 2),
+                  ui.Rect.fromLTWH(
+                    x - padH,
+                    y - padV,
+                    painter.width + padH * 2,
+                    painter.height + padV * 2,
+                  ),
                   ui.Radius.circular(fontSize * t.bgCorner),
                 ),
-                ui.Paint()
-                  ..color = t.bgColor.withValues(alpha: t.bgOpacity),
+                ui.Paint()..color = t.bgColor.withValues(alpha: t.bgOpacity),
               );
             }
             strokePainter?.paint(canvas, ui.Offset(x, y));
@@ -255,8 +290,12 @@ class WatermarkRenderer {
         final padV = fontSize * 0.18 * t.bgPad;
         canvas.drawRRect(
           ui.RRect.fromRectAndRadius(
-            ui.Rect.fromLTWH(left - padH, top - padV,
-                painter.width + padH * 2, painter.height + padV * 2),
+            ui.Rect.fromLTWH(
+              left - padH,
+              top - padV,
+              painter.width + padH * 2,
+              painter.height + padV * 2,
+            ),
             ui.Radius.circular(fontSize * t.bgCorner),
           ),
           ui.Paint()..color = t.bgColor.withValues(alpha: t.bgOpacity),

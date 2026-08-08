@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'color_grade.dart';
 import 'watermark_settings.dart';
 
 /// 素材種類。軌道本身不分種類，是「素材」有種類之分。
@@ -34,27 +35,26 @@ class MediaSource {
   double get aspect => (w == 0 || h == 0) ? 16 / 9 : w / h;
 
   Map<String, dynamic> toJson() => {
-        'path': path,
-        'name': name,
-        'kind': kind.index,
-        'w': w,
-        'h': h,
-        'duration': duration,
-        if (textStyle != null) 'textStyle': textStyle!.toJson(),
-      };
+    'path': path,
+    'name': name,
+    'kind': kind.index,
+    'w': w,
+    'h': h,
+    'duration': duration,
+    if (textStyle != null) 'textStyle': textStyle!.toJson(),
+  };
 
   factory MediaSource.fromJson(Map<String, dynamic> j) => MediaSource(
-        path: j['path'] ?? '',
-        name: j['name'] ?? '',
-        kind: ClipKind.values[(j['kind'] ?? 0) as int],
-        w: (j['w'] ?? 0) as int,
-        h: (j['h'] ?? 0) as int,
-        duration: (j['duration'] ?? 0).toDouble(),
-        textStyle: j['textStyle'] == null
-            ? null
-            : TextMark.fromJson(
-                Map<String, dynamic>.from(j['textStyle'] as Map)),
-      );
+    path: j['path'] ?? '',
+    name: j['name'] ?? '',
+    kind: ClipKind.values[(j['kind'] ?? 0) as int],
+    w: (j['w'] ?? 0) as int,
+    h: (j['h'] ?? 0) as int,
+    duration: (j['duration'] ?? 0).toDouble(),
+    textStyle: j['textStyle'] == null
+        ? null
+        : TextMark.fromJson(Map<String, dynamic>.from(j['textStyle'] as Map)),
+  );
 }
 
 /// 時間軸上的一個片段。
@@ -82,6 +82,9 @@ class TimelineClip {
   /// 變速會反映在時間軸長度上：2x 的片段佔的軸長是素材長的一半
   double speed;
 
+  /// 調色（跟照片編輯共用同一個模型）
+  final ColorGrade color;
+
   TimelineClip({
     required this.id,
     required this.sourceIndex,
@@ -96,7 +99,8 @@ class TimelineClip {
     this.fadeIn = 0,
     this.fadeOut = 0,
     this.speed = 1.0,
-  });
+    ColorGrade? color,
+  }) : color = color ?? ColorGrade();
 
   /// 素材端長度（trim 掉頭尾後的原始秒數）
   double get srcLength => math.max(0.0, trimEnd - trimStart);
@@ -121,36 +125,39 @@ class TimelineClip {
   }
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'sourceIndex': sourceIndex,
-        'trimStart': trimStart,
-        'trimEnd': trimEnd,
-        'offset': offset,
-        'track': track,
-        'volume': volume,
-        'px': px,
-        'py': py,
-        'scale': scale,
-        'fadeIn': fadeIn,
-        'fadeOut': fadeOut,
-        'speed': speed,
-      };
+    'id': id,
+    'sourceIndex': sourceIndex,
+    'trimStart': trimStart,
+    'trimEnd': trimEnd,
+    'offset': offset,
+    'track': track,
+    'volume': volume,
+    'px': px,
+    'py': py,
+    'scale': scale,
+    'fadeIn': fadeIn,
+    'fadeOut': fadeOut,
+    'speed': speed,
+    // 調色的鍵維持扁平，舊草稿讀得回來
+    ...color.toJson(),
+  };
 
   factory TimelineClip.fromJson(Map<String, dynamic> j) => TimelineClip(
-        id: (j['id'] ?? 0) as int,
-        sourceIndex: (j['sourceIndex'] ?? 0) as int,
-        trimStart: (j['trimStart'] ?? 0).toDouble(),
-        trimEnd: (j['trimEnd'] ?? 0).toDouble(),
-        offset: (j['offset'] ?? 0).toDouble(),
-        track: (j['track'] ?? 0) as int,
-        volume: (j['volume'] ?? 1.0).toDouble(),
-        px: (j['px'] ?? 0.5).toDouble(),
-        py: (j['py'] ?? 0.5).toDouble(),
-        scale: (j['scale'] ?? 1.0).toDouble(),
-        fadeIn: (j['fadeIn'] ?? 0).toDouble(),
-        fadeOut: (j['fadeOut'] ?? 0).toDouble(),
-        speed: (j['speed'] ?? 1.0).toDouble(),
-      );
+    id: (j['id'] ?? 0) as int,
+    sourceIndex: (j['sourceIndex'] ?? 0) as int,
+    trimStart: (j['trimStart'] ?? 0).toDouble(),
+    trimEnd: (j['trimEnd'] ?? 0).toDouble(),
+    offset: (j['offset'] ?? 0).toDouble(),
+    track: (j['track'] ?? 0) as int,
+    volume: (j['volume'] ?? 1.0).toDouble(),
+    px: (j['px'] ?? 0.5).toDouble(),
+    py: (j['py'] ?? 0.5).toDouble(),
+    scale: (j['scale'] ?? 1.0).toDouble(),
+    fadeIn: (j['fadeIn'] ?? 0).toDouble(),
+    fadeOut: (j['fadeOut'] ?? 0).toDouble(),
+    speed: (j['speed'] ?? 1.0).toDouble(),
+    color: ColorGrade.fromJson(j),
+  );
 
   TimelineClip copy() => TimelineClip.fromJson(toJson());
 }
@@ -195,14 +202,11 @@ class TimelineModel {
 
   /// 某時刻所有蓋在畫面上的影片片段，由下層到上層
   List<TimelineClip> videosAt(double t) {
-    final list =
-        clips.where((c) => sourceOf(c).isVideo && c.covers(t)).toList()
-          ..sort((a, b) {
-            final k = b.track.compareTo(a.track);
-            return k != 0
-                ? k
-                : clips.indexOf(a).compareTo(clips.indexOf(b));
-          });
+    final list = clips.where((c) => sourceOf(c).isVideo && c.covers(t)).toList()
+      ..sort((a, b) {
+        final k = b.track.compareTo(a.track);
+        return k != 0 ? k : clips.indexOf(a).compareTo(clips.indexOf(b));
+      });
     return list;
   }
 
@@ -213,15 +217,12 @@ class TimelineModel {
 
   /// 某時刻蓋在畫面上的圖片／文字片段，由下層到上層排序
   List<TimelineClip> overlaysAt(double t) {
-    final list = clips
-        .where((c) => sourceOf(c).isOverlay && c.covers(t))
-        .toList()
-      ..sort((a, b) {
-        final k = b.track.compareTo(a.track); // track 大的是下層，先畫
-        return k != 0
-            ? k
-            : clips.indexOf(a).compareTo(clips.indexOf(b));
-      });
+    final list =
+        clips.where((c) => sourceOf(c).isOverlay && c.covers(t)).toList()
+          ..sort((a, b) {
+            final k = b.track.compareTo(a.track); // track 大的是下層，先畫
+            return k != 0 ? k : clips.indexOf(a).compareTo(clips.indexOf(b));
+          });
     return list;
   }
 
@@ -281,6 +282,7 @@ class TimelineModel {
       px: c.px,
       py: c.py,
       scale: c.scale,
+      color: c.color.copy(),
     );
     c.trimEnd = srcT;
     clips.add(second);
@@ -297,8 +299,12 @@ class TimelineModel {
   }
 
   /// 拖曳時的貼齊：吸附到其他片段邊緣、播放頭與 0
-  double snapOffset(TimelineClip moving, double want, double playhead,
-      double pxPerSec) {
+  double snapOffset(
+    TimelineClip moving,
+    double want,
+    double playhead,
+    double pxPerSec,
+  ) {
     final threshold = 8 / pxPerSec; // 8px 內就吸附
     final len = moving.length;
     final candidates = <double>[0, playhead, playhead - len];
