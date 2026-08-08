@@ -1859,7 +1859,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     setState(() => _sel = second.id);
   }
 
-
   /// 刪除浮水印（整組文字＋圖片清空；按復原可以救回）
   void _deleteWatermark() {
     _pushUndo();
@@ -1910,6 +1909,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       items: [
         if (_tl.sourceOf(clip).kind == ClipKind.text)
           _menuItem('edit', Icons.edit_outlined, '編輯文字'),
+        if (_tl.sourceOf(clip).kind == ClipKind.wm)
+          _menuItem('edit', Icons.edit_outlined, '編輯樣式'),
         _menuItem('copy', Icons.copy, '複製'),
         _menuItem(
           'paste',
@@ -3147,9 +3148,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _pvBaseText = _settings.text.sizeFrac;
     _pvBaseLogo = _settings.logo.sizeFrac;
     _pvBaseClip = _selClipById(_sel)?.scale ?? 1.0;
+    // 選中的是浮水印素材：記它樣式裡的底值（clip.scale 對它沒作用）
+    final selC = _selClipById(_sel);
+    final selWm = selC == null ? null : _tl.sourceOf(selC).wmStyle;
+    if (selC != null && _tl.sourceOf(selC).kind == ClipKind.wm) {
+      _pvBaseClipWmText = selWm?.text.sizeFrac ?? 0.08;
+      _pvBaseClipWmLogo = selWm?.logo.sizeFrac ?? 0.2;
+    }
     if (_wmSel) _pickPinchTarget((p[0] + p[1]) / 2);
     _pushUndo();
   }
+
+  double _pvBaseClipWmText = 0.08;
+  double _pvBaseClipWmLogo = 0.2;
 
   void _previewPinchMove(PointerMoveEvent e) {
     if (!_pvPts.containsKey(e.pointer)) return;
@@ -3171,8 +3182,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       } else {
         final c = _selClipById(_sel);
         if (c != null) {
-          final maxS = _tl.sourceOf(c).kind == ClipKind.text ? 12.0 : 3.0;
-          c.scale = (_pvBaseClip * f).clamp(0.05, maxS);
+          final src = _tl.sourceOf(c);
+          if (src.kind == ClipKind.wm) {
+            // 浮水印素材整版渲染，不吃 clip.scale——
+            // 縮放要落在它樣式的字級／Logo 大小上才有反應
+            final st = src.wmStyle;
+            if (st != null) {
+              if (st.text.enabled && st.text.text.trim().isNotEmpty) {
+                st.text.sizeFrac = (_pvBaseClipWmText * f).clamp(0.015, 0.8);
+              }
+              if (st.logo.enabled) {
+                st.logo.sizeFrac = (_pvBaseClipWmLogo * f).clamp(0.03, 2.0);
+              }
+            }
+          } else {
+            final maxS = src.kind == ClipKind.text ? 12.0 : 3.0;
+            c.scale = (_pvBaseClip * f).clamp(0.05, maxS);
+          }
         }
       }
     });
