@@ -909,10 +909,12 @@ class _TimelineEditorState extends State<TimelineEditor> {
       muted: widget.mutedTracks.contains(t),
       isVoice: isVoice,
       isRecording: isVoice && widget.voiceRecording,
-      // 選中的片段在這一軌 → 左邊標籤亮起來
-      hasSelection: timeline.clips.any(
-        (c) => c.id == widget.selectedId && c.track == t,
-      ),
+      // 選中的片段在這一軌、或整條軌被選取 → 左邊標籤亮起來
+      hasSelection:
+          widget.selectedTrack == t ||
+          timeline.clips.any(
+            (c) => c.id == widget.selectedId && c.track == t,
+          ),
       isDragging: _dragTrack == t,
       dragDy: _dragTrack == t ? _dragDy : 0,
       maxTrack: timeline.usedTracks - 1,
