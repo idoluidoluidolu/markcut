@@ -1298,7 +1298,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       '大小',
                       st.sizeFrac,
                       0.02,
-                      0.2,
+                      2.0,
                       (v) => st.sizeFrac = v,
                     ),
                     slider('透明', st.opacity, 0.05, 1, (v) => st.opacity = v),
