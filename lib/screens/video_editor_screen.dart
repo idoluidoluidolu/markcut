@@ -726,22 +726,62 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   Future<void> _pickAudio(int track) async {
-    ({String url, String name})? picked;
-    try {
-      picked = await pickAudioFile();
-    } catch (e) {
-      if (mounted) showHint(context, '無法開啟檔案選擇器：$e', error: true);
-      return;
+    // 音樂來源：音樂檔，或從自己的影片提取聲音（只取音軌）
+    final fromVideo = await showModalBottomSheet<bool>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            ListTile(
+              leading: const Icon(Icons.library_music_outlined, color: kAmber),
+              title: const Text('音樂檔案'),
+              onTap: () => Navigator.pop(context, false),
+            ),
+            ListTile(
+              leading: const Icon(Icons.movie_outlined, color: kAmber),
+              title: const Text('從影片提取聲音'),
+              subtitle: const Text(
+                '只取影片的音軌，不會加入畫面',
+                style: TextStyle(fontSize: 11.5, color: kTextDim),
+              ),
+              onTap: () => Navigator.pop(context, true),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (fromVideo == null || !mounted) return;
+
+    String url;
+    String name;
+    if (fromVideo) {
+      final v = await ImagePicker().pickVideo(source: ImageSource.gallery);
+      if (v == null) return;
+      url = v.path;
+      name = v.name;
+    } else {
+      ({String url, String name})? picked;
+      try {
+        picked = await pickAudioFile();
+      } catch (e) {
+        if (mounted) showHint(context, '無法開啟檔案選擇器：$e', error: true);
+        return;
+      }
+      if (picked == null) return;
+      url = picked.url;
+      name = picked.name;
     }
-    if (picked == null) return;
     _pause();
-    final c = makeVideoController(picked.url);
+    final c = makeVideoController(url);
     try {
       await c.initialize();
     } catch (_) {
       c.dispose();
       if (mounted) {
-        showHint(context, '這個音訊檔無法播放，換一個試試', error: true);
+        showHint(context, '這個檔案無法播放，換一個試試', error: true);
       }
       return;
     }
@@ -749,16 +789,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (dur <= 0) {
       c.dispose();
       if (mounted) {
-        showHint(context, '讀不到這個音訊的長度，換一個試試', error: true);
+        showHint(context, '讀不到這個檔案的長度，換一個試試', error: true);
       }
       return;
     }
     _pushUndo();
     final srcIndex = _tl.sources.length;
     _tl.sources.add(
+      // 影片來源也一樣掛成 audio 種類：預覽和匯出都只用它的音軌，
+      // 畫面完全不進時間軸
       MediaSource(
-        path: picked.url,
-        name: picked.name,
+        path: url,
+        name: name,
         kind: ClipKind.audio,
         duration: dur,
       ),

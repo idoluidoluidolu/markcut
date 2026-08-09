@@ -112,7 +112,9 @@ Future<String> _buildCommand(
     final s = spec.sources[sourceIndex];
     return switch (s.kind) {
       ClipKind.video => probes[sourceIndex]!.hasAudio,
-      ClipKind.audio => true,
+      // 音訊來源也看 probe：「從影片提取聲音」可能選到沒音軌的影片，
+      // 寫死 true 會引用不存在的 [i:a] 讓整個匯出失敗
+      ClipKind.audio => probes[sourceIndex]!.hasAudio,
       _ => false,
     };
   }
