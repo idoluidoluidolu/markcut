@@ -2833,34 +2833,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // 磁吸開關：對齊的時候開，要微調的時候關。
-                // 開啟＝整顆反白（琥珀底、深色磁鐵），一眼就知道現在是開的
-                Tooltip(
-                  message: _snapOn ? '磁吸：開（點一下關掉）' : '磁吸：關（點一下打開）',
-                  child: InkWell(
-                    onTap: _toggleSnap,
-                    borderRadius: BorderRadius.circular(8),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 6,
-                      ),
-                      child: Container(
-                        width: 28,
-                        height: 26,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: _snapOn ? kAmber : Colors.transparent,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: CustomPaint(
-                          size: const Size(17, 17),
-                          painter: _MagnetPainter(_snapOn ? kBg : kTextDim),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
                 IconButton(
                   iconSize: 20,
                   color: _undoStack.isEmpty ? kTextDim : kText,
@@ -3859,6 +3831,52 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
   }
 
+  /// 工具列上的磁吸開關：自繪磁鐵圖示，開啟時反白（琥珀底、深色磁鐵）
+  Widget _snapToolBtn() {
+    final color = _snapOn ? kAmber : kTextDim.withValues(alpha: 0.55);
+    return Tooltip(
+      message: _snapOn ? '磁吸：開（點一下關掉）' : '磁吸：關（點一下打開）',
+      child: InkWell(
+        borderRadius: BorderRadius.circular(6),
+        onTap: _toggleSnap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                height: 21,
+                child: Container(
+                  width: 25,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: _snapOn ? kAmber : Colors.transparent,
+                    borderRadius: BorderRadius.circular(5),
+                  ),
+                  child: CustomPaint(
+                    size: const Size(16, 16),
+                    painter: _MagnetPainter(_snapOn ? kBg : color),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '磁吸',
+                style: TextStyle(
+                  fontSize: 10.5,
+                  height: 1.15,
+                  letterSpacing: 0.5,
+                  fontWeight: FontWeight.w400,
+                  color: color,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildTimelineTab() {
     if (_pxPerSec <= 0) {
       final screenW = MediaQuery.of(context).size.width - 60;
@@ -4148,6 +4166,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         tip: '把空隙補起來、素材接齊',
                         quarterTurns: 1,
                       ),
+                      _snapToolBtn(),
                       _toolBtn(Icons.add, '加素材', _addMediaChoice),
                       _toolBtn(
                         Icons.auto_awesome,
