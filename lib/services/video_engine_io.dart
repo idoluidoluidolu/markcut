@@ -502,6 +502,73 @@ Future<void> cancelExport() async {
   await FFmpegKit.cancel();
 }
 
+/// 把一段畫面「先做成倒轉好的暫存檔」。
+///
+/// FFmpeg 的 reverse 濾鏡要把整段解碼後全部存在記憶體裡才倒得出來，
+/// 一段 26 秒的 1080p 就要好幾 GB。這裡改成分段處理：
+/// 每 [chunkSec] 秒倒轉成一小段，再「由後往前」接起來——
+/// 結果跟一次倒轉完全一樣，但記憶體只會用到一小段的量，多長都倒得動。
+///
+/// 回傳暫存檔路徑；失敗回 null。產生的檔案會加進 [temps] 等待清理
+Future<String?> _prerenderReverse(
+  String srcPath,
+  double trimStart,
+  double trimEnd,
+  int outW,
+  int outH,
+  bool hasAudio,
+  List<String> temps,
+) async {
+  const chunkSec = 2.0;
+  final total = trimEnd - trimStart;
+  if (total <= 0.02) return null;
+  final dir = await getTemporaryDirectory();
+  final ts = DateTime.now().microsecondsSinceEpoch;
+  final n = (total / chunkSec).ceil();
+
+  final parts = <String>[];
+  // 由最後一段往前做：接起來就是整段倒著播
+  for (var i = n - 1; i >= 0; i--) {
+    final s = trimStart + i * chunkSec;
+    final e = math.min(trimEnd, s + chunkSec);
+    if (e - s < 0.02) continue;
+    final part = '${dir.path}${Platform.pathSeparator}rev_${ts}_$i.mp4';
+    // 先縮到輸出尺寸再倒轉：用原始解析度倒轉一樣會吃爆記憶體
+    final a = hasAudio ? '-af areverse -c:a aac -b:a 256k' : '-an';
+    final cmd =
+        '-y -ss ${_f(s)} -to ${_f(e)} -i "$srcPath" '
+        '-vf "scale=$outW:$outH:flags=bicubic,reverse" $a '
+        '-c:v ${_hwEncoder()} -b:v 16000k -pix_fmt nv12 "$part"';
+    var ses = await FFmpegKit.execute(cmd);
+    if (!ReturnCode.isSuccess(await ses.getReturnCode())) {
+      // 硬體編碼器不能用就退軟體編碼（跟主匯出同一套保底）
+      ses = await FFmpegKit.execute(
+        cmd.replaceFirst('-c:v ${_hwEncoder()}', '-c:v mpeg4 -q:v 3')
+            .replaceFirst('-pix_fmt nv12', '-pix_fmt yuv420p'),
+      );
+      if (!ReturnCode.isSuccess(await ses.getReturnCode())) return null;
+    }
+    parts.add(part);
+    temps.add(part);
+  }
+  if (parts.isEmpty) return null;
+  if (parts.length == 1) return parts.first;
+
+  // concat demuxer 把倒好的小段接起來（不用重編碼）
+  final listPath = '${dir.path}${Platform.pathSeparator}rev_${ts}_list.txt';
+  await File(listPath).writeAsString(
+    parts.map((p) => "file '${p.replaceAll("'", r"'\''")}'").join('\n'),
+  );
+  temps.add(listPath);
+  final joined = '${dir.path}${Platform.pathSeparator}rev_${ts}_all.mp4';
+  final ses = await FFmpegKit.execute(
+    '-y -f concat -safe 0 -i "$listPath" -c copy "$joined"',
+  );
+  if (!ReturnCode.isSuccess(await ses.getReturnCode())) return null;
+  temps.add(joined);
+  return joined;
+}
+
 /// 執行匯出並存到相簿。onProgress 回傳 0~1。
 Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   ExportSpec spec, {
@@ -510,6 +577,76 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   final dir = await getTemporaryDirectory();
   final ts = DateTime.now().millisecondsSinceEpoch;
   final outPath = '${dir.path}${Platform.pathSeparator}markcut_$ts.mp4';
+  final revTemps = <String>[];
+
+  // 倒轉的片段先各自做成「已經倒好」的暫存檔，主濾鏡就當成一般素材用。
+  // 這樣長片段也倒得動（見 _prerenderReverse）
+  if (spec.clips.any((c) => c.reverse)) {
+    final sources = List<MediaSource>.of(spec.sources);
+    final clips = <TimelineClip>[];
+    for (final c in spec.clips) {
+      final src = sources[c.sourceIndex];
+      if (!c.reverse || src.kind != ClipKind.video) {
+        clips.add(c);
+        continue;
+      }
+      final probe = await _probe(src.path);
+      final made = await _prerenderReverse(
+        src.path,
+        c.trimStart,
+        c.trimEnd,
+        spec.outW,
+        spec.outH,
+        probe.hasAudio,
+        revTemps,
+      );
+      if (made == null) {
+        for (final p in revTemps) {
+          try {
+            File(p).deleteSync();
+          } catch (_) {}
+        }
+        return (ok: false, message: '倒轉處理失敗，請再試一次', cancelled: false);
+      }
+      sources.add(
+        MediaSource(
+          path: made,
+          name: src.name,
+          kind: ClipKind.video,
+          duration: c.trimEnd - c.trimStart,
+          w: spec.outW,
+          h: spec.outH,
+        ),
+      );
+      // 改指到倒好的暫存檔，並把 reverse 關掉（主濾鏡不用再倒一次）。
+      // sourceIndex 是 final，只能走 JSON 重建
+      clips.add(
+        TimelineClip.fromJson({
+          ...c.toJson(),
+          'sourceIndex': sources.length - 1,
+          'trimStart': 0.0,
+          'trimEnd': c.trimEnd - c.trimStart,
+          'reverse': false,
+        }),
+      );
+    }
+    spec = ExportSpec(
+      sources: sources,
+      clips: clips,
+      timelineDuration: spec.timelineDuration,
+      speed: spec.speed,
+      watermarkPng: spec.watermarkPng,
+      outW: spec.outW,
+      outH: spec.outH,
+      wmStart: spec.wmStart,
+      wmEnd: spec.wmEnd,
+      wmAnimation: spec.wmAnimation,
+      wmSpeed: spec.wmSpeed,
+      wmRange: spec.wmRange,
+      overlayPngs: spec.overlayPngs,
+      crf: spec.crf,
+    );
+  }
 
   String? wmPath;
   if (spec.watermarkPng != null) {
@@ -564,6 +701,9 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     if (wmPath != null) del(wmPath);
     for (final p in overlayFiles.values) {
       del(p);
+    }
+    for (final p in revTemps) {
+      del(p); // 倒轉用的分段暫存檔
     }
   }
 

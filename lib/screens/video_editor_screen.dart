@@ -2376,29 +2376,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       showHint(context, '影片匯出需要 FFmpeg，只在手機 App 上提供');
       return;
     }
-    // 倒轉是把整段畫面存進記憶體再倒著吐，太長會直接把 App 撐爆。
-    // 與其讓它跑到一半閃退，不如先擋下來講清楚要怎麼處理
-    {
-      final (ow, oh) = computeCanvasSize(_tl, _resolution, _canvasRatio);
-      final revMax = engine.maxReverseSeconds(ow, oh);
-      final tooLong = _tl.clips
-          .where((c) => c.reverse && c.length > revMax)
-          .toList();
-      if (tooLong.isNotEmpty) {
-        final worst = tooLong
-            .map((c) => c.length)
-            .reduce((a, b) => a > b ? a : b);
-        showHint(
-          context,
-          '有 ${tooLong.length} 段倒轉片段太長（最長 ${worst.toStringAsFixed(1)} 秒）。'
-          '這個解析度下倒轉最多 ${revMax.toStringAsFixed(1)} 秒，'
-          '請先切短、或把解析度調低再匯出',
-          error: true,
-          duration: const Duration(seconds: 8),
-        );
-        return;
-      }
-    }
     _pause();
     // 匯出前把所有快取放掉：已解碼的幀（幾十 MB）、壓縮的抽幀
     // （長片可到 ~80MB）、ImageCache。匯出本身就要吃大量記憶體，
@@ -4546,16 +4523,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       setSheet(() {});
                     }
 
-                    // 倒轉要把整段畫面先存進記憶體才倒得出來，
-                    // 太長會把 App 撐爆——超過上限就先講，不要等到匯出才失敗
-                    final (ow, oh) = computeCanvasSize(
-                      _tl,
-                      _resolution,
-                      _canvasRatio,
-                    );
-                    final revMax = engine.maxReverseSeconds(ow, oh);
-                    final tooLong = rev && sel.length > revMax;
-
                     return Column(
                       children: [
                         Row(
@@ -4622,17 +4589,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             ],
                           ],
                         ),
-                        if (tooLong)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 6),
+                        if (rev)
+                          const Padding(
+                            padding: EdgeInsets.only(top: 6),
                             child: Text(
-                              '倒轉最多 ${revMax.toStringAsFixed(1)} 秒，'
-                              '這段有 ${sel.length.toStringAsFixed(1)} 秒。'
-                              '先把它切短一點再倒轉，不然匯出會失敗',
+                              '預覽是逐格畫面、暫時沒有聲音；'
+                              '匯出的成品畫面和聲音都會正確倒轉',
                               textAlign: TextAlign.center,
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 11,
-                                color: Color(0xFFE24B4A),
+                                color: kTextDim,
                                 height: 1.5,
                               ),
                             ),
