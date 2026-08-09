@@ -90,8 +90,23 @@ class TimelineEditor extends StatefulWidget {
   final bool wmHidden;
   final VoidCallback? onToggleWmVisible;
   final VoidCallback onSelectWm;
+
+  /// 拖曳浮水印列開始時的「安靜選取」：只選取、不切分頁。
+  /// 沒給就退回 onSelectWm。雙指縮放時手指落在浮水印列上
+  /// 不該直接跳去編輯模式
+  final VoidCallback? onSelectWmDrag;
   final ValueChanged<double> onMoveWm; // 新的起點
   final void Function(double deltaSec, bool fromLeft) onTrimWm;
+
+  /// 點軌道空白處＝選取整條軌道（貼上的目標）
+  final ValueChanged<int>? onTapTrack;
+
+  /// 目前被選取的軌道（-1＝沒有）；該軌會亮框提示
+  final int selectedTrack;
+
+  /// 額外的空白軌道數（「加入空白軌道」加出來的，
+  /// 在預設那條常駐空軌之外再多畫幾條）
+  final int extraTracks;
 
   const TimelineEditor({
     super.key,
@@ -127,8 +142,12 @@ class TimelineEditor extends StatefulWidget {
     this.wmHidden = false,
     this.onToggleWmVisible,
     required this.onSelectWm,
+    this.onSelectWmDrag,
     required this.onMoveWm,
     required this.onTrimWm,
+    this.onTapTrack,
+    this.selectedTrack = -1,
+    this.extraTracks = 0,
     this.trackScale = 1.0,
   });
 
@@ -163,10 +182,15 @@ class _TimelineEditorState extends State<TimelineEditor> {
   double get trackH => 54 * widget.trackScale;
   double get rowStride => trackH + TimelineEditor.gap;
 
-  /// 畫出來的軌數：有內容的 + 一條永遠留著的空軌
+  /// 畫出來的軌數：有內容的 + 一條永遠留著的空軌 + 手動加的空白軌
   // 永遠多一列空軌可放東西；預備中的旁白軌也要有位置顯示
-  int get _rows =>
-      math.max(timeline.usedTracks + 1, (widget.voiceTrack ?? -1) + 1);
+  int get _rows => math.max(
+    timeline.usedTracks + 1 + widget.extraTracks,
+    (widget.voiceTrack ?? -1) + 1,
+  );
+
+  /// 拖曳／插入允許到達的最底軌（含手動加的空白軌）
+  int get _maxTrack => timeline.usedTracks + widget.extraTracks;
 
   /// 浮水印軌佔掉的高度（含間距）
   double get _wmExtra =>
@@ -228,7 +252,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
       _pressTimer?.cancel();
     }
     final minDy = -(l.startTrack + 0.45) * rowStride;
-    final maxDy = (timeline.usedTracks - l.startTrack + 0.45) * rowStride;
+    final maxDy = (_maxTrack - l.startTrack + 0.45) * rowStride;
     setState(() {
       _lift = (
         clipId: l.clipId,
@@ -283,7 +307,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
           c.end > offset,
     );
 
-    final maxTrack = timeline.usedTracks; // 最底下的空軌
+    final maxTrack = _maxTrack; // 最底下的空軌（含手動加的空白軌）
     // 垂直沒怎麼動 → 留在原軌，只移位置
     if (l.dy.abs() < rowStride * 0.4) {
       return (
@@ -590,8 +614,12 @@ class _TimelineEditorState extends State<TimelineEditor> {
         Positioned.fill(
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            // 點空白處＝取消所有選取
-            onTap: () => widget.onSelect(-1),
+            // 點空白處＝取消片段選取、改成選取這條軌道
+            //（貼上就會貼進被選的軌）
+            onTap: () {
+              widget.onSelect(-1);
+              widget.onTapTrack?.call(track);
+            },
             onLongPressStart: (d) => widget.onLongPressEmpty(
               track,
               (d.localPosition.dx / pxPerSec).clamp(0.0, 1e6),
@@ -606,7 +634,11 @@ class _TimelineEditorState extends State<TimelineEditor> {
                 borderRadius: BorderRadius.circular(3),
                 border: isDropTarget
                     ? Border.all(color: kSelect, width: 2)
-                    : null,
+                    : (widget.selectedTrack == track
+                          ? Border.all(
+                              color: kSelect.withValues(alpha: 0.6),
+                            )
+                          : null),
               ),
             ),
           ),
@@ -719,13 +751,23 @@ class _TimelineEditorState extends State<TimelineEditor> {
                   GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
                     () => _EagerPanRecognizer(),
                     (r) => r
-                      ..onStart = ((_) => widget.onSelectWm())
-                      ..onUpdate = ((d) =>
-                          widget.onMoveWm(wm.start + d.delta.dx / pxPerSec)),
+                      // 拖曳開始＝「安靜選取」不切分頁——雙指縮放時
+                      // 手指落在這條上，不能一碰就跳去浮水印編輯
+                      ..onStart = ((_) {
+                        if (_pinching) return;
+                        (widget.onSelectWmDrag ?? widget.onSelectWm)();
+                      })
+                      ..onUpdate = ((d) {
+                        if (_pinching) return;
+                        widget.onMoveWm(wm.start + d.delta.dx / pxPerSec);
+                      }),
                   ),
             },
             child: GestureDetector(
-              onTap: widget.onSelectWm,
+              onTap: () {
+                if (_pinching) return;
+                widget.onSelectWm();
+              },
               child: Container(
                 width: w.toDouble(),
                 // 灰階退場：琥珀只留給「選取」一個意義。

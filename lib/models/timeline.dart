@@ -342,7 +342,9 @@ class TimelineModel {
     double playhead,
     double pxPerSec,
   ) {
-    final threshold = 8 / pxPerSec; // 8px 內就吸附
+    // 16px 內就吸附——太小會感覺不到「磁鐵」，
+    // 拖到別的片段頭尾附近要有被吸過去黏住的手感
+    final threshold = 16 / pxPerSec;
     final len = moving.length;
     final candidates = <double>[0, playhead, playhead - len];
     for (final c in clips) {

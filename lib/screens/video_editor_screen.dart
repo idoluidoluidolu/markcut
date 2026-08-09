@@ -32,7 +32,7 @@ import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
 
 /// 「加素材」選單的項目（錄旁白不是一種素材類型，所以另立一個 enum）
-enum _AddKind { video, image, text, wm, audio, record }
+enum _AddKind { video, image, text, wm, audio, record, blankTrack }
 
 const kSpeedOptions = <double>[0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
 
@@ -67,6 +67,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   final Map<int, List<Uint8List>> _thumbs = {}; // sourceIndex → filmstrip
 
   int _sel = -1; // 選取的片段 id
+  int _selTrack = -1; // 選取的軌道（點軌道空白處；貼上的目標）
+  int _extraBlankTracks = 0; // 手動加的空白軌數（常駐空軌之外）
   // 播放頭（時間軸秒，原速）。用 ValueNotifier 驅動，
   // 播放每一格只重繪時間碼／播放頭／預覽圖層，不整頁 setState
   final ValueNotifier<double> _posVN = ValueNotifier(0);
@@ -950,6 +952,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               title: const Text('錄旁白'),
               onTap: () => Navigator.pop(context, _AddKind.record),
             ),
+            ListTile(
+              leading: const Icon(Icons.playlist_add, color: kAmber),
+              title: const Text('空白軌道'),
+              onTap: () => Navigator.pop(context, _AddKind.blankTrack),
+            ),
             const SizedBox(height: 8),
           ],
         ),
@@ -971,6 +978,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         await _pickAudio(track);
       case _AddKind.record:
         await _recordVoice(track);
+      case _AddKind.blankTrack:
+        // 多畫一條空軌，之後可以貼上或拖片段進去
+        setState(() {
+          _extraBlankTracks++;
+          _selTrack = _tl.usedTracks + _extraBlankTracks - 1;
+        });
       case null:
         break;
     }
@@ -1824,9 +1837,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       showHint(context, '太靠近邊緣了，每段至少 0.2 秒');
       return;
     }
-    // 後半段需要自己的播放器（浮水印／文字／圖片沒有路徑，
-    // 開播放器會在 10 秒後 timeout 炸掉——交給 _ensureCtrlFor 判斷）
-    _ensureCtrlFor(second);
+    // 舊播放器正好停在切點附近，直接過戶給後半段——
+    // 切完當下畫面顯示的就是後半，重開播放器會黑一下（跳一下）。
+    // 前半再補一個新的（浮水印／文字／圖片沒有播放器，
+    // _ensureCtrlFor 會自己判斷跳過）
+    final oldCtrl = _ctrls.remove(c.id);
+    if (oldCtrl != null) _ctrls[second.id] = oldCtrl;
+    _ensureCtrlFor(c);
     setState(() => _sel = second.id);
   }
 
@@ -1990,12 +2007,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       trimStart: cb.trimStart,
       trimEnd: cb.trimEnd,
       offset: at ?? _position,
-      // 沒指定軌道時：優先貼到目前選取片段的那一軌
+      // 沒指定軌道時：選取片段的軌 → 點選中的軌道 → 複製來源的軌
       //（長按時間軸空白處＝貼到指定軌道與位置）
-      track: (track ?? _selClipById(_sel)?.track ?? cb.track).clamp(
-        0,
-        _tl.usedTracks,
-      ),
+      track:
+          (track ??
+                  _selClipById(_sel)?.track ??
+                  (_selTrack >= 0 ? _selTrack : cb.track))
+              .clamp(0, _tl.usedTracks + _extraBlankTracks),
       volume: cb.volume,
       // 這些貼上時原本被丟掉：2 倍速片段貼上會變 1 倍速、
       // 調好位置大小的疊圖會跳回置中原尺寸
@@ -2403,6 +2421,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   top: false,
                   child: TabBar(
                     controller: _tabs,
+                    // 調色模式沒有「完成」鈕：點任何分頁＝離開調色
+                    onTap: (_) {
+                      if (_colorMode) _exitColorMode();
+                    },
                     indicatorColor: Colors.transparent,
                     dividerHeight: 0,
                     labelStyle: const TextStyle(
@@ -2729,19 +2751,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       selRect = r;
                                       selVisual = c;
                                     }
-                                  }
-                                  if (vids.isEmpty) {
-                                    children.add(
-                                      const Center(
-                                        child: Text(
-                                          '這個時間點沒有畫面',
-                                          style: TextStyle(
-                                            color: kTextDim,
-                                            fontSize: 12,
-                                          ),
-                                        ),
-                                      ),
-                                    );
                                   }
 
                                   // 圖片 / 文字圖層（永遠疊在影片上面，由下層往上畫）
@@ -3568,7 +3577,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 onSelect: (id) => setState(() {
                                   _sel = id;
                                   _wmSel = false;
+                                  if (id != -1) _selTrack = -1;
                                 }),
+                                // 點軌道空白處＝選取該軌（貼上目標）
+                                onTapTrack: (t) =>
+                                    setState(() => _selTrack = t),
+                                selectedTrack: _selTrack,
+                                extraTracks: _extraBlankTracks,
                                 onSeek: _seekScrub,
                                 onTrim: _trimClip,
                                 onTrimStart: _pushUndo,
@@ -3633,6 +3648,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   });
                                   if (!wasSel) _tabs.animateTo(1);
                                 },
+                                // 拖曳開始只選取不切分頁：
+                                // 雙指縮放誤觸不會跳去編輯模式
+                                onSelectWmDrag: () => setState(() {
+                                  _wmSel = true;
+                                  _sel = -1;
+                                }),
                                 onMoveWm: (ns) => setState(() {
                                   final len = _wmEndEff - _wmStart;
                                   final s = ns.clamp(
@@ -4223,7 +4244,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       grade: c.color,
       onChanged: () => setState(() {}),
       onBeforeChange: _pushUndo,
-      onDone: _exitColorMode,
+      // 不放「完成」鈕：調整本來就即時生效，
+      // 點下方任何分頁就會離開調色（見 TabBar onTap）
       // 面板 dispose 時會回呼一次 false，那時這頁可能也在收——要擋
       onCompare: (on) {
         if (mounted) setState(() => _colorCompare = on);
