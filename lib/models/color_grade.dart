@@ -142,31 +142,47 @@ class ColorGrade {
   ui.ColorFilter? get filter => hasColor ? ui.ColorFilter.matrix(matrix) : null;
 
   /// 匯出用的 FFmpeg 濾鏡片段。沒調過回空字串。
-  /// 前面帶逗號，因為都是接在既有濾鏡後面
+  /// 前面帶逗號，因為都是接在既有濾鏡後面。
+  ///
+  /// 只用 LGPL 建置一定有的濾鏡——eq 是 GPL 授權，min 版沒編進去
+  /// （會直接 "No such filter: 'eq'"）。這裡把預覽的 4x5 矩陣拆成：
+  /// 飽和度＝colorchannelmixer 的跨通道混合；
+  /// 對比×曝光×亮度×色彩平衡＝lutrgb 的每通道仿射。
+  /// 數學上跟預覽矩陣一字不差，成品和預覽才對得上
   String get ffmpeg {
     if (!hasColor) return '';
-    String f(double v) => v.toStringAsFixed(3);
+    String f(double v) => v.toStringAsFixed(4);
+    const lr = 0.2126, lg = 0.7152, lb = 0.0722;
     final out = StringBuffer();
-    if (exposure.abs() > 0.001) {
-      final g = math.pow(2, exposure).toDouble();
-      out.write(',colorchannelmixer=rr=${f(g)}:gg=${f(g)}:bb=${f(g)}');
-    }
-    final hasBal =
-        balR.abs() > 0.001 || balG.abs() > 0.001 || balB.abs() > 0.001;
-    if (hasBal) {
-      // colorbalance 的範圍是 -1~1，但 1 已經誇張到不能看；
-      // 我們的 ±1 對應到它的 ±0.5，跟預覽矩陣的 ±64 階大致對得上
+
+    if ((saturation - 1).abs() > 0.001) {
+      final s = saturation;
+      final inv = 1 - s;
       out.write(
-        ',colorbalance=rm=${f(balR * 0.5)}'
-        ':gm=${f(balG * 0.5)}'
-        ':bm=${f(balB * 0.5)}',
+        ',colorchannelmixer='
+        'rr=${f(lr * inv + s)}:rg=${f(lg * inv)}:rb=${f(lb * inv)}:'
+        'gr=${f(lr * inv)}:gg=${f(lg * inv + s)}:gb=${f(lb * inv)}:'
+        'br=${f(lr * inv)}:bg=${f(lg * inv)}:bb=${f(lb * inv + s)}',
       );
     }
-    out.write(
-      ',eq=brightness=${f(brightness)}'
-      ':contrast=${f(contrast)}'
-      ':saturation=${f(saturation)}',
-    );
+
+    // 每通道仿射：out = val×(對比×曝光增益) + 對比中灰補償 + 亮度 + 平衡位移
+    final a = contrast * math.pow(2, exposure);
+    final base = 255 * (0.5 - 0.5 * contrast) + brightness * 255;
+    final offR = base + balR * 64;
+    final offG = base + balG * 64;
+    final offB = base + balB * 64;
+    final needLut =
+        (a - 1).abs() > 0.001 ||
+        offR.abs() > 0.5 ||
+        offG.abs() > 0.5 ||
+        offB.abs() > 0.5;
+    if (needLut) {
+      String ch(double off) =>
+          'clip(val*${f(a.toDouble())}'
+          '${off < 0 ? '' : '+'}${f(off)}\\,0\\,255)';
+      out.write(",lutrgb=r='${ch(offR)}':g='${ch(offG)}':b='${ch(offB)}'");
+    }
     return out.toString();
   }
 }
