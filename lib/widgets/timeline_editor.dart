@@ -1188,7 +1188,8 @@ class _ClipBlock extends StatelessWidget {
                 children: [
                   _clipFill(clip, source, filmstrip),
                   // 倒轉片段掛個標，不然跟正播的長得一模一樣
-                  if (clip.reverse)
+                  //（旗標模式或已轉成倒轉檔都算）
+                  if (clip.reverse || source.revOf != null)
                     Positioned(
                       left: 5,
                       top: 3,

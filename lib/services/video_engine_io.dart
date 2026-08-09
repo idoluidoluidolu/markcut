@@ -16,17 +16,50 @@ import 'video_processor.dart';
 /// 這個平台是否支援影片匯出
 const bool videoExportSupported = true;
 
-/// 倒轉一段畫面時，FFmpeg 的 reverse 濾鏡會把整段解碼後存在記憶體裡
-/// 才有辦法倒著吐出來。所以能倒轉多長是被記憶體綁死的，
-/// 不是隨便訂的數字：這裡抓 220MB 的預算換算成秒數。
+/// 把來源的某一段做成「已經倒轉好」的影片檔（按下倒轉時呼叫）。
 ///
-/// 回傳這個輸出尺寸下，單一片段最多能倒轉幾秒
-double maxReverseSeconds(int outW, int outH) {
-  const budgetBytes = 220 * 1024 * 1024;
-  const fps = 30;
-  final perFrame = outW * outH * 1.5; // YUV420
-  if (perFrame <= 0) return 3;
-  return (budgetBytes / (perFrame * fps)).clamp(1.0, 12.0);
+/// 做完之後這段就是普通素材：預覽有聲音、播放流暢、匯出不用特殊處理。
+/// 內部分段處理（每 2 秒一段、由後往前接），所以多長都倒得動、
+/// 記憶體只用到一小段的量。
+///
+/// [targetW]/[targetH] 是輸出尺寸（呼叫端先把長邊 cap 在 1920 以內）。
+/// 回傳檔案路徑；失敗或被取消回 null
+Future<String?> renderReversedClip(
+  String srcPath,
+  double trimStart,
+  double trimEnd,
+  int targetW,
+  int targetH, {
+  void Function(double progress)? onProgress,
+}) async {
+  final probe = await _probe(srcPath);
+  final temps = <String>[];
+  final out = await _prerenderReverse(
+    srcPath,
+    trimStart,
+    trimEnd,
+    targetW,
+    targetH,
+    probe.hasAudio,
+    temps,
+    onProgress: onProgress,
+  );
+  if (out == null) {
+    for (final p in temps) {
+      try {
+        File(p).deleteSync();
+      } catch (_) {}
+    }
+    return null;
+  }
+  // 中間分段檔可以清了，只留最後接合出來的那個
+  for (final p in temps) {
+    if (p == out) continue;
+    try {
+      File(p).deleteSync();
+    } catch (_) {}
+  }
+  return out;
 }
 
 /// 把倍速拆成 FFmpeg atempo 允許的範圍（單段 0.5~2.0）
@@ -517,8 +550,9 @@ Future<String?> _prerenderReverse(
   int outW,
   int outH,
   bool hasAudio,
-  List<String> temps,
-) async {
+  List<String> temps, {
+  void Function(double progress)? onProgress,
+}) async {
   const chunkSec = 2.0;
   final total = trimEnd - trimStart;
   if (total <= 0.02) return null;
@@ -550,6 +584,7 @@ Future<String?> _prerenderReverse(
     }
     parts.add(part);
     temps.add(part);
+    onProgress?.call(parts.length / n);
   }
   if (parts.isEmpty) return null;
   if (parts.length == 1) return parts.first;

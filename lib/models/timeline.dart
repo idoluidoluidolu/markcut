@@ -23,6 +23,12 @@ class MediaSource {
   /// 這讓浮水印變成一般的時間軸元素：可多軌、可切割、可移動
   WatermarkSettings? wmStyle;
 
+  /// 這份素材是「倒轉版」時，記下它是從哪個原始檔的哪一段做出來的。
+  /// 使用者把速度拉回正的時，靠這些資訊還原回原始素材
+  final String? revOf;
+  final double revStart;
+  final double revEnd;
+
   MediaSource({
     required this.path,
     required this.name,
@@ -32,6 +38,9 @@ class MediaSource {
     this.h = 0,
     this.textStyle,
     this.wmStyle,
+    this.revOf,
+    this.revStart = 0,
+    this.revEnd = 0,
   });
 
   bool get isVideo => kind == ClipKind.video;
@@ -50,6 +59,9 @@ class MediaSource {
     'duration': duration,
     if (textStyle != null) 'textStyle': textStyle!.toJson(),
     if (wmStyle != null) 'wmStyle': wmStyle!.toJson(),
+    if (revOf != null) 'revOf': revOf,
+    if (revOf != null) 'revStart': revStart,
+    if (revOf != null) 'revEnd': revEnd,
   };
 
   factory MediaSource.fromJson(Map<String, dynamic> j) => MediaSource(
@@ -68,6 +80,9 @@ class MediaSource {
         : WatermarkSettings.fromJson(
             Map<String, dynamic>.from(j['wmStyle'] as Map),
           ),
+    revOf: j['revOf'] as String?,
+    revStart: (j['revStart'] ?? 0).toDouble(),
+    revEnd: (j['revEnd'] ?? 0).toDouble(),
   );
 }
 

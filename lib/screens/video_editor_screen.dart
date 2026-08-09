@@ -4436,10 +4436,189 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     ).whenComplete(_saveDraft);
   }
 
+  /// 把片段（同 id）換成新的實例（倒轉／還原時 sourceIndex 是 final，
+  /// 只能整顆重建）。播放器也跟著換新來源
+  void _swapClip(TimelineClip oldClip, TimelineClip newClip) {
+    final i = _tl.clips.indexOf(oldClip);
+    if (i < 0) return;
+    setState(() => _tl.clips[i] = newClip);
+    _ctrls.remove(oldClip.id)?.dispose();
+    _ensureCtrlFor(newClip);
+    _resyncPlayback();
+    _saveDraft();
+  }
+
+  /// 按下倒轉：把這段現場做成「已經倒好的影片檔」再換上去。
+  /// 之後它就是普通素材——預覽有聲音、播放流暢、匯出不用特殊處理。
+  /// Web 或處理失敗時退回簡易模式（抽幀預覽，匯出時才倒轉）
+  Future<void> _reverseClip(
+    int clipId,
+    double sp,
+    VoidCallback onDone,
+  ) async {
+    final c = _selClipById(clipId);
+    if (c == null) return;
+    final src = _tl.sourceOf(c);
+    if (src.kind != ClipKind.video || kIsWeb) {
+      setState(() {
+        c.speed = sp;
+        c.reverse = true;
+      });
+      _resyncPlayback();
+      onDone();
+      return;
+    }
+    _pause();
+    // 進度視窗：長片段要分很多段處理，得讓人知道還活著
+    final progress = ValueNotifier<double>(0);
+    var dialogOpen = true;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          title: const Text('正在倒轉…'),
+          content: ValueListenableBuilder<double>(
+            valueListenable: progress,
+            builder: (context, v, _) => Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                LinearProgressIndicator(value: v > 0 ? v : null),
+                const SizedBox(height: 12),
+                Text('${(v * 100).toStringAsFixed(0)} %'),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => engine.cancelExport(),
+              child: const Text('取消'),
+            ),
+          ],
+        ),
+      ),
+    ).whenComplete(() => dialogOpen = false);
+
+    // 輸出尺寸：跟著來源走，但長邊 cap 在 1920（記憶體與速度的平衡）
+    var tw = src.w > 0 ? src.w : 1080;
+    var th = src.h > 0 ? src.h : 1920;
+    final long = math.max(tw, th);
+    if (long > 1920) {
+      final k = 1920 / long;
+      tw = (tw * k).round();
+      th = (th * k).round();
+    }
+    tw -= tw % 2;
+    th -= th % 2;
+
+    final made = await engine.renderReversedClip(
+      src.path,
+      c.trimStart,
+      c.trimEnd,
+      tw,
+      th,
+      onProgress: (v) => progress.value = v,
+    );
+    if (mounted && dialogOpen) Navigator.of(context).pop();
+    if (!mounted) return;
+
+    final cur = _selClipById(clipId);
+    if (cur == null) return;
+    if (made == null) {
+      // 失敗／取消：退回簡易模式，功能照樣能用
+      setState(() {
+        cur.speed = sp;
+        cur.reverse = true;
+      });
+      _resyncPlayback();
+      showHint(context, '倒轉檔沒做成，改用簡易預覽（匯出仍會正確倒轉）');
+      onDone();
+      return;
+    }
+    final segLen = cur.trimEnd - cur.trimStart;
+    final newIdx = _tl.sources.length;
+    _tl.sources.add(
+      MediaSource(
+        path: made,
+        name: src.name,
+        kind: ClipKind.video,
+        duration: segLen,
+        w: tw,
+        h: th,
+        // 還原用：記下是從哪個原始檔的哪一段倒出來的
+        revOf: src.path,
+        revStart: cur.trimStart,
+        revEnd: cur.trimEnd,
+      ),
+    );
+    // 倒轉檔的縮圖與拖曳快取
+    engine.makeThumbnails(made, segLen, 10, fastDecode: true).then((t) {
+      if (mounted && t.isNotEmpty) setState(() => _thumbs[newIdx] = t);
+    });
+    _makeScrubCache(newIdx, made, segLen);
+    _swapClip(
+      cur,
+      TimelineClip.fromJson({
+        ...cur.toJson(),
+        'sourceIndex': newIdx,
+        'trimStart': 0.0,
+        'trimEnd': segLen,
+        'reverse': false, // 內容已經倒好，不用再標
+        'speed': sp,
+      }),
+    );
+    onDone();
+  }
+
+  /// 速度拉回正的：把倒轉檔換回原始素材（修剪過的範圍照樣對應回去）
+  void _unreverseClip(int clipId, double sp, VoidCallback onDone) {
+    final c = _selClipById(clipId);
+    if (c == null) return;
+    if (c.reverse) {
+      // 簡易模式：關掉旗標就好
+      setState(() {
+        c.reverse = false;
+        c.speed = sp;
+      });
+      _resyncPlayback();
+      onDone();
+      return;
+    }
+    final src = _tl.sourceOf(c);
+    final orig = src.revOf;
+    if (orig == null) return; // 不是倒轉檔，沒事做
+    final idx = _tl.sources.indexWhere(
+      (s) => s.path == orig && s.revOf == null,
+    );
+    if (idx < 0) {
+      // 原始素材已不在專案裡（理論上不會發生）：保底只調速度
+      setState(() => c.speed = sp);
+      onDone();
+      return;
+    }
+    // 倒轉檔上的修剪範圍（a,b）對應回原始檔：
+    // 檔長 L＝revEnd-revStart，start'＝revStart+(L-b)、end'＝revStart+(L-a)
+    final revLen = src.revEnd - src.revStart;
+    _swapClip(
+      c,
+      TimelineClip.fromJson({
+        ...c.toJson(),
+        'sourceIndex': idx,
+        'trimStart': src.revStart + (revLen - c.trimEnd),
+        'trimEnd': src.revStart + (revLen - c.trimStart),
+        'reverse': false,
+        'speed': sp,
+      }),
+    );
+    onDone();
+  }
+
   /// 速度選單：選了片段＝調「那個片段」的速度（時間軸長度跟著縮放、
   /// 匯出同步生效）；沒選片段＝調整條影片的播放速度
   void _openSpeedSheet() {
-    final sel = _selClipById(_sel);
+    final selId = _sel; // 倒轉會換掉片段實例，之後都用 id 重查
+    final sel = _selClipById(selId);
     final selSrc = sel == null ? null : _tl.sourceOf(sel);
     // 只有影片/音訊能變速（圖片、文字的長度直接拖把手就好）
     final clipMode =
@@ -4472,7 +4651,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     const Spacer(),
                     Text(
                       clipMode
-                          ? '這段 ${sel.length.toStringAsFixed(1)}s'
+                          ? '這段 '
+                                '${(_selClipById(selId) ?? sel).length.toStringAsFixed(1)}s'
                           : _fmt(_tl.duration / _speed),
                       style: const TextStyle(
                         color: kTextDim,
@@ -4487,8 +4667,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 // 用固定檔位不用連續值，免得停在 1.03x 這種數字
                 Builder(
                   builder: (context) {
+                    // 倒轉/還原會把片段換成新實例（指向倒轉檔），每次重查
+                    final sel = _selClipById(selId);
+                    if (sel == null) return const SizedBox.shrink();
                     final now = clipMode ? sel.speed : _speed;
-                    final rev = clipMode && sel.reverse;
+                    // 倒轉中＝flag（簡易模式）或素材本身就是倒轉檔
+                    final rev =
+                        clipMode &&
+                        (sel.reverse || _tl.sourceOf(sel).revOf != null);
                     final signed = rev ? -now : now; // 帶號速度：負的＝倒轉
                     final stops = clipMode
                         ? kSpeedStops
@@ -4508,12 +4694,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                           _pushUndo();
                           pushed = true;
                         }
-                        setState(() {
-                          sel.speed = sp;
-                          sel.reverse = s < 0;
-                        });
+                        final wantRev = s < 0;
+                        if (wantRev != rev) {
+                          // 方向變了：做倒轉檔／還原原始素材（非同步，
+                          // 完成後片段會被換成新實例）
+                          if (wantRev) {
+                            _reverseClip(selId, sp, () => setSheet(() {}));
+                          } else {
+                            _unreverseClip(selId, sp, () => setSheet(() {}));
+                          }
+                          return;
+                        }
+                        setState(() => sel.speed = sp);
                         _ctrls[sel.id]?.setPlaybackSpeed(_speed * sp);
-                        _resyncPlayback(); // 變速／倒轉都改了時間對應
+                        _resyncPlayback(); // 變速改了時間對應
                       } else {
                         setState(() => _speed = sp);
                         for (final e in _tl.clips) {
@@ -4589,7 +4783,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             ],
                           ],
                         ),
-                        if (rev)
+                        if (rev && sel.reverse)
                           const Padding(
                             padding: EdgeInsets.only(top: 6),
                             child: Text(
