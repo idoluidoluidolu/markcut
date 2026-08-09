@@ -37,9 +37,13 @@ class WatermarkLayer extends StatefulWidget {
   final double? time;
 
   /// 回傳 true 時暫停單指拖曳。
-  /// 兩指捏合縮放時，其中一指滑過另一個元素會把它拖走——
+  /// 兩指捏合縮放時，其中一指滑過別的元素會把它拖走——
   /// 捏合期間要把拖曳整個鎖住
   final bool Function()? panLocked;
+
+  /// 回傳 false 時該部件完全不註冊拖曳（只留點選）。
+  /// 父層在「別的素材被選取」時用這個把拖曳讓給選中的素材
+  final bool Function(WmPart part)? panAllowed;
 
   const WatermarkLayer({
     super.key,
@@ -52,6 +56,7 @@ class WatermarkLayer extends StatefulWidget {
     this.onTapText,
     this.time,
     this.panLocked,
+    this.panAllowed,
   });
 
   @override
@@ -70,6 +75,16 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
           ),
         )
       : null;
+
+  /// 這個部件現在能不能拖：
+  /// 有部件被選取時只有被選的能拖；父層說不行（別的素材選取中）就不行。
+  /// 回 false 時連手勢都不註冊，拖曳會落到下層的「選取路由」去
+  bool _canDrag(WmPart part) {
+    if (widget.selectedPart != WmPart.none && widget.selectedPart != part) {
+      return false;
+    }
+    return widget.panAllowed?.call(part) ?? true;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -115,12 +130,26 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                 },
                 // 單指拖＝移動（雙指縮放由預覽層的 Listener 處理：
                 // 元素本身範圍太小，兩指張開時第二指會落在範圍外）
-                onPanStart: (_) => onDragStart?.call(),
-                onPanUpdate: (d) {
-                  logo.x = ((logo.x * w + d.delta.dx) / w).clamp(0.0, 1.0);
-                  logo.y = ((logo.y * h + d.delta.dy) / h).clamp(0.0, 1.0);
-                  onChanged();
-                },
+                onPanStart: !_canDrag(WmPart.logo)
+                    ? null
+                    : (_) {
+                        if (widget.panLocked?.call() ?? false) return;
+                        onDragStart?.call();
+                      },
+                onPanUpdate: !_canDrag(WmPart.logo)
+                    ? null
+                    : (d) {
+                        if (widget.panLocked?.call() ?? false) return;
+                        logo.x = ((logo.x * w + d.delta.dx) / w).clamp(
+                          0.0,
+                          1.0,
+                        );
+                        logo.y = ((logo.y * h + d.delta.dy) / h).clamp(
+                          0.0,
+                          1.0,
+                        );
+                        onChanged();
+                      },
                 child: Container(
                   decoration: _deco(WmPart.logo),
                   child: Opacity(
@@ -212,12 +241,20 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                   (onTapText ?? onTap)?.call();
                 },
                 // 單指拖＝移動（雙指縮放由預覽層的 Listener 處理）
-                onPanStart: (_) => onDragStart?.call(),
-                onPanUpdate: (d) {
-                  t.x = ((t.x * w + d.delta.dx) / w).clamp(0.0, 1.0);
-                  t.y = ((t.y * h + d.delta.dy) / h).clamp(0.0, 1.0);
-                  onChanged();
-                },
+                onPanStart: !_canDrag(WmPart.text)
+                    ? null
+                    : (_) {
+                        if (widget.panLocked?.call() ?? false) return;
+                        onDragStart?.call();
+                      },
+                onPanUpdate: !_canDrag(WmPart.text)
+                    ? null
+                    : (d) {
+                        if (widget.panLocked?.call() ?? false) return;
+                        t.x = ((t.x * w + d.delta.dx) / w).clamp(0.0, 1.0);
+                        t.y = ((t.y * h + d.delta.dy) / h).clamp(0.0, 1.0);
+                        onChanged();
+                      },
                 child: Transform.rotate(
                   angle: t.rotation * math.pi / 180,
                   child: Container(

@@ -2720,6 +2720,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               time: pos,
                                               panLocked: () =>
                                                   _pvPts.length >= 2,
+                                              // 有別的東西被選取時不吃拖曳，
+                                              // 讓給選取路由
+                                              panAllowed: (_) =>
+                                                  _sel == c.id ||
+                                                  (_sel == -1 && !_wmSel),
                                               // 點浮水印片段的元素＝
                                               // 選取＋進浮水印分頁編輯
                                               onTap: () {
@@ -2900,35 +2905,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             });
                                             _saveDraft();
                                           },
-                                          onScaleStart: (d) {
-                                            _pushUndo(); // 拖歪了可以按復原
-                                            _gestureStartPx = sc.px;
-                                            _gestureStartPy = sc.py;
-                                            _gestureStartScale = sc.scale;
-                                            _gestureStartFocal = d.focalPoint;
-                                          },
-                                          onScaleUpdate: (d) {
-                                            setState(() {
-                                              sc.px =
-                                                  (_gestureStartPx +
-                                                          (d.focalPoint.dx -
-                                                                  _gestureStartFocal
-                                                                      .dx) /
-                                                              w)
-                                                      .clamp(0.0, 1.0);
-                                              sc.py =
-                                                  (_gestureStartPy +
-                                                          (d.focalPoint.dy -
-                                                                  _gestureStartFocal
-                                                                      .dy) /
-                                                              h)
-                                                      .clamp(0.0, 1.0);
-                                              sc.scale =
-                                                  (_gestureStartScale * d.scale)
-                                                      .clamp(0.05, 3.0);
-                                            });
-                                          },
-                                          onScaleEnd: (_) => _saveDraft(),
+                                          // 移動／縮放手勢在最上層的
+                                          // 「選取路由」處理（拖曳整個
+                                          // 預覽區都只作用在選中的素材）
                                           // 文字素材有旋轉時，選取框跟著轉
                                           child: Transform.rotate(
                                             angle:
@@ -2965,6 +2944,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         // 捏合期間鎖拖曳，手指滑過別的
                                         // 元素才不會把它拖走
                                         panLocked: () => _pvPts.length >= 2,
+                                        // 有片段被選取時不吃拖曳，
+                                        // 讓給選取路由
+                                        panAllowed: (_) => _sel == -1,
                                         time: pos, // 動畫跟著播放頭走
                                         // 點浮水印 Logo＝選取＋切到浮水印分頁
                                         onTap: () {
@@ -2984,6 +2966,147 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           });
                                           _tabs.animateTo(1);
                                         },
+                                      ),
+                                    );
+                                  }
+
+                                  // ===== 選取路由（疊最上層）=====
+                                  // 有東西被選取時，整個預覽區的拖曳都
+                                  // 只作用在被選取的素材上——手指滑到
+                                  // 別的素材也不會把它拖走。
+                                  // 點選（tap）會穿透下去，仍可切換選取
+                                  TimelineClip? selWmClip;
+                                  {
+                                    final c = _selClipById(_sel);
+                                    if (c != null &&
+                                        _tl.sourceOf(c).kind == ClipKind.wm) {
+                                      selWmClip = c;
+                                    }
+                                  }
+                                  final wmClipStyle = selWmClip == null
+                                      ? null
+                                      : _tl.sourceOf(selWmClip).wmStyle;
+                                  final selVis = selVisual;
+                                  if (selVis != null ||
+                                      wmClipStyle != null ||
+                                      (_wmSel && _wmVisibleNow)) {
+                                    children.add(
+                                      Positioned.fill(
+                                        child: GestureDetector(
+                                          behavior: HitTestBehavior.translucent,
+                                          onScaleStart: (d) {
+                                            if (selVis != null ||
+                                                wmClipStyle != null) {
+                                              _pushUndo();
+                                            } else {
+                                              _pushWmUndo();
+                                            }
+                                            if (selVis != null) {
+                                              _gestureStartPx = selVis.px;
+                                              _gestureStartPy = selVis.py;
+                                              _gestureStartScale = selVis.scale;
+                                              _gestureStartFocal = d.focalPoint;
+                                            }
+                                            _routerLast = d.focalPoint;
+                                          },
+                                          onScaleUpdate: (d) {
+                                            if (selVis != null) {
+                                              setState(() {
+                                                selVis.px =
+                                                    (_gestureStartPx +
+                                                            (d.focalPoint.dx -
+                                                                    _gestureStartFocal
+                                                                        .dx) /
+                                                                w)
+                                                        .clamp(0.0, 1.0);
+                                                selVis.py =
+                                                    (_gestureStartPy +
+                                                            (d.focalPoint.dy -
+                                                                    _gestureStartFocal
+                                                                        .dy) /
+                                                                h)
+                                                        .clamp(0.0, 1.0);
+                                                selVis.scale =
+                                                    (_gestureStartScale *
+                                                            d.scale)
+                                                        .clamp(0.05, 3.0);
+                                              });
+                                              return;
+                                            }
+                                            // 浮水印：兩指縮放由外層
+                                            // Listener 處理，這裡只管移動
+                                            if (_pvPts.length >= 2) {
+                                              _routerLast = d.focalPoint;
+                                              return;
+                                            }
+                                            final dd =
+                                                d.focalPoint - _routerLast;
+                                            _routerLast = d.focalPoint;
+                                            final ddx = dd.dx / w;
+                                            final ddy = dd.dy / h;
+                                            setState(() {
+                                              if (wmClipStyle != null) {
+                                                // 浮水印片段：整組一起移
+                                                final t2 = wmClipStyle.text;
+                                                final lg = wmClipStyle.logo;
+                                                if (t2.enabled) {
+                                                  t2.x = (t2.x + ddx).clamp(
+                                                    0.0,
+                                                    1.0,
+                                                  );
+                                                  t2.y = (t2.y + ddy).clamp(
+                                                    0.0,
+                                                    1.0,
+                                                  );
+                                                }
+                                                if (lg.enabled) {
+                                                  lg.x = (lg.x + ddx).clamp(
+                                                    0.0,
+                                                    1.0,
+                                                  );
+                                                  lg.y = (lg.y + ddy).clamp(
+                                                    0.0,
+                                                    1.0,
+                                                  );
+                                                }
+                                              } else {
+                                                // 全域浮水印：只移被選部件
+                                                final t2 = _settings.text;
+                                                final lg = _settings.logo;
+                                                final hasT =
+                                                    t2.enabled &&
+                                                    t2.text.trim().isNotEmpty;
+                                                final part =
+                                                    _wmPart != WmPart.none
+                                                    ? _wmPart
+                                                    : (hasT
+                                                          ? WmPart.text
+                                                          : WmPart.logo);
+                                                if (part == WmPart.text) {
+                                                  t2.x = (t2.x + ddx).clamp(
+                                                    0.0,
+                                                    1.0,
+                                                  );
+                                                  t2.y = (t2.y + ddy).clamp(
+                                                    0.0,
+                                                    1.0,
+                                                  );
+                                                } else {
+                                                  lg.x = (lg.x + ddx).clamp(
+                                                    0.0,
+                                                    1.0,
+                                                  );
+                                                  lg.y = (lg.y + ddy).clamp(
+                                                    0.0,
+                                                    1.0,
+                                                  );
+                                                }
+                                              }
+                                            });
+                                          },
+                                          onScaleEnd: (_) => _saveDraft(),
+                                          child: const SizedBox.expand(),
+                                        ),
                                       ),
                                     );
                                   }
@@ -3013,6 +3136,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   // ===== 預覽區雙指縮放（選取中的浮水印或片段）=====
   final Map<int, Offset> _pvPts = {};
+
+  /// 選取路由的上一個拖曳點（算增量用）
+  Offset _routerLast = Offset.zero;
   double? _pvBaseDist;
   double _pvBaseText = 0;
   double _pvBaseLogo = 0;
