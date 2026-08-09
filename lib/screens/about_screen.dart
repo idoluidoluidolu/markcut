@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../services/store_links.dart';
 import '../theme.dart';
+import '../widgets/swipe_back.dart';
 
 /// 原始碼位置（MPL 要求提供取得方式）
 const kSourceUrl = 'https://github.com/idoluidoluidolu/markcut';
@@ -36,72 +37,74 @@ class AboutScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
+    return SwipeBack(
+      child: Scaffold(
         backgroundColor: Colors.black,
-        title: const Text('關於 浮水印'),
-      ),
-      body: SafeArea(
-        // 頁尾跟著內容捲到最後，不釘在畫面底部
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-          children: [
-            // 吉祥物（跟首頁同一張），不寫名字和版本
-            Center(
-              child: Padding(
-                padding: const EdgeInsets.only(top: 4, bottom: 20),
-                child: SizedBox(
-                  width: 220,
-                  height: 88,
-                  child: Image.asset(
-                    'assets/icon/icon_foreground.png',
-                    fit: BoxFit.cover, // 裁掉原圖四周的留白
-                    filterQuality: FilterQuality.medium,
+        appBar: AppBar(
+          backgroundColor: Colors.black,
+          title: const Text('關於 浮水印'),
+        ),
+        body: SafeArea(
+          // 頁尾跟著內容捲到最後，不釘在畫面底部
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            children: [
+              // 吉祥物（跟首頁同一張），不寫名字和版本
+              Center(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 4, bottom: 20),
+                  child: SizedBox(
+                    width: 220,
+                    height: 88,
+                    child: Image.asset(
+                      'assets/icon/icon_foreground.png',
+                      fit: BoxFit.cover, // 裁掉原圖四周的留白
+                      filterQuality: FilterQuality.medium,
+                    ),
                   ),
                 ),
               ),
-            ),
-            // 作者的話：置中對齊，不套卡片框。
-            // 一堆長短不一的短句齊左會很雜，置中之後行尾對齊就整齊了
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 8),
-              child: Text(
-                kDeveloperIntro,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 12.5,
-                  color: kTextDim,
-                  height: 1.75,
-                ),
-              ),
-            ),
-            const SizedBox(height: 22),
-            // 介紹文裡講的「下面的連結」就是這顆
-            Builder(
-              builder: (context) => FilledButton.icon(
-                onPressed: () async {
-                  final ok = await openLiuJiKan();
-                  if (!ok && context.mounted) {
-                    showHint(context, '開不了商店連結', error: true);
-                  }
-                },
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size.fromHeight(46),
-                ),
-                icon: const Icon(Icons.open_in_new, size: 17),
-                label: Text(
-                  liuJiKanStoreLabel,
-                  style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
+              // 作者的話：置中對齊，不套卡片框。
+              // 一堆長短不一的短句齊左會很雜，置中之後行尾對齊就整齊了
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 8),
+                child: Text(
+                  kDeveloperIntro,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: kTextDim,
+                    height: 1.75,
                   ),
                 ),
               ),
-            ),
-            const SizedBox(height: 28),
-            _footer(context),
-          ],
+              const SizedBox(height: 22),
+              // 介紹文裡講的「下面的連結」就是這顆
+              Builder(
+                builder: (context) => FilledButton.icon(
+                  onPressed: () async {
+                    final ok = await openLiuJiKan();
+                    if (!ok && context.mounted) {
+                      showHint(context, '開不了商店連結', error: true);
+                    }
+                  },
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(46),
+                  ),
+                  icon: const Icon(Icons.open_in_new, size: 17),
+                  label: Text(
+                    liuJiKanStoreLabel,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 28),
+              _footer(context),
+            ],
+          ),
         ),
       ),
     );
@@ -305,37 +308,39 @@ class _InfoPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(backgroundColor: Colors.black, title: Text(title)),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          for (final (heading, text) in sections) ...[
-            _card(heading, [_body(text)]),
-            const SizedBox(height: 10),
-          ],
-          if (showSourceRow) ...[
-            _copyRow(icon: Icons.code, text: kSourceUrl, copied: '已複製原始碼網址'),
-            const SizedBox(height: 12),
-          ],
-          if (showPackageList)
-            OutlinedButton(
-              onPressed: () => showLicensePage(
-                context: context,
-                applicationName: '浮水印',
-                applicationVersion: kAppVersion,
-                applicationLegalese: '依 MPL 2.0 散布',
+    return SwipeBack(
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(backgroundColor: Colors.black, title: Text(title)),
+        body: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            for (final (heading, text) in sections) ...[
+              _card(heading, [_body(text)]),
+              const SizedBox(height: 10),
+            ],
+            if (showSourceRow) ...[
+              _copyRow(icon: Icons.code, text: kSourceUrl, copied: '已複製原始碼網址'),
+              const SizedBox(height: 12),
+            ],
+            if (showPackageList)
+              OutlinedButton(
+                onPressed: () => showLicensePage(
+                  context: context,
+                  applicationName: '浮水印',
+                  applicationVersion: kAppVersion,
+                  applicationLegalese: '依 MPL 2.0 散布',
+                ),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size.fromHeight(44),
+                  side: const BorderSide(color: kClipBorder),
+                  foregroundColor: kText,
+                ),
+                child: const Text('第三方套件授權清單', style: TextStyle(fontSize: 13)),
               ),
-              style: OutlinedButton.styleFrom(
-                minimumSize: const Size.fromHeight(44),
-                side: const BorderSide(color: kClipBorder),
-                foregroundColor: kText,
-              ),
-              child: const Text('第三方套件授權清單', style: TextStyle(fontSize: 13)),
-            ),
-          const SizedBox(height: 24),
-        ],
+            const SizedBox(height: 24),
+          ],
+        ),
       ),
     );
   }

@@ -132,58 +132,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _ready = false;
   bool _exporting = false;
 
-  // ===== 右滑＝上一步 =====
-  //
-  // 用原始指標事件判斷，不走手勢競技場——時間軸、滑桿、浮水印都有自己的
-  // 拖曳處理，走競技場的話這些地方永遠搶不到。
-  // 條件抓得嚴一點，才不會把「橫向捲時間軸」誤判成返回：
-  // 單指、往右超過 110px、水平位移是垂直的 2 倍以上，
-  // 而且要在 450ms 內完成（是「甩」不是「慢慢拖」——慢拖是在捲時間軸）
-  int? _backPointer;
-  Offset _backStart = Offset.zero;
-  DateTime _backStartAt = DateTime.fromMillisecondsSinceEpoch(0);
-  double _backMaxDy = 0;
-  bool _backFired = false;
-
-  void _backSwipeDown(PointerDownEvent e) {
-    // 多指（捏合縮放）就整個放棄，不要跟縮放打架
-    if (_backPointer != null) {
-      _backPointer = null;
-      _backFired = true; // 這一輪不再判定
-      return;
-    }
-    _backPointer = e.pointer;
-    _backStart = e.position;
-    _backStartAt = DateTime.now();
-    _backMaxDy = 0;
-    _backFired = false;
-  }
-
-  void _backSwipeMove(PointerMoveEvent e) {
-    if (_backFired || e.pointer != _backPointer) return;
-    final d = e.position - _backStart;
-    _backMaxDy = math.max(_backMaxDy, d.dy.abs());
-    final ms = DateTime.now().difference(_backStartAt).inMilliseconds;
-    if (ms > 450) {
-      _backFired = true; // 拖太久＝不是甩，這一輪放棄
-      return;
-    }
-    if (d.dx > 110 && d.dx > _backMaxDy * 2) {
-      _backFired = true;
-      _backPointer = null;
-      _handleBack();
-    }
-  }
-
-  void _backSwipeUp(PointerUpEvent e) {
-    if (e.pointer == _backPointer) _backSwipeReset();
-  }
-
-  void _backSwipeReset() {
-    _backPointer = null;
-    _backFired = false;
-  }
-
   TimelineClip? _clipboard; // 複製的片段（貼上時以播放頭為起點）
   // 時間軸雙指縮放：在整個分頁層級偵測，空白處一樣能捏
   bool _tlPinching = false;
@@ -1506,10 +1454,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _pushUndo();
     // 起手用目前浮水印的設定當底（沒設定就給一個預設文字），
     // 點兩下隨時可以改
-    // 動畫要剝掉：素材是烘成靜態 PNG 匯出的，預覽會動但成品不會，
-    // 那種落差比沒有動畫更糟
     final style = _settings.hasAnyMark
-        ? (_settings.copy()..animation = WmAnimation.none)
+        ? _settings.copy()
         : (WatermarkSettings()
             ..text = TextMark(
               text: '@浮水印',
@@ -2313,65 +2259,56 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         appBar: AppBar(title: const Text('影片編輯')),
         body: !_ready
             ? const Center(child: CircularProgressIndicator())
-            // 右滑＝上一步。用 Listener 而不是 GestureDetector：
-            // Listener 不進手勢競技場，所以不管底下是時間軸、滑桿還是
-            // 浮水印，這裡都收得到——真的任何地方都能滑。
-            // 代價是要自己判斷「這是不是一次右滑」，見 _backSwipe*
-            : Listener(
-                onPointerDown: _backSwipeDown,
-                onPointerMove: _backSwipeMove,
-                onPointerUp: _backSwipeUp,
-                onPointerCancel: (_) => _backSwipeReset(),
-                child: Column(
-                  children: [
-                    Expanded(flex: 5, child: _buildPreview()),
-                    _buildControlBar(),
-                    Expanded(
-                      flex: 5,
-                      child: TabBarView(
-                        controller: _tabs,
-                        // 左右滑動保留給時間軸，分頁只用底部按鈕切換
-                        physics: const NeverScrollableScrollPhysics(),
-                        children: [
-                          // 調色模式接管下半部，預覽照常在上面看得到
-                          _colorMode ? _buildColorPanel() : _buildTimelineTab(),
-                          // 浮水印分頁認選取目標：選中的是浮水印素材
-                          // 就編它，否則編全域浮水印。key 綁目標，
-                          // 切換目標時面板內部狀態才會重置
-                          Builder(
-                            builder: (context) {
-                              final c = _selClipById(_sel);
-                              final src = c == null ? null : _tl.sourceOf(c);
-                              final isClipWm =
-                                  src != null && src.kind == ClipKind.wm;
-                              if (isClipWm) src.wmStyle ??= WatermarkSettings();
-                              return WatermarkPanel(
-                                key: ValueKey(isClipWm ? _sel : -1),
-                                settings: isClipWm ? src.wmStyle! : _settings,
-                                onChanged: () => setState(() {
-                                  if (isClipWm) {
-                                    // 名字跟著文字走，時間軸上才認得出來
-                                    final st = src.wmStyle!;
-                                    src.name =
-                                        st.text.enabled &&
-                                            st.text.text.trim().isNotEmpty
-                                        ? st.text.text
-                                        : '浮水印';
-                                  }
-                                }),
-                                onBeforeChange: _pushWmUndo,
-                                syncVersion: _wmSync,
-                                // 素材是靜態 PNG 匯出，動畫只給全域浮水印
-                                showAnimation: !isClipWm,
-                              );
-                            },
-                          ),
-                          _buildExportTab(),
-                        ],
-                      ),
+            // 編輯模式「不放」右滑返回：時間軸捲動、拖片段、移浮水印
+            // 全是橫向手勢，跟返回判定天生打架。返回走上一頁鍵／返回鍵
+            : Column(
+                children: [
+                  Expanded(flex: 5, child: _buildPreview()),
+                  _buildControlBar(),
+                  Expanded(
+                    flex: 5,
+                    child: TabBarView(
+                      controller: _tabs,
+                      // 左右滑動保留給時間軸，分頁只用底部按鈕切換
+                      physics: const NeverScrollableScrollPhysics(),
+                      children: [
+                        // 調色模式接管下半部，預覽照常在上面看得到
+                        _colorMode ? _buildColorPanel() : _buildTimelineTab(),
+                        // 浮水印分頁認選取目標：選中的是浮水印素材
+                        // 就編它，否則編全域浮水印。key 綁目標，
+                        // 切換目標時面板內部狀態才會重置
+                        Builder(
+                          builder: (context) {
+                            final c = _selClipById(_sel);
+                            final src = c == null ? null : _tl.sourceOf(c);
+                            final isClipWm =
+                                src != null && src.kind == ClipKind.wm;
+                            if (isClipWm) src.wmStyle ??= WatermarkSettings();
+                            return WatermarkPanel(
+                              key: ValueKey(isClipWm ? _sel : -1),
+                              settings: isClipWm ? src.wmStyle! : _settings,
+                              onChanged: () => setState(() {
+                                if (isClipWm) {
+                                  // 名字跟著文字走，時間軸上才認得出來
+                                  final st = src.wmStyle!;
+                                  src.name =
+                                      st.text.enabled &&
+                                          st.text.text.trim().isNotEmpty
+                                      ? st.text.text
+                                      : '浮水印';
+                                }
+                              }),
+                              onBeforeChange: _pushWmUndo,
+                              syncVersion: _wmSync,
+                              showAnimation: true,
+                            );
+                          },
+                        ),
+                        _buildExportTab(),
+                      ],
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
         bottomNavigationBar: !_ready
             ? null

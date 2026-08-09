@@ -288,9 +288,34 @@ Future<String> _buildCommand(
         '${vFades(c)}'
         '[lv$k];',
       );
+      // 浮水印素材的動畫跟全域浮水印同一套 overlay 時間運算式：
+      // 閃爍＝enable 週期開關；飄移/跑馬燈＝x,y 隨 t 變化
+      var enable = 'between(t\\,${_f(start)}\\,${_f(end)})';
+      var pos = '0:0';
+      var evalFrame = '';
+      final wmSt = src.kind == ClipKind.wm ? src.wmStyle : null;
+      if (wmSt != null && wmSt.animation != WmAnimation.none) {
+        evalFrame = 'eval=frame:';
+        switch (wmSt.animation) {
+          case WmAnimation.none:
+            break;
+          case WmAnimation.blink:
+            enable =
+                '$enable*lt(mod(t\\,${_f(wmSt.blinkCycle)})'
+                '\\,${_f(wmSt.blinkOn)})';
+          case WmAnimation.drift:
+            final f = _f(1.3 * wmSt.animSpeed);
+            final f2 = _f(0.9 * wmSt.animSpeed);
+            final amp = _f(0.02 * wmSt.animRange);
+            pos = "x='sin(t*$f)*W*$amp':y='cos(t*$f2)*H*$amp'";
+          case WmAnimation.marquee:
+            final cy = _f(wmSt.marqueeCycle);
+            pos = "x='W-mod(t\\,$cy)*2*W/$cy':y=0";
+        }
+      }
       fc.write(
-        '[$cur][lv$k]overlay=0:0:'
-        'enable=between(t\\,${_f(start)}\\,${_f(end)}):'
+        '[$cur][lv$k]overlay=$pos:$evalFrame'
+        'enable=$enable:'
         'eof_action=pass[ov$k];',
       );
     }

@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/watermark_settings.dart';
 import '../services/preset_store.dart';
 import '../theme.dart';
+import '../widgets/swipe_back.dart';
 import 'about_screen.dart';
 import 'feedback_screen.dart';
 import 'presets_screen.dart';
@@ -106,78 +107,88 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(backgroundColor: Colors.black, title: const Text('個人中心')),
-      body: Column(
-        children: [
-          // 三張大卡：垂直置中，放不下才變成可捲
-          Expanded(
-            child: LayoutBuilder(
-              builder: (context, cons) => SingleChildScrollView(
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(minHeight: cons.maxHeight),
-                  child: Padding(
+    // 非編輯頁面全頁都能右滑返回（編輯畫面橫向手勢太多，刻意不放）
+    return SwipeBack(
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          backgroundColor: Colors.black,
+          title: const Text('個人中心'),
+        ),
+        body: Column(
+          children: [
+            // 三張大卡：垂直置中，放不下才變成可捲
+            Expanded(
+              child: LayoutBuilder(
+                builder: (context, cons) => SingleChildScrollView(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(minHeight: cons.maxHeight),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 24,
+                        vertical: 16,
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _bigFolder(
+                            icon: Icons.bookmarks_outlined,
+                            title: '範本夾',
+                            subtitle: _presets.isEmpty
+                                ? '還沒有範本'
+                                : '${_presets.length} 個範本',
+                            screen: () => const PresetsScreen(),
+                          ),
+                          const SizedBox(height: 14),
+                          _bigFolder(
+                            icon: Icons.folder_outlined,
+                            title: '草稿夾',
+                            subtitle: _draft == null ? '沒有草稿' : '1 個未完成的專案',
+                            screen: () => const DraftsScreen(),
+                          ),
+                          const SizedBox(height: 14),
+                          _bigFolder(
+                            icon: Icons.chat_bubble_outline,
+                            title: '意見回饋',
+                            subtitle: '聯絡我',
+                            onTap: () => showFeedbackDialog(context),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            // 關於：釘在畫面底部置中
+            SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: TextButton.icon(
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const AboutScreen()),
+                  ),
+                  style: TextButton.styleFrom(
+                    foregroundColor: kIcon,
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 24,
-                      vertical: 16,
-                    ),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        _bigFolder(
-                          icon: Icons.bookmarks_outlined,
-                          title: '範本夾',
-                          subtitle: _presets.isEmpty
-                              ? '還沒有範本'
-                              : '${_presets.length} 個範本',
-                          screen: () => const PresetsScreen(),
-                        ),
-                        const SizedBox(height: 14),
-                        _bigFolder(
-                          icon: Icons.folder_outlined,
-                          title: '草稿夾',
-                          subtitle: _draft == null ? '沒有草稿' : '1 個未完成的專案',
-                          screen: () => const DraftsScreen(),
-                        ),
-                        const SizedBox(height: 14),
-                        _bigFolder(
-                          icon: Icons.chat_bubble_outline,
-                          title: '意見回饋',
-                          subtitle: '聯絡我',
-                          onTap: () => showFeedbackDialog(context),
-                        ),
-                      ],
+                      horizontal: 16,
+                      vertical: 8,
                     ),
                   ),
+                  icon: const Icon(
+                    Icons.info_outline,
+                    size: 14,
+                    color: kTextDim,
+                  ),
+                  label: const Text('關於這個 App', style: TextStyle(fontSize: 12)),
                 ),
               ),
             ),
-          ),
-          // 關於：釘在畫面底部置中
-          SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: TextButton.icon(
-                onPressed: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const AboutScreen()),
-                ),
-                style: TextButton.styleFrom(
-                  foregroundColor: kIcon,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
-                  ),
-                ),
-                icon: const Icon(Icons.info_outline, size: 14, color: kTextDim),
-                label: const Text('關於這個 App', style: TextStyle(fontSize: 12)),
-              ),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -276,111 +287,113 @@ class _DraftsScreenState extends State<DraftsScreen> {
   @override
   Widget build(BuildContext context) {
     final d = _draft;
-    return Scaffold(
-      appBar: AppBar(title: const Text('草稿夾')),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : d == null
-          ? const Center(
-              child: Padding(
-                padding: EdgeInsets.all(32),
-                child: Text(
-                  '沒有草稿。\n\n剪輯到一半離開時選「保留草稿」，'
-                  '專案就會存在這裡。',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: kTextDim, height: 1.6),
-                ),
-              ),
-            )
-          : ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                Container(
-                  decoration: BoxDecoration(
-                    color: kPanel,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: kBorder),
+    return SwipeBack(
+      child: Scaffold(
+        appBar: AppBar(title: const Text('草稿夾')),
+        body: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : d == null
+            ? const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(32),
+                  child: Text(
+                    '沒有草稿。\n\n剪輯到一半離開時選「保留草稿」，'
+                    '專案就會存在這裡。',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: kTextDim, height: 1.6),
                   ),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(10),
-                    onTap: _resume,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 14,
-                      ),
-                      child: Row(
-                        children: [
-                          // 影片縮圖當封面：框跟著影片比例走（直片直框），
-                          // 沒有縮圖才用圖示
-                          Builder(
-                            builder: (context) {
-                              final aspect =
-                                  ((d['thumbAspect'] as num?) ?? 16 / 9)
-                                      .toDouble();
-                              return Container(
-                                width: (52 * aspect).clamp(30.0, 92.0),
-                                height: 52,
-                                clipBehavior: Clip.antiAlias,
-                                decoration: BoxDecoration(
-                                  color: kPanelHi,
-                                  borderRadius: BorderRadius.circular(7),
-                                ),
-                                child: d['thumb'] is String
-                                    ? Image.memory(
-                                        base64Decode(d['thumb'] as String),
-                                        fit: BoxFit.cover,
-                                        gaplessPlayback: true,
-                                      )
-                                    : const Icon(
-                                        Icons.movie_outlined,
-                                        size: 20,
-                                        color: kAmber,
-                                      ),
-                              );
-                            },
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text(
-                                  '未完成的專案',
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w700,
+                ),
+              )
+            : ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  Container(
+                    decoration: BoxDecoration(
+                      color: kPanel,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: kBorder),
+                    ),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: _resume,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 14,
+                        ),
+                        child: Row(
+                          children: [
+                            // 影片縮圖當封面：框跟著影片比例走（直片直框），
+                            // 沒有縮圖才用圖示
+                            Builder(
+                              builder: (context) {
+                                final aspect =
+                                    ((d['thumbAspect'] as num?) ?? 16 / 9)
+                                        .toDouble();
+                                return Container(
+                                  width: (52 * aspect).clamp(30.0, 92.0),
+                                  height: 52,
+                                  clipBehavior: Clip.antiAlias,
+                                  decoration: BoxDecoration(
+                                    color: kPanelHi,
+                                    borderRadius: BorderRadius.circular(7),
                                   ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  '${(d['clips'] as List).length} 個片段'
-                                  '・${_fmt(_draftDuration(d))}'
-                                  '${_savedAtLabel(d)}',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: kTextDim,
+                                  child: d['thumb'] is String
+                                      ? Image.memory(
+                                          base64Decode(d['thumb'] as String),
+                                          fit: BoxFit.cover,
+                                          gaplessPlayback: true,
+                                        )
+                                      : const Icon(
+                                          Icons.movie_outlined,
+                                          size: 20,
+                                          color: kAmber,
+                                        ),
+                                );
+                              },
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    '未完成的專案',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w700,
+                                    ),
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    '${(d['clips'] as List).length} 個片段'
+                                    '・${_fmt(_draftDuration(d))}'
+                                    '${_savedAtLabel(d)}',
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: kTextDim,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                          ),
-                          IconButton(
-                            tooltip: '刪除草稿',
-                            icon: const Icon(
-                              Icons.delete_outline,
-                              size: 19,
-                              color: kTextDim,
+                            IconButton(
+                              tooltip: '刪除草稿',
+                              icon: const Icon(
+                                Icons.delete_outline,
+                                size: 19,
+                                color: kTextDim,
+                              ),
+                              onPressed: _delete,
                             ),
-                            onPressed: _delete,
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ],
-            ),
+                ],
+              ),
+      ),
     );
   }
 }

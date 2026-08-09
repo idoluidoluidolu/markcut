@@ -4,6 +4,7 @@ import '../models/watermark_settings.dart';
 import '../services/preset_store.dart';
 import '../theme.dart';
 import '../widgets/watermark_layer.dart';
+import '../widgets/swipe_back.dart';
 import 'watermark_studio_screen.dart';
 
 /// 常用浮水印範本管理：黑底預覽卡（浮水印按真實位置渲染），
@@ -59,8 +60,10 @@ class _PresetsScreenState extends State<PresetsScreen> {
     final newName = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('範本改名',
-            style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w700)),
+        title: const Text(
+          '範本改名',
+          style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w700),
+        ),
         content: TextField(
           controller: ctrl,
           autofocus: true,
@@ -101,17 +104,23 @@ class _PresetsScreenState extends State<PresetsScreen> {
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-              child: Text(p.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontSize: 13.5,
-                      fontWeight: FontWeight.w700,
-                      color: kText)),
+              child: Text(
+                p.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w700,
+                  color: kText,
+                ),
+              ),
             ),
             ListTile(
-              leading: const Icon(Icons.drive_file_rename_outline,
-                  size: 20, color: kIcon),
+              leading: const Icon(
+                Icons.drive_file_rename_outline,
+                size: 20,
+                color: kIcon,
+              ),
               title: const Text('改名', style: TextStyle(fontSize: 13.5)),
               onTap: () {
                 Navigator.pop(context);
@@ -119,11 +128,15 @@ class _PresetsScreenState extends State<PresetsScreen> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.delete_outline,
-                  size: 20, color: Color(0xFFFF6B6B)),
-              title: const Text('刪除',
-                  style:
-                      TextStyle(fontSize: 13.5, color: Color(0xFFFF6B6B))),
+              leading: const Icon(
+                Icons.delete_outline,
+                size: 20,
+                color: Color(0xFFFF6B6B),
+              ),
+              title: const Text(
+                '刪除',
+                style: TextStyle(fontSize: 13.5, color: Color(0xFFFF6B6B)),
+              ),
               onTap: () {
                 Navigator.pop(context);
                 _confirmDelete(p);
@@ -159,8 +172,7 @@ class _PresetsScreenState extends State<PresetsScreen> {
           children: [
             Icon(Icons.add, size: 24, color: kTextDim),
             SizedBox(height: 5),
-            Text('新增範本',
-                style: TextStyle(fontSize: 11.5, color: kTextDim)),
+            Text('新增範本', style: TextStyle(fontSize: 11.5, color: kTextDim)),
           ],
         ),
       ),
@@ -185,10 +197,7 @@ class _PresetsScreenState extends State<PresetsScreen> {
             Container(
               color: Colors.black,
               child: IgnorePointer(
-                child: WatermarkLayer(
-                  settings: p.settings,
-                  onChanged: () {},
-                ),
+                child: WatermarkLayer(settings: p.settings, onChanged: () {}),
               ),
             ),
             // 名字＝左上角小膠囊（UI 感明確，不會被誤認成浮水印）
@@ -197,7 +206,9 @@ class _PresetsScreenState extends State<PresetsScreen> {
               top: 5,
               child: Container(
                 padding: const EdgeInsets.symmetric(
-                    horizontal: 8, vertical: 2.5),
+                  horizontal: 8,
+                  vertical: 2.5,
+                ),
                 decoration: BoxDecoration(
                   color: kPanelHi.withValues(alpha: 0.92),
                   borderRadius: BorderRadius.circular(99),
@@ -208,7 +219,10 @@ class _PresetsScreenState extends State<PresetsScreen> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                      fontSize: 10, color: kIcon, height: 1.3),
+                    fontSize: 10,
+                    color: kIcon,
+                    height: 1.3,
+                  ),
                 ),
               ),
             ),
@@ -220,25 +234,25 @@ class _PresetsScreenState extends State<PresetsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('我的浮水印範本')),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : GridView.builder(
-              padding: const EdgeInsets.all(14),
-              gridDelegate:
-                  const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                mainAxisSpacing: 10,
-                crossAxisSpacing: 10,
-                childAspectRatio: 16 / 10,
+    return SwipeBack(
+      child: Scaffold(
+        appBar: AppBar(title: const Text('我的浮水印範本')),
+        body: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : GridView.builder(
+                padding: const EdgeInsets.all(14),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  mainAxisSpacing: 10,
+                  crossAxisSpacing: 10,
+                  childAspectRatio: 16 / 10,
+                ),
+                // 最後永遠多一格「＋ 新增範本」
+                itemCount: _presets.length + 1,
+                itemBuilder: (context, i) =>
+                    i < _presets.length ? _presetCard(_presets[i]) : _addCard(),
               ),
-              // 最後永遠多一格「＋ 新增範本」
-              itemCount: _presets.length + 1,
-              itemBuilder: (context, i) => i < _presets.length
-                  ? _presetCard(_presets[i])
-                  : _addCard(),
-            ),
+      ),
     );
   }
 }
