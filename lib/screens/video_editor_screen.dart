@@ -489,6 +489,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_playing) _pause();
     final t = (_tlScroll.offset / _pxPerSec).clamp(0.0, _tl.duration);
     if ((t - _position).abs() < 0.001) return;
+    // 播放頭經過素材頭尾時震一下（像卡榫），放手時再吸上去對齊——
+    // 拖曳中不硬拉捲動位置，不然會跟手指打架
+    _headSnapTarget = _nearestEdge(t);
+    if (_headSnapTarget != _lastHeadDetent) {
+      _lastHeadDetent = _headSnapTarget;
+      if (_headSnapTarget != null) HapticFeedback.selectionClick();
+    }
     _position = t; // 位置 UI 由 _posVN 小範圍重繪，不整頁 setState
     _scrubbing = true; // 快取幀模式（下一次 30fps 重繪就生效）
     _scrubEndTimer?.cancel();
@@ -503,6 +510,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     } else {
       _scrubSeek();
     }
+  }
+
+  /// 播放頭附近的吸附目標（素材頭尾）與上一個「經過」的卡榫
+  double? _headSnapTarget;
+  double? _lastHeadDetent;
+
+  /// 這個時間點附近有沒有素材的頭或尾可以吸（沒有回 null）。
+  /// 播放頭吸的是「片段邊緣」，不吸自己也不吸播放頭
+  double? _nearestEdge(double t) {
+    final snapped = _tl.snapTime(t, -1, _pxPerSec);
+    return (snapped - t).abs() > 0.0005 ? snapped : null;
   }
 
   /// 上一發 seek 還在解碼中就不發新的：
@@ -739,6 +757,30 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_seekInFlight) {
       _scrubEndTimer = Timer(const Duration(milliseconds: 80), _tryEndScrub);
       return;
+    }
+    // 放手時吸上去：播放頭剛好落在素材的頭或尾，之後切割、
+    // 對齊都不用再微調。動畫短一點，看起來就是「被吸過去」
+    final target = _headSnapTarget;
+    _headSnapTarget = null;
+    _lastHeadDetent = null;
+    if (target != null &&
+        _tlScroll.hasClients &&
+        (target - _position).abs() > 0.0005) {
+      _position = target.clamp(0.0, _tl.duration);
+      _suppressScroll = true;
+      _tlScroll
+          .animateTo(
+            (_position * _pxPerSec).clamp(
+              0.0,
+              _tlScroll.position.maxScrollExtent,
+            ),
+            duration: const Duration(milliseconds: 90),
+            curve: Curves.easeOut,
+          )
+          .whenComplete(() {
+            _suppressScroll = false;
+            _scrubSeek(force: true);
+          });
     }
     if (_scrubbing && mounted) setState(() => _scrubbing = false);
   }
@@ -1849,6 +1891,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _seekScrub(double t) {
     if (_playing) _pause();
     _position = t.clamp(0.0, _tl.duration);
+    // 跟捲動時間軸同一套：經過素材頭尾震一下，放手吸上去對齊
+    _headSnapTarget = _nearestEdge(_position);
+    if (_headSnapTarget != _lastHeadDetent) {
+      _lastHeadDetent = _headSnapTarget;
+      if (_headSnapTarget != null) HapticFeedback.selectionClick();
+    }
     _scrubbing = true;
     _scrubEndTimer?.cancel();
     _scrubEndTimer = Timer(const Duration(milliseconds: 220), _tryEndScrub);
