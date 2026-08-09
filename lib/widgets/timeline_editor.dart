@@ -874,6 +874,10 @@ class _TimelineEditorState extends State<TimelineEditor> {
       muted: widget.mutedTracks.contains(t),
       isVoice: isVoice,
       isRecording: isVoice && widget.voiceRecording,
+      // 選中的片段在這一軌 → 左邊標籤亮起來
+      hasSelection: timeline.clips.any(
+        (c) => c.id == widget.selectedId && c.track == t,
+      ),
       isDragging: _dragTrack == t,
       dragDy: _dragTrack == t ? _dragDy : 0,
       maxTrack: timeline.usedTracks - 1,
@@ -1151,6 +1155,9 @@ class _TrackLabel extends StatefulWidget {
   final bool muted;
   final bool isVoice; // 旁白軌：標籤變紅色錄音鈕
   final bool isRecording;
+
+  /// 選中的片段在這一軌：標籤亮起來，暗示選取落在哪一層
+  final bool hasSelection;
   final bool isDragging;
   final double dragDy;
   final int maxTrack;
@@ -1167,6 +1174,7 @@ class _TrackLabel extends StatefulWidget {
     this.muted = false,
     this.isVoice = false,
     this.isRecording = false,
+    this.hasSelection = false,
     required this.isDragging,
     required this.dragDy,
     required this.maxTrack,
@@ -1185,7 +1193,8 @@ class _TrackLabelState extends State<_TrackLabel> {
 
   @override
   Widget build(BuildContext context) {
-    final amber = widget.isEmptyRow || widget.isDragging;
+    final amber =
+        widget.isEmptyRow || widget.isDragging || widget.hasSelection;
     final label = Container(
       height: widget.height,
       margin: const EdgeInsets.only(right: 6),
@@ -1195,12 +1204,14 @@ class _TrackLabelState extends State<_TrackLabel> {
         border: Border.all(
           color: widget.isVoice
               ? const Color(0xFFFF3B30)
-              : (widget.isDragging
+              : (widget.isDragging || widget.hasSelection
                     ? kSelect
                     : (widget.isEmptyRow
                           ? kSelect.withValues(alpha: 0.55)
                           : kBorder)),
-          width: (widget.isDragging || widget.isVoice) ? 2 : 1,
+          width: (widget.isDragging || widget.isVoice || widget.hasSelection)
+              ? 2
+              : 1,
         ),
         boxShadow: widget.isDragging
             ? [
