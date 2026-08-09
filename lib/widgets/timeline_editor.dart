@@ -1193,8 +1193,7 @@ class _TrackLabelState extends State<_TrackLabel> {
 
   @override
   Widget build(BuildContext context) {
-    final amber =
-        widget.isEmptyRow || widget.isDragging || widget.hasSelection;
+    final amber = widget.isDragging || widget.hasSelection;
     final label = Container(
       height: widget.height,
       margin: const EdgeInsets.only(right: 6),
@@ -1206,9 +1205,7 @@ class _TrackLabelState extends State<_TrackLabel> {
               ? const Color(0xFFFF3B30)
               : (widget.isDragging || widget.hasSelection
                     ? kSelect
-                    : (widget.isEmptyRow
-                          ? kSelect.withValues(alpha: 0.55)
-                          : kBorder)),
+                    : kBorder),
           width: (widget.isDragging || widget.isVoice || widget.hasSelection)
               ? 2
               : 1,
