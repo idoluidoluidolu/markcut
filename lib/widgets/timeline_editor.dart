@@ -727,13 +727,15 @@ class _TimelineEditorState extends State<TimelineEditor> {
               onTap: widget.onSelectWm,
               child: Container(
                 width: w.toDouble(),
+                // 灰階退場：琥珀只留給「選取」一個意義。
+                // 選中這條軌時才亮起來
                 decoration: BoxDecoration(
-                  color: kSelect.withValues(alpha: 0.22),
+                  color: widget.wmSelected
+                      ? kSelect.withValues(alpha: 0.22)
+                      : kPanelHi,
                   borderRadius: BorderRadius.circular(4),
                   border: Border.all(
-                    color: widget.wmSelected
-                        ? kSelect
-                        : kSelect.withValues(alpha: 0.6),
+                    color: widget.wmSelected ? kSelect : Color(0xFF3A3A42),
                     width: widget.wmSelected ? 1.5 : 1,
                   ),
                 ),
@@ -746,10 +748,10 @@ class _TimelineEditorState extends State<TimelineEditor> {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(
+                          Icon(
                             Icons.branding_watermark,
                             size: 10,
-                            color: kSelect,
+                            color: widget.wmSelected ? kSelect : kIcon,
                           ),
                           const SizedBox(width: 4),
                           Flexible(
@@ -757,9 +759,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
                               widget.wmLabel,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 9,
-                                color: kSelect,
+                                color: widget.wmSelected ? kSelect : kIcon,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
@@ -934,11 +936,15 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
     );
   }
   if (src.kind == ClipKind.wm) {
-    // 浮水印片段：琥珀色小卡，跟最上面那條全域浮水印軌同一個語彙
+    // 浮水印片段：灰階小卡（琥珀留給選取）
     return Container(
-      color: const Color(0xFF4A4230),
+      color: const Color(0xFF3A3A42),
       alignment: Alignment.center,
-      child: const Icon(Icons.branding_watermark, size: 14, color: kSelect),
+      child: const Icon(
+        Icons.branding_watermark,
+        size: 14,
+        color: Colors.white70,
+      ),
     );
   }
   if (src.kind == ClipKind.image && strip.isNotEmpty) {
@@ -1040,10 +1046,11 @@ class _ClipBlock extends StatelessWidget {
         const Color(0xFF8A7BB8),
         Icons.title,
       ),
-      // 浮水印片段：琥珀色系，跟全域浮水印軌同一個語彙
+      // 浮水印片段：灰階（琥珀留給選取），
+      // 用圖示跟其他素材區分就夠了
       ClipKind.wm => (
-        const Color(0xFF3A3324),
-        kSelect,
+        const Color(0xFF2E2E35),
+        const Color(0xFF8A8A94),
         Icons.branding_watermark,
       ),
     };
@@ -1203,9 +1210,7 @@ class _TrackLabelState extends State<_TrackLabel> {
         border: Border.all(
           color: widget.isVoice
               ? const Color(0xFFFF3B30)
-              : (widget.isDragging || widget.hasSelection
-                    ? kSelect
-                    : kBorder),
+              : (widget.isDragging || widget.hasSelection ? kSelect : kBorder),
           width: (widget.isDragging || widget.isVoice || widget.hasSelection)
               ? 2
               : 1,
