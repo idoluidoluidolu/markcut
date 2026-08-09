@@ -2833,14 +2833,32 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // 磁吸開關：對齊的時候開，要微調的時候關
-                IconButton(
-                  iconSize: 20,
-                  tooltip: _snapOn ? '磁吸：開（點一下關掉）' : '磁吸：關（點一下打開）',
-                  onPressed: _toggleSnap,
-                  icon: CustomPaint(
-                    size: const Size(19, 19),
-                    painter: _MagnetPainter(_snapOn ? kAmber : kTextDim),
+                // 磁吸開關：對齊的時候開，要微調的時候關。
+                // 開啟＝整顆反白（琥珀底、深色磁鐵），一眼就知道現在是開的
+                Tooltip(
+                  message: _snapOn ? '磁吸：開（點一下關掉）' : '磁吸：關（點一下打開）',
+                  child: InkWell(
+                    onTap: _toggleSnap,
+                    borderRadius: BorderRadius.circular(8),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 6,
+                      ),
+                      child: Container(
+                        width: 28,
+                        height: 26,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: _snapOn ? kAmber : Colors.transparent,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: CustomPaint(
+                          size: const Size(17, 17),
+                          painter: _MagnetPainter(_snapOn ? kBg : kTextDim),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
                 IconButton(
@@ -4802,8 +4820,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 }
 
-/// U 型馬蹄磁鐵（Flutter 內建圖示沒有磁鐵，自己畫一顆）。
-/// 兩隻腳的末端壓淡，看起來就是磁極
+/// 實心馬蹄磁鐵（Flutter 內建圖示沒有磁鐵，自己畫一顆）。
+/// 兩隻腳靠近末端挖一條橫縫，分出「磁極」——沒有這條縫的話
+/// 小尺寸下看起來只是一個拱門
 class _MagnetPainter extends CustomPainter {
   final Color color;
 
@@ -4811,36 +4830,37 @@ class _MagnetPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final w = size.width;
-    final h = size.height;
-    final sw = w * 0.27; // 磁鐵臂的粗細
-    final cx = w / 2;
-    final r = (w - sw) / 2; // 圓弧半徑（加上臂厚剛好貼齊邊界）
-    final legTop = h * 0.46; // 圓弧結束、直腳開始
-    final legBottom = h * 0.92;
+    // 以 24×24 設計，等比縮放到實際大小
+    double x(double v) => v * size.width / 24.0;
+    double y(double v) => v * size.height / 24.0;
 
-    final arm = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = sw;
-    final path = Path()
-      ..moveTo(cx - r, legBottom)
-      ..lineTo(cx - r, legTop)
-      // 由左往右繞過頂端（畫面座標往下為正，順時針就是往上繞）
+    // 外圈往下兩隻腳 → 內圈繞回去，形成 U 型實心
+    final body = Path()
+      ..moveTo(x(4), y(20))
+      ..lineTo(x(4), y(11))
       ..arcToPoint(
-        Offset(cx + r, legTop),
-        radius: Radius.circular(r),
+        Offset(x(20), y(11)),
+        radius: Radius.circular(x(8)),
         clockwise: true,
       )
-      ..lineTo(cx + r, legBottom);
-    canvas.drawPath(path, arm);
+      ..lineTo(x(20), y(20))
+      ..lineTo(x(15.5), y(20))
+      ..lineTo(x(15.5), y(11))
+      ..arcToPoint(
+        Offset(x(8.5), y(11)),
+        radius: Radius.circular(x(3.5)),
+        clockwise: false,
+      )
+      ..lineTo(x(8.5), y(20))
+      ..close();
 
-    // 磁極：兩隻腳末端壓淡
-    final tip = Paint()..color = color.withValues(alpha: 0.4);
-    final tipH = h * 0.2;
-    for (final x in [cx - r, cx + r]) {
-      canvas.drawRect(Rect.fromLTWH(x - sw / 2, legBottom - tipH, sw, tipH), tip);
-    }
+    // 橫縫挖掉（不是塗深色）：這樣不管底下是深色還是反白都看得出來
+    final gap = Path()
+      ..addRect(Rect.fromLTWH(0, y(16.2), size.width, y(1.4)));
+    canvas.drawPath(
+      Path.combine(PathOperation.difference, body, gap),
+      Paint()..color = color,
+    );
   }
 
   @override
