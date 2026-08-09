@@ -152,17 +152,12 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
     super.dispose();
   }
 
-  /// 上次編輯時間：0.7 秒內的連續調整併成一步 undo，
-  /// 停頓後再調就是新的一步——跟浮水印面板同一套粒度。
-  /// （原本整個面板只拍一次快照：調十次按一次復原全退光）
-  DateTime _lastEditAt = DateTime.fromMillisecondsSinceEpoch(0);
+  /// 手勢開始（按下滑桿）時拍一次 undo 快照：
+  /// 一次拖曳（到放開為止）＝一步，跟使用者的直覺一致
+  void _beginEdit() => widget.onBeforeChange?.call();
 
+  /// 非滑桿的單發動作（重設、黑白鈕）：動作前自己拍一次
   void _edit(VoidCallback change) {
-    final now = DateTime.now();
-    if (now.difference(_lastEditAt).inMilliseconds > 700) {
-      widget.onBeforeChange?.call();
-    }
-    _lastEditAt = now;
     setState(change);
     widget.onChanged();
   }
@@ -252,7 +247,12 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
               ),
               const SizedBox(width: 6),
               TextButton(
-                onPressed: g.hasColor ? () => _edit(g.reset) : null,
+                onPressed: g.hasColor
+                    ? () {
+                        _beginEdit(); // 單發動作：先拍快照
+                        _edit(g.reset);
+                      }
+                    : null,
                 style: TextButton.styleFrom(
                   foregroundColor: kTextDim,
                   minimumSize: const Size(0, 32),
@@ -397,6 +397,7 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
     final on = _isMono(g);
     return OutlinedButton.icon(
       onPressed: () => _edit(() {
+        _beginEdit(); // 單發動作：先拍快照
         if (on) {
           // 再按一次＝把顏色還回來（亮度對比留著，那是另一回事）
           g.saturation = 1;
@@ -445,6 +446,7 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
                 value: v.clamp(-1.0, 1.0),
                 min: -1,
                 max: 1,
+                onChangeStart: (_) => _beginEdit(),
                 onChanged: (nv) => _edit(
                   // 靠近正中間就吸回 0，不然很難回到「完全沒調」
                   () => _setValue(g, t.axis, nv.abs() < 0.04 ? 0.0 : nv),
@@ -510,6 +512,7 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
                 value: v.clamp(-1.0, 1.0),
                 min: -1,
                 max: 1,
+                onChangeStart: (_) => _beginEdit(),
                 onChanged: (nv) => _edit(
                   // 靠近正中間就吸回 0，不然很難回到「完全沒修」
                   () => _setValue(g, f.axis, nv.abs() < 0.04 ? 0.0 : nv),
