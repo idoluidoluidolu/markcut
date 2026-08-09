@@ -474,7 +474,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
             ],
           ),
           const SizedBox(height: 2),
-          _sliderRow('大小', s.text.sizeFrac, 0.015, 0.8,
+          _sliderRow('大小', s.text.sizeFrac, 0.015, 2.0,
               (v) => _update(() => s.text.sizeFrac = v)),
           _sliderRow('透明', s.text.opacity, 0.05, 1,
               (v) => _update(() => s.text.opacity = v)),

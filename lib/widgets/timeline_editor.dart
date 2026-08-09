@@ -936,14 +936,30 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
     );
   }
   if (src.kind == ClipKind.wm) {
-    // 浮水印片段：灰階小卡（琥珀留給選取）
+    // 浮水印片段：跟最上面那條全域浮水印軌同一個樣式
+    // ——圖示＋名稱靠左，灰階（琥珀留給選取）
     return Container(
-      color: const Color(0xFF3A3A42),
-      alignment: Alignment.center,
-      child: const Icon(
-        Icons.branding_watermark,
-        size: 14,
-        color: Colors.white70,
+      color: kPanelHi,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      alignment: Alignment.centerLeft,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.branding_watermark, size: 10, color: kIcon),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              src.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 9,
+                color: kIcon,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

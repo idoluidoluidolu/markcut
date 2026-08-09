@@ -374,7 +374,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       // 都沒選而兩個都在，才一起動
       final doText = hasText && (_wmPart != WmPart.logo || !hasLogo);
       final doLogo = hasLogo && (_wmPart != WmPart.text || !hasText);
-      if (doText) t.sizeFrac = (_pvBaseText * f).clamp(0.015, 0.8);
+      if (doText) t.sizeFrac = (_pvBaseText * f).clamp(0.015, 2.0);
       if (doLogo) {
         _settings.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
       }

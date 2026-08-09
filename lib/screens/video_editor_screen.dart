@@ -3115,7 +3115,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 一起縮放會把已經調好的搭配弄壞
         final t = _settings.text;
         if (_pvHitText && t.enabled && t.text.trim().isNotEmpty) {
-          t.sizeFrac = (_pvBaseText * f).clamp(0.015, 0.8);
+          t.sizeFrac = (_pvBaseText * f).clamp(0.015, 2.0);
         }
         if (_pvHitLogo && _settings.logo.enabled) {
           _settings.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
@@ -3130,7 +3130,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             final st = src.wmStyle;
             if (st != null) {
               if (st.text.enabled && st.text.text.trim().isNotEmpty) {
-                st.text.sizeFrac = (_pvBaseClipWmText * f).clamp(0.015, 0.8);
+                st.text.sizeFrac = (_pvBaseClipWmText * f).clamp(0.015, 2.0);
               }
               if (st.logo.enabled) {
                 st.logo.sizeFrac = (_pvBaseClipWmLogo * f).clamp(0.03, 2.0);
