@@ -3,7 +3,8 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/color_grade.dart';
 import '../models/watermark_settings.dart';
@@ -169,14 +170,118 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     );
   }
 
-  /// 輸出前先問一次——匯出是會寫進相簿的動作，不該一按就發生
+  /// 輸出前選格式——兩種格式差很多，使用者要知道差在哪。
+  /// 點了格式就直接輸出（選擇即確認，不再多一層）
   Future<void> _confirmExport() async {
     if (_exporting) return;
-    final ok = await showConfirm(context, title: '輸出到相簿？', action: '確認');
-    if (ok && mounted) await _export();
+    final prefs = await SharedPreferences.getInstance();
+    final last = prefs.getString('photo_export_fmt') ?? 'jpg';
+    if (!mounted) return;
+    final fmt = await showDialog<String>(
+      context: context,
+      builder: (context) => Dialog(
+        backgroundColor: kBg,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(18),
+          side: const BorderSide(color: kBorder),
+        ),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 400),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  '輸出到相簿',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 14),
+                _fmtTile(
+                  context,
+                  fmt: 'jpg',
+                  title: "JPEG${last == 'jpg' ? '（上次用這個）' : ''}",
+                  subtitle:
+                      '檔案小很多（約 1/8），發社群、傳給別人用這個。'
+                      '肉眼看不出跟 PNG 的差別',
+                  icon: Icons.bolt,
+                ),
+                const SizedBox(height: 8),
+                _fmtTile(
+                  context,
+                  fmt: 'png',
+                  title: "PNG 無損${last == 'png' ? '（上次用這個）' : ''}",
+                  subtitle:
+                      '完全不壓縮，檔案很大（可能幾十 MB）。'
+                      '之後還要再編修、或想典藏原稿再用',
+                  icon: Icons.diamond_outlined,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (fmt == null || !mounted) return;
+    await prefs.setString('photo_export_fmt', fmt);
+    await _export(jpeg: fmt == 'jpg');
   }
 
-  Future<void> _export() async {
+  Widget _fmtTile(
+    BuildContext context, {
+    required String fmt,
+    required String title,
+    required String subtitle,
+    required IconData icon,
+  }) {
+    return Material(
+      color: Colors.black,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => Navigator.pop(context, fmt),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: kClipBorder),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, size: 20, color: kAmber),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        fontSize: 11.5,
+                        color: kTextDim,
+                        height: 1.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _export({bool jpeg = false}) async {
     if (_exporting || _photoBytes == null) return;
     setState(() => _exporting = true);
     showDialog(
@@ -194,16 +299,33 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     String message;
     var ok = true;
     try {
-      // 以原始解析度合成，輸出 PNG 完全不壓畫質
-      final png = await WatermarkRenderer.renderPhotoComposite(
+      // 以原始解析度合成（合成永遠是無損 PNG，要 JPEG 才轉檔）
+      var bytes = await WatermarkRenderer.renderPhotoComposite(
         _photoBytes!,
         _settings,
         grade: _grade,
       );
+      var ext = 'png';
+      if (jpeg) {
+        try {
+          bytes = await FlutterImageCompress.compressWithList(
+            bytes,
+            quality: 92,
+            format: CompressFormat.jpeg,
+          );
+          ext = 'jpg';
+        } catch (_) {
+          // 這個平台轉不了 JPEG 就照樣給 PNG，總比失敗好
+        }
+      }
       message = await savePhotoPng(
-        png,
+        bytes,
         'markcut_${DateTime.now().millisecondsSinceEpoch}',
+        ext: ext,
       );
+      if (jpeg && ext == 'png') {
+        message = '$message（此平台不支援 JPEG，已改用 PNG）';
+      }
     } catch (e) {
       message = '輸出失敗：$e';
       ok = false;
