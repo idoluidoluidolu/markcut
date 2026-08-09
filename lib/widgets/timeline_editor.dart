@@ -745,28 +745,18 @@ class _TimelineEditorState extends State<TimelineEditor> {
                   children: [
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 14),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.branding_watermark,
-                            size: 10,
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          widget.wmLabel,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 9,
                             color: widget.wmSelected ? kSelect : kIcon,
+                            fontWeight: FontWeight.w600,
                           ),
-                          const SizedBox(width: 4),
-                          Flexible(
-                            child: Text(
-                              widget.wmLabel,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 9,
-                                color: widget.wmSelected ? kSelect : kIcon,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ],
+                        ),
                       ),
                     ),
                     if (widget.wmSelected) ...[
@@ -929,37 +919,39 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
     );
   }
   if (src.kind == ClipKind.text) {
+    // 文字片段：不放圖示，直接顯示文字內容
     return Container(
       color: const Color(0xFF4A4A52),
-      alignment: Alignment.center,
-      child: const Icon(Icons.title, size: 14, color: Colors.white70),
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      alignment: Alignment.centerLeft,
+      child: Text(
+        src.name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(
+          fontSize: 9,
+          color: Colors.white70,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
     );
   }
   if (src.kind == ClipKind.wm) {
     // 浮水印片段：跟最上面那條全域浮水印軌同一個樣式
-    // ——圖示＋名稱靠左，灰階（琥珀留給選取）
+    // ——名稱靠左，灰階（琥珀留給選取）
     return Container(
       color: kPanelHi,
       padding: const EdgeInsets.symmetric(horizontal: 10),
       alignment: Alignment.centerLeft,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(Icons.branding_watermark, size: 10, color: kIcon),
-          const SizedBox(width: 4),
-          Flexible(
-            child: Text(
-              src.name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 9,
-                color: kIcon,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-        ],
+      child: Text(
+        src.name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(
+          fontSize: 9,
+          color: kIcon,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }
@@ -1053,22 +1045,13 @@ class _ClipBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final (fill, borderColor, icon) = switch (source.kind) {
-      ClipKind.video => (kVideoFill, kVideoBorder, Icons.movie_outlined),
-      ClipKind.audio => (kAudioFill, kAudioBorder, Icons.music_note),
-      ClipKind.image => (kVideoFill, kVideoBorder, Icons.image_outlined),
-      ClipKind.text => (
-        const Color(0xFF2E2A38),
-        const Color(0xFF8A7BB8),
-        Icons.title,
-      ),
-      // 浮水印片段：灰階（琥珀留給選取），
-      // 用圖示跟其他素材區分就夠了
-      ClipKind.wm => (
-        const Color(0xFF2E2E35),
-        const Color(0xFF8A8A94),
-        Icons.branding_watermark,
-      ),
+    final (fill, borderColor) = switch (source.kind) {
+      ClipKind.video => (kVideoFill, kVideoBorder),
+      ClipKind.audio => (kAudioFill, kAudioBorder),
+      ClipKind.image => (kVideoFill, kVideoBorder),
+      ClipKind.text => (const Color(0xFF2E2A38), const Color(0xFF8A7BB8)),
+      // 浮水印片段：灰階（琥珀留給選取）
+      ClipKind.wm => (const Color(0xFF2E2E35), const Color(0xFF8A8A94)),
     };
     final w = (clip.length * pxPerSec).clamp(22.0, double.infinity).toDouble();
 
@@ -1108,14 +1091,6 @@ class _ClipBlock extends StatelessWidget {
                 fit: StackFit.expand,
                 children: [
                   _clipFill(clip, source, filmstrip),
-                  // 檔名不顯示，畫面乾淨；只留左上角小圖示表明素材種類
-                  // （浮水印片段內容本身就是圖示＋名稱，不再疊一顆）
-                  if (source.kind != ClipKind.wm)
-                    Positioned(
-                      left: 5,
-                      top: 4,
-                      child: Icon(icon, size: 10, color: Colors.white70),
-                    ),
                   // 變速片段掛倍速小標
                   if ((clip.speed - 1.0).abs() > 0.01)
                     Positioned(
