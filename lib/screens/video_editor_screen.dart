@@ -2701,9 +2701,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             child: Stack(
                                               fit: StackFit.expand,
                                               children: [
-                                                ctrl.view(
-                                                  key: ValueKey('pv-${c.id}'),
-                                                ),
+                                                // key 綁「播放器」不綁片段 id：
+                                                // 切割的兩段在交界換手同一顆
+                                                // 播放器，key 不變貼圖就不用
+                                                // 拆掉重掛，畫面才不會閃一下
+                                                ctrl.view(key: ObjectKey(ctrl)),
                                                 if (frames != null &&
                                                     frames.isNotEmpty)
                                                   IgnorePointer(
