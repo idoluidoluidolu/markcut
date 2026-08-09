@@ -10,6 +10,9 @@ import 'video_processor.dart';
 /// Web 版沒有 FFmpeg，只提供介面預覽，不支援影片匯出。
 const bool videoExportSupported = false;
 
+/// 倒轉長度上限（Web 匯不出影片，回個佔位值讓介面能共用同一套判斷）
+double maxReverseSeconds(int outW, int outH) => 3;
+
 Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   ExportSpec spec, {
   void Function(double progress)? onProgress,

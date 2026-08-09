@@ -92,9 +92,12 @@ class TimelineClip {
   double fadeIn;
   double fadeOut;
 
-  /// 這個片段的播放速度（1 = 原速）。
-  /// 變速會反映在時間軸長度上：2x 的片段佔的軸長是素材長的一半
+  /// 這個片段的播放速度（1 = 原速）。永遠是正數，
+  /// 「倒著放」是另外用 reverse 表示（負速度會讓長度計算整組壞掉）
   double speed;
+
+  /// 倒轉播放（速度滑桿拉到負的那半邊）
+  bool reverse;
 
   /// 調色（跟照片編輯共用同一個模型）
   final ColorGrade color;
@@ -113,6 +116,7 @@ class TimelineClip {
     this.fadeIn = 0,
     this.fadeOut = 0,
     this.speed = 1.0,
+    this.reverse = false,
     ColorGrade? color,
   }) : color = color ?? ColorGrade();
 
@@ -126,9 +130,12 @@ class TimelineClip {
 
   bool covers(double t) => t >= offset && t < end;
 
-  /// 時間軸時間 → 這份素材內部的時間（含變速換算）
-  double sourceTimeAt(double t) =>
-      trimStart + (t - offset) * speed.clamp(0.1, 16.0);
+  /// 時間軸時間 → 這份素材內部的時間（含變速換算）。
+  /// 倒轉時從素材的尾巴往回走
+  double sourceTimeAt(double t) {
+    final d = (t - offset) * speed.clamp(0.1, 16.0);
+    return reverse ? trimEnd - d : trimStart + d;
+  }
 
   /// 淡入淡出在 t 時刻的係數（0~1）
   double fadeFactorAt(double t) {
@@ -152,6 +159,7 @@ class TimelineClip {
     'fadeIn': fadeIn,
     'fadeOut': fadeOut,
     'speed': speed,
+    'reverse': reverse,
     // 調色的鍵維持扁平，舊草稿讀得回來
     ...color.toJson(),
   };
@@ -170,6 +178,7 @@ class TimelineClip {
     fadeIn: (j['fadeIn'] ?? 0).toDouble(),
     fadeOut: (j['fadeOut'] ?? 0).toDouble(),
     speed: (j['speed'] ?? 1.0).toDouble(),
+    reverse: (j['reverse'] ?? false) as bool,
     color: ColorGrade.fromJson(j),
   );
 
@@ -338,6 +347,7 @@ class TimelineModel {
       track: c.track,
       volume: c.volume,
       speed: c.speed, // 切割後兩段維持相同變速
+      reverse: c.reverse,
       px: c.px,
       py: c.py,
       scale: c.scale,

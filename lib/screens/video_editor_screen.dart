@@ -37,6 +37,13 @@ enum _AddKind { video, image, text, wm, audio, record, blankTrack }
 
 const kSpeedOptions = <double>[0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
 
+/// 速度滑桿的檔位（帶號）：負的＝倒著放。
+/// 左端最快的倒轉 → 往中間變慢 → 過中線轉正 → 右端最快正播
+const kSpeedStops = <double>[
+  -4, -3, -2, -1.5, -1, -0.75, -0.5, -0.25,
+  0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4,
+];
+
 /// 草稿存放鍵
 const kDraftKey = 'project_draft_v1';
 
@@ -1890,8 +1897,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 音量最多 10 次/秒（fade 中每格打 method channel 也會卡）
       if (volDue) {
         final trackMute = _mutedTracks.contains(clip.track) ? 0.0 : 1.0;
-        final vol = (clip.volume * trackMute * clip.fadeFactorAt(_position))
-            .clamp(0.0, 1.0);
+        // 倒轉的片段預覽時靜音：播放器只會正著播，聲音是反的內容，
+        // 放出來只會干擾（匯出時會用 areverse 正確倒過來）
+        final revMute = clip.reverse ? 0.0 : 1.0;
+        final vol =
+            (clip.volume *
+                    trackMute *
+                    revMute *
+                    clip.fadeFactorAt(_position))
+                .clamp(0.0, 1.0);
         if ((vol - (_lastVol[clip.id] ?? -1)).abs() > 0.02) {
           _lastVol[clip.id] = vol;
           c.setVolume(vol);
@@ -2361,6 +2375,29 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (!engine.videoExportSupported) {
       showHint(context, '影片匯出需要 FFmpeg，只在手機 App 上提供');
       return;
+    }
+    // 倒轉是把整段畫面存進記憶體再倒著吐，太長會直接把 App 撐爆。
+    // 與其讓它跑到一半閃退，不如先擋下來講清楚要怎麼處理
+    {
+      final (ow, oh) = computeCanvasSize(_tl, _resolution, _canvasRatio);
+      final revMax = engine.maxReverseSeconds(ow, oh);
+      final tooLong = _tl.clips
+          .where((c) => c.reverse && c.length > revMax)
+          .toList();
+      if (tooLong.isNotEmpty) {
+        final worst = tooLong
+            .map((c) => c.length)
+            .reduce((a, b) => a > b ? a : b);
+        showHint(
+          context,
+          '有 ${tooLong.length} 段倒轉片段太長（最長 ${worst.toStringAsFixed(1)} 秒）。'
+          '這個解析度下倒轉最多 ${revMax.toStringAsFixed(1)} 秒，'
+          '請先切短、或把解析度調低再匯出',
+          error: true,
+          duration: const Duration(seconds: 8),
+        );
+        return;
+      }
     }
     _pause();
     // 匯出前把所有快取放掉：已解碼的幀（幾十 MB）、壓縮的抽幀
@@ -2964,7 +3001,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     // 才看得到即時的顏色。手機是材質（texture），
                                     // 濾鏡本來就吃得到，維持原解析度不降級
                                     final frames =
-                                        (_scrubbing || (_colorMode && kIsWeb))
+                                        // 倒轉的片段一律走快取幀：播放器
+                                        // 沒辦法倒著播，只能拿抽好的影格
+                                        // 反著貼（sourceTimeAt 已經算好
+                                        // 從尾巴往回的時間）
+                                        (_scrubbing ||
+                                            c.reverse ||
+                                            (_colorMode && kIsWeb))
                                         ? _scrubFrames[c.sourceIndex]
                                         : null;
                                     children.add(
@@ -4463,20 +4506,37 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   ],
                 ),
                 const SizedBox(height: 4),
-                // 推拉式：滑桿走的是 log 尺度，1x 剛好落在正中間，
-                // 慢速端和快速端的手感才對稱（0.25↔4、0.5↔2）
+                // 速度檔位：滑桿左半邊是負的＝倒著放。
+                // 用固定檔位不用連續值，免得停在 1.03x 這種數字
                 Builder(
                   builder: (context) {
                     final now = clipMode ? sel.speed : _speed;
-                    void apply(double sp) {
+                    final rev = clipMode && sel.reverse;
+                    final signed = rev ? -now : now; // 帶號速度：負的＝倒轉
+                    final stops = clipMode
+                        ? kSpeedStops
+                        : kSpeedStops.where((s) => s > 0).toList();
+                    var idx = 0;
+                    for (var i = 1; i < stops.length; i++) {
+                      if ((stops[i] - signed).abs() <
+                          (stops[idx] - signed).abs()) {
+                        idx = i;
+                      }
+                    }
+
+                    void apply(double s) {
+                      final sp = s.abs();
                       if (clipMode) {
                         if (!pushed) {
                           _pushUndo();
                           pushed = true;
                         }
-                        setState(() => sel.speed = sp);
+                        setState(() {
+                          sel.speed = sp;
+                          sel.reverse = s < 0;
+                        });
                         _ctrls[sel.id]?.setPlaybackSpeed(_speed * sp);
-                        _resyncPlayback(); // 變速改了時間對應
+                        _resyncPlayback(); // 變速／倒轉都改了時間對應
                       } else {
                         setState(() => _speed = sp);
                         for (final e in _tl.clips) {
@@ -4486,53 +4546,102 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       setSheet(() {});
                     }
 
+                    // 倒轉要把整段畫面先存進記憶體才倒得出來，
+                    // 太長會把 App 撐爆——超過上限就先講，不要等到匯出才失敗
+                    final (ow, oh) = computeCanvasSize(
+                      _tl,
+                      _resolution,
+                      _canvasRatio,
+                    );
+                    final revMax = engine.maxReverseSeconds(ow, oh);
+                    final tooLong = rev && sel.length > revMax;
+
                     return Column(
                       children: [
                         Row(
                           children: [
-                            const Text(
-                              '0.25x',
-                              style: TextStyle(fontSize: 10.5, color: kTextDim),
+                            Text(
+                              clipMode ? '-4x' : '0.25x',
+                              style: const TextStyle(
+                                fontSize: 10.5,
+                                color: kTextDim,
+                              ),
                             ),
                             Expanded(
                               child: Slider(
-                                value:
-                                    (math.log(now.clamp(0.25, 4.0)) / math.ln2)
-                                        .clamp(-2.0, 2.0),
-                                min: -2,
-                                max: 2,
+                                value: idx.toDouble(),
+                                min: 0,
+                                max: (stops.length - 1).toDouble(),
+                                divisions: stops.length - 1,
                                 onChanged: (v) {
-                                  // 吸附到常用倍率，手指放開才不會停在 1.03x
-                                  final raw = math.pow(2, v).toDouble();
-                                  final snapped = kSpeedOptions.reduce(
-                                    (a, b) => (a - raw).abs() < (b - raw).abs()
-                                        ? a
-                                        : b,
-                                  );
-                                  final sp = (snapped - raw).abs() < 0.06
-                                      ? snapped
-                                      : double.parse(raw.toStringAsFixed(2));
-                                  if (sp != now) apply(sp);
+                                  final s = stops[v.round()];
+                                  if (s != signed) apply(s);
                                 },
                               ),
                             ),
                             const Text(
                               '4x',
-                              style: TextStyle(fontSize: 10.5, color: kTextDim),
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                color: kTextDim,
+                              ),
                             ),
                           ],
                         ),
-                        Text(
-                          '${now.toStringAsFixed(now == now.roundToDouble() ? 0 : 2)}x',
-                          style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.w700,
-                            fontFeatures: [FontFeature.tabularFigures()],
-                          ),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              '${now.toStringAsFixed(now == now.roundToDouble() ? 0 : 2)}x',
+                              style: const TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w700,
+                                fontFeatures: [FontFeature.tabularFigures()],
+                              ),
+                            ),
+                            if (rev) ...[
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 3,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: kSelect,
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: const Text(
+                                  '倒轉',
+                                  style: TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.w700,
+                                    color: kBg,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
+                        if (tooLong)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Text(
+                              '倒轉最多 ${revMax.toStringAsFixed(1)} 秒，'
+                              '這段有 ${sel.length.toStringAsFixed(1)} 秒。'
+                              '先把它切短一點再倒轉，不然匯出會失敗',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Color(0xFFE24B4A),
+                                height: 1.5,
+                              ),
+                            ),
+                          ),
                         const SizedBox(height: 4),
                         TextButton(
-                          onPressed: now == 1.0 ? null : () => apply(1.0),
+                          onPressed: (now == 1.0 && !rev)
+                              ? null
+                              : () => apply(1.0),
                           style: TextButton.styleFrom(
                             foregroundColor: kTextDim,
                             minimumSize: const Size(0, 32),

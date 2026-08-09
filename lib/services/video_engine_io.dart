@@ -16,6 +16,19 @@ import 'video_processor.dart';
 /// 這個平台是否支援影片匯出
 const bool videoExportSupported = true;
 
+/// 倒轉一段畫面時，FFmpeg 的 reverse 濾鏡會把整段解碼後存在記憶體裡
+/// 才有辦法倒著吐出來。所以能倒轉多長是被記憶體綁死的，
+/// 不是隨便訂的數字：這裡抓 220MB 的預算換算成秒數。
+///
+/// 回傳這個輸出尺寸下，單一片段最多能倒轉幾秒
+double maxReverseSeconds(int outW, int outH) {
+  const budgetBytes = 220 * 1024 * 1024;
+  const fps = 30;
+  final perFrame = outW * outH * 1.5; // YUV420
+  if (perFrame <= 0) return 3;
+  return (budgetBytes / (perFrame * fps)).clamp(1.0, 12.0);
+}
+
 /// 把倍速拆成 FFmpeg atempo 允許的範圍（單段 0.5~2.0）
 String _atempoChain(double speed) {
   // 0、負數或 NaN 會讓下面的 while 迴圈轉不出來（UI 掛死）——
@@ -252,12 +265,16 @@ Future<String> _buildCommand(
     fc.write(
       '[$label]'
       'trim=start=${_f(c.trimStart)}:end=${_f(c.trimEnd)},'
+      // 先縮到輸出尺寸再倒轉：reverse 會把整段畫面存進記憶體，
+      // 用原始解析度存會直接把記憶體吃爆
+      'scale=$w2:$h2:flags=lanczos,'
+      '${c.reverse ? 'reverse,' : ''}'
       // 全域速度 × 每片段速度一起壓進 PTS
       //（速度 clamp 到跟 TimelineClip.length 同一個範圍，
-      // 兩邊算出來的時間才對得上）
+      // 兩邊算出來的時間才對得上）。倒轉會重排時間戳，
+      // 所以 setpts 一定要放在 reverse 後面
       'setpts=(PTS-STARTPTS)/${_f6(sp * c.speed.clamp(0.1, 16.0))}'
-      '+${_f(start)}/TB,'
-      'scale=$w2:$h2:flags=lanczos'
+      '+${_f(start)}/TB'
       '${_eq(c)}'
       '${vFades(c)}'
       '[lv$k];',
@@ -393,6 +410,8 @@ Future<String> _buildCommand(
     fc.write(
       '[$label]'
       'atrim=start=${_f(c.trimStart)}:end=${_f(c.trimEnd)},'
+      // 畫面倒轉時聲音也要倒過來，不然對不上嘴形／節奏
+      '${c.reverse ? 'areverse,' : ''}'
       'asetpts=PTS-STARTPTS,'
       // 全域速度 × 每片段速度（clamp 跟畫面端同一個範圍）
       '${_atempoChain(sp * c.speed.clamp(0.1, 16.0))}'

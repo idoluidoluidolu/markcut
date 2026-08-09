@@ -1187,6 +1187,30 @@ class _ClipBlock extends StatelessWidget {
                 fit: StackFit.expand,
                 children: [
                   _clipFill(clip, source, filmstrip),
+                  // 倒轉片段掛個標，不然跟正播的長得一模一樣
+                  if (clip.reverse)
+                    Positioned(
+                      left: 5,
+                      top: 3,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 1,
+                        ),
+                        decoration: BoxDecoration(
+                          color: kSelect,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Text(
+                          '倒轉',
+                          style: TextStyle(
+                            fontSize: 8.5,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.black,
+                          ),
+                        ),
+                      ),
+                    ),
                   // 變速片段掛倍速小標
                   if ((clip.speed - 1.0).abs() > 0.01)
                     Positioned(
