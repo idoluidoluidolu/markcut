@@ -486,16 +486,34 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                 ),
               ),
               const SizedBox(width: 10),
+              // 跟字體下拉同款的框＋「顏色」字樣：
+              // 裸圓點看起來像裝飾，不像可以點
               InkWell(
                 onTap: _pickColor,
-                borderRadius: BorderRadius.circular(14),
+                borderRadius: BorderRadius.circular(6),
                 child: Container(
-                  width: 28,
-                  height: 28,
+                  height: 38,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
                   decoration: BoxDecoration(
-                    color: s.text.color,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: kBorder, width: 2),
+                    border: Border.all(color: kBorder),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 22,
+                        height: 22,
+                        decoration: BoxDecoration(
+                          color: s.text.color,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: kBorder, width: 1.5),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      const Text('顏色',
+                          style: TextStyle(fontSize: 12, color: kTextDim)),
+                    ],
                   ),
                 ),
               ),
