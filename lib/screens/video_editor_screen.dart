@@ -3423,6 +3423,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     String label,
     VoidCallback? onTap, {
     String? tip,
+    // 按鈕灰掉時點下去的提示——沒提示的話新手不知道為什麼不能按
+    String? disabledHint,
     int quarterTurns = 0,
   }) {
     final on = onTap != null;
@@ -3431,7 +3433,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       message: tip ?? label,
       child: InkWell(
         borderRadius: BorderRadius.circular(6),
-        onTap: onTap,
+        onTap:
+            onTap ??
+            (disabledHint == null
+                ? null
+                : () => showHint(context, disabledHint)),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
           child: Column(
@@ -3661,6 +3667,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             ? _deleteWatermark
                             : (sel == null ? null : _deleteSelected),
                         tip: _wmSel ? '刪除浮水印' : '刪除片段',
+                        disabledHint: '先在時間軸點選一個片段',
                       ),
                       _toolBtn(
                         Icons.copy,
@@ -3673,12 +3680,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       () => _clipboard = sel.copy(),
                                     )),
                         tip: _wmSel ? '複製浮水印成素材' : '複製選取片段',
+                        disabledHint: '先在時間軸點選一個片段',
                       ),
                       _toolBtn(
                         Icons.content_paste,
                         '貼上',
                         _clipboard == null ? null : _pasteClipboard,
                         tip: '貼在播放處',
+                        disabledHint: '還沒有複製任何片段',
                       ),
                       _toolBtn(
                         Icons.open_in_full,
@@ -3688,6 +3697,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             ? null
                             : () => _openScaleSheet(sel),
                         tip: '縮放物件大小',
+                        disabledHint: sel == null
+                            ? '先在時間軸點選一個片段'
+                            : '聲音片段沒有畫面大小可調',
                       ),
                       _toolBtn(Icons.speed, '速度', _openSpeedSheet, tip: '播放速度'),
                       _toolBtn(
@@ -3699,12 +3711,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             ? null
                             : _enterColorMode,
                         tip: 'HSV 調色',
+                        disabledHint: sel == null
+                            ? '先在時間軸點選要調色的片段'
+                            : '這種素材不能調色（影片、圖片才可以）',
                       ),
                       _toolBtn(
                         Icons.auto_awesome,
                         '效果',
                         sel == null ? null : () => _openClipOptions(sel),
                         tip: '音量與淡化',
+                        disabledHint: '先在時間軸點選一個片段',
                       ),
                       _toolBtn(Icons.add, '加素材', _addMediaChoice),
                     ],
