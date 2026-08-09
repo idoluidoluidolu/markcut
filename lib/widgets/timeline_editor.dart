@@ -1109,11 +1109,13 @@ class _ClipBlock extends StatelessWidget {
                 children: [
                   _clipFill(clip, source, filmstrip),
                   // 檔名不顯示，畫面乾淨；只留左上角小圖示表明素材種類
-                  Positioned(
-                    left: 5,
-                    top: 4,
-                    child: Icon(icon, size: 10, color: Colors.white70),
-                  ),
+                  // （浮水印片段內容本身就是圖示＋名稱，不再疊一顆）
+                  if (source.kind != ClipKind.wm)
+                    Positioned(
+                      left: 5,
+                      top: 4,
+                      child: Icon(icon, size: 10, color: Colors.white70),
+                    ),
                   // 變速片段掛倍速小標
                   if ((clip.speed - 1.0).abs() > 0.01)
                     Positioned(
