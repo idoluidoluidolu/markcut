@@ -1668,6 +1668,43 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final now = DateTime.now();
     final volDue = now.difference(_lastVolSync).inMilliseconds >= 100;
     if (volDue) _lastVolSync = now;
+    // 無縫接續：切割出來的兩段（同來源、內容連續、同速度）在交界時
+    // 直接把前段「正在播」的播放器交給後段——暫停＋seek＋重新起播
+    // 就是播放跨過切點會卡一下的原因
+    if (_playing) {
+      for (final clip in _tl.clips) {
+        if (!clip.covers(_position) || _wasActive.contains(clip.id)) continue;
+        for (final prev in _tl.clips) {
+          if (identical(prev, clip) ||
+              prev.sourceIndex != clip.sourceIndex ||
+              prev.track != clip.track ||
+              prev.covers(_position) ||
+              !_wasActive.contains(prev.id)) {
+            continue;
+          }
+          if ((prev.end - clip.offset).abs() > 0.05 ||
+              (prev.trimEnd - clip.trimStart).abs() > 0.05 ||
+              (prev.speed - clip.speed).abs() > 0.001) {
+            continue;
+          }
+          final cOld = _ctrls[prev.id];
+          if (cOld == null || !cOld.value.isInitialized) break;
+          // 換手：後段接走正在播的，前段拿到後段那顆（離場會被暫停）
+          final cNew = _ctrls[clip.id];
+          _ctrls[clip.id] = cOld;
+          if (cNew != null) {
+            _ctrls[prev.id] = cNew;
+          } else {
+            _ctrls.remove(prev.id);
+          }
+          _lastVol[clip.id] = _lastVol.remove(prev.id) ?? -1;
+          _wasActive
+            ..add(clip.id) // 視為已進場：跳過 seek，讓它繼續跑
+            ..remove(prev.id);
+          break;
+        }
+      }
+    }
     for (final clip in _tl.clips) {
       final c = _ctrls[clip.id];
       if (c == null || !c.value.isInitialized) continue;
