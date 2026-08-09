@@ -32,7 +32,9 @@ class ExportSpeed {
     final work = outW * outH / 1000000.0 * outSeconds;
     if (work <= 0.01 || elapsed.inMilliseconds < 500) return;
     final measured = elapsed.inMilliseconds / 1000.0 / work;
-    if (!measured.isFinite || measured <= 0 || measured > 20) return;
+    // 上限放寬到 60：卡在軟體編碼的舊機器實測可能超過 20，
+    // 擋掉的話估值永遠學不到、每次都估太快
+    if (!measured.isFinite || measured <= 0 || measured > 60) return;
     final prev = await factor();
     _cached = prev * 0.6 + measured * 0.4;
     final prefs = await SharedPreferences.getInstance();

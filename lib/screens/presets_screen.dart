@@ -28,6 +28,7 @@ class _PresetsScreenState extends State<PresetsScreen> {
 
   Future<void> _reload() async {
     final p = await PresetStore.load();
+    if (!mounted) return; // 載入中滑回上一頁就別再 setState
     setState(() {
       _presets = p;
       _loading = false;
@@ -83,6 +84,7 @@ class _PresetsScreenState extends State<PresetsScreen> {
         ],
       ),
     );
+    ctrl.dispose();
     if (newName == null || newName.isEmpty || newName == p.name) return;
     final ok = await PresetStore.rename(p.name, newName);
     if (!mounted) return;

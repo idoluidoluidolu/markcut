@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -112,27 +113,44 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     final picked =
         await ImagePicker().pickImage(source: ImageSource.gallery);
     if (picked == null) return;
-    final raw = await picked.readAsBytes();
-    // 縮到 1024px 內再存進設定，範本自帶圖檔不佔太多空間
-    final shrunk = await _shrinkToPng(raw, 1024);
-    _update(() {
-      s.logo.bytesValue = shrunk;
-      s.logo.enabled = true;
-    });
+    try {
+      final raw = await picked.readAsBytes();
+      // 縮到 1024px 內再存進設定，範本自帶圖檔不佔太多空間
+      final shrunk = await _shrinkToPng(raw, 1024);
+      // 選圖期間畫面可能已經被收掉（挑很久、系統回收）
+      if (!mounted || shrunk == null) {
+        if (mounted) showHint(context, '這張圖讀不進來，換一張試試', error: true);
+        return;
+      }
+      _update(() {
+        s.logo.bytesValue = shrunk;
+        s.logo.enabled = true;
+      });
+    } catch (_) {
+      if (mounted) showHint(context, '這張圖讀不進來，換一張試試', error: true);
+    }
   }
 
-  static Future<Uint8List> _shrinkToPng(Uint8List raw, int maxW) async {
+  static Future<Uint8List?> _shrinkToPng(Uint8List raw, int maxSide) async {
     var codec = await ui.instantiateImageCodec(raw);
     var frame = await codec.getNextFrame();
-    if (frame.image.width > maxW) {
+    // 長邊超標就縮（只看寬的話 500×8000 的長圖會整張存進範本，
+    // web 的 localStorage 5MB 配額直接爆）
+    final w = frame.image.width;
+    final h = frame.image.height;
+    if (math.max(w, h) > maxSide) {
       frame.image.dispose();
-      codec = await ui.instantiateImageCodec(raw, targetWidth: maxW);
+      codec = await ui.instantiateImageCodec(
+        raw,
+        targetWidth: w >= h ? maxSide : null,
+        targetHeight: h > w ? maxSide : null,
+      );
       frame = await codec.getNextFrame();
     }
     final data =
         await frame.image.toByteData(format: ui.ImageByteFormat.png);
     frame.image.dispose();
-    return data!.buffer.asUint8List();
+    return data?.buffer.asUint8List(); // 特殊格式編不出 PNG 就回 null
   }
 
   /// 通用顏色挑選：文字、描邊、底色共用
@@ -221,9 +239,19 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         ],
       ),
     );
+    nameCtrl.dispose();
     if (name == null || name.isEmpty) return;
     final existed = _presets.any((p) => p.name == name);
-    await PresetStore.add(WatermarkPreset(name: name, settings: s.copy()));
+    try {
+      await PresetStore.add(WatermarkPreset(name: name, settings: s.copy()));
+    } catch (_) {
+      // web 的 localStorage 有 5MB 配額，Logo 太大會存不進去——
+      // 要讓使用者知道沒存成，不能無聲 crash
+      if (mounted) {
+        showHint(context, '存不下去（範本空間滿了），把 Logo 換小一點試試', error: true);
+      }
+      return;
+    }
     _presetSel = name;
     await _loadPresets();
     widget.onSaved?.call(); // 父層拿去重設「有沒有改過」的基準

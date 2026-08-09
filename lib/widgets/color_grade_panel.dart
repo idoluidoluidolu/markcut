@@ -204,14 +204,15 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
                   ),
                 ),
               const Spacer(),
-              // 按住＝暫時看原圖，放開回到調過的樣子
-              GestureDetector(
-                onTapDown: (_) => _setCompare(true),
-                onTapUp: (_) => _setCompare(false),
-                onTapCancel: () => _setCompare(false),
-                onLongPressDown: (_) => _setCompare(true),
-                onLongPressEnd: (_) => _setCompare(false),
-                onLongPressCancel: () => _setCompare(false),
+              // 按住＝暫時看原圖，放開回到調過的樣子。
+              // 用 Listener 收原始指標事件，不進手勢仲裁——
+              // 用 GestureDetector 的話按住約半秒長按手勢會把
+              // 點擊手勢踢掉、觸發 onTapCancel，畫面自己彈回去
+              Listener(
+                behavior: HitTestBehavior.opaque,
+                onPointerDown: (_) => _setCompare(true),
+                onPointerUp: (_) => _setCompare(false),
+                onPointerCancel: (_) => _setCompare(false),
                 child: Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 11,

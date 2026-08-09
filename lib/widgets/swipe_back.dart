@@ -24,6 +24,9 @@ class SwipeBack extends StatefulWidget {
 }
 
 class _SwipeBackState extends State<SwipeBack> {
+  /// 目前壓在螢幕上的所有指頭（不只追蹤第一指——
+  /// 只記一根的話，第三指下來會被誤認成「新的一輪」重新開始判定）
+  final Set<int> _downPointers = {};
   int? _pointer;
   Offset _start = Offset.zero;
   DateTime _startAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -31,8 +34,9 @@ class _SwipeBackState extends State<SwipeBack> {
   bool _done = false;
 
   void _down(PointerDownEvent e) {
-    // 第二指下來（捏合）就整輪放棄
-    if (_pointer != null) {
+    _downPointers.add(e.pointer);
+    // 螢幕上超過一指（捏合）就整輪放棄，直到全部放開
+    if (_downPointers.length > 1) {
       _pointer = null;
       _done = true;
       return;
@@ -59,9 +63,11 @@ class _SwipeBackState extends State<SwipeBack> {
     }
   }
 
-  void _reset() {
-    _pointer = null;
-    _done = false;
+  void _up(int pointer) {
+    _downPointers.remove(pointer);
+    if (pointer == _pointer) _pointer = null;
+    // 全部指頭都離開螢幕才重新開放判定
+    if (_downPointers.isEmpty) _done = false;
   }
 
   @override
@@ -69,10 +75,8 @@ class _SwipeBackState extends State<SwipeBack> {
     return Listener(
       onPointerDown: _down,
       onPointerMove: _move,
-      onPointerUp: (e) {
-        if (e.pointer == _pointer) _reset();
-      },
-      onPointerCancel: (_) => _reset(),
+      onPointerUp: (e) => _up(e.pointer),
+      onPointerCancel: (e) => _up(e.pointer),
       child: widget.child,
     );
   }

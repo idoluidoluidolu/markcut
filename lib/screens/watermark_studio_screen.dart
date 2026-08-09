@@ -37,6 +37,10 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
     if (e != null) {
       _settings.text = e.settings.text.copy();
       _settings.logo = e.settings.logo.copy();
+      // 動畫設定也要帶過來，不然存回去時會把範本的動畫洗掉
+      _settings.animation = e.settings.animation;
+      _settings.animSpeed = e.settings.animSpeed;
+      _settings.animRange = e.settings.animRange;
     }
     _initialJson = jsonEncode(_settings.toJson());
   }

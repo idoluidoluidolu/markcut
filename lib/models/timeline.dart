@@ -55,7 +55,8 @@ class MediaSource {
   factory MediaSource.fromJson(Map<String, dynamic> j) => MediaSource(
     path: j['path'] ?? '',
     name: j['name'] ?? '',
-    kind: ClipKind.values[(j['kind'] ?? 0) as int],
+    // % 防護：新版種類存進草稿後被舊版打開也不至於整包炸掉
+    kind: ClipKind.values[((j['kind'] ?? 0) as int) % ClipKind.values.length],
     w: (j['w'] ?? 0) as int,
     h: (j['h'] ?? 0) as int,
     duration: (j['duration'] ?? 0).toDouble(),
@@ -283,9 +284,28 @@ class TimelineModel {
   TimelineClip? splitAt(TimelineClip c, double t) {
     if (t - c.offset < 0.2 || c.end - t < 0.2) return null;
     final srcT = c.sourceTimeAt(t);
+    // 浮水印／文字素材的樣式存在來源上；切開後兩半要各自
+    // 一份來源，不然改其中一半的樣式另一半會跟著變
+    var srcIdx = c.sourceIndex;
+    final src = sources[srcIdx];
+    if (src.kind == ClipKind.wm || src.kind == ClipKind.text) {
+      sources.add(
+        MediaSource(
+          path: src.path,
+          name: src.name,
+          kind: src.kind,
+          w: src.w,
+          h: src.h,
+          duration: src.duration,
+          textStyle: src.textStyle?.copy(),
+          wmStyle: src.wmStyle?.copy(),
+        ),
+      );
+      srcIdx = sources.length - 1;
+    }
     final second = TimelineClip(
       id: nextId(),
-      sourceIndex: c.sourceIndex,
+      sourceIndex: srcIdx,
       trimStart: srcT,
       trimEnd: c.trimEnd,
       offset: t,
@@ -296,7 +316,11 @@ class TimelineModel {
       py: c.py,
       scale: c.scale,
       color: c.color.copy(),
+      // 淡出屬於「結尾」，跟著後半走；前半的淡出清掉，
+      // 不然會在切點處憑空淡出。淡入同理留在前半
+      fadeOut: c.fadeOut,
     );
+    c.fadeOut = 0;
     c.trimEnd = srcT;
     clips.add(second);
     return second;

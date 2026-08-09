@@ -18,8 +18,11 @@ const bool videoExportSupported = true;
 
 /// 把倍速拆成 FFmpeg atempo 允許的範圍（單段 0.5~2.0）
 String _atempoChain(double speed) {
+  // 0、負數或 NaN 會讓下面的 while 迴圈轉不出來（UI 掛死）——
+  // 正常操作到不了這裡，但壞掉的草稿 JSON 可能帶進來
+  if (!speed.isFinite || speed <= 0) return 'atempo=1.0';
   final parts = <double>[];
-  var s = speed;
+  var s = speed.clamp(0.025, 256.0);
   while (s < 0.5) {
     parts.add(0.5);
     s /= 0.5;
@@ -66,6 +69,10 @@ Future<_SourceProbe> _probe(String path) async {
 }
 
 String _f(double v) => v.toStringAsFixed(3);
+
+/// setpts 的除數要更準：0.25×0.25 這種組合用 3 位小數
+/// （0.063 vs 0.0625）會累積出可感知的影音不同步
+String _f6(double v) => v.toStringAsFixed(6);
 
 /// 片段調色 → FFmpeg 濾鏡（沒調過回空字串）
 String _eq(TimelineClip c) => c.color.ffmpeg;
@@ -244,7 +251,10 @@ Future<String> _buildCommand(
       '[$label]'
       'trim=start=${_f(c.trimStart)}:end=${_f(c.trimEnd)},'
       // 全域速度 × 每片段速度一起壓進 PTS
-      'setpts=(PTS-STARTPTS)/${_f(sp * c.speed)}+${_f(start)}/TB,'
+      //（速度 clamp 到跟 TimelineClip.length 同一個範圍，
+      // 兩邊算出來的時間才對得上）
+      'setpts=(PTS-STARTPTS)/${_f6(sp * c.speed.clamp(0.1, 16.0))}'
+      '+${_f(start)}/TB,'
       'scale=$w2:$h2:flags=lanczos'
       '${_eq(c)}'
       '${vFades(c)}'
@@ -296,21 +306,24 @@ Future<String> _buildCommand(
       final wmSt = src.kind == ClipKind.wm ? src.wmStyle : null;
       if (wmSt != null && wmSt.animation != WmAnimation.none) {
         evalFrame = 'eval=frame:';
+        // 動畫週期是「時間軸秒」；輸出時間 t 要乘回全域速度，
+        // 不然 2 倍速匯出時動畫會慢一半、跟預覽對不上
+        final ts = sp == 1.0 ? 't' : '(t*${_f(sp)})';
         switch (wmSt.animation) {
           case WmAnimation.none:
             break;
           case WmAnimation.blink:
             enable =
-                '$enable*lt(mod(t\\,${_f(wmSt.blinkCycle)})'
+                '$enable*lt(mod($ts\\,${_f(wmSt.blinkCycle)})'
                 '\\,${_f(wmSt.blinkOn)})';
           case WmAnimation.drift:
             final f = _f(1.3 * wmSt.animSpeed);
             final f2 = _f(0.9 * wmSt.animSpeed);
             final amp = _f(0.02 * wmSt.animRange);
-            pos = "x='sin(t*$f)*W*$amp':y='cos(t*$f2)*H*$amp'";
+            pos = "x='sin($ts*$f)*W*$amp':y='cos($ts*$f2)*H*$amp'";
           case WmAnimation.marquee:
             final cy = _f(wmSt.marqueeCycle);
-            pos = "x='W-mod(t\\,$cy)*2*W/$cy':y=0";
+            pos = "x='W-mod($ts\\,$cy)*2*W/$cy':y=0";
         }
       }
       fc.write(
@@ -331,22 +344,24 @@ Future<String> _buildCommand(
     final we = (spec.wmEnd / sp).clamp(0.0, outDur);
     var enable = 'between(t\\,${_f(ws)}\\,${_f(we)})';
     var pos = 'x=0:y=0';
+    // 動畫週期是「時間軸秒」；輸出時間 t 要乘回全域速度
+    final ts = sp == 1.0 ? 't' : '(t*${_f(sp)})';
     switch (spec.wmAnimation) {
       case WmAnimation.none:
         break;
       case WmAnimation.blink:
         enable =
-            '$enable*lt(mod(t\\,${_f(spec.wmCycle)})'
+            '$enable*lt(mod($ts\\,${_f(spec.wmCycle)})'
             '\\,${_f(spec.wmOn)})';
       case WmAnimation.drift:
         final f = _f(1.3 * spec.wmSpeed);
         final f2 = _f(0.9 * spec.wmSpeed);
         final amp = _f(0.02 * spec.wmRange);
-        pos = "x='sin(t*$f)*W*$amp':y='cos(t*$f2)*H*$amp'";
+        pos = "x='sin($ts*$f)*W*$amp':y='cos($ts*$f2)*H*$amp'";
       case WmAnimation.marquee:
         // 一輪由右向左掃過（整版 PNG 平移，超出畫面自然消失）
         final c = _f(spec.wmCycle);
-        pos = "x='W-mod(t\\,$c)*2*W/$c':y=0";
+        pos = "x='W-mod($ts\\,$c)*2*W/$c':y=0";
     }
     fc.write(
       '[$cur][$wmInputIdx:v]overlay=$pos:eval=frame:'
@@ -377,8 +392,8 @@ Future<String> _buildCommand(
       '[$label]'
       'atrim=start=${_f(c.trimStart)}:end=${_f(c.trimEnd)},'
       'asetpts=PTS-STARTPTS,'
-      // 全域速度 × 每片段速度
-      '${_atempoChain(sp * c.speed)}'
+      // 全域速度 × 每片段速度（clamp 跟畫面端同一個範圍）
+      '${_atempoChain(sp * c.speed.clamp(0.1, 16.0))}'
       '$fades,'
       'volume=${c.volume.toStringAsFixed(2)},'
       'adelay=$delayMs:all=1,'
@@ -515,14 +530,20 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   }
   FFmpegKitConfig.enableStatisticsCallback(null);
 
+  // 逐檔各自 try：第一個刪不掉（例如輸出檔根本沒生出來）
+  // 不該讓後面的浮水印／疊圖 PNG 全部漏掉
   void cleanupTemp() {
-    try {
-      File(outPath).deleteSync();
-      if (wmPath != null) File(wmPath).deleteSync();
-      for (final p in overlayFiles.values) {
+    void del(String p) {
+      try {
         File(p).deleteSync();
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
+
+    del(outPath);
+    if (wmPath != null) del(wmPath);
+    for (final p in overlayFiles.values) {
+      del(p);
+    }
   }
 
   if (ReturnCode.isCancel(rc)) {
@@ -539,9 +560,23 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   }
 
   if (!await Gal.hasAccess(toAlbum: true)) {
-    await Gal.requestAccess(toAlbum: true);
+    final granted = await Gal.requestAccess(toAlbum: true);
+    if (!granted) {
+      cleanupTemp();
+      return (
+        ok: false,
+        message: '影片做好了，但沒有相簿存取權限。\n請到系統設定開啟權限後再匯出一次',
+        cancelled: false,
+      );
+    }
   }
-  await Gal.putVideo(outPath, album: '浮水印');
+  try {
+    await Gal.putVideo(outPath, album: '浮水印');
+  } catch (e) {
+    // 存相簿失敗也要把暫存清掉，不然每失敗一次就漏一組檔案
+    cleanupTemp();
+    return (ok: false, message: '存到相簿失敗：$e', cancelled: false);
+  }
   cleanupTemp();
   return (ok: true, message: '完成！影片已儲存到相簿（浮水印 相簿）', cancelled: false);
 }

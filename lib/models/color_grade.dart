@@ -156,7 +156,10 @@ class ColorGrade {
     final out = StringBuffer();
 
     if ((saturation - 1).abs() > 0.001) {
-      final s = saturation;
+      // colorchannelmixer 的係數硬上限是 2.0；飽和度 2.08 起
+      // bb 就會超標讓濾鏡初始化失敗。滑桿現在最高 2.0（bb≈1.93），
+      // 這裡再夾一次，之後有人把滑桿範圍調大也不會炸匯出
+      final s = saturation.clamp(0.0, 2.0);
       final inv = 1 - s;
       out.write(
         ',colorchannelmixer='

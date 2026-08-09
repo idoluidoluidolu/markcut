@@ -81,7 +81,7 @@ class ExportSpec {
   final double wmSpeed; // 動畫速度倍率
   final double wmRange; // 動畫幅度倍率
 
-  /// 文字素材渲染好的整版 PNG（sourceIndex → 圖），匯出時 overlay 用
+  /// 文字／浮水印素材渲染好的整版 PNG（clip id → 圖），匯出時 overlay 用
   final Map<int, Uint8List> overlayPngs;
   final int outW;
   final int outH;

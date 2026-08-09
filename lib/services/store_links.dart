@@ -26,7 +26,7 @@ String get liuJiKanStoreLabel {
 ///
 /// 用 https 網址就好，不需要 market://、itms-apps:// 那種自訂 scheme，
 /// 也就不必在 Info.plist 加 LSApplicationQueriesSchemes。
-Future<bool> openLiuJiKan() {
+Future<bool> openLiuJiKan() async {
   var url = kLiuJiKanWebUrl;
   if (!kIsWeb) {
     try {
@@ -36,5 +36,14 @@ Future<bool> openLiuJiKan() {
       }
     } catch (_) {}
   }
-  return launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+  // launchUrl 在沒有瀏覽器可開時是「丟例外」不是回 false，
+  // 一律轉成 false 讓呼叫端統一顯示提示
+  try {
+    return await launchUrl(
+      Uri.parse(url),
+      mode: LaunchMode.externalApplication,
+    );
+  } catch (_) {
+    return false;
+  }
 }

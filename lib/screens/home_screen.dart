@@ -117,7 +117,20 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// 加入浮水印：先問要單支還是多支、影片還是照片
+  /// 選單開著就別再開第二個（連點兩下會疊兩層）
+  bool _picking = false;
+
   Future<void> _addWatermark() async {
+    if (_picking) return;
+    _picking = true;
+    try {
+      await _addWatermarkInner();
+    } finally {
+      _picking = false;
+    }
+  }
+
+  Future<void> _addWatermarkInner() async {
     final kind = await showDialog<_PickKind>(
       context: context,
       builder: (context) => Dialog(

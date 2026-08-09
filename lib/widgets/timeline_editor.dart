@@ -696,7 +696,8 @@ class _TimelineEditorState extends State<TimelineEditor> {
   /// 浮水印軌：整塊可左右拖曳、可修剪範圍的琥珀色塊
   Widget _wmRow() {
     final wm = widget.watermark!;
-    final w = ((wm.end - wm.start) * pxPerSec).clamp(20.0, double.infinity);
+    // 最窄 44：兩顆 13px 修剪把手＋文字內距，再窄就疊在一起分不出左右
+    final w = ((wm.end - wm.start) * pxPerSec).clamp(44.0, double.infinity);
     return Stack(
       clipBehavior: Clip.none,
       children: [
@@ -969,6 +970,10 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
         child: Icon(Icons.movie, size: 18, color: Colors.white38),
       ),
     );
+  }
+  // duration 讀不到（=0）時除法會變 NaN，floor() 直接炸——退回單張縮圖
+  if (src.duration <= 0) {
+    return Image.memory(strip[0], fit: BoxFit.cover, gaplessPlayback: true);
   }
   // 縮圖磚固定尺寸（不隨縮放拉伸變形），縮放只改變「放幾塊磚」
   final n = strip.length;

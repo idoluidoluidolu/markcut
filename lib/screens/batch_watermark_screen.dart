@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
@@ -167,10 +168,14 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     }
   }
 
-  /// 一次把每個檔案的小縮圖備好；原檔讀完就丟
+  /// 一次把每個檔案的小縮圖備好；原檔讀完就丟。
+  /// 迭代快照，不直接迭代 _items——載入中長按移除一張會讓
+  /// 迭代器丟 ConcurrentModificationError，剩下的縮圖全載不出來
   Future<void> _loadPreviews() async {
-    for (final item in _items) {
+    final snapshot = List.of(_items);
+    for (final item in snapshot) {
       if (!mounted) return;
+      if (!_items.contains(item)) continue; // 中途被移除就跳過
       final f = item.file;
       try {
         if (_isVideo(f)) {
@@ -225,6 +230,18 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   Future<void> _editCurrentAlone() async {
     final item = _items[_previewIndex];
     if (_isVideo(item.file)) {
+      // 開新影片專案會蓋掉現有草稿——跟首頁同一套，先問過
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      if ((prefs.getString(kDraftKey) ?? '').isNotEmpty) {
+        final ok = await showConfirm(
+          context,
+          title: '覆蓋上次的草稿？',
+          message: '開新專案後，未完成的草稿會被取代',
+          action: '開新專案',
+        );
+        if (!ok || !mounted) return;
+      }
       await Navigator.push(
         context,
         MaterialPageRoute(
@@ -317,6 +334,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
 
     var done = 0;
     var failed = 0;
+    var skipped = 0;
     for (var i = 0; i < _items.length; i++) {
       if (_stopRequested) break;
       final item = _items[i];
@@ -324,7 +342,13 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       label.value = '第 ${i + 1} / $total 個：${f.name}';
       try {
         if (_isVideo(f)) {
-          if (!engine.videoExportSupported) continue;
+          if (!engine.videoExportSupported) {
+            // 要計數＋推進度，不然進度條卡住、
+            // 結尾還顯示「完成！已輸出 0 個」的成功樣式
+            skipped++;
+            overall.value = (i + 1) / total;
+            continue;
+          }
           final ok = await _exportVideo(f, (p) {
             overall.value = (i + p) / total;
           });
@@ -347,10 +371,11 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     if (done > 0) _exported = true; // 有輸出成功，離開不用再問
     if (mounted) {
       Navigator.of(context).pop();
-      final msg = _stopRequested
+      var msg = _stopRequested
           ? '已取消，完成 $done 個'
           : (failed == 0 ? '完成！已輸出 $done 個檔案' : '完成 $done 個，$failed 個失敗');
-      showHint(context, msg, error: failed > 0 && !_stopRequested);
+      if (skipped > 0) msg += '（$skipped 部影片略過：此平台不支援）';
+      showHint(context, msg, error: (failed > 0 || skipped > 0) && !_stopRequested);
     }
     setState(() => _exporting = false);
   }

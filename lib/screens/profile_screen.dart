@@ -230,15 +230,17 @@ class _DraftsScreenState extends State<DraftsScreen> {
     }
   }
 
-  /// 專案總長（原速秒）＝所有片段最晚的結尾
+  /// 專案總長（秒）＝所有片段最晚的結尾（變速片段要除速度才準）
   double _draftDuration(Map<String, dynamic> j) {
     var end = 0.0;
     for (final c in (j['clips'] as List? ?? [])) {
       final m = Map<String, dynamic>.from(c as Map);
+      final speed = (((m['speed'] ?? 1.0) as num).toDouble()).clamp(0.1, 16.0);
       final e =
           ((m['offset'] ?? 0) as num).toDouble() +
-          ((m['trimEnd'] ?? 0) as num).toDouble() -
-          ((m['trimStart'] ?? 0) as num).toDouble();
+          (((m['trimEnd'] ?? 0) as num).toDouble() -
+                  ((m['trimStart'] ?? 0) as num).toDouble()) /
+              speed;
       if (e > end) end = e;
     }
     return end;

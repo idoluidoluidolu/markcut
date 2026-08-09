@@ -199,6 +199,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   String _snapshot() => jsonEncode({
     'clips': [for (final c in _tl.clips) c.toJson()],
+    // 來源也要進快照：浮水印／文字素材的樣式（wmStyle/textStyle/name）
+    // 存在來源上，漏掉的話那些編輯按復原根本退不回去
+    'sources': [for (final s in _tl.sources) s.toJson()],
     'wmStart': _wmStart,
     'wmEnd': _wmEnd,
     'wm': _settings.toJson(),
@@ -226,6 +229,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _restoreSnapshot(String snap) {
     final j = jsonDecode(snap) as Map<String, dynamic>;
     setState(() {
+      // 舊快照可能沒有 sources（升級前拍的），那就沿用現況
+      if (j['sources'] != null) {
+        _tl.sources
+          ..clear()
+          ..addAll([
+            for (final s in (j['sources'] as List))
+              MediaSource.fromJson(Map<String, dynamic>.from(s as Map)),
+          ]);
+      }
       _tl.clips
         ..clear()
         ..addAll([
@@ -605,6 +617,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _scrubbing = false;
   Timer? _scrubEndTimer;
 
+  /// 正在跑的抽幀 FFmpeg 段數（匯出前要等它歸零，
+  /// 不然兩個 FFmpeg 同時跑會吃爆記憶體、進度統計也會打架）
+  int _scrubExtracting = 0;
+
   Future<void> _makeScrubCache(int srcIndex, String path, double dur) async {
     if (dur <= 0) return;
     // 上限 2400 張（8fps 約 5 分鐘）；更長的片自動降密度保住記憶體
@@ -625,14 +641,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       if (!mounted || !identical(_scrubFrames[srcIndex], slots)) return;
       final count = math.min(segFrames, n - s);
-      final t = await engine.makeThumbnails(
-        path,
-        count * step,
-        count,
-        height: _scrubLongSide,
-        longSide: true,
-        startAt: s * step,
-      );
+      _scrubExtracting++;
+      List<Uint8List> t;
+      try {
+        t = await engine.makeThumbnails(
+          path,
+          count * step,
+          count,
+          height: _scrubLongSide,
+          longSide: true,
+          startAt: s * step,
+        );
+      } finally {
+        _scrubExtracting--;
+      }
       // 畫面關了或素材被換掉就停
       if (!mounted || !identical(_scrubFrames[srcIndex], slots)) return;
       for (var i = 0; i < t.length && s + i < n; i++) {
@@ -1476,8 +1498,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         wmStyle: style,
       ),
     );
-    // 預設從播放頭鋪到影片結尾（浮水印通常要蓋整段）
-    final len = (_tl.duration - _position).clamp(3.0, 3600.0);
+    // 預設從播放頭鋪到影片結尾（浮水印通常要蓋整段）。
+    // 播放頭貼著結尾時不硬撐 3 秒——那會讓匯出多一段
+    // 只有浮水印的黑畫面；至少留 1 秒讓片段抓得到就好
+    final remain = _tl.duration - _position;
+    final len = remain >= 1.0
+        ? remain.clamp(1.0, 3600.0)
+        : 1.0; // 空專案或貼著結尾：給最短 1 秒
     final clip = TimelineClip(
       id: _tl.nextId(),
       sourceIndex: srcIndex,
@@ -1769,13 +1796,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       showHint(context, '太靠近邊緣了，每段至少 0.2 秒');
       return;
     }
-    // 後半段需要自己的播放器
-    final src = _tl.sourceOf(second);
-    final ctrl = makeVideoController(src.path);
-    ctrl.initialize().then((_) {
-      if (mounted) setState(() {});
-    });
-    _ctrls[second.id] = ctrl;
+    // 後半段需要自己的播放器（浮水印／文字／圖片沒有路徑，
+    // 開播放器會在 10 秒後 timeout 炸掉——交給 _ensureCtrlFor 判斷）
+    _ensureCtrlFor(second);
     setState(() => _sel = second.id);
   }
 
@@ -1914,9 +1937,28 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final cb = _clipboard;
     if (cb == null) return;
     _pushUndo();
+    // 浮水印／文字素材：樣式在來源上，貼上要有自己的一份，
+    // 不然改貼出來那份的樣式，原本那份會跟著變
+    var srcIdx = cb.sourceIndex;
+    final cbSrc = _tl.sources[srcIdx];
+    if (cbSrc.kind == ClipKind.wm || cbSrc.kind == ClipKind.text) {
+      _tl.sources.add(
+        MediaSource(
+          path: cbSrc.path,
+          name: cbSrc.name,
+          kind: cbSrc.kind,
+          w: cbSrc.w,
+          h: cbSrc.h,
+          duration: cbSrc.duration,
+          textStyle: cbSrc.textStyle?.copy(),
+          wmStyle: cbSrc.wmStyle?.copy(),
+        ),
+      );
+      srcIdx = _tl.sources.length - 1;
+    }
     final clip = TimelineClip(
       id: _tl.nextId(),
-      sourceIndex: cb.sourceIndex,
+      sourceIndex: srcIdx,
       trimStart: cb.trimStart,
       trimEnd: cb.trimEnd,
       offset: at ?? _position,
@@ -1927,13 +1969,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         _tl.usedTracks,
       ),
       volume: cb.volume,
+      // 這些貼上時原本被丟掉：2 倍速片段貼上會變 1 倍速、
+      // 調好位置大小的疊圖會跳回置中原尺寸
+      speed: cb.speed,
+      px: cb.px,
+      py: cb.py,
+      scale: cb.scale,
+      fadeIn: cb.fadeIn,
+      fadeOut: cb.fadeOut,
+      color: cb.color.copy(),
     );
-    final src = _tl.sources[cb.sourceIndex];
-    final ctrl = makeVideoController(src.path);
-    ctrl.initialize().then((_) {
-      if (mounted) setState(() {});
-    });
-    _ctrls[clip.id] = ctrl;
+    // 播放器交給 _ensureCtrlFor（有種類判斷＋錯誤保護）
+    _ensureCtrlFor(clip);
     setState(() {
       _tl.clips.add(clip);
       _sel = clip.id;
@@ -1990,6 +2037,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     PaintingBinding.instance.imageCache.clearLiveImages();
 
     setState(() => _exporting = true);
+
+    // 抽幀可能正好在跑一段（約 6 秒）——等它收尾再開匯出，
+    // 上限 10 秒，卡住也不至於永遠不動
+    for (var i = 0; i < 100 && _scrubExtracting > 0; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    if (!mounted) return;
 
     final progress = ValueNotifier<double>(0);
     // 剩餘時間用實際進度速率推，比任何靜態公式都準
@@ -2978,8 +3032,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   TimelineClip? selWmClip;
                                   {
                                     final c = _selClipById(_sel);
+                                    // 只在片段真的顯示在播放頭上時才路由，
+                                    // 不然會盲拖一個看不見的浮水印
                                     if (c != null &&
-                                        _tl.sourceOf(c).kind == ClipKind.wm) {
+                                        _tl.sourceOf(c).kind == ClipKind.wm &&
+                                        c.covers(_position)) {
                                       selWmClip = c;
                                     }
                                   }
@@ -2995,12 +3052,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         child: GestureDetector(
                                           behavior: HitTestBehavior.translucent,
                                           onScaleStart: (d) {
-                                            if (selVis != null ||
-                                                wmClipStyle != null) {
-                                              _pushUndo();
-                                            } else {
-                                              _pushWmUndo();
-                                            }
+                                            // undo 延到第一次真的動到東西
+                                            // 才拍：光按一下不該吃掉 redo
+                                            _routerUndoPending = true;
                                             if (selVis != null) {
                                               _gestureStartPx = selVis.px;
                                               _gestureStartPy = selVis.py;
@@ -3011,6 +3065,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           },
                                           onScaleUpdate: (d) {
                                             if (selVis != null) {
+                                              _routerPushUndoIfNeeded();
+                                              // 文字素材可以放大到 12 倍
+                                              //（跟捏合 Listener 同一套），
+                                              // 其他 3 倍
+                                              final maxS =
+                                                  _tl.sourceOf(selVis).kind ==
+                                                      ClipKind.text
+                                                  ? 12.0
+                                                  : 3.0;
                                               setState(() {
                                                 selVis.px =
                                                     (_gestureStartPx +
@@ -3029,7 +3092,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                 selVis.scale =
                                                     (_gestureStartScale *
                                                             d.scale)
-                                                        .clamp(0.05, 3.0);
+                                                        .clamp(0.05, maxS);
                                               });
                                               return;
                                             }
@@ -3044,12 +3107,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             _routerLast = d.focalPoint;
                                             final ddx = dd.dx / w;
                                             final ddy = dd.dy / h;
+                                            // 平鋪滿版的部件沒有位置概念，
+                                            // 移了沒效果，也不該吃 undo
+                                            var moved = false;
                                             setState(() {
                                               if (wmClipStyle != null) {
                                                 // 浮水印片段：整組一起移
                                                 final t2 = wmClipStyle.text;
                                                 final lg = wmClipStyle.logo;
-                                                if (t2.enabled) {
+                                                if (t2.enabled &&
+                                                    !t2.tiled &&
+                                                    t2.text
+                                                        .trim()
+                                                        .isNotEmpty) {
+                                                  _routerPushUndoIfNeeded();
+                                                  moved = true;
                                                   t2.x = (t2.x + ddx).clamp(
                                                     0.0,
                                                     1.0,
@@ -3059,7 +3131,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                     1.0,
                                                   );
                                                 }
-                                                if (lg.enabled) {
+                                                if (lg.enabled && !lg.tiled) {
+                                                  _routerPushUndoIfNeeded();
+                                                  moved = true;
                                                   lg.x = (lg.x + ddx).clamp(
                                                     0.0,
                                                     1.0,
@@ -3082,7 +3156,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                     : (hasT
                                                           ? WmPart.text
                                                           : WmPart.logo);
-                                                if (part == WmPart.text) {
+                                                if (part == WmPart.text &&
+                                                    hasT &&
+                                                    !t2.tiled) {
+                                                  _routerPushUndoIfNeeded();
+                                                  moved = true;
                                                   t2.x = (t2.x + ddx).clamp(
                                                     0.0,
                                                     1.0,
@@ -3091,7 +3169,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                     0.0,
                                                     1.0,
                                                   );
-                                                } else {
+                                                } else if (part ==
+                                                        WmPart.logo &&
+                                                    lg.enabled &&
+                                                    !lg.tiled) {
+                                                  _routerPushUndoIfNeeded();
+                                                  moved = true;
                                                   lg.x = (lg.x + ddx).clamp(
                                                     0.0,
                                                     1.0,
@@ -3103,6 +3186,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                 }
                                               }
                                             });
+                                            if (!moved) return;
                                           },
                                           onScaleEnd: (_) => _saveDraft(),
                                           child: const SizedBox.expand(),
@@ -3139,6 +3223,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 選取路由的上一個拖曳點（算增量用）
   Offset _routerLast = Offset.zero;
+
+  /// 選取路由的 undo 快照「欠著」旗標：手勢開始先掛著，
+  /// 第一次真的動到東西才拍——光按一下不該清掉 redo
+  bool _routerUndoPending = false;
+
+  void _routerPushUndoIfNeeded() {
+    if (!_routerUndoPending) return;
+    _routerUndoPending = false;
+    _pushWmUndo(); // 0.7 秒內合併，跟捏合 Listener 的快照不會重複拍
+  }
   double? _pvBaseDist;
   double _pvBaseText = 0;
   double _pvBaseLogo = 0;
@@ -3223,7 +3317,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _pvBaseClipWmLogo = selWm?.logo.sizeFrac ?? 0.2;
     }
     if (_wmSel) _pickPinchTarget((p[0] + p[1]) / 2);
-    _pushUndo();
+    // 沒選任何東西的捏合什麼都不會動——別拍快照、別清 redo。
+    // 有選取時用節流版，跟選取路由的快照 0.7 秒內合併成一步
+    if (_wmSel || _sel != -1) _pushWmUndo();
   }
 
   double _pvBaseClipWmText = 0.08;
@@ -4084,7 +4180,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       onChanged: () => setState(() {}),
       onBeforeChange: _pushUndo,
       onDone: _exitColorMode,
-      onCompare: (on) => setState(() => _colorCompare = on),
+      // 面板 dispose 時會回呼一次 false，那時這頁可能也在收——要擋
+      onCompare: (on) {
+        if (mounted) setState(() => _colorCompare = on);
+      },
     );
   }
 

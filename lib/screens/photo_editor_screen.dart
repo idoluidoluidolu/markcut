@@ -408,9 +408,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                       onPointerUp: (e) => _pinchUp(e.pointer),
                       onPointerCancel: (e) => _pinchUp(e.pointer),
                       child: GestureDetector(
-                        // 點空白＝收鍵盤
-                        onTap: () =>
-                            FocusManager.instance.primaryFocus?.unfocus(),
+                        // 點空白＝收鍵盤＋取消部件選取
+                        //（不取消的話另一個部件會永遠拖不動）
+                        onTap: () {
+                          FocusManager.instance.primaryFocus?.unfocus();
+                          if (_wmPart != WmPart.none) {
+                            setState(() => _wmPart = WmPart.none);
+                          }
+                        },
                         child: Container(
                           color: Colors.black,
                           alignment: Alignment.center,
@@ -444,6 +449,56 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                       setState(() => _wmPart = p),
                                   panLocked: () => _pvPts.length >= 2,
                                 ),
+                                // 選取路由：有部件被選取（白框）時，
+                                // 整個預覽的拖曳都只動被選的那個——
+                                // 跟影片編輯同一套規則
+                                if (_wmPart != WmPart.none)
+                                  Positioned.fill(
+                                    child: LayoutBuilder(
+                                      builder: (context, box) {
+                                        final w = box.maxWidth;
+                                        final h = box.maxHeight;
+                                        return GestureDetector(
+                                          behavior:
+                                              HitTestBehavior.translucent,
+                                          onPanStart: (_) {
+                                            if (_pvPts.length < 2) {
+                                              _pushUndo();
+                                            }
+                                          },
+                                          onPanUpdate: (d) {
+                                            if (_pvPts.length >= 2) return;
+                                            final t = _settings.text;
+                                            final lg = _settings.logo;
+                                            setState(() {
+                                              if (_wmPart == WmPart.text &&
+                                                  t.enabled &&
+                                                  !t.tiled &&
+                                                  t.text.trim().isNotEmpty) {
+                                                t.x =
+                                                    (t.x + d.delta.dx / w)
+                                                        .clamp(0.0, 1.0);
+                                                t.y =
+                                                    (t.y + d.delta.dy / h)
+                                                        .clamp(0.0, 1.0);
+                                              } else if (_wmPart ==
+                                                      WmPart.logo &&
+                                                  lg.enabled &&
+                                                  !lg.tiled) {
+                                                lg.x =
+                                                    (lg.x + d.delta.dx / w)
+                                                        .clamp(0.0, 1.0);
+                                                lg.y =
+                                                    (lg.y + d.delta.dy / h)
+                                                        .clamp(0.0, 1.0);
+                                              }
+                                            });
+                                          },
+                                          child: const SizedBox.expand(),
+                                        );
+                                      },
+                                    ),
+                                  ),
                               ],
                             ),
                           ),
@@ -461,7 +516,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                         grade: _grade,
                         onChanged: () => setState(() {}),
                         onBeforeChange: _pushUndo,
-                        onCompare: (on) => setState(() => _colorCompare = on),
+                        // 面板 dispose 的回呼可能落在這頁收掉之後——要擋
+                        onCompare: (on) {
+                          if (mounted) setState(() => _colorCompare = on);
+                        },
                       ),
                       _ => WatermarkPanel(
                         key: _panelKey,

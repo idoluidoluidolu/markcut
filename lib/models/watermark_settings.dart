@@ -277,8 +277,16 @@ class WatermarkSettings {
         logo: LogoMark.fromJson(j['logo'] ?? {}),
         animation: WmAnimation.values[
             ((j['animation'] ?? 0) as int) % WmAnimation.values.length],
-        animSpeed: (j['animSpeed'] ?? 1.0).toDouble(),
-        animRange: (j['animRange'] ?? 1.0).toDouble(),
+        // clamp 到滑桿範圍：0 會讓閃爍週期變 Infinity，
+        // 進到 FFmpeg 濾鏡整個匯出直接失敗
+        animSpeed: ((j['animSpeed'] ?? 1.0).toDouble() as double).clamp(
+          0.2,
+          3.0,
+        ),
+        animRange: ((j['animRange'] ?? 1.0).toDouble() as double).clamp(
+          0.2,
+          3.0,
+        ),
       );
 
   WatermarkSettings copy() => WatermarkSettings.fromJson(toJson());

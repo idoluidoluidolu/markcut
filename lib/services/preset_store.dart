@@ -11,8 +11,10 @@ class PresetStore {
   static Future<void> ensureSeeded() async {
     final prefs = await SharedPreferences.getInstance();
     if (prefs.getBool(_seededKey) ?? false) return;
-    await prefs.setBool(_seededKey, true);
-    if ((prefs.getStringList(_key) ?? []).isNotEmpty) return;
+    if ((prefs.getStringList(_key) ?? []).isNotEmpty) {
+      await prefs.setBool(_seededKey, true);
+      return;
+    }
 
     // 只種一筆基本款，其餘樣式範本由 ensureSeededV2/V3 補
     final demos = [
@@ -33,6 +35,8 @@ class PresetStore {
     ];
     await prefs.setStringList(
         _key, demos.map((p) => p.encode()).toList());
+    // 旗標最後才立：寫到一半被殺掉的話下次還會重種
+    await prefs.setBool(_seededKey, true);
   }
 
   /// v2 追加的基本樣式（舊使用者也補種，不覆蓋同名）
@@ -40,7 +44,6 @@ class PresetStore {
     final prefs = await SharedPreferences.getInstance();
     const k2 = 'wm_presets_seeded_v2';
     if (prefs.getBool(k2) ?? false) return;
-    await prefs.setBool(k2, true);
 
     final extra = [
       WatermarkPreset(
@@ -106,6 +109,7 @@ class PresetStore {
       }
     }
     if (changed) await saveAll(cur);
+    await prefs.setBool(k2, true); // 資料寫完才立旗標
   }
 
   /// v3：內建範本全面改「樣式」導向——移除純字體變化的示範
@@ -114,7 +118,6 @@ class PresetStore {
     final prefs = await SharedPreferences.getInstance();
     const k3 = 'wm_presets_seeded_v3';
     if (prefs.getBool(k3) ?? false) return;
-    await prefs.setBool(k3, true);
 
     const removals = {'粉圓手感', '宋體雅致', '滿版防盜'};
     final extra = [
@@ -196,6 +199,7 @@ class PresetStore {
       if (!names.contains(p.name)) cur.add(p);
     }
     await saveAll(cur);
+    await prefs.setBool(k3, true); // 資料寫完才立旗標
   }
 
   /// v4：範本歸範本（使用者的完整存檔）、樣式改到面板的「樣式」區。
@@ -204,7 +208,6 @@ class PresetStore {
     final prefs = await SharedPreferences.getInstance();
     const k4 = 'wm_presets_seeded_v4';
     if (prefs.getBool(k4) ?? false) return;
-    await prefs.setBool(k4, true);
 
     const removals = {
       '大字滿版',
@@ -218,6 +221,7 @@ class PresetStore {
     final cur = await load();
     cur.removeWhere((p) => removals.contains(p.name));
     await saveAll(cur);
+    await prefs.setBool(k4, true); // 資料寫完才立旗標
   }
 
   static Future<List<WatermarkPreset>> load() async {

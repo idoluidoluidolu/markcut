@@ -8,6 +8,9 @@ import 'about_screen.dart' show kAppVersion;
 Future<void> showFeedbackDialog(BuildContext context) {
   return showDialog<void>(
     context: context,
+    // 不給點背景關閉：送出中點到背景會讓結果無聲消失，
+    // 使用者以為沒送成又送一次，後台就重複了
+    barrierDismissible: false,
     builder: (context) => Dialog(
       backgroundColor: kBg,
       insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
@@ -123,6 +126,14 @@ class _FeedbackFormState extends State<_FeedbackForm> {
                       fontWeight: FontWeight.w700,
                     ),
                   ),
+          ),
+          const SizedBox(height: 4),
+          TextButton(
+            onPressed: _sending ? null : () => Navigator.pop(context),
+            child: const Text(
+              '關閉',
+              style: TextStyle(fontSize: 13, color: kTextDim),
+            ),
           ),
         ],
       ),

@@ -14,8 +14,8 @@ Future<String> savePhotoPng(
   final url = web.URL.createObjectURL(blob);
   web.HTMLAnchorElement()
     ..href = url
-    ..download = '\$name.\$ext'
+    ..download = '$name.$ext'
     ..click();
   web.URL.revokeObjectURL(url);
-  return '完成！照片已下載（\$name.\$ext）';
+  return '完成！照片已下載（$name.$ext）';
 }
