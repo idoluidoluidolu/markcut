@@ -563,6 +563,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                         syncVersion: _sync,
                         // 儲存範本跟著面板捲到最後面，不釘在底部
                         hideSaveButton: false,
+                        // 剛加的圖片直接選起來，可以馬上拖／縮放
+                        onLogoAdded: () =>
+                            setState(() => _wmPart = WmPart.logo),
                       ),
                     },
                   ),

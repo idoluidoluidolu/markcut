@@ -31,6 +31,10 @@ class WatermarkPanel extends StatefulWidget {
   /// 存成範本後通知父層（重設「有沒有改過」的基準，離開才不會問放棄）
   final VoidCallback? onSaved;
 
+  /// 剛挑好一張圖片當 Logo：父層把選取設到 Logo 上，
+  /// 使用者回到畫面就能直接拖曳／縮放它
+  final VoidCallback? onLogoAdded;
+
   /// 隱藏面板內的「儲存範本」鈕（父層自己在底部放）
   final bool hideSaveButton;
 
@@ -43,6 +47,7 @@ class WatermarkPanel extends StatefulWidget {
     this.syncVersion = 0,
     this.initialPresetName,
     this.onSaved,
+    this.onLogoAdded,
     this.hideSaveButton = false,
   });
 
@@ -126,6 +131,9 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         s.logo.bytesValue = shrunk;
         s.logo.enabled = true;
       });
+      // 剛加進來的圖片直接設成選取：使用者接著一定是要移動／縮放它，
+      // 不用再回畫面上找它點一下
+      widget.onLogoAdded?.call();
     } catch (_) {
       if (mounted) showHint(context, '這張圖讀不進來，換一張試試', error: true);
     }

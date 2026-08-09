@@ -606,13 +606,28 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 快取幀解析度（長邊）。密度提高後張數變多，
   /// 解析度相對降一階換記憶體與解碼速度——拖曳中肉眼看不出差別。
-  /// 540 之下每張解碼後約 0.65MB，窗內留 64 張也才 40 幾 MB
+  /// 540×960 的 RGBA 一張約 2MB，所以窗內張數要控制（見 _ScrubDecoder）
   static const _scrubLongSide = 540;
+
+  /// 同時最多留幾個素材的解碼器。每個解碼器就是一份幾十 MB 的
+  /// 已解碼影格，素材一多就會把記憶體吃光、匯出時被系統殺掉
+  static const _maxLiveDecoders = 2;
 
   /// 已解碼的幀（每個素材一份）
   final Map<int, _ScrubDecoder> _scrubDecoders = {};
 
+  /// 解碼器的使用順序（最近用的排最後），超量時淘汰最久沒用的
+  final List<int> _decoderLru = [];
+
   _ScrubDecoder _decoderFor(int srcIndex, List<Uint8List?> frames) {
+    _decoderLru
+      ..remove(srcIndex)
+      ..add(srcIndex);
+    // 超量就把最久沒碰的整個放掉
+    while (_decoderLru.length > _maxLiveDecoders) {
+      final old = _decoderLru.removeAt(0);
+      _scrubDecoders.remove(old)?.dispose();
+    }
     final existing = _scrubDecoders[srcIndex];
     if (existing != null && identical(existing.frames, frames)) {
       return existing;
@@ -1891,10 +1906,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   void _trimClip(int id, double dSec, bool fromLeft) {
+    if (_tlPinching) return; // 雙指縮放中不修剪
     setState(() {
       for (final c in _tl.clips) {
         if (c.id != id) continue;
         final src = _tl.sourceOf(c);
+        // 磁吸：先算這條邊被拖到哪，吸附到鄰近片段邊緣／播放頭／0
+        // 之後，再換算回實際的位移量——接片段才能剛好無縫貼齊
+        final edge = fromLeft ? c.offset + dSec : c.end + dSec;
+        final snapped = _tl.snapEdge(c, edge, _position, _pxPerSec);
+        dSec = fromLeft ? snapped - c.offset : snapped - c.end;
         // 把手拖的是「時間軸秒」，變速片段要換算回素材秒
         final dSrc = dSec * c.speed;
         if (fromLeft) {
@@ -1908,6 +1929,56 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
     });
     _resyncPlayback();
+  }
+
+  /// 一鍵補洞：把空隙收掉、片段接齊。
+  /// 有選片段就只整理那一軌，沒選就整條時間軸一起整理
+  void _closeGaps() {
+    final t = _selClip?.track ?? (_selTrack >= 0 ? _selTrack : null);
+    if (_tl.clips.isEmpty) {
+      showHint(context, '時間軸還是空的');
+      return;
+    }
+    _pushUndo();
+    double removed = 0;
+    setState(() => removed = _tl.closeGaps(track: t));
+    _resyncPlayback();
+    _saveDraft();
+    if (removed < 0.05) {
+      showHint(context, t == null ? '沒有空隙可以補' : '第 ${t + 1} 軌沒有空隙');
+      return;
+    }
+    showHint(
+      context,
+      t == null
+          ? '已補起空隙，總共收掉 ${removed.toStringAsFixed(1)} 秒'
+          : '已整理第 ${t + 1} 軌，收掉 ${removed.toStringAsFixed(1)} 秒',
+    );
+  }
+
+  /// 刪掉整條軌道（軌上所有片段一起消失）
+  Future<void> _deleteTrack(int track) async {
+    final n = _tl.onTrack(track).length;
+    if (n == 0) {
+      showHint(context, '這一軌是空的');
+      return;
+    }
+    final ok = await showConfirm(
+      context,
+      title: '刪除第 ${track + 1} 軌？',
+      message: '這一軌的 $n 個素材會一起刪掉（可以按上一步救回來）',
+      action: '刪除整軌',
+    );
+    if (!ok || !mounted) return;
+    _pushUndo();
+    setState(() {
+      _tl.removeTrack(track);
+      _sel = -1;
+      _selTrack = -1;
+    });
+    _resyncPlayback();
+    _saveDraft();
+    showHint(context, '已刪除第 ${track + 1} 軌');
   }
 
   /// 整條軌道換順序（連同軌上所有片段一起搬）
@@ -2092,10 +2163,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           '貼上',
           enabled: _clipboard != null,
         ),
+        _menuItem('tidy', Icons.compress, '整理這一軌'),
+        _menuItem(
+          'delTrack',
+          Icons.delete_sweep_outlined,
+          '刪除整軌',
+          enabled: _tl.onTrack(track).isNotEmpty,
+        ),
       ],
     );
-    if (action == 'paste') {
-      await _pasteClipboard(at: t, track: track);
+    if (!mounted) return;
+    switch (action) {
+      case 'paste':
+        await _pasteClipboard(at: t, track: track);
+      case 'tidy':
+        setState(() => _selTrack = track);
+        _closeGaps();
+      case 'delTrack':
+        await _deleteTrack(track);
     }
   }
 
@@ -2203,9 +2288,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       d.dispose();
     }
     _scrubDecoders.clear();
+    _decoderLru.clear();
     _scrubFrames.clear();
-    PaintingBinding.instance.imageCache.clear();
-    PaintingBinding.instance.imageCache.clearLiveImages();
+    // 上限也壓到 0：只清內容的話，匯出期間畫面一重繪又會長回來，
+    // 跟 FFmpeg 搶記憶體。匯出結束再還原
+    PaintingBinding.instance.imageCache
+      ..clear()
+      ..clearLiveImages()
+      ..maximumSize = 0
+      ..maximumSizeBytes = 0;
 
     setState(() => _exporting = true);
 
@@ -2355,6 +2446,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         duration: Duration(seconds: ok || cancelled ? 3 : 8),
       );
     }
+    // 還原圖片快取上限（匯出期間壓成 0）
+    PaintingBinding.instance.imageCache
+      ..maximumSize = 300
+      ..maximumSizeBytes = 96 << 20;
     setState(() => _exporting = false);
     // 匯出前把抽幀快取清光了，現在重新抽回來（拖曳預覽要用）
     for (var i = 0; i < _tl.sources.length; i++) {
@@ -2488,10 +2583,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             // 全是橫向手勢，跟返回判定天生打架。返回走上一頁鍵／返回鍵
             : Column(
                 children: [
-                  Expanded(flex: 5, child: _buildPreview()),
+                  // 軌道多的時候把預覽讓一點空間給時間軸，
+                  // 不然四軌以上只剩一條縫可以捲
+                  Expanded(
+                    flex: _tl.usedTracks >= 3 ? 4 : 5,
+                    child: _buildPreview(),
+                  ),
                   _buildControlBar(),
                   Expanded(
-                    flex: 5,
+                    flex: _tl.usedTracks >= 3 ? 6 : 5,
                     child: TabBarView(
                       controller: _tabs,
                       // 左右滑動保留給時間軸，分頁只用底部按鈕切換
@@ -2526,6 +2626,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                               onBeforeChange: _pushWmUndo,
                               syncVersion: _wmSync,
                               showAnimation: true,
+                              // 剛加的圖片直接選起來，可以馬上拖／縮放
+                              onLogoAdded: () => setState(() {
+                                _wmPart = WmPart.logo;
+                                if (!isClipWm) _wmSel = true;
+                              }),
                             );
                           },
                         ),
@@ -3723,6 +3828,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 // 點軌道空白處＝選取該軌（貼上目標）
                                 onTapTrack: (t) =>
                                     setState(() => _selTrack = t),
+                                // 長按左邊的圖示＝刪掉整條軌道
+                                onDeleteTrack: _deleteTrack,
                                 selectedTrack: _selTrack,
                                 extraTracks: _extraBlankTracks,
                                 onSeek: _seekScrub,
@@ -3807,13 +3914,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   _wmEnd = s + len;
                                 }),
                                 onTrimWm: (d, fromLeft) => setState(() {
+                                  // 跟片段修剪同一套磁吸：對齊素材頭尾
                                   if (fromLeft) {
-                                    _wmStart = (_wmStart + d).clamp(
-                                      0.0,
-                                      _wmEndEff - 0.3,
+                                    final s = _tl.snapTime(
+                                      _wmStart + d,
+                                      _position,
+                                      _pxPerSec,
                                     );
+                                    _wmStart = s.clamp(0.0, _wmEndEff - 0.3);
                                   } else {
-                                    _wmEnd = (_wmEndEff + d).clamp(
+                                    final e = _tl.snapTime(
+                                      _wmEndEff + d,
+                                      _position,
+                                      _pxPerSec,
+                                    );
+                                    _wmEnd = e.clamp(
                                       _wmStart + 0.3,
                                       _tl.duration,
                                     );
@@ -3921,6 +4036,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         sel == null ? null : () => _openClipOptions(sel),
                         tip: '音量與淡化',
                         disabledHint: '先在時間軸點選一個片段',
+                      ),
+                      // 直向的 compress 轉 90°＝把左右的空隙擠掉
+                      _toolBtn(
+                        Icons.compress,
+                        '整理',
+                        _closeGaps,
+                        tip: '把空隙補起來、素材接齊',
+                        quarterTurns: 1,
                       ),
                       _toolBtn(Icons.add, '加素材', _addMediaChoice),
                     ],
@@ -4304,11 +4427,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     );
                   },
                 ),
-                if (clipMode)
-                  const Text(
-                    '時間軸上的長度會跟著速度縮放',
-                    style: TextStyle(fontSize: 10.5, color: kTextDim),
-                  ),
               ],
             ),
           ),
@@ -4616,10 +4734,12 @@ class _SelectionFramePainter extends CustomPainter {
 /// 改成事先把播放頭附近的幀解成 ui.Image 放著，畫的時候只是貼一張材質。
 class _ScrubDecoder {
   /// 播放頭前後各先解好幾張
-  static const _window = 18;
+  static const _window = 10;
 
-  /// 最多留幾張已解碼的（超過就丟離播放頭最遠的）
-  static const _capacity = 64;
+  /// 最多留幾張已解碼的（超過就丟離播放頭最遠的）。
+  /// 540×960 的 RGBA 一張就是 2MB——這個數字直接決定
+  /// 拖曳時會佔多少記憶體，開太大匯出就會被系統殺掉
+  static const _capacity = 24;
 
   final List<Uint8List?> frames;
   final VoidCallback onReady;

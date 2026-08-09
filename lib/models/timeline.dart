@@ -268,6 +268,32 @@ class TimelineModel {
     return false;
   }
 
+  /// 一鍵補洞：把片段依時間排好、頭尾接齊，中間的空隙全部收掉。
+  /// track 給 null 就整理所有軌道。回傳實際收掉的總秒數
+  double closeGaps({int? track}) {
+    final targets = track != null
+        ? [track]
+        : (clips.map((c) => c.track).toSet().toList()..sort());
+    var removed = 0.0;
+    for (final t in targets) {
+      var cursor = 0.0;
+      for (final c in onTrack(t)) {
+        removed += c.offset - cursor;
+        c.offset = cursor;
+        cursor = c.end;
+      }
+    }
+    return removed;
+  }
+
+  /// 整條軌道刪掉（軌上所有片段一起移除），下面的軌往上遞補
+  void removeTrack(int track) {
+    clips.removeWhere((c) => c.track == track);
+    for (final c in clips) {
+      if (c.track > track) c.track--;
+    }
+  }
+
   /// 把中間空掉的軌號補起來（例如整層被搬走之後）
   void compactTracks() {
     final used = clips.map((c) => c.track).toSet().toList()..sort();
@@ -334,6 +360,41 @@ class TimelineModel {
       }
     }
   }
+
+  /// 把一個時間點吸到最近的參考點（別的片段的頭尾、播放頭、0）。
+  /// 修剪把手、浮水印範圍都用這個，手感跟拖曳整段一致
+  double snapTime(
+    double want,
+    double playhead,
+    double pxPerSec, {
+    int? exceptId,
+  }) {
+    final threshold = math.min(16 / pxPerSec, 0.5);
+    final candidates = <double>[0, playhead];
+    for (final c in clips) {
+      if (c.id == exceptId) continue;
+      candidates.addAll([c.offset, c.end]);
+    }
+    var best = want;
+    var bestDist = threshold;
+    for (final cand in candidates) {
+      if (cand < 0) continue;
+      final d = (cand - want).abs();
+      if (d < bestDist) {
+        bestDist = d;
+        best = cand;
+      }
+    }
+    return math.max(0.0, best);
+  }
+
+  /// 修剪把手的貼齊（吸到別的片段，不吸自己）
+  double snapEdge(
+    TimelineClip moving,
+    double want,
+    double playhead,
+    double pxPerSec,
+  ) => snapTime(want, playhead, pxPerSec, exceptId: moving.id);
 
   /// 拖曳時的貼齊：吸附到其他片段邊緣、播放頭與 0
   double snapOffset(

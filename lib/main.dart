@@ -9,11 +9,13 @@ void main() {
   WidgetsFlutterBinding.ensureInitialized();
   // media_kit 播放引擎（Web 用不到也沒帶函式庫）
   if (!kIsWeb) MediaKit.ensureInitialized();
-  // 拖曳預覽的快取幀很密（8fps），預設 100 張的圖片快取一下就滿、
-  // 一滿就得重新解碼＝拖曳卡頓。放大到能裝下數秒份的幀
+  // 拖曳預覽的快取幀很密，預設 100 張一下就滿、一滿就要重新解碼＝卡頓，
+  // 所以要放大一點。但不能放太大：手機上這裡吃掉的記憶體會讓匯出時
+  // FFmpeg 要不到記憶體、整個 App 被系統殺掉（拖曳的影格另有自己的
+  // 解碼快取，不靠這個）
   PaintingBinding.instance.imageCache
-    ..maximumSize = 900
-    ..maximumSizeBytes = 320 << 20; // 320MB
+    ..maximumSize = 300
+    ..maximumSizeBytes = 96 << 20; // 96MB
   // 內建字型的 OFL 與 FFmpeg 的 LGPL 聲明，登錄到系統授權清單
   LicenseRegistry.addLicense(() async* {
     yield const LicenseEntryWithLineBreaks(

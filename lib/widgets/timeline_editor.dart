@@ -101,6 +101,9 @@ class TimelineEditor extends StatefulWidget {
   /// 點軌道空白處＝選取整條軌道（貼上的目標）
   final ValueChanged<int>? onTapTrack;
 
+  /// 長按左側標籤＝刪掉整條軌道
+  final ValueChanged<int>? onDeleteTrack;
+
   /// 目前被選取的軌道（-1＝沒有）；該軌會亮框提示
   final int selectedTrack;
 
@@ -146,6 +149,7 @@ class TimelineEditor extends StatefulWidget {
     required this.onMoveWm,
     required this.onTrimWm,
     this.onTapTrack,
+    this.onDeleteTrack,
     this.selectedTrack = -1,
     this.extraTracks = 0,
     this.trackScale = 1.0,
@@ -222,6 +226,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
   // ===== 拿起 / 移動 / 放下 =====
 
   void _liftStart(TimelineClip c, Offset globalPos) {
+    if (_pinching) return; // 雙指縮放時間軸中：不要把素材拿起來
     _liftWasSelected = widget.selectedId == c.id;
     widget.onSelect(c.id);
     widget.onLiftChanged?.call(true);
@@ -249,6 +254,17 @@ class _TimelineEditorState extends State<TimelineEditor> {
   }
 
   void _liftUpdate(double ddx, double ddy, Offset globalPos) {
+    // 拖到一半第二指下來（變成縮放）：整個放棄這次拖曳，
+    // 素材留在原地，不然縮放的同時素材會被拖走
+    if (_pinching) {
+      if (_lift != null) {
+        _pressTimer?.cancel();
+        setState(() => _lift = null);
+        _stopAutoScroll();
+        widget.onLiftChanged?.call(false);
+      }
+      return;
+    }
     final l = _lift;
     if (l == null) return;
     if ((l.dx + ddx).abs() > 6 || (l.dy + ddy).abs() > 6) {
@@ -934,6 +950,10 @@ class _TimelineEditorState extends State<TimelineEditor> {
       onTap: () => isVoice
           ? widget.onVoiceRecordTap?.call()
           : (isEmptyRow ? widget.onAddMedia(t) : widget.onToggleMute(t)),
+      // 長按左邊的圖示＝刪掉整條軌道（空軌沒東西可刪）
+      onLongPress: isEmptyRow || isVoice
+          ? null
+          : () => widget.onDeleteTrack?.call(t),
       onDragUpdate: (dy) => setState(() {
         _dragTrack = t;
         _dragDy = dy;
@@ -1223,6 +1243,9 @@ class _TrackLabel extends StatefulWidget {
   final double dragDy;
   final int maxTrack;
   final VoidCallback onTap;
+
+  /// 長按＝刪掉整條軌道（沒給就不支援）
+  final VoidCallback? onLongPress;
   final ValueChanged<double> onDragUpdate;
   final VoidCallback onDragEnd;
 
@@ -1240,6 +1263,7 @@ class _TrackLabel extends StatefulWidget {
     required this.dragDy,
     required this.maxTrack,
     required this.onTap,
+    this.onLongPress,
     required this.onDragUpdate,
     required this.onDragEnd,
   });
@@ -1251,6 +1275,16 @@ class _TrackLabel extends StatefulWidget {
 class _TrackLabelState extends State<_TrackLabel> {
   double _dy = 0;
   bool _moved = false;
+
+  /// 長按偵測（拖曳辨識器會吃掉手勢，長按得自己算）
+  Timer? _pressTimer;
+  bool _longFired = false;
+
+  @override
+  void dispose() {
+    _pressTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1309,7 +1343,11 @@ class _TrackLabelState extends State<_TrackLabel> {
     if (!widget.canDrag) {
       return SizedBox(
         height: widget.height,
-        child: InkWell(onTap: widget.onTap, child: label),
+        child: InkWell(
+          onTap: widget.onTap,
+          onLongPress: widget.onLongPress,
+          child: label,
+        ),
       );
     }
 
@@ -1324,16 +1362,43 @@ class _TrackLabelState extends State<_TrackLabel> {
                   ..onStart = (_) {
                     _dy = 0;
                     _moved = false;
+                    // 拖曳辨識器會直接吃掉手勢，長按只能自己算：
+                    // 按住不動 0.5 秒就當長按（刪整軌）
+                    _pressTimer?.cancel();
+                    if (widget.onLongPress != null) {
+                      _pressTimer = Timer(
+                        const Duration(milliseconds: 500),
+                        () {
+                          if (!_moved && mounted) {
+                            _longFired = true;
+                            widget.onDragUpdate(0);
+                            widget.onDragEnd();
+                            widget.onLongPress!();
+                          }
+                        },
+                      );
+                    }
                   }
                   ..onUpdate = (d) {
+                    if (_longFired) return;
                     _dy = (_dy + d.delta.dy).clamp(
                       -widget.index * widget.rowStride,
                       (widget.maxTrack - widget.index) * widget.rowStride,
                     );
-                    if (_dy.abs() > 4) _moved = true;
+                    if (_dy.abs() > 4) {
+                      _moved = true;
+                      _pressTimer?.cancel();
+                    }
                     widget.onDragUpdate(_dy);
                   }
                   ..onEnd = (_) {
+                    _pressTimer?.cancel();
+                    if (_longFired) {
+                      _longFired = false;
+                      _dy = 0;
+                      _moved = false;
+                      return;
+                    }
                     if (_moved) {
                       widget.onDragEnd();
                     } else {
@@ -1345,6 +1410,8 @@ class _TrackLabelState extends State<_TrackLabel> {
                     _moved = false;
                   }
                   ..onCancel = () {
+                    _pressTimer?.cancel();
+                    _longFired = false;
                     widget.onDragUpdate(0);
                     widget.onDragEnd();
                     _dy = 0;
