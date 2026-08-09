@@ -304,14 +304,12 @@ class _HomeScreenState extends State<HomeScreen> {
               _HomeButton(
                 primary: true,
                 label: '加入浮水印',
-                subtitle: '幫影片、照片上浮水印',
                 onTap: _addWatermark,
               ),
               const SizedBox(height: 12),
               _HomeButton(
                 primary: false,
                 label: '製作浮水印',
-                subtitle: '先做好樣式，存成範本',
                 onTap: _makeWatermark,
               ),
               if (_draft != null) ...[
@@ -370,16 +368,11 @@ class _HomeScreenState extends State<HomeScreen> {
 class _HomeButton extends StatelessWidget {
   final bool primary;
   final String label;
-
-  /// 一行小字說明這顆按鈕是幹嘛的（兩顆都有「浮水印」，
-  /// 沒有副標新手分不出「加入」和「製作」差在哪）
-  final String? subtitle;
   final VoidCallback onTap;
 
   const _HomeButton({
     required this.primary,
     required this.label,
-    this.subtitle,
     required this.onTap,
   });
 
@@ -389,7 +382,7 @@ class _HomeButton extends StatelessWidget {
       borderRadius: BorderRadius.circular(14),
       onTap: onTap,
       child: Container(
-        height: subtitle == null ? 56 : 58,
+        height: 56,
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: primary ? kAmber : Colors.transparent,
@@ -397,33 +390,14 @@ class _HomeButton extends StatelessWidget {
           border:
               primary ? null : Border.all(color: kClipBorder, width: 1.5),
         ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 1,
-                color: primary ? kBg : kText,
-              ),
-            ),
-            if (subtitle != null) ...[
-              const SizedBox(height: 1),
-              // 副標壓小壓淡：只是備註，不能跟主標搶
-              Text(
-                subtitle!,
-                style: TextStyle(
-                  fontSize: 10,
-                  letterSpacing: 0.5,
-                  color: primary
-                      ? kBg.withValues(alpha: 0.42)
-                      : kTextDim,
-                ),
-              ),
-            ],
-          ],
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 1,
+            color: primary ? kBg : kText,
+          ),
         ),
       ),
     );
