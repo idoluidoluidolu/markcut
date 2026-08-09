@@ -3832,38 +3832,32 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 工具列上的磁吸開關：自繪磁鐵圖示。
-  /// 開啟時整顆反白成琥珀色塊（跟時間軸上選取中的素材同一種黃），
-  /// 一眼就分得出現在是開還是關
+  /// 開啟＝琥珀色、關閉＝灰（不加底色，才不會在一排線條圖示裡過重）
   Widget _snapToolBtn() {
-    final off = kTextDim.withValues(alpha: 0.55);
+    final color = _snapOn ? kSelect : kTextDim.withValues(alpha: 0.55);
     return Tooltip(
       message: _snapOn ? '磁吸：開（點一下關掉）' : '磁吸：關（點一下打開）',
       child: InkWell(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(6),
         onTap: _toggleSnap,
-        child: Container(
-          margin: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-          decoration: BoxDecoration(
-            color: _snapOn ? kSelect : Colors.transparent,
-            borderRadius: BorderRadius.circular(8),
-          ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               CustomPaint(
-                size: const Size(20, 20),
-                painter: _MagnetPainter(_snapOn ? kBg : off),
+                size: const Size(21, 21),
+                painter: _MagnetPainter(color),
               ),
-              const SizedBox(height: 3),
+              const SizedBox(height: 4),
               Text(
                 '磁吸',
                 style: TextStyle(
                   fontSize: 10.5,
                   height: 1.15,
                   letterSpacing: 0.5,
-                  fontWeight: _snapOn ? FontWeight.w700 : FontWeight.w400,
-                  color: _snapOn ? kBg : off,
+                  fontWeight: FontWeight.w400,
+                  color: color,
                 ),
               ),
             ],
