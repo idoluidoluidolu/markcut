@@ -369,7 +369,9 @@ class TimelineModel {
     double pxPerSec, {
     int? exceptId,
   }) {
-    final threshold = math.min(16 / pxPerSec, 0.5);
+    // 24px 的吸附半徑：手指要「感覺得到」被吸過去，太小等於沒有。
+    // 秒數上限 2 秒，避免縮到最小時整條軸都在吸
+    final threshold = math.min(24 / pxPerSec, 2.0);
     final candidates = <double>[0, playhead];
     for (final c in clips) {
       if (c.id == exceptId) continue;
@@ -403,10 +405,8 @@ class TimelineModel {
     double playhead,
     double pxPerSec,
   ) {
-    // 16px 內就吸附——太小會感覺不到「磁鐵」；
-    // 但秒數上限 0.5s：縮到很小的時候 16px 可能是十幾秒，
-    // 整條時間軸到處都在吸，反而沒辦法自由擺位
-    final threshold = math.min(16 / pxPerSec, 0.5);
+    // 跟 snapTime 同一組手感參數
+    final threshold = math.min(24 / pxPerSec, 2.0);
     final len = moving.length;
     final candidates = <double>[0, playhead, playhead - len];
     for (final c in clips) {

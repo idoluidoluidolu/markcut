@@ -406,12 +406,14 @@ void main() {
         final got = tl.snapOffset(moving, want, head, px);
         expect(got.isFinite, isTrue);
         expect(got >= 0, isTrue, reason: '吸附回傳負值 $got');
-        // 吸附幅度不能超過上限（0.5 秒），不然縮小時整條軸都在吸
+        // 吸附幅度：手感是 24px，但秒數上限 2 秒——
+        // 不設上限的話縮到最小時整條軸都在吸，沒辦法自由擺位
         if (want >= 0) {
+          final moved = (got - want).abs();
           expect(
-            (got - want).abs() <= 0.5001,
+            moved <= math.min(24 / px, 2.0) + 0.0001,
             isTrue,
-            reason: 'px=$px want=$want 被吸走 ${(got - want).abs()} 秒（超過 0.5）',
+            reason: 'px=$px want=$want 被吸走 $moved 秒（超過該有的範圍）',
           );
         }
       }

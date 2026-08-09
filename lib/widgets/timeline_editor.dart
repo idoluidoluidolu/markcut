@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../models/timeline.dart';
 import '../services/waveform_cache.dart';
@@ -179,6 +180,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
   /// 浮水印列這次手勢的累計移動量（放開時 <6px＝點擊）
   double _wmDragDist = 0;
 
+  /// 拖曳片段時上一刻有沒有吸住（吸住的瞬間震一下）
+  bool _dragSnapped = false;
+
   // 長按偵測：按住不動 0.45 秒 → 取消拖曳、打開選單
   Timer? _pressTimer;
   Offset _pressPos = Offset.zero;
@@ -281,6 +285,16 @@ class _TimelineEditorState extends State<TimelineEditor> {
         dy: (l.dy + ddy).clamp(minDy, maxDy),
       );
     });
+    // 吸附到別的片段邊緣的那一下震動一次，手指才感覺得到「黏住」
+    final spec = _liftSpec();
+    if (spec != null) {
+      final want = l.startOffset + (l.dx + ddx) / pxPerSec;
+      final on = (spec.offset - math.max(0.0, want)).abs() > 0.0005;
+      if (on != _dragSnapped) {
+        _dragSnapped = on;
+        if (on) HapticFeedback.selectionClick();
+      }
+    }
     _updateAutoScroll(globalPos);
   }
 

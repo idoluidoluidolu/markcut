@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
@@ -1905,6 +1906,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _resyncPlayback();
   }
 
+  /// 上一刻修剪把手有沒有吸住（吸住的瞬間震一下，才有磁鐵的感覺）
+  bool _trimSnapped = false;
+
   void _trimClip(int id, double dSec, bool fromLeft) {
     if (_tlPinching) return; // 雙指縮放中不修剪
     setState(() {
@@ -1915,6 +1919,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 之後，再換算回實際的位移量——接片段才能剛好無縫貼齊
         final edge = fromLeft ? c.offset + dSec : c.end + dSec;
         final snapped = _tl.snapEdge(c, edge, _position, _pxPerSec);
+        // 剛吸上去的那一下震動回饋
+        final on = (snapped - edge).abs() > 0.0005;
+        if (on != _trimSnapped) {
+          _trimSnapped = on;
+          if (on) HapticFeedback.selectionClick();
+        }
         dSec = fromLeft ? snapped - c.offset : snapped - c.end;
         // 把手拖的是「時間軸秒」，變速片段要換算回素材秒
         final dSrc = dSec * c.speed;
