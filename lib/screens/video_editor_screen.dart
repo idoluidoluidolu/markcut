@@ -457,6 +457,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _tabs = TabController(length: 3, vsync: this);
     _ticker = createTicker(_onTick);
     _tlScroll.addListener(_onTimelineScroll);
+    _loadSnapPref(); // 記住上次磁吸開還關
     if (widget.draft != null) {
       _loadDraft(widget.draft!).then((_) {
         if (!mounted) return;
@@ -518,10 +519,29 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 播放頭上一個吸住的卡榫（換卡榫時震一下）
   double? _lastHeadDetent;
 
+  /// 磁吸開關（記住上次的選擇）。關掉之後拖曳、修剪、播放頭
+  /// 全部照手指走，不會被拉到別的邊緣，也不震動
+  bool _snapOn = true;
+  static const _kSnapPrefKey = 'timeline_snap_on';
+
+  Future<void> _loadSnapPref() async {
+    final prefs = await SharedPreferences.getInstance();
+    final v = prefs.getBool(_kSnapPrefKey) ?? true;
+    if (mounted && v != _snapOn) setState(() => _snapOn = v);
+  }
+
+  Future<void> _toggleSnap() async {
+    setState(() => _snapOn = !_snapOn);
+    showHint(context, _snapOn ? '磁吸已開啟' : '磁吸已關閉');
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kSnapPrefKey, _snapOn);
+  }
+
   /// 這個時間點附近有沒有素材的頭或尾可以吸（沒有回 null）。
   /// 播放頭吸的是「片段邊緣」，不吸自己也不吸播放頭。
   /// 半徑用 12px：太大會在滑過去的時候一直被抓住
   double? _nearestEdge(double t) {
+    if (!_snapOn) return null;
     final snapped = _tl.snapTime(t, -1, _pxPerSec, radiusPx: 12);
     return (snapped - t).abs() > 0.0005 ? snapped : null;
   }
@@ -1969,7 +1989,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 磁吸：先算這條邊被拖到哪，吸附到鄰近片段邊緣／播放頭／0
         // 之後，再換算回實際的位移量——接片段才能剛好無縫貼齊
         final edge = fromLeft ? c.offset + dSec : c.end + dSec;
-        final snapped = _tl.snapEdge(c, edge, _position, _pxPerSec);
+        final snapped = _snapOn
+            ? _tl.snapEdge(c, edge, _position, _pxPerSec)
+            : edge;
         // 剛吸上去的那一下震動回饋
         final on = (snapped - edge).abs() > 0.0005;
         if (on != _trimSnapped) {
@@ -2811,6 +2833,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                // 磁吸開關：對齊的時候開，要微調的時候關
+                IconButton(
+                  iconSize: 20,
+                  tooltip: _snapOn ? '磁吸：開（點一下關掉）' : '磁吸：關（點一下打開）',
+                  onPressed: _toggleSnap,
+                  icon: CustomPaint(
+                    size: const Size(19, 19),
+                    painter: _MagnetPainter(_snapOn ? kAmber : kTextDim),
+                  ),
+                ),
                 IconButton(
                   iconSize: 20,
                   color: _undoStack.isEmpty ? kTextDim : kText,
@@ -3893,6 +3925,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 onDeleteTrack: _deleteTrack,
                                 selectedTrack: _selTrack,
                                 extraTracks: _extraBlankTracks,
+                                snapEnabled: _snapOn,
                                 onSeek: _seekScrub,
                                 onTrim: _trimClip,
                                 onTrimStart: _pushUndo,
@@ -3977,18 +4010,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 onTrimWm: (d, fromLeft) => setState(() {
                                   // 跟片段修剪同一套磁吸：對齊素材頭尾
                                   if (fromLeft) {
-                                    final s = _tl.snapTime(
-                                      _wmStart + d,
-                                      _position,
-                                      _pxPerSec,
-                                    );
+                                    final w = _wmStart + d;
+                                    final s = _snapOn
+                                        ? _tl.snapTime(w, _position, _pxPerSec)
+                                        : w;
                                     _wmStart = s.clamp(0.0, _wmEndEff - 0.3);
                                   } else {
-                                    final e = _tl.snapTime(
-                                      _wmEndEff + d,
-                                      _position,
-                                      _pxPerSec,
-                                    );
+                                    final w = _wmEndEff + d;
+                                    final e = _snapOn
+                                        ? _tl.snapTime(w, _position, _pxPerSec)
+                                        : w;
                                     _wmEnd = e.clamp(
                                       _wmStart + 0.3,
                                       _tl.duration,
@@ -4769,6 +4800,51 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ),
     );
   }
+}
+
+/// U 型馬蹄磁鐵（Flutter 內建圖示沒有磁鐵，自己畫一顆）。
+/// 兩隻腳的末端壓淡，看起來就是磁極
+class _MagnetPainter extends CustomPainter {
+  final Color color;
+
+  const _MagnetPainter(this.color);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+    final sw = w * 0.27; // 磁鐵臂的粗細
+    final cx = w / 2;
+    final r = (w - sw) / 2; // 圓弧半徑（加上臂厚剛好貼齊邊界）
+    final legTop = h * 0.46; // 圓弧結束、直腳開始
+    final legBottom = h * 0.92;
+
+    final arm = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = sw;
+    final path = Path()
+      ..moveTo(cx - r, legBottom)
+      ..lineTo(cx - r, legTop)
+      // 由左往右繞過頂端（畫面座標往下為正，順時針就是往上繞）
+      ..arcToPoint(
+        Offset(cx + r, legTop),
+        radius: Radius.circular(r),
+        clockwise: true,
+      )
+      ..lineTo(cx + r, legBottom);
+    canvas.drawPath(path, arm);
+
+    // 磁極：兩隻腳末端壓淡
+    final tip = Paint()..color = color.withValues(alpha: 0.4);
+    final tipH = h * 0.2;
+    for (final x in [cx - r, cx + r]) {
+      canvas.drawRect(Rect.fromLTWH(x - sw / 2, legBottom - tipH, sw, tipH), tip);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_MagnetPainter old) => old.color != color;
 }
 
 /// 預覽裡選取圖層的外框：一圈細白框就好（無把手）

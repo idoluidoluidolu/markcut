@@ -108,6 +108,9 @@ class TimelineEditor extends StatefulWidget {
   /// 目前被選取的軌道（-1＝沒有）；該軌會亮框提示
   final int selectedTrack;
 
+  /// 磁吸開關：關掉之後拖曳完全照手指走、也不震動
+  final bool snapEnabled;
+
   /// 額外的空白軌道數（「加入空白軌道」加出來的，
   /// 在預設那條常駐空軌之外再多畫幾條）
   final int extraTracks;
@@ -152,6 +155,7 @@ class TimelineEditor extends StatefulWidget {
     this.onTapTrack,
     this.onDeleteTrack,
     this.selectedTrack = -1,
+    this.snapEnabled = true,
     this.extraTracks = 0,
     this.trackScale = 1.0,
   });
@@ -324,12 +328,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
     if (clip == null) return null;
 
     final want = l.startOffset + l.dx / pxPerSec;
-    final offset = timeline.snapOffset(
-      clip,
-      want,
-      widget.playhead.value,
-      pxPerSec,
-    );
+    final offset = widget.snapEnabled
+        ? timeline.snapOffset(clip, want, widget.playhead.value, pxPerSec)
+        : math.max(0.0, want);
     final len = clip.length;
 
     bool collide(int track) => timeline.clips.any(
