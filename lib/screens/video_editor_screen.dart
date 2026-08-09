@@ -3687,12 +3687,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   });
                                   if (!wasSel) _tabs.animateTo(1);
                                 },
-                                // 拖曳開始只選取不切分頁：
-                                // 雙指縮放誤觸不會跳去編輯模式
-                                onSelectWmDrag: () => setState(() {
-                                  _wmSel = true;
-                                  _sel = -1;
-                                }),
+                                // 拖曳開始：先選取，等一拍再跳分頁——
+                                // 若那一拍內第二指落下（雙指縮放），
+                                // 就不跳。單指點/拖維持自動進浮水印模式
+                                onSelectWmDrag: () {
+                                  setState(() {
+                                    _wmSel = true;
+                                    _sel = -1;
+                                  });
+                                  Future.delayed(
+                                    const Duration(milliseconds: 150),
+                                    () {
+                                      if (mounted &&
+                                          _wmSel &&
+                                          !_tlPinching &&
+                                          _pvPts.length < 2) {
+                                        _tabs.animateTo(1);
+                                      }
+                                    },
+                                  );
+                                },
                                 onMoveWm: (ns) => setState(() {
                                   final len = _wmEndEff - _wmStart;
                                   final s = ns.clamp(
