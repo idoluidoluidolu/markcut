@@ -4030,13 +4030,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             ? '先在時間軸點選要調色的片段'
                             : '這種素材不能調色（影片、圖片才可以）',
                       ),
-                      _toolBtn(
-                        Icons.auto_awesome,
-                        '效果',
-                        sel == null ? null : () => _openClipOptions(sel),
-                        tip: '音量與淡化',
-                        disabledHint: '先在時間軸點選一個片段',
-                      ),
                       // 直向的 compress 轉 90°＝把左右的空隙擠掉
                       _toolBtn(
                         Icons.compress,
@@ -4046,6 +4039,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         quarterTurns: 1,
                       ),
                       _toolBtn(Icons.add, '加素材', _addMediaChoice),
+                      _toolBtn(
+                        Icons.auto_awesome,
+                        '效果',
+                        sel == null ? null : () => _openClipOptions(sel),
+                        tip: '音量與淡化',
+                        disabledHint: '先在時間軸點選一個片段',
+                      ),
                     ],
                   ),
                 ),
