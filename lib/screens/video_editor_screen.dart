@@ -487,15 +487,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_suppressScroll || _lifting || _pxPerSec <= 0) return;
     if (!_tlScroll.hasClients) return;
     if (_playing) _pause();
-    final t = (_tlScroll.offset / _pxPerSec).clamp(0.0, _tl.duration);
-    if ((t - _position).abs() < 0.001) return;
-    // 播放頭經過素材頭尾時震一下（像卡榫），放手時再吸上去對齊——
-    // 拖曳中不硬拉捲動位置，不然會跟手指打架
-    _headSnapTarget = _nearestEdge(t);
-    if (_headSnapTarget != _lastHeadDetent) {
-      _lastHeadDetent = _headSnapTarget;
-      if (_headSnapTarget != null) HapticFeedback.selectionClick();
+    final raw = (_tlScroll.offset / _pxPerSec).clamp(0.0, _tl.duration);
+    // 即時吸附：靠近素材頭尾時，播放頭當場黏在那條邊上（底下的
+    // 時間軸繼續跟著手指滑），滑遠了自動脫離。
+    // 不去改捲動位置——改了會跟手指打架，也就是「慢半拍、
+    // 滑過去又被吸回來」的來源
+    final edge = _nearestEdge(raw);
+    if (edge != _lastHeadDetent) {
+      _lastHeadDetent = edge;
+      if (edge != null) HapticFeedback.selectionClick();
     }
+    final t = (edge ?? raw).clamp(0.0, _tl.duration);
+    if ((t - _position).abs() < 0.001) return;
     _position = t; // 位置 UI 由 _posVN 小範圍重繪，不整頁 setState
     _scrubbing = true; // 快取幀模式（下一次 30fps 重繪就生效）
     _scrubEndTimer?.cancel();
@@ -512,14 +515,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
   }
 
-  /// 播放頭附近的吸附目標（素材頭尾）與上一個「經過」的卡榫
-  double? _headSnapTarget;
+  /// 播放頭上一個吸住的卡榫（換卡榫時震一下）
   double? _lastHeadDetent;
 
   /// 這個時間點附近有沒有素材的頭或尾可以吸（沒有回 null）。
-  /// 播放頭吸的是「片段邊緣」，不吸自己也不吸播放頭
+  /// 播放頭吸的是「片段邊緣」，不吸自己也不吸播放頭。
+  /// 半徑用 12px：太大會在滑過去的時候一直被抓住
   double? _nearestEdge(double t) {
-    final snapped = _tl.snapTime(t, -1, _pxPerSec);
+    final snapped = _tl.snapTime(t, -1, _pxPerSec, radiusPx: 12);
     return (snapped - t).abs() > 0.0005 ? snapped : null;
   }
 
@@ -758,29 +761,28 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _scrubEndTimer = Timer(const Duration(milliseconds: 80), _tryEndScrub);
       return;
     }
-    // 放手時吸上去：播放頭剛好落在素材的頭或尾，之後切割、
-    // 對齊都不用再微調。動畫短一點，看起來就是「被吸過去」
-    final target = _headSnapTarget;
-    _headSnapTarget = null;
+    // 放手：拖曳中播放頭黏在剪接點上時，捲動位置會跟播放頭差一點點
+    //（最多十來個像素），這裡把時間軸補回來對齊，畫面才不會歪著。
+    // 播放頭本身不動，所以不會有「被吸回來」的感覺
     _lastHeadDetent = null;
-    if (target != null &&
-        _tlScroll.hasClients &&
-        (target - _position).abs() > 0.0005) {
-      _position = target.clamp(0.0, _tl.duration);
-      _suppressScroll = true;
-      _tlScroll
-          .animateTo(
-            (_position * _pxPerSec).clamp(
-              0.0,
-              _tlScroll.position.maxScrollExtent,
-            ),
-            duration: const Duration(milliseconds: 90),
-            curve: Curves.easeOut,
-          )
-          .whenComplete(() {
-            _suppressScroll = false;
-            _scrubSeek(force: true);
-          });
+    if (_tlScroll.hasClients && _pxPerSec > 0) {
+      final want = (_position * _pxPerSec).clamp(
+        0.0,
+        _tlScroll.position.maxScrollExtent,
+      );
+      if ((want - _tlScroll.offset).abs() > 0.5) {
+        _suppressScroll = true;
+        _tlScroll
+            .animateTo(
+              want,
+              duration: const Duration(milliseconds: 90),
+              curve: Curves.easeOut,
+            )
+            .whenComplete(() {
+              _suppressScroll = false;
+              _scrubSeek(force: true);
+            });
+      }
     }
     if (_scrubbing && mounted) setState(() => _scrubbing = false);
   }
@@ -1891,12 +1893,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _seekScrub(double t) {
     if (_playing) _pause();
     _position = t.clamp(0.0, _tl.duration);
-    // 跟捲動時間軸同一套：經過素材頭尾震一下，放手吸上去對齊
-    _headSnapTarget = _nearestEdge(_position);
-    if (_headSnapTarget != _lastHeadDetent) {
-      _lastHeadDetent = _headSnapTarget;
-      if (_headSnapTarget != null) HapticFeedback.selectionClick();
+    // 跟捲動時間軸同一套：靠近素材頭尾就當場吸住，換卡榫震一下
+    final edge = _nearestEdge(_position);
+    if (edge != _lastHeadDetent) {
+      _lastHeadDetent = edge;
+      if (edge != null) HapticFeedback.selectionClick();
     }
+    if (edge != null) _position = edge.clamp(0.0, _tl.duration);
     _scrubbing = true;
     _scrubEndTimer?.cancel();
     _scrubEndTimer = Timer(const Duration(milliseconds: 220), _tryEndScrub);
