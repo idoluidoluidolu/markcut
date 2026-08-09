@@ -4784,13 +4784,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                           ],
                         ),
                         if (rev && sel.reverse)
-                          const Padding(
-                            padding: EdgeInsets.only(top: 6),
+                          Padding(
+                            padding: const EdgeInsets.only(top: 6),
                             child: Text(
-                              '預覽是逐格畫面、暫時沒有聲音；'
-                              '匯出的成品畫面和聲音都會正確倒轉',
+                              kIsWeb
+                                  ? '網頁版只能逐格預覽；手機 App 會直接'
+                                        '做成流暢、有聲音的倒轉片段'
+                                  : '這段用簡易預覽（逐格、無聲音）；'
+                                        '匯出的成品畫面和聲音都會正確倒轉',
                               textAlign: TextAlign.center,
-                              style: TextStyle(
+                              style: const TextStyle(
                                 fontSize: 11,
                                 color: kTextDim,
                                 height: 1.5,
