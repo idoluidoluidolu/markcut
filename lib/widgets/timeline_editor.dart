@@ -172,6 +172,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
   // 這裡只需要知道「正在捏合」好鎖住捲動
   bool get _pinching => widget.pinching;
 
+  /// 浮水印列這次手勢的累計移動量（放開時 <6px＝點擊）
+  double _wmDragDist = 0;
+
   // 長按偵測：按住不動 0.45 秒 → 取消拖曳、打開選單
   Timer? _pressTimer;
   Offset _pressPos = Offset.zero;
@@ -751,15 +754,24 @@ class _TimelineEditorState extends State<TimelineEditor> {
                   GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
                     () => _EagerPanRecognizer(),
                     (r) => r
-                      // 拖曳開始＝「安靜選取」不切分頁——雙指縮放時
-                      // 手指落在這條上，不能一碰就跳去浮水印編輯
+                      // 按下＝「安靜選取」不切分頁。跳分頁放在放開時
+                      // 用移動距離判斷（幾乎沒動＝點擊）：
+                      // 拖曳調範圍不能中途被拉去浮水印分頁，
+                      // 雙指縮放誤觸也不能跳
                       ..onStart = ((_) {
                         if (_pinching) return;
+                        _wmDragDist = 0;
                         (widget.onSelectWmDrag ?? widget.onSelectWm)();
                       })
                       ..onUpdate = ((d) {
                         if (_pinching) return;
+                        _wmDragDist +=
+                            d.delta.dx.abs() + d.delta.dy.abs();
                         widget.onMoveWm(wm.start + d.delta.dx / pxPerSec);
+                      })
+                      ..onEnd = ((_) {
+                        if (_pinching || _wmDragDist >= 6) return;
+                        widget.onSelectWm(); // 點擊＝進浮水印分頁
                       }),
                   ),
             },

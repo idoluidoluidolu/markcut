@@ -48,9 +48,23 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 浮水印選到哪個部件（文字或圖片）。縮放只動被選的那個
   WmPart _wmPart = WmPart.none;
 
-  /// 進來時的設定快照＋是否已輸出，決定離開要不要問
+  /// 被選部件目前還「活著」嗎（存在、非平鋪）。
+  /// 選中 Logo 後把 Logo 移除／開滿版，殘留的選取會讓
+  /// 拖曳整個變死的——不活就一律當作沒選
+  WmPart get _wmPartAlive {
+    final t = _settings.text;
+    final lg = _settings.logo;
+    return switch (_wmPart) {
+      WmPart.text
+          when t.enabled && !t.tiled && t.text.trim().isNotEmpty =>
+        WmPart.text,
+      WmPart.logo when lg.enabled && !lg.tiled => WmPart.logo,
+      _ => WmPart.none,
+    };
+  }
+
+  /// 「有沒有改過」的基準快照：進來時拍一次，輸出成功後重設
   late String _initialJson;
-  bool _saved = false;
 
   @override
   void initState() {
@@ -62,7 +76,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   String get _stateJson =>
       jsonEncode({..._settings.toJson(), 'color': _grade.toJson()});
 
-  bool get _dirty => !_saved && _stateJson != _initialJson;
+  bool get _dirty => _stateJson != _initialJson;
 
   /// 離開保護：調過浮水印但沒輸出就問一下
   Future<void> _confirmLeave() async {
@@ -110,6 +124,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       _grade.copyFrom(
         ColorGrade.fromJson(Map<String, dynamic>.from(j['color'] as Map)),
       );
+      // 復原可能把被選取的部件變不見（例如撤銷加 Logo），
+      // 選取殘留會讓拖曳整個變死的
+      _wmPart = WmPart.none;
       _sync++;
     });
   }
@@ -128,14 +145,22 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   }
 
   Future<void> _load() async {
-    final bytes = await widget.photo.readAsBytes();
-    final codec = await ui.instantiateImageCodec(bytes);
-    final frame = await codec.getNextFrame();
-    setState(() {
-      _photoBytes = bytes;
-      _aspect = frame.image.width / frame.image.height;
-    });
-    frame.image.dispose();
+    try {
+      final bytes = await widget.photo.readAsBytes();
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      if (!mounted) return;
+      setState(() {
+        _photoBytes = bytes;
+        _aspect = frame.image.width / frame.image.height;
+      });
+      frame.image.dispose();
+    } catch (_) {
+      // 壞檔或不支援的格式：不能讓畫面永遠轉圈
+      if (!mounted) return;
+      showHint(context, '這張圖片無法讀取，換一張試試', error: true);
+      Navigator.of(context).pop();
+    }
   }
 
   /// 預覽與面板之間的控制列：上一步／重做。
@@ -330,7 +355,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       message = '輸出失敗：$e';
       ok = false;
     }
-    if (ok) _saved = true; // 已輸出，離開不用再問
+    if (ok) {
+      // 輸出成功＝把「有沒有改過」的基準點重設到現在。
+      // 不能一輸出就永遠關掉保護：之後又改了十分鐘、
+      // 誤觸返回會一聲不吭直接蒸發
+      _initialJson = _stateJson;
+    }
 
     if (mounted) {
       Navigator.of(context).pop();
@@ -371,9 +401,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       final hasText = t.enabled && t.text.trim().isNotEmpty;
       final hasLogo = _settings.logo.enabled;
       // 有選取就只動被選的那個（畫面上有白框）；
-      // 都沒選而兩個都在，才一起動
-      final doText = hasText && (_wmPart != WmPart.logo || !hasLogo);
-      final doLogo = hasLogo && (_wmPart != WmPart.text || !hasText);
+      // 都沒選而兩個都在，才一起動（用活性版，殘留選取不算）
+      final part = _wmPartAlive;
+      final doText = hasText && (part != WmPart.logo || !hasLogo);
+      final doLogo = hasLogo && (part != WmPart.text || !hasText);
       if (doText) t.sizeFrac = (_pvBaseText * f).clamp(0.015, 2.0);
       if (doLogo) {
         _settings.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
@@ -444,7 +475,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                   settings: _settings,
                                   onChanged: () => setState(() {}),
                                   onDragStart: _pushUndo,
-                                  selectedPart: _wmPart,
+                                  // 活性版：被選部件消失後視同沒選，
+                                  // 拖曳才不會整個變死的
+                                  selectedPart: _wmPartAlive,
                                   onSelectPart: (p) =>
                                       setState(() => _wmPart = p),
                                   panLocked: () => _pvPts.length >= 2,
@@ -452,7 +485,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                 // 選取路由：有部件被選取（白框）時，
                                 // 整個預覽的拖曳都只動被選的那個——
                                 // 跟影片編輯同一套規則
-                                if (_wmPart != WmPart.none)
+                                if (_wmPartAlive != WmPart.none)
                                   Positioned.fill(
                                     child: LayoutBuilder(
                                       builder: (context, box) {
@@ -470,8 +503,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                             if (_pvPts.length >= 2) return;
                                             final t = _settings.text;
                                             final lg = _settings.logo;
+                                            final part = _wmPartAlive;
                                             setState(() {
-                                              if (_wmPart == WmPart.text &&
+                                              if (part == WmPart.text &&
                                                   t.enabled &&
                                                   !t.tiled &&
                                                   t.text.trim().isNotEmpty) {
@@ -481,7 +515,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                                 t.y =
                                                     (t.y + d.delta.dy / h)
                                                         .clamp(0.0, 1.0);
-                                              } else if (_wmPart ==
+                                              } else if (part ==
                                                       WmPart.logo &&
                                                   lg.enabled &&
                                                   !lg.tiled) {

@@ -25,7 +25,11 @@ import 'video_editor_screen.dart';
 class BatchWatermarkScreen extends StatefulWidget {
   final List<XFile> files;
 
-  const BatchWatermarkScreen({super.key, required this.files});
+  /// 進場時要顯示的提示（例如「已略過 N 個非影片檔案」）。
+  /// 在前一頁 show 的話會被這頁蓋住，根本看不到
+  final String? initialHint;
+
+  const BatchWatermarkScreen({super.key, required this.files, this.initialHint});
 
   @override
   State<BatchWatermarkScreen> createState() => _BatchWatermarkScreenState();
@@ -61,9 +65,8 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     }.contains(ext);
   }
 
-  /// 進來時的設定快照＋是否已匯出，決定離開要不要問
+  /// 「有沒有改過」的基準快照：進來時拍一次，匯出成功後重設
   late String _initialJson;
-  bool _exported = false;
 
   @override
   void initState() {
@@ -71,10 +74,16 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     _initialJson = jsonEncode(_settings.toJson());
     _loadPreviews();
     _loadPreviewFull();
+    final hint = widget.initialHint;
+    if (hint != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) showHint(context, hint);
+      });
+    }
   }
 
-  bool get _dirty =>
-      !_exported && jsonEncode(_settings.toJson()) != _initialJson;
+  // 匯出成功會把基準點重設（見 _exportAll），不能一匯出就永遠關掉保護
+  bool get _dirty => jsonEncode(_settings.toJson()) != _initialJson;
 
   /// 離開保護：調過浮水印但整批還沒匯出就問一下
   Future<void> _confirmLeave() async {
@@ -262,6 +271,21 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         ),
       );
     }
+    // 單獨編輯是一條單行道：裡面的調整不會帶回批次。
+    // 如果已經在裡面輸出了，留在批次裡會被再輸出一次
+    //（而且是批次的舊設定）——回來時問一聲要不要移出批次
+    if (!mounted || _items.length <= 1) return;
+    final remove = await showConfirm(
+      context,
+      title: '把這個檔案移出批次？',
+      message: '單獨編輯的調整不會影響批次。若剛剛已在裡面輸出，'
+          '留在批次會用批次的設定再輸出一次',
+      action: '移出批次',
+    );
+    if (remove && mounted) {
+      _removeItem(_previewIndex);
+      showHint(context, '已從批次移除');
+    }
   }
 
   /// 長按縮圖＝從批次移除（要單獨處理的先踢出去）
@@ -282,10 +306,8 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
 
   Future<void> _exportAll() async {
     if (_exporting) return;
-    final hasVideo = _items.any((it) => _isVideo(it.file));
-    if (hasVideo && !engine.videoExportSupported) {
-      showHint(context, 'Web 版不支援影片匯出，只會處理照片');
-    }
+    // Web 略過影片的說明放在結尾的結果訊息（skipped 計數），
+    // 這裡先 show 會立刻被進度彈窗蓋住、根本看不到
     setState(() => _exporting = true);
     _stopRequested = false;
 
@@ -368,7 +390,10 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     }
 
     await keepScreenAwake(false);
-    if (done > 0) _exported = true; // 有輸出成功，離開不用再問
+    if (done > 0) {
+      // 基準點重設到現在：之後又改了設定，離開一樣會問
+      _initialJson = jsonEncode(_settings.toJson());
+    }
     if (mounted) {
       Navigator.of(context).pop();
       var msg = _stopRequested
@@ -518,9 +543,24 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
               itemBuilder: (context, i) => InkWell(
                 borderRadius: BorderRadius.circular(6),
                 onTap: () => _selectPreview(i),
-                onLongPress: () {
+                onLongPress: () async {
+                  // 剩一個不能移除：不能謊報「已移除」
+                  if (_items.length <= 1) {
+                    showHint(context, '批次至少要留一個檔案', error: true);
+                    return;
+                  }
+                  // 誤觸長按就直接消失太危險（沒有復原），先問一下
+                  final ok = await showConfirm(
+                    context,
+                    title: '從批次移除這個檔案？',
+                    message: _items[i].file.name,
+                    action: '移除',
+                  );
+                  if (!ok || !mounted) return;
                   _removeItem(i);
-                  showHint(context, '已從批次移除');
+                  // 用 State 的 context：itemBuilder 的 context 過了
+                  // await 之後不保證還活著
+                  showHint(this.context, '已從批次移除');
                 },
                 child: Container(
                   width: 56,

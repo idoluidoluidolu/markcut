@@ -204,15 +204,18 @@ class _HomeScreenState extends State<HomeScreen> {
         // 這樣才留得住系統原生的相簿選取器
         final list = await ImagePicker().pickMultipleMedia();
         final videos = list.where(_isVideoFile).toList();
-        if (videos.length < list.length && mounted) {
-          showHint(context, '已略過 ${list.length - videos.length} 個非影片檔案');
-        }
-        await _openBatch(videos);
+        // 提示交給批次頁進場後顯示——在這裡 show 會馬上被
+        // 推上來的新頁面蓋住，使用者根本看不到
+        final skipped = list.length - videos.length;
+        await _openBatch(
+          videos,
+          hint: skipped > 0 ? '已略過 $skipped 個非影片檔案' : null,
+        );
     }
   }
 
   /// 一支就進單檔編輯器，多支才進批次
-  Future<void> _openBatch(List<XFile> list) async {
+  Future<void> _openBatch(List<XFile> list, {String? hint}) async {
     if (list.isEmpty || !mounted) return;
     if (list.length == 1) {
       final f = list.first;
@@ -221,7 +224,9 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => BatchWatermarkScreen(files: list)),
+      MaterialPageRoute(
+        builder: (_) => BatchWatermarkScreen(files: list, initialHint: hint),
+      ),
     );
   }
 

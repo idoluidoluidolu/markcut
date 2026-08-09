@@ -829,7 +829,9 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   Widget _bigPosGrid() {
     const xs = [0.14, 0.5, 0.86];
     const ys = [0.12, 0.5, 0.9];
-    final target = s.text.enabled || !s.logo.enabled ? 'text' : 'logo';
+    // 文字要「真的有字」才算：開著但空字串時，九宮格應該動 Logo
+    final hasText = s.text.enabled && s.text.text.trim().isNotEmpty;
+    final target = hasText || !s.logo.enabled ? 'text' : 'logo';
     final x = target == 'text' ? s.text.x : s.logo.x;
     final y = target == 'text' ? s.text.y : s.logo.y;
     void pick(double gx, double gy) => _update(() {

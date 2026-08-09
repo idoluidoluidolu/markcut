@@ -112,7 +112,6 @@ class ColorGradePanel extends StatefulWidget {
 class _ColorGradePanelState extends State<ColorGradePanel> {
   /// 目前看的是哪一組（0 = 顏色，1 = 明暗）
   int _group = 0;
-  bool _pushed = false;
 
   /// 正在按著「原圖」比對
   bool _comparing = false;
@@ -153,11 +152,17 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
     super.dispose();
   }
 
+  /// 上次編輯時間：0.7 秒內的連續調整併成一步 undo，
+  /// 停頓後再調就是新的一步——跟浮水印面板同一套粒度。
+  /// （原本整個面板只拍一次快照：調十次按一次復原全退光）
+  DateTime _lastEditAt = DateTime.fromMillisecondsSinceEpoch(0);
+
   void _edit(VoidCallback change) {
-    if (!_pushed) {
+    final now = DateTime.now();
+    if (now.difference(_lastEditAt).inMilliseconds > 700) {
       widget.onBeforeChange?.call();
-      _pushed = true;
     }
+    _lastEditAt = now;
     setState(change);
     widget.onChanged();
   }

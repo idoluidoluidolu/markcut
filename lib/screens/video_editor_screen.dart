@@ -267,6 +267,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _sel = -1;
       _position = _position.clamp(0.0, _tl.duration);
     });
+    _resyncPlayback(); // 復原改了時間對應，播放要重新對位
     for (final c in _tl.clips) {
       _ensureCtrlFor(c);
     }
@@ -338,6 +339,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       'wm': _settings.toJson(),
       'wmStart': _wmStart,
       'wmEnd': _wmEnd,
+      'extraTracks': _extraBlankTracks,
     };
   }
 
@@ -388,6 +390,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _wmStart = ((j['wmStart'] ?? 0) as num).toDouble();
     _wmEnd = j['wmEnd'] == null ? null : (j['wmEnd'] as num).toDouble();
+    _extraBlankTracks = ((j['extraTracks'] ?? 0) as num).toInt();
 
     // 重建播放器與縮圖；素材檔案不見了（例如系統清掉 app 快取）就剔除該片段，
     // 免得留下永遠黑畫面的片段、到匯出才爆錯
@@ -396,6 +399,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final s = _tl.sources[i];
       if (s.kind == ClipKind.text || s.kind == ClipKind.wm) {
         continue; // 這兩種素材沒有檔案
+      }
+      // Web：blob 連結活不過重新整理，留著只會是永遠黑畫面
+      // 又不報錯的片段——剔除並讓下面的提示講清楚
+      if (kIsWeb &&
+          (s.kind == ClipKind.video || s.kind == ClipKind.audio) &&
+          s.path.startsWith('blob:')) {
+        deadSources.add(i);
+        continue;
       }
       if (s.kind == ClipKind.image) {
         final bytes = await readFileBytes(s.path);
@@ -719,10 +730,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _pickVideo(int track) async {
     final picked = await ImagePicker().pickVideo(source: ImageSource.gallery);
     if (picked == null) return;
+    if (!mounted) return;
     _pause();
     _pushUndo();
     await _importVideoFromPath(picked.path, track: track, name: picked.name);
     if (mounted) setState(() {});
+    _saveDraft(); // 加完立刻落草稿
   }
 
   Future<void> _pickAudio(int track) async {
@@ -774,6 +787,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       url = picked.url;
       name = picked.name;
     }
+    if (!mounted) return; // 挑檔期間畫面可能已被收掉
     _pause();
     final c = makeVideoController(url);
     try {
@@ -816,6 +830,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _tl.clips.add(clip);
     _ctrls[clip.id] = c;
     if (mounted) setState(() => _sel = clip.id);
+    _saveDraft(); // 加完立刻落草稿，被系統殺掉也不會掉
   }
 
   // ===== 旁白：邊看影片邊錄 =====
@@ -1087,6 +1102,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tl.clips.add(clip);
       _sel = clip.id;
     });
+    _saveDraft(); // 加完立刻落草稿
   }
 
   /// 文字輸入對話框（新增與編輯共用）
@@ -1549,6 +1565,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tl.clips.add(clip);
       _sel = clip.id;
     });
+    _saveDraft(); // 加完立刻落草稿
   }
 
   /// 浮水印素材：一個完整的浮水印（文字＋Logo）當成時間軸元素。
@@ -1697,6 +1714,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 片段「剛變成作用中」的追蹤：只在進場那一刻 seek 一次
   final Set<int> _wasActive = {};
 
+  /// 時間軸的「時間→內容」對應被改動（移動/修剪/變速/刪除/復原）後
+  /// 一定要呼叫：清掉進場狀態，下次播放每個片段重新對位。
+  /// 不清的話進場 seek 被跳過，1 秒內的錯位永遠不會被修正
+  void _resyncPlayback() {
+    _wasActive.clear();
+    _lastDriftFix.clear();
+  }
+
   /// 每個片段上次大幅校正的時間（防連發）
   final Map<int, DateTime> _lastDriftFix = {};
   DateTime _lastVolSync = DateTime.fromMillisecondsSinceEpoch(0);
@@ -1731,6 +1756,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           }
           final cOld = _ctrls[prev.id];
           if (cOld == null || !cOld.value.isInitialized) break;
+          // 保險絲：舊播放器必須真的停在交界附近才換手，
+          // 不然任何狀態殘留都會把錯位置的播放器塞給新片段
+          final oldPos = cOld.value.position.inMilliseconds / 1000.0;
+          if ((oldPos - clip.trimStart).abs() > 1.0) continue;
           // 換手：後段接走正在播的，前段拿到後段那顆（離場會被暫停）
           final cNew = _ctrls[clip.id];
           _ctrls[clip.id] = cOld;
@@ -1763,7 +1792,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         c.seekTo(Duration(milliseconds: (want * 1000).round()));
       } else if (_playing) {
         final actual = c.value.position.inMilliseconds / 1000.0;
-        if ((actual - want).abs() > 1.0 &&
+        // 門檻隨播放速度放大：Android 位置回報有 ~500ms 延遲，
+        // 2 倍速以上光是延遲就會超過 1 秒，會被誤判成脫節狂 seek
+        final driftThr = math.max(1.0, _speed * clip.speed);
+        if ((actual - want).abs() > driftThr &&
             now
                     .difference(
                       _lastDriftFix[clip.id] ??
@@ -1852,7 +1884,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tl.clips.add(clip);
       // 搬到最底下那條空軌時不要收斂，否則會被拉回原本的層
       if (insert || t < oldUsed) _tl.compactTracks();
+      // 插入/收斂會重編軌號，選取的軌道指不準了——直接清掉
+      if (insert) _selTrack = -1;
     });
+    _resyncPlayback();
   }
 
   void _trimClip(int id, double dSec, bool fromLeft) {
@@ -1872,6 +1907,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         }
       }
     });
+    _resyncPlayback();
   }
 
   /// 整條軌道換順序（連同軌上所有片段一起搬）
@@ -1890,6 +1926,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       for (final c in _tl.clips) {
         c.track = map[c.track] ?? c.track;
       }
+      // 軌號整批換過了，選取的軌道跟著對照表走
+      if (_selTrack >= 0) _selTrack = map[_selTrack] ?? -1;
     });
   }
 
@@ -1922,6 +1960,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // _ensureCtrlFor 會自己判斷跳過）
     final oldCtrl = _ctrls.remove(c.id);
     if (oldCtrl != null) _ctrls[second.id] = oldCtrl;
+    // 「已進場」狀態要跟著播放器走：留著前半的舊狀態的話，
+    // 下次播放時無縫換手會反向觸發，把還停在 0 秒的新播放器
+    // 塞給正在播的後半段（後半整段播錯內容）
+    if (_wasActive.remove(c.id)) _wasActive.add(second.id);
+    _lastVol[second.id] = _lastVol.remove(c.id) ?? -1;
     _ensureCtrlFor(c);
     setState(() => _sel = second.id);
   }
@@ -1951,6 +1994,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tl.clips.remove(c);
       _sel = -1;
     });
+    _resyncPlayback();
   }
 
   /// 長按片段 → 複製 / 貼上 / 刪除
@@ -2110,6 +2154,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tl.clips.add(clip);
       _sel = clip.id;
     });
+    _resyncPlayback();
+    _saveDraft(); // 貼上完立刻落草稿，被系統殺掉也不會掉
   }
 
   @override
@@ -3262,21 +3308,35 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                   );
                                                 }
                                               } else {
-                                                // 全域浮水印：只移被選部件
+                                                // 全域浮水印：只移被選部件；
+                                                // 被選的已消失/平鋪就退回
+                                                // 另一個活著的，不留死拖曳
                                                 final t2 = _settings.text;
                                                 final lg = _settings.logo;
                                                 final hasT =
                                                     t2.enabled &&
                                                     t2.text.trim().isNotEmpty;
-                                                final part =
-                                                    _wmPart != WmPart.none
-                                                    ? _wmPart
-                                                    : (hasT
-                                                          ? WmPart.text
-                                                          : WmPart.logo);
+                                                final tAlive =
+                                                    hasT && !t2.tiled;
+                                                final lAlive =
+                                                    lg.enabled && !lg.tiled;
+                                                var part = _wmPart;
                                                 if (part == WmPart.text &&
-                                                    hasT &&
-                                                    !t2.tiled) {
+                                                    !tAlive) {
+                                                  part = WmPart.none;
+                                                }
+                                                if (part == WmPart.logo &&
+                                                    !lAlive) {
+                                                  part = WmPart.none;
+                                                }
+                                                if (part == WmPart.none) {
+                                                  part = tAlive
+                                                      ? WmPart.text
+                                                      : (lAlive
+                                                            ? WmPart.logo
+                                                            : WmPart.none);
+                                                }
+                                                if (part == WmPart.text) {
                                                   _routerPushUndoIfNeeded();
                                                   moved = true;
                                                   t2.x = (t2.x + ddx).clamp(
@@ -3720,35 +3780,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 wmHidden: _wmHidden,
                                 onToggleWmVisible: () =>
                                     setState(() => _wmHidden = !_wmHidden),
-                                // 點浮水印軌＝選取＋自動切到浮水印分頁
+                                // 點浮水印軌＝選取＋自動切到浮水印分頁。
+                                // 一律跳：按下時 onSelectWmDrag 已先把
+                                // 選取設起來，這裡再看 wasSel 永遠不會跳
                                 onSelectWm: () {
-                                  final wasSel = _wmSel;
                                   setState(() {
                                     _wmSel = true;
                                     _sel = -1;
                                   });
-                                  if (!wasSel) _tabs.animateTo(1);
+                                  _tabs.animateTo(1);
                                 },
-                                // 拖曳開始：先選取，等一拍再跳分頁——
-                                // 若那一拍內第二指落下（雙指縮放），
-                                // 就不跳。單指點/拖維持自動進浮水印模式
-                                onSelectWmDrag: () {
-                                  setState(() {
-                                    _wmSel = true;
-                                    _sel = -1;
-                                  });
-                                  Future.delayed(
-                                    const Duration(milliseconds: 150),
-                                    () {
-                                      if (mounted &&
-                                          _wmSel &&
-                                          !_tlPinching &&
-                                          _pvPts.length < 2) {
-                                        _tabs.animateTo(1);
-                                      }
-                                    },
-                                  );
-                                },
+                                // 按下只安靜選取；點擊（放開時幾乎沒動）
+                                // 才由 timeline_editor 呼叫 onSelectWm 跳分頁。
+                                // 拖曳調範圍不會被打斷、捏合誤觸也不會跳
+                                onSelectWmDrag: () => setState(() {
+                                  _wmSel = true;
+                                  _sel = -1;
+                                }),
                                 onMoveWm: (ns) => setState(() {
                                   final len = _wmEndEff - _wmStart;
                                   final s = ns.clamp(
@@ -3837,13 +3885,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         Icons.open_in_full,
                         '大小',
                         (sel == null ||
-                                _tl.sourceOf(sel).kind == ClipKind.audio)
+                                _tl.sourceOf(sel).kind == ClipKind.audio ||
+                                // 浮水印素材整版渲染不吃 clip.scale，
+                                // 開這張表調了也沒反應
+                                _tl.sourceOf(sel).kind == ClipKind.wm)
                             ? null
                             : () => _openScaleSheet(sel),
                         tip: '縮放物件大小',
                         disabledHint: sel == null
                             ? '先在時間軸點選一個片段'
-                            : '聲音片段沒有畫面大小可調',
+                            : (_tl.sourceOf(sel).kind == ClipKind.wm
+                                  ? '浮水印大小請在浮水印分頁調，或在預覽雙指縮放'
+                                  : '聲音片段沒有畫面大小可調'),
                       ),
                       _toolBtn(Icons.speed, '速度', _openSpeedSheet, tip: '播放速度'),
                       _toolBtn(
@@ -3851,7 +3904,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         '調色',
                         (sel == null ||
                                 _tl.sourceOf(sel).kind == ClipKind.audio ||
-                                _tl.sourceOf(sel).kind == ClipKind.text)
+                                _tl.sourceOf(sel).kind == ClipKind.text ||
+                                // 浮水印素材的調色管線沒接（預覽跟匯出
+                                // 都不吃），開了等於騙人
+                                _tl.sourceOf(sel).kind == ClipKind.wm)
                             ? null
                             : _enterColorMode,
                         tip: 'HSV 調色',
@@ -4178,6 +4234,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         }
                         setState(() => sel.speed = sp);
                         _ctrls[sel.id]?.setPlaybackSpeed(_speed * sp);
+                        _resyncPlayback(); // 變速改了時間對應
                       } else {
                         setState(() => _speed = sp);
                         for (final e in _tl.clips) {
@@ -4329,6 +4386,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 調色盤：共用元件，照片編輯也是同一個
   Widget _buildColorPanel() {
+    // 調色中點了預覽裡別的影片/圖片 → 調色目標跟著換過去，
+    // 不然白框在 B 身上、滑桿卻在調 A，看起來像壞掉
+    final selNow = _selClipById(_sel);
+    if (selNow != null) {
+      final k = _tl.sourceOf(selNow).kind;
+      if (k == ClipKind.video || k == ClipKind.image) {
+        _colorClipId = selNow.id;
+      }
+    }
     final c = _selClipById(_colorClipId);
     if (c == null) {
       // 片段被刪掉了就退出去，不要留在空白的調色盤
@@ -4336,6 +4402,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return const SizedBox.shrink();
     }
     return ColorGradePanel(
+      key: ValueKey('grade-${c.id}'), // 換目標時面板內部狀態重置
       grade: c.color,
       onChanged: () => setState(() {}),
       onBeforeChange: _pushUndo,

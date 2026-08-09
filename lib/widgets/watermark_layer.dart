@@ -150,12 +150,14 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                         );
                         onChanged();
                       },
-                child: Container(
-                  decoration: _deco(WmPart.logo),
-                  child: Opacity(
-                    opacity: logo.opacity,
-                    child: Transform.rotate(
-                      angle: logo.rotation * math.pi / 180,
+                // 選取框放在旋轉「裡面」：框才會跟著 Logo 轉
+                //（文字那邊本來就是這樣，兩邊要一致）
+                child: Opacity(
+                  opacity: logo.opacity,
+                  child: Transform.rotate(
+                    angle: logo.rotation * math.pi / 180,
+                    child: Container(
+                      decoration: _deco(WmPart.logo),
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(
                           logo.corner * logoW / 2,
