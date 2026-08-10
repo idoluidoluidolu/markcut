@@ -67,6 +67,16 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
   DateTime _lastPush = DateTime.fromMillisecondsSinceEpoch(0);
   int _sync = 0; // 通知面板同步內部狀態
 
+  /// 拖曳浮水印時只重畫預覽區——整頁 setState 會連下面整片
+  /// 設定面板一起重建，拖起來會頓
+  final ValueNotifier<int> _wmTick = ValueNotifier(0);
+
+  @override
+  void dispose() {
+    _wmTick.dispose();
+    super.dispose();
+  }
+
   void _pushUndo() {
     final now = DateTime.now();
     if (now.difference(_lastPush).inMilliseconds < 700) return;
@@ -199,23 +209,26 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
             color: const Color(0xFF1B1B1F),
             child: Stack(
               children: [
-                Center(
-                  child: AspectRatio(
-                    aspectRatio: _ratios[_ratioIdx].$2,
-                    child: Container(
-                      color: _lightBg ? Colors.white : Colors.black,
-                      child: Stack(
-                        clipBehavior: Clip.none,
-                        fit: StackFit.expand,
-                        children: [
-                          // 底就是純色，不放示意圖示——那個山形圖案
-                          // 會被誤認成浮水印的一部分
-                          WatermarkLayer(
-                            settings: _settings,
-                            onChanged: () => setState(() {}),
-                            onDragStart: _pushUndo,
-                          ),
-                        ],
+                ValueListenableBuilder<int>(
+                  valueListenable: _wmTick,
+                  builder: (context, _, _) => Center(
+                    child: AspectRatio(
+                      aspectRatio: _ratios[_ratioIdx].$2,
+                      child: Container(
+                        color: _lightBg ? Colors.white : Colors.black,
+                        child: Stack(
+                          clipBehavior: Clip.none,
+                          fit: StackFit.expand,
+                          children: [
+                            // 底就是純色，不放示意圖示——那個山形圖案
+                            // 會被誤認成浮水印的一部分
+                            WatermarkLayer(
+                              settings: _settings,
+                              onChanged: () => _wmTick.value++,
+                              onDragStart: _pushUndo,
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),

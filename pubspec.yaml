@@ -105,6 +105,9 @@ flutter:
   assets:
     - assets/icon/icon_foreground.png
 
+  shaders:
+    - shaders/mosaic.frag
+
   fonts:
     - family: NotoSansTC
       fonts:

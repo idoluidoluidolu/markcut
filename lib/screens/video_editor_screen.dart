@@ -474,12 +474,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 目前畫面上該顯示的影片片段
   TimelineClip? get _activeVideo => _tl.videoAt(_position);
 
+  /// 馬賽克預覽 shader（載不到就退回霧化，web/舊 GPU 都走得下去）
+  ui.FragmentShader? _mosaicShader;
+
+  Future<void> _loadMosaicShader() async {
+    try {
+      final prog = await ui.FragmentProgram.fromAsset('shaders/mosaic.frag');
+      if (mounted) setState(() => _mosaicShader = prog.fragmentShader());
+    } catch (_) {}
+  }
+
   @override
   void initState() {
     super.initState();
     _tabs = TabController(length: 3, vsync: this);
     _ticker = createTicker(_onTick);
     _tlScroll.addListener(_onTimelineScroll);
+    _loadMosaicShader();
     _loadSnapPref(); // 記住上次磁吸開還關
     if (widget.draft != null) {
       _loadDraft(widget.draft!).then((_) {
@@ -3322,8 +3333,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   for (final c in _tl.overlaysAt(_position)) {
                                     final src = _tl.sourceOf(c);
                                     if (src.kind == ClipKind.mosaic) {
-                                      // 預覽用毛玻璃近似（真正的像素化
-                                      // 由匯出的 FFmpeg 做）
                                       final r = layerBox(c, 1.0);
                                       children.add(
                                         Positioned.fromRect(
@@ -3334,68 +3343,63 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               _sel = c.id;
                                               _wmSel = false;
                                             }),
-                                            // 手機：毛玻璃真的把底下畫面
-                                            // 糊掉（影片是材質抓得到）；
-                                            // web 播放中抓不到底圖，就只剩
-                                            // 淡格線框標示範圍，不擋畫面。
-                                            // 真正的像素化由匯出做
+                                            // 純效果不加字不加框：
+                                            // 像素化 = shader 取格中心色
+                                            // （真色塊）；不支援 shader 的
+                                            // 平台退回霧化。web 播放中抓不
+                                            // 到 HTML 影片，效果以匯出為準
                                             child: Builder(
                                               builder: (context) {
                                                 final ms =
                                                     src.mosaicStyle ??
                                                     MosaicStyle();
-                                                // 黑色遮蓋：實心黑塊
                                                 if (ms.type == 2) {
                                                   return Container(
                                                     color: Colors.black,
-                                                    alignment: Alignment.center,
-                                                    child: const Text(
-                                                      '遮蓋',
-                                                      style: TextStyle(
-                                                        fontSize: 10,
-                                                        color: Colors.white38,
-                                                      ),
-                                                    ),
                                                   );
                                                 }
-                                                // 像素化/模糊：毛玻璃，
-                                                // 濃度連動模糊半徑；
-                                                // 像素化多畫淡格線
+                                                ui.ImageFilter? filter;
+                                                if (ms.type == 0 &&
+                                                    _mosaicShader != null) {
+                                                  // 格數跟匯出同一條公式，
+                                                  // 濃度越高格子越大
+                                                  final cells =
+                                                      (26 - 20 * ms.strength)
+                                                          .round()
+                                                          .clamp(4, 40);
+                                                  final dpr = MediaQuery.of(
+                                                    context,
+                                                  ).devicePixelRatio;
+                                                  final cell = math.max(
+                                                    2.0,
+                                                    r.width * dpr / cells,
+                                                  );
+                                                  try {
+                                                    // 0,1 = u_size(引擎
+                                                    // 自動填),2 = u_cell
+                                                    _mosaicShader!.setFloat(
+                                                      2,
+                                                      cell,
+                                                    );
+                                                    filter =
+                                                        ui.ImageFilter.shader(
+                                                          _mosaicShader!,
+                                                        );
+                                                  } catch (_) {
+                                                    filter = null;
+                                                  }
+                                                }
                                                 final sigma =
                                                     4.0 + 16 * ms.strength;
+                                                filter ??= ui.ImageFilter.blur(
+                                                  sigmaX: sigma,
+                                                  sigmaY: sigma,
+                                                );
                                                 return ClipRect(
                                                   child: BackdropFilter(
-                                                    filter: ui.ImageFilter.blur(
-                                                      sigmaX: sigma,
-                                                      sigmaY: sigma,
-                                                    ),
-                                                    child: Container(
-                                                      decoration: BoxDecoration(
-                                                        border: Border.all(
-                                                          color: Colors.white54,
-                                                        ),
-                                                      ),
-                                                      child: Stack(
-                                                        fit: StackFit.expand,
-                                                        children: [
-                                                          if (ms.type == 0)
-                                                            const CustomPaint(
-                                                              painter:
-                                                                  _MosaicPatternPainter(),
-                                                            ),
-                                                          const Center(
-                                                            child: Text(
-                                                              '馬賽克',
-                                                              style: TextStyle(
-                                                                fontSize: 10,
-                                                                color: Colors
-                                                                    .white70,
-                                                              ),
-                                                            ),
-                                                          ),
-                                                        ],
-                                                      ),
-                                                    ),
+                                                    filter: filter,
+                                                    child: const SizedBox
+                                                        .expand(),
                                                   ),
                                                 );
                                               },
@@ -5482,28 +5486,6 @@ class _MagnetPainter extends CustomPainter {
 }
 
 /// 馬賽克區域的細格線（淡淡的，標示範圍但不擋內容）
-class _MosaicPatternPainter extends CustomPainter {
-  const _MosaicPatternPainter();
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final cell = (math.min(size.width, size.height) / 8).clamp(8.0, 22.0);
-    final line = Paint()
-      ..color =
-          const Color(0x2EFFFFFF) // 白 18%
-      ..strokeWidth = 1;
-    for (var x = cell; x < size.width; x += cell) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), line);
-    }
-    for (var y = cell; y < size.height; y += cell) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), line);
-    }
-  }
-
-  @override
-  bool shouldRepaint(_MosaicPatternPainter old) => false;
-}
-
 /// 預覽裡選取圖層的外框：一圈細白框就好（無把手）
 class _SelectionFramePainter extends CustomPainter {
   @override

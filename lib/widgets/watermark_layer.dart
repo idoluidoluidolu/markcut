@@ -93,6 +93,11 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
   /// 上一刻有沒有吸在中線上（吸上去的瞬間震一下）
   bool _centerSnapped = false;
 
+  /// 拖曳期間「未吸附」的原始座標。吸附只作用在顯示值上——
+  /// 若直接把吸完的值當下一刻的起點，單次手指位移永遠小於吸附半徑,
+  /// 吸上中線後就再也拖不出來（會一直被吸回去）
+  double _rawX = 0, _rawY = 0;
+
   /// 拖曳時把座標吸到置中線（0.5）附近；回傳吸完的值
   double _snapCenter(double v) {
     if ((v - 0.5).abs() < 0.015) return 0.5;
@@ -157,6 +162,8 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                     ? null
                     : (_) {
                         if (widget.panLocked?.call() ?? false) return;
+                        _rawX = logo.x;
+                        _rawY = logo.y;
                         setState(() => _panning = WmPart.logo);
                         onDragStart?.call();
                       },
@@ -164,13 +171,12 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                     ? null
                     : (d) {
                         if (widget.panLocked?.call() ?? false) return;
-                        // 靠近畫面中線就吸上去（垂直/水平置中輔助）
-                        logo.x = _snapCenter(
-                          ((logo.x * w + d.delta.dx) / w).clamp(0.0, 1.0),
-                        );
-                        logo.y = _snapCenter(
-                          ((logo.y * h + d.delta.dy) / h).clamp(0.0, 1.0),
-                        );
+                        // 手指位置累積在原始座標上；顯示值才吸中線,
+                        // 拖離吸附半徑就自然脫離
+                        _rawX = (_rawX + d.delta.dx / w).clamp(0.0, 1.0);
+                        _rawY = (_rawY + d.delta.dy / h).clamp(0.0, 1.0);
+                        logo.x = _snapCenter(_rawX);
+                        logo.y = _snapCenter(_rawY);
                         _feedbackCenter(logo.x, logo.y);
                         onChanged();
                       },
@@ -277,6 +283,8 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                     ? null
                     : (_) {
                         if (widget.panLocked?.call() ?? false) return;
+                        _rawX = t.x;
+                        _rawY = t.y;
                         setState(() => _panning = WmPart.text);
                         onDragStart?.call();
                       },
@@ -284,13 +292,12 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                     ? null
                     : (d) {
                         if (widget.panLocked?.call() ?? false) return;
-                        // 靠近畫面中線就吸上去（垂直/水平置中輔助）
-                        t.x = _snapCenter(
-                          ((t.x * w + d.delta.dx) / w).clamp(0.0, 1.0),
-                        );
-                        t.y = _snapCenter(
-                          ((t.y * h + d.delta.dy) / h).clamp(0.0, 1.0),
-                        );
+                        // 手指位置累積在原始座標上；顯示值才吸中線,
+                        // 拖離吸附半徑就自然脫離
+                        _rawX = (_rawX + d.delta.dx / w).clamp(0.0, 1.0);
+                        _rawY = (_rawY + d.delta.dy / h).clamp(0.0, 1.0);
+                        t.x = _snapCenter(_rawX);
+                        t.y = _snapCenter(_rawY);
                         _feedbackCenter(t.x, t.y);
                         onChanged();
                       },
