@@ -7,6 +7,26 @@ import 'watermark_settings.dart';
 // wm 一定要加在最尾端：kind 是用 index 序列化的，插中間會毀掉舊草稿
 enum ClipKind { video, audio, image, text, wm, mosaic }
 
+/// 馬賽克的樣式設定（每個馬賽克素材一份）
+class MosaicStyle {
+  /// 濃度 0~1：像素化＝格子越大、模糊＝越糊（黑色遮蓋不吃這個）
+  double strength;
+
+  /// 0=像素化、1=模糊、2=黑色遮蓋
+  int type;
+
+  MosaicStyle({this.strength = 0.5, this.type = 0});
+
+  Map<String, dynamic> toJson() => {'strength': strength, 'type': type};
+
+  factory MosaicStyle.fromJson(Map<String, dynamic> j) => MosaicStyle(
+    strength: ((j['strength'] ?? 0.5).toDouble() as double).clamp(0.0, 1.0),
+    type: ((j['type'] ?? 0) as int) % 3,
+  );
+
+  MosaicStyle copy() => MosaicStyle(strength: strength, type: type);
+}
+
 /// 一份匯入的素材（影片或音訊），可被多個片段引用
 class MediaSource {
   final String path; // 手機：檔案路徑；Web：blob URL
@@ -23,6 +43,9 @@ class MediaSource {
   /// 這讓浮水印變成一般的時間軸元素：可多軌、可切割、可移動
   WatermarkSettings? wmStyle;
 
+  /// 馬賽克素材的樣式（濃度、像素化/模糊/黑色）
+  MosaicStyle? mosaicStyle;
+
   /// 這份素材是「倒轉版」時，記下它是從哪個原始檔的哪一段做出來的。
   /// 使用者把速度拉回正的時，靠這些資訊還原回原始素材
   final String? revOf;
@@ -38,6 +61,7 @@ class MediaSource {
     this.h = 0,
     this.textStyle,
     this.wmStyle,
+    this.mosaicStyle,
     this.revOf,
     this.revStart = 0,
     this.revEnd = 0,
@@ -59,6 +83,7 @@ class MediaSource {
     'duration': duration,
     if (textStyle != null) 'textStyle': textStyle!.toJson(),
     if (wmStyle != null) 'wmStyle': wmStyle!.toJson(),
+    if (mosaicStyle != null) 'mosaicStyle': mosaicStyle!.toJson(),
     if (revOf != null) 'revOf': revOf,
     if (revOf != null) 'revStart': revStart,
     if (revOf != null) 'revEnd': revEnd,
@@ -79,6 +104,11 @@ class MediaSource {
         ? null
         : WatermarkSettings.fromJson(
             Map<String, dynamic>.from(j['wmStyle'] as Map),
+          ),
+    mosaicStyle: j['mosaicStyle'] == null
+        ? null
+        : MosaicStyle.fromJson(
+            Map<String, dynamic>.from(j['mosaicStyle'] as Map),
           ),
     revOf: j['revOf'] as String?,
     revStart: (j['revStart'] ?? 0).toDouble(),
@@ -346,7 +376,9 @@ class TimelineModel {
     // 一份來源，不然改其中一半的樣式另一半會跟著變
     var srcIdx = c.sourceIndex;
     final src = sources[srcIdx];
-    if (src.kind == ClipKind.wm || src.kind == ClipKind.text) {
+    if (src.kind == ClipKind.wm ||
+        src.kind == ClipKind.text ||
+        src.kind == ClipKind.mosaic) {
       sources.add(
         MediaSource(
           path: src.path,
@@ -357,6 +389,7 @@ class TimelineModel {
           duration: src.duration,
           textStyle: src.textStyle?.copy(),
           wmStyle: src.wmStyle?.copy(),
+          mosaicStyle: src.mosaicStyle?.copy(),
         ),
       );
       srcIdx = sources.length - 1;

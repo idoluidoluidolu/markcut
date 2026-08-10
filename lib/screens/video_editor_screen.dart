@@ -40,8 +40,22 @@ const kSpeedOptions = <double>[0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
 /// 速度滑桿的檔位（帶號）：負的＝倒著放。
 /// 左端最快的倒轉 → 往中間變慢 → 過中線轉正 → 右端最快正播
 const kSpeedStops = <double>[
-  -4, -3, -2, -1.5, -1, -0.75, -0.5, -0.25,
-  0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4,
+  -4,
+  -3,
+  -2,
+  -1.5,
+  -1,
+  -0.75,
+  -0.5,
+  -0.25,
+  0.25,
+  0.5,
+  0.75,
+  1,
+  1.5,
+  2,
+  3,
+  4,
 ];
 
 /// 草稿存放鍵
@@ -901,12 +915,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _tl.sources.add(
       // 影片來源也一樣掛成 audio 種類：預覽和匯出都只用它的音軌，
       // 畫面完全不進時間軸
-      MediaSource(
-        path: url,
-        name: name,
-        kind: ClipKind.audio,
-        duration: dur,
-      ),
+      MediaSource(path: url, name: name, kind: ClipKind.audio, duration: dur),
     );
     final clip = TimelineClip(
       id: _tl.nextId(),
@@ -1474,9 +1483,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                           // 裸圓點看起來不像可以點
                           child: Container(
                             height: 38,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                            ),
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
                             decoration: BoxDecoration(
                               border: Border.all(color: kBorder),
                               borderRadius: BorderRadius.circular(6),
@@ -1676,6 +1683,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         name: '馬賽克',
         kind: ClipKind.mosaic,
         duration: 3600,
+        mosaicStyle: MosaicStyle(),
       ),
     );
     final clip = TimelineClip(
@@ -1693,7 +1701,127 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _wmSel = false;
     });
     _saveDraft();
-    showHint(context, '拖曳調整馬賽克位置，雙指縮放大小');
+    showHint(context, '拖曳調位置、雙指縮放；再點一下可調樣式與濃度');
+  }
+
+  /// 馬賽克樣式表：樣式（像素化/模糊/黑色遮蓋）＋濃度
+  void _editMosaicClip(TimelineClip clip) {
+    final src = _tl.sourceOf(clip);
+    if (src.kind != ClipKind.mosaic) return;
+    src.mosaicStyle ??= MosaicStyle();
+    final st = src.mosaicStyle!;
+    var pushed = false;
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) {
+          void change(VoidCallback f) {
+            if (!pushed) {
+              _pushUndo();
+              pushed = true;
+            }
+            setState(f);
+            setSheet(() {});
+          }
+
+          Widget chip(String label, int type) {
+            final on = st.type == type;
+            return Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: () => change(() => st.type = type),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: on
+                          ? kSelect.withValues(alpha: 0.18)
+                          : Colors.transparent,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: on ? kSelect : kClipBorder,
+                        width: on ? 1.5 : 1,
+                      ),
+                    ),
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: on ? FontWeight.w700 : FontWeight.w400,
+                        color: on ? kSelect : kText,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }
+
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.blur_on, size: 18, color: kAmber),
+                      SizedBox(width: 8),
+                      Text(
+                        '馬賽克樣式',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [chip('像素化', 0), chip('模糊', 1), chip('黑色遮蓋', 2)],
+                  ),
+                  if (st.type != 2) ...[
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        const SizedBox(
+                          width: 40,
+                          child: Text(
+                            '濃度',
+                            style: TextStyle(fontSize: 12, color: kTextDim),
+                          ),
+                        ),
+                        Expanded(
+                          child: Slider(
+                            value: st.strength,
+                            onChanged: (v) => change(() => st.strength = v),
+                          ),
+                        ),
+                        SizedBox(
+                          width: 40,
+                          child: Text(
+                            '${(st.strength * 100).round()}%',
+                            textAlign: TextAlign.right,
+                            style: const TextStyle(
+                              fontSize: 11.5,
+                              color: kTextDim,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    ).whenComplete(_saveDraft);
   }
 
   /// 浮水印素材：一個完整的浮水印（文字＋Logo）當成時間軸元素。
@@ -1776,8 +1904,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _tl.sources.add(
       MediaSource(
         path: '',
-        name:
-            _settings.text.enabled && _settings.text.text.trim().isNotEmpty
+        name: _settings.text.enabled && _settings.text.text.trim().isNotEmpty
             ? _settings.text.text
             : '浮水印',
         kind: ClipKind.wm,
@@ -1943,10 +2070,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 放出來只會干擾（匯出時會用 areverse 正確倒過來）
         final revMute = clip.reverse ? 0.0 : 1.0;
         final vol =
-            (clip.volume *
-                    trackMute *
-                    revMute *
-                    clip.fadeFactorAt(_position))
+            (clip.volume * trackMute * revMute * clip.fadeFactorAt(_position))
                 .clamp(0.0, 1.0);
         if ((vol - (_lastVol[clip.id] ?? -1)).abs() > 0.02) {
           _lastVol[clip.id] = vol;
@@ -2232,6 +2356,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           _menuItem('edit', Icons.edit_outlined, '編輯文字'),
         if (_tl.sourceOf(clip).kind == ClipKind.wm)
           _menuItem('edit', Icons.edit_outlined, '編輯樣式'),
+        if (_tl.sourceOf(clip).kind == ClipKind.mosaic)
+          _menuItem('edit', Icons.edit_outlined, '調整馬賽克'),
         _menuItem('copy', Icons.copy, '複製'),
         _menuItem(
           'paste',
@@ -2244,8 +2370,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
     switch (action) {
       case 'edit':
-        if (_tl.sourceOf(clip).kind == ClipKind.wm) {
+        final k = _tl.sourceOf(clip).kind;
+        if (k == ClipKind.wm) {
           await _editWmClip(clip);
+        } else if (k == ClipKind.mosaic) {
+          _editMosaicClip(clip);
         } else {
           await _editTextClip(clip);
         }
@@ -3036,14 +3165,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                     fs.length)
                                                 .floor()
                                                 .clamp(0, fs.length - 1);
-                                        fb = _ScrubDecoder.nearestBytes(
-                                          fs,
-                                          fi,
-                                        );
+                                        fb = _ScrubDecoder.nearestBytes(fs, fi);
                                       }
-                                      fb ??= (_thumbs[c.sourceIndex] ??
-                                              const [])
-                                          .firstOrNull;
+                                      fb ??=
+                                          (_thumbs[c.sourceIndex] ?? const [])
+                                              .firstOrNull;
                                       if (fb != null) {
                                         children.add(
                                           Positioned.fromRect(
@@ -3213,39 +3339,66 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             // web 播放中抓不到底圖，就只剩
                                             // 淡格線框標示範圍，不擋畫面。
                                             // 真正的像素化由匯出做
-                                            child: ClipRect(
-                                              child: BackdropFilter(
-                                                filter: ui.ImageFilter.blur(
-                                                  sigmaX: 10,
-                                                  sigmaY: 10,
-                                                ),
-                                                child: Container(
-                                                  decoration: BoxDecoration(
-                                                    border: Border.all(
-                                                      color: Colors.white54,
-                                                    ),
-                                                  ),
-                                                  child: const Stack(
-                                                    fit: StackFit.expand,
-                                                    children: [
-                                                      CustomPaint(
-                                                        painter:
-                                                            _MosaicPatternPainter(),
+                                            child: Builder(
+                                              builder: (context) {
+                                                final ms =
+                                                    src.mosaicStyle ??
+                                                    MosaicStyle();
+                                                // 黑色遮蓋：實心黑塊
+                                                if (ms.type == 2) {
+                                                  return Container(
+                                                    color: Colors.black,
+                                                    alignment: Alignment.center,
+                                                    child: const Text(
+                                                      '遮蓋',
+                                                      style: TextStyle(
+                                                        fontSize: 10,
+                                                        color: Colors.white38,
                                                       ),
-                                                      Center(
-                                                        child: Text(
-                                                          '馬賽克',
-                                                          style: TextStyle(
-                                                            fontSize: 10,
-                                                            color:
-                                                                Colors.white70,
-                                                          ),
+                                                    ),
+                                                  );
+                                                }
+                                                // 像素化/模糊：毛玻璃，
+                                                // 濃度連動模糊半徑；
+                                                // 像素化多畫淡格線
+                                                final sigma =
+                                                    4.0 + 16 * ms.strength;
+                                                return ClipRect(
+                                                  child: BackdropFilter(
+                                                    filter: ui.ImageFilter.blur(
+                                                      sigmaX: sigma,
+                                                      sigmaY: sigma,
+                                                    ),
+                                                    child: Container(
+                                                      decoration: BoxDecoration(
+                                                        border: Border.all(
+                                                          color: Colors.white54,
                                                         ),
                                                       ),
-                                                    ],
+                                                      child: Stack(
+                                                        fit: StackFit.expand,
+                                                        children: [
+                                                          if (ms.type == 0)
+                                                            const CustomPaint(
+                                                              painter:
+                                                                  _MosaicPatternPainter(),
+                                                            ),
+                                                          const Center(
+                                                            child: Text(
+                                                              '馬賽克',
+                                                              style: TextStyle(
+                                                                fontSize: 10,
+                                                                color: Colors
+                                                                    .white70,
+                                                              ),
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    ),
                                                   ),
-                                                ),
-                                              ),
+                                                );
+                                              },
                                             ),
                                           ),
                                         ),
@@ -3654,9 +3807,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                 final lg = wmClipStyle.logo;
                                                 if (t2.enabled &&
                                                     !t2.tiled &&
-                                                    t2.text
-                                                        .trim()
-                                                        .isNotEmpty) {
+                                                    t2.text.trim().isNotEmpty) {
                                                   _routerPushUndoIfNeeded();
                                                   moved = true;
                                                   t2.x = (t2.x + ddx).clamp(
@@ -3784,6 +3935,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _routerUndoPending = false;
     _pushWmUndo(); // 0.7 秒內合併，跟捏合 Listener 的快照不會重複拍
   }
+
   double? _pvBaseDist;
   double _pvBaseText = 0;
   double _pvBaseLogo = 0;
@@ -4160,6 +4312,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     _editTextClip(c);
                                   } else if (k == ClipKind.wm) {
                                     _editWmClip(c);
+                                  } else if (k == ClipKind.mosaic) {
+                                    _editMosaicClip(c);
                                   }
                                 },
                                 onLiftChanged: (v) => _lifting = v,
@@ -4617,11 +4771,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 按下倒轉：把這段現場做成「已經倒好的影片檔」再換上去。
   /// 之後它就是普通素材——預覽有聲音、播放流暢、匯出不用特殊處理。
   /// Web 或處理失敗時退回簡易模式（抽幀預覽，匯出時才倒轉）
-  Future<void> _reverseClip(
-    int clipId,
-    double sp,
-    VoidCallback onDone,
-  ) async {
+  Future<void> _reverseClip(int clipId, double sp, VoidCallback onDone) async {
     final c = _selClipById(clipId);
     if (c == null) return;
     final src = _tl.sourceOf(c);
@@ -4929,10 +5079,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             ),
                             const Text(
                               '4x',
-                              style: TextStyle(
-                                fontSize: 10.5,
-                                color: kTextDim,
-                              ),
+                              style: TextStyle(fontSize: 10.5, color: kTextDim),
                             ),
                           ],
                         ),
@@ -5323,8 +5470,7 @@ class _MagnetPainter extends CustomPainter {
       ..close();
 
     // 橫縫挖掉（不是塗深色）：這樣不管底下是深色還是反白都看得出來
-    final gap = Path()
-      ..addRect(Rect.fromLTWH(0, y(16.2), size.width, y(1.4)));
+    final gap = Path()..addRect(Rect.fromLTWH(0, y(16.2), size.width, y(1.4)));
     canvas.drawPath(
       Path.combine(PathOperation.difference, body, gap),
       Paint()..color = color,
@@ -5343,7 +5489,8 @@ class _MosaicPatternPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final cell = (math.min(size.width, size.height) / 8).clamp(8.0, 22.0);
     final line = Paint()
-      ..color = const Color(0x2EFFFFFF) // 白 18%
+      ..color =
+          const Color(0x2EFFFFFF) // 白 18%
       ..strokeWidth = 1;
     for (var x = cell; x < size.width; x += cell) {
       canvas.drawLine(Offset(x, 0), Offset(x, size.height), line);

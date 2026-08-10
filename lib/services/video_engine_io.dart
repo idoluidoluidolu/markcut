@@ -392,10 +392,11 @@ Future<String> _buildCommand(
   // ===== 馬賽克：把區域裁下來、縮小再放大（鄰近取樣）疊回去 =====
   // 全部是 LGPL 濾鏡（split/crop/scale/overlay）。放在浮水印之前，
   // 馬賽克不會把浮水印一起打碼
-  final mosaicClips = spec.clips
-      .where((c) => spec.sources[c.sourceIndex].kind == ClipKind.mosaic)
-      .toList()
-    ..sort(cmpLayer);
+  final mosaicClips =
+      spec.clips
+          .where((c) => spec.sources[c.sourceIndex].kind == ClipKind.mosaic)
+          .toList()
+        ..sort(cmpLayer);
   for (final c in mosaicClips) {
     final k = layerN++;
     final start = c.offset / sp;
@@ -408,16 +409,37 @@ Future<String> _buildCommand(
     h2 = math.min(h2, spec.outH - y);
     w2 = math.max(2, w2 - w2 % 2);
     h2 = math.max(2, h2 - h2 % 2);
-    final dw = math.max(2, (w2 / 14).round());
-    final dh = math.max(2, (h2 / 14).round());
-    fc.write(
-      '[$cur]split=2[mzA$k][mzB$k];'
-      '[mzB$k]crop=$w2:$h2:$x:$y,scale=$dw:$dh,'
-      'scale=$w2:$h2:flags=neighbor[mzP$k];'
-      '[mzA$k][mzP$k]overlay=$x:$y:'
-      'enable=between(t\\,${_f(start)}\\,${_f(end)}):'
-      'eof_action=pass[mz$k];',
-    );
+    final ms = spec.sources[c.sourceIndex].mosaicStyle ?? MosaicStyle();
+    final enable = 'enable=between(t\\,${_f(start)}\\,${_f(end)})';
+    if (ms.type == 2) {
+      // 黑色遮蓋：直接畫實心黑塊
+      fc.write(
+        '[$cur]drawbox=x=$x:y=$y:w=$w2:h=$h2:color=black:t=fill:'
+        '$enable[mz$k];',
+      );
+    } else if (ms.type == 1) {
+      // 模糊：boxblur（LGPL），半徑跟著濃度走
+      final r = (2 + ms.strength * 18).round();
+      fc.write(
+        '[$cur]split=2[mzA$k][mzB$k];'
+        '[mzB$k]crop=$w2:$h2:$x:$y,boxblur=$r:2[mzP$k];'
+        '[mzA$k][mzP$k]overlay=$x:$y:$enable:'
+        'eof_action=pass[mz$k];',
+      );
+    } else {
+      // 像素化：縮小再鄰近取樣放大。濃度越高格子越大
+      //（橫向格數約 26 → 6）
+      final cells = (26 - 20 * ms.strength).round().clamp(4, 40);
+      final dw = math.max(2, math.min(cells, w2 ~/ 2));
+      final dh = math.max(2, (dw * h2 / w2).round());
+      fc.write(
+        '[$cur]split=2[mzA$k][mzB$k];'
+        '[mzB$k]crop=$w2:$h2:$x:$y,scale=$dw:$dh,'
+        'scale=$w2:$h2:flags=neighbor[mzP$k];'
+        '[mzA$k][mzP$k]overlay=$x:$y:$enable:'
+        'eof_action=pass[mz$k];',
+      );
+    }
     cur = 'mz$k';
   }
 
@@ -614,7 +636,8 @@ Future<String?> _prerenderReverse(
     if (!ReturnCode.isSuccess(await ses.getReturnCode())) {
       // 硬體編碼器不能用就退軟體編碼（跟主匯出同一套保底）
       ses = await FFmpegKit.execute(
-        cmd.replaceFirst('-c:v ${_hwEncoder()}', '-c:v mpeg4 -q:v 3')
+        cmd
+            .replaceFirst('-c:v ${_hwEncoder()}', '-c:v mpeg4 -q:v 3')
             .replaceFirst('-pix_fmt nv12', '-pix_fmt yuv420p'),
       );
       if (!ReturnCode.isSuccess(await ses.getReturnCode())) return null;
@@ -852,7 +875,8 @@ Future<List<Uint8List>> makeThumbnails(
   // 色彩要明確轉成 JPEG 的規格（bt601＋full range）：
   // 手機影片是 bt709 limited，不轉的話快取幀跟播放畫面
   // 顏色不一樣，拖曳時畫面會「變色」
-  const jpegColor = ':in_range=auto:out_range=jpeg'
+  const jpegColor =
+      ':in_range=auto:out_range=jpeg'
       ':in_color_matrix=auto:out_color_matrix=bt601';
   final scale = longSide
       ? 'scale=$height:$height:force_original_aspect_ratio=decrease$jpegColor'
