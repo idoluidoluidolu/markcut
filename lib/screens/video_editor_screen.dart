@@ -1795,6 +1795,37 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   Row(
                     children: [chip('像素化', 0), chip('模糊', 1), chip('純色遮蓋', 2)],
                   ),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      const SizedBox(
+                        width: 40,
+                        child: Text(
+                          '大小',
+                          style: TextStyle(fontSize: 12, color: kTextDim),
+                        ),
+                      ),
+                      Expanded(
+                        child: Slider(
+                          value: clip.scale.clamp(0.05, 3.0),
+                          min: 0.05,
+                          max: 3.0,
+                          onChanged: (v) => change(() => clip.scale = v),
+                        ),
+                      ),
+                      SizedBox(
+                        width: 40,
+                        child: Text(
+                          '${(clip.scale * 100).round()}%',
+                          textAlign: TextAlign.right,
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            color: kTextDim,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                   if (st.type != 2) ...[
                     const SizedBox(height: 14),
                     Row(
