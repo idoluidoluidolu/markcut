@@ -412,9 +412,10 @@ Future<String> _buildCommand(
     final ms = spec.sources[c.sourceIndex].mosaicStyle ?? MosaicStyle();
     final enable = 'enable=between(t\\,${_f(start)}\\,${_f(end)})';
     if (ms.type == 2) {
-      // 黑色遮蓋：直接畫實心黑塊
+      // 純色遮蓋：直接畫實心色塊（顏色取 RGB，0xRRGGBB）
+      final rgb = (ms.color & 0xFFFFFF).toRadixString(16).padLeft(6, '0');
       fc.write(
-        '[$cur]drawbox=x=$x:y=$y:w=$w2:h=$h2:color=black:t=fill:'
+        '[$cur]drawbox=x=$x:y=$y:w=$w2:h=$h2:color=0x$rgb:t=fill:'
         '$enable[mz$k];',
       );
     } else if (ms.type == 1) {

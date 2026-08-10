@@ -1715,7 +1715,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     showHint(context, '拖曳調位置、雙指縮放；再點一下可調樣式與濃度');
   }
 
-  /// 馬賽克樣式表：樣式（像素化/模糊/黑色遮蓋）＋濃度
+  /// 馬賽克樣式表：樣式（像素化/模糊/純色遮蓋）＋濃度/顏色
   void _editMosaicClip(TimelineClip clip) {
     final src = _tl.sourceOf(clip);
     if (src.kind != ClipKind.mosaic) return;
@@ -1793,7 +1793,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   ),
                   const SizedBox(height: 12),
                   Row(
-                    children: [chip('像素化', 0), chip('模糊', 1), chip('黑色遮蓋', 2)],
+                    children: [chip('像素化', 0), chip('模糊', 1), chip('純色遮蓋', 2)],
                   ),
                   if (st.type != 2) ...[
                     const SizedBox(height: 14),
@@ -1824,6 +1824,67 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                           ),
                         ),
                       ],
+                    ),
+                  ] else ...[
+                    const SizedBox(height: 14),
+                    SizedBox(
+                      height: 32,
+                      child: Row(
+                        children: [
+                          const Text(
+                            '顏色',
+                            style: TextStyle(fontSize: 12, color: kTextDim),
+                          ),
+                          const Spacer(),
+                          InkWell(
+                            borderRadius: BorderRadius.circular(12),
+                            onTap: () async {
+                              var color = Color(st.color);
+                              final ok = await showDialog<bool>(
+                                context: context,
+                                builder: (context) => AlertDialog(
+                                  title: const Text('顏色'),
+                                  content: SingleChildScrollView(
+                                    child: ColorPicker(
+                                      pickerColor: color,
+                                      enableAlpha: false,
+                                      labelTypes: const [],
+                                      onColorChanged: (c) => color = c,
+                                    ),
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () =>
+                                          Navigator.pop(context, false),
+                                      child: const Text('取消'),
+                                    ),
+                                    FilledButton(
+                                      onPressed: () =>
+                                          Navigator.pop(context, true),
+                                      child: const Text('確定'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                              if (ok == true) {
+                                change(() => st.color = color.toARGB32());
+                              }
+                            },
+                            child: Container(
+                              width: 24,
+                              height: 24,
+                              decoration: BoxDecoration(
+                                color: Color(st.color),
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: kBorder,
+                                  width: 1.5,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ],
@@ -3358,7 +3419,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                     MosaicStyle();
                                                 if (ms.type == 2) {
                                                   return Container(
-                                                    color: Colors.black,
+                                                    color: Color(ms.color),
                                                   );
                                                 }
                                                 ui.ImageFilter? filter;
