@@ -389,11 +389,15 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               fit: StackFit.expand,
               children: [
                 effect,
+                // 選取框跟浮水印同一套：細白框
                 if (_selMosaic == i)
                   IgnorePointer(
                     child: Container(
                       decoration: BoxDecoration(
-                        border: Border.all(color: kSelect, width: 1.5),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.9),
+                          width: 1.2,
+                        ),
                       ),
                     ),
                   ),
@@ -924,8 +928,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                   // 活性版：被選部件消失後視同沒選，
                                   // 拖曳才不會整個變死的
                                   selectedPart: _wmPartAlive,
-                                  onSelectPart: (p) =>
-                                      setState(() => _wmPart = p),
+                                  // 選浮水印部件＝取消馬賽克選取，
+                                  // 同時只會有一種東西被選（單一選取）
+                                  onSelectPart: (p) => setState(() {
+                                    _wmPart = p;
+                                    _selMosaic = -1;
+                                  }),
                                   panLocked: () => _pvPts.length >= 2,
                                 ),
                                 // 選取路由：有部件被選取（白框）時，
