@@ -2527,6 +2527,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _frameSettle?.cancel();
     _scrubSettleTimer?.cancel();
     _scrubEndTimer?.cancel();
+    _wheelSaveTimer?.cancel();
     for (final d in _scrubDecoders.values) {
       d.dispose();
     }
@@ -3082,6 +3083,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       onPointerMove: _previewPinchMove,
       onPointerUp: (e) => _previewPinchUp(e.pointer),
       onPointerCancel: (e) => _previewPinchUp(e.pointer),
+      // 電腦版：滾輪縮放選取中的元素
+      onPointerSignal: _previewWheel,
       child: GestureDetector(
         // 點預覽區任何空白（含畫布外的灰邊）＝取消所有選取＋收鍵盤
         onTap: () {
@@ -4079,6 +4082,57 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_pvBaseDist != null && _pvPts.length < 2) {
       _pvBaseDist = null;
       _saveDraft();
+    }
+  }
+
+  /// 電腦版滾輪 = 縮放選取中的元素（滑鼠沒有雙指縮放）。
+  /// 滾輪沒有「結束」事件，存草稿用 debounce
+  Timer? _wheelSaveTimer;
+
+  void _previewWheel(PointerSignalEvent e) {
+    if (e is! PointerScrollEvent) return;
+    final f = e.scrollDelta.dy > 0 ? (1 / 1.07) : 1.07;
+    var changed = false;
+    setState(() {
+      if (_wmSel) {
+        // 兩個部件乘同一個倍率：比例不變，搭配不會跑掉
+        final t = _settings.text;
+        if (t.enabled && t.text.trim().isNotEmpty) {
+          t.sizeFrac = (t.sizeFrac * f).clamp(0.015, 2.0);
+          changed = true;
+        }
+        if (_settings.logo.enabled) {
+          _settings.logo.sizeFrac = (_settings.logo.sizeFrac * f).clamp(
+            0.03,
+            2.0,
+          );
+          changed = true;
+        }
+      } else {
+        final c = _selClipById(_sel);
+        if (c == null) return;
+        final src = _tl.sourceOf(c);
+        if (src.kind == ClipKind.audio) return;
+        if (src.kind == ClipKind.wm) {
+          final st = src.wmStyle;
+          if (st == null) return;
+          if (st.text.enabled && st.text.text.trim().isNotEmpty) {
+            st.text.sizeFrac = (st.text.sizeFrac * f).clamp(0.015, 2.0);
+          }
+          if (st.logo.enabled) {
+            st.logo.sizeFrac = (st.logo.sizeFrac * f).clamp(0.03, 2.0);
+          }
+          changed = true;
+        } else {
+          final maxS = src.kind == ClipKind.text ? 12.0 : 3.0;
+          c.scale = (c.scale * f).clamp(0.05, maxS);
+          changed = true;
+        }
+      }
+    });
+    if (changed) {
+      _wheelSaveTimer?.cancel();
+      _wheelSaveTimer = Timer(const Duration(milliseconds: 600), _saveDraft);
     }
   }
 
