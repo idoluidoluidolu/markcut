@@ -214,25 +214,108 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         ),
       ),
       child: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
         children: [
-          // 左邊：加馬賽克（照片打碼；拖曳移動、再點一下調樣式）
-          TextButton.icon(
-            onPressed: _addMosaic,
-            icon: const Icon(Icons.blur_on, size: 17, color: kAmber),
-            label: const Text(
-              '馬賽克',
-              style: TextStyle(fontSize: 12, color: kText),
-            ),
-            style: TextButton.styleFrom(
-              visualDensity: VisualDensity.compact,
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-            ),
-          ),
-          const Spacer(),
           btn(Icons.undo, '上一步', _undoStack.isEmpty ? null : _undoLast),
           btn(Icons.redo, '重做', _redoStack.isEmpty ? null : _redoLast),
         ],
       ),
+    );
+  }
+
+  /// 面板裡的「馬賽克」卡（插在圖片卡下面）：＋加一塊，
+  /// 每塊一列可選取／調樣式／刪除
+  Widget _mosaicSection() {
+    const typeNames = ['像素化', '模糊', '純色遮蓋'];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // 還沒有馬賽克時整行都能點（跟圖片卡同一套）
+        InkWell(
+          onTap: _mosaics.isEmpty ? _addMosaic : null,
+          borderRadius: BorderRadius.circular(8),
+          child: Row(
+            children: [
+              const Text(
+                '馬賽克',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: kText,
+                ),
+              ),
+              const Spacer(),
+              IconButton(
+                tooltip: '加一塊馬賽克',
+                visualDensity: VisualDensity.compact,
+                onPressed: _addMosaic,
+                icon: const Icon(Icons.add, size: 20, color: kIcon),
+              ),
+            ],
+          ),
+        ),
+        for (var i = 0; i < _mosaics.length; i++)
+          InkWell(
+            onTap: () => setState(() {
+              _selMosaic = i;
+              _wmPart = WmPart.none;
+            }),
+            borderRadius: BorderRadius.circular(8),
+            child: Row(
+              children: [
+                Icon(
+                  _mosaics[i].style.type == 2
+                      ? Icons.square_rounded
+                      : Icons.blur_on,
+                  size: 15,
+                  color: _mosaics[i].style.type == 2
+                      ? Color(_mosaics[i].style.color)
+                      : (_selMosaic == i ? kSelect : kTextDim),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '第 ${i + 1} 塊 · ${typeNames[_mosaics[i].style.type]}',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: _selMosaic == i ? kSelect : kTextDim,
+                    fontWeight: _selMosaic == i
+                        ? FontWeight.w700
+                        : FontWeight.w400,
+                  ),
+                ),
+                const Spacer(),
+                IconButton(
+                  tooltip: '調整樣式',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () {
+                    setState(() {
+                      _selMosaic = i;
+                      _wmPart = WmPart.none;
+                    });
+                    _editMosaic(i);
+                  },
+                  icon: const Icon(Icons.tune, size: 17, color: kIcon),
+                ),
+                IconButton(
+                  tooltip: '刪除',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () {
+                    _pushUndo();
+                    setState(() {
+                      _mosaics.removeAt(i);
+                      _selMosaic = -1;
+                    });
+                  },
+                  icon: const Icon(
+                    Icons.delete_outline,
+                    size: 17,
+                    color: kTextDim,
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
     );
   }
 
@@ -929,6 +1012,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                         // 剛加的圖片直接選起來，可以馬上拖／縮放
                         onLogoAdded: () =>
                             setState(() => _wmPart = WmPart.logo),
+                        // 馬賽克卡：插在圖片卡下面（照片模式限定）
+                        extraSection: _mosaicSection(),
                       ),
                     },
                   ),
