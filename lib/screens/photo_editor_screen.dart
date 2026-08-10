@@ -80,13 +80,15 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   final List<PhotoMosaic> _mosaics = [];
   int _selMosaic = -1;
 
-  /// 預覽用 shader（真像素塊）；載不到就退回霧化
-  ui.FragmentShader? _mosaicShader;
+  /// 預覽用 shader 程式（真像素塊）；載不到就退回霧化。
+  /// 存「程式」不存實例：多塊馬賽克同幀各建各的實例，
+  /// 共用實例會讓後設定的參數蓋掉前面的
+  ui.FragmentProgram? _mosaicProg;
 
   Future<void> _loadMosaicShader() async {
     try {
       final prog = await ui.FragmentProgram.fromAsset('shaders/mosaic.frag');
-      if (mounted) setState(() => _mosaicShader = prog.fragmentShader());
+      if (mounted) setState(() => _mosaicProg = prog);
     } catch (_) {}
   }
 
@@ -335,13 +337,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         effect = Container(color: Color(m.style.color));
       } else {
         ui.ImageFilter? filter;
-        if (m.style.type == 0 && _mosaicShader != null) {
+        if (m.style.type == 0 && _mosaicProg != null) {
           final cells = (26 - 20 * m.style.strength).round().clamp(4, 40);
           final dpr = MediaQuery.of(context).devicePixelRatio;
           final cell = math.max(2.0, side * dpr / cells);
           try {
-            _mosaicShader!.setFloat(2, cell);
-            filter = ui.ImageFilter.shader(_mosaicShader!);
+            final sh = _mosaicProg!.fragmentShader();
+            sh.setFloat(2, cell);
+            filter = ui.ImageFilter.shader(sh);
           } catch (_) {
             filter = null;
           }
@@ -808,11 +811,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 底部「儲存範本」鈕要觸發面板裡的儲存流程
   final _panelKey = GlobalKey<WatermarkPanelState>();
 
-  // ===== 預覽區雙指縮放（照片上的浮水印）=====
+  // ===== 預覽區雙指縮放（照片上的浮水印／選中的馬賽克）=====
   final Map<int, Offset> _pvPts = {};
   double? _pvBaseDist;
   double _pvBaseText = 0;
   double _pvBaseLogo = 0;
+  double _pvBaseMosaic = 0.35;
 
   void _pinchDown(PointerDownEvent e) {
     _pvPts[e.pointer] = e.position;
@@ -823,6 +827,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     _pvBaseDist = d;
     _pvBaseText = _settings.text.sizeFrac;
     _pvBaseLogo = _settings.logo.sizeFrac;
+    if (_selMosaic >= 0 && _selMosaic < _mosaics.length) {
+      _pvBaseMosaic = _mosaics[_selMosaic].scale;
+    }
     _pushUndo();
   }
 
@@ -833,6 +840,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     final p = _pvPts.values.toList();
     final f = (p[0] - p[1]).distance / _pvBaseDist!;
     setState(() {
+      // 有選中馬賽克：雙指縮它，不動浮水印
+      if (_selMosaic >= 0 && _selMosaic < _mosaics.length) {
+        _mosaics[_selMosaic].scale = (_pvBaseMosaic * f).clamp(0.05, 1.5);
+        return;
+      }
       final t = _settings.text;
       final hasText = t.enabled && t.text.trim().isNotEmpty;
       final hasLogo = _settings.logo.enabled;

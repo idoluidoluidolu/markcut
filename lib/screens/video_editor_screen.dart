@@ -474,13 +474,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 目前畫面上該顯示的影片片段
   TimelineClip? get _activeVideo => _tl.videoAt(_position);
 
-  /// 馬賽克預覽 shader（載不到就退回霧化，web/舊 GPU 都走得下去）
-  ui.FragmentShader? _mosaicShader;
+  /// 馬賽克預覽 shader 程式（載不到就退回霧化，web/舊 GPU 都走得下去）。
+  /// 存「程式」不存實例：多塊馬賽克同幀各建各的實例，
+  /// 共用實例會讓後設定的參數蓋掉前面的
+  ui.FragmentProgram? _mosaicProg;
 
   Future<void> _loadMosaicShader() async {
     try {
       final prog = await ui.FragmentProgram.fromAsset('shaders/mosaic.frag');
-      if (mounted) setState(() => _mosaicShader = prog.fragmentShader());
+      if (mounted) setState(() => _mosaicProg = prog);
     } catch (_) {}
   }
 
@@ -2561,11 +2563,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final cb = _clipboard;
     if (cb == null) return;
     _pushUndo();
-    // 浮水印／文字素材：樣式在來源上，貼上要有自己的一份，
+    // 浮水印／文字／馬賽克素材：樣式在來源上，貼上要有自己的一份，
     // 不然改貼出來那份的樣式，原本那份會跟著變
     var srcIdx = cb.sourceIndex;
     final cbSrc = _tl.sources[srcIdx];
-    if (cbSrc.kind == ClipKind.wm || cbSrc.kind == ClipKind.text) {
+    if (cbSrc.kind == ClipKind.wm ||
+        cbSrc.kind == ClipKind.text ||
+        cbSrc.kind == ClipKind.mosaic) {
       _tl.sources.add(
         MediaSource(
           path: cbSrc.path,
@@ -2576,6 +2580,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           duration: cbSrc.duration,
           textStyle: cbSrc.textStyle?.copy(),
           wmStyle: cbSrc.wmStyle?.copy(),
+          mosaicStyle: cbSrc.mosaicStyle?.copy(),
         ),
       );
       srcIdx = _tl.sources.length - 1;
@@ -3455,7 +3460,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                 }
                                                 ui.ImageFilter? filter;
                                                 if (ms.type == 0 &&
-                                                    _mosaicShader != null) {
+                                                    _mosaicProg != null) {
                                                   // 格數跟匯出同一條公式，
                                                   // 濃度越高格子越大
                                                   final cells =
@@ -3472,13 +3477,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                   try {
                                                     // 0,1 = u_size(引擎
                                                     // 自動填),2 = u_cell
-                                                    _mosaicShader!.setFloat(
-                                                      2,
-                                                      cell,
-                                                    );
+                                                    final sh = _mosaicProg!
+                                                        .fragmentShader();
+                                                    sh.setFloat(2, cell);
                                                     filter =
                                                         ui.ImageFilter.shader(
-                                                          _mosaicShader!,
+                                                          sh,
                                                         );
                                                   } catch (_) {
                                                     filter = null;
@@ -4184,6 +4188,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _previewWheel(PointerSignalEvent e) {
     if (e is! PointerScrollEvent) return;
     final f = e.scrollDelta.dy > 0 ? (1 / 1.07) : 1.07;
+    // 快照要在改動前拍；節流版讓連續滾動 0.7 秒內合併成一步
+    if (_wmSel || _sel != -1) _pushWmUndo();
     var changed = false;
     setState(() {
       if (_wmSel) {
