@@ -5,7 +5,7 @@ import 'watermark_settings.dart';
 
 /// 素材種類。軌道本身不分種類，是「素材」有種類之分。
 // wm 一定要加在最尾端：kind 是用 index 序列化的，插中間會毀掉舊草稿
-enum ClipKind { video, audio, image, text, wm }
+enum ClipKind { video, audio, image, text, wm, mosaic }
 
 /// 一份匯入的素材（影片或音訊），可被多個片段引用
 class MediaSource {
@@ -255,8 +255,16 @@ class TimelineModel {
 
   /// 某時刻蓋在畫面上的圖片／文字片段，由下層到上層排序
   List<TimelineClip> overlaysAt(double t) {
-    final list =
-        clips.where((c) => sourceOf(c).isOverlay && c.covers(t)).toList()
+    // 馬賽克也算畫面上的覆蓋物（預覽要畫）；
+    // 但不進 isOverlay——匯出端對 overlay 的輸入映射是另一套
+    final list = clips
+        .where(
+          (c) =>
+              (sourceOf(c).isOverlay ||
+                  sourceOf(c).kind == ClipKind.mosaic) &&
+              c.covers(t),
+        )
+        .toList()
           ..sort((a, b) {
             final k = b.track.compareTo(a.track); // track 大的是下層，先畫
             return k != 0 ? k : clips.indexOf(a).compareTo(clips.indexOf(b));

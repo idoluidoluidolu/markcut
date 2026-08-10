@@ -44,6 +44,10 @@ class _BatchItem {
   final XFile file;
   Uint8List? thumb;
   (int, int)? dims;
+
+  /// 單張模式：這張有自己的浮水印設定（在預覽上調過就會建立），
+  /// null＝跟著整批的設定走
+  WatermarkSettings? override;
   _BatchItem(this.file);
 }
 
@@ -257,7 +261,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         MaterialPageRoute(
           builder: (_) => VideoEditorScreen(
             videoPath: item.file.path,
-            initialWatermark: _settings.copy(),
+            initialWatermark: _effectiveOf(_previewIndex).copy(),
           ),
         ),
       );
@@ -267,7 +271,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         MaterialPageRoute(
           builder: (_) => PhotoEditorScreen(
             photo: item.file,
-            initialWatermark: _settings.copy(),
+            initialWatermark: _effectiveOf(_previewIndex).copy(),
           ),
         ),
       );
@@ -303,6 +307,42 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     _loadPreviewFull();
   }
 
+  /// 這張實際生效的設定（有單張覆寫用覆寫，否則整批共用）
+  WatermarkSettings _effectiveOf(int i) => _items[i].override ?? _settings;
+
+  /// 整批設定的快照：單張模式下如果有事件漏打到共用設定，
+  /// 用這個把它復原（見 _ensureOverride 的說明）
+  String? _sharedSnap;
+
+  /// 在預覽上動手＝這張進入「單張模式」：
+  /// 把目前生效的設定複製成這張自己的，之後怎麼調都不影響其他張
+  void _ensureOverride() {
+    final item = _items[_previewIndex];
+    if (item.override != null) return;
+    item.override = _settings.copy();
+    _sharedSnap = jsonEncode(_settings.toJson());
+    setState(() {});
+    showHint(context, '已切換為單張調整，只影響這一張');
+  }
+
+  /// 單張模式下共用設定不該被動到；手勢切換的空窗期若有事件
+  /// 漏打到共用設定，把它還原
+  void _healShared() {
+    final snap = _sharedSnap;
+    if (snap == null || _items[_previewIndex].override == null) return;
+    if (jsonEncode(_settings.toJson()) != snap) {
+      final back = WatermarkSettings.fromJson(
+        Map<String, dynamic>.from(jsonDecode(snap) as Map),
+      );
+      _settings
+        ..text = back.text
+        ..logo = back.logo
+        ..animation = back.animation
+        ..animSpeed = back.animSpeed
+        ..animRange = back.animRange;
+    }
+  }
+
   // ===== 預覽區雙指縮放浮水印（跟照片編輯同一套）=====
   final Map<int, Offset> _pvPts = {};
   double? _pvBaseDist;
@@ -316,9 +356,11 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     final d = (p[0] - p[1]).distance;
     if (d <= 20) return;
     _pvBaseDist = d;
-    _pvBaseText = _settings.text.sizeFrac;
-    _pvBaseLogo = _settings.logo.sizeFrac;
     _pushUndo();
+    _ensureOverride(); // 捏合＝這張進入單張模式
+    final eff = _effectiveOf(_previewIndex);
+    _pvBaseText = eff.text.sizeFrac;
+    _pvBaseLogo = eff.logo.sizeFrac;
   }
 
   void _pinchMove(PointerMoveEvent e) {
@@ -328,12 +370,13 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     final p = _pvPts.values.toList();
     final f = (p[0] - p[1]).distance / _pvBaseDist!;
     setState(() {
-      final t = _settings.text;
+      final eff = _effectiveOf(_previewIndex);
+      final t = eff.text;
       if (t.enabled && t.text.trim().isNotEmpty) {
         t.sizeFrac = (_pvBaseText * f).clamp(0.015, 2.0);
       }
-      if (_settings.logo.enabled) {
-        _settings.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
+      if (eff.logo.enabled) {
+        eff.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
       }
     });
   }
@@ -412,14 +455,14 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
             overall.value = (i + 1) / total;
             continue;
           }
-          final ok = await _exportVideo(f, (p) {
+          final ok = await _exportVideo(f, _effectiveOf(i), (p) {
             overall.value = (i + p) / total;
           });
           ok ? done++ : failed++;
         } else {
           final bytes = await f.readAsBytes();
           final png = await WatermarkRenderer.renderPhotoComposite(
-              bytes, _settings);
+              bytes, _effectiveOf(i));
           await savePhotoPng(png,
               'markcut_${DateTime.now().millisecondsSinceEpoch}_$i');
           done++;
@@ -448,7 +491,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
 
   /// 單支影片：原樣 + 浮水印，整段匯出
   Future<bool> _exportVideo(
-      XFile f, void Function(double) onProgress) async {
+      XFile f,
+      WatermarkSettings wm,
+      void Function(double) onProgress) async {
     final c = makeVideoController(f.path);
     try {
       await c.initialize();
@@ -465,8 +510,8 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     h -= h % 2;
 
     Uint8List? wmPng;
-    if (_settings.hasAnyMark) {
-      wmPng = await WatermarkRenderer.renderOverlayPng(_settings, w, h);
+    if (wm.hasAnyMark) {
+      wmPng = await WatermarkRenderer.renderOverlayPng(wm, w, h);
     }
     final src = MediaSource(
       path: f.path,
@@ -493,9 +538,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         watermarkPng: wmPng,
         outW: w,
         outH: h,
-        wmAnimation: _settings.animation,
-        wmSpeed: _settings.animSpeed,
-        wmRange: _settings.animRange,
+        wmAnimation: wm.animation,
+        wmSpeed: wm.animSpeed,
+        wmRange: wm.animRange,
       ),
       onProgress: onProgress,
     );
@@ -566,9 +611,16 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                             Image.memory(_items[_previewIndex].thumb!,
                                 fit: BoxFit.contain),
                           WatermarkLayer(
-                            settings: _settings,
-                            onChanged: () => setState(() {}),
-                            onDragStart: _pushUndo,
+                            settings: _effectiveOf(_previewIndex),
+                            onChanged: () {
+                              _healShared();
+                              setState(() {});
+                            },
+                            // 在預覽上拖＝這張進入單張模式
+                            onDragStart: () {
+                              _pushUndo();
+                              _ensureOverride();
+                            },
                             panLocked: () => _pvPts.length >= 2,
                           ),
                         ],
@@ -594,22 +646,65 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                 onTap: () => _selectPreview(i),
                 onLongPress: () async {
                   HapticFeedback.mediumImpact(); // 長按成立的觸覺回饋
-                  // 剩一個不能移除：不能謊報「已移除」
-                  if (_items.length <= 1) {
-                    showHint(context, '批次至少要留一個檔案', error: true);
+                  final hasOverride = _items[i].override != null;
+                  final action = await showModalBottomSheet<String>(
+                    context: context,
+                    builder: (context) => SafeArea(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const SizedBox(height: 8),
+                          if (hasOverride)
+                            ListTile(
+                              leading: const Icon(
+                                Icons.sync,
+                                color: kAmber,
+                              ),
+                              title: const Text('還原成整批設定'),
+                              subtitle: const Text(
+                                '丟掉這張的單獨調整',
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  color: kTextDim,
+                                ),
+                              ),
+                              onTap: () =>
+                                  Navigator.pop(context, 'reset'),
+                            ),
+                          ListTile(
+                            leading: const Icon(
+                              Icons.delete_outline,
+                              color: kAmber,
+                            ),
+                            title: const Text('從批次移除'),
+                            enabled: _items.length > 1,
+                            onTap: () =>
+                                Navigator.pop(context, 'remove'),
+                          ),
+                          const SizedBox(height: 8),
+                        ],
+                      ),
+                    ),
+                  );
+                  if (!mounted) return;
+                  if (action == 'reset') {
+                    setState(() => _items[i].override = null);
+                    showHint(this.context, '已還原成整批設定');
                     return;
                   }
-                  // 誤觸長按就直接消失太危險（沒有復原），先問一下
+                  if (action != 'remove') return;
+                  if (_items.length <= 1) {
+                    showHint(this.context, '批次至少要留一個檔案', error: true);
+                    return;
+                  }
                   final ok = await showConfirm(
-                    context,
+                    this.context,
                     title: '從批次移除這個檔案？',
                     message: _items[i].file.name,
                     action: '移除',
                   );
                   if (!ok || !mounted) return;
                   _removeItem(i);
-                  // 用 State 的 context：itemBuilder 的 context 過了
-                  // await 之後不保證還活著
                   showHint(this.context, '已從批次移除');
                 },
                 child: Container(
@@ -631,6 +726,20 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                             fit: BoxFit.cover,
                             cacheWidth: _thumbLongSide,
                             gaplessPlayback: true),
+                      // 單張模式標記：左上角一顆琥珀小點
+                      if (_items[i].override != null)
+                        Align(
+                          alignment: Alignment.topLeft,
+                          child: Container(
+                            margin: const EdgeInsets.all(3),
+                            width: 8,
+                            height: 8,
+                            decoration: const BoxDecoration(
+                              color: kSelect,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
                       if (_isVideo(_items[i].file))
                         const Align(
                           alignment: Alignment.bottomRight,

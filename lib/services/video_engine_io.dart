@@ -192,7 +192,9 @@ Future<String> _buildCommand(
   final srcIn = <int, int>{};
   var nextInput = 0;
   for (var i = 0; i < spec.sources.length; i++) {
-    if (!isPngClip(spec.sources[i].kind)) srcIn[i] = nextInput++;
+    final k = spec.sources[i].kind;
+    // 馬賽克沒有檔案也不佔輸入（它是對畫面本身做的效果）
+    if (!isPngClip(k) && k != ClipKind.mosaic) srcIn[i] = nextInput++;
   }
   final textClipInput = <int, int>{}; // clip id → input index
   for (final c in spec.clips) {
@@ -387,6 +389,38 @@ Future<String> _buildCommand(
     cur = 'ov$k';
   }
 
+  // ===== 馬賽克：把區域裁下來、縮小再放大（鄰近取樣）疊回去 =====
+  // 全部是 LGPL 濾鏡（split/crop/scale/overlay）。放在浮水印之前，
+  // 馬賽克不會把浮水印一起打碼
+  final mosaicClips = spec.clips
+      .where((c) => spec.sources[c.sourceIndex].kind == ClipKind.mosaic)
+      .toList()
+    ..sort(cmpLayer);
+  for (final c in mosaicClips) {
+    final k = layerN++;
+    final start = c.offset / sp;
+    final end = c.end / sp;
+    var (w2, h2, x, y) = layerBox(c, 1.0);
+    // crop 超出畫布會直接報錯，夾回來
+    x = x.clamp(0, spec.outW - 2);
+    y = y.clamp(0, spec.outH - 2);
+    w2 = math.min(w2, spec.outW - x);
+    h2 = math.min(h2, spec.outH - y);
+    w2 = math.max(2, w2 - w2 % 2);
+    h2 = math.max(2, h2 - h2 % 2);
+    final dw = math.max(2, (w2 / 14).round());
+    final dh = math.max(2, (h2 / 14).round());
+    fc.write(
+      '[$cur]split=2[mzA$k][mzB$k];'
+      '[mzB$k]crop=$w2:$h2:$x:$y,scale=$dw:$dh,'
+      'scale=$w2:$h2:flags=neighbor[mzP$k];'
+      '[mzA$k][mzP$k]overlay=$x:$y:'
+      'enable=between(t\\,${_f(start)}\\,${_f(end)}):'
+      'eof_action=pass[mz$k];',
+    );
+    cur = 'mz$k';
+  }
+
   // 浮水印疊最上面（只在它的時間範圍內顯示）
   // 動畫用 overlay 的時間運算式做，不必逐格產圖：
   // 閃爍＝enable 週期開關；飄移/跑馬燈＝x,y 隨 t 變化（整版 PNG 一起位移）
@@ -484,6 +518,8 @@ Future<String> _buildCommand(
         );
       case ClipKind.text || ClipKind.wm:
         break; // 每個片段一張 PNG，在下面接續
+      case ClipKind.mosaic:
+        break; // 對畫面本身做的效果，沒有輸入檔
     }
   }
   for (final c in spec.clips) {

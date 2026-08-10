@@ -90,7 +90,7 @@ class WatermarkRenderer {
       final frame = await codec.getNextFrame();
       final img = frame.image;
 
-      final targetW = logo.sizeFrac * w;
+      final targetW = logo.sizeFrac * math.min(w, h); // 短邊基準（跟預覽一致）
       final targetH = targetW * img.height / img.width;
       final srcRect = ui.Rect.fromLTWH(
         0,
@@ -186,7 +186,7 @@ class WatermarkRenderer {
     if (t.enabled && t.text.trim().isNotEmpty) {
       // 不自動換行、也不自動縮小：使用者調多大就多大，
       // 超出畫面是允許的（明確換行 \n 仍有效）
-      final fontSize = t.sizeFrac * w;
+      final fontSize = t.sizeFrac * math.min(w, h); // 短邊基準（跟預覽一致）
 
       final shadows = t.shadow
           ? [

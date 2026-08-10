@@ -1048,6 +1048,23 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
       ),
     );
   }
+  if (src.kind == ClipKind.mosaic) {
+    return Container(
+      color: const Color(0xFF33404E),
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      alignment: Alignment.centerLeft,
+      child: const Text(
+        '馬賽克',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 9,
+          color: Colors.white70,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
   if (src.kind == ClipKind.wm) {
     // 浮水印片段：跟最上面那條全域浮水印軌同一個樣式
     // ——名稱靠左，灰階（琥珀留給選取）
@@ -1168,6 +1185,8 @@ class _ClipBlock extends StatelessWidget {
       ClipKind.text => (const Color(0xFF2E2A38), const Color(0xFF8A7BB8)),
       // 浮水印片段：灰階（琥珀留給選取）
       ClipKind.wm => (const Color(0xFF2E2E35), const Color(0xFF8A8A94)),
+      // 馬賽克：帶點藍紫，跟文字/浮水印區分
+      ClipKind.mosaic => (const Color(0xFF2A3038), const Color(0xFF7B8A9E)),
     };
     final w = (clip.length * pxPerSec).clamp(22.0, double.infinity).toDouble();
 

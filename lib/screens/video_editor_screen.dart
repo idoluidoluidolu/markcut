@@ -33,7 +33,7 @@ import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
 
 /// 「加素材」選單的項目（錄旁白不是一種素材類型，所以另立一個 enum）
-enum _AddKind { video, image, text, wm, audio, record, blankTrack }
+enum _AddKind { video, image, text, wm, audio, record, mosaic, blankTrack }
 
 const kSpeedOptions = <double>[0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
 
@@ -405,8 +405,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final deadSources = <int>{};
     for (var i = 0; i < _tl.sources.length; i++) {
       final s = _tl.sources[i];
-      if (s.kind == ClipKind.text || s.kind == ClipKind.wm) {
-        continue; // 這兩種素材沒有檔案
+      if (s.kind == ClipKind.text ||
+          s.kind == ClipKind.wm ||
+          s.kind == ClipKind.mosaic) {
+        continue; // 這幾種素材沒有檔案
       }
       // Web：blob 連結活不過重新整理，留著只會是永遠黑畫面
       // 又不報錯的片段——剔除並讓下面的提示講清楚
@@ -1097,6 +1099,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               onTap: () => Navigator.pop(context, _AddKind.record),
             ),
             ListTile(
+              leading: const Icon(Icons.blur_on, color: kAmber),
+              title: const Text('馬賽克'),
+              onTap: () => Navigator.pop(context, _AddKind.mosaic),
+            ),
+            ListTile(
               leading: const Icon(Icons.playlist_add, color: kAmber),
               title: const Text('空白軌道'),
               onTap: () => Navigator.pop(context, _AddKind.blankTrack),
@@ -1122,6 +1129,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         await _pickAudio(track);
       case _AddKind.record:
         await _recordVoice(track);
+      case _AddKind.mosaic:
+        _addMosaicClip(track);
       case _AddKind.blankTrack:
         // 多畫一條空軌，之後可以貼上或拖片段進去
         setState(() {
@@ -1653,6 +1662,38 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _sel = clip.id;
     });
     _saveDraft(); // 加完立刻落草稿
+  }
+
+  /// 馬賽克素材：畫面上一塊方形區域打碼。
+  /// 位置/大小直接在預覽上拖曳、雙指縮放；時間範圍在時間軸上拉
+  void _addMosaicClip(int track) {
+    _pause();
+    _pushUndo();
+    final srcIndex = _tl.sources.length;
+    _tl.sources.add(
+      MediaSource(
+        path: '',
+        name: '馬賽克',
+        kind: ClipKind.mosaic,
+        duration: 3600,
+      ),
+    );
+    final clip = TimelineClip(
+      id: _tl.nextId(),
+      sourceIndex: srcIndex,
+      trimStart: 0,
+      trimEnd: 3,
+      offset: _position,
+      track: track,
+      scale: 0.35, // 預設一塊不大不小的方形
+    );
+    setState(() {
+      _tl.clips.add(clip);
+      _sel = clip.id;
+      _wmSel = false;
+    });
+    _saveDraft();
+    showHint(context, '拖曳調整馬賽克位置，雙指縮放大小');
   }
 
   /// 浮水印素材：一個完整的浮水印（文字＋Logo）當成時間軸元素。
@@ -3154,6 +3195,56 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   // 圖片 / 文字圖層（永遠疊在影片上面，由下層往上畫）
                                   for (final c in _tl.overlaysAt(_position)) {
                                     final src = _tl.sourceOf(c);
+                                    if (src.kind == ClipKind.mosaic) {
+                                      // 預覽用毛玻璃近似（真正的像素化
+                                      // 由匯出的 FFmpeg 做）
+                                      final r = layerBox(c, 1.0);
+                                      children.add(
+                                        Positioned.fromRect(
+                                          rect: r,
+                                          child: GestureDetector(
+                                            behavior: HitTestBehavior.opaque,
+                                            onTap: () => setState(() {
+                                              _sel = c.id;
+                                              _wmSel = false;
+                                            }),
+                                            child: ClipRect(
+                                              child: BackdropFilter(
+                                                filter: ui.ImageFilter.blur(
+                                                  sigmaX: 12,
+                                                  sigmaY: 12,
+                                                ),
+                                                child: Container(
+                                                  decoration: BoxDecoration(
+                                                    color: Colors.white
+                                                        .withValues(
+                                                          alpha: 0.06,
+                                                        ),
+                                                    border: Border.all(
+                                                      color: Colors.white38,
+                                                    ),
+                                                  ),
+                                                  alignment:
+                                                      Alignment.center,
+                                                  child: const Text(
+                                                    '馬賽克',
+                                                    style: TextStyle(
+                                                      fontSize: 10,
+                                                      color: Colors.white70,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                      if (c.id == _sel) {
+                                        selRect = r;
+                                        selVisual = c;
+                                      }
+                                      continue;
+                                    }
                                     if (src.kind == ClipKind.image &&
                                         (_thumbs[c.sourceIndex]?.isNotEmpty ??
                                             false)) {
@@ -4221,6 +4312,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         (sel == null ||
                                 _tl.sourceOf(sel).kind == ClipKind.audio ||
                                 _tl.sourceOf(sel).kind == ClipKind.text ||
+                                _tl.sourceOf(sel).kind == ClipKind.mosaic ||
                                 // 浮水印素材的調色管線沒接（預覽跟匯出
                                 // 都不吃），開了等於騙人
                                 _tl.sourceOf(sel).kind == ClipKind.wm)

@@ -135,7 +135,9 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
             ),
           );
         } else if (logo.enabled && logoBytes != null) {
-          final logoW = logo.sizeFrac * w;
+          // 大小以「短邊」為基準：同一個範本套到 16:9 或 9:16，
+          // 看起來的比例才會一樣（用寬的話直式/橫式差超多）
+          final logoW = logo.sizeFrac * math.min(w, h);
           // 不夾限：允許放大到超出畫面（跟匯出同一套規則）
           final left = logo.x * w - logoW / 2;
           final top = logo.y * h - logoW / 2;
@@ -210,14 +212,14 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
           children.add(
             Positioned.fill(
               child: IgnorePointer(
-                child: CustomPaint(painter: _TiledTextPainter(t, w)),
+                child: CustomPaint(painter: _TiledTextPainter(t, math.min(w, h))),
               ),
             ),
           );
         } else if (t.enabled && t.text.trim().isNotEmpty) {
           // 不自動換行、也不自動縮小：使用者調多大就多大，
           // 超出畫面是允許的（跟匯出同一套規則）
-          final fontSize = t.sizeFrac * w;
+          final fontSize = t.sizeFrac * math.min(w, h); // 短邊基準
 
           TextPainter measure(double fs) => TextPainter(
             text: TextSpan(
@@ -461,7 +463,7 @@ class _TiledLogoPainter extends CustomPainter {
     if (im == null) return;
     final w = size.width;
     final h = size.height;
-    final targetW = logo.sizeFrac * w;
+    final targetW = logo.sizeFrac * math.min(w, h); // 短邊基準
     final targetH = targetW * im.height / im.width;
     final stepX = targetW * 1.8;
     final stepY = targetH * 1.9;
