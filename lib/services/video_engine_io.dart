@@ -561,17 +561,18 @@ Future<String?> _prerenderReverse(
   final n = (total / chunkSec).ceil();
 
   final parts = <String>[];
-  // 由最後一段往前做：接起來就是整段倒著播
+  // 由最後一段往前做：接起來就是整段倒著播。
+  // 分段只切「畫面」（-an）——聲音在下面整段一次倒，
+  // 分段倒聲音會在每個接點留下 AAC 編碼縫隙，聽起來忽大忽小
   for (var i = n - 1; i >= 0; i--) {
     final s = trimStart + i * chunkSec;
     final e = math.min(trimEnd, s + chunkSec);
     if (e - s < 0.02) continue;
     final part = '${dir.path}${Platform.pathSeparator}rev_${ts}_$i.mp4';
     // 先縮到輸出尺寸再倒轉：用原始解析度倒轉一樣會吃爆記憶體
-    final a = hasAudio ? '-af areverse -c:a aac -b:a 256k' : '-an';
     final cmd =
         '-y -ss ${_f(s)} -to ${_f(e)} -i "$srcPath" '
-        '-vf "scale=$outW:$outH:flags=bicubic,reverse" $a '
+        '-vf "scale=$outW:$outH:flags=bicubic,reverse" -an '
         '-c:v ${_hwEncoder()} -b:v 16000k -pix_fmt nv12 "$part"';
     var ses = await FFmpegKit.execute(cmd);
     if (!ReturnCode.isSuccess(await ses.getReturnCode())) {
@@ -584,23 +585,42 @@ Future<String?> _prerenderReverse(
     }
     parts.add(part);
     temps.add(part);
-    onProgress?.call(parts.length / n);
+    onProgress?.call(parts.length / n * 0.9);
   }
   if (parts.isEmpty) return null;
-  if (parts.length == 1) return parts.first;
 
-  // concat demuxer 把倒好的小段接起來（不用重編碼）
-  final listPath = '${dir.path}${Platform.pathSeparator}rev_${ts}_list.txt';
-  await File(listPath).writeAsString(
-    parts.map((p) => "file '${p.replaceAll("'", r"'\''")}'").join('\n'),
-  );
-  temps.add(listPath);
+  // 畫面接起來（不重編碼）
+  String video;
+  if (parts.length == 1) {
+    video = parts.first;
+  } else {
+    final listPath = '${dir.path}${Platform.pathSeparator}rev_${ts}_list.txt';
+    await File(listPath).writeAsString(
+      parts.map((p) => "file '${p.replaceAll("'", r"'\''")}'").join('\n'),
+    );
+    temps.add(listPath);
+    video = '${dir.path}${Platform.pathSeparator}rev_${ts}_v.mp4';
+    final ses = await FFmpegKit.execute(
+      '-y -f concat -safe 0 -i "$listPath" -c copy "$video"',
+    );
+    if (!ReturnCode.isSuccess(await ses.getReturnCode())) return null;
+    temps.add(video);
+  }
+  if (!hasAudio) return video;
+
+  // 聲音整段一次倒（音訊很便宜：一分鐘也才十來 MB，不用分段），
+  // 再跟畫面合起來
   final joined = '${dir.path}${Platform.pathSeparator}rev_${ts}_all.mp4';
-  final ses = await FFmpegKit.execute(
-    '-y -f concat -safe 0 -i "$listPath" -c copy "$joined"',
+  final mux = await FFmpegKit.execute(
+    '-y -i "$video" '
+    '-ss ${_f(trimStart)} -to ${_f(trimEnd)} -i "$srcPath" '
+    '-filter_complex "[1:a]areverse[a]" '
+    '-map 0:v -map "[a]" -c:v copy -c:a aac -b:a 256k '
+    '-shortest "$joined"',
   );
-  if (!ReturnCode.isSuccess(await ses.getReturnCode())) return null;
+  if (!ReturnCode.isSuccess(await mux.getReturnCode())) return video;
   temps.add(joined);
+  onProgress?.call(1.0);
   return joined;
 }
 
@@ -792,10 +812,15 @@ Future<List<Uint8List>> makeThumbnails(
   final ts = DateTime.now().millisecondsSinceEpoch;
   final pattern = '${dir.path}${Platform.pathSeparator}mkthumb_${ts}_%02d.jpg';
   final fps = count / durationSec;
-  // longSide＝把「長邊」縮到 height（直式影片才不會糊）
+  // longSide＝把「長邊」縮到 height（直式影片才不會糊）。
+  // 色彩要明確轉成 JPEG 的規格（bt601＋full range）：
+  // 手機影片是 bt709 limited，不轉的話快取幀跟播放畫面
+  // 顏色不一樣，拖曳時畫面會「變色」
+  const jpegColor = ':in_range=auto:out_range=jpeg'
+      ':in_color_matrix=auto:out_color_matrix=bt601';
   final scale = longSide
-      ? 'scale=$height:$height:force_original_aspect_ratio=decrease'
-      : 'scale=-2:$height';
+      ? 'scale=$height:$height:force_original_aspect_ratio=decrease$jpegColor'
+      : 'scale=-2:$height$jpegColor';
   // startAt：-ss 放在 -i 前面＝關鍵幀快轉，只解碼需要的段落
   final seek = startAt > 0.001
       ? '-ss ${startAt.toStringAsFixed(3)} -t ${durationSec.toStringAsFixed(3)} '

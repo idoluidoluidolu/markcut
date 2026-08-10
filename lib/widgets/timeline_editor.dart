@@ -187,6 +187,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
   /// 拖曳片段時上一刻有沒有吸住（吸住的瞬間震一下）
   bool _dragSnapped = false;
 
+  /// 拖曳已「武裝」（移動超過門檻）。沒武裝前幽靈不顯示、放開不算拖曳
+  bool _liftArmed = false;
+
   // 長按偵測：按住不動 0.45 秒 → 取消拖曳、打開選單
   Timer? _pressTimer;
   Offset _pressPos = Offset.zero;
@@ -235,6 +238,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
 
   void _liftStart(TimelineClip c, Offset globalPos) {
     if (_pinching) return; // 雙指縮放時間軸中：不要把素材拿起來
+    _liftArmed = false; // 移動超過門檻才算真的在拖（見 _liftUpdate）
     _liftWasSelected = widget.selectedId == c.id;
     widget.onSelect(c.id);
     widget.onLiftChanged?.call(true);
@@ -256,6 +260,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
         setState(() => _lift = null);
         _stopAutoScroll();
         widget.onLiftChanged?.call(false);
+        HapticFeedback.mediumImpact(); // 長按成立的觸覺回饋
         widget.onLongPressClip(c.id, _pressPos);
       }
     });
@@ -288,6 +293,12 @@ class _TimelineEditorState extends State<TimelineEditor> {
         dx: l.dx + ddx,
         dy: (l.dy + ddy).clamp(minDy, maxDy),
       );
+      // 移動超過 8px 才「武裝」：捏合的第一指落在素材上時，
+      // 第二指還沒到的那幾十毫秒不會看到素材被拖走
+      if (!_liftArmed &&
+          (_lift!.dx.abs() > 8 || _lift!.dy.abs() > 8)) {
+        _liftArmed = true;
+      }
     });
     // 吸附到別的片段邊緣的那一下震動一次，手指才感覺得到「黏住」
     final spec = _liftSpec();
@@ -306,13 +317,17 @@ class _TimelineEditorState extends State<TimelineEditor> {
     _pressTimer?.cancel();
     final spec = _liftSpec();
     final l = _lift;
+    final armed = _liftArmed;
+    _liftArmed = false;
     if (l == null) return; // 長按選單已經接手
     setState(() => _lift = null);
     _stopAutoScroll();
     widget.onLiftChanged?.call(false);
-    // 幾乎沒動 = 點擊；點已選取的片段 → 交給編輯回呼
-    if (l.dx.abs() < 6 && l.dy.abs() < 6) {
-      if (_liftWasSelected) widget.onTapSelectedClip?.call(l.clipId);
+    // 沒有武裝（幾乎沒動）= 點擊；點已選取的片段 → 交給編輯回呼
+    if (!armed) {
+      if (_liftWasSelected && l.dx.abs() < 6 && l.dy.abs() < 6) {
+        widget.onTapSelectedClip?.call(l.clipId);
+      }
       return;
     }
     if (spec == null) return;
@@ -597,7 +612,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
                                   ),
                                 ),
                               // 幽靈：拖曳中的片段，自由跟著手指
-                              if (_lift != null && spec != null) _ghost(spec),
+                              //（武裝後才顯示，避免捏合誤觸時閃一下）
+                              if (_lift != null && _liftArmed && spec != null)
+                                _ghost(spec),
                               // 拖曳浮水印範圍時的即時外框由 _wmRow 自己畫
                               // 播放頭：一條直線（只有它隨播放位置重繪）
                               Positioned.fill(
@@ -654,11 +671,14 @@ class _TimelineEditorState extends State<TimelineEditor> {
               widget.onSelect(-1);
               widget.onTapTrack?.call(track);
             },
-            onLongPressStart: (d) => widget.onLongPressEmpty(
-              track,
-              (d.localPosition.dx / pxPerSec).clamp(0.0, 1e6),
-              d.globalPosition,
-            ),
+            onLongPressStart: (d) {
+              HapticFeedback.mediumImpact(); // 長按成立的觸覺回饋
+              widget.onLongPressEmpty(
+                track,
+                (d.localPosition.dx / pxPerSec).clamp(0.0, 1e6),
+                d.globalPosition,
+              );
+            },
             // CapCut 式：整條灰底橫帶，不描邊；拖放目標才亮框
             child: Container(
               decoration: BoxDecoration(
@@ -684,7 +704,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
             source: timeline.sourceOf(c),
             filmstrip: widget.thumbs[c.sourceIndex] ?? const [],
             isSelected: c.id == widget.selectedId,
-            lifted: _lift?.clipId == c.id,
+            lifted: _liftArmed && _lift?.clipId == c.id,
             pxPerSec: pxPerSec,
             height: trackH,
             onSelect: widget.onSelect,
@@ -1411,6 +1431,7 @@ class _TrackLabelState extends State<_TrackLabel> {
                         () {
                           if (!_moved && mounted) {
                             _longFired = true;
+                            HapticFeedback.mediumImpact(); // 長按觸覺回饋
                             widget.onDragUpdate(0);
                             widget.onDragEnd();
                             widget.onLongPress!();

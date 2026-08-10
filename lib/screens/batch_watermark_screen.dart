@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -302,6 +303,46 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     _loadPreviewFull();
   }
 
+  // ===== 預覽區雙指縮放浮水印（跟照片編輯同一套）=====
+  final Map<int, Offset> _pvPts = {};
+  double? _pvBaseDist;
+  double _pvBaseText = 0;
+  double _pvBaseLogo = 0;
+
+  void _pinchDown(PointerDownEvent e) {
+    _pvPts[e.pointer] = e.position;
+    if (_pvPts.length != 2) return;
+    final p = _pvPts.values.toList();
+    final d = (p[0] - p[1]).distance;
+    if (d <= 20) return;
+    _pvBaseDist = d;
+    _pvBaseText = _settings.text.sizeFrac;
+    _pvBaseLogo = _settings.logo.sizeFrac;
+    _pushUndo();
+  }
+
+  void _pinchMove(PointerMoveEvent e) {
+    if (!_pvPts.containsKey(e.pointer)) return;
+    _pvPts[e.pointer] = e.position;
+    if (_pvBaseDist == null || _pvPts.length < 2) return;
+    final p = _pvPts.values.toList();
+    final f = (p[0] - p[1]).distance / _pvBaseDist!;
+    setState(() {
+      final t = _settings.text;
+      if (t.enabled && t.text.trim().isNotEmpty) {
+        t.sizeFrac = (_pvBaseText * f).clamp(0.015, 2.0);
+      }
+      if (_settings.logo.enabled) {
+        _settings.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
+      }
+    });
+  }
+
+  void _pinchUp(int pointer) {
+    _pvPts.remove(pointer);
+    if (_pvBaseDist != null && _pvPts.length < 2) _pvBaseDist = null;
+  }
+
   // ===== 批次匯出 =====
 
   Future<void> _exportAll() async {
@@ -496,7 +537,13 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
           // 預覽：目前選中的檔案縮圖 + 浮水印圖層
           Expanded(
             flex: 4,
-            child: Container(
+            child: Listener(
+              // 雙指縮放浮水印（跟照片編輯同一套，用 Listener 不搶單指拖曳）
+              onPointerDown: _pinchDown,
+              onPointerMove: _pinchMove,
+              onPointerUp: (e) => _pinchUp(e.pointer),
+              onPointerCancel: (e) => _pinchUp(e.pointer),
+              child: Container(
               color: const Color(0xFF1B1B1F),
               child: Center(
                 // 換檔案時整個預覽子樹重建，浮水印圖層不會殘留舊狀態
@@ -522,6 +569,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                             settings: _settings,
                             onChanged: () => setState(() {}),
                             onDragStart: _pushUndo,
+                            panLocked: () => _pvPts.length >= 2,
                           ),
                         ],
                       ),
@@ -529,6 +577,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                   ),
                 ),
               ),
+            ),
             ),
           ),
           // 檔案縮圖列：點了切換預覽、長按從批次移除
@@ -544,6 +593,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                 borderRadius: BorderRadius.circular(6),
                 onTap: () => _selectPreview(i),
                 onLongPress: () async {
+                  HapticFeedback.mediumImpact(); // 長按成立的觸覺回饋
                   // 剩一個不能移除：不能謊報「已移除」
                   if (_items.length <= 1) {
                     showHint(context, '批次至少要留一個檔案', error: true);

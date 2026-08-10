@@ -1723,22 +1723,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 複製浮水印：把浮水印「文字」複製成獨立的時間軸文字素材——
   /// 等於第二個浮水印，可以有自己的時間範圍、位置、大小
   void _duplicateWatermark() {
-    final t = _settings.text;
-    if (!t.enabled || t.text.trim().isEmpty) {
-      showHint(context, '目前只有文字浮水印可以複製', error: true);
+    if (!_settings.hasAnyMark) {
+      showHint(context, '浮水印還是空的，沒東西可以複製', error: true);
       return;
     }
     _pause();
     _pushUndo();
+    // 整組複製（文字＋Logo 都帶著）成獨立的浮水印素材，
+    // 有自己的時間範圍、位置、大小，跟原本的互不影響
     final srcIndex = _tl.sources.length;
-    final style = t.copy()..tiled = false; // 素材是單顆，平鋪無意義
     _tl.sources.add(
       MediaSource(
         path: '',
-        name: t.text,
-        kind: ClipKind.text,
+        name:
+            _settings.text.enabled && _settings.text.text.trim().isNotEmpty
+            ? _settings.text.text
+            : '浮水印',
+        kind: ClipKind.wm,
         duration: 3600,
-        textStyle: style,
+        wmStyle: _settings.copy(),
       ),
     );
     final start = _wmStart;
@@ -1750,15 +1753,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       trimEnd: len,
       offset: start,
       track: _tl.firstFreeTrack(), // 放到新的一層，不壓到現有素材
-      px: t.x,
-      py: t.y,
     );
     setState(() {
       _tl.clips.add(clip);
       _sel = clip.id;
       _wmSel = false;
     });
-    showHint(context, '已複製成文字素材，時間和位置都可獨立調整');
+    showHint(context, '已複製整組浮水印（文字＋圖片），時間和位置都可獨立調整');
   }
 
   // ===== 播放 =====
@@ -2394,6 +2395,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ..clearLiveImages()
       ..maximumSize = 0
       ..maximumSizeBytes = 0;
+    // 播放器也全部放掉：每顆播放器（解碼器＋緩衝）都是幾十 MB，
+    // 片段一多加起來比快取還兇——沒調色也會被系統殺掉就是這裡。
+    // 匯出完再重建（_ensureCtrlFor 會自動補）
+    for (final c in _ctrls.values) {
+      c.dispose();
+    }
+    _ctrls.clear();
+    _wasActive.clear();
 
     setState(() => _exporting = true);
 
@@ -2547,6 +2556,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     PaintingBinding.instance.imageCache
       ..maximumSize = 300
       ..maximumSizeBytes = 96 << 20;
+    // 播放器匯出前全放掉了，現在重建
+    for (final c in _tl.clips) {
+      _ensureCtrlFor(c);
+    }
+    _resyncPlayback();
     setState(() => _exporting = false);
     // 匯出前把抽幀快取清光了，現在重新抽回來（拖曳預覽要用）
     for (var i = 0; i < _tl.sources.length; i++) {
@@ -2964,6 +2978,55 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     final ctrl = _ctrls[c.id];
                                     if (ctrl == null ||
                                         !ctrl.value.isInitialized) {
+                                      // 播放器還沒好（初始化中／掛掉）：
+                                      // 有抽好的幀就先畫著，
+                                      // 不能讓畫面整片黑
+                                      final fs = _scrubFrames[c.sourceIndex];
+                                      final src0 = _tl.sourceOf(c);
+                                      final rf = layerBox(c, src0.aspect);
+                                      Uint8List? fb;
+                                      if (fs != null && fs.isNotEmpty) {
+                                        final fi =
+                                            (c.sourceTimeAt(_position) /
+                                                    math.max(
+                                                      0.01,
+                                                      src0.duration,
+                                                    ) *
+                                                    fs.length)
+                                                .floor()
+                                                .clamp(0, fs.length - 1);
+                                        fb = _ScrubDecoder.nearestBytes(
+                                          fs,
+                                          fi,
+                                        );
+                                      }
+                                      fb ??= (_thumbs[c.sourceIndex] ??
+                                              const [])
+                                          .firstOrNull;
+                                      if (fb != null) {
+                                        children.add(
+                                          Positioned.fromRect(
+                                            rect: rf,
+                                            child: _tinted(
+                                              c,
+                                              Opacity(
+                                                opacity: c.fadeFactorAt(
+                                                  _position,
+                                                ),
+                                                child: Image.memory(
+                                                  fb,
+                                                  fit: BoxFit.fill,
+                                                  gaplessPlayback: true,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        );
+                                        if (c.id == _sel) {
+                                          selRect = rf;
+                                          selVisual = c;
+                                        }
+                                      }
                                       continue;
                                     }
                                     final r = layerBox(
@@ -4626,6 +4689,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         selSrc != null &&
         (selSrc.isVideo || selSrc.kind == ClipKind.audio);
     var pushed = false; // 這次選單只拍一次快照
+    // 拖過方向線先掛著，「放開滑桿」才真的做倒轉／還原——
+    // 不然拖到一半就跳出處理視窗，嚇人
+    double? pendingSigned;
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
@@ -4675,7 +4741,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     final rev =
                         clipMode &&
                         (sel.reverse || _tl.sourceOf(sel).revOf != null);
-                    final signed = rev ? -now : now; // 帶號速度：負的＝倒轉
+                    final actualSigned = rev ? -now : now;
+                    // 拖曳中先顯示手指所在的檔位，放開才生效
+                    final signed = pendingSigned ?? actualSigned;
+                    final showRev = signed < 0;
                     final stops = clipMode
                         ? kSpeedStops
                         : kSpeedStops.where((s) => s > 0).toList();
@@ -4736,7 +4805,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 divisions: stops.length - 1,
                                 onChanged: (v) {
                                   final s = stops[v.round()];
-                                  if (s != signed) apply(s);
+                                  if (s == signed) return;
+                                  if ((s < 0) == rev) {
+                                    // 同方向：速度即時生效
+                                    pendingSigned = null;
+                                    apply(s);
+                                  } else {
+                                    // 換方向：先掛著，放開才處理
+                                    pendingSigned = s;
+                                    setSheet(() {});
+                                  }
+                                },
+                                onChangeEnd: (_) {
+                                  final s = pendingSigned;
+                                  if (s == null) return;
+                                  pendingSigned = null;
+                                  apply(s);
                                 },
                               ),
                             ),
@@ -4753,14 +4837,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             Text(
-                              '${now.toStringAsFixed(now == now.roundToDouble() ? 0 : 2)}x',
+                              '${signed.abs().toStringAsFixed(signed.abs() == signed.abs().roundToDouble() ? 0 : 2)}x',
                               style: const TextStyle(
                                 fontSize: 20,
                                 fontWeight: FontWeight.w700,
                                 fontFeatures: [FontFeature.tabularFigures()],
                               ),
                             ),
-                            if (rev) ...[
+                            if (showRev) ...[
                               const SizedBox(width: 8),
                               Container(
                                 padding: const EdgeInsets.symmetric(
@@ -4915,8 +4999,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       grade: c.color,
       onChanged: () => setState(() {}),
       onBeforeChange: _pushUndo,
-      // 不放「完成」鈕：調整本來就即時生效，
-      // 點下方任何分頁就會離開調色（見 TabBar onTap）
+      // 完成鈕＝離開調色；點下方任何分頁也一樣會離開（雙保險）
+      onDone: _exitColorMode,
       // 面板 dispose 時會回呼一次 false，那時這頁可能也在收——要擋
       onCompare: (on) {
         if (mounted) setState(() => _colorCompare = on);
@@ -5171,6 +5255,17 @@ class _SelectionFramePainter extends CustomPainter {
 /// 卡在 UI 執行緒上；手指一快就整片 miss，於是怎麼加幀都還是頓。
 /// 改成事先把播放頭附近的幀解成 ui.Image 放著，畫的時候只是貼一張材質。
 class _ScrubDecoder {
+  /// 從快取幀清單裡拿離 [fi] 最近、已經抽好的那張（可能整排都還沒好）
+  static Uint8List? nearestBytes(List<Uint8List?> frames, int fi) {
+    for (var d = 0; d < frames.length; d++) {
+      final a = fi - d;
+      if (a >= 0 && frames[a] != null) return frames[a];
+      final b = fi + d;
+      if (b < frames.length && frames[b] != null) return frames[b];
+    }
+    return null;
+  }
+
   /// 播放頭前後各先解好幾張
   static const _window = 10;
 

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../models/watermark_settings.dart';
 
@@ -86,6 +87,26 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
     return widget.panAllowed?.call(part) ?? true;
   }
 
+  /// 正在拖哪個部件（畫置中輔助線用）
+  WmPart _panning = WmPart.none;
+
+  /// 上一刻有沒有吸在中線上（吸上去的瞬間震一下）
+  bool _centerSnapped = false;
+
+  /// 拖曳時把座標吸到置中線（0.5）附近；回傳吸完的值
+  double _snapCenter(double v) {
+    if ((v - 0.5).abs() < 0.015) return 0.5;
+    return v;
+  }
+
+  void _feedbackCenter(double x, double y) {
+    final on = x == 0.5 || y == 0.5;
+    if (on != _centerSnapped) {
+      _centerSnapped = on;
+      if (on) HapticFeedback.selectionClick();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final settings = widget.settings;
@@ -134,22 +155,29 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                     ? null
                     : (_) {
                         if (widget.panLocked?.call() ?? false) return;
+                        setState(() => _panning = WmPart.logo);
                         onDragStart?.call();
                       },
                 onPanUpdate: !_canDrag(WmPart.logo)
                     ? null
                     : (d) {
                         if (widget.panLocked?.call() ?? false) return;
-                        logo.x = ((logo.x * w + d.delta.dx) / w).clamp(
-                          0.0,
-                          1.0,
+                        // 靠近畫面中線就吸上去（垂直/水平置中輔助）
+                        logo.x = _snapCenter(
+                          ((logo.x * w + d.delta.dx) / w).clamp(0.0, 1.0),
                         );
-                        logo.y = ((logo.y * h + d.delta.dy) / h).clamp(
-                          0.0,
-                          1.0,
+                        logo.y = _snapCenter(
+                          ((logo.y * h + d.delta.dy) / h).clamp(0.0, 1.0),
                         );
+                        _feedbackCenter(logo.x, logo.y);
                         onChanged();
                       },
+                onPanEnd: !_canDrag(WmPart.logo)
+                    ? null
+                    : (_) => setState(() => _panning = WmPart.none),
+                onPanCancel: !_canDrag(WmPart.logo)
+                    ? null
+                    : () => setState(() => _panning = WmPart.none),
                 // 選取框放在旋轉「裡面」：框才會跟著 Logo 轉
                 //（文字那邊本來就是這樣，兩邊要一致）
                 child: Opacity(
@@ -247,16 +275,29 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                     ? null
                     : (_) {
                         if (widget.panLocked?.call() ?? false) return;
+                        setState(() => _panning = WmPart.text);
                         onDragStart?.call();
                       },
                 onPanUpdate: !_canDrag(WmPart.text)
                     ? null
                     : (d) {
                         if (widget.panLocked?.call() ?? false) return;
-                        t.x = ((t.x * w + d.delta.dx) / w).clamp(0.0, 1.0);
-                        t.y = ((t.y * h + d.delta.dy) / h).clamp(0.0, 1.0);
+                        // 靠近畫面中線就吸上去（垂直/水平置中輔助）
+                        t.x = _snapCenter(
+                          ((t.x * w + d.delta.dx) / w).clamp(0.0, 1.0),
+                        );
+                        t.y = _snapCenter(
+                          ((t.y * h + d.delta.dy) / h).clamp(0.0, 1.0),
+                        );
+                        _feedbackCenter(t.x, t.y);
                         onChanged();
                       },
+                onPanEnd: !_canDrag(WmPart.text)
+                    ? null
+                    : (_) => setState(() => _panning = WmPart.none),
+                onPanCancel: !_canDrag(WmPart.text)
+                    ? null
+                    : () => setState(() => _panning = WmPart.none),
                 child: Transform.rotate(
                   angle: t.rotation * math.pi / 180,
                   child: Container(
@@ -304,6 +345,44 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
               ),
             ),
           );
+        }
+
+        // 置中輔助線：拖曳中吸在中線上時，畫出垂直／水平線
+        if (_panning != WmPart.none) {
+          final p = _panning == WmPart.text ? settings.text : null;
+          final lgP = _panning == WmPart.logo ? settings.logo : null;
+          final px = p?.x ?? lgP?.x;
+          final py = p?.y ?? lgP?.y;
+          if (px == 0.5) {
+            children.add(
+              Positioned(
+                left: w / 2 - 0.5,
+                top: 0,
+                bottom: 0,
+                child: IgnorePointer(
+                  child: Container(
+                    width: 1,
+                    color: const Color(0xFFFFC24B).withValues(alpha: 0.9),
+                  ),
+                ),
+              ),
+            );
+          }
+          if (py == 0.5) {
+            children.add(
+              Positioned(
+                top: h / 2 - 0.5,
+                left: 0,
+                right: 0,
+                child: IgnorePointer(
+                  child: Container(
+                    height: 1,
+                    color: const Color(0xFFFFC24B).withValues(alpha: 0.9),
+                  ),
+                ),
+              ),
+            );
+          }
         }
 
         // 動畫：整組浮水印一起位移＋淡出（閃爍＝alpha 0/1）
