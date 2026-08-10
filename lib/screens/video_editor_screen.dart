@@ -3208,32 +3208,33 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               _sel = c.id;
                                               _wmSel = false;
                                             }),
-                                            child: ClipRect(
-                                              child: BackdropFilter(
-                                                filter: ui.ImageFilter.blur(
-                                                  sigmaX: 12,
-                                                  sigmaY: 12,
+                                            // 棋盤格示意，不依賴底圖取樣
+                                            //（web 的影片在畫布外，毛玻璃
+                                            // 抓不到底圖會整塊隱形）。
+                                            // 真正的像素化由匯出做
+                                            child: Container(
+                                              decoration: BoxDecoration(
+                                                border: Border.all(
+                                                  color: Colors.white54,
                                                 ),
-                                                child: Container(
-                                                  decoration: BoxDecoration(
-                                                    color: Colors.white
-                                                        .withValues(
-                                                          alpha: 0.06,
-                                                        ),
-                                                    border: Border.all(
-                                                      color: Colors.white38,
+                                              ),
+                                              child: const Stack(
+                                                fit: StackFit.expand,
+                                                children: [
+                                                  CustomPaint(
+                                                    painter:
+                                                        _MosaicPatternPainter(),
+                                                  ),
+                                                  Center(
+                                                    child: Text(
+                                                      '馬賽克',
+                                                      style: TextStyle(
+                                                        fontSize: 10,
+                                                        color: Colors.white,
+                                                      ),
                                                     ),
                                                   ),
-                                                  alignment:
-                                                      Alignment.center,
-                                                  child: const Text(
-                                                    '馬賽克',
-                                                    style: TextStyle(
-                                                      fontSize: 10,
-                                                      color: Colors.white70,
-                                                    ),
-                                                  ),
-                                                ),
+                                                ],
                                               ),
                                             ),
                                           ),
@@ -5322,6 +5323,34 @@ class _MagnetPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_MagnetPainter old) => old.color != color;
+}
+
+/// 馬賽克區域的棋盤格示意（半透明，蓋在畫面上代表「這塊會打碼」）
+class _MosaicPatternPainter extends CustomPainter {
+  const _MosaicPatternPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cell = (math.min(size.width, size.height) / 8).clamp(6.0, 18.0);
+    final a = Paint()..color = const Color(0x59FFFFFF); // 白 35%
+    final b = Paint()..color = const Color(0x40000000); // 黑 25%
+    for (var y = 0; y * cell < size.height; y++) {
+      for (var x = 0; x * cell < size.width; x++) {
+        canvas.drawRect(
+          Rect.fromLTWH(
+            x * cell,
+            y * cell,
+            math.min(cell, size.width - x * cell),
+            math.min(cell, size.height - y * cell),
+          ),
+          (x + y).isEven ? a : b,
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_MosaicPatternPainter old) => false;
 }
 
 /// 預覽裡選取圖層的外框：一圈細白框就好（無把手）
