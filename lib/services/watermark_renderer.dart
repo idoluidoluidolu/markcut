@@ -5,7 +5,35 @@ import 'dart:ui' as ui;
 import 'package:flutter/painting.dart';
 
 import '../models/color_grade.dart';
+import '../models/timeline.dart' show MosaicStyle;
 import '../models/watermark_settings.dart';
+
+/// 照片上的一塊馬賽克區域：中心座標（0~1）＋大小（短邊比例）＋樣式
+class PhotoMosaic {
+  double x;
+  double y;
+  double scale;
+  MosaicStyle style;
+
+  PhotoMosaic({this.x = 0.5, this.y = 0.5, this.scale = 0.35, MosaicStyle? style})
+    : style = style ?? MosaicStyle();
+
+  Map<String, dynamic> toJson() => {
+    'x': x,
+    'y': y,
+    'scale': scale,
+    'style': style.toJson(),
+  };
+
+  factory PhotoMosaic.fromJson(Map<String, dynamic> j) => PhotoMosaic(
+    x: ((j['x'] ?? 0.5).toDouble() as double).clamp(0.0, 1.0),
+    y: ((j['y'] ?? 0.5).toDouble() as double).clamp(0.0, 1.0),
+    scale: ((j['scale'] ?? 0.35).toDouble() as double).clamp(0.02, 3.0),
+    style: j['style'] is Map
+        ? MosaicStyle.fromJson(Map<String, dynamic>.from(j['style'] as Map))
+        : MosaicStyle(),
+  );
+}
 
 /// 把浮水印設定畫成點陣圖。
 /// 預覽和輸出走同一套繪製邏輯，所以「看到的就是輸出的」。
@@ -28,26 +56,40 @@ class WatermarkRenderer {
     return data!.buffer.asUint8List();
   }
 
-  /// 照片浮水印：以原始解析度合成照片 + 浮水印，輸出 PNG（無損）。
+  /// 照片浮水印：以原始解析度合成照片 + 馬賽克 + 浮水印，輸出 PNG（無損）。
   static Future<Uint8List> renderPhotoComposite(
     Uint8List photoBytes,
     WatermarkSettings s, {
     ColorGrade? grade,
+    List<PhotoMosaic>? mosaics,
   }) async {
     final codec = await ui.instantiateImageCodec(photoBytes);
     final frame = await codec.getNextFrame();
-    final photo = frame.image;
+    var photo = frame.image;
     final w = photo.width;
     final h = photo.height;
 
+    // 有調色時先把「調完色的照片」烙成一張圖——
+    // 馬賽克要取樣的是調色後的畫面（跟預覽/影片匯出一致）
+    if (grade?.hasColor ?? false) {
+      final rec = ui.PictureRecorder();
+      ui.Canvas(rec).drawImage(
+        photo,
+        ui.Offset.zero,
+        ui.Paint()..colorFilter = grade!.filter,
+      );
+      final graded = await rec.endRecording().toImage(w, h);
+      photo.dispose();
+      photo = graded;
+    }
+
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(recorder);
-    // 調色只套在照片上，浮水印不跟著變色（下面 drawMarks 是另一支畫筆）
-    canvas.drawImage(
-      photo,
-      ui.Offset.zero,
-      ui.Paint()..colorFilter = grade?.filter,
-    );
+    canvas.drawImage(photo, ui.Offset.zero, ui.Paint());
+    // 馬賽克畫在浮水印下面（打碼的是照片，不是浮水印）
+    for (final m in mosaics ?? const <PhotoMosaic>[]) {
+      await _drawMosaic(canvas, photo, m, w, h);
+    }
     await drawMarks(canvas, s, w.toDouble(), h.toDouble());
     final picture = recorder.endRecording();
     final image = await picture.toImage(w, h);
@@ -55,6 +97,66 @@ class WatermarkRenderer {
     final data = await image.toByteData(format: ui.ImageByteFormat.png);
     image.dispose();
     return data!.buffer.asUint8List();
+  }
+
+  /// 在照片上畫一塊馬賽克（像素化＝縮小再鄰近放大、模糊、純色）。
+  /// 格數/半徑公式跟影片匯出同一套，兩邊效果一致
+  static Future<void> _drawMosaic(
+    ui.Canvas canvas,
+    ui.Image photo,
+    PhotoMosaic m,
+    int w,
+    int h,
+  ) async {
+    final side = m.scale * math.min(w, h);
+    var rect = ui.Rect.fromCenter(
+      center: ui.Offset(m.x * w, m.y * h),
+      width: side,
+      height: side,
+    ).intersect(ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()));
+    if (rect.width < 2 || rect.height < 2) return;
+
+    final st = m.style;
+    if (st.type == 2) {
+      canvas.drawRect(rect, ui.Paint()..color = ui.Color(st.color));
+      return;
+    }
+    if (st.type == 1) {
+      // 模糊：半徑跟影片匯出同公式，按輸出解析度等比放大
+      final sigma = math.max(
+        2.0,
+        (2 + st.strength * 18) * math.min(w, h) / 540,
+      );
+      canvas.save();
+      canvas.clipRect(rect);
+      canvas.saveLayer(
+        rect,
+        ui.Paint()..imageFilter = ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
+      );
+      canvas.drawImage(photo, ui.Offset.zero, ui.Paint());
+      canvas.restore();
+      canvas.restore();
+      return;
+    }
+    // 像素化：區域縮到 N 格再用「不插值」放大回去
+    final cells = (26 - 20 * st.strength).round().clamp(4, 40);
+    final sw = math.max(2, math.min(cells, rect.width ~/ 2));
+    final sh = math.max(2, (sw * rect.height / rect.width).round());
+    final rec = ui.PictureRecorder();
+    ui.Canvas(rec).drawImageRect(
+      photo,
+      rect,
+      ui.Rect.fromLTWH(0, 0, sw.toDouble(), sh.toDouble()),
+      ui.Paint()..filterQuality = ui.FilterQuality.medium,
+    );
+    final small = await rec.endRecording().toImage(sw, sh);
+    canvas.drawImageRect(
+      small,
+      ui.Rect.fromLTWH(0, 0, sw.toDouble(), sh.toDouble()),
+      rect,
+      ui.Paint()..filterQuality = ui.FilterQuality.none,
+    );
+    small.dispose();
   }
 
   /// 文字素材：以完整樣式＋位置＋縮放渲染成整版透明 PNG（匯出 overlay 用）

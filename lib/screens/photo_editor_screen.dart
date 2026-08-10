@@ -1,8 +1,10 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -70,11 +72,29 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   void initState() {
     super.initState();
     _initialJson = _stateJson;
+    _loadMosaicShader();
     _load();
   }
 
-  String get _stateJson =>
-      jsonEncode({..._settings.toJson(), 'color': _grade.toJson()});
+  // ===== 馬賽克（照片模式：任意數量的方形區域）=====
+  final List<PhotoMosaic> _mosaics = [];
+  int _selMosaic = -1;
+
+  /// 預覽用 shader（真像素塊）；載不到就退回霧化
+  ui.FragmentShader? _mosaicShader;
+
+  Future<void> _loadMosaicShader() async {
+    try {
+      final prog = await ui.FragmentProgram.fromAsset('shaders/mosaic.frag');
+      if (mounted) setState(() => _mosaicShader = prog.fragmentShader());
+    } catch (_) {}
+  }
+
+  String get _stateJson => jsonEncode({
+    ..._settings.toJson(),
+    'color': _grade.toJson(),
+    'mosaics': _mosaics.map((m) => m.toJson()).toList(),
+  });
 
   bool get _dirty => _stateJson != _initialJson;
 
@@ -124,9 +144,17 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       _grade.copyFrom(
         ColorGrade.fromJson(Map<String, dynamic>.from(j['color'] as Map)),
       );
+      _mosaics
+        ..clear()
+        ..addAll(
+          ((j['mosaics'] as List?) ?? const []).map(
+            (e) => PhotoMosaic.fromJson(Map<String, dynamic>.from(e as Map)),
+          ),
+        );
       // 復原可能把被選取的部件變不見（例如撤銷加 Logo），
       // 選取殘留會讓拖曳整個變死的
       _wmPart = WmPart.none;
+      _selMosaic = -1;
       _sync++;
     });
   }
@@ -177,7 +205,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     }
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 2, 8, 2),
+      padding: const EdgeInsets.fromLTRB(8, 2, 8, 2),
       decoration: const BoxDecoration(
         color: kBg,
         border: Border(
@@ -186,11 +214,331 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         ),
       ),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.end,
         children: [
+          // 左邊：加馬賽克（照片打碼；拖曳移動、再點一下調樣式）
+          TextButton.icon(
+            onPressed: _addMosaic,
+            icon: const Icon(Icons.blur_on, size: 17, color: kAmber),
+            label: const Text(
+              '馬賽克',
+              style: TextStyle(fontSize: 12, color: kText),
+            ),
+            style: TextButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+            ),
+          ),
+          const Spacer(),
           btn(Icons.undo, '上一步', _undoStack.isEmpty ? null : _undoLast),
           btn(Icons.redo, '重做', _redoStack.isEmpty ? null : _redoLast),
         ],
+      ),
+    );
+  }
+
+  /// 預覽上的馬賽克層：拖曳移動、點選取、再點開樣式表
+  Widget _buildMosaics(double w, double h) {
+    final children = <Widget>[];
+    for (var i = 0; i < _mosaics.length; i++) {
+      final m = _mosaics[i];
+      final side = m.scale * math.min(w, h);
+      final rect = Rect.fromCenter(
+        center: Offset(m.x * w, m.y * h),
+        width: side,
+        height: side,
+      );
+      Widget effect;
+      if (m.style.type == 2) {
+        effect = Container(color: Color(m.style.color));
+      } else {
+        ui.ImageFilter? filter;
+        if (m.style.type == 0 && _mosaicShader != null) {
+          final cells = (26 - 20 * m.style.strength).round().clamp(4, 40);
+          final dpr = MediaQuery.of(context).devicePixelRatio;
+          final cell = math.max(2.0, side * dpr / cells);
+          try {
+            _mosaicShader!.setFloat(2, cell);
+            filter = ui.ImageFilter.shader(_mosaicShader!);
+          } catch (_) {
+            filter = null;
+          }
+        }
+        final sigma = 4.0 + 16 * m.style.strength;
+        filter ??= ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma);
+        effect = ClipRect(
+          child: BackdropFilter(
+            filter: filter,
+            child: const SizedBox.expand(),
+          ),
+        );
+      }
+      children.add(
+        Positioned.fromRect(
+          rect: rect,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {
+              if (_selMosaic == i) {
+                _editMosaic(i);
+              } else {
+                setState(() {
+                  _selMosaic = i;
+                  _wmPart = WmPart.none;
+                });
+              }
+            },
+            onPanStart: (_) {
+              if (_pvPts.length >= 2) return;
+              _pushUndo();
+              setState(() {
+                _selMosaic = i;
+                _wmPart = WmPart.none;
+              });
+            },
+            onPanUpdate: (d) {
+              if (_pvPts.length >= 2) return;
+              setState(() {
+                m.x = (m.x + d.delta.dx / w).clamp(0.0, 1.0);
+                m.y = (m.y + d.delta.dy / h).clamp(0.0, 1.0);
+              });
+            },
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                effect,
+                if (_selMosaic == i)
+                  IgnorePointer(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: kSelect, width: 1.5),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    return Stack(clipBehavior: Clip.hardEdge, children: children);
+  }
+
+  void _addMosaic() {
+    _pushUndo();
+    setState(() {
+      _mosaics.add(PhotoMosaic());
+      _selMosaic = _mosaics.length - 1;
+      _wmPart = WmPart.none;
+    });
+    showHint(context, '拖曳調整位置，再點一下可調樣式與大小');
+  }
+
+  /// 馬賽克樣式表（照片版）：樣式＋大小＋濃度/顏色＋移除
+  void _editMosaic(int i) {
+    if (i < 0 || i >= _mosaics.length) return;
+    final m = _mosaics[i];
+    var pushed = false;
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) {
+          void change(VoidCallback f) {
+            if (!pushed) {
+              _pushUndo();
+              pushed = true;
+            }
+            setState(f);
+            setSheet(() {});
+          }
+
+          Widget chip(String label, int type) {
+            final on = m.style.type == type;
+            return Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: () => change(() => m.style.type = type),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: on
+                          ? kSelect.withValues(alpha: 0.18)
+                          : Colors.transparent,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: on ? kSelect : kBorder,
+                        width: on ? 1.5 : 1,
+                      ),
+                    ),
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: on ? FontWeight.w700 : FontWeight.w400,
+                        color: on ? kSelect : kText,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }
+
+          Widget row(String label, Widget child, [Widget? trail]) => Row(
+            children: [
+              SizedBox(
+                width: 40,
+                child: Text(
+                  label,
+                  style: const TextStyle(fontSize: 12, color: kTextDim),
+                ),
+              ),
+              Expanded(child: child),
+              if (trail != null) SizedBox(width: 40, child: trail),
+            ],
+          );
+
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.blur_on, size: 18, color: kAmber),
+                      SizedBox(width: 8),
+                      Text(
+                        '馬賽克樣式',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [chip('像素化', 0), chip('模糊', 1), chip('純色遮蓋', 2)],
+                  ),
+                  const SizedBox(height: 14),
+                  row(
+                    '大小',
+                    Slider(
+                      value: m.scale.clamp(0.05, 1.5),
+                      min: 0.05,
+                      max: 1.5,
+                      onChanged: (v) => change(() => m.scale = v),
+                    ),
+                    Text(
+                      '${(m.scale * 100).round()}%',
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(fontSize: 11.5, color: kTextDim),
+                    ),
+                  ),
+                  if (m.style.type != 2)
+                    row(
+                      '濃度',
+                      Slider(
+                        value: m.style.strength,
+                        onChanged: (v) => change(() => m.style.strength = v),
+                      ),
+                      Text(
+                        '${(m.style.strength * 100).round()}%',
+                        textAlign: TextAlign.right,
+                        style: const TextStyle(fontSize: 11.5, color: kTextDim),
+                      ),
+                    )
+                  else
+                    SizedBox(
+                      height: 32,
+                      child: Row(
+                        children: [
+                          const Text(
+                            '顏色',
+                            style: TextStyle(fontSize: 12, color: kTextDim),
+                          ),
+                          const Spacer(),
+                          InkWell(
+                            borderRadius: BorderRadius.circular(12),
+                            onTap: () async {
+                              var color = Color(m.style.color);
+                              final ok = await showDialog<bool>(
+                                context: context,
+                                builder: (context) => AlertDialog(
+                                  title: const Text('顏色'),
+                                  content: SingleChildScrollView(
+                                    child: ColorPicker(
+                                      pickerColor: color,
+                                      enableAlpha: false,
+                                      labelTypes: const [],
+                                      onColorChanged: (c) => color = c,
+                                    ),
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () =>
+                                          Navigator.pop(context, false),
+                                      child: const Text('取消'),
+                                    ),
+                                    FilledButton(
+                                      onPressed: () =>
+                                          Navigator.pop(context, true),
+                                      child: const Text('確定'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                              if (ok == true) {
+                                change(
+                                  () => m.style.color = color.toARGB32(),
+                                );
+                              }
+                            },
+                            child: Container(
+                              width: 24,
+                              height: 24,
+                              decoration: BoxDecoration(
+                                color: Color(m.style.color),
+                                shape: BoxShape.circle,
+                                border: Border.all(color: kBorder, width: 1.5),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(height: 6),
+                  Center(
+                    child: TextButton.icon(
+                      onPressed: () {
+                        _pushUndo();
+                        setState(() {
+                          _mosaics.removeAt(i);
+                          _selMosaic = -1;
+                        });
+                        Navigator.pop(context);
+                      },
+                      icon: const Icon(
+                        Icons.delete_outline,
+                        size: 16,
+                        color: kTextDim,
+                      ),
+                      label: const Text(
+                        '移除馬賽克',
+                        style: TextStyle(fontSize: 12, color: kTextDim),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -329,6 +677,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         _photoBytes!,
         _settings,
         grade: _grade,
+        mosaics: _mosaics,
       );
       var ext = 'png';
       if (jpeg) {
@@ -443,8 +792,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                         //（不取消的話另一個部件會永遠拖不動）
                         onTap: () {
                           FocusManager.instance.primaryFocus?.unfocus();
-                          if (_wmPart != WmPart.none) {
-                            setState(() => _wmPart = WmPart.none);
+                          if (_wmPart != WmPart.none || _selMosaic != -1) {
+                            setState(() {
+                              _wmPart = WmPart.none;
+                              _selMosaic = -1;
+                            });
                           }
                         },
                         child: Container(
@@ -470,6 +822,17 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                   Image.memory(
                                     _photoBytes!,
                                     fit: BoxFit.contain,
+                                  ),
+                                // 馬賽克層：畫在照片上、浮水印下
+                                if (_mosaics.isNotEmpty)
+                                  Positioned.fill(
+                                    child: LayoutBuilder(
+                                      builder: (context, box) =>
+                                          _buildMosaics(
+                                            box.maxWidth,
+                                            box.maxHeight,
+                                          ),
+                                    ),
                                   ),
                                 WatermarkLayer(
                                   settings: _settings,
