@@ -3208,33 +3208,43 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               _sel = c.id;
                                               _wmSel = false;
                                             }),
-                                            // 棋盤格示意，不依賴底圖取樣
-                                            //（web 的影片在畫布外，毛玻璃
-                                            // 抓不到底圖會整塊隱形）。
+                                            // 手機：毛玻璃真的把底下畫面
+                                            // 糊掉（影片是材質抓得到）；
+                                            // web 播放中抓不到底圖，就只剩
+                                            // 淡格線框標示範圍，不擋畫面。
                                             // 真正的像素化由匯出做
-                                            child: Container(
-                                              decoration: BoxDecoration(
-                                                border: Border.all(
-                                                  color: Colors.white54,
+                                            child: ClipRect(
+                                              child: BackdropFilter(
+                                                filter: ui.ImageFilter.blur(
+                                                  sigmaX: 10,
+                                                  sigmaY: 10,
                                                 ),
-                                              ),
-                                              child: const Stack(
-                                                fit: StackFit.expand,
-                                                children: [
-                                                  CustomPaint(
-                                                    painter:
-                                                        _MosaicPatternPainter(),
-                                                  ),
-                                                  Center(
-                                                    child: Text(
-                                                      '馬賽克',
-                                                      style: TextStyle(
-                                                        fontSize: 10,
-                                                        color: Colors.white,
-                                                      ),
+                                                child: Container(
+                                                  decoration: BoxDecoration(
+                                                    border: Border.all(
+                                                      color: Colors.white54,
                                                     ),
                                                   ),
-                                                ],
+                                                  child: const Stack(
+                                                    fit: StackFit.expand,
+                                                    children: [
+                                                      CustomPaint(
+                                                        painter:
+                                                            _MosaicPatternPainter(),
+                                                      ),
+                                                      Center(
+                                                        child: Text(
+                                                          '馬賽克',
+                                                          style: TextStyle(
+                                                            fontSize: 10,
+                                                            color:
+                                                                Colors.white70,
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
                                               ),
                                             ),
                                           ),
@@ -5325,27 +5335,21 @@ class _MagnetPainter extends CustomPainter {
   bool shouldRepaint(_MagnetPainter old) => old.color != color;
 }
 
-/// 馬賽克區域的棋盤格示意（半透明，蓋在畫面上代表「這塊會打碼」）
+/// 馬賽克區域的細格線（淡淡的，標示範圍但不擋內容）
 class _MosaicPatternPainter extends CustomPainter {
   const _MosaicPatternPainter();
 
   @override
   void paint(Canvas canvas, Size size) {
-    final cell = (math.min(size.width, size.height) / 8).clamp(6.0, 18.0);
-    final a = Paint()..color = const Color(0x59FFFFFF); // 白 35%
-    final b = Paint()..color = const Color(0x40000000); // 黑 25%
-    for (var y = 0; y * cell < size.height; y++) {
-      for (var x = 0; x * cell < size.width; x++) {
-        canvas.drawRect(
-          Rect.fromLTWH(
-            x * cell,
-            y * cell,
-            math.min(cell, size.width - x * cell),
-            math.min(cell, size.height - y * cell),
-          ),
-          (x + y).isEven ? a : b,
-        );
-      }
+    final cell = (math.min(size.width, size.height) / 8).clamp(8.0, 22.0);
+    final line = Paint()
+      ..color = const Color(0x2EFFFFFF) // 白 18%
+      ..strokeWidth = 1;
+    for (var x = cell; x < size.width; x += cell) {
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), line);
+    }
+    for (var y = cell; y < size.height; y += cell) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), line);
     }
   }
 
