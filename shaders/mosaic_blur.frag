@@ -23,17 +23,13 @@ void main() {
   uv.y = 1.0 - uv.y;
 #endif
 
-  const vec2 taps[16] = vec2[16](
-    vec2(0.0, 0.0), vec2(0.54, 0.17), vec2(-0.34, 0.44),
-    vec2(-0.55, -0.20), vec2(0.21, -0.56), vec2(0.85, -0.32),
-    vec2(-0.05, 0.89), vec2(-0.83, 0.40), vec2(-0.46, -0.79),
-    vec2(0.62, 0.68), vec2(0.99, 0.12), vec2(-0.99, -0.06),
-    vec2(0.30, -0.94), vec2(-0.28, 0.95), vec2(0.75, -0.66),
-    vec2(-0.72, 0.69)
-  );
+  // Vogel 螺旋 16 點圓盤取樣（SkSL 不支援陣列初始化，用算式產生）
   vec4 acc = vec4(0.0);
   for (int i = 0; i < 16; i++) {
-    vec2 q = clamp(uv + taps[i] * r / u_size, vec2(0.001), vec2(0.999));
+    float ang = 2.39996 * float(i);
+    float rad = r * sqrt((float(i) + 0.5) / 16.0);
+    vec2 off = vec2(cos(ang), sin(ang)) * rad;
+    vec2 q = clamp(uv + off / u_size, vec2(0.001), vec2(0.999));
     acc += texture(u_src, q);
   }
   acc /= 16.0;
