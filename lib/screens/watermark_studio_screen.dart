@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../models/watermark_settings.dart';
 import '../theme.dart';
@@ -96,8 +97,102 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
       _settings.animation = wm.animation;
       _settings.animSpeed = wm.animSpeed;
       _settings.animRange = wm.animRange;
+      _wmPart = WmPart.none; // 復原可能讓被選的部件消失，選取殘留會卡死拖曳
       _sync++;
     });
+  }
+
+  // ===== 選取（選了圖片就鎖定圖片：拖曳/縮放都只動它）=====
+  WmPart _wmPart = WmPart.none;
+
+  /// 被選部件還活著嗎（存在、非平鋪）；不活一律當沒選
+  WmPart get _wmPartAlive {
+    final t = _settings.text;
+    final lg = _settings.logo;
+    return switch (_wmPart) {
+      WmPart.text when t.enabled && !t.tiled && t.text.trim().isNotEmpty =>
+        WmPart.text,
+      WmPart.logo when lg.enabled && !lg.tiled => WmPart.logo,
+      _ => WmPart.none,
+    };
+  }
+
+  // ===== 雙指縮放（示意畫面上直接捏）=====
+  final Map<int, Offset> _pvPts = {};
+  double? _pvBaseDist;
+  double _pvBaseText = 0;
+  double _pvBaseLogo = 0;
+
+  void _pinchDown(PointerDownEvent e) {
+    _pvPts[e.pointer] = e.position;
+    if (_pvPts.length != 2) return;
+    final p = _pvPts.values.toList();
+    final d = (p[0] - p[1]).distance;
+    if (d <= 20) return;
+    _pvBaseDist = d;
+    _pvBaseText = _settings.text.sizeFrac;
+    _pvBaseLogo = _settings.logo.sizeFrac;
+    _pushUndo();
+  }
+
+  void _pinchMove(PointerMoveEvent e) {
+    if (!_pvPts.containsKey(e.pointer)) return;
+    _pvPts[e.pointer] = e.position;
+    if (_pvBaseDist == null || _pvPts.length < 2) return;
+    final p = _pvPts.values.toList();
+    final f = (p[0] - p[1]).distance / _pvBaseDist!;
+    final t = _settings.text;
+    final hasText = t.enabled && t.text.trim().isNotEmpty;
+    final hasLogo = _settings.logo.enabled;
+    // 有選取只動被選的；都沒選而兩個都在才一起動
+    final part = _wmPartAlive;
+    final doText = hasText && (part != WmPart.logo || !hasLogo);
+    final doLogo = hasLogo && (part != WmPart.text || !hasText);
+    if (doText) t.sizeFrac = (_pvBaseText * f).clamp(0.015, 2.0);
+    if (doLogo) {
+      _settings.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
+    }
+    _wmTick.value++;
+  }
+
+  void _pinchUp(int pointer) {
+    _pvPts.remove(pointer);
+    if (_pvBaseDist != null && _pvPts.length < 2) {
+      _pvBaseDist = null;
+      setState(() {}); // 面板的大小滑桿要跟上捏完的值
+    }
+  }
+
+  // ===== 選取路由的置中吸附（跟其他編輯器同手感）=====
+  double? _stRawX, _stRawY;
+  bool _stGuideV = false, _stGuideH = false;
+  bool _stSnapped = false;
+
+  double _snapC(double v) => (v - 0.5).abs() < 0.015 ? 0.5 : v;
+
+  void _stSetGuides(double x, double y) {
+    final v = x == 0.5, hh = y == 0.5;
+    if (v != _stGuideV || hh != _stGuideH) {
+      _stGuideV = v;
+      _stGuideH = hh;
+    }
+    final on = v || hh;
+    if (on != _stSnapped) {
+      _stSnapped = on;
+      if (on) HapticFeedback.selectionClick();
+    }
+    _wmTick.value++;
+  }
+
+  void _stClearGuides() {
+    _stRawX = null;
+    _stRawY = null;
+    _stSnapped = false;
+    if (_stGuideV || _stGuideH) {
+      _stGuideV = false;
+      _stGuideH = false;
+      _wmTick.value++;
+    }
   }
 
   /// 底色切換：迷你分段控制（黑／白）
@@ -211,23 +306,112 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
               children: [
                 ValueListenableBuilder<int>(
                   valueListenable: _wmTick,
-                  builder: (context, _, _) => Center(
-                    child: AspectRatio(
-                      aspectRatio: _ratios[_ratioIdx].$2,
-                      child: Container(
-                        color: _lightBg ? Colors.white : Colors.black,
-                        child: Stack(
-                          clipBehavior: Clip.none,
-                          fit: StackFit.expand,
-                          children: [
-                            // 底就是純色，不放示意圖示——那個山形圖案
-                            // 會被誤認成浮水印的一部分
-                            WatermarkLayer(
-                              settings: _settings,
-                              onChanged: () => _wmTick.value++,
-                              onDragStart: _pushUndo,
+                  builder: (context, _, _) => Listener(
+                    // 雙指縮放（用 Listener 不搶單指拖曳手勢）
+                    onPointerDown: _pinchDown,
+                    onPointerMove: _pinchMove,
+                    onPointerUp: (e) => _pinchUp(e.pointer),
+                    onPointerCancel: (e) => _pinchUp(e.pointer),
+                    child: GestureDetector(
+                      // 點空白＝取消選取
+                      onTap: () {
+                        if (_wmPart != WmPart.none) {
+                          setState(() => _wmPart = WmPart.none);
+                        }
+                      },
+                      child: Center(
+                        child: AspectRatio(
+                          aspectRatio: _ratios[_ratioIdx].$2,
+                          child: Container(
+                            color: _lightBg ? Colors.white : Colors.black,
+                            child: Stack(
+                              clipBehavior: Clip.none,
+                              fit: StackFit.expand,
+                              children: [
+                                // 底就是純色，不放示意圖示——那個山形圖案
+                                // 會被誤認成浮水印的一部分
+                                WatermarkLayer(
+                                  settings: _settings,
+                                  onChanged: () => _wmTick.value++,
+                                  onDragStart: _pushUndo,
+                                  // 選取鎖定：選了圖片就只動圖片
+                                  selectedPart: _wmPartAlive,
+                                  onSelectPart: (p) =>
+                                      setState(() => _wmPart = p),
+                                  panLocked: () => _pvPts.length >= 2,
+                                ),
+                                // 置中輔助線（路由拖曳吸中線時）
+                                if (_stGuideV || _stGuideH)
+                                  Positioned.fill(
+                                    child: CenterGuides(
+                                      vertical: _stGuideV,
+                                      horizontal: _stGuideH,
+                                    ),
+                                  ),
+                                // 選取路由：有部件被選取時，整個示意
+                                // 畫面的拖曳都只動被選的那個
+                                if (_wmPartAlive != WmPart.none)
+                                  Positioned.fill(
+                                    child: LayoutBuilder(
+                                      builder: (context, box) {
+                                        final w = box.maxWidth;
+                                        final h = box.maxHeight;
+                                        return GestureDetector(
+                                          behavior:
+                                              HitTestBehavior.translucent,
+                                          onPanStart: (_) {
+                                            _stClearGuides();
+                                            if (_pvPts.length < 2) {
+                                              _pushUndo();
+                                            }
+                                          },
+                                          onPanUpdate: (d) {
+                                            if (_pvPts.length >= 2) return;
+                                            final t = _settings.text;
+                                            final lg = _settings.logo;
+                                            final part = _wmPartAlive;
+                                            // 原始座標累積、顯示值吸中線
+                                            if (part == WmPart.text) {
+                                              _stRawX ??= t.x;
+                                              _stRawY ??= t.y;
+                                              _stRawX =
+                                                  (_stRawX! +
+                                                          d.delta.dx / w)
+                                                      .clamp(0.0, 1.0);
+                                              _stRawY =
+                                                  (_stRawY! +
+                                                          d.delta.dy / h)
+                                                      .clamp(0.0, 1.0);
+                                              t.x = _snapC(_stRawX!);
+                                              t.y = _snapC(_stRawY!);
+                                              _stSetGuides(t.x, t.y);
+                                            } else if (part ==
+                                                WmPart.logo) {
+                                              _stRawX ??= lg.x;
+                                              _stRawY ??= lg.y;
+                                              _stRawX =
+                                                  (_stRawX! +
+                                                          d.delta.dx / w)
+                                                      .clamp(0.0, 1.0);
+                                              _stRawY =
+                                                  (_stRawY! +
+                                                          d.delta.dy / h)
+                                                      .clamp(0.0, 1.0);
+                                              lg.x = _snapC(_stRawX!);
+                                              lg.y = _snapC(_stRawY!);
+                                              _stSetGuides(lg.x, lg.y);
+                                            }
+                                          },
+                                          onPanEnd: (_) => _stClearGuides(),
+                                          onPanCancel: _stClearGuides,
+                                          child: const SizedBox.expand(),
+                                        );
+                                      },
+                                    ),
+                                  ),
+                              ],
                             ),
-                          ],
+                          ),
                         ),
                       ),
                     ),

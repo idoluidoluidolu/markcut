@@ -110,7 +110,6 @@ flutter:
 
   shaders:
     - shaders/mosaic.frag
-    - shaders/mosaic_blur.frag
 
   fonts:
     - family: NotoSansTC

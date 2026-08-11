@@ -479,19 +479,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 共用實例會讓後設定的參數蓋掉前面的
   ui.FragmentProgram? _mosaicProg;
 
-  /// 模糊＋柔邊 shader（真羽化即時預覽）；載不到退回同心圈
-  ui.FragmentProgram? _blurProg;
-
   Future<void> _loadMosaicShader() async {
     try {
       final prog = await ui.FragmentProgram.fromAsset('shaders/mosaic.frag');
       if (mounted) setState(() => _mosaicProg = prog);
-    } catch (_) {}
-    try {
-      final prog = await ui.FragmentProgram.fromAsset(
-        'shaders/mosaic_blur.frag',
-      );
-      if (mounted) setState(() => _blurProg = prog);
     } catch (_) {}
   }
 
@@ -3501,48 +3492,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                   );
                                                 }
                                                 if (ms.type == 1 &&
-                                                    ms.feather > 0 &&
-                                                    _blurProg != null) {
-                                                  // 真羽化即時預覽：shader
-                                                  // 的模糊半徑與混合比例都
-                                                  // 隨離邊距離漸變
-                                                  final dpr = MediaQuery.of(
-                                                    context,
-                                                  ).devicePixelRatio;
-                                                  final sigma =
-                                                      (4.0 +
-                                                          16 * ms.strength) *
-                                                      dpr;
-                                                  final fpx =
-                                                      ms.feather *
-                                                      0.35 *
-                                                      math.min(
-                                                        r.width,
-                                                        r.height,
-                                                      ) *
-                                                      dpr;
-                                                  try {
-                                                    final sh = _blurProg!
-                                                        .fragmentShader();
-                                                    // 0,1=u_size(引擎填),
-                                                    // 2=u_sigma,3=u_feather
-                                                    sh.setFloat(2, sigma);
-                                                    sh.setFloat(3, fpx);
-                                                    return ClipRect(
-                                                      child: BackdropFilter(
-                                                        filter:
-                                                            ui.ImageFilter.shader(
-                                                              sh,
-                                                            ),
-                                                        child: const SizedBox
-                                                            .expand(),
-                                                      ),
-                                                    );
-                                                  } catch (_) {}
-                                                }
-                                                if (ms.type == 1 &&
                                                     ms.feather > 0) {
-                                                  // 退回方案：6 圈同心疊加,
+                                                  // 柔邊：6 圈同心疊加,
                                                   // 中心累積較糊、邊緣輕,
                                                   // 看不出圈與圈的階梯
                                                   //（跟匯出的漸進圈同思路）
