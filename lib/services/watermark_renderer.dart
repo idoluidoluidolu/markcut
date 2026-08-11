@@ -115,16 +115,21 @@ class WatermarkRenderer {
         canvas.drawImage(photo, ui.Offset.zero, ui.Paint());
         canvas.restore();
         canvas.restore();
+        // 遮罩用「圖層模糊」而不是 MaskFilter——web 支援不完整會硬邊
+        canvas.saveLayer(
+          rect,
+          ui.Paint()
+            ..blendMode = ui.BlendMode.dstIn
+            ..imageFilter = ui.ImageFilter.blur(
+              sigmaX: featherPx * 0.5,
+              sigmaY: featherPx * 0.5,
+            ),
+        );
         canvas.drawRect(
           rect.deflate(featherPx),
-          ui.Paint()
-            ..color = const ui.Color(0xFFFFFFFF)
-            ..maskFilter = ui.MaskFilter.blur(
-              ui.BlurStyle.normal,
-              featherPx * 0.6,
-            )
-            ..blendMode = ui.BlendMode.dstIn,
+          ui.Paint()..color = const ui.Color(0xFFFFFFFF),
         );
+        canvas.restore();
         canvas.restore();
         return;
       }

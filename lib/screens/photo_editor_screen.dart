@@ -1316,16 +1316,22 @@ class _MosaicPatchPainter extends CustomPainter {
       );
       canvas.restore();
       canvas.restore();
+      // 遮罩用「圖層模糊」而不是 MaskFilter——web 的繪圖引擎
+      // 對 MaskFilter 支援不完整,會變成硬邊
+      canvas.saveLayer(
+        bounds,
+        Paint()
+          ..blendMode = BlendMode.dstIn
+          ..imageFilter = ui.ImageFilter.blur(
+            sigmaX: featherPx * 0.5,
+            sigmaY: featherPx * 0.5,
+          ),
+      );
       canvas.drawRect(
         bounds.deflate(featherPx),
-        Paint()
-          ..color = const Color(0xFFFFFFFF)
-          ..maskFilter = ui.MaskFilter.blur(
-            ui.BlurStyle.normal,
-            featherPx * 0.6,
-          )
-          ..blendMode = BlendMode.dstIn,
+        Paint()..color = const Color(0xFFFFFFFF),
       );
+      canvas.restore();
       canvas.restore();
       return;
     }
