@@ -295,8 +295,8 @@ class _HomeScreenState extends State<HomeScreen> {
               Expanded(
                 child: Center(
                   child: SizedBox(
-                    width: 300,
-                    height: 120,
+                    width: 200,
+                    height: 80,
                     // 透明背景版 logo：直接融進近黑背景，不用底板
                     // （icon_foreground.png 是啟動圖示前景，別共用）
                     child: Image.asset(
