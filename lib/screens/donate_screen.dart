@@ -1,15 +1,29 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../theme.dart';
 
-/// 斗內頁（App 內購小費罐）：三檔消耗型內購。
-/// 商店後台（App Store Connect / Play Console）要先建立這三個
-/// 消耗型商品，ID 如下；還沒建立/還沒上架時頁面會顯示「即將開放」
+/// 斗內頁（App 內購小費罐）＋斗內牆。
+///
+/// 內購：三檔消耗型商品，商店後台要建立同 ID 的商品才買得動；
+/// 還沒建立時卡片照樣顯示（固定價），點了提示即將開放。
+/// 斗內牆：目前是「假資料＋本機紀錄」——自己斗內成功會記在本機
+/// 並上牆；之後要做真的再接後端（全部人共用的牆）。
 const kTipIds = <String>{'tip_small', 'tip_medium', 'tip_large'};
+
+/// 檔位定義：(商品 ID, 名稱, 沒抓到商店價時顯示的價格)
+const _kTiers = [
+  ('tip_small', '小挺一下', 'NT\$100'),
+  ('tip_medium', '中挺一下', 'NT\$500'),
+  ('tip_large', '大挺一下', 'NT\$990'),
+];
+
+const _kLocalTipsKey = 'my_tips';
 
 class DonateScreen extends StatefulWidget {
   const DonateScreen({super.key});
@@ -21,9 +35,19 @@ class DonateScreen extends StatefulWidget {
 class _DonateScreenState extends State<DonateScreen> {
   final _iap = InAppPurchase.instance;
   StreamSubscription<List<PurchaseDetails>>? _sub;
-  List<ProductDetails> _products = const [];
-  bool _loading = true;
+  final Map<String, ProductDetails> _products = {};
   bool _buying = false;
+
+  /// 斗內牆：假資料墊底（之後接後端換成真的），
+  /// 自己的斗內紀錄（本機）疊在最上面
+  static const _seedWall = [
+    ('剪', '剪片路過的', 'small'),
+    ('神', '神秘人', 'medium'),
+    ('阿', '阿偉', 'small'),
+    ('浮', '浮水印重度使用者', 'large'),
+    ('小', '小美', 'small'),
+  ];
+  List<(String, String, String)> _myTips = [];
 
   @override
   void initState() {
@@ -31,10 +55,9 @@ class _DonateScreenState extends State<DonateScreen> {
     if (!kIsWeb) {
       // 先掛監聽再查商品：買完的事件才不會漏接
       _sub = _iap.purchaseStream.listen(_onPurchases, onError: (_) {});
-      _load();
-    } else {
-      _loading = false;
+      _loadProducts();
     }
+    _loadMyTips();
   }
 
   @override
@@ -43,24 +66,51 @@ class _DonateScreenState extends State<DonateScreen> {
     super.dispose();
   }
 
-  Future<void> _load() async {
+  Future<void> _loadProducts() async {
     try {
-      if (!await _iap.isAvailable()) {
-        if (mounted) setState(() => _loading = false);
-        return;
-      }
+      if (!await _iap.isAvailable()) return;
       final resp = await _iap.queryProductDetails(kTipIds);
-      final list = resp.productDetails
-        ..sort((a, b) => a.rawPrice.compareTo(b.rawPrice));
       if (mounted) {
         setState(() {
-          _products = list;
-          _loading = false;
+          for (final p in resp.productDetails) {
+            _products[p.id] = p;
+          }
         });
       }
-    } catch (_) {
-      if (mounted) setState(() => _loading = false);
-    }
+    } catch (_) {}
+  }
+
+  Future<void> _loadMyTips() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_kLocalTipsKey);
+    if (raw == null) return;
+    try {
+      final list = (jsonDecode(raw) as List)
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .map(
+            (m) => (
+              (m['name'] as String? ?? '無名氏').isEmpty
+                  ? '無'
+                  : (m['name'] as String)[0],
+              m['name'] as String? ?? '無名氏',
+              m['tier'] as String? ?? 'small',
+            ),
+          )
+          .toList();
+      if (mounted) setState(() => _myTips = list);
+    } catch (_) {}
+  }
+
+  Future<void> _saveMyTip(String name, String tier) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_kLocalTipsKey);
+    List<dynamic> list = [];
+    try {
+      if (raw != null) list = jsonDecode(raw) as List;
+    } catch (_) {}
+    list.insert(0, {'name': name, 'tier': tier});
+    await prefs.setString(_kLocalTipsKey, jsonEncode(list));
+    _loadMyTips();
   }
 
   Future<void> _onPurchases(List<PurchaseDetails> purchases) async {
@@ -70,7 +120,8 @@ class _DonateScreenState extends State<DonateScreen> {
         if (p.pendingCompletePurchase) await _iap.completePurchase(p);
         if (mounted) {
           setState(() => _buying = false);
-          _thanks();
+          final tier = p.productID.replaceFirst('tip_', '');
+          _askNameAndThank(tier);
         }
       } else if (p.status == PurchaseStatus.error ||
           p.status == PurchaseStatus.canceled) {
@@ -80,23 +131,42 @@ class _DonateScreenState extends State<DonateScreen> {
     }
   }
 
-  void _thanks() {
-    showDialog<void>(
+  /// 斗內成功：問一個顯示名稱（選填）→ 上牆＋道謝
+  Future<void> _askNameAndThank(String tier) async {
+    final ctrl = TextEditingController();
+    final name = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('謝謝你的支持！'),
-        content: const Text('每一份心意都會變成我們繼續改進的動力 💪'),
+        title: const Text('謝謝你的加菜金！🙏'),
+        content: TextField(
+          controller: ctrl,
+          maxLength: 12,
+          decoration: const InputDecoration(
+            hintText: '想在斗內牆上顯示的名字（選填）',
+          ),
+        ),
         actions: [
           FilledButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('好'),
+            onPressed: () => Navigator.pop(context, ctrl.text.trim()),
+            child: const Text('上牆！'),
           ),
         ],
       ),
     );
+    ctrl.dispose();
+    await _saveMyTip(
+      (name == null || name.isEmpty) ? '無名氏' : name,
+      tier,
+    );
   }
 
-  Future<void> _buy(ProductDetails p) async {
+  Future<void> _buy(String id) async {
+    final p = _products[id];
+    if (p == null) {
+      // 商店商品還沒建立（未上架）或 web：先收下心意
+      showHint(context, '斗內功能上架商店後開放，先謝謝你的心意！');
+      return;
+    }
     if (_buying) return;
     setState(() => _buying = true);
     try {
@@ -108,18 +178,22 @@ class _DonateScreenState extends State<DonateScreen> {
     }
   }
 
-  /// 檔位的圖示與說明（照價位排序後依序套用）
-  static const _tiers = [
-    (Icons.local_cafe_outlined, '請我們喝杯飲料'),
-    (Icons.lunch_dining_outlined, '請我們吃份雞排'),
-    (Icons.rocket_launch_outlined, '大力支持開發'),
-  ];
+  static const _tierIcons = {
+    'small': Icons.local_cafe_outlined,
+    'medium': Icons.lunch_dining_outlined,
+    'large': Icons.rocket_launch_outlined,
+  };
+  static const _tierNames = {
+    'small': '小挺一下',
+    'medium': '中挺一下',
+    'large': '大挺一下',
+  };
 
-  Widget _tierCard(int i, ProductDetails p) {
-    final (icon, label) = _tiers[i.clamp(0, _tiers.length - 1)];
+  Widget _tierCard(String id, String label, String fallbackPrice) {
+    final tier = id.replaceFirst('tip_', '');
     return InkWell(
       borderRadius: BorderRadius.circular(16),
-      onTap: _buying ? null : () => _buy(p),
+      onTap: _buying ? null : () => _buy(id),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         decoration: BoxDecoration(
@@ -136,7 +210,7 @@ class _DonateScreenState extends State<DonateScreen> {
                 color: kPanelHi,
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: Icon(icon, size: 22, color: kAmber),
+              child: Icon(_tierIcons[tier], size: 22, color: kAmber),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -149,7 +223,7 @@ class _DonateScreenState extends State<DonateScreen> {
               ),
             ),
             Text(
-              p.price,
+              _products[id]?.price ?? fallbackPrice,
               style: const TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w800,
@@ -158,6 +232,52 @@ class _DonateScreenState extends State<DonateScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _wallRow(String name, String tier, {bool mine = false}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Container(
+            width: 30,
+            height: 30,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: kPanelHi,
+              borderRadius: BorderRadius.circular(9),
+            ),
+            child: Icon(_tierIcons[tier], size: 15, color: kAmber),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+          ),
+          if (mine)
+            Container(
+              margin: const EdgeInsets.only(right: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: kSelect.withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: const Text(
+                '你',
+                style: TextStyle(fontSize: 10, color: kSelect),
+              ),
+            ),
+          Text(
+            _tierNames[tier] ?? '',
+            style: const TextStyle(fontSize: 11.5, color: kTextDim),
+          ),
+        ],
       ),
     );
   }
@@ -187,70 +307,66 @@ class _DonateScreenState extends State<DonateScreen> {
               ),
               const SizedBox(height: 14),
               const Text(
-                '謝謝你喜歡這個 App！',
+                '真的那麼好用？',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                style: TextStyle(fontSize: 19, fontWeight: FontWeight.w800),
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 8),
               const Text(
-                '這是我們用下班時間慢慢做出來的作品。\n'
-                '如果它有幫上忙，可以請我們喝杯飲料，\n'
-                '讓我們更有動力繼續加功能、修問題 🙌',
+                '好用到會想給我一點加菜金？\n'
+                '如果你想斗內的話，\n'
+                '那我當然是不會拒絕的！',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 12.5, color: kTextDim, height: 1.7),
+                style: TextStyle(fontSize: 13, color: kTextDim, height: 1.7),
               ),
               const SizedBox(height: 22),
-              if (_loading)
-                const Center(
-                  child: Padding(
-                    padding: EdgeInsets.all(24),
-                    child: CircularProgressIndicator(),
-                  ),
-                )
-              else if (_products.isEmpty)
-                // web、模擬器、或商店商品還沒建好都會走到這
-                Container(
-                  padding: const EdgeInsets.all(18),
-                  decoration: BoxDecoration(
-                    color: kPanel,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: kBorder, width: 1.5),
-                  ),
-                  child: const Column(
-                    children: [
-                      Icon(Icons.storefront_outlined,
-                          size: 26, color: kTextDim),
-                      SizedBox(height: 8),
-                      Text(
-                        '斗內功能即將開放',
-                        style: TextStyle(
-                          fontSize: 13.5,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      SizedBox(height: 4),
-                      Text(
-                        'App 上架商店後就能在這裡請我們喝飲料，\n現在最大的支持是把 App 分享給朋友！',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: kTextDim,
-                          height: 1.6,
-                        ),
-                      ),
-                    ],
-                  ),
-                )
-              else
-                for (var i = 0; i < _products.length; i++) ...[
-                  if (i > 0) const SizedBox(height: 12),
-                  _tierCard(i, _products[i]),
-                ],
-              const SizedBox(height: 18),
+              for (final (id, label, price) in _kTiers) ...[
+                _tierCard(id, label, price),
+                const SizedBox(height: 12),
+              ],
+              const SizedBox(height: 4),
               const Text(
                 '斗內屬於自願贊助，不會解鎖額外功能',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 11, color: kTextDim),
+              ),
+              const SizedBox(height: 26),
+              // ===== 斗內牆 =====
+              Row(
+                children: [
+                  const Icon(Icons.emoji_events_outlined,
+                      size: 17, color: kAmber),
+                  const SizedBox(width: 7),
+                  const Text(
+                    '斗內牆',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+                  ),
+                  const Spacer(),
+                  Text(
+                    '感謝每一位',
+                    style: const TextStyle(fontSize: 11, color: kTextDim),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: kPanel,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: kBorder, width: 1.5),
+                ),
+                child: Column(
+                  children: [
+                    for (final (_, name, tier) in _myTips)
+                      _wallRow(name, tier, mine: true),
+                    for (final (_, name, tier) in _seedWall)
+                      _wallRow(name, tier),
+                  ],
+                ),
               ),
             ],
           ),
