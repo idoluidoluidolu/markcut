@@ -207,12 +207,6 @@ class _DonateScreenState extends State<DonateScreen> {
                 _tierCard(id, label, price),
                 const SizedBox(height: 12),
               ],
-              const SizedBox(height: 4),
-              const Text(
-                '斗內屬於自願贊助，不會解鎖額外功能',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 11, color: kTextDim),
-              ),
             ],
           ),
         ),
