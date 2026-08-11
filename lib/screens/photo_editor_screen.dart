@@ -267,21 +267,88 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     copy.logo.x = (copy.logo.x + 0.08).clamp(0.0, 1.0);
     copy.logo.y = (copy.logo.y + 0.08).clamp(0.0, 1.0);
     setState(() => _extraWms.add(copy));
-    showHint(context, '已加一組浮水印，直接在預覽上拖曳它');
+    _editExtraWm(_extraWms.length - 1);
   }
 
-  /// 面板裡的「更多浮水印」卡：以目前樣式複製多組，各自拖曳、刪除
+  /// 編輯某一組浮水印：抽屜裡放「跟主浮水印一模一樣」的完整面板，
+  /// 文字、字體、顏色、大小…全都能改，改動即時反映在預覽上
+  void _editExtraWm(int i) {
+    if (i < 0 || i >= _extraWms.length) return;
+    var pushed = false;
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => FractionallySizedBox(
+        heightFactor: 0.72,
+        child: WatermarkPanel(
+          settings: _extraWms[i],
+          onChanged: () => setState(() {}),
+          onBeforeChange: () {
+            if (!pushed) {
+              pushed = true;
+              _pushUndo();
+            }
+          },
+          hideSaveButton: true,
+        ),
+      ),
+    );
+  }
+
+  /// 面板裡的「浮水印＋」卡：每組一列（點列進完整編輯面板），
+  /// 最下面永遠有一個「浮水印＋」可以再加
   Widget _extraWmSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        for (var i = 0; i < _extraWms.length; i++)
+          InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => _editExtraWm(i),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.branding_watermark,
+                  size: 14,
+                  color: kTextDim,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _extraWms[i].text.enabled &&
+                            _extraWms[i].text.text.trim().isNotEmpty
+                        ? _extraWms[i].text.text
+                        : '浮水印 ${i + 2}（Logo）',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12.5, color: kText),
+                  ),
+                ),
+                IconButton(
+                  tooltip: '刪除這組',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () {
+                    _pushUndo();
+                    setState(() => _extraWms.removeAt(i));
+                  },
+                  icon: const Icon(
+                    Icons.delete_outline,
+                    size: 17,
+                    color: kTextDim,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        // 永遠釘在最下面的「浮水印＋」
         InkWell(
-          onTap: _extraWms.isEmpty ? _addExtraWm : null,
+          onTap: _addExtraWm,
           borderRadius: BorderRadius.circular(8),
           child: Row(
             children: [
               const Text(
-                '更多浮水印',
+                '浮水印＋',
                 style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w700,
@@ -290,7 +357,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               ),
               const Spacer(),
               IconButton(
-                tooltip: '以目前樣式再加一組',
+                tooltip: '再加一組浮水印',
                 visualDensity: VisualDensity.compact,
                 onPressed: _addExtraWm,
                 icon: const Icon(Icons.add, size: 20, color: kIcon),
@@ -298,37 +365,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             ],
           ),
         ),
-        for (var i = 0; i < _extraWms.length; i++)
-          Row(
-            children: [
-              const Icon(Icons.branding_watermark, size: 14, color: kTextDim),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  _extraWms[i].text.enabled &&
-                          _extraWms[i].text.text.trim().isNotEmpty
-                      ? _extraWms[i].text.text
-                      : '第 ${i + 2} 組（Logo）',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12, color: kTextDim),
-                ),
-              ),
-              IconButton(
-                tooltip: '刪除這組',
-                visualDensity: VisualDensity.compact,
-                onPressed: () {
-                  _pushUndo();
-                  setState(() => _extraWms.removeAt(i));
-                },
-                icon: const Icon(
-                  Icons.delete_outline,
-                  size: 17,
-                  color: kTextDim,
-                ),
-              ),
-            ],
-          ),
       ],
     );
   }
