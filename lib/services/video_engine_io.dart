@@ -419,11 +419,17 @@ Future<String> _buildCommand(
         '$enable[mz$k];',
       );
     } else if (ms.type == 1) {
-      // 模糊：boxblur（LGPL），半徑跟著濃度走
-      final r = (2 + ms.strength * 18).round();
+      // 模糊：縮小再「平滑」放大（跟像素化同管線，只差放大用 bilinear）。
+      // 不用 boxblur——裝置端的 min 版 FFmpeg 解析它會失敗
+      //（"No option name near"），本機完整版卻正常，靠不住；
+      // scale 在所有匯出路徑都驗證過。濃度越高縮越小＝越糊
+      final down = 2 + (ms.strength * 12).round();
+      final dw = math.max(2, (w2 / down).round());
+      final dh = math.max(2, (h2 / down).round());
       fc.write(
         '[$cur]split=2[mzA$k][mzB$k];'
-        '[mzB$k]crop=$w2:$h2:$x:$y,boxblur=$r:2[mzP$k];'
+        '[mzB$k]crop=$w2:$h2:$x:$y,scale=$dw:$dh,'
+        'scale=$w2:$h2:flags=bilinear[mzP$k];'
         '[mzA$k][mzP$k]overlay=$x:$y:$enable:'
         'eof_action=pass[mz$k];',
       );
