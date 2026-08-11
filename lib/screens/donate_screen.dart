@@ -18,7 +18,6 @@ const _kTiers = [
   ('tip_large', '大挺一下', 'NT\$990'),
 ];
 
-
 class DonateScreen extends StatefulWidget {
   const DonateScreen({super.key});
 
@@ -105,9 +104,7 @@ class _DonateScreenState extends State<DonateScreen> {
     if (_buying) return;
     setState(() => _buying = true);
     try {
-      await _iap.buyConsumable(
-        purchaseParam: PurchaseParam(productDetails: p),
-      );
+      await _iap.buyConsumable(purchaseParam: PurchaseParam(productDetails: p));
     } catch (_) {
       if (mounted) setState(() => _buying = false);
     }
@@ -174,38 +171,44 @@ class _DonateScreenState extends State<DonateScreen> {
         child: Column(
           children: [
             Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(24, 8, 24, 8),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const SizedBox(height: 16),
-                    const Text(
-                      '真的那麼好用？',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 19,
-                        fontWeight: FontWeight.w800,
-                      ),
+              // 內容垂直置中；畫面太矮放不下才變成可捲
+              child: LayoutBuilder(
+                builder: (context, cons) => SingleChildScrollView(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(minHeight: cons.maxHeight),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const Text(
+                          '真的那麼好用？',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 19,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          '好用到會想給我一點加菜金？\n'
+                          '如果你想斗內的話，\n'
+                          '那我當然是不會拒絕的！',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: kTextDim,
+                            height: 1.7,
+                          ),
+                        ),
+                        const SizedBox(height: 22),
+                        for (final (id, label, price) in _kTiers) ...[
+                          _tierCard(id, label, price),
+                          const SizedBox(height: 12),
+                        ],
+                      ],
                     ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      '好用到會想給我一點加菜金？\n'
-                      '如果你想斗內的話，\n'
-                      '那我當然是不會拒絕的！',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: kTextDim,
-                        height: 1.7,
-                      ),
-                    ),
-                    const SizedBox(height: 22),
-                    for (final (id, label, price) in _kTiers) ...[
-                      _tierCard(id, label, price),
-                      const SizedBox(height: 12),
-                    ],
-                  ],
+                  ),
                 ),
               ),
             ),
