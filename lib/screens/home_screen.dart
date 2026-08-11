@@ -297,16 +297,17 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: SizedBox(
                     width: 300,
                     height: 120,
-                    // 變亮混合：圖的純黑底變成 kBg，跟背景無縫
-                    child: ColorFiltered(
-                      colorFilter: const ColorFilter.mode(
-                        kBg,
-                        BlendMode.lighten,
-                      ),
-                      child: Image.asset(
-                        'assets/icon/icon_foreground.png',
-                        fit: BoxFit.cover, // 裁掉原圖四周的留白
-                        filterQuality: FilterQuality.medium,
+                    // 原圖原色放在圓角黑色底板上：黑底變成刻意的
+                    // 設計元素（變亮混合會把最暗那隻吃掉，不能用）
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(22),
+                      child: Container(
+                        color: Colors.black,
+                        child: Image.asset(
+                          'assets/icon/icon_foreground.png',
+                          fit: BoxFit.cover, // 裁掉原圖四周的留白
+                          filterQuality: FilterQuality.medium,
+                        ),
                       ),
                     ),
                   ),
