@@ -35,6 +35,7 @@ class WatermarkRenderer {
     WatermarkSettings s, {
     ColorGrade? grade,
     List<PhotoMosaic>? mosaics,
+    List<WatermarkSettings>? extraMarks,
   }) async {
     final codec = await ui.instantiateImageCodec(photoBytes);
     final frame = await codec.getNextFrame();
@@ -64,6 +65,10 @@ class WatermarkRenderer {
       await _drawMosaic(canvas, photo, m, w, h);
     }
     await drawMarks(canvas, s, w.toDouble(), h.toDouble());
+    // 更多浮水印：一組一組疊上去（照片模式可加好幾組）
+    for (final e in extraMarks ?? const <WatermarkSettings>[]) {
+      await drawMarks(canvas, e, w.toDouble(), h.toDouble());
+    }
     final picture = recorder.endRecording();
     final image = await picture.toImage(w, h);
     photo.dispose();

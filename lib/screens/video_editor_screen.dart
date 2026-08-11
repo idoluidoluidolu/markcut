@@ -1183,45 +1183,56 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 圖片素材：從播放頭開始、預設 4 秒，可用把手拉長
   Future<void> _pickImage(int track) async {
-    final picked = await ImagePicker().pickImage(source: ImageSource.gallery);
-    if (picked == null) return;
+    // 可一次多選：選多張就自動排成連續的幻燈片（每張 3 秒、頭尾相接），
+    // 想做「多張圖片串成影片」不用一張一張加
+    final picked = await ImagePicker().pickMultiImage();
+    if (picked.isEmpty) return;
     _pause();
-    final bytes = await picked.readAsBytes();
-    // 解出圖片尺寸，之後縮放定位要用
-    var imgW = 0, imgH = 0;
-    try {
-      final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-      imgW = frame.image.width;
-      imgH = frame.image.height;
-      frame.image.dispose();
-    } catch (_) {}
     _pushUndo();
-    final srcIndex = _tl.sources.length;
-    _tl.sources.add(
-      MediaSource(
-        path: picked.path,
-        name: picked.name,
-        kind: ClipKind.image,
-        duration: 3600, // 靜態素材，長度隨便拉
-        w: imgW,
-        h: imgH,
-      ),
-    );
-    _thumbs[srcIndex] = [bytes];
-    final clip = TimelineClip(
-      id: _tl.nextId(),
-      sourceIndex: srcIndex,
-      trimStart: 0,
-      trimEnd: 4,
-      offset: _position,
-      track: track,
-    );
-    setState(() {
+    var at = _position;
+    var firstId = -1;
+    for (final img in picked) {
+      final bytes = await img.readAsBytes();
+      // 解出圖片尺寸，之後縮放定位要用
+      var imgW = 0, imgH = 0;
+      try {
+        final codec = await ui.instantiateImageCodec(bytes);
+        final frame = await codec.getNextFrame();
+        imgW = frame.image.width;
+        imgH = frame.image.height;
+        frame.image.dispose();
+      } catch (_) {}
+      final srcIndex = _tl.sources.length;
+      _tl.sources.add(
+        MediaSource(
+          path: img.path,
+          name: img.name,
+          kind: ClipKind.image,
+          duration: 3600, // 靜態素材，長度隨便拉
+          w: imgW,
+          h: imgH,
+        ),
+      );
+      _thumbs[srcIndex] = [bytes];
+      final len = picked.length == 1 ? 4.0 : 3.0;
+      final clip = TimelineClip(
+        id: _tl.nextId(),
+        sourceIndex: srcIndex,
+        trimStart: 0,
+        trimEnd: len,
+        offset: at,
+        track: track,
+      );
+      if (firstId == -1) firstId = clip.id;
       _tl.clips.add(clip);
-      _sel = clip.id;
-    });
+      at += len;
+    }
+    setState(() => _sel = firstId);
+    _resyncPlayback();
     _saveDraft(); // 加完立刻落草稿
+    if (picked.length > 1 && mounted) {
+      showHint(context, '已加入 ${picked.length} 張圖片，每張 3 秒頭尾相接');
+    }
   }
 
   /// 文字輸入對話框（新增與編輯共用）

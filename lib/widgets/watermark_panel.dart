@@ -38,9 +38,9 @@ class WatermarkPanel extends StatefulWidget {
   /// 隱藏面板內的「儲存範本」鈕（父層自己在底部放）
   final bool hideSaveButton;
 
-  /// 額外區塊：插在「圖片」卡片之後、「儲存範本」之前。
-  /// 照片編輯器拿來放「馬賽克」卡（不屬於浮水印設定，所以由父層注入）
-  final Widget? extraSection;
+  /// 額外區塊：插在「圖片」卡片之後、「儲存範本」之前，
+  /// 一個區塊包成一張卡。照片編輯器拿來放「馬賽克」與「更多浮水印」
+  final List<Widget> extraSections;
 
   const WatermarkPanel({
     super.key,
@@ -53,7 +53,7 @@ class WatermarkPanel extends StatefulWidget {
     this.onSaved,
     this.onLogoAdded,
     this.hideSaveButton = false,
-    this.extraSection,
+    this.extraSections = const [],
   });
 
   @override
@@ -687,8 +687,8 @@ class WatermarkPanelState extends State<WatermarkPanel> {
           ],
         )),
 
-        // ===== 父層注入的額外區塊（照片編輯器的「馬賽克」卡）=====
-        if (widget.extraSection != null) _card(widget.extraSection!),
+        // ===== 父層注入的額外區塊（照片編輯器的馬賽克/更多浮水印）=====
+        for (final sec in widget.extraSections) _card(sec),
 
         // ===== 儲存範本（更新選中的範本，或另存新範本）=====
         // 照片編輯器把這顆移到底部跟「輸出」並排，所以這裡可隱藏

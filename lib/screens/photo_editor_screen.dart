@@ -84,6 +84,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   List<PhotoMosaic> get _mosaics => _settings.mosaics;
   int _selMosaic = -1;
 
+  /// 更多浮水印：每一組是完整的一套（文字＋Logo），
+  /// 疊在主浮水印上面，可各自拖曳、獨立刪除
+  final List<WatermarkSettings> _extraWms = [];
+
   /// 預覽用 shader 程式（真像素塊）；載不到就退回霧化。
   /// 存「程式」不存實例：多塊馬賽克同幀各建各的實例，
   /// 共用實例會讓後設定的參數蓋掉前面的
@@ -96,8 +100,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     } catch (_) {}
   }
 
-  String get _stateJson =>
-      jsonEncode({..._settings.toJson(), 'color': _grade.toJson()});
+  String get _stateJson => jsonEncode({
+    ..._settings.toJson(),
+    'color': _grade.toJson(),
+    'extraWms': _extraWms.map((e) => e.toJson()).toList(),
+  });
 
   bool get _dirty => _stateJson != _initialJson;
 
@@ -150,6 +157,15 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       _settings.mosaics
         ..clear()
         ..addAll(wm.mosaics);
+      _extraWms
+        ..clear()
+        ..addAll(
+          ((j['extraWms'] as List?) ?? const []).map(
+            (e) => WatermarkSettings.fromJson(
+              Map<String, dynamic>.from(e as Map),
+            ),
+          ),
+        );
       // 復原可能把被選取的部件變不見（例如撤銷加 Logo），
       // 選取殘留會讓拖曳整個變死的
       _wmPart = WmPart.none;
@@ -232,6 +248,88 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
           btn(Icons.redo, '重做', _redoStack.isEmpty ? null : _redoLast),
         ],
       ),
+    );
+  }
+
+  /// 加一組浮水印：以目前主浮水印為底複製一組，稍微錯開位置
+  void _addExtraWm() {
+    final t = _settings.text;
+    final hasAny =
+        (t.enabled && t.text.trim().isNotEmpty) || _settings.logo.enabled;
+    if (!hasAny) {
+      showHint(context, '先把上面的浮水印設定好，再新增更多組');
+      return;
+    }
+    _pushUndo();
+    final copy = _settings.copy()..mosaics.clear();
+    copy.text.x = (copy.text.x + 0.08).clamp(0.0, 1.0);
+    copy.text.y = (copy.text.y + 0.08).clamp(0.0, 1.0);
+    copy.logo.x = (copy.logo.x + 0.08).clamp(0.0, 1.0);
+    copy.logo.y = (copy.logo.y + 0.08).clamp(0.0, 1.0);
+    setState(() => _extraWms.add(copy));
+    showHint(context, '已加一組浮水印，直接在預覽上拖曳它');
+  }
+
+  /// 面板裡的「更多浮水印」卡：以目前樣式複製多組，各自拖曳、刪除
+  Widget _extraWmSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        InkWell(
+          onTap: _extraWms.isEmpty ? _addExtraWm : null,
+          borderRadius: BorderRadius.circular(8),
+          child: Row(
+            children: [
+              const Text(
+                '更多浮水印',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: kText,
+                ),
+              ),
+              const Spacer(),
+              IconButton(
+                tooltip: '以目前樣式再加一組',
+                visualDensity: VisualDensity.compact,
+                onPressed: _addExtraWm,
+                icon: const Icon(Icons.add, size: 20, color: kIcon),
+              ),
+            ],
+          ),
+        ),
+        for (var i = 0; i < _extraWms.length; i++)
+          Row(
+            children: [
+              const Icon(Icons.branding_watermark, size: 14, color: kTextDim),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  _extraWms[i].text.enabled &&
+                          _extraWms[i].text.text.trim().isNotEmpty
+                      ? _extraWms[i].text.text
+                      : '第 ${i + 2} 組（Logo）',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12, color: kTextDim),
+                ),
+              ),
+              IconButton(
+                tooltip: '刪除這組',
+                visualDensity: VisualDensity.compact,
+                onPressed: () {
+                  _pushUndo();
+                  setState(() => _extraWms.removeAt(i));
+                },
+                icon: const Icon(
+                  Icons.delete_outline,
+                  size: 17,
+                  color: kTextDim,
+                ),
+              ),
+            ],
+          ),
+      ],
     );
   }
 
@@ -820,6 +918,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         _settings,
         grade: _grade,
         mosaics: _mosaics,
+        extraMarks: _extraWms,
       );
       var ext = 'png';
       if (jpeg) {
@@ -1035,6 +1134,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                   }),
                                   panLocked: () => _pvPts.length >= 2,
                                 ),
+                                // 更多浮水印：一組一層疊上去，各自拖曳
+                                for (final e in _extraWms)
+                                  WatermarkLayer(
+                                    settings: e,
+                                    onChanged: () => setState(() {}),
+                                    onDragStart: _pushUndo,
+                                    panLocked: () => _pvPts.length >= 2,
+                                  ),
                                 // 置中輔助線（路由/馬賽克拖曳吸中線時）
                                 if (_phGuideV || _phGuideH)
                                   Positioned.fill(
@@ -1146,8 +1253,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                         // 剛加的圖片直接選起來，可以馬上拖／縮放
                         onLogoAdded: () =>
                             setState(() => _wmPart = WmPart.logo),
-                        // 馬賽克卡：插在圖片卡下面（照片模式限定）
-                        extraSection: _mosaicSection(),
+                        // 馬賽克/更多浮水印卡：插在圖片卡下面（照片模式限定）
+                        extraSections: [_mosaicSection(), _extraWmSection()],
                       ),
                     },
                   ),

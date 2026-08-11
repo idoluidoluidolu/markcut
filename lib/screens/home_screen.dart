@@ -7,13 +7,14 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../services/preset_store.dart';
 import '../theme.dart';
 import 'batch_watermark_screen.dart';
+import 'collage_screen.dart';
 import 'photo_editor_screen.dart';
 import 'profile_screen.dart';
 import 'video_editor_screen.dart';
 import 'watermark_studio_screen.dart';
 
-/// 「加入浮水印」的四種入口
-enum _PickKind { oneVideo, onePhoto, manyVideos, manyPhotos }
+/// 「加入浮水印」的五種入口
+enum _PickKind { oneVideo, onePhoto, manyVideos, manyPhotos, collage }
 
 /// 選取視窗裡的方塊：大圖示＋標題，多支的再加一個「批次」註記
 class _PickTile extends StatelessWidget {
@@ -181,6 +182,12 @@ class _HomeScreenState extends State<HomeScreen> {
                           hint: '建議 200 張以內',
                           kind: _PickKind.manyPhotos)),
                 ]),
+                const SizedBox(height: 10),
+                const _PickTile(
+                    icon: Icons.grid_view,
+                    label: '宮格拼圖',
+                    hint: '多張照片拼成一張（2/4/6/9 宮格）',
+                    kind: _PickKind.collage),
               ],
             ),
           ),
@@ -199,6 +206,19 @@ class _HomeScreenState extends State<HomeScreen> {
       case _PickKind.manyPhotos:
         final list = await ImagePicker().pickMultiImage();
         await _openBatch(list);
+      case _PickKind.collage:
+        final list = await ImagePicker().pickMultiImage();
+        if (list.length < 2) {
+          if (list.isNotEmpty && mounted) {
+            showHint(context, '拼圖至少要選兩張照片');
+          }
+          return;
+        }
+        if (!mounted) return;
+        await Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => CollageScreen(photos: list)),
+        );
       case _PickKind.manyVideos:
         // image_picker 沒有「只選多支影片」的 API，用混合選取再濾掉照片，
         // 這樣才留得住系統原生的相簿選取器
