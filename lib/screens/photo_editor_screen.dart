@@ -722,9 +722,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   context,
                   fmt: 'jpg',
                   title: "JPEG${last == 'jpg' ? '（上次用這個）' : ''}",
-                  subtitle:
-                      '檔案小很多（約 1/8），發社群、傳給別人用這個。'
-                      '肉眼看不出跟 PNG 的差別',
+                  subtitle: '檔案小，發社群用這個',
                   icon: Icons.bolt,
                 ),
                 const SizedBox(height: 8),
@@ -732,9 +730,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   context,
                   fmt: 'png',
                   title: "PNG 無損${last == 'png' ? '（上次用這個）' : ''}",
-                  subtitle:
-                      '完全不壓縮，檔案很大（可能幾十 MB）。'
-                      '之後還要再編修、或想典藏原稿再用',
+                  subtitle: '不壓縮、檔案大，要再編修用',
                   icon: Icons.diamond_outlined,
                 ),
               ],
@@ -860,11 +856,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
     if (mounted) {
       Navigator.of(context).pop();
-      if (ok) {
-        showSuccessPop(context, '已存到相簿');
-      } else {
-        showHint(context, message, error: true);
-      }
+      showHint(context, message, error: !ok);
     }
     setState(() => _exporting = false);
   }

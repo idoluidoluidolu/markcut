@@ -2865,18 +2865,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
     if (mounted) {
       Navigator.of(context).pop();
-      if (ok) {
-        // 成功用置中打勾動畫，完成感比一行文字強
-        showSuccessPop(context, '已存到相簿');
-      } else {
-        // 取消是使用者自己的決定，用中性提示就好，不當錯誤
-        showHint(
-          context,
-          message,
-          error: !cancelled,
-          duration: Duration(seconds: cancelled ? 3 : 8),
-        );
-      }
+      // 取消是使用者自己的決定，用中性提示就好，不當錯誤
+      showHint(
+        context,
+        message,
+        error: !ok && !cancelled,
+        duration: Duration(seconds: ok || cancelled ? 3 : 8),
+      );
     }
     // 還原圖片快取上限（匯出期間壓成 0）
     PaintingBinding.instance.imageCache
