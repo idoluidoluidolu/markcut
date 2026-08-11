@@ -377,3 +377,106 @@ class SectionLabel extends StatelessWidget {
     );
   }
 }
+
+// ===== 匯出成功的置中打勾動畫（完成感比一行文字強）=====
+
+void showSuccessPop(BuildContext context, String message) {
+  late OverlayEntry entry;
+  entry = OverlayEntry(
+    builder: (_) => _SuccessPop(message: message, onDone: () => entry.remove()),
+  );
+  Overlay.of(context, rootOverlay: true).insert(entry);
+}
+
+class _SuccessPop extends StatefulWidget {
+  final String message;
+  final VoidCallback onDone;
+
+  const _SuccessPop({required this.message, required this.onDone});
+
+  @override
+  State<_SuccessPop> createState() => _SuccessPopState();
+}
+
+class _SuccessPopState extends State<_SuccessPop>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1700),
+  );
+
+  late final Animation<double> _scale = CurvedAnimation(
+    parent: _c,
+    curve: const Interval(0, 0.28, curve: Curves.elasticOut),
+  );
+
+  late final Animation<double> _fade = CurvedAnimation(
+    parent: _c,
+    curve: const Interval(0.82, 1, curve: Curves.easeOut),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _c.forward().whenCompleteOrCancel(widget.onDone);
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Center(
+        child: AnimatedBuilder(
+          animation: _c,
+          builder: (context, child) => Opacity(
+            opacity: 1 - _fade.value,
+            child: Transform.scale(scale: _scale.value, child: child),
+          ),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(26, 22, 26, 20),
+            decoration: BoxDecoration(
+              color: const Color(0xFF232329),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: const Color(0xFF3A3A42)),
+              boxShadow: const [
+                BoxShadow(
+                  color: Colors.black54,
+                  blurRadius: 30,
+                  offset: Offset(0, 10),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 52,
+                  height: 52,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF2C7A54),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.check, size: 30, color: Colors.white),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  widget.message,
+                  style: const TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w700,
+                    color: kText,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

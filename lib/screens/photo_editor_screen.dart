@@ -860,7 +860,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
     if (mounted) {
       Navigator.of(context).pop();
-      showHint(context, message, error: !ok);
+      if (ok) {
+        showSuccessPop(context, '已存到相簿');
+      } else {
+        showHint(context, message, error: true);
+      }
     }
     setState(() => _exporting = false);
   }

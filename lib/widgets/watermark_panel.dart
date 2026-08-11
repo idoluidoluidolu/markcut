@@ -999,6 +999,15 @@ class WatermarkPanelState extends State<WatermarkPanel> {
               ),
             ),
           ),
+          // 即時數值：微調時有參考（跟馬賽克樣式表同一套）
+          SizedBox(
+            width: 38,
+            child: Text(
+              '${(value * 100).round()}%',
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontSize: 11, color: kTextDim),
+            ),
+          ),
         ],
       ),
     );

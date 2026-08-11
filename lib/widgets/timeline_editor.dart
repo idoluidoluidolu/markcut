@@ -694,6 +694,25 @@ class _TimelineEditorState extends State<TimelineEditor> {
                             )
                           : null),
               ),
+              // 空狀態引導：只在「第一條空軌」淡淡提示一句，
+              // 新手才知道多軌可以放什麼（有拖放目標時讓位）
+              alignment: Alignment.centerLeft,
+              padding: const EdgeInsets.only(left: 12),
+              child:
+                  (isEmptyRow &&
+                      track == timeline.usedTracks &&
+                      !isDropTarget &&
+                      clips.isEmpty)
+                  ? Text(
+                      '＋ 用「加素材」放文字、浮水印、馬賽克…',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        color: kTextDim.withValues(alpha: 0.55),
+                      ),
+                    )
+                  : null,
             ),
           ),
         ),
@@ -1518,17 +1537,24 @@ class _TrimHandle extends StatelessWidget {
                 ..onUpdate = ((d) => onDrag(d.delta.dx / pxPerSec)),
             ),
       },
+      // 觸控熱區 22px、視覺維持 13px 細把手貼在片段邊緣——
+      // 手指粗一點也按得到，畫面不變胖
       child: Container(
-        width: 13,
-        decoration: BoxDecoration(
-          color: kSelect,
-          borderRadius: BorderRadius.horizontal(
-            left: isLeft ? const Radius.circular(4) : Radius.zero,
-            right: isLeft ? Radius.zero : const Radius.circular(4),
+        width: 22,
+        color: Colors.transparent,
+        alignment: isLeft ? Alignment.centerLeft : Alignment.centerRight,
+        child: Container(
+          width: 13,
+          decoration: BoxDecoration(
+            color: kSelect,
+            borderRadius: BorderRadius.horizontal(
+              left: isLeft ? const Radius.circular(4) : Radius.zero,
+              right: isLeft ? Radius.zero : const Radius.circular(4),
+            ),
           ),
-        ),
-        child: const Center(
-          child: Icon(Icons.drag_indicator, size: 11, color: Colors.black87),
+          child: const Center(
+            child: Icon(Icons.drag_indicator, size: 11, color: Colors.black87),
+          ),
         ),
       ),
     );

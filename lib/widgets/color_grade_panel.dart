@@ -111,7 +111,10 @@ class ColorGradePanel extends StatefulWidget {
 
 class _ColorGradePanelState extends State<ColorGradePanel> {
   /// 目前看的是哪一組（0 = 顏色，1 = 明暗）
-  int _group = 0;
+  /// 記住上次用的分頁（顏色/明暗）：調色常常是同一種活連續做,
+  /// 每次打開都跳回「顏色」會一直要多點一下
+  static int _lastGroup = 0;
+  int _group = _lastGroup;
 
   /// 正在按著「原圖」比對
   bool _comparing = false;
@@ -348,7 +351,10 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
     return Expanded(
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: () => setState(() => _group = group),
+        onTap: () => setState(() {
+          _group = group;
+          _lastGroup = group;
+        }),
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 8),
           decoration: BoxDecoration(

@@ -1090,16 +1090,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               )
             else
               const SizedBox(height: 8),
-            ListTile(
-              leading: const Icon(Icons.videocam_outlined, color: kAmber),
-              title: const Text('影片'),
-              onTap: () => Navigator.pop(context, _AddKind.video),
-            ),
-            ListTile(
-              leading: const Icon(Icons.image_outlined, color: kAmber),
-              title: const Text('圖片'),
-              onTap: () => Navigator.pop(context, _AddKind.image),
-            ),
+            // 高頻優先：文字/浮水印/馬賽克排前面，媒體檔其次
             ListTile(
               leading: const Icon(Icons.title, color: kAmber),
               title: const Text('文字'),
@@ -1111,6 +1102,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               onTap: () => Navigator.pop(context, _AddKind.wm),
             ),
             ListTile(
+              leading: const Icon(Icons.blur_on, color: kAmber),
+              title: const Text('馬賽克'),
+              onTap: () => Navigator.pop(context, _AddKind.mosaic),
+            ),
+            ListTile(
+              leading: const Icon(Icons.videocam_outlined, color: kAmber),
+              title: const Text('影片'),
+              onTap: () => Navigator.pop(context, _AddKind.video),
+            ),
+            ListTile(
+              leading: const Icon(Icons.image_outlined, color: kAmber),
+              title: const Text('圖片'),
+              onTap: () => Navigator.pop(context, _AddKind.image),
+            ),
+            ListTile(
               leading: const Icon(Icons.music_note, color: kAmber),
               title: const Text('音樂'),
               onTap: () => Navigator.pop(context, _AddKind.audio),
@@ -1119,11 +1125,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               leading: const Icon(Icons.mic, color: kAmber),
               title: const Text('錄旁白'),
               onTap: () => Navigator.pop(context, _AddKind.record),
-            ),
-            ListTile(
-              leading: const Icon(Icons.blur_on, color: kAmber),
-              title: const Text('馬賽克'),
-              onTap: () => Navigator.pop(context, _AddKind.mosaic),
             ),
             ListTile(
               leading: const Icon(Icons.playlist_add, color: kAmber),
@@ -1310,6 +1311,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     min: min,
                     max: max,
                     onChanged: (x) => both(() => on(x)),
+                  ),
+                ),
+                SizedBox(
+                  width: 38,
+                  child: Text(
+                    '${(v * 100).round()}%',
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(fontSize: 11, color: kTextDim),
                   ),
                 ),
               ],
@@ -2856,13 +2865,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
     if (mounted) {
       Navigator.of(context).pop();
-      // 取消是使用者自己的決定，用中性提示就好，不當錯誤
-      showHint(
-        context,
-        message,
-        error: !ok && !cancelled,
-        duration: Duration(seconds: ok || cancelled ? 3 : 8),
-      );
+      if (ok) {
+        // 成功用置中打勾動畫，完成感比一行文字強
+        showSuccessPop(context, '已存到相簿');
+      } else {
+        // 取消是使用者自己的決定，用中性提示就好，不當錯誤
+        showHint(
+          context,
+          message,
+          error: !cancelled,
+          duration: Duration(seconds: cancelled ? 3 : 8),
+        );
+      }
     }
     // 還原圖片快取上限（匯出期間壓成 0）
     PaintingBinding.instance.imageCache
@@ -4445,6 +4459,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Offset _gestureStartFocal = Offset.zero;
 
   /// 工具列按鈕：圖示＋中文標示（CapCut 式：字跟圖示同亮度、清晰不發灰）
+  /// 工具列群組分隔線（剪輯｜樣式｜工具）
+  Widget _toolDivider() => Container(
+    width: 1,
+    height: 24,
+    margin: const EdgeInsets.symmetric(horizontal: 5),
+    color: kBorder,
+  );
+
   Widget _toolBtn(
     IconData icon,
     String label,
@@ -4777,6 +4799,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         tip: '貼在播放處',
                         disabledHint: '還沒有複製任何片段',
                       ),
+                      _toolDivider(),
                       _toolBtn(
                         Icons.open_in_full,
                         '大小',
@@ -4812,6 +4835,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             ? '先在時間軸點選要調色的片段'
                             : '這種素材不能調色（影片、圖片才可以）',
                       ),
+                      _toolBtn(
+                        Icons.auto_awesome,
+                        '效果',
+                        sel == null ? null : () => _openClipOptions(sel),
+                        tip: '音量與淡化',
+                        disabledHint: '先在時間軸點選一個片段',
+                      ),
+                      _toolDivider(),
                       // 直向的 compress 轉 90°＝把左右的空隙擠掉
                       _toolBtn(
                         Icons.compress,
@@ -4822,13 +4853,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       ),
                       _snapToolBtn(),
                       _toolBtn(Icons.add, '加素材', _addMediaChoice),
-                      _toolBtn(
-                        Icons.auto_awesome,
-                        '效果',
-                        sel == null ? null : () => _openClipOptions(sel),
-                        tip: '音量與淡化',
-                        disabledHint: '先在時間軸點選一個片段',
-                      ),
                     ],
                   ),
                 ),
@@ -4943,9 +4967,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             children: [
               Row(
                 children: [
+                  const Icon(Icons.open_in_full, size: 18, color: kAmber),
+                  const SizedBox(width: 8),
                   const Text(
                     '大小',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
                   ),
                   const Spacer(),
                   Text(
@@ -5679,6 +5705,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           },
         ),
         const SizedBox(height: 14),
+        // 選擇摘要：按下去之前心裡有底
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Text(
+            '${_canvasRatio.label}・$outW×$outH・${_quality.label}'
+            '・約 ${mb.toStringAsFixed(0)} MB',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 11.5,
+              color: kTextDim,
+              fontFeatures: [FontFeature.tabularFigures()],
+            ),
+          ),
+        ),
         FilledButton.icon(
           onPressed: _exporting ? null : _export,
           icon: const Icon(Icons.ios_share, size: 20),
