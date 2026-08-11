@@ -168,38 +168,57 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         horizontal: 24,
                         vertical: 16,
                       ),
+                      // 2×2 格狀：四張等大方卡，一屏收完不用捲
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          _bigFolder(
-                            icon: Icons.bookmarks_outlined,
-                            title: '範本夾',
-                            subtitle: _presets.isEmpty
-                                ? '還沒有範本'
-                                : '${_presets.length} 個範本',
-                            screen: () => const PresetsScreen(),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _bigFolder(
+                                  icon: Icons.bookmarks_outlined,
+                                  title: '範本夾',
+                                  subtitle: _presets.isEmpty
+                                      ? '還沒有範本'
+                                      : '${_presets.length} 個範本',
+                                  screen: () => const PresetsScreen(),
+                                ),
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: _bigFolder(
+                                  icon: Icons.folder_outlined,
+                                  title: '草稿夾',
+                                  subtitle: _draft == null
+                                      ? '沒有草稿'
+                                      : '1 個未完成的專案',
+                                  screen: () => const DraftsScreen(),
+                                ),
+                              ),
+                            ],
                           ),
                           const SizedBox(height: 14),
-                          _bigFolder(
-                            icon: Icons.folder_outlined,
-                            title: '草稿夾',
-                            subtitle: _draft == null ? '沒有草稿' : '1 個未完成的專案',
-                            screen: () => const DraftsScreen(),
-                          ),
-                          const SizedBox(height: 14),
-                          _bigFolder(
-                            icon: Icons.chat_bubble_outline,
-                            title: '意見回饋',
-                            subtitle: '聯絡我',
-                            onTap: () => showFeedbackDialog(context),
-                          ),
-                          const SizedBox(height: 14),
-                          _bigFolder(
-                            icon: Icons.favorite_border,
-                            title: '太好用啦',
-                            subtitle: '給我們一點鼓勵',
-                            onTap: _openLove,
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _bigFolder(
+                                  icon: Icons.chat_bubble_outline,
+                                  title: '意見回饋',
+                                  subtitle: '聯絡我',
+                                  onTap: () => showFeedbackDialog(context),
+                                ),
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: _bigFolder(
+                                  icon: Icons.favorite_border,
+                                  title: '太好用啦',
+                                  subtitle: '給我們一點鼓勵',
+                                  onTap: _openLove,
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
