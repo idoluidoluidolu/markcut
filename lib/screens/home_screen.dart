@@ -297,18 +297,12 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: SizedBox(
                     width: 300,
                     height: 120,
-                    // 原圖原色放在圓角黑色底板上：黑底變成刻意的
-                    // 設計元素（變亮混合會把最暗那隻吃掉，不能用）
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(22),
-                      child: Container(
-                        color: Colors.black,
-                        child: Image.asset(
-                          'assets/icon/icon_foreground.png',
-                          fit: BoxFit.cover, // 裁掉原圖四周的留白
-                          filterQuality: FilterQuality.medium,
-                        ),
-                      ),
+                    // 透明背景版 logo：直接融進近黑背景，不用底板
+                    // （icon_foreground.png 是啟動圖示前景，別共用）
+                    child: Image.asset(
+                      'assets/icon/home_logo.png',
+                      fit: BoxFit.cover, // 裁掉原圖四周的留白
+                      filterQuality: FilterQuality.medium,
                     ),
                   ),
                 ),

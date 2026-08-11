@@ -104,6 +104,7 @@ flutter:
 
   assets:
     - assets/icon/icon_foreground.png
+    - assets/icon/home_logo.png
 
   shaders:
     - shaders/mosaic.frag
