@@ -4795,6 +4795,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         disabledHint: '還沒有複製任何片段',
                       ),
                       _toolDivider(),
+                      // 直向的 compress 轉 90°＝把左右的空隙擠掉
+                      _toolBtn(
+                        Icons.compress,
+                        '整理',
+                        _closeGaps,
+                        tip: '把空隙補起來、素材接齊',
+                        quarterTurns: 1,
+                      ),
+                      _snapToolBtn(),
+                      _toolBtn(Icons.add, '加素材', _addMediaChoice),
+                      _toolDivider(),
                       _toolBtn(
                         Icons.open_in_full,
                         '大小',
@@ -4837,17 +4848,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         tip: '音量與淡化',
                         disabledHint: '先在時間軸點選一個片段',
                       ),
-                      _toolDivider(),
-                      // 直向的 compress 轉 90°＝把左右的空隙擠掉
-                      _toolBtn(
-                        Icons.compress,
-                        '整理',
-                        _closeGaps,
-                        tip: '把空隙補起來、素材接齊',
-                        quarterTurns: 1,
-                      ),
-                      _snapToolBtn(),
-                      _toolBtn(Icons.add, '加素材', _addMediaChoice),
                     ],
                   ),
                 ),
