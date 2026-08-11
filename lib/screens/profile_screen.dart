@@ -1,7 +1,10 @@
 import 'dart:convert';
+import 'dart:io' show Platform;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/watermark_settings.dart';
 import '../services/preset_store.dart';
@@ -11,6 +14,12 @@ import 'about_screen.dart';
 import 'feedback_screen.dart';
 import 'presets_screen.dart';
 import 'video_editor_screen.dart';
+
+/// 商店連結：上架後把網址填進來（iOS 填 App Store 的
+/// 「?action=write-review」連結、Android 填 Play 商店頁）。
+/// 空字串＝還沒上架，「太好用啦」點了先顯示感謝視窗
+const kAppStoreReviewUrl = '';
+const kPlayStoreUrl = '';
 
 /// 個人中心：範本夾＋草稿夾＋意見回饋
 class ProfileScreen extends StatefulWidget {
@@ -105,6 +114,37 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  /// 太好用啦：有商店連結就帶去評分，還沒上架先收下心意
+  Future<void> _openLove() async {
+    final url = kIsWeb
+        ? kAppStoreReviewUrl
+        : (Platform.isAndroid ? kPlayStoreUrl : kAppStoreReviewUrl);
+    if (url.isNotEmpty) {
+      try {
+        await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+        return;
+      } catch (_) {}
+    }
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('太好用啦！'),
+        content: const Text(
+          '謝謝你的喜歡！\n'
+          '等 App 上架商店後，這裡就會直接帶你去給我們五星鼓勵。\n'
+          '現在最大的支持就是把 App 分享給朋友 🙌',
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('好'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // 非編輯頁面全頁都能右滑返回（編輯畫面橫向手勢太多，刻意不放）
@@ -153,6 +193,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             title: '意見回饋',
                             subtitle: '聯絡我',
                             onTap: () => showFeedbackDialog(context),
+                          ),
+                          const SizedBox(height: 14),
+                          _bigFolder(
+                            icon: Icons.favorite_border,
+                            title: '太好用啦',
+                            subtitle: '給我們一點鼓勵',
+                            onTap: _openLove,
                           ),
                         ],
                       ),
