@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../services/store_links.dart';
 import '../theme.dart';
 import '../widgets/swipe_back.dart';
 
@@ -69,28 +68,6 @@ class AboutScreen extends StatelessWidget {
                                 fontSize: 12.5,
                                 color: kTextDim,
                                 height: 1.75,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 22),
-                          Builder(
-                            builder: (context) => FilledButton.icon(
-                              onPressed: () async {
-                                final ok = await openLiuJiKan();
-                                if (!ok && context.mounted) {
-                                  showHint(context, '開不了商店連結', error: true);
-                                }
-                              },
-                              style: FilledButton.styleFrom(
-                                minimumSize: const Size.fromHeight(46),
-                              ),
-                              icon: const Icon(Icons.open_in_new, size: 17),
-                              label: Text(
-                                liuJiKanStoreLabel,
-                                style: const TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w700,
-                                ),
                               ),
                             ),
                           ),
