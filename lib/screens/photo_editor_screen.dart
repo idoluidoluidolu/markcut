@@ -721,7 +721,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   context,
                   fmt: 'jpg',
                   title: 'JPEG',
-                  subtitle: '檔案小很多（約 1/8）',
+                  subtitle: '檔案小很多（約 1/8），肉眼看不出跟 PNG 差別',
                   icon: Icons.image_outlined,
                 ),
                 const SizedBox(height: 8),
