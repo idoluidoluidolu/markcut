@@ -91,10 +91,8 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       s.animation = p.settings.animation;
       s.animSpeed = p.settings.animSpeed;
       s.animRange = p.settings.animRange;
-      // 範本帶的馬賽克（照片模式用；影片的全域浮水印不吃這欄位）
-      s.mosaics
-        ..clear()
-        ..addAll(p.settings.mosaics.map((m) => m.copy()));
+      // 馬賽克不進範本也不被範本動到：套範本只換浮水印，
+      // 照片上已經畫好的碼留在原地
       _textCtrl.text = s.text.text;
       _presetSel = p.name;
     });
@@ -260,7 +258,10 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     if (name == null || name.isEmpty) return;
     final existed = _presets.any((p) => p.name == name);
     try {
-      await PresetStore.add(WatermarkPreset(name: name, settings: s.copy()));
+      // 範本不收馬賽克：每張照片內容不同，同位置的碼帶著走沒有意義
+      await PresetStore.add(
+        WatermarkPreset(name: name, settings: s.copy()..mosaics.clear()),
+      );
     } catch (_) {
       // web 的 localStorage 有 5MB 配額，Logo 太大會存不進去——
       // 要讓使用者知道沒存成，不能無聲 crash
