@@ -1,19 +1,14 @@
 import 'dart:async';
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../theme.dart';
 
-/// 斗內頁（App 內購小費罐）＋斗內牆。
+/// 斗內頁（App 內購小費罐）。
 ///
 /// 內購：三檔消耗型商品，商店後台要建立同 ID 的商品才買得動；
 /// 還沒建立時卡片照樣顯示（固定價），點了提示即將開放。
-/// 斗內牆：目前是「假資料＋本機紀錄」——自己斗內成功會記在本機
-/// 並上牆；之後要做真的再接後端（全部人共用的牆）。
 const kTipIds = <String>{'tip_small', 'tip_medium', 'tip_large'};
 
 /// 檔位定義：(商品 ID, 名稱, 沒抓到商店價時顯示的價格)
@@ -23,7 +18,6 @@ const _kTiers = [
   ('tip_large', '大挺一下', 'NT\$990'),
 ];
 
-const _kLocalTipsKey = 'my_tips';
 
 class DonateScreen extends StatefulWidget {
   const DonateScreen({super.key});
@@ -38,17 +32,6 @@ class _DonateScreenState extends State<DonateScreen> {
   final Map<String, ProductDetails> _products = {};
   bool _buying = false;
 
-  /// 斗內牆：假資料墊底（之後接後端換成真的），
-  /// 自己的斗內紀錄（本機）疊在最上面
-  static const _seedWall = [
-    ('剪', '剪片路過的', 'small'),
-    ('神', '神秘人', 'medium'),
-    ('阿', '阿偉', 'small'),
-    ('浮', '浮水印重度使用者', 'large'),
-    ('小', '小美', 'small'),
-  ];
-  List<(String, String, String)> _myTips = [];
-
   @override
   void initState() {
     super.initState();
@@ -57,7 +40,6 @@ class _DonateScreenState extends State<DonateScreen> {
       _sub = _iap.purchaseStream.listen(_onPurchases, onError: (_) {});
       _loadProducts();
     }
-    _loadMyTips();
   }
 
   @override
@@ -80,39 +62,6 @@ class _DonateScreenState extends State<DonateScreen> {
     } catch (_) {}
   }
 
-  Future<void> _loadMyTips() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_kLocalTipsKey);
-    if (raw == null) return;
-    try {
-      final list = (jsonDecode(raw) as List)
-          .map((e) => Map<String, dynamic>.from(e as Map))
-          .map(
-            (m) => (
-              (m['name'] as String? ?? '無名氏').isEmpty
-                  ? '無'
-                  : (m['name'] as String)[0],
-              m['name'] as String? ?? '無名氏',
-              m['tier'] as String? ?? 'small',
-            ),
-          )
-          .toList();
-      if (mounted) setState(() => _myTips = list);
-    } catch (_) {}
-  }
-
-  Future<void> _saveMyTip(String name, String tier) async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_kLocalTipsKey);
-    List<dynamic> list = [];
-    try {
-      if (raw != null) list = jsonDecode(raw) as List;
-    } catch (_) {}
-    list.insert(0, {'name': name, 'tier': tier});
-    await prefs.setString(_kLocalTipsKey, jsonEncode(list));
-    _loadMyTips();
-  }
-
   Future<void> _onPurchases(List<PurchaseDetails> purchases) async {
     for (final p in purchases) {
       if (p.status == PurchaseStatus.purchased ||
@@ -120,8 +69,7 @@ class _DonateScreenState extends State<DonateScreen> {
         if (p.pendingCompletePurchase) await _iap.completePurchase(p);
         if (mounted) {
           setState(() => _buying = false);
-          final tier = p.productID.replaceFirst('tip_', '');
-          _askNameAndThank(tier);
+          _thanks();
         }
       } else if (p.status == PurchaseStatus.error ||
           p.status == PurchaseStatus.canceled) {
@@ -131,32 +79,19 @@ class _DonateScreenState extends State<DonateScreen> {
     }
   }
 
-  /// 斗內成功：問一個顯示名稱（選填）→ 上牆＋道謝
-  Future<void> _askNameAndThank(String tier) async {
-    final ctrl = TextEditingController();
-    final name = await showDialog<String>(
+  void _thanks() {
+    showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('謝謝你的加菜金！🙏'),
-        content: TextField(
-          controller: ctrl,
-          maxLength: 12,
-          decoration: const InputDecoration(
-            hintText: '想在斗內牆上顯示的名字（選填）',
-          ),
-        ),
+        content: const Text('每一份心意都會變成我們繼續改進的動力 💪'),
         actions: [
           FilledButton(
-            onPressed: () => Navigator.pop(context, ctrl.text.trim()),
-            child: const Text('上牆！'),
+            onPressed: () => Navigator.pop(context),
+            child: const Text('好'),
           ),
         ],
       ),
-    );
-    ctrl.dispose();
-    await _saveMyTip(
-      (name == null || name.isEmpty) ? '無名氏' : name,
-      tier,
     );
   }
 
@@ -180,15 +115,9 @@ class _DonateScreenState extends State<DonateScreen> {
 
   static const _tierIcons = {
     'small': Icons.local_cafe_outlined,
-    'medium': Icons.lunch_dining_outlined,
+    'medium': Icons.ramen_dining_outlined,
     'large': Icons.rocket_launch_outlined,
   };
-  static const _tierNames = {
-    'small': '小挺一下',
-    'medium': '中挺一下',
-    'large': '大挺一下',
-  };
-
   Widget _tierCard(String id, String label, String fallbackPrice) {
     final tier = id.replaceFirst('tip_', '');
     return InkWell(
@@ -232,52 +161,6 @@ class _DonateScreenState extends State<DonateScreen> {
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _wallRow(String name, String tier, {bool mine = false}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        children: [
-          Container(
-            width: 30,
-            height: 30,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: kPanelHi,
-              borderRadius: BorderRadius.circular(9),
-            ),
-            child: Icon(_tierIcons[tier], size: 15, color: kAmber),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-            ),
-          ),
-          if (mine)
-            Container(
-              margin: const EdgeInsets.only(right: 8),
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: kSelect.withValues(alpha: 0.18),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: const Text(
-                '你',
-                style: TextStyle(fontSize: 10, color: kSelect),
-              ),
-            ),
-          Text(
-            _tierNames[tier] ?? '',
-            style: const TextStyle(fontSize: 11.5, color: kTextDim),
-          ),
-        ],
       ),
     );
   }
@@ -329,44 +212,6 @@ class _DonateScreenState extends State<DonateScreen> {
                 '斗內屬於自願贊助，不會解鎖額外功能',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 11, color: kTextDim),
-              ),
-              const SizedBox(height: 26),
-              // ===== 斗內牆 =====
-              Row(
-                children: [
-                  const Icon(Icons.emoji_events_outlined,
-                      size: 17, color: kAmber),
-                  const SizedBox(width: 7),
-                  const Text(
-                    '斗內牆',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
-                  ),
-                  const Spacer(),
-                  Text(
-                    '感謝每一位',
-                    style: const TextStyle(fontSize: 11, color: kTextDim),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 8,
-                ),
-                decoration: BoxDecoration(
-                  color: kPanel,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: kBorder, width: 1.5),
-                ),
-                child: Column(
-                  children: [
-                    for (final (_, name, tier) in _myTips)
-                      _wallRow(name, tier, mine: true),
-                    for (final (_, name, tier) in _seedWall)
-                      _wallRow(name, tier),
-                  ],
-                ),
               ),
             ],
           ),

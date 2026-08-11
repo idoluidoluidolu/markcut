@@ -54,10 +54,10 @@ class AboutScreen extends StatelessWidget {
                 child: Padding(
                   padding: const EdgeInsets.only(top: 4, bottom: 20),
                   child: SizedBox(
-                    width: 220,
-                    height: 88,
+                    width: 150,
+                    height: 60,
                     child: Image.asset(
-                      'assets/icon/icon_foreground.png',
+                      'assets/icon/home_logo.png', // 透明背景版，跟首頁同一張
                       fit: BoxFit.cover, // 裁掉原圖四周的留白
                       filterQuality: FilterQuality.medium,
                     ),
