@@ -5,35 +5,8 @@ import 'dart:ui' as ui;
 import 'package:flutter/painting.dart';
 
 import '../models/color_grade.dart';
-import '../models/timeline.dart' show MosaicStyle;
+import '../models/mosaic.dart';
 import '../models/watermark_settings.dart';
-
-/// 照片上的一塊馬賽克區域：中心座標（0~1）＋大小（短邊比例）＋樣式
-class PhotoMosaic {
-  double x;
-  double y;
-  double scale;
-  MosaicStyle style;
-
-  PhotoMosaic({this.x = 0.5, this.y = 0.5, this.scale = 0.35, MosaicStyle? style})
-    : style = style ?? MosaicStyle();
-
-  Map<String, dynamic> toJson() => {
-    'x': x,
-    'y': y,
-    'scale': scale,
-    'style': style.toJson(),
-  };
-
-  factory PhotoMosaic.fromJson(Map<String, dynamic> j) => PhotoMosaic(
-    x: ((j['x'] ?? 0.5).toDouble() as double).clamp(0.0, 1.0),
-    y: ((j['y'] ?? 0.5).toDouble() as double).clamp(0.0, 1.0),
-    scale: ((j['scale'] ?? 0.35).toDouble() as double).clamp(0.02, 3.0),
-    style: j['style'] is Map
-        ? MosaicStyle.fromJson(Map<String, dynamic>.from(j['style'] as Map))
-        : MosaicStyle(),
-  );
-}
 
 /// 把浮水印設定畫成點陣圖。
 /// 預覽和輸出走同一套繪製邏輯，所以「看到的就是輸出的」。
@@ -127,6 +100,34 @@ class WatermarkRenderer {
         2.0,
         (2 + st.strength * 18) * math.min(w, h) / 540,
       );
+      final featherPx = st.feather * 0.2 * math.min(rect.width, rect.height);
+      if (featherPx >= 1) {
+        // 真羽化：模糊補丁先畫進一層，再用「內縮＋霧化」的白色方塊
+        // 當 alpha 遮罩（dstIn），邊緣平滑淡出
+        canvas.saveLayer(rect, ui.Paint());
+        canvas.save();
+        canvas.clipRect(rect);
+        canvas.saveLayer(
+          rect,
+          ui.Paint()
+            ..imageFilter = ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
+        );
+        canvas.drawImage(photo, ui.Offset.zero, ui.Paint());
+        canvas.restore();
+        canvas.restore();
+        canvas.drawRect(
+          rect.deflate(featherPx),
+          ui.Paint()
+            ..color = const ui.Color(0xFFFFFFFF)
+            ..maskFilter = ui.MaskFilter.blur(
+              ui.BlurStyle.normal,
+              featherPx * 0.6,
+            )
+            ..blendMode = ui.BlendMode.dstIn,
+        );
+        canvas.restore();
+        return;
+      }
       canvas.save();
       canvas.clipRect(rect);
       canvas.saveLayer(

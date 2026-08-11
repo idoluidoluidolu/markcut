@@ -4,11 +4,13 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/color_grade.dart';
+import '../models/mosaic.dart';
 import '../models/watermark_settings.dart';
 import '../services/photo_saver.dart';
 import '../theme.dart';
@@ -77,7 +79,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   }
 
   // ===== 馬賽克（照片模式：任意數量的方形區域）=====
-  final List<PhotoMosaic> _mosaics = [];
+  // 存在 WatermarkSettings 上：跟著範本一起存／套用，
+  // undo 快照與「有沒有改過」判定也自動涵蓋
+  List<PhotoMosaic> get _mosaics => _settings.mosaics;
   int _selMosaic = -1;
 
   /// 預覽用 shader 程式（真像素塊）；載不到就退回霧化。
@@ -92,11 +96,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     } catch (_) {}
   }
 
-  String get _stateJson => jsonEncode({
-    ..._settings.toJson(),
-    'color': _grade.toJson(),
-    'mosaics': _mosaics.map((m) => m.toJson()).toList(),
-  });
+  String get _stateJson =>
+      jsonEncode({..._settings.toJson(), 'color': _grade.toJson()});
 
   bool get _dirty => _stateJson != _initialJson;
 
@@ -146,13 +147,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       _grade.copyFrom(
         ColorGrade.fromJson(Map<String, dynamic>.from(j['color'] as Map)),
       );
-      _mosaics
+      _settings.mosaics
         ..clear()
-        ..addAll(
-          ((j['mosaics'] as List?) ?? const []).map(
-            (e) => PhotoMosaic.fromJson(Map<String, dynamic>.from(e as Map)),
-          ),
-        );
+        ..addAll(wm.mosaics);
       // 復原可能把被選取的部件變不見（例如撤銷加 Logo），
       // 選取殘留會讓拖曳整個變死的
       _wmPart = WmPart.none;
@@ -335,6 +332,24 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       Widget effect;
       if (m.style.type == 2) {
         effect = Container(color: Color(m.style.color));
+      } else if (m.style.type == 1 && m.style.feather > 0) {
+        // 邊緣柔化預覽：同心圈疊加（中心累積較糊、邊緣輕）；
+        // 匯出時是真羽化遮罩
+        final sg = (4.0 + 16 * m.style.strength) / 3;
+        final ins = m.style.feather * 0.175 * side;
+        Widget ring(double i) => Positioned(
+          left: i,
+          top: i,
+          right: i,
+          bottom: i,
+          child: ClipRect(
+            child: BackdropFilter(
+              filter: ui.ImageFilter.blur(sigmaX: sg, sigmaY: sg),
+              child: const SizedBox.expand(),
+            ),
+          ),
+        );
+        effect = Stack(children: [ring(0), ring(ins), ring(ins * 2)]);
       } else {
         ui.ImageFilter? filter;
         if (m.style.type == 0 && _mosaicProg != null) {
@@ -375,6 +390,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             },
             onPanStart: (_) {
               if (_pvPts.length >= 2) return;
+              _phClearGuides();
               _pushUndo();
               setState(() {
                 _selMosaic = i;
@@ -384,10 +400,18 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             onPanUpdate: (d) {
               if (_pvPts.length >= 2) return;
               setState(() {
-                m.x = (m.x + d.delta.dx / w).clamp(0.0, 1.0);
-                m.y = (m.y + d.delta.dy / h).clamp(0.0, 1.0);
+                // 原始座標累積、顯示值吸中線（同浮水印手感）
+                _phRawX ??= m.x;
+                _phRawY ??= m.y;
+                _phRawX = (_phRawX! + d.delta.dx / w).clamp(0.0, 1.0);
+                _phRawY = (_phRawY! + d.delta.dy / h).clamp(0.0, 1.0);
+                m.x = _snapC(_phRawX!);
+                m.y = _snapC(_phRawY!);
               });
+              _phSetGuides(m.x, m.y);
             },
+            onPanEnd: (_) => _phClearGuides(),
+            onPanCancel: _phClearGuides,
             child: Stack(
               fit: StackFit.expand,
               children: [
@@ -530,7 +554,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                       style: const TextStyle(fontSize: 11.5, color: kTextDim),
                     ),
                   ),
-                  if (m.style.type != 2)
+                  if (m.style.type != 2) ...[
                     row(
                       '濃度',
                       Slider(
@@ -542,8 +566,24 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                         textAlign: TextAlign.right,
                         style: const TextStyle(fontSize: 11.5, color: kTextDim),
                       ),
-                    )
-                  else
+                    ),
+                    if (m.style.type == 1)
+                      row(
+                        '柔邊',
+                        Slider(
+                          value: m.style.feather,
+                          onChanged: (v) => change(() => m.style.feather = v),
+                        ),
+                        Text(
+                          '${(m.style.feather * 100).round()}%',
+                          textAlign: TextAlign.right,
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            color: kTextDim,
+                          ),
+                        ),
+                      ),
+                  ] else
                     SizedBox(
                       height: 32,
                       child: Row(
@@ -811,6 +851,41 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 底部「儲存範本」鈕要觸發面板裡的儲存流程
   final _panelKey = GlobalKey<WatermarkPanelState>();
 
+  // ===== 置中吸附（路由拖曳／馬賽克拖曳共用，跟 WatermarkLayer 同手感）=====
+  /// 未吸附的原始座標（吸附只作用在顯示值上，不然吸上就拖不出來）
+  double? _phRawX, _phRawY;
+  bool _phGuideV = false, _phGuideH = false;
+  bool _phSnapped = false;
+
+  double _snapC(double v) => (v - 0.5).abs() < 0.015 ? 0.5 : v;
+
+  void _phSetGuides(double x, double y) {
+    final v = x == 0.5, hh = y == 0.5;
+    if (v != _phGuideV || hh != _phGuideH) {
+      setState(() {
+        _phGuideV = v;
+        _phGuideH = hh;
+      });
+    }
+    final on = v || hh;
+    if (on != _phSnapped) {
+      _phSnapped = on;
+      if (on) HapticFeedback.selectionClick();
+    }
+  }
+
+  void _phClearGuides() {
+    _phRawX = null;
+    _phRawY = null;
+    _phSnapped = false;
+    if (_phGuideV || _phGuideH) {
+      setState(() {
+        _phGuideV = false;
+        _phGuideH = false;
+      });
+    }
+  }
+
   // ===== 預覽區雙指縮放（照片上的浮水印／選中的馬賽克）=====
   final Map<int, Offset> _pvPts = {};
   double? _pvBaseDist;
@@ -948,6 +1023,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                   }),
                                   panLocked: () => _pvPts.length >= 2,
                                 ),
+                                // 置中輔助線（路由/馬賽克拖曳吸中線時）
+                                if (_phGuideV || _phGuideH)
+                                  Positioned.fill(
+                                    child: CenterGuides(
+                                      vertical: _phGuideV,
+                                      horizontal: _phGuideH,
+                                    ),
+                                  ),
                                 // 選取路由：有部件被選取（白框）時，
                                 // 整個預覽的拖曳都只動被選的那個——
                                 // 跟影片編輯同一套規則
@@ -961,6 +1044,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                           behavior:
                                               HitTestBehavior.translucent,
                                           onPanStart: (_) {
+                                            _phClearGuides();
                                             if (_pvPts.length < 2) {
                                               _pushUndo();
                                             }
@@ -971,29 +1055,47 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                             final lg = _settings.logo;
                                             final part = _wmPartAlive;
                                             setState(() {
+                                              // 原始座標累積、顯示值吸中線
+                                              //（同 WatermarkLayer 手感）
                                               if (part == WmPart.text &&
                                                   t.enabled &&
                                                   !t.tiled &&
                                                   t.text.trim().isNotEmpty) {
-                                                t.x =
-                                                    (t.x + d.delta.dx / w)
+                                                _phRawX ??= t.x;
+                                                _phRawY ??= t.y;
+                                                _phRawX =
+                                                    (_phRawX! +
+                                                            d.delta.dx / w)
                                                         .clamp(0.0, 1.0);
-                                                t.y =
-                                                    (t.y + d.delta.dy / h)
+                                                _phRawY =
+                                                    (_phRawY! +
+                                                            d.delta.dy / h)
                                                         .clamp(0.0, 1.0);
+                                                t.x = _snapC(_phRawX!);
+                                                t.y = _snapC(_phRawY!);
+                                                _phSetGuides(t.x, t.y);
                                               } else if (part ==
                                                       WmPart.logo &&
                                                   lg.enabled &&
                                                   !lg.tiled) {
-                                                lg.x =
-                                                    (lg.x + d.delta.dx / w)
+                                                _phRawX ??= lg.x;
+                                                _phRawY ??= lg.y;
+                                                _phRawX =
+                                                    (_phRawX! +
+                                                            d.delta.dx / w)
                                                         .clamp(0.0, 1.0);
-                                                lg.y =
-                                                    (lg.y + d.delta.dy / h)
+                                                _phRawY =
+                                                    (_phRawY! +
+                                                            d.delta.dy / h)
                                                         .clamp(0.0, 1.0);
+                                                lg.x = _snapC(_phRawX!);
+                                                lg.y = _snapC(_phRawY!);
+                                                _phSetGuides(lg.x, lg.y);
                                               }
                                             });
                                           },
+                                          onPanEnd: (_) => _phClearGuides(),
+                                          onPanCancel: _phClearGuides,
                                           child: const SizedBox.expand(),
                                         );
                                       },

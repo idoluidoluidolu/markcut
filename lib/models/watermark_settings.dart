@@ -3,6 +3,8 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
+import 'mosaic.dart';
+
 /// 可選字型（全部為免費開源授權 SIL OFL）
 const kFontOptions = <({String label, String family})>[
   (label: '思源黑體', family: 'NotoSansTC'),
@@ -212,14 +214,20 @@ class WatermarkSettings {
   double animSpeed; // 速度倍率 0.2~3（越大越快）
   double animRange; // 幅度倍率 0.2~3（閃爍＝亮的比例、飄移＝擺動幅度）
 
+  /// 照片模式的馬賽克區塊。掛在這裡是為了跟著範本一起存／套用；
+  /// 影片編輯的全域浮水印不吃這個欄位（那邊的馬賽克是時間軸素材）
+  List<PhotoMosaic> mosaics;
+
   WatermarkSettings({
     TextMark? text,
     LogoMark? logo,
     this.animation = WmAnimation.none,
     this.animSpeed = 1.0,
     this.animRange = 1.0,
+    List<PhotoMosaic>? mosaics,
   })  : text = text ?? TextMark(),
-        logo = logo ?? LogoMark();
+        logo = logo ?? LogoMark(),
+        mosaics = mosaics ?? [];
 
   /// 閃爍一輪的秒數
   double get blinkCycle => 1.2 / animSpeed;
@@ -269,12 +277,18 @@ class WatermarkSettings {
         'animation': animation.index,
         'animSpeed': animSpeed,
         'animRange': animRange,
+        if (mosaics.isNotEmpty)
+          'mosaics': mosaics.map((m) => m.toJson()).toList(),
       };
 
   factory WatermarkSettings.fromJson(Map<String, dynamic> j) =>
       WatermarkSettings(
         text: TextMark.fromJson(j['text'] ?? {}),
         logo: LogoMark.fromJson(j['logo'] ?? {}),
+        mosaics: ((j['mosaics'] as List?) ?? const [])
+            .map((e) =>
+                PhotoMosaic.fromJson(Map<String, dynamic>.from(e as Map)))
+            .toList(),
         animation: WmAnimation.values[
             ((j['animation'] ?? 0) as int) % WmAnimation.values.length],
         // clamp 到滑桿範圍：0 會讓閃爍週期變 Infinity，

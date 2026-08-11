@@ -90,6 +90,8 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
   /// 正在拖哪個部件（畫置中輔助線用）
   WmPart _panning = WmPart.none;
 
+  // 置中輔助線的共用元件在檔尾：CenterGuides
+
   /// 上一刻有沒有吸在中線上（吸上去的瞬間震一下）
   bool _centerSnapped = false;
 
@@ -604,4 +606,43 @@ class _TiledTextPainter extends CustomPainter {
   @override
   bool shouldRepaint(_TiledTextPainter old) =>
       old.t != t || old.canvasW != canvasW;
+}
+
+/// 置中輔助線（琥珀色細線）：各編輯器在拖曳吸到中線時疊在預覽上。
+/// WatermarkLayer 自己的拖曳有內建，這個給「選取路由」等外部拖曳共用
+class CenterGuides extends StatelessWidget {
+  final bool vertical; // 吸在垂直中線（x == 0.5）
+  final bool horizontal; // 吸在水平中線（y == 0.5）
+
+  const CenterGuides({
+    super.key,
+    required this.vertical,
+    required this.horizontal,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const line = Color(0xFFFFC24B);
+    return IgnorePointer(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          if (vertical)
+            Center(
+              child: Container(
+                width: 1,
+                color: line.withValues(alpha: 0.9),
+              ),
+            ),
+          if (horizontal)
+            Center(
+              child: Container(
+                height: 1,
+                color: line.withValues(alpha: 0.9),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }

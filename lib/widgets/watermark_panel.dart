@@ -91,6 +91,10 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       s.animation = p.settings.animation;
       s.animSpeed = p.settings.animSpeed;
       s.animRange = p.settings.animRange;
+      // 範本帶的馬賽克（照片模式用；影片的全域浮水印不吃這欄位）
+      s.mosaics
+        ..clear()
+        ..addAll(p.settings.mosaics.map((m) => m.copy()));
       _textCtrl.text = s.text.text;
       _presetSel = p.name;
     });

@@ -1,40 +1,14 @@
 import 'dart:math' as math;
 
 import 'color_grade.dart';
+import 'mosaic.dart';
 import 'watermark_settings.dart';
+
+export 'mosaic.dart';
 
 /// 素材種類。軌道本身不分種類，是「素材」有種類之分。
 // wm 一定要加在最尾端：kind 是用 index 序列化的，插中間會毀掉舊草稿
 enum ClipKind { video, audio, image, text, wm, mosaic }
-
-/// 馬賽克的樣式設定（每個馬賽克素材一份）
-class MosaicStyle {
-  /// 濃度 0~1：像素化＝格子越大、模糊＝越糊（純色遮蓋不吃這個）
-  double strength;
-
-  /// 0=像素化、1=模糊、2=純色遮蓋
-  int type;
-
-  /// 純色遮蓋的顏色（ARGB，只用 RGB；預設黑）
-  int color;
-
-  MosaicStyle({this.strength = 0.5, this.type = 0, this.color = 0xFF000000});
-
-  Map<String, dynamic> toJson() => {
-    'strength': strength,
-    'type': type,
-    'color': color,
-  };
-
-  factory MosaicStyle.fromJson(Map<String, dynamic> j) => MosaicStyle(
-    strength: ((j['strength'] ?? 0.5).toDouble() as double).clamp(0.0, 1.0),
-    type: ((j['type'] ?? 0) as int) % 3,
-    color: (j['color'] ?? 0xFF000000) as int,
-  );
-
-  MosaicStyle copy() =>
-      MosaicStyle(strength: strength, type: type, color: color);
-}
 
 /// 一份匯入的素材（影片或音訊），可被多個片段引用
 class MediaSource {

@@ -1858,6 +1858,39 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         ),
                       ],
                     ),
+                    if (st.type == 1)
+                      Row(
+                        children: [
+                          const SizedBox(
+                            width: 40,
+                            child: Text(
+                              '柔邊',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: kTextDim,
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: Slider(
+                              value: st.feather,
+                              onChanged: (v) =>
+                                  change(() => st.feather = v),
+                            ),
+                          ),
+                          SizedBox(
+                            width: 40,
+                            child: Text(
+                              '${(st.feather * 100).round()}%',
+                              textAlign: TextAlign.right,
+                              style: const TextStyle(
+                                fontSize: 11.5,
+                                color: kTextDim,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                   ] else ...[
                     const SizedBox(height: 14),
                     SizedBox(
@@ -3458,6 +3491,49 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                     color: Color(ms.color),
                                                   );
                                                 }
+                                                if (ms.type == 1 &&
+                                                    ms.feather > 0) {
+                                                  // 邊緣柔化：同心圈疊加，
+                                                  // 中心累積較糊、邊緣輕
+                                                  //（跟匯出的漸進圈同思路）
+                                                  final sg =
+                                                      (4.0 +
+                                                          16 * ms.strength) /
+                                                      3;
+                                                  final ins =
+                                                      ms.feather *
+                                                      0.175 *
+                                                      math.min(
+                                                        r.width,
+                                                        r.height,
+                                                      );
+                                                  Widget ring(double i) =>
+                                                      Positioned(
+                                                        left: i,
+                                                        top: i,
+                                                        right: i,
+                                                        bottom: i,
+                                                        child: ClipRect(
+                                                          child: BackdropFilter(
+                                                            filter:
+                                                                ui.ImageFilter.blur(
+                                                                  sigmaX: sg,
+                                                                  sigmaY: sg,
+                                                                ),
+                                                            child:
+                                                                const SizedBox
+                                                                    .expand(),
+                                                          ),
+                                                        ),
+                                                      );
+                                                  return Stack(
+                                                    children: [
+                                                      ring(0),
+                                                      ring(ins),
+                                                      ring(ins * 2),
+                                                    ],
+                                                  );
+                                                }
                                                 ui.ImageFilter? filter;
                                                 if (ms.type == 0 &&
                                                     _mosaicProg != null) {
@@ -3848,6 +3924,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             // undo 延到第一次真的動到東西
                                             // 才拍：光按一下不該吃掉 redo
                                             _routerUndoPending = true;
+                                            _rtClearGuides();
                                             if (selVis != null) {
                                               _gestureStartPx = selVis.px;
                                               _gestureStartPy = selVis.py;
@@ -3868,25 +3945,33 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                   ? 12.0
                                                   : 3.0;
                                               setState(() {
-                                                selVis.px =
+                                                // 起點+總位移=未吸附原始值，
+                                                // 顯示值才吸中線
+                                                final rx =
                                                     (_gestureStartPx +
                                                             (d.focalPoint.dx -
                                                                     _gestureStartFocal
                                                                         .dx) /
                                                                 w)
                                                         .clamp(0.0, 1.0);
-                                                selVis.py =
+                                                final ry =
                                                     (_gestureStartPy +
                                                             (d.focalPoint.dy -
                                                                     _gestureStartFocal
                                                                         .dy) /
                                                                 h)
                                                         .clamp(0.0, 1.0);
+                                                selVis.px = _snapC(rx);
+                                                selVis.py = _snapC(ry);
                                                 selVis.scale =
                                                     (_gestureStartScale *
                                                             d.scale)
                                                         .clamp(0.05, maxS);
                                               });
+                                              _rtSetGuides(
+                                                selVis.px,
+                                                selVis.py,
+                                              );
                                               return;
                                             }
                                             // 浮水印：兩指縮放由外層
@@ -3905,34 +3990,58 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             var moved = false;
                                             setState(() {
                                               if (wmClipStyle != null) {
-                                                // 浮水印片段：整組一起移
+                                                // 浮水印片段：整組一起移。
+                                                // 吸附以「領頭」（文字，
+                                                // 沒文字就 Logo）為準，兩個
+                                                // 部件加同一個修正量，
+                                                // 相對位置不會被吸歪
                                                 final t2 = wmClipStyle.text;
                                                 final lg = wmClipStyle.logo;
-                                                if (t2.enabled &&
+                                                final tAlive =
+                                                    t2.enabled &&
                                                     !t2.tiled &&
-                                                    t2.text.trim().isNotEmpty) {
+                                                    t2.text.trim().isNotEmpty;
+                                                final lAlive =
+                                                    lg.enabled && !lg.tiled;
+                                                if (tAlive || lAlive) {
                                                   _routerPushUndoIfNeeded();
                                                   moved = true;
-                                                  t2.x = (t2.x + ddx).clamp(
-                                                    0.0,
-                                                    1.0,
-                                                  );
-                                                  t2.y = (t2.y + ddy).clamp(
-                                                    0.0,
-                                                    1.0,
-                                                  );
-                                                }
-                                                if (lg.enabled && !lg.tiled) {
-                                                  _routerPushUndoIfNeeded();
-                                                  moved = true;
-                                                  lg.x = (lg.x + ddx).clamp(
-                                                    0.0,
-                                                    1.0,
-                                                  );
-                                                  lg.y = (lg.y + ddy).clamp(
-                                                    0.0,
-                                                    1.0,
-                                                  );
+                                                  if (_rtRawX == null) {
+                                                    _rtRawX = tAlive
+                                                        ? t2.x
+                                                        : lg.x;
+                                                    _rtRawY = tAlive
+                                                        ? t2.y
+                                                        : lg.y;
+                                                    _rtRawX2 = lg.x;
+                                                    _rtRawY2 = lg.y;
+                                                  }
+                                                  _rtRawX = (_rtRawX! + ddx)
+                                                      .clamp(0.0, 1.0);
+                                                  _rtRawY = (_rtRawY! + ddy)
+                                                      .clamp(0.0, 1.0);
+                                                  _rtRawX2 = (_rtRawX2 + ddx)
+                                                      .clamp(0.0, 1.0);
+                                                  _rtRawY2 = (_rtRawY2 + ddy)
+                                                      .clamp(0.0, 1.0);
+                                                  final sx = _snapC(_rtRawX!);
+                                                  final sy = _snapC(_rtRawY!);
+                                                  final cx = sx - _rtRawX!;
+                                                  final cy = sy - _rtRawY!;
+                                                  if (tAlive) {
+                                                    t2.x = sx;
+                                                    t2.y = sy;
+                                                    if (lAlive) {
+                                                      lg.x = (_rtRawX2 + cx)
+                                                          .clamp(0.0, 1.0);
+                                                      lg.y = (_rtRawY2 + cy)
+                                                          .clamp(0.0, 1.0);
+                                                    }
+                                                  } else {
+                                                    lg.x = sx;
+                                                    lg.y = sy;
+                                                  }
+                                                  _rtSetGuides(sx, sy);
                                                 }
                                               } else {
                                                 // 全域浮水印：只移被選部件；
@@ -3966,35 +4075,51 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                 if (part == WmPart.text) {
                                                   _routerPushUndoIfNeeded();
                                                   moved = true;
-                                                  t2.x = (t2.x + ddx).clamp(
-                                                    0.0,
-                                                    1.0,
-                                                  );
-                                                  t2.y = (t2.y + ddy).clamp(
-                                                    0.0,
-                                                    1.0,
-                                                  );
+                                                  _rtRawX ??= t2.x;
+                                                  _rtRawY ??= t2.y;
+                                                  _rtRawX = (_rtRawX! + ddx)
+                                                      .clamp(0.0, 1.0);
+                                                  _rtRawY = (_rtRawY! + ddy)
+                                                      .clamp(0.0, 1.0);
+                                                  t2.x = _snapC(_rtRawX!);
+                                                  t2.y = _snapC(_rtRawY!);
+                                                  _rtSetGuides(t2.x, t2.y);
                                                 } else if (part ==
                                                         WmPart.logo &&
                                                     lg.enabled &&
                                                     !lg.tiled) {
                                                   _routerPushUndoIfNeeded();
                                                   moved = true;
-                                                  lg.x = (lg.x + ddx).clamp(
-                                                    0.0,
-                                                    1.0,
-                                                  );
-                                                  lg.y = (lg.y + ddy).clamp(
-                                                    0.0,
-                                                    1.0,
-                                                  );
+                                                  _rtRawX ??= lg.x;
+                                                  _rtRawY ??= lg.y;
+                                                  _rtRawX = (_rtRawX! + ddx)
+                                                      .clamp(0.0, 1.0);
+                                                  _rtRawY = (_rtRawY! + ddy)
+                                                      .clamp(0.0, 1.0);
+                                                  lg.x = _snapC(_rtRawX!);
+                                                  lg.y = _snapC(_rtRawY!);
+                                                  _rtSetGuides(lg.x, lg.y);
                                                 }
                                               }
                                             });
                                             if (!moved) return;
                                           },
-                                          onScaleEnd: (_) => _saveDraft(),
+                                          onScaleEnd: (_) {
+                                            _rtClearGuides();
+                                            _saveDraft();
+                                          },
                                           child: const SizedBox.expand(),
+                                        ),
+                                      ),
+                                    );
+                                  }
+                                  // 置中輔助線（路由拖曳吸到中線時）
+                                  if (_rtGuideV || _rtGuideH) {
+                                    children.add(
+                                      Positioned.fill(
+                                        child: CenterGuides(
+                                          vertical: _rtGuideV,
+                                          horizontal: _rtGuideH,
                                         ),
                                       ),
                                     );
@@ -4028,6 +4153,45 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 選取路由的上一個拖曳點（算增量用）
   Offset _routerLast = Offset.zero;
+
+  // ===== 選取路由的置中吸附（跟 WatermarkLayer 內建拖曳同手感）=====
+  /// 未吸附的原始座標（吸附只作用在顯示值上，不然吸上就拖不出來）
+  double? _rtRawX, _rtRawY;
+
+  /// 浮水印片段整組移動時的第二個部件（logo）原始座標
+  double _rtRawX2 = 0, _rtRawY2 = 0;
+
+  bool _rtGuideV = false, _rtGuideH = false;
+  bool _rtSnapped = false;
+
+  double _snapC(double v) => (v - 0.5).abs() < 0.015 ? 0.5 : v;
+
+  void _rtSetGuides(double x, double y) {
+    final v = x == 0.5, hh = y == 0.5;
+    if (v != _rtGuideV || hh != _rtGuideH) {
+      setState(() {
+        _rtGuideV = v;
+        _rtGuideH = hh;
+      });
+    }
+    final on = v || hh;
+    if (on != _rtSnapped) {
+      _rtSnapped = on;
+      if (on) HapticFeedback.selectionClick();
+    }
+  }
+
+  void _rtClearGuides() {
+    _rtRawX = null;
+    _rtRawY = null;
+    _rtSnapped = false;
+    if (_rtGuideV || _rtGuideH) {
+      setState(() {
+        _rtGuideV = false;
+        _rtGuideH = false;
+      });
+    }
+  }
 
   /// 選取路由的 undo 快照「欠著」旗標：手勢開始先掛著，
   /// 第一次真的動到東西才拍——光按一下不該清掉 redo

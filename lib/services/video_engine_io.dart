@@ -422,17 +422,39 @@ Future<String> _buildCommand(
       // 模糊：縮小再「平滑」放大（跟像素化同管線，只差放大用 bilinear）。
       // 不用 boxblur——裝置端的 min 版 FFmpeg 解析它會失敗
       //（"No option name near"），本機完整版卻正常，靠不住；
-      // scale 在所有匯出路徑都驗證過。濃度越高縮越小＝越糊
-      final down = 2 + (ms.strength * 12).round();
-      final dw = math.max(2, (w2 / down).round());
-      final dh = math.max(2, (h2 / down).round());
-      fc.write(
-        '[$cur]split=2[mzA$k][mzB$k];'
-        '[mzB$k]crop=$w2:$h2:$x:$y,scale=$dw:$dh,'
-        'scale=$w2:$h2:flags=bilinear[mzP$k];'
-        '[mzA$k][mzP$k]overlay=$x:$y:$enable:'
-        'eof_action=pass[mz$k];',
-      );
+      // scale 在所有匯出路徑都驗證過。濃度越高縮越小＝越糊。
+      // 邊緣柔化：同心 3 圈由外到內模糊漸強（外圈輕、內圈重），
+      // 邊界不再是一條硬線——一樣只用 scale/crop/overlay。
+      // 最後一圈輸出固定叫 mz$k，接回下面共用的 cur 指派
+      final downFull = 2 + (ms.strength * 12).round();
+      final margin = (ms.feather * 0.35 * math.min(w2, h2)).round();
+      final rings = margin >= 4
+          ? [
+              (0, math.max(2, (downFull / 3).round())),
+              (margin ~/ 2, math.max(2, (downFull * 2 / 3).round())),
+              (margin, downFull),
+            ]
+          : [(0, downFull)];
+      for (var i = 0; i < rings.length; i++) {
+        final (inset, down) = rings[i];
+        var rw = w2 - inset * 2;
+        var rh = h2 - inset * 2;
+        rw = math.max(2, rw - rw % 2);
+        rh = math.max(2, rh - rh % 2);
+        final rx = x + inset;
+        final ry = y + inset;
+        final dw = math.max(2, (rw / down).round());
+        final dh = math.max(2, (rh / down).round());
+        final out = i == rings.length - 1 ? 'mz$k' : 'mz${k}f$i';
+        fc.write(
+          '[$cur]split=2[mzA${k}f$i][mzB${k}f$i];'
+          '[mzB${k}f$i]crop=$rw:$rh:$rx:$ry,scale=$dw:$dh,'
+          'scale=$rw:$rh:flags=bilinear[mzP${k}f$i];'
+          '[mzA${k}f$i][mzP${k}f$i]overlay=$rx:$ry:$enable:'
+          'eof_action=pass[$out];',
+        );
+        cur = out;
+      }
     } else {
       // 像素化：縮小再鄰近取樣放大。濃度越高格子越大
       //（橫向格數約 26 → 6）
