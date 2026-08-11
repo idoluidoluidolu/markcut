@@ -428,11 +428,16 @@ Future<String> _buildCommand(
       // 最後一圈輸出固定叫 mz$k，接回下面共用的 cur 指派
       final downFull = 2 + (ms.strength * 12).round();
       final margin = (ms.feather * 0.35 * math.min(w2, h2)).round();
-      final rings = margin >= 4
+      // 6 圈由外到內漸強：外圈幾乎不糊、內圈全糊，
+      // 肉眼看不出圈與圈的階梯，邊界就沒有明顯分界線
+      // 先畫「最外圈最大範圍、幾乎不糊」，一路往內越縮越糊
+      final rings = margin >= 8
           ? [
-              (0, math.max(2, (downFull / 3).round())),
-              (margin ~/ 2, math.max(2, (downFull * 2 / 3).round())),
-              (margin, downFull),
+              for (var i = 1; i <= 6; i++)
+                (
+                  (margin * (i - 1) / 5).round(),
+                  math.max(2, (downFull * i / 6).round()),
+                ),
             ]
           : [(0, downFull)];
       for (var i = 0; i < rings.length; i++) {

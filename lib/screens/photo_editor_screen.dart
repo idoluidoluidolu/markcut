@@ -171,17 +171,30 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     _applyState(_undoStack.removeLast());
   }
 
+  /// 解碼後的照片（馬賽克預覽直接取樣它：真像素塊／真羽化，
+  /// 跟匯出同一套畫法，web 也一樣）
+  ui.Image? _photoImg;
+
+  @override
+  void dispose() {
+    _photoImg?.dispose();
+    super.dispose();
+  }
+
   Future<void> _load() async {
     try {
       final bytes = await widget.photo.readAsBytes();
       final codec = await ui.instantiateImageCodec(bytes);
       final frame = await codec.getNextFrame();
-      if (!mounted) return;
+      if (!mounted) {
+        frame.image.dispose();
+        return;
+      }
       setState(() {
         _photoBytes = bytes;
+        _photoImg = frame.image;
         _aspect = frame.image.width / frame.image.height;
       });
-      frame.image.dispose();
     } catch (_) {
       // 壞檔或不支援的格式：不能讓畫面永遠轉圈
       if (!mounted) return;
@@ -332,24 +345,28 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       Widget effect;
       if (m.style.type == 2) {
         effect = Container(color: Color(m.style.color));
-      } else if (m.style.type == 1 && m.style.feather > 0) {
-        // 邊緣柔化預覽：同心圈疊加（中心累積較糊、邊緣輕）；
-        // 匯出時是真羽化遮罩
-        final sg = (4.0 + 16 * m.style.strength) / 3;
-        final ins = m.style.feather * 0.175 * side;
-        Widget ring(double i) => Positioned(
-          left: i,
-          top: i,
-          right: i,
-          bottom: i,
-          child: ClipRect(
-            child: BackdropFilter(
-              filter: ui.ImageFilter.blur(sigmaX: sg, sigmaY: sg),
-              child: const SizedBox.expand(),
+      } else if (_photoImg != null) {
+        // 直接取樣照片畫效果：真像素塊、真羽化（跟匯出同一套畫法，
+        // web 也一樣）。調色時把同一個矩陣套在補丁上，顏色才會對
+        Widget patch = CustomPaint(
+          painter: _MosaicPatchPainter(
+            img: _photoImg!,
+            style: m.style,
+            srcRect: Rect.fromLTWH(
+              rect.left * _photoImg!.width / w,
+              rect.top * _photoImg!.height / h,
+              rect.width * _photoImg!.width / w,
+              rect.height * _photoImg!.height / h,
             ),
           ),
         );
-        effect = Stack(children: [ring(0), ring(ins), ring(ins * 2)]);
+        if (_grade.hasColor && !_colorCompare) {
+          patch = ColorFiltered(
+            colorFilter: ColorFilter.matrix(_grade.matrix),
+            child: patch,
+          );
+        }
+        effect = patch;
       } else {
         ui.ImageFilter? filter;
         if (m.style.type == 0 && _mosaicProg != null) {
@@ -1211,4 +1228,121 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       ),
     );
   }
+}
+
+/// 預覽用的馬賽克補丁：直接取樣照片畫「真效果」，
+/// 跟匯出（WatermarkRenderer._drawMosaic）同一套邏輯。
+/// - 像素化：每格取「格中心那顆像素」鋪滿整格（真色塊）
+/// - 模糊：整張圖經模糊層畫進來，柔邊用「內縮白方塊＋霧化」
+///   當 alpha 遮罩（dstIn），邊緣平滑淡出、沒有分界線
+class _MosaicPatchPainter extends CustomPainter {
+  final ui.Image img;
+  final MosaicStyle style;
+
+  /// 這塊區域對應到照片上的範圍（照片像素座標）
+  final Rect srcRect;
+
+  const _MosaicPatchPainter({
+    required this.img,
+    required this.style,
+    required this.srcRect,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.width < 1 || size.height < 1) return;
+    final scale = size.width / srcRect.width;
+    // 「整張圖」在此補丁座標系裡的位置：srcRect 對齊 (0,0)~size
+    final dstFull = Rect.fromLTWH(
+      -srcRect.left * scale,
+      -srcRect.top * scale,
+      img.width * scale,
+      img.height * scale,
+    );
+
+    if (style.type == 0) {
+      // 真像素塊：每格取格中心像素
+      final cells = (26 - 20 * style.strength).round().clamp(4, 40);
+      final nx = cells;
+      final ny = math.max(1, (cells * size.height / size.width).round());
+      final cw = size.width / nx;
+      final ch = size.height / ny;
+      final paintCell = Paint()..filterQuality = FilterQuality.none;
+      for (var iy = 0; iy < ny; iy++) {
+        for (var ix = 0; ix < nx; ix++) {
+          final sx = srcRect.left + (ix + 0.5) / nx * srcRect.width;
+          final sy = srcRect.top + (iy + 0.5) / ny * srcRect.height;
+          canvas.drawImageRect(
+            img,
+            Rect.fromLTWH(
+              sx.clamp(0.0, img.width - 1.0),
+              sy.clamp(0.0, img.height - 1.0),
+              1,
+              1,
+            ),
+            Rect.fromLTWH(ix * cw, iy * ch, cw + 0.5, ch + 0.5),
+            paintCell,
+          );
+        }
+      }
+      return;
+    }
+
+    // 模糊
+    final sigma = 4.0 + 16 * style.strength;
+    final featherPx =
+        style.feather * 0.2 * math.min(size.width, size.height);
+    final bounds = Offset.zero & size;
+    if (featherPx >= 1) {
+      canvas.saveLayer(bounds, Paint());
+      canvas.save();
+      canvas.clipRect(bounds);
+      canvas.saveLayer(
+        bounds,
+        Paint()..imageFilter = ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
+      );
+      canvas.drawImageRect(
+        img,
+        Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+        dstFull,
+        Paint()..filterQuality = FilterQuality.medium,
+      );
+      canvas.restore();
+      canvas.restore();
+      canvas.drawRect(
+        bounds.deflate(featherPx),
+        Paint()
+          ..color = const Color(0xFFFFFFFF)
+          ..maskFilter = ui.MaskFilter.blur(
+            ui.BlurStyle.normal,
+            featherPx * 0.6,
+          )
+          ..blendMode = BlendMode.dstIn,
+      );
+      canvas.restore();
+      return;
+    }
+    canvas.save();
+    canvas.clipRect(bounds);
+    canvas.saveLayer(
+      bounds,
+      Paint()..imageFilter = ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
+    );
+    canvas.drawImageRect(
+      img,
+      Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+      dstFull,
+      Paint()..filterQuality = FilterQuality.medium,
+    );
+    canvas.restore();
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_MosaicPatchPainter old) =>
+      old.img != img ||
+      old.srcRect != srcRect ||
+      old.style.type != style.type ||
+      old.style.strength != style.strength ||
+      old.style.feather != style.feather;
 }

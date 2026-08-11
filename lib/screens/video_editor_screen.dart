@@ -3493,16 +3493,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                 }
                                                 if (ms.type == 1 &&
                                                     ms.feather > 0) {
-                                                  // 邊緣柔化：同心圈疊加，
-                                                  // 中心累積較糊、邊緣輕
+                                                  // 邊緣柔化：6 圈同心疊加,
+                                                  // 中心累積較糊、邊緣輕,
+                                                  // 看不出圈與圈的階梯
                                                   //（跟匯出的漸進圈同思路）
                                                   final sg =
                                                       (4.0 +
-                                                          16 * ms.strength) /
-                                                      3;
-                                                  final ins =
+                                                          16 * ms.strength) *
+                                                      0.4;
+                                                  final step =
                                                       ms.feather *
-                                                      0.175 *
+                                                      0.07 *
                                                       math.min(
                                                         r.width,
                                                         r.height,
@@ -3528,9 +3529,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                       );
                                                   return Stack(
                                                     children: [
-                                                      ring(0),
-                                                      ring(ins),
-                                                      ring(ins * 2),
+                                                      for (
+                                                        var i = 0;
+                                                        i < 6;
+                                                        i++
+                                                      )
+                                                        ring(step * i),
                                                     ],
                                                   );
                                                 }
