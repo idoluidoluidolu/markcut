@@ -171,45 +171,58 @@ class _DonateScreenState extends State<DonateScreen> {
       backgroundColor: kBg,
       appBar: AppBar(backgroundColor: kBg, title: const Text('太好用啦')),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const SizedBox(height: 16),
-              const Text(
-                '真的那麼好用？',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 19, fontWeight: FontWeight.w800),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                '好用到會想給我一點加菜金？\n'
-                '如果你想斗內的話，\n'
-                '那我當然是不會拒絕的！',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 13, color: kTextDim, height: 1.7),
-              ),
-              const SizedBox(height: 22),
-              for (final (id, label, price) in _kTiers) ...[
-                _tierCard(id, label, price),
-                const SizedBox(height: 12),
-              ],
-              const SizedBox(height: 18),
-              // logo 收尾：底部置中
-              Center(
-                child: SizedBox(
-                  width: 120,
-                  height: 48,
-                  child: Image.asset(
-                    'assets/icon/home_logo.png',
-                    fit: BoxFit.cover,
-                    filterQuality: FilterQuality.medium,
-                  ),
+        child: Column(
+          children: [
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(24, 8, 24, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const SizedBox(height: 16),
+                    const Text(
+                      '真的那麼好用？',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 19,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      '好用到會想給我一點加菜金？\n'
+                      '如果你想斗內的話，\n'
+                      '那我當然是不會拒絕的！',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: kTextDim,
+                        height: 1.7,
+                      ),
+                    ),
+                    const SizedBox(height: 22),
+                    for (final (id, label, price) in _kTiers) ...[
+                      _tierCard(id, label, price),
+                      const SizedBox(height: 12),
+                    ],
+                  ],
                 ),
               ),
-            ],
-          ),
+            ),
+            // logo 釘在畫面底部置中（不跟內容捲動）
+            Padding(
+              padding: const EdgeInsets.only(bottom: 14),
+              child: SizedBox(
+                width: 120,
+                height: 48,
+                child: Image.asset(
+                  'assets/icon/home_logo.png',
+                  fit: BoxFit.cover,
+                  filterQuality: FilterQuality.medium,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
