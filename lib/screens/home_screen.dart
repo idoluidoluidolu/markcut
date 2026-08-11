@@ -264,10 +264,10 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // 純黑底：跟吉祥物原圖的黑底融為一體
-      backgroundColor: Colors.black,
+      // 近黑底（標準 dark mode）：吉祥物黑底圖用「變亮混合」融進背景
+      backgroundColor: kBg,
       appBar: AppBar(
-        backgroundColor: Colors.black,
+        backgroundColor: kBg,
         actions: [
           IconButton(
             tooltip: '個人中心',
@@ -297,10 +297,17 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: SizedBox(
                     width: 300,
                     height: 120,
-                    child: Image.asset(
-                      'assets/icon/icon_foreground.png',
-                      fit: BoxFit.cover, // 裁掉原圖四周的留白
-                      filterQuality: FilterQuality.medium,
+                    // 變亮混合：圖的純黑底變成 kBg，跟背景無縫
+                    child: ColorFiltered(
+                      colorFilter: const ColorFilter.mode(
+                        kBg,
+                        BlendMode.lighten,
+                      ),
+                      child: Image.asset(
+                        'assets/icon/icon_foreground.png',
+                        fit: BoxFit.cover, // 裁掉原圖四周的留白
+                        filterQuality: FilterQuality.medium,
+                      ),
                     ),
                   ),
                 ),

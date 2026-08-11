@@ -70,9 +70,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
       child: Container(
         height: 52,
         decoration: BoxDecoration(
-          color: Colors.black,
+          color: kPanel,
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: kClipBorder, width: 1.5),
+          border: Border.all(color: kBorder, width: 1.5),
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -113,9 +113,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
       child: Container(
         height: 130,
         decoration: BoxDecoration(
-          color: Colors.black,
+          color: kPanel,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: kClipBorder, width: 1.5),
+          border: Border.all(color: kBorder, width: 1.5),
         ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -181,9 +181,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
     // 非編輯頁面全頁都能右滑返回（編輯畫面橫向手勢太多，刻意不放）
     return SwipeBack(
       child: Scaffold(
-        backgroundColor: Colors.black,
+        backgroundColor: kBg,
         appBar: AppBar(
-          backgroundColor: Colors.black,
+          backgroundColor: kBg,
           title: const Text('個人中心'),
         ),
         body: Column(

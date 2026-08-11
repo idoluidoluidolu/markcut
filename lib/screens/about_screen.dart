@@ -39,9 +39,9 @@ class AboutScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return SwipeBack(
       child: Scaffold(
-        backgroundColor: Colors.black,
+        backgroundColor: kBg,
         appBar: AppBar(
-          backgroundColor: Colors.black,
+          backgroundColor: kBg,
           title: const Text('關於 浮水印'),
         ),
         body: SafeArea(
@@ -227,8 +227,8 @@ Widget _card(String title, List<Widget> children) {
   return Container(
     padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
     decoration: BoxDecoration(
-      // 純黑＋細邊線，跟個人中心同一套（不要滿頁深淺不一的灰）
-      color: Colors.black,
+      // 面板色＋細邊線，跟個人中心同一套（標準 dark mode 層次）
+      color: kPanel,
       borderRadius: BorderRadius.circular(10),
       border: Border.all(color: kClipBorder),
     ),
@@ -274,7 +274,7 @@ Widget _copyRow({
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
         decoration: BoxDecoration(
-          color: Colors.black,
+          color: kPanel,
           borderRadius: BorderRadius.circular(6),
           border: Border.all(color: kClipBorder),
         ),
@@ -316,8 +316,8 @@ class _InfoPage extends StatelessWidget {
   Widget build(BuildContext context) {
     return SwipeBack(
       child: Scaffold(
-        backgroundColor: Colors.black,
-        appBar: AppBar(backgroundColor: Colors.black, title: Text(title)),
+        backgroundColor: kBg,
+        appBar: AppBar(backgroundColor: kBg, title: Text(title)),
         body: ListView(
           padding: const EdgeInsets.all(16),
           children: [
