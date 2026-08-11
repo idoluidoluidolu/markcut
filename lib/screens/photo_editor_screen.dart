@@ -722,7 +722,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   fmt: 'jpg',
                   title: 'JPEG',
                   subtitle: '檔案小很多（約 1/8），肉眼看不出跟 PNG 的差別',
-                  icon: Icons.bolt,
+                  icon: Icons.image_outlined,
                 ),
                 const SizedBox(height: 8),
                 _fmtTile(
@@ -730,7 +730,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   fmt: 'png',
                   title: 'PNG 無損',
                   subtitle: '完全不壓縮，檔案很大（可能幾十 MB）',
-                  icon: Icons.diamond_outlined,
+                  icon: Icons.image_outlined,
                 ),
               ],
             ),
