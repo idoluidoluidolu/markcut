@@ -695,7 +695,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   Future<void> _confirmExport() async {
     if (_exporting) return;
     final prefs = await SharedPreferences.getInstance();
-    final last = prefs.getString('photo_export_fmt') ?? 'jpg';
     if (!mounted) return;
     final fmt = await showDialog<String>(
       context: context,
@@ -721,20 +720,16 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                 _fmtTile(
                   context,
                   fmt: 'jpg',
-                  title: "JPEG${last == 'jpg' ? '（上次用這個）' : ''}",
-                  subtitle:
-                      '檔案小很多（約 1/8），發社群、傳給別人用這個。'
-                      '肉眼看不出跟 PNG 的差別',
+                  title: 'JPEG',
+                  subtitle: '檔案小很多（約 1/8），肉眼看不出跟 PNG 的差別',
                   icon: Icons.bolt,
                 ),
                 const SizedBox(height: 8),
                 _fmtTile(
                   context,
                   fmt: 'png',
-                  title: "PNG 無損${last == 'png' ? '（上次用這個）' : ''}",
-                  subtitle:
-                      '完全不壓縮，檔案很大（可能幾十 MB）。'
-                      '之後還要再編修、或想典藏原稿再用',
+                  title: 'PNG 無損',
+                  subtitle: '完全不壓縮，檔案很大（可能幾十 MB）',
                   icon: Icons.diamond_outlined,
                 ),
               ],
