@@ -1030,59 +1030,40 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
       ),
     );
   }
-  if (src.kind == ClipKind.text) {
-    // 文字片段：不放圖示，直接顯示文字內容
-    return Container(
-      color: const Color(0xFF4A4A52),
-      padding: const EdgeInsets.symmetric(horizontal: 10),
-      alignment: Alignment.centerLeft,
-      child: Text(
-        src.name,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(
-          fontSize: 9,
-          color: Colors.white70,
-          fontWeight: FontWeight.w600,
+  // 文字/浮水印/馬賽克：保留各自底色，前面小圖示分種類、
+  // 文字樣式完全統一（同字級同色同字重）
+  Widget overlayLabel(Color bg, IconData icon, String text) => Container(
+    color: bg,
+    padding: const EdgeInsets.symmetric(horizontal: 8),
+    alignment: Alignment.centerLeft,
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 11, color: Colors.white54),
+        const SizedBox(width: 5),
+        Flexible(
+          child: Text(
+            text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 9,
+              color: Colors.white70,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ),
-      ),
-    );
+      ],
+    ),
+  );
+  if (src.kind == ClipKind.text) {
+    return overlayLabel(const Color(0xFF4A4A52), Icons.text_fields, src.name);
   }
   if (src.kind == ClipKind.mosaic) {
-    return Container(
-      color: const Color(0xFF33404E),
-      padding: const EdgeInsets.symmetric(horizontal: 10),
-      alignment: Alignment.centerLeft,
-      child: const Text(
-        '馬賽克',
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          fontSize: 9,
-          color: Colors.white70,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
+    return overlayLabel(const Color(0xFF33404E), Icons.blur_on, '馬賽克');
   }
   if (src.kind == ClipKind.wm) {
-    // 浮水印片段：跟最上面那條全域浮水印軌同一個樣式
-    // ——名稱靠左，灰階（琥珀留給選取）
-    return Container(
-      color: kPanelHi,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
-      alignment: Alignment.centerLeft,
-      child: Text(
-        src.name,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(
-          fontSize: 9,
-          color: kIcon,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
+    return overlayLabel(kPanelHi, Icons.branding_watermark, src.name);
   }
   if (src.kind == ClipKind.image && strip.isNotEmpty) {
     return Image.memory(strip[0], fit: BoxFit.cover, gaplessPlayback: true);
