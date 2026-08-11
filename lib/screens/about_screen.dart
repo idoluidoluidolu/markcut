@@ -31,63 +31,75 @@ class AboutScreen extends StatelessWidget {
           title: const Text('關於 浮水印'),
         ),
         body: SafeArea(
-          // 頁尾跟著內容捲到最後，不釘在畫面底部
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+          // 內容垂直置中、頁尾釘在畫面底部
+          child: Column(
             children: [
-              // 吉祥物（跟首頁同一張），不寫名字和版本
-              Center(
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 4, bottom: 20),
-                  child: SizedBox(
-                    width: 150,
-                    height: 60,
-                    child: Image.asset(
-                      'assets/icon/home_logo.png', // 透明背景版，跟首頁同一張
-                      fit: BoxFit.cover, // 裁掉原圖四周的留白
-                      filterQuality: FilterQuality.medium,
+              Expanded(
+                child: LayoutBuilder(
+                  builder: (context, cons) => SingleChildScrollView(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(minHeight: cons.maxHeight),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          // 吉祥物（跟首頁同一張），不寫名字和版本
+                          Center(
+                            child: Padding(
+                              padding: const EdgeInsets.only(bottom: 20),
+                              child: SizedBox(
+                                width: 150,
+                                height: 60,
+                                child: Image.asset(
+                                  'assets/icon/home_logo.png',
+                                  fit: BoxFit.cover,
+                                  filterQuality: FilterQuality.medium,
+                                ),
+                              ),
+                            ),
+                          ),
+                          // 作者的話：置中對齊，不套卡片框
+                          const Padding(
+                            padding: EdgeInsets.symmetric(horizontal: 8),
+                            child: Text(
+                              kDeveloperIntro,
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                color: kTextDim,
+                                height: 1.75,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 22),
+                          Builder(
+                            builder: (context) => FilledButton.icon(
+                              onPressed: () async {
+                                final ok = await openLiuJiKan();
+                                if (!ok && context.mounted) {
+                                  showHint(context, '開不了商店連結', error: true);
+                                }
+                              },
+                              style: FilledButton.styleFrom(
+                                minimumSize: const Size.fromHeight(46),
+                              ),
+                              icon: const Icon(Icons.open_in_new, size: 17),
+                              label: Text(
+                                liuJiKanStoreLabel,
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
               ),
-              // 作者的話：置中對齊，不套卡片框。
-              // 一堆長短不一的短句齊左會很雜，置中之後行尾對齊就整齊了
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 8),
-                child: Text(
-                  kDeveloperIntro,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    color: kTextDim,
-                    height: 1.75,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 22),
-              // 介紹文裡講的「下面的連結」就是這顆
-              Builder(
-                builder: (context) => FilledButton.icon(
-                  onPressed: () async {
-                    final ok = await openLiuJiKan();
-                    if (!ok && context.mounted) {
-                      showHint(context, '開不了商店連結', error: true);
-                    }
-                  },
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size.fromHeight(46),
-                  ),
-                  icon: const Icon(Icons.open_in_new, size: 17),
-                  label: Text(
-                    liuJiKanStoreLabel,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 28),
               _footer(context),
             ],
           ),
