@@ -722,14 +722,20 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   context,
                   fmt: 'jpg',
                   title: "JPEG${last == 'jpg' ? '（上次用這個）' : ''}",
-                  subtitle: '檔案小',
+                  subtitle:
+                      '檔案小很多（約 1/8），發社群、傳給別人用這個。'
+                      '肉眼看不出跟 PNG 的差別',
+                  icon: Icons.bolt,
                 ),
                 const SizedBox(height: 8),
                 _fmtTile(
                   context,
                   fmt: 'png',
-                  title: "PNG${last == 'png' ? '（上次用這個）' : ''}",
-                  subtitle: '檔案大',
+                  title: "PNG 無損${last == 'png' ? '（上次用這個）' : ''}",
+                  subtitle:
+                      '完全不壓縮，檔案很大（可能幾十 MB）。'
+                      '之後還要再編修、或想典藏原稿再用',
+                  icon: Icons.diamond_outlined,
                 ),
               ],
             ),
@@ -747,6 +753,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     required String fmt,
     required String title,
     required String subtitle,
+    required IconData icon,
   }) {
     return Material(
       color: Colors.black,
@@ -762,6 +769,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
           ),
           child: Row(
             children: [
+              Icon(icon, size: 20, color: kAmber),
+              const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
