@@ -1237,16 +1237,23 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 ///   當 alpha 遮罩（dstIn），邊緣平滑淡出、沒有分界線
 class _MosaicPatchPainter extends CustomPainter {
   final ui.Image img;
-  final MosaicStyle style;
+
+  // 樣式「值」在建構時拆開存——存物件參照的話，滑桿原地改值
+  // 會讓新舊 painter 比對永遠相等，畫面不重繪
+  final int type;
+  final double strength;
+  final double feather;
 
   /// 這塊區域對應到照片上的範圍（照片像素座標）
   final Rect srcRect;
 
-  const _MosaicPatchPainter({
+  _MosaicPatchPainter({
     required this.img,
-    required this.style,
+    required MosaicStyle style,
     required this.srcRect,
-  });
+  }) : type = style.type,
+       strength = style.strength,
+       feather = style.feather;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1260,9 +1267,9 @@ class _MosaicPatchPainter extends CustomPainter {
       img.height * scale,
     );
 
-    if (style.type == 0) {
+    if (type == 0) {
       // 真像素塊：每格取格中心像素
-      final cells = (26 - 20 * style.strength).round().clamp(4, 40);
+      final cells = (26 - 20 * strength).round().clamp(4, 40);
       final nx = cells;
       final ny = math.max(1, (cells * size.height / size.width).round());
       final cw = size.width / nx;
@@ -1289,9 +1296,9 @@ class _MosaicPatchPainter extends CustomPainter {
     }
 
     // 模糊
-    final sigma = 4.0 + 16 * style.strength;
+    final sigma = 4.0 + 16 * strength;
     final featherPx =
-        style.feather * 0.2 * math.min(size.width, size.height);
+        feather * 0.2 * math.min(size.width, size.height);
     final bounds = Offset.zero & size;
     if (featherPx >= 1) {
       canvas.saveLayer(bounds, Paint());
@@ -1342,7 +1349,7 @@ class _MosaicPatchPainter extends CustomPainter {
   bool shouldRepaint(_MosaicPatchPainter old) =>
       old.img != img ||
       old.srcRect != srcRect ||
-      old.style.type != style.type ||
-      old.style.strength != style.strength ||
-      old.style.feather != style.feather;
+      old.type != type ||
+      old.strength != strength ||
+      old.feather != feather;
 }
