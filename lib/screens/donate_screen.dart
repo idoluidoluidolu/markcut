@@ -176,19 +176,7 @@ class _DonateScreenState extends State<DonateScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const SizedBox(height: 8),
-              Center(
-                child: SizedBox(
-                  width: 120,
-                  height: 48,
-                  child: Image.asset(
-                    'assets/icon/home_logo.png',
-                    fit: BoxFit.cover,
-                    filterQuality: FilterQuality.medium,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 16),
               const Text(
                 '真的那麼好用？',
                 textAlign: TextAlign.center,
@@ -207,6 +195,19 @@ class _DonateScreenState extends State<DonateScreen> {
                 _tierCard(id, label, price),
                 const SizedBox(height: 12),
               ],
+              const SizedBox(height: 18),
+              // logo 收尾：底部置中
+              Center(
+                child: SizedBox(
+                  width: 120,
+                  height: 48,
+                  child: Image.asset(
+                    'assets/icon/home_logo.png',
+                    fit: BoxFit.cover,
+                    filterQuality: FilterQuality.medium,
+                  ),
+                ),
+              ),
             ],
           ),
         ),
