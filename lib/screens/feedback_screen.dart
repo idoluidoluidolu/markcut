@@ -77,7 +77,7 @@ class _FeedbackFormState extends State<_FeedbackForm> {
           ),
           const SizedBox(height: 6),
           const Text(
-            '歡迎留下任何你想說的話...',
+            '發現BUG、想要新增的功能都可以和我說',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 12.5, color: kTextDim, height: 1.6),
           ),
