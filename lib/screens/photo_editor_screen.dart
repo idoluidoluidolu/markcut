@@ -729,7 +729,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   context,
                   fmt: 'png',
                   title: 'PNG 無損',
-                  subtitle: '完全不壓縮，檔案很大（可能幾十 MB）',
+                  subtitle: '完全不壓縮',
                   icon: Icons.image_outlined,
                 ),
               ],
