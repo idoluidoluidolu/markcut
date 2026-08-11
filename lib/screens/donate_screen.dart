@@ -179,8 +179,8 @@ class _DonateScreenState extends State<DonateScreen> {
               const SizedBox(height: 8),
               Center(
                 child: SizedBox(
-                  width: 160,
-                  height: 64,
+                  width: 120,
+                  height: 48,
                   child: Image.asset(
                     'assets/icon/home_logo.png',
                     fit: BoxFit.cover,
