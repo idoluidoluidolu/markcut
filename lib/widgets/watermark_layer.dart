@@ -115,6 +115,30 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
     }
   }
 
+  /// 文字尺寸量測快取：拖曳中每一次指尖移動都會重建這一層，
+  /// 文字沒變就不要每幀重新排版一次（長文字一次要 1~3ms，會吃掉幀）
+  Size _probeSize = Size.zero;
+  List<Object?>? _probeKey;
+
+  Size _measureText(TextMark t, double fontSize) {
+    final key = [t.text, t.fontFamily, fontSize, t.spacing];
+    if (_probeKey != null && listEquals(_probeKey!, key)) return _probeSize;
+    final tp = TextPainter(
+      text: TextSpan(
+        text: t.text,
+        style: TextStyle(
+          fontFamily: t.fontFamily,
+          fontSize: fontSize,
+          letterSpacing: fontSize * t.spacing,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    _probeKey = key;
+    _probeSize = Size(tp.width, tp.height);
+    return _probeSize;
+  }
+
   /// Logo 的長寬比（寬/高）。匯出是用實際高度來置中與算圓角，
   /// 預覽若拿寬度當高度用，非正方形的 Logo 位置就會跟成品差一截
   double _logoAspect = 1;
@@ -251,19 +275,7 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
           // 超出畫面是允許的（跟匯出同一套規則）
           final fontSize = t.sizeFrac * math.min(w, h); // 短邊基準
 
-          TextPainter measure(double fs) => TextPainter(
-            text: TextSpan(
-              text: t.text,
-              style: TextStyle(
-                fontFamily: t.fontFamily,
-                fontSize: fs,
-                letterSpacing: fs * t.spacing,
-              ),
-            ),
-            textDirection: TextDirection.ltr,
-          )..layout();
-
-          final probe = measure(fontSize);
+          final probe = _measureText(t, fontSize);
 
           final style = TextStyle(
             fontFamily: t.fontFamily,

@@ -119,11 +119,52 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     } catch (_) {}
   }
 
-  String get _stateJson => jsonEncode({
-    ..._settings.toJson(),
-    'color': _grade.toJson(),
-    'extraWms': _extraWms.map((e) => e.toJson()).toList(),
-  });
+  /// Logo 的 base64 動輒好幾 MB。每次拖曳起手都把它整份 jsonEncode
+  /// 進 undo 快照，會讓「按下去那一瞬間」明顯卡一下（拖曳掉幀主因），
+  /// 60 份快照更是上百 MB——改成存進池子，快照裡只留編號。
+  /// 池子存的是同一個字串參照，沒有額外複製
+  final List<String> _b64Pool = [];
+
+  String _b64Token(String b64) {
+    for (var i = 0; i < _b64Pool.length; i++) {
+      if (identical(_b64Pool[i], b64)) return '@@b64:$i';
+    }
+    _b64Pool.add(b64);
+    return '@@b64:${_b64Pool.length - 1}';
+  }
+
+  void _packLogo(Object? m) {
+    if (m is! Map) return;
+    final lg = m['logo'];
+    if (lg is Map && lg['b64'] is String) {
+      lg['b64'] = _b64Token(lg['b64'] as String);
+    }
+  }
+
+  void _unpackLogo(Object? m) {
+    if (m is! Map) return;
+    final lg = m['logo'];
+    if (lg is Map && lg['b64'] is String) {
+      final v = lg['b64'] as String;
+      if (v.startsWith('@@b64:')) {
+        final i = int.tryParse(v.substring(6)) ?? -1;
+        lg['b64'] = (i >= 0 && i < _b64Pool.length) ? _b64Pool[i] : null;
+      }
+    }
+  }
+
+  String get _stateJson {
+    final j = <String, dynamic>{
+      ..._settings.toJson(),
+      'color': _grade.toJson(),
+      'extraWms': _extraWms.map((e) => e.toJson()).toList(),
+    };
+    _packLogo(j);
+    for (final e in (j['extraWms'] as List)) {
+      _packLogo(e);
+    }
+    return jsonEncode(j);
+  }
 
   bool get _dirty => _stateJson != _initialJson;
 
@@ -163,6 +204,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 把某個快照套回目前狀態
   void _applyState(String json) {
     final j = jsonDecode(json) as Map<String, dynamic>;
+    // 快照裡的 Logo 是池子編號，先換回真正的 base64
+    _unpackLogo(j);
+    for (final e in ((j['extraWms'] as List?) ?? const [])) {
+      _unpackLogo(e);
+    }
     final wm = WatermarkSettings.fromJson(j);
     setState(() {
       _settings.text = wm.text;

@@ -232,15 +232,34 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   final List<String> _undoStack = [];
   final List<String> _redoStack = [];
 
-  String _snapshot() => jsonEncode({
-    'clips': [for (final c in _tl.clips) c.toJson()],
-    // 來源也要進快照：浮水印／文字素材的樣式（wmStyle/textStyle/name）
-    // 存在來源上，漏掉的話那些編輯按復原根本退不回去
-    'sources': [for (final s in _tl.sources) s.toJson()],
-    'wmStart': _wmStart,
-    'wmEnd': _wmEnd,
-    'wm': _settings.toJson(),
-  });
+  /// Logo base64 動輒好幾 MB，每次快照都整份 jsonEncode 會讓
+  /// 拖曳起手卡一下；池子只存字串參照，快照裡留編號
+  final List<String> _wmB64Pool = [];
+
+  String _wmB64Token(String b64) {
+    for (var i = 0; i < _wmB64Pool.length; i++) {
+      if (identical(_wmB64Pool[i], b64)) return '@@b64:$i';
+    }
+    _wmB64Pool.add(b64);
+    return '@@b64:${_wmB64Pool.length - 1}';
+  }
+
+  String _snapshot() {
+    final wm = _settings.toJson();
+    final lg = wm['logo'];
+    if (lg is Map && lg['b64'] is String) {
+      lg['b64'] = _wmB64Token(lg['b64'] as String);
+    }
+    return jsonEncode({
+      'clips': [for (final c in _tl.clips) c.toJson()],
+      // 來源也要進快照：浮水印／文字素材的樣式（wmStyle/textStyle/name）
+      // 存在來源上，漏掉的話那些編輯按復原根本退不回去
+      'sources': [for (final s in _tl.sources) s.toJson()],
+      'wmStart': _wmStart,
+      'wmEnd': _wmEnd,
+      'wm': wm,
+    });
+  }
 
   /// 浮水印修改的快照：連續調整（拖滑桿、打字）0.7 秒內併成一步
   DateTime _lastWmPush = DateTime.fromMillisecondsSinceEpoch(0);
@@ -263,6 +282,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _restoreSnapshot(String snap) {
     final j = jsonDecode(snap) as Map<String, dynamic>;
+    // 快照裡的 Logo 是池子編號，先換回真正的 base64
+    final wmJ = j['wm'];
+    if (wmJ is Map) {
+      final lg = wmJ['logo'];
+      if (lg is Map && lg['b64'] is String) {
+        final v = lg['b64'] as String;
+        if (v.startsWith('@@b64:')) {
+          final i = int.tryParse(v.substring(6)) ?? -1;
+          lg['b64'] = (i >= 0 && i < _wmB64Pool.length) ? _wmB64Pool[i] : null;
+        }
+      }
+    }
     setState(() {
       // 舊快照可能沒有 sources（升級前拍的），那就沿用現況
       if (j['sources'] != null) {
@@ -376,7 +407,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     };
   }
 
+  Timer? _draftSaveTimer;
+
+  /// 存草稿（併批）：每個編輯動作、每次拖曳起手都會呼叫，
+  /// 而整包 jsonEncode（含 Logo base64）在主執行緒要好幾毫秒，
+  /// 連續操作時會吃掉幀——延後一拍、把連續呼叫併成一次真正的寫入
   Future<void> _saveDraft() async {
+    _draftSaveTimer?.cancel();
+    _draftSaveTimer = Timer(const Duration(milliseconds: 900), () {
+      _saveDraftNow();
+    });
+  }
+
+  Future<void> _saveDraftNow() async {
     // Web 也存：同一次瀏覽內可以繼續剪；重新整理後素材連結會失效，
     // 還原時由 _loadDraft 剔除並提示
     final prefs = await SharedPreferences.getInstance();
@@ -2719,6 +2762,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   @override
   void dispose() {
+    // 草稿還有沒落地的併批寫入：離開前補存，不能讓最後幾秒的編輯蒸發
+    if (_draftSaveTimer?.isActive ?? false) {
+      _draftSaveTimer!.cancel();
+      _saveDraftNow();
+    }
     _frameSettle?.cancel();
     _scrubSettleTimer?.cancel();
     _scrubEndTimer?.cancel();
@@ -3048,7 +3096,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
     if (!mounted) return;
     if (action == 'save') {
-      await _saveDraft();
+      // 離開前要真的落地，不能等併批計時器（頁面要關了）
+      _draftSaveTimer?.cancel();
+      await _saveDraftNow();
       if (mounted) Navigator.of(context).pop();
     } else if (action == 'discard') {
       await clearDraft();

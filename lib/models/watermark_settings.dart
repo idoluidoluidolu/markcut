@@ -150,14 +150,36 @@ class LogoMark {
     this.tiled = false,
   });
 
+  /// 同一張 Logo 會被複製到很多份設定（批次單張、多組浮水印、範本、
+  /// undo 快照還原），base64 字串是共享參照，但解碼後的 bytes 原本
+  /// 每份各解各的：一張 2MB 的 Logo 複製 20 份就是 40MB＋20 次解碼。
+  /// 用兩格小池子讓同一個字串只解一次、所有副本共用同一份 bytes——
+  /// 順帶讓 Image.memory 在框架的圖片快取裡也命中同一個 key
+  static String? _poolKeyA, _poolKeyB;
+  static Uint8List? _poolValA, _poolValB;
+
   Uint8List? get bytes {
-    if (b64 == null) return null;
-    return _cache ??= base64Decode(b64!);
+    final s = b64;
+    if (s == null) return null;
+    if (_cache != null) return _cache;
+    if (identical(s, _poolKeyA)) return _cache = _poolValA;
+    if (identical(s, _poolKeyB)) return _cache = _poolValB;
+    final v = base64Decode(s);
+    _poolKeyB = _poolKeyA;
+    _poolValB = _poolValA;
+    _poolKeyA = s;
+    _poolValA = v;
+    return _cache = v;
   }
 
   set bytesValue(Uint8List v) {
     _cache = v;
     b64 = base64Encode(v);
+    // 順手登記進池子：之後的 copy 直接共用這份，不再各自解碼
+    _poolKeyB = _poolKeyA;
+    _poolValB = _poolValA;
+    _poolKeyA = b64;
+    _poolValA = v;
   }
 
   Map<String, dynamic> toJson() => {
