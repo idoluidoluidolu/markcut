@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 
@@ -114,6 +115,22 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
     }
   }
 
+  /// Logo 的長寬比（寬/高）。匯出是用實際高度來置中與算圓角，
+  /// 預覽若拿寬度當高度用，非正方形的 Logo 位置就會跟成品差一截
+  double _logoAspect = 1;
+  Uint8List? _aspectFor;
+
+  void _ensureLogoAspect(Uint8List bytes) {
+    if (identical(_aspectFor, bytes)) return;
+    _aspectFor = bytes;
+    ui.instantiateImageCodec(bytes).then((c) => c.getNextFrame()).then((f) {
+      final a = f.image.width / f.image.height;
+      f.image.dispose();
+      if (!mounted || !identical(_aspectFor, bytes)) return;
+      if ((a - _logoAspect).abs() > 0.001) setState(() => _logoAspect = a);
+    }).catchError((_) {});
+  }
+
   @override
   Widget build(BuildContext context) {
     final settings = widget.settings;
@@ -145,9 +162,13 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
           // 大小以「短邊」為基準：同一個範本套到 16:9 或 9:16，
           // 看起來的比例才會一樣（用寬的話直式/橫式差超多）
           final logoW = logo.sizeFrac * math.min(w, h);
+          _ensureLogoAspect(logoBytes);
+          // 高度要用實際長寬比算，跟匯出同一套；
+          // 拿寬度當高度的話非正方形 Logo 會上下偏掉
+          final logoH = logoW / _logoAspect;
           // 不夾限：允許放大到超出畫面（跟匯出同一套規則）
           final left = logo.x * w - logoW / 2;
-          final top = logo.y * h - logoW / 2;
+          final top = logo.y * h - logoH / 2;
           children.add(
             Positioned(
               left: left,
@@ -197,8 +218,9 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                     child: Container(
                       decoration: _deco(WmPart.logo),
                       child: ClipRRect(
+                        // 圓角基準也跟匯出一致：短邊
                         borderRadius: BorderRadius.circular(
-                          logo.corner * logoW / 2,
+                          logo.corner * math.min(logoW, logoH) / 2,
                         ),
                         child: Image.memory(
                           logoBytes,
@@ -258,9 +280,14 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                   ]
                 : null,
           );
+          // 開底色時外框會往外長一圈 padding，Positioned 的原點是
+          // 「含底色的框」；不先扣掉的話文字會被推到右下，
+          // 跟匯出（底色往外擴、文字不動）差一個 padding
+          final padH = t.bg ? fontSize * 0.35 * t.bgPad : 0.0;
+          final padV = t.bg ? fontSize * 0.18 * t.bgPad : 0.0;
           // 不夾限：允許放大到超出畫面（跟匯出同一套規則）
-          final left = t.x * w - probe.width / 2;
-          final top = t.y * h - probe.height / 2;
+          final left = t.x * w - probe.width / 2 - padH;
+          final top = t.y * h - probe.height / 2 - padV;
 
           Widget textWidget(TextStyle st) => Text(
             t.text,
@@ -314,12 +341,10 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                   child: Container(
                     decoration: _deco(WmPart.text),
                     child: Container(
-                      padding: t.bg
-                          ? EdgeInsets.symmetric(
-                              horizontal: fontSize * 0.35 * t.bgPad,
-                              vertical: fontSize * 0.18 * t.bgPad,
-                            )
-                          : EdgeInsets.zero,
+                      padding: EdgeInsets.symmetric(
+                        horizontal: padH,
+                        vertical: padV,
+                      ),
                       decoration: t.bg
                           ? BoxDecoration(
                               color: t.bgColor.withValues(alpha: t.bgOpacity),
@@ -464,7 +489,13 @@ class _TiledLogoPainter extends CustomPainter {
   final LogoMark logo;
   final ui.Image? img;
 
-  _TiledLogoPainter(this.logo, this.img);
+  /// 面板是「原地改同一個物件」，比 reference 永遠相等，
+  /// shouldRepaint 就永遠回 false → 拉滑桿預覽完全不動。
+  /// 把影響畫面的值抄一份出來比
+  final List<Object?> _sig;
+
+  _TiledLogoPainter(this.logo, this.img)
+    : _sig = [logo.sizeFrac, logo.opacity, logo.rotation, logo.corner];
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -509,7 +540,7 @@ class _TiledLogoPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_TiledLogoPainter old) =>
-      old.logo != logo || old.img != img;
+      old.img != img || !listEquals(old._sig, _sig);
 }
 
 /// 滿版平鋪浮水印：跟匯出（WatermarkRenderer）同一套排列邏輯
@@ -517,7 +548,28 @@ class _TiledTextPainter extends CustomPainter {
   final TextMark t;
   final double canvasW; // 字級以畫面寬為基準
 
-  _TiledTextPainter(this.t, this.canvasW);
+  /// 同 _TiledLogoPainter：物件是原地改的，要比值不能比 reference
+  final List<Object?> _sig;
+
+  _TiledTextPainter(this.t, this.canvasW)
+    : _sig = [
+        t.text,
+        t.fontFamily,
+        t.sizeFrac,
+        t.spacing,
+        t.colorValue,
+        t.opacity,
+        t.rotation,
+        t.shadow,
+        t.outline,
+        t.outlineWidth,
+        t.outlineColorValue,
+        t.bg,
+        t.bgPad,
+        t.bgCorner,
+        t.bgColorValue,
+        t.bgOpacity,
+      ];
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -605,7 +657,7 @@ class _TiledTextPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_TiledTextPainter old) =>
-      old.t != t || old.canvasW != canvasW;
+      old.canvasW != canvasW || !listEquals(old._sig, _sig);
 }
 
 /// 置中輔助線（琥珀色細線）：各編輯器在拖曳吸到中線時疊在預覽上。

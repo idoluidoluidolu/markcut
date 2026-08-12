@@ -40,6 +40,15 @@ class BatchWatermarkScreen extends StatefulWidget {
 ///
 /// 這裡只留「小縮圖」——原檔 bytes 一律不留，要用的時候（大預覽、匯出）
 /// 才回頭讀。一張 12MP 照片解出來是 48MB 的點陣圖，全部留著幾十張就爆了
+/// 上一步的一筆：itemIndex >= 0 代表這一步改的是那一張的單張設定，
+/// -1 代表改的是整批共用設定
+class _UndoStep {
+  final int itemIndex;
+  final String json;
+
+  const _UndoStep(this.itemIndex, this.json);
+}
+
 class _BatchItem {
   final XFile file;
   Uint8List? thumb;
@@ -88,7 +97,11 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   }
 
   // 匯出成功會把基準點重設（見 _exportAll），不能一匯出就永遠關掉保護
-  bool get _dirty => jsonEncode(_settings.toJson()) != _initialJson;
+  /// 單張調整也算「改過」：只在預覽上拖過浮水印就離開，
+  /// 原本會一聲不吭直接丟掉
+  bool get _dirty =>
+      jsonEncode(_settings.toJson()) != _initialJson ||
+      _items.any((it) => it.override != null);
 
   /// 離開保護：調過浮水印但整批還沒匯出就問一下
   Future<void> _confirmLeave() async {
@@ -106,7 +119,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   }
 
   // ===== 上一步（改壞了可以救；連續滑桿拖動 0.7 秒內併成一步）=====
-  final List<String> _undoStack = [];
+  final List<_UndoStep> _undoStack = [];
   DateTime _lastPush = DateTime.fromMillisecondsSinceEpoch(0);
   int _sync = 0; // 通知面板同步內部狀態
 
@@ -114,21 +127,33 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     final now = DateTime.now();
     if (now.difference(_lastPush).inMilliseconds < 700) return;
     _lastPush = now;
-    _undoStack.add(jsonEncode(_settings.toJson()));
+    // 連同「這一步是改哪一份設定」一起記：單張模式的上一步要還原到
+    // 那一張的 override，還原到共用設定的話畫面完全沒反應
+    final target = _items[_previewIndex].override != null ? _previewIndex : -1;
+    _undoStack.add(
+      _UndoStep(target, jsonEncode(_effectiveOf(_previewIndex).toJson())),
+    );
     if (_undoStack.length > 60) _undoStack.removeAt(0);
     setState(() {}); // 讓上一步鈕亮起來
   }
 
   void _undoLast() {
     if (_undoStack.isEmpty) return;
+    final step = _undoStack.removeLast();
     final wm = WatermarkSettings.fromJson(
-        jsonDecode(_undoStack.removeLast()) as Map<String, dynamic>);
+        jsonDecode(step.json) as Map<String, dynamic>);
+    // 那張後來被移除的話就跳過這一步
+    if (step.itemIndex >= _items.length) return;
+    final dst = step.itemIndex < 0
+        ? _settings
+        : (_items[step.itemIndex].override ??= _settings.copy());
     setState(() {
-      _settings.text = wm.text;
-      _settings.logo = wm.logo;
-      _settings.animation = wm.animation;
-      _settings.animSpeed = wm.animSpeed;
-      _settings.animRange = wm.animRange;
+      if (step.itemIndex >= 0) _previewIndex = step.itemIndex;
+      dst.text = wm.text;
+      dst.logo = wm.logo;
+      dst.animation = wm.animation;
+      dst.animSpeed = wm.animSpeed;
+      dst.animRange = wm.animRange;
       _sync++;
     });
   }
@@ -216,7 +241,10 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
 
   Future<void> _loadPreviewFull() async {
     final i = _previewIndex;
-    if (i == _previewLoadedFor || i < 0 || i >= _items.length) return;
+    if (i < 0 || i >= _items.length) return;
+    // 已經讀好同一張就不重讀；讀失敗過的（bytes 是 null）要能重試，
+    // 不然那張永遠停在模糊縮圖
+    if (i == _previewLoadedFor && _previewBytes != null) return;
     _previewLoadedFor = i;
     final f = _items[i].file;
     Uint8List? bytes;
@@ -233,9 +261,14 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   }
 
   void _selectPreview(int i) {
+    // 點的就是目前這張：不要清掉已經讀好的大圖。
+    // 清掉之後 _loadPreviewFull 會因為索引沒變而早退，
+    // 預覽就永遠停在模糊的小縮圖
+    if (i == _previewIndex && _previewBytes != null) return;
     setState(() {
       _previewIndex = i;
       _previewBytes = null; // 先清掉舊的，別讓兩張同時佔記憶體
+      _sync++; // 換張＝面板換綁另一份設定，內部狀態要同步
     });
     _loadPreviewFull();
   }
@@ -298,7 +331,11 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     if (_items.length <= 1) return;
     setState(() {
       _items.removeAt(i);
-      if (_previewIndex >= _items.length) {
+      // 移除的是前面那張時索引整個往前位移，
+      // 不跟著減的話預覽會跳到隔壁張，使用者接著調的就是別張
+      if (i < _previewIndex) {
+        _previewIndex--;
+      } else if (_previewIndex >= _items.length) {
         _previewIndex = _items.length - 1;
       }
       _previewBytes = null;
@@ -310,37 +347,14 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   /// 這張實際生效的設定（有單張覆寫用覆寫，否則整批共用）
   WatermarkSettings _effectiveOf(int i) => _items[i].override ?? _settings;
 
-  /// 整批設定的快照：單張模式下如果有事件漏打到共用設定，
-  /// 用這個把它復原（見 _ensureOverride 的說明）
-  String? _sharedSnap;
-
   /// 在預覽上動手＝這張進入「單張模式」：
   /// 把目前生效的設定複製成這張自己的，之後怎麼調都不影響其他張
   void _ensureOverride() {
     final item = _items[_previewIndex];
     if (item.override != null) return;
     item.override = _settings.copy();
-    _sharedSnap = jsonEncode(_settings.toJson());
-    setState(() {});
+    setState(() => _sync++); // 面板換綁到 override，內部狀態要重新同步
     showHint(context, '已切換為單張調整，只影響這一張');
-  }
-
-  /// 單張模式下共用設定不該被動到；手勢切換的空窗期若有事件
-  /// 漏打到共用設定，把它還原
-  void _healShared() {
-    final snap = _sharedSnap;
-    if (snap == null || _items[_previewIndex].override == null) return;
-    if (jsonEncode(_settings.toJson()) != snap) {
-      final back = WatermarkSettings.fromJson(
-        Map<String, dynamic>.from(jsonDecode(snap) as Map),
-      );
-      _settings
-        ..text = back.text
-        ..logo = back.logo
-        ..animation = back.animation
-        ..animSpeed = back.animSpeed
-        ..animRange = back.animRange;
-    }
   }
 
   // ===== 預覽區雙指縮放浮水印（跟照片編輯同一套）=====
@@ -478,14 +492,15 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       // 基準點重設到現在：之後又改了設定，離開一樣會問
       _initialJson = jsonEncode(_settings.toJson());
     }
-    if (mounted) {
-      Navigator.of(context).pop();
-      var msg = _stopRequested
-          ? '已取消，完成 $done 個'
-          : (failed == 0 ? '完成！已輸出 $done 個檔案' : '完成 $done 個，$failed 個失敗');
-      if (skipped > 0) msg += '（$skipped 部影片略過：此平台不支援）';
-      showHint(context, msg, error: (failed > 0 || skipped > 0) && !_stopRequested);
-    }
+    overall.dispose();
+    label.dispose();
+    if (!mounted) return;
+    Navigator.of(context, rootNavigator: true).pop();
+    var msg = _stopRequested
+        ? '已取消，完成 $done 個'
+        : (failed == 0 ? '完成！已輸出 $done 個檔案' : '完成 $done 個，$failed 個失敗');
+    if (skipped > 0) msg += '（$skipped 部影片略過：此平台不支援）';
+    showHint(context, msg, error: (failed > 0 || skipped > 0) && !_stopRequested);
     setState(() => _exporting = false);
   }
 
@@ -612,14 +627,12 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                                 fit: BoxFit.contain),
                           WatermarkLayer(
                             settings: _effectiveOf(_previewIndex),
-                            onChanged: () {
-                              _healShared();
-                              setState(() {});
-                            },
-                            // 在預覽上拖＝這張進入單張模式
+                            onChanged: () => setState(() {}),
+                            // 在預覽上拖＝這張進入單張模式。
+                            // 先切模式再拍快照，上一步才會還原到這張自己的設定
                             onDragStart: () {
-                              _pushUndo();
                               _ensureOverride();
+                              _pushUndo();
                             },
                             panLocked: () => _pvPts.length >= 2,
                           ),
@@ -763,7 +776,10 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
             child: Stack(
               children: [
                 WatermarkPanel(
-                  settings: _settings,
+                  // 綁「這張實際生效的設定」：單張模式下要改的是那張的
+                  // override，綁 _settings 的話面板改了預覽不動、
+                  // 其他張反而被改到
+                  settings: _effectiveOf(_previewIndex),
                   onChanged: () => setState(() {}),
                   onBeforeChange: _pushUndo,
                   syncVersion: _sync,

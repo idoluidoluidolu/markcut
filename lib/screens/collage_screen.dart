@@ -1,4 +1,4 @@
-import 'dart:typed_data';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
@@ -28,8 +28,12 @@ class CollageScreen extends StatefulWidget {
 const _kLayouts = [(2, 2, 1), (4, 2, 2), (6, 2, 3), (9, 3, 3)];
 
 class _CollageScreenState extends State<CollageScreen> {
-  final List<Uint8List> _bytes = [];
-  final List<ui.Image> _images = [];
+  /// 已解碼的照片。換掉之後不再被任何格子用到的會被釋放並留 null，
+  /// 索引保持穩定（_order 存的是這裡的索引）
+  final List<ui.Image?> _images = [];
+
+  /// 一開始選進來的那批數量：換版型時還會用到，不能釋放
+  int _poolSize = 0;
 
   /// 目前版型（_kLayouts 的 index）；-1 = 還在載入
   int _layout = -1;
@@ -76,7 +80,7 @@ class _CollageScreenState extends State<CollageScreen> {
   @override
   void dispose() {
     for (final img in _images) {
-      img.dispose();
+      img?.dispose();
     }
     super.dispose();
   }
@@ -87,12 +91,18 @@ class _CollageScreenState extends State<CollageScreen> {
         final b = await f.readAsBytes();
         final codec = await ui.instantiateImageCodec(b);
         final frame = await codec.getNextFrame();
-        _bytes.add(b);
+        // 讀取途中使用者可能已經離開，這時 dispose 過了，
+        // 再往清單裡塞就沒人會釋放它
+        if (!mounted) {
+          frame.image.dispose();
+          return;
+        }
         _images.add(frame.image);
       } catch (_) {}
       if (_images.length >= 9) break; // 最多九宮格
     }
     if (!mounted) return;
+    _poolSize = _images.length;
     if (_images.length < 2) {
       showHint(context, '至少要兩張讀得出來的照片', error: true);
       Navigator.pop(context);
@@ -122,9 +132,14 @@ class _CollageScreenState extends State<CollageScreen> {
       _dragPos = null;
       _dragOver = -1;
       // 照片不夠的格子留空（-1），畫面上顯示「＋」讓使用者補
+      // 只填還活著的照片，被換掉釋放掉的那些留空格
+      final alive = [
+        for (var k = 0; k < _images.length; k++)
+          if (_images[k] != null) k,
+      ];
       _order = List.generate(
         _kLayouts[i].$1,
-        (n) => n < _images.length ? n : -1,
+        (n) => n < alive.length ? alive[n] : -1,
       );
       _fits = List.generate(_kLayouts[i].$1, (_) => _CellFit());
     });
@@ -134,35 +149,56 @@ class _CollageScreenState extends State<CollageScreen> {
   Future<void> _fillCell(int cell) async {
     final files = await ImagePicker().pickMultiImage();
     if (files.isEmpty || !mounted) return;
-    // 先補點的那格，再依序補其他空格
-    final targets = [
-      cell,
-      for (var i = 0; i < _order.length; i++)
-        if (_order[i] == -1 && i != cell) i,
-    ];
-    var ti = 0;
+    var filled = 0;
+    var failed = 0;
     for (final f in files) {
-      if (ti >= targets.length) break;
       try {
         final b = await f.readAsBytes();
         final codec = await ui.instantiateImageCodec(b);
         final frame = await codec.getNextFrame();
+        // 解碼要好幾秒，這中間使用者可能換了版型／離開，
+        // 用當初算好的索引會直接越界
         if (!mounted) {
           frame.image.dispose();
           return;
         }
-        _bytes.add(b);
+        final slot = _emptySlot(prefer: filled == 0 ? cell : -1);
+        if (slot == -1) {
+          frame.image.dispose();
+          break; // 沒有空格了
+        }
         _images.add(frame.image);
-        _order[targets[ti]] = _images.length - 1;
-        _fits[targets[ti]] = _CellFit();
-        ti++;
-      } catch (_) {}
+        _order[slot] = _images.length - 1;
+        _fits[slot] = _CellFit();
+        filled++;
+      } catch (_) {
+        failed++;
+      }
     }
     if (!mounted) return;
-    if (ti == 0) {
+    if (filled == 0 && failed > 0) {
       showHint(context, '照片讀不出來', error: true);
     }
     setState(() {});
+  }
+
+  /// 這一格現在顯示的照片（空格或已釋放都回 null）
+  ui.Image? _imgAt(int cell) {
+    if (cell < 0 || cell >= _order.length) return null;
+    final idx = _order[cell];
+    if (idx < 0 || idx >= _images.length) return null;
+    return _images[idx];
+  }
+
+  /// 現在還空著的格子；prefer 若仍是空的就優先用它
+  int _emptySlot({int prefer = -1}) {
+    if (prefer >= 0 && prefer < _order.length && _order[prefer] == -1) {
+      return prefer;
+    }
+    for (var i = 0; i < _order.length; i++) {
+      if (_order[i] == -1) return i;
+    }
+    return -1;
   }
 
   /// 點格子＝選取（可調整）；再點同一格取消
@@ -178,20 +214,33 @@ class _CollageScreenState extends State<CollageScreen> {
       final b = await f.readAsBytes();
       final codec = await ui.instantiateImageCodec(b);
       final frame = await codec.getNextFrame();
-      if (!mounted) {
+      // 選照片＋解碼期間版型可能被換掉，格子編號會失效
+      if (!mounted || cell >= _order.length) {
         frame.image.dispose();
         return;
       }
       setState(() {
-        _bytes.add(b);
+        final old = _order[cell];
         _images.add(frame.image);
         _order[cell] = _images.length - 1;
         _fits[cell] = _CellFit();
         _selCell = cell;
+        // 被換掉的那張若沒有別的格子在用就釋放，
+        // 不然連換幾張就是好幾十 MB 掛在那裡等到離開才放
+        _releaseIfUnused(old);
       });
     } catch (_) {
       if (mounted) showHint(context, '這張照片讀不出來', error: true);
     }
+  }
+
+  /// 釋放沒有任何格子在用的照片（一開始選進來的那批留著，
+  /// 換版型時還要靠它們把格子填回去）
+  void _releaseIfUnused(int idx) {
+    if (idx < _poolSize || idx < 0 || idx >= _images.length) return;
+    if (_order.contains(idx)) return;
+    _images[idx]?.dispose();
+    _images[idx] = null;
   }
 
   /// 拖曳互換：由宮格座標算出落在哪一格（-1 = 界外）
@@ -226,7 +275,7 @@ class _CollageScreenState extends State<CollageScreen> {
   /// 這一格目前的取景窗（來源圖片座標）。cover 基準：
   /// zoom=1 剛好蓋滿格子，只能再放大；平移夾在圖片範圍內。
   /// 預覽跟合成都用這個算，所見即所得
-  ui.Rect _srcRect(ui.Image img, _CellFit f, double cellAspect) {
+  (double, double) _srcSize(ui.Image img, _CellFit f, double cellAspect) {
     final iw = img.width.toDouble();
     final ih = img.height.toDouble();
     double sw, sh;
@@ -237,10 +286,24 @@ class _CollageScreenState extends State<CollageScreen> {
       sw = iw / f.zoom;
       sh = sw / cellAspect;
     }
-    // 浮點誤差可能讓取景窗比圖片大一點點，
-    // web 的繪圖引擎對出界比較嚴格，夾回圖內
-    if (sw > iw) sw = iw;
-    if (sh > ih) sh = ih;
+    return (math.min(sw, iw), math.min(sh, ih));
+  }
+
+  /// 把平移夾回「圖片還蓋得滿格子」的範圍。
+  /// 只在 _srcRect 裡夾的話，pan 本身會無上限累積
+  void _clampFit(ui.Image img, _CellFit f, double cellAspect) {
+    final (sw, sh) = _srcSize(img, f, cellAspect);
+    final mx = (img.width - sw) / 2;
+    final my = (img.height - sh) / 2;
+    f.panX = f.panX.clamp(-mx, math.max(0.0, mx));
+    f.panY = f.panY.clamp(-my, math.max(0.0, my));
+  }
+
+  ui.Rect _srcRect(ui.Image img, _CellFit f, double cellAspect) {
+    final iw = img.width.toDouble();
+    final ih = img.height.toDouble();
+    // _srcSize 已經把取景窗夾在圖片內（web 的繪圖引擎對出界很嚴格）
+    final (sw, sh) = _srcSize(img, f, cellAspect);
     // clamp 的上限不能是負的（浮點誤差會讓 iw-sw 變 -0.0001 直接炸）
     final mx = (iw - sw) > 0 ? iw - sw : 0.0;
     final my = (ih - sh) > 0 ? ih - sh : 0.0;
@@ -261,6 +324,12 @@ class _CollageScreenState extends State<CollageScreen> {
     setState(() => _building = true);
     // 讓「合成中…」先畫出來再開始重活（PNG 編碼在 web 會卡主執行緒）
     await Future<void>.delayed(const Duration(milliseconds: 40));
+    // 這 40ms 裡使用者可能已經離開（照片都 dispose 了）或換了版型
+    if (!mounted) return;
+    if (_order.contains(-1)) {
+      setState(() => _building = false);
+      return;
+    }
     try {
       // 1600：跟 2048 肉眼看不出差，但編碼＋解碼快 2.6 倍左右，
       // 進編輯器不會卡那麼久
@@ -272,8 +341,8 @@ class _CollageScreenState extends State<CollageScreen> {
       final rec = ui.PictureRecorder();
       final canvas = ui.Canvas(rec);
       for (var i = 0; i < count; i++) {
-        if (_order[i] == -1) continue;
-        final img = _images[_order[i]];
+        final img = _imgAt(i);
+        if (img == null) continue;
         final dst = ui.Rect.fromLTWH(
           (i % cols) * cw,
           (i ~/ cols) * ch,
@@ -609,10 +678,7 @@ class _CollageScreenState extends State<CollageScreen> {
                 ),
               ),
             // 拖曳互換中：浮起的縮圖跟著指尖走
-            if (_dragFrom >= 0 &&
-                _dragFrom < _order.length &&
-                _order[_dragFrom] != -1 &&
-                _dragPos != null)
+            if (_dragFrom >= 0 && _imgAt(_dragFrom) != null && _dragPos != null)
               Positioned(
                 left: _dragPos!.dx - cw * 0.3,
                 top: _dragPos!.dy - ch * 0.3,
@@ -628,9 +694,9 @@ class _CollageScreenState extends State<CollageScreen> {
                       child: ClipRect(
                         child: CustomPaint(
                           painter: _CellPainter(
-                            img: _images[_order[_dragFrom]],
+                            img: _imgAt(_dragFrom)!,
                             src: _srcRect(
-                              _images[_order[_dragFrom]],
+                              _imgAt(_dragFrom)!,
                               _fits[_dragFrom],
                               cw / ch,
                             ),
@@ -648,8 +714,9 @@ class _CollageScreenState extends State<CollageScreen> {
   }
 
   Widget _cell(int i, double cellW, double cellH) {
+    final img = _imgAt(i);
     // 空格子：一個「＋」，點了挑照片補進來（拖照片過來也行）
-    if (_order[i] == -1) {
+    if (img == null) {
       final over = _dragFrom != -1 && _dragOver == i;
       return GestureDetector(
         onTap: () => _fillCell(i),
@@ -667,7 +734,6 @@ class _CollageScreenState extends State<CollageScreen> {
       );
     }
     final selected = _selCell == i;
-    final img = _images[_order[i]];
     final fit = _fits[i];
     // 這格在宮格座標裡的左上角（拖曳換算指尖位置用）
     final origin = Offset(
@@ -677,22 +743,28 @@ class _CollageScreenState extends State<CollageScreen> {
     // 螢幕位移 → 來源像素位移的換算比
     double dispScale() => cellW / _srcRect(img, fit, cellW / cellH).width;
     return Listener(
-      // 雙指縮放（選取中才作用）
+      // 雙指縮放：判斷用「有沒有格子被選」而不是「這一格被選」——
+      // 撐開時第二指多半落在隔壁格，用後者的話常常整個沒反應
       onPointerDown: (e) {
         _pts[e.pointer] = e.position;
-        if (selected && _pts.length == 2) {
+        if (_selCell != -1 && _pts.length == 2) {
           final p = _pts.values.toList();
           _baseDist = (p[0] - p[1]).distance;
-          _baseZoom = fit.zoom;
+          _baseZoom = _fits[_selCell].zoom;
         }
       },
       onPointerMove: (e) {
         if (!_pts.containsKey(e.pointer)) return;
         _pts[e.pointer] = e.position;
-        if (selected && _baseDist != null && _pts.length >= 2) {
+        if (_selCell != -1 && _baseDist != null && _pts.length >= 2) {
           final p = _pts.values.toList();
           final f = (p[0] - p[1]).distance / _baseDist!;
-          setState(() => fit.zoom = (_baseZoom * f).clamp(1.0, 4.0));
+          final sf = _fits[_selCell];
+          setState(() {
+            sf.zoom = (_baseZoom * f).clamp(1.0, 4.0);
+            final si = _imgAt(_selCell);
+            if (si != null) _clampFit(si, sf, cellW / cellH);
+          });
         }
       },
       onPointerUp: (e) {
@@ -728,6 +800,9 @@ class _CollageScreenState extends State<CollageScreen> {
             setState(() {
               fit.panX -= d.delta.dx / k;
               fit.panY -= d.delta.dy / k;
+              // 夾回可移動範圍：不夾的話拖到底之後還會一直累積，
+              // 往回拖時要先抵銷那幾百 px，畫面看起來像卡住
+              _clampFit(img, fit, cellW / cellH);
             });
           } else if (_dragFrom == i) {
             setState(() {
