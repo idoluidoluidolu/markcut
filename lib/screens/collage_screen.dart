@@ -237,6 +237,10 @@ class _CollageScreenState extends State<CollageScreen> {
       sw = iw / f.zoom;
       sh = sw / cellAspect;
     }
+    // 浮點誤差可能讓取景窗比圖片大一點點，
+    // web 的繪圖引擎對出界比較嚴格，夾回圖內
+    if (sw > iw) sw = iw;
+    if (sh > ih) sh = ih;
     // clamp 的上限不能是負的（浮點誤差會讓 iw-sw 變 -0.0001 直接炸）
     final mx = (iw - sw) > 0 ? iw - sw : 0.0;
     final my = (ih - sh) > 0 ? ih - sh : 0.0;
@@ -482,7 +486,7 @@ class _CollageScreenState extends State<CollageScreen> {
                     const Padding(
                       padding: EdgeInsets.only(top: 6),
                       child: Text(
-                        '點一下鎖定 可調照片顯示位置',
+                        '拖曳可交換照片位置；點一下鎖定 可調照片顯示位置',
                         style: TextStyle(fontSize: 11, color: kTextDim),
                       ),
                     ),
