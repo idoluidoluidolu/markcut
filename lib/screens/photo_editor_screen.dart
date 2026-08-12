@@ -423,7 +423,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
           child: Row(
             children: [
               const Text(
-                '浮水印＋',
+                '浮水印',
                 style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w700,
