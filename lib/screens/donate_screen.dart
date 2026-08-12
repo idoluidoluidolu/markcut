@@ -14,8 +14,8 @@ const kTipIds = <String>{'tip_small', 'tip_medium', 'tip_large'};
 /// 檔位定義：(商品 ID, 名稱, 沒抓到商店價時顯示的價格)
 const _kTiers = [
   ('tip_small', '小挺一下', 'NT\$100'),
-  ('tip_medium', '中挺一下', 'NT\$500'),
-  ('tip_large', '大挺一下', 'NT\$990'),
+  ('tip_medium', '中挺一下', 'NT\$300'),
+  ('tip_large', '大挺一下', 'NT\$500'),
 ];
 
 class DonateScreen extends StatefulWidget {
