@@ -470,7 +470,7 @@ class _CollageScreenState extends State<CollageScreen> {
                     const Padding(
                       padding: EdgeInsets.only(top: 6),
                       child: Text(
-                        '拖曳格子互換位置；點一下選取可調構圖；長按換照片',
+                        '點一下鎖定 可調照片顯示位置',
                         style: TextStyle(fontSize: 11, color: kTextDim),
                       ),
                     ),
