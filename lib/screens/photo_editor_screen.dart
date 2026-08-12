@@ -416,27 +416,28 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               ),
             ),
           ),
-        // 永遠釘在最下面的「浮水印＋」
+        // 永遠釘在最下面的「浮水印＋」：跟圖片/馬賽克卡同一套排法
         InkWell(
           onTap: _addExtraWm,
           borderRadius: BorderRadius.circular(8),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 11),
-            child: Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    '浮水印＋',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                      color: kText,
-                    ),
-                  ),
+          child: Row(
+            children: [
+              const Text(
+                '浮水印＋',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: kText,
                 ),
-                Icon(Icons.add, size: 18, color: kSelect),
-              ],
-            ),
+              ),
+              const Spacer(),
+              IconButton(
+                tooltip: '再加一組浮水印',
+                visualDensity: VisualDensity.compact,
+                onPressed: _addExtraWm,
+                icon: const Icon(Icons.add, size: 20, color: kIcon),
+              ),
+            ],
           ),
         ),
       ],
