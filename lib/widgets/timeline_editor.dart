@@ -555,13 +555,35 @@ class _TimelineEditorState extends State<TimelineEditor> {
                                           widget.onSeek(
                                             d.localPosition.dx / pxPerSec,
                                           ),
-                                      child: CustomPaint(
-                                        size: Size(totalW, rulerH),
-                                        painter: _RulerPainter(
-                                          pxPerSec: pxPerSec,
-                                          color: kTextDim.withValues(
-                                            alpha: 0.7,
-                                          ),
+                                      // 只畫看得見的一段刻度：長片放大後整條
+                                      // 可以到十幾萬 px，全畫的話雙指縮放
+                                      // 每一幀都要排幾千個刻度＝掉幀。
+                                      // 自己包一層 RepaintBoundary，捲動時
+                                      // 只重畫這條薄薄的刻度尺，不拖累縮圖/波形
+                                      child: RepaintBoundary(
+                                        child: ListenableBuilder(
+                                          listenable: widget.scrollController,
+                                          builder: (context, _) {
+                                            final off =
+                                                widget
+                                                    .scrollController
+                                                    .hasClients
+                                                ? widget
+                                                      .scrollController
+                                                      .offset
+                                                : 0.0;
+                                            return CustomPaint(
+                                              size: Size(totalW, rulerH),
+                                              painter: _RulerPainter(
+                                                pxPerSec: pxPerSec,
+                                                color: kTextDim.withValues(
+                                                  alpha: 0.7,
+                                                ),
+                                                viewL: off - leadPad,
+                                                viewW: cons.maxWidth,
+                                              ),
+                                            );
+                                          },
                                         ),
                                       ),
                                     ),
@@ -1648,12 +1670,42 @@ class _WavePainter extends CustomPainter {
       old.color != color;
 }
 
-/// 時間刻度尺
+/// 時間刻度尺。
+/// 只畫 [viewL, viewL+viewW] 這段看得見的範圍：整條的寬度是
+/// 「片長 × 縮放」，長片放大後可到十幾萬 px，全畫的話每個主刻度
+/// 都要排一次文字，雙指縮放時每一幀都付這個代價
 class _RulerPainter extends CustomPainter {
   final double pxPerSec;
   final Color color;
+  final double viewL;
+  final double viewW;
 
-  _RulerPainter({required this.pxPerSec, required this.color});
+  _RulerPainter({
+    required this.pxPerSec,
+    required this.color,
+    required this.viewL,
+    required this.viewW,
+  });
+
+  /// 文字排版是刻度尺最貴的部分，而同一批標籤在縮放的每一幀
+  /// 都長一樣——排好的留著重複用
+  static final Map<String, TextPainter> _labelCache = {};
+
+  TextPainter _label(String text) {
+    final key = '$text|${color.toARGB32()}';
+    final hit = _labelCache[key];
+    if (hit != null) return hit;
+    if (_labelCache.length > 300) _labelCache.clear();
+    final tp = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(fontSize: 9, color: color),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    _labelCache[key] = tp;
+    return tp;
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1667,7 +1719,13 @@ class _RulerPainter extends CustomPainter {
       ..color = color
       ..strokeWidth = 1;
 
-    for (var t = 0.0; t * pxPerSec < size.width; t += step / 4) {
+    final sub = step / 4;
+    // 從可視左緣往前對齊到刻度格線，多留一格避免標籤被切半
+    final left = math.max(0.0, viewL - step * pxPerSec);
+    final right = math.min(size.width, viewL + viewW + 8);
+    var t = (left / pxPerSec / sub).floor() * sub;
+    if (t < 0) t = 0;
+    for (; t * pxPerSec < right; t += sub) {
       final x = t * pxPerSec;
       final isMajor = (t / step - (t / step).round()).abs() < 1e-6;
       canvas.drawLine(
@@ -1678,19 +1736,15 @@ class _RulerPainter extends CustomPainter {
       if (isMajor) {
         final m = (t ~/ 60).toString().padLeft(2, '0');
         final s = (t % 60).toStringAsFixed(step < 1 ? 1 : 0).padLeft(2, '0');
-        final tp = TextPainter(
-          text: TextSpan(
-            text: '$m:$s',
-            style: TextStyle(fontSize: 9, color: color),
-          ),
-          textDirection: TextDirection.ltr,
-        )..layout();
-        tp.paint(canvas, Offset(x + 3, 0));
+        _label('$m:$s').paint(canvas, Offset(x + 3, 0));
       }
     }
   }
 
   @override
   bool shouldRepaint(_RulerPainter old) =>
-      old.pxPerSec != pxPerSec || old.color != color;
+      old.pxPerSec != pxPerSec ||
+      old.color != color ||
+      old.viewL != viewL ||
+      old.viewW != viewW;
 }
