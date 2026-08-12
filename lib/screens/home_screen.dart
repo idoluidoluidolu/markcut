@@ -184,11 +184,14 @@ class _HomeScreenState extends State<HomeScreen> {
                           kind: _PickKind.manyPhotos)),
                 ]),
                 const SizedBox(height: 10),
-                const _PickTile(
-                    icon: Icons.grid_view,
-                    label: '照片拼圖',
-                    hint: '2/4/6/9 宮格',
-                    kind: _PickKind.collage),
+                const Row(children: [
+                  Expanded(
+                      child: _PickTile(
+                          icon: Icons.grid_view,
+                          label: '照片拼圖',
+                          hint: '2/4/6/9 宮格',
+                          kind: _PickKind.collage)),
+                ]),
               ],
             ),
           ),

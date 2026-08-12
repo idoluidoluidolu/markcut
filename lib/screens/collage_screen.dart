@@ -13,8 +13,8 @@ import 'photo_editor_screen.dart';
 /// 宮格拼圖：把多張照片拼成一張（2/4/6/9 宮格），
 /// 拼完直接進照片編輯器上浮水印。
 /// 版型固定 1:1 畫布、格子等分、照片置中裁滿（cover）；
-/// 拖曳格子互換位置、點一下選取後可調構圖、長按換照片，
-/// 也能開格線（調間距、選顏色）。
+/// 拖曳格子互換位置、點一下鎖定後可調構圖（右上角鈕換照片），
+/// 也能開純格線（調線寬、選顏色）。
 class CollageScreen extends StatefulWidget {
   final List<XFile> photos;
 
@@ -56,11 +56,11 @@ class _CollageScreenState extends State<CollageScreen> {
   // 這一幀宮格的幾何（拖曳換算目標格用）
   double _gG = 0, _gCw = 1, _gCh = 1;
 
-  /// 格線：開了之後格子間（含外框）會留縫、填格線顏色
+  /// 格線：開了之後在格子交界疊上細線（純線條，不填背景）
   bool _lines = false;
 
-  /// 間距（畫布邊長的比例），格線開啟時才作用
-  double _gapN = 0.012;
+  /// 線寬（畫布邊長的比例），格線開啟時才作用
+  double _gapN = 0.008;
 
   /// 格線顏色（ARGB）
   int _lineColor = 0xFFFFFFFF;
@@ -170,8 +170,8 @@ class _CollageScreenState extends State<CollageScreen> {
     setState(() => _selCell = _selCell == cell ? -1 : cell);
   }
 
-  /// 長按格子＝換一張照片（重新從相簿挑）
-  Future<void> _longPressCell(int cell) async {
+  /// 換一張照片（重新從相簿挑）：鎖定格子後點右上角按鈕
+  Future<void> _replaceCell(int cell) async {
     final f = await ImagePicker().pickImage(source: ImageSource.gallery);
     if (f == null || !mounted) return;
     try {
@@ -258,25 +258,17 @@ class _CollageScreenState extends State<CollageScreen> {
     try {
       const size = 2048.0;
       final (count, cols, rows) = _kLayouts[_layout];
-      // 跟預覽同一套排法：格線只畫在「格子跟格子之間」，
-      // 不加外框、不是整片底色
-      final g = _lines ? _gapN * size : 0.0;
-      final cw = (size - g * (cols - 1)) / cols;
-      final ch = (size - g * (rows - 1)) / rows;
+      // 跟預覽同一套排法：照片貼齊排滿，格線最後疊上去畫
+      final cw = size / cols;
+      final ch = size / rows;
       final rec = ui.PictureRecorder();
       final canvas = ui.Canvas(rec);
-      if (_lines) {
-        canvas.drawRect(
-          const ui.Rect.fromLTWH(0, 0, size, size),
-          ui.Paint()..color = ui.Color(_lineColor),
-        );
-      }
       for (var i = 0; i < count; i++) {
         if (_order[i] == -1) continue;
         final img = _images[_order[i]];
         final dst = ui.Rect.fromLTWH(
-          (i % cols) * (cw + g),
-          (i ~/ cols) * (ch + g),
+          (i % cols) * cw,
+          (i ~/ cols) * ch,
           cw,
           ch,
         );
@@ -286,6 +278,22 @@ class _CollageScreenState extends State<CollageScreen> {
           dst,
           ui.Paint()..filterQuality = ui.FilterQuality.high,
         );
+      }
+      if (_lines) {
+        final t = _gapN * size;
+        final lp = ui.Paint()..color = ui.Color(_lineColor);
+        for (var c = 1; c < cols; c++) {
+          canvas.drawRect(
+            ui.Rect.fromLTWH(c * cw - t / 2, 0, t, size),
+            lp,
+          );
+        }
+        for (var r = 1; r < rows; r++) {
+          canvas.drawRect(
+            ui.Rect.fromLTWH(0, r * ch - t / 2, size, t),
+            lp,
+          );
+        }
       }
       final image = await rec.endRecording().toImage(
         size.toInt(),
@@ -374,7 +382,7 @@ class _CollageScreenState extends State<CollageScreen> {
                     child: Slider(
                       value: _gapN,
                       min: 0.002,
-                      max: 0.05,
+                      max: 0.03,
                       onChanged: (v) => setState(() => _gapN = v),
                     ),
                   ),
@@ -506,28 +514,36 @@ class _CollageScreenState extends State<CollageScreen> {
     return LayoutBuilder(
       builder: (context, box) {
         final size = box.maxWidth; // 1:1 畫布
-        // 格線只留在格子之間，不加外框
-        final g = _lines ? _gapN * size : 0.0;
-        final cw = (size - g * (cols - 1)) / cols;
-        final ch = (size - g * (rows - 1)) / rows;
-        _gG = g;
+        // 純格線：格子貼齊排滿，線條疊在照片上面畫，
+        // 不用背景填色（背景填色會從空格、邊緣露出來）
+        final cw = size / cols;
+        final ch = size / rows;
+        _gG = 0;
         _gCw = cw;
         _gCh = ch;
         return Stack(
           clipBehavior: Clip.none,
           children: [
-            Positioned.fill(
-              child: ColoredBox(
-                color: _lines ? Color(_lineColor) : Colors.transparent,
-              ),
-            ),
             for (var i = 0; i < count; i++)
               Positioned(
-                left: (i % cols) * (cw + g),
-                top: (i ~/ cols) * (ch + g),
+                left: (i % cols) * cw,
+                top: (i ~/ cols) * ch,
                 width: cw,
                 height: ch,
                 child: _cell(i, cw, ch),
+              ),
+            if (_lines)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: CustomPaint(
+                    painter: _GridLinePainter(
+                      cols: cols,
+                      rows: rows,
+                      t: _gapN * size,
+                      color: Color(_lineColor),
+                    ),
+                  ),
+                ),
               ),
             // 拖曳互換中：浮起的縮圖跟著指尖走
             if (_dragFrom >= 0 &&
@@ -634,7 +650,6 @@ class _CollageScreenState extends State<CollageScreen> {
       },
       child: GestureDetector(
         onTap: () => _tapCell(i),
-        onLongPress: () => _longPressCell(i),
         // 選取中單指拖曳＝移動構圖；沒選取＝拖起來跟別格互換
         onPanStart: selected
             ? null
@@ -675,19 +690,78 @@ class _CollageScreenState extends State<CollageScreen> {
                   color: kSelect.withValues(alpha: 0.15),
                 )
               : null,
-          child: ClipRect(
-            child: CustomPaint(
-              size: Size(cellW, cellH),
-              painter: _CellPainter(
-                img: img,
-                src: _srcRect(img, fit, cellW / cellH),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              ClipRect(
+                child: CustomPaint(
+                  size: Size(cellW, cellH),
+                  painter: _CellPainter(
+                    img: img,
+                    src: _srcRect(img, fit, cellW / cellH),
+                  ),
+                ),
               ),
-            ),
+              // 鎖定中：右上角「換照片」鈕
+              // （長按跟拖曳在手機上會互相搶，改用按鈕最不會誤觸）
+              if (selected)
+                Positioned(
+                  right: 6,
+                  top: 6,
+                  child: GestureDetector(
+                    onTap: () => _replaceCell(i),
+                    child: Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.55),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.cached,
+                        size: 16,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
       ),
     );
   }
+}
+
+/// 純格線：畫在照片上面的細線（直的 cols-1 條、橫的 rows-1 條）
+class _GridLinePainter extends CustomPainter {
+  final int cols;
+  final int rows;
+  final double t;
+  final Color color;
+
+  const _GridLinePainter({
+    required this.cols,
+    required this.rows,
+    required this.t,
+    required this.color,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final p = Paint()..color = color;
+    final cw = size.width / cols;
+    final ch = size.height / rows;
+    for (var c = 1; c < cols; c++) {
+      canvas.drawRect(Rect.fromLTWH(c * cw - t / 2, 0, t, size.height), p);
+    }
+    for (var r = 1; r < rows; r++) {
+      canvas.drawRect(Rect.fromLTWH(0, r * ch - t / 2, size.width, t), p);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_GridLinePainter old) =>
+      old.cols != cols || old.rows != rows || old.t != t || old.color != color;
 }
 
 /// 每格的取景：cover 基準的縮放倍率（≥1）＋來源像素平移
