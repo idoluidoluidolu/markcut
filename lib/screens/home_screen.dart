@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -75,7 +74,6 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   Map<String, dynamic>? _draft; // 上次沒完成的專案
-  Uint8List? _draftThumb; // 已驗證可解碼的縮圖（壞掉就是 null）
 
   @override
   void initState() {
@@ -95,26 +93,13 @@ class _HomeScreenState extends State<HomeScreen> {
     final s = prefs.getString(kDraftKey);
     if (!mounted) return;
     Map<String, dynamic>? found;
-    Uint8List? thumb;
     if (s != null) {
       try {
         final j = jsonDecode(s) as Map<String, dynamic>;
         if ((j['clips'] as List?)?.isNotEmpty ?? false) found = j;
       } catch (_) {}
     }
-    // 縮圖先在這裡解好：base64 壞掉時 build 裡解會每一幀都丟例外，
-    // 首頁變成永遠的紅畫面，連重開 App 都救不回來
-    if (found != null && found['thumb'] is String) {
-      try {
-        thumb = base64Decode(found['thumb'] as String);
-      } catch (_) {
-        thumb = null;
-      }
-    }
-    setState(() {
-      _draft = found;
-      _draftThumb = thumb;
-    });
+    setState(() => _draft = found);
   }
 
   Future<void> _resumeDraft() async {
@@ -384,31 +369,14 @@ class _HomeScreenState extends State<HomeScreen> {
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(color: kBorder),
                     ),
-                    child: Row(
+                    // 不放專案縮圖：那張小圖在這裡只是雜訊，
+                    // 而且會把文字擠得沒對齊
+                    child: const Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        if (_draftThumb != null)
-                          Container(
-                            width: (26 *
-                                    ((_draft?['thumbAspect'] as num?) ??
-                                            16 / 9)
-                                        .toDouble())
-                                .clamp(16.0, 46.0),
-                            height: 26,
-                            clipBehavior: Clip.antiAlias,
-                            decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(4)),
-                            child: Image.memory(
-                              _draftThumb!,
-                              fit: BoxFit.cover,
-                              gaplessPlayback: true,
-                            ),
-                          )
-                        else
-                          const Icon(Icons.history,
-                              size: 18, color: kTextDim),
-                        const SizedBox(width: 10),
-                        const Text('繼續上次的專案',
+                        Icon(Icons.history, size: 18, color: kTextDim),
+                        SizedBox(width: 10),
+                        Text('繼續上次的專案',
                             style: TextStyle(
                                 fontSize: 14, color: kTextDim)),
                       ],
