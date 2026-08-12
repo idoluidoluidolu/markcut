@@ -5,26 +5,8 @@ import 'package:media_kit/media_kit.dart';
 import 'screens/home_screen.dart';
 import 'theme.dart';
 
-/// 未捕捉錯誤的畫面顯示器：抓到什麼就貼在畫面最上面。
-/// web 上錯誤只會進 console、畫面直接死掉看不到原因，
-/// 這樣使用者截圖就能直接回報錯誤原文
-final ValueNotifier<String?> kLastError = ValueNotifier(null);
-
-void _reportError(Object e, StackTrace? s) {
-  final text = '$e\n${s ?? ''}';
-  kLastError.value = text.length > 700 ? text.substring(0, 700) : text;
-}
-
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  FlutterError.onError = (details) {
-    FlutterError.presentError(details);
-    _reportError(details.exception, details.stack);
-  };
-  PlatformDispatcher.instance.onError = (e, s) {
-    _reportError(e, s);
-    return true;
-  };
   // media_kit 播放引擎（Web 用不到也沒帶函式庫）
   if (!kIsWeb) MediaKit.ensureInitialized();
   // 拖曳預覽的快取幀很密，預設 100 張一下就滿、一滿就要重新解碼＝卡頓，
@@ -75,68 +57,7 @@ class MarkCutApp extends StatelessWidget {
         builder: (context, child) => GestureDetector(
           behavior: HitTestBehavior.translucent,
           onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
-          child: Stack(
-            children: [
-              ?child,
-              // 錯誤橫幅：有未捕捉錯誤時蓋在最上面，點「關閉」收掉
-              ValueListenableBuilder<String?>(
-                valueListenable: kLastError,
-                builder: (context, err, _) {
-                  if (err == null) return const SizedBox.shrink();
-                  // 貼在畫面底部：壓在上面會蓋住 AppBar 的返回鍵，
-                  // 使用者連退出去都做不到
-                  return Positioned(
-                    left: 8,
-                    right: 8,
-                    bottom: 12,
-                    child: Material(
-                      color: const Color(0xE6470B0B),
-                      borderRadius: BorderRadius.circular(10),
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                const Expanded(
-                                  child: Text(
-                                    '出錯了，請截圖回報這個畫面',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                ),
-                                TextButton(
-                                  onPressed: () => kLastError.value = null,
-                                  child: const Text(
-                                    '關閉',
-                                    style: TextStyle(color: Colors.white),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            Text(
-                              err,
-                              maxLines: 14,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Color(0xFFFFD3D3),
-                                fontSize: 10,
-                                height: 1.25,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
+          child: child,
         ),
         home: const HomeScreen(),
       ),

@@ -287,12 +287,16 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
             icon: const Icon(Icons.undo),
             onPressed: _undo.isEmpty ? null : _undoLast,
           ),
-          IconButton(
-            tooltip: '我的範本',
-            icon: const Icon(Icons.bookmarks_outlined),
-            onPressed: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const PresetsScreen())),
-          ),
+          // 從範本夾點進來編輯時不顯示這顆：上一頁就是範本夾，
+          // 再開一次會變成「工作室→範本夾→工作室…」一直往上疊，
+          // 返回要按同樣多次才回得到首頁
+          if (widget.edit == null)
+            IconButton(
+              tooltip: '我的範本',
+              icon: const Icon(Icons.bookmarks_outlined),
+              onPressed: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const PresetsScreen())),
+            ),
         ],
       ),
       body: Column(
