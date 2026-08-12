@@ -164,9 +164,10 @@ class _FeedbackFormState extends State<_FeedbackForm> {
           const SizedBox(height: 10),
           OutlinedButton.icon(
             onPressed: _sending ? null : _openThreads,
-            // 形狀不覆寫，沿用佈景的 6px 圓角＝跟上面的「送出」一致
+            // 形狀與高度都對齊上面的「送出」（46）：
+            // 形狀沿用佈景的 6px 圓角，不要自己覆寫
             style: OutlinedButton.styleFrom(
-              minimumSize: const Size.fromHeight(44),
+              minimumSize: const Size.fromHeight(46),
               foregroundColor: kText,
               side: const BorderSide(color: kClipBorder),
             ),
