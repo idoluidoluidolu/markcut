@@ -195,8 +195,13 @@ Timer? _hintTimer;
 /// 沒有就落在畫面下方置中。
 void showHint(BuildContext context, String message,
     {bool error = false, GlobalKey? anchor, Duration? duration}) {
+  if (!context.mounted) return;
   _hintTimer?.cancel();
-  _hintEntry?.remove();
+  // 上一則可能已經跟著它的 Overlay 一起消失了，remove 會丟例外；
+  // 這裡炸掉會讓 _hintEntry 永遠留著，之後每一則提示都跟著炸
+  try {
+    _hintEntry?.remove();
+  } catch (_) {}
   _hintEntry = null;
 
   double? top;
@@ -212,11 +217,18 @@ void showHint(BuildContext context, String message,
   final entry = OverlayEntry(
     builder: (context) => _HintToast(message: message, error: error, top: top),
   );
+  // 先插入成功才記到全域：插入失敗時留下一個從沒上樹的 entry，
+  // 下一次 remove 它就會炸，之後全 App 的提示都跟著壞
+  final overlay = Overlay.maybeOf(context, rootOverlay: true);
+  if (overlay == null) return;
+  overlay.insert(entry);
   _hintEntry = entry;
-  Overlay.of(context, rootOverlay: true).insert(entry);
   _hintTimer = Timer(duration ?? const Duration(milliseconds: 2400), () {
-    _hintEntry?.remove();
-    _hintEntry = null;
+    // 清自己捕捉到的那一個，不要清當下的全域值
+    try {
+      entry.remove();
+    } catch (_) {}
+    if (identical(_hintEntry, entry)) _hintEntry = null;
   });
 }
 

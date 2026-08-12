@@ -217,6 +217,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 靜音的軌道（點軌道標籤的喇叭切換）
   final Set<int> _mutedTracks = {};
 
+  /// 軌號被重編之後，把靜音狀態一起搬過去。
+  /// 不搬的話靜音會落在別軌，而且匯出時是照這個集合把音量寫成 0，
+  /// 成品的聲音會跟預覽不一樣
+  void _remapMuted(Map<int, int> map) {
+    if (_mutedTracks.isEmpty || map.isEmpty) return;
+    final moved = _mutedTracks.map((k) => map[k] ?? k).toSet();
+    _mutedTracks
+      ..clear()
+      ..addAll(moved);
+  }
+
   // ===== 復原 / 重做 =====
   final List<String> _undoStack = [];
   final List<String> _redoStack = [];
@@ -2308,7 +2319,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tl.clips.remove(clip);
       _tl.clips.add(clip);
       // 搬到最底下那條空軌時不要收斂，否則會被拉回原本的層
-      if (insert || t < oldUsed) _tl.compactTracks();
+      if (insert) {
+        // 插入時 t 以下的軌整批往下移一格，靜音要跟著搬
+        //（不然靜音會掉到別軌，匯出時那一軌的聲音也會被寫成 0）
+        final moved = _mutedTracks.map((k) => k >= t ? k + 1 : k).toSet();
+        _mutedTracks
+          ..clear()
+          ..addAll(moved);
+      }
+      if (insert || t < oldUsed) _remapMuted(_tl.compactTracks());
       // 插入/收斂會重編軌號，選取的軌道指不準了——直接清掉
       if (insert) _selTrack = -1;
     });
@@ -2339,13 +2358,34 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         dSec = fromLeft ? snapped - c.offset : snapped - c.end;
         // 把手拖的是「時間軸秒」，變速片段要換算回素材秒
         final dSrc = dSec * c.speed;
-        if (fromLeft) {
-          final ns = (c.trimStart + dSrc).clamp(0.0, c.trimEnd - 0.3);
-          // offset 位移用時間軸秒（素材差 ÷ 速度）
-          c.offset = (c.offset + (ns - c.trimStart) / c.speed).clamp(0.0, 1e6);
-          c.trimStart = ns;
+        // clamp 的上下限一旦反轉（極短片段），Dart 會直接丟例外，
+        // 所以上限先確保不小於下限。
+        // 倒轉片段的時間軸左緣對應素材尾端，兩端要對調著修，
+        // 不然畫面上縮短的是左邊、實際被切掉的卻是尾巴
+        if (!c.reverse) {
+          if (fromLeft) {
+            final hi = math.max(0.0, c.trimEnd - 0.3);
+            final ns = (c.trimStart + dSrc).clamp(0.0, hi);
+            // offset 位移用時間軸秒（素材差 ÷ 速度）
+            c.offset = (c.offset + (ns - c.trimStart) / c.speed)
+                .clamp(0.0, 1e6);
+            c.trimStart = ns;
+          } else {
+            final lo = math.min(c.trimStart + 0.3, src.duration);
+            c.trimEnd = (c.trimEnd + dSrc).clamp(lo, src.duration);
+          }
         } else {
-          c.trimEnd = (c.trimEnd + dSrc).clamp(c.trimStart + 0.3, src.duration);
+          // 倒轉：時間軸左緣對應素材尾端，兩端對調著修
+          if (fromLeft) {
+            final lo = math.min(c.trimStart + 0.3, src.duration);
+            final ne = (c.trimEnd - dSrc).clamp(lo, src.duration);
+            c.offset = (c.offset + (c.trimEnd - ne) / c.speed)
+                .clamp(0.0, 1e6);
+            c.trimEnd = ne;
+          } else {
+            final hi = math.max(0.0, c.trimEnd - 0.3);
+            c.trimStart = (c.trimStart - dSrc).clamp(0.0, hi);
+          }
         }
       }
     });
@@ -2393,7 +2433,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (!ok || !mounted) return;
     _pushUndo();
     setState(() {
-      _tl.removeTrack(track);
+      // 被刪那一軌的靜音狀態要拿掉，下面遞補上來的軌則跟著搬
+      _mutedTracks.remove(track);
+      _remapMuted(_tl.removeTrack(track));
       _sel = -1;
       _selTrack = -1;
     });
@@ -2420,6 +2462,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       // 軌號整批換過了，選取的軌道跟著對照表走
       if (_selTrack >= 0) _selTrack = map[_selTrack] ?? -1;
+      // 靜音也是綁軌號的，同樣要跟著搬
+      _remapMuted(map);
     });
   }
 
@@ -2653,8 +2697,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               .clamp(0, _tl.usedTracks + _extraBlankTracks),
       volume: cb.volume,
       // 這些貼上時原本被丟掉：2 倍速片段貼上會變 1 倍速、
-      // 調好位置大小的疊圖會跳回置中原尺寸
+      // 調好位置大小的疊圖會跳回置中原尺寸、倒轉的片段會變正播
       speed: cb.speed,
+      reverse: cb.reverse,
       px: cb.px,
       py: cb.py,
       scale: cb.scale,
@@ -4726,21 +4771,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 }),
                                 onTrimWm: (d, fromLeft) => setState(() {
                                   // 跟片段修剪同一套磁吸：對齊素材頭尾
+                                  // 時間軸後來變短時上下限會反轉，
+                                  // clamp 反轉會直接丟例外，先夾好界線
                                   if (fromLeft) {
                                     final w = _wmStart + d;
                                     final s = _snapOn
                                         ? _tl.snapTime(w, _position, _pxPerSec)
                                         : w;
-                                    _wmStart = s.clamp(0.0, _wmEndEff - 0.3);
+                                    final hi = math.max(0.0, _wmEndEff - 0.3);
+                                    _wmStart = s.clamp(0.0, hi);
                                   } else {
                                     final w = _wmEndEff + d;
                                     final e = _snapOn
                                         ? _tl.snapTime(w, _position, _pxPerSec)
                                         : w;
-                                    _wmEnd = e.clamp(
+                                    final lo = math.min(
                                       _wmStart + 0.3,
                                       _tl.duration,
                                     );
+                                    _wmEnd = e.clamp(lo, _tl.duration);
                                   }
                                 }),
                               ),

@@ -440,7 +440,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
   int get _trackDropTarget {
     if (_dragTrack == null) return -1;
     final steps = (_dragDy / rowStride).round();
-    return (_dragTrack! + steps).clamp(0, timeline.usedTracks - 1);
+    return (_dragTrack! + steps).clamp(0, math.max(0, timeline.usedTracks - 1));
   }
 
   double _rowShiftFor(int t) {
@@ -1606,7 +1606,7 @@ class _WavePainter extends CustomPainter {
         for (var i = a; i < b; i++) {
           if (p[i] > m) m = p[i];
         }
-        final h = (m * size.height * 0.86).clamp(1.5, size.height - 2);
+        final h = (m * size.height * 0.86).clamp(1.5, math.max(1.5, size.height - 2));
         final x = 2.0 + c * step;
         canvas.drawLine(Offset(x, mid - h / 2), Offset(x, mid + h / 2), paint);
       }
@@ -1634,7 +1634,7 @@ class _WavePainter extends CustomPainter {
       for (var i = a; i < (b > a ? b : a + 1) && i < p.length; i++) {
         if (p[i] > m) m = p[i];
       }
-      final h = (m * size.height * 0.86).clamp(1.5, size.height - 2);
+      final h = (m * size.height * 0.86).clamp(1.5, math.max(1.5, size.height - 2));
       final x = 2.0 + c * step;
       canvas.drawLine(Offset(x, mid - h / 2), Offset(x, mid + h / 2), paint);
     }

@@ -294,6 +294,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 文字、字體、顏色、大小…全都能改，改動即時反映在預覽上
   void _editExtraWm(int i) {
     if (i < 0 || i >= _extraWms.length) return;
+    // 抓住這一組本身，不要在抽屜裡用索引取——刪除／復原之後
+    // 索引會失效，抽屜還在退場時重建就會越界
+    final target = _extraWms[i];
     // 開編輯＝選取這一組（預覽上畫白框），跟其他選取互斥
     setState(() {
       _selExtra = i;
@@ -323,7 +326,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                 children: [
                   Expanded(
                     child: Text(
-                      _extraWmLabel(i),
+                      _labelOf(target),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -339,7 +342,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                       Navigator.pop(sheetCtx);
                       _pushUndo();
                       setState(() {
-                        _extraWms.removeAt(i);
+                        _extraWms.remove(target);
                         _selExtra = -1;
                       });
                     },
@@ -354,7 +357,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             ),
             Expanded(
               child: WatermarkPanel(
-                settings: _extraWms[i],
+                settings: target,
                 onChanged: () => setState(() {}),
                 onBeforeChange: () {
                   if (!pushed) {
@@ -371,10 +374,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     );
   }
 
-  String _extraWmLabel(int i) =>
-      _extraWms[i].text.enabled && _extraWms[i].text.text.trim().isNotEmpty
-      ? _extraWms[i].text.text
-      : '浮水印 ${i + 2}（Logo）';
+  String _labelOf(WatermarkSettings w) =>
+      w.text.enabled && w.text.text.trim().isNotEmpty
+      ? w.text.text
+      : '浮水印 ${_extraWms.indexOf(w) + 2}（Logo）';
+
+  String _extraWmLabel(int i) => _labelOf(_extraWms[i]);
 
   /// 面板裡的「浮水印＋」卡（A 版）：整列可點進編輯（右邊箭頭），
   /// 刪除收在編輯面板裡；最下面永遠有一個「浮水印＋」可以再加
@@ -1013,17 +1018,23 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   Future<void> _export({bool jpeg = false}) async {
     if (_exporting || _photoBytes == null) return;
     setState(() => _exporting = true);
+    // PopScope：不擋的話返回鍵會把進度框關掉，
+    // 輸出完成後那個 pop 就會把「編輯頁本身」關掉，改的東西全沒了
+    var dialogOpen = true;
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => const AlertDialog(
-        title: Text('輸出中…'),
-        content: SizedBox(
-          height: 48,
-          child: Center(child: CircularProgressIndicator()),
+      builder: (context) => const PopScope(
+        canPop: false,
+        child: AlertDialog(
+          title: Text('輸出中…'),
+          content: SizedBox(
+            height: 48,
+            child: Center(child: CircularProgressIndicator()),
+          ),
         ),
       ),
-    );
+    ).then((_) => dialogOpen = false);
 
     String message;
     var ok = true;
@@ -1068,10 +1079,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       _initialJson = _stateJson;
     }
 
-    if (mounted) {
-      Navigator.of(context).pop();
-      showHint(context, message, error: !ok);
-    }
+    if (!mounted) return;
+    // 只有進度框還開著才 pop，不然會把編輯頁本身關掉。
+    // rootNavigator：showDialog 開在 root，pop 也要對同一個 navigator
+    if (dialogOpen) Navigator.of(context, rootNavigator: true).pop();
+    showHint(context, message, error: !ok);
     setState(() => _exporting = false);
   }
 
@@ -1119,6 +1131,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   double _pvBaseText = 0;
   double _pvBaseLogo = 0;
   double _pvBaseMosaic = 0.35;
+  double _pvBaseExtraText = 0.12;
+  double _pvBaseExtraLogo = 0.18;
 
   void _pinchDown(PointerDownEvent e) {
     _pvPts[e.pointer] = e.position;
@@ -1131,6 +1145,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     _pvBaseLogo = _settings.logo.sizeFrac;
     if (_selMosaic >= 0 && _selMosaic < _mosaics.length) {
       _pvBaseMosaic = _mosaics[_selMosaic].scale;
+    }
+    if (_selExtra >= 0 && _selExtra < _extraWms.length) {
+      _pvBaseExtraText = _extraWms[_selExtra].text.sizeFrac;
+      _pvBaseExtraLogo = _extraWms[_selExtra].logo.sizeFrac;
     }
     _pushUndo();
   }
@@ -1145,6 +1163,20 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       // 有選中馬賽克：雙指縮它，不動浮水印
       if (_selMosaic >= 0 && _selMosaic < _mosaics.length) {
         _mosaics[_selMosaic].scale = (_pvBaseMosaic * f).clamp(0.05, 1.5);
+        return;
+      }
+      // 有選中額外那幾組浮水印：縮的是那一組，不是主浮水印
+      if (_selExtra >= 0 && _selExtra < _extraWms.length) {
+        final e = _extraWms[_selExtra];
+        final part = _extraPartAlive(_selExtra);
+        final hasText = e.text.enabled && e.text.text.trim().isNotEmpty;
+        final hasLogo = e.logo.enabled;
+        if (hasText && (part != WmPart.logo || !hasLogo)) {
+          e.text.sizeFrac = (_pvBaseExtraText * f).clamp(0.015, 2.0);
+        }
+        if (hasLogo && (part != WmPart.text || !hasText)) {
+          e.logo.sizeFrac = (_pvBaseExtraLogo * f).clamp(0.03, 2.0);
+        }
         return;
       }
       final t = _settings.text;

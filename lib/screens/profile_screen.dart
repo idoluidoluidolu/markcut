@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -288,23 +289,39 @@ class _DraftsScreenState extends State<DraftsScreen> {
   /// 專案總長（秒）＝所有片段最晚的結尾（變速片段要除速度才準）
   double _draftDuration(Map<String, dynamic> j) {
     var end = 0.0;
+    // 壞掉的草稿（欄位型別不對）不能讓整個草稿夾紅屏，
+    // 不然連「刪掉這筆壞草稿」的按鈕都按不到
+    double num0(Object? v) => v is num ? v.toDouble() : 0.0;
     for (final c in (j['clips'] as List? ?? [])) {
-      final m = Map<String, dynamic>.from(c as Map);
-      final speed = (((m['speed'] ?? 1.0) as num).toDouble()).clamp(0.1, 16.0);
+      if (c is! Map) continue;
+      final m = Map<String, dynamic>.from(c);
+      final speed = (m['speed'] is num ? num0(m['speed']) : 1.0).clamp(
+        0.1,
+        16.0,
+      );
       final e =
-          ((m['offset'] ?? 0) as num).toDouble() +
-          (((m['trimEnd'] ?? 0) as num).toDouble() -
-                  ((m['trimStart'] ?? 0) as num).toDouble()) /
-              speed;
+          num0(m['offset']) +
+          (num0(m['trimEnd']) - num0(m['trimStart'])) / speed;
       if (e > end) end = e;
     }
     return end;
   }
 
   String _fmt(double sec) {
-    final m = sec ~/ 60;
-    final s = (sec % 60).round();
-    return '$m:${s.toString().padLeft(2, '0')}';
+    // 先進位到整秒再拆，不然 59.6 秒會顯示成 0:60
+    final t = sec.round();
+    return '${t ~/ 60}:${(t % 60).toString().padLeft(2, '0')}';
+  }
+
+  /// 縮圖解碼：壞掉的 base64 不能在 build 裡丟例外（整頁會紅屏）
+  Uint8List? _thumbOf(Map<String, dynamic> j) {
+    final t = j['thumb'];
+    if (t is! String) return null;
+    try {
+      return base64Decode(t);
+    } catch (_) {
+      return null;
+    }
   }
 
   String _savedAtLabel(Map<String, dynamic> j) {
@@ -395,9 +412,9 @@ class _DraftsScreenState extends State<DraftsScreen> {
                                     color: kPanelHi,
                                     borderRadius: BorderRadius.circular(7),
                                   ),
-                                  child: d['thumb'] is String
+                                  child: _thumbOf(d) != null
                                       ? Image.memory(
-                                          base64Decode(d['thumb'] as String),
+                                          _thumbOf(d)!,
                                           fit: BoxFit.cover,
                                           gaplessPlayback: true,
                                         )
@@ -423,7 +440,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
                                   ),
                                   const SizedBox(height: 2),
                                   Text(
-                                    '${(d['clips'] as List).length} 個片段'
+                                    '${(d['clips'] as List? ?? const []).length} 個片段'
                                     '・${_fmt(_draftDuration(d))}'
                                     '${_savedAtLabel(d)}',
                                     style: const TextStyle(

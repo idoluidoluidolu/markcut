@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -74,14 +75,18 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   Map<String, dynamic>? _draft; // 上次沒完成的專案
+  Uint8List? _draftThumb; // 已驗證可解碼的縮圖（壞掉就是 null）
 
   @override
   void initState() {
     super.initState();
+    // 預設範本補種：任何一步失敗都不該讓首頁跳錯誤橫幅，
+    // 也不該讓後面幾批預設從此不再補
     PresetStore.ensureSeeded()
         .then((_) => PresetStore.ensureSeededV2())
         .then((_) => PresetStore.ensureSeededV3())
-        .then((_) => PresetStore.ensureSeededV4());
+        .then((_) => PresetStore.ensureSeededV4())
+        .catchError((_) {});
     _checkDraft();
   }
 
@@ -90,13 +95,26 @@ class _HomeScreenState extends State<HomeScreen> {
     final s = prefs.getString(kDraftKey);
     if (!mounted) return;
     Map<String, dynamic>? found;
+    Uint8List? thumb;
     if (s != null) {
       try {
         final j = jsonDecode(s) as Map<String, dynamic>;
         if ((j['clips'] as List?)?.isNotEmpty ?? false) found = j;
       } catch (_) {}
     }
-    setState(() => _draft = found);
+    // 縮圖先在這裡解好：base64 壞掉時 build 裡解會每一幀都丟例外，
+    // 首頁變成永遠的紅畫面，連重開 App 都救不回來
+    if (found != null && found['thumb'] is String) {
+      try {
+        thumb = base64Decode(found['thumb'] as String);
+      } catch (_) {
+        thumb = null;
+      }
+    }
+    setState(() {
+      _draft = found;
+      _draftThumb = thumb;
+    });
   }
 
   Future<void> _resumeDraft() async {
@@ -358,7 +376,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        if (_draft?['thumb'] is String)
+                        if (_draftThumb != null)
                           Container(
                             width: (26 *
                                     ((_draft?['thumbAspect'] as num?) ??
@@ -370,7 +388,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(4)),
                             child: Image.memory(
-                              base64Decode(_draft!['thumb'] as String),
+                              _draftThumb!,
                               fit: BoxFit.cover,
                               gaplessPlayback: true,
                             ),

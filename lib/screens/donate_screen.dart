@@ -62,19 +62,26 @@ class _DonateScreenState extends State<DonateScreen> {
   }
 
   Future<void> _onPurchases(List<PurchaseDetails> purchases) async {
+    var thanked = false;
     for (final p in purchases) {
-      if (p.status == PurchaseStatus.purchased ||
-          p.status == PurchaseStatus.restored) {
-        if (p.pendingCompletePurchase) await _iap.completePurchase(p);
-        if (mounted) {
-          setState(() => _buying = false);
+      // pending（待付款、家長核准…）：不是終局，但按鈕不能一直鎖著，
+      // 否則三個檔位全部按不動，畫面上又沒有任何說明
+      if (p.status == PurchaseStatus.pending) {
+        if (mounted) setState(() => _buying = false);
+        continue;
+      }
+      if (p.pendingCompletePurchase) await _iap.completePurchase(p);
+      if (!mounted) return;
+      setState(() => _buying = false);
+      if (p.status == PurchaseStatus.purchased) {
+        // 一次收到好幾筆只謝一次，不然感謝視窗會疊好幾層
+        if (!thanked) {
+          thanked = true;
           _thanks();
         }
-      } else if (p.status == PurchaseStatus.error ||
-          p.status == PurchaseStatus.canceled) {
-        if (p.pendingCompletePurchase) await _iap.completePurchase(p);
-        if (mounted) setState(() => _buying = false);
       }
+      // restored：補送的舊交易，completePurchase 收乾淨就好，
+      // 不要在使用者一進頁面時莫名跳出感謝視窗
     }
   }
 

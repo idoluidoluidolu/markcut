@@ -83,10 +83,12 @@ class MarkCutApp extends StatelessWidget {
                 valueListenable: kLastError,
                 builder: (context, err, _) {
                   if (err == null) return const SizedBox.shrink();
+                  // 貼在畫面底部：壓在上面會蓋住 AppBar 的返回鍵，
+                  // 使用者連退出去都做不到
                   return Positioned(
                     left: 8,
                     right: 8,
-                    top: 40,
+                    bottom: 12,
                     child: Material(
                       color: const Color(0xE6470B0B),
                       borderRadius: BorderRadius.circular(10),

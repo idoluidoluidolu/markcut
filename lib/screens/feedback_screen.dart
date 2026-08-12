@@ -9,7 +9,8 @@ Future<void> showFeedbackDialog(BuildContext context) {
   return showDialog<void>(
     context: context,
     // 不給點背景關閉：送出中點到背景會讓結果無聲消失，
-    // 使用者以為沒送成又送一次，後台就重複了
+    // 使用者以為沒送成又送一次，後台就重複了。
+    // 返回鍵同理，交給表單自己在沒在送的時候才放行
     barrierDismissible: false,
     builder: (context) => Dialog(
       backgroundColor: kBg,
@@ -65,6 +66,15 @@ class _FeedbackFormState extends State<_FeedbackForm> {
 
   @override
   Widget build(BuildContext context) {
+    return PopScope(
+      // 送出中不讓返回鍵關掉：關掉的話成功／失敗都不會顯示，
+      // 使用者不知道送出去沒有，就會再送一次
+      canPop: !_sending,
+      child: _form(context),
+    );
+  }
+
+  Widget _form(BuildContext context) {
     return SingleChildScrollView(
       // 鍵盤跳出來時內容還捲得動
       padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),

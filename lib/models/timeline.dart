@@ -323,24 +323,35 @@ class TimelineModel {
     for (final t in targets) {
       var cursor = 0.0;
       for (final c in onTrack(t)) {
-        removed += c.offset - cursor;
-        c.offset = cursor;
-        cursor = c.end;
+        // 只補「空隙」，不動刻意重疊的片段——重疊時 c.offset < cursor，
+        // 照原本的寫法會把它往後推開，還把負數算進「收掉的秒數」
+        final gap = c.offset - cursor;
+        if (gap > 0) {
+          removed += gap;
+          c.offset = cursor;
+        }
+        if (c.end > cursor) cursor = c.end;
       }
     }
     return removed;
   }
 
-  /// 整條軌道刪掉（軌上所有片段一起移除），下面的軌往上遞補
-  void removeTrack(int track) {
+  /// 整條軌道刪掉（軌上所有片段一起移除），下面的軌往上遞補。
+  /// 回傳「舊軌號 → 新軌號」對照，呼叫端要拿它重映靜音之類的軌號狀態
+  Map<int, int> removeTrack(int track) {
     clips.removeWhere((c) => c.track == track);
+    final map = <int, int>{};
     for (final c in clips) {
-      if (c.track > track) c.track--;
+      final old = c.track;
+      if (old > track) c.track--;
+      map[old] = c.track;
     }
+    return map;
   }
 
-  /// 把中間空掉的軌號補起來（例如整層被搬走之後）
-  void compactTracks() {
+  /// 把中間空掉的軌號補起來（例如整層被搬走之後）。
+  /// 同樣回傳「舊軌號 → 新軌號」對照
+  Map<int, int> compactTracks() {
     final used = clips.map((c) => c.track).toSet().toList()..sort();
     final map = <int, int>{};
     for (var i = 0; i < used.length; i++) {
@@ -349,6 +360,7 @@ class TimelineModel {
     for (final c in clips) {
       c.track = map[c.track] ?? c.track;
     }
+    return map;
   }
 
   /// 在指定時間切開片段，回傳新產生的後半段（切不成回 null）
@@ -377,11 +389,13 @@ class TimelineModel {
       );
       srcIdx = sources.length - 1;
     }
+    // 倒轉片段的時間軸左緣對應素材的尾端，所以前後兩半要反過來配；
+    // 照正向切會讓兩半的長度對調，切完直接重疊
     final second = TimelineClip(
       id: nextId(),
       sourceIndex: srcIdx,
-      trimStart: srcT,
-      trimEnd: c.trimEnd,
+      trimStart: c.reverse ? c.trimStart : srcT,
+      trimEnd: c.reverse ? srcT : c.trimEnd,
       offset: t,
       track: c.track,
       volume: c.volume,
@@ -396,7 +410,11 @@ class TimelineModel {
       fadeOut: c.fadeOut,
     );
     c.fadeOut = 0;
-    c.trimEnd = srcT;
+    if (c.reverse) {
+      c.trimStart = srcT;
+    } else {
+      c.trimEnd = srcT;
+    }
     clips.add(second);
     return second;
   }

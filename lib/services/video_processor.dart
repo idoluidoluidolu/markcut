@@ -132,8 +132,10 @@ class ExportSpec {
 
   final base = timeline.sourceOf(videos.first);
   final allVideo = timeline.sources.where((s) => s.isVideo);
-  final maxLong =
-      allVideo.map((s) => math.max(s.w, s.h)).reduce(math.max);
+  // 有些機種／編碼在 initialize() 完成當下 size 還是 0，
+  // 讓它一路傳到 ffmpeg 會變成 s=0x0 直接匯出失敗
+  var maxLong = allVideo.map((s) => math.max(s.w, s.h)).reduce(math.max);
+  if (maxLong < 16) maxLong = 1920;
 
   int targetLong = switch (res) {
     ExportResolution.original => maxLong,
@@ -142,7 +144,8 @@ class ExportSpec {
   };
   if (targetLong > maxLong) targetLong = maxLong;
 
-  final aspect = ratio.value ?? base.aspect; // 寬/高
+  var aspect = ratio.value ?? base.aspect; // 寬/高
+  if (!aspect.isFinite || aspect <= 0) aspect = 16 / 9;
   int w, h;
   if (aspect >= 1) {
     w = targetLong;
@@ -151,8 +154,8 @@ class ExportSpec {
     h = targetLong;
     w = (targetLong * aspect).round();
   }
-  // H.264 需要偶數尺寸
+  // H.264 需要偶數尺寸，而且不能是 0
   w -= w % 2;
   h -= h % 2;
-  return (w, h);
+  return (math.max(2, w), math.max(2, h));
 }

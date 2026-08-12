@@ -189,12 +189,17 @@ Future<String> _buildCommand(
   // 輸入編號：文字／浮水印來源不佔輸入（每個片段各自一張烘好的 PNG），
   // 所以要建立「來源 → 輸入編號」對照表
   bool isPngClip(ClipKind k) => k == ClipKind.text || k == ClipKind.wm;
+  // 沒有任何片段引用的來源不能開輸入：草稿裡檔案已被清掉的素材、
+  // 還原倒轉後留下的暫存檔都在這裡，開下去 ffmpeg 直接開檔失敗
+  final usedSources = <int>{for (final c in spec.clips) c.sourceIndex};
   final srcIn = <int, int>{};
   var nextInput = 0;
   for (var i = 0; i < spec.sources.length; i++) {
     final k = spec.sources[i].kind;
     // 馬賽克沒有檔案也不佔輸入（它是對畫面本身做的效果）
-    if (!isPngClip(k) && k != ClipKind.mosaic) srcIn[i] = nextInput++;
+    if (!isPngClip(k) && k != ClipKind.mosaic && usedSources.contains(i)) {
+      srcIn[i] = nextInput++;
+    }
   }
   final textClipInput = <int, int>{}; // clip id → input index
   for (final c in spec.clips) {
@@ -564,6 +569,8 @@ Future<String> _buildCommand(
   final cmd = StringBuffer()..write('-y ');
   for (var i = 0; i < spec.sources.length; i++) {
     final s = spec.sources[i];
+    // 跟上面 srcIn 的條件一致，不然輸入編號會整組錯位
+    if (!usedSources.contains(i)) continue;
     switch (s.kind) {
       case ClipKind.video || ClipKind.audio:
         cmd.write('-i "${s.path}" ');
@@ -667,14 +674,19 @@ Future<String?> _prerenderReverse(
         '-vf "scale=$outW:$outH:flags=bicubic,reverse" -an '
         '-c:v ${_hwEncoder()} -b:v 16000k -pix_fmt nv12 "$part"';
     var ses = await FFmpegKit.execute(cmd);
-    if (!ReturnCode.isSuccess(await ses.getReturnCode())) {
+    var rc = await ses.getReturnCode();
+    // 使用者按取消也是「非成功」，但不能當成硬體編碼器壞掉而重跑一次，
+    // 不然按了取消還會把整段倒轉跑到底
+    if (ReturnCode.isCancel(rc)) return null;
+    if (!ReturnCode.isSuccess(rc)) {
       // 硬體編碼器不能用就退軟體編碼（跟主匯出同一套保底）
       ses = await FFmpegKit.execute(
         cmd
             .replaceFirst('-c:v ${_hwEncoder()}', '-c:v mpeg4 -q:v 3')
             .replaceFirst('-pix_fmt nv12', '-pix_fmt yuv420p'),
       );
-      if (!ReturnCode.isSuccess(await ses.getReturnCode())) return null;
+      rc = await ses.getReturnCode();
+      if (!ReturnCode.isSuccess(rc)) return null;
     }
     parts.add(part);
     temps.add(part);

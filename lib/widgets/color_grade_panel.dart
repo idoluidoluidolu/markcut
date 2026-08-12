@@ -150,8 +150,15 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
 
   @override
   void dispose() {
-    // 面板被收掉時手指還按著的話，要把預覽還原回調過的樣子
-    if (_comparing) widget.onCompare?.call(false);
+    // 面板被收掉時手指還按著的話，要把預覽還原回調過的樣子。
+    // dispose 期間 widget tree 是鎖住的，父層在這裡 setState 會丟例外，
+    // 所以排到下一幀再通知
+    if (_comparing) {
+      final cb = widget.onCompare;
+      if (cb != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => cb(false));
+      }
+    }
     super.dispose();
   }
 
