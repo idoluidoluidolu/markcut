@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:image_picker_android/image_picker_android.dart';
+import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 import 'package:media_kit/media_kit.dart';
 
 import 'screens/home_screen.dart';
@@ -7,6 +9,16 @@ import 'theme.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  // Android：改用系統的相簿選取器。
+  // 預設是關的，會走舊的 ACTION_GET_CONTENT——能不能一次選多個
+  // 要看手機上是哪個相簿 App 接手，很多機型只選得到一個
+  //（使用者回報「多支影片只能選一支」就是這個）。
+  // 舊版 Android 沒有系統選取器時，androidx 會自動退到
+  // ACTION_OPEN_DOCUMENT，那個的多選也比舊路徑可靠
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+    final picker = ImagePickerPlatform.instance;
+    if (picker is ImagePickerAndroid) picker.useAndroidPhotoPicker = true;
+  }
   // media_kit 播放引擎（Web 用不到也沒帶函式庫）
   if (!kIsWeb) MediaKit.ensureInitialized();
   // 拖曳預覽的快取幀很密，預設 100 張一下就滿、一滿就要重新解碼＝卡頓，

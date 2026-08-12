@@ -39,6 +39,10 @@ dependencies:
   ffmpeg_kit_flutter_new_min: ^3.6.2
   video_player: ^2.13.0
   image_picker: ^1.2.3
+  # 直接相依是為了打開 Android 的系統相簿選取器（見 main.dart）：
+  # 預設關閉時走舊的 ACTION_GET_CONTENT，能不能多選要看是哪個
+  # 相簿 App 接手，很多機型會變成只選得到一個
+  image_picker_android: ^0.8.13
   gal: ^2.3.3
   shared_preferences: ^2.5.5
   flutter_colorpicker: ^1.1.0
@@ -58,6 +62,7 @@ dependencies:
   url_launcher: ^6.3.2
   in_app_purchase: ^3.2.0
   flutter_image_compress: ^2.5.1
+  image_picker_platform_interface: ^2.11.1
 
 dev_dependencies:
   flutter_test:
