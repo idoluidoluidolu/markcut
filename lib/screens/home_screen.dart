@@ -310,26 +310,6 @@ class _HomeScreenState extends State<HomeScreen> {
       backgroundColor: kBg,
       appBar: AppBar(
         backgroundColor: kBg,
-        // logo 當品牌標識放在頂部這一列（跟個人中心同高），
-        // 不再孤零零地浮在畫面正中央。titleSpacing 對齊 body 的左邊距
-        titleSpacing: 24,
-        title: SizedBox(
-          width: 96,
-          height: 38,
-          child: ColorFiltered(
-            colorFilter: const ColorFilter.matrix(<double>[
-              0.85, 0, 0, 0, 0, //
-              0, 0.85, 0, 0, 0, //
-              0, 0, 0.85, 0, 0, //
-              0, 0, 0, 1, 0, //
-            ]),
-            child: Image.asset(
-              'assets/icon/home_logo.png',
-              fit: BoxFit.cover, // 裁掉原圖四周的留白
-              filterQuality: FilterQuality.medium,
-            ),
-          ),
-        ),
         actions: [
           IconButton(
             tooltip: '個人中心',
@@ -352,8 +332,34 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // logo 移到頂部那一列了，中間刻意留白
-              const Spacer(),
+              // logo 放在上約三分之一處（不是正中央）並放大：
+              // 正中央在視覺上最無趣，重心偏上一點才穩，
+              // 下面留白留給動作按鈕。上下 Spacer 的比例就是它的高度位置
+              const Spacer(flex: 22),
+              Center(
+                child: SizedBox(
+                  width: 190,
+                  height: 76,
+                  // 透明背景版 logo：直接融進近黑背景，不用底板
+                  // （icon_foreground.png 是啟動圖示前景，別共用）。
+                  // 壓暗一階（0.85）不跟白色主按鈕搶注意力——
+                  // 改這個數字就能微調亮度
+                  child: ColorFiltered(
+                    colorFilter: const ColorFilter.matrix(<double>[
+                      0.85, 0, 0, 0, 0, //
+                      0, 0.85, 0, 0, 0, //
+                      0, 0, 0.85, 0, 0, //
+                      0, 0, 0, 1, 0, //
+                    ]),
+                    child: Image.asset(
+                      'assets/icon/home_logo.png',
+                      fit: BoxFit.cover, // 裁掉原圖四周的留白
+                      filterQuality: FilterQuality.medium,
+                    ),
+                  ),
+                ),
+              ),
+              const Spacer(flex: 48),
               // 三個動作全部靠底
               _HomeButton(
                 primary: true,
