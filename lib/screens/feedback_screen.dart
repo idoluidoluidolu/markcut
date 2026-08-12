@@ -164,11 +164,11 @@ class _FeedbackFormState extends State<_FeedbackForm> {
           const SizedBox(height: 10),
           OutlinedButton.icon(
             onPressed: _sending ? null : _openThreads,
+            // 形狀不覆寫，沿用佈景的 6px 圓角＝跟上面的「送出」一致
             style: OutlinedButton.styleFrom(
               minimumSize: const Size.fromHeight(44),
               foregroundColor: kText,
               side: const BorderSide(color: kClipBorder),
-              shape: const StadiumBorder(),
             ),
             icon: const Icon(Icons.alternate_email, size: 16),
             label: const Text('直接密我 Threads', style: TextStyle(fontSize: 13)),
