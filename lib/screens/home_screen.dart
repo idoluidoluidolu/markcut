@@ -187,7 +187,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 const _PickTile(
                     icon: Icons.grid_view,
                     label: '照片拼圖',
-                    hint: '多張照片拼成一張 (2/4/6/9 宮格)',
+                    hint: '2/4/6/9 宮格',
                     kind: _PickKind.collage),
               ],
             ),
