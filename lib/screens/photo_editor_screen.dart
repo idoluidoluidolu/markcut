@@ -1051,7 +1051,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       }
       message = await savePhotoPng(
         bytes,
-        'markcut_${DateTime.now().millisecondsSinceEpoch}',
+        'watermarker_${DateTime.now().millisecondsSinceEpoch}',
         ext: ext,
       );
       if (jpeg && ext == 'png') {

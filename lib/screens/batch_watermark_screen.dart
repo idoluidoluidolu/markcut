@@ -464,7 +464,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
           final png = await WatermarkRenderer.renderPhotoComposite(
               bytes, _effectiveOf(i));
           await savePhotoPng(png,
-              'markcut_${DateTime.now().millisecondsSinceEpoch}_$i');
+              'watermarker_${DateTime.now().millisecondsSinceEpoch}_$i');
           done++;
         }
       } catch (_) {

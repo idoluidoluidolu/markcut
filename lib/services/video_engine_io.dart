@@ -724,7 +724,7 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
 }) async {
   final dir = await getTemporaryDirectory();
   final ts = DateTime.now().millisecondsSinceEpoch;
-  final outPath = '${dir.path}${Platform.pathSeparator}markcut_$ts.mp4';
+  final outPath = '${dir.path}${Platform.pathSeparator}watermarker_$ts.mp4';
   final revTemps = <String>[];
 
   // 倒轉的片段先各自做成「已經倒好」的暫存檔，主濾鏡就當成一般素材用。
