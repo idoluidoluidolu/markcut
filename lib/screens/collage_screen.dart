@@ -105,7 +105,10 @@ class _CollageScreenState extends State<CollageScreen> {
     }
     setState(() {
       _layout = pick;
-      _order = List.generate(_kLayouts[pick].$1, (i) => i % _images.length);
+      _order = List.generate(
+        _kLayouts[pick].$1,
+        (i) => i < _images.length ? i : -1,
+      );
       _fits = List.generate(_kLayouts[pick].$1, (_) => _CellFit());
     });
   }
@@ -114,9 +117,52 @@ class _CollageScreenState extends State<CollageScreen> {
     setState(() {
       _layout = i;
       _selCell = -1;
-      _order = List.generate(_kLayouts[i].$1, (n) => n % _images.length);
+      // 換版型時把拖曳狀態歸零，避免殘留的格子編號超出新版型
+      _dragFrom = -1;
+      _dragPos = null;
+      _dragOver = -1;
+      // 照片不夠的格子留空（-1），畫面上顯示「＋」讓使用者補
+      _order = List.generate(
+        _kLayouts[i].$1,
+        (n) => n < _images.length ? n : -1,
+      );
       _fits = List.generate(_kLayouts[i].$1, (_) => _CellFit());
     });
+  }
+
+  /// 點空格子的「＋」：挑照片補進來（多選會依序補其他空格）
+  Future<void> _fillCell(int cell) async {
+    final files = await ImagePicker().pickMultiImage();
+    if (files.isEmpty || !mounted) return;
+    // 先補點的那格，再依序補其他空格
+    final targets = [
+      cell,
+      for (var i = 0; i < _order.length; i++)
+        if (_order[i] == -1 && i != cell) i,
+    ];
+    var ti = 0;
+    for (final f in files) {
+      if (ti >= targets.length) break;
+      try {
+        final b = await f.readAsBytes();
+        final codec = await ui.instantiateImageCodec(b);
+        final frame = await codec.getNextFrame();
+        if (!mounted) {
+          frame.image.dispose();
+          return;
+        }
+        _bytes.add(b);
+        _images.add(frame.image);
+        _order[targets[ti]] = _images.length - 1;
+        _fits[targets[ti]] = _CellFit();
+        ti++;
+      } catch (_) {}
+    }
+    if (!mounted) return;
+    if (ti == 0) {
+      showHint(context, '照片讀不出來', error: true);
+    }
+    setState(() {});
   }
 
   /// 點格子＝選取（可調整）；再點同一格取消
@@ -151,19 +197,19 @@ class _CollageScreenState extends State<CollageScreen> {
   /// 拖曳互換：由宮格座標算出落在哪一格（-1 = 界外）
   int _cellAt(Offset p) {
     final (count, cols, rows) = _kLayouts[_layout];
-    final c = ((p.dx - _gG) / (_gCw + _gG)).floor();
-    final r = ((p.dy - _gG) / (_gCh + _gG)).floor();
+    final c = (p.dx / (_gCw + _gG)).floor();
+    final r = (p.dy / (_gCh + _gG)).floor();
     if (c < 0 || c >= cols || r < 0 || r >= rows) return -1;
     final i = r * cols + c;
     return i < count ? i : -1;
   }
 
-  /// 放開＝落在別格就互換（照片跟取景一起換）
+  /// 放開＝落在別格就互換（照片跟取景一起換；拖到空格＝移過去）
   void _endDrag() {
     final from = _dragFrom;
     final to = _dragPos == null ? -1 : _cellAt(_dragPos!);
     setState(() {
-      if (from != -1 && to != -1 && to != from) {
+      if (from >= 0 && from < _order.length && to != -1 && to != from) {
         final t = _order[from];
         _order[from] = _order[to];
         _order[to] = t;
@@ -191,24 +237,32 @@ class _CollageScreenState extends State<CollageScreen> {
       sw = iw / f.zoom;
       sh = sw / cellAspect;
     }
+    // clamp 的上限不能是負的（浮點誤差會讓 iw-sw 變 -0.0001 直接炸）
+    final mx = (iw - sw) > 0 ? iw - sw : 0.0;
+    final my = (ih - sh) > 0 ? ih - sh : 0.0;
     var cx = (iw - sw) / 2 + f.panX;
     var cy = (ih - sh) / 2 + f.panY;
-    cx = cx.clamp(0.0, iw - sw);
-    cy = cy.clamp(0.0, ih - sh);
+    cx = cx.clamp(0.0, mx);
+    cy = cy.clamp(0.0, my);
     return ui.Rect.fromLTWH(cx, cy, sw, sh);
   }
 
   /// 合成一張 2048×2048 的拼圖，交給照片編輯器
   Future<void> _done() async {
     if (_building) return;
+    if (_order.contains(-1)) {
+      showHint(context, '還有空格子：點「＋」補照片，或換個宮格數', error: true);
+      return;
+    }
     setState(() => _building = true);
     try {
       const size = 2048.0;
       final (count, cols, rows) = _kLayouts[_layout];
-      // 跟預覽同一套排法：格線開啟時格子間（含外框）留縫
+      // 跟預覽同一套排法：格線只畫在「格子跟格子之間」，
+      // 不加外框、不是整片底色
       final g = _lines ? _gapN * size : 0.0;
-      final cw = (size - g * (cols + 1)) / cols;
-      final ch = (size - g * (rows + 1)) / rows;
+      final cw = (size - g * (cols - 1)) / cols;
+      final ch = (size - g * (rows - 1)) / rows;
       final rec = ui.PictureRecorder();
       final canvas = ui.Canvas(rec);
       if (_lines) {
@@ -218,10 +272,11 @@ class _CollageScreenState extends State<CollageScreen> {
         );
       }
       for (var i = 0; i < count; i++) {
+        if (_order[i] == -1) continue;
         final img = _images[_order[i]];
         final dst = ui.Rect.fromLTWH(
-          g + (i % cols) * (cw + g),
-          g + (i ~/ cols) * (ch + g),
+          (i % cols) * (cw + g),
+          (i ~/ cols) * (ch + g),
           cw,
           ch,
         );
@@ -256,14 +311,13 @@ class _CollageScreenState extends State<CollageScreen> {
 
   Widget _layoutChip(int i) {
     final (count, _, _) = _kLayouts[i];
-    final enabled = _images.length >= count || count == _kLayouts[0].$1;
     final on = _layout == i;
     return Expanded(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 4),
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
-          onTap: enabled ? () => _setLayout(i) : null,
+          onTap: () => _setLayout(i),
           child: Container(
             padding: const EdgeInsets.symmetric(vertical: 10),
             alignment: Alignment.center,
@@ -280,9 +334,7 @@ class _CollageScreenState extends State<CollageScreen> {
               style: TextStyle(
                 fontSize: 12.5,
                 fontWeight: on ? FontWeight.w700 : FontWeight.w400,
-                color: !enabled
-                    ? kBorder
-                    : (on ? kSelect : kText),
+                color: on ? kSelect : kText,
               ),
             ),
           ),
@@ -345,24 +397,43 @@ class _CollageScreenState extends State<CollageScreen> {
                         ],
                       ),
                     ),
-                    // 格線開關＋顏色；開了才有間距可調
+                    // 格線開關＋顏色；樣式跟上面的宮格選擇一致
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
+                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
                       child: Row(
                         children: [
-                          const Text(
-                            '格線',
-                            style: TextStyle(fontSize: 12.5, color: kText),
-                          ),
-                          const SizedBox(width: 4),
-                          Switch(
-                            value: _lines,
-                            materialTapTargetSize:
-                                MaterialTapTargetSize.shrinkWrap,
-                            onChanged: (v) => setState(() => _lines = v),
+                          InkWell(
+                            borderRadius: BorderRadius.circular(10),
+                            onTap: () => setState(() => _lines = !_lines),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 10,
+                              ),
+                              decoration: BoxDecoration(
+                                color: _lines
+                                    ? kSelect.withValues(alpha: 0.18)
+                                    : Colors.transparent,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: _lines ? kSelect : kBorder,
+                                  width: _lines ? 1.5 : 1,
+                                ),
+                              ),
+                              child: Text(
+                                '格線',
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  fontWeight: _lines
+                                      ? FontWeight.w700
+                                      : FontWeight.w400,
+                                  color: _lines ? kSelect : kText,
+                                ),
+                              ),
+                            ),
                           ),
                           if (_lines) ...[
-                            const SizedBox(width: 8),
+                            const SizedBox(width: 12),
                             for (final c in const [
                               0xFFFFFFFF,
                               0xFF000000,
@@ -431,9 +502,10 @@ class _CollageScreenState extends State<CollageScreen> {
     return LayoutBuilder(
       builder: (context, box) {
         final size = box.maxWidth; // 1:1 畫布
+        // 格線只留在格子之間，不加外框
         final g = _lines ? _gapN * size : 0.0;
-        final cw = (size - g * (cols + 1)) / cols;
-        final ch = (size - g * (rows + 1)) / rows;
+        final cw = (size - g * (cols - 1)) / cols;
+        final ch = (size - g * (rows - 1)) / rows;
         _gG = g;
         _gCw = cw;
         _gCh = ch;
@@ -447,14 +519,17 @@ class _CollageScreenState extends State<CollageScreen> {
             ),
             for (var i = 0; i < count; i++)
               Positioned(
-                left: g + (i % cols) * (cw + g),
-                top: g + (i ~/ cols) * (ch + g),
+                left: (i % cols) * (cw + g),
+                top: (i ~/ cols) * (ch + g),
                 width: cw,
                 height: ch,
                 child: _cell(i, cw, ch),
               ),
             // 拖曳互換中：浮起的縮圖跟著指尖走
-            if (_dragFrom != -1 && _dragPos != null)
+            if (_dragFrom >= 0 &&
+                _dragFrom < _order.length &&
+                _order[_dragFrom] != -1 &&
+                _dragPos != null)
               Positioned(
                 left: _dragPos!.dx - cw * 0.3,
                 top: _dragPos!.dy - ch * 0.3,
@@ -490,13 +565,31 @@ class _CollageScreenState extends State<CollageScreen> {
   }
 
   Widget _cell(int i, double cellW, double cellH) {
+    // 空格子：一個「＋」，點了挑照片補進來（拖照片過來也行）
+    if (_order[i] == -1) {
+      final over = _dragFrom != -1 && _dragOver == i;
+      return GestureDetector(
+        onTap: () => _fillCell(i),
+        child: Container(
+          decoration: BoxDecoration(
+            color: kPanel,
+            border: over
+                ? Border.all(color: kSelect, width: 2.5)
+                : Border.all(color: kBorder),
+          ),
+          child: const Center(
+            child: Icon(Icons.add, size: 30, color: kTextDim),
+          ),
+        ),
+      );
+    }
     final selected = _selCell == i;
     final img = _images[_order[i]];
     final fit = _fits[i];
     // 這格在宮格座標裡的左上角（拖曳換算指尖位置用）
     final origin = Offset(
-      _gG + (i % _kLayouts[_layout].$2) * (_gCw + _gG),
-      _gG + (i ~/ _kLayouts[_layout].$2) * (_gCh + _gG),
+      (i % _kLayouts[_layout].$2) * (_gCw + _gG),
+      (i ~/ _kLayouts[_layout].$2) * (_gCh + _gG),
     );
     // 螢幕位移 → 來源像素位移的換算比
     double dispScale() => cellW / _srcRect(img, fit, cellW / cellH).width;
