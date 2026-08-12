@@ -490,7 +490,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         final bytes = await readFileBytes(s.path);
         if (bytes != null) {
           _thumbs[i] = [bytes];
-        } else if (!kIsWeb) {
+        } else {
+          // Web 也要剔除：那邊讀不回位元組（blob 連結活不過重新整理），
+          // 留著會變成「時間軸看得到、畫面上卻不存在」的幽靈素材——
+          // 預覽畫不出來，也就點不到、選不了、刪不掉
           deadSources.add(i);
         }
       } else if (!kIsWeb && !await fileExists(s.path)) {
@@ -3707,29 +3710,48 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       }
                                       continue;
                                     }
-                                    if (src.kind == ClipKind.image &&
-                                        (_thumbs[c.sourceIndex]?.isNotEmpty ??
-                                            false)) {
+                                    if (src.kind == ClipKind.image) {
                                       final r = layerBox(c, src.aspect);
+                                      final bytes = _thumbs[c.sourceIndex];
+                                      final hasBytes =
+                                          bytes != null && bytes.isNotEmpty;
                                       children.add(
                                         Positioned.fromRect(
                                           rect: r,
                                           child: Stack(
                                             fit: StackFit.expand,
                                             children: [
-                                              _tinted(
-                                                c,
-                                                Opacity(
-                                                  opacity: c.fadeFactorAt(
-                                                    _position,
+                                              if (hasBytes)
+                                                _tinted(
+                                                  c,
+                                                  Opacity(
+                                                    opacity: c.fadeFactorAt(
+                                                      _position,
+                                                    ),
+                                                    child: Image.memory(
+                                                      bytes[0],
+                                                      fit: BoxFit.fill,
+                                                      gaplessPlayback: true,
+                                                    ),
                                                   ),
-                                                  child: Image.memory(
-                                                    _thumbs[c.sourceIndex]![0],
-                                                    fit: BoxFit.fill,
-                                                    gaplessPlayback: true,
+                                                )
+                                              else
+                                                // 讀不到圖片位元組時也要畫個東西：
+                                                // 什麼都不畫的話這段素材在畫面上
+                                                // 等於不存在，使用者點不到也刪不掉
+                                                Container(
+                                                  color: kPanelHi.withValues(
+                                                    alpha: 0.5,
+                                                  ),
+                                                  alignment: Alignment.center,
+                                                  child: const Text(
+                                                    '圖片讀不到了',
+                                                    style: TextStyle(
+                                                      fontSize: 12,
+                                                      color: kTextDim,
+                                                    ),
                                                   ),
                                                 ),
-                                              ),
                                               // 點擊層疊最上面，確保收得到（跟影片圖層同一套）
                                               GestureDetector(
                                                 behavior:
