@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/gestures.dart';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../theme.dart';
@@ -375,17 +376,41 @@ class _CollageScreenState extends State<CollageScreen> {
                   0xFF000000,
                   0xFF9E9EA6,
                   0xFFFFC24B,
-                  0xFFE57373,
-                  0xFF64B5F6,
                 ])
                   _lineSwatch(c),
+                // 調色盤：想要什麼顏色都能挑
+                Padding(
+                  padding: const EdgeInsets.only(right: 7),
+                  child: InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: _pickLineColor,
+                    child: Container(
+                      width: 16,
+                      height: 16,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: const SweepGradient(
+                          colors: [
+                            Color(0xFFE57373),
+                            Color(0xFFFFC24B),
+                            Color(0xFF81C784),
+                            Color(0xFF64B5F6),
+                            Color(0xFFBA68C8),
+                            Color(0xFFE57373),
+                          ],
+                        ),
+                        border: Border.all(color: kBorder),
+                      ),
+                    ),
+                  ),
+                ),
                 Expanded(
                   child: SizedBox(
                     height: 30,
                     child: Slider(
                       value: _gapN,
-                      min: 0.002,
-                      max: 0.03,
+                      min: 0.001,
+                      max: 0.05,
                       onChanged: (v) => setState(() => _gapN = v),
                     ),
                   ),
@@ -431,6 +456,38 @@ class _CollageScreenState extends State<CollageScreen> {
         ),
       ),
     );
+  }
+
+  /// 調色盤挑格線顏色（跟浮水印文字的顏色挑選同一套）
+  Future<void> _pickLineColor() async {
+    var color = Color(_lineColor);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('格線顏色'),
+        content: SingleChildScrollView(
+          child: ColorPicker(
+            pickerColor: color,
+            enableAlpha: false,
+            labelTypes: const [],
+            onColorChanged: (c) => color = c,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('確定'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && mounted) {
+      setState(() => _lineColor = color.toARGB32());
+    }
   }
 
   Widget _lineSwatch(int c) {
