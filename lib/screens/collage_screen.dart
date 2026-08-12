@@ -311,8 +311,8 @@ class _CollageScreenState extends State<CollageScreen> {
         name: 'collage.png',
         mimeType: 'image/png',
       );
-      // 直接換頁進編輯器：返回時回首頁，不會卡在拼圖頁
-      await Navigator.pushReplacement(
+      // 用 push 保留拼圖頁：編輯器按上一步會回到宮格繼續調
+      await Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => PhotoEditorScreen(photo: file)),
       );
