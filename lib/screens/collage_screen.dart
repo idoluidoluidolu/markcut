@@ -13,7 +13,8 @@ import 'photo_editor_screen.dart';
 /// 宮格拼圖：把多張照片拼成一張（2/4/6/9 宮格），
 /// 拼完直接進照片編輯器上浮水印。
 /// 版型固定 1:1 畫布、格子等分、照片置中裁滿（cover）；
-/// 點兩個格子可以互換位置。
+/// 拖曳格子互換位置、點一下選取後可調構圖、長按換照片，
+/// 也能開格線（調間距、選顏色）。
 class CollageScreen extends StatefulWidget {
   final List<XFile> photos;
 
@@ -46,6 +47,23 @@ class _CollageScreenState extends State<CollageScreen> {
   final Map<int, Offset> _pts = {};
   double? _baseDist;
   double _baseZoom = 1;
+
+  // 拖曳互換：從哪格拖起、目前指尖（宮格座標）、懸在哪格上
+  int _dragFrom = -1;
+  Offset? _dragPos;
+  int _dragOver = -1;
+
+  // 這一幀宮格的幾何（拖曳換算目標格用）
+  double _gG = 0, _gCw = 1, _gCh = 1;
+
+  /// 格線：開了之後格子間（含外框）會留縫、填格線顏色
+  bool _lines = false;
+
+  /// 間距（畫布邊長的比例），格線開啟時才作用
+  double _gapN = 0.012;
+
+  /// 格線顏色（ARGB）
+  int _lineColor = 0xFFFFFFFF;
 
   bool _building = false;
 
@@ -106,17 +124,56 @@ class _CollageScreenState extends State<CollageScreen> {
     setState(() => _selCell = _selCell == cell ? -1 : cell);
   }
 
-  /// 長按另一格＝跟選取中的那格互換照片（取景一起帶走）
-  void _longPressCell(int cell) {
-    if (_selCell == -1 || _selCell == cell) return;
+  /// 長按格子＝換一張照片（重新從相簿挑）
+  Future<void> _longPressCell(int cell) async {
+    final f = await ImagePicker().pickImage(source: ImageSource.gallery);
+    if (f == null || !mounted) return;
+    try {
+      final b = await f.readAsBytes();
+      final codec = await ui.instantiateImageCodec(b);
+      final frame = await codec.getNextFrame();
+      if (!mounted) {
+        frame.image.dispose();
+        return;
+      }
+      setState(() {
+        _bytes.add(b);
+        _images.add(frame.image);
+        _order[cell] = _images.length - 1;
+        _fits[cell] = _CellFit();
+        _selCell = cell;
+      });
+    } catch (_) {
+      if (mounted) showHint(context, '這張照片讀不出來', error: true);
+    }
+  }
+
+  /// 拖曳互換：由宮格座標算出落在哪一格（-1 = 界外）
+  int _cellAt(Offset p) {
+    final (count, cols, rows) = _kLayouts[_layout];
+    final c = ((p.dx - _gG) / (_gCw + _gG)).floor();
+    final r = ((p.dy - _gG) / (_gCh + _gG)).floor();
+    if (c < 0 || c >= cols || r < 0 || r >= rows) return -1;
+    final i = r * cols + c;
+    return i < count ? i : -1;
+  }
+
+  /// 放開＝落在別格就互換（照片跟取景一起換）
+  void _endDrag() {
+    final from = _dragFrom;
+    final to = _dragPos == null ? -1 : _cellAt(_dragPos!);
     setState(() {
-      final t = _order[_selCell];
-      _order[_selCell] = _order[cell];
-      _order[cell] = t;
-      final f = _fits[_selCell];
-      _fits[_selCell] = _fits[cell];
-      _fits[cell] = f;
-      _selCell = -1;
+      if (from != -1 && to != -1 && to != from) {
+        final t = _order[from];
+        _order[from] = _order[to];
+        _order[to] = t;
+        final f = _fits[from];
+        _fits[from] = _fits[to];
+        _fits[to] = f;
+      }
+      _dragFrom = -1;
+      _dragPos = null;
+      _dragOver = -1;
     });
   }
 
@@ -148,15 +205,23 @@ class _CollageScreenState extends State<CollageScreen> {
     try {
       const size = 2048.0;
       final (count, cols, rows) = _kLayouts[_layout];
-      final cw = size / cols;
-      final ch = size / rows;
+      // 跟預覽同一套排法：格線開啟時格子間（含外框）留縫
+      final g = _lines ? _gapN * size : 0.0;
+      final cw = (size - g * (cols + 1)) / cols;
+      final ch = (size - g * (rows + 1)) / rows;
       final rec = ui.PictureRecorder();
       final canvas = ui.Canvas(rec);
+      if (_lines) {
+        canvas.drawRect(
+          const ui.Rect.fromLTWH(0, 0, size, size),
+          ui.Paint()..color = ui.Color(_lineColor),
+        );
+      }
       for (var i = 0; i < count; i++) {
         final img = _images[_order[i]];
         final dst = ui.Rect.fromLTWH(
-          (i % cols) * cw,
-          (i ~/ cols) * ch,
+          g + (i % cols) * (cw + g),
+          g + (i ~/ cols) * (ch + g),
           cw,
           ch,
         );
@@ -226,12 +291,35 @@ class _CollageScreenState extends State<CollageScreen> {
     );
   }
 
+  Widget _lineSwatch(int c) {
+    final on = _lineColor == c;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: () => setState(() => _lineColor = c),
+        child: Container(
+          width: 22,
+          height: 22,
+          decoration: BoxDecoration(
+            color: Color(c),
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: on ? kSelect : kBorder,
+              width: on ? 2 : 1,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return SwipeBack(
       child: Scaffold(
         backgroundColor: kBg,
-        appBar: AppBar(backgroundColor: kBg, title: const Text('宮格拼圖')),
+        appBar: AppBar(backgroundColor: kBg, title: const Text('照片拼圖')),
         body: _layout == -1
             ? const Center(child: CircularProgressIndicator())
             : SafeArea(
@@ -257,10 +345,61 @@ class _CollageScreenState extends State<CollageScreen> {
                         ],
                       ),
                     ),
+                    // 格線開關＋顏色；開了才有間距可調
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
+                      child: Row(
+                        children: [
+                          const Text(
+                            '格線',
+                            style: TextStyle(fontSize: 12.5, color: kText),
+                          ),
+                          const SizedBox(width: 4),
+                          Switch(
+                            value: _lines,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                            onChanged: (v) => setState(() => _lines = v),
+                          ),
+                          if (_lines) ...[
+                            const SizedBox(width: 8),
+                            for (final c in const [
+                              0xFFFFFFFF,
+                              0xFF000000,
+                              0xFF9E9EA6,
+                              0xFFFFC24B,
+                              0xFFE57373,
+                              0xFF64B5F6,
+                            ])
+                              _lineSwatch(c),
+                          ],
+                        ],
+                      ),
+                    ),
+                    if (_lines)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        child: Row(
+                          children: [
+                            const Text(
+                              '間距',
+                              style: TextStyle(fontSize: 12.5, color: kTextDim),
+                            ),
+                            Expanded(
+                              child: Slider(
+                                value: _gapN,
+                                min: 0.002,
+                                max: 0.05,
+                                onChanged: (v) => setState(() => _gapN = v),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     const Padding(
                       padding: EdgeInsets.only(top: 6),
                       child: Text(
-                        '點照片可拖曳移動、雙指縮放調整；長按另一格互換',
+                        '拖曳格子互換位置；點一下選取可調構圖；長按換照片',
                         style: TextStyle(fontSize: 11, color: kTextDim),
                       ),
                     ),
@@ -289,100 +428,167 @@ class _CollageScreenState extends State<CollageScreen> {
 
   Widget _buildGrid() {
     final (count, cols, rows) = _kLayouts[_layout];
-    return Column(
-      children: [
-        for (var r = 0; r < rows; r++)
-          Expanded(
-            child: Row(
-              children: [
-                for (var c = 0; c < cols; c++)
-                  Expanded(child: _cell(r * cols + c)),
-              ],
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _cell(int i) {
-    final selected = _selCell == i;
-    final img = _images[_order[i]];
-    final fit = _fits[i];
     return LayoutBuilder(
       builder: (context, box) {
-        final cellW = box.maxWidth;
-        final cellH = box.maxHeight;
-        // 螢幕位移 → 來源像素位移的換算比
-        double dispScale() => cellW / _srcRect(img, fit, cellW / cellH).width;
-        return Listener(
-          // 雙指縮放（選取中才作用）
-          onPointerDown: (e) {
-            _pts[e.pointer] = e.position;
-            if (selected && _pts.length == 2) {
-              final p = _pts.values.toList();
-              _baseDist = (p[0] - p[1]).distance;
-              _baseZoom = fit.zoom;
-            }
-          },
-          onPointerMove: (e) {
-            if (!_pts.containsKey(e.pointer)) return;
-            _pts[e.pointer] = e.position;
-            if (selected && _baseDist != null && _pts.length >= 2) {
-              final p = _pts.values.toList();
-              final f = (p[0] - p[1]).distance / _baseDist!;
-              setState(() => fit.zoom = (_baseZoom * f).clamp(1.0, 4.0));
-            }
-          },
-          onPointerUp: (e) {
-            _pts.remove(e.pointer);
-            if (_pts.length < 2) _baseDist = null;
-          },
-          onPointerCancel: (e) {
-            _pts.remove(e.pointer);
-            if (_pts.length < 2) _baseDist = null;
-          },
-          // 桌面：滾輪縮放選取中的格子
-          onPointerSignal: (e) {
-            if (e is! PointerScrollEvent || !selected) return;
-            setState(() {
-              fit.zoom = (fit.zoom * (e.scrollDelta.dy > 0 ? 1 / 1.07 : 1.07))
-                  .clamp(1.0, 4.0);
-            });
-          },
-          child: GestureDetector(
-            onTap: () => _tapCell(i),
-            onLongPress: () => _longPressCell(i),
-            // 選取中單指拖曳＝移動照片構圖
-            onPanUpdate: !selected
-                ? null
-                : (d) {
-                    if (_pts.length >= 2) return;
-                    final k = dispScale();
-                    setState(() {
-                      fit.panX -= d.delta.dx / k;
-                      fit.panY -= d.delta.dy / k;
-                    });
-                  },
-            child: Container(
-              margin: const EdgeInsets.all(1),
-              foregroundDecoration: selected
-                  ? BoxDecoration(
-                      border: Border.all(color: kSelect, width: 2),
-                    )
-                  : null,
-              child: ClipRect(
-                child: CustomPaint(
-                  size: Size(cellW, cellH),
-                  painter: _CellPainter(
-                    img: img,
-                    src: _srcRect(img, fit, cellW / cellH),
+        final size = box.maxWidth; // 1:1 畫布
+        final g = _lines ? _gapN * size : 0.0;
+        final cw = (size - g * (cols + 1)) / cols;
+        final ch = (size - g * (rows + 1)) / rows;
+        _gG = g;
+        _gCw = cw;
+        _gCh = ch;
+        return Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Positioned.fill(
+              child: ColoredBox(
+                color: _lines ? Color(_lineColor) : Colors.transparent,
+              ),
+            ),
+            for (var i = 0; i < count; i++)
+              Positioned(
+                left: g + (i % cols) * (cw + g),
+                top: g + (i ~/ cols) * (ch + g),
+                width: cw,
+                height: ch,
+                child: _cell(i, cw, ch),
+              ),
+            // 拖曳互換中：浮起的縮圖跟著指尖走
+            if (_dragFrom != -1 && _dragPos != null)
+              Positioned(
+                left: _dragPos!.dx - cw * 0.3,
+                top: _dragPos!.dy - ch * 0.3,
+                width: cw * 0.6,
+                height: ch * 0.6,
+                child: IgnorePointer(
+                  child: Opacity(
+                    opacity: 0.85,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: kSelect, width: 2),
+                      ),
+                      child: ClipRect(
+                        child: CustomPaint(
+                          painter: _CellPainter(
+                            img: _images[_order[_dragFrom]],
+                            src: _srcRect(
+                              _images[_order[_dragFrom]],
+                              _fits[_dragFrom],
+                              cw / ch,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ),
-            ),
-          ),
+          ],
         );
       },
+    );
+  }
+
+  Widget _cell(int i, double cellW, double cellH) {
+    final selected = _selCell == i;
+    final img = _images[_order[i]];
+    final fit = _fits[i];
+    // 這格在宮格座標裡的左上角（拖曳換算指尖位置用）
+    final origin = Offset(
+      _gG + (i % _kLayouts[_layout].$2) * (_gCw + _gG),
+      _gG + (i ~/ _kLayouts[_layout].$2) * (_gCh + _gG),
+    );
+    // 螢幕位移 → 來源像素位移的換算比
+    double dispScale() => cellW / _srcRect(img, fit, cellW / cellH).width;
+    return Listener(
+      // 雙指縮放（選取中才作用）
+      onPointerDown: (e) {
+        _pts[e.pointer] = e.position;
+        if (selected && _pts.length == 2) {
+          final p = _pts.values.toList();
+          _baseDist = (p[0] - p[1]).distance;
+          _baseZoom = fit.zoom;
+        }
+      },
+      onPointerMove: (e) {
+        if (!_pts.containsKey(e.pointer)) return;
+        _pts[e.pointer] = e.position;
+        if (selected && _baseDist != null && _pts.length >= 2) {
+          final p = _pts.values.toList();
+          final f = (p[0] - p[1]).distance / _baseDist!;
+          setState(() => fit.zoom = (_baseZoom * f).clamp(1.0, 4.0));
+        }
+      },
+      onPointerUp: (e) {
+        _pts.remove(e.pointer);
+        if (_pts.length < 2) _baseDist = null;
+      },
+      onPointerCancel: (e) {
+        _pts.remove(e.pointer);
+        if (_pts.length < 2) _baseDist = null;
+      },
+      // 桌面：滾輪縮放選取中的格子
+      onPointerSignal: (e) {
+        if (e is! PointerScrollEvent || !selected) return;
+        setState(() {
+          fit.zoom = (fit.zoom * (e.scrollDelta.dy > 0 ? 1 / 1.07 : 1.07))
+              .clamp(1.0, 4.0);
+        });
+      },
+      child: GestureDetector(
+        onTap: () => _tapCell(i),
+        onLongPress: () => _longPressCell(i),
+        // 選取中單指拖曳＝移動構圖；沒選取＝拖起來跟別格互換
+        onPanStart: selected
+            ? null
+            : (d) => setState(() {
+                _dragFrom = i;
+                _dragPos = origin + d.localPosition;
+                _dragOver = i;
+              }),
+        onPanUpdate: (d) {
+          if (_pts.length >= 2) return;
+          if (selected) {
+            final k = dispScale();
+            setState(() {
+              fit.panX -= d.delta.dx / k;
+              fit.panY -= d.delta.dy / k;
+            });
+          } else if (_dragFrom == i) {
+            setState(() {
+              _dragPos = origin + d.localPosition;
+              _dragOver = _cellAt(_dragPos!);
+            });
+          }
+        },
+        onPanEnd: selected ? null : (_) => _endDrag(),
+        onPanCancel: selected
+            ? null
+            : () => setState(() {
+                _dragFrom = -1;
+                _dragPos = null;
+                _dragOver = -1;
+              }),
+        child: Container(
+          foregroundDecoration: selected
+              ? BoxDecoration(border: Border.all(color: kSelect, width: 2))
+              : (_dragFrom != -1 && _dragOver == i && _dragFrom != i)
+              ? BoxDecoration(
+                  border: Border.all(color: kSelect, width: 2.5),
+                  color: kSelect.withValues(alpha: 0.15),
+                )
+              : null,
+          child: ClipRect(
+            child: CustomPaint(
+              size: Size(cellW, cellH),
+              painter: _CellPainter(
+                img: img,
+                src: _srcRect(img, fit, cellW / cellH),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

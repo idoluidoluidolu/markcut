@@ -54,6 +54,7 @@ class _PickTile extends StatelessWidget {
               if (hint != null) ...[
                 const SizedBox(height: 2),
                 Text(hint!,
+                    textAlign: TextAlign.center,
                     style: const TextStyle(fontSize: 11, color: kTextDim)),
               ],
             ],
@@ -185,8 +186,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 const SizedBox(height: 10),
                 const _PickTile(
                     icon: Icons.grid_view,
-                    label: '宮格拼圖',
-                    hint: '多張照片拼成一張（2/4/6/9 宮格）',
+                    label: '照片拼圖',
+                    hint: '多張照片拼成一張 (2/4/6/9 宮格)',
                     kind: _PickKind.collage),
               ],
             ),

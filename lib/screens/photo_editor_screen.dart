@@ -88,6 +88,25 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 疊在主浮水印上面，可各自拖曳、獨立刪除
   final List<WatermarkSettings> _extraWms = [];
 
+  /// 選取中的「浮水印＋」：第幾組、哪個部件（-1 = 沒有）。
+  /// 跟主浮水印／馬賽克互斥（單一選取）
+  int _selExtra = -1;
+  WmPart _selExtraPart = WmPart.none;
+
+  /// 被選的額外浮水印部件是否還活著（同 _wmPartAlive 的理由）
+  WmPart _extraPartAlive(int i) {
+    if (_selExtra != i || i < 0 || i >= _extraWms.length) return WmPart.none;
+    final t = _extraWms[i].text;
+    final lg = _extraWms[i].logo;
+    return switch (_selExtraPart) {
+      WmPart.text
+          when t.enabled && !t.tiled && t.text.trim().isNotEmpty =>
+        WmPart.text,
+      WmPart.logo when lg.enabled && !lg.tiled => WmPart.logo,
+      _ => WmPart.none,
+    };
+  }
+
   /// 預覽用 shader 程式（真像素塊）；載不到就退回霧化。
   /// 存「程式」不存實例：多塊馬賽克同幀各建各的實例，
   /// 共用實例會讓後設定的參數蓋掉前面的
@@ -170,6 +189,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       // 選取殘留會讓拖曳整個變死的
       _wmPart = WmPart.none;
       _selMosaic = -1;
+      _selExtra = -1;
       _sync++;
     });
   }
@@ -274,6 +294,19 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 文字、字體、顏色、大小…全都能改，改動即時反映在預覽上
   void _editExtraWm(int i) {
     if (i < 0 || i >= _extraWms.length) return;
+    // 開編輯＝選取這一組（預覽上畫白框），跟其他選取互斥
+    setState(() {
+      _selExtra = i;
+      if (_extraPartAlive(i) == WmPart.none) {
+        final t = _extraWms[i].text;
+        _selExtraPart =
+            (t.enabled && !t.tiled && t.text.trim().isNotEmpty)
+            ? WmPart.text
+            : WmPart.logo;
+      }
+      _wmPart = WmPart.none;
+      _selMosaic = -1;
+    });
     var pushed = false;
     showModalBottomSheet(
       context: context,
@@ -325,12 +358,26 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                     style: const TextStyle(fontSize: 12.5, color: kText),
                   ),
                 ),
+                // 明顯的「可編輯」提示：鉛筆＋文字
+                TextButton.icon(
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    foregroundColor: kSelect,
+                  ),
+                  onPressed: () => _editExtraWm(i),
+                  icon: const Icon(Icons.edit_outlined, size: 15),
+                  label: const Text('編輯', style: TextStyle(fontSize: 12)),
+                ),
                 IconButton(
                   tooltip: '刪除這組',
                   visualDensity: VisualDensity.compact,
                   onPressed: () {
                     _pushUndo();
-                    setState(() => _extraWms.removeAt(i));
+                    setState(() {
+                      _extraWms.removeAt(i);
+                      _selExtra = -1;
+                    });
                   },
                   icon: const Icon(
                     Icons.delete_outline,
@@ -405,6 +452,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             onTap: () => setState(() {
               _selMosaic = i;
               _wmPart = WmPart.none;
+              _selExtra = -1;
             }),
             borderRadius: BorderRadius.circular(8),
             child: Row(
@@ -437,6 +485,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                     setState(() {
                       _selMosaic = i;
                       _wmPart = WmPart.none;
+                      _selExtra = -1;
                     });
                     _editMosaic(i);
                   },
@@ -536,6 +585,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                 setState(() {
                   _selMosaic = i;
                   _wmPart = WmPart.none;
+                  _selExtra = -1;
                 });
               }
             },
@@ -546,6 +596,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               setState(() {
                 _selMosaic = i;
                 _wmPart = WmPart.none;
+                _selExtra = -1;
               });
             },
             onPanUpdate: (d) {
@@ -594,6 +645,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       _mosaics.add(PhotoMosaic());
       _selMosaic = _mosaics.length - 1;
       _wmPart = WmPart.none;
+      _selExtra = -1;
     });
     showHint(context, '拖曳調整位置，再點一下可調樣式與大小');
   }
@@ -1113,10 +1165,13 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                         //（不取消的話另一個部件會永遠拖不動）
                         onTap: () {
                           FocusManager.instance.primaryFocus?.unfocus();
-                          if (_wmPart != WmPart.none || _selMosaic != -1) {
+                          if (_wmPart != WmPart.none ||
+                              _selMosaic != -1 ||
+                              _selExtra != -1) {
                             setState(() {
                               _wmPart = WmPart.none;
                               _selMosaic = -1;
+                              _selExtra = -1;
                             });
                           }
                         },
@@ -1167,15 +1222,27 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                   onSelectPart: (p) => setState(() {
                                     _wmPart = p;
                                     _selMosaic = -1;
+                                    _selExtra = -1;
                                   }),
                                   panLocked: () => _pvPts.length >= 2,
                                 ),
-                                // 更多浮水印：一組一層疊上去，各自拖曳
-                                for (final e in _extraWms)
+                                // 更多浮水印：一組一層疊上去，各自拖曳；
+                                // 點一下＝選取（白框）＋直接開編輯面板
+                                for (var i = 0; i < _extraWms.length; i++)
                                   WatermarkLayer(
-                                    settings: e,
+                                    settings: _extraWms[i],
                                     onChanged: () => setState(() {}),
                                     onDragStart: _pushUndo,
+                                    selectedPart: _extraPartAlive(i),
+                                    onSelectPart: (p) {
+                                      setState(() {
+                                        _selExtra = i;
+                                        _selExtraPart = p;
+                                        _wmPart = WmPart.none;
+                                        _selMosaic = -1;
+                                      });
+                                      _editExtraWm(i);
+                                    },
                                     panLocked: () => _pvPts.length >= 2,
                                   ),
                                 // 置中輔助線（路由/馬賽克拖曳吸中線時）
