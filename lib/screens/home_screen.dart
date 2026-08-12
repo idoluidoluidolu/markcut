@@ -332,10 +332,10 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // logo 放在上約三分之一處（不是正中央）並放大：
-              // 正中央在視覺上最無趣，重心偏上一點才穩，
-              // 下面留白留給動作按鈕。上下 Spacer 的比例就是它的高度位置
-              const Spacer(flex: 22),
+              // logo 的高度位置＝上下這兩個 Spacer 的比例。
+              // 按鈕群本來就佔掉底部一大塊，所以「上下等分」看起來
+              // 已經略偏上了；再往上拉會變頭重腳輕
+              const Spacer(flex: 38),
               Center(
                 child: SizedBox(
                   width: 190,
@@ -359,7 +359,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
-              const Spacer(flex: 48),
+              const Spacer(flex: 32),
               // 三個動作全部靠底
               _HomeButton(
                 primary: true,
