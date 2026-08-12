@@ -309,30 +309,109 @@ class _CollageScreenState extends State<CollageScreen> {
     }
   }
 
+  /// 設定卡（版本 B）：左標籤右內容，「版型」「格線」兩列一張卡
+  Widget _settingsCard() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: kPanel,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: kBorder),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              const SizedBox(
+                width: 40,
+                child: Text(
+                  '版型',
+                  style: TextStyle(fontSize: 12, color: kTextDim),
+                ),
+              ),
+              for (var i = 0; i < _kLayouts.length; i++) _layoutChip(i),
+            ],
+          ),
+          Container(
+            height: 1,
+            margin: const EdgeInsets.symmetric(vertical: 8),
+            color: kBorder,
+          ),
+          Row(
+            children: [
+              const SizedBox(
+                width: 40,
+                child: Text(
+                  '格線',
+                  style: TextStyle(fontSize: 12, color: kTextDim),
+                ),
+              ),
+              SizedBox(
+                width: 42,
+                height: 26,
+                child: FittedBox(
+                  fit: BoxFit.contain,
+                  child: Switch(
+                    value: _lines,
+                    onChanged: (v) => setState(() => _lines = v),
+                  ),
+                ),
+              ),
+              if (_lines) ...[
+                const SizedBox(width: 8),
+                for (final c in const [
+                  0xFFFFFFFF,
+                  0xFF000000,
+                  0xFF9E9EA6,
+                  0xFFFFC24B,
+                  0xFFE57373,
+                  0xFF64B5F6,
+                ])
+                  _lineSwatch(c),
+                Expanded(
+                  child: SizedBox(
+                    height: 30,
+                    child: Slider(
+                      value: _gapN,
+                      min: 0.002,
+                      max: 0.05,
+                      onChanged: (v) => setState(() => _gapN = v),
+                    ),
+                  ),
+                ),
+              ] else
+                const Spacer(),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _layoutChip(int i) {
     final (count, _, _) = _kLayouts[i];
     final on = _layout == i;
     return Expanded(
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 3),
         child: InkWell(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(8),
           onTap: () => _setLayout(i),
           child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 10),
+            padding: const EdgeInsets.symmetric(vertical: 7),
             alignment: Alignment.center,
             decoration: BoxDecoration(
               color: on ? kSelect.withValues(alpha: 0.18) : Colors.transparent,
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(8),
               border: Border.all(
-                color: on ? kSelect : kBorder,
+                color: on ? kSelect : kClipBorder,
                 width: on ? 1.5 : 1,
               ),
             ),
             child: Text(
-              '$count 宮格',
+              '$count',
               style: TextStyle(
-                fontSize: 12.5,
+                fontSize: 12,
                 fontWeight: on ? FontWeight.w700 : FontWeight.w400,
                 color: on ? kSelect : kText,
               ),
@@ -346,13 +425,13 @@ class _CollageScreenState extends State<CollageScreen> {
   Widget _lineSwatch(int c) {
     final on = _lineColor == c;
     return Padding(
-      padding: const EdgeInsets.only(right: 8),
+      padding: const EdgeInsets.only(right: 7),
       child: InkWell(
         customBorder: const CircleBorder(),
         onTap: () => setState(() => _lineColor = c),
         child: Container(
-          width: 22,
-          height: 22,
+          width: 16,
+          height: 16,
           decoration: BoxDecoration(
             color: Color(c),
             shape: BoxShape.circle,
@@ -389,84 +468,9 @@ class _CollageScreenState extends State<CollageScreen> {
                       ),
                     ),
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
-                      child: Row(
-                        children: [
-                          for (var i = 0; i < _kLayouts.length; i++)
-                            _layoutChip(i),
-                        ],
-                      ),
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+                      child: _settingsCard(),
                     ),
-                    // 格線開關＋顏色；樣式跟上面的宮格選擇一致
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-                      child: Row(
-                        children: [
-                          InkWell(
-                            borderRadius: BorderRadius.circular(10),
-                            onTap: () => setState(() => _lines = !_lines),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 10,
-                              ),
-                              decoration: BoxDecoration(
-                                color: _lines
-                                    ? kSelect.withValues(alpha: 0.18)
-                                    : Colors.transparent,
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(
-                                  color: _lines ? kSelect : kBorder,
-                                  width: _lines ? 1.5 : 1,
-                                ),
-                              ),
-                              child: Text(
-                                '格線',
-                                style: TextStyle(
-                                  fontSize: 12.5,
-                                  fontWeight: _lines
-                                      ? FontWeight.w700
-                                      : FontWeight.w400,
-                                  color: _lines ? kSelect : kText,
-                                ),
-                              ),
-                            ),
-                          ),
-                          if (_lines) ...[
-                            const SizedBox(width: 12),
-                            for (final c in const [
-                              0xFFFFFFFF,
-                              0xFF000000,
-                              0xFF9E9EA6,
-                              0xFFFFC24B,
-                              0xFFE57373,
-                              0xFF64B5F6,
-                            ])
-                              _lineSwatch(c),
-                          ],
-                        ],
-                      ),
-                    ),
-                    if (_lines)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 20),
-                        child: Row(
-                          children: [
-                            const Text(
-                              '間距',
-                              style: TextStyle(fontSize: 12.5, color: kTextDim),
-                            ),
-                            Expanded(
-                              child: Slider(
-                                value: _gapN,
-                                min: 0.002,
-                                max: 0.05,
-                                onChanged: (v) => setState(() => _gapN = v),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
                     const Padding(
                       padding: EdgeInsets.only(top: 6),
                       child: Text(
