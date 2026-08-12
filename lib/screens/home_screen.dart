@@ -340,11 +340,21 @@ class _HomeScreenState extends State<HomeScreen> {
                     width: 150,
                     height: 60,
                     // 透明背景版 logo：直接融進近黑背景，不用底板
-                    // （icon_foreground.png 是啟動圖示前景，別共用）
-                    child: Image.asset(
-                      'assets/icon/home_logo.png',
-                      fit: BoxFit.cover, // 裁掉原圖四周的留白
-                      filterQuality: FilterQuality.medium,
+                    // （icon_foreground.png 是啟動圖示前景，別共用）。
+                    // 再壓暗一階（0.85）讓它更沉進背景，不跟下面的
+                    // 白色主按鈕搶注意力——改這個數字就能微調亮度
+                    child: ColorFiltered(
+                      colorFilter: const ColorFilter.matrix(<double>[
+                        0.85, 0, 0, 0, 0, //
+                        0, 0.85, 0, 0, 0, //
+                        0, 0, 0.85, 0, 0, //
+                        0, 0, 0, 1, 0, //
+                      ]),
+                      child: Image.asset(
+                        'assets/icon/home_logo.png',
+                        fit: BoxFit.cover, // 裁掉原圖四周的留白
+                        filterQuality: FilterQuality.medium,
+                      ),
                     ),
                   ),
                 ),
