@@ -7,7 +7,6 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../theme.dart';
-import '../widgets/swipe_back.dart';
 import 'photo_editor_screen.dart';
 
 /// 宮格拼圖：把多張照片拼成一張（2/4/6/9 宮格），
@@ -459,8 +458,8 @@ class _CollageScreenState extends State<CollageScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return SwipeBack(
-      child: Scaffold(
+    // 不包 SwipeBack：拖曳格子互換會誤觸右滑返回、被踢回首頁
+    return Scaffold(
         backgroundColor: kBg,
         appBar: AppBar(backgroundColor: kBg, title: const Text('照片拼圖')),
         body: _layout == -1
@@ -509,7 +508,6 @@ class _CollageScreenState extends State<CollageScreen> {
                   ],
                 ),
               ),
-      ),
     );
   }
 
