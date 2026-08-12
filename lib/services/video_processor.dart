@@ -4,14 +4,27 @@ import 'dart:typed_data';
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
 
-/// 匯出解析度選項
-enum ExportResolution { original, uhd4k, fhd1080 }
+/// 匯出解析度選項。
+/// 用「畫質等級」而不是 4K／1080P 這種絕對名稱：素材本身沒那麼大時
+/// 不會放大（放大不會更清晰，只會讓檔案變大、匯出變慢），
+/// 所以掛絕對數字的選項常常算出跟原始一模一樣的尺寸，選了也沒反應。
+/// 等級講的是「相對原片縮多少」，永遠三個選項而且永遠有意義
+enum ExportResolution { original, fhd1080, hd720 }
 
 extension ExportResolutionLabel on ExportResolution {
+  /// 用「尺寸」而不是「畫質」講：下面還有一個獨立的「畫質」設定
+  /// （標準／極高／最高），兩邊都叫畫質的話同一頁會出現兩個「最高」
   String get label => switch (this) {
-        ExportResolution.original => '原始解析度',
-        ExportResolution.uhd4k => '4K',
-        ExportResolution.fhd1080 => '1080P',
+        ExportResolution.original => '原尺寸',
+        ExportResolution.fhd1080 => '縮小',
+        ExportResolution.hd720 => '最小',
+      };
+
+  /// 選單裡的一句說明（尺寸另外由呼叫端算）
+  String get hint => switch (this) {
+        ExportResolution.original => '跟原片一樣',
+        ExportResolution.fhd1080 => '檔案小一半左右',
+        ExportResolution.hd720 => '匯出速度最快',
       };
 }
 
@@ -139,9 +152,10 @@ class ExportSpec {
 
   int targetLong = switch (res) {
     ExportResolution.original => maxLong,
-    ExportResolution.uhd4k => 3840,
     ExportResolution.fhd1080 => 1920,
+    ExportResolution.hd720 => 1280,
   };
+  // 只縮不放：素材沒那麼大時放大不會更清晰，只是白白變大變慢
   if (targetLong > maxLong) targetLong = maxLong;
 
   var aspect = ratio.value ?? base.aspect; // 寬/高

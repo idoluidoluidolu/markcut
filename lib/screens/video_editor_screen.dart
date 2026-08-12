@@ -399,6 +399,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       'speed': _speed,
       'ratio': _canvasRatio.index,
       'res': _resolution.index,
+      'resV': 2, // 解析度選項的語意版本（見 _loadDraft 的換算）
       'quality': _quality.index,
       'wm': _settings.toJson(),
       'wmStart': _wmStart,
@@ -450,8 +451,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _speed = ((j['speed'] ?? 1.0) as num).toDouble();
     _canvasRatio = CanvasRatio
         .values[((j['ratio'] ?? 0) as int) % CanvasRatio.values.length];
-    _resolution = ExportResolution
-        .values[((j['res'] ?? 0) as int) % ExportResolution.values.length];
+    // 解析度選項從「原始／4K／1080P」改成畫質等級後索引語意變了。
+    // 舊草稿沒有 resV 標記，照舊語意換算過來（4K 當年算出來就等於原始），
+    // 不換的話使用者的草稿會被悄悄降成更低的畫質
+    final rawRes = (j['res'] ?? 0) as int;
+    final resIdx = ((j['resV'] ?? 1) as int) >= 2
+        ? rawRes
+        : switch (rawRes) {
+            1 => 0, // 4K → 最高畫質
+            2 => 1, // 1080P → 高畫質
+            _ => 0,
+          };
+    _resolution =
+        ExportResolution.values[resIdx % ExportResolution.values.length];
     _quality = ExportQuality
         .values[((j['quality'] ?? 0) as int) % ExportQuality.values.length];
     if (j['wm'] != null) {
@@ -5808,9 +5820,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         row('畫面比例', _canvasRatio.label, _openRatioSheet),
         row(
           '解析度',
-          _resolution == ExportResolution.original
-              ? '$outW×$outH'
-              : '${_resolution.label}・$outW×$outH',
+          '${_resolution.label}・$outW×$outH',
           _openResolutionSheet,
         ),
         row('畫質', _quality.label, _openQualitySheet),
@@ -5905,9 +5915,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 Builder(
                   builder: (context) {
                     final (w, h) = computeCanvasSize(_tl, r, _canvasRatio);
+                    final (ow, oh) = computeCanvasSize(
+                      _tl,
+                      ExportResolution.original,
+                      _canvasRatio,
+                    );
+                    // 素材本身就比這一級小的時候，縮不下去＝跟原片同尺寸，
+                    // 這種情況直接講白，不要讓人以為選了沒反應
+                    final same =
+                        r != ExportResolution.original && w == ow && h == oh;
                     return _optionRow(
                       title: r.label,
-                      subtitle: '$w×$h',
+                      subtitle: same
+                          ? '$w×$h・原片就這麼大，不會再縮'
+                          : '$w×$h・${r.hint}',
                       selected: _resolution == r,
                       first: i == 0,
                       onTap: () {
