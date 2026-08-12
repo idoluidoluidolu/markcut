@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/feedback_api.dart';
+import '../services/store_links.dart';
 import '../theme.dart';
 import 'about_screen.dart' show kAppVersion;
 
@@ -62,6 +63,13 @@ class _FeedbackFormState extends State<_FeedbackForm> {
     }
     Navigator.pop(context);
     showHint(context, '收到了，謝謝你的回饋！');
+  }
+
+  /// 不關對話框：使用者可能只是去看一眼，回來還想把表單填完
+  Future<void> _openThreads() async {
+    final ok = await openThreads();
+    if (!mounted || ok) return;
+    showHint(context, '開不了 Threads，我的帳號是 @$kThreadsHandle', error: true);
   }
 
   @override
@@ -136,6 +144,34 @@ class _FeedbackFormState extends State<_FeedbackForm> {
                       fontWeight: FontWeight.w700,
                     ),
                   ),
+          ),
+          // 分成兩條路：填表單、或直接私訊。
+          // 用「或」的分隔線講清楚，不然兩顆按鈕擺一起會不知道該按哪個
+          const SizedBox(height: 14),
+          const Row(
+            children: [
+              Expanded(child: Divider(color: kBorder, height: 1)),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: 10),
+                child: Text(
+                  '或',
+                  style: TextStyle(fontSize: 11, color: kTextDim),
+                ),
+              ),
+              Expanded(child: Divider(color: kBorder, height: 1)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            onPressed: _sending ? null : _openThreads,
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size.fromHeight(44),
+              foregroundColor: kText,
+              side: const BorderSide(color: kClipBorder),
+              shape: const StadiumBorder(),
+            ),
+            icon: const Icon(Icons.alternate_email, size: 16),
+            label: const Text('直接密我 Threads', style: TextStyle(fontSize: 13)),
           ),
           const SizedBox(height: 4),
           TextButton(

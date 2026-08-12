@@ -3,6 +3,22 @@ import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:url_launcher/url_launcher.dart';
 
+/// 作者的 Threads 帳號（意見回饋裡的「直接密我」用）
+const kThreadsHandle = 'twconcertview';
+
+/// 開作者的 Threads。裝了 Threads App 的話系統會直接接手開 App，
+/// 沒裝就落到瀏覽器
+Future<bool> openThreads() async {
+  try {
+    return await launchUrl(
+      Uri.parse('https://www.threads.net/@$kThreadsHandle'),
+      mode: LaunchMode.externalApplication,
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
 /// 「留己看」的 App Store ID
 const kLiuJiKanIosId = '6787609932';
 
