@@ -259,8 +259,12 @@ class _CollageScreenState extends State<CollageScreen> {
       return;
     }
     setState(() => _building = true);
+    // 讓「合成中…」先畫出來再開始重活（PNG 編碼在 web 會卡主執行緒）
+    await Future<void>.delayed(const Duration(milliseconds: 40));
     try {
-      const size = 2048.0;
+      // 1600：跟 2048 肉眼看不出差，但編碼＋解碼快 2.6 倍左右，
+      // 進編輯器不會卡那麼久
+      const size = 1600.0;
       final (count, cols, rows) = _kLayouts[_layout];
       // 跟預覽同一套排法：照片貼齊排滿，格線最後疊上去畫
       final cw = size / cols;
