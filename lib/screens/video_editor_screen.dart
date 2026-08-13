@@ -6396,7 +6396,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               ),
               if (onTap != null) ...[
                 const SizedBox(width: 3),
-                const Icon(Icons.chevron_right, size: 15, color: kIcon),
+                const Icon(Icons.chevron_right, size: 13, color: kIcon),
               ],
             ],
           ),
