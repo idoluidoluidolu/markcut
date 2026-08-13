@@ -1026,12 +1026,6 @@ class _TimelineEditorState extends State<TimelineEditor> {
       muted: widget.mutedTracks.contains(t),
       isVoice: isVoice,
       isRecording: isVoice && widget.voiceRecording,
-      // 選中的片段在這一軌、或整條軌被選取 → 左邊標籤亮起來
-      hasSelection:
-          widget.selectedTrack == t ||
-          timeline.clips.any(
-            (c) => c.id == widget.selectedId && c.track == t,
-          ),
       isDragging: _dragTrack == t,
       dragDy: _dragTrack == t ? _dragDy : 0,
       maxTrack: timeline.usedTracks - 1,
@@ -1390,8 +1384,10 @@ class _TrackLabel extends StatefulWidget {
   final bool isVoice; // 旁白軌：標籤變紅色錄音鈕
   final bool isRecording;
 
-  /// 選中的片段在這一軌：標籤亮起來，暗示選取落在哪一層
-  final bool hasSelection;
+  // 標籤刻意「不」顯示選取狀態：點它是靜音，不是選取，
+  // 亮個選取框只會讓人以為整條軌被選起來了。
+  // 真的要看選取落在哪：片段自己在時間軸上有白框，
+  // 整條軌被選為貼上目標時是那一列亮框（見 _trackRow）
   final bool isDragging;
   final double dragDy;
   final int maxTrack;
@@ -1411,7 +1407,6 @@ class _TrackLabel extends StatefulWidget {
     this.muted = false,
     this.isVoice = false,
     this.isRecording = false,
-    this.hasSelection = false,
     required this.isDragging,
     required this.dragDy,
     required this.maxTrack,
@@ -1441,7 +1436,6 @@ class _TrackLabelState extends State<_TrackLabel> {
 
   @override
   Widget build(BuildContext context) {
-    final amber = widget.isDragging || widget.hasSelection;
     final label = Container(
       height: widget.height,
       margin: const EdgeInsets.only(right: 6),
@@ -1451,10 +1445,8 @@ class _TrackLabelState extends State<_TrackLabel> {
         border: Border.all(
           color: widget.isVoice
               ? const Color(0xFFFF3B30)
-              : (widget.isDragging || widget.hasSelection ? kSelect : kBorder),
-          width: (widget.isDragging || widget.isVoice || widget.hasSelection)
-              ? 2
-              : 1,
+              : (widget.isDragging ? kSelect : kBorder),
+          width: (widget.isDragging || widget.isVoice) ? 2 : 1,
         ),
         boxShadow: widget.isDragging
             ? [
@@ -1488,7 +1480,10 @@ class _TrackLabelState extends State<_TrackLabel> {
                     ? Icons.add
                     : (widget.muted ? Icons.volume_off : Icons.volume_up),
                 size: 15,
-                color: widget.muted ? kSelect : (amber ? kSelect : kTextDim),
+                // 只有「靜音」和「拖曳中」需要跳出來，其他一律低調
+                color: widget.muted
+                    ? kSelect
+                    : (widget.isDragging ? kSelect : kTextDim),
               ),
       ),
     );
