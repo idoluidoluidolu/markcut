@@ -1548,7 +1548,18 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                         onLogoAdded: () =>
                             setState(() => _wmPart = WmPart.logo),
                         // 馬賽克/更多浮水印卡：插在圖片卡下面（照片模式限定）
-                        extraSections: [_mosaicSection(), _extraWmSection()],
+                        extraSections: [
+                          (
+                            label: '馬賽克',
+                            icon: Icons.blur_on,
+                            child: _mosaicSection(),
+                          ),
+                          (
+                            label: '更多浮水印',
+                            icon: Icons.branding_watermark,
+                            child: _extraWmSection(),
+                          ),
+                        ],
                       ),
                     },
                   ),

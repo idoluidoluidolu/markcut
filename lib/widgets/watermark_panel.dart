@@ -3,6 +3,8 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart'
+    show RenderAbstractViewport, ScrollCacheExtent;
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -10,6 +12,13 @@ import '../models/watermark_settings.dart';
 import '../services/preset_store.dart';
 import '../theme.dart';
 import 'watermark_layer.dart';
+
+/// 父層注入的額外區塊。置頂導覽列要列出它，所以不能只給 Widget——
+/// 名稱和圖示也要一起帶進來
+typedef WmExtraSection = ({String label, IconData icon, Widget child});
+
+/// 導覽列上的一格
+typedef _NavItem = ({String label, IconData icon, GlobalKey key});
 
 /// 讓父層叫面板捲到某個設定區塊：點畫面上的浮水印文字，
 /// 下面的面板就自動捲到「文字」那張卡。
@@ -65,7 +74,7 @@ class WatermarkPanel extends StatefulWidget {
 
   /// 額外區塊：插在「圖片」卡片之後、「儲存範本」之前，
   /// 一個區塊包成一張卡。照片編輯器拿來放「馬賽克」與「更多浮水印」
-  final List<Widget> extraSections;
+  final List<WmExtraSection> extraSections;
 
   /// 父層用它叫面板捲到文字／圖片區塊
   final WatermarkPanelController? controller;
@@ -107,6 +116,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     _presetSel = widget.initialPresetName;
     _loadPresets();
     widget.controller?.addListener(_onScrollRequest);
+    _scroll.addListener(_spySection);
     // 請求可能在這個 State 出生之前就發出了（點浮水印的同時
     // 才切到浮水印分頁／才換編輯目標），一掛上就先看有沒有待辦
     _onScrollRequest();
@@ -134,6 +144,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   @override
   void dispose() {
     widget.controller?.removeListener(_onScrollRequest);
+    _scroll.removeListener(_spySection);
     _textCtrl.dispose();
     _scroll.dispose();
     super.dispose();
@@ -356,12 +367,121 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   /// 文字／圖片卡的位置：點畫面上的浮水印時捲過去
   final _textCardKey = GlobalKey();
   final _logoCardKey = GlobalKey();
+  final _posCardKey = GlobalKey();
+  final List<GlobalKey> _extraKeys = [];
   final _scroll = ScrollController();
+
+  /// 導覽列目前高亮第幾格
+  int _navAt = 0;
+
+  /// 這一輪畫出來的導覽項目（捲動時要用，所以存起來）
+  List<_NavItem> _nav = const [];
+
+  /// 捲到哪一區就高亮哪一格。
+  /// 判斷方式是「這一區的頂端已經捲過導覽列了」，取符合的最後一個
+  void _spySection() {
+    if (!_scroll.hasClients || _nav.isEmpty) return;
+    final line = _scroll.offset + 48;
+    var idx = 0;
+    for (var i = 0; i < _nav.length; i++) {
+      final ctx = _nav[i].key.currentContext;
+      if (ctx == null) continue;
+      final box = ctx.findRenderObject();
+      if (box is! RenderBox) continue;
+      final vp = RenderAbstractViewport.maybeOf(box);
+      if (vp == null) continue;
+      if (vp.getOffsetToReveal(box, 0.0).offset <= line) idx = i;
+    }
+    if (idx != _navAt && mounted) setState(() => _navAt = idx);
+  }
+
+  void _jumpToSection(int i) {
+    final ctx = _nav[i].key.currentContext;
+    if (ctx == null) return;
+    setState(() => _navAt = i);
+    Scrollable.ensureVisible(
+      ctx,
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  /// 置頂導覽列：圖示＋文字，跟 App 其他工具列同一種長相
+  Widget _sectionNav() => Container(
+        decoration: const BoxDecoration(
+          color: kPanel,
+          border: Border(bottom: BorderSide(color: kBorder)),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        child: Row(
+          children: [
+            for (var i = 0; i < _nav.length; i++)
+              Expanded(
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () => _jumpToSection(i),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 5),
+                    decoration: BoxDecoration(
+                      color: i == _navAt ? kPanelHi : Colors.transparent,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(_nav[i].icon,
+                            size: 17,
+                            color: i == _navAt ? kText : kTextDim),
+                        const SizedBox(height: 3),
+                        Text(_nav[i].label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontSize: 10.5,
+                                color: i == _navAt ? kText : kTextDim)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      );
 
   @override
   Widget build(BuildContext context) {
+    // 每一輪重算導覽項目：不同畫面的區塊本來就不一樣
+    //（影片多動畫、照片多馬賽克與更多浮水印）
+    while (_extraKeys.length < widget.extraSections.length) {
+      _extraKeys.add(GlobalKey());
+    }
+    _nav = [
+      (label: '位置', icon: Icons.grid_view, key: _posCardKey),
+      if (widget.showAnimation)
+        (label: '動畫', icon: Icons.auto_awesome, key: _animCardKey),
+      (label: '文字', icon: Icons.title, key: _textCardKey),
+      (label: '圖片', icon: Icons.image_outlined, key: _logoCardKey),
+      for (var i = 0; i < widget.extraSections.length; i++)
+        (
+          label: widget.extraSections[i].label,
+          icon: widget.extraSections[i].icon,
+          key: _extraKeys[i],
+        ),
+    ];
+    return Column(
+      children: [
+        _sectionNav(),
+        Expanded(child: _list()),
+      ],
+    );
+  }
+
+  Widget _list() {
     return ListView(
       controller: _scroll,
+      // 全部卡片都留著不要回收：導覽列要量每一區的位置，
+      // 沒建出來的區塊量不到，跳過去也跳不動（總共才七八張卡，不貴）
+      scrollCacheExtent: const ScrollCacheExtent.pixels(3000),
       // 往下滑清單就收鍵盤（打完字回不去的解法）
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
@@ -395,7 +515,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         const SizedBox(height: 10),
 
         // ===== 卡片 1：位置 =====
-        _card(_bigPosGrid()),
+        KeyedSubtree(key: _posCardKey, child: _card(_bigPosGrid())),
 
         // ===== 動畫（影片專用）=====
         if (widget.showAnimation)
@@ -772,7 +892,11 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         ),
 
         // ===== 父層注入的額外區塊（照片編輯器的馬賽克/更多浮水印）=====
-        for (final sec in widget.extraSections) _card(sec),
+        for (var i = 0; i < widget.extraSections.length; i++)
+          KeyedSubtree(
+            key: _extraKeys[i],
+            child: _card(widget.extraSections[i].child),
+          ),
 
         // ===== 儲存範本（更新選中的範本，或另存新範本）=====
         // 照片編輯器把這顆移到底部跟「輸出」並排，所以這裡可隱藏
