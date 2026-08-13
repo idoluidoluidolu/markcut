@@ -64,12 +64,22 @@ class MarkCutApp extends StatelessWidget {
         debugShowCheckedModeBanner: false,
         showPerformanceOverlay: perf,
         theme: buildStudioTheme(),
-        // 點任何非輸入元件的地方就收鍵盤（全 App 生效）。
-        // translucent＋不吃掉事件：底下的按鈕照樣正常反應
-        builder: (context, child) => GestureDetector(
-          behavior: HitTestBehavior.translucent,
-          onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
-          child: child,
+        builder: (context, child) => MediaQuery.withClampedTextScaling(
+          // 系統字級最多吃到 1.2 倍。
+          //
+          // 這是剪輯 App，版面密度很高：時間軸、匯出頁、浮水印面板
+          // 都是一行擠好幾個數值。完全放行的話開到 1.4 倍以上版面
+          // 就會擠爆甚至被切掉，設計稿也永遠對不上（稿是 1.0 畫的）。
+          // 1.2 是「看得出放大了、但版面撐得住」的界線。
+          // 要完全尊重系統設定就把這一層拿掉
+          maxScaleFactor: 1.2,
+          // 點任何非輸入元件的地方就收鍵盤（全 App 生效）。
+          // translucent＋不吃掉事件：底下的按鈕照樣正常反應
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+            child: child,
+          ),
         ),
         home: const HomeScreen(),
       ),
