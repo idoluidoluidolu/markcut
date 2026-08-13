@@ -99,6 +99,9 @@ class TimelineEditor extends StatefulWidget {
   final ValueChanged<double> onMoveWm; // 新的起點
   final void Function(double deltaSec, bool fromLeft) onTrimWm;
 
+  /// 浮水印修剪手勢開始（重置吸附用的原始邊緣、拍復原快照）
+  final VoidCallback? onTrimWmStart;
+
   /// 點軌道空白處＝選取整條軌道（貼上的目標）
   final ValueChanged<int>? onTapTrack;
 
@@ -152,6 +155,7 @@ class TimelineEditor extends StatefulWidget {
     this.onSelectWmDrag,
     required this.onMoveWm,
     required this.onTrimWm,
+    this.onTrimWmStart,
     this.onTapTrack,
     this.onDeleteTrack,
     this.selectedTrack = -1,
@@ -937,6 +941,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
                         child: _TrimHandle(
                           isLeft: true,
                           onDrag: (dxSec) => widget.onTrimWm(dxSec, true),
+                          onStart: widget.onTrimWmStart,
                           pxPerSec: pxPerSec,
                         ),
                       ),
@@ -945,6 +950,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
                         child: _TrimHandle(
                           isLeft: false,
                           onDrag: (dxSec) => widget.onTrimWm(dxSec, false),
+                          onStart: widget.onTrimWmStart,
                           pxPerSec: pxPerSec,
                         ),
                       ),
@@ -1130,9 +1136,6 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
   }
   if (src.kind == ClipKind.wm) {
     return overlayLabel(kPanelHi, Icons.branding_watermark, src.name);
-  }
-  if (src.kind == ClipKind.image && strip.isNotEmpty) {
-    return Image.memory(strip[0], fit: BoxFit.cover, gaplessPlayback: true);
   }
   if (strip.isEmpty) {
     return Container(

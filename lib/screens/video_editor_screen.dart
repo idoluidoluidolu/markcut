@@ -159,7 +159,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (v) _selValue = -1;
   }
 
-  double get _wmEndEff => (_wmEnd ?? _tl.duration).clamp(0.0, _tl.duration);
+  double get _wmEndEff {
+    final e = (_wmEnd ?? _tl.duration).clamp(0.0, _tl.duration);
+    // 空白專案剛進來時時間軸長度是 0。那時候碰過浮水印，會把
+    // 「跟到結尾」(null) 寫死成 0 長度，之後匯入素材也拉不開。
+    // 修剪本身有 0.3 秒的最短限制，所以「終點不大於起點」只可能是
+    // 這樣來的壞狀態，一律當成跟到結尾
+    return e <= _wmStart ? _tl.duration : e;
+  }
 
   /// 浮水印選到哪個部件（文字或圖片）。縮放只動被選的那個
   WmPart _wmPart = WmPart.none;
@@ -601,16 +608,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       });
     } else if (widget.blank) {
       // 空白專案：沒有素材可載，直接開工。
-      // 空的時間軸看起來跟壞掉很像，進場先講一句要從哪開始
+      // 不跳提示——空軌上就寫著「點我加入…」而且點下去就會開，
+      // 再彈一句浮在上面只是擋住那行字
       _ready = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        showHint(
-          context,
-          '空白專案：用下方的「加素材」放入影片、照片或文字',
-          duration: const Duration(seconds: 4),
-        );
-      });
     } else {
       _importVideoFromPath(widget.videoPath!, track: 0).then((_) {
         if (mounted) setState(() => _ready = true);
@@ -2556,6 +2556,38 @@ final color = Color(picked ?? 0);
       }
     });
     _resyncPlayback();
+  }
+
+  /// 浮水印範圍的修剪。跟片段共用 _trimRawEdge 那套「位移累計在未吸附的
+  /// 原始邊緣上」的做法——浮水印預設從 0 秒開始，而 0 秒本身就是吸附點，
+  /// 每一小步都從已吸附的位置起算的話會被吸回去，等於一開磁吸就拉不動
+  void _trimWatermark(double d, bool fromLeft) {
+    if (_tlPinching) return; // 雙指縮放中不修剪
+    setState(() {
+      final cur = fromLeft ? _wmStart : _wmEndEff;
+      final raw = (_trimRawEdge ?? cur) + d;
+      _trimRawEdge = raw;
+      final snapped = _snapOn
+          ? _tl.snapTime(raw, _position, _pxPerSec)
+          : raw;
+      final on = (snapped - raw).abs() > 0.0005;
+      if (on != _trimSnapped) {
+        _trimSnapped = on;
+        if (on) HapticFeedback.selectionClick();
+      }
+      // clamp 的上下限反轉會直接丟例外，先夾好界線
+      if (fromLeft) {
+        _wmStart = snapped.clamp(0.0, math.max(0.0, _wmEndEff - 0.3));
+      } else {
+        _wmEnd = snapped.clamp(
+          math.min(_wmStart + 0.3, _tl.duration),
+          _tl.duration,
+        );
+      }
+      // 被夾住時原始值跟回實際邊緣，不然反向拖回來會有一段空行程
+      final newEdge = fromLeft ? _wmStart : _wmEndEff;
+      if ((newEdge - snapped).abs() > 0.001) _trimRawEdge = newEdge;
+    });
   }
 
   /// 用清單調整同一軌素材的先後順序，確定後照新順序頭尾相接。
@@ -5246,31 +5278,12 @@ final color = Color(picked ?? 0);
                                     (_tl.duration - len).clamp(0.0, 1e6),
                                   );
                                   _wmStart = s;
-                                  _wmEnd = s + len;
+                                  // 時間軸還沒有素材時長度是 0，這時把終點
+                                  // 寫死等於把「跟到結尾」變成 0 長度
+                                  _wmEnd = len <= 0 ? null : s + len;
                                 }),
-                                onTrimWm: (d, fromLeft) => setState(() {
-                                  // 跟片段修剪同一套磁吸：對齊素材頭尾
-                                  // 時間軸後來變短時上下限會反轉，
-                                  // clamp 反轉會直接丟例外，先夾好界線
-                                  if (fromLeft) {
-                                    final w = _wmStart + d;
-                                    final s = _snapOn
-                                        ? _tl.snapTime(w, _position, _pxPerSec)
-                                        : w;
-                                    final hi = math.max(0.0, _wmEndEff - 0.3);
-                                    _wmStart = s.clamp(0.0, hi);
-                                  } else {
-                                    final w = _wmEndEff + d;
-                                    final e = _snapOn
-                                        ? _tl.snapTime(w, _position, _pxPerSec)
-                                        : w;
-                                    final lo = math.min(
-                                      _wmStart + 0.3,
-                                      _tl.duration,
-                                    );
-                                    _wmEnd = e.clamp(lo, _tl.duration);
-                                  }
-                                }),
+                                onTrimWmStart: _trimGestureStart,
+                                onTrimWm: _trimWatermark,
                               ),
                             ),
                           ),
