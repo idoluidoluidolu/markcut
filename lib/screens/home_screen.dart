@@ -184,7 +184,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 _PickRow(
                     icon: Icons.grid_view,
                     label: '照片拼圖',
-                    hint: '多張排成一張',
+                    hint: '進去再挑照片',
                     kind: _PickKind.collage),
                 _PickRow(
                     icon: Icons.playlist_add,
@@ -224,17 +224,11 @@ class _HomeScreenState extends State<HomeScreen> {
           hint: _countHint(count: list.length, unit: '張照片', soft: 200),
         );
       case _PickKind.collage:
-        final list = await ImagePicker().pickMultiImage();
-        if (list.length < 2) {
-          if (list.isNotEmpty && mounted) {
-            showHint(context, '拼圖至少要選兩張照片');
-          }
-          return;
-        }
-        if (!mounted) return;
+        // 直接進畫面，照片進去再挑。先挑照片的話，使用者還沒看到
+        // 宮格就得決定要幾張，挑錯還要退出去重來
         await Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => CollageScreen(photos: list)),
+          MaterialPageRoute(builder: (_) => const CollageScreen()),
         );
       case _PickKind.blank:
         await _openBlank();

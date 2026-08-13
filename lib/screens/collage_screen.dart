@@ -17,9 +17,11 @@ import 'photo_editor_screen.dart';
 /// 拖曳格子互換位置、點一下鎖定後可調構圖（右上角鈕換照片），
 /// 也能開純格線（調線寬、選顏色）。
 class CollageScreen extends StatefulWidget {
+  /// 進場時就帶進來的照片。可以是空的——空手進來先排宮格、
+  /// 再用底下的「批次匯入照片」或每一格的「＋」放照片
   final List<XFile> photos;
 
-  const CollageScreen({super.key, required this.photos});
+  const CollageScreen({super.key, this.photos = const []});
 
   @override
   State<CollageScreen> createState() => _CollageScreenState();
@@ -137,13 +139,21 @@ class _CollageScreenState extends State<CollageScreen> {
     }
     if (!mounted) return;
     _poolSize = _images.length;
-    if (_images.length < 2) {
-      showHint(context, '至少要兩張讀得出來的照片', error: true);
-      Navigator.pop(context);
+    // 空手進場（從首頁直接點拼圖）：給一個 2×2 的空盤，
+    // 使用者先挑宮格數再匯入照片。以前這裡會直接把人踢回上一頁
+    if (_images.isEmpty) {
+      setState(() {
+        _cols = 2;
+        _rows = 2;
+        _resize();
+      });
       return;
     }
+    if (_images.length < 2) {
+      showHint(context, '再加一張才拼得起來');
+    }
     // 預設挑一個「剛好放得下」而且接近正方形的排法
-    final n = _images.length;
+    final n = math.max(2, _images.length);
     var cols = math.sqrt(n).ceil().clamp(1, _kMaxSide);
     var rows = (n / cols).ceil().clamp(1, _kMaxSide);
     if (cols * rows > _kMaxCells) rows = _kMaxCells ~/ cols;
@@ -153,6 +163,9 @@ class _CollageScreenState extends State<CollageScreen> {
       _resize();
     });
   }
+
+  /// 目前放了幾張照片
+  int get _filled => _order.where((k) => k >= 0).length;
 
   /// 依目前欄列重建格子：照片夠就填，不夠的留空（畫面上顯示「＋」）
   void _resize() {
@@ -694,11 +707,21 @@ class _CollageScreenState extends State<CollageScreen> {
                     ),
                     Padding(
                       padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
-                      child: primaryAction(
-                        label: _building ? '合成中…' : '完成，上浮水印',
-                        icon: Icons.check,
-                        onPressed: _building ? null : _done,
-                      ),
+                      // 還有空格就先幫人把照片放進來，不要讓他按了
+                      // 才被告知「還有空格子」。放滿了才換成完成
+                      child: _order.contains(-1)
+                          ? primaryAction(
+                              label: _filled == 0
+                                  ? '匯入照片'
+                                  : '再匯入照片（還有 ${_order.where((k) => k < 0).length} 格）',
+                              icon: Icons.add_photo_alternate_outlined,
+                              onPressed: _building ? null : () => _fillCell(-1),
+                            )
+                          : primaryAction(
+                              label: _building ? '合成中…' : '完成，上浮水印',
+                              icon: Icons.check,
+                              onPressed: _building ? null : _done,
+                            ),
                     ),
                   ],
                 ),
