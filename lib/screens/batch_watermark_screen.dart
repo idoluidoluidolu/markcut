@@ -314,8 +314,11 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     final d = (p[0] - p[1]).distance;
     if (d <= 20) return;
     _pvBaseDist = d;
-    _pushUndo();
+    // 一定要先切單張模式再拍快照：_pushUndo 會記「這一步屬於誰」，
+    // 還沒 override 時記成 -1（整批共用設定），但捏合改的是 override，
+    // 按上一步就會把值寫回共用設定＝預覽完全沒反應
     _ensureOverride(); // 捏合＝這張進入單張模式
+    _pushUndo();
     final eff = _effectiveOf(_previewIndex);
     _pvBaseText = eff.text.sizeFrac;
     _pvBaseLogo = eff.logo.sizeFrac;

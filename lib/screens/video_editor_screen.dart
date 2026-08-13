@@ -1837,7 +1837,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _wmSel = false;
     });
     _saveDraft();
-    showHint(context, '拖曳調位置、雙指縮放；再點一下可調樣式與濃度');
+    showHint(context, kMosaicHint);
   }
 
   /// 馬賽克樣式表：樣式（像素化/模糊/純色遮蓋）＋濃度/顏色
@@ -3683,14 +3683,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               children: [
                 IconButton(
                   iconSize: 20,
+                  tooltip: '上一步',
                   color: _undoStack.isEmpty ? kTextDim : kText,
-                  icon: const Icon(Icons.undo_rounded),
+                  icon: const Icon(Icons.undo),
                   onPressed: _undoStack.isEmpty ? null : _undoAction,
                 ),
                 IconButton(
                   iconSize: 20,
+                  tooltip: '重做',
                   color: _redoStack.isEmpty ? kTextDim : kText,
-                  icon: const Icon(Icons.redo_rounded),
+                  icon: const Icon(Icons.redo),
                   onPressed: _redoStack.isEmpty ? null : _redoAction,
                 ),
               ],
@@ -4706,17 +4708,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       ),
                                     );
                                   }
-                                  // 置中輔助線（路由拖曳吸到中線時）
-                                  if (_rtGuideV || _rtGuideH) {
-                                    children.add(
-                                      Positioned.fill(
-                                        child: CenterGuides(
-                                          vertical: _rtGuideV,
-                                          horizontal: _rtGuideH,
-                                        ),
+                                  // 置中輔助線（路由拖曳吸到中線時）。
+                                  // 無條件插入，跟照片／工作室同一種寫法：
+                                  // 用 if 增減會把後面圖層的索引推掉、
+                                  // 手勢層被重建＝拖曳中斷。目前它排在最後
+                                  // 所以剛好沒事，但下次有人往後再加一層就會踩到
+                                  children.add(
+                                    Positioned.fill(
+                                      child: CenterGuides(
+                                        vertical: _rtGuideV,
+                                        horizontal: _rtGuideH,
                                       ),
-                                    );
-                                  }
+                                    ),
+                                  );
 
                                   return Stack(
                                     fit: StackFit.expand,

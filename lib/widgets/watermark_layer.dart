@@ -211,6 +211,15 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                   widget.onSelectPart?.call(WmPart.logo);
                   onTap?.call();
                 },
+                // 雙擊＝回正中央、恢復預設大小。
+                // 允許拖到畫面外，拖丟了本來只能去面板拉滑桿救
+                onDoubleTap: () {
+                  onDragStart?.call(); // 先拍快照
+                  logo.x = 0.5;
+                  logo.y = 0.5;
+                  logo.sizeFrac = 0.18;
+                  onChanged();
+                },
                 // 單指拖＝移動（雙指縮放由預覽層的 Listener 處理：
                 // 元素本身範圍太小，兩指張開時第二指會落在範圍外）
                 onPanStart: !_canDrag(WmPart.logo)
@@ -332,6 +341,14 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                 onTap: () {
                   widget.onSelectPart?.call(WmPart.text);
                   (onTapText ?? onTap)?.call();
+                },
+                // 雙擊＝回正中央、恢復預設大小（同 Logo）
+                onDoubleTap: () {
+                  onDragStart?.call();
+                  t.x = 0.5;
+                  t.y = 0.5;
+                  t.sizeFrac = 0.12;
+                  onChanged();
                 },
                 // 單指拖＝移動（雙指縮放由預覽層的 Listener 處理）
                 onPanStart: !_canDrag(WmPart.text)

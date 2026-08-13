@@ -436,6 +436,10 @@ Future<bool> askAfterExport(BuildContext context, String message) async {
   return home == true;
 }
 
+/// 剛加入馬賽克時的說明。影片和照片講同一句，
+/// 不然同一個功能在兩邊聽起來像兩件事
+const kMosaicHint = '拖曳調位置、雙指縮放；再點一下可調樣式';
+
 /// 區塊小標（灰字、寬字距，如「開始新專案」）
 class SectionLabel extends StatelessWidget {
   final String text;

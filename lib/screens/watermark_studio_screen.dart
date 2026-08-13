@@ -48,23 +48,100 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
 
   bool get _dirty => jsonEncode(_settings.toJson()) != _initialJson;
 
-  /// 離開保護：改過但沒存範本就問一下
+  /// 離開保護：改過但沒存範本就問一下。
+  /// 這裡沒有草稿可以留，所以直接給「存成範本」當出口——
+  /// 只有「放棄」一條路的話，設計半天會整個蒸發
   Future<void> _confirmLeave() async {
     if (!_dirty) {
       Navigator.of(context).pop();
       return;
     }
-    final ok = await showConfirm(
-      context,
-      title: '放棄這個浮水印？',
-      message: '還沒儲存成範本，離開後設計會消失',
-      action: '放棄離開',
+    final act = await showDialog<String>(
+      context: context,
+      builder: (context) => Dialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: kBorder),
+        ),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 280),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 26, 20, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text('還沒存成範本',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        fontSize: 15.5,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.3,
+                        color: kText)),
+                const SizedBox(height: 8),
+                const Text('離開後這個設計就會消失',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        fontSize: 12.5, color: kTextDim, height: 1.55)),
+                const SizedBox(height: 20),
+                FilledButton(
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(44),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                    textStyle: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        fontFamily: 'NotoSansTC'),
+                  ),
+                  onPressed: () => Navigator.pop(context, 'save'),
+                  child: const Text('存成範本'),
+                ),
+                const SizedBox(height: 6),
+                OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size.fromHeight(42),
+                    foregroundColor: kText,
+                    side: const BorderSide(color: kBorder),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                  onPressed: () => Navigator.pop(context, 'discard'),
+                  child: const Text('放棄離開',
+                      style: TextStyle(fontSize: 13.5)),
+                ),
+                const SizedBox(height: 4),
+                TextButton(
+                  onPressed: () => Navigator.pop(context, 'stay'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: kTextDim,
+                    minimumSize: const Size.fromHeight(40),
+                  ),
+                  child: const Text('繼續編輯',
+                      style: TextStyle(fontSize: 13)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
-    if (ok && mounted) Navigator.of(context).pop();
+    if (!mounted) return;
+    if (act == 'discard') {
+      Navigator.of(context).pop();
+    } else if (act == 'save') {
+      // 存完才離開；存到一半取消就留在這裡
+      await _panelKey.currentState?.savePreset();
+      if (mounted && !_dirty) Navigator.of(context).pop();
+    }
   }
 
-  // ===== 上一步（改壞了可以救；連續滑桿拖動 0.7 秒內併成一步）=====
+  /// 讓離開對話框能觸發面板裡的儲存流程
+  final _panelKey = GlobalKey<WatermarkPanelState>();
+
+  // ===== 上一步／重做（改壞了可以救；連續滑桿拖動 0.7 秒內併成一步）=====
   final List<String> _undo = [];
+  final List<String> _redo = [];
   DateTime _lastPush = DateTime.fromMillisecondsSinceEpoch(0);
   int _sync = 0; // 通知面板同步內部狀態
 
@@ -82,15 +159,18 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
     final now = DateTime.now();
     if (now.difference(_lastPush).inMilliseconds < 700) return;
     _lastPush = now;
-    _undo.add(jsonEncode(_settings.toJson()));
+    _undo.add(_stateJson);
     if (_undo.length > 60) _undo.removeAt(0);
+    _redo.clear(); // 改了新的東西，原本的重做路線就斷了
     setState(() {}); // 讓上一步鈕亮起來
   }
 
-  void _undoLast() {
-    if (_undo.isEmpty) return;
+  String get _stateJson => jsonEncode(_settings.toJson());
+
+  /// 把某個快照套回目前狀態
+  void _applyState(String json) {
     final wm = WatermarkSettings.fromJson(
-        jsonDecode(_undo.removeLast()) as Map<String, dynamic>);
+        jsonDecode(json) as Map<String, dynamic>);
     setState(() {
       _settings.text = wm.text;
       _settings.logo = wm.logo;
@@ -100,6 +180,20 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
       _wmPart = WmPart.none; // 復原可能讓被選的部件消失，選取殘留會卡死拖曳
       _sync++;
     });
+    _wmTick.value++;
+  }
+
+  void _undoLast() {
+    if (_undo.isEmpty) return;
+    // 撤銷之前先把現況存進重做堆疊，才回得來
+    _redo.add(_stateJson);
+    _applyState(_undo.removeLast());
+  }
+
+  void _redoLast() {
+    if (_redo.isEmpty) return;
+    _undo.add(_stateJson);
+    _applyState(_redo.removeLast());
   }
 
   // ===== 選取（選了圖片就鎖定圖片：拖曳/縮放都只動它）=====
@@ -132,6 +226,17 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
     _pvBaseDist = d;
     _pvBaseText = _settings.text.sizeFrac;
     _pvBaseLogo = _settings.logo.sizeFrac;
+    // 快照延到真的縮到東西才拍：光按一下就拍會把重做堆疊清空，
+    // 剛撤銷的東西再也回不來
+    _stUndoPending = true;
+  }
+
+  /// 這次手勢還沒拍過快照
+  bool _stUndoPending = false;
+
+  void _stPushUndoIfNeeded() {
+    if (!_stUndoPending) return;
+    _stUndoPending = false;
     _pushUndo();
   }
 
@@ -148,6 +253,7 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
     final part = _wmPartAlive;
     final doText = hasText && (part != WmPart.logo || !hasLogo);
     final doLogo = hasLogo && (part != WmPart.text || !hasText);
+    if (doText || doLogo) _stPushUndoIfNeeded();
     if (doText) t.sizeFrac = (_pvBaseText * f).clamp(0.015, 2.0);
     if (doLogo) {
       _settings.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
@@ -289,6 +395,11 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
             tooltip: '上一步',
             icon: const Icon(Icons.undo),
             onPressed: _undo.isEmpty ? null : _undoLast,
+          ),
+          IconButton(
+            tooltip: '重做',
+            icon: const Icon(Icons.redo),
+            onPressed: _redo.isEmpty ? null : _redoLast,
           ),
           // 從範本夾點進來編輯時不顯示這顆：上一頁就是範本夾，
           // 再開一次會變成「工作室→範本夾→工作室…」一直往上疊，
@@ -449,8 +560,13 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
           Container(height: 1, color: kBorder),
           Expanded(
             child: WatermarkPanel(
+              key: _panelKey,
               controller: _wmPanelCtrl,
               settings: _settings,
+              // 這裡是「做範本」的地方，動畫當然要能設定。
+              // 示意畫面沒有時間軸（time 為 null）所以不會動，
+              // 但值會存進範本，套到影片上就看得到
+              showAnimation: true,
               onChanged: () => setState(() {}),
               onBeforeChange: _pushUndo,
               syncVersion: _sync,

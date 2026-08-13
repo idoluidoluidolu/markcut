@@ -194,6 +194,18 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 重做堆疊：只要有新的編輯就作廢（分支掉的未來留著只會搞混）
   final List<String> _redoStack = [];
 
+  /// 這次手勢還沒拍過快照。
+  /// 一按下就拍的話，_pushUndo 會把重做堆疊清空——使用者剛按了
+  /// 上一步、手指只是輕碰一下預覽（有 panStart 但沒移動），
+  /// 剛撤銷的東西就再也回不來了
+  bool _phUndoPending = false;
+
+  void _phPushUndoIfNeeded() {
+    if (!_phUndoPending) return;
+    _phUndoPending = false;
+    _pushUndo();
+  }
+
   void _pushUndo() {
     final now = DateTime.now();
     if (now.difference(_lastPush).inMilliseconds < 700) return;
@@ -692,7 +704,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             onPanStart: (_) {
               if (_pvPts.length >= 2) return;
               _phClearGuides();
-              _pushUndo();
+              _phUndoPending = true; // 真的拖到才拍（見 _phPushUndoIfNeeded）
               setState(() {
                 _selMosaic = i;
                 _wmPart = WmPart.none;
@@ -701,6 +713,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             },
             onPanUpdate: (d) {
               if (_pvPts.length >= 2) return;
+              _phPushUndoIfNeeded();
               setState(() {
                 // 原始座標累積、顯示值吸中線（同浮水印手感）
                 _phRawX ??= m.x;
@@ -747,7 +760,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       _wmPart = WmPart.none;
       _selExtra = -1;
     });
-    showHint(context, '拖曳調整位置，再點一下可調樣式與大小');
+    showHint(context, kMosaicHint);
   }
 
   /// 馬賽克樣式表（照片版）：樣式＋大小＋濃度/顏色＋移除
@@ -1163,9 +1176,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     }
   }
 
-  /// 底部「儲存範本」鈕要觸發面板裡的儲存流程
-  final _panelKey = GlobalKey<WatermarkPanelState>();
-
   /// 點畫面上的浮水印時，叫下面的面板捲到對應的設定區塊
   final _wmPanelCtrl = WatermarkPanelController();
 
@@ -1326,7 +1336,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       _pvBaseExtraText = _extraWms[_selExtra].text.sizeFrac;
       _pvBaseExtraLogo = _extraWms[_selExtra].logo.sizeFrac;
     }
-    _pushUndo();
+    _phUndoPending = true;
   }
 
   void _pinchMove(PointerMoveEvent e) {
@@ -1335,6 +1345,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     if (_pvBaseDist == null || _pvPts.length < 2) return;
     final p = _pvPts.values.toList();
     final f = (p[0] - p[1]).distance / _pvBaseDist!;
+    _phPushUndoIfNeeded(); // 真的縮到東西了才拍
     setState(() {
       // 有選中馬賽克：雙指縮它，不動浮水印
       if (_selMosaic >= 0 && _selMosaic < _mosaics.length) {
@@ -1540,11 +1551,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                           onPanStart: (_) {
                                             _phClearGuides();
                                             if (_pvPts.length < 2) {
-                                              _pushUndo();
+                                              _phUndoPending = true;
                                             }
                                           },
                                           onPanUpdate: (d) {
                                             if (_pvPts.length >= 2) return;
+                                            _phPushUndoIfNeeded();
                                             final t = _settings.text;
                                             final lg = _settings.logo;
                                             final part = _wmPartAlive;
@@ -1618,7 +1630,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                         },
                       ),
                       _ => WatermarkPanel(
-                        key: _panelKey,
                         controller: _wmPanelCtrl,
                         settings: _settings,
                         onChanged: () => setState(() {}),
