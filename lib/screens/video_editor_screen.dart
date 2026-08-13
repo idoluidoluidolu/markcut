@@ -165,6 +165,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _pinchDown(PointerDownEvent e) {
     _pinchPts[e.pointer] = e.position;
+    // _lifting 只在素材「真的被拖動」時才是 true（見 timeline 的 armed 判定）。
+    // 手指剛按上去還沒移動就不算，這樣第二指下來仍然轉得成縮放——
+    // 不然按著素材再放第二指，會變成一路把素材拖走
     if (_pinchPts.length == 2 && !_lifting) {
       final p = _pinchPts.values.toList();
       final d = (p[0] - p[1]).distance;

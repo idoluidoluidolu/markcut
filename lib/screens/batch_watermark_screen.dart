@@ -5,7 +5,6 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:image_picker/image_picker.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
@@ -18,8 +17,6 @@ import '../services/watermark_renderer.dart';
 import '../theme.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
-import 'photo_editor_screen.dart';
-import 'video_editor_screen.dart';
 
 /// 批次浮水印：一次選多個檔案（照片/影片混合），
 /// 統一調一組浮水印，整批匯出到相簿
@@ -271,59 +268,6 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       _sync++; // 換張＝面板換綁另一份設定，內部狀態要同步
     });
     _loadPreviewFull();
-  }
-
-  /// 把目前選中的檔案丟進完整編輯器（帶著現在的浮水印設定）
-  Future<void> _editCurrentAlone() async {
-    final item = _items[_previewIndex];
-    if (_isVideo(item.file)) {
-      // 開新影片專案會蓋掉現有草稿——跟首頁同一套，先問過
-      final prefs = await SharedPreferences.getInstance();
-      if (!mounted) return;
-      if ((prefs.getString(kDraftKey) ?? '').isNotEmpty) {
-        final ok = await showConfirm(
-          context,
-          title: '覆蓋上次的草稿？',
-          message: '開新專案後，未完成的草稿會被取代',
-          action: '開新專案',
-        );
-        if (!ok || !mounted) return;
-      }
-      await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => VideoEditorScreen(
-            videoPath: item.file.path,
-            initialWatermark: _effectiveOf(_previewIndex).copy(),
-          ),
-        ),
-      );
-    } else {
-      await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => PhotoEditorScreen(
-            photo: item.file,
-            initialWatermark: _effectiveOf(_previewIndex).copy(),
-          ),
-        ),
-      );
-    }
-    // 單獨編輯是一條單行道：裡面的調整不會帶回批次。
-    // 如果已經在裡面輸出了，留在批次裡會被再輸出一次
-    //（而且是批次的舊設定）——回來時問一聲要不要移出批次
-    if (!mounted || _items.length <= 1) return;
-    final remove = await showConfirm(
-      context,
-      title: '把這個檔案移出批次？',
-      message: '單獨編輯的調整不會影響批次。若剛剛已在裡面輸出，'
-          '留在批次會用批次的設定再輸出一次',
-      action: '移出批次',
-    );
-    if (remove && mounted) {
-      _removeItem(_previewIndex);
-      showHint(context, '已從批次移除');
-    }
   }
 
   /// 長按縮圖＝從批次移除（要單獨處理的先踢出去）
@@ -582,13 +526,6 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
             tooltip: '上一步',
             icon: const Icon(Icons.undo),
             onPressed: _undoStack.isEmpty ? null : _undoLast,
-          ),
-          // 這個檔案要剪時間軸/單獨調 → 丟進完整編輯器（帶目前浮水印）
-          TextButton.icon(
-            onPressed: _editCurrentAlone,
-            icon: const Icon(Icons.tune, size: 16, color: kIcon),
-            label: const Text('單獨編輯',
-                style: TextStyle(fontSize: 12.5, color: kText)),
           ),
         ],
       ),

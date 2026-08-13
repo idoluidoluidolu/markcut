@@ -241,7 +241,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
     _liftArmed = false; // 移動超過門檻才算真的在拖（見 _liftUpdate）
     _liftWasSelected = widget.selectedId == c.id;
     widget.onSelect(c.id);
-    widget.onLiftChanged?.call(true);
+    // onLiftChanged 留到「真的拖起來」（armed）才通知父層——
+    // 一按下就說在拖的話，第二根手指落下時父層會以為使用者正在
+    // 搬素材而不轉成縮放，結果整條被拖走
     setState(() {
       _lift = (
         clipId: c.id,
@@ -298,6 +300,8 @@ class _TimelineEditorState extends State<TimelineEditor> {
       if (!_liftArmed &&
           (_lift!.dx.abs() > 8 || _lift!.dy.abs() > 8)) {
         _liftArmed = true;
+        // 到這裡才算真的在搬素材，父層現在才需要讓開
+        widget.onLiftChanged?.call(true);
       }
     });
     // 吸附到別的片段邊緣的那一下震動一次，手指才感覺得到「黏住」
@@ -510,6 +514,8 @@ class _TimelineEditorState extends State<TimelineEditor> {
                 final leadPad = cons.maxWidth * 0.35;
                 final totalW =
                     timeline.duration * pxPerSec + cons.maxWidth * 0.7;
+                _leadPad = leadPad;
+                _viewWidth = cons.maxWidth;
                 return SingleChildScrollView(
                   controller: widget.scrollController,
                   scrollDirection: Axis.horizontal,
@@ -674,6 +680,10 @@ class _TimelineEditorState extends State<TimelineEditor> {
     );
   }
 
+  /// 版面尺寸（給修剪把手貼邊用），build 時由 LayoutBuilder 存起來
+  double _leadPad = 0;
+  double _viewWidth = 0;
+
   Widget _trackRow(
     int track,
     ({double offset, int track, bool insert, int? insertLine})? spec,
@@ -726,7 +736,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
                       !isDropTarget &&
                       clips.isEmpty)
                   ? Text(
-                      '＋ 用「加素材」放文字、浮水印、馬賽克…',
+                      '用下方「加素材」加入文字、圖片、馬賽克',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
@@ -754,6 +764,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
             onLiftStart: (pos) => _liftStart(c, pos),
             onLiftUpdate: _liftUpdate,
             onLiftEnd: _liftEnd,
+            scrollController: widget.scrollController,
+            leadPad: _leadPad,
+            viewWidth: _viewWidth,
           ),
         // 錄音中：從起錄點往右長的紅色即時波形，長度跟著播放頭
         if (widget.voiceRecording && widget.voiceTrack == track)
@@ -1181,6 +1194,13 @@ class _ClipBlock extends StatelessWidget {
   final void Function(double ddx, double ddy, Offset globalPos) onLiftUpdate;
   final VoidCallback onLiftEnd;
 
+  /// 可視範圍：把手要貼在可視邊緣，不然片段比畫面長時它會跑到畫面外碰不到。
+  /// 傳控制器而不是算好的數字——只有把手需要跟著捲動重畫，
+  /// 整條時間軸重建太貴
+  final ScrollController scrollController;
+  final double leadPad;
+  final double viewWidth;
+
   const _ClipBlock({
     super.key,
     required this.clip,
@@ -1196,6 +1216,9 @@ class _ClipBlock extends StatelessWidget {
     required this.onLiftStart,
     required this.onLiftUpdate,
     required this.onLiftEnd,
+    required this.scrollController,
+    required this.leadPad,
+    required this.viewWidth,
   });
 
   @override
@@ -1298,22 +1321,51 @@ class _ClipBlock extends StatelessWidget {
                       ),
                     ),
                   if (isSelected && !lifted) ...[
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: _TrimHandle(
-                        isLeft: true,
-                        onStart: onTrimStart,
-                        onDrag: (dxSec) => onTrim(clip.id, dxSec, true),
-                        pxPerSec: pxPerSec,
-                      ),
-                    ),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: _TrimHandle(
-                        isLeft: false,
-                        onStart: onTrimStart,
-                        onDrag: (dxSec) => onTrim(clip.id, dxSec, false),
-                        pxPerSec: pxPerSec,
+                    // 熱區跟著片段長度給，短片段不會被兩個把手佔滿；
+                    // 位置夾在可視範圍內，片段拉得比畫面長時
+                    // 把手會貼在邊緣而不是跑到畫面外
+                    Positioned.fill(
+                      child: ListenableBuilder(
+                        listenable: scrollController,
+                        builder: (context, _) {
+                          final hw = (w * 0.28).clamp(22.0, 40.0);
+                          final off = scrollController.hasClients
+                              ? scrollController.offset
+                              : 0.0;
+                          // 換算成「相對這個片段左緣」的可視範圍
+                          final left = clip.offset * pxPerSec;
+                          final vL = off - leadPad - left;
+                          final vR = vL + viewWidth;
+                          final maxX = math.max(0.0, w - hw);
+                          return Stack(
+                            children: [
+                              Positioned(
+                                left: vL.clamp(0.0, maxX),
+                                top: 0,
+                                bottom: 0,
+                                child: _TrimHandle(
+                                  isLeft: true,
+                                  width: hw,
+                                  onStart: onTrimStart,
+                                  onDrag: (d) => onTrim(clip.id, d, true),
+                                  pxPerSec: pxPerSec,
+                                ),
+                              ),
+                              Positioned(
+                                left: (vR - hw).clamp(0.0, maxX),
+                                top: 0,
+                                bottom: 0,
+                                child: _TrimHandle(
+                                  isLeft: false,
+                                  width: hw,
+                                  onStart: onTrimStart,
+                                  onDrag: (d) => onTrim(clip.id, d, false),
+                                  pxPerSec: pxPerSec,
+                                ),
+                              ),
+                            ],
+                          );
+                        },
                       ),
                     ),
                   ],
@@ -1534,6 +1586,7 @@ class _TrackLabelState extends State<_TrackLabel> {
 class _TrimHandle extends StatelessWidget {
   final bool isLeft;
   final double pxPerSec;
+  final double width;
   final ValueChanged<double> onDrag;
   final VoidCallback? onStart;
 
@@ -1541,6 +1594,7 @@ class _TrimHandle extends StatelessWidget {
     required this.isLeft,
     required this.pxPerSec,
     required this.onDrag,
+    this.width = 26,
     this.onStart,
   });
 
@@ -1559,10 +1613,10 @@ class _TrimHandle extends StatelessWidget {
                 ..onUpdate = ((d) => onDrag(d.delta.dx / pxPerSec)),
             ),
       },
-      // 觸控熱區 22px、視覺維持 13px 細把手貼在片段邊緣——
+      // 觸控熱區由呼叫端依片段長度給（22～40），視覺維持 13px 細把手——
       // 手指粗一點也按得到，畫面不變胖
       child: Container(
-        width: 22,
+        width: width,
         color: Colors.transparent,
         alignment: isLeft ? Alignment.centerLeft : Alignment.centerRight,
         child: Container(

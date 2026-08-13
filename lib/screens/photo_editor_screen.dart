@@ -1331,6 +1331,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                     _selExtra = -1;
                                   }),
                                   panLocked: () => _pvPts.length >= 2,
+                                  // 別的東西被選取時完全不吃拖曳，讓給下面的
+                                  // 選取路由——不然選了馬賽克在畫面上拖，
+                                  // 手指剛好經過浮水印就會把浮水印拖走
+                                  panAllowed: (_) =>
+                                      _selMosaic == -1 && _selExtra == -1,
                                 ),
                                 // 更多浮水印：一組一層疊上去，各自拖曳；
                                 // 點一下＝選取（白框）＋直接開編輯面板
@@ -1350,6 +1355,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                       _editExtraWm(i);
                                     },
                                     panLocked: () => _pvPts.length >= 2,
+                                    // 同上：馬賽克選取中誰都不准拖；
+                                    // 選了別組浮水印時這一組也不吃
+                                    panAllowed: (_) =>
+                                        _selMosaic == -1 &&
+                                        (_selExtra == -1 || _selExtra == i),
                                   ),
                                 // 置中輔助線（路由/馬賽克拖曳吸中線時）
                                 if (_phGuideV || _phGuideH)
