@@ -1,3 +1,4 @@
+import 'dart:async' show unawaited;
 import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -22,14 +23,23 @@ import '../widgets/watermark_panel.dart';
 /// 預覽上一個可以點的東西：kind 0＝馬賽克、1＝主浮水印、2＝額外浮水印
 typedef _PhLayer = ({int kind, int index, WmPart part});
 
+/// 照片草稿。影片的草稿是編輯過程中一直自動存；照片這邊只在
+/// 「離開時使用者選擇保留」才存——照片編輯是一次性的工作，
+/// 每次改動都寫一次反而會把上一次真的想留的東西蓋掉
+const kPhotoDraftKey = 'photo_draft_v1';
+
 class PhotoEditorScreen extends StatefulWidget {
   final XFile photo;
   final WatermarkSettings? initialWatermark;
+
+  /// 從草稿還原：整份編輯狀態的 JSON（見 _stateJson）
+  final String? draft;
 
   const PhotoEditorScreen({
     super.key,
     required this.photo,
     this.initialWatermark,
+    this.draft,
   });
 
   @override
@@ -76,9 +86,33 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   @override
   void initState() {
     super.initState();
+    final d = widget.draft;
+    if (d != null) {
+      // 還原要在拍基準之前：不然一進來就被判定成「改過了」，
+      // 什麼都沒動就離開也會被問要不要留草稿
+      try {
+        _applyState(d);
+      } catch (_) {
+        // 壞掉的草稿不該讓畫面開不起來，當成沒有草稿就好
+      }
+    }
     _initialJson = _stateJson;
     _loadMosaicShader();
     _load();
+  }
+
+  /// 把目前的編輯狀態存成草稿（離開時選「保留」才呼叫）
+  Future<void> _saveDraft() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      kPhotoDraftKey,
+      jsonEncode({'photo': widget.photo.path, 'state': _stateJson}),
+    );
+  }
+
+  static Future<void> clearPhotoDraft() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(kPhotoDraftKey);
   }
 
   // ===== 馬賽克（照片模式：任意數量的方形區域）=====
@@ -177,13 +211,22 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       Navigator.of(context).pop();
       return;
     }
-    final ok = await showConfirm(
+    // 跟影片編輯同一款三顆直排。以前只有「放棄」一條路，
+    // 調了半天的馬賽克跟好幾組浮水印會整個蒸發
+    final act = await showLeaveChoice(
       context,
-      title: '放棄這張照片？',
-      message: '浮水印還沒輸出，離開後設定會消失',
-      action: '放棄離開',
+      title: '還沒輸出',
+      message: '留著草稿的話，下次可以從首頁接著改',
+      keepLabel: '保留草稿',
+      discardLabel: '捨棄',
     );
-    if (ok && mounted) Navigator.of(context).pop();
+    if (!mounted) return;
+    if (act == 'keep') {
+      await _saveDraft();
+      if (mounted) Navigator.of(context).pop();
+    } else if (act == 'discard') {
+      Navigator.of(context).pop();
+    }
   }
 
   // ===== 上一步（改壞了可以救；連續滑桿拖動 0.7 秒內併成一步）=====
@@ -295,7 +338,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     } catch (_) {
       // 壞檔或不支援的格式：不能讓畫面永遠轉圈
       if (!mounted) return;
-      showHint(context, '這張圖片無法讀取，換一張試試', error: true);
+      // 從草稿進來卻讀不到照片＝相簿那份暫存檔被系統清掉了。
+      // 草稿留著只會讓首頁一直有一列點了就失敗的東西
+      if (widget.draft != null) {
+        unawaited(clearPhotoDraft());
+        showHint(context, '上次那張照片已經不在了，草稿已清除', error: true);
+      } else {
+        showHint(context, '這張圖片無法讀取，換一張試試', error: true);
+      }
       Navigator.of(context).pop();
     }
   }
@@ -1176,6 +1226,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       ok = false;
     }
     if (ok) {
+      // 已經輸出過就不用留草稿了
+      unawaited(clearPhotoDraft());
       // 輸出成功＝把「有沒有改過」的基準點重設到現在。
       // 不能一輸出就永遠關掉保護：之後又改了十分鐘、
       // 誤觸返回會一聲不吭直接蒸發

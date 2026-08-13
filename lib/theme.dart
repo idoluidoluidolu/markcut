@@ -527,6 +527,91 @@ Future<String?> askPhotoFormat(BuildContext context) {
   );
 }
 
+/// 離開編輯畫面時的三選一：保留／捨棄／繼續編輯。
+/// 回傳 'keep'、'discard'、'stay'。
+///
+/// 影片、照片、工作室的離開對話框本來各寫一份，寬度、按鈕高度、
+/// 間距都不一樣。統一走這裡
+Future<String> showLeaveChoice(
+  BuildContext context, {
+  required String title,
+  required String message,
+  required String keepLabel,
+  String discardLabel = '捨棄',
+}) async {
+  final act = await showDialog<String>(
+    context: context,
+    builder: (context) => Dialog(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: kBorder),
+      ),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 280),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 26, 20, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(title,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      fontSize: 15.5,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.3,
+                      color: kText)),
+              const SizedBox(height: 8),
+              Text(message,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      fontSize: 12.5, color: kTextDim, height: 1.55)),
+              const SizedBox(height: 20),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(44),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                  textStyle: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      fontFamily: 'NotoSansTC'),
+                ),
+                onPressed: () => Navigator.pop(context, 'keep'),
+                child: Text(keepLabel),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton(
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size.fromHeight(44),
+                  foregroundColor: kText,
+                  side: const BorderSide(color: kClipBorder),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                ),
+                onPressed: () => Navigator.pop(context, 'discard'),
+                child: Text(discardLabel,
+                    style: const TextStyle(fontSize: 13.5)),
+              ),
+              const SizedBox(height: 4),
+              TextButton(
+                onPressed: () => Navigator.pop(context, 'stay'),
+                style: TextButton.styleFrom(
+                  foregroundColor: kTextDim,
+                  minimumSize: const Size.fromHeight(40),
+                ),
+                child: const Text('繼續編輯',
+                    style: TextStyle(fontSize: 13)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+  return act ?? 'stay';
+}
+
 /// 預覽與面板之間的控制列：上一步／重做。
 ///
 /// 四個編輯畫面都用這一條。原本工作室與批次把它放在標題列右上角，
