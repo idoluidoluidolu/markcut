@@ -29,6 +29,10 @@ typedef _NavItem = ({String label, IconData icon, GlobalKey key});
 /// 新的 State 一掛上就自己來取
 class WatermarkPanelController extends ChangeNotifier {
   WmPart? _pending;
+  int? _pendingSection;
+
+  /// 面板目前捲到第幾區（父層自己畫導覽列時拿來高亮）
+  int activeSection = 0;
 
   /// 面板取走待處理的請求（取走就清掉，不會重複捲）
   WmPart? takePending() {
@@ -37,10 +41,29 @@ class WatermarkPanelController extends ChangeNotifier {
     return p;
   }
 
+  int? takePendingSection() {
+    final i = _pendingSection;
+    _pendingSection = null;
+    return i;
+  }
+
   /// 要求捲到 [part] 的設定區塊
   void scrollTo(WmPart part) {
     if (part == WmPart.none) return;
     _pending = part;
+    notifyListeners();
+  }
+
+  /// 要求捲到第 [i] 區（父層的導覽列按下去時用）
+  void jumpToSection(int i) {
+    _pendingSection = i;
+    notifyListeners();
+  }
+
+  /// 面板回報捲到哪一區了
+  void reportSection(int i) {
+    if (i == activeSection) return;
+    activeSection = i;
     notifyListeners();
   }
 }
@@ -79,6 +102,14 @@ class WatermarkPanel extends StatefulWidget {
   /// 父層用它叫面板捲到文字／圖片區塊
   final WatermarkPanelController? controller;
 
+  /// 面板自己畫置頂導覽列。父層想自己畫（例如照片編輯要把「調色」
+  /// 也排進同一列）就傳 false
+  final bool showNav;
+
+  /// 清單底部多留的空間：父層在上面浮了東西（例如輸出鍵）時，
+  /// 最後一張卡才捲得到浮鍵上方
+  final double bottomInset;
+
   const WatermarkPanel({
     super.key,
     required this.settings,
@@ -92,6 +123,8 @@ class WatermarkPanel extends StatefulWidget {
     this.hideSaveButton = false,
     this.extraSections = const [],
     this.controller,
+    this.showNav = true,
+    this.bottomInset = 0,
   });
 
   @override
@@ -154,6 +187,13 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   void _onScrollRequest() {
     final part = widget.controller?.takePending();
     if (part != null) _ensureSection(part, 0);
+    final sec = widget.controller?.takePendingSection();
+    if (sec != null && sec >= 0 && sec < _nav.length) {
+      // 面板可能是這一刻才掛上來的（從調色切回來），等一幀再捲
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && sec < _nav.length) _jumpToSection(sec);
+      });
+    }
   }
 
   /// 捲到區塊。切分頁的那一瞬間卡片可能還沒掛上，隔幾十毫秒重試
@@ -393,6 +433,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       if (vp.getOffsetToReveal(box, 0.0).offset <= line) idx = i;
     }
     if (idx != _navAt && mounted) setState(() => _navAt = idx);
+    widget.controller?.reportSection(idx);
   }
 
   void _jumpToSection(int i) {
@@ -468,6 +509,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
           key: _extraKeys[i],
         ),
     ];
+    if (!widget.showNav) return _list();
     return Column(
       children: [
         _sectionNav(),
@@ -484,7 +526,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       scrollCacheExtent: const ScrollCacheExtent.pixels(3000),
       // 往下滑清單就收鍵盤（打完字回不去的解法）
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      padding: EdgeInsets.fromLTRB(16, 8, 16, 24 + widget.bottomInset),
       children: [
         // ===== 選擇範本：亮階底＋琥珀圖示＋下拉箭頭，按了彈窗挑 =====
         OutlinedButton(

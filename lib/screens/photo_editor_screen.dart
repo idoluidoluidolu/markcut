@@ -624,6 +624,130 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     put(WmPart.logo, logo);
   }
 
+  /// 置頂導覽列的項目。前五個是面板裡的區段（點了捲過去），
+  /// 最後的「調色」是另一個模式（點了整個換掉下半部）——
+  /// 因為調色面板自己有捲動清單，塞不進面板當一張卡
+  static const _phNav = [
+    (label: '位置', icon: Icons.grid_view),
+    (label: '文字', icon: Icons.title),
+    (label: '圖片', icon: Icons.image_outlined),
+    (label: '馬賽克', icon: Icons.blur_on),
+    (label: '更多', icon: Icons.branding_watermark),
+    (label: '調色', icon: Icons.tune),
+  ];
+
+  /// 調色在導覽列的位置（最後一格）
+  static const _phColorIdx = 5;
+
+  Widget _sectionBar() => AnimatedBuilder(
+        // 面板捲動時會回報捲到第幾區。只重畫這一條，
+        // 不要整頁 setState——預覽跟著重建會頓
+        animation: _wmPanelCtrl,
+        builder: (context, _) => _sectionBarBody(),
+      );
+
+  Widget _sectionBarBody() {
+    // 調色模式時高亮最後一格，否則跟著面板捲到哪就亮哪
+    final active = _tab == 1 ? _phColorIdx : _wmPanelCtrl.activeSection;
+    return Container(
+      decoration: const BoxDecoration(
+        color: kPanel,
+        border: Border(bottom: BorderSide(color: kBorder)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+      child: Row(
+        children: [
+          for (var i = 0; i < _phNav.length; i++)
+            Expanded(
+              child: InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: () {
+                  if (i == _phColorIdx) {
+                    setState(() => _tab = 1);
+                    return;
+                  }
+                  // 從調色切回來時面板要先掛上，jumpToSection
+                  // 內部會等一幀再捲
+                  setState(() {
+                    _tab = 0;
+                    _colorCompare = false;
+                  });
+                  _wmPanelCtrl.jumpToSection(i);
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 5),
+                  decoration: BoxDecoration(
+                    color: i == active ? kPanelHi : Colors.transparent,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(_phNav[i].icon,
+                          size: 17, color: i == active ? kText : kTextDim),
+                      const SizedBox(height: 3),
+                      Text(_phNav[i].label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 10.5,
+                              color: i == active ? kText : kTextDim)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 浮在面板上的輸出鍵。不佔版面高度——內容從它下面穿過去，
+  /// 底下鋪一層漸層讓字不會糊在一起。這樣面板的空間感才拉得開
+  Widget _floatingExport() => Positioned(
+        left: 0,
+        right: 0,
+        bottom: 0,
+        child: IgnorePointer(
+          ignoring: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IgnorePointer(
+                child: Container(
+                  height: 40,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [kBg.withValues(alpha: 0), kBg],
+                    ),
+                  ),
+                ),
+              ),
+              Container(
+                color: kBg,
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+                child: SafeArea(
+                  top: false,
+                  child: FilledButton.icon(
+                    onPressed: _exporting ? null : _confirmExport,
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(46),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                    ),
+                    icon: const Icon(Icons.ios_share, size: 18),
+                    label: const Text('輸出'),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+
   Widget _buildMosaics(double w, double h) {
     final children = <Widget>[];
     for (var i = 0; i < _mosaics.length; i++) {
@@ -1524,9 +1648,13 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   // 控制列：跟影片編輯的控制列同一個位置，
                   // 固定不動也不擋畫面
                   _buildControlBar(),
+                  _sectionBar(),
                   Expanded(
-                    flex: 4,
-                    child: switch (_tab) {
+                    flex: 5,
+                    child: Stack(
+                      children: [
+                        Positioned.fill(
+                          child: switch (_tab) {
                       1 => ColorGradePanel(
                         grade: _grade,
                         onChanged: () => setState(() {}),
@@ -1538,6 +1666,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                       ),
                       _ => WatermarkPanel(
                         controller: _wmPanelCtrl,
+                        // 導覽列由這一頁自己畫（要多一格「調色」）
+                        showNav: false,
+                        // 給浮在上面的輸出鍵讓位，最後一張卡才捲得完
+                        bottomInset: 78,
                         settings: _settings,
                         onChanged: () => setState(() {}),
                         onBeforeChange: _pushUndo,
@@ -1562,79 +1694,17 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                         ],
                       ),
                     },
+                        ),
+                        _floatingExport(),
+                      ],
+                    ),
                   ),
                 ],
-              ),
-        // 底部分頁：跟影片編輯同一套（浮水印／調色／輸出）
-        bottomNavigationBar: _photoBytes == null
-            ? null
-            : Container(
-                decoration: const BoxDecoration(
-                  color: kBg,
-                  border: Border(top: BorderSide(color: kBorder)),
-                ),
-                child: SafeArea(
-                  top: false,
-                  child: Row(
-                    children: [
-                      _tabBtn(0, Icons.branding_watermark, '浮水印'),
-                      _tabBtn(1, Icons.tune, '調色'),
-                      // 輸出是動作不是分頁。只有一種格式沒得選，
-                      // 中間再插一個視窗只是多一次點擊
-                      _tabBtn(
-                        -1,
-                        Icons.ios_share,
-                        '輸出',
-                        // 一定要給非 null，不然 ?? 會掉回分頁切換
-                        onTap: _confirmExport,
-                      ),
-                    ],
-                  ),
-                ),
               ),
       ),
     );
   }
 
-  /// i < 0 代表這一格是動作（例如輸出），不是分頁
-  Widget _tabBtn(int i, IconData icon, String label, {VoidCallback? onTap}) {
-    final on = _tab == i;
-    // 調色調過但現在不在那個分頁時，圖示留一點顏色提示
-    final hint = i == 1 && !on && _grade.hasColor;
-    return Expanded(
-      child: InkWell(
-        onTap:
-            onTap ??
-            () => setState(() {
-              _tab = i;
-              if (i != 1) _colorCompare = false;
-            }),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                icon,
-                size: 20,
-                color: on ? kAmber : (hint ? kSelect : kIcon),
-              ),
-              const SizedBox(height: 3),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: on ? FontWeight.w700 : FontWeight.w400,
-                  letterSpacing: 0.3,
-                  color: on ? kText : kTextDim,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 /// 預覽用的馬賽克補丁：直接取樣照片畫「真效果」，
