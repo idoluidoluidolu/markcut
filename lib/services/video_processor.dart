@@ -53,22 +53,36 @@ extension CanvasRatioInfo on CanvasRatio {
 }
 
 /// 匯出畫質（CRF 越低畫質越高、檔案越大）
-enum ExportQuality { standard, ultra, lossless }
+/// 匯出畫質。low 補在最後而不是插在最前面——
+/// 草稿存的是 enum 索引，插在中間會讓舊專案的畫質整個跑掉；
+/// 顯示順序另外由 [qualityOrder] 決定
+enum ExportQuality { standard, ultra, lossless, low }
+
+/// 選單顯示順序：由低到高
+const qualityOrder = [
+  ExportQuality.low,
+  ExportQuality.standard,
+  ExportQuality.ultra,
+  ExportQuality.lossless,
+];
 
 extension ExportQualityInfo on ExportQuality {
   String get label => switch (this) {
+        ExportQuality.low => '低',
         ExportQuality.standard => '標準',
         ExportQuality.ultra => '極高',
         ExportQuality.lossless => '最高',
       };
 
   String get note => switch (this) {
+        ExportQuality.low => '匯出速度最快',
         ExportQuality.standard => '視覺無損，建議日常使用',
         ExportQuality.ultra => '檔案約大一倍',
         ExportQuality.lossless => '位元率拉滿，檔案非常大',
       };
 
   int get crf => switch (this) {
+        ExportQuality.low => 26,
         ExportQuality.standard => 17,
         ExportQuality.ultra => 12,
         ExportQuality.lossless => 0,
@@ -76,6 +90,7 @@ extension ExportQualityInfo on ExportQuality {
 
   /// 粗估檔案大小相對「標準」的倍率
   double get sizeFactor => switch (this) {
+        ExportQuality.low => 0.45,
         ExportQuality.standard => 1,
         ExportQuality.ultra => 1.8,
         ExportQuality.lossless => 6,

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 
 import '../theme.dart';
+import '../widgets/swipe_back.dart';
 
 /// 斗內頁（App 內購小費罐）。
 ///
@@ -171,7 +172,8 @@ class _DonateScreenState extends State<DonateScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return SwipeBack(
+      child: Scaffold(
       backgroundColor: kBg,
       appBar: AppBar(backgroundColor: kBg, title: const Text('太好用啦')),
       body: SafeArea(
@@ -235,6 +237,7 @@ class _DonateScreenState extends State<DonateScreen> {
           ],
         ),
       ),
+    ),
     );
   }
 }

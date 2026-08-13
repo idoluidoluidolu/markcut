@@ -5883,7 +5883,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              for (final (i, q) in ExportQuality.values.indexed)
+              for (final (i, q) in qualityOrder.indexed)
                 _optionRow(
                   title: q.label,
                   subtitle: q.note,

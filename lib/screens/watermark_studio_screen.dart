@@ -344,18 +344,21 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
                                       setState(() => _wmPart = p),
                                   panLocked: () => _pvPts.length >= 2,
                                 ),
-                                // 置中輔助線（路由拖曳吸中線時）
-                                if (_stGuideV || _stGuideH)
-                                  Positioned.fill(
-                                    child: CenterGuides(
-                                      vertical: _stGuideV,
-                                      horizontal: _stGuideH,
-                                    ),
+                                // 置中輔助線（路由拖曳吸中線時）。
+                                // 永遠佔一個位置，不能用 if 增減——線一出現
+                                // 會把下面手勢層的索引推掉，拖曳被中斷後
+                                // 又從已吸附的中線重新開始，就再也拖不出來
+                                Positioned.fill(
+                                  child: CenterGuides(
+                                    vertical: _stGuideV,
+                                    horizontal: _stGuideH,
                                   ),
+                                ),
                                 // 選取路由：有部件被選取時，整個示意
                                 // 畫面的拖曳都只動被選的那個
                                 if (_wmPartAlive != WmPart.none)
                                   Positioned.fill(
+                                    key: const ValueKey('wm-route'),
                                     child: LayoutBuilder(
                                       builder: (context, box) {
                                         final w = box.maxWidth;

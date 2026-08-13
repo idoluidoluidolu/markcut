@@ -1361,19 +1361,24 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                         _selMosaic == -1 &&
                                         (_selExtra == -1 || _selExtra == i),
                                   ),
-                                // 置中輔助線（路由/馬賽克拖曳吸中線時）
-                                if (_phGuideV || _phGuideH)
-                                  Positioned.fill(
-                                    child: CenterGuides(
-                                      vertical: _phGuideV,
-                                      horizontal: _phGuideH,
-                                    ),
+                                // 置中輔助線（路由/馬賽克拖曳吸中線時）。
+                                // 一定要「永遠佔一個位置」，不能用 if 增減：
+                                // 線一出現就會把後面圖層的索引往後推，
+                                // Flutter 因此重建下面那個手勢層＝拖曳被中斷，
+                                // 下一輪又從已吸附的中線值重新開始，
+                                // 結果就是吸上中線後再也拖不出來
+                                Positioned.fill(
+                                  child: CenterGuides(
+                                    vertical: _phGuideV,
+                                    horizontal: _phGuideH,
                                   ),
+                                ),
                                 // 選取路由：有部件被選取（白框）時，
                                 // 整個預覽的拖曳都只動被選的那個——
                                 // 跟影片編輯同一套規則
                                 if (_wmPartAlive != WmPart.none)
                                   Positioned.fill(
+                                    key: const ValueKey('wm-route'),
                                     child: LayoutBuilder(
                                       builder: (context, box) {
                                         final w = box.maxWidth;
