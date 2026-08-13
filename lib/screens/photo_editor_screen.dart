@@ -1199,16 +1199,47 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       showHint(context, message, error: true);
       return;
     }
-    // 成功：問要回主畫面還是留下來繼續改
-    final home = await askAfterExport(context, message);
+    // 成功：問要回主畫面、繼續改，還是順便把這組浮水印存成範本
+    await _afterExport(message);
+  }
+
+  /// 輸出完成後的收尾。選了「存成範本」就存完再問一次
+  ///（存完還是要決定去留，但那次就不再問存範本了）
+  Future<void> _afterExport(String message, {bool offerSave = true}) async {
+    // 浮水印是空的就沒什麼好存
+    final hasWm = (_settings.text.enabled &&
+            _settings.text.text.trim().isNotEmpty) ||
+        (_settings.logo.enabled && _settings.logo.bytes != null);
+    final act = await askAfterExport(
+      context,
+      message,
+      offerSave: offerSave && hasWm,
+    );
+    if (!mounted) return;
+    if (act == 'save') {
+      // 面板只在浮水印分頁掛著；在調色模式要先切回去才叫得到它
+      if (_tab != 0) {
+        setState(() => _tab = 0);
+        await WidgetsBinding.instance.endOfFrame;
+        if (!mounted) return;
+      }
+      await _panelKey.currentState?.savePreset();
+      if (!mounted) return;
+      // 存完還是得決定去留；這次不再問存範本
+      await _afterExport(message, offerSave: false);
+      return;
+    }
     // _initialJson 上面已經對齊現況，離開不會再問「要放棄嗎」
-    if (home && mounted) {
+    if (act == 'home' && mounted) {
       Navigator.of(context).popUntil((r) => r.isFirst);
     }
   }
 
   /// 點畫面上的浮水印時，叫下面的面板捲到對應的設定區塊
   final _wmPanelCtrl = WatermarkPanelController();
+
+  /// 輸出後要問「存成範本」時，得叫得動面板裡的儲存流程
+  final _panelKey = GlobalKey<WatermarkPanelState>();
 
   /// 預覽上每個可點的東西畫在哪。
   /// 用 Map 不用 List：疊放順序在 _phOrder 裡是固定的（馬賽克在最下、
@@ -1674,8 +1705,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                         onChanged: () => setState(() {}),
                         onBeforeChange: _pushUndo,
                         syncVersion: _sync,
-                        // 儲存範本跟著面板捲到最後面，不釘在底部
-                        hideSaveButton: false,
+                        key: _panelKey,
+                        // 儲存範本改成輸出後才問：一顆白色大鈕釘在捲動區
+                        // 最底，跟浮在上面的輸出鍵長得一樣重，互相搶
+                        hideSaveButton: true,
                         // 剛加的圖片直接選起來，可以馬上拖／縮放
                         onLogoAdded: () =>
                             setState(() => _wmPart = WmPart.logo),

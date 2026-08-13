@@ -531,7 +531,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
           error: (failed > 0 || skipped > 0) && !_stopRequested);
       return;
     }
-    final home = await askAfterExport(context, msg);
+    final home = await askAfterExport(context, msg) == 'home';
     // _initialJson 上面已經對齊現況，離開不會再問「要放棄嗎」
     if (home && mounted) {
       Navigator.of(context).popUntil((r) => r.isFirst);

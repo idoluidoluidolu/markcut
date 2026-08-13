@@ -372,8 +372,15 @@ Future<bool> showConfirm(
 ///
 /// 存完檔直接把人留在編輯頁，他不知道到底成功了沒、也不知道
 /// 接下來該按什麼；直接踢回主畫面又會讓想微調再存一次的人重來
-Future<bool> askAfterExport(BuildContext context, String message) async {
-  final home = await showDialog<bool>(
+/// 回傳 'home'（回主畫面）／'stay'（繼續編輯）／'save'（先存成範本）。
+/// [offerSave] 打開時多一顆「存成範本」——問的時機比放一顆常駐按鈕準，
+/// 使用者剛做完一組滿意的浮水印才會想留下來
+Future<String> askAfterExport(
+  BuildContext context,
+  String message, {
+  bool offerSave = false,
+}) async {
+  final act = await showDialog<String>(
     context: context,
     barrierDismissible: false,
     builder: (context) => Dialog(
@@ -414,12 +421,28 @@ Future<bool> askAfterExport(BuildContext context, String message) async {
                       fontWeight: FontWeight.w700,
                       fontFamily: 'NotoSansTC'),
                 ),
-                onPressed: () => Navigator.pop(context, true),
+                onPressed: () => Navigator.pop(context, 'home'),
                 child: const Text('回主畫面'),
               ),
+              if (offerSave) ...[
+                const SizedBox(height: 6),
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size.fromHeight(42),
+                    foregroundColor: kText,
+                    side: const BorderSide(color: kBorder),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                  onPressed: () => Navigator.pop(context, 'save'),
+                  icon: const Icon(Icons.bookmark_add_outlined, size: 16),
+                  label: const Text('把這次的浮水印存成範本',
+                      style: TextStyle(fontSize: 12.5)),
+                ),
+              ],
               const SizedBox(height: 4),
               TextButton(
-                onPressed: () => Navigator.pop(context, false),
+                onPressed: () => Navigator.pop(context, 'stay'),
                 style: TextButton.styleFrom(
                   foregroundColor: kTextDim,
                   minimumSize: const Size.fromHeight(40),
@@ -433,7 +456,7 @@ Future<bool> askAfterExport(BuildContext context, String message) async {
       ),
     ),
   );
-  return home == true;
+  return act ?? 'stay';
 }
 
 /// 輸出照片前選格式。回傳 'jpg' / 'png'，取消回 null。

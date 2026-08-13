@@ -3379,7 +3379,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 問下一步一定要放在所有清理之後：選了回主畫面這頁就收掉，
     // 圖片快取上限沒還原的話整個 App 的快取會一直是關著的
     if (ok && mounted) {
-      final home = await askAfterExport(context, message);
+      final home = await askAfterExport(context, message) == 'home';
       // popUntil 不經過 PopScope，不會再跳一次「要不要留草稿」——
       // 草稿本來就一直有存，這裡直接走
       if (home && mounted) {
