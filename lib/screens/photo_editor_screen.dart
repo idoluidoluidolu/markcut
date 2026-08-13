@@ -1698,6 +1698,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                         grade: _grade,
                         onChanged: () => setState(() {}),
                         onBeforeChange: _pushUndo,
+                        // 上面的區段導覽列已經寫著「調色」了
+                        showTitle: false,
+                        // 給浮在上面的按鈕列讓位，最後一條滑桿
+                        // 才不會被蓋住
+                        bottomInset: 78,
                         // 面板 dispose 的回呼可能落在這頁收掉之後——要擋
                         onCompare: (on) {
                           if (mounted) setState(() => _colorCompare = on);

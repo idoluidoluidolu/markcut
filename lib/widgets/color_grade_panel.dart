@@ -96,6 +96,14 @@ class ColorGradePanel extends StatefulWidget {
   /// 父層收到 true 就先不要套調色，讓使用者比對前後差異
   final ValueChanged<bool>? onCompare;
 
+  /// 畫最上面那條「調色」標題列。照片編輯的區段導覽列已經寫著調色了，
+  /// 再寫一次是白佔一行，那邊傳 false
+  final bool showTitle;
+
+  /// 清單底部多留的空間（父層在上面浮了按鈕列時要留位子，
+  /// 不然最後一條滑桿會被蓋住）
+  final double bottomInset;
+
   const ColorGradePanel({
     super.key,
     required this.grade,
@@ -103,6 +111,8 @@ class ColorGradePanel extends StatefulWidget {
     this.onBeforeChange,
     this.onDone,
     this.onCompare,
+    this.showTitle = true,
+    this.bottomInset = 0,
   });
 
   @override
@@ -189,19 +199,43 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
 
     return Column(
       children: [
-        Container(
-          padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
-          decoration: const BoxDecoration(
-            border: Border(bottom: BorderSide(color: kBorder)),
+        if (widget.showTitle || widget.onDone != null)
+          Container(
+            padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+            decoration: const BoxDecoration(
+              border: Border(bottom: BorderSide(color: kBorder)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.tune, size: 16, color: kAmber),
+                const SizedBox(width: 6),
+                const Text(
+                  '調色',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+                ),
+                const Spacer(),
+                if (widget.onDone != null)
+                  FilledButton(
+                    onPressed: widget.onDone,
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size(0, 32),
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                    ),
+                    child: const Text('完成', style: TextStyle(fontSize: 12.5)),
+                  ),
+              ],
+            ),
           ),
+        // 分頁與動作同一列，但用完全不同的形狀：
+        // 分頁是底線式（輕、講「你在看哪一組」），
+        // 動作是描邊膠囊（重、講「按下去會發生事情」）
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 6, 12, 2),
           child: Row(
             children: [
-              const Icon(Icons.tune, size: 16, color: kAmber),
-              const SizedBox(width: 6),
-              const Text(
-                '調色',
-                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
-              ),
+              _groupTab(0, '顏色'),
+              const SizedBox(width: 20),
+              _groupTab(1, '明暗'),
               // 說明關掉之後還叫得回來，不然關了就永遠找不到。
               // 只在「顏色」組給——說明講的就是色偏那三條
               if (!_showHint && _group == 0)
@@ -209,7 +243,7 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
                   behavior: HitTestBehavior.opaque,
                   onTap: () => setState(() => _showHint = true),
                   child: const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                    padding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                     child: Icon(Icons.help_outline, size: 15, color: kTextDim),
                   ),
                 ),
@@ -228,8 +262,11 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
                     horizontal: 11,
                     vertical: 6,
                   ),
+                  // 平常就有底色＝看得出這是可以按的東西。
+                  // 原本是透明底，跟旁邊的純文字「重設」長得太像，
+                  // 沒人知道它可以按住比對
                   decoration: BoxDecoration(
-                    color: _comparing ? kPanelHi : Colors.transparent,
+                    color: _comparing ? kAmber : kPanelHi,
                     borderRadius: BorderRadius.circular(99),
                     border: Border.all(
                       color: _comparing ? kAmber : kClipBorder,
@@ -241,21 +278,25 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
                       Icon(
                         Icons.compare_arrows,
                         size: 14,
-                        color: _comparing ? kAmber : kTextDim,
+                        // 按住時整顆反白，才明顯是「正在看原圖」
+                        color: _comparing ? kBg : kIcon,
                       ),
                       const SizedBox(width: 4),
                       Text(
                         '原圖',
                         style: TextStyle(
                           fontSize: 11.5,
-                          color: _comparing ? kText : kTextDim,
+                          fontWeight: FontWeight.w600,
+                          color: _comparing ? kBg : kText,
                         ),
                       ),
                     ],
                   ),
                 ),
               ),
-              const SizedBox(width: 6),
+              const SizedBox(width: 2),
+              // 重設維持純文字：三個層級才分得開——
+              // 分頁是底線、原圖是有底色的鈕、重設是最輕的文字
               TextButton(
                 onPressed: g.hasColor
                     ? () {
@@ -269,34 +310,12 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
                 ),
                 child: const Text('重設', style: TextStyle(fontSize: 12)),
               ),
-              if (widget.onDone != null) ...[
-                const SizedBox(width: 4),
-                FilledButton(
-                  onPressed: widget.onDone,
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size(0, 32),
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                  ),
-                  child: const Text('完成', style: TextStyle(fontSize: 12.5)),
-                ),
-              ],
             ],
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-          child: Container(
-            padding: const EdgeInsets.all(3),
-            decoration: BoxDecoration(
-              color: kBg,
-              borderRadius: BorderRadius.circular(9),
-            ),
-            child: Row(children: [_groupTab(0, '顏色'), _groupTab(1, '明暗')]),
           ),
         ),
         Expanded(
           child: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+            padding: EdgeInsets.fromLTRB(16, 10, 16, 8 + widget.bottomInset),
             children: [
               // 用法擺在最上面，但只出現一次——滑桿本身看不出「拉哪邊代表
               // 什麼」，看過就不用再佔版面。
@@ -355,21 +374,24 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
     final on = _group == group;
     // 沒在看的那組如果有調過，掛個小點提醒
     final dot = !on && _groupTouched(group);
-    return Expanded(
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: () => setState(() {
-          _group = group;
-          _lastGroup = group;
-        }),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 8),
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => setState(() {
+        _group = group;
+        _lastGroup = group;
+      }),
+      child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 2),
           decoration: BoxDecoration(
-            color: on ? kPanelHi : Colors.transparent,
-            borderRadius: BorderRadius.circular(7),
+            border: Border(
+              bottom: BorderSide(
+                color: on ? kAmber : Colors.transparent,
+                width: 2,
+              ),
+            ),
           ),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
             children: [
               Text(
                 label,
@@ -393,7 +415,6 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
             ],
           ),
         ),
-      ),
     );
   }
 
