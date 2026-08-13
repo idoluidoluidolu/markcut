@@ -398,13 +398,13 @@ class _HomeScreenState extends State<HomeScreen> {
               if (_draft != null) ...[
                 const SizedBox(height: 18),
                 InkWell(
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(kHomeBtnRadius),
                   onTap: _resumeDraft,
                   child: Container(
                     padding: const EdgeInsets.symmetric(
                         vertical: 14, horizontal: 18),
                     decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(kHomeBtnRadius),
                       border: Border.all(color: kBorder),
                     ),
                     // 不放專案縮圖：那張小圖在這裡只是雜訊，
@@ -430,6 +430,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
+/// 首頁三顆按鈕的圓角。改這一個數字三顆一起變：
+/// 28 = 膠囊（全圓）、18 = 圓角、12 = 接近方角
+const double kHomeBtnRadius = 18;
+
 /// 首頁按鈕（B 版型）：主鍵反白填滿、次鍵描邊，主次分明
 class _HomeButton extends StatelessWidget {
   final bool primary;
@@ -445,14 +449,17 @@ class _HomeButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return InkWell(
-      borderRadius: BorderRadius.circular(14),
+      // 圓角 18：比原本的 14 圓一階，但不做成膠囊——
+      // 全圓的膠囊在 56 高的大按鈕上會顯得比較廉價，
+      // 也跟 App 其他卡片（12~16）對不上
+      borderRadius: BorderRadius.circular(kHomeBtnRadius),
       onTap: onTap,
       child: Container(
         height: 56,
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: primary ? kAmber : Colors.transparent,
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(kHomeBtnRadius),
           border:
               primary ? null : Border.all(color: kClipBorder, width: 1.5),
         ),
