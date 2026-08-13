@@ -41,6 +41,7 @@ Future<String?> renderReversedClip(
     targetW,
     targetH,
     probe.hasAudio,
+    probe.hdr,
     temps,
     onProgress: onProgress,
   );
@@ -84,16 +85,34 @@ String _atempoChain(double speed) {
 class _SourceProbe {
   final bool hasAudio;
   final double fps;
-  const _SourceProbe(this.hasAudio, this.fps);
+
+  /// HDR 素材（HLG／HDR10／杜比視界）：處理畫面時要先轉 SDR bt709，
+  /// 不轉的話顏色整片灰白退色
+  final bool hdr;
+  const _SourceProbe(this.hasAudio, this.fps, this.hdr);
 }
 
+/// HDR → SDR（bt709）色彩轉換。iPhone 預設就錄 HDR（HLG），
+/// FFmpeg 不轉的話只是把 bt2020 的數值原封塞進 SDR 檔，
+/// 匯出／縮圖整片灰白退色（播放正常是系統播放器自己會轉）。
+/// min 版 FFmpeg 沒有 zscale/tonemap，colorspace 是原生濾鏡；
+/// 它不認得 HLG 曲線，拿 bt2020-10 當近似（HLG 低亮度段就是這條），
+/// 亮部稍微壓一點，但顏色是對的
+const _kHdr2Sdr = 'colorspace=all=bt709:iall=bt2020:itrc=bt2020-10';
+
+/// 同一個檔案的 probe 快取（檔案內容不會變，縮圖會反覆問同一支）
+final Map<String, _SourceProbe> _probeCache = {};
+
 Future<_SourceProbe> _probe(String path) async {
+  final hit = _probeCache[path];
+  if (hit != null) return hit;
   try {
     final session = await FFprobeKit.getMediaInformation(path);
     final info = session.getMediaInformation();
     final streams = info?.getStreams() ?? [];
     final hasAudio = streams.any((s) => s.getType() == 'audio');
     double fps = 0;
+    var hdr = false;
     for (final s in streams) {
       if (s.getType() == 'video') {
         final r = s.getAverageFrameRate() ?? '';
@@ -105,12 +124,19 @@ Future<_SourceProbe> _probe(String path) async {
         } else {
           fps = double.tryParse(r) ?? 0;
         }
+        final trc = '${s.getProperty('color_transfer') ?? ''}';
+        final prim = '${s.getProperty('color_primaries') ?? ''}';
+        hdr = trc == 'smpte2084' ||
+            trc == 'arib-std-b67' ||
+            prim.startsWith('bt2020');
         break;
       }
     }
-    return _SourceProbe(hasAudio, fps);
+    final r = _SourceProbe(hasAudio, fps, hdr);
+    _probeCache[path] = r;
+    return r;
   } catch (_) {
-    return _SourceProbe(true, 0);
+    return _SourceProbe(true, 0, false);
   }
 }
 
@@ -138,7 +164,7 @@ Future<String> _buildCommand(
     final s = spec.sources[i];
     probes[i] = (s.kind == ClipKind.video || s.kind == ClipKind.audio)
         ? await _probe(s.path)
-        : const _SourceProbe(false, 0);
+        : const _SourceProbe(false, 0, false);
   }
 
   final sp = spec.speed;
@@ -308,6 +334,8 @@ Future<String> _buildCommand(
       // 先縮到輸出尺寸再倒轉：reverse 會把整段畫面存進記憶體，
       // 用原始解析度存會直接把記憶體吃爆
       'scale=$w2:$h2:flags=lanczos,'
+      // HDR 素材轉 SDR（縮完再轉，像素少、算得快）
+      '${probes[c.sourceIndex]!.hdr ? '$_kHdr2Sdr,' : ''}'
       '${c.reverse ? 'reverse,' : ''}'
       // 全域速度 × 每片段速度一起壓進 PTS
       //（速度 clamp 到跟 TimelineClip.length 同一個範圍，
@@ -649,6 +677,7 @@ Future<String?> _prerenderReverse(
   int outW,
   int outH,
   bool hasAudio,
+  bool hdr,
   List<String> temps, {
   void Function(double progress)? onProgress,
 }) async {
@@ -671,7 +700,8 @@ Future<String?> _prerenderReverse(
     // 先縮到輸出尺寸再倒轉：用原始解析度倒轉一樣會吃爆記憶體
     final cmd =
         '-y -ss ${_f(s)} -to ${_f(e)} -i "$srcPath" '
-        '-vf "scale=$outW:$outH:flags=bicubic,reverse" -an '
+        '-vf "scale=$outW:$outH:flags=bicubic,'
+        '${hdr ? '$_kHdr2Sdr,' : ''}reverse" -an '
         '-c:v ${_hwEncoder()} -b:v 16000k -pix_fmt nv12 "$part"';
     var ses = await FFmpegKit.execute(cmd);
     var rc = await ses.getReturnCode();
@@ -758,6 +788,7 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
         spec.outW,
         spec.outH,
         probe.hasAudio,
+        probe.hdr,
         revTemps,
       );
       if (made == null) {
@@ -822,7 +853,7 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     overlayFiles[e.key] = p;
   }
 
-  final cmd = await _buildCommand(spec, wmPath, overlayFiles, outPath);
+  var cmd = await _buildCommand(spec, wmPath, overlayFiles, outPath);
 
   final outDurMs = spec.outputDuration * 1000;
   FFmpegKitConfig.enableStatisticsCallback((stats) {
@@ -835,6 +866,15 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   var session = await FFmpegKit.execute(cmd);
   var rc = await session.getReturnCode();
   var ok = ReturnCode.isSuccess(rc);
+
+  // 保底：萬一這版 FFmpeg 的 colorspace 濾鏡不能用，
+  // 退回不轉色重跑——寧可顏色淡也不能匯不出來
+  if (!ok && !ReturnCode.isCancel(rc) && cmd.contains(_kHdr2Sdr)) {
+    cmd = cmd.replaceAll('$_kHdr2Sdr,', '');
+    session = await FFmpegKit.execute(cmd);
+    rc = await session.getReturnCode();
+    ok = ReturnCode.isSuccess(rc);
+  }
 
   // 保底：這台機器的硬體編碼器不能用（少數機型/模擬器）就退
   // LGPL 軟體編碼器 mpeg4 重跑一次，匯出不能整個死掉
@@ -935,11 +975,20 @@ Future<List<Uint8List>> makeThumbnails(
   // 手機 FFmpeg 是軟體解碼，4K HEVC 全幀解會把 CPU 吃滿好幾分鐘、
   // 整個 App 卡死；關鍵幀解快 50~100 倍，拖曳預覽夠用
   final skip = fastDecode ? '-skip_frame nokey ' : '';
+  // HDR 素材先轉 SDR 再縮圖：不轉的話快取幀／時間軸縮圖整片
+  // 灰白，拖曳預覽跟播放畫面顏色對不上（也就是「拖曳會退色」）
+  final hdrFix = (await _probe(inputPath)).hdr ? '$_kHdr2Sdr,' : '';
   final cmd =
-      '-y $skip$seek-i "$inputPath" -vf "fps=${fps.toStringAsFixed(6)},$scale" '
+      '-y $skip$seek-i "$inputPath" '
+      '-vf "fps=${fps.toStringAsFixed(6)},$hdrFix$scale" '
       '-frames:v $count -q:v 4 "$pattern"';
-  final session = await FFmpegKit.execute(cmd);
-  final rc = await session.getReturnCode();
+  var session = await FFmpegKit.execute(cmd);
+  var rc = await session.getReturnCode();
+  // 保底：colorspace 濾鏡不能用就退回不轉色重抽
+  if (!ReturnCode.isSuccess(rc) && hdrFix.isNotEmpty) {
+    session = await FFmpegKit.execute(cmd.replaceFirst(hdrFix, ''));
+    rc = await session.getReturnCode();
+  }
   if (!ReturnCode.isSuccess(rc)) return [];
   final result = <Uint8List>[];
   for (var i = 1; i <= count; i++) {

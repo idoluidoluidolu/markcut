@@ -2200,11 +2200,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 片段「剛變成作用中」的追蹤：只在進場那一刻 seek 一次
   final Set<int> _wasActive = {};
 
+  /// 已預先對位（快進場時先 seek 到起點）的片段
+  final Set<int> _preRolled = {};
+
   /// 時間軸的「時間→內容」對應被改動（移動/修剪/變速/刪除/復原）後
   /// 一定要呼叫：清掉進場狀態，下次播放每個片段重新對位。
   /// 不清的話進場 seek 被跳過，1 秒內的錯位永遠不會被修正
   void _resyncPlayback() {
     _wasActive.clear();
+    _preRolled.clear();
     _lastDriftFix.clear();
   }
 
@@ -2261,6 +2265,29 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           break;
         }
       }
+      // 預先對位：快進場的片段先把播放器 seek 到自己的起點，
+      // 到交界時第一幀已經解好、直接 play 就走。
+      // 進場才 seek 的話要等解碼器轉起來＝每段開頭頓一下
+      for (final clip in _tl.clips) {
+        final k = _tl.sourceOf(clip).kind;
+        if (k != ClipKind.video && k != ClipKind.audio) continue;
+        final lead = clip.offset - _position;
+        if (lead > 0 && lead < 1.2) {
+          if (_preRolled.contains(clip.id) || _wasActive.contains(clip.id)) {
+            continue;
+          }
+          final c = _ctrls[clip.id];
+          if (c == null || !c.value.isInitialized) continue;
+          _preRolled.add(clip.id);
+          c.seekTo(
+            Duration(
+              milliseconds: (clip.sourceTimeAt(clip.offset) * 1000).round(),
+            ),
+          );
+        } else if (lead <= 0 || lead > 2.0) {
+          _preRolled.remove(clip.id);
+        }
+      }
     }
     for (final clip in _tl.clips) {
       final c = _ctrls[clip.id];
@@ -2273,9 +2300,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       final want = clip.sourceTimeAt(_position);
       if (!_wasActive.contains(clip.id)) {
-        // 進場：對準起點，之後不再打擾
+        // 進場：對準起點，之後不再打擾。
+        // 已經預先對位過就不再 seek（見上面的 pre-roll）
         _wasActive.add(clip.id);
-        c.seekTo(Duration(milliseconds: (want * 1000).round()));
+        if (!_preRolled.remove(clip.id)) {
+          c.seekTo(Duration(milliseconds: (want * 1000).round()));
+        }
       } else if (_playing) {
         final actual = c.value.position.inMilliseconds / 1000.0;
         // 門檻隨播放速度放大：Android 位置回報有 ~500ms 延遲，
@@ -2398,25 +2428,40 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 上一刻修剪把手有沒有吸住（吸住的瞬間震一下，才有磁鐵的感覺）
   bool _trimSnapped = false;
 
+  /// 這次修剪手勢「未吸附」的邊緣位置。
+  /// 把手回報的是增量：若每步都從「已吸附」的邊緣起算，
+  /// 每一小步都落在吸附半徑內、又被吸回原點，把手就永遠拖不動——
+  /// 片段相接時起點本身就是吸附點，等於一開磁吸就完全不能修剪。
+  /// 位移改累計在這個原始值上，拖超過吸附半徑自然脫離
+  double? _trimRawEdge;
+
+  /// 修剪手勢開始：拍復原快照、重置原始邊緣
+  void _trimGestureStart() {
+    _trimRawEdge = null;
+    _pushUndo();
+  }
+
   void _trimClip(int id, double dSec, bool fromLeft) {
     if (_tlPinching) return; // 雙指縮放中不修剪
     setState(() {
       for (final c in _tl.clips) {
         if (c.id != id) continue;
         final src = _tl.sourceOf(c);
-        // 磁吸：先算這條邊被拖到哪，吸附到鄰近片段邊緣／播放頭／0
+        final curEdge = fromLeft ? c.offset : c.end;
+        // 磁吸：手指的「累計」位置吸附到鄰近片段邊緣／播放頭／0
         // 之後，再換算回實際的位移量——接片段才能剛好無縫貼齊
-        final edge = fromLeft ? c.offset + dSec : c.end + dSec;
+        final raw = (_trimRawEdge ?? curEdge) + dSec;
+        _trimRawEdge = raw;
         final snapped = _snapOn
-            ? _tl.snapEdge(c, edge, _position, _pxPerSec)
-            : edge;
+            ? _tl.snapEdge(c, raw, _position, _pxPerSec)
+            : raw;
         // 剛吸上去的那一下震動回饋
-        final on = (snapped - edge).abs() > 0.0005;
+        final on = (snapped - raw).abs() > 0.0005;
         if (on != _trimSnapped) {
           _trimSnapped = on;
           if (on) HapticFeedback.selectionClick();
         }
-        dSec = fromLeft ? snapped - c.offset : snapped - c.end;
+        dSec = snapped - curEdge;
         // 把手拖的是「時間軸秒」，變速片段要換算回素材秒
         final dSrc = dSec * c.speed;
         // clamp 的上下限一旦反轉（極短片段），Dart 會直接丟例外，
@@ -2448,6 +2493,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             c.trimStart = (c.trimStart - dSrc).clamp(0.0, hi);
           }
         }
+        // 撞到最短長度／素材端點被夾住時，原始值跟回實際邊緣：
+        // 不跟的話反向拖回來會有一段空行程
+        final newEdge = fromLeft ? c.offset : c.end;
+        if ((newEdge - snapped).abs() > 0.001) _trimRawEdge = newEdge;
       }
     });
     _resyncPlayback();
@@ -3421,6 +3470,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
                                   // 影片圖層（由下層往上疊 = 真 PiP）
                                   final vids = _tl.videosAt(_position);
+                                  // 播放中：快進場的影片先以幾乎看不見
+                                  // 的透明度掛在最底層——材質先附著、
+                                  // 第一幀先畫上去，跨過交界只是變回
+                                  // 不透明。到交界才掛材質的話，
+                                  // 掛上到第一幀之間就是那個黑閃
+                                  final warmIds = <int>{};
+                                  if (_playing) {
+                                    for (final c in _tl.clips) {
+                                      if (!_tl.sourceOf(c).isVideo) continue;
+                                      final lead = c.offset - _position;
+                                      if (lead <= 0 || lead > 1.2) continue;
+                                      final ct = _ctrls[c.id];
+                                      if (ct == null ||
+                                          !ct.value.isInitialized) {
+                                        continue;
+                                      }
+                                      warmIds.add(c.id);
+                                      vids.insert(0, c);
+                                    }
+                                  }
                                   for (final c in vids) {
                                     final ctrl = _ctrls[c.id];
                                     if (ctrl == null ||
@@ -3500,7 +3569,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         child: _tinted(
                                           c,
                                           Opacity(
-                                            opacity: c.fadeFactorAt(_position),
+                                            opacity: warmIds.contains(c.id)
+                                                ? 0.006
+                                                : c.fadeFactorAt(_position),
                                             child: Stack(
                                               fit: StackFit.expand,
                                               children: [
@@ -3572,6 +3643,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                   ),
                                                 // 點擊層必須疊在影片「上面」：影片是平台原生元件
                                                 // （Web 是 HTML video），會吃掉底下的點擊事件
+                                                // （預掛的隱形影片不收點擊）
+                                                if (!warmIds.contains(c.id))
                                                 GestureDetector(
                                                   behavior:
                                                       HitTestBehavior.opaque,
@@ -3589,7 +3662,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         ),
                                       ),
                                     );
-                                    if (c.id == _sel) {
+                                    if (c.id == _sel &&
+                                        !warmIds.contains(c.id)) {
                                       selRect = r;
                                       selVisual = c;
                                     }
@@ -4775,7 +4849,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 snapEnabled: _snapOn,
                                 onSeek: _seekScrub,
                                 onTrim: _trimClip,
-                                onTrimStart: _pushUndo,
+                                onTrimStart: _trimGestureStart,
                                 onDrop: _dropClip,
                                 onAddMedia: _addMedia,
                                 onReorderTrack: _reorderTrack,
