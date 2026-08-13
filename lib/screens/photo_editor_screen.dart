@@ -105,7 +105,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
       kPhotoDraftKey,
-      jsonEncode({'photo': widget.photo.path, 'state': _stateJson}),
+      jsonEncode({
+        'photo': widget.photo.path,
+        'state': _stateJson,
+        'savedAt': DateTime.now().toIso8601String(),
+      }),
     );
   }
 

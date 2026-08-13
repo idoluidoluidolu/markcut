@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart' show XFile;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/watermark_settings.dart';
@@ -11,6 +12,7 @@ import '../widgets/swipe_back.dart';
 import 'about_screen.dart';
 import 'donate_screen.dart';
 import 'feedback_screen.dart';
+import 'photo_editor_screen.dart';
 import 'presets_screen.dart';
 import 'video_editor_screen.dart';
 
@@ -24,7 +26,9 @@ class ProfileScreen extends StatefulWidget {
 
 class _ProfileScreenState extends State<ProfileScreen> {
   List<WatermarkPreset> _presets = const [];
-  Map<String, dynamic>? _draft;
+
+  /// 草稿夾裡有幾筆（影片＋照片各算一筆）
+  int _draftCount = 0;
 
   @override
   void initState() {
@@ -34,19 +38,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _reload() async {
     final presets = await PresetStore.load();
-    Map<String, dynamic>? draft;
+    var count = 0;
     final prefs = await SharedPreferences.getInstance();
     final s = prefs.getString(kDraftKey);
     if (s != null) {
       try {
         final j = jsonDecode(s) as Map<String, dynamic>;
-        if ((j['clips'] as List?)?.isNotEmpty ?? false) draft = j;
+        if ((j['clips'] as List?)?.isNotEmpty ?? false) count++;
+      } catch (_) {}
+    }
+    final ps = prefs.getString(kPhotoDraftKey);
+    if (ps != null) {
+      try {
+        final j = jsonDecode(ps) as Map<String, dynamic>;
+        if ((j['photo'] as String?)?.isNotEmpty ?? false) count++;
       } catch (_) {}
     }
     if (mounted) {
       setState(() {
         _presets = presets;
-        _draft = draft;
+        _draftCount = count;
       });
     }
   }
@@ -187,7 +198,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           _bigFolder(
                             icon: Icons.folder_outlined,
                             title: '草稿夾',
-                            subtitle: _draft == null ? '沒有草稿' : '1 個未完成的專案',
+                            subtitle: _draftCount == 0
+                                ? '沒有草稿'
+                                : '$_draftCount 個未完成',
                             screen: () => const DraftsScreen(),
                           ),
                           const SizedBox(height: 14),
@@ -260,6 +273,9 @@ class DraftsScreen extends StatefulWidget {
 
 class _DraftsScreenState extends State<DraftsScreen> {
   Map<String, dynamic>? _draft;
+
+  /// 照片編輯的草稿（離開時選「保留草稿」才會有）
+  Map<String, dynamic>? _photoDraft;
   bool _loading = true;
 
   @override
@@ -278,12 +294,123 @@ class _DraftsScreenState extends State<DraftsScreen> {
         if ((j['clips'] as List?)?.isNotEmpty ?? false) found = j;
       } catch (_) {}
     }
+    Map<String, dynamic>? photo;
+    final ps = prefs.getString(kPhotoDraftKey);
+    if (ps != null) {
+      try {
+        final j = jsonDecode(ps) as Map<String, dynamic>;
+        if ((j['photo'] as String?)?.isNotEmpty ?? false) photo = j;
+      } catch (_) {}
+    }
     if (mounted) {
       setState(() {
         _draft = found;
+        _photoDraft = photo;
         _loading = false;
       });
     }
+  }
+
+  /// 照片草稿的內容摘要：有幾塊馬賽克、幾組浮水印
+  String _photoSummary(Map<String, dynamic> j) {
+    final parts = <String>[];
+    try {
+      final st = jsonDecode(j['state'] as String) as Map<String, dynamic>;
+      final mosaics = (st['mosaics'] as List?)?.length ?? 0;
+      final extras = (st['extraWms'] as List?)?.length ?? 0;
+      // 主浮水印也算一組（有文字或有圖才算）
+      final text = st['text'];
+      final logo = st['logo'];
+      var wm = extras;
+      final hasText = text is Map &&
+          text['enabled'] == true &&
+          '${text['text'] ?? ''}'.trim().isNotEmpty;
+      final hasLogo = logo is Map && logo['enabled'] == true;
+      if (hasText || hasLogo) wm++;
+      if (mosaics > 0) parts.add('$mosaics 塊馬賽克');
+      if (wm > 0) parts.add('$wm 組浮水印');
+    } catch (_) {}
+    if (parts.isEmpty) parts.add('已編輯');
+    return parts.join('・') + _savedAtLabel(j);
+  }
+
+  Future<void> _resumePhoto() async {
+    final d = _photoDraft;
+    if (d == null) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PhotoEditorScreen(
+          photo: XFile(d['photo'] as String),
+          draft: d['state'] as String?,
+        ),
+      ),
+    );
+    _reload();
+  }
+
+  Future<void> _deletePhoto() async {
+    final ok = await showConfirm(
+      context,
+      title: '刪除草稿？',
+      message: '這張沒輸出的照片會被移除，無法復原',
+      action: '刪除',
+    );
+    if (ok) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(kPhotoDraftKey);
+      _reload();
+    }
+  }
+
+  /// 草稿卡（影片與照片共用同一種長相）
+  Widget _draftCard({
+    required Widget cover,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+    required VoidCallback onDelete,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: kPanel,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: kBorder),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(
+            children: [
+              cover,
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        style: const TextStyle(
+                            fontSize: 14, fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 2),
+                    Text(subtitle,
+                        style: const TextStyle(
+                            fontSize: 12, color: kTextDim)),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: '刪除草稿',
+                icon: const Icon(Icons.delete_outline,
+                    size: 19, color: kTextDim),
+                onPressed: onDelete,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   /// 專案總長（秒）＝所有片段最晚的結尾（變速片段要除速度才準）
@@ -361,18 +488,20 @@ class _DraftsScreenState extends State<DraftsScreen> {
   @override
   Widget build(BuildContext context) {
     final d = _draft;
+    final p = _photoDraft;
+    final empty = d == null && p == null;
     return SwipeBack(
       child: Scaffold(
         appBar: AppBar(title: const Text('草稿夾')),
         body: _loading
             ? const Center(child: CircularProgressIndicator())
-            : d == null
+            : empty
             ? const Center(
                 child: Padding(
                   padding: EdgeInsets.all(32),
                   child: Text(
-                    '沒有草稿。\n\n剪輯到一半離開時選「保留草稿」，'
-                    '專案就會存在這裡。',
+                    '沒有草稿。\n\n編輯到一半離開時選「保留草稿」，'
+                    '就會存在這裡。',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: kTextDim, height: 1.6),
                   ),
@@ -381,90 +510,59 @@ class _DraftsScreenState extends State<DraftsScreen> {
             : ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                  Container(
-                    decoration: BoxDecoration(
-                      color: kPanel,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: kBorder),
-                    ),
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(10),
-                      onTap: _resume,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 14,
-                        ),
-                        child: Row(
-                          children: [
-                            // 影片縮圖當封面：框跟著影片比例走（直片直框），
-                            // 沒有縮圖才用圖示
-                            Builder(
-                              builder: (context) {
-                                final aspect =
-                                    ((d['thumbAspect'] as num?) ?? 16 / 9)
-                                        .toDouble();
-                                return Container(
-                                  width: (52 * aspect).clamp(30.0, 92.0),
-                                  height: 52,
-                                  clipBehavior: Clip.antiAlias,
-                                  decoration: BoxDecoration(
-                                    color: kPanelHi,
-                                    borderRadius: BorderRadius.circular(7),
-                                  ),
-                                  child: _thumbOf(d) != null
-                                      ? Image.memory(
-                                          _thumbOf(d)!,
-                                          fit: BoxFit.cover,
-                                          gaplessPlayback: true,
-                                        )
-                                      : const Icon(
-                                          Icons.movie_outlined,
-                                          size: 20,
-                                          color: kAmber,
-                                        ),
-                                );
-                              },
+                  if (d != null)
+                    _draftCard(
+                      // 影片縮圖當封面：框跟著影片比例走（直片直框），
+                      // 沒有縮圖才用圖示
+                      cover: Builder(
+                        builder: (context) {
+                          final aspect =
+                              ((d['thumbAspect'] as num?) ?? 16 / 9)
+                                  .toDouble();
+                          return Container(
+                            width: (52 * aspect).clamp(30.0, 92.0),
+                            height: 52,
+                            clipBehavior: Clip.antiAlias,
+                            decoration: BoxDecoration(
+                              color: kPanelHi,
+                              borderRadius: BorderRadius.circular(7),
                             ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text(
-                                    '未完成的專案',
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    '${(d['clips'] as List? ?? const []).length} 個片段'
-                                    '・${_fmt(_draftDuration(d))}'
-                                    '${_savedAtLabel(d)}',
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      color: kTextDim,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            IconButton(
-                              tooltip: '刪除草稿',
-                              icon: const Icon(
-                                Icons.delete_outline,
-                                size: 19,
-                                color: kTextDim,
-                              ),
-                              onPressed: _delete,
-                            ),
-                          ],
-                        ),
+                            child: _thumbOf(d) != null
+                                ? Image.memory(_thumbOf(d)!,
+                                    fit: BoxFit.cover, gaplessPlayback: true)
+                                : const Icon(Icons.movie_outlined,
+                                    size: 20, color: kAmber),
+                          );
+                        },
                       ),
+                      title: '未完成的影片',
+                      subtitle:
+                          '${(d['clips'] as List? ?? const []).length} 個片段'
+                          '・${_fmt(_draftDuration(d))}'
+                          '${_savedAtLabel(d)}',
+                      onTap: _resume,
+                      onDelete: _delete,
                     ),
-                  ),
+                  if (d != null && p != null) const SizedBox(height: 12),
+                  if (p != null)
+                    _draftCard(
+                      // 照片草稿沒有存縮圖（那張照片還在裝置上，
+                      // 再存一份只是浪費空間），用圖示就好
+                      cover: Container(
+                        width: 52,
+                        height: 52,
+                        decoration: BoxDecoration(
+                          color: kPanelHi,
+                          borderRadius: BorderRadius.circular(7),
+                        ),
+                        child: const Icon(Icons.image_outlined,
+                            size: 20, color: kAmber),
+                      ),
+                      title: '未完成的照片',
+                      subtitle: _photoSummary(p),
+                      onTap: _resumePhoto,
+                      onDelete: _deletePhoto,
+                    ),
                 ],
               ),
       ),

@@ -86,10 +86,9 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  Map<String, dynamic>? _draft; // 上次沒完成的影片專案
-
-  /// 上次沒輸出的照片編輯（離開時選了「保留草稿」才會有）
-  Map<String, dynamic>? _photoDraft;
+  /// 上次沒完成的影片專案。首頁不列出來——草稿一律去
+  /// 個人中心的草稿夾拿；這裡只用來判斷「開新影片會不會蓋掉它」
+  Map<String, dynamic>? _draft;
 
   @override
   void initState() {
@@ -115,69 +114,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if ((j['clips'] as List?)?.isNotEmpty ?? false) found = j;
       } catch (_) {}
     }
-    Map<String, dynamic>? photo;
-    final ps = prefs.getString(kPhotoDraftKey);
-    if (ps != null) {
-      try {
-        final j = jsonDecode(ps) as Map<String, dynamic>;
-        if ((j['photo'] as String?)?.isNotEmpty ?? false) photo = j;
-      } catch (_) {}
-    }
-    setState(() {
-      _draft = found;
-      _photoDraft = photo;
-    });
-  }
-
-  Future<void> _resumePhotoDraft() async {
-    final d = _photoDraft;
-    if (d == null) return;
-    await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => PhotoEditorScreen(
-          photo: XFile(d['photo'] as String),
-          draft: d['state'] as String?,
-        ),
-      ),
-    );
-    _checkDraft();
-  }
-
-  /// 首頁底下的草稿列（影片／照片共用同一種長相）
-  Widget _draftRow(IconData icon, String label, VoidCallback onTap) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(kHomeBtnRadius),
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 18),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(kHomeBtnRadius),
-          border: Border.all(color: kBorder),
-        ),
-        // 不放專案縮圖：那張小圖在這裡只是雜訊，
-        // 而且會把文字擠得沒對齊
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, size: 18, color: kTextDim),
-            const SizedBox(width: 10),
-            Text(label,
-                style: const TextStyle(fontSize: 14, color: kTextDim)),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _resumeDraft() async {
-    final d = _draft;
-    if (d == null) return;
-    await Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => VideoEditorScreen(draft: d)),
-    );
-    _checkDraft();
+    setState(() => _draft = found);
   }
 
   bool _isVideoFile(XFile f) {
@@ -444,15 +381,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 label: '製作浮水印',
                 onTap: _makeWatermark,
               ),
-              if (_draft != null) ...[
-                const SizedBox(height: 18),
-                _draftRow(Icons.history, '繼續上次的影片', _resumeDraft),
-              ],
-              if (_photoDraft != null) ...[
-                SizedBox(height: _draft == null ? 18 : 10),
-                _draftRow(
-                    Icons.image_outlined, '繼續上次的照片', _resumePhotoDraft),
-              ],
             ],
           ),
         ),
