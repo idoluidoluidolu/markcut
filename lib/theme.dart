@@ -136,8 +136,14 @@ ThemeData buildStudioTheme() {
       inactiveTrackColor: kPanelHi,
       thumbColor: kAmber,
       overlayColor: Color(0x33FFC24B),
-      rangeThumbShape: RoundRangeSliderThumbShape(enabledThumbRadius: 8),
-      trackHeight: 3,
+      // 細版：一張表常常四五條滑桿疊在一起，Material 預設的把手 10
+      // 會讓那排白點比標籤和數值加起來還搶。
+      // 觸控範圍另外由 overlayShape 撐到 28px，
+      // 所以圓點縮小完全不影響好不好按
+      thumbShape: RoundSliderThumbShape(enabledThumbRadius: 6.5),
+      overlayShape: RoundSliderOverlayShape(overlayRadius: 14),
+      rangeThumbShape: RoundRangeSliderThumbShape(enabledThumbRadius: 6.5),
+      trackHeight: 2.5,
     ),
     switchTheme: SwitchThemeData(
       thumbColor: WidgetStateProperty.resolveWith((s) =>

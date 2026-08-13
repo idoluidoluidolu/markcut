@@ -674,8 +674,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       );
 
   Widget _sectionBarBody() {
-    // 調色模式時高亮最後一格，否則跟著面板捲到哪就亮哪
-    final active = _tab == 1 ? _phColorIdx : _wmPanelCtrl.activeSection;
+    // 調色模式時高亮最後一格，否則跟著面板捲到哪就亮哪。
+    // 捲到「更多浮水印」那一區時沒有對應的格子（見 _phNav），
+    // 這時不要亂亮——不然會亮到「調色」上面去
+    final sec = _wmPanelCtrl.activeSection;
+    final active =
+        _tab == 1 ? _phColorIdx : (sec < _phColorIdx ? sec : -1);
     return Container(
       decoration: const BoxDecoration(
         color: kPanel,
