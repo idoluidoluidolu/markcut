@@ -311,28 +311,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
     }
   }
 
-  /// 照片草稿的內容摘要：有幾塊馬賽克、幾組浮水印
-  String _photoSummary(Map<String, dynamic> j) {
-    final parts = <String>[];
-    try {
-      final st = jsonDecode(j['state'] as String) as Map<String, dynamic>;
-      final mosaics = (st['mosaics'] as List?)?.length ?? 0;
-      final extras = (st['extraWms'] as List?)?.length ?? 0;
-      // 主浮水印也算一組（有文字或有圖才算）
-      final text = st['text'];
-      final logo = st['logo'];
-      var wm = extras;
-      final hasText = text is Map &&
-          text['enabled'] == true &&
-          '${text['text'] ?? ''}'.trim().isNotEmpty;
-      final hasLogo = logo is Map && logo['enabled'] == true;
-      if (hasText || hasLogo) wm++;
-      if (mosaics > 0) parts.add('$mosaics 塊馬賽克');
-      if (wm > 0) parts.add('$wm 組浮水印');
-    } catch (_) {}
-    if (parts.isEmpty) parts.add('已編輯');
-    return parts.join('・') + _savedAtLabel(j);
-  }
 
   Future<void> _resumePhoto() async {
     final d = _photoDraft;
@@ -363,7 +341,8 @@ class _DraftsScreenState extends State<DraftsScreen> {
     }
   }
 
-  /// 草稿卡（影片與照片共用同一種長相）
+  /// 草稿卡（影片與照片共用同一種長相）。
+  /// 封面固定 52 方框：文字起點才會對齊，兩張卡看起來才整齊
   Widget _draftCard({
     required Widget cover,
     required String title,
@@ -384,19 +363,35 @@ class _DraftsScreenState extends State<DraftsScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           child: Row(
             children: [
-              cover,
+              Container(
+                width: 52,
+                height: 52,
+                clipBehavior: Clip.antiAlias,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: kPanelHi,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: cover,
+              ),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                             fontSize: 14, fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 2),
-                    Text(subtitle,
-                        style: const TextStyle(
-                            fontSize: 12, color: kTextDim)),
+                    if (subtitle.isNotEmpty) ...[
+                      const SizedBox(height: 3),
+                      Text(subtitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 12, color: kTextDim)),
+                    ],
                   ],
                 ),
               ),
@@ -413,32 +408,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
     );
   }
 
-  /// 專案總長（秒）＝所有片段最晚的結尾（變速片段要除速度才準）
-  double _draftDuration(Map<String, dynamic> j) {
-    var end = 0.0;
-    // 壞掉的草稿（欄位型別不對）不能讓整個草稿夾紅屏，
-    // 不然連「刪掉這筆壞草稿」的按鈕都按不到
-    double num0(Object? v) => v is num ? v.toDouble() : 0.0;
-    for (final c in (j['clips'] as List? ?? [])) {
-      if (c is! Map) continue;
-      final m = Map<String, dynamic>.from(c);
-      final speed = (m['speed'] is num ? num0(m['speed']) : 1.0).clamp(
-        0.1,
-        16.0,
-      );
-      final e =
-          num0(m['offset']) +
-          (num0(m['trimEnd']) - num0(m['trimStart'])) / speed;
-      if (e > end) end = e;
-    }
-    return end;
-  }
 
-  String _fmt(double sec) {
-    // 先進位到整秒再拆，不然 59.6 秒會顯示成 0:60
-    final t = sec.round();
-    return '${t ~/ 60}:${(t % 60).toString().padLeft(2, '0')}';
-  }
 
   /// 縮圖解碼：壞掉的 base64 不能在 build 裡丟例外（整頁會紅屏）
   Uint8List? _thumbOf(Map<String, dynamic> j) {
@@ -456,7 +426,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
     if (raw is! String) return '';
     final t = DateTime.tryParse(raw);
     if (t == null) return '';
-    return '・${t.month}/${t.day} '
+    return '${t.month}/${t.day} '
         '${t.hour.toString().padLeft(2, '0')}:'
         '${t.minute.toString().padLeft(2, '0')}';
   }
@@ -512,34 +482,15 @@ class _DraftsScreenState extends State<DraftsScreen> {
                 children: [
                   if (d != null)
                     _draftCard(
-                      // 影片縮圖當封面：框跟著影片比例走（直片直框），
-                      // 沒有縮圖才用圖示
-                      cover: Builder(
-                        builder: (context) {
-                          final aspect =
-                              ((d['thumbAspect'] as num?) ?? 16 / 9)
-                                  .toDouble();
-                          return Container(
-                            width: (52 * aspect).clamp(30.0, 92.0),
-                            height: 52,
-                            clipBehavior: Clip.antiAlias,
-                            decoration: BoxDecoration(
-                              color: kPanelHi,
-                              borderRadius: BorderRadius.circular(7),
-                            ),
-                            child: _thumbOf(d) != null
-                                ? Image.memory(_thumbOf(d)!,
-                                    fit: BoxFit.cover, gaplessPlayback: true)
-                                : const Icon(Icons.movie_outlined,
-                                    size: 20, color: kAmber),
-                          );
-                        },
-                      ),
+                      // 縮圖裁進固定的方框。以前框寬會跟著影片比例跑
+                      //（直片 30、橫片 92），兩張卡的文字起點就對不齊
+                      cover: _thumbOf(d) != null
+                          ? Image.memory(_thumbOf(d)!,
+                              fit: BoxFit.cover, gaplessPlayback: true)
+                          : const Icon(Icons.movie_outlined,
+                              size: 20, color: kAmber),
                       title: '未完成的影片',
-                      subtitle:
-                          '${(d['clips'] as List? ?? const []).length} 個片段'
-                          '・${_fmt(_draftDuration(d))}'
-                          '${_savedAtLabel(d)}',
+                      subtitle: _savedAtLabel(d),
                       onTap: _resume,
                       onDelete: _delete,
                     ),
@@ -548,18 +499,10 @@ class _DraftsScreenState extends State<DraftsScreen> {
                     _draftCard(
                       // 照片草稿沒有存縮圖（那張照片還在裝置上，
                       // 再存一份只是浪費空間），用圖示就好
-                      cover: Container(
-                        width: 52,
-                        height: 52,
-                        decoration: BoxDecoration(
-                          color: kPanelHi,
-                          borderRadius: BorderRadius.circular(7),
-                        ),
-                        child: const Icon(Icons.image_outlined,
-                            size: 20, color: kAmber),
-                      ),
+                      cover: const Icon(Icons.image_outlined,
+                          size: 20, color: kAmber),
                       title: '未完成的照片',
-                      subtitle: _photoSummary(p),
+                      subtitle: _savedAtLabel(p),
                       onTap: _resumePhoto,
                       onDelete: _deletePhoto,
                     ),
