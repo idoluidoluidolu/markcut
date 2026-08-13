@@ -691,6 +691,15 @@ class _TimelineEditorState extends State<TimelineEditor> {
     final isEmptyRow = track >= timeline.usedTracks;
     final clips = timeline.onTrack(track);
     final isDropTarget = spec != null && !spec.insert && spec.track == track;
+
+    /// 這條是不是那條「還沒用到的第一軌」——也就是會寫著
+    /// 「點我加入…」的那條。它整條就是一顆加素材按鈕
+    final isInviteRow =
+        isEmptyRow &&
+        track == timeline.usedTracks &&
+        !isDropTarget &&
+        clips.isEmpty;
+
     return Stack(
       clipBehavior: Clip.none,
       children: [
@@ -698,8 +707,15 @@ class _TimelineEditorState extends State<TimelineEditor> {
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             // 點空白處＝取消片段選取、改成選取這條軌道
-            //（貼上就會貼進被選的軌）
+            //（貼上就會貼進被選的軌）。
+            // 但那條寫著「點我加入…」的空軌例外：它整條就是加素材，
+            // 不然使用者照著字點下去只會看到一個框亮起來，什麼也沒發生。
+            // 那一軌還是可以當貼上目標——長按空白處的選單裡有「貼上」
             onTap: () {
+              if (isInviteRow) {
+                widget.onAddMedia(track);
+                return;
+              }
               widget.onSelect(-1);
               widget.onTapTrack?.call(track);
             },
@@ -730,13 +746,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
               // 新手才知道多軌可以放什麼（有拖放目標時讓位）
               alignment: Alignment.centerLeft,
               padding: const EdgeInsets.only(left: 12),
-              child:
-                  (isEmptyRow &&
-                      track == timeline.usedTracks &&
-                      !isDropTarget &&
-                      clips.isEmpty)
+              child: isInviteRow
                   ? Text(
-                      '用下方「加素材」加入文字、圖片、馬賽克',
+                      '點我加入文字、圖片、馬賽克',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
