@@ -328,7 +328,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   // 透明背景版 logo：直接融進近黑背景，不用底板
                   // （icon_foreground.png 是啟動圖示前景，別共用）。
                   // 壓暗一階（0.85）不跟白色主按鈕搶注意力——
-                  // 改這個數字就能微調亮度
+                  // 改這個數字就能微調「整組」亮度。
+                  // 三隻各自的透明度是烘在 PNG 的 alpha 裡
+                  // （左 75／中 42／右 16，各佔 x 132-378、382-628、
+                  // 632-878），這裡調不動，要改得動圖檔
                   child: ColorFiltered(
                     colorFilter: const ColorFilter.matrix(<double>[
                       0.85, 0, 0, 0, 0, //
