@@ -6343,41 +6343,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 匯出頁（使用者選定 B 款極簡設定列）：
-  /// 預估卡裡的一欄：小標在上、數值在下
-  Widget _estCol(
-    String label,
-    String value, {
-    String? sub,
-    bool alignRight = false,
-  }) {
-    final align =
-        alignRight ? CrossAxisAlignment.end : CrossAxisAlignment.start;
-    return Column(
-      crossAxisAlignment: align,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(label,
-            style: const TextStyle(fontSize: 10.5, color: kTextDim)),
-        const SizedBox(height: 4),
-        Text(
-          value,
-          style: const TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w700,
-            color: kText,
-            fontFeatures: [FontFeature.tabularFigures()],
-          ),
-        ),
-        if (sub != null) ...[
-          const SizedBox(height: 2),
-          Text(sub,
-              style: const TextStyle(fontSize: 10, color: kTextDim)),
-        ],
-      ],
-    );
-  }
 
-  /// 資訊列（比例／解析度／畫質）＋預估卡＋匯出鈕
+  /// 資訊列（比例／解析度／畫質）＋預估一行＋匯出鈕
   Widget _buildExportTab() {
     final (outW, outH) = computeCanvasSize(_tl, _resolution, _canvasRatio);
     final dur = _tl.duration / _speed;
@@ -6437,9 +6404,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       );
     }
 
-    String fmtDur(double sec) =>
-        '${sec ~/ 60}:${(sec % 60).round().toString().padLeft(2, '0')}';
-
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
       children: [
@@ -6450,44 +6414,30 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           _openResolutionSheet,
         ),
         row('畫質', _quality.label, _openQualitySheet, divider: false),
-        const SizedBox(height: 14),
-        // 預估值收成一張卡：它們不是設定，是設定的後果。
-        // 跟上面三列長一樣的話會讓人以為點得下去（其實不能點）
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-          decoration: BoxDecoration(
-            color: kPanel,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: kBorder),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: _estCol(
-                  '檔案大小',
-                  '約 ${mb.toStringAsFixed(0)} MB',
-                  sub: fmtDur(dur),
-                ),
+        const SizedBox(height: 22),
+        // 預估貼在匯出鈕正上方。它唯一的用途就是讓人在按下去之前
+        // 決定要不要回頭改設定，放在最靠近手指的地方最有用。
+        // 匯出時間跑過一次之後才是「這台機器」的實測值，
+        // 第一次只能粗估，標示清楚不要讓人以為很準
+        FutureBuilder<(double, bool)>(
+          future: _estimateExport(outW, outH, dur),
+          builder: (context, snap) {
+            final d = snap.data;
+            final t = d == null
+                ? '計算中…'
+                : '需要約 ${fmtDuration(d.$1)}${d.$2 ? '' : '（粗估）'}';
+            return Text(
+              '約 ${mb.toStringAsFixed(0)} MB・$t',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 11.5,
+                color: kTextDim,
+                fontFeatures: [FontFeature.tabularFigures()],
               ),
-              // 匯出時間：跑過一次之後才是「這台機器」的實測值，
-              // 第一次只能粗估，所以標示清楚不要讓人以為很準
-              FutureBuilder<(double, bool)>(
-                future: _estimateExport(outW, outH, dur),
-                builder: (context, snap) {
-                  final d = snap.data;
-                  return Expanded(
-                    child: _estCol(
-                      '需要時間',
-                      d == null ? '計算中…' : '約 ${fmtDuration(d.$1)}',
-                      sub: d == null || d.$2 ? null : '粗估',
-                      alignRight: true,
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
+            );
+          },
         ),
+        const SizedBox(height: 8),
         // 這裡原本還有一行「原始・1206×2622・標準・約 17 MB」的摘要，
         // 但上面五列已經逐項講過同樣的東西，等於整頁再抄一遍
         const SizedBox(height: 20),
