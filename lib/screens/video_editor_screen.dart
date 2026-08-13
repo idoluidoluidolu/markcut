@@ -6437,18 +6437,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             );
           },
         ),
-        const SizedBox(height: 8),
-        // 這裡原本還有一行「原始・1206×2622・標準・約 17 MB」的摘要，
-        // 但上面五列已經逐項講過同樣的東西，等於整頁再抄一遍
-        const SizedBox(height: 20),
-        FilledButton.icon(
-          onPressed: _exporting ? null : _export,
-          icon: const Icon(Icons.ios_share, size: 20),
-          label: const Padding(
-            padding: EdgeInsets.symmetric(vertical: 12),
-            child: Text('匯出', style: TextStyle(fontSize: 16)),
-          ),
-        ),
+        const SizedBox(height: 10),
+        // 跟照片／批次／拼圖同一顆（膠囊、46 高、圖示 18）。
+        // 這一頁的「結構」維持分頁不變，只有按鈕外觀對齊
+        primaryAction(label: '匯出', onPressed: _exporting ? null : _export),
       ],
     );
   }
