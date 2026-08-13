@@ -14,7 +14,11 @@ const kPanelHi = Color(0xFF26262C); // 面板亮階（icon 磚、選中底）
 const kBorder = Color(0xFF2A2A30); // 邊線
 const kClipBorder = Color(0xFF34343C); // 時間軸片段邊線
 const kAmber = Color(0xFFFFFFFF); // 強調色＝純白（沿用變數名，全 App 通用）
-const kSelect = Color(0xFFFFC24B); // 時間軸選取/拖放專用琥珀（白框疊白縮圖看不清）
+// 選取狀態只有兩種，不要再長出第三種：
+//   設定面板裡的「選項」被選中 → kAmber（純白）框 + kPanelHi 底
+//   疊在使用者照片／影片上的「物件」被選中 → kSelect（琥珀）
+// 後者不能用白：白框疊在白色縮圖或亮照片上會整個看不見
+const kSelect = Color(0xFFFFC24B); // 時間軸/縮圖/拼圖格 選取專用琥珀
 const kText = Color(0xFFE8E8EA);
 const kTextDim = Color(0xFF8B8B95);
 const kIcon = Color(0xFFB9B9C2);
@@ -522,6 +526,77 @@ Future<String?> askPhotoFormat(BuildContext context) {
     ),
   );
 }
+
+/// 預覽與面板之間的控制列：上一步／重做。
+///
+/// 四個編輯畫面都用這一條。原本工作室與批次把它放在標題列右上角，
+/// 但那個位置在大螢幕手機上拇指按不到，而上一步是高頻動作
+Widget undoRedoBar({
+  required VoidCallback? onUndo,
+  required VoidCallback? onRedo,
+  List<Widget> leading = const [],
+}) {
+  Widget btn(IconData icon, String tip, VoidCallback? onTap) => IconButton(
+        tooltip: tip,
+        icon: Icon(icon, size: 20, color: onTap != null ? kIcon : kTextDim),
+        onPressed: onTap,
+        visualDensity: VisualDensity.compact,
+      );
+
+  return Container(
+    padding: const EdgeInsets.fromLTRB(8, 2, 8, 2),
+    decoration: const BoxDecoration(
+      color: kBg,
+      border: Border(
+        top: BorderSide(color: kBorder),
+        bottom: BorderSide(color: kBorder),
+      ),
+    ),
+    child: Row(
+      children: [
+        ...leading,
+        const Spacer(),
+        btn(Icons.undo, '上一步', onUndo),
+        btn(Icons.redo, '重做', onRedo),
+      ],
+    ),
+  );
+}
+
+/// 主要動作鈕（輸出／匯出／完成）。膠囊、46 高、圖示 18、14pt。
+///
+/// 影片編輯不用這顆——它的匯出是一個「分頁」而不是一顆浮在面板上的
+/// 按鈕，結構本來就不同，硬套過去只會讓那一頁更奇怪
+Widget primaryAction({
+  required String label,
+  required VoidCallback? onPressed,
+  IconData icon = Icons.ios_share,
+}) => FilledButton.icon(
+      onPressed: onPressed,
+      style: FilledButton.styleFrom(
+        minimumSize: const Size.fromHeight(46),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+      ),
+      icon: Icon(icon, size: 18),
+      label: Text(label, style: const TextStyle(fontSize: 14)),
+    );
+
+/// 次要動作鈕（存成範本…）：跟主要鈕同高同圓角，只差描邊
+Widget secondaryAction({
+  required String label,
+  required VoidCallback? onPressed,
+  IconData? icon,
+}) => OutlinedButton.icon(
+      onPressed: onPressed,
+      style: OutlinedButton.styleFrom(
+        minimumSize: const Size.fromHeight(46),
+        foregroundColor: kText,
+        side: const BorderSide(color: kClipBorder),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+      ),
+      icon: Icon(icon ?? Icons.bookmark_add_outlined, size: 17),
+      label: Text(label, style: const TextStyle(fontSize: 13)),
+    );
 
 /// 點到重疊處時的說明。三個編輯畫面講同一句
 String overlapHint(int layers) => '這裡疊了 $layers 層，再點一次選下面那層';

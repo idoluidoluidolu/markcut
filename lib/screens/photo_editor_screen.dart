@@ -300,37 +300,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     }
   }
 
-  /// 預覽與面板之間的控制列：上一步／重做。
-  /// 左邊刻意留白——尺寸那類數字對使用者不構成任何決定
-  Widget _buildControlBar() {
-    Widget btn(IconData icon, String tip, VoidCallback? onTap) {
-      final on = onTap != null;
-      return IconButton(
-        tooltip: tip,
-        icon: Icon(icon, size: 19, color: on ? kIcon : kBorder),
-        onPressed: onTap,
-        visualDensity: VisualDensity.compact,
+  /// 預覽與面板之間的控制列：上一步／重做（四個編輯畫面共用同一條）
+  Widget _buildControlBar() => undoRedoBar(
+        onUndo: _undoStack.isEmpty ? null : _undoLast,
+        onRedo: _redoStack.isEmpty ? null : _redoLast,
       );
-    }
-
-    return Container(
-      padding: const EdgeInsets.fromLTRB(8, 2, 8, 2),
-      decoration: const BoxDecoration(
-        color: kBg,
-        border: Border(
-          top: BorderSide(color: kBorder),
-          bottom: BorderSide(color: kBorder),
-        ),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.end,
-        children: [
-          btn(Icons.undo, '上一步', _undoStack.isEmpty ? null : _undoLast),
-          btn(Icons.redo, '重做', _redoStack.isEmpty ? null : _redoLast),
-        ],
-      ),
-    );
-  }
 
   /// 加一組浮水印：以目前主浮水印為底複製一組，稍微錯開位置
   void _addExtraWm() {
@@ -745,34 +719,16 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   child: Row(
                     children: [
                       Expanded(
-                        child: OutlinedButton.icon(
+                        child: secondaryAction(
+                          label: '存成範本',
                           onPressed: _exporting ? null : _savePresetFromBar,
-                          style: OutlinedButton.styleFrom(
-                            minimumSize: const Size.fromHeight(46),
-                            foregroundColor: kText,
-                            side: const BorderSide(color: kClipBorder),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(999),
-                            ),
-                          ),
-                          icon: const Icon(Icons.bookmark_add_outlined,
-                              size: 17),
-                          label: const Text('存成範本',
-                              style: TextStyle(fontSize: 13)),
                         ),
                       ),
                       const SizedBox(width: 10),
                       Expanded(
-                        child: FilledButton.icon(
+                        child: primaryAction(
+                          label: '輸出',
                           onPressed: _exporting ? null : _confirmExport,
-                          style: FilledButton.styleFrom(
-                            minimumSize: const Size.fromHeight(46),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(999),
-                            ),
-                          ),
-                          icon: const Icon(Icons.ios_share, size: 18),
-                          label: const Text('輸出'),
                         ),
                       ),
                     ],
@@ -953,13 +909,13 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   child: Container(
                     padding: const EdgeInsets.symmetric(vertical: 10),
                     alignment: Alignment.center,
+                    // 設定面板裡的「選項」一律白框白字＋亮底
+                    //（琥珀只留給疊在使用者照片上的東西，見 theme.dart）
                     decoration: BoxDecoration(
-                      color: on
-                          ? kSelect.withValues(alpha: 0.18)
-                          : Colors.transparent,
+                      color: on ? kPanelHi : Colors.transparent,
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(
-                        color: on ? kSelect : kBorder,
+                        color: on ? kAmber : kBorder,
                         width: on ? 1.5 : 1,
                       ),
                     ),
@@ -968,7 +924,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                       style: TextStyle(
                         fontSize: 12.5,
                         fontWeight: on ? FontWeight.w700 : FontWeight.w400,
-                        color: on ? kSelect : kText,
+                        color: kText,
                       ),
                     ),
                   ),

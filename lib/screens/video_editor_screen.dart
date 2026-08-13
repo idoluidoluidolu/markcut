@@ -1872,13 +1872,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   child: Container(
                     padding: const EdgeInsets.symmetric(vertical: 10),
                     alignment: Alignment.center,
+                    // 設定面板裡的「選項」一律白框白字＋亮底
                     decoration: BoxDecoration(
-                      color: on
-                          ? kSelect.withValues(alpha: 0.18)
-                          : Colors.transparent,
+                      color: on ? kPanelHi : Colors.transparent,
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(
-                        color: on ? kSelect : kClipBorder,
+                        color: on ? kAmber : kClipBorder,
                         width: on ? 1.5 : 1,
                       ),
                     ),
@@ -1887,7 +1886,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       style: TextStyle(
                         fontSize: 12.5,
                         fontWeight: on ? FontWeight.w700 : FontWeight.w400,
-                        color: on ? kSelect : kText,
+                        color: kText,
                       ),
                     ),
                   ),

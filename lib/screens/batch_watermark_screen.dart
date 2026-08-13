@@ -135,8 +135,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     };
   }
 
-  // ===== 上一步（改壞了可以救；連續滑桿拖動 0.7 秒內併成一步）=====
+  // ===== 上一步／重做（改壞了可以救；連續滑桿拖動 0.7 秒內併成一步）=====
   final List<_UndoStep> _undoStack = [];
+  final List<_UndoStep> _redoStack = [];
   DateTime _lastPush = DateTime.fromMillisecondsSinceEpoch(0);
   int _sync = 0; // 通知面板同步內部狀態
 
@@ -160,12 +161,18 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       _UndoStep(target, jsonEncode(_effectiveOf(_previewIndex).toJson())),
     );
     if (_undoStack.length > 60) _undoStack.removeAt(0);
+    _redoStack.clear(); // 改了新的東西，原本的重做路線就斷了
     setState(() {}); // 讓上一步鈕亮起來
   }
 
-  void _undoLast() {
-    if (_undoStack.isEmpty) return;
-    final step = _undoStack.removeLast();
+  /// 目前這一刻的快照（撤銷前先存起來，才回得去）
+  _UndoStep get _snapshot => _UndoStep(
+        _items[_previewIndex].override != null ? _previewIndex : -1,
+        jsonEncode(_effectiveOf(_previewIndex).toJson()),
+      );
+
+  /// 把一筆快照套回去
+  void _applyStep(_UndoStep step) {
     final wm = WatermarkSettings.fromJson(
         jsonDecode(step.json) as Map<String, dynamic>);
     // 那張後來被移除的話就跳過這一步
@@ -182,6 +189,18 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       dst.animRange = wm.animRange;
       _sync++;
     });
+  }
+
+  void _undoLast() {
+    if (_undoStack.isEmpty) return;
+    _redoStack.add(_snapshot);
+    _applyStep(_undoStack.removeLast());
+  }
+
+  void _redoLast() {
+    if (_redoStack.isEmpty) return;
+    _undoStack.add(_snapshot);
+    _applyStep(_redoStack.removeLast());
   }
 
   /// 條列縮圖的長邊：條列格子只有 56dp，160px 在高 DPR 螢幕也夠銳利
@@ -612,11 +631,6 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       appBar: AppBar(
         title: Text('批次浮水印（${_items.length}）'),
         actions: [
-          IconButton(
-            tooltip: '上一步',
-            icon: const Icon(Icons.undo),
-            onPressed: _undoStack.isEmpty ? null : _undoLast,
-          ),
         ],
       ),
       body: Column(
@@ -719,6 +733,12 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
               ),
             ),
             ),
+          ),
+          // 上一步／重做跟影片、照片同一個位置（預覽下方）。
+          // 原本在標題列右上角，大螢幕手機拇指按不到
+          undoRedoBar(
+            onUndo: _undoStack.isEmpty ? null : _undoLast,
+            onRedo: _redoStack.isEmpty ? null : _redoLast,
           ),
           // 檔案縮圖列：點了切換預覽、長按從批次移除
           SizedBox(
@@ -886,25 +906,14 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
               ],
             ),
           ),
-          // 薄型底欄：左側檔案數小字、右側緊湊匯出鍵
+          // 主要動作跟照片編輯同一顆：整寬膠囊，不再縮在右下角
           SafeArea(
             top: false,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 2, 16, 10),
-              child: Align(
-                alignment: Alignment.centerRight,
-                child: FilledButton.icon(
-                  onPressed: _exporting ? null : _confirmExportAll,
-                  style: FilledButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 18, vertical: 9),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(9)),
-                  ),
-                  icon: const Icon(Icons.ios_share, size: 16),
-                  label: const Text('全部匯出',
-                      style: TextStyle(fontSize: 13)),
-                ),
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
+              child: primaryAction(
+                label: '輸出',
+                onPressed: _exporting ? null : _confirmExportAll,
               ),
             ),
           ),

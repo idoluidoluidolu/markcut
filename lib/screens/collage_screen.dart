@@ -694,18 +694,10 @@ class _CollageScreenState extends State<CollageScreen> {
                     ),
                     Padding(
                       padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
-                      child: SizedBox(
-                        width: double.infinity,
-                        child: FilledButton(
-                          onPressed: _building ? null : _done,
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            child: Text(
-                              _building ? '合成中…' : '完成，上浮水印',
-                              style: const TextStyle(fontSize: 15),
-                            ),
-                          ),
-                        ),
+                      child: primaryAction(
+                        label: _building ? '合成中…' : '完成，上浮水印',
+                        icon: Icons.check,
+                        onPressed: _building ? null : _done,
                       ),
                     ),
                   ],

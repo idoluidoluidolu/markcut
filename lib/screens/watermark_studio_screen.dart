@@ -426,16 +426,6 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
       appBar: AppBar(
         title: const Text('製作浮水印'),
         actions: [
-          IconButton(
-            tooltip: '上一步',
-            icon: const Icon(Icons.undo),
-            onPressed: _undo.isEmpty ? null : _undoLast,
-          ),
-          IconButton(
-            tooltip: '重做',
-            icon: const Icon(Icons.redo),
-            onPressed: _redo.isEmpty ? null : _redoLast,
-          ),
           // 從範本夾點進來編輯時不顯示這顆：上一頁就是範本夾，
           // 再開一次會變成「工作室→範本夾→工作室…」一直往上疊，
           // 返回要按同樣多次才回得到首頁
@@ -606,7 +596,12 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
               ],
             ),
           ),
-          Container(height: 1, color: kBorder),
+          // 上一步／重做跟影片、照片同一個位置（預覽下方）。
+          // 原本在標題列右上角，大螢幕手機拇指按不到
+          undoRedoBar(
+            onUndo: _undo.isEmpty ? null : _undoLast,
+            onRedo: _redo.isEmpty ? null : _redoLast,
+          ),
           Expanded(
             child: WatermarkPanel(
               key: _panelKey,
