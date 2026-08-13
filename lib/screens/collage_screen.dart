@@ -465,7 +465,7 @@ class _CollageScreenState extends State<CollageScreen> {
           Row(
             children: [
               const SizedBox(
-                width: 40,
+                width: kSliderLabelW,
                 child: Text(
                   '版型',
                   style: TextStyle(fontSize: 12, color: kTextDim),
@@ -489,7 +489,7 @@ class _CollageScreenState extends State<CollageScreen> {
           Row(
             children: [
               const SizedBox(
-                width: 40,
+                width: kSliderLabelW,
                 child: Text(
                   '格線',
                   style: TextStyle(fontSize: 12, color: kTextDim),

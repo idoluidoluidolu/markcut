@@ -1228,7 +1228,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       child: Row(
         children: [
           SizedBox(
-              width: 34,
+              width: kSliderLabelW,
               child: Text(label,
                   style:
                       const TextStyle(fontSize: 12, color: kTextDim))),
@@ -1242,7 +1242,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
           ),
           // 即時數值：微調時有參考（跟馬賽克樣式表同一套）
           SizedBox(
-            width: 38,
+            width: kSliderValueW,
             child: Text(
               '${(value * 100).round()}%',
               textAlign: TextAlign.right,
@@ -1262,7 +1262,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       child: Row(
         children: [
           SizedBox(
-            width: 76,
+            width: kSliderLabelW,
             child: Text(label,
                 maxLines: 1,
                 softWrap: false,
@@ -1279,7 +1279,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
               ),
           ),
           SizedBox(
-            width: 60,
+            width: kSliderValueW,
             child: Text(readout,
                 maxLines: 1,
                 softWrap: false,
@@ -1299,7 +1299,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       child: Row(
         children: [
           const SizedBox(
-              width: 34,
+              width: kSliderLabelW,
               child: Text('旋轉',
                   style: TextStyle(fontSize: 12, color: kTextDim))),
           Expanded(

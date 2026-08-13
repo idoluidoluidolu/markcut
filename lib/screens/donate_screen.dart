@@ -126,13 +126,13 @@ class _DonateScreenState extends State<DonateScreen> {
   Widget _tierCard(String id, String label, String fallbackPrice) {
     final tier = id.replaceFirst('tip_', '');
     return InkWell(
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(kCardRadius),
       onTap: _buying ? null : () => _buy(id),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         decoration: BoxDecoration(
           color: kPanel,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(kCardRadius),
           border: Border.all(color: kBorder, width: 1.5),
         ),
         child: Row(

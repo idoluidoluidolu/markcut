@@ -464,7 +464,7 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
       child: Row(
         children: [
           SizedBox(
-            width: 52,
+            width: kSliderLabelW,
             child: Text(
               t.label,
               style: const TextStyle(fontSize: 12, color: kText),
@@ -489,7 +489,7 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
             ),
           ),
           SizedBox(
-            width: 34,
+            width: kSliderLabelW,
             child: Text(
               on ? '${v > 0 ? '+' : ''}${(v * 100).round()}' : '0',
               textAlign: TextAlign.right,
@@ -516,7 +516,7 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
     // 沒在修的那端調暗一點，正在修的那端才跳出來
     Widget side(String label, Color base, bool active, bool alignRight) {
       return SizedBox(
-        width: 58,
+        width: kSliderLabelW,
         child: Text(
           active ? '$label $pct' : label,
           textAlign: alignRight ? TextAlign.right : TextAlign.left,

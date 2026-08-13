@@ -121,7 +121,7 @@ class AboutScreen extends StatelessWidget {
 
   Widget _link(BuildContext context, String label, VoidCallback onTap) {
     return InkWell(
-      borderRadius: BorderRadius.circular(4),
+      borderRadius: BorderRadius.circular(kTagRadius),
       onTap: onTap,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
@@ -204,7 +204,7 @@ Widget _card(String title, List<Widget> children) {
     decoration: BoxDecoration(
       // 面板色＋細邊線，跟個人中心同一套（標準 dark mode 層次）
       color: kPanel,
-      borderRadius: BorderRadius.circular(10),
+      borderRadius: BorderRadius.circular(kCardRadius),
       border: Border.all(color: kClipBorder),
     ),
     child: Column(

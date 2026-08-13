@@ -988,7 +988,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
           Widget row(String label, Widget child, [Widget? trail]) => Row(
             children: [
               SizedBox(
-                width: 40,
+                width: kSliderLabelW,
                 child: Text(
                   label,
                   style: const TextStyle(fontSize: 12, color: kTextDim),
@@ -1482,7 +1482,9 @@ final color = Color(picked ?? 0);
                           }
                         },
                         child: Container(
-                          color: Colors.black,
+                          // 跟影片／批次／工作室同一個底色。原本是純黑，
+                          // 直式照片兩側留邊會比其他畫面暗一階
+                          color: const Color(0xFF1B1B1F),
                           alignment: Alignment.center,
                           child: AspectRatio(
                             aspectRatio: _aspect!,

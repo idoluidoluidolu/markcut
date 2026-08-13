@@ -23,6 +23,26 @@ const kSelect = Color(0xFFFFC24B); // 時間軸/縮圖/拼圖格 選取專用琥
 const kText = Color(0xFFE8E8EA);
 const kTextDim = Color(0xFF8B8B95);
 const kIcon = Color(0xFFB9B9C2);
+
+// ===== 尺寸常數 =====
+// 圓角本來散在 3～18 之間（卡片就六種），是各畫面各自手刻的結果。
+// 新畫面一律引用這裡，不要再寫死數字
+//
+// 挑這幾個值的理由：主要按鈕已經是膠囊，卡片配 12 才不會顯得方；
+// 對話框 16 是這一輪新做的三個共用對話框已經在用的值；
+// 小標籤 6 跟輸入框同階，讀起來是同一個家族
+const kCardRadius = 12.0; // 卡片
+const kDialogRadius = 16.0; // 對話框
+const kTagRadius = 6.0; // 小標籤、狀態標
+const kFieldRadius = 12.0; // 大的文字輸入框
+
+/// 對話框最大寬度（窄的那些讀起來會太擠）
+const kDialogWidth = 280.0;
+
+// 滑桿列：左邊標籤欄、右邊數值欄。
+// 兩邊都固定寬，同一頁上下捲動時軌道的左右緣才不會一直跳
+const kSliderLabelW = 56.0;
+const kSliderValueW = 44.0;
 const kRecord = Color(0xFFFF3B30); // 錄音中：紅鈕與即時波形
 
 ThemeData buildStudioTheme() {
@@ -39,7 +59,8 @@ ThemeData buildStudioTheme() {
   );
 
   final radius6 = RoundedRectangleBorder(borderRadius: BorderRadius.circular(6));
-  final radius8 = RoundedRectangleBorder(borderRadius: BorderRadius.circular(8));
+  final cardShape =
+      RoundedRectangleBorder(borderRadius: BorderRadius.circular(kCardRadius));
 
   return ThemeData(
     useMaterial3: true,
@@ -65,7 +86,7 @@ ThemeData buildStudioTheme() {
     cardTheme: CardThemeData(
       color: kPanel,
       elevation: 0,
-      shape: radius8.copyWith(side: const BorderSide(color: kBorder)),
+      shape: cardShape.copyWith(side: const BorderSide(color: kBorder)),
       margin: EdgeInsets.zero,
     ),
     filledButtonTheme: FilledButtonThemeData(
@@ -130,6 +151,7 @@ ThemeData buildStudioTheme() {
           s.contains(WidgetState.selected) ? kAmber : kTextDim),
     ),
     dividerTheme: const DividerThemeData(color: kBorder, thickness: 1),
+    // 圓角改成 kDialogRadius：所有 AlertDialog 一次跟上
     dialogTheme: DialogThemeData(
       // 底色比面板亮一階＋真實陰影，跟壓暗的背景拉開層次
       backgroundColor: const Color(0xFF232329),
@@ -137,10 +159,11 @@ ThemeData buildStudioTheme() {
       elevation: 24,
       shadowColor: Colors.black,
       shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(kDialogRadius),
           side: const BorderSide(color: Color(0xFF3A3A42))),
+      // 標題字級跟自訂的那幾個對話框對齊（原本 16 只有這裡在用）
       titleTextStyle: const TextStyle(
-          fontSize: 16,
+          fontSize: 15.5,
           fontWeight: FontWeight.w700,
           color: kText,
           fontFamily: 'NotoSansTC'),
@@ -319,7 +342,7 @@ Future<bool> showConfirm(
         side: const BorderSide(color: kBorder),
       ),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 260),
+        constraints: const BoxConstraints(maxWidth: kDialogWidth),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 26, 20, 12),
           child: Column(
@@ -394,7 +417,7 @@ Future<String> askAfterExport(
         side: const BorderSide(color: kBorder),
       ),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 280),
+        constraints: const BoxConstraints(maxWidth: kDialogWidth),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 24, 20, 12),
           child: Column(
@@ -503,11 +526,11 @@ Future<String?> askPhotoFormat(BuildContext context) {
       backgroundColor: kBg,
       insetPadding: const EdgeInsets.symmetric(horizontal: 28),
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(kDialogRadius),
         side: const BorderSide(color: kBorder),
       ),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 400),
+        constraints: const BoxConstraints(maxWidth: kDialogWidth),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
           child: Column(
@@ -584,7 +607,7 @@ Future<String> showLeaveChoice(
         side: const BorderSide(color: kBorder),
       ),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 280),
+        constraints: const BoxConstraints(maxWidth: kDialogWidth),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 26, 20, 12),
           child: Column(

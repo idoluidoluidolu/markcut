@@ -147,11 +147,11 @@ class _HomeScreenState extends State<HomeScreen> {
         backgroundColor: kBg,
         insetPadding: const EdgeInsets.symmetric(horizontal: 32),
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(kDialogRadius),
           side: const BorderSide(color: kBorder),
         ),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 340),
+          constraints: const BoxConstraints(maxWidth: kDialogWidth),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 22, 16, 14),
             child: Column(

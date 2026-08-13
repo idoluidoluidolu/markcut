@@ -64,7 +64,7 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
           side: const BorderSide(color: kBorder),
         ),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 280),
+          constraints: const BoxConstraints(maxWidth: kDialogWidth),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(20, 26, 20, 12),
             child: Column(

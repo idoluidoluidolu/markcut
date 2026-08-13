@@ -69,13 +69,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
     required VoidCallback onTap,
   }) {
     return InkWell(
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(kCardRadius),
       onTap: onTap,
       child: Container(
         height: 52,
         decoration: BoxDecoration(
           color: kPanel,
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(kCardRadius),
           border: Border.all(color: kBorder, width: 1.5),
         ),
         child: Row(
@@ -102,7 +102,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     VoidCallback? onTap,
   }) {
     return InkWell(
-      borderRadius: BorderRadius.circular(18),
+      borderRadius: BorderRadius.circular(kCardRadius),
       onTap: () async {
         if (onTap != null) {
           onTap();
@@ -118,7 +118,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         height: 130,
         decoration: BoxDecoration(
           color: kPanel,
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(kCardRadius),
           border: Border.all(color: kBorder, width: 1.5),
         ),
         child: Column(

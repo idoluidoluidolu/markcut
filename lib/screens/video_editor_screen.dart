@@ -1432,7 +1432,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             child: Row(
               children: [
                 SizedBox(
-                  width: 56,
+                  width: kSliderLabelW,
                   child: Text(
                     label,
                     style: const TextStyle(fontSize: 12, color: kTextDim),
@@ -1447,7 +1447,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   ),
                 ),
                 SizedBox(
-                  width: 38,
+                  width: kSliderValueW,
                   child: Text(
                     '${(v * 100).round()}%',
                     textAlign: TextAlign.right,
@@ -1644,7 +1644,7 @@ final color = Color(picked ?? 0);
                       child: Row(
                         children: [
                           const SizedBox(
-                            width: 56,
+                            width: kSliderLabelW,
                             child: Text(
                               '旋轉',
                               style: TextStyle(fontSize: 12, color: kTextDim),
@@ -1897,7 +1897,7 @@ final color = Color(picked ?? 0);
                   Row(
                     children: [
                       const SizedBox(
-                        width: 40,
+                        width: kSliderLabelW,
                         child: Text(
                           '大小',
                           style: TextStyle(fontSize: 12, color: kTextDim),
@@ -1912,7 +1912,7 @@ final color = Color(picked ?? 0);
                         ),
                       ),
                       SizedBox(
-                        width: 40,
+                        width: kSliderLabelW,
                         child: Text(
                           '${(clip.scale * 100).round()}%',
                           textAlign: TextAlign.right,
@@ -1929,7 +1929,7 @@ final color = Color(picked ?? 0);
                     Row(
                       children: [
                         const SizedBox(
-                          width: 40,
+                          width: kSliderLabelW,
                           child: Text(
                             '濃度',
                             style: TextStyle(fontSize: 12, color: kTextDim),
@@ -1942,7 +1942,7 @@ final color = Color(picked ?? 0);
                           ),
                         ),
                         SizedBox(
-                          width: 40,
+                          width: kSliderLabelW,
                           child: Text(
                             '${(st.strength * 100).round()}%',
                             textAlign: TextAlign.right,
@@ -1958,7 +1958,7 @@ final color = Color(picked ?? 0);
                       Row(
                         children: [
                           const SizedBox(
-                            width: 40,
+                            width: kSliderLabelW,
                             child: Text(
                               '柔邊',
                               style: TextStyle(
@@ -1975,7 +1975,7 @@ final color = Color(picked ?? 0);
                             ),
                           ),
                           SizedBox(
-                            width: 40,
+                            width: kSliderLabelW,
                             child: Text(
                               '${(st.feather * 100).round()}%',
                               textAlign: TextAlign.right,
@@ -3199,7 +3199,7 @@ final color = Color(picked ?? 0);
                   const SizedBox(height: 4),
                   Text(
                     etaText(v),
-                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    style: const TextStyle(fontSize: 12, color: kTextDim),
                   ),
                 ],
               ),
@@ -3366,7 +3366,7 @@ final color = Color(picked ?? 0);
           side: const BorderSide(color: kBorder),
         ),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 260),
+          constraints: const BoxConstraints(maxWidth: kDialogWidth),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(20, 26, 20, 12),
             child: Column(
@@ -4953,13 +4953,13 @@ final color = Color(picked ?? 0);
       child: Padding(
         padding: const EdgeInsets.all(6),
         child: InkWell(
-          borderRadius: BorderRadius.circular(5),
+          borderRadius: BorderRadius.circular(kTagRadius),
           onTap: _openRatioSheet,
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
               color: Colors.white.withValues(alpha: 0.10),
-              borderRadius: BorderRadius.circular(5),
+              borderRadius: BorderRadius.circular(kTagRadius),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -5604,7 +5604,7 @@ final color = Color(picked ?? 0);
           ),
         ),
         SizedBox(
-          width: 48,
+          width: kSliderValueW,
           child: Text(
             suffix,
             textAlign: TextAlign.right,

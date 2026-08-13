@@ -17,11 +17,11 @@ Future<void> showFeedbackDialog(BuildContext context) {
       backgroundColor: kBg,
       insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(kDialogRadius),
         side: const BorderSide(color: kBorder),
       ),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 420),
+        constraints: const BoxConstraints(maxWidth: kDialogWidth),
         child: const _FeedbackForm(),
       ),
     ),
