@@ -166,6 +166,9 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
   // ===== 選取路由的置中吸附（跟其他編輯器同手感）=====
   double? _stRawX, _stRawY;
   bool _stGuideV = false, _stGuideH = false;
+
+  /// 點示意畫面上的浮水印時，叫下面的面板捲到對應的設定區塊
+  final _wmPanelCtrl = WatermarkPanelController();
   bool _stSnapped = false;
 
   double _snapC(double v) => (v - 0.5).abs() < 0.015 ? 0.5 : v;
@@ -340,8 +343,11 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
                                   onDragStart: _pushUndo,
                                   // 選取鎖定：選了圖片就只動圖片
                                   selectedPart: _wmPartAlive,
-                                  onSelectPart: (p) =>
-                                      setState(() => _wmPart = p),
+                                  onSelectPart: (p) {
+                                    setState(() => _wmPart = p);
+                                    // 點文字就把面板捲到文字設定
+                                    _wmPanelCtrl.scrollTo(p);
+                                  },
                                   panLocked: () => _pvPts.length >= 2,
                                 ),
                                 // 置中輔助線（路由拖曳吸中線時）。
@@ -443,6 +449,7 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
           Container(height: 1, color: kBorder),
           Expanded(
             child: WatermarkPanel(
+              controller: _wmPanelCtrl,
               settings: _settings,
               onChanged: () => setState(() {}),
               onBeforeChange: _pushUndo,

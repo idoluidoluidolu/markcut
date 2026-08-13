@@ -11,6 +11,31 @@ import '../services/preset_store.dart';
 import '../theme.dart';
 import 'watermark_layer.dart';
 
+/// 讓父層叫面板捲到某個設定區塊：點畫面上的浮水印文字，
+/// 下面的面板就自動捲到「文字」那張卡。
+///
+/// 用 controller 而不是 GlobalKey——面板的 key 會跟著編輯目標換
+/// （影片編輯器切換浮水印素材時），State 會整個重建，
+/// 拿不到穩定的 GlobalKey。請求存在 controller 裡，
+/// 新的 State 一掛上就自己來取
+class WatermarkPanelController extends ChangeNotifier {
+  WmPart? _pending;
+
+  /// 面板取走待處理的請求（取走就清掉，不會重複捲）
+  WmPart? takePending() {
+    final p = _pending;
+    _pending = null;
+    return p;
+  }
+
+  /// 要求捲到 [part] 的設定區塊
+  void scrollTo(WmPart part) {
+    if (part == WmPart.none) return;
+    _pending = part;
+    notifyListeners();
+  }
+}
+
 /// 浮水印編輯面板：文字、Logo、範本管理
 class WatermarkPanel extends StatefulWidget {
   final WatermarkSettings settings;
@@ -42,6 +67,9 @@ class WatermarkPanel extends StatefulWidget {
   /// 一個區塊包成一張卡。照片編輯器拿來放「馬賽克」與「更多浮水印」
   final List<Widget> extraSections;
 
+  /// 父層用它叫面板捲到文字／圖片區塊
+  final WatermarkPanelController? controller;
+
   const WatermarkPanel({
     super.key,
     required this.settings,
@@ -54,6 +82,7 @@ class WatermarkPanel extends StatefulWidget {
     this.onLogoAdded,
     this.hideSaveButton = false,
     this.extraSections = const [],
+    this.controller,
   });
 
   @override
@@ -77,6 +106,10 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     _textCtrl = TextEditingController(text: s.text.text);
     _presetSel = widget.initialPresetName;
     _loadPresets();
+    widget.controller?.addListener(_onScrollRequest);
+    // 請求可能在這個 State 出生之前就發出了（點浮水印的同時
+    // 才切到浮水印分頁／才換編輯目標），一掛上就先看有沒有待辦
+    _onScrollRequest();
   }
 
   Future<void> _loadPresets() async {
@@ -100,8 +133,43 @@ class WatermarkPanelState extends State<WatermarkPanel> {
 
   @override
   void dispose() {
+    widget.controller?.removeListener(_onScrollRequest);
     _textCtrl.dispose();
+    _scroll.dispose();
     super.dispose();
+  }
+
+  /// 父層要求捲到某個區塊
+  void _onScrollRequest() {
+    final part = widget.controller?.takePending();
+    if (part != null) _ensureSection(part, 0);
+  }
+
+  /// 捲到區塊。切分頁的那一瞬間卡片可能還沒掛上，隔幾十毫秒重試
+  void _ensureSection(WmPart part, int tries) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final key = part == WmPart.logo ? _logoCardKey : _textCardKey;
+      final ctx = key.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(
+          ctx,
+          duration: const Duration(milliseconds: 350),
+          curve: Curves.easeOutCubic,
+          alignment: 0.05,
+        );
+        return;
+      }
+      if (tries >= 4) return;
+      // 清單是延遲建構的：捲得太下面時上面的卡片根本不存在，
+      // 先回頂端把它建出來，下一輪再對位
+      if (tries == 1 && _scroll.hasClients && _scroll.offset > 0) {
+        _scroll.jumpTo(0);
+      }
+      Future.delayed(const Duration(milliseconds: 120), () {
+        if (mounted) _ensureSection(part, tries + 1);
+      });
+    });
   }
 
   void _update(VoidCallback fn) {
@@ -113,6 +181,10 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   @override
   void didUpdateWidget(WatermarkPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.controller != oldWidget.controller) {
+      oldWidget.controller?.removeListener(_onScrollRequest);
+      widget.controller?.addListener(_onScrollRequest);
+    }
     if (widget.syncVersion != oldWidget.syncVersion) {
       // 父層剛做了復原：把輸入框文字對回 settings
       _textCtrl.text = s.text.text;
@@ -281,9 +353,15 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   /// 動畫卡的位置：選了動畫後自動捲過去，讓微調滑桿露臉
   final _animCardKey = GlobalKey();
 
+  /// 文字／圖片卡的位置：點畫面上的浮水印時捲過去
+  final _textCardKey = GlobalKey();
+  final _logoCardKey = GlobalKey();
+  final _scroll = ScrollController();
+
   @override
   Widget build(BuildContext context) {
     return ListView(
+      controller: _scroll,
       // 往下滑清單就收鍵盤（打完字回不去的解法）
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
@@ -424,7 +502,9 @@ class WatermarkPanelState extends State<WatermarkPanel> {
           ),
 
         // ===== 卡片 2：文字 =====
-        _card(Column(
+        KeyedSubtree(
+          key: _textCardKey,
+          child: _card(Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
         _sectionRow('文字', s.text.enabled,
@@ -612,9 +692,12 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         ],
           ],
         )),
+        ),
 
         // ===== 卡片 3：圖片（有圖才展開；用＋加入，不用開關）=====
-        _card(Column(
+        KeyedSubtree(
+          key: _logoCardKey,
+          child: _card(Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
         // 還沒有圖片時整行都能點（不用精準戳 + 號）
@@ -686,6 +769,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         ],
           ],
         )),
+        ),
 
         // ===== 父層注入的額外區塊（照片編輯器的馬賽克/更多浮水印）=====
         for (final sec in widget.extraSections) _card(sec),

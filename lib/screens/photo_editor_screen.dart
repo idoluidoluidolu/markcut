@@ -1136,6 +1136,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 底部「儲存範本」鈕要觸發面板裡的儲存流程
   final _panelKey = GlobalKey<WatermarkPanelState>();
 
+  /// 點畫面上的浮水印時，叫下面的面板捲到對應的設定區塊
+  final _wmPanelCtrl = WatermarkPanelController();
+
   // ===== 置中吸附（路由拖曳／馬賽克拖曳共用，跟 WatermarkLayer 同手感）=====
   /// 未吸附的原始座標（吸附只作用在顯示值上，不然吸上就拖不出來）
   double? _phRawX, _phRawY;
@@ -1325,11 +1328,16 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                   selectedPart: _wmPartAlive,
                                   // 選浮水印部件＝取消馬賽克選取，
                                   // 同時只會有一種東西被選（單一選取）
-                                  onSelectPart: (p) => setState(() {
-                                    _wmPart = p;
-                                    _selMosaic = -1;
-                                    _selExtra = -1;
-                                  }),
+                                  onSelectPart: (p) {
+                                    setState(() {
+                                      _wmPart = p;
+                                      _selMosaic = -1;
+                                      _selExtra = -1;
+                                    });
+                                    // 點文字就把面板捲到文字設定
+                                    //（點圖片同理），不用自己找
+                                    _wmPanelCtrl.scrollTo(p);
+                                  },
                                   panLocked: () => _pvPts.length >= 2,
                                   // 別的東西被選取時完全不吃拖曳，讓給下面的
                                   // 選取路由——不然選了馬賽克在畫面上拖，
@@ -1468,6 +1476,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                       ),
                       _ => WatermarkPanel(
                         key: _panelKey,
+                        controller: _wmPanelCtrl,
                         settings: _settings,
                         onChanged: () => setState(() {}),
                         onBeforeChange: _pushUndo,

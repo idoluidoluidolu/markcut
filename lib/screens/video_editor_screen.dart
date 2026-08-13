@@ -63,6 +63,10 @@ const kDraftKey = 'project_draft_v1';
 
 class VideoEditorScreen extends StatefulWidget {
   final String? videoPath;
+
+  /// 空白專案：不帶素材直接進編輯器，進去再用「加素材」加。
+  /// 想先鋪好文字／浮水印再放影片的人不用被迫先選一支
+  final bool blank;
   final WatermarkSettings? initialWatermark; // 從範本卡片開新專案時帶入
   final Map<String, dynamic>? draft; // 從草稿還原
 
@@ -71,7 +75,8 @@ class VideoEditorScreen extends StatefulWidget {
     this.videoPath,
     this.initialWatermark,
     this.draft,
-  }) : assert(videoPath != null || draft != null);
+    this.blank = false,
+  }) : assert(videoPath != null || draft != null || blank);
 
   @override
   State<VideoEditorScreen> createState() => _VideoEditorScreenState();
@@ -577,6 +582,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             duration: const Duration(seconds: 5),
           );
         }
+      });
+    } else if (widget.blank) {
+      // 空白專案：沒有素材可載，直接開工。
+      // 空的時間軸看起來跟壞掉很像，進場先講一句要從哪開始
+      _ready = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        showHint(
+          context,
+          '空白專案：用下方的「加素材」放入影片、照片或文字',
+          duration: const Duration(seconds: 4),
+        );
       });
     } else {
       _importVideoFromPath(widget.videoPath!, track: 0).then((_) {
@@ -1145,7 +1162,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<_AddKind?> _askKind({String? title}) {
     return showModalBottomSheet<_AddKind>(
       context: context,
+      // 預設的選單最高只有螢幕的 9/16，八個項目塞不下——
+      // 最後一個（空白軌道）會被切掉，等於沒有這個功能。
+      // 放開高度限制並讓它可以捲
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.8,
+      ),
       builder: (context) => SafeArea(
+        child: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1198,13 +1223,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               title: const Text('錄旁白'),
               onTap: () => Navigator.pop(context, _AddKind.record),
             ),
+            const Divider(height: 1, indent: 16, endIndent: 16),
             ListTile(
               leading: const Icon(Icons.playlist_add, color: kAmber),
               title: const Text('空白軌道'),
+              subtitle: const Text(
+                '多一層可以貼上或拖素材進去',
+                style: TextStyle(fontSize: 11),
+              ),
               onTap: () => Navigator.pop(context, _AddKind.blankTrack),
             ),
             const SizedBox(height: 8),
           ],
+        ),
         ),
       ),
     );
@@ -2425,6 +2456,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _resyncPlayback();
   }
 
+  /// 點畫面上的浮水印時，叫下面的面板捲到對應的設定區塊
+  final _wmPanelCtrl = WatermarkPanelController();
+
   /// 上一刻修剪把手有沒有吸住（吸住的瞬間震一下，才有磁鐵的感覺）
   bool _trimSnapped = false;
 
@@ -2869,6 +2903,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       showHint(context, '影片匯出需要 FFmpeg，只在手機 App 上提供');
       return;
     }
+    // 空專案匯出＝叫 FFmpeg 產一支 0 秒的黑畫布，只會拿到一串
+    // 看不懂的錯誤訊息。直接講人話擋下來
+    if (_tl.clips.isEmpty) {
+      showHint(context, '時間軸還是空的，先用「加素材」放點東西進來', error: true);
+      return;
+    }
     _pause();
     // 匯出前把所有快取放掉：已解碼的幀（幾十 MB）、壓縮的抽幀
     // （長片可到 ~80MB）、ImageCache。匯出本身就要吃大量記憶體，
@@ -3216,6 +3256,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             if (isClipWm) src.wmStyle ??= WatermarkSettings();
                             return WatermarkPanel(
                               key: ValueKey(isClipWm ? _sel : -1),
+                              controller: _wmPanelCtrl,
                               settings: isClipWm ? src.wmStyle! : _settings,
                               onChanged: () => setState(() {
                                 if (isClipWm) {
@@ -3886,13 +3927,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                   _wmSel = false;
                                                 });
                                                 _tabs.animateTo(1);
+                                                _wmPanelCtrl.scrollTo(
+                                                  WmPart.logo,
+                                                );
                                               },
+                                              // 點文字＝面板直接捲到
+                                              // 文字設定，不用自己找
                                               onTapText: () {
                                                 setState(() {
                                                   _sel = c.id;
                                                   _wmSel = false;
                                                 });
                                                 _tabs.animateTo(1);
+                                                _wmPanelCtrl.scrollTo(
+                                                  WmPart.text,
+                                                );
                                               },
                                             ),
                                           ),
@@ -4101,23 +4150,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         // 讓給選取路由
                                         panAllowed: (_) => _sel == -1,
                                         time: pos, // 動畫跟著播放頭走
-                                        // 點浮水印 Logo＝選取＋切到浮水印分頁
+                                        // 點浮水印 Logo＝選取＋切到浮水印
+                                        // 分頁，面板捲到圖片設定
                                         onTap: () {
                                           setState(() {
                                             _wmSel = true;
                                             _sel = -1;
                                           });
                                           _tabs.animateTo(1);
+                                          _wmPanelCtrl.scrollTo(WmPart.logo);
                                         },
-                                        // 點浮水印文字＝跟點 Logo 一樣，
-                                        // 只切到浮水印分頁。要改字在
-                                        // 面板裡改，不要一點就跳鍵盤
+                                        // 點浮水印文字＝切到浮水印分頁並
+                                        // 捲到文字設定。不直接跳鍵盤——
+                                        // 要改字在面板裡改
                                         onTapText: () {
                                           setState(() {
                                             _wmSel = true;
                                             _sel = -1;
                                           });
                                           _tabs.animateTo(1);
+                                          _wmPanelCtrl.scrollTo(WmPart.text);
                                         },
                                       ),
                                     );

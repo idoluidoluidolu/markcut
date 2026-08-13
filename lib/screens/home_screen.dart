@@ -13,8 +13,8 @@ import 'profile_screen.dart';
 import 'video_editor_screen.dart';
 import 'watermark_studio_screen.dart';
 
-/// 「加入浮水印」的五種入口
-enum _PickKind { oneVideo, onePhoto, manyVideos, manyPhotos, collage }
+/// 「加入浮水印」的入口
+enum _PickKind { oneVideo, onePhoto, manyVideos, manyPhotos, collage, blank }
 
 /// 選取視窗裡的方塊：大圖示＋標題，多支的再加一個「批次」註記
 class _PickTile extends StatelessWidget {
@@ -187,13 +187,21 @@ class _HomeScreenState extends State<HomeScreen> {
                           kind: _PickKind.manyPhotos)),
                 ]),
                 const SizedBox(height: 10),
+                // 前四格都要先挑檔案，最後一排放「不用挑檔案」的兩個
                 const Row(children: [
                   Expanded(
                       child: _PickTile(
                           icon: Icons.grid_view,
                           label: '照片拼圖',
-                          hint: '2/4/6/9 宮格',
+                          hint: '自由宮格',
                           kind: _PickKind.collage)),
+                  SizedBox(width: 10),
+                  Expanded(
+                      child: _PickTile(
+                          icon: Icons.playlist_add,
+                          label: '空白專案',
+                          hint: '進去再加素材',
+                          kind: _PickKind.blank)),
                 ]),
               ],
             ),
@@ -226,6 +234,8 @@ class _HomeScreenState extends State<HomeScreen> {
           context,
           MaterialPageRoute(builder: (_) => CollageScreen(photos: list)),
         );
+      case _PickKind.blank:
+        await _openBlank();
       case _PickKind.manyVideos:
         // image_picker 沒有「只選多支影片」的 API，用混合選取再濾掉照片，
         // 這樣才留得住系統原生的相簿選取器
@@ -262,6 +272,25 @@ class _HomeScreenState extends State<HomeScreen> {
       context,
       MaterialPageRoute(builder: (_) => PhotoEditorScreen(photo: picked)),
     );
+  }
+
+  /// 空白專案：不挑素材直接進影片編輯器。
+  /// 跟開新影片一樣會蓋掉草稿，先問過
+  Future<void> _openBlank() async {
+    if (_draft != null) {
+      final ok = await showConfirm(
+        context,
+        title: '覆蓋上次的草稿？',
+        message: '開新專案後，未完成的草稿會被取代',
+        action: '開新專案',
+      );
+      if (!ok || !mounted) return;
+    }
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const VideoEditorScreen(blank: true)),
+    );
+    _checkDraft();
   }
 
   Future<void> _openVideo(XFile picked) async {
