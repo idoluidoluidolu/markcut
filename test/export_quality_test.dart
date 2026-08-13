@@ -51,10 +51,10 @@ void main() {
           outW: fhdW,
           outH: fhdH,
         );
-        final ok = q.kbpsFor(fhdW, fhdH) >= srcKbps * 1.3;
-        // 撞到最高一檔還是不夠時只能給最高，那是合理的收尾
+        final ok = q.kbpsFor(fhdW, fhdH) >= srcKbps * 1.25;
+        // 撞到上限（極高）還是不夠時就停在極高，那是刻意的取捨
         expect(
-          ok || q == qualityOrder.last,
+          ok || q == ExportQuality.ultra,
           isTrue,
           reason: '$srcKbps kbps 挑了 ${q.label}，壓不下去',
         );
@@ -62,7 +62,7 @@ void main() {
     });
 
     test('挑的是「夠用的最低檔」，不會無謂放大檔案', () {
-      // 標準在 1080p 是 9.3 Mbps，餘裕 1.3 倍 → 7000 kbps 以下都該收在標準
+      // 標準在 1080p 是 9.3 Mbps，餘裕 1.25 倍 → 7400 kbps 以下收在標準
       expect(
         recommendQuality(srcKbps: 5000, outW: fhdW, outH: fhdH),
         ExportQuality.standard,
@@ -71,6 +71,27 @@ void main() {
       expect(
         recommendQuality(srcKbps: 8000, outW: fhdW, outH: fhdH),
         ExportQuality.ultra,
+      );
+    });
+
+    test('自動挑不會選到「最高」——那是四倍檔案，要由使用者自己按', () {
+      for (final srcKbps in [20000.0, 60000.0, 200000.0]) {
+        for (final (w, h) in [(fhdW, fhdH), (3840, 2160), (1280, 720)]) {
+          expect(
+            recommendQuality(srcKbps: srcKbps, outW: w, outH: h),
+            isNot(ExportQuality.lossless),
+          );
+        }
+      }
+      // 上限本身可以放寬，只是預設不放
+      expect(
+        recommendQuality(
+          srcKbps: 200000,
+          outW: fhdW,
+          outH: fhdH,
+          cap: ExportQuality.lossless,
+        ),
+        ExportQuality.lossless,
       );
     });
 

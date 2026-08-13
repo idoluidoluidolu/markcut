@@ -119,26 +119,35 @@ ExportQuality qualityFromCrf(int crf) => switch (crf) {
       _ => ExportQuality.low,
     };
 
-/// 依素材本身的位元率，挑一個「看不出被重壓過」的檔位。
+/// 依素材本身的位元率，挑一個「看不出被重壓過」的檔位（視覺無損）。
 ///
 /// 只看檔案大小 ÷ 長度換算出來的位元率，不去 probe 編碼格式——
 /// probe 要另外跑一次 FFmpeg，開匯出頁就會卡一下。
 ///
-/// [headroom] 是重壓一次的餘裕：手機現在大多錄 HEVC，同樣的畫質
-/// 換成 H.264 大約要多吃三成位元率。寧可檔案大一點也不要糊掉——
-/// 使用者要省空間，隨時可以自己往下選
+/// [headroom] 是重壓一次的餘裕。同樣的畫質，HEVC 素材換成 H.264
+/// 要多吃三到五成位元率，H.264 素材則幾乎不用加；不知道是哪一種，
+/// 取中間值。
+///
+/// [cap] 是自動挑的上限，預設不會自己選到「最高」。最高是標準的
+/// 四倍檔案，那種代價該由使用者自己按下去決定，不該是他沒動過設定
+/// 就默默拿到的結果；而且極高在任何解析度都已經是很難挑毛病的畫質。
+/// 素材真的超過極高（高位元率相機檔）時就停在極高——這是刻意的取捨，
+/// 使用者要更高隨時可以自己往上選
 ExportQuality recommendQuality({
   required double srcKbps,
   required int outW,
   required int outH,
-  double headroom = 1.3,
+  double headroom = 1.25,
+  ExportQuality cap = ExportQuality.ultra,
 }) {
   if (srcKbps <= 0) return ExportQuality.standard;
   final need = srcKbps * headroom;
-  for (final q in qualityOrder) {
+  final limit = qualityOrder.indexOf(cap);
+  for (final (i, q) in qualityOrder.indexed) {
+    if (i >= limit) break;
     if (q.kbpsFor(outW, outH) >= need) return q;
   }
-  return qualityOrder.last;
+  return cap;
 }
 
 class ExportSpec {
