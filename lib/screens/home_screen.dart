@@ -13,52 +13,58 @@ import 'profile_screen.dart';
 import 'video_editor_screen.dart';
 import 'watermark_studio_screen.dart';
 
-/// 「加入浮水印」的入口
-enum _PickKind { oneVideo, onePhoto, manyVideos, manyPhotos, collage, blank }
+/// 「加入浮水印」的入口。
+/// 不分單支/多支——選一個就進單檔編輯器、選多個才進批次，
+/// 這件事程式自己判斷得出來，不用先問使用者
+enum _PickKind { video, photo, collage, blank }
 
-/// 選取視窗裡的方塊：大圖示＋標題，多支的再加一個「批次」註記
-class _PickTile extends StatelessWidget {
+/// 選取視窗裡的一列：圖示＋標題＋一句說明。
+/// 用清單不用方塊——眼睛只要走一條直線，不必在網格裡跳
+class _PickRow extends StatelessWidget {
   final IconData icon;
   final String label;
-  final String? hint;
+  final String hint;
   final _PickKind kind;
 
-  const _PickTile({
+  /// 最後一列不畫分隔線
+  final bool divider;
+
+  const _PickRow({
     required this.icon,
     required this.label,
+    required this.hint,
     required this.kind,
-    this.hint,
+    this.divider = true,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: kPanel,
-      borderRadius: BorderRadius.circular(12),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: () => Navigator.pop(context, kind),
-        child: Container(
-          height: 104,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: kBorder),
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, size: 26, color: kAmber),
-              const SizedBox(height: 8),
-              Text(label,
-                  style: const TextStyle(fontSize: 13.5, color: kText)),
-              if (hint != null) ...[
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: () => Navigator.pop(context, kind),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+        decoration: divider
+            ? const BoxDecoration(
+                border: Border(bottom: BorderSide(color: kBorder)),
+              )
+            : null,
+        child: Row(
+          children: [
+            Icon(icon, size: 21, color: kAmber),
+            const SizedBox(width: 13),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(label,
+                    style: const TextStyle(fontSize: 14, color: kText)),
                 const SizedBox(height: 2),
-                Text(hint!,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 11, color: kTextDim)),
+                Text(hint,
+                    style: const TextStyle(fontSize: 11.5, color: kTextDim)),
               ],
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -146,63 +152,39 @@ class _HomeScreenState extends State<HomeScreen> {
           side: const BorderSide(color: kBorder),
         ),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 380),
+          constraints: const BoxConstraints(maxWidth: 340),
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+            padding: const EdgeInsets.fromLTRB(16, 20, 16, 12),
             child: Column(
               mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text('加入浮水印',
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: const [
+                Text('加入浮水印',
+                    textAlign: TextAlign.center,
                     style: TextStyle(
                         fontSize: 15, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 16),
-                // 2×2：上排單支、下排多支
-                Row(children: [
-                  Expanded(
-                      child: _PickTile(
-                          icon: Icons.videocam_outlined,
-                          label: '單支影片',
-                          kind: _PickKind.oneVideo)),
-                  const SizedBox(width: 10),
-                  Expanded(
-                      child: _PickTile(
-                          icon: Icons.image_outlined,
-                          label: '單張照片',
-                          kind: _PickKind.onePhoto)),
-                ]),
-                const SizedBox(height: 10),
-                Row(children: [
-                  Expanded(
-                      child: _PickTile(
-                          icon: Icons.video_library_outlined,
-                          label: '多支影片',
-                          hint: '建議 30 部以內',
-                          kind: _PickKind.manyVideos)),
-                  const SizedBox(width: 10),
-                  Expanded(
-                      child: _PickTile(
-                          icon: Icons.photo_library_outlined,
-                          label: '多張照片',
-                          hint: '建議 200 張以內',
-                          kind: _PickKind.manyPhotos)),
-                ]),
-                const SizedBox(height: 10),
-                // 前四格都要先挑檔案，最後一排放「不用挑檔案」的兩個
-                const Row(children: [
-                  Expanded(
-                      child: _PickTile(
-                          icon: Icons.grid_view,
-                          label: '照片拼圖',
-                          hint: '自由宮格',
-                          kind: _PickKind.collage)),
-                  SizedBox(width: 10),
-                  Expanded(
-                      child: _PickTile(
-                          icon: Icons.playlist_add,
-                          label: '空白專案',
-                          hint: '進去再加素材',
-                          kind: _PickKind.blank)),
-                ]),
+                SizedBox(height: 12),
+                _PickRow(
+                    icon: Icons.videocam_outlined,
+                    label: '影片',
+                    hint: '單支或多支',
+                    kind: _PickKind.video),
+                _PickRow(
+                    icon: Icons.image_outlined,
+                    label: '照片',
+                    hint: '單張或多張',
+                    kind: _PickKind.photo),
+                _PickRow(
+                    icon: Icons.grid_view,
+                    label: '照片拼圖',
+                    hint: '多張排成一張',
+                    kind: _PickKind.collage),
+                _PickRow(
+                    icon: Icons.playlist_add,
+                    label: '空白專案',
+                    hint: '進去再加素材',
+                    kind: _PickKind.blank,
+                    divider: false),
               ],
             ),
           ),
@@ -212,15 +194,28 @@ class _HomeScreenState extends State<HomeScreen> {
     if (kind == null || !mounted) return;
 
     switch (kind) {
-      case _PickKind.oneVideo:
-        final f = await ImagePicker().pickVideo(source: ImageSource.gallery);
-        if (f != null && mounted) await _openVideo(f);
-      case _PickKind.onePhoto:
-        final f = await ImagePicker().pickImage(source: ImageSource.gallery);
-        if (f != null && mounted) await _openPhoto(f);
-      case _PickKind.manyPhotos:
+      case _PickKind.video:
+        // image_picker 沒有「只選影片」的 API，用混合選取再濾掉照片，
+        // 這樣才留得住系統原生的相簿選取器
+        final list = await ImagePicker().pickMultipleMedia();
+        final videos = list.where(_isVideoFile).toList();
+        // 提示交給批次頁進場後顯示——在這裡 show 會馬上被
+        // 推上來的新頁面蓋住，使用者根本看不到
+        await _openBatch(
+          videos,
+          hint: _countHint(
+            skipped: list.length - videos.length,
+            count: videos.length,
+            unit: '部影片',
+            soft: 30,
+          ),
+        );
+      case _PickKind.photo:
         final list = await ImagePicker().pickMultiImage();
-        await _openBatch(list);
+        await _openBatch(
+          list,
+          hint: _countHint(count: list.length, unit: '張照片', soft: 200),
+        );
       case _PickKind.collage:
         final list = await ImagePicker().pickMultiImage();
         if (list.length < 2) {
@@ -236,19 +231,23 @@ class _HomeScreenState extends State<HomeScreen> {
         );
       case _PickKind.blank:
         await _openBlank();
-      case _PickKind.manyVideos:
-        // image_picker 沒有「只選多支影片」的 API，用混合選取再濾掉照片，
-        // 這樣才留得住系統原生的相簿選取器
-        final list = await ImagePicker().pickMultipleMedia();
-        final videos = list.where(_isVideoFile).toList();
-        // 提示交給批次頁進場後顯示——在這裡 show 會馬上被
-        // 推上來的新頁面蓋住，使用者根本看不到
-        final skipped = list.length - videos.length;
-        await _openBatch(
-          videos,
-          hint: skipped > 0 ? '已略過 $skipped 個非影片檔案' : null,
-        );
     }
+  }
+
+  /// 選完才講的提醒（略過的檔案、數量偏多）。
+  /// 數量上限以前寫在選單上，但使用者還沒開始挑就先看到限制沒什麼用，
+  /// 挑完才講才是他真的需要知道的時候
+  String? _countHint({
+    int skipped = 0,
+    required int count,
+    required String unit,
+    required int soft,
+  }) {
+    final parts = [
+      if (skipped > 0) '已略過 $skipped 個非影片檔案',
+      if (count > soft) '選了 $count $unit，處理會比較久',
+    ];
+    return parts.isEmpty ? null : parts.join('；');
   }
 
   /// 一支就進單檔編輯器，多支才進批次

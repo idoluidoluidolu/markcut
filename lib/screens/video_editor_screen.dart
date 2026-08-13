@@ -2243,6 +2243,32 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _lastDriftFix.clear();
   }
 
+  /// 片段此刻該有的音量（還沒夾在 0~1，可能大於 1）
+  double _rawVolOf(TimelineClip clip) {
+    final trackMute = _mutedTracks.contains(clip.track) ? 0.0 : 1.0;
+    // 倒轉的片段預覽時靜音：播放器只會正著播，聲音是反的內容，
+    // 放出來只會干擾（匯出時會用 areverse 正確倒過來）
+    final revMute = clip.reverse ? 0.0 : 1.0;
+    return clip.volume * trackMute * revMute * clip.fadeFactorAt(_position);
+  }
+
+  /// 預覽混音的縮放基準。
+  ///
+  /// 播放器的音量上限就是 1.0（iOS AVPlayer、Android ExoPlayer 都一樣），
+  /// 所以 120% 沒辦法真的放大。硬夾成 1.0 的話，一段 120%、一段 60%
+  /// 聽起來會是 100% 對 60%，比例錯的——預覽跟匯出的混音不一樣。
+  /// 改成整組除以峰值：120/60 變成 100/50，比例跟匯出一致，
+  /// 只是整體小聲一點
+  double _previewVolPeak() {
+    var peak = 1.0;
+    for (final clip in _tl.clips) {
+      if (!clip.covers(_position)) continue;
+      final v = _rawVolOf(clip);
+      if (v > peak) peak = v;
+    }
+    return peak;
+  }
+
   /// 每個片段上次大幅校正的時間（防連發）
   final Map<int, DateTime> _lastDriftFix = {};
   DateTime _lastVolSync = DateTime.fromMillisecondsSinceEpoch(0);
@@ -2356,13 +2382,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       // 音量最多 10 次/秒（fade 中每格打 method channel 也會卡）
       if (volDue) {
-        final trackMute = _mutedTracks.contains(clip.track) ? 0.0 : 1.0;
-        // 倒轉的片段預覽時靜音：播放器只會正著播，聲音是反的內容，
-        // 放出來只會干擾（匯出時會用 areverse 正確倒過來）
-        final revMute = clip.reverse ? 0.0 : 1.0;
-        final vol =
-            (clip.volume * trackMute * revMute * clip.fadeFactorAt(_position))
-                .clamp(0.0, 1.0);
+        // 峰值 >100% 時整組等比例縮小（見 _previewVolPeak）
+        final vol = (_rawVolOf(clip) / _previewVolPeak()).clamp(0.0, 1.0);
         if ((vol - (_lastVol[clip.id] ?? -1)).abs() > 0.02) {
           _lastVol[clip.id] = vol;
           c.setVolume(vol);
@@ -5306,6 +5327,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   ? '浮水印大小請在浮水印分頁調，或在預覽雙指縮放'
                                   : '聲音片段沒有畫面大小可調'),
                       ),
+                      // 音量／效果分開兩顆：以前擠在同一張表裡，
+                      // 想調音量的人得先看懂「效果」是什麼
+                      _toolBtn(
+                        Icons.volume_up,
+                        '音量',
+                        (sel == null || !_clipHasAudio(sel))
+                            ? null
+                            : () => _openVolumeSheet(sel),
+                        tip: '這段的音量',
+                        disabledHint: sel == null
+                            ? '先在時間軸點選一個片段'
+                            : '這個素材沒有聲音',
+                      ),
+                      _toolBtn(
+                        Icons.gradient,
+                        '效果',
+                        sel == null ? null : () => _openFadeSheet(sel),
+                        tip: '淡入淡出',
+                        disabledHint: '先在時間軸點選一個片段',
+                      ),
                       _toolBtn(Icons.speed, '速度', _openSpeedSheet, tip: '播放速度'),
                       _toolBtn(
                         Icons.tune,
@@ -5323,14 +5364,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         disabledHint: sel == null
                             ? '先在時間軸點選要調色的片段'
                             : '這種素材不能調色（影片、圖片才可以）',
-                      ),
-                      // 叫「效果」沒人猜得到裡面是音量——直接叫音量
-                      _toolBtn(
-                        Icons.volume_up,
-                        '音量',
-                        sel == null ? null : () => _openClipOptions(sel),
-                        tip: '音量、淡入淡出',
-                        disabledHint: '先在時間軸點選一個片段',
                       ),
                     ],
                   ),
@@ -5502,188 +5535,207 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return k == ClipKind.video || k == ClipKind.audio;
   }
 
-  /// 片段選項：音量（有聲音的素材）＋淡入淡出
-  void _openClipOptions(TimelineClip clip) {
-    final hasAudio = _clipHasAudio(clip);
-    // 按靜音之前的音量，再按一次原音量回來
-    var lastVol = clip.volume > 0 ? clip.volume : 1.0;
-    final audioCount = _tl.clips.where(_clipHasAudio).length;
+  /// 兩張設定表共用的滑桿列
+  Widget _optRow({
+    required String label,
+    required double value,
+    required double max,
+    required String suffix,
+    required ValueChanged<double> onChanged,
+    Widget? leading,
+  }) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 56,
+          child:
+              leading ??
+              Text(
+                label,
+                style: const TextStyle(fontSize: 12, color: kTextDim),
+              ),
+        ),
+        Expanded(
+          child: Slider(
+            value: value.clamp(0, max),
+            max: max,
+            onChanged: onChanged,
+          ),
+        ),
+        SizedBox(
+          width: 48,
+          child: Text(
+            suffix,
+            textAlign: TextAlign.right,
+            style: const TextStyle(fontSize: 11, color: kTextDim),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 設定表的外框（標題＋內容）
+  Future<void> _optSheet(
+    String title,
+    Widget Function(StateSetter setSheet) body,
+  ) {
     _pushUndo();
-    showModalBottomSheet(
+    return showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
       builder: (context) => StatefulBuilder(
-        builder: (context, setSheet) {
-          Widget row(
-            String label,
-            double value,
-            double max,
-            String suffix,
-            ValueChanged<double> onChanged, {
-            Widget? leading,
-          }) {
-            return Row(
+        builder: (context, setSheet) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                SizedBox(
-                  width: 56,
-                  child:
-                      leading ??
-                      Text(
-                        label,
-                        style: const TextStyle(fontSize: 12, color: kTextDim),
-                      ),
-                ),
-                Expanded(
-                  child: Slider(
-                    value: value.clamp(0, max),
-                    max: max,
-                    onChanged: (v) {
-                      setSheet(() {});
-                      setState(() => onChanged(v));
-                    },
-                  ),
-                ),
-                SizedBox(
-                  width: 48,
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
                   child: Text(
-                    suffix,
-                    textAlign: TextAlign.right,
-                    style: const TextStyle(fontSize: 11, color: kTextDim),
+                    title,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
+                body(setSheet),
               ],
-            );
-          }
+            ),
+          ),
+        ),
+      ),
+    ).whenComplete(_saveDraft);
+  }
 
-          void setVol(double v) {
-            setSheet(() {});
-            setState(() {
-              clip.volume = v;
-              // 播放器音量上限就是 1.0，加強的部分只有匯出聽得到
-              _ctrls[clip.id]?.setVolume(v.clamp(0.0, 1.0));
-            });
-          }
+  /// 音量：滑桿＋一鍵靜音＋套用到全部
+  void _openVolumeSheet(TimelineClip clip) {
+    // 按靜音之前的音量，再按一次原音量回來
+    var lastVol = clip.volume > 0 ? clip.volume : 1.0;
+    final audioCount = _tl.clips.where(_clipHasAudio).length;
+    _optSheet('音量', (setSheet) {
+      void setVol(double v) {
+        setSheet(() {});
+        setState(() {
+          clip.volume = v;
+          // 上限 1.0 是播放器的硬限制，>100% 靠整組等比例縮小
+          // 讓比例正確（見 _previewVolPeak），匯出才會真的放大
+          _ctrls[clip.id]?.setVolume(v.clamp(0.0, 1.0));
+        });
+      }
 
-          return SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _optRow(
+            label: '音量',
+            value: clip.volume,
+            max: 2,
+            suffix: '${(clip.volume * 100).round()}%',
+            onChanged: setVol,
+            // 喇叭圖示可以點＝快速靜音／取消靜音
+            leading: InkWell(
+              onTap: () {
+                if (clip.volume > 0) {
+                  lastVol = clip.volume;
+                  setVol(0);
+                } else {
+                  setVol(lastVol);
+                }
+              },
+              child: Row(
                 children: [
-                  const Padding(
-                    padding: EdgeInsets.only(bottom: 6),
-                    child: Text(
-                      '音量與淡化',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
+                  Icon(
+                    clip.volume > 0 ? Icons.volume_up : Icons.volume_off,
+                    size: 16,
+                    color: clip.volume > 0 ? kTextDim : kSelect,
                   ),
-                  if (hasAudio) ...[
-                    row(
-                      '音量',
-                      clip.volume,
-                      2,
-                      '${(clip.volume * 100).round()}%',
-                      setVol,
-                      // 喇叭圖示可以點＝快速靜音／取消靜音
-                      leading: InkWell(
-                        onTap: () {
-                          if (clip.volume > 0) {
-                            lastVol = clip.volume;
-                            setVol(0);
-                          } else {
-                            setVol(lastVol);
-                          }
-                        },
-                        child: Row(
-                          children: [
-                            Icon(
-                              clip.volume > 0
-                                  ? Icons.volume_up
-                                  : Icons.volume_off,
-                              size: 16,
-                              color: clip.volume > 0 ? kTextDim : kSelect,
-                            ),
-                            const SizedBox(width: 4),
-                            const Text(
-                              '音量',
-                              style: TextStyle(fontSize: 12, color: kTextDim),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    // 超過 100% 是靠匯出時放大音軌做的，
-                    // 預覽播放器本身放不出來——先講清楚，
-                    // 不然會以為拉了沒反應
-                    if (clip.volume > 1.01)
-                      const Padding(
-                        padding: EdgeInsets.only(left: 56, bottom: 4),
-                        child: Text(
-                          '預覽最大只到 100%，加強的部分匯出後才聽得到',
-                          style: TextStyle(fontSize: 10.5, color: kTextDim),
-                        ),
-                      ),
-                    // 一段一段調太累：一鍵套到所有有聲音的素材
-                    if (audioCount > 1)
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: TextButton.icon(
-                          onPressed: () {
-                            setState(() {
-                              for (final c in _tl.clips) {
-                                if (!_clipHasAudio(c)) continue;
-                                c.volume = clip.volume;
-                                _ctrls[c.id]?.setVolume(
-                                  c.volume.clamp(0.0, 1.0),
-                                );
-                              }
-                            });
-                            showHint(
-                              context,
-                              '全部 $audioCount 個素材都設成 '
-                              '${(clip.volume * 100).round()}%',
-                            );
-                          },
-                          icon: const Icon(Icons.done_all, size: 16),
-                          label: const Text(
-                            '套用到全部素材',
-                            style: TextStyle(fontSize: 12),
-                          ),
-                        ),
-                      ),
-                  ] else
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 6),
-                      child: Text(
-                        '這個素材沒有聲音，只能調畫面的淡入淡出',
-                        style: TextStyle(fontSize: 11.5, color: kTextDim),
-                      ),
-                    ),
-                  row(
-                    '淡入',
-                    clip.fadeIn,
-                    3,
-                    '${clip.fadeIn.toStringAsFixed(1)}s',
-                    (v) => clip.fadeIn = v,
-                  ),
-                  row(
-                    '淡出',
-                    clip.fadeOut,
-                    3,
-                    '${clip.fadeOut.toStringAsFixed(1)}s',
-                    (v) => clip.fadeOut = v,
+                  const SizedBox(width: 4),
+                  const Text(
+                    '音量',
+                    style: TextStyle(fontSize: 12, color: kTextDim),
                   ),
                 ],
               ),
             ),
+          ),
+          // 100% 以上預覽播不出來（播放器上限就是 1.0）：
+          // 講清楚是「這裡聽不到」而不是「沒作用」
+          if (clip.volume > 1.01)
+            const Padding(
+              padding: EdgeInsets.only(left: 56, bottom: 4),
+              child: Text(
+                '預覽放不出 100% 以上（播放器限制），匯出才會真的放大',
+                style: TextStyle(fontSize: 10.5, color: kTextDim),
+              ),
+            ),
+          // 一段一段調太累：一鍵套到所有有聲音的素材
+          if (audioCount > 1)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () {
+                  setState(() {
+                    for (final c in _tl.clips) {
+                      if (!_clipHasAudio(c)) continue;
+                      c.volume = clip.volume;
+                      _ctrls[c.id]?.setVolume(c.volume.clamp(0.0, 1.0));
+                    }
+                  });
+                  showHint(
+                    context,
+                    '全部 $audioCount 個素材都設成 '
+                    '${(clip.volume * 100).round()}%',
+                  );
+                },
+                icon: const Icon(Icons.done_all, size: 16),
+                label: const Text(
+                  '套用到全部素材',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ),
+            ),
+        ],
+      );
+    });
+  }
+
+  /// 效果：進場／退場的淡化（畫面與聲音一起）
+  void _openFadeSheet(TimelineClip clip) {
+    _optSheet('效果', (setSheet) {
+      Widget row(String label, double value, ValueChanged<double> set) =>
+          _optRow(
+            label: label,
+            value: value,
+            max: 3,
+            suffix: '${value.toStringAsFixed(1)}s',
+            onChanged: (v) {
+              setSheet(() {});
+              setState(() => set(v));
+            },
           );
-        },
-      ),
-    ).whenComplete(_saveDraft);
+
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          row('淡入', clip.fadeIn, (v) => clip.fadeIn = v),
+          row('淡出', clip.fadeOut, (v) => clip.fadeOut = v),
+          Padding(
+            padding: const EdgeInsets.only(left: 56, top: 2),
+            child: Text(
+              _clipHasAudio(clip)
+                  ? '畫面與聲音一起淡'
+                  : '這個素材沒有聲音，只淡畫面',
+              style: const TextStyle(fontSize: 10.5, color: kTextDim),
+            ),
+          ),
+        ],
+      );
+    });
   }
 
   /// 把片段（同 id）換成新的實例（倒轉／還原時 sourceIndex 是 final，
