@@ -1507,6 +1507,10 @@ class _TrackLabelState extends State<_TrackLabel> {
     return SizedBox(
       height: widget.height,
       child: RawGestureDetector(
+        // 整格都能點，含標籤右邊那 6px 邊距。
+        // 預設是 deferToChild＝只有畫得出東西的地方吃得到手勢，
+        // 喇叭圖示那一格本來就不大，再少掉邊距更容易點空
+        behavior: HitTestBehavior.opaque,
         gestures: {
           _EagerPanRecognizer:
               GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
@@ -1565,9 +1569,19 @@ class _TrackLabelState extends State<_TrackLabel> {
                   }
                   ..onCancel = () {
                     _pressTimer?.cancel();
-                    _longFired = false;
+                    if (_longFired) {
+                      _longFired = false;
+                      _dy = 0;
+                      _moved = false;
+                      return;
+                    }
+                    // 手勢被中途取消（父層重建、外層捲動搶走、系統插斷）
+                    // 而手指幾乎沒動＝使用者的本意就是點一下。
+                    // 這裡原本直接吞掉，症狀就是「點了沒反應、要點第二次」
+                    final wasTap = !_moved;
                     widget.onDragUpdate(0);
                     widget.onDragEnd();
+                    if (wasTap) widget.onTap();
                     _dy = 0;
                     _moved = false;
                   },
