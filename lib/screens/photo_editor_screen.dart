@@ -702,8 +702,20 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     );
   }
 
-  /// 浮在面板上的輸出鍵。不佔版面高度——內容從它下面穿過去，
-  /// 底下鋪一層漸層讓字不會糊在一起。這樣面板的空間感才拉得開
+  /// 從浮動列存成範本。面板只在浮水印分頁掛著，
+  /// 在調色模式要先切回去才叫得到它的儲存流程
+  Future<void> _savePresetFromBar() async {
+    if (_tab != 0) {
+      setState(() => _tab = 0);
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return;
+    }
+    await _panelKey.currentState?.savePreset();
+  }
+
+  /// 浮在面板上的按鈕列。不佔版面高度——內容從它下面穿過去，
+  /// 底下鋪一層漸層讓字不會糊在一起，面板的空間感才拉得開。
+  /// 兩顆都寫字：存成範本縮成圖示就沒人知道那是什麼
   Widget _floatingExport() => Positioned(
         left: 0,
         right: 0,
@@ -730,16 +742,40 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                 padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
                 child: SafeArea(
                   top: false,
-                  child: FilledButton.icon(
-                    onPressed: _exporting ? null : _confirmExport,
-                    style: FilledButton.styleFrom(
-                      minimumSize: const Size.fromHeight(46),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(999),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _exporting ? null : _savePresetFromBar,
+                          style: OutlinedButton.styleFrom(
+                            minimumSize: const Size.fromHeight(46),
+                            foregroundColor: kText,
+                            side: const BorderSide(color: kClipBorder),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                          ),
+                          icon: const Icon(Icons.bookmark_add_outlined,
+                              size: 17),
+                          label: const Text('存成範本',
+                              style: TextStyle(fontSize: 13)),
+                        ),
                       ),
-                    ),
-                    icon: const Icon(Icons.ios_share, size: 18),
-                    label: const Text('輸出'),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: FilledButton.icon(
+                          onPressed: _exporting ? null : _confirmExport,
+                          style: FilledButton.styleFrom(
+                            minimumSize: const Size.fromHeight(46),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                          ),
+                          icon: const Icon(Icons.ios_share, size: 18),
+                          label: const Text('輸出'),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -1199,36 +1235,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       showHint(context, message, error: true);
       return;
     }
-    // 成功：問要回主畫面、繼續改，還是順便把這組浮水印存成範本
-    await _afterExport(message);
-  }
-
-  /// 輸出完成後的收尾。選了「存成範本」就存完再問一次
-  ///（存完還是要決定去留，但那次就不再問存範本了）
-  Future<void> _afterExport(String message, {bool offerSave = true}) async {
-    // 浮水印是空的就沒什麼好存
-    final hasWm = (_settings.text.enabled &&
-            _settings.text.text.trim().isNotEmpty) ||
-        (_settings.logo.enabled && _settings.logo.bytes != null);
-    final act = await askAfterExport(
-      context,
-      message,
-      offerSave: offerSave && hasWm,
-    );
-    if (!mounted) return;
-    if (act == 'save') {
-      // 面板只在浮水印分頁掛著；在調色模式要先切回去才叫得到它
-      if (_tab != 0) {
-        setState(() => _tab = 0);
-        await WidgetsBinding.instance.endOfFrame;
-        if (!mounted) return;
-      }
-      await _panelKey.currentState?.savePreset();
-      if (!mounted) return;
-      // 存完還是得決定去留；這次不再問存範本
-      await _afterExport(message, offerSave: false);
-      return;
-    }
+    // 成功：問要回主畫面還是留下來繼續改
+    final act = await askAfterExport(context, message);
     // _initialJson 上面已經對齊現況，離開不會再問「要放棄嗎」
     if (act == 'home' && mounted) {
       Navigator.of(context).popUntil((r) => r.isFirst);

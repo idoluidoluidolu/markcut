@@ -4,7 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
-    show RenderAbstractViewport, ScrollCacheExtent;
+    show RenderAbstractViewport, ScrollCacheExtent, ScrollDirection;
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -419,9 +419,27 @@ class WatermarkPanelState extends State<WatermarkPanel> {
 
   /// 捲到哪一區就高亮哪一格。
   /// 判斷方式是「這一區的頂端已經捲過導覽列了」，取符合的最後一個
+  /// 按了導覽列之後先鎖住高亮，等使用者自己捲才交還給偵測。
+  /// 不鎖的話：靠近底部的區塊（例如馬賽克）捲到底也到不了門檻線，
+  /// 偵測會立刻把高亮改回上一區，看起來就是「點了不會反白」
+  bool _navLocked = false;
+
   void _spySection() {
     if (!_scroll.hasClients || _nav.isEmpty) return;
-    final line = _scroll.offset + 48;
+    if (_navLocked) {
+      // 程式自己捲的時候 userScrollDirection 是 idle；
+      // 使用者真的動手捲了才解鎖
+      if (_scroll.position.userScrollDirection == ScrollDirection.idle) {
+        return;
+      }
+      _navLocked = false;
+    }
+    final pos = _scroll.position;
+    // 已經捲到底：後面那幾區的頂端不可能再往上跑，門檻線改用
+    // 畫面高度的 6 成，讓它們也選得到
+    final atEnd = pos.pixels >= pos.maxScrollExtent - 8;
+    final line =
+        pos.pixels + (atEnd ? pos.viewportDimension * 0.6 : 48);
     var idx = 0;
     for (var i = 0; i < _nav.length; i++) {
       final ctx = _nav[i].key.currentContext;
@@ -432,14 +450,21 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       if (vp == null) continue;
       if (vp.getOffsetToReveal(box, 0.0).offset <= line) idx = i;
     }
+    _setNav(idx);
+  }
+
+  void _setNav(int idx) {
     if (idx != _navAt && mounted) setState(() => _navAt = idx);
+    // 一定要回報：父層自己畫導覽列時（照片編輯）高亮是看這個值，
+    // 只更新面板內部的 _navAt 外面不會亮
     widget.controller?.reportSection(idx);
   }
 
   void _jumpToSection(int i) {
     final ctx = _nav[i].key.currentContext;
     if (ctx == null) return;
-    setState(() => _navAt = i);
+    _navLocked = true;
+    _setNav(i);
     Scrollable.ensureVisible(
       ctx,
       duration: const Duration(milliseconds: 320),
