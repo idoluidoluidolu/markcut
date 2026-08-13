@@ -964,7 +964,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                       color: on ? kPanelHi : Colors.transparent,
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(
-                        color: on ? kAmber : kBorder,
+                        color: on ? kAmber : kClipBorder,
                         width: on ? 1.5 : 1,
                       ),
                     ),
@@ -1023,10 +1023,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   const SizedBox(height: 14),
                   row(
                     '大小',
+                    // 上限跟影片端一致（原本這裡是 1.5、那邊 3.0，
+                    // 同一個功能能拉的範圍卻不一樣）
                     Slider(
-                      value: m.scale.clamp(0.05, 1.5),
+                      value: m.scale.clamp(0.05, 3.0),
                       min: 0.05,
-                      max: 1.5,
+                      max: 3.0,
                       onChanged: (v) => change(() => m.scale = v),
                     ),
                     Text(
