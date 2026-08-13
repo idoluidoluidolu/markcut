@@ -152,7 +152,8 @@ String _eq(TimelineClip c) => c.color.ffmpeg;
 /// 組出通用圖層的 FFmpeg 指令：
 /// 黑色畫布 → 由下層往上把每個影片片段 overlay 上去（各自只在自己的時間區間顯示）
 /// → 疊浮水印；所有帶聲音的片段 delay 對位後 amix 混成一軌。
-/// 高畫質策略：libx264 CRF 17 + lanczos 縮放。
+/// 縮放用 lanczos；編碼交給平台的硬體編碼器（見 _hwEncoder／_kbpsFor），
+/// 失敗才退軟體。
 Future<String> _buildCommand(
   ExportSpec spec,
   String? wmPath,
@@ -649,11 +650,19 @@ String _hwEncoder() => (Platform.isIOS || Platform.isMacOS)
     ? 'h264_videotoolbox'
     : 'h264_mediacodec';
 
-/// 畫質檔位 → 位元率（依解析度換算；沿用 spec.crf 當檔位訊號：
-/// 17=標準、12=極高、0=最高）
+/// 畫質檔位 → 位元率（依解析度換算）。
+///
+/// 手機走的是硬體編碼器，吃的是位元率不是 CRF，所以 spec.crf 在這裡
+/// 只是「使用者選了哪一檔」的訊號：26=低、17=標準、12=極高、0=最高。
+/// 每一檔都要有自己的分支——少一個就會跟隔壁檔位輸出同樣的檔案
 int _kbpsFor(ExportSpec spec) {
   final px = spec.outW * spec.outH;
-  final bpp = spec.crf <= 0 ? 0.60 : (spec.crf <= 12 ? 0.28 : 0.15);
+  final bpp = switch (spec.crf) {
+    <= 0 => 0.60,
+    <= 12 => 0.28,
+    <= 17 => 0.15,
+    _ => 0.07,
+  };
   return (px * 30 * bpp / 1000).round().clamp(1500, 120000);
 }
 

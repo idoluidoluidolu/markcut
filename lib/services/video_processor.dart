@@ -75,7 +75,7 @@ extension ExportQualityInfo on ExportQuality {
       };
 
   String get note => switch (this) {
-        ExportQuality.low => '匯出速度最快',
+        ExportQuality.low => '檔案最小，畫質略降',
         ExportQuality.standard => '視覺無損，建議日常使用',
         ExportQuality.ultra => '檔案約大一倍',
         ExportQuality.lossless => '位元率拉滿，檔案非常大',
@@ -93,7 +93,7 @@ extension ExportQualityInfo on ExportQuality {
         ExportQuality.low => 0.45,
         ExportQuality.standard => 1,
         ExportQuality.ultra => 1.8,
-        ExportQuality.lossless => 6,
+        ExportQuality.lossless => 4,
       };
 }
 
