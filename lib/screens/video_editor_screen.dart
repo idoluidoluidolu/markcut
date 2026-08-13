@@ -2536,6 +2536,210 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _resyncPlayback();
   }
 
+  /// 用清單調整同一軌素材的先後順序，確定後照新順序頭尾相接。
+  ///
+  /// 多支影片接在一起時，想換順序只能一段一段拖到旁邊再拖回來，
+  /// 位置還很難對準——這裡直接給一張可以上下拖的清單
+  Future<void> _openReorderSheet() async {
+    // 目標軌：選了東西就排那一軌，沒選就挑素材最多的那一軌
+    var track = _selClip?.track ?? (_selTrack >= 0 ? _selTrack : -1);
+    if (track < 0) {
+      var bestN = 0;
+      for (var t = 0; t < _tl.usedTracks; t++) {
+        final n = _tl.onTrack(t).length;
+        if (n > bestN) {
+          bestN = n;
+          track = t;
+        }
+      }
+    }
+    if (track < 0) {
+      showHint(context, '時間軸還是空的');
+      return;
+    }
+    // onTrack 回傳的是照時間排好的新清單，直接拿來當排序的暫存
+    final order = _tl.onTrack(track);
+    if (order.length < 2) {
+      showHint(context, '第 ${track + 1} 軌只有一段素材，不用排順序');
+      return;
+    }
+    // 重排的起點沿用原本第一段的位置，不會整條跳到 0
+    final start = order.first.offset;
+    _pause();
+
+    final ok = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.75,
+      ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+                child: Text(
+                  '調整順序（第 ${track + 1} 軌）',
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Text(
+                  '拖右邊的把手換位置；完成後會照新順序頭尾接好',
+                  style: TextStyle(fontSize: 11.5, color: kTextDim),
+                ),
+              ),
+              Flexible(
+                child: ReorderableListView.builder(
+                  shrinkWrap: true,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  itemCount: order.length,
+                  // onReorderItem（不是舊的 onReorder）給的索引
+                  // 已經扣掉搬走的那一格，直接插就對
+                  onReorderItem: (from, to) => setSheet(() {
+                    order.insert(to, order.removeAt(from));
+                  }),
+                  itemBuilder: (context, i) {
+                    final c = order[i];
+                    final src = _tl.sourceOf(c);
+                    final thumb = (_thumbs[c.sourceIndex] ?? const [])
+                        .firstOrNull;
+                    return Padding(
+                      key: ValueKey(c.id),
+                      padding: const EdgeInsets.symmetric(vertical: 3),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: kPanel,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: kBorder),
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 8,
+                        ),
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 20,
+                              child: Text(
+                                '${i + 1}',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: kSelect,
+                                ),
+                              ),
+                            ),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(4),
+                              child: SizedBox(
+                                width: 46,
+                                height: 34,
+                                child: thumb != null
+                                    ? Image.memory(thumb, fit: BoxFit.cover)
+                                    : Container(
+                                        color: kPanelHi,
+                                        child: Icon(
+                                          src.kind == ClipKind.audio
+                                              ? Icons.music_note
+                                              : Icons.movie,
+                                          size: 15,
+                                          color: kTextDim,
+                                        ),
+                                      ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    src.name,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 12.5),
+                                  ),
+                                  Text(
+                                    '${c.length.toStringAsFixed(1)} 秒',
+                                    style: const TextStyle(
+                                      fontSize: 10.5,
+                                      color: kTextDim,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            ReorderableDragStartListener(
+                              index: i,
+                              child: const Padding(
+                                padding: EdgeInsets.only(left: 6),
+                                child: Icon(
+                                  Icons.drag_handle,
+                                  size: 20,
+                                  color: kIcon,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('取消'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text('完成'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    _pushUndo();
+    setState(() {
+      var at = start;
+      for (final c in order) {
+        c.offset = at;
+        at += c.length;
+      }
+      // 清單順序也照排：同軌重疊時後面的會蓋在上面，
+      // 不跟著排的話疊放順序跟看到的對不起來
+      _tl.clips.removeWhere(order.contains);
+      _tl.clips.addAll(order);
+    });
+    _resyncPlayback();
+    _saveDraft();
+    showHint(context, '已照新的順序接好');
+  }
+
   /// 一鍵補洞：把空隙收掉、片段接齊。
   /// 有選片段就只整理那一軌，沒選就整條時間軸一起整理
   void _closeGaps() {
@@ -5075,6 +5279,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         _closeGaps,
                         tip: '把空隙補起來、素材接齊',
                         quarterTurns: 1,
+                      ),
+                      _toolBtn(
+                        Icons.swap_vert,
+                        '排序',
+                        _openReorderSheet,
+                        tip: '用清單調整素材的先後順序',
                       ),
                       _snapToolBtn(),
                       _toolBtn(Icons.add, '加素材', _addMediaChoice),
