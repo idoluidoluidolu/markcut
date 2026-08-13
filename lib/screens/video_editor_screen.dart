@@ -1158,84 +1158,99 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (mounted) showHint(context, '旁白已加入時間軸');
   }
 
-  /// 素材選單（影片／圖片／文字／音樂／錄旁白）
+  /// 素材選單。
+  ///
+  /// 排成格子不排成清單：八個項目做成八列會塞滿整個螢幕
+  /// （之前最後一項「空白軌道」就這樣被切掉過），而且八列長得
+  /// 一模一樣，看不出它們其實是三類不同的東西
   Future<_AddKind?> _askKind({String? title}) {
+    Widget tile(BuildContext context, IconData icon, String label,
+        _AddKind kind) {
+      return InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () => Navigator.pop(context, kind),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 11),
+          decoration: BoxDecoration(
+            color: kPanelHi,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 20, color: kAmber),
+              const SizedBox(height: 6),
+              Text(label,
+                  style: const TextStyle(fontSize: 11, color: kText)),
+            ],
+          ),
+        ),
+      );
+    }
+
+    Widget group(String label) => Padding(
+          padding: const EdgeInsets.fromLTRB(4, 14, 4, 7),
+          child: Text(
+            label,
+            style: const TextStyle(
+              fontSize: 10.5,
+              letterSpacing: 1.4,
+              color: kTextDim,
+            ),
+          ),
+        );
+
+    Widget row(List<Widget> tiles) => Row(
+          children: [
+            for (var i = 0; i < tiles.length; i++) ...[
+              if (i > 0) const SizedBox(width: 8),
+              Expanded(child: tiles[i]),
+            ],
+          ],
+        );
+
     return showModalBottomSheet<_AddKind>(
       context: context,
-      // 預設的選單最高只有螢幕的 9/16，八個項目塞不下——
-      // 最後一個（空白軌道）會被切掉，等於沒有這個功能。
-      // 放開高度限制並讓它可以捲
-      isScrollControlled: true,
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.8,
-      ),
+      showDragHandle: true,
       builder: (context) => SafeArea(
-        child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (title != null)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.bold,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (title != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text(
+                    title,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
-              )
-            else
-              const SizedBox(height: 8),
-            // 高頻優先：文字/浮水印/馬賽克排前面，媒體檔其次
-            ListTile(
-              leading: const Icon(Icons.title, color: kAmber),
-              title: const Text('文字'),
-              onTap: () => Navigator.pop(context, _AddKind.text),
-            ),
-            ListTile(
-              leading: const Icon(Icons.branding_watermark, color: kAmber),
-              title: const Text('浮水印'),
-              onTap: () => Navigator.pop(context, _AddKind.wm),
-            ),
-            ListTile(
-              leading: const Icon(Icons.blur_on, color: kAmber),
-              title: const Text('馬賽克'),
-              onTap: () => Navigator.pop(context, _AddKind.mosaic),
-            ),
-            ListTile(
-              leading: const Icon(Icons.videocam_outlined, color: kAmber),
-              title: const Text('影片'),
-              onTap: () => Navigator.pop(context, _AddKind.video),
-            ),
-            ListTile(
-              leading: const Icon(Icons.image_outlined, color: kAmber),
-              title: const Text('圖片'),
-              onTap: () => Navigator.pop(context, _AddKind.image),
-            ),
-            ListTile(
-              leading: const Icon(Icons.music_note, color: kAmber),
-              title: const Text('音樂'),
-              onTap: () => Navigator.pop(context, _AddKind.audio),
-            ),
-            ListTile(
-              leading: const Icon(Icons.mic, color: kAmber),
-              title: const Text('錄旁白'),
-              onTap: () => Navigator.pop(context, _AddKind.record),
-            ),
-            const Divider(height: 1, indent: 16, endIndent: 16),
-            ListTile(
-              leading: const Icon(Icons.playlist_add, color: kAmber),
-              title: const Text('空白軌道'),
-              subtitle: const Text(
-                '多一層可以貼上或拖素材進去',
-                style: TextStyle(fontSize: 11),
-              ),
-              onTap: () => Navigator.pop(context, _AddKind.blankTrack),
-            ),
-            const SizedBox(height: 8),
-          ],
-        ),
+              group('加在畫面上'),
+              row([
+                tile(context, Icons.title, '文字', _AddKind.text),
+                tile(context, Icons.branding_watermark, '浮水印', _AddKind.wm),
+                tile(context, Icons.blur_on, '馬賽克', _AddKind.mosaic),
+              ]),
+              group('從裝置匯入'),
+              row([
+                tile(context, Icons.videocam_outlined, '影片', _AddKind.video),
+                tile(context, Icons.image_outlined, '圖片', _AddKind.image),
+                tile(context, Icons.music_note, '音樂', _AddKind.audio),
+              ]),
+              group('其他'),
+              row([
+                tile(context, Icons.mic, '錄旁白', _AddKind.record),
+                tile(context, Icons.playlist_add, '空白軌道',
+                    _AddKind.blankTrack),
+              ]),
+            ],
+          ),
         ),
       ),
     );
