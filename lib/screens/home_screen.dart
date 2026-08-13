@@ -43,7 +43,7 @@ class _PickRow extends StatelessWidget {
       borderRadius: BorderRadius.circular(8),
       onTap: () => Navigator.pop(context, kind),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 17),
         decoration: divider
             ? const BoxDecoration(
                 border: Border(bottom: BorderSide(color: kBorder)),
@@ -51,8 +51,8 @@ class _PickRow extends StatelessWidget {
             : null,
         child: Row(
           children: [
-            Icon(icon, size: 21, color: kAmber),
-            const SizedBox(width: 13),
+            Icon(icon, size: 22, color: kAmber),
+            const SizedBox(width: 15),
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
@@ -65,7 +65,7 @@ class _PickRow extends StatelessWidget {
                         height: 1.25,
                         fontWeight: FontWeight.w700,
                         color: kText)),
-                const SizedBox(height: 1),
+                const SizedBox(height: 3),
                 Text(hint,
                     style: const TextStyle(
                         fontSize: 12, height: 1.25, color: kTextDim)),
@@ -161,7 +161,7 @@ class _HomeScreenState extends State<HomeScreen> {
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 340),
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 20, 16, 12),
+            padding: const EdgeInsets.fromLTRB(16, 22, 16, 14),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -170,7 +170,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     textAlign: TextAlign.center,
                     style: TextStyle(
                         fontSize: 15, fontWeight: FontWeight.bold)),
-                SizedBox(height: 12),
+                SizedBox(height: 16),
                 _PickRow(
                     icon: Icons.videocam_outlined,
                     label: '影片',
