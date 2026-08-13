@@ -6391,9 +6391,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       );
     }
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-      children: [
+    // 內容垂直置中；空間不夠（大字級、小螢幕）才變成可以捲。
+    // 這一頁只有三列加一顆鈕，靠上排會在下面留一大塊空白
+    return LayoutBuilder(
+      builder: (context, cons) => SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minHeight: cons.maxHeight - 28),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
         row('畫面比例', _canvasRatio.label, _openRatioSheet),
         row(
           '解析度',
@@ -6428,7 +6436,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 跟照片／批次／拼圖同一顆（膠囊、46 高、圖示 18）。
         // 這一頁的「結構」維持分頁不變，只有按鈕外觀對齊
         primaryAction(label: '匯出', onPressed: _exporting ? null : _export),
-      ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 
