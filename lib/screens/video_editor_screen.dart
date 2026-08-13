@@ -6378,19 +6378,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   color: kText,
                 ),
               ),
-              const Spacer(),
-              Text(
-                value,
-                style: const TextStyle(
-                  fontSize: 13,
-                  height: 1.4,
-                  color: kTextDim,
-                  fontFeatures: [FontFeature.tabularFigures()],
+              const SizedBox(width: 12),
+              // 值比標籤小一階也更淡：標籤是「這一列在講什麼」，
+              // 值是內容。兩者一樣大的話整頁沒有主次，掃不動
+              Expanded(
+                child: Text(
+                  value,
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    height: 1.4,
+                    color: kTextDim,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
                 ),
               ),
               if (onTap != null) ...[
-                const SizedBox(width: 2),
-                const Icon(Icons.chevron_right, size: 17, color: kTextDim),
+                const SizedBox(width: 3),
+                const Icon(Icons.chevron_right, size: 15, color: kIcon),
               ],
             ],
           ),
@@ -6428,21 +6433,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             );
           },
         ),
-        const SizedBox(height: 14),
-        // 選擇摘要：按下去之前心裡有底
-        Padding(
-          padding: const EdgeInsets.only(bottom: 8),
-          child: Text(
-            '${_canvasRatio.label}・$outW×$outH・${_quality.label}'
-            '・約 ${mb.toStringAsFixed(0)} MB',
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 11.5,
-              color: kTextDim,
-              fontFeatures: [FontFeature.tabularFigures()],
-            ),
-          ),
-        ),
+        // 這裡原本還有一行「原始・1206×2622・標準・約 17 MB」的摘要，
+        // 但上面五列已經逐項講過同樣的東西，等於整頁再抄一遍
+        const SizedBox(height: 20),
         FilledButton.icon(
           onPressed: _exporting ? null : _export,
           icon: const Icon(Icons.ios_share, size: 20),
