@@ -211,6 +211,41 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
     };
   }
 
+  // ===== 重疊時的循環選取 =====
+  /// 文字和 Logo 畫在哪（由 WatermarkLayer 回報）。
+  /// Logo 放大置中把文字整個蓋住時，這裡本來永遠點不到文字——
+  /// 而工作室沒有時間軸也沒有清單，沒有第二條路可以選它
+  Rect? _stTextBox, _stLogoBox;
+  Offset? _stCycleAt;
+  int _stCycleHintLeft = 2;
+
+  void _stTapAt(Offset p) {
+    // 文字畫在 Logo 之後＝文字在上
+    final hits = <WmPart>[
+      if (_stTextBox?.contains(p) ?? false) WmPart.text,
+      if (_stLogoBox?.contains(p) ?? false) WmPart.logo,
+    ];
+    if (hits.isEmpty) {
+      _stCycleAt = null;
+      if (_wmPart != WmPart.none) setState(() => _wmPart = WmPart.none);
+      return;
+    }
+    // 手指不可能點在同一個像素上，給 24px 的容忍
+    final same = _stCycleAt != null && (_stCycleAt! - p).distance <= 24;
+    var next = hits.first;
+    if (same) {
+      final at = hits.indexOf(_wmPart);
+      if (at >= 0) next = hits[(at + 1) % hits.length];
+    }
+    _stCycleAt = p;
+    setState(() => _wmPart = next);
+    _wmPanelCtrl.scrollTo(next);
+    if (!same && hits.length > 1 && _stCycleHintLeft > 0) {
+      _stCycleHintLeft--;
+      showHint(context, overlapHint(hits.length));
+    }
+  }
+
   // ===== 雙指縮放（示意畫面上直接捏）=====
   final Map<int, Offset> _pvPts = {};
   double? _pvBaseDist;
@@ -452,6 +487,10 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
                                   settings: _settings,
                                   onChanged: () => _wmTick.value++,
                                   onDragStart: _pushUndo,
+                                  onHitBox: (t, l) {
+                                    _stTextBox = t;
+                                    _stLogoBox = l;
+                                  },
                                   // 選取鎖定：選了圖片就只動圖片
                                   selectedPart: _wmPartAlive,
                                   onSelectPart: (p) {
@@ -460,6 +499,16 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
                                     _wmPanelCtrl.scrollTo(p);
                                   },
                                   panLocked: () => _pvPts.length >= 2,
+                                ),
+                                // 點擊判定層：疊在浮水印之上，統一決定
+                                // 點到誰。translucent＝只搶點擊，
+                                // 拖曳照樣傳給下面的圖層與選取路由
+                                Positioned.fill(
+                                  child: GestureDetector(
+                                    behavior: HitTestBehavior.translucent,
+                                    onTapUp: (d) => _stTapAt(d.localPosition),
+                                    child: const SizedBox.expand(),
+                                  ),
                                 ),
                                 // 置中輔助線（路由拖曳吸中線時）。
                                 // 永遠佔一個位置，不能用 if 增減——線一出現

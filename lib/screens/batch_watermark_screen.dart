@@ -4,7 +4,8 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
-import 'package:image_picker/image_picker.dart';
+// XFile 也是從這裡再匯出的，不用另外 import image_picker
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
@@ -115,10 +116,38 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     if (ok && mounted) Navigator.of(context).pop();
   }
 
+  // ===== 選取（選了圖片就鎖定圖片：拖曳/縮放都只動它）=====
+  /// 這頁本來完全沒有選取的概念：沒有白框、捏合永遠把文字和 Logo
+  /// 一起縮（調好的搭配會被弄壞）、拖文字時手指滑過 Logo 會把 Logo
+  /// 一起拖走。其他三個編輯畫面都有，這裡補齊
+  WmPart _wmPart = WmPart.none;
+
+  /// 被選部件還活著嗎（存在、非平鋪）；不活一律當沒選
+  WmPart get _wmPartAlive {
+    final st = _effectiveOf(_previewIndex);
+    final t = st.text;
+    final lg = st.logo;
+    return switch (_wmPart) {
+      WmPart.text when t.enabled && !t.tiled && t.text.trim().isNotEmpty =>
+        WmPart.text,
+      WmPart.logo when lg.enabled && !lg.tiled => WmPart.logo,
+      _ => WmPart.none,
+    };
+  }
+
   // ===== 上一步（改壞了可以救；連續滑桿拖動 0.7 秒內併成一步）=====
   final List<_UndoStep> _undoStack = [];
   DateTime _lastPush = DateTime.fromMillisecondsSinceEpoch(0);
   int _sync = 0; // 通知面板同步內部狀態
+
+  /// 點預覽上的浮水印時，叫下面的面板捲到對應的設定區塊
+  final _wmPanelCtrl = WatermarkPanelController();
+
+  /// 換一張預覽就清掉選取：那一張的部件不見得存在，
+  /// 選取殘留會讓拖曳整個卡住
+  void _clearWmSel() {
+    if (_wmPart != WmPart.none) setState(() => _wmPart = WmPart.none);
+  }
 
   void _pushUndo() {
     final now = DateTime.now();
@@ -266,6 +295,8 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       _previewIndex = i;
       _previewBytes = null; // 先清掉舊的，別讓兩張同時佔記憶體
       _sync++; // 換張＝面板換綁另一份設定，內部狀態要同步
+      // 換一張的部件不見得存在，選取殘留會讓拖曳卡住
+      _wmPart = WmPart.none;
     });
     _loadPreviewFull();
   }
@@ -318,10 +349,19 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     // 還沒 override 時記成 -1（整批共用設定），但捏合改的是 override，
     // 按上一步就會把值寫回共用設定＝預覽完全沒反應
     _ensureOverride(); // 捏合＝這張進入單張模式
-    _pushUndo();
+    _btUndoPending = true; // 真的縮到才拍（見 _btPushUndoIfNeeded）
     final eff = _effectiveOf(_previewIndex);
     _pvBaseText = eff.text.sizeFrac;
     _pvBaseLogo = eff.logo.sizeFrac;
+  }
+
+  /// 這次手勢還沒拍過快照（一按下就拍會把重做/選取狀態白白吃掉一步）
+  bool _btUndoPending = false;
+
+  void _btPushUndoIfNeeded() {
+    if (!_btUndoPending) return;
+    _btUndoPending = false;
+    _pushUndo();
   }
 
   void _pinchMove(PointerMoveEvent e) {
@@ -330,13 +370,20 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     if (_pvBaseDist == null || _pvPts.length < 2) return;
     final p = _pvPts.values.toList();
     final f = (p[0] - p[1]).distance / _pvBaseDist!;
+    _btPushUndoIfNeeded(); // 真的縮到東西了才拍快照
     setState(() {
       final eff = _effectiveOf(_previewIndex);
       final t = eff.text;
-      if (t.enabled && t.text.trim().isNotEmpty) {
-        t.sizeFrac = (_pvBaseText * f).clamp(0.015, 2.0);
-      }
-      if (eff.logo.enabled) {
+      final hasText = t.enabled && t.text.trim().isNotEmpty;
+      final hasLogo = eff.logo.enabled;
+      // 有選取就只縮被選的那個（跟其他三個畫面一致）；
+      // 都沒選而且兩個都在才一起縮。以前永遠一起縮，
+      // 調好的文字/Logo 搭配一捏就毀了
+      final part = _wmPartAlive;
+      final doText = hasText && (part != WmPart.logo || !hasLogo);
+      final doLogo = hasLogo && (part != WmPart.text || !hasText);
+      if (doText) t.sizeFrac = (_pvBaseText * f).clamp(0.015, 2.0);
+      if (doLogo) {
         eff.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
       }
     });
@@ -349,7 +396,22 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
 
   // ===== 批次匯出 =====
 
-  Future<void> _exportAll() async {
+  /// 匯出前先問照片格式。批次動輒幾十張，PNG 大約是 JPEG 的 8 倍，
+  /// 這裡反而是最需要選項的地方（單張編輯早就有了）
+  Future<void> _confirmExportAll() async {
+    if (_exporting) return;
+    // 整批都是影片就不用問（影片不吃這個格式）
+    final hasPhoto = _items.any((it) => !_isVideo(it.file));
+    var jpeg = false;
+    if (hasPhoto) {
+      final fmt = await askPhotoFormat(context);
+      if (fmt == null || !mounted) return;
+      jpeg = fmt == 'jpg';
+    }
+    await _exportAll(jpeg: jpeg);
+  }
+
+  Future<void> _exportAll({bool jpeg = false}) async {
     if (_exporting) return;
     // Web 略過影片的說明放在結尾的結果訊息（skipped 計數），
     // 這裡先 show 會立刻被進度彈窗蓋住、根本看不到
@@ -422,10 +484,24 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
           ok ? done++ : failed++;
         } else {
           final bytes = await f.readAsBytes();
-          final png = await WatermarkRenderer.renderPhotoComposite(
+          var out = await WatermarkRenderer.renderPhotoComposite(
               bytes, _effectiveOf(i));
-          await savePhotoPng(png,
-              'watermarker_${DateTime.now().millisecondsSinceEpoch}_$i');
+          var ext = 'png';
+          if (jpeg) {
+            try {
+              out = await FlutterImageCompress.compressWithList(
+                out,
+                quality: 92,
+                format: CompressFormat.jpeg,
+              );
+              ext = 'jpg';
+            } catch (_) {
+              // 這台機器轉不了 JPEG 就照樣給 PNG，總比整批失敗好
+            }
+          }
+          await savePhotoPng(out,
+              'watermarker_${DateTime.now().millisecondsSinceEpoch}_$i',
+              ext: ext);
           done++;
         }
       } catch (_) {
@@ -585,8 +661,56 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                               _ensureOverride();
                               _pushUndo();
                             },
+                            selectedPart: _wmPartAlive,
+                            onSelectPart: (p) {
+                              setState(() => _wmPart = p);
+                              _wmPanelCtrl.scrollTo(p);
+                            },
                             panLocked: () => _pvPts.length >= 2,
                           ),
+                          // 選取路由：有部件被選取時，整個預覽的拖曳
+                          // 都只動被選的那個——手指滑過另一個部件
+                          // 才不會把它一起拖走
+                          if (_wmPartAlive != WmPart.none)
+                            Positioned.fill(
+                              child: LayoutBuilder(
+                                builder: (context, box) => GestureDetector(
+                                  behavior: HitTestBehavior.translucent,
+                                  // 點空白＝取消選取（不取消的話另一個
+                                  // 部件會永遠拖不動）
+                                  onTap: _clearWmSel,
+                                  onPanStart: (_) {
+                                    if (_pvPts.length >= 2) return;
+                                    _ensureOverride();
+                                    _btUndoPending = true;
+                                  },
+                                  onPanUpdate: (d) {
+                                    if (_pvPts.length >= 2) return;
+                                    _btPushUndoIfNeeded();
+                                    final st = _effectiveOf(_previewIndex);
+                                    final part = _wmPartAlive;
+                                    setState(() {
+                                      if (part == WmPart.text) {
+                                        st.text.x = (st.text.x +
+                                                d.delta.dx / box.maxWidth)
+                                            .clamp(0.0, 1.0);
+                                        st.text.y = (st.text.y +
+                                                d.delta.dy / box.maxHeight)
+                                            .clamp(0.0, 1.0);
+                                      } else if (part == WmPart.logo) {
+                                        st.logo.x = (st.logo.x +
+                                                d.delta.dx / box.maxWidth)
+                                            .clamp(0.0, 1.0);
+                                        st.logo.y = (st.logo.y +
+                                                d.delta.dy / box.maxHeight)
+                                            .clamp(0.0, 1.0);
+                                      }
+                                    });
+                                  },
+                                  child: const SizedBox.expand(),
+                                ),
+                              ),
+                            ),
                         ],
                       ),
                     ),
@@ -727,6 +851,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
             child: Stack(
               children: [
                 WatermarkPanel(
+                  controller: _wmPanelCtrl,
                   // 綁「這張實際生效的設定」：單張模式下要改的是那張的
                   // override，綁 _settings 的話面板改了預覽不動、
                   // 其他張反而被改到
@@ -769,7 +894,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
               child: Align(
                 alignment: Alignment.centerRight,
                 child: FilledButton.icon(
-                  onPressed: _exporting ? null : _exportAll,
+                  onPressed: _exporting ? null : _confirmExportAll,
                   style: FilledButton.styleFrom(
                     padding: const EdgeInsets.symmetric(
                         horizontal: 18, vertical: 9),

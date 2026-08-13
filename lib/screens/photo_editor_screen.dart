@@ -995,105 +995,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     if (_exporting) return;
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
-    final fmt = await showDialog<String>(
-      context: context,
-      builder: (context) => Dialog(
-        backgroundColor: kBg,
-        insetPadding: const EdgeInsets.symmetric(horizontal: 28),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
-          side: const BorderSide(color: kBorder),
-        ),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 400),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  '輸出到相簿',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 14),
-                _fmtTile(
-                  context,
-                  fmt: 'jpg',
-                  title: 'JPEG',
-                  subtitle: '檔案小很多（約 1/8），肉眼看不出跟 PNG 差別',
-                  icon: Icons.image_outlined,
-                ),
-                const SizedBox(height: 8),
-                _fmtTile(
-                  context,
-                  fmt: 'png',
-                  title: 'PNG 無損',
-                  subtitle: '完全不壓縮',
-                  icon: Icons.image_outlined,
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
+    final fmt = await askPhotoFormat(context);
     if (fmt == null || !mounted) return;
     await prefs.setString('photo_export_fmt', fmt);
     await _export(jpeg: fmt == 'jpg');
   }
 
-  Widget _fmtTile(
-    BuildContext context, {
-    required String fmt,
-    required String title,
-    required String subtitle,
-    required IconData icon,
-  }) {
-    return Material(
-      color: Colors.black,
-      borderRadius: BorderRadius.circular(12),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: () => Navigator.pop(context, fmt),
-        child: Container(
-          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: kClipBorder),
-          ),
-          child: Row(
-            children: [
-              Icon(icon, size: 20, color: kAmber),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      subtitle,
-                      style: const TextStyle(
-                        fontSize: 11.5,
-                        color: kTextDim,
-                        height: 1.5,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 
   Future<void> _export({bool jpeg = false}) async {
     if (_exporting || _photoBytes == null) return;
@@ -1272,7 +1179,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     if (next.kind == 2 && !same) _editExtraWm(next.index);
     if (!same && hits.length > 1 && _phCycleHintLeft > 0) {
       _phCycleHintLeft--;
-      showHint(context, '這裡疊了 ${hits.length} 層，再點一次選下面那層');
+      showHint(context, overlapHint(hits.length));
     }
   }
 

@@ -2521,7 +2521,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     if (!same && hits.length > 1 && _cycleHintLeft > 0) {
       _cycleHintLeft--;
-      showHint(context, '這裡疊了 ${hits.length} 層，再點一次選下面那層');
+      showHint(context, overlapHint(hits.length));
     }
   }
 

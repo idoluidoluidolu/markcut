@@ -436,6 +436,82 @@ Future<bool> askAfterExport(BuildContext context, String message) async {
   return home == true;
 }
 
+/// 輸出照片前選格式。回傳 'jpg' / 'png'，取消回 null。
+/// 照片編輯與批次共用——同一個選擇不該長成兩個樣子
+Future<String?> askPhotoFormat(BuildContext context) {
+  Widget tile(BuildContext context, String fmt, String title, String sub) =>
+      Material(
+        color: Colors.black,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => Navigator.pop(context, fmt),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: kClipBorder),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.image_outlined, size: 20, color: kAmber),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title,
+                          style: const TextStyle(
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w700,
+                              color: kText)),
+                      const SizedBox(height: 2),
+                      Text(sub,
+                          style: const TextStyle(
+                              fontSize: 11.5, color: kTextDim, height: 1.4)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+  return showDialog<String>(
+    context: context,
+    builder: (context) => Dialog(
+      backgroundColor: kBg,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: const BorderSide(color: kBorder),
+      ),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 400),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('輸出到相簿',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 14),
+              tile(context, 'jpg', 'JPEG',
+                  '檔案小很多（約 1/8），肉眼看不出跟 PNG 差別'),
+              const SizedBox(height: 8),
+              tile(context, 'png', 'PNG 無損', '完全不壓縮'),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+/// 點到重疊處時的說明。三個編輯畫面講同一句
+String overlapHint(int layers) => '這裡疊了 $layers 層，再點一次選下面那層';
+
 /// 剛加入馬賽克時的說明。影片和照片講同一句，
 /// 不然同一個功能在兩邊聽起來像兩件事
 const kMosaicHint = '拖曳調位置、雙指縮放；再點一下可調樣式';
