@@ -145,6 +145,35 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   double _speed = 1.0;
   ExportResolution _resolution = ExportResolution.original;
   ExportQuality _quality = ExportQuality.standard;
+
+  /// 畫質還沒被使用者手動選過＝跟著素材自動挑（見 _qualityEff）
+  bool _qualityAuto = true;
+
+  /// 素材裡最高的位元率（kbps，檔案大小÷長度）。0＝量不到（Web）
+  double _srcKbps = 0;
+
+  /// 實際要用的畫質：使用者選過就聽他的，沒選過就依素材本身的
+  /// 位元率挑。放成 getter 而不是存起來，改解析度時才會跟著重算——
+  /// 同一支影片縮到 720p，需要的位元率就少了一半
+  ExportQuality get _qualityEff {
+    if (!_qualityAuto || _srcKbps <= 0) return _quality;
+    final (w, h) = computeCanvasSize(_tl, _resolution, _canvasRatio);
+    return recommendQuality(srcKbps: _srcKbps, outW: w, outH: h);
+  }
+
+  /// 量素材的位元率（檔案大小÷長度），取最高的那支當基準：
+  /// 一次匯出只有一個畫質，要顧就顧最吃位元率的那支
+  Future<void> _measureSrcKbps() async {
+    var best = 0.0;
+    for (final src in _tl.sources) {
+      if (!src.isVideo || src.duration <= 0) continue;
+      final bytes = await fileSizeBytes(src.path);
+      if (bytes <= 0) continue;
+      final kbps = bytes * 8 / src.duration / 1000;
+      if (kbps > best) best = kbps;
+    }
+    if (mounted && best != _srcKbps) setState(() => _srcKbps = best);
+  }
   CanvasRatio _canvasRatio = CanvasRatio.original;
   double _pxPerSec = 0;
   final _tlScroll = ScrollController();
@@ -432,6 +461,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       'res': _resolution.index,
       'resV': 2, // 解析度選項的語意版本（見 _loadDraft 的換算）
       'quality': _quality.index,
+      'qualityAuto': _qualityAuto,
       'wm': _settings.toJson(),
       'wmStart': _wmStart,
       'wmEnd': _wmEnd,
@@ -497,6 +527,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         ExportResolution.values[resIdx % ExportResolution.values.length];
     _quality = ExportQuality
         .values[((j['quality'] ?? 0) as int) % ExportQuality.values.length];
+    // 舊草稿沒這個欄位：當成使用者選過，不要回頭改動他存好的設定
+    _qualityAuto = (j['qualityAuto'] ?? false) as bool;
     if (j['wm'] != null) {
       final wm = WatermarkSettings.fromJson(
         Map<String, dynamic>.from(j['wm'] as Map),
@@ -598,6 +630,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _loadDraft(widget.draft!).then((_) {
         if (!mounted) return;
         setState(() => _ready = true);
+        unawaited(_measureSrcKbps());
         if (_droppedOnLoad > 0) {
           showHint(
             context,
@@ -772,6 +805,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (mounted && t.isNotEmpty) setState(() => _thumbs[srcIndex] = t);
     });
     _makeScrubCache(srcIndex, path, dur);
+    unawaited(_measureSrcKbps());
   }
 
   // ===== 拖曳快取幀（CapCut 式）=====
@@ -3307,7 +3341,7 @@ final color = Color(picked ?? 0);
           wmSpeed: _settings.animSpeed,
           wmRange: _settings.animRange,
           overlayPngs: overlayPngs,
-          crf: _quality.crf,
+          crf: _qualityEff.crf,
         ),
         onProgress: (v) => progress.value = v,
       );
@@ -6301,7 +6335,7 @@ final color = Color(picked ?? 0);
     final mb =
         (outW * outH * 30 * 0.09 / 8 * dur + 40000 * dur) /
         (1024 * 1024) *
-        _quality.sizeFactor;
+        _qualityEff.sizeFactor;
 
     Widget row(
       String label,
@@ -6371,7 +6405,16 @@ final color = Color(picked ?? 0);
           '${_resolution.label}・$outW×$outH',
           _openResolutionSheet,
         ),
-        row('畫質', _quality.label, _openQualitySheet, divider: false),
+        // 自動挑的時候標出來：不講的話，同一支 App 在不同素材上
+        // 預設值不一樣會像壞掉
+        row(
+          '畫質',
+          _qualityAuto && _srcKbps > 0
+              ? '${_qualityEff.label}・自動'
+              : _qualityEff.label,
+          _openQualitySheet,
+          divider: false,
+        ),
         const SizedBox(height: 22),
         // 預估貼在匯出鈕正上方。它唯一的用途就是讓人在按下去之前
         // 決定要不要回頭改設定，放在最靠近手指的地方最有用。
@@ -6422,10 +6465,13 @@ final color = Color(picked ?? 0);
                 _optionRow(
                   title: q.label,
                   subtitle: q.note,
-                  selected: _quality == q,
+                  selected: _qualityEff == q,
                   first: i == 0,
                   onTap: () {
-                    setState(() => _quality = q);
+                    setState(() {
+                      _quality = q;
+                      _qualityAuto = false; // 手動選過就不再自動改
+                    });
                     _saveDraft();
                     Navigator.pop(context);
                   },

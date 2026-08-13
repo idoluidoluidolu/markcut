@@ -81,6 +81,20 @@ extension ExportQualityInfo on ExportQuality {
         ExportQuality.lossless => '位元率拉滿，檔案非常大',
       };
 
+  /// 每像素每幀的位元數。手機走硬體編碼器，吃的是位元率不是 CRF，
+  /// 所以這張表才是各檔位實際的差別（見 [kbpsFor]）
+  double get bpp => switch (this) {
+        ExportQuality.low => 0.07,
+        ExportQuality.standard => 0.15,
+        ExportQuality.ultra => 0.28,
+        ExportQuality.lossless => 0.60,
+      };
+
+  /// 這一檔在指定輸出尺寸下的位元率（kbps）。
+  /// 下限擋住極小畫面算出來的荒謬低值，上限是保護（4K 最高會撞到）
+  int kbpsFor(int w, int h) =>
+      (w * h * 30 * bpp / 1000).round().clamp(1500, 120000);
+
   int get crf => switch (this) {
         ExportQuality.low => 26,
         ExportQuality.standard => 17,
@@ -95,6 +109,36 @@ extension ExportQualityInfo on ExportQuality {
         ExportQuality.ultra => 1.8,
         ExportQuality.lossless => 4,
       };
+}
+
+/// 匯出規格裡存的是 CRF 數字，換回檔位
+ExportQuality qualityFromCrf(int crf) => switch (crf) {
+      <= 0 => ExportQuality.lossless,
+      <= 12 => ExportQuality.ultra,
+      <= 17 => ExportQuality.standard,
+      _ => ExportQuality.low,
+    };
+
+/// 依素材本身的位元率，挑一個「看不出被重壓過」的檔位。
+///
+/// 只看檔案大小 ÷ 長度換算出來的位元率，不去 probe 編碼格式——
+/// probe 要另外跑一次 FFmpeg，開匯出頁就會卡一下。
+///
+/// [headroom] 是重壓一次的餘裕：手機現在大多錄 HEVC，同樣的畫質
+/// 換成 H.264 大約要多吃三成位元率。寧可檔案大一點也不要糊掉——
+/// 使用者要省空間，隨時可以自己往下選
+ExportQuality recommendQuality({
+  required double srcKbps,
+  required int outW,
+  required int outH,
+  double headroom = 1.3,
+}) {
+  if (srcKbps <= 0) return ExportQuality.standard;
+  final need = srcKbps * headroom;
+  for (final q in qualityOrder) {
+    if (q.kbpsFor(outW, outH) >= need) return q;
+  }
+  return qualityOrder.last;
 }
 
 class ExportSpec {

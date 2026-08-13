@@ -650,21 +650,11 @@ String _hwEncoder() => (Platform.isIOS || Platform.isMacOS)
     ? 'h264_videotoolbox'
     : 'h264_mediacodec';
 
-/// 畫質檔位 → 位元率（依解析度換算）。
-///
-/// 手機走的是硬體編碼器，吃的是位元率不是 CRF，所以 spec.crf 在這裡
-/// 只是「使用者選了哪一檔」的訊號：26=低、17=標準、12=極高、0=最高。
-/// 每一檔都要有自己的分支——少一個就會跟隔壁檔位輸出同樣的檔案
-int _kbpsFor(ExportSpec spec) {
-  final px = spec.outW * spec.outH;
-  final bpp = switch (spec.crf) {
-    <= 0 => 0.60,
-    <= 12 => 0.28,
-    <= 17 => 0.15,
-    _ => 0.07,
-  };
-  return (px * 30 * bpp / 1000).round().clamp(1500, 120000);
-}
+/// 畫質檔位 → 位元率。表在 ExportQuality 上（video_processor.dart），
+/// 兩邊共用一張——各自維護一份的話，加檔位時漏改一邊就會有兩檔
+/// 輸出一模一樣的檔案
+int _kbpsFor(ExportSpec spec) =>
+    qualityFromCrf(spec.crf).kbpsFor(spec.outW, spec.outH);
 
 /// 取消正在進行的匯出（FFmpeg 一次只跑一個 session，全取消即可）
 Future<void> cancelExport() async {

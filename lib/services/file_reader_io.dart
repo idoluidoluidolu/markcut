@@ -9,6 +9,14 @@ Future<Uint8List?> readFileBytes(String path) async {
   }
 }
 
+Future<int> fileSizeBytes(String path) async {
+  try {
+    return await File(path).length();
+  } catch (_) {
+    return 0;
+  }
+}
+
 Future<bool> fileExists(String path) async {
   try {
     return await File(path).exists();
