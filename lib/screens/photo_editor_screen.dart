@@ -19,6 +19,9 @@ import '../widgets/color_grade_panel.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
 
+/// 預覽上一個可以點的東西：kind 0＝馬賽克、1＝主浮水印、2＝額外浮水印
+typedef _PhLayer = ({int kind, int index, WmPart part});
+
 class PhotoEditorScreen extends StatefulWidget {
   final XFile photo;
   final WatermarkSettings? initialWatermark;
@@ -594,6 +597,21 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   }
 
   /// 預覽上的馬賽克層：拖曳移動、點選取、再點開樣式表
+  /// 浮水印圖層回報自己畫在哪（在 build/layout 裡呼叫，只能存不能 setState）
+  void _phSetBox(int kind, int index, Rect? text, Rect? logo) {
+    void put(WmPart part, Rect? r) {
+      final id = (kind: kind, index: index, part: part);
+      if (r == null) {
+        _phBox.remove(id);
+      } else {
+        _phBox[id] = r;
+      }
+    }
+
+    put(WmPart.text, text);
+    put(WmPart.logo, logo);
+  }
+
   Widget _buildMosaics(double w, double h) {
     final children = <Widget>[];
     for (var i = 0; i < _mosaics.length; i++) {
@@ -652,11 +670,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
           ),
         );
       }
+      _phBox[(kind: 0, index: i, part: WmPart.none)] = rect;
       children.add(
         Positioned.fromRect(
           rect: rect,
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
+            // 點擊統一由上面那層判定（重疊時要能往下鑽），
+            // 這裡留著只是萬一那層沒攔到的退路
             onTap: () {
               if (_selMosaic == i) {
                 _editMosaic(i);
@@ -1148,6 +1169,103 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 點畫面上的浮水印時，叫下面的面板捲到對應的設定區塊
   final _wmPanelCtrl = WatermarkPanelController();
 
+  /// 預覽上每個可點的東西畫在哪。
+  /// 用 Map 不用 List：疊放順序在 _phOrder 裡是固定的（馬賽克在最下、
+  /// 再來主浮水印、額外浮水印在最上），不必依賴收集的先後，
+  /// 這樣就不怕「清空了但某層那一幀沒重新回報」
+  final Map<_PhLayer, Rect> _phBox = {};
+
+  /// 上一次點預覽的位置：同一點再點一次就往下鑽一層
+  Offset? _phCycleAt;
+
+  /// 「還有下一層」的提示最多講幾次
+  int _phCycleHintLeft = 2;
+
+  /// 由上往下的疊放順序（只列出這一刻真的畫得出來的）
+  List<_PhLayer> _phOrder() {
+    final out = <_PhLayer>[];
+    void add(_PhLayer id) {
+      if (_phBox.containsKey(id)) out.add(id);
+    }
+
+    // 額外浮水印疊在最上面，後加的又在更上面
+    for (var i = _extraWms.length - 1; i >= 0; i--) {
+      add((kind: 2, index: i, part: WmPart.text));
+      add((kind: 2, index: i, part: WmPart.logo));
+    }
+    // 主浮水印：文字畫在 Logo 之後，所以文字在上
+    add((kind: 1, index: -1, part: WmPart.text));
+    add((kind: 1, index: -1, part: WmPart.logo));
+    for (var i = _mosaics.length - 1; i >= 0; i--) {
+      add((kind: 0, index: i, part: WmPart.none));
+    }
+    return out;
+  }
+
+  /// 目前選中的是哪一層
+  _PhLayer? _phCurrent() {
+    if (_selMosaic >= 0) {
+      return (kind: 0, index: _selMosaic, part: WmPart.none);
+    }
+    if (_selExtra >= 0) {
+      return (kind: 2, index: _selExtra, part: _selExtraPart);
+    }
+    if (_wmPart != WmPart.none) {
+      return (kind: 1, index: -1, part: _wmPart);
+    }
+    return null;
+  }
+
+  /// 點預覽區：選這個點上最上面的東西。
+  /// 同一點連續點擊往下鑽一層——完全被蓋住的圖層本來永遠選不到
+  void _phTapAt(Offset p) {
+    FocusManager.instance.primaryFocus?.unfocus();
+    final hits = [
+      for (final id in _phOrder())
+        if (_phBox[id]!.contains(p)) id,
+    ];
+    if (hits.isEmpty) {
+      _phCycleAt = null;
+      if (_wmPart != WmPart.none || _selMosaic != -1 || _selExtra != -1) {
+        setState(() {
+          _wmPart = WmPart.none;
+          _selMosaic = -1;
+          _selExtra = -1;
+        });
+      }
+      return;
+    }
+    // 手指不可能點在同一個像素上，給 24px 的容忍
+    final same = _phCycleAt != null && (_phCycleAt! - p).distance <= 24;
+    final cur = _phCurrent();
+    var next = hits.first;
+    if (same && cur != null) {
+      final at = hits.indexOf(cur);
+      if (at >= 0) next = hits[(at + 1) % hits.length];
+    }
+    _phCycleAt = p;
+    // 這裡只有一層而且已經選著它＝再點一次要進編輯（維持原本的手感）
+    if (same && next == cur) {
+      if (next.kind == 0) _editMosaic(next.index);
+      if (next.kind == 2) _editExtraWm(next.index);
+      return;
+    }
+    setState(() {
+      _selMosaic = next.kind == 0 ? next.index : -1;
+      _selExtra = next.kind == 2 ? next.index : -1;
+      if (next.kind == 2) _selExtraPart = next.part;
+      _wmPart = next.kind == 1 ? next.part : WmPart.none;
+    });
+    if (next.kind == 1) _wmPanelCtrl.scrollTo(next.part);
+    // 額外浮水印的設定在彈出視窗裡，選到就開；但循環途中不開，
+    // 不然視窗一蓋上來就沒辦法再點下一層
+    if (next.kind == 2 && !same) _editExtraWm(next.index);
+    if (!same && hits.length > 1 && _phCycleHintLeft > 0) {
+      _phCycleHintLeft--;
+      showHint(context, '這裡疊了 ${hits.length} 層，再點一次選下面那層');
+    }
+  }
+
   // ===== 置中吸附（路由拖曳／馬賽克拖曳共用，跟 WatermarkLayer 同手感）=====
   /// 未吸附的原始座標（吸附只作用在顯示值上，不然吸上就拖不出來）
   double? _phRawX, _phRawY;
@@ -1332,6 +1450,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                   settings: _settings,
                                   onChanged: () => setState(() {}),
                                   onDragStart: _pushUndo,
+                                  onHitBox: (t, l) =>
+                                      _phSetBox(1, -1, t, l),
                                   // 活性版：被選部件消失後視同沒選，
                                   // 拖曳才不會整個變死的
                                   selectedPart: _wmPartAlive,
@@ -1361,6 +1481,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                     settings: _extraWms[i],
                                     onChanged: () => setState(() {}),
                                     onDragStart: _pushUndo,
+                                    onHitBox: (t, l) => _phSetBox(2, i, t, l),
                                     selectedPart: _extraPartAlive(i),
                                     onSelectPart: (p) {
                                       setState(() {
@@ -1378,6 +1499,19 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                         _selMosaic == -1 &&
                                         (_selExtra == -1 || _selExtra == i),
                                   ),
+                                // 點擊判定層：疊在所有圖層之上，統一決定
+                                // 點到誰。translucent＝只搶點擊，
+                                // 拖曳照樣傳給下面的圖層與選取路由
+                                Positioned.fill(
+                                  child: LayoutBuilder(
+                                    builder: (context, box) => GestureDetector(
+                                      behavior: HitTestBehavior.translucent,
+                                      onTapUp: (d) =>
+                                          _phTapAt(d.localPosition),
+                                      child: const SizedBox.expand(),
+                                    ),
+                                  ),
+                                ),
                                 // 置中輔助線（路由/馬賽克拖曳吸中線時）。
                                 // 一定要「永遠佔一個位置」，不能用 if 增減：
                                 // 線一出現就會把後面圖層的索引往後推，
