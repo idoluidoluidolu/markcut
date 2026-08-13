@@ -2462,6 +2462,75 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 點畫面上的浮水印時，叫下面的面板捲到對應的設定區塊
   final _wmPanelCtrl = WatermarkPanelController();
 
+  /// 預覽區每個圖層畫在哪（由下往上收集，畫的時候順手記下來）。
+  /// -2 代表全域浮水印，其餘是片段 id
+  final List<({int id, Rect rect})> _hitBoxes = [];
+
+  /// 全域浮水印用的假 id
+  static const int _kWmId = -2;
+
+  /// 上一次點預覽的位置：同一點再點一次就往下鑽一層
+  Offset? _cycleAt;
+
+  /// 「還有下一層」的提示最多講幾次（手勢看不見，但也不能一直嘮叨）
+  int _cycleHintLeft = 2;
+
+  /// 點預覽區：選取這個點上最上面的東西。
+  ///
+  /// 同一點連續點擊會往下鑽一層。完全被蓋住的素材在畫面上本來
+  /// 永遠選不到（只能去時間軸點），這是唯一能選到它的方法
+  void _tapSelectAt(Offset p) {
+    // _hitBoxes 是由下往上收集的，倒過來就是由上往下
+    final hits = <int>[];
+    for (var i = _hitBoxes.length - 1; i >= 0; i--) {
+      final b = _hitBoxes[i];
+      if (b.rect.contains(p) && !hits.contains(b.id)) hits.add(b.id);
+    }
+    if (hits.isEmpty) {
+      _cycleAt = null;
+      setState(() {
+        _sel = -1;
+        _wmSel = false;
+      });
+      return;
+    }
+    // 手指不可能點在同一個像素上，給 24px 的容忍
+    final same = _cycleAt != null && (_cycleAt! - p).distance <= 24;
+    final cur = _wmSel ? _kWmId : _sel;
+    var next = hits.first;
+    if (same) {
+      final at = hits.indexOf(cur);
+      if (at >= 0) next = hits[(at + 1) % hits.length];
+    }
+    _cycleAt = p;
+    setState(() {
+      _wmSel = next == _kWmId;
+      _sel = next == _kWmId ? -1 : next;
+    });
+    // 選到浮水印就跳去浮水印分頁（跟以前點浮水印一樣）。
+    // 循環途中不跳，不然每點一下分頁就被拉走一次
+    if (!same) {
+      final isWm =
+          next == _kWmId ||
+          (_selClipById(next) != null &&
+              _tl.sourceOf(_selClipById(next)!).kind == ClipKind.wm);
+      if (isWm) {
+        _tabs.animateTo(1);
+        _wmPanelCtrl.scrollTo(WmPart.text);
+      }
+    }
+    if (!same && hits.length > 1 && _cycleHintLeft > 0) {
+      _cycleHintLeft--;
+      showHint(context, '這裡疊了 ${hits.length} 層，再點一次選下面那層');
+    }
+  }
+
+  /// 浮水印圖層回報自己畫在哪（在 build 裡呼叫，只能存不能 setState）
+  void _addWmHit(int id, Rect? text, Rect? logo) {
+    if (text != null) _hitBoxes.add((id: id, rect: text));
+    if (logo != null) _hitBoxes.add((id: id, rect: logo));
+  }
+
   /// 上一刻修剪把手有沒有吸住（吸住的瞬間震一下，才有磁鐵的感覺）
   bool _trimSnapped = false;
 
@@ -2595,7 +2664,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               const Padding(
                 padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
                 child: Text(
-                  '拖右邊的把手換位置；完成後會照新順序頭尾接好',
+                  '按住任一列上下拖曳換位置；完成後會照新順序頭尾接好',
                   style: TextStyle(fontSize: 11.5, color: kTextDim),
                 ),
               ),
@@ -2614,8 +2683,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     final src = _tl.sourceOf(c);
                     final thumb = (_thumbs[c.sourceIndex] ?? const [])
                         .firstOrNull;
-                    return Padding(
+                    // 整列按住就能拖（右邊把手則是按下去馬上拖）——
+                    // 只有把手能拖的話，在手機上要瞄準那一小塊很煩
+                    return ReorderableDelayedDragStartListener(
                       key: ValueKey(c.id),
+                      index: i,
+                      child: Padding(
                       padding: const EdgeInsets.symmetric(vertical: 3),
                       child: Container(
                         decoration: BoxDecoration(
@@ -2659,26 +2732,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       ),
                               ),
                             ),
-                            const SizedBox(width: 10),
+                            const SizedBox(width: 12),
+                            // 不放檔名：相簿匯出的檔名又長又沒有辨識度
+                            //（ScreenRecording_08-06-2026…），
+                            // 縮圖跟長度才認得出是哪一段
                             Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    src.name,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontSize: 12.5),
-                                  ),
-                                  Text(
-                                    '${c.length.toStringAsFixed(1)} 秒',
-                                    style: const TextStyle(
-                                      fontSize: 10.5,
-                                      color: kTextDim,
-                                    ),
-                                  ),
-                                ],
+                              child: Text(
+                                '${c.length.toStringAsFixed(1)} 秒',
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  color: kTextDim,
+                                ),
                               ),
                             ),
                             ReorderableDragStartListener(
@@ -2694,6 +2758,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             ),
                           ],
                         ),
+                      ),
                       ),
                     );
                   },
@@ -3713,6 +3778,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   }
 
                                   final children = <Widget>[];
+                                  // 點擊判定用的位置表，跟著畫面一起重建
+                                  _hitBoxes.clear();
                                   Rect? selRect;
                                   TimelineClip? selVisual;
 
@@ -3765,6 +3832,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           (_thumbs[c.sourceIndex] ?? const [])
                                               .firstOrNull;
                                       if (fb != null) {
+                                        _hitBoxes.add((id: c.id, rect: rf));
                                         children.add(
                                           Positioned.fromRect(
                                             rect: rf,
@@ -3794,6 +3862,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       c,
                                       ctrl.value.aspectRatio,
                                     );
+                                    _hitBoxes.add((id: c.id, rect: r));
                                     // 拖曳中：真影片上面疊快取幀。獨立小元件直接聽 _posVN
                                     // 全速換圖（不吃 30fps 節流），搭配鄰近幀預熱解碼＝跟手。
                                     //
@@ -3922,6 +3991,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     final src = _tl.sourceOf(c);
                                     if (src.kind == ClipKind.mosaic) {
                                       final r = layerBox(c, 1.0);
+                                      _hitBoxes.add((id: c.id, rect: r));
                                       children.add(
                                         Positioned.fromRect(
                                           rect: r,
@@ -4049,6 +4119,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     }
                                     if (src.kind == ClipKind.image) {
                                       final r = layerBox(c, src.aspect);
+                                      _hitBoxes.add((id: c.id, rect: r));
                                       final bytes = _thumbs[c.sourceIndex];
                                       final hasBytes =
                                           bytes != null && bytes.isNotEmpty;
@@ -4119,6 +4190,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               onChanged: () => setState(() {}),
                                               onDragStart: _pushUndo,
                                               time: pos,
+                                              onHitBox: (t, l) =>
+                                                  _addWmHit(c.id, t, l),
                                               panLocked: () =>
                                                   _pvPts.length >= 2,
                                               // 有別的東西被選取時不吃拖曳，
@@ -4203,6 +4276,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         textScaler: TextScaler.noScaling,
                                         style: s2,
                                       );
+                                      _hitBoxes.add((id: c.id, rect: r));
                                       children.add(
                                         Positioned(
                                           left: r.left,
@@ -4291,6 +4365,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     }
                                   }
 
+                                  // 中央點擊判定層：疊在所有素材之上，
+                                  // 統一決定點到的是哪一層（各素材自己的
+                                  // onTap 只有在這層之上才輪得到）。
+                                  // translucent＝只搶點擊，拖曳照樣傳給下面
+                                  children.add(
+                                    Positioned.fill(
+                                      child: GestureDetector(
+                                        behavior: HitTestBehavior.translucent,
+                                        onTapUp: (d) =>
+                                            _tapSelectAt(d.localPosition),
+                                      ),
+                                    ),
+                                  );
+
                                   // 選取中的圖層：細白框＋四角把手 + 拖曳移動 / 雙指縮放
                                   if (selRect != null && selVisual != null) {
                                     final sc = selVisual;
@@ -4299,11 +4387,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         rect: selRect,
                                         child: GestureDetector(
                                           behavior: HitTestBehavior.opaque,
-                                          // 已選取時再點一次＝維持選取（不要漏到底層變成取消選取）
-                                          onTap: () => setState(() {
-                                            _sel = sc.id;
-                                            _wmSel = false;
-                                          }),
+                                          // 選取框疊在別的素材上面，這裡也要走
+                                          // 同一套判定——不然被選中的那層會把
+                                          // 重疊處整個吃掉，再也切不到下面那層
+                                          onTapUp: (d) => _tapSelectAt(
+                                            selRect!.topLeft + d.localPosition,
+                                          ),
                                           // 雙擊＝回正中央、恢復原始大小（不小心拖歪的救援）
                                           onDoubleTap: () {
                                             _pushUndo();
@@ -4345,6 +4434,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         settings: _settings,
                                         onChanged: () => setState(() {}),
                                         onDragStart: _pushWmUndo,
+                                        onHitBox: (t, l) =>
+                                            _addWmHit(_kWmId, t, l),
                                         selectedPart: _wmSel
                                             ? _wmPart
                                             : WmPart.none,

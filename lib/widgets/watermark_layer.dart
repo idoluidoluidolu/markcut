@@ -35,6 +35,10 @@ class WatermarkLayer extends StatefulWidget {
   /// 沒給就退回 onTap
   final VoidCallback? onTapText;
 
+  /// 回報這一刻文字／Logo 畫在哪（父層拿去判斷點擊落在誰身上）。
+  /// 在 build 裡呼叫，父層只能存起來，不可以 setState
+  final void Function(Rect? textBox, Rect? logoBox)? onHitBox;
+
   /// 目前播放時間（秒）；動畫預覽用，靜態畫面給 null
   final double? time;
 
@@ -56,6 +60,7 @@ class WatermarkLayer extends StatefulWidget {
     this.onSelectPart,
     this.onTap,
     this.onTapText,
+    this.onHitBox,
     this.time,
     this.panLocked,
     this.panAllowed,
@@ -172,6 +177,8 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
             ? (dx: 0.0, dy: 0.0, alpha: 1.0)
             : settings.animAt(time);
         final children = <Widget>[];
+        // 這一輪畫出來的位置，最後回報給父層
+        Rect? hitText, hitLogo;
 
         final logo = settings.logo;
         final logoBytes = logo.bytes;
@@ -193,6 +200,7 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
           // 不夾限：允許放大到超出畫面（跟匯出同一套規則）
           final left = logo.x * w - logoW / 2;
           final top = logo.y * h - logoH / 2;
+          hitLogo = Rect.fromLTWH(left, top, logoW, logoH);
           children.add(
             Positioned(
               left: left,
@@ -300,6 +308,12 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
           // 不夾限：允許放大到超出畫面（跟匯出同一套規則）
           final left = t.x * w - probe.width / 2 - padH;
           final top = t.y * h - probe.height / 2 - padV;
+          hitText = Rect.fromLTWH(
+            left,
+            top,
+            probe.width + padH * 2,
+            probe.height + padV * 2,
+          );
 
           Widget textWidget(TextStyle st) => Text(
             t.text,
@@ -432,6 +446,10 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
             );
           }
         }
+
+        // 動畫會整組位移，回報的框也要跟著移，不然點擊判定跟看到的錯開
+        final shift = Offset(anim.dx * w, anim.dy * h);
+        widget.onHitBox?.call(hitText?.shift(shift), hitLogo?.shift(shift));
 
         // 動畫：整組浮水印一起位移＋淡出（閃爍＝alpha 0/1）
         if (anim.dx != 0 || anim.dy != 0 || anim.alpha != 1) {
