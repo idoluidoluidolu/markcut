@@ -430,9 +430,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-/// 首頁三顆按鈕的圓角。改這一個數字三顆一起變：
-/// 28 = 膠囊（全圓）、18 = 圓角、12 = 接近方角
-const double kHomeBtnRadius = 18;
+/// 首頁三顆按鈕的圓角。改這一個數字三顆一起變。
+/// 給一個夠大的值＝膠囊（全圓）：Skia 會自動把半徑夾到高度的一半，
+/// 所以三顆高度不同也一樣圓。想改回一般圓角就填 18 之類的實際值
+const double kHomeBtnRadius = 999;
 
 /// 首頁按鈕（B 版型）：主鍵反白填滿、次鍵描邊，主次分明
 class _HomeButton extends StatelessWidget {
@@ -449,9 +450,6 @@ class _HomeButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return InkWell(
-      // 圓角 18：比原本的 14 圓一階，但不做成膠囊——
-      // 全圓的膠囊在 56 高的大按鈕上會顯得比較廉價，
-      // 也跟 App 其他卡片（12~16）對不上
       borderRadius: BorderRadius.circular(kHomeBtnRadius),
       onTap: onTap,
       child: Container(
