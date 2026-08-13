@@ -6402,7 +6402,7 @@ final color = Color(picked ?? 0);
         row('畫面比例', _canvasRatio.label, _openRatioSheet),
         row(
           '解析度',
-          '${_resolution.label}・$outW×$outH',
+          '${_resolution.label}·$outW×$outH',
           _openResolutionSheet,
         ),
         // 自動挑的時候標出來：不講的話，同一支 App 在不同素材上
@@ -6410,7 +6410,7 @@ final color = Color(picked ?? 0);
         row(
           '畫質',
           _qualityAuto && _srcKbps > 0
-              ? '${_qualityEff.label}・自動'
+              ? '${_qualityEff.label}·自動'
               : _qualityEff.label,
           _openQualitySheet,
           divider: false,
@@ -6428,7 +6428,7 @@ final color = Color(picked ?? 0);
                 ? '計算中…'
                 : '需要約 ${fmtDuration(d.$1)}${d.$2 ? '' : '（粗估）'}';
             return Text(
-              '約 ${mb.toStringAsFixed(0)} MB・$t',
+              '約 ${mb.toStringAsFixed(0)} MB·$t',
               textAlign: TextAlign.center,
               style: const TextStyle(
                 fontSize: 11.5,
@@ -6511,8 +6511,8 @@ final color = Color(picked ?? 0);
                     return _optionRow(
                       title: r.label,
                       subtitle: same
-                          ? '$w×$h・原片就這麼大，不會再縮'
-                          : '$w×$h・${r.hint}',
+                          ? '$w×$h·原片就這麼大，不會再縮'
+                          : '$w×$h·${r.hint}',
                       selected: _resolution == r,
                       first: i == 0,
                       onTap: () {

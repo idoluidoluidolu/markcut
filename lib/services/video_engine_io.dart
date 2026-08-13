@@ -942,7 +942,34 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
 }
 
 /// 產生時間軸縮圖（height 可調：filmstrip 用 200、批次預覽用 720）
+/// 抽縮圖。抽不出來就回空清單——呼叫端全都處理得了「沒有縮圖」，
+/// 但處理不了例外：這些多半是射後不理的背景工作，例外跑出去就變成
+/// 沒人接的錯誤（FFmpeg 起不來、拿不到暫存目錄都會走到這裡）
 Future<List<Uint8List>> makeThumbnails(
+  String inputPath,
+  double durationSec,
+  int count, {
+  int height = 200,
+  bool longSide = false,
+  double startAt = 0,
+  bool fastDecode = false,
+}) async {
+  try {
+    return await _makeThumbnails(
+      inputPath,
+      durationSec,
+      count,
+      height: height,
+      longSide: longSide,
+      startAt: startAt,
+      fastDecode: fastDecode,
+    );
+  } catch (_) {
+    return const [];
+  }
+}
+
+Future<List<Uint8List>> _makeThumbnails(
   String inputPath,
   double durationSec,
   int count, {
