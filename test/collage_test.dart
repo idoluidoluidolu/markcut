@@ -86,8 +86,13 @@ void main() {
     await t.dragFrom(cellB, cellA - cellB);
     await _pumpFrames(t);
 
-    // 換到 9 宮格（會有空格）再把照片拖到空格
-    await t.tap(find.text('9'));
+    // 用加減器把格數加大（會多出空格）再把照片拖到空格。
+    // 兩顆加號分別是「欄」與「列」
+    final plus = find.byIcon(Icons.add);
+    expect(plus, findsNWidgets(2), reason: '欄與列各一顆加號');
+    await t.tap(plus.first);
+    await _pumpFrames(t);
+    await t.tap(plus.last);
     await _pumpFrames(t);
     final small = Offset(
       grid.left + grid.width / 6,
@@ -97,9 +102,21 @@ void main() {
     await t.dragFrom(small, empty - small);
     await _pumpFrames(t);
 
-    // 回 2 宮格
-    await t.tap(find.text('2'));
-    await _pumpFrames(t);
+    // 一路加到上限，確認擋得住而且不會炸
+    for (var i = 0; i < 10; i++) {
+      await t.tap(find.byIcon(Icons.add).first, warnIfMissed: false);
+      await _pumpFrames(t, 2);
+      await t.tap(find.byIcon(Icons.add).last, warnIfMissed: false);
+      await _pumpFrames(t, 2);
+    }
+
+    // 再減回小格數
+    for (var i = 0; i < 6; i++) {
+      await t.tap(find.byIcon(Icons.remove).first, warnIfMissed: false);
+      await _pumpFrames(t, 2);
+      await t.tap(find.byIcon(Icons.remove).last, warnIfMissed: false);
+      await _pumpFrames(t, 2);
+    }
 
     // 桌面情境：滑鼠拖曳互換
     await t.dragFrom(cellA, cellB - cellA, kind: PointerDeviceKind.mouse);

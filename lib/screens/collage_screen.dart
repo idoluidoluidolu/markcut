@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
@@ -24,8 +25,17 @@ class CollageScreen extends StatefulWidget {
   State<CollageScreen> createState() => _CollageScreenState();
 }
 
-/// 版型：(格數, 欄數, 列數)
-const _kLayouts = [(2, 2, 1), (4, 2, 2), (6, 2, 3), (9, 3, 3)];
+/// 單邊上限：再多的話手機上每格會小於觸控目標（約 48dp），
+/// 點選、拖曳互換、雙指縮放都會變得很難按
+const _kMaxSide = 6;
+
+/// 總格數上限：輸出畫布放大到 2400 時每格仍有 400px
+const _kMaxCells = 30;
+
+/// 解碼後的長邊上限。不縮的話一張 4000x3000 的照片解開就是 48MB，
+/// 放滿 30 格會直接被系統殺掉；縮到這裡每張約 7.7MB，
+/// 而輸出畫布最多 2400、單格最多幾百 px，畫質綽綽有餘
+const _kDecodeLongSide = 1600;
 
 class _CollageScreenState extends State<CollageScreen> {
   /// 已解碼的照片。換掉之後不再被任何格子用到的會被釋放並留 null，
@@ -35,8 +45,11 @@ class _CollageScreenState extends State<CollageScreen> {
   /// 一開始選進來的那批數量：換版型時還會用到，不能釋放
   int _poolSize = 0;
 
-  /// 目前版型（_kLayouts 的 index）；-1 = 還在載入
-  int _layout = -1;
+  /// 宮格的欄與列（0 = 還在載入）
+  int _cols = 0;
+  int _rows = 0;
+
+  int get _cellCount => _cols * _rows;
 
   /// 每個格子放哪張照片（照片 index，照選取順序）
   List<int> _order = [];
@@ -85,21 +98,42 @@ class _CollageScreenState extends State<CollageScreen> {
     super.dispose();
   }
 
+  /// 解碼並把長邊縮到 [_kDecodeLongSide]。
+  /// 先用 ImageDescriptor 讀出原圖尺寸（不解碼像素），才知道該縮哪一邊——
+  /// 只指定 targetWidth 的話，直式照片反而會被放大
+  Future<ui.Image> _decode(Uint8List bytes) async {
+    final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+    final desc = await ui.ImageDescriptor.encoded(buffer);
+    final long = math.max(desc.width, desc.height);
+    ui.Codec codec;
+    if (long > _kDecodeLongSide) {
+      final k = _kDecodeLongSide / long;
+      codec = await desc.instantiateCodec(
+        targetWidth: math.max(1, (desc.width * k).round()),
+        targetHeight: math.max(1, (desc.height * k).round()),
+      );
+    } else {
+      codec = await desc.instantiateCodec(); // 本來就小，不放大
+    }
+    final frame = await codec.getNextFrame();
+    codec.dispose();
+    desc.dispose();
+    return frame.image;
+  }
+
   Future<void> _load() async {
     for (final f in widget.photos) {
       try {
-        final b = await f.readAsBytes();
-        final codec = await ui.instantiateImageCodec(b);
-        final frame = await codec.getNextFrame();
+        final img = await _decode(await f.readAsBytes());
         // 讀取途中使用者可能已經離開，這時 dispose 過了，
         // 再往清單裡塞就沒人會釋放它
         if (!mounted) {
-          frame.image.dispose();
+          img.dispose();
           return;
         }
-        _images.add(frame.image);
+        _images.add(img);
       } catch (_) {}
-      if (_images.length >= 9) break; // 最多九宮格
+      if (_images.length >= _kMaxCells) break;
     }
     if (!mounted) return;
     _poolSize = _images.length;
@@ -108,40 +142,55 @@ class _CollageScreenState extends State<CollageScreen> {
       Navigator.pop(context);
       return;
     }
-    // 預設挑「放得下最多張」的版型
-    var pick = 0;
-    for (var i = 0; i < _kLayouts.length; i++) {
-      if (_images.length >= _kLayouts[i].$1) pick = i;
-    }
+    // 預設挑一個「剛好放得下」而且接近正方形的排法
+    final n = _images.length;
+    var cols = math.sqrt(n).ceil().clamp(1, _kMaxSide);
+    var rows = (n / cols).ceil().clamp(1, _kMaxSide);
+    if (cols * rows > _kMaxCells) rows = _kMaxCells ~/ cols;
     setState(() {
-      _layout = pick;
-      _order = List.generate(
-        _kLayouts[pick].$1,
-        (i) => i < _images.length ? i : -1,
-      );
-      _fits = List.generate(_kLayouts[pick].$1, (_) => _CellFit());
+      _cols = cols;
+      _rows = rows;
+      _resize();
     });
   }
 
-  void _setLayout(int i) {
+  /// 依目前欄列重建格子：照片夠就填，不夠的留空（畫面上顯示「＋」）
+  void _resize() {
+    final alive = [
+      for (var k = 0; k < _images.length; k++)
+        if (_images[k] != null) k,
+    ];
+    final keep = _order.take(_cellCount).toList();
+    _order = List.generate(_cellCount, (n) {
+      if (n < keep.length) return keep[n]; // 原本就有的格子維持不動
+      final used = keep.toSet();
+      final free = alive.where((x) => !used.contains(x)).toList();
+      final extra = n - keep.length;
+      return extra < free.length ? free[extra] : -1;
+    });
+    _fits = List.generate(
+      _cellCount,
+      (n) => n < _fits.length ? _fits[n] : _CellFit(),
+    );
+  }
+
+  void _setGrid({int? cols, int? rows}) {
+    final c = (cols ?? _cols).clamp(1, _kMaxSide);
+    final r = (rows ?? _rows).clamp(1, _kMaxSide);
+    if (c * r > _kMaxCells) {
+      showHint(context, '最多 $_kMaxCells 格', error: true);
+      return;
+    }
+    if (c == _cols && r == _rows) return;
     setState(() {
-      _layout = i;
+      _cols = c;
+      _rows = r;
       _selCell = -1;
-      // 換版型時把拖曳狀態歸零，避免殘留的格子編號超出新版型
+      // 換排法時把拖曳狀態歸零，避免殘留的格子編號超出範圍
       _dragFrom = -1;
       _dragPos = null;
       _dragOver = -1;
-      // 照片不夠的格子留空（-1），畫面上顯示「＋」讓使用者補
-      // 只填還活著的照片，被換掉釋放掉的那些留空格
-      final alive = [
-        for (var k = 0; k < _images.length; k++)
-          if (_images[k] != null) k,
-      ];
-      _order = List.generate(
-        _kLayouts[i].$1,
-        (n) => n < alive.length ? alive[n] : -1,
-      );
-      _fits = List.generate(_kLayouts[i].$1, (_) => _CellFit());
+      _resize();
     });
   }
 
@@ -153,21 +202,19 @@ class _CollageScreenState extends State<CollageScreen> {
     var failed = 0;
     for (final f in files) {
       try {
-        final b = await f.readAsBytes();
-        final codec = await ui.instantiateImageCodec(b);
-        final frame = await codec.getNextFrame();
-        // 解碼要好幾秒，這中間使用者可能換了版型／離開，
+        final img = await _decode(await f.readAsBytes());
+        // 解碼要好幾秒，這中間使用者可能換了排法／離開，
         // 用當初算好的索引會直接越界
         if (!mounted) {
-          frame.image.dispose();
+          img.dispose();
           return;
         }
         final slot = _emptySlot(prefer: filled == 0 ? cell : -1);
         if (slot == -1) {
-          frame.image.dispose();
+          img.dispose();
           break; // 沒有空格了
         }
-        _images.add(frame.image);
+        _images.add(img);
         _order[slot] = _images.length - 1;
         _fits[slot] = _CellFit();
         filled++;
@@ -211,17 +258,15 @@ class _CollageScreenState extends State<CollageScreen> {
     final f = await ImagePicker().pickImage(source: ImageSource.gallery);
     if (f == null || !mounted) return;
     try {
-      final b = await f.readAsBytes();
-      final codec = await ui.instantiateImageCodec(b);
-      final frame = await codec.getNextFrame();
-      // 選照片＋解碼期間版型可能被換掉，格子編號會失效
+      final img = await _decode(await f.readAsBytes());
+      // 選照片＋解碼期間排法可能被換掉，格子編號會失效
       if (!mounted || cell >= _order.length) {
-        frame.image.dispose();
+        img.dispose();
         return;
       }
       setState(() {
         final old = _order[cell];
-        _images.add(frame.image);
+        _images.add(img);
         _order[cell] = _images.length - 1;
         _fits[cell] = _CellFit();
         _selCell = cell;
@@ -245,12 +290,11 @@ class _CollageScreenState extends State<CollageScreen> {
 
   /// 拖曳互換：由宮格座標算出落在哪一格（-1 = 界外）
   int _cellAt(Offset p) {
-    final (count, cols, rows) = _kLayouts[_layout];
     final c = (p.dx / (_gCw + _gG)).floor();
     final r = (p.dy / (_gCh + _gG)).floor();
-    if (c < 0 || c >= cols || r < 0 || r >= rows) return -1;
-    final i = r * cols + c;
-    return i < count ? i : -1;
+    if (c < 0 || c >= _cols || r < 0 || r >= _rows) return -1;
+    final i = r * _cols + c;
+    return i < _cellCount ? i : -1;
   }
 
   /// 放開＝落在別格就互換（照片跟取景一起換；拖到空格＝移過去）
@@ -331,10 +375,10 @@ class _CollageScreenState extends State<CollageScreen> {
       return;
     }
     try {
-      // 1600：跟 2048 肉眼看不出差，但編碼＋解碼快 2.6 倍左右，
-      // 進編輯器不會卡那麼久
-      const size = 1600.0;
-      final (count, cols, rows) = _kLayouts[_layout];
+      // 畫布跟著格數長：格子多的時候固定 1600 會讓每格只剩百來 px。
+      // 上限 2400——再大 PNG 編碼在 web 會卡住主執行緒
+      final size = (math.max(_cols, _rows) * 420.0).clamp(1600.0, 2400.0);
+      final (count, cols, rows) = (_cellCount, _cols, _rows);
       // 跟預覽同一套排法：照片貼齊排滿，格線最後疊上去畫
       final cw = size / cols;
       final ch = size / rows;
@@ -376,6 +420,7 @@ class _CollageScreenState extends State<CollageScreen> {
         size.toInt(),
         size.toInt(),
       );
+
       final data = await image.toByteData(format: ui.ImageByteFormat.png);
       image.dispose();
       if (!mounted || data == null) return;
@@ -414,7 +459,14 @@ class _CollageScreenState extends State<CollageScreen> {
                   style: TextStyle(fontSize: 12, color: kTextDim),
                 ),
               ),
-              for (var i = 0; i < _kLayouts.length; i++) _layoutChip(i),
+              _stepper('欄', _cols, (v) => _setGrid(cols: v)),
+              const SizedBox(width: 10),
+              _stepper('列', _rows, (v) => _setGrid(rows: v)),
+              const Spacer(),
+              Text(
+                '$_cellCount 格',
+                style: const TextStyle(fontSize: 12, color: kTextDim),
+              ),
             ],
           ),
           Container(
@@ -497,36 +549,57 @@ class _CollageScreenState extends State<CollageScreen> {
     );
   }
 
-  Widget _layoutChip(int i) {
-    final (count, _, _) = _kLayouts[i];
-    final on = _layout == i;
-    return Expanded(
+  /// 欄／列的加減。到達上限時該側按鈕變灰，不是消失——
+  /// 按鈕位置跳動比按不下去更難用
+  Widget _stepper(String label, int value, ValueChanged<int> onChange) {
+    Widget btn(IconData icon, int delta, bool enabled) => InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: enabled ? () => onChange(value + delta) : null,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 3),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTap: () => _setLayout(i),
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 7),
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: on ? kSelect.withValues(alpha: 0.18) : Colors.transparent,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: on ? kSelect : kClipBorder,
-                width: on ? 1.5 : 1,
-              ),
-            ),
+        padding: const EdgeInsets.all(4),
+        child: Icon(
+          icon,
+          size: 17,
+          color: enabled ? kText : kBorder,
+        ),
+      ),
+    );
+    final other = label == '欄' ? _rows : _cols;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: kClipBorder),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 3, right: 5),
             child: Text(
-              '$count',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: on ? FontWeight.w700 : FontWeight.w400,
-                color: on ? kSelect : kText,
+              label,
+              style: const TextStyle(fontSize: 11.5, color: kTextDim),
+            ),
+          ),
+          btn(Icons.remove, -1, value > 1),
+          SizedBox(
+            width: 18,
+            child: Text(
+              '$value',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: kText,
               ),
             ),
           ),
-        ),
+          btn(
+            Icons.add,
+            1,
+            value < _kMaxSide && (value + 1) * other <= _kMaxCells,
+          ),
+        ],
       ),
     );
   }
@@ -592,7 +665,7 @@ class _CollageScreenState extends State<CollageScreen> {
     return Scaffold(
         backgroundColor: kBg,
         appBar: AppBar(backgroundColor: kBg, title: const Text('照片拼圖')),
-        body: _layout == -1
+        body: _cols == 0
             ? const Center(child: CircularProgressIndicator())
             : SafeArea(
                 child: Column(
@@ -642,7 +715,7 @@ class _CollageScreenState extends State<CollageScreen> {
   }
 
   Widget _buildGrid() {
-    final (count, cols, rows) = _kLayouts[_layout];
+    final (count, cols, rows) = (_cellCount, _cols, _rows);
     return LayoutBuilder(
       builder: (context, box) {
         final size = box.maxWidth; // 1:1 畫布
@@ -737,8 +810,8 @@ class _CollageScreenState extends State<CollageScreen> {
     final fit = _fits[i];
     // 這格在宮格座標裡的左上角（拖曳換算指尖位置用）
     final origin = Offset(
-      (i % _kLayouts[_layout].$2) * (_gCw + _gG),
-      (i ~/ _kLayouts[_layout].$2) * (_gCh + _gG),
+      (i % _cols) * (_gCw + _gG),
+      (i ~/ _cols) * (_gCh + _gG),
     );
     // 螢幕位移 → 來源像素位移的換算比
     double dispScale() => cellW / _srcRect(img, fit, cellW / cellH).width;
