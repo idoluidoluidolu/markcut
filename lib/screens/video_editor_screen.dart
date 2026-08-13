@@ -92,7 +92,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   final Map<int, PlayerX> _ctrls = {}; // clipId → controller
   final Map<int, List<Uint8List>> _thumbs = {}; // sourceIndex → filmstrip
 
-  int _sel = -1; // 選取的片段 id
+  // 片段選取與浮水印選取互斥：用 getter/setter 綁死，
+  // 而不是在每個「加素材」的地方各補一行清除。
+  // 漏掉一個就會同時亮兩個選取框（加影片、加音樂、錄旁白、
+  // 貼上都曾經漏掉），而且以後新增路徑還會再漏一次
+  int _selValue = -1;
+  bool _wmSelValue = false;
+
+  /// 選取的片段 id（-1 = 沒有）
+  int get _sel => _selValue;
+  set _sel(int v) {
+    _selValue = v;
+    if (v != -1) _wmSelValue = false;
+  }
   int _selTrack = -1; // 選取的軌道（點軌道空白處；貼上的目標）
   int _extraBlankTracks = 0; // 手動加的空白軌數（常駐空軌之外）
   // 播放頭（時間軸秒，原速）。用 ValueNotifier 驅動，
@@ -140,7 +152,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   // 浮水印顯示範圍（時間軸秒）；_wmEnd null = 跟到結尾
   double _wmStart = 0;
   double? _wmEnd;
-  bool _wmSel = false;
+  /// 有沒有選取全域浮水印（跟 _sel 互斥，見上面）
+  bool get _wmSel => _wmSelValue;
+  set _wmSel(bool v) {
+    _wmSelValue = v;
+    if (v) _selValue = -1;
+  }
 
   double get _wmEndEff => (_wmEnd ?? _tl.duration).clamp(0.0, _tl.duration);
 
@@ -946,6 +963,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 音樂來源：音樂檔，或從自己的影片提取聲音（只取音軌）
     final fromVideo = await showModalBottomSheet<bool>(
       context: context,
+      showDragHandle: true,
       builder: (context) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1375,8 +1393,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final ctrl = TextEditingController(text: src.name);
     await showModalBottomSheet(
       context: context,
-      isScrollControlled: true,
       showDragHandle: true,
+      isScrollControlled: true,
       // 視窗最多佔半個螢幕：上半留給預覽，邊調邊看即時效果
       constraints: BoxConstraints(
         maxHeight: MediaQuery.of(context).size.height * 0.5,
@@ -1794,7 +1812,6 @@ final color = Color(picked ?? 0);
       _wmSel = false;
     });
     _saveDraft();
-    showHint(context, kMosaicHint);
   }
 
   /// 馬賽克樣式表：樣式（像素化/模糊/純色遮蓋）＋濃度/顏色
@@ -2574,6 +2591,7 @@ final color = Color(picked ?? 0);
 
     final ok = await showModalBottomSheet<bool>(
       context: context,
+      showDragHandle: true,
       isScrollControlled: true,
       constraints: BoxConstraints(
         maxHeight: MediaQuery.of(context).size.height * 0.75,

@@ -757,6 +757,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                   final hasOverride = _items[i].override != null;
                   final action = await showModalBottomSheet<String>(
                     context: context,
+                    showDragHandle: true,
                     builder: (context) => SafeArea(
                       child: Column(
                         mainAxisSize: MainAxisSize.min,

@@ -1233,21 +1233,12 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                   style:
                       const TextStyle(fontSize: 12, color: kTextDim))),
           Expanded(
-            child: SliderTheme(
-              data: SliderTheme.of(context).copyWith(
-                trackHeight: 2.5,
-                thumbShape:
-                    const RoundSliderThumbShape(enabledThumbRadius: 6.5),
-                overlayShape:
-                    const RoundSliderOverlayShape(overlayRadius: 12),
-              ),
-              child: Slider(
+            child: Slider(
                 value: value.clamp(min, max),
                 min: min,
                 max: max,
                 onChanged: onChanged,
               ),
-            ),
           ),
           // 即時數值：微調時有參考（跟馬賽克樣式表同一套）
           SizedBox(
@@ -1280,21 +1271,12 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                     const TextStyle(fontSize: 11.5, color: kTextDim)),
           ),
           Expanded(
-            child: SliderTheme(
-              data: SliderTheme.of(context).copyWith(
-                trackHeight: 2.5,
-                thumbShape:
-                    const RoundSliderThumbShape(enabledThumbRadius: 6.5),
-                overlayShape:
-                    const RoundSliderOverlayShape(overlayRadius: 12),
-              ),
-              child: Slider(
+            child: Slider(
                 value: value.clamp(0.2, 3.0),
                 min: 0.2,
                 max: 3.0,
                 onChanged: onChanged,
               ),
-            ),
           ),
           SizedBox(
             width: 60,
@@ -1321,22 +1303,13 @@ class WatermarkPanelState extends State<WatermarkPanel> {
               child: Text('旋轉',
                   style: TextStyle(fontSize: 12, color: kTextDim))),
           Expanded(
-            child: SliderTheme(
-              data: SliderTheme.of(context).copyWith(
-                trackHeight: 2.5,
-                thumbShape:
-                    const RoundSliderThumbShape(enabledThumbRadius: 6.5),
-                overlayShape:
-                    const RoundSliderOverlayShape(overlayRadius: 12),
-              ),
-              child: Slider(
+            child: Slider(
                 value: value.clamp(-180, 180),
                 min: -180,
                 max: 180,
                 onChanged: (v) =>
                     onChanged(v.abs() < 4 ? 0 : v), // 吸附回正
               ),
-            ),
           ),
           InkWell(
             borderRadius: BorderRadius.circular(4),

@@ -100,6 +100,7 @@ class _PresetsScreenState extends State<PresetsScreen> {
   void _showActions(WatermarkPreset p) {
     showModalBottomSheet(
       context: context,
+      showDragHandle: true,
       builder: (context) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,

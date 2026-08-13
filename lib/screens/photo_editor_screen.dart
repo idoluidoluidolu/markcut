@@ -925,7 +925,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       _wmPart = WmPart.none;
       _selExtra = -1;
     });
-    showHint(context, kMosaicHint);
   }
 
   /// 馬賽克樣式表（照片版）：樣式＋大小＋濃度/顏色＋移除
