@@ -2252,23 +2252,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return clip.volume * trackMute * revMute * clip.fadeFactorAt(_position);
   }
 
-  /// 預覽混音的縮放基準。
-  ///
-  /// 播放器的音量上限就是 1.0（iOS AVPlayer、Android ExoPlayer 都一樣），
-  /// 所以 120% 沒辦法真的放大。硬夾成 1.0 的話，一段 120%、一段 60%
-  /// 聽起來會是 100% 對 60%，比例錯的——預覽跟匯出的混音不一樣。
-  /// 改成整組除以峰值：120/60 變成 100/50，比例跟匯出一致，
-  /// 只是整體小聲一點
-  double _previewVolPeak() {
-    var peak = 1.0;
-    for (final clip in _tl.clips) {
-      if (!clip.covers(_position)) continue;
-      final v = _rawVolOf(clip);
-      if (v > peak) peak = v;
-    }
-    return peak;
-  }
-
   /// 每個片段上次大幅校正的時間（防連發）
   final Map<int, DateTime> _lastDriftFix = {};
   DateTime _lastVolSync = DateTime.fromMillisecondsSinceEpoch(0);
@@ -2382,8 +2365,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       // 音量最多 10 次/秒（fade 中每格打 method channel 也會卡）
       if (volDue) {
-        // 峰值 >100% 時整組等比例縮小（見 _previewVolPeak）
-        final vol = (_rawVolOf(clip) / _previewVolPeak()).clamp(0.0, 1.0);
+        final vol = _rawVolOf(clip).clamp(0.0, 1.0);
         if ((vol - (_lastVol[clip.id] ?? -1)).abs() > 0.02) {
           _lastVol[clip.id] = vol;
           c.setVolume(vol);
@@ -5620,8 +5602,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         setSheet(() {});
         setState(() {
           clip.volume = v;
-          // 上限 1.0 是播放器的硬限制，>100% 靠整組等比例縮小
-          // 讓比例正確（見 _previewVolPeak），匯出才會真的放大
           _ctrls[clip.id]?.setVolume(v.clamp(0.0, 1.0));
         });
       }
@@ -5633,7 +5613,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           _optRow(
             label: '音量',
             value: clip.volume,
-            max: 2,
+            // 上限就是 100%（原始音量）。放大要靠 FFmpeg 重算取樣，
+            // 預覽的播放器做不到，開放了只會讓預覽跟成品對不起來
+            max: 1,
             suffix: '${(clip.volume * 100).round()}%',
             onChanged: setVol,
             // 喇叭圖示可以點＝快速靜音／取消靜音
@@ -5662,16 +5644,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               ),
             ),
           ),
-          // 100% 以上預覽播不出來（播放器上限就是 1.0）：
-          // 講清楚是「這裡聽不到」而不是「沒作用」
-          if (clip.volume > 1.01)
-            const Padding(
-              padding: EdgeInsets.only(left: 56, bottom: 4),
-              child: Text(
-                '預覽放不出 100% 以上（播放器限制），匯出才會真的放大',
-                style: TextStyle(fontSize: 10.5, color: kTextDim),
-              ),
-            ),
           // 一段一段調太累：一鍵套到所有有聲音的素材
           if (audioCount > 1)
             Align(

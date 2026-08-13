@@ -199,7 +199,9 @@ class TimelineClip {
     trimEnd: (j['trimEnd'] ?? 0).toDouble(),
     offset: (j['offset'] ?? 0).toDouble(),
     track: (j['track'] ?? 0) as int,
-    volume: (j['volume'] ?? 1.0).toDouble(),
+    // 舊草稿可能存了 >1 的音量（以前滑桿開到 200%）。
+    // 夾回 1.0：不夾的話 UI 顯示 100% 但匯出還在放大，改也改不掉
+    volume: (j['volume'] ?? 1.0).toDouble().clamp(0.0, 1.0),
     px: (j['px'] ?? 0.5).toDouble(),
     py: (j['py'] ?? 0.5).toDouble(),
     scale: (j['scale'] ?? 1.0).toDouble(),

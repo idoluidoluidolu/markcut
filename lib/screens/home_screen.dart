@@ -57,11 +57,18 @@ class _PickRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
+                // 標題給實體字重（字體已經有 700 的檔案），
+                // 兩行的行高也收緊一點，不然標題跟說明看起來像兩件事
                 Text(label,
-                    style: const TextStyle(fontSize: 14, color: kText)),
-                const SizedBox(height: 2),
+                    style: const TextStyle(
+                        fontSize: 14.5,
+                        height: 1.25,
+                        fontWeight: FontWeight.w700,
+                        color: kText)),
+                const SizedBox(height: 1),
                 Text(hint,
-                    style: const TextStyle(fontSize: 11.5, color: kTextDim)),
+                    style: const TextStyle(
+                        fontSize: 12, height: 1.25, color: kTextDim)),
               ],
             ),
           ],

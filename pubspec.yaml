@@ -118,9 +118,18 @@ flutter:
     - shaders/mosaic.frag
 
   fonts:
+    # UI 字體。原本這幾個檔案是「可變字體」，而它們的預設實例是
+    # Thin(100)／ExtraLight(200)——Flutter 不會自己把 fontWeight 套到
+    # wght 軸，所以實機上整個 App 都用最細的那一階在畫，字看起來很單薄
+    # （網頁版正常是因為瀏覽器換成自己的字體）。
+    # 已經用 fontTools 烘成固定字重的靜態字體，順便去掉 gvar 變小了。
+    # 要改字重就重新烘一份，不要換回可變字體
     - family: NotoSansTC
       fonts:
         - asset: assets/fonts/NotoSansTC.ttf
+          weight: 400
+        - asset: assets/fonts/NotoSansTC-Bold.ttf
+          weight: 700
     - family: NotoSerifTC
       fonts:
         - asset: assets/fonts/NotoSerifTC.ttf
