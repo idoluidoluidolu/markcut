@@ -3348,13 +3348,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
     if (mounted) {
       Navigator.of(context).pop();
+      // 成功的訊息交給下面的「輸出完成」視窗講，這裡只處理失敗／取消。
       // 取消是使用者自己的決定，用中性提示就好，不當錯誤
-      showHint(
-        context,
-        message,
-        error: !ok && !cancelled,
-        duration: Duration(seconds: ok || cancelled ? 3 : 8),
-      );
+      if (!ok) {
+        showHint(
+          context,
+          message,
+          error: !cancelled,
+          duration: Duration(seconds: cancelled ? 3 : 8),
+        );
+      }
     }
     // 還原圖片快取上限（匯出期間壓成 0）
     PaintingBinding.instance.imageCache
@@ -3371,6 +3374,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final s = _tl.sources[i];
       if (s.isVideo && s.duration > 0) {
         _makeScrubCache(i, s.path, s.duration);
+      }
+    }
+    // 問下一步一定要放在所有清理之後：選了回主畫面這頁就收掉，
+    // 圖片快取上限沒還原的話整個 App 的快取會一直是關著的
+    if (ok && mounted) {
+      final home = await askAfterExport(context, message);
+      // popUntil 不經過 PopScope，不會再跳一次「要不要留草稿」——
+      // 草稿本來就一直有存，這裡直接走
+      if (home && mounted) {
+        Navigator.of(context).popUntil((r) => r.isFirst);
       }
     }
   }

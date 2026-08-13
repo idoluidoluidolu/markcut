@@ -444,8 +444,19 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         ? '已取消，完成 $done 個'
         : (failed == 0 ? '完成！已輸出 $done 個檔案' : '完成 $done 個，$failed 個失敗');
     if (skipped > 0) msg += '（$skipped 部影片略過：此平台不支援）';
-    showHint(context, msg, error: (failed > 0 || skipped > 0) && !_stopRequested);
     setState(() => _exporting = false);
+    // 全部成功才問下一步；有失敗或略過就用提示講清楚，
+    // 這種時候把人送回主畫面等於把問題蓋掉
+    if (_stopRequested || failed > 0 || skipped > 0) {
+      showHint(context, msg,
+          error: (failed > 0 || skipped > 0) && !_stopRequested);
+      return;
+    }
+    final home = await askAfterExport(context, msg);
+    // _initialJson 上面已經對齊現況，離開不會再問「要放棄嗎」
+    if (home && mounted) {
+      Navigator.of(context).popUntil((r) => r.isFirst);
+    }
   }
 
   /// 單支影片：原樣 + 浮水印，整段匯出

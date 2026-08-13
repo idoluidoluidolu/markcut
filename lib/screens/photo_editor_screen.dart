@@ -1129,8 +1129,17 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     // 只有進度框還開著才 pop，不然會把編輯頁本身關掉。
     // rootNavigator：showDialog 開在 root，pop 也要對同一個 navigator
     if (dialogOpen) Navigator.of(context, rootNavigator: true).pop();
-    showHint(context, message, error: !ok);
     setState(() => _exporting = false);
+    if (!ok) {
+      showHint(context, message, error: true);
+      return;
+    }
+    // 成功：問要回主畫面還是留下來繼續改
+    final home = await askAfterExport(context, message);
+    // _initialJson 上面已經對齊現況，離開不會再問「要放棄嗎」
+    if (home && mounted) {
+      Navigator.of(context).popUntil((r) => r.isFirst);
+    }
   }
 
   /// 底部「儲存範本」鈕要觸發面板裡的儲存流程

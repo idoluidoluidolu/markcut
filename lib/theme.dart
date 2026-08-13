@@ -368,6 +368,74 @@ Future<bool> showConfirm(
   return ok == true;
 }
 
+/// 輸出完成後問下一步。回傳 true＝回主畫面、false＝留下來繼續編輯。
+///
+/// 存完檔直接把人留在編輯頁，他不知道到底成功了沒、也不知道
+/// 接下來該按什麼；直接踢回主畫面又會讓想微調再存一次的人重來
+Future<bool> askAfterExport(BuildContext context, String message) async {
+  final home = await showDialog<bool>(
+    context: context,
+    barrierDismissible: false,
+    builder: (context) => Dialog(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: kBorder),
+      ),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 280),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 24, 20, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Icon(Icons.check_circle_outline, size: 34, color: kAmber),
+              const SizedBox(height: 12),
+              const Text('輸出完成',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      fontSize: 15.5,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.3,
+                      color: kText)),
+              const SizedBox(height: 8),
+              Text(message,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      fontSize: 12.5, color: kTextDim, height: 1.55)),
+              const SizedBox(height: 20),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(44),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                  textStyle: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      fontFamily: 'NotoSansTC'),
+                ),
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('回主畫面'),
+              ),
+              const SizedBox(height: 4),
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                style: TextButton.styleFrom(
+                  foregroundColor: kTextDim,
+                  minimumSize: const Size.fromHeight(40),
+                ),
+                child: const Text('繼續編輯',
+                    style: TextStyle(fontSize: 13)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+  return home == true;
+}
+
 /// 區塊小標（灰字、寬字距，如「開始新專案」）
 class SectionLabel extends StatelessWidget {
   final String text;
