@@ -1160,28 +1160,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 素材選單。
   ///
-  /// 排成格子不排成清單：八個項目做成八列會塞滿整個螢幕
-  /// （之前最後一項「空白軌道」就這樣被切掉過），而且八列長得
-  /// 一模一樣，看不出它們其實是三類不同的東西
+  /// 八個項目分成三類：自己做的覆蓋物、從裝置匯入的檔案、軌道相關。
+  /// 不分組的話八列長得一模一樣，看不出它們其實不是同一種東西
   Future<_AddKind?> _askKind({String? title}) {
-    Widget tile(BuildContext context, IconData icon, String label,
-        _AddKind kind) {
+    Widget item(
+      BuildContext context,
+      IconData icon,
+      String label,
+      _AddKind kind,
+    ) {
       return InkWell(
-        borderRadius: BorderRadius.circular(10),
         onTap: () => Navigator.pop(context, kind),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 11),
-          decoration: BoxDecoration(
-            color: kPanelHi,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 11),
+          child: Row(
             children: [
               Icon(icon, size: 20, color: kAmber),
-              const SizedBox(height: 6),
+              const SizedBox(width: 15),
               Text(label,
-                  style: const TextStyle(fontSize: 11, color: kText)),
+                  style: const TextStyle(fontSize: 13.5, color: kText)),
             ],
           ),
         ),
@@ -1189,7 +1186,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
 
     Widget group(String label) => Padding(
-          padding: const EdgeInsets.fromLTRB(4, 14, 4, 7),
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 3),
           child: Text(
             label,
             style: const TextStyle(
@@ -1200,28 +1197,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           ),
         );
 
-    Widget row(List<Widget> tiles) => Row(
-          children: [
-            for (var i = 0; i < tiles.length; i++) ...[
-              if (i > 0) const SizedBox(width: 8),
-              Expanded(child: tiles[i]),
-            ],
-          ],
-        );
-
     return showModalBottomSheet<_AddKind>(
       context: context,
       showDragHandle: true,
+      // 分組之後比不分組更高，預設的 9/16 會塞不下（最後一項會被切掉）
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.85,
+      ),
       builder: (context) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               if (title != null)
                 Padding(
-                  padding: const EdgeInsets.only(bottom: 2),
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 2),
                   child: Text(
                     title,
                     textAlign: TextAlign.center,
@@ -1232,23 +1224,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   ),
                 ),
               group('加在畫面上'),
-              row([
-                tile(context, Icons.title, '文字', _AddKind.text),
-                tile(context, Icons.branding_watermark, '浮水印', _AddKind.wm),
-                tile(context, Icons.blur_on, '馬賽克', _AddKind.mosaic),
-              ]),
+              item(context, Icons.title, '文字', _AddKind.text),
+              item(context, Icons.branding_watermark, '浮水印', _AddKind.wm),
+              item(context, Icons.blur_on, '馬賽克', _AddKind.mosaic),
               group('從裝置匯入'),
-              row([
-                tile(context, Icons.videocam_outlined, '影片', _AddKind.video),
-                tile(context, Icons.image_outlined, '圖片', _AddKind.image),
-                tile(context, Icons.music_note, '音樂', _AddKind.audio),
-              ]),
+              item(context, Icons.videocam_outlined, '影片', _AddKind.video),
+              item(context, Icons.image_outlined, '圖片', _AddKind.image),
+              item(context, Icons.music_note, '音樂', _AddKind.audio),
               group('其他'),
-              row([
-                tile(context, Icons.mic, '錄旁白', _AddKind.record),
-                tile(context, Icons.playlist_add, '空白軌道',
-                    _AddKind.blankTrack),
-              ]),
+              item(context, Icons.mic, '錄旁白', _AddKind.record),
+              item(context, Icons.playlist_add, '空白軌道',
+                  _AddKind.blankTrack),
+              const SizedBox(height: 10),
             ],
           ),
         ),
