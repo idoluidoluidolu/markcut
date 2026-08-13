@@ -14,5 +14,7 @@ Future<String> savePhotoPng(
     if (!ok) return '沒有相簿存取權限，請到系統設定開啟後再試一次';
   }
   await Gal.putImageBytes(bytes, album: '浮水印', name: name);
-  return '完成！照片已儲存到相簿（浮水印 相簿）';
+  // 只講存到哪。檔名（watermarker_1786605032295.png）對使用者
+  // 沒有意義，放在完成視窗最大那行只是把重點蓋掉
+  return '已存到「浮水印」相簿';
 }

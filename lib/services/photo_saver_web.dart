@@ -17,5 +17,5 @@ Future<String> savePhotoPng(
     ..download = '$name.$ext'
     ..click();
   web.URL.revokeObjectURL(url);
-  return '完成！照片已下載（$name.$ext）';
+  return '已下載到你的下載資料夾';
 }

@@ -372,8 +372,14 @@ Future<bool> showConfirm(
 ///
 /// 存完檔直接把人留在編輯頁，他不知道到底成功了沒、也不知道
 /// 接下來該按什麼；直接踢回主畫面又會讓想微調再存一次的人重來
-/// 回傳 'home'（回主畫面）或 'stay'（繼續編輯）
-Future<String> askAfterExport(BuildContext context, String message) async {
+/// 回傳 'home'（回主畫面）或 'stay'（繼續編輯）。
+/// [note] 是次要說明（例如「此平台不支援 JPEG，已改用 PNG」），
+/// 用小灰字放在主訊息下面——那種話不該跟「成功了」搶同一行
+Future<String> askAfterExport(
+  BuildContext context,
+  String message, {
+  String? note,
+}) async {
   final act = await showDialog<String>(
     context: context,
     barrierDismissible: false,
@@ -403,7 +409,14 @@ Future<String> askAfterExport(BuildContext context, String message) async {
               Text(message,
                   textAlign: TextAlign.center,
                   style: const TextStyle(
-                      fontSize: 12.5, color: kTextDim, height: 1.55)),
+                      fontSize: 13, color: kIcon, height: 1.55)),
+              if (note != null) ...[
+                const SizedBox(height: 6),
+                Text(note,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        fontSize: 11, color: kTextDim, height: 1.5)),
+              ],
               const SizedBox(height: 20),
               FilledButton(
                 style: FilledButton.styleFrom(

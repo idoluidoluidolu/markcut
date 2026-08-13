@@ -1184,6 +1184,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     ).then((_) => dialogOpen = false);
 
     String message;
+    String? note;
     var ok = true;
     try {
       // 以原始解析度合成（合成永遠是無損 PNG，要 JPEG 才轉檔）
@@ -1212,9 +1213,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         'watermarker_${DateTime.now().millisecondsSinceEpoch}',
         ext: ext,
       );
-      if (jpeg && ext == 'png') {
-        message = '$message（此平台不支援 JPEG，已改用 PNG）';
-      }
+      // 這句是次要說明，不要接在主訊息後面變成一長串括號
+      if (jpeg && ext == 'png') note = '這個裝置不支援 JPEG，已改存 PNG';
     } catch (e) {
       message = '輸出失敗：$e';
       ok = false;
@@ -1236,7 +1236,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       return;
     }
     // 成功：問要回主畫面還是留下來繼續改
-    final act = await askAfterExport(context, message);
+    final act = await askAfterExport(context, message, note: note);
     // _initialJson 上面已經對齊現況，離開不會再問「要放棄嗎」
     if (act == 'home' && mounted) {
       Navigator.of(context).popUntil((r) => r.isFirst);

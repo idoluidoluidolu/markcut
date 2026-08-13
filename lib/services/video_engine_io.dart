@@ -939,7 +939,7 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     return (ok: false, message: '存到相簿失敗：$e', cancelled: false);
   }
   cleanupTemp();
-  return (ok: true, message: '完成！影片已儲存到相簿（浮水印 相簿）', cancelled: false);
+  return (ok: true, message: '已存到「浮水印」相簿', cancelled: false);
 }
 
 /// 產生時間軸縮圖（height 可調：filmstrip 用 200、批次預覽用 720）
