@@ -10,7 +10,6 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
-import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
@@ -1445,31 +1444,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             Color initial,
             void Function(int argb) apply,
           ) async {
-            var color = initial;
-            final ok = await showDialog<bool>(
-              context: context,
-              builder: (context) => AlertDialog(
-                title: const Text('顏色'),
-                content: SingleChildScrollView(
-                  child: ColorPicker(
-                    pickerColor: color,
-                    enableAlpha: false,
-                    labelTypes: const [],
-                    onColorChanged: (c) => color = c,
-                  ),
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context, false),
-                    child: const Text('取消'),
-                  ),
-                  FilledButton(
-                    onPressed: () => Navigator.pop(context, true),
-                    child: const Text('確定'),
-                  ),
-                ],
-              ),
-            );
+            final picked = await pickColor(
+    context, initial);
+final ok = picked != null;
+final color = Color(picked ?? 0);
             if (ok == true) both(() => apply(color.toARGB32()));
           }
 
@@ -1585,33 +1563,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         const SizedBox(width: 10),
                         InkWell(
                           onTap: () async {
-                            var color = st.color;
-                            final ok = await showDialog<bool>(
-                              context: context,
-                              builder: (context) => AlertDialog(
-                                title: const Text('顏色'),
-                                content: SingleChildScrollView(
-                                  child: ColorPicker(
-                                    pickerColor: color,
-                                    enableAlpha: false,
-                                    labelTypes: const [],
-                                    onColorChanged: (c) => color = c,
-                                  ),
-                                ),
-                                actions: [
-                                  TextButton(
-                                    onPressed: () =>
-                                        Navigator.pop(context, false),
-                                    child: const Text('取消'),
-                                  ),
-                                  FilledButton(
-                                    onPressed: () =>
-                                        Navigator.pop(context, true),
-                                    child: const Text('確定'),
-                                  ),
-                                ],
-                              ),
-                            );
+                            final picked = await pickColor(
+    context, st.color);
+final ok = picked != null;
+final color = Color(picked ?? 0);
                             if (ok == true) {
                               both(() => st.colorValue = color.toARGB32());
                             }
@@ -2029,33 +1984,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                           InkWell(
                             borderRadius: BorderRadius.circular(12),
                             onTap: () async {
-                              var color = Color(st.color);
-                              final ok = await showDialog<bool>(
-                                context: context,
-                                builder: (context) => AlertDialog(
-                                  title: const Text('顏色'),
-                                  content: SingleChildScrollView(
-                                    child: ColorPicker(
-                                      pickerColor: color,
-                                      enableAlpha: false,
-                                      labelTypes: const [],
-                                      onColorChanged: (c) => color = c,
-                                    ),
-                                  ),
-                                  actions: [
-                                    TextButton(
-                                      onPressed: () =>
-                                          Navigator.pop(context, false),
-                                      child: const Text('取消'),
-                                    ),
-                                    FilledButton(
-                                      onPressed: () =>
-                                          Navigator.pop(context, true),
-                                      child: const Text('確定'),
-                                    ),
-                                  ],
-                                ),
-                              );
+                              final picked = await pickColor(
+    context, Color(st.color));
+final ok = picked != null;
+final color = Color(picked ?? 0);
                               if (ok == true) {
                                 change(() => st.color = color.toARGB32());
                               }

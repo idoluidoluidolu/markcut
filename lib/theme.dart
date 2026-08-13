@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 
 /// 效能檢測模式（關於頁開關）：顯示 Flutter 的 UI/Raster 執行緒圖表，
 /// 卡頓時截圖就能判斷瓶頸在哪一層
@@ -525,6 +526,42 @@ Future<String?> askPhotoFormat(BuildContext context) {
       ),
     ),
   );
+}
+
+/// 挑一個顏色。回傳 ARGB 整數，取消回 null。
+///
+/// 這段本來在六個地方各寫了一份（浮水印面板、照片馬賽克、
+/// 影片文字描邊、影片文字顏色、影片馬賽克、拼圖格線），
+/// 完全一樣的程式碼，只有拼圖那份標題寫「格線顏色」
+Future<int?> pickColor(
+  BuildContext context,
+  Color initial, {
+  String title = '顏色',
+}) async {
+  var color = initial;
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(title),
+      content: SingleChildScrollView(
+        child: ColorPicker(
+          pickerColor: color,
+          enableAlpha: false,
+          labelTypes: const [],
+          onColorChanged: (c) => color = c,
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消')),
+        FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('確定')),
+      ],
+    ),
+  );
+  return ok == true ? color.toARGB32() : null;
 }
 
 /// 離開編輯畫面時的三選一：保留／捨棄／繼續編輯。

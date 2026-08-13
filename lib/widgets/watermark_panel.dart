@@ -5,7 +5,6 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
     show RenderAbstractViewport, ScrollCacheExtent, ScrollDirection;
-import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../models/watermark_settings.dart';
@@ -294,32 +293,8 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   /// 通用顏色挑選：文字、描邊、底色共用
   Future<void> _pickColorFor(
       Color initial, void Function(int argb) apply) async {
-    var color = initial;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('顏色'),
-        content: SingleChildScrollView(
-          child: ColorPicker(
-            pickerColor: color,
-            enableAlpha: false,
-            labelTypes: const [],
-            onColorChanged: (c) => color = c,
-          ),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消')),
-          FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('確定')),
-        ],
-      ),
-    );
-    if (ok == true) {
-      _update(() => apply(color.toARGB32()));
-    }
+    final v = await pickColor(context, initial);
+    if (v != null) _update(() => apply(v));
   }
 
   Future<void> _pickColor() =>

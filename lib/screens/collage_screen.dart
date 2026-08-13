@@ -5,7 +5,6 @@ import 'dart:ui' as ui;
 import 'package:flutter/gestures.dart';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../theme.dart';
@@ -619,31 +618,10 @@ class _CollageScreenState extends State<CollageScreen> {
 
   /// 調色盤挑格線顏色（跟浮水印文字的顏色挑選同一套）
   Future<void> _pickLineColor() async {
-    var color = Color(_lineColor);
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('格線顏色'),
-        content: SingleChildScrollView(
-          child: ColorPicker(
-            pickerColor: color,
-            enableAlpha: false,
-            labelTypes: const [],
-            onColorChanged: (c) => color = c,
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('確定'),
-          ),
-        ],
-      ),
-    );
+    final picked = await pickColor(
+    context, Color(_lineColor), title: '格線顏色');
+final ok = picked != null;
+final color = Color(picked ?? 0);
     if (ok == true && mounted) {
       setState(() => _lineColor = color.toARGB32());
     }

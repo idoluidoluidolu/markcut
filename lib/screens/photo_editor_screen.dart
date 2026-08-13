@@ -6,7 +6,6 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
-import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -1078,33 +1077,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                           InkWell(
                             borderRadius: BorderRadius.circular(12),
                             onTap: () async {
-                              var color = Color(m.style.color);
-                              final ok = await showDialog<bool>(
-                                context: context,
-                                builder: (context) => AlertDialog(
-                                  title: const Text('顏色'),
-                                  content: SingleChildScrollView(
-                                    child: ColorPicker(
-                                      pickerColor: color,
-                                      enableAlpha: false,
-                                      labelTypes: const [],
-                                      onColorChanged: (c) => color = c,
-                                    ),
-                                  ),
-                                  actions: [
-                                    TextButton(
-                                      onPressed: () =>
-                                          Navigator.pop(context, false),
-                                      child: const Text('取消'),
-                                    ),
-                                    FilledButton(
-                                      onPressed: () =>
-                                          Navigator.pop(context, true),
-                                      child: const Text('確定'),
-                                    ),
-                                  ],
-                                ),
-                              );
+                              final picked = await pickColor(
+    context, Color(m.style.color));
+final ok = picked != null;
+final color = Color(picked ?? 0);
                               if (ok == true) {
                                 change(
                                   () => m.style.color = color.toARGB32(),
