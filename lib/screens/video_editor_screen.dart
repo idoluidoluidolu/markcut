@@ -1080,7 +1080,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             ),
             _optionRow(
               title: '各自一軌',
-              subtitle: '從同一個時間點疊在一起，可做子母畫面',
+              subtitle: '每個影片開一個新軌道',
               selected: false,
               onTap: () => Navigator.pop(context, false),
             ),
