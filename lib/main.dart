@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker_android/image_picker_android.dart';
@@ -5,6 +7,7 @@ import 'package:image_picker_platform_interface/image_picker_platform_interface.
 import 'package:media_kit/media_kit.dart';
 
 import 'screens/home_screen.dart';
+import 'services/diagnostics.dart';
 import 'services/steady_pointer.dart';
 import 'theme.dart';
 
@@ -25,6 +28,9 @@ void main() {
   }
   // media_kit 播放引擎（Web 用不到也沒帶函式庫）
   if (!kIsWeb) MediaKit.ensureInitialized();
+  // 上次執行有沒有做到一半就被系統收掉（匯出閃退不會留當機報告，
+  // 只有這個黑盒子留得下現場）。讀完就刪，診斷畫面看得到
+  unawaited(Diag.loadLastRun());
   // 拖曳預覽的快取幀很密，預設 100 張一下就滿、一滿就要重新解碼＝卡頓，
   // 所以要放大一點。但不能放太大：手機上這裡吃掉的記憶體會讓匯出時
   // FFmpeg 要不到記憶體、整個 App 被系統殺掉（拖曳的影格另有自己的

@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'diagnostics.dart';
 import 'media_prep.dart';
 
 /// 素材的工作檔管理：一份素材轉一次，之後整支 App 都用轉好的那份。
@@ -93,12 +94,22 @@ class WorkFiles {
     final dir = await _dir();
     final name = 'w${DateTime.now().microsecondsSinceEpoch}.mp4';
     final dest = '${dir.path}${Platform.pathSeparator}$name';
+    final sw = Stopwatch()..start();
+    await Diag.mark('工作檔：轉檔中', data: {'檔案': src.split('/').last});
     final made = await MediaPrep.toWorkFile(
       src,
       dest,
       maxShortSide: maxShortSide,
       onProgress: onProgress,
     );
+    await Diag.clearMark();
+    Diag.note(
+      made == null
+          ? '工作檔失敗（用原檔）：${src.split('/').last}'
+          : '工作檔完成 ${sw.elapsed.inSeconds}秒 '
+                '${(File(made).lengthSync() / 1048576).round()}MB',
+    );
+    Diag.count(made == null ? '工作檔失敗' : '工作檔完成');
     if (made == null || !File(made).existsSync()) {
       try {
         File(dest).deleteSync();

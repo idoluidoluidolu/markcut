@@ -37,6 +37,7 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         val main = Handler(Looper.getMainLooper())
         registerPrepChannel(flutterEngine, main)
+        registerDiagChannel(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "markcut/frames")
             .setMethodCallHandler { call, result ->
                 if (call.method != "frameAt") {
@@ -104,6 +105,34 @@ class MainActivity : FlutterActivity() {
         bmp.compress(Bitmap.CompressFormat.JPEG, 80, out)
         bmp.recycle()
         return out.toByteArray()
+    }
+
+    // ===== 診斷（markcut/diag）=====
+    //
+    // 匯出被系統收掉時不會留下當機報告，只能靠「死掉前吃多少記憶體」
+    // 回推。totalPss 是這個行程實際佔的實體記憶體（含 codec 那些原生
+    // 配置，Runtime 的 heap 數字看不到那一塊）；availMem 是系統還剩多少
+    private fun registerDiagChannel(flutterEngine: FlutterEngine) {
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "markcut/diag")
+            .setMethodCallHandler { call, result ->
+                if (call.method != "memory") {
+                    result.notImplemented()
+                    return@setMethodCallHandler
+                }
+                val mi = android.os.Debug.MemoryInfo()
+                android.os.Debug.getMemoryInfo(mi)
+                val am =
+                    getSystemService(android.content.Context.ACTIVITY_SERVICE)
+                        as android.app.ActivityManager
+                val sys = android.app.ActivityManager.MemoryInfo()
+                am.getMemoryInfo(sys)
+                result(
+                    mapOf(
+                        "usedMb" to mi.totalPss / 1024.0,
+                        "freeMb" to sys.availMem / (1024.0 * 1024.0),
+                    )
+                )
+            }
     }
 
     // ===== 素材工作檔（markcut/prep）=====

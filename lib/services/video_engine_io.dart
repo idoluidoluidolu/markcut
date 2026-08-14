@@ -15,6 +15,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
+import 'diagnostics.dart';
 import 'video_processor.dart';
 
 /// 這個平台是否支援影片匯出
@@ -1341,6 +1342,20 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   // 分段渲染用的暫存檔（每一段的畫面、串接清單、串好的無聲影片）
   final segTemps = <String>[];
 
+  // 黑盒子：被系統收掉時不會有任何 log，只能靠開工前寫下的現場回推。
+  // 正常做完會擦掉（見結尾的 clearMark）
+  Diag.startSampling();
+  final hdrCount = spec.sources.where((s) => s.kind == ClipKind.video).length;
+  await Diag.mark(
+    '匯出：準備',
+    data: {
+      '輸出': '${spec.outW}x${spec.outH}',
+      '片段': spec.clips.length,
+      '素材': hdrCount,
+      '長度': spec.outputDuration.round(),
+    },
+  );
+
   /// 跑一次 FFmpeg，帶兩層保底：HDR 轉換鏈在這台機器跑不動就剝掉重跑
   /// （寧可顏色不對也不能匯不出來）、硬體編碼器不能用就退軟體編碼器
   Future<({bool ok, FFmpegSession session, dynamic rc})> runFF(
@@ -1355,12 +1370,14 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
         stripped = stripped.replaceAll('$c,', '');
       }
       if (stripped != cmd) {
+        Diag.note('HDR 轉換鏈跑不動，剝掉重跑（顏色會偏）');
         session = await FFmpegKit.execute(stripped);
         rc = await session.getReturnCode();
         ok = ReturnCode.isSuccess(rc);
       }
     }
     if (!ok && !ReturnCode.isCancel(rc) && cmd.contains(_hwEncoder())) {
+      Diag.note('硬體編碼器不能用，退軟體編碼（很慢、檔案大）');
       final soft = cmd
           .replaceFirst('-c:v ${_hwEncoder()}', '-c:v mpeg4 -q:v 3')
           .replaceFirst('-pix_fmt nv12', '-pix_fmt yuv420p');
@@ -1391,9 +1408,11 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   dynamic rc;
   FFmpegSession? session;
 
+  Diag.note('匯出：切成 ${bounds.length - 1} 段');
   if (bounds.length <= 2) {
     // 只有一段：照舊一次做完（聲音也在同一趟），不必多開暫存檔
     trackProgress(0, total, 0, 1);
+    await Diag.mark('匯出：單段', data: {'長度': total.round()});
     final r = await runFF(
       await _buildCommand(spec, wmPath, overlayFiles, outPath),
     );
@@ -1417,6 +1436,11 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
         videoOnly: true,
       );
       trackProgress(done, total, 0, 0.92);
+      // 每一段開始前更新現場：死在第幾段、當下多少記憶體都留得下來
+      await Diag.mark(
+        '匯出：第 ${i + 1}/${bounds.length - 1} 段',
+        data: {'秒數': (bounds[i + 1] - bounds[i]).toStringAsFixed(1)},
+      );
       final r = await runFF(cmd);
       ok = r.ok;
       rc = r.rc;
@@ -1440,6 +1464,7 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
       final joined =
           '${dir.path}${Platform.pathSeparator}joined_$ts.mp4';
       trackProgress(0, total, 0.92, 0.94);
+      await Diag.mark('匯出：串接');
       final r = await runFF(
         '-y -f concat -safe 0 -i "$listPath" -c copy "$joined"',
       );
@@ -1460,6 +1485,7 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
           }
         } else {
           trackProgress(0, total, 0.94, 1);
+          await Diag.mark('匯出：配音');
           final ra = await runFF(aCmd);
           ok = ra.ok;
           rc = ra.rc;
@@ -1469,6 +1495,10 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     }
   }
   FFmpegKitConfig.enableStatisticsCallback(null);
+  Diag.stopSampling();
+  // 走到這裡就代表 FFmpeg 沒把 App 帶走，現場可以擦了
+  await Diag.clearMark();
+  Diag.note('匯出結束：${ok ? '成功' : '失敗'}（峰值 ${Diag.peakMb} MB）');
 
   // 逐檔各自 try：第一個刪不掉（例如輸出檔根本沒生出來）
   // 不該讓後面的浮水印／疊圖 PNG 全部漏掉
@@ -1502,7 +1532,13 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     final lines = log.trim().split('\n');
     log = lines.skip(math.max(0, lines.length - 15)).join('\n');
     cleanupTemp();
-    return (ok: false, message: '匯出失敗\n$log', cancelled: false);
+    // 帶上峰值記憶體：匯出失敗最常見的原因就是記憶體撞上限，
+    // 使用者截這張圖給我，第一眼就分得出是不是那個問題
+    return (
+      ok: false,
+      message: '匯出失敗（記憶體峰值 ${Diag.peakMb} MB）\n$log',
+      cancelled: false,
+    );
   }
 
   if (!await Gal.hasAccess(toAlbum: true)) {

@@ -22,6 +22,7 @@ import UIKit
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     registerPrepChannel(engineBridge)
+    registerDiagChannel(engineBridge)
 
     // 拖曳預覽的「按需抽幀」通道：滑到哪、跟硬體解碼器要那一格。
     // HDR 的色調映射由系統做，顏色跟 AVPlayer 播放畫面天生一致
@@ -65,6 +66,41 @@ import UIKit
         }
         DispatchQueue.main.async { result(payload) }
       }
+    }
+  }
+
+  // MARK: - 診斷（markcut/diag）
+  //
+  // 匯出被系統收掉時不會留下任何當機報告，只能靠「死掉前吃多少記憶體」
+  // 回推。phys_footprint 就是 jetsam 判定用的那個數字（不是 residentSize，
+  // 那個會把共用的頁面也算進來，看起來永遠偏大）；
+  // os_proc_available_memory 是「這個 App 還能再要多少」，
+  // 比總量更能預測會不會被收掉
+  private func registerDiagChannel(_ engineBridge: FlutterImplicitEngineBridge) {
+    guard let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "markcut.diag")
+    else { return }
+    let channel = FlutterMethodChannel(
+      name: "markcut/diag", binaryMessenger: registrar.messenger())
+    channel.setMethodCallHandler { call, result in
+      guard call.method == "memory" else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      var info = task_vm_info_data_t()
+      var count = mach_msg_type_number_t(
+        MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+      let kerr = withUnsafeMutablePointer(to: &info) { ptr in
+        ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+          task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+        }
+      }
+      let mb = 1024.0 * 1024.0
+      let used = kerr == KERN_SUCCESS ? Double(info.phys_footprint) / mb : 0
+      var free = 0.0
+      if #available(iOS 13.0, *) {
+        free = Double(os_proc_available_memory()) / mb
+      }
+      result(["usedMb": used, "freeMb": free])
     }
   }
 

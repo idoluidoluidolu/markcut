@@ -21,6 +21,7 @@ import '../models/watermark_settings.dart';
 import '../services/audio_picker.dart';
 import '../services/native_frames.dart';
 import '../services/playback_trace.dart';
+import '../services/diagnostics.dart';
 import '../services/export_speed.dart';
 import '../services/file_reader.dart';
 import '../services/media_prep.dart';
@@ -709,6 +710,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _ticker = createTicker(_onTick);
     _tlScroll.addListener(_onTimelineScroll);
     _loadMosaicShader();
+    // 上次做到一半就被系統收掉的話講一聲——最常見的是匯出時記憶體
+    // 撞上限，使用者只看到 App 消失，不講他不會知道發生了什麼事
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || Diag.crumbFromLastRun == null) return;
+      showHint(
+        context,
+        Diag.lastRunDiedExporting
+            ? '上次匯出被系統中斷了（記憶體不足）。長按標題可以看診斷'
+            : '上次沒有正常結束。長按標題可以看診斷',
+        duration: const Duration(seconds: 6),
+      );
+    });
     _loadSnapPref(); // 記住上次磁吸開還關
     _loadTidyPref(); // 記住上次自動整理開還關
     if (widget.draft != null) {
@@ -2552,6 +2565,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final dt = (elapsed - _lastTick).inMicroseconds / 1e6;
     _lastTick = elapsed;
     PlaybackTrace.instance.tick(dt);
+    if (dt > 0.05) Diag.count('掉格');
     // 時間軸位置以原速計；播放速度反映在實際前進速率上
     _position += dt * _speed;
     if (_position >= _tl.duration) {
@@ -2726,6 +2740,28 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     tr.env('片段數', '${_tl.clips.length}');
     unawaited(engine.hdrChainName().then((n) => tr.env('HDR 轉換', n)));
+    // 工作檔到底有沒有生效：這一格對不對，決定了「順不順」是不是
+    // 還在原檔上跑
+    final vids = _tl.sources.where((s) => s.isVideo).toList();
+    final ready = vids.where((s) => s.workPath != null).length;
+    tr.env('工作檔', '${vids.length} 支素材，$ready 支已轉好'
+        '${_prepping.isEmpty ? '' : '（${_prepping.length} 支轉檔中）'}');
+    unawaited(
+      MediaPrep.available.then(
+        (v) => tr.env('轉檔通道', v ? '可用' : '沒接上（一律用原檔）'),
+      ),
+    );
+    unawaited(
+      Diag.memoryMb().then(
+        (mb) => tr.env(
+          '記憶體',
+          mb == null
+              ? '讀不到'
+              : '現在 $mb MB／峰值 ${Diag.peakMb} MB'
+                    '／系統還剩 ${Diag.lastFreeMb} MB',
+        ),
+      ),
+    );
 
     showModalBottomSheet(
       context: context,
@@ -2777,7 +2813,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         label: '複製報告',
                         onPressed: () {
                           Clipboard.setData(
-                            ClipboardData(text: tr.report()),
+                            ClipboardData(
+                              text: '${tr.report()}\n${Diag.report()}',
+                            ),
                           );
                           showHint(context, '已複製，貼給開發者就好');
                         },
