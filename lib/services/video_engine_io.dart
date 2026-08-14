@@ -2,8 +2,11 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit_config.dart';
+import 'package:ffmpeg_kit_flutter_new/ffmpeg_session.dart';
 import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 import 'package:ffmpeg_kit_flutter_new/stream_information.dart';
@@ -315,8 +318,11 @@ Future<String> _buildCommand(
   ExportSpec spec,
   String? wmPath,
   Map<int, String> overlayFiles,
-  String outPath,
-) async {
+  String outPath, {
+  double winStart = 0,
+  double? winEnd,
+  bool videoOnly = false,
+}) async {
   final probes = <int, _SourceProbe>{};
   for (var i = 0; i < spec.sources.length; i++) {
     final s = spec.sources[i];
@@ -346,6 +352,35 @@ Future<String> _buildCommand(
   final sp = spec.speed;
   final outDur = spec.outputDuration;
 
+  // 這一次要算的時間範圍（輸出秒）。分段渲染時一次只做一段，
+  // 只有這一段真的看得到的圖層會被組進濾鏡鏈——一段 4K HDR 的
+  // 色調映射就要 1GB 以上，全部塞同一條鏈是匯出閃退的主因
+  final w0 = winStart;
+  final w1 = math.min(winEnd ?? outDur, outDur);
+  final segDur = math.max(0.01, w1 - w0);
+
+  /// 段內時間 t 換算成整支影片的絕對輸出時間（動畫運算式用）
+  final tAbs = w0 <= 0.0005 ? 't' : '(t+${_f(w0)})';
+
+  /// 這個圖層在這一段裡看得見的範圍（輸出秒，絕對時間）；
+  /// 完全不在這一段就回 null
+  (double, double)? visible(double start, double end) {
+    final a = math.max(start, w0);
+    final b = math.min(end, w1);
+    return (b - a) <= 0.001 ? null : (a, b);
+  }
+
+  /// 這個片段在這一段裡有沒有戲份。輸入檔、split、圖層都照這個算——
+  /// 照全部片段算的話，一段只用到一支素材卻開了三個輸入，
+  /// 濾鏡圖裡還會留下接不到輸出的分支（ffmpeg 直接報錯）
+  bool inWindow(TimelineClip c) => visible(c.offset / sp, c.end / sp) != null;
+
+  /// 這一段要處理的片段（聲音那一趟不分段，見 _buildAudioMux）
+  final segClips = [
+    for (final c in spec.clips)
+      if (inWindow(c)) c,
+  ];
+
   // 畫布幀率取素材中最高者
   var fps = 0.0;
   for (var i = 0; i < spec.sources.length; i++) {
@@ -367,20 +402,20 @@ Future<String> _buildCommand(
     };
   }
 
-  for (final c in spec.clips) {
+  for (final c in segClips) {
     final k = spec.sources[c.sourceIndex].kind;
     // 文字有自己的輸入，不佔來源的 v 串流
     if (k == ClipKind.video || k == ClipKind.image) {
       vNeed[c.sourceIndex] = (vNeed[c.sourceIndex] ?? 0) + 1;
     }
-    if (clipHasAudio(c.sourceIndex)) {
+    if (!videoOnly && clipHasAudio(c.sourceIndex)) {
       aNeed[c.sourceIndex] = (aNeed[c.sourceIndex] ?? 0) + 1;
     }
   }
 
   // 圖片素材用 -loop 輸入，長度取該素材所有片段的最大需求
   final stillNeed = <int, double>{};
-  for (final c in spec.clips) {
+  for (final c in segClips) {
     if (spec.sources[c.sourceIndex].kind == ClipKind.image) {
       final need = c.length / sp + 0.5;
       if (need > (stillNeed[c.sourceIndex] ?? 0)) {
@@ -393,7 +428,7 @@ Future<String> _buildCommand(
   bool isPngClip(ClipKind k) => k == ClipKind.text || k == ClipKind.wm;
   // 沒有任何片段引用的來源不能開輸入：草稿裡檔案已被清掉的素材、
   // 還原倒轉後留下的暫存檔都在這裡，開下去 ffmpeg 直接開檔失敗
-  final usedSources = <int>{for (final c in spec.clips) c.sourceIndex};
+  final usedSources = <int>{for (final c in segClips) c.sourceIndex};
   final srcIn = <int, int>{};
   var nextInput = 0;
   for (var i = 0; i < spec.sources.length; i++) {
@@ -404,7 +439,7 @@ Future<String> _buildCommand(
     }
   }
   final textClipInput = <int, int>{}; // clip id → input index
-  for (final c in spec.clips) {
+  for (final c in segClips) {
     if (isPngClip(spec.sources[c.sourceIndex].kind)) {
       textClipInput[c.id] = nextInput++;
     }
@@ -439,7 +474,7 @@ Future<String> _buildCommand(
   // ===== 畫面：黑畫布 + 由下而上疊圖層 =====
   fc.write(
     'color=c=black:s=${spec.outW}x${spec.outH}:'
-    'r=${fps.toStringAsFixed(3)}:d=${_f(outDur)}[base];',
+    'r=${fps.toStringAsFixed(3)}:d=${_f(segDur)}[base];',
   );
 
   // 疊放順序：track 大的是下層先疊；同一層時，清單裡較後面的疊在上面
@@ -456,7 +491,7 @@ Future<String> _buildCommand(
   // 以前是分兩批、圖片文字永遠疊在影片上面，時間軸上把圖片搬到影片下面
   // 也沒有用。馬賽克不在這裡：它是對合成後的畫面做的效果，最後才套
   final layerClips =
-      spec.clips
+      segClips
           .where(
             (c) =>
                 spec.sources[c.sourceIndex].isVideo ||
@@ -485,17 +520,20 @@ Future<String> _buildCommand(
     return (w2, h2, x, y);
   }
 
-  // 畫面淡入淡出（時間用輸出秒）
+  /// 畫面淡入淡出。時間是「這個片段自己的時間」（0＝片段開頭），
+  /// 不是輸出時間——分段渲染時一個片段可能被切成好幾段，用絕對時間的話
+  /// 跨段的淡化需要負的起點，fade 濾鏡不收
+  ///（Value -0.5 for parameter 'st' out of range）。
+  /// 呼叫端負責把圖層的時間軸先移成「片段自己的時間」，見 writeVideoLayer
   String vFades(TimelineClip c) {
-    final start = c.offset / sp;
-    final end = c.end / sp;
+    final len = (c.end - c.offset) / sp;
     final fi = c.fadeIn / sp;
     final fo = c.fadeOut / sp;
     var out = '';
     if (fi > 0.01 || fo > 0.01) out += ',format=yuva420p';
-    if (fi > 0.01) out += ',fade=t=in:st=${_f(start)}:d=${_f(fi)}:alpha=1';
+    if (fi > 0.01) out += ',fade=t=in:st=0:d=${_f(fi)}:alpha=1';
     if (fo > 0.01) {
-      out += ',fade=t=out:st=${_f(end - fo)}:d=${_f(fo)}:alpha=1';
+      out += ',fade=t=out:st=${_f(math.max(0, len - fo))}:d=${_f(fo)}:alpha=1';
     }
     return out;
   }
@@ -508,10 +546,15 @@ Future<String> _buildCommand(
     final label = vPool[c.sourceIndex]!.removeLast();
     final start = c.offset / sp;
     final end = c.end / sp;
+    // 這一段看得到的範圍，換算回素材自己的時間（含變速）
+    final (a, b) = visible(start, end)!;
+    final rate = sp * c.speed.clamp(0.1, 16.0);
+    final srcA = c.trimStart + (a - start) * rate;
+    final srcB = c.trimStart + (b - start) * rate;
     final (w2, h2, x, y) = layerBox(c, src.aspect);
     fc.write(
       '[$label]'
-      'trim=start=${_f(c.trimStart)}:end=${_f(c.trimEnd)},'
+      'trim=start=${_f(srcA)}:end=${_f(srcB)},'
       // 先縮到輸出尺寸再倒轉：reverse 會把整段畫面存進記憶體，
       // 用原始解析度存會直接把記憶體吃爆。
       //
@@ -527,15 +570,19 @@ Future<String> _buildCommand(
       //（速度 clamp 到跟 TimelineClip.length 同一個範圍，
       // 兩邊算出來的時間才對得上）。倒轉會重排時間戳，
       // 所以 setpts 一定要放在 reverse 後面
-      'setpts=(PTS-STARTPTS)/${_f6(sp * c.speed.clamp(0.1, 16.0))}'
-      '+${_f(start)}/TB'
+      // 先移到「片段自己的時間」（0＝片段開頭）讓淡化算得對，
+      // 淡化做完再移到「這一段的時間」。分段渲染時同一個片段可能
+      // 被切成好幾段，兩段式位移是唯一不用負數起點的寫法
+      'setpts=(PTS-STARTPTS)/${_f6(rate)}'
+      '+${_f(a - start)}/TB'
       '${_eq(c)}'
       '${vFades(c)}'
+      ',setpts=PTS-STARTPTS+${_f(a - w0)}/TB'
       '[lv$k];',
     );
     fc.write(
       '[$cur][lv$k]overlay=$x:$y:'
-      'enable=${_window(start, end)}:'
+      'enable=${_window(a - w0, b - w0)}:'
       // 素材串流比片段短時要凍住最後一幀，不能讓底下的黑畫布露出來。
       // 手機拍的檔案很常「容器長度 > 視訊串流長度」（音軌比較長、
       // 或 VFR 的最後一幀提早結束），而片段長度是照容器長度算的——
@@ -548,6 +595,14 @@ Future<String> _buildCommand(
     final src = spec.sources[c.sourceIndex];
     final start = c.offset / sp;
     final end = c.end / sp;
+    // 靜態素材的輸入是 -loop 1，時間從「片段開頭」起算；
+    // 這一段只取得到的那一截（見 writeVideoLayer 的兩段式位移）
+    final (a, b) = visible(start, end)!;
+    final cut =
+        'trim=start=${_f(a - start)}:end=${_f(b - start)},'
+        'setpts=PTS-STARTPTS+${_f(a - start)}/TB';
+    const shift = ',setpts=PTS-STARTPTS';
+    final toSeg = '$shift+${_f(a - w0)}/TB';
     if (src.kind == ClipKind.image) {
       final label = vPool[c.sourceIndex]!.removeLast();
       final (w2, h2, x, y) = layerBox(c, src.aspect);
@@ -556,13 +611,14 @@ Future<String> _buildCommand(
         'scale=$w2:$h2:flags=lanczos'
         '${_eq(c)}'
         ',format=rgba,'
-        'setpts=PTS-STARTPTS+${_f(start)}/TB'
+        '$cut'
         '${vFades(c)}'
+        '$toSeg'
         '[lv$k];',
       );
       fc.write(
         '[$cur][lv$k]overlay=$x:$y:'
-        'enable=${_window(start, end)}:'
+        'enable=${_window(a - w0, b - w0)}:'
         'eof_action=repeat[ov$k];',
       );
     } else {
@@ -570,21 +626,24 @@ Future<String> _buildCommand(
       final inputIdx = textClipInput[c.id]!;
       fc.write(
         '[$inputIdx:v]'
-        'setpts=PTS-STARTPTS+${_f(start)}/TB'
+        '$cut'
         '${vFades(c)}'
+        '$toSeg'
         '[lv$k];',
       );
       // 浮水印素材的動畫跟全域浮水印同一套 overlay 時間運算式：
       // 閃爍＝enable 週期開關；飄移/跑馬燈＝x,y 隨 t 變化
-      var enable = _window(start, end);
+      var enable = _window(a - w0, b - w0);
       var pos = '0:0';
       var evalFrame = '';
       final wmSt = src.kind == ClipKind.wm ? src.wmStyle : null;
       if (wmSt != null && wmSt.animation != WmAnimation.none) {
         evalFrame = 'eval=frame:';
         // 動畫週期是「時間軸秒」；輸出時間 t 要乘回全域速度，
-        // 不然 2 倍速匯出時動畫會慢一半、跟預覽對不上
-        final ts = sp == 1.0 ? 't' : '(t*${_f(sp)})';
+        // 不然 2 倍速匯出時動畫會慢一半、跟預覽對不上。
+        // 分段渲染時 t 是段內時間，要先加回這一段的起點，
+        // 不然每一段的動畫都會從頭開始
+        final ts = sp == 1.0 ? tAbs : '($tAbs*${_f(sp)})';
         switch (wmSt.animation) {
           case WmAnimation.none:
             break;
@@ -624,7 +683,7 @@ Future<String> _buildCommand(
   // 全部是 LGPL 濾鏡（split/crop/scale/overlay）。放在浮水印之前，
   // 馬賽克不會把浮水印一起打碼
   final mosaicClips =
-      spec.clips
+      segClips
           .where((c) => spec.sources[c.sourceIndex].kind == ClipKind.mosaic)
           .toList()
         ..sort(cmpLayer);
@@ -632,6 +691,9 @@ Future<String> _buildCommand(
     final k = layerN++;
     final start = c.offset / sp;
     final end = c.end / sp;
+    final seen = visible(start, end);
+    if (seen == null) continue; // 這一段裡看不到
+    final (a, b) = seen;
     var (w2, h2, x, y) = layerBox(c, 1.0);
     // crop 超出畫布會直接報錯，夾回來
     x = x.clamp(0, spec.outW - 2);
@@ -641,7 +703,7 @@ Future<String> _buildCommand(
     w2 = math.max(2, w2 - w2 % 2);
     h2 = math.max(2, h2 - h2 % 2);
     final ms = spec.sources[c.sourceIndex].mosaicStyle ?? MosaicStyle();
-    final enable = 'enable=between(t\\,${_f(start)}\\,${_f(end)})';
+    final enable = 'enable=${_window(a - w0, b - w0)}';
     if (ms.type == 2) {
       // 純色遮蓋：直接畫實心色塊（顏色取 RGB，0xRRGGBB）
       final rgb = (ms.color & 0xFFFFFF).toRadixString(16).padLeft(6, '0');
@@ -715,10 +777,13 @@ Future<String> _buildCommand(
   if (hasWm) {
     final ws = (spec.wmStart / sp).clamp(0.0, outDur);
     final we = (spec.wmEnd / sp).clamp(0.0, outDur);
-    var enable = 'between(t\\,${_f(ws)}\\,${_f(we)})';
+    final seen = visible(ws, we);
+    // 這一段完全沒有浮水印時給一個永遠不成立的條件
+    var enable = seen == null ? '0' : _window(seen.$1 - w0, seen.$2 - w0);
     var pos = 'x=0:y=0';
-    // 動畫週期是「時間軸秒」；輸出時間 t 要乘回全域速度
-    final ts = sp == 1.0 ? 't' : '(t*${_f(sp)})';
+    // 動畫週期是「時間軸秒」；輸出時間 t 要乘回全域速度。
+    // 分段渲染時 t 是段內時間，先加回這一段的起點
+    final ts = sp == 1.0 ? tAbs : '($tAbs*${_f(sp)})';
     switch (spec.wmAnimation) {
       case WmAnimation.none:
         break;
@@ -744,9 +809,13 @@ Future<String> _buildCommand(
   }
 
   // ===== 聲音：每段對位後混音（軌道沒有上下之分，全部疊加）=====
+  //
+  // 分段渲染時這裡整個跳過：聲音在畫面串好之後一次做完（見
+  // _buildAudioMux）。一段一段配音的話，跨段的音樂會在每個接點
+  // 留下 AAC 編碼縫隙，而且每段都要重新混一次
   final audioLabels = <String>[];
-  for (var k = 0; k < spec.clips.length; k++) {
-    final c = spec.clips[k];
+  for (var k = 0; k < segClips.length && !videoOnly; k++) {
+    final c = segClips[k];
     if (!clipHasAudio(c.sourceIndex)) continue;
     final label = aPool[c.sourceIndex]!.removeLast();
     final delayMs = (c.offset / sp * 1000).round();
@@ -811,7 +880,7 @@ Future<String> _buildCommand(
         break; // 對畫面本身做的效果，沒有輸入檔
     }
   }
-  for (final c in spec.clips) {
+  for (final c in segClips) {
     if (isPngClip(spec.sources[c.sourceIndex].kind)) {
       cmd.write(
         '-loop 1 -framerate ${fps.toStringAsFixed(3)} '
@@ -829,7 +898,10 @@ Future<String> _buildCommand(
     cmd.write('-an ');
   }
   cmd
-    ..write('-t ${_f(outDur)} ')
+    ..write('-t ${_f(segDur)} ')
+    // 影格率寫死成畫布的：分段之後每一段都要「規格一模一樣」，
+    // 串接才敢用 -c copy（不重編碼）
+    ..write('-r ${fps.toStringAsFixed(3)} ')
     // LGPL 版沒有 x264：H.264 用手機的硬體編碼器（更快、更省電），
     // 畫質用位元率控制（硬體編碼器不吃 CRF）
     ..write(
@@ -966,6 +1038,212 @@ Future<String?> _prerenderReverse(
   return joined;
 }
 
+/// 分段的切點（輸出秒）。切在每個圖層的頭尾——這樣「一段裡有哪些圖層」
+/// 是固定的，每一段只組它自己要的濾鏡，一次只有一條轉換鏈在跑。
+///
+/// 以前是整條時間軸塞同一個濾鏡圖：每一段素材都是一條完整的解碼＋
+/// HDR 轉換＋縮放鏈，而且全部同時活著。實測 4K HLG 素材一段就要
+/// 1.7GB、三段 2.7GB，iOS 直接把 App 收掉（匯出閃退）。
+///
+/// 太靠近的切點會合併：切得太碎的話每段都要付一次啟動成本，
+/// 而且串接檔會變多。合併之後圖層可能只蓋住半段，所以 overlay 的
+/// enable 還是照時間開關（見 _buildCommand 的 visible）
+List<double> _segmentBounds(ExportSpec spec) {
+  final sp = spec.speed;
+  final outDur = spec.outputDuration;
+  final marks = <double>{};
+  for (final c in spec.clips) {
+    if (spec.sources[c.sourceIndex].kind == ClipKind.audio) continue;
+    marks
+      ..add(c.offset / sp)
+      ..add(c.end / sp);
+  }
+  if (spec.watermarkPng != null) {
+    marks
+      ..add(spec.wmStart / sp)
+      ..add(spec.wmEnd / sp);
+  }
+  final inner = marks.where((v) => v > 0.35 && v < outDur - 0.35).toList()
+    ..sort();
+  final out = <double>[0];
+  for (final v in inner) {
+    if (v - out.last >= 0.35) out.add(v);
+  }
+  out.add(outDur);
+  return out;
+}
+
+/// 把混好的聲音配到已經串好的畫面上。畫面直接 copy 不重編碼，
+/// 這一趟只有音訊在跑，記憶體與時間都可以忽略。
+///
+/// 聲音不跟著畫面分段做：跨段的音樂會在每個接點留下 AAC 編碼縫隙
+/// （倒轉那邊已經踩過一次，見 _prerenderReverse）。
+/// 沒有任何聲音時回 null，呼叫端直接把畫面當成成品
+Future<String?> _buildAudioMux(
+  ExportSpec spec,
+  String videoPath,
+  String outPath,
+) async {
+  final sp = spec.speed;
+  final hasAudio = <int, bool>{};
+  for (var i = 0; i < spec.sources.length; i++) {
+    final k = spec.sources[i].kind;
+    hasAudio[i] = (k == ClipKind.video || k == ClipKind.audio)
+        ? (await _probe(spec.sources[i].path)).hasAudio
+        : false;
+  }
+  // 靜音的片段直接不進混音（音量 0 混進去只是白白多一路）
+  final clips = [
+    for (final c in spec.clips)
+      if ((hasAudio[c.sourceIndex] ?? false) && c.volume > 0.001) c,
+  ];
+  if (clips.isEmpty) return null;
+
+  // 輸入 0 是已經串好的畫面，聲音來源從 1 開始編號
+  final srcIn = <int, int>{};
+  final need = <int, int>{};
+  var next = 1;
+  for (final c in clips) {
+    srcIn.putIfAbsent(c.sourceIndex, () => next++);
+    need[c.sourceIndex] = (need[c.sourceIndex] ?? 0) + 1;
+  }
+
+  final fc = StringBuffer();
+  final pool = <int, List<String>>{};
+  need.forEach((idx, n) {
+    final ii = srcIn[idx]!;
+    final labels = [for (var k = 0; k < n; k++) 'sa${idx}x$k'];
+    fc.write(
+      n == 1
+          ? '[$ii:a]anull[${labels[0]}];'
+          : '[$ii:a]asplit=$n${labels.map((l) => '[$l]').join()};',
+    );
+    pool[idx] = labels;
+  });
+
+  final labels = <String>[];
+  for (var k = 0; k < clips.length; k++) {
+    final c = clips[k];
+    final label = pool[c.sourceIndex]!.removeLast();
+    final delayMs = (c.offset / sp * 1000).round();
+    final lenOut = c.length / sp;
+    var fades = '';
+    if (c.fadeIn > 0.01) {
+      fades += ',afade=t=in:st=0:d=${_f(c.fadeIn / sp)}';
+    }
+    if (c.fadeOut > 0.01) {
+      fades +=
+          ',afade=t=out:st=${_f(math.max(0, lenOut - c.fadeOut / sp))}'
+          ':d=${_f(c.fadeOut / sp)}';
+    }
+    fc.write(
+      '[$label]'
+      'atrim=start=${_f(c.trimStart)}:end=${_f(c.trimEnd)},'
+      '${c.reverse ? 'areverse,' : ''}'
+      'asetpts=PTS-STARTPTS,'
+      '${_atempoChain(sp * c.speed.clamp(0.1, 16.0))}'
+      '$fades,'
+      'volume=${c.volume.toStringAsFixed(2)},'
+      'adelay=$delayMs:all=1,'
+      'aresample=44100,aformat=channel_layouts=stereo[la$k];',
+    );
+    labels.add('la$k');
+  }
+  String aLabel;
+  if (labels.length == 1) {
+    aLabel = labels.first;
+  } else {
+    fc.write(
+      '${labels.map((l) => '[$l]').join()}'
+      'amix=inputs=${labels.length}:duration=longest:normalize=0[aout];',
+    );
+    aLabel = 'aout';
+  }
+  var filter = fc.toString();
+  if (filter.endsWith(';')) filter = filter.substring(0, filter.length - 1);
+
+  final cmd = StringBuffer()
+    ..write('-y -i "$videoPath" ');
+  final ordered = srcIn.entries.toList()
+    ..sort((a, b) => a.value.compareTo(b.value));
+  for (final e in ordered) {
+    cmd.write('-i "${spec.sources[e.key].path}" ');
+  }
+  cmd
+    ..write('-filter_complex "$filter" ')
+    ..write('-map 0:v -c:v copy ')
+    ..write('-map "[$aLabel]" -c:a aac -b:a 256k ')
+    ..write('-t ${_f(spec.outputDuration)} ')
+    ..write('-movflags +faststart ')
+    ..write('"$outPath"');
+  return cmd.toString();
+}
+
+// ===== 測試掛勾 =====
+//
+// 匯出指令是這支 App 最容易默默改壞的東西：改一個時間位移，交界處就
+// 多一格黑、動畫就每段從頭跑一次，而這些只有實機匯出才看得到。
+// 這幾個掛勾讓測試「不碰 FFmpeg 也組得出指令」，組出來的字串可以拿去
+// 對真的 ffmpeg 跑（見 test/export_segment_test.dart）
+
+/// 直接塞一筆 probe 結果進快取，測試才不用真的去讀檔
+@visibleForTesting
+void debugPrimeProbe(
+  String path, {
+  bool hasAudio = false,
+  double fps = 30,
+  bool hdr = false,
+  String codec = 'h264',
+  String trc = '',
+  int dispW = 1920,
+  int dispH = 1080,
+  int rotation = 0,
+}) {
+  _probeCache[path] = _SourceProbe(
+    hasAudio,
+    fps,
+    hdr,
+    codec,
+    trc,
+    dispW,
+    dispH,
+    rotation,
+  );
+}
+
+/// 這台機器有沒有 zscale（測試裡直接指定，不去問 FFmpeg）
+@visibleForTesting
+set debugZscaleAvailable(bool v) => _hasZscale = v;
+
+@visibleForTesting
+List<double> debugSegmentBounds(ExportSpec spec) => _segmentBounds(spec);
+
+@visibleForTesting
+Future<String> debugBuildCommand(
+  ExportSpec spec,
+  String outPath, {
+  String? wmPath,
+  Map<int, String> overlayFiles = const {},
+  double winStart = 0,
+  double? winEnd,
+  bool videoOnly = false,
+}) => _buildCommand(
+  spec,
+  wmPath,
+  overlayFiles,
+  outPath,
+  winStart: winStart,
+  winEnd: winEnd,
+  videoOnly: videoOnly,
+);
+
+@visibleForTesting
+Future<String?> debugBuildAudioMux(
+  ExportSpec spec,
+  String videoPath,
+  String outPath,
+) => _buildAudioMux(spec, videoPath, outPath);
+
 /// 執行匯出並存到相簿。onProgress 回傳 0~1。
 Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   ExportSpec spec, {
@@ -1060,44 +1338,135 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     overlayFiles[e.key] = p;
   }
 
-  var cmd = await _buildCommand(spec, wmPath, overlayFiles, outPath);
+  // 分段渲染用的暫存檔（每一段的畫面、串接清單、串好的無聲影片）
+  final segTemps = <String>[];
 
-  final outDurMs = spec.outputDuration * 1000;
-  FFmpegKitConfig.enableStatisticsCallback((stats) {
-    final t = stats.getTime();
-    if (onProgress != null && outDurMs > 0) {
-      onProgress((t / outDurMs).clamp(0.0, 1.0));
+  /// 跑一次 FFmpeg，帶兩層保底：HDR 轉換鏈在這台機器跑不動就剝掉重跑
+  /// （寧可顏色不對也不能匯不出來）、硬體編碼器不能用就退軟體編碼器
+  Future<({bool ok, FFmpegSession session, dynamic rc})> runFF(
+    String cmd,
+  ) async {
+    var session = await FFmpegKit.execute(cmd);
+    var rc = await session.getReturnCode();
+    var ok = ReturnCode.isSuccess(rc);
+    if (!ok && !ReturnCode.isCancel(rc)) {
+      var stripped = cmd.replaceAll('$_kHdrFallback,', '');
+      for (final c in _usedHdrChains) {
+        stripped = stripped.replaceAll('$c,', '');
+      }
+      if (stripped != cmd) {
+        session = await FFmpegKit.execute(stripped);
+        rc = await session.getReturnCode();
+        ok = ReturnCode.isSuccess(rc);
+      }
     }
-  });
-
-  var session = await FFmpegKit.execute(cmd);
-  var rc = await session.getReturnCode();
-  var ok = ReturnCode.isSuccess(rc);
-
-  // 保底：萬一 HDR 轉換鏈在這台機器跑不動，剝掉重跑——
-  // 寧可顏色不對也不能匯不出來
-  if (!ok && !ReturnCode.isCancel(rc)) {
-    var stripped = cmd.replaceAll('$_kHdrFallback,', '');
-    for (final c in _usedHdrChains) {
-      stripped = stripped.replaceAll('$c,', '');
-    }
-    if (stripped != cmd) {
-      cmd = stripped;
-      session = await FFmpegKit.execute(cmd);
+    if (!ok && !ReturnCode.isCancel(rc) && cmd.contains(_hwEncoder())) {
+      final soft = cmd
+          .replaceFirst('-c:v ${_hwEncoder()}', '-c:v mpeg4 -q:v 3')
+          .replaceFirst('-pix_fmt nv12', '-pix_fmt yuv420p');
+      session = await FFmpegKit.execute(soft);
       rc = await session.getReturnCode();
       ok = ReturnCode.isSuccess(rc);
     }
+    return (ok: ok, session: session, rc: rc);
   }
 
-  // 保底：這台機器的硬體編碼器不能用（少數機型/模擬器）就退
-  // LGPL 軟體編碼器 mpeg4 重跑一次，匯出不能整個死掉
-  if (!ok && !ReturnCode.isCancel(rc) && cmd.contains(_hwEncoder())) {
-    final soft = cmd
-        .replaceFirst('-c:v ${_hwEncoder()}', '-c:v mpeg4 -q:v 3')
-        .replaceFirst('-pix_fmt nv12', '-pix_fmt yuv420p');
-    session = await FFmpegKit.execute(soft);
-    rc = await session.getReturnCode();
-    ok = ReturnCode.isSuccess(rc);
+  final total = math.max(0.01, spec.outputDuration);
+
+  /// 進度：分段時每段各自從 0 開始回報自己的秒數，這裡累加成整支的。
+  /// [from]~[to] 是這一趟在整條進度條上佔的區間——串接與配音留最後
+  /// 8%，不留的話畫面會停在 100% 一陣子（看起來像當掉）
+  void trackProgress(double doneSec, double spanSec, double from, double to) {
+    FFmpegKitConfig.enableStatisticsCallback((stats) {
+      if (onProgress == null) return;
+      final done = spanSec <= 0
+          ? 1.0
+          : ((doneSec + stats.getTime() / 1000.0) / spanSec).clamp(0.0, 1.0);
+      onProgress((from + (to - from) * done).clamp(0.0, 1.0));
+    });
+  }
+
+  final bounds = _segmentBounds(spec);
+  var ok = false;
+  dynamic rc;
+  FFmpegSession? session;
+
+  if (bounds.length <= 2) {
+    // 只有一段：照舊一次做完（聲音也在同一趟），不必多開暫存檔
+    trackProgress(0, total, 0, 1);
+    final r = await runFF(
+      await _buildCommand(spec, wmPath, overlayFiles, outPath),
+    );
+    ok = r.ok;
+    rc = r.rc;
+    session = r.session;
+  } else {
+    // 分段：一段一段做成無聲的畫面檔，串起來，最後一次配音
+    final segFiles = <String>[];
+    var done = 0.0;
+    for (var i = 0; i < bounds.length - 1; i++) {
+      final segPath =
+          '${dir.path}${Platform.pathSeparator}seg_${ts}_$i.mp4';
+      final cmd = await _buildCommand(
+        spec,
+        wmPath,
+        overlayFiles,
+        segPath,
+        winStart: bounds[i],
+        winEnd: bounds[i + 1],
+        videoOnly: true,
+      );
+      trackProgress(done, total, 0, 0.92);
+      final r = await runFF(cmd);
+      ok = r.ok;
+      rc = r.rc;
+      session = r.session;
+      if (!ok) break;
+      segFiles.add(segPath);
+      segTemps.add(segPath);
+      done += bounds[i + 1] - bounds[i];
+    }
+
+    if (ok) {
+      // 串接：每一段的編碼參數完全一樣，可以直接 copy 不重編碼
+      final listPath =
+          '${dir.path}${Platform.pathSeparator}seg_$ts.txt';
+      await File(listPath).writeAsString(
+        segFiles
+            .map((p) => "file '${p.replaceAll("'", r"'\''")}'")
+            .join('\n'),
+      );
+      segTemps.add(listPath);
+      final joined =
+          '${dir.path}${Platform.pathSeparator}joined_$ts.mp4';
+      trackProgress(0, total, 0.92, 0.94);
+      final r = await runFF(
+        '-y -f concat -safe 0 -i "$listPath" -c copy "$joined"',
+      );
+      ok = r.ok;
+      rc = r.rc;
+      session = r.session;
+      if (ok) segTemps.add(joined);
+
+      if (ok) {
+        final aCmd = await _buildAudioMux(spec, joined, outPath);
+        if (aCmd == null) {
+          // 整支都沒有聲音：串好的就是成品
+          try {
+            File(joined).renameSync(outPath);
+            segTemps.remove(joined);
+          } catch (_) {
+            ok = false;
+          }
+        } else {
+          trackProgress(0, total, 0.94, 1);
+          final ra = await runFF(aCmd);
+          ok = ra.ok;
+          rc = ra.rc;
+          session = ra.session;
+        }
+      }
+    }
   }
   FFmpegKitConfig.enableStatisticsCallback(null);
 
@@ -1118,6 +1487,9 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     for (final p in revTemps) {
       del(p); // 倒轉用的分段暫存檔
     }
+    for (final p in segTemps) {
+      del(p); // 分段渲染的每一段畫面、串接清單、串好的無聲影片
+    }
   }
 
   if (ReturnCode.isCancel(rc)) {
@@ -1126,7 +1498,7 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   }
 
   if (!ok) {
-    var log = await session.getAllLogsAsString() ?? '';
+    var log = await session?.getAllLogsAsString() ?? '';
     final lines = log.trim().split('\n');
     log = lines.skip(math.max(0, lines.length - 15)).join('\n');
     cleanupTemp();
