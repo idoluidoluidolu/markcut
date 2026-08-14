@@ -1150,7 +1150,21 @@ Future<List<Uint8List>> _makeThumbnails(
   // HDR 素材先轉 SDR 再縮圖：不轉的話快取幀／時間軸縮圖整片
   // 灰白，拖曳預覽跟播放畫面顏色對不上（也就是「拖曳會退色」）
   final p0 = await _probe(inputPath);
-  final hdrFix = p0.hdr ? '${await _hdrChainFor(p0.trc)},' : '';
+  // HDR 縮圖：把「縮小」摺進轉換鏈的第一步。
+  //
+  // 色調映射是 32 位元浮點運算，成本跟像素數成正比。原本是先轉再縮，
+  // 等於拿 4K 的每一個像素去跑浮點——一支 4K HDR 素材光是背景抽
+  // 拖曳快取幀就能把 CPU 吃滿，播放和預覽跟著卡。
+  //
+  // 縮小這一步必須由 zscale 自己做、不能用 scale：swscale 會把畫格的
+  // 色彩標記換掉，換掉之後 zscale 就不知道來源是 HLG/PQ 了（這正是
+  // 之前匯出退色的成因）。zscale 縮完再轉，像素少 16 倍、標記也還在
+  final hdrFix = p0.hdr
+      ? '${(await _hdrChainFor(p0.trc)).replaceFirst(
+          'zscale=t=linear',
+          'zscale=w=-1:h=$height:t=linear',
+        )},'
+      : '';
   // 旋轉不用自己處理：FFmpeg 預設就會依 display matrix 自動轉正
   //（本機用 ffmpeg 8.1 實測：3840x2160＋rotation=-90 的素材，
   // 不加任何 transpose 抽出來就是直的）。自己再加一次是轉兩次

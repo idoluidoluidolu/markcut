@@ -2459,6 +2459,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _lastDriftFix.clear();
   }
 
+  /// [clip] 是不是「切割出來的後段」——也就是同一軌、同一素材、
+  /// 頭尾相接且速度相同的前一段。是的話它進場時會直接接走前段的
+  /// 播放器，不必自己 seek 或預熱。回傳那個前段（沒有就 null）
+  TimelineClip? _handoffFrom(TimelineClip clip) {
+    for (final prev in _tl.clips) {
+      if (identical(prev, clip) ||
+          prev.sourceIndex != clip.sourceIndex ||
+          prev.track != clip.track) {
+        continue;
+      }
+      if ((prev.end - clip.offset).abs() > 0.05 ||
+          (prev.trimEnd - clip.trimStart).abs() > 0.05 ||
+          (prev.speed - clip.speed).abs() > 0.001) {
+        continue;
+      }
+      return prev;
+    }
+    return null;
+  }
+
   /// 片段此刻該有的音量（還沒夾在 0~1，可能大於 1）
   double _rawVolOf(TimelineClip clip) {
     final trackMute = _mutedTracks.contains(clip.track) ? 0.0 : 1.0;
@@ -2549,6 +2569,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           continue;
         }
         if (_wasActive.contains(clip.id)) continue;
+        // 切割出來的後段不要預熱。它進場時會直接接走前段正在播的
+        // 播放器（見上面的「換手」），根本不需要自己起步；先預熱的話
+        // 換手當下兩顆播放器對調，圖層底下的貼圖跟著換一顆，
+        // 就是「切割後片段之間閃一下」的來源
+        if (_handoffFrom(clip) != null) continue;
         if (lead < 1.2 && _preRolled.add(clip.id)) {
           c.seekTo(
             Duration(
