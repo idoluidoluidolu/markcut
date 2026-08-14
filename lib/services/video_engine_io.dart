@@ -127,21 +127,17 @@ class _SourceProbe {
 /// 快取幀和匯出都退色，而播放正常（播放走 AVPlayer，系統自己會轉）
 const _kHdrFallback = 'colorspace=all=bt709:iall=bt2020:itrc=bt2020-10';
 
-/// HDR→SDR，HLG 專用：直接做曲線轉換，不走色調映射。
-///
-/// HLG 本來就設計成跟 SDR 相容——參考白對參考白、超過的亮部截掉，
-/// 系統（AVPlayer）播放時就是這樣顯示的。之前對 HLG 也走
-/// linear+hable 的色調映射，hable 是照「峰值對白」在壓，整體亮度
-/// 被抬高一截，於是拖曳預覽比播放亮。npl=203＝HLG 參考白的亮度。
+/// HDR→SDR：轉線性光再色調映射壓回 bt709。
 ///
 /// 需要 zscale（libzimg）。為了它把 FFmpeg 從精簡版換成完整版，
 /// APK 大了約 27MB——iPhone 近幾代預設就錄 HLG，大多數使用者的
-/// 素材都走這條路
-const _kHdrHlg = 'zscale=p=bt709:t=bt709:m=bt709:r=tv:npl=203,'
-    'format=yuv420p';
-
-/// HDR→SDR，PQ 專用：PQ 是絕對亮度、範圍到 10000 nits，
-/// 沒辦法像 HLG 直接對應，只能轉線性光再色調映射壓回來
+/// 素材都走這條路。
+///
+/// 【教訓】曾試過對 HLG 用「參考白直接對應」（zscale 直轉、
+/// npl=203），理論漂亮，實機顏色整個跑掉、比色調映射差得多。
+/// 現在 HLG/PQ 都走這條 hable 鏈，已知偏差是「比系統稍亮」。
+/// 要真的校到跟系統一致，需要拿實際素材對著螢幕截圖比——
+/// 沒有樣本之前不要再盲調這裡
 const _kHdrPq =
     'zscale=t=linear:npl=100,format=gbrpf32le,'
     'tonemap=tonemap=hable:desat=0,'
@@ -164,10 +160,11 @@ Future<bool> _zscaleAvailable() async {
   return _hasZscale!;
 }
 
-/// 依素材的轉換曲線挑 HDR→SDR 的濾鏡鏈
+/// 依素材的轉換曲線挑 HDR→SDR 的濾鏡鏈（trc 目前僅保留給
+/// 之後校色用，兩種曲線暫時走同一條鏈，見 _kHdrPq 的教訓）
 Future<String> _hdrChainFor(String trc) async {
   if (!await _zscaleAvailable()) return _kHdrFallback;
-  return trc == 'arib-std-b67' ? _kHdrHlg : _kHdrPq;
+  return _kHdrPq;
 }
 
 /// 從串流資訊裡挖出旋轉角度。放的地方有兩種：新的檔案在
@@ -1009,7 +1006,6 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   // 寧可顏色不對也不能匯不出來
   if (!ok && !ReturnCode.isCancel(rc)) {
     final stripped = cmd
-        .replaceAll('$_kHdrHlg,', '')
         .replaceAll('$_kHdrPq,', '')
         .replaceAll('$_kHdrFallback,', '');
     if (stripped != cmd) {

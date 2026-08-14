@@ -2390,11 +2390,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (!mounted) return;
     }
     setState(() => _playing = true);
-    // 先叫「現在該播的」影片動起來，盯著它回報的位置，真的前進了
-    // 才開時間軸的錶。seek 完成不等於能立刻播——解碼器從暫停到
-    // 吐出第一格還有一小段起轉時間，先開錶的話時間軸已經在走、
-    // 畫面還停著，就是「開頭慢半拍」：之前只等 seek，等錯了東西。
-    // 上限 300ms，起不來寧可照舊也不能讓播放鍵卡住
+    // 先叫「現在該播的」影片動起來，盯著它的位置真的前進了才開
+    // 時間軸的錶。位置一定要用 positionNow()（直接問引擎）——
+    // 上一版盯的是 value.position，那是 video_player 每 500ms 才
+    // 更新一次的快取，在等待窗口內根本不會動，於是每次都白白
+    // 燒滿上限才開錶，播放鍵反而更延遲。
+    // 上限 250ms，起不來寧可照舊也不能讓播放鍵卡住
     PlayerX? lead;
     for (final clip in _tl.clips) {
       if (!clip.covers(_position)) continue;
@@ -2406,11 +2407,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       lead ??= c;
     }
     if (lead != null) {
-      final p0 = lead.value.position;
+      final p0 = await lead.positionNow();
       final sw = Stopwatch()..start();
-      while (mounted && sw.elapsedMilliseconds < 300) {
-        await Future<void>.delayed(const Duration(milliseconds: 15));
-        if (lead.value.position != p0) break;
+      while (mounted && sw.elapsedMilliseconds < 250) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        final p = await lead.positionNow();
+        if (p != null && p != p0) break;
       }
       if (!mounted) return;
     }

@@ -22,6 +22,8 @@ class PlayerX {
         size: _c.value.size,
       );
 
+  Future<Duration?> positionNow() => _c.position;
+
   Future<void> seekTo(Duration d) => _c.seekTo(d);
 
   Future<void> play() => _c.play();

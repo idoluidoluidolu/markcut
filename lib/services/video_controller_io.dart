@@ -21,6 +21,11 @@ abstract class PlayerX {
   String get path;
   Future<void> initialize();
   PlayerValueX get value;
+
+  /// 「現在」的播放位置，直接問引擎。
+  /// value.position 是 video_player 的快取，約每 500ms 才更新一次，
+  /// 拿它來判斷「影格開始滾動了沒」永遠等不到
+  Future<Duration?> positionNow();
   Future<void> seekTo(Duration d);
   Future<void> play();
   Future<void> pause();
@@ -55,6 +60,9 @@ class _AvPlayerX implements PlayerX {
         position: _c.value.position,
         size: _c.value.size,
       );
+
+  @override
+  Future<Duration?> positionNow() => _c.position;
 
   @override
   Future<void> seekTo(Duration d) => _c.seekTo(d);
@@ -99,6 +107,9 @@ class _MpvPlayerX implements PlayerX {
   Size _size = Size.zero;
   Duration _duration = Duration.zero;
   String _dbgSizeFrom = 'none';
+
+  @override
+  Future<Duration?> positionNow() async => _p.state.position;
 
   @override
   Future<void> initialize() async {
