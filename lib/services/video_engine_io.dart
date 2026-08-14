@@ -138,10 +138,27 @@ const _kHdrFallback = 'colorspace=all=bt709:iall=bt2020:itrc=bt2020-10';
 /// 現在 HLG/PQ 都走這條 hable 鏈，已知偏差是「比系統稍亮」。
 /// 要真的校到跟系統一致，需要拿實際素材對著螢幕截圖比——
 /// 沒有樣本之前不要再盲調這裡
-const _kHdrPq =
-    'zscale=t=linear:npl=100,format=gbrpf32le,'
-    'tonemap=tonemap=hable:desat=0,'
-    'zscale=p=bt709:t=bt709:m=bt709:r=tv,format=yuv420p';
+/// 組出 HDR→SDR 的濾鏡鏈。
+///
+/// [trc] 是素材的轉換曲線（arib-std-b67＝HLG、smpte2084＝PQ）。知道就
+/// 明確寫進 zscale 的輸入參數——畫格的色彩標記經過某些濾鏡會掉失，
+/// 一掉失 zscale 就會報 "no path between colorspaces" 整條鏈失敗。
+///
+/// [scaleH] 有給就把縮小摺進第一步。色調映射是 32 位元浮點運算，
+/// 成本跟像素數成正比，先縮小再轉可以省十幾倍。縮小必須由 zscale
+/// 自己做，不能用 scale——swscale 會把色彩標記換掉
+String _hdrChain({String trc = '', int? scaleH}) {
+  final tin = (trc == 'arib-std-b67' || trc == 'smpte2084')
+      ? 'tin=$trc:min=bt2020nc:pin=bt2020:'
+      : '';
+  final sz = scaleH == null ? '' : 'w=-1:h=$scaleH:';
+  return 'zscale=$tin${sz}t=linear:npl=100,format=gbrpf32le,'
+      'tonemap=tonemap=hable:desat=0,'
+      'zscale=p=bt709:t=bt709:m=bt709:r=tv,format=yuv420p';
+}
+
+/// 這次執行實際送出去的所有 HDR 鏈（失敗保底要把它們剝掉）
+final _usedHdrChains = <String>{};
 
 bool? _hasZscale;
 
@@ -151,12 +168,15 @@ bool? _hasZscale;
 Future<bool> _zscaleAvailable() async {
   if (_hasZscale != null) return _hasZscale!;
   try {
-    // 直接拿一張純色小圖跑一次完整的鏈。用「解析 -filters 的文字」
-    // 判斷不可靠——列表印在哪個串流、格式長怎樣都不保證，
-    // 而且濾鏡存在也不代表這個組合跑得起來。真的跑一次最準
+    // 只測「zscale 這個濾鏡在不在」，用最單純的縮放。
+    //
+    // 之前是拿合成的純色圖去跑「完整的轉換鏈」，結果那張圖沒有色彩
+    // 標記，zscale=t=linear 不知道來源曲線，報 no path between
+    // colorspaces——於是明明有 zscale 卻被判定成沒有，默默走了會退色
+    // 的退路。測試題目要能單獨成立，不能連帶考到別的條件
     final ses = await FFmpegKit.execute(
       '-v error -f lavfi -i color=c=red:s=64x64:d=0.1 '
-      '-vf "$_kHdrPq" -frames:v 1 -f null -',
+      '-vf "zscale=w=32:h=32" -frames:v 1 -f null -',
     );
     _hasZscale = ReturnCode.isSuccess(await ses.getReturnCode());
   } catch (_) {
@@ -166,14 +186,17 @@ Future<bool> _zscaleAvailable() async {
 }
 
 /// 這次實際會用哪條 HDR 轉換鏈（診斷用）
-Future<String> hdrChainName() async =>
-    await _zscaleAvailable() ? 'zscale+tonemap（正確）' : 'colorspace（退路，會退色）';
+Future<String> hdrChainName() async => await _zscaleAvailable()
+    ? 'zscale+tonemap（正確）'
+    : 'colorspace（退路，會退色）';
 
-/// 依素材的轉換曲線挑 HDR→SDR 的濾鏡鏈（trc 目前僅保留給
-/// 之後校色用，兩種曲線暫時走同一條鏈，見 _kHdrPq 的教訓）
-Future<String> _hdrChainFor(String trc) async {
+/// 依素材挑 HDR→SDR 的濾鏡鏈。HLG 和 PQ 目前走同一條 hable 鏈，
+/// 差別只在告訴 zscale 輸入是哪一種曲線
+Future<String> _hdrChainFor(String trc, {int? scaleH}) async {
   if (!await _zscaleAvailable()) return _kHdrFallback;
-  return _kHdrPq;
+  final c = _hdrChain(trc: trc, scaleH: scaleH);
+  _usedHdrChains.add(c);
+  return c;
 }
 
 /// 從串流資訊裡挖出旋轉角度。放的地方有兩種：新的檔案在
@@ -1014,9 +1037,10 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   // 保底：萬一 HDR 轉換鏈在這台機器跑不動，剝掉重跑——
   // 寧可顏色不對也不能匯不出來
   if (!ok && !ReturnCode.isCancel(rc)) {
-    final stripped = cmd
-        .replaceAll('$_kHdrPq,', '')
-        .replaceAll('$_kHdrFallback,', '');
+    var stripped = cmd.replaceAll('$_kHdrFallback,', '');
+    for (final c in _usedHdrChains) {
+      stripped = stripped.replaceAll('$c,', '');
+    }
     if (stripped != cmd) {
       cmd = stripped;
       session = await FFmpegKit.execute(cmd);
@@ -1163,12 +1187,8 @@ Future<List<Uint8List>> _makeThumbnails(
   // 縮小這一步必須由 zscale 自己做、不能用 scale：swscale 會把畫格的
   // 色彩標記換掉，換掉之後 zscale 就不知道來源是 HLG/PQ 了（這正是
   // 之前匯出退色的成因）。zscale 縮完再轉，像素少 16 倍、標記也還在
-  final hdrFix = p0.hdr
-      ? '${(await _hdrChainFor(p0.trc)).replaceFirst(
-          'zscale=t=linear',
-          'zscale=w=-1:h=$height:t=linear',
-        )},'
-      : '';
+  final hdrFix =
+      p0.hdr ? '${await _hdrChainFor(p0.trc, scaleH: height)},' : '';
   // 旋轉不用自己處理：FFmpeg 預設就會依 display matrix 自動轉正
   //（本機用 ffmpeg 8.1 實測：3840x2160＋rotation=-90 的素材，
   // 不加任何 transpose 抽出來就是直的）。自己再加一次是轉兩次
