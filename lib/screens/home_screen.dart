@@ -176,7 +176,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 _PickRow(
                     icon: Icons.grid_view,
                     label: '照片拼圖',
-                    hint: '進去再挑照片',
+                    hint: '多張照片組圖',
                     kind: _PickKind.collage),
                 _PickRow(
                     icon: Icons.playlist_add,

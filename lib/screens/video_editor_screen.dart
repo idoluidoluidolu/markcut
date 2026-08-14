@@ -2390,6 +2390,30 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (!mounted) return;
     }
     setState(() => _playing = true);
+    // 先叫「現在該播的」影片動起來，盯著它回報的位置，真的前進了
+    // 才開時間軸的錶。seek 完成不等於能立刻播——解碼器從暫停到
+    // 吐出第一格還有一小段起轉時間，先開錶的話時間軸已經在走、
+    // 畫面還停著，就是「開頭慢半拍」：之前只等 seek，等錯了東西。
+    // 上限 300ms，起不來寧可照舊也不能讓播放鍵卡住
+    PlayerX? lead;
+    for (final clip in _tl.clips) {
+      if (!clip.covers(_position)) continue;
+      if (_tl.sourceOf(clip).kind != ClipKind.video) continue;
+      final c = _ctrls[clip.id];
+      if (c == null || !c.value.isInitialized) continue;
+      c.setPlaybackSpeed(_speed * clip.speed);
+      unawaited(c.play());
+      lead ??= c;
+    }
+    if (lead != null) {
+      final p0 = lead.value.position;
+      final sw = Stopwatch()..start();
+      while (mounted && sw.elapsedMilliseconds < 300) {
+        await Future<void>.delayed(const Duration(milliseconds: 15));
+        if (lead.value.position != p0) break;
+      }
+      if (!mounted) return;
+    }
     _lastTick = Duration.zero;
     _ticker.start();
     _syncMedia();

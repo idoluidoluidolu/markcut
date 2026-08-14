@@ -41,7 +41,7 @@ Future<String?> renderReversedClip(
     targetW,
     targetH,
     probe.hasAudio,
-    probe.hdr,
+    probe.hdr ? (probe.trc.isEmpty ? 'unknown' : probe.trc) : '',
     temps,
     onProgress: onProgress,
   );
@@ -90,7 +90,14 @@ class _SourceProbe {
   /// 不轉的話顏色整片灰白退色
   final bool hdr;
   final String codec; // 視訊編碼（hevc/h264/…，讀不到＝空字串）
-  const _SourceProbe(this.hasAudio, this.fps, this.hdr, [this.codec = '']);
+  final String trc; // 轉換曲線（arib-std-b67=HLG、smpte2084=PQ）
+  const _SourceProbe(
+    this.hasAudio,
+    this.fps,
+    this.hdr, [
+    this.codec = '',
+    this.trc = '',
+  ]);
 }
 
 /// HDR → SDR（bt709）色彩轉換。iPhone 預設就錄 HDR（HLG），
@@ -107,37 +114,47 @@ class _SourceProbe {
 /// 快取幀和匯出都退色，而播放正常（播放走 AVPlayer，系統自己會轉）
 const _kHdrFallback = 'colorspace=all=bt709:iall=bt2020:itrc=bt2020-10';
 
-/// HDR→SDR 的正解：轉成線性光 → 色調映射 → 轉回 bt709。
-/// HLG／PQ 的曲線只有在線性光下才壓得回來。
-/// 需要 zscale（libzimg）。為了這個把 FFmpeg 從精簡版換成完整版
-/// （ffmpeg_kit_flutter_new），APK 因此大了約 27MB——iPhone 近幾代
-/// 預設就錄 HDR，等於大多數使用者的素材都會走到這條路
-const _kHdrTonemap =
+/// HDR→SDR，HLG 專用：直接做曲線轉換，不走色調映射。
+///
+/// HLG 本來就設計成跟 SDR 相容——參考白對參考白、超過的亮部截掉，
+/// 系統（AVPlayer）播放時就是這樣顯示的。之前對 HLG 也走
+/// linear+hable 的色調映射，hable 是照「峰值對白」在壓，整體亮度
+/// 被抬高一截，於是拖曳預覽比播放亮。npl=203＝HLG 參考白的亮度。
+///
+/// 需要 zscale（libzimg）。為了它把 FFmpeg 從精簡版換成完整版，
+/// APK 大了約 27MB——iPhone 近幾代預設就錄 HLG，大多數使用者的
+/// 素材都走這條路
+const _kHdrHlg = 'zscale=p=bt709:t=bt709:m=bt709:r=tv:npl=203,'
+    'format=yuv420p';
+
+/// HDR→SDR，PQ 專用：PQ 是絕對亮度、範圍到 10000 nits，
+/// 沒辦法像 HLG 直接對應，只能轉線性光再色調映射壓回來
+const _kHdrPq =
     'zscale=t=linear:npl=100,format=gbrpf32le,'
     'tonemap=tonemap=hable:desat=0,'
     'zscale=p=bt709:t=bt709:m=bt709:r=tv,format=yuv420p';
 
-/// 這次執行實際採用的 HDR 轉換鏈（開機第一次用到時決定）
-String _hdr2Sdr = _kHdrFallback;
-bool _hdrProbed = false;
+bool? _hasZscale;
 
-/// 問一次這個 FFmpeg 有哪些濾鏡，有 zscale 就用真正的色調映射。
-///
+/// 問一次這個 FFmpeg 有沒有 zscale／tonemap。
 /// 用問的而不是寫死：換 FFmpeg 套件版本時這裡會自動跟上，
 /// 不會出現「套件換了但程式還在走退路」這種查半天的狀況
-Future<String> _hdrChain() async {
-  if (_hdrProbed) return _hdr2Sdr;
-  _hdrProbed = true;
+Future<bool> _zscaleAvailable() async {
+  if (_hasZscale != null) return _hasZscale!;
   try {
     final ses = await FFmpegKit.execute('-hide_banner -filters');
     final out = await ses.getOutput() ?? '';
-    if (out.contains(' zscale ') && out.contains(' tonemap ')) {
-      _hdr2Sdr = _kHdrTonemap;
-    }
+    _hasZscale = out.contains(' zscale ') && out.contains(' tonemap ');
   } catch (_) {
-    // 問不到就用退路
+    _hasZscale = false;
   }
-  return _hdr2Sdr;
+  return _hasZscale!;
+}
+
+/// 依素材的轉換曲線挑 HDR→SDR 的濾鏡鏈
+Future<String> _hdrChainFor(String trc) async {
+  if (!await _zscaleAvailable()) return _kHdrFallback;
+  return trc == 'arib-std-b67' ? _kHdrHlg : _kHdrPq;
 }
 
 /// 同一個檔案的 probe 快取（檔案內容不會變，縮圖會反覆問同一支）
@@ -154,6 +171,7 @@ Future<_SourceProbe> _probe(String path) async {
     double fps = 0;
     var hdr = false;
     var codec = '';
+    var trcOut = '';
     for (final s in streams) {
       if (s.getType() == 'video') {
         codec = (s.getCodec() ?? '').toLowerCase();
@@ -171,10 +189,11 @@ Future<_SourceProbe> _probe(String path) async {
         hdr = trc == 'smpte2084' ||
             trc == 'arib-std-b67' ||
             prim.startsWith('bt2020');
+        trcOut = trc;
         break;
       }
     }
-    final r = _SourceProbe(hasAudio, fps, hdr, codec);
+    final r = _SourceProbe(hasAudio, fps, hdr, codec, trcOut);
     _probeCache[path] = r;
     return r;
   } catch (_) {
@@ -210,7 +229,11 @@ Future<String> _buildCommand(
         : const _SourceProbe(false, 0, false);
   }
 
-  final hdrChain = await _hdrChain();
+  // 每個 HDR 來源依自己的曲線（HLG/PQ）挑轉換鏈
+  final hdrChains = <int, String>{};
+  for (var i = 0; i < spec.sources.length; i++) {
+    if (probes[i]!.hdr) hdrChains[i] = await _hdrChainFor(probes[i]!.trc);
+  }
   final sp = spec.speed;
   final outDur = spec.outputDuration;
 
@@ -382,7 +405,7 @@ Future<String> _buildCommand(
       // 格式的預設值，等 colorspace 拿到手時來源是 bt2020 這件事
       // 已經被抹掉，轉換就變成沒作用——畫面照樣退色而且不會報錯。
       // 縮圖那條路一直是先轉再縮，所以縮圖正常、只有匯出退色
-      '${probes[c.sourceIndex]!.hdr ? '$hdrChain,' : ''}'
+      '${hdrChains[c.sourceIndex] != null ? '${hdrChains[c.sourceIndex]},' : ''}'
       'scale=$w2:$h2:flags=lanczos,'
       '${c.reverse ? 'reverse,' : ''}'
       // 全域速度 × 每片段速度一起壓進 PTS
@@ -729,7 +752,7 @@ Future<String?> _prerenderReverse(
   int outW,
   int outH,
   bool hasAudio,
-  bool hdr,
+  String hdrTrc, // 空字串＝SDR 素材
   List<String> temps, {
   void Function(double progress)? onProgress,
 }) async {
@@ -754,7 +777,7 @@ Future<String?> _prerenderReverse(
     // 色彩標記換掉，colorspace 再轉就沒作用了）
     final cmd =
         '-y -ss ${_f(s)} -to ${_f(e)} -i "$srcPath" '
-        '-vf "${hdr ? '${await _hdrChain()},' : ''}'
+        '-vf "${hdrTrc.isEmpty ? '' : '${await _hdrChainFor(hdrTrc)},'}'
         'scale=$outW:$outH:flags=bicubic,reverse" -an '
         '-c:v ${_hwEncoder()} -b:v 16000k -pix_fmt nv12 "$part"';
     var ses = await FFmpegKit.execute(cmd);
@@ -842,7 +865,7 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
         spec.outW,
         spec.outH,
         probe.hasAudio,
-        probe.hdr,
+        probe.hdr ? (probe.trc.isEmpty ? 'unknown' : probe.trc) : '',
         revTemps,
       );
       if (made == null) {
@@ -921,13 +944,19 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   var rc = await session.getReturnCode();
   var ok = ReturnCode.isSuccess(rc);
 
-  // 保底：萬一這版 FFmpeg 的 colorspace 濾鏡不能用，
-  // 退回不轉色重跑——寧可顏色淡也不能匯不出來
-  if (!ok && !ReturnCode.isCancel(rc) && cmd.contains(_hdr2Sdr)) {
-    cmd = cmd.replaceAll('$_hdr2Sdr,', '');
-    session = await FFmpegKit.execute(cmd);
-    rc = await session.getReturnCode();
-    ok = ReturnCode.isSuccess(rc);
+  // 保底：萬一 HDR 轉換鏈在這台機器跑不動，剝掉重跑——
+  // 寧可顏色不對也不能匯不出來
+  if (!ok && !ReturnCode.isCancel(rc)) {
+    final stripped = cmd
+        .replaceAll('$_kHdrHlg,', '')
+        .replaceAll('$_kHdrPq,', '')
+        .replaceAll('$_kHdrFallback,', '');
+    if (stripped != cmd) {
+      cmd = stripped;
+      session = await FFmpegKit.execute(cmd);
+      rc = await session.getReturnCode();
+      ok = ReturnCode.isSuccess(rc);
+    }
   }
 
   // 保底：這台機器的硬體編碼器不能用（少數機型/模擬器）就退
@@ -1058,9 +1087,8 @@ Future<List<Uint8List>> _makeThumbnails(
   final skip = fastDecode ? '-skip_frame nokey ' : '';
   // HDR 素材先轉 SDR 再縮圖：不轉的話快取幀／時間軸縮圖整片
   // 灰白，拖曳預覽跟播放畫面顏色對不上（也就是「拖曳會退色」）
-  final hdrFix = (await _probe(inputPath)).hdr
-      ? '${await _hdrChain()},'
-      : '';
+  final p0 = await _probe(inputPath);
+  final hdrFix = p0.hdr ? '${await _hdrChainFor(p0.trc)},' : '';
   final cmd =
       '-y $skip$seek-i "$inputPath" '
       '-vf "fps=${fps.toStringAsFixed(6)},$hdrFix$scale" '
