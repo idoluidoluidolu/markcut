@@ -2854,37 +2854,35 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // 取消／標題／完成同一列：這張表只有一個動作，
-              // 不值得再給它一整排底部按鈕
+              // 標題置中、完成靠右。沒有「取消」——往下滑或點外面就是
+              // 取消，而且不按完成本來就不會動到時間軸，多一顆按鈕
+              // 只是讓人多想一次
               Padding(
+                // 左右內距要一樣，標題才會真的置中在表單正中間
                 padding: const EdgeInsets.fromLTRB(6, 6, 6, 0),
-                child: Row(
+                child: Stack(
+                  alignment: Alignment.center,
                   children: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context, false),
-                      style: TextButton.styleFrom(foregroundColor: kTextDim),
-                      child: const Text('取消', style: TextStyle(fontSize: 14)),
-                    ),
-                    Expanded(
-                      child: Text(
-                        _tl.usedTracks > 1
-                            ? '調整片段順序（第 ${track + 1} 軌）'
-                            : '調整片段順序',
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                          color: kText,
-                        ),
+                    Text(
+                      _tl.usedTracks > 1
+                          ? '調整片段順序（第 ${track + 1} 軌）'
+                          : '調整片段順序',
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: kText,
                       ),
                     ),
-                    TextButton(
-                      onPressed: () => Navigator.pop(context, true),
-                      child: const Text(
-                        '完成',
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text(
+                          '完成',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                       ),
                     ),
