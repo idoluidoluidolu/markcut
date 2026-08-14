@@ -2750,38 +2750,65 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
     final ok = await showModalBottomSheet<bool>(
       context: context,
-      showDragHandle: true,
       isScrollControlled: true,
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.75,
-      ),
       builder: (context) => StatefulBuilder(
         builder: (context, setSheet) => SafeArea(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // 取消／標題／完成同一列：這張表只有一個動作，
+              // 不值得再給它一整排底部按鈕
               Padding(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
-                child: Text(
-                  '調整順序（第 ${track + 1} 軌）',
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.bold,
-                  ),
+                padding: const EdgeInsets.fromLTRB(6, 6, 6, 0),
+                child: Row(
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      style: TextButton.styleFrom(foregroundColor: kTextDim),
+                      child: const Text('取消', style: TextStyle(fontSize: 14)),
+                    ),
+                    Expanded(
+                      child: Text(
+                        _tl.usedTracks > 1
+                            ? '調整片段順序（第 ${track + 1} 軌）'
+                            : '調整片段順序',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: kText,
+                        ),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text(
+                        '完成',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
               const Padding(
-                padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
+                padding: EdgeInsets.fromLTRB(20, 0, 20, 10),
                 child: Text(
-                  '按住任一列上下拖曳換位置；完成後會照新順序頭尾接好',
+                  '按住卡片左右拖曳換順序',
+                  textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 11.5, color: kTextDim),
                 ),
               ),
-              Flexible(
+              // 橫排縮圖：一眼看得到「哪一段在哪個位置」。
+              // 直排清單要靠序號慢慢對，橫排就是成品的順序本身
+              SizedBox(
+                height: 132,
                 child: ReorderableListView.builder(
-                  shrinkWrap: true,
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
                   itemCount: order.length,
                   // onReorderItem（不是舊的 onReorder）給的索引
                   // 已經扣掉搬走的那一格，直接插就對
@@ -2793,76 +2820,94 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     final src = _tl.sourceOf(c);
                     final thumb =
                         (_thumbs[c.sourceIndex] ?? const []).firstOrNull;
-                    // 整列按住就能拖（右邊把手則是按下去馬上拖）——
-                    // 只有把手能拖的話，在手機上要瞄準那一小塊很煩
+                    final isSel = c.id == _sel;
+                    // 按住就能拖：橫排清單本身也要能左右捲，
+                    // 一按下去就拖的話會跟捲動打架
                     return ReorderableDelayedDragStartListener(
                       key: ValueKey(c.id),
                       index: i,
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 3),
+                        padding: const EdgeInsets.only(right: 8),
                         child: Container(
+                          width: 112,
                           decoration: BoxDecoration(
-                            color: kPanel,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: kBorder),
+                            color: kPanelHi,
+                            borderRadius: BorderRadius.circular(kCardRadius),
+                            border: Border.all(
+                              color: isSel ? kSelect : kBorder,
+                              width: isSel ? 2 : 1,
+                            ),
                           ),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 8,
-                          ),
-                          child: Row(
+                          clipBehavior: Clip.antiAlias,
+                          child: Stack(
+                            fit: StackFit.expand,
                             children: [
-                              SizedBox(
-                                width: 20,
-                                child: Text(
-                                  '${i + 1}',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w700,
-                                    color: kSelect,
-                                  ),
-                                ),
-                              ),
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(4),
-                                child: SizedBox(
-                                  width: 46,
-                                  height: 34,
-                                  child: thumb != null
-                                      ? Image.memory(thumb, fit: BoxFit.cover)
-                                      : Container(
-                                          color: kPanelHi,
-                                          child: Icon(
-                                            src.kind == ClipKind.audio
-                                                ? Icons.music_note
-                                                : Icons.movie,
-                                            size: 15,
-                                            color: kTextDim,
-                                          ),
-                                        ),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              // 不放檔名：相簿匯出的檔名又長又沒有辨識度
-                              //（ScreenRecording_08-06-2026…），
-                              // 縮圖跟長度才認得出是哪一段
-                              Expanded(
-                                child: Text(
-                                  '${c.length.toStringAsFixed(1)} 秒',
-                                  style: const TextStyle(
-                                    fontSize: 13,
+                              if (thumb != null)
+                                Image.memory(thumb, fit: BoxFit.cover)
+                              else
+                                Center(
+                                  child: Icon(
+                                    src.kind == ClipKind.audio
+                                        ? Icons.music_note
+                                        : Icons.movie,
+                                    size: 22,
                                     color: kTextDim,
                                   ),
                                 ),
+                              // 底部壓一層漸層，白字才讀得到
+                              Positioned(
+                                left: 0,
+                                right: 0,
+                                bottom: 0,
+                                child: Container(
+                                  height: 38,
+                                  decoration: const BoxDecoration(
+                                    gradient: LinearGradient(
+                                      begin: Alignment.topCenter,
+                                      end: Alignment.bottomCenter,
+                                      colors: [
+                                        Color(0x00000000),
+                                        Color(0xB3000000),
+                                      ],
+                                    ),
+                                  ),
+                                ),
                               ),
-                              ReorderableDragStartListener(
-                                index: i,
-                                child: const Padding(
-                                  padding: EdgeInsets.only(left: 6),
-                                  child: Icon(
-                                    Icons.drag_handle,
-                                    size: 20,
-                                    color: kIcon,
+                              Positioned(
+                                left: 5,
+                                top: 5,
+                                child: Container(
+                                  width: 20,
+                                  height: 20,
+                                  alignment: Alignment.center,
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withValues(alpha: 0.6),
+                                    borderRadius: BorderRadius.circular(
+                                      kTagRadius,
+                                    ),
+                                  ),
+                                  child: Text(
+                                    '${i + 1}',
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              Positioned(
+                                right: 7,
+                                bottom: 6,
+                                child: Text(
+                                  '${c.length.toStringAsFixed(1)}s',
+                                  style: const TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.white,
+                                    fontFeatures: [
+                                      FontFeature.tabularFigures(),
+                                    ],
                                   ),
                                 ),
                               ),
@@ -2874,26 +2919,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   },
                 ),
               ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: () => Navigator.pop(context, false),
-                        child: const Text('取消'),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: FilledButton(
-                        onPressed: () => Navigator.pop(context, true),
-                        child: const Text('完成'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              const SizedBox(height: 14),
             ],
           ),
         ),
