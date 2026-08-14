@@ -23,11 +23,13 @@ import '../services/native_frames.dart';
 import '../services/playback_trace.dart';
 import '../services/export_speed.dart';
 import '../services/file_reader.dart';
+import '../services/media_prep.dart';
 import '../services/screen_awake.dart';
 import '../services/video_controller.dart';
 import '../services/video_engine.dart' as engine;
 import '../services/video_processor.dart';
 import '../services/watermark_renderer.dart';
+import '../services/work_files.dart';
 import '../theme.dart';
 import '../widgets/color_grade_panel.dart';
 import '../widgets/timeline_editor.dart';
@@ -66,6 +68,11 @@ const kDraftKey = 'project_draft_v1';
 class VideoEditorScreen extends StatefulWidget {
   final String? videoPath;
 
+  /// 一次帶一整批影片進來（照選取順序接在同一軌上）。
+  /// 從首頁選了好幾支就走這條——以前多選只能進批次浮水印，
+  /// 想剪成一支還得先進去再一支一支加
+  final List<String>? videoPaths;
+
   /// 空白專案：不帶素材直接進編輯器，進去再用「加素材」加。
   /// 想先鋪好文字／浮水印再放影片的人不用被迫先選一支
   final bool blank;
@@ -75,10 +82,16 @@ class VideoEditorScreen extends StatefulWidget {
   const VideoEditorScreen({
     super.key,
     this.videoPath,
+    this.videoPaths,
     this.initialWatermark,
     this.draft,
     this.blank = false,
-  }) : assert(videoPath != null || draft != null || blank);
+  }) : assert(
+         videoPath != null ||
+             videoPaths != null ||
+             draft != null ||
+             blank,
+       );
 
   @override
   State<VideoEditorScreen> createState() => _VideoEditorScreenState();
@@ -475,7 +488,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final src = _tl.sources[c.sourceIndex];
     if (src.kind != ClipKind.video && src.kind != ClipKind.audio) return;
     if (_ctrls.containsKey(c.id)) return;
-    final ctrl = makeVideoController(src.path);
+    // 有工作檔就播工作檔：1080p SDR 一顆解碼器的成本只有 4K HDR 的
+    // 幾分之一，三段同時活著也不會掉格
+    final ctrl = makeVideoController(src.previewPath);
     _ctrls[c.id] = ctrl;
     ctrl
         .initialize()
@@ -630,7 +645,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // Web 沒辦法驗檔案還在不在，直接嘗試載入
         deadSources.add(i);
       } else if (s.kind == ClipKind.video) {
-        _thumbStrip(s.path, s.duration).then((t) {
+        // 草稿裡記的工作檔可能已經被清掉（或是舊草稿根本沒有），
+        // 沒有就先用原檔，等下面的 _prepAllWorkFiles 在背景補
+        if (s.workPath != null && !await fileExists(s.workPath!)) {
+          s.workPath = null;
+        }
+        _thumbStrip(s.previewPath, s.duration).then((t) {
           if (mounted && t.isNotEmpty) setState(() => _thumbs[i] = t);
         });
         _ensureScrubSlots(i, s.duration);
@@ -650,8 +670,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (c.reverse) c.sourceIndex,
     }) {
       final s = _tl.sources[i];
-      _makeScrubCache(i, s.path, s.duration);
+      _makeScrubCache(i, s.previewPath, s.duration);
     }
+    // 沒有工作檔的素材在背景補上（進場不等它）
+    unawaited(_prepAllWorkFiles());
   }
 
   // 「捲動時間軸＝移動播放位置」的同步控制
@@ -708,10 +730,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 再彈一句浮在上面只是擋住那行字
       _ready = true;
     } else {
-      _importVideoFromPath(widget.videoPath!, track: 0).then((_) {
-        if (mounted) setState(() => _ready = true);
+      // 一支或一整批都走同一條路：照順序接在第一軌上。
+      // 每一支進來就先能播（工作檔在背景備），不會卡在載入畫面
+      final list = widget.videoPaths ?? [widget.videoPath!];
+      () async {
+        for (final path in list) {
+          try {
+            await _importVideoFromPath(path, track: 0);
+          } catch (_) {
+            // 某一支讀不進來不該讓整批進不去
+          }
+          if (!mounted) return;
+          setState(() => _ready = true);
+        }
         _saveDraft();
-      });
+      }();
     }
   }
 
@@ -909,6 +942,90 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     });
     _ensureScrubSlots(srcIndex, dur);
     unawaited(_measureSrcKbps());
+    // 工作檔在背景備，不擋進場：先用原檔播，轉好了再換過去
+    unawaited(_prepWorkFile(srcIndex));
+  }
+
+  // ===== 素材工作檔 =====
+  //
+  // iPhone 預設錄 4K HLG。拿原檔直接用的話，每個片段都要養一顆 4K HDR
+  // 解碼器（三段就是三顆同時活著，預熱時還會有兩顆在解），拖曳抽幀也是
+  // 從 4K 解起——那就是「播放超 LAG、左右滑動不順」的來源。
+  //
+  // 解法是剪輯 App 的標準做法：進場先用原檔（不能讓使用者等），背景用
+  // 系統的硬體管線轉一份 1080p SDR 的工作檔，轉好了再換過去。換過去之後
+  // 播放、抽幀、縮圖都只碰 1080p SDR，而且顏色是系統轉的，跟匯出一致
+
+  /// 正在備工作檔的素材（畫面上顯示小提示用）
+  final Set<int> _prepping = {};
+
+  /// 這一刻工作檔備到哪（0~1，只顯示最近那一支）
+  double _prepProgress = 0;
+
+  Future<void> _prepWorkFile(int srcIndex) async {
+    if (srcIndex < 0 || srcIndex >= _tl.sources.length) return;
+    final src = _tl.sources[srcIndex];
+    if (src.kind != ClipKind.video || src.workPath != null) return;
+    if (!await MediaPrep.available) return;
+    if (!mounted) return;
+    setState(() {
+      _prepping.add(srcIndex);
+      _prepProgress = 0;
+    });
+    final made = await WorkFiles.ensure(
+      src.path,
+      onProgress: (v) {
+        if (mounted && _prepping.contains(srcIndex)) {
+          setState(() => _prepProgress = v);
+        }
+      },
+    );
+    if (!mounted) return;
+    setState(() => _prepping.remove(srcIndex));
+    if (made == null || srcIndex >= _tl.sources.length) return;
+    src.workPath = made;
+    // 換播放器：正在播就先記住位置，換完接回去
+    _swapToWorkFile(srcIndex);
+    _saveDraft();
+  }
+
+  /// 這份素材的播放器全部換成吃工作檔的新播放器
+  void _swapToWorkFile(int srcIndex) {
+    final was = _playing;
+    if (was) _pause();
+    for (final c in _tl.clips) {
+      if (c.sourceIndex != srcIndex) continue;
+      final old = _ctrls.remove(c.id);
+      old?.dispose();
+      _ensureCtrlFor(c);
+    }
+    _wasActive.clear();
+    _preRolled.clear();
+    _warmed.clear();
+    // 抽幀快取是從原檔抽的，換素材之後要重抽（工作檔解得快得多）
+    _scrubFrames.remove(srcIndex);
+    _scrubDecoders.remove(srcIndex)?.dispose();
+    _ensureScrubSlots(srcIndex, _tl.sources[srcIndex].duration);
+    _thumbStrip(_tl.sources[srcIndex].previewPath, _tl.sources[srcIndex].duration)
+        .then((t) {
+      if (mounted && t.isNotEmpty) setState(() => _thumbs[srcIndex] = t);
+    });
+    if (mounted) setState(() {});
+    _resyncPlayback();
+    if (was) _play();
+  }
+
+  /// 讀草稿之後補做：草稿裡記的工作檔可能已經被清掉了
+  Future<void> _prepAllWorkFiles() async {
+    if (!await MediaPrep.available) return;
+    for (var i = 0; i < _tl.sources.length; i++) {
+      final src = _tl.sources[i];
+      if (src.kind != ClipKind.video) continue;
+      if (src.workPath != null && await fileExists(src.workPath!)) continue;
+      src.workPath = null;
+      await _prepWorkFile(i);
+      if (!mounted) return;
+    }
   }
 
   // ===== 拖曳快取幀（CapCut 式）=====
@@ -1015,7 +1132,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         slots.length - 1,
       );
       if (slots[fi] != null) continue;
-      _nfWant.add((src: c.sourceIndex, fi: fi, t: t, path: src.path));
+      _nfWant.add((src: c.sourceIndex, fi: fi, t: t, path: src.previewPath));
     }
     unawaited(_nfPump());
   }
@@ -5509,6 +5626,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               ),
               // 比例膠囊釘在整個預覽區右上角（不跟畫布走）
               _canvasHint(),
+              _prepHint(),
             ],
           ),
         ),
@@ -5772,6 +5890,47 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 右上角比例小標籤：常駐顯示目前畫面比例，點了直接開比例選單
+  /// 「素材準備中」的小提示（左上角）。
+  ///
+  /// 只是提示，不擋任何操作：工作檔還沒好之前照樣能播、能剪，
+  /// 好了之後畫面會自己換成比較順的那份。不給提示的話，
+  /// 使用者會覺得「怎麼突然變順了」莫名其妙
+  Widget _prepHint() {
+    if (_prepping.isEmpty) return const SizedBox.shrink();
+    return Align(
+      alignment: Alignment.topLeft,
+      child: Padding(
+        padding: const EdgeInsets.all(6),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.45),
+            borderRadius: BorderRadius.circular(kTagRadius),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 10,
+                height: 10,
+                child: CircularProgressIndicator(
+                  strokeWidth: 1.6,
+                  value: _prepProgress > 0.02 ? _prepProgress : null,
+                  color: kAmber,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '素材準備中 ${(_prepProgress * 100).round()}%',
+                style: const TextStyle(fontSize: 10.5, color: kTextDim),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _canvasHint() {
     return Align(
       alignment: Alignment.topRight,

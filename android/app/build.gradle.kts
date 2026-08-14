@@ -43,3 +43,12 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // 素材工作檔：把 4K HDR 原檔轉成 1080p SDR。Transformer 走的是
+    // MediaCodec＋OpenGL 的硬體管線，HDR→SDR 的色調映射也是系統做的，
+    // 跟播放器看到的顏色一致（見 MainActivity 的 markcut/prep 通道）
+    implementation("androidx.media3:media3-transformer:1.5.1")
+    implementation("androidx.media3:media3-effect:1.5.1")
+    implementation("androidx.media3:media3-common:1.5.1")
+}

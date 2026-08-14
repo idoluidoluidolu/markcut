@@ -243,13 +243,52 @@ class _HomeScreenState extends State<HomeScreen> {
     return parts.isEmpty ? null : parts.join('；');
   }
 
-  /// 一支就進單檔編輯器，多支才進批次
+  /// 多支影片：問要接成一支（進剪輯）還是各自上浮水印（進批次）。
+  /// 兩件事差很多，猜錯的代價是使用者整批重挑
+  Future<bool?> _askMultiVideo(int n) => showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text('選了 $n 部影片'),
+      contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
+      content: SizedBox(
+        width: 270,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            optionRow(
+              title: '剪成一支影片',
+              subtitle: '照選取順序接在時間軸上，可以再剪、加字、上浮水印',
+              selected: false,
+              first: true,
+              onTap: () => Navigator.pop(context, true),
+            ),
+            optionRow(
+              title: '各自上浮水印',
+              subtitle: '每一部分開輸出，統一套同一組浮水印',
+              selected: false,
+              onTap: () => Navigator.pop(context, false),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  /// 一支就進單檔編輯器，多支先問要剪成一支還是各自處理
   Future<void> _openBatch(List<XFile> list, {String? hint}) async {
     if (list.isEmpty || !mounted) return;
     if (list.length == 1) {
       final f = list.first;
       await (_isVideoFile(f) ? _openVideo(f) : _openPhoto(f));
       return;
+    }
+    if (list.every(_isVideoFile)) {
+      final joinThem = await _askMultiVideo(list.length);
+      if (joinThem == null || !mounted) return;
+      if (joinThem) {
+        await _openVideos(list);
+        return;
+      }
     }
     await Navigator.push(
       context,
@@ -281,6 +320,27 @@ class _HomeScreenState extends State<HomeScreen> {
     await Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const VideoEditorScreen(blank: true)),
+    );
+    _checkDraft();
+  }
+
+  /// 一整批影片接成一支專案
+  Future<void> _openVideos(List<XFile> picked) async {
+    if (_draft != null) {
+      final ok = await showConfirm(
+        context,
+        title: '覆蓋上次的草稿？',
+        message: '開新專案後，未完成的草稿會被取代',
+        action: '開新專案',
+      );
+      if (!ok || !mounted) return;
+    }
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) =>
+            VideoEditorScreen(videoPaths: [for (final f in picked) f.path]),
+      ),
     );
     _checkDraft();
   }

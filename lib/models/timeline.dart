@@ -29,6 +29,19 @@ class MediaSource {
   /// 馬賽克素材的樣式（濃度、像素化/模糊/黑色）
   MosaicStyle? mosaicStyle;
 
+  /// 工作檔：系統的硬體管線轉出來的 1080p SDR 版本（見 WorkFiles）。
+  ///
+  /// 預覽、拖曳抽幀、縮圖一律走它。iPhone 預設錄 4K HLG，拿原檔來播
+  /// 等於每個片段都養一顆 4K HDR 解碼器，三段就開始掉格；而且工作檔的
+  /// HDR→SDR 是系統轉的，跟匯出的成品同一份素材，顏色不會兩套。
+  ///
+  /// null＝還沒轉好（或平台不支援），這時一律退回原檔——工作檔是加速，
+  /// 不是必要條件，所以進場當下就能播，轉好了再換過去
+  String? workPath;
+
+  /// 預覽／抽幀要用的路徑
+  String get previewPath => workPath ?? path;
+
   /// 這份素材是「倒轉版」時，記下它是從哪個原始檔的哪一段做出來的。
   /// 使用者把速度拉回正的時，靠這些資訊還原回原始素材
   final String? revOf;
@@ -42,6 +55,7 @@ class MediaSource {
     required this.duration,
     this.w = 0,
     this.h = 0,
+    this.workPath,
     this.textStyle,
     this.wmStyle,
     this.mosaicStyle,
@@ -64,6 +78,7 @@ class MediaSource {
     'w': w,
     'h': h,
     'duration': duration,
+    if (workPath != null) 'workPath': workPath,
     if (textStyle != null) 'textStyle': textStyle!.toJson(),
     if (wmStyle != null) 'wmStyle': wmStyle!.toJson(),
     if (mosaicStyle != null) 'mosaicStyle': mosaicStyle!.toJson(),
@@ -80,6 +95,7 @@ class MediaSource {
     w: (j['w'] ?? 0) as int,
     h: (j['h'] ?? 0) as int,
     duration: (j['duration'] ?? 0).toDouble(),
+    workPath: j['workPath'] as String?,
     textStyle: j['textStyle'] == null
         ? null
         : TextMark.fromJson(Map<String, dynamic>.from(j['textStyle'] as Map)),

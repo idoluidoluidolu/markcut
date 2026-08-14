@@ -5,6 +5,17 @@ import android.media.MediaMetadataRetriever
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.effect.Presentation
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.EditedMediaItemSequence
+import androidx.media3.transformer.Effects
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.ProgressHolder
+import androidx.media3.transformer.Transformer
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -18,9 +29,14 @@ class MainActivity : FlutterActivity() {
     private var cachedPath: String? = null
     private var retriever: MediaMetadataRetriever? = null
 
+    // 素材工作檔的轉檔工作（取消與進度回報用）
+    private var prep: Transformer? = null
+    private var prepTick: Runnable? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         val main = Handler(Looper.getMainLooper())
+        registerPrepChannel(flutterEngine, main)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "markcut/frames")
             .setMethodCallHandler { call, result ->
                 if (call.method != "frameAt") {
@@ -90,9 +106,141 @@ class MainActivity : FlutterActivity() {
         return out.toByteArray()
     }
 
+    // ===== 素材工作檔（markcut/prep）=====
+    //
+    // 把 4K HDR 原檔轉成 1080p SDR 的 H.264 工作檔，之後預覽、拖曳、
+    // 匯出都用它。Transformer 走 MediaCodec＋OpenGL 的硬體管線，
+    // HDR→SDR 的色調映射也是系統做的，跟播放器的顏色一致。
+    //
+    // 為什麼不用 FFmpeg 轉：它的色調映射是 32 位元浮點的軟體運算，
+    // 一格 4K 就要 100MB，實測一支 4K HDR 的峰值 1.7GB——那正是匯出
+    // 閃退的原因，拿它做工作檔只是把同一個問題搬到匯入
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun registerPrepChannel(flutterEngine: FlutterEngine, main: Handler) {
+        val channel =
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "markcut/prep")
+        channel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "available" -> result.success(true)
+                "cancel" -> {
+                    main.post { prep?.cancel() }
+                    result.success(null)
+                }
+                "toWorkFile" -> {
+                    val src = call.argument<String>("src")
+                    val dest = call.argument<String>("dest")
+                    val shortSide = (call.argument<Number>("maxShortSide") ?: 1080).toInt()
+                    if (src == null || dest == null) {
+                        result.success(null)
+                        return@setMethodCallHandler
+                    }
+                    main.post { startPrep(src, dest, shortSide, channel, main, result) }
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun startPrep(
+        src: String,
+        dest: String,
+        shortSide: Int,
+        channel: MethodChannel,
+        main: Handler,
+        result: MethodChannel.Result,
+    ) {
+        try {
+            java.io.File(dest).delete()
+            var replied = false
+            fun reply(path: String?) {
+                if (replied) return
+                replied = true
+                prepTick?.let { main.removeCallbacks(it) }
+                prepTick = null
+                prep = null
+                if (path == null) java.io.File(dest).delete()
+                result.success(path)
+            }
+
+            val transformer =
+                Transformer.Builder(this)
+                    // 一律輸出 H.264：後面的 FFmpeg 合成與各家播放器都吃得下
+                    .setVideoMimeType(MimeTypes.VIDEO_H264)
+                    .addListener(
+                        object : Transformer.Listener {
+                            override fun onCompleted(
+                                composition: Composition,
+                                exportResult: ExportResult,
+                            ) {
+                                channel.invokeMethod("progress", 1.0)
+                                reply(if (java.io.File(dest).exists()) dest else null)
+                            }
+
+                            override fun onError(
+                                composition: Composition,
+                                exportResult: ExportResult,
+                                exception: ExportException,
+                            ) {
+                                reply(null)
+                            }
+                        }
+                    )
+                    .build()
+
+            val item = MediaItem.fromUri(android.net.Uri.fromFile(java.io.File(src)))
+            // 短邊縮到 1080：直式拿到 1080x1920、橫式 1920x1080，
+            // 兩種方向的解碼成本一樣（縮長邊的話直式會糊掉）
+            val edited =
+                EditedMediaItem.Builder(item)
+                    .setEffects(
+                        Effects(
+                            emptyList(),
+                            listOf(Presentation.createForShortSide(shortSide)),
+                        )
+                    )
+                    .build()
+            val composition =
+                Composition.Builder(EditedMediaItemSequence.Builder(edited).build())
+                    // HDR → SDR 用 OpenGL 的色調映射（裝置不支援時
+                    // Transformer 自己會退到別的做法）
+                    .setHdrMode(
+                        Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL_TONE_MAPPER
+                    )
+                    .build()
+
+            prep = transformer
+            transformer.start(composition, dest)
+
+            // 進度：Transformer 只提供查詢式的進度，自己每 250ms 問一次
+            val holder = ProgressHolder()
+            val tick =
+                object : Runnable {
+                    override fun run() {
+                        val t = prep ?: return
+                        val state = t.getProgress(holder)
+                        if (state == Transformer.PROGRESS_STATE_AVAILABLE) {
+                            channel.invokeMethod("progress", holder.progress / 100.0)
+                        }
+                        main.postDelayed(this, 250)
+                    }
+                }
+            prepTick = tick
+            main.postDelayed(tick, 250)
+        } catch (_: Throwable) {
+            prep = null
+            result.success(null)
+        }
+    }
+
     override fun onDestroy() {
         retriever?.release()
         retriever = null
+        prepTick?.let { Handler(Looper.getMainLooper()).removeCallbacks(it) }
+        try {
+            prep?.cancel()
+        } catch (_: Throwable) {}
+        prep = null
         super.onDestroy()
     }
 }
