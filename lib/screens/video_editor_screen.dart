@@ -2907,6 +2907,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 14),
                   itemCount: order.length,
+                  // 關掉內建的拖曳把手。橫向清單它會在每張卡正下方
+                  // 放一個 ☰ 圖示（桌機／網頁才顯示，手機不會），
+                  // 剛好卡在長度旁邊像個亂碼。我們自己的觸發器是
+                  // 「按住整張卡」，本來就不需要那個把手
+                  buildDefaultDragHandles: false,
                   // onReorderItem（不是舊的 onReorder）給的索引
                   // 已經扣掉搬走的那一格，直接插就對
                   onReorderItem: (from, to) => setSheet(() {
