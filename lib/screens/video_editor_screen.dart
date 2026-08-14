@@ -2379,8 +2379,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 已經停在該在的位置就不要 seek。暫停後再按播放、或播完一段
       // 再按，播放器本來就在正確的地方——多送一次 seek 只是讓
       // 「按下去」到「畫面開始動」中間多一次來回。
-      // 80ms 的容差：位置回報本來就有誤差，比對太嚴等於白加
-      final now = await c.positionNow();
+      // 80ms 的容差：位置回報本來就有誤差，比對太嚴等於白加。
+      // web 的 position 是 async 往返，問了反而多一次等待
+      final now = kIsWeb ? null : await c.positionNow();
       if (now != null && (now.inMilliseconds / 1000 - want).abs() < 0.08) {
         continue;
       }
@@ -2411,7 +2412,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       unawaited(c.play());
       lead ??= c;
     }
-    if (lead != null) {
+    if (lead != null && !kIsWeb) {
       final p0 = await lead.positionNow();
       final sw = Stopwatch()..start();
       while (mounted && sw.elapsedMilliseconds < 250) {
@@ -2581,7 +2582,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             ),
           );
         }
-        if (_playing && lead < 0.35 && _warmed.add(clip.id)) {
+        // 預熱只在裝置端做。Web 播的是瀏覽器的 <video>，它自己會
+        // 緩衝、起步本來就快，沒有 AVPlayer 那種起轉延遲；在 web 上
+        // 多開一個元素同時解碼只會讓畫面更卡、交界更容易閃黑
+        if (!kIsWeb && _playing && lead < 0.35 && _warmed.add(clip.id)) {
           _lastVol[clip.id] = 0;
           c.setVolume(0);
           // 素材在 trimStart 之前還有畫面可用時（修剪、切割過的片段
