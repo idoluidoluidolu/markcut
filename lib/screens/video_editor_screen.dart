@@ -105,6 +105,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _selValue = v;
     if (v != -1) _wmSelValue = false;
   }
+
   int _selTrack = -1; // 選取的軌道（點軌道空白處；貼上的目標）
   int _extraBlankTracks = 0; // 手動加的空白軌數（常駐空軌之外）
   // 播放頭（時間軸秒，原速）。用 ValueNotifier 驅動，
@@ -208,6 +209,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       });
     }
   }
+
   CanvasRatio _canvasRatio = CanvasRatio.original;
   double _pxPerSec = 0;
   final _tlScroll = ScrollController();
@@ -215,6 +217,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   // 浮水印顯示範圍（時間軸秒）；_wmEnd null = 跟到結尾
   double _wmStart = 0;
   double? _wmEnd;
+
   /// 有沒有選取全域浮水印（跟 _sel 互斥，見上面）
   bool get _wmSel => _wmSelValue;
   set _wmSel(bool v) {
@@ -1262,8 +1265,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             children: [
               Icon(icon, size: 20, color: kAmber),
               const SizedBox(width: 15),
-              Text(label,
-                  style: const TextStyle(fontSize: 13.5, color: kText)),
+              Text(label, style: const TextStyle(fontSize: 13.5, color: kText)),
             ],
           ),
         ),
@@ -1271,16 +1273,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
 
     Widget group(String label) => Padding(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 3),
-          child: Text(
-            label,
-            style: const TextStyle(
-              fontSize: 10.5,
-              letterSpacing: 1.4,
-              color: kTextDim,
-            ),
-          ),
-        );
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 3),
+      child: Text(
+        label,
+        style: const TextStyle(
+          fontSize: 10.5,
+          letterSpacing: 1.4,
+          color: kTextDim,
+        ),
+      ),
+    );
 
     return showModalBottomSheet<_AddKind>(
       context: context,
@@ -1318,8 +1320,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               item(context, Icons.music_note, '音樂', _AddKind.audio),
               group('其他'),
               item(context, Icons.mic, '錄旁白', _AddKind.record),
-              item(context, Icons.playlist_add, '空白軌道',
-                  _AddKind.blankTrack),
+              item(context, Icons.playlist_add, '空白軌道', _AddKind.blankTrack),
               const SizedBox(height: 10),
             ],
           ),
@@ -1530,10 +1531,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             Color initial,
             void Function(int argb) apply,
           ) async {
-            final picked = await pickColor(
-    context, initial);
-final ok = picked != null;
-final color = Color(picked ?? 0);
+            final picked = await pickColor(context, initial);
+            final ok = picked != null;
+            final color = Color(picked ?? 0);
             if (ok == true) both(() => apply(color.toARGB32()));
           }
 
@@ -1649,10 +1649,9 @@ final color = Color(picked ?? 0);
                         const SizedBox(width: 10),
                         InkWell(
                           onTap: () async {
-                            final picked = await pickColor(
-    context, st.color);
-final ok = picked != null;
-final color = Color(picked ?? 0);
+                            final picked = await pickColor(context, st.color);
+                            final ok = picked != null;
+                            final color = Color(picked ?? 0);
                             if (ok == true) {
                               both(() => st.colorValue = color.toARGB32());
                             }
@@ -2029,17 +2028,13 @@ final color = Color(picked ?? 0);
                             width: kSliderLabelW,
                             child: Text(
                               '柔邊',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: kTextDim,
-                              ),
+                              style: TextStyle(fontSize: 12, color: kTextDim),
                             ),
                           ),
                           Expanded(
                             child: Slider(
                               value: st.feather,
-                              onChanged: (v) =>
-                                  change(() => st.feather = v),
+                              onChanged: (v) => change(() => st.feather = v),
                             ),
                           ),
                           SizedBox(
@@ -2070,9 +2065,11 @@ final color = Color(picked ?? 0);
                             borderRadius: BorderRadius.circular(12),
                             onTap: () async {
                               final picked = await pickColor(
-    context, Color(st.color));
-final ok = picked != null;
-final color = Color(picked ?? 0);
+                                context,
+                                Color(st.color),
+                              );
+                              final ok = picked != null;
+                              final color = Color(picked ?? 0);
                               if (ok == true) {
                                 change(() => st.color = color.toARGB32());
                               }
@@ -2083,10 +2080,7 @@ final color = Color(picked ?? 0);
                               decoration: BoxDecoration(
                                 color: Color(st.color),
                                 shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: kBorder,
-                                  width: 1.5,
-                                ),
+                                border: Border.all(color: kBorder, width: 1.5),
                               ),
                             ),
                           ),
@@ -2247,9 +2241,7 @@ final color = Color(picked ?? 0);
       _wasActive.add(clip.id); // 標記已進場，_syncMedia 不再 seek 一次
       waits.add(
         c.seekTo(
-          Duration(
-            milliseconds: (clip.sourceTimeAt(_position) * 1000).round(),
-          ),
+          Duration(milliseconds: (clip.sourceTimeAt(_position) * 1000).round()),
         ),
       );
     }
@@ -2272,6 +2264,8 @@ final color = Color(picked ?? 0);
     for (final c in _ctrls.values) {
       if (c.value.isPlaying) c.pause();
     }
+    // 預熱中的播放器也一起停了，下次播放要重新預熱
+    _warmed.clear();
     if (_playing) setState(() => _playing = false);
   }
 
@@ -2284,12 +2278,17 @@ final color = Color(picked ?? 0);
   /// 已預先對位（快進場時先 seek 到起點）的片段
   final Set<int> _preRolled = {};
 
+  /// 已經「預熱開播」的片段：進場前就用極慢速靜音跑著，
+  /// 讓解碼／送影格的管線先轉起來（見 _syncMedia 的 pre-roll）
+  final Set<int> _warmed = {};
+
   /// 時間軸的「時間→內容」對應被改動（移動/修剪/變速/刪除/復原）後
   /// 一定要呼叫：清掉進場狀態，下次播放每個片段重新對位。
   /// 不清的話進場 seek 被跳過，1 秒內的錯位永遠不會被修正
   void _resyncPlayback() {
     _wasActive.clear();
     _preRolled.clear();
+    _warmed.clear();
     _lastDriftFix.clear();
   }
 
@@ -2355,79 +2354,110 @@ final color = Color(picked ?? 0);
           break;
         }
       }
-      // 預先對位：快進場的片段先把播放器 seek 到自己的起點，
-      // 到交界時第一幀已經解好、直接 play 就走。
-      // 進場才 seek 的話要等解碼器轉起來＝每段開頭頓一下
+      // 進場準備，兩段式：
+      //
+      // 一、提早 1.2 秒 seek 到自己的起點，交界時第一幀已經解好。
+      //
+      // 二、光是解好第一幀還不夠。iOS 走 AVPlayer，從暫停狀態
+      // play() 到真的開始送影格有明顯延遲，交界時畫面就停在那第一幀
+      // 「頓一下」——這就是每段開頭都頓的原因。所以再往前一步：
+      // 進場前 0.35 秒用極慢速靜音開播，讓整條解碼與送影格的管線先
+      // 轉起來；交界時只要把速度換回正常，對一個已經在跑的播放器
+      // 來說那是很便宜的操作。0.35 秒 × 0.05 只吃掉 17 毫秒的內容，
+      // 而且那時它的圖層還是近乎透明的（見預覽的暖身掛載），看不到
       for (final clip in _tl.clips) {
         final k = _tl.sourceOf(clip).kind;
         if (k != ClipKind.video && k != ClipKind.audio) continue;
+        final c = _ctrls[clip.id];
+        if (c == null || !c.value.isInitialized) continue;
         final lead = clip.offset - _position;
-        if (lead > 0 && lead < 1.2) {
-          if (_preRolled.contains(clip.id) || _wasActive.contains(clip.id)) {
-            continue;
+        if (lead <= 0 || lead > 2.0) {
+          _preRolled.remove(clip.id);
+          // 又滑遠了：把預熱中的播放器收回來，不然它會一直慢慢跑
+          if (_warmed.remove(clip.id) && lead > 0 && c.value.isPlaying) {
+            c.pause();
           }
-          final c = _ctrls[clip.id];
-          if (c == null || !c.value.isInitialized) continue;
-          _preRolled.add(clip.id);
+          continue;
+        }
+        if (_wasActive.contains(clip.id)) continue;
+        if (lead < 1.2 && _preRolled.add(clip.id)) {
           c.seekTo(
             Duration(
               milliseconds: (clip.sourceTimeAt(clip.offset) * 1000).round(),
             ),
           );
-        } else if (lead <= 0 || lead > 2.0) {
-          _preRolled.remove(clip.id);
+        }
+        if (_playing && lead < 0.35 && _warmed.add(clip.id)) {
+          _lastVol[clip.id] = 0;
+          c.setVolume(0);
+          c.setPlaybackSpeed(0.05);
+          c.play();
         }
       }
     }
-    for (final clip in _tl.clips) {
-      final c = _ctrls[clip.id];
-      if (c == null || !c.value.isInitialized) continue;
-      final active = clip.covers(_position);
-      if (!active) {
-        _wasActive.remove(clip.id);
-        if (c.value.isPlaying) c.pause();
-        continue;
-      }
-      final want = clip.sourceTimeAt(_position);
-      if (!_wasActive.contains(clip.id)) {
-        // 進場：對準起點，之後不再打擾。
-        // 已經預先對位過就不再 seek（見上面的 pre-roll）
-        _wasActive.add(clip.id);
-        if (!_preRolled.remove(clip.id)) {
-          c.seekTo(Duration(milliseconds: (want * 1000).round()));
+    // 兩趟：第一趟處理進場與繼續播的，第二趟才處理離場的暫停。
+    // 合成一趟的話，因為 clips 是按時間排的、離場的那段排在前面，
+    // 交界那一格會先把上一段停掉、下一段還沒開始，中間空一格
+    for (var pass = 0; pass < 2; pass++) {
+      for (final clip in _tl.clips) {
+        final c = _ctrls[clip.id];
+        if (c == null || !c.value.isInitialized) continue;
+        final active = clip.covers(_position);
+        if (active != (pass == 0)) continue;
+        if (!active) {
+          _wasActive.remove(clip.id);
+          _warmed.remove(clip.id);
+          if (c.value.isPlaying) c.pause();
+          continue;
         }
-      } else if (_playing) {
-        final actual = c.value.position.inMilliseconds / 1000.0;
-        // 門檻隨播放速度放大：Android 位置回報有 ~500ms 延遲，
-        // 2 倍速以上光是延遲就會超過 1 秒，會被誤判成脫節狂 seek
-        final driftThr = math.max(1.0, _speed * clip.speed);
-        if ((actual - want).abs() > driftThr &&
-            now
-                    .difference(
-                      _lastDriftFix[clip.id] ??
-                          DateTime.fromMillisecondsSinceEpoch(0),
-                    )
-                    .inMilliseconds >
-                2000) {
-          _lastDriftFix[clip.id] = now;
-          c.seekTo(Duration(milliseconds: (want * 1000).round()));
+        final want = clip.sourceTimeAt(_position);
+        final justEntered = !_wasActive.contains(clip.id);
+        if (justEntered) {
+          // 進場：對準起點，之後不再打擾。
+          // 已經預先對位過就不再 seek（見上面的 pre-roll）
+          _wasActive.add(clip.id);
+          if (!_preRolled.remove(clip.id)) {
+            c.seekTo(Duration(milliseconds: (want * 1000).round()));
+          }
+        } else if (_playing) {
+          final actual = c.value.position.inMilliseconds / 1000.0;
+          // 門檻隨播放速度放大：Android 位置回報有 ~500ms 延遲，
+          // 2 倍速以上光是延遲就會超過 1 秒，會被誤判成脫節狂 seek
+          final driftThr = math.max(1.0, _speed * clip.speed);
+          if ((actual - want).abs() > driftThr &&
+              now
+                      .difference(
+                        _lastDriftFix[clip.id] ??
+                            DateTime.fromMillisecondsSinceEpoch(0),
+                      )
+                      .inMilliseconds >
+                  2000) {
+            _lastDriftFix[clip.id] = now;
+            c.seekTo(Duration(milliseconds: (want * 1000).round()));
+          }
         }
-      }
-      // 音量最多 10 次/秒（fade 中每格打 method channel 也會卡）
-      if (volDue) {
-        final vol = _rawVolOf(clip).clamp(0.0, 1.0);
-        if ((vol - (_lastVol[clip.id] ?? -1)).abs() > 0.02) {
-          _lastVol[clip.id] = vol;
-          c.setVolume(vol);
+        // 音量最多 10 次/秒（fade 中每格打 method channel 也會卡）。
+        // 進場那一格一定要更新：預熱時是靜音的，等節流輪到它會慢
+        // 100 毫秒，聽起來就像每段開頭都淡入
+        if (volDue || justEntered) {
+          final vol = _rawVolOf(clip).clamp(0.0, 1.0);
+          if ((vol - (_lastVol[clip.id] ?? -1)).abs() > 0.02) {
+            _lastVol[clip.id] = vol;
+            c.setVolume(vol);
+          }
         }
-      }
-      if (_playing) {
-        if (!c.value.isPlaying) {
-          c.setPlaybackSpeed(_speed * clip.speed);
-          c.play();
+        if (_playing) {
+          final rate = _speed * clip.speed;
+          if (!c.value.isPlaying) {
+            c.setPlaybackSpeed(rate);
+            c.play();
+          } else if (_warmed.remove(clip.id)) {
+            // 預熱時掛的是極慢速，進場換回真正的速度
+            c.setPlaybackSpeed(rate);
+          }
+        } else if (c.value.isPlaying) {
+          c.pause();
         }
-      } else if (c.value.isPlaying) {
-        c.pause();
       }
     }
   }
@@ -2608,9 +2638,7 @@ final color = Color(picked ?? 0);
         // 之後，再換算回實際的位移量——接片段才能剛好無縫貼齊
         final raw = (_trimRawEdge ?? curEdge) + dSec;
         _trimRawEdge = raw;
-        final snapped = _snapOn
-            ? _tl.snapEdge(c, raw, _pxPerSec)
-            : raw;
+        final snapped = _snapOn ? _tl.snapEdge(c, raw, _pxPerSec) : raw;
         // 剛吸上去的那一下震動回饋
         final on = (snapped - raw).abs() > 0.0005;
         if (on != _trimSnapped) {
@@ -2629,8 +2657,10 @@ final color = Color(picked ?? 0);
             final hi = math.max(0.0, c.trimEnd - 0.3);
             final ns = (c.trimStart + dSrc).clamp(0.0, hi);
             // offset 位移用時間軸秒（素材差 ÷ 速度）
-            c.offset = (c.offset + (ns - c.trimStart) / c.speed)
-                .clamp(0.0, 1e6);
+            c.offset = (c.offset + (ns - c.trimStart) / c.speed).clamp(
+              0.0,
+              1e6,
+            );
             c.trimStart = ns;
           } else {
             final lo = math.min(c.trimStart + 0.3, src.duration);
@@ -2641,8 +2671,7 @@ final color = Color(picked ?? 0);
           if (fromLeft) {
             final lo = math.min(c.trimStart + 0.3, src.duration);
             final ne = (c.trimEnd - dSrc).clamp(lo, src.duration);
-            c.offset = (c.offset + (c.trimEnd - ne) / c.speed)
-                .clamp(0.0, 1e6);
+            c.offset = (c.offset + (c.trimEnd - ne) / c.speed).clamp(0.0, 1e6);
             c.trimEnd = ne;
           } else {
             final hi = math.max(0.0, c.trimEnd - 0.3);
@@ -2667,9 +2696,7 @@ final color = Color(picked ?? 0);
       final cur = fromLeft ? _wmStart : _wmEndEff;
       final raw = (_trimRawEdge ?? cur) + d;
       _trimRawEdge = raw;
-      final snapped = _snapOn
-          ? _tl.snapTime(raw, _pxPerSec)
-          : raw;
+      final snapped = _snapOn ? _tl.snapTime(raw, _pxPerSec) : raw;
       final on = (snapped - raw).abs() > 0.0005;
       if (on != _trimSnapped) {
         _trimSnapped = on;
@@ -2764,84 +2791,84 @@ final color = Color(picked ?? 0);
                   itemBuilder: (context, i) {
                     final c = order[i];
                     final src = _tl.sourceOf(c);
-                    final thumb = (_thumbs[c.sourceIndex] ?? const [])
-                        .firstOrNull;
+                    final thumb =
+                        (_thumbs[c.sourceIndex] ?? const []).firstOrNull;
                     // 整列按住就能拖（右邊把手則是按下去馬上拖）——
                     // 只有把手能拖的話，在手機上要瞄準那一小塊很煩
                     return ReorderableDelayedDragStartListener(
                       key: ValueKey(c.id),
                       index: i,
                       child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 3),
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: kPanel,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: kBorder),
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 8,
-                        ),
-                        child: Row(
-                          children: [
-                            SizedBox(
-                              width: 20,
-                              child: Text(
-                                '${i + 1}',
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w700,
-                                  color: kSelect,
+                        padding: const EdgeInsets.symmetric(vertical: 3),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: kPanel,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: kBorder),
+                          ),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 8,
+                          ),
+                          child: Row(
+                            children: [
+                              SizedBox(
+                                width: 20,
+                                child: Text(
+                                  '${i + 1}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                    color: kSelect,
+                                  ),
                                 ),
                               ),
-                            ),
-                            ClipRRect(
-                              borderRadius: BorderRadius.circular(4),
-                              child: SizedBox(
-                                width: 46,
-                                height: 34,
-                                child: thumb != null
-                                    ? Image.memory(thumb, fit: BoxFit.cover)
-                                    : Container(
-                                        color: kPanelHi,
-                                        child: Icon(
-                                          src.kind == ClipKind.audio
-                                              ? Icons.music_note
-                                              : Icons.movie,
-                                          size: 15,
-                                          color: kTextDim,
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(4),
+                                child: SizedBox(
+                                  width: 46,
+                                  height: 34,
+                                  child: thumb != null
+                                      ? Image.memory(thumb, fit: BoxFit.cover)
+                                      : Container(
+                                          color: kPanelHi,
+                                          child: Icon(
+                                            src.kind == ClipKind.audio
+                                                ? Icons.music_note
+                                                : Icons.movie,
+                                            size: 15,
+                                            color: kTextDim,
+                                          ),
                                         ),
-                                      ),
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            // 不放檔名：相簿匯出的檔名又長又沒有辨識度
-                            //（ScreenRecording_08-06-2026…），
-                            // 縮圖跟長度才認得出是哪一段
-                            Expanded(
-                              child: Text(
-                                '${c.length.toStringAsFixed(1)} 秒',
-                                style: const TextStyle(
-                                  fontSize: 13,
-                                  color: kTextDim,
                                 ),
                               ),
-                            ),
-                            ReorderableDragStartListener(
-                              index: i,
-                              child: const Padding(
-                                padding: EdgeInsets.only(left: 6),
-                                child: Icon(
-                                  Icons.drag_handle,
-                                  size: 20,
-                                  color: kIcon,
+                              const SizedBox(width: 12),
+                              // 不放檔名：相簿匯出的檔名又長又沒有辨識度
+                              //（ScreenRecording_08-06-2026…），
+                              // 縮圖跟長度才認得出是哪一段
+                              Expanded(
+                                child: Text(
+                                  '${c.length.toStringAsFixed(1)} 秒',
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    color: kTextDim,
+                                  ),
                                 ),
                               ),
-                            ),
-                          ],
+                              ReorderableDragStartListener(
+                                index: i,
+                                child: const Padding(
+                                  padding: EdgeInsets.only(left: 6),
+                                  child: Icon(
+                                    Icons.drag_handle,
+                                    size: 20,
+                                    color: kIcon,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
                       ),
                     );
                   },
@@ -4066,17 +4093,17 @@ final color = Color(picked ?? 0);
                                                 // （Web 是 HTML video），會吃掉底下的點擊事件
                                                 // （預掛的隱形影片不收點擊）
                                                 if (!warmIds.contains(c.id))
-                                                GestureDetector(
-                                                  behavior:
-                                                      HitTestBehavior.opaque,
-                                                  // 點畫面上的影片＝選取它（等同在時間軸點該片段）
-                                                  onTap: () => setState(() {
-                                                    _sel = c.id;
-                                                    _wmSel = false;
-                                                  }),
-                                                  child:
-                                                      const SizedBox.expand(),
-                                                ),
+                                                  GestureDetector(
+                                                    behavior:
+                                                        HitTestBehavior.opaque,
+                                                    // 點畫面上的影片＝選取它（等同在時間軸點該片段）
+                                                    onTap: () => setState(() {
+                                                      _sel = c.id;
+                                                      _wmSel = false;
+                                                    }),
+                                                    child:
+                                                        const SizedBox.expand(),
+                                                  ),
                                               ],
                                             ),
                                           ),
@@ -4127,8 +4154,7 @@ final color = Color(picked ?? 0);
                                                   // 看不出圈與圈的階梯
                                                   //（跟匯出的漸進圈同思路）
                                                   final sg =
-                                                      (4.0 +
-                                                          16 * ms.strength) *
+                                                      (4.0 + 16 * ms.strength) *
                                                       0.4;
                                                   final step =
                                                       ms.feather *
@@ -4137,25 +4163,25 @@ final color = Color(picked ?? 0);
                                                         r.width,
                                                         r.height,
                                                       );
-                                                  Widget ring(double i) =>
-                                                      Positioned(
-                                                        left: i,
-                                                        top: i,
-                                                        right: i,
-                                                        bottom: i,
-                                                        child: ClipRect(
-                                                          child: BackdropFilter(
-                                                            filter:
-                                                                ui.ImageFilter.blur(
-                                                                  sigmaX: sg,
-                                                                  sigmaY: sg,
-                                                                ),
-                                                            child:
-                                                                const SizedBox
-                                                                    .expand(),
-                                                          ),
-                                                        ),
-                                                      );
+                                                  Widget ring(
+                                                    double i,
+                                                  ) => Positioned(
+                                                    left: i,
+                                                    top: i,
+                                                    right: i,
+                                                    bottom: i,
+                                                    child: ClipRect(
+                                                      child: BackdropFilter(
+                                                        filter:
+                                                            ui.ImageFilter.blur(
+                                                              sigmaX: sg,
+                                                              sigmaY: sg,
+                                                            ),
+                                                        child:
+                                                            const SizedBox.expand(),
+                                                      ),
+                                                    ),
+                                                  );
                                                   return Stack(
                                                     children: [
                                                       for (
@@ -4189,10 +4215,8 @@ final color = Color(picked ?? 0);
                                                     final sh = _mosaicProg!
                                                         .fragmentShader();
                                                     sh.setFloat(2, cell);
-                                                    filter =
-                                                        ui.ImageFilter.shader(
-                                                          sh,
-                                                        );
+                                                    filter = ui
+                                                        .ImageFilter.shader(sh);
                                                   } catch (_) {
                                                     filter = null;
                                                   }
@@ -4206,8 +4230,8 @@ final color = Color(picked ?? 0);
                                                 return ClipRect(
                                                   child: BackdropFilter(
                                                     filter: filter,
-                                                    child: const SizedBox
-                                                        .expand(),
+                                                    child:
+                                                        const SizedBox.expand(),
                                                   ),
                                                 );
                                               },
@@ -4626,8 +4650,7 @@ final color = Color(picked ?? 0);
                                             // 都不該把素材推歪幾個像素
                                             if (!_rtArmed) {
                                               if (d.pointerCount < 2 &&
-                                                  (d.focalPoint -
-                                                              _rtStartFocal)
+                                                  (d.focalPoint - _rtStartFocal)
                                                           .distance <
                                                       6) {
                                                 _routerLast = d.focalPoint;
@@ -4636,8 +4659,7 @@ final color = Color(picked ?? 0);
                                               _rtArmed = true;
                                               // 起算點移到「越過門檻的這
                                               // 一刻」，不然會憑空跳 6px
-                                              _gestureStartFocal =
-                                                  d.focalPoint;
+                                              _gestureStartFocal = d.focalPoint;
                                               _routerLast = d.focalPoint;
                                             }
                                             if (selVis != null) {
@@ -5523,9 +5545,7 @@ final color = Color(picked ?? 0);
                             ? null
                             : () => _openVolumeSheet(sel),
                         tip: '這段的音量',
-                        disabledHint: sel == null
-                            ? '先在時間軸點選一個片段'
-                            : '這個素材沒有聲音',
+                        disabledHint: sel == null ? '先在時間軸點選一個片段' : '這個素材沒有聲音',
                       ),
                       _toolBtn(
                         Icons.gradient,
@@ -5912,10 +5932,7 @@ final color = Color(picked ?? 0);
                   );
                 },
                 icon: const Icon(Icons.done_all, size: 16),
-                label: const Text(
-                  '套用到全部素材',
-                  style: TextStyle(fontSize: 12),
-                ),
+                label: const Text('套用到全部素材', style: TextStyle(fontSize: 12)),
               ),
             ),
         ],
@@ -5947,9 +5964,7 @@ final color = Color(picked ?? 0);
           Padding(
             padding: const EdgeInsets.only(left: 56, top: 2),
             child: Text(
-              _clipHasAudio(clip)
-                  ? '畫面與聲音一起淡'
-                  : '這個素材沒有聲音，只淡畫面',
+              _clipHasAudio(clip) ? '畫面與聲音一起淡' : '這個素材沒有聲音，只淡畫面',
               style: const TextStyle(fontSize: 10.5, color: kTextDim),
             ),
           ),
@@ -6549,49 +6564,52 @@ final color = Color(picked ?? 0);
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-        row('畫面比例', _canvasRatio.label, _openRatioSheet),
-        row(
-          '解析度',
-          '${_resolution.label}·$outW×$outH',
-          _openResolutionSheet,
-        ),
-        // 自動挑的時候標出來：不講的話，同一支 App 在不同素材上
-        // 預設值不一樣會像壞掉
-        row(
-          '畫質',
-          _qualityAuto && _srcKbps > 0
-              ? '${_qualityEff.label}·推薦'
-              : _qualityEff.label,
-          _openQualitySheet,
-          divider: false,
-        ),
-        const SizedBox(height: 22),
-        // 預估貼在匯出鈕正上方。它唯一的用途就是讓人在按下去之前
-        // 決定要不要回頭改設定，放在最靠近手指的地方最有用。
-        // 匯出時間跑過一次之後才是「這台機器」的實測值，
-        // 第一次只能粗估，標示清楚不要讓人以為很準
-        FutureBuilder<(double, bool)>(
-          future: _estimateExport(outW, outH, dur),
-          builder: (context, snap) {
-            final d = snap.data;
-            final t = d == null
-                ? '計算中…'
-                : '需要約 ${fmtDuration(d.$1)}${d.$2 ? '' : '（粗估）'}';
-            return Text(
-              '約 ${mb.toStringAsFixed(0)} MB·$t',
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                fontSize: 11.5,
-                color: kTextDim,
-                fontFeatures: [FontFeature.tabularFigures()],
+              row('畫面比例', _canvasRatio.label, _openRatioSheet),
+              row(
+                '解析度',
+                '${_resolution.label}·$outW×$outH',
+                _openResolutionSheet,
               ),
-            );
-          },
-        ),
-        const SizedBox(height: 10),
-        // 跟照片／批次／拼圖同一顆（膠囊、46 高、圖示 18）。
-        // 這一頁的「結構」維持分頁不變，只有按鈕外觀對齊
-        primaryAction(label: '匯出', onPressed: _exporting ? null : _export),
+              // 自動挑的時候標出來：不講的話，同一支 App 在不同素材上
+              // 預設值不一樣會像壞掉
+              row(
+                '畫質',
+                _qualityAuto && _srcKbps > 0
+                    ? '${_qualityEff.label}·推薦'
+                    : _qualityEff.label,
+                _openQualitySheet,
+                divider: false,
+              ),
+              const SizedBox(height: 22),
+              // 預估貼在匯出鈕正上方。它唯一的用途就是讓人在按下去之前
+              // 決定要不要回頭改設定，放在最靠近手指的地方最有用。
+              // 匯出時間跑過一次之後才是「這台機器」的實測值，
+              // 第一次只能粗估，標示清楚不要讓人以為很準
+              FutureBuilder<(double, bool)>(
+                future: _estimateExport(outW, outH, dur),
+                builder: (context, snap) {
+                  final d = snap.data;
+                  final t = d == null
+                      ? '計算中…'
+                      : '需要約 ${fmtDuration(d.$1)}${d.$2 ? '' : '（粗估）'}';
+                  return Text(
+                    '約 ${mb.toStringAsFixed(0)} MB·$t',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      color: kTextDim,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 10),
+              // 跟照片／批次／拼圖同一顆（膠囊、46 高、圖示 18）。
+              // 這一頁的「結構」維持分頁不變，只有按鈕外觀對齊
+              primaryAction(
+                label: '匯出',
+                onPressed: _exporting ? null : _export,
+              ),
             ],
           ),
         ),
@@ -6669,9 +6687,7 @@ final color = Color(picked ?? 0);
                         r != ExportResolution.original && w == ow && h == oh;
                     return _optionRow(
                       title: r.label,
-                      subtitle: same
-                          ? '$w×$h·原片就這麼大，不會再縮'
-                          : '$w×$h·${r.hint}',
+                      subtitle: same ? '$w×$h·原片就這麼大，不會再縮' : '$w×$h·${r.hint}',
                       selected: _resolution == r,
                       first: i == 0,
                       onTap: () {
