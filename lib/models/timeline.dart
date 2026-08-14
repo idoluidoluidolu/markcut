@@ -295,6 +295,44 @@ class TimelineModel {
   }
 
   /// 同軌上第一個影片片段之後的空位（用來把新影片接在後面）
+  /// 把 [moving] 放到 [track] 的 [want] 位置時，避開既有素材的落點。
+  ///
+  /// 同一軌上的素材不該互相覆蓋——蓋住的那段等於憑空消失，時間軸上
+  /// 還看不出來。想放的位置有人佔著時，滑到最近的空位：往前貼到那段
+  /// 的頭、或往後貼到那段的尾，取離原本意圖比較近的一邊。
+  /// 兩邊都塞不下就接到整軌的最後面
+  double freeOffsetOnTrack(TimelineClip moving, double want, int track) {
+    final len = moving.length;
+    if (len <= 0) return math.max(0, want);
+    final others = [
+      for (final c in clips)
+        if (c.id != moving.id && c.track == track) c,
+    ]..sort((a, b) => a.offset.compareTo(b.offset));
+    if (others.isEmpty) return math.max(0, want);
+
+    // 0.001 的容差：頭尾剛好相接不算重疊
+    bool fits(double at) {
+      if (at < -0.001) return false;
+      for (final c in others) {
+        if (at < c.end - 0.001 && at + len > c.offset + 0.001) return false;
+      }
+      return true;
+    }
+
+    final start = math.max(0.0, want);
+    if (fits(start)) return start;
+
+    // 候選：貼在每一段的前面或後面，挑離原意圖最近而且真的塞得下的
+    final cands = <double>[];
+    for (final c in others) {
+      cands..add(c.offset - len)..add(c.end);
+    }
+    cands.removeWhere((v) => v < 0 || !fits(v));
+    if (cands.isEmpty) return appendPointOnTrack(track);
+    cands.sort((a, b) => (a - start).abs().compareTo((b - start).abs()));
+    return cands.first;
+  }
+
   double appendPointOnTrack(int track) {
     var end = 0.0;
     for (final c in clips) {

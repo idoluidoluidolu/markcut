@@ -316,11 +316,24 @@ Future<String> _buildCommand(
         : const _SourceProbe(false, 0, false);
   }
 
-  // 每個 HDR 來源依自己的曲線（HLG/PQ）挑轉換鏈
-  final hdrChains = <int, String>{};
+  // 每個 HDR 來源依自己的曲線（HLG/PQ）挑轉換鏈。
+  // 鏈本身在下面依各片段的輸出高度組出來——色調映射要在縮小之後做
+  final hdrTrc = <int, String>{};
   for (var i = 0; i < spec.sources.length; i++) {
-    if (probes[i]!.hdr) hdrChains[i] = await _hdrChainFor(probes[i]!.trc);
+    if (probes[i]!.hdr) hdrTrc[i] = probes[i]!.trc;
   }
+  final zOk = hdrTrc.isEmpty ? false : await _zscaleAvailable();
+  /// 某個來源在「輸出高度 h」下要用的 HDR 轉換鏈（含結尾逗號）；
+  /// 不是 HDR 就回空字串
+  String hdrTrcOf(int srcIndex, int h) {
+    final trc = hdrTrc[srcIndex];
+    if (trc == null) return '';
+    if (!zOk) return '$_kHdrFallback,';
+    final c = _hdrChain(trc: trc, scaleH: h);
+    _usedHdrChains.add(c);
+    return '$c,';
+  }
+
   final sp = spec.speed;
   final outDur = spec.outputDuration;
 
@@ -486,13 +499,14 @@ Future<String> _buildCommand(
       '[$label]'
       'trim=start=${_f(c.trimStart)}:end=${_f(c.trimEnd)},'
       // 先縮到輸出尺寸再倒轉：reverse 會把整段畫面存進記憶體，
-      // 用原始解析度存會直接把記憶體吃爆
-      // HDR 素材先轉 SDR，再縮放。
-      // 順序不能反：swscale 縮放時會順手把畫格的色彩標記換成輸出
-      // 格式的預設值，等 colorspace 拿到手時來源是 bt2020 這件事
-      // 已經被抹掉，轉換就變成沒作用——畫面照樣退色而且不會報錯。
-      // 縮圖那條路一直是先轉再縮，所以縮圖正常、只有匯出退色
-      '${hdrChains[c.sourceIndex] != null ? '${hdrChains[c.sourceIndex]},' : ''}'
+      // 用原始解析度存會直接把記憶體吃爆。
+      //
+      // HDR 轉 SDR：縮小摺進轉換鏈的第一步，色調映射就在輸出尺寸上
+      // 做。原本是先在原始解析度轉完再縮——色調映射是 32 位元浮點，
+      // 一格 4K 的 gbrpf32le 就要上百 MB，手機直接被記憶體壓死（匯出
+      // 閃退）。縮小必須由 zscale 自己做，不能用 scale：swscale 會把
+      // 畫格的色彩標記換掉，換掉之後就不知道來源是 HLG/PQ 了
+      '${hdrTrcOf(c.sourceIndex, h2)}'
       'scale=$w2:$h2:flags=lanczos,'
       '${c.reverse ? 'reverse,' : ''}'
       // 全域速度 × 每片段速度一起壓進 PTS
