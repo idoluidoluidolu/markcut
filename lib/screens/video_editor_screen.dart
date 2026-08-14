@@ -2375,11 +2375,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final c = _ctrls[clip.id];
       if (c == null || !c.value.isInitialized) continue;
       _wasActive.add(clip.id); // 標記已進場，_syncMedia 不再 seek 一次
-      waits.add(
-        c.seekTo(
-          Duration(milliseconds: (clip.sourceTimeAt(_position) * 1000).round()),
-        ),
-      );
+      final want = clip.sourceTimeAt(_position);
+      // 已經停在該在的位置就不要 seek。暫停後再按播放、或播完一段
+      // 再按，播放器本來就在正確的地方——多送一次 seek 只是讓
+      // 「按下去」到「畫面開始動」中間多一次來回。
+      // 80ms 的容差：位置回報本來就有誤差，比對太嚴等於白加
+      final now = await c.positionNow();
+      if (now != null && (now.inMilliseconds / 1000 - want).abs() < 0.08) {
+        continue;
+      }
+      waits.add(c.seekTo(Duration(milliseconds: (want * 1000).round())));
     }
     if (waits.isNotEmpty) {
       // 上限 400ms：seek 卡住的話寧可頓一下，也不能讓播放鍵沒反應
