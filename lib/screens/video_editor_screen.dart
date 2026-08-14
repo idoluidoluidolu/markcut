@@ -152,27 +152,61 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 素材裡最高的位元率（kbps，檔案大小÷長度）。0＝量不到（Web）
   double _srcKbps = 0;
 
+  /// 位元率最高那支素材的編碼格式（hevc/h264/空＝不知道）
+  String _srcCodec = '';
+
+  /// 專案裡最高的影格率（輸出會跟著它走）
+  double _srcFps = 0;
+
   /// 實際要用的畫質：使用者選過就聽他的，沒選過就依素材本身的
   /// 位元率挑。放成 getter 而不是存起來，改解析度時才會跟著重算——
   /// 同一支影片縮到 720p，需要的位元率就少了一半
   ExportQuality get _qualityEff {
     if (!_qualityAuto || _srcKbps <= 0) return _quality;
     final (w, h) = computeCanvasSize(_tl, _resolution, _canvasRatio);
-    return recommendQuality(srcKbps: _srcKbps, outW: w, outH: h);
+    return recommendQuality(
+      srcKbps: _srcKbps,
+      outW: w,
+      outH: h,
+      fps: outputFps(_srcFps, w, h),
+      // 重壓一次的餘裕看來源編碼：HEVC 換 H.264 同畫質要多吃五六成
+      // 位元率，H.264 對 H.264 幾乎打平，不知道是哪種取中間值
+      headroom: switch (_srcCodec) {
+        'hevc' => 1.6,
+        'h264' => 1.1,
+        _ => 1.25,
+      },
+    );
   }
 
   /// 量素材的位元率（檔案大小÷長度），取最高的那支當基準：
   /// 一次匯出只有一個畫質，要顧就顧最吃位元率的那支
   Future<void> _measureSrcKbps() async {
     var best = 0.0;
+    var bestCodec = '';
+    var maxFps = 0.0;
     for (final src in _tl.sources) {
       if (!src.isVideo || src.duration <= 0) continue;
       final bytes = await fileSizeBytes(src.path);
       if (bytes <= 0) continue;
+      // 編碼格式跟影格率順便帶回來（匯入時為了偵測 HDR 已經 probe
+      // 過一次，引擎有快取，這裡不會再跑一次 FFprobe）
+      final info = await engine.probeVideoInfo(src.path);
+      if (info.fps > maxFps) maxFps = info.fps;
       final kbps = bytes * 8 / src.duration / 1000;
-      if (kbps > best) best = kbps;
+      if (kbps > best) {
+        best = kbps;
+        bestCodec = info.codec;
+      }
     }
-    if (mounted && best != _srcKbps) setState(() => _srcKbps = best);
+    if (!mounted) return;
+    if (best != _srcKbps || bestCodec != _srcCodec || maxFps != _srcFps) {
+      setState(() {
+        _srcKbps = best;
+        _srcCodec = bestCodec;
+        _srcFps = maxFps;
+      });
+    }
   }
   CanvasRatio _canvasRatio = CanvasRatio.original;
   double _pxPerSec = 0;
@@ -6370,13 +6404,14 @@ final color = Color(picked ?? 0);
   }
 
   /// 這個專案用某一檔畫質匯出大概多大（MB）。
-  /// 只是粗估：位元率換算加上音訊的固定開銷，夠人判斷「要不要換一檔」
+  /// 照引擎實際會下的位元率算（kbpsFor），不再另外維護一套估算公式
+  /// ——舊公式用固定 0.09bpp 乘倍率，跟編碼器拿到的 -b:v 是兩回事，
+  /// 「高畫質」估 15MB 實際會出 26MB。音訊 AAC 256k ≈ 32KB/s
   double _estMb(ExportQuality q) {
     final (w, h) = computeCanvasSize(_tl, _resolution, _canvasRatio);
     final dur = _tl.duration / _speed;
-    return (w * h * 30 * 0.09 / 8 * dur + 40000 * dur) /
-        (1024 * 1024) *
-        q.sizeFactor;
+    final kbps = q.kbpsFor(w, h, fps: outputFps(_srcFps, w, h));
+    return (kbps * 125.0 + 32000) * dur / (1024 * 1024);
   }
 
   /// 匯出頁（使用者選定 B 款極簡設定列）：

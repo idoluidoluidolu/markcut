@@ -36,6 +36,36 @@ void main() {
     });
   });
 
+  group('影格率', () {
+    test('位元率隨影格率開根號進位：60fps 約多四成，不是兩倍', () {
+      const q = ExportQuality.standard;
+      final k30 = q.kbpsFor(fhdW, fhdH);
+      final k60 = q.kbpsFor(fhdW, fhdH, fps: 60);
+      expect(k60 / k30, closeTo(1.41, 0.02));
+      // fps 沒給或給 0 都當 30，不會爆
+      expect(q.kbpsFor(fhdW, fhdH, fps: 0), k30);
+    });
+
+    test('輸出影格率：慢動作夾 120 而不是丟回 30', () {
+      expect(outputFps(240, fhdW, fhdH), 120);
+      expect(outputFps(120, fhdW, fhdH), 120);
+      expect(outputFps(59.94, fhdW, fhdH), closeTo(59.94, 0.001));
+    });
+
+    test('輸出影格率：垃圾值退回 30', () {
+      expect(outputFps(0, fhdW, fhdH), 30);
+      expect(outputFps(-5, fhdW, fhdH), 30);
+      expect(outputFps(1000, fhdW, fhdH), 30);
+    });
+
+    test('輸出影格率：1440p 以上夾 60（硬體編碼器的極限）', () {
+      expect(outputFps(120, 3840, 2160), 60);
+      expect(outputFps(30, 3840, 2160), 30);
+      // 1440p 本身還不夾
+      expect(outputFps(120, 2560, 1440), 120);
+    });
+  });
+
   group('依素材自動挑畫質', () {
     test('量不到大小時回標準，不亂猜', () {
       expect(
@@ -106,6 +136,21 @@ void main() {
           );
         }
         prev = q;
+      }
+    });
+
+    test('HEVC 素材的餘裕比 H.264 大：同位元率會挑到更高（或同）檔', () {
+      // 17 Mbps 的 1080p：H.264（餘裕 1.1）高畫質 17.4 剛好壓得住；
+      // HEVC（餘裕 1.6）要 27.2，超過上限 → 停在高畫質。兩者至少不反轉
+      for (final srcKbps in [5000.0, 10000.0, 17000.0, 30000.0]) {
+        final h264 = recommendQuality(
+          srcKbps: srcKbps, outW: fhdW, outH: fhdH, headroom: 1.1);
+        final hevc = recommendQuality(
+          srcKbps: srcKbps, outW: fhdW, outH: fhdH, headroom: 1.6);
+        expect(
+          qualityOrder.indexOf(hevc),
+          greaterThanOrEqualTo(qualityOrder.indexOf(h264)),
+        );
       }
     });
 

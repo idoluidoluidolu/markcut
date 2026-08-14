@@ -86,10 +86,16 @@ extension ExportQualityInfo on ExportQuality {
         ExportQuality.lossless => 0.60,
       };
 
-  /// 這一檔在指定輸出尺寸下的位元率（kbps）。
-  /// 下限擋住極小畫面算出來的荒謬低值，上限是保護（4K 最高會撞到）
-  int kbpsFor(int w, int h) =>
-      (w * h * 30 * bpp / 1000).round().clamp(1500, 120000);
+  /// 這一檔在指定輸出尺寸與影格率下的位元率（kbps）。
+  /// 下限擋住極小畫面算出來的荒謬低值，上限是保護（4K 最高會撞到）。
+  ///
+  /// 影格率用開根號進位：60fps 不用兩倍位元率——相鄰影格更像、
+  /// 可壓縮的冗餘更多，經驗值大約多四成，跟 sqrt(2)≈1.41 剛好對上。
+  /// 不算的話 60fps 每格只分到一半預算，同一檔畫質實際上掉一階
+  int kbpsFor(int w, int h, {double fps = 30}) {
+    final f = fps <= 0 ? 1.0 : math.pow(fps / 30, 0.5).toDouble();
+    return (w * h * 30 * bpp * f / 1000).round().clamp(1500, 120000);
+  }
 
   int get crf => switch (this) {
         ExportQuality.low => 26,
@@ -98,13 +104,22 @@ extension ExportQualityInfo on ExportQuality {
         ExportQuality.lossless => 0,
       };
 
-  /// 粗估檔案大小相對「標準」的倍率
-  double get sizeFactor => switch (this) {
-        ExportQuality.low => 0.45,
-        ExportQuality.standard => 1,
-        ExportQuality.ultra => 1.8,
-        ExportQuality.lossless => 4,
-      };
+}
+
+/// 輸出影格率：跟著素材走（取專案中最高者），只處理兩種例外。
+///
+/// probe 讀到垃圾值（0 或大於 480）退回 30。合法的高影格素材夾到
+/// 120 而不是丟回 30——原本的防呆寫成 fps>120 就整個退回 30，
+/// 等於 240fps 的慢動作素材一匯出就掉七成的影格。
+///
+/// 1440p 以上夾 60：多數手機的硬體編碼器 4K 只支援到 60，硬塞
+/// 120 會編碼失敗、掉進 mpeg4 軟編退路，畫質反而全毀
+double outputFps(double srcFps, int outW, int outH) {
+  var fps = srcFps;
+  if (fps <= 0 || fps > 480) return 30;
+  if (fps > 120) fps = 120;
+  if (outW * outH > 2560 * 1440 && fps > 60) fps = 60;
+  return fps;
 }
 
 /// 匯出規格裡存的是 CRF 數字，換回檔位
@@ -133,6 +148,7 @@ ExportQuality recommendQuality({
   required double srcKbps,
   required int outW,
   required int outH,
+  double fps = 30,
   double headroom = 1.25,
   ExportQuality cap = ExportQuality.ultra,
 }) {
@@ -141,7 +157,7 @@ ExportQuality recommendQuality({
   final limit = qualityOrder.indexOf(cap);
   for (final (i, q) in qualityOrder.indexed) {
     if (i >= limit) break;
-    if (q.kbpsFor(outW, outH) >= need) return q;
+    if (q.kbpsFor(outW, outH, fps: fps) >= need) return q;
   }
   return cap;
 }

@@ -89,7 +89,8 @@ class _SourceProbe {
   /// HDR 素材（HLG／HDR10／杜比視界）：處理畫面時要先轉 SDR bt709，
   /// 不轉的話顏色整片灰白退色
   final bool hdr;
-  const _SourceProbe(this.hasAudio, this.fps, this.hdr);
+  final String codec; // 視訊編碼（hevc/h264/…，讀不到＝空字串）
+  const _SourceProbe(this.hasAudio, this.fps, this.hdr, [this.codec = '']);
 }
 
 /// HDR → SDR（bt709）色彩轉換。iPhone 預設就錄 HDR（HLG），
@@ -113,8 +114,10 @@ Future<_SourceProbe> _probe(String path) async {
     final hasAudio = streams.any((s) => s.getType() == 'audio');
     double fps = 0;
     var hdr = false;
+    var codec = '';
     for (final s in streams) {
       if (s.getType() == 'video') {
+        codec = (s.getCodec() ?? '').toLowerCase();
         final r = s.getAverageFrameRate() ?? '';
         final parts = r.split('/');
         if (parts.length == 2) {
@@ -132,7 +135,7 @@ Future<_SourceProbe> _probe(String path) async {
         break;
       }
     }
-    final r = _SourceProbe(hasAudio, fps, hdr);
+    final r = _SourceProbe(hasAudio, fps, hdr, codec);
     _probeCache[path] = r;
     return r;
   } catch (_) {
@@ -176,7 +179,7 @@ Future<String> _buildCommand(
   for (var i = 0; i < spec.sources.length; i++) {
     if (spec.sources[i].isVideo && probes[i]!.fps > fps) fps = probes[i]!.fps;
   }
-  if (fps <= 0 || fps > 120) fps = 30;
+  fps = outputFps(fps, spec.outW, spec.outH);
 
   // 一個輸入串流只能被消費一次，被多個片段引用時要先 split
   final vNeed = <int, int>{};
@@ -636,9 +639,9 @@ Future<String> _buildCommand(
     // LGPL 版沒有 x264：H.264 用手機的硬體編碼器（更快、更省電），
     // 畫質用位元率控制（硬體編碼器不吃 CRF）
     ..write(
-      '-c:v ${_hwEncoder()} -b:v ${_kbpsFor(spec)}k '
-      '-maxrate ${(_kbpsFor(spec) * 1.4).round()}k '
-      '-bufsize ${_kbpsFor(spec) * 2}k -pix_fmt nv12 ',
+      '-c:v ${_hwEncoder()} -b:v ${_kbpsFor(spec, fps)}k '
+      '-maxrate ${(_kbpsFor(spec, fps) * 1.4).round()}k '
+      '-bufsize ${_kbpsFor(spec, fps) * 2}k -pix_fmt nv12 ',
     )
     ..write('-movflags +faststart ')
     ..write('"$outPath"');
@@ -653,8 +656,14 @@ String _hwEncoder() => (Platform.isIOS || Platform.isMacOS)
 /// 畫質檔位 → 位元率。表在 ExportQuality 上（video_processor.dart），
 /// 兩邊共用一張——各自維護一份的話，加檔位時漏改一邊就會有兩檔
 /// 輸出一模一樣的檔案
-int _kbpsFor(ExportSpec spec) =>
-    qualityFromCrf(spec.crf).kbpsFor(spec.outW, spec.outH);
+int _kbpsFor(ExportSpec spec, double fps) =>
+    qualityFromCrf(spec.crf).kbpsFor(spec.outW, spec.outH, fps: fps);
+
+/// 素材的視訊編碼與影格率（畫質自動挑檔用）。讀不到就回空值
+Future<({String codec, double fps})> probeVideoInfo(String path) async {
+  final p = await _probe(path);
+  return (codec: p.codec, fps: p.fps);
+}
 
 /// 取消正在進行的匯出（FFmpeg 一次只跑一個 session，全取消即可）
 Future<void> cancelExport() async {
