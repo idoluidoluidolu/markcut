@@ -34,6 +34,9 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
 /// 取消匯出（Web 版沒有匯出，不用做事）
 Future<void> cancelExport() async {}
 
+/// Web 沒有 FFmpeg，不做 HDR 轉換（診斷報告會照實寫）
+Future<String> hdrChainName() async => '不適用（web 沒有 FFmpeg）';
+
 /// Web 量不到（素材是 blob URL），回空值＝畫質自動挑不啟用
 Future<({String codec, double fps, int w, int h})> probeVideoInfo(
   String path,
