@@ -2533,8 +2533,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         final lead = clip.offset - _position;
         if (lead <= 0 || lead > 2.0) {
           _preRolled.remove(clip.id);
-          // 又滑遠了：把預熱中的播放器收回來，不然它會一直慢慢跑
-          if (_warmed.remove(clip.id) && lead > 0 && c.value.isPlaying) {
+          // 滑遠了才把預熱中的播放器收回來。lead<=0 是「正要進場」，
+          // 旗標要留給進場那一段消化（它靠這個旗標換回正常速度）——
+          // 之前在這裡就把旗標吃掉，進場後速度永遠卡在慢速
+          if (lead > 0 && _warmed.remove(clip.id) && c.value.isPlaying) {
             c.pause();
           }
           continue;
@@ -2550,8 +2552,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (_playing && lead < 0.35 && _warmed.add(clip.id)) {
           _lastVol[clip.id] = 0;
           c.setVolume(0);
-          c.setPlaybackSpeed(0.05);
-          c.play();
+          // 素材在 trimStart 之前還有畫面可用時（修剪、切割過的片段
+          // 都有），直接用正常速度「助跑」：從 trimStart 往前倒一點
+          // 開播，到交界剛好走到 trimStart，進場只是把透明度打開，
+          // 完全沒有起步這回事。trimStart=0（整支直接匯入）沒有前段
+          // 可倒，退回極慢速讓解碼管線轉著，進場再換速度
+          final backSrc = math.min(lead * clip.speed, clip.trimStart);
+          if (backSrc > 0.02) {
+            c.seekTo(
+              Duration(
+                milliseconds: ((clip.trimStart - backSrc) * 1000).round(),
+              ),
+            );
+            c.setPlaybackSpeed(_speed * clip.speed);
+          } else {
+            c.setPlaybackSpeed(0.05);
+          }
+          unawaited(c.play());
         }
       }
     }
@@ -2566,7 +2583,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (active != (pass == 0)) continue;
         if (!active) {
           _wasActive.remove(clip.id);
-          _warmed.remove(clip.id);
+          // 預熱中的不能在這裡按停——它就是要在進場前先跑著。
+          // 之前這裡把剛開始預熱的播放器當場暫停，每一格都是
+          // 「開播→立刻按停」，預熱從來沒真的發生過，交界照樣頓。
+          // 預熱的收回由上面 pre-roll 那段管（滑遠了才停）
+          if (_warmed.contains(clip.id)) continue;
           if (c.value.isPlaying) c.pause();
           continue;
         }
