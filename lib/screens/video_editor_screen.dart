@@ -4249,6 +4249,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         : null;
                                     children.add(
                                       Positioned.fromRect(
+                                        // 整層掛 key：交界那一格上一段會從
+                                        // children 裡消失，後面每一層的索引
+                                        // 都往前推一格。沒有 key 的話 Flutter
+                                        // 是按位置配對的，這些層會被當成
+                                        // 「換了個東西」重建——影片圖層一重建
+                                        // 就要重新掛貼圖，那就是交界的閃爍。
+                                        // 有 key 就認得出是同一層，只是換位置
+                                        key: ValueKey('vidlayer${c.id}'),
                                         rect: r,
                                         child: _tinted(
                                           c,
