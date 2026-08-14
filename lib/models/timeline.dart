@@ -430,20 +430,23 @@ class TimelineModel {
     }
   }
 
-  /// 把一個時間點吸到最近的參考點（別的片段的頭尾、播放頭、0）。
-  /// 修剪把手、浮水印範圍都用這個，手感跟拖曳整段一致
+  /// 把一個時間點吸到最近的素材頭尾。
+  /// 修剪把手、浮水印範圍都用這個，手感跟拖曳整段一致。
+  ///
+  /// 只吸素材的頭尾。播放頭和 0 秒都拿掉了：播放頭會跟著手指跑，
+  /// 是個位置一直在變的吸附點，滑到哪吸到哪＝「亂吸」。0 秒也不必
+  /// 特別給，第一段素材的頭本來就在那裡
   double snapTime(
     double want,
-    double playhead,
     double pxPerSec, {
     int? exceptId,
     double radiusPx = 16,
     double maxSec = 0.5,
   }) {
     // 吸附半徑（像素）＋秒數上限（縮到很小時 16px 可能是十幾秒，
-    // 不設上限整條軸都在吸）。播放頭用自己的一組參數
+    // 不設上限整條軸都在吸）
     final threshold = math.min(radiusPx / pxPerSec, maxSec);
-    final candidates = <double>[0, playhead];
+    final candidates = <double>[];
     for (final c in clips) {
       if (c.id == exceptId) continue;
       candidates.addAll([c.offset, c.end]);
@@ -465,21 +468,20 @@ class TimelineModel {
   double snapEdge(
     TimelineClip moving,
     double want,
-    double playhead,
     double pxPerSec,
-  ) => snapTime(want, playhead, pxPerSec, exceptId: moving.id);
+  ) => snapTime(want, pxPerSec, exceptId: moving.id);
 
-  /// 拖曳時的貼齊：吸附到其他片段邊緣、播放頭與 0
+  /// 拖曳時的貼齊：只吸到其他素材的頭尾（自己的頭對它們的頭尾、
+  /// 自己的尾對它們的頭尾，四種組合）。理由同 [snapTime]
   double snapOffset(
     TimelineClip moving,
     double want,
-    double playhead,
     double pxPerSec,
   ) {
     // 跟 snapTime 同一組手感參數
     final threshold = math.min(16 / pxPerSec, 0.5);
     final len = moving.length;
-    final candidates = <double>[0, playhead, playhead - len];
+    final candidates = <double>[];
     for (final c in clips) {
       if (c.id == moving.id) continue;
       candidates.addAll([c.offset, c.end, c.offset - len, c.end - len]);

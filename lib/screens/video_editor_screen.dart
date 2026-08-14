@@ -750,7 +750,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 半徑用 12px：太大會在滑過去的時候一直被抓住
   double? _nearestEdge(double t) {
     if (!_snapOn) return null;
-    final snapped = _tl.snapTime(t, -1, _pxPerSec, radiusPx: 12);
+    final snapped = _tl.snapTime(t, _pxPerSec, radiusPx: 12);
     return (snapped - t).abs() > 0.0005 ? snapped : null;
   }
 
@@ -1183,7 +1183,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             _voLevels.value = [..._voLevels.value, v];
           });
       setState(() => _voRecording = true);
-      _play(); // 影片跟著跑，才能對著畫面講
+      unawaited(_play()); // 影片跟著跑，才能對著畫面講
     } catch (e) {
       if (mounted) showHint(context, '無法開始錄音：$e', error: true);
     }
@@ -2226,9 +2226,41 @@ final color = Color(picked ?? 0);
     // 不做 setState：位置相關 UI 由 _posVN 各自小範圍重繪
   }
 
-  void _play() {
+  /// 起步：先把「現在該播的那幾段」seek 到位、等解碼器準備好，
+  /// 再開時鐘。
+  ///
+  /// 原本是按下去就開時鐘，然後才在 _syncMedia 裡 seek——解碼器
+  /// 轉起來要時間，這段期間時鐘已經在跑而畫面還停在上一格，
+  /// 所以每次按播放開頭都頓一下。播放途中的段落交界不會有這個問題，
+  /// 因為那些是提早 1.2 秒預先對位過的（見 _syncMedia 的 pre-roll）
+  Future<void> _play() async {
     if (_tl.duration <= 0) return;
     if (_position >= _tl.duration - 0.01) _position = 0;
+    final waits = <Future<void>>[];
+    for (final clip in _tl.clips) {
+      final k = _tl.sourceOf(clip).kind;
+      if (k != ClipKind.video && k != ClipKind.audio) continue;
+      if (!clip.covers(_position)) continue;
+      if (_wasActive.contains(clip.id)) continue; // 已經對好了
+      final c = _ctrls[clip.id];
+      if (c == null || !c.value.isInitialized) continue;
+      _wasActive.add(clip.id); // 標記已進場，_syncMedia 不再 seek 一次
+      waits.add(
+        c.seekTo(
+          Duration(
+            milliseconds: (clip.sourceTimeAt(_position) * 1000).round(),
+          ),
+        ),
+      );
+    }
+    if (waits.isNotEmpty) {
+      // 上限 400ms：seek 卡住的話寧可頓一下，也不能讓播放鍵沒反應
+      await Future.any([
+        Future.wait(waits).then((_) {}),
+        Future<void>.delayed(const Duration(milliseconds: 400)),
+      ]);
+      if (!mounted) return;
+    }
     setState(() => _playing = true);
     _lastTick = Duration.zero;
     _ticker.start();
@@ -2577,7 +2609,7 @@ final color = Color(picked ?? 0);
         final raw = (_trimRawEdge ?? curEdge) + dSec;
         _trimRawEdge = raw;
         final snapped = _snapOn
-            ? _tl.snapEdge(c, raw, _position, _pxPerSec)
+            ? _tl.snapEdge(c, raw, _pxPerSec)
             : raw;
         // 剛吸上去的那一下震動回饋
         final on = (snapped - raw).abs() > 0.0005;
@@ -2636,7 +2668,7 @@ final color = Color(picked ?? 0);
       final raw = (_trimRawEdge ?? cur) + d;
       _trimRawEdge = raw;
       final snapped = _snapOn
-          ? _tl.snapTime(raw, _position, _pxPerSec)
+          ? _tl.snapTime(raw, _pxPerSec)
           : raw;
       final on = (snapped - raw).abs() > 0.0005;
       if (on != _trimSnapped) {
@@ -3697,7 +3729,13 @@ final color = Color(picked ?? 0);
               icon: Icon(
                 _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
               ),
-              onPressed: () => _playing ? _pause() : _play(),
+              onPressed: () {
+                if (_playing) {
+                  _pause();
+                } else {
+                  unawaited(_play());
+                }
+              },
             ),
           ),
           // RepaintBoundary：時間碼每格重繪不波及整條播放列
@@ -4570,6 +4608,8 @@ final color = Color(picked ?? 0);
                                             // undo 延到第一次真的動到東西
                                             // 才拍：光按一下不該吃掉 redo
                                             _routerUndoPending = true;
+                                            _rtStartFocal = d.focalPoint;
+                                            _rtArmed = false;
                                             _rtClearGuides();
                                             if (selVis != null) {
                                               _gestureStartPx = selVis.px;
@@ -4580,6 +4620,26 @@ final color = Color(picked ?? 0);
                                             _routerLast = d.focalPoint;
                                           },
                                           onScaleUpdate: (d) {
+                                            // 起手門檻：手指移超過 6px
+                                            // 才開始搬。點一下要選取、
+                                            // 或抬手時的一點點位移，
+                                            // 都不該把素材推歪幾個像素
+                                            if (!_rtArmed) {
+                                              if (d.pointerCount < 2 &&
+                                                  (d.focalPoint -
+                                                              _rtStartFocal)
+                                                          .distance <
+                                                      6) {
+                                                _routerLast = d.focalPoint;
+                                                return;
+                                              }
+                                              _rtArmed = true;
+                                              // 起算點移到「越過門檻的這
+                                              // 一刻」，不然會憑空跳 6px
+                                              _gestureStartFocal =
+                                                  d.focalPoint;
+                                              _routerLast = d.focalPoint;
+                                            }
                                             if (selVis != null) {
                                               _routerPushUndoIfNeeded();
                                               // 文字素材可以放大到 12 倍
@@ -4798,6 +4858,11 @@ final color = Color(picked ?? 0);
 
   // ===== 預覽區雙指縮放（選取中的浮水印或片段）=====
   final Map<int, Offset> _pvPts = {};
+
+  /// 預覽拖曳的起手門檻用：這次手勢按下去的位置，以及「已經越過
+  /// 門檻、可以開始搬」的旗標（見 onScaleUpdate）
+  Offset _rtStartFocal = Offset.zero;
+  bool _rtArmed = false;
 
   /// 選取路由的上一個拖曳點（算增量用）
   Offset _routerLast = Offset.zero;

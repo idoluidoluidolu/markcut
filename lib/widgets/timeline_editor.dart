@@ -352,7 +352,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
 
     final want = l.startOffset + l.dx / pxPerSec;
     final offset = widget.snapEnabled
-        ? timeline.snapOffset(clip, want, widget.playhead.value, pxPerSec)
+        ? timeline.snapOffset(clip, want, pxPerSec)
         : math.max(0.0, want);
     final len = clip.length;
 
@@ -764,7 +764,13 @@ class _TimelineEditorState extends State<TimelineEditor> {
             ),
           ),
         ),
-        for (final c in clips)
+        // 被選取的畫最後：把手熱區會伸出片段邊界一點，
+        // 排在前面的話那一截會被相鄰片段蓋住，等於白做
+        for (final c in [...clips]..sort(
+          (a, b) => (a.id == widget.selectedId ? 1 : 0).compareTo(
+            b.id == widget.selectedId ? 1 : 0,
+          ),
+        ))
           _ClipBlock(
             key: ValueKey('clip${c.id}'),
             clip: c,
@@ -1193,6 +1199,9 @@ class _EagerPanRecognizer extends PanGestureRecognizer {
   }
 }
 
+/// 修剪把手的熱區往片段外多伸出去多少（見 _TrimHandle.overhang）
+const double _kHandleOverhang = 14;
+
 /// 時間軸上的片段。拖曳時本體留在原地變淡，移動的是父層的幽靈。
 class _ClipBlock extends StatelessWidget {
   final TimelineClip clip;
@@ -1271,7 +1280,12 @@ class _ClipBlock extends StatelessWidget {
           },
           child: GestureDetector(
             onTap: () => onSelect(clip.id),
-            child: Container(
+            // 外層不裁切：修剪把手的熱區要能伸出片段邊界一點
+            child: Stack(
+              clipBehavior: Clip.none,
+              fit: StackFit.passthrough,
+              children: [
+            Container(
               width: w,
               decoration: BoxDecoration(
                 color: fill,
@@ -1335,7 +1349,10 @@ class _ClipBlock extends StatelessWidget {
                         ),
                       ),
                     ),
-                  if (isSelected && !lifted) ...[
+                ],
+              ),
+            ),
+                  if (isSelected && !lifted)
                     // 熱區跟著片段長度給，短片段不會被兩個把手佔滿；
                     // 位置夾在可視範圍內，片段拉得比畫面長時
                     // 把手會貼在邊緣而不是跑到畫面外
@@ -1355,12 +1372,14 @@ class _ClipBlock extends StatelessWidget {
                           return Stack(
                             children: [
                               Positioned(
-                                left: vL.clamp(0.0, maxX),
+                                left:
+                                    vL.clamp(0.0, maxX) - _kHandleOverhang,
                                 top: 0,
                                 bottom: 0,
                                 child: _TrimHandle(
                                   isLeft: true,
                                   width: hw,
+                                  overhang: _kHandleOverhang,
                                   onStart: onTrimStart,
                                   onDrag: (d) => onTrim(clip.id, d, true),
                                   pxPerSec: pxPerSec,
@@ -1368,11 +1387,13 @@ class _ClipBlock extends StatelessWidget {
                               ),
                               Positioned(
                                 left: (vR - hw).clamp(0.0, maxX),
+                                // 右把手的熱區往右長，位置不用退
                                 top: 0,
                                 bottom: 0,
                                 child: _TrimHandle(
                                   isLeft: false,
                                   width: hw,
+                                  overhang: _kHandleOverhang,
                                   onStart: onTrimStart,
                                   onDrag: (d) => onTrim(clip.id, d, false),
                                   pxPerSec: pxPerSec,
@@ -1383,9 +1404,7 @@ class _ClipBlock extends StatelessWidget {
                         },
                       ),
                     ),
-                  ],
-                ],
-              ),
+              ],
             ),
           ),
         ),
@@ -1620,11 +1639,17 @@ class _TrimHandle extends StatelessWidget {
   final ValueChanged<double> onDrag;
   final VoidCallback? onStart;
 
+  /// 熱區往片段外面多伸出去的寬度。手指瞄準的是邊緣那條把手，
+  /// 接觸面有一半會落在片段外——熱區只到邊界為止的話，那一半會
+  /// 打到底下的軌道背景，變成捲動時間軸
+  final double overhang;
+
   const _TrimHandle({
     required this.isLeft,
     required this.pxPerSec,
     required this.onDrag,
     this.width = 26,
+    this.overhang = 0,
     this.onStart,
   });
 
@@ -1643,11 +1668,16 @@ class _TrimHandle extends StatelessWidget {
                 ..onUpdate = ((d) => onDrag(d.delta.dx / pxPerSec)),
             ),
       },
-      // 觸控熱區由呼叫端依片段長度給（22～40），視覺維持 13px 細把手——
-      // 手指粗一點也按得到，畫面不變胖
+      // 觸控熱區由呼叫端依片段長度給（22～40）＋往外的 overhang，
+      // 視覺維持 13px 細把手——手指粗一點也按得到，畫面不變胖。
+      // padding 把視覺把手推回片段邊界上：熱區往外長，圖案不動
       child: Container(
-        width: width,
+        width: width + overhang,
         color: Colors.transparent,
+        padding: EdgeInsets.only(
+          left: isLeft ? overhang : 0,
+          right: isLeft ? 0 : overhang,
+        ),
         alignment: isLeft ? Alignment.centerLeft : Alignment.centerRight,
         child: Container(
           width: 13,

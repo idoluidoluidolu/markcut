@@ -487,7 +487,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       if (_stopRequested) break;
       final item = _items[i];
       final f = item.file;
-      label.value = '第 ${i + 1} / $total 個：${f.name}';
+      // 不顯示檔名：使用者是照順序挑的，看到 IMG_4821.HEIC 也對不上
+      // 是哪一張，那串字只是把「還剩幾個」擠掉
+      label.value = '第 ${i + 1} / $total 個';
       try {
         if (_isVideo(f)) {
           if (!engine.videoExportSupported) {

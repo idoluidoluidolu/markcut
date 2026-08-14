@@ -337,9 +337,13 @@ Future<String> _buildCommand(
       'trim=start=${_f(c.trimStart)}:end=${_f(c.trimEnd)},'
       // 先縮到輸出尺寸再倒轉：reverse 會把整段畫面存進記憶體，
       // 用原始解析度存會直接把記憶體吃爆
-      'scale=$w2:$h2:flags=lanczos,'
-      // HDR 素材轉 SDR（縮完再轉，像素少、算得快）
+      // HDR 素材先轉 SDR，再縮放。
+      // 順序不能反：swscale 縮放時會順手把畫格的色彩標記換成輸出
+      // 格式的預設值，等 colorspace 拿到手時來源是 bt2020 這件事
+      // 已經被抹掉，轉換就變成沒作用——畫面照樣退色而且不會報錯。
+      // 縮圖那條路一直是先轉再縮，所以縮圖正常、只有匯出退色
       '${probes[c.sourceIndex]!.hdr ? '$_kHdr2Sdr,' : ''}'
+      'scale=$w2:$h2:flags=lanczos,'
       '${c.reverse ? 'reverse,' : ''}'
       // 全域速度 × 每片段速度一起壓進 PTS
       //（速度 clamp 到跟 TimelineClip.length 同一個範圍，
@@ -705,11 +709,13 @@ Future<String?> _prerenderReverse(
     final e = math.min(trimEnd, s + chunkSec);
     if (e - s < 0.02) continue;
     final part = '${dir.path}${Platform.pathSeparator}rev_${ts}_$i.mp4';
-    // 先縮到輸出尺寸再倒轉：用原始解析度倒轉一樣會吃爆記憶體
+    // 先縮到輸出尺寸再倒轉：用原始解析度倒轉一樣會吃爆記憶體。
+    // 轉色排在縮放之前（理由同主匯出：swscale 縮完會把來源的
+    // 色彩標記換掉，colorspace 再轉就沒作用了）
     final cmd =
         '-y -ss ${_f(s)} -to ${_f(e)} -i "$srcPath" '
-        '-vf "scale=$outW:$outH:flags=bicubic,'
-        '${hdr ? '$_kHdr2Sdr,' : ''}reverse" -an '
+        '-vf "${hdr ? '$_kHdr2Sdr,' : ''}'
+        'scale=$outW:$outH:flags=bicubic,reverse" -an '
         '-c:v ${_hwEncoder()} -b:v 16000k -pix_fmt nv12 "$part"';
     var ses = await FFmpegKit.execute(cmd);
     var rc = await ses.getReturnCode();

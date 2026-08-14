@@ -159,7 +159,7 @@ void main() {
               final c = tl.clips[r.nextInt(tl.clips.length)];
               final want = (r.nextDouble() - 0.2) * 80;
               final px = [1.0, 8.0, 60.0, 200.0][r.nextInt(4)];
-              final o = tl.snapOffset(c, want, r.nextDouble() * 60, px);
+              final o = tl.snapOffset(c, want, px);
               expect(o.isFinite && o >= 0, isTrue, reason: 'seed=$seed 吸附算壞了');
               c.offset = o;
             case 3: // 隨機修剪
@@ -402,8 +402,7 @@ void main() {
       for (var i = 0; i < 20000; i++) {
         final px = [0.5, 1.0, 6.0, 60.0, 200.0, 1e4][r.nextInt(6)];
         final want = (r.nextDouble() - 0.3) * 200;
-        final head = r.nextDouble() * 100;
-        final got = tl.snapOffset(moving, want, head, px);
+        final got = tl.snapOffset(moving, want, px);
         expect(got.isFinite, isTrue);
         expect(got >= 0, isTrue, reason: '吸附回傳負值 $got');
         // 吸附幅度：手感是 24px，但秒數上限 2 秒——
