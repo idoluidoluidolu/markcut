@@ -265,10 +265,13 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         if (_isVideo(f)) {
           // 條列用的小格，抽小的就好（大預覽另外抽 720p）
           final t = await engine.makeThumbnails(f.path, 1, 1, height: 240);
-          if (t.isNotEmpty) {
-            item.thumb = t.first;
-            item.dims = await _dimsOf(t.first);
-          }
+          if (t.isNotEmpty) item.thumb = t.first;
+          // 尺寸問影片本身，不要拿縮圖反推：縮圖只有在旋轉被正確
+          // 套用時才等於顯示方向，一有落差畫布就會變成橫的
+          final info = await engine.probeVideoInfo(f.path);
+          item.dims = (info.w > 0 && info.h > 0)
+              ? (info.w, info.h)
+              : (t.isNotEmpty ? await _dimsOf(t.first) : null);
         } else {
           final bytes = await f.readAsBytes();
           item.dims = await _dimsOf(bytes);
@@ -279,6 +282,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       if (mounted) setState(() {});
     }
   }
+
+  /// 拿來呼叫面板的「存成範本」（按鈕搬到底部那一排了）
+  final _panelKey = GlobalKey<WatermarkPanelState>();
 
   // 大預覽只留「目前這一張」的高解析度，換張就換掉
   Uint8List? _previewBytes;
@@ -874,7 +880,11 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
             child: Stack(
               children: [
                 WatermarkPanel(
+                  key: _panelKey,
                   controller: _wmPanelCtrl,
+                  // 面板內的「儲存範本」藏起來，改放底部那一排
+                  //（跟照片編輯同一個位置、同一個樣式）
+                  hideSaveButton: true,
                   // 綁「這張實際生效的設定」：單張模式下要改的是那張的
                   // override，綁 _settings 的話面板改了預覽不動、
                   // 其他張反而被改到
@@ -909,14 +919,29 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
               ],
             ),
           ),
-          // 主要動作跟照片編輯同一顆：整寬膠囊，不再縮在右下角
+          // 底部那一排跟照片編輯完全一樣：存成範本（次要）＋輸出（主要）
           SafeArea(
             top: false,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
-              child: primaryAction(
-                label: '輸出',
-                onPressed: _exporting ? null : _confirmExportAll,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: secondaryAction(
+                      label: '存成範本',
+                      onPressed: _exporting
+                          ? null
+                          : () => _panelKey.currentState?.savePreset(),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: primaryAction(
+                      label: '輸出',
+                      onPressed: _exporting ? null : _confirmExportAll,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),

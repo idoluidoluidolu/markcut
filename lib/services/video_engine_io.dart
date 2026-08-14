@@ -6,6 +6,7 @@ import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit_config.dart';
 import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/return_code.dart';
+import 'package:ffmpeg_kit_flutter_new/stream_information.dart';
 import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -91,12 +92,24 @@ class _SourceProbe {
   final bool hdr;
   final String codec; // 視訊編碼（hevc/h264/…，讀不到＝空字串）
   final String trc; // 轉換曲線（arib-std-b67=HLG、smpte2084=PQ）
+
+  /// 旋轉校正後的顯示長寬（0＝讀不到）。手機直式影片多半是
+  /// 「橫著存＋旋轉 90 度」的旗標，容器裡的 width/height 是橫的
+  final int dispW;
+  final int dispH;
+
+  /// 影片的旋轉角度（0/90/180/270）
+  final int rotation;
+
   const _SourceProbe(
     this.hasAudio,
     this.fps,
     this.hdr, [
     this.codec = '',
     this.trc = '',
+    this.dispW = 0,
+    this.dispH = 0,
+    this.rotation = 0,
   ]);
 }
 
@@ -157,6 +170,36 @@ Future<String> _hdrChainFor(String trc) async {
   return trc == 'arib-std-b67' ? _kHdrHlg : _kHdrPq;
 }
 
+/// 從串流資訊裡挖出旋轉角度。放的地方有兩種：新的檔案在
+/// side_data_list 的 rotation（負角度），舊的在 tags.rotate。
+/// 兩邊都翻一次，正規化成 0/90/180/270
+int _rotationOf(StreamInformation s) {
+  double? raw;
+  final props = s.getAllProperties();
+  if (props != null) {
+    final sd = props['side_data_list'];
+    if (sd is List) {
+      for (final e in sd) {
+        if (e is Map && e['rotation'] != null) {
+          raw = double.tryParse('${e['rotation']}');
+          break;
+        }
+      }
+    }
+    if (raw == null) {
+      final tags = props['tags'];
+      if (tags is Map && tags['rotate'] != null) {
+        raw = double.tryParse('${tags['rotate']}');
+      }
+    }
+  }
+  if (raw == null) return 0;
+  // side_data 的角度是「要轉回來的量」，習慣上取正值看
+  var deg = (-raw).round() % 360;
+  if (deg < 0) deg += 360;
+  return const {0, 90, 180, 270}.contains(deg) ? deg : 0;
+}
+
 /// 同一個檔案的 probe 快取（檔案內容不會變，縮圖會反覆問同一支）
 final Map<String, _SourceProbe> _probeCache = {};
 
@@ -172,9 +215,13 @@ Future<_SourceProbe> _probe(String path) async {
     var hdr = false;
     var codec = '';
     var trcOut = '';
+    var vw = 0, vh = 0, rot = 0;
     for (final s in streams) {
       if (s.getType() == 'video') {
         codec = (s.getCodec() ?? '').toLowerCase();
+        vw = s.getWidth() ?? 0;
+        vh = s.getHeight() ?? 0;
+        rot = _rotationOf(s);
         final r = s.getAverageFrameRate() ?? '';
         final parts = r.split('/');
         if (parts.length == 2) {
@@ -193,7 +240,18 @@ Future<_SourceProbe> _probe(String path) async {
         break;
       }
     }
-    final r = _SourceProbe(hasAudio, fps, hdr, codec, trcOut);
+    // 90/270 度＝長寬對調才是使用者看到的方向
+    final swap = rot == 90 || rot == 270;
+    final r = _SourceProbe(
+      hasAudio,
+      fps,
+      hdr,
+      codec,
+      trcOut,
+      swap ? vh : vw,
+      swap ? vw : vh,
+      rot,
+    );
     _probeCache[path] = r;
     return r;
   } catch (_) {
@@ -726,10 +784,13 @@ String _hwEncoder() => (Platform.isIOS || Platform.isMacOS)
 int _kbpsFor(ExportSpec spec, double fps) =>
     qualityFromCrf(spec.crf).kbpsFor(spec.outW, spec.outH, fps: fps);
 
-/// 素材的視訊編碼與影格率（畫質自動挑檔用）。讀不到就回空值
-Future<({String codec, double fps})> probeVideoInfo(String path) async {
+/// 素材的視訊編碼、影格率與「旋轉校正後」的顯示長寬。
+/// 讀不到就回空值（w/h 為 0）
+Future<({String codec, double fps, int w, int h})> probeVideoInfo(
+  String path,
+) async {
   final p = await _probe(path);
-  return (codec: p.codec, fps: p.fps);
+  return (codec: p.codec, fps: p.fps, w: p.dispW, h: p.dispH);
 }
 
 /// 取消正在進行的匯出（FFmpeg 一次只跑一個 session，全取消即可）
@@ -1089,9 +1150,18 @@ Future<List<Uint8List>> _makeThumbnails(
   // 灰白，拖曳預覽跟播放畫面顏色對不上（也就是「拖曳會退色」）
   final p0 = await _probe(inputPath);
   final hdrFix = p0.hdr ? '${await _hdrChainFor(p0.trc)},' : '';
+  // 旋轉：直式手機影片多半是「橫著存＋旋轉旗標」。解碼器不一定會
+  // 自動轉回來，不轉的話抽出來的縮圖是躺著的，連帶讓依縮圖算的
+  // 畫布比例也變成橫的
+  final rotFix = switch (p0.rotation) {
+    90 => 'transpose=1,',
+    180 => 'transpose=1,transpose=1,',
+    270 => 'transpose=2,',
+    _ => '',
+  };
   final cmd =
       '-y $skip$seek-i "$inputPath" '
-      '-vf "fps=${fps.toStringAsFixed(6)},$hdrFix$scale" '
+      '-vf "fps=${fps.toStringAsFixed(6)},$rotFix$hdrFix$scale" '
       '-frames:v $count -q:v 4 "$pattern"';
   var session = await FFmpegKit.execute(cmd);
   var rc = await session.getReturnCode();

@@ -35,8 +35,9 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
 Future<void> cancelExport() async {}
 
 /// Web 量不到（素材是 blob URL），回空值＝畫質自動挑不啟用
-Future<({String codec, double fps})> probeVideoInfo(String path) async =>
-    (codec: '', fps: 0.0);
+Future<({String codec, double fps, int w, int h})> probeVideoInfo(
+  String path,
+) async => (codec: '', fps: 0.0, w: 0, h: 0);
 
 /// Web 沒有 FFmpeg：用隱形 <video> + canvas 抓格做縮圖，
 /// 時間軸 filmstrip 與草稿封面才有畫面
