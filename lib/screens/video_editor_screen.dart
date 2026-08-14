@@ -19,6 +19,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
 import '../services/audio_picker.dart';
+import '../services/native_frames.dart';
 import '../services/playback_trace.dart';
 import '../services/export_speed.dart';
 import '../services/file_reader.dart';
@@ -640,7 +641,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         ) {
           if (mounted && t.isNotEmpty) setState(() => _thumbs[i] = t);
         });
-        _makeScrubCache(i, s.path, s.duration);
+        _ensureScrubSlots(i, s.duration);
       }
     }
     _droppedOnLoad = _tl.clips
@@ -649,6 +650,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _tl.clips.removeWhere((c) => deadSources.contains(c.sourceIndex));
     for (final c in _tl.clips) {
       _ensureCtrlFor(c);
+    }
+    // 簡易倒轉的片段（沒轉成倒轉檔的那種）預覽只能吃密集快取幀，
+    // 那幾支素材照舊整條抽；其他素材都改成滑到哪抽到哪
+    for (final i in {
+      for (final c in _tl.clips)
+        if (c.reverse) c.sourceIndex,
+    }) {
+      final s = _tl.sources[i];
+      _makeScrubCache(i, s.path, s.duration);
     }
   }
 
@@ -737,6 +747,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if ((t - _position).abs() < 0.001) return;
     _position = t; // 位置 UI 由 _posVN 小範圍重繪，不整頁 setState
     _scrubbing = true; // 快取幀模式（下一次 30fps 重繪就生效）
+    _requestScrubFrames();
     _scrubEndTimer?.cancel();
     _scrubEndTimer = Timer(const Duration(milliseconds: 220), _tryEndScrub);
     if (_activeScrubCached) {
@@ -904,7 +915,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     engine.makeThumbnails(path, dur, 10, fastDecode: true).then((t) {
       if (mounted && t.isNotEmpty) setState(() => _thumbs[srcIndex] = t);
     });
-    _makeScrubCache(srcIndex, path, dur);
+    _ensureScrubSlots(srcIndex, dur);
     unawaited(_measureSrcKbps());
   }
 
@@ -965,6 +976,70 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 正在跑的抽幀 FFmpeg 段數（匯出前要等它歸零，
   /// 不然兩個 FFmpeg 同時跑會吃爆記憶體、進度統計也會打架）
   int _scrubExtracting = 0;
+
+  /// 配好某個素材的快取幀格子（不抽任何幀）。
+  /// 滑動時由原生解碼器把滑到的那幾格按需填進來（_nfPump）；
+  /// 只有簡易倒轉需要整條密集抽（_makeScrubCache）
+  void _ensureScrubSlots(int srcIndex, double dur) {
+    if (dur <= 0 || _scrubFrames.containsKey(srcIndex)) return;
+    final n = (dur * _scrubFps).ceil().clamp(4, 2400);
+    _scrubFrames[srcIndex] = List<Uint8List?>.filled(n, null);
+  }
+
+  /// 按需抽幀：滑到哪、跟系統的硬體解碼器要哪一格。
+  /// 一次只飛一個請求，永遠抽「最新想要的」那格——手指比解碼快時，
+  /// 中間滑過的格子直接跳過，不排隊（排了也只是顯示過期的畫面）
+  final List<({int src, int fi, double t, String path})> _nfWant = [];
+  bool _nfBusy = false;
+
+  void _requestScrubFrames() {
+    if (kIsWeb) return;
+    _nfWant.clear();
+    for (final c in _tl.videosAt(_position)) {
+      if (c.reverse) continue; // 簡易倒轉走密集快取
+      final src = _tl.sourceOf(c);
+      if (src.duration <= 0) continue;
+      _ensureScrubSlots(c.sourceIndex, src.duration);
+      final slots = _scrubFrames[c.sourceIndex]!;
+      final t = c.sourceTimeAt(_position);
+      final fi = (t / src.duration * slots.length).floor().clamp(
+        0,
+        slots.length - 1,
+      );
+      if (slots[fi] != null) continue;
+      _nfWant.add((src: c.sourceIndex, fi: fi, t: t, path: src.path));
+    }
+    unawaited(_nfPump());
+  }
+
+  Future<void> _nfPump() async {
+    if (_nfBusy) return;
+    _nfBusy = true;
+    try {
+      while (_nfWant.isNotEmpty && mounted) {
+        final w = _nfWant.removeLast();
+        final sw = Stopwatch()..start();
+        final bytes = await nativeFrameAt(w.path, w.t, maxH: _scrubLongSide);
+        PlaybackTrace.instance.log(
+          '原生抽幀 ${sw.elapsedMilliseconds}ms（素材 ${w.src} 格 ${w.fi}）'
+          '${bytes == null ? '＝拿不到' : ''}',
+        );
+        if (!mounted) return;
+        final slots = _scrubFrames[w.src];
+        if (bytes != null &&
+            slots != null &&
+            w.fi < slots.length &&
+            slots[w.fi] == null) {
+          slots[w.fi] = bytes;
+          // 手指已停、畫面停在這格的話要主動重繪一次，
+          // 不然剛抽好的幀要等下一次位置變動才會出現
+          if (_scrubbing && mounted) setState(() {});
+        }
+      }
+    } finally {
+      _nfBusy = false;
+    }
+  }
 
   Future<void> _makeScrubCache(int srcIndex, String path, double dur) async {
     if (dur <= 0) return;
@@ -2811,6 +2886,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     if (edge != null) _position = edge.clamp(0.0, _tl.duration);
     _scrubbing = true;
+    _requestScrubFrames();
     _scrubEndTimer?.cancel();
     _scrubEndTimer = Timer(const Duration(milliseconds: 220), _tryEndScrub);
     if (_activeScrubCached) {
@@ -3919,8 +3995,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     for (var i = 0; i < _tl.sources.length; i++) {
       final s = _tl.sources[i];
       if (s.isVideo && s.duration > 0) {
-        _makeScrubCache(i, s.path, s.duration);
+        _ensureScrubSlots(i, s.duration);
       }
+    }
+    for (final i in {
+      for (final c in _tl.clips)
+        if (c.reverse) c.sourceIndex,
+    }) {
+      final s = _tl.sources[i];
+      _makeScrubCache(i, s.path, s.duration);
     }
     // 問下一步一定要放在所有清理之後：選了回主畫面這頁就收掉，
     // 圖片快取上限沒還原的話整個 App 的快取會一直是關著的
@@ -6455,6 +6538,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         c.speed = sp;
         c.reverse = true;
       });
+      // 簡易倒轉的預覽只能吃密集快取幀，這支素材照舊整條抽
+      if (!kIsWeb) _makeScrubCache(c.sourceIndex, src.path, src.duration);
       _resyncPlayback();
       onDone();
       return;
@@ -6522,6 +6607,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         cur.speed = sp;
         cur.reverse = true;
       });
+      final s2 = _tl.sourceOf(cur);
+      _makeScrubCache(cur.sourceIndex, s2.path, s2.duration);
       _resyncPlayback();
       showHint(context, '倒轉檔沒做成，改用簡易預覽（匯出仍會正確倒轉）');
       onDone();
@@ -6547,7 +6634,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     engine.makeThumbnails(made, segLen, 10, fastDecode: true).then((t) {
       if (mounted && t.isNotEmpty) setState(() => _thumbs[newIdx] = t);
     });
-    _makeScrubCache(newIdx, made, segLen);
+    _ensureScrubSlots(newIdx, segLen);
     _swapClip(
       cur,
       TimelineClip.fromJson({
