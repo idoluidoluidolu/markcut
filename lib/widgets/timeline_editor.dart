@@ -44,6 +44,9 @@ class TimelineEditor extends StatefulWidget {
   final void Function(int id, double deltaSec, bool fromLeft) onTrim;
   final VoidCallback? onTrimStart; // 修剪開始（拿來拍復原快照）
 
+  /// 修剪結束（自動整理要等手指放開才收空隙）
+  final VoidCallback? onTrimEnd;
+
   /// 放開片段：一次帶回新位置與軌道。insert=true 代表插成新的一層。
   final void Function(int id, double newOffset, int track, bool insert) onDrop;
   final ValueChanged<int> onAddMedia; // 在這一軌加素材
@@ -130,6 +133,7 @@ class TimelineEditor extends StatefulWidget {
     required this.onSeek,
     required this.onTrim,
     this.onTrimStart,
+    this.onTrimEnd,
     required this.onDrop,
     required this.onAddMedia,
     required this.onReorderTrack,
@@ -783,6 +787,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
             onSelect: widget.onSelect,
             onTrim: widget.onTrim,
             onTrimStart: widget.onTrimStart,
+            onTrimEnd: widget.onTrimEnd,
             onLiftStart: (pos) => _liftStart(c, pos),
             onLiftUpdate: _liftUpdate,
             onLiftEnd: _liftEnd,
@@ -1214,6 +1219,7 @@ class _ClipBlock extends StatelessWidget {
   final ValueChanged<int> onSelect;
   final void Function(int id, double deltaSec, bool fromLeft) onTrim;
   final VoidCallback? onTrimStart;
+  final VoidCallback? onTrimEnd;
   final ValueChanged<Offset> onLiftStart;
   final void Function(double ddx, double ddy, Offset globalPos) onLiftUpdate;
   final VoidCallback onLiftEnd;
@@ -1237,6 +1243,7 @@ class _ClipBlock extends StatelessWidget {
     required this.onSelect,
     required this.onTrim,
     this.onTrimStart,
+    this.onTrimEnd,
     required this.onLiftStart,
     required this.onLiftUpdate,
     required this.onLiftEnd,
@@ -1381,6 +1388,7 @@ class _ClipBlock extends StatelessWidget {
                                   width: hw,
                                   overhang: _kHandleOverhang,
                                   onStart: onTrimStart,
+                                  onEnd: onTrimEnd,
                                   onDrag: (d) => onTrim(clip.id, d, true),
                                   pxPerSec: pxPerSec,
                                 ),
@@ -1395,6 +1403,7 @@ class _ClipBlock extends StatelessWidget {
                                   width: hw,
                                   overhang: _kHandleOverhang,
                                   onStart: onTrimStart,
+                                  onEnd: onTrimEnd,
                                   onDrag: (d) => onTrim(clip.id, d, false),
                                   pxPerSec: pxPerSec,
                                 ),
@@ -1639,6 +1648,10 @@ class _TrimHandle extends StatelessWidget {
   final ValueChanged<double> onDrag;
   final VoidCallback? onStart;
 
+  /// 手指放開（或手勢被取消）。自動整理要等這一刻才收空隙——
+  /// 拖到一半就收，剩下的片段會在手指底下一直跳
+  final VoidCallback? onEnd;
+
   /// 熱區往片段外面多伸出去的寬度。手指瞄準的是邊緣那條把手，
   /// 接觸面有一半會落在片段外——熱區只到邊界為止的話，那一半會
   /// 打到底下的軌道背景，變成捲動時間軸
@@ -1651,6 +1664,7 @@ class _TrimHandle extends StatelessWidget {
     this.width = 26,
     this.overhang = 0,
     this.onStart,
+    this.onEnd,
   });
 
   @override
@@ -1665,7 +1679,9 @@ class _TrimHandle extends StatelessWidget {
               () => _EagerPanRecognizer(),
               (r) => r
                 ..onStart = ((_) => onStart?.call())
-                ..onUpdate = ((d) => onDrag(d.delta.dx / pxPerSec)),
+                ..onUpdate = ((d) => onDrag(d.delta.dx / pxPerSec))
+                ..onEnd = ((_) => onEnd?.call())
+                ..onCancel = (() => onEnd?.call()),
             ),
       },
       // 觸控熱區由呼叫端依片段長度給（22～40）＋往外的 overhang，

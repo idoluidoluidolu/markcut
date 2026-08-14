@@ -684,6 +684,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _tlScroll.addListener(_onTimelineScroll);
     _loadMosaicShader();
     _loadSnapPref(); // 記住上次磁吸開還關
+    _loadTidyPref(); // 記住上次自動整理開還關
     if (widget.draft != null) {
       _loadDraft(widget.draft!).then((_) {
         if (!mounted) return;
@@ -760,6 +761,45 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final prefs = await SharedPreferences.getInstance();
     final v = prefs.getBool(_kSnapPrefKey) ?? true;
     if (mounted && v != _snapOn) setState(() => _snapOn = v);
+  }
+
+  /// 自動整理開關（記住上次的選擇）。開著的時候，只要有編輯讓某一軌
+  /// 出現空隙（修剪變短、刪片段、改速度），就自動把後面的素材接上來
+  bool _autoTidy = false;
+  static const _kTidyPrefKey = 'timeline_auto_tidy';
+
+  Future<void> _loadTidyPref() async {
+    final prefs = await SharedPreferences.getInstance();
+    final v = prefs.getBool(_kTidyPrefKey) ?? false;
+    if (mounted && v != _autoTidy) setState(() => _autoTidy = v);
+  }
+
+  Future<void> _toggleAutoTidy() async {
+    setState(() => _autoTidy = !_autoTidy);
+    if (_autoTidy) {
+      // 打開的當下就先整理一次：使用者按這顆多半是「現在就想接齊」，
+      // 讓他還要再做一次編輯才看到效果很怪
+      _closeGaps();
+    } else {
+      showHint(context, '自動整理已關閉');
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kTidyPrefKey, _autoTidy);
+  }
+
+  /// 一次編輯做完之後補空隙（自動整理開著才做）。
+  ///
+  /// 不另外拍 undo：這是跟著剛才那次編輯一起發生的，按一次上一步
+  /// 應該連同整理一起退回去，而不是退成「整理前但已經剪短」的半套狀態
+  void _autoTidyIfOn({int? track}) {
+    if (!_autoTidy || _tl.clips.isEmpty) return;
+    final t =
+        track ?? _selClip?.track ?? (_selTrack >= 0 ? _selTrack : null);
+    final removed = _tl.closeGaps(track: t);
+    if (removed < 0.001) return;
+    setState(() {});
+    _resyncPlayback();
+    _saveDraft();
   }
 
   Future<void> _toggleSnap() async {
@@ -3244,11 +3284,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _pushUndo();
     // 播放器留著（復原時要用），畫面 dispose 時才統一清
     _ctrls[c.id]?.pause();
+    final track = c.track;
     setState(() {
       _tl.clips.remove(c);
       _sel = -1;
     });
     _resyncPlayback();
+    // 刪掉會留一個洞，自動整理開著就補起來。
+    // 軌號要先存：這時候選取已經清掉，問不到是哪一軌了
+    _autoTidyIfOn(track: track);
   }
 
   /// 長按片段 → 複製 / 貼上 / 刪除
@@ -5384,9 +5428,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 按鈕灰掉時點下去的提示——沒提示的話新手不知道為什麼不能按
     String? disabledHint,
     int quarterTurns = 0,
+    // 開關型按鈕開啟時的顏色（磁吸、整理）。null＝一般按鈕
+    Color? color,
   }) {
     final on = onTap != null;
-    final color = on ? kText : kTextDim.withValues(alpha: 0.4);
+    color ??= on ? kText : kTextDim.withValues(alpha: 0.4);
     return Tooltip(
       message: tip ?? label,
       child: InkWell(
@@ -5547,6 +5593,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 onSeek: _seekScrub,
                                 onTrim: _trimClip,
                                 onTrimStart: _trimGestureStart,
+                                onTrimEnd: _autoTidyIfOn,
                                 onDrop: _dropClip,
                                 onAddMedia: _addMedia,
                                 onReorderTrack: _reorderTrack,
@@ -5694,13 +5741,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         disabledHint: '還沒有複製任何片段',
                       ),
                       _toolDivider(),
-                      // 直向的 compress 轉 90°＝把左右的空隙擠掉
+                      // 直向的 compress 轉 90°＝把左右的空隙擠掉。
+                      // 跟磁吸一樣是開關：開著就自動接齊
                       _toolBtn(
                         Icons.compress,
                         '整理',
-                        _closeGaps,
-                        tip: '把空隙補起來、素材接齊',
+                        _toggleAutoTidy,
+                        tip: _autoTidy
+                            ? '自動整理：開（剪短後自動接齊，點一下關掉）'
+                            : '自動整理：關（點一下打開，並立刻接齊一次）',
                         quarterTurns: 1,
+                        color: _autoTidy ? kSelect : null,
                       ),
                       _toolBtn(
                         Icons.swap_vert,
@@ -6566,7 +6617,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           ),
         ),
       ),
-    ).whenComplete(_saveDraft);
+    ).whenComplete(() {
+      // 變速會改變片段長度＝可能留下空隙。改在關掉選單時整理，
+      // 而不是每動一次滑桿就整理——拖的過程中後面的素材會一直跳
+      _autoTidyIfOn();
+      _saveDraft();
+    });
   }
 
   /// 預覽時把調色套上去。沒調過就原樣回傳，不多包一層。
