@@ -13,6 +13,22 @@ import 'package:flutter/services.dart';
 /// 拿不到（web、平台不支援、檔案壞了）回 null，呼叫端自己有退路
 const _ch = MethodChannel('markcut/frames');
 
+/// 連續取 [count] 格（時間軸縮圖帶、批次條列的小格用）。
+/// 一格一格排進同一條原生工作緒，不會互相搶
+Future<List<Uint8List>> nativeStrip(
+  String path,
+  double dur,
+  int count, {
+  int maxH = 200,
+}) async {
+  final out = <Uint8List>[];
+  for (var i = 0; i < count; i++) {
+    final b = await nativeFrameAt(path, dur * (i + 0.5) / count, maxH: maxH);
+    if (b != null) out.add(b);
+  }
+  return out;
+}
+
 Future<Uint8List?> nativeFrameAt(
   String path,
   double seconds, {

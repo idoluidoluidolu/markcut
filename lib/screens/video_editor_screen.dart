@@ -636,9 +636,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // Web 沒辦法驗檔案還在不在，直接嘗試載入
         deadSources.add(i);
       } else if (s.kind == ClipKind.video) {
-        engine.makeThumbnails(s.path, s.duration, 10, fastDecode: true).then((
-          t,
-        ) {
+        _thumbStrip(s.path, s.duration).then((t) {
           if (mounted && t.isNotEmpty) setState(() => _thumbs[i] = t);
         });
         _ensureScrubSlots(i, s.duration);
@@ -912,7 +910,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _ctrls[clip.id] = c;
     _sel = clip.id;
 
-    engine.makeThumbnails(path, dur, 10, fastDecode: true).then((t) {
+    _thumbStrip(path, dur).then((t) {
       if (mounted && t.isNotEmpty) setState(() => _thumbs[srcIndex] = t);
     });
     _ensureScrubSlots(srcIndex, dur);
@@ -977,6 +975,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 不然兩個 FFmpeg 同時跑會吃爆記憶體、進度統計也會打架）
   int _scrubExtracting = 0;
 
+  /// 時間軸縮圖帶：先問系統解碼器（顏色跟播放一致、還會自動轉正），
+  /// 拿不到才退 FFmpeg。拖曳預覽早就走原生了，縮圖帶不跟上的話
+  /// 就會出現「預覽顏色對、時間軸顏色錯」的分裂
+  Future<List<Uint8List>> _thumbStrip(String path, double dur) async {
+    if (!kIsWeb) {
+      final t = await nativeStrip(path, dur, 10, maxH: 200);
+      if (t.isNotEmpty) return t;
+    }
+    return engine.makeThumbnails(path, dur, 10, fastDecode: true);
+  }
+
   /// 配好某個素材的快取幀格子（不抽任何幀）。
   /// 滑動時由原生解碼器把滑到的那幾格按需填進來（_nfPump）；
   /// 只有簡易倒轉需要整條密集抽（_makeScrubCache）
@@ -991,6 +1000,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 中間滑過的格子直接跳過，不排隊（排了也只是顯示過期的畫面）
   final List<({int src, int fi, double t, String path})> _nfWant = [];
   bool _nfBusy = false;
+
+  /// 每個素材「最近抽到的一格」。滑動顯示以它為底：格子快取是
+  /// 慢慢累積的，手指快的時候沿路都是空格，等格子＝畫面卡住不動；
+  /// 最新一格永遠跟著手指（頂多慢一個解碼的時間）
+  final Map<int, Uint8List> _nfLatest = {};
 
   void _requestScrubFrames() {
     if (kIsWeb) return;
@@ -1026,13 +1040,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         );
         if (!mounted) return;
         final slots = _scrubFrames[w.src];
-        if (bytes != null &&
-            slots != null &&
-            w.fi < slots.length &&
-            slots[w.fi] == null) {
-          slots[w.fi] = bytes;
-          // 手指已停、畫面停在這格的話要主動重繪一次，
-          // 不然剛抽好的幀要等下一次位置變動才會出現
+        if (bytes != null) {
+          _nfLatest[w.src] = bytes;
+          if (slots != null && w.fi < slots.length && slots[w.fi] == null) {
+            slots[w.fi] = bytes;
+          }
+          // 主動重繪：手指停住時，剛抽好的幀才會立刻出現
           if (_scrubbing && mounted) setState(() {});
         }
       }
@@ -1121,7 +1134,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           break;
         }
       }
-      if (!found) return false;
+      // 格子沒鋪到沒關係，有「最新一格」一樣能顯示——判成沒蓋到
+      // 的話會退回「每個手勢事件都去 seek 播放器」，那才是滑動卡的
+      // 主因（4K HDR 的精準 seek 一次幾百毫秒）
+      if (!found && _nfLatest[c.sourceIndex] == null) return false;
     }
     return true;
   }
@@ -4603,10 +4619,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                           );
                                                         }
                                                         // 還沒解好（剛拖到很遠的位置）先用位元組頂著
-                                                        final f = _nearestFrame(
-                                                          frames,
-                                                          fi,
-                                                        );
+                                                        final f =
+                                                            _nearestFrame(
+                                                              frames,
+                                                              fi,
+                                                            ) ??
+                                                            _nfLatest[c
+                                                                .sourceIndex];
                                                         if (f == null) {
                                                           return const SizedBox.shrink();
                                                         }
@@ -6631,7 +6650,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ),
     );
     // 倒轉檔的縮圖與拖曳快取
-    engine.makeThumbnails(made, segLen, 10, fastDecode: true).then((t) {
+    _thumbStrip(made, segLen).then((t) {
       if (mounted && t.isNotEmpty) setState(() => _thumbs[newIdx] = t);
     });
     _ensureScrubSlots(newIdx, segLen);

@@ -348,6 +348,13 @@ NS_INLINE CGFloat radiansToDegrees(CGFloat radians) {
     }
   } else {
     [_player pause];
+    // MarkCut patch: pre-warm the decoder while paused so the next play()
+    // starts rolling immediately. Measured ~266ms from play() to the first
+    // frame on 4K HDR clips without this. Requires
+    // automaticallyWaitsToMinimizeStalling = NO (set in FVPAVFactory).
+    if (_player.currentItem.status == AVPlayerItemStatusReadyToPlay) {
+      [_player prerollAtRate:1.0 completionHandler:nil];
+    }
   }
 }
 
@@ -438,6 +445,19 @@ NS_INLINE CGFloat radiansToDegrees(CGFloat radians) {
         toleranceBefore:tolerance
          toleranceAfter:tolerance
       completionHandler:^(BOOL completed) {
+        // MarkCut patch: seeks happen while paused (scrubbing); pre-warm the
+        // decoder at the new position so the next play() is instant.
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+          typeof(self) strongSelf = weakSelf;
+          if (strongSelf) {
+            AVPlayer *p = strongSelf->_player;
+            if (p.rate == 0 &&
+                p.currentItem.status == AVPlayerItemStatusReadyToPlay) {
+              [p prerollAtRate:1.0 completionHandler:nil];
+            }
+          }
+        });
         if (completion) {
           dispatch_async(dispatch_get_main_queue(), ^{
             completion(nil);

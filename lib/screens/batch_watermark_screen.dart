@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 // XFile 也是從這裡再匯出的，不用另外 import image_picker
@@ -9,6 +10,7 @@ import 'package:flutter_image_compress/flutter_image_compress.dart';
 
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
+import '../services/native_frames.dart';
 import '../services/photo_saver.dart';
 import '../services/screen_awake.dart';
 import '../services/video_controller.dart';
@@ -264,7 +266,12 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       try {
         if (_isVideo(f)) {
           // 條列用的小格，抽小的就好（大預覽另外抽 720p）
-          final t = await engine.makeThumbnails(f.path, 1, 1, height: 240);
+          var t = kIsWeb
+              ? const <Uint8List>[]
+              : await nativeStrip(f.path, 1, 1, maxH: 240);
+          if (t.isEmpty) {
+            t = await engine.makeThumbnails(f.path, 1, 1, height: 240);
+          }
           if (t.isNotEmpty) item.thumb = t.first;
           // 尺寸問影片本身，不要拿縮圖反推：縮圖只有在旋轉被正確
           // 套用時才等於顯示方向，一有落差畫布就會變成橫的
@@ -301,7 +308,12 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     Uint8List? bytes;
     try {
       if (_isVideo(f)) {
-        final t = await engine.makeThumbnails(f.path, 1, 1, height: 720);
+        var t = kIsWeb
+              ? const <Uint8List>[]
+              : await nativeStrip(f.path, 1, 1, maxH: 720);
+        if (t.isEmpty) {
+          t = await engine.makeThumbnails(f.path, 1, 1, height: 720);
+        }
         if (t.isNotEmpty) bytes = t.first;
       } else {
         bytes = await f.readAsBytes();
