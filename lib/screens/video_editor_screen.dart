@@ -6550,6 +6550,7 @@ final color = Color(picked ?? 0);
               for (final (i, q) in qualityOrder.indexed)
                 _optionRow(
                   title: q.label,
+                  subtitle: q.note,
                   // 自動挑到的那一檔＝壓到看不出跟原素材有差的點。
                   // 不寫「視覺無損」是因為素材超過上限時會停在極高，
                   // 那時它並不是無損，但仍然是這裡最該選的一檔
