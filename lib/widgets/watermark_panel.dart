@@ -222,11 +222,25 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     });
   }
 
+  /// 滑桿拖曳中：復原快照只在按下去那一刻拍一次。
+  ///
+  /// 之前每一格變動都拍——那是整份設定的深拷貝，一秒六十次，
+  /// 加上每次都重建整個預覽，畫面追不上手指；放開時滑桿跳回真值，
+  /// 看起來就是「飄動」。順帶讓復原變成一拖一步，而不是一格一步
+  bool _sliderDragging = false;
+
   void _update(VoidCallback fn) {
-    widget.onBeforeChange?.call();
+    if (!_sliderDragging) widget.onBeforeChange?.call();
     setState(fn);
     widget.onChanged();
   }
+
+  void _sliderStart() {
+    widget.onBeforeChange?.call();
+    _sliderDragging = true;
+  }
+
+  void _sliderEnd() => _sliderDragging = false;
 
   @override
   void didUpdateWidget(WatermarkPanel oldWidget) {
@@ -1238,6 +1252,8 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                 min: min,
                 max: max,
                 onChanged: onChanged,
+                onChangeStart: (_) => _sliderStart(),
+                onChangeEnd: (_) => _sliderEnd(),
               ),
           ),
           // 即時數值：微調時有參考（跟馬賽克樣式表同一套）
@@ -1276,6 +1292,8 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                 min: 0.2,
                 max: 3.0,
                 onChanged: onChanged,
+                onChangeStart: (_) => _sliderStart(),
+                onChangeEnd: (_) => _sliderEnd(),
               ),
           ),
           SizedBox(
@@ -1309,6 +1327,8 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                 max: 180,
                 onChanged: (v) =>
                     onChanged(v.abs() < 4 ? 0 : v), // 吸附回正
+                onChangeStart: (_) => _sliderStart(),
+                onChangeEnd: (_) => _sliderEnd(),
               ),
           ),
           InkWell(
