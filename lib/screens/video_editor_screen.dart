@@ -81,6 +81,27 @@ class VideoEditorScreen extends StatefulWidget {
   State<VideoEditorScreen> createState() => _VideoEditorScreenState();
 }
 
+/// 按住才能拖，但比 Flutter 內建的 ReorderableDelayedDragStartListener
+/// 短——那個寫死 kLongPressTimeout（500ms），按起來像沒反應。
+///
+/// 短一點不會跟左右捲動打架：DelayedMultiDragGestureRecognizer 在
+/// 時間到之前只要手指移動超過 slop 就會放棄，直接滑＝捲動、
+/// 按著不動＝拖曳，兩者分得開
+class _HoldToDragListener extends ReorderableDragStartListener {
+  const _HoldToDragListener({
+    super.key,
+    required super.child,
+    required super.index,
+  });
+
+  /// 200ms：內建那個是 500ms，按起來像沒反應；再短就會跟捲動搶
+  static const _delay = Duration(milliseconds: 200);
+
+  @override
+  MultiDragGestureRecognizer createRecognizer() =>
+      DelayedMultiDragGestureRecognizer(delay: _delay, debugOwner: this);
+}
+
 class _VideoEditorScreenState extends State<VideoEditorScreen>
     with TickerProviderStateMixin {
   late final TabController _tabs;
@@ -2748,6 +2769,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final start = order.first.offset;
     _pause();
 
+    // 正在拖的片段 id。用 id 不用索引：拖的過程中其他卡片會讓位、
+    // 索引一直在變，id 才跟得住同一張卡
+    int? dragId;
+
     final ok = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -2815,20 +2840,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   onReorderItem: (from, to) => setSheet(() {
                     order.insert(to, order.removeAt(from));
                   }),
+                  // 按住成立的那一刻亮框＋震一下：不給回饋的話，
+                  // 使用者不知道已經按夠久、可以開始移動了
+                  onReorderStart: (i) {
+                    HapticFeedback.mediumImpact();
+                    setSheet(() => dragId = order[i].id);
+                  },
+                  onReorderEnd: (_) => setSheet(() => dragId = null),
                   itemBuilder: (context, i) {
                     final c = order[i];
                     final src = _tl.sourceOf(c);
                     final thumb =
                         (_thumbs[c.sourceIndex] ?? const []).firstOrNull;
-                    // 卡片不標「目前選取中」：這張表是在排全部的順序，
-                    // 其中一張亮框會被讀成「這個被選起來了」，
-                    // 但那個狀態在這裡沒有任何作用。
-                    // 唯一值得顯示的狀態是「正在拖的那張」，
-                    // ReorderableListView 自己會把它浮起來
-                    //
+                    // 只標「正在拖的那張」。不標時間軸上選取中的那段——
+                    // 排序不需要先選誰，那個亮框會被讀成「這張被選起來了」
+                    final dragging = c.id == dragId;
                     // 按住就能拖：橫排清單本身也要能左右捲，
                     // 一按下去就拖的話會跟捲動打架
-                    return ReorderableDelayedDragStartListener(
+                    return _HoldToDragListener(
                       key: ValueKey(c.id),
                       index: i,
                       child: Padding(
@@ -2838,7 +2867,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                           decoration: BoxDecoration(
                             color: kPanelHi,
                             borderRadius: BorderRadius.circular(kCardRadius),
-                            border: Border.all(color: kBorder),
+                            border: Border.all(
+                              color: dragging ? kSelect : kBorder,
+                              width: dragging ? 2 : 1,
+                            ),
                           ),
                           clipBehavior: Clip.antiAlias,
                           child: Stack(

@@ -43,21 +43,9 @@ class AboutScreen extends StatelessWidget {
                         mainAxisAlignment: MainAxisAlignment.center,
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          // 吉祥物（跟首頁同一張），不寫名字和版本
-                          Center(
-                            child: Padding(
-                              padding: const EdgeInsets.only(bottom: 20),
-                              child: SizedBox(
-                                width: 150,
-                                height: 60,
-                                child: Image.asset(
-                                  'assets/icon/home_logo.png',
-                                  fit: BoxFit.cover,
-                                  filterQuality: FilterQuality.medium,
-                                ),
-                              ),
-                            ),
-                          ),
+                          // 不放吉祥物：標題列已經寫著「關於 浮水印」，
+                          // 進到這一頁的人不需要再被告知一次自己在哪
+                          //
                           // 作者的話：置中對齊，不套卡片框
                           const Padding(
                             padding: EdgeInsets.symmetric(horizontal: 8),
