@@ -5467,9 +5467,11 @@ final color = Color(picked ?? 0);
   /// 彈窗裡的一列選項：標題＋輸出尺寸副標＋選中勾勾
   Widget _optionRow({
     required String title,
-    required String subtitle,
     required bool selected,
     required VoidCallback onTap,
+    String? subtitle,
+    String? trailing,
+    String? badge,
     bool first = false,
   }) {
     return InkWell(
@@ -5487,27 +5489,68 @@ final color = Color(picked ?? 0);
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    title,
-                    style: TextStyle(
-                      fontSize: 13.5,
-                      fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
-                      color: selected ? kAmber : kText,
-                    ),
+                  Row(
+                    children: [
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: selected
+                              ? FontWeight.w700
+                              : FontWeight.w400,
+                          color: selected ? kAmber : kText,
+                        ),
+                      ),
+                      if (badge != null) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 5,
+                            vertical: 1.5,
+                          ),
+                          decoration: BoxDecoration(
+                            color: kAmber.withValues(alpha: 0.16),
+                            borderRadius: BorderRadius.circular(kTagRadius),
+                          ),
+                          child: Text(
+                            badge,
+                            style: const TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: kAmber,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
-                  const SizedBox(height: 1),
-                  Text(
-                    subtitle,
-                    style: const TextStyle(
-                      fontSize: 10.5,
-                      color: kTextDim,
-                      fontFeatures: [FontFeature.tabularFigures()],
+                  if (subtitle != null) ...[
+                    const SizedBox(height: 1),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        fontSize: 10.5,
+                        color: kTextDim,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      ),
                     ),
-                  ),
+                  ],
                 ],
               ),
             ),
-            if (selected) const Icon(Icons.check, size: 17, color: kAmber),
+            if (trailing != null)
+              Text(
+                trailing,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: selected ? kAmber : kTextDim,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+            if (selected) ...[
+              const SizedBox(width: 6),
+              const Icon(Icons.check, size: 17, color: kAmber),
+            ],
           ],
         ),
       ),
@@ -6326,16 +6369,23 @@ final color = Color(picked ?? 0);
     );
   }
 
+  /// 這個專案用某一檔畫質匯出大概多大（MB）。
+  /// 只是粗估：位元率換算加上音訊的固定開銷，夠人判斷「要不要換一檔」
+  double _estMb(ExportQuality q) {
+    final (w, h) = computeCanvasSize(_tl, _resolution, _canvasRatio);
+    final dur = _tl.duration / _speed;
+    return (w * h * 30 * 0.09 / 8 * dur + 40000 * dur) /
+        (1024 * 1024) *
+        q.sizeFactor;
+  }
+
   /// 匯出頁（使用者選定 B 款極簡設定列）：
 
   /// 資訊列（比例／解析度／畫質）＋預估一行＋匯出鈕
   Widget _buildExportTab() {
     final (outW, outH) = computeCanvasSize(_tl, _resolution, _canvasRatio);
     final dur = _tl.duration / _speed;
-    final mb =
-        (outW * outH * 30 * 0.09 / 8 * dur + 40000 * dur) /
-        (1024 * 1024) *
-        _qualityEff.sizeFactor;
+    final mb = _estMb(_qualityEff);
 
     Widget row(
       String label,
@@ -6410,7 +6460,7 @@ final color = Color(picked ?? 0);
         row(
           '畫質',
           _qualityAuto && _srcKbps > 0
-              ? '${_qualityEff.label}·自動'
+              ? '${_qualityEff.label}·推薦'
               : _qualityEff.label,
           _openQualitySheet,
           divider: false,
@@ -6449,7 +6499,8 @@ final color = Color(picked ?? 0);
     );
   }
 
-  /// 畫質：置中彈窗（同款直列，副標說明檔案大小差異）
+  /// 畫質：置中彈窗。副標拿掉，改成右邊直接列這個專案各檔位的檔案大小——
+  /// 「極高」跟「最高」用形容詞永遠比不出來，數字一眼就分得出
   void _openQualitySheet() {
     showDialog(
       context: context,
@@ -6464,7 +6515,14 @@ final color = Color(picked ?? 0);
               for (final (i, q) in qualityOrder.indexed)
                 _optionRow(
                   title: q.label,
-                  subtitle: q.note,
+                  // 自動挑到的那一檔＝壓到看不出跟原素材有差的點。
+                  // 不寫「視覺無損」是因為素材超過上限時會停在極高，
+                  // 那時它並不是無損，但仍然是這裡最該選的一檔
+                  badge: _qualityAuto && _srcKbps > 0 && _qualityEff == q
+                      ? '推薦'
+                      : null,
+                  trailing:
+                      '約 ${_estMb(q).clamp(1, 1e9).toStringAsFixed(0)} MB',
                   selected: _qualityEff == q,
                   first: i == 0,
                   onTap: () {

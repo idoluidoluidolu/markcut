@@ -67,18 +67,14 @@ const qualityOrder = [
 ];
 
 extension ExportQualityInfo on ExportQuality {
+  /// 「極高／最高」在中文裡分不出大小，選單上只好一個一個試。
+  /// 改成講尺度：省空間←→最高畫質。真正的差別由選單右邊的檔案大小講，
+  /// 那是唯一每個人都懂、而且會隨專案變動的東西
   String get label => switch (this) {
-        ExportQuality.low => '低',
+        ExportQuality.low => '省空間',
         ExportQuality.standard => '標準',
-        ExportQuality.ultra => '極高',
-        ExportQuality.lossless => '最高',
-      };
-
-  String get note => switch (this) {
-        ExportQuality.low => '檔案最小，畫質略降',
-        ExportQuality.standard => '視覺無損，建議日常使用',
-        ExportQuality.ultra => '檔案約大一倍',
-        ExportQuality.lossless => '位元率拉滿，檔案非常大',
+        ExportQuality.ultra => '高畫質',
+        ExportQuality.lossless => '最高畫質',
       };
 
   /// 每像素每幀的位元數。手機走硬體編碼器，吃的是位元率不是 CRF，
