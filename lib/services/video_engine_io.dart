@@ -151,9 +151,14 @@ bool? _hasZscale;
 Future<bool> _zscaleAvailable() async {
   if (_hasZscale != null) return _hasZscale!;
   try {
-    final ses = await FFmpegKit.execute('-hide_banner -filters');
-    final out = await ses.getOutput() ?? '';
-    _hasZscale = out.contains(' zscale ') && out.contains(' tonemap ');
+    // 直接拿一張純色小圖跑一次完整的鏈。用「解析 -filters 的文字」
+    // 判斷不可靠——列表印在哪個串流、格式長怎樣都不保證，
+    // 而且濾鏡存在也不代表這個組合跑得起來。真的跑一次最準
+    final ses = await FFmpegKit.execute(
+      '-v error -f lavfi -i color=c=red:s=64x64:d=0.1 '
+      '-vf "$_kHdrPq" -frames:v 1 -f null -',
+    );
+    _hasZscale = ReturnCode.isSuccess(await ses.getReturnCode());
   } catch (_) {
     _hasZscale = false;
   }
@@ -1146,18 +1151,12 @@ Future<List<Uint8List>> _makeThumbnails(
   // 灰白，拖曳預覽跟播放畫面顏色對不上（也就是「拖曳會退色」）
   final p0 = await _probe(inputPath);
   final hdrFix = p0.hdr ? '${await _hdrChainFor(p0.trc)},' : '';
-  // 旋轉：直式手機影片多半是「橫著存＋旋轉旗標」。解碼器不一定會
-  // 自動轉回來，不轉的話抽出來的縮圖是躺著的，連帶讓依縮圖算的
-  // 畫布比例也變成橫的
-  final rotFix = switch (p0.rotation) {
-    90 => 'transpose=1,',
-    180 => 'transpose=1,transpose=1,',
-    270 => 'transpose=2,',
-    _ => '',
-  };
+  // 旋轉不用自己處理：FFmpeg 預設就會依 display matrix 自動轉正
+  //（本機用 ffmpeg 8.1 實測：3840x2160＋rotation=-90 的素材，
+  // 不加任何 transpose 抽出來就是直的）。自己再加一次是轉兩次
   final cmd =
       '-y $skip$seek-i "$inputPath" '
-      '-vf "fps=${fps.toStringAsFixed(6)},$rotFix$hdrFix$scale" '
+      '-vf "fps=${fps.toStringAsFixed(6)},$hdrFix$scale" '
       '-frames:v $count -q:v 4 "$pattern"';
   var session = await FFmpegKit.execute(cmd);
   var rc = await session.getReturnCode();
