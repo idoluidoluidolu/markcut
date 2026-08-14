@@ -1040,14 +1040,89 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_scrubbing && mounted) setState(() => _scrubbing = false);
   }
 
+  /// 這個檔是影片嗎。優先看 mimeType，拿不到就退回看副檔名
+  ///（相簿匯出的檔案不一定帶 mime）
+  static bool _isVideoFile(XFile f) {
+    final mime = f.mimeType;
+    if (mime != null && mime.isNotEmpty) return mime.startsWith('video/');
+    final ext = f.name.toLowerCase().split('.').last;
+    return const {
+      'mp4',
+      'mov',
+      'm4v',
+      'avi',
+      'mkv',
+      'webm',
+      '3gp',
+      'ts',
+      'mts',
+    }.contains(ext);
+  }
+
+  /// 一次選多部時問：接成一段，還是各自一軌疊起來。
+  /// 回傳 true＝同一軌、false＝各自一軌、null＝取消
+  Future<bool?> _askSameTrack(int n) => showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text('加入 $n 部影片'),
+      contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
+      content: SizedBox(
+        width: 270,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _optionRow(
+              title: '接在同一軌',
+              subtitle: '照選取順序頭尾相接，變成一段長影片',
+              selected: false,
+              first: true,
+              onTap: () => Navigator.pop(context, true),
+            ),
+            _optionRow(
+              title: '各自一軌',
+              subtitle: '從同一個時間點疊在一起，可做子母畫面',
+              selected: false,
+              onTap: () => Navigator.pop(context, false),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
   Future<void> _pickVideo(int track) async {
-    final picked = await ImagePicker().pickVideo(source: ImageSource.gallery);
-    if (picked == null) return;
-    if (!mounted) return;
+    // 相簿沒有「只挑影片、而且可以多選」的介面，只能用混合媒體的
+    // 多選器再自己濾掉照片——照片有自己的入口（而且長度規則不一樣）
+    final picked = await ImagePicker().pickMultipleMedia();
+    if (picked.isEmpty || !mounted) return;
+    final vids = picked.where(_isVideoFile).toList();
+    if (vids.isEmpty) {
+      showHint(context, '這裡只能加影片，照片請用「圖片」那一項');
+      return;
+    }
+
+    var sameTrack = true;
+    if (vids.length > 1) {
+      final ans = await _askSameTrack(vids.length);
+      if (ans == null || !mounted) return; // 取消
+      sameTrack = ans;
+    }
+
     _pause();
     _pushUndo();
-    await _importVideoFromPath(picked.path, track: track, name: picked.name);
-    if (mounted) setState(() {});
+    for (var i = 0; i < vids.length; i++) {
+      // 各自一軌時，第二部以後每部都開一條新的空軌；
+      // usedTracks 每加一部就長一格，所以這裡每輪重新算
+      final t = (sameTrack || i == 0) ? track : _tl.usedTracks;
+      await _importVideoFromPath(vids[i].path, track: t, name: vids[i].name);
+      if (!mounted) return;
+    }
+    setState(() {});
+    // 挑到照片的那幾個直接跳過，但要講一聲，不然會以為漏加了
+    final skipped = picked.length - vids.length;
+    if (skipped > 0) {
+      showHint(context, '有 $skipped 個不是影片，已略過');
+    }
     _saveDraft(); // 加完立刻落草稿
   }
 
@@ -2769,9 +2844,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final start = order.first.offset;
     _pause();
 
-    // 正在拖的片段 id。用 id 不用索引：拖的過程中其他卡片會讓位、
-    // 索引一直在變，id 才跟得住同一張卡
-    int? dragId;
 
     final ok = await showModalBottomSheet<bool>(
       context: context,
@@ -2840,21 +2912,64 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   onReorderItem: (from, to) => setSheet(() {
                     order.insert(to, order.removeAt(from));
                   }),
-                  // 按住成立的那一刻亮框＋震一下：不給回饋的話，
-                  // 使用者不知道已經按夠久、可以開始移動了
-                  onReorderStart: (i) {
-                    HapticFeedback.mediumImpact();
-                    setSheet(() => dragId = order[i].id);
-                  },
-                  onReorderEnd: (_) => setSheet(() => dragId = null),
+                  // 按住成立就震一下，讓人知道已經按夠久了
+                  onReorderStart: (_) => HapticFeedback.mediumImpact(),
+                  // 浮起來那張卡的外觀。
+                  //
+                  // 不能靠 setState 去改卡片自己的邊框：浮起來的那張是
+                  // 「按住成立當下」把 widget 複製走的，之後父層再怎麼
+                  // rebuild 都不會反映到它身上——琥珀框會畫在底下那張
+                  // 看不見的卡上，浮著的還是原本的灰框。
+                  //
+                  // 預設的 proxyDecorator 會加陰影，在深色底上看起來就是
+                  // 一團黑，所以整個換掉：只留琥珀框和一點點放大
+                  proxyDecorator: (child, i, anim) => AnimatedBuilder(
+                    animation: anim,
+                    builder: (context, _) {
+                      final t = Curves.easeOut.transform(anim.value);
+                      return Transform.scale(
+                        scale: 1 + 0.05 * t,
+                        child: Material(
+                          type: MaterialType.transparency,
+                          child: Stack(
+                            children: [
+                              child,
+                              // right: 8 讓框只圈住卡片本身，
+                              // 不把卡片之間的間距一起圈進去
+                              Positioned(
+                                left: 0,
+                                top: 0,
+                                bottom: 0,
+                                right: 8,
+                                child: IgnorePointer(
+                                  child: DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(
+                                        kCardRadius,
+                                      ),
+                                      border: Border.all(
+                                        color: kSelect.withValues(alpha: t),
+                                        width: 2,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
                   itemBuilder: (context, i) {
                     final c = order[i];
                     final src = _tl.sourceOf(c);
                     final thumb =
                         (_thumbs[c.sourceIndex] ?? const []).firstOrNull;
-                    // 只標「正在拖的那張」。不標時間軸上選取中的那段——
-                    // 排序不需要先選誰，那個亮框會被讀成「這張被選起來了」
-                    final dragging = c.id == dragId;
+                    // 卡片本身不標任何選取狀態：排序不需要先選誰，
+                    // 亮框會被讀成「這張被選起來了」。唯一該亮的是
+                    // 正在拖的那張，那個由 proxyDecorator 畫
+                    //
                     // 按住就能拖：橫排清單本身也要能左右捲，
                     // 一按下去就拖的話會跟捲動打架
                     return _HoldToDragListener(
@@ -2867,10 +2982,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                           decoration: BoxDecoration(
                             color: kPanelHi,
                             borderRadius: BorderRadius.circular(kCardRadius),
-                            border: Border.all(
-                              color: dragging ? kSelect : kBorder,
-                              width: dragging ? 2 : 1,
-                            ),
+                            border: Border.all(color: kBorder),
                           ),
                           clipBehavior: Clip.antiAlias,
                           child: Stack(
