@@ -276,6 +276,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
     });
   }
 
+  /// 還沒套用的微小位移（低通用，見 _liftUpdate）
+  Offset _liftPend = Offset.zero;
+
   void _liftUpdate(double ddx, double ddy, Offset globalPos) {
     // 拖到一半第二指下來（變成縮放）：整個放棄這次拖曳，
     // 素材留在原地，不然縮放的同時素材會被拖走
@@ -293,6 +296,14 @@ class _TimelineEditorState extends State<TimelineEditor> {
     if ((l.dx + ddx).abs() > 6 || (l.dy + ddy).abs() > 6) {
       _pressTimer?.cancel();
     }
+    // 低通：累積不到 1.5px 的移動先不套用。手指離開的瞬間平台常常補
+    // 一個一兩像素的位移，照單全收就是「放手時素材跳一下」；手抖也
+    // 一樣。慢慢拖不受影響——位移留在 _liftPend 裡累積，超過就一次套上
+    _liftPend += Offset(ddx, ddy);
+    if (_liftPend.distance < 1.5) return;
+    ddx = _liftPend.dx;
+    ddy = _liftPend.dy;
+    _liftPend = Offset.zero;
     final minDy = -(l.startTrack + 0.45) * rowStride;
     final maxDy = (_maxTrack - l.startTrack + 0.45) * rowStride;
     setState(() {
@@ -326,6 +337,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
   }
 
   void _liftEnd() {
+    _liftPend = Offset.zero;
     _pressTimer?.cancel();
     final spec = _liftSpec();
     final l = _lift;

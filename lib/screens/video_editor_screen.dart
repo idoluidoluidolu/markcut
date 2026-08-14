@@ -2941,7 +2941,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final t = target.clamp(0, 9);
     final oldUsed = _tl.usedTracks;
     setState(() {
-      clip.offset = newOffset.clamp(0.0, 1e6);
+      // 同一軌不讓素材互相覆蓋：蓋住的那段等於憑空消失，時間軸上還
+      // 看不出來。想放的位置有人佔著就滑到最近的空位（見
+      // Timeline.freeOffsetOnTrack）。插入新軌不用判，那條軌是空的
+      final want = newOffset.clamp(0.0, 1e6);
+      clip.offset = insert ? want : _tl.freeOffsetOnTrack(clip, want, t);
       if (insert) {
         for (final c in _tl.clips) {
           if (c.id != id && c.track >= t) c.track++;
@@ -5186,6 +5190,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             // 才拍：光按一下不該吃掉 redo
                                             _routerUndoPending = true;
                                             _rtStartFocal = d.focalPoint;
+                                            _rtApplied = d.focalPoint;
                                             _rtArmed = false;
                                             _rtClearGuides();
                                             if (selVis != null) {
@@ -5214,7 +5219,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               // 一刻」，不然會憑空跳 6px
                                               _gestureStartFocal = d.focalPoint;
                                               _routerLast = d.focalPoint;
+                                              _rtApplied = d.focalPoint;
                                             }
+                                            // 低通：累積不到 1.5px 的移動
+                                            // 先不套用。手指離開的瞬間平台
+                                            // 常常補一個一兩像素的位移，
+                                            // 照單全收就是「放手時素材跳
+                                            // 一下」；手抖也一樣。慢慢拖不
+                                            // 受影響——位移會累積，超過
+                                            // 門檻就一次套上
+                                            if (d.pointerCount < 2 &&
+                                                (d.focalPoint - _rtApplied)
+                                                        .distance <
+                                                    1.5) {
+                                              return;
+                                            }
+                                            _rtApplied = d.focalPoint;
                                             if (selVis != null) {
                                               _routerPushUndoIfNeeded();
                                               // 文字素材可以放大到 12 倍
@@ -5438,6 +5458,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 門檻、可以開始搬」的旗標（見 onScaleUpdate）
   Offset _rtStartFocal = Offset.zero;
   bool _rtArmed = false;
+
+  /// 上一次「真的套用」的手指位置（低通濾波用，見 onScaleUpdate）
+  Offset _rtApplied = Offset.zero;
 
   /// 選取路由的上一個拖曳點（算增量用）
   Offset _routerLast = Offset.zero;
