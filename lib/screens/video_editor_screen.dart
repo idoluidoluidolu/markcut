@@ -2820,7 +2820,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     final src = _tl.sourceOf(c);
                     final thumb =
                         (_thumbs[c.sourceIndex] ?? const []).firstOrNull;
-                    final isSel = c.id == _sel;
+                    // 卡片不標「目前選取中」：這張表是在排全部的順序，
+                    // 其中一張亮框會被讀成「這個被選起來了」，
+                    // 但那個狀態在這裡沒有任何作用。
+                    // 唯一值得顯示的狀態是「正在拖的那張」，
+                    // ReorderableListView 自己會把它浮起來
+                    //
                     // 按住就能拖：橫排清單本身也要能左右捲，
                     // 一按下去就拖的話會跟捲動打架
                     return ReorderableDelayedDragStartListener(
@@ -2833,10 +2838,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                           decoration: BoxDecoration(
                             color: kPanelHi,
                             borderRadius: BorderRadius.circular(kCardRadius),
-                            border: Border.all(
-                              color: isSel ? kSelect : kBorder,
-                              width: isSel ? 2 : 1,
-                            ),
+                            border: Border.all(color: kBorder),
                           ),
                           clipBehavior: Clip.antiAlias,
                           child: Stack(
