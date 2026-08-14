@@ -80,10 +80,10 @@ extension ExportQualityInfo on ExportQuality {
   /// 一句話講「什麼時候選這檔」。講用途不講技術——位元率、壓縮率
   /// 那些字眼幫不了不懂的人，懂的人看右邊的檔案大小就夠了
   String get note => switch (this) {
-        ExportQuality.low => '傳訊息、發限動夠用',
-        ExportQuality.standard => '手機上看不太出差別',
-        ExportQuality.ultra => '跟原片幾乎沒差',
-        ExportQuality.lossless => '之後還要再剪才需要',
+        ExportQuality.low => '輸出最快速',
+        ExportQuality.standard => '手機上不放大看不太出差別',
+        ExportQuality.ultra => '幾乎原畫質',
+        ExportQuality.lossless => '多數情況下和高畫質幾乎沒有分別',
       };
 
   /// 每像素每幀的位元數。手機走硬體編碼器，吃的是位元率不是 CRF，
