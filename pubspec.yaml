@@ -64,6 +64,14 @@ dependencies:
   flutter_image_compress: ^2.5.1
   image_picker_platform_interface: ^2.11.1
 
+# 自帶修改版的 iOS 播放外掛（只差一行）：關掉
+# automaticallyWaitsToMinimizeStalling。那是給串流用的「先等緩衝夠再
+# 播」，對本機檔案純粹是白等——實測按下播放到第一格要 267ms+。
+# 上游沒開放這個設定，只能覆蓋。升級 video_player 時記得同步這份
+dependency_overrides:
+  video_player_avfoundation:
+    path: packages/video_player_avfoundation
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
