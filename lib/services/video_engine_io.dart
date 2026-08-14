@@ -165,6 +165,10 @@ Future<bool> _zscaleAvailable() async {
   return _hasZscale!;
 }
 
+/// 這次實際會用哪條 HDR 轉換鏈（診斷用）
+Future<String> hdrChainName() async =>
+    await _zscaleAvailable() ? 'zscale+tonemap（正確）' : 'colorspace（退路，會退色）';
+
 /// 依素材的轉換曲線挑 HDR→SDR 的濾鏡鏈（trc 目前僅保留給
 /// 之後校色用，兩種曲線暫時走同一條鏈，見 _kHdrPq 的教訓）
 Future<String> _hdrChainFor(String trc) async {

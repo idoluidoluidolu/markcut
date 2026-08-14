@@ -9,7 +9,8 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
-import 'package:flutter/services.dart' show HapticFeedback;
+import 'package:flutter/services.dart' show Clipboard, ClipboardData,
+    HapticFeedback;
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
@@ -18,6 +19,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
 import '../services/audio_picker.dart';
+import '../services/playback_trace.dart';
 import '../services/export_speed.dart';
 import '../services/file_reader.dart';
 import '../services/screen_awake.dart';
@@ -985,6 +987,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (!mounted || !identical(_scrubFrames[srcIndex], slots)) return;
       final count = math.min(segFrames, n - s);
       _scrubExtracting++;
+      PlaybackTrace.instance.log('開始背景抽幀（素材 $srcIndex，$count 格）');
       List<Uint8List> t;
       try {
         t = await engine.makeThumbnails(
@@ -997,6 +1000,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         );
       } finally {
         _scrubExtracting--;
+        PlaybackTrace.instance.log('背景抽幀結束（素材 $srcIndex）');
       }
       // 畫面關了或素材被換掉就停
       if (!mounted || !identical(_scrubFrames[srcIndex], slots)) return;
@@ -2345,6 +2349,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (!_playing) return;
     final dt = (elapsed - _lastTick).inMicroseconds / 1e6;
     _lastTick = elapsed;
+    PlaybackTrace.instance.tick(dt);
     // 時間軸位置以原速計；播放速度反映在實際前進速率上
     _position += dt * _speed;
     if (_position >= _tl.duration) {
@@ -2366,6 +2371,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _play() async {
     if (_tl.duration <= 0) return;
     if (_position >= _tl.duration - 0.01) _position = 0;
+    final tr = PlaybackTrace.instance..start();
     final waits = <Future<void>>[];
     for (final clip in _tl.clips) {
       final k = _tl.sourceOf(clip).kind;
@@ -2382,9 +2388,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 80ms 的容差：位置回報本來就有誤差，比對太嚴等於白加。
       // web 的 position 是 async 往返，問了反而多一次等待
       final now = kIsWeb ? null : await c.positionNow();
+      tr.log('查位置完成（片段 ${clip.id}）現在=${now?.inMilliseconds}ms '
+          '目標=${(want * 1000).round()}ms');
       if (now != null && (now.inMilliseconds / 1000 - want).abs() < 0.08) {
+        tr.log('位置已對，跳過 seek');
         continue;
       }
+      tr.log('送出 seek（片段 ${clip.id}）');
       waits.add(c.seekTo(Duration(milliseconds: (want * 1000).round())));
     }
     if (waits.isNotEmpty) {
@@ -2393,6 +2403,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         Future.wait(waits).then((_) {}),
         Future<void>.delayed(const Duration(milliseconds: 400)),
       ]);
+      tr.log('seek 等待結束（${waits.length} 個）');
       if (!mounted) return;
     }
     setState(() => _playing = true);
@@ -2410,6 +2421,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (c == null || !c.value.isInitialized) continue;
       c.setPlaybackSpeed(_speed * clip.speed);
       unawaited(c.play());
+      tr.log('呼叫 play()（片段 ${clip.id}）');
       lead ??= c;
     }
     if (lead != null && !kIsWeb) {
@@ -2418,12 +2430,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       while (mounted && sw.elapsedMilliseconds < 250) {
         await Future<void>.delayed(const Duration(milliseconds: 20));
         final p = await lead.positionNow();
-        if (p != null && p != p0) break;
+        if (p != null && p != p0) {
+          tr.log('影格開始滾動（位置從 ${p0?.inMilliseconds} 變成 '
+              '${p.inMilliseconds}ms）');
+          break;
+        }
+      }
+      if (sw.elapsedMilliseconds >= 250) {
+        tr.log('⚠ 等了 250ms 影格還沒動，直接開錶');
       }
       if (!mounted) return;
     }
     _lastTick = Duration.zero;
     _ticker.start();
+    tr.log('◀ 時間軸開始走');
     _syncMedia();
   }
 
@@ -2478,6 +2498,97 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return prev;
     }
     return null;
+  }
+
+  /// 播放診斷：長按標題打開。記錄按下播放之後每一段花了多久、
+  /// 交界有沒有命中預熱、背景抽幀跟卡頓的時間點對不對得上
+  void _openTrace() {
+    final tr = PlaybackTrace.instance;
+    // 素材規格填進環境區，看報告時不用再回頭問
+    final src = _tl.sources.firstWhere(
+      (s) => s.isVideo,
+      orElse: () => MediaSource(
+        path: '',
+        name: '',
+        kind: ClipKind.text,
+        duration: 0,
+      ),
+    );
+    if (src.isVideo) {
+      tr.env('素材', '${src.w}x${src.h}');
+      unawaited(
+        engine.probeVideoInfo(src.path).then((i) {
+          tr.env('編碼', '${i.codec} ${i.fps.toStringAsFixed(2)}fps');
+        }),
+      );
+    }
+    tr.env('片段數', '${_tl.clips.length}');
+    unawaited(engine.hdrChainName().then((n) => tr.env('HDR 轉換', n)));
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.85,
+      ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SwitchListTile(
+                value: tr.enabled,
+                onChanged: (v) => setSheet(() {
+                  tr.enabled = v;
+                  if (v) tr.clear();
+                }),
+                title: const Text('記錄播放診斷'),
+                subtitle: const Text('打開後按播放跑一次，再回來看'),
+              ),
+              const Divider(height: 1),
+              Flexible(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: SelectableText(
+                    tr.report(),
+                    style: const TextStyle(
+                      fontSize: 11,
+                      height: 1.5,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: secondaryAction(
+                        label: '清除',
+                        onPressed: () => setSheet(tr.clear),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: primaryAction(
+                        label: '複製報告',
+                        onPressed: () {
+                          Clipboard.setData(
+                            ClipboardData(text: tr.report()),
+                          );
+                          showHint(context, '已複製，貼給開發者就好');
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   /// 片段此刻該有的音量（還沒夾在 0~1，可能大於 1）
@@ -2585,6 +2696,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 預熱只在裝置端做。Web 播的是瀏覽器的 <video>，它自己會
         // 緩衝、起步本來就快，沒有 AVPlayer 那種起轉延遲；在 web 上
         // 多開一個元素同時解碼只會讓畫面更卡、交界更容易閃黑
+        if (!kIsWeb &&
+            _playing &&
+            lead < 0.35 &&
+            !_warmed.contains(clip.id)) {
+          PlaybackTrace.instance.log('預熱開播（片段 ${clip.id}，'
+              '距離進場 ${(lead * 1000).round()}ms）');
+        }
         if (!kIsWeb && _playing && lead < 0.35 && _warmed.add(clip.id)) {
           _lastVol[clip.id] = 0;
           c.setVolume(0);
@@ -2671,6 +2789,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           } else if (_warmed.remove(clip.id)) {
             // 預熱時掛的是極慢速，進場換回真正的速度
             c.setPlaybackSpeed(rate);
+            PlaybackTrace.instance.log('進場：預熱命中（片段 ${clip.id}）');
           }
         } else if (c.value.isPlaying) {
           c.pause();
@@ -3933,7 +4052,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (!didPop) _handleBack();
       },
       child: Scaffold(
-        appBar: AppBar(title: const Text('影片編輯')),
+        appBar: AppBar(
+          // 長按標題＝打開播放診斷。藏在這裡是刻意的：一般使用者
+          // 不會誤觸，要用的時候講一聲就找得到
+          title: GestureDetector(
+            onLongPress: _openTrace,
+            child: const Text('影片編輯'),
+          ),
+        ),
         body: !_ready
             ? const Center(child: CircularProgressIndicator())
             // 編輯模式「不放」右滑返回：時間軸捲動、拖片段、移浮水印
