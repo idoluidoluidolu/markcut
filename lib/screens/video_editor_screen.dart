@@ -2967,7 +2967,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   itemBuilder: (context, i) {
                     final c = order[i];
                     final src = _tl.sourceOf(c);
+                    // 優先用拖曳快取幀（長邊 540），不夠再退回時間軸的
+                    // 縮圖（高 200）。卡片在 3 倍螢幕上是 336×396 實體
+                    // 像素，200 的縮圖放上去糊成一片
+                    final slots = _scrubFrames[c.sourceIndex];
                     final thumb =
+                        (slots != null
+                            ? _nearestFrame(
+                                slots,
+                                (c.trimStart * _scrubFps).round(),
+                              )
+                            : null) ??
                         (_thumbs[c.sourceIndex] ?? const []).firstOrNull;
                     // 卡片本身不標任何選取狀態：排序不需要先選誰，
                     // 亮框會被讀成「這張被選起來了」。唯一該亮的是
@@ -2992,7 +3002,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             fit: StackFit.expand,
                             children: [
                               if (thumb != null)
-                                Image.memory(thumb, fit: BoxFit.cover)
+                                Image.memory(
+                                  thumb,
+                                  fit: BoxFit.cover,
+                                  // 放大時的取樣：預設的 low 會有明顯
+                                  // 鋸齒，medium 才平順
+                                  filterQuality: FilterQuality.medium,
+                                  gaplessPlayback: true,
+                                )
                               else
                                 Center(
                                   child: Icon(
