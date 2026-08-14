@@ -9,7 +9,9 @@ final ValueNotifier<bool> kPerfOverlay = ValueNotifier(false);
 
 // ===== 「黑白 Mono Dark」設計系統 =====
 // 碳黑面板、無彩色：強調一律用純白（選取／把手／主行動）
-const kBg = Color(0xFF141416); // 底
+const kBg = Color(0xFF000000); // 底＝純黑
+// 純黑而不是深灰：OLED 上純黑是真的不發光，卡片與面板（kPanel
+// 起跳 #1D1D21）浮起來的層次反而更清楚，也跟同類 App 的深色底一致
 const kPanel = Color(0xFF1D1D21); // 卡片/面板
 const kPanelHi = Color(0xFF26262C); // 面板亮階（icon 磚、選中底）
 const kBorder = Color(0xFF2A2A30); // 邊線
