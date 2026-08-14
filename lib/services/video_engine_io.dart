@@ -99,7 +99,44 @@ class _SourceProbe {
 /// min 版 FFmpeg 沒有 zscale/tonemap，colorspace 是原生濾鏡；
 /// 它不認得 HLG 曲線，拿 bt2020-10 當近似（HLG 低亮度段就是這條），
 /// 亮部稍微壓一點，但顏色是對的
-const _kHdr2Sdr = 'colorspace=all=bt709:iall=bt2020:itrc=bt2020-10';
+/// HDR→SDR 的退路：只換原色與矩陣（bt2020→bt709），曲線動不了。
+///
+/// vf_colorspace 不支援 smpte2084（PQ）和 arib-std-b67（HLG）當輸入，
+/// 給它 bt2020-10 只是騙它「曲線跟 bt709 一樣」——原色會轉對，但
+/// HDR 的亮度曲線原封不動，畫面就是平的、灰的。這也是為什麼拖曳的
+/// 快取幀和匯出都退色，而播放正常（播放走 AVPlayer，系統自己會轉）
+const _kHdrFallback = 'colorspace=all=bt709:iall=bt2020:itrc=bt2020-10';
+
+/// HDR→SDR 的正解：轉成線性光 → 色調映射 → 轉回 bt709。
+/// HLG／PQ 的曲線只有在線性光下才壓得回來。
+/// 需要 zscale（libzimg），精簡版的 FFmpeg 沒有這個濾鏡
+const _kHdrTonemap =
+    'zscale=t=linear:npl=100,format=gbrpf32le,'
+    'tonemap=tonemap=hable:desat=0,'
+    'zscale=p=bt709:t=bt709:m=bt709:r=tv,format=yuv420p';
+
+/// 這次執行實際採用的 HDR 轉換鏈（開機第一次用到時決定）
+String _hdr2Sdr = _kHdrFallback;
+bool _hdrProbed = false;
+
+/// 問一次這個 FFmpeg 有哪些濾鏡，有 zscale 就用真正的色調映射。
+///
+/// 用問的而不是寫死：換 FFmpeg 套件版本時這裡會自動跟上，
+/// 不會出現「套件換了但程式還在走退路」這種查半天的狀況
+Future<String> _hdrChain() async {
+  if (_hdrProbed) return _hdr2Sdr;
+  _hdrProbed = true;
+  try {
+    final ses = await FFmpegKit.execute('-hide_banner -filters');
+    final out = await ses.getOutput() ?? '';
+    if (out.contains(' zscale ') && out.contains(' tonemap ')) {
+      _hdr2Sdr = _kHdrTonemap;
+    }
+  } catch (_) {
+    // 問不到就用退路
+  }
+  return _hdr2Sdr;
+}
 
 /// 同一個檔案的 probe 快取（檔案內容不會變，縮圖會反覆問同一支）
 final Map<String, _SourceProbe> _probeCache = {};
@@ -171,6 +208,7 @@ Future<String> _buildCommand(
         : const _SourceProbe(false, 0, false);
   }
 
+  final hdrChain = await _hdrChain();
   final sp = spec.speed;
   final outDur = spec.outputDuration;
 
@@ -342,7 +380,7 @@ Future<String> _buildCommand(
       // 格式的預設值，等 colorspace 拿到手時來源是 bt2020 這件事
       // 已經被抹掉，轉換就變成沒作用——畫面照樣退色而且不會報錯。
       // 縮圖那條路一直是先轉再縮，所以縮圖正常、只有匯出退色
-      '${probes[c.sourceIndex]!.hdr ? '$_kHdr2Sdr,' : ''}'
+      '${probes[c.sourceIndex]!.hdr ? '$hdrChain,' : ''}'
       'scale=$w2:$h2:flags=lanczos,'
       '${c.reverse ? 'reverse,' : ''}'
       // 全域速度 × 每片段速度一起壓進 PTS
@@ -714,7 +752,7 @@ Future<String?> _prerenderReverse(
     // 色彩標記換掉，colorspace 再轉就沒作用了）
     final cmd =
         '-y -ss ${_f(s)} -to ${_f(e)} -i "$srcPath" '
-        '-vf "${hdr ? '$_kHdr2Sdr,' : ''}'
+        '-vf "${hdr ? '${await _hdrChain()},' : ''}'
         'scale=$outW:$outH:flags=bicubic,reverse" -an '
         '-c:v ${_hwEncoder()} -b:v 16000k -pix_fmt nv12 "$part"';
     var ses = await FFmpegKit.execute(cmd);
@@ -883,8 +921,8 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
 
   // 保底：萬一這版 FFmpeg 的 colorspace 濾鏡不能用，
   // 退回不轉色重跑——寧可顏色淡也不能匯不出來
-  if (!ok && !ReturnCode.isCancel(rc) && cmd.contains(_kHdr2Sdr)) {
-    cmd = cmd.replaceAll('$_kHdr2Sdr,', '');
+  if (!ok && !ReturnCode.isCancel(rc) && cmd.contains(_hdr2Sdr)) {
+    cmd = cmd.replaceAll('$_hdr2Sdr,', '');
     session = await FFmpegKit.execute(cmd);
     rc = await session.getReturnCode();
     ok = ReturnCode.isSuccess(rc);
@@ -1018,7 +1056,9 @@ Future<List<Uint8List>> _makeThumbnails(
   final skip = fastDecode ? '-skip_frame nokey ' : '';
   // HDR 素材先轉 SDR 再縮圖：不轉的話快取幀／時間軸縮圖整片
   // 灰白，拖曳預覽跟播放畫面顏色對不上（也就是「拖曳會退色」）
-  final hdrFix = (await _probe(inputPath)).hdr ? '$_kHdr2Sdr,' : '';
+  final hdrFix = (await _probe(inputPath)).hdr
+      ? '${await _hdrChain()},'
+      : '';
   final cmd =
       '-y $skip$seek-i "$inputPath" '
       '-vf "fps=${fps.toStringAsFixed(6)},$hdrFix$scale" '
