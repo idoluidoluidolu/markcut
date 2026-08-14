@@ -19,8 +19,9 @@ import '../widgets/color_grade_panel.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
 
-/// 預覽上一個可以點的東西：kind 0＝馬賽克、1＝主浮水印、2＝額外浮水印
-typedef _PhLayer = ({int kind, int index, WmPart part});
+/// 預覽上一個可以點的東西：kind 0＝馬賽克、1＝主浮水印、2＝額外浮水印。
+/// logo＝這一組的第幾張圖片（part 不是圖片時為 -1）
+typedef _PhLayer = ({int kind, int index, WmPart part, int logo});
 
 /// 照片草稿。影片的草稿是編輯過程中一直自動存；照片這邊只在
 /// 「離開時使用者選擇保留」才存——照片編輯是一次性的工作，
@@ -173,18 +174,21 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     return '@@b64:${_b64Pool.length - 1}';
   }
 
+  // 一組浮水印可以有很多張圖片，每一張都要換成池子編號——
+  // 漏掉的話那張圖的 base64 會原封不動存進每一步快照裡
   void _packLogo(Object? m) {
     if (m is! Map) return;
-    final lg = m['logo'];
-    if (lg is Map && lg['b64'] is String) {
-      lg['b64'] = _b64Token(lg['b64'] as String);
+    for (final lg in ((m['logos'] as List?) ?? const [])) {
+      if (lg is Map && lg['b64'] is String) {
+        lg['b64'] = _b64Token(lg['b64'] as String);
+      }
     }
   }
 
   void _unpackLogo(Object? m) {
     if (m is! Map) return;
-    final lg = m['logo'];
-    if (lg is Map && lg['b64'] is String) {
+    for (final lg in ((m['logos'] as List?) ?? const [])) {
+      if (lg is! Map || lg['b64'] is! String) continue;
       final v = lg['b64'] as String;
       if (v.startsWith('@@b64:')) {
         final i = int.tryParse(v.substring(6)) ?? -1;
@@ -272,11 +276,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     }
     final wm = WatermarkSettings.fromJson(j);
     setState(() {
-      _settings.text = wm.text;
-      _settings.logo = wm.logo;
-      _settings.animation = wm.animation;
-      _settings.animSpeed = wm.animSpeed;
-      _settings.animRange = wm.animRange;
+      _settings.copyMarksFrom(wm);
       _grade.copyFrom(
         ColorGrade.fromJson(Map<String, dynamic>.from(j['color'] as Map)),
       );
@@ -362,8 +362,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 加一組浮水印：以目前主浮水印為底複製一組，稍微錯開位置
   void _addExtraWm() {
     final t = _settings.text;
-    final hasAny =
-        (t.enabled && t.text.trim().isNotEmpty) || _settings.logo.enabled;
+    final hasAny = (t.enabled && t.text.trim().isNotEmpty) ||
+        _settings.logos.any((l) => l.enabled);
     if (!hasAny) {
       showHint(context, '先把上面的浮水印設定好，再新增更多組');
       return;
@@ -372,8 +372,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     final copy = _settings.copy()..mosaics.clear();
     copy.text.x = (copy.text.x + 0.08).clamp(0.0, 1.0);
     copy.text.y = (copy.text.y + 0.08).clamp(0.0, 1.0);
-    copy.logo.x = (copy.logo.x + 0.08).clamp(0.0, 1.0);
-    copy.logo.y = (copy.logo.y + 0.08).clamp(0.0, 1.0);
+    // 每一張圖片都要錯開，不然多圖的那幾張會整個疊在原來的位置上
+    for (final l in copy.logos) {
+      l.x = (l.x + 0.08).clamp(0.0, 1.0);
+      l.y = (l.y + 0.08).clamp(0.0, 1.0);
+    }
     setState(() => _extraWms.add(copy));
     _editExtraWm(_extraWms.length - 1);
   }
@@ -637,9 +640,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   /// 預覽上的馬賽克層：拖曳移動、點選取、再點開樣式表
   /// 浮水印圖層回報自己畫在哪（在 build/layout 裡呼叫，只能存不能 setState）
-  void _phSetBox(int kind, int index, Rect? text, Rect? logo) {
-    void put(WmPart part, Rect? r) {
-      final id = (kind: kind, index: index, part: part);
+  void _phSetBox(int kind, int index, Rect? text, List<Rect?> logos) {
+    void put(WmPart part, int logo, Rect? r) {
+      final id = (kind: kind, index: index, part: part, logo: logo);
       if (r == null) {
         _phBox.remove(id);
       } else {
@@ -647,8 +650,15 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       }
     }
 
-    put(WmPart.text, text);
-    put(WmPart.logo, logo);
+    put(WmPart.text, -1, text);
+    // 張數會變（加圖、刪圖），先把這一組舊的圖片框全清掉再重放，
+    // 不然刪掉的那張會留一個永遠點得到的鬼框
+    _phBox.removeWhere(
+      (k, _) => k.kind == kind && k.index == index && k.part == WmPart.logo,
+    );
+    for (var i = 0; i < logos.length; i++) {
+      put(WmPart.logo, i, logos[i]);
+    }
   }
 
   /// 置頂導覽列的項目。前五個是面板裡的區段（點了捲過去），
@@ -855,7 +865,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
           ),
         );
       }
-      _phBox[(kind: 0, index: i, part: WmPart.none)] = rect;
+      _phBox[(kind: 0, index: i, part: WmPart.none, logo: -1)] = rect;
       children.add(
         Positioned.fromRect(
           rect: rect,
@@ -1261,16 +1271,22 @@ final color = Color(picked ?? 0);
       if (_phBox.containsKey(id)) out.add(id);
     }
 
+    // 一組浮水印內部：文字畫在圖片之後＝文字在上；
+    // 圖片之間則是後加的那張在上
+    void addGroup(int kind, int index, WatermarkSettings s) {
+      add((kind: kind, index: index, part: WmPart.text, logo: -1));
+      for (var i = s.logos.length - 1; i >= 0; i--) {
+        add((kind: kind, index: index, part: WmPart.logo, logo: i));
+      }
+    }
+
     // 額外浮水印疊在最上面，後加的又在更上面
     for (var i = _extraWms.length - 1; i >= 0; i--) {
-      add((kind: 2, index: i, part: WmPart.text));
-      add((kind: 2, index: i, part: WmPart.logo));
+      addGroup(2, i, _extraWms[i]);
     }
-    // 主浮水印：文字畫在 Logo 之後，所以文字在上
-    add((kind: 1, index: -1, part: WmPart.text));
-    add((kind: 1, index: -1, part: WmPart.logo));
+    addGroup(1, -1, _settings);
     for (var i = _mosaics.length - 1; i >= 0; i--) {
-      add((kind: 0, index: i, part: WmPart.none));
+      add((kind: 0, index: i, part: WmPart.none, logo: -1));
     }
     return out;
   }
@@ -1278,13 +1294,25 @@ final color = Color(picked ?? 0);
   /// 目前選中的是哪一層
   _PhLayer? _phCurrent() {
     if (_selMosaic >= 0) {
-      return (kind: 0, index: _selMosaic, part: WmPart.none);
+      return (kind: 0, index: _selMosaic, part: WmPart.none, logo: -1);
     }
     if (_selExtra >= 0) {
-      return (kind: 2, index: _selExtra, part: _selExtraPart);
+      return (
+        kind: 2,
+        index: _selExtra,
+        part: _selExtraPart,
+        logo: _selExtraPart == WmPart.logo
+            ? _extraWms[_selExtra].activeLogo
+            : -1,
+      );
     }
     if (_wmPart != WmPart.none) {
-      return (kind: 1, index: -1, part: _wmPart);
+      return (
+        kind: 1,
+        index: -1,
+        part: _wmPart,
+        logo: _wmPart == WmPart.logo ? _settings.activeLogo : -1,
+      );
     }
     return null;
   }
@@ -1328,6 +1356,11 @@ final color = Color(picked ?? 0);
       _selExtra = next.kind == 2 ? next.index : -1;
       if (next.kind == 2) _selExtraPart = next.part;
       _wmPart = next.kind == 1 ? next.part : WmPart.none;
+      // 點到哪一張圖片，那張就變成操作中的（面板、捏合都跟著它）
+      if (next.logo >= 0) {
+        if (next.kind == 1) _settings.activeLogo = next.logo;
+        if (next.kind == 2) _extraWms[next.index].activeLogo = next.logo;
+      }
     });
     if (next.kind == 1) _wmPanelCtrl.scrollTo(next.part);
     // 額外浮水印的設定在彈出視窗裡，選到就開；但循環途中不開，

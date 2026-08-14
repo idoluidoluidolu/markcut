@@ -294,6 +294,15 @@ String _f(double v) => v.toStringAsFixed(3);
 /// （0.063 vs 0.0625）會累積出可感知的影音不同步
 String _f6(double v) => v.toStringAsFixed(6);
 
+/// 圖層的顯示區間（overlay 的 enable）。半開區間 [start, end)。
+///
+/// between() 兩端都含，交界那一格前後兩段會同時亮著，誰蓋住誰要看濾鏡鏈
+/// 的先後——同軌的排序是「片段清單的順序」，上一段排在後面時，交界那一格
+/// 蓋上去的是上一段的最後一幀，看起來就是倒退一格的閃爍。
+/// 半開也跟 TimelineClip.covers 同一套判定，預覽本來就是這樣畫的
+String _window(double start, double end) =>
+    'gte(t\\,${_f(start)})*lt(t\\,${_f(end)})';
+
 /// 片段調色 → FFmpeg 濾鏡（沒調過回空字串）
 String _eq(TimelineClip c) => c.color.ffmpeg;
 
@@ -443,12 +452,17 @@ Future<String> _buildCommand(
     return t != 0 ? t : (clipOrder[a.id] ?? 0).compareTo(clipOrder[b.id] ?? 0);
   }
 
-  final videoClips =
-      spec.clips.where((c) => spec.sources[c.sourceIndex].isVideo).toList()
-        ..sort(cmpLayer);
-  // 圖片/文字永遠疊在影片上面（跟預覽一致）
-  final stillClips =
-      spec.clips.where((c) => spec.sources[c.sourceIndex].isOverlay).toList()
+  // 影片與圖片／文字／浮水印排在同一條 z 序裡，完全照軌道來（跟預覽一致）。
+  // 以前是分兩批、圖片文字永遠疊在影片上面，時間軸上把圖片搬到影片下面
+  // 也沒有用。馬賽克不在這裡：它是對合成後的畫面做的效果，最後才套
+  final layerClips =
+      spec.clips
+          .where(
+            (c) =>
+                spec.sources[c.sourceIndex].isVideo ||
+                spec.sources[c.sourceIndex].isOverlay,
+          )
+          .toList()
         ..sort(cmpLayer);
 
   // 依片段的位置/縮放算出圖層的框（像素座標）
@@ -488,8 +502,8 @@ Future<String> _buildCommand(
 
   var cur = 'base';
   var layerN = 0;
-  for (final c in videoClips) {
-    final k = layerN++;
+
+  void writeVideoLayer(TimelineClip c, int k) {
     final src = spec.sources[c.sourceIndex];
     final label = vPool[c.sourceIndex]!.removeLast();
     final start = c.offset / sp;
@@ -521,13 +535,16 @@ Future<String> _buildCommand(
     );
     fc.write(
       '[$cur][lv$k]overlay=$x:$y:'
-      'enable=between(t\\,${_f(start)}\\,${_f(end)}):'
-      'eof_action=pass[ov$k];',
+      'enable=${_window(start, end)}:'
+      // 素材串流比片段短時要凍住最後一幀，不能讓底下的黑畫布露出來。
+      // 手機拍的檔案很常「容器長度 > 視訊串流長度」（音軌比較長、
+      // 或 VFR 的最後一幀提早結束），而片段長度是照容器長度算的——
+      // 用 pass 的話那幾格就直接是黑的，交界處閃一下黑就是這樣來的
+      'eof_action=repeat[ov$k];',
     );
-    cur = 'ov$k';
   }
-  for (final c in stillClips) {
-    final k = layerN++;
+
+  void writeStillLayer(TimelineClip c, int k) {
     final src = spec.sources[c.sourceIndex];
     final start = c.offset / sp;
     final end = c.end / sp;
@@ -545,8 +562,8 @@ Future<String> _buildCommand(
       );
       fc.write(
         '[$cur][lv$k]overlay=$x:$y:'
-        'enable=between(t\\,${_f(start)}\\,${_f(end)}):'
-        'eof_action=pass[ov$k];',
+        'enable=${_window(start, end)}:'
+        'eof_action=repeat[ov$k];',
       );
     } else {
       // 文字／浮水印：整版透明 PNG（位置/縮放已烘進圖），每片段一個輸入
@@ -559,7 +576,7 @@ Future<String> _buildCommand(
       );
       // 浮水印素材的動畫跟全域浮水印同一套 overlay 時間運算式：
       // 閃爍＝enable 週期開關；飄移/跑馬燈＝x,y 隨 t 變化
-      var enable = 'between(t\\,${_f(start)}\\,${_f(end)})';
+      var enable = _window(start, end);
       var pos = '0:0';
       var evalFrame = '';
       final wmSt = src.kind == ClipKind.wm ? src.wmStyle : null;
@@ -588,8 +605,17 @@ Future<String> _buildCommand(
       fc.write(
         '[$cur][lv$k]overlay=$pos:$evalFrame'
         'enable=$enable:'
-        'eof_action=pass[ov$k];',
+        'eof_action=repeat[ov$k];',
       );
+    }
+  }
+
+  for (final c in layerClips) {
+    final k = layerN++;
+    if (spec.sources[c.sourceIndex].isVideo) {
+      writeVideoLayer(c, k);
+    } else {
+      writeStillLayer(c, k);
     }
     cur = 'ov$k';
   }

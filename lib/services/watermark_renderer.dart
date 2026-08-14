@@ -195,10 +195,11 @@ class WatermarkRenderer {
     double w,
     double h,
   ) async {
-    // Logo 先畫（讓文字可以壓在 Logo 上面）
-    final logo = s.logo;
-    final logoBytes = logo.bytes;
-    if (logo.enabled && logoBytes != null) {
+    // 圖片先畫（讓文字可以壓在圖片上面）。多張時照清單順序，
+    // 後加的那張蓋在前面的上面——跟預覽的疊法一致
+    for (final logo in s.logos) {
+      final logoBytes = logo.bytes;
+      if (!logo.enabled || logoBytes == null) continue;
       final codec = await ui.instantiateImageCodec(logoBytes);
       final frame = await codec.getNextFrame();
       final img = frame.image;
@@ -246,9 +247,7 @@ class WatermarkRenderer {
         }
         canvas.restore();
         img.dispose();
-        // 平鋪畫完直接跳去畫文字
-        _drawText(canvas, s, w, h);
-        return;
+        continue; // 平鋪的這張畫完，換下一張
       }
 
       // 夾在畫面內，太靠邊不會被裁掉

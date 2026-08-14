@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -5,6 +6,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/gestures.dart';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:image_picker/image_picker.dart';
 
 import '../theme.dart';
@@ -71,6 +73,21 @@ class _CollageScreenState extends State<CollageScreen> {
   Offset? _dragPos;
   int _dragOver = -1;
 
+  /// 按住多久才算「拿起來」。跟排序清單同一個手感（200ms）：
+  /// 內建的 500ms 按起來像沒反應，再短就會跟一般的點選打架
+  static const _kHoldDelay = Duration(milliseconds: 200);
+
+  /// 按住計時器與按下的位置（宮格座標）。時間到才進入拖曳，
+  /// 途中手指移開太多就取消——一按就拖的話，只是想點一下鎖定
+  /// 都會不小心把照片搬走
+  Timer? _holdTimer;
+  Offset? _holdPos;
+
+  void _cancelHold() {
+    _holdTimer?.cancel();
+    _holdTimer = null;
+  }
+
   // 這一幀宮格的幾何（拖曳換算目標格用）
   double _gG = 0, _gCw = 1, _gCh = 1;
 
@@ -93,6 +110,7 @@ class _CollageScreenState extends State<CollageScreen> {
 
   @override
   void dispose() {
+    _cancelHold();
     for (final img in _images) {
       img?.dispose();
     }
@@ -679,7 +697,7 @@ final color = Color(picked ?? 0);
                     const Padding(
                       padding: EdgeInsets.only(top: 6),
                       child: Text(
-                        '拖曳可交換照片位置；點一下鎖定 可調照片顯示位置',
+                        '按住可拖曳交換照片位置；點一下鎖定 可調照片顯示位置',
                         style: TextStyle(fontSize: 11, color: kTextDim),
                       ),
                     ),
@@ -851,14 +869,31 @@ final color = Color(picked ?? 0);
       },
       child: GestureDetector(
         onTap: () => _tapCell(i),
-        // 選取中單指拖曳＝移動構圖；沒選取＝拖起來跟別格互換
-        onPanStart: selected
+        // 沒選取的格子：按住 200ms 才拿得起來（成立時震一下＋亮框），
+        // 之後拖到哪一格就跟哪一格互換。選取中的格子單指拖曳是移動構圖，
+        // 不進這條路
+        onPanDown: selected
             ? null
-            : (d) => setState(() {
-                _dragFrom = i;
-                _dragPos = origin + d.localPosition;
-                _dragOver = i;
-              }),
+            : (d) {
+                _holdPos = origin + d.localPosition;
+                _cancelHold();
+                _holdTimer = Timer(_kHoldDelay, () {
+                  if (!mounted) return;
+                  // 兩指在畫面上＝在縮放別格的構圖，不是要搬照片。
+                  // 第二指常常落在隔壁格，不擋的話那一格會被拿起來
+                  if (_pts.length >= 2) return;
+                  // 成立的那一刻給回饋：不震一下、不亮框的話，
+                  // 使用者不知道已經按夠久、可以開始移動了
+                  HapticFeedback.mediumImpact();
+                  setState(() {
+                    _dragFrom = i;
+                    _dragPos = _holdPos;
+                    _dragOver = i;
+                  });
+                });
+              },
+        // 還沒按滿就開始滑＝不是要搬照片，把計時器收掉
+        onPanStart: selected ? null : (_) => _cancelHold(),
         onPanUpdate: (d) {
           if (_pts.length >= 2) return;
           if (selected) {
@@ -877,17 +912,28 @@ final color = Color(picked ?? 0);
             });
           }
         },
-        onPanEnd: selected ? null : (_) => _endDrag(),
+        onPanEnd: selected
+            ? null
+            : (_) {
+                _cancelHold();
+                _endDrag();
+              },
         onPanCancel: selected
             ? null
-            : () => setState(() {
-                _dragFrom = -1;
-                _dragPos = null;
-                _dragOver = -1;
-              }),
+            : () {
+                _cancelHold();
+                setState(() {
+                  _dragFrom = -1;
+                  _dragPos = null;
+                  _dragOver = -1;
+                });
+              },
         child: Container(
           foregroundDecoration: selected
               ? BoxDecoration(border: Border.all(color: kSelect, width: 2))
+              // 被拿起來的那一格：亮框留在原位，看得出正在搬的是誰
+              : _dragFrom == i
+              ? BoxDecoration(border: Border.all(color: kSelect, width: 2.5))
               : (_dragFrom != -1 && _dragOver == i && _dragFrom != i)
               ? BoxDecoration(
                   border: Border.all(color: kSelect, width: 2.5),

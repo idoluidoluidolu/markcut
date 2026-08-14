@@ -751,6 +751,101 @@ Widget secondaryAction({
       label: Text(label, style: const TextStyle(fontSize: 13)),
     );
 
+/// 選單彈窗裡的一列（畫面比例／解析度／畫質都用這個）。
+/// 選中的那列標題轉琥珀色＋粗體，右邊打勾；[trailing] 放檔案大小之類的
+/// 數字，[badge] 放「推薦」那種小標
+Widget optionRow({
+  required String title,
+  required bool selected,
+  required VoidCallback onTap,
+  String? subtitle,
+  String? trailing,
+  String? badge,
+  bool first = false,
+}) {
+  return InkWell(
+    onTap: onTap,
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 9),
+      decoration: first
+          ? null
+          : const BoxDecoration(
+              border: Border(top: BorderSide(color: kPanelHi)),
+            ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: selected
+                            ? FontWeight.w700
+                            : FontWeight.w400,
+                        color: selected ? kAmber : kText,
+                      ),
+                    ),
+                    if (badge != null) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 5,
+                          vertical: 1.5,
+                        ),
+                        decoration: BoxDecoration(
+                          color: kAmber.withValues(alpha: 0.16),
+                          borderRadius: BorderRadius.circular(kTagRadius),
+                        ),
+                        child: Text(
+                          badge,
+                          style: const TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                            color: kAmber,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                if (subtitle != null) ...[
+                  const SizedBox(height: 1),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      fontSize: 10.5,
+                      color: kTextDim,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          if (trailing != null)
+            Text(
+              trailing,
+              style: TextStyle(
+                fontSize: 12,
+                color: selected ? kAmber : kTextDim,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          if (selected) ...[
+            const SizedBox(width: 6),
+            const Icon(Icons.check, size: 17, color: kAmber),
+          ],
+        ],
+      ),
+    ),
+  );
+}
+
 /// 點到重疊處時的說明。三個編輯畫面講同一句
 String overlapHint(int layers) => '這裡疊了 $layers 層，再點一次選下面那層';
 

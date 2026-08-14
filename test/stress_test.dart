@@ -378,6 +378,63 @@ void main() {
         expect(s.logo.sizeFrac == 1.987654, isFalse, reason: 'copy() 不是深拷貝（Logo）');
       }
     });
+
+    test('多張圖片：加、刪、切換都不會越界，logo 永遠有東西可回傳', () {
+      final r = math.Random(21);
+      final s = WatermarkSettings();
+      expect(s.logos.length, 1, reason: '一開始就要有一張（空的）');
+      for (var i = 0; i < 3000; i++) {
+        switch (r.nextInt(3)) {
+          case 0:
+            s.addLogo().b64 = 'img$i';
+          case 1:
+            s.removeLogo(r.nextInt(s.logos.length + 2) - 1);
+          case 2:
+            s.activeLogo = r.nextInt(12) - 4;
+        }
+        expect(s.logos.isNotEmpty, isTrue, reason: '清單被清空了');
+        expect(s.activeLogo >= 0 && s.activeLogo < s.logos.length, isTrue,
+            reason: '操作中的索引跑出範圍：${s.activeLogo}/${s.logos.length}');
+        expect(s.logo, same(s.logos[s.activeLogo]));
+      }
+    });
+
+    test('多張圖片：JSON 來回不失真，舊版單張草稿也讀得回來', () {
+      final s = WatermarkSettings();
+      s.logo.b64 = 'first';
+      s.logo.enabled = true;
+      s.addLogo().b64 = 'second';
+      s.addLogo().b64 = 'third';
+      s.activeLogo = 1;
+      final a = jsonEncode(s.toJson());
+      final back = WatermarkSettings.fromJson(jsonDecode(a));
+      expect(jsonEncode(back.toJson()), a, reason: '多張圖片來回後不一樣');
+      expect(back.logos.length, 3);
+      expect(back.activeLogo, 1, reason: '操作中的那張要記住');
+      expect(back.logos[2].b64, 'third');
+
+      // 舊草稿／舊範本只有單張的 logo 鍵
+      final old = WatermarkSettings.fromJson({
+        'text': {'text': 'x'},
+        'logo': {'b64': 'legacy', 'enabled': true},
+      });
+      expect(old.logos.length, 1);
+      expect(old.logo.b64, 'legacy');
+      expect(old.hasAnyMark, isTrue);
+
+      // 沒有任何圖片時 logo 還是要能取（空的那張）
+      final empty = WatermarkSettings();
+      expect(empty.logo.b64, isNull);
+      expect(empty.logos.length, 1);
+      empty.removeLogo(0);
+      expect(empty.logos.length, 1, reason: '最後一張只清空、不移除');
+
+      // 只有第二張有圖也算有浮水印（hasAnyMark 不能只看操作中的那張）
+      final second = WatermarkSettings();
+      second.addLogo().b64 = 'only-here';
+      second.activeLogo = 0;
+      expect(second.hasAnyMark, isTrue);
+    });
   });
 
   group('吸附（磁鐵）行為', () {

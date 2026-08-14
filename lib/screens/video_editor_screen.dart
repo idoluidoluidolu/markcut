@@ -367,9 +367,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   String _snapshot() {
     final wm = _settings.toJson();
-    final lg = wm['logo'];
-    if (lg is Map && lg['b64'] is String) {
-      lg['b64'] = _wmB64Token(lg['b64'] as String);
+    // 一組浮水印可以有很多張圖片，每一張都要換成池子編號
+    for (final lg in ((wm['logos'] as List?) ?? const [])) {
+      if (lg is Map && lg['b64'] is String) {
+        lg['b64'] = _wmB64Token(lg['b64'] as String);
+      }
     }
     return jsonEncode({
       'clips': [for (final c in _tl.clips) c.toJson()],
@@ -406,8 +408,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 快照裡的 Logo 是池子編號，先換回真正的 base64
     final wmJ = j['wm'];
     if (wmJ is Map) {
-      final lg = wmJ['logo'];
-      if (lg is Map && lg['b64'] is String) {
+      for (final lg in ((wmJ['logos'] as List?) ?? const [])) {
+        if (lg is! Map || lg['b64'] is! String) continue;
         final v = lg['b64'] as String;
         if (v.startsWith('@@b64:')) {
           final i = int.tryParse(v.substring(6)) ?? -1;
@@ -442,11 +444,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         final wm = WatermarkSettings.fromJson(
           Map<String, dynamic>.from(j['wm'] as Map),
         );
-        _settings.text = wm.text;
-        _settings.logo = wm.logo;
-        _settings.animation = wm.animation;
-        _settings.animSpeed = wm.animSpeed;
-        _settings.animRange = wm.animRange;
+        _settings.copyMarksFrom(wm);
         _wmSync++;
       }
       _sel = -1;
@@ -594,11 +592,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final wm = WatermarkSettings.fromJson(
         Map<String, dynamic>.from(j['wm'] as Map),
       );
-      _settings.text = wm.text;
-      _settings.logo = wm.logo;
-      _settings.animation = wm.animation;
-      _settings.animSpeed = wm.animSpeed;
-      _settings.animRange = wm.animRange;
+      _settings.copyMarksFrom(wm);
     }
     _wmStart = ((j['wmStart'] ?? 0) as num).toDouble();
     _wmEnd = j['wmEnd'] == null ? null : (j['wmEnd'] as num).toDouble();
@@ -1206,14 +1200,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _optionRow(
+            optionRow(
               title: '接在同一軌',
               subtitle: '照選取順序頭尾相接，變成一段長影片',
               selected: false,
               first: true,
               onTap: () => Navigator.pop(context, true),
             ),
-            _optionRow(
+            optionRow(
               title: '各自一軌',
               subtitle: '每個影片開一個新軌道',
               selected: false,
@@ -3037,10 +3031,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
   }
 
-  /// 浮水印圖層回報自己畫在哪（在 build 裡呼叫，只能存不能 setState）
-  void _addWmHit(int id, Rect? text, Rect? logo) {
+  /// 浮水印圖層回報自己畫在哪（在 build 裡呼叫，只能存不能 setState）。
+  /// 圖片可以有很多張，每一張都要能點得到
+  void _addWmHit(int id, Rect? text, List<Rect?> logos) {
     if (text != null) _hitBoxes.add((id: id, rect: text));
-    if (logo != null) _hitBoxes.add((id: id, rect: logo));
+    for (final r in logos) {
+      if (r != null) _hitBoxes.add((id: id, rect: r));
+    }
   }
 
   /// 上一刻修剪把手有沒有吸住（吸住的瞬間震一下，才有磁鐵的感覺）
@@ -3563,9 +3560,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _deleteWatermark() {
     _pushUndo();
     setState(() {
-      _settings.text = TextMark(text: '');
-      _settings.logo = LogoMark();
-      _settings.animation = WmAnimation.none;
+      // 整組換成空的：多張圖片也一起清掉
+      _settings.copyMarksFrom(WatermarkSettings(text: TextMark(text: '')));
       _wmSel = false;
       _wmStart = 0;
       _wmEnd = null;
@@ -4460,6 +4456,45 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   Rect? selRect;
                                   TimelineClip? selVisual;
 
+                                  // 圖層的上下關係一律照時間軸的軌道來：
+                                  // track 大的是下層、先畫。影片與圖片／文字
+                                  // 混在同一條 z 序裡排——以前是「所有影片
+                                  // 先畫、圖片文字永遠疊在上面」，時間軸上
+                                  // 把圖片搬到影片下面也沒有用
+                                  //
+                                  // 兩張表分別對應 children 前段與 _hitBoxes，
+                                  // 用同一個規則插入，畫面順序跟點擊順序才會一致
+                                  //（_hitBoxes 由後往前找＝由上往下）
+                                  final layerTracks = <int>[];
+                                  final hitTracks = <int>[];
+                                  int slotIn(List<int> tracks, int track) {
+                                    var i = 0;
+                                    while (i < tracks.length &&
+                                        tracks[i] >= track) {
+                                      i++;
+                                    }
+                                    return i;
+                                  }
+
+                                  void addLayer(int track, Widget w) {
+                                    final i = slotIn(layerTracks, track);
+                                    children.insert(i, w);
+                                    layerTracks.insert(i, track);
+                                  }
+
+                                  void addHit(int track, int id, Rect rect) {
+                                    final i = slotIn(hitTracks, track);
+                                    _hitBoxes.insert(i, (id: id, rect: rect));
+                                    hitTracks.insert(i, track);
+                                  }
+
+                                  // 暖身用的隱形影片永遠壓在最底下（見下面的
+                                  // 預掛載），馬賽克永遠在最上面——它是對
+                                  // 「合成後的畫面」做的效果，匯出端也是最後
+                                  // 才套，跟著軌道排的話會糊不到上層的東西
+                                  const warmTrack = 999;
+                                  const mosaicTrack = -999;
+
                                   // 影片圖層（由下層往上疊 = 真 PiP）
                                   final vids = _tl.videosAt(_position);
                                   // 播放中：快進場的影片先以幾乎看不見
@@ -4509,8 +4544,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           (_thumbs[c.sourceIndex] ?? const [])
                                               .firstOrNull;
                                       if (fb != null) {
-                                        _hitBoxes.add((id: c.id, rect: rf));
-                                        children.add(
+                                        // 這條路走的是「播放器還沒好」，
+                                        // 暖身片段一定有播放器，不會到這裡
+                                        addHit(c.track, c.id, rf);
+                                        addLayer(
+                                          c.track,
                                           Positioned.fromRect(
                                             rect: rf,
                                             child: _tinted(
@@ -4539,7 +4577,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       c,
                                       ctrl.value.aspectRatio,
                                     );
-                                    _hitBoxes.add((id: c.id, rect: r));
+                                    final vTrack = warmIds.contains(c.id)
+                                        ? warmTrack
+                                        : c.track;
+                                    addHit(vTrack, c.id, r);
                                     // 拖曳中：真影片上面疊快取幀。獨立小元件直接聽 _posVN
                                     // 全速換圖（不吃 30fps 節流），搭配鄰近幀預熱解碼＝跟手。
                                     //
@@ -4557,7 +4598,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             (_colorMode && kIsWeb))
                                         ? _scrubFrames[c.sourceIndex]
                                         : null;
-                                    children.add(
+                                    addLayer(
+                                      vTrack,
                                       Positioned.fromRect(
                                         // 整層掛 key：交界那一格上一段會從
                                         // children 裡消失，後面每一層的索引
@@ -4674,13 +4716,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     }
                                   }
 
-                                  // 圖片 / 文字圖層（永遠疊在影片上面，由下層往上畫）
+                                  // 圖片 / 文字圖層（插進上面那條 z 序，
+                                  // 位置由自己的軌道決定）
                                   for (final c in _tl.overlaysAt(_position)) {
                                     final src = _tl.sourceOf(c);
                                     if (src.kind == ClipKind.mosaic) {
                                       final r = layerBox(c, 1.0);
-                                      _hitBoxes.add((id: c.id, rect: r));
-                                      children.add(
+                                      addHit(mosaicTrack, c.id, r);
+                                      addLayer(
+                                        mosaicTrack,
                                         Positioned.fromRect(
                                           rect: r,
                                           child: GestureDetector(
@@ -4804,11 +4848,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     }
                                     if (src.kind == ClipKind.image) {
                                       final r = layerBox(c, src.aspect);
-                                      _hitBoxes.add((id: c.id, rect: r));
+                                      addHit(c.track, c.id, r);
                                       final bytes = _thumbs[c.sourceIndex];
                                       final hasBytes =
                                           bytes != null && bytes.isNotEmpty;
-                                      children.add(
+                                      addLayer(
+                                        c.track,
                                         Positioned.fromRect(
                                           rect: r,
                                           child: Stack(
@@ -4866,7 +4911,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     } else if (src.kind == ClipKind.wm) {
                                       final st =
                                           src.wmStyle ?? WatermarkSettings();
-                                      children.add(
+                                      addLayer(
+                                        c.track,
                                         Positioned.fill(
                                           child: Opacity(
                                             opacity: c.fadeFactorAt(_position),
@@ -4961,8 +5007,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         textScaler: TextScaler.noScaling,
                                         style: s2,
                                       );
-                                      _hitBoxes.add((id: c.id, rect: r));
-                                      children.add(
+                                      addHit(c.track, c.id, r);
+                                      addLayer(
+                                        c.track,
                                         Positioned(
                                           left: r.left,
                                           top: r.top,
@@ -5190,7 +5237,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             // 才拍：光按一下不該吃掉 redo
                                             _routerUndoPending = true;
                                             _rtStartFocal = d.focalPoint;
-                                            _rtApplied = d.focalPoint;
                                             _rtArmed = false;
                                             _rtClearGuides();
                                             if (selVis != null) {
@@ -5219,22 +5265,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               // 一刻」，不然會憑空跳 6px
                                               _gestureStartFocal = d.focalPoint;
                                               _routerLast = d.focalPoint;
-                                              _rtApplied = d.focalPoint;
                                             }
-                                            // 低通：累積不到 1.5px 的移動
-                                            // 先不套用。手指離開的瞬間平台
-                                            // 常常補一個一兩像素的位移，
-                                            // 照單全收就是「放手時素材跳
-                                            // 一下」；手抖也一樣。慢慢拖不
-                                            // 受影響——位移會累積，超過
-                                            // 門檻就一次套上
-                                            if (d.pointerCount < 2 &&
-                                                (d.focalPoint - _rtApplied)
-                                                        .distance <
-                                                    1.5) {
-                                              return;
-                                            }
-                                            _rtApplied = d.focalPoint;
+                                            // 抬手那一下的小位移不在這裡濾，
+                                            // 已經在事件進手勢辨識之前擋掉了
+                                            //（見 SteadyPointerBinding）
                                             if (selVis != null) {
                                               _routerPushUndoIfNeeded();
                                               // 文字素材可以放大到 12 倍
@@ -5297,50 +5331,81 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                 // 部件加同一個修正量，
                                                 // 相對位置不會被吸歪
                                                 final t2 = wmClipStyle.text;
-                                                final lg = wmClipStyle.logo;
+                                                // 圖片可以有很多張，
+                                                // 整組一起搬
+                                                final live = [
+                                                  for (final l
+                                                      in wmClipStyle.logos)
+                                                    if (l.enabled && !l.tiled)
+                                                      l,
+                                                ];
                                                 final tAlive =
                                                     t2.enabled &&
                                                     !t2.tiled &&
                                                     t2.text.trim().isNotEmpty;
-                                                final lAlive =
-                                                    lg.enabled && !lg.tiled;
-                                                if (tAlive || lAlive) {
+                                                if (tAlive || live.isNotEmpty) {
                                                   _routerPushUndoIfNeeded();
                                                   moved = true;
                                                   if (_rtRawX == null) {
                                                     _rtRawX = tAlive
                                                         ? t2.x
-                                                        : lg.x;
+                                                        : live.first.x;
                                                     _rtRawY = tAlive
                                                         ? t2.y
-                                                        : lg.y;
-                                                    _rtRawX2 = lg.x;
-                                                    _rtRawY2 = lg.y;
+                                                        : live.first.y;
+                                                    _rtRawLogos = [
+                                                      for (final l in live)
+                                                        Offset(l.x, l.y),
+                                                    ];
                                                   }
                                                   _rtRawX = (_rtRawX! + ddx)
                                                       .clamp(0.0, 1.0);
                                                   _rtRawY = (_rtRawY! + ddy)
                                                       .clamp(0.0, 1.0);
-                                                  _rtRawX2 = (_rtRawX2 + ddx)
-                                                      .clamp(0.0, 1.0);
-                                                  _rtRawY2 = (_rtRawY2 + ddy)
-                                                      .clamp(0.0, 1.0);
+                                                  for (
+                                                    var i = 0;
+                                                    i < _rtRawLogos.length;
+                                                    i++
+                                                  ) {
+                                                    final r = _rtRawLogos[i];
+                                                    _rtRawLogos[i] = Offset(
+                                                      (r.dx + ddx).clamp(
+                                                        0.0,
+                                                        1.0,
+                                                      ),
+                                                      (r.dy + ddy).clamp(
+                                                        0.0,
+                                                        1.0,
+                                                      ),
+                                                    );
+                                                  }
                                                   final sx = _snapC(_rtRawX!);
                                                   final sy = _snapC(_rtRawY!);
                                                   final cx = sx - _rtRawX!;
                                                   final cy = sy - _rtRawY!;
+                                                  // 領頭吸中線，其餘的加同一個
+                                                  // 修正量，相對位置不會被吸歪。
+                                                  // 沒有文字時領頭是第一張圖
+                                                  final from = tAlive ? 0 : 1;
                                                   if (tAlive) {
                                                     t2.x = sx;
                                                     t2.y = sy;
-                                                    if (lAlive) {
-                                                      lg.x = (_rtRawX2 + cx)
-                                                          .clamp(0.0, 1.0);
-                                                      lg.y = (_rtRawY2 + cy)
-                                                          .clamp(0.0, 1.0);
-                                                    }
                                                   } else {
-                                                    lg.x = sx;
-                                                    lg.y = sy;
+                                                    live.first.x = sx;
+                                                    live.first.y = sy;
+                                                  }
+                                                  for (
+                                                    var i = from;
+                                                    i < live.length &&
+                                                        i < _rtRawLogos.length;
+                                                    i++
+                                                  ) {
+                                                    live[i].x =
+                                                        (_rtRawLogos[i].dx + cx)
+                                                            .clamp(0.0, 1.0);
+                                                    live[i].y =
+                                                        (_rtRawLogos[i].dy + cy)
+                                                            .clamp(0.0, 1.0);
                                                   }
                                                   _rtSetGuides(sx, sy);
                                                 }
@@ -5459,9 +5524,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Offset _rtStartFocal = Offset.zero;
   bool _rtArmed = false;
 
-  /// 上一次「真的套用」的手指位置（低通濾波用，見 onScaleUpdate）
-  Offset _rtApplied = Offset.zero;
-
   /// 選取路由的上一個拖曳點（算增量用）
   Offset _routerLast = Offset.zero;
 
@@ -5469,8 +5531,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 未吸附的原始座標（吸附只作用在顯示值上，不然吸上就拖不出來）
   double? _rtRawX, _rtRawY;
 
-  /// 浮水印片段整組移動時的第二個部件（logo）原始座標
-  double _rtRawX2 = 0, _rtRawY2 = 0;
+  /// 浮水印片段整組移動時，每一張圖片的未吸附原始座標
+  List<Offset> _rtRawLogos = [];
 
   bool _rtGuideV = false, _rtGuideH = false;
   bool _rtSnapped = false;
@@ -6167,98 +6229,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 彈窗裡的一列選項：標題＋輸出尺寸副標＋選中勾勾
-  Widget _optionRow({
-    required String title,
-    required bool selected,
-    required VoidCallback onTap,
-    String? subtitle,
-    String? trailing,
-    String? badge,
-    bool first = false,
-  }) {
-    return InkWell(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 9),
-        decoration: first
-            ? null
-            : const BoxDecoration(
-                border: Border(top: BorderSide(color: kPanelHi)),
-              ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        title,
-                        style: TextStyle(
-                          fontSize: 13.5,
-                          fontWeight: selected
-                              ? FontWeight.w700
-                              : FontWeight.w400,
-                          color: selected ? kAmber : kText,
-                        ),
-                      ),
-                      if (badge != null) ...[
-                        const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 5,
-                            vertical: 1.5,
-                          ),
-                          decoration: BoxDecoration(
-                            color: kAmber.withValues(alpha: 0.16),
-                            borderRadius: BorderRadius.circular(kTagRadius),
-                          ),
-                          child: Text(
-                            badge,
-                            style: const TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                              color: kAmber,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                  if (subtitle != null) ...[
-                    const SizedBox(height: 1),
-                    Text(
-                      subtitle,
-                      style: const TextStyle(
-                        fontSize: 10.5,
-                        color: kTextDim,
-                        fontFeatures: [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            if (trailing != null)
-              Text(
-                trailing,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: selected ? kAmber : kTextDim,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
-              ),
-            if (selected) ...[
-              const SizedBox(width: 6),
-              const Icon(Icons.check, size: 17, color: kAmber),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
   /// 輸出畫面比例：置中彈窗，一行一個選項（附輸出尺寸），點了套用關窗
   void _openRatioSheet() {
     showDialog(
@@ -6275,7 +6245,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 Builder(
                   builder: (context) {
                     final (w, h) = computeCanvasSize(_tl, _resolution, r);
-                    return _optionRow(
+                    return optionRow(
                       title: r.label,
                       subtitle: '$w×$h',
                       selected: _canvasRatio == r,
@@ -7223,7 +7193,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             mainAxisSize: MainAxisSize.min,
             children: [
               for (final (i, q) in qualityOrder.indexed)
-                _optionRow(
+                optionRow(
                   title: q.label,
                   subtitle: q.note,
                   // 自動挑到的那一檔＝壓到看不出跟原素材有差的點。
@@ -7277,7 +7247,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     // 這種情況直接講白，不要讓人以為選了沒反應
                     final same =
                         r != ExportResolution.original && w == ow && h == oh;
-                    return _optionRow(
+                    return optionRow(
                       title: r.label,
                       subtitle: same ? '$w×$h·原片就這麼大，不會再縮' : '$w×$h·${r.hint}',
                       selected: _resolution == r,

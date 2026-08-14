@@ -5,10 +5,14 @@ import 'package:image_picker_platform_interface/image_picker_platform_interface.
 import 'package:media_kit/media_kit.dart';
 
 import 'screens/home_screen.dart';
+import 'services/steady_pointer.dart';
 import 'theme.dart';
 
 void main() {
-  WidgetsFlutterBinding.ensureInitialized();
+  // 一般是 WidgetsFlutterBinding.ensureInitialized()。換成自己那個
+  // 是為了在事件進到手勢辨識之前濾掉「抬手那一下的位移」——
+  // 全 App 的拖曳與滑桿都會經過這裡，見 SteadyPointerBinding
+  SteadyPointerBinding.ensureInitialized();
   // Android：改用系統的相簿選取器。
   // 預設是關的，會走舊的 ACTION_GET_CONTENT——能不能一次選多個
   // 要看手機上是哪個相簿 App 接手，很多機型只選得到一個

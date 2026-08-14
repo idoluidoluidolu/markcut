@@ -35,9 +35,10 @@ class WatermarkLayer extends StatefulWidget {
   /// 沒給就退回 onTap
   final VoidCallback? onTapText;
 
-  /// 回報這一刻文字／Logo 畫在哪（父層拿去判斷點擊落在誰身上）。
+  /// 回報這一刻文字／圖片畫在哪（父層拿去判斷點擊落在誰身上）。
+  /// [logoBoxes] 跟 settings.logos 一一對應，沒畫出來的那張是 null。
   /// 在 build 裡呼叫，父層只能存起來，不可以 setState
-  final void Function(Rect? textBox, Rect? logoBox)? onHitBox;
+  final void Function(Rect? textBox, List<Rect?> logoBoxes)? onHitBox;
 
   /// 目前播放時間（秒）；動畫預覽用，靜態畫面給 null
   final double? time;
@@ -73,15 +74,19 @@ class WatermarkLayer extends StatefulWidget {
 class _WatermarkLayerState extends State<WatermarkLayer> {
   // 捏合縮放的起點值
 
-  /// 選取框（只畫在被選的那個部件上）
-  BoxDecoration? _deco(WmPart part) => widget.selectedPart == part
-      ? BoxDecoration(
-          border: Border.all(
-            color: Colors.white.withValues(alpha: 0.9),
-            width: 1.2,
-          ),
-        )
-      : null;
+  /// 選取框（只畫在被選的那個部件上）。圖片有很多張時，
+  /// 只有「操作中」的那張要畫框——每張都畫等於沒有選取這回事
+  BoxDecoration? _deco(WmPart part, {int logoIndex = -1}) {
+    if (widget.selectedPart != part) return null;
+    if (part == WmPart.logo &&
+        logoIndex >= 0 &&
+        logoIndex != widget.settings.activeLogo) {
+      return null;
+    }
+    return BoxDecoration(
+      border: Border.all(color: Colors.white.withValues(alpha: 0.9), width: 1.2),
+    );
+  }
 
   /// 這個部件現在能不能拖：
   /// 有部件被選取時只有被選的能拖；父層說不行（別的素材選取中）就不行。
@@ -144,20 +149,25 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
     return _probeSize;
   }
 
-  /// Logo 的長寬比（寬/高）。匯出是用實際高度來置中與算圓角，
-  /// 預覽若拿寬度當高度用，非正方形的 Logo 位置就會跟成品差一截
-  double _logoAspect = 1;
-  Uint8List? _aspectFor;
+  /// 圖片的長寬比（寬/高），一張一格。匯出是用實際高度來置中與算圓角，
+  /// 預覽若拿寬度當高度用，非正方形的圖位置就會跟成品差一截。
+  /// 以 bytes 為 key：同一張圖被幾個地方共用時只量一次
+  final Map<Uint8List, double> _aspects = {};
 
-  void _ensureLogoAspect(Uint8List bytes) {
-    if (identical(_aspectFor, bytes)) return;
-    _aspectFor = bytes;
+  double _logoAspectOf(Uint8List bytes) {
+    final known = _aspects[bytes];
+    if (known != null) return known;
+    // 還沒量到先當正方形，量好了再重畫
+    _aspects[bytes] = 1;
     ui.instantiateImageCodec(bytes).then((c) => c.getNextFrame()).then((f) {
       final a = f.image.width / f.image.height;
       f.image.dispose();
-      if (!mounted || !identical(_aspectFor, bytes)) return;
-      if ((a - _logoAspect).abs() > 0.001) setState(() => _logoAspect = a);
+      if (!mounted) return;
+      if ((a - (_aspects[bytes] ?? 1)).abs() > 0.001) {
+        setState(() => _aspects[bytes] = a);
+      }
     }).catchError((_) {});
+    return 1;
   }
 
   @override
@@ -178,29 +188,36 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
             : settings.animAt(time);
         final children = <Widget>[];
         // 這一輪畫出來的位置，最後回報給父層
-        Rect? hitText, hitLogo;
+        Rect? hitText;
+        final hitLogos = List<Rect?>.filled(settings.logos.length, null);
 
-        final logo = settings.logo;
-        final logoBytes = logo.bytes;
-        // Logo 滿版平鋪：整面重複，不能拖曳（位置無意義）
-        if (logo.enabled && logoBytes != null && logo.tiled) {
-          children.add(
-            Positioned.fill(
-              child: IgnorePointer(child: _TiledLogo(logo: logo)),
-            ),
-          );
-        } else if (logo.enabled && logoBytes != null) {
+        // 圖片可以放很多張：照清單順序畫，後加的疊在前面的上面。
+        // 碰到哪一張就把它設成「操作中」（settings.activeLogo），
+        // 面板、捏合縮放、選取框全部跟著它走
+        for (var li = 0; li < settings.logos.length; li++) {
+          final logo = settings.logos[li];
+          final logoBytes = logo.bytes;
+          if (!logo.enabled || logoBytes == null) continue;
+          // 滿版平鋪：整面重複，不能拖曳（位置無意義）
+          if (logo.tiled) {
+            children.add(
+              Positioned.fill(
+                child: IgnorePointer(child: _TiledLogo(logo: logo)),
+              ),
+            );
+            continue;
+          }
           // 大小以「短邊」為基準：同一個範本套到 16:9 或 9:16，
           // 看起來的比例才會一樣（用寬的話直式/橫式差超多）
           final logoW = logo.sizeFrac * math.min(w, h);
-          _ensureLogoAspect(logoBytes);
           // 高度要用實際長寬比算，跟匯出同一套；
           // 拿寬度當高度的話非正方形 Logo 會上下偏掉
-          final logoH = logoW / _logoAspect;
+          final logoH = logoW / _logoAspectOf(logoBytes);
           // 不夾限：允許放大到超出畫面（跟匯出同一套規則）
           final left = logo.x * w - logoW / 2;
           final top = logo.y * h - logoH / 2;
-          hitLogo = Rect.fromLTWH(left, top, logoW, logoH);
+          hitLogos[li] = Rect.fromLTWH(left, top, logoW, logoH);
+          void makeActive() => settings.activeLogo = li;
           children.add(
             Positioned(
               left: left,
@@ -208,12 +225,14 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: () {
+                  makeActive();
                   widget.onSelectPart?.call(WmPart.logo);
                   onTap?.call();
                 },
                 // 雙擊＝回正中央、恢復預設大小。
                 // 允許拖到畫面外，拖丟了本來只能去面板拉滑桿救
                 onDoubleTap: () {
+                  makeActive();
                   onDragStart?.call(); // 先拍快照
                   logo.x = 0.5;
                   logo.y = 0.5;
@@ -226,6 +245,7 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                     ? null
                     : (_) {
                         if (widget.panLocked?.call() ?? false) return;
+                        makeActive();
                         _rawX = logo.x;
                         _rawY = logo.y;
                         setState(() => _panning = WmPart.logo);
@@ -257,7 +277,7 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                   child: Transform.rotate(
                     angle: logo.rotation * math.pi / 180,
                     child: Container(
-                      decoration: _deco(WmPart.logo),
+                      decoration: _deco(WmPart.logo, logoIndex: li),
                       child: ClipRRect(
                         // 圓角基準也跟匯出一致：短邊
                         borderRadius: BorderRadius.circular(
@@ -466,7 +486,9 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
 
         // 動畫會整組位移，回報的框也要跟著移，不然點擊判定跟看到的錯開
         final shift = Offset(anim.dx * w, anim.dy * h);
-        widget.onHitBox?.call(hitText?.shift(shift), hitLogo?.shift(shift));
+        widget.onHitBox?.call(hitText?.shift(shift), [
+          for (final r in hitLogos) r?.shift(shift),
+        ]);
 
         // 動畫：整組浮水印一起位移＋淡出（閃爍＝alpha 0/1）
         if (anim.dx != 0 || anim.dy != 0 || anim.alpha != 1) {

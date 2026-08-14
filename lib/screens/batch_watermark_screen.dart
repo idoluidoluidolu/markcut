@@ -70,6 +70,19 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   bool _exporting = false;
   bool _stopRequested = false;
 
+  /// 整批共用的畫質。影片吃它的位元率檔位，照片存 JPEG 時吃
+  /// [_jpegQuality]——一頁只問一次「畫質」，不要影片照片各一套。
+  /// 預設「標準」跟以前寫死的值一致（影片 crf 17、照片 JPEG 92），
+  /// 沒動過設定的人輸出結果不會變
+  ExportQuality _quality = ExportQuality.standard;
+
+  int get _jpegQuality => switch (_quality) {
+    ExportQuality.low => 78,
+    ExportQuality.standard => 92,
+    ExportQuality.ultra => 96,
+    ExportQuality.lossless => 100,
+  };
+
   bool _isVideo(XFile f) {
     final mime = f.mimeType;
     if (mime != null && mime.isNotEmpty) return mime.startsWith('video/');
@@ -184,11 +197,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         : (_items[step.itemIndex].override ??= _settings.copy());
     setState(() {
       if (step.itemIndex >= 0) _previewIndex = step.itemIndex;
-      dst.text = wm.text;
-      dst.logo = wm.logo;
-      dst.animation = wm.animation;
-      dst.animSpeed = wm.animSpeed;
-      dst.animRange = wm.animRange;
+      dst.copyMarksFrom(wm);
       _sync++;
     });
   }
@@ -530,7 +539,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
             try {
               out = await FlutterImageCompress.compressWithList(
                 out,
-                quality: 92,
+                quality: _jpegQuality,
                 format: CompressFormat.jpeg,
               );
               ext = 'jpg';
@@ -629,10 +638,42 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         wmAnimation: wm.animation,
         wmSpeed: wm.animSpeed,
         wmRange: wm.animRange,
+        crf: _quality.crf,
       ),
       onProgress: onProgress,
     );
     return result.ok;
+  }
+
+  /// 畫質：跟影片編輯的匯出頁同一個彈窗。這裡不列檔案大小——
+  /// 一批裡每個檔案的長度與尺寸都不一樣，加總出來的數字只會誤導
+  void _openQualitySheet() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('畫質'),
+        contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
+        content: SizedBox(
+          width: 270,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final (i, q) in qualityOrder.indexed)
+                optionRow(
+                  title: q.label,
+                  subtitle: q.note,
+                  selected: _quality == q,
+                  first: i == 0,
+                  onTap: () {
+                    setState(() => _quality = q);
+                    Navigator.pop(context);
+                  },
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   // ===== 畫面 =====
@@ -931,11 +972,42 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
               ],
             ),
           ),
+          // 畫質：整批共用一組。放在輸出鈕正上方——它唯一的用途就是
+          // 讓人在按下去之前決定要不要改，放最靠近手指的地方最有用
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 2, 20, 0),
+            child: InkWell(
+              onTap: _exporting ? null : _openQualitySheet,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Row(
+                  children: [
+                    const Text(
+                      '畫質',
+                      style: TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.3,
+                        color: kText,
+                      ),
+                    ),
+                    const Spacer(),
+                    Text(
+                      _quality.label,
+                      style: const TextStyle(fontSize: 12.5, color: kTextDim),
+                    ),
+                    const SizedBox(width: 3),
+                    const Icon(Icons.chevron_right, size: 13, color: kIcon),
+                  ],
+                ),
+              ),
+            ),
+          ),
           // 底部那一排跟照片編輯完全一樣：存成範本（次要）＋輸出（主要）
           SafeArea(
             top: false,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
               child: Row(
                 children: [
                   Expanded(

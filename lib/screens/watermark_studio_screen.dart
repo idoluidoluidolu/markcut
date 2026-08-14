@@ -36,12 +36,9 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
     super.initState();
     final e = widget.edit;
     if (e != null) {
-      _settings.text = e.settings.text.copy();
-      _settings.logo = e.settings.logo.copy();
-      // 動畫設定也要帶過來，不然存回去時會把範本的動畫洗掉
-      _settings.animation = e.settings.animation;
-      _settings.animSpeed = e.settings.animSpeed;
-      _settings.animRange = e.settings.animRange;
+      // copy() 是深拷貝：改這裡不會動到範本清單裡的那一份。
+      // 動畫設定也一起帶過來，不然存回去時會把範本的動畫洗掉
+      _settings.copyMarksFrom(e.settings.copy());
     }
     _initialJson = jsonEncode(_settings.toJson());
   }
@@ -172,11 +169,7 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
     final wm = WatermarkSettings.fromJson(
         jsonDecode(json) as Map<String, dynamic>);
     setState(() {
-      _settings.text = wm.text;
-      _settings.logo = wm.logo;
-      _settings.animation = wm.animation;
-      _settings.animSpeed = wm.animSpeed;
-      _settings.animRange = wm.animRange;
+      _settings.copyMarksFrom(wm);
       _wmPart = WmPart.none; // 復原可能讓被選的部件消失，選取殘留會卡死拖曳
       _sync++;
     });
@@ -215,15 +208,19 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
   /// 文字和 Logo 畫在哪（由 WatermarkLayer 回報）。
   /// Logo 放大置中把文字整個蓋住時，這裡本來永遠點不到文字——
   /// 而工作室沒有時間軸也沒有清單，沒有第二條路可以選它
-  Rect? _stTextBox, _stLogoBox;
+  Rect? _stTextBox;
+
+  /// 每一張圖片畫在哪（跟 _settings.logos 一一對應）
+  List<Rect?> _stLogoBoxes = const [];
   Offset? _stCycleAt;
   int _stCycleHintLeft = 2;
 
   void _stTapAt(Offset p) {
-    // 文字畫在 Logo 之後＝文字在上
-    final hits = <WmPart>[
-      if (_stTextBox?.contains(p) ?? false) WmPart.text,
-      if (_stLogoBox?.contains(p) ?? false) WmPart.logo,
+    // 由上往下：文字畫在圖片之後＝文字在上；圖片則是後加的在上
+    final hits = <({WmPart part, int logo})>[
+      if (_stTextBox?.contains(p) ?? false) (part: WmPart.text, logo: -1),
+      for (var i = _stLogoBoxes.length - 1; i >= 0; i--)
+        if (_stLogoBoxes[i]?.contains(p) ?? false) (part: WmPart.logo, logo: i),
     ];
     if (hits.isEmpty) {
       _stCycleAt = null;
@@ -234,12 +231,19 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
     final same = _stCycleAt != null && (_stCycleAt! - p).distance <= 24;
     var next = hits.first;
     if (same) {
-      final at = hits.indexOf(_wmPart);
+      final cur = (
+        part: _wmPart,
+        logo: _wmPart == WmPart.logo ? _settings.activeLogo : -1,
+      );
+      final at = hits.indexOf(cur);
       if (at >= 0) next = hits[(at + 1) % hits.length];
     }
     _stCycleAt = p;
-    setState(() => _wmPart = next);
-    _wmPanelCtrl.scrollTo(next);
+    setState(() {
+      _wmPart = next.part;
+      if (next.logo >= 0) _settings.activeLogo = next.logo;
+    });
+    _wmPanelCtrl.scrollTo(next.part);
     if (!same && hits.length > 1 && _stCycleHintLeft > 0) {
       _stCycleHintLeft--;
       showHint(context, overlapHint(hits.length));
@@ -479,7 +483,7 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
                                   onDragStart: _pushUndo,
                                   onHitBox: (t, l) {
                                     _stTextBox = t;
-                                    _stLogoBox = l;
+                                    _stLogoBoxes = l;
                                   },
                                   // 選取鎖定：選了圖片就只動圖片
                                   selectedPart: _wmPartAlive,

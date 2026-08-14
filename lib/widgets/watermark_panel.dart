@@ -161,11 +161,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
 
   void _applyPresetNow(WatermarkPreset p) {
     _update(() {
-      s.text = p.settings.text.copy();
-      s.logo = p.settings.logo.copy();
-      s.animation = p.settings.animation;
-      s.animSpeed = p.settings.animSpeed;
-      s.animRange = p.settings.animRange;
+      s.copyMarksFrom(p.settings.copy());
       // 馬賽克不進範本也不被範本動到：套範本只換浮水印，
       // 照片上已經畫好的碼留在原地
       _textCtrl.text = s.text.text;
@@ -255,6 +251,25 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       _presetSel = null;
       setState(() {});
     }
+  }
+
+  /// 這一組浮水印有沒有任何一張圖片
+  bool get _hasLogos => s.logos.any((l) => l.b64 != null);
+
+  /// 加一張圖片。清單裡還有空位（剛開的那張、或圖片被移除留下的）
+  /// 就先填它，不然新增一張再挑；挑到一半取消就把空的那張收回去，
+  /// 縮圖列才不會留一格永遠空白的
+  Future<void> _addLogo() async {
+    final empty = s.logos.indexWhere((l) => l.b64 == null);
+    if (empty >= 0) {
+      setState(() => s.activeLogo = empty);
+      await _pickLogo();
+      return;
+    }
+    _update(s.addLogo);
+    await _pickLogo();
+    if (!mounted) return;
+    if (s.logo.b64 == null) _update(() => s.removeLogo(s.activeLogo));
   }
 
   Future<void> _pickLogo() async {
@@ -870,7 +885,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         )),
         ),
 
-        // ===== 卡片 3：圖片（有圖才展開；用＋加入，不用開關）=====
+        // ===== 卡片 3：圖片（可以放很多張；＋加入，點縮圖換要調哪一張）=====
         KeyedSubtree(
           key: _logoCardKey,
           child: _card(Column(
@@ -878,9 +893,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
           children: [
         // 還沒有圖片時整行都能點（不用精準戳 + 號）
         InkWell(
-          onTap: (!s.logo.enabled || s.logo.bytes == null)
-              ? _pickLogo
-              : null,
+          onTap: _hasLogos ? null : _addLogo,
           borderRadius: BorderRadius.circular(8),
           child: Row(
             children: [
@@ -890,35 +903,67 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                       fontWeight: FontWeight.w700,
                       color: kText)),
               const Spacer(),
-              if (!s.logo.enabled || s.logo.bytes == null)
-                IconButton(
-                  tooltip: '加入圖片',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: _pickLogo,
-                  icon: const Icon(Icons.add, size: 20, color: kIcon),
-                ),
+              IconButton(
+                tooltip: _hasLogos ? '再加一張' : '加入圖片',
+                visualDensity: VisualDensity.compact,
+                onPressed: _addLogo,
+                icon: const Icon(Icons.add, size: 20, color: kIcon),
+              ),
             ],
           ),
         ),
-        if (s.logo.enabled && s.logo.bytes != null) ...[
+        if (_hasLogos) ...[
+          const SizedBox(height: 6),
+          // 縮圖列：底下的滑桿調的是「亮框的那一張」。
+          // 只有一張時也照樣顯示——加第二張之後版面才不會整個跳掉
+          SizedBox(
+            height: 46,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: s.logos.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 6),
+              itemBuilder: (context, i) {
+                final bytes = s.logos[i].bytes;
+                final on = i == s.activeLogo;
+                return InkWell(
+                  borderRadius: BorderRadius.circular(6),
+                  // 切換要調哪一張，不算改動內容——不拍上一步快照
+                  onTap: () {
+                    setState(() => s.activeLogo = i);
+                    widget.onChanged();
+                  },
+                  child: Container(
+                    width: 46,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                        color: on ? kSelect : kBorder,
+                        width: on ? 2 : 1,
+                      ),
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: bytes == null
+                        ? const Icon(Icons.image_outlined,
+                            size: 18, color: kTextDim)
+                        : Opacity(
+                            // 關掉的那張淡一點，看得出它現在不會出現在畫面上
+                            opacity: s.logos[i].enabled ? 1 : 0.35,
+                            child: Image.memory(bytes, fit: BoxFit.cover),
+                          ),
+                  ),
+                );
+              },
+            ),
+          ),
           const SizedBox(height: 6),
           Row(
             children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(6),
-                child: Image.memory(s.logo.bytes!,
-                    width: 44, height: 44, fit: BoxFit.cover),
-              ),
-              const SizedBox(width: 10),
               _miniBtn(Icons.swap_horiz, '換一張', _pickLogo),
               const Spacer(),
               IconButton(
-                tooltip: '移除圖片',
+                tooltip: s.logos.length > 1 ? '移除這一張' : '移除圖片',
                 visualDensity: VisualDensity.compact,
-                onPressed: () => _update(() {
-                  s.logo.enabled = false;
-                  s.logo.b64 = null;
-                }),
+                onPressed: () => _update(() => s.removeLogo(s.activeLogo)),
                 icon: const Icon(Icons.delete_outline,
                     size: 19, color: kTextDim),
               ),
