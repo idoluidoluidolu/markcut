@@ -2,10 +2,10 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:ffmpeg_kit_flutter_new_min/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter_new_min/ffmpeg_kit_config.dart';
-import 'package:ffmpeg_kit_flutter_new_min/ffprobe_kit.dart';
-import 'package:ffmpeg_kit_flutter_new_min/return_code.dart';
+import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit_config.dart';
+import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
+import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -109,7 +109,9 @@ const _kHdrFallback = 'colorspace=all=bt709:iall=bt2020:itrc=bt2020-10';
 
 /// HDR→SDR 的正解：轉成線性光 → 色調映射 → 轉回 bt709。
 /// HLG／PQ 的曲線只有在線性光下才壓得回來。
-/// 需要 zscale（libzimg），精簡版的 FFmpeg 沒有這個濾鏡
+/// 需要 zscale（libzimg）。為了這個把 FFmpeg 從精簡版換成完整版
+/// （ffmpeg_kit_flutter_new），APK 因此大了約 27MB——iPhone 近幾代
+/// 預設就錄 HDR，等於大多數使用者的素材都會走到這條路
 const _kHdrTonemap =
     'zscale=t=linear:npl=100,format=gbrpf32le,'
     'tonemap=tonemap=hable:desat=0,'
