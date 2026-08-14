@@ -76,6 +76,8 @@ static NSDictionary<NSString *, NSValue *> *FVPGetPlayerItemObservations(void) {
 @implementation FVPVideoPlayer {
   // Whether or not player and player item listeners have ever been registered.
   BOOL _listenersRegistered;
+  // MarkCut patch: seek generation, used to drop stale refine passes.
+  NSUInteger _seekGeneration;
 }
 
 - (instancetype)initWithPlayerItem:(NSObject<FVPAVPlayerItem> *)item
@@ -441,10 +443,43 @@ NS_INLINE CGFloat radiansToDegrees(CGFloat radians) {
   // seekToTime will never complete, and this call will hang.
   // see issue https://github.com/flutter/flutter/issues/124475.
   CMTime tolerance = position == duration ? CMTimeMake(1, 1000) : kCMTimeZero;
+
+  // MarkCut patch: scrubbing with frame-exact seeks is the reason dragging the
+  // playhead never felt smooth. An exact seek has to decode from the preceding
+  // keyframe to the target frame — hundreds of ms on 4K HEVC. Apple's own
+  // guidance for scrubbing is to seek with a generous tolerance and only
+  // refine once the user settles (see AVFoundation docs on seekToTime:
+  // toleranceBefore:toleranceAfter:).
+  //
+  // So while paused (which is exactly when scrubbing happens) do the fast
+  // tolerant seek first, then schedule an exact one. If another seek arrives
+  // in the meantime the refine is dropped, so a fast drag only ever pays for
+  // tolerant seeks, and the frame the user stops on is still frame-exact.
+  BOOL scrubbing = _player.rate == 0 && position != duration;
+  if (scrubbing) {
+    tolerance = CMTimeMakeWithSeconds(0.25, 600);
+  }
+  NSUInteger generation = ++_seekGeneration;
+  __weak typeof(self) weakSelfForRefine = self;
+  void (^scheduleRefine)(void) = ^{
+    if (!scrubbing) return;
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+          typeof(self) strongSelf = weakSelfForRefine;
+          if (!strongSelf || strongSelf->_seekGeneration != generation) return;
+          if (strongSelf->_player.rate != 0) return;
+          [strongSelf->_player seekToTime:targetCMTime
+                          toleranceBefore:kCMTimeZero
+                           toleranceAfter:kCMTimeZero];
+        });
+  };
+
   [_player seekToTime:targetCMTime
         toleranceBefore:tolerance
          toleranceAfter:tolerance
       completionHandler:^(BOOL completed) {
+        scheduleRefine();
         // MarkCut patch: seeks happen while paused (scrubbing); pre-warm the
         // decoder at the new position so the next play() is instant.
         __weak typeof(self) weakSelf = self;
