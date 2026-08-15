@@ -798,6 +798,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if ((t - _position).abs() < 0.001) return;
     _position = t; // 位置 UI 由 _posVN 小範圍重繪，不整頁 setState
     _scrubbing = true; // 快取幀模式（下一次 30fps 重繪就生效）
+    if (_compOn) {
+      // 合成播放器接手時，畫面直接由它出：手指每動一次就把最新位置送
+      // 過去（原生端只追最新的那個目標，不會排隊塞車），停手再補一發
+      // 精準的。不抽幀、不疊快取幀、不動底下那幾顆播放器——那些在這條
+      // 路徑上全是跟合成播放器搶解碼器的多餘工作
+      _compSeek();
+      _scrubEndTimer?.cancel();
+      _scrubEndTimer = Timer(const Duration(milliseconds: 220), _tryEndScrub);
+      _scrubSettleTimer?.cancel();
+      _scrubSettleTimer = Timer(
+        const Duration(milliseconds: 120),
+        () => _compSeek(exact: true),
+      );
+      return;
+    }
     _requestScrubFrames();
     _scrubEndTimer?.cancel();
     _scrubEndTimer = Timer(const Duration(milliseconds: 220), _tryEndScrub);
@@ -886,12 +901,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// seek 疊 seek 會在解碼器裡排隊，是拖曳卡頓的主因
   bool _seekInFlight = false;
 
-  void _compSeek() {
-    if (_compOn && !_playing) unawaited(_comp!.seek(_position));
+  void _compSeek({bool exact = false}) {
+    if (_compOn && !_playing) {
+      unawaited(_comp!.seek(_position, exact: exact));
+    }
   }
 
   void _scrubSeek({bool force = false}) {
-    _compSeek();
+    // force＝使用者停手了，這一發才需要對準那一格
+    _compSeek(exact: force);
+    // 合成播放器接手時，畫面就是它一顆在出：底下那三顆 4K 播放器不用
+    // 也不該跟著 seek。它們跟著動的話是三份 4K 解碼在跟合成播放器搶
+    // 解碼器，拖曳當然追不上
+    if (_compOn) return;
     final now = DateTime.now();
     if (_seekInFlight ||
         (!force && now.difference(_lastScrubSeek).inMilliseconds < 100)) {
@@ -2781,7 +2803,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       return;
     }
-    final made = await CompPlayer.build(_tl);
+    // 用系統影片圖層顯示時不要另外出一份材質：那份沒有人看，
+    // 卻是每一格都在複製一張 4K 畫面，等於跟解碼搶頻寬
+    final made = await CompPlayer.build(_tl, texture: !Diag.playerLayer.value);
     _compDirty = false;
     if (!mounted) {
       await made?.dispose();
@@ -2891,12 +2915,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 而且「快不快」也就比不出來了
     if (_compOn) {
       setState(() => _playing = true);
-      await _comp!.seek(_position);
+      // 已經停在該在的位置就不要 seek——這正是我在舊路徑上剛修掉的
+      // 同一個坑：seek 沒跑完之前播放器的 rate 壓在 0，畫面不會動。
+      // 真的要移動時也用寬容 seek，反正接下來就要滾過去了
+      final now = await _comp!.position();
+      if ((now - _position).abs() > 0.08) {
+        await _comp!.seek(_position);
+      }
       await _comp!.setRate(_speed);
       await _comp!.play();
       tr.log('呼叫 play()（合成播放器）');
       final sw = Stopwatch()..start();
-      final p0 = await _comp!.position();
+      final p0 = now;
       while (mounted && sw.elapsedMilliseconds < 250) {
         await Future<void>.delayed(const Duration(milliseconds: 16));
         final p = await _comp!.position();
@@ -3099,7 +3129,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
     // 換圖間隔＝畫面實際更新的節奏，judder 的唯一證據
     if (_comp != null) {
-      unawaited(_comp!.gaps().then((g) => tr.env('換圖節奏', g)));
+      if (Diag.playerLayer.value) {
+        // 畫面走系統影片圖層，根本沒有材質可量——上一版這行印的是
+        // 「沒有人在看的那份材質」的節奏，看了只會誤判
+        tr.env('換圖節奏', '系統影片圖層模式：畫面不經過材質，量不到');
+      } else {
+        unawaited(_comp!.gaps().then((g) => tr.env('換圖節奏', g)));
+      }
     }
     unawaited(
       Diag.memoryMb().then(
@@ -3220,7 +3256,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   value: t.$3.value,
                   onChanged: (v) {
                     setSheet(() => t.$3.value = v);
-                    if (identical(t.$3, Diag.compPlayer)) {
+                    // 圖層開關也要重組：材質那份是在組的時候決定要不要
+                    // 出的，切了不重組等於什麼都沒變
+                    if (identical(t.$3, Diag.compPlayer) ||
+                        identical(t.$3, Diag.playerLayer)) {
                       _pause();
                       _compDirty = true;
                       unawaited(_ensureComp());
@@ -3601,6 +3640,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     if (edge != null) _position = edge.clamp(0.0, _tl.duration);
     _scrubbing = true;
+    if (_compOn) {
+      // 合成播放器接手時，畫面直接由它出：手指每動一次就把最新位置送
+      // 過去（原生端只追最新的那個目標，不會排隊塞車），停手再補一發
+      // 精準的。不抽幀、不疊快取幀、不動底下那幾顆播放器——那些在這條
+      // 路徑上全是跟合成播放器搶解碼器的多餘工作
+      _compSeek();
+      _scrubEndTimer?.cancel();
+      _scrubEndTimer = Timer(const Duration(milliseconds: 220), _tryEndScrub);
+      _scrubSettleTimer?.cancel();
+      _scrubSettleTimer = Timer(
+        const Duration(milliseconds: 120),
+        () => _compSeek(exact: true),
+      );
+      return;
+    }
     _requestScrubFrames();
     _scrubEndTimer?.cancel();
     _scrubEndTimer = Timer(const Duration(milliseconds: 220), _tryEndScrub);
@@ -5334,7 +5388,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         // 沒辦法倒著播，只能拿抽好的影格
                                         // 反著貼（sourceTimeAt 已經算好
                                         // 從尾巴往回的時間）
-                                        (_scrubbing ||
+                                        //
+                                        // 合成播放器接手時不疊快取幀：畫面
+                                        // 直接來自系統影片圖層，追時 seek
+                                        // 本來就跟得上手指。再疊一層抽幀
+                                        // 反而是拿「現抽 4K 原檔」蓋掉它，
+                                        // 那才是拖曳變成一格一格的原因
+                                        ((_scrubbing && !_compOn) ||
                                             c.reverse ||
                                             (_colorMode && kIsWeb))
                                         ? _scrubFrames[c.sourceIndex]

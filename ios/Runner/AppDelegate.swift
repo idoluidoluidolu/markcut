@@ -103,7 +103,8 @@ import UIKit
         }
         self.comp?.dispose()
         let p = CompPlayer(registry: textures)
-        guard p.build(clips: clips) else {
+        guard p.build(clips: clips, texture: (args["texture"] as? Bool) ?? true)
+        else {
           p.dispose()
           result(nil)
           return
@@ -125,7 +126,12 @@ import UIKit
         self.comp?.setRate((call.arguments as? Double) ?? 1)
         result(nil)
       case "seek":
-        self.comp?.seek(((call.arguments as? Double) ?? 0))
+        if let a = call.arguments as? [String: Any] {
+          self.comp?.seek(
+            (a["sec"] as? Double) ?? 0, exact: (a["exact"] as? Bool) ?? false)
+        } else {
+          self.comp?.seek((call.arguments as? Double) ?? 0, exact: false)
+        }
         result(nil)
       case "position":
         result(self.comp?.positionMs ?? 0)
@@ -475,7 +481,10 @@ final class CompPlayer: NSObject, FlutterTexture {
 
   /// 用片段清單組出合成。clips 依時間順序，每一筆是
   /// path / start / end（素材內秒數）/ gap（跟前一段之間的空白秒數）/ volume
-  func build(clips: [[String: Any]]) -> Bool {
+  /// [texture] 畫面要不要另外送一份到 Flutter 材質。
+  /// 用系統影片圖層顯示時就不用——那條路是播放器自己畫到圖層上，
+  /// 材質這份沒有人看，卻是每一格都在複製一張 4K 的畫面
+  func build(clips: [[String: Any]], texture: Bool) -> Bool {
     let comp = AVMutableComposition()
     guard
       let vTrack = comp.addMutableTrack(
@@ -582,16 +591,20 @@ final class CompPlayer: NSObject, FlutterTexture {
       kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
       kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
     ]
-    let out = AVPlayerItemVideoOutput(pixelBufferAttributes: attrs)
-    item.add(out)
-    output = out
+    if texture {
+      let out = AVPlayerItemVideoOutput(pixelBufferAttributes: attrs)
+      item.add(out)
+      output = out
+    }
     duration = cursor.seconds
     player.replaceCurrentItem(with: item)
 
-    if textureId == 0, let registry = registry {
-      textureId = registry.register(self)
+    if texture {
+      if textureId == 0, let registry = registry {
+        textureId = registry.register(self)
+      }
+      startLink()
     }
-    startLink()
     return true
   }
 
@@ -630,17 +643,69 @@ final class CompPlayer: NSObject, FlutterTexture {
     return Unmanaged.passRetained(b)
   }
 
-  func play() { player.play() }
-  func pause() { player.pause() }
-  func setRate(_ r: Double) { player.rate = Float(r) }
+  private var targetRate: Float = 1
 
-  func seek(_ seconds: Double) {
-    // 容忍半格：拖曳時要的是跟手，逐格精準會慢到沒辦法用
-    let t = CMTime(seconds: seconds, preferredTimescale: 600)
-    player.seek(
-      to: t,
-      toleranceBefore: .zero,
-      toleranceAfter: CMTime(value: 8, timescale: 600))
+  /// playImmediately 而不是 play：後者會先跑一輪緩衝條件才讓畫面真的動
+  func play() { player.playImmediately(atRate: targetRate) }
+
+  func pause() {
+    player.pause()
+    // 暫停時把管線熱著，下次按播放就不用等
+    if player.currentItem?.status == .readyToPlay {
+      player.preroll(atRate: targetRate, completionHandler: nil)
+    }
+  }
+
+  func setRate(_ r: Double) {
+    targetRate = Float(r)
+    if player.rate != 0 { player.playImmediately(atRate: targetRate) }
+  }
+
+  private var seekTarget: CMTime = .invalid
+  private var seekTargetExact = false
+  private var seeking = false
+
+  /// [exact] 只有「使用者停手了、要對準那一格」時才給 true。
+  ///
+  /// 精準 seek 要從前一個關鍵幀一路解到目標格，而且跑完之前 rate 會被
+  /// 壓在 0——按下播放剛好撞上它，畫面就是不動。拖曳中一律寬容，
+  /// 停手之後才補一次精準的
+  func seek(_ seconds: Double, exact: Bool) {
+    seekTarget = CMTime(seconds: seconds, preferredTimescale: 600)
+    seekTargetExact = exact
+    // 已經有一發在跑：只要記住最新目標就好，跑完會自己追上去
+    if !seeking { chase() }
+  }
+
+  /// 追最新的目標，不是把每一發都做完。
+  ///
+  /// 手指每動一次就灌一發 seek 的話，AVPlayer 會排成隊列一發一發做，
+  /// 畫面於是永遠落在手指後面好幾發——看起來就是「一格一格跳、沒辦法
+  /// 快速預覽」。中途那些目標使用者根本沒在看，直接丟掉
+  private func chase() {
+    guard seekTarget.isValid, player.currentItem?.status == .readyToPlay else {
+      seeking = false
+      return
+    }
+    let t = seekTarget
+    let exact = seekTargetExact
+    seekTarget = .invalid
+    seeking = true
+    let tol =
+      exact ? CMTime.zero : CMTimeMakeWithSeconds(0.1, preferredTimescale: 600)
+    player.seek(to: t, toleranceBefore: tol, toleranceAfter: tol) {
+      [weak self] _ in
+      guard let self = self else { return }
+      self.seeking = false
+      if self.seekTarget.isValid {
+        self.chase()  // 手指又動了，追過去
+      } else if self.player.rate == 0,
+        self.player.currentItem?.status == .readyToPlay
+      {
+        // 停下來了：把管線熱著，下次按播放就不用等
+        self.player.preroll(atRate: self.targetRate, completionHandler: nil)
+      }
+    }
   }
 
   var positionMs: Int { Int(player.currentTime().seconds * 1000) }

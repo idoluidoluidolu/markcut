@@ -71,7 +71,9 @@ class CompPlayer {
   }
 
   /// 用時間軸組一份合成。組不起來（平台不支援、素材有問題）回 null
-  static Future<CompPlayer?> build(TimelineModel tl) async {
+  /// [texture] 畫面要不要另外送一份到 Flutter 材質。用系統影片圖層
+  /// 顯示時給 false：那份材質沒有人看，卻是每一格複製一張 4K 畫面
+  static Future<CompPlayer?> build(TimelineModel tl, {bool texture = true}) async {
     if (!await available) return null;
     final vids = [
       for (final c in tl.clips)
@@ -94,6 +96,7 @@ class CompPlayer {
     try {
       final m = await _ch.invokeMapMethod<String, dynamic>('build', {
         'clips': clips,
+        'texture': texture,
       });
       if (m == null) return null;
       return CompPlayer._(
@@ -110,7 +113,10 @@ class CompPlayer {
   Future<void> play() => _quiet('play');
   Future<void> pause() => _quiet('pause');
   Future<void> setRate(double r) => _quiet('rate', r);
-  Future<void> seek(double seconds) => _quiet('seek', seconds);
+  /// [exact] 只有「停手要對準那一格」時才給 true。拖曳中與按下播放前
+  /// 一律寬容——精準 seek 跑完之前播放器的 rate 會被壓在 0
+  Future<void> seek(double seconds, {bool exact = false}) =>
+      _quiet('seek', {'sec': seconds, 'exact': exact});
   Future<void> dispose() => _quiet('dispose');
 
   /// 目前位置（秒）。合成播放器是唯一的時鐘來源——App 不再自己算時間，
