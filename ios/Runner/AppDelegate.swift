@@ -475,7 +475,10 @@ final class CompPlayer: NSObject, FlutterTexture {
   func seek(_ seconds: Double) {
     // 容忍半格：拖曳時要的是跟手，逐格精準會慢到沒辦法用
     let t = CMTime(seconds: seconds, preferredTimescale: 600)
-    player.seek(t, toleranceBefore: .zero, toleranceAfter: CMTime(value: 8, timescale: 600))
+    player.seek(
+      to: t,
+      toleranceBefore: .zero,
+      toleranceAfter: CMTime(value: 8, timescale: 600))
   }
 
   var positionMs: Int { Int(player.currentTime().seconds * 1000) }
