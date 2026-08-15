@@ -115,6 +115,28 @@ class MainActivity : FlutterActivity() {
     private fun registerDiagChannel(flutterEngine: FlutterEngine) {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "markcut/diag")
             .setMethodCallHandler { call, result ->
+                if (call.method == "deviceState") {
+                    // 過熱降頻時什麼都會頓，查程式碼永遠查不到
+                    val pm = getSystemService(android.content.Context.POWER_SERVICE)
+                        as android.os.PowerManager
+                    val t = if (android.os.Build.VERSION.SDK_INT >= 29) {
+                        when (pm.currentThermalStatus) {
+                            android.os.PowerManager.THERMAL_STATUS_NONE -> "正常"
+                            android.os.PowerManager.THERMAL_STATUS_LIGHT -> "微溫"
+                            android.os.PowerManager.THERMAL_STATUS_MODERATE -> "溫熱"
+                            else -> "過熱（系統已降頻）"
+                        }
+                    } else {
+                        "?"
+                    }
+                    result(
+                        mapOf(
+                            "thermal" to t,
+                            "lowPower" to pm.isPowerSaveMode,
+                        )
+                    )
+                    return@setMethodCallHandler
+                }
                 if (call.method != "memory") {
                     result.notImplemented()
                     return@setMethodCallHandler

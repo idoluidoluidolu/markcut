@@ -1135,7 +1135,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   final Map<int, Uint8List> _nfLatest = {};
 
   void _requestScrubFrames() {
-    if (kIsWeb) return;
+    if (kIsWeb || !Diag.scrubPrefetch.value) return;
+    // 播放中不要跟播放器搶解碼器：抽幀是給拖曳用的，
+    // 播放的時候一格都不需要
+    if (_playing) {
+      Diag.count('播放中還在抽幀（已擋下）');
+      return;
+    }
     _nfWant.clear();
     for (final c in _tl.videosAt(_position)) {
       if (c.reverse) continue; // 簡易倒轉走密集快取
@@ -2581,6 +2587,111 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 不做 setState：位置相關 UI 由 _posVN 各自小範圍重繪
   }
 
+  /// 自動排查：依序把每個可疑的東西關掉各播一輪，最後直接說是哪個。
+  ///
+  /// 一輪一個假設地問使用者，一次來回就是一天。這裡把四種設定一次跑完，
+  /// 每一輪都在同一支專案、同一段時間上量同一組數字，最後比出來——
+  /// 唯一可靠的比較方式是「同一支手機、同一個當下、只差一個變因」
+  bool _selfTesting = false;
+
+  /// 上一次自動排查的結論（複製報告時一起帶出去）
+  String? _selfTestResult;
+
+  Future<String> _runSelfTest() async {
+    if (_tl.clips.isEmpty) return '時間軸是空的，先放點素材再測';
+    final was = (
+      Diag.preheat.value,
+      Diag.driftFix.value,
+      Diag.scrubPrefetch.value,
+    );
+    _selfTesting = true;
+    await Diag.readDeviceState();
+
+    // 每一輪播幾秒：太短量不到交界，太長使用者會等到不耐煩
+    final dur = math.min(8.0, math.max(3.0, _tl.duration));
+    final rounds = <({String name, bool pre, bool drift, bool fetch})>[
+      (name: '現況（全開）', pre: true, drift: true, fetch: true),
+      (name: '關掉交界預熱', pre: false, drift: true, fetch: true),
+      (name: '關掉脫節校正', pre: true, drift: false, fetch: true),
+      (name: '三個都關', pre: false, drift: false, fetch: false),
+    ];
+    final results =
+        <({String name, int stalls, int samples, int jankB, int jankR})>[];
+
+    for (final r in rounds) {
+      Diag.preheat.value = r.pre;
+      Diag.driftFix.value = r.drift;
+      Diag.scrubPrefetch.value = r.fetch;
+      _pause();
+      setState(() => _position = 0);
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      final before = Diag.snapshot();
+      await _play();
+      await Future<void>.delayed(
+        Duration(milliseconds: (dur * 1000).round()),
+      );
+      _pause();
+      final d = Diag.since(before);
+      results.add((
+        name: r.name,
+        stalls: d.stalls,
+        samples: d.samples,
+        jankB: d.jankB,
+        jankR: d.jankR,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+    }
+
+    Diag.preheat.value = was.$1;
+    Diag.driftFix.value = was.$2;
+    Diag.scrubPrefetch.value = was.$3;
+    _selfTesting = false;
+    if (!mounted) return '（已離開畫面）';
+    setState(() => _position = 0);
+
+    // 結論：拿「影格落後的比例」比，比不出來就看是不是整台機器都在慢
+    final b = StringBuffer()..writeln('=== 自動排查 ===');
+    b.writeln('每輪播 ${dur.toStringAsFixed(0)} 秒，同一段素材');
+    double rate(({String name, int stalls, int samples, int jankB, int jankR}) r) =>
+        r.samples == 0 ? 0 : r.stalls / r.samples;
+    for (final r in results) {
+      b.writeln(
+        '  ${r.name}：影格落後 ${r.stalls}/${r.samples} 次'
+        '（${(rate(r) * 100).round()}%）'
+        '／UI 超時 ${r.jankB}／合成超時 ${r.jankR}',
+      );
+    }
+    final base = results.first;
+    final best = results.reduce((a, c) => rate(c) < rate(a) ? c : a);
+    b.writeln('--- 結論 ---');
+    if (base.samples == 0) {
+      b.writeln('沒量到東西（可能太短或沒播起來），再測一次');
+    } else if (rate(base) < 0.08) {
+      b.writeln(
+        '這一輪播放本身是順的（落後 ${(rate(base) * 100).round()}%）。'
+        '如果你看畫面還是覺得卡，那不是影格沒送上來的問題，'
+        '請連同「裝置狀態」與「畫面」兩段一起回報',
+      );
+    } else if (identical(best, base) ||
+        rate(best) > rate(base) * 0.6) {
+      b.writeln(
+        '關掉哪一個都沒有明顯變好（最好的一輪還有 '
+        '${(rate(best) * 100).round()}%）——'
+        '問題不在這三個機制，而在播放引擎或裝置本身。'
+        '${Diag.thermal.contains('過熱') ? '注意：裝置正在過熱降頻，先讓它涼下來再測一次。' : ''}'
+        '下一步請用診斷面板裡的「純播放測試」比原檔與工作檔',
+      );
+    } else {
+      b.writeln(
+        '「${best.name}」明顯比較順（'
+        '${(rate(base) * 100).round()}% → ${(rate(best) * 100).round()}%），'
+        '元凶就是被關掉的那個機制',
+      );
+    }
+    _selfTestResult = b.toString();
+    return _selfTestResult!;
+  }
+
   /// 播放中比對「時鐘」與「播放器實際位置」的取樣器。
   ///
   /// 有一種卡頓在 Flutter 這邊完全看不到：影格根本沒從解碼器送上來。
@@ -2592,13 +2703,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _playProbe?.cancel();
     final wall = Stopwatch()..start();
     var basePlayer = -1;
+    Object? baseCtrl;
     _playProbe = Timer.periodic(const Duration(milliseconds: 400), (_) async {
       if (!_playing || !mounted) return;
       final c = _ctrls[_tl.videoAt(_position)?.id ?? -1];
       if (c == null || !c.value.isInitialized) return;
       final pos = (await c.positionNow())?.inMilliseconds;
       if (pos == null) return;
-      if (basePlayer < 0) {
+      // 跨過交界會換一顆播放器，兩顆的位置本來就不連續——
+      // 不重新起算的話那一次會被記成「落後好幾秒」的假訊號
+      if (basePlayer < 0 || !identical(baseCtrl, c)) {
+        baseCtrl = c;
         basePlayer = pos;
         wall.reset();
         return;
@@ -2786,6 +2901,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         (v) => tr.env('轉檔通道', v ? '可用' : '沒接上（一律用原檔）'),
       ),
     );
+    unawaited(Diag.readDeviceState());
     unawaited(
       Diag.memoryMb().then(
         (mb) => tr.env(
@@ -2818,6 +2934,85 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 title: const Text('記錄播放診斷'),
                 subtitle: const Text('打開後按播放跑一次，再回來看'),
               ),
+              // 一鍵自動排查：四種設定各播一輪，直接說是哪個。
+              // 一輪一個假設地問使用者，一次來回就是一天
+              ListTile(
+                leading: _selfTesting
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: kAmber,
+                        ),
+                      )
+                    : const Icon(Icons.troubleshoot, color: kAmber),
+                title: Text(_selfTesting ? '排查中…請不要離開這一頁' : '一鍵自動排查'),
+                subtitle: const Text('四種設定各播一輪，直接告訴你是哪個機制'),
+                enabled: !_selfTesting,
+                onTap: () async {
+                  setSheet(() => _selfTesting = true);
+                  final r = await _runSelfTest();
+                  if (!context.mounted) return;
+                  setSheet(() {});
+                  await showDialog<void>(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: const Text('排查結果'),
+                      content: SingleChildScrollView(
+                        child: Text(
+                          r,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            height: 1.5,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: r));
+                            Navigator.pop(context);
+                          },
+                          child: const Text('複製'),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.pop(context),
+                          child: const Text('關閉'),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+              const Divider(height: 1),
+              // 現場實驗開關：關掉一個東西再播一次，卡頓有沒有消失
+              // 當場就知道，不用等下一版
+              for (final t in [
+                (
+                  '交界預熱（多開一顆播放器）',
+                  '關掉試試：iOS 上兩顆 AVPlayer 同時解碼可能就是那個頓',
+                  Diag.preheat,
+                ),
+                (
+                  '脫節校正（播放中自動 seek）',
+                  '關掉試試：每次校正都會讓畫面停一下',
+                  Diag.driftFix,
+                ),
+                ('背景抽幀', '關掉試試：抽幀會跟播放搶硬體解碼器', Diag.scrubPrefetch),
+              ])
+                SwitchListTile(
+                  value: t.$3.value,
+                  onChanged: (v) => setSheet(() => t.$3.value = v),
+                  title: Text(t.$1, style: const TextStyle(fontSize: 13.5)),
+                  subtitle: Text(
+                    t.$2,
+                    style: const TextStyle(fontSize: 11, color: kTextDim),
+                  ),
+                  dense: true,
+                ),
+              const Divider(height: 1),
               // 同一支影片裸播一次：沒有時間軸、沒有 ticker、沒有圖層。
               // 這裡順而編輯器卡＝編輯器的問題；這裡也卡＝引擎或裝置。
               // 進去還能切「原檔／工作檔」再比一次，範圍一次縮到最小
@@ -2866,7 +3061,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         onPressed: () {
                           Clipboard.setData(
                             ClipboardData(
-                              text: '${tr.report()}\n${Diag.report()}',
+                              text:
+                                  '${tr.report()}\n${Diag.report()}'
+                                  '\n${_selfTestResult ?? ''}',
                             ),
                           );
                           showHint(context, '已複製，貼給開發者就好');
@@ -2901,7 +3098,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 拿過期位置對時鐘會誤判脫節 → seek 風暴＝跳針。
   /// 所以播放中只在「進場那一刻」seek 一次，之後放手讓解碼器自己跑，
   /// 除非真的大幅脫節（>1 秒）才校正、且同片段 2 秒內不重複校正。
+  int _syncSampleTick = 0;
+
   void _syncMedia() {
+    final sw = (++_syncSampleTick % 30 == 0) ? (Stopwatch()..start()) : null;
+    _syncMediaBody();
+    if (sw != null) {
+      Diag.noteSync(sw.elapsedMicroseconds);
+      var live = 0, playing = 0;
+      for (final c in _ctrls.values) {
+        if (!c.value.isInitialized) continue;
+        live++;
+        if (c.value.isPlaying) playing++;
+      }
+      Diag.notePlayers(live, playing);
+    }
+  }
+
+  void _syncMediaBody() {
     final now = DateTime.now();
     final volDue = now.difference(_lastVolSync).inMilliseconds >= 100;
     if (volDue) _lastVolSync = now;
@@ -2989,13 +3203,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 緩衝、起步本來就快，沒有 AVPlayer 那種起轉延遲；在 web 上
         // 多開一個元素同時解碼只會讓畫面更卡、交界更容易閃黑
         if (!kIsWeb &&
+            Diag.preheat.value &&
             _playing &&
             lead < 0.35 &&
             !_warmed.contains(clip.id)) {
           PlaybackTrace.instance.log('預熱開播（片段 ${clip.id}，'
               '距離進場 ${(lead * 1000).round()}ms）');
         }
-        if (!kIsWeb && _playing && lead < 0.35 && _warmed.add(clip.id)) {
+        if (!kIsWeb &&
+            Diag.preheat.value &&
+            _playing &&
+            lead < 0.35 &&
+            _warmed.add(clip.id)) {
           Diag.count('預熱：兩顆播放器同時在解');
           _lastVol[clip.id] = 0;
           c.setVolume(0);
@@ -3052,7 +3271,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           // 門檻隨播放速度放大：Android 位置回報有 ~500ms 延遲，
           // 2 倍速以上光是延遲就會超過 1 秒，會被誤判成脫節狂 seek
           final driftThr = math.max(1.0, _speed * clip.speed);
-          if ((actual - want).abs() > driftThr &&
+          if (Diag.driftFix.value &&
+              (actual - want).abs() > driftThr &&
               now
                       .difference(
                         _lastDriftFix[clip.id] ??
@@ -3061,6 +3281,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       .inMilliseconds >
                   2000) {
             _lastDriftFix[clip.id] = now;
+            // 播放中的每一次 seek 都會讓畫面停一下。以前完全沒有紀錄，
+            // 所以「卡頓」到底是不是自己 seek 出來的無從分辨
+            Diag.count('播放中校正 seek');
+            PlaybackTrace.instance.log(
+              '⚠ 脫節校正 seek（片段 ${clip.id}，'
+              '差 ${((actual - want) * 1000).round()}ms）',
+            );
             c.seekTo(Duration(milliseconds: (want * 1000).round()));
           }
         }

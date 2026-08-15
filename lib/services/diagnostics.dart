@@ -198,9 +198,84 @@ class Diag {
 
   // ===== 計數與備註 =====
 
+  /// 現場可切的實驗開關。
+  ///
+  /// 卡頓這種只有實機才重現的問題，最快的路是「當場關掉一個東西看看」。
+  /// 每個假設都要重新出一次 build 的話，一個假設就要花掉一天；做成開關
+  /// 之後三十秒就試得完，而且是使用者自己在真的卡的那支專案上試
+  static final preheat = ValueNotifier(true);
+  static final driftFix = ValueNotifier(true);
+  static final scrubPrefetch = ValueNotifier(true);
+
+  static String get tuning =>
+      '預熱=${preheat.value ? '開' : '關'}／'
+      '脫節校正=${driftFix.value ? '開' : '關'}／'
+      '背景抽幀=${scrubPrefetch.value ? '開' : '關'}';
+
   static void count(String key, [int n = 1]) {
     _counts[key] = (_counts[key] ?? 0) + n;
   }
+
+  // ===== 其他判斷器 =====
+
+  /// 裝置的散熱狀態。連續匯出幾支 4K 之後手機會燙，系統一降頻，
+  /// 什麼都會頓——這種「全部一起變慢」的卡頓查程式碼永遠查不到
+  static String thermal = '?';
+  static bool lowPower = false;
+
+  static Future<void> readDeviceState() async {
+    if (kIsWeb) return;
+    try {
+      final m = await _ch.invokeMapMethod<String, dynamic>('deviceState');
+      if (m == null) return;
+      thermal = (m['thermal'] as String?) ?? '?';
+      lowPower = (m['lowPower'] as bool?) ?? false;
+    } catch (_) {}
+  }
+
+  /// _syncMedia 每一格的成本（60fps 下超過 2ms 就吃掉 12% 的預算）
+  static int syncCalls = 0;
+  static int syncTotalUs = 0;
+  static int syncWorstUs = 0;
+
+  static void noteSync(int us) {
+    syncCalls++;
+    syncTotalUs += us;
+    if (us > syncWorstUs) syncWorstUs = us;
+  }
+
+  /// 這一刻有幾顆播放器活著／幾顆正在播（同時播兩顆以上很可能就是頓的來源）
+  static int livePlayers = 0;
+  static int playingPlayers = 0;
+  static int worstPlayingPlayers = 0;
+
+  static void notePlayers(int live, int playing) {
+    livePlayers = live;
+    playingPlayers = playing;
+    if (playing > worstPlayingPlayers) worstPlayingPlayers = playing;
+  }
+
+  // ===== 自動排查用的快照 =====
+
+  static ({int frames, int jankB, int jankR, int stalls, int samples})
+  snapshot() => (
+    frames: frames,
+    jankB: jankBuild,
+    jankR: jankRaster,
+    stalls: playStalls,
+    samples: playSamples,
+  );
+
+  /// 從某個快照到現在的變化（自動排查每一輪各拿一份）
+  static ({int frames, int jankB, int jankR, int stalls, int samples}) since(
+    ({int frames, int jankB, int jankR, int stalls, int samples}) s,
+  ) => (
+    frames: frames - s.frames,
+    jankB: jankBuild - s.jankB,
+    jankR: jankRaster - s.jankR,
+    stalls: playStalls - s.stalls,
+    samples: playSamples - s.samples,
+  );
 
   /// 一句話的事實（工作檔轉好了、退到軟體編碼器了…）。最多留 40 條
   static void note(String msg) {
@@ -214,6 +289,8 @@ class Diag {
     peakMb = 0;
     frames = jankBuild = jankRaster = worstBuildMs = worstRasterMs = 0;
     playSamples = playStalls = worstStallMs = 0;
+    syncCalls = syncTotalUs = syncWorstUs = 0;
+    worstPlayingPlayers = 0;
   }
 
   static String report() {
@@ -227,6 +304,17 @@ class Diag {
     if (crumbFromLastRun != null) {
       b.writeln('--- 上次執行 ---');
       b.writeln(crumbFromLastRun);
+    }
+    b.writeln('實驗開關：$tuning');
+    b.writeln('裝置狀態：散熱=$thermal${lowPower ? '／低耗電模式開著' : ''}');
+    if (syncCalls > 0) {
+      b.writeln(
+        '每格對時成本：平均 ${(syncTotalUs / syncCalls / 1000).toStringAsFixed(2)}ms'
+        '／最久 ${(syncWorstUs / 1000).toStringAsFixed(1)}ms（$syncCalls 次）',
+      );
+    }
+    if (livePlayers > 0) {
+      b.writeln('播放器：活著 $livePlayers 顆／同時在播最多 $worstPlayingPlayers 顆');
     }
     if (frames > 0) {
       b

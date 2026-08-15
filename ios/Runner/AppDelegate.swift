@@ -82,6 +82,23 @@ import UIKit
     let channel = FlutterMethodChannel(
       name: "markcut/diag", binaryMessenger: registrar.messenger())
     channel.setMethodCallHandler { call, result in
+      // 裝置狀態：連續匯出幾支 4K 之後手機會燙，系統一降頻什麼都會頓。
+      // 這種「全部一起變慢」的卡頓，查程式碼永遠查不到
+      if call.method == "deviceState" {
+        let t: String
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: t = "正常"
+        case .fair: t = "微溫"
+        case .serious: t = "過熱（系統已降頻）"
+        case .critical: t = "嚴重過熱（大幅降頻）"
+        @unknown default: t = "?"
+        }
+        result([
+          "thermal": t,
+          "lowPower": ProcessInfo.processInfo.isLowPowerModeEnabled,
+        ])
+        return
+      }
       guard call.method == "memory" else {
         result(FlutterMethodNotImplemented)
         return
