@@ -488,6 +488,10 @@ final class CompPlayer: NSObject, FlutterTexture {
     var cursor = CMTime.zero
     var mixParams: [AVMutableAudioMixInputParameters] = []
     let aParams = AVMutableAudioMixInputParameters(track: aTrack)
+    // 每一段的時間範圍與來源方向。一條合成軌只有一個
+    // preferredTransform，混到不同方向的素材就會躺平或被拉扁——
+    // 逐段的 layer instruction 才是 AVFoundation 給的正解
+    var segments: [(range: CMTimeRange, transform: CGAffineTransform, size: CGSize)] = []
 
     for clip in clips {
       guard let path = clip["path"] as? String else { continue }
@@ -523,9 +527,15 @@ final class CompPlayer: NSObject, FlutterTexture {
       }
       // 每一段的音量（靜音的軌、調過音量的片段）
       aParams.setVolume(volume, at: cursor)
+      segments.append((
+        range: CMTimeRange(start: cursor, duration: range.duration),
+        transform: src.preferredTransform,
+        size: src.naturalSize
+      ))
+      // 畫面大小以第一段「轉正之後」的尺寸為準
       if size == .zero {
-        // 工作檔都是轉正過的，直接拿第一段的尺寸當畫面大小
-        size = src.naturalSize
+        let d = src.naturalSize.applying(src.preferredTransform)
+        size = CGSize(width: abs(d.width), height: abs(d.height))
       }
       cursor = cursor + range.duration
     }
@@ -536,6 +546,36 @@ final class CompPlayer: NSObject, FlutterTexture {
     mix.inputParameters = mixParams
     let item = AVPlayerItem(asset: comp)
     item.audioMix = mix
+
+    // 逐段套用「轉正 → 等比縮放貼齊畫面 → 置中」。
+    // 有這個之後，直式與橫式、轉正過與沒轉正過的素材可以混在一起，
+    // 每一段都用自己的方向畫
+    if size.width > 1, size.height > 1, !segments.isEmpty {
+      let vc = AVMutableVideoComposition()
+      vc.renderSize = size
+      vc.frameDuration = CMTime(value: 1, timescale: 30)
+      var instructions: [AVMutableVideoCompositionInstruction] = []
+      for seg in segments {
+        let disp = seg.size.applying(seg.transform)
+        let dw = abs(disp.width)
+        let dh = abs(disp.height)
+        guard dw > 1, dh > 1 else { continue }
+        let k = min(size.width / dw, size.height / dh)
+        let tx = (size.width - dw * k) / 2
+        let ty = (size.height - dh * k) / 2
+        let t = seg.transform
+          .concatenating(CGAffineTransform(scaleX: k, y: k))
+          .concatenating(CGAffineTransform(translationX: tx, y: ty))
+        let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: vTrack)
+        layer.setTransform(t, at: seg.range.start)
+        let ins = AVMutableVideoCompositionInstruction()
+        ins.timeRange = seg.range
+        ins.layerInstructions = [layer]
+        instructions.append(ins)
+      }
+      vc.instructions = instructions
+      item.videoComposition = vc
+    }
     // 影格輸出：BGRA 直接給 Flutter 材質用
     // 屬性字典的型別要寫死：空字典字面值 Swift 推不出型別會直接編不過
     let attrs: [String: Any] = [

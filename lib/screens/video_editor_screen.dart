@@ -887,7 +887,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _seekInFlight = false;
 
   void _compSeek() {
-    if (_compOn) unawaited(_comp!.seek(_position));
+    if (_compOn && !_playing) unawaited(_comp!.seek(_position));
   }
 
   void _scrubSeek({bool force = false}) {
@@ -2813,12 +2813,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     Object? baseCtrl;
     _playProbe = Timer.periodic(const Duration(milliseconds: 400), (_) async {
       if (!_playing || !mounted) return;
-      final c = _ctrls[_tl.videoAt(_position)?.id ?? -1];
-      if (c == null || !c.value.isInitialized) return;
       final callSw = Stopwatch()..start();
-      final pos = (await c.positionNow())?.inMilliseconds;
+      int? pos;
+      Object? who;
+      if (_compOn) {
+        pos = ((await _comp!.position()) * 1000).round();
+        who = _comp;
+      } else {
+        final c = _ctrls[_tl.videoAt(_position)?.id ?? -1];
+        if (c == null || !c.value.isInitialized) return;
+        pos = (await c.positionNow())?.inMilliseconds;
+        who = c;
+      }
       callSw.stop();
       if (pos == null) return;
+      final c = who;
       // 跨過交界會換一顆播放器，兩顆的位置本來就不連續——
       // 不重新起算的話那一次會被記成「落後好幾秒」的假訊號
       if (basePlayer < 0 || !identical(baseCtrl, c)) {
@@ -2864,6 +2873,33 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_tl.duration <= 0) return;
     if (_position >= _tl.duration - 0.01) _position = 0;
     final tr = PlaybackTrace.instance..start();
+
+    // 合成播放器接手時，整條時間軸就是它一顆在播：舊的逐片段播放器
+    // 一個都不要碰。上一版兩邊同時在播——兩倍解碼、兩份聲音，
+    // 而且「快不快」也就比不出來了
+    if (_compOn) {
+      setState(() => _playing = true);
+      await _comp!.seek(_position);
+      await _comp!.setRate(_speed);
+      await _comp!.play();
+      tr.log('呼叫 play()（合成播放器）');
+      final sw = Stopwatch()..start();
+      final p0 = await _comp!.position();
+      while (mounted && sw.elapsedMilliseconds < 250) {
+        await Future<void>.delayed(const Duration(milliseconds: 16));
+        final p = await _comp!.position();
+        if ((p - p0).abs() > 0.001) {
+          tr.log('影格開始滾動（合成播放器）');
+          break;
+        }
+      }
+      Diag.notePlayLatency(sw.elapsedMilliseconds);
+      if (!mounted) return;
+      _lastTick = Duration.zero;
+      _ticker.start();
+      tr.log('◀ 時間軸開始走');
+      return;
+    }
     final waits = <Future<void>>[];
     for (final clip in _tl.clips) {
       final k = _tl.sourceOf(clip).kind;
@@ -2944,11 +2980,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _lastTick = Duration.zero;
     _ticker.start();
-    if (_compOn) {
-      await _comp!.seek(_position);
-      await _comp!.setRate(_speed);
-      await _comp!.play();
-    }
     _startPlayProbe();
     tr.log('◀ 時間軸開始走');
     _syncMedia();
