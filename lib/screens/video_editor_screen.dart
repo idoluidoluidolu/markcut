@@ -1050,18 +1050,46 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _prepping.remove(srcIndex);
     if (made == null || srcIndex >= _tl.sources.length) return;
     src.workPath = made;
-    // 換播放器：正在播就先記住位置，換完接回去
-    _swapToWorkFile(srcIndex);
-    // 合成一進場就用原檔組好了，這裡是「換成工作檔」的重組。每好一支
-    // 就重組的話畫面會重載好幾次，等全部好了一次換完
-    if (_prepping.isEmpty) {
-      _compDirty = true;
-      unawaited(_ensureComp());
-    }
+    // 播放中絕對不換媒體。換播放器會 pause→重建→play，合成重組會換掉
+    // AVPlayerItem——兩個都會把畫面重設回 seek 的位置，看起來就是
+    // 「一進去點播放就跳回去」。真正的剪輯 App 不會在播放中抽換媒體，
+    // 排到暫停後再一次做完
+    _pendingSwaps.add(srcIndex);
+    if (!_playing) _flushPendingSwaps();
     _saveDraft();
   }
 
   /// 這份素材的播放器全部換成吃工作檔的新播放器
+  /// 等著換成工作檔的素材（播放中先排隊，暫停後才換）
+  final Set<int> _pendingSwaps = {};
+
+  /// 播放中發生過、被推遲的合成重組
+  bool _pendingCompRebuild = false;
+
+  /// 沖洗中（_swapToWorkFile 內部會再呼叫一次 _pause，別讓它遞迴進來
+  /// 重組第二次合成）
+  bool _flushing = false;
+
+  /// 暫停之後把排隊的媒體抽換一次做完
+  void _flushPendingSwaps() {
+    if (_playing || _flushing) return;
+    _flushing = true;
+    final todo = _pendingSwaps.toList();
+    _pendingSwaps.clear();
+    for (final i in todo) {
+      if (i >= 0 && i < _tl.sources.length) _swapToWorkFile(i);
+    }
+    _flushing = false;
+    // 全部素材都備好了才把合成換成工作檔版：每好一支就重組的話
+    // 畫面會重載好幾次
+    if (todo.isNotEmpty && _prepping.isEmpty) _pendingCompRebuild = true;
+    if (_pendingCompRebuild) {
+      _pendingCompRebuild = false;
+      _compDirty = true;
+      unawaited(_ensureComp());
+    }
+  }
+
   void _swapToWorkFile(int srcIndex) {
     final was = _playing;
     if (was) _pause();
@@ -2810,6 +2838,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     if (_comp != null && !_compDirty) return;
+    // 播放中一律不動合成：重組＝換掉 AVPlayerItem＝畫面重設回 seek 的
+    // 位置；而就算是第一次組好，接手的那一刻畫面也會從舊圖層切到合成
+    // 圖層，合成那顆卻還沒開始播。兩種都是「一進去點播放就跳」。
+    // 排到暫停之後再做
+    if (_playing) {
+      _pendingCompRebuild = true;
+      return;
+    }
     final why = CompPlayer.whyNot(_tl);
     _compWhyNot = why;
     if (why != null) {
@@ -3062,6 +3098,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 預熱中的播放器也一起停了，下次播放要重新預熱
     _warmed.clear();
     if (_playing) setState(() => _playing = false);
+    // 播放中推遲掉的媒體抽換，現在補做
+    if (_pendingSwaps.isNotEmpty || _pendingCompRebuild) {
+      _flushPendingSwaps();
+    }
   }
 
   /// 音量快取：值沒變就不打擾播放器（每格呼叫 setVolume 會卡）
