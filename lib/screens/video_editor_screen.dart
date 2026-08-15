@@ -565,22 +565,34 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     });
   }
 
-  /// 合成播放器烘進去的那些值的指紋（變了就要重組）
-  String _compSig() => [
+  /// 合成播放器烘進去的那些值的指紋（變了就要重組）。
+  ///
+  /// [withPaths] 分兩種用途：帶路徑的是「這份合成還對不對」，不帶的是
+  /// 「使用者改了什麼」。要分開是因為工作檔一支接一支轉好，路徑會連著
+  /// 變好幾次——那種變化得等全部轉完再一次換，每變一次就重烘的話
+  /// 畫面會重載好幾次
+  String _compSig({bool withPaths = true}) => [
     for (final c in _tl.clips)
       if (_tl.sourceOf(c).isVideo)
-        '${_tl.sourceOf(c).previewPath}|${c.trimStart}|${c.trimEnd}|'
+        '${withPaths ? _tl.sourceOf(c).previewPath : c.sourceIndex}|'
+            '${c.trimStart}|${c.trimEnd}|'
             '${c.offset}|${c.volume}|${c.speed}|${c.fadeIn}|${c.fadeOut}|'
             '${c.scale}|${c.px}|${c.py}|${c.reverse}',
   ].join(';');
 
   String? _lastCompSig;
+  String? _lastCompEditSig;
 
   void _compRefreshIfChanged() {
     if (!Diag.compPlayer.value || !mounted) return;
     final sig = _compSig();
     if (sig == _lastCompSig) return;
+    // 使用者真的改了東西＝立刻重烘；只有素材路徑變（某一支工作檔轉好了）
+    // ＝等全部轉完再一次換
+    final editSig = _compSig(withPaths: false);
+    if (editSig == _lastCompEditSig && !_allWorkFilesReady) return;
     _lastCompSig = sig;
+    _lastCompEditSig = editSig;
     _compDirty = true;
     unawaited(_ensureComp());
   }
@@ -1036,6 +1048,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 正在備工作檔的素材（全部備完才把合成換成工作檔版）
   final Set<int> _prepping = {};
 
+  /// 影片素材是不是全部都有工作檔了。
+  ///
+  /// 不能用 _prepping.isEmpty 判斷：轉檔是一支接一支排隊做的，第一支
+  /// 做完的瞬間第二支還沒進佇列，_prepping 是空的——上一版就是這樣
+  /// 每轉好一支就重烘一次合成，畫面重載了三次
+  bool get _allWorkFilesReady =>
+      _tl.sources.every((s) => !s.isVideo || s.workPath != null);
+
   Future<void> _prepWorkFile(int srcIndex) async {
     if (srcIndex < 0 || srcIndex >= _tl.sources.length) return;
     final src = _tl.sources[srcIndex];
@@ -1055,7 +1075,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 「一進去點播放就跳回去」。真正的剪輯 App 不會在播放中抽換媒體，
     // 排到暫停後再一次做完
     _pendingSwaps.add(srcIndex);
-    if (!_playing) _flushPendingSwaps();
+    // 全部轉完才動合成：每好一支就重烘的話畫面會重載好幾次
+    if (!_playing && _allWorkFilesReady) _flushPendingSwaps();
     _saveDraft();
   }
 
@@ -1082,7 +1103,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _flushing = false;
     // 全部素材都備好了才把合成換成工作檔版：每好一支就重組的話
     // 畫面會重載好幾次
-    if (todo.isNotEmpty && _prepping.isEmpty) _pendingCompRebuild = true;
+    if (todo.isNotEmpty && _allWorkFilesReady) _pendingCompRebuild = true;
     if (_pendingCompRebuild) {
       _pendingCompRebuild = false;
       _compDirty = true;
@@ -2872,7 +2893,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     Diag.note('合成播放器就緒：${made.duration.toStringAsFixed(1)} 秒');
-    _lastCompSig = _compSig(); // 這一版烘的就是現在的值，指紋同步
+    // 這一版烘的就是現在的值，兩份指紋一起同步
+    _lastCompSig = _compSig();
+    _lastCompEditSig = _compSig(withPaths: false);
     setState(() => _comp = made);
     // 合成接手了，舊的那幾顆播放器立刻放掉（見 _trimPlayers）
     _trimPlayers();

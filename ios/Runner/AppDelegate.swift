@@ -112,9 +112,7 @@ final class AtomicFlag {
       name: "markcut/comp", binaryMessenger: registrar.messenger())
     let textures = registrar.textures()
     // AVPlayerLayer 版的預覽：跟相簿播放同一條路，零複製
-    registrar.register(
-      PlayerViewFactory(playerProvider: { [weak self] in self?.comp?.player }),
-      withId: "markcut/player_view")
+    registrar.register(PlayerViewFactory(), withId: "markcut/player_view")
     channel.setMethodCallHandler { [weak self] call, result in
       guard let self = self else {
         result(nil)
@@ -139,6 +137,9 @@ final class AtomicFlag {
           return
         }
         self.comp = p
+        // 重組之後畫面上的影片圖層要指到新的播放器，不然還黏在剛被
+        // 收掉的那顆上，預覽就是一片黑
+        PlayerHosts.shared.use(p.player)
         result([
           "textureId": p.textureId,
           "duration": p.duration,
@@ -170,6 +171,7 @@ final class AtomicFlag {
       case "health":
         result(self.comp?.healthStats() ?? [:])
       case "dispose":
+        PlayerHosts.shared.use(nil)
         self.comp?.dispose()
         self.comp = nil
         result(nil)
@@ -716,32 +718,48 @@ final class PlayerHostView: UIView {
   var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
 }
 
+/// 目前該顯示哪一顆播放器，以及畫面上還活著的影片圖層。
+///
+/// 平台視圖是「建立時抓一次播放器」就再也不換的。合成會重組（工作檔
+/// 轉好了要換成工作檔版、時間軸改了要重烘），一重組舊播放器就被收掉，
+/// 而畫面上那層還指著它——結果就是預覽整片黑。這裡把「現在是哪一顆」
+/// 集中管理，換的時候一起換過去
+final class PlayerHosts: NSObject {
+  static let shared = PlayerHosts()
+  private let views = NSHashTable<PlayerHostView>.weakObjects()
+  private(set) var current: AVPlayer?
+
+  func register(_ v: PlayerHostView) {
+    views.add(v)
+    v.playerLayer.player = current
+  }
+
+  /// 換成新的播放器：所有還活著的圖層一起指過去
+  func use(_ p: AVPlayer?) {
+    current = p
+    for v in views.allObjects { v.playerLayer.player = p }
+  }
+}
+
 final class PlayerPlatformView: NSObject, FlutterPlatformView {
   private let host: PlayerHostView
 
-  init(frame: CGRect, player: AVPlayer?) {
+  init(frame: CGRect) {
     host = PlayerHostView(frame: frame)
     host.backgroundColor = .black
     host.playerLayer.videoGravity = .resizeAspect
-    host.playerLayer.player = player
     super.init()
+    PlayerHosts.shared.register(host)
   }
 
   func view() -> UIView { host }
 }
 
 final class PlayerViewFactory: NSObject, FlutterPlatformViewFactory {
-  private let playerProvider: () -> AVPlayer?
-
-  init(playerProvider: @escaping () -> AVPlayer?) {
-    self.playerProvider = playerProvider
-    super.init()
-  }
-
   func create(
     withFrame frame: CGRect, viewIdentifier viewId: Int64, arguments args: Any?
   ) -> FlutterPlatformView {
-    PlayerPlatformView(frame: frame, player: playerProvider())
+    PlayerPlatformView(frame: frame)
   }
 
   func createArgsCodec() -> FlutterMessageCodec & NSObjectProtocol {
