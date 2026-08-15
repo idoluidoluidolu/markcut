@@ -186,14 +186,18 @@ class Diag {
   static int playStalls = 0;
   static int worstStallMs = 0;
 
-  static void notePlaybackSample(int wallMs, int playerMs) {
+  /// [callMs] 是「問播放器位置」這通平台呼叫自己花的時間。
+  /// 不扣掉的話，平台執行緒忙的時候會被記成「影格落後」——
+  /// 上一份報告的「最久落後 210ms」很可能就是這樣來的假訊號
+  static void notePlaybackSample(int wallMs, int playerMs, int callMs) {
     if (wallMs < 50) return;
     playSamples++;
-    final behind = wallMs - playerMs;
+    final behind = wallMs - playerMs - callMs;
     if (behind > 80) {
       playStalls++;
       if (behind > worstStallMs) worstStallMs = behind;
     }
+    if (callMs > 50) count('問位置這通平台呼叫就花了 50ms 以上');
   }
 
   // ===== 計數與備註 =====
@@ -207,10 +211,16 @@ class Diag {
   static final driftFix = ValueNotifier(true);
   static final scrubPrefetch = ValueNotifier(true);
 
+  /// 只養一顆播放器：把不是「現在這一段」的播放器整顆放掉。
+  /// iOS 上每顆 AVPlayer 都佔一組解碼與影格輸出資源，同時養三顆時
+  /// 系統會在它們之間排隊——排除掉前面全部之後，這是最後的嫌疑
+  static final singlePlayer = ValueNotifier(false);
+
   static String get tuning =>
       '預熱=${preheat.value ? '開' : '關'}／'
       '脫節校正=${driftFix.value ? '開' : '關'}／'
-      '背景抽幀=${scrubPrefetch.value ? '開' : '關'}';
+      '背景抽幀=${scrubPrefetch.value ? '開' : '關'}／'
+      '只養一顆播放器=${singlePlayer.value ? '開' : '關'}';
 
   static void count(String key, [int n = 1]) {
     _counts[key] = (_counts[key] ?? 0) + n;

@@ -2603,18 +2603,51 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       Diag.preheat.value,
       Diag.driftFix.value,
       Diag.scrubPrefetch.value,
+      Diag.singlePlayer.value,
     );
     _selfTesting = true;
     await Diag.readDeviceState();
 
     // 每一輪播幾秒：太短量不到交界，太長使用者會等到不耐煩
     final dur = math.min(8.0, math.max(3.0, _tl.duration));
-    final rounds = <({String name, bool pre, bool drift, bool fetch})>[
-      (name: '現況（全開）', pre: true, drift: true, fetch: true),
-      (name: '關掉交界預熱', pre: false, drift: true, fetch: true),
-      (name: '關掉脫節校正', pre: true, drift: false, fetch: true),
-      (name: '三個都關', pre: false, drift: false, fetch: false),
-    ];
+    final rounds =
+        <({String name, bool pre, bool drift, bool fetch, bool single})>[
+          (
+            name: '現況（全開）',
+            pre: true,
+            drift: true,
+            fetch: true,
+            single: false,
+          ),
+          (
+            name: '關掉交界預熱',
+            pre: false,
+            drift: true,
+            fetch: true,
+            single: false,
+          ),
+          (
+            name: '關掉脫節校正',
+            pre: true,
+            drift: false,
+            fetch: true,
+            single: false,
+          ),
+          (
+            name: '三個都關',
+            pre: false,
+            drift: false,
+            fetch: false,
+            single: false,
+          ),
+          (
+            name: '只養一顆播放器',
+            pre: false,
+            drift: false,
+            fetch: false,
+            single: true,
+          ),
+        ];
     final results =
         <({String name, int stalls, int samples, int jankB, int jankR})>[];
 
@@ -2622,6 +2655,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       Diag.preheat.value = r.pre;
       Diag.driftFix.value = r.drift;
       Diag.scrubPrefetch.value = r.fetch;
+      Diag.singlePlayer.value = r.single;
       _pause();
       setState(() => _position = 0);
       await Future<void>.delayed(const Duration(milliseconds: 600));
@@ -2645,6 +2679,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     Diag.preheat.value = was.$1;
     Diag.driftFix.value = was.$2;
     Diag.scrubPrefetch.value = was.$3;
+    Diag.singlePlayer.value = was.$4;
     _selfTesting = false;
     if (!mounted) return '（已離開畫面）';
     setState(() => _position = 0);
@@ -2708,7 +2743,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (!_playing || !mounted) return;
       final c = _ctrls[_tl.videoAt(_position)?.id ?? -1];
       if (c == null || !c.value.isInitialized) return;
+      final callSw = Stopwatch()..start();
       final pos = (await c.positionNow())?.inMilliseconds;
+      callSw.stop();
       if (pos == null) return;
       // 跨過交界會換一顆播放器，兩顆的位置本來就不連續——
       // 不重新起算的話那一次會被記成「落後好幾秒」的假訊號
@@ -2718,7 +2755,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         wall.reset();
         return;
       }
-      Diag.notePlaybackSample(wall.elapsedMilliseconds, pos - basePlayer);
+      Diag.notePlaybackSample(
+        wall.elapsedMilliseconds,
+        pos - basePlayer,
+        callSw.elapsedMilliseconds,
+      );
       basePlayer = pos;
       wall.reset();
     });
@@ -3001,6 +3042,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   Diag.driftFix,
                 ),
                 ('背景抽幀', '關掉試試：抽幀會跟播放搶硬體解碼器', Diag.scrubPrefetch),
+                (
+                  '只養一顆播放器',
+                  '打開試試：三顆 AVPlayer 一起養，系統會在它們之間排隊',
+                  Diag.singlePlayer,
+                ),
               ])
                 SwitchListTile(
                   value: t.$3.value,
@@ -3099,8 +3145,49 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 所以播放中只在「進場那一刻」seek 一次，之後放手讓解碼器自己跑，
   /// 除非真的大幅脫節（>1 秒）才校正、且同片段 2 秒內不重複校正。
   int _syncSampleTick = 0;
+  DateTime _lastTrim = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// 只養一顆播放器（實驗開關）：不是「現在這一段」也不是「快進場」的
+  /// 播放器整顆放掉。
+  ///
+  /// iOS 上每顆 AVPlayer 都佔一組解碼與影格輸出資源；三顆一起養的時候
+  /// 系統會在它們之間排隊，畫面就會不定時頓一下。聲音的播放器不動——
+  /// 那個要整段對位，中途放掉會斷
+  void _trimPlayers() {
+    if (!Diag.singlePlayer.value) return;
+    final now = DateTime.now();
+    if (now.difference(_lastTrim).inMilliseconds < 400) return;
+    _lastTrim = now;
+    final keep = <int>{};
+    final cur = _tl.videoAt(_position);
+    if (cur != null) keep.add(cur.id);
+    for (final c in _tl.clips) {
+      if (_tl.sourceOf(c).kind == ClipKind.audio) {
+        keep.add(c.id);
+        continue;
+      }
+      // 快進場的留著：交界才現場開一顆的話，會頓得比現在更明顯
+      final lead = c.offset - _position;
+      if (lead > 0 && lead < 1.5) keep.add(c.id);
+    }
+    var dropped = 0;
+    for (final id in _ctrls.keys.toList()) {
+      if (keep.contains(id)) continue;
+      _ctrls.remove(id)?.dispose();
+      _wasActive.remove(id);
+      _preRolled.remove(id);
+      _warmed.remove(id);
+      dropped++;
+    }
+    if (dropped > 0) Diag.count('放掉閒置播放器', dropped);
+    // 該留的還沒開就補開（放掉之後又滑回來的情況）
+    for (final c in _tl.clips) {
+      if (keep.contains(c.id)) _ensureCtrlFor(c);
+    }
+  }
 
   void _syncMedia() {
+    _trimPlayers();
     final sw = (++_syncSampleTick % 30 == 0) ? (Stopwatch()..start()) : null;
     _syncMediaBody();
     if (sw != null) {
