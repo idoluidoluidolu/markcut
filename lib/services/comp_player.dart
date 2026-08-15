@@ -124,6 +124,24 @@ class CompPlayer {
     }
   }
 
+  /// 材質實際更新的間隔統計。30fps 的素材理想是每 33ms 換一張；
+  /// 出現 60、80、100 就是 judder——每一格都準時畫，但畫的是同一張。
+  /// Flutter 端的所有指標都看不到這件事，眼睛卻很敏感
+  Future<String> gaps() async {
+    try {
+      final m = await _ch.invokeMapMethod<String, dynamic>('gaps');
+      final n = (m?['count'] as num?)?.toInt() ?? 0;
+      if (n == 0) return '沒有取樣到';
+      final avg = (m!['avgMs'] as num).toDouble();
+      final max = (m['maxMs'] as num).toInt();
+      final over = (m['over2x'] as num).toInt();
+      return '換圖 $n 次／平均 ${avg.toStringAsFixed(1)}ms'
+          '／最久 ${max}ms／超過兩格 $over 次';
+    } catch (_) {
+      return '讀不到';
+    }
+  }
+
   Future<void> _quiet(String method, [Object? arg]) async {
     try {
       await _ch.invokeMethod(method, arg);

@@ -220,15 +220,42 @@ class Diag {
   /// 這是「一片段一顆播放器」那套的替代品，也是排除到最後剩下的解法
   static final compPlayer = ValueNotifier(false);
 
+  /// 預覽改用系統的影片圖層（AVPlayerLayer）而不是 Flutter 材質。
+  ///
+  /// 材質那條路是「影格複製進 Flutter 材質、再由 Flutter 合成」；就算
+  /// 一格都沒掉，節奏也可能不均（16ms、50ms、16ms…每格都準時畫，但畫的
+  /// 是同一張）。所有 Flutter 端的指標都看不到它，眼睛卻很敏感——這是
+  /// 「成品在相簿裡很順、App 裡就是卡」最後一個沒被排除的結構差異。
+  /// 打開之後走的是跟相簿播放同一條路：零複製、影格節奏由系統排
+  static final playerLayer = ValueNotifier(false);
+
   static String get tuning =>
       '預熱=${preheat.value ? '開' : '關'}／'
       '脫節校正=${driftFix.value ? '開' : '關'}／'
       '背景抽幀=${scrubPrefetch.value ? '開' : '關'}／'
       '只養一顆播放器=${singlePlayer.value ? '開' : '關'}／'
-      '合成播放器=${compPlayer.value ? '開' : '關'}';
+      '合成播放器=${compPlayer.value ? '開' : '關'}／'
+      '系統影片圖層=${playerLayer.value ? '開' : '關'}';
 
   static void count(String key, [int n = 1]) {
     _counts[key] = (_counts[key] ?? 0) + n;
+  }
+
+  /// 按下播放到畫面真的動（毫秒）。使用者說的「撥放延遲」就是它——
+  /// 一直被我讀成「卡頓」而查錯方向，其實數字從第一份報告就在 trace 裡
+  static final List<int> playLatencies = [];
+
+  static void notePlayLatency(int ms) {
+    playLatencies.add(ms);
+    if (playLatencies.length > 30) playLatencies.removeAt(0);
+  }
+
+  static String get playLatencyText {
+    if (playLatencies.isEmpty) return '還沒量到';
+    final sum = playLatencies.reduce((a, b) => a + b);
+    return '按 ${playLatencies.length} 次：平均 ${sum ~/ playLatencies.length}ms'
+        '／最久 ${playLatencies.reduce((a, b) => a > b ? a : b)}ms'
+        '／最快 ${playLatencies.reduce((a, b) => a < b ? a : b)}ms';
   }
 
   // ===== 其他判斷器 =====
@@ -320,6 +347,7 @@ class Diag {
       b.writeln('--- 上次執行 ---');
       b.writeln(crumbFromLastRun);
     }
+    b.writeln('按下播放到畫面動：$playLatencyText');
     b.writeln('實驗開關：$tuning');
     b.writeln('裝置狀態：散熱=$thermal${lowPower ? '／低耗電模式開著' : ''}');
     if (syncCalls > 0) {

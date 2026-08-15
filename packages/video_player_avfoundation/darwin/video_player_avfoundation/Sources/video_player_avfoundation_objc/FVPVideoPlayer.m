@@ -346,7 +346,12 @@ NS_INLINE CGFloat radiansToDegrees(CGFloat radians) {
     if (_targetPlaybackSpeed) {
       [self updateRate];
     } else {
-      [_player play];
+      // MarkCut patch: playImmediately instead of play. -play (and setting
+      // rate) runs the buffering rules before the picture actually moves;
+      // measured ~200ms from play() to the first frame even with preroll
+      // in place. -playImmediatelyAtRate: is the "start now, don't wait"
+      // API and is what makes the play button feel instant.
+      [_player playImmediatelyAtRate:1.0];
     }
   } else {
     [_player pause];
@@ -383,7 +388,13 @@ NS_INLINE CGFloat radiansToDegrees(CGFloat radians) {
     }
     speed = 1.0;
   }
-  _player.rate = speed;
+  // MarkCut patch: same reason as above—while playing, start immediately
+  // instead of letting the buffering rules gate the first frame
+  if (_isPlaying && readyToPlay) {
+    [_player playImmediatelyAtRate:speed];
+  } else {
+    _player.rate = speed;
+  }
 }
 
 - (void)sendFailedToLoadVideoEvent {

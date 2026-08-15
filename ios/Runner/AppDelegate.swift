@@ -82,6 +82,10 @@ import UIKit
     let channel = FlutterMethodChannel(
       name: "markcut/comp", binaryMessenger: registrar.messenger())
     let textures = registrar.textures()
+    // AVPlayerLayer 版的預覽：跟相簿播放同一條路，零複製
+    registrar.register(
+      PlayerViewFactory(playerProvider: { [weak self] in self?.comp?.player }),
+      withId: "markcut/player_view")
     channel.setMethodCallHandler { [weak self] call, result in
       guard let self = self else {
         result(nil)
@@ -125,6 +129,8 @@ import UIKit
         result(nil)
       case "position":
         result(self.comp?.positionMs ?? 0)
+      case "gaps":
+        result(self.comp?.gapStats() ?? ["count": 0])
       case "dispose":
         self.comp?.dispose()
         self.comp = nil
@@ -355,6 +361,53 @@ import UIKit
   }
 }
 
+/// 用 AVPlayerLayer 直接顯示的原生視圖。
+///
+/// 材質那條路（影格 → CVPixelBuffer → 複製進 Flutter 材質 → Flutter 合成）
+/// 就算一格都沒掉，節奏也可能不均：16ms、50ms、16ms、50ms——每一格都
+/// 準時畫，但畫的是同一張。所有 Flutter 端的指標都看不到它，眼睛卻很
+/// 敏感，這正是「成品在相簿裡很順、App 裡就是卡」的最後一個結構差異。
+///
+/// AVPlayerLayer 是系統自己的影片圖層，跟相簿播放走同一條路：零複製、
+/// 影格節奏由系統排程
+final class PlayerHostView: UIView {
+  override class var layerClass: AnyClass { AVPlayerLayer.self }
+  var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+}
+
+final class PlayerPlatformView: NSObject, FlutterPlatformView {
+  private let host: PlayerHostView
+
+  init(frame: CGRect, player: AVPlayer?) {
+    host = PlayerHostView(frame: frame)
+    host.backgroundColor = .black
+    host.playerLayer.videoGravity = .resizeAspect
+    host.playerLayer.player = player
+    super.init()
+  }
+
+  func view() -> UIView { host }
+}
+
+final class PlayerViewFactory: NSObject, FlutterPlatformViewFactory {
+  private let playerProvider: () -> AVPlayer?
+
+  init(playerProvider: @escaping () -> AVPlayer?) {
+    self.playerProvider = playerProvider
+    super.init()
+  }
+
+  func create(
+    withFrame frame: CGRect, viewIdentifier viewId: Int64, arguments args: Any?
+  ) -> FlutterPlatformView {
+    PlayerPlatformView(frame: frame, player: playerProvider())
+  }
+
+  func createArgsCodec() -> FlutterMessageCodec & NSObjectProtocol {
+    FlutterStandardMessageCodec.sharedInstance()
+  }
+}
+
 // ===== 合成播放器 =====
 //
 // 這個類別本來是獨立的 CompPlayer.swift，但 Xcode 專案是「逐檔列在
@@ -377,7 +430,8 @@ import UIKit
 /// 影格用 AVPlayerItemVideoOutput 取出來交給 Flutter 材質，
 /// 由 CADisplayLink 驅動——跟 video_player 內部同一套機制
 final class CompPlayer: NSObject, FlutterTexture {
-  private let player = AVPlayer()
+  /// 讓 AVPlayerLayer 的 PlatformView 拿得到（見 PlayerHostView）
+  let player = AVPlayer()
   private var output: AVPlayerItemVideoOutput?
   private var link: CADisplayLink?
   private var latest: CVPixelBuffer?
@@ -487,12 +541,21 @@ final class CompPlayer: NSObject, FlutterTexture {
     link = l
   }
 
+  /// 材質實際更新的間隔統計（judder 的唯一證據）
+  private var lastFrameAt: CFTimeInterval = 0
+  private(set) var frameGaps: [Int] = []
+
   @objc private func onFrame() {
     guard let out = output else { return }
     let t = player.currentTime()
     guard out.hasNewPixelBuffer(forItemTime: t),
       let buf = out.copyPixelBuffer(forItemTime: t, itemTimeForDisplay: nil)
     else { return }
+    let now = CACurrentMediaTime()
+    if lastFrameAt > 0, frameGaps.count < 600 {
+      frameGaps.append(Int((now - lastFrameAt) * 1000))
+    }
+    lastFrameAt = now
     lock.lock()
     latest = buf
     lock.unlock()
@@ -520,6 +583,20 @@ final class CompPlayer: NSObject, FlutterTexture {
   }
 
   var positionMs: Int { Int(player.currentTime().seconds * 1000) }
+
+  /// 換圖間隔的統計：幾次、平均、最久、超過兩格的次數。
+  /// 30fps 的素材理想值是每 33ms 一次；出現 60、80、100 就是 judder
+  func gapStats() -> [String: Any] {
+    let g = frameGaps
+    guard !g.isEmpty else { return ["count": 0] }
+    let sum = g.reduce(0, +)
+    return [
+      "count": g.count,
+      "avgMs": Double(sum) / Double(g.count),
+      "maxMs": g.max() ?? 0,
+      "over2x": g.filter { $0 > 66 }.count,
+    ]
+  }
 
   func dispose() {
     link?.invalidate()

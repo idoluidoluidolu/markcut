@@ -2907,7 +2907,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (_tl.sourceOf(clip).kind != ClipKind.video) continue;
       final c = _ctrls[clip.id];
       if (c == null || !c.value.isInitialized) continue;
-      c.setPlaybackSpeed(_speed * clip.speed);
+      final want = _speed * clip.speed;
+      if ((_lastSpeed[clip.id] ?? -1) != want) {
+        _lastSpeed[clip.id] = want;
+        c.setPlaybackSpeed(want);
+      }
       unawaited(c.play());
       tr.log('呼叫 play()（片段 ${clip.id}）');
       lead ??= c;
@@ -2924,6 +2928,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           break;
         }
       }
+      // 「按下播放到畫面真的動」——使用者說的「撥放延遲」就是這個數字。
+      // 記成第一級的統計，才比得出改動有沒有效
+      Diag.notePlayLatency(sw.elapsedMilliseconds);
       if (sw.elapsedMilliseconds >= 250) {
         tr.log('⚠ 等了 250ms 影格還沒動，直接開錶');
       }
@@ -3036,9 +3043,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     tr.env(
       '合成播放器',
       _comp != null
-          ? '使用中'
+          ? '使用中${Diag.playerLayer.value ? '（系統影片圖層）' : '（Flutter 材質）'}'
           : (_compWhyNot ?? (Diag.compPlayer.value ? '組不起來' : '沒開')),
     );
+    // 換圖間隔＝畫面實際更新的節奏，judder 的唯一證據
+    if (_comp != null) {
+      unawaited(_comp!.gaps().then((g) => tr.env('換圖節奏', g)));
+    }
     unawaited(
       Diag.memoryMb().then(
         (mb) => tr.env(
@@ -3148,6 +3159,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   '打開試試：一份 AVComposition、一顆播放器、一組解碼資源',
                   Diag.compPlayer,
                 ),
+                (
+                  '系統影片圖層（要先開合成播放器）',
+                  '打開試試：跟相簿播放同一條路，影格不再複製進 Flutter',
+                  Diag.playerLayer,
+                ),
               ])
                 SwitchListTile(
                   value: t.$3.value,
@@ -3243,6 +3259,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return clip.volume * trackMute * revMute * clip.fadeFactorAt(_position);
   }
 
+  /// 每個播放器上次設過的速度。重複設同一個值不是沒事——暫停狀態下
+  /// 設速度會讓插件重跑一次 pause+preroll，把剛熱好的解碼管線打掉
+  final Map<int, double> _lastSpeed = {};
+
   /// 每個片段上次大幅校正的時間（防連發）
   final Map<int, DateTime> _lastDriftFix = {};
   DateTime _lastVolSync = DateTime.fromMillisecondsSinceEpoch(0);
@@ -3312,6 +3332,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _syncMediaBody() {
     final now = DateTime.now();
+    // 預熱／進場會直接改速度，記回來讓 _play 的比對是準的
+    for (final e in _warmed) {
+      _lastSpeed.remove(e);
+    }
     final volDue = now.difference(_lastVolSync).inMilliseconds >= 100;
     if (volDue) _lastVolSync = now;
     // 無縫接續：切割出來的兩段（同來源、內容連續、同速度）在交界時
@@ -5161,16 +5185,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       cur?.track ?? 0,
                                       Positioned.fromRect(
                                         rect: rect,
-                                        child: FittedBox(
-                                          fit: BoxFit.contain,
-                                          child: SizedBox(
-                                            width: _comp!.width,
-                                            height: _comp!.height,
-                                            child: Texture(
-                                              textureId: _comp!.textureId,
-                                            ),
-                                          ),
-                                        ),
+                                        // 兩條路：系統的影片圖層（跟相簿
+                                        // 播放同一條，零複製）或 Flutter
+                                        // 材質（影格要複製一次再合成）
+                                        child: Diag.playerLayer.value
+                                            ? const UiKitView(
+                                                viewType: 'markcut/player_view',
+                                              )
+                                            : FittedBox(
+                                                fit: BoxFit.contain,
+                                                child: SizedBox(
+                                                  width: _comp!.width,
+                                                  height: _comp!.height,
+                                                  child: Texture(
+                                                    textureId:
+                                                        _comp!.textureId,
+                                                  ),
+                                                ),
+                                              ),
                                       ),
                                     );
                                     vids.clear();
