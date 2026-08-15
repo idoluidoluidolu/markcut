@@ -164,7 +164,14 @@ class CompPlayer {
       final m = await _ch.invokeMapMethod<String, dynamic>('health');
       if (m == null || m.isEmpty) return '讀不到';
       final b = StringBuffer();
-      b.write('狀態 ${m['timeControl'] ?? '?'}');
+      // 有沒有掛合成器＝這條時間軸是「硬體解碼直送螢幕」還是
+      // 「每一格都進合成管線重畫一張」。原檔一匯入順不順就看這裡
+      b.write(
+        m['usesVC'] == true
+            ? '合成器 開（每格重畫 ${m['renderW']}x${m['renderH']}）'
+            : '合成器 關（硬體直送，跟相簿同一條路）',
+      );
+      b.write('／狀態 ${m['timeControl'] ?? '?'}');
       if (m['waiting'] != null) b.write('（在等：${m['waiting']}）');
       if (m['bufferEmpty'] == true) b.write('／緩衝空的');
       if (m['likelyToKeepUp'] == false) b.write('／可能跟不上');

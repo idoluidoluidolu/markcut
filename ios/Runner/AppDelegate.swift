@@ -781,6 +781,10 @@ final class CompPlayer: NSObject, FlutterTexture {
   private weak var registry: FlutterTextureRegistry?
   private(set) var textureId: Int64 = 0
 
+  /// 這次有沒有掛合成器。掛了＝每一格都進合成管線重畫一張，
+  /// 沒掛＝硬體解碼直送螢幕（跟相簿播放同一條路）
+  private(set) var usesVC = false
+
   /// 這份合成的總長度（秒）與畫面尺寸
   private(set) var duration: Double = 0
   private(set) var size: CGSize = .zero
@@ -919,10 +923,52 @@ final class CompPlayer: NSObject, FlutterTexture {
     // 變速時聲音保持音高（跟主流剪輯 App 一致）
     item.audioTimePitchAlgorithm = .timeDomain
 
-    // 逐段套用「轉正 → 等比縮放貼齊畫面 → 置中」。
-    // 有這個之後，直式與橫式、轉正過與沒轉正過的素材可以混在一起，
-    // 每一段都用自己的方向畫
-    if size.width > 1, size.height > 1, !segments.isEmpty {
+    // 需不需要合成器，先問清楚再掛。
+    //
+    // 掛了 AVVideoComposition，播放就從「硬體解碼直送螢幕」變成
+    // 「每一格都進合成管線重畫一張」——4K 素材那是每格重畫 830 萬像素。
+    // 相簿播同一支影片不會這樣，別家剪輯 App 也不會：他們只在真的要
+    // 疊圖層、轉正、淡入淡出的時候才掛。
+    //
+    // 全部片段方向一致、尺寸一致、沒有淡入淡出也沒有縮放位移時，
+    // 一條軌照順序播就是正確結果，合成器純粹是多餘的成本——
+    // 而且不掛的話 HDR 素材由系統自己映射，顏色跟相簿完全一致
+    // 方向不必靠合成器：全部片段方向一致的話，把那個方向設在合成軌上
+    // 就好。iPhone 直式影片是「橫著存＋旋轉旗標」，整條時間軸都是同一支
+    // 手機拍的話旗標當然一樣——這個情況（也就是絕大多數情況）掛合成器
+    // 純屬浪費
+    let uniformTransform = segments.first?.transform ?? .identity
+    let sameTransform = segments.allSatisfy { $0.transform == uniformTransform }
+    let needsVC =
+      segments.contains { seg in
+        seg.fadeIn > 0.01 || seg.fadeOut > 0.01
+          || abs(seg.userScale - 1) > 0.001 || abs(seg.px - 0.5) > 0.001
+          || abs(seg.py - 0.5) > 0.001
+      }
+      || segments.contains { seg in
+        let d = seg.size.applying(seg.transform)
+        return abs(abs(d.width) - size.width) > 1
+          || abs(abs(d.height) - size.height) > 1
+      }
+      || !sameTransform
+      // Flutter 材質那條路拿到的是「儲存方向」的原始影格，不會自動套
+      // 軌道方向——走材質又有旋轉旗標時，方向只能靠合成器烘進畫面。
+      // 系統影片圖層則會自己套，不受影響
+      || (texture && !uniformTransform.isIdentity)
+    if !needsVC { vTrack.preferredTransform = uniformTransform }
+    usesVC = needsVC
+
+    if needsVC, size.width > 1, size.height > 1, !segments.isEmpty {
+      // 預覽用的合成不需要原始解析度：手機螢幕短邊不到 1200，
+      // 用 4K 去重畫每一格只是把解碼省下來的錢又花掉。這也是別家
+      // 「預覽解析度」設定在做的事
+      let cap: CGFloat = 1080
+      let shrink = min(1, cap / min(size.width, size.height))
+      if shrink < 1 {
+        size = CGSize(
+          width: (size.width * shrink / 2).rounded() * 2,
+          height: (size.height * shrink / 2).rounded() * 2)
+      }
       let vc = AVMutableVideoComposition()
       vc.renderSize = size
       vc.frameDuration = CMTime(value: 1, timescale: 30)
@@ -1201,7 +1247,8 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// - 卡頓：播放中途被迫停下來等資料
   /// - 在等什麼：rate 想跑但跑不動時，系統說的理由
   func healthStats() -> [String: Any] {
-    var m: [String: Any] = [:]
+    var m: [String: Any] = ["usesVC": usesVC, "renderW": Int(size.width),
+                            "renderH": Int(size.height)]
     switch player.timeControlStatus {
     case .paused: m["timeControl"] = "暫停"
     case .waitingToPlayAtSpecifiedRate: m["timeControl"] = "想播但在等"
