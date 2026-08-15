@@ -56,6 +56,7 @@ class _AvPlayerX implements PlayerX {
   PlayerValueX get value => PlayerValueX(
         isInitialized: _c.value.isInitialized,
         isPlaying: _c.value.isPlaying,
+        isBuffering: _c.value.isBuffering,
         duration: _c.value.duration,
         position: _c.value.position,
         size: _c.value.size,

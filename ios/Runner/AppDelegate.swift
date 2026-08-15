@@ -154,6 +154,27 @@ import UIKit
     let channel = FlutterMethodChannel(
       name: "markcut/diag", binaryMessenger: registrar.messenger())
     channel.setMethodCallHandler { call, result in
+      // 音訊 session 的啟用成本。
+      //
+      // 插件只設 category、從來沒有主動 setActive；iOS 是在播放真的開始
+      // 時才隱式啟用，而啟用要跟音訊伺服器協商，典型 100~300ms——
+      // 那正是「按下播放要等一下畫面才動」的量級，而且完全不在影片
+      // 解碼那條路上（所以改 preroll、改 playImmediately 都沒用）。
+      // 進編輯器時先啟用起來並保持著，播放鍵就不用付這筆錢
+      if call.method == "activateAudio" {
+        let t0 = CACurrentMediaTime()
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, options: [.mixWithOthers])
+        try? session.setActive(true)
+        result(Int((CACurrentMediaTime() - t0) * 1000))
+        return
+      }
+      if call.method == "deactivateAudio" {
+        try? AVAudioSession.sharedInstance().setActive(
+          false, options: [.notifyOthersOnDeactivation])
+        result(nil)
+        return
+      }
       // 裝置狀態：連續匯出幾支 4K 之後手機會燙，系統一降頻什麼都會頓。
       // 這種「全部一起變慢」的卡頓，查程式碼永遠查不到
       if call.method == "deviceState" {

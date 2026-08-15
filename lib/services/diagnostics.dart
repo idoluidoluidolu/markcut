@@ -245,8 +245,13 @@ class Diag {
   /// 一直被我讀成「卡頓」而查錯方向，其實數字從第一份報告就在 trace 裡
   static final List<int> playLatencies = [];
 
-  static void notePlayLatency(int ms) {
+  /// 等待期間播放器有沒有回報「正在緩衝」。這是分辨「等的是資料」
+  /// 還是「等的是別的東西」的關鍵——播放器自己說了算
+  static int playBuffering = 0;
+
+  static void notePlayLatency(int ms, {bool buffering = false}) {
     playLatencies.add(ms);
+    if (buffering) playBuffering++;
     if (playLatencies.length > 30) playLatencies.removeAt(0);
   }
 
@@ -256,6 +261,36 @@ class Diag {
     return '按 ${playLatencies.length} 次：平均 ${sum ~/ playLatencies.length}ms'
         '／最久 ${playLatencies.reduce((a, b) => a > b ? a : b)}ms'
         '／最快 ${playLatencies.reduce((a, b) => a < b ? a : b)}ms';
+  }
+
+  /// 先把音訊 session 啟用起來（進編輯器時做一次）。
+  ///
+  /// 播放器插件只設 category、從來不主動 setActive；iOS 是在播放真的
+  /// 開始時才隱式啟用，而啟用要跟音訊伺服器協商——典型 100~300ms。
+  /// 那正好是「按下播放要等一下畫面才動」的量級，而且完全不在影片
+  /// 解碼那條路上，所以改 preroll、改 playImmediately 都沒用。
+  /// 回傳這次啟用花了幾毫秒（那個數字本身就是證據）
+  static Future<int?> activateAudio() async {
+    if (kIsWeb) return null;
+    try {
+      final ms = await _ch.invokeMethod<int>('activateAudio');
+      if (ms != null) {
+        audioActivateMs = ms;
+        note('啟用音訊 session 花了 ${ms}ms');
+      }
+      return ms;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static int audioActivateMs = -1;
+
+  static Future<void> deactivateAudio() async {
+    if (kIsWeb) return;
+    try {
+      await _ch.invokeMethod('deactivateAudio');
+    } catch (_) {}
   }
 
   // ===== 其他判斷器 =====
@@ -348,6 +383,12 @@ class Diag {
       b.writeln(crumbFromLastRun);
     }
     b.writeln('按下播放到畫面動：$playLatencyText');
+    if (audioActivateMs >= 0) {
+      b.writeln('音訊 session 啟用：${audioActivateMs}ms（進場時先付掉）');
+    }
+    if (playBuffering > 0) {
+      b.writeln('按下播放後在緩衝：$playBuffering 次（播放器說它在等資料）');
+    }
     b.writeln('實驗開關：$tuning');
     b.writeln('裝置狀態：散熱=$thermal${lowPower ? '／低耗電模式開著' : ''}');
     if (syncCalls > 0) {

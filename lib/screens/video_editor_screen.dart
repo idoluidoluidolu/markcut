@@ -716,6 +716,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 量「誰在卡」：UI 執行緒、合成執行緒、還是影片本身。
     // 這三種的處理方式完全不同，沒有數字就只能猜
     Diag.watchFrames();
+    // 音訊 session 先啟用起來：不先付這筆錢的話，第一次按播放時
+    // iOS 會在那當下跟音訊伺服器協商（典型 100~300ms），
+    // 使用者感覺到的就是「按下去要等一下畫面才動」
+    unawaited(Diag.activateAudio());
     _ticker = createTicker(_onTick);
     _tlScroll.addListener(_onTimelineScroll);
     _loadMosaicShader();
@@ -2919,8 +2923,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (lead != null && !kIsWeb) {
       final p0 = await lead.positionNow();
       final sw = Stopwatch()..start();
+      var sawBuffering = false;
       while (mounted && sw.elapsedMilliseconds < 250) {
         await Future<void>.delayed(const Duration(milliseconds: 20));
+        if (lead.value.isBuffering) sawBuffering = true;
         final p = await lead.positionNow();
         if (p != null && p != p0) {
           tr.log('影格開始滾動（位置從 ${p0?.inMilliseconds} 變成 '
@@ -2930,7 +2936,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       // 「按下播放到畫面真的動」——使用者說的「撥放延遲」就是這個數字。
       // 記成第一級的統計，才比得出改動有沒有效
-      Diag.notePlayLatency(sw.elapsedMilliseconds);
+      Diag.notePlayLatency(sw.elapsedMilliseconds, buffering: sawBuffering);
       if (sw.elapsedMilliseconds >= 250) {
         tr.log('⚠ 等了 250ms 影格還沒動，直接開錶');
       }
@@ -4434,6 +4440,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _frameSettle?.cancel();
     _playProbe?.cancel();
+    unawaited(Diag.deactivateAudio());
     unawaited(_comp?.dispose() ?? Future<void>.value());
     _scrubSettleTimer?.cancel();
     _scrubEndTimer?.cancel();
