@@ -2,6 +2,35 @@ import AVFoundation
 import Flutter
 import UIKit
 
+/// 跨執行緒的一次性旗標。轉檔那條路上有兩個地方需要它：
+/// 「中途失敗過」（不記的話截斷檔會被當成功換上去）與「已經回覆過」
+///（逾時跟正常完成會撞在一起，回兩次就會有兩份結果）
+final class AtomicFlag {
+  private let lock = NSLock()
+  private var value = false
+
+  var isSet: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return value
+  }
+
+  func set() {
+    lock.lock()
+    value = true
+    lock.unlock()
+  }
+
+  /// 還沒設過才設起來並回 true；已經設過回 false
+  func setIfClear() -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    if value { return false }
+    value = true
+    return true
+  }
+}
+
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   /// 抽幀用的 asset 快取：同一支影片反覆要幀，不用每次重新解析容器
@@ -138,6 +167,8 @@ import UIKit
         result(self.comp?.positionMs ?? 0)
       case "gaps":
         result(self.comp?.gapStats() ?? ["count": 0])
+      case "health":
+        result(self.comp?.healthStats() ?? [:])
       case "dispose":
         self.comp?.dispose()
         self.comp = nil
@@ -258,6 +289,16 @@ import UIKit
         self.makeWorkFile(
           src: src, dest: dest, maxShortSide: maxShortSide, channel: channel)
         { path in result(path) }
+      case "probe":
+        guard let path = call.arguments as? String else {
+          result(nil)
+          return
+        }
+        // 讀完整條軌，別擋主執行緒
+        DispatchQueue.global(qos: .userInitiated).async {
+          let m = self.probeFile(path)
+          DispatchQueue.main.async { result(m) }
+        }
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -372,22 +413,23 @@ import UIKit
       let out = AVAssetReaderTrackOutput(
         track: aTrack,
         outputSettings: [AVFormatIDKey: Int(kAudioFormatLinearPCM)])
-      if reader.canAdd(out) {
+      let input = AVAssetWriterInput(
+        mediaType: .audio,
+        outputSettings: [
+          AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+          AVNumberOfChannelsKey: ch,
+          AVSampleRateKey: sr,
+          AVEncoderBitRateKey: 128_000,
+        ])
+      input.expectsMediaDataInRealTime = false
+      // 兩邊都要收得下才動手：只把 reader output 加進去而 writer input
+      // 沒加的話，那條軌永遠不會被讀完，reader 就到不了 completed，
+      // 整份重編會被判成失敗
+      if reader.canAdd(out), writer.canAdd(input) {
         reader.add(out)
-        let input = AVAssetWriterInput(
-          mediaType: .audio,
-          outputSettings: [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVNumberOfChannelsKey: ch,
-            AVSampleRateKey: sr,
-            AVEncoderBitRateKey: 128_000,
-          ])
-        input.expectsMediaDataInRealTime = false
-        if writer.canAdd(input) {
-          writer.add(input)
-          aOut = out
-          aIn = input
-        }
+        writer.add(input)
+        aOut = out
+        aIn = input
       }
     }
 
@@ -398,12 +440,21 @@ import UIKit
     writer.startSession(atSourceTime: .zero)
 
     let group = DispatchGroup()
-    let q = DispatchQueue(label: "markcut.dense")
+    // 一條軌一條佇列：兩個 input 共用一條序列佇列的話，影像那個 block
+    // 在 while 裡跑的時候聲音那個永遠排不進去，兩邊互相餓死
+    let vq = DispatchQueue(label: "markcut.dense.v")
+    let aq = DispatchQueue(label: "markcut.dense.a")
+    // append 失敗要記下來：不記的話 writer 仍可能收在 completed，
+    // 於是一份「只有前半段」的檔會被換上去，素材默默變短
+    let failed = AtomicFlag()
+    let t0 = CACurrentMediaTime()
+
     group.enter()
-    vIn.requestMediaDataWhenReady(on: q) {
+    vIn.requestMediaDataWhenReady(on: vq) {
       while vIn.isReadyForMoreMediaData {
         if let sb = vOut.copyNextSampleBuffer() {
           if !vIn.append(sb) {
+            failed.set()
             vIn.markAsFinished()
             group.leave()
             return
@@ -417,10 +468,11 @@ import UIKit
     }
     if let aOut = aOut, let aIn = aIn {
       group.enter()
-      aIn.requestMediaDataWhenReady(on: q) {
+      aIn.requestMediaDataWhenReady(on: aq) {
         while aIn.isReadyForMoreMediaData {
           if let sb = aOut.copyNextSampleBuffer() {
             if !aIn.append(sb) {
+              failed.set()
               aIn.markAsFinished()
               group.leave()
               return
@@ -433,25 +485,128 @@ import UIKit
         }
       }
     }
-    group.notify(queue: q) {
+
+    // 只回一次（逾時與正常完成可能撞在一起）
+    let replied = AtomicFlag()
+    let finish: (Bool, String?) -> Void = { ok, note in
+      guard replied.setIfClear() else { return }
+      DispatchQueue.main.async {
+        if ok {
+          done(true)
+          return
+        }
+        try? FileManager.default.removeItem(atPath: tmp)
+        if let note = note { channel.invokeMethod("note", arguments: note) }
+        done(false)
+      }
+    }
+    // 逾時保險：硬體編碼器被別的工作佔住時 requestMediaDataWhenReady
+    // 可能一直不回來，沒有這道就卡在「工作檔轉不完」，畫面永遠是原檔
+    DispatchQueue.main.asyncAfter(deadline: .now() + 90) {
+      guard !replied.isSet else { return }
+      reader.cancelReading()
+      writer.cancelWriting()
+      finish(false, "密關鍵幀重編逾時（照用原工作檔，滑動會比較鈍）")
+    }
+
+    group.notify(queue: vq) {
+      if failed.isSet {
+        reader.cancelReading()
+        writer.cancelWriting()
+        finish(false, "密關鍵幀重編中途失敗（照用原工作檔）")
+        return
+      }
       writer.finishWriting {
-        DispatchQueue.main.async {
-          let ok = writer.status == .completed && reader.status == .completed
-          if ok {
-            do {
-              _ = try FileManager.default.replaceItemAt(
-                srcURL, withItemAt: URL(fileURLWithPath: tmp))
-              done(true)
-              return
-            } catch {}
-          }
-          try? FileManager.default.removeItem(atPath: tmp)
-          channel.invokeMethod(
-            "note", arguments: "密關鍵幀重編沒成功（照用原工作檔，滑動會比較鈍）")
-          done(false)
+        let ok =
+          writer.status == .completed && reader.status == .completed
+          && !failed.isSet
+        guard ok else {
+          finish(false, "密關鍵幀重編沒成功（照用原工作檔，滑動會比較鈍）")
+          return
+        }
+        do {
+          _ = try FileManager.default.replaceItemAt(
+            srcURL, withItemAt: URL(fileURLWithPath: tmp))
+          let ms = Int((CACurrentMediaTime() - t0) * 1000)
+          channel.invokeMethod("note", arguments: "密關鍵幀重編完成 \(ms)ms")
+          finish(true, nil)
+        } catch {
+          finish(false, "密關鍵幀重編換檔失敗（照用原工作檔）")
         }
       }
     }
+  }
+
+  /// 檢查一份影片檔的實際規格——尺寸、編碼、位元率，以及**關鍵幀間隔**。
+  ///
+  /// 關鍵幀間隔是「左右滑動順不順」的決定性數字：seek 一定要從前一個
+  /// 關鍵幀解過來，間隔 60 格就是每滑一下解 60 格。這裡用 passthrough
+  /// 讀（不解碼）數每一格的 sync 旗標，一支十秒的檔幾十毫秒就數完
+  private func probeFile(_ path: String) -> [String: Any] {
+    var m: [String: Any] = ["path": (path as NSString).lastPathComponent]
+    if let attr = try? FileManager.default.attributesOfItem(atPath: path),
+      let bytes = attr[.size] as? NSNumber
+    {
+      m["sizeMb"] = bytes.doubleValue / 1_048_576
+    }
+    let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+    guard let t = asset.tracks(withMediaType: .video).first else {
+      m["error"] = "沒有視訊軌"
+      return m
+    }
+    let n = t.naturalSize.applying(t.preferredTransform)
+    m["w"] = Int(abs(n.width))
+    m["h"] = Int(abs(n.height))
+    m["fps"] = Double(t.nominalFrameRate)
+    m["kbps"] = Int(t.estimatedDataRate / 1000)
+    m["durSec"] = asset.duration.seconds
+    if let fdAny = t.formatDescriptions.first {
+      let fd = fdAny as! CMFormatDescription
+      let c = CMFormatDescriptionGetMediaSubType(fd)
+      m["codec"] = String(
+        format: "%c%c%c%c", (c >> 24) & 255, (c >> 16) & 255, (c >> 8) & 255,
+        c & 255)
+    }
+    // 有沒有旋轉旗標：有的話合成播放器要靠 layer instruction 轉正，
+    // 沒有的話是已經燒進畫面的（工作檔第一次轉成功就會是這種）
+    m["rotated"] = !t.preferredTransform.isIdentity
+    if let reader = try? AVAssetReader(asset: asset) {
+      let out = AVAssetReaderTrackOutput(track: t, outputSettings: nil)
+      out.alwaysCopiesSampleData = false
+      if reader.canAdd(out) {
+        reader.add(out)
+        if reader.startReading() {
+          var frames = 0
+          var keys = 0
+          var gap = 0
+          var maxGap = 0
+          while let sb = out.copyNextSampleBuffer() {
+            frames += 1
+            var sync = true
+            if let arr = CMSampleBufferGetSampleAttachmentsArray(
+              sb, createIfNecessary: false) as? [[CFString: Any]],
+              let first = arr.first,
+              let notSync = first[kCMSampleAttachmentKey_NotSync] as? Bool
+            {
+              sync = !notSync
+            }
+            if sync {
+              keys += 1
+              maxGap = max(maxGap, gap)
+              gap = 1
+            } else {
+              gap += 1
+            }
+          }
+          maxGap = max(maxGap, gap)
+          reader.cancelReading()
+          m["frames"] = frames
+          m["keyframes"] = keys
+          m["maxGopFrames"] = maxGap
+        }
+      }
+    }
+    return m
   }
 
   /// 轉一次。成功回 nil，失敗回原因字串
@@ -920,6 +1075,13 @@ final class CompPlayer: NSObject, FlutterTexture {
   private var seekTargetExact = false
   private var seeking = false
 
+  /// 每一發真正做掉的 seek 花多久（毫秒），以及被合併掉幾發。
+  /// 這是「左右滑動順不順」的直接證據：平均 30ms 以下＝跟得上手指，
+  /// 200ms 以上＝每滑一下都要等，關鍵幀太疏
+  private(set) var seekMs: [Int] = []
+  private(set) var seekCoalesced = 0
+  private var seekStart: CFTimeInterval = 0
+
   /// [exact] 只有「使用者停手了、要對準那一格」時才給 true。
   ///
   /// 精準 seek 要從前一個關鍵幀一路解到目標格，而且跑完之前 rate 會被
@@ -929,7 +1091,11 @@ final class CompPlayer: NSObject, FlutterTexture {
     seekTarget = CMTime(seconds: seconds, preferredTimescale: 600)
     seekTargetExact = exact
     // 已經有一發在跑：只要記住最新目標就好，跑完會自己追上去
-    if !seeking { chase() }
+    if seeking {
+      seekCoalesced += 1
+    } else {
+      chase()
+    }
   }
 
   /// 追最新的目標，不是把每一發都做完。
@@ -948,9 +1114,13 @@ final class CompPlayer: NSObject, FlutterTexture {
     seeking = true
     let tol =
       exact ? CMTime.zero : CMTimeMakeWithSeconds(0.1, preferredTimescale: 600)
+    seekStart = CACurrentMediaTime()
     player.seek(to: t, toleranceBefore: tol, toleranceAfter: tol) {
       [weak self] _ in
       guard let self = self else { return }
+      if self.seekMs.count < 400 {
+        self.seekMs.append(Int((CACurrentMediaTime() - self.seekStart) * 1000))
+      }
       self.seeking = false
       if self.seekTarget.isValid {
         self.chase()  // 手指又動了，追過去
@@ -964,6 +1134,47 @@ final class CompPlayer: NSObject, FlutterTexture {
   }
 
   var positionMs: Int { Int(player.currentTime().seconds * 1000) }
+
+  /// 系統自己記的播放品質。這幾個數字是 AVPlayer 內部統計，
+  /// Flutter 端的任何指標都看不到：
+  /// - 掉格：解碼器沒把影格及時交出來（畫面頓的直接證據）
+  /// - 卡頓：播放中途被迫停下來等資料
+  /// - 在等什麼：rate 想跑但跑不動時，系統說的理由
+  func healthStats() -> [String: Any] {
+    var m: [String: Any] = [:]
+    switch player.timeControlStatus {
+    case .paused: m["timeControl"] = "暫停"
+    case .waitingToPlayAtSpecifiedRate: m["timeControl"] = "想播但在等"
+    case .playing: m["timeControl"] = "播放中"
+    @unknown default: m["timeControl"] = "未知"
+    }
+    if let r = player.reasonForWaitingToPlay {
+      switch r {
+      case .toMinimizeStalls: m["waiting"] = "怕卡頓先囤資料"
+      case .evaluatingBufferingRate: m["waiting"] = "在評估載入速度"
+      case .noItemToPlay: m["waiting"] = "沒有東西可播"
+      default: m["waiting"] = r.rawValue
+      }
+    }
+    if let it = player.currentItem {
+      m["bufferEmpty"] = it.isPlaybackBufferEmpty
+      m["likelyToKeepUp"] = it.isPlaybackLikelyToKeepUp
+      if let e = it.accessLog()?.events.last {
+        m["dropped"] = e.numberOfDroppedVideoFrames
+        m["stalls"] = e.numberOfStalls
+      }
+    }
+    if !seekMs.isEmpty {
+      let sorted = seekMs.sorted()
+      m["seekCount"] = seekMs.count
+      m["seekAvgMs"] = seekMs.reduce(0, +) / seekMs.count
+      m["seekP50Ms"] = sorted[sorted.count / 2]
+      m["seekP90Ms"] = sorted[min(sorted.count - 1, sorted.count * 9 / 10)]
+      m["seekMaxMs"] = sorted.last!
+      m["seekCoalesced"] = seekCoalesced
+    }
+    return m
+  }
 
   /// 換圖間隔的統計：幾次、平均、最久、超過兩格的次數。
   /// 30fps 的素材理想值是每 33ms 一次；出現 60、80、100 就是 judder

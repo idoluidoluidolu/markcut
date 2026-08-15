@@ -3149,6 +3149,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         (v) => tr.env('轉檔通道', v ? '可用' : '沒接上（一律用原檔）'),
       ),
     );
+    // 實際在播的那份檔到底長什麼樣。關鍵幀間隔那一欄直接決定拖曳順不順，
+    // 以前只能從「有沒有轉好」猜，猜錯過很多次
+    for (var i = 0; i < vids.length; i++) {
+      final src = vids[i];
+      unawaited(
+        MediaPrep.probe(src.previewPath).then((m) {
+          if (m == null) return;
+          tr.env(
+            '在播的檔 ${i + 1}${src.workPath == null ? '（原檔！）' : ''}',
+            MediaPrep.describe(m),
+          );
+        }),
+      );
+    }
     unawaited(Diag.readDeviceState());
     tr.env(
       '合成播放器',
@@ -3165,6 +3179,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       } else {
         unawaited(_comp!.gaps().then((g) => tr.env('換圖節奏', g)));
       }
+    }
+    if (_comp != null) {
+      unawaited(_comp!.health().then((h) => tr.env('播放器回報', h)));
     }
     unawaited(
       Diag.memoryMb().then(

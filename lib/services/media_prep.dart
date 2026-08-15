@@ -61,6 +61,44 @@ class MediaPrep {
     return _available!;
   }
 
+  /// 檢查一份影片檔實際長什麼樣：尺寸、編碼、位元率，還有**關鍵幀間隔**。
+  ///
+  /// 關鍵幀間隔是「左右滑動順不順」的決定性數字——seek 一定要從前一個
+  /// 關鍵幀解過來，間隔 60 格就是每滑一下解 60 格。以前只能猜工作檔
+  /// 有沒有生效，現在可以直接看檔案本身
+  static Future<Map<String, dynamic>?> probe(String path) async {
+    try {
+      if (!await available) return null;
+      return await _ch.invokeMapMethod<String, dynamic>('probe', path);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// [probe] 的結果排成一行人看得懂的字
+  static String describe(Map<String, dynamic> m) {
+    if (m['error'] != null) return '${m['path']}：${m['error']}';
+    final b = StringBuffer('${m['path']}：');
+    b.write('${m['w']}x${m['h']} ${m['codec'] ?? '?'}');
+    final fps = (m['fps'] as num?)?.toDouble();
+    if (fps != null && fps > 0) b.write(' ${fps.toStringAsFixed(0)}fps');
+    b.write(' ${m['kbps'] ?? '?'}kbps');
+    final mb = (m['sizeMb'] as num?)?.toDouble();
+    if (mb != null) b.write(' ${mb.toStringAsFixed(1)}MB');
+    if (m['rotated'] == true) b.write('（帶旋轉旗標）');
+    final frames = (m['frames'] as num?)?.toInt();
+    final keys = (m['keyframes'] as num?)?.toInt();
+    final maxGop = (m['maxGopFrames'] as num?)?.toInt();
+    if (frames != null && keys != null && keys > 0) {
+      final avg = frames / keys;
+      // 這一行就是結論：平均間隔幾格＝每滑一下要解幾格
+      b.write('／關鍵幀每 ${avg.toStringAsFixed(1)} 格');
+      if (maxGop != null) b.write('（最疏 $maxGop 格）');
+      b.write(avg <= 8 ? ' ✓密' : ' ✗疏，滑動會鈍');
+    }
+    return b.toString();
+  }
+
   /// 把 [src] 轉成工作檔寫到 [dest]。成功回 [dest]，失敗或平台不支援回 null。
   ///
   /// [maxShortSide] 是短邊上限（預設 1080＝直式 1080x1920、橫式

@@ -154,6 +154,35 @@ class CompPlayer {
     }
   }
 
+  /// 播放器自己回報的狀況：seek 成本、掉格、卡頓、在等什麼。
+  /// 這幾個數字 Flutter 端一個都量不到
+  Future<String> health() async {
+    try {
+      final m = await _ch.invokeMapMethod<String, dynamic>('health');
+      if (m == null || m.isEmpty) return '讀不到';
+      final b = StringBuffer();
+      b.write('狀態 ${m['timeControl'] ?? '?'}');
+      if (m['waiting'] != null) b.write('（在等：${m['waiting']}）');
+      if (m['bufferEmpty'] == true) b.write('／緩衝空的');
+      if (m['likelyToKeepUp'] == false) b.write('／可能跟不上');
+      final dropped = (m['dropped'] as num?)?.toInt();
+      if (dropped != null) b.write('／系統記的掉格 $dropped');
+      final stalls = (m['stalls'] as num?)?.toInt();
+      if (stalls != null) b.write('／卡頓 $stalls 次');
+      final n = (m['seekCount'] as num?)?.toInt();
+      if (n != null) {
+        b.write(
+          '\n  拖曳 seek：$n 發／平均 ${m['seekAvgMs']}ms'
+          '／一半在 ${m['seekP50Ms']}ms 內／九成在 ${m['seekP90Ms']}ms 內'
+          '／最久 ${m['seekMaxMs']}ms／被合併掉 ${m['seekCoalesced']} 發',
+        );
+      }
+      return b.toString();
+    } catch (_) {
+      return '讀不到';
+    }
+  }
+
   Future<void> _quiet(String method, [Object? arg]) async {
     try {
       await _ch.invokeMethod(method, arg);
