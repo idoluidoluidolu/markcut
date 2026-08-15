@@ -16,6 +16,7 @@ import 'package:path_provider/path_provider.dart';
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
 import 'diagnostics.dart';
+import 'native_export.dart';
 import 'video_processor.dart';
 
 /// 這個平台是否支援影片匯出
@@ -935,8 +936,10 @@ Future<({String codec, double fps, int w, int h})> probeVideoInfo(
   return (codec: p.codec, fps: p.fps, w: p.dispW, h: p.dispH);
 }
 
-/// 取消正在進行的匯出（FFmpeg 一次只跑一個 session，全取消即可）
+/// 取消正在進行的匯出。兩條路都要通知：原生那條在跑的時候 FFmpeg 是閒著
+/// 的，反之亦然，對沒在跑的那條喊取消不會有事
 Future<void> cancelExport() async {
+  await NativeExport.cancel();
   await FFmpegKit.cancel();
 }
 
@@ -1325,6 +1328,73 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     );
   }
 
+  /// 做好的檔案存進相簿。原生與 FFmpeg 兩條路共用
+  Future<({bool ok, String message, bool cancelled})> saveToGallery() async {
+    if (!await Gal.hasAccess(toAlbum: true)) {
+      final granted = await Gal.requestAccess(toAlbum: true);
+      if (!granted) {
+        return (
+          ok: false,
+          message: '影片做好了，但沒有相簿存取權限。\n請到系統設定開啟權限後再匯出一次',
+          cancelled: false,
+        );
+      }
+    }
+    try {
+      await Gal.putVideo(outPath, album: '浮水印');
+    } catch (e) {
+      return (ok: false, message: '存到相簿失敗：$e', cancelled: false);
+    }
+    return (ok: true, message: '已存到「浮水印」相簿', cancelled: false);
+  }
+
+  void delRevTemps() {
+    for (final p in revTemps) {
+      try {
+        File(p).deleteSync();
+      } catch (_) {}
+    }
+  }
+
+  // 先試系統自己的管線：AVComposition ＋ Core Animation 圖層 ＋ 硬體
+  // 編碼。記憶體由系統管（FFmpeg 的 HDR 色調映射一格 4K 要 100MB、
+  // 峰值 1.7GB，那正是匯出閃退的來源）、跟預覽是同一份合成所以顏色
+  // 天生一致、而且快好幾倍。
+  //
+  // 做不到的情況（馬賽克、照片素材、子母畫面、倒轉）原樣退回下面的
+  // FFmpeg——這條路是加速，不是取代，任何一種舊功能都不能因此少掉
+  if (Platform.isIOS && await NativeExport.available) {
+    final why = NativeExport.whyNot(spec);
+    if (why != null) {
+      Diag.note('原生匯出用不了：$why（改用 FFmpeg）');
+    } else {
+      Diag.startSampling();
+      final err = await NativeExport.run(spec, outPath, onProgress: onProgress);
+      if (err == null) {
+        Diag.note('原生匯出完成（峰值 ${Diag.peakMb} MB）');
+        delRevTemps();
+        final r = await saveToGallery();
+        try {
+          File(outPath).deleteSync();
+        } catch (_) {}
+        return r;
+      }
+      if (err == '已取消') {
+        delRevTemps();
+        try {
+          File(outPath).deleteSync();
+        } catch (_) {}
+        return (ok: false, message: '已取消匯出', cancelled: true);
+      }
+      // 失敗就當作沒發生過，讓下面的 FFmpeg 照舊跑一次：使用者該拿到的
+      // 是「慢一點但成功」，不是一則錯誤訊息
+      Diag.note('原生匯出失敗，改用 FFmpeg：$err');
+      try {
+        File(outPath).deleteSync();
+      } catch (_) {}
+    }
+  }
+
   String? wmPath;
   if (spec.watermarkPng != null) {
     wmPath = '${dir.path}${Platform.pathSeparator}wm_$ts.png';
@@ -1541,26 +1611,10 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     );
   }
 
-  if (!await Gal.hasAccess(toAlbum: true)) {
-    final granted = await Gal.requestAccess(toAlbum: true);
-    if (!granted) {
-      cleanupTemp();
-      return (
-        ok: false,
-        message: '影片做好了，但沒有相簿存取權限。\n請到系統設定開啟權限後再匯出一次',
-        cancelled: false,
-      );
-    }
-  }
-  try {
-    await Gal.putVideo(outPath, album: '浮水印');
-  } catch (e) {
-    // 存相簿失敗也要把暫存清掉，不然每失敗一次就漏一組檔案
-    cleanupTemp();
-    return (ok: false, message: '存到相簿失敗：$e', cancelled: false);
-  }
+  final saved = await saveToGallery();
+  // 存相簿失敗也要把暫存清掉，不然每失敗一次就漏一組檔案
   cleanupTemp();
-  return (ok: true, message: '已存到「浮水印」相簿', cancelled: false);
+  return saved;
 }
 
 /// 產生時間軸縮圖（height 可調：filmstrip 用 200、批次預覽用 720）

@@ -53,6 +53,7 @@ final class AtomicFlag {
     registerPrepChannel(engineBridge)
     registerDiagChannel(engineBridge)
     registerCompChannel(engineBridge)
+    registerExportChannel(engineBridge)
 
     // 拖曳預覽的「按需抽幀」通道：滑到哪、跟硬體解碼器要那一格。
     // HDR 的色調映射由系統做，顏色跟 AVPlayer 播放畫面天生一致
@@ -179,6 +180,482 @@ final class AtomicFlag {
         result(FlutterMethodNotImplemented)
       }
     }
+  }
+
+
+  // MARK: - 原生匯出（markcut/export）
+  //
+  // 匯出本來走 FFmpeg。它的 HDR 色調映射是 32 位元浮點的軟體運算，一格
+  // 4K 就要 100MB，實測峰值 1.7GB——那正是「匯出閃退」的來源，也是
+  // 「素材一定要先轉工作檔」這整套東西存在的唯一硬理由。
+  //
+  // 這裡改用系統自己的路：預覽已經在用的那份 AVComposition，浮水印與
+  // 文字用 Core Animation 圖層疊上去，交給 AVAssetExportSession 硬體
+  // 編碼。記憶體由系統管、顏色跟預覽天生一致（同一份合成）、速度是
+  // 硬體對軟體的差距。
+  //
+  // 做不到的（子母畫面、馬賽克、照片素材）由呼叫端判斷後退回 FFmpeg
+  private var exportSession: AVAssetExportSession?
+  private var exportTimer: Timer?
+
+  private func registerExportChannel(_ engineBridge: FlutterImplicitEngineBridge) {
+    guard let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "markcut.export")
+    else { return }
+    let channel = FlutterMethodChannel(
+      name: "markcut/export", binaryMessenger: registrar.messenger())
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self = self else {
+        result(nil)
+        return
+      }
+      switch call.method {
+      case "available":
+        result(true)
+      case "cancel":
+        self.exportSession?.cancelExport()
+        result(nil)
+      case "run":
+        guard let a = call.arguments as? [String: Any] else {
+          result("參數錯誤")
+          return
+        }
+        self.runExport(a, channel: channel) { err in result(err) }
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
+  /// 成功回 nil，失敗回原因字串（取消回「已取消」）
+  private func runExport(
+    _ a: [String: Any], channel: FlutterMethodChannel,
+    done: @escaping (String?) -> Void
+  ) {
+    guard let clips = a["clips"] as? [[String: Any]],
+      let dest = a["dest"] as? String,
+      let outW = a["outW"] as? Int, let outH = a["outH"] as? Int,
+      outW > 1, outH > 1
+    else {
+      done("參數錯誤")
+      return
+    }
+    let audios = a["audios"] as? [[String: Any]] ?? []
+    let overlays = a["overlays"] as? [[String: Any]] ?? []
+    let globalSpeed = max(0.05, a["speed"] as? Double ?? 1)
+    let canvas = CGSize(width: CGFloat(outW), height: CGFloat(outH))
+    let scale: CMTimeScale = 600
+
+    let comp = AVMutableComposition()
+    guard
+      let vTrack = comp.addMutableTrack(
+        withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
+    else {
+      done("建不出視訊軌")
+      return
+    }
+
+    // 聲音可能同時有好幾層（影片自己的聲音＋配樂），一條軌塞不下重疊的
+    // 時間範圍——需要幾條就開幾條，每條記自己排到哪
+    var aTracks: [(track: AVMutableCompositionTrack, end: CMTime)] = []
+    var aParams: [AVMutableAudioMixInputParameters] = []
+    func audioTrack(from t: CMTime) -> AVMutableCompositionTrack? {
+      for i in aTracks.indices where aTracks[i].end <= t {
+        return aTracks[i].track
+      }
+      guard
+        let nt = comp.addMutableTrack(
+          withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+      else { return nil }
+      aTracks.append((nt, .zero))
+      aParams.append(AVMutableAudioMixInputParameters(track: nt))
+      return nt
+    }
+    func noteAudioEnd(_ track: AVMutableCompositionTrack, _ end: CMTime) {
+      for i in aTracks.indices where aTracks[i].track === track {
+        aTracks[i].end = end
+      }
+    }
+    func params(for track: AVMutableCompositionTrack)
+      -> AVMutableAudioMixInputParameters?
+    {
+      for (i, t) in aTracks.enumerated() where t.track === track {
+        return aParams[i]
+      }
+      return nil
+    }
+
+    /// 一段聲音：插進某條空著的軌，套音量與淡入淡出
+    func addAudio(
+      asset: AVAsset, range: CMTimeRange, at: CMTime, outDur: CMTime,
+      volume: Float, fadeIn: Double, fadeOut: Double
+    ) {
+      guard let src = asset.tracks(withMediaType: .audio).first,
+        let track = audioTrack(from: at)
+      else { return }
+      do {
+        try track.insertTimeRange(range, of: src, at: at)
+        if outDur != range.duration {
+          track.scaleTimeRange(
+            CMTimeRange(start: at, duration: range.duration), toDuration: outDur)
+        }
+      } catch {
+        return
+      }
+      let end = at + outDur
+      noteAudioEnd(track, end)
+      guard let pr = params(for: track) else { return }
+      if fadeIn > 0.01 {
+        pr.setVolumeRamp(
+          fromStartVolume: 0, toEndVolume: volume,
+          timeRange: CMTimeRange(
+            start: at,
+            duration: CMTime(seconds: fadeIn, preferredTimescale: scale)))
+      } else {
+        pr.setVolume(volume, at: at)
+      }
+      if fadeOut > 0.01 {
+        let fo = CMTime(seconds: fadeOut, preferredTimescale: scale)
+        pr.setVolumeRamp(
+          fromStartVolume: volume, toEndVolume: 0,
+          timeRange: CMTimeRange(start: end - fo, duration: fo))
+      }
+    }
+
+    // ── 影片：照時間順序接成一條軌 ──────────────────────────────
+    var cursor = CMTime.zero
+    var segments:
+      [(
+        range: CMTimeRange, transform: CGAffineTransform, size: CGSize,
+        fadeIn: Double, fadeOut: Double, userScale: Double, px: Double,
+        py: Double
+      )] = []
+
+    for clip in clips {
+      guard let path = clip["path"] as? String else { continue }
+      let start = clip["start"] as? Double ?? 0
+      let end = clip["end"] as? Double ?? 0
+      let gap = clip["gap"] as? Double ?? 0
+      let volume = Float(clip["volume"] as? Double ?? 1)
+      let speed = max(0.05, clip["speed"] as? Double ?? 1)
+      let fadeIn = clip["fadeIn"] as? Double ?? 0
+      let fadeOut = clip["fadeOut"] as? Double ?? 0
+      let userScale = clip["scale"] as? Double ?? 1
+      let px = clip["px"] as? Double ?? 0.5
+      let py = clip["py"] as? Double ?? 0.5
+      if end - start <= 0.01 { continue }
+
+      if gap > 0.01 {
+        let g = CMTime(seconds: gap, preferredTimescale: scale)
+        vTrack.insertEmptyTimeRange(CMTimeRange(start: cursor, duration: g))
+        cursor = cursor + g
+      }
+      let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+      guard let src = asset.tracks(withMediaType: .video).first else { continue }
+      let range = CMTimeRange(
+        start: CMTime(seconds: start, preferredTimescale: scale),
+        duration: CMTime(seconds: end - start, preferredTimescale: scale))
+      let outDur =
+        abs(speed - 1) > 0.001
+        ? CMTime(seconds: (end - start) / speed, preferredTimescale: scale)
+        : range.duration
+      do {
+        try vTrack.insertTimeRange(range, of: src, at: cursor)
+        if outDur != range.duration {
+          vTrack.scaleTimeRange(
+            CMTimeRange(start: cursor, duration: range.duration),
+            toDuration: outDur)
+        }
+      } catch {
+        done("素材接不進時間軸")
+        return
+      }
+      if volume > 0.001 {
+        addAudio(
+          asset: asset, range: range, at: cursor, outDur: outDur,
+          volume: volume, fadeIn: fadeIn, fadeOut: fadeOut)
+      }
+      segments.append((
+        range: CMTimeRange(start: cursor, duration: outDur),
+        transform: src.preferredTransform, size: src.naturalSize,
+        fadeIn: fadeIn, fadeOut: fadeOut, userScale: userScale, px: px, py: py
+      ))
+      cursor = cursor + outDur
+    }
+    if cursor.seconds <= 0.01 {
+      done("時間軸沒有內容")
+      return
+    }
+
+    // ── 純聲音素材（配樂）：可以跟影片重疊 ─────────────────────
+    for m in audios {
+      guard let path = m["path"] as? String else { continue }
+      let start = m["start"] as? Double ?? 0
+      let end = m["end"] as? Double ?? 0
+      if end - start <= 0.01 { continue }
+      let at = CMTime(
+        seconds: m["offset"] as? Double ?? 0, preferredTimescale: scale)
+      let speed = max(0.05, m["speed"] as? Double ?? 1)
+      let range = CMTimeRange(
+        start: CMTime(seconds: start, preferredTimescale: scale),
+        duration: CMTime(seconds: end - start, preferredTimescale: scale))
+      let outDur =
+        abs(speed - 1) > 0.001
+        ? CMTime(seconds: (end - start) / speed, preferredTimescale: scale)
+        : range.duration
+      addAudio(
+        asset: AVURLAsset(url: URL(fileURLWithPath: path)), range: range,
+        at: at, outDur: outDur, volume: Float(m["volume"] as? Double ?? 1),
+        fadeIn: m["fadeIn"] as? Double ?? 0, fadeOut: m["fadeOut"] as? Double ?? 0
+      )
+    }
+
+    // ── 整條時間軸的速度 ───────────────────────────────────────
+    if abs(globalSpeed - 1) > 0.001 {
+      let whole = CMTimeRange(start: .zero, duration: cursor)
+      let target = CMTime(
+        seconds: cursor.seconds / globalSpeed, preferredTimescale: scale)
+      vTrack.scaleTimeRange(whole, toDuration: target)
+      for t in aTracks {
+        t.track.scaleTimeRange(
+          CMTimeRange(start: .zero, duration: t.end), toDuration: target)
+      }
+      // 片段的時間範圍也跟著換算，圖層指令才對得上
+      for i in segments.indices {
+        segments[i].range = CMTimeRange(
+          start: CMTime(
+            seconds: segments[i].range.start.seconds / globalSpeed,
+            preferredTimescale: scale),
+          duration: CMTime(
+            seconds: segments[i].range.duration.seconds / globalSpeed,
+            preferredTimescale: scale))
+        segments[i].fadeIn /= globalSpeed
+        segments[i].fadeOut /= globalSpeed
+      }
+    }
+    let total = comp.duration.seconds
+
+    // ── 畫面：每段貼齊畫布（轉正 → 等比縮放 → 置中 → 使用者變形）──
+    let vc = AVMutableVideoComposition()
+    vc.renderSize = canvas
+    vc.frameDuration = CMTime(value: 1, timescale: 30)
+    var instructions: [AVMutableVideoCompositionInstruction] = []
+    for seg in segments {
+      let disp = seg.size.applying(seg.transform)
+      let dw = abs(disp.width)
+      let dh = abs(disp.height)
+      guard dw > 1, dh > 1 else { continue }
+      let k = min(canvas.width / dw, canvas.height / dh)
+      var t = seg.transform
+        .concatenating(CGAffineTransform(scaleX: k, y: k))
+        .concatenating(
+          CGAffineTransform(
+            translationX: (canvas.width - dw * k) / 2,
+            y: (canvas.height - dh * k) / 2))
+      let u = CGFloat(seg.userScale)
+      if abs(seg.userScale - 1) > 0.001 || abs(seg.px - 0.5) > 0.001
+        || abs(seg.py - 0.5) > 0.001
+      {
+        t = t
+          .concatenating(
+            CGAffineTransform(
+              translationX: -canvas.width / 2, y: -canvas.height / 2)
+          )
+          .concatenating(CGAffineTransform(scaleX: u, y: u))
+          .concatenating(
+            CGAffineTransform(
+              translationX: canvas.width / 2 + CGFloat(seg.px - 0.5)
+                * canvas.width,
+              y: canvas.height / 2 + CGFloat(seg.py - 0.5) * canvas.height))
+      }
+      let li = AVMutableVideoCompositionLayerInstruction(assetTrack: vTrack)
+      li.setTransform(t, at: seg.range.start)
+      if seg.fadeIn > 0.01 {
+        li.setOpacityRamp(
+          fromStartOpacity: 0, toEndOpacity: 1,
+          timeRange: CMTimeRange(
+            start: seg.range.start,
+            duration: CMTime(seconds: seg.fadeIn, preferredTimescale: scale)))
+      }
+      if seg.fadeOut > 0.01 {
+        let fo = CMTime(seconds: seg.fadeOut, preferredTimescale: scale)
+        li.setOpacityRamp(
+          fromStartOpacity: 1, toEndOpacity: 0,
+          timeRange: CMTimeRange(start: seg.range.end - fo, duration: fo))
+      }
+      let ins = AVMutableVideoCompositionInstruction()
+      ins.timeRange = seg.range
+      ins.layerInstructions = [li]
+      instructions.append(ins)
+    }
+    vc.instructions = instructions
+
+    // ── 浮水印與文字：Core Animation 圖層 ──────────────────────
+    if !overlays.isEmpty {
+      let parent = CALayer()
+      parent.frame = CGRect(origin: .zero, size: canvas)
+      // 影片合成的座標原點在左下，而 PNG 是照左上角畫的——不翻的話
+      // 浮水印會上下顛倒
+      parent.isGeometryFlipped = true
+      let videoLayer = CALayer()
+      videoLayer.frame = parent.frame
+      parent.addSublayer(videoLayer)
+      for ov in overlays {
+        if let l = overlayLayer(ov, canvas: canvas, total: total) {
+          parent.addSublayer(l)
+        }
+      }
+      vc.animationTool = AVVideoCompositionCoreAnimationTool(
+        postProcessingAsVideoLayer: videoLayer, in: parent)
+    }
+
+    let mix = AVMutableAudioMix()
+    mix.inputParameters = aParams
+
+    // 預設輸出尺寸由 renderSize 決定，preset 只決定編碼品質上限：
+    // 挑一個裝得下畫布的，不然系統會把畫面縮下去
+    let long = max(canvas.width, canvas.height)
+    let preset: String
+    if long > 1920, AVAssetExportSession.allExportPresets().contains(
+      AVAssetExportPreset3840x2160)
+    {
+      preset = AVAssetExportPreset3840x2160
+    } else if long > 1280 {
+      preset = AVAssetExportPreset1920x1080
+    } else {
+      preset = AVAssetExportPreset1280x720
+    }
+    guard let session = AVAssetExportSession(asset: comp, presetName: preset)
+    else {
+      done("這台機器建不出匯出工作")
+      return
+    }
+    try? FileManager.default.removeItem(atPath: dest)
+    session.outputURL = URL(fileURLWithPath: dest)
+    session.outputFileType = .mp4
+    session.videoComposition = vc
+    if !aParams.isEmpty { session.audioMix = mix }
+    session.shouldOptimizeForNetworkUse = true
+
+    exportSession = session
+    exportTimer?.invalidate()
+    exportTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) {
+      [weak session] _ in
+      guard let session = session else { return }
+      channel.invokeMethod("progress", arguments: Double(session.progress))
+    }
+    session.exportAsynchronously { [weak self] in
+      DispatchQueue.main.async {
+        self?.exportTimer?.invalidate()
+        self?.exportTimer = nil
+        self?.exportSession = nil
+        switch session.status {
+        case .completed:
+          channel.invokeMethod("progress", arguments: 1.0)
+          done(nil)
+        case .cancelled:
+          try? FileManager.default.removeItem(atPath: dest)
+          done("已取消")
+        default:
+          try? FileManager.default.removeItem(atPath: dest)
+          if let e = session.error as NSError? {
+            done("\(e.localizedDescription)[\(e.domain) \(e.code)]")
+          } else {
+            done("status=\(session.status.rawValue)")
+          }
+        }
+      }
+    }
+  }
+
+  /// 一張整版 PNG 疊在畫面上，只在它的時間範圍內出現。
+  ///
+  /// 動畫跟 FFmpeg 那條路一致：閃爍＝週期性開關、飄移＝原地小幅擺動、
+  /// 跑馬燈＝整版由右向左掃過
+  private func overlayLayer(
+    _ ov: [String: Any], canvas: CGSize, total: Double
+  ) -> CALayer? {
+    guard let data = (ov["png"] as? FlutterStandardTypedData)?.data,
+      let img = UIImage(data: data)?.cgImage
+    else { return nil }
+    let layer = CALayer()
+    layer.frame = CGRect(origin: .zero, size: canvas)
+    layer.contents = img
+    layer.contentsGravity = .resize
+    layer.isOpaque = false
+
+    let start = max(0, ov["start"] as? Double ?? 0)
+    let end = min(total, ov["end"] as? Double ?? total)
+    let anim = ov["anim"] as? String ?? "none"
+    let cycle = max(0.05, ov["cycle"] as? Double ?? 1.2)
+    let on = max(0.01, ov["on"] as? Double ?? 0.7)
+    let animSpeed = max(0.05, ov["animSpeed"] as? Double ?? 1)
+    let range = max(0.01, ov["range"] as? Double ?? 1)
+    if end <= start { return nil }
+
+    // 顯示區間（閃爍就在區間內再切開關）。用離散關鍵幀＝硬開硬關
+    var times: [Double] = [0]
+    var values: [Double] = [0]
+    func mark(_ t: Double, _ v: Double) {
+      let c = min(max(t, 0), total)
+      if let last = times.last, c < last { return }
+      times.append(c)
+      values.append(v)
+    }
+    if anim == "blink" {
+      var t = start
+      while t < end {
+        mark(t, 1)
+        mark(min(t + on, end), 0)
+        t += cycle
+      }
+    } else {
+      mark(start, 1)
+      mark(end, 0)
+    }
+    let op = CAKeyframeAnimation(keyPath: "opacity")
+    op.calculationMode = .discrete
+    op.duration = max(0.05, total)
+    op.values = values
+    op.keyTimes = times.map { NSNumber(value: $0 / max(0.05, total)) }
+    op.beginTime = AVCoreAnimationBeginTimeAtZero
+    op.isRemovedOnCompletion = false
+    op.fillMode = .both
+    layer.opacity = 0
+    layer.add(op, forKey: "markcut.window")
+
+    let center = CGPoint(x: canvas.width / 2, y: canvas.height / 2)
+    layer.position = center
+    if anim == "drift" {
+      // 跟 FFmpeg 同一組係數：x=sin(t*1.3v)*W*0.02r、y=cos(t*0.9v)*H*0.02r
+      let amp = 0.02 * range
+      let steps = min(1200, max(30, Int(total * 12)))
+      var pts: [NSValue] = []
+      for i in 0...steps {
+        let t = total * Double(i) / Double(steps)
+        pts.append(
+          NSValue(cgPoint: CGPoint(
+            x: center.x + sin(t * 1.3 * animSpeed) * canvas.width * amp,
+            y: center.y + cos(t * 0.9 * animSpeed) * canvas.height * amp)))
+      }
+      let mv = CAKeyframeAnimation(keyPath: "position")
+      mv.values = pts
+      mv.duration = max(0.05, total)
+      mv.beginTime = AVCoreAnimationBeginTimeAtZero
+      mv.isRemovedOnCompletion = false
+      mv.fillMode = .both
+      layer.add(mv, forKey: "markcut.drift")
+    } else if anim == "marquee" {
+      let mv = CABasicAnimation(keyPath: "position.x")
+      mv.fromValue = center.x + canvas.width
+      mv.toValue = center.x - canvas.width
+      mv.duration = cycle
+      mv.repeatCount = .greatestFiniteMagnitude
+      mv.beginTime = AVCoreAnimationBeginTimeAtZero
+      mv.isRemovedOnCompletion = false
+      mv.fillMode = .both
+      layer.add(mv, forKey: "markcut.marquee")
+    }
+    return layer
   }
 
   // MARK: - 診斷（markcut/diag）
