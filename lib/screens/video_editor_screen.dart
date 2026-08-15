@@ -558,7 +558,31 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _draftSaveTimer?.cancel();
     _draftSaveTimer = Timer(const Duration(milliseconds: 900), () {
       _saveDraftNow();
+      // 合成把 trim、變速、淡入淡出、縮放位移都烘在裡面，而這些值在
+      // 拖曳過程中連續變——_pushUndo 只在起手時重組一次，結束時的最終
+      // 值會漏掉。跟存草稿共用同一個併批節奏：停手後比對指紋，變了才重組
+      _compRefreshIfChanged();
     });
+  }
+
+  /// 合成播放器烘進去的那些值的指紋（變了就要重組）
+  String _compSig() => [
+    for (final c in _tl.clips)
+      if (_tl.sourceOf(c).isVideo)
+        '${_tl.sourceOf(c).previewPath}|${c.trimStart}|${c.trimEnd}|'
+            '${c.offset}|${c.volume}|${c.speed}|${c.fadeIn}|${c.fadeOut}|'
+            '${c.scale}|${c.px}|${c.py}|${c.reverse}',
+  ].join(';');
+
+  String? _lastCompSig;
+
+  void _compRefreshIfChanged() {
+    if (!Diag.compPlayer.value || !mounted) return;
+    final sig = _compSig();
+    if (sig == _lastCompSig) return;
+    _lastCompSig = sig;
+    _compDirty = true;
+    unawaited(_ensureComp());
   }
 
   Future<void> _saveDraftNow() async {
@@ -2816,6 +2840,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     Diag.note('合成播放器就緒：${made.duration.toStringAsFixed(1)} 秒');
+    _lastCompSig = _compSig(); // 這一版烘的就是現在的值，指紋同步
     setState(() => _comp = made);
     await made.seek(_position);
   }
@@ -3243,12 +3268,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 ),
                 (
                   '合成播放器（整條時間軸交給系統）',
-                  '打開試試：一份 AVComposition、一顆播放器、一組解碼資源',
+                  '預設開。關掉＝退回一片段一顆播放器的舊路徑',
                   Diag.compPlayer,
                 ),
                 (
                   '系統影片圖層（要先開合成播放器）',
-                  '打開試試：跟相簿播放同一條路，影格不再複製進 Flutter',
+                  '預設開。關掉＝影格複製一份進 Flutter 材質再合成',
                   Diag.playerLayer,
                 ),
               ])

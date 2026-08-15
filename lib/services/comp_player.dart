@@ -39,9 +39,9 @@ class CompPlayer {
 
   /// 這條時間軸能不能交給合成播放器。
   ///
-  /// 條件嚴格是刻意的：合成是「一條軌、照順序接」的模型，做不到子母畫面、
-  /// 變速、倒轉、個別縮放位移。不符合就退回原本的路徑，不要硬塞——
-  /// 硬塞的結果是畫面對不上，比卡頓更難查
+  /// 只擋「合成真的做不到」的：倒轉（播放器沒辦法倒著播）、同一時刻
+  /// 疊兩層畫面（子母畫面）、工作檔還沒好。變速、淡入淡出、縮放位移
+  /// AVFoundation 原生就支援，都烘進合成裡
   static String? whyNot(TimelineModel tl) {
     final vids = [
       for (final c in tl.clips)
@@ -53,13 +53,6 @@ class CompPlayer {
     // 「同一時刻要疊兩層畫面」
     for (final c in vids) {
       if (c.reverse) return '有倒轉的片段';
-      if ((c.speed - 1).abs() > 0.001) return '有變速的片段';
-      if ((c.scale - 1).abs() > 0.001 ||
-          (c.px - 0.5).abs() > 0.001 ||
-          (c.py - 0.5).abs() > 0.001) {
-        return '有縮放或位移過的片段';
-      }
-      if (c.fadeIn > 0.01 || c.fadeOut > 0.01) return '有淡入淡出的片段';
       if (tl.sourceOf(c).workPath == null) return '有素材還沒轉好工作檔';
     }
     for (var i = 1; i < vids.length; i++) {
@@ -90,6 +83,12 @@ class CompPlayer {
         'end': c.trimEnd,
         'gap': (c.offset - cursor).clamp(0.0, 1e6),
         'volume': c.volume.clamp(0.0, 1.0),
+        'speed': c.speed,
+        'fadeIn': c.fadeIn,
+        'fadeOut': c.fadeOut,
+        'scale': c.scale,
+        'px': c.px,
+        'py': c.py,
       });
       cursor = c.end;
     }

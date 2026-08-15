@@ -217,8 +217,9 @@ class Diag {
   static final singlePlayer = ValueNotifier(false);
 
   /// 合成播放器：整條時間軸交給系統的一顆播放器（見 CompPlayer）。
-  /// 這是「一片段一顆播放器」那套的替代品，也是排除到最後剩下的解法
-  static final compPlayer = ValueNotifier(false);
+  /// 這是「一片段一顆播放器」那套的替代品，也是排除到最後剩下的解法。
+  /// 實機驗過之後扶正為預設；關掉＝退回舊路徑（備援用）
+  static final compPlayer = ValueNotifier(true);
 
   /// 預覽改用系統的影片圖層（AVPlayerLayer）而不是 Flutter 材質。
   ///
@@ -226,8 +227,9 @@ class Diag {
   /// 一格都沒掉，節奏也可能不均（16ms、50ms、16ms…每格都準時畫，但畫的
   /// 是同一張）。所有 Flutter 端的指標都看不到它，眼睛卻很敏感——這是
   /// 「成品在相簿裡很順、App 裡就是卡」最後一個沒被排除的結構差異。
-  /// 打開之後走的是跟相簿播放同一條路：零複製、影格節奏由系統排
-  static final playerLayer = ValueNotifier(false);
+  /// 打開之後走的是跟相簿播放同一條路：零複製、影格節奏由系統排。
+  /// 跟合成播放器一起扶正為預設
+  static final playerLayer = ValueNotifier(true);
 
   static String get tuning =>
       '預熱=${preheat.value ? '開' : '關'}／'

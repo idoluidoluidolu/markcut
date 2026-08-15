@@ -500,7 +500,12 @@ final class CompPlayer: NSObject, FlutterTexture {
     // 每一段的時間範圍與來源方向。一條合成軌只有一個
     // preferredTransform，混到不同方向的素材就會躺平或被拉扁——
     // 逐段的 layer instruction 才是 AVFoundation 給的正解
-    var segments: [(range: CMTimeRange, transform: CGAffineTransform, size: CGSize)] = []
+    var segments:
+      [(
+        range: CMTimeRange, transform: CGAffineTransform, size: CGSize,
+        fadeIn: Double, fadeOut: Double, userScale: Double, px: Double,
+        py: Double
+      )] = []
 
     for clip in clips {
       guard let path = clip["path"] as? String else { continue }
@@ -508,6 +513,12 @@ final class CompPlayer: NSObject, FlutterTexture {
       let end = clip["end"] as? Double ?? 0
       let gap = clip["gap"] as? Double ?? 0
       let volume = Float(clip["volume"] as? Double ?? 1)
+      let speed = clip["speed"] as? Double ?? 1
+      let fadeIn = clip["fadeIn"] as? Double ?? 0
+      let fadeOut = clip["fadeOut"] as? Double ?? 0
+      let userScale = clip["scale"] as? Double ?? 1
+      let px = clip["px"] as? Double ?? 0.5
+      let py = clip["py"] as? Double ?? 0.5
       if end - start <= 0.01 { continue }
 
       // 片段之間的空白：畫面留黑、聲音留靜音，時間軸才對得上
@@ -523,30 +534,66 @@ final class CompPlayer: NSObject, FlutterTexture {
       let range = CMTimeRange(
         start: CMTime(seconds: start, preferredTimescale: scale),
         duration: CMTime(seconds: end - start, preferredTimescale: scale))
+      // 變速直接烘進合成的時間軸（scaleTimeRange），播放器照常播；
+      // outDur 是這一段在時間軸上實際佔的長度
+      let outDur =
+        abs(speed - 1) > 0.001
+        ? CMTime(seconds: (end - start) / speed, preferredTimescale: scale)
+        : range.duration
       do {
         try vTrack.insertTimeRange(range, of: src, at: cursor)
+        if abs(speed - 1) > 0.001 {
+          vTrack.scaleTimeRange(
+            CMTimeRange(start: cursor, duration: range.duration),
+            toDuration: outDur)
+        }
         if let sa = asset.tracks(withMediaType: .audio).first {
           try aTrack.insertTimeRange(range, of: sa, at: cursor)
+          if abs(speed - 1) > 0.001 {
+            aTrack.scaleTimeRange(
+              CMTimeRange(start: cursor, duration: range.duration),
+              toDuration: outDur)
+          }
         } else {
           aTrack.insertEmptyTimeRange(
-            CMTimeRange(start: cursor, duration: range.duration))
+            CMTimeRange(start: cursor, duration: outDur))
         }
       } catch {
         return false
       }
-      // 每一段的音量（靜音的軌、調過音量的片段）
-      aParams.setVolume(volume, at: cursor)
+      // 每一段的音量；淡入淡出是斜坡，不是階梯
+      let segEnd = cursor + outDur
+      if fadeIn > 0.01 {
+        aParams.setVolumeRamp(
+          fromStartVolume: 0, toEndVolume: volume,
+          timeRange: CMTimeRange(
+            start: cursor,
+            duration: CMTime(seconds: fadeIn, preferredTimescale: scale)))
+      } else {
+        aParams.setVolume(volume, at: cursor)
+      }
+      if fadeOut > 0.01 {
+        let fo = CMTime(seconds: fadeOut, preferredTimescale: scale)
+        aParams.setVolumeRamp(
+          fromStartVolume: volume, toEndVolume: 0,
+          timeRange: CMTimeRange(start: segEnd - fo, duration: fo))
+      }
       segments.append((
-        range: CMTimeRange(start: cursor, duration: range.duration),
+        range: CMTimeRange(start: cursor, duration: outDur),
         transform: src.preferredTransform,
-        size: src.naturalSize
+        size: src.naturalSize,
+        fadeIn: fadeIn,
+        fadeOut: fadeOut,
+        userScale: userScale,
+        px: px,
+        py: py
       ))
       // 畫面大小以第一段「轉正之後」的尺寸為準
       if size == .zero {
         let d = src.naturalSize.applying(src.preferredTransform)
         size = CGSize(width: abs(d.width), height: abs(d.height))
       }
-      cursor = cursor + range.duration
+      cursor = segEnd
     }
     if cursor.seconds <= 0 { return false }
     mixParams.append(aParams)
@@ -555,6 +602,8 @@ final class CompPlayer: NSObject, FlutterTexture {
     mix.inputParameters = mixParams
     let item = AVPlayerItem(asset: comp)
     item.audioMix = mix
+    // 變速時聲音保持音高（跟主流剪輯 App 一致）
+    item.audioTimePitchAlgorithm = .timeDomain
 
     // 逐段套用「轉正 → 等比縮放貼齊畫面 → 置中」。
     // 有這個之後，直式與橫式、轉正過與沒轉正過的素材可以混在一起，
@@ -572,11 +621,42 @@ final class CompPlayer: NSObject, FlutterTexture {
         let k = min(size.width / dw, size.height / dh)
         let tx = (size.width - dw * k) / 2
         let ty = (size.height - dh * k) / 2
-        let t = seg.transform
+        var t = seg.transform
           .concatenating(CGAffineTransform(scaleX: k, y: k))
           .concatenating(CGAffineTransform(translationX: tx, y: ty))
+        // 使用者的縮放與位移：以畫面中心縮放，再把中心移到 (px, py)
+        let u = CGFloat(seg.userScale)
+        if abs(seg.userScale - 1) > 0.001 || abs(seg.px - 0.5) > 0.001
+          || abs(seg.py - 0.5) > 0.001
+        {
+          t = t
+            .concatenating(
+              CGAffineTransform(
+                translationX: -size.width / 2, y: -size.height / 2)
+            )
+            .concatenating(CGAffineTransform(scaleX: u, y: u))
+            .concatenating(
+              CGAffineTransform(
+                translationX: size.width / 2 + CGFloat(seg.px - 0.5)
+                  * size.width,
+                y: size.height / 2 + CGFloat(seg.py - 0.5) * size.height))
+        }
         let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: vTrack)
         layer.setTransform(t, at: seg.range.start)
+        // 畫面的淡入淡出（背景是黑的，淡不透明度＝淡到黑）
+        if seg.fadeIn > 0.01 {
+          layer.setOpacityRamp(
+            fromStartOpacity: 0, toEndOpacity: 1,
+            timeRange: CMTimeRange(
+              start: seg.range.start,
+              duration: CMTime(seconds: seg.fadeIn, preferredTimescale: scale)))
+        }
+        if seg.fadeOut > 0.01 {
+          let fo = CMTime(seconds: seg.fadeOut, preferredTimescale: scale)
+          layer.setOpacityRamp(
+            fromStartOpacity: 1, toEndOpacity: 0,
+            timeRange: CMTimeRange(start: seg.range.end - fo, duration: fo))
+        }
         let ins = AVMutableVideoCompositionInstruction()
         ins.timeRange = seg.range
         ins.layerInstructions = [layer]
