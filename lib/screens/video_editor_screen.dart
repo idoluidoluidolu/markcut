@@ -2944,12 +2944,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 同一個坑：seek 沒跑完之前播放器的 rate 壓在 0，畫面不會動。
       // 真的要移動時也用寬容 seek，反正接下來就要滾過去了
       final now = await _comp!.position();
-      if ((now - _position).abs() > 0.08) {
+      if ((now - _position).abs() <= 0.15) {
+        // 播放器已經在附近（chase 的寬容度是 0.1，別跟它打架）：
+        // 一發 seek 都不送，時間軸直接對齊播放器——它本來就是唯一的時鐘
+        _position = now;
+      } else {
         await _comp!.seek(_position);
       }
       await _comp!.setRate(_speed);
-      await _comp!.play();
-      tr.log('呼叫 play()（合成播放器）');
+      final st = await _comp!.play();
+      tr.log('呼叫 play()（合成播放器，狀態：${st ?? '？'}）');
       final sw = Stopwatch()..start();
       final p0 = now;
       while (mounted && sw.elapsedMilliseconds < 250) {

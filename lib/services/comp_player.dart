@@ -109,7 +109,14 @@ class CompPlayer {
     }
   }
 
-  Future<void> play() => _quiet('play');
+  /// 回「按下那一刻播放器在忙什麼」（診斷用；原生端拿不到就 null）
+  Future<String?> play() async {
+    try {
+      return await _ch.invokeMethod<String>('play');
+    } catch (_) {
+      return null;
+    }
+  }
   Future<void> pause() => _quiet('pause');
   Future<void> setRate(double r) => _quiet('rate', r);
   /// [exact] 只有「停手要對準那一格」時才給 true。拖曳中與按下播放前

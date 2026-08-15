@@ -117,8 +117,9 @@ import UIKit
           "height": Double(p.size.height),
         ])
       case "play":
+        let st = self.comp?.playStatus()
         self.comp?.play()
-        result(nil)
+        result(st)
       case "pause":
         self.comp?.pause()
         result(nil)
@@ -276,7 +277,7 @@ import UIKit
       useComposition: true, channel: channel
     ) { [weak self] err in
       if err == nil {
-        done(dest)
+        self?.denseKeyframes(dest, channel: channel) { _ in done(dest) }
         return
       }
       channel.invokeMethod(
@@ -286,10 +287,168 @@ import UIKit
         useComposition: false, channel: channel
       ) { err2 in
         if err2 == nil {
-          done(dest)
+          self?.denseKeyframes(dest, channel: channel) { _ in done(dest) }
         } else {
           channel.invokeMethod("note", arguments: "工作檔還是失敗：\(err2!)")
           done(nil)
+        }
+      }
+    }
+  }
+
+  /// 把工作檔重編成「密關鍵幀」：每 5 格一個關鍵幀、不用 B 幀。
+  ///
+  /// 系統轉出來的檔關鍵幀間隔一兩秒，拖曳的每一次 seek 都要從前一個
+  /// 關鍵幀解幾十格過來——左右滑動跟不上手指的根本原因。密關鍵幀之後
+  /// 一次 seek 最多解 5 格；chase 的 0.1 秒寬容窗裡永遠有關鍵幀可落，
+  /// 多數 seek 直接落幀。輸入已經是 SDR H.264，這一步沒有任何色彩
+  /// 轉換，純粹重排關鍵幀。失敗就照用原工作檔（只是滑動比較鈍）
+  private func denseKeyframes(
+    _ path: String, channel: FlutterMethodChannel,
+    done: @escaping (Bool) -> Void
+  ) {
+    let srcURL = URL(fileURLWithPath: path)
+    let tmp = path + ".dense.mp4"
+    try? FileManager.default.removeItem(atPath: tmp)
+    let asset = AVURLAsset(url: srcURL)
+    guard let vTrack = asset.tracks(withMediaType: .video).first,
+      let reader = try? AVAssetReader(asset: asset),
+      let writer = try? AVAssetWriter(
+        outputURL: URL(fileURLWithPath: tmp), fileType: .mp4)
+    else {
+      done(false)
+      return
+    }
+    let vOut = AVAssetReaderTrackOutput(
+      track: vTrack,
+      outputSettings: [
+        kCVPixelBufferPixelFormatTypeKey as String: Int(
+          kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+      ])
+    vOut.alwaysCopiesSampleData = false
+    guard reader.canAdd(vOut) else {
+      done(false)
+      return
+    }
+    reader.add(vOut)
+
+    let size = vTrack.naturalSize
+    let fps = vTrack.nominalFrameRate > 1 ? vTrack.nominalFrameRate : 30
+    let vIn = AVAssetWriterInput(
+      mediaType: .video,
+      outputSettings: [
+        AVVideoCodecKey: AVVideoCodecType.h264,
+        AVVideoWidthKey: Int(size.width),
+        AVVideoHeightKey: Int(size.height),
+        AVVideoCompressionPropertiesKey: [
+          AVVideoMaxKeyFrameIntervalKey: 5,
+          AVVideoAllowFrameReorderingKey: false,
+          AVVideoAverageBitRateKey: Int(
+            size.width * size.height * CGFloat(min(fps, 60)) * 0.2),
+          AVVideoExpectedSourceFrameRateKey: Int(fps.rounded()),
+        ] as [String: Any],
+      ])
+    vIn.expectsMediaDataInRealTime = false
+    vIn.transform = vTrack.preferredTransform
+    guard writer.canAdd(vIn) else {
+      done(false)
+      return
+    }
+    writer.add(vIn)
+
+    // 聲音照抄成 AAC（取樣率與聲道數跟著來源，寫死會編不動單聲道）
+    var aOut: AVAssetReaderTrackOutput?
+    var aIn: AVAssetWriterInput?
+    if let aTrack = asset.tracks(withMediaType: .audio).first {
+      var ch = 2
+      var sr = 44100.0
+      if let fdAny = aTrack.formatDescriptions.first {
+        let fd = fdAny as! CMFormatDescription
+        if let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fd) {
+          ch = max(1, Int(asbd.pointee.mChannelsPerFrame))
+          if asbd.pointee.mSampleRate > 0 { sr = asbd.pointee.mSampleRate }
+        }
+      }
+      let out = AVAssetReaderTrackOutput(
+        track: aTrack,
+        outputSettings: [AVFormatIDKey: Int(kAudioFormatLinearPCM)])
+      if reader.canAdd(out) {
+        reader.add(out)
+        let input = AVAssetWriterInput(
+          mediaType: .audio,
+          outputSettings: [
+            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+            AVNumberOfChannelsKey: ch,
+            AVSampleRateKey: sr,
+            AVEncoderBitRateKey: 128_000,
+          ])
+        input.expectsMediaDataInRealTime = false
+        if writer.canAdd(input) {
+          writer.add(input)
+          aOut = out
+          aIn = input
+        }
+      }
+    }
+
+    guard reader.startReading(), writer.startWriting() else {
+      done(false)
+      return
+    }
+    writer.startSession(atSourceTime: .zero)
+
+    let group = DispatchGroup()
+    let q = DispatchQueue(label: "markcut.dense")
+    group.enter()
+    vIn.requestMediaDataWhenReady(on: q) {
+      while vIn.isReadyForMoreMediaData {
+        if let sb = vOut.copyNextSampleBuffer() {
+          if !vIn.append(sb) {
+            vIn.markAsFinished()
+            group.leave()
+            return
+          }
+        } else {
+          vIn.markAsFinished()
+          group.leave()
+          return
+        }
+      }
+    }
+    if let aOut = aOut, let aIn = aIn {
+      group.enter()
+      aIn.requestMediaDataWhenReady(on: q) {
+        while aIn.isReadyForMoreMediaData {
+          if let sb = aOut.copyNextSampleBuffer() {
+            if !aIn.append(sb) {
+              aIn.markAsFinished()
+              group.leave()
+              return
+            }
+          } else {
+            aIn.markAsFinished()
+            group.leave()
+            return
+          }
+        }
+      }
+    }
+    group.notify(queue: q) {
+      writer.finishWriting {
+        DispatchQueue.main.async {
+          let ok = writer.status == .completed && reader.status == .completed
+          if ok {
+            do {
+              _ = try FileManager.default.replaceItemAt(
+                srcURL, withItemAt: URL(fileURLWithPath: tmp))
+              done(true)
+              return
+            } catch {}
+          }
+          try? FileManager.default.removeItem(atPath: tmp)
+          channel.invokeMethod(
+            "note", arguments: "密關鍵幀重編沒成功（照用原工作檔，滑動會比較鈍）")
+          done(false)
         }
       }
     }
@@ -724,6 +883,22 @@ final class CompPlayer: NSObject, FlutterTexture {
   }
 
   private var targetRate: Float = 1
+
+  /// 按下播放那一刻播放器在忙什麼——量出來，不用猜。
+  /// 「seek進行中」＝畫面要等那發 seek 跑完才會動；
+  /// 「緩衝是空的」＝暫停期間 buffer 被回收了，要先重新解
+  func playStatus() -> String {
+    var bits: [String] = []
+    if seeking { bits.append("seek進行中") }
+    if let it = player.currentItem {
+      if it.status != .readyToPlay { bits.append("item還沒ready") }
+      if it.isPlaybackBufferEmpty { bits.append("緩衝是空的") }
+      if !it.isPlaybackLikelyToKeepUp { bits.append("緩衝可能跟不上") }
+    } else {
+      bits.append("沒有item")
+    }
+    return bits.isEmpty ? "乾淨" : bits.joined(separator: "、")
+  }
 
   /// playImmediately 而不是 play：後者會先跑一輪緩衝條件才讓畫面真的動
   func play() { player.playImmediately(atRate: targetRate) }
