@@ -1056,7 +1056,67 @@ final class CompPlayer: NSObject, FlutterTexture {
   }
 
   /// playImmediately 而不是 play：後者會先跑一輪緩衝條件才讓畫面真的動
-  func play() { player.playImmediately(atRate: targetRate) }
+  func play() {
+    // 還沒跑完的 preroll 會把播放壓住，先取消
+    player.cancelPendingPrerolls()
+    startPlayWatch()
+    player.playImmediately(atRate: targetRate)
+  }
+
+  // ── 按下播放到畫面真的動：在原生端量，而且量的是「過程」 ─────────
+  //
+  // Dart 端只能每 33ms 問一次位置，而且問到的是「時鐘動了沒」。
+  // 播放器自己說「乾淨」卻要 200ms 才動——那 200ms 裡它到底在做什麼，
+  // 只有在原生端用 display link 逐格記錄才看得到：
+  // - timeControlStatus 什麼時候變成 playing
+  // - 這期間 reasonForWaitingToPlay 說了什麼
+  // - currentTime 什麼時候真的開始前進
+  // 三個時間點分開之後，是「播放器沒開始」還是「開始了但畫面沒更新」
+  // 一眼就分得出來
+  private var watchLink: CADisplayLink?
+  private var watchT0: CFTimeInterval = 0
+  private var watchStartTime: CMTime = .zero
+  private(set) var lastPlayBreakdown: [String: Any] = [:]
+
+  private func startPlayWatch() {
+    watchLink?.invalidate()
+    watchT0 = CACurrentMediaTime()
+    watchStartTime = player.currentTime()
+    lastPlayBreakdown = [:]
+    let l = CADisplayLink(target: self, selector: #selector(onWatch))
+    l.add(to: .main, forMode: .common)
+    watchLink = l
+  }
+
+  @objc private func onWatch() {
+    let ms = Int((CACurrentMediaTime() - watchT0) * 1000)
+    if lastPlayBreakdown["rateMs"] == nil, player.rate != 0 {
+      lastPlayBreakdown["rateMs"] = ms
+    }
+    if lastPlayBreakdown["playingMs"] == nil,
+      player.timeControlStatus == .playing
+    {
+      lastPlayBreakdown["playingMs"] = ms
+    }
+    if lastPlayBreakdown["waiting"] == nil,
+      player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+      let r = player.reasonForWaitingToPlay
+    {
+      lastPlayBreakdown["waiting"] = "\(r.rawValue)＠\(ms)ms"
+    }
+    if lastPlayBreakdown["movedMs"] == nil,
+      CMTimeGetSeconds(player.currentTime()) - CMTimeGetSeconds(watchStartTime)
+        > 0.001
+    {
+      lastPlayBreakdown["movedMs"] = ms
+    }
+    // 畫面真的動了、或量超過 2 秒都沒動，就收工
+    if lastPlayBreakdown["movedMs"] != nil || ms > 2000 {
+      lastPlayBreakdown["totalMs"] = ms
+      watchLink?.invalidate()
+      watchLink = nil
+    }
+  }
 
   func pause() {
     player.pause()
@@ -1164,6 +1224,9 @@ final class CompPlayer: NSObject, FlutterTexture {
         m["stalls"] = e.numberOfStalls
       }
     }
+    if !lastPlayBreakdown.isEmpty {
+      m["playBreakdown"] = lastPlayBreakdown
+    }
     if !seekMs.isEmpty {
       let sorted = seekMs.sorted()
       m["seekCount"] = seekMs.count
@@ -1190,7 +1253,13 @@ final class CompPlayer: NSObject, FlutterTexture {
     ]
   }
 
+  func disposeWatch() {
+    watchLink?.invalidate()
+    watchLink = nil
+  }
+
   func dispose() {
+    disposeWatch()
     link?.invalidate()
     link = nil
     player.pause()

@@ -39,9 +39,13 @@ class CompPlayer {
 
   /// 這條時間軸能不能交給合成播放器。
   ///
-  /// 只擋「合成真的做不到」的：倒轉（播放器沒辦法倒著播）、同一時刻
-  /// 疊兩層畫面（子母畫面）、工作檔還沒好。變速、淡入淡出、縮放位移
-  /// AVFoundation 原生就支援，都烘進合成裡
+  /// 只擋「合成真的做不到」的：倒轉（播放器沒辦法倒著播）與同一時刻疊
+  /// 兩層畫面（子母畫面）。變速、淡入淡出、縮放位移 AVFoundation 原生
+  /// 就支援，都烘進合成裡。
+  ///
+  /// 工作檔沒好也照組——用原檔組一樣播得動，而且是一顆播放器一組解碼
+  /// 資源，比舊路徑的「一片段一顆 4K 播放器」輕得多。等在那裡才是最差
+  /// 的選擇：使用者一進場就該看得到畫面，別家 App 也沒有那個讀取條
   static String? whyNot(TimelineModel tl) {
     final vids = [
       for (final c in tl.clips)
@@ -53,7 +57,6 @@ class CompPlayer {
     // 「同一時刻要疊兩層畫面」
     for (final c in vids) {
       if (c.reverse) return '有倒轉的片段';
-      if (tl.sourceOf(c).workPath == null) return '有素材還沒轉好工作檔';
     }
     for (var i = 1; i < vids.length; i++) {
       if (vids[i].offset < vids[i - 1].end - 0.001) {
@@ -170,6 +173,23 @@ class CompPlayer {
       final stalls = (m['stalls'] as num?)?.toInt();
       if (stalls != null) b.write('／卡頓 $stalls 次');
       final n = (m['seekCount'] as num?)?.toInt();
+      // 按下播放那兩百毫秒的內部拆解：播放器什麼時候真的開始跑、
+      // 什麼時候畫面才動、中間在等什麼。三個時間點分開之後，
+      // 「播放器沒開始」跟「開始了但畫面沒更新」一眼就分得出來
+      final bd = m['playBreakdown'];
+      if (bd is Map) {
+        b.write(
+          '\n  按下播放：${[
+            if (bd['rateMs'] != null) 'rate 起來 ${bd['rateMs']}ms',
+            if (bd['playingMs'] != null) '系統說在播 ${bd['playingMs']}ms',
+            if (bd['movedMs'] != null)
+              '時間真的前進 ${bd['movedMs']}ms'
+            else
+              '時間一直沒前進',
+            if (bd['waiting'] != null) '等待理由 ${bd['waiting']}',
+          ].join('／')}',
+        );
+      }
       if (n != null) {
         b.write(
           '\n  拖曳 seek：$n 發／平均 ${m['seekAvgMs']}ms'

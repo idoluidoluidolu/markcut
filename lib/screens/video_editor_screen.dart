@@ -1033,11 +1033,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   // 系統的硬體管線轉一份 1080p SDR 的工作檔，轉好了再換過去。換過去之後
   // 播放、抽幀、縮圖都只碰 1080p SDR，而且顏色是系統轉的，跟匯出一致
 
-  /// 正在備工作檔的素材（畫面上顯示小提示用）
+  /// 正在備工作檔的素材（全部備完才把合成換成工作檔版）
   final Set<int> _prepping = {};
-
-  /// 這一刻工作檔備到哪（0~1，只顯示最近那一支）
-  double _prepProgress = 0;
 
   Future<void> _prepWorkFile(int srcIndex) async {
     if (srcIndex < 0 || srcIndex >= _tl.sources.length) return;
@@ -1045,26 +1042,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (src.kind != ClipKind.video || src.workPath != null) return;
     if (!await MediaPrep.available) return;
     if (!mounted) return;
-    setState(() {
-      _prepping.add(srcIndex);
-      _prepProgress = 0;
-    });
-    final made = await WorkFiles.ensure(
-      src.path,
-      onProgress: (v) {
-        if (mounted && _prepping.contains(srcIndex)) {
-          setState(() => _prepProgress = v);
-        }
-      },
-    );
+    // 純背景工作，畫面上沒有任何東西在等它：不用 setState，
+    // 進度也不用收——以前那個回呼每 250ms 就重建一次整頁編輯器
+    _prepping.add(srcIndex);
+    final made = await WorkFiles.ensure(src.path);
     if (!mounted) return;
-    setState(() => _prepping.remove(srcIndex));
+    _prepping.remove(srcIndex);
     if (made == null || srcIndex >= _tl.sources.length) return;
     src.workPath = made;
     // 換播放器：正在播就先記住位置，換完接回去
     _swapToWorkFile(srcIndex);
-    _compDirty = true;
-    unawaited(_ensureComp());
+    // 合成一進場就用原檔組好了，這裡是「換成工作檔」的重組。每好一支
+    // 就重組的話畫面會重載好幾次，等全部好了一次換完
+    if (_prepping.isEmpty) {
+      _compDirty = true;
+      unawaited(_ensureComp());
+    }
     _saveDraft();
   }
 
@@ -6365,7 +6358,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               ),
               // 比例膠囊釘在整個預覽區右上角（不跟畫布走）
               _canvasHint(),
-              _prepHint(),
+              // 工作檔在背景備，不出現在畫面上：進場就能剪，
+              // 好了自己換過去。別家剪輯 App 也沒有那個讀取條
             ],
           ),
         ),
@@ -6629,47 +6623,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 右上角比例小標籤：常駐顯示目前畫面比例，點了直接開比例選單
-  /// 「素材準備中」的小提示（左上角）。
-  ///
-  /// 只是提示，不擋任何操作：工作檔還沒好之前照樣能播、能剪，
-  /// 好了之後畫面會自己換成比較順的那份。不給提示的話，
-  /// 使用者會覺得「怎麼突然變順了」莫名其妙
-  Widget _prepHint() {
-    if (_prepping.isEmpty) return const SizedBox.shrink();
-    return Align(
-      alignment: Alignment.topLeft,
-      child: Padding(
-        padding: const EdgeInsets.all(6),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.45),
-            borderRadius: BorderRadius.circular(kTagRadius),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SizedBox(
-                width: 10,
-                height: 10,
-                child: CircularProgressIndicator(
-                  strokeWidth: 1.6,
-                  value: _prepProgress > 0.02 ? _prepProgress : null,
-                  color: kAmber,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Text(
-                '素材準備中 ${(_prepProgress * 100).round()}%',
-                style: const TextStyle(fontSize: 10.5, color: kTextDim),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
   Widget _canvasHint() {
     return Align(
       alignment: Alignment.topRight,
