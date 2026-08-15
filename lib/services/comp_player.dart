@@ -48,9 +48,10 @@ class CompPlayer {
         if (tl.sourceOf(c).isVideo) c,
     ]..sort((a, b) => a.offset.compareTo(b.offset));
     if (vids.isEmpty) return '沒有影片片段';
-    final track = vids.first.track;
+    // 不看軌道，只看「時間上有沒有重疊」（下面那個迴圈）：分在不同軌
+    // 但前後接著播的話，畫面結果跟同一軌完全一樣——真正做不到的是
+    // 「同一時刻要疊兩層畫面」
     for (final c in vids) {
-      if (c.track != track) return '影片分在不同軌（子母畫面）';
       if (c.reverse) return '有倒轉的片段';
       if ((c.speed - 1).abs() > 0.001) return '有變速的片段';
       if ((c.scale - 1).abs() > 0.001 ||
@@ -62,7 +63,9 @@ class CompPlayer {
       if (tl.sourceOf(c).workPath == null) return '有素材還沒轉好工作檔';
     }
     for (var i = 1; i < vids.length; i++) {
-      if (vids[i].offset < vids[i - 1].end - 0.001) return '影片片段時間重疊';
+      if (vids[i].offset < vids[i - 1].end - 0.001) {
+        return '同一時刻有兩層畫面（子母畫面）';
+      }
     }
     return null;
   }

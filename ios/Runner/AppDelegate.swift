@@ -235,9 +235,42 @@ import UIKit
     channel: FlutterMethodChannel,
     done: @escaping (String?) -> Void
   ) {
+    // 先照我們自己算的尺寸轉；失敗就退一步、不套 videoComposition 再試
+    // 一次（尺寸交給系統預設）。慢動作、時間重映射過的軌套 composition
+    // 會直接失敗，但那種素材更需要工作檔——4K HDR 240fps 是最重的一種
+    exportOnce(
+      src: src, dest: dest, maxShortSide: maxShortSide,
+      useComposition: true, channel: channel
+    ) { [weak self] err in
+      if err == nil {
+        done(dest)
+        return
+      }
+      channel.invokeMethod(
+        "note", arguments: "工作檔第一次失敗（\(err!)），改用系統預設尺寸重試")
+      self?.exportOnce(
+        src: src, dest: dest, maxShortSide: maxShortSide,
+        useComposition: false, channel: channel
+      ) { err2 in
+        if err2 == nil {
+          done(dest)
+        } else {
+          channel.invokeMethod("note", arguments: "工作檔還是失敗：\(err2!)")
+          done(nil)
+        }
+      }
+    }
+  }
+
+  /// 轉一次。成功回 nil，失敗回原因字串
+  private func exportOnce(
+    src: String, dest: String, maxShortSide: Int, useComposition: Bool,
+    channel: FlutterMethodChannel,
+    done: @escaping (String?) -> Void
+  ) {
     let asset = AVURLAsset(url: URL(fileURLWithPath: src))
     guard let track = asset.tracks(withMediaType: .video).first else {
-      done(nil)  // 沒有畫面（純音訊）不需要工作檔
+      done("沒有視訊軌")  // 純音訊不需要工作檔
       return
     }
     // 1920x1080 這個預設輸出的是 H.264 SDR——素材是 HLG/PQ 時系統會
@@ -246,7 +279,7 @@ import UIKit
       let session = AVAssetExportSession(
         asset: asset, presetName: AVAssetExportPreset1920x1080)
     else {
-      done(nil)
+      done("這台機器建不出 1920x1080 的轉檔工作")
       return
     }
     // 同一個目的檔案殘留會讓 export 直接失敗
@@ -261,7 +294,7 @@ import UIKit
     let natural = track.naturalSize.applying(track.preferredTransform)
     let dispW = abs(natural.width)
     let dispH = abs(natural.height)
-    if dispW > 1, dispH > 1 {
+    if useComposition, dispW > 1, dispH > 1 {
       let scale = min(1.0, CGFloat(maxShortSide) / min(dispW, dispH))
       var outW = (dispW * scale).rounded()
       var outH = (dispH * scale).rounded()
@@ -307,10 +340,15 @@ import UIKit
           FileManager.default.fileExists(atPath: dest)
         {
           channel.invokeMethod("progress", arguments: 1.0)
-          done(dest)
+          done(nil)
         } else {
           try? FileManager.default.removeItem(atPath: dest)
-          done(nil)
+          // 把系統給的原因帶回去：沒有它就只知道「失敗」，
+          // 而失敗的素材會一路用 4K HDR 原檔播，那正是卡頓的來源
+          let reason =
+            session.error?.localizedDescription
+            ?? (session.status == .cancelled ? "已取消" : "未知原因")
+          done(reason)
         }
       }
     }

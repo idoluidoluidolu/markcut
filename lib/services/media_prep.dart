@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
+import 'diagnostics.dart';
+
 /// 把素材交給「平台自己的硬體管線」轉成工作檔：SDR、H.264、長邊有上限。
 ///
 /// 為什麼要有這一層：iPhone 預設錄 4K HLG（HDR）。這種素材直接拿來用，
@@ -36,6 +38,11 @@ class MediaPrep {
     _ch.setMethodCallHandler((call) async {
       if (call.method == 'progress' && call.arguments is num) {
         _onProgress?.call((call.arguments as num).toDouble().clamp(0.0, 1.0));
+      }
+      // 原生端把失敗的真正原因送回來。以前只知道「失敗」，而失敗的素材
+      // 會一路用 4K HDR 原檔播——那正是卡頓的來源，卻查不出為什麼
+      if (call.method == 'note' && call.arguments is String) {
+        Diag.note(call.arguments as String);
       }
       return null;
     });
