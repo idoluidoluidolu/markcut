@@ -1095,9 +1095,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (was) _pause();
     for (final c in _tl.clips) {
       if (c.sourceIndex != srcIndex) continue;
-      final old = _ctrls.remove(c.id);
-      old?.dispose();
-      _ensureCtrlFor(c);
+      _ctrls.remove(c.id)?.dispose();
+      // 合成播放器接手時畫面不由這些播放器出，開回來只是白佔解碼資源
+      if (!_compOn) _ensureCtrlFor(c);
     }
     _wasActive.clear();
     _preRolled.clear();
@@ -2834,6 +2834,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (_comp != null) {
         await _comp!.dispose();
         if (mounted) setState(() => _comp = null);
+        // 退回舊路徑：剛才放掉的播放器要補回來
+        _trimPlayers();
+        _syncMedia();
       }
       return;
     }
@@ -2871,6 +2874,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     Diag.note('合成播放器就緒：${made.duration.toStringAsFixed(1)} 秒');
     _lastCompSig = _compSig(); // 這一版烘的就是現在的值，指紋同步
     setState(() => _comp = made);
+    // 合成接手了，舊的那幾顆播放器立刻放掉（見 _trimPlayers）
+    _trimPlayers();
     await made.seek(_position);
   }
 
@@ -3451,6 +3456,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 系統會在它們之間排隊，畫面就會不定時頓一下。聲音的播放器不動——
   /// 那個要整段對位，中途放掉會斷
   void _trimPlayers() {
+    // 合成播放器接手時，整條時間軸就是它一顆在出畫面——舊的那幾顆
+    // 一顆都不需要留。閒置的 AVPlayer 不是免費的：每顆都佔一組解碼與
+    // 影格輸出資源，系統會在它們之間排隊。相簿播影片只有一顆播放器，
+    // 我們要一樣順就不能多養
+    if (_compOn) {
+      if (_ctrls.isEmpty) return;
+      final n = _ctrls.length;
+      for (final c in _ctrls.values) {
+        c.dispose();
+      }
+      _ctrls.clear();
+      _wasActive.clear();
+      _preRolled.clear();
+      _warmed.clear();
+      _lastVol.clear();
+      _lastSpeed.clear();
+      Diag.count('放掉閒置播放器', n);
+      return;
+    }
     if (!Diag.singlePlayer.value) return;
     final now = DateTime.now();
     if (now.difference(_lastTrim).inMilliseconds < 400) return;
