@@ -216,11 +216,16 @@ class Diag {
   /// 系統會在它們之間排隊——排除掉前面全部之後，這是最後的嫌疑
   static final singlePlayer = ValueNotifier(false);
 
+  /// 合成播放器：整條時間軸交給系統的一顆播放器（見 CompPlayer）。
+  /// 這是「一片段一顆播放器」那套的替代品，也是排除到最後剩下的解法
+  static final compPlayer = ValueNotifier(false);
+
   static String get tuning =>
       '預熱=${preheat.value ? '開' : '關'}／'
       '脫節校正=${driftFix.value ? '開' : '關'}／'
       '背景抽幀=${scrubPrefetch.value ? '開' : '關'}／'
-      '只養一顆播放器=${singlePlayer.value ? '開' : '關'}';
+      '只養一顆播放器=${singlePlayer.value ? '開' : '關'}／'
+      '合成播放器=${compPlayer.value ? '開' : '關'}';
 
   static void count(String key, [int n = 1]) {
     _counts[key] = (_counts[key] ?? 0) + n;

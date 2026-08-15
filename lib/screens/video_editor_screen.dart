@@ -21,6 +21,7 @@ import '../models/watermark_settings.dart';
 import '../services/audio_picker.dart';
 import '../services/native_frames.dart';
 import '../services/playback_trace.dart';
+import '../services/comp_player.dart';
 import '../services/diagnostics.dart';
 import '../services/export_speed.dart';
 import '../services/file_reader.dart';
@@ -412,6 +413,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 每個破壞性操作前呼叫：拍快照＋順便存草稿
   void _pushUndo() {
+    // 時間軸只要動過，合成就要重組（片段順序、長度、音量都烘在裡面）
+    _compDirty = true;
+    unawaited(Future.microtask(_ensureComp));
     _undoStack.add(_snapshot());
     if (_undoStack.length > 60) _undoStack.removeAt(0);
     _redoStack.clear();
@@ -676,6 +680,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     // 沒有工作檔的素材在背景補上（進場不等它）
     unawaited(_prepAllWorkFiles());
+    unawaited(_ensureComp());
   }
 
   // 「捲動時間軸＝移動播放位置」的同步控制
@@ -877,7 +882,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// seek 疊 seek 會在解碼器裡排隊，是拖曳卡頓的主因
   bool _seekInFlight = false;
 
+  void _compSeek() {
+    if (_compOn) unawaited(_comp!.seek(_position));
+  }
+
   void _scrubSeek({bool force = false}) {
+    _compSeek();
     final now = DateTime.now();
     if (_seekInFlight ||
         (!force && now.difference(_lastScrubSeek).inMilliseconds < 100)) {
@@ -1003,6 +1013,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     src.workPath = made;
     // 換播放器：正在播就先記住位置，換完接回去
     _swapToWorkFile(srcIndex);
+    _compDirty = true;
+    unawaited(_ensureComp());
     _saveDraft();
   }
 
@@ -2582,6 +2594,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _position = _tl.duration;
       _pause();
     }
+    // 合成播放器是唯一的時鐘來源：位置以它為準，Dart 這邊只在兩次
+    // 回報之間補間。原本的做法是 App 自己算時間再回頭校正播放器，
+    // 那個校正每次都會讓畫面停一下
+    if (_compOn) {
+      _syncFromComp();
+      return;
+    }
     _syncMedia();
     _followPlayhead();
     // 不做 setState：位置相關 UI 由 _posVN 各自小範圍重繪
@@ -2727,6 +2746,55 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return _selfTestResult!;
   }
 
+  // ===== 合成播放器 =====
+  //
+  // 整條時間軸組成一份 AVComposition 交給系統的一顆播放器。條件不符
+  // （子母畫面、變速、倒轉、縮放位移、還沒轉好工作檔）就退回原本
+  // 「一片段一顆播放器」的路徑——硬塞的話畫面會對不上，比卡頓更難查
+
+  CompPlayer? _comp;
+  String? _compWhyNot;
+
+  /// 時間軸改過就要重組（換素材、剪過、搬過都算）
+  bool _compDirty = true;
+
+  Future<void> _ensureComp() async {
+    if (!Diag.compPlayer.value) {
+      if (_comp != null) {
+        await _comp!.dispose();
+        if (mounted) setState(() => _comp = null);
+      }
+      return;
+    }
+    if (_comp != null && !_compDirty) return;
+    final why = CompPlayer.whyNot(_tl);
+    _compWhyNot = why;
+    if (why != null) {
+      Diag.note('合成播放器用不了：$why');
+      if (_comp != null) {
+        await _comp!.dispose();
+        if (mounted) setState(() => _comp = null);
+      }
+      return;
+    }
+    final made = await CompPlayer.build(_tl);
+    _compDirty = false;
+    if (!mounted) {
+      await made?.dispose();
+      return;
+    }
+    if (made == null) {
+      Diag.note('合成播放器組不起來（退回原本的路徑）');
+      return;
+    }
+    Diag.note('合成播放器就緒：${made.duration.toStringAsFixed(1)} 秒');
+    setState(() => _comp = made);
+    await made.seek(_position);
+  }
+
+  /// 現在這一刻是不是真的走合成播放器
+  bool get _compOn => Diag.compPlayer.value && _comp != null;
+
   /// 播放中比對「時鐘」與「播放器實際位置」的取樣器。
   ///
   /// 有一種卡頓在 Flutter 這邊完全看不到：影格根本沒從解碼器送上來。
@@ -2763,6 +2831,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       basePlayer = pos;
       wall.reset();
     });
+  }
+
+  /// 跟合成播放器對時：每 200ms 問一次真正的位置，中間用 ticker 補間
+  DateTime _lastCompSync = DateTime.fromMillisecondsSinceEpoch(0);
+
+  void _syncFromComp() {
+    final now = DateTime.now();
+    if (now.difference(_lastCompSync).inMilliseconds < 200) return;
+    _lastCompSync = now;
+    unawaited(
+      _comp!.position().then((p) {
+        if (!mounted || !_playing) return;
+        // 差太多才拉回去：每次都硬設會讓播放頭一直微跳
+        if ((p - _position).abs() > 0.12) _position = p;
+      }),
+    );
   }
 
   /// 起步：先把「現在該播的那幾段」seek 到位、等解碼器準備好，
@@ -2847,6 +2931,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _lastTick = Duration.zero;
     _ticker.start();
+    if (_compOn) {
+      await _comp!.seek(_position);
+      await _comp!.setRate(_speed);
+      await _comp!.play();
+    }
     _startPlayProbe();
     tr.log('◀ 時間軸開始走');
     _syncMedia();
@@ -2855,6 +2944,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _pause() {
     _playProbe?.cancel();
     _playProbe = null;
+    if (_comp != null) unawaited(_comp!.pause());
     if (_ticker.isActive) _ticker.stop();
     for (final c in _ctrls.values) {
       if (c.value.isPlaying) c.pause();
@@ -2943,6 +3033,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ),
     );
     unawaited(Diag.readDeviceState());
+    tr.env(
+      '合成播放器',
+      _comp != null
+          ? '使用中'
+          : (_compWhyNot ?? (Diag.compPlayer.value ? '組不起來' : '沒開')),
+    );
     unawaited(
       Diag.memoryMb().then(
         (mb) => tr.env(
@@ -3047,10 +3143,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   '打開試試：三顆 AVPlayer 一起養，系統會在它們之間排隊',
                   Diag.singlePlayer,
                 ),
+                (
+                  '合成播放器（整條時間軸交給系統）',
+                  '打開試試：一份 AVComposition、一顆播放器、一組解碼資源',
+                  Diag.compPlayer,
+                ),
               ])
                 SwitchListTile(
                   value: t.$3.value,
-                  onChanged: (v) => setSheet(() => t.$3.value = v),
+                  onChanged: (v) {
+                    setSheet(() => t.$3.value = v);
+                    if (identical(t.$3, Diag.compPlayer)) {
+                      _pause();
+                      _compDirty = true;
+                      unawaited(_ensureComp());
+                    }
+                  },
                   title: Text(t.$1, style: const TextStyle(fontSize: 13.5)),
                   subtitle: Text(
                     t.$2,
@@ -4302,6 +4410,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _frameSettle?.cancel();
     _playProbe?.cancel();
+    unawaited(_comp?.dispose() ?? Future<void>.value());
     _scrubSettleTimer?.cancel();
     _scrubEndTimer?.cancel();
     _wheelSaveTimer?.cancel();
@@ -5039,6 +5148,32 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       warmIds.add(c.id);
                                       vids.insert(0, c);
                                     }
+                                  }
+                                  // 合成播放器接手時，畫面就是它那一張材質
+                                  //（整條時間軸都在裡面），不再逐片段疊圖層
+                                  if (_compOn) {
+                                    final cur = _tl.videoAt(_position);
+                                    final rect = Rect.fromLTWH(0, 0, w, h);
+                                    if (cur != null) {
+                                      addHit(cur.track, cur.id, rect);
+                                    }
+                                    addLayer(
+                                      cur?.track ?? 0,
+                                      Positioned.fromRect(
+                                        rect: rect,
+                                        child: FittedBox(
+                                          fit: BoxFit.contain,
+                                          child: SizedBox(
+                                            width: _comp!.width,
+                                            height: _comp!.height,
+                                            child: Texture(
+                                              textureId: _comp!.textureId,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                    vids.clear();
                                   }
                                   for (final c in vids) {
                                     final ctrl = _ctrls[c.id];

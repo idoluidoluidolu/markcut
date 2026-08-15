@@ -23,6 +23,7 @@ import UIKit
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     registerPrepChannel(engineBridge)
     registerDiagChannel(engineBridge)
+    registerCompChannel(engineBridge)
 
     // 拖曳預覽的「按需抽幀」通道：滑到哪、跟硬體解碼器要那一格。
     // HDR 的色調映射由系統做，顏色跟 AVPlayer 播放畫面天生一致
@@ -65,6 +66,71 @@ import UIKit
           payload = FlutterStandardTypedData(bytes: data)
         }
         DispatchQueue.main.async { result(payload) }
+      }
+    }
+  }
+
+  // MARK: - 合成播放器（markcut/comp）
+  //
+  // 整條時間軸組成一份 AVComposition、一顆 AVPlayer 播。
+  // 為什麼要換掉「一片段一顆播放器」見 CompPlayer.swift 的說明
+  private var comp: CompPlayer?
+
+  private func registerCompChannel(_ engineBridge: FlutterImplicitEngineBridge) {
+    guard let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "markcut.comp")
+    else { return }
+    let channel = FlutterMethodChannel(
+      name: "markcut/comp", binaryMessenger: registrar.messenger())
+    let textures = registrar.textures()
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self = self else {
+        result(nil)
+        return
+      }
+      switch call.method {
+      case "available":
+        result(true)
+      case "build":
+        guard let args = call.arguments as? [String: Any],
+          let clips = args["clips"] as? [[String: Any]]
+        else {
+          result(nil)
+          return
+        }
+        self.comp?.dispose()
+        let p = CompPlayer(registry: textures)
+        guard p.build(clips: clips) else {
+          p.dispose()
+          result(nil)
+          return
+        }
+        self.comp = p
+        result([
+          "textureId": p.textureId,
+          "duration": p.duration,
+          "width": Double(p.size.width),
+          "height": Double(p.size.height),
+        ])
+      case "play":
+        self.comp?.play()
+        result(nil)
+      case "pause":
+        self.comp?.pause()
+        result(nil)
+      case "rate":
+        self.comp?.setRate((call.arguments as? Double) ?? 1)
+        result(nil)
+      case "seek":
+        self.comp?.seek(((call.arguments as? Double) ?? 0))
+        result(nil)
+      case "position":
+        result(self.comp?.positionMs ?? 0)
+      case "dispose":
+        self.comp?.dispose()
+        self.comp = nil
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
       }
     }
   }
