@@ -362,12 +362,48 @@ final class AtomicFlag {
       done(false)
       return
     }
-    let vOut = AVAssetReaderTrackOutput(
-      track: vTrack,
-      outputSettings: [
-        kCVPixelBufferPixelFormatTypeKey as String: Int(
-          kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
-      ])
+    let fps = vTrack.nominalFrameRate > 1 ? vTrack.nominalFrameRate : 30
+    let pixels: [String: Any] = [
+      kCVPixelBufferPixelFormatTypeKey as String: Int(
+        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+    ]
+
+    // 順便把方向烘進畫面。
+    //
+    // 轉檔第一次失敗時會退一步用系統預設尺寸重試，那條路出來的檔會保留
+    // 旋轉旗標；成功那條則是把方向燒進畫面。同一條時間軸上兩種混在一起，
+    // 方向就不一致，合成播放器只好掛上合成器逐格重畫——整條路上最貴的
+    // 那件事，就因為這個又被打開。
+    //
+    // 這裡本來就要重編一次，順手讓讀取端走一份只做轉正的合成，
+    // 寫出來的檔一律是「已經轉正、沒有旋轉旗標」。之後所有工作檔方向
+    // 天生一致，合成器就不會再被叫醒
+    let disp = vTrack.naturalSize.applying(vTrack.preferredTransform)
+    let upright = !vTrack.preferredTransform.isIdentity
+    let size =
+      upright
+      ? CGSize(width: abs(disp.width), height: abs(disp.height))
+      : vTrack.naturalSize
+
+    let vOut: AVAssetReaderOutput
+    if upright {
+      let vc = AVMutableVideoComposition()
+      vc.renderSize = size
+      vc.frameDuration = CMTime(
+        value: 1, timescale: CMTimeScale(max(1, min(60, fps.rounded()))))
+      let ins = AVMutableVideoCompositionInstruction()
+      ins.timeRange = CMTimeRange(start: .zero, duration: asset.duration)
+      let li = AVMutableVideoCompositionLayerInstruction(assetTrack: vTrack)
+      li.setTransform(vTrack.preferredTransform, at: .zero)
+      ins.layerInstructions = [li]
+      vc.instructions = [ins]
+      let o = AVAssetReaderVideoCompositionOutput(
+        videoTracks: [vTrack], videoSettings: pixels)
+      o.videoComposition = vc
+      vOut = o
+    } else {
+      vOut = AVAssetReaderTrackOutput(track: vTrack, outputSettings: pixels)
+    }
     vOut.alwaysCopiesSampleData = false
     guard reader.canAdd(vOut) else {
       done(false)
@@ -375,8 +411,6 @@ final class AtomicFlag {
     }
     reader.add(vOut)
 
-    let size = vTrack.naturalSize
-    let fps = vTrack.nominalFrameRate > 1 ? vTrack.nominalFrameRate : 30
     let vIn = AVAssetWriterInput(
       mediaType: .video,
       outputSettings: [
@@ -392,7 +426,7 @@ final class AtomicFlag {
         ] as [String: Any],
       ])
     vIn.expectsMediaDataInRealTime = false
-    vIn.transform = vTrack.preferredTransform
+    // 方向已經烘進畫面，不再帶旗標（upright 為 false 時本來就是單位矩陣）
     guard writer.canAdd(vIn) else {
       done(false)
       return
@@ -694,9 +728,17 @@ final class AtomicFlag {
           try? FileManager.default.removeItem(atPath: dest)
           // 把系統給的原因帶回去：沒有它就只知道「失敗」，
           // 而失敗的素材會一路用 4K HDR 原檔播，那正是卡頓的來源
-          let reason =
-            session.error?.localizedDescription
-            ?? (session.status == .cancelled ? "已取消" : "未知原因")
+          // 「未知原因」查不動。把系統給的東西全帶回來：error 的
+          // domain/code、底層 error，還有 status 本身
+          var reason: String
+          if let e = session.error as NSError? {
+            reason = "\(e.localizedDescription)[\(e.domain) \(e.code)]"
+            if let u = e.userInfo[NSUnderlyingErrorKey] as? NSError {
+              reason += "←\(u.domain) \(u.code)"
+            }
+          } else {
+            reason = "status=\(session.status.rawValue)"
+          }
           done(reason)
         }
       }
