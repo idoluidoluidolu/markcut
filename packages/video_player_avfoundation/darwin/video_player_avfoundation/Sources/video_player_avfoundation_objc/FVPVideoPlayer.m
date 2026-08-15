@@ -434,6 +434,16 @@ NS_INLINE CGFloat radiansToDegrees(CGFloat radians) {
 #pragma mark - FVPVideoPlayerInstanceApi
 
 - (void)playWithError:(FlutterError *_Nullable *_Nonnull)error {
+  // MarkCut patch: invalidate any pending "refine" seek before starting.
+  // Scrubbing schedules a frame-exact seek 250ms after the user stops
+  // dragging; an exact seek decodes from the preceding keyframe to the
+  // target frame, which is hundreds of ms on 4K HEVC, and the player's rate
+  // stays at 0 for its whole duration. The user's actual sequence is
+  // "drag to a frame, then hit play", so play lands right inside that
+  // window—which is exactly the reported "press play and the picture takes
+  // a moment to start". Bumping the generation drops the scheduled refine;
+  // playback rolls past that frame anyway, so frame-exactness is moot here.
+  _seekGeneration++;
   _isPlaying = YES;
   [self updatePlayingState];
 }
@@ -480,6 +490,16 @@ NS_INLINE CGFloat radiansToDegrees(CGFloat radians) {
           typeof(self) strongSelf = weakSelfForRefine;
           if (!strongSelf || strongSelf->_seekGeneration != generation) return;
           if (strongSelf->_player.rate != 0) return;
+          // MarkCut patch: if the tolerant seek already landed within half a
+          // frame of the target there is nothing to refine, and every refine
+          // we skip is one less chance for play() to land on top of an
+          // in-flight exact seek.
+          CMTime landed = strongSelf->_player.currentTime;
+          if (CMTIME_IS_NUMERIC(landed) &&
+              fabs(CMTimeGetSeconds(CMTimeSubtract(landed, targetCMTime))) <
+                  0.016) {
+            return;
+          }
           [strongSelf->_player seekToTime:targetCMTime
                           toleranceBefore:kCMTimeZero
                            toleranceAfter:kCMTimeZero];

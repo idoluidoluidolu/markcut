@@ -2874,6 +2874,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_position >= _tl.duration - 0.01) _position = 0;
     final tr = PlaybackTrace.instance..start();
 
+    // 拖曳收尾排在後面的那幾件事，按下播放的當下全部取消：
+    // 120ms 的補送 seek、220ms 的收尾（裡面還會再送一次 seek）。
+    // 使用者的順序就是「拖到某一格 → 按播放」，這些 seek 常常剛好在
+    // 按下去的那一刻進行中，而 seek 跑完之前播放器的 rate 壓在 0，
+    // 畫面就是不會動。
+    // 同時立刻離開拖曳模式——拖曳中預覽是「快取幀疊在影片上面」，
+    // 不收掉的話影片已經在跑也還是看到那張蓋著的靜止圖
+    _scrubSettleTimer?.cancel();
+    _scrubEndTimer?.cancel();
+    _seekInFlight = false;
+    if (_scrubbing) setState(() => _scrubbing = false);
+
     // 合成播放器接手時，整條時間軸就是它一顆在播：舊的逐片段播放器
     // 一個都不要碰。上一版兩邊同時在播——兩倍解碼、兩份聲音，
     // 而且「快不快」也就比不出來了
@@ -2960,8 +2972,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final p0 = await lead.positionNow();
       final sw = Stopwatch()..start();
       var sawBuffering = false;
+      // 一格問一次就夠。20ms 一次的平台往返是在播放器最忙的時候一直
+      // 插隊，等於自己拖慢自己
       while (mounted && sw.elapsedMilliseconds < 250) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await Future<void>.delayed(const Duration(milliseconds: 33));
         if (lead.value.isBuffering) sawBuffering = true;
         final p = await lead.positionNow();
         if (p != null && p != p0) {
