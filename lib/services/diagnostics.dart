@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -142,6 +143,59 @@ class Diag {
   static bool get lastRunDiedExporting =>
       crumbFromLastRun?.contains('匯出') ?? false;
 
+  // ===== 畫面時間（分辨「誰在卡」）=====
+  //
+  // 「卡頓」有三種完全不同的來源，處理方式也完全不同：
+  //   1. UI 執行緒（build/layout 太重）→ 要減少重建範圍
+  //   2. 合成執行緒（raster：saveLayer、模糊、太多圖層）→ 要減少特效
+  //   3. 影片本身（解碼器沒把影格送上來）→ 跟 Flutter 無關
+  //
+  // 前兩種 Flutter 自己會報時間，第三種要看播放器的位置有沒有前進。
+  // 沒有這三個數字就只能猜——而三次猜錯的成本是三次白做
+
+  static int frames = 0;
+  static int jankBuild = 0; // UI 執行緒超過一格
+  static int jankRaster = 0; // 合成執行緒超過一格
+  static int worstBuildMs = 0;
+  static int worstRasterMs = 0;
+  static bool _watchingFrames = false;
+
+  /// 一格的預算：60Hz 是 16.7ms，抓 17 當門檻
+  static const _budgetMs = 17;
+
+  static void watchFrames() {
+    if (_watchingFrames) return;
+    _watchingFrames = true;
+    SchedulerBinding.instance.addTimingsCallback((list) {
+      for (final t in list) {
+        frames++;
+        final b = t.buildDuration.inMilliseconds;
+        final r = t.rasterDuration.inMilliseconds;
+        if (b > _budgetMs) jankBuild++;
+        if (r > _budgetMs) jankRaster++;
+        if (b > worstBuildMs) worstBuildMs = b;
+        if (r > worstRasterMs) worstRasterMs = r;
+      }
+    });
+  }
+
+  /// 播放器的位置有沒有真的在前進（第三種卡頓）。
+  /// 每次取樣比對「時鐘走了多少」與「播放器走了多少」，差太多就是
+  /// 影格沒送上來——這種卡頓在 Flutter 這邊完全看不到
+  static int playSamples = 0;
+  static int playStalls = 0;
+  static int worstStallMs = 0;
+
+  static void notePlaybackSample(int wallMs, int playerMs) {
+    if (wallMs < 50) return;
+    playSamples++;
+    final behind = wallMs - playerMs;
+    if (behind > 80) {
+      playStalls++;
+      if (behind > worstStallMs) worstStallMs = behind;
+    }
+  }
+
   // ===== 計數與備註 =====
 
   static void count(String key, [int n = 1]) {
@@ -158,6 +212,8 @@ class Diag {
     _counts.clear();
     _notes.clear();
     peakMb = 0;
+    frames = jankBuild = jankRaster = worstBuildMs = worstRasterMs = 0;
+    playSamples = playStalls = worstStallMs = 0;
   }
 
   static String report() {
@@ -171,6 +227,17 @@ class Diag {
     if (crumbFromLastRun != null) {
       b.writeln('--- 上次執行 ---');
       b.writeln(crumbFromLastRun);
+    }
+    if (frames > 0) {
+      b
+        ..writeln('--- 畫面（共 $frames 格）---')
+        ..writeln('  UI 執行緒超時：$jankBuild 格（最久 $worstBuildMs ms）')
+        ..writeln('  合成執行緒超時：$jankRaster 格（最久 $worstRasterMs ms）');
+    }
+    if (playSamples > 0) {
+      b
+        ..writeln('--- 播放器跟不跟得上（取樣 $playSamples 次）---')
+        ..writeln('  影格落後：$playStalls 次（最久落後 $worstStallMs ms）');
     }
     if (_counts.isNotEmpty) {
       b.writeln('--- 計數 ---');

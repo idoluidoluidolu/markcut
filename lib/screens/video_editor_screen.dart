@@ -32,6 +32,7 @@ import '../services/video_processor.dart';
 import '../services/watermark_renderer.dart';
 import '../services/work_files.dart';
 import '../theme.dart';
+import 'playback_test_screen.dart';
 import '../widgets/color_grade_panel.dart';
 import '../widgets/timeline_editor.dart';
 import '../widgets/watermark_layer.dart';
@@ -707,6 +708,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void initState() {
     super.initState();
     _tabs = TabController(length: 3, vsync: this);
+    // 量「誰在卡」：UI 執行緒、合成執行緒、還是影片本身。
+    // 這三種的處理方式完全不同，沒有數字就只能猜
+    Diag.watchFrames();
     _ticker = createTicker(_onTick);
     _tlScroll.addListener(_onTimelineScroll);
     _loadMosaicShader();
@@ -2577,6 +2581,34 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 不做 setState：位置相關 UI 由 _posVN 各自小範圍重繪
   }
 
+  /// 播放中比對「時鐘」與「播放器實際位置」的取樣器。
+  ///
+  /// 有一種卡頓在 Flutter 這邊完全看不到：影格根本沒從解碼器送上來。
+  /// UI 與合成執行緒都很閒，但畫面就是不動——只有直接問播放器位置
+  /// 才分得出來，而那正是「輸出的檔案很順、App 裡就是卡」的形狀
+  Timer? _playProbe;
+
+  void _startPlayProbe() {
+    _playProbe?.cancel();
+    final wall = Stopwatch()..start();
+    var basePlayer = -1;
+    _playProbe = Timer.periodic(const Duration(milliseconds: 400), (_) async {
+      if (!_playing || !mounted) return;
+      final c = _ctrls[_tl.videoAt(_position)?.id ?? -1];
+      if (c == null || !c.value.isInitialized) return;
+      final pos = (await c.positionNow())?.inMilliseconds;
+      if (pos == null) return;
+      if (basePlayer < 0) {
+        basePlayer = pos;
+        wall.reset();
+        return;
+      }
+      Diag.notePlaybackSample(wall.elapsedMilliseconds, pos - basePlayer);
+      basePlayer = pos;
+      wall.reset();
+    });
+  }
+
   /// 起步：先把「現在該播的那幾段」seek 到位、等解碼器準備好，
   /// 再開時鐘。
   ///
@@ -2659,11 +2691,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _lastTick = Duration.zero;
     _ticker.start();
+    _startPlayProbe();
     tr.log('◀ 時間軸開始走');
     _syncMedia();
   }
 
   void _pause() {
+    _playProbe?.cancel();
+    _playProbe = null;
     if (_ticker.isActive) _ticker.stop();
     for (final c in _ctrls.values) {
       if (c.value.isPlaying) c.pause();
@@ -2782,6 +2817,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 }),
                 title: const Text('記錄播放診斷'),
                 subtitle: const Text('打開後按播放跑一次，再回來看'),
+              ),
+              // 同一支影片裸播一次：沒有時間軸、沒有 ticker、沒有圖層。
+              // 這裡順而編輯器卡＝編輯器的問題；這裡也卡＝引擎或裝置。
+              // 進去還能切「原檔／工作檔」再比一次，範圍一次縮到最小
+              ListTile(
+                leading: const Icon(Icons.play_circle_outline, color: kAmber),
+                title: const Text('純播放測試'),
+                subtitle: const Text('裸播一支影片，比對原檔與工作檔'),
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    this.context,
+                    MaterialPageRoute(
+                      builder: (_) => const PlaybackTestScreen(),
+                    ),
+                  );
+                },
               ),
               const Divider(height: 1),
               Flexible(
@@ -2944,6 +2996,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               '距離進場 ${(lead * 1000).round()}ms）');
         }
         if (!kIsWeb && _playing && lead < 0.35 && _warmed.add(clip.id)) {
+          Diag.count('預熱：兩顆播放器同時在解');
           _lastVol[clip.id] = 0;
           c.setVolume(0);
           // 素材在 trimStart 之前還有畫面可用時（修剪、切割過的片段
@@ -3934,6 +3987,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _saveDraftNow();
     }
     _frameSettle?.cancel();
+    _playProbe?.cancel();
     _scrubSettleTimer?.cancel();
     _scrubEndTimer?.cancel();
     _wheelSaveTimer?.cancel();
@@ -4732,9 +4786,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       c,
                                       ctrl.value.aspectRatio,
                                     );
-                                    final vTrack = warmIds.contains(c.id)
-                                        ? warmTrack
-                                        : c.track;
+                                    final warm = warmIds.contains(c.id);
+                                    final vTrack = warm ? warmTrack : c.track;
                                     addHit(vTrack, c.id, r);
                                     // 拖曳中：真影片上面疊快取幀。獨立小元件直接聽 _posVN
                                     // 全速換圖（不吃 30fps 節流），搭配鄰近幀預熱解碼＝跟手。
@@ -4764,11 +4817,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         // 就要重新掛貼圖，那就是交界的閃爍。
                                         // 有 key 就認得出是同一層，只是換位置
                                         key: ValueKey('vidlayer${c.id}'),
-                                        rect: r,
+                                        // 暖身的隱形圖層只畫 1 像素。它的
+                                        // 用途是「先把材質掛上、把第一幀解
+                                        // 出來」好讓交界不閃黑，那跟畫多大
+                                        // 無關；以前是整面畫著只是幾乎全
+                                        // 透明，等於交界前那 350ms 合成
+                                        // 執行緒都在多畫一整張影片材質。
+                                        // 只改大小不改結構：元件樹一樣，
+                                        // 材質不會被拆掉重掛（那才會閃）
+                                        rect: warm
+                                            ? const Rect.fromLTWH(0, 0, 1, 1)
+                                            : r,
                                         child: _tinted(
                                           c,
                                           Opacity(
-                                            opacity: warmIds.contains(c.id)
+                                            opacity: warm
                                                 ? 0.006
                                                 : c.fadeFactorAt(_position),
                                             child: Stack(
@@ -4846,7 +4909,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                 // 點擊層必須疊在影片「上面」：影片是平台原生元件
                                                 // （Web 是 HTML video），會吃掉底下的點擊事件
                                                 // （預掛的隱形影片不收點擊）
-                                                if (!warmIds.contains(c.id))
+                                                if (!warm)
                                                   GestureDetector(
                                                     behavior:
                                                         HitTestBehavior.opaque,
@@ -4864,8 +4927,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         ),
                                       ),
                                     );
-                                    if (c.id == _sel &&
-                                        !warmIds.contains(c.id)) {
+                                    if (c.id == _sel && !warm) {
                                       selRect = r;
                                       selVisual = c;
                                     }
