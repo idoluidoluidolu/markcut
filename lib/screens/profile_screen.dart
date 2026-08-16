@@ -346,28 +346,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         const SizedBox(height: 14),
                         if (draftCount == 0)
                           // 空的時候不畫框：一個又扁又寬的空盒子跟旁邊
-                          // 的長條卡不是同一種東西，看起來像沒做完
+                          // 的長條卡不是同一種東西，看起來像沒做完。
+                          // 也不解釋草稿怎麼來——真的存了一份之後這行
+                          // 就永遠不會再出現，講了也是白講
                           const Padding(
                             padding: EdgeInsets.only(top: 10, bottom: 4),
-                            child: Column(
-                              children: [
-                                Text(
-                                  '還沒有草稿',
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    color: Color(0xFFA8A8B4),
-                                  ),
+                            child: Center(
+                              child: Text(
+                                '還沒有草稿',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: Color(0xFFA8A8B4),
                                 ),
-                                SizedBox(height: 6),
-                                Text(
-                                  '編輯到一半離開時選「保留草稿」，就會存在這裡',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11.5,
-                                    color: Color(0xFFC0C0CA),
-                                  ),
-                                ),
-                              ],
+                              ),
                             ),
                           )
                         else
