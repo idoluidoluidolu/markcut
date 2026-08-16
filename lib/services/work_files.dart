@@ -29,6 +29,15 @@ class WorkFiles {
 
   static Map<String, dynamic>? _index;
 
+  /// 正在寫的工作檔。清理時一定要跳過——同時轉兩支時，先做完的那支
+  /// 會順手 sweep，而還在寫的那支還沒進索引，就被當成孤兒刪掉。
+  /// 檔案被抽走的當下 writer 會回 -11819（CannotComplete），
+  /// 或是留下一個沒有視訊軌的殘檔
+  static final Set<String> _inFlight = {};
+
+  /// 產生一個不會撞號的工作檔名。微秒時間戳在同一瞬間開兩支時會一樣
+  static int _seq = 0;
+
   static Future<Map<String, dynamic>> _load() async {
     if (_index != null) return _index!;
     try {
@@ -95,16 +104,22 @@ class WorkFiles {
     if (!await MediaPrep.available) return null;
 
     final dir = await _dir();
-    final name = 'w${DateTime.now().microsecondsSinceEpoch}.mp4';
+    final name = 'w${DateTime.now().microsecondsSinceEpoch}_${_seq++}.mp4';
     final dest = '${dir.path}${Platform.pathSeparator}$name';
     final sw = Stopwatch()..start();
     await Diag.mark('工作檔：轉檔中', data: {'檔案': src.split('/').last});
-    final made = await MediaPrep.toWorkFile(
-      src,
-      dest,
-      maxShortSide: maxShortSide,
-      onProgress: onProgress,
-    );
+    _inFlight.add(dest);
+    String? made;
+    try {
+      made = await MediaPrep.toWorkFile(
+        src,
+        dest,
+        maxShortSide: maxShortSide,
+        onProgress: onProgress,
+      );
+    } finally {
+      _inFlight.remove(dest);
+    }
     await Diag.clearMark();
     Diag.note(
       made == null
@@ -134,6 +149,9 @@ class WorkFiles {
   /// 每次轉完一支就順手跑一次，不用另外找時機
   static Future<void> sweep() async {
     if (kIsWeb) return;
+    // 還有人在轉就先不清。跳過 in-flight 已經夠安全，但轉檔期間本來就
+    // 不缺這一次清理，等全部做完再一次清最單純
+    if (_inFlight.isNotEmpty) return;
     try {
       final idx = await _load();
       final dir = await _dir();
@@ -162,8 +180,10 @@ class WorkFiles {
         idx.remove(k);
       }
 
-      // 目錄裡沒被索引指到的檔案＝上次轉到一半就被關掉的，直接清
+      // 目錄裡沒被索引指到的檔案＝上次轉到一半就被關掉的，直接清。
+      // 但正在寫的那些不能碰——它們還沒進索引
       for (final f in dir.listSync().whereType<File>()) {
+        if (_inFlight.contains(f.path)) continue;
         if (!alive.contains(f.path)) {
           try {
             f.deleteSync();

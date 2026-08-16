@@ -1110,6 +1110,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 閃西」——所以轉檔排成一批做完，期間畫面上蓋一層遮罩擋住互動。
   /// 一支一支各自開跑的話，遮罩會閃三次，比等一次還煩
   final List<int> _prepQueue = [];
+
+  /// 已經補試過一次的素材：轉檔失敗的後果是那支一路用 4K 原檔播
+  /// （拖曳會鈍、記憶體也高），值得再試一次；但只再試一次，
+  /// 不然壞掉的素材會無限重跑
+  final Set<int> _prepRetried = {};
   bool _prepBusy = false;
   int _prepDone = 0;
   int _prepTotal = 0;
@@ -1192,6 +1197,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (!mounted) return;
       // 這一批做完之後可能又進來新的，總數要跟著長
       setState(() => _prepTotal = _prepDone + _prepQueue.length);
+      // 沒轉成功的補試一次（每支只補一次）
+      if (_prepQueue.isEmpty) {
+        for (var i = 0; i < _tl.sources.length; i++) {
+          final src = _tl.sources[i];
+          if (!src.isVideo || src.workPath != null) continue;
+          if (!_prepRetried.add(i)) continue;
+          Diag.note('工作檔沒轉成功，再試一次：${src.name}');
+          _prepQueue.add(i);
+        }
+        if (_prepQueue.isNotEmpty && mounted) {
+          setState(() => _prepTotal = _prepDone + _prepQueue.length);
+        }
+      }
     }
     if (!mounted) return;
     _prepEscapeTimer?.cancel();
