@@ -7,6 +7,53 @@ extension Double {
   func clamped01() -> Double { self < 0 ? 0 : (self > 1 ? 1 : self) }
 }
 
+/// 影片合成的驗證回報。AVFoundation 自己會逐段檢查指令，出問題時
+/// 直接說是哪一種——時間範圍沒接起來、軌道編號不對、指令是空的。
+/// 靠人眼看程式碼猜「為什麼合成壞了」是查不出來的
+final class VCValidator: NSObject, AVVideoCompositionValidationHandling {
+  var problems: [String] = []
+
+  func videoComposition(
+    _ videoComposition: AVVideoComposition,
+    shouldContinueValidatingAfterFindingInvalidValueForKey key: String
+  ) -> Bool {
+    problems.append("欄位不合法：\(key)")
+    return true
+  }
+
+  func videoComposition(
+    _ videoComposition: AVVideoComposition,
+    shouldContinueValidatingAfterFindingEmptyTimeRange timeRange: CMTimeRange
+  ) -> Bool {
+    problems.append(
+      "有一段沒人管：\(String(format: "%.2f", timeRange.start.seconds))~"
+        + "\(String(format: "%.2f", timeRange.end.seconds))s")
+    return true
+  }
+
+  func videoComposition(
+    _ videoComposition: AVVideoComposition,
+    shouldContinueValidatingAfterFindingInvalidTimeRangeIn instruction:
+      AVVideoCompositionInstructionProtocol
+  ) -> Bool {
+    problems.append(
+      "指令的時間範圍不合法：\(String(format: "%.2f", instruction.timeRange.start.seconds))~"
+        + "\(String(format: "%.2f", instruction.timeRange.end.seconds))s")
+    return true
+  }
+
+  func videoComposition(
+    _ videoComposition: AVVideoComposition,
+    shouldContinueValidatingAfterFindingInvalidTrackIDIn instruction:
+      AVVideoCompositionInstructionProtocol,
+    layerInstruction: AVVideoCompositionLayerInstruction,
+    asset: AVAsset
+  ) -> Bool {
+    problems.append("指令指到不存在的軌道（trackID \(layerInstruction.trackID)）")
+    return true
+  }
+}
+
 /// 跨執行緒的一次性旗標。轉檔那條路上有兩個地方需要它：
 /// 「中途失敗過」（不記的話截斷檔會被當成功換上去）與「已經回覆過」
 ///（逾時跟正常完成會撞在一起，回兩次就會有兩份結果）
@@ -1822,10 +1869,12 @@ final class CompPlayer: NSObject, FlutterTexture {
         if let last = marks.last, t - last < 0.005 { continue }
         marks.append(t)
       }
-      if marks.count < 2 { marks = [0, duration] }
-      if let last = marks.last, duration - last > 0.0001 {
-        marks[marks.count - 1] = duration
+      // 補一個結尾，不要覆蓋原本的最後一個切點——覆蓋掉的話那一段
+      // 就消失了，取中點時會挑到別段，畫面直接不見
+      if let last = marks.last, duration - last > 0.005 {
+        marks.append(duration)
       }
+      if marks.count < 2 { marks = [0, max(0.01, duration)] }
       var instructions: [AVMutableVideoCompositionInstruction] = []
       for i in 0..<(marks.count - 1) {
         let a = marks[i]
@@ -1869,6 +1918,18 @@ final class CompPlayer: NSObject, FlutterTexture {
         instructions.append(ins)
       }
       vc.instructions = instructions
+      // 交出去之前先讓 AVFoundation 自己驗一遍。壞掉的合成不會丟例外，
+      // 只會安靜地變成一片黑——那正是「拉到新軌道預覽就消失」
+      let v = VCValidator()
+      if !vc.isValid(
+        for: comp, timeRange: CMTimeRange(start: .zero, duration: comp.duration),
+        validationDelegate: v)
+      {
+        buildError =
+          "合成指令不合法：" + (v.problems.first ?? "沒有細節")
+          + (v.problems.count > 1 ? "（共 \(v.problems.count) 處）" : "")
+        return false
+      }
       item.videoComposition = vc
     }
     // 影格輸出：BGRA 直接給 Flutter 材質用
@@ -2121,8 +2182,13 @@ final class CompPlayer: NSObject, FlutterTexture {
   private func frameProbe() -> String {
     guard let comp = composition else { return "沒有合成" }
     let gen = AVAssetImageGenerator(asset: comp)
-    gen.appliesPreferredTrackTransform = true
-    gen.videoComposition = player.currentItem?.videoComposition
+    // 掛了 videoComposition 就不能再要求它套軌道方向：兩個一起給，
+    // 產生器會直接失敗——那樣這個檢查本身就在說謊
+    if let vc = player.currentItem?.videoComposition {
+      gen.videoComposition = vc
+    } else {
+      gen.appliesPreferredTrackTransform = true
+    }
     gen.maximumSize = CGSize(width: 64, height: 64)
     gen.requestedTimeToleranceBefore = CMTimeMakeWithSeconds(0.2, preferredTimescale: 600)
     gen.requestedTimeToleranceAfter = CMTimeMakeWithSeconds(0.2, preferredTimescale: 600)
