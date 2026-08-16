@@ -8,16 +8,24 @@ import '../widgets/swipe_back.dart';
 
 /// 斗內頁（App 內購小費罐）。
 ///
-/// 內購：三檔消耗型商品，商店後台要建立同 ID 的商品才買得動；
+/// 內購：四檔消耗型商品，商店後台要建立同 ID 的商品才買得動；
 /// 還沒建立時卡片照樣顯示（固定價），點了提示即將開放。
-const kTipIds = <String>{'tip_small', 'tip_medium', 'tip_large'};
+const kTipIds = <String>{
+  'tip_small',
+  'tip_medium',
+  'tip_large',
+  'tip_max',
+};
 
-/// 檔位定義：(商品 ID, 名稱, 沒抓到商店價時顯示的價格)
+/// 前三檔並排：(商品 ID, 名稱, 沒抓到商店價時顯示的價格)
 const _kTiers = [
   ('tip_small', '小挺一下', 'NT\$100'),
   ('tip_medium', '中挺一下', 'NT\$300'),
   ('tip_large', '大挺一下', 'NT\$500'),
 ];
+
+/// 最下面那一檔，整排寬
+const _kMaxTier = ('tip_max', '極限挺', 'NT\$990');
 
 class DonateScreen extends StatefulWidget {
   const DonateScreen({super.key});
@@ -118,46 +126,114 @@ class _DonateScreenState extends State<DonateScreen> {
     }
   }
 
-  static const _tierIcons = {
-    'small': Icons.local_cafe_outlined,
-    'medium': Icons.ramen_dining_outlined,
-    'large': Icons.rocket_launch_outlined,
-  };
-  Widget _tierCard(String id, String label, String fallbackPrice) {
-    final tier = id.replaceFirst('tip_', '');
+  /// 並排的一張：金額是主角，名稱在下面。
+  /// [strong] 是推薦的那一檔，直接填深色
+  Widget _tierCard(
+    String id,
+    String label,
+    String fallbackPrice, {
+    bool strong = false,
+  }) {
+    final price = _products[id]?.price ?? fallbackPrice;
+    // 「NT$300」拆成幣別與數字：數字要夠大才好比較，幣別只是註記。
+    // 從第一個數字切開，別把小數點的錢（US$3.99）拆成 399
+    final cut = price.indexOf(RegExp(r'\d'));
+    final unit = cut <= 0 ? '' : price.substring(0, cut).trim();
+    final digits = cut < 0 ? price : price.substring(cut).trim();
+    return Expanded(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: _buying ? null : () => _buy(id),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 20),
+          decoration: BoxDecoration(
+            color: strong ? kLAccent : kLCard,
+            borderRadius: BorderRadius.circular(20),
+            border: strong ? null : Border.all(color: kLBorder, width: 1.4),
+          ),
+          child: Column(
+            children: [
+              // 換個幣別可能是「30,000」這種長數字，卡片只有三分之一
+              // 螢幕寬——縮著顯示，不要爆版
+              FittedBox(
+                child: Text(
+                  digits,
+                  style: TextStyle(
+                    fontSize: 26,
+                    fontWeight: FontWeight.w900,
+                    height: 1,
+                    color: strong ? Colors.white : kLText,
+                  ),
+                ),
+              ),
+              if (unit.isNotEmpty) ...[
+                const SizedBox(height: 3),
+                Text(
+                  unit,
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    color: strong
+                        ? Colors.white.withValues(alpha: 0.7)
+                        : kLTextDim,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 12),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  color: strong ? Colors.white : kLText,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 最下面那一檔：整排寬，金額跟名稱並排
+  Widget _maxTierCard() {
+    final (id, label, fallback) = _kMaxTier;
+    final price = _products[id]?.price ?? fallback;
     return InkWell(
-      borderRadius: BorderRadius.circular(kCardRadius),
+      borderRadius: BorderRadius.circular(20),
       onTap: _buying ? null : () => _buy(id),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        decoration: lightCard(),
+        padding: const EdgeInsets.fromLTRB(22, 20, 22, 20),
+        decoration: BoxDecoration(
+          color: kLCard,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: kLAccent, width: 1.8),
+        ),
         child: Row(
           children: [
-            Container(
-              width: 42,
-              height: 42,
-              decoration: BoxDecoration(
-                color: kLTile,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(_tierIcons[tier], size: 22, color: kLAccent),
-            ),
-            const SizedBox(width: 12),
             Expanded(
-              child: Text(
-                label,
-                style: const TextStyle(
-                  fontSize: 14.5,
-                  fontWeight: FontWeight.w700,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  const Text(
+                    '這個我會記很久',
+                    style: TextStyle(fontSize: 12.5, color: kLTextDim),
+                  ),
+                ],
               ),
             ),
             Text(
-              _products[id]?.price ?? fallbackPrice,
+              price,
               style: const TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w800,
-                color: kLAccent,
+                fontSize: 20,
+                fontWeight: FontWeight.w900,
               ),
             ),
           ],
@@ -207,10 +283,23 @@ class _DonateScreenState extends State<DonateScreen> {
                           ),
                         ),
                         const SizedBox(height: 22),
-                        for (final (id, label, price) in _kTiers) ...[
-                          _tierCard(id, label, price),
-                          const SizedBox(height: 12),
-                        ],
+                        Row(
+                          children: [
+                            for (var i = 0; i < _kTiers.length; i++) ...[
+                              if (i > 0) const SizedBox(width: 10),
+                              _tierCard(
+                                _kTiers[i].$1,
+                                _kTiers[i].$2,
+                                _kTiers[i].$3,
+                                // 中間那檔當推薦：三選一時人會挑中間的，
+                                // 直接標出來省得猶豫
+                                strong: i == 1,
+                              ),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        _maxTierCard(),
                       ],
                     ),
                   ),
