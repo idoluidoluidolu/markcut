@@ -132,25 +132,31 @@ class _ProfileScreenState extends State<ProfileScreen> {
             width: 92,
             height: 92,
             alignment: Alignment.center,
-            padding: const EdgeInsets.all(10),
+            padding: const EdgeInsets.all(9),
             decoration: BoxDecoration(
               color: const Color(0xFF1B1B20),
               borderRadius: BorderRadius.circular(20),
             ),
-            // 有圖就畫圖，沒圖就畫文字——這一格的用途是「一眼認出是哪組」
+            // 有圖就畫圖，沒圖就畫文字——這一格的用途是「一眼認出是哪組」。
+            // 文字包在 FittedBox 裡：長的範本名以前會被截成「© MARKCUT…」，
+            // 現在是整段一起縮到剛好放得下，一個字都不切
             child: logo.enabled && logo.bytes != null
-                ? Image.memory(logo.bytes!, fit: BoxFit.contain,
-                    gaplessPlayback: true)
-                : Text(
-                    text.text.trim().isEmpty ? '浮水印' : text.text,
-                    maxLines: 3,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 10.5,
-                      height: 1.35,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.white.withValues(alpha: 0.82),
+                ? Image.memory(
+                    logo.bytes!,
+                    fit: BoxFit.contain,
+                    gaplessPlayback: true,
+                  )
+                : FittedBox(
+                    fit: BoxFit.contain,
+                    child: Text(
+                      text.text.trim().isEmpty ? '浮水印' : text.text,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 15,
+                        height: 1.3,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white.withValues(alpha: 0.86),
+                      ),
                     ),
                   ),
           ),
@@ -221,6 +227,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   /// 草稿卡：長條的。上面一塊方形縮圖區（直式影片置中留邊，橫式也放得下），
   /// 下面名稱與時間——加起來整張是直的，直片橫片排在一起高度才一致
+  /// 草稿：縮圖本身就是卡（滿版、圓角），文字放在卡片外面。
+  ///
+  /// 本來是「白卡包著一塊灰底、灰底裡再放縮圖」——兩層框、三種底色，
+  /// 而畫面上真正有資訊的只有縮圖。拿掉外框之後縮圖可以直接鋪滿，
+  /// 也就是相簿、專案列表那種長相
   Widget _draftTile({
     required Widget cover,
     required String title,
@@ -229,57 +240,37 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }) =>
       GestureDetector(
         onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: kLCard,
-            borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: kLBorder, width: 1.4),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              AspectRatio(
-                aspectRatio: 1,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF3F3F7),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  clipBehavior: Clip.antiAlias,
-                  alignment: Alignment.center,
-                  child: cover,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AspectRatio(
+              aspectRatio: 3 / 4,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF1F1F5),
+                  borderRadius: BorderRadius.circular(18),
                 ),
+                clipBehavior: Clip.antiAlias,
+                alignment: Alignment.center,
+                child: cover,
               ),
-              const SizedBox(height: 11),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      when,
-                      style: const TextStyle(
-                        fontSize: 11.5,
-                        color: kLTextDim,
-                      ),
-                    ),
-                  ],
-                ),
+            ),
+            const SizedBox(height: 9),
+            Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 13.5,
+                fontWeight: FontWeight.w800,
               ),
-              const SizedBox(height: 4),
-            ],
-          ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              when,
+              style: const TextStyle(fontSize: 11.5, color: kLTextDim),
+            ),
+          ],
         ),
       );
 
@@ -389,7 +380,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                     cover: _thumbOf(v) != null
                                         ? Image.memory(
                                             _thumbOf(v)!,
-                                            fit: BoxFit.contain,
+                                            // 鋪滿：這是縮圖不是預覽，
+                                            // 留邊只會讓一排卡看起來破碎
+                                            fit: BoxFit.cover,
+                                            width: double.infinity,
+                                            height: double.infinity,
                                             gaplessPlayback: true,
                                           )
                                         : const Icon(

@@ -920,10 +920,11 @@ class SectionLabel extends StatelessWidget {
 // 編輯畫面留黑：畫面上唯一該亮的是使用者的素材，UI 一亮就搶戲。
 // 但主畫面、範本、個人頁這些「不看素材」的頁面沒有這個限制，白底
 // 讀起來輕鬆得多，也跟系統的相簿、設定同一個調性
-/// 頁面底。刻意不是純白：卡片是純白的，頁面得比它低一階，
-/// 「浮起來」才成立——純白卡疊在純白頁上只靠陰影撐不住上緣，
-/// 整張卡會看起來像一段浮著的文字。系統的設定、相簿都是這一派
-const kLBg = Color(0xFFF7F7F9);
+/// 頁面底＝純白。
+///
+/// 一度改成 #F7F7F9，為的是讓純白卡「浮」起來；但那讓整頁看起來灰灰的。
+/// 改回純白之後卡片改用髮絲邊線分層（見 lightCard），不靠底色差
+const kLBg = Color(0xFFFFFFFF);
 
 /// 浮在頁面上的面：卡片、對話框、抽屜、輸入框
 const kLCard = Color(0xFFFFFFFF);
@@ -942,27 +943,14 @@ const kLAccent = Color(0xFF121216);
 /// 卡片已經是純白＋陰影了，磚再灰下去整張會顯髒
 const kLTile = Color(0xFFF2F2F6);
 
-/// 淺色頁的卡片：純白底＋柔和陰影，不描邊。
+/// 淺色頁的卡片：純白底＋一條髮絲邊線，不打陰影。
 ///
-/// 灰底＋描邊那種在白頁上會變成「一塊比較髒的白」，而陰影是靠深度
-/// 分層，白紙上疊白卡讀起來乾淨得多（系統的設定、相簿都是這一派）
+/// 頁面是純白的，所以分層只能靠邊線。陰影在淺色頁上會拖出一條灰邊，
+/// 而且只有往下那一層時上緣會消失，整張卡看起來像一段浮著的文字
 BoxDecoration lightCard({double radius = kCardRadius}) => BoxDecoration(
       color: kLCard,
       borderRadius: BorderRadius.circular(radius),
-      // 兩層：一層貼身的（四周不偏移）讓上緣也有界線，一層擴散的給深度。
-      // 只有往下那一層的話，純白卡疊在純白頁上會變成「上緣消失」，
-      // 看起來像一段浮著的文字而不是一張卡
-      boxShadow: [
-        BoxShadow(
-          color: Colors.black.withValues(alpha: 0.06),
-          blurRadius: 3,
-        ),
-        BoxShadow(
-          color: Colors.black.withValues(alpha: 0.08),
-          blurRadius: 16,
-          offset: const Offset(0, 5),
-        ),
-      ],
+      border: Border.all(color: const Color(0xFFEDEDF2), width: 1.4),
     );
 
 ThemeData buildLightTheme() {
