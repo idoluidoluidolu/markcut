@@ -809,7 +809,7 @@ Widget optionRow({
   return InkWell(
     onTap: onTap,
     child: Container(
-      padding: EdgeInsets.symmetric(horizontal: 6, vertical: 9),
+      padding: EdgeInsets.symmetric(horizontal: 6, vertical: 12),
       decoration: first
           ? null
           : BoxDecoration(
@@ -823,13 +823,15 @@ Widget optionRow({
               children: [
                 Row(
                   children: [
+                    // 標題一律粗體。本來是「選中才粗」，在深底上淺字
+                    // 看起來本來就重，換到白底就變得又細又小——同一段
+                    // 程式碼、兩種底色，讀起來完全不是同一回事。
+                    // 選中與否改用顏色分，不用粗細分
                     Text(
                       title,
                       style: TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: selected
-                            ? FontWeight.w700
-                            : FontWeight.w400,
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w700,
                         color: selected ? c.accent : c.text,
                       ),
                     ),
@@ -857,11 +859,12 @@ Widget optionRow({
                   ],
                 ),
                 if (subtitle != null) ...[
-                  SizedBox(height: 1),
+                  SizedBox(height: 3),
                   Text(
                     subtitle,
                     style: TextStyle(
-                      fontSize: 10.5,
+                      fontSize: 11.5,
+                      height: 1.45,
                       color: c.dim,
                       fontFeatures: [FontFeature.tabularFigures()],
                     ),
