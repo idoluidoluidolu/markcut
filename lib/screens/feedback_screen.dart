@@ -95,7 +95,7 @@ class _FeedbackFormState extends State<_FeedbackForm> {
           ),
           const SizedBox(height: 6),
           const Text(
-            '發現BUG、想要新增的功能都可以和我說',
+            '發現 BUG、想要的功能，都可以跟我說',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 12.5, color: kLTextDim, height: 1.6),
           ),
@@ -108,8 +108,6 @@ class _FeedbackFormState extends State<_FeedbackForm> {
             style: const TextStyle(fontSize: 13),
             decoration: const InputDecoration(
               hintText: '想說的話⋯',
-              filled: true,
-              fillColor: Colors.black,
               counterText: '',
             ),
           ),
@@ -120,8 +118,6 @@ class _FeedbackFormState extends State<_FeedbackForm> {
             style: const TextStyle(fontSize: 13),
             decoration: const InputDecoration(
               hintText: '你的聯絡方式（選填）',
-              filled: true,
-              fillColor: Colors.black,
               counterText: '',
             ),
           ),

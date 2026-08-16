@@ -1080,7 +1080,10 @@ ThemeData buildLightTheme() {
     inputDecorationTheme: InputDecorationTheme(
       isDense: true,
       filled: true,
-      fillColor: kLPanel,
+      // 輸入框要比卡片深一階才看得出「這裡可以打字」。
+      // kLPanel 現在等於純白，填了跟沒填一樣
+      fillColor: const Color(0xFFF4F4F7),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
       enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(6),
           borderSide: const BorderSide(color: kLBorder)),
