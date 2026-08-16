@@ -184,6 +184,18 @@ class CompPlayer {
             ? '合成器 開（每格重畫 ${m['renderW']}x${m['renderH']}）'
             : '合成器 關（硬體直送，跟相簿同一條路）',
       );
+      // 軌數、指令數、以及「這一刻抽得到畫面嗎」。畫面黑掉時這一行
+      // 直接分得出是合成壞了還是圖層沒畫
+      if (m['vTracks'] != null) {
+        b.write(
+          '／${m['vTracks']} 條畫面軌、${m['aTracks']} 條聲音軌'
+          '、${m['instructions']} 段指令'
+          '、長 ${(m['compDur'] as num?)?.toStringAsFixed(1)}s',
+        );
+      }
+      if (m['frameProbe'] != null) {
+        b.write('\n  抽格檢查：${m['frameProbe']}');
+      }
       b.write('／狀態 ${m['timeControl'] ?? '?'}');
       if (m['waiting'] != null) b.write('（在等：${m['waiting']}）');
       if (m['bufferEmpty'] == true) b.write('／緩衝空的');

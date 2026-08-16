@@ -1490,6 +1490,9 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 預覽退回舊路徑，查不出為什麼
   private(set) var buildError: String?
 
+  /// 這份合成本身（診斷用：軌數、抽格）
+  private var composition: AVMutableComposition?
+
   /// 這份合成的總長度（秒）與畫面尺寸
   private(set) var duration: Double = 0
   private(set) var size: CGSize = .zero
@@ -1879,6 +1882,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       item.add(out)
       output = out
     }
+    composition = comp
     player.replaceCurrentItem(with: item)
 
     if texture {
@@ -2111,9 +2115,51 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// - 掉格：解碼器沒把影格及時交出來（畫面頓的直接證據）
   /// - 卡頓：播放中途被迫停下來等資料
   /// - 在等什麼：rate 想跑但跑不動時，系統說的理由
+  /// 「畫面是黑的」有兩種完全不同的原因，修法也完全不同：
+  /// 合成本身是空的／壞的，還是合成好好的但圖層沒把它畫出來。
+  /// 直接從這份合成抽一格出來看，就分得開——抽得到就是圖層的問題
+  private func frameProbe() -> String {
+    guard let comp = composition else { return "沒有合成" }
+    let gen = AVAssetImageGenerator(asset: comp)
+    gen.appliesPreferredTrackTransform = true
+    gen.videoComposition = player.currentItem?.videoComposition
+    gen.maximumSize = CGSize(width: 64, height: 64)
+    gen.requestedTimeToleranceBefore = CMTimeMakeWithSeconds(0.2, preferredTimescale: 600)
+    gen.requestedTimeToleranceAfter = CMTimeMakeWithSeconds(0.2, preferredTimescale: 600)
+    let t = player.currentTime()
+    guard let cg = try? gen.copyCGImage(at: t, actualTime: nil) else {
+      return "這一刻抽不到畫面（合成本身有問題）"
+    }
+    let w = cg.width
+    let h = cg.height
+    var buf = [UInt8](repeating: 0, count: max(1, w * h * 4))
+    guard
+      let ctx = CGContext(
+        data: &buf, width: w, height: h, bitsPerComponent: 8,
+        bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    else { return "抽得到但檢查不了" }
+    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+    var lit = 0
+    for i in stride(from: 0, to: buf.count, by: 4) {
+      if Int(buf[i]) + Int(buf[i + 1]) + Int(buf[i + 2]) > 24 { lit += 1 }
+    }
+    return lit == 0
+      ? "抽得到但整格是黑的（合成內容是空的）"
+      : "抽得到，有畫面（合成沒問題，是圖層沒畫出來）"
+  }
+
   func healthStats() -> [String: Any] {
     var m: [String: Any] = ["usesVC": usesVC, "renderW": Int(size.width),
                             "renderH": Int(size.height)]
+    if let comp = composition {
+      m["vTracks"] = comp.tracks(withMediaType: .video).count
+      m["aTracks"] = comp.tracks(withMediaType: .audio).count
+      m["compDur"] = comp.duration.seconds
+    }
+    m["instructions"] =
+      player.currentItem?.videoComposition?.instructions.count ?? 0
+    m["frameProbe"] = frameProbe()
     switch player.timeControlStatus {
     case .paused: m["timeControl"] = "暫停"
     case .waitingToPlayAtSpecifiedRate: m["timeControl"] = "想播但在等"
