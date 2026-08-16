@@ -258,7 +258,7 @@ class _HomeScreenState extends State<HomeScreen> {
             optionRow(
   context: context,
               title: '剪成一支影片',
-              subtitle: '照選取順序接在時間軸上，可以再剪、加字、上浮水印',
+              subtitle: '照選取順序接在時間軸上',
               selected: false,
               first: true,
               onTap: () => Navigator.pop(context, true),
@@ -266,7 +266,7 @@ class _HomeScreenState extends State<HomeScreen> {
             optionRow(
   context: context,
               title: '各自上浮水印',
-              subtitle: '每一部分開輸出，統一套同一組浮水印',
+              subtitle: '快速套用同一組浮水印',
               selected: false,
               onTap: () => Navigator.pop(context, false),
             ),
