@@ -1031,8 +1031,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     });
     _ensureScrubSlots(srcIndex, dur);
     unawaited(_measureSrcKbps());
-    // 工作檔在背景備，不擋進場：先用原檔播，轉好了再換過去
-    unawaited(_prepWorkFile(srcIndex));
+    // 排進轉檔佇列（遮罩會蓋著等它做完）
+    _enqueuePrep(srcIndex);
   }
 
   // ===== 素材工作檔 =====
@@ -1047,6 +1047,57 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 正在備工作檔的素材（全部備完才把合成換成工作檔版）
   final Set<int> _prepping = {};
+
+  /// 還沒開始備的素材，以及「這一批總共幾支、做完幾支」。
+  ///
+  /// 使用者要的是「先等一下，然後進去就都好了」，不是「進去之後閃東
+  /// 閃西」——所以轉檔排成一批做完，期間畫面上蓋一層遮罩擋住互動。
+  /// 一支一支各自開跑的話，遮罩會閃三次，比等一次還煩
+  final List<int> _prepQueue = [];
+  bool _prepBusy = false;
+  int _prepDone = 0;
+  int _prepTotal = 0;
+
+  /// 這一刻要不要蓋讀取遮罩
+  bool get _prepGate => _prepBusy;
+
+  void _enqueuePrep(int srcIndex) {
+    if (srcIndex < 0 || srcIndex >= _tl.sources.length) return;
+    final src = _tl.sources[srcIndex];
+    if (src.kind != ClipKind.video || src.workPath != null) return;
+    if (_prepQueue.contains(srcIndex) || _prepping.contains(srcIndex)) return;
+    _prepQueue.add(srcIndex);
+    _prepTotal = _prepDone + _prepQueue.length + _prepping.length;
+    unawaited(_drainPrep());
+  }
+
+  Future<void> _drainPrep() async {
+    if (_prepBusy) return;
+    if (!await MediaPrep.available) {
+      _prepQueue.clear();
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _prepBusy = true;
+      _prepDone = 0;
+      _prepTotal = _prepQueue.length;
+    });
+    while (_prepQueue.isNotEmpty && mounted) {
+      await _prepWorkFile(_prepQueue.removeAt(0));
+      if (!mounted) return;
+      setState(() {
+        _prepDone++;
+        _prepTotal = _prepDone + _prepQueue.length;
+      });
+    }
+    if (!mounted) return;
+    setState(() => _prepBusy = false);
+    // 這時候才組合成：全部素材都是工作檔，方向與編碼一致，
+    // 合成器不會被叫醒，而且之後不必再重烘一次
+    _compDirty = true;
+    unawaited(_ensureComp());
+  }
 
   /// 影片素材是不是全部都有工作檔了。
   ///
@@ -1144,7 +1195,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (src.kind != ClipKind.video) continue;
       if (src.workPath != null && await fileExists(src.workPath!)) continue;
       src.workPath = null;
-      await _prepWorkFile(i);
+      _enqueuePrep(i);
       if (!mounted) return;
     }
   }
@@ -5047,8 +5098,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             child: const Text('影片編輯'),
           ),
         ),
-        body: !_ready
-            ? const Center(child: CircularProgressIndicator())
+        // 素材還在備就整頁擋著等它做完。使用者的原話是「既然一定要跑
+        // 讀取，那請改成先跑一下讀取再進入，比進入後閃東閃西讀取還好」
+        body: !_ready || _prepGate
+            ? _buildPrepGate()
             // 編輯模式「不放」右滑返回：時間軸捲動、拖片段、移浮水印
             // 全是橫向手勢，跟返回判定天生打架。返回走上一頁鍵／返回鍵
             : Column(
@@ -6710,6 +6763,46 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 右上角比例小標籤：常駐顯示目前畫面比例，點了直接開比例選單
+  /// 進場的讀取畫面：素材備好之前整頁擋著。
+  ///
+  /// 備素材本身省不掉（1080p SDR 的工作檔是拖曳跟匯出順的前提），
+  /// 但「什麼時候讓使用者看到編輯器」是可以選的。以前是進場就給畫面、
+  /// 背景邊轉邊換，結果是進去之後畫面閃、播放跳；現在一次等完，
+  /// 進去就是完成品
+  Widget _buildPrepGate() {
+    final total = _prepTotal;
+    final done = _prepDone;
+    final pct = total <= 0 ? null : (done / total).clamp(0.0, 1.0);
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            width: 44,
+            height: 44,
+            child: CircularProgressIndicator(
+              strokeWidth: 3,
+              value: pct == null || pct <= 0 ? null : pct,
+              color: kAmber,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            _ready && total > 0 ? '準備素材 $done／$total' : '載入中',
+            style: const TextStyle(fontSize: 13, color: kTextDim),
+          ),
+          if (_ready && total > 0) ...[
+            const SizedBox(height: 6),
+            const Text(
+              '轉成剪輯用的格式，之後拖曳與匯出都會順',
+              style: TextStyle(fontSize: 11, color: kTextDim),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _canvasHint() {
     return Align(
       alignment: Alignment.topRight,

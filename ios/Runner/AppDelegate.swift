@@ -438,6 +438,12 @@ final class AtomicFlag {
     let vc = AVMutableVideoComposition()
     vc.renderSize = canvas
     vc.frameDuration = CMTime(value: 1, timescale: 30)
+    // 明確標成 709。素材是 iPhone 預設的 4K HLG（HDR），不標的話 HDR 的
+    // 色彩標記會原封帶進輸出檔，播放器再自己套一次曲線——輕則顏色歪掉，
+    // 重則整片黑。轉工作檔那段早就踩過同一個坑，這裡漏了
+    vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
+    vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
+    vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
     var instructions: [AVMutableVideoCompositionInstruction] = []
     for seg in segments {
       let disp = seg.size.applying(seg.transform)
@@ -550,6 +556,16 @@ final class AtomicFlag {
         self?.exportSession = nil
         switch session.status {
         case .completed:
+          // 驗收：抽兩格看是不是整片黑。
+          //
+          // 匯出「成功但畫面是黑的」不會有任何錯誤——檔案照樣生出來、
+          // 存進相簿，使用者要等整支匯完才發現。這種錯不能靠使用者回報，
+          // 這裡自己看一眼；黑的就當作失敗，呼叫端會退回 FFmpeg 重跑
+          if self?.looksBlank(dest) == true {
+            try? FileManager.default.removeItem(atPath: dest)
+            done("畫面是黑的（已丟掉，改用 FFmpeg）")
+            return
+          }
           channel.invokeMethod("progress", arguments: 1.0)
           done(nil)
         case .cancelled:
@@ -565,6 +581,40 @@ final class AtomicFlag {
         }
       }
     }
+  }
+
+  /// 抽兩格看畫面是不是整片黑（匯出的驗收）。
+  ///
+  /// 只看亮度：把影格縮成 32x32 拿出來，只要有任何一格不是幾乎全黑就算
+  /// 過。真的全黑的影片本來就很少，誤判的代價也只是多跑一次 FFmpeg
+  private func looksBlank(_ path: String) -> Bool {
+    let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+    let dur = asset.duration.seconds
+    guard dur > 0.05 else { return true }
+    let gen = AVAssetImageGenerator(asset: asset)
+    gen.appliesPreferredTrackTransform = true
+    gen.maximumSize = CGSize(width: 32, height: 32)
+    gen.requestedTimeToleranceBefore = CMTime(seconds: 0.5, preferredTimescale: 600)
+    gen.requestedTimeToleranceAfter = CMTime(seconds: 0.5, preferredTimescale: 600)
+    for frac in [0.1, 0.5] {
+      let t = CMTime(seconds: dur * frac, preferredTimescale: 600)
+      guard let cg = try? gen.copyCGImage(at: t, actualTime: nil) else { continue }
+      let w = cg.width
+      let h = cg.height
+      guard w > 0, h > 0 else { continue }
+      var buf = [UInt8](repeating: 0, count: w * h * 4)
+      guard
+        let ctx = CGContext(
+          data: &buf, width: w, height: h, bitsPerComponent: 8,
+          bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+      else { continue }
+      ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+      for i in stride(from: 0, to: buf.count, by: 4) {
+        if Int(buf[i]) + Int(buf[i + 1]) + Int(buf[i + 2]) > 24 { return false }
+      }
+    }
+    return true
   }
 
   /// 一張整版 PNG 疊在畫面上，只在它的時間範圍內出現。
