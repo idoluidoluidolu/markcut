@@ -49,3 +49,6 @@ fonts_original/
 
 # iOS 簽章私鑰（貼進 Codemagic 安全變數用，絕不能進版控）
 ios_cert_key.pem
+
+# golden 測試失敗時的比對圖（本機產物）
+test/failures/
