@@ -131,9 +131,9 @@ class _DonateScreenState extends State<DonateScreen> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         decoration: BoxDecoration(
-          color: kPanel,
+          color: kLPanel,
           borderRadius: BorderRadius.circular(kCardRadius),
-          border: Border.all(color: kBorder, width: 1.5),
+          border: Border.all(color: kLBorder, width: 1.5),
         ),
         child: Row(
           children: [
@@ -141,10 +141,10 @@ class _DonateScreenState extends State<DonateScreen> {
               width: 42,
               height: 42,
               decoration: BoxDecoration(
-                color: kPanelHi,
+                color: kLPanelHi,
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: Icon(_tierIcons[tier], size: 22, color: kAmber),
+              child: Icon(_tierIcons[tier], size: 22, color: kLAccent),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -161,7 +161,7 @@ class _DonateScreenState extends State<DonateScreen> {
               style: const TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w800,
-                color: kAmber,
+                color: kLAccent,
               ),
             ),
           ],
@@ -172,10 +172,10 @@ class _DonateScreenState extends State<DonateScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return SwipeBack(
+    return LightPage(child: SwipeBack(
       child: Scaffold(
-      backgroundColor: kBg,
-      appBar: AppBar(backgroundColor: kBg, title: const Text('太好用啦')),
+      backgroundColor: kLBg,
+      appBar: AppBar(backgroundColor: kLBg, title: const Text('太好用啦')),
       body: SafeArea(
         child: Column(
           children: [
@@ -206,7 +206,7 @@ class _DonateScreenState extends State<DonateScreen> {
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             fontSize: 13,
-                            color: kTextDim,
+                            color: kLTextDim,
                             height: 1.7,
                           ),
                         ),
@@ -238,6 +238,6 @@ class _DonateScreenState extends State<DonateScreen> {
         ),
       ),
     ),
-    );
+    ));
   }
 }

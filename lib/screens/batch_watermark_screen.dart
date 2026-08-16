@@ -660,6 +660,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
             children: [
               for (final (i, q) in qualityOrder.indexed)
                 optionRow(
+  context: context,
                   title: q.label,
                   subtitle: q.note,
                   selected: _quality == q,

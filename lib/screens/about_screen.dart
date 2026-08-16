@@ -22,11 +22,11 @@ class AboutScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SwipeBack(
+    return LightPage(child: SwipeBack(
       child: Scaffold(
-        backgroundColor: kBg,
+        backgroundColor: kLBg,
         appBar: AppBar(
-          backgroundColor: kBg,
+          backgroundColor: kLBg,
           title: const Text('關於 浮水印'),
         ),
         body: SafeArea(
@@ -54,7 +54,7 @@ class AboutScreen extends StatelessWidget {
                               textAlign: TextAlign.center,
                               style: TextStyle(
                                 fontSize: 12.5,
-                                color: kTextDim,
+                                color: kLTextDim,
                                 height: 1.75,
                               ),
                             ),
@@ -70,7 +70,7 @@ class AboutScreen extends StatelessWidget {
           ),
         ),
       ),
-    );
+    ));
   }
 
   /// 頁尾：授權相關全部收在這三個小連結裡
@@ -95,7 +95,7 @@ class AboutScreen extends StatelessWidget {
           const SizedBox(height: 8),
           const Text(
             '依 MPL 2.0 散布 · FFmpeg LGPL v2.1+',
-            style: TextStyle(fontSize: 11, color: kTextDim),
+            style: TextStyle(fontSize: 11, color: kLTextDim),
           ),
         ],
       ),
@@ -104,7 +104,7 @@ class AboutScreen extends StatelessWidget {
 
   Widget _dot() => const Padding(
     padding: EdgeInsets.symmetric(horizontal: 8),
-    child: Text('·', style: TextStyle(fontSize: 12, color: kTextDim)),
+    child: Text('·', style: TextStyle(fontSize: 12, color: kLTextDim)),
   );
 
   Widget _link(BuildContext context, String label, VoidCallback onTap) {
@@ -115,7 +115,7 @@ class AboutScreen extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
         child: Text(
           label,
-          style: const TextStyle(fontSize: 12.5, color: kText),
+          style: const TextStyle(fontSize: 12.5, color: kLText),
         ),
       ),
     );
@@ -191,9 +191,9 @@ Widget _card(String title, List<Widget> children) {
     padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
     decoration: BoxDecoration(
       // 面板色＋細邊線，跟個人中心同一套（標準 dark mode 層次）
-      color: kPanel,
+      color: kLPanel,
       borderRadius: BorderRadius.circular(kCardRadius),
-      border: Border.all(color: kClipBorder),
+      border: Border.all(color: kLBorder),
     ),
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -203,7 +203,7 @@ Widget _card(String title, List<Widget> children) {
           style: const TextStyle(
             fontSize: 13,
             fontWeight: FontWeight.w700,
-            color: kText,
+            color: kLText,
           ),
         ),
         const SizedBox(height: 8),
@@ -217,7 +217,7 @@ Widget _body(String text) => Padding(
   padding: const EdgeInsets.only(bottom: 6),
   child: Text(
     text,
-    style: const TextStyle(fontSize: 12.5, color: kTextDim, height: 1.6),
+    style: const TextStyle(fontSize: 12.5, color: kLTextDim, height: 1.6),
   ),
 );
 
@@ -237,23 +237,23 @@ Widget _copyRow({
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
         decoration: BoxDecoration(
-          color: kPanel,
+          color: kLPanel,
           borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: kClipBorder),
+          border: Border.all(color: kLBorder),
         ),
         child: Row(
           children: [
-            Icon(icon, size: 15, color: kAmber),
+            Icon(icon, size: 15, color: kLAccent),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
                 text,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 11.5, color: kText),
+                style: const TextStyle(fontSize: 11.5, color: kLText),
               ),
             ),
-            const Icon(Icons.copy, size: 14, color: kTextDim),
+            const Icon(Icons.copy, size: 14, color: kLTextDim),
           ],
         ),
       ),
@@ -277,10 +277,10 @@ class _InfoPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SwipeBack(
+    return LightPage(child: SwipeBack(
       child: Scaffold(
-        backgroundColor: kBg,
-        appBar: AppBar(backgroundColor: kBg, title: Text(title)),
+        backgroundColor: kLBg,
+        appBar: AppBar(backgroundColor: kLBg, title: Text(title)),
         body: ListView(
           padding: const EdgeInsets.all(16),
           children: [
@@ -302,8 +302,8 @@ class _InfoPage extends StatelessWidget {
                 ),
                 style: OutlinedButton.styleFrom(
                   minimumSize: const Size.fromHeight(44),
-                  side: const BorderSide(color: kClipBorder),
-                  foregroundColor: kText,
+                  side: const BorderSide(color: kLBorder),
+                  foregroundColor: kLText,
                 ),
                 child: const Text('第三方套件授權清單', style: TextStyle(fontSize: 13)),
               ),
@@ -311,6 +311,6 @@ class _InfoPage extends StatelessWidget {
           ],
         ),
       ),
-    );
+    ));
   }
 }

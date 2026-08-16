@@ -14,11 +14,11 @@ Future<void> showFeedbackDialog(BuildContext context) {
     // 返回鍵同理，交給表單自己在沒在送的時候才放行
     barrierDismissible: false,
     builder: (context) => Dialog(
-      backgroundColor: kBg,
+      backgroundColor: kLBg,
       insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(kDialogRadius),
-        side: const BorderSide(color: kBorder),
+        side: const BorderSide(color: kLBorder),
       ),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: kDialogWidth),
@@ -74,12 +74,12 @@ class _FeedbackFormState extends State<_FeedbackForm> {
 
   @override
   Widget build(BuildContext context) {
-    return PopScope(
+    return LightPage(child: PopScope(
       // 送出中不讓返回鍵關掉：關掉的話成功／失敗都不會顯示，
       // 使用者不知道送出去沒有，就會再送一次
       canPop: !_sending,
       child: _form(context),
-    );
+    ));
   }
 
   Widget _form(BuildContext context) {
@@ -97,7 +97,7 @@ class _FeedbackFormState extends State<_FeedbackForm> {
           const Text(
             '發現BUG、想要新增的功能都可以和我說',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 12.5, color: kTextDim, height: 1.6),
+            style: TextStyle(fontSize: 12.5, color: kLTextDim, height: 1.6),
           ),
           const SizedBox(height: 14),
           TextField(
@@ -150,15 +150,15 @@ class _FeedbackFormState extends State<_FeedbackForm> {
           const SizedBox(height: 14),
           const Row(
             children: [
-              Expanded(child: Divider(color: kBorder, height: 1)),
+              Expanded(child: Divider(color: kLBorder, height: 1)),
               Padding(
                 padding: EdgeInsets.symmetric(horizontal: 10),
                 child: Text(
                   '或',
-                  style: TextStyle(fontSize: 11, color: kTextDim),
+                  style: TextStyle(fontSize: 11, color: kLTextDim),
                 ),
               ),
-              Expanded(child: Divider(color: kBorder, height: 1)),
+              Expanded(child: Divider(color: kLBorder, height: 1)),
             ],
           ),
           const SizedBox(height: 10),
@@ -168,8 +168,8 @@ class _FeedbackFormState extends State<_FeedbackForm> {
             // 形狀沿用佈景的 6px 圓角，不要自己覆寫
             style: OutlinedButton.styleFrom(
               minimumSize: const Size.fromHeight(46),
-              foregroundColor: kText,
-              side: const BorderSide(color: kClipBorder),
+              foregroundColor: kLText,
+              side: const BorderSide(color: kLBorder),
             ),
             icon: const Icon(Icons.alternate_email, size: 16),
             label: const Text('直接密我 Threads', style: TextStyle(fontSize: 13)),
@@ -179,7 +179,7 @@ class _FeedbackFormState extends State<_FeedbackForm> {
             onPressed: _sending ? null : () => Navigator.pop(context),
             child: const Text(
               '關閉',
-              style: TextStyle(fontSize: 13, color: kTextDim),
+              style: TextStyle(fontSize: 13, color: kLTextDim),
             ),
           ),
         ],

@@ -46,12 +46,12 @@ class _PickRow extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 17),
         decoration: divider
             ? const BoxDecoration(
-                border: Border(bottom: BorderSide(color: kBorder)),
+                border: Border(bottom: BorderSide(color: kLBorder)),
               )
             : null,
         child: Row(
           children: [
-            Icon(icon, size: 22, color: kAmber),
+            Icon(icon, size: 22, color: kLAccent),
             const SizedBox(width: 15),
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -64,11 +64,11 @@ class _PickRow extends StatelessWidget {
                         fontSize: 14.5,
                         height: 1.25,
                         fontWeight: FontWeight.w700,
-                        color: kText)),
+                        color: kLText)),
                 const SizedBox(height: 3),
                 Text(hint,
                     style: const TextStyle(
-                        fontSize: 12, height: 1.25, color: kTextDim)),
+                        fontSize: 12, height: 1.25, color: kLTextDim)),
               ],
             ),
           ],
@@ -144,11 +144,11 @@ class _HomeScreenState extends State<HomeScreen> {
     final kind = await showDialog<_PickKind>(
       context: context,
       builder: (context) => Dialog(
-        backgroundColor: kBg,
+        backgroundColor: kLBg,
         insetPadding: const EdgeInsets.symmetric(horizontal: 32),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(kDialogRadius),
-          side: const BorderSide(color: kBorder),
+          side: const BorderSide(color: kLBorder),
         ),
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: kDialogWidth),
@@ -256,6 +256,7 @@ class _HomeScreenState extends State<HomeScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             optionRow(
+  context: context,
               title: '剪成一支影片',
               subtitle: '照選取順序接在時間軸上，可以再剪、加字、上浮水印',
               selected: false,
@@ -263,6 +264,7 @@ class _HomeScreenState extends State<HomeScreen> {
               onTap: () => Navigator.pop(context, true),
             ),
             optionRow(
+  context: context,
               title: '各自上浮水印',
               subtitle: '每一部分開輸出，統一套同一組浮水印',
               selected: false,
@@ -371,11 +373,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      // 近黑底（標準 dark mode）：吉祥物黑底圖用「變亮混合」融進背景
-      backgroundColor: kBg,
+    return LightPage(child: Scaffold(
+      backgroundColor: kLBg,
       appBar: AppBar(
-        backgroundColor: kBg,
+        backgroundColor: kLBg,
         actions: [
           IconButton(
             tooltip: '個人中心',
@@ -406,20 +407,16 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: SizedBox(
                   width: 190,
                   height: 76,
-                  // 透明背景版 logo：直接融進近黑背景，不用底板
-                  // （icon_foreground.png 是啟動圖示前景，別共用）。
-                  // 壓暗一階（0.85）不跟白色主按鈕搶注意力——
-                  // 改這個數字就能微調「整組」亮度。
-                  // 三隻各自的透明度是烘在 PNG 的 alpha 裡
-                  // （左 75／中 42／右 16，各佔 x 132-378、382-628、
-                  // 632-878），這裡調不動，要改得動圖檔
+                  // 圖檔是白色的吉祥物（原本配近黑底），白底頁面直接放
+                  // 會整片看不見。srcIn 只換顏色不動 alpha，所以三隻各自
+                  // 的淡出還在（左 75／中 42／右 16，烘在 PNG 的 alpha
+                  // 裡，各佔 x 132-378、382-628、632-878，這裡調不動）。
+                  // icon_foreground.png 是啟動圖示前景，別共用
                   child: ColorFiltered(
-                    colorFilter: const ColorFilter.matrix(<double>[
-                      0.85, 0, 0, 0, 0, //
-                      0, 0.85, 0, 0, 0, //
-                      0, 0, 0.85, 0, 0, //
-                      0, 0, 0, 1, 0, //
-                    ]),
+                    colorFilter: const ColorFilter.mode(
+                      kLText,
+                      BlendMode.srcIn,
+                    ),
                     child: Image.asset(
                       'assets/icon/home_logo.png',
                       fit: BoxFit.cover, // 裁掉原圖四周的留白
@@ -445,7 +442,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       ),
-    );
+    ));
   }
 }
 
@@ -475,10 +472,10 @@ class _HomeButton extends StatelessWidget {
         height: 56,
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: primary ? kAmber : Colors.transparent,
+          color: primary ? kLAccent : Colors.transparent,
           borderRadius: BorderRadius.circular(kHomeBtnRadius),
           border:
-              primary ? null : Border.all(color: kClipBorder, width: 1.5),
+              primary ? null : Border.all(color: kLBorder, width: 1.5),
         ),
         child: Text(
           label,
@@ -486,7 +483,7 @@ class _HomeButton extends StatelessWidget {
             fontSize: 16,
             fontWeight: FontWeight.w800,
             letterSpacing: 1,
-            color: primary ? kBg : kText,
+            color: primary ? kLBg : kLText,
           ),
         ),
       ),

@@ -2,6 +2,11 @@ import AVFoundation
 import Flutter
 import UIKit
 
+extension Double {
+  /// 夾在 0~1（淡入淡出的係數算出來可能超出範圍）
+  func clamped01() -> Double { self < 0 ? 0 : (self > 1 ? 1 : self) }
+}
+
 /// 跨執行緒的一次性旗標。轉檔那條路上有兩個地方需要它：
 /// 「中途失敗過」（不記的話截斷檔會被當成功換上去）與「已經回覆過」
 ///（逾時跟正常完成會撞在一起，回兩次就會有兩份結果）
@@ -1603,6 +1608,14 @@ final class CompPlayer: NSObject, FlutterTexture {
         }
         if let i = chosen {
           do {
+            // 先補空白再插：插在超過軌道長度的時間點時，「會不會自動
+            // 補空白」文件講得含糊，不補的話配樂可能整段往前擠、
+            // 聲音跟畫面對不上
+            if aTracks[i].end < putAt {
+              aTracks[i].track.insertEmptyTimeRange(
+                CMTimeRange(
+                  start: aTracks[i].end, duration: putAt - aTracks[i].end))
+            }
             try aTracks[i].track.insertTimeRange(range, of: sa, at: putAt)
             if outDur != range.duration {
               aTracks[i].track.scaleTimeRange(
@@ -1638,13 +1651,22 @@ final class CompPlayer: NSObject, FlutterTexture {
           transform: src.preferredTransform, size: src.naturalSize,
           fadeIn: fadeIn, fadeOut: fadeOut, userScale: userScale, px: px,
           py: py, track: slot.track, layer: layer))
-      // 畫面大小以最底層、最早出現的那一段「轉正之後」的尺寸為準
-      if size == .zero {
-        let d = src.naturalSize.applying(src.preferredTransform)
-        size = CGSize(width: abs(d.width), height: abs(d.height))
-      }
     }
     if segments.isEmpty { return false }
+
+    // 畫面大小以「最底層、最早出現」的那一段轉正之後的尺寸為準。
+    //
+    // 本來是取迴圈裡第一個遇到的，但那份排序只看時間不看層——子母畫面
+    // 的小畫面如果比底下那層早開始，整個畫布就會照小畫面的比例走
+    if let base = segments.min(by: {
+      $0.layer != $1.layer
+        ? $0.layer < $1.layer
+        : $0.range.start.seconds < $1.range.start.seconds
+    }) {
+      let d = base.size.applying(base.transform)
+      size = CGSize(width: abs(d.width), height: abs(d.height))
+    }
+    if size.width < 2 || size.height < 2 { return false }
     duration = comp.duration.seconds
     if duration <= 0 { return false }
 
@@ -1736,21 +1758,45 @@ final class CompPlayer: NSObject, FlutterTexture {
         return t
       }
 
+      /// 一段畫面在 [t] 這一刻該有多不透明（0~1）。淡入淡出是線性的
+      func opacity(_ seg: Seg, at t: Double) -> Double {
+        let s = seg.range.start.seconds
+        let e = seg.range.end.seconds
+        var o = 1.0
+        if seg.fadeIn > 0.01 {
+          o = min(o, ((t - s) / seg.fadeIn).clamped01())
+        }
+        if seg.fadeOut > 0.01 {
+          o = min(o, ((e - t) / seg.fadeOut).clamped01())
+        }
+        return o
+      }
+
       // 指令必須把整條時間軸切成不重疊、而且接得起來的區間。
       // 每個片段的頭尾都是一個切點；區間內把「當下看得到的層」由下往上
       // 疊起來，這就是子母畫面
-      var cuts: Set<Double> = [0, duration]
+      var raw: [Double] = [0, duration]
       for seg in segments {
-        cuts.insert(seg.range.start.seconds)
-        cuts.insert(seg.range.end.seconds)
+        raw.append(seg.range.start.seconds)
+        raw.append(seg.range.end.seconds)
       }
-      let marks = cuts.filter { $0.isFinite && $0 >= 0 && $0 <= duration }
-        .sorted()
+      // 去重要帶容差，而且是在這裡去掉，不是排完之後跳過太短的區間——
+      // 跳過會在時間軸上留一條沒有指令的縫，而指令必須首尾相接把整條
+      // 蓋滿，缺一段系統就當這份合成有問題
+      var marks: [Double] = []
+      for t in raw.filter({ $0.isFinite && $0 >= 0 && $0 <= duration }).sorted()
+      {
+        if let last = marks.last, t - last < 0.005 { continue }
+        marks.append(t)
+      }
+      if marks.count < 2 { marks = [0, duration] }
+      if let last = marks.last, duration - last > 0.0001 {
+        marks[marks.count - 1] = duration
+      }
       var instructions: [AVMutableVideoCompositionInstruction] = []
-      for i in 0..<max(0, marks.count - 1) {
+      for i in 0..<(marks.count - 1) {
         let a = marks[i]
         let b = marks[i + 1]
-        if b - a < 0.001 { continue }
         let mid = (a + b) / 2
         let here = segments.filter {
           $0.range.start.seconds <= mid + 0.0005
@@ -1767,19 +1813,22 @@ final class CompPlayer: NSObject, FlutterTexture {
           let li = AVMutableVideoCompositionLayerInstruction(
             assetTrack: seg.track)
           li.setTransform(t, at: ins.timeRange.start)
-          if seg.fadeIn > 0.01 {
-            li.setOpacityRamp(
-              fromStartOpacity: 0, toEndOpacity: 1,
-              timeRange: CMTimeRange(
-                start: seg.range.start,
-                duration: CMTime(
-                  seconds: seg.fadeIn, preferredTimescale: scale)))
-          }
-          if seg.fadeOut > 0.01 {
-            let fo = CMTime(seconds: seg.fadeOut, preferredTimescale: scale)
-            li.setOpacityRamp(
-              fromStartOpacity: 1, toEndOpacity: 0,
-              timeRange: CMTimeRange(start: seg.range.end - fo, duration: fo))
+          // 淡入淡出要裁進「這一段指令」的範圍裡。
+          //
+          // 指令的區間是被所有片段的頭尾切出來的，一個片段常常橫跨好幾
+          // 段指令；把整條淡入的時間範圍原封設在每一段指令上，範圍會落
+          // 在指令之外，那是不合法的用法。改成算出這段指令的頭尾各自
+          // 該有多不透明，中間拉一條斜坡——跨幾段都接得起來
+          let o0 = opacity(seg, at: a)
+          let o1 = opacity(seg, at: b)
+          if abs(o0 - 1) > 0.001 || abs(o1 - 1) > 0.001 {
+            if abs(o0 - o1) < 0.001 {
+              li.setOpacity(Float(o0), at: ins.timeRange.start)
+            } else {
+              li.setOpacityRamp(
+                fromStartOpacity: Float(o0), toEndOpacity: Float(o1),
+                timeRange: ins.timeRange)
+            }
           }
           lis.append(li)
         }

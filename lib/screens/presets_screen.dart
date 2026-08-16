@@ -114,7 +114,7 @@ class _PresetsScreenState extends State<PresetsScreen> {
                 style: const TextStyle(
                   fontSize: 13.5,
                   fontWeight: FontWeight.w700,
-                  color: kText,
+                  color: kLText,
                 ),
               ),
             ),
@@ -122,7 +122,7 @@ class _PresetsScreenState extends State<PresetsScreen> {
               leading: const Icon(
                 Icons.drive_file_rename_outline,
                 size: 20,
-                color: kIcon,
+                color: kLIcon,
               ),
               title: const Text('改名', style: TextStyle(fontSize: 13.5)),
               onTap: () {
@@ -168,14 +168,14 @@ class _PresetsScreenState extends State<PresetsScreen> {
       child: Container(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: kClipBorder),
+          border: Border.all(color: kLBorder),
         ),
         child: const Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.add, size: 24, color: kTextDim),
+            Icon(Icons.add, size: 24, color: kLTextDim),
             SizedBox(height: 5),
-            Text('新增範本', style: TextStyle(fontSize: 11.5, color: kTextDim)),
+            Text('新增範本', style: TextStyle(fontSize: 11.5, color: kLTextDim)),
           ],
         ),
       ),
@@ -191,7 +191,7 @@ class _PresetsScreenState extends State<PresetsScreen> {
         clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: kBorder),
+          border: Border.all(color: kLBorder),
         ),
         child: Stack(
           fit: StackFit.expand,
@@ -213,9 +213,9 @@ class _PresetsScreenState extends State<PresetsScreen> {
                   vertical: 2.5,
                 ),
                 decoration: BoxDecoration(
-                  color: kPanelHi.withValues(alpha: 0.92),
+                  color: kLPanelHi.withValues(alpha: 0.92),
                   borderRadius: BorderRadius.circular(99),
-                  border: Border.all(color: kClipBorder),
+                  border: Border.all(color: kLBorder),
                 ),
                 child: Text(
                   p.name,
@@ -223,7 +223,7 @@ class _PresetsScreenState extends State<PresetsScreen> {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     fontSize: 10,
-                    color: kIcon,
+                    color: kLIcon,
                     height: 1.3,
                   ),
                 ),
@@ -237,7 +237,7 @@ class _PresetsScreenState extends State<PresetsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return SwipeBack(
+    return LightPage(child: SwipeBack(
       child: Scaffold(
         appBar: AppBar(title: const Text('我的浮水印範本')),
         body: _loading
@@ -256,6 +256,6 @@ class _PresetsScreenState extends State<PresetsScreen> {
                     i < _presets.length ? _presetCard(_presets[i]) : _addCard(),
               ),
       ),
-    );
+    ));
   }
 }

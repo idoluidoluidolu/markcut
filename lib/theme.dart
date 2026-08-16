@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show SystemUiOverlayStyle;
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 
 /// 效能檢測模式（關於頁開關）：顯示 Flutter 的 UI/Raster 執行緒圖表，
@@ -50,6 +51,38 @@ const kDialogWidth = 280.0;
 const kSliderLabelW = 56.0;
 const kSliderValueW = 44.0;
 const kRecord = Color(0xFFFF3B30); // 錄音中：紅鈕與即時波形
+
+/// 共用元件（對話框、選項列）在深色與淺色頁都會出現，顏色得看當下的佈景。
+///
+/// 不直接用 ColorScheme 推是刻意的：深色那組值一個都不能變，而
+/// kTextDim、kClipBorder 在 ColorScheme 裡沒有對應的位置，硬推會飄色
+typedef PageColors = ({
+  Color text,
+  Color dim,
+  Color line,
+  Color accent,
+  Color panelHi,
+  Color bg,
+});
+
+PageColors pageColors(BuildContext context) =>
+    Theme.of(context).brightness == Brightness.dark
+        ? (
+            text: kText,
+            dim: kTextDim,
+            line: kBorder,
+            accent: kAmber,
+            panelHi: kPanelHi,
+            bg: kBg,
+          )
+        : (
+            text: kLText,
+            dim: kLTextDim,
+            line: kLBorder,
+            accent: kLAccent,
+            panelHi: kLPanelHi,
+            bg: kLBg,
+          );
 
 ThemeData buildStudioTheme() {
   const scheme = ColorScheme.dark(
@@ -346,42 +379,43 @@ Future<bool> showConfirm(
   String message = '',
   required String action,
 }) async {
+  final c = pageColors(context);
   final ok = await showDialog<bool>(
     context: context,
     builder: (context) => Dialog(
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
-        side: const BorderSide(color: kBorder),
+        side: BorderSide(color: c.line),
       ),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: kDialogWidth),
+        constraints: BoxConstraints(maxWidth: kDialogWidth),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 26, 20, 12),
+          padding: EdgeInsets.fromLTRB(20, 26, 20, 12),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(title,
                   textAlign: TextAlign.center,
-                  style: const TextStyle(
+                  style: TextStyle(
                       fontSize: 15.5,
                       fontWeight: FontWeight.w700,
                       letterSpacing: 0.3,
-                      color: kText)),
+                      color: c.text)),
               if (message.isNotEmpty) ...[
-                const SizedBox(height: 8),
+                SizedBox(height: 8),
                 Text(message,
                     textAlign: TextAlign.center,
-                    style: const TextStyle(
-                        fontSize: 12.5, color: kTextDim, height: 1.55)),
+                    style: TextStyle(
+                        fontSize: 12.5, color: c.dim, height: 1.55)),
               ],
-              const SizedBox(height: 20),
+              SizedBox(height: 20),
               FilledButton(
                 style: FilledButton.styleFrom(
                   minimumSize: const Size.fromHeight(44),
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10)),
-                  textStyle: const TextStyle(
+                  textStyle: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w700,
                       fontFamily: 'NotoSansTC'),
@@ -389,14 +423,14 @@ Future<bool> showConfirm(
                 onPressed: () => Navigator.pop(context, true),
                 child: Text(action),
               ),
-              const SizedBox(height: 4),
+              SizedBox(height: 4),
               TextButton(
                 onPressed: () => Navigator.pop(context, false),
                 style: TextButton.styleFrom(
-                  foregroundColor: kTextDim,
+                  foregroundColor: c.dim,
                   minimumSize: const Size.fromHeight(40),
                 ),
-                child: const Text('取消',
+                child: Text('取消',
                     style: TextStyle(fontSize: 13)),
               ),
             ],
@@ -420,65 +454,66 @@ Future<String> askAfterExport(
   String message, {
   String? note,
 }) async {
+  final c = pageColors(context);
   final act = await showDialog<String>(
     context: context,
     barrierDismissible: false,
     builder: (context) => Dialog(
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
-        side: const BorderSide(color: kBorder),
+        side: BorderSide(color: c.line),
       ),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: kDialogWidth),
+        constraints: BoxConstraints(maxWidth: kDialogWidth),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 24, 20, 12),
+          padding: EdgeInsets.fromLTRB(20, 24, 20, 12),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Icon(Icons.check_circle_outline, size: 34, color: kAmber),
-              const SizedBox(height: 12),
-              const Text('輸出完成',
+              Icon(Icons.check_circle_outline, size: 34, color: c.accent),
+              SizedBox(height: 12),
+              Text('輸出完成',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                       fontSize: 15.5,
                       fontWeight: FontWeight.w700,
                       letterSpacing: 0.3,
-                      color: kText)),
-              const SizedBox(height: 8),
+                      color: c.text)),
+              SizedBox(height: 8),
               Text(message,
                   textAlign: TextAlign.center,
-                  style: const TextStyle(
+                  style: TextStyle(
                       fontSize: 13, color: kIcon, height: 1.55)),
               if (note != null) ...[
-                const SizedBox(height: 6),
+                SizedBox(height: 6),
                 Text(note,
                     textAlign: TextAlign.center,
-                    style: const TextStyle(
-                        fontSize: 11, color: kTextDim, height: 1.5)),
+                    style: TextStyle(
+                        fontSize: 11, color: c.dim, height: 1.5)),
               ],
-              const SizedBox(height: 20),
+              SizedBox(height: 20),
               FilledButton(
                 style: FilledButton.styleFrom(
                   minimumSize: const Size.fromHeight(44),
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10)),
-                  textStyle: const TextStyle(
+                  textStyle: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w700,
                       fontFamily: 'NotoSansTC'),
                 ),
                 onPressed: () => Navigator.pop(context, 'home'),
-                child: const Text('回主畫面'),
+                child: Text('回主畫面'),
               ),
-              const SizedBox(height: 4),
+              SizedBox(height: 4),
               TextButton(
                 onPressed: () => Navigator.pop(context, 'stay'),
                 style: TextButton.styleFrom(
-                  foregroundColor: kTextDim,
+                  foregroundColor: c.dim,
                   minimumSize: const Size.fromHeight(40),
                 ),
-                child: const Text('繼續編輯',
+                child: Text('繼續編輯',
                     style: TextStyle(fontSize: 13)),
               ),
             ],
@@ -493,6 +528,7 @@ Future<String> askAfterExport(
 /// 輸出照片前選格式。回傳 'jpg' / 'png'，取消回 null。
 /// 照片編輯與批次共用——同一個選擇不該長成兩個樣子
 Future<String?> askPhotoFormat(BuildContext context) {
+  final c = pageColors(context);
   Widget tile(BuildContext context, String fmt, String title, String sub) =>
       Material(
         color: Colors.black,
@@ -501,28 +537,28 @@ Future<String?> askPhotoFormat(BuildContext context) {
           borderRadius: BorderRadius.circular(12),
           onTap: () => Navigator.pop(context, fmt),
           child: Container(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+            padding: EdgeInsets.fromLTRB(14, 12, 14, 12),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: kClipBorder),
+              border: Border.all(color: c.line),
             ),
             child: Row(
               children: [
-                const Icon(Icons.image_outlined, size: 20, color: kAmber),
-                const SizedBox(width: 12),
+                Icon(Icons.image_outlined, size: 20, color: c.accent),
+                SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(title,
-                          style: const TextStyle(
+                          style: TextStyle(
                               fontSize: 13.5,
                               fontWeight: FontWeight.w700,
-                              color: kText)),
-                      const SizedBox(height: 2),
+                              color: c.text)),
+                      SizedBox(height: 2),
                       Text(sub,
-                          style: const TextStyle(
-                              fontSize: 11.5, color: kTextDim, height: 1.4)),
+                          style: TextStyle(
+                              fontSize: 11.5, color: c.dim, height: 1.4)),
                     ],
                   ),
                 ),
@@ -535,25 +571,25 @@ Future<String?> askPhotoFormat(BuildContext context) {
   return showDialog<String>(
     context: context,
     builder: (context) => Dialog(
-      backgroundColor: kBg,
-      insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+      backgroundColor: c.bg,
+      insetPadding: EdgeInsets.symmetric(horizontal: 28),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(kDialogRadius),
-        side: const BorderSide(color: kBorder),
+        side: BorderSide(color: c.line),
       ),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: kDialogWidth),
+        constraints: BoxConstraints(maxWidth: kDialogWidth),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+          padding: EdgeInsets.fromLTRB(16, 20, 16, 16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('輸出到相簿',
+              Text('輸出到相簿',
                   style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 14),
+              SizedBox(height: 14),
               tile(context, 'jpg', 'JPEG',
                   '檔案小很多（約 1/8），肉眼看不出跟 PNG 差別'),
-              const SizedBox(height: 8),
+              SizedBox(height: 8),
               tile(context, 'png', 'PNG 無損', '完全不壓縮'),
             ],
           ),
@@ -611,40 +647,41 @@ Future<String> showLeaveChoice(
   required String keepLabel,
   String discardLabel = '捨棄',
 }) async {
+  final c = pageColors(context);
   final act = await showDialog<String>(
     context: context,
     builder: (context) => Dialog(
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
-        side: const BorderSide(color: kBorder),
+        side: BorderSide(color: c.line),
       ),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: kDialogWidth),
+        constraints: BoxConstraints(maxWidth: kDialogWidth),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 26, 20, 12),
+          padding: EdgeInsets.fromLTRB(20, 26, 20, 12),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(title,
                   textAlign: TextAlign.center,
-                  style: const TextStyle(
+                  style: TextStyle(
                       fontSize: 15.5,
                       fontWeight: FontWeight.w700,
                       letterSpacing: 0.3,
-                      color: kText)),
-              const SizedBox(height: 8),
+                      color: c.text)),
+              SizedBox(height: 8),
               Text(message,
                   textAlign: TextAlign.center,
-                  style: const TextStyle(
-                      fontSize: 12.5, color: kTextDim, height: 1.55)),
-              const SizedBox(height: 20),
+                  style: TextStyle(
+                      fontSize: 12.5, color: c.dim, height: 1.55)),
+              SizedBox(height: 20),
               FilledButton(
                 style: FilledButton.styleFrom(
                   minimumSize: const Size.fromHeight(44),
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10)),
-                  textStyle: const TextStyle(
+                  textStyle: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w700,
                       fontFamily: 'NotoSansTC'),
@@ -652,27 +689,27 @@ Future<String> showLeaveChoice(
                 onPressed: () => Navigator.pop(context, 'keep'),
                 child: Text(keepLabel),
               ),
-              const SizedBox(height: 8),
+              SizedBox(height: 8),
               OutlinedButton(
                 style: OutlinedButton.styleFrom(
                   minimumSize: const Size.fromHeight(44),
-                  foregroundColor: kText,
-                  side: const BorderSide(color: kClipBorder),
+                  foregroundColor: c.text,
+                  side: BorderSide(color: c.line),
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10)),
                 ),
                 onPressed: () => Navigator.pop(context, 'discard'),
                 child: Text(discardLabel,
-                    style: const TextStyle(fontSize: 13.5)),
+                    style: TextStyle(fontSize: 13.5)),
               ),
-              const SizedBox(height: 4),
+              SizedBox(height: 4),
               TextButton(
                 onPressed: () => Navigator.pop(context, 'stay'),
                 style: TextButton.styleFrom(
-                  foregroundColor: kTextDim,
+                  foregroundColor: c.dim,
                   minimumSize: const Size.fromHeight(40),
                 ),
-                child: const Text('繼續編輯',
+                child: Text('繼續編輯',
                     style: TextStyle(fontSize: 13)),
               ),
             ],
@@ -759,6 +796,7 @@ Widget secondaryAction({
 /// 選中的那列標題轉琥珀色＋粗體，右邊打勾；[trailing] 放檔案大小之類的
 /// 數字，[badge] 放「推薦」那種小標
 Widget optionRow({
+  required BuildContext context,
   required String title,
   required bool selected,
   required VoidCallback onTap,
@@ -767,14 +805,15 @@ Widget optionRow({
   String? badge,
   bool first = false,
 }) {
+  final c = pageColors(context);
   return InkWell(
     onTap: onTap,
     child: Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 9),
+      padding: EdgeInsets.symmetric(horizontal: 6, vertical: 9),
       decoration: first
           ? null
-          : const BoxDecoration(
-              border: Border(top: BorderSide(color: kPanelHi)),
+          : BoxDecoration(
+              border: Border(top: BorderSide(color: c.panelHi)),
             ),
       child: Row(
         children: [
@@ -791,26 +830,26 @@ Widget optionRow({
                         fontWeight: selected
                             ? FontWeight.w700
                             : FontWeight.w400,
-                        color: selected ? kAmber : kText,
+                        color: selected ? c.accent : c.text,
                       ),
                     ),
                     if (badge != null) ...[
-                      const SizedBox(width: 6),
+                      SizedBox(width: 6),
                       Container(
-                        padding: const EdgeInsets.symmetric(
+                        padding: EdgeInsets.symmetric(
                           horizontal: 5,
                           vertical: 1.5,
                         ),
                         decoration: BoxDecoration(
-                          color: kAmber.withValues(alpha: 0.16),
+                          color: c.accent.withValues(alpha: 0.16),
                           borderRadius: BorderRadius.circular(kTagRadius),
                         ),
                         child: Text(
                           badge,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 10,
                             fontWeight: FontWeight.w600,
-                            color: kAmber,
+                            color: c.accent,
                           ),
                         ),
                       ),
@@ -818,12 +857,12 @@ Widget optionRow({
                   ],
                 ),
                 if (subtitle != null) ...[
-                  const SizedBox(height: 1),
+                  SizedBox(height: 1),
                   Text(
                     subtitle,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 10.5,
-                      color: kTextDim,
+                      color: c.dim,
                       fontFeatures: [FontFeature.tabularFigures()],
                     ),
                   ),
@@ -836,13 +875,13 @@ Widget optionRow({
               trailing,
               style: TextStyle(
                 fontSize: 12,
-                color: selected ? kAmber : kTextDim,
+                color: selected ? c.accent : c.dim,
                 fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),
           if (selected) ...[
-            const SizedBox(width: 6),
-            const Icon(Icons.check, size: 17, color: kAmber),
+            SizedBox(width: 6),
+            Icon(Icons.check, size: 17, color: c.accent),
           ],
         ],
       ),
@@ -875,3 +914,199 @@ class SectionLabel extends StatelessWidget {
   }
 }
 
+
+// ===== 淺色頁面（編輯畫面以外全部走這一套）=====
+//
+// 編輯畫面留黑：畫面上唯一該亮的是使用者的素材，UI 一亮就搶戲。
+// 但主畫面、範本、個人頁這些「不看素材」的頁面沒有這個限制，白底
+// 讀起來輕鬆得多，也跟系統的相簿、設定同一個調性
+const kLBg = Color(0xFFFFFFFF);
+const kLPanel = Color(0xFFF6F6F8); // 卡片／面板
+const kLPanelHi = Color(0xFFECECF0); // 面板亮階（選中底、icon 磚）
+const kLBorder = Color(0xFFE3E3E8); // 邊線
+const kLText = Color(0xFF121216);
+const kLTextDim = Color(0xFF70707A);
+const kLIcon = Color(0xFF44444C);
+
+/// 淺色頁的強調色。深色頁用純白，白底上當然不能用白——
+/// 一樣走無彩色，換成近黑
+const kLAccent = Color(0xFF121216);
+
+ThemeData buildLightTheme() {
+  const scheme = ColorScheme.light(
+    primary: kLAccent,
+    onPrimary: kLBg,
+    secondary: kLAccent,
+    onSecondary: kLBg,
+    surface: kLBg,
+    onSurface: kLText,
+    surfaceContainerHighest: kLPanelHi,
+    outline: kLBorder,
+    error: Color(0xFFD1373A),
+  );
+  final radius6 = RoundedRectangleBorder(borderRadius: BorderRadius.circular(6));
+  final cardShape =
+      RoundedRectangleBorder(borderRadius: BorderRadius.circular(kCardRadius));
+
+  return ThemeData(
+    useMaterial3: true,
+    colorScheme: scheme,
+    fontFamily: 'NotoSansTC',
+    scaffoldBackgroundColor: kLBg,
+    appBarTheme: const AppBarTheme(
+      backgroundColor: kLBg,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      centerTitle: false,
+      titleTextStyle: TextStyle(
+        fontFamily: 'NotoSansTC',
+        fontSize: 17,
+        fontWeight: FontWeight.w800,
+        letterSpacing: 1.0,
+        color: kLText,
+      ),
+      iconTheme: IconThemeData(color: kLIcon, size: 22),
+      actionsIconTheme: IconThemeData(color: kLIcon, size: 22),
+    ),
+    iconTheme: const IconThemeData(color: kLIcon),
+    cardTheme: CardThemeData(
+      color: kLPanel,
+      elevation: 0,
+      shape: cardShape.copyWith(side: const BorderSide(color: kLBorder)),
+      margin: EdgeInsets.zero,
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        backgroundColor: kLAccent,
+        foregroundColor: kLBg,
+        shape: radius6,
+        textStyle: const TextStyle(
+            fontWeight: FontWeight.w700, fontSize: 14, fontFamily: 'NotoSansTC'),
+      ),
+    ),
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(foregroundColor: kLAccent, shape: radius6),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        foregroundColor: kLText,
+        side: const BorderSide(color: kLBorder),
+        shape: radius6,
+      ),
+    ),
+    chipTheme: ChipThemeData(
+      backgroundColor: kLPanel,
+      selectedColor: kLPanelHi,
+      side: const BorderSide(color: kLBorder),
+      shape: radius6,
+      labelStyle: const TextStyle(
+          fontSize: 12, color: kLText, fontFamily: 'NotoSansTC'),
+      showCheckmark: false,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    ),
+    tabBarTheme: const TabBarThemeData(
+      labelColor: kLAccent,
+      unselectedLabelColor: kLTextDim,
+      indicatorColor: kLAccent,
+      indicatorSize: TabBarIndicatorSize.label,
+      dividerColor: kLBorder,
+      labelStyle: TextStyle(
+          fontSize: 12, fontWeight: FontWeight.w700, fontFamily: 'NotoSansTC'),
+      unselectedLabelStyle: TextStyle(fontSize: 12, fontFamily: 'NotoSansTC'),
+    ),
+    sliderTheme: const SliderThemeData(
+      activeTrackColor: kLAccent,
+      inactiveTrackColor: kLPanelHi,
+      thumbColor: kLAccent,
+      thumbShape: RoundSliderThumbShape(enabledThumbRadius: 6.5),
+      overlayShape: RoundSliderOverlayShape(overlayRadius: 14),
+      trackHeight: 2.5,
+    ),
+    switchTheme: SwitchThemeData(
+      thumbColor: WidgetStateProperty.resolveWith(
+          (s) => s.contains(WidgetState.selected) ? kLBg : kLTextDim),
+      trackColor: WidgetStateProperty.resolveWith(
+          (s) => s.contains(WidgetState.selected) ? kLAccent : kLPanelHi),
+      trackOutlineColor: const WidgetStatePropertyAll(kLBorder),
+    ),
+    radioTheme: RadioThemeData(
+      fillColor: WidgetStateProperty.resolveWith(
+          (s) => s.contains(WidgetState.selected) ? kLAccent : kLTextDim),
+    ),
+    dividerTheme: const DividerThemeData(color: kLBorder, thickness: 1),
+    dialogTheme: DialogThemeData(
+      backgroundColor: kLBg,
+      barrierColor: Colors.black.withValues(alpha: 0.35),
+      elevation: 8,
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(kDialogRadius),
+          side: const BorderSide(color: kLBorder)),
+      titleTextStyle: const TextStyle(
+          fontSize: 15.5,
+          fontWeight: FontWeight.w700,
+          color: kLText,
+          fontFamily: 'NotoSansTC'),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      backgroundColor: kLText,
+      contentTextStyle: const TextStyle(color: kLBg, fontFamily: 'NotoSansTC'),
+      shape: radius6,
+      behavior: SnackBarBehavior.floating,
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      isDense: true,
+      filled: true,
+      fillColor: kLPanel,
+      enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(6),
+          borderSide: const BorderSide(color: kLBorder)),
+      focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(6),
+          borderSide: const BorderSide(color: kLAccent, width: 1.5)),
+      labelStyle: const TextStyle(color: kLTextDim, fontSize: 13),
+      hintStyle: const TextStyle(color: kLTextDim, fontSize: 13),
+    ),
+    listTileTheme: const ListTileThemeData(
+      iconColor: kLIcon,
+      textColor: kLText,
+    ),
+    bottomSheetTheme: BottomSheetThemeData(
+      backgroundColor: kLBg,
+      modalBackgroundColor: kLBg,
+      modalBarrierColor: Colors.black.withValues(alpha: 0.35),
+      elevation: 8,
+      dragHandleColor: const Color(0xFFC4C4CC),
+      dragHandleSize: const Size(34, 4),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
+        side: BorderSide(color: kLBorder),
+      ),
+    ),
+    progressIndicatorTheme: const ProgressIndicatorThemeData(
+      color: kLAccent,
+      linearTrackColor: kLPanelHi,
+    ),
+  );
+}
+
+/// 把一頁換成淺色。編輯畫面以外的頁面都包這個。
+///
+/// 包一層 Theme 而不是把 App 的預設換掉：編輯畫面的顏色大量寫死在
+/// k 開頭的常數裡（那是刻意的，它們要跟素材一起看），整包換掉的話
+/// 那些頁面會變成半黑半白
+class LightPage extends StatelessWidget {
+  final Widget child;
+
+  const LightPage({super.key, required this.child});
+
+  @override
+  Widget build(BuildContext context) => AnnotatedRegion<SystemUiOverlayStyle>(
+        // 白底要配深色的狀態列圖示，不然電量、時間全看不見
+        value: SystemUiOverlayStyle.dark.copyWith(
+          statusBarColor: Colors.transparent,
+          systemNavigationBarColor: kLBg,
+          systemNavigationBarIconBrightness: Brightness.dark,
+        ),
+        child: Theme(data: buildLightTheme(), child: child),
+      );
+}

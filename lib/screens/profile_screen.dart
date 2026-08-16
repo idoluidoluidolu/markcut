@@ -74,14 +74,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
       child: Container(
         height: 52,
         decoration: BoxDecoration(
-          color: kPanel,
+          color: kLPanel,
           borderRadius: BorderRadius.circular(kCardRadius),
-          border: Border.all(color: kBorder, width: 1.5),
+          border: Border.all(color: kLBorder, width: 1.5),
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, size: 17, color: kAmber),
+            Icon(icon, size: 17, color: kLAccent),
             const SizedBox(width: 8),
             Text(
               title,
@@ -117,9 +117,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
       child: Container(
         height: 130,
         decoration: BoxDecoration(
-          color: kPanel,
+          color: kLPanel,
           borderRadius: BorderRadius.circular(kCardRadius),
-          border: Border.all(color: kBorder, width: 1.5),
+          border: Border.all(color: kLBorder, width: 1.5),
         ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -128,10 +128,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
               width: 48,
               height: 48,
               decoration: BoxDecoration(
-                color: kPanelHi,
+                color: kLPanelHi,
                 borderRadius: BorderRadius.circular(13),
               ),
-              child: Icon(icon, size: 25, color: kAmber),
+              child: Icon(icon, size: 25, color: kLAccent),
             ),
             const SizedBox(height: 10),
             Text(
@@ -141,7 +141,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             const SizedBox(height: 3),
             Text(
               subtitle,
-              style: const TextStyle(fontSize: 12, color: kTextDim),
+              style: const TextStyle(fontSize: 12, color: kLTextDim),
             ),
           ],
         ),
@@ -160,11 +160,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
   @override
   Widget build(BuildContext context) {
     // 非編輯頁面全頁都能右滑返回（編輯畫面橫向手勢太多，刻意不放）
-    return SwipeBack(
+    return LightPage(child: SwipeBack(
       child: Scaffold(
-        backgroundColor: kBg,
+        backgroundColor: kLBg,
         appBar: AppBar(
-          backgroundColor: kBg,
+          backgroundColor: kLBg,
           title: const Text('個人中心'),
         ),
         body: Column(
@@ -241,7 +241,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     MaterialPageRoute(builder: (_) => const AboutScreen()),
                   ),
                   style: TextButton.styleFrom(
-                    foregroundColor: kIcon,
+                    foregroundColor: kLIcon,
                     padding: const EdgeInsets.symmetric(
                       horizontal: 16,
                       vertical: 8,
@@ -250,7 +250,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   icon: const Icon(
                     Icons.info_outline,
                     size: 14,
-                    color: kTextDim,
+                    color: kLTextDim,
                   ),
                   label: const Text('關於這個 App', style: TextStyle(fontSize: 12)),
                 ),
@@ -259,7 +259,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ],
         ),
       ),
-    );
+    ));
   }
 }
 
@@ -352,9 +352,9 @@ class _DraftsScreenState extends State<DraftsScreen> {
   }) {
     return Container(
       decoration: BoxDecoration(
-        color: kPanel,
+        color: kLPanel,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: kBorder),
+        border: Border.all(color: kLBorder),
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
@@ -369,7 +369,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
                 clipBehavior: Clip.antiAlias,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
-                  color: kPanelHi,
+                  color: kLPanelHi,
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: cover,
@@ -390,7 +390,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
-                              fontSize: 12, color: kTextDim)),
+                              fontSize: 12, color: kLTextDim)),
                     ],
                   ],
                 ),
@@ -398,7 +398,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
               IconButton(
                 tooltip: '刪除草稿',
                 icon: const Icon(Icons.delete_outline,
-                    size: 19, color: kTextDim),
+                    size: 19, color: kLTextDim),
                 onPressed: onDelete,
               ),
             ],
@@ -473,7 +473,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
                     '沒有草稿。\n\n編輯到一半離開時選「保留草稿」，'
                     '就會存在這裡。',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: kTextDim, height: 1.6),
+                    style: TextStyle(color: kLTextDim, height: 1.6),
                   ),
                 ),
               )
@@ -488,7 +488,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
                           ? Image.memory(_thumbOf(d)!,
                               fit: BoxFit.cover, gaplessPlayback: true)
                           : const Icon(Icons.movie_outlined,
-                              size: 20, color: kAmber),
+                              size: 20, color: kLAccent),
                       title: '未完成的影片',
                       subtitle: _savedAtLabel(d),
                       onTap: _resume,
@@ -500,7 +500,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
                       // 照片草稿沒有存縮圖（那張照片還在裝置上，
                       // 再存一份只是浪費空間），用圖示就好
                       cover: const Icon(Icons.image_outlined,
-                          size: 20, color: kAmber),
+                          size: 20, color: kLAccent),
                       title: '未完成的照片',
                       subtitle: _savedAtLabel(p),
                       onTap: _resumePhoto,

@@ -1540,6 +1540,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           mainAxisSize: MainAxisSize.min,
           children: [
             optionRow(
+  context: context,
               title: '接在同一軌',
               subtitle: '照選取順序頭尾相接，變成一段長影片',
               selected: false,
@@ -1547,6 +1548,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               onTap: () => Navigator.pop(context, true),
             ),
             optionRow(
+  context: context,
               title: '各自一軌',
               subtitle: '每個影片開一個新軌道',
               selected: false,
@@ -7303,6 +7305,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   builder: (context) {
                     final (w, h) = computeCanvasSize(_tl, _resolution, r);
                     return optionRow(
+  context: context,
                       title: r.label,
                       subtitle: '$w×$h',
                       selected: _canvasRatio == r,
@@ -8251,6 +8254,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             children: [
               for (final (i, q) in qualityOrder.indexed)
                 optionRow(
+  context: context,
                   title: q.label,
                   subtitle: q.note,
                   // 自動挑到的那一檔＝壓到看不出跟原素材有差的點。
@@ -8305,6 +8309,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     final same =
                         r != ExportResolution.original && w == ow && h == oh;
                     return optionRow(
+  context: context,
                       title: r.label,
                       subtitle: same ? '$w×$h·原片就這麼大，不會再縮' : '$w×$h·${r.hint}',
                       selected: _resolution == r,
