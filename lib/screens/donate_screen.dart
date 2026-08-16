@@ -25,7 +25,7 @@ const _kTiers = [
 ];
 
 /// 最下面那一檔，整排寬
-const _kMaxTier = ('tip_max', '極限挺', 'NT\$990');
+const _kMaxTier = ('tip_max', '真的要這麼挺...?', 'NT\$990');
 
 class DonateScreen extends StatefulWidget {
   const DonateScreen({super.key});
