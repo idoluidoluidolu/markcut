@@ -438,7 +438,9 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
               tooltip: '我的範本',
               icon: const Icon(Icons.bookmarks_outlined),
               onPressed: () => Navigator.push(context,
-                  MaterialPageRoute(builder: (_) => const PresetsScreen())),
+                  MaterialPageRoute(
+                      builder: (_) =>
+                          const LightPage(child: PresetsScreen()))),
             ),
         ],
       ),

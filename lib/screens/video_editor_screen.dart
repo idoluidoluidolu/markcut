@@ -578,7 +578,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         '${withPaths ? _tl.sourceOf(c).previewPath : c.sourceIndex}|'
             '${c.trimStart}|${c.trimEnd}|'
             '${c.offset}|${c.volume}|${c.speed}|${c.fadeIn}|${c.fadeOut}|'
-            '${c.scale}|${c.px}|${c.py}|${c.reverse}',
+            // 調色也要記：有調色就得退回舊路徑（系統影片圖層疊不上
+            // Flutter 的濾鏡），不記的話調了色也不會換引擎
+            '${c.scale}|${c.px}|${c.py}|${c.reverse}|${c.color.hasColor}',
   ].join(';');
 
   String? _lastCompSig;
@@ -1109,21 +1111,30 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _prepTotal = _prepQueue.length;
     });
     // 全部一起送出去，同時跑幾支由 MediaPrep 控（現在是兩支）。
-    // 一支做完就送下一支進去，硬體編碼器不會有空檔
-    final jobs = <Future<void>>[];
-    while (_prepQueue.isNotEmpty) {
-      final i = _prepQueue.removeAt(0);
-      jobs.add(
-        _prepWorkFile(i).then((_) {
-          if (!mounted) return;
-          setState(() {
-            _prepDone++;
-            _prepCur.remove(i);
-          });
-        }),
-      );
+    // 一支做完就送下一支進去，硬體編碼器不會有空檔。
+    //
+    // 外面這層 while 不能省：轉檔進行中還會有素材被排進來（多選匯入是
+    // 一支一支加的），只撈一次的話那些會留在佇列裡沒人理——上一版就是
+    // 這樣，五支素材只轉好一支，其他全程用 4K 原檔播
+    while (_prepQueue.isNotEmpty && mounted) {
+      final jobs = <Future<void>>[];
+      while (_prepQueue.isNotEmpty) {
+        final i = _prepQueue.removeAt(0);
+        jobs.add(
+          _prepWorkFile(i).then((_) {
+            if (!mounted) return;
+            setState(() {
+              _prepDone++;
+              _prepCur.remove(i);
+            });
+          }),
+        );
+      }
+      await Future.wait(jobs);
+      if (!mounted) return;
+      // 這一批做完之後可能又進來新的，總數要跟著長
+      setState(() => _prepTotal = _prepDone + _prepQueue.length);
     }
-    await Future.wait(jobs);
     if (!mounted) return;
     setState(() {
       _prepBusy = false;

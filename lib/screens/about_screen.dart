@@ -22,7 +22,7 @@ class AboutScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return LightPage(child: SwipeBack(
+    return SwipeBack(
       child: Scaffold(
         backgroundColor: kLBg,
         appBar: AppBar(
@@ -70,7 +70,7 @@ class AboutScreen extends StatelessWidget {
           ),
         ),
       ),
-    ));
+    );
   }
 
   /// 頁尾：授權相關全部收在這三個小連結裡
@@ -269,7 +269,7 @@ class _InfoPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return LightPage(child: SwipeBack(
+    return SwipeBack(
       child: Scaffold(
         backgroundColor: kLBg,
         appBar: AppBar(backgroundColor: kLBg, title: Text(title)),
@@ -303,6 +303,6 @@ class _InfoPage extends StatelessWidget {
           ],
         ),
       ),
-    ));
+    );
   }
 }

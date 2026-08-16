@@ -168,7 +168,7 @@ class _DonateScreenState extends State<DonateScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return LightPage(child: SwipeBack(
+    return SwipeBack(
       child: Scaffold(
       backgroundColor: kLBg,
       appBar: AppBar(backgroundColor: kLBg, title: const Text('太好用啦')),
@@ -234,6 +234,6 @@ class _DonateScreenState extends State<DonateScreen> {
         ),
       ),
     ),
-    ));
+    );
   }
 }

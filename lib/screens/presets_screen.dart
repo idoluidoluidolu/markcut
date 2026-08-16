@@ -237,7 +237,7 @@ class _PresetsScreenState extends State<PresetsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return LightPage(child: SwipeBack(
+    return SwipeBack(
       child: Scaffold(
         appBar: AppBar(title: const Text('我的浮水印範本')),
         body: _loading
@@ -256,6 +256,6 @@ class _PresetsScreenState extends State<PresetsScreen> {
                     i < _presets.length ? _presetCard(_presets[i]) : _addCard(),
               ),
       ),
-    ));
+    );
   }
 }

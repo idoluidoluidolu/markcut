@@ -91,7 +91,7 @@ class MarkCutApp extends StatelessWidget {
             child: child,
           ),
         ),
-        home: const HomeScreen(),
+        home: const LightPage(child: HomeScreen()),
       ),
     );
   }

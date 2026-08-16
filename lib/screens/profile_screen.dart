@@ -124,7 +124,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return GestureDetector(
       onTap: () => Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => const PresetsScreen()),
+        MaterialPageRoute(builder: (_) => const LightPage(child: PresetsScreen())),
       ).then((_) => _reload()),
       child: Column(
         children: [
@@ -179,7 +179,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget _presetAddTile() => GestureDetector(
         onTap: () => Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => const PresetsScreen()),
+          MaterialPageRoute(builder: (_) => const LightPage(child: PresetsScreen())),
         ).then((_) => _reload()),
         child: Column(
           children: [
@@ -294,7 +294,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void _openLove() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const DonateScreen()),
+      MaterialPageRoute(builder: (_) => const LightPage(child: DonateScreen())),
     );
   }
 
@@ -304,7 +304,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final p = _photoDraft;
     final draftCount = (v == null ? 0 : 1) + (p == null ? 0 : 1);
     // 非編輯頁面全頁都能右滑返回（編輯畫面橫向手勢太多，刻意不放）
-    return LightPage(child: SwipeBack(
+    return SwipeBack(
       child: Scaffold(
         backgroundColor: kLBg,
         appBar: AppBar(
@@ -475,7 +475,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     GestureDetector(
                       onTap: () => Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (_) => const AboutScreen()),
+                        MaterialPageRoute(builder: (_) => const LightPage(child: AboutScreen())),
                       ),
                       child: const Text(
                         '關於這個 App',
@@ -489,7 +489,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
         ),
       ),
-    ));
+    );
   }
 }
 

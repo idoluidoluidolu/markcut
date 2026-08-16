@@ -15,6 +15,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:markcut/models/watermark_settings.dart';
 import 'package:markcut/screens/profile_screen.dart';
+import 'package:markcut/theme.dart';
 import 'package:markcut/screens/video_editor_screen.dart' show kDraftKey;
 import 'package:markcut/screens/photo_editor_screen.dart' show kPhotoDraftKey;
 
@@ -61,9 +62,12 @@ void main() {
 
     await tester.binding.setSurfaceSize(const Size(390, 780));
     await tester.pumpWidget(
-      const MaterialApp(
+      MaterialApp(
+        // App 的預設佈景是深色；淺色是在 route 層包上去的，
+        // 測試也照同一種方式包，不然量到的不是真的長相
+        theme: buildStudioTheme(),
         debugShowCheckedModeBanner: false,
-        home: ProfileScreen(),
+        home: const LightPage(child: ProfileScreen()),
       ),
     );
     await tester.pump(const Duration(milliseconds: 400));
@@ -77,9 +81,12 @@ void main() {
     SharedPreferences.setMockInitialValues({'wm_presets_seeded_v1': true});
     await tester.binding.setSurfaceSize(const Size(390, 780));
     await tester.pumpWidget(
-      const MaterialApp(
+      MaterialApp(
+        // App 的預設佈景是深色；淺色是在 route 層包上去的，
+        // 測試也照同一種方式包，不然量到的不是真的長相
+        theme: buildStudioTheme(),
         debugShowCheckedModeBanner: false,
-        home: ProfileScreen(),
+        home: const LightPage(child: ProfileScreen()),
       ),
     );
     await tester.pump(const Duration(milliseconds: 400));

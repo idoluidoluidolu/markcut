@@ -74,12 +74,12 @@ class _FeedbackFormState extends State<_FeedbackForm> {
 
   @override
   Widget build(BuildContext context) {
-    return LightPage(child: PopScope(
+    return PopScope(
       // 送出中不讓返回鍵關掉：關掉的話成功／失敗都不會顯示，
       // 使用者不知道送出去沒有，就會再送一次
       canPop: !_sending,
       child: _form(context),
-    ));
+    );
   }
 
   Widget _form(BuildContext context) {

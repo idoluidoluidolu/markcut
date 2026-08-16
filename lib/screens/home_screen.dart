@@ -373,7 +373,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return LightPage(child: Scaffold(
+    return Scaffold(
       backgroundColor: kLBg,
       appBar: AppBar(
         backgroundColor: kLBg,
@@ -387,7 +387,7 @@ class _HomeScreenState extends State<HomeScreen> {
               await Navigator.push(
                   context,
                   MaterialPageRoute(
-                      builder: (_) => const ProfileScreen()));
+                      builder: (_) => const LightPage(child: ProfileScreen())));
               _checkDraft(); // 草稿可能在裡面被刪掉或接續了
             },
           ),
@@ -436,7 +436,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       ),
-    ));
+    );
   }
 }
 
