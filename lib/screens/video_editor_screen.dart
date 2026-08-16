@@ -516,21 +516,56 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   int _droppedOnLoad = 0; // 還原時因為檔案不見而剔除的片段數
 
   /// 草稿封面縮圖：時間軸上最早出現、有縮圖的影片/圖片片段（帶長寬比）
-  (String, double)? _draftThumb() {
+  /// 草稿封面的快取。個人中心是拿它當大圖顯示的，不能再借用時間軸
+  /// 縮圖帶那幾張——那些只有 200px 高，放大到卡片寬度就糊了
+  String? _coverB64;
+  double? _coverAspect;
+
+  /// 這份封面是誰的（素材路徑＋時間）。換了片段才重抽，不然每次存草稿
+  /// 都抽一張太浪費
+  String? _coverKey;
+
+  /// 時間軸上最早出現的那個影片／照片片段
+  TimelineClip? _coverClip() {
     TimelineClip? best;
     for (final c in _tl.clips) {
       final src = _tl.sources[c.sourceIndex];
-      if (src.kind != ClipKind.video && src.kind != ClipKind.image) {
-        continue;
-      }
-      if (!(_thumbs[c.sourceIndex]?.isNotEmpty ?? false)) continue;
+      if (src.kind != ClipKind.video && src.kind != ClipKind.image) continue;
       if (best == null || c.offset < best.offset) best = c;
     }
-    if (best == null) return null;
-    return (
-      base64Encode(_thumbs[best.sourceIndex]!.first),
-      _tl.sources[best.sourceIndex].aspect,
-    );
+    return best;
+  }
+
+  /// 需要的話抽一張夠大的封面（存草稿前呼叫）
+  Future<void> _refreshCover() async {
+    final c = _coverClip();
+    if (c == null) {
+      _coverB64 = null;
+      _coverAspect = null;
+      _coverKey = null;
+      return;
+    }
+    final src = _tl.sources[c.sourceIndex];
+    final key = '${src.previewPath}@${c.trimStart.toStringAsFixed(2)}';
+    if (key == _coverKey && _coverB64 != null) return;
+    Uint8List? bytes;
+    if (!kIsWeb && src.kind == ClipKind.video) {
+      // 720：個人中心那張卡最寬也才 ~350pt，720 在三倍螢幕上還有餘裕。
+      // 抽一張大約 40~80KB，比原本那張 200px 的糊圖值得
+      bytes = await nativeFrameAt(src.previewPath, c.trimStart, maxH: 720);
+    }
+    // 抽不到（Web、照片、原生失敗）就退回時間軸縮圖，至少有東西
+    bytes ??= _thumbs[c.sourceIndex]?.firstOrNull;
+    if (bytes == null) return;
+    _coverKey = key;
+    _coverB64 = base64Encode(bytes);
+    _coverAspect = src.aspect;
+  }
+
+  (String, double)? _draftThumb() {
+    final b = _coverB64;
+    if (b == null) return null;
+    return (b, _coverAspect ?? 9 / 16);
   }
 
   Map<String, dynamic> _projectJson() {
@@ -605,6 +640,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   Future<void> _saveDraftNow() async {
+    // 封面要夠大：個人中心拿它當大圖顯示。抽過就快取，換了片段才重抽
+    await _refreshCover();
+    if (!mounted) return;
     // Web 也存：同一次瀏覽內可以繼續剪；重新整理後素材連結會失效，
     // 還原時由 _loadDraft 剔除並提示
     final map = _projectJson();
