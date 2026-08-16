@@ -920,9 +920,15 @@ class SectionLabel extends StatelessWidget {
 // 編輯畫面留黑：畫面上唯一該亮的是使用者的素材，UI 一亮就搶戲。
 // 但主畫面、範本、個人頁這些「不看素材」的頁面沒有這個限制，白底
 // 讀起來輕鬆得多，也跟系統的相簿、設定同一個調性
-const kLBg = Color(0xFFFFFFFF);
-const kLPanel = Color(0xFFF6F6F8); // 卡片／面板
-const kLPanelHi = Color(0xFFECECF0); // 面板亮階（選中底、icon 磚）
+/// 頁面底。刻意不是純白：卡片是純白的，頁面得比它低一階，
+/// 「浮起來」才成立——純白卡疊在純白頁上只靠陰影撐不住上緣，
+/// 整張卡會看起來像一段浮著的文字。系統的設定、相簿都是這一派
+const kLBg = Color(0xFFF7F7F9);
+
+/// 浮在頁面上的面：卡片、對話框、抽屜、輸入框
+const kLCard = Color(0xFFFFFFFF);
+const kLPanel = kLCard; // 沿用舊名：面板就是卡片那一層
+const kLPanelHi = Color(0xFFECECF0); // 面板亮階（選中底）
 const kLBorder = Color(0xFFE3E3E8); // 邊線
 const kLText = Color(0xFF121216);
 const kLTextDim = Color(0xFF70707A);
@@ -932,12 +938,39 @@ const kLIcon = Color(0xFF44444C);
 /// 一樣走無彩色，換成近黑
 const kLAccent = Color(0xFF121216);
 
+/// 卡片裡那塊圖示磚的底。比卡片本身深一階，但不能用 kLPanelHi——
+/// 卡片已經是純白＋陰影了，磚再灰下去整張會顯髒
+const kLTile = Color(0xFFF2F2F6);
+
+/// 淺色頁的卡片：純白底＋柔和陰影，不描邊。
+///
+/// 灰底＋描邊那種在白頁上會變成「一塊比較髒的白」，而陰影是靠深度
+/// 分層，白紙上疊白卡讀起來乾淨得多（系統的設定、相簿都是這一派）
+BoxDecoration lightCard({double radius = kCardRadius}) => BoxDecoration(
+      color: kLCard,
+      borderRadius: BorderRadius.circular(radius),
+      // 兩層：一層貼身的（四周不偏移）讓上緣也有界線，一層擴散的給深度。
+      // 只有往下那一層的話，純白卡疊在純白頁上會變成「上緣消失」，
+      // 看起來像一段浮著的文字而不是一張卡
+      boxShadow: [
+        BoxShadow(
+          color: Colors.black.withValues(alpha: 0.06),
+          blurRadius: 3,
+        ),
+        BoxShadow(
+          color: Colors.black.withValues(alpha: 0.08),
+          blurRadius: 16,
+          offset: const Offset(0, 5),
+        ),
+      ],
+    );
+
 ThemeData buildLightTheme() {
   const scheme = ColorScheme.light(
     primary: kLAccent,
-    onPrimary: kLBg,
+    onPrimary: kLCard,
     secondary: kLAccent,
-    onSecondary: kLBg,
+    onSecondary: kLCard,
     surface: kLBg,
     onSurface: kLText,
     surfaceContainerHighest: kLPanelHi,
@@ -978,7 +1011,7 @@ ThemeData buildLightTheme() {
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
         backgroundColor: kLAccent,
-        foregroundColor: kLBg,
+        foregroundColor: kLCard,
         shape: radius6,
         textStyle: const TextStyle(
             fontWeight: FontWeight.w700, fontSize: 14, fontFamily: 'NotoSansTC'),
@@ -1035,7 +1068,7 @@ ThemeData buildLightTheme() {
     ),
     dividerTheme: const DividerThemeData(color: kLBorder, thickness: 1),
     dialogTheme: DialogThemeData(
-      backgroundColor: kLBg,
+      backgroundColor: kLCard,
       barrierColor: Colors.black.withValues(alpha: 0.35),
       elevation: 8,
       shape: RoundedRectangleBorder(
@@ -1049,7 +1082,7 @@ ThemeData buildLightTheme() {
     ),
     snackBarTheme: SnackBarThemeData(
       backgroundColor: kLText,
-      contentTextStyle: const TextStyle(color: kLBg, fontFamily: 'NotoSansTC'),
+      contentTextStyle: const TextStyle(color: kLCard, fontFamily: 'NotoSansTC'),
       shape: radius6,
       behavior: SnackBarBehavior.floating,
     ),
@@ -1071,8 +1104,8 @@ ThemeData buildLightTheme() {
       textColor: kLText,
     ),
     bottomSheetTheme: BottomSheetThemeData(
-      backgroundColor: kLBg,
-      modalBackgroundColor: kLBg,
+      backgroundColor: kLCard,
+      modalBackgroundColor: kLCard,
       modalBarrierColor: Colors.black.withValues(alpha: 0.35),
       elevation: 8,
       dragHandleColor: const Color(0xFFC4C4CC),

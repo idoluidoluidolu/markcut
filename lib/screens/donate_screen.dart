@@ -130,18 +130,14 @@ class _DonateScreenState extends State<DonateScreen> {
       onTap: _buying ? null : () => _buy(id),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        decoration: BoxDecoration(
-          color: kLPanel,
-          borderRadius: BorderRadius.circular(kCardRadius),
-          border: Border.all(color: kLBorder, width: 1.5),
-        ),
+        decoration: lightCard(),
         child: Row(
           children: [
             Container(
               width: 42,
               height: 42,
               decoration: BoxDecoration(
-                color: kLPanelHi,
+                color: kLTile,
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Icon(_tierIcons[tier], size: 22, color: kLAccent),

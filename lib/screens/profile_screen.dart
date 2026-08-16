@@ -73,11 +73,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       onTap: onTap,
       child: Container(
         height: 52,
-        decoration: BoxDecoration(
-          color: kLPanel,
-          borderRadius: BorderRadius.circular(kCardRadius),
-          border: Border.all(color: kLBorder, width: 1.5),
-        ),
+        decoration: lightCard(),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
@@ -116,11 +112,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       },
       child: Container(
         height: 130,
-        decoration: BoxDecoration(
-          color: kLPanel,
-          borderRadius: BorderRadius.circular(kCardRadius),
-          border: Border.all(color: kLBorder, width: 1.5),
-        ),
+        decoration: lightCard(),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
@@ -128,7 +120,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               width: 48,
               height: 48,
               decoration: BoxDecoration(
-                color: kLPanelHi,
+                color: kLTile,
                 borderRadius: BorderRadius.circular(13),
               ),
               child: Icon(icon, size: 25, color: kLAccent),
@@ -351,11 +343,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
     required VoidCallback onDelete,
   }) {
     return Container(
-      decoration: BoxDecoration(
-        color: kLPanel,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: kLBorder),
-      ),
+      decoration: lightCard(radius: 12),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
         onTap: onTap,
@@ -369,7 +357,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
                 clipBehavior: Clip.antiAlias,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
-                  color: kLPanelHi,
+                  color: kLTile,
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: cover,

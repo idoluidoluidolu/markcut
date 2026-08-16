@@ -189,12 +189,8 @@ class AboutScreen extends StatelessWidget {
 Widget _card(String title, List<Widget> children) {
   return Container(
     padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-    decoration: BoxDecoration(
-      // 面板色＋細邊線，跟個人中心同一套（標準 dark mode 層次）
-      color: kLPanel,
-      borderRadius: BorderRadius.circular(kCardRadius),
-      border: Border.all(color: kLBorder),
-    ),
+    // 純白底＋柔和陰影，跟個人中心同一套
+    decoration: lightCard(),
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -236,11 +232,7 @@ Widget _copyRow({
       },
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-        decoration: BoxDecoration(
-          color: kLPanel,
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: kLBorder),
-        ),
+        decoration: lightCard(radius: 6),
         child: Row(
           children: [
             Icon(icon, size: 15, color: kLAccent),

@@ -213,7 +213,7 @@ class _PresetsScreenState extends State<PresetsScreen> {
                   vertical: 2.5,
                 ),
                 decoration: BoxDecoration(
-                  color: kLPanelHi.withValues(alpha: 0.92),
+                  color: kLTile.withValues(alpha: 0.92),
                   borderRadius: BorderRadius.circular(99),
                   border: Border.all(color: kLBorder),
                 ),
