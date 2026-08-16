@@ -661,10 +661,13 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     }
   }
 
-  /// 置頂導覽列的項目。前五個是面板裡的區段（點了捲過去），
-  /// 最後的「調色」是另一個模式（點了整個換掉下半部）——
-  /// 因為調色面板自己有捲動清單，塞不進面板當一張卡
+  /// 置頂導覽列的項目。順序要跟 WatermarkPanel 裡那份一模一樣——
+  /// 這一條是自己畫的，但按下去是叫面板跳第幾區，索引對不上就跳錯。
+  /// 第一格「範本」不是區段，按了直接開挑選視窗；最後的「調色」是
+  /// 另一個模式（點了整個換掉下半部），因為調色面板自己有捲動清單，
+  /// 塞不進面板當一張卡
   static const _phNav = [
+    (label: '範本', icon: Icons.bookmarks_outlined),
     (label: '位置', icon: Icons.grid_view),
     (label: '文字', icon: Icons.title),
     (label: '圖片', icon: Icons.image_outlined),
@@ -674,7 +677,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   ];
 
   /// 調色在導覽列的位置（最後一格）
-  static const _phColorIdx = 5;
+  static const _phColorIdx = 6;
 
   Widget _sectionBar() => AnimatedBuilder(
         // 面板捲動時會回報捲到第幾區。只重畫這一條，

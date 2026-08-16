@@ -17,7 +17,14 @@ import 'watermark_layer.dart';
 typedef WmExtraSection = ({String label, IconData icon, Widget child});
 
 /// 導覽列上的一格
-typedef _NavItem = ({String label, IconData icon, GlobalKey key});
+/// 導覽列的一格。[key] 是要捲過去的區塊；[action] 有值時是「按了就做事」
+/// 而不是捲動（範本那格會直接開挑選視窗）
+typedef _NavItem = ({
+  String label,
+  IconData icon,
+  GlobalKey? key,
+  VoidCallback? action,
+});
 
 /// 讓父層叫面板捲到某個設定區塊：點畫面上的浮水印文字，
 /// 下面的面板就自動捲到「文字」那張卡。
@@ -444,9 +451,10 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     final atEnd = pos.pixels >= pos.maxScrollExtent - 8;
     final line =
         pos.pixels + (atEnd ? pos.viewportDimension * 0.6 : 48);
-    var idx = 0;
+    // 從 1 開始：第 0 格是「範本」，它不是一個區塊，捲動不會選到它
+    var idx = 1;
     for (var i = 0; i < _nav.length; i++) {
-      final ctx = _nav[i].key.currentContext;
+      final ctx = _nav[i].key?.currentContext;
       if (ctx == null) continue;
       final box = ctx.findRenderObject();
       if (box is! RenderBox) continue;
@@ -465,7 +473,12 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   }
 
   void _jumpToSection(int i) {
-    final ctx = _nav[i].key.currentContext;
+    final action = _nav[i].action;
+    if (action != null) {
+      action();
+      return;
+    }
+    final ctx = _nav[i].key?.currentContext;
     if (ctx == null) return;
     _navLocked = true;
     _setNav(i);
@@ -526,16 +539,35 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       _extraKeys.add(GlobalKey());
     }
     _nav = [
-      (label: '位置', icon: Icons.grid_view, key: _posCardKey),
+      // 範本擺第一格：套範本是「先挑一個再開始調」的動作，位置在最前面
+      // 才對得上順序。按了直接開挑選視窗，不是捲到某一區
+      (
+        label: '範本',
+        icon: Icons.bookmarks_outlined,
+        key: null,
+        action: _openPresetPicker,
+      ),
+      (label: '位置', icon: Icons.grid_view, key: _posCardKey, action: null),
       if (widget.showAnimation)
-        (label: '動畫', icon: Icons.auto_awesome, key: _animCardKey),
-      (label: '文字', icon: Icons.title, key: _textCardKey),
-      (label: '圖片', icon: Icons.image_outlined, key: _logoCardKey),
+        (
+          label: '動畫',
+          icon: Icons.auto_awesome,
+          key: _animCardKey,
+          action: null,
+        ),
+      (label: '文字', icon: Icons.title, key: _textCardKey, action: null),
+      (
+        label: '圖片',
+        icon: Icons.image_outlined,
+        key: _logoCardKey,
+        action: null,
+      ),
       for (var i = 0; i < widget.extraSections.length; i++)
         (
           label: widget.extraSections[i].label,
           icon: widget.extraSections[i].icon,
           key: _extraKeys[i],
+          action: null,
         ),
     ];
     if (!widget.showNav) return _list();
