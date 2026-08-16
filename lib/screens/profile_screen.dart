@@ -347,27 +347,36 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         const SizedBox(height: 26),
                         _sectionTitle(
                           '草稿',
-                          trailing: draftCount == 0 ? '沒有' : '全部',
+                          // 空的時候不放「沒有」：下面那行字已經說了，
+                          // 標題右邊再寫一次只是重複
+                          trailing: draftCount == 0 ? null : '全部',
                           onTap: draftCount == 0 ? null : _openDrafts,
                         ),
                         const SizedBox(height: 14),
                         if (draftCount == 0)
-                          Container(
-                            padding: const EdgeInsets.symmetric(vertical: 26),
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(
-                              color: kLCard,
-                              borderRadius: BorderRadius.circular(22),
-                              border: Border.all(color: kLBorder, width: 1.4),
-                            ),
-                            child: const Text(
-                              '編輯到一半離開時選「保留草稿」，就會存在這裡',
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: kLTextDim,
-                                height: 1.5,
-                              ),
+                          // 空的時候不畫框：一個又扁又寬的空盒子跟旁邊
+                          // 的長條卡不是同一種東西，看起來像沒做完
+                          const Padding(
+                            padding: EdgeInsets.only(top: 10, bottom: 4),
+                            child: Column(
+                              children: [
+                                Text(
+                                  '還沒有草稿',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    color: Color(0xFFA8A8B4),
+                                  ),
+                                ),
+                                SizedBox(height: 6),
+                                Text(
+                                  '編輯到一半離開時選「保留草稿」，就會存在這裡',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 11.5,
+                                    color: Color(0xFFC0C0CA),
+                                  ),
+                                ),
+                              ],
                             ),
                           )
                         else
