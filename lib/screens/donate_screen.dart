@@ -208,32 +208,38 @@ class _DonateScreenState extends State<DonateScreen> {
           borderRadius: BorderRadius.circular(20),
           border: Border.all(color: kLAccent, width: 1.8),
         ),
-        child: Row(
+        // 小標是一整句話，跟金額擠同一排會被切成兩段又貼著數字；
+        // 名稱與金額先各佔一邊，小標自己一整行
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
                     label,
                     style: const TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.w900,
                     ),
                   ),
-                  const SizedBox(height: 3),
-                  const Text(
-                    '這個我會記很久',
-                    style: TextStyle(fontSize: 12.5, color: kLTextDim),
+                ),
+                Text(
+                  price,
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w900,
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
-            Text(
-              price,
-              style: const TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w900,
+            const SizedBox(height: 6),
+            const Text(
+              '台灣今天有一個人因為你在電腦螢幕前笑出來了',
+              style: TextStyle(
+                fontSize: 12.5,
+                color: kLTextDim,
+                height: 1.5,
               ),
             ),
           ],

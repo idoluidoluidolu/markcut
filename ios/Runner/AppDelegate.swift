@@ -25,9 +25,12 @@ final class VCValidator: NSObject, AVVideoCompositionValidationHandling {
     _ videoComposition: AVVideoComposition,
     shouldContinueValidatingAfterFindingEmptyTimeRange timeRange: CMTimeRange
   ) -> Bool {
+    // 連長度一起印：這種縫常常短到兩位小數看起來頭尾一樣（4.45~4.45），
+    // 沒有長度就分不出「差一格的接縫」跟「真的少了一整段」
     problems.append(
-      "有一段沒人管：\(String(format: "%.2f", timeRange.start.seconds))~"
-        + "\(String(format: "%.2f", timeRange.end.seconds))s")
+      "有一段沒人管：\(String(format: "%.3f", timeRange.start.seconds))~"
+        + "\(String(format: "%.3f", timeRange.end.seconds))s"
+        + "（長 \(Int((timeRange.duration.seconds * 1000).rounded()))ms）")
     return true
   }
 
@@ -1855,39 +1858,52 @@ final class CompPlayer: NSObject, FlutterTexture {
       // 指令必須把整條時間軸切成不重疊、而且接得起來的區間。
       // 每個片段的頭尾都是一個切點；區間內把「當下看得到的層」由下往上
       // 疊起來，這就是子母畫面
-      var raw: [Double] = [0, duration]
+      //
+      // 切點一律用 CMTime 本人，不要繞道 Double 再轉回來。
+      //
+      // 轉回來會各自被 timescale 四捨五入：前一段的「開頭＋長度」跟下一段
+      // 的「開頭」就差那麼一兩格，中間留下一條比一格還短的縫。系統驗出來
+      // 就是「有一段沒人管：4.45~4.45s」（頭尾印出來一樣，因為根本不到
+      // 0.01 秒），整份合成直接作廢，播放退回舊的多播放器路徑——那正是
+      // 「不黑畫面了，但延遲又回來了」
+      var rawT: [CMTime] = [CMTime.zero, comp.duration]
       for seg in segments {
-        raw.append(seg.range.start.seconds)
-        raw.append(seg.range.end.seconds)
+        rawT.append(seg.range.start)
+        rawT.append(seg.range.end)
       }
       // 去重要帶容差，而且是在這裡去掉，不是排完之後跳過太短的區間——
       // 跳過會在時間軸上留一條沒有指令的縫，而指令必須首尾相接把整條
       // 蓋滿，缺一段系統就當這份合成有問題
-      var marks: [Double] = []
-      for t in raw.filter({ $0.isFinite && $0 >= 0 && $0 <= duration }).sorted()
-      {
-        if let last = marks.last, t - last < 0.005 { continue }
+      var marks: [CMTime] = []
+      for t in rawT.filter({
+        $0.isValid && $0 >= CMTime.zero && $0 <= comp.duration
+      }).sorted() {
+        if let last = marks.last, (t - last).seconds < 0.005 { continue }
         marks.append(t)
       }
-      // 補一個結尾，不要覆蓋原本的最後一個切點——覆蓋掉的話那一段
-      // 就消失了，取中點時會挑到別段，畫面直接不見
-      if let last = marks.last, duration - last > 0.005 {
-        marks.append(duration)
+      // 結尾一定要正好等於 comp.duration，差一格系統就當最後那一格沒人管。
+      // 距離夠遠才補一個切點；很近的話是把原本的切點對齊過去，不是蓋掉
+      // 它——蓋掉的話那一段就消失了，取中點時會挑到別段，畫面直接不見
+      if let last = marks.last, last != comp.duration {
+        if (comp.duration - last).seconds < 0.005 {
+          marks[marks.count - 1] = comp.duration
+        } else {
+          marks.append(comp.duration)
+        }
       }
-      if marks.count < 2 { marks = [0, max(0.01, duration)] }
+      if marks.count < 2 { marks = [CMTime.zero, comp.duration] }
       var instructions: [AVMutableVideoCompositionInstruction] = []
       for i in 0..<(marks.count - 1) {
         let a = marks[i]
         let b = marks[i + 1]
-        let mid = (a + b) / 2
+        let mid = (a.seconds + b.seconds) / 2
         let here = segments.filter {
           $0.range.start.seconds <= mid + 0.0005
             && $0.range.end.seconds >= mid - 0.0005
         }.sorted { $0.layer < $1.layer }  // 軌道編號小的在下面
         let ins = AVMutableVideoCompositionInstruction()
-        ins.timeRange = CMTimeRange(
-          start: CMTime(seconds: a, preferredTimescale: scale),
-          duration: CMTime(seconds: b - a, preferredTimescale: scale))
+        // 上一段的結尾就是下一段的開頭本人，接縫是零
+        ins.timeRange = CMTimeRange(start: a, end: b)
         var lis: [AVMutableVideoCompositionLayerInstruction] = []
         // 疊圖層時後面的畫在上面，所以由上往下加
         for seg in here.reversed() {
@@ -1901,8 +1917,8 @@ final class CompPlayer: NSObject, FlutterTexture {
           // 段指令；把整條淡入的時間範圍原封設在每一段指令上，範圍會落
           // 在指令之外，那是不合法的用法。改成算出這段指令的頭尾各自
           // 該有多不透明，中間拉一條斜坡——跨幾段都接得起來
-          let o0 = opacity(seg, at: a)
-          let o1 = opacity(seg, at: b)
+          let o0 = opacity(seg, at: a.seconds)
+          let o1 = opacity(seg, at: b.seconds)
           if abs(o0 - 1) > 0.001 || abs(o1 - 1) > 0.001 {
             if abs(o0 - o1) < 0.001 {
               li.setOpacity(Float(o0), at: ins.timeRange.start)
