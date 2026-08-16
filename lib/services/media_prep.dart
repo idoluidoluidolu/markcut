@@ -26,18 +26,50 @@ class MediaPrep {
   static const _ch = MethodChannel('markcut/prep');
 
   static bool _wired = false;
-  static void Function(double)? _onProgress;
 
-  /// 一次只轉一支。兩個硬體轉檔工作同時跑會互相搶解碼器，
-  /// 加起來反而比排隊慢，記憶體也翻倍
-  static Future<void> _queue = Future.value();
+  /// 每個轉檔工作的進度回呼，用 job 編號分開。
+  ///
+  /// 同時可以跑兩支：iPhone 的硬體編碼器吃得下，兩支一起跑的總時間
+  /// 明顯比排隊短。再多就會互搶，而且記憶體跟著翻倍
+  static const _maxConcurrent = 2;
+  static final Map<int, void Function(double)> _progressOf = {};
+  static int _nextJob = 1;
+
+  /// 目前在跑的工作數；滿了就排隊等
+  static int _running = 0;
+  static final List<Completer<void>> _waiting = [];
+
+  static Future<void> _acquire() {
+    if (_running < _maxConcurrent) {
+      _running++;
+      return Future.value();
+    }
+    final c = Completer<void>();
+    _waiting.add(c);
+    return c.future;
+  }
+
+  static void _release() {
+    if (_waiting.isNotEmpty) {
+      _waiting.removeAt(0).complete();
+      return;
+    }
+    _running--;
+  }
 
   static void _wire() {
     if (_wired) return;
     _wired = true;
     _ch.setMethodCallHandler((call) async {
-      if (call.method == 'progress' && call.arguments is num) {
-        _onProgress?.call((call.arguments as num).toDouble().clamp(0.0, 1.0));
+      if (call.method == 'progress') {
+        final a = call.arguments;
+        if (a is Map) {
+          final job = (a['job'] as num?)?.toInt();
+          final v = (a['value'] as num?)?.toDouble();
+          if (job != null && v != null) {
+            _progressOf[job]?.call(v.clamp(0.0, 1.0));
+          }
+        }
       }
       // 原生端把失敗的真正原因送回來。以前只知道「失敗」，而失敗的素材
       // 會一路用 4K HDR 原檔播——那正是卡頓的來源，卻查不出為什麼
@@ -109,26 +141,25 @@ class MediaPrep {
     String dest, {
     int maxShortSide = 1080,
     void Function(double progress)? onProgress,
-  }) {
-    final job = _queue.then((_) async {
-      if (!await available) return null;
-      _wire();
-      _onProgress = onProgress;
-      try {
-        return await _ch.invokeMethod<String>('toWorkFile', {
-          'src': src,
-          'dest': dest,
-          'maxShortSide': maxShortSide,
-        });
-      } catch (_) {
-        return null;
-      } finally {
-        _onProgress = null;
-      }
-    });
-    // 排隊用的 future 不能帶錯誤，不然一次失敗會把後面全部毒死
-    _queue = job.then((_) {}, onError: (_) {});
-    return job;
+  }) async {
+    if (!await available) return null;
+    _wire();
+    final job = _nextJob++;
+    if (onProgress != null) _progressOf[job] = onProgress;
+    await _acquire();
+    try {
+      return await _ch.invokeMethod<String>('toWorkFile', {
+        'src': src,
+        'dest': dest,
+        'maxShortSide': maxShortSide,
+        'job': job,
+      });
+    } catch (_) {
+      return null;
+    } finally {
+      _progressOf.remove(job);
+      _release();
+    }
   }
 
   /// 取消正在進行的轉檔（使用者按了「先不要等」）

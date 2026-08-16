@@ -16,11 +16,11 @@ class PrepGateView extends StatelessWidget {
   final int done;
   final int total;
 
-  /// 正在備的那一支做到哪（0~1）。
+  /// 整體進度（0~1）：已完成的支數，加上正在轉的那幾支各自的進度。
   ///
-  /// 沒有它的話百分比只會跳 33、67、100——三支素材的畫面上，
+  /// 只算「做好幾支」的話百分比只會跳 33、67、100——三支素材的畫面上，
   /// 那個大數字大半時間是停著的，看起來就像當掉
-  final double current;
+  final double fraction;
 
   /// 編輯器本身載好了沒。還沒載好時連「幾支」都還不知道
   final bool ready;
@@ -29,16 +29,14 @@ class PrepGateView extends StatelessWidget {
     super.key,
     required this.done,
     required this.total,
-    this.current = 0,
+    this.fraction = 0,
     this.ready = true,
   });
 
   @override
   Widget build(BuildContext context) {
     final counting = ready && total > 0;
-    final pct = counting
-        ? ((done + current.clamp(0.0, 1.0)) / total).clamp(0.0, 1.0)
-        : 0.0;
+    final pct = counting ? fraction.clamp(0.0, 1.0) : 0.0;
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,

@@ -44,9 +44,8 @@ final class AtomicFlag {
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
-  /// 正在跑的轉檔工作（取消用）與回報進度的計時器
-  private var prepSession: AVAssetExportSession?
-  private var prepTimer: Timer?
+  /// 正在跑的轉檔工作（取消用）。同時可能有兩支在轉，用 job 編號分開
+  private var prepSessions: [Int: AVAssetExportSession] = [:]
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
@@ -804,7 +803,7 @@ final class AtomicFlag {
       case "available":
         result(true)
       case "cancel":
-        self.prepSession?.cancelExport()
+        for s in self.prepSessions.values { s.cancelExport() }
         result(nil)
       case "toWorkFile":
         guard let args = call.arguments as? [String: Any],
@@ -815,9 +814,18 @@ final class AtomicFlag {
           return
         }
         let maxShortSide = args["maxShortSide"] as? Int ?? 1080
+        let job = args["job"] as? Int ?? 0
+        // 已經符合規格的素材直接用原檔，一格都不用重編。
+        // 自己匯出過的影片、下載回來的 1080p H.264 都會命中
+        if let why = self.alreadyGoodEnough(src, maxShortSide: maxShortSide) {
+          channel.invokeMethod("note", arguments: "素材本來就合用（\(why)）")
+          result(src)
+          return
+        }
         self.makeWorkFile(
-          src: src, dest: dest, maxShortSide: maxShortSide, channel: channel)
-        { path in result(path) }
+          src: src, dest: dest, maxShortSide: maxShortSide, channel: channel,
+          job: job
+        ) { path in result(path) }
       case "probe":
         guard let path = call.arguments as? String else {
           result(nil)
@@ -834,9 +842,42 @@ final class AtomicFlag {
     }
   }
 
+  /// 這支素材本來就合用嗎？合用就直接拿原檔當工作檔，一格都不用重編。
+  ///
+  /// 條件跟工作檔的輸出規格一致：短邊沒超過上限、H.264、SDR(709)、
+  /// 關鍵幀夠密、而且沒有旋轉旗標。回 nil 代表要轉，回字串是「為什麼
+  /// 可以省下來」（寫進診斷用）
+  private func alreadyGoodEnough(_ path: String, maxShortSide: Int) -> String? {
+    let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+    guard let t = asset.tracks(withMediaType: .video).first else { return nil }
+    guard t.preferredTransform.isIdentity else { return nil }
+    let n = t.naturalSize.applying(t.preferredTransform)
+    let short = min(abs(n.width), abs(n.height))
+    guard short > 1, Int(short) <= maxShortSide else { return nil }
+    guard let fdAny = t.formatDescriptions.first else { return nil }
+    let fd = fdAny as! CMFormatDescription
+    guard CMFormatDescriptionGetMediaSubType(fd) == kCMVideoCodecType_H264
+    else { return nil }
+    // HDR 一定要轉：色調映射交給系統做，不然預覽跟匯出的顏色會不一樣
+    let trc = CMFormatDescriptionGetExtension(
+      fd, extensionKey: kCMFormatDescriptionExtension_TransferFunction)
+    if let trc = trc,
+      !CFEqual(trc, kCMFormatDescriptionTransferFunction_ITU_R_709_2)
+    {
+      return nil
+    }
+    // 關鍵幀太疏的話拖曳會鈍，那正是工作檔要解決的事
+    let m = probeFile(path)
+    guard let frames = m["frames"] as? Int, let keys = m["keyframes"] as? Int,
+      let maxGop = m["maxGopFrames"] as? Int,
+      keys > 0, Double(frames) / Double(keys) <= 8, maxGop <= 12
+    else { return nil }
+    return "\(Int(short))p H.264 SDR、關鍵幀每 \(frames / keys) 格"
+  }
+
   private func makeWorkFile(
     src: String, dest: String, maxShortSide: Int,
-    channel: FlutterMethodChannel,
+    channel: FlutterMethodChannel, job: Int,
     done: @escaping (String?) -> Void
   ) {
     // 一趟做完：解碼 → 轉正、縮到 1080、映射回 709 → 密關鍵幀編碼。
@@ -844,7 +885,7 @@ final class AtomicFlag {
     // 時間重映射過的軌有可能讓合成器讀不動，那種素材更需要工作檔
     transcodeWorkFile(
       src: src, dest: dest, maxShortSide: maxShortSide, channel: channel,
-      label: "工作檔一趟轉好"
+      label: "工作檔一趟轉好", job: job
     ) { [weak self] err in
       if err == nil {
         done(dest)
@@ -854,7 +895,7 @@ final class AtomicFlag {
         "note", arguments: "一趟轉檔沒成功（\(err!)），改用兩段式")
       self?.exportOnce(
         src: src, dest: dest, maxShortSide: maxShortSide,
-        useComposition: true, channel: channel
+        useComposition: true, channel: channel, job: job
       ) { e1 in
         if e1 == nil {
           self?.denseKeyframes(dest, channel: channel) { _ in done(dest) }
@@ -864,7 +905,7 @@ final class AtomicFlag {
           "note", arguments: "工作檔第一次失敗（\(e1!)），改用系統預設尺寸重試")
         self?.exportOnce(
           src: src, dest: dest, maxShortSide: maxShortSide,
-          useComposition: false, channel: channel
+          useComposition: false, channel: channel, job: job
         ) { e2 in
           if e2 == nil {
             self?.denseKeyframes(dest, channel: channel) { _ in done(dest) }
@@ -892,7 +933,7 @@ final class AtomicFlag {
   /// [maxShortSide] 給 0 代表不縮，維持原尺寸（只重排關鍵幀時用）
   private func transcodeWorkFile(
     src: String, dest: String, maxShortSide: Int,
-    channel: FlutterMethodChannel, label: String,
+    channel: FlutterMethodChannel, label: String, job: Int = 0,
     done: @escaping (String?) -> Void
   ) {
     try? FileManager.default.removeItem(atPath: dest)
@@ -1056,7 +1097,8 @@ final class AtomicFlag {
             if t.isFinite {
               DispatchQueue.main.async {
                 channel.invokeMethod(
-                  "progress", arguments: min(1, max(0, t / dur)))
+                  "progress",
+                  arguments: ["job": job, "value": min(1, max(0, t / dur))])
               }
             }
           }
@@ -1141,7 +1183,7 @@ final class AtomicFlag {
     let tmp = path + ".dense.mp4"
     transcodeWorkFile(
       src: path, dest: tmp, maxShortSide: 0, channel: channel,
-      label: "密關鍵幀重編完成"
+      label: "密關鍵幀重編完成", job: -1
     ) { err in
       guard err == nil else {
         channel.invokeMethod(
@@ -1236,7 +1278,7 @@ final class AtomicFlag {
   /// 轉一次。成功回 nil，失敗回原因字串
   private func exportOnce(
     src: String, dest: String, maxShortSide: Int, useComposition: Bool,
-    channel: FlutterMethodChannel,
+    channel: FlutterMethodChannel, job: Int,
     done: @escaping (String?) -> Void
   ) {
     let asset = AVURLAsset(url: URL(fileURLWithPath: src))
@@ -1294,23 +1336,24 @@ final class AtomicFlag {
       session.videoComposition = comp
     }
 
-    prepSession = session
-    prepTimer?.invalidate()
-    // 進度用輪詢的：AVAssetExportSession 沒有回呼式的進度
-    prepTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak session] _ in
+    prepSessions[job] = session
+    // 進度用輪詢的：AVAssetExportSession 沒有回呼式的進度。
+    // 計時器是這一趟自己的，不是共用的——同時轉兩支時共用那個會互相蓋掉
+    let timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) {
+      [weak session] _ in
       guard let session = session else { return }
-      channel.invokeMethod("progress", arguments: Double(session.progress))
+      channel.invokeMethod(
+        "progress", arguments: ["job": job, "value": Double(session.progress)])
     }
 
     session.exportAsynchronously { [weak self] in
       DispatchQueue.main.async {
-        self?.prepTimer?.invalidate()
-        self?.prepTimer = nil
-        self?.prepSession = nil
+        timer.invalidate()
+        self?.prepSessions.removeValue(forKey: job)
         if session.status == .completed,
           FileManager.default.fileExists(atPath: dest)
         {
-          channel.invokeMethod("progress", arguments: 1.0)
+          channel.invokeMethod("progress", arguments: ["job": job, "value": 1.0])
           done(nil)
         } else {
           try? FileManager.default.removeItem(atPath: dest)

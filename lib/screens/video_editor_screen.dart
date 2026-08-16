@@ -5,7 +5,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show compute, kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -601,8 +601,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _saveDraftNow() async {
     // Web 也存：同一次瀏覽內可以繼續剪；重新整理後素材連結會失效，
     // 還原時由 _loadDraft 剔除並提示
+    final map = _projectJson();
+    // 編碼丟到背景執行緒：整包 JSON 含 Logo 的 base64，在主執行緒要好
+    // 幾毫秒——而存草稿是每個編輯動作都會走到的，那幾毫秒正好落在使用者
+    // 手指還在動的時候。Web 沒有背景執行緒，照原本的做
+    String text;
+    try {
+      text = kIsWeb ? jsonEncode(map) : await compute(jsonEncode, map);
+    } catch (_) {
+      text = jsonEncode(map);
+    }
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(kDraftKey, jsonEncode(_projectJson()));
+    await prefs.setString(kDraftKey, text);
   }
 
   static Future<void> clearDraft() async {
@@ -1059,9 +1069,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   int _prepDone = 0;
   int _prepTotal = 0;
 
-  /// 正在轉的那一支做到哪（0~1）。沒有它的話百分比只會跳
-  /// 33、67、100，三支素材的畫面上那個大數字大半時間是停著的
-  double _prepCur = 0;
+  /// 正在轉的每一支各做到哪（0~1），素材索引 → 進度。
+  ///
+  /// 沒有它的話百分比只會跳 33、67、100，三支素材的畫面上那個大數字
+  /// 大半時間是停著的。同時可能有兩支在轉，所以是一張表不是一個值
+  final Map<int, double> _prepCur = {};
+
+  /// 這一刻的整體進度（0~1）
+  double get _prepFraction {
+    if (_prepTotal <= 0) return 0;
+    final inFlight = _prepCur.values.fold(0.0, (a, b) => a + b);
+    return ((_prepDone + inFlight) / _prepTotal).clamp(0.0, 1.0);
+  }
 
   /// 這一刻要不要蓋讀取遮罩
   bool get _prepGate => _prepBusy;
@@ -1086,20 +1105,30 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     setState(() {
       _prepBusy = true;
       _prepDone = 0;
-      _prepCur = 0;
+      _prepCur.clear();
       _prepTotal = _prepQueue.length;
     });
-    while (_prepQueue.isNotEmpty && mounted) {
-      await _prepWorkFile(_prepQueue.removeAt(0));
-      if (!mounted) return;
-      setState(() {
-        _prepDone++;
-        _prepCur = 0;
-        _prepTotal = _prepDone + _prepQueue.length;
-      });
+    // 全部一起送出去，同時跑幾支由 MediaPrep 控（現在是兩支）。
+    // 一支做完就送下一支進去，硬體編碼器不會有空檔
+    final jobs = <Future<void>>[];
+    while (_prepQueue.isNotEmpty) {
+      final i = _prepQueue.removeAt(0);
+      jobs.add(
+        _prepWorkFile(i).then((_) {
+          if (!mounted) return;
+          setState(() {
+            _prepDone++;
+            _prepCur.remove(i);
+          });
+        }),
+      );
     }
+    await Future.wait(jobs);
     if (!mounted) return;
-    setState(() => _prepBusy = false);
+    setState(() {
+      _prepBusy = false;
+      _prepCur.clear();
+    });
     // 這時候才組合成：全部素材都是工作檔，方向與編碼一致，
     // 合成器不會被叫醒，而且之後不必再重烘一次
     _compDirty = true;
@@ -1128,12 +1157,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       src.path,
       onProgress: (v) {
         if (!mounted || !_prepBusy) return;
-        setState(() => _prepCur = v.clamp(0.0, 1.0));
+        setState(() => _prepCur[srcIndex] = v.clamp(0.0, 1.0));
       },
     );
     if (!mounted) return;
     _prepping.remove(srcIndex);
-    _prepCur = 0;
+    _prepCur.remove(srcIndex);
     if (made == null || srcIndex >= _tl.sources.length) return;
     src.workPath = made;
     // 播放中絕對不換媒體。換播放器會 pause→重建→play，合成重組會換掉
@@ -6791,7 +6820,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Widget _buildPrepGate() => PrepGateView(
     done: _prepDone,
     total: _prepTotal,
-    current: _prepCur,
+    fraction: _prepFraction,
     ready: _ready,
   );
 
