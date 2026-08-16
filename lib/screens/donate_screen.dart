@@ -8,24 +8,16 @@ import '../widgets/swipe_back.dart';
 
 /// 斗內頁（App 內購小費罐）。
 ///
-/// 內購：四檔消耗型商品，商店後台要建立同 ID 的商品才買得動；
+/// 內購：三檔消耗型商品，商店後台要建立同 ID 的商品才買得動；
 /// 還沒建立時卡片照樣顯示（固定價），點了提示即將開放。
-const kTipIds = <String>{
-  'tip_small',
-  'tip_medium',
-  'tip_large',
-  'tip_max',
-};
+const kTipIds = <String>{'tip_small', 'tip_medium', 'tip_large'};
 
-/// 前三檔並排：(商品 ID, 名稱, 沒抓到商店價時顯示的價格)
+/// 檔位定義：(商品 ID, 名稱, 沒抓到商店價時顯示的價格)
 const _kTiers = [
   ('tip_small', '小挺一下', 'NT\$100'),
   ('tip_medium', '中挺一下', 'NT\$300'),
   ('tip_large', '大挺一下', 'NT\$500'),
 ];
-
-/// 最下面那一檔，整排寬
-const _kMaxTier = ('tip_max', '真的要這麼挺...?', 'NT\$990');
 
 class DonateScreen extends StatefulWidget {
   const DonateScreen({super.key});
@@ -194,60 +186,6 @@ class _DonateScreenState extends State<DonateScreen> {
     );
   }
 
-  /// 最下面那一檔：整排寬，金額跟名稱並排
-  Widget _maxTierCard() {
-    final (id, label, fallback) = _kMaxTier;
-    final price = _products[id]?.price ?? fallback;
-    return InkWell(
-      borderRadius: BorderRadius.circular(20),
-      onTap: _buying ? null : () => _buy(id),
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(22, 20, 22, 20),
-        decoration: BoxDecoration(
-          color: kLCard,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: kLAccent, width: 1.8),
-        ),
-        // 小標是一整句話，跟金額擠同一排會被切成兩段又貼著數字；
-        // 名稱與金額先各佔一邊，小標自己一整行
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    label,
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                ),
-                Text(
-                  price,
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              '台灣今天有一個人因為你在電腦螢幕前笑出來了',
-              style: TextStyle(
-                fontSize: 12.5,
-                color: kLTextDim,
-                height: 1.5,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return SwipeBack(
@@ -304,8 +242,6 @@ class _DonateScreenState extends State<DonateScreen> {
                             ],
                           ],
                         ),
-                        const SizedBox(height: 12),
-                        _maxTierCard(),
                       ],
                     ),
                   ),
