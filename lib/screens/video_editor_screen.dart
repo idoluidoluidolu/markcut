@@ -36,6 +36,7 @@ import '../theme.dart';
 import 'playback_test_screen.dart';
 import '../widgets/color_grade_panel.dart';
 import '../widgets/timeline_editor.dart';
+import '../widgets/prep_gate_view.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
 
@@ -6763,45 +6764,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 右上角比例小標籤：常駐顯示目前畫面比例，點了直接開比例選單
-  /// 進場的讀取畫面：素材備好之前整頁擋著。
-  ///
-  /// 備素材本身省不掉（1080p SDR 的工作檔是拖曳跟匯出順的前提），
-  /// 但「什麼時候讓使用者看到編輯器」是可以選的。以前是進場就給畫面、
-  /// 背景邊轉邊換，結果是進去之後畫面閃、播放跳；現在一次等完，
-  /// 進去就是完成品
-  Widget _buildPrepGate() {
-    final total = _prepTotal;
-    final done = _prepDone;
-    final pct = total <= 0 ? null : (done / total).clamp(0.0, 1.0);
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          SizedBox(
-            width: 44,
-            height: 44,
-            child: CircularProgressIndicator(
-              strokeWidth: 3,
-              value: pct == null || pct <= 0 ? null : pct,
-              color: kAmber,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            _ready && total > 0 ? '準備素材 $done／$total' : '載入中',
-            style: const TextStyle(fontSize: 13, color: kTextDim),
-          ),
-          if (_ready && total > 0) ...[
-            const SizedBox(height: 6),
-            const Text(
-              '轉成剪輯用的格式，之後拖曳與匯出都會順',
-              style: TextStyle(fontSize: 11, color: kTextDim),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
+  /// 進場的讀取畫面（元件在 widgets/prep_gate_view.dart）
+  Widget _buildPrepGate() =>
+      PrepGateView(done: _prepDone, total: _prepTotal, ready: _ready);
 
   Widget _canvasHint() {
     return Align(
