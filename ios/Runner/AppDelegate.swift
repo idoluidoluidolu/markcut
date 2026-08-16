@@ -839,101 +839,123 @@ final class AtomicFlag {
     channel: FlutterMethodChannel,
     done: @escaping (String?) -> Void
   ) {
-    // 先照我們自己算的尺寸轉；失敗就退一步、不套 videoComposition 再試
-    // 一次（尺寸交給系統預設）。慢動作、時間重映射過的軌套 composition
-    // 會直接失敗，但那種素材更需要工作檔——4K HDR 240fps 是最重的一種
-    exportOnce(
-      src: src, dest: dest, maxShortSide: maxShortSide,
-      useComposition: true, channel: channel
+    // 一趟做完：解碼 → 轉正、縮到 1080、映射回 709 → 密關鍵幀編碼。
+    // 兩段式（ExportSession 再重編一次）是舊路徑，留著當保底：慢動作、
+    // 時間重映射過的軌有可能讓合成器讀不動，那種素材更需要工作檔
+    transcodeWorkFile(
+      src: src, dest: dest, maxShortSide: maxShortSide, channel: channel,
+      label: "工作檔一趟轉好"
     ) { [weak self] err in
       if err == nil {
-        self?.denseKeyframes(dest, channel: channel) { _ in done(dest) }
+        done(dest)
         return
       }
       channel.invokeMethod(
-        "note", arguments: "工作檔第一次失敗（\(err!)），改用系統預設尺寸重試")
+        "note", arguments: "一趟轉檔沒成功（\(err!)），改用兩段式")
       self?.exportOnce(
         src: src, dest: dest, maxShortSide: maxShortSide,
-        useComposition: false, channel: channel
-      ) { err2 in
-        if err2 == nil {
+        useComposition: true, channel: channel
+      ) { e1 in
+        if e1 == nil {
           self?.denseKeyframes(dest, channel: channel) { _ in done(dest) }
-        } else {
-          channel.invokeMethod("note", arguments: "工作檔還是失敗：\(err2!)")
-          done(nil)
+          return
+        }
+        channel.invokeMethod(
+          "note", arguments: "工作檔第一次失敗（\(e1!)），改用系統預設尺寸重試")
+        self?.exportOnce(
+          src: src, dest: dest, maxShortSide: maxShortSide,
+          useComposition: false, channel: channel
+        ) { e2 in
+          if e2 == nil {
+            self?.denseKeyframes(dest, channel: channel) { _ in done(dest) }
+          } else {
+            channel.invokeMethod("note", arguments: "工作檔還是失敗：\(e2!)")
+            done(nil)
+          }
         }
       }
     }
   }
 
-  /// 把工作檔重編成「密關鍵幀」：每 5 格一個關鍵幀、不用 B 幀。
+  /// 一趟把素材做成工作檔：解碼 → 轉正、縮到短邊上限、映射回 709 →
+  /// 密關鍵幀 H.264 編碼。
   ///
-  /// 系統轉出來的檔關鍵幀間隔一兩秒，拖曳的每一次 seek 都要從前一個
-  /// 關鍵幀解幾十格過來——左右滑動跟不上手指的根本原因。密關鍵幀之後
-  /// 一次 seek 最多解 5 格；chase 的 0.1 秒寬容窗裡永遠有關鍵幀可落，
-  /// 多數 seek 直接落幀。輸入已經是 SDR H.264，這一步沒有任何色彩
-  /// 轉換，純粹重排關鍵幀。失敗就照用原工作檔（只是滑動比較鈍）
-  private func denseKeyframes(
-    _ path: String, channel: FlutterMethodChannel,
-    done: @escaping (Bool) -> Void
+  /// 本來是兩趟：AVAssetExportSession 先轉成 1080p SDR，再用
+  /// reader/writer 重編一次排密關鍵幀。兩趟各自做了一次完整的解碼與
+  /// 編碼，而它們做的其實是同一件事的不同部分——合成一趟就好，時間
+  /// 大約省一半。
+  ///
+  /// 顏色不會因此改變：舊的第一趟本來就是掛 videoComposition 交給
+  /// 系統的合成器算，這裡是同一個合成器、同一組色彩屬性，只是換成
+  /// 由 writer 收影格。
+  ///
+  /// [maxShortSide] 給 0 代表不縮，維持原尺寸（只重排關鍵幀時用）
+  private func transcodeWorkFile(
+    src: String, dest: String, maxShortSide: Int,
+    channel: FlutterMethodChannel, label: String,
+    done: @escaping (String?) -> Void
   ) {
-    let srcURL = URL(fileURLWithPath: path)
-    let tmp = path + ".dense.mp4"
-    try? FileManager.default.removeItem(atPath: tmp)
-    let asset = AVURLAsset(url: srcURL)
+    try? FileManager.default.removeItem(atPath: dest)
+    let asset = AVURLAsset(url: URL(fileURLWithPath: src))
     guard let vTrack = asset.tracks(withMediaType: .video).first,
       let reader = try? AVAssetReader(asset: asset),
       let writer = try? AVAssetWriter(
-        outputURL: URL(fileURLWithPath: tmp), fileType: .mp4)
+        outputURL: URL(fileURLWithPath: dest), fileType: .mp4)
     else {
-      done(false)
+      done("開不了這個檔")
       return
     }
+    let dur = asset.duration.seconds
     let fps = vTrack.nominalFrameRate > 1 ? vTrack.nominalFrameRate : 30
     let pixels: [String: Any] = [
       kCVPixelBufferPixelFormatTypeKey as String: Int(
         kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
     ]
 
-    // 順便把方向烘進畫面。
-    //
-    // 轉檔第一次失敗時會退一步用系統預設尺寸重試，那條路出來的檔會保留
-    // 旋轉旗標；成功那條則是把方向燒進畫面。同一條時間軸上兩種混在一起，
-    // 方向就不一致，合成播放器只好掛上合成器逐格重畫——整條路上最貴的
-    // 那件事，就因為這個又被打開。
-    //
-    // 這裡本來就要重編一次，順手讓讀取端走一份只做轉正的合成，
-    // 寫出來的檔一律是「已經轉正、沒有旋轉旗標」。之後所有工作檔方向
-    // 天生一致，合成器就不會再被叫醒
+    // 輸出尺寸縮的是短邊：直式拿到 1080x1920、橫式拿到 1920x1080，
+    // 兩種方向的清晰度與解碼成本都一樣。系統預設的「塞進 1920x1080」
+    // 會把直式 4K 縮成 607x1080，長邊只剩六成，預覽就糊了
     let disp = vTrack.naturalSize.applying(vTrack.preferredTransform)
-    let upright = !vTrack.preferredTransform.isIdentity
-    let size =
-      upright
-      ? CGSize(width: abs(disp.width), height: abs(disp.height))
-      : vTrack.naturalSize
-
-    let vOut: AVAssetReaderOutput
-    if upright {
-      let vc = AVMutableVideoComposition()
-      vc.renderSize = size
-      vc.frameDuration = CMTime(
-        value: 1, timescale: CMTimeScale(max(1, min(60, fps.rounded()))))
-      let ins = AVMutableVideoCompositionInstruction()
-      ins.timeRange = CMTimeRange(start: .zero, duration: asset.duration)
-      let li = AVMutableVideoCompositionLayerInstruction(assetTrack: vTrack)
-      li.setTransform(vTrack.preferredTransform, at: .zero)
-      ins.layerInstructions = [li]
-      vc.instructions = [ins]
-      let o = AVAssetReaderVideoCompositionOutput(
-        videoTracks: [vTrack], videoSettings: pixels)
-      o.videoComposition = vc
-      vOut = o
-    } else {
-      vOut = AVAssetReaderTrackOutput(track: vTrack, outputSettings: pixels)
+    let dw = abs(disp.width)
+    let dh = abs(disp.height)
+    guard dw > 1, dh > 1 else {
+      done("讀不到畫面尺寸")
+      return
     }
+    let shrink =
+      maxShortSide > 0 ? min(1, CGFloat(maxShortSide) / min(dw, dh)) : 1
+    var outW = (dw * shrink).rounded()
+    var outH = (dh * shrink).rounded()
+    outW -= outW.truncatingRemainder(dividingBy: 2)  // H.264 要偶數
+    outH -= outH.truncatingRemainder(dividingBy: 2)
+    let size = CGSize(width: max(2, outW), height: max(2, outH))
+
+    // 一律走合成器：方向燒進畫面（不留旋轉旗標，不然合成播放器會為了
+    // 方向不一致而掛上逐格重畫）、尺寸精確、而且明確標成 709——不標的
+    // 話 HDR 的色彩標記會原封帶進 H.264 檔，播放器再套一次曲線，顏色
+    // 就整個歪掉
+    let vc = AVMutableVideoComposition()
+    vc.renderSize = size
+    vc.frameDuration = CMTime(
+      value: 1, timescale: CMTimeScale(max(1, min(60, fps.rounded()))))
+    vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
+    vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
+    vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
+    let ins = AVMutableVideoCompositionInstruction()
+    ins.timeRange = CMTimeRange(start: .zero, duration: asset.duration)
+    let li = AVMutableVideoCompositionLayerInstruction(assetTrack: vTrack)
+    li.setTransform(
+      vTrack.preferredTransform.concatenating(
+        CGAffineTransform(scaleX: shrink, y: shrink)),
+      at: .zero)
+    ins.layerInstructions = [li]
+    vc.instructions = [ins]
+    let vOut = AVAssetReaderVideoCompositionOutput(
+      videoTracks: [vTrack], videoSettings: pixels)
+    vOut.videoComposition = vc
     vOut.alwaysCopiesSampleData = false
     guard reader.canAdd(vOut) else {
-      done(false)
+      done("讀取端建不起來")
       return
     }
     reader.add(vOut)
@@ -945,6 +967,9 @@ final class AtomicFlag {
         AVVideoWidthKey: Int(size.width),
         AVVideoHeightKey: Int(size.height),
         AVVideoCompressionPropertiesKey: [
+          // 每 5 格一個關鍵幀、不用 B 幀：拖曳的每一次 seek 最多只要
+          // 解 5 格。系統轉出來的檔關鍵幀間隔一兩秒，那是滑動跟不上
+          // 手指的根本原因
           AVVideoMaxKeyFrameIntervalKey: 5,
           AVVideoAllowFrameReorderingKey: false,
           AVVideoAverageBitRateKey: Int(
@@ -953,9 +978,8 @@ final class AtomicFlag {
         ] as [String: Any],
       ])
     vIn.expectsMediaDataInRealTime = false
-    // 方向已經烘進畫面，不再帶旗標（upright 為 false 時本來就是單位矩陣）
     guard writer.canAdd(vIn) else {
-      done(false)
+      done("寫入端建不起來")
       return
     }
     writer.add(vIn)
@@ -987,7 +1011,7 @@ final class AtomicFlag {
       input.expectsMediaDataInRealTime = false
       // 兩邊都要收得下才動手：只把 reader output 加進去而 writer input
       // 沒加的話，那條軌永遠不會被讀完，reader 就到不了 completed，
-      // 整份重編會被判成失敗
+      // 整份轉檔會被判成失敗
       if reader.canAdd(out), writer.canAdd(input) {
         reader.add(out)
         writer.add(input)
@@ -997,7 +1021,7 @@ final class AtomicFlag {
     }
 
     guard reader.startReading(), writer.startWriting() else {
-      done(false)
+      done("開不了工")
       return
     }
     writer.startSession(atSourceTime: .zero)
@@ -1005,12 +1029,13 @@ final class AtomicFlag {
     let group = DispatchGroup()
     // 一條軌一條佇列：兩個 input 共用一條序列佇列的話，影像那個 block
     // 在 while 裡跑的時候聲音那個永遠排不進去，兩邊互相餓死
-    let vq = DispatchQueue(label: "markcut.dense.v")
-    let aq = DispatchQueue(label: "markcut.dense.a")
+    let vq = DispatchQueue(label: "markcut.work.v")
+    let aq = DispatchQueue(label: "markcut.work.a")
     // append 失敗要記下來：不記的話 writer 仍可能收在 completed，
-    // 於是一份「只有前半段」的檔會被換上去，素材默默變短
+    // 於是一份「只有前半段」的檔會被當成功交出去，素材默默變短
     let failed = AtomicFlag()
     let t0 = CACurrentMediaTime()
+    var lastReport: CFTimeInterval = 0
 
     group.enter()
     vIn.requestMediaDataWhenReady(on: vq) {
@@ -1021,6 +1046,19 @@ final class AtomicFlag {
             vIn.markAsFinished()
             group.leave()
             return
+          }
+          // 進度：讀到第幾秒。reader/writer 沒有內建進度，但影格自己
+          // 帶著時間戳，除以總長就是進度
+          let now = CACurrentMediaTime()
+          if dur > 0.05, now - lastReport > 0.2 {
+            lastReport = now
+            let t = CMSampleBufferGetPresentationTimeStamp(sb).seconds
+            if t.isFinite {
+              DispatchQueue.main.async {
+                channel.invokeMethod(
+                  "progress", arguments: min(1, max(0, t / dur)))
+              }
+            }
           }
         } else {
           vIn.markAsFinished()
@@ -1051,32 +1089,27 @@ final class AtomicFlag {
 
     // 只回一次（逾時與正常完成可能撞在一起）
     let replied = AtomicFlag()
-    let finish: (Bool, String?) -> Void = { ok, note in
+    let finish: (String?) -> Void = { err in
       guard replied.setIfClear() else { return }
       DispatchQueue.main.async {
-        if ok {
-          done(true)
-          return
-        }
-        try? FileManager.default.removeItem(atPath: tmp)
-        if let note = note { channel.invokeMethod("note", arguments: note) }
-        done(false)
+        if err != nil { try? FileManager.default.removeItem(atPath: dest) }
+        done(err)
       }
     }
     // 逾時保險：硬體編碼器被別的工作佔住時 requestMediaDataWhenReady
     // 可能一直不回來，沒有這道就卡在「工作檔轉不完」，畫面永遠是原檔
-    DispatchQueue.main.asyncAfter(deadline: .now() + 90) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 120) {
       guard !replied.isSet else { return }
       reader.cancelReading()
       writer.cancelWriting()
-      finish(false, "密關鍵幀重編逾時（照用原工作檔，滑動會比較鈍）")
+      finish("逾時")
     }
 
     group.notify(queue: vq) {
       if failed.isSet {
         reader.cancelReading()
         writer.cancelWriting()
-        finish(false, "密關鍵幀重編中途失敗（照用原工作檔）")
+        finish("中途失敗")
         return
       }
       writer.finishWriting {
@@ -1084,18 +1117,46 @@ final class AtomicFlag {
           writer.status == .completed && reader.status == .completed
           && !failed.isSet
         guard ok else {
-          finish(false, "密關鍵幀重編沒成功（照用原工作檔，滑動會比較鈍）")
+          if let e = writer.error as NSError? {
+            finish("\(e.localizedDescription)[\(e.domain) \(e.code)]")
+          } else if let e = reader.error as NSError? {
+            finish("讀取端 \(e.localizedDescription)[\(e.code)]")
+          } else {
+            finish("writer=\(writer.status.rawValue) reader=\(reader.status.rawValue)")
+          }
           return
         }
-        do {
-          _ = try FileManager.default.replaceItemAt(
-            srcURL, withItemAt: URL(fileURLWithPath: tmp))
-          let ms = Int((CACurrentMediaTime() - t0) * 1000)
-          channel.invokeMethod("note", arguments: "密關鍵幀重編完成 \(ms)ms")
-          finish(true, nil)
-        } catch {
-          finish(false, "密關鍵幀重編換檔失敗（照用原工作檔）")
-        }
+        let ms = Int((CACurrentMediaTime() - t0) * 1000)
+        channel.invokeMethod("note", arguments: "\(label) \(ms)ms")
+        finish(nil)
+      }
+    }
+  }
+
+  /// 已經是工作檔了，只重排關鍵幀（原地換掉）。兩段式那條路才會用到
+  private func denseKeyframes(
+    _ path: String, channel: FlutterMethodChannel,
+    done: @escaping (Bool) -> Void
+  ) {
+    let tmp = path + ".dense.mp4"
+    transcodeWorkFile(
+      src: path, dest: tmp, maxShortSide: 0, channel: channel,
+      label: "密關鍵幀重編完成"
+    ) { err in
+      guard err == nil else {
+        channel.invokeMethod(
+          "note", arguments: "密關鍵幀重編沒成功（\(err!)，滑動會比較鈍）")
+        done(false)
+        return
+      }
+      do {
+        _ = try FileManager.default.replaceItemAt(
+          URL(fileURLWithPath: path), withItemAt: URL(fileURLWithPath: tmp))
+        done(true)
+      } catch {
+        try? FileManager.default.removeItem(atPath: tmp)
+        channel.invokeMethod("note", arguments: "密關鍵幀重編換檔失敗")
+        done(false)
       }
     }
   }

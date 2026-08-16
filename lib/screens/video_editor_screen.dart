@@ -1123,14 +1123,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _prepping.add(srcIndex);
     // 進度只在讀取遮罩蓋著的時候收。那時候畫面上只有遮罩本身，
     // 重建一次很便宜；遮罩收掉之後就不再理它（以前那個回呼是每
-    // 250ms 重建一次整頁編輯器）。
-    // 收到 0.9 為止：轉完之後還有一道密關鍵幀重編沒有進度可回報，
-    // 讓數字停在 100% 等它，看起來就像卡住了
+    // 250ms 重建一次整頁編輯器）
     final made = await WorkFiles.ensure(
       src.path,
       onProgress: (v) {
         if (!mounted || !_prepBusy) return;
-        setState(() => _prepCur = (v * 0.9).clamp(0.0, 0.9));
+        setState(() => _prepCur = v.clamp(0.0, 1.0));
       },
     );
     if (!mounted) return;
