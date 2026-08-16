@@ -448,7 +448,7 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
           Container(
             height: 250,
             width: double.infinity,
-            color: const Color(0xFF1B1B1F),
+            color: kPreviewBg,
             child: Stack(
               children: [
                 ValueListenableBuilder<int>(

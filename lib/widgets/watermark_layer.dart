@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../models/watermark_settings.dart';
+import '../theme.dart';
 
 /// 疊在預覽畫面上的浮水印圖層：單指拖曳調位置、雙指捏合調大小。
 /// 大小以「佔畫面寬度比例」計算，跟輸出時的算法一致，所見即所得。
@@ -83,8 +84,10 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
         logoIndex != widget.settings.activeLogo) {
       return null;
     }
+    // 琥珀而不是白：這個框疊的是使用者的照片／影片，白框落在白色縮圖
+    // 或亮背景上會整個看不見
     return BoxDecoration(
-      border: Border.all(color: Colors.white.withValues(alpha: 0.9), width: 1.2),
+      border: Border.all(color: kSelect, width: 1.4),
     );
   }
 

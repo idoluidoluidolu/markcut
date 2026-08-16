@@ -7,21 +7,25 @@ import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 /// 卡頓時截圖就能判斷瓶頸在哪一層
 final ValueNotifier<bool> kPerfOverlay = ValueNotifier(false);
 
-// ===== 「黑白 Mono Dark」設計系統 =====
-// 碳黑面板、無彩色：強調一律用純白（選取／把手／主行動）
+// ===== 「碳黑 ＋ 琥珀」設計系統 =====
+//
+// 底一路黑到底：主流剪輯 App（CapCut、剪映、iMovie）的編輯畫面幾乎
+// 都是純黑，因為畫面上唯一該亮的是使用者的素材。面板只比底黑高一階，
+// 靠間距與邊線分區，不靠亮度——面板一亮，眼睛就會被 UI 拉走
 const kBg = Color(0xFF000000); // 底＝純黑
-// 純黑而不是深灰：OLED 上純黑是真的不發光，卡片與面板（kPanel
-// 起跳 #1D1D21）浮起來的層次反而更清楚，也跟同類 App 的深色底一致
-const kPanel = Color(0xFF1D1D21); // 卡片/面板
-const kPanelHi = Color(0xFF26262C); // 面板亮階（icon 磚、選中底）
-const kBorder = Color(0xFF2A2A30); // 邊線
-const kClipBorder = Color(0xFF34343C); // 時間軸片段邊線
-const kAmber = Color(0xFFFFFFFF); // 強調色＝純白（沿用變數名，全 App 通用）
-// 選取狀態只有兩種，不要再長出第三種：
-//   設定面板裡的「選項」被選中 → kAmber（純白）框 + kPanelHi 底
-//   疊在使用者照片／影片上的「物件」被選中 → kSelect（琥珀）
-// 後者不能用白：白框疊在白色縮圖或亮照片上會整個看不見
-const kSelect = Color(0xFFFFC24B); // 時間軸/縮圖/拼圖格 選取專用琥珀
+const kPanel = Color(0xFF0C0C0E); // 卡片/面板（只比底高一階）
+const kPanelHi = Color(0xFF17171A); // 面板亮階（icon 磚、選中底）
+const kBorder = Color(0xFF232328); // 邊線
+const kClipBorder = Color(0xFF2A2A30); // 時間軸片段邊線
+// 預覽區的底（畫布外圍那圈）。幾乎是純黑，只留一階讓黑色畫布的邊界
+// 還看得出來——比例不同的素材會留黑邊，全一樣黑就分不出畫面到哪裡
+const kPreviewBg = Color(0xFF0A0A0C);
+// 強調色＝琥珀，全 App 通用（選取框、把手、主行動、滑桿）。
+// 一度改成純白，但白框疊在白色縮圖或亮照片上會整個看不見，
+// 而剪輯畫面裡最常被選取的東西正好就是使用者的素材
+const kAmber = Color(0xFFFFC24B);
+// 同一個琥珀。時間軸／縮圖／拼圖格沿用這個名字，語意是「選取」
+const kSelect = kAmber;
 const kText = Color(0xFFE8E8EA);
 const kTextDim = Color(0xFF8B8B95);
 const kIcon = Color(0xFFB9B9C2);
@@ -162,13 +166,13 @@ ThemeData buildStudioTheme() {
     // 圓角改成 kDialogRadius：所有 AlertDialog 一次跟上
     dialogTheme: DialogThemeData(
       // 底色比面板亮一階＋真實陰影，跟壓暗的背景拉開層次
-      backgroundColor: const Color(0xFF232329),
+      backgroundColor: const Color(0xFF151519),
       barrierColor: Colors.black.withValues(alpha: 0.85),
       elevation: 24,
       shadowColor: Colors.black,
       shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(kDialogRadius),
-          side: const BorderSide(color: Color(0xFF3A3A42))),
+          side: const BorderSide(color: Color(0xFF2E2E36))),
       // 標題字級跟自訂的那幾個對話框對齊（原本 16 只有這裡在用）
       titleTextStyle: const TextStyle(
           fontSize: 15.5,
@@ -207,11 +211,11 @@ ThemeData buildStudioTheme() {
       modalBackgroundColor: kPanelHi,
       modalBarrierColor: Colors.black.withValues(alpha: 0.6),
       elevation: 12,
-      dragHandleColor: const Color(0xFF6A6A74),
+      dragHandleColor: const Color(0xFF55555E),
       dragHandleSize: const Size(34, 4),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
-        side: BorderSide(color: Color(0xFF4A4A52)),
+        side: BorderSide(color: Color(0xFF33333B)),
       ),
     ),
     progressIndicatorTheme: const ProgressIndicatorThemeData(
@@ -297,9 +301,9 @@ class _HintToast extends StatelessWidget {
               left: BorderSide(
                   color: error ? const Color(0xFFFF6B6B) : kAmber,
                   width: 3),
-              top: const BorderSide(color: Color(0xFF4A4A52)),
-              right: const BorderSide(color: Color(0xFF4A4A52)),
-              bottom: const BorderSide(color: Color(0xFF4A4A52)),
+              top: const BorderSide(color: Color(0xFF33333B)),
+              right: const BorderSide(color: Color(0xFF33333B)),
+              bottom: const BorderSide(color: Color(0xFF33333B)),
             ),
             boxShadow: [
               BoxShadow(

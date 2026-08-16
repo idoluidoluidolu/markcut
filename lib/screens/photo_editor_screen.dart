@@ -1521,7 +1521,7 @@ final color = Color(picked ?? 0);
                         child: Container(
                           // 跟影片／批次／工作室同一個底色。原本是純黑，
                           // 直式照片兩側留邊會比其他畫面暗一階
-                          color: const Color(0xFF1B1B1F),
+                          color: kPreviewBg,
                           alignment: Alignment.center,
                           child: AspectRatio(
                             aspectRatio: _aspect!,

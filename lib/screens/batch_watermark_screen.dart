@@ -706,7 +706,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
               onPointerUp: (e) => _pinchUp(e.pointer),
               onPointerCancel: (e) => _pinchUp(e.pointer),
               child: Container(
-              color: const Color(0xFF1B1B1F),
+              color: kPreviewBg,
               child: Center(
                 // 換檔案時整個預覽子樹重建，浮水印圖層不會殘留舊狀態
                 child: KeyedSubtree(

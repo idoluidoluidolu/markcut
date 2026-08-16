@@ -5336,7 +5336,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         child: Container(
           key: _previewKey,
           // 預覽區背景比純黑亮一點，黑色畫布靠對比自己浮出來（CapCut 式）
-          color: const Color(0xFF1B1B1F),
+          color: kPreviewBg,
           child: Stack(
             children: [
               Center(
