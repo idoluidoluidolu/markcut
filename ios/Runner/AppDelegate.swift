@@ -1495,48 +1495,54 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 材質這份沒有人看，卻是每一格都在複製一張 4K 的畫面
   func build(clips: [[String: Any]], texture: Bool) -> Bool {
     let comp = AVMutableComposition()
-    guard
-      let vTrack = comp.addMutableTrack(
-        withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid),
-      let aTrack = comp.addMutableTrack(
-        withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
-    else { return false }
-
     let scale: CMTimeScale = 600
-    var cursor = CMTime.zero
-    var mixParams: [AVMutableAudioMixInputParameters] = []
-    let aParams = AVMutableAudioMixInputParameters(track: aTrack)
-    // 每一段的時間範圍與來源方向。一條合成軌只有一個
-    // preferredTransform，混到不同方向的素材就會躺平或被拉扁——
-    // 逐段的 layer instruction 才是 AVFoundation 給的正解
-    var segments:
-      [(
-        range: CMTimeRange, transform: CGAffineTransform, size: CGSize,
-        fadeIn: Double, fadeOut: Double, userScale: Double, px: Double,
-        py: Double
-      )] = []
 
-    for clip in clips {
+    // 一條時間軸軌道 → 一條合成軌。
+    //
+    // 本來只開一條，所以「同一時刻有兩層畫面」（子母畫面）就整組退回
+    // 舊的一片段一顆播放器——那正是使用者說的「多軌之後變超 LAG」。
+    // AVFoundation 本來就支援多軌疊合，逐段的 layer instruction 決定
+    // 每一刻誰在上面、怎麼擺
+    struct Seg {
+      var range: CMTimeRange
+      var transform: CGAffineTransform
+      var size: CGSize
+      var fadeIn: Double
+      var fadeOut: Double
+      var userScale: Double
+      var px: Double
+      var py: Double
+      var track: AVMutableCompositionTrack
+      var layer: Int
+    }
+    var segments: [Seg] = []
+    var vTracks: [Int: (track: AVMutableCompositionTrack, end: CMTime)] = [:]
+
+    // 聲音也可能同時好幾層（影片自己的聲音＋配樂），一條軌塞不下重疊的
+    // 時間範圍——需要幾條就開幾條
+    var aTracks: [(track: AVMutableCompositionTrack, end: CMTime)] = []
+    var aParams: [AVMutableAudioMixInputParameters] = []
+
+    // 依時間排好再放：同一條合成軌只能往後接，中間的空白要自己補
+    let ordered = clips.sorted {
+      (($0["offset"] as? Double) ?? 0) < (($1["offset"] as? Double) ?? 0)
+    }
+
+    for clip in ordered {
       guard let path = clip["path"] as? String else { continue }
       let start = clip["start"] as? Double ?? 0
       let end = clip["end"] as? Double ?? 0
-      let gap = clip["gap"] as? Double ?? 0
+      let at = CMTime(
+        seconds: max(0, clip["offset"] as? Double ?? 0), preferredTimescale: scale)
+      let layer = clip["track"] as? Int ?? 0
       let volume = Float(clip["volume"] as? Double ?? 1)
-      let speed = clip["speed"] as? Double ?? 1
+      let speed = max(0.05, clip["speed"] as? Double ?? 1)
       let fadeIn = clip["fadeIn"] as? Double ?? 0
       let fadeOut = clip["fadeOut"] as? Double ?? 0
       let userScale = clip["scale"] as? Double ?? 1
       let px = clip["px"] as? Double ?? 0.5
       let py = clip["py"] as? Double ?? 0.5
       if end - start <= 0.01 { continue }
-
-      // 片段之間的空白：畫面留黑、聲音留靜音，時間軸才對得上
-      if gap > 0.01 {
-        let g = CMTime(seconds: gap, preferredTimescale: scale)
-        vTrack.insertEmptyTimeRange(CMTimeRange(start: cursor, duration: g))
-        aTrack.insertEmptyTimeRange(CMTimeRange(start: cursor, duration: g))
-        cursor = cursor + g
-      }
 
       let asset = AVURLAsset(url: URL(fileURLWithPath: path))
       guard let src = asset.tracks(withMediaType: .video).first else { continue }
@@ -1549,66 +1555,101 @@ final class CompPlayer: NSObject, FlutterTexture {
         abs(speed - 1) > 0.001
         ? CMTime(seconds: (end - start) / speed, preferredTimescale: scale)
         : range.duration
+
+      // 這一層的合成軌（沒有就開一條）
+      if vTracks[layer] == nil {
+        guard
+          let t = comp.addMutableTrack(
+            withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
+        else { return false }
+        vTracks[layer] = (t, .zero)
+      }
+      guard var slot = vTracks[layer] else { return false }
+      // 補到位：同一條軌上一段結束到這一段開始之間留空（畫面留黑）
+      if slot.end < at {
+        slot.track.insertEmptyTimeRange(
+          CMTimeRange(start: slot.end, duration: at - slot.end))
+        slot.end = at
+      }
+      // 同一層若真的重疊（理論上不會，時間軸不允許），往後推一格避免蓋掉
+      let putAt = max(at, slot.end)
       do {
-        try vTrack.insertTimeRange(range, of: src, at: cursor)
-        if abs(speed - 1) > 0.001 {
-          vTrack.scaleTimeRange(
-            CMTimeRange(start: cursor, duration: range.duration),
+        try slot.track.insertTimeRange(range, of: src, at: putAt)
+        if outDur != range.duration {
+          slot.track.scaleTimeRange(
+            CMTimeRange(start: putAt, duration: range.duration),
             toDuration: outDur)
-        }
-        if let sa = asset.tracks(withMediaType: .audio).first {
-          try aTrack.insertTimeRange(range, of: sa, at: cursor)
-          if abs(speed - 1) > 0.001 {
-            aTrack.scaleTimeRange(
-              CMTimeRange(start: cursor, duration: range.duration),
-              toDuration: outDur)
-          }
-        } else {
-          aTrack.insertEmptyTimeRange(
-            CMTimeRange(start: cursor, duration: outDur))
         }
       } catch {
         return false
       }
-      // 每一段的音量；淡入淡出是斜坡，不是階梯
-      let segEnd = cursor + outDur
-      if fadeIn > 0.01 {
-        aParams.setVolumeRamp(
-          fromStartVolume: 0, toEndVolume: volume,
-          timeRange: CMTimeRange(
-            start: cursor,
-            duration: CMTime(seconds: fadeIn, preferredTimescale: scale)))
-      } else {
-        aParams.setVolume(volume, at: cursor)
+      slot.end = putAt + outDur
+      vTracks[layer] = slot
+
+      // 聲音：找一條這個時間點空著的軌，沒有就開新的
+      if let sa = asset.tracks(withMediaType: .audio).first {
+        var chosen: Int? = nil
+        for i in aTracks.indices where aTracks[i].end <= putAt {
+          chosen = i
+          break
+        }
+        if chosen == nil,
+          let t = comp.addMutableTrack(
+            withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+        {
+          aTracks.append((t, .zero))
+          aParams.append(AVMutableAudioMixInputParameters(track: t))
+          chosen = aTracks.count - 1
+        }
+        if let i = chosen {
+          do {
+            try aTracks[i].track.insertTimeRange(range, of: sa, at: putAt)
+            if outDur != range.duration {
+              aTracks[i].track.scaleTimeRange(
+                CMTimeRange(start: putAt, duration: range.duration),
+                toDuration: outDur)
+            }
+            aTracks[i].end = putAt + outDur
+            // 每一段的音量；淡入淡出是斜坡，不是階梯
+            let pr = aParams[i]
+            if fadeIn > 0.01 {
+              pr.setVolumeRamp(
+                fromStartVolume: 0, toEndVolume: volume,
+                timeRange: CMTimeRange(
+                  start: putAt,
+                  duration: CMTime(seconds: fadeIn, preferredTimescale: scale)))
+            } else {
+              pr.setVolume(volume, at: putAt)
+            }
+            if fadeOut > 0.01 {
+              let fo = CMTime(seconds: fadeOut, preferredTimescale: scale)
+              pr.setVolumeRamp(
+                fromStartVolume: volume, toEndVolume: 0,
+                timeRange: CMTimeRange(
+                  start: putAt + outDur - fo, duration: fo))
+            }
+          } catch {}
+        }
       }
-      if fadeOut > 0.01 {
-        let fo = CMTime(seconds: fadeOut, preferredTimescale: scale)
-        aParams.setVolumeRamp(
-          fromStartVolume: volume, toEndVolume: 0,
-          timeRange: CMTimeRange(start: segEnd - fo, duration: fo))
-      }
-      segments.append((
-        range: CMTimeRange(start: cursor, duration: outDur),
-        transform: src.preferredTransform,
-        size: src.naturalSize,
-        fadeIn: fadeIn,
-        fadeOut: fadeOut,
-        userScale: userScale,
-        px: px,
-        py: py
-      ))
-      // 畫面大小以第一段「轉正之後」的尺寸為準
+
+      segments.append(
+        Seg(
+          range: CMTimeRange(start: putAt, duration: outDur),
+          transform: src.preferredTransform, size: src.naturalSize,
+          fadeIn: fadeIn, fadeOut: fadeOut, userScale: userScale, px: px,
+          py: py, track: slot.track, layer: layer))
+      // 畫面大小以最底層、最早出現的那一段「轉正之後」的尺寸為準
       if size == .zero {
         let d = src.naturalSize.applying(src.preferredTransform)
         size = CGSize(width: abs(d.width), height: abs(d.height))
       }
-      cursor = segEnd
     }
-    if cursor.seconds <= 0 { return false }
-    mixParams.append(aParams)
+    if segments.isEmpty { return false }
+    duration = comp.duration.seconds
+    if duration <= 0 { return false }
 
     let mix = AVMutableAudioMix()
-    mix.inputParameters = mixParams
+    mix.inputParameters = aParams
     let item = AVPlayerItem(asset: comp)
     item.audioMix = mix
     // 變速時聲音保持音高（跟主流剪輯 App 一致）
@@ -1621,17 +1662,14 @@ final class CompPlayer: NSObject, FlutterTexture {
     // 相簿播同一支影片不會這樣，別家剪輯 App 也不會：他們只在真的要
     // 疊圖層、轉正、淡入淡出的時候才掛。
     //
-    // 全部片段方向一致、尺寸一致、沒有淡入淡出也沒有縮放位移時，
+    // 只有一層、方向一致、尺寸一致、沒有淡入淡出也沒有縮放位移時，
     // 一條軌照順序播就是正確結果，合成器純粹是多餘的成本——
     // 而且不掛的話 HDR 素材由系統自己映射，顏色跟相簿完全一致
-    // 方向不必靠合成器：全部片段方向一致的話，把那個方向設在合成軌上
-    // 就好。iPhone 直式影片是「橫著存＋旋轉旗標」，整條時間軸都是同一支
-    // 手機拍的話旗標當然一樣——這個情況（也就是絕大多數情況）掛合成器
-    // 純屬浪費
     let uniformTransform = segments.first?.transform ?? .identity
     let sameTransform = segments.allSatisfy { $0.transform == uniformTransform }
     let needsVC =
-      segments.contains { seg in
+      vTracks.count > 1
+      || segments.contains { seg in
         seg.fadeIn > 0.01 || seg.fadeOut > 0.01
           || abs(seg.userScale - 1) > 0.001 || abs(seg.px - 0.5) > 0.001
           || abs(seg.py - 0.5) > 0.001
@@ -1646,10 +1684,12 @@ final class CompPlayer: NSObject, FlutterTexture {
       // 軌道方向——走材質又有旋轉旗標時，方向只能靠合成器烘進畫面。
       // 系統影片圖層則會自己套，不受影響
       || (texture && !uniformTransform.isIdentity)
-    if !needsVC { vTrack.preferredTransform = uniformTransform }
+    if !needsVC, let only = vTracks.values.first {
+      only.track.preferredTransform = uniformTransform
+    }
     usesVC = needsVC
 
-    if needsVC, size.width > 1, size.height > 1, !segments.isEmpty {
+    if needsVC, size.width > 1, size.height > 1 {
       // 預覽用的合成不需要原始解析度：手機螢幕短邊不到 1200，
       // 用 4K 去重畫每一格只是把解碼省下來的錢又花掉。這也是別家
       // 「預覽解析度」設定在做的事
@@ -1663,19 +1703,20 @@ final class CompPlayer: NSObject, FlutterTexture {
       let vc = AVMutableVideoComposition()
       vc.renderSize = size
       vc.frameDuration = CMTime(value: 1, timescale: 30)
-      var instructions: [AVMutableVideoCompositionInstruction] = []
-      for seg in segments {
+
+      /// 一段畫面貼進畫布：轉正 → 等比縮放貼齊 → 置中 → 使用者的縮放位移
+      func fitTransform(_ seg: Seg) -> CGAffineTransform? {
         let disp = seg.size.applying(seg.transform)
         let dw = abs(disp.width)
         let dh = abs(disp.height)
-        guard dw > 1, dh > 1 else { continue }
+        guard dw > 1, dh > 1 else { return nil }
         let k = min(size.width / dw, size.height / dh)
-        let tx = (size.width - dw * k) / 2
-        let ty = (size.height - dh * k) / 2
         var t = seg.transform
           .concatenating(CGAffineTransform(scaleX: k, y: k))
-          .concatenating(CGAffineTransform(translationX: tx, y: ty))
-        // 使用者的縮放與位移：以畫面中心縮放，再把中心移到 (px, py)
+          .concatenating(
+            CGAffineTransform(
+              translationX: (size.width - dw * k) / 2,
+              y: (size.height - dh * k) / 2))
         let u = CGFloat(seg.userScale)
         if abs(seg.userScale - 1) > 0.001 || abs(seg.px - 0.5) > 0.001
           || abs(seg.py - 0.5) > 0.001
@@ -1692,25 +1733,57 @@ final class CompPlayer: NSObject, FlutterTexture {
                   * size.width,
                 y: size.height / 2 + CGFloat(seg.py - 0.5) * size.height))
         }
-        let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: vTrack)
-        layer.setTransform(t, at: seg.range.start)
-        // 畫面的淡入淡出（背景是黑的，淡不透明度＝淡到黑）
-        if seg.fadeIn > 0.01 {
-          layer.setOpacityRamp(
-            fromStartOpacity: 0, toEndOpacity: 1,
-            timeRange: CMTimeRange(
-              start: seg.range.start,
-              duration: CMTime(seconds: seg.fadeIn, preferredTimescale: scale)))
-        }
-        if seg.fadeOut > 0.01 {
-          let fo = CMTime(seconds: seg.fadeOut, preferredTimescale: scale)
-          layer.setOpacityRamp(
-            fromStartOpacity: 1, toEndOpacity: 0,
-            timeRange: CMTimeRange(start: seg.range.end - fo, duration: fo))
-        }
+        return t
+      }
+
+      // 指令必須把整條時間軸切成不重疊、而且接得起來的區間。
+      // 每個片段的頭尾都是一個切點；區間內把「當下看得到的層」由下往上
+      // 疊起來，這就是子母畫面
+      var cuts: Set<Double> = [0, duration]
+      for seg in segments {
+        cuts.insert(seg.range.start.seconds)
+        cuts.insert(seg.range.end.seconds)
+      }
+      let marks = cuts.filter { $0.isFinite && $0 >= 0 && $0 <= duration }
+        .sorted()
+      var instructions: [AVMutableVideoCompositionInstruction] = []
+      for i in 0..<max(0, marks.count - 1) {
+        let a = marks[i]
+        let b = marks[i + 1]
+        if b - a < 0.001 { continue }
+        let mid = (a + b) / 2
+        let here = segments.filter {
+          $0.range.start.seconds <= mid + 0.0005
+            && $0.range.end.seconds >= mid - 0.0005
+        }.sorted { $0.layer < $1.layer }  // 軌道編號小的在下面
         let ins = AVMutableVideoCompositionInstruction()
-        ins.timeRange = seg.range
-        ins.layerInstructions = [layer]
+        ins.timeRange = CMTimeRange(
+          start: CMTime(seconds: a, preferredTimescale: scale),
+          duration: CMTime(seconds: b - a, preferredTimescale: scale))
+        var lis: [AVMutableVideoCompositionLayerInstruction] = []
+        // 疊圖層時後面的畫在上面，所以由上往下加
+        for seg in here.reversed() {
+          guard let t = fitTransform(seg) else { continue }
+          let li = AVMutableVideoCompositionLayerInstruction(
+            assetTrack: seg.track)
+          li.setTransform(t, at: ins.timeRange.start)
+          if seg.fadeIn > 0.01 {
+            li.setOpacityRamp(
+              fromStartOpacity: 0, toEndOpacity: 1,
+              timeRange: CMTimeRange(
+                start: seg.range.start,
+                duration: CMTime(
+                  seconds: seg.fadeIn, preferredTimescale: scale)))
+          }
+          if seg.fadeOut > 0.01 {
+            let fo = CMTime(seconds: seg.fadeOut, preferredTimescale: scale)
+            li.setOpacityRamp(
+              fromStartOpacity: 1, toEndOpacity: 0,
+              timeRange: CMTimeRange(start: seg.range.end - fo, duration: fo))
+          }
+          lis.append(li)
+        }
+        ins.layerInstructions = lis
         instructions.append(ins)
       }
       vc.instructions = instructions
@@ -1727,7 +1800,6 @@ final class CompPlayer: NSObject, FlutterTexture {
       item.add(out)
       output = out
     }
-    duration = cursor.seconds
     player.replaceCurrentItem(with: item)
 
     if texture {

@@ -39,29 +39,24 @@ class CompPlayer {
 
   /// 這條時間軸能不能交給合成播放器。
   ///
-  /// 只擋「合成真的做不到」的：倒轉（播放器沒辦法倒著播）與同一時刻疊
-  /// 兩層畫面（子母畫面）。變速、淡入淡出、縮放位移 AVFoundation 原生
-  /// 就支援，都烘進合成裡。
+  /// 只剩一件事做不到：倒轉（播放器沒辦法倒著播，那條路是先把片段做成
+  /// 「已經倒好的檔」）。
+  ///
+  /// 子母畫面本來也被擋掉，一上多軌就整組退回舊的「一片段一顆播放器」
+  /// ——那正是「多軌之後變超 LAG」。AVFoundation 原生就支援多軌疊合，
+  /// 一條時間軸軌道對一條合成軌，逐段的 layer instruction 決定每一刻
+  /// 誰在上面。變速、淡入淡出、縮放位移也一樣烘進合成裡。
   ///
   /// 工作檔沒好也照組——用原檔組一樣播得動，而且是一顆播放器一組解碼
-  /// 資源，比舊路徑的「一片段一顆 4K 播放器」輕得多。等在那裡才是最差
-  /// 的選擇：使用者一進場就該看得到畫面，別家 App 也沒有那個讀取條
+  /// 資源，比舊路徑輕得多
   static String? whyNot(TimelineModel tl) {
     final vids = [
       for (final c in tl.clips)
         if (tl.sourceOf(c).isVideo) c,
-    ]..sort((a, b) => a.offset.compareTo(b.offset));
+    ];
     if (vids.isEmpty) return '沒有影片片段';
-    // 不看軌道，只看「時間上有沒有重疊」（下面那個迴圈）：分在不同軌
-    // 但前後接著播的話，畫面結果跟同一軌完全一樣——真正做不到的是
-    // 「同一時刻要疊兩層畫面」
     for (final c in vids) {
       if (c.reverse) return '有倒轉的片段';
-    }
-    for (var i = 1; i < vids.length; i++) {
-      if (vids[i].offset < vids[i - 1].end - 0.001) {
-        return '同一時刻有兩層畫面（子母畫面）';
-      }
     }
     return null;
   }
@@ -74,27 +69,31 @@ class CompPlayer {
     final vids = [
       for (final c in tl.clips)
         if (tl.sourceOf(c).isVideo) c,
-    ]..sort((a, b) => a.offset.compareTo(b.offset));
+    ]..sort((a, b) {
+      final t = a.offset.compareTo(b.offset);
+      return t != 0 ? t : a.track.compareTo(b.track);
+    });
     if (vids.isEmpty) return null;
-    final clips = <Map<String, dynamic>>[];
-    var cursor = 0.0;
-    for (final c in vids) {
-      clips.add({
-        // 一律用工作檔：轉正過、SDR、H.264，一條軌接得起來
-        'path': tl.sourceOf(c).previewPath,
-        'start': c.trimStart,
-        'end': c.trimEnd,
-        'gap': (c.offset - cursor).clamp(0.0, 1e6),
-        'volume': c.volume.clamp(0.0, 1.0),
-        'speed': c.speed,
-        'fadeIn': c.fadeIn,
-        'fadeOut': c.fadeOut,
-        'scale': c.scale,
-        'px': c.px,
-        'py': c.py,
-      });
-      cursor = c.end;
-    }
+    final clips = [
+      for (final c in vids)
+        {
+          // 一律用工作檔：轉正過、SDR、H.264，一條軌接得起來
+          'path': tl.sourceOf(c).previewPath,
+          'start': c.trimStart,
+          'end': c.trimEnd,
+          // 絕對時間＋軌道編號：原生端一條軌道開一條合成軌，
+          // 疊起來的順序就是使用者看到的上下層
+          'offset': c.offset,
+          'track': c.track,
+          'volume': c.volume.clamp(0.0, 1.0),
+          'speed': c.speed,
+          'fadeIn': c.fadeIn,
+          'fadeOut': c.fadeOut,
+          'scale': c.scale,
+          'px': c.px,
+          'py': c.py,
+        },
+    ];
     try {
       final m = await _ch.invokeMapMethod<String, dynamic>('build', {
         'clips': clips,
