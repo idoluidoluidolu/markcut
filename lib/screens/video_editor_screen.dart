@@ -3002,7 +3002,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     if (made == null) {
-      Diag.note('合成播放器組不起來（退回原本的路徑）');
+      Diag.note(
+        '合成播放器組不起來：${CompPlayer.lastError ?? '沒有回報原因'}（退回原本的路徑）',
+      );
+      // 舊的那顆不能留著：畫面上的影片圖層已經指到別處，繼續當它還在
+      // 就是一片黑。放掉它，讓預覽退回逐片段播放器那條路
+      if (_comp != null) {
+        await _comp!.dispose();
+        if (mounted) setState(() => _comp = null);
+      }
       return;
     }
     Diag.note('合成播放器就緒：${made.duration.toStringAsFixed(1)} 秒');

@@ -133,18 +133,23 @@ final class AtomicFlag {
           result(nil)
           return
         }
-        self.comp?.dispose()
+        // 先組好新的，確定成功才換過去，最後才收掉舊的。
+        //
+        // 本來是「先 dispose 舊的再組新的」：組的過程中畫面上那層指著
+        // 一顆已經被收掉的播放器（黑一下），而萬一組不起來就永遠黑著——
+        // 使用者說的「按了切割整個畫面都消失」就是這條路
         let p = CompPlayer(registry: textures)
         guard p.build(clips: clips, texture: (args["texture"] as? Bool) ?? true)
         else {
+          let why = p.buildError ?? "未知原因"
           p.dispose()
-          result(nil)
+          result(["error": why])  // 舊的還活著，畫面照舊
           return
         }
+        let old = self.comp
         self.comp = p
-        // 重組之後畫面上的影片圖層要指到新的播放器，不然還黏在剛被
-        // 收掉的那顆上，預覽就是一片黑
         PlayerHosts.shared.use(p.player)
+        old?.dispose()
         result([
           "textureId": p.textureId,
           "duration": p.duration,
@@ -1481,6 +1486,10 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 沒掛＝硬體解碼直送螢幕（跟相簿播放同一條路）
   private(set) var usesVC = false
 
+  /// 組不起來時的原因。沒有這個的話只知道「失敗」，而失敗的後果是
+  /// 預覽退回舊路徑，查不出為什麼
+  private(set) var buildError: String?
+
   /// 這份合成的總長度（秒）與畫面尺寸
   private(set) var duration: Double = 0
   private(set) var size: CGSize = .zero
@@ -1566,10 +1575,16 @@ final class CompPlayer: NSObject, FlutterTexture {
         guard
           let t = comp.addMutableTrack(
             withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
-        else { return false }
+        else {
+          buildError = "開不出第 \(layer) 層的合成軌"
+          return false
+        }
         vTracks[layer] = (t, .zero)
       }
-      guard var slot = vTracks[layer] else { return false }
+      guard var slot = vTracks[layer] else {
+        buildError = "第 \(layer) 層的合成軌不見了"
+        return false
+      }
       // 補到位：同一條軌上一段結束到這一段開始之間留空（畫面留黑）
       if slot.end < at {
         slot.track.insertEmptyTimeRange(
@@ -1586,6 +1601,12 @@ final class CompPlayer: NSObject, FlutterTexture {
             toDuration: outDur)
         }
       } catch {
+        // 最常見的是「要的區間超出素材長度」——修剪或切割之後
+        // trim 值算過頭就會走到這裡
+        buildError =
+          "素材接不進去（\((path as NSString).lastPathComponent)："
+          + "要 \(String(format: "%.2f", start))~\(String(format: "%.2f", end))s，"
+          + "素材長 \(String(format: "%.2f", asset.duration.seconds))s）"
         return false
       }
       slot.end = putAt + outDur
@@ -1652,7 +1673,10 @@ final class CompPlayer: NSObject, FlutterTexture {
           fadeIn: fadeIn, fadeOut: fadeOut, userScale: userScale, px: px,
           py: py, track: slot.track, layer: layer))
     }
-    if segments.isEmpty { return false }
+    if segments.isEmpty {
+      buildError = "沒有一段畫面接得進去"
+      return false
+    }
 
     // 畫面大小以「最底層、最早出現」的那一段轉正之後的尺寸為準。
     //
@@ -1666,9 +1690,15 @@ final class CompPlayer: NSObject, FlutterTexture {
       let d = base.size.applying(base.transform)
       size = CGSize(width: abs(d.width), height: abs(d.height))
     }
-    if size.width < 2 || size.height < 2 { return false }
+    if size.width < 2 || size.height < 2 {
+      buildError = "讀不到畫面尺寸"
+      return false
+    }
     duration = comp.duration.seconds
-    if duration <= 0 { return false }
+    if duration <= 0 {
+      buildError = "總長度是 0"
+      return false
+    }
 
     let mix = AVMutableAudioMix()
     mix.inputParameters = aParams

@@ -68,6 +68,9 @@ class CompPlayer {
   /// 用時間軸組一份合成。組不起來（平台不支援、素材有問題）回 null
   /// [texture] 畫面要不要另外送一份到 Flutter 材質。用系統影片圖層
   /// 顯示時給 false：那份材質沒有人看，卻是每一格複製一張 4K 畫面
+  /// 上一次組不起來的原因（原生端回報的）。呼叫端拿去寫進診斷
+  static String? lastError;
+
   static Future<CompPlayer?> build(TimelineModel tl, {bool texture = true}) async {
     if (!await available) return null;
     final vids = [
@@ -104,6 +107,13 @@ class CompPlayer {
         'texture': texture,
       });
       if (m == null) return null;
+      // 原生端組不起來時會回原因，不要讓它只變成一句「組不起來」
+      final err = m['error'];
+      if (err is String) {
+        lastError = err;
+        return null;
+      }
+      lastError = null;
       return CompPlayer._(
         (m['textureId'] as num).toInt(),
         (m['duration'] as num).toDouble(),
