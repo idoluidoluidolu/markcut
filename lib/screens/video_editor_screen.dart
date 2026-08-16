@@ -1910,9 +1910,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       case _AddKind.mosaic:
         _addMosaicClip(track);
       case _AddKind.blankTrack:
-        // 多畫一條空軌，之後可以貼上或拖片段進去
+        // 多畫一條空軌，之後可以貼上或拖片段進去。
+        // 選取直接落在新那條上：原本只設了 _selTrack，但片段的選取優先
+        // 度比它高（見 _dispatchAdd 的 track 判斷），舊的選取還在的話
+        // 「加素材／貼上」會跑回舊軌道，剛開的那條等於白開
         setState(() {
           _extraBlankTracks++;
+          _sel = -1;
+          _wmSel = false;
           _selTrack = _tl.usedTracks + _extraBlankTracks - 1;
         });
       case null:

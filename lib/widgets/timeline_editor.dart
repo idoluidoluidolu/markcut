@@ -865,8 +865,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
   /// 浮水印軌：整塊可左右拖曳、可修剪範圍的琥珀色塊
   Widget _wmRow() {
     final wm = widget.watermark!;
-    // 最窄 44：兩顆 13px 修剪把手＋文字內距，再窄就疊在一起分不出左右
-    final w = ((wm.end - wm.start) * pxPerSec).clamp(44.0, double.infinity);
+    // 最窄 72：兩顆 13px 修剪把手＋圖示＋幾個字，再窄就只剩把手，
+    // 看起來像一塊空白
+    final w = ((wm.end - wm.start) * pxPerSec).clamp(72.0, double.infinity);
     return Stack(
       clipBehavior: Clip.none,
       children: [
@@ -932,20 +933,38 @@ class _TimelineEditorState extends State<TimelineEditor> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
+                    // 標示：圖示＋內容。本來只有 9px 的字、左右又各留
+                    // 14px 給修剪把手，窄的時候整條看起來是空白的，
+                    // 根本認不出這是浮水印
                     Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 14),
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          widget.wmLabel,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 9,
+                      padding: EdgeInsets.only(
+                        left: widget.wmSelected ? 15 : 6,
+                        right: widget.wmSelected ? 15 : 6,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            widget.wmHidden
+                                ? Icons.visibility_off_outlined
+                                : Icons.branding_watermark,
+                            size: 11,
                             color: widget.wmSelected ? kSelect : kIcon,
-                            fontWeight: FontWeight.w600,
                           ),
-                        ),
+                          const SizedBox(width: 4),
+                          Flexible(
+                            child: Text(
+                              widget.wmLabel,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                color: widget.wmSelected ? kSelect : kIcon,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                     if (widget.wmSelected) ...[
