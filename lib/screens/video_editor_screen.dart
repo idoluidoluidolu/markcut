@@ -5482,6 +5482,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     final rect = Rect.fromLTWH(0, 0, w, h);
                                     if (cur != null) {
                                       addHit(cur.track, cur.id, rect);
+                                      // 選中的影片片段要在預覽上有框。
+                                      // 逐片段圖層被整批換成一層合成畫面時，
+                                      // 只搬了畫面沒搬選取框——框是在那個
+                                      // 迴圈裡設的，而合成這條路不會跑到它
+                                      if (cur.id == _sel) {
+                                        final s = _tl.sourceOf(cur);
+                                        selRect = layerBox(cur, s.aspect);
+                                        selVisual = cur;
+                                      }
                                     }
                                     addLayer(
                                       cur?.track ?? 0,
@@ -8332,6 +8341,10 @@ class _MagnetPainter extends CustomPainter {
 
 /// 馬賽克區域的細格線（淡淡的，標示範圍但不擋內容）
 /// 預覽裡選取圖層的外框：一圈細白框就好（無把手）
+/// 預覽上的選取框。
+///
+/// 琥珀不用白：這個框疊的是使用者的照片／影片，白框落在白色縮圖或
+/// 亮背景上會整個看不見
 class _SelectionFramePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
@@ -8339,8 +8352,8 @@ class _SelectionFramePainter extends CustomPainter {
       Offset.zero & size,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.2
-        ..color = Colors.white.withValues(alpha: 0.9),
+        ..strokeWidth = 1.4
+        ..color = kSelect,
     );
   }
 

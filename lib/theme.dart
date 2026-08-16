@@ -20,12 +20,12 @@ const kClipBorder = Color(0xFF2A2A30); // 時間軸片段邊線
 // 預覽區的底（畫布外圍那圈）。幾乎是純黑，只留一階讓黑色畫布的邊界
 // 還看得出來——比例不同的素材會留黑邊，全一樣黑就分不出畫面到哪裡
 const kPreviewBg = Color(0xFF0A0A0C);
-// 強調色＝琥珀，全 App 通用（選取框、把手、主行動、滑桿）。
-// 一度改成純白，但白框疊在白色縮圖或亮照片上會整個看不見，
-// 而剪輯畫面裡最常被選取的東西正好就是使用者的素材
-const kAmber = Color(0xFFFFC24B);
-// 同一個琥珀。時間軸／縮圖／拼圖格沿用這個名字，語意是「選取」
-const kSelect = kAmber;
+const kAmber = Color(0xFFFFFFFF); // 強調色＝純白（沿用變數名，全 App 通用）
+// 選取狀態只有兩種，不要再長出第三種：
+//   設定面板裡的「選項」被選中 → kAmber（純白）框 + kPanelHi 底
+//   疊在使用者照片／影片上的「物件」被選中 → kSelect（琥珀）
+// 後者不能用白：白框疊在白色縮圖或亮照片上會整個看不見
+const kSelect = Color(0xFFFFC24B); // 時間軸/縮圖/預覽選取框 專用琥珀
 const kText = Color(0xFFE8E8EA);
 const kTextDim = Color(0xFF8B8B95);
 const kIcon = Color(0xFFB9B9C2);
