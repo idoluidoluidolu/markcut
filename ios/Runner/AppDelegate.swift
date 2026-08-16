@@ -2051,11 +2051,34 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 手指每動一次就灌一發 seek 的話，AVPlayer 會排成隊列一發一發做，
   /// 畫面於是永遠落在手指後面好幾發——看起來就是「一格一格跳、沒辦法
   /// 快速預覽」。中途那些目標使用者根本沒在看，直接丟掉
+  /// 還沒 ready 就先等一下再試，最多等 2 秒（40 次）
+  private var chaseWaits = 0
+
   private func chase() {
-    guard seekTarget.isValid, player.currentItem?.status == .readyToPlay else {
+    guard seekTarget.isValid else {
       seeking = false
+      chaseWaits = 0
       return
     }
+    // 剛重組完的 item 還沒 ready，這時候 seek 會被系統丟掉——本來就在
+    // 這裡直接放棄，結果是「切割之後預覽跳回前段」：時間軸停在 2.8 秒，
+    // 畫面卻是第 0 秒。改成等它 ready 再送
+    guard player.currentItem?.status == .readyToPlay else {
+      if chaseWaits >= 40 {
+        seeking = false
+        chaseWaits = 0
+        return
+      }
+      chaseWaits += 1
+      seeking = true
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        guard let self = self else { return }
+        self.seeking = false
+        self.chase()
+      }
+      return
+    }
+    chaseWaits = 0
     let t = seekTarget
     let exact = seekTargetExact
     seekTarget = .invalid

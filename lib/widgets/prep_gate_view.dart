@@ -25,12 +25,19 @@ class PrepGateView extends StatelessWidget {
   /// 編輯器本身載好了沒。還沒載好時連「幾支」都還不知道
   final bool ready;
 
+  /// 「先進去編輯」——備素材卡住時的退路。
+  ///
+  /// 轉檔偶爾會卡在某一支（硬體編碼器被佔住、素材有問題），而這一頁
+  /// 擋著整個編輯器。沒有退路的話使用者只能關掉 App 重來
+  final VoidCallback? onSkip;
+
   const PrepGateView({
     super.key,
     required this.done,
     required this.total,
     this.fraction = 0,
     this.ready = true,
+    this.onSkip,
   });
 
   @override
@@ -88,6 +95,14 @@ class PrepGateView extends StatelessWidget {
             Text(
               '準備素材 $done／$total',
               style: const TextStyle(fontSize: 12, color: kTextDim),
+            ),
+          ],
+          if (onSkip != null) ...[
+            const SizedBox(height: 26),
+            TextButton(
+              onPressed: onSkip,
+              style: TextButton.styleFrom(foregroundColor: kTextDim),
+              child: const Text('先進去編輯', style: TextStyle(fontSize: 13)),
             ),
           ],
         ],

@@ -414,9 +414,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 每個破壞性操作前呼叫：拍快照＋順便存草稿
   void _pushUndo() {
-    // 時間軸只要動過，合成就要重組（片段順序、長度、音量都烘在裡面）
-    _compDirty = true;
-    unawaited(Future.microtask(_ensureComp));
+    // 這裡不重組合成。
+    //
+    // _pushUndo 是「每個破壞性操作前」都會呼叫的——拖曳片段的過程中
+    // 一路呼叫，重組就一路發生（使用者的紀錄裡「合成播放器就緒」出現
+    // 二十幾次）。每次重組都要換掉 AVPlayerItem，畫面會抖、位置會跳。
+    // 交給 _saveDraft 那條併批的路：停手 900ms 之後比對指紋，
+    // 值真的變了才重組一次
     _undoStack.add(_snapshot());
     if (_undoStack.length > 60) _undoStack.removeAt(0);
     _redoStack.clear();
@@ -855,7 +859,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _compSeek();
       _scrubEndTimer?.cancel();
       _scrubEndTimer = Timer(const Duration(milliseconds: 220), _tryEndScrub);
-      _scrubSettleTimer?.cancel();
+      _prepEscapeTimer?.cancel();
+    _scrubSettleTimer?.cancel();
       _scrubSettleTimer = Timer(
         const Duration(milliseconds: 120),
         () => _compSeek(exact: true),
@@ -1084,8 +1089,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return ((_prepDone + inFlight) / _prepTotal).clamp(0.0, 1.0);
   }
 
+  /// 使用者按了「先進去編輯」——遮罩收掉，轉檔繼續在背景跑
+  bool _prepSkipped = false;
+
+  /// 幾秒之後才給退路：一開始就給的話，正常的兩秒等待也會被當成卡住
+  Timer? _prepEscapeTimer;
+  bool _prepEscapeReady = false;
+
   /// 這一刻要不要蓋讀取遮罩
-  bool get _prepGate => _prepBusy;
+  bool get _prepGate => _prepBusy && !_prepSkipped;
 
   void _enqueuePrep(int srcIndex) {
     if (srcIndex < 0 || srcIndex >= _tl.sources.length) return;
@@ -1106,9 +1118,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (!mounted) return;
     setState(() {
       _prepBusy = true;
+      _prepSkipped = false;
+      _prepEscapeReady = false;
       _prepDone = 0;
       _prepCur.clear();
       _prepTotal = _prepQueue.length;
+    });
+    // 轉檔偶爾會卡在某一支（硬體編碼器被佔住、素材有問題）。這一頁擋著
+    // 整個編輯器，沒有退路的話使用者只能關掉 App 重來
+    _prepEscapeTimer?.cancel();
+    _prepEscapeTimer = Timer(const Duration(seconds: 8), () {
+      if (mounted && _prepBusy) setState(() => _prepEscapeReady = true);
     });
     // 全部一起送出去，同時跑幾支由 MediaPrep 控（現在是兩支）。
     // 一支做完就送下一支進去，硬體編碼器不會有空檔。
@@ -1136,8 +1156,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       setState(() => _prepTotal = _prepDone + _prepQueue.length);
     }
     if (!mounted) return;
+    _prepEscapeTimer?.cancel();
     setState(() {
       _prepBusy = false;
+      _prepEscapeReady = false;
       _prepCur.clear();
     });
     // 這時候才組合成：全部素材都是工作檔，方向與編碼一致，
@@ -2963,14 +2985,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 時間軸改過就要重組（換素材、剪過、搬過都算）
   bool _compDirty = true;
 
+  /// 合成播放器不在了（關掉、資格不符、組不起來）就要把逐片段播放器
+  /// 開回來。
+  ///
+  /// 合成接手時那些播放器是被主動放掉的（見 _trimPlayers），沒人開回來
+  /// 的話畫面上就只剩浮水印——使用者說的「按下切割後預覽黑掉，只剩下
+  /// 浮水印」正是這個：合成組不起來、舊的又早就沒了
+  void _restoreClipPlayers() {
+    for (final c in _tl.clips) {
+      _ensureCtrlFor(c);
+    }
+    _resyncPlayback();
+    if (mounted) setState(() {});
+  }
+
   Future<void> _ensureComp() async {
     if (!Diag.compPlayer.value) {
       if (_comp != null) {
         await _comp!.dispose();
         if (mounted) setState(() => _comp = null);
-        // 退回舊路徑：剛才放掉的播放器要補回來
-        _trimPlayers();
-        _syncMedia();
+        _restoreClipPlayers();
       }
       return;
     }
@@ -2991,6 +3025,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         await _comp!.dispose();
         if (mounted) setState(() => _comp = null);
       }
+      _restoreClipPlayers();
       return;
     }
     // 用系統影片圖層顯示時不要另外出一份材質：那份沒有人看，
@@ -3011,6 +3046,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         await _comp!.dispose();
         if (mounted) setState(() => _comp = null);
       }
+      _restoreClipPlayers();
       return;
     }
     Diag.note('合成播放器就緒：${made.duration.toStringAsFixed(1)} 秒');
@@ -6848,6 +6884,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     total: _prepTotal,
     fraction: _prepFraction,
     ready: _ready,
+    onSkip: _prepEscapeReady
+        ? () => setState(() => _prepSkipped = true)
+        : null,
   );
 
   Widget _canvasHint() {
