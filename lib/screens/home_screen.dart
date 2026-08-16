@@ -407,21 +407,15 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: SizedBox(
                   width: 190,
                   height: 76,
-                  // 圖檔是白色的吉祥物（原本配近黑底），白底頁面直接放
-                  // 會整片看不見。srcIn 只換顏色不動 alpha，所以三隻各自
-                  // 的淡出還在（左 75／中 42／右 16，烘在 PNG 的 alpha
-                  // 裡，各佔 x 132-378、382-628、632-878，這裡調不動）。
+                  // 直接用圖檔原本的樣子，不套任何顏色。
+                  // 三隻的淡出是烘在 PNG 的 alpha 裡的（左 75／中 42／
+                  // 右 16，各佔 x 132-378、382-628、632-878），程式這邊
+                  // 調不動，要改得動圖檔。
                   // icon_foreground.png 是啟動圖示前景，別共用
-                  child: ColorFiltered(
-                    colorFilter: const ColorFilter.mode(
-                      kLText,
-                      BlendMode.srcIn,
-                    ),
-                    child: Image.asset(
-                      'assets/icon/home_logo.png',
-                      fit: BoxFit.cover, // 裁掉原圖四周的留白
-                      filterQuality: FilterQuality.medium,
-                    ),
+                  child: Image.asset(
+                    'assets/icon/home_logo.png',
+                    fit: BoxFit.cover, // 裁掉原圖四周的留白
+                    filterQuality: FilterQuality.medium,
                   ),
                 ),
               ),
