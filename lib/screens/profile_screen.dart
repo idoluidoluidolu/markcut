@@ -24,6 +24,10 @@ class ProfileScreen extends StatefulWidget {
   State<ProfileScreen> createState() => _ProfileScreenState();
 }
 
+/// 頁面左右的留白。範本那排要出血，所以留白不放在外層，
+/// 由每一段自己給
+const _side = EdgeInsets.symmetric(horizontal: 22);
+
 class _ProfileScreenState extends State<ProfileScreen> {
   List<WatermarkPreset> _presets = const [];
 
@@ -304,8 +308,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ),
         body: SafeArea(
           top: false,
+          // 左右留白改由各段自己給：範本那排要滿版出血（捲出畫面外），
+          // 外層一留白它就被切在邊上，看起來像少畫了一格
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(22, 10, 22, 12),
+            padding: const EdgeInsets.fromLTRB(0, 10, 0, 12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -315,18 +321,23 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        _sectionTitle(
-                          '範本',
-                          trailing: _presets.isEmpty
-                              ? '還沒有'
-                              : '${_presets.length} 個',
+                        Padding(
+                          padding: _side,
+                          child: _sectionTitle(
+                            '範本',
+                            trailing: _presets.isEmpty
+                                ? '還沒有'
+                                : '${_presets.length} 個',
+                          ),
                         ),
                         const SizedBox(height: 14),
                         SizedBox(
                           height: 122,
                           child: ListView.separated(
                             scrollDirection: Axis.horizontal,
-                            padding: EdgeInsets.zero,
+                            // 內距放在清單裡：第一格跟標題對齊，
+                            // 最後一格可以捲到畫面外
+                            padding: _side,
                             itemCount: _presets.length + 1,
                             separatorBuilder: (_, _) =>
                                 const SizedBox(width: 12),
@@ -336,12 +347,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           ),
                         ),
                         const SizedBox(height: 26),
-                        _sectionTitle(
-                          '草稿',
+                        Padding(
+                          padding: _side,
+                          child: _sectionTitle(
+                            '草稿',
                           // 空的時候不放「沒有」：下面那行字已經說了，
                           // 標題右邊再寫一次只是重複
-                          trailing: draftCount == 0 ? null : '全部',
-                          onTap: draftCount == 0 ? null : _openDrafts,
+                            trailing: draftCount == 0 ? null : '全部',
+                            onTap: draftCount == 0 ? null : _openDrafts,
+                          ),
                         ),
                         const SizedBox(height: 14),
                         if (draftCount == 0)
@@ -362,7 +376,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             ),
                           )
                         else
-                          Row(
+                          Padding(
+                            padding: _side,
+                            child: Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               if (v != null)
@@ -412,13 +428,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ],
                             ],
                           ),
+                          ),
                       ],
                     ),
                   ),
                 ),
                 const SizedBox(height: 16),
                 // 首頁那顆主行動鈕的長相
-                GestureDetector(
+                Padding(
+                  padding: _side,
+                  child: GestureDetector(
                   onTap: _openLove,
                   child: Container(
                     height: 54,
@@ -436,6 +455,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ),
                     ),
                   ),
+                ),
                 ),
                 const SizedBox(height: 14),
                 Row(
