@@ -1059,6 +1059,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   int _prepDone = 0;
   int _prepTotal = 0;
 
+  /// 正在轉的那一支做到哪（0~1）。沒有它的話百分比只會跳
+  /// 33、67、100，三支素材的畫面上那個大數字大半時間是停著的
+  double _prepCur = 0;
+
   /// 這一刻要不要蓋讀取遮罩
   bool get _prepGate => _prepBusy;
 
@@ -1082,6 +1086,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     setState(() {
       _prepBusy = true;
       _prepDone = 0;
+      _prepCur = 0;
       _prepTotal = _prepQueue.length;
     });
     while (_prepQueue.isNotEmpty && mounted) {
@@ -1089,6 +1094,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (!mounted) return;
       setState(() {
         _prepDone++;
+        _prepCur = 0;
         _prepTotal = _prepDone + _prepQueue.length;
       });
     }
@@ -1114,12 +1120,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (src.kind != ClipKind.video || src.workPath != null) return;
     if (!await MediaPrep.available) return;
     if (!mounted) return;
-    // 純背景工作，畫面上沒有任何東西在等它：不用 setState，
-    // 進度也不用收——以前那個回呼每 250ms 就重建一次整頁編輯器
     _prepping.add(srcIndex);
-    final made = await WorkFiles.ensure(src.path);
+    // 進度只在讀取遮罩蓋著的時候收。那時候畫面上只有遮罩本身，
+    // 重建一次很便宜；遮罩收掉之後就不再理它（以前那個回呼是每
+    // 250ms 重建一次整頁編輯器）。
+    // 收到 0.9 為止：轉完之後還有一道密關鍵幀重編沒有進度可回報，
+    // 讓數字停在 100% 等它，看起來就像卡住了
+    final made = await WorkFiles.ensure(
+      src.path,
+      onProgress: (v) {
+        if (!mounted || !_prepBusy) return;
+        setState(() => _prepCur = (v * 0.9).clamp(0.0, 0.9));
+      },
+    );
     if (!mounted) return;
     _prepping.remove(srcIndex);
+    _prepCur = 0;
     if (made == null || srcIndex >= _tl.sources.length) return;
     src.workPath = made;
     // 播放中絕對不換媒體。換播放器會 pause→重建→play，合成重組會換掉
@@ -6765,8 +6781,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 右上角比例小標籤：常駐顯示目前畫面比例，點了直接開比例選單
   /// 進場的讀取畫面（元件在 widgets/prep_gate_view.dart）
-  Widget _buildPrepGate() =>
-      PrepGateView(done: _prepDone, total: _prepTotal, ready: _ready);
+  Widget _buildPrepGate() => PrepGateView(
+    done: _prepDone,
+    total: _prepTotal,
+    current: _prepCur,
+    ready: _ready,
+  );
 
   Widget _canvasHint() {
     return Align(

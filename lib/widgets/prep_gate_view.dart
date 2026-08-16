@@ -16,6 +16,12 @@ class PrepGateView extends StatelessWidget {
   final int done;
   final int total;
 
+  /// 正在備的那一支做到哪（0~1）。
+  ///
+  /// 沒有它的話百分比只會跳 33、67、100——三支素材的畫面上，
+  /// 那個大數字大半時間是停著的，看起來就像當掉
+  final double current;
+
   /// 編輯器本身載好了沒。還沒載好時連「幾支」都還不知道
   final bool ready;
 
@@ -23,37 +29,67 @@ class PrepGateView extends StatelessWidget {
     super.key,
     required this.done,
     required this.total,
+    this.current = 0,
     this.ready = true,
   });
 
   @override
   Widget build(BuildContext context) {
     final counting = ready && total > 0;
-    final pct = counting ? (done / total).clamp(0.0, 1.0) : null;
+    final pct = counting
+        ? ((done + current.clamp(0.0, 1.0)) / total).clamp(0.0, 1.0)
+        : 0.0;
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (counting)
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Text(
+                  '${(pct * 100).floor()}',
+                  style: const TextStyle(
+                    fontSize: 46,
+                    fontWeight: FontWeight.w300,
+                    color: kText,
+                    height: 1,
+                    // 等寬數字：不然位數一變，整組數字會左右跳
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                ),
+                const Text(
+                  '%',
+                  style: TextStyle(fontSize: 17, color: kTextDim, height: 1.6),
+                ),
+              ],
+            )
+          else
+            const Text(
+              '載入中',
+              style: TextStyle(fontSize: 15, color: kTextDim, letterSpacing: 2),
+            ),
+          const SizedBox(height: 20),
           SizedBox(
-            width: 44,
-            height: 44,
-            child: CircularProgressIndicator(
-              strokeWidth: 3,
-              // 還不知道總數時轉圈圈，知道了才走進度
-              value: pct == null || pct <= 0 ? null : pct,
-              color: kAmber,
+            width: 150,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(2),
+              child: LinearProgressIndicator(
+                // 還不知道總數時走不定量（來回跑的那種）
+                value: counting ? pct : null,
+                minHeight: 3,
+                backgroundColor: kPanelHi,
+                color: kAmber,
+              ),
             ),
           ),
-          const SizedBox(height: 16),
-          Text(
-            counting ? '準備素材 $done／$total' : '載入中',
-            style: const TextStyle(fontSize: 13, color: kText),
-          ),
           if (counting) ...[
-            const SizedBox(height: 6),
-            const Text(
-              '轉成剪輯用的格式，之後拖曳與匯出都會順',
-              style: TextStyle(fontSize: 11, color: kTextDim),
+            const SizedBox(height: 14),
+            Text(
+              '準備素材 $done／$total',
+              style: const TextStyle(fontSize: 12, color: kTextDim),
             ),
           ],
         ],

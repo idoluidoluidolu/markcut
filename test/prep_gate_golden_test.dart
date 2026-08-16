@@ -41,7 +41,7 @@ void main() {
   testWidgets('讀取畫面：備素材中', (tester) async {
     await tester.binding.setSurfaceSize(const Size(390, 500));
     await tester.pumpWidget(
-      wrap(const PrepGateView(done: 1, total: 3)),
+      wrap(const PrepGateView(done: 1, total: 3, current: 0.4)),
     );
     await tester.pump(const Duration(milliseconds: 100));
     await expectLater(
