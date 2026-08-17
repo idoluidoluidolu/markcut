@@ -250,10 +250,9 @@ class WatermarkRenderer {
         continue; // 平鋪的這張畫完，換下一張
       }
 
-      // 夾在畫面內，太靠邊不會被裁掉
-      // 不夾限：允許放大到超出畫面（跟預覽同一套規則）
-      final left = logo.x * w - targetW / 2;
-      final top = logo.y * h - targetH / 2;
+      // 夾回畫面內（公式跟預覽端一致）
+      final left = clampWmBox(logo.x * w - targetW / 2, w, targetW);
+      final top = clampWmBox(logo.y * h - targetH / 2, h, targetH);
       final rect = ui.Rect.fromLTWH(left, top, targetW, targetH);
       final paint = ui.Paint()
         ..filterQuality = ui.FilterQuality.high
@@ -383,9 +382,22 @@ class WatermarkRenderer {
         return;
       }
 
-      // 不夾限：允許放大到超出畫面（跟預覽同一套規則）
-      final left = t.x * w - painter.width / 2;
-      final top = t.y * h - painter.height / 2;
+      // 夾回畫面內（含底色的整個框；公式跟預覽端一致）。
+      // 底色框比文字框大一圈 padding，用文字框夾會讓底色凸出去
+      final padH2 = t.bg ? fontSize * 0.35 * t.bgPad : 0.0;
+      final padV2 = t.bg ? fontSize * 0.18 * t.bgPad : 0.0;
+      final left = clampWmBox(
+            t.x * w - painter.width / 2 - padH2,
+            w,
+            painter.width + padH2 * 2,
+          ) +
+          padH2;
+      final top = clampWmBox(
+            t.y * h - painter.height / 2 - padV2,
+            h,
+            painter.height + padV2 * 2,
+          ) +
+          padV2;
 
       // 旋轉：整組（底色＋描邊＋文字）以文字中心為軸
       canvas.save();
@@ -419,4 +431,13 @@ class WatermarkRenderer {
       canvas.restore();
     }
   }
+}
+
+/// 把一個部件的外框夾回畫面內：left 夾在 [0, 空間-寬度]。
+/// 部件比畫面還大時反過來（兩邊都會凸出去，至少置中對稱、不會偏一邊）。
+/// 預覽跟匯出用同一條公式，看到的就是輸出的
+double clampWmBox(double pos, double span, double part) {
+  final lo = span - part < 0 ? span - part : 0.0;
+  final hi = span - part < 0 ? 0.0 : span - part;
+  return pos.clamp(lo, hi);
 }

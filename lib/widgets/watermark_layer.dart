@@ -216,9 +216,10 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
           // 高度要用實際長寬比算，跟匯出同一套；
           // 拿寬度當高度的話非正方形 Logo 會上下偏掉
           final logoH = logoW / _logoAspectOf(logoBytes);
-          // 不夾限：允許放大到超出畫面（跟匯出同一套規則）
-          final left = logo.x * w - logoW / 2;
-          final top = logo.y * h - logoH / 2;
+          // 夾回畫面內：拖到邊上也不會有一半掛在畫面外（匯出會被裁掉，
+          // 預覽卻看得到，等於騙人）。公式跟匯出端完全一致
+          final left = clampWmBox(logo.x * w - logoW / 2, w, logoW);
+          final top = clampWmBox(logo.y * h - logoH / 2, h, logoH);
           hitLogos[li] = Rect.fromLTWH(left, top, logoW, logoH);
           void makeActive() => settings.activeLogo = li;
           children.add(
@@ -337,15 +338,12 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
           // 跟匯出（底色往外擴、文字不動）差一個 padding
           final padH = t.bg ? fontSize * 0.35 * t.bgPad : 0.0;
           final padV = t.bg ? fontSize * 0.18 * t.bgPad : 0.0;
-          // 不夾限：允許放大到超出畫面（跟匯出同一套規則）
-          final left = t.x * w - probe.width / 2 - padH;
-          final top = t.y * h - probe.height / 2 - padV;
-          hitText = Rect.fromLTWH(
-            left,
-            top,
-            probe.width + padH * 2,
-            probe.height + padV * 2,
-          );
+          // 夾回畫面內（含底色的整個框；公式跟匯出端一致）
+          final boxW = probe.width + padH * 2;
+          final boxH = probe.height + padV * 2;
+          final left = clampWmBox(t.x * w - probe.width / 2 - padH, w, boxW);
+          final top = clampWmBox(t.y * h - probe.height / 2 - padV, h, boxH);
+          hitText = Rect.fromLTWH(left, top, boxW, boxH);
 
           Widget textWidget(TextStyle st) => Text(
             t.text,
@@ -769,4 +767,13 @@ class CenterGuides extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 把一個部件的外框夾回畫面內：left 夾在 [0, 空間-寬度]。
+/// 部件比畫面還大時反過來（兩邊都會凸出去，至少置中對稱、不會偏一邊）。
+/// 預覽跟匯出用同一條公式，看到的就是輸出的
+double clampWmBox(double pos, double span, double part) {
+  final lo = span - part < 0 ? span - part : 0.0;
+  final hi = span - part < 0 ? 0.0 : span - part;
+  return pos.clamp(lo, hi);
 }
