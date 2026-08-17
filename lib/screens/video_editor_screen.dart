@@ -7595,6 +7595,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       _snapToolBtn(),
                       _toolBtn(Icons.add, '加素材', _addMediaChoice),
                       _toolDivider(),
+                      // 排列順序：大小、裁切、音量、調色、速度、效果
                       _toolBtn(
                         Icons.open_in_full,
                         '大小',
@@ -7612,25 +7613,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   ? '浮水印大小請在浮水印分頁調，或在預覽雙指縮放'
                                   : '聲音片段沒有畫面大小可調'),
                       ),
-                      // 音量／效果分開兩顆：以前擠在同一張表裡，
-                      // 想調音量的人得先看懂「效果」是什麼
-                      _toolBtn(
-                        Icons.volume_up,
-                        '音量',
-                        (sel == null || !_clipHasAudio(sel))
-                            ? null
-                            : () => _openVolumeSheet(sel),
-                        tip: '這段的音量',
-                        disabledHint: sel == null ? '先在時間軸點選一個片段' : '這個素材沒有聲音',
-                      ),
-                      _toolBtn(
-                        Icons.gradient,
-                        '效果',
-                        sel == null ? null : () => _openFadeSheet(sel),
-                        tip: '淡入淡出',
-                        disabledHint: '先在時間軸點選一個片段',
-                      ),
-                      _toolBtn(Icons.speed, '速度', _openSpeedSheet, tip: '播放速度'),
                       _toolBtn(
                         Icons.crop,
                         '裁切',
@@ -7645,6 +7627,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         disabledHint: sel == null
                             ? '先在時間軸點選影片或圖片'
                             : '這種素材沒有畫面可以裁',
+                      ),
+                      // 音量／效果分開兩顆：以前擠在同一張表裡，
+                      // 想調音量的人得先看懂「效果」是什麼
+                      _toolBtn(
+                        Icons.volume_up,
+                        '音量',
+                        (sel == null || !_clipHasAudio(sel))
+                            ? null
+                            : () => _openVolumeSheet(sel),
+                        tip: '這段的音量',
+                        disabledHint: sel == null ? '先在時間軸點選一個片段' : '這個素材沒有聲音',
                       ),
                       _toolBtn(
                         Icons.tune,
@@ -7662,6 +7655,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         disabledHint: sel == null
                             ? '先在時間軸點選要調色的片段'
                             : '這種素材不能調色（影片、圖片才可以）',
+                      ),
+                      _toolBtn(Icons.speed, '速度', _openSpeedSheet, tip: '播放速度'),
+                      _toolBtn(
+                        Icons.gradient,
+                        '效果',
+                        sel == null ? null : () => _openFadeSheet(sel),
+                        tip: '淡入淡出',
+                        disabledHint: '先在時間軸點選一個片段',
                       ),
                     ],
                   ),
