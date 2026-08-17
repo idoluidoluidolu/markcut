@@ -78,7 +78,13 @@ class CompPlayer {
   /// 上一次組不起來的原因（原生端回報的）。呼叫端拿去寫進診斷
   static String? lastError;
 
-  static Future<CompPlayer?> build(TimelineModel tl, {bool texture = true}) async {
+  /// [mutedTracks] 整軌靜音的軌號：音量在組合成時就烘進去，
+  /// 所以切靜音要重組（呼叫端的指紋有把它算進去）
+  static Future<CompPlayer?> build(
+    TimelineModel tl, {
+    bool texture = true,
+    Set<int> mutedTracks = const {},
+  }) async {
     if (!await available) return null;
     final vids = [
       for (final c in tl.clips)
@@ -99,7 +105,9 @@ class CompPlayer {
           // 疊起來的順序就是使用者看到的上下層
           'offset': c.offset,
           'track': c.track,
-          'volume': c.volume.clamp(0.0, 1.0),
+          'volume': mutedTracks.contains(c.track)
+              ? 0.0
+              : c.volume.clamp(0.0, 1.0),
           'speed': c.speed,
           'fadeIn': c.fadeIn,
           'fadeOut': c.fadeOut,

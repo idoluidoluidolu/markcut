@@ -509,6 +509,115 @@ void main() {
     });
   });
 
+  group('覆寫（同軌不重疊）', () {
+    TimelineModel base() {
+      final tl = TimelineModel();
+      tl.sources.add(MediaSource(
+          path: '/a.mp4', name: 'a', kind: ClipKind.video, duration: 100));
+      // 一段 0~10 秒躺在第 0 軌
+      tl.clips.add(TimelineClip(
+        id: tl.nextId(),
+        sourceIndex: 0,
+        trimStart: 20,
+        trimEnd: 30,
+        offset: 0,
+        track: 0,
+      ));
+      return tl;
+    }
+
+    test('完全被蓋住＝整段刪除', () {
+      final tl = base();
+      tl.carveRange(-1, 11, 0);
+      expect(tl.clips, isEmpty);
+    });
+
+    test('蓋到尾巴＝尾巴被裁掉', () {
+      final tl = base();
+      tl.carveRange(6, 15, 0);
+      final c = tl.clips.single;
+      expect(c.offset, 0);
+      expect(c.end, closeTo(6, 1e-9));
+      expect(c.trimEnd, closeTo(26, 1e-9));
+    });
+
+    test('蓋到頭＝頭被裁掉、起點往後移', () {
+      final tl = base();
+      tl.carveRange(-2, 4, 0);
+      final c = tl.clips.single;
+      expect(c.offset, closeTo(4, 1e-9));
+      expect(c.end, closeTo(10, 1e-9));
+      expect(c.trimStart, closeTo(24, 1e-9));
+    });
+
+    test('蓋在中段＝切成前後兩半', () {
+      final tl = base();
+      tl.carveRange(3, 7, 0);
+      expect(tl.clips.length, 2);
+      final head = tl.clips.firstWhere((c) => c.offset < 1);
+      final tail = tl.clips.firstWhere((c) => c.offset > 1);
+      expect(head.end, closeTo(3, 1e-9));
+      expect(tail.offset, closeTo(7, 1e-9));
+      expect(tail.end, closeTo(10, 1e-9));
+      // 素材時間也要接得上：頭半段 20~23、尾半段 27~30
+      expect(head.trimEnd, closeTo(23, 1e-9));
+      expect(tail.trimStart, closeTo(27, 1e-9));
+    });
+
+    test('倒轉的片段蓋到中段，兩半的長度也要對', () {
+      final tl = base();
+      tl.clips.single.reverse = true;
+      tl.carveRange(3, 7, 0);
+      expect(tl.clips.length, 2);
+      final head = tl.clips.firstWhere((c) => c.offset < 1);
+      final tail = tl.clips.firstWhere((c) => c.offset > 1);
+      expect(head.length, closeTo(3, 1e-9));
+      expect(tail.length, closeTo(3, 1e-9));
+      // 倒轉：時間軸左緣對素材尾端。頭半段是素材的 27~30、
+      // 尾半段是素材的 20~23
+      expect(head.trimStart, closeTo(27, 1e-9));
+      expect(tail.trimEnd, closeTo(23, 1e-9));
+    });
+
+    test('別的軌、放下的自己都不受影響', () {
+      final tl = base();
+      tl.clips.add(TimelineClip(
+        id: tl.nextId(),
+        sourceIndex: 0,
+        trimStart: 0,
+        trimEnd: 5,
+        offset: 2,
+        track: 1,
+      ));
+      tl.carveRange(0, 10, 0, exceptId: tl.clips.first.id);
+      expect(tl.clips.length, 2);
+    });
+  });
+
+  group('整理（closeGaps）', () {
+    test('只收中間的空隙，第一段留在原地', () {
+      final tl = TimelineModel();
+      tl.sources.add(MediaSource(
+          path: '/a.mp4', name: 'a', kind: ClipKind.video, duration: 100));
+      for (final off in [2.0, 8.0, 15.0]) {
+        tl.clips.add(TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 0,
+          trimStart: 0,
+          trimEnd: 3,
+          offset: off,
+          track: 0,
+        ));
+      }
+      tl.closeGaps(track: 0);
+      final offs = (tl.clips.map((c) => c.offset).toList()..sort());
+      // 第一段不動（片頭刻意留白是正常排法），後面接齊
+      expect(offs[0], closeTo(2, 1e-9));
+      expect(offs[1], closeTo(5, 1e-9));
+      expect(offs[2], closeTo(8, 1e-9));
+    });
+  });
+
   group('吸附（磁鐵）行為', () {
     /// 一條軸上就這一段，往片頭／片尾附近拖
     TimelineModel oneClip() {

@@ -1,3 +1,4 @@
+import 'dart:async' show unawaited;
 import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -7,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 // XFile 也是從這裡再匯出的，不用另外 import image_picker
 import 'package:flutter_image_compress/flutter_image_compress.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
@@ -266,8 +268,37 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   /// 一次把每個檔案的小縮圖備好；原檔讀完就丟。
   /// 迭代快照，不直接迭代 _items——載入中長按移除一張會讓
   /// 迭代器丟 ConcurrentModificationError，剩下的縮圖全載不出來
-  Future<void> _loadPreviews() async {
-    final snapshot = List.of(_items);
+  /// 縮圖列最後那格「＋」：中途再加檔案進這一批。
+  /// 相簿混選（影片照片都收），加進來直接套整批的浮水印設定
+  Widget _addTile() {
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: _exporting ? null : _addMoreFiles,
+      child: Container(
+        width: 40,
+        decoration: BoxDecoration(
+          color: kPanelHi,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: kBorder),
+        ),
+        child: const Icon(Icons.add, size: 20, color: kIcon),
+      ),
+    );
+  }
+
+  Future<void> _addMoreFiles() async {
+    final picked = await ImagePicker().pickMultipleMedia();
+    if (picked.isEmpty || !mounted) return;
+    final added = picked.map(_BatchItem.new).toList();
+    setState(() => _items.addAll(added));
+    showHint(context, '已加入 ${added.length} 個檔案');
+    // 縮圖與尺寸背景補上，跟進場時同一條路
+    unawaited(_loadPreviews(only: added));
+  }
+
+  /// [only] 給了就只載那幾個（中途加進來的新檔案），不重抽整批
+  Future<void> _loadPreviews({List<_BatchItem>? only}) async {
+    final snapshot = List.of(only ?? _items);
     for (final item in snapshot) {
       if (!mounted) return;
       if (!_items.contains(item)) continue; // 中途被移除就跳過
@@ -809,9 +840,11 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
               scrollDirection: Axis.horizontal,
               padding:
                   const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              itemCount: _items.length,
+              itemCount: _items.length + 1,
               separatorBuilder: (_, i) => const SizedBox(width: 6),
-              itemBuilder: (context, i) => InkWell(
+              itemBuilder: (context, i) => i == _items.length
+                  ? _addTile()
+                  : InkWell(
                 borderRadius: BorderRadius.circular(6),
                 onTap: () => _selectPreview(i),
                 onLongPress: () async {

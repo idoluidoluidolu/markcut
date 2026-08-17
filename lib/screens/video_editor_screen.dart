@@ -627,6 +627,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 馬賽克片段也要算進來：它跟調色一樣會逼著退回材質那條路，
     // 而它不是影片片段，不記的話「加了馬賽克」不會觸發重烘
     'mz${_tl.clips.where((c) => _tl.sourceOf(c).kind == ClipKind.mosaic).length}',
+    // 整軌靜音是烘進合成的音量參數的，切了要重組——不記的話
+    // 預覽照樣有聲音，匯出卻是靜音的（匯出另外走自己的靜音處理）
+    'mute${(_mutedTracks.toList()..sort()).join(',')}',
   ].join(';');
 
   String? _lastCompSig;
@@ -3275,7 +3278,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     // 用系統影片圖層顯示時不要另外出一份材質：那份沒有人看，
     // 卻是每一格都在複製一張 4K 畫面，等於跟解碼搶頻寬
-    final made = await CompPlayer.build(_tl, texture: !Diag.playerLayer.value);
+    final made = await CompPlayer.build(
+      _tl,
+      texture: !Diag.playerLayer.value,
+      mutedTracks: _mutedTracks,
+    );
     _compDirty = false;
     if (!mounted) {
       await made?.dispose();
@@ -4222,11 +4229,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final t = target.clamp(0, 9);
     final oldUsed = _tl.usedTracks;
     setState(() {
-      // 同一軌不讓素材互相覆蓋：蓋住的那段等於憑空消失，時間軸上還
-      // 看不出來。想放的位置有人佔著就滑到最近的空位（見
-      // Timeline.freeOffsetOnTrack）。插入新軌不用判，那條軌是空的
+      // 同一軌的素材不互相重疊：放下去壓到別人時，被壓住的部分直接
+      // 裁掉（覆寫，跟主流剪輯 App 一致）。插入新軌不用清，那條軌是空的
       final want = newOffset.clamp(0.0, 1e6);
-      clip.offset = insert ? want : _tl.freeOffsetOnTrack(clip, want, t);
+      clip.offset = want;
+      if (!insert) {
+        _tl.carveRange(want, want + clip.length, t, exceptId: clip.id);
+      }
       if (insert) {
         for (final c in _tl.clips) {
           if (c.id != id && c.track >= t) c.track++;
@@ -4754,12 +4763,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       showHint(context, t == null ? '沒有空隙可以補' : '第 ${t + 1} 軌沒有空隙');
       return;
     }
-    showHint(
-      context,
-      t == null
-          ? '已補起空隙，總共收掉 ${removed.toStringAsFixed(1)} 秒'
-          : '已整理第 ${t + 1} 軌，收掉 ${removed.toStringAsFixed(1)} 秒',
-    );
+    showHint(context, t == null ? '已補起空隙' : '已整理第 ${t + 1} 軌');
   }
 
   /// 刪掉整條軌道（軌上所有片段一起消失）
@@ -7449,12 +7453,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 onAddMedia: _addMedia,
                                 onReorderTrack: _reorderTrack,
                                 mutedTracks: _mutedTracks,
-                                onToggleMute: (t) => setState(() {
-                                  if (!_mutedTracks.remove(t)) {
-                                    _mutedTracks.add(t);
-                                  }
-                                  _syncMedia();
-                                }),
+                                onToggleMute: (t) {
+                                  setState(() {
+                                    if (!_mutedTracks.remove(t)) {
+                                      _mutedTracks.add(t);
+                                    }
+                                    _syncMedia();
+                                  });
+                                  // 合成播放器的音量是組合成時烘進去的，
+                                  // 切靜音要重組一次才聽得到差別
+                                  _compRefreshIfChanged();
+                                },
                                 onLongPressClip: _showClipMenu,
                                 onLongPressEmpty: _showEmptyMenu,
                                 onTapSelectedClip: (id) {

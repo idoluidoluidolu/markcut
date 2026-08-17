@@ -385,8 +385,13 @@ class TimelineModel {
         : (clips.map((c) => c.track).toSet().toList()..sort());
     var removed = 0.0;
     for (final t in targets) {
-      var cursor = 0.0;
-      for (final c in onTrack(t)) {
+      final list = onTrack(t);
+      if (list.isEmpty) continue;
+      // 從第一段自己的位置起算：整理是「把中間的空隙收掉」，
+      // 不是把整軌拖回 0 秒——片頭刻意留白（等音樂進來）是常見排法，
+      // 一開自動整理就被吸到最開始等於這個排法直接不能用
+      var cursor = list.first.offset;
+      for (final c in list) {
         // 只補「空隙」，不動刻意重疊的片段——重疊時 c.offset < cursor，
         // 照原本的寫法會把它往後推開，還把負數算進「收掉的秒數」
         final gap = c.offset - cursor;
@@ -398,6 +403,104 @@ class TimelineModel {
       }
     }
     return removed;
+  }
+
+  /// 把 [a, b) 這段時間在 [track] 上清出來：蓋到誰就把誰裁掉。
+  ///
+  /// 同一軌的素材不互相重疊——放下去壓到別人時，被壓住的部分直接消失
+  /// （跟主流剪輯 App 的覆寫行為一致）：完全被蓋住的整段刪除、蓋到頭尾
+  /// 的把那一側裁掉、蓋在中段的切成前後兩半。[exceptId] 是正在放下的
+  /// 那一段自己
+  void carveRange(double a, double b, int track, {int? exceptId}) {
+    if (b - a < 0.001) return;
+    final victims = [
+      for (final c in clips)
+        if (c.id != exceptId &&
+            c.track == track &&
+            c.offset < b - 0.001 &&
+            c.end > a + 0.001)
+          c,
+    ];
+    for (final c in victims) {
+      final headLen = a - c.offset;
+      final tailLen = c.end - b;
+      // 剩不到 0.05 秒的碎屑不留：看不到、點不到，只會卡整理
+      if (headLen < 0.05 && tailLen < 0.05) {
+        clips.remove(c);
+        continue;
+      }
+      // 先把兩個切點換算回素材時間，再動 trim——動了就換算不回來了
+      final srcA = c.sourceTimeAt(a);
+      final srcB = c.sourceTimeAt(b);
+      if (headLen >= 0.05 && tailLen >= 0.05) {
+        // 蓋在中段：切成頭尾兩段（來源複製規則跟 splitAt 同一套——
+        // 樣式類素材兩半要各自一份來源，改一半才不會動到另一半）
+        var srcIdx = c.sourceIndex;
+        final src = sources[srcIdx];
+        if (src.kind == ClipKind.wm ||
+            src.kind == ClipKind.text ||
+            src.kind == ClipKind.mosaic) {
+          sources.add(
+            MediaSource(
+              path: src.path,
+              name: src.name,
+              kind: src.kind,
+              w: src.w,
+              h: src.h,
+              duration: src.duration,
+              textStyle: src.textStyle?.copy(),
+              wmStyle: src.wmStyle?.copy(),
+              mosaicStyle: src.mosaicStyle?.copy(),
+            ),
+          );
+          srcIdx = sources.length - 1;
+        }
+        clips.add(
+          TimelineClip(
+            id: nextId(),
+            sourceIndex: srcIdx,
+            trimStart: c.reverse ? c.trimStart : srcB,
+            trimEnd: c.reverse ? srcB : c.trimEnd,
+            offset: b,
+            track: c.track,
+            volume: c.volume,
+            speed: c.speed,
+            reverse: c.reverse,
+            mirror: c.mirror,
+            px: c.px,
+            py: c.py,
+            scale: c.scale,
+            fadeOut: c.fadeOut,
+            color: c.color.copy(),
+          ),
+        );
+        if (c.reverse) {
+          c.trimStart = srcA;
+        } else {
+          c.trimEnd = srcA;
+        }
+        c.fadeOut = 0; // 切口不淡出，跟切割一致
+        continue;
+      }
+      if (headLen >= 0.05) {
+        // 只蓋到尾巴
+        if (c.reverse) {
+          c.trimStart = srcA;
+        } else {
+          c.trimEnd = srcA;
+        }
+        c.fadeOut = 0;
+      } else {
+        // 只蓋到頭
+        if (c.reverse) {
+          c.trimEnd = srcB;
+        } else {
+          c.trimStart = srcB;
+        }
+        c.offset = b;
+        c.fadeIn = 0;
+      }
+    }
   }
 
   /// 整條軌道刪掉（軌上所有片段一起移除），下面的軌往上遞補。

@@ -367,11 +367,16 @@ class _CropArea extends StatefulWidget {
 }
 
 class _CropAreaState extends State<_CropArea> {
-  /// 手指按下時抓到的是哪個角（0~3），-1＝整塊搬，null＝沒在拖
+  /// 手指按下抓到什麼：0~3＝四個角、4~7＝左上右下四條邊、
+  /// -1＝整塊搬，null＝沒在拖
   int? _grab;
   Rect? _startCrop;
 
-  static const double _handle = 26; // 角落的判定半徑（畫面像素）
+  // 角落的判定半徑。26 太小：框拉滿整張圖時角落貼著邊，手指又粗，
+  // 十次有八次抓成「整塊搬」——而框已經滿版根本搬不動，看起來就是
+  //「無法縮放」。加大到 44（系統建議的最小觸控目標）
+  static const double _handle = 44;
+  static const double _edge = 30; // 邊的判定寬度
   static const double _minSide = 32; // 裁切框最小邊長（畫面像素）
 
   @override
@@ -408,11 +413,33 @@ class _CropAreaState extends State<_CropArea> {
             cropView.bottomLeft,
             cropView.bottomRight,
           ];
+          // 取「最近的那個角」而不是第一個碰到的：熱區加大之後
+          // 相鄰兩個角可能同時在範圍內，抓錯角會往反方向縮
           _grab = -1;
+          var best = _handle;
           for (var i = 0; i < 4; i++) {
-            if ((corners[i] - p).distance <= _handle) {
+            final d = (corners[i] - p).distance;
+            if (d <= best) {
+              best = d;
               _grab = i;
-              break;
+            }
+          }
+          if (_grab != -1) return;
+          // 沒抓到角就試四條邊（鎖比例時邊不能單獨動，跳過）。
+          // 4=左 5=上 6=右 7=下
+          if (widget.ratio == null) {
+            final withinY = p.dy >= cropView.top - _edge &&
+                p.dy <= cropView.bottom + _edge;
+            final withinX = p.dx >= cropView.left - _edge &&
+                p.dx <= cropView.right + _edge;
+            if (withinY && (p.dx - cropView.left).abs() <= _edge) {
+              _grab = 4;
+            } else if (withinY && (p.dx - cropView.right).abs() <= _edge) {
+              _grab = 6;
+            } else if (withinX && (p.dy - cropView.top).abs() <= _edge) {
+              _grab = 5;
+            } else if (withinX && (p.dy - cropView.bottom).abs() <= _edge) {
+              _grab = 7;
             }
           }
         }
@@ -439,10 +466,10 @@ class _CropAreaState extends State<_CropArea> {
             var t = start.top;
             var r = start.right;
             var b = start.bottom;
-            if (g == 0 || g == 2) l = start.left + delta.dx;
-            if (g == 1 || g == 3) r = start.right + delta.dx;
-            if (g == 0 || g == 1) t = start.top + delta.dy;
-            if (g == 2 || g == 3) b = start.bottom + delta.dy;
+            if (g == 0 || g == 2 || g == 4) l = start.left + delta.dx;
+            if (g == 1 || g == 3 || g == 6) r = start.right + delta.dx;
+            if (g == 0 || g == 1 || g == 5) t = start.top + delta.dy;
+            if (g == 2 || g == 3 || g == 7) b = start.bottom + delta.dy;
             l = l.clamp(view.left, view.right - _minSide);
             t = t.clamp(view.top, view.bottom - _minSide);
             r = r.clamp(view.left + _minSide, view.right);
@@ -453,9 +480,10 @@ class _CropAreaState extends State<_CropArea> {
               math.max(r, l + _minSide),
               math.max(b, t + _minSide),
             );
-            // 鎖比例時，用被拖的那個角當支點重算另一邊
+            // 鎖比例時，用被拖的那個角當支點重算另一邊（onDown 在
+            // 鎖比例時不會給出邊，這裡只會是角）
             final ratio = widget.ratio;
-            if (ratio != null) {
+            if (ratio != null && g < 4) {
               var w = next.width;
               var h = w / ratio;
               if (h > view.height) {
@@ -564,6 +592,19 @@ class _CropPainter extends CustomPainter {
     corner(crop.topRight, -1, 1);
     corner(crop.bottomLeft, 1, -1);
     corner(crop.bottomRight, -1, -1);
+    // 四條邊的中點也給一小段把手：邊是可以單獨拉的（自由模式），
+    // 沒有記號沒人知道
+    const tick = 13.0;
+    final cx = crop.center.dx;
+    final cy = crop.center.dy;
+    canvas.drawLine(
+        Offset(cx - tick, crop.top), Offset(cx + tick, crop.top), h);
+    canvas.drawLine(
+        Offset(cx - tick, crop.bottom), Offset(cx + tick, crop.bottom), h);
+    canvas.drawLine(
+        Offset(crop.left, cy - tick), Offset(crop.left, cy + tick), h);
+    canvas.drawLine(
+        Offset(crop.right, cy - tick), Offset(crop.right, cy + tick), h);
   }
 
   @override
