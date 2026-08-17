@@ -215,8 +215,15 @@ class _TimelineEditorState extends State<TimelineEditor> {
     (widget.voiceTrack ?? -1) + 1,
   );
 
-  /// 拖曳／插入允許到達的最底軌（含手動加的空白軌）
+  /// 拖曳／插入允許到達的最上層軌（含手動加的空白軌）
   int get _maxTrack => timeline.usedTracks + widget.extraTracks;
+
+  /// 軌道編號 → 畫面上由上往下數的第幾列。
+  ///
+  /// 編號大的疊在畫面上層，所以它在時間軸上也要畫在上面——剪映、
+  /// Premiere 都是這樣：主軌在最下面，疊加的往上長。反過來排的話，
+  /// 新加的素材明明蓋在最上面，看起來卻掉到時間軸最底下
+  int _rowOf(int track) => _rows - 1 - track;
 
   /// 浮水印軌佔掉的高度（含間距）
   double get _wmExtra =>
@@ -295,8 +302,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
     }
     // 抬手那一下的小位移不在這裡濾：事件進到手勢辨識之前就擋掉了
     //（見 SteadyPointerBinding）
-    final minDy = -(l.startTrack + 0.45) * rowStride;
-    final maxDy = (_maxTrack - l.startTrack + 0.45) * rowStride;
+    // 畫面上越上面＝編號越大（見 _rowOf）：往下拖是往編號小的走
+    final minDy = -(_maxTrack - l.startTrack + 0.45) * rowStride;
+    final maxDy = (l.startTrack + 0.45) * rowStride;
     setState(() {
       _lift = (
         clipId: l.clipId,
@@ -380,7 +388,8 @@ class _TimelineEditorState extends State<TimelineEditor> {
         insertLine: null,
       );
     }
-    final raw = (l.startTrack * rowStride + l.dy) / rowStride;
+    // 往下拖 dy 是正的，但那是往編號小的方向
+    final raw = (l.startTrack * rowStride - l.dy) / rowStride;
     final nearest = raw.round().clamp(0, maxTrack);
     final frac = raw - raw.round();
     // 大部分範圍都是「放進這一層」；貼近交界且會撞到才是插入
@@ -454,22 +463,23 @@ class _TimelineEditorState extends State<TimelineEditor> {
   int get _trackDropTarget {
     if (_dragTrack == null) return -1;
     final steps = (_dragDy / rowStride).round();
-    return (_dragTrack! + steps).clamp(0, math.max(0, timeline.usedTracks - 1));
+    return (_dragTrack! - steps).clamp(0, math.max(0, timeline.usedTracks - 1));
   }
 
   double _rowShiftFor(int t) {
     // 片段插入的預覽：插入點以下全部讓位
     final spec = _liftSpec();
     if (spec?.insertLine != null) {
-      return t >= spec!.insertLine! ? rowStride : 0;
+      // 插入點「以上」（編號比它大的）整批往上讓一格
+      return t >= spec!.insertLine! ? -rowStride : 0;
     }
     // 軌道標籤拖曳
     final from = _dragTrack;
     if (from == null) return 0;
     if (t == from) return _dragDy;
     final to = _trackDropTarget;
-    if (from < to && t > from && t <= to) return -rowStride;
-    if (to < from && t >= to && t < from) return rowStride;
+    if (from < to && t > from && t <= to) return rowStride;
+    if (to < from && t >= to && t < from) return -rowStride;
     return 0;
   }
 
@@ -509,7 +519,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
                   _wmLabel(),
                   const SizedBox(height: gap),
                 ],
-                for (var t = 0; t < _rows; t++) ...[
+                // 由上往下畫，編號由大到小：時間軸上面的那一列，在畫面
+                // 上也是疊在上面的那一層（跟剪映／Premiere 一致）
+                for (var t = _rows - 1; t >= 0; t--) ...[
                   _shifted(t, _trackLabel(t)),
                   const SizedBox(height: gap),
                 ],
@@ -613,7 +625,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
                                       ),
                                       const SizedBox(height: gap),
                                     ],
-                                    for (var t = 0; t < _rows; t++) ...[
+                                    for (var t = _rows - 1; t >= 0; t--) ...[
                                       _shifted(
                                         t,
                                         SizedBox(
@@ -636,7 +648,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
                                       rulerH +
                                       _rulerGap +
                                       _wmExtra +
-                                      spec!.insertLine! * rowStride -
+                                      (_rows - spec!.insertLine!) * rowStride -
                                       gap / 2 -
                                       1.5,
                                   child: IgnorePointer(
@@ -1012,7 +1024,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
           TimelineEditor.rulerH +
           _rulerGap +
           _wmExtra +
-          l.startTrack * rowStride +
+          _rowOf(l.startTrack) * rowStride +
           l.dy,
       child: IgnorePointer(
         child: Container(
@@ -1604,9 +1616,10 @@ class _TrackLabelState extends State<_TrackLabel> {
                   }
                   ..onUpdate = (d) {
                     if (_longFired) return;
+                    // 往下拖是往編號小的走（時間軸上面＝編號大）
                     _dy = (_dy + d.delta.dy).clamp(
-                      -widget.index * widget.rowStride,
-                      (widget.maxTrack - widget.index) * widget.rowStride,
+                      -(widget.maxTrack - widget.index) * widget.rowStride,
+                      widget.index * widget.rowStride,
                     );
                     if (_dy.abs() > 4) {
                       _moved = true;
