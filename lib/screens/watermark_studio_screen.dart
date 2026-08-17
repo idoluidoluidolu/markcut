@@ -22,7 +22,11 @@ class WatermarkStudioScreen extends StatefulWidget {
 
 class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
   final _settings = WatermarkSettings();
-  bool _lightBg = false; // 示意畫面底色：黑 / 白
+  /// 示意畫面底色：0＝透明（棋盤格）、1＝黑、2＝白。
+  ///
+  /// 預設透明：做浮水印時最重要的是看清楚「這張圖自己的邊緣到哪裡」，
+  /// 純黑或純白底會把同色的邊緣整個吃掉
+  int _bgMode = 0;
 
   /// 示意畫面比例：直式影片的浮水印要在對的比例下設計才準
   static const _ratios = [('16:9', 16 / 9), ('9:16', 9 / 16), ('1:1', 1.0)];
@@ -343,12 +347,12 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
     }
   }
 
-  /// 底色切換：迷你分段控制（黑／白）
+  /// 底色切換：迷你分段控制（透／黑／白）
   Widget _bgSegment() {
-    Widget seg(String label, bool light) {
-      final active = _lightBg == light;
+    Widget seg(String label, int mode) {
+      final active = _bgMode == mode;
       return InkWell(
-        onTap: () => setState(() => _lightBg = light),
+        onTap: () => setState(() => _bgMode = mode),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
           color: active ? kPanelHi : Colors.transparent,
@@ -375,7 +379,7 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
-          children: [seg('黑', false), seg('白', true)],
+          children: [seg('透', 0), seg('黑', 1), seg('白', 2)],
         ),
       ),
     );
@@ -472,11 +476,24 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
                         child: AspectRatio(
                           aspectRatio: _ratios[_ratioIdx].$2,
                           child: Container(
-                            color: _lightBg ? Colors.white : Colors.black,
+                            color: _bgMode == 2
+                                ? Colors.white
+                                : (_bgMode == 1 ? Colors.black : null),
                             child: Stack(
                               clipBehavior: Clip.none,
                               fit: StackFit.expand,
                               children: [
+                                // 透明模式的棋盤格：純色底會把同色的邊緣
+                                // 整個吃掉，做浮水印最需要看清楚的就是
+                                //「這張圖自己的邊到哪裡」
+                                if (_bgMode == 0)
+                                  const Positioned.fill(
+                                    child: IgnorePointer(
+                                      child: CustomPaint(
+                                        painter: CheckerPainter(),
+                                      ),
+                                    ),
+                                  ),
                                 // 底就是純色，不放示意圖示——那個山形圖案
                                 // 會被誤認成浮水印的一部分
                                 WatermarkLayer(

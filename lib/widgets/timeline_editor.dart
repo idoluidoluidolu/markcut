@@ -72,6 +72,10 @@ class TimelineEditor extends StatefulWidget {
   /// 點一下「已經選取」的片段（例如文字片段點兩下進編輯）
   final ValueChanged<int>? onTapSelectedClip;
 
+  /// 點到一個「窄到擺不下修剪把手」的片段。父層負責放大時間軸到看得
+  /// 清楚為止——不然使用者只會看到把手憑空消失，不知道要先放大
+  final ValueChanged<int>? onTooNarrow;
+
   /// 長按軌道空白處（貼上用）：軌道、該處的時間、選單位置
   final void Function(int track, double timeSec, Offset globalPos)
   onLongPressEmpty;
@@ -147,6 +151,7 @@ class TimelineEditor extends StatefulWidget {
     required this.onLongPressClip,
     required this.onLongPressEmpty,
     this.onTapSelectedClip,
+    this.onTooNarrow,
     this.onLiftChanged,
     this.pinching = false,
     this.onZoom,
@@ -347,6 +352,14 @@ class _TimelineEditorState extends State<TimelineEditor> {
     widget.onLiftChanged?.call(false);
     // 沒有武裝（幾乎沒動）= 點擊；點已選取的片段 → 交給編輯回呼
     if (!armed) {
+      // 窄到擺不下把手的片段：點一下就請父層放大到修剪得動為止。
+      // 只在「真的只是點一下」時做——拖曳中途縮放時間軸會讓手指
+      // 底下的東西整個位移
+      final c = _clipById(l.clipId);
+      if (c != null && c.length * pxPerSec < kTrimMinWidth) {
+        widget.onTooNarrow?.call(l.clipId);
+        return;
+      }
       if (_liftWasSelected && l.dx.abs() < 6 && l.dy.abs() < 6) {
         widget.onTapSelectedClip?.call(l.clipId);
       }
@@ -1240,6 +1253,10 @@ class _EagerPanRecognizer extends PanGestureRecognizer {
 /// 修剪把手的熱區往片段外多伸出去多少（見 _TrimHandle.overhang）
 const double _kHandleOverhang = 14;
 
+/// 片段要有這麼寬，兩顆修剪把手才擺得下、中間還留得住可以抓著移動的
+/// 空間。比這窄就不畫把手（不然整條被把手蓋滿，變成拖不動）
+const double kTrimMinWidth = 64;
+
 /// 時間軸上的片段。拖曳時本體留在原地變淡，移動的是父層的幽靈。
 class _ClipBlock extends StatelessWidget {
   final TimelineClip clip;
@@ -1330,11 +1347,18 @@ class _ClipBlock extends StatelessWidget {
               decoration: BoxDecoration(
                 color: fill,
                 borderRadius: BorderRadius.circular(5),
-                border: Border.all(
-                  color: isSelected ? kSelect : borderColor,
-                  width: isSelected ? 2 : 1,
-                ),
+                // 底層永遠是同一條 1px 邊：邊框寬度會被算進內距，
+                // 選取時從 1 換成 2 的話裡面的縮圖就整個位移 1px，
+                // 取消選取又移回去——那正是「選取時素材會抖一下」
+                border: Border.all(color: borderColor, width: 1),
               ),
+              // 選取的琥珀框畫在「前景」：疊在內容上面，不參與版面
+              foregroundDecoration: isSelected
+                  ? BoxDecoration(
+                      borderRadius: BorderRadius.circular(5),
+                      border: Border.all(color: kSelect, width: 2),
+                    )
+                  : null,
               clipBehavior: Clip.antiAlias,
               child: Stack(
                 fit: StackFit.expand,
@@ -1392,11 +1416,26 @@ class _ClipBlock extends StatelessWidget {
                 ],
               ),
             ),
+                  // 窄到擺不下把手時，中間放一個放大鏡當暗示：點一下
+                  // 會自動放大到修剪得動（見 TimelineEditor.onTooNarrow）。
+                  // IgnorePointer＝點擊照樣由底下的片段本體收，
+                  // 整塊都是「點了會放大」
+                  if (isSelected && !lifted && w < kTrimMinWidth)
+                    const Positioned.fill(
+                      child: IgnorePointer(
+                        child: Center(
+                          child: Icon(
+                            Icons.zoom_in,
+                            size: 13,
+                            color: kSelect,
+                          ),
+                        ),
+                      ),
+                    ),
                   // 片段太窄時把手整個不畫：兩顆最小 22px 的把手會把
                   // 22px 的片段整條蓋住，中間沒有任何地方可以抓著移動
-                  // ——「太短無法拖曳」就是這樣來的。要修剪就先把時間軸
-                  // 放大（雙指縮放），片段變寬把手就回來了
-                  if (isSelected && !lifted && w >= 64)
+                  // ——「太短無法拖曳」就是這樣來的
+                  if (isSelected && !lifted && w >= kTrimMinWidth)
                     // 熱區跟著片段長度給，短片段不會被兩個把手佔滿；
                     // 位置夾在可視範圍內，片段拉得比畫面長時
                     // 把手會貼在邊緣而不是跑到畫面外

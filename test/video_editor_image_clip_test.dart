@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:markcut/models/timeline.dart';
+import 'package:markcut/theme.dart';
 import 'package:markcut/screens/video_editor_screen.dart';
 
 /// 用草稿啟動真實的影片編輯頁（不需要影片播放器），
@@ -91,19 +92,29 @@ void main() {
     await _settle(t, 6);
 
     // 選取後工具列的「切割」之類應該可用；直接看選取框：
-    // _ClipBlock 選取時邊框變成 kSelect（金色），用 Container 的 decoration 判斷
+    // 琥珀色的選取框畫在 foregroundDecoration（畫在內容上面、不參與
+    // 版面）——用 decoration 掛的話邊框寬度會被算進內距，選取的瞬間
+    // 裡面的縮圖就位移 1px
     final container = t.widget<Container>(
       find
           .descendant(of: block, matching: find.byType(Container))
           .first,
     );
-    final deco = container.decoration as BoxDecoration?;
+    final deco = container.foregroundDecoration as BoxDecoration?;
     final border = deco?.border as Border?;
     expect(
       border?.top.width,
       2.0,
-      reason: '被選取的片段邊框寬度應該是 2（沒選是 1）',
+      reason: '被選取的片段要有 2px 的琥珀前景框',
     );
+    expect(
+      border?.top.color,
+      kSelect,
+      reason: '選取框是琥珀色',
+    );
+    // 底層那條邊維持 1px：它才是參與版面的那一條，換寬度就會抖
+    final base = container.decoration as BoxDecoration?;
+    expect((base?.border as Border?)?.top.width, 1.0);
   });
 
 }

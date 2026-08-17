@@ -132,35 +132,6 @@ class _CropScreenState extends State<CropScreen> {
     }
   }
 
-  /// 轉 90 度：把圖真的轉出一張新的，裁切框跟著轉過去
-  Future<void> _rotate() async {
-    final img = _img;
-    if (img == null || _busy) return;
-    setState(() => _busy = true);
-    final h = img.height.toDouble();
-    final rec = ui.PictureRecorder();
-    final canvas = Canvas(rec);
-    // 順時針 90：新圖寬高互換，原圖左下角轉到左上角
-    canvas.translate(h, 0);
-    canvas.rotate(math.pi / 2);
-    canvas.drawImage(img, Offset.zero, Paint());
-    final pic = rec.endRecording();
-    final rotated = await pic.toImage(img.height, img.width);
-    pic.dispose();
-    if (!mounted) {
-      rotated.dispose();
-      return;
-    }
-    final c = _crop;
-    setState(() {
-      _img?.dispose();
-      _img = rotated;
-      // 舊框 (x,y,w,h) 在轉過的圖上是 (H-y-h, x, h, w)
-      _crop = Rect.fromLTWH(h - c.top - c.height, c.left, c.height, c.width);
-      _busy = false;
-    });
-  }
-
   /// 還原：框回到整張圖。
   ///
   /// 呼叫端進來時給的是「沒裁過的原圖」，所以框拉回整張、按完成
@@ -255,13 +226,6 @@ class _CropScreenState extends State<CropScreen> {
             onPressed: _busy || img == null ? null : _resetCrop,
             icon: const Icon(Icons.restore),
           ),
-          // 只回框的模式沒有轉向：底圖轉了，換算回影片的框就對不上
-          if (!widget.rectOnly)
-            IconButton(
-              tooltip: '轉 90 度',
-              onPressed: _busy ? null : _rotate,
-              icon: const Icon(Icons.rotate_90_degrees_cw_outlined),
-            ),
           TextButton(
             onPressed: _busy || img == null ? null : _done,
             child: const Text(
@@ -276,14 +240,11 @@ class _CropScreenState extends State<CropScreen> {
           : Column(
               children: [
                 Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: _CropArea(
-                      image: img,
-                      crop: _crop,
-                      ratio: _ratio,
-                      onCrop: (r) => setState(() => _crop = r),
-                    ),
+                  child: _CropArea(
+                    image: img,
+                    crop: _crop,
+                    ratio: _ratio,
+                    onCrop: (r) => setState(() => _crop = r),
                   ),
                 ),
                 SizedBox(
@@ -385,8 +346,15 @@ class _CropAreaState extends State<_CropArea> {
       builder: (context, box) {
         final iw = widget.image.width.toDouble();
         final ih = widget.image.height.toDouble();
-        // 圖片貼合可用範圍（維持比例）
-        final k = math.min(box.maxWidth / iw, box.maxHeight / ih);
+        // 留白留在「手勢範圍裡面」而不是外面：本來是外層包 Padding，
+        // 圖片外那一圈完全不吃觸控，而角落的把手正好畫在邊界上——
+        // 手指稍微落到框外就什麼反應都沒有（右邊特別明顯，因為圖片
+        // 常常是被寬度限制、左右緊貼邊）
+        const pad = 18.0;
+        final k = math.min(
+          (box.maxWidth - pad * 2) / iw,
+          (box.maxHeight - pad * 2) / ih,
+        );
         final dw = iw * k;
         final dh = ih * k;
         final ox = (box.maxWidth - dw) / 2;

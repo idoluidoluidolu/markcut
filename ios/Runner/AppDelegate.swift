@@ -491,7 +491,9 @@ final class AtomicFlag {
     // 舊路徑（實驗開關，成品有異狀時的備援）。
     // 沒有疊加物時不走：那種匯出本來就沒有 CoreAnimationTool 的瓶頸，
     // 標準路徑（layer instruction）是純硬體，CI 反而多一次像素格式轉換
-    let useCI = (a["ci"] as? Bool ?? true) && !overlays.isEmpty
+    var useCI = (a["ci"] as? Bool ?? true) && !overlays.isEmpty
+    // HDR 來源一律不交給自訂合成器（見下面的 hasHDR）
+    var hasHDR = false
     let canvas = CGSize(width: CGFloat(outW), height: CGFloat(outH))
     let scale: CMTimeScale = 600
 
@@ -602,6 +604,22 @@ final class AtomicFlag {
       }
       let asset = AVURLAsset(url: URL(fileURLWithPath: path))
       guard let src = asset.tracks(withMediaType: .video).first else { continue }
+      // HLG／PQ 的來源：色調映射是 AVFoundation 內建合成器在做的，
+      // 自訂合成器拿到的是「還沒映射」的原始畫格，直接當 709 render
+      // 出來就是顏色變淡、發灰。這種來源退回內建那條路（慢一點但正確）
+      for fd in src.formatDescriptions {
+        guard let d = fd as? CMFormatDescription,
+          let tf = CMFormatDescriptionGetExtension(
+            d, extensionKey: kCMFormatDescriptionExtension_TransferFunction)
+            as? String
+        else { continue }
+        if tf == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String)
+          || tf
+            == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String)
+        {
+          hasHDR = true
+        }
+      }
       let range = CMTimeRange(
         start: CMTime(seconds: start, preferredTimescale: scale),
         duration: CMTime(seconds: end - start, preferredTimescale: scale))
@@ -697,6 +715,7 @@ final class AtomicFlag {
     vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
     vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
     var instructions: [AVMutableVideoCompositionInstruction] = []
+    if hasHDR { useCI = false }
     // GPU 路：疊加物先整批解好（PNG → 畫布大小的 CIImage），
     // 每段指令都帶同一份
     let ciOverlays: [CIOverlaySpec] =

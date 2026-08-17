@@ -23,11 +23,9 @@ void main() {
           srcAspect,
           canvasAspect,
         );
-        // 素材貼合畫布之後，短邊那側本來就填不滿——要填滿整個畫布
-        // 就得放大，這時 scale 會大於 1，那是對的
-        final (fw, fh) = fitInCanvas(srcAspect, canvasAspect);
-        final want = math.max(canvasAspect / fw, 1 / fh);
-        expect(t.scale, closeTo(want, 1e-9));
+        // 整張框起來＝維持原樣（scale 正好 1）。以前是「填滿畫布」，
+        // 直式影片放橫式畫布時會憑空被放大一刀
+        expect(t.scale, closeTo(1, 1e-9));
         expect(t.px, closeTo(0.5, 1e-9));
         expect(t.py, closeTo(0.5, 1e-9));
       }
@@ -81,19 +79,23 @@ void main() {
           srcAspect,
           canvasAspect,
         );
-        // 框的比例跟畫布不一樣時，短邊那側會被畫布切掉一點——
-        // 所以只保證「回來的框」被原框包住、而且至少有一邊完全吻合
-        expect(back.width, lessThanOrEqualTo(w + 1e-6));
-        expect(back.height, lessThanOrEqualTo(h + 1e-6));
+        // 框的比例跟畫布不一樣時，另一側會看到比框更多的畫面——
+        // 所以是「回來的框包住原框」，而且至少有一邊完全吻合
+        expect(back.width, greaterThanOrEqualTo(w - 1e-6));
+        expect(back.height, greaterThanOrEqualTo(h - 1e-6));
         final sameW = (back.width - w).abs() < 1e-6;
         final sameH = (back.height - h).abs() < 1e-6;
         expect(
           sameW || sameH,
           isTrue,
-          reason: '兩邊都被切掉了：$crop → $back',
+          reason: '兩邊都跑掉了：$crop → $back',
         );
-        expect(back.center.dx, closeTo(crop.center.dx, 1e-6));
-        expect(back.center.dy, closeTo(crop.center.dy, 1e-6));
+        // 重新打開裁切時看到的框，要把上次框的範圍整個包住
+        //（另一側會多看到一點畫面，那正是「不補滿」的結果）
+        expect(back.left, lessThanOrEqualTo(crop.left + 1e-6));
+        expect(back.right, greaterThanOrEqualTo(crop.right - 1e-6));
+        expect(back.top, lessThanOrEqualTo(crop.top + 1e-6));
+        expect(back.bottom, greaterThanOrEqualTo(crop.bottom - 1e-6));
       }
     });
 

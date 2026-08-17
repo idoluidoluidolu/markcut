@@ -76,7 +76,11 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
   // 捏合縮放的起點值
 
   /// 選取框（只畫在被選的那個部件上）。圖片有很多張時，
-  /// 只有「操作中」的那張要畫框——每張都畫等於沒有選取這回事
+  /// 只有「操作中」的那張要畫框——每張都畫等於沒有選取這回事。
+  ///
+  /// 一定要用 foregroundDecoration 掛：Container 的 decoration 會把
+  /// 邊框寬度算進內距，選取／取消選取的瞬間內容就位移 1.4px——
+  /// 那正是「移好位置後點別的東西，浮水印會稍微跳一下」
   BoxDecoration? _deco(WmPart part, {int logoIndex = -1}) {
     if (widget.selectedPart != part) return null;
     if (part == WmPart.logo &&
@@ -216,10 +220,11 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
           // 高度要用實際長寬比算，跟匯出同一套；
           // 拿寬度當高度的話非正方形 Logo 會上下偏掉
           final logoH = logoW / _logoAspectOf(logoBytes);
-          // 夾回畫面內：拖到邊上也不會有一半掛在畫面外（匯出會被裁掉，
-          // 預覽卻看得到，等於騙人）。公式跟匯出端完全一致
-          final left = clampWmBox(logo.x * w - logoW / 2, w, logoW);
-          final top = clampWmBox(logo.y * h - logoH / 2, h, logoH);
+          // 不夾限：可以一路拖出畫面。超出的部分由預覽的裁切自然切掉
+          //（匯出同一套規則），還留在畫面內的那一角連同琥珀選取框
+          // 會看得到，知道它跑到哪去了
+          final left = logo.x * w - logoW / 2;
+          final top = logo.y * h - logoH / 2;
           hitLogos[li] = Rect.fromLTWH(left, top, logoW, logoH);
           void makeActive() => settings.activeLogo = li;
           children.add(
@@ -281,7 +286,7 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                   child: Transform.rotate(
                     angle: logo.rotation * math.pi / 180,
                     child: Container(
-                      decoration: _deco(WmPart.logo, logoIndex: li),
+                      foregroundDecoration: _deco(WmPart.logo, logoIndex: li),
                       child: ClipRRect(
                         // 圓角基準也跟匯出一致：短邊
                         borderRadius: BorderRadius.circular(
@@ -338,11 +343,11 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
           // 跟匯出（底色往外擴、文字不動）差一個 padding
           final padH = t.bg ? fontSize * 0.35 * t.bgPad : 0.0;
           final padV = t.bg ? fontSize * 0.18 * t.bgPad : 0.0;
-          // 夾回畫面內（含底色的整個框；公式跟匯出端一致）
+          // 不夾限（理由同 Logo）
           final boxW = probe.width + padH * 2;
           final boxH = probe.height + padV * 2;
-          final left = clampWmBox(t.x * w - probe.width / 2 - padH, w, boxW);
-          final top = clampWmBox(t.y * h - probe.height / 2 - padV, h, boxH);
+          final left = t.x * w - probe.width / 2 - padH;
+          final top = t.y * h - probe.height / 2 - padV;
           hitText = Rect.fromLTWH(left, top, boxW, boxH);
 
           Widget textWidget(TextStyle st) => Text(
@@ -403,7 +408,7 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                 child: Transform.rotate(
                   angle: t.rotation * math.pi / 180,
                   child: Container(
-                    decoration: _deco(WmPart.text),
+                    foregroundDecoration: _deco(WmPart.text),
                     child: Container(
                       padding: EdgeInsets.symmetric(
                         horizontal: padH,
@@ -769,11 +774,26 @@ class CenterGuides extends StatelessWidget {
   }
 }
 
-/// 把一個部件的外框夾回畫面內：left 夾在 [0, 空間-寬度]。
-/// 部件比畫面還大時反過來（兩邊都會凸出去，至少置中對稱、不會偏一邊）。
-/// 預覽跟匯出用同一條公式，看到的就是輸出的
-double clampWmBox(double pos, double span, double part) {
-  final lo = span - part < 0 ? span - part : 0.0;
-  final hi = span - part < 0 ? 0.0 : span - part;
-  return pos.clamp(lo, hi);
+/// 透明底的棋盤格。做浮水印時底色如果是純黑或純白，跟浮水印同色的
+/// 邊緣會整個看不見——棋盤格才分得出「這張圖的邊到哪裡」
+class CheckerPainter extends CustomPainter {
+  const CheckerPainter({this.cell = 12});
+
+  final double cell;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final a = Paint()..color = const Color(0xFF2A2A30);
+    final b = Paint()..color = const Color(0xFF1B1B20);
+    canvas.drawRect(Offset.zero & size, a);
+    for (var y = 0.0; y < size.height; y += cell) {
+      for (var x = 0.0; x < size.width; x += cell) {
+        if (((x / cell).floor() + (y / cell).floor()).isEven) continue;
+        canvas.drawRect(Rect.fromLTWH(x, y, cell, cell), b);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(CheckerPainter old) => old.cell != cell;
 }

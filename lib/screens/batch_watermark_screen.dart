@@ -451,6 +451,43 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   /// 這次手勢還沒拍過快照（一按下就拍會把重做/選取狀態白白吃掉一步）
   bool _btUndoPending = false;
 
+  // ===== 置中吸附與輔助線（跟影片／照片／工作室同一套手感）=====
+  //
+  // 拖曳時記「未吸附」的原始座標：直接把吸完的值當下一刻的起點，
+  // 單次手指位移永遠小於吸附半徑，就再也拖不出中線了
+  double? _btRawX, _btRawY;
+  bool _btGuideV = false, _btGuideH = false;
+  bool _btSnapped = false;
+
+  double _snapC(double v) => (v - 0.5).abs() < 0.015 ? 0.5 : v;
+
+  void _btSetGuides(double x, double y) {
+    final v = x == 0.5, hh = y == 0.5;
+    if (v != _btGuideV || hh != _btGuideH) {
+      setState(() {
+        _btGuideV = v;
+        _btGuideH = hh;
+      });
+    }
+    final on = v || hh;
+    if (on != _btSnapped) {
+      _btSnapped = on;
+      if (on) HapticFeedback.selectionClick(); // 吸上去震一下
+    }
+  }
+
+  void _btClearGuides() {
+    _btRawX = null;
+    _btRawY = null;
+    _btSnapped = false;
+    if (_btGuideV || _btGuideH) {
+      setState(() {
+        _btGuideV = false;
+        _btGuideH = false;
+      });
+    }
+  }
+
   void _btPushUndoIfNeeded() {
     if (!_btUndoPending) return;
     _btUndoPending = false;
@@ -795,6 +832,16 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                             },
                             panLocked: () => _pvPts.length >= 2,
                           ),
+                          // 置中輔助線。無條件插入、不要用 if 增減：
+                          // 線一出現會把後面手勢層的索引推掉，拖曳被
+                          // 中斷後又從已吸附的中線重新開始，就再也
+                          // 拖不出來了（其他三個編輯畫面同一種寫法）
+                          Positioned.fill(
+                            child: CenterGuides(
+                              vertical: _btGuideV,
+                              horizontal: _btGuideH,
+                            ),
+                          ),
                           // 選取路由：有部件被選取時，整個預覽的拖曳
                           // 都只動被選的那個——手指滑過另一個部件
                           // 才不會把它一起拖走
@@ -810,30 +857,48 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                                     if (_pvPts.length >= 2) return;
                                     _ensureOverride();
                                     _btUndoPending = true;
+                                    _btRawX = null;
+                                    _btRawY = null;
                                   },
                                   onPanUpdate: (d) {
                                     if (_pvPts.length >= 2) return;
                                     _btPushUndoIfNeeded();
                                     final st = _effectiveOf(_previewIndex);
                                     final part = _wmPartAlive;
+                                    final mark = part == WmPart.text
+                                        ? (x: st.text.x, y: st.text.y)
+                                        : (x: st.logo.x, y: st.logo.y);
+                                    if (part != WmPart.text &&
+                                        part != WmPart.logo) {
+                                      return;
+                                    }
+                                    // 累加在「未吸附」的原始座標上，
+                                    // 顯示值才吸中線
+                                    _btRawX ??= mark.x;
+                                    _btRawY ??= mark.y;
+                                    _btRawX =
+                                        (_btRawX! +
+                                                d.delta.dx / box.maxWidth)
+                                            .clamp(0.0, 1.0);
+                                    _btRawY =
+                                        (_btRawY! +
+                                                d.delta.dy / box.maxHeight)
+                                            .clamp(0.0, 1.0);
+                                    final sx = _snapC(_btRawX!);
+                                    final sy = _snapC(_btRawY!);
                                     setState(() {
                                       if (part == WmPart.text) {
-                                        st.text.x = (st.text.x +
-                                                d.delta.dx / box.maxWidth)
-                                            .clamp(0.0, 1.0);
-                                        st.text.y = (st.text.y +
-                                                d.delta.dy / box.maxHeight)
-                                            .clamp(0.0, 1.0);
-                                      } else if (part == WmPart.logo) {
-                                        st.logo.x = (st.logo.x +
-                                                d.delta.dx / box.maxWidth)
-                                            .clamp(0.0, 1.0);
-                                        st.logo.y = (st.logo.y +
-                                                d.delta.dy / box.maxHeight)
-                                            .clamp(0.0, 1.0);
+                                        st.text.x = sx;
+                                        st.text.y = sy;
+                                      } else {
+                                        st.logo.x = sx;
+                                        st.logo.y = sy;
                                       }
                                     });
+                                    _btSetGuides(sx, sy);
                                   },
+                                  onPanEnd: (_) => _btClearGuides(),
+                                  onPanCancel: _btClearGuides,
                                   child: const SizedBox.expand(),
                                 ),
                               ),

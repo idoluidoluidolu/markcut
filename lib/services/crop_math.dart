@@ -17,7 +17,11 @@ import 'dart:ui' show Rect;
     : (srcAspect, 1.0);
 
 /// 裁切框（0~1，素材座標）→ 片段的縮放與位移。
-/// 框會填滿畫布：兩個方向各自需要多大，取大的那個
+///
+/// 框「放得進畫布」就好，不是「填滿畫布」：兩個方向各自需要多大，
+/// 取小的那個。填滿的話框的長邊會被畫布切掉——使用者框了什麼卻看不到
+/// 全部，而且「整張都框起來」會變成自動放大填滿，等於什麼都沒改卻
+/// 被裁了一刀
 ({double scale, double px, double py}) cropToTransform(
   Rect crop,
   double srcAspect,
@@ -26,7 +30,7 @@ import 'dart:ui' show Rect;
   final (fw, fh) = fitInCanvas(srcAspect, canvasAspect);
   final w = math.max(0.01, crop.width);
   final h = math.max(0.01, crop.height);
-  final s = math.max(canvasAspect / (w * fw), 1 / (h * fh));
+  final s = math.min(canvasAspect / (w * fw), 1 / (h * fh));
   return (
     scale: s,
     px: 0.5 - ((crop.left + w / 2) - 0.5) * fw * s / canvasAspect,

@@ -2055,6 +2055,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         bytes: await img.readAsBytes(),
       ));
     }
+    // 匯入時就裁過的話，這裡留著那張的原圖
+    Uint8List? importedOrig;
     // 只選一張才進裁切畫面：一次選十張還一張一張裁太煩
     if (items.length == 1 && mounted) {
       final out = await cropImage(context, items.first.bytes);
@@ -2062,11 +2064,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 手機寫暫存檔、web 做 blob URL；存不下來就用原圖，
         // 至少東西還加得進去
         final path = await writeTempBytes(out, 'png');
-        items[0] = (
-          path: path ?? items.first.path,
-          name: items.first.name,
-          bytes: path == null ? items.first.bytes : out,
-        );
+        if (path != null) {
+          // 原圖留著：之後在時間軸上再按裁切要從這份開始
+          importedOrig = items.first.bytes;
+          items[0] = (path: path, name: items.first.name, bytes: out);
+        }
       }
     }
     if (!mounted) return;
@@ -2097,6 +2099,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         ),
       );
       _thumbs[srcIndex] = [bytes];
+      if (importedOrig != null) _cropOrigBytes[srcIndex] = importedOrig;
       final len = items.length == 1 ? 4.0 : 3.0;
       final clip = TimelineClip(
         id: _tl.nextId(),
@@ -2124,6 +2127,46 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 越裁越小回不去。按上一步就會回到裁切前的樣子
   final Map<int, int> _cropOrigin = {};
 
+  /// 放大時間軸到「這一段修剪得動」為止。
+  ///
+  /// 片段窄到擺不下兩顆修剪把手時（見 kTrimMinWidth）把手會整個不畫，
+  /// 好把中間讓出來給拖曳。但那樣使用者只看到把手消失、不知道能怎麼辦
+  /// ——改成點一下就放大到看得清楚，順便把播放頭移過去（時間軸是
+  /// 播放頭固定、內容捲動的，不移過去就捲不到那一段）
+  void _zoomToClip(int id) {
+    final c = _selClipById(id);
+    if (c == null || c.length <= 0) return;
+    // 目標：這一段佔 160px。上限跟捏合縮放同一個（200px/秒）
+    final want = (160 / c.length).clamp(1.0, 200.0);
+    if (want <= _pxPerSec + 0.5) {
+      // 已經放到最大還是太窄＝這一段真的太短
+      showHint(context, '這一段只有 ${c.length.toStringAsFixed(1)} 秒，'
+          '已經放到最大了');
+      return;
+    }
+    setState(() => _pxPerSec = want);
+    _seekScrub(
+      (c.offset + c.length / 2).clamp(0.0, math.max(0.0, _tl.duration)),
+    );
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _syncScrollToPosition(),
+    );
+    if (_zoomTrimHintLeft > 0) {
+      _zoomTrimHintLeft--;
+      showHint(context, '已放大這一段，可以拖兩端修剪了');
+    }
+  }
+
+  /// 「放大就能修剪」這件事講兩次就夠了
+  int _zoomTrimHintLeft = 2;
+
+  /// 素材索引 → 它裁切之前的原始位元組。
+  ///
+  /// 匯入時就先裁過那一刀（_pickImage）是不可逆的：素材存的是裁好的
+  /// 檔案，時間軸上再按裁切時，「原圖」就只剩那份裁過的。留一份原始
+  /// bytes 才真的回得去
+  final Map<int, Uint8List> _cropOrigBytes = {};
+
   /// 左右鏡像這一段（自拍、有字的招牌常常要翻回來）
   void _toggleMirror(TimelineClip clip) {
     _pushUndo();
@@ -2138,7 +2181,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final src = _tl.sources[srcIndex];
     // 圖片素材的位元組本來就留了一份當縮圖（web 的 blob URL 讀不回來，
     // 只能靠它）；沒有才去讀檔
-    final raw = _thumbs[srcIndex]?.firstOrNull ??
+    final raw = _cropOrigBytes[srcIndex] ??
+        _thumbs[srcIndex]?.firstOrNull ??
         await readFileBytes(src.path);
     if (raw == null) {
       if (mounted) showHint(context, '這張圖讀不到了', error: true);
@@ -2176,6 +2220,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
     _thumbs[newIndex] = [cut];
     _cropOrigin[newIndex] = srcIndex;
+    // 原圖一路傳下去：裁第三次、第四次也還是從同一份原圖開始
+    _cropOrigBytes[newIndex] = raw;
     // sourceIndex 是 final：換素材＝原地換一顆同 id 的片段，
     // 時間軸上的位置、長度、變形全部照抄
     final i = _tl.clips.indexOf(clip);
@@ -3265,7 +3311,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _pendingCompRebuild = true;
       return;
     }
-    final why = CompPlayer.whyNot(_tl);
+    // 調色模式一開就退回材質路徑：畫面走系統影片圖層時 Flutter 的濾鏡
+    // 疊不上去，本來是「拉到有顏色的那一刻」才換路徑——換路徑要拆掉
+    // 合成播放器、重建每個片段的播放器，那一下就是使用者說的
+    //「第一次拉會頓一下、閃一下才開始變色」。改成進調色時就先換好，
+    // 手指還在往滑桿移動的那段時間把它做完
+    final why = _colorMode ? '調色模式' : CompPlayer.whyNot(_tl);
     _compWhyNot = why;
     if (why != null) {
       Diag.note('合成播放器用不了：$why');
@@ -6126,10 +6177,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                 }
                                                 if (ms.type == 1 &&
                                                     ms.feather > 0) {
-                                                  // 柔邊：6 圈同心疊加,
-                                                  // 中心累積較糊、邊緣輕,
-                                                  // 看不出圈與圈的階梯
-                                                  //（跟匯出的漸進圈同思路）
+                                                  // 柔邊：6 圈同心，由外到內
+                                                  // 越來越糊。每圈都用同一個
+                                                  // 強度是沒用的——最外圈就
+                                                  // 已經全糊，邊界照樣是一條
+                                                  // 硬線，拉柔邊看不出差別
                                                   final sg =
                                                       (4.0 + 16 * ms.strength) *
                                                       0.4;
@@ -6140,8 +6192,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                         r.width,
                                                         r.height,
                                                       );
+                                                  // [k] 是這一圈的強度比例
+                                                  //（外圈小、內圈滿）
                                                   Widget ring(
                                                     double i,
+                                                    double k,
                                                   ) => Positioned(
                                                     left: i,
                                                     top: i,
@@ -6151,8 +6206,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                       child: BackdropFilter(
                                                         filter:
                                                             ui.ImageFilter.blur(
-                                                              sigmaX: sg,
-                                                              sigmaY: sg,
+                                                              sigmaX: sg * k,
+                                                              sigmaY: sg * k,
                                                             ),
                                                         child:
                                                             const SizedBox.expand(),
@@ -6166,7 +6221,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                         i < 6;
                                                         i++
                                                       )
-                                                        ring(step * i),
+                                                        ring(
+                                                          step * i,
+                                                          (i + 1) / 6,
+                                                        ),
                                                     ],
                                                   );
                                                 }
@@ -7479,6 +7537,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   // 切靜音要重組一次才聽得到差別
                                   _compRefreshIfChanged();
                                 },
+                                // 窄到擺不下修剪把手的片段：點一下自動
+                                // 放大。不然使用者只看到把手憑空不見，
+                                // 不會知道要先把時間軸放大
+                                onTooNarrow: _zoomToClip,
                                 onLongPressClip: _showClipMenu,
                                 onLongPressEmpty: _showEmptyMenu,
                                 onTapSelectedClip: (id) {
@@ -8462,7 +8524,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       );
     }
     // 比對中直接回傳原樣，看得出調色前後差多少
-    if (_colorCompare || !c.color.hasColor) return w;
+    if (_colorCompare) return w;
+    // 調色模式中一律包著 ColorFiltered（沒調過色就用等同不變的矩陣）。
+    //
+    // 「有顏色才包」的話，第一次拉滑桿會憑空在影片圖層上面插一層
+    // 元件——影片圖層被重新掛載＝黑閃一下。整個調色期間形狀固定，
+    // 拉滑桿就只是換一組矩陣，第一下跟第一百下一樣即時
+    if (!c.color.hasColor && !(_colorMode && c.id == _colorClipId)) return w;
     return ColorFiltered(
       colorFilter: ColorFilter.matrix(c.color.matrix),
       child: w,
@@ -8512,6 +8580,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _colorMode = true;
       _colorClipId = sel.id;
     });
+    // 立刻把播放路徑換成材質（見 _ensureComp 的「調色模式」）：
+    // 等到第一次拉滑桿才換，那一下會頓、會閃
+    _compDirty = true;
+    unawaited(_ensureComp());
   }
 
   void _exitColorMode() {
@@ -8519,6 +8591,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _colorMode = false;
       _colorCompare = false;
     });
+    // 離開就把合成播放器接回來（沒調過色的話）
+    _compDirty = true;
+    unawaited(_ensureComp());
     _saveDraft();
   }
 
