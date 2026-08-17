@@ -318,16 +318,17 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         await ImagePicker().pickImage(source: ImageSource.gallery);
     if (picked == null) return;
     try {
-      var raw = await picked.readAsBytes();
+      final raw = await picked.readAsBytes();
       // 先給裁切：浮水印的圖常常是從截圖或大圖裡挖一塊出來用，
       // 挑完直接進裁切畫面比「加進去再想辦法縮」直覺得多。
       // 按取消就整個不加（跟以前挑完取消一樣）
       if (!mounted) return;
       final cut = await cropImage(context, raw, title: '裁切浮水印圖片');
       if (cut == null) return;
-      raw = cut;
       // 縮到 1024px 內再存進設定，範本自帶圖檔不佔太多空間
-      final shrunk = await _shrinkToPng(raw, 1024);
+      final shrunk = await _shrinkToPng(cut, 1024);
+      // 原圖也留一份（同樣縮過）：之後要還原、重新裁都靠它
+      final orig = await _shrinkToPng(raw, 1024);
       // 選圖期間畫面可能已經被收掉（挑很久、系統回收）
       if (!mounted || shrunk == null) {
         if (mounted) showHint(context, '這張圖讀不進來，換一張試試', error: true);
@@ -335,6 +336,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       }
       _update(() {
         s.logo.bytesValue = shrunk;
+        s.logo.origBytes = orig;
         s.logo.enabled = true;
       });
       // 剛加進來的圖片直接設成選取：使用者接著一定是要移動／縮放它，
@@ -343,6 +345,30 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     } catch (_) {
       if (mounted) showHint(context, '這張圖讀不進來，換一張試試', error: true);
     }
+  }
+
+  /// 重新裁切現在這張圖。有原圖就從原圖裁——不然裁小了之後只能在
+  /// 那一小塊裡面繼續裁，越裁越小回不去
+  Future<void> _cropLogo() async {
+    final src = s.logo.origBytes ?? s.logo.bytes;
+    if (src == null) return;
+    final cut = await cropImage(context, src, title: '裁切浮水印圖片');
+    if (cut == null || !mounted) return;
+    final shrunk = await _shrinkToPng(cut, 1024);
+    if (!mounted || shrunk == null) return;
+    _update(() {
+      // 第一次裁的人可能是從舊草稿讀回來的（沒有原圖），
+      // 這時把「裁之前的樣子」記起來當原圖
+      s.logo.origBytes ??= src;
+      s.logo.bytesValue = shrunk;
+    });
+  }
+
+  /// 還原成沒裁過的樣子
+  void _restoreLogo() {
+    final orig = s.logo.origBytes;
+    if (orig == null) return;
+    _update(() => s.logo.bytesValue = orig);
   }
 
   static Future<Uint8List?> _shrinkToPng(Uint8List raw, int maxSide) async {
@@ -1032,6 +1058,12 @@ class WatermarkPanelState extends State<WatermarkPanel> {
           Row(
             children: [
               _miniBtn(Icons.swap_horiz, '換一張', _pickLogo),
+              const SizedBox(width: 8),
+              _miniBtn(Icons.crop, '裁切', _cropLogo),
+              if (s.logo.origBytes != null) ...[
+                const SizedBox(width: 8),
+                _miniBtn(Icons.restore, '還原', _restoreLogo),
+              ],
               const Spacer(),
               IconButton(
                 tooltip: s.logos.length > 1 ? '移除這一張' : '移除圖片',

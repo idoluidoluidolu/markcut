@@ -2114,6 +2114,68 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
   }
 
+  /// 被裁過的素材 → 它是從哪一份原圖裁出來的。
+  ///
+  /// 重新裁切一律從原圖開始：不然裁小了之後只能在那一小塊裡面繼續裁，
+  /// 越裁越小回不去。按上一步就會回到裁切前的樣子
+  final Map<int, int> _cropOrigin = {};
+
+  /// 裁切時間軸上的一張圖片素材
+  Future<void> _cropImageClip(TimelineClip clip) async {
+    final srcIndex = _cropOrigin[clip.sourceIndex] ?? clip.sourceIndex;
+    final src = _tl.sources[srcIndex];
+    Uint8List raw;
+    try {
+      raw = await File(src.path).readAsBytes();
+    } catch (_) {
+      if (mounted) showHint(context, '這張圖讀不到了', error: true);
+      return;
+    }
+    if (!mounted) return;
+    final cut = await cropImage(context, raw);
+    if (cut == null || !mounted) return;
+    // 裁完是一份 bytes，素材要的是檔案路徑
+    final f = File(
+      '${(await getTemporaryDirectory()).path}'
+      '${Platform.pathSeparator}crop_'
+      '${DateTime.now().millisecondsSinceEpoch}.png',
+    );
+    await f.writeAsBytes(cut);
+    var w = 0, h = 0;
+    try {
+      final codec = await ui.instantiateImageCodec(cut);
+      final frame = await codec.getNextFrame();
+      w = frame.image.width;
+      h = frame.image.height;
+      frame.image.dispose();
+    } catch (_) {}
+    if (!mounted) return;
+    _pushUndo();
+    final newIndex = _tl.sources.length;
+    _tl.sources.add(
+      MediaSource(
+        path: f.path,
+        name: src.name,
+        kind: ClipKind.image,
+        duration: src.duration,
+        w: w,
+        h: h,
+      ),
+    );
+    _thumbs[newIndex] = [cut];
+    _cropOrigin[newIndex] = srcIndex;
+    // sourceIndex 是 final：換素材＝原地換一顆同 id 的片段，
+    // 時間軸上的位置、長度、變形全部照抄
+    final i = _tl.clips.indexOf(clip);
+    if (i >= 0) {
+      final j = clip.toJson();
+      j['sourceIndex'] = newIndex;
+      setState(() => _tl.clips[i] = TimelineClip.fromJson(j));
+    }
+    _resyncPlayback();
+    _saveDraft();
+  }
+
   /// 文字輸入對話框（新增與編輯共用）
   Future<String?> _askText({String initial = ''}) {
     final ctrl = TextEditingController(text: initial);
@@ -7490,6 +7552,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         disabledHint: '先在時間軸點選一個片段',
                       ),
                       _toolBtn(Icons.speed, '速度', _openSpeedSheet, tip: '播放速度'),
+                      _toolBtn(
+                        Icons.crop,
+                        '裁切',
+                        (sel == null ||
+                                kIsWeb ||
+                                _tl.sourceOf(sel).kind != ClipKind.image)
+                            ? null
+                            : () => _cropImageClip(sel),
+                        tip: '裁切這張圖片',
+                        disabledHint: sel == null
+                            ? '先在時間軸點選一張圖片'
+                            : (kIsWeb ? '網頁版不支援裁切' : '只有圖片素材可以裁切'),
+                      ),
                       _toolBtn(
                         Icons.tune,
                         '調色',

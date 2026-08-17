@@ -138,6 +138,14 @@ class LogoMark {
 
   Uint8List? _cache;
 
+  /// 裁切前的原圖。有它才能「還原」再重新裁一次——不然裁小了之後
+  /// 再進裁切畫面，只會在已經裁過的那一小塊裡面繼續裁，回不去。
+  ///
+  /// 刻意不寫進 JSON：範本／草稿本來就自帶一份 PNG，再存一份原圖等於
+  /// 體積翻倍（web 的 localStorage 只有 5MB）。所以它只活在這一次編輯
+  /// 期間——裁完馬上想反悔的情境，這樣就夠了
+  Uint8List? origBytes;
+
   LogoMark({
     this.enabled = false,
     this.b64,

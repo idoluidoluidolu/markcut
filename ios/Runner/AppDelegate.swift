@@ -599,7 +599,10 @@ final class AtomicFlag {
     session.outputFileType = .mp4
     session.videoComposition = vc
     if !aParams.isEmpty { session.audioMix = mix }
-    session.shouldOptimizeForNetworkUse = true
+    // 這個開關會在編碼完之後「再把整個檔案重寫一遍」，只為了把
+    // moov atom 搬到檔頭讓網路串流可以邊下載邊播。成品是存進相簿的，
+    // 沒有人在串流它——多的那一趟純粹是白等，長片尤其明顯
+    session.shouldOptimizeForNetworkUse = false
 
     exportSession = session
     exportTimer?.invalidate()
