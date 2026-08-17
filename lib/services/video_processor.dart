@@ -189,6 +189,10 @@ class ExportSpec {
   final int outH;
   final int crf; // 匯出畫質（x264 CRF）
 
+  /// 輸出成 GIF：先照舊做出影片，最後再轉一趟 GIF（480p、12fps、
+  /// 兩段式調色盤）。管線一行都不用改，GIF 只是多一道後製
+  final bool gif;
+
   ExportSpec({
     required this.sources,
     required this.clips,
@@ -204,6 +208,7 @@ class ExportSpec {
     this.wmRange = 1.0,
     this.overlayPngs = const {},
     this.crf = 17,
+    this.gif = false,
   });
 
   /// 輸出影片實際長度（變速後）

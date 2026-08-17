@@ -191,6 +191,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   ExportResolution _resolution = ExportResolution.original;
   ExportQuality _quality = ExportQuality.standard;
 
+  /// 輸出成 GIF（固定 480p、12fps；解析度與畫質那兩列對它沒作用）
+  bool _gifOut = false;
+
   /// 畫質還沒被使用者手動選過＝跟著素材自動挑（見 _qualityEff）
   bool _qualityAuto = true;
 
@@ -5332,6 +5335,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           watermarkPng: wmPng,
           outW: outW,
           outH: outH,
+          gif: _gifOut,
           wmStart: _wmStart,
           wmEnd: _wmEndEff,
           wmAnimation: _settings.animation,
@@ -8737,20 +8741,27 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              row(
+                '格式',
+                _gifOut ? 'GIF' : '影片 MP4',
+                _openFormatSheet,
+              ),
               row('畫面比例', _canvasRatio.label, _openRatioSheet),
               row(
                 '解析度',
-                '${_resolution.label}·$outW×$outH',
-                _openResolutionSheet,
+                _gifOut ? 'GIF 固定 480p' : '${_resolution.label}·$outW×$outH',
+                _gifOut ? null : _openResolutionSheet,
               ),
               // 自動挑的時候標出來：不講的話，同一支 App 在不同素材上
               // 預設值不一樣會像壞掉
               row(
                 '畫質',
-                _qualityAuto && _srcKbps > 0
-                    ? '${_qualityEff.label}·推薦'
-                    : _qualityEff.label,
-                _openQualitySheet,
+                _gifOut
+                    ? 'GIF 固定 12fps·256 色'
+                    : (_qualityAuto && _srcKbps > 0
+                          ? '${_qualityEff.label}·推薦'
+                          : _qualityEff.label),
+                _gifOut ? null : _openQualitySheet,
                 divider: false,
               ),
               const SizedBox(height: 22),
@@ -8758,30 +8769,84 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               // 決定要不要回頭改設定，放在最靠近手指的地方最有用。
               // 匯出時間跑過一次之後才是「這台機器」的實測值，
               // 第一次只能粗估，標示清楚不要讓人以為很準
-              FutureBuilder<(double, bool)>(
-                future: _estimateExport(outW, outH, dur),
-                builder: (context, snap) {
-                  final d = snap.data;
-                  final t = d == null
-                      ? '計算中…'
-                      : '需要約 ${fmtDuration(d.$1)}${d.$2 ? '' : '（粗估）'}';
-                  return Text(
-                    '約 ${mb.toStringAsFixed(0)} MB·$t',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 11.5,
-                      color: kTextDim,
-                      fontFeatures: [FontFeature.tabularFigures()],
-                    ),
-                  );
-                },
-              ),
+              if (_gifOut)
+                Text(
+                  dur > 15
+                      ? '這支 ${dur.toStringAsFixed(0)} 秒——GIF 建議 15 秒內，'
+                            '太長檔案會很大'
+                      : 'GIF 沒有聲音；長漸層可能出現色帶（格式先天限制）',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    color: kTextDim,
+                    height: 1.5,
+                  ),
+                )
+              else
+                FutureBuilder<(double, bool)>(
+                  future: _estimateExport(outW, outH, dur),
+                  builder: (context, snap) {
+                    final d = snap.data;
+                    final t = d == null
+                        ? '計算中…'
+                        : '需要約 ${fmtDuration(d.$1)}${d.$2 ? '' : '（粗估）'}';
+                    return Text(
+                      '約 ${mb.toStringAsFixed(0)} MB·$t',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 11.5,
+                        color: kTextDim,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      ),
+                    );
+                  },
+                ),
               const SizedBox(height: 10),
               // 跟照片／批次／拼圖同一顆（膠囊、46 高、圖示 18）。
               // 這一頁的「結構」維持分頁不變，只有按鈕外觀對齊
               primaryAction(
                 label: '匯出',
                 onPressed: _exporting ? null : _export,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 輸出格式：影片或 GIF
+  void _openFormatSheet() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('格式'),
+        contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
+        content: SizedBox(
+          width: 270,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              optionRow(
+                context: context,
+                title: '影片 MP4',
+                subtitle: '一般匯出，有聲音',
+                selected: !_gifOut,
+                first: true,
+                onTap: () {
+                  setState(() => _gifOut = false);
+                  Navigator.pop(context);
+                },
+              ),
+              optionRow(
+                context: context,
+                title: 'GIF',
+                subtitle: '480p·12fps·無聲，建議 15 秒內（檔案會比影片大）',
+                selected: _gifOut,
+                onTap: () {
+                  setState(() => _gifOut = true);
+                  Navigator.pop(context);
+                },
               ),
             ],
           ),
