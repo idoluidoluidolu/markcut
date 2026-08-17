@@ -178,8 +178,17 @@ final class CIExportCompositor: NSObject, AVVideoCompositing {
   private let outCS =
     CGColorSpace(name: CGColorSpace.itur_709) ?? CGColorSpaceCreateDeviceRGB()
 
+  // 收原生格式（含 10-bit HDR）。只收 BGRA 的話，HDR 來源會在進到
+  // 我們手上之前先被轉成 8-bit BGRA——那一步沒有色調映射，顏色就是
+  // 在這裡被沖淡的。收原生 YUV，映射交給下面的 toneMapHDRtoSDR
   var sourcePixelBufferAttributes: [String: Any]? = [
-    kCVPixelBufferPixelFormatTypeKey as String: [Int(kCVPixelFormatType_32BGRA)]
+    kCVPixelBufferPixelFormatTypeKey as String: [
+      Int(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange),
+      Int(kCVPixelFormatType_420YpCbCr10BiPlanarFullRange),
+      Int(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+      Int(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange),
+      Int(kCVPixelFormatType_32BGRA),
+    ]
   ]
   var requiredPixelBufferAttributesForRenderContext: [String: Any] = [
     kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)
@@ -213,7 +222,16 @@ final class CIExportCompositor: NSObject, AVVideoCompositing {
             a: 1, b: 0, c: 0, d: -1, tx: 0, ty: ins.srcHeight)
           let flipCanvas = CGAffineTransform(
             a: 1, b: 0, c: 0, d: -1, tx: 0, ty: size.height)
-          var img = CIImage(cvPixelBuffer: buf).transformed(
+          // HDR（HLG/PQ）來源：開系統的色調映射轉成 SDR，跟相簿、
+          // 跟內建合成器同一套曲線。SDR 來源開著沒有影響
+          let base: CIImage
+          if #available(iOS 14.1, *) {
+            base = CIImage(
+              cvPixelBuffer: buf, options: [.toneMapHDRtoSDR: true])
+          } else {
+            base = CIImage(cvPixelBuffer: buf)
+          }
+          var img = base.transformed(
             by: flipSrc.concatenating(ins.transform).concatenating(flipCanvas))
           let a = ins.alpha(at: t)
           if a < 0.999 {
@@ -715,7 +733,15 @@ final class AtomicFlag {
     vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
     vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
     var instructions: [AVMutableVideoCompositionInstruction] = []
-    if hasHDR { useCI = false }
+    // HDR 在 GPU 路裡用 toneMapHDRtoSDR 處理（見 startRequest）；
+    // 只有拿不到那個選項的舊系統才退回內建合成器
+    if hasHDR {
+      if #available(iOS 14.1, *) {
+        // GPU 路自己會做色調映射，照走
+      } else {
+        useCI = false
+      }
+    }
     // GPU 路：疊加物先整批解好（PNG → 畫布大小的 CIImage），
     // 每段指令都帶同一份
     let ciOverlays: [CIOverlaySpec] =
