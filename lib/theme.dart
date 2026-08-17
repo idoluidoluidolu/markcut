@@ -16,10 +16,10 @@ final ValueNotifier<bool> kPerfOverlay = ValueNotifier(false);
 // 整個工作區同一個近黑（Edits 的做法）：純黑只留給畫布，
 // 輸出範圍靠「畫布黑 vs 介面近黑」自己浮出來
 const kBg = Color(0xFF0C0F14);
-const kPanel = Color(0xFF161A21); // 卡片/面板（比底亮一階）
-const kPanelHi = Color(0xFF20252E); // 面板亮階（icon 磚、選中底）
-const kBorder = Color(0xFF272D37); // 邊線
-const kClipBorder = Color(0xFF2C333E); // 時間軸片段邊線
+const kPanel = Color(0xFF111113); // 卡片/面板（深黑卡，最低調）
+const kPanelHi = Color(0xFF1A1A1C); // 面板亮階（icon 磚、選中底）
+const kBorder = Color(0xFF252528); // 邊線
+const kClipBorder = Color(0xFF2A2A2E); // 時間軸片段邊線
 // 預覽區的底（畫布外圍那圈）。幾乎是純黑，只留一階讓黑色畫布的邊界
 // 還看得出來——比例不同的素材會留黑邊，全一樣黑就分不出畫面到哪裡
 // 跟整個工作區同一個顏色（不再是自己一塊）

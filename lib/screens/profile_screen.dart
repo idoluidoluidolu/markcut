@@ -281,7 +281,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _openDrafts() async {
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const DraftsScreen()),
+      // LightPage 一定要包：這是亮色頁，漏包就掉進暗色主題
+      //（背景變黑、白卡片浮在上面，超跳）
+      MaterialPageRoute(
+        builder: (_) => const LightPage(child: DraftsScreen()),
+      ),
     );
     _reload();
   }
