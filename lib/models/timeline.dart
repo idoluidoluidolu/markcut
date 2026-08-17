@@ -487,9 +487,12 @@ class TimelineModel {
   /// 把一個時間點吸到最近的素材頭尾。
   /// 修剪把手、浮水印範圍都用這個，手感跟拖曳整段一致。
   ///
-  /// 只吸素材的頭尾。播放頭和 0 秒都拿掉了：播放頭會跟著手指跑，
-  /// 是個位置一直在變的吸附點，滑到哪吸到哪＝「亂吸」。0 秒也不必
-  /// 特別給，第一段素材的頭本來就在那裡
+  /// 吸素材的頭尾，外加片頭（0 秒）這個固定錨點。
+  ///
+  /// 播放頭不吸：它跟著手指跑，是個位置一直在變的吸附點，滑到哪吸到哪
+  /// ＝「亂吸」。0 秒本來也拿掉了（想說第一段素材的頭就在那裡），但排除
+  /// 掉自己之後（[exceptId]），或整條軸上就這一段時，片頭附近一個候選
+  /// 都沒有，手一放就停在離片頭一點點的怪地方
   double snapTime(
     double want,
     double pxPerSec, {
@@ -500,7 +503,7 @@ class TimelineModel {
     // 吸附半徑（像素）＋秒數上限（縮到很小時 16px 可能是十幾秒，
     // 不設上限整條軸都在吸）
     final threshold = math.min(radiusPx / pxPerSec, maxSec);
-    final candidates = <double>[];
+    final candidates = <double>[0];
     for (final c in clips) {
       if (c.id == exceptId) continue;
       candidates.addAll([c.offset, c.end]);
@@ -535,11 +538,17 @@ class TimelineModel {
     // 跟 snapTime 同一組手感參數
     final threshold = math.min(16 / pxPerSec, 0.5);
     final len = moving.length;
-    final candidates = <double>[];
+    // 片頭跟片尾各一個固定錨點：拖到最前面要黏在 0，拖到最後面要跟
+    // 現有素材的結尾對齊。只吸別人的頭尾的話，拖到空軌上或整條軸就
+    // 這一段時附近沒有候選，手一放就停在離片頭一點點的怪地方
+    final candidates = <double>[0];
+    var contentEnd = 0.0;
     for (final c in clips) {
       if (c.id == moving.id) continue;
+      if (c.end > contentEnd) contentEnd = c.end;
       candidates.addAll([c.offset, c.end, c.offset - len, c.end - len]);
     }
+    if (contentEnd > 0) candidates.add(contentEnd - len);
     var best = want;
     var bestDist = threshold;
     for (final cand in candidates) {

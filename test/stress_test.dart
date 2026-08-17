@@ -438,6 +438,54 @@ void main() {
   });
 
   group('吸附（磁鐵）行為', () {
+    /// 一條軸上就這一段，往片頭／片尾附近拖
+    TimelineModel oneClip() {
+      final tl = TimelineModel();
+      tl.sources.add(
+        MediaSource(
+            path: '/a.mp4', name: 'a', kind: ClipKind.video, duration: 100),
+      );
+      tl.clips.add(TimelineClip(
+        id: tl.nextId(),
+        sourceIndex: 0,
+        trimStart: 0,
+        trimEnd: 5,
+        offset: 12,
+        track: 0,
+      ));
+      return tl;
+    }
+
+    test('拖到片頭附近會黏在 0（就算沒有別的素材可以吸）', () {
+      final tl = oneClip();
+      final moving = tl.clips.first;
+      // 60px/秒、離片頭 0.1 秒＝6px，在 16px 的吸附半徑內
+      expect(tl.snapOffset(moving, 0.1, 60), 0);
+      // 遠到半徑外就不該亂吸
+      expect(tl.snapOffset(moving, 1.2, 60), 1.2);
+    });
+
+    test('拖到片尾附近會跟現有素材的結尾對齊', () {
+      final tl = oneClip();
+      tl.clips.add(TimelineClip(
+        id: tl.nextId(),
+        sourceIndex: 0,
+        trimStart: 0,
+        trimEnd: 8,
+        offset: 30,
+        track: 0,
+      ));
+      final moving = tl.clips.first; // 長 5 秒
+      // 別段的結尾在 38 秒：這一段的結尾要對過去，開頭就是 33
+      expect(tl.snapOffset(moving, 33.1, 60), closeTo(33, 0.0001));
+    });
+
+    test('時間點吸附也吃得到片頭', () {
+      final tl = oneClip();
+      // 排除自己之後整條軸沒有別的候選，片頭仍要吸得到
+      expect(tl.snapTime(0.1, 60, exceptId: tl.clips.first.id), 0);
+    });
+
     test('縮放到極端時吸附範圍仍受控，且永不回傳負值', () {
       final r = math.Random(13);
       final tl = TimelineModel();
