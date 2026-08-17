@@ -479,13 +479,13 @@ Future<String> _buildCommand(
     'r=${fps.toStringAsFixed(3)}:d=${_f(segDur)}[base];',
   );
 
-  // 疊放順序：track 大的是下層先疊；同一層時，清單裡較後面的疊在上面
+  // 疊放順序：track 小的是下層先疊；同一層時，清單裡較後面的疊在上面
   final clipOrder = <int, int>{};
   for (var i = 0; i < spec.clips.length; i++) {
     clipOrder[spec.clips[i].id] = i;
   }
   int cmpLayer(TimelineClip a, TimelineClip b) {
-    final t = b.track.compareTo(a.track);
+    final t = a.track.compareTo(b.track);
     return t != 0 ? t : (clipOrder[a.id] ?? 0).compareTo(clipOrder[b.id] ?? 0);
   }
 

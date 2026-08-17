@@ -437,6 +437,38 @@ void main() {
     });
   });
 
+  group('圖層上下關係', () {
+    // 時間軸上面那一列＝編號大＝畫面上蓋在上面。預覽、匯出、原生
+    // 合成播放器三邊都得同一套，不然「預覽長這樣、匯出不一樣」
+    TimelineModel twoLayers() {
+      final tl = TimelineModel();
+      tl.sources.add(MediaSource(
+          path: '/a.mp4', name: 'a', kind: ClipKind.video, duration: 100));
+      tl.sources.add(MediaSource(
+          path: '/b.png', name: 'b', kind: ClipKind.image, duration: 100));
+      for (final (src, track) in [(0, 0), (0, 1), (1, 0), (1, 2)]) {
+        tl.clips.add(TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: src,
+          trimStart: 0,
+          trimEnd: 10,
+          offset: 0,
+          track: track,
+        ));
+      }
+      return tl;
+    }
+
+    test('編號大的疊在上面', () {
+      final tl = twoLayers();
+      // 由下層到上層＝編號由小到大
+      expect(tl.videosAt(1).map((c) => c.track).toList(), [0, 1]);
+      expect(tl.overlaysAt(1).map((c) => c.track).toList(), [0, 2]);
+      // 單選一個「看得到的那個」＝最上層
+      expect(tl.videoAt(1)!.track, 1);
+    });
+  });
+
   group('吸附（磁鐵）行為', () {
     /// 一條軸上就這一段，往片頭／片尾附近拖
     TimelineModel oneClip() {

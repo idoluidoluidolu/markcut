@@ -219,7 +219,7 @@ class ExportSpec {
 }
 
 /// 依選項計算輸出畫布大小。
-/// 比例：選了固定比例就用它，否則取「最上層、最早出現」的影片片段；
+/// 比例：選了固定比例就用它，否則取「最底層（主軌）、最早出現」的影片；
 /// 長邊上限不超過素材本身（不放大）。
 (int, int) computeCanvasSize(TimelineModel timeline, ExportResolution res,
     [CanvasRatio ratio = CanvasRatio.original]) {

@@ -5560,7 +5560,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   TimelineClip? selVisual;
 
                                   // 圖層的上下關係一律照時間軸的軌道來：
-                                  // track 大的是下層、先畫。影片與圖片／文字
+                                  // track 小的是下層、先畫（編號越大越上面，
+                                  // 跟時間軸看到的順序一致）。影片與圖片／文字
                                   // 混在同一條 z 序裡排——以前是「所有影片
                                   // 先畫、圖片文字永遠疊在上面」，時間軸上
                                   // 把圖片搬到影片下面也沒有用
@@ -5573,7 +5574,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   int slotIn(List<int> tracks, int track) {
                                     var i = 0;
                                     while (i < tracks.length &&
-                                        tracks[i] >= track) {
+                                        tracks[i] <= track) {
                                       i++;
                                     }
                                     return i;
@@ -5595,8 +5596,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   // 預掛載），馬賽克永遠在最上面——它是對
                                   // 「合成後的畫面」做的效果，匯出端也是最後
                                   // 才套，跟著軌道排的話會糊不到上層的東西
-                                  const warmTrack = 999;
-                                  const mosaicTrack = -999;
+                                  const warmTrack = -999;
+                                  const mosaicTrack = 999;
 
                                   // 影片圖層（由下層往上疊 = 真 PiP）
                                   final vids = _tl.videosAt(_position);

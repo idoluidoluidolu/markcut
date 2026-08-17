@@ -117,7 +117,9 @@ class MediaSource {
 
 /// 時間軸上的一個片段。
 /// 軌道是通用圖層：影片、音樂都能放在任何一軌。
-/// track 0 = 最上層（畫面以最上層的影片為準；聲音則是全部混音）。
+/// 編號越大＝疊得越上面（track 0 是最底下的主軌），跟時間軸上看到的
+/// 順序一致，也跟剪映／Premiere 一致：新加的素材放到編號最大的一軌，
+/// 就是「蓋在最上面、不會被別人壓住」。聲音則是全部混音。
 class TimelineClip {
   final int id;
   final int sourceIndex;
@@ -259,21 +261,21 @@ class TimelineModel {
   MediaSource sourceOf(TimelineClip c) => sources[c.sourceIndex];
 
   /// 某時刻該顯示哪個影片片段。
-  /// 上層優先；同一層疊在一起時，後放進來的蓋住先放的。
+  /// 上層優先（編號大的在上）；同一層疊在一起時，後放進來的蓋住先放的。
   TimelineClip? videoAt(double t) {
     TimelineClip? best;
     for (final c in clips) {
       if (!sourceOf(c).isVideo || !c.covers(t)) continue;
-      if (best == null || c.track <= best.track) best = c;
+      if (best == null || c.track >= best.track) best = c;
     }
     return best;
   }
 
-  /// 某時刻所有蓋在畫面上的影片片段，由下層到上層
+  /// 某時刻所有蓋在畫面上的影片片段，由下層到上層（編號小的先）
   List<TimelineClip> videosAt(double t) {
     final list = clips.where((c) => sourceOf(c).isVideo && c.covers(t)).toList()
       ..sort((a, b) {
-        final k = b.track.compareTo(a.track);
+        final k = a.track.compareTo(b.track);
         return k != 0 ? k : clips.indexOf(a).compareTo(clips.indexOf(b));
       });
     return list;
@@ -297,7 +299,7 @@ class TimelineModel {
         )
         .toList()
           ..sort((a, b) {
-            final k = b.track.compareTo(a.track); // track 大的是下層，先畫
+            final k = a.track.compareTo(b.track); // track 小的是下層，先畫
             return k != 0 ? k : clips.indexOf(a).compareTo(clips.indexOf(b));
           });
     return list;
