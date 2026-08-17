@@ -43,7 +43,7 @@ import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
 
 /// 「加素材」選單的項目（錄旁白不是一種素材類型，所以另立一個 enum）
-enum _AddKind { video, image, text, wm, audio, record, mosaic, blankTrack }
+enum _AddKind { media, text, wm, audio, record, mosaic, blankTrack }
 
 const kSpeedOptions = <double>[0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
 
@@ -1655,16 +1655,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     ),
   );
 
-  Future<void> _pickVideo(int track) async {
-    // 相簿沒有「只挑影片、而且可以多選」的介面，只能用混合媒體的
-    // 多選器再自己濾掉照片——照片有自己的入口（而且長度規則不一樣）
-    final picked = await ImagePicker().pickMultipleMedia();
-    if (picked.isEmpty || !mounted) return;
-    final vids = picked.where(_isVideoFile).toList();
-    if (vids.isEmpty) {
-      showHint(context, '這裡只能加影片，照片請用「圖片」那一項');
-      return;
-    }
+  /// [picked] 已經挑好的話就不再開相簿（影片／圖片混選那條路會給）
+  Future<void> _pickVideo(int track, {List<XFile>? picked}) async {
+    // 相簿沒有「只挑影片、而且可以多選」的介面，用的是混合媒體的多選器
+    final all = picked ?? await ImagePicker().pickMultipleMedia();
+    if (all.isEmpty || !mounted) return;
+    final vids = all.where(_isVideoFile).toList();
+    if (vids.isEmpty) return;
 
     var sameTrack = true;
     if (vids.length > 1) {
@@ -1683,9 +1680,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (!mounted) return;
     }
     setState(() {});
-    // 挑到照片的那幾個直接跳過，但要講一聲，不然會以為漏加了
-    final skipped = picked.length - vids.length;
-    if (skipped > 0) {
+    // 挑到但不是影片也不是照片的（相簿偶爾會給 live photo 之類的）
+    // 直接跳過，但要講一聲，不然會以為漏加了
+    final skipped = all.length - vids.length;
+    if (skipped > 0 && picked == null) {
       showHint(context, '有 $skipped 個不是影片，已略過');
     }
     _saveDraft(); // 加完立刻落草稿
@@ -1976,8 +1974,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               item(context, Icons.branding_watermark, '浮水印', _AddKind.wm),
               item(context, Icons.blur_on, '馬賽克', _AddKind.mosaic),
               group('從裝置匯入'),
-              item(context, Icons.videocam_outlined, '影片', _AddKind.video),
-              item(context, Icons.image_outlined, '圖片', _AddKind.image),
+              // 影片與圖片併成一項：相簿的多選器本來就只給照片跟影片，
+              // 分成兩項的結果是「挑影片時不小心選到照片」要被退回來重挑
+              item(
+                context,
+                Icons.perm_media_outlined,
+                '影片／圖片',
+                _AddKind.media,
+              ),
               item(context, Icons.music_note, '音樂', _AddKind.audio),
               group('其他'),
               item(context, Icons.mic, '錄旁白', _AddKind.record),
@@ -1992,10 +1996,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   Future<void> _dispatchAdd(_AddKind? kind, int track) async {
     switch (kind) {
-      case _AddKind.video:
-        await _pickVideo(track);
-      case _AddKind.image:
-        await _pickImage(track);
+      case _AddKind.media:
+        await _pickMedia(track);
       case _AddKind.text:
         await _addTextClip(track);
       case _AddKind.wm:
@@ -2025,11 +2027,31 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 工具列的「＋」
   Future<void> _addMediaChoice() async {
     final kind = await _askKind();
-    // 影片接在目前軌道後面；圖片/文字/音樂/旁白放到新的一層
+    // 影片接在目前軌道後面；文字／音樂／旁白放到新的一層。
+    //（影片／圖片混選時，圖片要放哪一層由 _pickMedia 自己決定）
     await _dispatchAdd(
       kind,
-      kind == _AddKind.video ? (_selClip?.track ?? 0) : _tl.usedTracks,
+      kind == _AddKind.media ? (_selClip?.track ?? 0) : _tl.usedTracks,
     );
+  }
+
+  /// 從相簿挑「影片或圖片」。
+  ///
+  /// 相簿的多選器本來就只列照片與影片，一次挑完再自己分流：影片接在
+  /// 指定的軌道上，圖片疊到新的一層（它是覆蓋物，長度規則也不一樣）。
+  /// 以前分成兩個入口，挑影片時選到照片會被整個退回來重挑
+  Future<void> _pickMedia(int track) async {
+    final picked = await ImagePicker().pickMultipleMedia();
+    if (picked.isEmpty || !mounted) return;
+    final vids = picked.where(_isVideoFile).toList();
+    final imgs = picked.where((f) => !_isVideoFile(f)).toList();
+    if (vids.isNotEmpty) {
+      await _pickVideo(track, picked: vids);
+      if (!mounted) return;
+    }
+    if (imgs.isNotEmpty) {
+      await _pickImage(_tl.usedTracks, pickedFiles: imgs);
+    }
   }
 
   /// 軌道標籤上的「＋」
@@ -2039,10 +2061,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 圖片素材：從播放頭開始、預設 4 秒，可用把手拉長
-  Future<void> _pickImage(int track) async {
+  /// [picked] 已經挑好的話就不再開相簿（影片／圖片混選那條路會給）
+  Future<void> _pickImage(int track, {List<XFile>? pickedFiles}) async {
     // 可一次多選：選多張就自動排成連續的幻燈片（每張 3 秒、頭尾相接），
     // 想做「多張圖片串成影片」不用一張一張加
-    final picked = await ImagePicker().pickMultiImage();
+    final picked = pickedFiles ?? await ImagePicker().pickMultiImage();
     if (picked.isEmpty) return;
     // 先把每張都讀進來，才有東西可以裁、也才量得到尺寸
     final items = <({String path, String name, Uint8List bytes})>[];
