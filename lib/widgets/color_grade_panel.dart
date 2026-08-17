@@ -202,9 +202,6 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
         if (widget.showTitle || widget.onDone != null)
           Container(
             padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
-            decoration: const BoxDecoration(
-              border: Border(bottom: BorderSide(color: kBorder)),
-            ),
             child: Row(
               children: [
                 const Icon(Icons.tune, size: 16, color: kAmber),

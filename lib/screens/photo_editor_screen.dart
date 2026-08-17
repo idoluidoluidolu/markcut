@@ -697,10 +697,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     final active =
         _tab == 1 ? _phColorIdx : (sec < _phColorIdx ? sec : -1);
     return Container(
-      decoration: const BoxDecoration(
-        color: kPanel,
-        border: Border(bottom: BorderSide(color: kBorder)),
-      ),
+      color: kPanel,
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
       child: Row(
         children: [

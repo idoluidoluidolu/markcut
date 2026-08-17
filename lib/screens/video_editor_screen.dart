@@ -5604,10 +5604,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         bottomNavigationBar: !_ready
             ? null
             : Container(
-                decoration: const BoxDecoration(
-                  color: kBg,
-                  border: Border(top: BorderSide(color: kBorder)),
-                ),
+                color: kBg,
                 child: SafeArea(
                   top: false,
                   child: TabBar(
@@ -5661,10 +5658,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Widget _buildControlBar() {
     return Container(
       height: 44,
-      decoration: const BoxDecoration(
-        color: kBg,
-        border: Border(bottom: BorderSide(color: kBorder)),
-      ),
+      // 不畫分隔線：整個工作區同一個顏色，區塊靠留白分就夠了
+      color: kBg,
       child: Stack(
         alignment: Alignment.center,
         children: [
@@ -7511,14 +7506,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     child: Listener(
                       behavior: HitTestBehavior.opaque,
                       onPointerSignal: _wheelZoom,
-                      // 內容比視口矮時直向置中（CapCut 版型），不要貼著頂
+                      // 貼著頂端排，不置中：置中會讓時間軸浮在中間，
+                      // 上面一塊死空間、下面又沒有固定的留白。
+                      // 底部墊 96：軌道再多，最下面永遠有一條空白帶
+                      // 可以抓著左右滑（那裡沒有片段可誤觸）
                       child: ConstrainedBox(
                         constraints: BoxConstraints(
                           minHeight: (box.maxHeight - 60).clamp(0.0, 1e9),
                         ),
-                        child: Center(
+                        child: Align(
+                          alignment: Alignment.topCenter,
                           child: Padding(
-                            padding: const EdgeInsets.fromLTRB(10, 14, 10, 0),
+                            padding: const EdgeInsets.fromLTRB(10, 14, 10, 96),
                             // RepaintBoundary：時間軸的重繪與頁面其他部分互不打擾
                             child: RepaintBoundary(
                               child: TimelineEditor(
@@ -7648,11 +7647,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 ),
               ),
             ),
-            // 底部工具列（取代原本的上方工具列與音量列）
+            // 底部工具列（取代原本的上方工具列與音量列）。
+            // 不畫分隔線：整個工作區同一個顏色，區塊靠留白分
             Container(
-              decoration: const BoxDecoration(
-                border: Border(top: BorderSide(color: kBorder)),
-              ),
               padding: const EdgeInsets.symmetric(vertical: 2),
               // 按鈕加了文字後可能塞不下，塞不下就橫向捲動（同 CapCut）
               child: SingleChildScrollView(

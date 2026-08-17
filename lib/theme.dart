@@ -13,16 +13,18 @@ final ValueNotifier<bool> kPerfOverlay = ValueNotifier(false);
 // 底一路黑到底：主流剪輯 App（CapCut、剪映、iMovie）的編輯畫面幾乎
 // 都是純黑，因為畫面上唯一該亮的是使用者的素材。面板只比底黑高一階，
 // 靠間距與邊線分區，不靠亮度——面板一亮，眼睛就會被 UI 拉走
-const kBg = Color(0xFF000000); // 底＝純黑
-const kPanel = Color(0xFF0C0C0E); // 卡片/面板（只比底高一階）
-const kPanelHi = Color(0xFF17171A); // 面板亮階（icon 磚、選中底）
-const kBorder = Color(0xFF232328); // 邊線
-const kClipBorder = Color(0xFF2A2A30); // 時間軸片段邊線
+// 整個工作區同一個近黑（Edits 的做法）：純黑只留給畫布，
+// 輸出範圍靠「畫布黑 vs 介面近黑」自己浮出來
+const kBg = Color(0xFF0C0F14);
+const kPanel = Color(0xFF161A21); // 卡片/面板（比底亮一階）
+const kPanelHi = Color(0xFF20252E); // 面板亮階（icon 磚、選中底）
+const kBorder = Color(0xFF272D37); // 邊線
+const kClipBorder = Color(0xFF2C333E); // 時間軸片段邊線
 // 預覽區的底（畫布外圍那圈）。幾乎是純黑，只留一階讓黑色畫布的邊界
 // 還看得出來——比例不同的素材會留黑邊，全一樣黑就分不出畫面到哪裡
-// 比畫布的純黑亮一階：畫布邊界靠「面積分色」自己浮出來，
-// 畫面上不用加任何線（方案 B；嫌不夠清楚可以再疊一條髮絲框）
-const kPreviewBg = Color(0xFF1B1B20);
+// 跟整個工作區同一個顏色（不再是自己一塊）
+const kPreviewBg = kBg;
+
 const kAmber = Color(0xFFFFFFFF); // 強調色＝純白（沿用變數名，全 App 通用）
 // 選取狀態只有兩種，不要再長出第三種：
 //   設定面板裡的「選項」被選中 → kAmber（純白）框 + kPanelHi 底
