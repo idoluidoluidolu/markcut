@@ -23,6 +23,7 @@ import '../services/audio_picker.dart';
 import '../services/native_frames.dart';
 import '../services/playback_trace.dart';
 import '../services/comp_player.dart';
+import '../services/crop_math.dart';
 import '../services/diagnostics.dart';
 import '../services/export_speed.dart';
 import '../services/file_reader.dart';
@@ -2173,6 +2174,60 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       setState(() => _tl.clips[i] = TimelineClip.fromJson(j));
     }
     _resyncPlayback();
+    _saveDraft();
+  }
+
+  /// 裁切影片片段。
+  ///
+  /// 影片不是真的裁成一張新圖——那要重新編碼整段。改成把裁切框換算成
+  /// 這個片段的縮放與位移（scale / px / py）：預覽、合成播放器、原生
+  /// 匯出、FFmpeg 匯出本來就都吃這三個值，所以裁切是零成本的，
+  /// 而且隨時可以再調回來。
+  ///
+  /// 代價是「裁出來的那塊會填滿畫布」——框的比例跟畫布不一樣時，
+  /// 短邊的那一側會再被畫布切掉一點。固定畫布的剪輯 App 都是這樣
+  Future<void> _cropVideoClip(TimelineClip clip) async {
+    final src = _tl.sourceOf(clip);
+    // 底圖用這一段的一格畫面（拿不到就用縮圖）
+    final frame =
+        await nativeFrameAt(src.previewPath, clip.trimStart, maxH: 720) ??
+        _thumbs[clip.sourceIndex]?.firstOrNull;
+    if (frame == null) {
+      if (mounted) showHint(context, '抓不到這一段的畫面，沒辦法裁切', error: true);
+      return;
+    }
+    if (!mounted) return;
+    final canvasAspect = _canvasRatio.value ?? src.aspect;
+    // 現在的縮放位移換算回「框」，重新開啟時才會停在原本的位置
+    final initial = transformToCrop(
+      clip.scale,
+      clip.px,
+      clip.py,
+      src.aspect,
+      canvasAspect,
+    );
+    final r = await pickCropRect(context, frame, initial: initial);
+    if (r == null || !mounted || r.width < 0.01 || r.height < 0.01) return;
+    // 框沒動就什麼都別做。
+    //
+    // 素材比例跟畫布不一樣時（直式影片放在橫式畫布），畫面本來是留黑邊
+    // 完整顯示的，而「整張都框起來」換算出來是「填滿畫布」——等於使用者
+    // 只是進來看一眼、什麼都沒改，畫面卻被裁了。沒動就不動最不意外
+    const eps = 0.002;
+    if ((r.left - initial.left).abs() < eps &&
+        (r.top - initial.top).abs() < eps &&
+        (r.width - initial.width).abs() < eps &&
+        (r.height - initial.height).abs() < eps) {
+      return;
+    }
+    final t = cropToTransform(r, src.aspect, canvasAspect);
+    _pushUndo();
+    setState(() {
+      clip.scale = t.scale;
+      clip.px = t.px;
+      clip.py = t.py;
+    });
+    _compRefreshIfChanged();
     _saveDraft();
   }
 
@@ -7556,13 +7611,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         Icons.crop,
                         '裁切',
                         (sel == null ||
-                                _tl.sourceOf(sel).kind != ClipKind.image)
+                                !(_tl.sourceOf(sel).kind == ClipKind.image ||
+                                    _tl.sourceOf(sel).isVideo))
                             ? null
-                            : () => _cropImageClip(sel),
-                        tip: '裁切這張圖片',
+                            : () => _tl.sourceOf(sel).isVideo
+                                  ? _cropVideoClip(sel)
+                                  : _cropImageClip(sel),
+                        tip: '裁切畫面',
                         disabledHint: sel == null
-                            ? '先在時間軸點選一張圖片'
-                            : '只有圖片素材可以裁切',
+                            ? '先在時間軸點選影片或圖片'
+                            : '這種素材沒有畫面可以裁',
                       ),
                       _toolBtn(
                         Icons.tune,

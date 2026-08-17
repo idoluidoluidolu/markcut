@@ -364,13 +364,6 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     });
   }
 
-  /// 還原成沒裁過的樣子
-  void _restoreLogo() {
-    final orig = s.logo.origBytes;
-    if (orig == null) return;
-    _update(() => s.logo.bytesValue = orig);
-  }
-
   static Future<Uint8List?> _shrinkToPng(Uint8List raw, int maxSide) async {
     var codec = await ui.instantiateImageCodec(raw);
     var frame = await codec.getNextFrame();
@@ -1060,10 +1053,6 @@ class WatermarkPanelState extends State<WatermarkPanel> {
               _miniBtn(Icons.swap_horiz, '換一張', _pickLogo),
               const SizedBox(width: 8),
               _miniBtn(Icons.crop, '裁切', _cropLogo),
-              if (s.logo.origBytes != null) ...[
-                const SizedBox(width: 8),
-                _miniBtn(Icons.restore, '還原', _restoreLogo),
-              ],
               const Spacer(),
               IconButton(
                 tooltip: s.logos.length > 1 ? '移除這一張' : '移除圖片',

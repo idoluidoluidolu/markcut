@@ -14,13 +14,40 @@ Future<Uint8List?> cropImage(
   BuildContext context,
   Uint8List bytes, {
   String title = '裁切圖片',
-}) {
-  return Navigator.of(context).push<Uint8List>(
+}) async {
+  final out = await Navigator.of(context).push<Object>(
     MaterialPageRoute(
       fullscreenDialog: true,
       builder: (_) => CropScreen(bytes: bytes, title: title),
     ),
   );
+  return out is Uint8List ? out : null;
+}
+
+/// 只要「裁切框」，不要裁好的圖：回傳 0~1 的比例框（取消回 null）。
+///
+/// 影片走這條：影片不能真的裁成一張圖，是把框換算成片段的縮放與位移
+/// （預覽、合成播放器、兩條匯出管線本來就都吃這三個值），所以裁切
+/// 完全不用重編碼、也不會多一份檔案。[frame] 是拿來當底圖的那一格，
+/// [initial] 是現在的框（重新開啟時要回到原本的位置）
+Future<Rect?> pickCropRect(
+  BuildContext context,
+  Uint8List frame, {
+  Rect? initial,
+  String title = '裁切畫面',
+}) async {
+  final out = await Navigator.of(context).push<Object>(
+    MaterialPageRoute(
+      fullscreenDialog: true,
+      builder: (_) => CropScreen(
+        bytes: frame,
+        title: title,
+        rectOnly: true,
+        initial: initial,
+      ),
+    ),
+  );
+  return out is Rect ? out : null;
 }
 
 /// 裁切比例的選項。null＝自由
@@ -34,10 +61,22 @@ const _kRatios = <(String, double?)>[
 ];
 
 class CropScreen extends StatefulWidget {
-  const CropScreen({super.key, required this.bytes, this.title = '裁切圖片'});
+  const CropScreen({
+    super.key,
+    required this.bytes,
+    this.title = '裁切圖片',
+    this.rectOnly = false,
+    this.initial,
+  });
 
   final Uint8List bytes;
   final String title;
+
+  /// true＝按完成回傳 0~1 的框，不真的把圖裁下來
+  final bool rectOnly;
+
+  /// 進來時框要停在哪（0~1）。null＝整張
+  final Rect? initial;
 
   @override
   State<CropScreen> createState() => _CropScreenState();
@@ -76,12 +115,17 @@ class _CropScreenState extends State<CropScreen> {
       setState(() {
         _img?.dispose();
         _img = frame.image;
-        _crop = Rect.fromLTWH(
-          0,
-          0,
-          frame.image.width.toDouble(),
-          frame.image.height.toDouble(),
-        );
+        final iw = frame.image.width.toDouble();
+        final ih = frame.image.height.toDouble();
+        final f = widget.initial;
+        _crop = f == null
+            ? Rect.fromLTWH(0, 0, iw, ih)
+            : Rect.fromLTWH(
+                f.left * iw,
+                f.top * ih,
+                f.width * iw,
+                f.height * ih,
+              );
       });
     } catch (_) {
       if (mounted) Navigator.pop(context);
@@ -117,6 +161,24 @@ class _CropScreenState extends State<CropScreen> {
     });
   }
 
+  /// 還原：框回到整張圖。
+  ///
+  /// 呼叫端進來時給的是「沒裁過的原圖」，所以框拉回整張、按完成
+  /// 就等於把之前裁掉的部分要回來了
+  void _resetCrop() {
+    final img = _img;
+    if (img == null) return;
+    setState(() {
+      _ratio = null;
+      _crop = Rect.fromLTWH(
+        0,
+        0,
+        img.width.toDouble(),
+        img.height.toDouble(),
+      );
+    });
+  }
+
   /// 把裁切框套上比例（以中心為準往內縮，保證不會超出圖）
   void _applyRatio(double? r) {
     final img = _img;
@@ -145,8 +207,17 @@ class _CropScreenState extends State<CropScreen> {
   Future<void> _done() async {
     final img = _img;
     if (img == null || _busy) return;
-    setState(() => _busy = true);
     final r = _crop;
+    if (widget.rectOnly) {
+      final iw = img.width.toDouble();
+      final ih = img.height.toDouble();
+      Navigator.pop(
+        context,
+        Rect.fromLTWH(r.left / iw, r.top / ih, r.width / iw, r.height / ih),
+      );
+      return;
+    }
+    setState(() => _busy = true);
     final w = math.max(1, r.width.round());
     final h = math.max(1, r.height.round());
     final rec = ui.PictureRecorder();
@@ -180,10 +251,17 @@ class _CropScreenState extends State<CropScreen> {
         title: Text(widget.title),
         actions: [
           IconButton(
-            tooltip: '轉 90 度',
-            onPressed: _busy ? null : _rotate,
-            icon: const Icon(Icons.rotate_90_degrees_cw_outlined),
+            tooltip: '還原（框回到整張圖）',
+            onPressed: _busy || img == null ? null : _resetCrop,
+            icon: const Icon(Icons.restore),
           ),
+          // 只回框的模式沒有轉向：底圖轉了，換算回影片的框就對不上
+          if (!widget.rectOnly)
+            IconButton(
+              tooltip: '轉 90 度',
+              onPressed: _busy ? null : _rotate,
+              icon: const Icon(Icons.rotate_90_degrees_cw_outlined),
+            ),
           TextButton(
             onPressed: _busy || img == null ? null : _done,
             child: const Text(
