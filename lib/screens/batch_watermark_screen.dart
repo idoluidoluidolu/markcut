@@ -66,6 +66,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   final _settings = WatermarkSettings();
   int _previewIndex = 0;
 
+  /// 被選浮水印部件的框（畫在裁切外，拖出畫面也看得到位置）
+  final _wmFrameInfo = ValueNotifier<WmFrameInfo?>(null);
+
   late final List<_BatchItem> _items =
       widget.files.map(_BatchItem.new).toList();
 
@@ -806,6 +809,8 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                       color: Colors.black,
                       child: Stack(
                         fit: StackFit.expand,
+                        // 不裁切：浮水印選取框要能畫到畫面外
+                        clipBehavior: Clip.none,
                         children: [
                           // 大圖還在讀的時候先用小縮圖頂著，不要閃黑
                           if (_previewBytes != null)
@@ -818,6 +823,8 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                                 fit: BoxFit.contain),
                           WatermarkLayer(
                             settings: _effectiveOf(_previewIndex),
+                            // 選取框畫在裁切外（見 _wmFrameInfo）
+                            frameNotifier: _wmFrameInfo,
                             onChanged: () => setState(() {}),
                             // 在預覽上拖＝這張進入單張模式。
                             // 先切模式再拍快照，上一步才會還原到這張自己的設定
@@ -841,6 +848,10 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                               vertical: _btGuideV,
                               horizontal: _btGuideH,
                             ),
+                          ),
+                          // 浮水印選取框：畫在真實位置（拖出畫面也看得到）
+                          Positioned.fill(
+                            child: WmFrameOverlay(_wmFrameInfo),
                           ),
                           // 選取路由：有部件被選取時，整個預覽的拖曳
                           // 都只動被選的那個——手指滑過另一個部件

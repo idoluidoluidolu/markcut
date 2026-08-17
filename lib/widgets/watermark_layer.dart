@@ -41,6 +41,14 @@ class WatermarkLayer extends StatefulWidget {
   /// 在 build 裡呼叫，父層只能存起來，不可以 setState
   final void Function(Rect? textBox, List<Rect?> logoBoxes)? onHitBox;
 
+  /// 給了這個就不在圖層內畫選取框，改成把「被選部件的框」回報出去，
+  /// 由外層的 [WmFrameOverlay] 在「不裁切的圖層」畫。
+  ///
+  /// 為什麼要繞這一圈：部件可以拖出畫面（超出的內容被裁掉是對的），
+  /// 但琥珀框要照畫在真實位置，人才知道它跑到哪去了——框畫在圖層內
+  /// 會跟內容一起被裁掉，整個看不見
+  final ValueNotifier<WmFrameInfo?>? frameNotifier;
+
   /// 目前播放時間（秒）；動畫預覽用，靜態畫面給 null
   final double? time;
 
@@ -63,6 +71,7 @@ class WatermarkLayer extends StatefulWidget {
     this.onTap,
     this.onTapText,
     this.onHitBox,
+    this.frameNotifier,
     this.time,
     this.panLocked,
     this.panAllowed,
@@ -82,6 +91,8 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
   /// 邊框寬度算進內距，選取／取消選取的瞬間內容就位移 1.4px——
   /// 那正是「移好位置後點別的東西，浮水印會稍微跳一下」
   BoxDecoration? _deco(WmPart part, {int logoIndex = -1}) {
+    // 外層接手畫框（見 frameNotifier）就不在圖層內畫
+    if (widget.frameNotifier != null) return null;
     if (widget.selectedPart != part) return null;
     if (part == WmPart.logo &&
         logoIndex >= 0 &&
@@ -496,6 +507,31 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
           for (final r in hitLogos) r?.shift(shift),
         ]);
 
+        // 被選部件的框回報給外層畫（見 frameNotifier 的說明）
+        final fn = widget.frameNotifier;
+        if (fn != null) {
+          WmFrameInfo? info;
+          if (widget.selectedPart == WmPart.text && hitText != null) {
+            info = WmFrameInfo(
+              hitText.shift(shift),
+              settings.text.rotation,
+            );
+          } else if (widget.selectedPart == WmPart.logo) {
+            final ai = settings.activeLogo;
+            final r = (ai >= 0 && ai < hitLogos.length) ? hitLogos[ai] : null;
+            if (r != null) {
+              info = WmFrameInfo(r.shift(shift), settings.logos[ai].rotation);
+            }
+          }
+          // build 中不能動 notifier（會連鎖 setState），排到這一格畫完
+          if (fn.value != info) {
+            final want = info;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (fn.value != want) fn.value = want;
+            });
+          }
+        }
+
         // 動畫：整組浮水印一起位移＋淡出（閃爍＝alpha 0/1）
         if (anim.dx != 0 || anim.dy != 0 || anim.alpha != 1) {
           return Opacity(
@@ -796,4 +832,58 @@ class CheckerPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(CheckerPainter old) => old.cell != cell;
+}
+
+/// 被選取的浮水印部件在畫面上的框（圖層座標）＋旋轉角度
+class WmFrameInfo {
+  const WmFrameInfo(this.rect, this.rotation);
+
+  final Rect rect;
+  final double rotation;
+
+  @override
+  bool operator ==(Object other) =>
+      other is WmFrameInfo && other.rect == rect && other.rotation == rotation;
+
+  @override
+  int get hashCode => Object.hash(rect, rotation);
+}
+
+/// 把 [WmFrameInfo] 畫成琥珀選取框的外層圖層。
+///
+/// 掛在「不會被裁切」的地方（畫布 Stack 要 clipBehavior: Clip.none）：
+/// 部件拖出畫面時內容照樣被圖層自己的 Stack 裁掉，但這個框畫在真實
+/// 位置——超出畫面的部分也看得到，人才知道東西跑到哪去了
+class WmFrameOverlay extends StatelessWidget {
+  const WmFrameOverlay(this.info, {super.key});
+
+  final ValueNotifier<WmFrameInfo?> info;
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: ValueListenableBuilder<WmFrameInfo?>(
+        valueListenable: info,
+        builder: (context, f, _) {
+          if (f == null) return const SizedBox.shrink();
+          return Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Positioned.fromRect(
+                rect: f.rect,
+                child: Transform.rotate(
+                  angle: f.rotation * math.pi / 180,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      border: Border.all(color: kSelect, width: 1.4),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
 }

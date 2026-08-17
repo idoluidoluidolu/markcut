@@ -49,6 +49,9 @@ class PhotoEditorScreen extends StatefulWidget {
 class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   late final WatermarkSettings _settings =
       widget.initialWatermark?.copy() ?? WatermarkSettings();
+
+  /// 被選浮水印部件的框（畫在裁切外，拖出照片也看得到位置）
+  final _wmFrameInfo = ValueNotifier<WmFrameInfo?>(null);
   Uint8List? _photoBytes;
   double? _aspect; // 照片長寬比
   bool _exporting = false;
@@ -1535,6 +1538,9 @@ final color = Color(picked ?? 0);
                             aspectRatio: _aspect!,
                             child: Stack(
                               fit: StackFit.expand,
+                              // 不裁切：浮水印選取框要能畫到照片外
+                              //（內容由 WatermarkLayer 自己的 Stack 裁）
+                              clipBehavior: Clip.none,
                               children: [
                                 // 調色即時反映在預覽上
                                 if (_grade.hasColor && !_colorCompare)
@@ -1567,6 +1573,8 @@ final color = Color(picked ?? 0);
                                   settings: _settings,
                                   onChanged: () => setState(() {}),
                                   onDragStart: _pushUndo,
+                                  // 選取框畫在裁切外（見 _wmFrameInfo）
+                                  frameNotifier: _wmFrameInfo,
                                   onHitBox: (t, l) =>
                                       _phSetBox(1, -1, t, l),
                                   // 活性版：被選部件消失後視同沒選，
@@ -1640,6 +1648,11 @@ final color = Color(picked ?? 0);
                                     vertical: _phGuideV,
                                     horizontal: _phGuideH,
                                   ),
+                                ),
+                                // 浮水印選取框：畫在真實位置（部件拖出
+                                // 照片時內容被裁、框照畫）
+                                Positioned.fill(
+                                  child: WmFrameOverlay(_wmFrameInfo),
                                 ),
                                 // 選取路由：有部件被選取（白框）時，
                                 // 整個預覽的拖曳都只動被選的那個——

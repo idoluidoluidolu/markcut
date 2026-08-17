@@ -22,6 +22,9 @@ class WatermarkStudioScreen extends StatefulWidget {
 
 class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
   final _settings = WatermarkSettings();
+  /// 被選浮水印部件的框（畫在裁切外，拖出示意畫面也看得到位置）
+  final _wmFrameInfo = ValueNotifier<WmFrameInfo?>(null);
+
   /// 示意畫面底色：0＝透明（棋盤格）、1＝黑、2＝白。
   ///
   /// 預設透明：做浮水印時最重要的是看清楚「這張圖自己的邊緣到哪裡」，
@@ -497,6 +500,7 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
                                 // 底就是純色，不放示意圖示——那個山形圖案
                                 // 會被誤認成浮水印的一部分
                                 WatermarkLayer(
+                                  frameNotifier: _wmFrameInfo,
                                   settings: _settings,
                                   onChanged: () => _wmTick.value++,
                                   onDragStart: _pushUndo,
@@ -532,6 +536,10 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
                                     vertical: _stGuideV,
                                     horizontal: _stGuideH,
                                   ),
+                                ),
+                                // 浮水印選取框：畫在真實位置
+                                Positioned.fill(
+                                  child: WmFrameOverlay(_wmFrameInfo),
                                 ),
                                 // 選取路由：有部件被選取時，整個示意
                                 // 畫面的拖曳都只動被選的那個

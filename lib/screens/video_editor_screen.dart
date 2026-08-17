@@ -4339,6 +4339,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 全域浮水印用的假 id
   static const int _kWmId = -2;
 
+  /// 被選浮水印部件的框（由 WatermarkLayer 回報，畫在裁切外，
+  /// 拖出畫面也看得到位置）
+  final _wmFrameInfo = ValueNotifier<WmFrameInfo?>(null);
+
   /// 上一次點預覽的位置：同一點再點一次就往下鑽一層
   Offset? _cycleAt;
 
@@ -5777,6 +5781,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   aspectRatio: canvasAspect,
                   child: Stack(
                     fit: StackFit.expand,
+                    // 不裁切：浮水印的選取框要能畫到畫布外
+                    //（內容本身照樣被裡面的 ClipRect 裁掉）
+                    clipBehavior: Clip.none,
                     children: [
                       // 點預覽空白處＝取消所有選取＋收鍵盤
                       GestureDetector(
@@ -6684,6 +6691,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         settings: _settings,
                                         onChanged: () => setState(() {}),
                                         onDragStart: _pushWmUndo,
+                                        // 選取框畫在裁切外（見 _wmFrameInfo）
+                                        frameNotifier: _wmFrameInfo,
                                         onHitBox: (t, l) =>
                                             _addWmHit(_kWmId, t, l),
                                         selectedPart: _wmSel
@@ -7020,6 +7029,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             },
                           ),
                         ),
+                      ),
+                      // 浮水印的選取框：畫在裁切外面（上面那個 ClipRect
+                      // 的兄弟），部件拖出畫面時內容被裁掉、框照畫在
+                      // 真實位置，才知道東西跑到哪去了
+                      Positioned.fill(
+                        child: WmFrameOverlay(_wmFrameInfo),
                       ),
                     ],
                   ),
