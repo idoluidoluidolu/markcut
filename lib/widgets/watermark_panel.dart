@@ -9,6 +9,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../models/watermark_settings.dart';
 import '../services/preset_store.dart';
+import '../screens/crop_screen.dart';
 import '../theme.dart';
 import 'watermark_layer.dart';
 
@@ -317,7 +318,14 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         await ImagePicker().pickImage(source: ImageSource.gallery);
     if (picked == null) return;
     try {
-      final raw = await picked.readAsBytes();
+      var raw = await picked.readAsBytes();
+      // 先給裁切：浮水印的圖常常是從截圖或大圖裡挖一塊出來用，
+      // 挑完直接進裁切畫面比「加進去再想辦法縮」直覺得多。
+      // 按取消就整個不加（跟以前挑完取消一樣）
+      if (!mounted) return;
+      final cut = await cropImage(context, raw, title: '裁切浮水印圖片');
+      if (cut == null) return;
+      raw = cut;
       // 縮到 1024px 內再存進設定，範本自帶圖檔不佔太多空間
       final shrunk = await _shrinkToPng(raw, 1024);
       // 選圖期間畫面可能已經被收掉（挑很久、系統回收）

@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform;
+import 'dart:io' show File, Platform;
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -16,6 +16,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'crop_screen.dart';
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
 import '../services/audio_picker.dart';
@@ -2041,12 +2042,36 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 想做「多張圖片串成影片」不用一張一張加
     final picked = await ImagePicker().pickMultiImage();
     if (picked.isEmpty) return;
+    // 先把每張都讀進來，才有東西可以裁、也才量得到尺寸
+    final items = <({String path, String name, Uint8List bytes})>[];
+    for (final img in picked) {
+      items.add((
+        path: img.path,
+        name: img.name,
+        bytes: await img.readAsBytes(),
+      ));
+    }
+    // 只選一張才進裁切畫面：一次選十張還一張一張裁太煩。
+    // web 沒有檔案路徑可以寫，裁完的 bytes 放不回素材，先不給
+    if (items.length == 1 && !kIsWeb && mounted) {
+      final out = await cropImage(context, items.first.bytes);
+      if (out != null) {
+        final f = File(
+          '${(await getTemporaryDirectory()).path}'
+          '${Platform.pathSeparator}crop_'
+          '${DateTime.now().millisecondsSinceEpoch}.png',
+        );
+        await f.writeAsBytes(out);
+        items[0] = (path: f.path, name: items.first.name, bytes: out);
+      }
+    }
+    if (!mounted) return;
     _pause();
     _pushUndo();
     var at = _position;
     var firstId = -1;
-    for (final img in picked) {
-      final bytes = await img.readAsBytes();
+    for (final img in items) {
+      final bytes = img.bytes;
       // 解出圖片尺寸，之後縮放定位要用
       var imgW = 0, imgH = 0;
       try {
@@ -2068,7 +2093,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         ),
       );
       _thumbs[srcIndex] = [bytes];
-      final len = picked.length == 1 ? 4.0 : 3.0;
+      final len = items.length == 1 ? 4.0 : 3.0;
       final clip = TimelineClip(
         id: _tl.nextId(),
         sourceIndex: srcIndex,

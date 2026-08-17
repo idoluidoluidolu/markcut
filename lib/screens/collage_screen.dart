@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:image_picker/image_picker.dart';
 
+import 'crop_screen.dart';
 import '../theme.dart';
 import 'photo_editor_screen.dart';
 
@@ -288,7 +289,13 @@ class _CollageScreenState extends State<CollageScreen> {
     final f = await ImagePicker().pickImage(source: ImageSource.gallery);
     if (f == null || !mounted) return;
     try {
-      final img = await _decode(await f.readAsBytes());
+      // 換單張時給裁切：宮格是「貼齊格子」的排版，想強調照片裡的
+      // 哪一塊只能先裁
+      final raw = await f.readAsBytes();
+      if (!mounted) return;
+      final cut = await cropImage(context, raw);
+      if (cut == null || !mounted) return;
+      final img = await _decode(cut);
       // 選照片＋解碼期間排法可能被換掉，格子編號會失效
       if (!mounted || cell >= _order.length) {
         img.dispose();
