@@ -97,6 +97,22 @@ void main() {
       }
     });
 
+    test('鏡像的框翻兩次回到原樣，翻一次左右互換', () {
+      final r = math.Random(3);
+      for (var i = 0; i < 2000; i++) {
+        final w = 0.05 + r.nextDouble() * 0.9;
+        final x = r.nextDouble() * (1 - w);
+        final rect = Rect.fromLTWH(x, r.nextDouble() * 0.5, w, 0.3);
+        final f = flipRectX(rect);
+        // 左緣到左邊的距離＝原本右緣到右邊的距離
+        expect(f.left, closeTo(1 - rect.right, 1e-12));
+        expect(f.width, closeTo(rect.width, 1e-12));
+        expect(f.top, rect.top);
+        final back = flipRectX(f);
+        expect(back.left, closeTo(rect.left, 1e-12));
+      }
+    });
+
     test('再怎麼亂都不會產生 NaN 或負的縮放', () {
       final r = math.Random(11);
       for (var i = 0; i < 5000; i++) {

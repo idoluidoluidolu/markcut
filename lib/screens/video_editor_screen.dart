@@ -2230,26 +2230,36 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     if (!mounted) return;
     final canvasAspect = _canvasRatio.value ?? src.aspect;
-    // 現在的縮放位移換算回「框」，重新開啟時才會停在原本的位置
-    final initial = transformToCrop(
+    // 現在的縮放位移換算回「框」，重新開啟時才會停在原本的位置。
+    // 鏡像的片段要多翻一次：底圖是未鏡像的原始畫面，而縮放位移指的是
+    // 「翻過之後」的顯示座標——不翻的話框會停在左右相反的那一側，
+    // 裁下去也會裁到相反的那一塊
+    final display = transformToCrop(
       clip.scale,
       clip.px,
       clip.py,
       src.aspect,
       canvasAspect,
     );
-    final r = await pickCropRect(context, frame, initial: initial);
-    if (r == null || !mounted || r.width < 0.01 || r.height < 0.01) return;
+    final initial = clip.mirror ? flipRectX(display) : display;
+    final picked0 = await pickCropRect(context, frame, initial: initial);
+    if (picked0 == null ||
+        !mounted ||
+        picked0.width < 0.01 ||
+        picked0.height < 0.01) {
+      return;
+    }
+    final r = clip.mirror ? flipRectX(picked0) : picked0;
     // 框沒動就什麼都別做。
     //
     // 素材比例跟畫布不一樣時（直式影片放在橫式畫布），畫面本來是留黑邊
     // 完整顯示的，而「整張都框起來」換算出來是「填滿畫布」——等於使用者
     // 只是進來看一眼、什麼都沒改，畫面卻被裁了。沒動就不動最不意外
     const eps = 0.002;
-    if ((r.left - initial.left).abs() < eps &&
-        (r.top - initial.top).abs() < eps &&
-        (r.width - initial.width).abs() < eps &&
-        (r.height - initial.height).abs() < eps) {
+    if ((picked0.left - initial.left).abs() < eps &&
+        (picked0.top - initial.top).abs() < eps &&
+        (picked0.width - initial.width).abs() < eps &&
+        (picked0.height - initial.height).abs() < eps) {
       return;
     }
     final t = cropToTransform(r, src.aspect, canvasAspect);

@@ -56,3 +56,11 @@ Rect transformToCrop(
     h,
   );
 }
+
+/// 左右翻轉一個 0~1 的框（給鏡像的片段用）。
+///
+/// 裁切底圖抓的是「未鏡像」的原始畫面，但片段實際顯示是翻過的：
+/// 內容在來源的 x，顯示時在 1-x。框在兩套座標之間換的就是這一下，
+/// 來回各翻一次（翻兩次＝原樣）
+Rect flipRectX(Rect r) =>
+    Rect.fromLTWH(1 - r.left - r.width, r.top, r.width, r.height);
