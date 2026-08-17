@@ -2816,7 +2816,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       const SizedBox(
                         width: kSliderLabelW,
                         child: Text(
-                          '大小',
+                          '縮放',
                           style: TextStyle(fontSize: 12, color: kTextDim),
                         ),
                       ),
@@ -7637,10 +7637,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       _snapToolBtn(),
                       _toolBtn(Icons.add, '加素材', _addMediaChoice),
                       _toolDivider(),
-                      // 排列順序：大小、裁切、音量、調色、速度、效果
+                      // 排列順序：縮放、裁切、鏡像、音量、調色、速度、效果
                       _toolBtn(
                         Icons.open_in_full,
-                        '大小',
+                        '縮放',
                         (sel == null ||
                                 _tl.sourceOf(sel).kind == ClipKind.audio ||
                                 // 浮水印素材整版渲染不吃 clip.scale，
@@ -7648,12 +7648,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 _tl.sourceOf(sel).kind == ClipKind.wm)
                             ? null
                             : () => _openScaleSheet(sel),
-                        tip: '縮放物件大小',
+                        tip: '縮放這個物件',
                         disabledHint: sel == null
                             ? '先在時間軸點選一個片段'
                             : (_tl.sourceOf(sel).kind == ClipKind.wm
-                                  ? '浮水印大小請在浮水印分頁調，或在預覽雙指縮放'
-                                  : '聲音片段沒有畫面大小可調'),
+                                  ? '浮水印的縮放請在浮水印分頁調，或在預覽雙指縮放'
+                                  : '聲音片段沒有畫面可以縮放'),
                       ),
                       _toolBtn(
                         Icons.crop,
@@ -7789,7 +7789,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   const Icon(Icons.open_in_full, size: 18, color: kAmber),
                   const SizedBox(width: 8),
                   const Text(
-                    '大小',
+                    '縮放',
                     style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
                   ),
                   const Spacer(),
