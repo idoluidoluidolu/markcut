@@ -2681,7 +2681,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         ),
                       ],
                     ),
-                    if (st.type == 1)
+                    // 純色遮蓋是實心色塊，沒有邊可以柔；
+                    // 像素化跟模糊都吃得到
+                    if (st.type != 2)
                       Row(
                         children: [
                           const SizedBox(
@@ -5971,17 +5973,73 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                     2.0,
                                                     r.width * dpr / cells,
                                                   );
-                                                  try {
-                                                    // 0,1 = u_size(引擎
-                                                    // 自動填),2 = u_cell
-                                                    final sh = _mosaicProg!
-                                                        .fragmentShader();
-                                                    sh.setFloat(2, cell);
-                                                    filter = ui
-                                                        .ImageFilter.shader(sh);
-                                                  } catch (_) {
-                                                    filter = null;
+                                                  ui.ImageFilter? pix(
+                                                    double c,
+                                                  ) {
+                                                    try {
+                                                      // 0,1 = u_size(引擎
+                                                      // 自動填),2 = u_cell
+                                                      final sh = _mosaicProg!
+                                                          .fragmentShader();
+                                                      sh.setFloat(
+                                                        2,
+                                                        math.max(2.0, c),
+                                                      );
+                                                      return ui
+                                                          .ImageFilter.shader(
+                                                            sh,
+                                                          );
+                                                    } catch (_) {
+                                                      return null;
+                                                    }
                                                   }
+
+                                                  // 柔邊：跟模糊同一套同心
+                                                  // 圈，只是由外到內格子越
+                                                  // 來越大——外圈幾乎是原
+                                                  // 畫面，邊界就沒有硬線
+                                                  if (ms.feather > 0) {
+                                                    final step =
+                                                        ms.feather *
+                                                        0.07 *
+                                                        math.min(
+                                                          r.width,
+                                                          r.height,
+                                                        );
+                                                    final rings = <Widget>[];
+                                                    for (
+                                                      var i = 0;
+                                                      i < 6;
+                                                      i++
+                                                    ) {
+                                                      final f = pix(
+                                                        cell * (i + 1) / 6,
+                                                      );
+                                                      if (f == null) continue;
+                                                      final inset = step * i;
+                                                      rings.add(
+                                                        Positioned(
+                                                          left: inset,
+                                                          top: inset,
+                                                          right: inset,
+                                                          bottom: inset,
+                                                          child: ClipRect(
+                                                            child: BackdropFilter(
+                                                              filter: f,
+                                                              child:
+                                                                  const SizedBox.expand(),
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      );
+                                                    }
+                                                    if (rings.isNotEmpty) {
+                                                      return Stack(
+                                                        children: rings,
+                                                      );
+                                                    }
+                                                  }
+                                                  filter = pix(cell);
                                                 }
                                                 final sigma =
                                                     4.0 + 16 * ms.strength;

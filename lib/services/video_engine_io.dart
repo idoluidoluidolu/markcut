@@ -759,15 +759,39 @@ Future<String> _buildCommand(
       // 像素化：縮小再鄰近取樣放大。濃度越高格子越大
       //（橫向格數約 26 → 6）
       final cells = (26 - 20 * ms.strength).round().clamp(4, 40);
-      final dw = math.max(2, math.min(cells, w2 ~/ 2));
-      final dh = math.max(2, (dw * h2 / w2).round());
-      fc.write(
-        '[$cur]split=2[mzA$k][mzB$k];'
-        '[mzB$k]crop=$w2:$h2:$x:$y,scale=$dw:$dh,'
-        'scale=$w2:$h2:flags=neighbor[mzP$k];'
-        '[mzA$k][mzP$k]overlay=$x:$y:$enable:'
-        'eof_action=pass[mz$k];',
-      );
+      final margin = (ms.feather * 0.35 * math.min(w2, h2)).round();
+      // 柔邊：跟模糊同一套同心圈，只是由外到內格子越來越大——
+      // 外圈幾乎是原畫面，邊界就沒有一條硬線
+      final rings = margin >= 8
+          ? [
+              for (var i = 1; i <= 6; i++)
+                (
+                  (margin * (i - 1) / 5).round(),
+                  // i=1 是最外圈：格數最多＝格子最細
+                  (cells * (7 - i)).clamp(4, 240),
+                ),
+            ]
+          : [(0, cells)];
+      for (var i = 0; i < rings.length; i++) {
+        final (inset, cn) = rings[i];
+        var rw = w2 - inset * 2;
+        var rh = h2 - inset * 2;
+        rw = math.max(2, rw - rw % 2);
+        rh = math.max(2, rh - rh % 2);
+        final rx = x + inset;
+        final ry = y + inset;
+        final dw = math.max(2, math.min(cn, rw ~/ 2));
+        final dh = math.max(2, (dw * rh / rw).round());
+        final out = i == rings.length - 1 ? 'mz$k' : 'mz${k}p$i';
+        fc.write(
+          '[$cur]split=2[mzA${k}p$i][mzB${k}p$i];'
+          '[mzB${k}p$i]crop=$rw:$rh:$rx:$ry,scale=$dw:$dh,'
+          'scale=$rw:$rh:flags=neighbor[mzP${k}p$i];'
+          '[mzA${k}p$i][mzP${k}p$i]overlay=$rx:$ry:$enable:'
+          'eof_action=pass[$out];',
+        );
+        cur = out;
+      }
     }
     cur = 'mz$k';
   }
