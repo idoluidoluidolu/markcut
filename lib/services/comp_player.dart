@@ -62,6 +62,13 @@ class CompPlayer {
       if (c.reverse) return '有倒轉的片段';
       if (c.color.hasColor) return '有調色的片段';
     }
+    // 馬賽克跟調色是同一件事：預覽的馬賽克是 Flutter 的 BackdropFilter，
+    // 它只吃得到「Flutter 自己畫的東西」。合成播放器的畫面走系統的影片
+    // 圖層（平台原生元件，由系統另外合成），BackdropFilter 取不到它的
+    // 像素——結果就是馬賽克整個沒反應。有馬賽克就退回材質那條路
+    for (final c in tl.clips) {
+      if (tl.sourceOf(c).kind == ClipKind.mosaic) return '有馬賽克';
+    }
     return null;
   }
 

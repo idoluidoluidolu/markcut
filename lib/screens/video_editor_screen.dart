@@ -620,6 +620,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             // 調色也要記：有調色就得退回舊路徑（系統影片圖層疊不上
             // Flutter 的濾鏡），不記的話調了色也不會換引擎
             '${c.scale}|${c.px}|${c.py}|${c.reverse}|${c.color.hasColor}',
+    // 馬賽克片段也要算進來：它跟調色一樣會逼著退回材質那條路，
+    // 而它不是影片片段，不記的話「加了馬賽克」不會觸發重烘
+    'mz${_tl.clips.where((c) => _tl.sourceOf(c).kind == ClipKind.mosaic).length}',
   ].join(';');
 
   String? _lastCompSig;

@@ -10,6 +10,7 @@ import 'dart:math' as math;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:markcut/models/color_grade.dart';
 import 'package:markcut/models/timeline.dart';
+import 'package:markcut/services/comp_player.dart';
 import 'package:markcut/models/watermark_settings.dart';
 
 /// 每個回合結束都必須成立的條件；違反就是 bug
@@ -466,6 +467,43 @@ void main() {
       expect(tl.overlaysAt(1).map((c) => c.track).toList(), [0, 2]);
       // 單選一個「看得到的那個」＝最上層
       expect(tl.videoAt(1)!.track, 1);
+    });
+  });
+
+  group('合成播放器的適用範圍', () {
+    TimelineModel base() {
+      final tl = TimelineModel();
+      tl.sources.add(MediaSource(
+          path: '/a.mp4', name: 'a', kind: ClipKind.video, duration: 100));
+      tl.clips.add(TimelineClip(
+        id: tl.nextId(),
+        sourceIndex: 0,
+        trimStart: 0,
+        trimEnd: 5,
+        offset: 0,
+        track: 0,
+      ));
+      return tl;
+    }
+
+    test('乾淨的時間軸走合成播放器', () {
+      expect(CompPlayer.whyNot(base()), isNull);
+    });
+
+    test('有馬賽克就退回材質那條路', () {
+      // 馬賽克是 Flutter 的 BackdropFilter，取不到系統影片圖層的像素
+      final tl = base();
+      tl.sources.add(MediaSource(
+          path: '', name: '', kind: ClipKind.mosaic, duration: 3600));
+      tl.clips.add(TimelineClip(
+        id: tl.nextId(),
+        sourceIndex: 1,
+        trimStart: 0,
+        trimEnd: 3,
+        offset: 0,
+        track: 1,
+      ));
+      expect(CompPlayer.whyNot(tl), '有馬賽克');
     });
   });
 
