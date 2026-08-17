@@ -148,6 +148,39 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   List<WatermarkPreset> _presets = [];
   String? _presetSel; // 選單目前顯示的範本名
 
+  // 開滿版平鋪之前的大小。平鋪是「整面鋪滿的防盜浮水印」，尺寸一大
+  // 就變成幾塊巨字蓋住整支影片——所以一開就自動縮到最小。關掉時把
+  // 原本的大小還回去，不然使用者只是想看一下就得自己重調
+  double? _sizeBeforeTileText;
+  double? _sizeBeforeTileLogo;
+
+  /// 大小滑桿的下限（跟 _sliderRow 給的值一致）
+  static const double _minTextSize = 0.015;
+  static const double _minLogoSize = 0.05;
+
+  void _setTiled({required bool isLogo, required bool on}) {
+    // 文字跟圖片是不同型別，共用一個變數會退化成 Object，只好分開寫
+    _update(() {
+      if (isLogo) {
+        if (on) {
+          _sizeBeforeTileLogo = s.logo.sizeFrac;
+          s.logo.sizeFrac = _minLogoSize;
+        } else if (_sizeBeforeTileLogo != null) {
+          s.logo.sizeFrac = _sizeBeforeTileLogo!;
+        }
+        s.logo.tiled = on;
+      } else {
+        if (on) {
+          _sizeBeforeTileText = s.text.sizeFrac;
+          s.text.sizeFrac = _minTextSize;
+        } else if (_sizeBeforeTileText != null) {
+          s.text.sizeFrac = _sizeBeforeTileText!;
+        }
+        s.text.tiled = on;
+      }
+    });
+  }
+
   @override
   void initState() {
     super.initState();
@@ -854,8 +887,8 @@ class WatermarkPanelState extends State<WatermarkPanel> {
               const Text('滿版平鋪',
                   style: TextStyle(fontSize: 12, color: kTextDim)),
               const Spacer(),
-              _miniSwitch(
-                  s.text.tiled, (v) => _update(() => s.text.tiled = v)),
+              _miniSwitch(s.text.tiled,
+                  (v) => _setTiled(isLogo: false, on: v)),
             ],
           ),
           Row(
@@ -1015,8 +1048,8 @@ class WatermarkPanelState extends State<WatermarkPanel> {
               const Text('滿版平鋪',
                   style: TextStyle(fontSize: 12, color: kTextDim)),
               const Spacer(),
-              _miniSwitch(
-                  s.logo.tiled, (v) => _update(() => s.logo.tiled = v)),
+              _miniSwitch(s.logo.tiled,
+                  (v) => _setTiled(isLogo: true, on: v)),
             ],
           ),
         ],
@@ -1196,17 +1229,24 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     final target = hasText || !s.logo.enabled ? 'text' : 'logo';
     final x = target == 'text' ? s.text.x : s.logo.x;
     final y = target == 'text' ? s.text.y : s.logo.y;
-    void pick(double gx, double gy) => _update(() {
-          if (target == 'text') {
-            s.text.tiled = false; // 指定位置＝退出滿版平鋪
-            s.text.x = gx;
-            s.text.y = gy;
-          } else {
-            s.logo.tiled = false; // 指定位置＝退出滿版平鋪
-            s.logo.x = gx;
-            s.logo.y = gy;
-          }
-        });
+    void pick(double gx, double gy) {
+      // 指定位置＝退出滿版平鋪。走 _setTiled 才會把開平鋪前的大小
+      // 還回去——不然這裡退出後留著平鋪用的最小尺寸，小到看不見
+      if (target == 'text') {
+        if (s.text.tiled) _setTiled(isLogo: false, on: false);
+      } else {
+        if (s.logo.tiled) _setTiled(isLogo: true, on: false);
+      }
+      _update(() {
+        if (target == 'text') {
+          s.text.x = gx;
+          s.text.y = gy;
+        } else {
+          s.logo.x = gx;
+          s.logo.y = gy;
+        }
+      });
+    }
 
     return Column(
       children: [
