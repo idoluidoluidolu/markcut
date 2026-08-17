@@ -1070,7 +1070,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                         style: const TextStyle(fontSize: 11.5, color: kTextDim),
                       ),
                     ),
-                    if (m.style.type == 1)
+                    // 純色遮蓋是實心色塊，沒有邊可以柔；像素化跟模糊都吃得到
+                    if (m.style.type != 2)
                       row(
                         '柔邊',
                         Slider(
@@ -1821,8 +1822,35 @@ class _MosaicPatchPainter extends CustomPainter {
       img.height * scale,
     );
 
+    // 柔邊的遮罩寬度（像素化與模糊共用同一條公式）
+    final featherPx = feather * 0.2 * math.min(size.width, size.height);
+    final bounds = Offset.zero & size;
+
+    /// 把剛畫好的那一層用「中間實、邊緣淡」的遮罩收邊。
+    /// 遮罩用圖層模糊而不是 MaskFilter——web 的繪圖引擎對 MaskFilter
+    /// 支援不完整，會變成硬邊
+    void softEdge() {
+      canvas.saveLayer(
+        bounds,
+        Paint()
+          ..blendMode = BlendMode.dstIn
+          ..imageFilter = ui.ImageFilter.blur(
+            sigmaX: featherPx * 0.5,
+            sigmaY: featherPx * 0.5,
+          ),
+      );
+      canvas.drawRect(
+        bounds.deflate(featherPx),
+        Paint()..color = const Color(0xFFFFFFFF),
+      );
+      canvas.restore();
+      canvas.restore();
+    }
+
     if (type == 0) {
       // 真像素塊：每格取格中心像素
+      final soft = featherPx >= 1;
+      if (soft) canvas.saveLayer(bounds, Paint());
       final cells = (26 - 20 * strength).round().clamp(4, 40);
       final nx = cells;
       final ny = math.max(1, (cells * size.height / size.width).round());
@@ -1846,14 +1874,12 @@ class _MosaicPatchPainter extends CustomPainter {
           );
         }
       }
+      if (soft) softEdge();
       return;
     }
 
     // 模糊
     final sigma = 4.0 + 16 * strength;
-    final featherPx =
-        feather * 0.2 * math.min(size.width, size.height);
-    final bounds = Offset.zero & size;
     if (featherPx >= 1) {
       canvas.saveLayer(bounds, Paint());
       canvas.save();
@@ -1870,23 +1896,7 @@ class _MosaicPatchPainter extends CustomPainter {
       );
       canvas.restore();
       canvas.restore();
-      // 遮罩用「圖層模糊」而不是 MaskFilter——web 的繪圖引擎
-      // 對 MaskFilter 支援不完整,會變成硬邊
-      canvas.saveLayer(
-        bounds,
-        Paint()
-          ..blendMode = BlendMode.dstIn
-          ..imageFilter = ui.ImageFilter.blur(
-            sigmaX: featherPx * 0.5,
-            sigmaY: featherPx * 0.5,
-          ),
-      );
-      canvas.drawRect(
-        bounds.deflate(featherPx),
-        Paint()..color = const Color(0xFFFFFFFF),
-      );
-      canvas.restore();
-      canvas.restore();
+      softEdge();
       return;
     }
     canvas.save();
