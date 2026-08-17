@@ -7265,13 +7265,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     var changed = false;
     setState(() {
       if (_wmSel) {
-        // 兩個部件乘同一個倍率：比例不變，搭配不會跑掉
+        // 跟手機的雙指縮放同一套規則：只縮「被選取的那個部件」
+        //（有白框的那個）。本來是文字＋圖片乘同一個倍率，滾一下
+        // 兩個一起變大，跟捏合的行為對不起來
+        _pickPinchTarget(e.position);
         final t = _settings.text;
-        if (t.enabled && t.text.trim().isNotEmpty) {
+        if (_pvHitText && t.enabled && t.text.trim().isNotEmpty) {
           t.sizeFrac = (t.sizeFrac * f).clamp(0.015, 2.0);
           changed = true;
         }
-        if (_settings.logo.enabled) {
+        if (_pvHitLogo && _settings.logo.enabled) {
           _settings.logo.sizeFrac = (_settings.logo.sizeFrac * f).clamp(
             0.03,
             2.0,
