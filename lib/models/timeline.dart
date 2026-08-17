@@ -66,6 +66,23 @@ class MediaSource {
 
   bool get isVideo => kind == ClipKind.video;
 
+  /// 同一份素材、換一個實體檔。快速匯出把來源換成工作檔時用：
+  /// 其他欄位照抄（w/h 留原始值，只拿來算比例與上限，不影響輸出尺寸）
+  MediaSource withPath(String p) => MediaSource(
+    path: p,
+    name: name,
+    kind: kind,
+    duration: duration,
+    w: w,
+    h: h,
+    textStyle: textStyle,
+    wmStyle: wmStyle,
+    mosaicStyle: mosaicStyle,
+    revOf: revOf,
+    revStart: revStart,
+    revEnd: revEnd,
+  );
+
   /// 疊在畫面上的靜態素材（圖片、文字、浮水印）
   bool get isOverlay =>
       kind == ClipKind.image || kind == ClipKind.text || kind == ClipKind.wm;

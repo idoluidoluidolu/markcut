@@ -177,6 +177,7 @@ class NativeExport {
         'outH': spec.outH,
         'speed': sp,
         'dest': dest,
+        'ci': Diag.ciExport.value,
       });
       if (err != null) Diag.note('原生匯出失敗：$err');
       return err;

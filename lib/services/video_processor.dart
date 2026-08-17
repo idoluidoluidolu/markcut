@@ -218,6 +218,36 @@ class ExportSpec {
   double get wmOn => wmCycle * (0.58 * wmRange).clamp(0.1, 0.92);
 }
 
+/// 快速匯出：影片來源換成工作檔的條件成立時，回傳替換過的來源清單。
+///
+/// 工作檔是「1080p 短邊、SDR、H.264、轉正好」的版本——輸出不超過
+/// 1080p、畫質在標準以下時，拿它當匯出來源可以把「解 4K HEVC HDR ＋
+/// 色調映射」整段換成「解 1080p H.264」，是匯出最大宗的省。
+/// 選了極致／無損畫質、或輸出解析度超過工作檔時照舊用原檔，畫質不妥協。
+/// 回傳 (來源清單, 換掉幾支)；一支都沒換時清單就是原本那份
+(List<MediaSource>, int) fastExportSources(
+  List<MediaSource> sources, {
+  required int outW,
+  required int outH,
+  required ExportQuality quality,
+}) {
+  final eligible =
+      math.min(outW, outH) <= 1080 &&
+      (quality == ExportQuality.standard || quality == ExportQuality.low);
+  if (!eligible) return (sources, 0);
+  var swapped = 0;
+  final out = <MediaSource>[];
+  for (final s in sources) {
+    if (s.isVideo && s.workPath != null) {
+      out.add(s.withPath(s.workPath!));
+      swapped++;
+    } else {
+      out.add(s);
+    }
+  }
+  return (swapped == 0 ? sources : out, swapped);
+}
+
 /// 依選項計算輸出畫布大小。
 /// 比例：選了固定比例就用它，否則取「最底層（主軌）、最早出現」的影片；
 /// 長邊上限不超過素材本身（不放大）。

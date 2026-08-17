@@ -231,13 +231,19 @@ class Diag {
   /// 跟合成播放器一起扶正為預設
   static final playerLayer = ValueNotifier(true);
 
+  /// 匯出的浮水印合成走 GPU（自訂 AVVideoCompositing + Core Image）。
+  /// 舊路徑（CoreAnimationTool）是匯出最大的單一瓶頸——它把渲染拉到
+  /// Core Animation 的離線繪製。關掉＝退回舊路徑（成品有異狀時的備援）
+  static final ciExport = ValueNotifier(true);
+
   static String get tuning =>
       '預熱=${preheat.value ? '開' : '關'}／'
       '脫節校正=${driftFix.value ? '開' : '關'}／'
       '背景抽幀=${scrubPrefetch.value ? '開' : '關'}／'
       '只養一顆播放器=${singlePlayer.value ? '開' : '關'}／'
       '合成播放器=${compPlayer.value ? '開' : '關'}／'
-      '系統影片圖層=${playerLayer.value ? '開' : '關'}';
+      '系統影片圖層=${playerLayer.value ? '開' : '關'}／'
+      'GPU匯出=${ciExport.value ? '開' : '關'}';
 
   static void count(String key, [int n = 1]) {
     _counts[key] = (_counts[key] ?? 0) + n;

@@ -3753,6 +3753,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 ),
                 ('背景抽幀', '關掉試試：抽幀會跟播放搶硬體解碼器', Diag.scrubPrefetch),
                 (
+                  'GPU 匯出合成',
+                  '浮水印在 GPU 上逐格疊（快）。成品有異狀時關掉退回舊路徑',
+                  Diag.ciExport,
+                ),
+                (
                   '只養一顆播放器',
                   '打開試試：三顆 AVPlayer 一起養，系統會在它們之間排隊',
                   Diag.singlePlayer,
@@ -5216,6 +5221,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     var cancelled = false;
     try {
       final (outW, outH) = computeCanvasSize(_tl, _resolution, _canvasRatio);
+      // 快速匯出：條件成立時影片來源直接用工作檔（見 fastExportSources）
+      final (exportSources, fastSwapped) = fastExportSources(
+        _tl.sources,
+        outW: outW,
+        outH: outH,
+        quality: _qualityEff,
+      );
+      if (fastSwapped > 0) {
+        Diag.note('快速匯出：$fastSwapped 支影片來源用工作檔（1080p SDR）');
+      }
       Uint8List? wmPng;
       // 浮水印軌關掉時匯出也不要有——所見即所得
       if (!_wmHidden && _settings.hasAnyMark) {
@@ -5247,7 +5262,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       final result = await engine.exportVideoToGallery(
         ExportSpec(
-          sources: _tl.sources,
+          sources: exportSources,
           clips: [
             for (final c in _tl.clips)
               c.copy()..volume = _mutedTracks.contains(c.track) ? 0 : c.volume,

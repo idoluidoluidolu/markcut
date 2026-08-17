@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreImage
 import Flutter
 import UIKit
 
@@ -54,6 +55,188 @@ final class VCValidator: NSObject, AVVideoCompositionValidationHandling {
   ) -> Bool {
     problems.append("指令指到不存在的軌道（trackID \(layerInstruction.trackID)）")
     return true
+  }
+}
+
+// ── GPU 匯出合成器 ─────────────────────────────────────────
+//
+// 疊浮水印本來走 AVVideoCompositionCoreAnimationTool——那條路會把整個
+// 渲染拉到 Core Animation 的離線繪製，是匯出最大的單一瓶頸。這裡改成
+// 自訂合成器：每一格在 GPU 上用 Core Image 疊，管線全程硬體。
+//
+// 疊加物的模型本來就簡單：整張畫布大小的 PNG＋純時間函數的動畫
+//（閃爍＝週期開關、飄移＝sin/cos、跑馬燈＝線性位移），逐格算正好
+
+/// 一張疊加物（浮水印／文字 PNG）＋它的顯示窗與動畫參數
+final class CIOverlaySpec {
+  let image: CIImage  // 已縮放到畫布大小
+  let start: Double
+  let end: Double
+  let anim: String
+  let cycle: Double
+  let on: Double
+  let animSpeed: Double
+  let range: Double
+
+  init?(_ ov: [String: Any], canvas: CGSize) {
+    guard let data = (ov["png"] as? FlutterStandardTypedData)?.data,
+      let ui = UIImage(data: data), let cg = ui.cgImage
+    else { return nil }
+    var img = CIImage(cgImage: cg)
+    let ext = img.extent
+    guard ext.width > 1, ext.height > 1 else { return nil }
+    img = img.transformed(
+      by: CGAffineTransform(
+        scaleX: canvas.width / ext.width, y: canvas.height / ext.height))
+    image = img
+    start = max(0, ov["start"] as? Double ?? 0)
+    end = ov["end"] as? Double ?? .greatestFiniteMagnitude
+    anim = ov["anim"] as? String ?? "none"
+    cycle = max(0.05, ov["cycle"] as? Double ?? 1.2)
+    on = max(0.01, ov["on"] as? Double ?? 0.7)
+    animSpeed = max(0.05, ov["animSpeed"] as? Double ?? 1)
+    range = max(0.01, ov["range"] as? Double ?? 1)
+    if end <= start { return nil }
+  }
+
+  /// t 時刻要不要畫、畫在哪個位移。座標注意：Core Animation 的 y 往下、
+  /// Core Image 的 y 往上，垂直位移要反過來。係數跟 CALayer 版與 FFmpeg
+  /// 版完全同一組，三條路的動畫才長一樣
+  func frame(at t: Double, canvas: CGSize) -> CIImage? {
+    if t < start || t >= end { return nil }
+    switch anim {
+    case "blink":
+      if (t - start).truncatingRemainder(dividingBy: cycle) >= on {
+        return nil
+      }
+      return image
+    case "drift":
+      let amp = 0.02 * range
+      let dx = sin(t * 1.3 * animSpeed) * Double(canvas.width) * amp
+      let dy = cos(t * 0.9 * animSpeed) * Double(canvas.height) * amp
+      return image.transformed(
+        by: CGAffineTransform(translationX: dx, y: -dy))
+    case "marquee":
+      let ph = t.truncatingRemainder(dividingBy: cycle) / cycle
+      let dx = Double(canvas.width) * (1 - 2 * ph)
+      return image.transformed(by: CGAffineTransform(translationX: dx, y: 0))
+    default:
+      return image
+    }
+  }
+}
+
+/// 一段指令：一個來源軌（或沒有＝黑底）＋變形＋淡入淡出＋整批疊加物
+final class CIExportInstruction: NSObject, AVVideoCompositionInstructionProtocol {
+  let timeRange: CMTimeRange
+  let enablePostProcessing = false
+  let containsTweening = true
+  let passthroughTrackID = kCMPersistentTrackID_Invalid
+  var requiredSourceTrackIDs: [NSValue]? {
+    trackID == kCMPersistentTrackID_Invalid
+      ? nil : [NSNumber(value: trackID)]
+  }
+
+  let trackID: CMPersistentTrackID
+  /// AVFoundation 座標（左上原點、y 往下）的變形，跟舊路徑同一顆
+  let transform: CGAffineTransform
+  /// 來源緩衝的高（座標翻轉用；黑底段給 1）
+  let srcHeight: CGFloat
+  let fadeIn: Double
+  let fadeOut: Double
+  let overlays: [CIOverlaySpec]
+
+  init(
+    timeRange: CMTimeRange, trackID: CMPersistentTrackID,
+    transform: CGAffineTransform, srcHeight: CGFloat,
+    fadeIn: Double, fadeOut: Double, overlays: [CIOverlaySpec]
+  ) {
+    self.timeRange = timeRange
+    self.trackID = trackID
+    self.transform = transform
+    self.srcHeight = srcHeight
+    self.fadeIn = fadeIn
+    self.fadeOut = fadeOut
+    self.overlays = overlays
+    super.init()
+  }
+
+  /// 這一格的不透明度（線性淡入淡出，跟 opacity() 同一條公式）
+  func alpha(at t: Double) -> Double {
+    var a = 1.0
+    let s = timeRange.start.seconds
+    let e = timeRange.end.seconds
+    if fadeIn > 0.01 { a = min(a, ((t - s) / fadeIn).clamped01()) }
+    if fadeOut > 0.01 { a = min(a, ((e - t) / fadeOut).clamped01()) }
+    return a
+  }
+}
+
+final class CIExportCompositor: NSObject, AVVideoCompositing {
+  private let ctx = CIContext(options: [.cacheIntermediates: false])
+  private let queue = DispatchQueue(label: "markcut.ciexport")
+  private let outCS =
+    CGColorSpace(name: CGColorSpace.itur_709) ?? CGColorSpaceCreateDeviceRGB()
+
+  var sourcePixelBufferAttributes: [String: Any]? = [
+    kCVPixelBufferPixelFormatTypeKey as String: [Int(kCVPixelFormatType_32BGRA)]
+  ]
+  var requiredPixelBufferAttributesForRenderContext: [String: Any] = [
+    kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)
+  ]
+
+  func renderContextChanged(_ newContext: AVVideoCompositionRenderContext) {}
+  func cancelAllPendingVideoCompositionRequests() {}
+
+  func startRequest(_ req: AVAsynchronousVideoCompositionRequest) {
+    queue.async {
+      autoreleasepool {
+        guard
+          let ins = req.videoCompositionInstruction as? CIExportInstruction,
+          let dst = req.renderContext.newPixelBuffer()
+        else {
+          req.finish(
+            with: NSError(domain: "markcut.ciexport", code: -1, userInfo: nil))
+          return
+        }
+        let size = req.renderContext.size
+        let canvasRect = CGRect(origin: .zero, size: size)
+        var out = CIImage(color: CIColor(red: 0, green: 0, blue: 0))
+          .cropped(to: canvasRect)
+        let t = req.compositionTime.seconds
+        if ins.trackID != kCMPersistentTrackID_Invalid,
+          let buf = req.sourceFrame(byTrackID: ins.trackID)
+        {
+          // 變形是「左上原點、y 往下」的 AVFoundation 座標，Core Image
+          // 是「左下原點、y 往上」：先把來源翻成 y 往下、套變形、再翻回
+          let flipSrc = CGAffineTransform(
+            a: 1, b: 0, c: 0, d: -1, tx: 0, ty: ins.srcHeight)
+          let flipCanvas = CGAffineTransform(
+            a: 1, b: 0, c: 0, d: -1, tx: 0, ty: size.height)
+          var img = CIImage(cvPixelBuffer: buf).transformed(
+            by: flipSrc.concatenating(ins.transform).concatenating(flipCanvas))
+          let a = ins.alpha(at: t)
+          if a < 0.999 {
+            // 淡入淡出＝把 RGB 往黑壓（背景就是黑的，效果等同透明度）
+            img = img.applyingFilter(
+              "CIColorMatrix",
+              parameters: [
+                "inputRVector": CIVector(x: CGFloat(a), y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: CGFloat(a), z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: CGFloat(a), w: 0),
+              ])
+          }
+          out = img.cropped(to: canvasRect).composited(over: out)
+        }
+        for ov in ins.overlays {
+          if let o = ov.frame(at: t, canvas: size) {
+            out = o.composited(over: out)
+          }
+        }
+        self.ctx.render(out, to: dst, bounds: canvasRect, colorSpace: self.outCS)
+        req.finish(withComposedVideoFrame: dst)
+      }
+    }
   }
 }
 
@@ -304,6 +487,11 @@ final class AtomicFlag {
     let audios = a["audios"] as? [[String: Any]] ?? []
     let overlays = a["overlays"] as? [[String: Any]] ?? []
     let globalSpeed = max(0.05, a["speed"] as? Double ?? 1)
+    // GPU 合成（見 CIExportCompositor）。關掉＝退回 CoreAnimationTool
+    // 舊路徑（實驗開關，成品有異狀時的備援）。
+    // 沒有疊加物時不走：那種匯出本來就沒有 CoreAnimationTool 的瓶頸，
+    // 標準路徑（layer instruction）是純硬體，CI 反而多一次像素格式轉換
+    let useCI = (a["ci"] as? Bool ?? true) && !overlays.isEmpty
     let canvas = CGSize(width: CGFloat(outW), height: CGFloat(outH))
     let scale: CMTimeScale = 600
 
@@ -509,6 +697,14 @@ final class AtomicFlag {
     vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
     vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
     var instructions: [AVMutableVideoCompositionInstruction] = []
+    // GPU 路：疊加物先整批解好（PNG → 畫布大小的 CIImage），
+    // 每段指令都帶同一份
+    let ciOverlays: [CIOverlaySpec] =
+      useCI ? overlays.compactMap { CIOverlaySpec($0, canvas: canvas) } : []
+    var ciInstructions: [CIExportInstruction] = []
+    // 指令必須首尾相接把整條蓋滿：段落之間的空白（gap）也要有一段
+    // 「黑底＋疊加物」的指令，缺一段合成就不合法
+    var ciCursor = CMTime.zero
     for seg in segments {
       let disp = seg.size.applying(seg.transform)
       let dw = abs(disp.width)
@@ -544,6 +740,22 @@ final class AtomicFlag {
                 * canvas.width,
               y: canvas.height / 2 + CGFloat(seg.py - 0.5) * canvas.height))
       }
+      if useCI {
+        if seg.range.start > ciCursor {
+          ciInstructions.append(
+            CIExportInstruction(
+              timeRange: CMTimeRange(start: ciCursor, end: seg.range.start),
+              trackID: kCMPersistentTrackID_Invalid, transform: .identity,
+              srcHeight: 1, fadeIn: 0, fadeOut: 0, overlays: ciOverlays))
+        }
+        ciInstructions.append(
+          CIExportInstruction(
+            timeRange: seg.range, trackID: vTrack.trackID, transform: t,
+            srcHeight: seg.size.height, fadeIn: seg.fadeIn,
+            fadeOut: seg.fadeOut, overlays: ciOverlays))
+        ciCursor = seg.range.end
+        continue
+      }
       let li = AVMutableVideoCompositionLayerInstruction(assetTrack: vTrack)
       li.setTransform(t, at: seg.range.start)
       if seg.fadeIn > 0.01 {
@@ -564,10 +776,22 @@ final class AtomicFlag {
       ins.layerInstructions = [li]
       instructions.append(ins)
     }
-    vc.instructions = instructions
+    if useCI {
+      if comp.duration > ciCursor {
+        ciInstructions.append(
+          CIExportInstruction(
+            timeRange: CMTimeRange(start: ciCursor, end: comp.duration),
+            trackID: kCMPersistentTrackID_Invalid, transform: .identity,
+            srcHeight: 1, fadeIn: 0, fadeOut: 0, overlays: ciOverlays))
+      }
+      vc.customVideoCompositorClass = CIExportCompositor.self
+      vc.instructions = ciInstructions
+    } else {
+      vc.instructions = instructions
+    }
 
-    // ── 浮水印與文字：Core Animation 圖層 ──────────────────────
-    if !overlays.isEmpty {
+    // ── 浮水印與文字：Core Animation 圖層（舊路徑備援）────────
+    if !useCI && !overlays.isEmpty {
       let parent = CALayer()
       parent.frame = CGRect(origin: .zero, size: canvas)
       // 影片合成的座標原點在左下，而 PNG 是照左上角畫的——不翻的話

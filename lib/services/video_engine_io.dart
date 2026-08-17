@@ -895,7 +895,9 @@ Future<String> _buildCommand(
     // 跟上面 srcIn 的條件一致，不然輸入編號會整組錯位
     if (!usedSources.contains(i)) continue;
     switch (s.kind) {
-      case ClipKind.video || ClipKind.audio:
+      case ClipKind.video:
+        cmd.write('${_hwDecode()}-i "${s.path}" ');
+      case ClipKind.audio:
         cmd.write('-i "${s.path}" ');
       case ClipKind.image:
         cmd.write(
@@ -946,6 +948,17 @@ Future<String> _buildCommand(
 String _hwEncoder() => (Platform.isIOS || Platform.isMacOS)
     ? 'h264_videotoolbox'
     : 'h264_mediacodec';
+
+/// 影片輸入前面掛的硬體解碼旗標。
+///
+/// 編碼早就是硬體了，解碼一直是軟體——4K HEVC 用 CPU 解是 FFmpeg
+/// 那條路第二大的成本（第一大是 HDR 色調映射）。iOS 的 videotoolbox
+/// hwaccel 會自動把解好的畫格搬回記憶體給濾鏡鏈用，濾鏡不用改。
+/// Android 的 mediacodec hwaccel 要接 surface，風險高，先不上。
+/// 跑不動時 runFF 會把這面旗子剝掉重跑（見下面的保底）
+const kHwDecodeFlag = '-hwaccel videotoolbox ';
+String _hwDecode() =>
+    (Platform.isIOS || Platform.isMacOS) ? kHwDecodeFlag : '';
 
 /// 畫質檔位 → 位元率。表在 ExportQuality 上（video_processor.dart），
 /// 兩邊共用一張——各自維護一份的話，加檔位時漏改一邊就會有兩檔
@@ -1460,6 +1473,14 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     var session = await FFmpegKit.execute(cmd);
     var rc = await session.getReturnCode();
     var ok = ReturnCode.isSuccess(rc);
+    // 硬體解碼跑不動（機型差異、編碼太怪）就剝掉重跑——軟解慢但一定行
+    if (!ok && !ReturnCode.isCancel(rc) && cmd.contains(kHwDecodeFlag)) {
+      Diag.note('硬體解碼不能用，退軟體解碼重跑');
+      cmd = cmd.replaceAll(kHwDecodeFlag, '');
+      session = await FFmpegKit.execute(cmd);
+      rc = await session.getReturnCode();
+      ok = ReturnCode.isSuccess(rc);
+    }
     if (!ok && !ReturnCode.isCancel(rc)) {
       var stripped = cmd.replaceAll('$_kHdrFallback,', '');
       for (final c in _usedHdrChains) {
