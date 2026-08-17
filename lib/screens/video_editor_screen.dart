@@ -2192,14 +2192,30 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 底圖抓大一點：這張要鋪滿整個裁切畫面，720 高的圖在 3 倍螢幕上
     // 等於放大四倍，糊到看不清楚要裁哪裡。工作檔本來就只有 1080 短邊，
     // 抓到頂也不貴（縮圖那份是給時間軸用的小圖，只有拿不到畫面才退回它）
-    final frame =
-        await nativeFrameAt(
-          src.previewPath,
-          clip.trimStart,
-          maxH: 1920,
-          quality: 0.95,
-        ) ??
-        _thumbs[clip.sourceIndex]?.firstOrNull;
+    var frame = await nativeFrameAt(
+      src.previewPath,
+      clip.trimStart,
+      maxH: 1920,
+      quality: 0.95,
+    );
+    // web 沒有原生抽幀：用隱形 <video> ＋ canvas 自己抓一格。
+    // 時間軸縮圖那份只有 200px 高，拿來鋪滿裁切畫面糊到沒辦法用
+    if (frame == null) {
+      // 這條路要載一次影片再 seek，一兩秒跑不掉；先講一聲，
+      // 不然按下去像沒反應
+      if (mounted) showHint(context, '正在抓這一格畫面…');
+      final one = await engine.makeThumbnails(
+        src.previewPath,
+        // count=1 時取的是 startAt + dur/2，所以 dur 給到最小＝就取 startAt 那一格
+        0.001,
+        1,
+        height: 1920,
+        longSide: true,
+        startAt: clip.trimStart,
+      );
+      frame = one.firstOrNull;
+    }
+    frame ??= _thumbs[clip.sourceIndex]?.firstOrNull;
     if (frame == null) {
       if (mounted) showHint(context, '抓不到這一段的畫面，沒辦法裁切', error: true);
       return;
