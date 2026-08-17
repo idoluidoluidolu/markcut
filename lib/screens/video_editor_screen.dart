@@ -4063,6 +4063,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (insert) _selTrack = -1;
     });
     _resyncPlayback();
+    // 自動整理開著時，這裡就把空隙收掉。
+    //
+    // 本來是等到下一次編輯（關掉某個面板、刪東西）才整理，而那時
+    // 「要整理哪一軌」看的是當下選取的片段——所以放開的位置明明是
+    // 對的，等到去點別的素材才整個飄一下。要收就當場收，眼睛看到
+    // 的落點才是最後的落點
+    _autoTidyIfOn(track: t);
   }
 
   /// 點畫面上的浮水印時，叫下面的面板捲到對應的設定區塊
