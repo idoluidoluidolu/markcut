@@ -1389,14 +1389,17 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
 
   /// GIF：把做好的影片轉一趟 GIF 再存相簿。
   ///
-  /// 12fps、寬高皆 ≤480、palettegen/paletteuse 兩段式調色盤——
+  /// 影格率與長邊上限吃 spec（GIF 製作頁可調），
+  /// palettegen/paletteuse 兩段式調色盤——
   /// GIF 只有 256 色，不先算調色盤的話漸層會整片色帶。
   /// 這一趟接在「影片已經做好」之後，原生與 FFmpeg 兩條路共用
   Future<({bool ok, String message, bool cancelled})> saveAsGif() async {
     final gifPath = '${dir.path}${Platform.pathSeparator}out_$ts.gif';
+    final side = spec.gifMaxSide;
     final session = await FFmpegKit.execute(
       '-y -i "$outPath" -filter_complex '
-      '"[0:v]fps=12,scale=w=480:h=480:force_original_aspect_ratio=decrease'
+      '"[0:v]fps=${spec.gifFps},'
+      'scale=w=$side:h=$side:force_original_aspect_ratio=decrease'
       ':flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];'
       '[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle[g]" '
       '-map "[g]" -an "$gifPath"',
