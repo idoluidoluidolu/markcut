@@ -267,7 +267,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             optionRow(
   context: context,
-              title: '各自上浮水印',
+              title: '統一上浮水印',
               subtitle: '快速套用同一組浮水印',
               selected: false,
               onTap: () => Navigator.pop(context, false),
