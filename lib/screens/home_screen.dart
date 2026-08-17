@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+
+import '../services/video_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/preset_store.dart';
@@ -194,9 +196,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     switch (kind) {
       case _PickKind.video:
-        // image_picker 沒有「只選影片」的 API，用混合選取再濾掉照片，
-        // 這樣才留得住系統原生的相簿選取器
-        final list = await ImagePicker().pickMultipleMedia();
+        // 相簿只列影片：選單上寫「影片」，就不該讓照片跟著出現
+        //（點得下去、最後卻被告知不能用）
+        final list = await pickVideoFiles();
         final videos = list.where(_isVideoFile).toList();
         // 提示交給批次頁進場後顯示——在這裡 show 會馬上被
         // 推上來的新頁面蓋住，使用者根本看不到
