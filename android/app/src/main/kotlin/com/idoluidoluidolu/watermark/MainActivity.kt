@@ -47,13 +47,17 @@ class MainActivity : FlutterActivity() {
                 val path = call.argument<String>("path")
                 val ms = (call.argument<Number>("ms") ?: 0).toLong()
                 val maxH = (call.argument<Number>("maxH") ?: 540).toInt()
+                // 拖曳預覽壓得兇一點沒人看得出來；當裁切底圖時會被放大
+                // 到滿版，壓縮痕跡就很明顯，呼叫端自己決定
+                val q = ((call.argument<Number>("q") ?: 0.8).toDouble() * 100)
+                    .toInt().coerceIn(30, 100)
                 if (path == null) {
                     result.success(null)
                     return@setMethodCallHandler
                 }
                 frameExec.execute {
                     val bytes = try {
-                        grabFrame(path, ms, maxH)
+                        grabFrame(path, ms, maxH, q)
                     } catch (_: Exception) {
                         null
                     }
@@ -62,7 +66,12 @@ class MainActivity : FlutterActivity() {
             }
     }
 
-    private fun grabFrame(path: String, ms: Long, maxH: Int): ByteArray? {
+    private fun grabFrame(
+        path: String,
+        ms: Long,
+        maxH: Int,
+        quality: Int = 80,
+    ): ByteArray? {
         if (cachedPath != path) {
             retriever?.release()
             retriever = MediaMetadataRetriever().also { it.setDataSource(path) }
@@ -102,7 +111,7 @@ class MainActivity : FlutterActivity() {
         }
         if (bmp == null) return null
         val out = ByteArrayOutputStream()
-        bmp.compress(Bitmap.CompressFormat.JPEG, 80, out)
+        bmp.compress(Bitmap.CompressFormat.JPEG, quality, out)
         bmp.recycle()
         return out.toByteArray()
     }

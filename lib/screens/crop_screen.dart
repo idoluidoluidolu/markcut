@@ -522,7 +522,7 @@ class _CropPainter extends CustomPainter {
       image,
       Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
       view,
-      Paint()..filterQuality = FilterQuality.medium,
+      Paint()..filterQuality = FilterQuality.high,
     );
     // 框外壓暗
     final dim = Paint()..color = const Color(0xB3000000);

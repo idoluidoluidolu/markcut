@@ -29,16 +29,20 @@ Future<List<Uint8List>> nativeStrip(
   return out;
 }
 
+/// [quality] 是 JPEG 品質。拖曳預覽求快，壓得兇一點沒人看得出來；
+/// 但拿去當裁切畫面的底圖時會被放大到滿版，壓縮痕跡就很明顯
 Future<Uint8List?> nativeFrameAt(
   String path,
   double seconds, {
   int maxH = 540,
+  double quality = 0.7,
 }) async {
   try {
     return await _ch.invokeMethod<Uint8List>('frameAt', {
       'path': path,
       'ms': (seconds * 1000).round(),
       'maxH': maxH,
+      'q': quality,
     });
   } catch (_) {
     return null;

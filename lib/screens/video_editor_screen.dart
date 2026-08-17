@@ -2189,8 +2189,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _cropVideoClip(TimelineClip clip) async {
     final src = _tl.sourceOf(clip);
     // 底圖用這一段的一格畫面（拿不到就用縮圖）
+    // 底圖抓大一點：這張要鋪滿整個裁切畫面，720 高的圖在 3 倍螢幕上
+    // 等於放大四倍，糊到看不清楚要裁哪裡。工作檔本來就只有 1080 短邊，
+    // 抓到頂也不貴（縮圖那份是給時間軸用的小圖，只有拿不到畫面才退回它）
     final frame =
-        await nativeFrameAt(src.previewPath, clip.trimStart, maxH: 720) ??
+        await nativeFrameAt(
+          src.previewPath,
+          clip.trimStart,
+          maxH: 1920,
+          quality: 0.95,
+        ) ??
         _thumbs[clip.sourceIndex]?.firstOrNull;
     if (frame == null) {
       if (mounted) showHint(context, '抓不到這一段的畫面，沒辦法裁切', error: true);

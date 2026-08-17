@@ -126,6 +126,9 @@ final class AtomicFlag {
         return
       }
       let maxH = args["maxH"] as? Int ?? 540
+      // 拖曳預覽壓得兇一點沒人看得出來；當裁切底圖時會被放大到滿版，
+      // 壓縮痕跡就很明顯，呼叫端自己決定
+      let jpegQ = CGFloat(args["q"] as? Double ?? 0.7)
       self.frameQueue.async {
         let asset: AVURLAsset
         if let cached = self.frameAssets[path] {
@@ -145,7 +148,7 @@ final class AtomicFlag {
         var payload: FlutterStandardTypedData?
         if let cg = try? gen.copyCGImage(
           at: CMTime(value: Int64(ms), timescale: 1000), actualTime: nil),
-          let data = UIImage(cgImage: cg).jpegData(compressionQuality: 0.7)
+          let data = UIImage(cgImage: cg).jpegData(compressionQuality: jpegQ)
         {
           payload = FlutterStandardTypedData(bytes: data)
         }
