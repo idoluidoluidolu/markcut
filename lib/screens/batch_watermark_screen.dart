@@ -943,6 +943,8 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                   // override，綁 _settings 的話面板改了預覽不動、
                   // 其他張反而被改到
                   settings: _effectiveOf(_previewIndex),
+                  // 剛加的圖片直接選起來，可以馬上拖／縮放
+                  onLogoAdded: () => setState(() => _wmPart = WmPart.logo),
                   onChanged: () => setState(() {}),
                   onBeforeChange: _pushUndo,
                   syncVersion: _sync,

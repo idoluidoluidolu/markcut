@@ -617,6 +617,10 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
               // 示意畫面沒有時間軸（time 為 null）所以不會動，
               // 但值會存進範本，套到影片上就看得到
               showAnimation: true,
+              // 剛加的圖片直接選起來：接下來一定是要拖它／縮放它，
+              // 不用再回畫面上找它點一下（其他三個編輯畫面本來就這樣，
+              // 只有這裡跟批次漏掛）
+              onLogoAdded: () => setState(() => _wmPart = WmPart.logo),
               onChanged: () => setState(() {}),
               onBeforeChange: _pushUndo,
               syncVersion: _sync,
