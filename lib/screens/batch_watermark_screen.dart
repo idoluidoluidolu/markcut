@@ -1002,11 +1002,15 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                   decoration: BoxDecoration(
                     color: kPanelHi,
                     borderRadius: BorderRadius.circular(6),
-                    border: Border.all(
-                      color: i == _previewIndex ? kSelect : kBorder,
-                      width: i == _previewIndex ? 1.5 : 1,
-                    ),
+                    border: Border.all(color: kBorder, width: 1),
                   ),
+                  // 選取框畫在前景，縮圖不位移
+                  foregroundDecoration: i == _previewIndex
+                      ? BoxDecoration(
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: kSelect, width: 1.5),
+                        )
+                      : null,
                   child: Stack(
                     fit: StackFit.expand,
                     children: [

@@ -983,11 +983,15 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                     decoration: BoxDecoration(
                       color: on ? kPanelHi : Colors.transparent,
                       borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                        color: on ? kAmber : kClipBorder,
-                        width: on ? 1.5 : 1,
-                      ),
+                      border: Border.all(color: kClipBorder, width: 1),
                     ),
+                    // 粗框畫在前景，字不位移（同影片編輯）
+                    foregroundDecoration: on
+                        ? BoxDecoration(
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: kAmber, width: 1.5),
+                          )
+                        : null,
                     child: Text(
                       label,
                       style: TextStyle(

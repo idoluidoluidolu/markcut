@@ -2809,15 +2809,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   child: Container(
                     padding: const EdgeInsets.symmetric(vertical: 10),
                     alignment: Alignment.center,
-                    // 設定面板裡的「選項」一律白框白字＋亮底
+                    // 設定面板裡的「選項」一律白框白字＋亮底。
+                    // 選取的粗框畫在前景：邊框寬度變了會被算進內距，
+                    // 裡面的字會位移半個像素
                     decoration: BoxDecoration(
                       color: on ? kPanelHi : Colors.transparent,
                       borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                        color: on ? kAmber : kClipBorder,
-                        width: on ? 1.5 : 1,
-                      ),
+                      border: Border.all(color: kClipBorder, width: 1),
                     ),
+                    foregroundDecoration: on
+                        ? BoxDecoration(
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: kAmber, width: 1.5),
+                          )
+                        : null,
                     child: Text(
                       label,
                       style: TextStyle(

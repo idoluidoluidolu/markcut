@@ -872,11 +872,15 @@ class _TimelineEditorState extends State<TimelineEditor> {
         decoration: BoxDecoration(
           color: kPanel,
           borderRadius: BorderRadius.circular(4),
-          border: Border.all(
-            color: widget.wmSelected ? kSelect : kBorder,
-            width: widget.wmSelected ? 1.5 : 1,
-          ),
+          border: Border.all(color: kBorder, width: 1),
         ),
+        // 選取框畫在前景：換邊框寬度會讓裡面的圖示位移
+        foregroundDecoration: widget.wmSelected
+            ? BoxDecoration(
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: kSelect, width: 1.5),
+              )
+            : null,
         alignment: Alignment.center,
         child: Icon(
           hidden ? Icons.visibility_off_outlined : Icons.branding_watermark,
@@ -950,10 +954,17 @@ class _TimelineEditorState extends State<TimelineEditor> {
                       : kPanelHi,
                   borderRadius: BorderRadius.circular(4),
                   border: Border.all(
-                    color: widget.wmSelected ? kSelect : Color(0xFF3A3A42),
-                    width: widget.wmSelected ? 1.5 : 1,
+                    color: const Color(0xFF3A3A42),
+                    width: 1,
                   ),
                 ),
+                // 選取框畫在前景，內容不位移
+                foregroundDecoration: widget.wmSelected
+                    ? BoxDecoration(
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: kSelect, width: 1.5),
+                      )
+                    : null,
                 clipBehavior: Clip.antiAlias,
                 child: Stack(
                   fit: StackFit.expand,
@@ -1570,11 +1581,11 @@ class _TrackLabelState extends State<_TrackLabel> {
       decoration: BoxDecoration(
         color: widget.isRecording ? const Color(0x33FF3B30) : kPanel,
         borderRadius: BorderRadius.circular(4),
+        // 旁白軌的紅框是常駐的（不會切換，不位移）；琥珀的選取框
+        // 畫在下面的前景，寬度切換不影響版面
         border: Border.all(
-          color: widget.isVoice
-              ? const Color(0xFFFF3B30)
-              : (amber ? kSelect : kBorder),
-          width: (amber || widget.isVoice) ? 2 : 1,
+          color: widget.isVoice ? const Color(0xFFFF3B30) : kBorder,
+          width: widget.isVoice ? 2 : 1,
         ),
         boxShadow: widget.isDragging
             ? [
@@ -1586,6 +1597,12 @@ class _TrackLabelState extends State<_TrackLabel> {
               ]
             : null,
       ),
+      foregroundDecoration: (amber && !widget.isVoice)
+          ? BoxDecoration(
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: kSelect, width: 2),
+            )
+          : null,
       // 只放一個圖示，乾淨就好（整條軌道仍可上下拖曳換順序）
       child: Center(
         child: widget.isVoice

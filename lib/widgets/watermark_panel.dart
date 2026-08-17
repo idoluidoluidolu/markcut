@@ -730,14 +730,17 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                           color: s.animation == a
                               ? kPanelHi
                               : Colors.transparent,
-                          border: Border.all(
-                            color: s.animation == a
-                                ? kAmber
-                                : kClipBorder,
-                            width: s.animation == a ? 1.5 : 1,
-                          ),
+                          border: Border.all(color: kClipBorder, width: 1),
                           borderRadius: BorderRadius.circular(6),
                         ),
+                        // 選取的粗框畫在前景，字不位移
+                        foregroundDecoration: s.animation == a
+                            ? BoxDecoration(
+                                borderRadius: BorderRadius.circular(6),
+                                border:
+                                    Border.all(color: kAmber, width: 1.5),
+                              )
+                            : null,
                         child: Text(a.label,
                             style: TextStyle(
                                 fontSize: 11.5,
@@ -1028,11 +1031,15 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                     width: 46,
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(6),
-                      border: Border.all(
-                        color: on ? kSelect : kBorder,
-                        width: on ? 2 : 1,
-                      ),
+                      border: Border.all(color: kBorder, width: 1),
                     ),
+                    // 選取框畫在前景，縮圖不位移
+                    foregroundDecoration: on
+                        ? BoxDecoration(
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: kSelect, width: 2),
+                          )
+                        : null,
                     clipBehavior: Clip.antiAlias,
                     child: bytes == null
                         ? const Icon(Icons.image_outlined,
@@ -1190,11 +1197,15 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: selected ? kAmber : kBorder,
-            width: selected ? 1.5 : 1,
-          ),
+          border: Border.all(color: kBorder, width: 1),
         ),
+        // 選取框畫在前景，內容不位移
+        foregroundDecoration: selected
+            ? BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: kAmber, width: 1.5),
+              )
+            : null,
         child: Stack(
           fit: StackFit.expand,
           children: [
