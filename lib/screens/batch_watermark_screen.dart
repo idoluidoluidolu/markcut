@@ -101,8 +101,18 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   void initState() {
     super.initState();
     _initialJson = jsonEncode(_settings.toJson());
-    _loadPreviews();
-    _loadPreviewFull();
+    // web：大預覽跟縮圖列同時各開一個 <video> 解同一支影片，
+    // 其中一邊常常等不到（timeout 回空）而且永遠不重試——縮圖列
+    // 就整排空白。錯開：先把大預覽讀完，再慢慢補縮圖。
+    // 手機的抽幀走原生的單一工作緒，本來就不會互相搶
+    if (kIsWeb) {
+      _loadPreviewFull().then((_) {
+        if (mounted) _loadPreviews();
+      });
+    } else {
+      _loadPreviews();
+      _loadPreviewFull();
+    }
     final hint = widget.initialHint;
     if (hint != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -312,6 +322,12 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
           if (t.isEmpty) {
             t = await engine.makeThumbnails(f.path, 1, 1, height: 240);
           }
+          if (t.isEmpty) {
+            // web 的 <video> 抽格偶爾等不到（跟別的解碼搶），
+            // 喘口氣再試一次，不要一翻車就整排空白
+            await Future<void>.delayed(const Duration(milliseconds: 400));
+            t = await engine.makeThumbnails(f.path, 1, 1, height: 240);
+          }
           if (t.isNotEmpty) item.thumb = t.first;
           // 尺寸問影片本身，不要拿縮圖反推：縮圖只有在旋轉被正確
           // 套用時才等於顯示方向，一有落差畫布就會變成橫的
@@ -477,6 +493,8 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   /// 這裡反而是最需要選項的地方（單張編輯早就有了）
   Future<void> _confirmExportAll() async {
     if (_exporting) return;
+    // 先問畫質（取消＝整個不匯）
+    if (!await _askQuality() || !mounted) return;
     // 整批都是影片就不用問（影片不吃這個格式）
     final hasPhoto = _items.any((it) => !_isVideo(it.file));
     var jpeg = false;
@@ -676,10 +694,12 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     return result.ok;
   }
 
-  /// 畫質：跟影片編輯的匯出頁同一個彈窗。這裡不列檔案大小——
-  /// 一批裡每個檔案的長度與尺寸都不一樣，加總出來的數字只會誤導
-  void _openQualitySheet() {
-    showDialog(
+  /// 畫質：按下「輸出」時才問（畫質是輸出的參數，不是編輯的狀態）。
+  /// 點一個選項＝選定並繼續；點外面＝取消整個輸出。
+  /// 這裡不列檔案大小——一批裡每個檔案的長度與尺寸都不一樣，
+  /// 加總出來的數字只會誤導
+  Future<bool> _askQuality() async {
+    final picked = await showDialog<ExportQuality>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('畫質'),
@@ -691,21 +711,21 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
             children: [
               for (final (i, q) in qualityOrder.indexed)
                 optionRow(
-  context: context,
+                  context: context,
                   title: q.label,
                   subtitle: q.note,
                   selected: _quality == q,
                   first: i == 0,
-                  onTap: () {
-                    setState(() => _quality = q);
-                    Navigator.pop(context);
-                  },
+                  onTap: () => Navigator.pop(context, q),
                 ),
             ],
           ),
         ),
       ),
     );
+    if (picked == null) return false;
+    setState(() => _quality = picked);
+    return true;
   }
 
   // ===== 畫面 =====
@@ -1008,38 +1028,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
               ],
             ),
           ),
-          // 畫質：整批共用一組。放在輸出鈕正上方——它唯一的用途就是
-          // 讓人在按下去之前決定要不要改，放最靠近手指的地方最有用
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 2, 20, 0),
-            child: InkWell(
-              onTap: _exporting ? null : _openQualitySheet,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Row(
-                  children: [
-                    const Text(
-                      '畫質',
-                      style: TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0.3,
-                        color: kText,
-                      ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      _quality.label,
-                      style: const TextStyle(fontSize: 12.5, color: kTextDim),
-                    ),
-                    const SizedBox(width: 3),
-                    const Icon(Icons.chevron_right, size: 13, color: kIcon),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          // 底部那一排跟照片編輯完全一樣：存成範本（次要）＋輸出（主要）
+          // 底部那一排跟照片編輯完全一樣：存成範本（次要）＋輸出（主要）。
+          // 畫質不放這裡：那是「輸出的參數」，按下輸出時才問（見
+          // _confirmExportAll），編輯畫面上擺一顆常駐的只會讓人分心
           SafeArea(
             top: false,
             child: Padding(
