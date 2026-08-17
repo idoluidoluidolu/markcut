@@ -625,9 +625,11 @@ final class AtomicFlag {
       // HLG／PQ 的來源：色調映射是 AVFoundation 內建合成器在做的，
       // 自訂合成器拿到的是「還沒映射」的原始畫格，直接當 709 render
       // 出來就是顏色變淡、發灰。這種來源退回內建那條路（慢一點但正確）
-      // formatDescriptions 在新 SDK 已經是 [CMFormatDescription]，
-      // 再做條件轉型會被編譯器擋（CF 型別的多餘轉型是錯誤不是警告）
-      for d in src.formatDescriptions {
+      // formatDescriptions 是 [Any]，而 CF 型別只能用強制轉型：
+      // as? 會被編譯器擋（「一定會成功」是錯誤）、直接用又轉不過去，
+      // as! 是官方文件的標準寫法
+      for fd in src.formatDescriptions {
+        let d = fd as! CMFormatDescription
         guard
           let tf = CMFormatDescriptionGetExtension(
             d, extensionKey: kCMFormatDescriptionExtension_TransferFunction)
