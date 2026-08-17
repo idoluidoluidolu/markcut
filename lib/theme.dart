@@ -20,7 +20,9 @@ const kBorder = Color(0xFF232328); // 邊線
 const kClipBorder = Color(0xFF2A2A30); // 時間軸片段邊線
 // 預覽區的底（畫布外圍那圈）。幾乎是純黑，只留一階讓黑色畫布的邊界
 // 還看得出來——比例不同的素材會留黑邊，全一樣黑就分不出畫面到哪裡
-const kPreviewBg = Color(0xFF0A0A0C);
+// 比畫布的純黑亮一階：畫布邊界靠「面積分色」自己浮出來，
+// 畫面上不用加任何線（方案 B；嫌不夠清楚可以再疊一條髮絲框）
+const kPreviewBg = Color(0xFF1B1B20);
 const kAmber = Color(0xFFFFFFFF); // 強調色＝純白（沿用變數名，全 App 通用）
 // 選取狀態只有兩種，不要再長出第三種：
 //   設定面板裡的「選項」被選中 → kAmber（純白）框 + kPanelHi 底
