@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show File, Platform;
+import 'dart:io' show Platform;
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -2051,18 +2051,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         bytes: await img.readAsBytes(),
       ));
     }
-    // 只選一張才進裁切畫面：一次選十張還一張一張裁太煩。
-    // web 沒有檔案路徑可以寫，裁完的 bytes 放不回素材，先不給
-    if (items.length == 1 && !kIsWeb && mounted) {
+    // 只選一張才進裁切畫面：一次選十張還一張一張裁太煩
+    if (items.length == 1 && mounted) {
       final out = await cropImage(context, items.first.bytes);
       if (out != null) {
-        final f = File(
-          '${(await getTemporaryDirectory()).path}'
-          '${Platform.pathSeparator}crop_'
-          '${DateTime.now().millisecondsSinceEpoch}.png',
+        // 手機寫暫存檔、web 做 blob URL；存不下來就用原圖，
+        // 至少東西還加得進去
+        final path = await writeTempBytes(out, 'png');
+        items[0] = (
+          path: path ?? items.first.path,
+          name: items.first.name,
+          bytes: path == null ? items.first.bytes : out,
         );
-        await f.writeAsBytes(out);
-        items[0] = (path: f.path, name: items.first.name, bytes: out);
       }
     }
     if (!mounted) return;
@@ -2124,23 +2124,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _cropImageClip(TimelineClip clip) async {
     final srcIndex = _cropOrigin[clip.sourceIndex] ?? clip.sourceIndex;
     final src = _tl.sources[srcIndex];
-    Uint8List raw;
-    try {
-      raw = await File(src.path).readAsBytes();
-    } catch (_) {
+    // 圖片素材的位元組本來就留了一份當縮圖（web 的 blob URL 讀不回來，
+    // 只能靠它）；沒有才去讀檔
+    final raw = _thumbs[srcIndex]?.firstOrNull ??
+        await readFileBytes(src.path);
+    if (raw == null) {
       if (mounted) showHint(context, '這張圖讀不到了', error: true);
       return;
     }
     if (!mounted) return;
     final cut = await cropImage(context, raw);
     if (cut == null || !mounted) return;
-    // 裁完是一份 bytes，素材要的是檔案路徑
-    final f = File(
-      '${(await getTemporaryDirectory()).path}'
-      '${Platform.pathSeparator}crop_'
-      '${DateTime.now().millisecondsSinceEpoch}.png',
-    );
-    await f.writeAsBytes(cut);
+    // 裁完是一份 bytes，素材要的是路徑（手機＝暫存檔，web＝blob URL）
+    final path = await writeTempBytes(cut, 'png');
+    if (path == null) {
+      if (mounted) showHint(context, '裁切結果存不下來', error: true);
+      return;
+    }
     var w = 0, h = 0;
     try {
       final codec = await ui.instantiateImageCodec(cut);
@@ -2154,7 +2154,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final newIndex = _tl.sources.length;
     _tl.sources.add(
       MediaSource(
-        path: f.path,
+        path: path,
         name: src.name,
         kind: ClipKind.image,
         duration: src.duration,
@@ -7556,14 +7556,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         Icons.crop,
                         '裁切',
                         (sel == null ||
-                                kIsWeb ||
                                 _tl.sourceOf(sel).kind != ClipKind.image)
                             ? null
                             : () => _cropImageClip(sel),
                         tip: '裁切這張圖片',
                         disabledHint: sel == null
                             ? '先在時間軸點選一張圖片'
-                            : (kIsWeb ? '網頁版不支援裁切' : '只有圖片素材可以裁切'),
+                            : '只有圖片素材可以裁切',
                       ),
                       _toolBtn(
                         Icons.tune,
