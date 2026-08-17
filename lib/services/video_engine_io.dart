@@ -567,6 +567,7 @@ Future<String> _buildCommand(
       // 畫格的色彩標記換掉，換掉之後就不知道來源是 HLG/PQ 了
       '${hdrTrcOf(c.sourceIndex, h2)}'
       'scale=$w2:$h2:flags=lanczos,'
+      '${c.mirror ? 'hflip,' : ''}'
       '${c.reverse ? 'reverse,' : ''}'
       // 全域速度 × 每片段速度一起壓進 PTS
       //（速度 clamp 到跟 TimelineClip.length 同一個範圍，
@@ -611,6 +612,7 @@ Future<String> _buildCommand(
       fc.write(
         '[$label]'
         'scale=$w2:$h2:flags=lanczos'
+        '${c.mirror ? ',hflip' : ''}'
         '${_eq(c)}'
         ',format=rgba,'
         '$cut'

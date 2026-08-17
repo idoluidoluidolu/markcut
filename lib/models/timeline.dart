@@ -145,6 +145,9 @@ class TimelineClip {
   /// 倒轉播放（速度滑桿拉到負的那半邊）
   bool reverse;
 
+  /// 左右鏡像。自拍的畫面、有字的招牌常常要翻回來
+  bool mirror;
+
   /// 調色（跟照片編輯共用同一個模型）
   final ColorGrade color;
 
@@ -163,6 +166,7 @@ class TimelineClip {
     this.fadeOut = 0,
     this.speed = 1.0,
     this.reverse = false,
+    this.mirror = false,
     ColorGrade? color,
   }) : color = color ?? ColorGrade();
 
@@ -206,6 +210,7 @@ class TimelineClip {
     'fadeOut': fadeOut,
     'speed': speed,
     'reverse': reverse,
+    'mirror': mirror,
     // 調色的鍵維持扁平，舊草稿讀得回來
     ...color.toJson(),
   };
@@ -227,6 +232,7 @@ class TimelineClip {
     fadeOut: (j['fadeOut'] ?? 0).toDouble(),
     speed: (j['speed'] ?? 1.0).toDouble(),
     reverse: (j['reverse'] ?? false) as bool,
+    mirror: (j['mirror'] ?? false) as bool,
     color: ColorGrade.fromJson(j),
   );
 

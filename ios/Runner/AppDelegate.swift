@@ -389,7 +389,7 @@ final class AtomicFlag {
       [(
         range: CMTimeRange, transform: CGAffineTransform, size: CGSize,
         fadeIn: Double, fadeOut: Double, userScale: Double, px: Double,
-        py: Double
+        py: Double, mirror: Bool
       )] = []
 
     for clip in clips {
@@ -404,6 +404,7 @@ final class AtomicFlag {
       let userScale = clip["scale"] as? Double ?? 1
       let px = clip["px"] as? Double ?? 0.5
       let py = clip["py"] as? Double ?? 0.5
+      let mirror = clip["mirror"] as? Bool ?? false
       if end - start <= 0.01 { continue }
 
       if gap > 0.01 {
@@ -439,7 +440,8 @@ final class AtomicFlag {
       segments.append((
         range: CMTimeRange(start: cursor, duration: outDur),
         transform: src.preferredTransform, size: src.naturalSize,
-        fadeIn: fadeIn, fadeOut: fadeOut, userScale: userScale, px: px, py: py
+        fadeIn: fadeIn, fadeOut: fadeOut, userScale: userScale, px: px,
+        py: py, mirror: mirror
       ))
       cursor = cursor + outDur
     }
@@ -513,7 +515,14 @@ final class AtomicFlag {
       let dh = abs(disp.height)
       guard dw > 1, dh > 1 else { continue }
       let k = min(canvas.width / dw, canvas.height / dh)
+      // 鏡像在「轉正之後的顯示座標」上做：先左右翻，再推回原位，
+      // 後面的縮放置中就完全不用改
       var t = seg.transform
+      if seg.mirror {
+        t = t.concatenating(CGAffineTransform(scaleX: -1, y: 1))
+          .concatenating(CGAffineTransform(translationX: dw, y: 0))
+      }
+      t = t
         .concatenating(CGAffineTransform(scaleX: k, y: k))
         .concatenating(
           CGAffineTransform(
@@ -1585,6 +1594,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       var userScale: Double
       var px: Double
       var py: Double
+      var mirror: Bool
       var track: AVMutableCompositionTrack
       var layer: Int
     }
@@ -1615,6 +1625,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       let userScale = clip["scale"] as? Double ?? 1
       let px = clip["px"] as? Double ?? 0.5
       let py = clip["py"] as? Double ?? 0.5
+      let mirror = clip["mirror"] as? Bool ?? false
       if end - start <= 0.01 { continue }
 
       let asset = AVURLAsset(url: URL(fileURLWithPath: path))
@@ -1730,7 +1741,7 @@ final class CompPlayer: NSObject, FlutterTexture {
           range: CMTimeRange(start: putAt, duration: outDur),
           transform: src.preferredTransform, size: src.naturalSize,
           fadeIn: fadeIn, fadeOut: fadeOut, userScale: userScale, px: px,
-          py: py, track: slot.track, layer: layer))
+          py: py, mirror: mirror, track: slot.track, layer: layer))
     }
     if segments.isEmpty {
       buildError = "沒有一段畫面接得進去"
@@ -1781,7 +1792,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     let needsVC =
       vTracks.count > 1
       || segments.contains { seg in
-        seg.fadeIn > 0.01 || seg.fadeOut > 0.01
+        seg.fadeIn > 0.01 || seg.fadeOut > 0.01 || seg.mirror
           || abs(seg.userScale - 1) > 0.001 || abs(seg.px - 0.5) > 0.001
           || abs(seg.py - 0.5) > 0.001
       }
@@ -1822,7 +1833,13 @@ final class CompPlayer: NSObject, FlutterTexture {
         let dh = abs(disp.height)
         guard dw > 1, dh > 1 else { return nil }
         let k = min(size.width / dw, size.height / dh)
+        // 鏡像在「轉正之後的顯示座標」上做：先左右翻，再推回原位
         var t = seg.transform
+        if seg.mirror {
+          t = t.concatenating(CGAffineTransform(scaleX: -1, y: 1))
+            .concatenating(CGAffineTransform(translationX: dw, y: 0))
+        }
+        t = t
           .concatenating(CGAffineTransform(scaleX: k, y: k))
           .concatenating(
             CGAffineTransform(

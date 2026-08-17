@@ -227,6 +227,8 @@ void main() {
           fadeIn: r.nextDouble() * 3,
           fadeOut: r.nextDouble() * 3,
           speed: 0.1 + r.nextDouble() * 15.9,
+          reverse: r.nextBool(),
+          mirror: r.nextBool(),
           color: ColorGrade()
             ..balR = r.nextDouble() * 2 - 1
             ..balG = r.nextDouble() * 2 - 1

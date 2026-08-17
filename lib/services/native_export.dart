@@ -111,6 +111,7 @@ class NativeExport {
         'scale': c.scale,
         'px': c.px,
         'py': c.py,
+        'mirror': c.mirror,
       });
       cursor = c.end;
     }

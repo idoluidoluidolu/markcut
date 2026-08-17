@@ -621,7 +621,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             '${c.offset}|${c.volume}|${c.speed}|${c.fadeIn}|${c.fadeOut}|'
             // 調色也要記：有調色就得退回舊路徑（系統影片圖層疊不上
             // Flutter 的濾鏡），不記的話調了色也不會換引擎
-            '${c.scale}|${c.px}|${c.py}|${c.reverse}|${c.color.hasColor}',
+            '${c.scale}|${c.px}|${c.py}|${c.reverse}|${c.mirror}'
+            '|${c.color.hasColor}',
     // 馬賽克片段也要算進來：它跟調色一樣會逼著退回材質那條路，
     // 而它不是影片片段，不記的話「加了馬賽克」不會觸發重烘
     'mz${_tl.clips.where((c) => _tl.sourceOf(c).kind == ClipKind.mosaic).length}',
@@ -2120,6 +2121,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 重新裁切一律從原圖開始：不然裁小了之後只能在那一小塊裡面繼續裁，
   /// 越裁越小回不去。按上一步就會回到裁切前的樣子
   final Map<int, int> _cropOrigin = {};
+
+  /// 左右鏡像這一段（自拍、有字的招牌常常要翻回來）
+  void _toggleMirror(TimelineClip clip) {
+    _pushUndo();
+    setState(() => clip.mirror = !clip.mirror);
+    _compRefreshIfChanged();
+    _saveDraft();
+  }
 
   /// 裁切時間軸上的一張圖片素材
   Future<void> _cropImageClip(TimelineClip clip) async {
@@ -5876,7 +5885,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           c.track,
                                           Positioned.fromRect(
                                             rect: rf,
-                                            child: _tinted(
+                                            child: _shaped(
                                               c,
                                               Opacity(
                                                 opacity: c.fadeFactorAt(
@@ -5950,7 +5959,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         rect: warm
                                             ? const Rect.fromLTWH(0, 0, 1, 1)
                                             : r,
-                                        child: _tinted(
+                                        child: _shaped(
                                           c,
                                           Opacity(
                                             opacity: warm
@@ -6255,7 +6264,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             fit: StackFit.expand,
                                             children: [
                                               if (hasBytes)
-                                                _tinted(
+                                                _shaped(
                                                   c,
                                                   Opacity(
                                                     opacity: c.fadeFactorAt(
@@ -7628,6 +7637,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             ? '先在時間軸點選影片或圖片'
                             : '這種素材沒有畫面可以裁',
                       ),
+                      _toolBtn(
+                        Icons.flip,
+                        '鏡像',
+                        (sel == null ||
+                                !(_tl.sourceOf(sel).kind == ClipKind.image ||
+                                    _tl.sourceOf(sel).isVideo))
+                            ? null
+                            : () => _toggleMirror(sel),
+                        tip: '左右翻轉',
+                        color: (sel?.mirror ?? false) ? kSelect : null,
+                        disabledHint: sel == null
+                            ? '先在時間軸點選影片或圖片'
+                            : '這種素材沒有畫面可以翻',
+                      ),
                       // 音量／效果分開兩顆：以前擠在同一張表裡，
                       // 想調音量的人得先看懂「效果」是什麼
                       _toolBtn(
@@ -8392,12 +8415,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 注意：Web 的影片是 HTML <video> 元素，跟 Flutter 畫布分開合成，
   /// 濾鏡吃不到它——Web 上只有拖曳時的快取幀會變色，播放中的影片不會。
   /// 手機是材質（texture），兩種都正常。
-  Widget _tinted(TimelineClip c, Widget child) {
+  /// 一個片段的畫面外觀：調色 ＋ 左右鏡像。
+  ///
+  /// 只作用在「一片段一圖層」那條路。合成播放器接手時整個畫面是系統
+  /// 合出來的一層，這裡翻它等於整組一起翻——鏡像是在原生端逐片段做的
+  Widget _shaped(TimelineClip c, Widget child) {
+    var w = child;
+    if (c.mirror) {
+      w = Transform(
+        alignment: Alignment.center,
+        transform: Matrix4.identity()..scaleByDouble(-1, 1, 1, 1),
+        child: w,
+      );
+    }
     // 比對中直接回傳原樣，看得出調色前後差多少
-    if (_colorCompare || !c.color.hasColor) return child;
+    if (_colorCompare || !c.color.hasColor) return w;
     return ColorFiltered(
       colorFilter: ColorFilter.matrix(c.color.matrix),
-      child: child,
+      child: w,
     );
   }
 

@@ -106,6 +106,7 @@ class CompPlayer {
           'scale': c.scale,
           'px': c.px,
           'py': c.py,
+          'mirror': c.mirror,
         },
     ];
     try {
