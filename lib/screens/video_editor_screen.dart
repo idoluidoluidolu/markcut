@@ -6331,6 +6331,29 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   );
 
                                   // 選取中的圖層：細白框＋四角把手 + 拖曳移動 / 雙指縮放
+                                  //
+                                  // 素材拖出畫面時，框會被預覽的裁切
+                                  // 吃掉，看起來就像選取整個不見了。
+                                  // 把框夾回可見範圍：至少沿著邊還看得
+                                  // 到它在哪、也還抓得到它拖回來
+                                  final canvasRect =
+                                      Offset.zero & Size(w, h);
+                                  if (selRect != null &&
+                                      !selRect.overlaps(canvasRect)) {
+                                    // 整個在外面：連一條邊都沒有，
+                                    // 貼著最近的邊留一小塊當把手
+                                    final c = selRect.center;
+                                    selRect = Rect.fromCenter(
+                                      center: Offset(
+                                        c.dx.clamp(6.0, w - 6),
+                                        c.dy.clamp(6.0, h - 6),
+                                      ),
+                                      width: 12,
+                                      height: 12,
+                                    );
+                                  } else if (selRect != null) {
+                                    selRect = selRect.intersect(canvasRect);
+                                  }
                                   if (selRect != null && selVisual != null) {
                                     final sc = selVisual;
                                     children.add(
