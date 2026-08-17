@@ -122,23 +122,43 @@ class _CollageScreenState extends State<CollageScreen> {
   /// 先用 ImageDescriptor 讀出原圖尺寸（不解碼像素），才知道該縮哪一邊——
   /// 只指定 targetWidth 的話，直式照片反而會被放大
   Future<ui.Image> _decode(Uint8List bytes) async {
-    final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
-    final desc = await ui.ImageDescriptor.encoded(buffer);
-    final long = math.max(desc.width, desc.height);
-    ui.Codec codec;
-    if (long > _kDecodeLongSide) {
-      final k = _kDecodeLongSide / long;
-      codec = await desc.instantiateCodec(
-        targetWidth: math.max(1, (desc.width * k).round()),
-        targetHeight: math.max(1, (desc.height * k).round()),
-      );
-    } else {
-      codec = await desc.instantiateCodec(); // 本來就小，不放大
+    try {
+      final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+      final desc = await ui.ImageDescriptor.encoded(buffer);
+      final long = math.max(desc.width, desc.height);
+      ui.Codec codec;
+      if (long > _kDecodeLongSide) {
+        final k = _kDecodeLongSide / long;
+        codec = await desc.instantiateCodec(
+          targetWidth: math.max(1, (desc.width * k).round()),
+          targetHeight: math.max(1, (desc.height * k).round()),
+        );
+      } else {
+        codec = await desc.instantiateCodec(); // 本來就小，不放大
+      }
+      final frame = await codec.getNextFrame();
+      codec.dispose();
+      desc.dispose();
+      return frame.image;
+    } catch (_) {
+      // ImageDescriptor 這條快路不是每個平台都在（web 的部分算圖
+      // 引擎沒有它），走不通就退回一般解碼——少了「先縮再解」的
+      // 省記憶體，但至少解得開
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      codec.dispose();
+      return frame.image;
     }
-    final frame = await codec.getNextFrame();
-    codec.dispose();
-    desc.dispose();
-    return frame.image;
+  }
+
+  /// 讀不出來時給個有用的說法：iPhone 的 HEIC 瀏覽器解不動是最常見的
+  /// 原因，講清楚比一句「讀不出來」省使用者一輪瞎猜
+  static String _decodeFailMsg(Iterable<String> names) {
+    final heic = names.any((n) {
+      final l = n.toLowerCase();
+      return l.endsWith('.heic') || l.endsWith('.heif');
+    });
+    return heic ? '瀏覽器解不了 HEIC 格式，請先轉成 JPG（或改用手機版）' : '照片讀不出來';
   }
 
   Future<void> _load() async {
@@ -230,7 +250,7 @@ class _CollageScreenState extends State<CollageScreen> {
     final files = await ImagePicker().pickMultiImage();
     if (files.isEmpty || !mounted) return;
     var filled = 0;
-    var failed = 0;
+    final failedNames = <String>[];
     for (final f in files) {
       try {
         final img = await _decode(await f.readAsBytes());
@@ -250,12 +270,12 @@ class _CollageScreenState extends State<CollageScreen> {
         _fits[slot] = _CellFit();
         filled++;
       } catch (_) {
-        failed++;
+        failedNames.add(f.name);
       }
     }
     if (!mounted) return;
-    if (filled == 0 && failed > 0) {
-      showHint(context, '照片讀不出來', error: true);
+    if (failedNames.isNotEmpty) {
+      showHint(context, _decodeFailMsg(failedNames), error: true);
     }
     setState(() {});
   }
@@ -312,7 +332,9 @@ class _CollageScreenState extends State<CollageScreen> {
         _releaseIfUnused(old);
       });
     } catch (_) {
-      if (mounted) showHint(context, '這張照片讀不出來', error: true);
+      if (mounted) {
+        showHint(context, _decodeFailMsg([f.name]), error: true);
+      }
     }
   }
 
