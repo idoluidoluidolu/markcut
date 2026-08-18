@@ -460,11 +460,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           for (final c in (j['clips'] as List))
             TimelineClip.fromJson(Map<String, dynamic>.from(c as Map)),
         ]);
-      var maxId = -1;
-      for (final c in _tl.clips) {
-        if (c.id > maxId) maxId = c.id;
-      }
-      _tl.ensureIdAbove(maxId);
+      final fixedIds = _tl.fixDuplicateIds();
+      if (fixedIds > 0) Diag.note('快照裡有 $fixedIds 個撞號的片段 id，已補新號');
       _wmStart = (j['wmStart'] ?? 0).toDouble();
       _wmEnd = j['wmEnd'] == null ? null : (j['wmEnd'] as num).toDouble();
       if (j['wm'] != null) {
@@ -685,11 +682,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         TimelineClip.fromJson(Map<String, dynamic>.from(cj as Map)),
       );
     }
-    var maxId = -1;
-    for (final c in _tl.clips) {
-      if (c.id > maxId) maxId = c.id;
-    }
-    _tl.ensureIdAbove(maxId);
+    final fixedIds = _tl.fixDuplicateIds();
+    if (fixedIds > 0) Diag.note('草稿裡有 $fixedIds 個撞號的片段 id，已補新號');
     _speed = ((j['speed'] ?? 1.0) as num).toDouble();
     _canvasRatio = CanvasRatio
         .values[((j['ratio'] ?? 0) as int) % CanvasRatio.values.length];

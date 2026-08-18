@@ -542,6 +542,28 @@ void main() {
       expect(CompPlayer.whyNot(tl), '影片結束後還有其他素材');
     });
 
+    test('撞號的片段 id 載入時要補新號（兩軌同時亮燈的根因）', () {
+      final tl = TimelineModel();
+      tl.sources.add(MediaSource(
+          path: '/a.mp4', name: 'a', kind: ClipKind.video, duration: 100));
+      for (final t in [0, 1, 2]) {
+        tl.clips.add(TimelineClip(
+          id: 7, // 三個全撞同一號
+          sourceIndex: 0,
+          trimStart: 0,
+          trimEnd: 5,
+          offset: 0,
+          track: t,
+        ));
+      }
+      final fixed = tl.fixDuplicateIds();
+      expect(fixed, 2, reason: '第一個保留原號，後兩個補新號');
+      expect(tl.clips.map((c) => c.id).toSet().length, 3);
+      expect(tl.clips.first.id, 7);
+      // 補完之後再配號也不會撞
+      expect(tl.clips.every((c) => c.id != tl.nextId()), isTrue);
+    });
+
     test('文字跟影片一樣長（或更短）不影響合成', () {
       final tl = base();
       tl.sources.add(MediaSource(

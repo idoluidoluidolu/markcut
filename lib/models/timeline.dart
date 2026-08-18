@@ -138,7 +138,8 @@ class MediaSource {
 /// 順序一致，也跟剪映／Premiere 一致：新加的素材放到編號最大的一軌，
 /// 就是「蓋在最上面、不會被別人壓住」。聲音則是全部混音。
 class TimelineClip {
-  final int id;
+  /// 可改：載入時發現撞號會就地換新號（見 fixDuplicateIds）
+  int id;
   final int sourceIndex;
   double trimStart;
   double trimEnd;
@@ -307,6 +308,29 @@ class TimelineModel {
   /// 還原草稿/復原快照後，確保之後配的 id 不會撞號
   void ensureIdAbove(int maxUsed) {
     if (_idSeq <= maxUsed) _idSeq = maxUsed + 1;
+  }
+
+  /// 載入後的體檢：撞號的片段就地換新號，回傳修了幾個。
+  ///
+  /// id 撞號的專案（舊版本的 bug 存進草稿後就跟著專案一輩子）會讓
+  /// 「選一個片段、兩條軌的標籤一起亮」，而且所有照 id 找片段的操作
+  /// 都可能找錯對象。先把序號墊到最高之上再補號，補的號才不會再撞
+  int fixDuplicateIds() {
+    var maxId = -1;
+    for (final c in clips) {
+      if (c.id > maxId) maxId = c.id;
+    }
+    ensureIdAbove(maxId);
+    final seen = <int>{};
+    var fixed = 0;
+    for (final c in clips) {
+      if (!seen.add(c.id)) {
+        c.id = nextId();
+        seen.add(c.id);
+        fixed++;
+      }
+    }
+    return fixed;
   }
 
   /// 某時刻蓋在畫面上的圖片／文字片段，由下層到上層排序

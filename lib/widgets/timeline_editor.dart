@@ -1114,10 +1114,14 @@ class _TimelineEditorState extends State<TimelineEditor> {
       isRecording: isVoice && widget.voiceRecording,
       // 選中的片段在這一軌 → 標籤跟著亮，指出選取落在哪一層。
       // 「整條軌被選為貼上目標」不算：點標籤是靜音不是選取，
-      // 那個狀態讓標籤亮起來只會讓人以為自己選了整條軌
-      hasSelection: timeline.clips.any(
-        (c) => c.id == widget.selectedId && c.track == t,
-      ),
+      // 那個狀態讓標籤亮起來只會讓人以為自己選了整條軌。
+      // 用「第一個命中的片段」的軌來比：就算資料裡有撞號的 id，
+      // 也永遠只亮一條（兩軌同時亮燈是使用者實際回報過的症狀）
+      hasSelection: timeline.clips
+              .where((c) => c.id == widget.selectedId)
+              .firstOrNull
+              ?.track ==
+          t,
       isDragging: _dragTrack == t,
       dragDy: _dragTrack == t ? _dragDy : 0,
       maxTrack: timeline.usedTracks - 1,
