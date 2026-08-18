@@ -7,6 +7,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../models/watermark_settings.dart';
 import '../services/preset_store.dart';
+import '../services/sticker_store.dart';
 import '../screens/crop_screen.dart';
 import '../screens/draw_screen.dart';
 import '../theme.dart';
@@ -324,6 +325,156 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     _ensureSection(WmPart.logo, 0);
   }
 
+  /// 貼圖挑選：上排 Emoji、下排「我的貼圖」（收藏的圖片）。
+  /// 挑到的一律變成一張透明 PNG，接上圖片浮水印那條路
+  Future<void> _openStickers() async {
+    var mine = await StickerStore.load();
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.8,
+      ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 0, 14, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Text('貼圖',
+                        style: TextStyle(
+                            fontSize: 14, fontWeight: FontWeight.w700)),
+                    const Spacer(),
+                    // 把相簿裡的圖收進「我的貼圖」，之後一鍵就拿得到
+                    TextButton.icon(
+                      onPressed: () async {
+                        final picked = await ImagePicker()
+                            .pickImage(source: ImageSource.gallery);
+                        if (picked == null) return;
+                        final bytes = await picked.readAsBytes();
+                        await StickerStore.add(bytes);
+                        mine = await StickerStore.load();
+                        setSheet(() {});
+                      },
+                      icon: const Icon(Icons.add_photo_alternate_outlined,
+                          size: 17),
+                      label: const Text('收藏圖片',
+                          style: TextStyle(fontSize: 12.5)),
+                    ),
+                  ],
+                ),
+                Flexible(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (mine.isNotEmpty) ...[
+                          const Padding(
+                            padding: EdgeInsets.fromLTRB(2, 4, 2, 8),
+                            child: Text('我的貼圖（長按移除）',
+                                style: TextStyle(
+                                    fontSize: 11, color: kTextDim)),
+                          ),
+                          GridView.builder(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            gridDelegate:
+                                const SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: 5,
+                              mainAxisSpacing: 8,
+                              crossAxisSpacing: 8,
+                            ),
+                            itemCount: mine.length,
+                            itemBuilder: (context, i) => InkWell(
+                              borderRadius: BorderRadius.circular(8),
+                              onTap: () {
+                                Navigator.pop(context);
+                                _useSticker(mine[i]);
+                              },
+                              onLongPress: () async {
+                                await StickerStore.removeAt(i);
+                                mine = await StickerStore.load();
+                                setSheet(() {});
+                              },
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: kClipBorder),
+                                ),
+                                clipBehavior: Clip.antiAlias,
+                                padding: const EdgeInsets.all(4),
+                                child: Image.memory(mine[i],
+                                    fit: BoxFit.contain,
+                                    gaplessPlayback: true),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                        ],
+                        const Padding(
+                          padding: EdgeInsets.fromLTRB(2, 0, 2, 8),
+                          child: Text('Emoji',
+                              style:
+                                  TextStyle(fontSize: 11, color: kTextDim)),
+                        ),
+                        GridView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 6,
+                            mainAxisSpacing: 6,
+                            crossAxisSpacing: 6,
+                          ),
+                          itemCount: StickerStore.emojis.length,
+                          itemBuilder: (context, i) {
+                            final e = StickerStore.emojis[i];
+                            return InkWell(
+                              borderRadius: BorderRadius.circular(8),
+                              onTap: () async {
+                                Navigator.pop(context);
+                                final png =
+                                    await StickerStore.renderEmoji(e);
+                                if (png != null) _useSticker(png);
+                              },
+                              child: Center(
+                                child: Text(e,
+                                    style: const TextStyle(fontSize: 28)),
+                              ),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 貼圖套進來：跟手繪一樣填進空的圖片位、沒有空位就加一張
+  void _useSticker(Uint8List png) {
+    _addInto(() async {
+      _update(() {
+        s.logo.bytesValue = png;
+        s.logo.origBytes = png;
+        s.logo.enabled = true;
+      });
+      widget.onLogoAdded?.call();
+      _ensureSection(WmPart.logo, 0);
+    });
+  }
+
   /// 手繪的圖再編輯：有筆畫資料就還原成活的筆畫（上一步、
   /// 調粗細全部可用）；舊資料只有 PNG 就鋪底圖繼續畫
   Future<void> _editDrawing() async {
@@ -610,6 +761,13 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         key: _logoCardKey,
         action: null,
       ),
+      if (widget.showNav)
+        (
+          label: '貼圖',
+          icon: Icons.emoji_emotions_outlined,
+          key: null,
+          action: _openStickers,
+        ),
       if (widget.showNav)
         (
           label: '手繪',
