@@ -6714,6 +6714,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     }
                                   }
 
+                                  // 旋轉吸附的輔助線（吸住整數角度才出現）
+                                  children.add(
+                                    Positioned.fill(
+                                      child: IgnorePointer(
+                                        child: CustomPaint(
+                                          painter: RotGuidePainter(_rotSnapAt),
+                                        ),
+                                      ),
+                                    ),
+                                  );
+
                                   // 中央點擊判定層：疊在所有素材之上，
                                   // 統一決定點到的是哪一層（各素材自己的
                                   // onTap 只有在這層之上才輪得到）。
@@ -7298,11 +7309,52 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _previewPinchDown(PointerDownEvent e) {
     _pvPts[e.pointer] = e.position;
-    if (_pvPts.length != 2) return;
+    _armPreviewPinch();
+  }
+
+  /// 兩指距離夠了才開始算縮放（起手靠太近時，拉開到門檻再補上——
+  /// 只在按下那刻檢查的話，小圖永遠捏不動）
+  /// 目前吸在哪個整數角度（畫輔助線用；null＝沒吸住）
+  double? _rotSnapAt;
+
+  double _pvBaseAngle = 0;
+  double _pvBaseRotText = 0;
+  double _pvBaseRotLogo = 0;
+
+  /// 每 15 度吸一次，附近 4 度內就黏上去（黏住的瞬間震一下）
+  double _snapAngle(double deg) {
+    final near = (deg / 15.0).roundToDouble() * 15.0;
+    if ((deg - near).abs() <= 4) {
+      if (_rotSnapAt != near) {
+        _rotSnapAt = near;
+        HapticFeedback.selectionClick();
+      }
+      return near;
+    }
+    if (_rotSnapAt != null) _rotSnapAt = null;
+    return deg;
+  }
+
+  static double _wrapDeg(double v) {
+    var x = v;
+    while (x > 180) {
+      x -= 360;
+    }
+    while (x < -180) {
+      x += 360;
+    }
+    return x;
+  }
+
+  void _armPreviewPinch() {
+    if (_pvBaseDist != null || _pvPts.length < 2) return;
     final p = _pvPts.values.toList();
     final d = (p[0] - p[1]).distance;
-    if (d <= 20) return;
+    if (d <= 12) return;
     _pvBaseDist = d;
+    _pvBaseAngle = math.atan2(p[1].dy - p[0].dy, p[1].dx - p[0].dx);
+    _pvBaseRotText = _settings.text.rotation;
+    _pvBaseRotLogo = _settings.logo.rotation;
     _pvBaseText = _settings.text.sizeFrac;
     _pvBaseLogo = _settings.logo.sizeFrac;
     _pvBaseClip = _selClipById(_sel)?.scale ?? 1.0;
@@ -7357,7 +7409,41 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             }
           } else {
             final maxS = src.kind == ClipKind.text ? 12.0 : 3.0;
-            c.scale = (_pvBaseClip * f).clamp(0.05, maxS);
+            c.scale = (_pvBaseClip * f).clamp(0.02, maxS);
+          }
+        }
+      }
+      // 兩指轉多少就轉多少（每 15 度吸一次）。手指幾乎沒轉時不動它——
+      // 單純想縮放的人不該被順手轉歪
+      final ang = math.atan2(p[1].dy - p[0].dy, p[1].dx - p[0].dx);
+      final dDeg = _wrapDeg((ang - _pvBaseAngle) * 180 / math.pi);
+      if (dDeg.abs() > 3) {
+        if (_wmSel) {
+          final t = _settings.text;
+          if (_pvHitText && t.enabled && t.text.trim().isNotEmpty) {
+            t.rotation = _snapAngle(_wrapDeg(_pvBaseRotText + dDeg));
+          }
+          if (_pvHitLogo && _settings.logo.enabled) {
+            _settings.logo.rotation =
+                _snapAngle(_wrapDeg(_pvBaseRotLogo + dDeg));
+          }
+        } else {
+          final c = _selClipById(_sel);
+          final st = c == null ? null : _tl.sourceOf(c).wmStyle;
+          if (st != null) {
+            // 浮水印素材：轉它樣式裡的文字與圖片
+            if (st.text.enabled && st.text.text.trim().isNotEmpty) {
+              st.text.rotation = _snapAngle(_wrapDeg(_pvBaseRotText + dDeg));
+            }
+            if (st.logo.enabled) {
+              st.logo.rotation = _snapAngle(_wrapDeg(_pvBaseRotLogo + dDeg));
+            }
+          } else if (c != null) {
+            final ts = _tl.sourceOf(c).textStyle;
+            // 文字素材有自己的角度；影片／圖片片段目前不轉
+            if (ts != null) {
+              ts.rotation = _snapAngle(_wrapDeg(_pvBaseRotText + dDeg));
+            }
           }
         }
       }
@@ -7368,6 +7454,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _pvPts.remove(pointer);
     if (_pvBaseDist != null && _pvPts.length < 2) {
       _pvBaseDist = null;
+      _rotSnapAt = null;
       _saveDraft();
     }
   }

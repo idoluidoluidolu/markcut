@@ -910,3 +910,43 @@ class WmFrameOverlay extends StatelessWidget {
     );
   }
 }
+
+/// 旋轉吸附的輔助線：吸在整數角度時，畫一條穿過中心的斜線與角度標。
+/// 只有「正在吸住」時才畫（[deg] 為 null 就整個不出現）
+class RotGuidePainter extends CustomPainter {
+  final double? deg;
+
+  const RotGuidePainter(this.deg);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final d = deg;
+    if (d == null) return;
+    final c = Offset(size.width / 2, size.height / 2);
+    final r = math.sqrt(size.width * size.width + size.height * size.height);
+    final a = d * math.pi / 180;
+    final v = Offset(math.cos(a), math.sin(a));
+    canvas.drawLine(
+      c - v * r,
+      c + v * r,
+      Paint()
+        ..color = kSelect.withValues(alpha: 0.9)
+        ..strokeWidth = 1,
+    );
+    final tp = TextPainter(
+      text: TextSpan(
+        text: '${d.round()}°',
+        style: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          color: kSelect,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, c + const Offset(8, -18));
+  }
+
+  @override
+  bool shouldRepaint(RotGuidePainter old) => old.deg != deg;
+}

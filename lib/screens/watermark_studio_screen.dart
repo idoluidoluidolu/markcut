@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
@@ -304,13 +305,49 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
   double _pvBaseText = 0;
   double _pvBaseLogo = 0;
 
+  // 雙指旋轉：記下起手的兩指夾角與當下角度，之後跟著手轉
+  double _pvBaseAngle = 0;
+  double _pvBaseRotText = 0;
+  double _pvBaseRotLogo = 0;
+
+  /// 目前吸在哪個整數角度（畫輔助線用；null＝沒吸住）
+  double? _rotSnapAt;
+
+  /// 每 15 度吸一次，附近 4 度內就黏上去（黏住的瞬間震一下）
+  static const _rotStep = 15.0;
+
+  double _snapAngle(double deg) {
+    final near = (deg / _rotStep).roundToDouble() * _rotStep;
+    if ((deg - near).abs() <= 4) {
+      if (_rotSnapAt != near) {
+        _rotSnapAt = near;
+        HapticFeedback.selectionClick();
+      }
+      return near;
+    }
+    if (_rotSnapAt != null) _rotSnapAt = null;
+    return deg;
+  }
+
   void _pinchDown(PointerDownEvent e) {
     _pvPts[e.pointer] = e.position;
-    if (_pvPts.length != 2) return;
+    _armPinch();
+  }
+
+  /// 兩指距離夠了才開始算縮放。
+  ///
+  /// 以前只在「第二指落下」那一刻檢查，距離不夠就整輪放棄——圖小的時候
+  /// 大家自然把兩指靠得很近放上去，於是永遠捏不動（實測回報）。
+  /// 改成之後拉開到門檻就補上，起手多近都沒關係
+  void _armPinch() {
+    if (_pvBaseDist != null || _pvPts.length < 2) return;
     final p = _pvPts.values.toList();
     final d = (p[0] - p[1]).distance;
-    if (d <= 20) return;
+    if (d <= 12) return;
     _pvBaseDist = d;
+    _pvBaseAngle = math.atan2(p[1].dy - p[0].dy, p[1].dx - p[0].dx);
+    _pvBaseRotText = _settings.text.rotation;
+    _pvBaseRotLogo = _settings.logo.rotation;
     _pvBaseText = _settings.text.sizeFrac;
     _pvBaseLogo = _settings.logo.sizeFrac;
     // 快照延到真的縮到東西才拍：光按一下就拍會把重做堆疊清空，
@@ -330,6 +367,7 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
   void _pinchMove(PointerMoveEvent e) {
     if (!_pvPts.containsKey(e.pointer)) return;
     _pvPts[e.pointer] = e.position;
+    _armPinch(); // 起手靠太近時，拉開到門檻才開始算
     if (_pvBaseDist == null || _pvPts.length < 2) return;
     final p = _pvPts.values.toList();
     final f = (p[0] - p[1]).distance / _pvBaseDist!;
@@ -345,6 +383,33 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
     if (doLogo) {
       _settings.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
     }
+    // 兩指轉多少，元素就轉多少（每 15 度吸附一次，會震一下）。
+    // 手指幾乎沒轉時不動它——單純想縮放的人不該被順手轉歪
+    final ang = math.atan2(p[1].dy - p[0].dy, p[1].dx - p[0].dx);
+    var dDeg = (ang - _pvBaseAngle) * 180 / math.pi;
+    while (dDeg > 180) {
+      dDeg -= 360;
+    }
+    while (dDeg < -180) {
+      dDeg += 360;
+    }
+    if (dDeg.abs() > 3) {
+      double wrap(double v) {
+        var x = v;
+        while (x > 180) {
+          x -= 360;
+        }
+        while (x < -180) {
+          x += 360;
+        }
+        return x;
+      }
+
+      if (doText) t.rotation = _snapAngle(wrap(_pvBaseRotText + dDeg));
+      if (doLogo) {
+        _settings.logo.rotation = _snapAngle(wrap(_pvBaseRotLogo + dDeg));
+      }
+    }
     _wmTick.value++;
   }
 
@@ -352,6 +417,7 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
     _pvPts.remove(pointer);
     if (_pvBaseDist != null && _pvPts.length < 2) {
       _pvBaseDist = null;
+      _rotSnapAt = null;
       setState(() {}); // 面板的大小滑桿要跟上捏完的值
     }
   }
@@ -570,6 +636,15 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
                                   child: CenterGuides(
                                     vertical: _stGuideV,
                                     horizontal: _stGuideH,
+                                  ),
+                                ),
+                                // 角度吸附的輔助線：吸在整數角度時畫一條
+                                // 穿過畫面中心的斜線＋角度，手感上有「卡住」
+                                Positioned.fill(
+                                  child: IgnorePointer(
+                                    child: CustomPaint(
+                                      painter: RotGuidePainter(_rotSnapAt),
+                                    ),
                                   ),
                                 ),
                                 // 浮水印選取框：畫在真實位置
