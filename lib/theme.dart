@@ -741,15 +741,10 @@ Widget undoRedoBar({
         visualDensity: VisualDensity.compact,
       );
 
+  // 不畫上下邊線：整個工作區走無邊線的風格，靠色階分層就夠了
   return Container(
     padding: const EdgeInsets.fromLTRB(8, 2, 8, 2),
-    decoration: const BoxDecoration(
-      color: kBg,
-      border: Border(
-        top: BorderSide(color: kBorder),
-        bottom: BorderSide(color: kBorder),
-      ),
-    ),
+    color: kBg,
     child: Row(
       children: [
         ...leading,
