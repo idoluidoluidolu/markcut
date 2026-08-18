@@ -195,6 +195,12 @@ class _DrawScreenState extends State<_DrawScreen> {
     final raw = _pendingData;
     _pendingData = null;
     if (raw == null) return;
+    // 還原發生在 layout 階段（LayoutBuilder）——同一幀「先」蓋好的
+    // 完成鈕還以為沒有墨水，會一直灰著直到下一次隨便點什麼。
+    // 排一個 frame 後的重建把按鈕狀態對回來
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() {});
+    });
     try {
       final j = jsonDecode(raw) as Map<String, dynamic>;
       final ow = (j['w'] as num).toDouble();
