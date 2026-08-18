@@ -1210,14 +1210,18 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
     return overlayLabel(kPanelHi, Icons.branding_watermark, src.name);
   }
   if (strip.isEmpty) {
+    // 縮圖還沒抽出來時的暫時底色。中性灰，不帶藍——
+    // blueGrey 是整個深色主題裡唯一有色味的東西
     return Container(
-      decoration: BoxDecoration(
+      decoration: const BoxDecoration(
         gradient: LinearGradient(
-          colors: [Colors.blueGrey.shade700, Colors.blueGrey.shade900],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF232328), Color(0xFF141416)],
         ),
       ),
       child: const Center(
-        child: Icon(Icons.movie, size: 18, color: Colors.white38),
+        child: Icon(Icons.movie, size: 18, color: Color(0xFF6E6E78)),
       ),
     );
   }
