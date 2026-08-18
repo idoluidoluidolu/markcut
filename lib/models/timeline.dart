@@ -198,6 +198,11 @@ class TimelineClip {
 
   bool covers(double t) => t >= offset && t < end;
 
+  /// 畫面用的覆蓋判定：播到最後停在總長那一點時，[covers] 對每個片段
+  /// 都不成立（結尾是開區間），畫面就整片黑。這裡讓「剛好停在結尾」
+  /// 的那一刻仍算最後一格，播完保留最後一幀
+  bool coversForDisplay(double t) => t >= offset && t <= end;
+
   /// 時間軸時間 → 這份素材內部的時間（含變速換算）。
   /// 倒轉時從素材的尾巴往回走
   double sourceTimeAt(double t) {
@@ -289,7 +294,7 @@ class TimelineModel {
   TimelineClip? videoAt(double t) {
     TimelineClip? best;
     for (final c in clips) {
-      if (!sourceOf(c).isVideo || !c.covers(t)) continue;
+      if (!sourceOf(c).isVideo || !c.coversForDisplay(t)) continue;
       if (best == null || c.track >= best.track) best = c;
     }
     return best;
@@ -297,7 +302,8 @@ class TimelineModel {
 
   /// 某時刻所有蓋在畫面上的影片片段，由下層到上層（編號小的先）
   List<TimelineClip> videosAt(double t) {
-    final list = clips.where((c) => sourceOf(c).isVideo && c.covers(t)).toList()
+    final list =
+        clips.where((c) => sourceOf(c).isVideo && c.coversForDisplay(t)).toList()
       ..sort((a, b) {
         final k = a.track.compareTo(b.track);
         return k != 0 ? k : clips.indexOf(a).compareTo(clips.indexOf(b));
@@ -342,7 +348,7 @@ class TimelineModel {
           (c) =>
               (sourceOf(c).isOverlay ||
                   sourceOf(c).kind == ClipKind.mosaic) &&
-              c.covers(t),
+              c.coversForDisplay(t),
         )
         .toList()
           ..sort((a, b) {

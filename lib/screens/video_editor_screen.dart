@@ -367,7 +367,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final d = (p[0] - p[1]).distance;
       setState(
         () =>
-            _pxPerSec = (_pinchBasePx * d / _pinchBaseDist!).clamp(1.0, 200.0),
+            _pxPerSec = (_pinchBasePx * d / _pinchBaseDist!).clamp(1.0, 600.0),
       );
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _syncScrollToPosition(),
@@ -390,7 +390,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     GestureBinding.instance.pointerSignalResolver.register(e, (event) {
       final dy = (event as PointerScrollEvent).scrollDelta.dy;
       setState(
-        () => _pxPerSec = (_pxPerSec * math.exp(-dy * 0.002)).clamp(1.0, 200.0),
+        () => _pxPerSec = (_pxPerSec * math.exp(-dy * 0.002)).clamp(1.0, 600.0),
       );
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _syncScrollToPosition(),
@@ -1082,7 +1082,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     for (final clip in _tl.clips) {
       final c = _ctrls[clip.id];
       if (c == null || !c.value.isInitialized) continue;
-      if (clip.covers(_position)) {
+      if (clip.coversForDisplay(_position)) {
         seeks.add(
           c.seekTo(
             Duration(
@@ -2198,7 +2198,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final c = _selClipById(id);
     if (c == null || c.length <= 0) return;
     // 目標：這一段佔 160px。上限跟捏合縮放同一個（200px/秒）
-    final want = (160 / c.length).clamp(1.0, 200.0);
+    final want = (160 / c.length).clamp(1.0, 600.0);
     if (want <= _pxPerSec + 0.5) {
       // 已經放到最大還是太窄＝這一段真的太短
       showHint(context, '這一段只有 ${c.length.toStringAsFixed(1)} 秒，'
@@ -2372,21 +2372,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         (picked0.height - initial.height).abs() < eps) {
       return;
     }
-    // 裁什麼形狀，成品就是什麼形狀：畫布比例直接換成這一框的比例。
-    // 框是素材座標的 0~1，乘回素材本身的長寬比才是真正的形狀。
-    // 兩邊比例一樣時「放得進去」與「填滿」是同一個答案，所以這一框
-    // 會剛好填滿畫布，不會再有黑邊
-    final newAspect = (r.width / r.height) * src.aspect;
-    final t = cropToTransform(r, src.aspect, newAspect);
+    // 裁切保持專案原本的畫布比例（實測回報：直式影片裁一下整個
+    // 變成 16:9）。框只換算成這個片段的縮放位移，畫布形狀不動——
+    // 想改成品形狀請用匯出頁的「畫面比例」
+    final t = cropToTransform(r, src.aspect, canvasAspect);
     // 之後回報「裁了沒反應」時，先看這行有沒有出現、值對不對
     Diag.note(
-      '裁切套用：畫布比例 ${newAspect.toStringAsFixed(3)}、'
-      'scale=${t.scale.toStringAsFixed(3)} '
+      '裁切套用：scale=${t.scale.toStringAsFixed(3)} '
       'px=${t.px.toStringAsFixed(3)} py=${t.py.toStringAsFixed(3)}',
     );
     _pushUndo();
     setState(() {
-      _customAspect = newAspect;
       clip.scale = t.scale;
       clip.px = t.px;
       clip.py = t.py;
@@ -2947,7 +2943,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       Expanded(
                         child: Slider(
                           value: clip.scale.clamp(0.05, 3.0),
-                          min: 0.05,
+                          min: 0.02,
                           max: 3.0,
                           onChanged: (v) => change(() => clip.scale = v),
                         ),
@@ -3563,7 +3559,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     for (final clip in _tl.clips) {
       final k = _tl.sourceOf(clip).kind;
       if (k != ClipKind.video && k != ClipKind.audio) continue;
-      if (!clip.covers(_position)) continue;
+      if (!clip.coversForDisplay(_position)) continue;
       if (_wasActive.contains(clip.id)) continue; // 已經對好了
       final c = _ctrls[clip.id];
       if (c == null || !c.value.isInitialized) continue;
@@ -3602,7 +3598,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 上限 250ms，起不來寧可照舊也不能讓播放鍵卡住
     PlayerX? lead;
     for (final clip in _tl.clips) {
-      if (!clip.covers(_position)) continue;
+      if (!clip.coversForDisplay(_position)) continue;
       if (_tl.sourceOf(clip).kind != ClipKind.video) continue;
       final c = _ctrls[clip.id];
       if (c == null || !c.value.isInitialized) continue;
@@ -4216,7 +4212,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       for (final clip in _tl.clips) {
         final c = _ctrls[clip.id];
         if (c == null || !c.value.isInitialized) continue;
-        final active = clip.covers(_position);
+        // 播到結尾停在總長那一點時，covers 是開區間、每一段都不成立，
+        // 畫面會整片黑。畫面用的判定含結尾，最後一幀留著
+        final active = clip.coversForDisplay(_position);
         if (active != (pass == 0)) continue;
         if (!active) {
           _wasActive.remove(clip.id);
@@ -6861,7 +6859,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     // 不然會盲拖一個看不見的浮水印
                                     if (c != null &&
                                         _tl.sourceOf(c).kind == ClipKind.wm &&
-                                        c.covers(_position)) {
+                                        c.coversForDisplay(_position)) {
                                       selWmClip = c;
                                     }
                                   }
@@ -7715,7 +7713,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 // 桌面滾輪縮放：下限 1px/秒，長片也能整條盡收眼底
                                 onZoom: (v) {
                                   setState(
-                                    () => _pxPerSec = v.clamp(1.0, 200.0),
+                                    () => _pxPerSec = v.clamp(1.0, 600.0),
                                   );
                                   WidgetsBinding.instance.addPostFrameCallback(
                                     (_) => _syncScrollToPosition(),
@@ -8017,12 +8015,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               ),
               const SizedBox(height: 6),
               Slider(
-                value: clip.scale.clamp(0.05, maxScale),
-                min: 0.05,
+                value: clip.scale.clamp(0.02, maxScale),
+                min: 0.02,
                 max: maxScale,
                 onChanged: (v) {
                   setSheet(() {});
                   setState(() => clip.scale = v);
+                  // 合成播放器出畫面時，改了變形要叫它重畫，
+                  // 不然滑桿拉完畫面沒反應、關掉面板才看到（實測回報）
+                  _compRefreshIfChanged();
                 },
               ),
               // 回復預設：置中、原始大小

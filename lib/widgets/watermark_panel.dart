@@ -982,9 +982,18 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                         for (final f in kFontOptions)
                           DropdownMenuItem(
                             value: f.family,
-                            child: Text(f.label,
-                                style: TextStyle(
-                                    fontFamily: f.family, fontSize: 13)),
+                            // 有些字型（粉圓）的行高比字級大，不夾住
+                            // 行高就會頂出格子（實測回報）
+                            child: Text(
+                              f.label,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontFamily: f.family,
+                                fontSize: 13,
+                                height: 1.15,
+                              ),
+                            ),
                           ),
                       ],
                       onChanged: (v) => _update(

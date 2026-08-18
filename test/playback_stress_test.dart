@@ -192,10 +192,40 @@ void main() {
             expect(top, isNull);
           }
           for (final c in [...vids, ...overlays]) {
-            expect(c.covers(t), isTrue, reason: '回傳了沒有涵蓋這一刻的片段');
+            // 畫面查詢用的是含結尾的判定（播到最後留最後一幀，
+            // 不要黑畫面）——這裡跟著用同一套
+            expect(
+              c.coversForDisplay(t),
+              isTrue,
+              reason: '回傳了沒有涵蓋這一刻的片段',
+            );
           }
         }
       }
+    });
+
+    test('播到總長那一刻仍有畫面（不黑）', () {
+      final tl = TimelineModel();
+      tl.sources.add(MediaSource(
+        path: '/a.mp4',
+        name: 'a',
+        kind: ClipKind.video,
+        duration: 10,
+      ));
+      tl.clips.add(TimelineClip(
+        id: tl.nextId(),
+        sourceIndex: 0,
+        trimStart: 0,
+        trimEnd: 5,
+        offset: 0,
+        track: 0,
+      ));
+      final end = tl.duration;
+      // 舊的嚴格判定在結尾是開區間＝沒人負責畫面（黑畫面的來源）
+      expect(tl.clips.first.covers(end), isFalse);
+      // 畫面判定含結尾：最後一幀留著
+      expect(tl.videoAt(end), isNotNull, reason: '播完該留最後一幀');
+      expect(tl.videosAt(end), isNotEmpty);
     });
   });
 

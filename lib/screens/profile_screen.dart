@@ -15,6 +15,7 @@ import 'donate_screen.dart';
 import 'feedback_screen.dart';
 import 'photo_editor_screen.dart';
 import 'presets_screen.dart';
+import 'watermark_studio_screen.dart';
 import 'video_editor_screen.dart';
 
 /// 個人中心：範本夾＋草稿夾＋意見回饋
@@ -127,10 +128,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
   /// 以前只挑第一張圖或第一行字當代表，跟實際內容對不上
   Widget _presetTile(WatermarkPreset preset) {
     return GestureDetector(
+      // 點磚＝直接編輯那一組（以前是跳到範本夾，還要再找一次）；
+      // 長按＝刪除。右上角「全部」才是進範本夾
       onTap: () => Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => const LightPage(child: PresetsScreen())),
+        MaterialPageRoute(
+          builder: (_) => WatermarkStudioScreen(edit: preset),
+        ),
       ).then((_) => _reload()),
+      onLongPress: () => _confirmDeletePreset(preset),
       child: Column(
         children: [
           Container(
@@ -167,6 +173,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ],
       ),
     );
+  }
+
+  /// 長按範本磚：問一下再刪
+  Future<void> _confirmDeletePreset(WatermarkPreset p) async {
+    final ok = await showConfirm(
+      context,
+      title: '刪除範本「${p.name}」？',
+      message: '刪除後無法復原',
+      action: '刪除',
+    );
+    if (!ok) return;
+    await PresetStore.remove(p.name);
+    _reload();
   }
 
   /// 範本區最後一格：新增

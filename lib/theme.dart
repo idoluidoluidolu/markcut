@@ -346,10 +346,11 @@ class _HintToast extends StatelessWidget {
               bottom: const BorderSide(color: Color(0xFF33333B)),
             ),
             boxShadow: [
+              // 白底頁面上 0.9 的黑影太重（實測回報），收到 0.28
               BoxShadow(
-                color: Colors.black.withValues(alpha: 0.9),
-                blurRadius: 22,
-                offset: const Offset(0, 6),
+                color: Colors.black.withValues(alpha: 0.28),
+                blurRadius: 14,
+                offset: const Offset(0, 4),
               ),
             ],
           ),
