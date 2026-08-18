@@ -5547,9 +5547,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       context: context,
       builder: (context) => SafeArea(
         child: Align(
-          alignment: Alignment.bottomCenter,
+          alignment: Alignment.center,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+            padding: const EdgeInsets.symmetric(horizontal: 14),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 360),
               child: Material(
