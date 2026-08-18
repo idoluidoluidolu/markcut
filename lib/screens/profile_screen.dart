@@ -9,6 +9,7 @@ import '../models/watermark_settings.dart';
 import '../services/preset_store.dart';
 import '../theme.dart';
 import '../widgets/swipe_back.dart';
+import '../widgets/watermark_layer.dart';
 import 'about_screen.dart';
 import 'donate_screen.dart';
 import 'feedback_screen.dart';
@@ -121,10 +122,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ],
       );
 
-  /// 範本磚：深色方塊，裡面就是這組浮水印長什麼樣
+  /// 範本磚：深色方塊，裡面就是這組浮水印長什麼樣。
+  /// 用真的 WatermarkLayer 照實渲染（多文字、多圖、平鋪全都畫）——
+  /// 以前只挑第一張圖或第一行字當代表，跟實際內容對不上
   Widget _presetTile(WatermarkPreset preset) {
-    final logo = preset.settings.logo;
-    final text = preset.settings.text;
     return GestureDetector(
       onTap: () => Navigator.push(
         context,
@@ -135,34 +136,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
           Container(
             width: 92,
             height: 92,
-            alignment: Alignment.center,
-            padding: const EdgeInsets.all(9),
+            clipBehavior: Clip.antiAlias,
             decoration: BoxDecoration(
               color: const Color(0xFF1B1B20),
               borderRadius: BorderRadius.circular(20),
             ),
-            // 有圖就畫圖，沒圖就畫文字——這一格的用途是「一眼認出是哪組」。
-            // 文字包在 FittedBox 裡：長的範本名以前會被截成「© MARKCUT…」，
-            // 現在是整段一起縮到剛好放得下，一個字都不切
-            child: logo.enabled && logo.bytes != null
-                ? Image.memory(
-                    logo.bytes!,
-                    fit: BoxFit.contain,
-                    gaplessPlayback: true,
-                  )
-                : FittedBox(
-                    fit: BoxFit.contain,
-                    child: Text(
-                      text.text.trim().isEmpty ? '浮水印' : text.text,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 15,
-                        height: 1.3,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.white.withValues(alpha: 0.86),
-                      ),
-                    ),
-                  ),
+            child: IgnorePointer(
+              child: WatermarkLayer(
+                settings: preset.settings,
+                onChanged: () {},
+              ),
+            ),
           ),
           const SizedBox(height: 7),
           SizedBox(

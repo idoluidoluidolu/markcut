@@ -72,12 +72,22 @@ class _SwipeBackState extends State<SwipeBack> {
 
   @override
   Widget build(BuildContext context) {
-    return Listener(
-      onPointerDown: _down,
-      onPointerMove: _move,
-      onPointerUp: (e) => _up(e.pointer),
-      onPointerCancel: (e) => _up(e.pointer),
-      child: widget.child,
+    // 頁面裡的「橫向捲動」一動就放棄這一輪判定：
+    // 手指在橫向清單（範本列那種）上滑，清單在捲、我們也在算位移，
+    // 兩邊同時成立就會邊捲邊被踢回上一頁（使用者實測回報）。
+    // 捲動通知冒上來＝那根手指是在捲清單，不是在甩返回
+    return NotificationListener<ScrollUpdateNotification>(
+      onNotification: (n) {
+        if (n.metrics.axis == Axis.horizontal) _done = true;
+        return false; // 只旁聽，不攔截
+      },
+      child: Listener(
+        onPointerDown: _down,
+        onPointerMove: _move,
+        onPointerUp: (e) => _up(e.pointer),
+        onPointerCancel: (e) => _up(e.pointer),
+        child: widget.child,
+      ),
     );
   }
 }
