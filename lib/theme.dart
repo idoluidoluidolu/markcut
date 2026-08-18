@@ -737,10 +737,11 @@ Widget undoRedoBar({
   List<Widget> leading = const [],
 }) {
   // 按鈕收到最小高度：這條列夾在預覽跟面板中間，IconButton 預設的
-  // 觸控高度會把兩邊撐出一大截空白（使用者：「間隔太多」）
+  // 觸控高度會把兩邊撐出一大截空白（使用者：「間隔太多」）。
+  // 亮起（有步驟可退）用琥珀，跟「可以動它」的選取語言一致
   Widget btn(IconData icon, String tip, VoidCallback? onTap) => IconButton(
         tooltip: tip,
-        icon: Icon(icon, size: 20, color: onTap != null ? kIcon : kTextDim),
+        icon: Icon(icon, size: 20, color: onTap != null ? kSelect : kTextDim),
         onPressed: onTap,
         visualDensity: VisualDensity.compact,
         padding: EdgeInsets.zero,

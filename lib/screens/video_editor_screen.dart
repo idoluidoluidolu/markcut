@@ -5734,17 +5734,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                // 亮起（有步驟可退）用琥珀，跟其他畫面的上一步列一致
                 IconButton(
                   iconSize: 20,
                   tooltip: '上一步',
-                  color: _undoStack.isEmpty ? kTextDim : kText,
+                  color: _undoStack.isEmpty ? kTextDim : kSelect,
                   icon: const Icon(Icons.undo),
                   onPressed: _undoStack.isEmpty ? null : _undoAction,
                 ),
                 IconButton(
                   iconSize: 20,
                   tooltip: '重做',
-                  color: _redoStack.isEmpty ? kTextDim : kText,
+                  color: _redoStack.isEmpty ? kTextDim : kSelect,
                   icon: const Icon(Icons.redo),
                   onPressed: _redoStack.isEmpty ? null : _redoAction,
                 ),
