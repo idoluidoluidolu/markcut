@@ -7779,7 +7779,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         ),
                       ),
                     ),
-                        ),
                             ),
                             // 下面還有軌道的暗示：底部一條淡出漸層＋小箭頭。
                             // 捲到底就消失——不然會騙人說還有東西
