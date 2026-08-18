@@ -1179,7 +1179,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
               const SizedBox(width: 8),
               // 手繪的那張可以載回畫板繼續改
               if (s.logo.drawn) ...[
-                _miniBtn(Icons.draw_outlined, '再編輯', _editDrawing),
+                _miniBtn(Icons.draw_outlined, '編輯', _editDrawing),
                 const SizedBox(width: 8),
               ],
               _miniBtn(Icons.crop, '裁切', _cropLogo),
