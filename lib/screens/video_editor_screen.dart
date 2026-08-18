@@ -891,6 +891,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           if (!mounted) return;
           setState(() => _ready = true);
         }
+        // 匯入會順手選中剛加的片段（加素材時的正確行為），
+        // 但「進場」的預設選取是浮水印——匯完整批把選取還回去
+        if (mounted) {
+          setState(() {
+            _sel = -1;
+            _wmSelValue = true;
+          });
+        }
         _saveDraft();
       }();
     }
