@@ -600,6 +600,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       children: [
         _sectionNav(),
         Expanded(child: _list()),
+        if (!widget.hideSaveButton) _saveBar(),
       ],
     );
   }
@@ -615,7 +616,8 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       scrollCacheExtent: const ScrollCacheExtent.pixels(3000),
       // 往下滑清單就收鍵盤（打完字回不去的解法）
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-      padding: EdgeInsets.fromLTRB(16, 8, 16, 24 + widget.bottomInset),
+      // 底部的鍵盤內距交給釘在下面的儲存鈕；清單自己留一般邊距就好
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
       children: [
         // ===== 選擇範本：D 案不填色、只留線框；琥珀圖示＋下拉箭頭 =====
         OutlinedButton(
@@ -1077,24 +1079,26 @@ class WatermarkPanelState extends State<WatermarkPanel> {
               child: _card(widget.extraSections[i].child),
             ),
 
-        // ===== 儲存範本（更新選中的範本，或另存新範本）=====
-        // 照片編輯器把這顆移到底部跟「輸出」並排，所以這裡可隱藏
-        if (!widget.hideSaveButton) ...[
-          const SizedBox(height: 4),
-          FilledButton.icon(
-            onPressed: _savePreset,
-            icon: const Icon(Icons.bookmark_add_outlined, size: 18),
-            label: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 10),
-              child: Text(
-                  _presetSel == null ? '儲存範本' : '儲存範本「$_presetSel」',
-                  style: const TextStyle(fontSize: 14)),
-            ),
-          ),
-        ],
       ],
     );
   }
+
+  /// 儲存範本（更新選中的範本，或另存新範本）。
+  /// 釘在面板最底下、不跟內容一起捲：每個分頁都要一眼看得到出口。
+  /// 照片編輯器把這顆移到底部跟「輸出」並排，所以可隱藏
+  Widget _saveBar() => Padding(
+        padding: EdgeInsets.fromLTRB(16, 6, 16, 10 + widget.bottomInset),
+        child: FilledButton.icon(
+          onPressed: _savePreset,
+          icon: const Icon(Icons.bookmark_add_outlined, size: 18),
+          label: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            child: Text(
+                _presetSel == null ? '儲存範本' : '儲存範本「$_presetSel」',
+                style: const TextStyle(fontSize: 14)),
+          ),
+        ),
+      );
 
   /// 範本挑選彈窗：黑底預覽卡（跟範本管理頁同款），點卡直接套用
   void _openPresetPicker() {
