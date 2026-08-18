@@ -643,9 +643,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   /// 預覽上的馬賽克層：拖曳移動、點選取、再點開樣式表
   /// 浮水印圖層回報自己畫在哪（在 build/layout 裡呼叫，只能存不能 setState）
-  void _phSetBox(int kind, int index, Rect? text, List<Rect?> logos) {
-    void put(WmPart part, int logo, Rect? r) {
-      final id = (kind: kind, index: index, part: part, logo: logo);
+  void _phSetBox(int kind, int index, List<Rect?> texts, List<Rect?> logos) {
+    void put(WmPart part, int sub, Rect? r) {
+      final id = (kind: kind, index: index, part: part, logo: sub);
       if (r == null) {
         _phBox.remove(id);
       } else {
@@ -653,12 +653,17 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       }
     }
 
-    put(WmPart.text, -1, text);
-    // 張數會變（加圖、刪圖），先把這一組舊的圖片框全清掉再重放，
-    // 不然刪掉的那張會留一個永遠點得到的鬼框
+    // 個數會變（加、刪），先把這一組舊的框全清掉再重放，
+    // 不然刪掉的那個會留一個永遠點得到的鬼框
     _phBox.removeWhere(
-      (k, _) => k.kind == kind && k.index == index && k.part == WmPart.logo,
+      (k, _) =>
+          k.kind == kind &&
+          k.index == index &&
+          (k.part == WmPart.logo || k.part == WmPart.text),
     );
+    for (var i = 0; i < texts.length; i++) {
+      put(WmPart.text, i, texts[i]);
+    }
     for (var i = 0; i < logos.length; i++) {
       put(WmPart.logo, i, logos[i]);
     }
@@ -1286,7 +1291,9 @@ final color = Color(picked ?? 0);
     // 一組浮水印內部：文字畫在圖片之後＝文字在上；
     // 圖片之間則是後加的那張在上
     void addGroup(int kind, int index, WatermarkSettings s) {
-      add((kind: kind, index: index, part: WmPart.text, logo: -1));
+      for (var i = s.texts.length - 1; i >= 0; i--) {
+        add((kind: kind, index: index, part: WmPart.text, logo: i));
+      }
       for (var i = s.logos.length - 1; i >= 0; i--) {
         add((kind: kind, index: index, part: WmPart.logo, logo: i));
       }
@@ -1309,13 +1316,14 @@ final color = Color(picked ?? 0);
       return (kind: 0, index: _selMosaic, part: WmPart.none, logo: -1);
     }
     if (_selExtra >= 0) {
+      final s = _extraWms[_selExtra];
       return (
         kind: 2,
         index: _selExtra,
         part: _selExtraPart,
         logo: _selExtraPart == WmPart.logo
-            ? _extraWms[_selExtra].activeLogo
-            : -1,
+            ? s.activeLogo
+            : (_selExtraPart == WmPart.text ? s.activeText : -1),
       );
     }
     if (_wmPart != WmPart.none) {
@@ -1323,7 +1331,9 @@ final color = Color(picked ?? 0);
         kind: 1,
         index: -1,
         part: _wmPart,
-        logo: _wmPart == WmPart.logo ? _settings.activeLogo : -1,
+        logo: _wmPart == WmPart.logo
+            ? _settings.activeLogo
+            : (_wmPart == WmPart.text ? _settings.activeText : -1),
       );
     }
     return null;
@@ -1368,10 +1378,15 @@ final color = Color(picked ?? 0);
       _selExtra = next.kind == 2 ? next.index : -1;
       if (next.kind == 2) _selExtraPart = next.part;
       _wmPart = next.kind == 1 ? next.part : WmPart.none;
-      // 點到哪一張圖片，那張就變成操作中的（面板、捏合都跟著它）
+      // 點到哪一個，那個就變成操作中的（面板、捏合都跟著它）
       if (next.logo >= 0) {
-        if (next.kind == 1) _settings.activeLogo = next.logo;
-        if (next.kind == 2) _extraWms[next.index].activeLogo = next.logo;
+        final s = next.kind == 1
+            ? _settings
+            : (next.kind == 2 ? _extraWms[next.index] : null);
+        if (s != null) {
+          if (next.part == WmPart.logo) s.activeLogo = next.logo;
+          if (next.part == WmPart.text) s.activeText = next.logo;
+        }
       }
     });
     if (next.kind == 1) _wmPanelCtrl.scrollTo(next.part);

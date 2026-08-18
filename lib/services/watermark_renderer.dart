@@ -286,14 +286,15 @@ class WatermarkRenderer {
     _drawText(canvas, s, w, h);
   }
 
-  /// 文字浮水印（含平鋪、底色、描邊、旋轉）
+  /// 文字浮水印（含平鋪、底色、描邊、旋轉）。
+  /// 文字可以有很多個，照清單順序畫（後加的在上）
   static void _drawText(
     ui.Canvas canvas,
     WatermarkSettings s,
     double w,
     double h,
   ) {
-    final t = s.text;
+    for (final t in s.texts) {
     if (t.enabled && t.text.trim().isNotEmpty) {
       // 不自動換行、也不自動縮小：使用者調多大就多大，
       // 超出畫面是允許的（明確換行 \n 仍有效）
@@ -416,6 +417,7 @@ class WatermarkRenderer {
       strokePainter?.paint(canvas, ui.Offset(left, top));
       painter.paint(canvas, ui.Offset(left, top));
       canvas.restore();
+    }
     }
   }
 }

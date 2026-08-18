@@ -4440,9 +4440,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 浮水印圖層回報自己畫在哪（在 build 裡呼叫，只能存不能 setState）。
-  /// 圖片可以有很多張，每一張都要能點得到
-  void _addWmHit(int id, Rect? text, List<Rect?> logos) {
-    if (text != null) _hitBoxes.add((id: id, rect: text));
+  /// 文字跟圖片都可以有很多個，每一個都要能點得到
+  void _addWmHit(int id, List<Rect?> texts, List<Rect?> logos) {
+    for (final r in texts) {
+      if (r != null) _hitBoxes.add((id: id, rect: r));
+    }
     for (final r in logos) {
       if (r != null) _hitBoxes.add((id: id, rect: r));
     }

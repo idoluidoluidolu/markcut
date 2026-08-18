@@ -37,9 +37,10 @@ class WatermarkLayer extends StatefulWidget {
   final VoidCallback? onTapText;
 
   /// 回報這一刻文字／圖片畫在哪（父層拿去判斷點擊落在誰身上）。
-  /// [logoBoxes] 跟 settings.logos 一一對應，沒畫出來的那張是 null。
+  /// [textBoxes] 跟 settings.texts、[logoBoxes] 跟 settings.logos
+  /// 一一對應，沒畫出來的是 null。
   /// 在 build 裡呼叫，父層只能存起來，不可以 setState
-  final void Function(Rect? textBox, List<Rect?> logoBoxes)? onHitBox;
+  final void Function(List<Rect?> textBoxes, List<Rect?> logoBoxes)? onHitBox;
 
   /// 給了這個就不在圖層內畫選取框，改成把「被選部件的框」回報出去，
   /// 由外層的 [WmFrameOverlay] 在「不裁切的圖層」畫。
@@ -90,13 +91,18 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
   /// 一定要用 foregroundDecoration 掛：Container 的 decoration 會把
   /// 邊框寬度算進內距，選取／取消選取的瞬間內容就位移 1.4px——
   /// 那正是「移好位置後點別的東西，浮水印會稍微跳一下」
-  BoxDecoration? _deco(WmPart part, {int logoIndex = -1}) {
+  BoxDecoration? _deco(WmPart part, {int logoIndex = -1, int textIndex = -1}) {
     // 外層接手畫框（見 frameNotifier）就不在圖層內畫
     if (widget.frameNotifier != null) return null;
     if (widget.selectedPart != part) return null;
     if (part == WmPart.logo &&
         logoIndex >= 0 &&
         logoIndex != widget.settings.activeLogo) {
+      return null;
+    }
+    if (part == WmPart.text &&
+        textIndex >= 0 &&
+        textIndex != widget.settings.activeText) {
       return null;
     }
     // 琥珀而不是白：這個框疊的是使用者的照片／影片，白框落在白色縮圖
@@ -206,7 +212,7 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
             : settings.animAt(time);
         final children = <Widget>[];
         // 這一輪畫出來的位置，最後回報給父層
-        Rect? hitText;
+        final hitTexts = List<Rect?>.filled(settings.texts.length, null);
         final hitLogos = List<Rect?>.filled(settings.logos.length, null);
 
         // 圖片可以放很多張：照清單順序畫，後加的疊在前面的上面。
@@ -317,7 +323,10 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
           );
         }
 
-        final t = settings.text;
+        // 文字可以放很多個（跟圖片同一套）：照清單順序畫，
+        // 碰到哪一個就把它設成「操作中」（settings.activeText）
+        for (var ti = 0; ti < settings.texts.length; ti++) {
+        final t = settings.texts[ti];
         // 滿版平鋪（棋盤格）：整面重複，不能拖曳（位置無意義）
         if (t.enabled && t.text.trim().isNotEmpty && t.tiled) {
           children.add(
@@ -359,7 +368,8 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
           final boxH = probe.height + padV * 2;
           final left = t.x * w - probe.width / 2 - padH;
           final top = t.y * h - probe.height / 2 - padV;
-          hitText = Rect.fromLTWH(left, top, boxW, boxH);
+          hitTexts[ti] = Rect.fromLTWH(left, top, boxW, boxH);
+          void makeActive() => settings.activeText = ti;
 
           Widget textWidget(TextStyle st) => Text(
             t.text,
@@ -376,11 +386,13 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: () {
+                  makeActive();
                   widget.onSelectPart?.call(WmPart.text);
                   (onTapText ?? onTap)?.call();
                 },
                 // 雙擊＝回正中央、恢復預設大小（同 Logo）
                 onDoubleTap: () {
+                  makeActive();
                   onDragStart?.call();
                   t.x = 0.5;
                   t.y = 0.5;
@@ -392,6 +404,7 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                     ? null
                     : (_) {
                         if (widget.panLocked?.call() ?? false) return;
+                        makeActive();
                         _rawX = t.x;
                         _rawY = t.y;
                         setState(() => _panning = WmPart.text);
@@ -419,7 +432,7 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                 child: Transform.rotate(
                   angle: t.rotation * math.pi / 180,
                   child: Container(
-                    foregroundDecoration: _deco(WmPart.text),
+                    foregroundDecoration: _deco(WmPart.text, textIndex: ti),
                     child: Container(
                       padding: EdgeInsets.symmetric(
                         horizontal: padH,
@@ -462,6 +475,7 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
             ),
           );
         }
+        }
 
         // 置中輔助線：拖曳中吸在中線上時，畫出垂直／水平線
         if (_panning != WmPart.none) {
@@ -503,7 +517,9 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
 
         // 動畫會整組位移，回報的框也要跟著移，不然點擊判定跟看到的錯開
         final shift = Offset(anim.dx * w, anim.dy * h);
-        widget.onHitBox?.call(hitText?.shift(shift), [
+        widget.onHitBox?.call([
+          for (final r in hitTexts) r?.shift(shift),
+        ], [
           for (final r in hitLogos) r?.shift(shift),
         ]);
 
@@ -511,11 +527,12 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
         final fn = widget.frameNotifier;
         if (fn != null) {
           WmFrameInfo? info;
-          if (widget.selectedPart == WmPart.text && hitText != null) {
-            info = WmFrameInfo(
-              hitText.shift(shift),
-              settings.text.rotation,
-            );
+          if (widget.selectedPart == WmPart.text) {
+            final ai = settings.activeText;
+            final r = (ai >= 0 && ai < hitTexts.length) ? hitTexts[ai] : null;
+            if (r != null) {
+              info = WmFrameInfo(r.shift(shift), settings.texts[ai].rotation);
+            }
           } else if (widget.selectedPart == WmPart.logo) {
             final ai = settings.activeLogo;
             final r = (ai >= 0 && ai < hitLogos.length) ? hitLogos[ai] : null;

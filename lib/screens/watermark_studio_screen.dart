@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../models/watermark_settings.dart';
@@ -19,7 +20,8 @@ class WatermarkStudioScreen extends StatefulWidget {
   State<WatermarkStudioScreen> createState() => _WatermarkStudioScreenState();
 }
 
-class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
+class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
+    with SingleTickerProviderStateMixin {
   final _settings = WatermarkSettings();
   /// 被選浮水印部件的框（畫在裁切外，拖出示意畫面也看得到位置）
   final _wmFrameInfo = ValueNotifier<WmFrameInfo?>(null);
@@ -37,9 +39,29 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
   /// 進來時的設定快照，離開時比對有沒有改過
   late String _initialJson;
 
+  /// 動畫預覽的時鐘。工作室沒有時間軸，以前動畫「值存得進範本、
+  /// 畫面上看不到」——選了閃爍要套到影片上才知道長怎樣（使用者實測
+  /// 回報）。選了動畫就開錶讓示意畫面動起來，選回固定就停
+  late final Ticker _animTicker;
+  double _animT = 0;
+
+  void _syncAnimTicker() {
+    final want = _settings.animation != WmAnimation.none;
+    if (want && !_animTicker.isActive) _animTicker.start();
+    if (!want && _animTicker.isActive) {
+      _animTicker.stop();
+      _animT = 0;
+      _wmTick.value++;
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+    _animTicker = createTicker((el) {
+      _animT = el.inMicroseconds / 1e6;
+      _wmTick.value++; // 只重畫預覽區，面板不動
+    });
     final e = widget.edit;
     if (e != null) {
       // copy() 是深拷貝：改這裡不會動到範本清單裡的那一份。
@@ -47,6 +69,7 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
       _settings.copyMarksFrom(e.settings.copy());
     }
     _initialJson = jsonEncode(_settings.toJson());
+    _syncAnimTicker();
   }
 
   bool get _dirty => jsonEncode(_settings.toJson()) != _initialJson;
@@ -154,6 +177,7 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
 
   @override
   void dispose() {
+    _animTicker.dispose();
     _wmTick.dispose();
     super.dispose();
   }
@@ -179,6 +203,7 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
       _wmPart = WmPart.none; // 復原可能讓被選的部件消失，選取殘留會卡死拖曳
       _sync++;
     });
+    _syncAnimTicker();
     _wmTick.value++;
   }
 
@@ -214,7 +239,8 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
   /// 文字和 Logo 畫在哪（由 WatermarkLayer 回報）。
   /// Logo 放大置中把文字整個蓋住時，這裡本來永遠點不到文字——
   /// 而工作室沒有時間軸也沒有清單，沒有第二條路可以選它
-  Rect? _stTextBox;
+  /// 每一個文字畫在哪（跟 _settings.texts 一一對應）
+  List<Rect?> _stTextBoxes = const [];
 
   /// 每一張圖片畫在哪（跟 _settings.logos 一一對應）
   List<Rect?> _stLogoBoxes = const [];
@@ -222,9 +248,10 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
   int _stCycleHintLeft = 2;
 
   void _stTapAt(Offset p) {
-    // 由上往下：文字畫在圖片之後＝文字在上；圖片則是後加的在上
+    // 由上往下：文字畫在圖片之後＝文字在上；同類則是後加的在上
     final hits = <({WmPart part, int logo})>[
-      if (_stTextBox?.contains(p) ?? false) (part: WmPart.text, logo: -1),
+      for (var i = _stTextBoxes.length - 1; i >= 0; i--)
+        if (_stTextBoxes[i]?.contains(p) ?? false) (part: WmPart.text, logo: i),
       for (var i = _stLogoBoxes.length - 1; i >= 0; i--)
         if (_stLogoBoxes[i]?.contains(p) ?? false) (part: WmPart.logo, logo: i),
     ];
@@ -239,7 +266,9 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
     if (same) {
       final cur = (
         part: _wmPart,
-        logo: _wmPart == WmPart.logo ? _settings.activeLogo : -1,
+        logo: _wmPart == WmPart.logo
+            ? _settings.activeLogo
+            : (_wmPart == WmPart.text ? _settings.activeText : -1),
       );
       final at = hits.indexOf(cur);
       if (at >= 0) next = hits[(at + 1) % hits.length];
@@ -247,7 +276,10 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
     _stCycleAt = p;
     setState(() {
       _wmPart = next.part;
-      if (next.logo >= 0) _settings.activeLogo = next.logo;
+      if (next.logo >= 0) {
+        if (next.part == WmPart.logo) _settings.activeLogo = next.logo;
+        if (next.part == WmPart.text) _settings.activeText = next.logo;
+      }
     });
     _wmPanelCtrl.scrollTo(next.part);
     if (!same && hits.length > 1 && _stCycleHintLeft > 0) {
@@ -487,10 +519,14 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
                                 WatermarkLayer(
                                   frameNotifier: _wmFrameInfo,
                                   settings: _settings,
+                                  // 動畫預覽：選了動畫才給時間，固定＝靜態
+                                  time: _settings.animation == WmAnimation.none
+                                      ? null
+                                      : _animT,
                                   onChanged: () => _wmTick.value++,
                                   onDragStart: _pushUndo,
                                   onHitBox: (t, l) {
-                                    _stTextBox = t;
+                                    _stTextBoxes = t;
                                     _stLogoBoxes = l;
                                   },
                                   // 選取鎖定：選了圖片就只動圖片
@@ -631,7 +667,10 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
               // 不用再回畫面上找它點一下（其他三個編輯畫面本來就這樣，
               // 只有這裡跟批次漏掛）
               onLogoAdded: () => setState(() => _wmPart = WmPart.logo),
-              onChanged: () => setState(() {}),
+              onChanged: () {
+                _syncAnimTicker();
+                setState(() {});
+              },
               onBeforeChange: _pushUndo,
               syncVersion: _sync,
               initialPresetName: widget.edit?.name,

@@ -238,7 +238,12 @@ extension WmAnimationInfo on WmAnimation {
 
 /// 一組完整的浮水印設定（文字 + 圖片）
 class WatermarkSettings {
-  TextMark text;
+  /// 文字浮水印，可以放很多個（跟 logos 同一套模式）。永遠至少一個；
+  /// 「目前操作中的是哪一個」記在 [activeText]，所有舊呼叫點拿的
+  /// [text] 就是操作中的那一個，多文字只是換一個對象
+  final List<TextMark> texts;
+
+  int _activeText = 0;
 
   /// 圖片浮水印，可以放很多張。永遠至少一張（沒選圖時是空的那張，
   /// enabled=false），第一張就是舊版的 logo。
@@ -260,6 +265,8 @@ class WatermarkSettings {
 
   WatermarkSettings({
     TextMark? text,
+    List<TextMark>? texts,
+    int activeText = 0,
     LogoMark? logo,
     List<LogoMark>? logos,
     int activeLogo = 0,
@@ -267,13 +274,62 @@ class WatermarkSettings {
     this.animSpeed = 1.0,
     this.animRange = 1.0,
     List<PhotoMosaic>? mosaics,
-  })  : text = text ?? TextMark(),
-        // logo（單張）是舊的建構參數，留著讓既有呼叫端不用改
+  })  : // text（單個）是舊的建構參數，留著讓既有呼叫端不用改
+        texts = (texts == null || texts.isEmpty)
+            ? [text ?? TextMark()]
+            : texts,
+        // 參數名 activeText 對應私有欄位，initializing formal 用不上
+        // ignore: prefer_initializing_formals
+        _activeText = activeText,
         logos = (logos == null || logos.isEmpty)
             ? [logo ?? LogoMark()]
             : logos,
         _active = activeLogo,
         mosaics = mosaics ?? [];
+
+  /// 目前操作中的那一個文字。索引夾在範圍內
+  TextMark get text => texts[activeText];
+
+  /// 舊呼叫端有直接指派 text 的（套範本），改成蓋掉操作中那個
+  set text(TextMark t) => texts[activeText] = t;
+
+  int get activeText => _activeText.clamp(0, texts.length - 1);
+
+  set activeText(int i) => _activeText = i.clamp(0, texts.length - 1);
+
+  /// 有內容的文字數
+  int get textCount =>
+      texts.where((t) => t.enabled && t.text.trim().isNotEmpty).length;
+
+  /// 再加一個文字，並切成操作中。位置稍微錯開＋直接開著，
+  /// 不然新的那個會整個疊在舊的上面、看起來像沒加到
+  TextMark addText() {
+    final base = text;
+    final add = TextMark(
+      enabled: true,
+      sizeFrac: base.sizeFrac,
+      colorValue: base.colorValue,
+      opacity: base.opacity,
+      fontFamily: base.fontFamily,
+      x: (base.x + 0.08).clamp(0.0, 1.0),
+      y: (base.y + 0.08).clamp(0.0, 1.0),
+    );
+    texts.add(add);
+    _activeText = texts.length - 1;
+    return add;
+  }
+
+  /// 刪掉一個。最後一個不真的移除（清空內容就好），
+  /// [text] 才永遠有東西可以回傳
+  void removeText(int i) {
+    if (i < 0 || i >= texts.length) return;
+    if (texts.length == 1) {
+      texts[0] = TextMark();
+    } else {
+      texts.removeAt(i);
+    }
+    _activeText = _activeText.clamp(0, texts.length - 1);
+  }
 
   /// 目前操作中的那一張圖片。索引夾在範圍內：刪掉最後一張之後
   /// 還留著舊索引也不會越界
@@ -293,7 +349,10 @@ class WatermarkSettings {
   /// [other] 的 LogoMark 是直接接手不再複製，傳進來的通常是剛從 JSON
   /// 讀出來的暫時物件；要保留原件請自己先 copy()
   void copyMarksFrom(WatermarkSettings other) {
-    text = other.text;
+    texts
+      ..clear()
+      ..addAll(other.texts);
+    activeText = other.activeText;
     logos
       ..clear()
       ..addAll(other.logos);
@@ -371,13 +430,14 @@ class WatermarkSettings {
   }
 
   bool get hasAnyMark =>
-      (text.enabled && text.text.trim().isNotEmpty) ||
+      texts.any((t) => t.enabled && t.text.trim().isNotEmpty) ||
       logos.any((l) => l.enabled && l.b64 != null);
 
   // 只寫 logos，不再寫舊的 logo 鍵：圖片是 base64 存在設定裡的，
   // 兩份等於草稿與範本的體積翻倍（web 的 localStorage 只有 5MB）
   Map<String, dynamic> toJson() => {
-        'text': text.toJson(),
+        'texts': texts.map((t) => t.toJson()).toList(),
+        'activeText': activeText,
         'logos': logos.map((l) => l.toJson()).toList(),
         'activeLogo': activeLogo,
         'animation': animation.index,
@@ -389,7 +449,12 @@ class WatermarkSettings {
 
   factory WatermarkSettings.fromJson(Map<String, dynamic> j) =>
       WatermarkSettings(
-        text: TextMark.fromJson(j['text'] ?? {}),
+        // 舊資料（草稿、範本）只有單個的 text，讀成一個的清單
+        texts: ((j['texts'] as List?) ?? [j['text'] ?? const {}])
+            .map((e) =>
+                TextMark.fromJson(Map<String, dynamic>.from(e as Map)))
+            .toList(),
+        activeText: (j['activeText'] ?? 0) as int,
         // 舊資料（草稿、範本）只有單張的 logo，讀成一張的清單
         logos: ((j['logos'] as List?) ?? [j['logo'] ?? const {}])
             .map((e) => LogoMark.fromJson(Map<String, dynamic>.from(e as Map)))

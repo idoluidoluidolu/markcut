@@ -143,6 +143,9 @@ class WatermarkPanelState extends State<WatermarkPanel> {
 
   late final TextEditingController _textCtrl;
 
+  /// 文字輸入框的焦點（收起鍵盤鈕看它決定要不要出現）
+  final FocusNode _textFocus = FocusNode();
+
   WatermarkSettings get s => widget.settings;
 
   List<WatermarkPreset> _presets = [];
@@ -216,6 +219,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   void dispose() {
     widget.controller?.removeListener(_onScrollRequest);
     _textCtrl.dispose();
+    _textFocus.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -771,11 +775,104 @@ class WatermarkPanelState extends State<WatermarkPanel> {
           child: _card(Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-        _sectionRow('文字', s.text.enabled,
-            (v) => _update(() => s.text.enabled = v)),
+        // 標頭：標題＋「再加一個」＋（多個時）刪除＋這一個的開關。
+        // 文字跟圖片同一套：可以放很多個，設定調的是「亮框那一個」
+        Row(
+          children: [
+            const Text('文字',
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: kText)),
+            const Spacer(),
+            if (s.texts.length > 1)
+              IconButton(
+                tooltip: '移除這一個',
+                visualDensity: VisualDensity.compact,
+                onPressed: () {
+                  _update(() => s.removeText(s.activeText));
+                  _textCtrl.text = s.text.text;
+                },
+                icon: const Icon(Icons.delete_outline,
+                    size: 19, color: kTextDim),
+              ),
+            IconButton(
+              tooltip: '再加一個文字',
+              visualDensity: VisualDensity.compact,
+              onPressed: () {
+                _update(() => s.addText());
+                _textCtrl.text = s.text.text;
+              },
+              icon: const Icon(Icons.add, size: 20, color: kIcon),
+            ),
+            Switch(
+              value: s.text.enabled,
+              onChanged: (v) => _update(() => s.text.enabled = v),
+            ),
+          ],
+        ),
+        if (s.texts.length > 1) ...[
+          const SizedBox(height: 4),
+          // 選取列：底下整組設定調的都是亮框的那一個
+          SizedBox(
+            height: 34,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: s.texts.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 6),
+              itemBuilder: (context, i) {
+                final t = s.texts[i];
+                final on = i == s.activeText;
+                final label =
+                    t.text.trim().isEmpty ? '（空）' : t.text.trim();
+                return InkWell(
+                  borderRadius: BorderRadius.circular(999),
+                  // 切換要調哪一個，不算改動內容——不拍上一步快照
+                  onTap: () {
+                    setState(() {
+                      s.activeText = i;
+                      _textCtrl.text = s.text.text;
+                    });
+                    widget.onChanged();
+                  },
+                  child: Container(
+                    constraints: const BoxConstraints(maxWidth: 120),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 7),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(color: kBorder),
+                    ),
+                    foregroundDecoration: on
+                        ? BoxDecoration(
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(color: kSelect, width: 1.5),
+                          )
+                        : null,
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        // 關掉的那個淡一點，看得出它現在不會出現在畫面上
+                        color: t.enabled ? kText : kTextDim,
+                        fontWeight: on ? FontWeight.w700 : FontWeight.w400,
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
         if (s.text.enabled) ...[
           const SizedBox(height: 6),
           // ===== 大輸入框：用目前字型與顏色顯示，打字即預覽 =====
+          // 疊一顆「收起鍵盤」鈕在右上角：多行輸入的換行鍵不能當完成鍵，
+          // 打完字原本沒有地方可以把鍵盤收掉（使用者實測回報）
+          Stack(
+            children: [
           Container(
             constraints: const BoxConstraints(minHeight: 110),
             alignment: Alignment.center,
@@ -786,6 +883,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
             ),
             child: TextField(
               controller: _textCtrl,
+              focusNode: _textFocus,
               textAlign: TextAlign.center,
               maxLines: null,
               style: TextStyle(
@@ -808,6 +906,24 @@ class WatermarkPanelState extends State<WatermarkPanel> {
               ),
               onChanged: (v) => _update(() => s.text.text = v),
             ),
+          ),
+              Positioned(
+                right: 2,
+                top: 2,
+                child: AnimatedBuilder(
+                  animation: _textFocus,
+                  builder: (context, _) => _textFocus.hasFocus
+                      ? IconButton(
+                          tooltip: '收起鍵盤',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () => _textFocus.unfocus(),
+                          icon: const Icon(Icons.keyboard_hide_outlined,
+                              size: 20, color: kIcon),
+                        )
+                      : const SizedBox.shrink(),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 12),
           Row(
@@ -1355,17 +1471,6 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   }
 
   /// 區塊標題列：小標 + 迷你開關
-  Widget _sectionRow(String title, bool value, ValueChanged<bool> onChanged) {
-    return Row(
-      children: [
-        Text(title,
-            style: const TextStyle(
-                fontSize: 13, fontWeight: FontWeight.w700, color: kText)),
-        const Spacer(),
-        _miniSwitch(value, onChanged),
-      ],
-    );
-  }
 
   Widget _miniSwitch(bool value, ValueChanged<bool> onChanged) {
     return Transform.scale(
