@@ -599,14 +599,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     return Column(
       children: [
         _sectionNav(),
-        Expanded(
-          child: Stack(
-            children: [
-              _list(),
-              if (!widget.hideSaveButton) _saveBar(),
-            ],
-          ),
-        ),
+        Expanded(child: _list()),
       ],
     );
   }
@@ -622,8 +615,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       scrollCacheExtent: const ScrollCacheExtent.pixels(3000),
       // 往下滑清單就收鍵盤（打完字回不去的解法）
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-      // 底部多留一截：儲存鈕浮在右下角，最後一張卡要捲得出它的陰影區
-      padding: EdgeInsets.fromLTRB(16, 8, 16, 76 + widget.bottomInset),
+      padding: EdgeInsets.fromLTRB(16, 8, 16, 24 + widget.bottomInset),
       children: [
         // ===== 選擇範本：D 案不填色、只留線框；琥珀圖示＋下拉箭頭 =====
         OutlinedButton(
@@ -1085,60 +1077,35 @@ class WatermarkPanelState extends State<WatermarkPanel> {
               child: _card(widget.extraSections[i].child),
             ),
 
+        // ===== 儲存範本：內容最後一項，跟著捲 =====
+        if (!widget.hideSaveButton) ...[
+          const SizedBox(height: 2),
+          _saveBar(),
+        ],
       ],
     );
   }
 
   /// 儲存範本（更新選中的範本，或另存新範本）。
-  /// 浮在面板右下角、不佔版面高度：內容從它下面穿過去，上緣鋪一層
-  /// 漸層淡出，不硬切到內容——跟照片編輯的浮動列同一種做法。
+  /// 排在內容最後、跟著捲（不釘死）：白色小膠囊靠右，跟照片編輯的
+  /// 浮動列同一種按鈕語言。
   /// 照片編輯器把這顆移到底部跟「輸出」並排，所以可隱藏
-  Widget _saveBar() => Positioned(
-        left: 0,
-        right: 0,
-        bottom: 0,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            IgnorePointer(
-              child: Container(
-                height: 40,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [kBg.withValues(alpha: 0), kBg],
-                  ),
-                ),
-              ),
+  Widget _saveBar() => Align(
+        alignment: Alignment.centerRight,
+        child: FilledButton.icon(
+          onPressed: _savePreset,
+          style: FilledButton.styleFrom(
+            minimumSize: const Size(0, 44),
+            padding: const EdgeInsets.symmetric(horizontal: 18),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(999),
             ),
-            Container(
-              color: kBg,
-              padding:
-                  EdgeInsets.fromLTRB(16, 0, 16, 10 + widget.bottomInset),
-              child: Align(
-                alignment: Alignment.centerRight,
-                // 白色填滿的小膠囊、寬度貼內容：它是浮在角落的動作鈕，
-                // 拉滿整排反而像被置中的大按鈕
-                child: FilledButton.icon(
-                  onPressed: _savePreset,
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size(0, 44),
-                    padding: const EdgeInsets.symmetric(horizontal: 18),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                  ),
-                  icon: const Icon(Icons.bookmark_add_outlined, size: 17),
-                  label: Text(
-                    _presetSel == null ? '儲存範本' : '儲存範本「$_presetSel」',
-                    style: const TextStyle(fontSize: 13.5),
-                  ),
-                ),
-              ),
-            ),
-          ],
+          ),
+          icon: const Icon(Icons.bookmark_add_outlined, size: 17),
+          label: Text(
+            _presetSel == null ? '儲存範本' : '儲存範本「$_presetSel」',
+            style: const TextStyle(fontSize: 13.5),
+          ),
         ),
       );
 
