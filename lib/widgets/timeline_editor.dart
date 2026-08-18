@@ -29,6 +29,17 @@ typedef _Lift = ({
 
 /// 通用圖層時間軸：軌道不分影片或音訊，任何素材都能放在任何一軌。
 /// track 0 是最上層——畫面以最上層的影片為準，聲音則是全部混音。
+/// 時間軸上「沒有縮圖可看」的片段共用的底色。
+///
+/// 影片的縮圖還沒抽出來、文字、浮水印、馬賽克全部同一個中性灰——
+/// 以前四種各有各的底色（馬賽克還帶藍），時間軸看起來像調色盤。
+/// 種類靠前面那顆小圖示分就夠了
+const kClipFill = LinearGradient(
+  begin: Alignment.topCenter,
+  end: Alignment.bottomCenter,
+  colors: [Color(0xFF232328), Color(0xFF141416)],
+);
+
 class TimelineEditor extends StatefulWidget {
   final TimelineModel timeline;
   final Map<int, List<Uint8List>> thumbs; // sourceIndex → filmstrip
@@ -1174,10 +1185,10 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
       ),
     );
   }
-  // 文字/浮水印/馬賽克：保留各自底色，前面小圖示分種類、
+  // 文字/浮水印/馬賽克：底色跟影片片段統一，前面小圖示分種類、
   // 文字樣式完全統一（同字級同色同字重）
-  Widget overlayLabel(Color bg, IconData icon, String text) => Container(
-    color: bg,
+  Widget overlayLabel(IconData icon, String text) => Container(
+    decoration: const BoxDecoration(gradient: kClipFill),
     padding: const EdgeInsets.symmetric(horizontal: 8),
     alignment: Alignment.centerLeft,
     child: Row(
@@ -1201,25 +1212,18 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
     ),
   );
   if (src.kind == ClipKind.text) {
-    return overlayLabel(const Color(0xFF4A4A52), Icons.text_fields, src.name);
+    return overlayLabel(Icons.text_fields, src.name);
   }
   if (src.kind == ClipKind.mosaic) {
-    return overlayLabel(const Color(0xFF33404E), Icons.blur_on, '馬賽克');
+    return overlayLabel(Icons.blur_on, '馬賽克');
   }
   if (src.kind == ClipKind.wm) {
-    return overlayLabel(kPanelHi, Icons.branding_watermark, src.name);
+    return overlayLabel(Icons.branding_watermark, src.name);
   }
   if (strip.isEmpty) {
-    // 縮圖還沒抽出來時的暫時底色。中性灰，不帶藍——
-    // blueGrey 是整個深色主題裡唯一有色味的東西
+    // 縮圖還沒抽出來時的暫時底色，跟其他沒有縮圖的片段同一個
     return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0xFF232328), Color(0xFF141416)],
-        ),
-      ),
+      decoration: const BoxDecoration(gradient: kClipFill),
       child: const Center(
         child: Icon(Icons.movie, size: 18, color: Color(0xFF6E6E78)),
       ),
