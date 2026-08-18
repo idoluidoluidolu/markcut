@@ -599,8 +599,14 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     return Column(
       children: [
         _sectionNav(),
-        Expanded(child: _list()),
-        if (!widget.hideSaveButton) _saveBar(),
+        Expanded(
+          child: Stack(
+            children: [
+              _list(),
+              if (!widget.hideSaveButton) _saveBar(),
+            ],
+          ),
+        ),
       ],
     );
   }
@@ -616,8 +622,8 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       scrollCacheExtent: const ScrollCacheExtent.pixels(3000),
       // 往下滑清單就收鍵盤（打完字回不去的解法）
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-      // 底部的鍵盤內距交給釘在下面的儲存鈕；清單自己留一般邊距就好
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+      // 底部多留一截：儲存鈕浮在右下角，最後一張卡要捲得出它的陰影區
+      padding: EdgeInsets.fromLTRB(16, 8, 16, 76 + widget.bottomInset),
       children: [
         // ===== 選擇範本：D 案不填色、只留線框；琥珀圖示＋下拉箭頭 =====
         OutlinedButton(
@@ -1084,19 +1090,42 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   }
 
   /// 儲存範本（更新選中的範本，或另存新範本）。
-  /// 釘在面板最底下、不跟內容一起捲：每個分頁都要一眼看得到出口。
+  /// 浮在面板右下角、不佔版面高度：內容從它下面穿過去，上緣鋪一層
+  /// 漸層淡出，不硬切到內容——跟照片編輯的浮動列同一種做法。
   /// 照片編輯器把這顆移到底部跟「輸出」並排，所以可隱藏
-  Widget _saveBar() => Padding(
-        padding: EdgeInsets.fromLTRB(16, 6, 16, 10 + widget.bottomInset),
-        child: FilledButton.icon(
-          onPressed: _savePreset,
-          icon: const Icon(Icons.bookmark_add_outlined, size: 18),
-          label: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            child: Text(
-                _presetSel == null ? '儲存範本' : '儲存範本「$_presetSel」',
-                style: const TextStyle(fontSize: 14)),
-          ),
+  Widget _saveBar() => Positioned(
+        left: 0,
+        right: 0,
+        bottom: 0,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            IgnorePointer(
+              child: Container(
+                height: 40,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [kBg.withValues(alpha: 0), kBg],
+                  ),
+                ),
+              ),
+            ),
+            Container(
+              color: kBg,
+              padding:
+                  EdgeInsets.fromLTRB(16, 0, 16, 10 + widget.bottomInset),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: secondaryAction(
+                  label: _presetSel == null ? '儲存範本' : '儲存範本「$_presetSel」',
+                  onPressed: _savePreset,
+                ),
+              ),
+            ),
+          ],
         ),
       );
 
