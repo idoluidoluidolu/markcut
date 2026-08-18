@@ -3,6 +3,9 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+// flutter_colorpicker 也輸出一個叫 CheckerPainter 的類別，藏掉它
+import 'package:flutter_colorpicker/flutter_colorpicker.dart'
+    hide CheckerPainter;
 
 import '../theme.dart';
 import '../widgets/watermark_layer.dart' show CheckerPainter;
@@ -19,19 +22,93 @@ Future<Uint8List?> drawWatermark(BuildContext context) =>
       MaterialPageRoute(builder: (_) => const _DrawScreen()),
     );
 
-/// 一筆：路徑點＋顏色＋粗細（或橡皮擦）
+/// 筆刷：每種差在透明度、寬度倍率、筆頭形狀
+enum _Brush { pen, marker, highlight, eraser }
+
+extension _BrushInfo on _Brush {
+  String get label => switch (this) {
+        _Brush.pen => '鋼筆',
+        _Brush.marker => '麥克筆',
+        _Brush.highlight => '螢光筆',
+        _Brush.eraser => '橡皮擦',
+      };
+
+  IconData get icon => switch (this) {
+        _Brush.pen => Icons.edit_outlined,
+        _Brush.marker => Icons.brush_outlined,
+        _Brush.highlight => Icons.border_color_outlined,
+        _Brush.eraser => Icons.cleaning_services_outlined,
+      };
+
+  /// 透明度：麥克筆半透明、螢光筆更透（疊起來有層次）
+  double get alpha => switch (this) {
+        _Brush.marker => 0.65,
+        _Brush.highlight => 0.4,
+        _ => 1.0,
+      };
+
+  /// 寬度倍率：同一支粗細滑桿，不同筆刷有自己的手感
+  double get widthK => switch (this) {
+        _Brush.marker => 1.6,
+        _Brush.highlight => 2.4,
+        _Brush.eraser => 1.4,
+        _ => 1.0,
+      };
+}
+
+/// 形狀工具：自由畫之外的基本形狀（拖一下＝從起點畫到終點）
+enum _Tool { free, line, rect, oval }
+
+extension _ToolInfo on _Tool {
+  String get label => switch (this) {
+        _Tool.free => '自由',
+        _Tool.line => '直線',
+        _Tool.rect => '方框',
+        _Tool.oval => '圓形',
+      };
+
+  IconData get icon => switch (this) {
+        _Tool.free => Icons.gesture,
+        _Tool.line => Icons.show_chart,
+        _Tool.rect => Icons.crop_square,
+        _Tool.oval => Icons.circle_outlined,
+      };
+}
+
+/// 一筆：路徑點＋顏色＋粗細＋筆刷＋工具。
+/// 形狀工具只用第一點和最後一點（起點→終點）
 class _Stroke {
   final List<Offset> points;
   final Color color;
   final double width;
-  final bool eraser;
+  final _Brush brush;
+  final _Tool tool;
 
   _Stroke({
     required this.points,
     required this.color,
     required this.width,
-    required this.eraser,
+    required this.brush,
+    required this.tool,
   });
+
+  bool get eraser => brush == _Brush.eraser;
+
+  /// 實際畫出來的寬度
+  double get drawWidth => width * brush.widthK;
+
+  /// 這一筆的外框（輸出裁圖用）
+  Rect get bounds {
+    final pad = drawWidth / 2 + 2;
+    if (tool != _Tool.free) {
+      return Rect.fromPoints(points.first, points.last).inflate(pad);
+    }
+    var r = Rect.fromCircle(center: points.first, radius: pad);
+    for (final p in points) {
+      r = r.expandToInclude(Rect.fromCircle(center: p, radius: pad));
+    }
+    return r;
+  }
 }
 
 class _DrawScreen extends StatefulWidget {
@@ -43,11 +120,18 @@ class _DrawScreen extends StatefulWidget {
 
 class _DrawScreenState extends State<_DrawScreen> {
   final List<_Stroke> _strokes = [];
+
+  /// 重做堆疊：上一步收回來的筆放這裡，畫新的一筆就清掉
+  final List<_Stroke> _undone = [];
   _Stroke? _live;
 
   Color _color = Colors.white;
+
+  /// 調色盤挑出來的自訂色（顯示成色列的第一顆）
+  Color _custom = const Color(0xFF9B7BFF);
   double _width = 8;
-  bool _eraser = false;
+  _Brush _brush = _Brush.pen;
+  _Tool _tool = _Tool.free;
 
   /// 白色放最前面：深色影片上最常用的就是白字白圖
   static const _palette = [
@@ -69,7 +153,8 @@ class _DrawScreenState extends State<_DrawScreen> {
         points: [p],
         color: _color,
         width: _width,
-        eraser: _eraser,
+        brush: _brush,
+        tool: _tool,
       );
     });
   }
@@ -77,6 +162,17 @@ class _DrawScreenState extends State<_DrawScreen> {
   void _move(Offset p) {
     final s = _live;
     if (s == null) return;
+    if (s.tool != _Tool.free) {
+      // 形狀：只追蹤終點（起點固定），拖到哪畫到哪
+      setState(() {
+        if (s.points.length == 1) {
+          s.points.add(p);
+        } else {
+          s.points[s.points.length - 1] = p;
+        }
+      });
+      return;
+    }
     // 距離太近的點丟掉：一筆幾千個點會讓重繪跟輸出都變慢
     if ((s.points.last - p).distance < 1.5) return;
     setState(() => s.points.add(p));
@@ -88,7 +184,47 @@ class _DrawScreenState extends State<_DrawScreen> {
     setState(() {
       _strokes.add(s);
       _live = null;
+      _undone.clear(); // 畫了新的，原本的重做路線就斷了
     });
+  }
+
+  /// 調色盤：挑任意顏色（挑完直接拿在手上）
+  Future<void> _openPicker() async {
+    var pick = _custom;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('調色盤'),
+        contentPadding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+        content: SingleChildScrollView(
+          child: ColorPicker(
+            pickerColor: pick,
+            onColorChanged: (c) => pick = c,
+            enableAlpha: false,
+            hexInputBar: true,
+            labelTypes: const [],
+            pickerAreaBorderRadius: BorderRadius.circular(10),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('就用這個'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && mounted) {
+      setState(() {
+        _custom = pick;
+        _color = pick;
+        if (_brush == _Brush.eraser) _brush = _Brush.pen;
+      });
+    }
   }
 
   Future<void> _done(Size boardSize) async {
@@ -111,11 +247,8 @@ class _DrawScreenState extends State<_DrawScreen> {
     var first = true;
     for (final s in _strokes) {
       if (s.eraser) continue;
-      for (final p in s.points) {
-        final r = Rect.fromCircle(center: p, radius: s.width / 2 + 2);
-        bounds = first ? r : bounds.expandToInclude(r);
-        first = false;
-      }
+      bounds = first ? s.bounds : bounds.expandToInclude(s.bounds);
+      first = false;
     }
     bounds = bounds.intersect(Offset.zero & boardSize);
     if (bounds.width < 4 || bounds.height < 4) return null;
@@ -136,6 +269,47 @@ class _DrawScreenState extends State<_DrawScreen> {
     return data?.buffer.asUint8List();
   }
 
+  /// 筆刷／工具共用的小圓片選項
+  Widget _chip({
+    required String label,
+    required IconData icon,
+    required bool on,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(999),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: kClipBorder),
+        ),
+        foregroundDecoration: on
+            ? BoxDecoration(
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: kSelect, width: 1.5),
+              )
+            : null,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: on ? kText : kTextDim),
+            const SizedBox(width: 5),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: on ? FontWeight.w700 : FontWeight.w400,
+                color: on ? kText : kTextDim,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -147,14 +321,28 @@ class _DrawScreenState extends State<_DrawScreen> {
             tooltip: '上一步',
             onPressed: _strokes.isEmpty
                 ? null
-                : () => setState(() => _strokes.removeLast()),
-            icon: const Icon(Icons.undo, size: 20),
+                : () => setState(() => _undone.add(_strokes.removeLast())),
+            icon: Icon(Icons.undo,
+                size: 20, color: _strokes.isEmpty ? kTextDim : kSelect),
+          ),
+          IconButton(
+            tooltip: '重做',
+            onPressed: _undone.isEmpty
+                ? null
+                : () => setState(() => _strokes.add(_undone.removeLast())),
+            icon: Icon(Icons.redo,
+                size: 20, color: _undone.isEmpty ? kTextDim : kSelect),
           ),
           IconButton(
             tooltip: '全部清掉',
             onPressed: _strokes.isEmpty
                 ? null
-                : () => setState(_strokes.clear),
+                : () => setState(() {
+                      _undone
+                        ..clear()
+                        ..addAll(_strokes.reversed);
+                      _strokes.clear();
+                    }),
             icon: const Icon(Icons.delete_sweep_outlined, size: 20),
           ),
         ],
@@ -193,70 +381,112 @@ class _DrawScreenState extends State<_DrawScreen> {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 14),
+              padding: const EdgeInsets.fromLTRB(16, 6, 16, 14),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // 顏色一排＋橡皮擦
-                  Row(
-                    children: [
-                      Expanded(
-                        child: SizedBox(
-                          height: 34,
-                          child: ListView.separated(
-                            scrollDirection: Axis.horizontal,
-                            itemCount: _palette.length,
-                            separatorBuilder: (_, _) =>
-                                const SizedBox(width: 8),
-                            itemBuilder: (context, i) {
-                              final c = _palette[i];
-                              final on = !_eraser && c == _color;
-                              return InkWell(
-                                borderRadius: BorderRadius.circular(999),
-                                onTap: () => setState(() {
-                                  _color = c;
-                                  _eraser = false;
-                                }),
-                                child: Container(
-                                  width: 34,
-                                  decoration: BoxDecoration(
-                                    color: c,
-                                    shape: BoxShape.circle,
-                                    border: Border.all(
-                                      color: on ? kSelect : kClipBorder,
-                                      width: on ? 2.5 : 1,
-                                    ),
-                                  ),
-                                ),
-                              );
-                            },
+                  // 筆刷一排＋形狀一排：各自單選
+                  SizedBox(
+                    height: 32,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      children: [
+                        for (final b in _Brush.values) ...[
+                          _chip(
+                            label: b.label,
+                            icon: b.icon,
+                            on: _brush == b,
+                            onTap: () => setState(() => _brush = b),
+                          ),
+                          const SizedBox(width: 6),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  SizedBox(
+                    height: 32,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      children: [
+                        for (final t in _Tool.values) ...[
+                          _chip(
+                            label: t.label,
+                            icon: t.icon,
+                            on: _tool == t,
+                            onTap: () => setState(() => _tool = t),
+                          ),
+                          const SizedBox(width: 6),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  // 顏色一排：第一顆是調色盤（自訂色），其餘是常用色
+                  SizedBox(
+                    height: 34,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      children: [
+                        // 調色盤：長按直接重開挑色；顯示目前的自訂色
+                        InkWell(
+                          borderRadius: BorderRadius.circular(999),
+                          onTap: _openPicker,
+                          child: Container(
+                            width: 34,
+                            decoration: BoxDecoration(
+                              color: _custom,
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: _brush != _Brush.eraser &&
+                                        _color == _custom
+                                    ? kSelect
+                                    : kClipBorder,
+                                width: _brush != _Brush.eraser &&
+                                        _color == _custom
+                                    ? 2.5
+                                    : 1,
+                              ),
+                            ),
+                            child: const Icon(Icons.palette_outlined,
+                                size: 16, color: Colors.white70),
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 10),
-                      // 橡皮擦：跟顏色互斥，同一排看得出「現在拿的是誰」
-                      InkWell(
-                        borderRadius: BorderRadius.circular(999),
-                        onTap: () => setState(() => _eraser = !_eraser),
-                        child: Container(
-                          width: 34,
-                          height: 34,
-                          decoration: BoxDecoration(
-                            color: _eraser ? kPanelHi : Colors.transparent,
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: _eraser ? kSelect : kClipBorder,
-                              width: _eraser ? 2.5 : 1,
+                        const SizedBox(width: 8),
+                        for (final c in _palette) ...[
+                          InkWell(
+                            borderRadius: BorderRadius.circular(999),
+                            onTap: () => setState(() {
+                              _color = c;
+                              if (_brush == _Brush.eraser) {
+                                _brush = _Brush.pen;
+                              }
+                            }),
+                            child: Container(
+                              width: 34,
+                              decoration: BoxDecoration(
+                                color: c,
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: _brush != _Brush.eraser &&
+                                          c == _color
+                                      ? kSelect
+                                      : kClipBorder,
+                                  width: _brush != _Brush.eraser &&
+                                          c == _color
+                                      ? 2.5
+                                      : 1,
+                                ),
+                              ),
                             ),
                           ),
-                          child: const Icon(Icons.cleaning_services_outlined,
-                              size: 16, color: kIcon),
-                        ),
-                      ),
-                    ],
+                          const SizedBox(width: 8),
+                        ],
+                      ],
+                    ),
                   ),
-                  const SizedBox(height: 10),
-                  // 粗細：拖的時候右邊那顆點即時變大小
+                  const SizedBox(height: 4),
+                  // 粗細：拖的時候右邊那顆點即時變大小（含筆刷倍率）
                   Row(
                     children: [
                       const Text('粗細',
@@ -277,10 +507,12 @@ class _DrawScreenState extends State<_DrawScreen> {
                         height: 40,
                         child: Center(
                           child: Container(
-                            width: _width.clamp(2, 36),
-                            height: _width.clamp(2, 36),
+                            width: (_width * _brush.widthK).clamp(2, 40),
+                            height: (_width * _brush.widthK).clamp(2, 40),
                             decoration: BoxDecoration(
-                              color: _eraser ? kPanelHi : _color,
+                              color: _brush == _Brush.eraser
+                                  ? kPanelHi
+                                  : _color.withValues(alpha: _brush.alpha),
                               shape: BoxShape.circle,
                               border: Border.all(color: kClipBorder),
                             ),
@@ -289,7 +521,7 @@ class _DrawScreenState extends State<_DrawScreen> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 6),
                   primaryAction(
                     label: '完成',
                     icon: Icons.check,
@@ -320,22 +552,45 @@ void _paintStrokes(
   for (final s in [...strokes, ?live]) {
     final paint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = s.width
-      ..strokeCap = StrokeCap.round
+      ..strokeWidth = s.drawWidth
+      // 螢光筆是平頭（畫出來像真的螢光筆），其他圓頭
+      ..strokeCap = s.brush == _Brush.highlight
+          ? StrokeCap.square
+          : StrokeCap.round
       ..strokeJoin = StrokeJoin.round
       ..isAntiAlias = true;
     if (s.eraser) {
       paint.blendMode = BlendMode.clear;
     } else {
-      paint.color = s.color;
+      paint.color = s.color.withValues(alpha: s.brush.alpha);
     }
+
+    // 形狀工具：起點→終點
+    if (s.tool != _Tool.free && s.points.length >= 2) {
+      final a = s.points.first;
+      final b = s.points.last;
+      switch (s.tool) {
+        case _Tool.line:
+          canvas.drawLine(a, b, paint);
+        case _Tool.rect:
+          canvas.drawRect(Rect.fromPoints(a, b), paint);
+        case _Tool.oval:
+          canvas.drawOval(Rect.fromPoints(a, b), paint);
+        case _Tool.free:
+          break;
+      }
+      continue;
+    }
+
     if (s.points.length == 1) {
       // 點一下＝一個圓點
       canvas.drawCircle(
         s.points.first,
-        s.width / 2,
+        s.drawWidth / 2,
         Paint()
-          ..color = s.eraser ? Colors.transparent : s.color
+          ..color = s.eraser
+              ? Colors.transparent
+              : s.color.withValues(alpha: s.brush.alpha)
           ..blendMode = s.eraser ? BlendMode.clear : BlendMode.srcOver,
       );
       continue;

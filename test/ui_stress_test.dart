@@ -145,11 +145,19 @@ void main() {
       await tester.pumpAndSettle();
 
       for (var round = 0; round < 20; round++) {
-        final switches = find.byType(GestureDetector);
-        final n = math.min(switches.evaluate().length, 12);
-        for (var i = 0; i < n; i++) {
+        for (var i = 0; i < 12; i++) {
+          // 每一下都重新數：亂點可能點到「手繪」把畫板推上來，
+          // 畫面上的元件數會中途改變，沿用舊的 finder 會越界
+          final switches = find.byType(GestureDetector);
+          if (i >= switches.evaluate().length) break;
           await tester.tap(switches.at(i), warnIfMissed: false);
           await tester.pump(const Duration(milliseconds: 5));
+          // 點到「手繪」開了畫板就退回來再繼續亂點面板
+          final back = find.byType(BackButton);
+          if (back.evaluate().isNotEmpty) {
+            await tester.tap(back.first, warnIfMissed: false);
+            await tester.pumpAndSettle();
+          }
         }
       }
       await tester.pumpAndSettle();

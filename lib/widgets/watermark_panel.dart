@@ -587,6 +587,13 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         key: _logoCardKey,
         action: null,
       ),
+      if (widget.showNav)
+        (
+          label: '手繪',
+          icon: Icons.draw_outlined,
+          key: null,
+          action: _addDrawing,
+        ),
       for (var i = 0; i < widget.extraSections.length; i++)
         (
           label: widget.extraSections[i].label,
@@ -1093,12 +1100,6 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                       fontWeight: FontWeight.w700,
                       color: kText)),
               const Spacer(),
-              IconButton(
-                tooltip: '手繪一張',
-                visualDensity: VisualDensity.compact,
-                onPressed: _addDrawing,
-                icon: const Icon(Icons.draw_outlined, size: 19, color: kIcon),
-              ),
               IconButton(
                 tooltip: _hasLogos ? '再加一張' : '加入圖片',
                 visualDensity: VisualDensity.compact,
