@@ -5551,7 +5551,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14),
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 360),
+              constraints: const BoxConstraints(maxWidth: 300),
               child: Material(
                 color: Colors.transparent,
                 child: Column(
