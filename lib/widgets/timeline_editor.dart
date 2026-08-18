@@ -271,7 +271,10 @@ class _TimelineEditorState extends State<TimelineEditor> {
     if (_pinching) return; // 雙指縮放時間軸中：不要把素材拿起來
     _liftArmed = false; // 移動超過門檻才算真的在拖（見 _liftUpdate）
     _liftWasSelected = widget.selectedId == c.id;
-    widget.onSelect(c.id);
+    // 這裡「不」選取：第一指按在素材上、第二指跟著落下變成縮放時，
+    // 按下就選會讓縮放的手勢順便誤選素材（使用者實測回報）。
+    // 選取延到三個確定不是縮放的時刻：真的拖起來（armed）、
+    // 放開當一次點擊、或長按開選單
     // onLiftChanged 留到「真的拖起來」（armed）才通知父層——
     // 一按下就說在拖的話，第二根手指落下時父層會以為使用者正在
     // 搬素材而不轉成縮放，結果整條被拖走
@@ -293,6 +296,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
         setState(() => _lift = null);
         _stopAutoScroll();
         widget.onLiftChanged?.call(false);
+        widget.onSelect(c.id); // 延後的選取（見 _liftStart）
         HapticFeedback.mediumImpact(); // 長按成立的觸覺回饋
         widget.onLongPressClip(c.id, _pressPos);
       }
@@ -334,6 +338,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
       if (!_liftArmed &&
           (_lift!.dx.abs() > 8 || _lift!.dy.abs() > 8)) {
         _liftArmed = true;
+        widget.onSelect(l.clipId); // 延後的選取（見 _liftStart）
         // 到這裡才算真的在搬素材，父層現在才需要讓開
         widget.onLiftChanged?.call(true);
       }
@@ -361,8 +366,10 @@ class _TimelineEditorState extends State<TimelineEditor> {
     setState(() => _lift = null);
     _stopAutoScroll();
     widget.onLiftChanged?.call(false);
-    // 沒有武裝（幾乎沒動）= 點擊；點已選取的片段 → 交給編輯回呼
+    // 沒有武裝（幾乎沒動）= 點擊：現在才選取（見 _liftStart）；
+    // 點已選取的片段 → 交給編輯回呼
     if (!armed) {
+      widget.onSelect(l.clipId);
       // 窄到擺不下把手的片段：點一下就請父層放大到修剪得動為止。
       // 只在「真的只是點一下」時做——拖曳中途縮放時間軸會讓手指
       // 底下的東西整個位移
