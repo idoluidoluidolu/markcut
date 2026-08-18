@@ -115,6 +115,38 @@ void main() {
       }
     });
 
+    test('畫布比例跟著裁切走：框剛好填滿，來回換算一模一樣', () {
+      // 「裁什麼形狀，成品就是什麼形狀」的數學保證：
+      // 畫布比例取成這一框的實際形狀時，「放得進去」與「填滿」是
+      // 同一個答案，所以不會再有黑邊，重開裁切也會停在同一個框上
+      final r = math.Random(77);
+      for (var i = 0; i < 3000; i++) {
+        final srcAspect = 0.2 + r.nextDouble() * 4;
+        final w = 0.05 + r.nextDouble() * 0.95;
+        final h = 0.05 + r.nextDouble() * 0.95;
+        final crop = Rect.fromLTWH(
+          r.nextDouble() * (1 - w),
+          r.nextDouble() * (1 - h),
+          w,
+          h,
+        );
+        final newAspect = (crop.width / crop.height) * srcAspect;
+        final t = cropToTransform(crop, srcAspect, newAspect);
+        final back = transformToCrop(
+          t.scale,
+          t.px,
+          t.py,
+          srcAspect,
+          newAspect,
+        );
+        // 完全填滿＝回來的框跟原框一樣大（不多看到任何一側）
+        expect(back.width, closeTo(crop.width, 1e-6));
+        expect(back.height, closeTo(crop.height, 1e-6));
+        expect(back.left, closeTo(crop.left, 1e-6));
+        expect(back.top, closeTo(crop.top, 1e-6));
+      }
+    });
+
     test('再怎麼亂都不會產生 NaN 或負的縮放', () {
       final r = math.Random(11);
       for (var i = 0; i < 5000; i++) {

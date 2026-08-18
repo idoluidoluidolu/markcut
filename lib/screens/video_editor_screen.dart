@@ -215,7 +215,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 同一支影片縮到 720p，需要的位元率就少了一半
   ExportQuality get _qualityEff {
     if (!_qualityAuto || _srcKbps <= 0) return _quality;
-    final (w, h) = computeCanvasSize(_tl, _resolution, _canvasRatio);
+    final (w, h) = computeCanvasSize(_tl, _resolution, _canvasRatio, _customAspect);
     return recommendQuality(
       srcKbps: _srcKbps,
       outW: w,
@@ -262,6 +262,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   CanvasRatio _canvasRatio = CanvasRatio.original;
+
+  /// 裁切算出來的自訂畫布比例（寬/高）。null＝照 [_canvasRatio]。
+  ///
+  /// 影片裁切改成「裁什麼比例，成品就是什麼比例」之後才有這個：
+  /// 以前裁切只改片段的縮放位移，畫布形狀不變，裁成正方形也還是塞回
+  /// 原比例、上下留黑
+  double? _customAspect;
+
+  /// 目前的畫布比例（寬/高）。null＝跟著素材
+  double? get _ratioAspect => _customAspect ?? _canvasRatio.value;
+
+  /// 比例的顯示字樣（自訂時不硬湊成 x:y，那種數字多半很醜）
+  String get _ratioLabel => _customAspect == null ? _canvasRatio.label : '裁切';
   double _pxPerSec = 0;
   final _tlScroll = ScrollController();
 
@@ -585,6 +598,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       'clips': [for (final c in _tl.clips) c.toJson()],
       'speed': _speed,
       'ratio': _canvasRatio.index,
+      'customAspect': _customAspect,
       'res': _resolution.index,
       'resV': 2, // 解析度選項的語意版本（見 _loadDraft 的換算）
       'quality': _quality.index,
@@ -694,6 +708,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _speed = ((j['speed'] ?? 1.0) as num).toDouble();
     _canvasRatio = CanvasRatio
         .values[((j['ratio'] ?? 0) as int) % CanvasRatio.values.length];
+    final ca = (j['customAspect'] as num?)?.toDouble();
+    _customAspect = (ca != null && ca.isFinite && ca > 0) ? ca : null;
     // 解析度選項從「原始／4K／1080P」改成畫質等級後索引語意變了。
     // 舊草稿沒有 resV 標記，照舊語意換算過來（4K 當年算出來就等於原始），
     // 不換的話使用者的草稿會被悄悄降成更低的畫質
@@ -2279,7 +2295,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     if (!mounted) return;
-    final canvasAspect = _canvasRatio.value ?? src.aspect;
+    final canvasAspect = _ratioAspect ?? src.aspect;
     // 現在的縮放位移換算回「框」，重新開啟時才會停在原本的位置。
     // 鏡像的片段要多翻一次：底圖是未鏡像的原始畫面，而縮放位移指的是
     // 「翻過之後」的顯示座標——不翻的話框會停在左右相反的那一側，
@@ -2312,14 +2328,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         (picked0.height - initial.height).abs() < eps) {
       return;
     }
-    final t = cropToTransform(r, src.aspect, canvasAspect);
+    // 裁什麼形狀，成品就是什麼形狀：畫布比例直接換成這一框的比例。
+    // 框是素材座標的 0~1，乘回素材本身的長寬比才是真正的形狀。
+    // 兩邊比例一樣時「放得進去」與「填滿」是同一個答案，所以這一框
+    // 會剛好填滿畫布，不會再有黑邊
+    final newAspect = (r.width / r.height) * src.aspect;
+    final t = cropToTransform(r, src.aspect, newAspect);
     // 之後回報「裁了沒反應」時，先看這行有沒有出現、值對不對
     Diag.note(
-      '裁切套用：scale=${t.scale.toStringAsFixed(3)} '
+      '裁切套用：畫布比例 ${newAspect.toStringAsFixed(3)}、'
+      'scale=${t.scale.toStringAsFixed(3)} '
       'px=${t.px.toStringAsFixed(3)} py=${t.py.toStringAsFixed(3)}',
     );
     _pushUndo();
     setState(() {
+      _customAspect = newAspect;
       clip.scale = t.scale;
       clip.px = t.px;
       clip.py = t.py;
@@ -5309,7 +5332,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     bool ok = false;
     var cancelled = false;
     try {
-      final (outW, outH) = computeCanvasSize(_tl, _resolution, _canvasRatio);
+      final (outW, outH) = computeCanvasSize(_tl, _resolution, _canvasRatio, _customAspect);
       // 快速匯出：條件成立時影片來源直接用工作檔（見 fastExportSources）
       final (exportSources, fastSwapped) = fastExportSources(
         _tl.sources,
@@ -5379,7 +5402,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     // 這次實際跑多久 → 更新這台機器的速度係數，下次預估才準
     if (ok) {
-      final (ow, oh) = computeCanvasSize(_tl, _resolution, _canvasRatio);
+      final (ow, oh) = computeCanvasSize(_tl, _resolution, _canvasRatio, _customAspect);
       await ExportSpeed.record(
         outW: ow,
         outH: oh,
@@ -5775,7 +5798,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         ? baseCtrl.value.aspectRatio
         : (_tl.sources.isEmpty ? 16 / 9 : _tl.sources.first.aspect);
     // 畫布比例：選了固定比例就用它（跟匯出一致）
-    final canvasAspect = _canvasRatio.value ?? baseAspect;
+    final canvasAspect = _ratioAspect ?? baseAspect;
 
     return Listener(
       // 雙指縮放選取中的元素（浮水印／片段）。
@@ -7152,7 +7175,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (box == null || !box.hasSize) return null;
     final local = box.globalToLocal(globalPos);
     final aspect =
-        _canvasRatio.value ??
+        _ratioAspect ??
         (_tl.sources.isEmpty ? 16 / 9 : _tl.sources.first.aspect);
     // 畫布是置中的 AspectRatio，先還原它在預覽區裡的框
     final s = box.size;
@@ -7371,7 +7394,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 const Icon(Icons.aspect_ratio, size: 12, color: kTextDim),
                 const SizedBox(width: 4),
                 Text(
-                  _canvasRatio.label,
+                  _ratioLabel,
                   style: const TextStyle(
                     fontSize: 10.5,
                     color: kIcon,
@@ -7888,7 +7911,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       selected: _canvasRatio == r,
                       first: i == 0,
                       onTap: () {
-                        setState(() => _canvasRatio = r);
+                        setState(() {
+                          _canvasRatio = r;
+                          // 手動挑了比例＝不要裁切算出來的那個了
+                          _customAspect = null;
+                        });
                         _saveDraft();
                         Navigator.pop(context);
                       },
@@ -8712,7 +8739,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// ——舊公式用固定 0.09bpp 乘倍率，跟編碼器拿到的 -b:v 是兩回事，
   /// 「高畫質」估 15MB 實際會出 26MB。音訊 AAC 256k ≈ 32KB/s
   double _estMb(ExportQuality q) {
-    final (w, h) = computeCanvasSize(_tl, _resolution, _canvasRatio);
+    final (w, h) = computeCanvasSize(_tl, _resolution, _canvasRatio, _customAspect);
     final dur = _tl.duration / _speed;
     final kbps = q.kbpsFor(w, h, fps: outputFps(_srcFps, w, h));
     return (kbps * 125.0 + 32000) * dur / (1024 * 1024);
@@ -8722,7 +8749,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 資訊列（比例／解析度／畫質）＋預估一行＋匯出鈕
   Widget _buildExportTab() {
-    final (outW, outH) = computeCanvasSize(_tl, _resolution, _canvasRatio);
+    final (outW, outH) = computeCanvasSize(_tl, _resolution, _canvasRatio, _customAspect);
     final dur = _tl.duration / _speed;
     final mb = _estMb(_qualityEff);
 
@@ -8788,7 +8815,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              row('畫面比例', _canvasRatio.label, _openRatioSheet),
+              row('畫面比例', _ratioLabel, _openRatioSheet),
               row(
                 '解析度',
                 '${_resolution.label}·$outW×$outH',
@@ -8900,7 +8927,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               for (final (i, r) in ExportResolution.values.indexed)
                 Builder(
                   builder: (context) {
-                    final (w, h) = computeCanvasSize(_tl, r, _canvasRatio);
+                    final (w, h) = computeCanvasSize(_tl, r, _canvasRatio, _customAspect);
                     final (ow, oh) = computeCanvasSize(
                       _tl,
                       ExportResolution.original,

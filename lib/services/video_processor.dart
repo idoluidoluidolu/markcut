@@ -251,8 +251,10 @@ class ExportSpec {
 /// 依選項計算輸出畫布大小。
 /// 比例：選了固定比例就用它，否則取「最底層（主軌）、最早出現」的影片；
 /// 長邊上限不超過素材本身（不放大）。
+/// [customAspect] 是裁切算出來的自訂比例（寬/高）。有值就蓋過 [ratio]——
+/// 「裁成什麼形狀，成品就是什麼形狀」，不再塞回原本的畫布留黑邊
 (int, int) computeCanvasSize(TimelineModel timeline, ExportResolution res,
-    [CanvasRatio ratio = CanvasRatio.original]) {
+    [CanvasRatio ratio = CanvasRatio.original, double? customAspect]) {
   final videos = timeline.clips
       .where((c) => timeline.sourceOf(c).isVideo)
       .toList()
@@ -277,7 +279,7 @@ class ExportSpec {
   // 只縮不放：素材沒那麼大時放大不會更清晰，只是白白變大變慢
   if (targetLong > maxLong) targetLong = maxLong;
 
-  var aspect = ratio.value ?? base.aspect; // 寬/高
+  var aspect = customAspect ?? ratio.value ?? base.aspect; // 寬/高
   if (!aspect.isFinite || aspect <= 0) aspect = 16 / 9;
   int w, h;
   if (aspect >= 1) {
