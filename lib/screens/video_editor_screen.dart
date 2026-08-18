@@ -125,6 +125,13 @@ class _HoldToDragListener extends ReorderableDragStartListener {
       DelayedMultiDragGestureRecognizer(delay: _delay, debugOwner: this);
 }
 
+/// 時間軸下方永久留白帶的高度。
+///
+/// 軌道再多、捲到哪裡，最下面都固定空這麼一條：那裡沒有片段可以誤觸，
+/// 抓著它左右滑就是平移整條時間軸。以前是墊在捲動內容的最底部，
+/// 軌道一多就得先捲到底才摸得到，等於沒有
+const double kTlPanStrip = 96.0;
+
 class _VideoEditorScreenState extends State<VideoEditorScreen>
     with TickerProviderStateMixin {
   late final TabController _tabs;
@@ -7523,7 +7530,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       );
                     }
                   },
-                  child: SingleChildScrollView(
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: SingleChildScrollView(
                     // 雙指縮放時間軸時暫停垂直捲動，縮放手勢才吃得到
                     physics: _tlPinching
                         ? const NeverScrollableScrollPhysics()
@@ -7535,17 +7545,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       behavior: HitTestBehavior.opaque,
                       onPointerSignal: _wheelZoom,
                       // 貼著頂端排，不置中：置中會讓時間軸浮在中間，
-                      // 上面一塊死空間、下面又沒有固定的留白。
-                      // 底部墊 96：軌道再多，最下面永遠有一條空白帶
-                      // 可以抓著左右滑（那裡沒有片段可誤觸）
+                      // 上面一塊死空間、下面又沒有固定的留白
                       child: ConstrainedBox(
                         constraints: BoxConstraints(
-                          minHeight: (box.maxHeight - 60).clamp(0.0, 1e9),
+                          minHeight: (box.maxHeight - kTlPanStrip - 14)
+                              .clamp(0.0, 1e9),
                         ),
                         child: Align(
                           alignment: Alignment.topCenter,
                           child: Padding(
-                            padding: const EdgeInsets.fromLTRB(10, 14, 10, 96),
+                            padding: const EdgeInsets.fromLTRB(10, 14, 10, 14),
                             // RepaintBoundary：時間軸的重繪與頁面其他部分互不打擾
                             child: RepaintBoundary(
                               child: TimelineEditor(
@@ -7671,6 +7680,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         ),
                       ),
                     ),
+                        ),
+                      ),
+                      // 永久留白帶：不在捲動內容裡，所以捲到哪它都在。
+                      // 外層的 GestureDetector 蓋得到這裡，橫滑一樣平移時間軸；
+                      // 滾輪另外接一層（這裡沒有捲動容器來搶 PointerSignal）
+                      Listener(
+                        behavior: HitTestBehavior.opaque,
+                        onPointerSignal: _wheelZoom,
+                        child: const SizedBox(
+                          height: kTlPanStrip,
+                          width: double.infinity,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
