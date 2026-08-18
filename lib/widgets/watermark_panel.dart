@@ -10,6 +10,7 @@ import 'package:image_picker/image_picker.dart';
 import '../models/watermark_settings.dart';
 import '../services/preset_store.dart';
 import '../screens/crop_screen.dart';
+import '../screens/draw_screen.dart';
 import '../theme.dart';
 import 'watermark_layer.dart';
 
@@ -300,17 +301,35 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   /// 加一張圖片。清單裡還有空位（剛開的那張、或圖片被移除留下的）
   /// 就先填它，不然新增一張再挑；挑到一半取消就把空的那張收回去，
   /// 縮圖列才不會留一格永遠空白的
-  Future<void> _addLogo() async {
+  Future<void> _addLogo() => _addInto(_pickLogo);
+
+  /// 手繪：畫一張進來。跟 _addLogo 同一套「填空位／取消收回」的流程，
+  /// 只是圖的來源從相簿換成畫板
+  Future<void> _addDrawing() => _addInto(_pickDrawing);
+
+  Future<void> _addInto(Future<void> Function() fill) async {
     final empty = s.logos.indexWhere((l) => l.b64 == null);
     if (empty >= 0) {
       setState(() => s.activeLogo = empty);
-      await _pickLogo();
+      await fill();
       return;
     }
     _update(s.addLogo);
-    await _pickLogo();
+    await fill();
     if (!mounted) return;
     if (s.logo.b64 == null) _update(() => s.removeLogo(s.activeLogo));
+  }
+
+  Future<void> _pickDrawing() async {
+    final png = await drawWatermark(context);
+    if (png == null || !mounted) return;
+    _update(() {
+      s.logo.bytesValue = png;
+      // 手繪的「原圖」就是它自己：之後按裁切從完整的畫作開始裁
+      s.logo.origBytes = png;
+      s.logo.enabled = true;
+    });
+    widget.onLogoAdded?.call();
   }
 
   Future<void> _pickLogo() async {
@@ -995,6 +1014,12 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                       fontWeight: FontWeight.w700,
                       color: kText)),
               const Spacer(),
+              IconButton(
+                tooltip: '手繪一張',
+                visualDensity: VisualDensity.compact,
+                onPressed: _addDrawing,
+                icon: const Icon(Icons.draw_outlined, size: 19, color: kIcon),
+              ),
               IconButton(
                 tooltip: _hasLogos ? '再加一張' : '加入圖片',
                 visualDensity: VisualDensity.compact,
