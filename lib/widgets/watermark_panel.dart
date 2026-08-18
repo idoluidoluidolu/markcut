@@ -1119,9 +1119,22 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                   EdgeInsets.fromLTRB(16, 0, 16, 10 + widget.bottomInset),
               child: Align(
                 alignment: Alignment.centerRight,
-                child: secondaryAction(
-                  label: _presetSel == null ? '儲存範本' : '儲存範本「$_presetSel」',
+                // 白色填滿的小膠囊、寬度貼內容：它是浮在角落的動作鈕，
+                // 拉滿整排反而像被置中的大按鈕
+                child: FilledButton.icon(
                   onPressed: _savePreset,
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(0, 44),
+                    padding: const EdgeInsets.symmetric(horizontal: 18),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  ),
+                  icon: const Icon(Icons.bookmark_add_outlined, size: 17),
+                  label: Text(
+                    _presetSel == null ? '儲存範本' : '儲存範本「$_presetSel」',
+                    style: const TextStyle(fontSize: 13.5),
+                  ),
                 ),
               ),
             ),
