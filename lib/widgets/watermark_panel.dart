@@ -315,11 +315,24 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       // 手繪的「原圖」就是它自己：之後按裁切從完整的畫作開始裁
       s.logo.origBytes = png;
       s.logo.enabled = true;
+      s.logo.drawn = true; // 之後「再編輯」看這個旗標
     });
     widget.onLogoAdded?.call();
     // 畫完回來直接站在「圖片」分頁：剛畫好的那張已是操作中，
     // 大小、透明度、平鋪馬上調得到，不用自己找去哪了
     _ensureSection(WmPart.logo, 0);
+  }
+
+  /// 手繪的圖再編輯：載回畫板繼續畫（加筆畫、擦掉一部分都行）
+  Future<void> _editDrawing() async {
+    final cur = s.logo.bytes;
+    if (cur == null) return;
+    final png = await drawWatermark(context, initial: cur);
+    if (png == null || !mounted) return;
+    _update(() {
+      s.logo.bytesValue = png;
+      s.logo.origBytes = png;
+    });
   }
 
   Future<void> _pickLogo() async {
@@ -1164,6 +1177,11 @@ class WatermarkPanelState extends State<WatermarkPanel> {
             children: [
               _miniBtn(Icons.swap_horiz, '換一張', _pickLogo),
               const SizedBox(width: 8),
+              // 手繪的那張可以載回畫板繼續改
+              if (s.logo.drawn) ...[
+                _miniBtn(Icons.draw_outlined, '再編輯', _editDrawing),
+                const SizedBox(width: 8),
+              ],
               _miniBtn(Icons.crop, '裁切', _cropLogo),
               const Spacer(),
               IconButton(

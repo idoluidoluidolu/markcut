@@ -16,11 +16,14 @@ import '../widgets/watermark_layer.dart' show CheckerPainter;
 /// 拿到的 PNG 走現有的圖片浮水印那條路——位置、縮放、旋轉、透明度、
 /// 平鋪、匯出全部直接繼承，這一頁只負責「把筆跡變成一張圖」。
 ///
+/// [initial] 是要「再編輯」的既有畫作：載進來鋪在畫板中央當底，
+/// 可以繼續加筆畫、也可以用橡皮擦擦它。
+///
 /// 回傳 null＝取消。
-Future<Uint8List?> drawWatermark(BuildContext context) =>
+Future<Uint8List?> drawWatermark(BuildContext context, {Uint8List? initial}) =>
     Navigator.push<Uint8List>(
       context,
-      MaterialPageRoute(builder: (_) => const _DrawScreen()),
+      MaterialPageRoute(builder: (_) => _DrawScreen(initial: initial)),
     );
 
 /// 筆刷：每種差在透明度、寬度倍率、筆頭形狀
@@ -109,7 +112,9 @@ class _Stroke {
 }
 
 class _DrawScreen extends StatefulWidget {
-  const _DrawScreen();
+  final Uint8List? initial;
+
+  const _DrawScreen({this.initial});
 
   @override
   State<_DrawScreen> createState() => _DrawScreenState();
@@ -117,6 +122,38 @@ class _DrawScreen extends StatefulWidget {
 
 class _DrawScreenState extends State<_DrawScreen> {
   final List<_Stroke> _strokes = [];
+
+  /// 再編輯時鋪在底下的舊畫作（跟筆畫同一個圖層，橡皮擦擦得到）
+  ui.Image? _base;
+
+  @override
+  void initState() {
+    super.initState();
+    final b = widget.initial;
+    if (b != null) {
+      ui.instantiateImageCodec(b).then((codec) async {
+        final frame = await codec.getNextFrame();
+        if (mounted) setState(() => _base = frame.image);
+      }).catchError((_) {});
+    }
+  }
+
+  @override
+  void dispose() {
+    _base?.dispose();
+    super.dispose();
+  }
+
+  /// 底圖鋪在畫板中央、留一點邊（畫板座標）
+  Rect _baseRect(Size board) {
+    final img = _base!;
+    final k = math.min(board.width * 0.86 / img.width,
+        board.height * 0.86 / img.height);
+    final w = img.width * k;
+    final h = img.height * k;
+    return Rect.fromLTWH(
+        (board.width - w) / 2, (board.height - h) / 2, w, h);
+  }
 
   /// 重做堆疊：上一步收回來的筆放這裡，畫新的一筆就清掉
   final List<_Stroke> _undone = [];
@@ -145,7 +182,7 @@ class _DrawScreenState extends State<_DrawScreen> {
     Color(0xFFFF6FA6),
   ];
 
-  bool get _hasInk => _strokes.any((s) => !s.eraser);
+  bool get _hasInk => _base != null || _strokes.any((s) => !s.eraser);
 
   _Stroke? get _selStroke =>
       (_sel >= 0 && _sel < _strokes.length) ? _strokes[_sel] : null;
@@ -281,9 +318,13 @@ class _DrawScreenState extends State<_DrawScreen> {
   /// 選取框也會大得莫名其妙）。長邊輸出 1024。
   Future<Uint8List?> _renderPng(Size boardSize) async {
     if (!_hasInk) return null;
-    // 外框只看畫筆（橡皮擦只影響透明度，不該撐大範圍）
+    // 外框只看畫筆與底圖（橡皮擦只影響透明度，不該撐大範圍）
     var bounds = Rect.zero;
     var first = true;
+    if (_base != null) {
+      bounds = _baseRect(boardSize);
+      first = false;
+    }
     for (final s in _strokes) {
       if (s.eraser) continue;
       bounds = first ? s.bounds : bounds.expandToInclude(s.bounds);
@@ -301,7 +342,8 @@ class _DrawScreenState extends State<_DrawScreen> {
     canvas.scale(scale);
     canvas.translate(-bounds.left, -bounds.top);
     // 跟預覽同一個畫法（saveLayer 讓橡皮擦真的擦成透明）
-    _paintStrokes(canvas, _strokes, null, Offset.zero & boardSize);
+    _paintStrokes(canvas, _strokes, null, Offset.zero & boardSize,
+        base: _base, baseRect: _base == null ? null : _baseRect(boardSize));
     final img = await rec.endRecording().toImage(outW, outH);
     final data = await img.toByteData(format: ui.ImageByteFormat.png);
     img.dispose();
@@ -423,6 +465,10 @@ class _DrawScreenState extends State<_DrawScreen> {
                             strokes: _strokes,
                             live: _live,
                             selected: _sel,
+                            base: _base,
+                            baseRect: _base == null
+                                ? null
+                                : _baseRect(size),
                           ),
                           size: size,
                         ),
@@ -619,8 +665,20 @@ void _paintStrokes(
   _Stroke? live,
   Rect area, {
   int selected = -1,
+  ui.Image? base,
+  Rect? baseRect,
 }) {
   canvas.saveLayer(area, Paint());
+  // 再編輯的底圖畫在同一個圖層的最下面：橡皮擦（BlendMode.clear）
+  // 連它一起擦得掉，等於真的在改這張圖
+  if (base != null && baseRect != null) {
+    canvas.drawImageRect(
+      base,
+      Rect.fromLTWH(0, 0, base.width.toDouble(), base.height.toDouble()),
+      baseRect,
+      Paint()..filterQuality = FilterQuality.medium,
+    );
+  }
   final all = [...strokes, ?live];
   for (var i = 0; i < all.length; i++) {
     final s = all[i];
@@ -682,17 +740,21 @@ class _BoardPainter extends CustomPainter {
   final List<_Stroke> strokes;
   final _Stroke? live;
   final int selected;
+  final ui.Image? base;
+  final Rect? baseRect;
 
   const _BoardPainter({
     required this.strokes,
     required this.live,
     required this.selected,
+    this.base,
+    this.baseRect,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
     _paintStrokes(canvas, strokes, live, Offset.zero & size,
-        selected: selected);
+        selected: selected, base: base, baseRect: baseRect);
   }
 
   // 筆跡的點是就地 add 的，列表比對看不出變化——每次都重畫。

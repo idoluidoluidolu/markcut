@@ -136,6 +136,9 @@ class LogoMark {
   double corner; // 圓角 0~1（1 = 半徑為寬度一半）
   bool tiled; // 滿版平鋪（棋盤格），開啟後 x/y 無意義
 
+  /// 這張是手繪的：圖片卡多一顆「再編輯」把它載回畫板繼續畫
+  bool drawn;
+
   Uint8List? _cache;
 
   /// 裁切前的原圖。有它才能「還原」再重新裁一次——不然裁小了之後
@@ -156,6 +159,7 @@ class LogoMark {
     this.rotation = 0,
     this.corner = 0,
     this.tiled = false,
+    this.drawn = false,
   });
 
   /// 同一張 Logo 會被複製到很多份設定（批次單張、多組浮水印、範本、
@@ -200,6 +204,7 @@ class LogoMark {
         'rotation': rotation,
         'corner': corner,
         'tiled': tiled,
+        if (drawn) 'drawn': true,
       };
 
   factory LogoMark.fromJson(Map<String, dynamic> j) => LogoMark(
@@ -212,6 +217,7 @@ class LogoMark {
         rotation: (j['rotation'] ?? 0).toDouble(),
         corner: (j['corner'] ?? 0).toDouble(),
         tiled: j['tiled'] ?? false,
+        drawn: j['drawn'] ?? false,
       );
 
   LogoMark copy() => LogoMark.fromJson(toJson());
