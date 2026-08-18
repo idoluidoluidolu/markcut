@@ -303,7 +303,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 浮水印選到哪個部件（文字或圖片）。縮放只動被選的那個
-  WmPart _wmPart = WmPart.none;
+  /// 預設選著文字：進場浮水印是預選狀態（_wmSelValue），
+  /// 畫面上要跟著亮框才看得出「已經選好了」。沒有文字時圖層
+  /// 畫不出框，自然沒有影響
+  WmPart _wmPart = WmPart.text;
 
   /// 點浮水印軌標籤＝關掉浮水印。預覽和匯出一起關，
   /// 不然「看起來沒有、匯出卻有」更容易做白工
