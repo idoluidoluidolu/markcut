@@ -126,11 +126,15 @@ class _HoldToDragListener extends ReorderableDragStartListener {
 }
 
 /// 時間軸下方永久留白帶的高度。
+/// 96 的版本被回報「留太多、整個吊在上面」，收到 56。
 ///
 /// 軌道再多、捲到哪裡，最下面都固定空這麼一條：那裡沒有片段可以誤觸，
 /// 抓著它左右滑就是平移整條時間軸。以前是墊在捲動內容的最底部，
 /// 軌道一多就得先捲到底才摸得到，等於沒有
-const double kTlPanStrip = 96.0;
+const double kTlPanStrip = 56.0;
+
+/// 軌道高度倍率：微縮一點讓可視範圍放得下四排（使用者選定）
+const double kTlTrackScale = 0.88;
 
 class _VideoEditorScreenState extends State<VideoEditorScreen>
     with TickerProviderStateMixin {
@@ -3061,18 +3065,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _addWmClip(int track) {
     _pause();
     _pushUndo();
-    // 起手用目前浮水印的設定當底（沒設定就給一個預設文字），
-    // 點兩下隨時可以改
-    final style = _settings.hasAnyMark
-        ? _settings.copy()
-        : (WatermarkSettings()
-            ..text = TextMark(
-              text: '@浮水印',
-              sizeFrac: 0.08,
-              colorValue: 0xFFFFFFFF,
-              opacity: 0.8,
-              shadow: true,
-            ));
+    // 一律從預設起手（使用者實測回報：抄目前的全域浮水印，
+    // 「加一個新的」就變成「複製一份現在的」——要複製有專門的複製鈕）
+    final style = WatermarkSettings()
+      ..text = TextMark(
+        text: '@浮水印',
+        sizeFrac: 0.08,
+        colorValue: 0xFFFFFFFF,
+        opacity: 0.8,
+        shadow: true,
+      );
     final srcIndex = _tl.sources.length;
     _tl.sources.add(
       MediaSource(
@@ -7553,6 +7555,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
   }
 
+  /// 時間軸可視高度：最多整整四排素材軌（更多的在裡面捲動），
+  /// 內容更少就縮到剛好。永遠切在整排的邊界上——以前的做法是
+  /// 「有多高吃多高」，最後一排常常被視窗切一半（死切）
+  double _tlViewportH(double maxH) {
+    const stride = 54.0 * kTlTrackScale + 4; // trackH + gap
+    final rowsTotal = _tl.usedTracks + 1 + _extraBlankTracks;
+    final rows = math.min(rowsTotal, 4);
+    final wmExtra = _settings.hasAnyMark ? 24.0 + 4 : 0.0;
+    // 上下 padding 14＋刻度尺 22＋尺與軌道間距 10＋尾巴 4
+    final content = 14 + 22 + 10 + wmExtra + rows * stride + 4 + 14;
+    return math.min(content, (maxH - kTlPanStrip).clamp(120.0, 1e9));
+  }
+
   Widget _buildTimelineTab() {
     if (_pxPerSec <= 0) {
       final screenW = MediaQuery.of(context).size.width - 60;
@@ -7599,7 +7614,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   },
                   child: Column(
                     children: [
-                      Expanded(
+                      SizedBox(
+                        height: _tlViewportH(box.maxHeight),
                         child: SingleChildScrollView(
                     // 雙指縮放時間軸時暫停垂直捲動，縮放手勢才吃得到
                     physics: _tlPinching
@@ -7614,9 +7630,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       // 貼著頂端排，不置中：置中會讓時間軸浮在中間，
                       // 上面一塊死空間、下面又沒有固定的留白
                       child: ConstrainedBox(
+                        // 高度由外面的 SizedBox 決定；這裡只要保證
+                        // 滾輪的感應區至少鋪滿可視範圍
                         constraints: BoxConstraints(
-                          minHeight: (box.maxHeight - kTlPanStrip - 14)
-                              .clamp(0.0, 1e9),
+                          minHeight:
+                              (_tlViewportH(box.maxHeight) - 28)
+                                  .clamp(0.0, 1e9),
                         ),
                         child: Align(
                           alignment: Alignment.topCenter,
@@ -7626,6 +7645,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             child: RepaintBoundary(
                               child: TimelineEditor(
                                 timeline: _tl,
+                                trackScale: kTlTrackScale,
                                 thumbs: _thumbs,
                                 selectedId: _sel,
                                 playhead: _posVN,

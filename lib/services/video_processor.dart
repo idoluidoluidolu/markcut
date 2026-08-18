@@ -255,8 +255,14 @@ class ExportSpec {
 /// 「裁成什麼形狀，成品就是什麼形狀」，不再塞回原本的畫布留黑邊
 (int, int) computeCanvasSize(TimelineModel timeline, ExportResolution res,
     [CanvasRatio ratio = CanvasRatio.original, double? customAspect]) {
+  // 影片「或圖片」都算畫面素材。只認影片的話，純照片的時間軸
+  //（照片做成影片）會一路拿到寫死的 1920x1080：比例選單每一項
+  // 都顯示同一個數字、匯出畫布跟預覽（直式照片）完全對不上，
+  // 浮水印的位置比例整個歪掉（裝置實測回報）
+  bool visual(MediaSource s) =>
+      s.isVideo || s.kind == ClipKind.image;
   final videos = timeline.clips
-      .where((c) => timeline.sourceOf(c).isVideo)
+      .where((c) => visual(timeline.sourceOf(c)))
       .toList()
     ..sort((a, b) {
       final t = a.track.compareTo(b.track);
@@ -265,10 +271,10 @@ class ExportSpec {
   if (videos.isEmpty) return (1920, 1080);
 
   final base = timeline.sourceOf(videos.first);
-  final allVideo = timeline.sources.where((s) => s.isVideo);
+  final allVideo = timeline.sources.where(visual);
   // 有些機種／編碼在 initialize() 完成當下 size 還是 0，
   // 讓它一路傳到 ffmpeg 會變成 s=0x0 直接匯出失敗
-  var maxLong = allVideo.map((s) => math.max(s.w, s.h)).reduce(math.max);
+  var maxLong = allVideo.fold(0, (m, s) => math.max(m, math.max(s.w, s.h)));
   if (maxLong < 16) maxLong = 1920;
 
   int targetLong = switch (res) {
