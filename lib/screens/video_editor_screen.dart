@@ -86,16 +86,22 @@ class VideoEditorScreen extends StatefulWidget {
   final WatermarkSettings? initialWatermark; // 從範本卡片開新專案時帶入
   final Map<String, dynamic>? draft; // 從草稿還原
 
+  /// 一批照片串成一段影片（首頁「照片 → 串成一段影片」）。
+  /// 進場後會先問每張停留幾秒
+  final List<String>? photoPaths;
+
   const VideoEditorScreen({
     super.key,
     this.videoPath,
     this.videoPaths,
+    this.photoPaths,
     this.initialWatermark,
     this.draft,
     this.blank = false,
   }) : assert(
          videoPath != null ||
              videoPaths != null ||
+             photoPaths != null ||
              draft != null ||
              blank,
        );
@@ -892,6 +898,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             duration: const Duration(seconds: 5),
           );
         }
+      });
+    } else if (widget.photoPaths != null) {
+      // 一批照片串成影片：進場先問每張幾秒，再照順序接起來
+      _ready = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_importPhotoBatch(widget.photoPaths!));
       });
     } else if (widget.blank) {
       // 空白專案：沒有素材可載，直接開工。
@@ -2133,6 +2145,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
     }
     if (!mounted) return;
+    // 多張＝要串成一段影片：先問每張幾秒（一張就照舊 4 秒）
+    var perImage = 3.0;
+    if (items.length > 1) {
+      final picked = await _askSlideSeconds(items.length);
+      if (picked == null || !mounted) return; // 取消＝整批不加
+      perImage = picked;
+    }
     _pause();
     _pushUndo();
     var at = _position;
@@ -2161,7 +2180,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       );
       _thumbs[srcIndex] = [bytes];
       if (importedOrig != null) _cropOrigBytes[srcIndex] = importedOrig;
-      final len = items.length == 1 ? 4.0 : 3.0;
+      final len = items.length == 1 ? 4.0 : perImage;
       final clip = TimelineClip(
         id: _tl.nextId(),
         sourceIndex: srcIndex,
@@ -2178,8 +2197,134 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _resyncPlayback();
     _saveDraft(); // 加完立刻落草稿
     if (picked.length > 1 && mounted) {
-      showHint(context, '已加入 ${picked.length} 張圖片，每張 3 秒頭尾相接');
+      showHint(
+        context,
+        '已加入 ${picked.length} 張圖片，每張 '
+        '${perImage.toStringAsFixed(perImage % 1 == 0 ? 0 : 1)} 秒頭尾相接',
+      );
     }
+  }
+
+  /// 一批照片串成一段影片（首頁那條路）：問完秒數就照順序接在主軌上
+  Future<void> _importPhotoBatch(List<String> paths) async {
+    if (paths.isEmpty) return;
+    final sec = await _askSlideSeconds(paths.length);
+    if (sec == null || !mounted) {
+      // 取消＝這個專案沒有東西，直接退回上一頁比留一個空專案好
+      if (mounted) Navigator.of(context).pop();
+      return;
+    }
+    _pushUndo();
+    var at = 0.0;
+    var firstId = -1;
+    for (final path in paths) {
+      final Uint8List? read = await readFileBytes(path);
+      // 某一張讀不到不該讓整批進不去
+      if (read == null) continue;
+      final bytes = read;
+      var imgW = 0, imgH = 0;
+      try {
+        final codec = await ui.instantiateImageCodec(bytes);
+        final frame = await codec.getNextFrame();
+        imgW = frame.image.width;
+        imgH = frame.image.height;
+        frame.image.dispose();
+      } catch (_) {}
+      final srcIndex = _tl.sources.length;
+      _tl.sources.add(
+        MediaSource(
+          path: path,
+          name: path.split(Platform.pathSeparator).last,
+          kind: ClipKind.image,
+          duration: 3600,
+          w: imgW,
+          h: imgH,
+        ),
+      );
+      _thumbs[srcIndex] = [bytes];
+      final clip = TimelineClip(
+        id: _tl.nextId(),
+        sourceIndex: srcIndex,
+        trimStart: 0,
+        trimEnd: sec,
+        offset: at,
+        track: 0,
+      );
+      if (firstId == -1) firstId = clip.id;
+      _tl.clips.add(clip);
+      at += sec;
+    }
+    if (!mounted) return;
+    setState(() => _sel = firstId);
+    _resyncPlayback();
+    _saveDraft();
+    showHint(context, '已串成 ${fmtDuration(at)} 的影片，可以再調整每一段');
+  }
+
+  /// 多張圖片串成影片時，先問每張停留幾秒。
+  /// 回 null＝取消（整批都不加）
+  Future<double?> _askSlideSeconds(int count) {
+    var sec = 3.0;
+    return showDialog<double>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialog) => AlertDialog(
+          title: Text('$count 張圖片串成影片'),
+          contentPadding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+          content: SizedBox(
+            width: 300,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '每張停留 ${sec.toStringAsFixed(sec % 1 == 0 ? 0 : 1)} 秒'
+                  '，總長 ${fmtDuration(sec * count)}',
+                  style: const TextStyle(fontSize: 12.5, color: kTextDim),
+                ),
+                const SizedBox(height: 6),
+                Slider(
+                  value: sec,
+                  min: 0.5,
+                  max: 10,
+                  divisions: 19,
+                  onChanged: (v) => setDialog(() => sec = v),
+                ),
+                // 常用的幾個直接點，不用拉
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    for (final v in const [1.0, 2.0, 3.0, 5.0])
+                      OutlinedButton(
+                        style: OutlinedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          foregroundColor: sec == v ? kSelect : kText,
+                          side: BorderSide(
+                            color: sec == v ? kSelect : kClipBorder,
+                          ),
+                        ),
+                        onPressed: () => setDialog(() => sec = v),
+                        child: Text('${v.toStringAsFixed(0)} 秒',
+                            style: const TextStyle(fontSize: 12)),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, sec),
+              child: const Text('加入'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   /// 被裁過的素材 → 它是從哪一份原圖裁出來的。

@@ -278,6 +278,60 @@ class _HomeScreenState extends State<HomeScreen> {
     ),
   );
 
+  /// 多張照片：問要串成一段影片（進剪輯）還是各自上浮水印（進批次）
+  Future<bool?> _askMultiPhoto(int n) => showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text('選了 $n 張照片'),
+      contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
+      content: SizedBox(
+        width: 270,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            optionRow(
+              context: context,
+              title: '串成一段影片',
+              subtitle: '照選取順序接起來，下一步可以選每張幾秒',
+              selected: false,
+              first: true,
+              onTap: () => Navigator.pop(context, true),
+            ),
+            optionRow(
+              context: context,
+              title: '統一上浮水印',
+              subtitle: '每張各自輸出一張照片',
+              selected: false,
+              onTap: () => Navigator.pop(context, false),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  /// 一批照片串成影片：進影片編輯器，由它問每張幾秒
+  Future<void> _openPhotosAsVideo(List<XFile> picked) async {
+    if (_draft != null) {
+      final ok = await showConfirm(
+        context,
+        title: '覆蓋上次的草稿？',
+        message: '開新專案後，未完成的草稿會被取代',
+        action: '開新專案',
+      );
+      if (!ok || !mounted) return;
+    }
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VideoEditorScreen(
+          photoPaths: [for (final f in picked) f.path],
+        ),
+      ),
+    );
+    _checkDraft();
+  }
+
   /// 一支就進單檔編輯器，多支先問要剪成一支還是各自處理
   Future<void> _openBatch(List<XFile> list, {String? hint}) async {
     if (list.isEmpty || !mounted) return;
@@ -291,6 +345,15 @@ class _HomeScreenState extends State<HomeScreen> {
       if (joinThem == null || !mounted) return;
       if (joinThem) {
         await _openVideos(list);
+        return;
+      }
+    } else if (list.every((f) => !_isVideoFile(f))) {
+      // 一批照片：最常見的兩件事就是「串成一段影片」跟
+      //「每張各自上浮水印」，猜錯的代價是整批重挑
+      final joinThem = await _askMultiPhoto(list.length);
+      if (joinThem == null || !mounted) return;
+      if (joinThem) {
+        await _openPhotosAsVideo(list);
         return;
       }
     }
