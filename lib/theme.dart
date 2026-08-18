@@ -73,22 +73,22 @@ typedef PageColors = ({
 
 PageColors pageColors(BuildContext context) =>
     Theme.of(context).brightness == Brightness.dark
-        ? (
-            text: kText,
-            dim: kTextDim,
-            line: kBorder,
-            accent: kAmber,
-            panelHi: kPanelHi,
-            bg: kBg,
-          )
-        : (
-            text: kLText,
-            dim: kLTextDim,
-            line: kLBorder,
-            accent: kLAccent,
-            panelHi: kLPanelHi,
-            bg: kLBg,
-          );
+    ? (
+        text: kText,
+        dim: kTextDim,
+        line: kBorder,
+        accent: kAmber,
+        panelHi: kPanelHi,
+        bg: kBg,
+      )
+    : (
+        text: kLText,
+        dim: kLTextDim,
+        line: kLBorder,
+        accent: kLAccent,
+        panelHi: kLPanelHi,
+        bg: kLBg,
+      );
 
 ThemeData buildStudioTheme() {
   const scheme = ColorScheme.dark(
@@ -103,9 +103,12 @@ ThemeData buildStudioTheme() {
     error: Color(0xFFFF6B6B),
   );
 
-  final radius6 = RoundedRectangleBorder(borderRadius: BorderRadius.circular(6));
-  final cardShape =
-      RoundedRectangleBorder(borderRadius: BorderRadius.circular(kCardRadius));
+  final radius6 = RoundedRectangleBorder(
+    borderRadius: BorderRadius.circular(6),
+  );
+  final cardShape = RoundedRectangleBorder(
+    borderRadius: BorderRadius.circular(kCardRadius),
+  );
 
   return ThemeData(
     useMaterial3: true,
@@ -140,7 +143,10 @@ ThemeData buildStudioTheme() {
         foregroundColor: kBg,
         shape: radius6,
         textStyle: const TextStyle(
-            fontWeight: FontWeight.w700, fontSize: 14, fontFamily: 'NotoSansTC'),
+          fontWeight: FontWeight.w700,
+          fontSize: 14,
+          fontFamily: 'NotoSansTC',
+        ),
       ),
     ),
     textButtonTheme: TextButtonThemeData(
@@ -159,9 +165,15 @@ ThemeData buildStudioTheme() {
       side: const BorderSide(color: kBorder),
       shape: radius6,
       labelStyle: const TextStyle(
-          fontSize: 12, color: kText, fontFamily: 'NotoSansTC'),
+        fontSize: 12,
+        color: kText,
+        fontFamily: 'NotoSansTC',
+      ),
       secondaryLabelStyle: const TextStyle(
-          fontSize: 12, color: kAmber, fontFamily: 'NotoSansTC'),
+        fontSize: 12,
+        color: kAmber,
+        fontFamily: 'NotoSansTC',
+      ),
       checkmarkColor: kAmber,
       showCheckmark: false,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -173,7 +185,10 @@ ThemeData buildStudioTheme() {
       indicatorSize: TabBarIndicatorSize.label,
       dividerColor: kBorder,
       labelStyle: TextStyle(
-          fontSize: 12, fontWeight: FontWeight.w700, fontFamily: 'NotoSansTC'),
+        fontSize: 12,
+        fontWeight: FontWeight.w700,
+        fontFamily: 'NotoSansTC',
+      ),
       unselectedLabelStyle: TextStyle(fontSize: 12, fontFamily: 'NotoSansTC'),
     ),
     sliderTheme: const SliderThemeData(
@@ -191,15 +206,18 @@ ThemeData buildStudioTheme() {
       trackHeight: 2.5,
     ),
     switchTheme: SwitchThemeData(
-      thumbColor: WidgetStateProperty.resolveWith((s) =>
-          s.contains(WidgetState.selected) ? kBg : kTextDim),
-      trackColor: WidgetStateProperty.resolveWith((s) =>
-          s.contains(WidgetState.selected) ? kAmber : kPanelHi),
+      thumbColor: WidgetStateProperty.resolveWith(
+        (s) => s.contains(WidgetState.selected) ? kBg : kTextDim,
+      ),
+      trackColor: WidgetStateProperty.resolveWith(
+        (s) => s.contains(WidgetState.selected) ? kAmber : kPanelHi,
+      ),
       trackOutlineColor: const WidgetStatePropertyAll(kBorder),
     ),
     radioTheme: RadioThemeData(
-      fillColor: WidgetStateProperty.resolveWith((s) =>
-          s.contains(WidgetState.selected) ? kAmber : kTextDim),
+      fillColor: WidgetStateProperty.resolveWith(
+        (s) => s.contains(WidgetState.selected) ? kAmber : kTextDim,
+      ),
     ),
     dividerTheme: const DividerThemeData(color: kBorder, thickness: 1),
     // 圓角改成 kDialogRadius：所有 AlertDialog 一次跟上
@@ -210,19 +228,20 @@ ThemeData buildStudioTheme() {
       elevation: 24,
       shadowColor: Colors.black,
       shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(kDialogRadius),
-          side: const BorderSide(color: Color(0xFF2E2E36))),
+        borderRadius: BorderRadius.circular(kDialogRadius),
+        side: const BorderSide(color: Color(0xFF2E2E36)),
+      ),
       // 標題字級跟自訂的那幾個對話框對齊（原本 16 只有這裡在用）
       titleTextStyle: const TextStyle(
-          fontSize: 15.5,
-          fontWeight: FontWeight.w700,
-          color: kText,
-          fontFamily: 'NotoSansTC'),
+        fontSize: 15.5,
+        fontWeight: FontWeight.w700,
+        color: kText,
+        fontFamily: 'NotoSansTC',
+      ),
     ),
     snackBarTheme: SnackBarThemeData(
       backgroundColor: kPanelHi,
-      contentTextStyle:
-          const TextStyle(color: kText, fontFamily: 'NotoSansTC'),
+      contentTextStyle: const TextStyle(color: kText, fontFamily: 'NotoSansTC'),
       shape: radius6,
       behavior: SnackBarBehavior.floating,
     ),
@@ -231,19 +250,18 @@ ThemeData buildStudioTheme() {
       filled: true,
       fillColor: kBg,
       enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(6),
-          borderSide: const BorderSide(color: kBorder)),
+        borderRadius: BorderRadius.circular(6),
+        borderSide: const BorderSide(color: kBorder),
+      ),
       focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(6),
-          borderSide: const BorderSide(color: kAmber, width: 1.5)),
+        borderRadius: BorderRadius.circular(6),
+        borderSide: const BorderSide(color: kAmber, width: 1.5),
+      ),
       labelStyle: const TextStyle(color: kTextDim, fontSize: 13),
       // 提示文字用灰字，才不會被誤認成已輸入的內容
       hintStyle: const TextStyle(color: kTextDim, fontSize: 13),
     ),
-    listTileTheme: const ListTileThemeData(
-      iconColor: kIcon,
-      textColor: kText,
-    ),
+    listTileTheme: const ListTileThemeData(iconColor: kIcon, textColor: kText),
     // 抽屜（A 案）：底色跟工作區同色，輪廓只靠上緣框線＋把手畫出來——
     // 亮一階的底在 D 案的全黑工作區上太跳（使用者選定）
     bottomSheetTheme: BottomSheetThemeData(
@@ -273,8 +291,13 @@ Timer? _hintTimer;
 /// 精緻提示（取代預設 SnackBar）：貼在預覽畫面下緣的小卡，
 /// 左側一條琥珀直線（error 時轉紅）。有 anchor 就錨定該區塊下緣，
 /// 沒有就落在畫面下方置中。
-void showHint(BuildContext context, String message,
-    {bool error = false, GlobalKey? anchor, Duration? duration}) {
+void showHint(
+  BuildContext context,
+  String message, {
+  bool error = false,
+  GlobalKey? anchor,
+  Duration? duration,
+}) {
   if (!context.mounted) return;
   _hintTimer?.cancel();
   // 上一則可能已經跟著它的 Overlay 一起消失了，remove 會丟例外；
@@ -329,7 +352,9 @@ class _HintToast extends StatelessWidget {
         builder: (context, v, child) => Opacity(
           opacity: v,
           child: Transform.translate(
-              offset: Offset(0, (1 - v) * 6), child: child),
+            offset: Offset(0, (1 - v) * 6),
+            child: child,
+          ),
         ),
         child: Container(
           constraints: const BoxConstraints(maxWidth: 320),
@@ -339,8 +364,9 @@ class _HintToast extends StatelessWidget {
             color: Colors.black,
             border: Border(
               left: BorderSide(
-                  color: error ? const Color(0xFFFF6B6B) : kAmber,
-                  width: 3),
+                color: error ? const Color(0xFFFF6B6B) : kAmber,
+                width: 3,
+              ),
               top: const BorderSide(color: Color(0xFF33333B)),
               right: const BorderSide(color: Color(0xFF33333B)),
               bottom: const BorderSide(color: Color(0xFF33333B)),
@@ -357,12 +383,13 @@ class _HintToast extends StatelessWidget {
           child: Text(
             message,
             style: const TextStyle(
-                fontSize: 13,
-                color: kText,
-                height: 1.35,
-                decoration: TextDecoration.none,
-                fontWeight: FontWeight.w400,
-                fontFamily: 'NotoSansTC'),
+              fontSize: 13,
+              color: kText,
+              height: 1.35,
+              decoration: TextDecoration.none,
+              fontWeight: FontWeight.w400,
+              fontFamily: 'NotoSansTC',
+            ),
           ),
         ),
       ),
@@ -370,12 +397,229 @@ class _HintToast extends StatelessWidget {
 
     if (top != null) {
       return Positioned(
-          top: top, left: 0, right: 0, child: Center(child: pill));
+        top: top,
+        left: 0,
+        right: 0,
+        child: Center(child: pill),
+      );
     }
     // 預設落在畫面下方的空白區（工具列上方）
     return Positioned(
-        bottom: 150, left: 0, right: 0, child: Center(child: pill));
+      bottom: 150,
+      left: 0,
+      right: 0,
+      child: Center(child: pill),
+    );
   }
+}
+
+/// 全 App 對話框的統一外殼。
+///
+/// 以前每個彈窗各寫一份 AlertDialog：標題有的置左有的置中、寬度
+/// 270/280/300 都有、按鈕有的橫排有的直排，同一個 App 看起來像三個
+/// 人做的。這裡定一份：置中標題、可選說明、中間放自訂內容
+/// （選項列／輸入框／滑桿／進度條）、底部直排大按鈕。
+///
+/// [action] 是整寬主行動鈕；[cancel] 給 null 就不畫取消。
+/// [footer] 放額外的次要鈕（例如排查結果的「複製」）
+Widget appDialog(
+  BuildContext context, {
+  required String title,
+  String message = '',
+  Widget? child,
+  String? action,
+  VoidCallback? onAction,
+  String? cancel = '取消',
+  VoidCallback? onCancel,
+  List<Widget> footer = const [],
+  double width = kDialogWidth,
+
+  /// 標題上方的圖示（例如「輸出完成」的打勾）
+  IconData? icon,
+}) {
+  final c = pageColors(context);
+  return Dialog(
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(kDialogRadius),
+      side: BorderSide(color: c.line),
+    ),
+    child: ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: width),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 22, 16, 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (icon != null) ...[
+              Icon(icon, size: 34, color: c.accent),
+              const SizedBox(height: 12),
+            ],
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 15.5,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.3,
+                color: c.text,
+              ),
+            ),
+            if (message.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 12.5, color: c.dim, height: 1.55),
+              ),
+            ],
+            if (child != null) ...[
+              const SizedBox(height: 14),
+              // Flexible：內容長到滿版時讓它自己捲，不要把按鈕擠出畫面
+              Flexible(child: child),
+            ],
+            if (action != null) ...[
+              SizedBox(height: child != null ? 14 : 20),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(44),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  textStyle: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    fontFamily: 'NotoSansTC',
+                  ),
+                ),
+                onPressed: onAction ?? () => Navigator.pop(context),
+                child: Text(action),
+              ),
+            ],
+            ...footer,
+            if (cancel != null) ...[
+              const SizedBox(height: 4),
+              TextButton(
+                onPressed: onCancel ?? () => Navigator.pop(context),
+                style: TextButton.styleFrom(
+                  foregroundColor: c.dim,
+                  minimumSize: const Size.fromHeight(40),
+                ),
+                child: Text(cancel, style: const TextStyle(fontSize: 13)),
+              ),
+            ],
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+/// 彈窗裡的次要按鈕（三選一的中間那顆，例如「放棄離開」）。
+/// 放進 [appDialog] 的 footer
+Widget dialogSecondary(BuildContext context, String label, VoidCallback onTap) {
+  final c = pageColors(context);
+  return Padding(
+    padding: const EdgeInsets.only(top: 6),
+    child: OutlinedButton(
+      style: OutlinedButton.styleFrom(
+        minimumSize: const Size.fromHeight(42),
+        foregroundColor: c.text,
+        side: BorderSide(color: c.line),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+      onPressed: onTap,
+      child: Text(label, style: const TextStyle(fontSize: 13.5)),
+    ),
+  );
+}
+
+/// 一列一列的選項彈窗（畫面比例／解析度／畫質／二選一都走這裡）。
+/// 點一列＝選定並關窗，[optionRow] 負責畫每一列
+Future<T?> showOptions<T>(
+  BuildContext context, {
+  required String title,
+  String message = '',
+  required List<Widget> Function(BuildContext context) options,
+}) => showDialog<T>(
+  context: context,
+  builder: (context) => appDialog(
+    context,
+    title: title,
+    message: message,
+    child: SingleChildScrollView(
+      child: Column(mainAxisSize: MainAxisSize.min, children: options(context)),
+    ),
+  ),
+);
+
+/// 打字用的彈窗（改名、加文字、存範本）。回傳 null＝取消
+Future<String?> askInput(
+  BuildContext context, {
+  required String title,
+  String initial = '',
+  String hint = '',
+  String action = '確定',
+  int maxLines = 1,
+  int? maxLength,
+}) async {
+  final ctrl = TextEditingController(text: initial);
+  final out = await showDialog<String>(
+    context: context,
+    builder: (context) => appDialog(
+      context,
+      title: title,
+      action: action,
+      onAction: () => Navigator.pop(context, ctrl.text.trim()),
+      child: TextField(
+        controller: ctrl,
+        autofocus: true,
+        maxLines: maxLines,
+        maxLength: maxLength,
+        decoration: InputDecoration(
+          hintText: hint.isEmpty ? null : hint,
+          counterText: '',
+        ),
+        onSubmitted: maxLines == 1
+            ? (v) => Navigator.pop(context, v.trim())
+            : null,
+      ),
+    ),
+  );
+  ctrl.dispose();
+  return out;
+}
+
+/// 進度彈窗的內容（匯出、批次、倒轉共用）：進度條＋百分比＋一行說明
+Widget dialogProgress(BuildContext context, double v, {String? note}) {
+  final c = pageColors(context);
+  return Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      ClipRRect(
+        borderRadius: BorderRadius.circular(999),
+        child: LinearProgressIndicator(value: v > 0 ? v : null, minHeight: 6),
+      ),
+      const SizedBox(height: 10),
+      if (v > 0)
+        Text(
+          '${(v * 100).toStringAsFixed(0)} %',
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+            color: c.text,
+          ),
+        ),
+      if (note != null && note.isNotEmpty) ...[
+        const SizedBox(height: 4),
+        Text(
+          note,
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 12, color: c.dim),
+        ),
+      ],
+    ],
+  );
 }
 
 /// 確認對話框（使用者選定 C 款直排大按鈕）：
@@ -383,68 +627,20 @@ class _HintToast extends StatelessWidget {
 Future<bool> showConfirm(
   BuildContext context, {
   required String title,
+
   /// 補充說明；不給就只顯示標題和按鈕
   String message = '',
   required String action,
 }) async {
-  final c = pageColors(context);
   final ok = await showDialog<bool>(
     context: context,
-    builder: (context) => Dialog(
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: c.line),
-      ),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: kDialogWidth),
-        child: Padding(
-          padding: EdgeInsets.fromLTRB(20, 26, 20, 12),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(title,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                      fontSize: 15.5,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.3,
-                      color: c.text)),
-              if (message.isNotEmpty) ...[
-                SizedBox(height: 8),
-                Text(message,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                        fontSize: 12.5, color: c.dim, height: 1.55)),
-              ],
-              SizedBox(height: 20),
-              FilledButton(
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size.fromHeight(44),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                  textStyle: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      fontFamily: 'NotoSansTC'),
-                ),
-                onPressed: () => Navigator.pop(context, true),
-                child: Text(action),
-              ),
-              SizedBox(height: 4),
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                style: TextButton.styleFrom(
-                  foregroundColor: c.dim,
-                  minimumSize: const Size.fromHeight(40),
-                ),
-                child: Text('取消',
-                    style: TextStyle(fontSize: 13)),
-              ),
-            ],
-          ),
-        ),
-      ),
+    builder: (context) => appDialog(
+      context,
+      title: title,
+      message: message,
+      action: action,
+      onAction: () => Navigator.pop(context, true),
+      onCancel: () => Navigator.pop(context, false),
     ),
   );
   return ok == true;
@@ -462,72 +658,18 @@ Future<String> askAfterExport(
   String message, {
   String? note,
 }) async {
-  final c = pageColors(context);
   final act = await showDialog<String>(
     context: context,
     barrierDismissible: false,
-    builder: (context) => Dialog(
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: c.line),
-      ),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: kDialogWidth),
-        child: Padding(
-          padding: EdgeInsets.fromLTRB(20, 24, 20, 12),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Icon(Icons.check_circle_outline, size: 34, color: c.accent),
-              SizedBox(height: 12),
-              Text('輸出完成',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                      fontSize: 15.5,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.3,
-                      color: c.text)),
-              SizedBox(height: 8),
-              Text(message,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                      fontSize: 13, color: kIcon, height: 1.55)),
-              if (note != null) ...[
-                SizedBox(height: 6),
-                Text(note,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                        fontSize: 11, color: c.dim, height: 1.5)),
-              ],
-              SizedBox(height: 20),
-              FilledButton(
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size.fromHeight(44),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                  textStyle: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      fontFamily: 'NotoSansTC'),
-                ),
-                onPressed: () => Navigator.pop(context, 'home'),
-                child: Text('回主畫面'),
-              ),
-              SizedBox(height: 4),
-              TextButton(
-                onPressed: () => Navigator.pop(context, 'stay'),
-                style: TextButton.styleFrom(
-                  foregroundColor: c.dim,
-                  minimumSize: const Size.fromHeight(40),
-                ),
-                child: Text('繼續編輯',
-                    style: TextStyle(fontSize: 13)),
-              ),
-            ],
-          ),
-        ),
-      ),
+    builder: (context) => appDialog(
+      context,
+      icon: Icons.check_circle_outline,
+      title: '輸出完成',
+      message: note == null ? message : '$message\n$note',
+      action: '回主畫面',
+      onAction: () => Navigator.pop(context, 'home'),
+      cancel: '繼續編輯',
+      onCancel: () => Navigator.pop(context, 'stay'),
     ),
   );
   return act ?? 'stay';
@@ -558,15 +700,23 @@ Future<String?> askPhotoFormat(BuildContext context) {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(title,
-                          style: TextStyle(
-                              fontSize: 13.5,
-                              fontWeight: FontWeight.w700,
-                              color: c.text)),
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w700,
+                          color: c.text,
+                        ),
+                      ),
                       SizedBox(height: 2),
-                      Text(sub,
-                          style: TextStyle(
-                              fontSize: 11.5, color: c.dim, height: 1.4)),
+                      Text(
+                        sub,
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: c.dim,
+                          height: 1.4,
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -578,30 +728,16 @@ Future<String?> askPhotoFormat(BuildContext context) {
 
   return showDialog<String>(
     context: context,
-    builder: (context) => Dialog(
-      backgroundColor: c.bg,
-      insetPadding: EdgeInsets.symmetric(horizontal: 28),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(kDialogRadius),
-        side: BorderSide(color: c.line),
-      ),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: kDialogWidth),
-        child: Padding(
-          padding: EdgeInsets.fromLTRB(16, 20, 16, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('輸出到相簿',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-              SizedBox(height: 14),
-              tile(context, 'jpg', 'JPEG',
-                  '檔案小很多（約 1/8），肉眼看不出跟 PNG 差別'),
-              SizedBox(height: 8),
-              tile(context, 'png', 'PNG 無損', '完全不壓縮'),
-            ],
-          ),
-        ),
+    builder: (context) => appDialog(
+      context,
+      title: '輸出到相簿',
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          tile(context, 'jpg', 'JPEG', '檔案小很多（約 1/8），肉眼看不出跟 PNG 差別'),
+          const SizedBox(height: 8),
+          tile(context, 'png', 'PNG 無損', '完全不壓縮'),
+        ],
       ),
     ),
   );
@@ -620,24 +756,22 @@ Future<int?> pickColor(
   var color = initial;
   final ok = await showDialog<bool>(
     context: context,
-    builder: (context) => AlertDialog(
-      title: Text(title),
-      content: SingleChildScrollView(
+    builder: (context) => appDialog(
+      context,
+      title: title,
+      width: 320,
+      action: '確定',
+      onAction: () => Navigator.pop(context, true),
+      onCancel: () => Navigator.pop(context, false),
+      child: SingleChildScrollView(
         child: ColorPicker(
           pickerColor: color,
           enableAlpha: false,
           labelTypes: const [],
+          pickerAreaBorderRadius: BorderRadius.circular(10),
           onColorChanged: (c) => color = c,
         ),
       ),
-      actions: [
-        TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消')),
-        FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('確定')),
-      ],
     ),
   );
   return ok == true ? color.toARGB32() : null;
@@ -655,75 +789,24 @@ Future<String> showLeaveChoice(
   required String keepLabel,
   String discardLabel = '捨棄',
 }) async {
-  final c = pageColors(context);
   final act = await showDialog<String>(
     context: context,
-    builder: (context) => Dialog(
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: c.line),
-      ),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: kDialogWidth),
-        child: Padding(
-          padding: EdgeInsets.fromLTRB(20, 26, 20, 12),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(title,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                      fontSize: 15.5,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.3,
-                      color: c.text)),
-              SizedBox(height: 8),
-              Text(message,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                      fontSize: 12.5, color: c.dim, height: 1.55)),
-              SizedBox(height: 20),
-              FilledButton(
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size.fromHeight(44),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                  textStyle: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      fontFamily: 'NotoSansTC'),
-                ),
-                onPressed: () => Navigator.pop(context, 'keep'),
-                child: Text(keepLabel),
-              ),
-              SizedBox(height: 8),
-              OutlinedButton(
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(44),
-                  foregroundColor: c.text,
-                  side: BorderSide(color: c.line),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                ),
-                onPressed: () => Navigator.pop(context, 'discard'),
-                child: Text(discardLabel,
-                    style: TextStyle(fontSize: 13.5)),
-              ),
-              SizedBox(height: 4),
-              TextButton(
-                onPressed: () => Navigator.pop(context, 'stay'),
-                style: TextButton.styleFrom(
-                  foregroundColor: c.dim,
-                  minimumSize: const Size.fromHeight(40),
-                ),
-                child: Text('繼續編輯',
-                    style: TextStyle(fontSize: 13)),
-              ),
-            ],
-          ),
+    barrierDismissible: false,
+    builder: (context) => appDialog(
+      context,
+      title: title,
+      message: message,
+      action: keepLabel,
+      onAction: () => Navigator.pop(context, 'keep'),
+      footer: [
+        dialogSecondary(
+          context,
+          discardLabel,
+          () => Navigator.pop(context, 'discard'),
         ),
-      ),
+      ],
+      cancel: '繼續編輯',
+      onCancel: () => Navigator.pop(context, 'stay'),
     ),
   );
   return act ?? 'stay';
@@ -742,13 +825,13 @@ Widget undoRedoBar({
   // 觸控高度會把兩邊撐出一大截空白（使用者：「間隔太多」）。
   // 亮起（有步驟可退）用琥珀，跟「可以動它」的選取語言一致
   Widget btn(IconData icon, String tip, VoidCallback? onTap) => IconButton(
-        tooltip: tip,
-        icon: Icon(icon, size: 20, color: onTap != null ? kSelect : kTextDim),
-        onPressed: onTap,
-        visualDensity: VisualDensity.compact,
-        padding: EdgeInsets.zero,
-        constraints: const BoxConstraints(minWidth: 42, minHeight: 30),
-      );
+    tooltip: tip,
+    icon: Icon(icon, size: 20, color: onTap != null ? kSelect : kTextDim),
+    onPressed: onTap,
+    visualDensity: VisualDensity.compact,
+    padding: EdgeInsets.zero,
+    constraints: const BoxConstraints(minWidth: 42, minHeight: 30),
+  );
 
   // 不畫上下邊線：整個工作區走無邊線的風格，靠色階分層就夠了
   return Container(
@@ -774,14 +857,14 @@ Widget primaryAction({
   required VoidCallback? onPressed,
   IconData icon = Icons.ios_share,
 }) => FilledButton.icon(
-      onPressed: onPressed,
-      style: FilledButton.styleFrom(
-        minimumSize: const Size.fromHeight(46),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
-      ),
-      icon: Icon(icon, size: 18),
-      label: Text(label, style: const TextStyle(fontSize: 14)),
-    );
+  onPressed: onPressed,
+  style: FilledButton.styleFrom(
+    minimumSize: const Size.fromHeight(46),
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+  ),
+  icon: Icon(icon, size: 18),
+  label: Text(label, style: const TextStyle(fontSize: 14)),
+);
 
 /// 次要動作鈕（存成範本…）：跟主要鈕同高同圓角，只差描邊
 Widget secondaryAction({
@@ -789,16 +872,16 @@ Widget secondaryAction({
   required VoidCallback? onPressed,
   IconData? icon,
 }) => OutlinedButton.icon(
-      onPressed: onPressed,
-      style: OutlinedButton.styleFrom(
-        minimumSize: const Size.fromHeight(46),
-        foregroundColor: kText,
-        side: const BorderSide(color: kClipBorder),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
-      ),
-      icon: Icon(icon ?? Icons.bookmark_add_outlined, size: 17),
-      label: Text(label, style: const TextStyle(fontSize: 13)),
-    );
+  onPressed: onPressed,
+  style: OutlinedButton.styleFrom(
+    minimumSize: const Size.fromHeight(46),
+    foregroundColor: kText,
+    side: const BorderSide(color: kClipBorder),
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+  ),
+  icon: Icon(icon ?? Icons.bookmark_add_outlined, size: 17),
+  label: Text(label, style: const TextStyle(fontSize: 13)),
+);
 
 /// 選單彈窗裡的一列（畫面比例／解析度／畫質都用這個）。
 /// 選中的那列標題轉琥珀色＋粗體，右邊打勾；[trailing] 放檔案大小之類的
@@ -925,7 +1008,6 @@ class SectionLabel extends StatelessWidget {
   }
 }
 
-
 // ===== 淺色頁面（編輯畫面以外全部走這一套）=====
 //
 // 編輯畫面留黑：畫面上唯一該亮的是使用者的素材，UI 一亮就搶戲。
@@ -959,10 +1041,10 @@ const kLTile = Color(0xFFF2F2F6);
 /// 頁面是純白的，所以分層只能靠邊線。陰影在淺色頁上會拖出一條灰邊，
 /// 而且只有往下那一層時上緣會消失，整張卡看起來像一段浮著的文字
 BoxDecoration lightCard({double radius = kCardRadius}) => BoxDecoration(
-      color: kLCard,
-      borderRadius: BorderRadius.circular(radius),
-      border: Border.all(color: const Color(0xFFEDEDF2), width: 1.4),
-    );
+  color: kLCard,
+  borderRadius: BorderRadius.circular(radius),
+  border: Border.all(color: const Color(0xFFEDEDF2), width: 1.4),
+);
 
 ThemeData buildLightTheme() {
   const scheme = ColorScheme.light(
@@ -976,9 +1058,12 @@ ThemeData buildLightTheme() {
     outline: kLBorder,
     error: Color(0xFFD1373A),
   );
-  final radius6 = RoundedRectangleBorder(borderRadius: BorderRadius.circular(6));
-  final cardShape =
-      RoundedRectangleBorder(borderRadius: BorderRadius.circular(kCardRadius));
+  final radius6 = RoundedRectangleBorder(
+    borderRadius: BorderRadius.circular(6),
+  );
+  final cardShape = RoundedRectangleBorder(
+    borderRadius: BorderRadius.circular(kCardRadius),
+  );
 
   return ThemeData(
     useMaterial3: true,
@@ -1013,7 +1098,10 @@ ThemeData buildLightTheme() {
         foregroundColor: kLCard,
         shape: radius6,
         textStyle: const TextStyle(
-            fontWeight: FontWeight.w700, fontSize: 14, fontFamily: 'NotoSansTC'),
+          fontWeight: FontWeight.w700,
+          fontSize: 14,
+          fontFamily: 'NotoSansTC',
+        ),
       ),
     ),
     textButtonTheme: TextButtonThemeData(
@@ -1032,7 +1120,10 @@ ThemeData buildLightTheme() {
       side: const BorderSide(color: kLBorder),
       shape: radius6,
       labelStyle: const TextStyle(
-          fontSize: 12, color: kLText, fontFamily: 'NotoSansTC'),
+        fontSize: 12,
+        color: kLText,
+        fontFamily: 'NotoSansTC',
+      ),
       showCheckmark: false,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
     ),
@@ -1043,7 +1134,10 @@ ThemeData buildLightTheme() {
       indicatorSize: TabBarIndicatorSize.label,
       dividerColor: kLBorder,
       labelStyle: TextStyle(
-          fontSize: 12, fontWeight: FontWeight.w700, fontFamily: 'NotoSansTC'),
+        fontSize: 12,
+        fontWeight: FontWeight.w700,
+        fontFamily: 'NotoSansTC',
+      ),
       unselectedLabelStyle: TextStyle(fontSize: 12, fontFamily: 'NotoSansTC'),
     ),
     sliderTheme: const SliderThemeData(
@@ -1056,14 +1150,17 @@ ThemeData buildLightTheme() {
     ),
     switchTheme: SwitchThemeData(
       thumbColor: WidgetStateProperty.resolveWith(
-          (s) => s.contains(WidgetState.selected) ? kLBg : kLTextDim),
+        (s) => s.contains(WidgetState.selected) ? kLBg : kLTextDim,
+      ),
       trackColor: WidgetStateProperty.resolveWith(
-          (s) => s.contains(WidgetState.selected) ? kLAccent : kLPanelHi),
+        (s) => s.contains(WidgetState.selected) ? kLAccent : kLPanelHi,
+      ),
       trackOutlineColor: const WidgetStatePropertyAll(kLBorder),
     ),
     radioTheme: RadioThemeData(
       fillColor: WidgetStateProperty.resolveWith(
-          (s) => s.contains(WidgetState.selected) ? kLAccent : kLTextDim),
+        (s) => s.contains(WidgetState.selected) ? kLAccent : kLTextDim,
+      ),
     ),
     dividerTheme: const DividerThemeData(color: kLBorder, thickness: 1),
     dialogTheme: DialogThemeData(
@@ -1071,17 +1168,22 @@ ThemeData buildLightTheme() {
       barrierColor: Colors.black.withValues(alpha: 0.35),
       elevation: 8,
       shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(kDialogRadius),
-          side: const BorderSide(color: kLBorder)),
+        borderRadius: BorderRadius.circular(kDialogRadius),
+        side: const BorderSide(color: kLBorder),
+      ),
       titleTextStyle: const TextStyle(
-          fontSize: 15.5,
-          fontWeight: FontWeight.w700,
-          color: kLText,
-          fontFamily: 'NotoSansTC'),
+        fontSize: 15.5,
+        fontWeight: FontWeight.w700,
+        color: kLText,
+        fontFamily: 'NotoSansTC',
+      ),
     ),
     snackBarTheme: SnackBarThemeData(
       backgroundColor: kLText,
-      contentTextStyle: const TextStyle(color: kLCard, fontFamily: 'NotoSansTC'),
+      contentTextStyle: const TextStyle(
+        color: kLCard,
+        fontFamily: 'NotoSansTC',
+      ),
       shape: radius6,
       behavior: SnackBarBehavior.floating,
     ),
@@ -1093,11 +1195,13 @@ ThemeData buildLightTheme() {
       fillColor: const Color(0xFFF4F4F7),
       contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
       enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(6),
-          borderSide: const BorderSide(color: kLBorder)),
+        borderRadius: BorderRadius.circular(6),
+        borderSide: const BorderSide(color: kLBorder),
+      ),
       focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(6),
-          borderSide: const BorderSide(color: kLAccent, width: 1.5)),
+        borderRadius: BorderRadius.circular(6),
+        borderSide: const BorderSide(color: kLAccent, width: 1.5),
+      ),
       labelStyle: const TextStyle(color: kLTextDim, fontSize: 13),
       hintStyle: const TextStyle(color: kLTextDim, fontSize: 13),
     ),
@@ -1136,12 +1240,12 @@ class LightPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => AnnotatedRegion<SystemUiOverlayStyle>(
-        // 白底要配深色的狀態列圖示，不然電量、時間全看不見
-        value: SystemUiOverlayStyle.dark.copyWith(
-          statusBarColor: Colors.transparent,
-          systemNavigationBarColor: kLBg,
-          systemNavigationBarIconBrightness: Brightness.dark,
-        ),
-        child: Theme(data: buildLightTheme(), child: child),
-      );
+    // 白底要配深色的狀態列圖示，不然電量、時間全看不見
+    value: SystemUiOverlayStyle.dark.copyWith(
+      statusBarColor: Colors.transparent,
+      systemNavigationBarColor: kLBg,
+      systemNavigationBarIconBrightness: Brightness.dark,
+    ),
+    child: Theme(data: buildLightTheme(), child: child),
+  );
 }

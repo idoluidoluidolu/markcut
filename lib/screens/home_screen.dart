@@ -61,16 +61,24 @@ class _PickRow extends StatelessWidget {
               children: [
                 // 標題給實體字重（字體已經有 700 的檔案），
                 // 兩行的行高也收緊一點，不然標題跟說明看起來像兩件事
-                Text(label,
-                    style: const TextStyle(
-                        fontSize: 14.5,
-                        height: 1.25,
-                        fontWeight: FontWeight.w700,
-                        color: kLText)),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 14.5,
+                    height: 1.25,
+                    fontWeight: FontWeight.w700,
+                    color: kLText,
+                  ),
+                ),
                 const SizedBox(height: 3),
-                Text(hint,
-                    style: const TextStyle(
-                        fontSize: 12, height: 1.25, color: kLTextDim)),
+                Text(
+                  hint,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    height: 1.25,
+                    color: kLTextDim,
+                  ),
+                ),
               ],
             ),
           ],
@@ -124,7 +132,15 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mime != null && mime.isNotEmpty) return mime.startsWith('video/');
     final ext = f.name.toLowerCase().split('.').last;
     return const {
-      'mp4', 'mov', 'm4v', 'avi', 'mkv', 'webm', '3gp', 'ts', 'mts'
+      'mp4',
+      'mov',
+      'm4v',
+      'avi',
+      'mkv',
+      'webm',
+      '3gp',
+      'ts',
+      'mts',
     }.contains(ext);
   }
 
@@ -145,50 +161,39 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _addWatermarkInner() async {
     final kind = await showDialog<_PickKind>(
       context: context,
-      builder: (context) => Dialog(
-        backgroundColor: kLBg,
-        insetPadding: const EdgeInsets.symmetric(horizontal: 32),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(kDialogRadius),
-          side: const BorderSide(color: kLBorder),
-        ),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: kDialogWidth),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 22, 16, 14),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: const [
-                Text('加入浮水印',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                        fontSize: 15, fontWeight: FontWeight.bold)),
-                SizedBox(height: 16),
-                _PickRow(
-                    icon: Icons.videocam_outlined,
-                    label: '影片',
-                    hint: '單支或多支',
-                    kind: _PickKind.video),
-                _PickRow(
-                    icon: Icons.image_outlined,
-                    label: '照片',
-                    hint: '單張或多張',
-                    kind: _PickKind.photo),
-                _PickRow(
-                    icon: Icons.grid_view,
-                    label: '照片拼圖',
-                    hint: '多張照片組圖',
-                    kind: _PickKind.collage),
-                _PickRow(
-                    icon: Icons.playlist_add,
-                    label: '空白專案',
-                    hint: '進去再加素材',
-                    kind: _PickKind.blank,
-                    divider: false),
-              ],
+      builder: (context) => appDialog(
+        context,
+        title: '加入浮水印',
+        child: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _PickRow(
+              icon: Icons.videocam_outlined,
+              label: '影片',
+              hint: '單支或多支',
+              kind: _PickKind.video,
             ),
-          ),
+            _PickRow(
+              icon: Icons.image_outlined,
+              label: '照片',
+              hint: '單張或多張',
+              kind: _PickKind.photo,
+            ),
+            _PickRow(
+              icon: Icons.grid_view,
+              label: '照片拼圖',
+              hint: '多張照片組圖',
+              kind: _PickKind.collage,
+            ),
+            _PickRow(
+              icon: Icons.playlist_add,
+              label: '空白專案',
+              hint: '進去再加素材',
+              kind: _PickKind.blank,
+              divider: false,
+            ),
+          ],
         ),
       ),
     );
@@ -247,67 +252,49 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// 多支影片：問要接成一支（進剪輯）還是各自上浮水印（進批次）。
   /// 兩件事差很多，猜錯的代價是使用者整批重挑
-  Future<bool?> _askMultiVideo(int n) => showDialog<bool>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: Text('選了 $n 部影片'),
-      contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
-      content: SizedBox(
-        width: 270,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            optionRow(
-  context: context,
-              title: '剪成一支影片',
-              subtitle: '照選取順序接在時間軸上',
-              selected: false,
-              first: true,
-              onTap: () => Navigator.pop(context, true),
-            ),
-            optionRow(
-  context: context,
-              title: '統一上浮水印',
-              subtitle: '快速套用同一組浮水印',
-              selected: false,
-              onTap: () => Navigator.pop(context, false),
-            ),
-          ],
-        ),
+  Future<bool?> _askMultiVideo(int n) => showOptions<bool>(
+    context,
+    title: '選了 $n 部影片',
+    options: (context) => [
+      optionRow(
+        context: context,
+        title: '剪成一支影片',
+        subtitle: '照選取順序接在時間軸上',
+        selected: false,
+        first: true,
+        onTap: () => Navigator.pop(context, true),
       ),
-    ),
+      optionRow(
+        context: context,
+        title: '統一上浮水印',
+        subtitle: '快速套用同一組浮水印',
+        selected: false,
+        onTap: () => Navigator.pop(context, false),
+      ),
+    ],
   );
 
   /// 多張照片：問要串成一段影片（進剪輯）還是各自上浮水印（進批次）
-  Future<bool?> _askMultiPhoto(int n) => showDialog<bool>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: Text('選了 $n 張照片'),
-      contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
-      content: SizedBox(
-        width: 270,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            optionRow(
-              context: context,
-              title: '串成一段影片',
-              subtitle: '照選取順序接起來，下一步可以選每張幾秒',
-              selected: false,
-              first: true,
-              onTap: () => Navigator.pop(context, true),
-            ),
-            optionRow(
-              context: context,
-              title: '統一上浮水印',
-              subtitle: '每張各自輸出一張照片',
-              selected: false,
-              onTap: () => Navigator.pop(context, false),
-            ),
-          ],
-        ),
+  Future<bool?> _askMultiPhoto(int n) => showOptions<bool>(
+    context,
+    title: '選了 $n 張照片',
+    options: (context) => [
+      optionRow(
+        context: context,
+        title: '串成一段影片',
+        subtitle: '照選取順序接起來，下一步可以選每張幾秒',
+        selected: false,
+        first: true,
+        onTap: () => Navigator.pop(context, true),
       ),
-    ),
+      optionRow(
+        context: context,
+        title: '統一上浮水印',
+        subtitle: '每張各自輸出一張照片',
+        selected: false,
+        onTap: () => Navigator.pop(context, false),
+      ),
+    ],
   );
 
   /// 一批照片串成影片：進影片編輯器，由它問每張幾秒
@@ -324,9 +311,8 @@ class _HomeScreenState extends State<HomeScreen> {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => VideoEditorScreen(
-          photoPaths: [for (final f in picked) f.path],
-        ),
+        builder: (_) =>
+            VideoEditorScreen(photoPaths: [for (final f in picked) f.path]),
       ),
     );
     _checkDraft();
@@ -426,14 +412,17 @@ class _HomeScreenState extends State<HomeScreen> {
     await Navigator.push(
       context,
       MaterialPageRoute(
-          builder: (_) => VideoEditorScreen(videoPath: picked.path)),
+        builder: (_) => VideoEditorScreen(videoPath: picked.path),
+      ),
     );
     _checkDraft();
   }
 
   void _makeWatermark() {
-    Navigator.push(context,
-        MaterialPageRoute(builder: (_) => const WatermarkStudioScreen()));
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const WatermarkStudioScreen()),
+    );
   }
 
   @override
@@ -450,9 +439,11 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: const Icon(Icons.person_outline),
             onPressed: () async {
               await Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                      builder: (_) => const LightPage(child: ProfileScreen())));
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const LightPage(child: ProfileScreen()),
+                ),
+              );
               _checkDraft(); // 草稿可能在裡面被刪掉或接續了
             },
           ),
@@ -486,11 +477,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const Spacer(flex: 32),
               // 三個動作全部靠底
-              _HomeButton(
-                primary: true,
-                label: '加入浮水印',
-                onTap: _addWatermark,
-              ),
+              _HomeButton(primary: true, label: '加入浮水印', onTap: _addWatermark),
               const SizedBox(height: 12),
               _HomeButton(
                 primary: false,
@@ -533,8 +520,7 @@ class _HomeButton extends StatelessWidget {
         decoration: BoxDecoration(
           color: primary ? kLAccent : Colors.transparent,
           borderRadius: BorderRadius.circular(kHomeBtnRadius),
-          border:
-              primary ? null : Border.all(color: kLBorder, width: 1.5),
+          border: primary ? null : Border.all(color: kLBorder, width: 1.5),
         ),
         child: Text(
           label,

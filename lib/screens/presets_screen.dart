@@ -57,34 +57,12 @@ class _PresetsScreenState extends State<PresetsScreen> {
   }
 
   Future<void> _rename(WatermarkPreset p) async {
-    final ctrl = TextEditingController(text: p.name);
-    final newName = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text(
-          '範本改名',
-          style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w700),
-        ),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          maxLength: 20,
-          decoration: const InputDecoration(counterText: ''),
-          onSubmitted: (v) => Navigator.pop(context, v.trim()),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, ctrl.text.trim()),
-            child: const Text('確定'),
-          ),
-        ],
-      ),
+    final newName = await askInput(
+      context,
+      title: '範本改名',
+      initial: p.name,
+      maxLength: 20,
     );
-    ctrl.dispose();
     if (newName == null || newName.isEmpty || newName == p.name) return;
     final ok = await PresetStore.rename(p.name, newName);
     if (!mounted) return;

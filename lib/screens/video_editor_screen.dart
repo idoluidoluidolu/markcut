@@ -9,8 +9,8 @@ import 'package:flutter/foundation.dart' show compute, kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
-import 'package:flutter/services.dart' show Clipboard, ClipboardData,
-    HapticFeedback;
+import 'package:flutter/services.dart'
+    show Clipboard, ClipboardData, HapticFeedback;
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
@@ -44,7 +44,17 @@ import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
 
 /// 「加素材」選單的項目（錄旁白不是一種素材類型，所以另立一個 enum）
-enum _AddKind { video, image, text, wm, audio, record, mosaic, blankTrack, paste }
+enum _AddKind {
+  video,
+  image,
+  text,
+  wm,
+  audio,
+  record,
+  mosaic,
+  blankTrack,
+  paste,
+}
 
 const kSpeedOptions = <double>[0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
 
@@ -218,7 +228,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 同一支影片縮到 720p，需要的位元率就少了一半
   ExportQuality get _qualityEff {
     if (!_qualityAuto || _srcKbps <= 0) return _quality;
-    final (w, h) = computeCanvasSize(_tl, _resolution, _canvasRatio, _customAspect);
+    final (w, h) = computeCanvasSize(
+      _tl,
+      _resolution,
+      _canvasRatio,
+      _customAspect,
+    );
     return recommendQuality(
       srcKbps: _srcKbps,
       outW: w,
@@ -343,8 +358,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final now = DateTime.now();
     _pinchPts.removeWhere((id, _) {
       final seen = _pinchSeen[id];
-      final stale =
-          seen == null || now.difference(seen).inSeconds > 15;
+      final stale = seen == null || now.difference(seen).inSeconds > 15;
       if (stale) _pinchSeen.remove(id);
       return stale;
     });
@@ -970,7 +984,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _scrubEndTimer?.cancel();
       _scrubEndTimer = Timer(const Duration(milliseconds: 220), _tryEndScrub);
       _prepEscapeTimer?.cancel();
-    _scrubSettleTimer?.cancel();
+      _scrubSettleTimer?.cancel();
       _scrubSettleTimer = Timer(
         const Duration(milliseconds: 120),
         () => _compSeek(exact: true),
@@ -1036,8 +1050,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 應該連同整理一起退回去，而不是退成「整理前但已經剪短」的半套狀態
   void _autoTidyIfOn({int? track}) {
     if (!_autoTidy || _tl.clips.isEmpty) return;
-    final t =
-        track ?? _selClip?.track ?? (_selTrack >= 0 ? _selTrack : null);
+    final t = track ?? _selClip?.track ?? (_selTrack >= 0 ? _selTrack : null);
     final removed = _tl.closeGaps(track: t);
     if (removed < 0.001) return;
     setState(() {});
@@ -1383,8 +1396,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _scrubFrames.remove(srcIndex);
     _scrubDecoders.remove(srcIndex)?.dispose();
     _ensureScrubSlots(srcIndex, _tl.sources[srcIndex].duration);
-    _thumbStrip(_tl.sources[srcIndex].previewPath, _tl.sources[srcIndex].duration)
-        .then((t) {
+    _thumbStrip(
+      _tl.sources[srcIndex].previewPath,
+      _tl.sources[srcIndex].duration,
+    ).then((t) {
       if (mounted && t.isNotEmpty) setState(() => _thumbs[srcIndex] = t);
     });
     if (mounted) setState(() {});
@@ -1690,35 +1705,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 一次選多部時問：接成一段，還是各自一軌疊起來。
   /// 回傳 true＝同一軌、false＝各自一軌、null＝取消
-  Future<bool?> _askSameTrack(int n) => showDialog<bool>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: Text('加入 $n 部影片'),
-      contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
-      content: SizedBox(
-        width: 270,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            optionRow(
-  context: context,
-              title: '接在同一軌',
-              subtitle: '照選取順序頭尾相接，變成一段長影片',
-              selected: false,
-              first: true,
-              onTap: () => Navigator.pop(context, true),
-            ),
-            optionRow(
-  context: context,
-              title: '各自一軌',
-              subtitle: '每個影片開一個新軌道',
-              selected: false,
-              onTap: () => Navigator.pop(context, false),
-            ),
-          ],
-        ),
+  Future<bool?> _askSameTrack(int n) => showOptions<bool>(
+    context,
+    title: '加入 $n 部影片',
+    options: (context) => [
+      optionRow(
+        context: context,
+        title: '接在同一軌',
+        subtitle: '照選取順序頭尾相接，變成一段長影片',
+        selected: false,
+        first: true,
+        onTap: () => Navigator.pop(context, true),
       ),
-    ),
+      optionRow(
+        context: context,
+        title: '各自一軌',
+        subtitle: '每個影片開一個新軌道',
+        selected: false,
+        onTap: () => Navigator.pop(context, false),
+      ),
+    ],
   );
 
   Future<void> _pickVideo(int track) async {
@@ -2268,60 +2274,48 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return showDialog<double>(
       context: context,
       builder: (context) => StatefulBuilder(
-        builder: (context, setDialog) => AlertDialog(
-          title: Text('$count 張圖片串成影片'),
-          contentPadding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
-          content: SizedBox(
-            width: 300,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '每張停留 ${sec.toStringAsFixed(sec % 1 == 0 ? 0 : 1)} 秒'
-                  '，總長 ${fmtDuration(sec * count)}',
-                  style: const TextStyle(fontSize: 12.5, color: kTextDim),
-                ),
-                const SizedBox(height: 6),
-                Slider(
-                  value: sec,
-                  min: 0.5,
-                  max: 10,
-                  divisions: 19,
-                  onChanged: (v) => setDialog(() => sec = v),
-                ),
-                // 常用的幾個直接點，不用拉
-                Wrap(
-                  spacing: 8,
-                  children: [
-                    for (final v in const [1.0, 2.0, 3.0, 5.0])
-                      OutlinedButton(
-                        style: OutlinedButton.styleFrom(
-                          visualDensity: VisualDensity.compact,
-                          foregroundColor: sec == v ? kSelect : kText,
-                          side: BorderSide(
-                            color: sec == v ? kSelect : kClipBorder,
-                          ),
+        builder: (context, setDialog) => appDialog(
+          context,
+          title: '$count 張圖片串成影片',
+          message:
+              '每張停留 ${sec.toStringAsFixed(sec % 1 == 0 ? 0 : 1)} 秒'
+              '，總長 ${fmtDuration(sec * count)}',
+          action: '加入',
+          onAction: () => Navigator.pop(context, sec),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Slider(
+                value: sec,
+                min: 0.5,
+                max: 10,
+                divisions: 19,
+                onChanged: (v) => setDialog(() => sec = v),
+              ),
+              // 常用的幾個直接點，不用拉
+              Wrap(
+                spacing: 8,
+                alignment: WrapAlignment.center,
+                children: [
+                  for (final v in const [1.0, 2.0, 3.0, 5.0])
+                    OutlinedButton(
+                      style: OutlinedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        foregroundColor: sec == v ? kSelect : kText,
+                        side: BorderSide(
+                          color: sec == v ? kSelect : kClipBorder,
                         ),
-                        onPressed: () => setDialog(() => sec = v),
-                        child: Text('${v.toStringAsFixed(0)} 秒',
-                            style: const TextStyle(fontSize: 12)),
                       ),
-                  ],
-                ),
-              ],
-            ),
+                      onPressed: () => setDialog(() => sec = v),
+                      child: Text(
+                        '${v.toStringAsFixed(0)} 秒',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                ],
+              ),
+            ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, sec),
-              child: const Text('加入'),
-            ),
-          ],
         ),
       ),
     );
@@ -2346,8 +2340,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final want = (160 / c.length).clamp(1.0, 600.0);
     if (want <= _pxPerSec + 0.5) {
       // 已經放到最大還是太窄＝這一段真的太短
-      showHint(context, '這一段只有 ${c.length.toStringAsFixed(1)} 秒，'
-          '已經放到最大了');
+      showHint(
+        context,
+        '這一段只有 ${c.length.toStringAsFixed(1)} 秒，'
+        '已經放到最大了',
+      );
       return;
     }
     setState(() => _pxPerSec = want);
@@ -2387,7 +2384,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final src = _tl.sources[srcIndex];
     // 圖片素材的位元組本來就留了一份當縮圖（web 的 blob URL 讀不回來，
     // 只能靠它）；沒有才去讀檔
-    final raw = _cropOrigBytes[srcIndex] ??
+    final raw =
+        _cropOrigBytes[srcIndex] ??
         _thumbs[srcIndex]?.firstOrNull ??
         await readFileBytes(src.path);
     if (raw == null) {
@@ -2537,31 +2535,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 文字輸入對話框（新增與編輯共用）
-  Future<String?> _askText({String initial = ''}) {
-    final ctrl = TextEditingController(text: initial);
-    return showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('文字'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          maxLines: 2,
-          decoration: const InputDecoration(hintText: '輸入文字'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, ctrl.text.trim()),
-            child: Text(initial.isEmpty ? '加入' : '儲存'),
-          ),
-        ],
-      ),
-    );
-  }
+  Future<String?> _askText({String initial = ''}) => askInput(
+    context,
+    title: '文字',
+    initial: initial,
+    hint: '輸入文字',
+    maxLines: 2,
+    action: initial.isEmpty ? '加入' : '儲存',
+  );
 
   /// 點選已選取的文字片段 → 編輯內容與樣式
   Future<void> _editTextClip(TimelineClip clip) async {
@@ -3364,34 +3345,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final dur = math.min(8.0, math.max(3.0, _tl.duration));
     final rounds =
         <({String name, bool pre, bool drift, bool fetch, bool single})>[
-          (
-            name: '現況（全開）',
-            pre: true,
-            drift: true,
-            fetch: true,
-            single: false,
-          ),
-          (
-            name: '關掉交界預熱',
-            pre: false,
-            drift: true,
-            fetch: true,
-            single: false,
-          ),
-          (
-            name: '關掉脫節校正',
-            pre: true,
-            drift: false,
-            fetch: true,
-            single: false,
-          ),
-          (
-            name: '三個都關',
-            pre: false,
-            drift: false,
-            fetch: false,
-            single: false,
-          ),
+          (name: '現況（全開）', pre: true, drift: true, fetch: true, single: false),
+          (name: '關掉交界預熱', pre: false, drift: true, fetch: true, single: false),
+          (name: '關掉脫節校正', pre: true, drift: false, fetch: true, single: false),
+          (name: '三個都關', pre: false, drift: false, fetch: false, single: false),
           (
             name: '只養一顆播放器',
             pre: false,
@@ -3413,9 +3370,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       await Future<void>.delayed(const Duration(milliseconds: 600));
       final before = Diag.snapshot();
       await _play();
-      await Future<void>.delayed(
-        Duration(milliseconds: (dur * 1000).round()),
-      );
+      await Future<void>.delayed(Duration(milliseconds: (dur * 1000).round()));
       _pause();
       final d = Diag.since(before);
       results.add((
@@ -3439,8 +3394,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 結論：拿「影格落後的比例」比，比不出來就看是不是整台機器都在慢
     final b = StringBuffer()..writeln('=== 自動排查 ===');
     b.writeln('每輪播 ${dur.toStringAsFixed(0)} 秒，同一段素材');
-    double rate(({String name, int stalls, int samples, int jankB, int jankR}) r) =>
-        r.samples == 0 ? 0 : r.stalls / r.samples;
+    double rate(
+      ({String name, int stalls, int samples, int jankB, int jankR}) r,
+    ) => r.samples == 0 ? 0 : r.stalls / r.samples;
     for (final r in results) {
       b.writeln(
         '  ${r.name}：影格落後 ${r.stalls}/${r.samples} 次'
@@ -3459,8 +3415,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         '如果你看畫面還是覺得卡，那不是影格沒送上來的問題，'
         '請連同「裝置狀態」與「畫面」兩段一起回報',
       );
-    } else if (identical(best, base) ||
-        rate(best) > rate(base) * 0.6) {
+    } else if (identical(best, base) || rate(best) > rate(base) * 0.6) {
       b.writeln(
         '關掉哪一個都沒有明顯變好（最好的一輪還有 '
         '${(rate(best) * 100).round()}%）——'
@@ -3552,9 +3507,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     if (made == null) {
-      Diag.note(
-        '合成播放器組不起來：${CompPlayer.lastError ?? '沒有回報原因'}（退回原本的路徑）',
-      );
+      Diag.note('合成播放器組不起來：${CompPlayer.lastError ?? '沒有回報原因'}（退回原本的路徑）');
       // 舊的那顆不能留著：畫面上的影片圖層已經指到別處，繼續當它還在
       // 就是一片黑。放掉它，讓預覽退回逐片段播放器那條路
       if (_comp != null) {
@@ -3716,8 +3669,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 80ms 的容差：位置回報本來就有誤差，比對太嚴等於白加。
       // web 的 position 是 async 往返，問了反而多一次等待
       final now = kIsWeb ? null : await c.positionNow();
-      tr.log('查位置完成（片段 ${clip.id}）現在=${now?.inMilliseconds}ms '
-          '目標=${(want * 1000).round()}ms');
+      tr.log(
+        '查位置完成（片段 ${clip.id}）現在=${now?.inMilliseconds}ms '
+        '目標=${(want * 1000).round()}ms',
+      );
       if (now != null && (now.inMilliseconds / 1000 - want).abs() < 0.08) {
         tr.log('位置已對，跳過 seek');
         continue;
@@ -3767,8 +3722,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (lead.value.isBuffering) sawBuffering = true;
         final p = await lead.positionNow();
         if (p != null && p != p0) {
-          tr.log('影格開始滾動（位置從 ${p0?.inMilliseconds} 變成 '
-              '${p.inMilliseconds}ms）');
+          tr.log(
+            '影格開始滾動（位置從 ${p0?.inMilliseconds} 變成 '
+            '${p.inMilliseconds}ms）',
+          );
           break;
         }
       }
@@ -3854,12 +3811,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 素材規格填進環境區，看報告時不用再回頭問
     final src = _tl.sources.firstWhere(
       (s) => s.isVideo,
-      orElse: () => MediaSource(
-        path: '',
-        name: '',
-        kind: ClipKind.text,
-        duration: 0,
-      ),
+      orElse: () =>
+          MediaSource(path: '', name: '', kind: ClipKind.text, duration: 0),
     );
     if (src.isVideo) {
       tr.env('素材', '${src.w}x${src.h}');
@@ -3875,12 +3828,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 還在原檔上跑
     final vids = _tl.sources.where((s) => s.isVideo).toList();
     final ready = vids.where((s) => s.workPath != null).length;
-    tr.env('工作檔', '${vids.length} 支素材，$ready 支已轉好'
-        '${_prepping.isEmpty ? '' : '（${_prepping.length} 支轉檔中）'}');
+    tr.env(
+      '工作檔',
+      '${vids.length} 支素材，$ready 支已轉好'
+          '${_prepping.isEmpty ? '' : '（${_prepping.length} 支轉檔中）'}',
+    );
     unawaited(
-      MediaPrep.available.then(
-        (v) => tr.env('轉檔通道', v ? '可用' : '沒接上（一律用原檔）'),
-      ),
+      MediaPrep.available.then((v) => tr.env('轉檔通道', v ? '可用' : '沒接上（一律用原檔）')),
     );
     // 實際在播的那份檔到底長什麼樣。關鍵幀間隔那一欄直接決定拖曳順不順，
     // 以前只能從「有沒有轉好」猜，猜錯過很多次
@@ -3971,9 +3925,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   setSheet(() {});
                   await showDialog<void>(
                     context: context,
-                    builder: (context) => AlertDialog(
-                      title: const Text('排查結果'),
-                      content: SingleChildScrollView(
+                    builder: (context) => appDialog(
+                      context,
+                      title: '排查結果',
+                      width: 340,
+                      action: '複製',
+                      onAction: () {
+                        Clipboard.setData(ClipboardData(text: r));
+                        Navigator.pop(context);
+                      },
+                      cancel: '關閉',
+                      child: SingleChildScrollView(
                         child: Text(
                           r,
                           style: const TextStyle(
@@ -3983,19 +3945,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                           ),
                         ),
                       ),
-                      actions: [
-                        TextButton(
-                          onPressed: () {
-                            Clipboard.setData(ClipboardData(text: r));
-                            Navigator.pop(context);
-                          },
-                          child: const Text('複製'),
-                        ),
-                        TextButton(
-                          onPressed: () => Navigator.pop(context),
-                          child: const Text('關閉'),
-                        ),
-                      ],
                     ),
                   );
                 },
@@ -4009,27 +3958,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   '關掉試試：iOS 上兩顆 AVPlayer 同時解碼可能就是那個頓',
                   Diag.preheat,
                 ),
-                (
-                  '脫節校正（播放中自動 seek）',
-                  '關掉試試：每次校正都會讓畫面停一下',
-                  Diag.driftFix,
-                ),
+                ('脫節校正（播放中自動 seek）', '關掉試試：每次校正都會讓畫面停一下', Diag.driftFix),
                 ('背景抽幀', '關掉試試：抽幀會跟播放搶硬體解碼器', Diag.scrubPrefetch),
-                (
-                  'GPU 匯出合成',
-                  '浮水印在 GPU 上逐格疊（快）。成品有異狀時關掉退回舊路徑',
-                  Diag.ciExport,
-                ),
+                ('GPU 匯出合成', '浮水印在 GPU 上逐格疊（快）。成品有異狀時關掉退回舊路徑', Diag.ciExport),
                 (
                   '只養一顆播放器',
                   '打開試試：三顆 AVPlayer 一起養，系統會在它們之間排隊',
                   Diag.singlePlayer,
                 ),
-                (
-                  '合成播放器（整條時間軸交給系統）',
-                  '預設開。關掉＝退回一片段一顆播放器的舊路徑',
-                  Diag.compPlayer,
-                ),
+                ('合成播放器（整條時間軸交給系統）', '預設開。關掉＝退回一片段一顆播放器的舊路徑', Diag.compPlayer),
                 (
                   '系統影片圖層（要先開合成播放器）',
                   '預設開。關掉＝影格複製一份進 Flutter 材質再合成',
@@ -4319,8 +4256,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             _playing &&
             lead < 0.35 &&
             !_warmed.contains(clip.id)) {
-          PlaybackTrace.instance.log('預熱開播（片段 ${clip.id}，'
-              '距離進場 ${(lead * 1000).round()}ms）');
+          PlaybackTrace.instance.log(
+            '預熱開播（片段 ${clip.id}，'
+            '距離進場 ${(lead * 1000).round()}ms）',
+          );
         }
         if (!kIsWeb &&
             Diag.preheat.value &&
@@ -4755,7 +4694,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 重排的起點沿用原本第一段的位置，不會整條跳到 0
     final start = order.first.offset;
     _pause();
-
 
     final ok = await showModalBottomSheet<bool>(
       context: context,
@@ -5473,35 +5411,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       builder: (context) => PopScope(
         canPop: false,
         child: StatefulBuilder(
-          builder: (context, setDialog) => AlertDialog(
-            title: const Text('匯出中…'),
-            content: ValueListenableBuilder<double>(
+          builder: (context, setDialog) => appDialog(
+            context,
+            title: '匯出中…',
+            cancel: cancelRequested ? '取消中…' : '取消',
+            onCancel: cancelRequested
+                ? () {}
+                : () {
+                    setDialog(() => cancelRequested = true);
+                    engine.cancelExport();
+                  },
+            child: ValueListenableBuilder<double>(
               valueListenable: progress,
-              builder: (context, v, _) => Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  LinearProgressIndicator(value: v > 0 ? v : null),
-                  const SizedBox(height: 12),
-                  Text('${(v * 100).toStringAsFixed(0)} %'),
-                  const SizedBox(height: 4),
-                  Text(
-                    etaText(v),
-                    style: const TextStyle(fontSize: 12, color: kTextDim),
-                  ),
-                ],
-              ),
+              builder: (context, v, _) =>
+                  dialogProgress(context, v, note: etaText(v)),
             ),
-            actions: [
-              TextButton(
-                onPressed: cancelRequested
-                    ? null
-                    : () {
-                        setDialog(() => cancelRequested = true);
-                        engine.cancelExport();
-                      },
-                child: Text(cancelRequested ? '取消中…' : '取消'),
-              ),
-            ],
           ),
         ),
       ),
@@ -5515,11 +5439,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     var cancelled = false;
     try {
       final (outW, outH) = _exportDims();
-      final (rawW, rawH) =
-          computeCanvasSize(_tl, _resolution, _canvasRatio, _customAspect);
+      final (rawW, rawH) = computeCanvasSize(
+        _tl,
+        _resolution,
+        _canvasRatio,
+        _customAspect,
+      );
       if (rawW != outW || rawH != outH) {
-        Diag.note('快速匯出：輸出 ${rawW}x$rawH → ${outW}x$outH'
-            '（標準畫質、全部影片有工作檔）');
+        Diag.note(
+          '快速匯出：輸出 ${rawW}x$rawH → ${outW}x$outH'
+          '（標準畫質、全部影片有工作檔）',
+        );
       }
       // 快速匯出：條件成立時影片來源直接用工作檔（見 fastExportSources）
       final (exportSources, fastSwapped) = fastExportSources(
@@ -5590,7 +5520,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     // 這次實際跑多久 → 更新這台機器的速度係數，下次預估才準
     if (ok) {
-      final (ow, oh) = computeCanvasSize(_tl, _resolution, _canvasRatio, _customAspect);
+      final (ow, oh) = computeCanvasSize(
+        _tl,
+        _resolution,
+        _canvasRatio,
+        _customAspect,
+      );
       await ExportSpeed.record(
         outW: ow,
         outH: oh,
@@ -5705,17 +5640,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
 
     Widget group(List<Widget> children) => Container(
-          clipBehavior: Clip.antiAlias,
-          decoration: BoxDecoration(
-            color: kBg,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: kBorder),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: children,
-          ),
-        );
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: kBg,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: kBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: children,
+      ),
+    );
 
     final action = await showDialog<String>(
       context: context,
@@ -5735,8 +5670,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     group([
                       Container(
                         alignment: Alignment.center,
-                        padding:
-                            const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                        padding: const EdgeInsets.symmetric(
+                          vertical: 12,
+                          horizontal: 16,
+                        ),
                         child: const Text(
                           '保留草稿之後可以繼續剪',
                           style: TextStyle(fontSize: 12, color: kTextDim),
@@ -5751,9 +5688,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       ),
                     ]),
                     const SizedBox(height: 8),
-                    group([
-                      row(context, '繼續編輯', first: true),
-                    ]),
+                    group([row(context, '繼續編輯', first: true)]),
                   ],
                 ),
               ),
@@ -5785,14 +5720,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         appBar: _fullscreen
             ? null
             : AppBar(
-          // 標題文字拿掉了，但「長按開播放診斷」這個隱藏入口要留著：
-          // 改成一塊透明的感應區佔著原本標題的位置，看不到但按得到
-          title: GestureDetector(
-            onLongPress: _openTrace,
-            behavior: HitTestBehavior.opaque,
-            child: const SizedBox(width: 200, height: kToolbarHeight),
-          ),
-        ),
+                // 標題文字拿掉了，但「長按開播放診斷」這個隱藏入口要留著：
+                // 改成一塊透明的感應區佔著原本標題的位置，看不到但按得到
+                title: GestureDetector(
+                  onLongPress: _openTrace,
+                  behavior: HitTestBehavior.opaque,
+                  child: const SizedBox(width: 200, height: kToolbarHeight),
+                ),
+              ),
         // 素材還在備就整頁擋著等它做完。使用者的原話是「既然一定要跑
         // 讀取，那請改成先跑一下讀取再進入，比進入後閃東閃西讀取還好」
         body: !_ready || _prepGate
@@ -6017,17 +5952,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   Widget _fsBtn(IconData icon, VoidCallback onTap) => InkWell(
-        borderRadius: BorderRadius.circular(999),
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.45),
-            shape: BoxShape.circle,
-          ),
-          child: Icon(icon, size: 22, color: kText),
-        ),
-      );
+    borderRadius: BorderRadius.circular(999),
+    onTap: onTap,
+    child: Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.45),
+        shape: BoxShape.circle,
+      ),
+      child: Icon(icon, size: 22, color: kText),
+    ),
+  );
 
   /// 預覽下方的控制列（CapCut 式）：播放鈕左、時間碼中、復原/重做右
   Widget _buildControlBar() {
@@ -6303,8 +6238,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                   width: _comp!.width,
                                                   height: _comp!.height,
                                                   child: Texture(
-                                                    textureId:
-                                                        _comp!.textureId,
+                                                    textureId: _comp!.textureId,
                                                   ),
                                                 ),
                                               ),
@@ -6640,8 +6574,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                       );
                                                       return ui
                                                           .ImageFilter.shader(
-                                                            sh,
-                                                          );
+                                                        sh,
+                                                      );
                                                     } catch (_) {
                                                       return null;
                                                     }
@@ -6836,7 +6770,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           TextMark(text: src.name);
                                       // 短邊基準，跟匯出的渲染器同一套
                                       //（用寬的話橫式畫布的字會比成品大）
-                                      final fontSize = st.sizeFrac *
+                                      final fontSize =
+                                          st.sizeFrac *
                                           math.min(w, h) *
                                           c.scale;
                                       final style = TextStyle(
@@ -7014,8 +6949,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   // 吃掉，看起來就像選取整個不見了。
                                   // 把框夾回可見範圍：至少沿著邊還看得
                                   // 到它在哪、也還抓得到它拖回來
-                                  final canvasRect =
-                                      Offset.zero & Size(w, h);
+                                  final canvasRect = Offset.zero & Size(w, h);
                                   if (selRect != null &&
                                       !selRect.overlaps(canvasRect)) {
                                     // 整個在外面：連一條邊都沒有，
@@ -7432,9 +7366,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       // 浮水印的選取框：畫在裁切外面（上面那個 ClipRect
                       // 的兄弟），部件拖出畫面時內容被裁掉、框照畫在
                       // 真實位置，才知道東西跑到哪去了
-                      Positioned.fill(
-                        child: WmFrameOverlay(_wmFrameInfo),
-                      ),
+                      Positioned.fill(child: WmFrameOverlay(_wmFrameInfo)),
                     ],
                   ),
                 ),
@@ -7708,8 +7640,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             t.rotation = _snapAngle(_wrapDeg(_pvBaseRotText + dDeg));
           }
           if (_pvHitLogo && _settings.logo.enabled) {
-            _settings.logo.rotation =
-                _snapAngle(_wrapDeg(_pvBaseRotLogo + dDeg));
+            _settings.logo.rotation = _snapAngle(
+              _wrapDeg(_pvBaseRotLogo + dDeg),
+            );
           }
         } else {
           final c = _selClipById(_sel);
@@ -7806,9 +7739,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     total: _prepTotal,
     fraction: _prepFraction,
     ready: _ready,
-    onSkip: _prepEscapeReady
-        ? () => setState(() => _prepSkipped = true)
-        : null,
+    onSkip: _prepEscapeReady ? () => setState(() => _prepSkipped = true) : null,
   );
 
   Widget _canvasHint() {
@@ -7830,35 +7761,34 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   color: Colors.white.withValues(alpha: 0.10),
                   borderRadius: BorderRadius.circular(kTagRadius),
                 ),
-                child: const Icon(Icons.fullscreen,
-                    size: 15, color: kIcon),
+                child: const Icon(Icons.fullscreen, size: 15, color: kIcon),
               ),
             ),
             InkWell(
-          borderRadius: BorderRadius.circular(kTagRadius),
-          onTap: _openRatioSheet,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.10),
               borderRadius: BorderRadius.circular(kTagRadius),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.aspect_ratio, size: 12, color: kTextDim),
-                const SizedBox(width: 4),
-                Text(
-                  _ratioLabel,
-                  style: const TextStyle(
-                    fontSize: 10.5,
-                    color: kIcon,
-                    height: 1.2,
-                  ),
+              onTap: _openRatioSheet,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(kTagRadius),
                 ),
-              ],
-            ),
-          ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.aspect_ratio, size: 12, color: kTextDim),
+                    const SizedBox(width: 4),
+                    Text(
+                      _ratioLabel,
+                      style: const TextStyle(
+                        fontSize: 10.5,
+                        color: kIcon,
+                        height: 1.2,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ],
         ),
@@ -8331,42 +8261,33 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 彈窗裡的一列選項：標題＋輸出尺寸副標＋選中勾勾
   /// 輸出畫面比例：置中彈窗，一行一個選項（附輸出尺寸），點了套用關窗
   void _openRatioSheet() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('畫面比例'),
-        contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
-        content: SizedBox(
-          width: 270,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final (i, r) in CanvasRatio.values.indexed)
-                Builder(
-                  builder: (context) {
-                    final (w, h) = computeCanvasSize(_tl, _resolution, r);
-                    return optionRow(
-  context: context,
-                      title: r.label,
-                      subtitle: '$w×$h',
-                      selected: _canvasRatio == r,
-                      first: i == 0,
-                      onTap: () {
-                        setState(() {
-                          _canvasRatio = r;
-                          // 手動挑了比例＝不要裁切算出來的那個了
-                          _customAspect = null;
-                        });
-                        _saveDraft();
-                        Navigator.pop(context);
-                      },
-                    );
-                  },
-                ),
-            ],
+    showOptions<void>(
+      context,
+      title: '畫面比例',
+      options: (context) => [
+        for (final (i, r) in CanvasRatio.values.indexed)
+          Builder(
+            builder: (context) {
+              final (w, h) = computeCanvasSize(_tl, _resolution, r);
+              return optionRow(
+                context: context,
+                title: r.label,
+                subtitle: '$w×$h',
+                selected: _canvasRatio == r,
+                first: i == 0,
+                onTap: () {
+                  setState(() {
+                    _canvasRatio = r;
+                    // 手動挑了比例＝不要裁切算出來的那個了
+                    _customAspect = null;
+                  });
+                  _saveDraft();
+                  Navigator.pop(context);
+                },
+              );
+            },
           ),
-        ),
-      ),
+      ],
     );
   }
 
@@ -8673,25 +8594,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       barrierDismissible: false,
       builder: (dialogContext) => PopScope(
         canPop: false,
-        child: AlertDialog(
-          title: const Text('正在倒轉…'),
-          content: ValueListenableBuilder<double>(
+        child: appDialog(
+          dialogContext,
+          title: '正在倒轉…',
+          onCancel: () => engine.cancelExport(),
+          child: ValueListenableBuilder<double>(
             valueListenable: progress,
-            builder: (context, v, _) => Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                LinearProgressIndicator(value: v > 0 ? v : null),
-                const SizedBox(height: 12),
-                Text('${(v * 100).toStringAsFixed(0)} %'),
-              ],
-            ),
+            builder: (context, v, _) => dialogProgress(context, v),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => engine.cancelExport(),
-              child: const Text('取消'),
-            ),
-          ],
         ),
       ),
     ).whenComplete(() => dialogOpen = false);
@@ -9189,9 +9099,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 1080p 工作檔時輸出比它大也只是白白放大。
   /// 選高畫質以上＝使用者自己要畫質，照舊用原檔原尺寸
   (int, int) _exportDims() {
-    var (w, h) =
-        computeCanvasSize(_tl, _resolution, _canvasRatio, _customAspect);
-    final fastQ = _qualityEff == ExportQuality.standard ||
+    var (w, h) = computeCanvasSize(
+      _tl,
+      _resolution,
+      _canvasRatio,
+      _customAspect,
+    );
+    final fastQ =
+        _qualityEff == ExportQuality.standard ||
         _qualityEff == ExportQuality.low;
     if (!fastQ || math.min(w, h) <= 1080) return (w, h);
     final videos = _tl.sources.where((s) => s.isVideo).toList();
@@ -9340,90 +9255,75 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 畫質：置中彈窗。副標拿掉，改成右邊直接列這個專案各檔位的檔案大小——
   /// 「極高」跟「最高」用形容詞永遠比不出來，數字一眼就分得出
   void _openQualitySheet() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('畫質'),
-        contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
-        content: SizedBox(
-          width: 270,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final (i, q) in qualityOrder.indexed)
-                optionRow(
-  context: context,
-                  title: q.label,
-                  subtitle: q.note,
-                  // 自動挑到的那一檔＝壓到看不出跟原素材有差的點。
-                  // 不寫「視覺無損」是因為素材超過上限時會停在極高，
-                  // 那時它並不是無損，但仍然是這裡最該選的一檔
-                  badge: _qualityAuto && _srcKbps > 0 && _qualityEff == q
-                      ? '推薦'
-                      : null,
-                  trailing:
-                      '約 ${_estMb(q).clamp(1, 1e9).toStringAsFixed(0)} MB',
-                  selected: _qualityEff == q,
-                  first: i == 0,
-                  onTap: () {
-                    setState(() {
-                      _quality = q;
-                      _qualityAuto = false; // 手動選過就不再自動改
-                    });
-                    _saveDraft();
-                    Navigator.pop(context);
-                  },
-                ),
-            ],
+    showOptions<void>(
+      context,
+      title: '畫質',
+      options: (context) => [
+        for (final (i, q) in qualityOrder.indexed)
+          optionRow(
+            context: context,
+            title: q.label,
+            subtitle: q.note,
+            // 自動挑到的那一檔＝壓到看不出跟原素材有差的點。
+            // 不寫「視覺無損」是因為素材超過上限時會停在極高，
+            // 那時它並不是無損，但仍然是這裡最該選的一檔
+            badge: _qualityAuto && _srcKbps > 0 && _qualityEff == q
+                ? '推薦'
+                : null,
+            trailing: '約 ${_estMb(q).clamp(1, 1e9).toStringAsFixed(0)} MB',
+            selected: _qualityEff == q,
+            first: i == 0,
+            onTap: () {
+              setState(() {
+                _quality = q;
+                _qualityAuto = false; // 手動選過就不再自動改
+              });
+              _saveDraft();
+              Navigator.pop(context);
+            },
           ),
-        ),
-      ),
+      ],
     );
   }
 
   /// 解析度：置中彈窗（跟比例同款直列）
   void _openResolutionSheet() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('解析度'),
-        contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
-        content: SizedBox(
-          width: 270,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final (i, r) in ExportResolution.values.indexed)
-                Builder(
-                  builder: (context) {
-                    final (w, h) = computeCanvasSize(_tl, r, _canvasRatio, _customAspect);
-                    final (ow, oh) = computeCanvasSize(
-                      _tl,
-                      ExportResolution.original,
-                      _canvasRatio,
-                    );
-                    // 素材本身就比這一級小的時候，縮不下去＝跟原片同尺寸，
-                    // 這種情況直接講白，不要讓人以為選了沒反應
-                    final same =
-                        r != ExportResolution.original && w == ow && h == oh;
-                    return optionRow(
-  context: context,
-                      title: r.label,
-                      subtitle: same ? '$w×$h·原片就這麼大，不會再縮' : '$w×$h·${r.hint}',
-                      selected: _resolution == r,
-                      first: i == 0,
-                      onTap: () {
-                        setState(() => _resolution = r);
-                        _saveDraft();
-                        Navigator.pop(context);
-                      },
-                    );
-                  },
-                ),
-            ],
+    showOptions<void>(
+      context,
+      title: '解析度',
+      options: (context) => [
+        for (final (i, r) in ExportResolution.values.indexed)
+          Builder(
+            builder: (context) {
+              final (w, h) = computeCanvasSize(
+                _tl,
+                r,
+                _canvasRatio,
+                _customAspect,
+              );
+              final (ow, oh) = computeCanvasSize(
+                _tl,
+                ExportResolution.original,
+                _canvasRatio,
+              );
+              // 素材本身就比這一級小的時候，縮不下去＝跟原片同尺寸，
+              // 這種情況直接講白，不要讓人以為選了沒反應
+              final same = r != ExportResolution.original && w == ow && h == oh;
+              return optionRow(
+                context: context,
+                title: r.label,
+                subtitle: same ? '$w×$h·原片就這麼大，不會再縮' : '$w×$h·${r.hint}',
+                selected: _resolution == r,
+                first: i == 0,
+                onTap: () {
+                  setState(() => _resolution = r);
+                  _saveDraft();
+                  Navigator.pop(context);
+                },
+              );
+            },
           ),
-        ),
-      ),
+      ],
     );
   }
 }
