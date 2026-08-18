@@ -7561,11 +7561,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   double _tlViewportH(double maxH) {
     const stride = 54.0 * kTlTrackScale + 4; // trackH + gap
     final rowsTotal = _tl.usedTracks + 1 + _extraBlankTracks;
-    final rows = math.min(rowsTotal, 4);
     final wmExtra = _settings.hasAnyMark ? 24.0 + 4 : 0.0;
-    // 上下 padding 14＋刻度尺 22＋尺與軌道間距 10＋尾巴 4
-    final content = 14 + 22 + 10 + wmExtra + rows * stride + 4 + 14;
-    return math.min(content, (maxH - kTlPanStrip).clamp(120.0, 1e9));
+    // 頂部 padding 14＋刻度尺 22＋尺與軌道間距 10
+    const head = 14.0 + 22 + 10;
+    // 放得下＝整份內容含底部邊距（14）與尾巴（4），沒有捲動。
+    // 放不下＝可視高度剛好切在第四排的結尾——底部邊距「不能」算進來，
+    // 算進來的那 18px 會變成第五排探出頭（裝置實測：最下面被裁一截）
+    final h = rowsTotal <= 4
+        ? head + wmExtra + rowsTotal * stride + 4 + 14
+        : head + wmExtra + 4 * stride;
+    return math.min(h, (maxH - kTlPanStrip).clamp(120.0, 1e9));
   }
 
   Widget _buildTimelineTab() {
