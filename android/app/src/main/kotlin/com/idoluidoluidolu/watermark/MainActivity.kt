@@ -138,7 +138,7 @@ class MainActivity : FlutterActivity() {
                     } else {
                         "?"
                     }
-                    result(
+                    result.success(
                         mapOf(
                             "thermal" to t,
                             "lowPower" to pm.isPowerSaveMode,
@@ -157,7 +157,7 @@ class MainActivity : FlutterActivity() {
                         as android.app.ActivityManager
                 val sys = android.app.ActivityManager.MemoryInfo()
                 am.getMemoryInfo(sys)
-                result(
+                result.success(
                     mapOf(
                         "usedMb" to mi.totalPss / 1024.0,
                         "freeMb" to sys.availMem / (1024.0 * 1024.0),
@@ -250,23 +250,28 @@ class MainActivity : FlutterActivity() {
 
             val item = MediaItem.fromUri(android.net.Uri.fromFile(java.io.File(src)))
             // 短邊縮到 1080：直式拿到 1080x1920、橫式 1920x1080，
-            // 兩種方向的解碼成本一樣（縮長邊的話直式會糊掉）
+            // 兩種方向的解碼成本一樣（縮長邊的話直式會糊掉）。
+            //
+            // media3 只給 createForHeight／createForWidthAndHeight，
+            // 沒有「照短邊縮」的工廠，所以自己讀原始尺寸算一次。
+            // 讀不到就退回 createForHeight（橫式的常見情況剛好正確）
+            val effects =
+                sizeForShortSide(src, shortSide)?.let { (w, h) ->
+                    Presentation.createForWidthAndHeight(
+                        w,
+                        h,
+                        Presentation.LAYOUT_SCALE_TO_FIT,
+                    )
+                } ?: Presentation.createForHeight(shortSide)
             val edited =
                 EditedMediaItem.Builder(item)
-                    .setEffects(
-                        Effects(
-                            emptyList(),
-                            listOf(Presentation.createForShortSide(shortSide)),
-                        )
-                    )
+                    .setEffects(Effects(emptyList(), listOf(effects)))
                     .build()
             val composition =
                 Composition.Builder(EditedMediaItemSequence.Builder(edited).build())
                     // HDR → SDR 用 OpenGL 的色調映射（裝置不支援時
                     // Transformer 自己會退到別的做法）
-                    .setHdrMode(
-                        Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL_TONE_MAPPER
-                    )
+                    .setHdrMode(Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL)
                     .build()
 
             prep = transformer
@@ -292,6 +297,42 @@ class MainActivity : FlutterActivity() {
             result.success(null)
         }
     }
+
+    /// 把素材縮成「短邊 = [shortSide]」之後的寬高（已經照轉向換算）。
+    /// 讀不到尺寸就回 null，呼叫端自己有退路。
+    /// 本來就比短邊小的素材不放大——放大不會更清楚，只是白編碼
+    private fun sizeForShortSide(src: String, shortSide: Int): Pair<Int, Int>? {
+        val r = MediaMetadataRetriever()
+        try {
+            r.setDataSource(src)
+            val w =
+                r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                    ?.toIntOrNull() ?: return null
+            val h =
+                r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                    ?.toIntOrNull() ?: return null
+            val rot =
+                r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                    ?.toIntOrNull() ?: 0
+            if (w < 2 || h < 2) return null
+            // 轉向 90/270 的素材，顯示出來的寬高是相反的
+            val dw = if (rot == 90 || rot == 270) h else w
+            val dh = if (rot == 90 || rot == 270) w else h
+            val short = minOf(dw, dh)
+            if (short <= shortSide) return Pair(even(dw), even(dh))
+            val k = shortSide.toDouble() / short
+            return Pair(even((dw * k).toInt()), even((dh * k).toInt()))
+        } catch (_: Throwable) {
+            return null
+        } finally {
+            try {
+                r.release()
+            } catch (_: Throwable) {}
+        }
+    }
+
+    /// 編碼器只吃偶數邊長
+    private fun even(v: Int): Int = maxOf(2, v / 2 * 2)
 
     override fun onDestroy() {
         retriever?.release()
