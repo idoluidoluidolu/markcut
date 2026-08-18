@@ -1037,7 +1037,7 @@ final class AtomicFlag {
             trackID: seg.trackID, still: nil, transform: t,
             srcHeight: seg.size.height, start: seg.range.start.seconds,
             end: seg.range.end.seconds, fadeIn: seg.fadeIn,
-            fadeOut: seg.fadeOut, colorMatrix: seg.color)
+            fadeOut: seg.fadeOut, colorMatrix: seg.color, z: seg.z)
         ))
         continue
       }
@@ -1136,7 +1136,8 @@ final class AtomicFlag {
             end: st["end"] as? Double ?? 0,
             fadeIn: st["fadeIn"] as? Double ?? 0,
             fadeOut: st["fadeOut"] as? Double ?? 0,
-            colorMatrix: st["color"] as? [Double])
+            colorMatrix: st["color"] as? [Double],
+            z: st["track"] as? Int ?? 0)
         ))
       }
       // z 序排定（同 z 保持進籃順序）

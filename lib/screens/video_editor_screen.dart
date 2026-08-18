@@ -318,10 +318,31 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   // 時間軸雙指縮放：在整個分頁層級偵測，空白處一樣能捏
   bool _tlPinching = false;
   final Map<int, Offset> _pinchPts = {};
+
+  /// 每根指頭最後有動靜的時間。抬手事件偶爾送不到（元件在手勢中途
+  /// 被換掉），殘留的鬼指標會讓之後每一次單指觸碰都被誤判成捏合，
+  /// 時間軸從此滑不動（實測回報「暫停後卡住」）。太舊的進場先清掉
+  final Map<int, DateTime> _pinchSeen = {};
   double? _pinchBaseDist;
   double _pinchBasePx = 0;
 
+  void _resetTlPinch() {
+    _pinchPts.clear();
+    _pinchSeen.clear();
+    _pinchBaseDist = null;
+    if (_tlPinching && mounted) setState(() => _tlPinching = false);
+  }
+
   void _pinchDown(PointerDownEvent e) {
+    final now = DateTime.now();
+    _pinchPts.removeWhere((id, _) {
+      final seen = _pinchSeen[id];
+      final stale =
+          seen == null || now.difference(seen).inSeconds > 15;
+      if (stale) _pinchSeen.remove(id);
+      return stale;
+    });
+    _pinchSeen[e.pointer] = now;
     _pinchPts[e.pointer] = e.position;
     // _lifting 只在素材「真的被拖動」時才是 true（見 timeline 的 armed 判定）。
     // 手指剛按上去還沒移動就不算，這樣第二指下來仍然轉得成縮放——
@@ -339,6 +360,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _pinchMove(PointerMoveEvent e) {
     if (!_pinchPts.containsKey(e.pointer)) return;
+    _pinchSeen[e.pointer] = DateTime.now();
     _pinchPts[e.pointer] = e.position;
     if (_tlPinching && _pinchPts.length >= 2) {
       final p = _pinchPts.values.toList();
@@ -355,6 +377,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _pinchUp(int pointer) {
     _pinchPts.remove(pointer);
+    _pinchSeen.remove(pointer);
     if (_tlPinching && _pinchPts.length < 2) {
       _pinchBaseDist = null;
       setState(() => _tlPinching = false);
@@ -853,6 +876,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         duration: const Duration(seconds: 6),
       );
     });
+    // 分頁一換就把捏合簿記歸零：手勢中途換分頁會讓抬手事件沒人收
+    _tabs.addListener(_resetTlPinch);
     _loadSnapPref(); // 記住上次磁吸開還關
     _loadTidyPref(); // 記住上次自動整理開還關
     if (widget.draft != null) {
@@ -3111,17 +3136,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _tabs.animateTo(1);
   }
 
-  /// 複製浮水印：把浮水印「文字」複製成獨立的時間軸文字素材——
-  /// 等於第二個浮水印，可以有自己的時間範圍、位置、大小
+  /// 複製浮水印：整組（文字＋Logo）放進剪貼簿，讓使用者自己決定
+  /// 貼在哪一軌哪個時間點——以前是直接生一個片段到時間軸上
+  ///（實測回報「複製不要直接貼上」）
   void _duplicateWatermark() {
     if (!_settings.hasAnyMark) {
       showHint(context, '浮水印還是空的，沒東西可以複製', error: true);
       return;
     }
-    _pause();
-    _pushUndo();
-    // 整組複製（文字＋Logo 都帶著）成獨立的浮水印素材，
-    // 有自己的時間範圍、位置、大小，跟原本的互不影響
+    // 來源先建好（樣式的完整拷貝）；片段只進剪貼簿，
+    // 貼上時 _pasteClipboard 會再為它複製一份樣式來源
     final srcIndex = _tl.sources.length;
     _tl.sources.add(
       MediaSource(
@@ -3136,20 +3160,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
     final start = _wmStart;
     final len = (_wmEndEff - start).clamp(0.5, 3600.0);
-    final clip = TimelineClip(
-      id: _tl.nextId(),
+    _clipboard = TimelineClip(
+      id: -1, // 不在時間軸上；貼上時會配新號
       sourceIndex: srcIndex,
       trimStart: 0,
       trimEnd: len,
       offset: start,
-      track: _tl.firstFreeTrack(), // 放到新的一層，不壓到現有素材
+      track: _tl.firstFreeTrack(),
     );
-    setState(() {
-      _tl.clips.add(clip);
-      _sel = clip.id;
-      _wmSel = false;
-    });
-    showHint(context, '已複製整組浮水印（文字＋圖片），時間和位置都可獨立調整');
+    setState(() {}); // 「貼上」鈕亮起來
+    showHint(context, '已複製整組浮水印，按「貼上」放到想要的位置');
   }
 
   // ===== 播放 =====
@@ -5955,11 +5975,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   }
 
                                   // 暖身用的隱形影片永遠壓在最底下（見下面的
-                                  // 預掛載），馬賽克永遠在最上面——它是對
-                                  // 「合成後的畫面」做的效果，匯出端也是最後
-                                  // 才套，跟著軌道排的話會糊不到上層的東西
+                                  // 預掛載）。馬賽克照軌道排：它只糊「它下面」
+                                  // 的層，疊在馬賽克上面的素材不受影響
+                                  //（匯出兩條路同一套規則）
                                   const warmTrack = -999;
-                                  const mosaicTrack = 999;
 
                                   // 影片圖層（由下層往上疊 = 真 PiP）
                                   final vids = _tl.videosAt(_position);
@@ -6245,9 +6264,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     final src = _tl.sourceOf(c);
                                     if (src.kind == ClipKind.mosaic) {
                                       final r = layerBox(c, 1.0);
-                                      addHit(mosaicTrack, c.id, r);
+                                      addHit(c.track, c.id, r);
                                       addLayer(
-                                        mosaicTrack,
+                                        c.track,
                                         Positioned.fromRect(
                                           rect: r,
                                           child: GestureDetector(
@@ -6548,8 +6567,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       final st =
                                           src.textStyle ??
                                           TextMark(text: src.name);
-                                      final fontSize =
-                                          st.sizeFrac * w * c.scale;
+                                      // 短邊基準，跟匯出的渲染器同一套
+                                      //（用寬的話橫式畫布的字會比成品大）
+                                      final fontSize = st.sizeFrac *
+                                          math.min(w, h) *
+                                          c.scale;
                                       final style = TextStyle(
                                         fontFamily: st.fontFamily,
                                         fontSize: fontSize,
@@ -6581,10 +6603,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         ),
                                         textDirection: TextDirection.ltr,
                                       )..layout();
+                                      // 框含底色的留白：Positioned 用的是
+                                      // 「整個盒子」的左上角，不把 padding
+                                      // 算進來的話，開底色的瞬間文字會被
+                                      // padding 推離錨點（實測回報「加底色
+                                      // 位置整個跑掉」）
+                                      final padH = st.bg
+                                          ? fontSize * 0.35 * st.bgPad
+                                          : 0.0;
+                                      final padV = st.bg
+                                          ? fontSize * 0.18 * st.bgPad
+                                          : 0.0;
                                       final r = Rect.fromCenter(
                                         center: Offset(c.px * w, c.py * h),
-                                        width: painter.width,
-                                        height: painter.height,
+                                        width: painter.width + padH * 2,
+                                        height: painter.height + padV * 2,
                                       );
                                       Widget textW(TextStyle s2) => Text(
                                         src.name,

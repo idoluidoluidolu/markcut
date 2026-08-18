@@ -158,7 +158,8 @@ class NativeExport {
         });
       }
     }
-    // 馬賽克照軌道由下而上疊（跟 FFmpeg 同順序）
+    // 馬賽克照軌道由下而上；Swift 端會照 z 交錯進圖層堆疊，
+    // 只糊排在它下面的層（跟預覽、FFmpeg 同一套規則）
     mosaics.sort((a, b) => (a['track'] as int).compareTo(b['track'] as int));
 
     // 純聲音素材（配樂）：可以跟影片重疊，位置照時間軸絕對秒數

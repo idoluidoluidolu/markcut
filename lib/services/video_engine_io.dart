@@ -489,15 +489,16 @@ Future<String> _buildCommand(
     return t != 0 ? t : (clipOrder[a.id] ?? 0).compareTo(clipOrder[b.id] ?? 0);
   }
 
-  // 影片與圖片／文字／浮水印排在同一條 z 序裡，完全照軌道來（跟預覽一致）。
-  // 以前是分兩批、圖片文字永遠疊在影片上面，時間軸上把圖片搬到影片下面
-  // 也沒有用。馬賽克不在這裡：它是對合成後的畫面做的效果，最後才套
+  // 影片／圖片／文字／浮水印／馬賽克全部排在同一條 z 序裡，完全照
+  // 軌道來（跟預覽一致）。馬賽克是對「到它為止的合成畫面」做的效果：
+  // 排在它上面的層不受影響（以前它永遠最後套，會把上層一起打碼）
   final layerClips =
       segClips
           .where(
             (c) =>
                 spec.sources[c.sourceIndex].isVideo ||
-                spec.sources[c.sourceIndex].isOverlay,
+                spec.sources[c.sourceIndex].isOverlay ||
+                spec.sources[c.sourceIndex].kind == ClipKind.mosaic,
           )
           .toList()
         ..sort(cmpLayer);
@@ -673,30 +674,13 @@ Future<String> _buildCommand(
     }
   }
 
-  for (final c in layerClips) {
-    final k = layerN++;
-    if (spec.sources[c.sourceIndex].isVideo) {
-      writeVideoLayer(c, k);
-    } else {
-      writeStillLayer(c, k);
-    }
-    cur = 'ov$k';
-  }
-
   // ===== 馬賽克：把區域裁下來、縮小再放大（鄰近取樣）疊回去 =====
-  // 全部是 LGPL 濾鏡（split/crop/scale/overlay）。放在浮水印之前，
-  // 馬賽克不會把浮水印一起打碼
-  final mosaicClips =
-      segClips
-          .where((c) => spec.sources[c.sourceIndex].kind == ClipKind.mosaic)
-          .toList()
-        ..sort(cmpLayer);
-  for (final c in mosaicClips) {
-    final k = layerN++;
+  // 全部是 LGPL 濾鏡（split/crop/scale/overlay）
+  void writeMosaicLayer(TimelineClip c, int k) {
     final start = c.offset / sp;
     final end = c.end / sp;
     final seen = visible(start, end);
-    if (seen == null) continue; // 這一段裡看不到
+    if (seen == null) return; // 這一段裡看不到
     final (a, b) = seen;
     var (w2, h2, x, y) = layerBox(c, 1.0);
     // crop 超出畫布會直接報錯，夾回來
@@ -796,6 +780,20 @@ Future<String> _buildCommand(
       }
     }
     cur = 'mz$k';
+  }
+
+  for (final c in layerClips) {
+    final k = layerN++;
+    final kind = spec.sources[c.sourceIndex].kind;
+    if (kind == ClipKind.mosaic) {
+      writeMosaicLayer(c, k); // cur 在裡面接手
+    } else if (spec.sources[c.sourceIndex].isVideo) {
+      writeVideoLayer(c, k);
+      cur = 'ov$k';
+    } else {
+      writeStillLayer(c, k);
+      cur = 'ov$k';
+    }
   }
 
   // 浮水印疊最上面（只在它的時間範圍內顯示）
