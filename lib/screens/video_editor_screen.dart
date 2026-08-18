@@ -5482,7 +5482,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   // ===== 畫面 =====
 
-  /// 離開保護：問清楚要留草稿還是捨棄（C 款直排大按鈕）
+  /// 離開保護：問清楚要留草稿還是捨棄（D 款 iOS 動作清單風）
   /// 返回：先退回上一個分頁（匯出→浮水印→剪輯），
   /// 已經在剪輯分頁才問要不要離開專案
   void _handleBack() {
@@ -5499,80 +5499,90 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   Future<void> _confirmLeave() async {
+    // D 款：iOS 動作清單風。說明當清單的頭、選項一列一列排，
+    // 捨棄用紅字降權重；「繼續編輯」自己一塊在最下面
+    Widget row(
+      BuildContext context,
+      String label, {
+      Color color = kText,
+      String? pop,
+      bool first = false,
+    }) {
+      return InkWell(
+        onTap: () => Navigator.pop(context, pop),
+        child: Container(
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          decoration: first
+              ? null
+              : const BoxDecoration(
+                  border: Border(top: BorderSide(color: kPanelHi)),
+                ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 14.5,
+              fontWeight: FontWeight.w600,
+              color: color,
+            ),
+          ),
+        ),
+      );
+    }
+
+    Widget group(List<Widget> children) => Container(
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+            color: kBg,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: kBorder),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: children,
+          ),
+        );
+
     final action = await showDialog<String>(
       context: context,
-      builder: (context) => Dialog(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: kBorder),
-        ),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: kDialogWidth),
+      builder: (context) => SafeArea(
+        child: Align(
+          alignment: Alignment.bottomCenter,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 26, 20, 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Text(
-                  '離開專案？',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 15.5,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.3,
-                    color: kText,
-                  ),
+            padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 360),
+              child: Material(
+                color: Colors.transparent,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    group([
+                      Container(
+                        alignment: Alignment.center,
+                        padding:
+                            const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                        child: const Text(
+                          '保留草稿之後可以繼續剪',
+                          style: TextStyle(fontSize: 12, color: kTextDim),
+                        ),
+                      ),
+                      row(context, '保留草稿', pop: 'save'),
+                      row(
+                        context,
+                        '捨棄',
+                        color: const Color(0xFFFF6B60),
+                        pop: 'discard',
+                      ),
+                    ]),
+                    const SizedBox(height: 8),
+                    group([
+                      row(context, '繼續編輯', first: true),
+                    ]),
+                  ],
                 ),
-                const SizedBox(height: 8),
-                const Text(
-                  '保留草稿之後可以從首頁繼續剪',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    color: kTextDim,
-                    height: 1.55,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                FilledButton(
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size.fromHeight(44),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    textStyle: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      fontFamily: 'NotoSansTC',
-                    ),
-                  ),
-                  onPressed: () => Navigator.pop(context, 'save'),
-                  child: const Text('保留草稿'),
-                ),
-                const SizedBox(height: 8),
-                OutlinedButton(
-                  onPressed: () => Navigator.pop(context, 'discard'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: kTextDim,
-                    minimumSize: const Size.fromHeight(44),
-                    side: const BorderSide(color: kClipBorder),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text('捨棄', style: TextStyle(fontSize: 13)),
-                ),
-                const SizedBox(height: 2),
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  style: TextButton.styleFrom(
-                    foregroundColor: kTextDim,
-                    minimumSize: const Size.fromHeight(40),
-                  ),
-                  child: const Text('繼續編輯', style: TextStyle(fontSize: 13)),
-                ),
-              ],
+              ),
             ),
           ),
         ),
