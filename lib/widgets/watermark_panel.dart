@@ -1101,25 +1101,21 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   }
 
   /// 儲存範本（更新選中的範本，或另存新範本）。
-  /// 排在內容最後（短分頁被推到底、長分頁跟著捲）：白色小膠囊置中，
-  /// 跟照片編輯的浮動列同一種按鈕語言。
+  /// 排在內容最後（短分頁被推到底、長分頁跟著捲）：整排的白色膠囊，
+  /// 跟「匯入照片」「輸出」那些主要動作鈕同一種長相。
   /// 照片編輯器把這顆移到底部跟「輸出」並排，所以可隱藏
-  Widget _saveBar() => Align(
-        alignment: Alignment.center,
-        child: FilledButton.icon(
-          onPressed: _savePreset,
-          style: FilledButton.styleFrom(
-            minimumSize: const Size(0, 44),
-            padding: const EdgeInsets.symmetric(horizontal: 18),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(999),
-            ),
+  Widget _saveBar() => FilledButton.icon(
+        onPressed: _savePreset,
+        style: FilledButton.styleFrom(
+          minimumSize: const Size.fromHeight(48),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(999),
           ),
-          icon: const Icon(Icons.bookmark_add_outlined, size: 17),
-          label: Text(
-            _presetSel == null ? '儲存範本' : '儲存範本「$_presetSel」',
-            style: const TextStyle(fontSize: 13.5),
-          ),
+        ),
+        icon: const Icon(Icons.bookmark_add_outlined, size: 18),
+        label: Text(
+          _presetSel == null ? '儲存範本' : '儲存範本「$_presetSel」',
+          style: const TextStyle(fontSize: 14),
         ),
       );
 
