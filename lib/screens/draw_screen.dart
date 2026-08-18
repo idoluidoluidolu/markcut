@@ -462,14 +462,27 @@ class _DrawScreenState extends State<_DrawScreen> {
                     child: ListView(
                       scrollDirection: Axis.horizontal,
                       children: [
+                        // 調色盤＝彩虹漸層圈（A 案，全繪圖 App 共通的
+                        // 「自訂色」語言）；中心的點顯示目前挑好的自訂色
                         InkWell(
                           borderRadius: BorderRadius.circular(999),
                           onTap: _openPicker,
                           child: Container(
                             width: 34,
+                            alignment: Alignment.center,
                             decoration: BoxDecoration(
-                              color: _custom,
                               shape: BoxShape.circle,
+                              gradient: const SweepGradient(
+                                colors: [
+                                  Color(0xFFFF0000),
+                                  Color(0xFFFFFF00),
+                                  Color(0xFF00FF00),
+                                  Color(0xFF00FFFF),
+                                  Color(0xFF0000FF),
+                                  Color(0xFFFF00FF),
+                                  Color(0xFFFF0000),
+                                ],
+                              ),
                               border: Border.all(
                                 color: _brush != _Brush.eraser &&
                                         _color == _custom
@@ -481,8 +494,16 @@ class _DrawScreenState extends State<_DrawScreen> {
                                     : 1,
                               ),
                             ),
-                            child: const Icon(Icons.palette_outlined,
-                                size: 16, color: Colors.white70),
+                            child: Container(
+                              width: 14,
+                              height: 14,
+                              decoration: BoxDecoration(
+                                color: _custom,
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                    color: Colors.black26, width: 1),
+                              ),
+                            ),
                           ),
                         ),
                         const SizedBox(width: 8),
