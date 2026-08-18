@@ -56,6 +56,10 @@ void main() {
     );
     await _settle(t, 20);
 
+    // 面板改分頁模式：浮水印組的卡片在「更多」分頁裡，先切過去
+    await t.tap(find.text('更多'));
+    await _settle(t);
+
     // 面板裡的「浮水印」加號卡
     expect(find.text('浮水印'), findsWidgets);
     await t.ensureVisible(find.text('浮水印').first);

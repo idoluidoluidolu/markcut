@@ -3,8 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart'
-    show RenderAbstractViewport, ScrollCacheExtent, ScrollDirection;
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:image_picker/image_picker.dart';
 
 import '../models/watermark_settings.dart';
@@ -190,10 +189,13 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     _presetSel = widget.initialPresetName;
     _loadPresets();
     widget.controller?.addListener(_onScrollRequest);
-    _scroll.addListener(_spySection);
     // 請求可能在這個 State 出生之前就發出了（點浮水印的同時
     // 才切到浮水印分頁／才換編輯目標），一掛上就先看有沒有待辦
     _onScrollRequest();
+    // 分頁模式：預設停在「位置」，並回報給父層畫的導覽列
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.controller?.reportSection(_navAt);
+    });
   }
 
   Future<void> _loadPresets() async {
@@ -214,7 +216,6 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   @override
   void dispose() {
     widget.controller?.removeListener(_onScrollRequest);
-    _scroll.removeListener(_spySection);
     _textCtrl.dispose();
     _scroll.dispose();
     super.dispose();
@@ -233,30 +234,13 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     }
   }
 
-  /// 捲到區塊。切分頁的那一瞬間卡片可能還沒掛上，隔幾十毫秒重試
+  /// 切到 [part] 對應的分頁（點畫面上的文字／圖片時面板跟著跳）
   void _ensureSection(WmPart part, int tries) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
+      if (!mounted || _nav.isEmpty) return;
       final key = part == WmPart.logo ? _logoCardKey : _textCardKey;
-      final ctx = key.currentContext;
-      if (ctx != null) {
-        Scrollable.ensureVisible(
-          ctx,
-          duration: const Duration(milliseconds: 350),
-          curve: Curves.easeOutCubic,
-          alignment: 0.05,
-        );
-        return;
-      }
-      if (tries >= 4) return;
-      // 清單是延遲建構的：捲得太下面時上面的卡片根本不存在，
-      // 先回頂端把它建出來，下一輪再對位
-      if (tries == 1 && _scroll.hasClients && _scroll.offset > 0) {
-        _scroll.jumpTo(0);
-      }
-      Future.delayed(const Duration(milliseconds: 120), () {
-        if (mounted) _ensureSection(part, tries + 1);
-      });
+      final idx = _nav.indexWhere((n) => n.key == key);
+      if (idx > 0) _jumpToSection(idx);
     });
   }
 
@@ -502,47 +486,12 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   final _scroll = ScrollController();
 
   /// 導覽列目前高亮第幾格
-  int _navAt = 0;
+  /// 分頁模式：一格導覽＝一區功能，點哪格就只顯示那一區。
+  /// 預設停在「位置」（第 0 格「範本」是動作不是區塊）
+  int _navAt = 1;
 
-  /// 這一輪畫出來的導覽項目（捲動時要用，所以存起來）
+  /// 這一輪畫出來的導覽項目
   List<_NavItem> _nav = const [];
-
-  /// 捲到哪一區就高亮哪一格。
-  /// 判斷方式是「這一區的頂端已經捲過導覽列了」，取符合的最後一個
-  /// 按了導覽列之後先鎖住高亮，等使用者自己捲才交還給偵測。
-  /// 不鎖的話：靠近底部的區塊（例如馬賽克）捲到底也到不了門檻線，
-  /// 偵測會立刻把高亮改回上一區，看起來就是「點了不會反白」
-  bool _navLocked = false;
-
-  void _spySection() {
-    if (!_scroll.hasClients || _nav.isEmpty) return;
-    if (_navLocked) {
-      // 程式自己捲的時候 userScrollDirection 是 idle；
-      // 使用者真的動手捲了才解鎖
-      if (_scroll.position.userScrollDirection == ScrollDirection.idle) {
-        return;
-      }
-      _navLocked = false;
-    }
-    final pos = _scroll.position;
-    // 已經捲到底：後面那幾區的頂端不可能再往上跑，門檻線改用
-    // 畫面高度的 6 成，讓它們也選得到
-    final atEnd = pos.pixels >= pos.maxScrollExtent - 8;
-    final line =
-        pos.pixels + (atEnd ? pos.viewportDimension * 0.6 : 48);
-    // 從 1 開始：第 0 格是「範本」，它不是一個區塊，捲動不會選到它
-    var idx = 1;
-    for (var i = 0; i < _nav.length; i++) {
-      final ctx = _nav[i].key?.currentContext;
-      if (ctx == null) continue;
-      final box = ctx.findRenderObject();
-      if (box is! RenderBox) continue;
-      final vp = RenderAbstractViewport.maybeOf(box);
-      if (vp == null) continue;
-      if (vp.getOffsetToReveal(box, 0.0).offset <= line) idx = i;
-    }
-    _setNav(idx);
-  }
 
   void _setNav(int idx) {
     if (idx != _navAt && mounted) setState(() => _navAt = idx);
@@ -557,15 +506,9 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       action();
       return;
     }
-    final ctx = _nav[i].key?.currentContext;
-    if (ctx == null) return;
-    _navLocked = true;
     _setNav(i);
-    Scrollable.ensureVisible(
-      ctx,
-      duration: const Duration(milliseconds: 320),
-      curve: Curves.easeOutCubic,
-    );
+    // 換分頁回到頂端：每一區都不長，殘留的捲動位置只會讓人以為內容缺一半
+    if (_scroll.hasClients) _scroll.jumpTo(0);
   }
 
   /// 置頂導覽列：圖示＋文字，跟 App 其他工具列同一種長相
@@ -649,6 +592,9 @@ class WatermarkPanelState extends State<WatermarkPanel> {
           action: null,
         ),
     ];
+    // 導覽項目可能隨畫面狀態增減（照片編輯的額外區塊），
+    // 停留的分頁被收掉就退回「位置」
+    if (_navAt >= _nav.length || _nav[_navAt].key == null) _navAt = 1;
     if (!widget.showNav) return _list();
     return Column(
       children: [
@@ -657,6 +603,9 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       ],
     );
   }
+
+  /// 這一區在目前的分頁該不該出現
+  bool _on(GlobalKey key) => _nav[_navAt].key == key;
 
   Widget _list() {
     return ListView(
@@ -696,10 +645,11 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         const SizedBox(height: 10),
 
         // ===== 卡片 1：位置 =====
-        KeyedSubtree(key: _posCardKey, child: _card(_bigPosGrid())),
+        if (_on(_posCardKey))
+          KeyedSubtree(key: _posCardKey, child: _card(_bigPosGrid())),
 
         // ===== 動畫（影片專用）=====
-        if (widget.showAnimation)
+        if (widget.showAnimation && _on(_animCardKey))
           KeyedSubtree(
           key: _animCardKey,
           child: _card(Column(
@@ -806,6 +756,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
           ),
 
         // ===== 卡片 2：文字 =====
+        if (_on(_textCardKey))
         KeyedSubtree(
           key: _textCardKey,
           child: _card(Column(
@@ -999,6 +950,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         ),
 
         // ===== 卡片 3：圖片（可以放很多張；＋加入，點縮圖換要調哪一張）=====
+        if (_on(_logoCardKey))
         KeyedSubtree(
           key: _logoCardKey,
           child: _card(Column(
@@ -1119,10 +1071,11 @@ class WatermarkPanelState extends State<WatermarkPanel> {
 
         // ===== 父層注入的額外區塊（照片編輯器的馬賽克/更多浮水印）=====
         for (var i = 0; i < widget.extraSections.length; i++)
-          KeyedSubtree(
-            key: _extraKeys[i],
-            child: _card(widget.extraSections[i].child),
-          ),
+          if (_on(_extraKeys[i]))
+            KeyedSubtree(
+              key: _extraKeys[i],
+              child: _card(widget.extraSections[i].child),
+            ),
 
         // ===== 儲存範本（更新選中的範本，或另存新範本）=====
         // 照片編輯器把這顆移到底部跟「輸出」並排，所以這裡可隱藏
