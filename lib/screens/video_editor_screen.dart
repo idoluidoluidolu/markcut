@@ -148,7 +148,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   // 漏掉一個就會同時亮兩個選取框（加影片、加音樂、錄旁白、
   // 貼上都曾經漏掉），而且以後新增路徑還會再漏一次
   int _selValue = -1;
-  bool _wmSelValue = false;
+
+  /// 一進編輯器就先選著浮水印（留在剪輯分頁，不跳浮水印模式）：
+  /// 最常見的第一個動作就是動浮水印，先選好省一次點擊。
+  /// 點到任何片段（setter 會清掉）或點空白處就恢復一般狀態
+  bool _wmSelValue = true;
 
   /// 選取的片段 id（-1 = 沒有）
   int get _sel => _selValue;
