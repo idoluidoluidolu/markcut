@@ -21,7 +21,9 @@ Future<void> showFeedbackDialog(BuildContext context) {
         side: const BorderSide(color: kLBorder),
       ),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: kDialogWidth),
+        // 這個視窗有兩個輸入框，kDialogWidth（280）打字太擠——
+        // 放寬到 340（使用者要求）
+        constraints: const BoxConstraints(maxWidth: 340),
         child: const _FeedbackForm(),
       ),
     ),
