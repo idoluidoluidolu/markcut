@@ -3,7 +3,6 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:image_picker/image_picker.dart';
 
 import '../models/watermark_settings.dart';
@@ -608,15 +607,25 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   bool _on(GlobalKey key) => _nav[_navAt].key == key;
 
   Widget _list() {
-    return ListView(
-      controller: _scroll,
-      // 全部卡片都留著不要回收：導覽列要量每一區的位置，
-      // 沒建出來的區塊量不到，跳過去也跳不動（總共才七八張卡，不貴）
-      scrollCacheExtent: const ScrollCacheExtent.pixels(3000),
-      // 往下滑清單就收鍵盤（打完字回不去的解法）
-      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-      padding: EdgeInsets.fromLTRB(16, 8, 16, 24 + widget.bottomInset),
-      children: [
+    return LayoutBuilder(
+      builder: (context, cons) => SingleChildScrollView(
+        controller: _scroll,
+        // 往下滑清單就收鍵盤（打完字回不去的解法）
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: EdgeInsets.fromLTRB(16, 8, 16, 24 + widget.bottomInset),
+        child: ConstrainedBox(
+          // 內容不滿一頁：撐到剛好一頁高，儲存鈕被 spaceBetween 推到
+          // 右下角固定；內容超過一頁：恢復排在最後、跟著捲（不釘死）
+          constraints: BoxConstraints(
+            minHeight: math.max(0, cons.maxHeight - 32 - widget.bottomInset),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
         // ===== 選擇範本：D 案不填色、只留線框；琥珀圖示＋下拉箭頭 =====
         OutlinedButton(
           onPressed: _openPresetPicker,
@@ -1077,12 +1086,17 @@ class WatermarkPanelState extends State<WatermarkPanel> {
               child: _card(widget.extraSections[i].child),
             ),
 
-        // ===== 儲存範本：內容最後一項，跟著捲 =====
-        if (!widget.hideSaveButton) ...[
-          const SizedBox(height: 2),
-          _saveBar(),
-        ],
-      ],
+              ],
+              ),
+              if (!widget.hideSaveButton)
+                Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: _saveBar(),
+                ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
