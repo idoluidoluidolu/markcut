@@ -313,7 +313,7 @@ class _HomeScreenState extends State<HomeScreen> {
             optionRow(
               context: context,
               title: '串成一段影片',
-              subtitle: '照選取順序接起來，下一步可以選每張幾秒',
+              subtitle: '照選取順序串成影片',
               selected: false,
               first: true,
               onTap: () => Navigator.pop(context, true),
