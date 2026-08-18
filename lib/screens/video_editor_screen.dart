@@ -5510,6 +5510,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 返回：先退回上一個分頁（匯出→浮水印→剪輯），
   /// 已經在剪輯分頁才問要不要離開專案
   void _handleBack() {
+    // 全螢幕先退回編輯畫面，不要一按就離開專案
+    if (_fullscreen) {
+      setState(() => _fullscreen = false);
+      return;
+    }
     // 調色模式先退出去，不要直接跳掉整個分頁
     if (_colorMode) {
       _exitColorMode();
@@ -5632,7 +5637,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (!didPop) _handleBack();
       },
       child: Scaffold(
-        appBar: AppBar(
+        appBar: _fullscreen
+            ? null
+            : AppBar(
           // 標題文字拿掉了，但「長按開播放診斷」這個隱藏入口要留著：
           // 改成一塊透明的感應區佔著原本標題的位置，看不到但按得到
           title: GestureDetector(
@@ -5645,6 +5652,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 讀取，那請改成先跑一下讀取再進入，比進入後閃東閃西讀取還好」
         body: !_ready || _prepGate
             ? _buildPrepGate()
+            : _fullscreen
+            ? _buildFullscreen()
             // 編輯模式「不放」右滑返回：時間軸捲動、拖片段、移浮水印
             // 全是橫向手勢，跟返回判定天生打架。返回走上一頁鍵／返回鍵
             : Column(
@@ -5707,7 +5716,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   ),
                 ],
               ),
-        bottomNavigationBar: !_ready
+        bottomNavigationBar: !_ready || _fullscreen
             ? null
             : Container(
                 color: kBg,
@@ -5759,6 +5768,121 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ),
     );
   }
+
+  /// 全螢幕播放：預覽鋪滿整頁、黑底、點畫面切換控制列。
+  /// 用的是同一份預覽（合成播放器或疊圖層），不另外開播放器——
+  /// 全螢幕看到的必須跟編輯畫面完全一樣
+  Widget _buildFullscreen() {
+    return ColoredBox(
+      color: Colors.black,
+      child: SafeArea(
+        child: Stack(
+          children: [
+            Positioned.fill(child: _buildPreview()),
+            // 點畫面＝收起／叫出控制列（看片時不要有東西擋著）
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTap: () => setState(() => _fsBar = !_fsBar),
+              ),
+            ),
+            if (_fsBar) ...[
+              // 左上角：離開全螢幕
+              Positioned(
+                left: 8,
+                top: 8,
+                child: _fsBtn(Icons.fullscreen_exit, _toggleFullscreen),
+              ),
+              // 下方：播放鈕＋時間碼＋進度條
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: Container(
+                  padding: const EdgeInsets.fromLTRB(10, 8, 16, 12),
+                  color: Colors.black.withValues(alpha: 0.35),
+                  child: Row(
+                    children: [
+                      _fsBtn(
+                        _playing
+                            ? Icons.pause_rounded
+                            : Icons.play_arrow_rounded,
+                        () {
+                          if (_playing) {
+                            _pause();
+                          } else {
+                            unawaited(_play());
+                          }
+                        },
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: ValueListenableBuilder<double>(
+                          valueListenable: _posVN,
+                          builder: (context, pos, _) {
+                            final dur = math.max(0.01, _tl.duration);
+                            return Row(
+                              children: [
+                                Text(
+                                  _fmt(pos),
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: kText,
+                                    fontFeatures: [
+                                      FontFeature.tabularFigures(),
+                                    ],
+                                  ),
+                                ),
+                                Expanded(
+                                  child: Slider(
+                                    value: pos.clamp(0.0, dur),
+                                    max: dur,
+                                    onChanged: (v) {
+                                      _pause();
+                                      setState(() => _position = v);
+                                      _scrubSeek(force: true);
+                                      _compSeek(exact: true);
+                                    },
+                                  ),
+                                ),
+                                Text(
+                                  _fmt(dur),
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: kTextDim,
+                                    fontFeatures: [
+                                      FontFeature.tabularFigures(),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _fsBtn(IconData icon, VoidCallback onTap) => InkWell(
+        borderRadius: BorderRadius.circular(999),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.45),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(icon, size: 22, color: kText),
+        ),
+      );
 
   /// 預覽下方的控制列（CapCut 式）：播放鈕左、時間碼中、復原/重做右
   Widget _buildControlBar() {
@@ -7314,6 +7438,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 兩指距離夠了才開始算縮放（起手靠太近時，拉開到門檻再補上——
   /// 只在按下那刻檢查的話，小圖永遠捏不動）
+  /// 全螢幕播放：預覽鋪滿整頁、時間軸與工具列收起來，
+  /// 點畫面切換控制列的顯示。用的還是同一份預覽（合成播放器或
+  /// 疊圖層），不另外開播放器——所見即所得的前提不能因為換模式就破
+  bool _fullscreen = false;
+
+  /// 全螢幕時控制列露不露臉（點畫面切換）
+  bool _fsBar = true;
+
+  void _toggleFullscreen() {
+    setState(() {
+      _fullscreen = !_fullscreen;
+      _fsBar = true;
+    });
+  }
+
   /// 目前吸在哪個整數角度（畫輔助線用；null＝沒吸住）
   double? _rotSnapAt;
 
@@ -7532,7 +7671,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       alignment: Alignment.topRight,
       child: Padding(
         padding: const EdgeInsets.all(6),
-        child: InkWell(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 全螢幕播放：預覽鋪滿整頁，專心看成品
+            InkWell(
+              borderRadius: BorderRadius.circular(kTagRadius),
+              onTap: _toggleFullscreen,
+              child: Container(
+                padding: const EdgeInsets.all(5),
+                margin: const EdgeInsets.only(right: 6),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(kTagRadius),
+                ),
+                child: const Icon(Icons.fullscreen,
+                    size: 15, color: kIcon),
+              ),
+            ),
+            InkWell(
           borderRadius: BorderRadius.circular(kTagRadius),
           onTap: _openRatioSheet,
           child: Container(
@@ -7557,6 +7714,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               ],
             ),
           ),
+            ),
+          ],
         ),
       ),
     );
