@@ -317,6 +317,9 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       s.logo.enabled = true;
     });
     widget.onLogoAdded?.call();
+    // 畫完回來直接站在「圖片」分頁：剛畫好的那張已是操作中，
+    // 大小、透明度、平鋪馬上調得到，不用自己找去哪了
+    _ensureSection(WmPart.logo, 0);
   }
 
   Future<void> _pickLogo() async {

@@ -433,15 +433,16 @@ class _DrawScreenState extends State<_DrawScreen> {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 6, 16, 14),
+              padding: const EdgeInsets.fromLTRB(0, 6, 0, 14),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // 筆刷一排：單選
+                  // 筆刷一排：單選（出血捲到螢幕邊，不在邊距處被切）
                   SizedBox(
                     height: 32,
                     child: ListView(
                       scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
                       children: [
                         for (final b in _Brush.values) ...[
                           _chip(
@@ -461,6 +462,7 @@ class _DrawScreenState extends State<_DrawScreen> {
                     height: 34,
                     child: ListView(
                       scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
                       children: [
                         // 調色盤＝彩虹漸層圈（A 案，全繪圖 App 共通的
                         // 「自訂色」語言）；中心的點顯示目前挑好的自訂色
@@ -541,7 +543,9 @@ class _DrawScreenState extends State<_DrawScreen> {
                   ),
                   const SizedBox(height: 4),
                   // 粗細：沒選東西＝下一筆的粗細；點選了某一筆＝直接調它
-                  Row(
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Row(
                     children: [
                       Text(
                         sel == null ? '粗細' : '這一筆',
@@ -593,12 +597,16 @@ class _DrawScreenState extends State<_DrawScreen> {
                         ),
                       ),
                     ],
+                    ),
                   ),
                   const SizedBox(height: 6),
-                  primaryAction(
-                    label: '完成',
-                    icon: Icons.check,
-                    onPressed: !_hasInk ? null : () => _done(_boardSize),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: primaryAction(
+                      label: '完成',
+                      icon: Icons.check,
+                      onPressed: !_hasInk ? null : () => _done(_boardSize),
+                    ),
                   ),
                 ],
               ),
