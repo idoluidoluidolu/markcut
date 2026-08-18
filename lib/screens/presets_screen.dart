@@ -242,19 +242,51 @@ class _PresetsScreenState extends State<PresetsScreen> {
         appBar: AppBar(),
         body: _loading
             ? const Center(child: CircularProgressIndicator())
-            : GridView.builder(
-                padding: const EdgeInsets.all(14),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2,
-                  mainAxisSpacing: 10,
-                  crossAxisSpacing: 10,
-                  childAspectRatio: 16 / 10,
-                ),
-                // 最後永遠多一格「＋ 新增範本」
-                itemCount: _presets.length + 1,
-                itemBuilder: (context, i) =>
-                    i < _presets.length ? _presetCard(_presets[i]) : _addCard(),
-              ),
+            // 兩欄瀑布流：卡片照各自的設計比例（16:9 扁、9:16 高、
+            // 1:1 方），比塞進同一種格子誠實——預覽就是設計時的樣子
+            : Builder(builder: (context) {
+                final left = <Widget>[];
+                final right = <Widget>[];
+                var hl = 0.0, hr = 0.0;
+                void put(Widget w, double h) {
+                  if (hl <= hr) {
+                    left.add(w);
+                    hl += h;
+                  } else {
+                    right.add(w);
+                    hr += h;
+                  }
+                }
+
+                for (final p in _presets) {
+                  final a = p.settings.designAspect;
+                  put(
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: AspectRatio(
+                        aspectRatio: a,
+                        child: _presetCard(p),
+                      ),
+                    ),
+                    1 / a,
+                  );
+                }
+                put(
+                  AspectRatio(aspectRatio: 16 / 10, child: _addCard()),
+                  10 / 16,
+                );
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.all(14),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: Column(children: left)),
+                      const SizedBox(width: 10),
+                      Expanded(child: Column(children: right)),
+                    ],
+                  ),
+                );
+              }),
       ),
     );
   }

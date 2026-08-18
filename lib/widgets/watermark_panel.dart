@@ -1279,22 +1279,50 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                 style:
                     TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
             const SizedBox(height: 12),
+            // 兩欄瀑布流：卡片照各自的設計比例（跟範本管理頁同款）
             Flexible(
-              child: GridView.builder(
-                shrinkWrap: true,
-                gridDelegate:
-                    const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2,
-                  mainAxisSpacing: 8,
-                  crossAxisSpacing: 8,
-                  childAspectRatio: 16 / 10,
-                ),
-                // 最後一格＝新增範本
-                itemCount: _presets.length + 1,
-                itemBuilder: (context, i) => i < _presets.length
-                    ? _pickerCard(_presets[i])
-                    : _addPresetCard(),
-              ),
+              child: Builder(builder: (context) {
+                final left = <Widget>[];
+                final right = <Widget>[];
+                var hl = 0.0, hr = 0.0;
+                void put(Widget w, double h) {
+                  if (hl <= hr) {
+                    left.add(w);
+                    hl += h;
+                  } else {
+                    right.add(w);
+                    hr += h;
+                  }
+                }
+
+                for (final p in _presets) {
+                  final a = p.settings.designAspect;
+                  put(
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: AspectRatio(
+                        aspectRatio: a,
+                        child: _pickerCard(p),
+                      ),
+                    ),
+                    1 / a,
+                  );
+                }
+                put(
+                  AspectRatio(aspectRatio: 16 / 10, child: _addPresetCard()),
+                  10 / 16,
+                );
+                return SingleChildScrollView(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: Column(children: left)),
+                      const SizedBox(width: 8),
+                      Expanded(child: Column(children: right)),
+                    ],
+                  ),
+                );
+              }),
             ),
           ],
         ),

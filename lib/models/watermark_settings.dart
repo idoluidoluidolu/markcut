@@ -272,6 +272,10 @@ class WatermarkSettings {
   double animSpeed; // 速度倍率 0.2~3（越大越快）
   double animRange; // 幅度倍率 0.2~3（閃爍＝亮的比例、飄移＝擺動幅度）
 
+  /// 設計時的畫布比例（寬/高）。範本卡照這個比例畫，
+  /// 預覽才長得跟設計時一樣（舊資料沒存＝16:9）
+  double designAspect;
+
   /// 照片模式的馬賽克區塊。掛在這裡是為了跟著範本一起存／套用；
   /// 影片編輯的全域浮水印不吃這個欄位（那邊的馬賽克是時間軸素材）
   List<PhotoMosaic> mosaics;
@@ -286,6 +290,7 @@ class WatermarkSettings {
     this.animation = WmAnimation.none,
     this.animSpeed = 1.0,
     this.animRange = 1.0,
+    this.designAspect = 16 / 9,
     List<PhotoMosaic>? mosaics,
   })  : // text（單個）是舊的建構參數，留著讓既有呼叫端不用改
         texts = (texts == null || texts.isEmpty)
@@ -373,6 +378,7 @@ class WatermarkSettings {
     animation = other.animation;
     animSpeed = other.animSpeed;
     animRange = other.animRange;
+    designAspect = other.designAspect;
   }
 
   /// 再加一張圖片，並切成操作中。位置稍微錯開，不然新的那張
@@ -456,6 +462,7 @@ class WatermarkSettings {
         'animation': animation.index,
         'animSpeed': animSpeed,
         'animRange': animRange,
+        'designAspect': designAspect,
         if (mosaics.isNotEmpty)
           'mosaics': mosaics.map((m) => m.toJson()).toList(),
       };
@@ -489,6 +496,9 @@ class WatermarkSettings {
           0.2,
           3.0,
         ),
+        designAspect:
+            ((j['designAspect'] ?? (16 / 9)).toDouble() as double)
+                .clamp(0.2, 5.0),
       );
 
   WatermarkSettings copy() => WatermarkSettings.fromJson(toJson());

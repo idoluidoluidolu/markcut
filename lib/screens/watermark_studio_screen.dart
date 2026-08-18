@@ -67,7 +67,17 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
       // copy() 是深拷貝：改這裡不會動到範本清單裡的那一份。
       // 動畫設定也一起帶過來，不然存回去時會把範本的動畫洗掉
       _settings.copyMarksFrom(e.settings.copy());
+      // 示意畫面回到設計時的比例（找最接近的那一格）
+      var best = 0;
+      for (var i = 1; i < _ratios.length; i++) {
+        if ((_ratios[i].$2 - _settings.designAspect).abs() <
+            (_ratios[best].$2 - _settings.designAspect).abs()) {
+          best = i;
+        }
+      }
+      _ratioIdx = best;
     }
+    _settings.designAspect = _ratios[_ratioIdx].$2;
     _initialJson = jsonEncode(_settings.toJson());
     _syncAnimTicker();
   }
@@ -424,7 +434,11 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
     Widget seg(int i) {
       final active = _ratioIdx == i;
       return InkWell(
-        onTap: () => setState(() => _ratioIdx = i),
+        onTap: () => setState(() {
+          _ratioIdx = i;
+          // 設計比例跟著存進範本：範本卡才能照真實比例畫
+          _settings.designAspect = _ratios[i].$2;
+        }),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
           color: active ? kPanelHi : Colors.transparent,
