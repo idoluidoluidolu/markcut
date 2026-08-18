@@ -464,14 +464,13 @@ class _DrawScreenState extends State<_DrawScreen> {
                       scrollDirection: Axis.horizontal,
                       padding: const EdgeInsets.symmetric(horizontal: 16),
                       children: [
-                        // 調色盤＝彩虹漸層圈（A 案，全繪圖 App 共通的
-                        // 「自訂色」語言）；中心的點顯示目前挑好的自訂色
+                        // 調色盤＝整顆彩虹漸層（A 案，全繪圖 App 共通的
+                        // 「自訂色」語言）。不放中心點——放了就變成色環（B）
                         InkWell(
                           borderRadius: BorderRadius.circular(999),
                           onTap: _openPicker,
                           child: Container(
                             width: 34,
-                            alignment: Alignment.center,
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
                               gradient: const SweepGradient(
@@ -494,16 +493,6 @@ class _DrawScreenState extends State<_DrawScreen> {
                                         _color == _custom
                                     ? 2.5
                                     : 1,
-                              ),
-                            ),
-                            child: Container(
-                              width: 14,
-                              height: 14,
-                              decoration: BoxDecoration(
-                                color: _custom,
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                    color: Colors.black26, width: 1),
                               ),
                             ),
                           ),
