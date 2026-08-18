@@ -581,10 +581,13 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                   onTap: () => _jumpToSection(i),
                   child: Container(
                     padding: const EdgeInsets.symmetric(vertical: 5),
-                    decoration: BoxDecoration(
-                      color: i == _navAt ? kPanelHi : Colors.transparent,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
+                    // D 案：選中不填色，改畫線框。框在前景，內容不位移
+                    foregroundDecoration: i == _navAt
+                        ? BoxDecoration(
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: kAmber, width: 1.5),
+                          )
+                        : null,
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -665,12 +668,11 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: EdgeInsets.fromLTRB(16, 8, 16, 24 + widget.bottomInset),
       children: [
-        // ===== 選擇範本：亮階底＋琥珀圖示＋下拉箭頭，按了彈窗挑 =====
+        // ===== 選擇範本：D 案不填色、只留線框；琥珀圖示＋下拉箭頭 =====
         OutlinedButton(
           onPressed: _openPresetPicker,
           style: OutlinedButton.styleFrom(
             minimumSize: const Size.fromHeight(44),
-            backgroundColor: kPanelHi,
             side: const BorderSide(color: kClipBorder),
             foregroundColor: kText,
             textStyle: const TextStyle(

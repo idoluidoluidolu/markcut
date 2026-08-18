@@ -720,10 +720,13 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                 },
                 child: Container(
                   padding: const EdgeInsets.symmetric(vertical: 5),
-                  decoration: BoxDecoration(
-                    color: i == active ? kPanelHi : Colors.transparent,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
+                  // D 案：選中不填色，改畫線框。框在前景，內容不位移
+                  foregroundDecoration: i == active
+                      ? BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: kAmber, width: 1.5),
+                        )
+                      : null,
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
