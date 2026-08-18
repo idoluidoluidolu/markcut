@@ -5550,11 +5550,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       },
       child: Scaffold(
         appBar: AppBar(
-          // 長按標題＝打開播放診斷。藏在這裡是刻意的：一般使用者
-          // 不會誤觸，要用的時候講一聲就找得到
+          // 標題文字拿掉了，但「長按開播放診斷」這個隱藏入口要留著：
+          // 改成一塊透明的感應區佔著原本標題的位置，看不到但按得到
           title: GestureDetector(
             onLongPress: _openTrace,
-            child: const Text('影片編輯'),
+            behavior: HitTestBehavior.opaque,
+            child: const SizedBox(width: 200, height: kToolbarHeight),
           ),
         ),
         // 素材還在備就整頁擋著等它做完。使用者的原話是「既然一定要跑

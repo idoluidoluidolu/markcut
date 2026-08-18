@@ -306,10 +306,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return SwipeBack(
       child: Scaffold(
         backgroundColor: kLBg,
-        appBar: AppBar(
-          backgroundColor: kLBg,
-          title: const Text('個人中心'),
-        ),
+        appBar: AppBar(backgroundColor: kLBg),
         body: SafeArea(
           top: false,
           // 左右留白改由各段自己給：範本那排要滿版出血（捲出畫面外），
@@ -698,7 +695,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
     final empty = d == null && p == null;
     return SwipeBack(
       child: Scaffold(
-        appBar: AppBar(title: const Text('草稿夾')),
+        appBar: AppBar(),
         body: _loading
             ? const Center(child: CircularProgressIndicator())
             : empty

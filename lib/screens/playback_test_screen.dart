@@ -116,7 +116,6 @@ class _PlaybackTestScreenState extends State<PlaybackTestScreen> {
       backgroundColor: Colors.black,
       appBar: AppBar(
         backgroundColor: Colors.black,
-        title: const Text('純播放測試'),
         actions: [
           IconButton(
             tooltip: '選影片',

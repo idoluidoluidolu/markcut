@@ -1502,7 +1502,7 @@ final color = Color(picked ?? 0);
         if (!didPop) _confirmLeave();
       },
       child: Scaffold(
-        appBar: AppBar(title: const Text('照片浮水印')),
+        appBar: AppBar(),
         body: _photoBytes == null || _aspect == null
             ? const Center(child: CircularProgressIndicator())
             : Column(

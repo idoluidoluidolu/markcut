@@ -191,7 +191,7 @@ class _DonateScreenState extends State<DonateScreen> {
     return SwipeBack(
       child: Scaffold(
       backgroundColor: kLBg,
-      appBar: AppBar(backgroundColor: kLBg, title: const Text('太好用啦')),
+      appBar: AppBar(backgroundColor: kLBg),
       body: SafeArea(
         child: Column(
           children: [

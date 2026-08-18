@@ -781,11 +781,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         if (!didPop) _confirmLeave();
       },
       child: Scaffold(
-      appBar: AppBar(
-        title: Text('批次浮水印（${_items.length}）'),
-        actions: [
-        ],
-      ),
+      appBar: AppBar(),
       body: Column(
         children: [
           // 預覽：目前選中的檔案縮圖 + 浮水印圖層

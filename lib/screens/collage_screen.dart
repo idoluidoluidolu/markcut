@@ -702,7 +702,7 @@ final color = Color(picked ?? 0);
     // 不包 SwipeBack：拖曳格子互換會誤觸右滑返回、被踢回首頁
     return Scaffold(
         backgroundColor: kBg,
-        appBar: AppBar(backgroundColor: kBg, title: const Text('照片拼圖')),
+        appBar: AppBar(backgroundColor: kBg),
         body: _cols == 0
             ? const Center(child: CircularProgressIndicator())
             : SafeArea(

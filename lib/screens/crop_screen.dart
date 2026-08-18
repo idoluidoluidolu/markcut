@@ -10,15 +10,11 @@ import '../theme.dart';
 ///
 /// 每個「加圖片」的入口都走這裡：浮水印 Logo、時間軸的圖片素材，
 /// 拿到的都是一份 bytes，裁完還是一份 bytes，呼叫端不用改自己的流程。
-Future<Uint8List?> cropImage(
-  BuildContext context,
-  Uint8List bytes, {
-  String title = '裁切圖片',
-}) async {
+Future<Uint8List?> cropImage(BuildContext context, Uint8List bytes) async {
   final out = await Navigator.of(context).push<Object>(
     MaterialPageRoute(
       fullscreenDialog: true,
-      builder: (_) => CropScreen(bytes: bytes, title: title),
+      builder: (_) => CropScreen(bytes: bytes),
     ),
   );
   return out is Uint8List ? out : null;
@@ -34,14 +30,12 @@ Future<Rect?> pickCropRect(
   BuildContext context,
   Uint8List frame, {
   Rect? initial,
-  String title = '裁切畫面',
 }) async {
   final out = await Navigator.of(context).push<Object>(
     MaterialPageRoute(
       fullscreenDialog: true,
       builder: (_) => CropScreen(
         bytes: frame,
-        title: title,
         rectOnly: true,
         initial: initial,
       ),
@@ -64,13 +58,11 @@ class CropScreen extends StatefulWidget {
   const CropScreen({
     super.key,
     required this.bytes,
-    this.title = '裁切圖片',
     this.rectOnly = false,
     this.initial,
   });
 
   final Uint8List bytes;
-  final String title;
 
   /// true＝按完成回傳 0~1 的框，不真的把圖裁下來
   final bool rectOnly;
@@ -219,7 +211,6 @@ class _CropScreenState extends State<CropScreen> {
       backgroundColor: kBg,
       appBar: AppBar(
         backgroundColor: kBg,
-        title: Text(widget.title),
         actions: [
           IconButton(
             tooltip: '還原（框回到整張圖）',

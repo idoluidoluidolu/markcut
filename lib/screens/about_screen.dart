@@ -25,10 +25,7 @@ class AboutScreen extends StatelessWidget {
     return SwipeBack(
       child: Scaffold(
         backgroundColor: kLBg,
-        appBar: AppBar(
-          backgroundColor: kLBg,
-          title: const Text('關於 浮水印'),
-        ),
+        appBar: AppBar(backgroundColor: kLBg),
         body: SafeArea(
           // 內容垂直置中、頁尾釘在畫面底部
           child: Column(
@@ -126,7 +123,6 @@ class AboutScreen extends StatelessWidget {
       context,
       MaterialPageRoute(
         builder: (_) => _InfoPage(
-          title: '開源授權',
           sections: const [
             (
               '本程式',
@@ -164,7 +160,6 @@ class AboutScreen extends StatelessWidget {
       context,
       MaterialPageRoute(
         builder: (_) => const _InfoPage(
-          title: '隱私',
           sections: [
             (
               '媒體全部在你的裝置上',
@@ -255,13 +250,11 @@ Widget _copyRow({
 
 /// 頁尾連結點開的內容頁
 class _InfoPage extends StatelessWidget {
-  final String title;
   final List<(String, String)> sections;
   final bool showSourceRow;
   final bool showPackageList;
 
   const _InfoPage({
-    required this.title,
     required this.sections,
     this.showSourceRow = false,
     this.showPackageList = false,
@@ -272,7 +265,7 @@ class _InfoPage extends StatelessWidget {
     return SwipeBack(
       child: Scaffold(
         backgroundColor: kLBg,
-        appBar: AppBar(backgroundColor: kLBg, title: Text(title)),
+        appBar: AppBar(backgroundColor: kLBg),
         body: ListView(
           padding: const EdgeInsets.all(16),
           children: [

@@ -435,7 +435,7 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
       child: Scaffold(
       // 右上角不放「我的範本」了：面板第一格就是「選擇範本」，
       // 同一件事兩個入口只是讓人多想一次
-      appBar: AppBar(title: const Text('製作浮水印')),
+      appBar: AppBar(),
       body: Column(
         children: [
           // 示意畫面（拖曳浮水印調位置）；固定高度，比例改變時畫布置中縮放

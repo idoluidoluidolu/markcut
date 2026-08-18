@@ -239,7 +239,7 @@ class _PresetsScreenState extends State<PresetsScreen> {
   Widget build(BuildContext context) {
     return SwipeBack(
       child: Scaffold(
-        appBar: AppBar(title: const Text('我的浮水印範本')),
+        appBar: AppBar(),
         body: _loading
             ? const Center(child: CircularProgressIndicator())
             : GridView.builder(

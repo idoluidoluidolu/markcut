@@ -142,11 +142,6 @@ class _DrawScreenState extends State<_DrawScreen> {
       backgroundColor: kBg,
       appBar: AppBar(
         backgroundColor: kBg,
-        title: const Text(
-          '手繪浮水印',
-          style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
-        ),
-        centerTitle: true,
         actions: [
           IconButton(
             tooltip: '上一步',

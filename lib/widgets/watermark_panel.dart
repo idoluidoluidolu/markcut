@@ -325,7 +325,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       // 挑完直接進裁切畫面比「加進去再想辦法縮」直覺得多。
       // 按取消就整個不加（跟以前挑完取消一樣）
       if (!mounted) return;
-      final cut = await cropImage(context, raw, title: '裁切浮水印圖片');
+      final cut = await cropImage(context, raw);
       if (cut == null) return;
       // 縮到 1024px 內再存進設定，範本自帶圖檔不佔太多空間
       final shrunk = await _shrinkToPng(cut, 1024);
@@ -354,7 +354,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   Future<void> _cropLogo() async {
     final src = s.logo.origBytes ?? s.logo.bytes;
     if (src == null) return;
-    final cut = await cropImage(context, src, title: '裁切浮水印圖片');
+    final cut = await cropImage(context, src);
     if (cut == null || !mounted) return;
     final shrunk = await _shrinkToPng(cut, 1024);
     if (!mounted || shrunk == null) return;
