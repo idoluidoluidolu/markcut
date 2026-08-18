@@ -1387,50 +1387,6 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     return (ok: true, message: '已存到「浮水印」相簿', cancelled: false);
   }
 
-  /// GIF：把做好的影片轉一趟 GIF 再存相簿。
-  ///
-  /// 影格率與長邊上限吃 spec（GIF 製作頁可調），
-  /// palettegen/paletteuse 兩段式調色盤——
-  /// GIF 只有 256 色，不先算調色盤的話漸層會整片色帶。
-  /// 這一趟接在「影片已經做好」之後，原生與 FFmpeg 兩條路共用
-  Future<({bool ok, String message, bool cancelled})> saveAsGif() async {
-    final gifPath = '${dir.path}${Platform.pathSeparator}out_$ts.gif';
-    final side = spec.gifMaxSide;
-    final session = await FFmpegKit.execute(
-      '-y -i "$outPath" -filter_complex '
-      '"[0:v]fps=${spec.gifFps},'
-      'scale=w=$side:h=$side:force_original_aspect_ratio=decrease'
-      ':flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];'
-      '[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle[g]" '
-      '-map "[g]" -an "$gifPath"',
-    );
-    final ok = ReturnCode.isSuccess(await session.getReturnCode());
-    if (!ok) {
-      return (ok: false, message: 'GIF 轉檔失敗', cancelled: false);
-    }
-    if (!await Gal.hasAccess(toAlbum: true)) {
-      final granted = await Gal.requestAccess(toAlbum: true);
-      if (!granted) {
-        return (
-          ok: false,
-          message: 'GIF 做好了，但沒有相簿存取權限。\n請到系統設定開啟權限後再匯出一次',
-          cancelled: false,
-        );
-      }
-    }
-    try {
-      // GIF 對相簿來說是「圖片」，走圖片那條存
-      await Gal.putImage(gifPath, album: '浮水印');
-    } catch (e) {
-      return (ok: false, message: '存到相簿失敗：$e', cancelled: false);
-    } finally {
-      try {
-        File(gifPath).deleteSync();
-      } catch (_) {}
-    }
-    return (ok: true, message: '已把 GIF 存到「浮水印」相簿', cancelled: false);
-  }
-
   void delRevTemps() {
     for (final p in revTemps) {
       try {
@@ -1456,7 +1412,7 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
       if (err == null) {
         Diag.note('原生匯出完成（峰值 ${Diag.peakMb} MB）');
         delRevTemps();
-        final r = spec.gif ? await saveAsGif() : await saveToGallery();
+        final r = await saveToGallery();
         try {
           File(outPath).deleteSync();
         } catch (_) {}
@@ -1702,7 +1658,7 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     );
   }
 
-  final saved = spec.gif ? await saveAsGif() : await saveToGallery();
+  final saved = await saveToGallery();
   // 存相簿失敗也要把暫存清掉，不然每失敗一次就漏一組檔案
   cleanupTemp();
   return saved;

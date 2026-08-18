@@ -1,6 +1,5 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -11,7 +10,6 @@ import '../services/preset_store.dart';
 import '../theme.dart';
 import 'batch_watermark_screen.dart';
 import 'collage_screen.dart';
-import 'gif_screen.dart';
 import 'photo_editor_screen.dart';
 import 'profile_screen.dart';
 import 'video_editor_screen.dart';
@@ -20,7 +18,7 @@ import 'watermark_studio_screen.dart';
 /// 「加入浮水印」的入口。
 /// 不分單支/多支——選一個就進單檔編輯器、選多個才進批次，
 /// 這件事程式自己判斷得出來，不用先問使用者
-enum _PickKind { video, photo, collage, gif, blank }
+enum _PickKind { video, photo, collage, blank }
 
 /// 選取視窗裡的一列：圖示＋標題＋一句說明。
 /// 用清單不用方塊——眼睛只要走一條直線，不必在網格裡跳
@@ -161,35 +159,28 @@ class _HomeScreenState extends State<HomeScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Text('加入浮水印',
+              children: const [
+                Text('加入浮水印',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                         fontSize: 15, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 16),
-                const _PickRow(
+                SizedBox(height: 16),
+                _PickRow(
                     icon: Icons.videocam_outlined,
                     label: '影片',
                     hint: '單支或多支',
                     kind: _PickKind.video),
-                const _PickRow(
+                _PickRow(
                     icon: Icons.image_outlined,
                     label: '照片',
                     hint: '單張或多張',
                     kind: _PickKind.photo),
-                const _PickRow(
+                _PickRow(
                     icon: Icons.grid_view,
                     label: '照片拼圖',
                     hint: '多張照片組圖',
                     kind: _PickKind.collage),
-                // GIF 靠 FFmpeg 轉檔，Web 版沒有 FFmpeg，列出來也做不了
-                if (!kIsWeb)
-                  const _PickRow(
-                      icon: Icons.gif_box_outlined,
-                      label: '製作 GIF',
-                      hint: '剪一小段影片轉成 GIF',
-                      kind: _PickKind.gif),
-                const _PickRow(
+                _PickRow(
                     icon: Icons.playlist_add,
                     label: '空白專案',
                     hint: '進去再加素材',
@@ -232,17 +223,6 @@ class _HomeScreenState extends State<HomeScreen> {
         await Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => const CollageScreen()),
-        );
-      case _PickKind.gif:
-        // GIF 一次做一支；多選了就拿第一支，這裡不值得再多問一輪
-        final list = await pickVideoFiles();
-        final v = list.where(_isVideoFile).toList();
-        if (v.isEmpty || !mounted) return;
-        await Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => GifScreen(path: v.first.path, name: v.first.name),
-          ),
         );
       case _PickKind.blank:
         await _openBlank();
