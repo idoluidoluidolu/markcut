@@ -7,7 +7,6 @@ import '../models/watermark_settings.dart';
 import '../theme.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
-import 'presets_screen.dart';
 
 /// 製作浮水印：在示意畫面上設計浮水印、存成範本。
 /// 帶 [edit] 進來＝編輯既有範本（載入它的設定、儲存鈕預選它的名字）
@@ -434,23 +433,9 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen> {
         if (!didPop) _confirmLeave();
       },
       child: Scaffold(
-      appBar: AppBar(
-        title: const Text('製作浮水印'),
-        actions: [
-          // 從範本夾點進來編輯時不顯示這顆：上一頁就是範本夾，
-          // 再開一次會變成「工作室→範本夾→工作室…」一直往上疊，
-          // 返回要按同樣多次才回得到首頁
-          if (widget.edit == null)
-            IconButton(
-              tooltip: '我的範本',
-              icon: const Icon(Icons.bookmarks_outlined),
-              onPressed: () => Navigator.push(context,
-                  MaterialPageRoute(
-                      builder: (_) =>
-                          const LightPage(child: PresetsScreen()))),
-            ),
-        ],
-      ),
+      // 右上角不放「我的範本」了：面板第一格就是「選擇範本」，
+      // 同一件事兩個入口只是讓人多想一次
+      appBar: AppBar(title: const Text('製作浮水印')),
       body: Column(
         children: [
           // 示意畫面（拖曳浮水印調位置）；固定高度，比例改變時畫布置中縮放
