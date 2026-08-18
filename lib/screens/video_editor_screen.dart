@@ -191,7 +191,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _frameVN.value = v;
     } else {
       // 尾巴補一發，停下來時畫面一定對齊最終位置
-      _frameSettle?.cancel();
+      _tlVScroll.dispose();
+    _frameSettle?.cancel();
       _frameSettle = Timer(const Duration(milliseconds: 40), () {
         _lastFramePush = DateTime.now();
         _frameVN.value = _posVN.value;
@@ -7555,6 +7556,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
   }
 
+  /// 時間軸垂直捲動（底部「還有更多」暗示條看它決定要不要出現）
+  final ScrollController _tlVScroll = ScrollController();
+
   /// 時間軸可視高度：最多整整四排素材軌（更多的在裡面捲動），
   /// 內容更少就縮到剛好。永遠切在整排的邊界上——以前的做法是
   /// 「有多高吃多高」，最後一排常常被視窗切一半（死切）
@@ -7621,7 +7625,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     children: [
                       SizedBox(
                         height: _tlViewportH(box.maxHeight),
-                        child: SingleChildScrollView(
+                        child: Stack(
+                          children: [
+                            SingleChildScrollView(
+                              controller: _tlVScroll,
                     // 雙指縮放時間軸時暫停垂直捲動，縮放手勢才吃得到
                     physics: _tlPinching
                         ? const NeverScrollableScrollPhysics()
@@ -7772,6 +7779,59 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         ),
                       ),
                     ),
+                        ),
+                            ),
+                            // 下面還有軌道的暗示：底部一條淡出漸層＋小箭頭。
+                            // 捲到底就消失——不然會騙人說還有東西
+                            Positioned(
+                              left: 0,
+                              right: 0,
+                              bottom: 0,
+                              child: IgnorePointer(
+                                child: AnimatedBuilder(
+                                  animation: _tlVScroll,
+                                  builder: (context, _) {
+                                    final pos = _tlVScroll.hasClients
+                                        ? _tlVScroll.position
+                                        : null;
+                                    final more = pos == null
+                                        // 第一幀還沒掛上：用軌數推
+                                        ? (_tl.usedTracks +
+                                                1 +
+                                                _extraBlankTracks) >
+                                            4
+                                        : pos.maxScrollExtent > 1 &&
+                                            _tlVScroll.offset <
+                                                pos.maxScrollExtent - 2;
+                                    return AnimatedOpacity(
+                                      opacity: more ? 1 : 0,
+                                      duration:
+                                          const Duration(milliseconds: 150),
+                                      child: Container(
+                                        height: 34,
+                                        alignment: Alignment.bottomCenter,
+                                        decoration: const BoxDecoration(
+                                          gradient: LinearGradient(
+                                            begin: Alignment.topCenter,
+                                            end: Alignment.bottomCenter,
+                                            colors: [
+                                              Color(0x000C0F14),
+                                              kBg,
+                                            ],
+                                          ),
+                                        ),
+                                        child: const Icon(
+                                          Icons.keyboard_arrow_down,
+                                          size: 16,
+                                          color: kTextDim,
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                       // 永久留白帶：不在捲動內容裡，所以捲到哪它都在。
