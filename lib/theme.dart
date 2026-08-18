@@ -736,16 +736,20 @@ Widget undoRedoBar({
   required VoidCallback? onRedo,
   List<Widget> leading = const [],
 }) {
+  // 按鈕收到最小高度：這條列夾在預覽跟面板中間，IconButton 預設的
+  // 觸控高度會把兩邊撐出一大截空白（使用者：「間隔太多」）
   Widget btn(IconData icon, String tip, VoidCallback? onTap) => IconButton(
         tooltip: tip,
         icon: Icon(icon, size: 20, color: onTap != null ? kIcon : kTextDim),
         onPressed: onTap,
         visualDensity: VisualDensity.compact,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 42, minHeight: 30),
       );
 
   // 不畫上下邊線：整個工作區走無邊線的風格，靠色階分層就夠了
   return Container(
-    padding: const EdgeInsets.fromLTRB(8, 2, 8, 2),
+    padding: const EdgeInsets.symmetric(horizontal: 8),
     color: kBg,
     child: Row(
       children: [

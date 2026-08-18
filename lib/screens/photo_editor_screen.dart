@@ -698,7 +698,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         _tab == 1 ? _phColorIdx : (sec < _phColorIdx ? sec : -1);
     return Container(
       color: kPanel,
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+      // 跟面板那份導覽列同一組內距（往上收緊，間隔才不會太鬆）
+      padding: const EdgeInsets.fromLTRB(6, 0, 6, 4),
       child: Row(
         children: [
           for (var i = 0; i < _phNav.length; i++)
