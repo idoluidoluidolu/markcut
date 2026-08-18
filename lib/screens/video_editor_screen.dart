@@ -7601,8 +7601,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       onPointerSignal: _wheelZoom,
                       // 貼著頂端排，不置中：置中會讓時間軸浮在中間，
                       // 上面一塊死空間、下面又沒有固定的留白。
-                      // 底部墊 96：軌道再多，最下面永遠有一條空白帶
-                      // 可以抓著左右滑（那裡沒有片段可誤觸）
+                      // 底部墊 48：軌道再多，最下面永遠有一條空白帶
+                      // 可以抓著左右滑（96 被回報「捲到底留太大」，減半）
                       child: ConstrainedBox(
                         constraints: BoxConstraints(
                           minHeight: (box.maxHeight - 60).clamp(0.0, 1e9),
@@ -7610,7 +7610,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         child: Align(
                           alignment: Alignment.topCenter,
                           child: Padding(
-                            padding: const EdgeInsets.fromLTRB(10, 14, 10, 96),
+                            padding: const EdgeInsets.fromLTRB(10, 14, 10, 48),
                             // RepaintBoundary：時間軸的重繪與頁面其他部分互不打擾
                             child: RepaintBoundary(
                               child: TimelineEditor(
