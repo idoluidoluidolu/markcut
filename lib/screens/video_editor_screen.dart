@@ -2312,6 +2312,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     final t = cropToTransform(r, src.aspect, canvasAspect);
+    // 之後回報「裁了沒反應」時，先看這行有沒有出現、值對不對
+    Diag.note(
+      '裁切套用：scale=${t.scale.toStringAsFixed(3)} '
+      'px=${t.px.toStringAsFixed(3)} py=${t.py.toStringAsFixed(3)}',
+    );
     _pushUndo();
     setState(() {
       clip.scale = t.scale;
@@ -4831,11 +4836,38 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     showHint(context, t == null ? '已補起空隙' : '已整理第 ${t + 1} 軌');
   }
 
-  /// 刪掉整條軌道（軌上所有片段一起消失）
+  /// 刪掉整條軌道（軌上所有片段一起消失）。
+  /// 空軌也刪得掉：手動加的空白軌收回去、夾在中間的空軌讓上面遞補下來
   Future<void> _deleteTrack(int track) async {
     final n = _tl.onTrack(track).length;
     if (n == 0) {
-      showHint(context, '這一軌是空的');
+      if (track >= _tl.usedTracks) {
+        // 內容軌之外的空列：手動加的先收，收完剩的那條是常駐空軌
+        if (_extraBlankTracks > 0) {
+          setState(() {
+            _extraBlankTracks--;
+            if (_selTrack >= _tl.usedTracks + _extraBlankTracks) {
+              _selTrack = -1;
+            }
+          });
+          _saveDraft();
+          showHint(context, '已收起空白軌');
+        } else {
+          showHint(context, '這是常駐的空軌，放了素材會自動再長一條');
+        }
+        return;
+      }
+      // 夾在內容軌中間的空軌：沒東西可失去，不用確認
+      _pushUndo();
+      setState(() {
+        _mutedTracks.remove(track);
+        _remapMuted(_tl.removeTrack(track));
+        _sel = -1;
+        _selTrack = -1;
+      });
+      _resyncPlayback();
+      _saveDraft();
+      showHint(context, '已刪除空白軌');
       return;
     }
     final ok = await showConfirm(
@@ -5051,12 +5083,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           enabled: _clipboard != null,
         ),
         _menuItem('tidy', Icons.compress, '整理這一軌'),
-        _menuItem(
-          'delTrack',
-          Icons.delete_sweep_outlined,
-          '刪除整軌',
-          enabled: _tl.onTrack(track).isNotEmpty,
-        ),
+        // 空軌也能刪（收起空白軌／讓上面的軌遞補），所以不再依內容停用
+        _menuItem('delTrack', Icons.delete_sweep_outlined, '刪除整軌'),
       ],
     );
     if (!mounted) return;
@@ -6994,6 +7022,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           },
                                           onScaleEnd: (_) {
                                             _rtClearGuides();
+                                            // 拖的是片段的話，位置縮放要立刻
+                                            // 烘回合成——等併批的 900ms 就是
+                                            // 使用者說的「放開影片才跟上」
+                                            _compRefreshIfChanged();
                                             _saveDraft();
                                           },
                                           child: const SizedBox.expand(),

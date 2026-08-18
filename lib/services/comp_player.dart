@@ -69,6 +69,19 @@ class CompPlayer {
     for (final c in tl.clips) {
       if (tl.sourceOf(c).kind == ClipKind.mosaic) return '有馬賽克';
     }
+    // 圖片素材進不了合成（合成只裝得下影片軌），而系統的播放器圖層是
+    // 不透明的——墊在影片下層的圖片會被整片蓋黑，影片縮小移開也露不出來
+    for (final c in tl.clips) {
+      if (tl.sourceOf(c).kind == ClipKind.image) return '有圖片素材';
+    }
+    // 影片全部播完之後時間軸還有別的東西（圖片、文字拖得比影片長）：
+    // 合成的總長只到影片結尾，播放時鐘走到那裡就卡住原地跳針，
+    // 位置甚至會跑到比總長還大
+    var vidEnd = 0.0;
+    for (final c in vids) {
+      if (c.end > vidEnd) vidEnd = c.end;
+    }
+    if (tl.duration - vidEnd > 0.05) return '影片結束後還有其他素材';
     return null;
   }
 

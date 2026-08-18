@@ -507,6 +507,59 @@ void main() {
       ));
       expect(CompPlayer.whyNot(tl), '有馬賽克');
     });
+
+    test('有圖片素材就退回：墊在影片下層的圖片會被播放器圖層蓋黑', () {
+      final tl = base();
+      tl.sources.add(MediaSource(
+          path: '/p.png', name: 'p', kind: ClipKind.image, duration: 3600));
+      tl.clips.add(TimelineClip(
+        id: tl.nextId(),
+        sourceIndex: 1,
+        trimStart: 0,
+        trimEnd: 3,
+        offset: 0,
+        track: 0,
+      ));
+      expect(CompPlayer.whyNot(tl), '有圖片素材');
+    });
+
+    test('影片播完後面還有文字：合成只到影片結尾，時鐘會卡住', () {
+      final tl = base(); // 影片 0~5 秒
+      tl.sources.add(MediaSource(
+          path: '',
+          name: '哈囉',
+          kind: ClipKind.text,
+          duration: 3600,
+          textStyle: TextMark(text: '哈囉')));
+      tl.clips.add(TimelineClip(
+        id: tl.nextId(),
+        sourceIndex: 1,
+        trimStart: 0,
+        trimEnd: 9, // 文字拖到 9 秒，比影片長
+        offset: 0,
+        track: 1,
+      ));
+      expect(CompPlayer.whyNot(tl), '影片結束後還有其他素材');
+    });
+
+    test('文字跟影片一樣長（或更短）不影響合成', () {
+      final tl = base();
+      tl.sources.add(MediaSource(
+          path: '',
+          name: '哈囉',
+          kind: ClipKind.text,
+          duration: 3600,
+          textStyle: TextMark(text: '哈囉')));
+      tl.clips.add(TimelineClip(
+        id: tl.nextId(),
+        sourceIndex: 1,
+        trimStart: 0,
+        trimEnd: 5,
+        offset: 0,
+        track: 1,
+      ));
+      expect(CompPlayer.whyNot(tl), isNull);
+    });
   });
 
   group('覆寫（同軌不重疊）', () {
