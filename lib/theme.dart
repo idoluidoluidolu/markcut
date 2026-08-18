@@ -244,17 +244,18 @@ ThemeData buildStudioTheme() {
       iconColor: kIcon,
       textColor: kText,
     ),
-    // 抽屜：亮一階底＋深遮罩＋描邊＋把手（把手由各呼叫端開）
+    // 抽屜（A 案）：底色跟工作區同色，輪廓只靠上緣框線＋把手畫出來——
+    // 亮一階的底在 D 案的全黑工作區上太跳（使用者選定）
     bottomSheetTheme: BottomSheetThemeData(
-      backgroundColor: kPanelHi,
-      modalBackgroundColor: kPanelHi,
+      backgroundColor: kBg,
+      modalBackgroundColor: kBg,
       modalBarrierColor: Colors.black.withValues(alpha: 0.6),
-      elevation: 12,
+      elevation: 0,
       dragHandleColor: const Color(0xFF55555E),
       dragHandleSize: const Size(34, 4),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
-        side: BorderSide(color: Color(0xFF33333B)),
+        side: BorderSide(color: kBorder),
       ),
     ),
     progressIndicatorTheme: const ProgressIndicatorThemeData(

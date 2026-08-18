@@ -1101,11 +1101,11 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   }
 
   /// 儲存範本（更新選中的範本，或另存新範本）。
-  /// 排在內容最後、跟著捲（不釘死）：白色小膠囊靠右，跟照片編輯的
-  /// 浮動列同一種按鈕語言。
+  /// 排在內容最後（短分頁被推到底、長分頁跟著捲）：白色小膠囊置中，
+  /// 跟照片編輯的浮動列同一種按鈕語言。
   /// 照片編輯器把這顆移到底部跟「輸出」並排，所以可隱藏
   Widget _saveBar() => Align(
-        alignment: Alignment.centerRight,
+        alignment: Alignment.center,
         child: FilledButton.icon(
           onPressed: _savePreset,
           style: FilledButton.styleFrom(
