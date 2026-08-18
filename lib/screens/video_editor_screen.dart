@@ -44,7 +44,7 @@ import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
 
 /// 「加素材」選單的項目（錄旁白不是一種素材類型，所以另立一個 enum）
-enum _AddKind { video, image, text, wm, audio, record, mosaic, blankTrack }
+enum _AddKind { video, image, text, wm, audio, record, mosaic, blankTrack, paste }
 
 const kSpeedOptions = <double>[0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
 
@@ -1990,6 +1990,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     ),
                   ),
                 ),
+              // 剪貼簿有東西才出現：選單已經夠長，空的時候多一個
+              // 按了沒反應的項目只是干擾
+              if (_clipboard != null) ...[
+                group('剪貼簿'),
+                item(context, Icons.content_paste, '貼上', _AddKind.paste),
+              ],
               group('加在畫面上'),
               item(context, Icons.title, '文字', _AddKind.text),
               item(context, Icons.branding_watermark, '浮水印', _AddKind.wm),
@@ -2025,6 +2031,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         await _recordVoice(track);
       case _AddKind.mosaic:
         _addMosaicClip(track);
+      case _AddKind.paste:
+        // 貼到「點下去的那一軌」的播放頭位置。空軌點進來最常做的事
+        // 就是把剛複製的東西放上去，卻要先關掉選單、再長按空白處找
+        // 「貼上」——那一步沒有理由存在
+        await _pasteClipboard(at: _position, track: track);
       case _AddKind.blankTrack:
         // 多畫一條空軌，之後可以貼上或拖片段進去。
         // 選取直接落在新那條上：原本只設了 _selTrack，但片段的選取優先
