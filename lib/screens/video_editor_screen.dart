@@ -7793,8 +7793,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     final pos = _tlVScroll.hasClients
                                         ? _tlVScroll.position
                                         : null;
-                                    final more = pos == null
-                                        // 第一幀還沒掛上：用軌數推
+                                    // 掛上了但還沒量好尺寸時，
+                                    // maxScrollExtent 會炸 null——一樣用軌數推
+                                    final ready = pos != null &&
+                                        pos.hasContentDimensions;
+                                    final more = !ready
                                         ? (_tl.usedTracks +
                                                 1 +
                                                 _extraBlankTracks) >
