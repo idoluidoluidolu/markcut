@@ -49,36 +49,38 @@ class NativeExport {
 
   /// 這份匯出能不能交給系統。回 null＝可以，回字串＝不行的理由。
   ///
-  /// 條件嚴格是刻意的：系統的合成是「一條軌照順序播、圖層疊上去」的
-  /// 模型。馬賽克要逐格重算像素、照片素材要當成靜態畫面軌、子母畫面
-  /// 要同時疊兩層影片——這三種目前只有 FFmpeg 那條路做得到，硬塞的
-  /// 結果是成品跟預覽不一樣，比慢更糟
+  /// 馬賽克／照片素材／子母畫面／調色現在都由 GPU 合成器
+  ///（CIExportCompositor 的圖層模式）處理，不再退回 FFmpeg——
+  /// 那條路解 4K HDR 要做軟體色調映射，一格 100MB，正是匯出閃退的
+  /// 來源。倒轉在進到這裡之前就被預先渲染成「已倒好」的暫存檔
+  ///（見 exportVideoToGallery），這裡的檢查只是保險
   static String? whyNot(ExportSpec spec) {
     final vids = <TimelineClip>[];
     for (final c in spec.clips) {
-      final kind = spec.sources[c.sourceIndex].kind;
-      switch (kind) {
-        case ClipKind.video:
-          vids.add(c);
-        case ClipKind.audio:
-        case ClipKind.text:
-        case ClipKind.wm:
-          break;
-        case ClipKind.image:
-          return '有照片素材';
-        case ClipKind.mosaic:
-          return '有馬賽克';
-      }
-      if (c.reverse) return '有倒轉的片段';
+      if (spec.sources[c.sourceIndex].kind == ClipKind.video) vids.add(c);
+      if (c.reverse) return '有倒轉的片段（前置處理漏了）';
     }
     if (vids.isEmpty) return '沒有影片片段';
-    vids.sort((a, b) => a.offset.compareTo(b.offset));
-    for (var i = 1; i < vids.length; i++) {
-      if (vids[i].offset < vids[i - 1].end - 0.001) {
-        return '同一時刻有兩層畫面（子母畫面）';
+    return null;
+  }
+
+  /// 這份匯出需不需要圖層模式（多軌合成）。
+  /// 需要的話 Swift 端會強制走 CI 合成器、開多條視訊軌
+  static bool needsLayered(ExportSpec spec) {
+    final vids = <TimelineClip>[];
+    for (final c in spec.clips) {
+      final kind = spec.sources[c.sourceIndex].kind;
+      if (kind == ClipKind.image || kind == ClipKind.mosaic) return true;
+      if (kind == ClipKind.video) {
+        if (c.color.hasColor) return true;
+        vids.add(c);
       }
     }
-    return null;
+    vids.sort((a, b) => a.offset.compareTo(b.offset));
+    for (var i = 1; i < vids.length; i++) {
+      if (vids[i].offset < vids[i - 1].end - 0.001) return true;
+    }
+    return false;
   }
 
   /// 匯出到 [dest]。成功回 null，失敗回原因字串（取消回「已取消」）
@@ -104,6 +106,8 @@ class NativeExport {
         'start': c.trimStart,
         'end': c.trimEnd,
         'gap': (c.offset - cursor).clamp(0.0, 1e6),
+        'offset': c.offset,
+        'track': c.track,
         'volume': c.volume.clamp(0.0, 1.0),
         'speed': c.speed,
         'fadeIn': c.fadeIn,
@@ -112,9 +116,50 @@ class NativeExport {
         'px': c.px,
         'py': c.py,
         'mirror': c.mirror,
+        // 調色：預覽的 4x5 矩陣原封送過去，Swift 端在 gamma 域套同一顆
+        'color': c.color.hasColor ? c.color.matrix : null,
       });
       cursor = c.end;
     }
+
+    // 照片素材與馬賽克（圖層模式）。時間一律換算成輸出秒數——
+    // 它們不進合成軌，整體變速不會自動套到它們身上
+    final stills = <Map<String, dynamic>>[];
+    final mosaics = <Map<String, dynamic>>[];
+    for (final c in spec.clips) {
+      final src = spec.sources[c.sourceIndex];
+      if (src.kind == ClipKind.image) {
+        stills.add({
+          'path': src.path,
+          'start': c.offset / sp,
+          'end': c.end / sp,
+          'track': c.track,
+          'px': c.px,
+          'py': c.py,
+          'scale': c.scale,
+          'mirror': c.mirror,
+          'fadeIn': c.fadeIn / sp,
+          'fadeOut': c.fadeOut / sp,
+          'color': c.color.hasColor ? c.color.matrix : null,
+        });
+      } else if (src.kind == ClipKind.mosaic) {
+        final ms = src.mosaicStyle ?? MosaicStyle();
+        mosaics.add({
+          'start': c.offset / sp,
+          'end': c.end / sp,
+          'track': c.track,
+          'px': c.px,
+          'py': c.py,
+          'scale': c.scale,
+          'type': ms.type,
+          'strength': ms.strength,
+          'color': ms.color,
+          'feather': ms.feather,
+        });
+      }
+    }
+    // 馬賽克照軌道由下而上疊（跟 FFmpeg 同順序）
+    mosaics.sort((a, b) => (a['track'] as int).compareTo(b['track'] as int));
 
     // 純聲音素材（配樂）：可以跟影片重疊，位置照時間軸絕對秒數
     final audios = [
@@ -178,6 +223,10 @@ class NativeExport {
         'speed': sp,
         'dest': dest,
         'ci': Diag.ciExport.value,
+        'layered': needsLayered(spec),
+        'stills': stills,
+        'mosaics': mosaics,
+        'timelineDuration': spec.timelineDuration,
       });
       if (err != null) Diag.note('原生匯出失敗：$err');
       return err;

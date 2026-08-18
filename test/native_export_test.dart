@@ -3,9 +3,12 @@ import 'package:markcut/models/timeline.dart';
 import 'package:markcut/services/native_export.dart';
 import 'package:markcut/services/video_processor.dart';
 
-/// 原生匯出走的是「一條軌照順序播、整版 PNG 疊上去」的模型。
-/// 做不到的一定要退回 FFmpeg——放行一個做不到的，成品就跟預覽不一樣，
-/// 而使用者要等整支匯完才會發現。這幾條界線用測試釘死
+/// 原生匯出的守門邏輯。
+///
+/// 馬賽克／照片／子母畫面／調色現在由 GPU 合成器的圖層模式處理
+///（whyNot 放行、needsLayered 開圖層模式）；判斷錯的代價是退回
+/// FFmpeg 的 4K HDR 軟體路——慢、而且是匯出閃退的元凶，
+/// 這幾條界線用測試釘死
 void main() {
   MediaSource vid(String name, {double dur = 5}) => MediaSource(
     path: '/tmp/$name.mp4',
@@ -99,7 +102,7 @@ void main() {
       expect(NativeExport.whyNot(s), isNull);
     });
 
-    test('馬賽克要退回 FFmpeg（要逐格重算像素）', () {
+    test('馬賽克可以了（GPU 圖層模式），而且會開圖層模式', () {
       final s = spec(
         [vid('a'), of(ClipKind.mosaic)],
         [
@@ -107,10 +110,11 @@ void main() {
           clip(id: 2, srcIndex: 1, track: 1),
         ],
       );
-      expect(NativeExport.whyNot(s), '有馬賽克');
+      expect(NativeExport.whyNot(s), isNull);
+      expect(NativeExport.needsLayered(s), isTrue);
     });
 
-    test('照片素材要退回 FFmpeg（靜態畫面不能插進合成軌）', () {
+    test('照片素材可以了（靜態圖層），而且會開圖層模式', () {
       final s = spec(
         [vid('a'), of(ClipKind.image)],
         [
@@ -118,15 +122,16 @@ void main() {
           clip(id: 2, srcIndex: 1, offset: 5),
         ],
       );
-      expect(NativeExport.whyNot(s), '有照片素材');
+      expect(NativeExport.whyNot(s), isNull);
+      expect(NativeExport.needsLayered(s), isTrue);
     });
 
-    test('倒轉要退回 FFmpeg（播放器沒辦法倒著播）', () {
+    test('倒轉在前置處理沒跑到時要擋（保險）', () {
       final s = spec([vid('a')], [clip(id: 1, reverse: true)]);
-      expect(NativeExport.whyNot(s), '有倒轉的片段');
+      expect(NativeExport.whyNot(s), isNotNull);
     });
 
-    test('子母畫面要退回 FFmpeg（同一時刻兩層畫面）', () {
+    test('子母畫面可以了（多軌合成），而且會開圖層模式', () {
       final s = spec(
         [vid('a'), vid('b')],
         [
@@ -134,7 +139,26 @@ void main() {
           clip(id: 2, srcIndex: 1, offset: 2, track: 1),
         ],
       );
-      expect(NativeExport.whyNot(s), '同一時刻有兩層畫面（子母畫面）');
+      expect(NativeExport.whyNot(s), isNull);
+      expect(NativeExport.needsLayered(s), isTrue);
+    });
+
+    test('調過色的影片會開圖層模式（以前原生路默默丟掉調色）', () {
+      final c = clip(id: 1)..color.saturation = 1.6;
+      final s = spec([vid('a')], [c]);
+      expect(NativeExport.whyNot(s), isNull);
+      expect(NativeExport.needsLayered(s), isTrue);
+    });
+
+    test('單純的時間軸不開圖層模式（走驗證過的舊路）', () {
+      final s = spec(
+        [vid('a'), vid('b')],
+        [
+          clip(id: 1, srcIndex: 0),
+          clip(id: 2, srcIndex: 1, offset: 5),
+        ],
+      );
+      expect(NativeExport.needsLayered(s), isFalse);
     });
 
     test('只有文字沒有影片：退回 FFmpeg（合成軌是空的）', () {
@@ -151,6 +175,7 @@ void main() {
         ],
       );
       expect(NativeExport.whyNot(s), isNull);
+      expect(NativeExport.needsLayered(s), isFalse);
     });
   });
 }

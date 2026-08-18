@@ -1400,8 +1400,9 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   // 峰值 1.7GB，那正是匯出閃退的來源）、跟預覽是同一份合成所以顏色
   // 天生一致、而且快好幾倍。
   //
-  // 做不到的情況（馬賽克、照片素材、子母畫面、倒轉）原樣退回下面的
-  // FFmpeg——這條路是加速，不是取代，任何一種舊功能都不能因此少掉
+  // 馬賽克／照片素材／子母畫面／調色由 GPU 合成器的圖層模式處理，
+  // 倒轉在上面已預先渲染成暫存檔。原生路真的失敗時照舊退回 FFmpeg
+  // ——這條路是加速，不是取代，任何一種舊功能都不能因此少掉
   if (Platform.isIOS && await NativeExport.available) {
     final why = NativeExport.whyNot(spec);
     if (why != null) {

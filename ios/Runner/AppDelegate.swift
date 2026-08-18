@@ -126,49 +126,116 @@ final class CIOverlaySpec {
   }
 }
 
-/// 一段指令：一個來源軌（或沒有＝黑底）＋變形＋淡入淡出＋整批疊加物
+/// 一層畫面：一段影片軌（或一張已定位好的靜態圖）＋變形＋淡入淡出＋調色。
+///
+/// start/end 是這一層自己的完整顯示窗（輸出秒）。淡入淡出照它算，
+/// 不照指令的範圍——指令會被圖層邊界切成好幾段，照指令算的話
+/// 每一段都會重新淡一次
+final class CILayerSpec {
+  let trackID: CMPersistentTrackID  // Invalid ＝ 靜態圖層（still 有值）
+  let still: CIImage?
+  let transform: CGAffineTransform
+  let srcHeight: CGFloat
+  let start: Double
+  let end: Double
+  let fadeIn: Double
+  let fadeOut: Double
+  /// 調色：跟預覽同一顆 4x5 矩陣（列主序 20 個數，位移是 0~255 階）。
+  /// nil＝沒調
+  let colorMatrix: [Double]?
+
+  init(
+    trackID: CMPersistentTrackID, still: CIImage?,
+    transform: CGAffineTransform, srcHeight: CGFloat,
+    start: Double, end: Double, fadeIn: Double, fadeOut: Double,
+    colorMatrix: [Double]?
+  ) {
+    self.trackID = trackID
+    self.still = still
+    self.transform = transform
+    self.srcHeight = srcHeight
+    self.start = start
+    self.end = end
+    self.fadeIn = fadeIn
+    self.fadeOut = fadeOut
+    self.colorMatrix = colorMatrix
+  }
+
+  /// 這一格的不透明度（線性淡入淡出）
+  func alpha(at t: Double) -> Double {
+    var a = 1.0
+    if fadeIn > 0.01 { a = min(a, ((t - start) / fadeIn).clamped01()) }
+    if fadeOut > 0.01 { a = min(a, ((end - t) / fadeOut).clamped01()) }
+    return a
+  }
+}
+
+/// 一塊馬賽克：畫布座標（左上原點）的方框＋樣式＋顯示窗。
+/// 區域數學跟 FFmpeg 的 layerBox(srcAspect=1) 同一個答案：
+/// 貼合後是「畫布短邊 × scale」的正方形，中心在 (px, py)
+final class CIMosaicSpec {
+  let rect: CGRect
+  let type: Int  // 0=像素化 1=模糊 2=純色遮蓋
+  let strength: Double
+  let color: CIColor
+  let feather: Double
+  let start: Double
+  let end: Double
+
+  init?(_ m: [String: Any], canvas: CGSize) {
+    let px = m["px"] as? Double ?? 0.5
+    let py = m["py"] as? Double ?? 0.5
+    let scale = m["scale"] as? Double ?? 1
+    let aspect = canvas.width / canvas.height
+    let side = (aspect <= 1 ? canvas.width : canvas.height) * CGFloat(scale)
+    guard side > 2 else { return nil }
+    rect = CGRect(
+      x: CGFloat(px) * canvas.width - side / 2,
+      y: CGFloat(py) * canvas.height - side / 2,
+      width: side, height: side)
+    type = m["type"] as? Int ?? 0
+    strength = min(1, max(0, m["strength"] as? Double ?? 0.5))
+    let argb = m["color"] as? Int ?? 0xFF00_0000
+    color = CIColor(
+      red: CGFloat((argb >> 16) & 0xFF) / 255.0,
+      green: CGFloat((argb >> 8) & 0xFF) / 255.0,
+      blue: CGFloat(argb & 0xFF) / 255.0)
+    feather = min(1, max(0, m["feather"] as? Double ?? 0))
+    start = m["start"] as? Double ?? 0
+    end = m["end"] as? Double ?? 0
+    if end <= start { return nil }
+  }
+}
+
+/// 一段指令：這段時間裡「有哪些圖層、哪些馬賽克」固定不變。
+/// 圖層照 z 序（時間軸軌道由下而上）排好，馬賽克疊在圖層之上、
+/// 文字／浮水印 PNG 疊在最上——跟 FFmpeg 那條路同一個疊法
 final class CIExportInstruction: NSObject, AVVideoCompositionInstructionProtocol {
   let timeRange: CMTimeRange
   let enablePostProcessing = false
   let containsTweening = true
   let passthroughTrackID = kCMPersistentTrackID_Invalid
   var requiredSourceTrackIDs: [NSValue]? {
-    trackID == kCMPersistentTrackID_Invalid
-      ? nil : [NSNumber(value: trackID)]
+    let ids = layers.compactMap { l -> NSNumber? in
+      l.trackID == kCMPersistentTrackID_Invalid
+        ? nil : NSNumber(value: l.trackID)
+    }
+    return ids.isEmpty ? nil : ids
   }
 
-  let trackID: CMPersistentTrackID
-  /// AVFoundation 座標（左上原點、y 往下）的變形，跟舊路徑同一顆
-  let transform: CGAffineTransform
-  /// 來源緩衝的高（座標翻轉用；黑底段給 1）
-  let srcHeight: CGFloat
-  let fadeIn: Double
-  let fadeOut: Double
+  let layers: [CILayerSpec]
+  let mosaics: [CIMosaicSpec]
   let overlays: [CIOverlaySpec]
 
   init(
-    timeRange: CMTimeRange, trackID: CMPersistentTrackID,
-    transform: CGAffineTransform, srcHeight: CGFloat,
-    fadeIn: Double, fadeOut: Double, overlays: [CIOverlaySpec]
+    timeRange: CMTimeRange, layers: [CILayerSpec],
+    mosaics: [CIMosaicSpec], overlays: [CIOverlaySpec]
   ) {
     self.timeRange = timeRange
-    self.trackID = trackID
-    self.transform = transform
-    self.srcHeight = srcHeight
-    self.fadeIn = fadeIn
-    self.fadeOut = fadeOut
+    self.layers = layers
+    self.mosaics = mosaics
     self.overlays = overlays
     super.init()
-  }
-
-  /// 這一格的不透明度（線性淡入淡出，跟 opacity() 同一條公式）
-  func alpha(at t: Double) -> Double {
-    var a = 1.0
-    let s = timeRange.start.seconds
-    let e = timeRange.end.seconds
-    if fadeIn > 0.01 { a = min(a, ((t - s) / fadeIn).clamped01()) }
-    if fadeOut > 0.01 { a = min(a, ((e - t) / fadeOut).clamped01()) }
-    return a
   }
 }
 
@@ -197,6 +264,82 @@ final class CIExportCompositor: NSObject, AVVideoCompositing {
   func renderContextChanged(_ newContext: AVVideoCompositionRenderContext) {}
   func cancelAllPendingVideoCompositionRequests() {}
 
+  /// 調色：預覽的 4x5 矩陣是在「已編碼（gamma）」的像素值上做的，
+  /// Core Image 的工作空間是線性——直接套會跟預覽對不上。先轉去
+  /// sRGB 編碼域、套矩陣、再轉回來，數學才跟預覽／FFmpeg 一字不差
+  private func applyColor(_ img: CIImage, _ m: [Double]) -> CIImage {
+    guard m.count >= 20 else { return img }
+    var i = img.applyingFilter("CILinearToSRGBToneCurve")
+    i = i.applyingFilter(
+      "CIColorMatrix",
+      parameters: [
+        "inputRVector": CIVector(
+          x: CGFloat(m[0]), y: CGFloat(m[1]), z: CGFloat(m[2]), w: 0),
+        "inputGVector": CIVector(
+          x: CGFloat(m[5]), y: CGFloat(m[6]), z: CGFloat(m[7]), w: 0),
+        "inputBVector": CIVector(
+          x: CGFloat(m[10]), y: CGFloat(m[11]), z: CGFloat(m[12]), w: 0),
+        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+        "inputBiasVector": CIVector(
+          x: CGFloat(m[4] / 255.0), y: CGFloat(m[9] / 255.0),
+          z: CGFloat(m[14] / 255.0), w: 0),
+      ])
+    return i.applyingFilter("CISRGBToneCurveToLinear")
+  }
+
+  /// 馬賽克。柔邊跟 FFmpeg 同一套同心圈：由外到內 6 圈漸強，
+  /// 外圈幾乎是原畫面，邊界就沒有一條硬線
+  private func applyMosaic(
+    _ mz: CIMosaicSpec, to base: CIImage, canvas: CGSize
+  ) -> CIImage {
+    // rect 是左上原點座標，翻成 Core Image 的左下
+    var r = CGRect(
+      x: mz.rect.minX, y: canvas.height - mz.rect.maxY,
+      width: mz.rect.width, height: mz.rect.height)
+    r = r.intersection(CGRect(origin: .zero, size: canvas))
+    guard r.width > 2, r.height > 2 else { return base }
+
+    func patch(_ region: CGRect, _ k: Double) -> CIImage {
+      switch mz.type {
+      case 2:
+        return CIImage(color: mz.color).cropped(to: region)
+      case 1:
+        // 濃度 → FFmpeg 的縮小倍數（2~14），拿它當高斯半徑的基準
+        let down = 2.0 + mz.strength * 12.0
+        return base.clampedToExtent()
+          .applyingFilter(
+            "CIGaussianBlur", parameters: ["inputRadius": down * k])
+          .cropped(to: region)
+      default:
+        // 濃度 → 橫向格數（26~6，跟 FFmpeg 同一條換算）
+        let cells = min(40.0, max(4.0, 26.0 - 20.0 * mz.strength))
+        let cell = max(2.0, Double(r.width) / cells * k)
+        return base.clampedToExtent()
+          .applyingFilter(
+            "CIPixellate",
+            parameters: [
+              "inputScale": cell,
+              "inputCenter": CIVector(x: region.minX, y: region.minY),
+            ])
+          .cropped(to: region)
+      }
+    }
+
+    let margin = mz.feather * 0.35 * Double(min(r.width, r.height))
+    var out = base
+    if margin >= 8, mz.type != 2 {
+      for i in 1...6 {
+        let inset = CGFloat(margin * Double(i - 1) / 5.0)
+        let region = r.insetBy(dx: inset, dy: inset)
+        guard region.width > 2, region.height > 2 else { break }
+        out = patch(region, Double(i) / 6.0).composited(over: out)
+      }
+    } else {
+      out = patch(r, 1).composited(over: out)
+    }
+    return out
+  }
+
   func startRequest(_ req: AVAsynchronousVideoCompositionRequest) {
     queue.async {
       autoreleasepool {
@@ -213,38 +356,56 @@ final class CIExportCompositor: NSObject, AVVideoCompositing {
         var out = CIImage(color: CIColor(red: 0, green: 0, blue: 0))
           .cropped(to: canvasRect)
         let t = req.compositionTime.seconds
-        if ins.trackID != kCMPersistentTrackID_Invalid,
-          let buf = req.sourceFrame(byTrackID: ins.trackID)
-        {
-          // 變形是「左上原點、y 往下」的 AVFoundation 座標，Core Image
-          // 是「左下原點、y 往上」：先把來源翻成 y 往下、套變形、再翻回
-          let flipSrc = CGAffineTransform(
-            a: 1, b: 0, c: 0, d: -1, tx: 0, ty: ins.srcHeight)
-          let flipCanvas = CGAffineTransform(
-            a: 1, b: 0, c: 0, d: -1, tx: 0, ty: size.height)
-          // HDR（HLG/PQ）來源：開系統的色調映射轉成 SDR，跟相簿、
-          // 跟內建合成器同一套曲線。SDR 來源開著沒有影響
-          let base: CIImage
-          if #available(iOS 14.1, *) {
-            base = CIImage(
-              cvPixelBuffer: buf, options: [.toneMapHDRtoSDR: true])
+        let flipCanvas = CGAffineTransform(
+          a: 1, b: 0, c: 0, d: -1, tx: 0, ty: size.height)
+
+        for layer in ins.layers {
+          var img: CIImage
+          if layer.trackID != kCMPersistentTrackID_Invalid {
+            guard let buf = req.sourceFrame(byTrackID: layer.trackID) else {
+              continue
+            }
+            // HDR（HLG/PQ）來源：開系統的色調映射轉成 SDR，跟相簿、
+            // 跟內建合成器同一套曲線。SDR 來源開著沒有影響
+            let base: CIImage
+            if #available(iOS 14.1, *) {
+              base = CIImage(
+                cvPixelBuffer: buf, options: [.toneMapHDRtoSDR: true])
+            } else {
+              base = CIImage(cvPixelBuffer: buf)
+            }
+            // 變形是「左上原點、y 往下」的 AVFoundation 座標，Core Image
+            // 是「左下原點、y 往上」：先把來源翻成 y 往下、套變形、再翻回
+            let flipSrc = CGAffineTransform(
+              a: 1, b: 0, c: 0, d: -1, tx: 0, ty: layer.srcHeight)
+            img = base.transformed(
+              by: flipSrc.concatenating(layer.transform)
+                .concatenating(flipCanvas))
+          } else if let still = layer.still {
+            img = still  // 靜態圖層在建圖時就定位好了
           } else {
-            base = CIImage(cvPixelBuffer: buf)
+            continue
           }
-          var img = base.transformed(
-            by: flipSrc.concatenating(ins.transform).concatenating(flipCanvas))
-          let a = ins.alpha(at: t)
+          if let m = layer.colorMatrix {
+            img = self.applyColor(img, m)
+          }
+          let a = layer.alpha(at: t)
           if a < 0.999 {
-            // 淡入淡出＝把 RGB 往黑壓（背景就是黑的，效果等同透明度）
+            // 淡入淡出＝RGBA 一起乘（premultiplied 直接壓係數）：
+            // 疊在下層畫面上就是正確的交叉淡化，疊在黑底上等同變暗
             img = img.applyingFilter(
               "CIColorMatrix",
               parameters: [
                 "inputRVector": CIVector(x: CGFloat(a), y: 0, z: 0, w: 0),
                 "inputGVector": CIVector(x: 0, y: CGFloat(a), z: 0, w: 0),
                 "inputBVector": CIVector(x: 0, y: 0, z: CGFloat(a), w: 0),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: CGFloat(a)),
               ])
           }
           out = img.cropped(to: canvasRect).composited(over: out)
+        }
+        for mz in ins.mosaics where t >= mz.start && t < mz.end {
+          out = self.applyMosaic(mz, to: out, canvas: size)
         }
         for ov in ins.overlays {
           if let o = ov.frame(at: t, canvas: size) {
@@ -505,11 +666,19 @@ final class AtomicFlag {
     let audios = a["audios"] as? [[String: Any]] ?? []
     let overlays = a["overlays"] as? [[String: Any]] ?? []
     let globalSpeed = max(0.05, a["speed"] as? Double ?? 1)
+    // 圖層模式：子母畫面／照片素材／馬賽克／調色。這些要每格在 GPU 上
+    // 疊，一律走 CI 合成器；沒有這些的簡單匯出照舊走驗證過的舊路
+    let layered = a["layered"] as? Bool ?? false
+    let stillsIn = a["stills"] as? [[String: Any]] ?? []
+    let mosaicsIn = a["mosaics"] as? [[String: Any]] ?? []
+    // 時間軸總長（秒）：圖片素材可能比最後一段影片還晚結束，
+    // 合成要補空白撐到這裡，不然片尾的圖會被切掉
+    let timelineDur = a["timelineDuration"] as? Double ?? 0
     // GPU 合成（見 CIExportCompositor）。關掉＝退回 CoreAnimationTool
     // 舊路徑（實驗開關，成品有異狀時的備援）。
     // 沒有疊加物時不走：那種匯出本來就沒有 CoreAnimationTool 的瓶頸，
     // 標準路徑（layer instruction）是純硬體，CI 反而多一次像素格式轉換
-    var useCI = (a["ci"] as? Bool ?? true) && !overlays.isEmpty
+    var useCI = layered || ((a["ci"] as? Bool ?? true) && !overlays.isEmpty)
     // HDR 來源一律不交給自訂合成器（見下面的 hasHDR）
     var hasHDR = false
     let canvas = CGSize(width: CGFloat(outW), height: CGFloat(outH))
@@ -522,6 +691,26 @@ final class AtomicFlag {
     else {
       done("建不出視訊軌")
       return
+    }
+    // 圖層模式的多條視訊軌：跟聲音同一套「找一條排得下的，沒有就開新的」
+    var vTracks: [(track: AVMutableCompositionTrack, end: CMTime)] = [
+      (vTrack, .zero)
+    ]
+    func videoTrack(from t: CMTime) -> AVMutableCompositionTrack? {
+      for i in vTracks.indices where vTracks[i].end <= t {
+        return vTracks[i].track
+      }
+      guard
+        let nt = comp.addMutableTrack(
+          withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
+      else { return nil }
+      vTracks.append((nt, .zero))
+      return nt
+    }
+    func noteVideoEnd(_ track: AVMutableCompositionTrack, _ end: CMTime) {
+      for i in vTracks.indices where vTracks[i].track === track {
+        vTracks[i].end = end
+      }
     }
 
     // 聲音可能同時有好幾層（影片自己的聲音＋配樂），一條軌塞不下重疊的
@@ -597,7 +786,8 @@ final class AtomicFlag {
       [(
         range: CMTimeRange, transform: CGAffineTransform, size: CGSize,
         fadeIn: Double, fadeOut: Double, userScale: Double, px: Double,
-        py: Double, mirror: Bool
+        py: Double, mirror: Bool, trackID: CMPersistentTrackID, z: Int,
+        color: [Double]?
       )] = []
 
     for clip in clips {
@@ -613,9 +803,15 @@ final class AtomicFlag {
       let px = clip["px"] as? Double ?? 0.5
       let py = clip["py"] as? Double ?? 0.5
       let mirror = clip["mirror"] as? Bool ?? false
+      let clipOffset = clip["offset"] as? Double ?? 0
+      let zTrack = clip["track"] as? Int ?? 0
+      let colorM = clip["color"] as? [Double]
       if end - start <= 0.01 { continue }
 
-      if gap > 0.01 {
+      if layered {
+        // 圖層模式：照時間軸的絕對位置放，重疊就開新的一條軌
+        cursor = CMTime(seconds: clipOffset, preferredTimescale: scale)
+      } else if gap > 0.01 {
         let g = CMTime(seconds: gap, preferredTimescale: scale)
         vTrack.insertEmptyTimeRange(CMTimeRange(start: cursor, duration: g))
         cursor = cursor + g
@@ -649,10 +845,20 @@ final class AtomicFlag {
         abs(speed - 1) > 0.001
         ? CMTime(seconds: (end - start) / speed, preferredTimescale: scale)
         : range.duration
+      let destTrack = layered ? (videoTrack(from: cursor) ?? vTrack) : vTrack
       do {
-        try vTrack.insertTimeRange(range, of: src, at: cursor)
+        if layered {
+          // 軌道上一段的結尾跟這段的開頭之間要補空白（合成不接受洞）
+          let prevEnd = vTracks.first(where: { $0.track === destTrack })?.end
+            ?? .zero
+          if cursor > prevEnd {
+            destTrack.insertEmptyTimeRange(
+              CMTimeRange(start: prevEnd, end: cursor))
+          }
+        }
+        try destTrack.insertTimeRange(range, of: src, at: cursor)
         if outDur != range.duration {
-          vTrack.scaleTimeRange(
+          destTrack.scaleTimeRange(
             CMTimeRange(start: cursor, duration: range.duration),
             toDuration: outDur)
         }
@@ -660,6 +866,7 @@ final class AtomicFlag {
         done("素材接不進時間軸")
         return
       }
+      if layered { noteVideoEnd(destTrack, cursor + outDur) }
       if volume > 0.001 {
         addAudio(
           asset: asset, range: range, at: cursor, outDur: outDur,
@@ -669,9 +876,25 @@ final class AtomicFlag {
         range: CMTimeRange(start: cursor, duration: outDur),
         transform: src.preferredTransform, size: src.naturalSize,
         fadeIn: fadeIn, fadeOut: fadeOut, userScale: userScale, px: px,
-        py: py, mirror: mirror
+        py: py, mirror: mirror, trackID: destTrack.trackID, z: zTrack,
+        color: colorM
       ))
       cursor = cursor + outDur
+    }
+    if layered {
+      // 時間軸的尾巴可能是圖片素材：主軌補空白撐到總長，
+      // 不然合成在最後一段影片結束就收工了
+      var maxEnd = vTracks.map { $0.end }.max() ?? .zero
+      let want = CMTime(seconds: timelineDur, preferredTimescale: scale)
+      if want > maxEnd {
+        // 補在主軌自己的結尾之後（不是 maxEnd）：主軌可能比別的軌短，
+        // 從 maxEnd 開始補會在中間留一個洞，合成不接受
+        let ownEnd = vTracks[0].end
+        vTrack.insertEmptyTimeRange(CMTimeRange(start: ownEnd, end: want))
+        noteVideoEnd(vTrack, want)
+        maxEnd = want
+      }
+      cursor = maxEnd
     }
     if cursor.seconds <= 0.01 {
       done("時間軸沒有內容")
@@ -706,7 +929,17 @@ final class AtomicFlag {
       let whole = CMTimeRange(start: .zero, duration: cursor)
       let target = CMTime(
         seconds: cursor.seconds / globalSpeed, preferredTimescale: scale)
-      vTrack.scaleTimeRange(whole, toDuration: target)
+      if layered {
+        for vt in vTracks where vt.end > .zero {
+          vt.track.scaleTimeRange(
+            CMTimeRange(start: .zero, duration: vt.end),
+            toDuration: CMTime(
+              seconds: vt.end.seconds / globalSpeed,
+              preferredTimescale: scale))
+        }
+      } else {
+        vTrack.scaleTimeRange(whole, toDuration: target)
+      }
       for t in aTracks {
         t.track.scaleTimeRange(
           CMTimeRange(start: .zero, duration: t.end), toDuration: target)
@@ -742,6 +975,11 @@ final class AtomicFlag {
     if hasHDR {
       if #available(iOS 14.1, *) {
         // GPU 路自己會做色調映射，照走
+      } else if layered {
+        // 圖層模式沒有備援路（多軌合成只有 CI 做得到），
+        // 這種老系統直接退回 FFmpeg
+        done("HDR 圖層匯出需要 iOS 14.1")
+        return
       } else {
         useCI = false
       }
@@ -751,6 +989,9 @@ final class AtomicFlag {
     let ciOverlays: [CIOverlaySpec] =
       useCI ? overlays.compactMap { CIOverlaySpec($0, canvas: canvas) } : []
     var ciInstructions: [CIExportInstruction] = []
+    // 圖層模式：先把每一層收起來（z 序＝時間軸軌道，由下而上），
+    // 迴圈跑完再按邊界切段
+    var layerBasket: [(z: Int, order: Int, layer: CILayerSpec)] = []
     // 指令必須首尾相接把整條蓋滿：段落之間的空白（gap）也要有一段
     // 「黑底＋疊加物」的指令，缺一段合成就不合法
     var ciCursor = CMTime.zero
@@ -789,19 +1030,35 @@ final class AtomicFlag {
                 * canvas.width,
               y: canvas.height / 2 + CGFloat(seg.py - 0.5) * canvas.height))
       }
+      if layered {
+        layerBasket.append((
+          z: seg.z, order: layerBasket.count,
+          layer: CILayerSpec(
+            trackID: seg.trackID, still: nil, transform: t,
+            srcHeight: seg.size.height, start: seg.range.start.seconds,
+            end: seg.range.end.seconds, fadeIn: seg.fadeIn,
+            fadeOut: seg.fadeOut, colorMatrix: seg.color)
+        ))
+        continue
+      }
       if useCI {
         if seg.range.start > ciCursor {
           ciInstructions.append(
             CIExportInstruction(
               timeRange: CMTimeRange(start: ciCursor, end: seg.range.start),
-              trackID: kCMPersistentTrackID_Invalid, transform: .identity,
-              srcHeight: 1, fadeIn: 0, fadeOut: 0, overlays: ciOverlays))
+              layers: [], mosaics: [], overlays: ciOverlays))
         }
         ciInstructions.append(
           CIExportInstruction(
-            timeRange: seg.range, trackID: vTrack.trackID, transform: t,
-            srcHeight: seg.size.height, fadeIn: seg.fadeIn,
-            fadeOut: seg.fadeOut, overlays: ciOverlays))
+            timeRange: seg.range,
+            layers: [
+              CILayerSpec(
+                trackID: seg.trackID, still: nil, transform: t,
+                srcHeight: seg.size.height,
+                start: seg.range.start.seconds, end: seg.range.end.seconds,
+                fadeIn: seg.fadeIn, fadeOut: seg.fadeOut, colorMatrix: nil)
+            ],
+            mosaics: [], overlays: ciOverlays))
         ciCursor = seg.range.end
         continue
       }
@@ -825,13 +1082,109 @@ final class AtomicFlag {
       ins.layerInstructions = [li]
       instructions.append(ins)
     }
-    if useCI {
+    if layered {
+      // 照片素材：讀進來、照「貼合畫布 → 使用者變形」定位好，
+      // 座標翻轉也在這裡一次做完（見 CIExportCompositor 的說明）
+      for st in stillsIn {
+        guard let path = st["path"] as? String,
+          let ui = UIImage(contentsOfFile: path), let cg = ui.cgImage
+        else { continue }
+        var img = CIImage(cgImage: cg)
+        let dw = img.extent.width
+        let dh = img.extent.height
+        guard dw > 1, dh > 1 else { continue }
+        var t = CGAffineTransform.identity
+        if st["mirror"] as? Bool ?? false {
+          t = t.concatenating(CGAffineTransform(scaleX: -1, y: 1))
+            .concatenating(CGAffineTransform(translationX: dw, y: 0))
+        }
+        let k = min(canvas.width / dw, canvas.height / dh)
+        t = t.concatenating(CGAffineTransform(scaleX: k, y: k))
+          .concatenating(
+            CGAffineTransform(
+              translationX: (canvas.width - dw * k) / 2,
+              y: (canvas.height - dh * k) / 2))
+        let u = CGFloat(st["scale"] as? Double ?? 1)
+        let px = st["px"] as? Double ?? 0.5
+        let py = st["py"] as? Double ?? 0.5
+        if abs(Double(u) - 1) > 0.001 || abs(px - 0.5) > 0.001
+          || abs(py - 0.5) > 0.001
+        {
+          t = t
+            .concatenating(
+              CGAffineTransform(
+                translationX: -canvas.width / 2, y: -canvas.height / 2)
+            )
+            .concatenating(CGAffineTransform(scaleX: u, y: u))
+            .concatenating(
+              CGAffineTransform(
+                translationX: canvas.width / 2 + CGFloat(px - 0.5)
+                  * canvas.width,
+                y: canvas.height / 2 + CGFloat(py - 0.5) * canvas.height))
+        }
+        let flipSrc = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: dh)
+        let flipCanvas = CGAffineTransform(
+          a: 1, b: 0, c: 0, d: -1, tx: 0, ty: canvas.height)
+        img = img.transformed(
+          by: flipSrc.concatenating(t).concatenating(flipCanvas))
+        layerBasket.append((
+          z: st["track"] as? Int ?? 0, order: layerBasket.count,
+          layer: CILayerSpec(
+            trackID: kCMPersistentTrackID_Invalid, still: img,
+            transform: .identity, srcHeight: dh,
+            start: st["start"] as? Double ?? 0,
+            end: st["end"] as? Double ?? 0,
+            fadeIn: st["fadeIn"] as? Double ?? 0,
+            fadeOut: st["fadeOut"] as? Double ?? 0,
+            colorMatrix: st["color"] as? [Double])
+        ))
+      }
+      // z 序排定（同 z 保持進籃順序）
+      layerBasket.sort { $0.z != $1.z ? $0.z < $1.z : $0.order < $1.order }
+      let ciMosaics = mosaicsIn.compactMap { CIMosaicSpec($0, canvas: canvas) }
+
+      // 邊界切段：每一層／每塊馬賽克的頭尾都是切點，
+      // 切出來的每一段「有哪些層」固定，一段一條指令
+      let total = comp.duration
+      var qs = Set<Int64>()
+      func q(_ sec: Double) -> Int64 { Int64((sec * 600).rounded()) }
+      for e in layerBasket {
+        qs.insert(q(e.layer.start))
+        qs.insert(q(e.layer.end))
+      }
+      for m in ciMosaics {
+        qs.insert(q(m.start))
+        qs.insert(q(m.end))
+      }
+      let totalQ = q(total.seconds)
+      var cuts: [CMTime] = [.zero]
+      for v in qs.sorted() where v > 0 && v < totalQ {
+        cuts.append(CMTime(value: v, timescale: 600))
+      }
+      cuts.append(total)
+      var built: [CIExportInstruction] = []
+      for j in 0..<(cuts.count - 1) {
+        let a0 = cuts[j]
+        let b0 = cuts[j + 1]
+        if b0 <= a0 { continue }
+        let mid = (a0.seconds + b0.seconds) / 2
+        let act = layerBasket.filter {
+          mid >= $0.layer.start && mid < $0.layer.end
+        }
+        built.append(
+          CIExportInstruction(
+            timeRange: CMTimeRange(start: a0, end: b0),
+            layers: act.map { $0.layer }, mosaics: ciMosaics,
+            overlays: ciOverlays))
+      }
+      vc.customVideoCompositorClass = CIExportCompositor.self
+      vc.instructions = built
+    } else if useCI {
       if comp.duration > ciCursor {
         ciInstructions.append(
           CIExportInstruction(
             timeRange: CMTimeRange(start: ciCursor, end: comp.duration),
-            trackID: kCMPersistentTrackID_Invalid, transform: .identity,
-            srcHeight: 1, fadeIn: 0, fadeOut: 0, overlays: ciOverlays))
+            layers: [], mosaics: [], overlays: ciOverlays))
       }
       vc.customVideoCompositorClass = CIExportCompositor.self
       vc.instructions = ciInstructions
