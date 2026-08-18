@@ -822,10 +822,16 @@ class CheckerPainter extends CustomPainter {
     final a = Paint()..color = const Color(0xFF2A2A30);
     final b = Paint()..color = const Color(0xFF1B1B20);
     canvas.drawRect(Offset.zero & size, a);
-    for (var y = 0.0; y < size.height; y += cell) {
-      for (var x = 0.0; x < size.width; x += cell) {
-        if (((x / cell).floor() + (y / cell).floor()).isEven) continue;
-        canvas.drawRect(Rect.fromLTWH(x, y, cell, cell), b);
+    // 格數取整、格子大小跟著微調：固定 12px 一路鋪過去的話，
+    // 畫布邊長不是 12 的倍數時最後一排會剩半截格子，邊緣看起來缺一角
+    final nx = math.max(1, (size.width / cell).round());
+    final ny = math.max(1, (size.height / cell).round());
+    final cw = size.width / nx;
+    final ch = size.height / ny;
+    for (var iy = 0; iy < ny; iy++) {
+      for (var ix = 0; ix < nx; ix++) {
+        if ((ix + iy).isEven) continue;
+        canvas.drawRect(Rect.fromLTWH(ix * cw, iy * ch, cw, ch), b);
       }
     }
   }

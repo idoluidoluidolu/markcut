@@ -16,7 +16,9 @@ final ValueNotifier<bool> kPerfOverlay = ValueNotifier(false);
 // 整個工作區同一個近黑（Edits 的做法）：純黑只留給畫布，
 // 輸出範圍靠「畫布黑 vs 介面近黑」自己浮出來
 const kBg = Color(0xFF0C0F14);
-const kPanel = Color(0xFF111113); // 卡片/面板（深黑卡，最低調）
+// D 案「只留線框」：卡片完全不填色（跟背景同色），輪廓全靠框線。
+// 常數留著，哪天要回填色只改這一行
+const kPanel = kBg;
 const kPanelHi = Color(0xFF1A1A1C); // 面板亮階（icon 磚、選中底）
 const kBorder = Color(0xFF252528); // 邊線
 const kClipBorder = Color(0xFF2A2A2E); // 時間軸片段邊線
