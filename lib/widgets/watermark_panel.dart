@@ -571,7 +571,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   /// 置頂導覽列：圖示＋文字，跟 App 其他工具列同一種長相
   Widget _sectionNav() => Container(
         color: kPanel,
-        padding: const EdgeInsets.fromLTRB(8, 0, 8, 4),
+        padding: const EdgeInsets.fromLTRB(8, 3, 8, 5),
         child: Row(
           children: [
             for (var i = 0; i < _nav.length; i++)

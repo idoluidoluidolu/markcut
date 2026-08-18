@@ -699,7 +699,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     return Container(
       color: kPanel,
       // 跟面板那份導覽列同一組內距（往上收緊，間隔才不會太鬆）
-      padding: const EdgeInsets.fromLTRB(6, 0, 6, 4),
+      padding: const EdgeInsets.fromLTRB(6, 3, 6, 5),
       child: Row(
         children: [
           for (var i = 0; i < _phNav.length; i++)

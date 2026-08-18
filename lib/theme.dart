@@ -749,7 +749,7 @@ Widget undoRedoBar({
 
   // 不畫上下邊線：整個工作區走無邊線的風格，靠色階分層就夠了
   return Container(
-    padding: const EdgeInsets.symmetric(horizontal: 8),
+    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
     color: kBg,
     child: Row(
       children: [
