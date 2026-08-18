@@ -1195,7 +1195,9 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
   // 文字/浮水印/馬賽克：底色跟影片片段統一，前面小圖示分種類、
   // 文字樣式完全統一（同字級同色同字重）
   Widget overlayLabel(IconData icon, String text) => Container(
-    decoration: const BoxDecoration(gradient: kClipFill),
+    // 不畫底：底由外層的圓角容器統一畫（見 _ClipBox 的 decoration）。
+    // 這裡再鋪一層方形漸層的話，圓角處兩個形狀對不齊會露出縫，
+    // 看起來就是四角各缺一塊（實測回報）
     padding: const EdgeInsets.symmetric(horizontal: 8),
     alignment: Alignment.centerLeft,
     child: Row(
@@ -1228,12 +1230,9 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
     return overlayLabel(Icons.branding_watermark, src.name);
   }
   if (strip.isEmpty) {
-    // 縮圖還沒抽出來時的暫時底色，跟其他沒有縮圖的片段同一個
-    return Container(
-      decoration: const BoxDecoration(gradient: kClipFill),
-      child: const Center(
-        child: Icon(Icons.movie, size: 18, color: Color(0xFF6E6E78)),
-      ),
+    // 縮圖還沒抽出來時：底同樣交給外層畫，這裡只放圖示
+    return const Center(
+      child: Icon(Icons.movie, size: 18, color: Color(0xFF6E6E78)),
     );
   }
   // duration 讀不到（=0）時除法會變 NaN，floor() 直接炸——退回單張縮圖
@@ -1344,6 +1343,8 @@ class _ClipBlock extends StatelessWidget {
       // 馬賽克：帶點藍紫，跟文字/浮水印區分
       ClipKind.mosaic => (const Color(0xFF2A3038), const Color(0xFF7B8A9E)),
     };
+    // 有縮圖（影片／圖片抽到了幀）才用純色底；其餘一律漸層底
+    final hasStrip = filmstrip.isNotEmpty;
     final w = (clip.length * pxPerSec).clamp(22.0, double.infinity).toDouble();
 
     return Positioned(
@@ -1375,7 +1376,10 @@ class _ClipBlock extends StatelessWidget {
             Container(
               width: w,
               decoration: BoxDecoration(
-                color: fill,
+                // 有縮圖的片段用純色當底（縮圖會蓋滿）；沒有縮圖的
+                // 用漸層——底只在這裡畫一次，圓角就不會有接縫
+                color: hasStrip ? fill : null,
+                gradient: hasStrip ? null : kClipFill,
                 borderRadius: BorderRadius.circular(5),
                 // 底層永遠是同一條 1px 邊：邊框寬度會被算進內距，
                 // 選取時從 1 換成 2 的話裡面的縮圖就整個位移 1px，
