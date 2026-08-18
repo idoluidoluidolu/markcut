@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart'
     hide CheckerPainter;
 
+import '../services/photo_saver.dart';
 import '../theme.dart';
 import '../widgets/watermark_layer.dart' show CheckerPainter;
 
@@ -56,40 +57,19 @@ extension _BrushInfo on _Brush {
       };
 }
 
-/// 形狀工具：自由畫之外的基本形狀（拖一下＝從起點畫到終點）
-enum _Tool { free, line, rect, oval }
-
-extension _ToolInfo on _Tool {
-  String get label => switch (this) {
-        _Tool.free => '自由',
-        _Tool.line => '直線',
-        _Tool.rect => '方框',
-        _Tool.oval => '圓形',
-      };
-
-  IconData get icon => switch (this) {
-        _Tool.free => Icons.gesture,
-        _Tool.line => Icons.show_chart,
-        _Tool.rect => Icons.crop_square,
-        _Tool.oval => Icons.circle_outlined,
-      };
-}
-
-/// 一筆：路徑點＋顏色＋粗細＋筆刷＋工具。
-/// 形狀工具只用第一點和最後一點（起點→終點）
+/// 一筆：路徑點＋顏色＋粗細＋筆刷。
+/// 粗細不是 final——畫完還可以點選那一筆回頭調
 class _Stroke {
   final List<Offset> points;
   final Color color;
-  final double width;
+  double width;
   final _Brush brush;
-  final _Tool tool;
 
   _Stroke({
     required this.points,
     required this.color,
     required this.width,
     required this.brush,
-    required this.tool,
   });
 
   bool get eraser => brush == _Brush.eraser;
@@ -100,14 +80,31 @@ class _Stroke {
   /// 這一筆的外框（輸出裁圖用）
   Rect get bounds {
     final pad = drawWidth / 2 + 2;
-    if (tool != _Tool.free) {
-      return Rect.fromPoints(points.first, points.last).inflate(pad);
-    }
     var r = Rect.fromCircle(center: points.first, radius: pad);
     for (final p in points) {
       r = r.expandToInclude(Rect.fromCircle(center: p, radius: pad));
     }
     return r;
+  }
+
+  /// 點 [p] 到這一筆的最短距離（選取判定用）
+  double distanceTo(Offset p) {
+    if (points.length == 1) return (points.first - p).distance;
+    var best = double.infinity;
+    for (var i = 0; i < points.length - 1; i++) {
+      best = math.min(best, _distToSegment(p, points[i], points[i + 1]));
+      if (best == 0) break;
+    }
+    return best;
+  }
+
+  static double _distToSegment(Offset p, Offset a, Offset b) {
+    final ab = b - a;
+    final len2 = ab.dx * ab.dx + ab.dy * ab.dy;
+    if (len2 <= 1e-9) return (p - a).distance;
+    final t =
+        (((p - a).dx * ab.dx + (p - a).dy * ab.dy) / len2).clamp(0.0, 1.0);
+    return (p - (a + ab * t)).distance;
   }
 }
 
@@ -125,13 +122,16 @@ class _DrawScreenState extends State<_DrawScreen> {
   final List<_Stroke> _undone = [];
   _Stroke? _live;
 
+  /// 被選取的那一筆（-1＝沒有）。選了之後粗細滑桿調的就是它；
+  /// 點空白處或開始畫新的一筆＝取消
+  int _sel = -1;
+
   Color _color = Colors.white;
 
   /// 調色盤挑出來的自訂色（顯示成色列的第一顆）
   Color _custom = const Color(0xFF9B7BFF);
   double _width = 8;
   _Brush _brush = _Brush.pen;
-  _Tool _tool = _Tool.free;
 
   /// 白色放最前面：深色影片上最常用的就是白字白圖
   static const _palette = [
@@ -147,14 +147,49 @@ class _DrawScreenState extends State<_DrawScreen> {
 
   bool get _hasInk => _strokes.any((s) => !s.eraser);
 
+  _Stroke? get _selStroke =>
+      (_sel >= 0 && _sel < _strokes.length) ? _strokes[_sel] : null;
+
+  /// 點一下：先看有沒有點到既有的筆畫（選取它、回頭調粗細）；
+  /// 都沒點到——沒選取時畫一個圓點（原本的手感），有選取時只取消
+  void _tapAt(Offset p) {
+    var hit = -1;
+    // 後畫的在上面，從後往前找
+    for (var i = _strokes.length - 1; i >= 0; i--) {
+      final s = _strokes[i];
+      if (s.distanceTo(p) <= math.max(12, s.drawWidth / 2 + 6)) {
+        hit = i;
+        break;
+      }
+    }
+    if (hit >= 0) {
+      setState(() => _sel = hit == _sel ? -1 : hit);
+      return;
+    }
+    if (_sel != -1) {
+      setState(() => _sel = -1);
+      return;
+    }
+    // 點空白＝一個圓點
+    setState(() {
+      _strokes.add(_Stroke(
+        points: [p],
+        color: _color,
+        width: _width,
+        brush: _brush,
+      ));
+      _undone.clear();
+    });
+  }
+
   void _start(Offset p) {
     setState(() {
+      _sel = -1; // 開始畫新的一筆＝取消選取
       _live = _Stroke(
         points: [p],
         color: _color,
         width: _width,
         brush: _brush,
-        tool: _tool,
       );
     });
   }
@@ -162,17 +197,6 @@ class _DrawScreenState extends State<_DrawScreen> {
   void _move(Offset p) {
     final s = _live;
     if (s == null) return;
-    if (s.tool != _Tool.free) {
-      // 形狀：只追蹤終點（起點固定），拖到哪畫到哪
-      setState(() {
-        if (s.points.length == 1) {
-          s.points.add(p);
-        } else {
-          s.points[s.points.length - 1] = p;
-        }
-      });
-      return;
-    }
     // 距離太近的點丟掉：一筆幾千個點會讓重繪跟輸出都變慢
     if ((s.points.last - p).distance < 1.5) return;
     setState(() => s.points.add(p));
@@ -227,6 +251,21 @@ class _DrawScreenState extends State<_DrawScreen> {
     }
   }
 
+  /// 把畫好的透明 PNG 直接存進相簿（不進浮水印流程也拿得到圖）
+  Future<void> _saveToGallery() async {
+    final png = await _renderPng(_boardSize);
+    if (!mounted) return;
+    if (png == null) {
+      showHint(context, '還沒畫任何東西', error: true);
+      return;
+    }
+    final msg = await savePhotoPng(
+      png,
+      'draw_${DateTime.now().millisecondsSinceEpoch}',
+    );
+    if (mounted) showHint(context, msg, error: !msg.contains('已'));
+  }
+
   Future<void> _done(Size boardSize) async {
     final png = await _renderPng(boardSize);
     if (!mounted) return;
@@ -269,7 +308,7 @@ class _DrawScreenState extends State<_DrawScreen> {
     return data?.buffer.asUint8List();
   }
 
-  /// 筆刷／工具共用的小圓片選項
+  /// 筆刷選項的小圓片
   Widget _chip({
     required String label,
     required IconData icon,
@@ -312,6 +351,7 @@ class _DrawScreenState extends State<_DrawScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final sel = _selStroke;
     return Scaffold(
       backgroundColor: kBg,
       appBar: AppBar(
@@ -321,7 +361,10 @@ class _DrawScreenState extends State<_DrawScreen> {
             tooltip: '上一步',
             onPressed: _strokes.isEmpty
                 ? null
-                : () => setState(() => _undone.add(_strokes.removeLast())),
+                : () => setState(() {
+                      _undone.add(_strokes.removeLast());
+                      _sel = -1;
+                    }),
             icon: Icon(Icons.undo,
                 size: 20, color: _strokes.isEmpty ? kTextDim : kSelect),
           ),
@@ -334,6 +377,11 @@ class _DrawScreenState extends State<_DrawScreen> {
                 size: 20, color: _undone.isEmpty ? kTextDim : kSelect),
           ),
           IconButton(
+            tooltip: '存到相簿（透明背景 PNG）',
+            onPressed: !_hasInk ? null : _saveToGallery,
+            icon: const Icon(Icons.save_alt, size: 20),
+          ),
+          IconButton(
             tooltip: '全部清掉',
             onPressed: _strokes.isEmpty
                 ? null
@@ -342,8 +390,9 @@ class _DrawScreenState extends State<_DrawScreen> {
                         ..clear()
                         ..addAll(_strokes.reversed);
                       _strokes.clear();
+                      _sel = -1;
                     }),
-            icon: const Icon(Icons.delete_sweep_outlined, size: 20),
+            icon: const Icon(Icons.delete_outline, size: 20),
           ),
         ],
       ),
@@ -362,7 +411,9 @@ class _DrawScreenState extends State<_DrawScreen> {
                     return ClipRRect(
                       borderRadius: BorderRadius.circular(10),
                       child: GestureDetector(
-                        // 畫圖是單指的事；縮放手勢這一頁用不到
+                        // 畫圖是單指的事；縮放手勢這一頁用不到。
+                        // 點一下＝選取既有筆畫（回頭調粗細）或畫圓點
+                        onTapUp: (d) => _tapAt(d.localPosition),
                         onPanStart: (d) => _start(d.localPosition),
                         onPanUpdate: (d) => _move(d.localPosition),
                         onPanEnd: (_) => _end(),
@@ -371,6 +422,7 @@ class _DrawScreenState extends State<_DrawScreen> {
                           foregroundPainter: _BoardPainter(
                             strokes: _strokes,
                             live: _live,
+                            selected: _sel,
                           ),
                           size: size,
                         ),
@@ -385,7 +437,7 @@ class _DrawScreenState extends State<_DrawScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // 筆刷一排＋形狀一排：各自單選
+                  // 筆刷一排：單選
                   SizedBox(
                     height: 32,
                     child: ListView(
@@ -403,24 +455,6 @@ class _DrawScreenState extends State<_DrawScreen> {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 6),
-                  SizedBox(
-                    height: 32,
-                    child: ListView(
-                      scrollDirection: Axis.horizontal,
-                      children: [
-                        for (final t in _Tool.values) ...[
-                          _chip(
-                            label: t.label,
-                            icon: t.icon,
-                            on: _tool == t,
-                            onTap: () => setState(() => _tool = t),
-                          ),
-                          const SizedBox(width: 6),
-                        ],
-                      ],
-                    ),
-                  ),
                   const SizedBox(height: 8),
                   // 顏色一排：第一顆是調色盤（自訂色），其餘是常用色
                   SizedBox(
@@ -428,7 +462,6 @@ class _DrawScreenState extends State<_DrawScreen> {
                     child: ListView(
                       scrollDirection: Axis.horizontal,
                       children: [
-                        // 調色盤：長按直接重開挑色；顯示目前的自訂色
                         InkWell(
                           borderRadius: BorderRadius.circular(999),
                           onTap: _openPicker,
@@ -486,37 +519,56 @@ class _DrawScreenState extends State<_DrawScreen> {
                     ),
                   ),
                   const SizedBox(height: 4),
-                  // 粗細：拖的時候右邊那顆點即時變大小（含筆刷倍率）
+                  // 粗細：沒選東西＝下一筆的粗細；點選了某一筆＝直接調它
                   Row(
                     children: [
-                      const Text('粗細',
-                          style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: kText)),
+                      Text(
+                        sel == null ? '粗細' : '這一筆',
+                        style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: sel == null ? kText : kSelect),
+                      ),
                       Expanded(
                         child: Slider(
-                          value: _width,
+                          value: (sel?.width ?? _width).clamp(2.0, 36.0),
                           min: 2,
                           max: 36,
-                          onChanged: (v) => setState(() => _width = v),
+                          onChanged: (v) => setState(() {
+                            if (sel != null) {
+                              sel.width = v;
+                            } else {
+                              _width = v;
+                            }
+                          }),
                         ),
                       ),
                       SizedBox(
                         width: 40,
                         height: 40,
                         child: Center(
-                          child: Container(
-                            width: (_width * _brush.widthK).clamp(2, 40),
-                            height: (_width * _brush.widthK).clamp(2, 40),
-                            decoration: BoxDecoration(
-                              color: _brush == _Brush.eraser
-                                  ? kPanelHi
-                                  : _color.withValues(alpha: _brush.alpha),
-                              shape: BoxShape.circle,
-                              border: Border.all(color: kClipBorder),
-                            ),
-                          ),
+                          child: Builder(builder: (context) {
+                            final w = sel?.drawWidth ??
+                                (_width * _brush.widthK);
+                            final showColor = sel == null
+                                ? (_brush == _Brush.eraser
+                                    ? kPanelHi
+                                    : _color
+                                        .withValues(alpha: _brush.alpha))
+                                : (sel.eraser
+                                    ? kPanelHi
+                                    : sel.color
+                                        .withValues(alpha: sel.brush.alpha));
+                            return Container(
+                              width: w.clamp(2, 40),
+                              height: w.clamp(2, 40),
+                              decoration: BoxDecoration(
+                                color: showColor,
+                                shape: BoxShape.circle,
+                                border: Border.all(color: kClipBorder),
+                              ),
+                            );
+                          }),
                         ),
                       ),
                     ],
@@ -541,15 +593,29 @@ class _DrawScreenState extends State<_DrawScreen> {
 }
 
 /// 預覽跟輸出共用的畫法：saveLayer 之後畫全部筆跡，
-/// 橡皮擦用 BlendMode.clear——不開圖層的話 clear 會把棋盤格也擦掉
+/// 橡皮擦用 BlendMode.clear——不開圖層的話 clear 會把棋盤格也擦掉。
+/// [selected] 是被選取那一筆的索引（畫琥珀光暈），輸出時給 -1
 void _paintStrokes(
   Canvas canvas,
   List<_Stroke> strokes,
   _Stroke? live,
-  Rect area,
-) {
+  Rect area, {
+  int selected = -1,
+}) {
   canvas.saveLayer(area, Paint());
-  for (final s in [...strokes, ?live]) {
+  final all = [...strokes, ?live];
+  for (var i = 0; i < all.length; i++) {
+    final s = all[i];
+    // 被選取的那一筆：先在底下畫一圈琥珀光暈，看得出選到誰
+    if (i == selected) {
+      final halo = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = s.drawWidth + 7
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..color = kSelect.withValues(alpha: 0.85);
+      _strokePath(canvas, s, halo, haloDot: true);
+    }
     final paint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = s.drawWidth
@@ -564,59 +630,51 @@ void _paintStrokes(
     } else {
       paint.color = s.color.withValues(alpha: s.brush.alpha);
     }
-
-    // 形狀工具：起點→終點
-    if (s.tool != _Tool.free && s.points.length >= 2) {
-      final a = s.points.first;
-      final b = s.points.last;
-      switch (s.tool) {
-        case _Tool.line:
-          canvas.drawLine(a, b, paint);
-        case _Tool.rect:
-          canvas.drawRect(Rect.fromPoints(a, b), paint);
-        case _Tool.oval:
-          canvas.drawOval(Rect.fromPoints(a, b), paint);
-        case _Tool.free:
-          break;
-      }
-      continue;
-    }
-
-    if (s.points.length == 1) {
-      // 點一下＝一個圓點
-      canvas.drawCircle(
-        s.points.first,
-        s.drawWidth / 2,
-        Paint()
-          ..color = s.eraser
-              ? Colors.transparent
-              : s.color.withValues(alpha: s.brush.alpha)
-          ..blendMode = s.eraser ? BlendMode.clear : BlendMode.srcOver,
-      );
-      continue;
-    }
-    final path = Path()..moveTo(s.points.first.dx, s.points.first.dy);
-    // 相鄰點取中點畫二次貝茲：折線的稜角會被抹掉，看起來像真的筆
-    for (var i = 1; i < s.points.length - 1; i++) {
-      final mid = (s.points[i] + s.points[i + 1]) / 2;
-      path.quadraticBezierTo(
-          s.points[i].dx, s.points[i].dy, mid.dx, mid.dy);
-    }
-    path.lineTo(s.points.last.dx, s.points.last.dy);
-    canvas.drawPath(path, paint);
+    _strokePath(canvas, s, paint);
   }
   canvas.restore();
+}
+
+/// 一筆的實際繪製（光暈與本體共用同一條路徑）
+void _strokePath(Canvas canvas, _Stroke s, Paint paint,
+    {bool haloDot = false}) {
+  if (s.points.length == 1) {
+    final dot = Paint()
+      ..color = haloDot
+          ? paint.color
+          : (s.eraser
+              ? Colors.transparent
+              : s.color.withValues(alpha: s.brush.alpha))
+      ..blendMode =
+          (!haloDot && s.eraser) ? BlendMode.clear : BlendMode.srcOver;
+    canvas.drawCircle(s.points.first, paint.strokeWidth / 2, dot);
+    return;
+  }
+  final path = Path()..moveTo(s.points.first.dx, s.points.first.dy);
+  // 相鄰點取中點畫二次貝茲：折線的稜角會被抹掉，看起來像真的筆
+  for (var i = 1; i < s.points.length - 1; i++) {
+    final mid = (s.points[i] + s.points[i + 1]) / 2;
+    path.quadraticBezierTo(s.points[i].dx, s.points[i].dy, mid.dx, mid.dy);
+  }
+  path.lineTo(s.points.last.dx, s.points.last.dy);
+  canvas.drawPath(path, paint);
 }
 
 class _BoardPainter extends CustomPainter {
   final List<_Stroke> strokes;
   final _Stroke? live;
+  final int selected;
 
-  const _BoardPainter({required this.strokes, required this.live});
+  const _BoardPainter({
+    required this.strokes,
+    required this.live,
+    required this.selected,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
-    _paintStrokes(canvas, strokes, live, Offset.zero & size);
+    _paintStrokes(canvas, strokes, live, Offset.zero & size,
+        selected: selected);
   }
 
   // 筆跡的點是就地 add 的，列表比對看不出變化——每次都重畫。
