@@ -561,21 +561,34 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       barrierDismissible: false,
       builder: (context) => PopScope(
         canPop: false,
-        child: appDialog(
-          context,
-          title: '批次匯出中…',
-          onCancel: () {
-            _stopRequested = true;
-            engine.cancelExport();
-          },
-          child: ValueListenableBuilder<double>(
-            valueListenable: overall,
-            builder: (context, v, _) => ValueListenableBuilder<String>(
-              valueListenable: label,
-              builder: (context, s, _) =>
-                  dialogProgress(context, v, note: s),
-            ),
+        child: AlertDialog(
+          title: const Text('批次匯出中…'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ValueListenableBuilder<double>(
+                valueListenable: overall,
+                builder: (context, v, _) =>
+                    LinearProgressIndicator(value: v),
+              ),
+              const SizedBox(height: 12),
+              ValueListenableBuilder<String>(
+                valueListenable: label,
+                builder: (context, s, _) => Text(s,
+                    style: const TextStyle(
+                        fontSize: 12, color: kTextDim)),
+              ),
+            ],
           ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                _stopRequested = true;
+                engine.cancelExport();
+              },
+              child: const Text('取消'),
+            ),
+          ],
         ),
       ),
     );
@@ -728,10 +741,11 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   Future<bool> _askQuality() async {
     final picked = await showDialog<ExportQuality>(
       context: context,
-      builder: (context) => appDialog(
-        context,
-        title: '畫質',
-        child: SingleChildScrollView(
+      builder: (context) => AlertDialog(
+        title: const Text('畫質'),
+        contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
+        content: SizedBox(
+          width: 270,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [

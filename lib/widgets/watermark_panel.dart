@@ -608,13 +608,27 @@ class WatermarkPanelState extends State<WatermarkPanel> {
 
   Future<void> _savePreset() async {
     // 有選中的範本就預填它的名字：直接儲存＝更新該範本，改名＝另存新的
-    final name = await askInput(
-      context,
-      title: '儲存為常用範本',
-      initial: _presetSel ?? '',
-      hint: '範本名稱，例如「我的頻道」',
-      action: '儲存',
+    final nameCtrl = TextEditingController(text: _presetSel ?? '');
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('儲存為常用範本'),
+        content: TextField(
+          controller: nameCtrl,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: '範本名稱，例如「我的頻道」'),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, nameCtrl.text.trim()),
+              child: const Text('儲存')),
+        ],
+      ),
     );
+    nameCtrl.dispose();
     if (name == null || name.isEmpty) return;
     final existed = _presets.any((p) => p.name == name);
     try {

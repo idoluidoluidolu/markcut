@@ -89,12 +89,15 @@ class _DonateScreenState extends State<DonateScreen> {
   void _thanks() {
     showDialog<void>(
       context: context,
-      builder: (context) => appDialog(
-        context,
-        title: '謝謝你的加菜金！🙏',
-        message: '每一份心意都會變成我們繼續改進的動力 💪',
-        action: '好',
-        cancel: null,
+      builder: (context) => AlertDialog(
+        title: const Text('謝謝你的加菜金！🙏'),
+        content: const Text('每一份心意都會變成我們繼續改進的動力 💪'),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('好'),
+          ),
+        ],
       ),
     );
   }

@@ -335,14 +335,10 @@ class _DrawScreenState extends State<_DrawScreen> {
     var pick = _custom;
     final ok = await showDialog<bool>(
       context: context,
-      builder: (context) => appDialog(
-        context,
-        title: '調色盤',
-        width: 320,
-        action: '就用這個',
-        onAction: () => Navigator.pop(context, true),
-        onCancel: () => Navigator.pop(context, false),
-        child: SingleChildScrollView(
+      builder: (context) => AlertDialog(
+        title: const Text('調色盤'),
+        contentPadding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+        content: SingleChildScrollView(
           child: ColorPicker(
             pickerColor: pick,
             onColorChanged: (c) => pick = c,
@@ -352,6 +348,16 @@ class _DrawScreenState extends State<_DrawScreen> {
             pickerAreaBorderRadius: BorderRadius.circular(10),
           ),
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('就用這個'),
+          ),
+        ],
       ),
     );
     if (ok == true && mounted) {

@@ -1189,13 +1189,14 @@ final color = Color(picked ?? 0);
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => PopScope(
+      builder: (context) => const PopScope(
         canPop: false,
-        child: appDialog(
-          context,
-          title: '輸出中…',
-          cancel: null,
-          child: dialogProgress(context, 0, note: '合成中，馬上好'),
+        child: AlertDialog(
+          title: Text('輸出中…'),
+          content: SizedBox(
+            height: 48,
+            child: Center(child: CircularProgressIndicator()),
+          ),
         ),
       ),
     ).then((_) => dialogOpen = false);
