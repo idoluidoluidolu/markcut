@@ -191,8 +191,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _frameVN.value = v;
     } else {
       // 尾巴補一發，停下來時畫面一定對齊最終位置
-      _tlVScroll.dispose();
-    _frameSettle?.cancel();
+      _frameSettle?.cancel();
       _frameSettle = Timer(const Duration(milliseconds: 40), () {
         _lastFramePush = DateTime.now();
         _frameVN.value = _posVN.value;
@@ -7556,27 +7555,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
   }
 
-  /// 時間軸垂直捲動（底部「還有更多」暗示條看它決定要不要出現）
-  final ScrollController _tlVScroll = ScrollController();
-
-  /// 時間軸可視高度：最多整整四排素材軌（更多的在裡面捲動），
-  /// 內容更少就縮到剛好。永遠切在整排的邊界上——以前的做法是
-  /// 「有多高吃多高」，最後一排常常被視窗切一半（死切）
-  double _tlViewportH(double maxH) {
-    const stride = 54.0 * kTlTrackScale + 4; // trackH + gap
-    final rowsTotal = _tl.usedTracks + 1 + _extraBlankTracks;
-    final wmExtra = _settings.hasAnyMark ? 24.0 + 4 : 0.0;
-    // 頂部 padding 14＋刻度尺 22＋尺與軌道間距 10
-    const head = 14.0 + 22 + 10;
-    // 放得下＝整份內容含底部邊距（14）與尾巴（4），沒有捲動。
-    // 放不下＝可視高度剛好切在第四排的結尾——底部邊距「不能」算進來，
-    // 算進來的那 18px 會變成第五排探出頭（裝置實測：最下面被裁一截）
-    final h = rowsTotal <= 4
-        ? head + wmExtra + rowsTotal * stride + 4 + 14
-        : head + wmExtra + 4 * stride;
-    return math.min(h, (maxH - kTlPanStrip).clamp(120.0, 1e9));
-  }
-
   Widget _buildTimelineTab() {
     if (_pxPerSec <= 0) {
       final screenW = MediaQuery.of(context).size.width - 60;
@@ -7623,12 +7601,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   },
                   child: Column(
                     children: [
-                      SizedBox(
-                        height: _tlViewportH(box.maxHeight),
-                        child: Stack(
-                          children: [
-                            SingleChildScrollView(
-                              controller: _tlVScroll,
+                      Expanded(
+                        child: SingleChildScrollView(
                     // 雙指縮放時間軸時暫停垂直捲動，縮放手勢才吃得到
                     physics: _tlPinching
                         ? const NeverScrollableScrollPhysics()
@@ -7642,12 +7616,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       // 貼著頂端排，不置中：置中會讓時間軸浮在中間，
                       // 上面一塊死空間、下面又沒有固定的留白
                       child: ConstrainedBox(
-                        // 高度由外面的 SizedBox 決定；這裡只要保證
-                        // 滾輪的感應區至少鋪滿可視範圍
                         constraints: BoxConstraints(
-                          minHeight:
-                              (_tlViewportH(box.maxHeight) - 28)
-                                  .clamp(0.0, 1e9),
+                          minHeight: (box.maxHeight - kTlPanStrip - 14)
+                              .clamp(0.0, 1e9),
                         ),
                         child: Align(
                           alignment: Alignment.topCenter,
@@ -7779,62 +7750,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         ),
                       ),
                     ),
-                            ),
-                            // 下面還有軌道的暗示：底部一條淡出漸層＋小箭頭。
-                            // 捲到底就消失——不然會騙人說還有東西
-                            Positioned(
-                              left: 0,
-                              right: 0,
-                              bottom: 0,
-                              child: IgnorePointer(
-                                child: AnimatedBuilder(
-                                  animation: _tlVScroll,
-                                  builder: (context, _) {
-                                    final pos = _tlVScroll.hasClients
-                                        ? _tlVScroll.position
-                                        : null;
-                                    // 掛上了但還沒量好尺寸時，
-                                    // maxScrollExtent 會炸 null——一樣用軌數推
-                                    final ready = pos != null &&
-                                        pos.hasContentDimensions;
-                                    final more = !ready
-                                        ? (_tl.usedTracks +
-                                                1 +
-                                                _extraBlankTracks) >
-                                            4
-                                        : pos.maxScrollExtent > 1 &&
-                                            _tlVScroll.offset <
-                                                pos.maxScrollExtent - 2;
-                                    return AnimatedOpacity(
-                                      opacity: more ? 1 : 0,
-                                      duration:
-                                          const Duration(milliseconds: 150),
-                                      child: Container(
-                                        height: 34,
-                                        alignment: Alignment.bottomCenter,
-                                        decoration: const BoxDecoration(
-                                          gradient: LinearGradient(
-                                            begin: Alignment.topCenter,
-                                            end: Alignment.bottomCenter,
-                                            colors: [
-                                              Color(0x000C0F14),
-                                              kBg,
-                                            ],
-                                          ),
-                                        ),
-                                        child: const Icon(
-                                          Icons.keyboard_arrow_down,
-                                          size: 16,
-                                          color: kTextDim,
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
+                  ),
                       ),
                       // 永久留白帶：不在捲動內容裡，所以捲到哪它都在。
                       // 外層的 GestureDetector 蓋得到這裡，橫滑一樣平移時間軸；
