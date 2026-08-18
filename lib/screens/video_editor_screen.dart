@@ -5343,7 +5343,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     bool ok = false;
     var cancelled = false;
     try {
-      final (outW, outH) = computeCanvasSize(_tl, _resolution, _canvasRatio, _customAspect);
+      final (outW, outH) = _exportDims();
+      final (rawW, rawH) =
+          computeCanvasSize(_tl, _resolution, _canvasRatio, _customAspect);
+      if (rawW != outW || rawH != outH) {
+        Diag.note('快速匯出：輸出 ${rawW}x$rawH → ${outW}x$outH'
+            '（標準畫質、全部影片有工作檔）');
+      }
       // 快速匯出：條件成立時影片來源直接用工作檔（見 fastExportSources）
       final (exportSources, fastSwapped) = fastExportSources(
         _tl.sources,
@@ -8745,12 +8751,37 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
   }
 
+  /// 匯出實際會用的輸出尺寸。
+  ///
+  /// 標準以下的畫質、而且每支影片都有 1080p 工作檔時，輸出縮到
+  /// 1080p 短邊——這是快速匯出的門票（fastExportSources 只在輸出
+  /// ≤1080p 時換工作檔）。有馬賽克／子母畫面的專案走不了原生 GPU 路，
+  /// 退回 FFmpeg 後拿 4K HDR 原檔跑軟體色調映射一格要 100MB，
+  /// 實測 892MB 直接被系統收掉（匯出到一半閃退）。
+  /// 標準畫質的承諾本來就是「手機上不放大看不太出差別」，來源是
+  /// 1080p 工作檔時輸出比它大也只是白白放大。
+  /// 選高畫質以上＝使用者自己要畫質，照舊用原檔原尺寸
+  (int, int) _exportDims() {
+    var (w, h) =
+        computeCanvasSize(_tl, _resolution, _canvasRatio, _customAspect);
+    final fastQ = _qualityEff == ExportQuality.standard ||
+        _qualityEff == ExportQuality.low;
+    if (!fastQ || math.min(w, h) <= 1080) return (w, h);
+    final videos = _tl.sources.where((s) => s.isVideo).toList();
+    if (videos.isEmpty || videos.any((s) => s.workPath == null)) {
+      return (w, h);
+    }
+    final k = 1080 / math.min(w, h);
+    int ev(num v) => math.max(2, (v * k / 2).round() * 2);
+    return (ev(w), ev(h));
+  }
+
   /// 這個專案用某一檔畫質匯出大概多大（MB）。
   /// 照引擎實際會下的位元率算（kbpsFor），不再另外維護一套估算公式
   /// ——舊公式用固定 0.09bpp 乘倍率，跟編碼器拿到的 -b:v 是兩回事，
   /// 「高畫質」估 15MB 實際會出 26MB。音訊 AAC 256k ≈ 32KB/s
   double _estMb(ExportQuality q) {
-    final (w, h) = computeCanvasSize(_tl, _resolution, _canvasRatio, _customAspect);
+    final (w, h) = _exportDims();
     final dur = _tl.duration / _speed;
     final kbps = q.kbpsFor(w, h, fps: outputFps(_srcFps, w, h));
     return (kbps * 125.0 + 32000) * dur / (1024 * 1024);
@@ -8760,7 +8791,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 資訊列（比例／解析度／畫質）＋預估一行＋匯出鈕
   Widget _buildExportTab() {
-    final (outW, outH) = computeCanvasSize(_tl, _resolution, _canvasRatio, _customAspect);
+    final (outW, outH) = _exportDims();
     final dur = _tl.duration / _speed;
     final mb = _estMb(_qualityEff);
 
