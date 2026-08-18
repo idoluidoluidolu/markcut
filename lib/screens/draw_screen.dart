@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -16,14 +17,25 @@ import '../widgets/watermark_layer.dart' show CheckerPainter;
 /// 拿到的 PNG 走現有的圖片浮水印那條路——位置、縮放、旋轉、透明度、
 /// 平鋪、匯出全部直接繼承，這一頁只負責「把筆跡變成一張圖」。
 ///
-/// [initial] 是要「再編輯」的既有畫作：載進來鋪在畫板中央當底，
-/// 可以繼續加筆畫、也可以用橡皮擦擦它。
+/// 手繪的成果：壓平的 PNG（給浮水印流程用）＋筆畫資料（再編輯用）
+typedef DrawResult = ({Uint8List png, String data});
+
+/// [initialData] 是上次存下來的筆畫資料：載回來就是一筆一筆活的，
+/// 上一步、點選調粗細全部可用。舊資料只有 PNG（[initial]）時退回
+/// 「鋪在畫板中央當底」的做法——還是能加筆畫、用橡皮擦擦。
 ///
 /// 回傳 null＝取消。
-Future<Uint8List?> drawWatermark(BuildContext context, {Uint8List? initial}) =>
-    Navigator.push<Uint8List>(
+Future<DrawResult?> drawWatermark(
+  BuildContext context, {
+  String? initialData,
+  Uint8List? initial,
+}) =>
+    Navigator.push<DrawResult>(
       context,
-      MaterialPageRoute(builder: (_) => _DrawScreen(initial: initial)),
+      MaterialPageRoute(
+        builder: (_) =>
+            _DrawScreen(initialData: initialData, initial: initial),
+      ),
     );
 
 /// 筆刷：每種差在透明度、寬度倍率、筆頭形狀
@@ -77,6 +89,33 @@ class _Stroke {
 
   bool get eraser => brush == _Brush.eraser;
 
+  /// 序列化（座標取一位小數就夠，省一半體積）
+  Map<String, dynamic> toJson() => {
+        'c': color.toARGB32(),
+        'w': double.parse(width.toStringAsFixed(1)),
+        'b': brush.index,
+        'p': [
+          for (final p in points) ...[
+            double.parse(p.dx.toStringAsFixed(1)),
+            double.parse(p.dy.toStringAsFixed(1)),
+          ],
+        ],
+      };
+
+  factory _Stroke.fromJson(Map<String, dynamic> j) {
+    final raw = (j['p'] as List).cast<num>();
+    return _Stroke(
+      color: Color((j['c'] as num).toInt()),
+      width: (j['w'] as num).toDouble(),
+      brush: _Brush
+          .values[((j['b'] ?? 0) as num).toInt() % _Brush.values.length],
+      points: [
+        for (var i = 0; i + 1 < raw.length; i += 2)
+          Offset(raw[i].toDouble(), raw[i + 1].toDouble()),
+      ],
+    );
+  }
+
   /// 實際畫出來的寬度
   double get drawWidth => width * brush.widthK;
 
@@ -112,9 +151,10 @@ class _Stroke {
 }
 
 class _DrawScreen extends StatefulWidget {
+  final String? initialData;
   final Uint8List? initial;
 
-  const _DrawScreen({this.initial});
+  const _DrawScreen({this.initialData, this.initial});
 
   @override
   State<_DrawScreen> createState() => _DrawScreenState();
@@ -126,10 +166,15 @@ class _DrawScreenState extends State<_DrawScreen> {
   /// 再編輯時鋪在底下的舊畫作（跟筆畫同一個圖層，橡皮擦擦得到）
   ui.Image? _base;
 
+  /// 還沒還原的筆畫資料（要等第一次知道畫板尺寸才能換算座標）
+  String? _pendingData;
+
   @override
   void initState() {
     super.initState();
-    final b = widget.initial;
+    _pendingData = widget.initialData;
+    // 有筆畫資料就不鋪底圖：筆畫本身就是完整的畫作
+    final b = _pendingData != null ? null : widget.initial;
     if (b != null) {
       ui.instantiateImageCodec(b).then((codec) async {
         final frame = await codec.getNextFrame();
@@ -142,6 +187,36 @@ class _DrawScreenState extends State<_DrawScreen> {
   void dispose() {
     _base?.dispose();
     super.dispose();
+  }
+
+  /// 把上次的筆畫還原到目前的畫板：照舊畫板的尺寸等比縮放置中，
+  /// 換裝置、轉方向回來畫作還是在中間、比例不變
+  void _restoreStrokes(Size board) {
+    final raw = _pendingData;
+    _pendingData = null;
+    if (raw == null) return;
+    try {
+      final j = jsonDecode(raw) as Map<String, dynamic>;
+      final ow = (j['w'] as num).toDouble();
+      final oh = (j['h'] as num).toDouble();
+      if (ow < 2 || oh < 2) return;
+      final k = math.min(board.width / ow, board.height / oh);
+      final dx = (board.width - ow * k) / 2;
+      final dy = (board.height - oh * k) / 2;
+      for (final e in (j['s'] as List)) {
+        final s = _Stroke.fromJson(Map<String, dynamic>.from(e as Map));
+        _strokes.add(_Stroke(
+          color: s.color,
+          width: s.width * k,
+          brush: s.brush,
+          points: [
+            for (final p in s.points) Offset(p.dx * k + dx, p.dy * k + dy),
+          ],
+        ));
+      }
+    } catch (_) {
+      // 資料壞了就當全新的畫板，至少還能畫
+    }
   }
 
   /// 底圖鋪在畫板中央、留一點邊（畫板座標）
@@ -310,7 +385,13 @@ class _DrawScreenState extends State<_DrawScreen> {
       showHint(context, '還沒畫任何東西', error: true);
       return;
     }
-    Navigator.pop(context, png);
+    // 筆畫資料一起帶回去：下次「編輯」還原成活的筆畫
+    final data = jsonEncode({
+      'w': double.parse(boardSize.width.toStringAsFixed(1)),
+      'h': double.parse(boardSize.height.toStringAsFixed(1)),
+      's': [for (final s in _strokes) s.toJson()],
+    });
+    Navigator.pop(context, (png: png, data: data));
   }
 
   /// 把筆跡畫成 PNG：只取「筆跡的外框＋一點邊距」，不是整塊畫板——
@@ -450,6 +531,9 @@ class _DrawScreenState extends State<_DrawScreen> {
                   builder: (context, cons) {
                     final size = Size(cons.maxWidth, cons.maxHeight);
                     _boardSize = size;
+                    // 第一次知道畫板尺寸：把上次的筆畫還原進來。
+                    // 在 build 裡直接改列表沒關係——這一幀畫的就是它
+                    if (_pendingData != null) _restoreStrokes(size);
                     return ClipRRect(
                       borderRadius: BorderRadius.circular(10),
                       child: GestureDetector(

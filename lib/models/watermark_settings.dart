@@ -136,8 +136,12 @@ class LogoMark {
   double corner; // 圓角 0~1（1 = 半徑為寬度一半）
   bool tiled; // 滿版平鋪（棋盤格），開啟後 x/y 無意義
 
-  /// 這張是手繪的：圖片卡多一顆「再編輯」把它載回畫板繼續畫
+  /// 這張是手繪的：圖片卡多一顆「編輯」把它載回畫板繼續畫
   bool drawn;
+
+  /// 手繪的筆畫資料（JSON）。有它「編輯」還原的是一筆一筆活的筆畫；
+  /// 沒有（舊資料）就退回鋪 PNG 當底的做法
+  String? drawData;
 
   Uint8List? _cache;
 
@@ -160,6 +164,7 @@ class LogoMark {
     this.corner = 0,
     this.tiled = false,
     this.drawn = false,
+    this.drawData,
   });
 
   /// 同一張 Logo 會被複製到很多份設定（批次單張、多組浮水印、範本、
@@ -205,6 +210,7 @@ class LogoMark {
         'corner': corner,
         'tiled': tiled,
         if (drawn) 'drawn': true,
+        if (drawData != null) 'drawData': drawData,
       };
 
   factory LogoMark.fromJson(Map<String, dynamic> j) => LogoMark(
@@ -218,6 +224,7 @@ class LogoMark {
         corner: (j['corner'] ?? 0).toDouble(),
         tiled: j['tiled'] ?? false,
         drawn: j['drawn'] ?? false,
+        drawData: j['drawData'],
       );
 
   LogoMark copy() => LogoMark.fromJson(toJson());

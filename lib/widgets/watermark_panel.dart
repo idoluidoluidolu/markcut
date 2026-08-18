@@ -308,14 +308,15 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   }
 
   Future<void> _pickDrawing() async {
-    final png = await drawWatermark(context);
-    if (png == null || !mounted) return;
+    final res = await drawWatermark(context);
+    if (res == null || !mounted) return;
     _update(() {
-      s.logo.bytesValue = png;
+      s.logo.bytesValue = res.png;
       // 手繪的「原圖」就是它自己：之後按裁切從完整的畫作開始裁
-      s.logo.origBytes = png;
+      s.logo.origBytes = res.png;
       s.logo.enabled = true;
-      s.logo.drawn = true; // 之後「再編輯」看這個旗標
+      s.logo.drawn = true; // 之後「編輯」看這個旗標
+      s.logo.drawData = res.data; // 筆畫資料：編輯時還原成活的
     });
     widget.onLogoAdded?.call();
     // 畫完回來直接站在「圖片」分頁：剛畫好的那張已是操作中，
@@ -323,15 +324,21 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     _ensureSection(WmPart.logo, 0);
   }
 
-  /// 手繪的圖再編輯：載回畫板繼續畫（加筆畫、擦掉一部分都行）
+  /// 手繪的圖再編輯：有筆畫資料就還原成活的筆畫（上一步、
+  /// 調粗細全部可用）；舊資料只有 PNG 就鋪底圖繼續畫
   Future<void> _editDrawing() async {
     final cur = s.logo.bytes;
     if (cur == null) return;
-    final png = await drawWatermark(context, initial: cur);
-    if (png == null || !mounted) return;
+    final res = await drawWatermark(
+      context,
+      initialData: s.logo.drawData,
+      initial: cur,
+    );
+    if (res == null || !mounted) return;
     _update(() {
-      s.logo.bytesValue = png;
-      s.logo.origBytes = png;
+      s.logo.bytesValue = res.png;
+      s.logo.origBytes = res.png;
+      s.logo.drawData = res.data;
     });
   }
 
