@@ -335,8 +335,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
       );
       // 移動超過 8px 才「武裝」：捏合的第一指落在素材上時，
       // 第二指還沒到的那幾十毫秒不會看到素材被拖走
-      if (!_liftArmed &&
-          (_lift!.dx.abs() > 8 || _lift!.dy.abs() > 8)) {
+      if (!_liftArmed && (_lift!.dx.abs() > 8 || _lift!.dy.abs() > 8)) {
         _liftArmed = true;
         widget.onSelect(l.clipId); // 延後的選取（見 _liftStart）
         // 到這裡才算真的在搬素材，父層現在才需要讓開
@@ -374,7 +373,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
       // 只在「真的只是點一下」時做——拖曳中途縮放時間軸會讓手指
       // 底下的東西整個位移
       final c = _clipById(l.clipId);
-      if (c != null && c.length * pxPerSec < kTrimMinWidth) {
+      if (c != null && c.length * pxPerSec < kAutoZoomWidth) {
         widget.onTooNarrow?.call(l.clipId);
         return;
       }
@@ -627,9 +626,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
                                                 widget
                                                     .scrollController
                                                     .hasClients
-                                                ? widget
-                                                      .scrollController
-                                                      .offset
+                                                ? widget.scrollController.offset
                                                 : 0.0;
                                             return CustomPaint(
                                               size: Size(totalW, rulerH),
@@ -790,9 +787,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
                 border: isDropTarget
                     ? Border.all(color: kSelect, width: 2)
                     : (widget.selectedTrack == track
-                          ? Border.all(
-                              color: kSelect.withValues(alpha: 0.6),
-                            )
+                          ? Border.all(color: kSelect.withValues(alpha: 0.6))
                           : null),
               ),
               // 空狀態引導：只在「第一條空軌」淡淡提示一句，
@@ -815,11 +810,12 @@ class _TimelineEditorState extends State<TimelineEditor> {
         ),
         // 被選取的畫最後：把手熱區會伸出片段邊界一點，
         // 排在前面的話那一截會被相鄰片段蓋住，等於白做
-        for (final c in [...clips]..sort(
-          (a, b) => (a.id == widget.selectedId ? 1 : 0).compareTo(
-            b.id == widget.selectedId ? 1 : 0,
-          ),
-        ))
+        for (final c
+            in [...clips]..sort(
+              (a, b) => (a.id == widget.selectedId ? 1 : 0).compareTo(
+                b.id == widget.selectedId ? 1 : 0,
+              ),
+            ))
           _ClipBlock(
             key: ValueKey('clip${c.id}'),
             clip: c,
@@ -947,8 +943,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
                       })
                       ..onUpdate = ((d) {
                         if (_pinching) return;
-                        _wmDragDist +=
-                            d.delta.dx.abs() + d.delta.dy.abs();
+                        _wmDragDist += d.delta.dx.abs() + d.delta.dy.abs();
                         widget.onMoveWm(wm.start + d.delta.dx / pxPerSec);
                       })
                       ..onEnd = ((_) {
@@ -971,10 +966,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
                       ? kSelect.withValues(alpha: 0.22)
                       : kPanelHi,
                   borderRadius: BorderRadius.circular(4),
-                  border: Border.all(
-                    color: const Color(0xFF3A3A42),
-                    width: 1,
-                  ),
+                  border: Border.all(color: const Color(0xFF3A3A42), width: 1),
                 ),
                 // 選取框畫在前景，內容不位移
                 foregroundDecoration: widget.wmSelected
@@ -1135,7 +1127,8 @@ class _TimelineEditorState extends State<TimelineEditor> {
       // 那個狀態讓標籤亮起來只會讓人以為自己選了整條軌。
       // 用「第一個命中的片段」的軌來比：就算資料裡有撞號的 id，
       // 也永遠只亮一條（兩軌同時亮燈是使用者實際回報過的症狀）
-      hasSelection: timeline.clips
+      hasSelection:
+          timeline.clips
               .where((c) => c.id == widget.selectedId)
               .firstOrNull
               ?.track ==
@@ -1286,6 +1279,14 @@ const double _kHandleOverhang = 14;
 /// 空間。比這窄就不畫把手（不然整條被把手蓋滿，變成拖不動）
 const double kTrimMinWidth = 64;
 
+/// 窄到這個地步，點一下才自動放大時間軸（見 onTooNarrow）。
+///
+/// 本來跟 [kTrimMinWidth] 共用同一個門檻，結果縮到 64px 以下就
+/// 「點一下＝彈回放大」，等於不准使用者把時間軸縮小來看全貌——
+/// 明明那個寬度還看得見、也選得到。兩件事拆開：64px 以下只是
+/// 不畫把手，真的窄到看不出是什麼了才幫忙放大
+const double kAutoZoomWidth = 26;
+
 /// 時間軸上的片段。拖曳時本體留在原地變淡，移動的是父層的幽靈。
 class _ClipBlock extends StatelessWidget {
   final TimelineClip clip;
@@ -1373,156 +1374,151 @@ class _ClipBlock extends StatelessWidget {
               clipBehavior: Clip.none,
               fit: StackFit.passthrough,
               children: [
-            Container(
-              width: w,
-              decoration: BoxDecoration(
-                // 有縮圖的片段用純色當底（縮圖會蓋滿）；沒有縮圖的
-                // 用漸層——底只在這裡畫一次，圓角就不會有接縫
-                color: hasStrip ? fill : null,
-                gradient: hasStrip ? null : kClipFill,
-                borderRadius: BorderRadius.circular(5),
-                // 底層永遠是同一條 1px 邊：邊框寬度會被算進內距，
-                // 選取時從 1 換成 2 的話裡面的縮圖就整個位移 1px，
-                // 取消選取又移回去——那正是「選取時素材會抖一下」
-                border: Border.all(color: borderColor, width: 1),
-              ),
-              // 選取的琥珀框畫在「前景」：疊在內容上面，不參與版面
-              foregroundDecoration: isSelected
-                  ? BoxDecoration(
-                      borderRadius: BorderRadius.circular(5),
-                      border: Border.all(color: kSelect, width: 2),
-                    )
-                  : null,
-              clipBehavior: Clip.antiAlias,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  _clipFill(clip, source, filmstrip),
-                  // 倒轉片段掛個標，不然跟正播的長得一模一樣
-                  //（旗標模式或已轉成倒轉檔都算）
-                  if (clip.reverse || source.revOf != null)
-                    Positioned(
-                      left: 5,
-                      top: 3,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 4,
-                          vertical: 1,
-                        ),
-                        decoration: BoxDecoration(
-                          color: kSelect,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: const Text(
-                          '倒轉',
-                          style: TextStyle(
-                            fontSize: 8.5,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.black,
-                          ),
-                        ),
-                      ),
-                    ),
-                  // 變速片段掛倍速小標
-                  if ((clip.speed - 1.0).abs() > 0.01)
-                    Positioned(
-                      right: 5,
-                      top: 3,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 4,
-                          vertical: 1,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.black54,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          '${clip.speed % 1 == 0 ? clip.speed.toInt() : clip.speed}x',
-                          style: const TextStyle(
-                            fontSize: 8.5,
-                            color: Colors.white,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-                  // 窄到擺不下把手時，中間放一個放大鏡當暗示：點一下
-                  // 會自動放大到修剪得動（見 TimelineEditor.onTooNarrow）。
-                  // IgnorePointer＝點擊照樣由底下的片段本體收，
-                  // 整塊都是「點了會放大」
-                  if (isSelected && !lifted && w < kTrimMinWidth)
-                    const Positioned.fill(
-                      child: IgnorePointer(
-                        child: Center(
-                          child: Icon(
-                            Icons.zoom_in,
-                            size: 13,
-                            color: kSelect,
-                          ),
-                        ),
-                      ),
-                    ),
-                  // 片段太窄時把手整個不畫：兩顆最小 22px 的把手會把
-                  // 22px 的片段整條蓋住，中間沒有任何地方可以抓著移動
-                  // ——「太短無法拖曳」就是這樣來的
-                  if (isSelected && !lifted && w >= kTrimMinWidth)
-                    // 熱區跟著片段長度給，短片段不會被兩個把手佔滿；
-                    // 位置夾在可視範圍內，片段拉得比畫面長時
-                    // 把手會貼在邊緣而不是跑到畫面外
-                    Positioned.fill(
-                      child: ListenableBuilder(
-                        listenable: scrollController,
-                        builder: (context, _) {
-                          final hw = (w * 0.28).clamp(22.0, 40.0);
-                          final off = scrollController.hasClients
-                              ? scrollController.offset
-                              : 0.0;
-                          // 換算成「相對這個片段左緣」的可視範圍
-                          final left = clip.offset * pxPerSec;
-                          final vL = off - leadPad - left;
-                          final vR = vL + viewWidth;
-                          final maxX = math.max(0.0, w - hw);
-                          return Stack(
-                            children: [
-                              Positioned(
-                                left:
-                                    vL.clamp(0.0, maxX) - _kHandleOverhang,
-                                top: 0,
-                                bottom: 0,
-                                child: _TrimHandle(
-                                  isLeft: true,
-                                  width: hw,
-                                  overhang: _kHandleOverhang,
-                                  onStart: onTrimStart,
-                                  onEnd: onTrimEnd,
-                                  onDrag: (d) => onTrim(clip.id, d, true),
-                                  pxPerSec: pxPerSec,
-                                ),
+                Container(
+                  width: w,
+                  decoration: BoxDecoration(
+                    // 有縮圖的片段用純色當底（縮圖會蓋滿）；沒有縮圖的
+                    // 用漸層——底只在這裡畫一次，圓角就不會有接縫
+                    color: hasStrip ? fill : null,
+                    gradient: hasStrip ? null : kClipFill,
+                    borderRadius: BorderRadius.circular(5),
+                    // 底層永遠是同一條 1px 邊：邊框寬度會被算進內距，
+                    // 選取時從 1 換成 2 的話裡面的縮圖就整個位移 1px，
+                    // 取消選取又移回去——那正是「選取時素材會抖一下」
+                    border: Border.all(color: borderColor, width: 1),
+                  ),
+                  // 選取的琥珀框畫在「前景」：疊在內容上面，不參與版面
+                  foregroundDecoration: isSelected
+                      ? BoxDecoration(
+                          borderRadius: BorderRadius.circular(5),
+                          border: Border.all(color: kSelect, width: 2),
+                        )
+                      : null,
+                  clipBehavior: Clip.antiAlias,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      _clipFill(clip, source, filmstrip),
+                      // 倒轉片段掛個標，不然跟正播的長得一模一樣
+                      //（旗標模式或已轉成倒轉檔都算）
+                      if (clip.reverse || source.revOf != null)
+                        Positioned(
+                          left: 5,
+                          top: 3,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 4,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: kSelect,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text(
+                              '倒轉',
+                              style: TextStyle(
+                                fontSize: 8.5,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.black,
                               ),
-                              Positioned(
-                                left: (vR - hw).clamp(0.0, maxX),
-                                // 右把手的熱區往右長，位置不用退
-                                top: 0,
-                                bottom: 0,
-                                child: _TrimHandle(
-                                  isLeft: false,
-                                  width: hw,
-                                  overhang: _kHandleOverhang,
-                                  onStart: onTrimStart,
-                                  onEnd: onTrimEnd,
-                                  onDrag: (d) => onTrim(clip.id, d, false),
-                                  pxPerSec: pxPerSec,
-                                ),
+                            ),
+                          ),
+                        ),
+                      // 變速片段掛倍速小標
+                      if ((clip.speed - 1.0).abs() > 0.01)
+                        Positioned(
+                          right: 5,
+                          top: 3,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 4,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              '${clip.speed % 1 == 0 ? clip.speed.toInt() : clip.speed}x',
+                              style: const TextStyle(
+                                fontSize: 8.5,
+                                color: Colors.white,
+                                fontWeight: FontWeight.w700,
                               ),
-                            ],
-                          );
-                        },
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                // 窄到擺不下把手時，中間放一個放大鏡當暗示：點一下
+                // 會自動放大到修剪得動（見 TimelineEditor.onTooNarrow）。
+                // IgnorePointer＝點擊照樣由底下的片段本體收，
+                // 整塊都是「點了會放大」
+                if (isSelected && !lifted && w < kAutoZoomWidth)
+                  const Positioned.fill(
+                    child: IgnorePointer(
+                      child: Center(
+                        child: Icon(Icons.zoom_in, size: 13, color: kSelect),
                       ),
                     ),
+                  ),
+                // 片段太窄時把手整個不畫：兩顆最小 22px 的把手會把
+                // 22px 的片段整條蓋住，中間沒有任何地方可以抓著移動
+                // ——「太短無法拖曳」就是這樣來的
+                if (isSelected && !lifted && w >= kTrimMinWidth)
+                  // 熱區跟著片段長度給，短片段不會被兩個把手佔滿；
+                  // 位置夾在可視範圍內，片段拉得比畫面長時
+                  // 把手會貼在邊緣而不是跑到畫面外
+                  Positioned.fill(
+                    child: ListenableBuilder(
+                      listenable: scrollController,
+                      builder: (context, _) {
+                        final hw = (w * 0.28).clamp(22.0, 40.0);
+                        final off = scrollController.hasClients
+                            ? scrollController.offset
+                            : 0.0;
+                        // 換算成「相對這個片段左緣」的可視範圍
+                        final left = clip.offset * pxPerSec;
+                        final vL = off - leadPad - left;
+                        final vR = vL + viewWidth;
+                        final maxX = math.max(0.0, w - hw);
+                        return Stack(
+                          children: [
+                            Positioned(
+                              left: vL.clamp(0.0, maxX) - _kHandleOverhang,
+                              top: 0,
+                              bottom: 0,
+                              child: _TrimHandle(
+                                isLeft: true,
+                                width: hw,
+                                overhang: _kHandleOverhang,
+                                onStart: onTrimStart,
+                                onEnd: onTrimEnd,
+                                onDrag: (d) => onTrim(clip.id, d, true),
+                                pxPerSec: pxPerSec,
+                              ),
+                            ),
+                            Positioned(
+                              left: (vR - hw).clamp(0.0, maxX),
+                              // 右把手的熱區往右長，位置不用退
+                              top: 0,
+                              bottom: 0,
+                              child: _TrimHandle(
+                                isLeft: false,
+                                width: hw,
+                                overhang: _kHandleOverhang,
+                                onStart: onTrimStart,
+                                onEnd: onTrimEnd,
+                                onDrag: (d) => onTrim(clip.id, d, false),
+                                pxPerSec: pxPerSec,
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
               ],
             ),
           ),
@@ -1875,7 +1871,10 @@ class _WavePainter extends CustomPainter {
         for (var i = a; i < b; i++) {
           if (p[i] > m) m = p[i];
         }
-        final h = (m * size.height * 0.86).clamp(1.5, math.max(1.5, size.height - 2));
+        final h = (m * size.height * 0.86).clamp(
+          1.5,
+          math.max(1.5, size.height - 2),
+        );
         final x = 2.0 + c * step;
         canvas.drawLine(Offset(x, mid - h / 2), Offset(x, mid + h / 2), paint);
       }
@@ -1903,7 +1902,10 @@ class _WavePainter extends CustomPainter {
       for (var i = a; i < (b > a ? b : a + 1) && i < p.length; i++) {
         if (p[i] > m) m = p[i];
       }
-      final h = (m * size.height * 0.86).clamp(1.5, math.max(1.5, size.height - 2));
+      final h = (m * size.height * 0.86).clamp(
+        1.5,
+        math.max(1.5, size.height - 2),
+      );
       final x = 2.0 + c * step;
       canvas.drawLine(Offset(x, mid - h / 2), Offset(x, mid + h / 2), paint);
     }
