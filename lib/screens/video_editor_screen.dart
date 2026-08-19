@@ -4726,7 +4726,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final now = DateTime.now();
     if (now.difference(_trimStopToastAt).inSeconds < 3) return;
     _trimStopToastAt = now;
-    showHint(context, '已是這個縮放下的最短，放大時間軸可以再縮');
+    showHint(context, '需要先縮放才能再縮小');
   }
 
   /// 這次修剪手勢「未吸附」的邊緣位置。
