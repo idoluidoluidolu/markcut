@@ -41,12 +41,14 @@ import '../widgets/color_grade_panel.dart';
 import '../widgets/timeline_editor.dart';
 import '../widgets/prep_gate_view.dart';
 import '../widgets/watermark_layer.dart';
+import '../widgets/sticker_picker.dart';
 import '../widgets/watermark_panel.dart';
 
 /// 「加素材」選單的項目（錄旁白不是一種素材類型，所以另立一個 enum）
 enum _AddKind {
   video,
   image,
+  sticker,
   text,
   wm,
   audio,
@@ -2063,6 +2065,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               group('從裝置匯入'),
               item(context, Icons.videocam_outlined, '影片', _AddKind.video),
               item(context, Icons.image_outlined, '圖片', _AddKind.image),
+              item(
+                context,
+                Icons.emoji_emotions_outlined,
+                '貼圖',
+                _AddKind.sticker,
+              ),
               item(context, Icons.music_note, '音樂', _AddKind.audio),
               group('其他'),
               item(context, Icons.mic, '錄旁白', _AddKind.record),
@@ -2081,6 +2089,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         await _pickVideo(track);
       case _AddKind.image:
         await _pickImage(track);
+      case _AddKind.sticker:
+        await _addSticker(track);
       case _AddKind.text:
         await _addTextClip(track);
       case _AddKind.wm:
@@ -2126,6 +2136,55 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _addMedia(int track) async {
     final kind = await _askKind(title: '加素材到第 ${track + 1} 軌');
     await _dispatchAdd(kind, track);
+  }
+
+  /// 貼圖素材：挑一張 Emoji 或收藏的圖，當成一段圖片素材放上時間軸。
+  ///
+  /// 走的是圖片那條路（寫成暫存 PNG 再當一般素材匯入），所以位置、
+  /// 縮放、旋轉、淡入淡出、匯出全部直接繼承——貼圖不需要自己一套
+  Future<void> _addSticker(int track) async {
+    final png = await pickSticker(context);
+    if (png == null || !mounted) return;
+    final path = await writeTempBytes(png, 'png');
+    if (path == null || !mounted) {
+      if (mounted) showHint(context, '貼圖加不進來，再試一次', error: true);
+      return;
+    }
+    var imgW = 0, imgH = 0;
+    try {
+      final codec = await ui.instantiateImageCodec(png);
+      final frame = await codec.getNextFrame();
+      imgW = frame.image.width;
+      imgH = frame.image.height;
+      frame.image.dispose();
+    } catch (_) {}
+    if (!mounted) return;
+    _pushUndo();
+    final srcIndex = _tl.sources.length;
+    _tl.sources.add(
+      MediaSource(
+        path: path,
+        name: '貼圖',
+        kind: ClipKind.image,
+        duration: 3600,
+        w: imgW,
+        h: imgH,
+      ),
+    );
+    _thumbs[srcIndex] = [png];
+    // 從播放頭開始、預設 4 秒，跟匯入圖片同一個手感
+    final clip = TimelineClip(
+      id: _tl.nextId(),
+      sourceIndex: srcIndex,
+      trimStart: 0,
+      trimEnd: 4,
+      offset: _position,
+      track: track,
+    );
+    _tl.clips.add(clip);
+    setState(() => _sel = clip.id);
+    _resyncPlayback();
+    _saveDraft();
   }
 
   /// 圖片素材：從播放頭開始、預設 4 秒，可用把手拉長

@@ -7,7 +7,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../models/watermark_settings.dart';
 import '../services/preset_store.dart';
-import '../services/sticker_store.dart';
+import 'sticker_picker.dart';
 import '../screens/crop_screen.dart';
 import '../screens/draw_screen.dart';
 import '../theme.dart';
@@ -325,141 +325,10 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     _ensureSection(WmPart.logo, 0);
   }
 
-  /// 貼圖挑選：上排 Emoji、下排「我的貼圖」（收藏的圖片）。
-  /// 挑到的一律變成一張透明 PNG，接上圖片浮水印那條路
+  /// 貼圖：挑一張進來當圖片浮水印（挑選器見 pickSticker）
   Future<void> _openStickers() async {
-    var mine = await StickerStore.load();
-    if (!mounted) return;
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.8,
-      ),
-      builder: (context) => StatefulBuilder(
-        builder: (context, setSheet) => SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 0, 14, 16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Text('貼圖',
-                        style: TextStyle(
-                            fontSize: 14, fontWeight: FontWeight.w700)),
-                    const Spacer(),
-                    // 把相簿裡的圖收進「我的貼圖」，之後一鍵就拿得到
-                    TextButton.icon(
-                      onPressed: () async {
-                        final picked = await ImagePicker()
-                            .pickImage(source: ImageSource.gallery);
-                        if (picked == null) return;
-                        final bytes = await picked.readAsBytes();
-                        await StickerStore.add(bytes);
-                        mine = await StickerStore.load();
-                        setSheet(() {});
-                      },
-                      icon: const Icon(Icons.add_photo_alternate_outlined,
-                          size: 17),
-                      label: const Text('收藏圖片',
-                          style: TextStyle(fontSize: 12.5)),
-                    ),
-                  ],
-                ),
-                Flexible(
-                  child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (mine.isNotEmpty) ...[
-                          const Padding(
-                            padding: EdgeInsets.fromLTRB(2, 4, 2, 8),
-                            child: Text('我的貼圖（長按移除）',
-                                style: TextStyle(
-                                    fontSize: 11, color: kTextDim)),
-                          ),
-                          GridView.builder(
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            gridDelegate:
-                                const SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 5,
-                              mainAxisSpacing: 8,
-                              crossAxisSpacing: 8,
-                            ),
-                            itemCount: mine.length,
-                            itemBuilder: (context, i) => InkWell(
-                              borderRadius: BorderRadius.circular(8),
-                              onTap: () {
-                                Navigator.pop(context);
-                                _useSticker(mine[i]);
-                              },
-                              onLongPress: () async {
-                                await StickerStore.removeAt(i);
-                                mine = await StickerStore.load();
-                                setSheet(() {});
-                              },
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(color: kClipBorder),
-                                ),
-                                clipBehavior: Clip.antiAlias,
-                                padding: const EdgeInsets.all(4),
-                                child: Image.memory(mine[i],
-                                    fit: BoxFit.contain,
-                                    gaplessPlayback: true),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 14),
-                        ],
-                        const Padding(
-                          padding: EdgeInsets.fromLTRB(2, 0, 2, 8),
-                          child: Text('Emoji',
-                              style:
-                                  TextStyle(fontSize: 11, color: kTextDim)),
-                        ),
-                        GridView.builder(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          gridDelegate:
-                              const SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: 6,
-                            mainAxisSpacing: 6,
-                            crossAxisSpacing: 6,
-                          ),
-                          itemCount: StickerStore.emojis.length,
-                          itemBuilder: (context, i) {
-                            final e = StickerStore.emojis[i];
-                            return InkWell(
-                              borderRadius: BorderRadius.circular(8),
-                              onTap: () async {
-                                Navigator.pop(context);
-                                final png =
-                                    await StickerStore.renderEmoji(e);
-                                if (png != null) _useSticker(png);
-                              },
-                              child: Center(
-                                child: Text(e,
-                                    style: const TextStyle(fontSize: 28)),
-                              ),
-                            );
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
+    final png = await pickSticker(context);
+    if (png != null && mounted) _useSticker(png);
   }
 
   /// 貼圖套進來：跟手繪一樣填進空的圖片位、沒有空位就加一張
@@ -494,8 +363,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   }
 
   Future<void> _pickLogo() async {
-    final picked =
-        await ImagePicker().pickImage(source: ImageSource.gallery);
+    final picked = await ImagePicker().pickImage(source: ImageSource.gallery);
     if (picked == null) return;
     try {
       final raw = await picked.readAsBytes();
@@ -560,15 +428,16 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       );
       frame = await codec.getNextFrame();
     }
-    final data =
-        await frame.image.toByteData(format: ui.ImageByteFormat.png);
+    final data = await frame.image.toByteData(format: ui.ImageByteFormat.png);
     frame.image.dispose();
     return data?.buffer.asUint8List(); // 特殊格式編不出 PNG 就回 null
   }
 
   /// 通用顏色挑選：文字、描邊、底色共用
   Future<void> _pickColorFor(
-      Color initial, void Function(int argb) apply) async {
+    Color initial,
+    void Function(int argb) apply,
+  ) async {
     final v = await pickColor(context, initial);
     if (v != null) _update(() => apply(v));
   }
@@ -584,8 +453,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         height: 32,
         child: Row(
           children: [
-            Text(label,
-                style: const TextStyle(fontSize: 12, color: kTextDim)),
+            Text(label, style: const TextStyle(fontSize: 12, color: kTextDim)),
             const Spacer(),
             InkWell(
               onTap: () => _pickColorFor(color, apply),
@@ -620,11 +488,13 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('取消')),
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
           FilledButton(
-              onPressed: () => Navigator.pop(context, nameCtrl.text.trim()),
-              child: const Text('儲存')),
+            onPressed: () => Navigator.pop(context, nameCtrl.text.trim()),
+            child: const Text('儲存'),
+          ),
         ],
       ),
     );
@@ -690,45 +560,50 @@ class WatermarkPanelState extends State<WatermarkPanel> {
 
   /// 置頂導覽列：圖示＋文字，跟 App 其他工具列同一種長相
   Widget _sectionNav() => Container(
-        color: kPanel,
-        padding: const EdgeInsets.fromLTRB(8, 3, 8, 5),
-        child: Row(
-          children: [
-            for (var i = 0; i < _nav.length; i++)
-              Expanded(
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(8),
-                  onTap: () => _jumpToSection(i),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(vertical: 5),
-                    // D 案：選中不填色，改畫線框。框在前景，內容不位移
-                    foregroundDecoration: i == _navAt
-                        ? BoxDecoration(
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: kAmber, width: 1.5),
-                          )
-                        : null,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(_nav[i].icon,
-                            size: 17,
-                            color: i == _navAt ? kText : kTextDim),
-                        const SizedBox(height: 3),
-                        Text(_nav[i].label,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                                fontSize: 10.5,
-                                color: i == _navAt ? kText : kTextDim)),
-                      ],
+    color: kPanel,
+    padding: const EdgeInsets.fromLTRB(8, 3, 8, 5),
+    child: Row(
+      children: [
+        for (var i = 0; i < _nav.length; i++)
+          Expanded(
+            child: InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: () => _jumpToSection(i),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 5),
+                // D 案：選中不填色，改畫線框。框在前景，內容不位移
+                foregroundDecoration: i == _navAt
+                    ? BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: kAmber, width: 1.5),
+                      )
+                    : null,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      _nav[i].icon,
+                      size: 17,
+                      color: i == _navAt ? kText : kTextDim,
                     ),
-                  ),
+                    const SizedBox(height: 3),
+                    Text(
+                      _nav[i].label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        color: i == _navAt ? kText : kTextDim,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-          ],
-        ),
-      );
+            ),
+          ),
+      ],
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -818,587 +693,821 @@ class WatermarkPanelState extends State<WatermarkPanel> {
               Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-        // ===== 選擇範本：D 案不填色、只留線框；琥珀圖示＋下拉箭頭 =====
-        OutlinedButton(
-          onPressed: _openPresetPicker,
-          style: OutlinedButton.styleFrom(
-            minimumSize: const Size.fromHeight(44),
-            side: const BorderSide(color: kClipBorder),
-            foregroundColor: kText,
-            textStyle: const TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                fontFamily: 'NotoSansTC'),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.bookmarks_outlined,
-                  size: 16, color: kAmber),
-              const SizedBox(width: 8),
-              Text(_presetSel == null ? '選擇範本' : '範本：$_presetSel'),
-              const SizedBox(width: 5),
-              const Icon(Icons.keyboard_arrow_down,
-                  size: 17, color: kTextDim),
-            ],
-          ),
-        ),
-        const SizedBox(height: 10),
-
-        // ===== 卡片 1：位置 =====
-        if (_on(_posCardKey))
-          KeyedSubtree(key: _posCardKey, child: _card(_bigPosGrid())),
-
-        // ===== 動畫（影片專用）=====
-        if (widget.showAnimation && _on(_animCardKey))
-          KeyedSubtree(
-          key: _animCardKey,
-          child: _card(Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text('動畫',
-                  style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                      color: kText)),
-              const SizedBox(height: 8),
-              GridView.count(
-                crossAxisCount: 4,
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                mainAxisSpacing: 6,
-                crossAxisSpacing: 6,
-                childAspectRatio: 2.2,
-                children: [
-                  for (final a in WmAnimation.values)
-                    InkWell(
-                      borderRadius: BorderRadius.circular(6),
-                      onTap: () {
-                        _update(() => s.animation = a);
-                        // 微調滑桿在下面才展開：自動捲過去，
-                        // 暗示使用者有這些選項能調
-                        if (a != WmAnimation.none) {
-                          WidgetsBinding.instance
-                              .addPostFrameCallback((_) {
-                            final ctx = _animCardKey.currentContext;
-                            if (ctx != null) {
-                              Scrollable.ensureVisible(
-                                ctx,
-                                duration:
-                                    const Duration(milliseconds: 350),
-                                curve: Curves.easeOutCubic,
-                                alignment: 0.05,
-                              );
-                            }
-                          });
-                        }
-                      },
-                      child: Container(
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: s.animation == a
-                              ? kPanelHi
-                              : Colors.transparent,
-                          border: Border.all(color: kClipBorder, width: 1),
-                          borderRadius: BorderRadius.circular(6),
+                  // ===== 選擇範本：D 案不填色、只留線框；琥珀圖示＋下拉箭頭 =====
+                  OutlinedButton(
+                    onPressed: _openPresetPicker,
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(44),
+                      side: const BorderSide(color: kClipBorder),
+                      foregroundColor: kText,
+                      textStyle: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        fontFamily: 'NotoSansTC',
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.bookmarks_outlined,
+                          size: 16,
+                          color: kAmber,
                         ),
-                        // 選取的粗框畫在前景，字不位移
-                        foregroundDecoration: s.animation == a
-                            ? BoxDecoration(
-                                borderRadius: BorderRadius.circular(6),
-                                border:
-                                    Border.all(color: kAmber, width: 1.5),
-                              )
-                            : null,
-                        child: Text(a.label,
-                            style: TextStyle(
-                                fontSize: 11.5,
-                                height: 1.2,
-                                fontWeight: s.animation == a
-                                    ? FontWeight.w700
-                                    : FontWeight.w400,
-                                color: s.animation == a
-                                    ? kAmber
-                                    : kText)),
-                      ),
+                        const SizedBox(width: 8),
+                        Text(_presetSel == null ? '選擇範本' : '範本：$_presetSel'),
+                        const SizedBox(width: 5),
+                        const Icon(
+                          Icons.keyboard_arrow_down,
+                          size: 17,
+                          color: kTextDim,
+                        ),
+                      ],
                     ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              Text(s.animation.note,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                      fontSize: 10.5, color: kTextDim)),
-              // 微調：速度／幅度（標籤跟著模式改，右邊顯示實際數值）
-              if (s.animation != WmAnimation.none) ...[
-                const SizedBox(height: 4),
-                _animSlider(
-                  s.animation == WmAnimation.blink ? '頻率' : '速度',
-                  s.animSpeed,
-                  s.animation == WmAnimation.blink
-                      ? '${s.blinkCycle.toStringAsFixed(1)} 秒一次'
-                      : s.animation == WmAnimation.marquee
-                          ? '${s.marqueeCycle.toStringAsFixed(1)} 秒一輪'
-                          : '${s.animSpeed.toStringAsFixed(1)}x',
-                  (v) => _update(() => s.animSpeed = v),
-                ),
-                if (s.animation != WmAnimation.marquee)
-                  _animSlider(
-                    s.animation == WmAnimation.blink ? '一次亮多久' : '幅度',
-                    s.animRange,
-                    s.animation == WmAnimation.blink
-                        ? '亮 ${s.blinkOn.toStringAsFixed(1)} 秒'
-                        : '${(s.animRange * 2).toStringAsFixed(0)}%',
-                    (v) => _update(() => s.animRange = v),
                   ),
-              ],
-            ],
-          )),
-          ),
+                  const SizedBox(height: 10),
 
-        // ===== 卡片 2：文字 =====
-        if (_on(_textCardKey))
-        KeyedSubtree(
-          key: _textCardKey,
-          child: _card(Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-        // 標頭：標題＋「再加一個」＋（多個時）刪除＋這一個的開關。
-        // 文字跟圖片同一套：可以放很多個，設定調的是「亮框那一個」
-        Row(
-          children: [
-            const Text('文字',
-                style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                    color: kText)),
-            const Spacer(),
-            if (s.texts.length > 1)
-              IconButton(
-                tooltip: '移除這一個',
-                visualDensity: VisualDensity.compact,
-                onPressed: () {
-                  _update(() => s.removeText(s.activeText));
-                  _textCtrl.text = s.text.text;
-                },
-                icon: const Icon(Icons.delete_outline,
-                    size: 19, color: kTextDim),
-              ),
-            IconButton(
-              tooltip: '再加一個文字',
-              visualDensity: VisualDensity.compact,
-              onPressed: () {
-                _update(() => s.addText());
-                _textCtrl.text = s.text.text;
-              },
-              icon: const Icon(Icons.add, size: 20, color: kIcon),
-            ),
-            Switch(
-              value: s.text.enabled,
-              onChanged: (v) => _update(() => s.text.enabled = v),
-            ),
-          ],
-        ),
-        if (s.texts.length > 1) ...[
-          const SizedBox(height: 4),
-          // 選取列：底下整組設定調的都是亮框的那一個
-          SizedBox(
-            height: 34,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemCount: s.texts.length,
-              separatorBuilder: (_, _) => const SizedBox(width: 6),
-              itemBuilder: (context, i) {
-                final t = s.texts[i];
-                final on = i == s.activeText;
-                final label =
-                    t.text.trim().isEmpty ? '（空）' : t.text.trim();
-                return InkWell(
-                  borderRadius: BorderRadius.circular(999),
-                  // 切換要調哪一個，不算改動內容——不拍上一步快照
-                  onTap: () {
-                    setState(() {
-                      s.activeText = i;
-                      _textCtrl.text = s.text.text;
-                    });
-                    widget.onChanged();
-                  },
-                  child: Container(
-                    constraints: const BoxConstraints(maxWidth: 120),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 7),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(999),
-                      border: Border.all(color: kBorder),
-                    ),
-                    foregroundDecoration: on
-                        ? BoxDecoration(
-                            borderRadius: BorderRadius.circular(999),
-                            border: Border.all(color: kSelect, width: 1.5),
-                          )
-                        : null,
-                    child: Text(
-                      label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        // 關掉的那個淡一點，看得出它現在不會出現在畫面上
-                        color: t.enabled ? kText : kTextDim,
-                        fontWeight: on ? FontWeight.w700 : FontWeight.w400,
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-        ],
-        if (s.text.enabled) ...[
-          const SizedBox(height: 6),
-          // ===== 大輸入框：用目前字型與顏色顯示，打字即預覽 =====
-          // 疊一顆「收起鍵盤」鈕在右上角：多行輸入的換行鍵不能當完成鍵，
-          // 打完字原本沒有地方可以把鍵盤收掉（使用者實測回報）
-          Stack(
-            children: [
-          Container(
-            constraints: const BoxConstraints(minHeight: 110),
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: const Color(0xFF0F0F11),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: kClipBorder, width: 1.5),
-            ),
-            child: TextField(
-              controller: _textCtrl,
-              focusNode: _textFocus,
-              textAlign: TextAlign.center,
-              maxLines: null,
-              style: TextStyle(
-                fontFamily: s.text.fontFamily,
-                fontSize: 26,
-                color: s.text.color
-                    .withValues(alpha: s.text.opacity.clamp(0.55, 1.0)),
-              ),
-              decoration: const InputDecoration(
-                hintText: '浮水印文字',
-                hintStyle: TextStyle(
-                    color: kTextDim,
-                    fontSize: 16,
-                    fontFamily: 'NotoSansTC'),
-                filled: false,
-                enabledBorder: InputBorder.none,
-                focusedBorder: InputBorder.none,
-                contentPadding:
-                    EdgeInsets.symmetric(horizontal: 14, vertical: 20),
-              ),
-              onChanged: (v) => _update(() => s.text.text = v),
-            ),
-          ),
-              Positioned(
-                right: 2,
-                top: 2,
-                child: AnimatedBuilder(
-                  animation: _textFocus,
-                  builder: (context, _) => _textFocus.hasFocus
-                      ? IconButton(
-                          tooltip: '收起鍵盤',
-                          visualDensity: VisualDensity.compact,
-                          onPressed: () => _textFocus.unfocus(),
-                          icon: const Icon(Icons.keyboard_hide_outlined,
-                              size: 20, color: kIcon),
-                        )
-                      : const SizedBox.shrink(),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: DropdownButtonHideUnderline(
-                  child: Container(
-                    height: 38,
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: kBorder),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: DropdownButton<String>(
-                      isExpanded: true,
-                      value: s.text.fontFamily,
-                      icon: const Icon(Icons.expand_more,
-                          size: 16, color: kTextDim),
-                      style: const TextStyle(fontSize: 13, color: kText),
-                      // 選單跟 App 同風格：面板色、圓角、限高
-                      dropdownColor: kPanelHi,
-                      borderRadius: BorderRadius.circular(12),
-                      menuMaxHeight: 320,
-                      itemHeight: 48,
-                      items: [
-                        for (final f in kFontOptions)
-                          DropdownMenuItem(
-                            value: f.family,
-                            // 有些字型（粉圓）的行高比字級大，不夾住
-                            // 行高就會頂出格子（實測回報）
-                            child: Text(
-                              f.label,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
+                  // ===== 卡片 1：位置 =====
+                  if (_on(_posCardKey))
+                    KeyedSubtree(key: _posCardKey, child: _card(_bigPosGrid())),
+
+                  // ===== 動畫（影片專用）=====
+                  if (widget.showAnimation && _on(_animCardKey))
+                    KeyedSubtree(
+                      key: _animCardKey,
+                      child: _card(
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            const Text(
+                              '動畫',
                               style: TextStyle(
-                                fontFamily: f.family,
                                 fontSize: 13,
-                                height: 1.15,
+                                fontWeight: FontWeight.w700,
+                                color: kText,
                               ),
                             ),
-                          ),
-                      ],
-                      onChanged: (v) => _update(
-                          () => s.text.fontFamily = v ?? 'NotoSansTC'),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 10),
-              // 跟字體下拉同款的框＋「顏色」字樣：
-              // 裸圓點看起來像裝飾，不像可以點
-              InkWell(
-                onTap: _pickColor,
-                borderRadius: BorderRadius.circular(6),
-                child: Container(
-                  height: 38,
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  decoration: BoxDecoration(
-                    border: Border.all(color: kBorder),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 22,
-                        height: 22,
-                        decoration: BoxDecoration(
-                          color: s.text.color,
-                          shape: BoxShape.circle,
-                          border: Border.all(color: kBorder, width: 1.5),
+                            const SizedBox(height: 8),
+                            GridView.count(
+                              crossAxisCount: 4,
+                              shrinkWrap: true,
+                              physics: const NeverScrollableScrollPhysics(),
+                              mainAxisSpacing: 6,
+                              crossAxisSpacing: 6,
+                              childAspectRatio: 2.2,
+                              children: [
+                                for (final a in WmAnimation.values)
+                                  InkWell(
+                                    borderRadius: BorderRadius.circular(6),
+                                    onTap: () {
+                                      _update(() => s.animation = a);
+                                      // 微調滑桿在下面才展開：自動捲過去，
+                                      // 暗示使用者有這些選項能調
+                                      if (a != WmAnimation.none) {
+                                        WidgetsBinding.instance
+                                            .addPostFrameCallback((_) {
+                                              final ctx =
+                                                  _animCardKey.currentContext;
+                                              if (ctx != null) {
+                                                Scrollable.ensureVisible(
+                                                  ctx,
+                                                  duration: const Duration(
+                                                    milliseconds: 350,
+                                                  ),
+                                                  curve: Curves.easeOutCubic,
+                                                  alignment: 0.05,
+                                                );
+                                              }
+                                            });
+                                      }
+                                    },
+                                    child: Container(
+                                      alignment: Alignment.center,
+                                      decoration: BoxDecoration(
+                                        color: s.animation == a
+                                            ? kPanelHi
+                                            : Colors.transparent,
+                                        border: Border.all(
+                                          color: kClipBorder,
+                                          width: 1,
+                                        ),
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      // 選取的粗框畫在前景，字不位移
+                                      foregroundDecoration: s.animation == a
+                                          ? BoxDecoration(
+                                              borderRadius:
+                                                  BorderRadius.circular(6),
+                                              border: Border.all(
+                                                color: kAmber,
+                                                width: 1.5,
+                                              ),
+                                            )
+                                          : null,
+                                      child: Text(
+                                        a.label,
+                                        style: TextStyle(
+                                          fontSize: 11.5,
+                                          height: 1.2,
+                                          fontWeight: s.animation == a
+                                              ? FontWeight.w700
+                                              : FontWeight.w400,
+                                          color: s.animation == a
+                                              ? kAmber
+                                              : kText,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              s.animation.note,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                fontSize: 10.5,
+                                color: kTextDim,
+                              ),
+                            ),
+                            // 微調：速度／幅度（標籤跟著模式改，右邊顯示實際數值）
+                            if (s.animation != WmAnimation.none) ...[
+                              const SizedBox(height: 4),
+                              _animSlider(
+                                s.animation == WmAnimation.blink ? '頻率' : '速度',
+                                s.animSpeed,
+                                s.animation == WmAnimation.blink
+                                    ? '${s.blinkCycle.toStringAsFixed(1)} 秒一次'
+                                    : s.animation == WmAnimation.marquee
+                                    ? '${s.marqueeCycle.toStringAsFixed(1)} 秒一輪'
+                                    : '${s.animSpeed.toStringAsFixed(1)}x',
+                                (v) => _update(() => s.animSpeed = v),
+                              ),
+                              if (s.animation != WmAnimation.marquee)
+                                _animSlider(
+                                  s.animation == WmAnimation.blink
+                                      ? '一次亮多久'
+                                      : '幅度',
+                                  s.animRange,
+                                  s.animation == WmAnimation.blink
+                                      ? '亮 ${s.blinkOn.toStringAsFixed(1)} 秒'
+                                      : '${(s.animRange * 2).toStringAsFixed(0)}%',
+                                  (v) => _update(() => s.animRange = v),
+                                ),
+                            ],
+                          ],
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      const Text('顏色',
-                          style: TextStyle(fontSize: 12, color: kTextDim)),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 2),
-          _sliderRow('大小', s.text.sizeFrac, 0.015, 2.0,
-              (v) => _update(() => s.text.sizeFrac = v)),
-          _sliderRow('透明', s.text.opacity, 0.05, 1,
-              (v) => _update(() => s.text.opacity = v)),
-          _sliderRow('間距', s.text.spacing, 0, 0.6,
-              (v) => _update(() => s.text.spacing = v)),
-          _rotationRow(s.text.rotation,
-              (v) => _update(() => s.text.rotation = v)),
-          Row(
-            children: [
-              const Text('滿版平鋪',
-                  style: TextStyle(fontSize: 12, color: kTextDim)),
-              const Spacer(),
-              _miniSwitch(s.text.tiled,
-                  (v) => _setTiled(isLogo: false, on: v)),
-            ],
-          ),
-          Row(
-            children: [
-              const Text('陰影',
-                  style: TextStyle(fontSize: 12, color: kTextDim)),
-              const Spacer(),
-              _miniSwitch(
-                  s.text.shadow, (v) => _update(() => s.text.shadow = v)),
-            ],
-          ),
-          Row(
-            children: [
-              const Text('描邊',
-                  style: TextStyle(fontSize: 12, color: kTextDim)),
-              const Spacer(),
-              _miniSwitch(
-                  s.text.outline, (v) => _update(() => s.text.outline = v)),
-            ],
-          ),
-          if (s.text.outline) ...[
-            _colorDotRow('顏色', s.text.outlineColor,
-                (v) => s.text.outlineColorValue = v),
-            Padding(
-              padding: const EdgeInsets.only(left: 16),
-              child: _sliderRow('粗度', s.text.outlineWidth, 0.02, 0.2,
-                  (v) => _update(() => s.text.outlineWidth = v)),
-            ),
-          ],
-          Row(
-            children: [
-              const Text('底色',
-                  style: TextStyle(fontSize: 12, color: kTextDim)),
-              const Spacer(),
-              _miniSwitch(s.text.bg, (v) => _update(() => s.text.bg = v)),
-            ],
-          ),
-          if (s.text.bg) ...[
-            _colorDotRow(
-                '顏色', s.text.bgColor, (v) => s.text.bgColorValue = v),
-            Padding(
-              padding: const EdgeInsets.only(left: 16),
-              child: _sliderRow('透明', s.text.bgOpacity, 0.1, 1,
-                  (v) => _update(() => s.text.bgOpacity = v)),
-            ),
-            Padding(
-              padding: const EdgeInsets.only(left: 16),
-              child: _sliderRow('大小', s.text.bgPad, 0.3, 2.5,
-                  (v) => _update(() => s.text.bgPad = v)),
-            ),
-            Padding(
-              padding: const EdgeInsets.only(left: 16),
-              child: _sliderRow('圓角', s.text.bgCorner, 0, 1,
-                  (v) => _update(() => s.text.bgCorner = v)),
-            ),
-          ],
-        ],
-          ],
-        )),
-        ),
-
-        // ===== 卡片 3：圖片（可以放很多張；＋加入，點縮圖換要調哪一張）=====
-        if (_on(_logoCardKey))
-        KeyedSubtree(
-          key: _logoCardKey,
-          child: _card(Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-        // 還沒有圖片時整行都能點（不用精準戳 + 號）
-        InkWell(
-          onTap: _hasLogos ? null : _addLogo,
-          borderRadius: BorderRadius.circular(8),
-          child: Row(
-            children: [
-              const Text('圖片',
-                  style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                      color: kText)),
-              const Spacer(),
-              IconButton(
-                tooltip: _hasLogos ? '再加一張' : '加入圖片',
-                visualDensity: VisualDensity.compact,
-                onPressed: _addLogo,
-                icon: const Icon(Icons.add, size: 20, color: kIcon),
-              ),
-            ],
-          ),
-        ),
-        if (_hasLogos) ...[
-          const SizedBox(height: 6),
-          // 縮圖列：底下的滑桿調的是「亮框的那一張」。
-          // 只有一張時也照樣顯示——加第二張之後版面才不會整個跳掉
-          SizedBox(
-            height: 46,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemCount: s.logos.length,
-              separatorBuilder: (_, _) => const SizedBox(width: 6),
-              itemBuilder: (context, i) {
-                final bytes = s.logos[i].bytes;
-                final on = i == s.activeLogo;
-                return InkWell(
-                  borderRadius: BorderRadius.circular(6),
-                  // 切換要調哪一張，不算改動內容——不拍上一步快照
-                  onTap: () {
-                    setState(() => s.activeLogo = i);
-                    widget.onChanged();
-                  },
-                  child: Container(
-                    width: 46,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: kBorder, width: 1),
                     ),
-                    // 選取框畫在前景，縮圖不位移
-                    foregroundDecoration: on
-                        ? BoxDecoration(
-                            borderRadius: BorderRadius.circular(6),
-                            border: Border.all(color: kSelect, width: 2),
-                          )
-                        : null,
-                    clipBehavior: Clip.antiAlias,
-                    child: bytes == null
-                        ? const Icon(Icons.image_outlined,
-                            size: 18, color: kTextDim)
-                        : Opacity(
-                            // 關掉的那張淡一點，看得出它現在不會出現在畫面上
-                            opacity: s.logos[i].enabled ? 1 : 0.35,
-                            child: Image.memory(bytes, fit: BoxFit.cover),
-                          ),
-                  ),
-                );
-              },
-            ),
-          ),
-          const SizedBox(height: 6),
-          Row(
-            children: [
-              _miniBtn(Icons.swap_horiz, '換一張', _pickLogo),
-              const SizedBox(width: 8),
-              // 手繪的那張可以載回畫板繼續改
-              if (s.logo.drawn) ...[
-                _miniBtn(Icons.draw_outlined, '編輯', _editDrawing),
-                const SizedBox(width: 8),
-              ],
-              _miniBtn(Icons.crop, '裁切', _cropLogo),
-              const Spacer(),
-              IconButton(
-                tooltip: s.logos.length > 1 ? '移除這一張' : '移除圖片',
-                visualDensity: VisualDensity.compact,
-                onPressed: () => _update(() => s.removeLogo(s.activeLogo)),
-                icon: const Icon(Icons.delete_outline,
-                    size: 19, color: kTextDim),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          _sliderRow('大小', s.logo.sizeFrac, 0.05, 2.0,
-              (v) => _update(() => s.logo.sizeFrac = v)),
-          _sliderRow('透明', s.logo.opacity, 0.05, 1,
-              (v) => _update(() => s.logo.opacity = v)),
-          _rotationRow(s.logo.rotation,
-              (v) => _update(() => s.logo.rotation = v)),
-          _sliderRow('圓角', s.logo.corner, 0, 1,
-              (v) => _update(() => s.logo.corner = v)),
-          Row(
-            children: [
-              const Text('滿版平鋪',
-                  style: TextStyle(fontSize: 12, color: kTextDim)),
-              const Spacer(),
-              _miniSwitch(s.logo.tiled,
-                  (v) => _setTiled(isLogo: true, on: v)),
-            ],
-          ),
-        ],
-          ],
-        )),
-        ),
 
-        // ===== 父層注入的額外區塊（照片編輯器的馬賽克/更多浮水印）=====
-        for (var i = 0; i < widget.extraSections.length; i++)
-          if (_on(_extraKeys[i]))
-            KeyedSubtree(
-              key: _extraKeys[i],
-              child: _card(widget.extraSections[i].child),
-            ),
+                  // ===== 卡片 2：文字 =====
+                  if (_on(_textCardKey))
+                    KeyedSubtree(
+                      key: _textCardKey,
+                      child: _card(
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            // 標頭：標題＋「再加一個」＋（多個時）刪除＋這一個的開關。
+                            // 文字跟圖片同一套：可以放很多個，設定調的是「亮框那一個」
+                            Row(
+                              children: [
+                                const Text(
+                                  '文字',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                    color: kText,
+                                  ),
+                                ),
+                                const Spacer(),
+                                if (s.texts.length > 1)
+                                  IconButton(
+                                    tooltip: '移除這一個',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: () {
+                                      _update(() => s.removeText(s.activeText));
+                                      _textCtrl.text = s.text.text;
+                                    },
+                                    icon: const Icon(
+                                      Icons.delete_outline,
+                                      size: 19,
+                                      color: kTextDim,
+                                    ),
+                                  ),
+                                IconButton(
+                                  tooltip: '再加一個文字',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: () {
+                                    _update(() => s.addText());
+                                    _textCtrl.text = s.text.text;
+                                  },
+                                  icon: const Icon(
+                                    Icons.add,
+                                    size: 20,
+                                    color: kIcon,
+                                  ),
+                                ),
+                                Switch(
+                                  value: s.text.enabled,
+                                  onChanged: (v) =>
+                                      _update(() => s.text.enabled = v),
+                                ),
+                              ],
+                            ),
+                            if (s.texts.length > 1) ...[
+                              const SizedBox(height: 4),
+                              // 選取列：底下整組設定調的都是亮框的那一個
+                              SizedBox(
+                                height: 34,
+                                child: ListView.separated(
+                                  scrollDirection: Axis.horizontal,
+                                  itemCount: s.texts.length,
+                                  separatorBuilder: (_, _) =>
+                                      const SizedBox(width: 6),
+                                  itemBuilder: (context, i) {
+                                    final t = s.texts[i];
+                                    final on = i == s.activeText;
+                                    final label = t.text.trim().isEmpty
+                                        ? '（空）'
+                                        : t.text.trim();
+                                    return InkWell(
+                                      borderRadius: BorderRadius.circular(999),
+                                      // 切換要調哪一個，不算改動內容——不拍上一步快照
+                                      onTap: () {
+                                        setState(() {
+                                          s.activeText = i;
+                                          _textCtrl.text = s.text.text;
+                                        });
+                                        widget.onChanged();
+                                      },
+                                      child: Container(
+                                        constraints: const BoxConstraints(
+                                          maxWidth: 120,
+                                        ),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                          vertical: 7,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          borderRadius: BorderRadius.circular(
+                                            999,
+                                          ),
+                                          border: Border.all(color: kBorder),
+                                        ),
+                                        foregroundDecoration: on
+                                            ? BoxDecoration(
+                                                borderRadius:
+                                                    BorderRadius.circular(999),
+                                                border: Border.all(
+                                                  color: kSelect,
+                                                  width: 1.5,
+                                                ),
+                                              )
+                                            : null,
+                                        child: Text(
+                                          label,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontSize: 11.5,
+                                            // 關掉的那個淡一點，看得出它現在不會出現在畫面上
+                                            color: t.enabled ? kText : kTextDim,
+                                            fontWeight: on
+                                                ? FontWeight.w700
+                                                : FontWeight.w400,
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                            ],
+                            if (s.text.enabled) ...[
+                              const SizedBox(height: 6),
+                              // ===== 大輸入框：用目前字型與顏色顯示，打字即預覽 =====
+                              // 疊一顆「收起鍵盤」鈕在右上角：多行輸入的換行鍵不能當完成鍵，
+                              // 打完字原本沒有地方可以把鍵盤收掉（使用者實測回報）
+                              Stack(
+                                children: [
+                                  Container(
+                                    constraints: const BoxConstraints(
+                                      minHeight: 110,
+                                    ),
+                                    alignment: Alignment.center,
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF0F0F11),
+                                      borderRadius: BorderRadius.circular(12),
+                                      border: Border.all(
+                                        color: kClipBorder,
+                                        width: 1.5,
+                                      ),
+                                    ),
+                                    child: TextField(
+                                      controller: _textCtrl,
+                                      focusNode: _textFocus,
+                                      textAlign: TextAlign.center,
+                                      maxLines: null,
+                                      style: TextStyle(
+                                        fontFamily: s.text.fontFamily,
+                                        fontSize: 26,
+                                        color: s.text.color.withValues(
+                                          alpha: s.text.opacity.clamp(
+                                            0.55,
+                                            1.0,
+                                          ),
+                                        ),
+                                      ),
+                                      decoration: const InputDecoration(
+                                        hintText: '浮水印文字',
+                                        hintStyle: TextStyle(
+                                          color: kTextDim,
+                                          fontSize: 16,
+                                          fontFamily: 'NotoSansTC',
+                                        ),
+                                        filled: false,
+                                        enabledBorder: InputBorder.none,
+                                        focusedBorder: InputBorder.none,
+                                        contentPadding: EdgeInsets.symmetric(
+                                          horizontal: 14,
+                                          vertical: 20,
+                                        ),
+                                      ),
+                                      onChanged: (v) =>
+                                          _update(() => s.text.text = v),
+                                    ),
+                                  ),
+                                  Positioned(
+                                    right: 2,
+                                    top: 2,
+                                    child: AnimatedBuilder(
+                                      animation: _textFocus,
+                                      builder: (context, _) =>
+                                          _textFocus.hasFocus
+                                          ? IconButton(
+                                              tooltip: '收起鍵盤',
+                                              visualDensity:
+                                                  VisualDensity.compact,
+                                              onPressed: () =>
+                                                  _textFocus.unfocus(),
+                                              icon: const Icon(
+                                                Icons.keyboard_hide_outlined,
+                                                size: 20,
+                                                color: kIcon,
+                                              ),
+                                            )
+                                          : const SizedBox.shrink(),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: DropdownButtonHideUnderline(
+                                      child: Container(
+                                        height: 38,
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          border: Border.all(color: kBorder),
+                                          borderRadius: BorderRadius.circular(
+                                            6,
+                                          ),
+                                        ),
+                                        child: DropdownButton<String>(
+                                          isExpanded: true,
+                                          value: s.text.fontFamily,
+                                          icon: const Icon(
+                                            Icons.expand_more,
+                                            size: 16,
+                                            color: kTextDim,
+                                          ),
+                                          style: const TextStyle(
+                                            fontSize: 13,
+                                            color: kText,
+                                          ),
+                                          // 選單跟 App 同風格：面板色、圓角、限高
+                                          dropdownColor: kPanelHi,
+                                          borderRadius: BorderRadius.circular(
+                                            12,
+                                          ),
+                                          menuMaxHeight: 320,
+                                          itemHeight: 48,
+                                          items: [
+                                            for (final f in kFontOptions)
+                                              DropdownMenuItem(
+                                                value: f.family,
+                                                // 有些字型（粉圓）的行高比字級大，不夾住
+                                                // 行高就會頂出格子（實測回報）
+                                                child: Text(
+                                                  f.label,
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: TextStyle(
+                                                    fontFamily: f.family,
+                                                    fontSize: 13,
+                                                    height: 1.15,
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
+                                          onChanged: (v) => _update(
+                                            () => s.text.fontFamily =
+                                                v ?? 'NotoSansTC',
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  // 跟字體下拉同款的框＋「顏色」字樣：
+                                  // 裸圓點看起來像裝飾，不像可以點
+                                  InkWell(
+                                    onTap: _pickColor,
+                                    borderRadius: BorderRadius.circular(6),
+                                    child: Container(
+                                      height: 38,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 12,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        border: Border.all(color: kBorder),
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Container(
+                                            width: 22,
+                                            height: 22,
+                                            decoration: BoxDecoration(
+                                              color: s.text.color,
+                                              shape: BoxShape.circle,
+                                              border: Border.all(
+                                                color: kBorder,
+                                                width: 1.5,
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          const Text(
+                                            '顏色',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: kTextDim,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 2),
+                              _sliderRow(
+                                '大小',
+                                s.text.sizeFrac,
+                                0.015,
+                                2.0,
+                                (v) => _update(() => s.text.sizeFrac = v),
+                              ),
+                              _sliderRow(
+                                '透明',
+                                s.text.opacity,
+                                0.05,
+                                1,
+                                (v) => _update(() => s.text.opacity = v),
+                              ),
+                              _sliderRow(
+                                '間距',
+                                s.text.spacing,
+                                0,
+                                0.6,
+                                (v) => _update(() => s.text.spacing = v),
+                              ),
+                              _rotationRow(
+                                s.text.rotation,
+                                (v) => _update(() => s.text.rotation = v),
+                              ),
+                              Row(
+                                children: [
+                                  const Text(
+                                    '滿版平鋪',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: kTextDim,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  _miniSwitch(
+                                    s.text.tiled,
+                                    (v) => _setTiled(isLogo: false, on: v),
+                                  ),
+                                ],
+                              ),
+                              Row(
+                                children: [
+                                  const Text(
+                                    '陰影',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: kTextDim,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  _miniSwitch(
+                                    s.text.shadow,
+                                    (v) => _update(() => s.text.shadow = v),
+                                  ),
+                                ],
+                              ),
+                              Row(
+                                children: [
+                                  const Text(
+                                    '描邊',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: kTextDim,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  _miniSwitch(
+                                    s.text.outline,
+                                    (v) => _update(() => s.text.outline = v),
+                                  ),
+                                ],
+                              ),
+                              if (s.text.outline) ...[
+                                _colorDotRow(
+                                  '顏色',
+                                  s.text.outlineColor,
+                                  (v) => s.text.outlineColorValue = v,
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 16),
+                                  child: _sliderRow(
+                                    '粗度',
+                                    s.text.outlineWidth,
+                                    0.02,
+                                    0.2,
+                                    (v) =>
+                                        _update(() => s.text.outlineWidth = v),
+                                  ),
+                                ),
+                              ],
+                              Row(
+                                children: [
+                                  const Text(
+                                    '底色',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: kTextDim,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  _miniSwitch(
+                                    s.text.bg,
+                                    (v) => _update(() => s.text.bg = v),
+                                  ),
+                                ],
+                              ),
+                              if (s.text.bg) ...[
+                                _colorDotRow(
+                                  '顏色',
+                                  s.text.bgColor,
+                                  (v) => s.text.bgColorValue = v,
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 16),
+                                  child: _sliderRow(
+                                    '透明',
+                                    s.text.bgOpacity,
+                                    0.1,
+                                    1,
+                                    (v) => _update(() => s.text.bgOpacity = v),
+                                  ),
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 16),
+                                  child: _sliderRow(
+                                    '大小',
+                                    s.text.bgPad,
+                                    0.3,
+                                    2.5,
+                                    (v) => _update(() => s.text.bgPad = v),
+                                  ),
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 16),
+                                  child: _sliderRow(
+                                    '圓角',
+                                    s.text.bgCorner,
+                                    0,
+                                    1,
+                                    (v) => _update(() => s.text.bgCorner = v),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
 
-              ],
+                  // ===== 卡片 3：圖片（可以放很多張；＋加入，點縮圖換要調哪一張）=====
+                  if (_on(_logoCardKey))
+                    KeyedSubtree(
+                      key: _logoCardKey,
+                      child: _card(
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            // 還沒有圖片時整行都能點（不用精準戳 + 號）
+                            InkWell(
+                              onTap: _hasLogos ? null : _addLogo,
+                              borderRadius: BorderRadius.circular(8),
+                              child: Row(
+                                children: [
+                                  const Text(
+                                    '圖片',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700,
+                                      color: kText,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  IconButton(
+                                    tooltip: _hasLogos ? '再加一張' : '加入圖片',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: _addLogo,
+                                    icon: const Icon(
+                                      Icons.add,
+                                      size: 20,
+                                      color: kIcon,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            if (_hasLogos) ...[
+                              const SizedBox(height: 6),
+                              // 縮圖列：底下的滑桿調的是「亮框的那一張」。
+                              // 只有一張時也照樣顯示——加第二張之後版面才不會整個跳掉
+                              SizedBox(
+                                height: 46,
+                                child: ListView.separated(
+                                  scrollDirection: Axis.horizontal,
+                                  itemCount: s.logos.length,
+                                  separatorBuilder: (_, _) =>
+                                      const SizedBox(width: 6),
+                                  itemBuilder: (context, i) {
+                                    final bytes = s.logos[i].bytes;
+                                    final on = i == s.activeLogo;
+                                    return InkWell(
+                                      borderRadius: BorderRadius.circular(6),
+                                      // 切換要調哪一張，不算改動內容——不拍上一步快照
+                                      onTap: () {
+                                        setState(() => s.activeLogo = i);
+                                        widget.onChanged();
+                                      },
+                                      child: Container(
+                                        width: 46,
+                                        decoration: BoxDecoration(
+                                          borderRadius: BorderRadius.circular(
+                                            6,
+                                          ),
+                                          border: Border.all(
+                                            color: kBorder,
+                                            width: 1,
+                                          ),
+                                        ),
+                                        // 選取框畫在前景，縮圖不位移
+                                        foregroundDecoration: on
+                                            ? BoxDecoration(
+                                                borderRadius:
+                                                    BorderRadius.circular(6),
+                                                border: Border.all(
+                                                  color: kSelect,
+                                                  width: 2,
+                                                ),
+                                              )
+                                            : null,
+                                        clipBehavior: Clip.antiAlias,
+                                        child: bytes == null
+                                            ? const Icon(
+                                                Icons.image_outlined,
+                                                size: 18,
+                                                color: kTextDim,
+                                              )
+                                            : Opacity(
+                                                // 關掉的那張淡一點，看得出它現在不會出現在畫面上
+                                                opacity: s.logos[i].enabled
+                                                    ? 1
+                                                    : 0.35,
+                                                child: Image.memory(
+                                                  bytes,
+                                                  fit: BoxFit.cover,
+                                                ),
+                                              ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Row(
+                                children: [
+                                  _miniBtn(Icons.swap_horiz, '換一張', _pickLogo),
+                                  const SizedBox(width: 8),
+                                  // 手繪的那張可以載回畫板繼續改
+                                  if (s.logo.drawn) ...[
+                                    _miniBtn(
+                                      Icons.draw_outlined,
+                                      '編輯',
+                                      _editDrawing,
+                                    ),
+                                    const SizedBox(width: 8),
+                                  ],
+                                  _miniBtn(Icons.crop, '裁切', _cropLogo),
+                                  const Spacer(),
+                                  IconButton(
+                                    tooltip: s.logos.length > 1
+                                        ? '移除這一張'
+                                        : '移除圖片',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: () => _update(
+                                      () => s.removeLogo(s.activeLogo),
+                                    ),
+                                    icon: const Icon(
+                                      Icons.delete_outline,
+                                      size: 19,
+                                      color: kTextDim,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              _sliderRow(
+                                '大小',
+                                s.logo.sizeFrac,
+                                0.05,
+                                2.0,
+                                (v) => _update(() => s.logo.sizeFrac = v),
+                              ),
+                              _sliderRow(
+                                '透明',
+                                s.logo.opacity,
+                                0.05,
+                                1,
+                                (v) => _update(() => s.logo.opacity = v),
+                              ),
+                              _rotationRow(
+                                s.logo.rotation,
+                                (v) => _update(() => s.logo.rotation = v),
+                              ),
+                              _sliderRow(
+                                '圓角',
+                                s.logo.corner,
+                                0,
+                                1,
+                                (v) => _update(() => s.logo.corner = v),
+                              ),
+                              Row(
+                                children: [
+                                  const Text(
+                                    '滿版平鋪',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: kTextDim,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  _miniSwitch(
+                                    s.logo.tiled,
+                                    (v) => _setTiled(isLogo: true, on: v),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+
+                  // ===== 父層注入的額外區塊（照片編輯器的馬賽克/更多浮水印）=====
+                  for (var i = 0; i < widget.extraSections.length; i++)
+                    if (_on(_extraKeys[i]))
+                      KeyedSubtree(
+                        key: _extraKeys[i],
+                        child: _card(widget.extraSections[i].child),
+                      ),
+                ],
               ),
               if (!widget.hideSaveButton)
                 Padding(
@@ -1417,19 +1526,17 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   /// 跟「匯入照片」「輸出」那些主要動作鈕同一種長相。
   /// 照片編輯器把這顆移到底部跟「輸出」並排，所以可隱藏
   Widget _saveBar() => FilledButton.icon(
-        onPressed: _savePreset,
-        style: FilledButton.styleFrom(
-          minimumSize: const Size.fromHeight(48),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(999),
-          ),
-        ),
-        icon: const Icon(Icons.bookmark_add_outlined, size: 18),
-        label: Text(
-          _presetSel == null ? '儲存範本' : '儲存範本「$_presetSel」',
-          style: const TextStyle(fontSize: 14),
-        ),
-      );
+    onPressed: _savePreset,
+    style: FilledButton.styleFrom(
+      minimumSize: const Size.fromHeight(48),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+    ),
+    icon: const Icon(Icons.bookmark_add_outlined, size: 18),
+    label: Text(
+      _presetSel == null ? '儲存範本' : '儲存範本「$_presetSel」',
+      style: const TextStyle(fontSize: 14),
+    ),
+  );
 
   /// 範本挑選彈窗：黑底預覽卡（跟範本管理頁同款），點卡直接套用
   void _openPresetPicker() {
@@ -1442,54 +1549,57 @@ class WatermarkPanelState extends State<WatermarkPanel> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('選擇範本',
-                style:
-                    TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
+            const Text(
+              '選擇範本',
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+            ),
             const SizedBox(height: 12),
             // 兩欄瀑布流：卡片照各自的設計比例（跟範本管理頁同款）
             Flexible(
-              child: Builder(builder: (context) {
-                final left = <Widget>[];
-                final right = <Widget>[];
-                var hl = 0.0, hr = 0.0;
-                void put(Widget w, double h) {
-                  if (hl <= hr) {
-                    left.add(w);
-                    hl += h;
-                  } else {
-                    right.add(w);
-                    hr += h;
+              child: Builder(
+                builder: (context) {
+                  final left = <Widget>[];
+                  final right = <Widget>[];
+                  var hl = 0.0, hr = 0.0;
+                  void put(Widget w, double h) {
+                    if (hl <= hr) {
+                      left.add(w);
+                      hl += h;
+                    } else {
+                      right.add(w);
+                      hr += h;
+                    }
                   }
-                }
 
-                for (final p in _presets) {
-                  final a = p.settings.designAspect;
-                  put(
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: AspectRatio(
-                        aspectRatio: a,
-                        child: _pickerCard(p),
+                  for (final p in _presets) {
+                    final a = p.settings.designAspect;
+                    put(
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: AspectRatio(
+                          aspectRatio: a,
+                          child: _pickerCard(p),
+                        ),
                       ),
-                    ),
-                    1 / a,
+                      1 / a,
+                    );
+                  }
+                  put(
+                    AspectRatio(aspectRatio: 16 / 10, child: _addPresetCard()),
+                    10 / 16,
                   );
-                }
-                put(
-                  AspectRatio(aspectRatio: 16 / 10, child: _addPresetCard()),
-                  10 / 16,
-                );
-                return SingleChildScrollView(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(child: Column(children: left)),
-                      const SizedBox(width: 8),
-                      Expanded(child: Column(children: right)),
-                    ],
-                  ),
-                );
-              }),
+                  return SingleChildScrollView(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(child: Column(children: left)),
+                        const SizedBox(width: 8),
+                        Expanded(child: Column(children: right)),
+                      ],
+                    ),
+                  );
+                },
+              ),
             ),
           ],
         ),
@@ -1517,8 +1627,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
           children: [
             Icon(Icons.add, size: 22, color: kTextDim),
             SizedBox(height: 4),
-            Text('新增範本',
-                style: TextStyle(fontSize: 11, color: kTextDim)),
+            Text('新增範本', style: TextStyle(fontSize: 11, color: kTextDim)),
           ],
         ),
       ),
@@ -1552,10 +1661,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
             Container(
               color: Colors.black,
               child: IgnorePointer(
-                child: WatermarkLayer(
-                  settings: p.settings,
-                  onChanged: () {},
-                ),
+                child: WatermarkLayer(settings: p.settings, onChanged: () {}),
               ),
             ),
             Positioned(
@@ -1563,7 +1669,9 @@ class WatermarkPanelState extends State<WatermarkPanel> {
               top: 5,
               child: Container(
                 padding: const EdgeInsets.symmetric(
-                    horizontal: 8, vertical: 2.5),
+                  horizontal: 8,
+                  vertical: 2.5,
+                ),
                 decoration: BoxDecoration(
                   color: kPanelHi.withValues(alpha: 0.92),
                   borderRadius: BorderRadius.circular(99),
@@ -1574,7 +1682,10 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                      fontSize: 10, color: kIcon, height: 1.3),
+                    fontSize: 10,
+                    color: kIcon,
+                    height: 1.3,
+                  ),
                 ),
               ),
             ),
@@ -1583,7 +1694,6 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       ),
     );
   }
-
 
   /// W2 卡片群組：每個設定群組一張卡片
   Widget _card(Widget child) {
@@ -1630,66 +1740,74 @@ class WatermarkPanelState extends State<WatermarkPanel> {
 
     return Column(
       children: [
-        const Text('浮水印位置',
-            style: TextStyle(
-                fontSize: 11,
-                letterSpacing: 3,
-                color: kTextDim,
-                fontWeight: FontWeight.w600)),
+        const Text(
+          '浮水印位置',
+          style: TextStyle(
+            fontSize: 11,
+            letterSpacing: 3,
+            color: kTextDim,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
         const SizedBox(height: 8),
         Center(
-      child: Container(
-        width: 180,
-        height: 102,
-        decoration: BoxDecoration(
-          color: kBg,
-          border: Border.all(color: kBorder),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: [
-            for (final gy in ys)
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  for (final gx in xs)
-                    InkWell(
-                      onTap: () => pick(gx, gy),
-                      customBorder: const CircleBorder(),
-                      child: Container(
-                        width: 30,
-                        height: 30,
-                        alignment: Alignment.center,
-                        child: Container(
-                          width:
-                              ((x - gx).abs() < 0.17 && (y - gy).abs() < 0.18)
+          child: Container(
+            width: 180,
+            height: 102,
+            decoration: BoxDecoration(
+              color: kBg,
+              border: Border.all(color: kBorder),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                for (final gy in ys)
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      for (final gx in xs)
+                        InkWell(
+                          onTap: () => pick(gx, gy),
+                          customBorder: const CircleBorder(),
+                          child: Container(
+                            width: 30,
+                            height: 30,
+                            alignment: Alignment.center,
+                            child: Container(
+                              width:
+                                  ((x - gx).abs() < 0.17 &&
+                                      (y - gy).abs() < 0.18)
                                   ? 14.0
                                   : 10.0,
-                          height:
-                              ((x - gx).abs() < 0.17 && (y - gy).abs() < 0.18)
+                              height:
+                                  ((x - gx).abs() < 0.17 &&
+                                      (y - gy).abs() < 0.18)
                                   ? 14.0
                                   : 10.0,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: ((x - gx).abs() < 0.17 &&
-                                    (y - gy).abs() < 0.18)
-                                ? kAmber
-                                : kPanelHi,
-                            border: Border.all(color: kBorder, width: 0.5),
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color:
+                                    ((x - gx).abs() < 0.17 &&
+                                        (y - gy).abs() < 0.18)
+                                    ? kAmber
+                                    : kPanelHi,
+                                border: Border.all(color: kBorder, width: 0.5),
+                              ),
+                            ),
                           ),
                         ),
-                      ),
-                    ),
-                ],
-              ),
-          ],
-        ),
-      ),
+                    ],
+                  ),
+              ],
+            ),
+          ),
         ),
         const SizedBox(height: 6),
-        const Text('點一格，直接對齊到畫面該處',
-            style: TextStyle(fontSize: 10, color: kTextDim)),
+        const Text(
+          '點一格，直接對齊到畫面該處',
+          style: TextStyle(fontSize: 10, color: kTextDim),
+        ),
       ],
     );
   }
@@ -1713,34 +1831,40 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         minimumSize: const Size(0, 30),
         side: const BorderSide(color: kBorder),
         foregroundColor: kText,
-        textStyle:
-            const TextStyle(fontSize: 12, fontFamily: 'NotoSansTC'),
+        textStyle: const TextStyle(fontSize: 12, fontFamily: 'NotoSansTC'),
       ),
       icon: Icon(icon, size: 14, color: kTextDim),
       label: Text(label),
     );
   }
 
-  Widget _sliderRow(String label, double value, double min, double max,
-      ValueChanged<double> onChanged) {
+  Widget _sliderRow(
+    String label,
+    double value,
+    double min,
+    double max,
+    ValueChanged<double> onChanged,
+  ) {
     return SizedBox(
       height: 34,
       child: Row(
         children: [
           SizedBox(
-              width: kSliderLabelW,
-              child: Text(label,
-                  style:
-                      const TextStyle(fontSize: 12, color: kTextDim))),
+            width: kSliderLabelW,
+            child: Text(
+              label,
+              style: const TextStyle(fontSize: 12, color: kTextDim),
+            ),
+          ),
           Expanded(
             child: Slider(
-                value: value.clamp(min, max),
-                min: min,
-                max: max,
-                onChanged: onChanged,
-                onChangeStart: (_) => _sliderStart(),
-                onChangeEnd: (_) => _sliderEnd(),
-              ),
+              value: value.clamp(min, max),
+              min: min,
+              max: max,
+              onChanged: onChanged,
+              onChangeStart: (_) => _sliderStart(),
+              onChangeEnd: (_) => _sliderEnd(),
+            ),
           ),
           // 即時數值：微調時有參考（跟馬賽克樣式表同一套）
           SizedBox(
@@ -1757,39 +1881,49 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   }
 
   /// 動畫微調列：滑桿＋右側實際數值
-  Widget _animSlider(String label, double value, String readout,
-      ValueChanged<double> onChanged) {
+  Widget _animSlider(
+    String label,
+    double value,
+    String readout,
+    ValueChanged<double> onChanged,
+  ) {
     return SizedBox(
       height: 34,
       child: Row(
         children: [
           SizedBox(
             width: kSliderLabelW,
-            child: Text(label,
-                maxLines: 1,
-                softWrap: false,
-                overflow: TextOverflow.visible,
-                style:
-                    const TextStyle(fontSize: 11.5, color: kTextDim)),
+            child: Text(
+              label,
+              maxLines: 1,
+              softWrap: false,
+              overflow: TextOverflow.visible,
+              style: const TextStyle(fontSize: 11.5, color: kTextDim),
+            ),
           ),
           Expanded(
             child: Slider(
-                value: value.clamp(0.2, 3.0),
-                min: 0.2,
-                max: 3.0,
-                onChanged: onChanged,
-                onChangeStart: (_) => _sliderStart(),
-                onChangeEnd: (_) => _sliderEnd(),
-              ),
+              value: value.clamp(0.2, 3.0),
+              min: 0.2,
+              max: 3.0,
+              onChanged: onChanged,
+              onChangeStart: (_) => _sliderStart(),
+              onChangeEnd: (_) => _sliderEnd(),
+            ),
           ),
           SizedBox(
             width: kSliderValueW,
-            child: Text(readout,
-                maxLines: 1,
-                softWrap: false,
-                textAlign: TextAlign.right,
-                style: const TextStyle(
-                    fontSize: 9.5, color: kTextDim, height: 1.2)),
+            child: Text(
+              readout,
+              maxLines: 1,
+              softWrap: false,
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                fontSize: 9.5,
+                color: kTextDim,
+                height: 1.2,
+              ),
+            ),
           ),
         ],
       ),
@@ -1803,33 +1937,32 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       child: Row(
         children: [
           const SizedBox(
-              width: kSliderLabelW,
-              child: Text('旋轉',
-                  style: TextStyle(fontSize: 12, color: kTextDim))),
+            width: kSliderLabelW,
+            child: Text('旋轉', style: TextStyle(fontSize: 12, color: kTextDim)),
+          ),
           Expanded(
             child: Slider(
-                value: value.clamp(-180, 180),
-                min: -180,
-                max: 180,
-                onChanged: (v) =>
-                    onChanged(v.abs() < 4 ? 0 : v), // 吸附回正
-                onChangeStart: (_) => _sliderStart(),
-                onChangeEnd: (_) => _sliderEnd(),
-              ),
+              value: value.clamp(-180, 180),
+              min: -180,
+              max: 180,
+              onChanged: (v) => onChanged(v.abs() < 4 ? 0 : v), // 吸附回正
+              onChangeStart: (_) => _sliderStart(),
+              onChangeEnd: (_) => _sliderEnd(),
+            ),
           ),
           InkWell(
             borderRadius: BorderRadius.circular(4),
             onTap: () => onChanged(0),
             child: Padding(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 4, vertical: 4),
-              child: Text('${value.round()}°',
-                  style: TextStyle(
-                      fontSize: 11,
-                      color: value.round() == 0 ? kTextDim : kText,
-                      fontFeatures: const [
-                        FontFeature.tabularFigures()
-                      ])),
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+              child: Text(
+                '${value.round()}°',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: value.round() == 0 ? kTextDim : kText,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
             ),
           ),
         ],
