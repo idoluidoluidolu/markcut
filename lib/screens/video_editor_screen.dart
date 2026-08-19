@@ -4217,6 +4217,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 片段此刻該有的音量（還沒夾在 0~1，可能大於 1）
   double _rawVolOf(TimelineClip clip) {
+    // 全螢幕的靜音鈕：只掐預覽，素材本身的音量不動
+    if (_fsMuted) return 0;
     final trackMute = _mutedTracks.contains(clip.track) ? 0.0 : 1.0;
     // 倒轉的片段預覽時靜音：播放器只會正著播，聲音是反的內容，
     // 放出來只會干擾（匯出時會用 areverse 正確倒過來）
@@ -6081,6 +6083,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                           ),
                         ),
                       ),
+                      InkWell(
+                        borderRadius: BorderRadius.circular(999),
+                        onTap: _toggleFsMute,
+                        child: Padding(
+                          padding: const EdgeInsets.all(5),
+                          child: Icon(
+                            _fsMuted
+                                ? Icons.volume_off_rounded
+                                : Icons.volume_up_rounded,
+                            size: 19,
+                            color: _fsMuted ? kSelect : Colors.white,
+                          ),
+                        ),
+                      ),
                       Expanded(
                         child: ValueListenableBuilder<double>(
                           valueListenable: _posVN,
@@ -7163,7 +7179,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   } else if (selRect != null) {
                                     selRect = selRect.intersect(canvasRect);
                                   }
-                                  if (selRect != null && selVisual != null) {
+                                  if (selRect != null &&
+                                      selVisual != null &&
+                                      !_hideSelUi) {
                                     final sc = selVisual;
                                     children.add(
                                       Positioned.fromRect(
@@ -7221,7 +7239,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         frameNotifier: _wmFrameInfo,
                                         onHitBox: (t, l) =>
                                             _addWmHit(_kWmId, t, l),
-                                        selectedPart: _wmSel
+                                        selectedPart: (_wmSel && !_hideSelUi)
                                             ? _wmPart
                                             : WmPart.none,
                                         onSelectPart: (p) =>
@@ -7719,6 +7737,30 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 全螢幕時控制列露不露臉（點畫面切換）
   bool _fsBar = true;
+
+  /// 播放中（或全螢幕）不要畫選取框。
+  ///
+  /// 那是編輯用的東西：正在看成品時它只是一條蓋在畫面上的黃框，
+  /// 而且播放中本來就動不了選取的素材
+  bool get _hideSelUi => _fullscreen || _playing;
+
+  /// 全螢幕預覽靜音（只影響預覽，不動素材本身的音量）
+  bool _fsMuted = false;
+
+  void _toggleFsMute() {
+    setState(() => _fsMuted = !_fsMuted);
+    // 合成播放器的音量是組合成時烘進去的，改參數要整份重組——
+    // 按一下靜音卡一拍太蠢，走播放器自己的靜音開關
+    unawaited(_comp?.setMuted(_fsMuted) ?? Future.value());
+    // 逐片段播放那條路：音量有快取（值沒變就不打擾播放器），
+    // 不清掉的話這一下不會生效
+    _lastVol.clear();
+    for (final e in _ctrls.entries) {
+      final c = _tl.clips.where((x) => x.id == e.key);
+      if (c.isEmpty) continue;
+      e.value.setVolume(_rawVolOf(c.first).clamp(0.0, 1.0));
+    }
+  }
 
   void _toggleFullscreen() {
     setState(() {

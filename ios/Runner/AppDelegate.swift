@@ -581,6 +581,9 @@ final class AtomicFlag {
       case "rate":
         self.comp?.setRate((call.arguments as? Double) ?? 1)
         result(nil)
+      case "muted":
+        self.comp?.setMuted((call.arguments as? Bool) ?? false)
+        result(nil)
       case "seek":
         if let a = call.arguments as? [String: Any] {
           self.comp?.seek(
@@ -2748,6 +2751,12 @@ final class CompPlayer: NSObject, FlutterTexture {
   func setRate(_ r: Double) {
     targetRate = Float(r)
     if player.rate != 0 { player.playImmediately(atRate: targetRate) }
+  }
+
+  /// 預覽靜音。走 AVPlayer 自己的 isMuted，不動合成裡烘好的音量——
+  /// 改音量參數要整份重組，按一下靜音就會卡一拍
+  func setMuted(_ m: Bool) {
+    player.isMuted = m
   }
 
   private var seekTarget: CMTime = .invalid

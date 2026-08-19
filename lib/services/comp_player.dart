@@ -99,13 +99,14 @@ class CompPlayer {
     Set<int> mutedTracks = const {},
   }) async {
     if (!await available) return null;
-    final vids = [
-      for (final c in tl.clips)
-        if (tl.sourceOf(c).isVideo) c,
-    ]..sort((a, b) {
-      final t = a.offset.compareTo(b.offset);
-      return t != 0 ? t : a.track.compareTo(b.track);
-    });
+    final vids =
+        [
+          for (final c in tl.clips)
+            if (tl.sourceOf(c).isVideo) c,
+        ]..sort((a, b) {
+          final t = a.offset.compareTo(b.offset);
+          return t != 0 ? t : a.track.compareTo(b.track);
+        });
     if (vids.isEmpty) return null;
     final clips = [
       for (final c in vids)
@@ -162,8 +163,13 @@ class CompPlayer {
       return null;
     }
   }
+
   Future<void> pause() => _quiet('pause');
   Future<void> setRate(double r) => _quiet('rate', r);
+
+  /// 預覽靜音（原生端走播放器的 isMuted，不重組合成）
+  Future<void> setMuted(bool m) => _quiet('muted', m);
+
   /// [exact] 只有「停手要對準那一格」時才給 true。拖曳中與按下播放前
   /// 一律寬容——精準 seek 跑完之前播放器的 rate 會被壓在 0
   Future<void> seek(double seconds, {bool exact = false}) =>
@@ -240,15 +246,7 @@ class CompPlayer {
       final bd = m['playBreakdown'];
       if (bd is Map) {
         b.write(
-          '\n  按下播放：${[
-            if (bd['rateMs'] != null) 'rate 起來 ${bd['rateMs']}ms',
-            if (bd['playingMs'] != null) '系統說在播 ${bd['playingMs']}ms',
-            if (bd['movedMs'] != null)
-              '時間真的前進 ${bd['movedMs']}ms'
-            else
-              '時間一直沒前進',
-            if (bd['waiting'] != null) '等待理由 ${bd['waiting']}',
-          ].join('／')}',
+          '\n  按下播放：${[if (bd['rateMs'] != null) 'rate 起來 ${bd['rateMs']}ms', if (bd['playingMs'] != null) '系統說在播 ${bd['playingMs']}ms', if (bd['movedMs'] != null) '時間真的前進 ${bd['movedMs']}ms' else '時間一直沒前進', if (bd['waiting'] != null) '等待理由 ${bd['waiting']}'].join('／')}',
         );
       }
       if (n != null) {

@@ -52,7 +52,10 @@ Future<Uint8List?> pickSticker(BuildContext context) async {
                       Icons.add_photo_alternate_outlined,
                       size: 17,
                     ),
-                    label: const Text('收藏圖片', style: TextStyle(fontSize: 12.5)),
+                    label: const Text(
+                      '從相簿加入貼圖',
+                      style: TextStyle(fontSize: 12.5),
+                    ),
                   ),
                 ],
               ),
