@@ -357,10 +357,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   void _pinchDown(PointerDownEvent e) {
+    // 只有觸控算捏合。滑鼠／觸控筆不可能兩指，而 web 上滑鼠在
+    // 視窗外放開時 pointer-up 常常整顆遺失——那顆幽靈殘指跟下一次
+    // 按下湊成「兩指」，_tlPinching 一開，修剪與拖曳全被鎖住，
+    // 就是「突然無法左右拉」
+    if (e.kind != ui.PointerDeviceKind.touch) return;
     final now = DateTime.now();
     _pinchPts.removeWhere((id, _) {
       final seen = _pinchSeen[id];
-      final stale = seen == null || now.difference(seen).inSeconds > 15;
+      // 3 秒沒動靜＝殘指清掉。真的要捏合，第二指 1 秒內就會下來
+      final stale = seen == null || now.difference(seen).inSeconds > 3;
       if (stale) _pinchSeen.remove(id);
       return stale;
     });
@@ -381,6 +387,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   void _pinchMove(PointerMoveEvent e) {
+    if (e.kind != ui.PointerDeviceKind.touch) return;
     if (!_pinchPts.containsKey(e.pointer)) return;
     _pinchSeen[e.pointer] = DateTime.now();
     _pinchPts[e.pointer] = e.position;
@@ -7782,6 +7789,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _pvHitLogo = true;
 
   void _previewPinchDown(PointerDownEvent e) {
+    // 只有觸控算捏合（理由同時間軸：web 的滑鼠殘指會假裝成第二指，
+    // panLocked 一鎖，浮水印與片段就再也拖不動）
+    if (e.kind != ui.PointerDeviceKind.touch) return;
     _pvPts[e.pointer] = e.position;
     _armPreviewPinch();
   }
@@ -7888,6 +7898,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   double _pvBaseClipWmLogo = 0.2;
 
   void _previewPinchMove(PointerMoveEvent e) {
+    if (e.kind != ui.PointerDeviceKind.touch) return;
     if (!_pvPts.containsKey(e.pointer)) return;
     _pvPts[e.pointer] = e.position;
     if (_pvBaseDist == null || _pvPts.length < 2) return;
