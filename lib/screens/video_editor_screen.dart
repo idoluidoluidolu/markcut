@@ -2138,52 +2138,49 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     await _dispatchAdd(kind, track);
   }
 
-  /// 貼圖素材：挑一張 Emoji 或收藏的圖，當成一段圖片素材放上時間軸。
+  /// 貼圖素材：挑一張 Emoji 或收藏的圖，放上時間軸當一段可調的貼圖。
   ///
-  /// 走的是圖片那條路（寫成暫存 PNG 再當一般素材匯入），所以位置、
-  /// 縮放、旋轉、淡入淡出、匯出全部直接繼承——貼圖不需要自己一套
+  /// 做成「浮水印素材」而不是「圖片素材」：圖片素材只有位置與縮放，
+  /// 轉不了；浮水印素材本來就吃 LogoMark 的旋轉、透明度、圓角，
+  /// 匯出也早就走「整版透明 PNG」那條路（見 overlayPngs），三個
+  /// 後端一次到位。點一下就進浮水印編輯，捏合旋轉也照樣有用
   Future<void> _addSticker(int track) async {
     final png = await pickSticker(context);
     if (png == null || !mounted) return;
-    final path = await writeTempBytes(png, 'png');
-    if (path == null || !mounted) {
-      if (mounted) showHint(context, '貼圖加不進來，再試一次', error: true);
-      return;
-    }
-    var imgW = 0, imgH = 0;
-    try {
-      final codec = await ui.instantiateImageCodec(png);
-      final frame = await codec.getNextFrame();
-      imgW = frame.image.width;
-      imgH = frame.image.height;
-      frame.image.dispose();
-    } catch (_) {}
-    if (!mounted) return;
+    _pause();
     _pushUndo();
+    final style = WatermarkSettings()
+      ..text = TextMark(text: '', enabled: false);
+    style.logo
+      ..enabled = true
+      ..sizeFrac = 0.28
+      ..bytesValue = png;
     final srcIndex = _tl.sources.length;
     _tl.sources.add(
       MediaSource(
-        path: path,
+        path: '',
         name: '貼圖',
-        kind: ClipKind.image,
+        kind: ClipKind.wm,
         duration: 3600,
-        w: imgW,
-        h: imgH,
+        wmStyle: style,
       ),
     );
-    _thumbs[srcIndex] = [png];
-    // 從播放頭開始、預設 4 秒，跟匯入圖片同一個手感
+    // 貼圖通常是「某一段冒出來」的東西，不像浮水印要蓋整片：
+    // 從播放頭給 3 秒，不夠再用把手拉長
+    final remain = _tl.duration - _position;
+    final len = remain >= 1.0 ? math.min(3.0, remain) : 3.0;
     final clip = TimelineClip(
       id: _tl.nextId(),
       sourceIndex: srcIndex,
       trimStart: 0,
-      trimEnd: 4,
+      trimEnd: len,
       offset: _position,
       track: track,
     );
-    _tl.clips.add(clip);
-    setState(() => _sel = clip.id);
-    _resyncPlayback();
+    setState(() {
+      _tl.clips.add(clip);
+      _sel = clip.id;
+    });
     _saveDraft();
   }
 
