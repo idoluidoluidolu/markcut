@@ -412,8 +412,8 @@ class _GifScreenState extends State<GifScreen> {
 
   /// 疊在預覽右下角的裁切鈕。裁的是那張畫面，按鈕就長在那張畫面上
   Widget _cropButton() => Positioned(
-    right: 10,
-    bottom: 10,
+    right: 12,
+    bottom: 12,
     child: Row(
       children: [
         if (_crop != null)
@@ -477,74 +477,66 @@ class _GifScreenState extends State<GifScreen> {
     final gif = _gifPreview;
     // 做好成品就直接看成品：GIF 只有 10~15 格、顏色壓成 256 色，
     // 拿影片播放器當預覽會讓人以為成品比實際好看
-    if (gif != null) {
-      return GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        // 點一下回去看原片（要重新選範圍時比較好對位）
-        onTap: () => setState(() => _gifPreview = null),
-        child: Container(
-          // 跟影片編輯的預覽同一個底色：純黑會在預覽區與下面的
-          // 控制區之間切出一條分界，整頁看起來像被切成兩塊
-          color: kPreviewBg,
-          alignment: Alignment.center,
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              AspectRatio(
-                aspectRatio: aspect,
-                child: GifImage(gif, fit: BoxFit.contain),
-              ),
-              if (_building)
-                const Positioned(
-                  right: 10,
-                  top: 10,
-                  child: SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+    final showGif = gif != null;
+
+    // 外層這個 Stack 撐滿整個預覽區，裁切鈕才釘得住。
+    // 疊在「內容」上面的話，框會跟著影片的比例縮放——直式換橫式，
+    // 按鈕就從一個位置跳到另一個位置
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            // 看成品時點一下回去看原片（要重新選範圍時比較好對位）
+            onTap: showGif
+                ? () => setState(() => _gifPreview = null)
+                : _togglePlay,
+            child: Container(
+              // 跟影片編輯的預覽同一個底色：純黑會在預覽區與下面的
+              // 控制區之間切出一條分界，整頁看起來像被切成兩塊
+              color: kPreviewBg,
+              alignment: Alignment.center,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  AspectRatio(
+                    aspectRatio: aspect,
+                    child: showGif
+                        ? GifImage(gif, fit: BoxFit.contain)
+                        : p.view(),
                   ),
-                ),
-              _cropButton(),
-            ],
+                  // 暫停時給一顆播放鈕；播放中畫面乾淨
+                  if (!showGif && !_playing)
+                    Container(
+                      width: 54,
+                      height: 54,
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.45),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.play_arrow,
+                        size: 34,
+                        color: kText,
+                      ),
+                    ),
+                ],
+              ),
+            ),
           ),
         ),
-      );
-    }
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: _togglePlay,
-      child: Container(
-        color: kPreviewBg,
-        alignment: Alignment.center,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            AspectRatio(aspectRatio: aspect, child: p.view()),
-            if (_building)
-              const Positioned(
-                right: 10,
-                top: 10,
-                child: SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              ),
-            _cropButton(),
-            // 暫停時給一顆播放鈕；播放中畫面乾淨
-            if (!_playing)
-              Container(
-                width: 54,
-                height: 54,
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.45),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(Icons.play_arrow, size: 34, color: kText),
-              ),
-          ],
-        ),
-      ),
+        if (_building)
+          const Positioned(
+            right: 12,
+            top: 12,
+            child: SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          ),
+        _cropButton(),
+      ],
     );
   }
 
