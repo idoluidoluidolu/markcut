@@ -121,33 +121,48 @@ class MediaSource {
     if (revOf != null) 'revEnd': revEnd,
   };
 
-  factory MediaSource.fromJson(Map<String, dynamic> j) => MediaSource(
-    path: j['path'] ?? '',
-    name: j['name'] ?? '',
-    // % 防護：新版種類存進草稿後被舊版打開也不至於整包炸掉
-    kind: ClipKind.values[((j['kind'] ?? 0) as int) % ClipKind.values.length],
-    isSticker: j['sticker'] == true,
-    w: (j['w'] ?? 0) as int,
-    h: (j['h'] ?? 0) as int,
-    duration: (j['duration'] ?? 0).toDouble(),
-    workPath: j['workPath'] as String?,
-    textStyle: j['textStyle'] == null
-        ? null
-        : TextMark.fromJson(Map<String, dynamic>.from(j['textStyle'] as Map)),
-    wmStyle: j['wmStyle'] == null
+  factory MediaSource.fromJson(Map<String, dynamic> j) {
+    final kind =
+        ClipKind.values[((j['kind'] ?? 0) as int) % ClipKind.values.length];
+    final wmStyle = j['wmStyle'] == null
         ? null
         : WatermarkSettings.fromJson(
             Map<String, dynamic>.from(j['wmStyle'] as Map),
-          ),
-    mosaicStyle: j['mosaicStyle'] == null
-        ? null
-        : MosaicStyle.fromJson(
-            Map<String, dynamic>.from(j['mosaicStyle'] as Map),
-          ),
-    revOf: j['revOf'] as String?,
-    revStart: (j['revStart'] ?? 0).toDouble(),
-    revEnd: (j['revEnd'] ?? 0).toDouble(),
-  );
+          );
+    // 舊草稿的貼圖沒有 sticker 旗標（旗標上線前存的），用內容認：
+    // 貼圖是「沒有文字、只有一張圖」的浮水印片段——手動做的浮水印
+    // 一定有文字（_addWmClip 預設就給 @浮水印）。認不出來的話，
+    // 點那顆貼圖會被當成浮水印、永遠跳去浮水印分頁
+    final sticker =
+        j['sticker'] == true ||
+        (kind == ClipKind.wm &&
+            wmStyle != null &&
+            !wmStyle.text.enabled &&
+            wmStyle.logo.enabled);
+    return MediaSource(
+      path: j['path'] ?? '',
+      name: j['name'] ?? '',
+      // % 防護：新版種類存進草稿後被舊版打開也不至於整包炸掉
+      kind: kind,
+      isSticker: sticker,
+      w: (j['w'] ?? 0) as int,
+      h: (j['h'] ?? 0) as int,
+      duration: (j['duration'] ?? 0).toDouble(),
+      workPath: j['workPath'] as String?,
+      textStyle: j['textStyle'] == null
+          ? null
+          : TextMark.fromJson(Map<String, dynamic>.from(j['textStyle'] as Map)),
+      wmStyle: wmStyle,
+      mosaicStyle: j['mosaicStyle'] == null
+          ? null
+          : MosaicStyle.fromJson(
+              Map<String, dynamic>.from(j['mosaicStyle'] as Map),
+            ),
+      revOf: j['revOf'] as String?,
+      revStart: (j['revStart'] ?? 0).toDouble(),
+      revEnd: (j['revEnd'] ?? 0).toDouble(),
+    );
+  }
 }
 
 /// 時間軸上的一個片段。
