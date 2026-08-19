@@ -125,6 +125,8 @@ flutter:
   assets:
     - assets/icon/icon_foreground.png
     - assets/icon/home_logo.png
+    # Web 展示模式用的內建 GIF 範例（見 GifStore.demoRefs）
+    - assets/demo/
 
   shaders:
     - shaders/mosaic.frag

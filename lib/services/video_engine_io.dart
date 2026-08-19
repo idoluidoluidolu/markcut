@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' show Rect;
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
@@ -1743,15 +1744,22 @@ Future<String?> makeGifFile({
   required double end,
   required int fps,
   required int maxSide,
+  Rect? crop,
 }) async {
   final dir = await getTemporaryDirectory();
   final ts = DateTime.now().millisecondsSinceEpoch;
   final out = '${dir.path}${Platform.pathSeparator}preview_$ts.gif';
   final dur = math.max(0.05, end - start);
+  // 裁切用比例表示（0~1），換成 FFmpeg 的 crop：長寬用 iw/ih 算，
+  // 不必先知道影片實際幾 px
+  final cropF = crop == null
+      ? ''
+      : 'crop=iw*${_f(crop.width)}:ih*${_f(crop.height)}'
+            ':iw*${_f(crop.left)}:ih*${_f(crop.top)},';
   try {
     final session = await FFmpegKit.execute(
       '-y -ss ${_f(start)} -t ${_f(dur)} -i "$inputPath" -filter_complex '
-      '"[0:v]fps=$fps,'
+      '"[0:v]${cropF}fps=$fps,'
       'scale=w=$maxSide:h=$maxSide:force_original_aspect_ratio=decrease'
       ':flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];'
       '[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle[g]" '
@@ -1762,6 +1770,32 @@ Future<String?> makeGifFile({
   } catch (_) {
     return null;
   }
+}
+
+/// 把一個做好的 GIF 存到相簿，並在 App 裡留一份（我的 GIF）。
+///
+/// 跟預覽用的是同一個檔案——預覽看到什麼，存下去就是什麼
+Future<({bool ok, String message, bool cancelled})> saveGifToGallery(
+  String gifPath,
+) async {
+  if (!await Gal.hasAccess(toAlbum: true)) {
+    final granted = await Gal.requestAccess(toAlbum: true);
+    if (!granted) {
+      return (
+        ok: false,
+        message: 'GIF 做好了，但沒有相簿存取權限。\n請到系統設定開啟權限後再試一次',
+        cancelled: false,
+      );
+    }
+  }
+  try {
+    // GIF 對相簿來說是「圖片」，走圖片那條存
+    await Gal.putImage(gifPath, album: '浮水印');
+    await GifStore.add(gifPath);
+  } catch (e) {
+    return (ok: false, message: '存到相簿失敗：$e', cancelled: false);
+  }
+  return (ok: true, message: '已把 GIF 存到「浮水印」相簿', cancelled: false);
 }
 
 /// 產生時間軸縮圖（height 可調：filmstrip 用 200、批次預覽用 720）

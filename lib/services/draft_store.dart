@@ -124,9 +124,14 @@ class DraftStore {
     await _writeIndex(prefs, metas);
   }
 
+  /// 同一微秒內連開兩個專案時，光靠時間戳會撞號——補一個序號
+  static int _seq = 0;
+
   /// 產生一個新的草稿 id
-  static String newId() =>
-      'p${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}';
+  static String newId() {
+    final t = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+    return 'p$t${(_seq++).toRadixString(36)}';
+  }
 
   static Future<void> _writeIndex(
     SharedPreferences prefs,

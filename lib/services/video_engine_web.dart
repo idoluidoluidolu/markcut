@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:js_interop';
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' show Rect;
 
 import 'package:web/web.dart' as web;
 
@@ -44,15 +45,26 @@ Future<({String codec, double fps, int w, int h})> probeVideoInfo(
 
 /// Web 沒有 FFmpeg：用隱形 <video> + canvas 抓格做縮圖，
 /// 時間軸 filmstrip 與草稿封面才有畫面
-/// Web 沒有 FFmpeg，做不出 GIF（GIF 相關的入口在 web 上本來就隱藏，
-/// 這裡只是讓兩邊的介面對得起來）
+/// Web 沒有相簿可以存（展示模式不會走到這裡）
+Future<({bool ok, String message, bool cancelled})> saveGifToGallery(
+  String gifPath,
+) async => (ok: false, message: '網頁版不能存到相簿', cancelled: false);
+
+/// Web 沒有 FFmpeg，做不出 GIF。展示模式回一個內建範例，讓整套
+/// 流程（選範圍 → 看成品 → 匯出）在瀏覽器裡點得完——看到的動畫
+/// 不是這支影片的內容，其餘的互動都跟實機一樣
 Future<String?> makeGifFile({
   required String inputPath,
   required double start,
   required double end,
   required int fps,
   required int maxSide,
-}) async => null;
+  Rect? crop,
+}) async {
+  // 假裝跑了一下，不然預覽會瞬間出現，看不出「正在做」
+  await Future<void>.delayed(const Duration(milliseconds: 700));
+  return 'asset:assets/demo/demo_spin.gif';
+}
 
 Future<List<Uint8List>> makeThumbnails(
     String inputPath, double durationSec, int count,

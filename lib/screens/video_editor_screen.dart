@@ -45,6 +45,7 @@ import '../widgets/timeline_editor.dart';
 import '../widgets/prep_gate_view.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/sticker_picker.dart';
+import '../widgets/gif_image.dart';
 import '../widgets/watermark_panel.dart';
 
 /// 「加素材」選單的項目（錄旁白不是一種素材類型，所以另立一個 enum）
@@ -2135,9 +2136,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               group('從裝置匯入'),
               item(context, Icons.videocam_outlined, '影片', _AddKind.video),
               item(context, Icons.image_outlined, '圖片', _AddKind.image),
-              // GIF 要 FFmpeg 才畫得出來（-ignore_loop），web 沒有
-              if (!kIsWeb)
-                item(context, Icons.gif_box_outlined, 'GIF', _AddKind.gif),
+              // Web 沒有 FFmpeg，畫不出會動的 GIF（-ignore_loop）——
+              // 但入口照樣留著，用內建範例把互動走一遍
+              item(context, Icons.gif_box_outlined, 'GIF', _AddKind.gif),
               item(
                 context,
                 Icons.emoji_emotions_outlined,
@@ -2265,10 +2266,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       if (src.isGif)
                         TextButton.icon(
                           onPressed: () async {
-                            final path = await _pickGifFromGallery();
-                            if (path == null || !mounted) return;
-                            final bytes = await readFileBytes(path);
+                            final ref = await _pickGifRef();
+                            if (ref == null || !mounted) return;
+                            final bytes = await GifStore.bytes(ref);
                             if (bytes == null || !mounted) return;
+                            final path = GifStore.isAsset(ref)
+                                ? await writeTempBytes(bytes, 'gif')
+                                : ref;
+                            if (path == null || !mounted) return;
                             change(() {
                               _tl.sources[clip.sourceIndex] = src.withPath(
                                 path,
@@ -2335,84 +2340,79 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 只是畫的時候是一段動畫——預覽交給 Image.memory 自己跑，
   /// 匯出時 FFmpeg 用 -ignore_loop 0 讓它循環播完整段
   Future<void> _pickGif(int track) async {
+    final ref = await _pickGifRef();
+    if (ref == null || !mounted) return;
+    await _addGifClip(ref, track);
+  }
+
+  /// 挑一個 GIF：從「我的 GIF」選，或從相簿匯入。
+  /// 回傳的是參照（檔案路徑，或 Web 展示模式的內建範例）
+  Future<String?> _pickGifRef() async {
     final mine = await GifStore.list();
-    if (!mounted) return;
-    String? path;
-    if (mine.isEmpty) {
-      path = await _pickGifFromGallery();
-    } else {
-      path = await showModalBottomSheet<String>(
-        context: context,
-        showDragHandle: true,
-        isScrollControlled: true,
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.of(context).size.height * 0.7,
-        ),
-        builder: (context) => SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 0, 14, 16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Text(
-                      '我的 GIF',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
+    if (!mounted) return null;
+    if (mine.isEmpty) return _pickGifFromGallery();
+    return showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.7,
+      ),
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 0, 14, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Text(
+                    '我的 GIF',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+                  ),
+                  const Spacer(),
+                  TextButton.icon(
+                    onPressed: () async {
+                      final f = await _pickGifFromGallery();
+                      if (f != null && context.mounted) {
+                        Navigator.pop(context, f);
+                      }
+                    },
+                    icon: const Icon(Icons.photo_library_outlined, size: 17),
+                    label: const Text('從相簿選', style: TextStyle(fontSize: 12.5)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Flexible(
+                child: GridView.builder(
+                  shrinkWrap: true,
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 3,
+                    mainAxisSpacing: 8,
+                    crossAxisSpacing: 8,
+                  ),
+                  itemCount: mine.length,
+                  itemBuilder: (context, i) => InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: () => Navigator.pop(context, mine[i]),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: kClipBorder),
                       ),
-                    ),
-                    const Spacer(),
-                    TextButton.icon(
-                      onPressed: () async {
-                        final f = await _pickGifFromGallery();
-                        if (f != null && context.mounted) {
-                          Navigator.pop(context, f);
-                        }
-                      },
-                      icon: const Icon(Icons.photo_library_outlined, size: 17),
-                      label: const Text(
-                        '從相簿選',
-                        style: TextStyle(fontSize: 12.5),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Flexible(
-                  child: GridView.builder(
-                    shrinkWrap: true,
-                    gridDelegate:
-                        const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 3,
-                          mainAxisSpacing: 8,
-                          crossAxisSpacing: 8,
-                        ),
-                    itemCount: mine.length,
-                    itemBuilder: (context, i) => InkWell(
-                      borderRadius: BorderRadius.circular(8),
-                      onTap: () => Navigator.pop(context, mine[i].path),
-                      child: Container(
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: kClipBorder),
-                        ),
-                        clipBehavior: Clip.antiAlias,
-                        child: Image.file(mine[i], fit: BoxFit.cover),
-                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: GifImage(mine[i]),
                     ),
                   ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
-      );
-    }
-    if (path == null || !mounted) return;
-    await _addGifClip(path, track);
+      ),
+    );
   }
 
   /// 從相簿挑一個 GIF。
@@ -2432,13 +2432,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return path;
   }
 
-  /// 把一個 GIF 檔放上時間軸
-  Future<void> _addGifClip(String path, int track) async {
-    final bytes = await readFileBytes(path);
+  /// 把一個 GIF 放上時間軸。
+  ///
+  /// [ref] 可能是檔案路徑，也可能是內建範例（Web 展示模式）——
+  /// 一律先拿 bytes，再落成一個素材用得到的路徑（Web 是 blob URL）
+  Future<void> _addGifClip(String ref, int track) async {
+    final bytes = await GifStore.bytes(ref);
     if (bytes == null || !mounted) {
       if (mounted) showHint(context, '這個 GIF 讀不到', error: true);
       return;
     }
+    final path = GifStore.isAsset(ref)
+        ? await writeTempBytes(bytes, 'gif')
+        : ref;
+    if (path == null || !mounted) return;
     var imgW = 0, imgH = 0;
     try {
       final codec = await ui.instantiateImageCodec(bytes);
@@ -6401,12 +6408,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                               // GIF 得當時間軸素材才會動（浮水印是烘成
                               // 一張靜態 PNG 的），所以從這裡加也是加到
                               // 時間軸上，加完把人帶回剪輯分頁看
-                              onAddGif: kIsWeb
-                                  ? null
-                                  : () async {
-                                      await _pickGif(_tl.usedTracks);
-                                      if (mounted) _tabs.animateTo(0);
-                                    },
+                              onAddGif: () async {
+                                await _pickGif(_tl.usedTracks);
+                                if (mounted) _tabs.animateTo(0);
+                              },
                             );
                           },
                         ),

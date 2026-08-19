@@ -1,10 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart' show XFile;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -14,6 +12,7 @@ import '../services/draft_store.dart';
 import '../services/gif_store.dart';
 import '../services/preset_store.dart';
 import '../theme.dart';
+import '../widgets/gif_image.dart';
 import '../widgets/swipe_back.dart';
 import '../widgets/watermark_layer.dart';
 import 'about_screen.dart';
@@ -44,8 +43,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   /// 影片草稿清單（可以有很多份，見 DraftStore）
   List<DraftMeta> _videoDrafts = const [];
 
-  /// 做好的 GIF（見 GifStore）
-  List<File> _gifs = const [];
+  /// 做好的 GIF（見 GifStore；Web 是內建範例）
+  List<String> _gifs = const [];
   Map<String, dynamic>? _photoDraft;
 
   @override
@@ -57,7 +56,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _reload() async {
     final presets = await PresetStore.load();
     final videoDrafts = await DraftStore.list();
-    final gifs = kIsWeb ? <File>[] : await GifStore.list();
+    final gifs = await GifStore.list();
     final prefs = await SharedPreferences.getInstance();
 
     Map<String, dynamic>? readDraft(String key, String contentKey) {
@@ -412,10 +411,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                     borderRadius: BorderRadius.circular(12),
                                   ),
                                   clipBehavior: Clip.antiAlias,
-                                  child: Image.file(
-                                    _gifs[i],
-                                    fit: BoxFit.cover,
-                                  ),
+                                  child: GifImage(_gifs[i]),
                                 ),
                               ),
                             ),
@@ -873,7 +869,7 @@ class GifsScreen extends StatefulWidget {
 }
 
 class _GifsScreenState extends State<GifsScreen> {
-  List<File> _gifs = const [];
+  List<String> _gifs = const [];
 
   /// 每個 GIF 的寬高比（路徑 → 寬/高）。瀑布流照原始比例排，
   /// 一律切成正方形的話直式的會被裁掉頭尾
@@ -894,11 +890,12 @@ class _GifsScreenState extends State<GifsScreen> {
       _loading = false;
     });
     // 比例邊讀邊補：只解第一格拿尺寸，不用等全部讀完才畫得出東西
-    for (final f in gifs) {
-      if (_aspect.containsKey(f.path)) continue;
+    for (final ref in gifs) {
+      if (_aspect.containsKey(ref)) continue;
       double a;
       try {
-        final codec = await ui.instantiateImageCodec(await f.readAsBytes());
+        final bytes = await GifStore.bytes(ref);
+        final codec = await ui.instantiateImageCodec(bytes!);
         final frame = await codec.getNextFrame();
         a = frame.image.width / frame.image.height;
         frame.image.dispose();
@@ -907,40 +904,37 @@ class _GifsScreenState extends State<GifsScreen> {
         a = 1.0; // 讀不到就當正方形，至少排得出來
       }
       if (!mounted) return;
-      setState(() => _aspect[f.path] = a);
+      setState(() => _aspect[ref] = a);
     }
   }
 
   /// 兩欄瀑布流：每一個丟進目前比較短的那一欄。
   /// 高度用寬高比推算（欄寬 ÷ 比例），不用等圖片真的畫出來
-  List<List<File>> _columns(double colW) {
-    final cols = <List<File>>[[], []];
+  List<List<String>> _columns(double colW) {
+    final cols = <List<String>>[[], []];
     final h = [0.0, 0.0];
-    for (final f in _gifs) {
+    for (final ref in _gifs) {
       final i = h[0] <= h[1] ? 0 : 1;
-      cols[i].add(f);
-      h[i] += colW / (_aspect[f.path] ?? 1.0) + 10;
+      cols[i].add(ref);
+      h[i] += colW / (_aspect[ref] ?? 1.0) + 10;
     }
     return cols;
   }
 
   /// 一格：照原始比例畫。GIF 自己會動——Image.file 讀到多格就會播
-  Widget _gifTile(File f) => GestureDetector(
-    onTap: () => _preview(f),
-    onLongPress: () => _delete(f),
+  Widget _gifTile(String ref) => GestureDetector(
+    onTap: () => _preview(ref),
+    onLongPress: () => _delete(ref),
     child: ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: AspectRatio(
-        aspectRatio: _aspect[f.path] ?? 1.0,
-        child: ColoredBox(
-          color: kLTile,
-          child: Image.file(f, fit: BoxFit.cover, gaplessPlayback: true),
-        ),
+        aspectRatio: _aspect[ref] ?? 1.0,
+        child: ColoredBox(color: kLTile, child: GifImage(ref)),
       ),
     ),
   );
 
-  Future<void> _delete(File f) async {
+  Future<void> _delete(String ref) async {
     final ok = await showConfirm(
       context,
       title: '刪除這個 GIF？',
@@ -948,12 +942,12 @@ class _GifsScreenState extends State<GifsScreen> {
       action: '刪除',
     );
     if (!ok) return;
-    await GifStore.remove(f.path);
+    await GifStore.remove(ref);
     _reload();
   }
 
   /// 點一下放大看：GIF 在小格子裡看不出動了什麼
-  void _preview(File f) {
+  void _preview(String ref) {
     showDialog<void>(
       context: context,
       builder: (context) => Dialog(
@@ -963,7 +957,7 @@ class _GifsScreenState extends State<GifsScreen> {
           onTap: () => Navigator.pop(context),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(12),
-            child: Image.file(f, fit: BoxFit.contain),
+            child: GifImage(ref, fit: BoxFit.contain),
           ),
         ),
       ),

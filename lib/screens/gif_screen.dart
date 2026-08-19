@@ -3,15 +3,17 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
-import '../models/timeline.dart';
 import '../services/export_speed.dart' show fmtDuration;
 import '../services/native_frames.dart';
 import '../services/screen_awake.dart';
 import '../services/video_controller.dart';
+import '../services/gif_store.dart';
 import '../services/video_engine.dart' as engine;
-import '../services/video_processor.dart';
+import '../widgets/gif_image.dart';
+import 'crop_screen.dart';
 import '../theme.dart';
 import '../widgets/swipe_back.dart';
 
@@ -51,6 +53,11 @@ class _GifScreenState extends State<GifScreen> {
   int _size = 480;
   int _fps = 12;
 
+  /// 裁切框（0~1 的比例）。null＝整張。
+  /// GIF 常常只要畫面裡的某一小塊（一個表情、一個動作），
+  /// 整張出去檔案大又抓不到重點
+  Rect? _crop;
+
   Timer? _tick;
   bool _exporting = false;
 
@@ -74,9 +81,14 @@ class _GifScreenState extends State<GifScreen> {
 
   Future<void> _buildPreview() async {
     if (_building || !mounted) return;
+    final c = _crop;
+    final cropKey = c == null
+        ? 'full'
+        : '${c.left.toStringAsFixed(3)},${c.top.toStringAsFixed(3)},'
+              '${c.width.toStringAsFixed(3)},${c.height.toStringAsFixed(3)}';
     final key =
         '${_start.toStringAsFixed(2)}~${_end.toStringAsFixed(2)}'
-        '@$_fps@$_size';
+        '@$_fps@$_size@$cropKey';
     if (key == _previewKey) return;
     setState(() => _building = true);
     final path = await engine.makeGifFile(
@@ -85,6 +97,7 @@ class _GifScreenState extends State<GifScreen> {
       end: _end,
       fps: _fps,
       maxSide: _size,
+      crop: _crop,
     );
     if (!mounted) return;
     // 做好一份就把上一份刪掉，暫存不會愈積愈多
@@ -96,7 +109,7 @@ class _GifScreenState extends State<GifScreen> {
         _previewKey = key;
       }
     });
-    if (old != null && old != path) {
+    if (old != null && old != path && !GifStore.isAsset(old)) {
       try {
         File(old).deleteSync();
       } catch (_) {}
@@ -153,7 +166,7 @@ class _GifScreenState extends State<GifScreen> {
     _tick?.cancel();
     _previewTimer?.cancel();
     final gif = _gifPreview;
-    if (gif != null) {
+    if (gif != null && !GifStore.isAsset(gif)) {
       try {
         File(gif).deleteSync();
       } catch (_) {}
@@ -189,16 +202,6 @@ class _GifScreenState extends State<GifScreen> {
   double get _len => math.max(0.1, _end - _start);
 
   /// 中繼影片的輸出尺寸：素材原比例、長邊不超過選的 GIF 尺寸。
-  /// 先做大再縮小是白編碼一趟，中繼檔直接做到剛好
-  (int, int) _outSize() {
-    final s = _player?.value.size ?? Size.zero;
-    var vw = s.width, vh = s.height;
-    if (vw < 2 || vh < 2) (vw, vh) = (480, 480);
-    var k = _size / math.max(vw, vh);
-    if (k > 1) k = 1;
-    int ev(double v) => math.max(2, (v * k / 2).round() * 2);
-    return (ev(vw), ev(vh));
-  }
 
   Future<void> _export() async {
     if (_exporting) return;
@@ -266,45 +269,28 @@ class _GifScreenState extends State<GifScreen> {
 
     String message;
     var ok = false;
-    var cancelled = false;
     try {
-      final s = _player?.value.size ?? Size.zero;
-      final (outW, outH) = _outSize();
-      final src = MediaSource(
-        path: widget.path,
-        name: widget.name,
-        kind: ClipKind.video,
-        duration: _dur,
-        w: s.width.round(),
-        h: s.height.round(),
-      );
-      final result = await engine.exportVideoToGallery(
-        ExportSpec(
-          sources: [src],
-          clips: [
-            TimelineClip(
-              id: 1,
-              sourceIndex: 0,
-              trimStart: _start,
-              trimEnd: _end,
-              offset: 0,
-              track: 0,
-            ),
-          ],
-          timelineDuration: _len,
-          speed: 1.0,
-          watermarkPng: null,
-          outW: outW,
-          outH: outH,
-          gif: true,
-          gifFps: _fps,
-          gifMaxSide: _size,
-        ),
-        onProgress: (v) => progress.value = v,
-      );
-      ok = result.ok;
-      message = result.message;
-      cancelled = result.cancelled;
+      if (kIsWeb) {
+        // Web 沒有 FFmpeg：整套流程點得完，但不會真的產出檔案
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+        if (mounted) Navigator.pop(context);
+        _exporting = false;
+        await keepScreenAwake(false);
+        if (mounted) showHint(context, '這是網頁展示模式，實機才會真的做出 GIF');
+        return;
+      }
+      // 直接用預覽那一份：預覽看到什麼，存下去就是什麼。
+      // 設定沒動過就不用再做一次（_buildPreview 有指紋擋著）
+      await _buildPreview();
+      progress.value = 0.8;
+      final gif = _gifPreview;
+      if (gif == null) {
+        message = 'GIF 做不出來，換個範圍或尺寸試試';
+      } else {
+        final r = await engine.saveGifToGallery(gif);
+        ok = r.ok;
+        message = r.message;
+      }
     } catch (e) {
       message = '製作失敗：$e';
     } finally {
@@ -313,8 +299,47 @@ class _GifScreenState extends State<GifScreen> {
     }
     if (!mounted) return;
     Navigator.pop(context); // 關進度視窗
-    if (cancelled) return;
     showHint(context, message, error: !ok);
+  }
+
+  /// 裁切：底圖抓範圍開頭那一格，用的是影片裁切同一個畫面
+  Future<void> _openCrop() async {
+    final p = _player;
+    if (p == null) return;
+    if (_playing) {
+      await p.pause();
+      if (mounted) setState(() => _playing = false);
+    }
+    Uint8List? frame = await nativeFrameAt(widget.path, _start, maxH: 1280);
+    if (frame == null) {
+      try {
+        final one = await engine.makeThumbnails(
+          widget.path,
+          0.001,
+          1,
+          height: 1280,
+          longSide: true,
+          startAt: _start,
+        );
+        frame = one.firstOrNull;
+      } catch (_) {}
+    }
+    frame ??= _thumbs.firstOrNull;
+    if (frame == null || !mounted) {
+      if (mounted) showHint(context, '抓不到畫面，沒辦法裁切', error: true);
+      return;
+    }
+    final picked = await pickCropRect(
+      context,
+      frame,
+      initial: _crop ?? const Rect.fromLTWH(0, 0, 1, 1),
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      // 整張＝視同沒裁（免得多一道無謂的 crop 濾鏡）
+      _crop = (picked.width > 0.995 && picked.height > 0.995) ? null : picked;
+    });
+    _schedulePreview();
   }
 
   // ===== UI =====
@@ -347,6 +372,45 @@ class _GifScreenState extends State<GifScreen> {
                           const SizedBox(height: 8),
                           _trimStrip(),
                           const SizedBox(height: 16),
+                          Row(
+                            children: [
+                              OutlinedButton.icon(
+                                onPressed: _openCrop,
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: _crop == null
+                                      ? kText
+                                      : kSelect,
+                                  side: BorderSide(
+                                    color: _crop == null
+                                        ? kClipBorder
+                                        : kSelect,
+                                  ),
+                                ),
+                                icon: const Icon(Icons.crop, size: 16),
+                                label: Text(
+                                  _crop == null ? '裁切' : '已裁切',
+                                  style: const TextStyle(fontSize: 12.5),
+                                ),
+                              ),
+                              if (_crop != null) ...[
+                                const SizedBox(width: 8),
+                                TextButton(
+                                  onPressed: () {
+                                    setState(() => _crop = null);
+                                    _schedulePreview();
+                                  },
+                                  style: TextButton.styleFrom(
+                                    foregroundColor: kTextDim,
+                                  ),
+                                  child: const Text(
+                                    '還原',
+                                    style: TextStyle(fontSize: 12.5),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                          const SizedBox(height: 12),
                           _chipsRow('尺寸', [320, 480, 640], _size, (v) {
                             setState(() => _size = v);
                             _schedulePreview();
@@ -394,11 +458,7 @@ class _GifScreenState extends State<GifScreen> {
             children: [
               AspectRatio(
                 aspectRatio: aspect,
-                child: Image.file(
-                  File(gif),
-                  fit: BoxFit.contain,
-                  gaplessPlayback: true,
-                ),
+                child: GifImage(gif, fit: BoxFit.contain),
               ),
               if (_building)
                 const Positioned(

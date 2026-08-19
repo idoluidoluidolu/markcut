@@ -186,14 +186,14 @@ class _HomeScreenState extends State<HomeScreen> {
                   hint: '多張照片組圖',
                   kind: _PickKind.collage,
                 ),
-                // GIF 靠 FFmpeg 轉檔，Web 版沒有 FFmpeg，列出來也做不了
-                if (!kIsWeb)
-                  const _PickRow(
-                    icon: Icons.gif_box_outlined,
-                    label: '製作 GIF',
-                    hint: '剪一小段影片轉成 GIF',
-                    kind: _PickKind.gif,
-                  ),
+                // GIF 靠 FFmpeg 轉檔，Web 版沒有 FFmpeg——但流程還是
+                // 要看得到，所以照樣列出來，只是標成展示模式
+                _PickRow(
+                  icon: Icons.gif_box_outlined,
+                  label: '製作 GIF',
+                  hint: kIsWeb ? '網頁展示模式' : '剪一小段影片轉成 GIF',
+                  kind: _PickKind.gif,
+                ),
                 const _PickRow(
                   icon: Icons.playlist_add,
                   label: '空白專案',
