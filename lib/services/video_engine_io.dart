@@ -542,6 +542,29 @@ Future<String> _buildCommand(
     return ('crop=$cw:$ch:$cx:$cy,', cx, cy);
   }
 
+  /// 片段的旋轉與透明度。回傳濾鏡片段，以及 overlay 要補的位移。
+  ///
+  /// rotate 會把畫面撐成「對角線邊長」的正方形（不然轉 45 度時四角
+  /// 會被切掉），所以 overlay 的位置要往回退掉多出來的一半，
+  /// 內容才留在原地。c=none＝多出來的地方留透明，不要黑底
+  (String, int, int) spinFadeOf(TimelineClip c, int w2, int h2) {
+    var f = '';
+    var dx = 0, dy = 0;
+    if (c.rotated) {
+      var d = math.sqrt(w2 * w2 + h2 * h2).ceil();
+      d = d + (d % 2); // 偶數，編碼器才收
+      final rad = c.rotation * math.pi / 180;
+      f += 'rotate=${_f6(rad)}:ow=$d:oh=$d:c=none,';
+      dx = -((d - w2) / 2).round();
+      dy = -((d - h2) / 2).round();
+    }
+    if (c.faded) {
+      // 透明度乘在 alpha 上（前面已經 format=rgba）
+      f += 'colorchannelmixer=aa=${_f(c.opacity.clamp(0.0, 1.0))},';
+    }
+    return (f, dx, dy);
+  }
+
   /// 畫面淡入淡出。時間是「這個片段自己的時間」（0＝片段開頭），
   /// 不是輸出時間——分段渲染時一個片段可能被切成好幾段，用絕對時間的話
   /// 跨段的淡化需要負的起點，fade 濾鏡不收
@@ -575,6 +598,9 @@ Future<String> _buildCommand(
     final srcB = c.trimStart + (b - start) * rate;
     final (w2, h2, x, y) = layerBox(c, src.aspect);
     final (cropF, cdx, cdy) = cropOf(c, w2, h2);
+    final cw = c.cropped ? (c.cropW * w2).round() : w2;
+    final ch = c.cropped ? (c.cropH * h2).round() : h2;
+    final (spinF, sdx, sdy) = spinFadeOf(c, cw, ch);
     fc.write(
       '[$label]'
       'trim=start=${_f(srcA)}:end=${_f(srcB)},'
@@ -590,6 +616,8 @@ Future<String> _buildCommand(
       'scale=$w2:$h2:flags=lanczos,'
       '$cropF'
       '${c.mirror ? 'hflip,' : ''}'
+      // 旋轉需要 alpha 才留得住空白角，先轉成 rgba
+      '${spinF.isEmpty ? '' : 'format=rgba,$spinF'}'
       '${c.reverse ? 'reverse,' : ''}'
       // 全域速度 × 每片段速度一起壓進 PTS
       //（速度 clamp 到跟 TimelineClip.length 同一個範圍，
@@ -606,7 +634,7 @@ Future<String> _buildCommand(
       '[lv$k];',
     );
     fc.write(
-      '[$cur][lv$k]overlay=${x + cdx}:${y + cdy}:'
+      '[$cur][lv$k]overlay=${x + cdx + sdx}:${y + cdy + sdy}:'
       'enable=${_window(a - w0, b - w0)}:'
       // 素材串流比片段短時要凍住最後一幀，不能讓底下的黑畫布露出來。
       // 手機拍的檔案很常「容器長度 > 視訊串流長度」（音軌比較長、
@@ -632,6 +660,9 @@ Future<String> _buildCommand(
       final label = vPool[c.sourceIndex]!.removeLast();
       final (w2, h2, x, y) = layerBox(c, src.aspect);
       final (cropF, cdx, cdy) = cropOf(c, w2, h2);
+      final cw = c.cropped ? (c.cropW * w2).round() : w2;
+      final ch = c.cropped ? (c.cropH * h2).round() : h2;
+      final (spinF, sdx, sdy) = spinFadeOf(c, cw, ch);
       fc.write(
         '[$label]'
         'scale=$w2:$h2:flags=lanczos'
@@ -639,13 +670,14 @@ Future<String> _buildCommand(
         '${c.mirror ? ',hflip' : ''}'
         '${_eq(c)}'
         ',format=rgba,'
+        '$spinF'
         '$cut'
         '${vFades(c)}'
         '$toSeg'
         '[lv$k];',
       );
       fc.write(
-        '[$cur][lv$k]overlay=${x + cdx}:${y + cdy}:'
+        '[$cur][lv$k]overlay=${x + cdx + sdx}:${y + cdy + sdy}:'
         'enable=${_window(a - w0, b - w0)}:'
         'eof_action=repeat[ov$k];',
       );

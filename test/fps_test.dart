@@ -38,9 +38,11 @@ void main() {
       expect(kFpsChoices.contains(30), isTrue);
     });
 
-    test('自動的說明會帶出素材的張數', () {
-      expect(fpsNote(0, 59.94), contains('60'));
-      expect(fpsNote(0, 0), '跟素材一樣');
+    test('每一檔都有一句人話說明', () {
+      expect(fpsNote(0, 59.94), '跟原素材一樣');
+      expect(fpsNote(24, 0), '電影感');
+      expect(fpsNote(30, 0), '一般影片');
+      expect(fpsNote(60, 0), '滑順');
     });
   });
 }

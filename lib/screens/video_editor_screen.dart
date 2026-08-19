@@ -750,7 +750,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             '${c.scale}|${c.px}|${c.py}|${c.reverse}|${c.mirror}'
             // 裁切同理：合成播放器畫不出來，裁了要換回逐片段那條路
             '|${c.color.hasColor}|${c.cropped}'
-            '|${c.cropL}|${c.cropT}|${c.cropW}|${c.cropH}',
+            '|${c.cropL}|${c.cropT}|${c.cropW}|${c.cropH}'
+            '|${c.opacity}|${c.rotation}',
     // 馬賽克片段也要算進來：它跟調色一樣會逼著退回材質那條路，
     // 而它不是影片片段，不記的話「加了馬賽克」不會觸發重烘
     'mz${_tl.clips.where((c) => _tl.sourceOf(c).kind == ClipKind.mosaic).length}',
@@ -2306,25 +2307,29 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       clip.py = 0.5;
                     }),
                   ),
-                  const SizedBox(height: 6),
-                  Row(
-                    children: [
-                      OutlinedButton.icon(
-                        onPressed: () =>
-                            change(() => clip.mirror = !clip.mirror),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: clip.mirror ? kSelect : kText,
-                          side: BorderSide(
-                            color: clip.mirror ? kSelect : kClipBorder,
-                          ),
-                        ),
-                        icon: const Icon(Icons.flip, size: 16),
-                        label: const Text(
-                          '左右翻轉',
-                          style: TextStyle(fontSize: 12.5),
-                        ),
-                      ),
-                    ],
+                  sliderRow(
+                    label: '旋轉',
+                    value: clip.rotation,
+                    min: -180,
+                    max: 180,
+                    onChanged: (v) => change(
+                      () =>
+                          clip.rotation = snapAngle(v, current: clip.rotation),
+                    ),
+                    readout: '${clip.rotation.round()}',
+                    unit: '°',
+                    valueColor: clip.rotation.round() == 0 ? kTextDim : kText,
+                    // 手滑到 3° 很難拉回正的，點數字就歸零
+                    onReset: () => change(() => clip.rotation = 0),
+                  ),
+                  sliderRow(
+                    label: '透明度',
+                    value: clip.opacity,
+                    min: 0.05,
+                    max: 1,
+                    onChanged: (v) => change(() => clip.opacity = v),
+                    readout: '${(clip.opacity * 100).round()}',
+                    unit: '%',
                   ),
                 ],
               ),
@@ -9794,6 +9799,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         transform: Matrix4.identity()..scaleByDouble(-1, 1, 1, 1),
         child: w,
       );
+    }
+    // 旋轉：包在鏡像之後，跟匯出的順序一致（先翻再轉）
+    if (c.rotated) {
+      w = Transform.rotate(angle: c.rotation * math.pi / 180, child: w);
+    }
+    if (c.faded) {
+      w = Opacity(opacity: c.opacity.clamp(0.0, 1.0), child: w);
     }
     // 比對中直接回傳原樣，看得出調色前後差多少
     if (_colorCompare) return w;

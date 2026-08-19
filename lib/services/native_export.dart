@@ -63,6 +63,9 @@ class NativeExport {
       // 交給它會匯出成「沒裁過」的樣子——預覽與成品不一樣，
       // 比慢一點嚴重得多
       if (c.cropped) return '有裁切過的片段';
+      // 旋轉與透明度目前也只有 FFmpeg 那條路畫得出來
+      if (c.rotated) return '有旋轉過的片段';
+      if (c.faded) return '有調過透明度的片段';
     }
     if (vids.isEmpty) return '沒有影片片段';
     // 指定張數目前只有 FFmpeg 那條路做得到（-r）。Swift 端照素材

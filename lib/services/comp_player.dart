@@ -102,8 +102,8 @@ class CompPlayer {
     // 裁切的片段畫面來自系統影片圖層，Flutter 這邊的剪裁蓋不到它——
     // 組下去預覽就是「沒裁過」的樣子。整條退回逐片段播放器
     //（那條路的畫面是 Flutter 材質，裁切吃得到）
-    if (tl.clips.any((c) => c.cropped)) {
-      lastError = '有裁切過的片段';
+    if (tl.clips.any((c) => c.cropped || c.rotated || c.faded)) {
+      lastError = '有裁切／旋轉／調過透明度的片段';
       return null;
     }
     final vids =

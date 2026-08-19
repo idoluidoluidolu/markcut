@@ -213,6 +213,16 @@ class TimelineClip {
   /// 調色（跟照片編輯共用同一個模型）
   final ColorGrade color;
 
+  /// 透明度（0~1）。圖片／GIF 素材壓在影片上時常常要淡一點
+  double opacity;
+
+  /// 旋轉角度（度，-180~180）。正值＝順時針
+  double rotation;
+
+  /// 有沒有旋轉／調過透明度（浮點誤差當作沒有）
+  bool get rotated => rotation.abs() > 0.05;
+  bool get faded => opacity < 0.999;
+
   /// 裁切框（素材座標 0~1，未鏡像的原始畫面）。整張＝沒裁。
   ///
   /// 真的把框以外的像素切掉，不動 [scale]：裁切就是裁切，不該
@@ -248,6 +258,8 @@ class TimelineClip {
     this.cropT = 0,
     this.cropW = 1,
     this.cropH = 1,
+    this.opacity = 1.0,
+    this.rotation = 0,
   }) : color = color ?? ColorGrade();
 
   /// 素材端長度（trim 掉頭尾後的原始秒數）
@@ -297,6 +309,8 @@ class TimelineClip {
     'reverse': reverse,
     'mirror': mirror,
     if (cropped) 'crop': [cropL, cropT, cropW, cropH],
+    if (faded) 'opacity': opacity,
+    if (rotated) 'rotation': rotation,
     // 調色的鍵維持扁平，舊草稿讀得回來
     ...color.toJson(),
   };
@@ -319,6 +333,8 @@ class TimelineClip {
     speed: (j['speed'] ?? 1.0).toDouble(),
     reverse: (j['reverse'] ?? false) as bool,
     mirror: (j['mirror'] ?? false) as bool,
+    opacity: ((j['opacity'] ?? 1) as num).toDouble(),
+    rotation: ((j['rotation'] ?? 0) as num).toDouble(),
     cropL: _crop(j, 0, 0),
     cropT: _crop(j, 1, 0),
     cropW: _crop(j, 2, 1),
