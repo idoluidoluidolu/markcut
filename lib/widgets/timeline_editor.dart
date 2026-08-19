@@ -1282,17 +1282,21 @@ const double _kHandleOverhang = 14;
 /// 空間。比這窄就不畫把手（不然整條被把手蓋滿，變成拖不動）
 const double kTrimMinWidth = 64;
 
-/// 片段畫得再小也不會小於這個寬度（只是不讓它整條消失）。
+/// 片段畫得再小也不會小於這個寬度：兩顆 16px 把手＋中間一點內容。
 ///
-/// 這個值必須夠小。它是「畫出來的寬度」下限，一旦大於「片段最短
-/// 長度在目前縮放下的實際寬度」，修剪就會撞牆：模型明明還在變短，
-/// 畫面卻定住不動，看起來就是「縮到這裡就不能再縮了」。
+/// 這是「畫出來的寬度」下限，比它更短的片段會畫得比實際長——所以
+/// 必須確保「放大到底時，最短片段的實際寬度」大於它，不然修剪會
+/// 撞牆：模型還在變短，畫面卻定住不動。
 ///
-/// 對照：最大縮放 600px/秒 × [kMinClipLen] 0.05 秒 = 30px，
-/// 12 遠小於它，所以放大之後永遠是先碰到真正的長度下限，
-/// 不會先被畫面卡住。太窄時把手改成各佔一半，靠熱區往外伸
-/// （見 _TrimHandle.overhang）還是抓得到
-const double kClipMinWidth = 12;
+/// 對照：最大縮放 [kMaxPxPerSec] 1200px/秒 × [kMinClipLen] 0.05 秒
+/// = 60px > 56，所以放大之後永遠是先碰到真正的長度下限
+const double kClipMinWidth = 56;
+
+/// 時間軸的最大縮放（每秒幾 px）。
+///
+/// 這個值撐著 [kClipMinWidth] 的前提：放大到底時最短片段畫得出
+/// 60px，比畫面下限寬，修剪才不會在放大之後還是動不了
+const double kMaxPxPerSec = 1200;
 
 /// 時間軸上的片段。拖曳時本體留在原地變淡，移動的是父層的幽靈。
 class _ClipBlock extends StatelessWidget {
@@ -1472,14 +1476,10 @@ class _ClipBlock extends StatelessWidget {
                     child: ListenableBuilder(
                       listenable: scrollController,
                       builder: (context, _) {
-                        // 一般是片段寬的 28%（16~40px）。片段窄到
-                        // 擺不下兩顆時各佔一半——抓得到靠的是熱區
-                        // 往片段外多伸出去的那一段，不是看得見的寬度
-                        final hw = w < 34
-                            ? w / 2
-                            : (w * 0.28).clamp(16.0, 40.0);
-                        // 窄片段的熱區再往外伸一點，不然只剩幾 px 可點
-                        final over = w < 34 ? 20.0 : _kHandleOverhang;
+                        // 片段縮到底（kClipMinWidth）時兩顆各 16px，
+                        // 中間留 24px：修剪與抓著移動都還在
+                        final hw = (w * 0.28).clamp(16.0, 40.0);
+                        const over = _kHandleOverhang;
                         final off = scrollController.hasClients
                             ? scrollController.offset
                             : 0.0;

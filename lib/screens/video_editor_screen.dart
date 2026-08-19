@@ -388,8 +388,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final p = _pinchPts.values.toList();
       final d = (p[0] - p[1]).distance;
       setState(
-        () =>
-            _pxPerSec = (_pinchBasePx * d / _pinchBaseDist!).clamp(1.0, 600.0),
+        () => _pxPerSec = (_pinchBasePx * d / _pinchBaseDist!).clamp(
+          1.0,
+          kMaxPxPerSec,
+        ),
       );
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _syncScrollToPosition(),
@@ -412,7 +414,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     GestureBinding.instance.pointerSignalResolver.register(e, (event) {
       final dy = (event as PointerScrollEvent).scrollDelta.dy;
       setState(
-        () => _pxPerSec = (_pxPerSec * math.exp(-dy * 0.002)).clamp(1.0, 600.0),
+        () => _pxPerSec = (_pxPerSec * math.exp(-dy * 0.002)).clamp(
+          1.0,
+          kMaxPxPerSec,
+        ),
       );
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _syncScrollToPosition(),
@@ -8296,7 +8301,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 // 桌面滾輪縮放：下限 1px/秒，長片也能整條盡收眼底
                                 onZoom: (v) {
                                   setState(
-                                    () => _pxPerSec = v.clamp(1.0, 600.0),
+                                    () =>
+                                        _pxPerSec = v.clamp(1.0, kMaxPxPerSec),
                                   );
                                   WidgetsBinding.instance.addPostFrameCallback(
                                     (_) => _syncScrollToPosition(),
