@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart' show XFile;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/watermark_settings.dart';
+import '../services/draft_store.dart';
 import '../services/preset_store.dart';
 import '../theme.dart';
 import '../widgets/swipe_back.dart';
@@ -132,9 +133,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       // 長按＝刪除。右上角「全部」才是進範本夾
       onTap: () => Navigator.push(
         context,
-        MaterialPageRoute(
-          builder: (_) => WatermarkStudioScreen(edit: preset),
-        ),
+        MaterialPageRoute(builder: (_) => WatermarkStudioScreen(edit: preset)),
       ).then((_) => _reload()),
       onLongPress: () => _confirmDeletePreset(preset),
       child: Column(
@@ -190,47 +189,49 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   /// 範本區最後一格：新增
   Widget _presetAddTile() => GestureDetector(
-        onTap: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const LightPage(child: PresetsScreen())),
-        ).then((_) => _reload()),
-        child: Column(
-          children: [
-            Container(
-              width: 92,
-              height: 92,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: kLCard,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: kLBorder, width: 1.4),
-              ),
-              child: const Text(
-                '＋',
-                style: TextStyle(
-                  fontSize: 26,
-                  color: Color(0xFFB0B0BA),
-                  fontWeight: FontWeight.w300,
-                ),
-              ),
+    onTap: () => Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const LightPage(child: PresetsScreen()),
+      ),
+    ).then((_) => _reload()),
+    child: Column(
+      children: [
+        Container(
+          width: 92,
+          height: 92,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: kLCard,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: kLBorder, width: 1.4),
+          ),
+          child: const Text(
+            '＋',
+            style: TextStyle(
+              fontSize: 26,
+              color: Color(0xFFB0B0BA),
+              fontWeight: FontWeight.w300,
             ),
-            const SizedBox(height: 7),
-            const SizedBox(
-              width: 92,
-              child: Text(
-                '新增',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 11,
-                  letterSpacing: 0.6,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF6E6E7A),
-                ),
-              ),
-            ),
-          ],
+          ),
         ),
-      );
+        const SizedBox(height: 7),
+        const SizedBox(
+          width: 92,
+          child: Text(
+            '新增',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 11,
+              letterSpacing: 0.6,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF6E6E7A),
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
 
   /// 草稿卡：長條的。上面一塊方形縮圖區（直式影片置中留邊，橫式也放得下），
   /// 下面名稱與時間——加起來整張是直的，直片橫片排在一起高度才一致
@@ -244,51 +245,42 @@ class _ProfileScreenState extends State<ProfileScreen> {
     required String title,
     required String when,
     required VoidCallback onTap,
-  }) =>
-      GestureDetector(
-        onTap: onTap,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            AspectRatio(
-              aspectRatio: 3 / 4,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF1F1F5),
-                  borderRadius: BorderRadius.circular(18),
-                ),
-                clipBehavior: Clip.antiAlias,
-                alignment: Alignment.center,
-                child: cover,
-              ),
+  }) => GestureDetector(
+    onTap: onTap,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        AspectRatio(
+          aspectRatio: 3 / 4,
+          child: Container(
+            decoration: BoxDecoration(
+              color: const Color(0xFFF1F1F5),
+              borderRadius: BorderRadius.circular(18),
             ),
-            const SizedBox(height: 9),
-            Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 13.5,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              when,
-              style: const TextStyle(fontSize: 11.5, color: kLTextDim),
-            ),
-          ],
+            clipBehavior: Clip.antiAlias,
+            alignment: Alignment.center,
+            child: cover,
+          ),
         ),
-      );
+        const SizedBox(height: 9),
+        Text(
+          title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 2),
+        Text(when, style: const TextStyle(fontSize: 11.5, color: kLTextDim)),
+      ],
+    ),
+  );
 
   Future<void> _openDrafts() async {
     await Navigator.push(
       context,
       // LightPage 一定要包：這是亮色頁，漏包就掉進暗色主題
       //（背景變黑、白卡片浮在上面，超跳）
-      MaterialPageRoute(
-        builder: (_) => const LightPage(child: DraftsScreen()),
-      ),
+      MaterialPageRoute(builder: (_) => const LightPage(child: DraftsScreen())),
     );
     _reload();
   }
@@ -355,8 +347,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           padding: _side,
                           child: _sectionTitle(
                             '草稿',
-                          // 空的時候不放「沒有」：下面那行字已經說了，
-                          // 標題右邊再寫一次只是重複
+                            // 空的時候不放「沒有」：下面那行字已經說了，
+                            // 標題右邊再寫一次只是重複
                             trailing: draftCount == 0 ? null : '全部',
                             onTap: draftCount == 0 ? null : _openDrafts,
                           ),
@@ -383,55 +375,55 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           Padding(
                             padding: _side,
                             child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              if (v != null)
-                                Expanded(
-                                  child: _draftTile(
-                                    cover: _thumbOf(v) != null
-                                        ? Image.memory(
-                                            _thumbOf(v)!,
-                                            // 鋪滿：這是縮圖不是預覽，
-                                            // 留邊只會讓一排卡看起來破碎
-                                            fit: BoxFit.cover,
-                                            width: double.infinity,
-                                            height: double.infinity,
-                                            gaplessPlayback: true,
-                                          )
-                                        : const Icon(
-                                            Icons.movie_outlined,
-                                            size: 26,
-                                            color: Color(0xFFAFAFBB),
-                                          ),
-                                    title: '未完成的影片',
-                                    when: _whenOf(v),
-                                    onTap: _openDrafts,
-                                  ),
-                                ),
-                              if (v != null && p != null)
-                                const SizedBox(width: 12),
-                              if (p != null)
-                                Expanded(
-                                  child: _draftTile(
-                                    // 照片草稿沒有存縮圖（那張照片還在裝置
-                                    // 上，再存一份只是浪費空間）
-                                    cover: const Icon(
-                                      Icons.image_outlined,
-                                      size: 26,
-                                      color: Color(0xFFAFAFBB),
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (v != null)
+                                  Expanded(
+                                    child: _draftTile(
+                                      cover: _thumbOf(v) != null
+                                          ? Image.memory(
+                                              _thumbOf(v)!,
+                                              // 鋪滿：這是縮圖不是預覽，
+                                              // 留邊只會讓一排卡看起來破碎
+                                              fit: BoxFit.cover,
+                                              width: double.infinity,
+                                              height: double.infinity,
+                                              gaplessPlayback: true,
+                                            )
+                                          : const Icon(
+                                              Icons.movie_outlined,
+                                              size: 26,
+                                              color: Color(0xFFAFAFBB),
+                                            ),
+                                      title: '未完成的影片',
+                                      when: _whenOf(v),
+                                      onTap: _openDrafts,
                                     ),
-                                    title: '未完成的照片',
-                                    when: _whenOf(p),
-                                    onTap: _openDrafts,
                                   ),
-                                ),
-                              // 只有一張時右邊補空，卡片才不會被撐成整排寬
-                              if (v == null || p == null) ...[
-                                const SizedBox(width: 12),
-                                const Expanded(child: SizedBox()),
+                                if (v != null && p != null)
+                                  const SizedBox(width: 12),
+                                if (p != null)
+                                  Expanded(
+                                    child: _draftTile(
+                                      // 照片草稿沒有存縮圖（那張照片還在裝置
+                                      // 上，再存一份只是浪費空間）
+                                      cover: const Icon(
+                                        Icons.image_outlined,
+                                        size: 26,
+                                        color: Color(0xFFAFAFBB),
+                                      ),
+                                      title: '未完成的照片',
+                                      when: _whenOf(p),
+                                      onTap: _openDrafts,
+                                    ),
+                                  ),
+                                // 只有一張時右邊補空，卡片才不會被撐成整排寬
+                                if (v == null || p == null) ...[
+                                  const SizedBox(width: 12),
+                                  const Expanded(child: SizedBox()),
+                                ],
                               ],
-                            ],
-                          ),
+                            ),
                           ),
                       ],
                     ),
@@ -442,24 +434,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 Padding(
                   padding: _side,
                   child: GestureDetector(
-                  onTap: _openLove,
-                  child: Container(
-                    height: 54,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: kLAccent,
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: const Text(
-                      '太好用啦',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.white,
+                    onTap: _openLove,
+                    child: Container(
+                      height: 54,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: kLAccent,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: const Text(
+                        '太好用啦',
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
+                        ),
                       ),
                     ),
                   ),
-                ),
                 ),
                 const SizedBox(height: 14),
                 Row(
@@ -485,7 +477,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     GestureDetector(
                       onTap: () => Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (_) => const LightPage(child: AboutScreen())),
+                        MaterialPageRoute(
+                          builder: (_) => const LightPage(child: AboutScreen()),
+                        ),
                       ),
                       child: const Text(
                         '關於這個 App',
@@ -503,7 +497,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 }
 
-/// 草稿夾：目前一個草稿位，顯示未完成的專案，可繼續或刪除
+/// 草稿夾：列出所有未完成的影片專案（可以有很多份），
+/// 點一下繼續、長按改名或刪除
 class DraftsScreen extends StatefulWidget {
   const DraftsScreen({super.key});
 
@@ -512,7 +507,7 @@ class DraftsScreen extends StatefulWidget {
 }
 
 class _DraftsScreenState extends State<DraftsScreen> {
-  Map<String, dynamic>? _draft;
+  List<DraftMeta> _drafts = const [];
 
   /// 照片編輯的草稿（離開時選「保留草稿」才會有）
   Map<String, dynamic>? _photoDraft;
@@ -525,15 +520,8 @@ class _DraftsScreenState extends State<DraftsScreen> {
   }
 
   Future<void> _reload() async {
-    Map<String, dynamic>? found;
+    final found = await DraftStore.list();
     final prefs = await SharedPreferences.getInstance();
-    final s = prefs.getString(kDraftKey);
-    if (s != null) {
-      try {
-        final j = jsonDecode(s) as Map<String, dynamic>;
-        if ((j['clips'] as List?)?.isNotEmpty ?? false) found = j;
-      } catch (_) {}
-    }
     Map<String, dynamic>? photo;
     final ps = prefs.getString(kPhotoDraftKey);
     if (ps != null) {
@@ -544,13 +532,12 @@ class _DraftsScreenState extends State<DraftsScreen> {
     }
     if (mounted) {
       setState(() {
-        _draft = found;
+        _drafts = found;
         _photoDraft = photo;
         _loading = false;
       });
     }
   }
-
 
   Future<void> _resumePhoto() async {
     final d = _photoDraft;
@@ -589,12 +576,15 @@ class _DraftsScreenState extends State<DraftsScreen> {
     required String subtitle,
     required VoidCallback onTap,
     required VoidCallback onDelete,
+    VoidCallback? onRename,
   }) {
     return Container(
       decoration: lightCard(radius: 12),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
         onTap: onTap,
+        // 長按改名：跟範本夾同一個手勢
+        onLongPress: onRename,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           child: Row(
@@ -615,26 +605,44 @@ class _DraftsScreenState extends State<DraftsScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontSize: 14, fontWeight: FontWeight.w700)),
+                    Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                     if (subtitle.isNotEmpty) ...[
                       const SizedBox(height: 3),
-                      Text(subtitle,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              fontSize: 12, color: kLTextDim)),
+                      Text(
+                        subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12, color: kLTextDim),
+                      ),
                     ],
                   ],
                 ),
               ),
+              if (onRename != null)
+                IconButton(
+                  tooltip: '改名',
+                  icon: const Icon(
+                    Icons.edit_outlined,
+                    size: 18,
+                    color: kLTextDim,
+                  ),
+                  onPressed: onRename,
+                ),
               IconButton(
                 tooltip: '刪除草稿',
-                icon: const Icon(Icons.delete_outline,
-                    size: 19, color: kLTextDim),
+                icon: const Icon(
+                  Icons.delete_outline,
+                  size: 19,
+                  color: kLTextDim,
+                ),
                 onPressed: onDelete,
               ),
             ],
@@ -644,17 +652,25 @@ class _DraftsScreenState extends State<DraftsScreen> {
     );
   }
 
-
-
-  /// 縮圖解碼：壞掉的 base64 不能在 build 裡丟例外（整頁會紅屏）
-  Uint8List? _thumbOf(Map<String, dynamic> j) {
-    final t = j['thumb'];
-    if (t is! String) return null;
+  /// 草稿清單那筆的縮圖（壞掉的 base64 不能在 build 裡丟例外）
+  Uint8List? _thumbBytes(DraftMeta m) {
+    final t = m.thumb;
+    if (t == null) return null;
     try {
       return base64Decode(t);
     } catch (_) {
       return null;
     }
+  }
+
+  /// 副標：存檔時間＋幾段素材
+  String _metaLabel(DraftMeta m) {
+    final t = m.savedAt;
+    final when =
+        '${t.month}/${t.day} '
+        '${t.hour.toString().padLeft(2, '0')}:'
+        '${t.minute.toString().padLeft(2, '0')}';
+    return m.clipCount > 0 ? '$when · ${m.clipCount} 段' : when;
   }
 
   String _savedAtLabel(Map<String, dynamic> j) {
@@ -667,35 +683,71 @@ class _DraftsScreenState extends State<DraftsScreen> {
         '${t.minute.toString().padLeft(2, '0')}';
   }
 
-  Future<void> _resume() async {
-    final d = _draft;
-    if (d == null) return;
+  Future<void> _resume(DraftMeta m) async {
+    final data = await DraftStore.load(m.id);
+    if (data == null || !mounted) {
+      if (mounted) showHint(context, '這份草稿讀不到了', error: true);
+      return;
+    }
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => VideoEditorScreen(draft: d)),
+      MaterialPageRoute(
+        builder: (_) =>
+            VideoEditorScreen(draft: data, draftId: m.id, draftName: m.name),
+      ),
     );
     _reload();
   }
 
-  Future<void> _delete() async {
+  Future<void> _rename(DraftMeta m) async {
+    final ctrl = TextEditingController(text: m.name);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('專案改名'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLength: 20,
+          decoration: const InputDecoration(counterText: ''),
+          onSubmitted: (v) => Navigator.pop(context, v.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, ctrl.text.trim()),
+            child: const Text('確定'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (name == null || name.isEmpty || name == m.name) return;
+    await DraftStore.rename(m.id, name);
+    _reload();
+  }
+
+  Future<void> _delete(DraftMeta m) async {
     final ok = await showConfirm(
       context,
-      title: '刪除草稿？',
+      title: '刪除「${m.name}」？',
       message: '未完成的專案會被移除，無法復原',
       action: '刪除',
     );
     if (ok) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(kDraftKey);
+      await DraftStore.remove(m.id);
       _reload();
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final d = _draft;
+    final ds = _drafts;
     final p = _photoDraft;
-    final empty = d == null && p == null;
+    final empty = ds.isEmpty && p == null;
     return SwipeBack(
       child: Scaffold(
         appBar: AppBar(),
@@ -716,27 +768,38 @@ class _DraftsScreenState extends State<DraftsScreen> {
             : ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                  if (d != null)
+                  for (final m in ds) ...[
                     _draftCard(
                       // 縮圖裁進固定的方框。以前框寬會跟著影片比例跑
                       //（直片 30、橫片 92），兩張卡的文字起點就對不齊
-                      cover: _thumbOf(d) != null
-                          ? Image.memory(_thumbOf(d)!,
-                              fit: BoxFit.cover, gaplessPlayback: true)
-                          : const Icon(Icons.movie_outlined,
-                              size: 20, color: kLAccent),
-                      title: '未完成的影片',
-                      subtitle: _savedAtLabel(d),
-                      onTap: _resume,
-                      onDelete: _delete,
+                      cover: _thumbBytes(m) != null
+                          ? Image.memory(
+                              _thumbBytes(m)!,
+                              fit: BoxFit.cover,
+                              gaplessPlayback: true,
+                            )
+                          : const Icon(
+                              Icons.movie_outlined,
+                              size: 20,
+                              color: kLAccent,
+                            ),
+                      title: m.name,
+                      subtitle: _metaLabel(m),
+                      onTap: () => _resume(m),
+                      onDelete: () => _delete(m),
+                      onRename: () => _rename(m),
                     ),
-                  if (d != null && p != null) const SizedBox(height: 12),
+                    const SizedBox(height: 12),
+                  ],
                   if (p != null)
                     _draftCard(
                       // 照片草稿沒有存縮圖（那張照片還在裝置上，
                       // 再存一份只是浪費空間），用圖示就好
-                      cover: const Icon(Icons.image_outlined,
-                          size: 20, color: kLAccent),
+                      cover: const Icon(
+                        Icons.image_outlined,
+                        size: 20,
+                        color: kLAccent,
+                      ),
                       title: '未完成的照片',
                       subtitle: _savedAtLabel(p),
                       onTap: _resumePhoto,

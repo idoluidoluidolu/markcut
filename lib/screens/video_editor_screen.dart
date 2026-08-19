@@ -26,6 +26,7 @@ import '../services/comp_player.dart';
 import '../services/video_picker.dart';
 import '../services/crop_math.dart';
 import '../services/diagnostics.dart';
+import '../services/draft_store.dart';
 import '../services/export_speed.dart';
 import '../services/file_reader.dart';
 import '../services/media_prep.dart';
@@ -81,7 +82,7 @@ const kSpeedStops = <double>[
   4,
 ];
 
-/// 草稿存放鍵
+/// 草稿存放鍵（舊版單一草稿；現在由 DraftStore 管多份，見那邊的搬移）
 const kDraftKey = 'project_draft_v1';
 
 class VideoEditorScreen extends StatefulWidget {
@@ -98,6 +99,12 @@ class VideoEditorScreen extends StatefulWidget {
   final WatermarkSettings? initialWatermark; // 從範本卡片開新專案時帶入
   final Map<String, dynamic>? draft; // 從草稿還原
 
+  /// 這個專案的草稿 id。null＝新專案，進去之後自己產一個
+  final String? draftId;
+
+  /// 專案名稱（草稿清單上顯示的那個）。null＝自動取「專案 N」
+  final String? draftName;
+
   /// 一批照片串成一段影片（首頁「照片 → 串成一段影片」）。
   /// 進場後會先問每張停留幾秒
   final List<String>? photoPaths;
@@ -109,6 +116,8 @@ class VideoEditorScreen extends StatefulWidget {
     this.photoPaths,
     this.initialWatermark,
     this.draft,
+    this.draftId,
+    this.draftName,
     this.blank = false,
   }) : assert(
          videoPath != null ||
@@ -669,6 +678,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     };
   }
 
+  /// 這份專案在草稿清單裡的 id 與名字。進場時決定，之後跟著它存
+  late final String _draftId = widget.draftId ?? DraftStore.newId();
+  late String _draftName = widget.draftName ?? '';
+
   Timer? _draftSaveTimer;
 
   /// 存草稿（併批）：每個編輯動作、每次拖曳起手都會呼叫，
@@ -744,14 +757,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     } catch (_) {
       text = jsonEncode(map);
     }
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(kDraftKey, text);
+    // 第一次存才取名字：新專案取「專案 N」，避開已經用過的號碼
+    if (_draftName.isEmpty) _draftName = await DraftStore.defaultName();
+    final thumb = _draftThumb();
+    await DraftStore.save(
+      _draftId,
+      text,
+      name: _draftName,
+      thumb: thumb?.$1,
+      thumbAspect: thumb?.$2,
+      clipCount: _tl.clips.length,
+      duration: _tl.duration,
+    );
   }
 
-  static Future<void> clearDraft() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(kDraftKey);
-  }
+  /// 丟掉這一份草稿（離開時選「不保留」）
+  Future<void> clearThisDraft() => DraftStore.remove(_draftId);
 
   Future<void> _loadDraft(Map<String, dynamic> j) async {
     for (final sj in (j['sources'] as List? ?? [])) {
@@ -5981,7 +6002,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       await _saveDraftNow();
       if (mounted) Navigator.of(context).pop();
     } else if (action == 'discard') {
-      await clearDraft();
+      // 只丟這一份，別人的草稿不受影響
+      await clearThisDraft();
       if (mounted) Navigator.of(context).pop();
     }
   }
@@ -9962,7 +9984,6 @@ class _ScrubDecoder {
     _decoded.clear();
   }
 }
-
 
 /// 片段裁切框 → 這一層的剪裁矩形（框是素材座標 0~1）
 class _CropClipper extends CustomClipper<Rect> {

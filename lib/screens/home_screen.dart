@@ -1,10 +1,7 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../services/video_picker.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/preset_store.dart';
 import '../theme.dart';
@@ -96,10 +93,6 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  /// 上次沒完成的影片專案。首頁不列出來——草稿一律去
-  /// 個人中心的草稿夾拿；這裡只用來判斷「開新影片會不會蓋掉它」
-  Map<String, dynamic>? _draft;
-
   @override
   void initState() {
     super.initState();
@@ -113,19 +106,10 @@ class _HomeScreenState extends State<HomeScreen> {
     _checkDraft();
   }
 
-  Future<void> _checkDraft() async {
-    final prefs = await SharedPreferences.getInstance();
-    final s = prefs.getString(kDraftKey);
-    if (!mounted) return;
-    Map<String, dynamic>? found;
-    if (s != null) {
-      try {
-        final j = jsonDecode(s) as Map<String, dynamic>;
-        if ((j['clips'] as List?)?.isNotEmpty ?? false) found = j;
-      } catch (_) {}
-    }
-    setState(() => _draft = found);
-  }
+  /// 草稿現在可以有很多份（見 DraftStore），開新專案不會蓋掉任何一份，
+  /// 所以首頁不用再記「有沒有草稿」，也不用再問「要覆蓋嗎」。
+  /// 留這個空殼是因為好幾個入口回來時都會呼叫它
+  Future<void> _checkDraft() async {}
 
   bool _isVideoFile(XFile f) {
     final mime = f.mimeType;
@@ -333,15 +317,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// 一批照片串成影片：進影片編輯器，由它問每張幾秒
   Future<void> _openPhotosAsVideo(List<XFile> picked) async {
-    if (_draft != null) {
-      final ok = await showConfirm(
-        context,
-        title: '覆蓋上次的草稿？',
-        message: '開新專案後，未完成的草稿會被取代',
-        action: '開新專案',
-      );
-      if (!ok || !mounted) return;
-    }
     await Navigator.push(
       context,
       MaterialPageRoute(
@@ -393,17 +368,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// 空白專案：不挑素材直接進影片編輯器。
-  /// 跟開新影片一樣會蓋掉草稿，先問過
+  /// 草稿可以有很多份（見 DraftStore），開新的不會蓋掉舊的
   Future<void> _openBlank() async {
-    if (_draft != null) {
-      final ok = await showConfirm(
-        context,
-        title: '覆蓋上次的草稿？',
-        message: '開新專案後，未完成的草稿會被取代',
-        action: '開新專案',
-      );
-      if (!ok || !mounted) return;
-    }
     await Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const VideoEditorScreen(blank: true)),
@@ -413,15 +379,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// 一整批影片接成一支專案
   Future<void> _openVideos(List<XFile> picked) async {
-    if (_draft != null) {
-      final ok = await showConfirm(
-        context,
-        title: '覆蓋上次的草稿？',
-        message: '開新專案後，未完成的草稿會被取代',
-        action: '開新專案',
-      );
-      if (!ok || !mounted) return;
-    }
     await Navigator.push(
       context,
       MaterialPageRoute(
@@ -433,16 +390,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _openVideo(XFile picked) async {
-    // 新影片專案會覆蓋現有草稿，先問過
-    if (_draft != null) {
-      final ok = await showConfirm(
-        context,
-        title: '覆蓋上次的草稿？',
-        message: '開新專案後，未完成的草稿會被取代',
-        action: '開新專案',
-      );
-      if (!ok || !mounted) return;
-    }
     await Navigator.push(
       context,
       MaterialPageRoute(
