@@ -1483,7 +1483,14 @@ class _ClipBlock extends StatelessWidget {
                     child: ListenableBuilder(
                       listenable: scrollController,
                       builder: (context, _) {
-                        final hw = (w * 0.28).clamp(13.0, 40.0);
+                        // 兩顆把手吃掉的內寬至多 w-12：中間永遠留
+                        // 12px 抓著移動。縮到煞車寬（32px）時把手內寬
+                        // 各 10px，「有時抓不到、拉不動」就是中間只剩
+                        // 一絲縫被把手吃光的時候
+                        final hw = math.min(
+                          (w - 12) / 2,
+                          (w * 0.28).clamp(13.0, 40.0),
+                        );
                         const over = _kHandleOverhang;
                         final off = scrollController.hasClients
                             ? scrollController.offset
@@ -1819,7 +1826,7 @@ class _TrimHandle extends StatelessWidget {
         ),
         alignment: isLeft ? Alignment.centerLeft : Alignment.centerRight,
         child: Container(
-          width: 13,
+          width: math.min(13, width),
           decoration: BoxDecoration(
             color: kSelect,
             borderRadius: BorderRadius.horizontal(
