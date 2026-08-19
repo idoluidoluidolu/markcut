@@ -71,6 +71,32 @@ class GifStore {
     }
   }
 
+  /// 這個路徑是不是已經在我的 GIF 裡（在的話就不用再收一份）
+  static Future<bool> isStored(String path) async {
+    if (kIsWeb || isAsset(path)) return false;
+    try {
+      final d = await _dir();
+      return path.startsWith(d.path);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 直接用位元組收一份進來。相簿挑出來的檔案放在暫存目錄，
+  /// 系統隨時會清掉——存成草稿之後就找不到了，所以一律留一份自己的
+  static Future<String?> addBytes(Uint8List bytes) async {
+    if (kIsWeb) return null;
+    try {
+      final d = await _dir();
+      final name = 'gif_${DateTime.now().millisecondsSinceEpoch}.gif';
+      final dest = '${d.path}${Platform.pathSeparator}$name';
+      await File(dest).writeAsBytes(bytes);
+      return dest;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// 收一份進來。回傳存好的路徑，失敗回 null
   static Future<String?> add(String srcPath) async {
     if (kIsWeb) return null;

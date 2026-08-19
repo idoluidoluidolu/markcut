@@ -2443,9 +2443,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (mounted) showHint(context, '這個 GIF 讀不到', error: true);
       return;
     }
-    final path = GifStore.isAsset(ref)
+    // 一律先收進「我的 GIF」再用那份的路徑。
+    //
+    // 相簿挑出來的檔案，file_picker 給的是暫存目錄裡的複本——系統
+    // 隨時會清掉。存成草稿之後再打開，那個路徑就不存在了，片段會
+    // 被 _loadDraft 當成「素材不見了」剔除（實測回報：GIF 存草稿
+    // 後顯示不出來）。Web 沒有檔案系統，退回 blob URL
+    final path = kIsWeb
         ? await writeTempBytes(bytes, 'gif')
-        : ref;
+        : (await GifStore.isStored(ref)
+              ? ref
+              : (await GifStore.addBytes(bytes) ?? ref));
     if (path == null || !mounted) return;
     var imgW = 0, imgH = 0;
     try {

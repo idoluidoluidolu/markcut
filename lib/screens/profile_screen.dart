@@ -654,6 +654,8 @@ class _DraftsScreenState extends State<DraftsScreen> {
     required String subtitle,
     required VoidCallback onTap,
     required VoidCallback onDelete,
+    /// 縮圖的寬高比。null＝沒有縮圖（放圖示佔位，維持方框）
+    double? coverAspect,
   }) {
     return Container(
       decoration: lightCard(radius: 12),
@@ -664,16 +666,20 @@ class _DraftsScreenState extends State<DraftsScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           child: Row(
             children: [
-              Container(
-                width: 52,
-                height: 52,
-                clipBehavior: Clip.antiAlias,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: kLTile,
-                  borderRadius: BorderRadius.circular(8),
+              // 縮圖照它自己的比例：高度固定 52，寬度跟著比例走。
+              //
+              // 本來是固定 52×52 的方框，而 alignment 會把緊的約束
+              // 放鬆——圖片於是照原比例縮進方框裡，兩側露出一塊灰邊。
+              // 直片橫片的寬度不一樣是正常的，那才是它本來的樣子
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: SizedBox(
+                  height: 52,
+                  width: 52 * (coverAspect ?? 1.0).clamp(0.4, 2.5),
+                  child: coverAspect == null
+                      ? ColoredBox(color: kLTile, child: Center(child: cover))
+                      : cover,
                 ),
-                child: cover,
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -829,6 +835,9 @@ class _DraftsScreenState extends State<DraftsScreen> {
                               size: 20,
                               color: kLAccent,
                             ),
+                      coverAspect: _covers[m.id] == null
+                          ? null
+                          : (m.thumbAspect ?? 9 / 16),
                       title: _dateLabel(m.createdAt),
                       subtitle: _metaLabel(m),
                       onTap: () => _resume(m),
