@@ -1945,7 +1945,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
               value: value.clamp(-180, 180),
               min: -180,
               max: 180,
-              onChanged: (v) => onChanged(v.abs() < 4 ? 0 : v), // 吸附回正
+              onChanged: (v) => onChanged(snapAngle(v, current: value)),
               onChangeStart: (_) => _sliderStart(),
               onChangeEnd: (_) => _sliderEnd(),
             ),

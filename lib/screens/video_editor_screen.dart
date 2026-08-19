@@ -2246,15 +2246,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   ),
                 ),
               ),
-              if (onReset != null)
-                InkWell(
-                  borderRadius: BorderRadius.circular(kTagRadius),
-                  onTap: onReset,
-                  child: const Padding(
-                    padding: EdgeInsets.all(4),
-                    child: Icon(Icons.restart_alt, size: 16, color: kTextDim),
-                  ),
-                ),
+              // 重設鈕一律佔一格：只有角度那列有，但沒有的那幾列
+              // 如果不留位，滑桿長度和數字就會一列一個樣
+              SizedBox(
+                width: 26,
+                child: onReset == null
+                    ? null
+                    : InkWell(
+                        borderRadius: BorderRadius.circular(kTagRadius),
+                        onTap: onReset,
+                        child: const Icon(
+                          Icons.restart_alt,
+                          size: 16,
+                          color: kTextDim,
+                        ),
+                      ),
+              ),
             ],
           );
 
@@ -2310,7 +2317,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     -180,
                     180,
                     '${logo.rotation.round()}°',
-                    (v) => change(() => logo.rotation = v),
+                    (v) => change(
+                      () =>
+                          logo.rotation = snapAngle(v, current: logo.rotation),
+                    ),
                     // 手滑到 3° 很難拉回正的，給一顆歸零
                     onReset: () => change(() => logo.rotation = 0),
                   ),
@@ -2321,14 +2331,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     1,
                     '${(logo.opacity * 100).round()}%',
                     (v) => change(() => logo.opacity = v),
-                  ),
-                  row(
-                    '圓角',
-                    logo.corner,
-                    0,
-                    1,
-                    '${(logo.corner * 100).round()}%',
-                    (v) => change(() => logo.corner = v),
                   ),
                 ],
               ),
