@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -375,6 +376,48 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           ),
                         ),
                         const SizedBox(height: 26),
+                        // GIF 做好會存一份在 App 裡（相簿那份跟幾千張
+                        // 照片混在一起，要拿它當素材根本找不到）
+                        if (_gifs.isNotEmpty) ...[
+                          const SizedBox(height: 26),
+                          Padding(
+                            padding: _side,
+                            child: _sectionTitle(
+                              '我的 GIF',
+                              trailing: '${_gifs.length} 個',
+                              onTap: _openGifs,
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          SizedBox(
+                            height: 96,
+                            child: ListView.separated(
+                              scrollDirection: Axis.horizontal,
+                              padding: _side,
+                              itemCount: _gifs.length.clamp(0, 8),
+                              separatorBuilder: (_, _) =>
+                                  const SizedBox(width: 10),
+                              itemBuilder: (context, i) => GestureDetector(
+                                onTap: _openGifs,
+                                child: Container(
+                                  width: 96,
+                                  decoration: BoxDecoration(
+                                    color: kLTile,
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  clipBehavior: Clip.antiAlias,
+                                  child: Image.file(
+                                    _gifs[i],
+                                    fit: BoxFit.cover,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          // 跟下面那一區隔開，不然「草稿」會黏在
+                          // GIF 那排的下緣上
+                          const SizedBox(height: 26),
+                        ],
                         Padding(
                           padding: _side,
                           child: _sectionTitle(
@@ -457,45 +500,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ],
                             ),
                           ),
-                        // GIF 做好會存一份在 App 裡（相簿那份跟幾千張
-                        // 照片混在一起，要拿它當素材根本找不到）
-                        if (_gifs.isNotEmpty) ...[
-                          const SizedBox(height: 26),
-                          Padding(
-                            padding: _side,
-                            child: _sectionTitle(
-                              '我的 GIF',
-                              trailing: '${_gifs.length} 個',
-                              onTap: _openGifs,
-                            ),
-                          ),
-                          const SizedBox(height: 14),
-                          SizedBox(
-                            height: 96,
-                            child: ListView.separated(
-                              scrollDirection: Axis.horizontal,
-                              padding: _side,
-                              itemCount: _gifs.length.clamp(0, 8),
-                              separatorBuilder: (_, _) =>
-                                  const SizedBox(width: 10),
-                              itemBuilder: (context, i) => GestureDetector(
-                                onTap: _openGifs,
-                                child: Container(
-                                  width: 96,
-                                  decoration: BoxDecoration(
-                                    color: kLTile,
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  clipBehavior: Clip.antiAlias,
-                                  child: Image.file(
-                                    _gifs[i],
-                                    fit: BoxFit.cover,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
                       ],
                     ),
                   ),
@@ -904,6 +908,10 @@ class GifsScreen extends StatefulWidget {
 
 class _GifsScreenState extends State<GifsScreen> {
   List<File> _gifs = const [];
+
+  /// 每個 GIF 的寬高比（路徑 → 寬/高）。瀑布流照原始比例排，
+  /// 一律切成正方形的話直式的會被裁掉頭尾
+  final Map<String, double> _aspect = {};
   bool _loading = true;
 
   @override
@@ -914,13 +922,57 @@ class _GifsScreenState extends State<GifsScreen> {
 
   Future<void> _reload() async {
     final gifs = await GifStore.list();
-    if (mounted) {
-      setState(() {
-        _gifs = gifs;
-        _loading = false;
-      });
+    if (!mounted) return;
+    setState(() {
+      _gifs = gifs;
+      _loading = false;
+    });
+    // 比例邊讀邊補：只解第一格拿尺寸，不用等全部讀完才畫得出東西
+    for (final f in gifs) {
+      if (_aspect.containsKey(f.path)) continue;
+      double a;
+      try {
+        final codec = await ui.instantiateImageCodec(await f.readAsBytes());
+        final frame = await codec.getNextFrame();
+        a = frame.image.width / frame.image.height;
+        frame.image.dispose();
+        if (a <= 0) a = 1.0;
+      } catch (_) {
+        a = 1.0; // 讀不到就當正方形，至少排得出來
+      }
+      if (!mounted) return;
+      setState(() => _aspect[f.path] = a);
     }
   }
+
+  /// 兩欄瀑布流：每一個丟進目前比較短的那一欄。
+  /// 高度用寬高比推算（欄寬 ÷ 比例），不用等圖片真的畫出來
+  List<List<File>> _columns(double colW) {
+    final cols = <List<File>>[[], []];
+    final h = [0.0, 0.0];
+    for (final f in _gifs) {
+      final i = h[0] <= h[1] ? 0 : 1;
+      cols[i].add(f);
+      h[i] += colW / (_aspect[f.path] ?? 1.0) + 10;
+    }
+    return cols;
+  }
+
+  /// 一格：照原始比例畫。GIF 自己會動——Image.file 讀到多格就會播
+  Widget _gifTile(File f) => GestureDetector(
+    onTap: () => _preview(f),
+    onLongPress: () => _delete(f),
+    child: ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: AspectRatio(
+        aspectRatio: _aspect[f.path] ?? 1.0,
+        child: ColoredBox(
+          color: kLTile,
+          child: Image.file(f, fit: BoxFit.cover, gaplessPlayback: true),
+        ),
+      ),
+    ),
+  );
 
   Future<void> _delete(File f) async {
     final ok = await showConfirm(
@@ -972,26 +1024,33 @@ class _GifsScreenState extends State<GifsScreen> {
                   ),
                 ),
               )
-            : GridView.builder(
-                padding: const EdgeInsets.all(16),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 3,
-                  mainAxisSpacing: 10,
-                  crossAxisSpacing: 10,
-                ),
-                itemCount: _gifs.length,
-                itemBuilder: (context, i) => GestureDetector(
-                  onTap: () => _preview(_gifs[i]),
-                  onLongPress: () => _delete(_gifs[i]),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: kLTile,
-                      borderRadius: BorderRadius.circular(12),
+            : LayoutBuilder(
+                builder: (context, box) {
+                  // 兩欄瀑布流：左右各 16、中間 10
+                  final colW = (box.maxWidth - 16 * 2 - 10) / 2;
+                  final cols = _columns(colW);
+                  return SingleChildScrollView(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (var c = 0; c < cols.length; c++) ...[
+                          if (c > 0) const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              children: [
+                                for (final f in cols[c]) ...[
+                                  _gifTile(f),
+                                  const SizedBox(height: 10),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
-                    clipBehavior: Clip.antiAlias,
-                    child: Image.file(_gifs[i], fit: BoxFit.cover),
-                  ),
-                ),
+                  );
+                },
               ),
       ),
     );
