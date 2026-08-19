@@ -43,6 +43,13 @@ class MediaSource {
   /// 開貼圖自己的調整視窗，不是整套浮水印面板；選取時畫框
   bool isSticker;
 
+  /// 這份圖片素材是會動的 GIF。
+  ///
+  /// 種類還是 image：位置、縮放、透明度、圖層順序全部照舊，差別只在
+  /// 「畫的時候是一段動畫」——預覽交給 Image.memory 自己跑，匯出時
+  /// FFmpeg 的輸入改成 -ignore_loop 0（讓它循環播完整段）
+  bool isGif;
+
   /// 工作檔：系統的硬體管線轉出來的 1080p SDR 版本（見 WorkFiles）。
   ///
   /// 預覽、拖曳抽幀、縮圖一律走它。iPhone 預設錄 4K HLG，拿原檔來播
@@ -77,6 +84,7 @@ class MediaSource {
     this.revStart = 0,
     this.revEnd = 0,
     this.isSticker = false,
+    this.isGif = false,
   });
 
   bool get isVideo => kind == ClipKind.video;
@@ -94,6 +102,7 @@ class MediaSource {
     wmStyle: wmStyle,
     mosaicStyle: mosaicStyle,
     isSticker: isSticker,
+    isGif: isGif,
     revOf: revOf,
     revStart: revStart,
     revEnd: revEnd,
@@ -109,6 +118,7 @@ class MediaSource {
     'name': name,
     'kind': kind.index,
     if (isSticker) 'sticker': true,
+    if (isGif) 'gif': true,
     'w': w,
     'h': h,
     'duration': duration,
@@ -145,6 +155,7 @@ class MediaSource {
       // % 防護：新版種類存進草稿後被舊版打開也不至於整包炸掉
       kind: kind,
       isSticker: sticker,
+    isGif: j['gif'] == true,
       w: (j['w'] ?? 0) as int,
       h: (j['h'] ?? 0) as int,
       duration: (j['duration'] ?? 0).toDouble(),

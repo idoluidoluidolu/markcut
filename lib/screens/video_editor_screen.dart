@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart'
     show Clipboard, ClipboardData, HapticFeedback;
+import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
@@ -27,6 +28,7 @@ import '../services/video_picker.dart';
 import '../services/crop_math.dart';
 import '../services/diagnostics.dart';
 import '../services/draft_store.dart';
+import '../services/gif_store.dart';
 import '../services/export_speed.dart';
 import '../services/file_reader.dart';
 import '../services/media_prep.dart';
@@ -49,6 +51,7 @@ import '../widgets/watermark_panel.dart';
 enum _AddKind {
   video,
   image,
+  gif,
   sticker,
   text,
   wm,
@@ -2172,6 +2175,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               group('從裝置匯入'),
               item(context, Icons.videocam_outlined, '影片', _AddKind.video),
               item(context, Icons.image_outlined, '圖片', _AddKind.image),
+              // GIF 要 FFmpeg 才畫得出來（-ignore_loop），web 沒有
+              if (!kIsWeb)
+                item(context, Icons.gif_box_outlined, 'GIF', _AddKind.gif),
               item(
                 context,
                 Icons.emoji_emotions_outlined,
@@ -2196,6 +2202,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         await _pickVideo(track);
       case _AddKind.image:
         await _pickImage(track);
+      case _AddKind.gif:
+        await _pickGif(track);
       case _AddKind.sticker:
         await _addSticker(track);
       case _AddKind.text:
@@ -2243,6 +2251,145 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _addMedia(int track) async {
     final kind = await _askKind(title: '加素材到第 ${track + 1} 軌');
     await _dispatchAdd(kind, track);
+  }
+
+  /// GIF 素材：從「我的 GIF」挑一個，或從檔案匯入。
+  ///
+  /// 種類還是圖片素材（位置、縮放、透明度、圖層順序全部照舊），
+  /// 只是畫的時候是一段動畫——預覽交給 Image.memory 自己跑，
+  /// 匯出時 FFmpeg 用 -ignore_loop 0 讓它循環播完整段
+  Future<void> _pickGif(int track) async {
+    final mine = await GifStore.list();
+    if (!mounted) return;
+    String? path;
+    if (mine.isEmpty) {
+      path = await _pickGifFile();
+    } else {
+      path = await showModalBottomSheet<String>(
+        context: context,
+        showDragHandle: true,
+        isScrollControlled: true,
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.7,
+        ),
+        builder: (context) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 0, 14, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Text(
+                      '我的 GIF',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const Spacer(),
+                    TextButton.icon(
+                      onPressed: () async {
+                        final f = await _pickGifFile();
+                        if (f != null && context.mounted) {
+                          Navigator.pop(context, f);
+                        }
+                      },
+                      icon: const Icon(Icons.folder_open, size: 17),
+                      label: const Text(
+                        '從檔案選',
+                        style: TextStyle(fontSize: 12.5),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Flexible(
+                  child: GridView.builder(
+                    shrinkWrap: true,
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 3,
+                          mainAxisSpacing: 8,
+                          crossAxisSpacing: 8,
+                        ),
+                    itemCount: mine.length,
+                    itemBuilder: (context, i) => InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () => Navigator.pop(context, mine[i].path),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: kClipBorder),
+                        ),
+                        clipBehavior: Clip.antiAlias,
+                        child: Image.file(mine[i], fit: BoxFit.cover),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    if (path == null || !mounted) return;
+    await _addGifClip(path, track);
+  }
+
+  /// 從檔案挑一個 .gif
+  Future<String?> _pickGifFile() async {
+    final r = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['gif'],
+    );
+    return r?.files.singleOrNull?.path;
+  }
+
+  /// 把一個 GIF 檔放上時間軸
+  Future<void> _addGifClip(String path, int track) async {
+    final bytes = await readFileBytes(path);
+    if (bytes == null || !mounted) {
+      if (mounted) showHint(context, '這個 GIF 讀不到', error: true);
+      return;
+    }
+    var imgW = 0, imgH = 0;
+    try {
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      imgW = frame.image.width;
+      imgH = frame.image.height;
+      frame.image.dispose();
+    } catch (_) {}
+    if (!mounted) return;
+    _pushUndo();
+    final srcIndex = _tl.sources.length;
+    _tl.sources.add(
+      MediaSource(
+        path: path,
+        name: 'GIF',
+        kind: ClipKind.image,
+        duration: 3600,
+        w: imgW,
+        h: imgH,
+        isGif: true,
+      ),
+    );
+    _thumbs[srcIndex] = [bytes];
+    final clip = TimelineClip(
+      id: _tl.nextId(),
+      sourceIndex: srcIndex,
+      trimStart: 0,
+      trimEnd: 4,
+      offset: _position,
+      track: track,
+    );
+    _tl.clips.add(clip);
+    setState(() => _sel = clip.id);
+    _resyncPlayback();
+    _saveDraft();
   }
 
   /// 貼圖素材：挑一張 Emoji 或收藏的圖，放上時間軸當一段可調的貼圖。

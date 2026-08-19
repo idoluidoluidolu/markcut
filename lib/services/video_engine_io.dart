@@ -16,6 +16,7 @@ import 'package:path_provider/path_provider.dart';
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
 import 'diagnostics.dart';
+import 'gif_store.dart';
 import 'native_export.dart';
 import 'video_processor.dart';
 
@@ -1440,6 +1441,9 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     try {
       // GIF 對相簿來說是「圖片」，走圖片那條存
       await Gal.putImage(gifPath, album: '浮水印');
+      // App 裡也留一份：之後要拿它當素材、或在個人中心回顧，
+      // 不用到相簿的幾千張照片裡翻
+      await GifStore.add(gifPath);
     } catch (e) {
       return (ok: false, message: '存到相簿失敗：$e', cancelled: false);
     } finally {

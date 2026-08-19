@@ -1,13 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart' show XFile;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/watermark_settings.dart';
 import '../services/draft_store.dart';
+import '../services/gif_store.dart';
 import '../services/preset_store.dart';
 import '../theme.dart';
 import '../widgets/swipe_back.dart';
@@ -39,6 +42,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   /// 不再只顯示「有幾個」——使用者要找的是「那一個專案」，不是數量
   /// 影片草稿清單（可以有很多份，見 DraftStore）
   List<DraftMeta> _videoDrafts = const [];
+
+  /// 做好的 GIF（見 GifStore）
+  List<File> _gifs = const [];
   Map<String, dynamic>? _photoDraft;
 
   @override
@@ -50,6 +56,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _reload() async {
     final presets = await PresetStore.load();
     final videoDrafts = await DraftStore.list();
+    final gifs = kIsWeb ? <File>[] : await GifStore.list();
     final prefs = await SharedPreferences.getInstance();
 
     Map<String, dynamic>? readDraft(String key, String contentKey) {
@@ -69,6 +76,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     setState(() {
       _presets = presets;
       _videoDrafts = videoDrafts;
+      _gifs = gifs;
       _photoDraft = readDraft(kPhotoDraftKey, 'photo');
     });
     unawaited(_loadCovers(videoDrafts));
@@ -290,6 +298,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
     ),
   );
 
+  Future<void> _openGifs() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const LightPage(child: GifsScreen())),
+    );
+    _reload();
+  }
+
   Future<void> _openDrafts() async {
     await Navigator.push(
       context,
@@ -441,6 +457,45 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ],
                             ),
                           ),
+                        // GIF 做好會存一份在 App 裡（相簿那份跟幾千張
+                        // 照片混在一起，要拿它當素材根本找不到）
+                        if (_gifs.isNotEmpty) ...[
+                          const SizedBox(height: 26),
+                          Padding(
+                            padding: _side,
+                            child: _sectionTitle(
+                              '我的 GIF',
+                              trailing: '${_gifs.length} 個',
+                              onTap: _openGifs,
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          SizedBox(
+                            height: 96,
+                            child: ListView.separated(
+                              scrollDirection: Axis.horizontal,
+                              padding: _side,
+                              itemCount: _gifs.length.clamp(0, 8),
+                              separatorBuilder: (_, _) =>
+                                  const SizedBox(width: 10),
+                              itemBuilder: (context, i) => GestureDetector(
+                                onTap: _openGifs,
+                                child: Container(
+                                  width: 96,
+                                  decoration: BoxDecoration(
+                                    color: kLTile,
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  clipBehavior: Clip.antiAlias,
+                                  child: Image.file(
+                                    _gifs[i],
+                                    fit: BoxFit.cover,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -830,6 +885,113 @@ class _DraftsScreenState extends State<DraftsScreen> {
                       onDelete: _deletePhoto,
                     ),
                 ],
+              ),
+      ),
+    );
+  }
+}
+
+/// 我的 GIF：做好的 GIF 都留一份在這裡。
+///
+/// 相簿那份跟幾千張照片混在一起，要拿它當素材根本找不到；
+/// 這裡只有 GIF，點一下放大看，長按刪除
+class GifsScreen extends StatefulWidget {
+  const GifsScreen({super.key});
+
+  @override
+  State<GifsScreen> createState() => _GifsScreenState();
+}
+
+class _GifsScreenState extends State<GifsScreen> {
+  List<File> _gifs = const [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+  }
+
+  Future<void> _reload() async {
+    final gifs = await GifStore.list();
+    if (mounted) {
+      setState(() {
+        _gifs = gifs;
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _delete(File f) async {
+    final ok = await showConfirm(
+      context,
+      title: '刪除這個 GIF？',
+      message: '只會刪掉 App 裡這一份，相簿裡的不受影響',
+      action: '刪除',
+    );
+    if (!ok) return;
+    await GifStore.remove(f.path);
+    _reload();
+  }
+
+  /// 點一下放大看：GIF 在小格子裡看不出動了什麼
+  void _preview(File f) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(20),
+        child: GestureDetector(
+          onTap: () => Navigator.pop(context),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Image.file(f, fit: BoxFit.contain),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SwipeBack(
+      child: Scaffold(
+        appBar: AppBar(),
+        body: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : _gifs.isEmpty
+            ? const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(32),
+                  child: Text(
+                    '還沒有 GIF。\n\n'
+                    '首頁「加入浮水印 → 製作 GIF」做一個，'
+                    '做好會自動留一份在這裡。',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: kLTextDim, height: 1.6),
+                  ),
+                ),
+              )
+            : GridView.builder(
+                padding: const EdgeInsets.all(16),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 3,
+                  mainAxisSpacing: 10,
+                  crossAxisSpacing: 10,
+                ),
+                itemCount: _gifs.length,
+                itemBuilder: (context, i) => GestureDetector(
+                  onTap: () => _preview(_gifs[i]),
+                  onLongPress: () => _delete(_gifs[i]),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: kLTile,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: Image.file(_gifs[i], fit: BoxFit.cover),
+                  ),
+                ),
               ),
       ),
     );
