@@ -904,7 +904,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
     //
     // 改成照實畫，只留 12px 不讓它消失（跟片段一樣，太窄時把手與
     // 文字自己收起來，中間讓出來給拖曳）
-    final rawW = (wm.end - wm.start) * pxPerSec;
+    final rawW0 = (wm.end - wm.start) * pxPerSec;
+    // 選取中至少撐到煞車寬，跟片段同一套（把手永遠有得拉）
+    final rawW = widget.wmSelected ? math.max(rawW0, kTrimStopWidth) : rawW0;
     final w = rawW.clamp(2.0, double.infinity);
     // 擺得下圖示＋文字才畫標示；窄於煞車寬就不畫把手（跟片段
     // 同一套：這個縮放下修剪煞車不會放行，整條讓給拖曳移動）
@@ -1356,10 +1358,15 @@ class _ClipBlock extends StatelessWidget {
     // 有縮圖（影片／圖片抽到了幀）才用純色底；其餘一律漸層底
     final hasStrip = filmstrip.isNotEmpty;
     // 照時間軸的相對比例畫，最窄留 16px：一小截素材（縮圖）
-    // 還看得見，認得出這一格是什麼（CapCut 同款）。修剪的煞車
-    // （kTrimStopWidth）保證選取中的片段不會被「剪」到這麼窄；
-    // 這 16px 只會出現在縮小時間軸看全貌的時候
-    final w = (clip.length * pxPerSec).clamp(16.0, double.infinity).toDouble();
+    // 還看得見，認得出這一格是什麼。
+    //
+    // 「選取中」再放寬到煞車寬（32px）：不撐的話，縮小時間軸後
+    // 點選一個短片段會完全沒有把手——想拉長都沒得拉。撐這 16px
+    // 只是互動狀態的視覺，其他片段照比例不動；在這個縮放下往
+    // 更短修剪一樣被煞車擋（會跳提示），拉長則隨時可以
+    final wTrue = (clip.length * pxPerSec).clamp(16.0, double.infinity);
+    final w = (isSelected && !lifted ? math.max(wTrue, kTrimStopWidth) : wTrue)
+        .toDouble();
 
     return Positioned(
       left: clip.offset * pxPerSec,
