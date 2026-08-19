@@ -1844,41 +1844,17 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     double min,
     double max,
     ValueChanged<double> onChanged,
-  ) {
-    return SizedBox(
-      height: 34,
-      child: Row(
-        children: [
-          SizedBox(
-            width: kSliderLabelW,
-            child: Text(
-              label,
-              style: const TextStyle(fontSize: 12, color: kTextDim),
-            ),
-          ),
-          Expanded(
-            child: Slider(
-              value: value.clamp(min, max),
-              min: min,
-              max: max,
-              onChanged: onChanged,
-              onChangeStart: (_) => _sliderStart(),
-              onChangeEnd: (_) => _sliderEnd(),
-            ),
-          ),
-          // 即時數值：微調時有參考（跟馬賽克樣式表同一套）
-          SizedBox(
-            width: kSliderValueW,
-            child: Text(
-              '${(value * 100).round()}%',
-              textAlign: TextAlign.right,
-              style: const TextStyle(fontSize: 11, color: kTextDim),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  ) => sliderRow(
+    label: label,
+    value: value,
+    min: min,
+    max: max,
+    onChanged: onChanged,
+    onChangeStart: (_) => _sliderStart(),
+    onChangeEnd: (_) => _sliderEnd(),
+    readout: '${(value * 100).round()}',
+    unit: '%',
+  );
 
   /// 動畫微調列：滑桿＋右側實際數值
   Widget _animSlider(
@@ -1886,87 +1862,30 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     double value,
     String readout,
     ValueChanged<double> onChanged,
-  ) {
-    return SizedBox(
-      height: 34,
-      child: Row(
-        children: [
-          SizedBox(
-            width: kSliderLabelW,
-            child: Text(
-              label,
-              maxLines: 1,
-              softWrap: false,
-              overflow: TextOverflow.visible,
-              style: const TextStyle(fontSize: 11.5, color: kTextDim),
-            ),
-          ),
-          Expanded(
-            child: Slider(
-              value: value.clamp(0.2, 3.0),
-              min: 0.2,
-              max: 3.0,
-              onChanged: onChanged,
-              onChangeStart: (_) => _sliderStart(),
-              onChangeEnd: (_) => _sliderEnd(),
-            ),
-          ),
-          SizedBox(
-            width: kSliderValueW,
-            child: Text(
-              readout,
-              maxLines: 1,
-              softWrap: false,
-              textAlign: TextAlign.right,
-              style: const TextStyle(
-                fontSize: 9.5,
-                color: kTextDim,
-                height: 1.2,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  ) => sliderRow(
+    label: label,
+    value: value,
+    min: 0.2,
+    max: 3.0,
+    onChanged: onChanged,
+    onChangeStart: (_) => _sliderStart(),
+    onChangeEnd: (_) => _sliderEnd(),
+    readout: readout,
+  );
 
-  /// 旋轉專用列：靠近 0 度自動吸附回正、點角度數字一鍵歸零
-  Widget _rotationRow(double value, ValueChanged<double> onChanged) {
-    return SizedBox(
-      height: 34,
-      child: Row(
-        children: [
-          const SizedBox(
-            width: kSliderLabelW,
-            child: Text('旋轉', style: TextStyle(fontSize: 12, color: kTextDim)),
-          ),
-          Expanded(
-            child: Slider(
-              value: value.clamp(-180, 180),
-              min: -180,
-              max: 180,
-              onChanged: (v) => onChanged(snapAngle(v, current: value)),
-              onChangeStart: (_) => _sliderStart(),
-              onChangeEnd: (_) => _sliderEnd(),
-            ),
-          ),
-          InkWell(
-            borderRadius: BorderRadius.circular(4),
-            onTap: () => onChanged(0),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-              child: Text(
-                '${value.round()}°',
-                style: TextStyle(
-                  fontSize: 11,
-                  color: value.round() == 0 ? kTextDim : kText,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  /// 旋轉專用列：卡在關鍵角度、點角度數字一鍵歸零
+  Widget _rotationRow(double value, ValueChanged<double> onChanged) =>
+      sliderRow(
+        label: '旋轉',
+        value: value,
+        min: -180,
+        max: 180,
+        onChanged: (v) => onChanged(snapAngle(v, current: value)),
+        onChangeStart: (_) => _sliderStart(),
+        onChangeEnd: (_) => _sliderEnd(),
+        readout: '${value.round()}',
+        unit: '\u00B0',
+        valueColor: value.round() == 0 ? kTextDim : kText,
+        onReset: () => onChanged(0),
+      );
 }

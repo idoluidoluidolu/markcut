@@ -2209,62 +2209,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             _saveDraft();
           }
 
-          Widget row(
-            String label,
-            double value,
-            double min,
-            double max,
-            String suffix,
-            ValueChanged<double> onChanged, {
-            VoidCallback? onReset,
-          }) => Row(
-            children: [
-              SizedBox(
-                width: kSliderLabelW,
-                child: Text(
-                  label,
-                  style: const TextStyle(fontSize: 12.5, color: kTextDim),
-                ),
-              ),
-              Expanded(
-                child: Slider(
-                  value: value.clamp(min, max),
-                  min: min,
-                  max: max,
-                  onChanged: onChanged,
-                ),
-              ),
-              SizedBox(
-                width: kSliderValueW,
-                child: Text(
-                  suffix,
-                  textAlign: TextAlign.right,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: kText,
-                    fontFeatures: [FontFeature.tabularFigures()],
-                  ),
-                ),
-              ),
-              // 重設鈕一律佔一格：只有角度那列有，但沒有的那幾列
-              // 如果不留位，滑桿長度和數字就會一列一個樣
-              SizedBox(
-                width: 26,
-                child: onReset == null
-                    ? null
-                    : InkWell(
-                        borderRadius: BorderRadius.circular(kTagRadius),
-                        onTap: onReset,
-                        child: const Icon(
-                          Icons.restart_alt,
-                          size: 16,
-                          color: kTextDim,
-                        ),
-                      ),
-              ),
-            ],
-          );
-
           return SafeArea(
             child: SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
@@ -2303,34 +2247,38 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     ],
                   ),
                   const SizedBox(height: 4),
-                  row(
-                    '大小',
-                    logo.sizeFrac,
-                    0.02,
-                    1.5,
-                    '${(logo.sizeFrac * 100).round()}%',
-                    (v) => change(() => logo.sizeFrac = v),
+                  sliderRow(
+                    label: '大小',
+                    value: logo.sizeFrac,
+                    min: 0.02,
+                    max: 1.5,
+                    onChanged: (v) => change(() => logo.sizeFrac = v),
+                    readout: '${(logo.sizeFrac * 100).round()}',
+                    unit: '%',
                   ),
-                  row(
-                    '角度',
-                    logo.rotation,
-                    -180,
-                    180,
-                    '${logo.rotation.round()}°',
-                    (v) => change(
+                  sliderRow(
+                    label: '角度',
+                    value: logo.rotation,
+                    min: -180,
+                    max: 180,
+                    onChanged: (v) => change(
                       () =>
                           logo.rotation = snapAngle(v, current: logo.rotation),
                     ),
-                    // 手滑到 3° 很難拉回正的，給一顆歸零
+                    readout: '${logo.rotation.round()}',
+                    unit: '°',
+                    valueColor: logo.rotation.round() == 0 ? kTextDim : kText,
+                    // 手滑到 3° 很難拉回正的，點數字就歸零
                     onReset: () => change(() => logo.rotation = 0),
                   ),
-                  row(
-                    '透明度',
-                    logo.opacity,
-                    0.05,
-                    1,
-                    '${(logo.opacity * 100).round()}%',
-                    (v) => change(() => logo.opacity = v),
+                  sliderRow(
+                    label: '透明度',
+                    value: logo.opacity,
+                    min: 0.05,
+                    max: 1,
+                    onChanged: (v) => change(() => logo.opacity = v),
+                    readout: '${(logo.opacity * 100).round()}',
+                    unit: '%',
                   ),
                 ],
               ),
@@ -2890,35 +2838,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             double min,
             double max,
             ValueChanged<double> on,
-          ) => SizedBox(
-            height: 34,
-            child: Row(
-              children: [
-                SizedBox(
-                  width: kSliderLabelW,
-                  child: Text(
-                    label,
-                    style: const TextStyle(fontSize: 12, color: kTextDim),
-                  ),
-                ),
-                Expanded(
-                  child: Slider(
-                    value: v.clamp(min, max),
-                    min: min,
-                    max: max,
-                    onChanged: (x) => both(() => on(x)),
-                  ),
-                ),
-                SizedBox(
-                  width: kSliderValueW,
-                  child: Text(
-                    '${(v * 100).round()}%',
-                    textAlign: TextAlign.right,
-                    style: const TextStyle(fontSize: 11, color: kTextDim),
-                  ),
-                ),
-              ],
-            ),
+          ) => sliderRow(
+            label: label,
+            value: v,
+            min: min,
+            max: max,
+            onChanged: (x) => both(() => on(x)),
+            readout: '${(v * 100).round()}',
+            unit: '%',
           );
 
           Future<void> pickC(
@@ -3100,47 +3027,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     slider('透明', st.opacity, 0.05, 1, (v) => st.opacity = v),
                     slider('間距', st.spacing, 0, 0.6, (v) => st.spacing = v),
                     // 旋轉：±4° 內吸附回正，點角度數字一鍵歸零
-                    SizedBox(
-                      height: 34,
-                      child: Row(
-                        children: [
-                          const SizedBox(
-                            width: kSliderLabelW,
-                            child: Text(
-                              '旋轉',
-                              style: TextStyle(fontSize: 12, color: kTextDim),
-                            ),
-                          ),
-                          Expanded(
-                            child: Slider(
-                              value: st.rotation.clamp(-180, 180),
-                              min: -180,
-                              max: 180,
-                              onChanged: (v) =>
-                                  both(() => st.rotation = v.abs() < 4 ? 0 : v),
-                            ),
-                          ),
-                          InkWell(
-                            borderRadius: BorderRadius.circular(4),
-                            onTap: () => both(() => st.rotation = 0),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 4,
-                                vertical: 4,
-                              ),
-                              child: Text(
-                                '${st.rotation.round()}°',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: st.rotation.round() == 0
-                                      ? kTextDim
-                                      : kText,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
+                    sliderRow(
+                      label: '旋轉',
+                      value: st.rotation,
+                      min: -180,
+                      max: 180,
+                      onChanged: (v) => both(
+                        () => st.rotation = snapAngle(v, current: st.rotation),
                       ),
+                      readout: '${st.rotation.round()}',
+                      unit: '\u00B0',
+                      valueColor: st.rotation.round() == 0 ? kTextDim : kText,
+                      onReset: () => both(() => st.rotation = 0),
                     ),
                     toggle('陰影', st.shadow, (v) => st.shadow = v),
                     toggle('描邊', st.outline, (v) => st.outline = v),
@@ -3360,35 +3258,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     children: [chip('像素化', 0), chip('模糊', 1), chip('純色遮蓋', 2)],
                   ),
                   const SizedBox(height: 14),
-                  Row(
-                    children: [
-                      const SizedBox(
-                        width: kSliderLabelW,
-                        child: Text(
-                          '縮放',
-                          style: TextStyle(fontSize: 12, color: kTextDim),
-                        ),
-                      ),
-                      Expanded(
-                        child: Slider(
-                          value: clip.scale.clamp(0.05, 3.0),
-                          min: 0.02,
-                          max: 3.0,
-                          onChanged: (v) => change(() => clip.scale = v),
-                        ),
-                      ),
-                      SizedBox(
-                        width: kSliderLabelW,
-                        child: Text(
-                          '${(clip.scale * 100).round()}%',
-                          textAlign: TextAlign.right,
-                          style: const TextStyle(
-                            fontSize: 11.5,
-                            color: kTextDim,
-                          ),
-                        ),
-                      ),
-                    ],
+                  sliderRow(
+                    label: '縮放',
+                    value: clip.scale,
+                    min: 0.02,
+                    max: 3.0,
+                    onChanged: (v) => change(() => clip.scale = v),
+                    readout: '${(clip.scale * 100).round()}',
+                    unit: '%',
                   ),
                   if (st.type != 2) ...[
                     const SizedBox(height: 14),

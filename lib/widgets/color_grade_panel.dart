@@ -378,40 +378,40 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
         _lastGroup = group;
       }),
       child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 2),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(
-                color: on ? kAmber : Colors.transparent,
-                width: 2,
-              ),
+        padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 2),
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+              color: on ? kAmber : Colors.transparent,
+              width: 2,
             ),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 12.5,
-                  color: on ? kText : kTextDim,
-                  fontWeight: on ? FontWeight.w700 : FontWeight.w400,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12.5,
+                color: on ? kText : kTextDim,
+                fontWeight: on ? FontWeight.w700 : FontWeight.w400,
+              ),
+            ),
+            if (dot) ...[
+              const SizedBox(width: 5),
+              Container(
+                width: 5,
+                height: 5,
+                decoration: const BoxDecoration(
+                  color: kSelect,
+                  shape: BoxShape.circle,
                 ),
               ),
-              if (dot) ...[
-                const SizedBox(width: 5),
-                Container(
-                  width: 5,
-                  height: 5,
-                  decoration: const BoxDecoration(
-                    color: kSelect,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-              ],
             ],
-          ),
+          ],
         ),
+      ),
     );
   }
 
@@ -456,48 +456,25 @@ class _ColorGradePanelState extends State<ColorGradePanel> {
   Widget _toneRow(ColorGrade g, ({String label, String axis}) t) {
     final v = _valueOf(g, t.axis);
     final on = v.abs() > 0.005;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Row(
-        children: [
-          SizedBox(
-            width: kSliderLabelW,
-            child: Text(
-              t.label,
-              style: const TextStyle(fontSize: 12, color: kText),
-            ),
-          ),
-          Expanded(
-            child: SliderTheme(
-              data: SliderTheme.of(context).copyWith(
-                trackHeight: 3,
-                overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-              ),
-              child: Slider(
-                value: v.clamp(-1.0, 1.0),
-                min: -1,
-                max: 1,
-                onChangeStart: (_) => _beginEdit(),
-                onChanged: (nv) => _edit(
-                  // 靠近正中間就吸回 0，不然很難回到「完全沒調」
-                  () => _setValue(g, t.axis, nv.abs() < 0.04 ? 0.0 : nv),
-                ),
-              ),
-            ),
-          ),
-          SizedBox(
-            width: kSliderLabelW,
-            child: Text(
-              on ? '${v > 0 ? '+' : ''}${(v * 100).round()}' : '0',
-              textAlign: TextAlign.right,
-              style: TextStyle(
-                fontSize: 11.5,
-                color: on ? kText : kTextDim,
-                fontFeatures: const [FontFeature.tabularFigures()],
-              ),
-            ),
-          ),
-        ],
+    return SliderTheme(
+      data: SliderTheme.of(context).copyWith(
+        trackHeight: 3,
+        overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+      ),
+      child: sliderRow(
+        label: t.label,
+        value: v,
+        min: -1,
+        max: 1,
+        onChangeStart: (_) => _beginEdit(),
+        onChanged: (nv) => _edit(
+          // 靠近正中間就吸回 0，不然很難回到「完全沒調」
+          () => _setValue(g, t.axis, nv.abs() < 0.04 ? 0.0 : nv),
+        ),
+        readout: on ? '${v > 0 ? '+' : ''}${(v * 100).round()}' : '0',
+        labelColor: kText,
+        valueColor: on ? kText : kTextDim,
+        onReset: () => _edit(() => _setValue(g, t.axis, 0)),
       ),
     );
   }

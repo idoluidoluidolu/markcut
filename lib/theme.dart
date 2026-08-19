@@ -864,6 +864,88 @@ Widget secondaryAction({
   label: Text(label, style: const TextStyle(fontSize: 13)),
 );
 
+/// 一列滑桿：左標籤、中滑桿、右數值。全 App 同一個版型。
+///
+/// 數字與單位分開給（[readout] 只放數字、[unit] 放 % 或 °）：單位
+/// 縮小變灰，數字才會落在同一欄。以前每個面板各寫一份，數值欄寬
+/// 有的用 kSliderValueW 有的用 kSliderLabelW、字級 11/11.5/12 都有，
+/// 排在一起就是歪的。
+///
+/// 要「一鍵歸零」給 [onReset]——做在數字上，不要在右邊多掛一顆鈕：
+/// 只有一列有的話，那一列的滑桿會被擠短，整面就跟著歪
+Widget sliderRow({
+  required String label,
+  required double value,
+  required double min,
+  required double max,
+  required ValueChanged<double> onChanged,
+  required String readout,
+  String unit = '',
+  int? divisions,
+  ValueChanged<double>? onChangeStart,
+  ValueChanged<double>? onChangeEnd,
+  VoidCallback? onReset,
+  Color? labelColor,
+  Color? valueColor,
+}) {
+  final value0 = SizedBox(
+    width: kSliderValueW,
+    child: Text.rich(
+      TextSpan(
+        children: [
+          TextSpan(text: readout),
+          if (unit.isNotEmpty)
+            TextSpan(
+              text: unit,
+              style: const TextStyle(fontSize: 10.5, color: kTextDim),
+            ),
+        ],
+      ),
+      textAlign: TextAlign.right,
+      maxLines: 1,
+      style: TextStyle(
+        fontSize: 12,
+        color: valueColor ?? kText,
+        fontFeatures: const [FontFeature.tabularFigures()],
+      ),
+    ),
+  );
+  return SizedBox(
+    height: 34,
+    child: Row(
+      children: [
+        SizedBox(
+          width: kSliderLabelW,
+          child: Text(
+            label,
+            maxLines: 1,
+            style: TextStyle(fontSize: 12, color: labelColor ?? kTextDim),
+          ),
+        ),
+        Expanded(
+          child: Slider(
+            value: value.clamp(min, max),
+            min: min,
+            max: max,
+            divisions: divisions,
+            onChanged: onChanged,
+            onChangeStart: onChangeStart,
+            onChangeEnd: onChangeEnd,
+          ),
+        ),
+        if (onReset == null)
+          value0
+        else
+          InkWell(
+            borderRadius: BorderRadius.circular(kTagRadius),
+            onTap: onReset,
+            child: value0,
+          ),
+      ],
+    ),
+  );
+}
+
 /// 角度滑桿會卡住的關鍵角度。
 ///
 /// 只放這幾個而不是每 15 度一格：整條軌都有格會變成拖不順，
