@@ -1283,17 +1283,17 @@ const double _kHandleOverhang = 14;
 const double kTrimMinWidth = 64;
 
 /// 修剪的「畫面煞車」寬度：把手拖到片段在目前縮放下只剩這麼寬
-/// 就停（兩顆 16px 把手＋中間 24px，修剪與拖著移動都還抓得住）。
+/// 就停（兩顆 14px 把手＋中間 12px，再窄就抓不住了）。
 ///
 /// 重點：煞車做在「修剪」而不是「畫面」。片段永遠照時間軸的
 /// 相對比例畫，絕不畫得比實際長——之前反過來做（模型隨便剪、
 /// 畫面卡住 56px 不動）的結果是：看起來正常的片段其實已經被剪到
 /// 0.05 秒，總長歸零、播放鍵看似卡死。想剪得比煞車短就放大，
 /// 放大後同樣的 56px 對應更短的秒數，煞車自然跟著鬆開
-const double kTrimStopWidth = 56;
+const double kTrimStopWidth = 40;
 
 /// 時間軸的最大縮放（每秒幾 px）。跟 [kTrimStopWidth] 一起決定
-/// 修剪的絕對極限：1200px/秒 時煞車在 56/1200 ≈ 0.05 秒
+/// 修剪的絕對極限：1200px/秒 時煞車在 40/1200 ≈ 0.03 秒
 const double kMaxPxPerSec = 1200;
 
 /// 時間軸上的片段。拖曳時本體留在原地變淡，移動的是父層的幽靈。
@@ -1476,7 +1476,7 @@ class _ClipBlock extends StatelessWidget {
                     child: ListenableBuilder(
                       listenable: scrollController,
                       builder: (context, _) {
-                        final hw = (w * 0.28).clamp(16.0, 40.0);
+                        final hw = (w * 0.28).clamp(14.0, 40.0);
                         const over = _kHandleOverhang;
                         final off = scrollController.hasClients
                             ? scrollController.offset
