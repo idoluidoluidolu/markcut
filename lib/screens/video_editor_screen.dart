@@ -2163,6 +2163,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         kind: ClipKind.wm,
         duration: 3600,
         wmStyle: style,
+        isSticker: true,
       ),
     );
     // 貼圖通常是「某一段冒出來」的東西，不像浮水印要蓋整片：
@@ -2182,6 +2183,160 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _sel = clip.id;
     });
     _saveDraft();
+  }
+
+  /// 貼圖的調整視窗：大小、角度、透明度、圓角，外加換一張。
+  ///
+  /// 刻意不開浮水印面板——那整套（文字、動畫、範本、平鋪）對一張
+  /// 貼圖來說九成用不到，找一個「轉角度」要滑很久
+  Future<void> _editStickerClip(TimelineClip clip) async {
+    final src = _tl.sourceOf(clip);
+    final logo = (src.wmStyle ??= WatermarkSettings()).logo;
+    _pause();
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.5,
+      ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) {
+          void change(VoidCallback f) {
+            _pushUndo();
+            setSheet(f);
+            setState(() {});
+            _saveDraft();
+          }
+
+          Widget row(
+            String label,
+            double value,
+            double min,
+            double max,
+            String suffix,
+            ValueChanged<double> onChanged, {
+            VoidCallback? onReset,
+          }) => Row(
+            children: [
+              SizedBox(
+                width: kSliderLabelW,
+                child: Text(
+                  label,
+                  style: const TextStyle(fontSize: 12.5, color: kTextDim),
+                ),
+              ),
+              Expanded(
+                child: Slider(
+                  value: value.clamp(min, max),
+                  min: min,
+                  max: max,
+                  onChanged: onChanged,
+                ),
+              ),
+              SizedBox(
+                width: kSliderValueW,
+                child: Text(
+                  suffix,
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: kText,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ),
+              if (onReset != null)
+                InkWell(
+                  borderRadius: BorderRadius.circular(kTagRadius),
+                  onTap: onReset,
+                  child: const Padding(
+                    padding: EdgeInsets.all(4),
+                    child: Icon(Icons.restart_alt, size: 16, color: kTextDim),
+                  ),
+                ),
+            ],
+          );
+
+          return SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.emoji_emotions_outlined,
+                        size: 18,
+                        color: kAmber,
+                      ),
+                      const SizedBox(width: 8),
+                      const Text(
+                        '貼圖',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const Spacer(),
+                      TextButton.icon(
+                        onPressed: () async {
+                          final png = await pickSticker(context);
+                          if (png == null) return;
+                          change(() => logo.bytesValue = png);
+                        },
+                        icon: const Icon(Icons.swap_horiz, size: 17),
+                        label: const Text(
+                          '換一張',
+                          style: TextStyle(fontSize: 12.5),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  row(
+                    '大小',
+                    logo.sizeFrac,
+                    0.02,
+                    1.5,
+                    '${(logo.sizeFrac * 100).round()}%',
+                    (v) => change(() => logo.sizeFrac = v),
+                  ),
+                  row(
+                    '角度',
+                    logo.rotation,
+                    -180,
+                    180,
+                    '${logo.rotation.round()}°',
+                    (v) => change(() => logo.rotation = v),
+                    // 手滑到 3° 很難拉回正的，給一顆歸零
+                    onReset: () => change(() => logo.rotation = 0),
+                  ),
+                  row(
+                    '透明度',
+                    logo.opacity,
+                    0.05,
+                    1,
+                    '${(logo.opacity * 100).round()}%',
+                    (v) => change(() => logo.opacity = v),
+                  ),
+                  row(
+                    '圓角',
+                    logo.corner,
+                    0,
+                    1,
+                    '${(logo.corner * 100).round()}%',
+                    (v) => change(() => logo.corner = v),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 
   /// 圖片素材：從播放頭開始、預設 4 秒，可用把手拉長
@@ -5928,8 +6083,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                           builder: (context) {
                             final c = _selClipById(_sel);
                             final src = c == null ? null : _tl.sourceOf(c);
+                            // 貼圖不算：它有自己的調整視窗，選著一張貼圖
+                            // 切到浮水印分頁時，該編的是全域浮水印
                             final isClipWm =
-                                src != null && src.kind == ClipKind.wm;
+                                src != null &&
+                                src.kind == ClipKind.wm &&
+                                !src.isSticker;
                             if (isClipWm) src.wmStyle ??= WatermarkSettings();
                             return WatermarkPanel(
                               key: ValueKey(isClipWm ? _sel : -1),
@@ -6937,6 +7096,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               onChanged: () => setState(() {}),
                                               onDragStart: _pushUndo,
                                               time: pos,
+                                              // 貼圖是一個素材，選取時就該
+                                              // 看得到框（浮水印素材的框在
+                                              // 浮水印面板那邊自己畫）
+                                              selectedPart:
+                                                  (src.isSticker &&
+                                                      _sel == c.id &&
+                                                      !_hideSelUi)
+                                                  ? WmPart.logo
+                                                  : WmPart.none,
                                               onHitBox: (t, l) =>
                                                   _addWmHit(c.id, t, l),
                                               panLocked: () =>
@@ -6946,13 +7114,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               panAllowed: (_) =>
                                                   _sel == c.id ||
                                                   (_sel == -1 && !_wmSel),
-                                              // 點浮水印片段的元素＝
-                                              // 選取＋進浮水印分頁編輯
+                                              // 浮水印片段：點了＝選取＋
+                                              // 進浮水印分頁編輯。
+                                              // 貼圖不進浮水印模式——它就是
+                                              // 一個素材，點一下選取，再點
+                                              // 一下開它自己的調整視窗
                                               onTap: () {
+                                                final was = _sel == c.id;
                                                 setState(() {
                                                   _sel = c.id;
                                                   _wmSel = false;
                                                 });
+                                                if (src.isSticker) {
+                                                  if (was) {
+                                                    unawaited(
+                                                      _editStickerClip(c),
+                                                    );
+                                                  }
+                                                  return;
+                                                }
                                                 _tabs.animateTo(1);
                                                 _wmPanelCtrl.scrollTo(
                                                   WmPart.logo,
@@ -8253,7 +8433,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   if (k == ClipKind.text) {
                                     _editTextClip(c);
                                   } else if (k == ClipKind.wm) {
-                                    _editWmClip(c);
+                                    if (_tl.sourceOf(c).isSticker) {
+                                      unawaited(_editStickerClip(c));
+                                    } else {
+                                      _editWmClip(c);
+                                    }
                                   } else if (k == ClipKind.mosaic) {
                                     _editMosaicClip(c);
                                   }

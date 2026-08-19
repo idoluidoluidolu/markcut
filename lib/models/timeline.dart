@@ -29,6 +29,13 @@ class MediaSource {
   /// 馬賽克素材的樣式（濃度、像素化/模糊/黑色）
   MosaicStyle? mosaicStyle;
 
+  /// 這份浮水印素材其實是一張貼圖。
+  ///
+  /// 畫法與匯出跟浮水印素材完全一樣（整版透明 PNG，見 overlayPngs），
+  /// 所以不另立一種 kind——差別只在「使用者眼中它是什麼」：點下去
+  /// 開貼圖自己的調整視窗，不是整套浮水印面板；選取時畫框
+  bool isSticker;
+
   /// 工作檔：系統的硬體管線轉出來的 1080p SDR 版本（見 WorkFiles）。
   ///
   /// 預覽、拖曳抽幀、縮圖一律走它。iPhone 預設錄 4K HLG，拿原檔來播
@@ -62,6 +69,7 @@ class MediaSource {
     this.revOf,
     this.revStart = 0,
     this.revEnd = 0,
+    this.isSticker = false,
   });
 
   bool get isVideo => kind == ClipKind.video;
@@ -78,6 +86,7 @@ class MediaSource {
     textStyle: textStyle,
     wmStyle: wmStyle,
     mosaicStyle: mosaicStyle,
+    isSticker: isSticker,
     revOf: revOf,
     revStart: revStart,
     revEnd: revEnd,
@@ -92,6 +101,7 @@ class MediaSource {
     'path': path,
     'name': name,
     'kind': kind.index,
+    if (isSticker) 'sticker': true,
     'w': w,
     'h': h,
     'duration': duration,
@@ -109,6 +119,7 @@ class MediaSource {
     name: j['name'] ?? '',
     // % 防護：新版種類存進草稿後被舊版打開也不至於整包炸掉
     kind: ClipKind.values[((j['kind'] ?? 0) as int) % ClipKind.values.length],
+    isSticker: j['sticker'] == true,
     w: (j['w'] ?? 0) as int,
     h: (j['h'] ?? 0) as int,
     duration: (j['duration'] ?? 0).toDouble(),
@@ -303,11 +314,13 @@ class TimelineModel {
   /// 某時刻所有蓋在畫面上的影片片段，由下層到上層（編號小的先）
   List<TimelineClip> videosAt(double t) {
     final list =
-        clips.where((c) => sourceOf(c).isVideo && c.coversForDisplay(t)).toList()
-      ..sort((a, b) {
-        final k = a.track.compareTo(b.track);
-        return k != 0 ? k : clips.indexOf(a).compareTo(clips.indexOf(b));
-      });
+        clips
+            .where((c) => sourceOf(c).isVideo && c.coversForDisplay(t))
+            .toList()
+          ..sort((a, b) {
+            final k = a.track.compareTo(b.track);
+            return k != 0 ? k : clips.indexOf(a).compareTo(clips.indexOf(b));
+          });
     return list;
   }
 
@@ -343,14 +356,15 @@ class TimelineModel {
   List<TimelineClip> overlaysAt(double t) {
     // 馬賽克也算畫面上的覆蓋物（預覽要畫）；
     // 但不進 isOverlay——匯出端對 overlay 的輸入映射是另一套
-    final list = clips
-        .where(
-          (c) =>
-              (sourceOf(c).isOverlay ||
-                  sourceOf(c).kind == ClipKind.mosaic) &&
-              c.coversForDisplay(t),
-        )
-        .toList()
+    final list =
+        clips
+            .where(
+              (c) =>
+                  (sourceOf(c).isOverlay ||
+                      sourceOf(c).kind == ClipKind.mosaic) &&
+                  c.coversForDisplay(t),
+            )
+            .toList()
           ..sort((a, b) {
             final k = a.track.compareTo(b.track); // track 小的是下層，先畫
             return k != 0 ? k : clips.indexOf(a).compareTo(clips.indexOf(b));
@@ -396,7 +410,9 @@ class TimelineModel {
     // 候選：貼在每一段的前面或後面，挑離原意圖最近而且真的塞得下的
     final cands = <double>[];
     for (final c in others) {
-      cands..add(c.offset - len)..add(c.end);
+      cands
+        ..add(c.offset - len)
+        ..add(c.end);
     }
     cands.removeWhere((v) => v < 0 || !fits(v));
     if (cands.isEmpty) return appendPointOnTrack(track);
@@ -680,19 +696,12 @@ class TimelineModel {
   }
 
   /// 修剪把手的貼齊（吸到別的片段，不吸自己）
-  double snapEdge(
-    TimelineClip moving,
-    double want,
-    double pxPerSec,
-  ) => snapTime(want, pxPerSec, exceptId: moving.id);
+  double snapEdge(TimelineClip moving, double want, double pxPerSec) =>
+      snapTime(want, pxPerSec, exceptId: moving.id);
 
   /// 拖曳時的貼齊：只吸到其他素材的頭尾（自己的頭對它們的頭尾、
   /// 自己的尾對它們的頭尾，四種組合）。理由同 [snapTime]
-  double snapOffset(
-    TimelineClip moving,
-    double want,
-    double pxPerSec,
-  ) {
+  double snapOffset(TimelineClip moving, double want, double pxPerSec) {
     // 跟 snapTime 同一組手感參數
     final threshold = math.min(16 / pxPerSec, 0.5);
     final len = moving.length;

@@ -1220,7 +1220,10 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
     return overlayLabel(Icons.blur_on, '馬賽克');
   }
   if (src.kind == ClipKind.wm) {
-    return overlayLabel(Icons.branding_watermark, src.name);
+    return overlayLabel(
+      src.isSticker ? Icons.emoji_emotions_outlined : Icons.branding_watermark,
+      src.name,
+    );
   }
   if (strip.isEmpty) {
     // 縮圖還沒抽出來時：底同樣交給外層畫，這裡只放圖示
