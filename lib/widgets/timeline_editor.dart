@@ -1355,10 +1355,11 @@ class _ClipBlock extends StatelessWidget {
     };
     // 有縮圖（影片／圖片抽到了幀）才用純色底；其餘一律漸層底
     final hasStrip = filmstrip.isNotEmpty;
-    // 照時間軸的相對比例畫，只留 2px 不讓它消失。修剪的煞車
-    // （kTrimStopWidth）保證選取中的片段不會真的被剪到這麼窄；
-    // 縮小時間軸讓它變窄則是使用者自己的選擇，照實呈現
-    final w = (clip.length * pxPerSec).clamp(2.0, double.infinity).toDouble();
+    // 照時間軸的相對比例畫，最窄留 16px：一小截素材（縮圖）
+    // 還看得見，認得出這一格是什麼（CapCut 同款）。修剪的煞車
+    // （kTrimStopWidth）保證選取中的片段不會被「剪」到這麼窄；
+    // 這 16px 只會出現在縮小時間軸看全貌的時候
+    final w = (clip.length * pxPerSec).clamp(16.0, double.infinity).toDouble();
 
     return Positioned(
       left: clip.offset * pxPerSec,
@@ -1463,11 +1464,42 @@ class _ClipBlock extends StatelessWidget {
                     ],
                   ),
                 ),
-                // 把手一律畫：寬度跟著片段縮，窄到剩兩顆把手也還是
-                // 修剪得動。想拖著移動就自己把時間軸放大——本來是
-                // 「太窄就不畫把手、點一下自動放大」，那個自動放大
-                // 等於不准使用者縮小看全貌，每點一下就彈回去
-                if (isSelected && !lifted)
+                // 窄片段：把手掛到片段「外面」貼著兩側（CapCut 的
+                // 做法）——不佔本體的寬度，那一小截素材整段保留，
+                // 把手也永遠一樣大、抓得到
+                if (isSelected && !lifted && w < 34) ...[
+                  Positioned(
+                    // -26 ＝ 視覺 14 ＋ 外伸熱區 12：整顆都在本體左緣外
+                    left: -26,
+                    top: 0,
+                    bottom: 0,
+                    child: _TrimHandle(
+                      isLeft: true,
+                      width: 14,
+                      overhang: 12,
+                      onStart: onTrimStart,
+                      onEnd: onTrimEnd,
+                      onDrag: (d) => onTrim(clip.id, d, true),
+                      pxPerSec: pxPerSec,
+                    ),
+                  ),
+                  Positioned(
+                    left: w,
+                    top: 0,
+                    bottom: 0,
+                    child: _TrimHandle(
+                      isLeft: false,
+                      width: 14,
+                      overhang: 12,
+                      onStart: onTrimStart,
+                      onEnd: onTrimEnd,
+                      onDrag: (d) => onTrim(clip.id, d, false),
+                      pxPerSec: pxPerSec,
+                    ),
+                  ),
+                ],
+                // 一般寬度：把手貼在片段內側兩緣
+                if (isSelected && !lifted && w >= 34)
                   // 熱區跟著片段長度給，短片段不會被兩個把手佔滿；
                   // 位置夾在可視範圍內，片段拉得比畫面長時
                   // 把手會貼在邊緣而不是跑到畫面外
@@ -1475,12 +1507,8 @@ class _ClipBlock extends StatelessWidget {
                     child: ListenableBuilder(
                       listenable: scrollController,
                       builder: (context, _) {
-                        // 一般是片段寬的 28%（16~40px）。片段窄到
-                        // 擺不下兩顆時各佔一半，靠加大的外伸熱區抓
-                        final hw = w < 34
-                            ? w / 2
-                            : (w * 0.28).clamp(16.0, 40.0);
-                        final over = w < 34 ? 20.0 : _kHandleOverhang;
+                        final hw = (w * 0.28).clamp(16.0, 40.0);
+                        const over = _kHandleOverhang;
                         final off = scrollController.hasClients
                             ? scrollController.offset
                             : 0.0;
