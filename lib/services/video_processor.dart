@@ -205,6 +205,14 @@ class ExportSpec {
   /// 每秒張數。0＝跟著素材（見 outputFps）
   final int fps;
 
+  /// 輸出成 GIF：先照舊做出影片，最後再轉一趟 GIF（兩段式調色盤）。
+  /// 管線一行都不用改，GIF 只是多一道後製
+  final bool gif;
+
+  /// GIF 的影格率與長邊上限（只在 gif=true 時有意義）
+  final int gifFps;
+  final int gifMaxSide;
+
   ExportSpec({
     required this.sources,
     required this.clips,
@@ -221,6 +229,9 @@ class ExportSpec {
     this.overlayPngs = const {},
     this.crf = 17,
     this.fps = 0,
+    this.gif = false,
+    this.gifFps = 12,
+    this.gifMaxSide = 480,
   });
 
   /// 輸出影片實際長度（變速後）
