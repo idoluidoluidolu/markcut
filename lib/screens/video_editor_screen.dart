@@ -2359,22 +2359,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         onChanged: (v) => setDialog(() => sec = v),
                       ),
                     ),
-                    // 常用的幾個直接點，不用拉。四顆等寬排一列，
-                    // 不要讓第四顆自己掉到下一行
-                    Row(
-                      children: [
-                        for (final v in const [1.0, 2.0, 3.0, 5.0]) ...[
-                          if (v != 1.0) const SizedBox(width: 8),
-                          Expanded(
-                            child: _secChip(
-                              v,
-                              sec == v,
-                              () => setDialog(() => sec = v),
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
                     const SizedBox(height: 18),
                     FilledButton(
                       style: FilledButton.styleFrom(
@@ -2409,29 +2393,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ),
     );
   }
-
-  /// 秒數快捷鍵一顆（選中的填淡底＋琥珀字）
-  Widget _secChip(double v, bool on, VoidCallback onTap) => InkWell(
-    borderRadius: BorderRadius.circular(9),
-    onTap: onTap,
-    child: Container(
-      height: 36,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: on ? kSelect.withValues(alpha: 0.13) : null,
-        borderRadius: BorderRadius.circular(9),
-        border: Border.all(color: on ? kSelect : kClipBorder),
-      ),
-      child: Text(
-        '${v.toStringAsFixed(0)} 秒',
-        style: TextStyle(
-          fontSize: 12.5,
-          fontWeight: on ? FontWeight.w700 : FontWeight.w400,
-          color: on ? kSelect : kText,
-        ),
-      ),
-    ),
-  );
 
   /// 被裁過的素材 → 它是從哪一份原圖裁出來的。
   ///
