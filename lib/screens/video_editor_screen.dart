@@ -475,6 +475,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 來源也要進快照：浮水印／文字素材的樣式（wmStyle/textStyle/name）
       // 存在來源上，漏掉的話那些編輯按復原根本退不回去
       'sources': [for (final s in _tl.sources) s.toJson()],
+      'muted': _fsMuted,
       'wmStart': _wmStart,
       'wmEnd': _wmEnd,
       'wm': wm,
@@ -539,6 +540,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         ]);
       final fixedIds = _tl.fixDuplicateIds();
       if (fixedIds > 0) Diag.note('快照裡有 $fixedIds 個撞號的片段 id，已補新號');
+      _fsMuted = j['muted'] == true;
       _wmStart = (j['wmStart'] ?? 0).toDouble();
       _wmEnd = j['wmEnd'] == null ? null : (j['wmEnd'] as num).toDouble();
       if (j['wm'] != null) {
@@ -792,6 +794,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _wmStart = ((j['wmStart'] ?? 0) as num).toDouble();
     _wmEnd = j['wmEnd'] == null ? null : (j['wmEnd'] as num).toDouble();
+    _fsMuted = j['muted'] == true;
     _extraBlankTracks = ((j['extraTracks'] ?? 0) as num).toInt();
 
     // 重建播放器與縮圖；素材檔案不見了（例如系統清掉 app 快取）就剔除該片段，
@@ -2449,10 +2452,54 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     showHint(context, '已串成 ${fmtDuration(at)} 的影片，可以再調整每一段');
   }
 
+  /// 時間軸上有幾段圖片素材（貼圖那種浮水印素材不算）
+  int get _imageClipCount =>
+      _tl.clips.where((c) => _tl.sourceOf(c).kind == ClipKind.image).length;
+
+  /// 把所有圖片素材改成同一個長度，並照原本的先後順序重新接起來。
+  ///
+  /// 幻燈片是「一整排等長的圖」，改秒數就該整批改；一張一張拉把手
+  /// 不但慢，長度還會差個幾格對不齊
+  Future<void> _resetSlideSeconds() async {
+    final imgs = _tl.clips
+        .where((c) => _tl.sourceOf(c).kind == ClipKind.image)
+        .toList();
+    if (imgs.length < 2) return;
+    final cur = imgs.first.length;
+    final sec = await _askSlideSeconds(
+      imgs.length,
+      initial: cur.clamp(0.1, 10.0),
+    );
+    if (sec == null || !mounted) return;
+    _pushUndo();
+    setState(() {
+      // 每一軌各自重新接：不同軌的圖片本來就不該互相推擠
+      final byTrack = <int, List<TimelineClip>>{};
+      for (final c in imgs) {
+        (byTrack[c.track] ??= []).add(c);
+      }
+      for (final list in byTrack.values) {
+        list.sort((a, b) => a.offset.compareTo(b.offset));
+        var at = list.first.offset;
+        for (final c in list) {
+          c.trimStart = 0;
+          c.trimEnd = sec;
+          c.offset = at;
+          at += sec;
+        }
+      }
+    });
+    _resyncPlayback();
+    _saveDraft();
+    if (mounted) {
+      showHint(context, '${imgs.length} 張圖片都改成 ${fmtDuration(sec)}');
+    }
+  }
+
   /// 多張圖片串成影片時，先問每張停留幾秒。
   /// 回 null＝取消（整批都不加）
-  Future<double?> _askSlideSeconds(int count) {
-    var sec = 3.0;
+  Future<double?> _askSlideSeconds(int count, {double initial = 3.0}) {
+    var sec = initial;
     // 秒數是這個彈窗的主角：大字擺中間，拉滑桿時數字跟著跳，
     // 不用先讀完一整句才知道自己選到幾秒
     return showDialog<double>(
@@ -2460,6 +2507,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       builder: (context) => StatefulBuilder(
         builder: (context, setDialog) {
           final label = sec.toStringAsFixed(sec % 1 == 0 ? 0 : 1);
+          final titleText = initial == 3.0
+              ? '$count 張圖片串成影片'
+              : '$count 張圖片重設秒數';
           return Dialog(
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(kDialogRadius),
@@ -2474,7 +2524,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Text(
-                      '$count 張圖片串成影片',
+                      titleText,
                       textAlign: TextAlign.center,
                       style: const TextStyle(
                         fontSize: 15.5,
@@ -2524,12 +2574,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         activeTickMarkColor: Colors.transparent,
                         inactiveTickMarkColor: Colors.transparent,
                       ),
+                      // 下限 0.1 秒：快閃式的幻燈片（一秒好幾張）
+                      // 也做得出來。0.1 為一格，拉得到整數
                       child: Slider(
                         value: sec,
-                        min: 0.5,
+                        min: 0.1,
                         max: 10,
-                        divisions: 19,
-                        onChanged: (v) => setDialog(() => sec = v),
+                        divisions: 99,
+                        onChanged: (v) =>
+                            setDialog(() => sec = (v * 10).round() / 10),
                       ),
                     ),
                     const SizedBox(height: 18),
@@ -2546,7 +2599,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         ),
                       ),
                       onPressed: () => Navigator.pop(context, sec),
-                      child: const Text('加入'),
+                      child: Text(initial == 3.0 ? '加入' : '套用'),
                     ),
                     const SizedBox(height: 4),
                     TextButton(
@@ -4224,7 +4277,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 片段此刻該有的音量（還沒夾在 0~1，可能大於 1）
   double _rawVolOf(TimelineClip clip) {
-    // 全螢幕的靜音鈕：只掐預覽，素材本身的音量不動
+    // 專案靜音（見 _fsMuted）：素材本身的音量不動，關掉就回來
     if (_fsMuted) return 0;
     final trackMute = _mutedTracks.contains(clip.track) ? 0.0 : 1.0;
     // 倒轉的片段預覽時靜音：播放器只會正著播，聲音是反的內容，
@@ -5724,7 +5777,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           sources: exportSources,
           clips: [
             for (final c in _tl.clips)
-              c.copy()..volume = _mutedTracks.contains(c.track) ? 0 : c.volume,
+              c.copy()
+                ..volume = (_fsMuted || _mutedTracks.contains(c.track))
+                    ? 0
+                    : c.volume,
           ],
           timelineDuration: _tl.duration,
           speed: _speed,
@@ -6091,7 +6147,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       child: SafeArea(
         child: Stack(
           children: [
-            Positioned.fill(child: _buildPreview()),
+            // 全螢幕＝純看片：預覽整層不吃手勢，素材與浮水印都
+            // 動不了。不擋的話手指一劃就把浮水印拖走了，而且
+            // 全螢幕本來就沒有「撤銷」可以按
+            Positioned.fill(child: IgnorePointer(child: _buildPreview())),
             // 點畫面＝收起／叫出控制列（看片時不要有東西擋著）
             Positioned.fill(
               child: GestureDetector(
@@ -7842,7 +7901,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 而且播放中本來就動不了選取的素材
   bool get _hideSelUi => _fullscreen || _playing;
 
-  /// 全螢幕預覽靜音（只影響預覽，不動素材本身的音量）
+  /// 整個專案靜音（全螢幕膠囊上那顆喇叭）。
+  ///
+  /// 不是只掐預覽——匯出也一起靜音。預覽聽到的跟成品不一樣才是
+  /// 真正的意外；素材各自的音量還是留著，關掉靜音就回來
   bool _fsMuted = false;
 
   void _toggleFsMute() {
@@ -8504,6 +8566,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         tip: '用清單調整素材的先後順序',
                       ),
                       _snapToolBtn(),
+                      // 幻燈片做完之後想整批改快一點／慢一點：一張一張
+                      // 拉把手要拉到天荒地老
+                      _toolBtn(
+                        Icons.timer_outlined,
+                        '圖片秒數',
+                        _imageClipCount >= 2 ? _resetSlideSeconds : null,
+                        tip: '把所有圖片素材改成同一個長度',
+                        disabledHint: '時間軸上要有兩張以上的圖片素材',
+                      ),
                       _toolBtn(Icons.add, '加素材', _addMediaChoice),
                       _toolDivider(),
                       // 排列順序：縮放、裁切、鏡像、音量、調色、速度、效果
