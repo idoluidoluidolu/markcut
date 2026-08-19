@@ -205,6 +205,44 @@ void main() {
     );
   });
 
+  testWidgets('彈窗 E：解析度（還沒換）', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildStudioTheme(),
+        debugShowCheckedModeBanner: false,
+        home: VideoEditorScreen(draft: _draft()),
+      ),
+    );
+    await _settle(tester);
+    await tester.tap(find.text('匯出').last);
+    await _settle(tester);
+    await tester.tap(find.text('解析度'));
+    await _settle(tester);
+    await expectLater(
+      find.byType(MaterialApp),
+      matchesGoldenFile('goldens/audit_resolution.png'),
+    );
+  });
+
+  testWidgets('彈窗 F：文字輸入（還沒換）', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildStudioTheme(),
+        debugShowCheckedModeBanner: false,
+        home: VideoEditorScreen(draft: _draft()),
+      ),
+    );
+    await _settle(tester);
+    await tester.tap(find.text('加素材'));
+    await _settle(tester);
+    await tester.tap(find.text('文字'));
+    await _settle(tester);
+    await expectLater(
+      find.byType(MaterialApp),
+      matchesGoldenFile('goldens/audit_textinput.png'),
+    );
+  });
+
   testWidgets('彈窗 C：畫面比例（AlertDialog）', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
