@@ -18,7 +18,7 @@ import '../theme.dart';
 import '../widgets/swipe_back.dart';
 
 /// 專屬的 GIF 製作頁：選一支影片進來，拉兩個把手決定要剪哪一段，
-/// 挑尺寸跟流暢度，直接出 GIF。
+/// 挑尺寸跟順暢度，直接出 GIF。
 ///
 /// 不走影片編輯器——做 GIF 的人只想要「這幾秒變成 GIF」，
 /// 不需要時間軸、多軌、浮水印那一整套。這一頁只有三件事：
@@ -388,7 +388,7 @@ class _GifScreenState extends State<GifScreen> {
                             _schedulePreview();
                           }, (v) => '${v}p'),
                           const SizedBox(height: 10),
-                          _chipsRow('流暢度', [10, 12, 15], _fps, (v) {
+                          _chipsRow('順暢度', [10, 12, 15], _fps, (v) {
                             setState(() => _fps = v);
                             _schedulePreview();
                           }, (v) => '$v fps'),
@@ -713,7 +713,7 @@ class _GifScreenState extends State<GifScreen> {
     );
   }
 
-  /// 速度那一排。用 chips 跟尺寸／流暢度同型，不另外發明一種東西
+  /// 速度那一排。用 chips 跟尺寸／順暢度同型，不另外發明一種東西
   Widget _speedRow() => _chipsRow<double>(
     '速度',
     const [0.25, 0.5, 1.0, 1.5, 2.0],

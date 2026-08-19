@@ -234,7 +234,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 專案裡最高的影格率（輸出會跟著它走）
   double _srcFps = 0;
 
-  /// 匯出的每秒張數。0＝跟著素材（見 outputFps）
+  /// 匯出的順暢度（每秒幾張）。0＝跟著素材（見 outputFps）
   int _fps = 0;
 
   /// 實際要用的畫質：使用者選過就聽他的，沒選過就依素材本身的
@@ -10027,7 +10027,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 _openQualitySheet,
               ),
               row(
-                '每秒張數',
+                '順暢度',
                 _fps == 0
                     ? (_srcFps > 0 ? '自動·${_srcFps.round()}' : '自動')
                     : '$_fps fps',
@@ -10115,12 +10115,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
   }
 
-  /// 每秒張數：跟畫質／解析度同一款清單
+  /// 順暢度：跟畫質／解析度同一款清單
   void _openFpsSheet() {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('每秒張數'),
+        title: const Text('順暢度'),
         contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
         content: SizedBox(
           width: 270,

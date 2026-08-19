@@ -202,7 +202,7 @@ class ExportSpec {
   final int outH;
   final int crf; // 匯出畫質（x264 CRF）
 
-  /// 每秒張數。0＝跟著素材（見 outputFps）
+  /// 順暢度（每秒幾張）。0＝跟著素材（見 outputFps）
   final int fps;
 
   /// 輸出成 GIF：先照舊做出影片，最後再轉一趟 GIF（兩段式調色盤）。

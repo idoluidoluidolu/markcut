@@ -67,7 +67,7 @@ class NativeExport {
     if (vids.isEmpty) return '沒有影片片段';
     // 指定張數目前只有 FFmpeg 那條路做得到（-r）。Swift 端照素材
     // 的幀率走，交給它會匯出成「沒改過張數」的成品
-    if (spec.fps > 0) return '指定了每秒張數';
+    if (spec.fps > 0) return '指定了順暢度';
     return null;
   }
 
