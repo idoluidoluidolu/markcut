@@ -7,7 +7,6 @@ import 'package:image_picker/image_picker.dart';
 
 import '../models/watermark_settings.dart';
 import '../services/preset_store.dart';
-import 'sticker_picker.dart';
 import '../screens/crop_screen.dart';
 import '../screens/draw_screen.dart';
 import '../theme.dart';
@@ -325,25 +324,6 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     _ensureSection(WmPart.logo, 0);
   }
 
-  /// 貼圖：挑一張進來當圖片浮水印（挑選器見 pickSticker）
-  Future<void> _openStickers() async {
-    final png = await pickSticker(context);
-    if (png != null && mounted) _useSticker(png);
-  }
-
-  /// 貼圖套進來：跟手繪一樣填進空的圖片位、沒有空位就加一張
-  void _useSticker(Uint8List png) {
-    _addInto(() async {
-      _update(() {
-        s.logo.bytesValue = png;
-        s.logo.origBytes = png;
-        s.logo.enabled = true;
-      });
-      widget.onLogoAdded?.call();
-      _ensureSection(WmPart.logo, 0);
-    });
-  }
-
   /// 手繪的圖再編輯：有筆畫資料就還原成活的筆畫（上一步、
   /// 調粗細全部可用）；舊資料只有 PNG 就鋪底圖繼續畫
   Future<void> _editDrawing() async {
@@ -636,13 +616,6 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         key: _logoCardKey,
         action: null,
       ),
-      if (widget.showNav)
-        (
-          label: '貼圖',
-          icon: Icons.emoji_emotions_outlined,
-          key: null,
-          action: _openStickers,
-        ),
       if (widget.showNav)
         (
           label: '手繪',
