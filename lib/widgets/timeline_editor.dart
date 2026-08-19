@@ -1387,6 +1387,23 @@ class _ClipBlock extends StatelessWidget {
               clipBehavior: Clip.none,
               fit: StackFit.passthrough,
               children: [
+                // 窄片段選取時的一體式外框：琥珀膠囊從左把手一路鋪到
+                // 右把手，中間被本體（縮圖）蓋住——看起來就是「一顆
+                // 膠囊、中間一扇素材小窗」（CapCut 同款），而不是
+                // 兩塊分開浮著的把手
+                if (isSelected && !lifted && w < 34)
+                  Positioned(
+                    left: -14,
+                    top: 0,
+                    bottom: 0,
+                    child: Container(
+                      width: w + 28,
+                      decoration: BoxDecoration(
+                        color: kSelect,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                    ),
+                  ),
                 Container(
                   width: w,
                   decoration: BoxDecoration(
