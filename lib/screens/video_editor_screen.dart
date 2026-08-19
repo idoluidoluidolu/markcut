@@ -105,9 +105,6 @@ class VideoEditorScreen extends StatefulWidget {
   /// 這個專案的草稿 id。null＝新專案，進去之後自己產一個
   final String? draftId;
 
-  /// 專案名稱（草稿清單上顯示的那個）。null＝自動取「專案 N」
-  final String? draftName;
-
   /// 一批照片串成一段影片（首頁「照片 → 串成一段影片」）。
   /// 進場後會先問每張停留幾秒
   final List<String>? photoPaths;
@@ -120,7 +117,6 @@ class VideoEditorScreen extends StatefulWidget {
     this.initialWatermark,
     this.draft,
     this.draftId,
-    this.draftName,
     this.blank = false,
   }) : assert(
          videoPath != null ||
@@ -707,9 +703,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     };
   }
 
-  /// 這份專案在草稿清單裡的 id 與名字。進場時決定，之後跟著它存
+  /// 這份專案在草稿清單裡的 id。進場時決定，之後跟著它存。
+  ///
+  /// 沒有名字這回事：草稿夾只顯示「什麼時候存的」——要取名字的話，
+  /// 剪到一半離開還得先想一個名稱，而多數人只是想放著等一下回來
   late final String _draftId = widget.draftId ?? DraftStore.newId();
-  late String _draftName = widget.draftName ?? '';
 
   Timer? _draftSaveTimer;
 
@@ -786,60 +784,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     } catch (_) {
       text = jsonEncode(map);
     }
-    // 第一次存才取名字：新專案取「專案 N」，避開已經用過的號碼
-    if (_draftName.isEmpty) _draftName = await DraftStore.defaultName();
     final thumb = _draftThumb();
     await DraftStore.save(
       _draftId,
       text,
-      name: _draftName,
       thumb: thumb?.$1,
       thumbAspect: thumb?.$2,
       clipCount: _tl.clips.length,
       duration: _tl.duration,
     );
-  }
-
-  /// 保留草稿前先問名字。回 false＝使用者按了取消（留在編輯畫面）。
-  ///
-  /// 預填目前的名字；還沒取過就預填「專案 N」，直接按確定也有個
-  /// 說得過去的名字
-  Future<bool> _askDraftName() async {
-    final suggested = _draftName.isEmpty
-        ? await DraftStore.defaultName()
-        : _draftName;
-    if (!mounted) return false;
-    final ctrl = TextEditingController(text: suggested);
-    final name = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('這份草稿叫什麼？'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          maxLength: 20,
-          decoration: const InputDecoration(
-            counterText: '',
-            hintText: '例如「開箱片 A 版」',
-          ),
-          onSubmitted: (v) => Navigator.pop(context, v.trim()),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, ctrl.text.trim()),
-            child: const Text('保留'),
-          ),
-        ],
-      ),
-    );
-    ctrl.dispose();
-    if (name == null) return false; // 取消＝不離開
-    _draftName = name.isEmpty ? suggested : name;
-    return true;
   }
 
   /// 丟掉這一份草稿（離開時選「不保留」）
@@ -6221,10 +6174,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
     if (!mounted) return;
     if (action == 'save') {
-      // 先問名字：草稿現在可以有很多份，回頭在草稿夾裡找的時候
-      // 一排「專案 1、專案 2」誰認得出哪個是哪個
-      final named = await _askDraftName();
-      if (!mounted || !named) return;
       // 離開前要真的落地，不能等併批計時器（頁面要關了）
       _draftSaveTimer?.cancel();
       await _saveDraftNow();

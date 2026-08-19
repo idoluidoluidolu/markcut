@@ -78,7 +78,6 @@ class DraftStore {
   static Future<void> save(
     String id,
     String json, {
-    required String name,
     String? thumb,
     double? thumbAspect,
     int clipCount = 0,
@@ -93,11 +92,19 @@ class DraftStore {
       await prefs.remove(_thumbKey(id));
     }
     final metas = await list();
+    // 建立時間：第一次存下來的那一刻，之後每次存都留著同一個。
+    // 草稿夾顯示的就是它——沒有名字這回事
+    final createdAt = metas
+        .firstWhere(
+          (m) => m.id == id,
+          orElse: () => DraftMeta(id: id, savedAt: DateTime.now()),
+        )
+        .createdAt;
     metas.removeWhere((m) => m.id == id);
     metas.add(
       DraftMeta(
         id: id,
-        name: name,
+        createdAt: createdAt,
         savedAt: DateTime.now(),
         hasThumb: thumb != null,
         thumbAspect: thumbAspect,
@@ -105,15 +112,6 @@ class DraftStore {
         duration: duration,
       ),
     );
-    await _writeIndex(prefs, metas);
-  }
-
-  static Future<void> rename(String id, String name) async {
-    final prefs = await SharedPreferences.getInstance();
-    final metas = await list();
-    for (final m in metas) {
-      if (m.id == id) m.name = name;
-    }
     await _writeIndex(prefs, metas);
   }
 
@@ -129,20 +127,6 @@ class DraftStore {
   /// 產生一個新的草稿 id
   static String newId() =>
       'p${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}';
-
-  /// 沒取名字時用的預設名：「專案 1」「專案 2」…（避開已用過的號碼）
-  static Future<String> defaultName() async {
-    final used = <int>{};
-    for (final m in await list()) {
-      final n = RegExp(r'^專案 (\d+)$').firstMatch(m.name);
-      if (n != null) used.add(int.parse(n.group(1)!));
-    }
-    var i = 1;
-    while (used.contains(i)) {
-      i++;
-    }
-    return '專案 $i';
-  }
 
   static Future<void> _writeIndex(
     SharedPreferences prefs,
@@ -177,7 +161,6 @@ class DraftStore {
     if (oldThumb != null) await prefs.setString(_thumbKey(id), oldThumb);
     final meta = DraftMeta(
       id: id,
-      name: '未命名專案',
       savedAt:
           DateTime.tryParse(j['savedAt'] as String? ?? '') ?? DateTime.now(),
       hasThumb: oldThumb != null,
@@ -191,7 +174,11 @@ class DraftStore {
 /// 草稿清單上的一筆（不含專案內容，只有列表要用的那些）
 class DraftMeta {
   final String id;
-  String name;
+
+  /// 這份草稿是什麼時候開始的。草稿夾顯示的就是它
+  final DateTime createdAt;
+
+  /// 最後一次存的時間（清單照這個由新到舊排）
   final DateTime savedAt;
 
   /// 有沒有封面（內容另外存，見 DraftStore.thumb）
@@ -202,17 +189,17 @@ class DraftMeta {
 
   DraftMeta({
     required this.id,
-    required this.name,
     required this.savedAt,
+    DateTime? createdAt,
     this.hasThumb = false,
     this.thumbAspect,
     this.clipCount = 0,
     this.duration = 0,
-  });
+  }) : createdAt = createdAt ?? savedAt;
 
   Map<String, dynamic> toJson() => {
     'id': id,
-    'name': name,
+    'createdAt': createdAt.toIso8601String(),
     'savedAt': savedAt.toIso8601String(),
     if (hasThumb) 'hasThumb': true,
     if (thumbAspect != null) 'thumbAspect': thumbAspect,
@@ -222,8 +209,9 @@ class DraftMeta {
 
   factory DraftMeta.fromJson(Map<String, dynamic> j) => DraftMeta(
     id: j['id'] as String? ?? '',
-    name: j['name'] as String? ?? '未命名專案',
     savedAt: DateTime.tryParse(j['savedAt'] as String? ?? '') ?? DateTime(2000),
+    // 舊資料沒有這個欄位，退回存檔時間
+    createdAt: DateTime.tryParse(j['createdAt'] as String? ?? ''),
     hasThumb: j['hasThumb'] == true,
     thumbAspect: (j['thumbAspect'] as num?)?.toDouble(),
     clipCount: ((j['clips'] ?? 0) as num).toInt(),

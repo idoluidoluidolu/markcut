@@ -109,6 +109,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return t == null ? '' : _whenLabel(t);
   }
 
+  /// 建立時間，當草稿的名字用（草稿沒有名字，見 DraftStore）
+  String _dateLabel(DateTime t) =>
+      '${t.month}/${t.day} '
+      '${t.hour.toString().padLeft(2, '0')}:'
+      '${t.minute.toString().padLeft(2, '0')}';
+
   /// 存檔時間講人話：剛剛／N 分鐘前／今天 HH:mm／M/D
   String _whenLabel(DateTime t) {
     final d = DateTime.now().difference(t);
@@ -470,7 +476,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                               size: 26,
                                               color: Color(0xFFAFAFBB),
                                             ),
-                                      title: v.name,
+                                      title: _dateLabel(v.createdAt),
                                       when: _whenLabel(v.savedAt),
                                       onTap: _openDrafts,
                                     ),
@@ -652,15 +658,12 @@ class _DraftsScreenState extends State<DraftsScreen> {
     required String subtitle,
     required VoidCallback onTap,
     required VoidCallback onDelete,
-    VoidCallback? onRename,
   }) {
     return Container(
       decoration: lightCard(radius: 12),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
         onTap: onTap,
-        // 長按改名：跟範本夾同一個手勢
-        onLongPress: onRename,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           child: Row(
@@ -702,16 +705,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
                   ],
                 ),
               ),
-              if (onRename != null)
-                IconButton(
-                  tooltip: '改名',
-                  icon: const Icon(
-                    Icons.edit_outlined,
-                    size: 18,
-                    color: kLTextDim,
-                  ),
-                  onPressed: onRename,
-                ),
               IconButton(
                 tooltip: '刪除草稿',
                 icon: const Icon(
@@ -746,7 +739,13 @@ class _DraftsScreenState extends State<DraftsScreen> {
     if (mounted) setState(() {});
   }
 
-  /// 副標：存檔時間＋幾段素材
+  /// 建立時間，當草稿的名字用（草稿沒有名字，見 DraftStore）
+  String _dateLabel(DateTime t) =>
+      '${t.month}/${t.day} '
+      '${t.hour.toString().padLeft(2, '0')}:'
+      '${t.minute.toString().padLeft(2, '0')}';
+
+  /// 副標：最後存檔時間＋幾段素材
   String _metaLabel(DraftMeta m) {
     final t = m.savedAt;
     final when =
@@ -775,48 +774,16 @@ class _DraftsScreenState extends State<DraftsScreen> {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) =>
-            VideoEditorScreen(draft: data, draftId: m.id, draftName: m.name),
+        builder: (_) => VideoEditorScreen(draft: data, draftId: m.id),
       ),
     );
-    _reload();
-  }
-
-  Future<void> _rename(DraftMeta m) async {
-    final ctrl = TextEditingController(text: m.name);
-    final name = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('專案改名'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          maxLength: 20,
-          decoration: const InputDecoration(counterText: ''),
-          onSubmitted: (v) => Navigator.pop(context, v.trim()),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, ctrl.text.trim()),
-            child: const Text('確定'),
-          ),
-        ],
-      ),
-    );
-    ctrl.dispose();
-    if (name == null || name.isEmpty || name == m.name) return;
-    await DraftStore.rename(m.id, name);
     _reload();
   }
 
   Future<void> _delete(DraftMeta m) async {
     final ok = await showConfirm(
       context,
-      title: '刪除「${m.name}」？',
+      title: '刪除這份草稿？',
       message: '未完成的專案會被移除，無法復原',
       action: '刪除',
     );
@@ -866,11 +833,10 @@ class _DraftsScreenState extends State<DraftsScreen> {
                               size: 20,
                               color: kLAccent,
                             ),
-                      title: m.name,
+                      title: _dateLabel(m.createdAt),
                       subtitle: _metaLabel(m),
                       onTap: () => _resume(m),
                       onDelete: () => _delete(m),
-                      onRename: () => _rename(m),
                     ),
                     const SizedBox(height: 12),
                   ],
