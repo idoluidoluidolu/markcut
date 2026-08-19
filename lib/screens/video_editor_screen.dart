@@ -4751,13 +4751,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         dSec = snapped - curEdge;
         // 把手拖的是「時間軸秒」，變速片段要換算回素材秒
         final dSrc = dSec * c.speed;
+        // 修剪的煞車：在目前縮放下剩 kTrimStopWidth 寬就停。
+        // 想剪更短就放大——同樣的寬度對應更短的秒數，煞車跟著鬆。
+        // 換算成素材秒（clamp 作用在 trimStart/End 上）
+        final minSrc =
+            math.max(kMinClipLen, kTrimStopWidth / _pxPerSec) * c.speed;
         // clamp 的上下限一旦反轉（極短片段），Dart 會直接丟例外，
         // 所以上限先確保不小於下限。
         // 倒轉片段的時間軸左緣對應素材尾端，兩端要對調著修，
         // 不然畫面上縮短的是左邊、實際被切掉的卻是尾巴
         if (!c.reverse) {
           if (fromLeft) {
-            final hi = math.max(0.0, c.trimEnd - kMinClipLen);
+            final hi = math.max(0.0, c.trimEnd - minSrc);
             final ns = (c.trimStart + dSrc).clamp(0.0, hi);
             // offset 位移用時間軸秒（素材差 ÷ 速度）
             c.offset = (c.offset + (ns - c.trimStart) / c.speed).clamp(
@@ -4766,18 +4771,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             );
             c.trimStart = ns;
           } else {
-            final lo = math.min(c.trimStart + kMinClipLen, src.duration);
+            final lo = math.min(c.trimStart + minSrc, src.duration);
             c.trimEnd = (c.trimEnd + dSrc).clamp(lo, src.duration);
           }
         } else {
           // 倒轉：時間軸左緣對應素材尾端，兩端對調著修
           if (fromLeft) {
-            final lo = math.min(c.trimStart + kMinClipLen, src.duration);
+            final lo = math.min(c.trimStart + minSrc, src.duration);
             final ne = (c.trimEnd - dSrc).clamp(lo, src.duration);
             c.offset = (c.offset + (c.trimEnd - ne) / c.speed).clamp(0.0, 1e6);
             c.trimEnd = ne;
           } else {
-            final hi = math.max(0.0, c.trimEnd - kMinClipLen);
+            final hi = math.max(0.0, c.trimEnd - minSrc);
             c.trimStart = (c.trimStart - dSrc).clamp(0.0, hi);
           }
         }
@@ -4805,12 +4810,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         _trimSnapped = on;
         if (on) HapticFeedback.selectionClick();
       }
+      // 修剪煞車同片段：目前縮放下剩 kTrimStopWidth 寬就停
+      final minLen = math.max(kMinClipLen, kTrimStopWidth / _pxPerSec);
       // clamp 的上下限反轉會直接丟例外，先夾好界線
       if (fromLeft) {
-        _wmStart = snapped.clamp(0.0, math.max(0.0, _wmEndEff - kMinClipLen));
+        _wmStart = snapped.clamp(0.0, math.max(0.0, _wmEndEff - minLen));
       } else {
         _wmEnd = snapped.clamp(
-          math.min(_wmStart + kMinClipLen, _tl.duration),
+          math.min(_wmStart + minLen, _tl.duration),
           _tl.duration,
         );
       }

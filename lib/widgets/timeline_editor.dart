@@ -905,7 +905,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
     // 改成照實畫，只留 12px 不讓它消失（跟片段一樣，太窄時把手與
     // 文字自己收起來，中間讓出來給拖曳）
     final rawW = (wm.end - wm.start) * pxPerSec;
-    final w = rawW.clamp(kClipMinWidth, double.infinity);
+    final w = rawW.clamp(2.0, double.infinity);
     // 擺得下圖示＋文字才畫標示。把手一律畫：縮到剩兩顆把手也還是
     // 修剪得動（跟片段同一套）
     final showLabel = rawW >= 56;
@@ -1282,20 +1282,18 @@ const double _kHandleOverhang = 14;
 /// 空間。比這窄就不畫把手（不然整條被把手蓋滿，變成拖不動）
 const double kTrimMinWidth = 64;
 
-/// 片段畫得再小也不會小於這個寬度：兩顆 16px 把手＋中間一點內容。
+/// 修剪的「畫面煞車」寬度：把手拖到片段在目前縮放下只剩這麼寬
+/// 就停（兩顆 16px 把手＋中間 24px，修剪與拖著移動都還抓得住）。
 ///
-/// 這是「畫出來的寬度」下限，比它更短的片段會畫得比實際長——所以
-/// 必須確保「放大到底時，最短片段的實際寬度」大於它，不然修剪會
-/// 撞牆：模型還在變短，畫面卻定住不動。
-///
-/// 對照：最大縮放 [kMaxPxPerSec] 1200px/秒 × [kMinClipLen] 0.05 秒
-/// = 60px > 56，所以放大之後永遠是先碰到真正的長度下限
-const double kClipMinWidth = 56;
+/// 重點：煞車做在「修剪」而不是「畫面」。片段永遠照時間軸的
+/// 相對比例畫，絕不畫得比實際長——之前反過來做（模型隨便剪、
+/// 畫面卡住 56px 不動）的結果是：看起來正常的片段其實已經被剪到
+/// 0.05 秒，總長歸零、播放鍵看似卡死。想剪得比煞車短就放大，
+/// 放大後同樣的 56px 對應更短的秒數，煞車自然跟著鬆開
+const double kTrimStopWidth = 56;
 
-/// 時間軸的最大縮放（每秒幾 px）。
-///
-/// 這個值撐著 [kClipMinWidth] 的前提：放大到底時最短片段畫得出
-/// 60px，比畫面下限寬，修剪才不會在放大之後還是動不了
+/// 時間軸的最大縮放（每秒幾 px）。跟 [kTrimStopWidth] 一起決定
+/// 修剪的絕對極限：1200px/秒 時煞車在 56/1200 ≈ 0.05 秒
 const double kMaxPxPerSec = 1200;
 
 /// 時間軸上的片段。拖曳時本體留在原地變淡，移動的是父層的幽靈。
@@ -1357,9 +1355,10 @@ class _ClipBlock extends StatelessWidget {
     };
     // 有縮圖（影片／圖片抽到了幀）才用純色底；其餘一律漸層底
     final hasStrip = filmstrip.isNotEmpty;
-    final w = (clip.length * pxPerSec)
-        .clamp(kClipMinWidth, double.infinity)
-        .toDouble();
+    // 照時間軸的相對比例畫，只留 2px 不讓它消失。修剪的煞車
+    // （kTrimStopWidth）保證選取中的片段不會真的被剪到這麼窄；
+    // 縮小時間軸讓它變窄則是使用者自己的選擇，照實呈現
+    final w = (clip.length * pxPerSec).clamp(2.0, double.infinity).toDouble();
 
     return Positioned(
       left: clip.offset * pxPerSec,
@@ -1476,10 +1475,12 @@ class _ClipBlock extends StatelessWidget {
                     child: ListenableBuilder(
                       listenable: scrollController,
                       builder: (context, _) {
-                        // 片段縮到底（kClipMinWidth）時兩顆各 16px，
-                        // 中間留 24px：修剪與抓著移動都還在
-                        final hw = (w * 0.28).clamp(16.0, 40.0);
-                        const over = _kHandleOverhang;
+                        // 一般是片段寬的 28%（16~40px）。片段窄到
+                        // 擺不下兩顆時各佔一半，靠加大的外伸熱區抓
+                        final hw = w < 34
+                            ? w / 2
+                            : (w * 0.28).clamp(16.0, 40.0);
+                        final over = w < 34 ? 20.0 : _kHandleOverhang;
                         final off = scrollController.hasClients
                             ? scrollController.offset
                             : 0.0;
