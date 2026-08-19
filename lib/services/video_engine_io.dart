@@ -388,7 +388,7 @@ Future<String> _buildCommand(
   for (var i = 0; i < spec.sources.length; i++) {
     if (spec.sources[i].isVideo && probes[i]!.fps > fps) fps = probes[i]!.fps;
   }
-  fps = outputFps(fps, spec.outW, spec.outH);
+  fps = outputFps(fps, spec.outW, spec.outH, want: spec.fps);
 
   // 一個輸入串流只能被消費一次，被多個片段引用時要先 split
   final vNeed = <int, int>{};

@@ -234,6 +234,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 專案裡最高的影格率（輸出會跟著它走）
   double _srcFps = 0;
 
+  /// 匯出的每秒張數。0＝跟著素材（見 outputFps）
+  int _fps = 0;
+
   /// 實際要用的畫質：使用者選過就聽他的，沒選過就依素材本身的
   /// 位元率挑。放成 getter 而不是存起來，改解析度時才會跟著重算——
   /// 同一支影片縮到 720p，需要的位元率就少了一半
@@ -249,7 +252,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       srcKbps: _srcKbps,
       outW: w,
       outH: h,
-      fps: outputFps(_srcFps, w, h),
+      fps: outputFps(_srcFps, w, h, want: _fps),
       // 重壓一次的餘裕看來源編碼：HEVC 換 H.264 同畫質要多吃五六成
       // 位元率，H.264 對 H.264 幾乎打平，不知道是哪種取中間值
       headroom: switch (_srcCodec) {
@@ -550,6 +553,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final fixedIds = _tl.fixDuplicateIds();
       if (fixedIds > 0) Diag.note('快照裡有 $fixedIds 個撞號的片段 id，已補新號');
       _fsMuted = j['muted'] == true;
+      _fps = ((j['fps'] ?? 0) as num).toInt();
       _wmStart = (j['wmStart'] ?? 0).toDouble();
       _wmEnd = j['wmEnd'] == null ? null : (j['wmEnd'] as num).toDouble();
       if (j['wm'] != null) {
@@ -691,6 +695,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       'res': _resolution.index,
       'resV': 2, // 解析度選項的語意版本（見 _loadDraft 的換算）
       'quality': _quality.index,
+      'fps': _fps,
       'qualityAuto': _qualityAuto,
       'wm': _settings.toJson(),
       'wmStart': _wmStart,
@@ -881,6 +886,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _wmStart = ((j['wmStart'] ?? 0) as num).toDouble();
     _wmEnd = j['wmEnd'] == null ? null : (j['wmEnd'] as num).toDouble();
     _fsMuted = j['muted'] == true;
+    _fps = ((j['fps'] ?? 0) as num).toInt();
     _extraBlankTracks = ((j['extraTracks'] ?? 0) as num).toInt();
 
     // 重建播放器與縮圖；素材檔案不見了（例如系統清掉 app 快取）就剔除該片段，
@@ -5877,6 +5883,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           wmRange: _settings.animRange,
           overlayPngs: overlayPngs,
           crf: _qualityEff.crf,
+          fps: _fps,
         ),
         onProgress: (v) => progress.value = v,
       );
@@ -8781,42 +8788,33 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 彈窗裡的一列選項：標題＋輸出尺寸副標＋選中勾勾
   /// 輸出畫面比例：置中彈窗，一行一個選項（附輸出尺寸），點了套用關窗
   void _openRatioSheet() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('畫面比例'),
-        contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
-        content: SizedBox(
-          width: 270,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final (i, r) in CanvasRatio.values.indexed)
-                Builder(
-                  builder: (context) {
-                    final (w, h) = computeCanvasSize(_tl, _resolution, r);
-                    return optionRow(
-                      context: context,
-                      title: r.label,
-                      subtitle: '$w×$h',
-                      selected: _canvasRatio == r,
-                      first: i == 0,
-                      onTap: () {
-                        setState(() {
-                          _canvasRatio = r;
-                          // 手動挑了比例＝不要裁切算出來的那個了
-                          _customAspect = null;
-                        });
-                        _saveDraft();
-                        Navigator.pop(context);
-                      },
-                    );
-                  },
-                ),
-            ],
+    showOptionsDialog<void>(
+      context,
+      title: '畫面比例',
+      options: (context) => [
+        for (final (i, r) in CanvasRatio.values.indexed)
+          Builder(
+            builder: (context) {
+              final (w, h) = computeCanvasSize(_tl, _resolution, r);
+              return optionRow(
+                context: context,
+                title: r.label,
+                subtitle: '$w×$h',
+                selected: _canvasRatio == r,
+                first: i == 0,
+                onTap: () {
+                  setState(() {
+                    _canvasRatio = r;
+                    // 手動挑了比例＝不要裁切算出來的那個了
+                    _customAspect = null;
+                  });
+                  _saveDraft();
+                  Navigator.pop(context);
+                },
+              );
+            },
           ),
-        ),
-      ),
+      ],
     );
   }
 
@@ -9675,7 +9673,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   double _estMb(ExportQuality q) {
     final (w, h) = _exportDims();
     final dur = _tl.duration / _speed;
-    final kbps = q.kbpsFor(w, h, fps: outputFps(_srcFps, w, h));
+    final kbps = q.kbpsFor(w, h, fps: outputFps(_srcFps, w, h, want: _fps));
     return (kbps * 125.0 + 32000) * dur / (1024 * 1024);
   }
 
@@ -9763,6 +9761,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     ? '${_qualityEff.label}·推薦'
                     : _qualityEff.label,
                 _openQualitySheet,
+              ),
+              row(
+                '每秒張數',
+                _fps == 0
+                    ? (_srcFps > 0 ? '自動·${_srcFps.round()}' : '自動')
+                    : '$_fps fps',
+                _openFpsSheet,
                 divider: false,
               ),
               const SizedBox(height: 22),
@@ -9805,44 +9810,57 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 畫質：置中彈窗。副標拿掉，改成右邊直接列這個專案各檔位的檔案大小——
   /// 「極高」跟「最高」用形容詞永遠比不出來，數字一眼就分得出
   void _openQualitySheet() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('畫質'),
-        contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
-        content: SizedBox(
-          width: 270,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final (i, q) in qualityOrder.indexed)
-                optionRow(
-                  context: context,
-                  title: q.label,
-                  subtitle: q.note,
-                  // 自動挑到的那一檔＝壓到看不出跟原素材有差的點。
-                  // 不寫「視覺無損」是因為素材超過上限時會停在極高，
-                  // 那時它並不是無損，但仍然是這裡最該選的一檔
-                  badge: _qualityAuto && _srcKbps > 0 && _qualityEff == q
-                      ? '推薦'
-                      : null,
-                  trailing:
-                      '約 ${_estMb(q).clamp(1, 1e9).toStringAsFixed(0)} MB',
-                  selected: _qualityEff == q,
-                  first: i == 0,
-                  onTap: () {
-                    setState(() {
-                      _quality = q;
-                      _qualityAuto = false; // 手動選過就不再自動改
-                    });
-                    _saveDraft();
-                    Navigator.pop(context);
-                  },
-                ),
-            ],
+    showOptionsDialog<void>(
+      context,
+      title: '畫質',
+      options: (context) => [
+        for (final (i, q) in qualityOrder.indexed)
+          optionRow(
+            context: context,
+            title: q.label,
+            subtitle: q.note,
+            // 自動挑到的那一檔＝壓到看不出跟原素材有差的點。
+            // 不寫「視覺無損」是因為素材超過上限時會停在極高，
+            // 那時它並不是無損，但仍然是這裡最該選的一檔
+            badge: _qualityAuto && _srcKbps > 0 && _qualityEff == q
+                ? '推薦'
+                : null,
+            trailing: '約 ${_estMb(q).clamp(1, 1e9).toStringAsFixed(0)} MB',
+            selected: _qualityEff == q,
+            first: i == 0,
+            onTap: () {
+              setState(() {
+                _quality = q;
+                _qualityAuto = false; // 手動選過就不再自動改
+              });
+              _saveDraft();
+              Navigator.pop(context);
+            },
           ),
-        ),
-      ),
+      ],
+    );
+  }
+
+  /// 每秒張數：跟畫質／解析度同一款清單
+  void _openFpsSheet() {
+    showOptionsDialog<void>(
+      context,
+      title: '每秒張數',
+      options: (context) => [
+        for (final (i, f) in kFpsChoices.indexed)
+          optionRow(
+            context: context,
+            title: f == 0 ? '自動' : '$f fps',
+            subtitle: fpsNote(f, _srcFps),
+            selected: _fps == f,
+            first: i == 0,
+            onTap: () {
+              setState(() => _fps = f);
+              _saveDraft();
+              Navigator.pop(context);
+            },
+          ),
+      ],
     );
   }
 

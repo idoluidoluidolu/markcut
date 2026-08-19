@@ -414,6 +414,75 @@ class _HintToast extends StatelessWidget {
   }
 }
 
+/// 一列一列的選項彈窗（畫面比例／解析度／畫質都走這裡）。
+///
+/// 外框跟 [showConfirm] 用同一套：置中標題、同樣的圓角與留白、
+/// 底部一顆整寬取消。裡面每一列還是 [optionRow]，一個像素都沒動——
+/// 上次連內容一起改才出事。
+///
+/// 寬度比確認框寬一點：這裡的列有標題、副標、還有右邊的數字，
+/// 塞進 280 會擠成兩行
+Future<T?> showOptionsDialog<T>(
+  BuildContext context, {
+  required String title,
+  required List<Widget> Function(BuildContext context) options,
+  double width = 320,
+}) {
+  final c = pageColors(context);
+  return showDialog<T>(
+    context: context,
+    builder: (context) => Dialog(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(kDialogRadius),
+        side: BorderSide(color: c.line),
+      ),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: width),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 22, 16, 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // 標題靠左：選項清單是「一排可以掃的東西」，標題跟每一列
+              // 的左緣切齊，眼睛才有一條線可以往下走
+              Padding(
+                padding: const EdgeInsets.only(left: 6),
+                child: Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 15.5,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.3,
+                    color: c.text,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: options(context),
+                  ),
+                ),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                style: TextButton.styleFrom(
+                  foregroundColor: c.dim,
+                  minimumSize: const Size.fromHeight(40),
+                ),
+                child: const Text('取消', style: TextStyle(fontSize: 13)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 /// 確認對話框（使用者選定 C 款直排大按鈕）：
 /// 置中標題＋一行後果說明＋整寬主行動鈕＋文字取消。回傳 true=執行。
 Future<bool> showConfirm(

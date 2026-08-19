@@ -15,17 +15,17 @@ extension ExportResolutionLabel on ExportResolution {
   /// 用「尺寸」而不是「畫質」講：下面還有一個獨立的「畫質」設定
   /// （標準／極高／最高），兩邊都叫畫質的話同一頁會出現兩個「最高」
   String get label => switch (this) {
-        ExportResolution.original => '原尺寸',
-        ExportResolution.fhd1080 => '縮小',
-        ExportResolution.hd720 => '最小',
-      };
+    ExportResolution.original => '原尺寸',
+    ExportResolution.fhd1080 => '縮小',
+    ExportResolution.hd720 => '最小',
+  };
 
   /// 選單裡的一句說明（尺寸另外由呼叫端算）
   String get hint => switch (this) {
-        ExportResolution.original => '跟原片一樣',
-        ExportResolution.fhd1080 => '檔案小一半左右',
-        ExportResolution.hd720 => '匯出速度最快',
-      };
+    ExportResolution.original => '跟原片一樣',
+    ExportResolution.fhd1080 => '檔案小一半左右',
+    ExportResolution.hd720 => '匯出速度最快',
+  };
 }
 
 /// 輸出畫面比例（原始 = 跟第一個影片一樣）
@@ -33,23 +33,23 @@ enum CanvasRatio { original, r16_9, r9_16, r1_1, r4_3, r3_4 }
 
 extension CanvasRatioInfo on CanvasRatio {
   String get label => switch (this) {
-        CanvasRatio.original => '原始',
-        CanvasRatio.r16_9 => '16:9',
-        CanvasRatio.r9_16 => '9:16',
-        CanvasRatio.r1_1 => '1:1',
-        CanvasRatio.r4_3 => '4:3',
-        CanvasRatio.r3_4 => '3:4',
-      };
+    CanvasRatio.original => '原始',
+    CanvasRatio.r16_9 => '16:9',
+    CanvasRatio.r9_16 => '9:16',
+    CanvasRatio.r1_1 => '1:1',
+    CanvasRatio.r4_3 => '4:3',
+    CanvasRatio.r3_4 => '3:4',
+  };
 
   /// 寬/高；null = 依素材
   double? get value => switch (this) {
-        CanvasRatio.original => null,
-        CanvasRatio.r16_9 => 16 / 9,
-        CanvasRatio.r9_16 => 9 / 16,
-        CanvasRatio.r1_1 => 1,
-        CanvasRatio.r4_3 => 4 / 3,
-        CanvasRatio.r3_4 => 3 / 4,
-      };
+    CanvasRatio.original => null,
+    CanvasRatio.r16_9 => 16 / 9,
+    CanvasRatio.r9_16 => 9 / 16,
+    CanvasRatio.r1_1 => 1,
+    CanvasRatio.r4_3 => 4 / 3,
+    CanvasRatio.r3_4 => 3 / 4,
+  };
 }
 
 /// 匯出畫質（CRF 越低畫質越高、檔案越大）
@@ -71,29 +71,29 @@ extension ExportQualityInfo on ExportQuality {
   /// 改成講尺度：省空間←→最高畫質。真正的差別由選單右邊的檔案大小講，
   /// 那是唯一每個人都懂、而且會隨專案變動的東西
   String get label => switch (this) {
-        ExportQuality.low => '省空間',
-        ExportQuality.standard => '標準',
-        ExportQuality.ultra => '高畫質',
-        ExportQuality.lossless => '最高畫質',
-      };
+    ExportQuality.low => '省空間',
+    ExportQuality.standard => '標準',
+    ExportQuality.ultra => '高畫質',
+    ExportQuality.lossless => '最高畫質',
+  };
 
   /// 一句話講「什麼時候選這檔」。講用途不講技術——位元率、壓縮率
   /// 那些字眼幫不了不懂的人，懂的人看右邊的檔案大小就夠了
   String get note => switch (this) {
-        ExportQuality.low => '輸出最快速',
-        ExportQuality.standard => '手機上不放大看不太出差別',
-        ExportQuality.ultra => '幾乎原畫質',
-        ExportQuality.lossless => '多數情況下和高畫質幾乎沒有分別',
-      };
+    ExportQuality.low => '輸出最快速',
+    ExportQuality.standard => '手機上不放大看不太出差別',
+    ExportQuality.ultra => '幾乎原畫質',
+    ExportQuality.lossless => '多數情況下和高畫質幾乎沒有分別',
+  };
 
   /// 每像素每幀的位元數。手機走硬體編碼器，吃的是位元率不是 CRF，
   /// 所以這張表才是各檔位實際的差別（見 [kbpsFor]）
   double get bpp => switch (this) {
-        ExportQuality.low => 0.07,
-        ExportQuality.standard => 0.15,
-        ExportQuality.ultra => 0.28,
-        ExportQuality.lossless => 0.60,
-      };
+    ExportQuality.low => 0.07,
+    ExportQuality.standard => 0.15,
+    ExportQuality.ultra => 0.28,
+    ExportQuality.lossless => 0.60,
+  };
 
   /// 這一檔在指定輸出尺寸與影格率下的位元率（kbps）。
   /// 下限擋住極小畫面算出來的荒謬低值，上限是保護（4K 最高會撞到）。
@@ -107,12 +107,11 @@ extension ExportQualityInfo on ExportQuality {
   }
 
   int get crf => switch (this) {
-        ExportQuality.low => 26,
-        ExportQuality.standard => 17,
-        ExportQuality.ultra => 12,
-        ExportQuality.lossless => 0,
-      };
-
+    ExportQuality.low => 26,
+    ExportQuality.standard => 17,
+    ExportQuality.ultra => 12,
+    ExportQuality.lossless => 0,
+  };
 }
 
 /// 輸出影格率：跟著素材走（取專案中最高者），只處理兩種例外。
@@ -123,21 +122,35 @@ extension ExportQualityInfo on ExportQuality {
 ///
 /// 1440p 以上夾 60：多數手機的硬體編碼器 4K 只支援到 60，硬塞
 /// 120 會編碼失敗、掉進 mpeg4 軟編退路，畫質反而全毀
-double outputFps(double srcFps, int outW, int outH) {
+double outputFps(double srcFps, int outW, int outH, {int want = 0}) {
   var fps = srcFps;
-  if (fps <= 0 || fps > 480) return 30;
+  if (fps <= 0 || fps > 480) fps = 30;
   if (fps > 120) fps = 120;
   if (outW * outH > 2560 * 1440 && fps > 60) fps = 60;
+  // 使用者指定了張數就照他的，但不超過素材本身有的——把 30fps 的
+  // 素材寫成 60fps 只是把每一格存兩次，檔案變兩倍、畫面一樣頓
+  if (want > 0) return math.min(want.toDouble(), fps);
   return fps;
 }
 
+/// 匯出頁「張數」可以選的幾檔。0＝跟著素材
+const kFpsChoices = <int>[0, 24, 30, 60];
+
+/// 張數選項的說明
+String fpsNote(int fps, double srcFps) => switch (fps) {
+  0 => srcFps > 0 ? '跟素材一樣（${srcFps.round()}）' : '跟素材一樣',
+  24 => '電影感，檔案最小',
+  30 => '一般社群平台',
+  _ => '最流暢，檔案最大',
+};
+
 /// 匯出規格裡存的是 CRF 數字，換回檔位
 ExportQuality qualityFromCrf(int crf) => switch (crf) {
-      <= 0 => ExportQuality.lossless,
-      <= 12 => ExportQuality.ultra,
-      <= 17 => ExportQuality.standard,
-      _ => ExportQuality.low,
-    };
+  <= 0 => ExportQuality.lossless,
+  <= 12 => ExportQuality.ultra,
+  <= 17 => ExportQuality.standard,
+  _ => ExportQuality.low,
+};
 
 /// 依素材本身的位元率，挑一個「看不出被重壓過」的檔位（視覺無損）。
 ///
@@ -189,6 +202,9 @@ class ExportSpec {
   final int outH;
   final int crf; // 匯出畫質（x264 CRF）
 
+  /// 每秒張數。0＝跟著素材（見 outputFps）
+  final int fps;
+
   ExportSpec({
     required this.sources,
     required this.clips,
@@ -204,15 +220,15 @@ class ExportSpec {
     this.wmRange = 1.0,
     this.overlayPngs = const {},
     this.crf = 17,
+    this.fps = 0,
   });
 
   /// 輸出影片實際長度（變速後）
   double get outputDuration => math.max(0.01, timelineDuration / speed);
 
   /// 動畫週期（閃爍一輪／跑馬燈掃一輪的秒數）
-  double get wmCycle => wmAnimation == WmAnimation.marquee
-      ? 8 / wmSpeed
-      : 1.2 / wmSpeed;
+  double get wmCycle =>
+      wmAnimation == WmAnimation.marquee ? 8 / wmSpeed : 1.2 / wmSpeed;
 
   /// 閃爍時亮著的秒數
   double get wmOn => wmCycle * (0.58 * wmRange).clamp(0.1, 0.92);
@@ -253,21 +269,23 @@ class ExportSpec {
 /// 長邊上限不超過素材本身（不放大）。
 /// [customAspect] 是裁切算出來的自訂比例（寬/高）。有值就蓋過 [ratio]——
 /// 「裁成什麼形狀，成品就是什麼形狀」，不再塞回原本的畫布留黑邊
-(int, int) computeCanvasSize(TimelineModel timeline, ExportResolution res,
-    [CanvasRatio ratio = CanvasRatio.original, double? customAspect]) {
+(int, int) computeCanvasSize(
+  TimelineModel timeline,
+  ExportResolution res, [
+  CanvasRatio ratio = CanvasRatio.original,
+  double? customAspect,
+]) {
   // 影片「或圖片」都算畫面素材。只認影片的話，純照片的時間軸
   //（照片做成影片）會一路拿到寫死的 1920x1080：比例選單每一項
   // 都顯示同一個數字、匯出畫布跟預覽（直式照片）完全對不上，
   // 浮水印的位置比例整個歪掉（裝置實測回報）
-  bool visual(MediaSource s) =>
-      s.isVideo || s.kind == ClipKind.image;
-  final videos = timeline.clips
-      .where((c) => visual(timeline.sourceOf(c)))
-      .toList()
-    ..sort((a, b) {
-      final t = a.track.compareTo(b.track);
-      return t != 0 ? t : a.offset.compareTo(b.offset);
-    });
+  bool visual(MediaSource s) => s.isVideo || s.kind == ClipKind.image;
+  final videos =
+      timeline.clips.where((c) => visual(timeline.sourceOf(c))).toList()
+        ..sort((a, b) {
+          final t = a.track.compareTo(b.track);
+          return t != 0 ? t : a.offset.compareTo(b.offset);
+        });
   if (videos.isEmpty) return (1920, 1080);
 
   final base = timeline.sourceOf(videos.first);
