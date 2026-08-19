@@ -13,7 +13,7 @@ export 'mosaic.dart';
 /// 本來寫死 0.3 秒：放大到看得見毫秒了，把手還是拖不動——想切出
 /// 一個兩三格的瞬間根本做不到。30ms 在 30fps 大約是 1 格，
 /// 編碼器也吃得下
-const double kMinClipLen = 0.03;
+const double kMinClipLen = 0.025;
 
 enum ClipKind { video, audio, image, text, wm, mosaic }
 
