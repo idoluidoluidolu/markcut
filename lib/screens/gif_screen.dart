@@ -58,6 +58,9 @@ class _GifScreenState extends State<GifScreen> {
   /// 整張出去檔案大又抓不到重點
   Rect? _crop;
 
+  /// 播放速度倍率。GIF 常常要放慢看細節、或加快變成有梗的節奏
+  double _speed = 1.0;
+
   /// 拖把手時的起手值與累計位移。
   ///
   /// 本來每一格都拿「上一格畫出來的 x」再加這一格的位移去算時間——
@@ -97,7 +100,7 @@ class _GifScreenState extends State<GifScreen> {
               '${c.width.toStringAsFixed(3)},${c.height.toStringAsFixed(3)}';
     final key =
         '${_start.toStringAsFixed(2)}~${_end.toStringAsFixed(2)}'
-        '@$_fps@$_size@$cropKey';
+        '@$_fps@$_size@$cropKey@$_speed';
     if (key == _previewKey) return;
     setState(() => _building = true);
     final path = await engine.makeGifFile(
@@ -107,6 +110,7 @@ class _GifScreenState extends State<GifScreen> {
       fps: _fps,
       maxSide: _size,
       crop: _crop,
+      speed: _speed,
     );
     if (!mounted) return;
     // 做好一份就把上一份刪掉，暫存不會愈積愈多
@@ -208,7 +212,12 @@ class _GifScreenState extends State<GifScreen> {
     await p.seekTo(Duration(milliseconds: (t * 1000).round()));
   }
 
+  /// 選取範圍的長度（原速）
   double get _len => math.max(0.1, _end - _start);
+
+  /// 成品實際的長度：變速之後的秒數。
+  /// 「建議 15 秒內」看的是成品，放慢兩倍就真的變兩倍長
+  double get _outLen => _len / _speed.clamp(0.1, 8.0);
 
   /// 中繼影片的輸出尺寸：素材原比例、長邊不超過選的 GIF 尺寸。
 
@@ -358,35 +367,7 @@ class _GifScreenState extends State<GifScreen> {
     return SwipeBack(
       child: Scaffold(
         backgroundColor: kBg,
-        appBar: AppBar(
-          backgroundColor: kBg,
-          // 裁切跟返回同一層級：它是「對這支影片做的一件事」，
-          // 不是尺寸／流暢度那種輸出參數，混在下面那兩排會像硬塞
-          actions: [
-            TextButton.icon(
-              onPressed: _ready ? _openCrop : null,
-              style: TextButton.styleFrom(
-                foregroundColor: _crop == null ? kText : kSelect,
-              ),
-              icon: const Icon(Icons.crop, size: 17),
-              label: Text(
-                _crop == null ? '裁切' : '已裁切',
-                style: const TextStyle(fontSize: 13),
-              ),
-            ),
-            if (_crop != null)
-              IconButton(
-                tooltip: '還原裁切',
-                onPressed: () {
-                  setState(() => _crop = null);
-                  _schedulePreview();
-                },
-                icon: const Icon(Icons.restart_alt, size: 18),
-                color: kTextDim,
-              ),
-            const SizedBox(width: 4),
-          ],
-        ),
+        appBar: AppBar(backgroundColor: kBg),
         body: SafeArea(
           child: !_ready
               ? const Center(child: CircularProgressIndicator())
@@ -411,6 +392,8 @@ class _GifScreenState extends State<GifScreen> {
                             setState(() => _fps = v);
                             _schedulePreview();
                           }, (v) => '$v fps'),
+                          const SizedBox(height: 10),
+                          _speedRow(),
                           const SizedBox(height: 16),
                           primaryAction(
                             label: '做成 GIF',
@@ -427,6 +410,64 @@ class _GifScreenState extends State<GifScreen> {
     );
   }
 
+  /// 疊在預覽右下角的裁切鈕。裁的是那張畫面，按鈕就長在那張畫面上
+  Widget _cropButton() => Positioned(
+    right: 10,
+    bottom: 10,
+    child: Row(
+      children: [
+        if (_crop != null)
+          Padding(
+            padding: const EdgeInsets.only(right: 6),
+            child: Material(
+              color: Colors.black.withValues(alpha: 0.6),
+              shape: const CircleBorder(),
+              child: InkWell(
+                customBorder: const CircleBorder(),
+                onTap: () {
+                  setState(() => _crop = null);
+                  _schedulePreview();
+                },
+                child: const Padding(
+                  padding: EdgeInsets.all(7),
+                  child: Icon(Icons.restart_alt, size: 16, color: kTextDim),
+                ),
+              ),
+            ),
+          ),
+        Material(
+          color: Colors.black.withValues(alpha: 0.6),
+          borderRadius: BorderRadius.circular(999),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(999),
+            onTap: _openCrop,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.crop,
+                    size: 15,
+                    color: _crop == null ? kText : kSelect,
+                  ),
+                  const SizedBox(width: 5),
+                  Text(
+                    _crop == null ? '裁切' : '已裁切',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      color: _crop == null ? kText : kSelect,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+
   Widget _preview() {
     final p = _player!;
     final size = p.value.size;
@@ -442,7 +483,9 @@ class _GifScreenState extends State<GifScreen> {
         // 點一下回去看原片（要重新選範圍時比較好對位）
         onTap: () => setState(() => _gifPreview = null),
         child: Container(
-          color: Colors.black,
+          // 跟影片編輯的預覽同一個底色：純黑會在預覽區與下面的
+          // 控制區之間切出一條分界，整頁看起來像被切成兩塊
+          color: kPreviewBg,
           alignment: Alignment.center,
           child: Stack(
             alignment: Alignment.center,
@@ -461,6 +504,7 @@ class _GifScreenState extends State<GifScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
                 ),
+              _cropButton(),
             ],
           ),
         ),
@@ -470,7 +514,7 @@ class _GifScreenState extends State<GifScreen> {
       behavior: HitTestBehavior.opaque,
       onTap: _togglePlay,
       child: Container(
-        color: Colors.black,
+        color: kPreviewBg,
         alignment: Alignment.center,
         child: Stack(
           alignment: Alignment.center,
@@ -486,6 +530,7 @@ class _GifScreenState extends State<GifScreen> {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 ),
               ),
+            _cropButton(),
             // 暫停時給一顆播放鈕；播放中畫面乾淨
             if (!_playing)
               Container(
@@ -504,7 +549,7 @@ class _GifScreenState extends State<GifScreen> {
   }
 
   Widget _rangeReadout() {
-    final over = _len > 15;
+    final over = _outLen > 15;
     return Row(
       children: [
         Text(
@@ -518,8 +563,8 @@ class _GifScreenState extends State<GifScreen> {
         const Spacer(),
         Text(
           over
-              ? '長度 ${_len.toStringAsFixed(1)} 秒·建議 15 秒內'
-              : '長度 ${_len.toStringAsFixed(1)} 秒',
+              ? '長度 ${_outLen.toStringAsFixed(1)} 秒·建議 15 秒內'
+              : '長度 ${_outLen.toStringAsFixed(1)} 秒',
           style: TextStyle(
             fontSize: 12.5,
             fontWeight: FontWeight.w600,
@@ -667,6 +712,18 @@ class _GifScreenState extends State<GifScreen> {
       ),
     );
   }
+
+  /// 速度那一排。用 chips 跟尺寸／流暢度同型，不另外發明一種東西
+  Widget _speedRow() => _chipsRow<double>(
+    '速度',
+    const [0.25, 0.5, 1.0, 1.5, 2.0],
+    _speed,
+    (v) {
+      setState(() => _speed = v);
+      _schedulePreview();
+    },
+    (v) => v == 1.0 ? '原速' : '${v % 1 == 0 ? v.toInt() : v}x',
+  );
 
   Widget _chipsRow<T>(
     String label,

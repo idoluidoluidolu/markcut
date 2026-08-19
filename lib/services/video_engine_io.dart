@@ -921,9 +921,18 @@ Future<String> _buildCommand(
       case ClipKind.audio:
         cmd.write('-i "${s.path}" ');
       case ClipKind.image:
+        // GIF 是會動的：-ignore_loop 0 讓它循環播到片段結束。
+        // 而且 gif demuxer 根本沒有 loop 這個選項——沿用 -loop 1
+        // 會直接讓 FFmpeg 報「Option loop not found」，整個匯出失敗。
+        //
+        // 靜態圖則要先 -f image2 指定 demuxer：單張 .png 會被自動
+        // 判成 png_pipe，那個一樣沒有 loop（裁切過、貼圖那種落成
+        // .png 的素材就會踩到）
         cmd.write(
-          '-loop 1 -framerate ${fps.toStringAsFixed(3)} '
-          '-t ${_f(stillNeed[i] ?? 1)} -i "${s.path}" ',
+          s.isGif
+              ? '-ignore_loop 0 -t ${_f(stillNeed[i] ?? 1)} -i "${s.path}" '
+              : '-f image2 -loop 1 -framerate ${fps.toStringAsFixed(3)} '
+                    '-t ${_f(stillNeed[i] ?? 1)} -i "${s.path}" ',
         );
       case ClipKind.text || ClipKind.wm:
         break; // 每個片段一張 PNG，在下面接續
@@ -933,8 +942,9 @@ Future<String> _buildCommand(
   }
   for (final c in segClips) {
     if (isPngClip(spec.sources[c.sourceIndex].kind)) {
+      // 整版透明 PNG 同理，也要指定 image2
       cmd.write(
-        '-loop 1 -framerate ${fps.toStringAsFixed(3)} '
+        '-f image2 -loop 1 -framerate ${fps.toStringAsFixed(3)} '
         '-t ${_f(c.length / sp + 0.5)} -i "${overlayFiles[c.id]}" ',
       );
     }
@@ -1745,11 +1755,18 @@ Future<String?> makeGifFile({
   required int fps,
   required int maxSide,
   Rect? crop,
+  double speed = 1.0,
 }) async {
   final dir = await getTemporaryDirectory();
   final ts = DateTime.now().millisecondsSinceEpoch;
   final out = '${dir.path}${Platform.pathSeparator}preview_$ts.gif';
+  final sp = speed.clamp(0.1, 8.0);
   final dur = math.max(0.05, end - start);
+  // 變速用 setpts 壓時間戳，接在 fps 之前——先改時間再抽格，
+  // 抽出來的每一格才是照新的節奏走
+  final speedF = (sp - 1).abs() < 0.001
+      ? ''
+      : 'setpts=${_f(1 / sp)}*PTS,';
   // 裁切用比例表示（0~1），換成 FFmpeg 的 crop：長寬用 iw/ih 算，
   // 不必先知道影片實際幾 px
   final cropF = crop == null
@@ -1759,7 +1776,7 @@ Future<String?> makeGifFile({
   try {
     final session = await FFmpegKit.execute(
       '-y -ss ${_f(start)} -t ${_f(dur)} -i "$inputPath" -filter_complex '
-      '"[0:v]${cropF}fps=$fps,'
+      '"[0:v]$cropF$speedF' 'fps=$fps,'
       'scale=w=$maxSide:h=$maxSide:force_original_aspect_ratio=decrease'
       ':flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];'
       '[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle[g]" '

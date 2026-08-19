@@ -2295,6 +2295,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     value: clip.scale,
                     min: 0.02,
                     max: 3.0,
+                    curve: 1.8,
                     onChanged: (v) => change(() => clip.scale = v),
                     readout: '${(clip.scale * 100).round()}',
                     unit: '%',
@@ -2597,6 +2598,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     value: logo.sizeFrac,
                     min: 0.02,
                     max: 2.0,
+                    // 常用的是小尺寸那一段，線性的話動一下就跳好幾倍
+                    curve: 2.2,
                     onChanged: (v) => change(() => logo.sizeFrac = v),
                     readout: '${(logo.sizeFrac * 100).round()}',
                     unit: '%',
@@ -2783,17 +2786,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 時間軸上有幾段圖片素材（貼圖那種浮水印素材不算）
-  int get _imageClipCount =>
-      _tl.clips.where((c) => _tl.sourceOf(c).kind == ClipKind.image).length;
+  int get _imageClipCount => _tl.clips.where((c) {
+    final src = _tl.sourceOf(c);
+    // GIF 不算：它本來就有自己的長度，跟照片一起重設成同一個秒數
+    // 只會弄壞它（實測回報：只放一張照片，卻因為旁邊有個 GIF
+    // 就跳出「圖片秒數」）
+    return src.kind == ClipKind.image && !src.isGif;
+  }).length;
 
   /// 把所有圖片素材改成同一個長度，並照原本的先後順序重新接起來。
   ///
   /// 幻燈片是「一整排等長的圖」，改秒數就該整批改；一張一張拉把手
   /// 不但慢，長度還會差個幾格對不齊
   Future<void> _resetSlideSeconds() async {
-    final imgs = _tl.clips
-        .where((c) => _tl.sourceOf(c).kind == ClipKind.image)
-        .toList();
+    final imgs = _tl.clips.where((c) {
+      final src = _tl.sourceOf(c);
+      return src.kind == ClipKind.image && !src.isGif;
+    }).toList();
     if (imgs.length < 2) return;
     final cur = imgs.first.length;
     final sec = await _askSlideSeconds(
@@ -8095,8 +8104,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   ),
                 ),
               ),
-              // 比例膠囊釘在整個預覽區右上角（不跟畫布走）
-              _canvasHint(),
+              // 比例膠囊釘在整個預覽區右上角（不跟畫布走）。
+              // 全螢幕時整組收掉：那是「編輯用的資訊」，看片時
+              // 只會擋畫面——退出全螢幕的鈕在膠囊上，這裡不需要
+              if (!_fullscreen) _canvasHint(),
               // 工作檔在背景備，不出現在畫面上：進場就能剪，
               // 好了自己換過去。別家剪輯 App 也沒有那個讀取條
             ],

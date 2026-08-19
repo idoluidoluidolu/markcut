@@ -1161,6 +1161,9 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                 0.015,
                                 2.0,
                                 (v) => _update(() => s.text.sizeFrac = v),
+                                // 常用的是 2%~20%，線性的話全擠在軌道
+                                // 最前面一小段，動一下就跳好幾倍
+                                curve: 2.2,
                               ),
                               _sliderRow(
                                 '透明',
@@ -1445,6 +1448,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                 0.05,
                                 2.0,
                                 (v) => _update(() => s.logo.sizeFrac = v),
+                                curve: 2.0,
                               ),
                               _sliderRow(
                                 '透明',
@@ -1829,12 +1833,14 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     double value,
     double min,
     double max,
-    ValueChanged<double> onChanged,
-  ) => sliderRow(
+    ValueChanged<double> onChanged, {
+    double curve = 1,
+  }) => sliderRow(
     label: label,
     value: value,
     min: min,
     max: max,
+    curve: curve,
     onChanged: onChanged,
     onChangeStart: (_) => _sliderStart(),
     onChangeEnd: (_) => _sliderEnd(),

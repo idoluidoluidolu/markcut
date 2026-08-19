@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'
@@ -887,6 +888,12 @@ Widget sliderRow({
   VoidCallback? onReset,
   Color? labelColor,
   Color? valueColor,
+  /// 刻度的彎曲程度。1＝線性；大於 1 就把「小的那一端」拉開。
+  ///
+  /// 大小這種滑桿最小 0.015、最大 2.0，線性的話常用的 2%~20% 全部
+  /// 擠在軌道最前面 9%——手指動一點點就跳好幾倍。給 2.2 之後那一段
+  /// 佔到四成多，才調得動
+  double curve = 1,
 }) {
   final value0 = SizedBox(
     width: kSliderValueW,
@@ -923,15 +930,29 @@ Widget sliderRow({
           ),
         ),
         Expanded(
-          child: Slider(
-            value: value.clamp(min, max),
-            min: min,
-            max: max,
-            divisions: divisions,
-            onChanged: onChanged,
-            onChangeStart: onChangeStart,
-            onChangeEnd: onChangeEnd,
-          ),
+          child: curve == 1
+              ? Slider(
+                  value: value.clamp(min, max),
+                  min: min,
+                  max: max,
+                  divisions: divisions,
+                  onChanged: onChanged,
+                  onChangeStart: onChangeStart,
+                  onChangeEnd: onChangeEnd,
+                )
+              : Slider(
+                  // 彎刻度：滑桿自己走 0~1，換算之後才是真正的值
+                  value: math
+                      .pow(
+                        ((value - min) / (max - min)).clamp(0.0, 1.0),
+                        1 / curve,
+                      )
+                      .toDouble(),
+                  onChanged: (t) =>
+                      onChanged(min + (max - min) * math.pow(t, curve)),
+                  onChangeStart: onChangeStart,
+                  onChangeEnd: onChangeEnd,
+                ),
         ),
         if (onReset == null)
           value0

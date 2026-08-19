@@ -60,6 +60,7 @@ Future<String?> makeGifFile({
   required int fps,
   required int maxSide,
   Rect? crop,
+  double speed = 1.0,
 }) async {
   // 假裝跑了一下，不然預覽會瞬間出現，看不出「正在做」
   await Future<void>.delayed(const Duration(milliseconds: 700));

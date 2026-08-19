@@ -368,7 +368,20 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
           final boxH = probe.height + padV * 2;
           final left = t.x * w - probe.width / 2 - padH;
           final top = t.y * h - probe.height / 2 - padV;
-          hitTexts[ti] = Rect.fromLTWH(left, top, boxW, boxH);
+          // 框比量到的字再放寬一點點。
+          //
+          // TextPainter 回的是「行高」，而不少字型的墨水會超出行高
+          //（粉圓這種圓體最明顯，筆畫的圓頭往上下多凸一截）——照行高
+          // 畫框，字就會壓在框線上、甚至凸出去。放寬只動框與點擊範圍，
+          // 文字本身的位置一個像素都沒變，跟匯出還是對得上
+          final inkH = fontSize * 0.07;
+          final inkW = fontSize * 0.04;
+          hitTexts[ti] = Rect.fromLTWH(
+            left - inkW,
+            top - inkH,
+            boxW + inkW * 2,
+            boxH + inkH * 2,
+          );
           void makeActive() => settings.activeText = ti;
 
           Widget textWidget(TextStyle st) => Text(
