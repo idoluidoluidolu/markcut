@@ -905,7 +905,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
     // 改成照實畫，只留 12px 不讓它消失（跟片段一樣，太窄時把手與
     // 文字自己收起來，中間讓出來給拖曳）
     final rawW = (wm.end - wm.start) * pxPerSec;
-    final w = rawW.clamp(12.0, double.infinity);
+    final w = rawW.clamp(kClipMinWidth, double.infinity);
     // 擺得下圖示＋文字才畫標示。把手一律畫：縮到剩兩顆把手也還是
     // 修剪得動（跟片段同一套）
     final showLabel = rawW >= 56;
@@ -1051,7 +1051,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
     final clip = _clipById(l.clipId);
     if (clip == null) return const SizedBox.shrink();
     final src = timeline.sourceOf(clip);
-    final w = (clip.length * pxPerSec).clamp(22.0, double.infinity).toDouble();
+    final w = (clip.length * pxPerSec)
+        .clamp(kClipMinWidth, double.infinity)
+        .toDouble();
     return Positioned(
       left: spec.offset * pxPerSec,
       top:
@@ -1282,6 +1284,13 @@ const double _kHandleOverhang = 14;
 /// 空間。比這窄就不畫把手（不然整條被把手蓋滿，變成拖不動）
 const double kTrimMinWidth = 64;
 
+/// 片段畫得再小也不會小於這個寬度：兩顆最小尺寸（22px）的修剪把手
+/// 剛好排滿。
+///
+/// 到這裡就停住不再縮——再小下去把手就抓不到了，想繼續修剪請自己
+/// 把時間軸放大（使用者要求：「縮到這裡就不能再縮，要放大才能縮」）
+const double kClipMinWidth = 44;
+
 /// 時間軸上的片段。拖曳時本體留在原地變淡，移動的是父層的幽靈。
 class _ClipBlock extends StatelessWidget {
   final TimelineClip clip;
@@ -1341,7 +1350,9 @@ class _ClipBlock extends StatelessWidget {
     };
     // 有縮圖（影片／圖片抽到了幀）才用純色底；其餘一律漸層底
     final hasStrip = filmstrip.isNotEmpty;
-    final w = (clip.length * pxPerSec).clamp(22.0, double.infinity).toDouble();
+    final w = (clip.length * pxPerSec)
+        .clamp(kClipMinWidth, double.infinity)
+        .toDouble();
 
     return Positioned(
       left: clip.offset * pxPerSec,
@@ -1458,9 +1469,9 @@ class _ClipBlock extends StatelessWidget {
                     child: ListenableBuilder(
                       listenable: scrollController,
                       builder: (context, _) {
-                        // 下限 8：兩顆把手佔滿 16px 的片段時中間雖然
-                        // 沒得抓，但至少兩邊還拖得動（使用者要求）
-                        final hw = (w * 0.35).clamp(8.0, 40.0);
+                        // 下限 22：跟 kClipMinWidth 對應，片段縮到底時
+                        // 剛好就是左右兩顆把手
+                        final hw = (w * 0.35).clamp(22.0, 40.0);
                         final off = scrollController.hasClients
                             ? scrollController.offset
                             : 0.0;
