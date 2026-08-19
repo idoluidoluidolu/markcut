@@ -4752,7 +4752,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 不然畫面上縮短的是左邊、實際被切掉的卻是尾巴
         if (!c.reverse) {
           if (fromLeft) {
-            final hi = math.max(0.0, c.trimEnd - 0.3);
+            final hi = math.max(0.0, c.trimEnd - kMinClipLen);
             final ns = (c.trimStart + dSrc).clamp(0.0, hi);
             // offset 位移用時間軸秒（素材差 ÷ 速度）
             c.offset = (c.offset + (ns - c.trimStart) / c.speed).clamp(
@@ -4761,18 +4761,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             );
             c.trimStart = ns;
           } else {
-            final lo = math.min(c.trimStart + 0.3, src.duration);
+            final lo = math.min(c.trimStart + kMinClipLen, src.duration);
             c.trimEnd = (c.trimEnd + dSrc).clamp(lo, src.duration);
           }
         } else {
           // 倒轉：時間軸左緣對應素材尾端，兩端對調著修
           if (fromLeft) {
-            final lo = math.min(c.trimStart + 0.3, src.duration);
+            final lo = math.min(c.trimStart + kMinClipLen, src.duration);
             final ne = (c.trimEnd - dSrc).clamp(lo, src.duration);
             c.offset = (c.offset + (c.trimEnd - ne) / c.speed).clamp(0.0, 1e6);
             c.trimEnd = ne;
           } else {
-            final hi = math.max(0.0, c.trimEnd - 0.3);
+            final hi = math.max(0.0, c.trimEnd - kMinClipLen);
             c.trimStart = (c.trimStart - dSrc).clamp(0.0, hi);
           }
         }
@@ -4802,10 +4802,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       // clamp 的上下限反轉會直接丟例外，先夾好界線
       if (fromLeft) {
-        _wmStart = snapped.clamp(0.0, math.max(0.0, _wmEndEff - 0.3));
+        _wmStart = snapped.clamp(0.0, math.max(0.0, _wmEndEff - kMinClipLen));
       } else {
         _wmEnd = snapped.clamp(
-          math.min(_wmStart + 0.3, _tl.duration),
+          math.min(_wmStart + kMinClipLen, _tl.duration),
           _tl.duration,
         );
       }
