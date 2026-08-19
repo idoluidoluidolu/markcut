@@ -6035,35 +6035,52 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               ),
             ),
             if (_fsBar) ...[
-              // 左上角：離開全螢幕
+              // 右上角：離開全螢幕
               Positioned(
-                left: 8,
+                right: 8,
                 top: 8,
                 child: _fsBtn(Icons.fullscreen_exit, _toggleFullscreen),
               ),
-              // 下方：播放鈕＋時間碼＋進度條
+              // 底部浮動膠囊：播放、進度、時間收在同一條裡。
+              //
+              // 不貼邊是刻意的——貼到最底會跟系統的返回手勢區重疊，
+              // 想拖進度變成退出 App。浮起來還有一個好處：影片本身
+              // 底部有東西（字幕、原本 App 的按鈕）時不會糊成一片
               Positioned(
-                left: 0,
-                right: 0,
-                bottom: 0,
+                left: 10,
+                right: 10,
+                bottom: 12,
                 child: Container(
-                  padding: const EdgeInsets.fromLTRB(10, 8, 16, 12),
-                  color: Colors.black.withValues(alpha: 0.35),
+                  padding: const EdgeInsets.fromLTRB(8, 6, 14, 6),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.82),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.12),
+                    ),
+                  ),
                   child: Row(
                     children: [
-                      _fsBtn(
-                        _playing
-                            ? Icons.pause_rounded
-                            : Icons.play_arrow_rounded,
-                        () {
+                      InkWell(
+                        borderRadius: BorderRadius.circular(999),
+                        onTap: () {
                           if (_playing) {
                             _pause();
                           } else {
                             unawaited(_play());
                           }
                         },
+                        child: Padding(
+                          padding: const EdgeInsets.all(5),
+                          child: Icon(
+                            _playing
+                                ? Icons.pause_rounded
+                                : Icons.play_arrow_rounded,
+                            size: 24,
+                            color: Colors.white,
+                          ),
+                        ),
                       ),
-                      const SizedBox(width: 8),
                       Expanded(
                         child: ValueListenableBuilder<double>(
                           valueListenable: _posVN,
@@ -6071,33 +6088,45 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             final dur = math.max(0.01, _tl.duration);
                             return Row(
                               children: [
+                                Expanded(
+                                  child: SliderTheme(
+                                    data: SliderTheme.of(context).copyWith(
+                                      trackHeight: 3,
+                                      activeTrackColor: kSelect,
+                                      thumbColor: kSelect,
+                                      inactiveTrackColor: Colors.white
+                                          .withValues(alpha: 0.2),
+                                      overlayColor: kSelect.withValues(
+                                        alpha: 0.14,
+                                      ),
+                                      thumbShape: const RoundSliderThumbShape(
+                                        enabledThumbRadius: 5,
+                                      ),
+                                      overlayShape:
+                                          const RoundSliderOverlayShape(
+                                            overlayRadius: 14,
+                                          ),
+                                    ),
+                                    child: Slider(
+                                      value: pos.clamp(0.0, dur),
+                                      max: dur,
+                                      onChanged: (v) {
+                                        _pause();
+                                        setState(() => _position = v);
+                                        _scrubSeek(force: true);
+                                        _compSeek(exact: true);
+                                      },
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                // 只寫現在播到哪：總長在時間軸看得到，
+                                // 這條膠囊要短才不會蓋掉畫面
                                 Text(
                                   _fmt(pos),
                                   style: const TextStyle(
-                                    fontSize: 12,
+                                    fontSize: 11.5,
                                     color: kText,
-                                    fontFeatures: [
-                                      FontFeature.tabularFigures(),
-                                    ],
-                                  ),
-                                ),
-                                Expanded(
-                                  child: Slider(
-                                    value: pos.clamp(0.0, dur),
-                                    max: dur,
-                                    onChanged: (v) {
-                                      _pause();
-                                      setState(() => _position = v);
-                                      _scrubSeek(force: true);
-                                      _compSeek(exact: true);
-                                    },
-                                  ),
-                                ),
-                                Text(
-                                  _fmt(dur),
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: kTextDim,
                                     fontFeatures: [
                                       FontFeature.tabularFigures(),
                                     ],
