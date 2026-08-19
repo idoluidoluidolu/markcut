@@ -4847,6 +4847,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           math.min(_wmStart + minLen, _tl.duration),
           _tl.duration,
         );
+        // 拖到貼著影片結尾＝「跟到結尾」：記 null 而不是一個死數字。
+        // 記死數字的話，之後影片修剪變短、加素材變長，浮水印都停在
+        // 舊的位置不動——浮水印要跟著影片縮放
+        if (_wmEnd != null && _wmEnd! >= _tl.duration - 0.05) _wmEnd = null;
       }
       // 被夾住時原始值跟回實際邊緣，不然反向拖回來會有一段空行程
       final newEdge = fromLeft ? _wmStart : _wmEndEff;
