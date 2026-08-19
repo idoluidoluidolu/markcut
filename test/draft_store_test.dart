@@ -71,7 +71,8 @@ void main() {
       );
       final m = (await DraftStore.list()).single;
       expect(m.clipCount, 3);
-      expect(m.thumb, 'AAA');
+      expect(m.hasThumb, isTrue);
+      expect(await DraftStore.thumb('a'), 'AAA');
     });
   });
 
@@ -89,7 +90,8 @@ void main() {
       final list = await DraftStore.list();
       expect(list.length, 1);
       expect(list.single.name, '未命名專案');
-      expect(list.single.thumb, 'ZZZ');
+      expect(list.single.hasThumb, isTrue);
+      expect(await DraftStore.thumb(list.single.id), 'ZZZ');
       expect(list.single.clipCount, 1);
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.getString('project_draft_v1'), isNull);

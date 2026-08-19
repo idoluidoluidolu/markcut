@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -70,17 +71,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
       _videoDrafts = videoDrafts;
       _photoDraft = readDraft(kPhotoDraftKey, 'photo');
     });
+    unawaited(_loadCovers(videoDrafts));
   }
 
-  /// 草稿清單那筆的封面（壞掉的 base64 不能在 build 裡丟例外）
-  Uint8List? _metaThumb(DraftMeta m) {
-    final t = m.thumb;
-    if (t == null) return null;
-    try {
-      return base64Decode(t);
-    } catch (_) {
-      return null;
+  /// 草稿封面：內容另外存（見 DraftStore.thumb），讀進來後放這個
+  /// 快取；build 裡只查表，不解碼也不丟例外
+  final Map<String, Uint8List> _covers = {};
+
+  Future<void> _loadCovers(List<DraftMeta> metas) async {
+    for (final m in metas) {
+      if (!m.hasThumb || _covers.containsKey(m.id)) continue;
+      final t = await DraftStore.thumb(m.id);
+      if (t == null) continue;
+      try {
+        _covers[m.id] = base64Decode(t);
+      } catch (_) {
+        // 壞掉的那筆就沒有封面，不能讓整頁紅屏
+      }
     }
+    if (mounted) setState(() {});
   }
 
   /// 存檔時間講人話：剛剛／N 分鐘前／今天 HH:mm／M/D
@@ -387,9 +396,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 if (v != null)
                                   Expanded(
                                     child: _draftTile(
-                                      cover: _metaThumb(v) != null
+                                      cover: _covers[v.id] != null
                                           ? Image.memory(
-                                              _metaThumb(v)!,
+                                              _covers[v.id]!,
                                               // 鋪滿：這是縮圖不是預覽，
                                               // 留邊只會讓一排卡看起來破碎
                                               fit: BoxFit.cover,
@@ -543,6 +552,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
         _photoDraft = photo;
         _loading = false;
       });
+      unawaited(_loadCovers(found));
     }
   }
 
@@ -659,15 +669,22 @@ class _DraftsScreenState extends State<DraftsScreen> {
     );
   }
 
-  /// 草稿清單那筆的縮圖（壞掉的 base64 不能在 build 裡丟例外）
-  Uint8List? _thumbBytes(DraftMeta m) {
-    final t = m.thumb;
-    if (t == null) return null;
-    try {
-      return base64Decode(t);
-    } catch (_) {
-      return null;
+  /// 草稿封面：內容另外存（見 DraftStore.thumb），讀進來後放這個
+  /// 快取；build 裡只查表，不解碼也不丟例外
+  final Map<String, Uint8List> _covers = {};
+
+  Future<void> _loadCovers(List<DraftMeta> metas) async {
+    for (final m in metas) {
+      if (!m.hasThumb || _covers.containsKey(m.id)) continue;
+      final t = await DraftStore.thumb(m.id);
+      if (t == null) continue;
+      try {
+        _covers[m.id] = base64Decode(t);
+      } catch (_) {
+        // 壞掉的那筆就沒有封面，不能讓整頁紅屏
+      }
     }
+    if (mounted) setState(() {});
   }
 
   /// 副標：存檔時間＋幾段素材
@@ -779,9 +796,9 @@ class _DraftsScreenState extends State<DraftsScreen> {
                     _draftCard(
                       // 縮圖裁進固定的方框。以前框寬會跟著影片比例跑
                       //（直片 30、橫片 92），兩張卡的文字起點就對不齊
-                      cover: _thumbBytes(m) != null
+                      cover: _covers[m.id] != null
                           ? Image.memory(
-                              _thumbBytes(m)!,
+                              _covers[m.id]!,
                               fit: BoxFit.cover,
                               gaplessPlayback: true,
                             )

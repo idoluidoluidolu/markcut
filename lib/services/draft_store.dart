@@ -18,10 +18,24 @@ class DraftStore {
   /// 單一草稿內容的鍵前綴
   static const _dataPrefix = 'project_data_';
 
+  /// 封面縮圖的鍵前綴。
+  ///
+  /// 不放進索引：封面是 base64 的 720p 影格，一張就上百 KB，
+  /// 放進去的話每次列清單都要把所有草稿的封面一起解析一遍——
+  /// 十份草稿就是一個 1MB 的字串，開個人中心會卡住
+  static const _thumbPrefix = 'project_thumb_';
+
   /// 舊版那個唯一的草稿鍵（搬完就刪）
   static const _legacyKey = 'project_draft_v1';
 
   static String _dataKey(String id) => '$_dataPrefix$id';
+  static String _thumbKey(String id) => '$_thumbPrefix$id';
+
+  /// 讀某一份草稿的封面（base64 PNG/JPEG）
+  static Future<String?> thumb(String id) async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_thumbKey(id));
+  }
 
   /// 讀清單（新到舊）。順便把舊版單一草稿搬進來
   static Future<List<DraftMeta>> list() async {
@@ -73,6 +87,11 @@ class DraftStore {
     final prefs = await SharedPreferences.getInstance();
     await _migrate(prefs);
     await prefs.setString(_dataKey(id), json);
+    if (thumb != null) {
+      await prefs.setString(_thumbKey(id), thumb);
+    } else {
+      await prefs.remove(_thumbKey(id));
+    }
     final metas = await list();
     metas.removeWhere((m) => m.id == id);
     metas.add(
@@ -80,7 +99,7 @@ class DraftStore {
         id: id,
         name: name,
         savedAt: DateTime.now(),
-        thumb: thumb,
+        hasThumb: thumb != null,
         thumbAspect: thumbAspect,
         clipCount: clipCount,
         duration: duration,
@@ -101,6 +120,7 @@ class DraftStore {
   static Future<void> remove(String id) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_dataKey(id));
+    await prefs.remove(_thumbKey(id));
     final metas = await list()
       ..removeWhere((m) => m.id == id);
     await _writeIndex(prefs, metas);
@@ -153,12 +173,14 @@ class DraftStore {
     if ((j['clips'] as List?)?.isEmpty ?? true) return;
     final id = newId();
     await prefs.setString(_dataKey(id), old);
+    final oldThumb = j['thumb'] as String?;
+    if (oldThumb != null) await prefs.setString(_thumbKey(id), oldThumb);
     final meta = DraftMeta(
       id: id,
       name: '未命名專案',
       savedAt:
           DateTime.tryParse(j['savedAt'] as String? ?? '') ?? DateTime.now(),
-      thumb: j['thumb'] as String?,
+      hasThumb: oldThumb != null,
       thumbAspect: (j['thumbAspect'] as num?)?.toDouble(),
       clipCount: (j['clips'] as List?)?.length ?? 0,
     );
@@ -172,8 +194,8 @@ class DraftMeta {
   String name;
   final DateTime savedAt;
 
-  /// 封面縮圖（base64 PNG）
-  final String? thumb;
+  /// 有沒有封面（內容另外存，見 DraftStore.thumb）
+  final bool hasThumb;
   final double? thumbAspect;
   final int clipCount;
   final double duration;
@@ -182,7 +204,7 @@ class DraftMeta {
     required this.id,
     required this.name,
     required this.savedAt,
-    this.thumb,
+    this.hasThumb = false,
     this.thumbAspect,
     this.clipCount = 0,
     this.duration = 0,
@@ -192,7 +214,7 @@ class DraftMeta {
     'id': id,
     'name': name,
     'savedAt': savedAt.toIso8601String(),
-    if (thumb != null) 'thumb': thumb,
+    if (hasThumb) 'hasThumb': true,
     if (thumbAspect != null) 'thumbAspect': thumbAspect,
     'clips': clipCount,
     'dur': duration,
@@ -202,7 +224,7 @@ class DraftMeta {
     id: j['id'] as String? ?? '',
     name: j['name'] as String? ?? '未命名專案',
     savedAt: DateTime.tryParse(j['savedAt'] as String? ?? '') ?? DateTime(2000),
-    thumb: j['thumb'] as String?,
+    hasThumb: j['hasThumb'] == true,
     thumbAspect: (j['thumbAspect'] as num?)?.toDouble(),
     clipCount: ((j['clips'] ?? 0) as num).toInt(),
     duration: ((j['dur'] ?? 0) as num).toDouble(),

@@ -637,12 +637,33 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final key = '${src.previewPath}@${c.trimStart.toStringAsFixed(2)}';
     if (key == _coverKey && _coverB64 != null) return;
     Uint8List? bytes;
-    if (!kIsWeb && src.kind == ClipKind.video) {
+    if (src.kind == ClipKind.video) {
       // 720：個人中心那張卡最寬也才 ~350pt，720 在三倍螢幕上還有餘裕。
-      // 抽一張大約 40~80KB，比原本那張 200px 的糊圖值得
-      bytes = await nativeFrameAt(src.previewPath, c.trimStart, maxH: 720);
+      // 抽一張大約 40~80KB，比時間軸那張 200px 高的糊圖值得
+      if (!kIsWeb) {
+        bytes = await nativeFrameAt(src.previewPath, c.trimStart, maxH: 720);
+      } else {
+        // Web 沒有原生抽幀，走隱形 <video> ＋ canvas 這條（跟裁切
+        // 底圖同一套）。以前直接退回時間軸縮圖，那是 200px 高的圖
+        // 拿去當大卡片的封面——糊到看不出是哪個專案。
+        // 這裡有 _coverKey 擋著，同一個片段只會抽一次
+        try {
+          final one = await engine.makeThumbnails(
+            src.previewPath,
+            0.001, // count=1 時取 startAt + dur/2，給最小＝就取 startAt
+            1,
+            height: 720,
+            longSide: true,
+            startAt: c.trimStart,
+          );
+          bytes = one.firstOrNull;
+        } catch (_) {
+          // 抽不到就退回下面那張小圖，至少有東西
+        }
+      }
     }
-    // 抽不到（Web、照片、原生失敗）就退回時間軸縮圖，至少有東西
+    // 抽不到（照片素材、原生失敗、web 讀不到）就退回時間軸縮圖。
+    // 圖片素材那份存的是原檔位元組，本來就是清楚的
     bytes ??= _thumbs[c.sourceIndex]?.firstOrNull;
     if (bytes == null) return;
     _coverKey = key;
