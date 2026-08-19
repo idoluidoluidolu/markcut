@@ -114,6 +114,41 @@ Future<Uint8List?> pickSticker(BuildContext context) async {
                           style: TextStyle(fontSize: 11, color: kTextDim),
                         ),
                       ),
+                      // 自己打：內建的 64 顆只是常用款，想要的不在裡面
+                      // 就直接輸入（手機鍵盤的 emoji 面板什麼都有）。
+                      // 打字、貼上都行，取第一個字符畫成貼圖
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: TextField(
+                          decoration: InputDecoration(
+                            hintText: '輸入任何 Emoji，例如 🐧',
+                            isDense: true,
+                            suffixIcon: const Icon(
+                              Icons.keyboard_return,
+                              size: 16,
+                            ),
+                            hintStyle: const TextStyle(fontSize: 12.5),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 10,
+                            ),
+                          ),
+                          style: const TextStyle(fontSize: 18),
+                          textInputAction: TextInputAction.done,
+                          onSubmitted: (v) async {
+                            final t = v.trim();
+                            if (t.isEmpty) return;
+                            // 取第一個「使用者感知字符」：emoji 常是
+                            // 多個 code unit（膚色、組合旗），不能用
+                            // substring 硬切
+                            final first = t.characters.first;
+                            final png = await StickerStore.renderEmoji(first);
+                            if (png != null && context.mounted) {
+                              Navigator.pop(context, png);
+                            }
+                          },
+                        ),
+                      ),
                       GridView.builder(
                         shrinkWrap: true,
                         physics: const NeverScrollableScrollPhysics(),
