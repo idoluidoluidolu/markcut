@@ -1051,9 +1051,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
     final clip = _clipById(l.clipId);
     if (clip == null) return const SizedBox.shrink();
     final src = timeline.sourceOf(clip);
-    final w = (clip.length * pxPerSec)
-        .clamp(kClipMinWidth, double.infinity)
-        .toDouble();
+    final w = (clip.length * pxPerSec).clamp(22.0, double.infinity).toDouble();
     return Positioned(
       left: spec.offset * pxPerSec,
       top:
@@ -1284,12 +1282,17 @@ const double _kHandleOverhang = 14;
 /// 空間。比這窄就不畫把手（不然整條被把手蓋滿，變成拖不動）
 const double kTrimMinWidth = 64;
 
-/// 片段畫得再小也不會小於這個寬度。
+/// 片段畫得再小也不會小於這個寬度（只是不讓它整條消失）。
 ///
-/// 44px（兩顆 22px 把手剛好排滿）試過了：中間一點空隙都不剩，
-/// 縮到底之後就再也拖不動這一段。留 56px，兩顆把手縮到 16px，
-/// 中間還有 24px 抓得住——修剪與移動都還在
-const double kClipMinWidth = 56;
+/// 這個值必須夠小。它是「畫出來的寬度」下限，一旦大於「片段最短
+/// 長度在目前縮放下的實際寬度」，修剪就會撞牆：模型明明還在變短，
+/// 畫面卻定住不動，看起來就是「縮到這裡就不能再縮了」。
+///
+/// 對照：最大縮放 600px/秒 × [kMinClipLen] 0.05 秒 = 30px，
+/// 12 遠小於它，所以放大之後永遠是先碰到真正的長度下限，
+/// 不會先被畫面卡住。太窄時把手改成各佔一半，靠熱區往外伸
+/// （見 _TrimHandle.overhang）還是抓得到
+const double kClipMinWidth = 12;
 
 /// 時間軸上的片段。拖曳時本體留在原地變淡，移動的是父層的幽靈。
 class _ClipBlock extends StatelessWidget {
@@ -1469,9 +1472,14 @@ class _ClipBlock extends StatelessWidget {
                     child: ListenableBuilder(
                       listenable: scrollController,
                       builder: (context, _) {
-                        // 下限 16：片段縮到 kClipMinWidth 時兩顆把手
-                        // 佔 32px，中間留 24px 給「抓著移動」
-                        final hw = (w * 0.28).clamp(16.0, 40.0);
+                        // 一般是片段寬的 28%（16~40px）。片段窄到
+                        // 擺不下兩顆時各佔一半——抓得到靠的是熱區
+                        // 往片段外多伸出去的那一段，不是看得見的寬度
+                        final hw = w < 34
+                            ? w / 2
+                            : (w * 0.28).clamp(16.0, 40.0);
+                        // 窄片段的熱區再往外伸一點，不然只剩幾 px 可點
+                        final over = w < 34 ? 20.0 : _kHandleOverhang;
                         final off = scrollController.hasClients
                             ? scrollController.offset
                             : 0.0;
@@ -1489,7 +1497,7 @@ class _ClipBlock extends StatelessWidget {
                               child: _TrimHandle(
                                 isLeft: true,
                                 width: hw,
-                                overhang: _kHandleOverhang,
+                                overhang: over,
                                 onStart: onTrimStart,
                                 onEnd: onTrimEnd,
                                 onDrag: (d) => onTrim(clip.id, d, true),
@@ -1504,7 +1512,7 @@ class _ClipBlock extends StatelessWidget {
                               child: _TrimHandle(
                                 isLeft: false,
                                 width: hw,
-                                overhang: _kHandleOverhang,
+                                overhang: over,
                                 onStart: onTrimStart,
                                 onEnd: onTrimEnd,
                                 onDrag: (d) => onTrim(clip.id, d, false),
