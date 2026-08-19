@@ -953,12 +953,11 @@ class _GifsScreenState extends State<GifsScreen> {
       builder: (context) => Dialog(
         backgroundColor: Colors.transparent,
         insetPadding: const EdgeInsets.all(20),
+        // 不切圓角：GIF 本身是方的，圓角切下去邊緣會露出一條
+        // 對不齊的白線
         child: GestureDetector(
           onTap: () => Navigator.pop(context),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: GifImage(ref, fit: BoxFit.contain),
-          ),
+          child: GifImage(ref, fit: BoxFit.contain),
         ),
       ),
     );

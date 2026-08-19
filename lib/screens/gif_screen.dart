@@ -58,6 +58,15 @@ class _GifScreenState extends State<GifScreen> {
   /// 整張出去檔案大又抓不到重點
   Rect? _crop;
 
+  /// 拖把手時的起手值與累計位移。
+  ///
+  /// 本來每一格都拿「上一格畫出來的 x」再加這一格的位移去算時間——
+  /// 但那個 x 是上一次 build 的結果，而 setState 又會重新 build，
+  /// 等於把自己的輸出接回輸入，指針就會來回抖。起手記一次、之後
+  /// 只累加手指的位移，中間不看畫面
+  double? _dragFrom;
+  double _dragAcc = 0;
+
   Timer? _tick;
   bool _exporting = false;
 
@@ -351,11 +360,32 @@ class _GifScreenState extends State<GifScreen> {
         backgroundColor: kBg,
         appBar: AppBar(
           backgroundColor: kBg,
-          title: const Text(
-            '製作 GIF',
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
-          ),
-          centerTitle: true,
+          // 裁切跟返回同一層級：它是「對這支影片做的一件事」，
+          // 不是尺寸／流暢度那種輸出參數，混在下面那兩排會像硬塞
+          actions: [
+            TextButton.icon(
+              onPressed: _ready ? _openCrop : null,
+              style: TextButton.styleFrom(
+                foregroundColor: _crop == null ? kText : kSelect,
+              ),
+              icon: const Icon(Icons.crop, size: 17),
+              label: Text(
+                _crop == null ? '裁切' : '已裁切',
+                style: const TextStyle(fontSize: 13),
+              ),
+            ),
+            if (_crop != null)
+              IconButton(
+                tooltip: '還原裁切',
+                onPressed: () {
+                  setState(() => _crop = null);
+                  _schedulePreview();
+                },
+                icon: const Icon(Icons.restart_alt, size: 18),
+                color: kTextDim,
+              ),
+            const SizedBox(width: 4),
+          ],
         ),
         body: SafeArea(
           child: !_ready
@@ -372,45 +402,6 @@ class _GifScreenState extends State<GifScreen> {
                           const SizedBox(height: 8),
                           _trimStrip(),
                           const SizedBox(height: 16),
-                          Row(
-                            children: [
-                              OutlinedButton.icon(
-                                onPressed: _openCrop,
-                                style: OutlinedButton.styleFrom(
-                                  foregroundColor: _crop == null
-                                      ? kText
-                                      : kSelect,
-                                  side: BorderSide(
-                                    color: _crop == null
-                                        ? kClipBorder
-                                        : kSelect,
-                                  ),
-                                ),
-                                icon: const Icon(Icons.crop, size: 16),
-                                label: Text(
-                                  _crop == null ? '裁切' : '已裁切',
-                                  style: const TextStyle(fontSize: 12.5),
-                                ),
-                              ),
-                              if (_crop != null) ...[
-                                const SizedBox(width: 8),
-                                TextButton(
-                                  onPressed: () {
-                                    setState(() => _crop = null);
-                                    _schedulePreview();
-                                  },
-                                  style: TextButton.styleFrom(
-                                    foregroundColor: kTextDim,
-                                  ),
-                                  child: const Text(
-                                    '還原',
-                                    style: TextStyle(fontSize: 12.5),
-                                  ),
-                                ),
-                              ],
-                            ],
-                          ),
-                          const SizedBox(height: 12),
                           _chipsRow('尺寸', [320, 480, 640], _size, (v) {
                             setState(() => _size = v);
                             _schedulePreview();
@@ -470,24 +461,6 @@ class _GifScreenState extends State<GifScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
                 ),
-              Positioned(
-                left: 10,
-                top: 10,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 3,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.55),
-                    borderRadius: BorderRadius.circular(kTagRadius),
-                  ),
-                  child: const Text(
-                    '成品預覽',
-                    style: TextStyle(fontSize: 10.5, color: kText),
-                  ),
-                ),
-              ),
             ],
           ),
         ),
@@ -655,8 +628,16 @@ class _GifScreenState extends State<GifScreen> {
       width: 44,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
+        onHorizontalDragStart: (_) {
+          _dragFrom = left ? _start : _end;
+          _dragAcc = 0;
+        },
+        onHorizontalDragEnd: (_) => _dragFrom = null,
+        onHorizontalDragCancel: () => _dragFrom = null,
         onHorizontalDragUpdate: (d) {
-          final t = ((x + d.delta.dx) / width * _dur).clamp(0.0, _dur);
+          final from = _dragFrom ?? (left ? _start : _end);
+          _dragAcc += d.delta.dx;
+          final t = (from + _dragAcc / width * _dur).clamp(0.0, _dur);
           setState(() {
             if (left) {
               _start = math.min(t, _end - 0.2);
