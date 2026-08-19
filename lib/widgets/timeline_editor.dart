@@ -906,10 +906,10 @@ class _TimelineEditorState extends State<TimelineEditor> {
     // 文字自己收起來，中間讓出來給拖曳）
     final rawW = (wm.end - wm.start) * pxPerSec;
     final w = rawW.clamp(2.0, double.infinity);
-    // 擺得下圖示＋文字才畫標示。把手一律畫：縮到剩兩顆把手也還是
-    // 修剪得動（跟片段同一套）
+    // 擺得下圖示＋文字才畫標示；窄於煞車寬就不畫把手（跟片段
+    // 同一套：這個縮放下修剪煞車不會放行，整條讓給拖曳移動）
     final showLabel = rawW >= 56;
-    final showHandles = true;
+    final showHandles = rawW >= kTrimStopWidth;
     return Stack(
       clipBehavior: Clip.none,
       children: [
@@ -1387,23 +1387,6 @@ class _ClipBlock extends StatelessWidget {
               clipBehavior: Clip.none,
               fit: StackFit.passthrough,
               children: [
-                // 窄片段選取時的一體式外框：琥珀膠囊從左把手一路鋪到
-                // 右把手，中間被本體（縮圖）蓋住——看起來就是「一顆
-                // 膠囊、中間一扇素材小窗」（CapCut 同款），而不是
-                // 兩塊分開浮著的把手
-                if (isSelected && !lifted && w < 34)
-                  Positioned(
-                    left: -14,
-                    top: 0,
-                    bottom: 0,
-                    child: Container(
-                      width: w + 28,
-                      decoration: BoxDecoration(
-                        color: kSelect,
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                    ),
-                  ),
                 Container(
                   width: w,
                   decoration: BoxDecoration(
@@ -1481,42 +1464,11 @@ class _ClipBlock extends StatelessWidget {
                     ],
                   ),
                 ),
-                // 窄片段：把手掛到片段「外面」貼著兩側（CapCut 的
-                // 做法）——不佔本體的寬度，那一小截素材整段保留，
-                // 把手也永遠一樣大、抓得到
-                if (isSelected && !lifted && w < 34) ...[
-                  Positioned(
-                    // -26 ＝ 視覺 14 ＋ 外伸熱區 12：整顆都在本體左緣外
-                    left: -26,
-                    top: 0,
-                    bottom: 0,
-                    child: _TrimHandle(
-                      isLeft: true,
-                      width: 14,
-                      overhang: 12,
-                      onStart: onTrimStart,
-                      onEnd: onTrimEnd,
-                      onDrag: (d) => onTrim(clip.id, d, true),
-                      pxPerSec: pxPerSec,
-                    ),
-                  ),
-                  Positioned(
-                    left: w,
-                    top: 0,
-                    bottom: 0,
-                    child: _TrimHandle(
-                      isLeft: false,
-                      width: 14,
-                      overhang: 12,
-                      onStart: onTrimStart,
-                      onEnd: onTrimEnd,
-                      onDrag: (d) => onTrim(clip.id, d, false),
-                      pxPerSec: pxPerSec,
-                    ),
-                  ),
-                ],
-                // 一般寬度：把手貼在片段內側兩緣
-                if (isSelected && !lifted && w >= 34)
+                // 原本的雙把手，貼在片段內側兩緣。窄於煞車寬
+                // （kTrimStopWidth）就不畫：在這個縮放下修剪的煞車
+                // 本來就不會放行，畫了也只是把 16px 的本體整個蓋住，
+                // 想移動都抓不到。整條讓給「拖曳移動」，要修剪就放大
+                if (isSelected && !lifted && w >= kTrimStopWidth)
                   // 熱區跟著片段長度給，短片段不會被兩個把手佔滿；
                   // 位置夾在可視範圍內，片段拉得比畫面長時
                   // 把手會貼在邊緣而不是跑到畫面外
