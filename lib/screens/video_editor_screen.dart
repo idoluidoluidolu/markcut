@@ -4692,16 +4692,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _wmSel = next == _kWmId;
       _sel = next == _kWmId ? -1 : next;
     });
-    // 選到浮水印就跳去浮水印分頁（跟以前點浮水印一樣）。
+    // 選到浮水印就跳去浮水印分頁；選到一般素材時，如果人還停在
+    // 浮水印分頁，就跳回剪輯分頁——不跳的話畫面上選取已經換人，
+    // 面板卻還在編浮水印，看起來就是「點了沒切換」。
     // 循環途中不跳，不然每點一下分頁就被拉走一次
     if (!same) {
+      final nextClip = _selClipById(next);
+      final nextSrc = nextClip == null ? null : _tl.sourceOf(nextClip);
       final isWm =
           next == _kWmId ||
-          (_selClipById(next) != null &&
-              _tl.sourceOf(_selClipById(next)!).kind == ClipKind.wm);
+          (nextSrc?.kind == ClipKind.wm && !(nextSrc?.isSticker ?? false));
       if (isWm) {
         _tabs.animateTo(1);
         _wmPanelCtrl.scrollTo(WmPart.text);
+      } else if (_tabs.index == 1) {
+        _tabs.animateTo(0);
       }
     }
     if (!same && hits.length > 1 && _cycleHintLeft > 0) {
@@ -7018,6 +7023,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                   _wmSel = false;
                                                 });
                                                 if (src.isSticker) {
+                                                  // 人在浮水印分頁點貼圖：
+                                                  // 帶回剪輯分頁，不然選取
+                                                  // 換了、面板還在編浮水印
+                                                  if (_tabs.index == 1) {
+                                                    _tabs.animateTo(0);
+                                                  }
                                                   if (was) {
                                                     unawaited(
                                                       _editStickerClip(c),
