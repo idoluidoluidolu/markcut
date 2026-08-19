@@ -86,22 +86,55 @@ class _GifScreenState extends State<GifScreen> {
   /// 這一份預覽是照哪組設定做的（設定沒變就不用重做）
   String _previewKey = '';
 
-  void _schedulePreview() {
-    _previewTimer?.cancel();
-    _previewTimer = Timer(const Duration(milliseconds: 500), _buildPreview);
-  }
+  /// 已經做過的預覽：設定指紋 → 檔案路徑。
+  ///
+  /// 每換一個尺寸／順暢度都要等 FFmpeg 跑一次，來回比較兩個值就得
+  /// 等兩次。做過的留著，切回去是零等待——實際使用就是在幾個值之間
+  /// 來回看，所以命中率很高
+  final Map<String, String> _previewCache = {};
 
-  Future<void> _buildPreview() async {
-    if (_building || !mounted) return;
+  /// 這一輪設定的指紋
+  String _keyFor() {
     final c = _crop;
     final cropKey = c == null
         ? 'full'
         : '${c.left.toStringAsFixed(3)},${c.top.toStringAsFixed(3)},'
               '${c.width.toStringAsFixed(3)},${c.height.toStringAsFixed(3)}';
-    final key =
-        '${_start.toStringAsFixed(2)}~${_end.toStringAsFixed(2)}'
+    return '${_start.toStringAsFixed(2)}~${_end.toStringAsFixed(2)}'
         '@$_fps@$_size@$cropKey@$_speed';
+  }
+
+  void _schedulePreview() {
+    final key = _keyFor();
     if (key == _previewKey) return;
+    // 這組設定做過了：直接換上去，一格都不用等
+    final hit = _previewCache[key];
+    if (hit != null) {
+      _previewTimer?.cancel();
+      setState(() {
+        _gifPreview = hit;
+        _previewKey = key;
+      });
+      return;
+    }
+    _previewTimer?.cancel();
+    // 250ms：手指離開就開始做。太長會像卡住，太短則拉把手時每動
+    // 一格都在跑
+    _previewTimer = Timer(const Duration(milliseconds: 250), _buildPreview);
+  }
+
+  Future<void> _buildPreview() async {
+    if (_building || !mounted) return;
+    final key = _keyFor();
+    if (key == _previewKey) return;
+    final hit = _previewCache[key];
+    if (hit != null) {
+      setState(() {
+        _gifPreview = hit;
+        _previewKey = key;
+      });
+      return;
+    }
     setState(() => _building = true);
     final path = await engine.makeGifFile(
       inputPath: widget.path,
@@ -113,18 +146,29 @@ class _GifScreenState extends State<GifScreen> {
       speed: _speed,
     );
     if (!mounted) return;
-    // 做好一份就把上一份刪掉，暫存不會愈積愈多
-    final old = _gifPreview;
     setState(() {
       _building = false;
       if (path != null) {
         _gifPreview = path;
         _previewKey = key;
+        _previewCache[key] = path;
       }
     });
-    if (old != null && old != path && !GifStore.isAsset(old)) {
+    // 跑完的時候設定可能又被改過了（使用者連按了好幾個），
+    // 那就接著做最新的那一組
+    if (mounted && _keyFor() != _previewKey) _schedulePreview();
+    _trimCache();
+  }
+
+  /// 快取只留最近 12 份，多的連檔案一起刪——一份 480p 的 GIF
+  /// 幾百 KB，放著不管暫存會愈積愈大
+  void _trimCache() {
+    while (_previewCache.length > 12) {
+      final k = _previewCache.keys.first;
+      final p = _previewCache.remove(k);
+      if (p == null || p == _gifPreview || GifStore.isAsset(p)) continue;
       try {
-        File(old).deleteSync();
+        File(p).deleteSync();
       } catch (_) {}
     }
   }
@@ -178,10 +222,10 @@ class _GifScreenState extends State<GifScreen> {
   void dispose() {
     _tick?.cancel();
     _previewTimer?.cancel();
-    final gif = _gifPreview;
-    if (gif != null && !GifStore.isAsset(gif)) {
+    for (final p in {..._previewCache.values, ?_gifPreview}) {
+      if (GifStore.isAsset(p)) continue;
       try {
-        File(gif).deleteSync();
+        File(p).deleteSync();
       } catch (_) {}
     }
     _player?.dispose();

@@ -34,11 +34,8 @@ Future<Rect?> pickCropRect(
   final out = await Navigator.of(context).push<Object>(
     MaterialPageRoute(
       fullscreenDialog: true,
-      builder: (_) => CropScreen(
-        bytes: frame,
-        rectOnly: true,
-        initial: initial,
-      ),
+      builder: (_) =>
+          CropScreen(bytes: frame, rectOnly: true, initial: initial),
     ),
   );
   return out is Rect ? out : null;
@@ -133,12 +130,7 @@ class _CropScreenState extends State<CropScreen> {
     if (img == null) return;
     setState(() {
       _ratio = null;
-      _crop = Rect.fromLTWH(
-        0,
-        0,
-        img.width.toDouble(),
-        img.height.toDouble(),
-      );
+      _crop = Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble());
     });
   }
 
@@ -352,15 +344,18 @@ class _CropAreaState extends State<_CropArea> {
         final oy = (box.maxHeight - dh) / 2;
         final view = Rect.fromLTWH(ox, oy, dw, dh);
 
-        Rect toView(Rect r) =>
-            Rect.fromLTWH(ox + r.left * k, oy + r.top * k, r.width * k,
-                r.height * k);
+        Rect toView(Rect r) => Rect.fromLTWH(
+          ox + r.left * k,
+          oy + r.top * k,
+          r.width * k,
+          r.height * k,
+        );
         Rect toImage(Rect r) => Rect.fromLTWH(
-              (r.left - ox) / k,
-              (r.top - oy) / k,
-              r.width / k,
-              r.height / k,
-            );
+          (r.left - ox) / k,
+          (r.top - oy) / k,
+          r.width / k,
+          r.height / k,
+        );
 
         final cropView = toView(widget.crop);
 
@@ -387,10 +382,10 @@ class _CropAreaState extends State<_CropArea> {
           // 沒抓到角就試四條邊（鎖比例時邊不能單獨動，跳過）。
           // 4=左 5=上 6=右 7=下
           if (widget.ratio == null) {
-            final withinY = p.dy >= cropView.top - _edge &&
-                p.dy <= cropView.bottom + _edge;
-            final withinX = p.dx >= cropView.left - _edge &&
-                p.dx <= cropView.right + _edge;
+            final withinY =
+                p.dy >= cropView.top - _edge && p.dy <= cropView.bottom + _edge;
+            final withinX =
+                p.dx >= cropView.left - _edge && p.dx <= cropView.right + _edge;
             if (withinY && (p.dx - cropView.left).abs() <= _edge) {
               _grab = 4;
             } else if (withinY && (p.dx - cropView.right).abs() <= _edge) {
@@ -411,14 +406,12 @@ class _CropAreaState extends State<_CropArea> {
           if (g == -1) {
             next = start.shift(delta);
             // 整塊搬：撞到邊就停住，不要縮小
-            final x = next.left.clamp(
-              view.left,
-              math.max(view.left, view.right - next.width),
-            ).toDouble();
-            final y = next.top.clamp(
-              view.top,
-              math.max(view.top, view.bottom - next.height),
-            ).toDouble();
+            final x = next.left
+                .clamp(view.left, math.max(view.left, view.right - next.width))
+                .toDouble();
+            final y = next.top
+                .clamp(view.top, math.max(view.top, view.bottom - next.height))
+                .toDouble();
             next = Rect.fromLTWH(x, y, next.width, next.height);
           } else {
             var l = start.left;
@@ -461,23 +454,74 @@ class _CropAreaState extends State<_CropArea> {
           widget.onCrop(toImage(next));
         }
 
+        /// 雙指：以起手的框為基準，跟著兩指的距離縮放、跟著中點平移。
+        /// 兩邊同時動，不用一邊一邊拖
+        void onPinch(double scale, Offset focal, Offset pan) {
+          final start = _startCrop;
+          if (start == null) return;
+          // 焦點在起手框裡的相對位置：縮放要繞著它，手指按著的那塊
+          // 內容才會留在指尖底下
+          final rel = Offset(
+            start.width == 0 ? 0.5 : (focal.dx - start.left) / start.width,
+            start.height == 0 ? 0.5 : (focal.dy - start.top) / start.height,
+          );
+          final ratio = widget.ratio;
+          var w = (start.width * scale).clamp(_minSide, view.width);
+          var h = ratio != null
+              ? w / ratio
+              : (start.height * scale).clamp(_minSide, view.height);
+          if (ratio != null && h > view.height) {
+            h = view.height;
+            w = h * ratio;
+          }
+          h = h.clamp(_minSide, view.height);
+          var x = focal.dx + pan.dx - rel.dx * w;
+          var y = focal.dy + pan.dy - rel.dy * h;
+          x = x.clamp(view.left, math.max(view.left, view.right - w));
+          y = y.clamp(view.top, math.max(view.top, view.bottom - h));
+          widget.onCrop(toImage(Rect.fromLTWH(x, y, w, h)));
+        }
+
+        // 用 onScale 而不是 onPan：ScaleGestureRecognizer 一根手指
+        // 也收得到（scale 恆為 1），所以單指拖角／拖邊／搬整塊的行為
+        // 完全照舊，兩根手指時才多一條縮放的路
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onPanStart: (d) {
-            _grabStart = d.localPosition;
-            onDown(d.localPosition);
+          onScaleStart: (d) {
+            _grabStart = d.localFocalPoint;
+            _pinchFocal = d.localFocalPoint;
+            _startCrop = cropView;
+            _pinching = d.pointerCount >= 2;
+            if (!_pinching) onDown(d.localFocalPoint);
           },
-          // 位移一律從「按下的那一點」算起，不用累加 delta——
-          // 累加會把每一步的夾邊誤差一路帶下去，手指跟框會越走越開
-          onPanUpdate: (d) =>
-              onMove(d.localPosition - (_grabStart ?? d.localPosition)),
-          onPanEnd: (_) {
+          onScaleUpdate: (d) {
+            final startPt = _grabStart ?? d.localFocalPoint;
+            if (d.pointerCount >= 2) {
+              // 第二根手指中途才放上來：以這一刻重新起手，
+              // 不然框會從舊的基準瞬間跳一下
+              if (!_pinching) {
+                _pinching = true;
+                _grab = null;
+                _grabStart = d.localFocalPoint;
+                _pinchFocal = d.localFocalPoint;
+                _startCrop = cropView;
+                return;
+              }
+              onPinch(
+                d.scale,
+                _pinchFocal ?? d.localFocalPoint,
+                d.localFocalPoint - startPt,
+              );
+              return;
+            }
+            if (_pinching) return; // 放開一指之後不要接著單指亂拖
+            onMove(d.localFocalPoint - startPt);
+          },
+          onScaleEnd: (_) {
             _grab = null;
             _grabStart = null;
-          },
-          onPanCancel: () {
-            _grab = null;
-            _grabStart = null;
+            _pinchFocal = null;
+            _pinching = false;
           },
           child: CustomPaint(
             size: Size(box.maxWidth, box.maxHeight),
@@ -494,6 +538,10 @@ class _CropAreaState extends State<_CropArea> {
 
   /// 這一次拖曳的起點（localPosition），用來算「從按下到現在」的位移
   Offset? _grabStart;
+
+  /// 雙指縮放中；起手時兩指的中點（縮放繞著它轉）
+  bool _pinching = false;
+  Offset? _pinchFocal;
 }
 
 class _CropPainter extends CustomPainter {
@@ -557,13 +605,25 @@ class _CropPainter extends CustomPainter {
     final cx = crop.center.dx;
     final cy = crop.center.dy;
     canvas.drawLine(
-        Offset(cx - tick, crop.top), Offset(cx + tick, crop.top), h);
+      Offset(cx - tick, crop.top),
+      Offset(cx + tick, crop.top),
+      h,
+    );
     canvas.drawLine(
-        Offset(cx - tick, crop.bottom), Offset(cx + tick, crop.bottom), h);
+      Offset(cx - tick, crop.bottom),
+      Offset(cx + tick, crop.bottom),
+      h,
+    );
     canvas.drawLine(
-        Offset(crop.left, cy - tick), Offset(crop.left, cy + tick), h);
+      Offset(crop.left, cy - tick),
+      Offset(crop.left, cy + tick),
+      h,
+    );
     canvas.drawLine(
-        Offset(crop.right, cy - tick), Offset(crop.right, cy + tick), h);
+      Offset(crop.right, cy - tick),
+      Offset(crop.right, cy + tick),
+      h,
+    );
   }
 
   @override
