@@ -4717,6 +4717,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 上一刻修剪把手有沒有吸住（吸住的瞬間震一下，才有磁鐵的感覺）
   bool _trimSnapped = false;
 
+  /// 撞到修剪煞車的提示最後一次跳的時間。拖到底的過程會連續撞
+  /// 幾十次，每次都跳 toast 會蓋滿畫面——3 秒內只講一次
+  DateTime _trimStopToastAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// 撞到煞車（在目前縮放下已經是最短）→ 提示要先放大才能再縮
+  void _trimStopHint() {
+    final now = DateTime.now();
+    if (now.difference(_trimStopToastAt).inSeconds < 3) return;
+    _trimStopToastAt = now;
+    showHint(context, '已是這個縮放下的最短，放大時間軸可以再縮');
+  }
+
   /// 這次修剪手勢「未吸附」的邊緣位置。
   /// 把手回報的是增量：若每步都從「已吸附」的邊緣起算，
   /// 每一小步都落在吸附半徑內、又被吸回原點，把手就永遠拖不動——
@@ -4789,7 +4801,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 撞到最短長度／素材端點被夾住時，原始值跟回實際邊緣：
         // 不跟的話反向拖回來會有一段空行程
         final newEdge = fromLeft ? c.offset : c.end;
-        if ((newEdge - snapped).abs() > 0.001) _trimRawEdge = newEdge;
+        if ((newEdge - snapped).abs() > 0.001) {
+          _trimRawEdge = newEdge;
+          // 是「往更短的方向拖」撞到煞車才提示；拖到素材端點
+          //（拉長方向）不算
+          final wantShorter = fromLeft ? dSec > 0 : dSec < 0;
+          if (wantShorter && c.length <= minSrc / c.speed + 0.001) {
+            _trimStopHint();
+          }
+        }
       }
     });
     _resyncPlayback();
@@ -4823,7 +4843,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       // 被夾住時原始值跟回實際邊緣，不然反向拖回來會有一段空行程
       final newEdge = fromLeft ? _wmStart : _wmEndEff;
-      if ((newEdge - snapped).abs() > 0.001) _trimRawEdge = newEdge;
+      if ((newEdge - snapped).abs() > 0.001) {
+        _trimRawEdge = newEdge;
+        final wantShorter = fromLeft ? d > 0 : d < 0;
+        if (wantShorter && (_wmEndEff - _wmStart) <= minLen + 0.001) {
+          _trimStopHint();
+        }
+      }
     });
   }
 
