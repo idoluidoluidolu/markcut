@@ -2798,13 +2798,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 短邊的那一側會再被畫布切掉一點。固定畫布的剪輯 App 都是這樣
   Future<void> _cropVideoClip(TimelineClip clip) async {
     final src = _tl.sourceOf(clip);
+    // 底圖抓「播放頭正指著的那一格」，不是片段開頭那一格：
+    // 使用者會先把播放頭移到想裁的畫面再按裁切，結果卻拿到片頭
+    // ——那一格常常是黑的或還沒進正題，根本看不出要裁哪裡。
+    // 播放頭不在這一段上（從時間軸選了別段就按）才退回開頭
+    final at = clip.coversForDisplay(_position)
+        ? clip.sourceTimeAt(_position).clamp(clip.trimStart, clip.trimEnd)
+        : clip.trimStart;
     // 底圖用這一段的一格畫面（拿不到就用縮圖）
     // 底圖抓大一點：這張要鋪滿整個裁切畫面，720 高的圖在 3 倍螢幕上
     // 等於放大四倍，糊到看不清楚要裁哪裡。工作檔本來就只有 1080 短邊，
     // 抓到頂也不貴（縮圖那份是給時間軸用的小圖，只有拿不到畫面才退回它）
     var frame = await nativeFrameAt(
       src.previewPath,
-      clip.trimStart,
+      at,
       maxH: 1920,
       quality: 0.95,
     );
@@ -2821,7 +2828,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         1,
         height: 1920,
         longSide: true,
-        startAt: clip.trimStart,
+        startAt: at,
       );
       frame = one.firstOrNull;
     }
