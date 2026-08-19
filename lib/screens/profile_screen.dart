@@ -36,7 +36,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   /// 影片草稿與照片草稿（沒有就是 null）。這一頁直接把草稿畫出來，
   /// 不再只顯示「有幾個」——使用者要找的是「那一個專案」，不是數量
-  Map<String, dynamic>? _videoDraft;
+  /// 影片草稿清單（可以有很多份，見 DraftStore）
+  List<DraftMeta> _videoDrafts = const [];
   Map<String, dynamic>? _photoDraft;
 
   @override
@@ -47,6 +48,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _reload() async {
     final presets = await PresetStore.load();
+    final videoDrafts = await DraftStore.list();
     final prefs = await SharedPreferences.getInstance();
 
     Map<String, dynamic>? readDraft(String key, String contentKey) {
@@ -65,15 +67,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (!mounted) return;
     setState(() {
       _presets = presets;
-      _videoDraft = readDraft(kDraftKey, 'clips');
+      _videoDrafts = videoDrafts;
       _photoDraft = readDraft(kPhotoDraftKey, 'photo');
     });
   }
 
-  /// 縮圖解碼：壞掉的 base64 不能在 build 裡丟例外（整頁會紅屏）
-  Uint8List? _thumbOf(Map<String, dynamic> j) {
-    final t = j['thumb'];
-    if (t is! String) return null;
+  /// 草稿清單那筆的封面（壞掉的 base64 不能在 build 裡丟例外）
+  Uint8List? _metaThumb(DraftMeta m) {
+    final t = m.thumb;
+    if (t == null) return null;
     try {
       return base64Decode(t);
     } catch (_) {
@@ -86,7 +88,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final raw = j['savedAt'];
     if (raw is! String) return '';
     final t = DateTime.tryParse(raw);
-    if (t == null) return '';
+    return t == null ? '' : _whenLabel(t);
+  }
+
+  /// 存檔時間講人話：剛剛／N 分鐘前／今天 HH:mm／M/D
+  String _whenLabel(DateTime t) {
     final d = DateTime.now().difference(t);
     if (d.inMinutes < 1) return '剛剛';
     if (d.inMinutes < 60) return '${d.inMinutes} 分鐘前';
@@ -294,9 +300,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final v = _videoDraft;
+    // 首頁這裡只放最近的一份，其餘去草稿夾看（「全部」進得去）
+    final v = _videoDrafts.isEmpty ? null : _videoDrafts.first;
     final p = _photoDraft;
-    final draftCount = (v == null ? 0 : 1) + (p == null ? 0 : 1);
+    final draftCount = _videoDrafts.length + (p == null ? 0 : 1);
     // 非編輯頁面全頁都能右滑返回（編輯畫面橫向手勢太多，刻意不放）
     return SwipeBack(
       child: Scaffold(
@@ -380,9 +387,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 if (v != null)
                                   Expanded(
                                     child: _draftTile(
-                                      cover: _thumbOf(v) != null
+                                      cover: _metaThumb(v) != null
                                           ? Image.memory(
-                                              _thumbOf(v)!,
+                                              _metaThumb(v)!,
                                               // 鋪滿：這是縮圖不是預覽，
                                               // 留邊只會讓一排卡看起來破碎
                                               fit: BoxFit.cover,
@@ -395,8 +402,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                               size: 26,
                                               color: Color(0xFFAFAFBB),
                                             ),
-                                      title: '未完成的影片',
-                                      when: _whenOf(v),
+                                      title: v.name,
+                                      when: _whenLabel(v.savedAt),
                                       onTap: _openDrafts,
                                     ),
                                   ),
