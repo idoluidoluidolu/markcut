@@ -908,9 +908,17 @@ class _TimelineEditorState extends State<TimelineEditor> {
   /// 浮水印軌：整塊可左右拖曳、可修剪範圍的琥珀色塊
   Widget _wmRow() {
     final wm = widget.watermark!;
-    // 最窄 72：兩顆 13px 修剪把手＋圖示＋幾個字，再窄就只剩把手，
-    // 看起來像一塊空白
-    final w = ((wm.end - wm.start) * pxPerSec).clamp(72.0, double.infinity);
+    // 真正的寬度。以前底線是 72px：範圍再短、時間軸再縮，這條都還是
+    // 畫 72px 寬——看起來就是「浮水印縮不下去」，而且右邊那顆修剪把手
+    // 早就不在真正的結尾上，越拖越對不上。
+    //
+    // 改成照實畫，只留 12px 不讓它消失（跟片段一樣，太窄時把手與
+    // 文字自己收起來，中間讓出來給拖曳）
+    final rawW = (wm.end - wm.start) * pxPerSec;
+    final w = rawW.clamp(12.0, double.infinity);
+    // 擺得下圖示＋文字才畫標示；擺得下兩顆把手才畫把手
+    final showLabel = rawW >= 56;
+    final showHandles = rawW >= kTrimMinWidth;
     return Stack(
       clipBehavior: Clip.none,
       children: [
@@ -982,38 +990,39 @@ class _TimelineEditorState extends State<TimelineEditor> {
                     // 標示：圖示＋內容。本來只有 9px 的字、左右又各留
                     // 14px 給修剪把手，窄的時候整條看起來是空白的，
                     // 根本認不出這是浮水印
-                    Padding(
-                      padding: EdgeInsets.only(
-                        left: widget.wmSelected ? 15 : 6,
-                        right: widget.wmSelected ? 15 : 6,
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            widget.wmHidden
-                                ? Icons.visibility_off_outlined
-                                : Icons.branding_watermark,
-                            size: 11,
-                            color: widget.wmSelected ? kSelect : kIcon,
-                          ),
-                          const SizedBox(width: 4),
-                          Flexible(
-                            child: Text(
-                              widget.wmLabel,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 10.5,
-                                color: widget.wmSelected ? kSelect : kIcon,
-                                fontWeight: FontWeight.w600,
+                    if (showLabel)
+                      Padding(
+                        padding: EdgeInsets.only(
+                          left: widget.wmSelected && showHandles ? 15 : 6,
+                          right: widget.wmSelected && showHandles ? 15 : 6,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              widget.wmHidden
+                                  ? Icons.visibility_off_outlined
+                                  : Icons.branding_watermark,
+                              size: 11,
+                              color: widget.wmSelected ? kSelect : kIcon,
+                            ),
+                            const SizedBox(width: 4),
+                            Flexible(
+                              child: Text(
+                                widget.wmLabel,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 10.5,
+                                  color: widget.wmSelected ? kSelect : kIcon,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
-                    if (widget.wmSelected) ...[
+                    if (widget.wmSelected && showHandles) ...[
                       Align(
                         alignment: Alignment.centerLeft,
                         child: _TrimHandle(
