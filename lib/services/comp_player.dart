@@ -99,6 +99,13 @@ class CompPlayer {
     Set<int> mutedTracks = const {},
   }) async {
     if (!await available) return null;
+    // 裁切的片段畫面來自系統影片圖層，Flutter 這邊的剪裁蓋不到它——
+    // 組下去預覽就是「沒裁過」的樣子。整條退回逐片段播放器
+    //（那條路的畫面是 Flutter 材質，裁切吃得到）
+    if (tl.clips.any((c) => c.cropped)) {
+      lastError = '有裁切過的片段';
+      return null;
+    }
     final vids =
         [
           for (final c in tl.clips)

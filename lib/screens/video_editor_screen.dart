@@ -700,7 +700,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             // 調色也要記：有調色就得退回舊路徑（系統影片圖層疊不上
             // Flutter 的濾鏡），不記的話調了色也不會換引擎
             '${c.scale}|${c.px}|${c.py}|${c.reverse}|${c.mirror}'
-            '|${c.color.hasColor}',
+            // 裁切同理：合成播放器畫不出來，裁了要換回逐片段那條路
+            '|${c.color.hasColor}|${c.cropped}'
+            '|${c.cropL}|${c.cropT}|${c.cropW}|${c.cropH}',
     // 馬賽克片段也要算進來：它跟調色一樣會逼著退回材質那條路，
     // 而它不是影片片段，不記的話「加了馬賽克」不會觸發重烘
     'mz${_tl.clips.where((c) => _tl.sourceOf(c).kind == ClipKind.mosaic).length}',
@@ -2745,19 +2747,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     if (!mounted) return;
-    final canvasAspect = _ratioAspect ?? src.aspect;
-    // 現在的縮放位移換算回「框」，重新開啟時才會停在原本的位置。
-    // 鏡像的片段要多翻一次：底圖是未鏡像的原始畫面，而縮放位移指的是
-    // 「翻過之後」的顯示座標——不翻的話框會停在左右相反的那一側，
-    // 裁下去也會裁到相反的那一塊
-    final display = transformToCrop(
-      clip.scale,
-      clip.px,
-      clip.py,
-      src.aspect,
-      canvasAspect,
-    );
-    final initial = clip.mirror ? flipRectX(display) : display;
+    // 已經裁過就從原本的框開始（底圖是未鏡像的原始畫面，鏡像的
+    // 片段要翻一次才對得上使用者看到的左右）
+    final saved = Rect.fromLTWH(clip.cropL, clip.cropT, clip.cropW, clip.cropH);
+    final initial = clip.mirror ? flipRectX(saved) : saved;
     final picked0 = await pickCropRect(context, frame, initial: initial);
     if (picked0 == null ||
         !mounted ||
@@ -2778,20 +2771,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         (picked0.height - initial.height).abs() < eps) {
       return;
     }
-    // 裁切保持專案原本的畫布比例（實測回報：直式影片裁一下整個
-    // 變成 16:9）。框只換算成這個片段的縮放位移，畫布形狀不動——
-    // 想改成品形狀請用匯出頁的「畫面比例」
-    final t = cropToTransform(r, src.aspect, canvasAspect);
-    // 之後回報「裁了沒反應」時，先看這行有沒有出現、值對不對
+    // 單純的裁切：只記框，不動 scale/px/py。框以外的像素不畫，
+    // 留下來的那塊維持原本的大小與位置——不會撐滿畫布，畫布形狀
+    // 也不變（想改成品形狀請用匯出頁的「畫面比例」）
     Diag.note(
-      '裁切套用：scale=${t.scale.toStringAsFixed(3)} '
-      'px=${t.px.toStringAsFixed(3)} py=${t.py.toStringAsFixed(3)}',
+      '裁切套用：l=${r.left.toStringAsFixed(3)} t=${r.top.toStringAsFixed(3)} '
+      'w=${r.width.toStringAsFixed(3)} h=${r.height.toStringAsFixed(3)}',
     );
     _pushUndo();
     setState(() {
-      clip.scale = t.scale;
-      clip.px = t.px;
-      clip.py = t.py;
+      clip.cropL = r.left.clamp(0.0, 1.0);
+      clip.cropT = r.top.clamp(0.0, 1.0);
+      clip.cropW = r.width.clamp(0.01, 1.0);
+      clip.cropH = r.height.clamp(0.01, 1.0);
     });
     _compRefreshIfChanged();
     _saveDraft();
@@ -6472,6 +6464,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     );
                                   }
 
+                                  // 裁切之後真正看得到的那一塊。點擊判定
+                                  // 與選取框都該用它——不然裁掉的空白處
+                                  // 還是點得到、框也框在看不見的邊上
+                                  Rect cropBox(Rect r, TimelineClip c) {
+                                    if (!c.cropped) return r;
+                                    final l = c.mirror
+                                        ? 1 - c.cropL - c.cropW
+                                        : c.cropL;
+                                    return Rect.fromLTWH(
+                                      r.left + l * r.width,
+                                      r.top + c.cropT * r.height,
+                                      c.cropW * r.width,
+                                      c.cropH * r.height,
+                                    );
+                                  }
+
                                   final children = <Widget>[];
                                   // 點擊判定用的位置表，跟著畫面一起重建
                                   _hitBoxes.clear();
@@ -6552,7 +6560,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       // 迴圈裡設的，而合成這條路不會跑到它
                                       if (cur.id == _sel) {
                                         final s = _tl.sourceOf(cur);
-                                        selRect = layerBox(cur, s.aspect);
+                                        selRect = cropBox(
+                                          layerBox(cur, s.aspect),
+                                          cur,
+                                        );
                                         selVisual = cur;
                                       }
                                     }
@@ -6643,7 +6654,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     );
                                     final warm = warmIds.contains(c.id);
                                     final vTrack = warm ? warmTrack : c.track;
-                                    addHit(vTrack, c.id, r);
+                                    addHit(vTrack, c.id, cropBox(r, c));
                                     // 拖曳中：真影片上面疊快取幀。獨立小元件直接聽 _posVN
                                     // 全速換圖（不吃 30fps 節流），搭配鄰近幀預熱解碼＝跟手。
                                     //
@@ -6789,7 +6800,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       ),
                                     );
                                     if (c.id == _sel && !warm) {
-                                      selRect = r;
+                                      selRect = cropBox(r, c);
                                       selVisual = c;
                                     }
                                   }
@@ -6989,7 +7000,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     }
                                     if (src.kind == ClipKind.image) {
                                       final r = layerBox(c, src.aspect);
-                                      addHit(c.track, c.id, r);
+                                      addHit(c.track, c.id, cropBox(r, c));
                                       final bytes = _thumbs[c.sourceIndex];
                                       final hasBytes =
                                           bytes != null && bytes.isNotEmpty;
@@ -7046,7 +7057,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         ),
                                       );
                                       if (c.id == _sel) {
-                                        selRect = r;
+                                        selRect = cropBox(r, c);
                                         selVisual = c;
                                       }
                                     } else if (src.kind == ClipKind.wm) {
@@ -9399,8 +9410,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   ///
   /// 只作用在「一片段一圖層」那條路。合成播放器接手時整個畫面是系統
   /// 合出來的一層，這裡翻它等於整組一起翻——鏡像是在原生端逐片段做的
+  /// 裁切用的剪裁器：框是素材座標的 0~1，換算成這一層的實際像素
   Widget _shaped(TimelineClip c, Widget child) {
     var w = child;
+    // 裁切在最內層：框以外的像素直接不畫，留下來的那塊維持原本的
+    // 大小與位置——「單純的裁切」，不順便放大填滿畫布。
+    // 擺在鏡像之前＝框定義在未鏡像的原始畫面上，翻轉時窗口跟著翻
+    if (c.cropped) {
+      w = ClipRect(
+        clipper: _CropClipper(c.cropL, c.cropT, c.cropW, c.cropH),
+        child: w,
+      );
+    }
     if (c.mirror) {
       w = Transform(
         alignment: Alignment.center,
@@ -9940,4 +9961,24 @@ class _ScrubDecoder {
     }
     _decoded.clear();
   }
+}
+
+
+/// 片段裁切框 → 這一層的剪裁矩形（框是素材座標 0~1）
+class _CropClipper extends CustomClipper<Rect> {
+  final double l, t, w, h;
+
+  const _CropClipper(this.l, this.t, this.w, this.h);
+
+  @override
+  Rect getClip(Size size) => Rect.fromLTWH(
+    l * size.width,
+    t * size.height,
+    w * size.width,
+    h * size.height,
+  );
+
+  @override
+  bool shouldReclip(_CropClipper old) =>
+      old.l != l || old.t != t || old.w != w || old.h != h;
 }

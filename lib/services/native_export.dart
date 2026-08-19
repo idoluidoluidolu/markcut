@@ -59,6 +59,10 @@ class NativeExport {
     for (final c in spec.clips) {
       if (spec.sources[c.sourceIndex].kind == ClipKind.video) vids.add(c);
       if (c.reverse) return '有倒轉的片段（前置處理漏了）';
+      // 裁切目前只有 FFmpeg 那條路會畫。Swift 端還沒吃這個欄位，
+      // 交給它會匯出成「沒裁過」的樣子——預覽與成品不一樣，
+      // 比慢一點嚴重得多
+      if (c.cropped) return '有裁切過的片段';
     }
     if (vids.isEmpty) return '沒有影片片段';
     return null;

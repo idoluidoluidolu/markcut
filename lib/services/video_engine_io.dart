@@ -523,6 +523,23 @@ Future<String> _buildCommand(
     return (w2, h2, x, y);
   }
 
+  /// 片段的裁切：縮到輸出尺寸之後把框以外切掉，並回報 overlay 要
+  /// 跟著位移多少——切掉左上角之後，剩下的那塊在畫布上的位置也要
+  /// 往右下移同樣的量，內容才會留在原地（「單純的裁切」）。
+  ///
+  /// 接在 scale 之後、hflip 之前，跟預覽的順序一致：框定義在未鏡像
+  /// 的原始畫面上
+  (String, int, int) cropOf(TimelineClip c, int w2, int h2) {
+    if (!c.cropped) return ('', 0, 0);
+    var cw = (c.cropW * w2).round();
+    var ch = (c.cropH * h2).round();
+    cw = math.max(2, cw - cw % 2);
+    ch = math.max(2, ch - ch % 2);
+    final cx = (c.cropL * w2).round().clamp(0, math.max(0, w2 - cw)).toInt();
+    final cy = (c.cropT * h2).round().clamp(0, math.max(0, h2 - ch)).toInt();
+    return ('crop=$cw:$ch:$cx:$cy,', cx, cy);
+  }
+
   /// 畫面淡入淡出。時間是「這個片段自己的時間」（0＝片段開頭），
   /// 不是輸出時間——分段渲染時一個片段可能被切成好幾段，用絕對時間的話
   /// 跨段的淡化需要負的起點，fade 濾鏡不收
@@ -555,6 +572,7 @@ Future<String> _buildCommand(
     final srcA = c.trimStart + (a - start) * rate;
     final srcB = c.trimStart + (b - start) * rate;
     final (w2, h2, x, y) = layerBox(c, src.aspect);
+    final (cropF, cdx, cdy) = cropOf(c, w2, h2);
     fc.write(
       '[$label]'
       'trim=start=${_f(srcA)}:end=${_f(srcB)},'
@@ -568,6 +586,7 @@ Future<String> _buildCommand(
       // 畫格的色彩標記換掉，換掉之後就不知道來源是 HLG/PQ 了
       '${hdrTrcOf(c.sourceIndex, h2)}'
       'scale=$w2:$h2:flags=lanczos,'
+      '$cropF'
       '${c.mirror ? 'hflip,' : ''}'
       '${c.reverse ? 'reverse,' : ''}'
       // 全域速度 × 每片段速度一起壓進 PTS
@@ -585,7 +604,7 @@ Future<String> _buildCommand(
       '[lv$k];',
     );
     fc.write(
-      '[$cur][lv$k]overlay=$x:$y:'
+      '[$cur][lv$k]overlay=${x + cdx}:${y + cdy}:'
       'enable=${_window(a - w0, b - w0)}:'
       // 素材串流比片段短時要凍住最後一幀，不能讓底下的黑畫布露出來。
       // 手機拍的檔案很常「容器長度 > 視訊串流長度」（音軌比較長、
@@ -610,9 +629,11 @@ Future<String> _buildCommand(
     if (src.kind == ClipKind.image) {
       final label = vPool[c.sourceIndex]!.removeLast();
       final (w2, h2, x, y) = layerBox(c, src.aspect);
+      final (cropF, cdx, cdy) = cropOf(c, w2, h2);
       fc.write(
         '[$label]'
         'scale=$w2:$h2:flags=lanczos'
+        '${cropF.isEmpty ? '' : ',${cropF.substring(0, cropF.length - 1)}'}'
         '${c.mirror ? ',hflip' : ''}'
         '${_eq(c)}'
         ',format=rgba,'
@@ -622,7 +643,7 @@ Future<String> _buildCommand(
         '[lv$k];',
       );
       fc.write(
-        '[$cur][lv$k]overlay=$x:$y:'
+        '[$cur][lv$k]overlay=${x + cdx}:${y + cdy}:'
         'enable=${_window(a - w0, b - w0)}:'
         'eof_action=repeat[ov$k];',
       );

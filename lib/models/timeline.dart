@@ -202,6 +202,20 @@ class TimelineClip {
   /// 調色（跟照片編輯共用同一個模型）
   final ColorGrade color;
 
+  /// 裁切框（素材座標 0~1，未鏡像的原始畫面）。整張＝沒裁。
+  ///
+  /// 真的把框以外的像素切掉，不動 [scale]：裁切就是裁切，不該
+  /// 順便把留下來的那塊放大填滿畫布（使用者原話：「單純的裁切，
+  /// 不要每次裁切完他都撐滿整個螢幕」）
+  double cropL;
+  double cropT;
+  double cropW;
+  double cropH;
+
+  /// 有沒有真的裁過（浮點誤差當作沒裁）
+  bool get cropped =>
+      cropL > 0.001 || cropT > 0.001 || cropW < 0.999 || cropH < 0.999;
+
   TimelineClip({
     required this.id,
     required this.sourceIndex,
@@ -219,6 +233,10 @@ class TimelineClip {
     this.reverse = false,
     this.mirror = false,
     ColorGrade? color,
+    this.cropL = 0,
+    this.cropT = 0,
+    this.cropW = 1,
+    this.cropH = 1,
   }) : color = color ?? ColorGrade();
 
   /// 素材端長度（trim 掉頭尾後的原始秒數）
@@ -267,6 +285,7 @@ class TimelineClip {
     'speed': speed,
     'reverse': reverse,
     'mirror': mirror,
+    if (cropped) 'crop': [cropL, cropT, cropW, cropH],
     // 調色的鍵維持扁平，舊草稿讀得回來
     ...color.toJson(),
   };
@@ -289,10 +308,21 @@ class TimelineClip {
     speed: (j['speed'] ?? 1.0).toDouble(),
     reverse: (j['reverse'] ?? false) as bool,
     mirror: (j['mirror'] ?? false) as bool,
+    cropL: _crop(j, 0, 0),
+    cropT: _crop(j, 1, 0),
+    cropW: _crop(j, 2, 1),
+    cropH: _crop(j, 3, 1),
     color: ColorGrade.fromJson(j),
   );
 
   TimelineClip copy() => TimelineClip.fromJson(toJson());
+
+  /// 裁切框的一個分量（舊草稿沒有這個欄位就回預設＝沒裁）
+  static double _crop(Map<String, dynamic> j, int i, double fallback) {
+    final v = j['crop'];
+    if (v is List && v.length == 4) return (v[i] as num).toDouble();
+    return fallback;
+  }
 }
 
 /// 整條時間軸的狀態與操作
