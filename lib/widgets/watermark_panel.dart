@@ -98,6 +98,11 @@ class WatermarkPanel extends StatefulWidget {
   /// 使用者回到畫面就能直接拖曳／縮放它
   final VoidCallback? onLogoAdded;
 
+  /// 「加 GIF」的入口。給了才會在導覽列出現那一格——GIF 一定要當
+  /// 時間軸素材才會動（浮水印是烘成一張靜態 PNG 的），所以真正
+  /// 怎麼加是由影片編輯器決定，面板只負責把入口擺出來
+  final VoidCallback? onAddGif;
+
   /// 隱藏面板內的「儲存範本」鈕（父層自己在底部放）
   final bool hideSaveButton;
 
@@ -126,6 +131,7 @@ class WatermarkPanel extends StatefulWidget {
     this.initialPresetName,
     this.onSaved,
     this.onLogoAdded,
+    this.onAddGif,
     this.hideSaveButton = false,
     this.extraSections = const [],
     this.controller,
@@ -616,6 +622,13 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         key: _logoCardKey,
         action: null,
       ),
+      if (widget.showNav && widget.onAddGif != null)
+        (
+          label: 'GIF',
+          icon: Icons.gif_box_outlined,
+          key: null,
+          action: widget.onAddGif!,
+        ),
       if (widget.showNav)
         (
           label: '手繪',

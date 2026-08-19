@@ -44,6 +44,16 @@ Future<({String codec, double fps, int w, int h})> probeVideoInfo(
 
 /// Web 沒有 FFmpeg：用隱形 <video> + canvas 抓格做縮圖，
 /// 時間軸 filmstrip 與草稿封面才有畫面
+/// Web 沒有 FFmpeg，做不出 GIF（GIF 相關的入口在 web 上本來就隱藏，
+/// 這裡只是讓兩邊的介面對得起來）
+Future<String?> makeGifFile({
+  required String inputPath,
+  required double start,
+  required double end,
+  required int fps,
+  required int maxSide,
+}) async => null;
+
 Future<List<Uint8List>> makeThumbnails(
     String inputPath, double durationSec, int count,
     {int height = 200,

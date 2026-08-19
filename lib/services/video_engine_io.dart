@@ -1732,6 +1732,38 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   return saved;
 }
 
+/// 把一段影片做成 GIF 檔並回傳路徑（不存相簿）。給「成品預覽」用：
+/// 使用者調完範圍與流暢度，看到的就是真的成品，不是影片播放器。
+///
+/// 跟匯出走同一組濾鏡（兩段式調色盤），所以預覽跟最後存到相簿的
+/// 那一份是同一個東西
+Future<String?> makeGifFile({
+  required String inputPath,
+  required double start,
+  required double end,
+  required int fps,
+  required int maxSide,
+}) async {
+  final dir = await getTemporaryDirectory();
+  final ts = DateTime.now().millisecondsSinceEpoch;
+  final out = '${dir.path}${Platform.pathSeparator}preview_$ts.gif';
+  final dur = math.max(0.05, end - start);
+  try {
+    final session = await FFmpegKit.execute(
+      '-y -ss ${_f(start)} -t ${_f(dur)} -i "$inputPath" -filter_complex '
+      '"[0:v]fps=$fps,'
+      'scale=w=$maxSide:h=$maxSide:force_original_aspect_ratio=decrease'
+      ':flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];'
+      '[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle[g]" '
+      '-map "[g]" -an "$out"',
+    );
+    if (!ReturnCode.isSuccess(await session.getReturnCode())) return null;
+    return out;
+  } catch (_) {
+    return null;
+  }
+}
+
 /// 產生時間軸縮圖（height 可調：filmstrip 用 200、批次預覽用 720）
 /// 抽縮圖。抽不出來就回空清單——呼叫端全都處理得了「沒有縮圖」，
 /// 但處理不了例外：這些多半是射後不理的背景工作，例外跑出去就變成

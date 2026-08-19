@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -53,6 +54,55 @@ class _GifScreenState extends State<GifScreen> {
   Timer? _tick;
   bool _exporting = false;
 
+  /// 成品預覽：真的做一份 GIF 出來擺在大圖那裡。
+  ///
+  /// 用影片播放器當預覽會騙人——GIF 只有 10~15 格、顏色被壓成 256 色，
+  /// 跟原片差很多。看到的就該是最後存下去的那個東西
+  String? _gifPreview;
+  bool _building = false;
+
+  /// 設定停下來之後才重做預覽（拉把手時每動一下就做一次會卡死）
+  Timer? _previewTimer;
+
+  /// 這一份預覽是照哪組設定做的（設定沒變就不用重做）
+  String _previewKey = '';
+
+  void _schedulePreview() {
+    _previewTimer?.cancel();
+    _previewTimer = Timer(const Duration(milliseconds: 500), _buildPreview);
+  }
+
+  Future<void> _buildPreview() async {
+    if (_building || !mounted) return;
+    final key =
+        '${_start.toStringAsFixed(2)}~${_end.toStringAsFixed(2)}'
+        '@$_fps@$_size';
+    if (key == _previewKey) return;
+    setState(() => _building = true);
+    final path = await engine.makeGifFile(
+      inputPath: widget.path,
+      start: _start,
+      end: _end,
+      fps: _fps,
+      maxSide: _size,
+    );
+    if (!mounted) return;
+    // 做好一份就把上一份刪掉，暫存不會愈積愈多
+    final old = _gifPreview;
+    setState(() {
+      _building = false;
+      if (path != null) {
+        _gifPreview = path;
+        _previewKey = key;
+      }
+    });
+    if (old != null && old != path) {
+      try {
+        File(old).deleteSync();
+      } catch (_) {}
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -75,6 +125,7 @@ class _GifScreenState extends State<GifScreen> {
     _dur = p.value.duration.inMilliseconds / 1000.0;
     _start = 0;
     _end = math.min(_dur, 15);
+    _schedulePreview();
     if (mounted) setState(() => _ready = true);
     // 縮圖帶：先走系統硬體解碼，抽不到再退 FFmpeg
     var thumbs = await nativeStrip(widget.path, _dur, 10, maxH: 120);
@@ -100,6 +151,13 @@ class _GifScreenState extends State<GifScreen> {
   @override
   void dispose() {
     _tick?.cancel();
+    _previewTimer?.cancel();
+    final gif = _gifPreview;
+    if (gif != null) {
+      try {
+        File(gif).deleteSync();
+      } catch (_) {}
+    }
     _player?.dispose();
     _pos.dispose();
     super.dispose();
@@ -289,21 +347,15 @@ class _GifScreenState extends State<GifScreen> {
                           const SizedBox(height: 8),
                           _trimStrip(),
                           const SizedBox(height: 16),
-                          _chipsRow(
-                            '尺寸',
-                            [320, 480, 640],
-                            _size,
-                            (v) => setState(() => _size = v),
-                            (v) => '${v}p',
-                          ),
+                          _chipsRow('尺寸', [320, 480, 640], _size, (v) {
+                            setState(() => _size = v);
+                            _schedulePreview();
+                          }, (v) => '${v}p'),
                           const SizedBox(height: 10),
-                          _chipsRow(
-                            '流暢度',
-                            [10, 12, 15],
-                            _fps,
-                            (v) => setState(() => _fps = v),
-                            (v) => '$v fps',
-                          ),
+                          _chipsRow('流暢度', [10, 12, 15], _fps, (v) {
+                            setState(() => _fps = v);
+                            _schedulePreview();
+                          }, (v) => '$v fps'),
                           const SizedBox(height: 16),
                           primaryAction(
                             label: '做成 GIF',
@@ -326,6 +378,61 @@ class _GifScreenState extends State<GifScreen> {
     final aspect = (size.width > 0 && size.height > 0)
         ? size.width / size.height
         : 16 / 9;
+    final gif = _gifPreview;
+    // 做好成品就直接看成品：GIF 只有 10~15 格、顏色壓成 256 色，
+    // 拿影片播放器當預覽會讓人以為成品比實際好看
+    if (gif != null) {
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        // 點一下回去看原片（要重新選範圍時比較好對位）
+        onTap: () => setState(() => _gifPreview = null),
+        child: Container(
+          color: Colors.black,
+          alignment: Alignment.center,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              AspectRatio(
+                aspectRatio: aspect,
+                child: Image.file(
+                  File(gif),
+                  fit: BoxFit.contain,
+                  gaplessPlayback: true,
+                ),
+              ),
+              if (_building)
+                const Positioned(
+                  right: 10,
+                  top: 10,
+                  child: SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              Positioned(
+                left: 10,
+                top: 10,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.55),
+                    borderRadius: BorderRadius.circular(kTagRadius),
+                  ),
+                  child: const Text(
+                    '成品預覽',
+                    style: TextStyle(fontSize: 10.5, color: kText),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: _togglePlay,
@@ -336,6 +443,16 @@ class _GifScreenState extends State<GifScreen> {
           alignment: Alignment.center,
           children: [
             AspectRatio(aspectRatio: aspect, child: p.view()),
+            if (_building)
+              const Positioned(
+                right: 10,
+                top: 10,
+                child: SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
             // 暫停時給一顆播放鈕；播放中畫面乾淨
             if (!_playing)
               Container(
@@ -419,16 +536,14 @@ class _GifScreenState extends State<GifScreen> {
                 top: 0,
                 bottom: 0,
                 width: xOf(_start),
-                child: ColoredBox(
-                    color: Colors.black.withValues(alpha: 0.62)),
+                child: ColoredBox(color: Colors.black.withValues(alpha: 0.62)),
               ),
               Positioned(
                 left: xOf(_end),
                 top: 0,
                 bottom: 0,
                 right: 0,
-                child: ColoredBox(
-                    color: Colors.black.withValues(alpha: 0.62)),
+                child: ColoredBox(color: Colors.black.withValues(alpha: 0.62)),
               ),
               // 選取範圍的上下框線
               Positioned(
@@ -439,10 +554,9 @@ class _GifScreenState extends State<GifScreen> {
                 child: IgnorePointer(
                   child: DecoratedBox(
                     decoration: BoxDecoration(
-                      border:
-                          Border.symmetric(
-                            horizontal: BorderSide(color: kSelect, width: 2),
-                          ),
+                      border: Border.symmetric(
+                        horizontal: BorderSide(color: kSelect, width: 2),
+                      ),
                     ),
                   ),
                 ),
@@ -455,10 +569,7 @@ class _GifScreenState extends State<GifScreen> {
                   top: -2,
                   bottom: -2,
                   child: const IgnorePointer(
-                    child: SizedBox(
-                      width: 2,
-                      child: ColoredBox(color: kText),
-                    ),
+                    child: SizedBox(width: 2, child: ColoredBox(color: kText)),
                   ),
                 ),
               ),
@@ -472,7 +583,11 @@ class _GifScreenState extends State<GifScreen> {
   }
 
   /// 一個把手：44pt 觸控區、視覺上是一根圓頭短棒
-  Widget _handle({required double x, required bool left, required double width}) {
+  Widget _handle({
+    required double x,
+    required bool left,
+    required double width,
+  }) {
     return Positioned(
       left: x - 22,
       top: -6,
@@ -491,6 +606,7 @@ class _GifScreenState extends State<GifScreen> {
           });
           // 拉哪個把手，畫面就停在哪個把手的位置——邊拉邊看剪在哪
           _seek(left ? _start : _end);
+          _schedulePreview();
           final p = _player;
           if (_playing && p != null) {
             p.pause();
@@ -538,8 +654,10 @@ class _GifScreenState extends State<GifScreen> {
               borderRadius: BorderRadius.circular(999),
               onTap: () => onPick(o),
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 7,
+                ),
                 decoration: BoxDecoration(
                   color: o == selected ? kPanelHi : Colors.transparent,
                   borderRadius: BorderRadius.circular(999),
@@ -551,8 +669,9 @@ class _GifScreenState extends State<GifScreen> {
                   fmt(o),
                   style: TextStyle(
                     fontSize: 12.5,
-                    fontWeight:
-                        o == selected ? FontWeight.w700 : FontWeight.w500,
+                    fontWeight: o == selected
+                        ? FontWeight.w700
+                        : FontWeight.w500,
                     color: o == selected ? kText : kTextDim,
                     fontFeatures: const [FontFeature.tabularFigures()],
                   ),

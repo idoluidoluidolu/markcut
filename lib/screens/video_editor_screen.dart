@@ -668,7 +668,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 抽不到（照片素材、原生失敗、web 讀不到）就退回時間軸縮圖。
     // 圖片素材那份存的是原檔位元組，本來就是清楚的
     bytes ??= _thumbs[c.sourceIndex]?.firstOrNull;
-    if (bytes == null) return;
+    if (bytes == null) {
+      // 抽不到就把舊的清掉。留著的話草稿會顯示上一個封面片段的畫面
+      //（換過第一段、或刪掉原本那段之後），縮圖跟內容對不上
+      _coverB64 = null;
+      _coverAspect = null;
+      _coverKey = null;
+      return;
+    }
     _coverKey = key;
     _coverB64 = base64Encode(bytes);
     _coverAspect = src.aspect;
@@ -2206,7 +2213,123 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     await _dispatchAdd(kind, track);
   }
 
-  /// GIF 素材：從「我的 GIF」挑一個，或從檔案匯入。
+  /// 圖片／GIF 素材的調整視窗：大小、左右翻轉，GIF 另外可以換一個。
+  ///
+  /// 本來點選取中的圖片素材沒有任何反應——文字、浮水印、馬賽克都
+  /// 點得開自己的設定，只有圖片沒有
+  Future<void> _editImageClip(TimelineClip clip) async {
+    final src = _tl.sourceOf(clip);
+    _pause();
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.5,
+      ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) {
+          void change(VoidCallback f) {
+            _pushUndo();
+            setSheet(f);
+            setState(() {});
+            _compRefreshIfChanged();
+            _saveDraft();
+          }
+
+          return SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        src.isGif
+                            ? Icons.gif_box_outlined
+                            : Icons.image_outlined,
+                        size: 18,
+                        color: kAmber,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        src.isGif ? 'GIF' : '圖片',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const Spacer(),
+                      if (src.isGif)
+                        TextButton.icon(
+                          onPressed: () async {
+                            final path = await _pickGifFromGallery();
+                            if (path == null || !mounted) return;
+                            final bytes = await readFileBytes(path);
+                            if (bytes == null || !mounted) return;
+                            change(() {
+                              _tl.sources[clip.sourceIndex] = src.withPath(
+                                path,
+                              );
+                              _thumbs[clip.sourceIndex] = [bytes];
+                            });
+                          },
+                          icon: const Icon(Icons.swap_horiz, size: 17),
+                          label: const Text(
+                            '換一個',
+                            style: TextStyle(fontSize: 12.5),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  sliderRow(
+                    label: '大小',
+                    value: clip.scale,
+                    min: 0.02,
+                    max: 3.0,
+                    onChanged: (v) => change(() => clip.scale = v),
+                    readout: '${(clip.scale * 100).round()}',
+                    unit: '%',
+                    // 點數字＝回到剛好貼合畫布、置中
+                    onReset: () => change(() {
+                      clip.scale = 1.0;
+                      clip.px = 0.5;
+                      clip.py = 0.5;
+                    }),
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: () =>
+                            change(() => clip.mirror = !clip.mirror),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: clip.mirror ? kSelect : kText,
+                          side: BorderSide(
+                            color: clip.mirror ? kSelect : kClipBorder,
+                          ),
+                        ),
+                        icon: const Icon(Icons.flip, size: 16),
+                        label: const Text(
+                          '左右翻轉',
+                          style: TextStyle(fontSize: 12.5),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// GIF 素材：從「我的 GIF」挑一個，或從相簿匯入。
   ///
   /// 種類還是圖片素材（位置、縮放、透明度、圖層順序全部照舊），
   /// 只是畫的時候是一段動畫——預覽交給 Image.memory 自己跑，
@@ -2216,7 +2339,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (!mounted) return;
     String? path;
     if (mine.isEmpty) {
-      path = await _pickGifFile();
+      path = await _pickGifFromGallery();
     } else {
       path = await showModalBottomSheet<String>(
         context: context,
@@ -2244,14 +2367,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     const Spacer(),
                     TextButton.icon(
                       onPressed: () async {
-                        final f = await _pickGifFile();
+                        final f = await _pickGifFromGallery();
                         if (f != null && context.mounted) {
                           Navigator.pop(context, f);
                         }
                       },
-                      icon: const Icon(Icons.folder_open, size: 17),
+                      icon: const Icon(Icons.photo_library_outlined, size: 17),
                       label: const Text(
-                        '從檔案選',
+                        '從相簿選',
                         style: TextStyle(fontSize: 12.5),
                       ),
                     ),
@@ -2292,13 +2415,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     await _addGifClip(path, track);
   }
 
-  /// 從檔案挑一個 .gif
-  Future<String?> _pickGifFile() async {
-    final r = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: const ['gif'],
-    );
-    return r?.files.singleOrNull?.path;
+  /// 從相簿挑一個 GIF。
+  ///
+  /// 用 FileType.image：在 iOS／Android 上開的是相簿本人（不是檔案
+  /// App）。相簿裡什麼都選得到，所以挑完自己驗一次副檔名——選到
+  /// 一般照片時要講清楚，不能默默當成 GIF 加進去只有一格
+  Future<String?> _pickGifFromGallery() async {
+    final r = await FilePicker.platform.pickFiles(type: FileType.image);
+    final f = r?.files.singleOrNull;
+    final path = f?.path;
+    if (path == null) return null;
+    if (!path.toLowerCase().endsWith('.gif')) {
+      if (mounted) showHint(context, '這不是 GIF，請選會動的那種', error: true);
+      return null;
+    }
+    return path;
   }
 
   /// 把一個 GIF 檔放上時間軸
@@ -6267,6 +6398,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 _wmPart = WmPart.logo;
                                 if (!isClipWm) _wmSel = true;
                               }),
+                              // GIF 得當時間軸素材才會動（浮水印是烘成
+                              // 一張靜態 PNG 的），所以從這裡加也是加到
+                              // 時間軸上，加完把人帶回剪輯分頁看
+                              onAddGif: kIsWeb
+                                  ? null
+                                  : () async {
+                                      await _pickGif(_tl.usedTracks);
+                                      if (mounted) _tabs.animateTo(0);
+                                    },
                             );
                           },
                         ),
@@ -8633,6 +8773,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     }
                                   } else if (k == ClipKind.mosaic) {
                                     _editMosaicClip(c);
+                                  } else if (k == ClipKind.image) {
+                                    // 圖片與 GIF 本來點了沒反應
+                                    _editImageClip(c);
                                   }
                                 },
                                 onLiftChanged: (v) => _lifting = v,
