@@ -2561,42 +2561,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 越裁越小回不去。按上一步就會回到裁切前的樣子
   final Map<int, int> _cropOrigin = {};
 
-  /// 放大時間軸到「這一段修剪得動」為止。
-  ///
-  /// 片段窄到擺不下兩顆修剪把手時（見 kTrimMinWidth）把手會整個不畫，
-  /// 好把中間讓出來給拖曳。但那樣使用者只看到把手消失、不知道能怎麼辦
-  /// ——改成點一下就放大到看得清楚，順便把播放頭移過去（時間軸是
-  /// 播放頭固定、內容捲動的，不移過去就捲不到那一段）
-  void _zoomToClip(int id) {
-    final c = _selClipById(id);
-    if (c == null || c.length <= 0) return;
-    // 目標：這一段佔 160px。上限跟捏合縮放同一個（200px/秒）
-    final want = (160 / c.length).clamp(1.0, 600.0);
-    if (want <= _pxPerSec + 0.5) {
-      // 已經放到最大還是太窄＝這一段真的太短
-      showHint(
-        context,
-        '這一段只有 ${c.length.toStringAsFixed(1)} 秒，'
-        '已經放到最大了',
-      );
-      return;
-    }
-    setState(() => _pxPerSec = want);
-    _seekScrub(
-      (c.offset + c.length / 2).clamp(0.0, math.max(0.0, _tl.duration)),
-    );
-    WidgetsBinding.instance.addPostFrameCallback(
-      (_) => _syncScrollToPosition(),
-    );
-    if (_zoomTrimHintLeft > 0) {
-      _zoomTrimHintLeft--;
-      showHint(context, '已放大這一段，可以拖兩端修剪了');
-    }
-  }
-
-  /// 「放大就能修剪」這件事講兩次就夠了
-  int _zoomTrimHintLeft = 2;
-
   /// 素材索引 → 它裁切之前的原始位元組。
   ///
   /// 匯入時就先裁過那一刀（_pickImage）是不可逆的：素材存的是裁好的
@@ -8302,7 +8266,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 // 窄到擺不下修剪把手的片段：點一下自動
                                 // 放大。不然使用者只看到把手憑空不見，
                                 // 不會知道要先把時間軸放大
-                                onTooNarrow: _zoomToClip,
                                 onLongPressClip: _showClipMenu,
                                 onLongPressEmpty: _showEmptyMenu,
                                 onTapSelectedClip: (id) {

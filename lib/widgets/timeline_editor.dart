@@ -85,7 +85,6 @@ class TimelineEditor extends StatefulWidget {
 
   /// 點到一個「窄到擺不下修剪把手」的片段。父層負責放大時間軸到看得
   /// 清楚為止——不然使用者只會看到把手憑空消失，不知道要先放大
-  final ValueChanged<int>? onTooNarrow;
 
   /// 長按軌道空白處（貼上用）：軌道、該處的時間、選單位置
   final void Function(int track, double timeSec, Offset globalPos)
@@ -162,7 +161,6 @@ class TimelineEditor extends StatefulWidget {
     required this.onLongPressClip,
     required this.onLongPressEmpty,
     this.onTapSelectedClip,
-    this.onTooNarrow,
     this.onLiftChanged,
     this.pinching = false,
     this.onZoom,
@@ -369,14 +367,6 @@ class _TimelineEditorState extends State<TimelineEditor> {
     // 點已選取的片段 → 交給編輯回呼
     if (!armed) {
       widget.onSelect(l.clipId);
-      // 窄到擺不下把手的片段：點一下就請父層放大到修剪得動為止。
-      // 只在「真的只是點一下」時做——拖曳中途縮放時間軸會讓手指
-      // 底下的東西整個位移
-      final c = _clipById(l.clipId);
-      if (c != null && c.length * pxPerSec < kAutoZoomWidth) {
-        widget.onTooNarrow?.call(l.clipId);
-        return;
-      }
       if (_liftWasSelected && l.dx.abs() < 6 && l.dy.abs() < 6) {
         widget.onTapSelectedClip?.call(l.clipId);
       }
@@ -916,9 +906,10 @@ class _TimelineEditorState extends State<TimelineEditor> {
     // 文字自己收起來，中間讓出來給拖曳）
     final rawW = (wm.end - wm.start) * pxPerSec;
     final w = rawW.clamp(12.0, double.infinity);
-    // 擺得下圖示＋文字才畫標示；擺得下兩顆把手才畫把手
+    // 擺得下圖示＋文字才畫標示。把手一律畫：縮到剩兩顆把手也還是
+    // 修剪得動（跟片段同一套）
     final showLabel = rawW >= 56;
-    final showHandles = rawW >= kTrimMinWidth;
+    final showHandles = true;
     return Stack(
       clipBehavior: Clip.none,
       children: [
@@ -1291,14 +1282,6 @@ const double _kHandleOverhang = 14;
 /// 空間。比這窄就不畫把手（不然整條被把手蓋滿，變成拖不動）
 const double kTrimMinWidth = 64;
 
-/// 窄到這個地步，點一下才自動放大時間軸（見 onTooNarrow）。
-///
-/// 本來跟 [kTrimMinWidth] 共用同一個門檻，結果縮到 64px 以下就
-/// 「點一下＝彈回放大」，等於不准使用者把時間軸縮小來看全貌——
-/// 明明那個寬度還看得見、也選得到。兩件事拆開：64px 以下只是
-/// 不畫把手，真的窄到看不出是什麼了才幫忙放大
-const double kAutoZoomWidth = 26;
-
 /// 時間軸上的片段。拖曳時本體留在原地變淡，移動的是父層的幽靈。
 class _ClipBlock extends StatelessWidget {
   final TimelineClip clip;
@@ -1463,22 +1446,11 @@ class _ClipBlock extends StatelessWidget {
                     ],
                   ),
                 ),
-                // 窄到擺不下把手時，中間放一個放大鏡當暗示：點一下
-                // 會自動放大到修剪得動（見 TimelineEditor.onTooNarrow）。
-                // IgnorePointer＝點擊照樣由底下的片段本體收，
-                // 整塊都是「點了會放大」
-                if (isSelected && !lifted && w < kAutoZoomWidth)
-                  const Positioned.fill(
-                    child: IgnorePointer(
-                      child: Center(
-                        child: Icon(Icons.zoom_in, size: 13, color: kSelect),
-                      ),
-                    ),
-                  ),
-                // 片段太窄時把手整個不畫：兩顆最小 22px 的把手會把
-                // 22px 的片段整條蓋住，中間沒有任何地方可以抓著移動
-                // ——「太短無法拖曳」就是這樣來的
-                if (isSelected && !lifted && w >= kTrimMinWidth)
+                // 把手一律畫：寬度跟著片段縮，窄到剩兩顆把手也還是
+                // 修剪得動。想拖著移動就自己把時間軸放大——本來是
+                // 「太窄就不畫把手、點一下自動放大」，那個自動放大
+                // 等於不准使用者縮小看全貌，每點一下就彈回去
+                if (isSelected && !lifted)
                   // 熱區跟著片段長度給，短片段不會被兩個把手佔滿；
                   // 位置夾在可視範圍內，片段拉得比畫面長時
                   // 把手會貼在邊緣而不是跑到畫面外
@@ -1486,7 +1458,9 @@ class _ClipBlock extends StatelessWidget {
                     child: ListenableBuilder(
                       listenable: scrollController,
                       builder: (context, _) {
-                        final hw = (w * 0.28).clamp(22.0, 40.0);
+                        // 下限 8：兩顆把手佔滿 16px 的片段時中間雖然
+                        // 沒得抓，但至少兩邊還拖得動（使用者要求）
+                        final hw = (w * 0.35).clamp(8.0, 40.0);
                         final off = scrollController.hasClients
                             ? scrollController.offset
                             : 0.0;
