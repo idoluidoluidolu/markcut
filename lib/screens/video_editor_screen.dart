@@ -4692,22 +4692,32 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _wmSel = next == _kWmId;
       _sel = next == _kWmId ? -1 : next;
     });
+    // 已經選著同一顆貼圖再點一下＝開它的調整視窗
+    //（中央判定層蓋在素材上面，貼圖圖層自己的「第二下」收不到）
+    if (next == cur) {
+      final c = _selClipById(next);
+      if (c != null && _tl.sourceOf(c).isSticker) {
+        unawaited(_editStickerClip(c));
+      }
+    }
     // 選到浮水印就跳去浮水印分頁；選到一般素材時，如果人還停在
     // 浮水印分頁，就跳回剪輯分頁——不跳的話畫面上選取已經換人，
     // 面板卻還在編浮水印，看起來就是「點了沒切換」。
-    // 循環途中不跳，不然每點一下分頁就被拉走一次
-    if (!same) {
-      final nextClip = _selClipById(next);
-      final nextSrc = nextClip == null ? null : _tl.sourceOf(nextClip);
-      final isWm =
-          next == _kWmId ||
-          (nextSrc?.kind == ClipKind.wm && !(nextSrc?.isSticker ?? false));
-      if (isWm) {
+    // 「跳去浮水印」只在第一下做（循環途中每點一下就被拉走一次
+    // 很煩），「跳回剪輯」則隨時做——選取都換到素材上了，分頁
+    // 卡在浮水印看起來就是壞的
+    final nextClip = _selClipById(next);
+    final nextSrc = nextClip == null ? null : _tl.sourceOf(nextClip);
+    final isWm =
+        next == _kWmId ||
+        (nextSrc?.kind == ClipKind.wm && !(nextSrc?.isSticker ?? false));
+    if (isWm) {
+      if (!same) {
         _tabs.animateTo(1);
         _wmPanelCtrl.scrollTo(WmPart.text);
-      } else if (_tabs.index == 1) {
-        _tabs.animateTo(0);
       }
+    } else if (_tabs.index == 1) {
+      _tabs.animateTo(0);
     }
     if (!same && hits.length > 1 && _cycleHintLeft > 0) {
       _cycleHintLeft--;
@@ -7017,6 +7027,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               // 一個素材，點一下選取，再點
                                               // 一下開它自己的調整視窗
                                               onTap: () {
+                                                // 換路選取＝重新開始，
+                                                // 不接續上一輪的連點循環
+                                                _cycleAt = null;
                                                 final was = _sel == c.id;
                                                 setState(() {
                                                   _sel = c.id;
@@ -7334,6 +7347,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         // 點浮水印 Logo＝選取＋切到浮水印
                                         // 分頁，面板捲到圖片設定
                                         onTap: () {
+                                          _cycleAt = null;
                                           setState(() {
                                             _wmSel = true;
                                             _sel = -1;
@@ -7345,6 +7359,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         // 捲到文字設定。不直接跳鍵盤——
                                         // 要改字在面板裡改
                                         onTapText: () {
+                                          _cycleAt = null;
                                           setState(() {
                                             _wmSel = true;
                                             _sel = -1;
