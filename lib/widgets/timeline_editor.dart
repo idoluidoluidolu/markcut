@@ -1284,12 +1284,12 @@ const double _kHandleOverhang = 14;
 /// 空間。比這窄就不畫把手（不然整條被把手蓋滿，變成拖不動）
 const double kTrimMinWidth = 64;
 
-/// 片段畫得再小也不會小於這個寬度：兩顆最小尺寸（22px）的修剪把手
-/// 剛好排滿。
+/// 片段畫得再小也不會小於這個寬度。
 ///
-/// 到這裡就停住不再縮——再小下去把手就抓不到了，想繼續修剪請自己
-/// 把時間軸放大（使用者要求：「縮到這裡就不能再縮，要放大才能縮」）
-const double kClipMinWidth = 44;
+/// 44px（兩顆 22px 把手剛好排滿）試過了：中間一點空隙都不剩，
+/// 縮到底之後就再也拖不動這一段。留 56px，兩顆把手縮到 16px，
+/// 中間還有 24px 抓得住——修剪與移動都還在
+const double kClipMinWidth = 56;
 
 /// 時間軸上的片段。拖曳時本體留在原地變淡，移動的是父層的幽靈。
 class _ClipBlock extends StatelessWidget {
@@ -1469,9 +1469,9 @@ class _ClipBlock extends StatelessWidget {
                     child: ListenableBuilder(
                       listenable: scrollController,
                       builder: (context, _) {
-                        // 下限 22：跟 kClipMinWidth 對應，片段縮到底時
-                        // 剛好就是左右兩顆把手
-                        final hw = (w * 0.35).clamp(22.0, 40.0);
+                        // 下限 16：片段縮到 kClipMinWidth 時兩顆把手
+                        // 佔 32px，中間留 24px 給「抓著移動」
+                        final hw = (w * 0.28).clamp(16.0, 40.0);
                         final off = scrollController.hasClients
                             ? scrollController.offset
                             : 0.0;
