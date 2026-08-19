@@ -368,7 +368,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_tlPinching && mounted) setState(() => _tlPinching = false);
   }
 
+  /// 目前有幾根手指壓在時間軸上（不分觸控／滑鼠）。
+  /// _tryEndScrub 的「對齊回彈」看這個：手指還在就不准動時間軸
+  int _tlFingers = 0;
+
   void _pinchDown(PointerDownEvent e) {
+    _tlFingers++;
+    // 對齊動畫進行到一半被新的一指打斷時，_suppressScroll 可能
+    // 還卡在 true——那會把接下來整段拖曳的 seek 全部吃掉
+    _suppressScroll = false;
     // 只有觸控算捏合。滑鼠／觸控筆不可能兩指，而 web 上滑鼠在
     // 視窗外放開時 pointer-up 常常整顆遺失——那顆幽靈殘指跟下一次
     // 按下湊成「兩指」，_tlPinching 一開，修剪與拖曳全被鎖住，
@@ -419,6 +427,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   void _pinchUp(int pointer) {
+    if (_tlFingers > 0) _tlFingers--;
     _pinchPts.remove(pointer);
     _pinchSeen.remove(pointer);
     if (_tlPinching && _pinchPts.length < 2) {
@@ -1728,7 +1737,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 放手（220ms 沒新事件）→ 收掉快取幀、換回真影片畫面。
   /// seek 還在跑就再等一下，避免閃回舊畫面。
   void _tryEndScrub() {
-    if (_seekInFlight) {
+    // 手指還壓在時間軸上就不收尾。
+    //
+    // 「暫停後往右滑不動」就是這裡來的：手指停頓超過 220ms（正在
+    // 對位很常見）收尾就開跑，把時間軸 animateTo 回播放頭——跟手指
+    // 直接打架。往左滑沒事是因為向前 seek 快、_seekInFlight 早就清了，
+    // 收尾多半趕在手指停頓前就結束；向後 seek 要回到前一個關鍵幀
+    // 重解，_seekInFlight 拖很久，收尾正好撞上手指
+    if (_seekInFlight || _tlFingers > 0) {
       _scrubEndTimer = Timer(const Duration(milliseconds: 80), _tryEndScrub);
       return;
     }
