@@ -69,9 +69,12 @@ class StickerStore {
   /// 把一顆 Emoji 畫成透明背景的 PNG（邊長 [size]）。
   ///
   /// 直接當圖片浮水印用：貼圖的縮放、旋轉、平鋪全部免費繼承，
-  /// 匯出也不用另外處理字型（PNG 裡就是畫好的樣子）
+  /// 匯出也不用另外處理字型（PNG 裡就是畫好的樣子）。
+  ///
+  /// 1024：使用者會把 emoji 拉到滿版（sizeFrac 最大 2.0），
+  /// 256px 的圖放到 1080p 畫布上是一團糊
   static Future<Uint8List?> renderEmoji(String emoji,
-      {double size = 256}) async {
+      {double size = 1024}) async {
     final painter = TextPainter(
       text: TextSpan(text: emoji, style: TextStyle(fontSize: size * 0.82)),
       textDirection: TextDirection.ltr,

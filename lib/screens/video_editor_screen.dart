@@ -2263,7 +2263,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     label: '大小',
                     value: logo.sizeFrac,
                     min: 0.02,
-                    max: 1.5,
+                    max: 2.0,
                     onChanged: (v) => change(() => logo.sizeFrac = v),
                     readout: '${(logo.sizeFrac * 100).round()}',
                     unit: '%',
