@@ -53,7 +53,8 @@ class PhotoMosaic {
   PhotoMosaic({
     this.x = 0.5,
     this.y = 0.5,
-    this.scale = 0.35,
+    // 預設就要蓋得住主體，太小每次都得先放大（跟影片編輯同一個值）
+    this.scale = 0.72,
     MosaicStyle? style,
   }) : style = style ?? MosaicStyle();
 

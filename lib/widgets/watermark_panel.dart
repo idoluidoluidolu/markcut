@@ -682,39 +682,8 @@ class WatermarkPanelState extends State<WatermarkPanel> {
               Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // ===== 選擇範本：D 案不填色、只留線框；琥珀圖示＋下拉箭頭 =====
-                  OutlinedButton(
-                    onPressed: _openPresetPicker,
-                    style: OutlinedButton.styleFrom(
-                      minimumSize: const Size.fromHeight(44),
-                      side: const BorderSide(color: kClipBorder),
-                      foregroundColor: kText,
-                      textStyle: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        fontFamily: 'NotoSansTC',
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(
-                          Icons.bookmarks_outlined,
-                          size: 16,
-                          color: kAmber,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(_presetSel == null ? '選擇範本' : '範本：$_presetSel'),
-                        const SizedBox(width: 5),
-                        const Icon(
-                          Icons.keyboard_arrow_down,
-                          size: 17,
-                          color: kTextDim,
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 10),
+                  // 「選擇範本」按鈕拿掉了：導覽列第一格「範本」就是它，
+                  // 面板裡再放一顆只是把每一區往下擠
 
                   // ===== 卡片 1：位置 =====
                   if (_on(_posCardKey))
