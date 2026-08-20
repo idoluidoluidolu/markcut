@@ -101,6 +101,23 @@ class _CollageScreenState extends State<CollageScreen> {
   /// 格線顏色（ARGB）
   int _lineColor = 0xFFFFFFFF;
 
+  // ===== 自由模式 =====
+  //
+  // 照片不排格子，是畫布上一塊塊可以自由拖曳、四角拉伸的方塊。
+  // 想要「一張大的配兩張小的」這種排法，宮格等分做不到
+
+  /// 自由模式開關（版型列的「宮格／自由」切換）
+  bool _free = false;
+
+  /// 自由模式的照片方塊（畫的順序＝疊的順序，後面的在上面）
+  final List<_FreeItem> _items = [];
+
+  /// 自由模式選取中的方塊（-1 = 沒有）
+  int _selItem = -1;
+
+  /// 進行中的手勢（移動或拉某一角），null = 沒有
+  _FreeDrag? _fDrag;
+
   bool _building = false;
 
   @override
@@ -343,8 +360,138 @@ class _CollageScreenState extends State<CollageScreen> {
   void _releaseIfUnused(int idx) {
     if (idx < _poolSize || idx < 0 || idx >= _images.length) return;
     if (_order.contains(idx)) return;
+    if (_items.any((t) => t.img == idx)) return; // 自由模式還在用
     _images[idx]?.dispose();
     _images[idx] = null;
+  }
+
+  // ===== 自由模式：狀態操作 =====
+
+  /// 切換宮格／自由。第一次切到自由時，用當下的宮格排列當起始位置
+  /// ——使用者多半是先排個大概再想微調，從空白畫布重排一次太折騰。
+  /// 之後來回切都各自保留（自由排好的不會因為看了一眼宮格就毀掉）
+  void _setFree(bool v) {
+    if (v == _free) return;
+    setState(() {
+      _free = v;
+      _selCell = -1;
+      _selItem = -1;
+      _fDrag = null;
+      _cancelHold();
+      _dragFrom = -1;
+      _dragPos = null;
+      _dragOver = -1;
+      if (v && _items.isEmpty) {
+        for (var i = 0; i < _cellCount; i++) {
+          if (_imgAt(i) == null) continue;
+          _items.add(
+            _FreeItem(
+              img: _order[i],
+              rect: ui.Rect.fromLTWH(
+                (i % _cols) / _cols,
+                (i ~/ _cols) / _rows,
+                1 / _cols,
+                1 / _rows,
+              ),
+            ),
+          );
+        }
+      }
+    });
+  }
+
+  /// 自由模式加照片：新的方塊疊在畫布中間，一張比一張錯開一點，
+  /// 看得出來是好幾張（完全重疊的話會以為只進來一張）
+  Future<void> _addFreePhotos() async {
+    final files = await ImagePicker().pickMultiImage();
+    if (files.isEmpty || !mounted) return;
+    final failedNames = <String>[];
+    var added = 0;
+    for (final f in files) {
+      try {
+        final img = await _decode(await f.readAsBytes());
+        if (!mounted) {
+          img.dispose();
+          return;
+        }
+        _images.add(img);
+        // 方塊照照片比例開（寬 45% 畫布），太長太扁的夾一下
+        final a = img.width / img.height;
+        const w = 0.45;
+        final h = (w / a).clamp(0.18, 0.7);
+        final off = 0.04 * (_items.length % 5);
+        _items.add(
+          _FreeItem(
+            img: _images.length - 1,
+            rect: ui.Rect.fromLTWH(
+              (0.5 - w / 2 + off).clamp(0.0, 1.0 - w),
+              (0.5 - h / 2 + off).clamp(0.0, 1.0 - h),
+              w,
+              h,
+            ),
+          ),
+        );
+        added++;
+      } catch (_) {
+        failedNames.add(f.name);
+      }
+    }
+    if (!mounted) return;
+    if (failedNames.isNotEmpty) {
+      showHint(context, _decodeFailMsg(failedNames), error: true);
+    }
+    if (added > 0) setState(() => _selItem = _items.length - 1);
+  }
+
+  /// 移除選取中的方塊（照片沒別人用就釋放）
+  void _removeFreeItem() {
+    if (_selItem < 0 || _selItem >= _items.length) return;
+    setState(() {
+      final idx = _items.removeAt(_selItem).img;
+      _selItem = -1;
+      _releaseIfUnused(idx);
+    });
+  }
+
+  /// 拿到最上面（畫的順序＝疊的順序）。回傳搬完之後的索引
+  int _bringToFront(int i) {
+    if (i < 0 || i >= _items.length - 1) return i;
+    final t = _items.removeAt(i);
+    _items.add(t);
+    return _items.length - 1;
+  }
+
+  /// 指尖落在哪個方塊上（從最上層找起）
+  int _freeHit(Offset p, double s) {
+    for (var i = _items.length - 1; i >= 0; i--) {
+      final r = _items[i].rect;
+      if (ui.Rect.fromLTWH(
+        r.left * s,
+        r.top * s,
+        r.width * s,
+        r.height * s,
+      ).contains(p)) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  /// 指尖有沒有壓在選取框的某一角（回 0~3＝左上/右上/左下/右下）
+  int _freeCorner(Offset p, double s) {
+    if (_selItem < 0 || _selItem >= _items.length) return -1;
+    final r = _items[_selItem].rect;
+    final cs = [
+      Offset(r.left * s, r.top * s),
+      Offset(r.right * s, r.top * s),
+      Offset(r.left * s, r.bottom * s),
+      Offset(r.right * s, r.bottom * s),
+    ];
+    for (var k = 0; k < 4; k++) {
+      // 24px 的觸控範圍：角點本身只有 10px，照畫的大小抓根本按不到
+      if ((p - cs[k]).distance <= 24) return k;
+    }
+    return -1;
   }
 
   /// 拖曳互換：由宮格座標算出落在哪一格（-1 = 界外）
@@ -420,7 +567,12 @@ class _CollageScreenState extends State<CollageScreen> {
   /// 合成一張 2048×2048 的拼圖，交給照片編輯器
   Future<void> _done() async {
     if (_building) return;
-    if (_order.contains(-1)) {
+    if (_free) {
+      if (_items.isEmpty) {
+        showHint(context, '先加幾張照片再合成', error: true);
+        return;
+      }
+    } else if (_order.contains(-1)) {
       showHint(context, '還有空格子：點「＋」補照片，或換個宮格數', error: true);
       return;
     }
@@ -429,56 +581,79 @@ class _CollageScreenState extends State<CollageScreen> {
     await Future<void>.delayed(const Duration(milliseconds: 40));
     // 這 40ms 裡使用者可能已經離開（照片都 dispose 了）或換了版型
     if (!mounted) return;
-    if (_order.contains(-1)) {
+    if (!_free && _order.contains(-1)) {
       setState(() => _building = false);
       return;
     }
     try {
-      // 畫布跟著格數長：格子多的時候固定 1600 會讓每格只剩百來 px。
-      // 上限 2400——再大 PNG 編碼在 web 會卡住主執行緒
-      final size = (math.max(_cols, _rows) * 420.0).clamp(1600.0, 2400.0);
-      final (count, cols, rows) = (_cellCount, _cols, _rows);
-      // 跟預覽同一套排法：照片貼齊排滿，格線最後疊上去畫
-      final cw = size / cols;
-      final ch = size / rows;
-      final rec = ui.PictureRecorder();
-      final canvas = ui.Canvas(rec);
-      for (var i = 0; i < count; i++) {
-        final img = _imgAt(i);
-        if (img == null) continue;
-        final dst = ui.Rect.fromLTWH(
-          (i % cols) * cw,
-          (i ~/ cols) * ch,
-          cw,
-          ch,
+      final ui.Image image;
+      if (_free) {
+        // 自由排版：白底畫布，照疊放順序畫上去。方塊拉出畫布的部分
+        // 自然被裁掉（跟預覽看到的一樣）
+        const size = 2048.0;
+        final rec = ui.PictureRecorder();
+        final canvas = ui.Canvas(rec);
+        canvas.drawRect(
+          ui.Rect.fromLTWH(0, 0, size, size),
+          ui.Paint()..color = const ui.Color(0xFFFFFFFF),
         );
-        canvas.drawImageRect(
-          img,
-          _srcRect(img, _fits[i], cw / ch),
-          dst,
-          ui.Paint()..filterQuality = ui.FilterQuality.high,
-        );
-      }
-      if (_lines) {
-        final t = _gapN * size;
-        final lp = ui.Paint()..color = ui.Color(_lineColor);
-        for (var c = 1; c < cols; c++) {
-          canvas.drawRect(
-            ui.Rect.fromLTWH(c * cw - t / 2, 0, t, size),
-            lp,
+        for (final it in _items) {
+          final img = (it.img >= 0 && it.img < _images.length)
+              ? _images[it.img]
+              : null;
+          if (img == null) continue;
+          final dst = ui.Rect.fromLTWH(
+            it.rect.left * size,
+            it.rect.top * size,
+            it.rect.width * size,
+            it.rect.height * size,
+          );
+          canvas.drawImageRect(
+            img,
+            _coverSrc(img, dst.width / dst.height),
+            dst,
+            ui.Paint()..filterQuality = ui.FilterQuality.high,
           );
         }
-        for (var r = 1; r < rows; r++) {
-          canvas.drawRect(
-            ui.Rect.fromLTWH(0, r * ch - t / 2, size, t),
-            lp,
+        image = await rec.endRecording().toImage(size.toInt(), size.toInt());
+      } else {
+        // 畫布跟著格數長：格子多的時候固定 1600 會讓每格只剩百來 px。
+        // 上限 2400——再大 PNG 編碼在 web 會卡住主執行緒
+        final size = (math.max(_cols, _rows) * 420.0).clamp(1600.0, 2400.0);
+        final (count, cols, rows) = (_cellCount, _cols, _rows);
+        // 跟預覽同一套排法：照片貼齊排滿，格線最後疊上去畫
+        final cw = size / cols;
+        final ch = size / rows;
+        final rec = ui.PictureRecorder();
+        final canvas = ui.Canvas(rec);
+        for (var i = 0; i < count; i++) {
+          final img = _imgAt(i);
+          if (img == null) continue;
+          final dst = ui.Rect.fromLTWH(
+            (i % cols) * cw,
+            (i ~/ cols) * ch,
+            cw,
+            ch,
+          );
+          canvas.drawImageRect(
+            img,
+            _srcRect(img, _fits[i], cw / ch),
+            dst,
+            ui.Paint()..filterQuality = ui.FilterQuality.high,
           );
         }
+        if (_lines) {
+          final t = _gapN * size;
+          final lp = ui.Paint()..color = ui.Color(_lineColor);
+          for (var c = 1; c < cols; c++) {
+            canvas.drawRect(ui.Rect.fromLTWH(c * cw - t / 2, 0, t, size), lp);
+          }
+          for (var r = 1; r < rows; r++) {
+            canvas.drawRect(ui.Rect.fromLTWH(0, r * ch - t / 2, size, t), lp);
+          }
+        }
+        image = await rec.endRecording().toImage(size.toInt(), size.toInt());
       }
-      final image = await rec.endRecording().toImage(
-        size.toInt(),
-        size.toInt(),
-      );
 
       final data = await image.toByteData(format: ui.ImageByteFormat.png);
       image.dispose();
@@ -514,99 +689,173 @@ class _CollageScreenState extends State<CollageScreen> {
               const SizedBox(
                 width: kSliderLabelW,
                 child: Text(
-                  '版型',
+                  '模式',
                   style: TextStyle(fontSize: 12, color: kTextDim),
                 ),
               ),
-              _stepper('欄', _cols, (v) => _setGrid(cols: v)),
-              const SizedBox(width: 10),
-              _stepper('列', _rows, (v) => _setGrid(rows: v)),
+              _modeChip('宮格', !_free, () => _setFree(false)),
+              const SizedBox(width: 8),
+              _modeChip('自由', _free, () => _setFree(true)),
               const Spacer(),
-              Text(
-                '$_cellCount 格',
-                style: const TextStyle(fontSize: 12, color: kTextDim),
-              ),
+              if (_free) ...[
+                if (_selItem >= 0 && _selItem < _items.length)
+                  _freeAction(Icons.delete_outline, '移除', _removeFreeItem),
+                const SizedBox(width: 8),
+                _freeAction(
+                  Icons.add_photo_alternate_outlined,
+                  '加照片',
+                  _addFreePhotos,
+                ),
+              ],
             ],
           ),
-          Container(
-            height: 1,
-            margin: const EdgeInsets.symmetric(vertical: 8),
-            color: kBorder,
-          ),
-          Row(
-            children: [
-              const SizedBox(
-                width: kSliderLabelW,
-                child: Text(
-                  '格線',
-                  style: TextStyle(fontSize: 12, color: kTextDim),
-                ),
-              ),
-              SizedBox(
-                width: 42,
-                height: 26,
-                child: FittedBox(
-                  fit: BoxFit.contain,
-                  child: Switch(
-                    value: _lines,
-                    onChanged: (v) => setState(() => _lines = v),
+          if (!_free) ...[
+            Container(
+              height: 1,
+              margin: const EdgeInsets.symmetric(vertical: 8),
+              color: kBorder,
+            ),
+            Row(
+              children: [
+                const SizedBox(
+                  width: kSliderLabelW,
+                  child: Text(
+                    '版型',
+                    style: TextStyle(fontSize: 12, color: kTextDim),
                   ),
                 ),
-              ),
-              if (_lines) ...[
-                const SizedBox(width: 8),
-                for (final c in const [
-                  0xFFFFFFFF,
-                  0xFF000000,
-                  0xFF9E9EA6,
-                  0xFFFFC24B,
-                ])
-                  _lineSwatch(c),
-                // 調色盤：想要什麼顏色都能挑
-                Padding(
-                  padding: const EdgeInsets.only(right: 7),
-                  child: InkWell(
-                    customBorder: const CircleBorder(),
-                    onTap: _pickLineColor,
-                    child: Container(
-                      width: 16,
-                      height: 16,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: const SweepGradient(
-                          colors: [
-                            Color(0xFFE57373),
-                            Color(0xFFFFC24B),
-                            Color(0xFF81C784),
-                            Color(0xFF64B5F6),
-                            Color(0xFFBA68C8),
-                            Color(0xFFE57373),
-                          ],
+                _stepper('欄', _cols, (v) => _setGrid(cols: v)),
+                const SizedBox(width: 10),
+                _stepper('列', _rows, (v) => _setGrid(rows: v)),
+                const Spacer(),
+                Text(
+                  '$_cellCount 格',
+                  style: const TextStyle(fontSize: 12, color: kTextDim),
+                ),
+              ],
+            ),
+          ],
+          if (!_free)
+            Container(
+              height: 1,
+              margin: const EdgeInsets.symmetric(vertical: 8),
+              color: kBorder,
+            ),
+          if (!_free)
+            Row(
+              children: [
+                const SizedBox(
+                  width: kSliderLabelW,
+                  child: Text(
+                    '格線',
+                    style: TextStyle(fontSize: 12, color: kTextDim),
+                  ),
+                ),
+                SizedBox(
+                  width: 42,
+                  height: 26,
+                  child: FittedBox(
+                    fit: BoxFit.contain,
+                    child: Switch(
+                      value: _lines,
+                      onChanged: (v) => setState(() => _lines = v),
+                    ),
+                  ),
+                ),
+                if (_lines) ...[
+                  const SizedBox(width: 8),
+                  for (final c in const [
+                    0xFFFFFFFF,
+                    0xFF000000,
+                    0xFF9E9EA6,
+                    0xFFFFC24B,
+                  ])
+                    _lineSwatch(c),
+                  // 調色盤：想要什麼顏色都能挑
+                  Padding(
+                    padding: const EdgeInsets.only(right: 7),
+                    child: InkWell(
+                      customBorder: const CircleBorder(),
+                      onTap: _pickLineColor,
+                      child: Container(
+                        width: 16,
+                        height: 16,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: const SweepGradient(
+                            colors: [
+                              Color(0xFFE57373),
+                              Color(0xFFFFC24B),
+                              Color(0xFF81C784),
+                              Color(0xFF64B5F6),
+                              Color(0xFFBA68C8),
+                              Color(0xFFE57373),
+                            ],
+                          ),
+                          border: Border.all(color: kBorder),
                         ),
-                        border: Border.all(color: kBorder),
                       ),
                     ),
                   ),
-                ),
-                Expanded(
-                  child: SizedBox(
-                    height: 30,
-                    child: Slider(
-                      value: _gapN,
-                      min: 0.001,
-                      max: 0.05,
-                      onChanged: (v) => setState(() => _gapN = v),
+                  Expanded(
+                    child: SizedBox(
+                      height: 30,
+                      child: Slider(
+                        value: _gapN,
+                        min: 0.001,
+                        max: 0.05,
+                        onChanged: (v) => setState(() => _gapN = v),
+                      ),
                     ),
                   ),
-                ),
-              ] else
-                const Spacer(),
-            ],
-          ),
+                ] else
+                  const Spacer(),
+              ],
+            ),
         ],
       ),
     );
   }
+
+  /// 宮格／自由的切換膠囊
+  Widget _modeChip(String label, bool on, VoidCallback onTap) => InkWell(
+    borderRadius: BorderRadius.circular(999),
+    onTap: onTap,
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      decoration: BoxDecoration(
+        color: on ? kSelect.withValues(alpha: 0.16) : Colors.transparent,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: on ? kSelect : kClipBorder),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 11.5,
+          fontWeight: on ? FontWeight.w700 : FontWeight.w400,
+          color: on ? kSelect : kTextDim,
+        ),
+      ),
+    ),
+  );
+
+  /// 自由模式的小動作鈕（加照片、移除）
+  Widget _freeAction(IconData icon, String label, VoidCallback onTap) =>
+      InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 15, color: kText),
+              const SizedBox(width: 4),
+              Text(label, style: const TextStyle(fontSize: 11.5, color: kText)),
+            ],
+          ),
+        ),
+      );
 
   /// 欄／列的加減。到達上限時該側按鈕變灰，不是消失——
   /// 按鈕位置跳動比按不下去更難用
@@ -616,11 +865,7 @@ class _CollageScreenState extends State<CollageScreen> {
       onTap: enabled ? () => onChange(value + delta) : null,
       child: Padding(
         padding: const EdgeInsets.all(4),
-        child: Icon(
-          icon,
-          size: 17,
-          color: enabled ? kText : kBorder,
-        ),
+        child: Icon(icon, size: 17, color: enabled ? kText : kBorder),
       ),
     );
     final other = label == '欄' ? _rows : _cols;
@@ -665,10 +910,9 @@ class _CollageScreenState extends State<CollageScreen> {
 
   /// 調色盤挑格線顏色（跟浮水印文字的顏色挑選同一套）
   Future<void> _pickLineColor() async {
-    final picked = await pickColor(
-    context, Color(_lineColor), title: '格線顏色');
-final ok = picked != null;
-final color = Color(picked ?? 0);
+    final picked = await pickColor(context, Color(_lineColor), title: '格線顏色');
+    final ok = picked != null;
+    final color = Color(picked ?? 0);
     if (ok == true && mounted) {
       setState(() => _lineColor = color.toARGB32());
     }
@@ -701,56 +945,70 @@ final color = Color(picked ?? 0);
   Widget build(BuildContext context) {
     // 不包 SwipeBack：拖曳格子互換會誤觸右滑返回、被踢回首頁
     return Scaffold(
-        backgroundColor: kBg,
-        appBar: AppBar(backgroundColor: kBg),
-        body: _cols == 0
-            ? const Center(child: CircularProgressIndicator())
-            : SafeArea(
-                child: Column(
-                  children: [
-                    Expanded(
-                      child: Center(
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: AspectRatio(
-                            aspectRatio: 1,
-                            child: _buildGrid(),
-                          ),
+      backgroundColor: kBg,
+      appBar: AppBar(backgroundColor: kBg),
+      body: _cols == 0
+          ? const Center(child: CircularProgressIndicator())
+          : SafeArea(
+              child: Column(
+                children: [
+                  Expanded(
+                    child: Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: AspectRatio(
+                          aspectRatio: 1,
+                          child: _free ? _buildFree() : _buildGrid(),
                         ),
                       ),
                     ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
-                      child: _settingsCard(),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+                    child: _settingsCard(),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      _free
+                          ? '拖曳移動照片 拖四角拉伸大小 點一下選取'
+                          : '按住可拖曳交換照片位置；點一下鎖定 可調照片顯示位置',
+                      style: const TextStyle(fontSize: 11, color: kTextDim),
                     ),
-                    const Padding(
-                      padding: EdgeInsets.only(top: 6),
-                      child: Text(
-                        '按住可拖曳交換照片位置；點一下鎖定 可調照片顯示位置',
-                        style: TextStyle(fontSize: 11, color: kTextDim),
-                      ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
-                      // 還有空格就先幫人把照片放進來，不要讓他按了
-                      // 才被告知「還有空格子」。放滿了才換成完成
-                      child: _order.contains(-1)
-                          ? primaryAction(
-                              label: _filled == 0
-                                  ? '匯入照片'
-                                  : '再匯入照片（還有 ${_order.where((k) => k < 0).length} 格）',
-                              icon: Icons.add_photo_alternate_outlined,
-                              onPressed: _building ? null : () => _fillCell(-1),
-                            )
-                          : primaryAction(
-                              label: _building ? '合成中…' : '完成，上浮水印',
-                              icon: Icons.check,
-                              onPressed: _building ? null : _done,
-                            ),
-                    ),
-                  ],
-                ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
+                    // 還有空格就先幫人把照片放進來，不要讓他按了
+                    // 才被告知「還有空格子」。放滿了才換成完成
+                    child: _free
+                        ? (_items.isEmpty
+                              ? primaryAction(
+                                  label: '匯入照片',
+                                  icon: Icons.add_photo_alternate_outlined,
+                                  onPressed: _building ? null : _addFreePhotos,
+                                )
+                              : primaryAction(
+                                  label: _building ? '合成中…' : '完成，上浮水印',
+                                  icon: Icons.check,
+                                  onPressed: _building ? null : _done,
+                                ))
+                        : _order.contains(-1)
+                        ? primaryAction(
+                            label: _filled == 0
+                                ? '匯入照片'
+                                : '再匯入照片（還有 ${_order.where((k) => k < 0).length} 格）',
+                            icon: Icons.add_photo_alternate_outlined,
+                            onPressed: _building ? null : () => _fillCell(-1),
+                          )
+                        : primaryAction(
+                            label: _building ? '合成中…' : '完成，上浮水印',
+                            icon: Icons.check,
+                            onPressed: _building ? null : _done,
+                          ),
+                  ),
+                ],
               ),
+            ),
     );
   }
 
@@ -824,6 +1082,154 @@ final color = Color(picked ?? 0);
         );
       },
     );
+  }
+
+  // ===== 自由模式：手勢與畫布 =====
+
+  void _freePanStart(Offset p, double s) {
+    // 先看角：角落的觸控範圍常常同時落在方塊裡，
+    // 先判斷方塊的話就永遠拉不到角
+    final corner = _freeCorner(p, s);
+    if (corner != -1) {
+      _fDrag = _FreeDrag(corner: corner, start: _items[_selItem].rect, from: p);
+      return;
+    }
+    final hit = _freeHit(p, s);
+    if (hit == -1) {
+      _fDrag = null;
+      return;
+    }
+    setState(() => _selItem = _bringToFront(hit));
+    _fDrag = _FreeDrag(corner: -1, start: _items[_selItem].rect, from: p);
+  }
+
+  void _freePanUpdate(Offset p, double s) {
+    final d = _fDrag;
+    if (d == null || _selItem < 0 || _selItem >= _items.length) return;
+    final dx = (p.dx - d.from.dx) / s;
+    final dy = (p.dy - d.from.dy) / s;
+    final r = d.start;
+    ui.Rect nr;
+    if (d.corner == -1) {
+      // 移動：中心不准出畫布，方塊才不會被丟到找不回來
+      nr = r.shift(Offset(dx, dy));
+      nr = ui.Rect.fromCenter(
+        center: Offset(
+          nr.center.dx.clamp(0.0, 1.0),
+          nr.center.dy.clamp(0.0, 1.0),
+        ),
+        width: nr.width,
+        height: nr.height,
+      );
+    } else {
+      // 拉某一角：對角不動。可以拉出畫布一些（出血構圖），
+      // 但不能小到抓不到（0.08 ≈ 手指的大小）
+      const mn = 0.08;
+      var l = r.left, t = r.top, rr = r.right, b = r.bottom;
+      if (d.corner == 0 || d.corner == 2) {
+        l = (r.left + dx).clamp(-0.5, rr - mn);
+      } else {
+        rr = (r.right + dx).clamp(l + mn, 1.5);
+      }
+      if (d.corner == 0 || d.corner == 1) {
+        t = (r.top + dy).clamp(-0.5, b - mn);
+      } else {
+        b = (r.bottom + dy).clamp(t + mn, 1.5);
+      }
+      nr = ui.Rect.fromLTRB(l, t, rr, b);
+    }
+    setState(() => _items[_selItem].rect = nr);
+  }
+
+  Widget _buildFree() {
+    return LayoutBuilder(
+      builder: (context, box) {
+        final s = box.maxWidth;
+        final sel = (_selItem >= 0 && _selItem < _items.length)
+            ? _items[_selItem]
+            : null;
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapUp: (e) => setState(() {
+            final hit = _freeHit(e.localPosition, s);
+            _selItem = hit == -1 ? -1 : _bringToFront(hit);
+          }),
+          onPanStart: (e) => _freePanStart(e.localPosition, s),
+          onPanUpdate: (e) => _freePanUpdate(e.localPosition, s),
+          onPanEnd: (_) => _fDrag = null,
+          onPanCancel: () => _fDrag = null,
+          child: Container(
+            decoration: BoxDecoration(
+              color: kPanel,
+              border: Border.all(color: kBorder),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: CustomPaint(
+                    painter: _FreePainter(items: _items, images: _images),
+                  ),
+                ),
+                if (_items.isEmpty)
+                  const Center(
+                    child: Text(
+                      '點「加照片」開始自由組圖',
+                      style: TextStyle(fontSize: 12, color: kTextDim),
+                    ),
+                  ),
+                if (sel != null) ..._freeSelection(sel, s),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// 選取框＋四個角點（都不吃事件：拖曳判斷在畫布那層做，
+  /// 這裡吃掉的話拉角會變成拉不動）
+  List<Widget> _freeSelection(_FreeItem it, double s) {
+    final r = Rect.fromLTWH(
+      it.rect.left * s,
+      it.rect.top * s,
+      it.rect.width * s,
+      it.rect.height * s,
+    );
+    Widget dot(double x, double y) => Positioned(
+      left: x - 5,
+      top: y - 5,
+      child: IgnorePointer(
+        child: Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            shape: BoxShape.circle,
+            border: Border.all(color: kSelect, width: 2),
+          ),
+        ),
+      ),
+    );
+    return [
+      Positioned(
+        left: r.left,
+        top: r.top,
+        width: r.width,
+        height: r.height,
+        child: IgnorePointer(
+          child: Container(
+            decoration: BoxDecoration(
+              border: Border.all(color: kSelect, width: 2),
+            ),
+          ),
+        ),
+      ),
+      dot(r.left, r.top),
+      dot(r.right, r.top),
+      dot(r.left, r.bottom),
+      dot(r.right, r.bottom),
+    ];
   }
 
   Widget _cell(int i, double cellW, double cellH) {
@@ -1041,6 +1447,72 @@ class _GridLinePainter extends CustomPainter {
   @override
   bool shouldRepaint(_GridLinePainter old) =>
       old.cols != cols || old.rows != rows || old.t != t || old.color != color;
+}
+
+/// 自由模式的一塊照片：哪張圖＋在畫布上的位置（0~1 比例座標，
+/// 可以稍微出畫布——出血構圖）
+class _FreeItem {
+  final int img;
+  ui.Rect rect;
+
+  _FreeItem({required this.img, required this.rect});
+}
+
+/// 自由模式進行中的手勢：corner -1＝整塊移動，0~3＝拉哪一角。
+/// 起手時記下方塊位置，之後只看指尖總位移（見 GIF 把手的教訓：
+/// 拿上一幀畫出來的值當基準會自己餵自己，抖）
+class _FreeDrag {
+  final int corner;
+  final ui.Rect start;
+  final Offset from;
+
+  _FreeDrag({required this.corner, required this.start, required this.from});
+}
+
+/// 照片塞進某個長寬比的框時的取景窗（置中 cover，不變形）
+ui.Rect _coverSrc(ui.Image img, double aspect) {
+  final iw = img.width.toDouble();
+  final ih = img.height.toDouble();
+  double sw, sh;
+  if (iw / ih > aspect) {
+    sh = ih;
+    sw = sh * aspect;
+  } else {
+    sw = iw;
+    sh = sw / aspect;
+  }
+  return ui.Rect.fromLTWH((iw - sw) / 2, (ih - sh) / 2, sw, sh);
+}
+
+/// 自由模式的畫布：照清單順序畫（後面的疊上面）
+class _FreePainter extends CustomPainter {
+  final List<_FreeItem> items;
+  final List<ui.Image?> images;
+
+  const _FreePainter({required this.items, required this.images});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final p = Paint()..filterQuality = FilterQuality.medium;
+    for (final it in items) {
+      final img = (it.img >= 0 && it.img < images.length)
+          ? images[it.img]
+          : null;
+      if (img == null) continue;
+      final dst = Rect.fromLTWH(
+        it.rect.left * size.width,
+        it.rect.top * size.height,
+        it.rect.width * size.width,
+        it.rect.height * size.height,
+      );
+      canvas.drawImageRect(img, _coverSrc(img, dst.width / dst.height), dst, p);
+    }
+  }
+
+  // rect 是直接改在 _FreeItem 上的，新舊 painter 比不出差異——
+  // 這頁只有拖曳時會 setState，每次都重畫是對的
+  @override
+  bool shouldRepaint(_FreePainter old) => true;
 }
 
 /// 每格的取景：cover 基準的縮放倍率（≥1）＋來源像素平移
