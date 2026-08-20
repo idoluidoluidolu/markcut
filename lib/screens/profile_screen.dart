@@ -312,6 +312,23 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _reload();
   }
 
+  /// 直接開某一份草稿：卡片點下去就是要繼續剪，不是進資料夾
+  Future<void> _openDraft(DraftMeta m) async {
+    final data = await DraftStore.load(m.id);
+    if (!mounted) return;
+    if (data == null) {
+      showHint(context, '這份草稿讀不到了', error: true);
+      return;
+    }
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VideoEditorScreen(draft: data, draftId: m.id),
+      ),
+    );
+    _reload();
+  }
+
   Future<void> _openDrafts() async {
     await Navigator.push(
       context,
@@ -320,6 +337,66 @@ class _ProfileScreenState extends State<ProfileScreen> {
       MaterialPageRoute(builder: (_) => const LightPage(child: DraftsScreen())),
     );
     _reload();
+  }
+
+  /// 草稿區：所有影片草稿＋照片草稿，兩欄排。
+  ///
+  /// 卡片是「縮圖＋兩行字」的直式 Column（高度看內容），GridView 要
+  /// 指定長寬比反而每台機器都要重調——直接兩張一列手排
+  Widget _draftGrid(Map<String, dynamic>? p) {
+    final tiles = <Widget>[
+      for (final m in _videoDrafts)
+        _draftTile(
+          cover: _covers[m.id] != null
+              ? Image.memory(
+                  _covers[m.id]!,
+                  // 鋪滿：這是縮圖不是預覽，留邊只會讓一排卡看起來破碎
+                  fit: BoxFit.cover,
+                  width: double.infinity,
+                  height: double.infinity,
+                  gaplessPlayback: true,
+                )
+              : const Icon(
+                  Icons.movie_outlined,
+                  size: 26,
+                  color: Color(0xFFAFAFBB),
+                ),
+          title: _dateLabel(m.createdAt),
+          when: _whenLabel(m.savedAt),
+          onTap: () => _openDraft(m),
+        ),
+      if (p != null)
+        _draftTile(
+          // 照片草稿沒有存縮圖（那張照片還在裝置上，
+          // 再存一份只是浪費空間）
+          cover: const Icon(
+            Icons.image_outlined,
+            size: 26,
+            color: Color(0xFFAFAFBB),
+          ),
+          title: '未完成的照片',
+          when: _whenOf(p),
+          onTap: _openDrafts,
+        ),
+    ];
+    return Column(
+      children: [
+        for (var i = 0; i < tiles.length; i += 2) ...[
+          if (i > 0) const SizedBox(height: 18),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: tiles[i]),
+              const SizedBox(width: 12),
+              // 奇數張時右邊補空，卡片才不會被撐成整排寬
+              Expanded(
+                child: i + 1 < tiles.length ? tiles[i + 1] : const SizedBox(),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
   }
 
   void _openLove() {
@@ -331,8 +408,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // 首頁這裡只放最近的一份，其餘去草稿夾看（「全部」進得去）
-    final v = _videoDrafts.isEmpty ? null : _videoDrafts.first;
     final p = _photoDraft;
     final draftCount = _videoDrafts.length + (p == null ? 0 : 1);
     // 非編輯頁面全頁都能右滑返回（編輯畫面橫向手勢太多，刻意不放）
@@ -451,56 +526,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         else
                           Padding(
                             padding: _side,
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                if (v != null)
-                                  Expanded(
-                                    child: _draftTile(
-                                      cover: _covers[v.id] != null
-                                          ? Image.memory(
-                                              _covers[v.id]!,
-                                              // 鋪滿：這是縮圖不是預覽，
-                                              // 留邊只會讓一排卡看起來破碎
-                                              fit: BoxFit.cover,
-                                              width: double.infinity,
-                                              height: double.infinity,
-                                              gaplessPlayback: true,
-                                            )
-                                          : const Icon(
-                                              Icons.movie_outlined,
-                                              size: 26,
-                                              color: Color(0xFFAFAFBB),
-                                            ),
-                                      title: _dateLabel(v.createdAt),
-                                      when: _whenLabel(v.savedAt),
-                                      onTap: _openDrafts,
-                                    ),
-                                  ),
-                                if (v != null && p != null)
-                                  const SizedBox(width: 12),
-                                if (p != null)
-                                  Expanded(
-                                    child: _draftTile(
-                                      // 照片草稿沒有存縮圖（那張照片還在裝置
-                                      // 上，再存一份只是浪費空間）
-                                      cover: const Icon(
-                                        Icons.image_outlined,
-                                        size: 26,
-                                        color: Color(0xFFAFAFBB),
-                                      ),
-                                      title: '未完成的照片',
-                                      when: _whenOf(p),
-                                      onTap: _openDrafts,
-                                    ),
-                                  ),
-                                // 只有一張時右邊補空，卡片才不會被撐成整排寬
-                                if (v == null || p == null) ...[
-                                  const SizedBox(width: 12),
-                                  const Expanded(child: SizedBox()),
-                                ],
-                              ],
-                            ),
+                            // 全部列出來（兩欄）：本來只放最近一份、其餘要
+                            // 進草稿夾看，但清單就在這一頁，藏起來只是多一步
+                            child: _draftGrid(p),
                           ),
                       ],
                     ),
