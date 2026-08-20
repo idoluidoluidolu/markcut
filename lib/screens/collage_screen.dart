@@ -1011,8 +1011,8 @@ class _CollageScreenState extends State<CollageScreen> {
                       child: Padding(
                         padding: const EdgeInsets.all(16),
                         child: AspectRatio(
-                          // 宮格固定 1:1；自由模式的畫布比例可選
-                          aspectRatio: _free ? _canvasAspect : 1,
+                          // 畫布比例兩種模式共用（宮格＝把它等分）
+                          aspectRatio: _canvasAspect,
                           child: _free ? _buildFree() : _buildGrid(),
                         ),
                       ),
