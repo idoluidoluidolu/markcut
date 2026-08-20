@@ -62,13 +62,9 @@ class CompPlayer {
       if (c.reverse) return '有倒轉的片段';
       if (c.color.hasColor) return '有調色的片段';
     }
-    // 馬賽克跟調色是同一件事：預覽的馬賽克是 Flutter 的 BackdropFilter，
-    // 它只吃得到「Flutter 自己畫的東西」。合成播放器的畫面走系統的影片
-    // 圖層（平台原生元件，由系統另外合成），BackdropFilter 取不到它的
-    // 像素——結果就是馬賽克整個沒反應。有馬賽克就退回材質那條路
-    for (final c in tl.clips) {
-      if (tl.sourceOf(c).kind == ClipKind.mosaic) return '有馬賽克';
-    }
+    // 馬賽克不再是阻擋條件：改成烘進合成本身——原生端掛上跟匯出
+    // 同一顆 CI 合成器，逐格在 GPU 上打碼。Flutter 的 BackdropFilter
+    // 版馬賽克在合成模式下會關掉（不然是打兩次碼）
     // 圖片素材進不了合成（合成只裝得下影片軌），而系統的播放器圖層是
     // 不透明的——墊在影片下層的圖片會被整片蓋黑，影片縮小移開也露不出來
     for (final c in tl.clips) {
@@ -138,10 +134,33 @@ class CompPlayer {
           'mirror': c.mirror,
         },
     ];
+    // 馬賽克：跟原生匯出同一套欄位（見 native_export 的 mosaics），
+    // 原生端拿它組 CIMosaicSpec。時間是時間軸秒數——合成的時間基準
+    // 就是時間軸，整體變速由播放速率處理，不用在這裡除
+    final mosaics = <Map<String, dynamic>>[];
+    for (final c in tl.clips) {
+      final src = tl.sourceOf(c);
+      if (src.kind != ClipKind.mosaic) continue;
+      final ms = src.mosaicStyle ?? MosaicStyle();
+      mosaics.add({
+        'start': c.offset,
+        'end': c.end,
+        'track': c.track,
+        'px': c.px,
+        'py': c.py,
+        'scale': c.scale,
+        'type': ms.type,
+        'strength': ms.strength,
+        'color': ms.color,
+        'feather': ms.feather,
+      });
+    }
+    mosaics.sort((a, b) => (a['track'] as int).compareTo(b['track'] as int));
     try {
       final m = await _ch.invokeMapMethod<String, dynamic>('build', {
         'clips': clips,
         'texture': texture,
+        'mosaics': mosaics,
       });
       if (m == null) return null;
       // 原生端組不起來時會回原因，不要讓它只變成一句「組不起來」

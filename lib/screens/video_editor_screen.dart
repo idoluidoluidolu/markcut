@@ -766,9 +766,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             '|${c.color.hasColor}|${c.cropped}'
             '|${c.cropL}|${c.cropT}|${c.cropW}|${c.cropH}'
             '|${c.opacity}|${c.rotation}',
-    // 馬賽克片段也要算進來：它跟調色一樣會逼著退回材質那條路，
-    // 而它不是影片片段，不記的話「加了馬賽克」不會觸發重烘
-    'mz${_tl.clips.where((c) => _tl.sourceOf(c).kind == ClipKind.mosaic).length}',
+    // 馬賽克的幾何與樣式都要記：它是烘進合成畫面裡的（CI 合成器），
+    // 拖了位置、調了濃度都得重組。重組有併批（900ms 停手後才做），
+    // 拖曳中畫面暫時停在舊碼位，停手一拍後跟上
+    for (final c in _tl.clips)
+      if (_tl.sourceOf(c).kind == ClipKind.mosaic)
+        'mz${c.offset}|${c.end}|${c.px}|${c.py}|${c.scale}|${c.track}'
+            '|${_tl.sourceOf(c).mosaicStyle?.type}'
+            '|${_tl.sourceOf(c).mosaicStyle?.strength}'
+            '|${_tl.sourceOf(c).mosaicStyle?.color}'
+            '|${_tl.sourceOf(c).mosaicStyle?.feather}',
     // 整軌靜音是烘進合成的音量參數的，切了要重組——不記的話
     // 預覽照樣有聲音，匯出卻是靜音的（匯出另外走自己的靜音處理）
     'mute${(_mutedTracks.toList()..sort()).join(',')}',
@@ -7214,169 +7221,190 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             // 像素化 = shader 取格中心色
                                             // （真色塊）；不支援 shader 的
                                             // 平台退回霧化。web 播放中抓不
-                                            // 到 HTML 影片，效果以匯出為準
-                                            child: Builder(
-                                              builder: (context) {
-                                                final ms =
-                                                    src.mosaicStyle ??
-                                                    MosaicStyle();
-                                                if (ms.type == 2) {
-                                                  return Container(
-                                                    color: Color(ms.color),
-                                                  );
-                                                }
-                                                if (ms.type == 1 &&
-                                                    ms.feather > 0) {
-                                                  // 柔邊：6 圈同心，由外到內
-                                                  // 越來越糊。每圈都用同一個
-                                                  // 強度是沒用的——最外圈就
-                                                  // 已經全糊，邊界照樣是一條
-                                                  // 硬線，拉柔邊看不出差別
-                                                  final sg =
-                                                      (4.0 + 16 * ms.strength) *
-                                                      0.4;
-                                                  final step =
-                                                      ms.feather *
-                                                      0.07 *
-                                                      math.min(
-                                                        r.width,
-                                                        r.height,
-                                                      );
-                                                  // [k] 是這一圈的強度比例
-                                                  //（外圈小、內圈滿）
-                                                  Widget ring(
-                                                    double i,
-                                                    double k,
-                                                  ) => Positioned(
-                                                    left: i,
-                                                    top: i,
-                                                    right: i,
-                                                    bottom: i,
-                                                    child: ClipRect(
-                                                      child: BackdropFilter(
-                                                        filter:
-                                                            ui.ImageFilter.blur(
-                                                              sigmaX: sg * k,
-                                                              sigmaY: sg * k,
-                                                            ),
-                                                        child:
-                                                            const SizedBox.expand(),
-                                                      ),
-                                                    ),
-                                                  );
-                                                  return Stack(
-                                                    children: [
-                                                      for (
-                                                        var i = 0;
-                                                        i < 6;
-                                                        i++
-                                                      )
-                                                        ring(
-                                                          step * i,
-                                                          (i + 1) / 6,
-                                                        ),
-                                                    ],
-                                                  );
-                                                }
-                                                ui.ImageFilter? filter;
-                                                if (ms.type == 0 &&
-                                                    _mosaicProg != null) {
-                                                  // 格數跟匯出同一條公式，
-                                                  // 濃度越高格子越大
-                                                  final cells =
-                                                      (26 - 20 * ms.strength)
-                                                          .round()
-                                                          .clamp(4, 40);
-                                                  final dpr = MediaQuery.of(
-                                                    context,
-                                                  ).devicePixelRatio;
-                                                  final cell = math.max(
-                                                    2.0,
-                                                    r.width * dpr / cells,
-                                                  );
-                                                  ui.ImageFilter? pix(
-                                                    double c,
-                                                  ) {
-                                                    try {
-                                                      // 0,1 = u_size(引擎
-                                                      // 自動填),2 = u_cell
-                                                      final sh = _mosaicProg!
-                                                          .fragmentShader();
-                                                      sh.setFloat(
-                                                        2,
-                                                        math.max(2.0, c),
-                                                      );
-                                                      return ui
-                                                          .ImageFilter.shader(
-                                                        sh,
-                                                      );
-                                                    } catch (_) {
-                                                      return null;
-                                                    }
-                                                  }
-
-                                                  // 柔邊：跟模糊同一套同心
-                                                  // 圈，只是由外到內格子越
-                                                  // 來越大——外圈幾乎是原
-                                                  // 畫面，邊界就沒有硬線
-                                                  if (ms.feather > 0) {
-                                                    final step =
-                                                        ms.feather *
-                                                        0.07 *
-                                                        math.min(
-                                                          r.width,
-                                                          r.height,
+                                            // 到 HTML 影片，效果以匯出為準。
+                                            // 合成播放器接手時，馬賽克已
+                                            // 經烘進它的畫面裡（CI 合成
+                                            // 器），這裡再畫就是打兩次碼
+                                            child: _compOn
+                                                ? const SizedBox.expand()
+                                                : Builder(
+                                                    builder: (context) {
+                                                      final ms =
+                                                          src.mosaicStyle ??
+                                                          MosaicStyle();
+                                                      if (ms.type == 2) {
+                                                        return Container(
+                                                          color: Color(
+                                                            ms.color,
+                                                          ),
                                                         );
-                                                    final rings = <Widget>[];
-                                                    for (
-                                                      var i = 0;
-                                                      i < 6;
-                                                      i++
-                                                    ) {
-                                                      final f = pix(
-                                                        cell * (i + 1) / 6,
-                                                      );
-                                                      if (f == null) continue;
-                                                      final inset = step * i;
-                                                      rings.add(
-                                                        Positioned(
-                                                          left: inset,
-                                                          top: inset,
-                                                          right: inset,
-                                                          bottom: inset,
+                                                      }
+                                                      if (ms.type == 1 &&
+                                                          ms.feather > 0) {
+                                                        // 柔邊：6 圈同心，由外到內
+                                                        // 越來越糊。每圈都用同一個
+                                                        // 強度是沒用的——最外圈就
+                                                        // 已經全糊，邊界照樣是一條
+                                                        // 硬線，拉柔邊看不出差別
+                                                        final sg =
+                                                            (4.0 +
+                                                                16 *
+                                                                    ms.strength) *
+                                                            0.4;
+                                                        final step =
+                                                            ms.feather *
+                                                            0.07 *
+                                                            math.min(
+                                                              r.width,
+                                                              r.height,
+                                                            );
+                                                        // [k] 是這一圈的強度比例
+                                                        //（外圈小、內圈滿）
+                                                        Widget ring(
+                                                          double i,
+                                                          double k,
+                                                        ) => Positioned(
+                                                          left: i,
+                                                          top: i,
+                                                          right: i,
+                                                          bottom: i,
                                                           child: ClipRect(
                                                             child: BackdropFilter(
-                                                              filter: f,
+                                                              filter:
+                                                                  ui.ImageFilter.blur(
+                                                                    sigmaX:
+                                                                        sg * k,
+                                                                    sigmaY:
+                                                                        sg * k,
+                                                                  ),
                                                               child:
                                                                   const SizedBox.expand(),
                                                             ),
                                                           ),
+                                                        );
+                                                        return Stack(
+                                                          children: [
+                                                            for (
+                                                              var i = 0;
+                                                              i < 6;
+                                                              i++
+                                                            )
+                                                              ring(
+                                                                step * i,
+                                                                (i + 1) / 6,
+                                                              ),
+                                                          ],
+                                                        );
+                                                      }
+                                                      ui.ImageFilter? filter;
+                                                      if (ms.type == 0 &&
+                                                          _mosaicProg != null) {
+                                                        // 格數跟匯出同一條公式，
+                                                        // 濃度越高格子越大
+                                                        final cells =
+                                                            (26 - 20 * ms.strength)
+                                                                .round()
+                                                                .clamp(4, 40);
+                                                        final dpr =
+                                                            MediaQuery.of(
+                                                              context,
+                                                            ).devicePixelRatio;
+                                                        final cell = math.max(
+                                                          2.0,
+                                                          r.width * dpr / cells,
+                                                        );
+                                                        ui.ImageFilter? pix(
+                                                          double c,
+                                                        ) {
+                                                          try {
+                                                            // 0,1 = u_size(引擎
+                                                            // 自動填),2 = u_cell
+                                                            final sh = _mosaicProg!
+                                                                .fragmentShader();
+                                                            sh.setFloat(
+                                                              2,
+                                                              math.max(2.0, c),
+                                                            );
+                                                            return ui
+                                                                .ImageFilter.shader(
+                                                              sh,
+                                                            );
+                                                          } catch (_) {
+                                                            return null;
+                                                          }
+                                                        }
+
+                                                        // 柔邊：跟模糊同一套同心
+                                                        // 圈，只是由外到內格子越
+                                                        // 來越大——外圈幾乎是原
+                                                        // 畫面，邊界就沒有硬線
+                                                        if (ms.feather > 0) {
+                                                          final step =
+                                                              ms.feather *
+                                                              0.07 *
+                                                              math.min(
+                                                                r.width,
+                                                                r.height,
+                                                              );
+                                                          final rings =
+                                                              <Widget>[];
+                                                          for (
+                                                            var i = 0;
+                                                            i < 6;
+                                                            i++
+                                                          ) {
+                                                            final f = pix(
+                                                              cell *
+                                                                  (i + 1) /
+                                                                  6,
+                                                            );
+                                                            if (f == null) {
+                                                              continue;
+                                                            }
+                                                            final inset =
+                                                                step * i;
+                                                            rings.add(
+                                                              Positioned(
+                                                                left: inset,
+                                                                top: inset,
+                                                                right: inset,
+                                                                bottom: inset,
+                                                                child: ClipRect(
+                                                                  child: BackdropFilter(
+                                                                    filter: f,
+                                                                    child:
+                                                                        const SizedBox.expand(),
+                                                                  ),
+                                                                ),
+                                                              ),
+                                                            );
+                                                          }
+                                                          if (rings
+                                                              .isNotEmpty) {
+                                                            return Stack(
+                                                              children: rings,
+                                                            );
+                                                          }
+                                                        }
+                                                        filter = pix(cell);
+                                                      }
+                                                      final sigma =
+                                                          4.0 +
+                                                          16 * ms.strength;
+                                                      filter ??=
+                                                          ui.ImageFilter.blur(
+                                                            sigmaX: sigma,
+                                                            sigmaY: sigma,
+                                                          );
+                                                      return ClipRect(
+                                                        child: BackdropFilter(
+                                                          filter: filter,
+                                                          child:
+                                                              const SizedBox.expand(),
                                                         ),
                                                       );
-                                                    }
-                                                    if (rings.isNotEmpty) {
-                                                      return Stack(
-                                                        children: rings,
-                                                      );
-                                                    }
-                                                  }
-                                                  filter = pix(cell);
-                                                }
-                                                final sigma =
-                                                    4.0 + 16 * ms.strength;
-                                                filter ??= ui.ImageFilter.blur(
-                                                  sigmaX: sigma,
-                                                  sigmaY: sigma,
-                                                );
-                                                return ClipRect(
-                                                  child: BackdropFilter(
-                                                    filter: filter,
-                                                    child:
-                                                        const SizedBox.expand(),
+                                                    },
                                                   ),
-                                                );
-                                              },
-                                            ),
                                           ),
                                         ),
                                       );

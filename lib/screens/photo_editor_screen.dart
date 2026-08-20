@@ -1784,6 +1784,8 @@ final color = Color(picked ?? 0);
                         // 給浮在上面的輸出鍵讓位，最後一張卡才捲得完
                         bottomInset: 78,
                         settings: _settings,
+                        // 這一頁的面板比影片編輯高，九宮格給大一點
+                        posGridCap: 280,
                         onChanged: () => setState(() {}),
                         onBeforeChange: _pushUndo,
                         syncVersion: _sync,

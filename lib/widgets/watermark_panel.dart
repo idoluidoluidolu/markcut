@@ -128,6 +128,10 @@ class WatermarkPanel extends StatefulWidget {
   /// 最後一張卡才捲得到浮鍵上方
   final double bottomInset;
 
+  /// 位置九宮格的最大寬。影片編輯的面板矮，太大會佔掉大半；
+  /// 照片編輯的面板高，太小旁邊又空一大片——由父層自己給
+  final double posGridCap;
+
   const WatermarkPanel({
     super.key,
     required this.settings,
@@ -145,6 +149,7 @@ class WatermarkPanel extends StatefulWidget {
     this.controller,
     this.showNav = true,
     this.bottomInset = 0,
+    this.posGridCap = 210,
   });
 
   @override
@@ -1726,8 +1731,8 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         LayoutBuilder(
           builder: (context, cons) {
             final w = cons.maxWidth.isFinite
-                ? math.min(cons.maxWidth, 210.0)
-                : 210.0;
+                ? math.min(cons.maxWidth, widget.posGridCap)
+                : widget.posGridCap;
             return Center(
               child: Container(
                 width: w,

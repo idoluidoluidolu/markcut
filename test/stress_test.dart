@@ -492,8 +492,7 @@ void main() {
       expect(CompPlayer.whyNot(base()), isNull);
     });
 
-    test('有馬賽克就退回材質那條路', () {
-      // 馬賽克是 Flutter 的 BackdropFilter，取不到系統影片圖層的像素
+    test('有馬賽克不再退回：改烘進合成（CI 合成器）', () {
       final tl = base();
       tl.sources.add(MediaSource(
           path: '', name: '', kind: ClipKind.mosaic, duration: 3600));
@@ -505,7 +504,7 @@ void main() {
         offset: 0,
         track: 1,
       ));
-      expect(CompPlayer.whyNot(tl), '有馬賽克');
+      expect(CompPlayer.whyNot(tl), isNull);
     });
 
     test('有圖片素材就退回：墊在影片下層的圖片會被播放器圖層蓋黑', () {

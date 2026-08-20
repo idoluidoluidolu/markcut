@@ -562,7 +562,11 @@ final class AtomicFlag {
         // 一顆已經被收掉的播放器（黑一下），而萬一組不起來就永遠黑著——
         // 使用者說的「按了切割整個畫面都消失」就是這條路
         let p = CompPlayer(registry: textures)
-        guard p.build(clips: clips, texture: (args["texture"] as? Bool) ?? true)
+        let mosaics = args["mosaics"] as? [[String: Any]] ?? []
+        guard
+          p.build(
+            clips: clips, texture: (args["texture"] as? Bool) ?? true,
+            mosaics: mosaics)
         else {
           let why = p.buildError ?? "未知原因"
           p.dispose()
@@ -2212,7 +2216,11 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// [texture] 畫面要不要另外送一份到 Flutter 材質。
   /// 用系統影片圖層顯示時就不用——那條路是播放器自己畫到圖層上，
   /// 材質這份沒有人看，卻是每一格都在複製一張 4K 的畫面
-  func build(clips: [[String: Any]], texture: Bool) -> Bool {
+  /// [mosaics] 跟原生匯出同一套欄位（px/py/scale/type/strength/
+  /// color/feather/start/end）。非空時掛 CI 合成器把碼烘進畫面
+  func build(
+    clips: [[String: Any]], texture: Bool, mosaics: [[String: Any]] = []
+  ) -> Bool {
     let comp = AVMutableComposition()
     let scale: CMTimeScale = 600
 
@@ -2443,6 +2451,8 @@ final class CompPlayer: NSObject, FlutterTexture {
       // 軌道方向——走材質又有旋轉旗標時，方向只能靠合成器烘進畫面。
       // 系統影片圖層則會自己套，不受影響
       || (texture && !uniformTransform.isIdentity)
+      // 馬賽克要烘進畫面，一定得走合成器
+      || !mosaics.isEmpty
     if !needsVC, let only = vTracks.values.first {
       only.track.preferredTransform = uniformTransform
     }
@@ -2552,6 +2562,42 @@ final class CompPlayer: NSObject, FlutterTexture {
         }
       }
       if marks.count < 2 { marks = [CMTime.zero, comp.duration] }
+      if !mosaics.isEmpty {
+        // 馬賽克要逐格打在畫面上，標準的 layer instruction 做不到——
+        // 掛跟匯出同一顆 CI 合成器（CIExportCompositor）：濃度、柔邊、
+        // 顏色的數學跟成品一字不差，預覽即所得。
+        // HDR 來源它會做 toneMapHDRtoSDR，顏色跟相簿同一條曲線
+        let ciMosaics = mosaics.compactMap { CIMosaicSpec($0, canvas: size) }
+        var built: [CIExportInstruction] = []
+        for i in 0..<(marks.count - 1) {
+          let a = marks[i]
+          let b = marks[i + 1]
+          let mid = (a.seconds + b.seconds) / 2
+          let here = segments.filter {
+            $0.range.start.seconds <= mid + 0.0005
+              && $0.range.end.seconds >= mid - 0.0005
+          }.sorted { $0.layer < $1.layer }
+          // CI 合成器照陣列順序由下往上疊
+          var layers: [CILayerSpec] = []
+          for seg in here {
+            guard let t = fitTransform(seg) else { continue }
+            layers.append(
+              CILayerSpec(
+                trackID: seg.track.trackID, still: nil,
+                transform: t, srcHeight: seg.size.height,
+                start: seg.range.start.seconds,
+                end: seg.range.end.seconds,
+                fadeIn: seg.fadeIn, fadeOut: seg.fadeOut,
+                colorMatrix: nil))
+          }
+          built.append(
+            CIExportInstruction(
+              timeRange: CMTimeRange(start: a, end: b),
+              layers: layers, mosaics: ciMosaics, overlays: []))
+        }
+        vc.customVideoCompositorClass = CIExportCompositor.self
+        vc.instructions = built
+      } else {
       var instructions: [AVMutableVideoCompositionInstruction] = []
       for i in 0..<(marks.count - 1) {
         let a = marks[i]
@@ -2594,6 +2640,7 @@ final class CompPlayer: NSObject, FlutterTexture {
         instructions.append(ins)
       }
       vc.instructions = instructions
+      }
       // 交出去之前先讓 AVFoundation 自己驗一遍。壞掉的合成不會丟例外，
       // 只會安靜地變成一片黑——那正是「拉到新軌道預覽就消失」
       let v = VCValidator()
