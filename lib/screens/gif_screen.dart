@@ -93,15 +93,15 @@ class _GifScreenState extends State<GifScreen> {
   /// 來回看，所以命中率很高
   final Map<String, String> _previewCache = {};
 
-  /// 這一輪設定的指紋
-  String _keyFor() {
+  /// 這一輪設定的指紋（[fps]/[size] 可以代入別的值：預先做隔壁選項用）
+  String _keyFor({int? fps, int? size}) {
     final c = _crop;
     final cropKey = c == null
         ? 'full'
         : '${c.left.toStringAsFixed(3)},${c.top.toStringAsFixed(3)},'
               '${c.width.toStringAsFixed(3)},${c.height.toStringAsFixed(3)}';
     return '${_start.toStringAsFixed(2)}~${_end.toStringAsFixed(2)}'
-        '@$_fps@$_size@$cropKey@$_speed';
+        '@${fps ?? _fps}@${size ?? _size}@$cropKey@$_speed';
   }
 
   void _schedulePreview() {
@@ -115,6 +115,8 @@ class _GifScreenState extends State<GifScreen> {
         _gifPreview = hit;
         _previewKey = key;
       });
+      // 換上快取＝閒置：接著把這一組的隔壁選項也補起來
+      unawaited(_prefetchSiblings());
       return;
     }
     _previewTimer?.cancel();
@@ -158,6 +160,54 @@ class _GifScreenState extends State<GifScreen> {
     // 那就接著做最新的那一組
     if (mounted && _keyFor() != _previewKey) _schedulePreview();
     _trimCache();
+    // 目前這組做好了＝進入閒置：把隔壁選項在背景先做起來
+    if (mounted && _keyFor() == _previewKey) unawaited(_prefetchSiblings());
+  }
+
+  /// 背景有沒有正在預先做的東西（一次只跑一個，不跟使用者搶）
+  bool _prefetching = false;
+
+  /// 把「其他尺寸 × 目前順暢度」「目前尺寸 × 其他順暢度」預先做起來。
+  ///
+  /// 使用者實際的用法就是在幾個選項之間來回點著比較——等他點的時候
+  /// 才開始做，每一下都要等 FFmpeg 跑一輪。趁目前這組做完的閒置時間
+  /// 先做，點過去就是快取直接換上，零等待。
+  /// 一次只跑一支；使用者改了任何設定就立刻讓路
+  Future<void> _prefetchSiblings() async {
+    if (_prefetching || kIsWeb) return;
+    _prefetching = true;
+    try {
+      final baseKey = _previewKey;
+      final jobs = <(int fps, int size)>[
+        for (final s in [320, 480, 640])
+          if (s != _size) (_fps, s),
+        for (final f in [10, 12, 15])
+          if (f != _fps) (f, _size),
+      ];
+      for (final (fps, size) in jobs) {
+        if (!mounted) return;
+        // 設定變了或使用者的 build 正在跑：讓路，等下一次閒置再說
+        if (_building || _keyFor() != baseKey) return;
+        final key = _keyFor(fps: fps, size: size);
+        if (_previewCache.containsKey(key)) continue;
+        final path = await engine.makeGifFile(
+          inputPath: widget.path,
+          start: _start,
+          end: _end,
+          fps: fps,
+          maxSide: size,
+          crop: _crop,
+          speed: _speed,
+        );
+        if (!mounted) return;
+        if (path != null && !_previewCache.containsKey(key)) {
+          _previewCache[key] = path;
+          _trimCache();
+        }
+      }
+    } finally {
+      _prefetching = false;
+    }
   }
 
   /// 快取只留最近 12 份，多的連檔案一起刪——一份 480p 的 GIF
