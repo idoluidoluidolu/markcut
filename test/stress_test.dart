@@ -492,6 +492,38 @@ void main() {
       expect(CompPlayer.whyNot(base()), isNull);
     });
 
+    test('馬賽克拖得比影片長：照樣用合成（尾巴會被夾掉，不該整組放棄）', () {
+      final tl = base();
+      tl.sources.add(MediaSource(
+          path: '', name: '', kind: ClipKind.mosaic, duration: 3600));
+      // 影片 5 秒（base 的預設），馬賽克拖到 8 秒——預設 3 秒的馬賽克
+      // 在短片上幾乎永遠是這個形狀，之前因此永遠用不到合成播放器
+      tl.clips.add(TimelineClip(
+        id: tl.nextId(),
+        sourceIndex: 1,
+        trimStart: 0,
+        trimEnd: 8,
+        offset: 0,
+        track: 1,
+      ));
+      expect(CompPlayer.whyNot(tl), isNull);
+    });
+
+    test('文字拖得比影片長：還是要退回（播放時鐘到影片結尾就停了）', () {
+      final tl = base();
+      tl.sources.add(MediaSource(
+          path: '', name: 'T', kind: ClipKind.text, duration: 3600));
+      tl.clips.add(TimelineClip(
+        id: tl.nextId(),
+        sourceIndex: 1,
+        trimStart: 0,
+        trimEnd: 9,
+        offset: 0,
+        track: 1,
+      ));
+      expect(CompPlayer.whyNot(tl), isNotNull);
+    });
+
     test('有馬賽克不再退回：改烘進合成（CI 合成器）', () {
       final tl = base();
       tl.sources.add(MediaSource(

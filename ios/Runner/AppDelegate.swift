@@ -327,7 +327,11 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   var supportsWideColorSourceFrames = true
   var supportsHDRSourceFrames = true
 
-  func renderContextChanged(_ newContext: AVVideoCompositionRenderContext) {}
+  func renderContextChanged(_ newContext: AVVideoCompositionRenderContext) {
+    // 渲染環境換了（理論上一個 item 一生只有一次）：上一格的緩衝
+    // 尺寸可能對不上了，別再重播它
+    queue.async { self.lastComposed = nil }
+  }
   func cancelAllPendingVideoCompositionRequests() {}
 
   /// 調色：預覽的 4x5 矩陣是在「已編碼（gamma）」的像素值上做的，
