@@ -144,11 +144,22 @@ final class CILayerSpec {
   /// nil＝沒調
   let colorMatrix: [Double]?
 
+  /// 裁切窗（顯示座標的比例 0~1、左上原點；鏡像在打包時已換算）。
+  /// nil＝不裁。只留窗內的畫面，位置不重新貼合——跟預覽一致
+  let crop: CGRect?
+
+  /// 自由旋轉（度；順時針＝正，跟預覽的 Transform.rotate 同方向）
+  let rotation: Double
+
+  /// 固定透明度（0~1），跟淡入淡出相乘
+  let opacity: Double
+
   init(
     trackID: CMPersistentTrackID, still: CIImage?,
     transform: CGAffineTransform, srcHeight: CGFloat,
     start: Double, end: Double, fadeIn: Double, fadeOut: Double,
-    colorMatrix: [Double]?
+    colorMatrix: [Double]?,
+    crop: CGRect? = nil, rotation: Double = 0, opacity: Double = 1
   ) {
     self.trackID = trackID
     self.still = still
@@ -159,6 +170,9 @@ final class CILayerSpec {
     self.fadeIn = fadeIn
     self.fadeOut = fadeOut
     self.colorMatrix = colorMatrix
+    self.crop = crop
+    self.rotation = rotation
+    self.opacity = opacity
   }
 
   /// 這一格的不透明度（線性淡入淡出）
@@ -348,6 +362,18 @@ final class CIExportCompositor: NSObject, AVVideoCompositing {
     return out
   }
 
+  /// 繞著 [c] 轉 [degrees] 度（順時針，跟預覽同方向）。
+  /// CI 座標 y 往上，視覺上的順時針要用負角度
+  private static func spin(
+    _ img: CIImage, degrees: Double, around c: CGPoint
+  ) -> CIImage {
+    let t = CGAffineTransform(translationX: -c.x, y: -c.y)
+      .concatenating(
+        CGAffineTransform(rotationAngle: CGFloat(-degrees * .pi / 180)))
+      .concatenating(CGAffineTransform(translationX: c.x, y: c.y))
+    return img.transformed(by: t)
+  }
+
   func startRequest(_ req: AVAsynchronousVideoCompositionRequest) {
     queue.async {
       autoreleasepool {
@@ -394,10 +420,32 @@ final class CIExportCompositor: NSObject, AVVideoCompositing {
           } else {
             continue
           }
+          // 裁切：transform 沒有旋轉成分，貼上畫布是軸對齊的方框，
+          // 直接照 extent 的比例切窗。比例是左上原點，CI 是左下——
+          // y 要反過來。旋轉繞「整個片段框」的中心（跟預覽一致），
+          // 所以中心用裁切前的 extent 算
+          if layer.crop != nil || abs(layer.rotation) > 0.05 {
+            let full = img.extent
+            if full.width > 1, full.height > 1 {
+              if let cr = layer.crop {
+                img = img.cropped(
+                  to: CGRect(
+                    x: full.minX + cr.minX * full.width,
+                    y: full.minY + (1 - cr.minY - cr.height) * full.height,
+                    width: cr.width * full.width,
+                    height: cr.height * full.height))
+              }
+              if abs(layer.rotation) > 0.05 {
+                img = Self.spin(
+                  img, degrees: layer.rotation,
+                  around: CGPoint(x: full.midX, y: full.midY))
+              }
+            }
+          }
           if let m = layer.colorMatrix {
             img = self.applyColor(img, m)
           }
-          let a = layer.alpha(at: t)
+          let a = layer.alpha(at: t) * layer.opacity
           if a < 0.999 {
             // 淡入淡出＝RGBA 一起乘（premultiplied 直接壓係數）：
             // 疊在下層畫面上就是正確的交叉淡化，疊在黑底上等同變暗
@@ -802,7 +850,7 @@ final class AtomicFlag {
         range: CMTimeRange, transform: CGAffineTransform, size: CGSize,
         fadeIn: Double, fadeOut: Double, userScale: Double, px: Double,
         py: Double, mirror: Bool, trackID: CMPersistentTrackID, z: Int,
-        color: [Double]?
+        color: [Double]?, crop: [Double]?, rotation: Double, opacity: Double
       )] = []
 
     for clip in clips {
@@ -821,6 +869,9 @@ final class AtomicFlag {
       let clipOffset = clip["offset"] as? Double ?? 0
       let zTrack = clip["track"] as? Int ?? 0
       let colorM = clip["color"] as? [Double]
+      let cropArr = clip["crop"] as? [Double]
+      let rotation = clip["rotation"] as? Double ?? 0
+      let opacity = clip["opacity"] as? Double ?? 1
       if end - start <= 0.01 { continue }
 
       if layered {
@@ -892,7 +943,7 @@ final class AtomicFlag {
         transform: src.preferredTransform, size: src.naturalSize,
         fadeIn: fadeIn, fadeOut: fadeOut, userScale: userScale, px: px,
         py: py, mirror: mirror, trackID: destTrack.trackID, z: zTrack,
-        color: colorM
+        color: colorM, crop: cropArr, rotation: rotation, opacity: opacity
       ))
       cursor = cursor + outDur
     }
@@ -977,7 +1028,10 @@ final class AtomicFlag {
     // ── 畫面：每段貼齊畫布（轉正 → 等比縮放 → 置中 → 使用者變形）──
     let vc = AVMutableVideoComposition()
     vc.renderSize = canvas
-    vc.frameDuration = CMTime(value: 1, timescale: 30)
+    // 順暢度：指定張數就照指定的走，沒指定維持 30
+    let fpsOut = a["fps"] as? Int ?? 0
+    vc.frameDuration = CMTime(
+      value: 1, timescale: fpsOut > 0 ? CMTimeScale(fpsOut) : 30)
     // 明確標成 709。素材是 iPhone 預設的 4K HLG（HDR），不標的話 HDR 的
     // 色彩標記會原封帶進輸出檔，播放器再自己套一次曲線——輕則顏色歪掉，
     // 重則整片黑。轉工作檔那段早就踩過同一個坑，這裡漏了
@@ -1046,13 +1100,21 @@ final class AtomicFlag {
               y: canvas.height / 2 + CGFloat(seg.py - 0.5) * canvas.height))
       }
       if layered {
+        // 裁切窗：預覽是「先裁再鏡像」，這裡的 transform 已含鏡像，
+        // 所以鏡像時窗的水平位置要翻過來
+        var cropRect: CGRect? = nil
+        if let ca = seg.crop, ca.count >= 4, ca[2] > 0.001, ca[3] > 0.001 {
+          let l = seg.mirror ? 1 - ca[0] - ca[2] : ca[0]
+          cropRect = CGRect(x: l, y: ca[1], width: ca[2], height: ca[3])
+        }
         layerBasket.append((
           z: seg.z, order: layerBasket.count,
           layer: CILayerSpec(
             trackID: seg.trackID, still: nil, transform: t,
             srcHeight: seg.size.height, start: seg.range.start.seconds,
             end: seg.range.end.seconds, fadeIn: seg.fadeIn,
-            fadeOut: seg.fadeOut, colorMatrix: seg.color)
+            fadeOut: seg.fadeOut, colorMatrix: seg.color,
+            crop: cropRect, rotation: seg.rotation, opacity: seg.opacity)
         ))
         continue
       }
@@ -1142,6 +1204,14 @@ final class AtomicFlag {
           a: 1, b: 0, c: 0, d: -1, tx: 0, ty: canvas.height)
         img = img.transformed(
           by: flipSrc.concatenating(t).concatenating(flipCanvas))
+        var stCrop: CGRect? = nil
+        if let ca = st["crop"] as? [Double], ca.count >= 4, ca[2] > 0.001,
+          ca[3] > 0.001
+        {
+          let mir = st["mirror"] as? Bool ?? false
+          let l = mir ? 1 - ca[0] - ca[2] : ca[0]
+          stCrop = CGRect(x: l, y: ca[1], width: ca[2], height: ca[3])
+        }
         layerBasket.append((
           z: st["track"] as? Int ?? 0, order: layerBasket.count,
           layer: CILayerSpec(
@@ -1151,7 +1221,10 @@ final class AtomicFlag {
             end: st["end"] as? Double ?? 0,
             fadeIn: st["fadeIn"] as? Double ?? 0,
             fadeOut: st["fadeOut"] as? Double ?? 0,
-            colorMatrix: st["color"] as? [Double])
+            colorMatrix: st["color"] as? [Double],
+            crop: stCrop,
+            rotation: st["rotation"] as? Double ?? 0,
+            opacity: st["opacity"] as? Double ?? 1)
         ))
       }
       // z 序排定（同 z 保持進籃順序）
@@ -2242,6 +2315,9 @@ final class CompPlayer: NSObject, FlutterTexture {
       var mirror: Bool
       var track: AVMutableCompositionTrack
       var layer: Int
+      var crop: [Double]?
+      var rotation: Double
+      var opacity: Double
     }
     var segments: [Seg] = []
     var vTracks: [Int: (track: AVMutableCompositionTrack, end: CMTime)] = [:]
@@ -2271,6 +2347,9 @@ final class CompPlayer: NSObject, FlutterTexture {
       let px = clip["px"] as? Double ?? 0.5
       let py = clip["py"] as? Double ?? 0.5
       let mirror = clip["mirror"] as? Bool ?? false
+      let cropArr = clip["crop"] as? [Double]
+      let rotation = clip["rotation"] as? Double ?? 0
+      let opacity = clip["opacity"] as? Double ?? 1
       if end - start <= 0.01 { continue }
 
       let asset = AVURLAsset(url: URL(fileURLWithPath: path))
@@ -2386,7 +2465,8 @@ final class CompPlayer: NSObject, FlutterTexture {
           range: CMTimeRange(start: putAt, duration: outDur),
           transform: src.preferredTransform, size: src.naturalSize,
           fadeIn: fadeIn, fadeOut: fadeOut, userScale: userScale, px: px,
-          py: py, mirror: mirror, track: slot.track, layer: layer))
+          py: py, mirror: mirror, track: slot.track, layer: layer,
+          crop: cropArr, rotation: rotation, opacity: opacity))
     }
     if segments.isEmpty {
       buildError = "沒有一段畫面接得進去"
@@ -2451,8 +2531,11 @@ final class CompPlayer: NSObject, FlutterTexture {
       // 軌道方向——走材質又有旋轉旗標時，方向只能靠合成器烘進畫面。
       // 系統影片圖層則會自己套，不受影響
       || (texture && !uniformTransform.isIdentity)
-      // 馬賽克要烘進畫面，一定得走合成器
+      // 馬賽克要烘進畫面，一定得走合成器；裁切/旋轉/透明度同理
       || !mosaics.isEmpty
+      || segments.contains { seg in
+        seg.crop != nil || abs(seg.rotation) > 0.05 || seg.opacity < 0.999
+      }
     if !needsVC, let only = vTracks.values.first {
       only.track.preferredTransform = uniformTransform
     }
@@ -2562,7 +2645,13 @@ final class CompPlayer: NSObject, FlutterTexture {
         }
       }
       if marks.count < 2 { marks = [CMTime.zero, comp.duration] }
-      if !mosaics.isEmpty {
+      // 這些效果標準的 layer instruction 畫不出來，得掛 CI 合成器
+      let needsCI =
+        !mosaics.isEmpty
+        || segments.contains { seg in
+          seg.crop != nil || abs(seg.rotation) > 0.05 || seg.opacity < 0.999
+        }
+      if needsCI {
         // 馬賽克要逐格打在畫面上，標準的 layer instruction 做不到——
         // 掛跟匯出同一顆 CI 合成器（CIExportCompositor）：濃度、柔邊、
         // 顏色的數學跟成品一字不差，預覽即所得。
@@ -2581,6 +2670,15 @@ final class CompPlayer: NSObject, FlutterTexture {
           var layers: [CILayerSpec] = []
           for seg in here {
             guard let t = fitTransform(seg) else { continue }
+            // 裁切窗：預覽是「先裁再鏡像」，transform 已含鏡像，
+            // 鏡像時窗的水平位置要翻過來（跟匯出同一套換算）
+            var cropRect: CGRect? = nil
+            if let ca = seg.crop, ca.count >= 4, ca[2] > 0.001,
+              ca[3] > 0.001
+            {
+              let l = seg.mirror ? 1 - ca[0] - ca[2] : ca[0]
+              cropRect = CGRect(x: l, y: ca[1], width: ca[2], height: ca[3])
+            }
             layers.append(
               CILayerSpec(
                 trackID: seg.track.trackID, still: nil,
@@ -2588,7 +2686,9 @@ final class CompPlayer: NSObject, FlutterTexture {
                 start: seg.range.start.seconds,
                 end: seg.range.end.seconds,
                 fadeIn: seg.fadeIn, fadeOut: seg.fadeOut,
-                colorMatrix: nil))
+                colorMatrix: nil,
+                crop: cropRect, rotation: seg.rotation,
+                opacity: seg.opacity))
           }
           built.append(
             CIExportInstruction(

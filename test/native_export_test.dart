@@ -166,6 +166,37 @@ void main() {
       expect(NativeExport.whyNot(s), '沒有影片片段');
     });
 
+    test('裁切／旋轉／透明度不再退回：CI 合成器畫得出來，走圖層模式', () {
+      final s = spec(
+        [vid('a')],
+        [
+          clip(id: 1)
+            ..cropL = 0.1
+            ..cropT = 0.1
+            ..cropW = 0.5
+            ..cropH = 0.5
+            ..rotation = 30
+            ..opacity = 0.6,
+        ],
+      );
+      expect(NativeExport.whyNot(s), isNull);
+      expect(NativeExport.needsLayered(s), isTrue);
+    });
+
+    test('指定順暢度不再退回（frameDuration 交給 Swift 端）', () {
+      final s = ExportSpec(
+        sources: [vid('a')],
+        clips: [clip(id: 1)],
+        timelineDuration: 10,
+        speed: 1,
+        watermarkPng: null,
+        outW: 1080,
+        outH: 1920,
+        fps: 24,
+      );
+      expect(NativeExport.whyNot(s), isNull);
+    });
+
     test('接得剛剛好（前一段的結束＝後一段的開始）不算重疊', () {
       final s = spec(
         [vid('a'), vid('b')],

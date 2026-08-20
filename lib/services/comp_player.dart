@@ -95,13 +95,8 @@ class CompPlayer {
     Set<int> mutedTracks = const {},
   }) async {
     if (!await available) return null;
-    // 裁切的片段畫面來自系統影片圖層，Flutter 這邊的剪裁蓋不到它——
-    // 組下去預覽就是「沒裁過」的樣子。整條退回逐片段播放器
-    //（那條路的畫面是 Flutter 材質，裁切吃得到）
-    if (tl.clips.any((c) => c.cropped || c.rotated || c.faded)) {
-      lastError = '有裁切／旋轉／調過透明度的片段';
-      return null;
-    }
+    // 裁切/旋轉/透明度不再是阻擋條件：原生端會為它們掛 CI 合成器，
+    // 直接烘進合成畫面（跟匯出同一套數學）
     final vids =
         [
           for (final c in tl.clips)
@@ -132,6 +127,9 @@ class CompPlayer {
           'px': c.px,
           'py': c.py,
           'mirror': c.mirror,
+          if (c.cropped) 'crop': [c.cropL, c.cropT, c.cropW, c.cropH],
+          'rotation': c.rotation,
+          'opacity': c.opacity,
         },
     ];
     // 馬賽克：跟原生匯出同一套欄位（見 native_export 的 mosaics），

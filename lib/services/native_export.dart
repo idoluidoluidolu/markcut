@@ -59,18 +59,11 @@ class NativeExport {
     for (final c in spec.clips) {
       if (spec.sources[c.sourceIndex].kind == ClipKind.video) vids.add(c);
       if (c.reverse) return '有倒轉的片段（前置處理漏了）';
-      // 裁切目前只有 FFmpeg 那條路會畫。Swift 端還沒吃這個欄位，
-      // 交給它會匯出成「沒裁過」的樣子——預覽與成品不一樣，
-      // 比慢一點嚴重得多
-      if (c.cropped) return '有裁切過的片段';
-      // 旋轉與透明度目前也只有 FFmpeg 那條路畫得出來
-      if (c.rotated) return '有旋轉過的片段';
-      if (c.faded) return '有調過透明度的片段';
+      // 裁切／旋轉／透明度現在 CI 合成器都畫得出來（跟預覽同一套
+      // 數學），不再退 FFmpeg——HDR 專案才走得到系統的色調映射
     }
     if (vids.isEmpty) return '沒有影片片段';
-    // 指定張數目前只有 FFmpeg 那條路做得到（-r）。Swift 端照素材
-    // 的幀率走，交給它會匯出成「沒改過張數」的成品
-    if (spec.fps > 0) return '指定了順暢度';
+    // 順暢度也交給 Swift 端（videoComposition 的 frameDuration）
     return null;
   }
 
@@ -83,6 +76,8 @@ class NativeExport {
       if (kind == ClipKind.image || kind == ClipKind.mosaic) return true;
       if (kind == ClipKind.video) {
         if (c.color.hasColor) return true;
+        // 裁切/旋轉/透明度只有 CI 合成器（圖層模式）畫得出來
+        if (c.cropped || c.rotated || c.faded) return true;
         vids.add(c);
       }
     }
@@ -128,6 +123,9 @@ class NativeExport {
         'mirror': c.mirror,
         // 調色：預覽的 4x5 矩陣原封送過去，Swift 端在 gamma 域套同一顆
         'color': c.color.hasColor ? c.color.matrix : null,
+        if (c.cropped) 'crop': [c.cropL, c.cropT, c.cropW, c.cropH],
+        'rotation': c.rotation,
+        'opacity': c.opacity,
       });
       cursor = c.end;
     }
@@ -151,6 +149,9 @@ class NativeExport {
           'fadeIn': c.fadeIn / sp,
           'fadeOut': c.fadeOut / sp,
           'color': c.color.hasColor ? c.color.matrix : null,
+          if (c.cropped) 'crop': [c.cropL, c.cropT, c.cropW, c.cropH],
+          'rotation': c.rotation,
+          'opacity': c.opacity,
         });
       } else if (src.kind == ClipKind.mosaic) {
         final ms = src.mosaicStyle ?? MosaicStyle();
@@ -235,6 +236,8 @@ class NativeExport {
         'dest': dest,
         'ci': Diag.ciExport.value,
         'layered': needsLayered(spec),
+        // 順暢度（0＝跟預設一樣 30）
+        'fps': spec.fps,
         'stills': stills,
         'mosaics': mosaics,
         'timelineDuration': spec.timelineDuration,
