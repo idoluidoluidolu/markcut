@@ -180,7 +180,7 @@ class _GifScreenState extends State<GifScreen> {
   }
 
   Future<void> _init() async {
-    final p = makeVideoController(widget.path);
+    final p = makeVideoController(widget.path, system: true);
     _player = p;
     try {
       await p.initialize();

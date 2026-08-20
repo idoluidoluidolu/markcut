@@ -47,4 +47,6 @@ class PlayerX {
   Widget view({Key? key}) => VideoPlayer(_c, key: key);
 }
 
-PlayerX makeVideoController(String path) => PlayerX(path);
+// [system] 只在裝置端有意義（見 io 版），Web 收下參數照舊
+PlayerX makeVideoController(String path, {bool system = false}) =>
+    PlayerX(path);

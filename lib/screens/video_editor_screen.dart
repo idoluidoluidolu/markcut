@@ -601,8 +601,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (src.kind != ClipKind.video && src.kind != ClipKind.audio) return;
     if (_ctrls.containsKey(c.id)) return;
     // 有工作檔就播工作檔：1080p SDR 一顆解碼器的成本只有 4K HDR 的
-    // 幾分之一，三段同時活著也不會掉格
-    final ctrl = makeVideoController(src.previewPath);
+    // 幾分之一，三段同時活著也不會掉格。
+    // 還在等轉檔的原檔用系統解碼器播（螢幕錄影那類檔 mpv 會解成
+    // 破圖然後全黑），工作檔才交給 mpv
+    final ctrl = makeVideoController(
+      src.previewPath,
+      system: src.workPath == null,
+    );
     _ctrls[c.id] = ctrl;
     ctrl
         .initialize()
@@ -1223,7 +1228,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     required int track,
     String? name,
   }) async {
-    final c = makeVideoController(path);
+    // 剛匯入一定是原檔：走系統解碼器（見 _ensureCtrlFor 的說明）
+    final c = makeVideoController(path, system: true);
     await c.initialize();
     final dur = c.value.duration.inMilliseconds / 1000.0;
     final srcIndex = _tl.sources.length;

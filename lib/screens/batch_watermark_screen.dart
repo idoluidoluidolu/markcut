@@ -680,7 +680,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       XFile f,
       WatermarkSettings wm,
       void Function(double) onProgress) async {
-    final c = makeVideoController(f.path);
+    final c = makeVideoController(f.path, system: true);
     try {
       await c.initialize();
     } catch (_) {

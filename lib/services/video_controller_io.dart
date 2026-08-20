@@ -15,8 +15,16 @@ import 'player_value.dart';
 ///   media_kit 的 iOS 函式庫實測黑畫面＋拿不到尺寸。
 /// 介面模仿 VideoPlayerController，編輯器無感。
 abstract class PlayerX {
-  factory PlayerX(String path) =>
-      Platform.isIOS ? _AvPlayerX(path) : _FallbackPlayerX(path);
+  /// [system]（只影響 Android）：直接用系統解碼器（ExoPlayer），
+  /// 不試 mpv。原檔（尤其螢幕錄影）給它——mpv 的硬解在部分機型上
+  /// 會把這類檔解成破圖然後全黑，而且有畫面出來，事後根本驗不出來；
+  /// 系統自己錄的檔，系統解碼器保證播得對。
+  /// 工作檔（轉檔出來的乾淨 H.264）維持 mpv，Pixel 的順暢度不受影響
+  factory PlayerX(String path, {bool system = false}) => Platform.isIOS
+      ? _AvPlayerX(path)
+      : system
+      ? _AvPlayerX(path)
+      : _FallbackPlayerX(path);
 
   String get path;
   Future<void> initialize();
@@ -318,4 +326,5 @@ class _MpvPlayerX implements PlayerX {
   }
 }
 
-PlayerX makeVideoController(String path) => PlayerX(path);
+PlayerX makeVideoController(String path, {bool system = false}) =>
+    PlayerX(path, system: system);
