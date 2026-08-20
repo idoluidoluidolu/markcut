@@ -753,7 +753,148 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 需要的話抽一張夠大的封面（存草稿前呼叫）
+
+  /// 封面照「編輯畫面 t≈0 看到的樣子」合成一張：這一刻可見的
+  /// 影片/圖片圖層由下往上貼進畫布（跟預覽同一套 layerBox 數學），
+  /// 最上面壓浮水印。以前只抽第一段影片的一格——多軌、子母畫面、
+  /// 圖片素材的專案封面跟編輯畫面對不上（使用者：縮圖顯示錯誤）。
+  /// 文字與馬賽克不畫（成本高、對認出專案幫助小）
+  Future<(Uint8List, double)?> _composeCoverPng() async {
+    try {
+      final (rawW, rawH) = computeCanvasSize(
+        _tl,
+        _resolution,
+        _canvasRatio,
+        _customAspect,
+      );
+      if (rawW < 2 || rawH < 2) return null;
+      final shrink = math.min(1.0, 720 / math.max(rawW, rawH));
+      final cw = math.max(2, (rawW * shrink).round());
+      final ch = math.max(2, (rawH * shrink).round());
+      final canvasAspect = cw / ch;
+      const t0 = 0.02;
+      final visible =
+          _tl.clips.where((c) {
+              final kind = _tl.sourceOf(c).kind;
+              if (kind != ClipKind.video && kind != ClipKind.image) {
+                return false;
+              }
+              return c.offset <= t0 && c.end > t0;
+            }).toList()
+            ..sort((a, b) => a.track.compareTo(b.track));
+      if (visible.isEmpty) return null;
+      final rec = ui.PictureRecorder();
+      final canvas = ui.Canvas(rec);
+      canvas.drawRect(
+        ui.Rect.fromLTWH(0, 0, cw.toDouble(), ch.toDouble()),
+        ui.Paint()..color = const ui.Color(0xFF000000),
+      );
+      var drew = false;
+      for (final c in visible) {
+        final src = _tl.sourceOf(c);
+        Uint8List? bytes;
+        if (src.kind == ClipKind.video) {
+          if (kIsWeb) continue;
+          final st = c.sourceTimeAt(t0);
+          bytes = await nativeFrameAt(src.previewPath, st, maxH: 720);
+        } else {
+          try {
+            bytes = await File(src.path).readAsBytes();
+          } catch (_) {}
+        }
+        if (bytes == null) continue;
+        ui.Image img;
+        try {
+          final codec = await ui.instantiateImageCodec(
+            bytes,
+            targetWidth: 720,
+          );
+          img = (await codec.getNextFrame()).image;
+          codec.dispose();
+        } catch (_) {
+          continue;
+        }
+        final srcAspect = img.width / img.height;
+        double fitW, fitH;
+        if (srcAspect >= canvasAspect) {
+          fitW = cw.toDouble();
+          fitH = fitW / srcAspect;
+        } else {
+          fitH = ch.toDouble();
+          fitW = fitH * srcAspect;
+        }
+        final w2 = fitW * c.scale;
+        final h2 = fitH * c.scale;
+        canvas.drawImageRect(
+          img,
+          ui.Rect.fromLTWH(
+            0,
+            0,
+            img.width.toDouble(),
+            img.height.toDouble(),
+          ),
+          ui.Rect.fromLTWH(c.px * cw - w2 / 2, c.py * ch - h2 / 2, w2, h2),
+          ui.Paint()..filterQuality = ui.FilterQuality.medium,
+        );
+        img.dispose();
+        drew = true;
+      }
+      if (!drew) return null;
+      if (!_wmHidden && _settings.hasAnyMark) {
+        final png = await WatermarkRenderer.renderOverlayPng(
+          _settings,
+          cw,
+          ch,
+        );
+        {
+          try {
+            final codec = await ui.instantiateImageCodec(png);
+            final wm = (await codec.getNextFrame()).image;
+            codec.dispose();
+            canvas.drawImageRect(
+              wm,
+              ui.Rect.fromLTWH(
+                0,
+                0,
+                wm.width.toDouble(),
+                wm.height.toDouble(),
+              ),
+              ui.Rect.fromLTWH(0, 0, cw.toDouble(), ch.toDouble()),
+              ui.Paint()..filterQuality = ui.FilterQuality.medium,
+            );
+            wm.dispose();
+          } catch (_) {}
+        }
+      }
+      final out = await rec.endRecording().toImage(cw, ch);
+      final data = await out.toByteData(format: ui.ImageByteFormat.png);
+      out.dispose();
+      if (data == null) return null;
+      return (data.buffer.asUint8List(), cw / ch);
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> _refreshCover() async {
+    // 先試「照編輯畫面合成」的封面；不行再退回舊的抽單格
+    final ck = [
+      _canvasRatio.index,
+      _resolution.index,
+      for (final c in _tl.clips)
+        '${c.id}|${c.track}|${c.offset.toStringAsFixed(2)}'
+            '|${c.trimStart.toStringAsFixed(2)}|${c.scale}|${c.px}|${c.py}',
+      _settings.hasAnyMark,
+      _wmHidden,
+    ].join(';');
+    if (ck == _coverKey && _coverB64 != null) return;
+    final composed = await _composeCoverPng();
+    if (composed != null) {
+      _coverKey = ck;
+      _coverB64 = base64Encode(composed.$1);
+      _coverAspect = composed.$2;
+      return;
+    }
     final c = _coverClip();
     if (c == null) {
       _coverB64 = null;

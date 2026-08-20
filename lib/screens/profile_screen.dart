@@ -379,18 +379,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
           onTap: _openDrafts,
         ),
     ];
+    // 最多兩張：整片列出來會把頁面吃光，其餘按「全部」進草稿夾
+    final shown = tiles.take(2).toList();
     return Column(
       children: [
-        for (var i = 0; i < tiles.length; i += 2) ...[
+        for (var i = 0; i < shown.length; i += 2) ...[
           if (i > 0) const SizedBox(height: 18),
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(child: tiles[i]),
+              Expanded(child: shown[i]),
               const SizedBox(width: 12),
               // 奇數張時右邊補空，卡片才不會被撐成整排寬
               Expanded(
-                child: i + 1 < tiles.length ? tiles[i + 1] : const SizedBox(),
+                child: i + 1 < shown.length ? shown[i + 1] : const SizedBox(),
               ),
             ],
           ),
@@ -626,6 +628,29 @@ class _DraftsScreenState extends State<DraftsScreen> {
   Map<String, dynamic>? _photoDraft;
   bool _loading = true;
 
+  /// 選取模式：勾好幾份、右上角垃圾桶一次刪
+  bool _selecting = false;
+  final Set<String> _picked = {};
+
+  Future<void> _deletePicked() async {
+    if (_picked.isEmpty) return;
+    final ok = await showConfirm(
+      context,
+      title: '刪除 ${_picked.length} 份草稿？',
+      message: '未完成的專案會被移除，無法復原',
+      action: '刪除',
+    );
+    if (!ok || !mounted) return;
+    for (final id in _picked) {
+      await DraftStore.remove(id);
+    }
+    setState(() {
+      _picked.clear();
+      _selecting = false;
+    });
+    _reload();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -691,6 +716,9 @@ class _DraftsScreenState extends State<DraftsScreen> {
     required VoidCallback onTap,
     required VoidCallback onDelete,
 
+    /// 選取模式的勾選狀態；null＝不在選取模式（照常顯示刪除鈕）
+    bool? picked,
+
     /// 縮圖的寬高比。null＝沒有縮圖（放圖示佔位，維持方框）
     double? coverAspect,
   }) {
@@ -747,15 +775,26 @@ class _DraftsScreenState extends State<DraftsScreen> {
                   ],
                 ),
               ),
-              IconButton(
-                tooltip: '刪除草稿',
-                icon: const Icon(
-                  Icons.delete_outline,
-                  size: 19,
-                  color: kLTextDim,
+              // 選取模式：刪除鈕換成勾選圈；點卡片本身就是勾/取消
+              if (picked != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  child: Icon(
+                    picked ? Icons.check_circle : Icons.circle_outlined,
+                    size: 20,
+                    color: picked ? kLAccent : kLTextDim,
+                  ),
+                )
+              else
+                IconButton(
+                  tooltip: '刪除草稿',
+                  icon: const Icon(
+                    Icons.delete_outline,
+                    size: 19,
+                    color: kLTextDim,
+                  ),
+                  onPressed: onDelete,
                 ),
-                onPressed: onDelete,
-              ),
             ],
           ),
         ),
@@ -842,7 +881,28 @@ class _DraftsScreenState extends State<DraftsScreen> {
     final empty = ds.isEmpty && p == null;
     return SwipeBack(
       child: Scaffold(
-        appBar: AppBar(),
+        appBar: AppBar(
+          actions: [
+            if (_selecting) ...[
+              IconButton(
+                tooltip: '刪除選取的草稿',
+                icon: const Icon(Icons.delete_outline),
+                onPressed: _picked.isEmpty ? null : _deletePicked,
+              ),
+              TextButton(
+                onPressed: () => setState(() {
+                  _selecting = false;
+                  _picked.clear();
+                }),
+                child: const Text('取消'),
+              ),
+            ] else if (ds.isNotEmpty)
+              TextButton(
+                onPressed: () => setState(() => _selecting = true),
+                child: const Text('選取'),
+              ),
+          ],
+        ),
         body: _loading
             ? const Center(child: CircularProgressIndicator())
             : empty
@@ -880,8 +940,15 @@ class _DraftsScreenState extends State<DraftsScreen> {
                           : (m.thumbAspect ?? 9 / 16),
                       title: _dateLabel(m.createdAt),
                       subtitle: _metaLabel(m),
-                      onTap: () => _resume(m),
+                      onTap: _selecting
+                          ? () => setState(() {
+                              _picked.contains(m.id)
+                                  ? _picked.remove(m.id)
+                                  : _picked.add(m.id);
+                            })
+                          : () => _resume(m),
                       onDelete: () => _delete(m),
+                      picked: _selecting ? _picked.contains(m.id) : null,
                     ),
                     const SizedBox(height: 12),
                   ],
