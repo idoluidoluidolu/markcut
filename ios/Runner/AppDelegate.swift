@@ -239,6 +239,11 @@ final class CIExportInstruction: NSObject, AVVideoCompositionInstructionProtocol
   let containsTweening = true
   let passthroughTrackID = kCMPersistentTrackID_Invalid
   var requiredSourceTrackIDs: [NSValue]? {
+    // 治本：全部影像軌每一段都列進去。AVFoundation 只替「這段指令
+    // 要求的軌」預捲解碼器——只列當下用到的話，上層片段進場那一刻
+    // 它的解碼器才冷啟動，來源格晚一兩格到位，就是接縫閃黑／停頓
+    // 的根。列了但這一段沒有媒體的軌是空範圍，沒有解碼成本
+    if !prerollTrackIDs.isEmpty { return prerollTrackIDs }
     let ids = layers.compactMap { l -> NSNumber? in
       l.trackID == kCMPersistentTrackID_Invalid
         ? nil : NSNumber(value: l.trackID)
@@ -250,14 +255,19 @@ final class CIExportInstruction: NSObject, AVVideoCompositionInstructionProtocol
   let mosaics: [CIMosaicSpec]
   let overlays: [CIOverlaySpec]
 
+  /// 整條時間軸用到的所有影像軌（預捲用，見 requiredSourceTrackIDs）
+  let prerollTrackIDs: [NSNumber]
+
   init(
     timeRange: CMTimeRange, layers: [CILayerSpec],
-    mosaics: [CIMosaicSpec], overlays: [CIOverlaySpec]
+    mosaics: [CIMosaicSpec], overlays: [CIOverlaySpec],
+    prerollTrackIDs: [NSNumber] = []
   ) {
     self.timeRange = timeRange
     self.layers = layers
     self.mosaics = mosaics
     self.overlays = overlays
+    self.prerollTrackIDs = prerollTrackIDs
     super.init()
   }
 }
@@ -1343,6 +1353,15 @@ final class AtomicFlag {
       // z 序排定（同 z 保持進籃順序）
       layerBasket.sort { $0.z != $1.z ? $0.z < $1.z : $0.order < $1.order }
       let ciMosaics = mosaicsIn.compactMap { CIMosaicSpec($0, canvas: canvas) }
+      // 全部影像軌都預捲（跟合成播放器同一個治本，見
+      // CIExportInstruction.requiredSourceTrackIDs）
+      let prerollIDs = Array(
+        Set(
+          layerBasket.compactMap {
+            $0.layer.trackID == kCMPersistentTrackID_Invalid
+              ? nil : $0.layer.trackID
+          })
+      ).sorted().map { NSNumber(value: $0) }
 
       // 邊界切段：每一層／每塊馬賽克的頭尾都是切點，
       // 切出來的每一段「有哪些層」固定，一段一條指令
@@ -1376,7 +1395,7 @@ final class AtomicFlag {
           CIExportInstruction(
             timeRange: CMTimeRange(start: a0, end: b0),
             layers: act.map { $0.layer }, mosaics: ciMosaics,
-            overlays: ciOverlays))
+            overlays: ciOverlays, prerollTrackIDs: prerollIDs))
       }
       vc.customVideoCompositorClass =
         wantHDR ? CIExportCompositorHDR.self : CIExportCompositor.self
@@ -2783,6 +2802,10 @@ final class CompPlayer: NSObject, FlutterTexture {
         // 顏色的數學跟成品一字不差，預覽即所得。
         // HDR 來源它會做 toneMapHDRtoSDR，顏色跟相簿同一條曲線
         let ciMosaics = mosaics.compactMap { CIMosaicSpec($0, canvas: size) }
+        // 全部影像軌：每段指令都列，解碼器全程保持熱的（見
+        // CIExportInstruction.requiredSourceTrackIDs 的說明）
+        let prerollIDs = Array(Set(segments.map { $0.track.trackID }))
+          .sorted().map { NSNumber(value: $0) }
         var built: [CIExportInstruction] = []
         for i in 0..<(marks.count - 1) {
           let a = marks[i]
@@ -2819,7 +2842,8 @@ final class CompPlayer: NSObject, FlutterTexture {
           built.append(
             CIExportInstruction(
               timeRange: CMTimeRange(start: a, end: b),
-              layers: layers, mosaics: ciMosaics, overlays: []))
+              layers: layers, mosaics: ciMosaics, overlays: [],
+              prerollTrackIDs: prerollIDs))
         }
         vc.customVideoCompositorClass = CIExportCompositor.self
         vc.instructions = built
