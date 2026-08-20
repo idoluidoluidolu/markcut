@@ -169,7 +169,32 @@ Future<void> runVideoProbe(String path, void Function(String) log) async {
     } else {
       final b = await nativeFrameAt(work, 1.0, maxH: 240);
       final lum = b == null ? null : await meanLuminance(b);
-      log('工作檔 OK：亮度 ${lum?.toStringAsFixed(1) ?? '解不開'}');
+      log('工作檔 OK：系統抽幀亮度 ${lum?.toStringAsFixed(1) ?? '解不開'}');
+      // 關鍵組合：mpv「播放中」畫工作檔——編輯器按下播放後跑的
+      // 就是這一條。第一輪偵測漏了它，黑畫面就是黑在這裡
+      final wp = mk.Player();
+      mkv.VideoController(wp);
+      try {
+        await wp.open(mk.Media(work), play: false);
+        await wp.stream.duration
+            .firstWhere((d) => d > Duration.zero)
+            .timeout(const Duration(seconds: 8));
+        await wp.setVolume(0);
+        await wp.play();
+        await Future<void>.delayed(const Duration(milliseconds: 1200));
+        final shot = await wp.screenshot();
+        await wp.pause();
+        final sl = shot == null ? null : await meanLuminance(shot);
+        log(
+          'mpv 播工作檔：截圖亮度 '
+          '${sl?.toStringAsFixed(1) ?? '拿不到'}'
+          '${sl != null && sl < 2 ? '（全黑！就是這裡）' : ''}',
+        );
+      } catch (e) {
+        log('mpv 播工作檔失敗：$e');
+      } finally {
+        wp.dispose();
+      }
     }
   } catch (e) {
     log('失敗：$e');
