@@ -213,6 +213,11 @@ class ExportSpec {
   final int gifFps;
   final int gifMaxSide;
 
+  /// 保留 HDR：輸出 HEVC 10-bit HLG（只在 iOS 原生匯出、來源是 HDR
+  /// 時有效果）。SDR 轉出來在 HDR 螢幕上永遠跟原片有落差，
+  /// 要「跟看到的一樣」只有讓輸出檔本身就是 HDR
+  final bool hdr;
+
   ExportSpec({
     required this.sources,
     required this.clips,
@@ -232,6 +237,7 @@ class ExportSpec {
     this.gif = false,
     this.gifFps = 12,
     this.gifMaxSide = 480,
+    this.hdr = false,
   });
 
   /// 輸出影片實際長度（變速後）

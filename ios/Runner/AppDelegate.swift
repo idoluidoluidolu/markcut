@@ -154,12 +154,16 @@ final class CILayerSpec {
   /// 固定透明度（0~1），跟淡入淡出相乘
   let opacity: Double
 
+  /// 疊放層級（時間軸軌道編號）。馬賽克只糊 z 比它低的層
+  let z: Int
+
   init(
     trackID: CMPersistentTrackID, still: CIImage?,
     transform: CGAffineTransform, srcHeight: CGFloat,
     start: Double, end: Double, fadeIn: Double, fadeOut: Double,
     colorMatrix: [Double]?,
-    crop: CGRect? = nil, rotation: Double = 0, opacity: Double = 1
+    crop: CGRect? = nil, rotation: Double = 0, opacity: Double = 1,
+    z: Int = 0
   ) {
     self.trackID = trackID
     self.still = still
@@ -173,6 +177,7 @@ final class CILayerSpec {
     self.crop = crop
     self.rotation = rotation
     self.opacity = opacity
+    self.z = z
   }
 
   /// 這一格的不透明度（線性淡入淡出）
@@ -196,6 +201,9 @@ final class CIMosaicSpec {
   let start: Double
   let end: Double
 
+  /// 疊放層級（時間軸軌道編號）：只糊 z 比它低的層
+  let z: Int
+
   init?(_ m: [String: Any], canvas: CGSize) {
     let px = m["px"] as? Double ?? 0.5
     let py = m["py"] as? Double ?? 0.5
@@ -215,6 +223,7 @@ final class CIMosaicSpec {
       green: CGFloat((argb >> 8) & 0xFF) / 255.0,
       blue: CGFloat(argb & 0xFF) / 255.0)
     feather = min(1, max(0, m["feather"] as? Double ?? 0))
+    z = m["track"] as? Int ?? 0
     start = m["start"] as? Double ?? 0
     end = m["end"] as? Double ?? 0
     if end <= start { return nil }
@@ -253,11 +262,26 @@ final class CIExportInstruction: NSObject, AVVideoCompositionInstructionProtocol
   }
 }
 
-final class CIExportCompositor: NSObject, AVVideoCompositing {
-  private let ctx = CIContext(options: [.cacheIntermediates: false])
+class CIExportCompositor: NSObject, AVVideoCompositing {
+  /// HDR 輸出模式（見 CIExportCompositorHDR）：來源不做色調映射、
+  /// 輸出 10-bit HLG。SDR（預設）＝原本的 8-bit 709
+  var hdrOut: Bool { false }
+
+  private lazy var ctx = CIContext(options: [
+    .cacheIntermediates: false,
+    // HDR 要在半浮點工作格式上算，8 位元會把高光截掉
+    .workingFormat: hdrOut ? CIFormat.RGBAh : CIFormat.RGBA8,
+  ])
   private let queue = DispatchQueue(label: "markcut.ciexport")
-  private let outCS =
-    CGColorSpace(name: CGColorSpace.itur_709) ?? CGColorSpaceCreateDeviceRGB()
+  private lazy var outCS: CGColorSpace = {
+    if hdrOut, #available(iOS 14.0, *),
+      let hlg = CGColorSpace(name: CGColorSpace.itur_2100_HLG)
+    {
+      return hlg
+    }
+    return CGColorSpace(name: CGColorSpace.itur_709)
+      ?? CGColorSpaceCreateDeviceRGB()
+  }()
 
   // 收原生格式（含 10-bit HDR）。只收 BGRA 的話，HDR 來源會在進到
   // 我們手上之前先被轉成 8-bit BGRA——那一步沒有色調映射，顏色就是
@@ -271,9 +295,13 @@ final class CIExportCompositor: NSObject, AVVideoCompositing {
       Int(kCVPixelFormatType_32BGRA),
     ]
   ]
-  var requiredPixelBufferAttributesForRenderContext: [String: Any] = [
-    kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)
-  ]
+  var requiredPixelBufferAttributesForRenderContext: [String: Any] {
+    [
+      kCVPixelBufferPixelFormatTypeKey as String: hdrOut
+        ? Int(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
+        : Int(kCVPixelFormatType_32BGRA)
+    ]
+  }
 
   // 沒有這兩個旗標的話，AVFoundation 會在把畫格交給我們「之前」
   // 自己先把 HDR 轉成 SDR——那一步是純色度轉換、沒有色調映射，
@@ -393,7 +421,17 @@ final class CIExportCompositor: NSObject, AVVideoCompositing {
         let flipCanvas = CGAffineTransform(
           a: 1, b: 0, c: 0, d: -1, tx: 0, ty: size.height)
 
+        // 馬賽克照 z 交錯：只糊排在它下面的層。疊完 z 比它低的層就
+        // 先打碼，再把更高的層（例如子母畫面）疊上去——跟預覽一致
+        let activeMz = ins.mosaics
+          .filter { t >= $0.start && t < $0.end }
+          .sorted { $0.z < $1.z }
+        var mzIdx = 0
         for layer in ins.layers {
+          while mzIdx < activeMz.count, activeMz[mzIdx].z <= layer.z {
+            out = self.applyMosaic(activeMz[mzIdx], to: out, canvas: size)
+            mzIdx += 1
+          }
           var img: CIImage
           if layer.trackID != kCMPersistentTrackID_Invalid {
             guard let buf = req.sourceFrame(byTrackID: layer.trackID) else {
@@ -403,8 +441,11 @@ final class CIExportCompositor: NSObject, AVVideoCompositing {
             // 跟內建合成器同一套曲線。SDR 來源開著沒有影響
             let base: CIImage
             if #available(iOS 14.1, *) {
+              // SDR 輸出＝系統色調映射（跟相簿同一條曲線）；
+              // HDR 輸出＝不映射，HDR 像素原封進 HLG 管線
               base = CIImage(
-                cvPixelBuffer: buf, options: [.toneMapHDRtoSDR: true])
+                cvPixelBuffer: buf,
+                options: [.toneMapHDRtoSDR: !self.hdrOut])
             } else {
               base = CIImage(cvPixelBuffer: buf)
             }
@@ -460,8 +501,9 @@ final class CIExportCompositor: NSObject, AVVideoCompositing {
           }
           out = img.cropped(to: canvasRect).composited(over: out)
         }
-        for mz in ins.mosaics where t >= mz.start && t < mz.end {
-          out = self.applyMosaic(mz, to: out, canvas: size)
+        while mzIdx < activeMz.count {
+          out = self.applyMosaic(activeMz[mzIdx], to: out, canvas: size)
+          mzIdx += 1
         }
         for ov in ins.overlays {
           if let o = ov.frame(at: t, canvas: size) {
@@ -473,6 +515,12 @@ final class CIExportCompositor: NSObject, AVVideoCompositing {
       }
     }
   }
+}
+
+/// HDR 匯出用的合成器：同一套疊圖邏輯，只是不做色調映射、
+/// 輸出 10-bit HLG（見 CIExportCompositor.hdrOut）
+final class CIExportCompositorHDR: CIExportCompositor {
+  override var hdrOut: Bool { true }
 }
 
 /// 跨執行緒的一次性旗標。轉檔那條路上有兩個地方需要它：
@@ -698,6 +746,38 @@ final class AtomicFlag {
       switch call.method {
       case "available":
         result(true)
+      case "hasHDR":
+        // 這批檔案裡有沒有 HDR（HLG/PQ）影像軌。匯出頁用它決定
+        // 要不要顯示「保留 HDR」的開關
+        guard let paths = call.arguments as? [String] else {
+          result(false)
+          return
+        }
+        var found = false
+        for p in paths where !found {
+          let asset = AVURLAsset(url: URL(fileURLWithPath: p))
+          for tr in asset.tracks(withMediaType: .video) {
+            for d in tr.formatDescriptions {
+              let desc = d as! CMFormatDescription
+              guard
+                let tf = CMFormatDescriptionGetExtension(
+                  desc,
+                  extensionKey: kCMFormatDescriptionExtension_TransferFunction)
+                  as? String
+              else { continue }
+              if tf
+                == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG
+                  as String)
+                || tf
+                  == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ
+                    as String)
+              {
+                found = true
+              }
+            }
+          }
+        }
+        result(found)
       case "cancel":
         self.exportSession?.cancelExport()
         result(nil)
@@ -1032,12 +1112,25 @@ final class AtomicFlag {
     let fpsOut = a["fps"] as? Int ?? 0
     vc.frameDuration = CMTime(
       value: 1, timescale: fpsOut > 0 ? CMTimeScale(fpsOut) : 30)
-    // 明確標成 709。素材是 iPhone 預設的 4K HLG（HDR），不標的話 HDR 的
-    // 色彩標記會原封帶進輸出檔，播放器再自己套一次曲線——輕則顏色歪掉，
-    // 重則整片黑。轉工作檔那段早就踩過同一個坑，這裡漏了
-    vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
-    vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
-    vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
+    // HDR 輸出：使用者要「跟原片一樣」而且來源真的是 HDR 才開。
+    // SDR 轉出來在 HDR 螢幕上永遠跟原片有落差（亮度被壓縮了），
+    // 唯一的真解是輸出檔本身就是 HDR（HEVC 10-bit HLG）
+    var wantHDR = (a["hdr"] as? Bool ?? false) && hasHDR
+    if wantHDR, #unavailable(iOS 15.0) { wantHDR = false }
+    if wantHDR {
+      // 疊加物要在 HLG 管線裡合成，一律走 CI
+      useCI = true
+      vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_2020
+      vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_2100_HLG
+      vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_2020
+    } else {
+      // 明確標成 709。素材是 iPhone 預設的 4K HLG（HDR），不標的話 HDR
+      // 的色彩標記會原封帶進輸出檔，播放器再自己套一次曲線——輕則顏色
+      // 歪掉，重則整片黑。轉工作檔那段早就踩過同一個坑，這裡漏了
+      vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
+      vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
+      vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
+    }
     var instructions: [AVMutableVideoCompositionInstruction] = []
     // HDR 在 GPU 路裡用 toneMapHDRtoSDR 處理（見 startRequest）；
     // 只有拿不到那個選項的舊系統才退回內建合成器
@@ -1114,7 +1207,8 @@ final class AtomicFlag {
             srcHeight: seg.size.height, start: seg.range.start.seconds,
             end: seg.range.end.seconds, fadeIn: seg.fadeIn,
             fadeOut: seg.fadeOut, colorMatrix: seg.color,
-            crop: cropRect, rotation: seg.rotation, opacity: seg.opacity)
+            crop: cropRect, rotation: seg.rotation, opacity: seg.opacity,
+            z: seg.z)
         ))
         continue
       }
@@ -1224,7 +1318,8 @@ final class AtomicFlag {
             colorMatrix: st["color"] as? [Double],
             crop: stCrop,
             rotation: st["rotation"] as? Double ?? 0,
-            opacity: st["opacity"] as? Double ?? 1)
+            opacity: st["opacity"] as? Double ?? 1,
+            z: st["track"] as? Int ?? 0)
         ))
       }
       // z 序排定（同 z 保持進籃順序）
@@ -1265,7 +1360,8 @@ final class AtomicFlag {
             layers: act.map { $0.layer }, mosaics: ciMosaics,
             overlays: ciOverlays))
       }
-      vc.customVideoCompositorClass = CIExportCompositor.self
+      vc.customVideoCompositorClass =
+        wantHDR ? CIExportCompositorHDR.self : CIExportCompositor.self
       vc.instructions = built
     } else if useCI {
       if comp.duration > ciCursor {
@@ -1274,7 +1370,8 @@ final class AtomicFlag {
             timeRange: CMTimeRange(start: ciCursor, end: comp.duration),
             layers: [], mosaics: [], overlays: ciOverlays))
       }
-      vc.customVideoCompositorClass = CIExportCompositor.self
+      vc.customVideoCompositorClass =
+        wantHDR ? CIExportCompositorHDR.self : CIExportCompositor.self
       vc.instructions = ciInstructions
     } else {
       vc.instructions = instructions
@@ -1306,8 +1403,19 @@ final class AtomicFlag {
     // 挑一個裝得下畫布的，不然系統會把畫面縮下去
     let long = max(canvas.width, canvas.height)
     let preset: String
-    if long > 1920, AVAssetExportSession.allExportPresets().contains(
-      AVAssetExportPreset3840x2160)
+    if wantHDR {
+      // HDR 一定要 HEVC（H.264 沒有 10-bit HLG 這回事）
+      if long > 1920,
+        AVAssetExportSession.allExportPresets().contains(
+          AVAssetExportPresetHEVC3840x2160)
+      {
+        preset = AVAssetExportPresetHEVC3840x2160
+      } else {
+        preset = AVAssetExportPresetHEVC1920x1080
+      }
+    } else if long > 1920,
+      AVAssetExportSession.allExportPresets().contains(
+        AVAssetExportPreset3840x2160)
     {
       preset = AVAssetExportPreset3840x2160
     } else if long > 1280 {
@@ -2688,7 +2796,7 @@ final class CompPlayer: NSObject, FlutterTexture {
                 fadeIn: seg.fadeIn, fadeOut: seg.fadeOut,
                 colorMatrix: nil,
                 crop: cropRect, rotation: seg.rotation,
-                opacity: seg.opacity))
+                opacity: seg.opacity, z: seg.layer))
           }
           built.append(
             CIExportInstruction(

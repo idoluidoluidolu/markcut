@@ -246,13 +246,16 @@ Future<void> runVideoProbe(String path, void Function(String) log) async {
       );
       final tmp = await getTemporaryDirectory();
       final dest = '${tmp.path}${Platform.pathSeparator}probe_color.mp4';
-      final made = await NativeExport.run(spec, dest);
-      if (made == null) {
-        log('原生匯出失敗（App 會退 FFmpeg 路線）——這本身是線索');
+      // run 的語意：成功回 null、失敗回原因字串
+      final err = await NativeExport.run(spec, dest);
+      if (err != null) {
+        log('原生匯出失敗：$err（App 會退 FFmpeg 路線）');
+      } else if (!File(dest).existsSync()) {
+        log('原生匯出說成功但檔案不在');
       } else {
         final t = end / 2 < 0.3 ? end / 2 : (end / 2 > 2.0 ? 2.0 : end / 2);
         final a = await nativeFrameAt(path, t, maxH: 240);
-        final b = await nativeFrameAt(made, t, maxH: 240);
+        final b = await nativeFrameAt(dest, t, maxH: 240);
         if (a == null || b == null) {
           log('抽幀失敗（原檔 ${a != null}、匯出檔 ${b != null}）');
         } else {
@@ -275,7 +278,7 @@ Future<void> runVideoProbe(String path, void Function(String) log) async {
           }
         }
         try {
-          File(made).deleteSync();
+          File(dest).deleteSync();
         } catch (_) {}
       }
     }

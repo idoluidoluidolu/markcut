@@ -37,6 +37,17 @@ class NativeExport {
 
   static bool? _available;
 
+  /// 這批檔案裡有沒有 HDR 影像軌（HLG/PQ）。
+  /// 匯出頁用它決定要不要顯示「保留 HDR」開關；查不動（Android）回 false
+  static Future<bool> anyHDR(List<String> paths) async {
+    if (paths.isEmpty) return false;
+    try {
+      return await _ch.invokeMethod<bool>('hasHDR', paths) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   static Future<bool> get available async {
     if (_available != null) return _available!;
     try {
@@ -238,6 +249,8 @@ class NativeExport {
         'layered': needsLayered(spec),
         // 順暢度（0＝跟預設一樣 30）
         'fps': spec.fps,
+        // 保留 HDR（HEVC 10-bit HLG）
+        'hdr': spec.hdr,
         'stills': stills,
         'mosaics': mosaics,
         'timelineDuration': spec.timelineDuration,

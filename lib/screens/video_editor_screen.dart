@@ -21,6 +21,7 @@ import 'crop_screen.dart';
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
 import '../services/audio_picker.dart';
+import '../services/native_export.dart';
 import '../services/native_frames.dart';
 import '../services/playback_trace.dart';
 import '../services/comp_player.dart';
@@ -236,6 +237,27 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 匯出的順暢度（每秒幾張）。0＝跟著素材（見 outputFps）
   int _fps = 0;
+
+  /// 保留 HDR 匯出（HEVC 10-bit HLG）。只有來源真的是 HDR 時
+  /// 匯出頁才會出現這個選項；預設開——使用者要的是跟看到的一樣
+  bool _exportHdr = true;
+
+  /// 來源裡有沒有 HDR（查過的結果；null＝還沒查）
+  bool? _hdrAvail;
+  String _hdrCheckKey = '';
+
+  void _checkHdrSources() {
+    final paths = [
+      for (final s in _tl.sources)
+        if (s.isVideo) s.path,
+    ]..sort();
+    final key = paths.join('|');
+    if (key == _hdrCheckKey) return;
+    _hdrCheckKey = key;
+    NativeExport.anyHDR(paths).then((v) {
+      if (mounted && v != _hdrAvail) setState(() => _hdrAvail = v);
+    });
+  }
 
   /// 實際要用的畫質：使用者選過就聽他的，沒選過就依素材本身的
   /// 位元率挑。放成 getter 而不是存起來，改解析度時才會跟著重算——
@@ -563,6 +585,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (fixedIds > 0) Diag.note('快照裡有 $fixedIds 個撞號的片段 id，已補新號');
       _fsMuted = j['muted'] == true;
       _fps = ((j['fps'] ?? 0) as num).toInt();
+    _exportHdr = (j['hdrOut'] ?? true) == true;
       _wmStart = (j['wmStart'] ?? 0).toDouble();
       _wmEnd = j['wmEnd'] == null ? null : (j['wmEnd'] as num).toDouble();
       if (j['wm'] != null) {
@@ -717,6 +740,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       'resV': 2, // 解析度選項的語意版本（見 _loadDraft 的換算）
       'quality': _quality.index,
       'fps': _fps,
+      'hdrOut': _exportHdr,
       'qualityAuto': _qualityAuto,
       'wm': _settings.toJson(),
       'wmStart': _wmStart,
@@ -873,6 +897,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _wmEnd = j['wmEnd'] == null ? null : (j['wmEnd'] as num).toDouble();
     _fsMuted = j['muted'] == true;
     _fps = ((j['fps'] ?? 0) as num).toInt();
+    _exportHdr = (j['hdrOut'] ?? true) == true;
     _extraBlankTracks = ((j['extraTracks'] ?? 0) as num).toInt();
 
     // 重建播放器與縮圖；素材檔案不見了（例如系統清掉 app 快取）就剔除該片段，
@@ -6173,6 +6198,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           overlayPngs: overlayPngs,
           crf: _qualityEff.crf,
           fps: _fps,
+          hdr: _exportHdr && _hdrAvail == true,
         ),
         onProgress: (v) => progress.value = v,
       );
@@ -10015,6 +10041,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 資訊列（比例／解析度／畫質）＋預估一行＋匯出鈕
   Widget _buildExportTab() {
+    _checkHdrSources();
     final (outW, outH) = _exportDims();
     final dur = _tl.duration / _speed;
     final mb = _estMb(_qualityEff);
@@ -10102,8 +10129,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     ? (_srcFps > 0 ? '自動·${_srcFps.round()}' : '自動')
                     : '$_fps fps',
                 _openFpsSheet,
-                divider: false,
+                divider: _hdrAvail == true,
               ),
+              // 來源是 HDR 才出現：SDR 匯出在 HDR 螢幕上永遠跟原片
+              // 有落差（亮度被壓縮），要一樣只有輸出檔本身就是 HDR
+              if (_hdrAvail == true)
+                row(
+                  'HDR',
+                  _exportHdr ? '保留（跟原片一樣）' : '轉成 SDR',
+                  () => setState(() => _exportHdr = !_exportHdr),
+                  divider: false,
+                ),
               const SizedBox(height: 22),
               // 預估貼在匯出鈕正上方。它唯一的用途就是讓人在按下去之前
               // 決定要不要回頭改設定，放在最靠近手指的地方最有用。
