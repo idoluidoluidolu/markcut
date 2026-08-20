@@ -2487,6 +2487,10 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 這份合成本身（診斷用：軌數、抽格）
   private var composition: AVMutableComposition?
 
+  /// 組建內視鏡：Swift 實際收到什麼、組出什麼（診斷用）。
+  /// 「程式碼看起來對、裝置行為不對」的僵局只有它拆得開
+  private(set) var buildInfo: [String: Any] = [:]
+
   /// 這份合成的總長度（秒）與畫面尺寸
   private(set) var duration: Double = 0
   private(set) var size: CGSize = .zero
@@ -2546,6 +2550,17 @@ final class CompPlayer: NSObject, FlutterTexture {
     let ordered = clips.sorted {
       (($0["offset"] as? Double) ?? 0) < (($1["offset"] as? Double) ?? 0)
     }
+    buildInfo["收到"] = ordered.map { c -> String in
+      let tk = c["track"] as? Int ?? -9
+      let of = c["offset"] as? Double ?? -1
+      return "軌\(tk)@\(String(format: "%.2f", of))"
+    }.joined(separator: " ")
+    buildInfo["馬賽克"] = mosaics.map { m -> String in
+      let tk = m["track"] as? Int ?? -9
+      let a = m["start"] as? Double ?? -1
+      let b = m["end"] as? Double ?? -1
+      return "z\(tk) \(String(format: "%.2f", a))~\(String(format: "%.2f", b))"
+    }.joined(separator: " ")
 
     for clip in ordered {
       guard let path = clip["path"] as? String else { continue }
@@ -2918,6 +2933,12 @@ final class CompPlayer: NSObject, FlutterTexture {
         }
         vc.customVideoCompositorClass = CIExportCompositor.self
         vc.instructions = built
+        buildInfo["CI"] = true
+        buildInfo["指令"] = built.map { ins -> String in
+          "\(String(format: "%.2f", ins.timeRange.start.seconds))~"
+            + "\(String(format: "%.2f", ins.timeRange.end.seconds))"
+            + " 層z=\(ins.layers.map { $0.z })"
+        }.joined(separator: "；")
       } else {
       var instructions: [AVMutableVideoCompositionInstruction] = []
       for i in 0..<(marks.count - 1) {
@@ -2961,6 +2982,12 @@ final class CompPlayer: NSObject, FlutterTexture {
         instructions.append(ins)
       }
       vc.instructions = instructions
+      buildInfo["CI"] = false
+      buildInfo["指令"] = instructions.map { ins -> String in
+        "\(String(format: "%.2f", ins.timeRange.start.seconds))~"
+          + "\(String(format: "%.2f", ins.timeRange.end.seconds))"
+          + " 層數\(ins.layerInstructions.count)"
+      }.joined(separator: "；")
       }
       // 交出去之前先讓 AVFoundation 自己驗一遍。壞掉的合成不會丟例外，
       // 只會安靜地變成一片黑——那正是「拉到新軌道預覽就消失」
@@ -2987,6 +3014,8 @@ final class CompPlayer: NSObject, FlutterTexture {
       item.add(out)
       output = out
     }
+    buildInfo["合成軌"] = vTracks.count
+    buildInfo["usesVC"] = usesVC
     composition = comp
     player.replaceCurrentItem(with: item)
 
@@ -3275,6 +3304,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     }
     m["instructions"] =
       player.currentItem?.videoComposition?.instructions.count ?? 0
+    m["buildInfo"] = buildInfo
     CIExportCompositor.slowLock.lock()
     m["ciFrames"] = CIExportCompositor.frameCount
     m["ciWorstMs"] = CIExportCompositor.worstMs

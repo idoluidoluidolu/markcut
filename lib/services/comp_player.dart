@@ -285,6 +285,17 @@ class CompPlayer {
           b.write('／沒有超過 20ms 的格');
         }
       }
+      // 組建內視鏡：Swift 實際收到的軌值、組出的軌數與每段指令的層 z。
+      // 「程式碼看起來對、裝置行為不對」時只有這個拆得開
+      final bi = m['buildInfo'];
+      if (bi is Map && bi.isNotEmpty) {
+        b.write(
+          '\n  組建：收到 ${bi['收到'] ?? '?'}'
+          '／馬賽克 ${bi['馬賽克'] ?? '無'}'
+          '／合成軌 ${bi['合成軌']}／CI ${bi['CI']}'
+          '\n  指令：${bi['指令'] ?? '?'}',
+        );
+      }
       b.write('／狀態 ${m['timeControl'] ?? '?'}');
       if (m['waiting'] != null) b.write('（在等：${m['waiting']}）');
       if (m['bufferEmpty'] == true) b.write('／緩衝空的');
