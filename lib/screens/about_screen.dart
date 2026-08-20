@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../theme.dart';
 import '../widgets/swipe_back.dart';
+import 'probe_screen.dart';
 
 /// 原始碼位置（MPL 要求提供取得方式）
 const kSourceUrl = 'https://github.com/idoluidoluidolu/markcut';
@@ -87,6 +88,16 @@ class AboutScreen extends StatelessWidget {
               }),
               _dot(),
               _link(context, '隱私', () => _openPrivacy(context)),
+              _dot(),
+              // 遠端使用者回報「影片沒畫面」時的一次定位工具
+              _link(
+                context,
+                '播放偵測',
+                () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ProbeScreen()),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 8),

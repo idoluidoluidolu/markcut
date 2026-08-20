@@ -222,8 +222,80 @@ class MainActivity : FlutterActivity() {
     // 回推。totalPss 是這個行程實際佔的實體記憶體（含 codec 那些原生
     // 配置，Runtime 的 heap 數字看不到那一塊）；availMem 是系統還剩多少
     private fun registerDiagChannel(flutterEngine: FlutterEngine) {
+        val main = Handler(Looper.getMainLooper())
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "markcut/diag")
             .setMethodCallHandler { call, result ->
+                if (call.method == "videoProbe") {
+                    // 播放偵測：這支檔在「系統眼中」長什麼樣、會挑哪顆解碼器。
+                    // MediaFormat.toString() 直接倒出來——csd、色彩、profile
+                    // 全在裡面，挑著印反而漏掉關鍵欄位
+                    val path = call.argument<String>("path")
+                    if (path == null) {
+                        result.success(null)
+                        return@setMethodCallHandler
+                    }
+                    frameExec.execute {
+                        val out = LinkedHashMap<String, String>()
+                        out["機型"] = "${Build.MANUFACTURER} ${Build.MODEL} (API ${Build.VERSION.SDK_INT})"
+                        try {
+                            val r = MediaMetadataRetriever()
+                            r.setDataSource(path)
+                            fun md(k: Int, name: String) {
+                                try {
+                                    r.extractMetadata(k)?.let { out[name] = it }
+                                } catch (_: Exception) {}
+                            }
+                            md(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH, "寬")
+                            md(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT, "高")
+                            md(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION, "旋轉")
+                            md(MediaMetadataRetriever.METADATA_KEY_DURATION, "時長ms")
+                            md(MediaMetadataRetriever.METADATA_KEY_MIMETYPE, "容器")
+                            if (Build.VERSION.SDK_INT >= 28) {
+                                md(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT, "影格數")
+                            }
+                            if (Build.VERSION.SDK_INT >= 30) {
+                                md(MediaMetadataRetriever.METADATA_KEY_COLOR_STANDARD, "色彩標準")
+                                md(MediaMetadataRetriever.METADATA_KEY_COLOR_TRANSFER, "色彩轉換")
+                                md(MediaMetadataRetriever.METADATA_KEY_COLOR_RANGE, "色彩範圍")
+                            }
+                            r.release()
+                        } catch (e: Exception) {
+                            out["retriever"] = "失敗 $e"
+                        }
+                        try {
+                            val ex = android.media.MediaExtractor()
+                            ex.setDataSource(path)
+                            for (i in 0 until ex.trackCount) {
+                                val f = ex.getTrackFormat(i)
+                                val mime =
+                                    f.getString(android.media.MediaFormat.KEY_MIME) ?: ""
+                                out["軌道$i"] = f.toString()
+                                if (mime.startsWith("video/")) {
+                                    try {
+                                        // findDecoderForFormat 不接受帶 frame-rate
+                                        // 的格式（官方文件明講的雷），先清掉
+                                        f.setString(
+                                            android.media.MediaFormat.KEY_FRAME_RATE,
+                                            null,
+                                        )
+                                        val dec =
+                                            android.media.MediaCodecList(
+                                                android.media.MediaCodecList.ALL_CODECS
+                                            ).findDecoderForFormat(f)
+                                        out["系統挑的解碼器"] = dec ?: "找不到！"
+                                    } catch (e: Exception) {
+                                        out["系統挑的解碼器"] = "查失敗 $e"
+                                    }
+                                }
+                            }
+                            ex.release()
+                        } catch (e: Exception) {
+                            out["extractor"] = "失敗 $e"
+                        }
+                        main.post { result.success(out) }
+                    }
+                    return@setMethodCallHandler
+                }
                 if (call.method == "deviceState") {
                     // 過熱降頻時什麼都會頓，查程式碼永遠查不到
                     val pm = getSystemService(android.content.Context.POWER_SERVICE)
