@@ -1722,13 +1722,12 @@ class WatermarkPanelState extends State<WatermarkPanel> {
           ),
         ),
         const SizedBox(height: 8),
-        // 上限 240：原本固定 180 太小、放到 320 又在影片編輯那種
-        // 比較矮的面板裡佔掉大半——240 在兩邊都剛好
+        // 上限 210：180 太小、240 在影片編輯的矮面板裡還是太搶
         LayoutBuilder(
           builder: (context, cons) {
             final w = cons.maxWidth.isFinite
-                ? math.min(cons.maxWidth, 240.0)
-                : 240.0;
+                ? math.min(cons.maxWidth, 210.0)
+                : 210.0;
             return Center(
               child: Container(
                 width: w,
