@@ -714,7 +714,9 @@ Future<int?> pickColor(
   // 只存顏色的話拖「深淺」到底再拉回來，色相就歸零變紅色
   final hsv0 = HSVColor.fromColor(initial);
   var hue = hsv0.hue;
-  var tone = hsv0.value * (1 - hsv0.saturation / 2);
+  // 深淺開門停中間（＝純色）：往左變深、往右變淺，兩邊都有路可走。
+  // 照目前顏色反推的話，白色會停在最右邊，第一下只能往回拖
+  var tone = 0.5;
   final hexCtrl = TextEditingController(text: _hex6(initial));
 
   // 深淺一條滑到底：左半邊黑→純色（拉明度），右半邊純色→白（拉飽和）
@@ -747,29 +749,30 @@ Future<int?> pickColor(
           });
         }
 
-        Widget swatch(int v) => Padding(
-          padding: const EdgeInsets.only(right: 8),
-          child: InkWell(
-            customBorder: const CircleBorder(),
-            onTap: () => fromOutside(Color(v)),
-            child: Container(
-              width: 24,
-              height: 24,
-              decoration: BoxDecoration(
-                color: Color(v),
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: color.toARGB32() == v ? kSelect : kClipBorder,
-                  width: color.toARGB32() == v ? 2 : 1,
-                ),
+        Widget swatch(int v) => InkWell(
+          customBorder: const CircleBorder(),
+          onTap: () => fromOutside(Color(v)),
+          child: Container(
+            width: 24,
+            height: 24,
+            decoration: BoxDecoration(
+              color: Color(v),
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: color.toARGB32() == v ? kSelect : kClipBorder,
+                width: color.toARGB32() == v ? 2 : 1,
               ),
             ),
           ),
         );
 
-        Widget swatchRow(List<int> colors) => SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(children: [for (final v in colors) swatch(v)]),
+        // Wrap 不是捲動列：放不下就折到第二排，任何寬度都不會把
+        // 色塊切一半（實測各家瀏覽器算出來的視窗寬差很多，
+        // 跟固定寬度硬碰永遠有一台會切）
+        Widget swatchRow(List<int> colors) => Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [for (final v in colors) swatch(v)],
         );
 
         Widget label(String s) => Padding(
