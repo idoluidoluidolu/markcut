@@ -837,6 +837,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             // 調色也要記：有調色就得退回舊路徑（系統影片圖層疊不上
             // Flutter 的濾鏡），不記的話調了色也不會換引擎
             '${c.scale}|${c.px}|${c.py}|${c.reverse}|${c.mirror}'
+            // 軌道一定要記：切割後把片段拖到別的軌，trim/offset 全沒變、
+            // 只有 track 變——不記的話合成不重組，播的是舊排法：
+            // 軌數不對、馬賽克蓋錯層、層級整個對不上（實測就是這樣壞的）
+            '|tk${c.track}'
             // 裁切同理：合成播放器畫不出來，裁了要換回逐片段那條路
             '|${c.color.hasColor}|${c.cropped}'
             '|${c.cropL}|${c.cropT}|${c.cropW}|${c.cropH}'
