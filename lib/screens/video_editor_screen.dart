@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform;
+import 'dart:io' show Directory, File, Platform;
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -644,6 +644,42 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   int _droppedOnLoad = 0; // 還原時因為檔案不見而剔除的片段數
 
+  /// 新素材的預設長度：不要超過目前時間軸的結尾。
+  /// 空時間軸照預設給；已經站在結尾附近至少給 0.5 秒，
+  /// 不然加進來是一條抓不到的細絲
+  double _newClipLen(double want) {
+    final total = _tl.duration;
+    if (total <= 0.01) return want;
+    final room = total - _position;
+    if (room < 0.5) return 0.5;
+    return math.min(want, room);
+  }
+
+  /// 原檔不見時用工作檔救回：把工作檔搬進 App 自己的 imports 夾、
+  /// 升格成來源。用搬（rename）不是複製——工作檔目錄有總量清理，
+  /// 留在那裡哪天會被排隊清掉，草稿又斷一次。
+  /// 它本身就是 1080p H.264，順便直接當自己的工作檔用，不必重轉
+  Future<bool> _rescueFromWorkFile(MediaSource s) async {
+    final wp = s.workPath;
+    if (wp == null || !await fileExists(wp)) return false;
+    try {
+      final base = await getApplicationSupportDirectory();
+      final dir = Directory('${base.path}${Platform.pathSeparator}imports');
+      if (!dir.existsSync()) dir.createSync(recursive: true);
+      final dest =
+          '${dir.path}${Platform.pathSeparator}'
+          'r${DateTime.now().microsecondsSinceEpoch}.mp4';
+      await File(wp).rename(dest);
+      s
+        ..path = dest
+        ..workPath = dest;
+      Diag.note('素材原檔被系統清掉，用工作檔救回：${s.name}');
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// 診斷用：整條時間軸的結構（每一軌每一段、修剪、旗標、縫隙）。
   /// 遠端回報「哪種排法會頓」不用再靠截圖，報告裡就有時間軸本人
   String _timelineDump() {
@@ -984,8 +1020,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           deadSources.add(i);
         }
       } else if (!kIsWeb && !await fileExists(s.path)) {
-        // Web 沒辦法驗檔案還在不在，直接嘗試載入
-        deadSources.add(i);
+        // 原檔被系統清掉（相簿快取一週左右就會被回收）：
+        // 先用工作檔救回，救不回才剔除
+        if (await _rescueFromWorkFile(s)) {
+          if (s.kind == ClipKind.video) {
+            _thumbStrip(s.previewPath, s.duration).then((t) {
+              if (mounted && t.isNotEmpty) setState(() => _thumbs[i] = t);
+            });
+            _ensureScrubSlots(i, s.duration);
+          }
+        } else {
+          deadSources.add(i);
+        }
       } else if (s.kind == ClipKind.video) {
         // 草稿裡記的工作檔可能已經被清掉（或是舊草稿根本沒有），
         // 沒有就先用原檔，等下面的 _prepAllWorkFiles 在背景補
@@ -2596,7 +2642,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       id: _tl.nextId(),
       sourceIndex: srcIndex,
       trimStart: 0,
-      trimEnd: 4,
+      trimEnd: _newClipLen(4),
       offset: _position,
       track: track,
     );
@@ -3617,7 +3663,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       id: _tl.nextId(),
       sourceIndex: srcIndex,
       trimStart: 0,
-      trimEnd: 3,
+      trimEnd: _newClipLen(3),
       offset: _position,
       track: track,
     );
@@ -3647,7 +3693,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       id: _tl.nextId(),
       sourceIndex: srcIndex,
       trimStart: 0,
-      trimEnd: 3,
+      trimEnd: _newClipLen(3),
       offset: _position,
       track: track,
       scale: 0.72, // 預設就要蓋得住主體，太小每次都得先放大
@@ -5848,6 +5894,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _sel = -1;
     });
     _resyncPlayback();
+    // 這一軌清空了就整條收掉（上面的軌遞補下來）——留著一條空列
+    // 只會像「幽靈軌道」，選取框還可能殘留在上面。
+    // 只收「內容軌範圍內」的：最外面的常駐空軌本來就該在
+    if (_tl.onTrack(track).isEmpty && track < _tl.usedTracks) {
+      setState(() {
+        _mutedTracks.remove(track);
+        _remapMuted(_tl.removeTrack(track));
+        if (_selTrack == track) _selTrack = -1;
+      });
+    }
+    if (_selTrack >= _tl.usedTracks + _extraBlankTracks) _selTrack = -1;
     // 刪掉會留一個洞，自動整理開著就補起來。
     // 軌號要先存：這時候選取已經清掉，問不到是哪一軌了
     _autoTidyIfOn(track: track);

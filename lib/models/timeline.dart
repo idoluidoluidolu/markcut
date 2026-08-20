@@ -19,7 +19,9 @@ enum ClipKind { video, audio, image, text, wm, mosaic }
 
 /// 一份匯入的素材（影片或音訊），可被多個片段引用
 class MediaSource {
-  final String path; // 手機：檔案路徑；Web：blob URL
+  /// 手機：檔案路徑；Web：blob URL。
+  /// 可變：原檔被系統清掉時，用工作檔升格救回（見 _loadDraft）
+  String path;
   String name; // 文字素材的內容存在這裡（可編輯）
   final ClipKind kind;
   final int w; // 影片/圖片的像素尺寸

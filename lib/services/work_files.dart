@@ -217,17 +217,13 @@ class WorkFiles {
           return;
         }
         final work = e['work'] as String?;
-        if (work == null ||
-            !File(work).existsSync() ||
-            !File(src).existsSync()) {
+        if (work == null || !File(work).existsSync()) {
           dead.add(src);
-          if (work != null) {
-            try {
-              File(work).deleteSync();
-            } catch (_) {}
-          }
           return;
         }
+        // 原檔不見了（系統清掉相簿快取）：工作檔是唯一活著的備份，
+        // 千萬不能連坐刪掉——草稿救回（_loadDraft 的升格）全靠它。
+        // 索引留著，總量清理時它照樣排隊，但不會因為原檔死了就陪葬
         alive.add(work);
       });
       for (final k in dead) {
