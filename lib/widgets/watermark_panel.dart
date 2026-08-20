@@ -963,15 +963,19 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                     ),
                                     alignment: Alignment.center,
                                     decoration: BoxDecoration(
-                                      // 文字選了深色就把底提亮一階：黑字
-                                      // 貼在近黑的框裡會隱形。只提到中灰
-                                      // ——夠讓黑透出來就好，
-                                      // 亮到灰白會跟整頁的暗色打架
-                                      color:
-                                          s.text.color.computeLuminance() <
-                                              0.09
-                                          ? const Color(0xFF4E4E56)
-                                          : const Color(0xFF0F0F11),
+                                      // 底色跟著文字亮度動態調：文字越暗
+                                      // 底提得越亮，但頂多到深灰——只要
+                                      // 讓字浮出來一點點，不要一塊亮版。
+                                      // 亮字（白、黃）維持近黑底不動
+                                      color: Color.lerp(
+                                        const Color(0xFF0F0F11),
+                                        const Color(0xFF3D3D45),
+                                        (1 -
+                                                s.text.color
+                                                        .computeLuminance() /
+                                                    0.18)
+                                            .clamp(0.0, 1.0),
+                                      )!,
                                       borderRadius: BorderRadius.circular(12),
                                       border: Border.all(
                                         color: kClipBorder,
