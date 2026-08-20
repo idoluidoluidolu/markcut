@@ -15,7 +15,7 @@ import 'photo_editor_screen.dart';
 
 /// 宮格拼圖：把多張照片拼成一張（2/4/6/9 宮格），
 /// 拼完直接進照片編輯器上浮水印。
-/// 版型固定 1:1 畫布、格子等分、照片置中裁滿（cover）；
+/// 畫布比例可選（1:1/4:5/3:4/16:9/9:16）、格子等分、照片置中裁滿（cover）；
 /// 拖曳格子互換位置、點一下鎖定後可調構圖（右上角鈕換照片），
 /// 也能開純格線（調線寬、選顏色）。
 class CollageScreen extends StatefulWidget {
@@ -118,7 +118,7 @@ class _CollageScreenState extends State<CollageScreen> {
   /// 進行中的手勢（移動或拉某一角），null = 沒有
   _FreeDrag? _fDrag;
 
-  /// 自由模式的畫布比例（寬/高）。方塊座標是 0~1 的比例，
+  /// 畫布比例（寬/高），宮格與自由共用。方塊座標是 0~1 的比例，
   /// 換比例時排版跟著畫布伸縮，不會弄丟
   double _canvasAspect = 1;
 
@@ -634,12 +634,15 @@ class _CollageScreenState extends State<CollageScreen> {
         image = await rec.endRecording().toImage(cw.round(), ch.round());
       } else {
         // 畫布跟著格數長：格子多的時候固定 1600 會讓每格只剩百來 px。
-        // 上限 2400——再大 PNG 編碼在 web 會卡住主執行緒
+        // 上限 2400——再大 PNG 編碼在 web 會卡住主執行緒。
+        // 長邊照這個算，另一邊照選的畫布比例
         final size = (math.max(_cols, _rows) * 420.0).clamp(1600.0, 2400.0);
+        final gw = _canvasAspect >= 1 ? size : size * _canvasAspect;
+        final gh = _canvasAspect >= 1 ? size / _canvasAspect : size;
         final (count, cols, rows) = (_cellCount, _cols, _rows);
         // 跟預覽同一套排法：照片貼齊排滿，格線最後疊上去畫
-        final cw = size / cols;
-        final ch = size / rows;
+        final cw = gw / cols;
+        final ch = gh / rows;
         final rec = ui.PictureRecorder();
         final canvas = ui.Canvas(rec);
         for (var i = 0; i < count; i++) {
@@ -659,16 +662,16 @@ class _CollageScreenState extends State<CollageScreen> {
           );
         }
         if (_lines) {
-          final t = _gapN * size;
+          final t = _gapN * gw;
           final lp = ui.Paint()..color = ui.Color(_lineColor);
           for (var c = 1; c < cols; c++) {
-            canvas.drawRect(ui.Rect.fromLTWH(c * cw - t / 2, 0, t, size), lp);
+            canvas.drawRect(ui.Rect.fromLTWH(c * cw - t / 2, 0, t, gh), lp);
           }
           for (var r = 1; r < rows; r++) {
-            canvas.drawRect(ui.Rect.fromLTWH(0, r * ch - t / 2, size, t), lp);
+            canvas.drawRect(ui.Rect.fromLTWH(0, r * ch - t / 2, gw, t), lp);
           }
         }
-        image = await rec.endRecording().toImage(size.toInt(), size.toInt());
+        image = await rec.endRecording().toImage(gw.round(), gh.round());
       }
 
       final data = await image.toByteData(format: ui.ImageByteFormat.png);
@@ -725,42 +728,41 @@ class _CollageScreenState extends State<CollageScreen> {
               ],
             ],
           ),
-          if (_free) ...[
-            Container(
-              height: 1,
-              margin: const EdgeInsets.symmetric(vertical: 8),
-              color: kBorder,
-            ),
-            Row(
-              children: [
-                const SizedBox(
-                  width: kSliderLabelW,
-                  child: Text(
-                    '畫布',
-                    style: TextStyle(fontSize: 12, color: kTextDim),
-                  ),
+          // 畫布比例兩種模式都能選：宮格就是把選的比例等分
+          Container(
+            height: 1,
+            margin: const EdgeInsets.symmetric(vertical: 8),
+            color: kBorder,
+          ),
+          Row(
+            children: [
+              const SizedBox(
+                width: kSliderLabelW,
+                child: Text(
+                  '畫布',
+                  style: TextStyle(fontSize: 12, color: kTextDim),
                 ),
-                // 五顆膠囊排不下窄螢幕，讓它自己捲
-                Expanded(
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        for (final (label, a) in _kAspects) ...[
-                          _modeChip(
-                            label,
-                            (_canvasAspect - a).abs() < 0.01,
-                            () => setState(() => _canvasAspect = a),
-                          ),
-                          const SizedBox(width: 6),
-                        ],
+              ),
+              // 五顆膠囊排不下窄螢幕，讓它自己捲
+              Expanded(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      for (final (label, a) in _kAspects) ...[
+                        _modeChip(
+                          label,
+                          (_canvasAspect - a).abs() < 0.01,
+                          () => setState(() => _canvasAspect = a),
+                        ),
+                        const SizedBox(width: 6),
                       ],
-                    ),
+                    ],
                   ),
                 ),
-              ],
-            ),
-          ],
+              ),
+            ],
+          ),
           if (!_free) ...[
             Container(
               height: 1,
@@ -1069,11 +1071,12 @@ class _CollageScreenState extends State<CollageScreen> {
     final (count, cols, rows) = (_cellCount, _cols, _rows);
     return LayoutBuilder(
       builder: (context, box) {
-        final size = box.maxWidth; // 1:1 畫布
+        // 畫布比例由外層的 AspectRatio 決定（不再鎖 1:1），
+        // 這裡拿到多寬多高就等分多寬多高。
         // 純格線：格子貼齊排滿，線條疊在照片上面畫，
         // 不用背景填色（背景填色會從空格、邊緣露出來）
-        final cw = size / cols;
-        final ch = size / rows;
+        final cw = box.maxWidth / cols;
+        final ch = box.maxHeight / rows;
         _gG = 0;
         _gCw = cw;
         _gCh = ch;
@@ -1095,7 +1098,7 @@ class _CollageScreenState extends State<CollageScreen> {
                     painter: _GridLinePainter(
                       cols: cols,
                       rows: rows,
-                      t: _gapN * size,
+                      t: _gapN * box.maxWidth,
                       color: Color(_lineColor),
                     ),
                   ),
