@@ -1007,13 +1007,22 @@ class _CollageScreenState extends State<CollageScreen> {
               child: Column(
                 children: [
                   Expanded(
-                    child: Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: AspectRatio(
-                          // 畫布比例兩種模式共用（宮格＝把它等分）
-                          aspectRatio: _canvasAspect,
-                          child: _free ? _buildFree() : _buildGrid(),
+                    // 點畫布外的黑邊＝取消選取。窄長畫布（9:16）兩側
+                    // 一大片留白，點那裡沒反應會以為選取卡住了
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => setState(() {
+                        _selItem = -1;
+                        _selCell = -1;
+                      }),
+                      child: Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: AspectRatio(
+                            // 畫布比例兩種模式共用（宮格＝把它等分）
+                            aspectRatio: _canvasAspect,
+                            child: _free ? _buildFree() : _buildGrid(),
+                          ),
                         ),
                       ),
                     ),
@@ -1026,7 +1035,7 @@ class _CollageScreenState extends State<CollageScreen> {
                     padding: const EdgeInsets.only(top: 6),
                     child: Text(
                       _free
-                          ? '拖曳移動照片 拖四角拉伸大小 點一下選取'
+                          ? '最後選取的照片會在最上層'
                           : '按住可拖曳交換照片位置；點一下鎖定 可調照片顯示位置',
                       style: const TextStyle(fontSize: 11, color: kTextDim),
                     ),
