@@ -283,11 +283,39 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   /// 輸出 10-bit HLG。SDR（預設）＝原本的 8-bit 709
   var hdrOut: Bool { false }
 
-  private lazy var ctx = CIContext(options: [
-    .cacheIntermediates: false,
-    // HDR 要在半浮點工作格式上算，8 位元會把高光截掉
-    .workingFormat: hdrOut ? CIFormat.RGBAh : CIFormat.RGBA8,
+  // context 用靜態共用：CI 的濾鏡管線編譯快取掛在 context 上，
+  // 每個合成器實例各開一顆的話，抽格器、播放器、匯出各自都要
+  // 重新編一次管線——首編譯那幾十 ms 正好落在畫面上變成一頓
+  private static let ctxSDR = CIContext(options: [
+    .cacheIntermediates: false, .workingFormat: CIFormat.RGBA8,
   ])
+  // HDR 要在半浮點工作格式上算，8 位元會把高光截掉
+  private static let ctxHDR = CIContext(options: [
+    .cacheIntermediates: false, .workingFormat: CIFormat.RGBAh,
+  ])
+  private var ctx: CIContext { hdrOut ? Self.ctxHDR : Self.ctxSDR }
+
+  /// 先把馬賽克那組濾鏡的 GPU 管線編譯起來。
+  /// CI 第一次遇到新形狀的濾鏡圖要現場編 Metal 管線（幾十 ms）——
+  /// 「上層片段進場」的第一格正好會換圖形，那一下就是接縫的頓。
+  /// 開合成時先空跑一次，管線進快取，正式播放全程熱路徑
+  static func warmUp() {
+    DispatchQueue.global(qos: .utility).async {
+      let base = CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5))
+        .cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64))
+      var img = base.clampedToExtent()
+        .applyingFilter("CIPixellate", parameters: ["inputScale": 8.0])
+        .cropped(to: base.extent)
+      img = base.clampedToExtent()
+        .applyingFilter("CIGaussianBlur", parameters: ["inputRadius": 4.0])
+        .cropped(to: base.extent)
+        .composited(over: img)
+      img = img.applyingFilter("CILinearToSRGBToneCurve")
+        .applyingFilter("CISRGBToneCurveToLinear")
+        .composited(over: base)
+      _ = ctxSDR.createCGImage(img, from: base.extent)
+    }
+  }
   private let queue = DispatchQueue(label: "markcut.ciexport")
 
   /// 上一格合成完的畫面（指向我們自己輸出池的緩衝）。
@@ -699,6 +727,8 @@ final class AtomicFlag {
         // 使用者說的「按了切割整個畫面都消失」就是這條路
         let p = CompPlayer(registry: textures)
         let mosaics = args["mosaics"] as? [[String: Any]] ?? []
+        // 馬賽克要走 CI 合成器：先把濾鏡管線暖起來，接縫不吃首編譯
+        if !mosaics.isEmpty { CIExportCompositor.warmUp() }
         guard
           p.build(
             clips: clips, texture: (args["texture"] as? Bool) ?? true,
