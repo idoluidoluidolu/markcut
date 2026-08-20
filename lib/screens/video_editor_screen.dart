@@ -9364,7 +9364,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             ? '先在時間軸點選要調色的片段'
                             : '這種素材不能調色（影片、圖片才可以）',
                       ),
-                      _toolBtn(Icons.speed, '速度', _openSpeedSheet, tip: '播放速度'),
+                      _toolBtn(
+                        Icons.speed,
+                        '速度',
+                        // 選著「變速無意義」的素材（GIF/圖片/文字/馬賽克/
+                        // 浮水印）時不給按：以前會默默開成「整體速度」，
+                        // 使用者以為在調那個素材，改了又沒反應
+                        (sel != null &&
+                                !_tl.sourceOf(sel).isVideo &&
+                                _tl.sourceOf(sel).kind != ClipKind.audio)
+                            ? null
+                            : _openSpeedSheet,
+                        tip: '播放速度',
+                        disabledHint: '這種素材沒有速度可調（長度直接拖把手）；'
+                            '要調整條影片的速度，先點空白處取消選取',
+                      ),
                       _toolBtn(
                         Icons.gradient,
                         '效果',
