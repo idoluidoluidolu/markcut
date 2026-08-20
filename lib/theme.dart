@@ -748,13 +748,13 @@ Future<int?> pickColor(
         }
 
         Widget swatch(int v) => Padding(
-          padding: const EdgeInsets.only(right: 9),
+          padding: const EdgeInsets.only(right: 8),
           child: InkWell(
             customBorder: const CircleBorder(),
             onTap: () => fromOutside(Color(v)),
             child: Container(
-              width: 26,
-              height: 26,
+              width: 24,
+              height: 24,
               decoration: BoxDecoration(
                 color: Color(v),
                 shape: BoxShape.circle,
@@ -788,8 +788,7 @@ Future<int?> pickColor(
         }) => LayoutBuilder(
           builder: (context, cons) {
             final w = cons.maxWidth;
-            void toValue(double dx) =>
-                onChanged((dx / w).clamp(0.0, 1.0));
+            void toValue(double dx) => onChanged((dx / w).clamp(0.0, 1.0));
             return GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTapDown: (e) => toValue(e.localPosition.dx),
@@ -830,88 +829,98 @@ Future<int?> pickColor(
         final vivid = HSVColor.fromAHSV(1, hue, 1, 1).toColor();
         return AlertDialog(
           title: Text(title),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                if (recents.isNotEmpty) ...[
-                  label('最近'),
-                  swatchRow(recents),
-                  const SizedBox(height: 10),
-                  label('常用'),
+          // 加寬：12 顆常用色一排要 384px，預設寬度會把最後幾顆切掉。
+          // 小螢幕放不下 400 就吃滿（扣邊距），色塊列自己可以捲
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 20,
+            vertical: 24,
+          ),
+          content: SizedBox(
+            width: math.min(400.0, MediaQuery.sizeOf(context).width - 88),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (recents.isNotEmpty) ...[
+                    label('最近'),
+                    swatchRow(recents),
+                    const SizedBox(height: 10),
+                    label('常用'),
+                  ],
+                  swatchRow(kPresetColors),
+                  const SizedBox(height: 14),
+                  label('色相'),
+                  gradSlider(
+                    colors: const [
+                      Color(0xFFFF0000),
+                      Color(0xFFFFFF00),
+                      Color(0xFF00FF00),
+                      Color(0xFF00FFFF),
+                      Color(0xFF0000FF),
+                      Color(0xFFFF00FF),
+                      Color(0xFFFF0000),
+                    ],
+                    value: hue / 360,
+                    onChanged: (v) {
+                      hue = v * 360;
+                      fromSlider();
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  label('深淺'),
+                  gradSlider(
+                    colors: [Colors.black, vivid, Colors.white],
+                    value: tone,
+                    onChanged: (v) {
+                      tone = v;
+                      fromSlider();
+                    },
+                  ),
+                  const SizedBox(height: 14),
+                  // 色碼：左邊一塊目前的顏色，打滿 6 碼就套用
+                  Row(
+                    children: [
+                      Container(
+                        width: 34,
+                        height: 34,
+                        decoration: BoxDecoration(
+                          color: color,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: kClipBorder),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: TextField(
+                          controller: hexCtrl,
+                          maxLength: 6,
+                          textCapitalization: TextCapitalization.characters,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            letterSpacing: 1.2,
+                            fontFeatures: [FontFeature.tabularFigures()],
+                          ),
+                          // 不放「色碼」標籤：# 開頭的欄位長什麼樣
+                          // 大家都認得，多一個字只是視覺雜訊
+                          decoration: const InputDecoration(
+                            prefixText: '# ',
+                            counterText: '',
+                            isDense: true,
+                          ),
+                          onChanged: (v) {
+                            final t = v.trim().replaceAll('#', '');
+                            if (t.length != 6) return;
+                            final n = int.tryParse(t, radix: 16);
+                            if (n == null) return;
+                            fromOutside(Color(0xFF000000 | n), typing: true);
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
                 ],
-                swatchRow(kPresetColors),
-                const SizedBox(height: 14),
-                label('色相'),
-                gradSlider(
-                  colors: const [
-                    Color(0xFFFF0000),
-                    Color(0xFFFFFF00),
-                    Color(0xFF00FF00),
-                    Color(0xFF00FFFF),
-                    Color(0xFF0000FF),
-                    Color(0xFFFF00FF),
-                    Color(0xFFFF0000),
-                  ],
-                  value: hue / 360,
-                  onChanged: (v) {
-                    hue = v * 360;
-                    fromSlider();
-                  },
-                ),
-                const SizedBox(height: 8),
-                label('深淺'),
-                gradSlider(
-                  colors: [Colors.black, vivid, Colors.white],
-                  value: tone,
-                  onChanged: (v) {
-                    tone = v;
-                    fromSlider();
-                  },
-                ),
-                const SizedBox(height: 14),
-                // 色碼：左邊一塊目前的顏色，打滿 6 碼就套用
-                Row(
-                  children: [
-                    Container(
-                      width: 34,
-                      height: 34,
-                      decoration: BoxDecoration(
-                        color: color,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: kClipBorder),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: TextField(
-                        controller: hexCtrl,
-                        maxLength: 6,
-                        textCapitalization: TextCapitalization.characters,
-                        style: const TextStyle(
-                          fontSize: 14,
-                          letterSpacing: 1.2,
-                          fontFeatures: [FontFeature.tabularFigures()],
-                        ),
-                        decoration: const InputDecoration(
-                          prefixText: '# ',
-                          counterText: '',
-                          isDense: true,
-                          labelText: '色碼',
-                        ),
-                        onChanged: (v) {
-                          final t = v.trim().replaceAll('#', '');
-                          if (t.length != 6) return;
-                          final n = int.tryParse(t, radix: 16);
-                          if (n == null) return;
-                          fromOutside(Color(0xFF000000 | n), typing: true);
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-              ],
+              ),
             ),
           ),
           actions: [
@@ -1130,6 +1139,7 @@ Widget sliderRow({
   VoidCallback? onReset,
   Color? labelColor,
   Color? valueColor,
+
   /// 刻度的彎曲程度。1＝線性；大於 1 就把「小的那一端」拉開。
   ///
   /// 大小這種滑桿最小 0.015、最大 2.0，線性的話常用的 2%~20% 全部
