@@ -963,19 +963,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                     ),
                                     alignment: Alignment.center,
                                     decoration: BoxDecoration(
-                                      // 底色跟著文字亮度動態調：文字越暗
-                                      // 底提得越亮，但頂多到深灰——只要
-                                      // 讓字浮出來一點點，不要一塊亮版。
-                                      // 亮字（白、黃）維持近黑底不動
-                                      color: Color.lerp(
-                                        const Color(0xFF0F0F11),
-                                        const Color(0xFF3D3D45),
-                                        (1 -
-                                                s.text.color
-                                                        .computeLuminance() /
-                                                    0.18)
-                                            .clamp(0.0, 1.0),
-                                      )!,
+                                      color: const Color(0xFF0F0F11),
                                       borderRadius: BorderRadius.circular(12),
                                       border: Border.all(
                                         color: kClipBorder,
@@ -987,15 +975,15 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                       focusNode: _textFocus,
                                       textAlign: TextAlign.center,
                                       maxLines: null,
+                                      // 打字永遠白字（B 案）：這一格只管
+                                      // 打字，顏色與透明看上面的預覽跟
+                                      // 旁邊的色塊——照所選顏色渲染的話
+                                      // 深色字會沉進黑底裡看不見。
+                                      // 字型照選的渲染，字型是要在這裡挑的
                                       style: TextStyle(
                                         fontFamily: s.text.fontFamily,
                                         fontSize: 26,
-                                        color: s.text.color.withValues(
-                                          alpha: s.text.opacity.clamp(
-                                            0.55,
-                                            1.0,
-                                          ),
-                                        ),
+                                        color: kText,
                                       ),
                                       decoration: const InputDecoration(
                                         hintText: '浮水印文字',
