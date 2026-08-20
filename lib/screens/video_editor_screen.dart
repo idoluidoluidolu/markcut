@@ -3557,7 +3557,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       trimEnd: 3,
       offset: _position,
       track: track,
-      scale: 0.35, // 預設一塊不大不小的方形
+      scale: 0.72, // 預設就要蓋得住主體，太小每次都得先放大
     );
     setState(() {
       _tl.clips.add(clip);
