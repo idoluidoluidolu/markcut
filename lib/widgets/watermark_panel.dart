@@ -963,12 +963,14 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                     ),
                                     alignment: Alignment.center,
                                     decoration: BoxDecoration(
-                                      // 文字選了深色就換淺底：不然黑字
-                                      // 貼在近黑的框裡，打了什麼都看不到
+                                      // 文字選了深色就把底提亮一階：黑字
+                                      // 貼在近黑的框裡會隱形。只提到中灰
+                                      // ——夠讓黑透出來就好，
+                                      // 亮到灰白會跟整頁的暗色打架
                                       color:
                                           s.text.color.computeLuminance() <
                                               0.09
-                                          ? const Color(0xFFE9E9EE)
+                                          ? const Color(0xFF4E4E56)
                                           : const Color(0xFF0F0F11),
                                       borderRadius: BorderRadius.circular(12),
                                       border: Border.all(
