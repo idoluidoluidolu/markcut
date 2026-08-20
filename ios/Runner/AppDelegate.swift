@@ -258,16 +258,22 @@ final class CIExportInstruction: NSObject, AVVideoCompositionInstructionProtocol
   /// 整條時間軸用到的所有影像軌（預捲用，見 requiredSourceTrackIDs）
   let prerollTrackIDs: [NSNumber]
 
+  /// 這一段沒有任何圖層時，用上一格頂住而不是畫黑。
+  /// 只給「極短的空窗」開：片段之間手滑留下的一條小縫（幾格），
+  /// 忠實畫黑就是使用者看到的「接縫閃一下」；刻意留的長空窗照樣黑
+  let holdIfEmpty: Bool
+
   init(
     timeRange: CMTimeRange, layers: [CILayerSpec],
     mosaics: [CIMosaicSpec], overlays: [CIOverlaySpec],
-    prerollTrackIDs: [NSNumber] = []
+    prerollTrackIDs: [NSNumber] = [], holdIfEmpty: Bool = false
   ) {
     self.timeRange = timeRange
     self.layers = layers
     self.mosaics = mosaics
     self.overlays = overlays
     self.prerollTrackIDs = prerollTrackIDs
+    self.holdIfEmpty = holdIfEmpty
     super.init()
   }
 }
@@ -523,8 +529,10 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           }
           out = img.cropped(to: canvasRect).composited(over: out)
         }
-        if missing, let held = self.lastComposed {
-          // 邊界缺格：上一格原封重播（它已含馬賽克與疊加物）
+        let tinyGap =
+          ins.layers.isEmpty && ins.holdIfEmpty && self.lastComposed != nil
+        if missing || tinyGap, let held = self.lastComposed {
+          // 邊界缺格或極短空窗：上一格原封重播（已含馬賽克與疊加物）
           out = held
         } else {
           while mzIdx < activeMz.count {
@@ -538,7 +546,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           }
         }
         self.ctx.render(out, to: dst, bounds: canvasRect, colorSpace: self.outCS)
-        if !missing {
+        if !missing && !tinyGap {
           // 引用的是我們自己的輸出緩衝（不是解碼器的），
           // 只多佔用池子裡的一顆
           self.lastComposed = CIImage(cvPixelBuffer: dst)
@@ -1246,10 +1254,12 @@ final class AtomicFlag {
       }
       if useCI {
         if seg.range.start > ciCursor {
+          let gap = CMTimeRange(start: ciCursor, end: seg.range.start)
           ciInstructions.append(
             CIExportInstruction(
-              timeRange: CMTimeRange(start: ciCursor, end: seg.range.start),
-              layers: [], mosaics: [], overlays: ciOverlays))
+              timeRange: gap,
+              layers: [], mosaics: [], overlays: ciOverlays,
+              holdIfEmpty: gap.duration.seconds < 0.12))
         }
         ciInstructions.append(
           CIExportInstruction(
@@ -1399,7 +1409,8 @@ final class AtomicFlag {
           CIExportInstruction(
             timeRange: CMTimeRange(start: a0, end: b0),
             layers: act.map { $0.layer }, mosaics: ciMosaics,
-            overlays: ciOverlays, prerollTrackIDs: prerollIDs))
+            overlays: ciOverlays, prerollTrackIDs: prerollIDs,
+            holdIfEmpty: act.isEmpty && (b0 - a0).seconds < 0.12))
       }
       vc.customVideoCompositorClass =
         wantHDR ? CIExportCompositorHDR.self : CIExportCompositor.self
@@ -2847,7 +2858,8 @@ final class CompPlayer: NSObject, FlutterTexture {
             CIExportInstruction(
               timeRange: CMTimeRange(start: a, end: b),
               layers: layers, mosaics: ciMosaics, overlays: [],
-              prerollTrackIDs: prerollIDs))
+              prerollTrackIDs: prerollIDs,
+              holdIfEmpty: layers.isEmpty && (b - a).seconds < 0.12))
         }
         vc.customVideoCompositorClass = CIExportCompositor.self
         vc.instructions = built
