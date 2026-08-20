@@ -89,7 +89,7 @@ dev_dependencies:
 # iOS 26 的 Liquid Glass 會自動幫「只有預設圖示」的 App 加上鏡面反光
 # （邊緣呼吸感）。提供深色／單色變體後，系統改用我們給的圖，
 # 深色模式下就是乾淨的純黑底
-# 定版：像素幽靈第五版（icon_v5，純白底＋三隻由深到淺）。
+# 定版：像素幽靈第六版（icon_v6，淡色三隻放大到近滿版）。
 # v4 的三隻只有 8~42% 不透明度，壓在白底上幾乎看不見，
 # 遠看整顆糊成一塊灰——v5 把三階拉到 130/190/255，層次還在，
 # 但白底才真的讀得出來是白
@@ -101,16 +101,16 @@ flutter_launcher_icons:
   android: true
   ios: true
   remove_alpha_ios: true # App Store 圖示不能帶透明通道
-  image_path: "assets/icon/icon_v5.png"
+  image_path: "assets/icon/icon_v6.png"
   # 深色模式也用白底那張：使用者要求圖示背景一律白色
-  image_path_ios_dark_transparent: "assets/icon/icon_v5.png"
-  image_path_ios_tinted_grayscale: "assets/icon/icon_v5_trans.png"
+  image_path_ios_dark_transparent: "assets/icon/icon_v6.png"
+  image_path_ios_tinted_grayscale: "assets/icon/icon_v6_trans.png"
   desaturate_tinted_to_grayscale_ios: true
   adaptive_icon_background: "#FFFFFF"
-  adaptive_icon_foreground: "assets/icon/icon_v5_trans.png"
+  adaptive_icon_foreground: "assets/icon/icon_v6_trans.png"
   web:
     generate: true
-    image_path: "assets/icon/icon_v5.png"
+    image_path: "assets/icon/icon_v6.png"
     background_color: "#FFFFFF"
     theme_color: "#FFFFFF"
 
