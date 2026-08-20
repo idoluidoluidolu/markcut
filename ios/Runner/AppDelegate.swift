@@ -456,9 +456,31 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
     return img.transformed(by: t)
   }
 
+  /// 慢格紀錄（>20ms 的合成格）：時間點、耗時、層數、有沒有缺格。
+  /// 靜態＋鎖：合成器實例是 AVFoundation 生的，診斷只能從這裡撈
+  static let slowLock = NSLock()
+  static var slowFrames: [String] = []
+  static var frameCount = 0
+  static var worstMs = 0.0
+
+  static func noteFrame(t: Double, ms: Double, layers: Int, missing: Bool) {
+    slowLock.lock()
+    frameCount += 1
+    if ms > worstMs { worstMs = ms }
+    if ms > 20 {
+      if slowFrames.count > 40 { slowFrames.removeFirst() }
+      slowFrames.append(
+        String(
+          format: "%.2fs 花了 %.0fms（%d 層%@）", t, ms, layers,
+          missing ? "、缺格" : ""))
+    }
+    slowLock.unlock()
+  }
+
   func startRequest(_ req: AVAsynchronousVideoCompositionRequest) {
     queue.async {
       autoreleasepool {
+        let tick = CFAbsoluteTimeGetCurrent()
         guard
           let ins = req.videoCompositionInstruction as? CIExportInstruction,
           let dst = req.renderContext.newPixelBuffer()
@@ -580,6 +602,9 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           self.lastComposed = CIImage(cvPixelBuffer: dst)
         }
         req.finish(withComposedVideoFrame: dst)
+        Self.noteFrame(
+          t: t, ms: (CFAbsoluteTimeGetCurrent() - tick) * 1000,
+          layers: ins.layers.count, missing: missing)
       }
     }
   }
@@ -3250,6 +3275,11 @@ final class CompPlayer: NSObject, FlutterTexture {
     }
     m["instructions"] =
       player.currentItem?.videoComposition?.instructions.count ?? 0
+    CIExportCompositor.slowLock.lock()
+    m["ciFrames"] = CIExportCompositor.frameCount
+    m["ciWorstMs"] = CIExportCompositor.worstMs
+    m["ciSlow"] = CIExportCompositor.slowFrames
+    CIExportCompositor.slowLock.unlock()
     m["frameProbe"] = frameProbe()
     switch player.timeControlStatus {
     case .paused: m["timeControl"] = "暫停"
