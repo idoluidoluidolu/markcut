@@ -16,7 +16,7 @@ import 'player_value.dart';
 /// 介面模仿 VideoPlayerController，編輯器無感。
 abstract class PlayerX {
   factory PlayerX(String path) =>
-      Platform.isIOS ? _AvPlayerX(path) : _MpvPlayerX(path);
+      Platform.isIOS ? _AvPlayerX(path) : _FallbackPlayerX(path);
 
   String get path;
   Future<void> initialize();
@@ -41,7 +41,77 @@ abstract class PlayerX {
   String get debugInfo;
 }
 
-/// iOS：AVPlayer（經 video_player）
+/// mpv 有影像軌卻畫不出紋理（部分機型黑畫面）。
+/// 用來通知 [_FallbackPlayerX] 換引擎，不會漏到更外層
+class MpvBlackScreen implements Exception {
+  const MpvBlackScreen();
+}
+
+/// Android：先試 media_kit（libmpv），開不起來或畫不出影像就換
+/// ExoPlayer（video_player）。
+///
+/// libmpv 在部分機型上吃不下螢幕錄影那類檔案（奇數解析度、可變影格
+/// 率）：硬解開不起來就黑畫面、退軟解則慢到像當掉。ExoPlayer 對系統
+/// 自家錄的檔案幾乎都吃得下，但它在 Pixel 上的影格傳遞會卡——
+/// 所以順序是 mpv 優先，只有撞牆的那一支換引擎
+class _FallbackPlayerX implements PlayerX {
+  _FallbackPlayerX(this.path);
+
+  @override
+  final String path;
+
+  late PlayerX _inner = _MpvPlayerX(path);
+
+  @override
+  Future<void> initialize() async {
+    try {
+      await _inner.initialize();
+    } catch (_) {
+      // 黑畫面、逾時、開檔失敗都走這裡。ExoPlayer 再失敗才往外丟
+      //（呼叫端本來就有「影片打不開」的處理）
+      _inner.dispose();
+      _inner = _AvPlayerX(path);
+      await _inner.initialize();
+    }
+  }
+
+  @override
+  PlayerValueX get value => _inner.value;
+
+  @override
+  Future<Duration?> positionNow() => _inner.positionNow();
+
+  @override
+  Future<void> seekTo(Duration d) => _inner.seekTo(d);
+
+  @override
+  Future<void> play() => _inner.play();
+
+  @override
+  Future<void> pause() => _inner.pause();
+
+  @override
+  Future<void> setVolume(double v) => _inner.setVolume(v);
+
+  @override
+  Future<void> setPlaybackSpeed(double s) => _inner.setPlaybackSpeed(s);
+
+  @override
+  Future<void> setLooping(bool loop) => _inner.setLooping(loop);
+
+  @override
+  void dispose() => _inner.dispose();
+
+  @override
+  Widget view({Key? key}) => _inner.view(key: key);
+
+  @override
+  String get debugInfo =>
+      '${_inner.debugInfo}\n(engine: ${_inner is _MpvPlayerX ? 'mpv' : 'exo'})';
+}
+
+/// iOS：AVPlayer（經 video_player）。
+/// Android 的後備引擎也是這個類別（video_player 在安卓走 ExoPlayer）
 class _AvPlayerX implements PlayerX {
   _AvPlayerX(this.path) : _c = VideoPlayerController.file(File(path));
 
@@ -116,20 +186,6 @@ class _MpvPlayerX implements PlayerX {
   Future<void> initialize() async {
     await _p.open(mk.Media(path), play: false);
 
-    // 重要：先看 state 快照、再等串流。
-    // 值可能在訂閱前就到了，只等串流會逾時
-    Future<int?> waitInt(Stream<int?> st, int? cur) async {
-      if ((cur ?? 0) > 0) return cur;
-      try {
-        return await st
-            .where((v) => (v ?? 0) > 0)
-            .first
-            .timeout(const Duration(milliseconds: 3000));
-      } catch (_) {
-        return null;
-      }
-    }
-
     // 時長就緒才算初始化完成（音訊檔也有時長）
     if (_p.state.duration > Duration.zero) {
       _duration = _p.state.duration;
@@ -172,36 +228,26 @@ class _MpvPlayerX implements PlayerX {
       _size = texSize;
       _dbgSizeFrom = 'texture';
     } else {
-      // 後備：影片參數（dw/dh ＋ rotate 對調）
+      // 紋理沒起來。查清楚是「根本沒有影像軌」還是「有影像卻畫不出來」：
+      // 音訊檔（配樂、旁白）本來就沒有紋理，繼續用 mpv 沒問題；
+      // 但有影像軌卻沒紋理＝黑畫面——部分機型的解碼器吃不下螢幕錄影
+      // 那類奇數解析度／可變影格率的檔案。丟出去讓外層換 ExoPlayer，
+      // 系統自家錄的檔案它幾乎都吃得下
       mk.VideoParams? vp = _p.state.videoParams;
       if ((vp.w ?? 0) <= 0) {
         try {
+          // 紋理那邊已經等了 4 秒，參數要到早就到了——短等收尾就好
           vp = await _p.stream.videoParams
               .firstWhere((v) => (v.w ?? 0) > 0)
-              .timeout(const Duration(milliseconds: 3000));
+              .timeout(const Duration(milliseconds: 500));
         } catch (_) {
           vp = null;
         }
       }
-      if (vp != null && (vp.w ?? 0) > 0 && (vp.h ?? 0) > 0) {
-        var w = (vp.dw ?? vp.w)!;
-        var h = (vp.dh ?? vp.h)!;
-        final rot = vp.rotate ?? 0;
-        if (rot % 180 != 0) {
-          final t = w;
-          w = h;
-          h = t;
-        }
-        _size = Size(w.toDouble(), h.toDouble());
-        _dbgSizeFrom = 'videoParams';
-      } else {
-        final w = await waitInt(_p.stream.width, _p.state.width);
-        final h = await waitInt(_p.stream.height, _p.state.height);
-        if ((w ?? 0) > 0 && (h ?? 0) > 0) {
-          _size = Size(w!.toDouble(), h!.toDouble());
-          _dbgSizeFrom = 'w/h streams';
-        }
-      }
+      final hasVideo =
+          (vp != null && (vp.w ?? 0) > 0) || (_p.state.width ?? 0) > 0;
+      if (hasVideo) throw const MpvBlackScreen();
+      _dbgSizeFrom = 'audio-only';
     }
     _inited = true;
   }

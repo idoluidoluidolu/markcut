@@ -1,21 +1,43 @@
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:image_picker/image_picker.dart';
 // XFile 由 image_picker 轉出來，不另外相依 cross_file
+
+/// 安卓的系統相片選取器（原生端實作在 MainActivity.kt）。
+/// Android 12 以下沒有這個東西，原生端會回 null
+const _pickCh = MethodChannel('markcut/pick');
 
 /// 只挑影片：相簿裡就只列得出影片，不會混著照片一起給。
 ///
 /// image_picker 沒有「只選影片、而且可以多選」的 API——pickVideo 只能
 /// 挑一支，pickMultipleMedia 則是照片影片混在一起，挑完還要自己濾掉
 /// 照片（使用者看得到照片、點得下去，最後卻被告知不能用）。
-/// file_picker 的 FileType.video 在 iOS／Android 都是相簿本人，
-/// 只是先幫我們濾好了。
 ///
-/// Web 沒有這條路（拿不到檔案路徑），退回混合選取再濾
+/// Android 13+：走系統相片選取器（開出來就是相簿、只列影片）。
+/// file_picker 的 FileType.video 在安卓其實是 SAF 文件選取器，
+/// 開出來是檔案管理器的「最近」——使用者反映找不到影片。
+/// iOS 與舊安卓照舊走 file_picker；Web 拿不到檔案路徑，退回混合選取再濾
 Future<List<XFile>> pickVideoFiles() async {
   if (kIsWeb) {
     final list = await ImagePicker().pickMultipleMedia();
     return list.where(isVideoFile).toList();
+  }
+  if (defaultTargetPlatform == TargetPlatform.android) {
+    try {
+      final r = await _pickCh.invokeMethod<List<dynamic>>('videos', {
+        'max': 100, // 選取器的上限；App 的軟性上限在挑完之後才提醒
+      });
+      if (r != null) {
+        return [
+          for (final p in r.cast<String>()) XFile(p, name: p.split('/').last),
+        ];
+      }
+      // null＝這台沒有系統相片選取器（Android 12 以下），往下走 SAF
+    } catch (_) {
+      // 通道出狀況也退回 SAF，選影片這件事不能因此壞掉
+    }
   }
   final r = await FilePicker.platform.pickFiles(
     type: FileType.video,

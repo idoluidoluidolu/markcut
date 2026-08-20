@@ -1,10 +1,15 @@
 package com.idoluidoluidolu.watermark
 
+import android.app.Activity
+import android.content.Intent
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
+import android.provider.OpenableColumns
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.effect.Presentation
@@ -20,6 +25,8 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
@@ -38,6 +45,7 @@ class MainActivity : FlutterActivity() {
         val main = Handler(Looper.getMainLooper())
         registerPrepChannel(flutterEngine, main)
         registerDiagChannel(flutterEngine)
+        registerPickChannel(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "markcut/frames")
             .setMethodCallHandler { call, result ->
                 if (call.method != "frameAt") {
@@ -64,6 +72,98 @@ class MainActivity : FlutterActivity() {
                     main.post { result.success(bytes) }
                 }
             }
+    }
+
+    // ===== 挑影片：系統相片選取器 =====
+    //
+    // file_picker 的 FileType.video 在安卓走 SAF 文件選取器——開出來是
+    // 檔案管理器的「最近」，不是相簿。Android 13 起有系統相片選取器
+    // （ACTION_PICK_IMAGES），可以限定只列影片、直接開在相簿的長相。
+    // 更舊的機型回 null，Dart 端退回原本的 SAF 那條路
+
+    /// 等使用者選完的那次呼叫（一次只會有一個選取器在畫面上）
+    private var pickReply: MethodChannel.Result? = null
+    private val pickReq = 9137
+
+    /// 把 content:// 複製進快取的工作緒（大檔要幾秒，不能佔主緒）
+    private val copyExec = Executors.newSingleThreadExecutor()
+
+    private fun registerPickChannel(flutterEngine: FlutterEngine) {
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "markcut/pick")
+            .setMethodCallHandler { call, result ->
+                if (call.method != "videos") {
+                    result.notImplemented()
+                    return@setMethodCallHandler
+                }
+                if (Build.VERSION.SDK_INT < 33) {
+                    // 沒有系統相片選取器：讓 Dart 端走 file_picker
+                    result.success(null)
+                    return@setMethodCallHandler
+                }
+                if (pickReply != null) {
+                    // 已經有一個選取器開著（連點兩下）：這一次當沒選
+                    result.success(ArrayList<String>())
+                    return@setMethodCallHandler
+                }
+                val max = (call.argument<Number>("max") ?: 30).toInt()
+                    .coerceIn(2, MediaStore.getPickImagesMaxLimit())
+                pickReply = result
+                val intent = Intent(MediaStore.ACTION_PICK_IMAGES).apply {
+                    type = "video/*"
+                    putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, max)
+                }
+                startActivityForResult(intent, pickReq)
+            }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode != pickReq) {
+            super.onActivityResult(requestCode, resultCode, data)
+            return
+        }
+        val reply = pickReply ?: return
+        pickReply = null
+        if (resultCode != Activity.RESULT_OK || data == null) {
+            reply.success(ArrayList<String>()) // 使用者按了返回
+            return
+        }
+        val uris = ArrayList<Uri>()
+        val clip = data.clipData
+        if (clip != null) {
+            for (i in 0 until clip.itemCount) uris.add(clip.getItemAt(i).uri)
+        } else {
+            data.data?.let { uris.add(it) }
+        }
+        // 選取器給的是 content://，整條管線（FFmpeg、mpv、抽幀）都吃
+        // 檔案路徑——複製進快取再回。file_picker 本來也是這樣做的，
+        // 成本一樣，只是選取的長相變成相簿
+        val main = Handler(Looper.getMainLooper())
+        copyExec.execute {
+            val out = ArrayList<String>()
+            for (u in uris) copyToCache(u)?.let { out.add(it) }
+            main.post { reply.success(out) }
+        }
+    }
+
+    /// content:// → 快取檔。保留原檔名（介面上顯示素材名稱用）
+    private fun copyToCache(u: Uri): String? = try {
+        var name: String? = null
+        contentResolver.query(u, null, null, null, null)?.use { c ->
+            val i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (i >= 0 && c.moveToFirst()) name = c.getString(i)
+        }
+        val safe = (name ?: "video_${System.currentTimeMillis()}.mp4")
+            .replace('/', '_')
+        val dir = File(cacheDir, "picked").apply { mkdirs() }
+        var f = File(dir, safe)
+        var n = 1
+        while (f.exists()) f = File(dir, "${n++}_$safe") // 同名不覆蓋
+        contentResolver.openInputStream(u)?.use { input ->
+            FileOutputStream(f).use { output -> input.copyTo(output, 1 shl 16) }
+        } ?: return null
+        f.absolutePath
+    } catch (_: Exception) {
+        null
     }
 
     private fun grabFrame(
