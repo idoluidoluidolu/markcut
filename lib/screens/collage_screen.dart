@@ -118,6 +118,19 @@ class _CollageScreenState extends State<CollageScreen> {
   /// 進行中的手勢（移動或拉某一角），null = 沒有
   _FreeDrag? _fDrag;
 
+  /// 自由模式的畫布比例（寬/高）。方塊座標是 0~1 的比例，
+  /// 換比例時排版跟著畫布伸縮，不會弄丟
+  double _canvasAspect = 1;
+
+  /// 畫布比例的選項（標籤＋寬/高）
+  static const _kAspects = [
+    ('1:1', 1.0),
+    ('4:5', 0.8),
+    ('3:4', 0.75),
+    ('16:9', 16 / 9),
+    ('9:16', 9 / 16),
+  ];
+
   bool _building = false;
 
   @override
@@ -415,10 +428,11 @@ class _CollageScreenState extends State<CollageScreen> {
           return;
         }
         _images.add(img);
-        // 方塊照照片比例開（寬 45% 畫布），太長太扁的夾一下
+        // 方塊照照片比例開（寬 45% 畫布），太長太扁的夾一下。
+        // 高度的比例座標要把畫布比例算進去，方塊才真的是照片的形狀
         final a = img.width / img.height;
         const w = 0.45;
-        final h = (w / a).clamp(0.18, 0.7);
+        final h = (w * _canvasAspect / a).clamp(0.15, 0.8);
         final off = 0.04 * (_items.length % 5);
         _items.add(
           _FreeItem(
@@ -461,15 +475,16 @@ class _CollageScreenState extends State<CollageScreen> {
     return _items.length - 1;
   }
 
-  /// 指尖落在哪個方塊上（從最上層找起）
-  int _freeHit(Offset p, double s) {
+  /// 指尖落在哪個方塊上（從最上層找起）。
+  /// 座標是比例值，寬高要各用各的邊換算（畫布不一定是正方形）
+  int _freeHit(Offset p, Size s) {
     for (var i = _items.length - 1; i >= 0; i--) {
       final r = _items[i].rect;
       if (ui.Rect.fromLTWH(
-        r.left * s,
-        r.top * s,
-        r.width * s,
-        r.height * s,
+        r.left * s.width,
+        r.top * s.height,
+        r.width * s.width,
+        r.height * s.height,
       ).contains(p)) {
         return i;
       }
@@ -478,14 +493,14 @@ class _CollageScreenState extends State<CollageScreen> {
   }
 
   /// 指尖有沒有壓在選取框的某一角（回 0~3＝左上/右上/左下/右下）
-  int _freeCorner(Offset p, double s) {
+  int _freeCorner(Offset p, Size s) {
     if (_selItem < 0 || _selItem >= _items.length) return -1;
     final r = _items[_selItem].rect;
     final cs = [
-      Offset(r.left * s, r.top * s),
-      Offset(r.right * s, r.top * s),
-      Offset(r.left * s, r.bottom * s),
-      Offset(r.right * s, r.bottom * s),
+      Offset(r.left * s.width, r.top * s.height),
+      Offset(r.right * s.width, r.top * s.height),
+      Offset(r.left * s.width, r.bottom * s.height),
+      Offset(r.right * s.width, r.bottom * s.height),
     ];
     for (var k = 0; k < 4; k++) {
       // 24px 的觸控範圍：角點本身只有 10px，照畫的大小抓根本按不到
@@ -589,12 +604,13 @@ class _CollageScreenState extends State<CollageScreen> {
       final ui.Image image;
       if (_free) {
         // 自由排版：白底畫布，照疊放順序畫上去。方塊拉出畫布的部分
-        // 自然被裁掉（跟預覽看到的一樣）
-        const size = 2048.0;
+        // 自然被裁掉（跟預覽看到的一樣）。長邊 2048，另一邊照比例
+        final cw = _canvasAspect >= 1 ? 2048.0 : 2048.0 * _canvasAspect;
+        final ch = _canvasAspect >= 1 ? 2048.0 / _canvasAspect : 2048.0;
         final rec = ui.PictureRecorder();
         final canvas = ui.Canvas(rec);
         canvas.drawRect(
-          ui.Rect.fromLTWH(0, 0, size, size),
+          ui.Rect.fromLTWH(0, 0, cw, ch),
           ui.Paint()..color = const ui.Color(0xFFFFFFFF),
         );
         for (final it in _items) {
@@ -603,10 +619,10 @@ class _CollageScreenState extends State<CollageScreen> {
               : null;
           if (img == null) continue;
           final dst = ui.Rect.fromLTWH(
-            it.rect.left * size,
-            it.rect.top * size,
-            it.rect.width * size,
-            it.rect.height * size,
+            it.rect.left * cw,
+            it.rect.top * ch,
+            it.rect.width * cw,
+            it.rect.height * ch,
           );
           canvas.drawImageRect(
             img,
@@ -615,7 +631,7 @@ class _CollageScreenState extends State<CollageScreen> {
             ui.Paint()..filterQuality = ui.FilterQuality.high,
           );
         }
-        image = await rec.endRecording().toImage(size.toInt(), size.toInt());
+        image = await rec.endRecording().toImage(cw.round(), ch.round());
       } else {
         // 畫布跟著格數長：格子多的時候固定 1600 會讓每格只剩百來 px。
         // 上限 2400——再大 PNG 編碼在 web 會卡住主執行緒
@@ -709,6 +725,42 @@ class _CollageScreenState extends State<CollageScreen> {
               ],
             ],
           ),
+          if (_free) ...[
+            Container(
+              height: 1,
+              margin: const EdgeInsets.symmetric(vertical: 8),
+              color: kBorder,
+            ),
+            Row(
+              children: [
+                const SizedBox(
+                  width: kSliderLabelW,
+                  child: Text(
+                    '畫布',
+                    style: TextStyle(fontSize: 12, color: kTextDim),
+                  ),
+                ),
+                // 五顆膠囊排不下窄螢幕，讓它自己捲
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        for (final (label, a) in _kAspects) ...[
+                          _modeChip(
+                            label,
+                            (_canvasAspect - a).abs() < 0.01,
+                            () => setState(() => _canvasAspect = a),
+                          ),
+                          const SizedBox(width: 6),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
           if (!_free) ...[
             Container(
               height: 1,
@@ -957,7 +1009,8 @@ class _CollageScreenState extends State<CollageScreen> {
                       child: Padding(
                         padding: const EdgeInsets.all(16),
                         child: AspectRatio(
-                          aspectRatio: 1,
+                          // 宮格固定 1:1；自由模式的畫布比例可選
+                          aspectRatio: _free ? _canvasAspect : 1,
                           child: _free ? _buildFree() : _buildGrid(),
                         ),
                       ),
@@ -1086,7 +1139,7 @@ class _CollageScreenState extends State<CollageScreen> {
 
   // ===== 自由模式：手勢與畫布 =====
 
-  void _freePanStart(Offset p, double s) {
+  void _freePanStart(Offset p, Size s) {
     // 先看角：角落的觸控範圍常常同時落在方塊裡，
     // 先判斷方塊的話就永遠拉不到角
     final corner = _freeCorner(p, s);
@@ -1103,11 +1156,11 @@ class _CollageScreenState extends State<CollageScreen> {
     _fDrag = _FreeDrag(corner: -1, start: _items[_selItem].rect, from: p);
   }
 
-  void _freePanUpdate(Offset p, double s) {
+  void _freePanUpdate(Offset p, Size s) {
     final d = _fDrag;
     if (d == null || _selItem < 0 || _selItem >= _items.length) return;
-    final dx = (p.dx - d.from.dx) / s;
-    final dy = (p.dy - d.from.dy) / s;
+    final dx = (p.dx - d.from.dx) / s.width;
+    final dy = (p.dy - d.from.dy) / s.height;
     final r = d.start;
     ui.Rect nr;
     if (d.corner == -1) {
@@ -1144,7 +1197,7 @@ class _CollageScreenState extends State<CollageScreen> {
   Widget _buildFree() {
     return LayoutBuilder(
       builder: (context, box) {
-        final s = box.maxWidth;
+        final s = Size(box.maxWidth, box.maxHeight);
         final sel = (_selItem >= 0 && _selItem < _items.length)
             ? _items[_selItem]
             : null;
@@ -1189,12 +1242,12 @@ class _CollageScreenState extends State<CollageScreen> {
 
   /// 選取框＋四個角點（都不吃事件：拖曳判斷在畫布那層做，
   /// 這裡吃掉的話拉角會變成拉不動）
-  List<Widget> _freeSelection(_FreeItem it, double s) {
+  List<Widget> _freeSelection(_FreeItem it, Size s) {
     final r = Rect.fromLTWH(
-      it.rect.left * s,
-      it.rect.top * s,
-      it.rect.width * s,
-      it.rect.height * s,
+      it.rect.left * s.width,
+      it.rect.top * s.height,
+      it.rect.width * s.width,
+      it.rect.height * s.height,
     );
     Widget dot(double x, double y) => Positioned(
       left: x - 5,
