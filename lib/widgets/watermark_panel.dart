@@ -110,6 +110,13 @@ class WatermarkPanel extends StatefulWidget {
   /// 一個區塊包成一張卡。照片編輯器拿來放「馬賽克」與「更多浮水印」
   final List<WmExtraSection> extraSections;
 
+  /// 接在「文字」那一區後面的額外卡片。
+  ///
+  /// 面板是分頁的（一次只建目前那一區），所以沒有自己那一格導覽的
+  /// 東西根本進不去——照片編輯的「更多浮水印」就掛在這裡，
+  /// 跟主浮水印同一頁，不必為它多佔一格
+  final Widget? textSectionExtra;
+
   /// 父層用它叫面板捲到文字／圖片區塊
   final WatermarkPanelController? controller;
 
@@ -134,6 +141,7 @@ class WatermarkPanel extends StatefulWidget {
     this.onAddGif,
     this.hideSaveButton = false,
     this.extraSections = const [],
+    this.textSectionExtra,
     this.controller,
     this.showNav = true,
     this.bottomInset = 0,
@@ -1279,6 +1287,10 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                         ),
                       ),
                     ),
+
+                  // 「更多浮水印」之類的附加卡：跟文字同一頁
+                  if (_on(_textCardKey) && widget.textSectionExtra != null)
+                    _card(widget.textSectionExtra!),
 
                   // ===== 卡片 3：圖片（可以放很多張；＋加入，點縮圖換要調哪一張）=====
                   if (_on(_logoCardKey))

@@ -56,18 +56,24 @@ void main() {
     );
     await _settle(t, 20);
 
-    // 面板改分頁模式：浮水印組的卡片在「更多」分頁裡，先切過去
-    await t.tap(find.text('更多'));
+    // 面板是分頁的：浮水印組的卡片掛在「浮水印」那一頁，先切過去
+    // （「更多」那格已經拿掉，見 _phNav）
+    await t.tap(find.text('浮水印').first);
     await _settle(t);
 
-    // 面板裡的「浮水印」加號卡
-    expect(find.text('浮水印'), findsWidgets);
-    await t.ensureVisible(find.text('浮水印').first);
+    // 面板裡的「浮水印」加號卡。導覽列那格也叫「浮水印」，
+    // 要的是卡片裡那個——挑捲動區裡的那一個
+    final addLabel = find.descendant(
+      of: find.byType(SingleChildScrollView),
+      matching: find.text('浮水印'),
+    );
+    expect(addLabel, findsWidgets);
+    await t.ensureVisible(addLabel.first);
     await _settle(t);
 
     // 加第一組
     final addRow = find.ancestor(
-      of: find.text('浮水印'),
+      of: addLabel,
       matching: find.byType(InkWell),
     );
     await t.tap(addRow.first, warnIfMissed: false);

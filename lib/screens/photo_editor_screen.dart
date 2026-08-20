@@ -1794,19 +1794,17 @@ final color = Color(picked ?? 0);
                         // 剛加的圖片直接選起來，可以馬上拖／縮放
                         onLogoAdded: () =>
                             setState(() => _wmPart = WmPart.logo),
-                        // 馬賽克/更多浮水印卡：插在圖片卡下面（照片模式限定）
+                        // 馬賽克卡：插在圖片卡下面（照片模式限定）
                         extraSections: [
                           (
                             label: '馬賽克',
                             icon: Icons.blur_on,
                             child: _mosaicSection(),
                           ),
-                          (
-                            label: '更多浮水印',
-                            icon: Icons.branding_watermark,
-                            child: _extraWmSection(),
-                          ),
                         ],
+                        // 「更多浮水印」跟主浮水印同一頁：導覽列不再給它
+                        // 一格，而面板是分頁的，沒掛在別人下面就進不去了
+                        textSectionExtra: _extraWmSection(),
                       ),
                     },
                         ),
