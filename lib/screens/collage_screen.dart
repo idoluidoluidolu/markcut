@@ -1159,13 +1159,62 @@ class _CollageScreenState extends State<CollageScreen> {
     _fDrag = _FreeDrag(corner: -1, start: _items[_selItem].rect, from: p);
   }
 
+  /// 吸附中的輔助線位置（比例座標；null＝這一軸沒吸到）
+  double? _guideX, _guideY;
+
+  /// 吸附的候選線：畫布的邊與中線＋其他方塊的邊。
+  /// 照片跟照片要能貼齊，靠的就是別人的邊也在候選裡
+  (List<double>, List<double>) _snapCands() {
+    final xs = [0.0, 0.5, 1.0];
+    final ys = [0.0, 0.5, 1.0];
+    for (var i = 0; i < _items.length; i++) {
+      if (i == _selItem) continue;
+      final o = _items[i].rect;
+      xs
+        ..add(o.left)
+        ..add(o.right);
+      ys
+        ..add(o.top)
+        ..add(o.bottom);
+    }
+    return (xs, ys);
+  }
+
+  /// 這一軸最近的吸附修正量：edges 是方塊上會動的邊，吸到候選線
+  /// 就回（要補的位移, 吸到哪條線）；都太遠回（0, null）
+  (double, double?) _snapAxis(
+    List<double> edges,
+    List<double> cands,
+    double th,
+  ) {
+    var best = 0.0;
+    double? line;
+    var bestD = th;
+    for (final e in edges) {
+      for (final c in cands) {
+        final dd = (c - e).abs();
+        if (dd < bestD) {
+          bestD = dd;
+          best = c - e;
+          line = c;
+        }
+      }
+    }
+    return (best, line);
+  }
+
   void _freePanUpdate(Offset p, Size s) {
     final d = _fDrag;
     if (d == null || _selItem < 0 || _selItem >= _items.length) return;
     final dx = (p.dx - d.from.dx) / s.width;
     final dy = (p.dy - d.from.dy) / s.height;
     final r = d.start;
+    // 吸附門檻：螢幕 8px。用比例座標比會隨畫布大小忽鬆忽緊
+    final thx = 8 / s.width;
+    final thy = 8 / s.height;
+    final (xCands, yCands) = _snapCands();
     ui.Rect nr;
+    double? gx, gy;
     if (d.corner == -1) {
       // 移動：中心不准出畫布，方塊才不會被丟到找不回來
       nr = r.shift(Offset(dx, dy));
@@ -1177,6 +1226,20 @@ class _CollageScreenState extends State<CollageScreen> {
         width: nr.width,
         height: nr.height,
       );
+      // 磁鐵：左右邊與中線去吸候選線，吸到就整塊平移過去
+      final (sx, lx) = _snapAxis(
+        [nr.left, nr.right, nr.center.dx],
+        xCands,
+        thx,
+      );
+      final (sy, ly) = _snapAxis(
+        [nr.top, nr.bottom, nr.center.dy],
+        yCands,
+        thy,
+      );
+      nr = nr.shift(Offset(sx, sy));
+      gx = lx;
+      gy = ly;
     } else {
       // 拉某一角：對角不動。可以拉出畫布一些（出血構圖），
       // 但不能小到抓不到（0.08 ≈ 手指的大小）
@@ -1184,17 +1247,48 @@ class _CollageScreenState extends State<CollageScreen> {
       var l = r.left, t = r.top, rr = r.right, b = r.bottom;
       if (d.corner == 0 || d.corner == 2) {
         l = (r.left + dx).clamp(-0.5, rr - mn);
+        final (sx, lx) = _snapAxis([l], xCands, thx);
+        if ((l + sx) < rr - mn) l += sx;
+        gx = lx;
       } else {
         rr = (r.right + dx).clamp(l + mn, 1.5);
+        final (sx, lx) = _snapAxis([rr], xCands, thx);
+        if ((rr + sx) > l + mn) rr += sx;
+        gx = lx;
       }
       if (d.corner == 0 || d.corner == 1) {
         t = (r.top + dy).clamp(-0.5, b - mn);
+        final (sy, ly) = _snapAxis([t], yCands, thy);
+        if ((t + sy) < b - mn) t += sy;
+        gy = ly;
       } else {
         b = (r.bottom + dy).clamp(t + mn, 1.5);
+        final (sy, ly) = _snapAxis([b], yCands, thy);
+        if ((b + sy) > t + mn) b += sy;
+        gy = ly;
       }
       nr = ui.Rect.fromLTRB(l, t, rr, b);
     }
-    setState(() => _items[_selItem].rect = nr);
+    // 剛吸上去的那一刻輕震一下（跟時間軸磁鐵同一個手感；web 是無感）
+    if ((gx != null && gx != _guideX) || (gy != null && gy != _guideY)) {
+      HapticFeedback.selectionClick();
+    }
+    setState(() {
+      _items[_selItem].rect = nr;
+      _guideX = gx;
+      _guideY = gy;
+    });
+  }
+
+  /// 手勢結束：收掉進行中的拖曳與吸附輔助線
+  void _endFreeDrag() {
+    _fDrag = null;
+    if (_guideX != null || _guideY != null) {
+      setState(() {
+        _guideX = null;
+        _guideY = null;
+      });
+    }
   }
 
   Widget _buildFree() {
@@ -1212,8 +1306,8 @@ class _CollageScreenState extends State<CollageScreen> {
           }),
           onPanStart: (e) => _freePanStart(e.localPosition, s),
           onPanUpdate: (e) => _freePanUpdate(e.localPosition, s),
-          onPanEnd: (_) => _fDrag = null,
-          onPanCancel: () => _fDrag = null,
+          onPanEnd: (_) => _endFreeDrag(),
+          onPanCancel: _endFreeDrag,
           child: Container(
             decoration: BoxDecoration(
               color: kPanel,
@@ -1235,6 +1329,28 @@ class _CollageScreenState extends State<CollageScreen> {
                     ),
                   ),
                 if (sel != null) ..._freeSelection(sel, s),
+                // 吸附輔助線：吸到哪條線就把那條畫出來，
+                // 不然使用者只覺得「怎麼卡了一下」
+                if (_guideX != null)
+                  Positioned(
+                    left: _guideX! * s.width - 0.5,
+                    top: 0,
+                    bottom: 0,
+                    width: 1,
+                    child: const IgnorePointer(
+                      child: ColoredBox(color: kSelect),
+                    ),
+                  ),
+                if (_guideY != null)
+                  Positioned(
+                    top: _guideY! * s.height - 0.5,
+                    left: 0,
+                    right: 0,
+                    height: 1,
+                    child: const IgnorePointer(
+                      child: ColoredBox(color: kSelect),
+                    ),
+                  ),
               ],
             ),
           ),
