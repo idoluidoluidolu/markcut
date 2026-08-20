@@ -273,6 +273,12 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
     .workingFormat: hdrOut ? CIFormat.RGBAh : CIFormat.RGBA8,
   ])
   private let queue = DispatchQueue(label: "markcut.ciexport")
+
+  /// 上一格合成完的畫面（指向我們自己輸出池的緩衝）。
+  /// 指令邊界的瞬間，某一軌的來源格常常還沒到位——那一格畫黑底
+  /// 就是使用者看到的「接縫閃黑」。缺格就重播上一格頂住，
+  /// 解碼器下一格就追上了
+  private var lastComposed: CIImage?
   private lazy var outCS: CGColorSpace = {
     if hdrOut, #available(iOS 14.0, *),
       let hlg = CGColorSpace(name: CGColorSpace.itur_2100_HLG)
@@ -427,6 +433,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           .filter { t >= $0.start && t < $0.end }
           .sorted { $0.z < $1.z }
         var mzIdx = 0
+        var missing = false
         for layer in ins.layers {
           while mzIdx < activeMz.count, activeMz[mzIdx].z <= layer.z {
             out = self.applyMosaic(activeMz[mzIdx], to: out, canvas: size)
@@ -435,6 +442,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           var img: CIImage
           if layer.trackID != kCMPersistentTrackID_Invalid {
             guard let buf = req.sourceFrame(byTrackID: layer.trackID) else {
+              missing = true
               continue
             }
             // HDR（HLG/PQ）來源：開系統的色調映射轉成 SDR，跟相簿、
@@ -501,16 +509,26 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           }
           out = img.cropped(to: canvasRect).composited(over: out)
         }
-        while mzIdx < activeMz.count {
-          out = self.applyMosaic(activeMz[mzIdx], to: out, canvas: size)
-          mzIdx += 1
-        }
-        for ov in ins.overlays {
-          if let o = ov.frame(at: t, canvas: size) {
-            out = o.composited(over: out)
+        if missing, let held = self.lastComposed {
+          // 邊界缺格：上一格原封重播（它已含馬賽克與疊加物）
+          out = held
+        } else {
+          while mzIdx < activeMz.count {
+            out = self.applyMosaic(activeMz[mzIdx], to: out, canvas: size)
+            mzIdx += 1
+          }
+          for ov in ins.overlays {
+            if let o = ov.frame(at: t, canvas: size) {
+              out = o.composited(over: out)
+            }
           }
         }
         self.ctx.render(out, to: dst, bounds: canvasRect, colorSpace: self.outCS)
+        if !missing {
+          // 引用的是我們自己的輸出緩衝（不是解碼器的），
+          // 只多佔用池子裡的一顆
+          self.lastComposed = CIImage(cvPixelBuffer: dst)
+        }
         req.finish(withComposedVideoFrame: dst)
       }
     }
