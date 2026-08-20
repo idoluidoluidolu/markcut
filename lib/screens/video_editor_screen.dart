@@ -644,6 +644,57 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   int _droppedOnLoad = 0; // 還原時因為檔案不見而剔除的片段數
 
+  /// 診斷用：整條時間軸的結構（每一軌每一段、修剪、旗標、縫隙）。
+  /// 遠端回報「哪種排法會頓」不用再靠截圖，報告裡就有時間軸本人
+  String _timelineDump() {
+    final b = StringBuffer();
+    final byTrack = <int, List<TimelineClip>>{};
+    for (final c in _tl.clips) {
+      byTrack.putIfAbsent(c.track, () => []).add(c);
+    }
+    String f(double v) => v.toStringAsFixed(2);
+    final tracks = byTrack.keys.toList()..sort();
+    for (final t in tracks.reversed) {
+      final clips = byTrack[t]!
+        ..sort((a, b) => a.offset.compareTo(b.offset));
+      final parts = <String>[];
+      double? prevEnd;
+      for (final c in clips) {
+        final src = _tl.sourceOf(c);
+        final kind = switch (src.kind) {
+          ClipKind.video => '影片',
+          ClipKind.audio => '聲音',
+          ClipKind.image =>
+            src.isGif ? 'GIF' : (src.isSticker ? '貼圖' : '圖片'),
+          ClipKind.text => '文字',
+          ClipKind.wm => '浮水印',
+          ClipKind.mosaic => '馬賽克',
+        };
+        if (prevEnd != null && c.offset - prevEnd > 0.001) {
+          parts.add('⋯縫 ${f(c.offset - prevEnd)}s⋯');
+        }
+        final flags = <String>[
+          if ((c.speed - 1).abs() > 0.001) '${c.speed}x',
+          if (c.cropped) '裁',
+          if (c.rotated) '旋${c.rotation.round()}',
+          if (c.faded) '透${(c.opacity * 100).round()}',
+          if (c.mirror) '鏡',
+          if (c.reverse) '倒',
+          if (src.kind == ClipKind.mosaic) '樣式${src.mosaicStyle?.type ?? 0}',
+        ];
+        parts.add(
+          '$kind ${f(c.offset)}~${f(c.end)}'
+          '（取 ${f(c.trimStart)}~${f(c.trimEnd)}）'
+          '${flags.isEmpty ? '' : '[${flags.join(',')}]'}',
+        );
+        prevEnd = c.end;
+      }
+      b.writeln('  軌 $t：${parts.join(' ')}');
+    }
+    return b.toString().trimRight();
+  }
+
+
   /// 草稿封面縮圖：時間軸上最早出現、有縮圖的影片/圖片片段（帶長寬比）
   /// 草稿封面的快取。個人中心是拿它當大圖顯示的，不能再借用時間軸
   /// 縮圖帶那幾張——那些只有 200px 高，放大到卡片寬度就糊了
@@ -4435,6 +4486,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       );
     }
     tr.env('片段數', '${_tl.clips.length}');
+    tr.env('時間軸', '\n${_timelineDump()}');
     unawaited(engine.hdrChainName().then((n) => tr.env('HDR 轉換', n)));
     // 工作檔到底有沒有生效：這一格對不對，決定了「順不順」是不是
     // 還在原檔上跑
