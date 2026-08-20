@@ -669,23 +669,24 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     }
   }
 
-  /// 置頂導覽列的項目。順序要跟 WatermarkPanel 裡那份一模一樣——
-  /// 這一條是自己畫的，但按下去是叫面板跳第幾區，索引對不上就跳錯。
+  /// 置頂導覽列的項目。sec＝WatermarkPanel 的區段索引（按下去是叫
+  /// 面板跳第幾區，對不上就跳錯）——「更多浮水印」那一區沒有自己的
+  /// 格子（列太擠了），要用就往下捲，所以格子跟區段不再一一對應。
   /// 第一格「範本」不是區段，按了直接開挑選視窗；最後的「調色」是
   /// 另一個模式（點了整個換掉下半部），因為調色面板自己有捲動清單，
   /// 塞不進面板當一張卡
   static const _phNav = [
-    (label: '範本', icon: Icons.bookmarks_outlined),
-    (label: '位置', icon: Icons.grid_view),
-    (label: '文字', icon: Icons.title),
-    (label: '圖片', icon: Icons.image_outlined),
-    (label: '馬賽克', icon: Icons.blur_on),
-    (label: '更多', icon: Icons.branding_watermark),
-    (label: '調色', icon: Icons.tune),
+    (label: '範本', icon: Icons.bookmarks_outlined, sec: 0),
+    (label: '位置', icon: Icons.grid_view, sec: 1),
+    // 這一區調的是「文字浮水印」，但對使用者來說它就是浮水印本體
+    (label: '浮水印', icon: Icons.title, sec: 2),
+    (label: '圖片', icon: Icons.image_outlined, sec: 3),
+    (label: '馬賽克', icon: Icons.blur_on, sec: 4),
+    (label: '調色', icon: Icons.tune, sec: -1),
   ];
 
   /// 調色在導覽列的位置（最後一格）
-  static const _phColorIdx = 6;
+  static const _phColorIdx = 5;
 
   Widget _sectionBar() => AnimatedBuilder(
         // 面板捲動時會回報捲到第幾區。只重畫這一條，
@@ -697,10 +698,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   Widget _sectionBarBody() {
     // 調色模式時高亮最後一格，否則跟著面板捲到哪就亮哪。
     // 捲到「更多浮水印」那一區時沒有對應的格子（見 _phNav），
-    // 這時不要亂亮——不然會亮到「調色」上面去
+    // indexWhere 找不到回 -1＝不亮，剛好是要的行為
     final sec = _wmPanelCtrl.activeSection;
-    final active =
-        _tab == 1 ? _phColorIdx : (sec < _phColorIdx ? sec : -1);
+    final active = _tab == 1
+        ? _phColorIdx
+        : _phNav.indexWhere((n) => n.sec == sec);
     return Container(
       color: kPanel,
       // 跟面板那份導覽列同一組內距（往上收緊，間隔才不會太鬆）
@@ -722,7 +724,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                     _tab = 0;
                     _colorCompare = false;
                   });
-                  _wmPanelCtrl.jumpToSection(i);
+                  _wmPanelCtrl.jumpToSection(_phNav[i].sec);
                 },
                 child: Container(
                   padding: const EdgeInsets.symmetric(vertical: 5),
@@ -1522,8 +1524,10 @@ final color = Color(picked ?? 0);
             ? const Center(child: CircularProgressIndicator())
             : Column(
                 children: [
+                  // 上 4 下 6：面板是主要工作區，太窄的話每次調整都在
+                  // 捲動；照片有全螢幕預覽可以看，這裡讓一點沒關係
                   Expanded(
-                    flex: 5,
+                    flex: 4,
                     // 雙指縮放浮水印（用 Listener 不搶單指拖曳手勢）
                     child: Listener(
                       onPointerDown: _pinchDown,
@@ -1754,7 +1758,7 @@ final color = Color(picked ?? 0);
                   _buildControlBar(),
                   _sectionBar(),
                   Expanded(
-                    flex: 5,
+                    flex: 6,
                     child: Stack(
                       children: [
                         Positioned.fill(
