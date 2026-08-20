@@ -4,7 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'
     show HapticFeedback, SystemUiOverlayStyle;
-import 'package:flutter_colorpicker/flutter_colorpicker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// 效能檢測模式（關於頁開關）：顯示 Flutter 的 UI/Raster 執行緒圖表，
 /// 卡頓時截圖就能判斷瓶頸在哪一層
@@ -685,39 +685,149 @@ const kPresetColors = [
 String _hex6(Color c) =>
     c.toARGB32().toRadixString(16).padLeft(8, '0').substring(2).toUpperCase();
 
+/// 最近用過的顏色（跨場次記著，最多 8 顆）
+const _kRecentColorsKey = 'recent_colors_v1';
+
 /// 挑一個顏色。回傳 ARGB 整數，取消回 null。
 ///
 /// 這段本來在六個地方各寫了一份（浮水印面板、照片馬賽克、
 /// 影片文字描邊、影片文字顏色、影片馬賽克、拼圖格線），
 /// 完全一樣的程式碼，只有拼圖那份標題寫「格線顏色」。
-/// 上面一排常用色、中間色盤、最底下可以直接打色碼
+///
+/// 版面（使用者選的 D 案）：最近用過＋常用色兩排、「色相」「深淺」
+/// 兩條滑桿、色碼欄。沒有 2D 色盤——挑色九成是「挑個大方向」，
+/// 兩條滑桿一隻手指就滑得完；要精準就打色碼
 Future<int?> pickColor(
   BuildContext context,
   Color initial, {
   String title = '顏色',
 }) async {
+  final prefs = await SharedPreferences.getInstance();
+  final recents = [
+    for (final s in prefs.getStringList(_kRecentColorsKey) ?? const <String>[])
+      ?int.tryParse(s),
+  ];
+  if (!context.mounted) return null;
+
   var color = initial;
+  // 滑桿的狀態跟顏色分開記：純黑純白反推不出色相，
+  // 只存顏色的話拖「深淺」到底再拉回來，色相就歸零變紅色
+  final hsv0 = HSVColor.fromColor(initial);
+  var hue = hsv0.hue;
+  var tone = hsv0.value * (1 - hsv0.saturation / 2);
   final hexCtrl = TextEditingController(text: _hex6(initial));
+
+  // 深淺一條滑到底：左半邊黑→純色（拉明度），右半邊純色→白（拉飽和）
+  Color toneColor(double h, double t) {
+    final tt = t.clamp(0.0, 1.0);
+    return tt <= 0.5
+        ? HSVColor.fromAHSV(1, h, 1, tt * 2).toColor()
+        : HSVColor.fromAHSV(1, h, 1 - (tt - 0.5) * 2, 1).toColor();
+  }
+
   final ok = await showDialog<bool>(
     context: context,
     builder: (context) => StatefulBuilder(
       builder: (context, setDialog) {
-        // 從色盤拖出來的變化：只更新色碼欄的字，不重建整個視窗——
-        // 重建會讓 ColorPicker 由 RGB 反推 HSV，在黑白灰附近
-        // 色相資訊會掉，拖到一半把手會跳走
-        void fromPicker(Color c) {
-          color = c;
-          hexCtrl.text = _hex6(c);
+        void fromSlider() {
+          setDialog(() {
+            color = toneColor(hue, tone);
+            hexCtrl.text = _hex6(color);
+          });
         }
 
-        // 點常用色或打色碼：要重建，色盤靠 didUpdateWidget 跟上
+        // 點色塊或打色碼：滑桿也要跟著新顏色站好
         void fromOutside(Color c, {bool typing = false}) {
           setDialog(() {
             color = c;
+            final hv = HSVColor.fromColor(c);
+            if (hv.saturation > 0.001) hue = hv.hue; // 黑白灰不動色相
+            tone = hv.value * (1 - hv.saturation / 2);
             if (!typing) hexCtrl.text = _hex6(c);
           });
         }
 
+        Widget swatch(int v) => Padding(
+          padding: const EdgeInsets.only(right: 9),
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: () => fromOutside(Color(v)),
+            child: Container(
+              width: 26,
+              height: 26,
+              decoration: BoxDecoration(
+                color: Color(v),
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: color.toARGB32() == v ? kSelect : kClipBorder,
+                  width: color.toARGB32() == v ? 2 : 1,
+                ),
+              ),
+            ),
+          ),
+        );
+
+        Widget swatchRow(List<int> colors) => SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(children: [for (final v in colors) swatch(v)]),
+        );
+
+        Widget label(String s) => Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Text(
+            s,
+            style: const TextStyle(fontSize: 11.5, color: kTextDim),
+          ),
+        );
+
+        // 漸層滑桿：點哪滑到哪。Slider 畫不出漸層軌道，自己排一條
+        Widget gradSlider({
+          required List<Color> colors,
+          required double value,
+          required ValueChanged<double> onChanged,
+        }) => LayoutBuilder(
+          builder: (context, cons) {
+            final w = cons.maxWidth;
+            void toValue(double dx) =>
+                onChanged((dx / w).clamp(0.0, 1.0));
+            return GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTapDown: (e) => toValue(e.localPosition.dx),
+              onHorizontalDragUpdate: (e) => toValue(e.localPosition.dx),
+              child: SizedBox(
+                height: 30,
+                child: Stack(
+                  alignment: Alignment.centerLeft,
+                  children: [
+                    Container(
+                      height: 14,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(7),
+                        gradient: LinearGradient(colors: colors),
+                      ),
+                    ),
+                    Positioned(
+                      left: (value.clamp(0.0, 1.0)) * (w - 20),
+                      child: Container(
+                        width: 20,
+                        height: 20,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          shape: BoxShape.circle,
+                          boxShadow: const [
+                            BoxShadow(color: Colors.black54, blurRadius: 4),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+
+        final vivid = HSVColor.fromAHSV(1, hue, 1, 1).toColor();
         return AlertDialog(
           title: Text(title),
           content: SingleChildScrollView(
@@ -725,63 +835,81 @@ Future<int?> pickColor(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // 常用色
-                Wrap(
-                  spacing: 9,
-                  runSpacing: 9,
-                  children: [
-                    for (final v in kPresetColors)
-                      InkWell(
-                        customBorder: const CircleBorder(),
-                        onTap: () => fromOutside(Color(v)),
-                        child: Container(
-                          width: 26,
-                          height: 26,
-                          decoration: BoxDecoration(
-                            color: Color(v),
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: color.toARGB32() == v
-                                  ? kSelect
-                                  : kClipBorder,
-                              width: color.toARGB32() == v ? 2 : 1,
-                            ),
-                          ),
-                        ),
-                      ),
+                if (recents.isNotEmpty) ...[
+                  label('最近'),
+                  swatchRow(recents),
+                  const SizedBox(height: 10),
+                  label('常用'),
+                ],
+                swatchRow(kPresetColors),
+                const SizedBox(height: 14),
+                label('色相'),
+                gradSlider(
+                  colors: const [
+                    Color(0xFFFF0000),
+                    Color(0xFFFFFF00),
+                    Color(0xFF00FF00),
+                    Color(0xFF00FFFF),
+                    Color(0xFF0000FF),
+                    Color(0xFFFF00FF),
+                    Color(0xFFFF0000),
                   ],
+                  value: hue / 360,
+                  onChanged: (v) {
+                    hue = v * 360;
+                    fromSlider();
+                  },
+                ),
+                const SizedBox(height: 8),
+                label('深淺'),
+                gradSlider(
+                  colors: [Colors.black, vivid, Colors.white],
+                  value: tone,
+                  onChanged: (v) {
+                    tone = v;
+                    fromSlider();
+                  },
                 ),
                 const SizedBox(height: 14),
-                ColorPicker(
-                  pickerColor: color,
-                  enableAlpha: false,
-                  labelTypes: const [],
-                  onColorChanged: fromPicker,
-                ),
-                const SizedBox(height: 4),
-                // 色碼：打滿 6 碼就套用
-                TextField(
-                  controller: hexCtrl,
-                  maxLength: 6,
-                  textCapitalization: TextCapitalization.characters,
-                  style: const TextStyle(
-                    fontSize: 14,
-                    letterSpacing: 1.2,
-                    fontFeatures: [FontFeature.tabularFigures()],
-                  ),
-                  decoration: const InputDecoration(
-                    prefixText: '# ',
-                    counterText: '',
-                    isDense: true,
-                    labelText: '色碼',
-                  ),
-                  onChanged: (v) {
-                    final t = v.trim().replaceAll('#', '');
-                    if (t.length != 6) return;
-                    final n = int.tryParse(t, radix: 16);
-                    if (n == null) return;
-                    fromOutside(Color(0xFF000000 | n), typing: true);
-                  },
+                // 色碼：左邊一塊目前的顏色，打滿 6 碼就套用
+                Row(
+                  children: [
+                    Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        color: color,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: kClipBorder),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        controller: hexCtrl,
+                        maxLength: 6,
+                        textCapitalization: TextCapitalization.characters,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          letterSpacing: 1.2,
+                          fontFeatures: [FontFeature.tabularFigures()],
+                        ),
+                        decoration: const InputDecoration(
+                          prefixText: '# ',
+                          counterText: '',
+                          isDense: true,
+                          labelText: '色碼',
+                        ),
+                        onChanged: (v) {
+                          final t = v.trim().replaceAll('#', '');
+                          if (t.length != 6) return;
+                          final n = int.tryParse(t, radix: 16);
+                          if (n == null) return;
+                          fromOutside(Color(0xFF000000 | n), typing: true);
+                        },
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -800,7 +928,21 @@ Future<int?> pickColor(
       },
     ),
   );
-  return ok == true ? color.toARGB32() : null;
+  if (ok != true) return null;
+  // 記進「最近」：常用色本來就在排上，不用重複記
+  final v = color.toARGB32();
+  if (!kPresetColors.contains(v)) {
+    recents
+      ..remove(v)
+      ..insert(0, v);
+    while (recents.length > 8) {
+      recents.removeLast();
+    }
+    await prefs.setStringList(_kRecentColorsKey, [
+      for (final x in recents) '$x',
+    ]);
+  }
+  return v;
 }
 
 /// 離開編輯畫面時的三選一：保留／捨棄／繼續編輯。
