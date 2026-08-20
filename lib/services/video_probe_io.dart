@@ -7,8 +7,13 @@ import 'package:media_kit/media_kit.dart' as mk;
 import 'package:media_kit_video/media_kit_video.dart' as mkv;
 import 'package:video_player/video_player.dart';
 
+import 'package:path_provider/path_provider.dart';
+
+import '../models/timeline.dart';
 import 'frame_check.dart';
+import 'native_export.dart';
 import 'native_frames.dart';
+import 'video_processor.dart';
 import 'work_files.dart';
 
 /// 播放偵測：對同一支影片把每一層解碼路徑各跑一遍，量化成一份
@@ -165,6 +170,89 @@ Future<void> runVideoProbe(String path, void Function(String) log) async {
       final b = await nativeFrameAt(work, 1.0, maxH: 240);
       final lum = b == null ? null : await meanLuminance(b);
       log('工作檔 OK：亮度 ${lum?.toStringAsFixed(1) ?? '解不開'}');
+    }
+  } catch (e) {
+    log('失敗：$e');
+  }
+
+  log('');
+
+  // ---- 7. 匯出顏色還原：用原生匯出管線真的匯 2 秒，
+  // 跟原檔同一時間點抽幀比色差。HDR 的沖淡過曝在這裡直接以數字現形
+  //（iOS＝CIExportCompositor + toneMapHDRtoSDR 那條；Android＝media3）
+  log('— 匯出顏色還原（原生管線）—');
+  try {
+    if (!await NativeExport.available) {
+      log('這台沒有原生匯出（會走 FFmpeg），略過');
+    } else {
+      final vp2 = VideoPlayerController.file(File(path));
+      await vp2.initialize().timeout(const Duration(seconds: 8));
+      final w = vp2.value.size.width.round() & ~1;
+      final h = vp2.value.size.height.round() & ~1;
+      final dur = vp2.value.duration.inMilliseconds / 1000.0;
+      unawaited(vp2.dispose());
+      final end = dur < 2.5 ? dur : 2.5;
+      final spec = ExportSpec(
+        sources: [
+          MediaSource(
+            path: path,
+            name: 'probe',
+            kind: ClipKind.video,
+            duration: dur,
+            w: w,
+            h: h,
+          ),
+        ],
+        clips: [
+          TimelineClip(
+            id: 1,
+            sourceIndex: 0,
+            trimStart: 0,
+            trimEnd: end,
+            offset: 0,
+            track: 0,
+          ),
+        ],
+        timelineDuration: end,
+        speed: 1,
+        watermarkPng: null,
+        outW: w < 2 ? 1920 : w,
+        outH: h < 2 ? 1080 : h,
+      );
+      final tmp = await getTemporaryDirectory();
+      final dest = '${tmp.path}${Platform.pathSeparator}probe_color.mp4';
+      final made = await NativeExport.run(spec, dest);
+      if (made == null) {
+        log('原生匯出失敗（App 會退 FFmpeg 路線）——這本身是線索');
+      } else {
+        final t = end / 2 < 0.3 ? end / 2 : (end / 2 > 2.0 ? 2.0 : end / 2);
+        final a = await nativeFrameAt(path, t, maxH: 240);
+        final b = await nativeFrameAt(made, t, maxH: 240);
+        if (a == null || b == null) {
+          log('抽幀失敗（原檔 ${a != null}、匯出檔 ${b != null}）');
+        } else {
+          final la = await meanLuminance(a);
+          final lb = await meanLuminance(b);
+          final diff = await frameColorDiff(a, b);
+          log(
+            '亮度 原檔 ${la?.toStringAsFixed(1)} / '
+            '匯出 ${lb?.toStringAsFixed(1)}，'
+            '逐格色差 ${diff?.toStringAsFixed(1) ?? '?'} /255',
+          );
+          if (diff != null) {
+            log(
+              diff < 12
+                  ? '→ 顏色一致'
+                  : diff < 25
+                  ? '→ 有一點差（可能是壓縮），把報告傳回來'
+                  : '→ 顏色跑掉了（HDR 還原有問題），把報告傳回來',
+            );
+          }
+        }
+        try {
+          File(made).deleteSync();
+        } catch (_) {}
+      }
     }
   } catch (e) {
     log('失敗：$e');

@@ -1722,13 +1722,13 @@ class WatermarkPanelState extends State<WatermarkPanel> {
           ),
         ),
         const SizedBox(height: 8),
-        // 撐滿可用寬度（上限 320）：這一區現在只有九宮格，
-        // 固定 180 寬在整頁裡顯得很小，旁邊白白空一大片
+        // 上限 240：原本固定 180 太小、放到 320 又在影片編輯那種
+        // 比較矮的面板裡佔掉大半——240 在兩邊都剛好
         LayoutBuilder(
           builder: (context, cons) {
             final w = cons.maxWidth.isFinite
-                ? math.min(cons.maxWidth, 320.0)
-                : 320.0;
+                ? math.min(cons.maxWidth, 240.0)
+                : 240.0;
             return Center(
               child: Container(
                 width: w,
