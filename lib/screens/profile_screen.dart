@@ -530,68 +530,76 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             // 進草稿夾看，但清單就在這一頁，藏起來只是多一步
                             child: _draftGrid(p),
                           ),
+                        // 行動鈕跟頁尾連結跟著內容捲（不釘底）：
+                        // 釘底會一直吃掉一截可視高度，草稿多的時候很擠
+                        const SizedBox(height: 30),
+                        Padding(
+                          padding: _side,
+                          child: GestureDetector(
+                            onTap: _openLove,
+                            child: Container(
+                              height: 54,
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: kLAccent,
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                              child: const Text(
+                                '太好用啦',
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w800,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            GestureDetector(
+                              onTap: () => showFeedbackDialog(context),
+                              child: const Text(
+                                '意見回饋',
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  color: kLTextDim,
+                                ),
+                              ),
+                            ),
+                            const Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 10),
+                              child: Text(
+                                '·',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Color(0xFFB0B0BA),
+                                ),
+                              ),
+                            ),
+                            GestureDetector(
+                              onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) =>
+                                      const LightPage(child: AboutScreen()),
+                                ),
+                              ),
+                              child: const Text(
+                                '關於這個 App',
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  color: kLTextDim,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ],
                     ),
                   ),
-                ),
-                const SizedBox(height: 16),
-                // 首頁那顆主行動鈕的長相
-                Padding(
-                  padding: _side,
-                  child: GestureDetector(
-                    onTap: _openLove,
-                    child: Container(
-                      height: 54,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: kLAccent,
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: const Text(
-                        '太好用啦',
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w800,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 14),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    GestureDetector(
-                      onTap: () => showFeedbackDialog(context),
-                      child: const Text(
-                        '意見回饋',
-                        style: TextStyle(fontSize: 12.5, color: kLTextDim),
-                      ),
-                    ),
-                    const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 10),
-                      child: Text(
-                        '·',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Color(0xFFB0B0BA),
-                        ),
-                      ),
-                    ),
-                    GestureDetector(
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const LightPage(child: AboutScreen()),
-                        ),
-                      ),
-                      child: const Text(
-                        '關於這個 App',
-                        style: TextStyle(fontSize: 12.5, color: kLTextDim),
-                      ),
-                    ),
-                  ],
                 ),
               ],
             ),
@@ -682,6 +690,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
     required String subtitle,
     required VoidCallback onTap,
     required VoidCallback onDelete,
+
     /// 縮圖的寬高比。null＝沒有縮圖（放圖示佔位，維持方框）
     double? coverAspect,
   }) {
@@ -705,7 +714,10 @@ class _DraftsScreenState extends State<DraftsScreen> {
                   height: 52,
                   width: 52 * (coverAspect ?? 1.0).clamp(0.4, 2.5),
                   child: coverAspect == null
-                      ? ColoredBox(color: kLTile, child: Center(child: cover))
+                      ? ColoredBox(
+                          color: kLTile,
+                          child: Center(child: cover),
+                        )
                       : cover,
                 ),
               ),
