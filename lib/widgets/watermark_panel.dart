@@ -1670,15 +1670,13 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   }
 
   /// W2 卡片群組：每個設定群組一張卡片
+  /// 一個設定區塊。不畫框：面板改成分頁之後一次只出現一區，
+  /// 那層框原本是用來把疊在一起的好幾區分開的，現在沒有東西要分——
+  /// 留著只是在一塊小區域裡多一圈線
   Widget _card(Widget child) {
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
-      decoration: BoxDecoration(
-        color: kPanel,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: kBorder),
-      ),
+      padding: const EdgeInsets.fromLTRB(2, 10, 2, 12),
       child: child,
     );
   }
