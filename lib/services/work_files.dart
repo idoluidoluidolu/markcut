@@ -7,7 +7,9 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'diagnostics.dart';
+import 'frame_check.dart';
 import 'media_prep.dart';
+import 'native_frames.dart';
 
 /// 素材的工作檔管理：一份素材轉一次，之後整支 App 都用轉好的那份。
 ///
@@ -134,6 +136,21 @@ class WorkFiles {
       } catch (_) {}
       return null;
     }
+    // 轉出來的檔要先驗過才敢用。
+    //
+    // Pixel 上的螢幕錄影（1080x2410）踩到這個坑：短邊本來就是 1080，
+    // 轉檔等於原尺寸重編一次，而 2410 不是 16 的倍數——硬體編碼器
+    // 「成功」產出一個播起來全黑的檔。Transformer 回報成功、檔案也在，
+    // 只有真的去解一格才看得出來。
+    // 驗不過就當轉檔失敗，退回原檔（那條路本來就有）
+    if (!await _looksUsable(src, made)) {
+      Diag.note('工作檔畫面壞掉，退回原檔：${src.split('/').last}');
+      Diag.count('工作檔壞掉');
+      try {
+        File(made).deleteSync();
+      } catch (_) {}
+      return null;
+    }
     final idx = await _load();
     idx[src] = {
       'work': made,
@@ -143,6 +160,42 @@ class WorkFiles {
     await _save();
     unawaited(sweep());
     return made;
+  }
+
+  /// 這份工作檔畫得出東西嗎。
+  ///
+  /// 抽兩格算亮度，跟原檔同一個時間點比：原檔看得見、工作檔卻是全黑
+  /// （或根本解不開）＝編碼器吐了壞檔。
+  /// 只有在原檔本身夠亮的時候才判定——真的很暗的素材不能誤殺
+  static Future<bool> _looksUsable(String src, String work) async {
+    try {
+      var srcMax = 0.0;
+      var workMax = 0.0;
+      var workReadable = false;
+      for (final t in const [0.5, 2.0]) {
+        final sb = await nativeFrameAt(src, t, maxH: 120);
+        if (sb != null) {
+          final v = await meanLuminance(sb);
+          if (v != null && v > srcMax) srcMax = v;
+        }
+        final wb = await nativeFrameAt(work, t, maxH: 120);
+        if (wb != null) {
+          final v = await meanLuminance(wb);
+          if (v != null) {
+            workReadable = true;
+            if (v > workMax) workMax = v;
+          }
+        }
+      }
+      // 原檔也抽不到（權限、格式怪）＝沒有基準可比，不要亂判，放行
+      if (srcMax <= 0) return true;
+      if (!workReadable) return false; // 工作檔連一格都解不開
+      // 原檔看得見、工作檔幾乎全黑
+      if (srcMax > 8 && workMax < 2) return false;
+      return true;
+    } catch (_) {
+      return true; // 驗不動就放行，寧可維持原本的行為
+    }
   }
 
   /// 清掉用不到的工作檔：原檔已經不見的、索引對不上的、超過總量的。

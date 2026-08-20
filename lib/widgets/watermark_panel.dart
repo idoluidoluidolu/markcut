@@ -1722,60 +1722,72 @@ class WatermarkPanelState extends State<WatermarkPanel> {
           ),
         ),
         const SizedBox(height: 8),
-        Center(
-          child: Container(
-            width: 180,
-            height: 102,
-            decoration: BoxDecoration(
-              color: kBg,
-              border: Border.all(color: kBorder),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                for (final gy in ys)
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      for (final gx in xs)
-                        InkWell(
-                          onTap: () => pick(gx, gy),
-                          customBorder: const CircleBorder(),
-                          child: Container(
-                            width: 30,
-                            height: 30,
-                            alignment: Alignment.center,
-                            child: Container(
-                              width:
-                                  ((x - gx).abs() < 0.17 &&
-                                      (y - gy).abs() < 0.18)
-                                  ? 14.0
-                                  : 10.0,
-                              height:
-                                  ((x - gx).abs() < 0.17 &&
-                                      (y - gy).abs() < 0.18)
-                                  ? 14.0
-                                  : 10.0,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color:
-                                    ((x - gx).abs() < 0.17 &&
-                                        (y - gy).abs() < 0.18)
-                                    ? kAmber
-                                    : kPanelHi,
-                                border: Border.all(color: kBorder, width: 0.5),
+        // 撐滿可用寬度（上限 320）：這一區現在只有九宮格，
+        // 固定 180 寬在整頁裡顯得很小，旁邊白白空一大片
+        LayoutBuilder(
+          builder: (context, cons) {
+            final w = cons.maxWidth.isFinite
+                ? math.min(cons.maxWidth, 320.0)
+                : 320.0;
+            return Center(
+              child: Container(
+                width: w,
+                height: w * 102 / 180,
+                decoration: BoxDecoration(
+                  color: kBg,
+                  border: Border.all(color: kBorder),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    for (final gy in ys)
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          for (final gx in xs)
+                            InkWell(
+                              onTap: () => pick(gx, gy),
+                              customBorder: const CircleBorder(),
+                              child: Container(
+                                width: w / 6,
+                                height: w / 6,
+                                alignment: Alignment.center,
+                                child: Container(
+                                  width:
+                                      ((x - gx).abs() < 0.17 &&
+                                          (y - gy).abs() < 0.18)
+                                      ? w / 13
+                                      : w / 18,
+                                  height:
+                                      ((x - gx).abs() < 0.17 &&
+                                          (y - gy).abs() < 0.18)
+                                      ? w / 13
+                                      : w / 18,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color:
+                                        ((x - gx).abs() < 0.17 &&
+                                            (y - gy).abs() < 0.18)
+                                        ? kAmber
+                                        : kPanelHi,
+                                    border: Border.all(
+                                      color: kBorder,
+                                      width: 0.5,
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
-                          ),
-                        ),
-                    ],
-                  ),
-              ],
-            ),
-          ),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 8),
         const Text(
           '點一格，直接對齊到畫面該處',
           style: TextStyle(fontSize: 10, color: kTextDim),

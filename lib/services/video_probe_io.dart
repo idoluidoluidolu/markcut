@@ -1,7 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
-import 'dart:ui' as ui;
 
 import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
 import 'package:flutter/services.dart' show MethodChannel;
@@ -9,7 +7,9 @@ import 'package:media_kit/media_kit.dart' as mk;
 import 'package:media_kit_video/media_kit_video.dart' as mkv;
 import 'package:video_player/video_player.dart';
 
+import 'frame_check.dart';
 import 'native_frames.dart';
+import 'work_files.dart';
 
 /// 播放偵測：對同一支影片把每一層解碼路徑各跑一遍，量化成一份
 /// 可以複製回傳的報告——遠端使用者的「沒畫面」一份報告就能定位。
@@ -85,7 +85,7 @@ Future<void> runVideoProbe(String path, void Function(String) log) async {
       log('${t}s：抽不到');
       continue;
     }
-    final lum = await _meanLuminance(b);
+    final lum = await meanLuminance(b);
     log('${t}s：${lum?.toStringAsFixed(1) ?? '解不開'}');
   }
   log('');
@@ -144,7 +144,7 @@ Future<void> runVideoProbe(String path, void Function(String) log) async {
         log('截圖$i：拿不到（硬解影格可能不給讀，這本身也是線索）');
         continue;
       }
-      final lum = await _meanLuminance(s);
+      final lum = await meanLuminance(s);
       log('截圖$i 亮度：${lum?.toStringAsFixed(1) ?? '解不開'}');
     }
   } catch (e) {
@@ -153,34 +153,27 @@ Future<void> runVideoProbe(String path, void Function(String) log) async {
     p.dispose();
   }
   log('');
+
+  // ---- 6. 工作檔：轉一份出來，看它畫不畫得出東西
+  //（黑畫面最後一個嫌疑：轉檔「成功」卻吐出壞檔）
+  log('— 工作檔 —');
+  try {
+    final work = await WorkFiles.ensure(path);
+    if (work == null) {
+      log('沒有工作檔（轉檔失敗或驗不過 → App 會用原檔，這是安全的）');
+    } else {
+      final b = await nativeFrameAt(work, 1.0, maxH: 240);
+      final lum = b == null ? null : await meanLuminance(b);
+      log('工作檔 OK：亮度 ${lum?.toStringAsFixed(1) ?? '解不開'}');
+    }
+  } catch (e) {
+    log('失敗：$e');
+  }
+
+  log('');
   log('— 判讀 —');
   log('系統抽幀亮、mpv 黑 → mpv 硬解吃不下這支檔');
   log('全部黑 → 檔案或系統解碼本身的問題');
   log('把整份報告複製傳回來即可');
   log('=== 報告結束 ===');
-}
-
-/// 一張圖（JPEG/PNG bytes）的平均亮度（0~255）。
-/// 縮到 64 寬再抽樣：夠判斷黑不黑，不用整張算
-Future<double?> _meanLuminance(Uint8List bytes) async {
-  try {
-    final codec = await ui.instantiateImageCodec(bytes, targetWidth: 64);
-    final frame = await codec.getNextFrame();
-    final data = await frame.image.toByteData(
-      format: ui.ImageByteFormat.rawRgba,
-    );
-    frame.image.dispose();
-    codec.dispose();
-    if (data == null) return null;
-    final b = data.buffer.asUint8List();
-    var sum = 0.0;
-    var n = 0;
-    for (var i = 0; i + 3 < b.length; i += 16) {
-      sum += 0.299 * b[i] + 0.587 * b[i + 1] + 0.114 * b[i + 2];
-      n++;
-    }
-    return n == 0 ? null : sum / n;
-  } catch (_) {
-    return null;
-  }
 }
