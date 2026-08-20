@@ -4,9 +4,6 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-// flutter_colorpicker 也輸出一個叫 CheckerPainter 的類別，藏掉它
-import 'package:flutter_colorpicker/flutter_colorpicker.dart'
-    hide CheckerPainter;
 
 import '../services/photo_saver.dart';
 import '../theme.dart';
@@ -330,43 +327,16 @@ class _DrawScreenState extends State<_DrawScreen> {
     });
   }
 
-  /// 調色盤：挑任意顏色（挑完直接拿在手上）
+  /// 調色盤：挑任意顏色（挑完直接拿在手上）。
+  /// 走全 App 共用的挑色視窗（最近＋常用＋色相/深淺＋色碼）
   Future<void> _openPicker() async {
-    var pick = _custom;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('調色盤'),
-        contentPadding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-        content: SingleChildScrollView(
-          child: ColorPicker(
-            pickerColor: pick,
-            onColorChanged: (c) => pick = c,
-            enableAlpha: false,
-            hexInputBar: true,
-            labelTypes: const [],
-            pickerAreaBorderRadius: BorderRadius.circular(10),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('就用這個'),
-          ),
-        ],
-      ),
-    );
-    if (ok == true && mounted) {
-      setState(() {
-        _custom = pick;
-        _color = pick;
-        if (_brush == _Brush.eraser) _brush = _Brush.pen;
-      });
-    }
+    final picked = await pickColor(context, _custom, title: '調色盤');
+    if (picked == null || !mounted) return;
+    setState(() {
+      _custom = Color(picked);
+      _color = _custom;
+      if (_brush == _Brush.eraser) _brush = _Brush.pen;
+    });
   }
 
   /// 把畫好的透明 PNG 直接存進相簿（不進浮水印流程也拿得到圖）
