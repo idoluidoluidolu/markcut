@@ -261,6 +261,14 @@ final class CIExportCompositor: NSObject, AVVideoCompositing {
     kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)
   ]
 
+  // 沒有這兩個旗標的話，AVFoundation 會在把畫格交給我們「之前」
+  // 自己先把 HDR 轉成 SDR——那一步是純色度轉換、沒有色調映射，
+  // HLG 的像素被當成 709 解，成品就是整片沖淡、過曝。
+  // 而我們自己的 toneMapHDRtoSDR 這時拿到的已經是標成 SDR 的畫格，
+  // 等於空轉。宣告支援之後，HDR 畫格原封進來，色調映射才輪得到我們
+  var supportsWideColorSourceFrames = true
+  var supportsHDRSourceFrames = true
+
   func renderContextChanged(_ newContext: AVVideoCompositionRenderContext) {}
   func cancelAllPendingVideoCompositionRequests() {}
 
