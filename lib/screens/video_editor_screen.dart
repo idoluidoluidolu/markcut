@@ -9367,17 +9367,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       _toolBtn(
                         Icons.speed,
                         '速度',
-                        // 選著「變速無意義」的素材（GIF/圖片/文字/馬賽克/
-                        // 浮水印）時不給按：以前會默默開成「整體速度」，
-                        // 使用者以為在調那個素材，改了又沒反應
+                        // 速度只針對單一素材：一定要選著影片/聲音片段。
+                        // 「整體速度」拿掉了——以前沒選片段會默默開成
+                        // 全域變速，使用者以為在調選中的素材
                         (sel != null &&
-                                !_tl.sourceOf(sel).isVideo &&
-                                _tl.sourceOf(sel).kind != ClipKind.audio)
-                            ? null
-                            : _openSpeedSheet,
-                        tip: '播放速度',
-                        disabledHint: '這種素材沒有速度可調（長度直接拖把手）；'
-                            '要調整條影片的速度，先點空白處取消選取',
+                                (_tl.sourceOf(sel).isVideo ||
+                                    _tl.sourceOf(sel).kind == ClipKind.audio))
+                            ? _openSpeedSheet
+                            : null,
+                        tip: '片段速度',
+                        disabledHint: sel == null
+                            ? '先在時間軸點選要變速的影片或聲音片段'
+                            : '這種素材沒有速度可調（長度直接拖把手就好）',
                       ),
                       _toolBtn(
                         Icons.gradient,
@@ -9881,8 +9882,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     onDone();
   }
 
-  /// 速度選單：選了片段＝調「那個片段」的速度（時間軸長度跟著縮放、
-  /// 匯出同步生效）；沒選片段＝調整條影片的播放速度
+  /// 速度選單：只調「選中那個片段」的速度（時間軸長度跟著縮放、
+  /// 匯出同步生效）。全域變速拿掉了——速度永遠針對單一素材
   void _openSpeedSheet() {
     final selId = _sel; // 倒轉會換掉片段實例，之後都用 id 重查
     final sel = _selClipById(selId);
@@ -9892,6 +9893,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         sel != null &&
         selSrc != null &&
         (selSrc.isVideo || selSrc.kind == ClipKind.audio);
+    if (!clipMode) return; // 按鈕已經擋了，這裡是保險
     var pushed = false; // 這次選單只拍一次快照
     // 拖過方向線先掛著，「放開滑桿」才真的做倒轉／還原——
     // 不然拖到一半就跳出處理視窗，嚇人
