@@ -714,9 +714,12 @@ Future<int?> pickColor(
   // 只存顏色的話拖「深淺」到底再拉回來，色相就歸零變紅色
   final hsv0 = HSVColor.fromColor(initial);
   var hue = hsv0.hue;
-  // 深淺開門停中間（＝純色）：往左變深、往右變淺，兩邊都有路可走。
-  // 照目前顏色反推的話，白色會停在最右邊，第一下只能往回拖
-  var tone = 0.5;
+  // 深淺照目前的顏色站位：使用者上次調到深綠，重開就該停在深的那邊
+  // ——「預設停中間」試過，跟目前顏色對不上反而像壞掉。
+  // 只有黑白灰（沒有深淺可言）才停中間，第一下往哪拖都有路
+  var tone = hsv0.saturation < 0.001 && hsv0.value > 0.999
+      ? 0.5
+      : hsv0.value * (1 - hsv0.saturation / 2);
   final hexCtrl = TextEditingController(text: _hex6(initial));
 
   // 深淺一條滑到底：左半邊黑→純色（拉明度），右半邊純色→白（拉飽和）
