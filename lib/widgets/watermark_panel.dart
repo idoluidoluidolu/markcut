@@ -323,6 +323,9 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       s.logo.enabled = true;
       s.logo.drawn = true; // 之後「編輯」看這個旗標
       s.logo.drawData = res.data; // 筆畫資料：編輯時還原成活的
+      // 選了手繪＝主角是那張畫，預設的「@浮水印」文字先關掉——
+      // 幾乎沒有人要兩個一起出現，要的話再自己打開
+      s.text.enabled = false;
     });
     widget.onLogoAdded?.call();
     // 畫完回來直接站在「圖片」分頁：剛畫好的那張已是操作中，
