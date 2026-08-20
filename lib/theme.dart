@@ -665,39 +665,139 @@ Future<String?> askPhotoFormat(BuildContext context) {
   );
 }
 
+/// 常用色（挑色視窗最上面那排）：黑白灰＋一輪基本色相
+const kPresetColors = [
+  0xFFFFFFFF,
+  0xFF000000,
+  0xFF9E9EA6,
+  0xFFE53935,
+  0xFFFF7043,
+  0xFFFFC24B,
+  0xFFFFEB3B,
+  0xFF66BB6A,
+  0xFF26C6DA,
+  0xFF42A5F5,
+  0xFFAB47BC,
+  0xFFF06292,
+];
+
+/// RRGGBB 大寫色碼（不含 #）
+String _hex6(Color c) =>
+    c.toARGB32().toRadixString(16).padLeft(8, '0').substring(2).toUpperCase();
+
 /// 挑一個顏色。回傳 ARGB 整數，取消回 null。
 ///
 /// 這段本來在六個地方各寫了一份（浮水印面板、照片馬賽克、
 /// 影片文字描邊、影片文字顏色、影片馬賽克、拼圖格線），
-/// 完全一樣的程式碼，只有拼圖那份標題寫「格線顏色」
+/// 完全一樣的程式碼，只有拼圖那份標題寫「格線顏色」。
+/// 上面一排常用色、中間色盤、最底下可以直接打色碼
 Future<int?> pickColor(
   BuildContext context,
   Color initial, {
   String title = '顏色',
 }) async {
   var color = initial;
+  final hexCtrl = TextEditingController(text: _hex6(initial));
   final ok = await showDialog<bool>(
     context: context,
-    builder: (context) => AlertDialog(
-      title: Text(title),
-      content: SingleChildScrollView(
-        child: ColorPicker(
-          pickerColor: color,
-          enableAlpha: false,
-          labelTypes: const [],
-          onColorChanged: (c) => color = c,
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, false),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.pop(context, true),
-          child: const Text('確定'),
-        ),
-      ],
+    builder: (context) => StatefulBuilder(
+      builder: (context, setDialog) {
+        // 從色盤拖出來的變化：只更新色碼欄的字，不重建整個視窗——
+        // 重建會讓 ColorPicker 由 RGB 反推 HSV，在黑白灰附近
+        // 色相資訊會掉，拖到一半把手會跳走
+        void fromPicker(Color c) {
+          color = c;
+          hexCtrl.text = _hex6(c);
+        }
+
+        // 點常用色或打色碼：要重建，色盤靠 didUpdateWidget 跟上
+        void fromOutside(Color c, {bool typing = false}) {
+          setDialog(() {
+            color = c;
+            if (!typing) hexCtrl.text = _hex6(c);
+          });
+        }
+
+        return AlertDialog(
+          title: Text(title),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // 常用色
+                Wrap(
+                  spacing: 9,
+                  runSpacing: 9,
+                  children: [
+                    for (final v in kPresetColors)
+                      InkWell(
+                        customBorder: const CircleBorder(),
+                        onTap: () => fromOutside(Color(v)),
+                        child: Container(
+                          width: 26,
+                          height: 26,
+                          decoration: BoxDecoration(
+                            color: Color(v),
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: color.toARGB32() == v
+                                  ? kSelect
+                                  : kClipBorder,
+                              width: color.toARGB32() == v ? 2 : 1,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                ColorPicker(
+                  pickerColor: color,
+                  enableAlpha: false,
+                  labelTypes: const [],
+                  onColorChanged: fromPicker,
+                ),
+                const SizedBox(height: 4),
+                // 色碼：打滿 6 碼就套用
+                TextField(
+                  controller: hexCtrl,
+                  maxLength: 6,
+                  textCapitalization: TextCapitalization.characters,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    letterSpacing: 1.2,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                  decoration: const InputDecoration(
+                    prefixText: '# ',
+                    counterText: '',
+                    isDense: true,
+                    labelText: '色碼',
+                  ),
+                  onChanged: (v) {
+                    final t = v.trim().replaceAll('#', '');
+                    if (t.length != 6) return;
+                    final n = int.tryParse(t, radix: 16);
+                    if (n == null) return;
+                    fromOutside(Color(0xFF000000 | n), typing: true);
+                  },
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('確定'),
+            ),
+          ],
+        );
+      },
     ),
   );
   return ok == true ? color.toARGB32() : null;

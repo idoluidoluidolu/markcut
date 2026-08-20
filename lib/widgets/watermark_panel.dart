@@ -963,7 +963,13 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                     ),
                                     alignment: Alignment.center,
                                     decoration: BoxDecoration(
-                                      color: const Color(0xFF0F0F11),
+                                      // 文字選了深色就換淺底：不然黑字
+                                      // 貼在近黑的框裡，打了什麼都看不到
+                                      color:
+                                          s.text.color.computeLuminance() <
+                                              0.09
+                                          ? const Color(0xFFE9E9EE)
+                                          : const Color(0xFF0F0F11),
                                       borderRadius: BorderRadius.circular(12),
                                       border: Border.all(
                                         color: kClipBorder,

@@ -227,6 +227,16 @@ class _MpvPlayerX implements PlayerX {
     if (texSize != null) {
       _size = texSize;
       _dbgSizeFrom = 'texture';
+      // 紋理起來了還不夠：有些檔（Pixel 的螢幕錄影）紋理配好了、
+      // 第一格卻永遠畫不出來——畫面就是黑的，尺寸與時長全都正常。
+      // 等到「第一格真的渲染出來」才算過關，等不到就換 ExoPlayer
+      try {
+        await _vc.waitUntilFirstFrameRendered.timeout(
+          const Duration(milliseconds: 2500),
+        );
+      } catch (_) {
+        throw const MpvBlackScreen();
+      }
     } else {
       // 紋理沒起來。查清楚是「根本沒有影像軌」還是「有影像卻畫不出來」：
       // 音訊檔（配樂、旁白）本來就沒有紋理，繼續用 mpv 沒問題；
