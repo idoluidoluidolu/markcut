@@ -72,12 +72,20 @@ class CompPlayer {
     }
     // 影片全部播完之後時間軸還有別的東西（圖片、文字拖得比影片長）：
     // 合成的總長只到影片結尾，播放時鐘走到那裡就卡住原地跳針，
-    // 位置甚至會跑到比總長還大
+    // 位置甚至會跑到比總長還大。
+    // 馬賽克不算：它只是糊底下的畫面，影片播完沒東西可糊，而且
+    // 預設 3 秒常常比短片還長——因為它放棄合成，等於馬賽克永遠
+    // 用不到單一播放器（實測就是這樣壞的）
     var vidEnd = 0.0;
     for (final c in vids) {
       if (c.end > vidEnd) vidEnd = c.end;
     }
-    if (tl.duration - vidEnd > 0.05) return '影片結束後還有其他素材';
+    var lastEnd = 0.0;
+    for (final c in tl.clips) {
+      if (tl.sourceOf(c).kind == ClipKind.mosaic) continue;
+      if (c.end > lastEnd) lastEnd = c.end;
+    }
+    if (lastEnd - vidEnd > 0.05) return '影片結束後還有其他素材';
     return null;
   }
 
@@ -135,14 +143,21 @@ class CompPlayer {
     // 馬賽克：跟原生匯出同一套欄位（見 native_export 的 mosaics），
     // 原生端拿它組 CIMosaicSpec。時間是時間軸秒數——合成的時間基準
     // 就是時間軸，整體變速由播放速率處理，不用在這裡除
+    // 馬賽克的尾巴夾到影片結尾：合成只到影片結尾，超過的部分
+    // 沒有畫面可糊（也是 whyNot 對馬賽克放行的前提）
+    var compEnd = 0.0;
+    for (final c in vids) {
+      if (c.end > compEnd) compEnd = c.end;
+    }
     final mosaics = <Map<String, dynamic>>[];
     for (final c in tl.clips) {
       final src = tl.sourceOf(c);
       if (src.kind != ClipKind.mosaic) continue;
+      if (c.offset >= compEnd) continue; // 整塊都在影片之後：沒東西可糊
       final ms = src.mosaicStyle ?? MosaicStyle();
       mosaics.add({
         'start': c.offset,
-        'end': c.end,
+        'end': c.end > compEnd ? compEnd : c.end,
         'track': c.track,
         'px': c.px,
         'py': c.py,
