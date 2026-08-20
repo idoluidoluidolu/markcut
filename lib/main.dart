@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker_android/image_picker_android.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
@@ -9,6 +10,7 @@ import 'package:media_kit/media_kit.dart';
 import 'screens/home_screen.dart';
 import 'services/diagnostics.dart';
 import 'services/steady_pointer.dart';
+import 'services/playback_trace.dart';
 import 'theme.dart';
 
 void main() {
@@ -59,6 +61,10 @@ void main() {
       'FFmpeg 為其各自作者所有，詳見 https://ffmpeg.org',
     );
   });
+  // 版本標填進診斷（播放診斷／播放偵測的第一行要能對版）
+  PackageInfo.fromPlatform().then((i) {
+    appVersionTag = '${i.version}+${i.buildNumber}';
+  }).catchError((_) {});
   runApp(const MarkCutApp());
 }
 

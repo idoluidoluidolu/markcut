@@ -13,6 +13,7 @@ import '../models/timeline.dart';
 import 'frame_check.dart';
 import 'native_export.dart';
 import 'native_frames.dart';
+import 'playback_trace.dart';
 import 'video_processor.dart';
 import 'work_files.dart';
 
@@ -31,6 +32,7 @@ Future<void> runVideoProbe(String path, void Function(String) log) async {
   try {
     log('大小：${(File(path).lengthSync() / 1048576).toStringAsFixed(1)} MB');
   } catch (_) {}
+  log('版本：$appVersionTag');
   log('平台：${Platform.operatingSystem} ${Platform.operatingSystemVersion}');
   log('');
 

@@ -9,6 +9,10 @@ import 'package:flutter/foundation.dart';
 ///
 /// 設計成隨時可以留在正式版裡：只有環形緩衝區的字串，不打網路、
 /// 不寫檔，關掉之後連記錄都不做
+/// 這班 build 的版本（main 啟動時填入）。遠端回報要對版用：
+/// 「這班到底含不含某個修正」不能再用猜的
+String appVersionTag = '?';
+
 class PlaybackTrace {
   PlaybackTrace._();
   static final instance = PlaybackTrace._();
@@ -60,6 +64,9 @@ class PlaybackTrace {
   String report() {
     final b = StringBuffer()
       ..writeln('=== 播放診斷 ===')
+      // 版本一定要進報告：遠端來回時「這班 build 到底含不含修正」
+      // 猜過太多次了，報告第一行就要能對版
+      ..writeln('版本：$appVersionTag')
       ..writeln('平台：${defaultTargetPlatform.name}${kIsWeb ? ' (web)' : ''}');
     for (final e in _env.entries) {
       b.writeln('${e.key}：${e.value}');
