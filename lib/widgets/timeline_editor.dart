@@ -1282,9 +1282,6 @@ class _EagerPanRecognizer extends PanGestureRecognizer {
 /// 修剪把手的熱區往片段外多伸出去多少（見 _TrimHandle.overhang）
 const double _kHandleOverhang = 14;
 
-/// 片段要有這麼寬，兩顆修剪把手才擺得下、中間還留得住可以抓著移動的
-/// 空間。比這窄就不畫把手（不然整條被把手蓋滿，變成拖不動）
-const double kTrimMinWidth = 64;
 
 /// 修剪的「畫面煞車」寬度：把手拖到片段在目前縮放下只剩這麼寬
 /// 就停（兩顆 13px 把手＋中間一絲縫，再窄就抓不住了）。
@@ -1617,12 +1614,14 @@ class _TrackLabelState extends State<_TrackLabel> {
       height: widget.height,
       margin: const EdgeInsets.only(right: 6),
       decoration: BoxDecoration(
-        color: widget.isRecording ? const Color(0x33FF3B30) : kPanel,
+        color: widget.isRecording
+            ? kRecord.withValues(alpha: 0.2)
+            : kPanel,
         borderRadius: BorderRadius.circular(4),
         // 旁白軌的紅框是常駐的（不會切換，不位移）；琥珀的選取框
         // 畫在下面的前景，寬度切換不影響版面
         border: Border.all(
-          color: widget.isVoice ? const Color(0xFFFF3B30) : kBorder,
+          color: widget.isVoice ? kRecord : kBorder,
           width: widget.isVoice ? 2 : 1,
         ),
         boxShadow: widget.isDragging
@@ -1649,7 +1648,7 @@ class _TrackLabelState extends State<_TrackLabel> {
                 width: 22,
                 height: 22,
                 decoration: const BoxDecoration(
-                  color: Color(0xFFFF3B30),
+                  color: kRecord,
                   shape: BoxShape.circle,
                 ),
                 child: Icon(
@@ -1663,7 +1662,7 @@ class _TrackLabelState extends State<_TrackLabel> {
                     ? Icons.add
                     : (widget.muted ? Icons.volume_off : Icons.volume_up),
                 size: 15,
-                color: widget.muted ? kSelect : (amber ? kSelect : kTextDim),
+                color: (widget.muted || amber) ? kSelect : kTextDim,
               ),
       ),
     );

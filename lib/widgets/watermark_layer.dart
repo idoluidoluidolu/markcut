@@ -505,7 +505,7 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                 child: IgnorePointer(
                   child: Container(
                     width: 1,
-                    color: const Color(0xFFFFC24B).withValues(alpha: 0.9),
+                    color: kSelect.withValues(alpha: 0.9),
                   ),
                 ),
               ),
@@ -520,7 +520,7 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                 child: IgnorePointer(
                   child: Container(
                     height: 1,
-                    color: const Color(0xFFFFC24B).withValues(alpha: 0.9),
+                    color: kSelect.withValues(alpha: 0.9),
                   ),
                 ),
               ),
@@ -815,7 +815,7 @@ class CenterGuides extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const line = Color(0xFFFFC24B);
+    const line = kSelect;
     return IgnorePointer(
       child: Stack(
         fit: StackFit.expand,

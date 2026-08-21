@@ -109,10 +109,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   /// 建立時間，當草稿的名字用（草稿沒有名字，見 DraftStore）
-  String _dateLabel(DateTime t) =>
-      '${t.month}/${t.day} '
-      '${t.hour.toString().padLeft(2, '0')}:'
-      '${t.minute.toString().padLeft(2, '0')}';
+  String _dateLabel(DateTime t) => dateLabel(t);
 
   /// 存檔時間講人話：剛剛／N 分鐘前／今天 HH:mm／M/D
   String _whenLabel(DateTime t) {
@@ -821,10 +818,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
   }
 
   /// 建立時間，當草稿的名字用（草稿沒有名字，見 DraftStore）
-  String _dateLabel(DateTime t) =>
-      '${t.month}/${t.day} '
-      '${t.hour.toString().padLeft(2, '0')}:'
-      '${t.minute.toString().padLeft(2, '0')}';
+  String _dateLabel(DateTime t) => dateLabel(t);
 
   String _savedAtLabel(Map<String, dynamic> j) {
     final raw = j['savedAt'];
@@ -1160,3 +1154,9 @@ class _GifsScreenState extends State<GifsScreen> {
     );
   }
 }
+
+/// 「M/D HH:mm」：草稿卡與個人頁共用（以前三處各寫一份）
+String dateLabel(DateTime t) =>
+    '${t.month}/${t.day} '
+    '${t.hour.toString().padLeft(2, '0')}:'
+    '${t.minute.toString().padLeft(2, '0')}';

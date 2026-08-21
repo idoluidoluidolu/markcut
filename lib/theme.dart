@@ -49,7 +49,6 @@ const kIcon = Color(0xFFB9B9C2);
 const kCardRadius = 12.0; // 卡片
 const kDialogRadius = 16.0; // 對話框
 const kTagRadius = 6.0; // 小標籤、狀態標
-const kFieldRadius = 12.0; // 大的文字輸入框
 
 /// 對話框最大寬度（窄的那些讀起來會太擠）
 const kDialogWidth = 280.0;
@@ -1348,27 +1347,6 @@ Widget optionRow({
 /// 點到重疊處時的說明。三個編輯畫面講同一句
 String overlapHint(int layers) => '這裡疊了 $layers 層，再點一次選下面那層';
 
-/// 區塊小標（灰字、寬字距，如「開始新專案」）
-class SectionLabel extends StatelessWidget {
-  final String text;
-  const SectionLabel(this.text, {super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(2, 18, 2, 8),
-      child: Text(
-        text,
-        style: const TextStyle(
-          fontSize: 11,
-          letterSpacing: 3,
-          color: kTextDim,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
-  }
-}
 
 // ===== 淺色頁面（編輯畫面以外全部走這一套）=====
 //

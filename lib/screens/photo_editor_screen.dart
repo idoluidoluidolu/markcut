@@ -728,25 +728,20 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                 },
                 child: Container(
                   padding: const EdgeInsets.symmetric(vertical: 5),
-                  // D 案：選中不填色，改畫線框。框在前景，內容不位移
-                  foregroundDecoration: i == active
-                      ? BoxDecoration(
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: kAmber, width: 1.5),
-                        )
-                      : null,
+                  // 選中不畫框：圖示＋文字直接轉琥珀，
+                  // 跟浮水印面板與影片編輯器同一套選取語言
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(_phNav[i].icon,
-                          size: 17, color: i == active ? kText : kTextDim),
+                          size: 17, color: i == active ? kSelect : kTextDim),
                       const SizedBox(height: 3),
                       Text(_phNav[i].label,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                               fontSize: 10.5,
-                              color: i == active ? kText : kTextDim)),
+                              color: i == active ? kSelect : kTextDim)),
                     ],
                   ),
                 ),
@@ -1116,13 +1111,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                             borderRadius: BorderRadius.circular(12),
                             onTap: () async {
                               final picked = await pickColor(
-    context, Color(m.style.color));
-final ok = picked != null;
-final color = Color(picked ?? 0);
-                              if (ok == true) {
-                                change(
-                                  () => m.style.color = color.toARGB32(),
-                                );
+                                context,
+                                Color(m.style.color),
+                              );
+                              if (picked != null) {
+                                change(() => m.style.color = picked);
                               }
                             },
                             child: Container(

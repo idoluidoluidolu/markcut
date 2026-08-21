@@ -64,7 +64,6 @@ enum _AddKind {
   paste,
 }
 
-const kSpeedOptions = <double>[0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
 
 /// 速度滑桿的檔位（帶號）：負的＝倒著放。
 /// 左端最快的倒轉 → 往中間變慢 → 過中線轉正 → 右端最快正播
@@ -6818,7 +6817,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       row(
                         context,
                         '捨棄',
-                        color: const Color(0xFFFF6B60),
+                        color: const Color(0xFFFF6B6B),
                         pop: 'discard',
                       ),
                     ]),

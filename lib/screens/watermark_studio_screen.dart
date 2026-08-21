@@ -93,80 +93,19 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
       Navigator.of(context).pop();
       return;
     }
-    final act = await showDialog<String>(
-      context: context,
-      builder: (context) => Dialog(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: kBorder),
-        ),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: kDialogWidth),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 26, 20, 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Text('還沒存成範本',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                        fontSize: 15.5,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.3,
-                        color: kText)),
-                const SizedBox(height: 8),
-                const Text('離開後這個設計就會消失',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                        fontSize: 12.5, color: kTextDim, height: 1.55)),
-                const SizedBox(height: 20),
-                FilledButton(
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size.fromHeight(44),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10)),
-                    textStyle: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        fontFamily: 'NotoSansTC'),
-                  ),
-                  onPressed: () => Navigator.pop(context, 'save'),
-                  child: const Text('存成範本'),
-                ),
-                const SizedBox(height: 6),
-                OutlinedButton(
-                  style: OutlinedButton.styleFrom(
-                    minimumSize: const Size.fromHeight(42),
-                    foregroundColor: kText,
-                    side: const BorderSide(color: kBorder),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10)),
-                  ),
-                  onPressed: () => Navigator.pop(context, 'discard'),
-                  child: const Text('放棄離開',
-                      style: TextStyle(fontSize: 13.5)),
-                ),
-                const SizedBox(height: 4),
-                TextButton(
-                  onPressed: () => Navigator.pop(context, 'stay'),
-                  style: TextButton.styleFrom(
-                    foregroundColor: kTextDim,
-                    minimumSize: const Size.fromHeight(40),
-                  ),
-                  child: const Text('繼續編輯',
-                      style: TextStyle(fontSize: 13)),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
+    // 跟影片、照片同一顆統一的離開對話框（以前這裡手刻了一份
+    // 幾乎逐行相同的，寬度與按鈕高度都是拷貝出來的）
+    final act = await showLeaveChoice(
+      context,
+      title: '還沒存成範本',
+      message: '離開後這個設計就會消失',
+      keepLabel: '存成範本',
+      discardLabel: '放棄離開',
     );
     if (!mounted) return;
     if (act == 'discard') {
       Navigator.of(context).pop();
-    } else if (act == 'save') {
+    } else if (act == 'keep') {
       // 存完才離開；存到一半取消就留在這裡
       await _panelKey.currentState?.savePreset();
       if (mounted && !_dirty) Navigator.of(context).pop();
