@@ -798,14 +798,15 @@ class _GifScreenState extends State<GifScreen> {
                   ),
                 ),
               ),
-              // 播放頭：白針＋頂端圓頭，整根可拖＝滑動速覽（C 案）。
-              // 44pt 觸控區跟把手同級，拖起來不用瞄準
+              // 播放頭：整根可拖＝滑動速覽（C 案）。長相跟影片編輯區
+              // 時間軸的播放頭一致——純白 2px 細線；36pt 觸控區是
+              // 隱形的，拖起來不用瞄準
               ValueListenableBuilder<double>(
                 valueListenable: _pos,
                 builder: (context, t, _) => Positioned(
                   left: xOf(t.clamp(0, _dur)) - 18,
-                  top: -10,
-                  bottom: -6,
+                  top: -2,
+                  bottom: -2,
                   width: 36,
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
@@ -813,32 +814,11 @@ class _GifScreenState extends State<GifScreen> {
                     onHorizontalDragUpdate: (d) => _scrubBy(d.delta.dx, w),
                     onHorizontalDragEnd: (_) => _scrubEnd(),
                     onHorizontalDragCancel: _scrubEnd,
-                    child: Column(
-                      children: [
-                        Container(
-                          width: 9,
-                          height: 9,
-                          decoration: const BoxDecoration(
-                            color: kText,
-                            shape: BoxShape.circle,
-                            boxShadow: [
-                              BoxShadow(color: Colors.black54, blurRadius: 3),
-                            ],
-                          ),
-                        ),
-                        Expanded(
-                          child: Container(
-                            width: 2.5,
-                            decoration: BoxDecoration(
-                              color: kText,
-                              borderRadius: BorderRadius.circular(2),
-                              boxShadow: const [
-                                BoxShadow(color: Colors.black54, blurRadius: 3),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
+                    child: const Center(
+                      child: SizedBox(
+                        width: 2,
+                        child: ColoredBox(color: kText),
+                      ),
                     ),
                   ),
                 ),
