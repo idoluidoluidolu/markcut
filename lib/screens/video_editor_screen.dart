@@ -663,6 +663,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 升格成來源。用搬（rename）不是複製——工作檔目錄有總量清理，
   /// 留在那裡哪天會被排隊清掉，草稿又斷一次。
   /// 它本身就是 1080p H.264，順便直接當自己的工作檔用，不必重轉
+  /// 這一輪載入有沒有發生過工作檔救援（有就要立刻把草稿落地）
+  bool _rescued = false;
+
   Future<bool> _rescueFromWorkFile(MediaSource s) async {
     final wp = s.workPath;
     if (wp == null || !await fileExists(wp)) return false;
@@ -673,10 +676,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final dest =
           '${dir.path}${Platform.pathSeparator}'
           'r${DateTime.now().microsecondsSinceEpoch}.mp4';
-      await File(wp).rename(dest);
+      // copy 不 rename：rename 之後新路徑只存在記憶體裡，草稿要等
+      // 下一次存檔才落地——中間退出的話兩個路徑都沒了，素材真的消失。
+      // copy 讓原工作檔留在原地當保險，救回的那份歸 imports 自己管
+      await File(wp).copy(dest);
       s
         ..path = dest
         ..workPath = dest;
+      _rescued = true;
       Diag.note('素材原檔被系統清掉，用工作檔救回：${s.name}');
       return true;
     } catch (_) {
@@ -1058,10 +1065,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     unawaited(_ensureComp());
   }
 
-  Future<void> _saveDraftNow() async {
+  /// 草稿存檔失敗提示過了沒（整場只煩一次）
+  bool _draftSaveWarned = false;
+
+  /// [force]：dispose 的最後補存用。那時 unmount 已經發生，
+  /// `mounted` 必為 false——以前這裡一檢查就 return，
+  /// 「離開前補存」其實從來沒有存成功過
+  Future<void> _saveDraftNow({bool force = false}) async {
     // 封面要夠大：個人中心拿它當大圖顯示。抽過就快取，換了片段才重抽
     await _refreshCover();
-    if (!mounted) return;
+    if (!mounted && !force) return;
     // Web 也存：同一次瀏覽內可以繼續剪；重新整理後素材連結會失效，
     // 還原時由 _loadDraft 剔除並提示
     final map = _projectJson();
@@ -1075,7 +1088,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       text = jsonEncode(map);
     }
     final thumb = _draftThumb();
-    await DraftStore.save(
+    final ok = await DraftStore.save(
       _draftId,
       text,
       thumb: thumb?.$1,
@@ -1083,22 +1096,58 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       clipCount: _tl.clips.length,
       duration: _tl.duration,
     );
+    // 存不進去（空間滿、prefs 損毀）要講，不能讓使用者整場都
+    // 以為有自動存。只提示一次，不然每個動作都跳
+    if (!ok && mounted && !_draftSaveWarned) {
+      _draftSaveWarned = true;
+      showHint(context, '草稿存不進去（儲存空間可能滿了）', error: true);
+    }
   }
 
   /// 丟掉這一份草稿（離開時選「不保留」）
   Future<void> clearThisDraft() => DraftStore.remove(_draftId);
 
   Future<void> _loadDraft(Map<String, dynamic> j) async {
+    // 逐筆容錯：一筆欄位壞掉只跳過那一筆，不能讓整份草稿打不開——
+    // 以前一個型別對不上整個 _loadDraft 就丟例外，卡在讀取畫面，
+    // 而且半載入的時間軸一被自動存檔就把好的那份蓋成殘缺版。
+    // 注意：素材清單是索引對位的，壞掉的素材用「空位」佔著，
+    // 不能直接跳過——跳過會讓後面每個 sourceIndex 都對錯位
+    var broken = 0;
     for (final sj in (j['sources'] as List? ?? [])) {
-      _tl.sources.add(
-        MediaSource.fromJson(Map<String, dynamic>.from(sj as Map)),
-      );
+      try {
+        _tl.sources.add(
+          MediaSource.fromJson(Map<String, dynamic>.from(sj as Map)),
+        );
+      } catch (_) {
+        broken++;
+        _tl.sources.add(
+          MediaSource(path: '', name: '', kind: ClipKind.text, duration: 0),
+        );
+      }
     }
     for (final cj in (j['clips'] as List? ?? [])) {
-      _tl.clips.add(
-        TimelineClip.fromJson(Map<String, dynamic>.from(cj as Map)),
+      try {
+        _tl.clips.add(
+          TimelineClip.fromJson(Map<String, dynamic>.from(cj as Map)),
+        );
+      } catch (_) {
+        broken++;
+      }
+    }
+    // sourceIndex 對界：指到不存在素材的片段直接剔除，
+    // 留著的話 sourceOf 的裸下標一碰就炸
+    final nSrc = _tl.sources.length;
+    final outOfRange = _tl.clips
+        .where((c) => c.sourceIndex < 0 || c.sourceIndex >= nSrc)
+        .length;
+    if (outOfRange > 0) {
+      broken += outOfRange;
+      _tl.clips.removeWhere(
+        (c) => c.sourceIndex < 0 || c.sourceIndex >= nSrc,
       );
     }
+    if (broken > 0) Diag.note('草稿裡有 $broken 筆壞資料，已跳過');
     final fixedIds = _tl.fixDuplicateIds();
     if (fixedIds > 0) Diag.note('草稿裡有 $fixedIds 個撞號的片段 id，已補新號');
     _speed = ((j['speed'] ?? 1.0) as num).toDouble();
@@ -1193,6 +1242,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         .where((c) => deadSources.contains(c.sourceIndex))
         .length;
     _tl.clips.removeWhere((c) => deadSources.contains(c.sourceIndex));
+    // 有素材是用工作檔救回來的：新路徑現在只存在記憶體，
+    // 立刻落地一次，中間被殺掉才不會又指回已經不存在的舊路徑
+    if (_rescued) unawaited(_saveDraftNow());
     for (final c in _tl.clips) {
       _ensureCtrlFor(c);
     }
@@ -1267,7 +1319,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _loadSnapPref(); // 記住上次磁吸開還關
     _loadTidyPref(); // 記住上次自動整理開還關
     if (widget.draft != null) {
-      _loadDraft(widget.draft!).then((_) {
+      // 保底：就算 _loadDraft 有沒料到的例外，也要離開讀取畫面並
+      // 講清楚，不能永遠卡在轉圈圈（而且半載入狀態不該被自動存檔蓋）
+      _loadDraft(widget.draft!).catchError((Object e) {
+        Diag.note('草稿載入炸了：$e');
+        if (mounted) {
+          showHint(context, '這份草稿有部分資料壞了，已盡量載入', error: true);
+        }
+      }).then((_) {
         if (!mounted) return;
         setState(() => _ready = true);
         unawaited(_measureSrcKbps());
@@ -6333,10 +6392,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   @override
   void dispose() {
-    // 草稿還有沒落地的併批寫入：離開前補存，不能讓最後幾秒的編輯蒸發
+    // 草稿還有沒落地的併批寫入：離開前補存，不能讓最後幾秒的編輯蒸發。
+    // force：unmount 之後 mounted 必為 false，不帶的話這筆補存永遠
+    // 走不到寫入那一行
     if (_draftSaveTimer?.isActive ?? false) {
       _draftSaveTimer!.cancel();
-      _saveDraftNow();
+      _saveDraftNow(force: true);
     }
     _frameSettle?.cancel();
     _playProbe?.cancel();
@@ -6410,6 +6471,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _wasActive.clear();
 
     setState(() => _exporting = true);
+    // 匯出期間清掃整段暫停：換進來源的工作檔被背景清掉，
+    // 整場匯出就以一段 FFmpeg log 收場
+    WorkFiles.holdSweep = true;
+    // 換檔前逐一驗存在：早被清掉的退回原檔，而不是匯到一半才爆
+    if (!kIsWeb) {
+      for (final src in _tl.sources) {
+        if (src.workPath != null && !File(src.workPath!).existsSync()) {
+          src.workPath = null;
+        }
+      }
+    }
 
     // 抽幀可能正好在跑一段（約 6 秒）——等它收尾再開匯出，
     // 上限 10 秒，卡住也不至於永遠不動
@@ -6601,6 +6673,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _ensureCtrlFor(c);
     }
     _resyncPlayback();
+    WorkFiles.holdSweep = false;
     setState(() => _exporting = false);
     // 匯出前把抽幀快取清光了，現在重新抽回來（拖曳預覽要用）
     for (var i = 0; i < _tl.sources.length; i++) {
@@ -6748,6 +6821,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       await _saveDraftNow();
       if (mounted) Navigator.of(context).pop();
     } else if (action == 'discard') {
+      // 捨棄＝整個專案永久刪除，而這顆就貼在「保留草稿」旁邊——
+      // 手滑一次專案就沒了。跟草稿夾的刪除一樣先確認
+      final ok = await showConfirm(
+        context,
+        title: '捨棄這份草稿？',
+        message: '整個專案會被刪除，無法復原',
+        action: '捨棄',
+      );
+      if (!ok || !mounted) return;
       // 只丟這一份，別人的草稿不受影響
       await clearThisDraft();
       if (mounted) Navigator.of(context).pop();

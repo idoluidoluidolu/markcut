@@ -55,11 +55,13 @@ class WorkFiles {
     return _index!;
   }
 
-  static Future<void> _save() async {
+  static Future<bool> _save() async {
     try {
       final sp = await SharedPreferences.getInstance();
-      await sp.setString(_key, jsonEncode(_index ?? {}));
-    } catch (_) {}
+      return await sp.setString(_key, jsonEncode(_index ?? {}));
+    } catch (_) {
+      return false;
+    }
   }
 
   static Future<Directory> _dir() async {
@@ -158,7 +160,12 @@ class WorkFiles {
       'stamp': _stamp(src),
       'at': DateTime.now().millisecondsSinceEpoch,
     };
-    await _save();
+    if (!await _save()) {
+      // 索引沒寫成功：sweep 會把這支當孤兒刪掉。掛在 in-flight 名單
+      // 讓它整個行程都不被清，檔案照用
+      _inFlight.add(made);
+      Diag.note('工作檔索引寫入失敗（本次照用，先不給清掃碰）');
+    }
     unawaited(sweep());
     return made;
   }
@@ -199,71 +206,85 @@ class WorkFiles {
     }
   }
 
+  /// 匯出期間整段暫停清掃：換進匯出來源的工作檔被背景清掉的話，
+  /// 整場匯出用一段 FFmpeg log 收場。由匯出流程設／清
+  static bool holdSweep = false;
+
   /// 清掉用不到的工作檔：原檔已經不見的、索引對不上的、超過總量的。
-  /// 每次轉完一支就順手跑一次，不用另外找時機
+  /// 每次轉完一支就順手跑一次，不用另外找時機。
+  /// 全程用 async 檔案操作——以前 listSync/deleteSync 對一目錄的
+  /// 1080p 檔做同步 stat 與刪除，正好卡在匯入進度畫面在動的時候
   static Future<void> sweep() async {
-    if (kIsWeb) return;
+    if (kIsWeb || holdSweep) return;
     // 還有人在轉就先不清。跳過 in-flight 已經夠安全，但轉檔期間本來就
     // 不缺這一次清理，等全部做完再一次清最單純
     if (_inFlight.isNotEmpty) return;
     try {
       final idx = await _load();
+      // 保險絲：索引是空的（版本跳號、解析失敗）時什麼都不清。
+      // 空索引＋照常清＝目錄裡所有工作檔被當孤兒整批刪光，
+      // 其中包括「原檔已被系統回收、工作檔是唯一備份」的那些
+      if (idx.isEmpty) return;
       final dir = await _dir();
       final alive = <String>{};
       final dead = <String>[];
-      idx.forEach((src, e) {
+      for (final entry in idx.entries) {
+        final e = entry.value;
         if (e is! Map) {
-          dead.add(src);
-          return;
+          dead.add(entry.key);
+          continue;
         }
         final work = e['work'] as String?;
-        if (work == null || !File(work).existsSync()) {
-          dead.add(src);
-          return;
+        if (work == null || !await File(work).exists()) {
+          dead.add(entry.key);
+          continue;
         }
         // 原檔不見了（系統清掉相簿快取）：工作檔是唯一活著的備份，
         // 千萬不能連坐刪掉——草稿救回（_loadDraft 的升格）全靠它。
         // 索引留著，總量清理時它照樣排隊，但不會因為原檔死了就陪葬
         alive.add(work);
-      });
+      }
       for (final k in dead) {
         idx.remove(k);
       }
 
       // 目錄裡沒被索引指到的檔案＝上次轉到一半就被關掉的，直接清。
       // 但正在寫的那些不能碰——它們還沒進索引
-      for (final f in dir.listSync().whereType<File>()) {
+      await for (final f in dir.list()) {
+        if (f is! File) continue;
         if (_inFlight.contains(f.path)) continue;
         if (!alive.contains(f.path)) {
           try {
-            f.deleteSync();
+            await f.delete();
           } catch (_) {}
         }
       }
 
-      // 總量超標：從最舊的開始丟
+      // 總量超標：從最舊的開始丟（正在寫的不碰）
       var total = 0;
       final entries = <({String src, String work, int at, int size})>[];
-      idx.forEach((src, e) {
-        final work = (e as Map)['work'] as String;
+      for (final entry in idx.entries) {
+        final e = entry.value as Map;
+        final work = e['work'] as String;
         var size = 0;
         try {
-          size = File(work).lengthSync();
+          size = await File(work).length();
         } catch (_) {}
         total += size;
         entries.add((
-          src: src,
+          src: entry.key,
           work: work,
           at: (e['at'] ?? 0) as int,
           size: size,
         ));
-      });
+      }
       if (total > _maxTotalBytes) {
         entries.sort((a, b) => a.at.compareTo(b.at));
         for (final e in entries) {
           if (total <= _maxTotalBytes) break;
+          if (_inFlight.contains(e.work)) continue;
           try {
-            File(e.work).deleteSync();
+            await File(e.work).delete();
           } catch (_) {}
           idx.remove(e.src);
           total -= e.size;

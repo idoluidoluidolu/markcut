@@ -192,6 +192,7 @@ class PresetStore {
       ),
     ];
 
+    if (!await _allParseable()) return; // 有壞筆就別回寫，下次再試
     final cur = await load();
     cur.removeWhere((p) => removals.contains(p.name));
     final names = cur.map((p) => p.name).toSet();
@@ -218,10 +219,26 @@ class PresetStore {
       '手寫簽名',
       '角落細字',
     };
+    if (!await _allParseable()) return; // 有壞筆就別回寫，下次再試
     final cur = await load();
     cur.removeWhere((p) => removals.contains(p.name));
     await saveAll(cur);
     await prefs.setBool(k4, true); // 資料寫完才立旗標
+  }
+
+  /// seeding 前的保險：底層清單有任何一筆解不開就回 false。
+  /// seeding 是 read-modify-write——load() 對壞資料是「略過」，
+  /// 略過再整包回寫＝那筆範本被永久抹掉且無從察覺
+  static Future<bool> _allParseable() async {
+    final prefs = await SharedPreferences.getInstance();
+    for (final s in prefs.getStringList(_key) ?? const <String>[]) {
+      try {
+        WatermarkPreset.decode(s);
+      } catch (_) {
+        return false;
+      }
+    }
+    return true;
   }
 
   static Future<List<WatermarkPreset>> load() async {

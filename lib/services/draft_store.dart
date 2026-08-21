@@ -37,22 +37,62 @@ class DraftStore {
     return prefs.getString(_thumbKey(id));
   }
 
-  /// 讀清單（新到舊）。順便把舊版單一草稿搬進來
+  /// 讀清單（新到舊）。順便把舊版單一草稿搬進來。
+  ///
+  /// 索引壞掉「不能」回空清單：save() 會把空清單當事實重寫索引，
+  /// 其他草稿的內容都還在卻永遠列不出來——歷史上「草稿全部不見」
+  /// 就是這個形狀。壞掉就從內容鍵把索引重建回來
   static Future<List<DraftMeta>> list() async {
     final prefs = await SharedPreferences.getInstance();
     await _migrate(prefs);
     final raw = prefs.getString(_indexKey);
-    if (raw == null) return [];
-    try {
-      final list = jsonDecode(raw) as List;
-      final out = [
-        for (final e in list)
-          DraftMeta.fromJson(Map<String, dynamic>.from(e as Map)),
-      ]..sort((a, b) => b.savedAt.compareTo(a.savedAt));
-      return out;
-    } catch (_) {
-      return [];
+    if (raw != null) {
+      try {
+        final list = jsonDecode(raw) as List;
+        final out = [
+          for (final e in list)
+            DraftMeta.fromJson(Map<String, dynamic>.from(e as Map)),
+        ]..sort((a, b) => b.savedAt.compareTo(a.savedAt));
+        return out;
+      } catch (_) {
+        // 原字串留一份備份再重建，之後要追問題還有現場
+        await prefs.setString('projects_index_backup', raw);
+      }
     }
+    return _rebuildIndex(prefs);
+  }
+
+  /// 從還活著的內容鍵（project_data_*）把索引重建回來。
+  /// 只在索引遺失或解析失敗時走到；沒有任何內容鍵就回空
+  static Future<List<DraftMeta>> _rebuildIndex(SharedPreferences prefs) async {
+    final metas = <DraftMeta>[];
+    for (final k in prefs.getKeys()) {
+      if (!k.startsWith(_dataPrefix)) continue;
+      final id = k.substring(_dataPrefix.length);
+      var savedAt = DateTime.now();
+      var clips = 0;
+      try {
+        final j = Map<String, dynamic>.from(
+          jsonDecode(prefs.getString(k) ?? '') as Map,
+        );
+        savedAt =
+            DateTime.tryParse(j['savedAt'] as String? ?? '') ?? savedAt;
+        clips = (j['clips'] as List?)?.length ?? 0;
+      } catch (_) {
+        // 內容也壞了：仍列出來讓使用者看得到、自己決定刪不刪
+      }
+      metas.add(
+        DraftMeta(
+          id: id,
+          savedAt: savedAt,
+          hasThumb: prefs.getString(_thumbKey(id)) != null,
+          clipCount: clips,
+        ),
+      );
+    }
+    if (metas.isNotEmpty) await _writeIndex(prefs, metas);
+    metas.sort((a, b) => b.savedAt.compareTo(a.savedAt));
+    return metas;
   }
 
   /// 最近存的那一個（首頁的「繼續上次」用）
@@ -75,7 +115,31 @@ class DraftStore {
 
   /// 存一份草稿。[json] 已經是編碼好的字串（編碼在背景執行緒做，
   /// 見 _saveDraftNow——那是每個編輯動作都會走到的路）
-  static Future<void> save(
+  /// 回傳有沒有真的寫進去。SharedPreferences 寫入失敗（空間滿、
+  /// prefs 損毀）以前被吞掉，使用者整場都以為有自動存
+  static Future<bool> save(
+    String id,
+    String json, {
+    String? thumb,
+    double? thumbAspect,
+    int clipCount = 0,
+    double duration = 0,
+  }) async {
+    try {
+      return await _saveInner(
+        id,
+        json,
+        thumb: thumb,
+        thumbAspect: thumbAspect,
+        clipCount: clipCount,
+        duration: duration,
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> _saveInner(
     String id,
     String json, {
     String? thumb,
@@ -113,6 +177,7 @@ class DraftStore {
       ),
     );
     await _writeIndex(prefs, metas);
+    return true;
   }
 
   static Future<void> remove(String id) async {
