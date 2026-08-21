@@ -569,10 +569,10 @@ class _GifScreenState extends State<GifScreen> {
     ),
   );
 
-  /// 播放控制列：播放/暫停鈕＋位置滑桿（拖到哪 seek 到哪）。
-  /// 使用者指定：不用成果預覽籤，要的是明確的播放暫停與選位置
+  /// 播放控制列：播放/暫停＋目前秒數。
+  /// 位置選擇（滑動速覽）由修剪條上的白色播放頭負責（C 案：
+  /// 不另外加一條，播放頭直接長在修剪條上、拖了即時換畫面）
   Widget _playbackRow() {
-    final dur = _dur <= 0 ? 1.0 : _dur;
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 2, 16, 0),
       child: Row(
@@ -586,33 +586,7 @@ class _GifScreenState extends State<GifScreen> {
             visualDensity: VisualDensity.compact,
             onPressed: _togglePlay,
           ),
-          Expanded(
-            child: ValueListenableBuilder<double>(
-              valueListenable: _pos,
-              builder: (context, t, _) => SliderTheme(
-                data: SliderTheme.of(context).copyWith(
-                  trackHeight: 3,
-                  thumbShape: const RoundSliderThumbShape(
-                    enabledThumbRadius: 7,
-                  ),
-                  overlayShape: const RoundSliderOverlayShape(
-                    overlayRadius: 14,
-                  ),
-                  activeTrackColor: kSelect,
-                  thumbColor: kSelect,
-                  inactiveTrackColor: kPanelHi,
-                ),
-                child: Slider(
-                  value: t.clamp(0.0, dur),
-                  max: dur,
-                  onChanged: (v) {
-                    _pos.value = v;
-                    _player?.seekTo(Duration(milliseconds: (v * 1000).round()));
-                  },
-                ),
-              ),
-            ),
-          ),
+          const Spacer(),
           ValueListenableBuilder<double>(
             valueListenable: _pos,
             builder: (context, t, _) => Text(
@@ -627,6 +601,42 @@ class _GifScreenState extends State<GifScreen> {
         ],
       ),
     );
+  }
+
+  // ── 播放頭速覽拖曳（修剪條上的白針）───────────────────────
+  double? _scrubFrom;
+  double _scrubAcc = 0;
+  DateTime _lastScrubSeek = DateTime.fromMillisecondsSinceEpoch(0);
+
+  void _scrubBegin() {
+    _scrubFrom = _pos.value;
+    _scrubAcc = 0;
+    // 拖曳中不播：畫面完全跟著手指
+    if (_playing) {
+      _player?.pause();
+      setState(() => _playing = false);
+    }
+  }
+
+  void _scrubBy(double dx, double width) {
+    final from = _scrubFrom;
+    if (from == null) return;
+    _scrubAcc += dx;
+    final t = (from + _scrubAcc / width * _dur).clamp(0.0, _dur);
+    _pos.value = t;
+    // seek 節流：60ms 一發（每個手指事件都 seek 會把解碼器打爆），
+    // 放手在 _scrubEnd 補一發精準的
+    final now = DateTime.now();
+    if (now.difference(_lastScrubSeek).inMilliseconds >= 60) {
+      _lastScrubSeek = now;
+      _player?.seekTo(Duration(milliseconds: (t * 1000).round()));
+    }
+  }
+
+  void _scrubEnd() {
+    if (_scrubFrom == null) return;
+    _scrubFrom = null;
+    _player?.seekTo(Duration(milliseconds: (_pos.value * 1000).round()));
   }
 
   Widget _preview() {
@@ -728,25 +738,33 @@ class _GifScreenState extends State<GifScreen> {
           return Stack(
             clipBehavior: Clip.none,
             children: [
-              // 縮圖帶
+              // 縮圖帶：點哪跳哪（跟播放頭拖曳互補）
               Positioned.fill(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: _thumbs.isEmpty
-                      ? const ColoredBox(color: kPanelHi)
-                      : Row(
-                          children: [
-                            for (final b in _thumbs)
-                              Expanded(
-                                child: Image.memory(
-                                  b,
-                                  fit: BoxFit.cover,
-                                  height: 56,
-                                  gaplessPlayback: true,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapDown: (d) {
+                    final t = (d.localPosition.dx / w * _dur).clamp(0.0, _dur);
+                    _pos.value = t;
+                    _player?.seekTo(Duration(milliseconds: (t * 1000).round()));
+                  },
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: _thumbs.isEmpty
+                        ? const ColoredBox(color: kPanelHi)
+                        : Row(
+                            children: [
+                              for (final b in _thumbs)
+                                Expanded(
+                                  child: Image.memory(
+                                    b,
+                                    fit: BoxFit.cover,
+                                    height: 56,
+                                    gaplessPlayback: true,
+                                  ),
                                 ),
-                              ),
-                          ],
-                        ),
+                            ],
+                          ),
+                  ),
                 ),
               ),
               // 範圍外壓暗
@@ -780,15 +798,48 @@ class _GifScreenState extends State<GifScreen> {
                   ),
                 ),
               ),
-              // 播放頭細線
+              // 播放頭：白針＋頂端圓頭，整根可拖＝滑動速覽（C 案）。
+              // 44pt 觸控區跟把手同級，拖起來不用瞄準
               ValueListenableBuilder<double>(
                 valueListenable: _pos,
                 builder: (context, t, _) => Positioned(
-                  left: xOf(t.clamp(0, _dur)) - 1,
-                  top: -2,
-                  bottom: -2,
-                  child: const IgnorePointer(
-                    child: SizedBox(width: 2, child: ColoredBox(color: kText)),
+                  left: xOf(t.clamp(0, _dur)) - 18,
+                  top: -10,
+                  bottom: -6,
+                  width: 36,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onHorizontalDragStart: (_) => _scrubBegin(),
+                    onHorizontalDragUpdate: (d) => _scrubBy(d.delta.dx, w),
+                    onHorizontalDragEnd: (_) => _scrubEnd(),
+                    onHorizontalDragCancel: _scrubEnd,
+                    child: Column(
+                      children: [
+                        Container(
+                          width: 9,
+                          height: 9,
+                          decoration: const BoxDecoration(
+                            color: kText,
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(color: Colors.black54, blurRadius: 3),
+                            ],
+                          ),
+                        ),
+                        Expanded(
+                          child: Container(
+                            width: 2.5,
+                            decoration: BoxDecoration(
+                              color: kText,
+                              borderRadius: BorderRadius.circular(2),
+                              boxShadow: const [
+                                BoxShadow(color: Colors.black54, blurRadius: 3),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
