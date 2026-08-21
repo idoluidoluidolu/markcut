@@ -418,14 +418,36 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   /// 這張實際生效的設定（有單張覆寫用覆寫，否則整批共用）
   WatermarkSettings _effectiveOf(int i) => _items[i].override ?? _settings;
 
-  /// 在預覽上動手＝這張進入「單張模式」：
-  /// 把目前生效的設定複製成這張自己的，之後怎麼調都不影響其他張
+  /// 切成「單張模式」：把目前生效的設定複製成這張自己的，
+  /// 之後怎麼調都不影響其他張。只由預覽下方的範圍開關觸發——
+  /// 以前預覽上一動手就自動切，使用者以為在調整批（實測回報）
   void _ensureOverride() {
     final item = _items[_previewIndex];
     if (item.override != null) return;
     item.override = _settings.copy();
     setState(() => _sync++); // 面板換綁到 override，內部狀態要重新同步
     showHint(context, '已切換為單張調整，只影響這一張');
+  }
+
+  /// 範圍開關：整批 ↔ 單張
+  Future<void> _toggleScope() async {
+    final item = _items[_previewIndex];
+    if (item.override == null) {
+      _ensureOverride();
+      return;
+    }
+    final ok = await showConfirm(
+      context,
+      title: '回到整批調整？',
+      message: '這張單獨調過的部分會被丟掉，改用整批共用的設定',
+      action: '回到整批',
+    );
+    if (!ok || !mounted) return;
+    setState(() {
+      item.override = null;
+      _sync++;
+    });
+    showHint(context, '已還原成整批設定');
   }
 
   // ===== 預覽區雙指縮放浮水印（跟照片編輯同一套）=====
@@ -444,7 +466,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     // 一定要先切單張模式再拍快照：_pushUndo 會記「這一步屬於誰」，
     // 還沒 override 時記成 -1（整批共用設定），但捏合改的是 override，
     // 按上一步就會把值寫回共用設定＝預覽完全沒反應
-    _ensureOverride(); // 捏合＝這張進入單張模式
+    // 不再自動切單張：沒開開關就是調整批（見 _toggleScope）
     _btUndoPending = true; // 真的縮到才拍（見 _btPushUndoIfNeeded）
     final eff = _effectiveOf(_previewIndex);
     _pvBaseText = eff.text.sizeFrac;
@@ -775,6 +797,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     final dims = _items[_previewIndex].dims;
     final aspect =
         dims == null ? 16 / 9 : dims.$1 / (dims.$2 == 0 ? 1 : dims.$2);
+    // 鍵盤打開時把預覽、縮圖列、底欄全收起來：不收的話面板被擠成
+    // 一條縫，文字輸入框整個藏在鍵盤後面（實測回報）
+    final kbOpen = MediaQuery.of(context).viewInsets.bottom > 60;
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
@@ -785,6 +810,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       body: Column(
         children: [
           // 預覽：目前選中的檔案縮圖 + 浮水印圖層
+          if (!kbOpen)
           Expanded(
             flex: 4,
             child: Listener(
@@ -822,12 +848,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                             // 選取框畫在裁切外（見 _wmFrameInfo）
                             frameNotifier: _wmFrameInfo,
                             onChanged: () => setState(() {}),
-                            // 在預覽上拖＝這張進入單張模式。
-                            // 先切模式再拍快照，上一步才會還原到這張自己的設定
-                            onDragStart: () {
-                              _ensureOverride();
-                              _pushUndo();
-                            },
+                            // 拖曳落在目前生效的設定上：
+                            // 整批模式改整批、單張模式改這張（見開關）
+                            onDragStart: _pushUndo,
                             selectedPart: _wmPartAlive,
                             onSelectPart: (p) {
                               setState(() => _wmPart = p);
@@ -862,7 +885,6 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                                   onTap: _clearWmSel,
                                   onPanStart: (_) {
                                     if (_pvPts.length >= 2) return;
-                                    _ensureOverride();
                                     _btUndoPending = true;
                                     _btRawX = null;
                                     _btRawY = null;
@@ -921,13 +943,54 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
           ),
           // 上一步／重做跟影片、照片同一個位置（預覽下方）。
           // 原本在標題列右上角，大螢幕手機拇指按不到
+          if (!kbOpen)
           undoRedoBar(
             onUndo: _undoStack.isEmpty ? null : _undoLast,
             onRedo: _redoStack.isEmpty ? null : _redoLast,
+            leading: [
+              const SizedBox(width: 12),
+              // 範圍開關：預設整批；「單張」要在這裡特別切換
+              //（以前預覽上一動手就自動變單張，使用者以為在調整批）
+              GestureDetector(
+                onTap: _toggleScope,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _items[_previewIndex].override != null
+                        ? kSelect.withValues(alpha: 0.15)
+                        : kPanelHi,
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: _items[_previewIndex].override != null
+                          ? kSelect
+                          : kBorder,
+                    ),
+                  ),
+                  child: Text(
+                    _items[_previewIndex].override != null
+                        ? '單張調整中'
+                        : '整批調整中',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w600,
+                      color: _items[_previewIndex].override != null
+                          ? kSelect
+                          : kTextDim,
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
-          // 檔案縮圖列：點了切換預覽、長按從批次移除
+          // 檔案縮圖列：點了切換預覽、長按從批次移除。
+          // 高 72：扣掉上下 8 的留白，縮圖是 56×56 正方形
+          //（以前 56 高擠成 56×40 的橫式，使用者指定要正方形）
+          if (!kbOpen)
           SizedBox(
-            height: 56,
+            height: 72,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               padding:
@@ -1106,7 +1169,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
           ),
           // 底部那一排跟照片編輯完全一樣：存成範本（次要）＋輸出（主要）。
           // 畫質不放這裡：那是「輸出的參數」，按下輸出時才問（見
-          // _confirmExportAll），編輯畫面上擺一顆常駐的只會讓人分心
+          // _confirmExportAll），編輯畫面上擺一顆常駐的只會讓人分心。
+          // 打字中收起來，空間讓給輸入框
+          if (!kbOpen)
           SafeArea(
             top: false,
             child: Padding(

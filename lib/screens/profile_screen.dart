@@ -122,32 +122,35 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   // ── 區塊標題：一行大粗字，右邊放次要資訊 ────────────────────
+  // 點「標題」或右邊的「全部」都能進該區的總覽（使用者指定），
+  // 所以整列包一個 GestureDetector，不是只有右邊的小字能點
   Widget _sectionTitle(String title, {String? trailing, VoidCallback? onTap}) =>
-      Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          Expanded(
-            child: Text(
-              title,
-              style: const TextStyle(
-                fontSize: 21,
-                fontWeight: FontWeight.w900,
-                height: 1.1,
+      GestureDetector(
+        onTap: onTap,
+        behavior: HitTestBehavior.opaque,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 21,
+                  fontWeight: FontWeight.w900,
+                  height: 1.1,
+                ),
               ),
             ),
-          ),
-          if (trailing != null)
-            GestureDetector(
-              onTap: onTap,
-              child: Padding(
+            if (trailing != null)
+              Padding(
                 padding: const EdgeInsets.only(bottom: 3, left: 12),
                 child: Text(
                   trailing,
                   style: const TextStyle(fontSize: 12.5, color: kLTextDim),
                 ),
               ),
-            ),
-        ],
+          ],
+        ),
       );
 
   /// 範本磚：深色方塊，裡面就是這組浮水印長什麼樣。
@@ -213,12 +216,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _reload();
   }
 
-  /// 範本區最後一格：新增
+  /// 範本區最後一格：新增——直接開工作室做一組新的
+  ///（使用者指定：＋就是新增，總覽走標題或「全部」）
   Widget _presetAddTile() => GestureDetector(
     onTap: () => Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => const LightPage(child: PresetsScreen()),
+        builder: (_) => const WatermarkStudioScreen(),
       ),
     ).then((_) => _reload()),
     child: Column(
@@ -435,6 +439,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             '範本',
                             // 不顯示數量，一律「全部」（跟草稿區一致）
                             trailing: _presets.isEmpty ? '還沒有' : '全部',
+                            // 點標題或「全部」都進範本總覽；
+                            // ＋磚才是直接新增（見 _presetAddTile）
+                            onTap: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) =>
+                                    const LightPage(child: PresetsScreen()),
+                              ),
+                            ).then((_) => _reload()),
                           ),
                         ),
                         const SizedBox(height: 14),
