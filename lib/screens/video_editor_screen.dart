@@ -5572,7 +5572,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 所以上限先確保不小於下限。
         // 倒轉片段的時間軸左緣對應素材尾端，兩端要對調著修，
         // 不然畫面上縮短的是左邊、實際被切掉的卻是尾巴
-        if (!c.reverse) {
+        final freeKind =
+            src.kind == ClipKind.mosaic ||
+            src.kind == ClipKind.text ||
+            src.kind == ClipKind.image;
+        if (freeKind && fromLeft) {
+          // 馬賽克／文字／圖片沒有素材本體（duration 是假的），而它們
+          // 的 trimStart 生下來就是 0——照「素材修剪」的邏輯左把手
+          // 一開始就頂到底，於是只能往右拉長不能往左。這類片段左把手
+          // 的語意改成「往前生長」：起點前移、右緣不動、長度變長
+          final endT = c.end;
+          final minLen = minSrc / c.speed;
+          c.offset = (c.offset + dSec).clamp(
+            0.0,
+            math.max(0.0, endT - minLen),
+          );
+          c.trimEnd = c.trimStart + (endT - c.offset) * c.speed;
+        } else if (!c.reverse) {
           if (fromLeft) {
             final hi = math.max(0.0, c.trimEnd - minSrc);
             final ns = (c.trimStart + dSrc).clamp(0.0, hi);
@@ -9886,7 +9902,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 的 reverse 濾鏡；不行（Android、舊機、失敗）原樣退回 FFmpeg
     String? made;
     var cancelled = false;
-    if (await NativeExport.available) {
+    // HDR（HLG/PQ）素材不走原生倒轉：原生管線讀出來是 8-bit、沒做
+    // 色調映射，倒完整支變色。FFmpeg 那條有 zscale+tonemap 的完整
+    // 鏈，HDR 一律退回去；SDR 才吃原生的速度紅利
+    if (await NativeExport.available &&
+        !(await NativeExport.anyHDR([src.path]))) {
       final dir = await getTemporaryDirectory();
       final dest =
           '${dir.path}/rev${DateTime.now().microsecondsSinceEpoch}.mp4';
