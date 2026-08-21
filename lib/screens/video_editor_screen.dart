@@ -1760,6 +1760,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _preRolled.clear();
     _warmed.clear();
     // 抽幀快取是從原檔抽的，換素材之後要重抽（工作檔解得快得多）
+    _scrubBytes -= _scrubBytesOf(srcIndex);
     _scrubFrames.remove(srcIndex);
     _scrubDecoders.remove(srcIndex)?.dispose();
     _ensureScrubSlots(srcIndex, _tl.sources[srcIndex].duration);
@@ -1795,6 +1796,47 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// sourceIndex → 等距格子，分段漸進填滿：
   /// 抽好第一段（幾秒內）就能順順拖那一段
   final Map<int, List<Uint8List?>> _scrubFrames = {};
+
+  /// 拖曳快取的記帳與預算：每格 JPEG 累計 bytes，超過預算就把最久
+  /// 沒碰的素材整組清空（格子留著，之後滑到再抽）。以前完全不清——
+  /// 多素材的專案滑過一輪，幾百 MB 就一直掛著不走，峰值 400MB
+  /// 有一大半是它
+  static const _scrubBudgetBytes = 96 << 20;
+  int _scrubBytes = 0;
+  int _scrubTick = 0;
+  final Map<int, int> _scrubTouch = {};
+
+  void _noteScrubTouch(int srcIndex) => _scrubTouch[srcIndex] = ++_scrubTick;
+
+  int _scrubBytesOf(int srcIndex) {
+    var n = 0;
+    for (final b in _scrubFrames[srcIndex] ?? const <Uint8List?>[]) {
+      n += b?.length ?? 0;
+    }
+    return n;
+  }
+
+  /// 超過預算就清最久沒碰的素材；正在畫面上的不清
+  void _trimScrubBudget() {
+    if (_scrubBytes <= _scrubBudgetBytes) return;
+    final keep = _tl.videosAt(_position).map((c) => c.sourceIndex).toSet();
+    final order = _scrubFrames.keys.toList()
+      ..sort((a, b) => (_scrubTouch[a] ?? 0).compareTo(_scrubTouch[b] ?? 0));
+    for (final idx in order) {
+      if (_scrubBytes <= _scrubBudgetBytes) break;
+      if (keep.contains(idx)) continue;
+      final slots = _scrubFrames[idx];
+      if (slots == null) continue;
+      _scrubBytes -= _scrubBytesOf(idx);
+      // 換一個全新的空陣列：背景抽幀用 identical() 認舊陣列，
+      // 看到被換掉就會自己停，不會往清空的格子繼續塞
+      _scrubFrames[idx] = List<Uint8List?>.filled(slots.length, null);
+      _nfLatest.remove(idx);
+      _scrubDecoders.remove(idx)?.dispose();
+      _decoderLru.remove(idx);
+      Diag.count('拖曳快取回收');
+    }
+  }
 
   /// 每張快取幀的時間間隔（秒）：專業剪輯 App 的拖曳之所以絲滑，
   /// 是因為幀夠密；太疏就只能拿舊幀湊，看起來一段段跳
@@ -1890,6 +1932,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final src = _tl.sourceOf(c);
       if (src.duration <= 0) continue;
       _ensureScrubSlots(c.sourceIndex, src.duration);
+      _noteScrubTouch(c.sourceIndex);
       final slots = _scrubFrames[c.sourceIndex]!;
       final t = c.sourceTimeAt(_position);
       final fi = (t / src.duration * slots.length).floor().clamp(
@@ -1918,8 +1961,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         final slots = _scrubFrames[w.src];
         if (bytes != null) {
           _nfLatest[w.src] = bytes;
+          _noteScrubTouch(w.src);
           if (slots != null && w.fi < slots.length && slots[w.fi] == null) {
             slots[w.fi] = bytes;
+            _scrubBytes += bytes.length;
+            _trimScrubBudget();
           }
           // 主動重繪：手指停住時，剛抽好的幀才會立刻出現
           if (_scrubbing && mounted) setState(() {});
@@ -1969,8 +2015,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 畫面關了或素材被換掉就停
       if (!mounted || !identical(_scrubFrames[srcIndex], slots)) return;
       for (var i = 0; i < t.length && s + i < n; i++) {
+        if (slots[s + i] == null) _scrubBytes += t[i].length;
         slots[s + i] = t[i];
       }
+      _noteScrubTouch(srcIndex);
+      _trimScrubBudget();
       // 段落之間喘口氣，把 CPU 讓給 UI
       await Future<void>.delayed(const Duration(milliseconds: 120));
     }
@@ -4693,6 +4742,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     tr.env('片段數', '${_tl.clips.length}');
     tr.env('時間軸', '\n${_timelineDump()}');
+    // 記憶體記帳：大宗快取各占多少。以前只有總數，
+    // 漲上去了也不知道是誰吃的
+    var thumbB = 0;
+    for (final t in _thumbs.values) {
+      for (final b in t) {
+        thumbB += b.length;
+      }
+    }
+    tr.env(
+      '快取記帳',
+      '拖曳幀 ${(_scrubBytes / 1048576).toStringAsFixed(1)}MB'
+      '（${_scrubFrames.length} 個素材，預算 ${_scrubBudgetBytes >> 20}MB）'
+      '／縮圖帶 ${(thumbB / 1048576).toStringAsFixed(1)}MB'
+      '／拖曳解碼器 ${_scrubDecoders.length} 顆',
+    );
     unawaited(engine.hdrChainName().then((n) => tr.env('HDR 轉換', n)));
     // 工作檔到底有沒有生效：這一格對不對，決定了「順不順」是不是
     // 還在原檔上跑
@@ -9794,7 +9858,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           ),
           actions: [
             TextButton(
-              onPressed: () => engine.cancelExport(),
+              onPressed: () {
+                // 原生與 FFmpeg 哪條在跑就取消哪條（都叫最省事）
+                unawaited(NativeExport.cancelReverse());
+                engine.cancelExport();
+              },
               child: const Text('取消'),
             ),
           ],
@@ -9814,14 +9882,39 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     tw -= tw % 2;
     th -= th % 2;
 
-    final made = await engine.renderReversedClip(
-      src.path,
-      c.trimStart,
-      c.trimEnd,
-      tw,
-      th,
-      onProgress: (v) => progress.value = v,
-    );
+    // 原生（iOS）優先：硬體解編碼、逐窗處理，速度與畫質都贏 FFmpeg
+    // 的 reverse 濾鏡；不行（Android、舊機、失敗）原樣退回 FFmpeg
+    String? made;
+    var cancelled = false;
+    if (await NativeExport.available) {
+      final dir = await getTemporaryDirectory();
+      final dest =
+          '${dir.path}/rev${DateTime.now().microsecondsSinceEpoch}.mp4';
+      final err = await NativeExport.reverseClip(
+        path: src.path,
+        start: c.trimStart,
+        end: c.trimEnd,
+        out: dest,
+        onProgress: (v) => progress.value = v,
+      );
+      if (err == null) {
+        made = dest;
+      } else if (err == '已取消') {
+        cancelled = true;
+      } else {
+        Diag.note('原生倒轉失敗，退 FFmpeg：$err');
+      }
+    }
+    made ??= cancelled
+        ? null
+        : await engine.renderReversedClip(
+            src.path,
+            c.trimStart,
+            c.trimEnd,
+            tw,
+            th,
+            onProgress: (v) => progress.value = v,
+          );
     if (mounted && dialogOpen) Navigator.of(context).pop();
     if (!mounted) return;
 

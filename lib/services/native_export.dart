@@ -265,6 +265,41 @@ class NativeExport {
     }
   }
 
+  /// 原生倒轉檔：把 [start]~[end] 渲染成一支「已倒好」的 mp4。
+  /// 硬體解編碼、從片尾逐窗處理，快且省記憶體。
+  /// 成功回 null，失敗回原因字串（呼叫端退回 FFmpeg）、取消回「已取消」
+  static Future<String?> reverseClip({
+    required String path,
+    required double start,
+    required double end,
+    required String out,
+    int maxLong = 1920,
+    void Function(double p)? onProgress,
+  }) async {
+    if (!await available) return '沒有原生管線';
+    _wire();
+    _onProgress = onProgress;
+    try {
+      return await _ch.invokeMethod<String>('reverse', {
+        'path': path,
+        'start': start,
+        'end': end,
+        'out': out,
+        'maxLong': maxLong,
+      });
+    } catch (e) {
+      return '$e';
+    } finally {
+      _onProgress = null;
+    }
+  }
+
+  static Future<void> cancelReverse() async {
+    try {
+      await _ch.invokeMethod('reverseCancel');
+    } catch (_) {}
+  }
+
   static Future<void> cancel() async {
     try {
       await _ch.invokeMethod('cancel');

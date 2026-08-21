@@ -934,6 +934,15 @@ final class AtomicFlag {
       case "cancel":
         self.exportSession?.cancelExport()
         result(nil)
+      case "reverse":
+        guard let a = call.arguments as? [String: Any] else {
+          result("參數錯誤")
+          return
+        }
+        self.runReverse(a, channel: channel) { err in result(err) }
+      case "reverseCancel":
+        self.reverseCancelled = true
+        result(nil)
       case "run":
         guard let a = call.arguments as? [String: Any] else {
           result("參數錯誤")
@@ -944,6 +953,314 @@ final class AtomicFlag {
         result(FlutterMethodNotImplemented)
       }
     }
+  }
+
+  // ===== 倒轉檔（原生）=====
+  //
+  // 「倒轉」在 App 裡是一次性前置處理：把選定區間渲染成一支「已倒好」
+  // 的檔，之後整條管線（預覽、合成播放器、匯出）都當普通素材用。
+  // 原本這一步交給 FFmpeg 的 reverse 濾鏡（軟體解編碼，整段吃記憶體
+  // 得分段跑）。這裡改系統硬體管線：從片尾往片頭一窗一窗處理——
+  // 窗內影格倒序寫出、窗與窗又倒序銜接，整支就是連續倒轉，
+  // 全程只佔一窗的記憶體；聲音同一招（窗內 PCM 樣本反轉）
+  private var reverseCancelled = false
+
+  private func runReverse(
+    _ a: [String: Any], channel: FlutterMethodChannel,
+    done: @escaping (String?) -> Void
+  ) {
+    guard let path = a["path"] as? String, let out = a["out"] as? String
+    else {
+      done("參數錯誤")
+      return
+    }
+    let start = a["start"] as? Double ?? 0
+    let end = a["end"] as? Double ?? 0
+    let maxLong = a["maxLong"] as? Int ?? 1920
+    reverseCancelled = false
+    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+      var err: String? = "內部錯誤"
+      if let self = self {
+        err = self.reverseWork(
+          path: path, start: start, end: end, out: out, maxLong: maxLong
+        ) { v in
+          DispatchQueue.main.async {
+            channel.invokeMethod("progress", arguments: v)
+          }
+        }
+      }
+      DispatchQueue.main.async { done(err) }
+    }
+  }
+
+  private func reverseWork(
+    path: String, start: Double, end: Double, out: String, maxLong: Int,
+    progress: @escaping (Double) -> Void
+  ) -> String? {
+    let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+    guard let vTrack = asset.tracks(withMediaType: .video).first else {
+      return "沒有影像軌"
+    }
+    let dur = asset.duration.seconds
+    let a = max(0, min(start, dur))
+    let b = max(a + 0.05, min(end <= 0 ? dur : end, dur))
+
+    // 輸出尺寸：轉正後的顯示尺寸，長邊夾在 maxLong
+    let d0 = vTrack.naturalSize.applying(vTrack.preferredTransform)
+    let dispW = max(1, abs(d0.width))
+    let dispH = max(1, abs(d0.height))
+    var k: CGFloat = 1
+    if max(dispW, dispH) > CGFloat(maxLong) {
+      k = CGFloat(maxLong) / max(dispW, dispH)
+    }
+    let outW = max(2, Int((dispW * k).rounded()) & ~1)
+    let outH = max(2, Int((dispH * k).rounded()) & ~1)
+
+    try? FileManager.default.removeItem(atPath: out)
+    let writer: AVAssetWriter
+    do {
+      writer = try AVAssetWriter(
+        outputURL: URL(fileURLWithPath: out), fileType: .mp4)
+    } catch {
+      return "開不了輸出檔：\(error.localizedDescription)"
+    }
+    let fps = vTrack.nominalFrameRate > 1 ? Double(vTrack.nominalFrameRate) : 30
+    let vIn = AVAssetWriterInput(
+      mediaType: .video,
+      outputSettings: [
+        AVVideoCodecKey: AVVideoCodecType.h264,
+        AVVideoWidthKey: outW,
+        AVVideoHeightKey: outH,
+        AVVideoCompressionPropertiesKey: [
+          // 位元率跟工作檔同級，畫質不因倒轉降階
+          AVVideoAverageBitRateKey: max(4_000_000, outW * outH * 6),
+          AVVideoExpectedSourceFrameRateKey: Int(fps.rounded()),
+        ],
+      ])
+    vIn.expectsMediaDataInRealTime = false
+    guard writer.canAdd(vIn) else { return "加不進影像軌" }
+    writer.add(vIn)
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+      assetWriterInput: vIn,
+      sourcePixelBufferAttributes: [
+        kCVPixelBufferPixelFormatTypeKey as String:
+          kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+      ])
+
+    // 聲音：讀成 PCM、窗內樣本反轉，寫回 AAC
+    let aTrack = asset.tracks(withMediaType: .audio).first
+    var aIn: AVAssetWriterInput? = nil
+    var pcmDesc: CMAudioFormatDescription? = nil
+    let sampleRate = 44_100.0
+    let channels: UInt32 = 2
+    if aTrack != nil {
+      let input = AVAssetWriterInput(
+        mediaType: .audio,
+        outputSettings: [
+          AVFormatIDKey: kAudioFormatMPEG4AAC,
+          AVSampleRateKey: sampleRate,
+          AVNumberOfChannelsKey: channels,
+          AVEncoderBitRateKey: 128_000,
+        ])
+      input.expectsMediaDataInRealTime = false
+      if writer.canAdd(input) {
+        writer.add(input)
+        aIn = input
+      }
+      var asbd = AudioStreamBasicDescription(
+        mSampleRate: sampleRate, mFormatID: kAudioFormatLinearPCM,
+        mFormatFlags: kAudioFormatFlagIsSignedInteger
+          | kAudioFormatFlagIsPacked,
+        mBytesPerPacket: 2 * channels, mFramesPerPacket: 1,
+        mBytesPerFrame: 2 * channels, mChannelsPerFrame: channels,
+        mBitsPerChannel: 16, mReserved: 0)
+      CMAudioFormatDescriptionCreate(
+        allocator: nil, asbd: &asbd, layoutSize: 0, layout: nil,
+        magicCookieSize: 0, magicCookie: nil, extensions: nil,
+        formatDescriptionOut: &pcmDesc)
+    }
+
+    guard writer.startWriting() else {
+      return "寫入器啟動失敗：\(writer.error?.localizedDescription ?? "?")"
+    }
+    writer.startSession(atSourceTime: .zero)
+
+    // 轉正＋縮放交給解碼端的 videoComposition：讀出來就是輸出尺寸，
+    // 一窗的記憶體占用固定（0.5 秒約 15 格 NV12，1080p 一格 3MB）
+    let comp = AVMutableVideoComposition()
+    comp.renderSize = CGSize(width: outW, height: outH)
+    comp.frameDuration = CMTime(
+      value: 1, timescale: CMTimeScale(max(1, Int(fps.rounded()))))
+    let ins = AVMutableVideoCompositionInstruction()
+    ins.timeRange = CMTimeRange(start: .zero, duration: asset.duration)
+    let li = AVMutableVideoCompositionLayerInstruction(assetTrack: vTrack)
+    li.setTransform(
+      vTrack.preferredTransform.concatenating(
+        CGAffineTransform(scaleX: k, y: k)), at: .zero)
+    ins.layerInstructions = [li]
+    comp.instructions = [ins]
+
+    let win = 0.5
+    let steps = max(1, Int(ceil((b - a) / win)))
+    var outAudioFrames: Int64 = 0
+    for i in 0..<steps {
+      if reverseCancelled {
+        writer.cancelWriting()
+        try? FileManager.default.removeItem(atPath: out)
+        return "已取消"
+      }
+      let wEnd = b - Double(i) * win
+      let wStart = max(a, wEnd - win)
+      var frames: [(CVPixelBuffer, CMTime)] = []
+      var pcm = Data()
+      var readErr: String? = nil
+      autoreleasepool {
+        guard let reader = try? AVAssetReader(asset: asset) else {
+          readErr = "讀取器開不起來"
+          return
+        }
+        reader.timeRange = CMTimeRange(
+          start: CMTime(seconds: wStart, preferredTimescale: 600),
+          end: CMTime(seconds: wEnd, preferredTimescale: 600))
+        let vOut = AVAssetReaderVideoCompositionOutput(
+          videoTracks: [vTrack],
+          videoSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String:
+              kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+          ])
+        vOut.videoComposition = comp
+        vOut.alwaysCopiesSampleData = false
+        guard reader.canAdd(vOut) else {
+          readErr = "讀不了影像"
+          return
+        }
+        reader.add(vOut)
+        var aOut: AVAssetReaderTrackOutput? = nil
+        if let at = aTrack, aIn != nil {
+          let o = AVAssetReaderTrackOutput(
+            track: at,
+            outputSettings: [
+              AVFormatIDKey: kAudioFormatLinearPCM,
+              AVSampleRateKey: sampleRate,
+              AVLinearPCMBitDepthKey: 16,
+              AVLinearPCMIsFloatKey: false,
+              AVLinearPCMIsBigEndianKey: false,
+              AVLinearPCMIsNonInterleaved: false,
+              AVNumberOfChannelsKey: channels,
+            ])
+          if reader.canAdd(o) {
+            reader.add(o)
+            aOut = o
+          }
+        }
+        reader.startReading()
+        while let sb = vOut.copyNextSampleBuffer() {
+          if let pb = CMSampleBufferGetImageBuffer(sb) {
+            frames.append((pb, CMSampleBufferGetPresentationTimeStamp(sb)))
+          }
+        }
+        if let ao = aOut {
+          while let sb = ao.copyNextSampleBuffer() {
+            if let blk = CMSampleBufferGetDataBuffer(sb) {
+              let len = CMBlockBufferGetDataLength(blk)
+              var tmp = Data(count: len)
+              tmp.withUnsafeMutableBytes { raw in
+                if let base = raw.baseAddress {
+                  _ = CMBlockBufferCopyDataBytes(
+                    blk, atOffset: 0, dataLength: len, destination: base)
+                }
+              }
+              pcm.append(tmp)
+            }
+          }
+        }
+        if reader.status == .failed {
+          readErr = "讀取失敗：\(reader.error?.localizedDescription ?? "?")"
+        }
+      }
+      if let e = readErr {
+        writer.cancelWriting()
+        return e
+      }
+
+      // 影格倒序寫出：這一窗在成品裡的起點＝(b - wEnd)。
+      // 窗內用等距時間戳（窗長 ÷ 張數），來源變動幀率也不會亂
+      let outBase = b - wEnd
+      let step = (wEnd - wStart) / Double(max(1, frames.count))
+      for (j, f) in frames.reversed().enumerated() {
+        while !vIn.isReadyForMoreMediaData {
+          if reverseCancelled { break }
+          usleep(5000)
+        }
+        if reverseCancelled { continue }
+        adaptor.append(
+          f.0,
+          withPresentationTime: CMTime(
+            seconds: outBase + Double(j) * step, preferredTimescale: 600))
+      }
+      frames.removeAll()
+
+      if let input = aIn, let desc = pcmDesc, !pcm.isEmpty {
+        let bpf = Int(2 * channels)
+        let nFrames = pcm.count / bpf
+        var rev = Data(capacity: nFrames * bpf)
+        pcm.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+          guard let base = raw.baseAddress else { return }
+          for f in stride(from: nFrames - 1, through: 0, by: -1) {
+            rev.append(Data(bytes: base + f * bpf, count: bpf))
+          }
+        }
+        var blk: CMBlockBuffer? = nil
+        CMBlockBufferCreateWithMemoryBlock(
+          allocator: kCFAllocatorDefault, memoryBlock: nil,
+          blockLength: rev.count, blockAllocator: nil,
+          customBlockSource: nil, offsetToData: 0,
+          dataLength: rev.count, flags: 0, blockBufferOut: &blk)
+        if let bb = blk {
+          CMBlockBufferAssureBlockMemory(bb)
+          rev.withUnsafeBytes { raw in
+            if let base = raw.baseAddress {
+              _ = CMBlockBufferReplaceDataBytes(
+                with: base, blockBuffer: bb,
+                offsetIntoDestination: 0, dataLength: rev.count)
+            }
+          }
+          var sb: CMSampleBuffer? = nil
+          CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+            allocator: kCFAllocatorDefault, dataBuffer: bb,
+            formatDescription: desc, sampleCount: nFrames,
+            presentationTimeStamp: CMTime(
+              value: outAudioFrames, timescale: Int32(sampleRate)),
+            packetDescriptions: nil, sampleBufferOut: &sb)
+          if let s2 = sb {
+            while !input.isReadyForMoreMediaData {
+              if reverseCancelled { break }
+              usleep(5000)
+            }
+            if !reverseCancelled { input.append(s2) }
+            outAudioFrames += Int64(nFrames)
+          }
+        }
+      }
+      progress(Double(i + 1) / Double(steps))
+    }
+    if reverseCancelled {
+      writer.cancelWriting()
+      try? FileManager.default.removeItem(atPath: out)
+      return "已取消"
+    }
+    vIn.markAsFinished()
+    aIn?.markAsFinished()
+    var err: String? = nil
+    let sem = DispatchSemaphore(value: 0)
+    writer.finishWriting {
+      if writer.status != .completed {
+        err = "寫檔失敗：\(writer.error?.localizedDescription ?? "?")"
+      }
+      sem.signal()
+    }
+    sem.wait()
+    return err
   }
 
   /// 成功回 nil，失敗回原因字串（取消回「已取消」）
