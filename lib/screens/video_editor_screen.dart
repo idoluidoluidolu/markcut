@@ -4445,6 +4445,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     unawaited(
       _comp!.position().then((p) {
         if (!mounted || !_playing) return;
+        // 合成只鋪到最後一段影片的結尾；時間軸可能更長（馬賽克或
+        // 文字拖出去的尾巴）。播放器到底停住之後它就不再是時鐘——
+        // 再拿它校正會把指針一路拉回合成結尾，跟還在前進的時鐘打
+        // 架，播放頭就在結尾來回抖。尾巴段讓 Dart 時鐘自己走完，
+        // 畫面維持最後一幀（播放器本來就停在那）
+        final compEnd = _comp!.duration;
+        if (compEnd > 0 &&
+            compEnd < _tl.duration - 0.05 &&
+            p >= compEnd - 0.1) {
+          return;
+        }
         // 差太多才拉回去：每次都硬設會讓播放頭一直微跳
         if ((p - _position).abs() > 0.12) _position = p;
       }),
