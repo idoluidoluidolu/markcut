@@ -7838,11 +7838,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                     opacity: c.fadeFactorAt(
                                                       _position,
                                                     ),
-                                                    child: Image.memory(
-                                                      bytes[0],
-                                                      fit: BoxFit.fill,
-                                                      gaplessPlayback: true,
-                                                    ),
+                                                    // GIF 要跟著時間軸的
+                                                    // 時鐘走（可播可停）；
+                                                    // 靜態圖照舊
+                                                    child: src.isGif
+                                                        ? _TimelineGif(
+                                                            key: ValueKey(
+                                                              'gif${c.id}',
+                                                            ),
+                                                            bytes: bytes[0],
+                                                            clock: _frameVN,
+                                                            start: c.offset,
+                                                            trimStart:
+                                                                c.trimStart,
+                                                          )
+                                                        : Image.memory(
+                                                            bytes[0],
+                                                            fit: BoxFit.fill,
+                                                            gaplessPlayback:
+                                                                true,
+                                                          ),
                                                   ),
                                                 )
                                               else
@@ -10798,6 +10813,113 @@ class _SelectionFramePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_SelectionFramePainter oldDelegate) => false;
+}
+
+/// GIF 圖層：跟著時間軸的時鐘挑格，而不是丟給 Image.memory 自己
+/// 無限輪播——那樣暫停也照跑、跟播放頭完全對不上（使用者回報：
+/// 「GIF 自己一直重複播放，無法播放與暫停」）。
+/// 幀在掛載時解一次（寬度夾 480 省記憶體），之後每格只是貼圖
+class _TimelineGif extends StatefulWidget {
+  const _TimelineGif({
+    super.key,
+    required this.bytes,
+    required this.clock,
+    required this.start,
+    required this.trimStart,
+  });
+
+  final Uint8List bytes;
+
+  /// 節流後的播放位置（_frameVN）
+  final ValueNotifier<double> clock;
+
+  /// 片段在時間軸上的起點與內容起點
+  final double start;
+  final double trimStart;
+
+  @override
+  State<_TimelineGif> createState() => _TimelineGifState();
+}
+
+class _TimelineGifState extends State<_TimelineGif> {
+  final List<ui.Image> _frames = [];
+  final List<int> _endMs = []; // 每格「結束於第幾毫秒」（累計）
+  int _totalMs = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _decode();
+  }
+
+  Future<void> _decode() async {
+    try {
+      final codec = await ui.instantiateImageCodec(
+        widget.bytes,
+        targetWidth: 480,
+      );
+      var acc = 0;
+      // 300 格（約 30 秒）封頂：再長的 GIF 就循環前 300 格，
+      // 不讓一支怪檔把記憶體吃光
+      final n = math.min(codec.frameCount, 300);
+      for (var i = 0; i < n; i++) {
+        final f = await codec.getNextFrame();
+        if (!mounted) {
+          f.image.dispose();
+          codec.dispose();
+          return;
+        }
+        _frames.add(f.image);
+        // 0ms 的格（壞檔慣例）當 100ms 用，跟瀏覽器一致
+        final d = f.duration.inMilliseconds;
+        acc += d < 10 ? 100 : d;
+        _endMs.add(acc);
+      }
+      codec.dispose();
+      _totalMs = acc;
+      if (mounted) setState(() {});
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    for (final f in _frames) {
+      f.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_frames.isEmpty || _totalMs <= 0) {
+      // 還在解（幾百毫秒內）：先讓 Image.memory 頂著，避免閃空白
+      return Image.memory(
+        widget.bytes,
+        fit: BoxFit.fill,
+        gaplessPlayback: true,
+      );
+    }
+    return ValueListenableBuilder<double>(
+      valueListenable: widget.clock,
+      builder: (context, pos, _) {
+        var t = (pos - widget.start) + widget.trimStart;
+        if (t < 0) t = 0;
+        final ms = (t * 1000).round() % _totalMs;
+        // 二分找「結束時間 > ms」的第一格
+        var lo = 0;
+        var hi = _endMs.length - 1;
+        while (lo < hi) {
+          final mid = (lo + hi) >> 1;
+          if (_endMs[mid] > ms) {
+            hi = mid;
+          } else {
+            lo = mid + 1;
+          }
+        }
+        return RawImage(image: _frames[lo], fit: BoxFit.fill);
+      },
+    );
+  }
 }
 
 /// 拖曳預覽用的「已解碼幀」快取。
