@@ -433,9 +433,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           padding: _side,
                           child: _sectionTitle(
                             '範本',
-                            trailing: _presets.isEmpty
-                                ? '還沒有'
-                                : '${_presets.length} 個',
+                            // 不顯示數量，一律「全部」（跟草稿區一致）
+                            trailing: _presets.isEmpty ? '還沒有' : '全部',
                           ),
                         ),
                         const SizedBox(height: 14),
@@ -463,7 +462,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             padding: _side,
                             child: _sectionTitle(
                               '我的 GIF',
-                              trailing: '${_gifs.length} 個',
+                              trailing: '全部',
                               onTap: _openGifs,
                             ),
                           ),
