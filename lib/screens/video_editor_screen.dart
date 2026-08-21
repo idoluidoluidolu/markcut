@@ -1934,9 +1934,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       frames,
       // 停在原地時晚一步解好的圖也要補畫上去
       onReady: () {
-        if (mounted && _scrubbing) _frameVN.value = _posVN.value;
+        // 同值不通知，要用 poke（不然晚一步解好的圖常常補不上去）
+        if (mounted && _scrubbing) _pokeFrame();
       },
     );
+  }
+
+  /// 逐格快取剛解好時，讓聽 _frameVN 的預覽層重畫一次。
+  /// ValueNotifier 對相同值不通知，先撥開一根頭髮再放回來——
+  /// 兩次小範圍重繪，還是遠比整頁 setState（build 三千多行）便宜
+  void _pokeFrame() {
+    final v = _posVN.value;
+    _frameVN.value = v + 1e-7;
+    _frameVN.value = v;
   }
 
   bool _scrubbing = false;
@@ -2026,8 +2036,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             _scrubBytes += bytes.length;
             _trimScrubBudget();
           }
-          // 主動重繪：手指停住時，剛抽好的幀才會立刻出現
-          if (_scrubbing && mounted) setState(() {});
+          // 主動重繪：手指停住時，剛抽好的幀才會立刻出現。
+          // 只重繪預覽層，不整頁 setState（拖曳中每解一格重建一次
+          // 三千多行的 build，就是拖曳頓的來源之一）
+          if (_scrubbing && mounted) _pokeFrame();
         }
       }
     } finally {
@@ -4764,27 +4776,38 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _preRolled.clear();
     _warmed.clear();
     _lastDriftFix.clear();
+    _rebuildHandoff();
+  }
+
+  /// 切割接手關係（後段 id → 前段）。純結構條件（同來源/同軌/
+  /// 首尾相接/同速度），只在時間軸變動時會變——這裡一次建好，
+  /// 播放 tick 與預熱判斷不再每格對全部片段做 O(n²) 掃描
+  final Map<int, TimelineClip> _handoffPrev = {};
+
+  void _rebuildHandoff() {
+    _handoffPrev.clear();
+    for (final clip in _tl.clips) {
+      for (final prev in _tl.clips) {
+        if (identical(prev, clip) ||
+            prev.sourceIndex != clip.sourceIndex ||
+            prev.track != clip.track) {
+          continue;
+        }
+        if ((prev.end - clip.offset).abs() > 0.05 ||
+            (prev.trimEnd - clip.trimStart).abs() > 0.05 ||
+            (prev.speed - clip.speed).abs() > 0.001) {
+          continue;
+        }
+        _handoffPrev[clip.id] = prev;
+        break;
+      }
+    }
   }
 
   /// [clip] 是不是「切割出來的後段」——也就是同一軌、同一素材、
   /// 頭尾相接且速度相同的前一段。是的話它進場時會直接接走前段的
   /// 播放器，不必自己 seek 或預熱。回傳那個前段（沒有就 null）
-  TimelineClip? _handoffFrom(TimelineClip clip) {
-    for (final prev in _tl.clips) {
-      if (identical(prev, clip) ||
-          prev.sourceIndex != clip.sourceIndex ||
-          prev.track != clip.track) {
-        continue;
-      }
-      if ((prev.end - clip.offset).abs() > 0.05 ||
-          (prev.trimEnd - clip.trimStart).abs() > 0.05 ||
-          (prev.speed - clip.speed).abs() > 0.001) {
-        continue;
-      }
-      return prev;
-    }
-    return null;
-  }
+  TimelineClip? _handoffFrom(TimelineClip clip) => _handoffPrev[clip.id];
 
   /// 播放診斷：長按標題打開。記錄按下播放之後每一段花了多久、
   /// 交界有沒有命中預熱、背景抽幀跟卡頓的時間點對不對得上
@@ -5179,21 +5202,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_playing) {
       for (final clip in _tl.clips) {
         if (!clip.covers(_position) || _wasActive.contains(clip.id)) continue;
-        for (final prev in _tl.clips) {
-          if (identical(prev, clip) ||
-              prev.sourceIndex != clip.sourceIndex ||
-              prev.track != clip.track ||
-              prev.covers(_position) ||
-              !_wasActive.contains(prev.id)) {
-            continue;
-          }
-          if ((prev.end - clip.offset).abs() > 0.05 ||
-              (prev.trimEnd - clip.trimStart).abs() > 0.05 ||
-              (prev.speed - clip.speed).abs() > 0.001) {
-            continue;
-          }
+        // 結構條件已在 _handoffPrev 建表時算好，這裡只驗當下狀態
+        final prev = _handoffPrev[clip.id];
+        if (prev != null &&
+            !prev.covers(_position) &&
+            _wasActive.contains(prev.id)) {
           final cOld = _ctrls[prev.id];
-          if (cOld == null || !cOld.value.isInitialized) break;
+          if (cOld == null || !cOld.value.isInitialized) continue;
           // 保險絲：舊播放器必須真的停在交界附近才換手，
           // 不然任何狀態殘留都會把錯位置的播放器塞給新片段
           final oldPos = cOld.value.position.inMilliseconds / 1000.0;
@@ -5210,7 +5225,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           _wasActive
             ..add(clip.id) // 視為已進場：跳過 seek，讓它繼續跑
             ..remove(prev.id);
-          break;
         }
       }
       // 進場準備，兩段式：
@@ -6401,6 +6415,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _frameSettle?.cancel();
     _playProbe?.cancel();
+    _prepEscapeTimer?.cancel();
+    _posVN.dispose();
+    _frameVN.dispose();
+    _wmFrameInfo.dispose();
     unawaited(Diag.deactivateAudio());
     unawaited(_comp?.dispose() ?? Future<void>.value());
     _scrubSettleTimer?.cancel();

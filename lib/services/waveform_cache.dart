@@ -14,16 +14,27 @@ class WaveformCache extends ChangeNotifier {
   final _loading = <String>{};
   final _failed = <String>{};
 
+  /// 峰值快取上限（支）。單例活過整個 App 生命週期，以前完全不清：
+  /// 每載入過一支音檔就永久多一條峰值陣列，跨專案一路疊上去。
+  /// 超過就丟最久沒被要過的（Map 的插入順序＝LRU，讀到就搬到尾巴）
+  static const _maxEntries = 12;
+
   /// 拿某個檔案的波形峰值；還沒好（或解不出來）回 null
   List<double>? of(String path) {
-    final p = _peaks[path];
-    if (p != null) return p;
+    final p = _peaks.remove(path);
+    if (p != null) {
+      _peaks[path] = p; // 搬到尾巴＝最近用過
+      return p;
+    }
     if (_failed.contains(path) || _loading.contains(path)) return null;
     _loading.add(path);
     decodeWaveformPeaks(path).then((v) {
       _loading.remove(path);
       if (v != null && v.isNotEmpty) {
         _peaks[path] = v;
+        while (_peaks.length > _maxEntries) {
+          _peaks.remove(_peaks.keys.first);
+        }
         notifyListeners();
       } else {
         _failed.add(path);

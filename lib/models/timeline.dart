@@ -394,13 +394,16 @@ class TimelineModel {
 
   /// 某時刻所有蓋在畫面上的影片片段，由下層到上層（編號小的先）
   List<TimelineClip> videosAt(double t) {
+    // 排序鍵先查好：比較器裡呼叫 clips.indexOf 是 O(n²·log n)，
+    // 這個方法在拖曳與預覽重繪的熱路徑上每秒被叫好幾十次
+    final order = {for (var i = 0; i < clips.length; i++) clips[i]: i};
     final list =
         clips
             .where((c) => sourceOf(c).isVideo && c.coversForDisplay(t))
             .toList()
           ..sort((a, b) {
             final k = a.track.compareTo(b.track);
-            return k != 0 ? k : clips.indexOf(a).compareTo(clips.indexOf(b));
+            return k != 0 ? k : (order[a] ?? 0).compareTo(order[b] ?? 0);
           });
     return list;
   }
@@ -436,7 +439,9 @@ class TimelineModel {
   /// 某時刻蓋在畫面上的圖片／文字片段，由下層到上層排序
   List<TimelineClip> overlaysAt(double t) {
     // 馬賽克也算畫面上的覆蓋物（預覽要畫）；
-    // 但不進 isOverlay——匯出端對 overlay 的輸入映射是另一套
+    // 但不進 isOverlay——匯出端對 overlay 的輸入映射是另一套。
+    // 排序鍵先查好（理由同 videosAt）
+    final order2 = {for (var i = 0; i < clips.length; i++) clips[i]: i};
     final list =
         clips
             .where(
@@ -448,7 +453,7 @@ class TimelineModel {
             .toList()
           ..sort((a, b) {
             final k = a.track.compareTo(b.track); // track 小的是下層，先畫
-            return k != 0 ? k : clips.indexOf(a).compareTo(clips.indexOf(b));
+            return k != 0 ? k : (order2[a] ?? 0).compareTo(order2[b] ?? 0);
           });
     return list;
   }
