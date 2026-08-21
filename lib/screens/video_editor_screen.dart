@@ -217,6 +217,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   bool _playing = false;
+
+  /// 合成影片原生圖層的身分證：就算在子元件清單裡換了位置，Flutter
+  /// 也要「搬移」而不是「拆掉重建」——重建的那一瞬間就是黑閃
+  final GlobalKey _compViewKey = GlobalKey();
   Duration _lastTick = Duration.zero;
 
   double _speed = 1.0;
@@ -7242,27 +7246,48 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         selVisual = cur;
                                       }
                                     }
+                                    // 插入位置一定要整條時間軸固定（用
+                                    // 全部影片裡最低的軌）。原本用「當下
+                                    // 片段的軌道」：跨接縫時它會相對馬賽克
+                                    // 佔位換順序，原生圖層被 Flutter 拆掉
+                                    // 重掛——重掛那一瞬間就是接縫的閃黑＋
+                                    // 卡頓，而且只在「分段擺在馬賽克軌之上」
+                                    // 時發生，跟使用者回報的條件一字不差。
+                                    // 供格節奏偵測器證明影片管線本身是順的
+                                    var vidTrack = 1 << 20;
+                                    for (final c in _tl.clips) {
+                                      if (_tl.sourceOf(c).isVideo &&
+                                          c.track < vidTrack) {
+                                        vidTrack = c.track;
+                                      }
+                                    }
+                                    if (vidTrack == 1 << 20) vidTrack = 0;
                                     addLayer(
-                                      cur?.track ?? 0,
+                                      vidTrack,
                                       Positioned.fromRect(
                                         rect: rect,
                                         // 兩條路：系統的影片圖層（跟相簿
                                         // 播放同一條，零複製）或 Flutter
                                         // 材質（影格要複製一次再合成）
-                                        child: Diag.playerLayer.value
-                                            ? const UiKitView(
-                                                viewType: 'markcut/player_view',
-                                              )
-                                            : FittedBox(
-                                                fit: BoxFit.contain,
-                                                child: SizedBox(
-                                                  width: _comp!.width,
-                                                  height: _comp!.height,
-                                                  child: Texture(
-                                                    textureId: _comp!.textureId,
+                                        child: KeyedSubtree(
+                                          key: _compViewKey,
+                                          child: Diag.playerLayer.value
+                                              ? const UiKitView(
+                                                  viewType:
+                                                      'markcut/player_view',
+                                                )
+                                              : FittedBox(
+                                                  fit: BoxFit.contain,
+                                                  child: SizedBox(
+                                                    width: _comp!.width,
+                                                    height: _comp!.height,
+                                                    child: Texture(
+                                                      textureId:
+                                                          _comp!.textureId,
+                                                    ),
                                                   ),
                                                 ),
-                                              ),
+                                        ),
                                       ),
                                     );
                                     vids.clear();

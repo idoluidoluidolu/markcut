@@ -335,6 +335,14 @@ class CompPlayer {
       if (dropped != null) b.write('／系統記的掉格 $dropped');
       final stalls = (m['stalls'] as num?)?.toInt();
       if (stalls != null) b.write('／卡頓 $stalls 次');
+      // 原生圖層建立次數：播放中變多＝圖層被拆掉重掛（黑閃）。
+      // 修好之後整段編輯應該只有 1 次
+      final vcr = (m['viewCreates'] as num?)?.toInt();
+      if (vcr != null) {
+        b.write('／原生圖層建立 $vcr 次');
+        final at = m['viewCreateAt'];
+        if (at is List && at.isNotEmpty) b.write('（${at.join('、')}）');
+      }
       // 系統主動喊的「播放卡住」通知（跟供格節奏對照用）
       final sn = (m['stallNotify'] as num?)?.toInt() ?? 0;
       if (sn > 0) {

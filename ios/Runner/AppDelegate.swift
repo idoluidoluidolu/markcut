@@ -2479,12 +2479,26 @@ final class PlayerHosts: NSObject {
 final class PlayerPlatformView: NSObject, FlutterPlatformView {
   private let host: PlayerHostView
 
+  /// 原生圖層被「建立」的次數與時間：播放中數字增加＝Flutter 把圖層
+  /// 拆掉重掛（重掛那一瞬間就是黑閃）。接縫卡頓的最終 tripwire——
+  /// 修好之後整段編輯過程應該只建立一次
+  static let statLock = NSLock()
+  static var createCount = 0
+  static var createNotes: [String] = []
+
   init(frame: CGRect) {
     host = PlayerHostView(frame: frame)
     host.backgroundColor = .black
     host.playerLayer.videoGravity = .resizeAspect
     super.init()
     PlayerHosts.shared.register(host)
+    Self.statLock.lock()
+    Self.createCount += 1
+    if Self.createNotes.count > 9 { Self.createNotes.removeFirst() }
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm:ss"
+    Self.createNotes.append(f.string(from: Date()))
+    Self.statLock.unlock()
   }
 
   func view() -> UIView { host }
@@ -3439,6 +3453,12 @@ final class CompPlayer: NSObject, FlutterTexture {
     // 掛了 videoComposition 就不能再要求它套軌道方向：兩個一起給，
     // 產生器會直接失敗——那樣這個檢查本身就在說謊
     if let vc = player.currentItem?.videoComposition {
+      // Apple 的限制：產生器不支援自訂合成器，掛了必定抽不到。
+      // 這條檢查對 CI 路線天生無效——+77~+80 每一份報告的
+      // 「抽不到畫面（合成本身有問題）」全是這裡的假警報
+      if vc.customVideoCompositorClass != nil {
+        return "不適用（CI 合成器，產生器天生抽不了；不是故障）"
+      }
       gen.videoComposition = vc
     } else {
       gen.appliesPreferredTrackTransform = true
@@ -3493,6 +3513,10 @@ final class CompPlayer: NSObject, FlutterTexture {
     CIExportCompositor.slowLock.unlock()
     m["stallNotify"] = stallCount
     m["stallNotifyAt"] = stallNotes
+    PlayerPlatformView.statLock.lock()
+    m["viewCreates"] = PlayerPlatformView.createCount
+    m["viewCreateAt"] = PlayerPlatformView.createNotes
+    PlayerPlatformView.statLock.unlock()
     m["frameProbe"] = frameProbe()
     switch player.timeControlStatus {
     case .paused: m["timeControl"] = "暫停"
