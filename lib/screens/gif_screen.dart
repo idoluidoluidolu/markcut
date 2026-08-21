@@ -12,7 +12,6 @@ import '../services/screen_awake.dart';
 import '../services/video_controller.dart';
 import '../services/gif_store.dart';
 import '../services/video_engine.dart' as engine;
-import '../widgets/gif_image.dart';
 import 'crop_screen.dart';
 import '../theme.dart';
 import '../widgets/swipe_back.dart';
@@ -43,12 +42,6 @@ class _GifScreenState extends State<GifScreen> {
   /// GIF 的甜蜜點就是幾秒鐘，預設值該直接落在合理範圍
   double _start = 0;
   double _end = 0;
-
-  /// 預覽模式：false＝裁切預覽（影片本人，可播可停可對位）、
-  /// true＝成果預覽（真的 GIF，循環播）。
-  /// 以前成品一做好就自動切過去，GIF 一直循環、選段落很難對位
-  ///（實測回報）——改成兩顆籤明確切換，預設看裁切
-  bool _showResult = false;
 
   /// 播放頭位置（秒），給進度細線用
   final ValueNotifier<double> _pos = ValueNotifier(0);
@@ -481,6 +474,7 @@ class _GifScreenState extends State<GifScreen> {
               : Column(
                   children: [
                     Expanded(child: _preview()),
+                    _playbackRow(),
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
                       child: Column(
@@ -575,16 +569,72 @@ class _GifScreenState extends State<GifScreen> {
     ),
   );
 
+  /// 播放控制列：播放/暫停鈕＋位置滑桿（拖到哪 seek 到哪）。
+  /// 使用者指定：不用成果預覽籤，要的是明確的播放暫停與選位置
+  Widget _playbackRow() {
+    final dur = _dur <= 0 ? 1.0 : _dur;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 2, 16, 0),
+      child: Row(
+        children: [
+          IconButton(
+            icon: Icon(
+              _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+              size: 26,
+              color: kText,
+            ),
+            visualDensity: VisualDensity.compact,
+            onPressed: _togglePlay,
+          ),
+          Expanded(
+            child: ValueListenableBuilder<double>(
+              valueListenable: _pos,
+              builder: (context, t, _) => SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: 3,
+                  thumbShape: const RoundSliderThumbShape(
+                    enabledThumbRadius: 7,
+                  ),
+                  overlayShape: const RoundSliderOverlayShape(
+                    overlayRadius: 14,
+                  ),
+                  activeTrackColor: kSelect,
+                  thumbColor: kSelect,
+                  inactiveTrackColor: kPanelHi,
+                ),
+                child: Slider(
+                  value: t.clamp(0.0, dur),
+                  max: dur,
+                  onChanged: (v) {
+                    _pos.value = v;
+                    _player?.seekTo(Duration(milliseconds: (v * 1000).round()));
+                  },
+                ),
+              ),
+            ),
+          ),
+          ValueListenableBuilder<double>(
+            valueListenable: _pos,
+            builder: (context, t, _) => Text(
+              '${t.toStringAsFixed(1)}s',
+              style: const TextStyle(
+                fontSize: 11.5,
+                color: kTextDim,
+                fontFeatures: [FontFeature.tabularFigures()],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _preview() {
     final p = _player!;
     final size = p.value.size;
     final aspect = (size.width > 0 && size.height > 0)
         ? size.width / size.height
         : 16 / 9;
-    final gif = _gifPreview;
-    // 兩種預覽明確分開：裁切預覽＝影片本人（選段落用），
-    // 成果預覽＝真的 GIF（顏色/格數照實）。看哪個由籤決定
-    final showGif = _showResult && gif != null;
 
     // 外層這個 Stack 撐滿整個預覽區，裁切鈕才釘得住。
     // 疊在「內容」上面的話，框會跟著影片的比例縮放——直式換橫式，
@@ -594,10 +644,7 @@ class _GifScreenState extends State<GifScreen> {
         Positioned.fill(
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            // 看成品時點一下回去看原片（要重新選範圍時比較好對位）
-            onTap: showGif
-                ? () => setState(() => _showResult = false)
-                : _togglePlay,
+            onTap: _togglePlay,
             child: Container(
               // 跟影片編輯的預覽同一個底色：純黑會在預覽區與下面的
               // 控制區之間切出一條分界，整頁看起來像被切成兩塊
@@ -606,14 +653,9 @@ class _GifScreenState extends State<GifScreen> {
               child: Stack(
                 alignment: Alignment.center,
                 children: [
-                  AspectRatio(
-                    aspectRatio: aspect,
-                    child: showGif
-                        ? GifImage(gif, fit: BoxFit.contain)
-                        : p.view(),
-                  ),
+                  AspectRatio(aspectRatio: aspect, child: p.view()),
                   // 暫停時給一顆播放鈕；播放中畫面乾淨
-                  if (!showGif && !_playing)
+                  if (!_playing)
                     Container(
                       width: 54,
                       height: 54,
@@ -642,59 +684,10 @@ class _GifScreenState extends State<GifScreen> {
               child: CircularProgressIndicator(strokeWidth: 2),
             ),
           ),
-        // 預覽模式籤：裁切（影片）↔ 成果（真 GIF）
-        Positioned(
-          top: 10,
-          left: 0,
-          right: 0,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              _modeTab('裁切預覽', !_showResult, () {
-                setState(() => _showResult = false);
-              }),
-              const SizedBox(width: 6),
-              _modeTab(
-                gif == null ? '成果預覽…' : '成果預覽',
-                _showResult,
-                () {
-                  if (_gifPreview == null) {
-                    showHint(context, '成果還在做，好了會亮起來');
-                    _schedulePreview();
-                    return;
-                  }
-                  setState(() => _showResult = true);
-                },
-              ),
-            ],
-          ),
-        ),
         _cropButton(),
       ],
     );
   }
-
-  /// 預覽模式籤（膠囊）：選中琥珀字，跟全 App 的選取語言一致
-  Widget _modeTab(String label, bool on, VoidCallback onTap) =>
-      GestureDetector(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.55),
-            borderRadius: BorderRadius.circular(999),
-            border: Border.all(color: on ? kSelect : kBorder),
-          ),
-          child: Text(
-            label,
-            style: TextStyle(
-              fontSize: 11.5,
-              fontWeight: FontWeight.w600,
-              color: on ? kSelect : kTextDim,
-            ),
-          ),
-        ),
-      );
 
   Widget _rangeReadout() {
     final over = _outLen > 15;
@@ -833,10 +826,8 @@ class _GifScreenState extends State<GifScreen> {
           final t = (from + _dragAcc / width * _dur).clamp(0.0, _dur);
           setState(() {
             if (left) {
-              _showResult = false; // 重新選段落＝回裁切預覽
               _start = math.min(t, _end - 0.2);
             } else {
-              _showResult = false;
               _end = math.max(t, _start + 0.2);
             }
           });
