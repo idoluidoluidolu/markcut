@@ -9,6 +9,7 @@ import 'package:flutter/services.dart' show HapticFeedback;
 // XFile 也是從這裡再匯出的，不用另外 import image_picker
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
@@ -24,15 +25,26 @@ import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
 
 /// 批次浮水印：一次選多個檔案（照片/影片混合），
+/// 批次浮水印的草稿鍵（個人頁「未完成的批次」讀這裡）
+const kBatchDraftKey = 'batch_draft_v1';
+
 /// 統一調一組浮水印，整批匯出到相簿
 class BatchWatermarkScreen extends StatefulWidget {
   final List<XFile> files;
+
+  /// 從草稿續作：整批共用設定與各張的單張覆寫（見 kBatchDraftKey）
+  final Map<String, dynamic>? restore;
 
   /// 進場時要顯示的提示（例如「已略過 N 個非影片檔案」）。
   /// 在前一頁 show 的話會被這頁蓋住，根本看不到
   final String? initialHint;
 
-  const BatchWatermarkScreen({super.key, required this.files, this.initialHint});
+  const BatchWatermarkScreen({
+    super.key,
+    required this.files,
+    this.initialHint,
+    this.restore,
+  });
 
   @override
   State<BatchWatermarkScreen> createState() => _BatchWatermarkScreenState();
@@ -103,6 +115,30 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   @override
   void initState() {
     super.initState();
+    // 草稿續作：先還原設定，再拍基準（沒再改動就不會被問保留）
+    final r = widget.restore;
+    if (r != null) {
+      try {
+        _settings.copyMarksFrom(
+          WatermarkSettings.fromJson(
+            Map<String, dynamic>.from(r['settings'] as Map),
+          ),
+        );
+        final ov = r['overrides'];
+        if (ov is Map) {
+          ov.forEach((k, v) {
+            final i = int.tryParse('$k') ?? -1;
+            if (i >= 0 && i < _items.length && v is Map) {
+              try {
+                _items[i].override = WatermarkSettings.fromJson(
+                  Map<String, dynamic>.from(v),
+                );
+              } catch (_) {}
+            }
+          });
+        }
+      } catch (_) {}
+    }
     _initialJson = jsonEncode(_settings.toJson());
     // web：大預覽跟縮圖列同時各開一個 <video> 解同一支影片，
     // 其中一邊常常等不到（timeout 回空）而且永遠不重試——縮圖列
@@ -137,13 +173,43 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       Navigator.of(context).pop();
       return;
     }
-    final ok = await showConfirm(
+    // 跟影片、照片一樣可以保留草稿（實測回報：批次無法進入草稿）。
+    // 存的是檔案路徑＋整批設定＋各張覆寫；下次從個人頁「未完成的
+    // 批次」續作
+    final act = await showLeaveChoice(
       context,
-      title: '放棄這批檔案？',
-      message: '還沒匯出，離開後浮水印設定會消失',
-      action: '放棄離開',
+      title: '這批還沒匯出',
+      message: '保留草稿的話，下次從個人頁的「未完成的批次」繼續',
+      keepLabel: '保留草稿',
     );
-    if (ok && mounted) Navigator.of(context).pop();
+    if (!mounted) return;
+    if (act == 'keep') {
+      await _saveBatchDraft();
+      if (mounted) Navigator.of(context).pop();
+    } else if (act == 'discard') {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(kBatchDraftKey);
+      if (mounted) Navigator.of(context).pop();
+    }
+  }
+
+  Future<void> _saveBatchDraft() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        kBatchDraftKey,
+        jsonEncode({
+          'files': [for (final it in _items) it.file.path],
+          'settings': _settings.toJson(),
+          'overrides': {
+            for (var i = 0; i < _items.length; i++)
+              if (_items[i].override != null)
+                '$i': _items[i].override!.toJson(),
+          },
+          'savedAt': DateTime.now().toIso8601String(),
+        }),
+      );
+    } catch (_) {}
   }
 
   // ===== 選取（選了圖片就鎖定圖片：拖曳/縮放都只動它）=====

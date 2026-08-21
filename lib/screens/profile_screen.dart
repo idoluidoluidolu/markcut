@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/watermark_settings.dart';
 import '../services/draft_store.dart';
+import '../services/file_reader.dart';
 import '../services/gif_store.dart';
 import '../services/preset_store.dart';
 import '../theme.dart';
@@ -18,6 +19,7 @@ import '../widgets/watermark_layer.dart';
 import 'about_screen.dart';
 import 'donate_screen.dart';
 import 'feedback_screen.dart';
+import 'batch_watermark_screen.dart';
 import 'photo_editor_screen.dart';
 import 'presets_screen.dart';
 import 'watermark_studio_screen.dart';
@@ -46,6 +48,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   /// 做好的 GIF（見 GifStore；Web 是內建範例）
   List<String> _gifs = const [];
   Map<String, dynamic>? _photoDraft;
+
+  /// 批次浮水印的未完成草稿（見 kBatchDraftKey）
+  Map<String, dynamic>? _batchDraft;
 
   @override
   void initState() {
@@ -78,6 +83,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       _videoDrafts = videoDrafts;
       _gifs = gifs;
       _photoDraft = readDraft(kPhotoDraftKey, 'photo');
+      _batchDraft = readDraft(kBatchDraftKey, 'files');
     });
     unawaited(_loadCovers(videoDrafts));
   }
@@ -379,6 +385,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
           when: _whenOf(p),
           onTap: _openDrafts,
         ),
+      if (_batchDraft != null)
+        _draftTile(
+          cover: const Icon(
+            Icons.collections_outlined,
+            size: 26,
+            color: Color(0xFFAFAFBB),
+          ),
+          title: '未完成的批次浮水印',
+          when: _whenOf(_batchDraft!),
+          onTap: _openDrafts,
+        ),
     ];
     // 最多兩張：整片列出來會把頁面吃光，其餘按「全部」進草稿夾
     final shown = tiles.take(2).toList();
@@ -635,6 +652,9 @@ class _DraftsScreenState extends State<DraftsScreen> {
 
   /// 照片編輯的草稿（離開時選「保留草稿」才會有）
   Map<String, dynamic>? _photoDraft;
+
+  /// 批次浮水印的草稿（見 kBatchDraftKey）
+  Map<String, dynamic>? _batchDraft;
   bool _loading = true;
 
   /// 選取模式：勾好幾份、右上角垃圾桶一次刪
@@ -677,13 +697,70 @@ class _DraftsScreenState extends State<DraftsScreen> {
         if ((j['photo'] as String?)?.isNotEmpty ?? false) photo = j;
       } catch (_) {}
     }
+    Map<String, dynamic>? batch;
+    final bs = prefs.getString(kBatchDraftKey);
+    if (bs != null) {
+      try {
+        final j = jsonDecode(bs) as Map<String, dynamic>;
+        if ((j['files'] as List?)?.isNotEmpty ?? false) batch = j;
+      } catch (_) {}
+    }
     if (mounted) {
       setState(() {
         _drafts = found;
         _photoDraft = photo;
+        _batchDraft = batch;
         _loading = false;
       });
       unawaited(_loadCovers(found));
+    }
+  }
+
+  /// 續作批次浮水印：檔案還在的帶回去，不見的略過並講清楚
+  Future<void> _resumeBatch() async {
+    final d = _batchDraft;
+    if (d == null) return;
+    final paths = (d['files'] as List? ?? []).cast<String>();
+    final alive = <XFile>[];
+    var gone = 0;
+    for (final path in paths) {
+      if (await fileExists(path)) {
+        alive.add(XFile(path));
+      } else {
+        gone++;
+      }
+    }
+    if (alive.isEmpty) {
+      if (mounted) {
+        showHint(context, '這批檔案都已經不在了，草稿無法續作', error: true);
+      }
+      return;
+    }
+    if (!mounted) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => BatchWatermarkScreen(
+          files: alive,
+          restore: d,
+          initialHint: gone > 0 ? '有 $gone 個檔案已不在，已略過' : null,
+        ),
+      ),
+    );
+    _reload();
+  }
+
+  Future<void> _deleteBatch() async {
+    final ok = await showConfirm(
+      context,
+      title: '刪除批次草稿？',
+      message: '這批的浮水印設定會被移除，無法復原',
+      action: '刪除',
+    );
+    if (ok) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(kBatchDraftKey);
+      _reload();
     }
   }
 
@@ -874,7 +951,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
   Widget build(BuildContext context) {
     final ds = _drafts;
     final p = _photoDraft;
-    final empty = ds.isEmpty && p == null;
+    final empty = ds.isEmpty && p == null && _batchDraft == null;
     return SwipeBack(
       child: Scaffold(
         appBar: AppBar(
@@ -960,6 +1037,20 @@ class _DraftsScreenState extends State<DraftsScreen> {
                       onTap: _resumePhoto,
                       onDelete: _deletePhoto,
                     ),
+                  if (_batchDraft != null) ...[
+                    const SizedBox(height: 12),
+                    _draftCard(
+                      cover: const Icon(
+                        Icons.collections_outlined,
+                        size: 20,
+                        color: kLAccent,
+                      ),
+                      title: '未完成的批次浮水印',
+                      subtitle: _savedAtLabel(_batchDraft!),
+                      onTap: _resumeBatch,
+                      onDelete: _deleteBatch,
+                    ),
+                  ],
                   // 底部刪除列滑上來時，最後一張卡不被蓋住
                   if (_selecting) const SizedBox(height: 88),
                 ],
