@@ -826,16 +826,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
       '${t.hour.toString().padLeft(2, '0')}:'
       '${t.minute.toString().padLeft(2, '0')}';
 
-  /// 副標：最後存檔時間＋幾段素材
-  String _metaLabel(DraftMeta m) {
-    final t = m.savedAt;
-    final when =
-        '${t.month}/${t.day} '
-        '${t.hour.toString().padLeft(2, '0')}:'
-        '${t.minute.toString().padLeft(2, '0')}';
-    return m.clipCount > 0 ? '$when · ${m.clipCount} 段' : when;
-  }
-
   String _savedAtLabel(Map<String, dynamic> j) {
     final raw = j['savedAt'];
     if (raw is! String) return '';
@@ -938,8 +928,10 @@ class _DraftsScreenState extends State<DraftsScreen> {
                       coverAspect: _covers[m.id] == null
                           ? null
                           : (m.thumbAspect ?? 9 / 16),
-                      title: _dateLabel(m.createdAt),
-                      subtitle: _metaLabel(m),
+                      // 只顯示一個時間（最後存檔），段數不顯示——
+                      // 之前「建立＋更新」兩行日期看起來就是重複
+                      title: _dateLabel(m.savedAt),
+                      subtitle: '',
                       onTap: _selecting
                           ? () => setState(() {
                               _picked.contains(m.id)
