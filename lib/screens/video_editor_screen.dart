@@ -4220,6 +4220,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 那個校正每次都會讓畫面停一下
     if (_compOn) {
       _syncFromComp();
+      // 時間軸的設計是「播放頭固定、捲動內容＝位置」，合成模式一直
+      // 沒跟著捲——位置走到 1.7、捲動還停在 0。暫停之後兩者脫鉤：
+      // 往右滑（offset 要往 0 以下減）整條拖不動、往左滑指針先跳回
+      // 開頭。播放中一樣要讓內容跟著播放頭捲
+      _followPlayhead();
       return;
     }
     _syncMedia();

@@ -102,16 +102,16 @@ flutter_launcher_icons:
   android: true
   ios: true
   remove_alpha_ios: true # App Store 圖示不能帶透明通道
-  image_path: "assets/icon/icon_v6.png"
+  image_path: "assets/icon/icon_v7.png"
   # 深色模式也用白底那張：使用者要求圖示背景一律白色
-  image_path_ios_dark_transparent: "assets/icon/icon_v6.png"
-  image_path_ios_tinted_grayscale: "assets/icon/icon_v6_trans.png"
+  image_path_ios_dark_transparent: "assets/icon/icon_v7.png"
+  image_path_ios_tinted_grayscale: "assets/icon/icon_v7_trans.png"
   desaturate_tinted_to_grayscale_ios: true
   adaptive_icon_background: "#FFFFFF"
-  adaptive_icon_foreground: "assets/icon/icon_v6_trans.png"
+  adaptive_icon_foreground: "assets/icon/icon_v7_trans.png"
   web:
     generate: true
-    image_path: "assets/icon/icon_v6.png"
+    image_path: "assets/icon/icon_v7.png"
     background_color: "#FFFFFF"
     theme_color: "#FFFFFF"
 
