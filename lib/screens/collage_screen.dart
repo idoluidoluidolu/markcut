@@ -11,6 +11,7 @@ import 'package:image_picker/image_picker.dart';
 
 import 'crop_screen.dart';
 import '../theme.dart';
+import '../widgets/watermark_layer.dart';
 import 'photo_editor_screen.dart';
 
 /// 宮格拼圖：把多張照片拼成一張（2/4/6/9 宮格），
@@ -492,6 +493,27 @@ class _CollageScreenState extends State<CollageScreen> {
     return -1;
   }
 
+  /// 點擊用的命中：重疊處「再點一下」輪到下一層。
+  /// 已選中的正好是最上層的命中時，回傳它下面那一張——疊在一起的
+  /// 照片才選得到（使用者指定：加入後再點一下，選底下一層的照片）
+  int _freeHitCycle(Offset p, Size s) {
+    final hits = <int>[];
+    for (var i = _items.length - 1; i >= 0; i--) {
+      final r = _items[i].rect;
+      if (ui.Rect.fromLTWH(
+        r.left * s.width,
+        r.top * s.height,
+        r.width * s.width,
+        r.height * s.height,
+      ).contains(p)) {
+        hits.add(i);
+      }
+    }
+    if (hits.isEmpty) return -1;
+    if (hits.length > 1 && hits.first == _selItem) return hits[1];
+    return hits.first;
+  }
+
   /// 指尖有沒有壓在選取框的某一角（回 0~3＝左上/右上/左下/右下）
   int _freeCorner(Offset p, Size s) {
     if (_selItem < 0 || _selItem >= _items.length) return -1;
@@ -603,16 +625,15 @@ class _CollageScreenState extends State<CollageScreen> {
     try {
       final ui.Image image;
       if (_free) {
-        // 自由排版：白底畫布，照疊放順序畫上去。方塊拉出畫布的部分
-        // 自然被裁掉（跟預覽看到的一樣）。長邊 2048，另一邊照比例
+        // 自由排版：「透明」畫布，照疊放順序畫上去。方塊拉出畫布的
+        // 部分自然被裁掉（跟預覽看到的一樣）。長邊 2048，另一邊照比例。
+        // 不畫白底：沒被照片蓋到的地方就是透明，之後進浮水印、存 PNG
+        // 一路保留（朋友回報：透明的組圖按「加入浮水印」被強制上白底，
+        // 白底就是這裡烙下去的）
         final cw = _canvasAspect >= 1 ? 2048.0 : 2048.0 * _canvasAspect;
         final ch = _canvasAspect >= 1 ? 2048.0 / _canvasAspect : 2048.0;
         final rec = ui.PictureRecorder();
         final canvas = ui.Canvas(rec);
-        canvas.drawRect(
-          ui.Rect.fromLTWH(0, 0, cw, ch),
-          ui.Paint()..color = const ui.Color(0xFFFFFFFF),
-        );
         for (final it in _items) {
           final img = (it.img >= 0 && it.img < _images.length)
               ? _images[it.img]
@@ -1034,9 +1055,7 @@ class _CollageScreenState extends State<CollageScreen> {
                   Padding(
                     padding: const EdgeInsets.only(top: 6),
                     child: Text(
-                      _free
-                          ? '最後選取的照片會在最上層'
-                          : '按住可拖曳交換照片位置；點一下鎖定 可調照片顯示位置',
+                      _free ? '最後選取的照片會在最上層' : '按住可拖曳交換照片位置；點一下鎖定 可調照片顯示位置',
                       style: const TextStyle(fontSize: 11, color: kTextDim),
                     ),
                   ),
@@ -1310,7 +1329,9 @@ class _CollageScreenState extends State<CollageScreen> {
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTapUp: (e) => setState(() {
-            final hit = _freeHit(e.localPosition, s);
+            // 重疊處再點一下＝輪到下一層（選到誰誰就被帶到最上層，
+            // 跟「最後選取的照片會在最上層」一致）
+            final hit = _freeHitCycle(e.localPosition, s);
             _selItem = hit == -1 ? -1 : _bringToFront(hit);
           }),
           onPanStart: (e) => _freePanStart(e.localPosition, s),
@@ -1318,49 +1339,51 @@ class _CollageScreenState extends State<CollageScreen> {
           onPanEnd: (_) => _endFreeDrag(),
           onPanCancel: _endFreeDrag,
           child: Container(
-            decoration: BoxDecoration(
-              color: kPanel,
-              border: Border.all(color: kBorder),
-            ),
+            decoration: BoxDecoration(border: Border.all(color: kBorder)),
             clipBehavior: Clip.antiAlias,
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: CustomPaint(
-                    painter: _FreePainter(items: _items, images: _images),
-                  ),
-                ),
-                if (_items.isEmpty)
-                  const Center(
-                    child: Text(
-                      '點「加照片」開始自由組圖',
-                      style: TextStyle(fontSize: 12, color: kTextDim),
+            // 底改棋盤格＝把「這塊是透明的」講清楚：匯出就是透明 PNG
+            //（以前預覽用面板色、匯出卻烙白底，兩邊說法不一致）
+            child: CustomPaint(
+              painter: const CheckerPainter(),
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: CustomPaint(
+                      painter: _FreePainter(items: _items, images: _images),
                     ),
                   ),
-                if (sel != null) ..._freeSelection(sel, s),
-                // 吸附輔助線：吸到哪條線就把那條畫出來，
-                // 不然使用者只覺得「怎麼卡了一下」
-                if (_guideX != null)
-                  Positioned(
-                    left: _guideX! * s.width - 0.5,
-                    top: 0,
-                    bottom: 0,
-                    width: 1,
-                    child: const IgnorePointer(
-                      child: ColoredBox(color: kSelect),
+                  if (_items.isEmpty)
+                    const Center(
+                      child: Text(
+                        '點「加照片」開始自由組圖',
+                        style: TextStyle(fontSize: 12, color: kTextDim),
+                      ),
                     ),
-                  ),
-                if (_guideY != null)
-                  Positioned(
-                    top: _guideY! * s.height - 0.5,
-                    left: 0,
-                    right: 0,
-                    height: 1,
-                    child: const IgnorePointer(
-                      child: ColoredBox(color: kSelect),
+                  if (sel != null) ..._freeSelection(sel, s),
+                  // 吸附輔助線：吸到哪條線就把那條畫出來，
+                  // 不然使用者只覺得「怎麼卡了一下」
+                  if (_guideX != null)
+                    Positioned(
+                      left: _guideX! * s.width - 0.5,
+                      top: 0,
+                      bottom: 0,
+                      width: 1,
+                      child: const IgnorePointer(
+                        child: ColoredBox(color: kSelect),
+                      ),
                     ),
-                  ),
-              ],
+                  if (_guideY != null)
+                    Positioned(
+                      top: _guideY! * s.height - 0.5,
+                      left: 0,
+                      right: 0,
+                      height: 1,
+                      child: const IgnorePointer(
+                        child: ColoredBox(color: kSelect),
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
         );
