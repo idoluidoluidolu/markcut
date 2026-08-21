@@ -44,6 +44,12 @@ class _GifScreenState extends State<GifScreen> {
   double _start = 0;
   double _end = 0;
 
+  /// 預覽模式：false＝裁切預覽（影片本人，可播可停可對位）、
+  /// true＝成果預覽（真的 GIF，循環播）。
+  /// 以前成品一做好就自動切過去，GIF 一直循環、選段落很難對位
+  ///（實測回報）——改成兩顆籤明確切換，預設看裁切
+  bool _showResult = false;
+
   /// 播放頭位置（秒），給進度細線用
   final ValueNotifier<double> _pos = ValueNotifier(0);
 
@@ -569,9 +575,9 @@ class _GifScreenState extends State<GifScreen> {
         ? size.width / size.height
         : 16 / 9;
     final gif = _gifPreview;
-    // 做好成品就直接看成品：GIF 只有 10~15 格、顏色壓成 256 色，
-    // 拿影片播放器當預覽會讓人以為成品比實際好看
-    final showGif = gif != null;
+    // 兩種預覽明確分開：裁切預覽＝影片本人（選段落用），
+    // 成果預覽＝真的 GIF（顏色/格數照實）。看哪個由籤決定
+    final showGif = _showResult && gif != null;
 
     // 外層這個 Stack 撐滿整個預覽區，裁切鈕才釘得住。
     // 疊在「內容」上面的話，框會跟著影片的比例縮放——直式換橫式，
@@ -583,7 +589,7 @@ class _GifScreenState extends State<GifScreen> {
             behavior: HitTestBehavior.opaque,
             // 看成品時點一下回去看原片（要重新選範圍時比較好對位）
             onTap: showGif
-                ? () => setState(() => _gifPreview = null)
+                ? () => setState(() => _showResult = false)
                 : _togglePlay,
             child: Container(
               // 跟影片編輯的預覽同一個底色：純黑會在預覽區與下面的
@@ -629,10 +635,59 @@ class _GifScreenState extends State<GifScreen> {
               child: CircularProgressIndicator(strokeWidth: 2),
             ),
           ),
+        // 預覽模式籤：裁切（影片）↔ 成果（真 GIF）
+        Positioned(
+          top: 10,
+          left: 0,
+          right: 0,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _modeTab('裁切預覽', !_showResult, () {
+                setState(() => _showResult = false);
+              }),
+              const SizedBox(width: 6),
+              _modeTab(
+                gif == null ? '成果預覽…' : '成果預覽',
+                _showResult,
+                () {
+                  if (_gifPreview == null) {
+                    showHint(context, '成果還在做，好了會亮起來');
+                    _schedulePreview();
+                    return;
+                  }
+                  setState(() => _showResult = true);
+                },
+              ),
+            ],
+          ),
+        ),
         _cropButton(),
       ],
     );
   }
+
+  /// 預覽模式籤（膠囊）：選中琥珀字，跟全 App 的選取語言一致
+  Widget _modeTab(String label, bool on, VoidCallback onTap) =>
+      GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.55),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: on ? kSelect : kBorder),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w600,
+              color: on ? kSelect : kTextDim,
+            ),
+          ),
+        ),
+      );
 
   Widget _rangeReadout() {
     final over = _outLen > 15;
@@ -771,8 +826,10 @@ class _GifScreenState extends State<GifScreen> {
           final t = (from + _dragAcc / width * _dur).clamp(0.0, _dur);
           setState(() {
             if (left) {
+              _showResult = false; // 重新選段落＝回裁切預覽
               _start = math.min(t, _end - 0.2);
             } else {
+              _showResult = false;
               _end = math.max(t, _start + 0.2);
             }
           });
