@@ -686,6 +686,10 @@ class WatermarkPanelState extends State<WatermarkPanel> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // 只有「位置」分頁置中：它內容短，貼頂時下面一大片空。
+              // 開頭放一個空元素，spaceBetween 就會把它擺到導覽列與
+              // 儲存鈕的正中間；其他分頁照舊從上排、大小不變
+              if (_on(_posCardKey)) const SizedBox.shrink(),
               Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
