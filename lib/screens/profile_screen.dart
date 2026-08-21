@@ -874,11 +874,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
         appBar: AppBar(
           actions: [
             if (_selecting) ...[
-              IconButton(
-                tooltip: '刪除選取的草稿',
-                icon: const Icon(Icons.delete_outline),
-                onPressed: _picked.isEmpty ? null : _deletePicked,
-              ),
+              // 刪除鈕移到底部 sticky 列（勾了才浮上來），上面只留取消
               TextButton(
                 onPressed: () => setState(() {
                   _selecting = false;
@@ -958,8 +954,49 @@ class _DraftsScreenState extends State<DraftsScreen> {
                       onTap: _resumePhoto,
                       onDelete: _deletePhoto,
                     ),
+                  // 底部刪除列滑上來時，最後一張卡不被蓋住
+                  if (_selecting) const SizedBox(height: 88),
                 ],
               ),
+        // 選取模式勾了至少一張，刪除列才從最下方漸漸浮上來（sticky）
+        bottomSheet: AnimatedSlide(
+          offset: _selecting && _picked.isNotEmpty
+              ? Offset.zero
+              : const Offset(0, 1.2),
+          duration: const Duration(milliseconds: 260),
+          curve: Curves.easeOutCubic,
+          child: IgnorePointer(
+            ignoring: !(_selecting && _picked.isNotEmpty),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                border: Border(top: BorderSide(color: Color(0xFFECECEF))),
+              ),
+              child: SafeArea(
+                top: false,
+                child: SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFFE53935),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: const StadiumBorder(),
+                      textStyle: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    onPressed: _deletePicked,
+                    child: Text('刪除 ${_picked.length} 份草稿'),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
