@@ -417,7 +417,14 @@ class _GifScreenState extends State<GifScreen> {
     }
     if (!mounted) return;
     Navigator.pop(context); // 關進度視窗
-    showHint(context, message, error: !ok);
+    if (!ok) {
+      showHint(context, message, error: true);
+      return;
+    }
+    // 成功統一走「輸出完成」對話框（跟影片/照片/批次同一顆），
+    // 小 toast 太不明顯（實測回報）
+    final act = await askAfterExport(context, message);
+    if (act == 'home' && mounted) Navigator.of(context).pop();
   }
 
   /// 裁切：底圖抓範圍開頭那一格，用的是影片裁切同一個畫面

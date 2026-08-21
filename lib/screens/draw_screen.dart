@@ -351,7 +351,15 @@ class _DrawScreenState extends State<_DrawScreen> {
       png,
       'draw_${DateTime.now().millisecondsSinceEpoch}',
     );
-    if (mounted) showHint(context, msg, error: !msg.contains('已'));
+    if (!mounted) return;
+    if (!msg.contains('已')) {
+      showHint(context, msg, error: true);
+      return;
+    }
+    // 成功統一走「輸出完成」對話框（跟其他輸出同一顆）；
+    // 選回主畫面就收掉繪圖頁（圖已經存好了）
+    final act = await askAfterExport(context, msg);
+    if (act == 'home' && mounted) Navigator.of(context).pop();
   }
 
   Future<void> _done(Size boardSize) async {
