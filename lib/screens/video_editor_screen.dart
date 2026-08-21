@@ -896,6 +896,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             '|${c.trimStart.toStringAsFixed(2)}|${c.scale}|${c.px}|${c.py}',
       _settings.hasAnyMark,
       _wmHidden,
+      // 浮水印「內容」也要進指紋：只記有沒有的話，換了樣式/文字/
+      // Logo 封面不會重畫（實測回報：草稿封面永遠是預設字樣）。
+      // Logo 的 b64 只取長度，不把幾 MB 的字串拼進指紋
+      for (final t in _settings.texts)
+        if (t.enabled)
+          't${t.text}|${t.fontFamily}|${t.colorValue}|${t.opacity}'
+              '|${t.sizeFrac}|${t.spacing}|${t.x}|${t.y}|${t.rotation}'
+              '|${t.tiled}|${t.shadow}|${t.outline}|${t.outlineColorValue}',
+      for (final l in _settings.logos)
+        if (l.enabled)
+          'l${l.b64?.length ?? 0}|${l.opacity}|${l.sizeFrac}|${l.x}'
+              '|${l.y}|${l.rotation}|${l.corner}|${l.tiled}|${l.drawn}',
     ].join(';');
     if (ck == _coverKey && _coverB64 != null) return;
     final composed = await _composeCoverPng();
