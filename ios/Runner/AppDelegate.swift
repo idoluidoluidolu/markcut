@@ -463,6 +463,55 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   static var frameCount = 0
   static var worstMs = 0.0
 
+  /// 供格節奏：播放中相鄰兩格「牆鐘等了多久 vs 畫面差多少」。
+  /// 合成再快，系統若在接縫供不出下一格，卡頓就在這裡現形——
+  /// 直接寫出「幾秒處等了幾 ms」。只在合成播放器播放中量
+  //（watchSupply），匯出的離線節奏不會混進來
+  static var watchSupply = false
+  static var lastReqT = -1.0
+  static var lastReqWall = 0.0
+  static var supplyGaps: [String] = []
+  static var worstSupplyMs = 0.0
+  /// 缺格（sourceFrame 給不出來）：哪一軌、什麼時候、總共幾次
+  static var missNotes: [String] = []
+  static var missTotal = 0
+  /// 保底出動次數：缺格重播上一格／短縫頂住
+  static var holdMissCount = 0
+  static var holdGapCount = 0
+
+  static func noteSupply(t: Double, wall: Double) {
+    slowLock.lock()
+    defer { slowLock.unlock() }
+    if watchSupply, lastReqT >= 0 {
+      let dt = t - lastReqT
+      let dw = wall - lastReqWall
+      // 只看連續播放的相鄰格（畫面差半秒內）；seek、暫停造成的大跳
+      // 不算。牆鐘比畫面多等 80ms 以上＝系統在這一格卡住了
+      if dt > 0, dt <= 0.5 {
+        let extra = (dw - dt) * 1000
+        if extra > worstSupplyMs { worstSupplyMs = extra }
+        if extra > 80 {
+          if supplyGaps.count > 12 { supplyGaps.removeFirst() }
+          supplyGaps.append(
+            String(
+              format: "%.2fs 等了 %.0fms（畫面才差 %.0fms）",
+              t, dw * 1000, dt * 1000))
+        }
+      }
+    }
+    lastReqT = t
+    lastReqWall = wall
+  }
+
+  static func noteMiss(t: Double, track: Int) {
+    slowLock.lock()
+    missTotal += 1
+    if missNotes.count < 10 {
+      missNotes.append(String(format: "%.2fs 軌%d 給不出影格", t, track))
+    }
+    slowLock.unlock()
+  }
+
   static func noteFrame(t: Double, ms: Double, layers: Int, missing: Bool) {
     slowLock.lock()
     frameCount += 1
@@ -481,6 +530,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
     queue.async {
       autoreleasepool {
         let tick = CFAbsoluteTimeGetCurrent()
+        Self.noteSupply(t: req.compositionTime.seconds, wall: tick)
         guard
           let ins = req.videoCompositionInstruction as? CIExportInstruction,
           let dst = req.renderContext.newPixelBuffer()
@@ -513,6 +563,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           if layer.trackID != kCMPersistentTrackID_Invalid {
             guard let buf = req.sourceFrame(byTrackID: layer.trackID) else {
               missing = true
+              Self.noteMiss(t: t, track: Int(layer.trackID))
               continue
             }
             // HDR（HLG/PQ）來源：開系統的色調映射轉成 SDR，跟相簿、
@@ -584,6 +635,13 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         if missing || tinyGap, let held = self.lastComposed {
           // 邊界缺格或極短空窗：上一格原封重播（已含馬賽克與疊加物）
           out = held
+          Self.slowLock.lock()
+          if missing {
+            Self.holdMissCount += 1
+          } else {
+            Self.holdGapCount += 1
+          }
+          Self.slowLock.unlock()
         } else {
           while mzIdx < activeMz.count {
             out = self.applyMosaic(activeMz[mzIdx], to: out, canvas: size)
@@ -2491,6 +2549,11 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 「程式碼看起來對、裝置行為不對」的僵局只有它拆得開
   private(set) var buildInfo: [String: Any] = [:]
 
+  /// 系統的「播放卡住」通知：次數與發生的時間點
+  var stallCount = 0
+  var stallNotes: [String] = []
+  private var stallObs: NSObjectProtocol? = nil
+
   /// 這份合成的總長度（秒）與畫面尺寸
   private(set) var duration: Double = 0
   private(set) var size: CGSize = .zero
@@ -2542,6 +2605,8 @@ final class CompPlayer: NSObject, FlutterTexture {
     var vTracks: [Int: (track: AVMutableCompositionTrack, end: CMTime)] = [:]
     // 每層最後插入的媒體（來源軌＋來源區間），片尾鋪滿（見 needsCI）用
     var lastMedia: [Int: (src: AVAssetTrack, rng: CMTimeRange)] = [:]
+    stallCount = 0
+    stallNotes = []
 
     // 聲音也可能同時好幾層（影片自己的聲音＋配樂），一條軌塞不下重疊的
     // 時間範圍——需要幾條就開幾條
@@ -2794,12 +2859,40 @@ final class CompPlayer: NSObject, FlutterTexture {
       return false
     }
 
+    // 軌道實況：每條畫面軌實際鋪了什麼（媒＝正常媒體、填＝拉長的
+    // 填充或變速、空＝空範圍）。CI 路線出現「空」＝鋪滿失敗，直接定罪
+    buildInfo["軌道段"] = vTracks.keys.sorted().map { k -> String in
+      guard let tr = vTracks[k]?.track else { return "軌\(k)：？" }
+      let parts = tr.segments.map { sg -> String in
+        let r = sg.timeMapping.target
+        let tag =
+          sg.isEmpty
+          ? "空" : (sg.timeMapping.source.duration == r.duration ? "媒" : "填")
+        return String(
+          format: "%@%.2f~%.2f", tag, r.start.seconds, r.end.seconds)
+      }.joined(separator: "｜")
+      return "軌\(k)：\(parts)"
+    }.joined(separator: "；")
+
     let mix = AVMutableAudioMix()
     mix.inputParameters = aParams
     let item = AVPlayerItem(asset: comp)
     item.audioMix = mix
     // 變速時聲音保持音高（跟主流剪輯 App 一致）
     item.audioTimePitchAlgorithm = .timeDomain
+    // 系統自己喊的「播放卡住了」：時間點記下來，跟供格節奏對照
+    if let o = stallObs { NotificationCenter.default.removeObserver(o) }
+    stallObs = NotificationCenter.default.addObserver(
+      forName: NSNotification.Name.AVPlayerItemPlaybackStalled,
+      object: item, queue: nil
+    ) { [weak self] _ in
+      guard let self = self else { return }
+      self.stallCount += 1
+      if self.stallNotes.count < 10 {
+        self.stallNotes.append(
+          String(format: "%.2fs", self.player.currentTime().seconds))
+      }
+    }
 
     // 需不需要合成器，先問清楚再掛。
     //
@@ -2956,6 +3049,8 @@ final class CompPlayer: NSObject, FlutterTexture {
         // CIExportInstruction.requiredSourceTrackIDs 的說明）
         let prerollIDs = Array(Set(segments.map { $0.track.trackID }))
           .sorted().map { NSNumber(value: $0) }
+        // 最後一個可見片段結束的時間：之後的區間就是「片尾」
+        let lastShow = segments.map { $0.range.end.seconds }.max() ?? 0
         var built: [CIExportInstruction] = []
         for i in 0..<(marks.count - 1) {
           let a = marks[i]
@@ -2989,12 +3084,16 @@ final class CompPlayer: NSObject, FlutterTexture {
                 crop: cropRect, rotation: seg.rotation,
                 opacity: seg.opacity, z: seg.layer))
           }
+          // 片尾（最後一個可見片段之後，例如音樂比畫面長）不留黑：
+          // 無條件重播最後一格，畫面停在最後一幀直到播完
+          let tail = a.seconds >= lastShow - 0.001
           built.append(
             CIExportInstruction(
               timeRange: CMTimeRange(start: a, end: b),
               layers: layers, mosaics: ciMosaics, overlays: [],
               prerollTrackIDs: prerollIDs,
-              holdIfEmpty: layers.isEmpty && (b - a).seconds < 0.12))
+              holdIfEmpty: layers.isEmpty
+                && ((b - a).seconds < 0.12 || tail)))
         }
         vc.customVideoCompositorClass = CIExportCompositor.self
         vc.instructions = built
@@ -3151,6 +3250,10 @@ final class CompPlayer: NSObject, FlutterTexture {
     // 還沒跑完的 preroll 會把播放壓住，先取消
     player.cancelPendingPrerolls()
     startPlayWatch()
+    CIExportCompositor.slowLock.lock()
+    CIExportCompositor.watchSupply = true
+    CIExportCompositor.lastReqT = -1
+    CIExportCompositor.slowLock.unlock()
     player.playImmediately(atRate: targetRate)
   }
 
@@ -3210,6 +3313,9 @@ final class CompPlayer: NSObject, FlutterTexture {
   }
 
   func pause() {
+    CIExportCompositor.slowLock.lock()
+    CIExportCompositor.watchSupply = false
+    CIExportCompositor.slowLock.unlock()
     player.pause()
     // 暫停時把管線熱著，下次按播放就不用等
     if player.currentItem?.status == .readyToPlay {
@@ -3245,7 +3351,11 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 壓在 0——按下播放剛好撞上它，畫面就是不動。拖曳中一律寬容，
   /// 停手之後才補一次精準的
   func seek(_ seconds: Double, exact: Bool) {
-    seekTarget = CMTime(seconds: seconds, preferredTimescale: 600)
+    // 目標夾在「最後一格之前」：seek 到正好等於總長的位置，指令已經
+    // 出界，畫面可能刷成黑的——拖到底或播完停在結尾都要停在最後一幀
+    var t = seconds
+    if duration > 0.1, t > duration - 0.034 { t = duration - 0.034 }
+    seekTarget = CMTime(seconds: t, preferredTimescale: 600)
     seekTargetExact = exact
     // 已經有一發在跑：只要記住最新目標就好，跑完會自己追上去
     if seeking {
@@ -3374,7 +3484,15 @@ final class CompPlayer: NSObject, FlutterTexture {
     m["ciFrames"] = CIExportCompositor.frameCount
     m["ciWorstMs"] = CIExportCompositor.worstMs
     m["ciSlow"] = CIExportCompositor.slowFrames
+    m["ciSupplyWorst"] = CIExportCompositor.worstSupplyMs
+    m["ciSupplyGaps"] = CIExportCompositor.supplyGaps
+    m["ciMiss"] = CIExportCompositor.missTotal
+    m["ciMissNotes"] = CIExportCompositor.missNotes
+    m["ciHoldMiss"] = CIExportCompositor.holdMissCount
+    m["ciHoldGap"] = CIExportCompositor.holdGapCount
     CIExportCompositor.slowLock.unlock()
+    m["stallNotify"] = stallCount
+    m["stallNotifyAt"] = stallNotes
     m["frameProbe"] = frameProbe()
     switch player.timeControlStatus {
     case .paused: m["timeControl"] = "暫停"
@@ -3434,6 +3552,10 @@ final class CompPlayer: NSObject, FlutterTexture {
 
   func dispose() {
     disposeWatch()
+    if let o = stallObs {
+      NotificationCenter.default.removeObserver(o)
+      stallObs = nil
+    }
     link?.invalidate()
     link = nil
     player.pause()

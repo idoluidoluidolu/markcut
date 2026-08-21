@@ -284,6 +284,32 @@ class CompPlayer {
         } else {
           b.write('／沒有超過 20ms 的格');
         }
+        // 供格節奏：合成快不等於畫面順——系統若在接縫供不出下一格，
+        // 這裡會直接寫出「幾秒處等了幾 ms」。卡頓的最終裁判
+        b.write(
+          '\n  供格節奏：最多多等 '
+          '${(m['ciSupplyWorst'] as num?)?.toStringAsFixed(0) ?? '?'}ms',
+        );
+        final gaps = m['ciSupplyGaps'];
+        if (gaps is List && gaps.isNotEmpty) {
+          b.write('／卡住的點：${gaps.join('；')}');
+        } else {
+          b.write('／沒有等超過 80ms 的格');
+        }
+        // 缺格與保底：哪一軌在什麼時候給不出影格、保底出動了幾次
+        final miss = (m['ciMiss'] as num?)?.toInt() ?? 0;
+        final holdM = (m['ciHoldMiss'] as num?)?.toInt() ?? 0;
+        final holdG = (m['ciHoldGap'] as num?)?.toInt() ?? 0;
+        if (miss > 0 || holdM > 0 || holdG > 0) {
+          b.write('\n  缺格：$miss 次');
+          final notes = m['ciMissNotes'];
+          if (notes is List && notes.isNotEmpty) {
+            b.write('（${notes.join('；')}）');
+          }
+          b.write('／保底重播：缺格 $holdM 次、短縫或片尾 $holdG 次');
+        } else {
+          b.write('\n  缺格：0／保底沒出動');
+        }
       }
       // 組建內視鏡：Swift 實際收到的軌值、組出的軌數與每段指令的層 z。
       // 「程式碼看起來對、裝置行為不對」時只有這個拆得開
@@ -295,6 +321,11 @@ class CompPlayer {
           '／合成軌 ${bi['合成軌']}／CI ${bi['CI']}'
           '\n  指令：${bi['指令'] ?? '?'}',
         );
+        // 軌道實況：媒＝正常媒體、填＝拉長的填充、空＝空範圍。
+        // CI 路線出現「空」＝鋪滿失敗，病灶直接定罪
+        if (bi['軌道段'] != null) {
+          b.write('\n  軌道段：${bi['軌道段']}');
+        }
       }
       b.write('／狀態 ${m['timeControl'] ?? '?'}');
       if (m['waiting'] != null) b.write('（在等：${m['waiting']}）');
@@ -304,6 +335,14 @@ class CompPlayer {
       if (dropped != null) b.write('／系統記的掉格 $dropped');
       final stalls = (m['stalls'] as num?)?.toInt();
       if (stalls != null) b.write('／卡頓 $stalls 次');
+      // 系統主動喊的「播放卡住」通知（跟供格節奏對照用）
+      final sn = (m['stallNotify'] as num?)?.toInt() ?? 0;
+      if (sn > 0) {
+        b.write(
+          '／系統喊卡住 $sn 次'
+          '（${(m['stallNotifyAt'] as List?)?.join('、') ?? '?'}）',
+        );
+      }
       final n = (m['seekCount'] as num?)?.toInt();
       // 按下播放那兩百毫秒的內部拆解：播放器什麼時候真的開始跑、
       // 什麼時候畫面才動、中間在等什麼。三個時間點分開之後，
