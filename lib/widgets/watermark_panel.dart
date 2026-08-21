@@ -573,20 +573,14 @@ class WatermarkPanelState extends State<WatermarkPanel> {
               onTap: () => _jumpToSection(i),
               child: Container(
                 padding: const EdgeInsets.symmetric(vertical: 5),
-                // D 案：選中不填色，改畫線框。框在前景，內容不位移
-                foregroundDecoration: i == _navAt
-                    ? BoxDecoration(
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: kAmber, width: 1.5),
-                      )
-                    : null,
+                // 選中不畫框（試過線框，太搶）：圖示＋文字直接轉琥珀
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Icon(
                       _nav[i].icon,
                       size: 17,
-                      color: i == _navAt ? kText : kTextDim,
+                      color: i == _navAt ? kSelect : kTextDim,
                     ),
                     const SizedBox(height: 3),
                     Text(
@@ -595,7 +589,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 10.5,
-                        color: i == _navAt ? kText : kTextDim,
+                        color: i == _navAt ? kSelect : kTextDim,
                       ),
                     ),
                   ],
@@ -770,7 +764,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                               borderRadius:
                                                   BorderRadius.circular(6),
                                               border: Border.all(
-                                                color: kAmber,
+                                                color: kSelect,
                                                 width: 1.5,
                                               ),
                                             )
@@ -784,7 +778,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                               ? FontWeight.w700
                                               : FontWeight.w400,
                                           color: s.animation == a
-                                              ? kAmber
+                                              ? kSelect
                                               : kText,
                                         ),
                                       ),
@@ -1631,7 +1625,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         foregroundDecoration: selected
             ? BoxDecoration(
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: kAmber, width: 1.5),
+                border: Border.all(color: kSelect, width: 1.5),
               )
             : null,
         child: Stack(
@@ -1773,7 +1767,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                     color:
                                         ((x - gx).abs() < 0.17 &&
                                             (y - gy).abs() < 0.18)
-                                        ? kAmber
+                                        ? kSelect
                                         : kPanelHi,
                                     border: Border.all(
                                       color: kBorder,

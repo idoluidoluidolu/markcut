@@ -6866,6 +6866,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     },
                     indicatorColor: Colors.transparent,
                     dividerHeight: 0,
+                    // 選中分頁跟浮水印面板同一套語言：字＋圖示直接轉琥珀
+                    labelColor: kSelect,
+                    unselectedLabelColor: kTextDim,
                     labelStyle: const TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w600,

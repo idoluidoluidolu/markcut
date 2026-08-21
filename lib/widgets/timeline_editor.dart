@@ -992,14 +992,16 @@ class _TimelineEditorState extends State<TimelineEditor> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(
-                              widget.wmHidden
-                                  ? Icons.visibility_off_outlined
-                                  : Icons.branding_watermark,
-                              size: 11,
-                              color: widget.wmSelected ? kSelect : kIcon,
-                            ),
-                            const SizedBox(width: 4),
+                            // 平常不放圖示（文字本身就認得出是浮水印）；
+                            // 隱藏中的閉眼是狀態提示，留著
+                            if (widget.wmHidden) ...[
+                              const Icon(
+                                Icons.visibility_off_outlined,
+                                size: 11,
+                                color: kTextDim,
+                              ),
+                              const SizedBox(width: 4),
+                            ],
                             Flexible(
                               child: Text(
                                 widget.wmLabel,
