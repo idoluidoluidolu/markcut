@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -14,7 +15,6 @@ import '../services/gif_store.dart';
 import '../services/video_engine.dart' as engine;
 import 'crop_screen.dart';
 import '../theme.dart';
-import '../widgets/swipe_back.dart';
 
 /// 專屬的 GIF 製作頁：選一支影片進來，拉兩個把手決定要剪哪一段，
 /// 挑尺寸跟順暢度，直接出 GIF。
@@ -103,6 +103,106 @@ class _GifScreenState extends State<GifScreen> {
         '@${fps ?? _fps}@${size ?? _size}@$cropKey@$_speed';
   }
 
+  // ── GIF 成果播放器：把做好的 GIF 解成幀，用自己的時鐘播 ──
+  //
+  // 大預覽就是 GIF 本人（顏色/格數照實），但不交給元件自由輪播：
+  // 時鐘在我們手上，才能（1）播放/暫停（2）把「現在放到段落哪裡」
+  // 映射回修剪條上的指針（使用者：預覽一樣是 GIF，但要顯示指針
+  // 位置，才知道自己放到哪）
+  final List<ui.Image> _gifFrames = [];
+  final List<int> _gifEndMs = [];
+  int _gifLoopMs = 0;
+  double _gifMs = 0;
+  int _gifDecodeSeq = 0;
+  final ValueNotifier<int> _gifFrameVN = ValueNotifier(0);
+  Timer? _gifTick;
+
+  bool get _gifMode => _gifFrames.isNotEmpty && _gifLoopMs > 0;
+  double get _rangeLen => math.max(0.05, _end - _start);
+
+  Future<void> _decodeGifFrames(String path) async {
+    final seq = ++_gifDecodeSeq;
+    try {
+      final bytes = await File(path).readAsBytes();
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frames = <ui.Image>[];
+      final ends = <int>[];
+      var acc = 0;
+      final n = math.min(codec.frameCount, 400);
+      for (var i = 0; i < n; i++) {
+        final f = await codec.getNextFrame();
+        if (!mounted || seq != _gifDecodeSeq) {
+          f.image.dispose();
+          codec.dispose();
+          for (final im in frames) {
+            im.dispose();
+          }
+          return;
+        }
+        frames.add(f.image);
+        final d = f.duration.inMilliseconds;
+        acc += d < 10 ? 100 : d;
+        ends.add(acc);
+      }
+      codec.dispose();
+      if (!mounted || seq != _gifDecodeSeq) {
+        for (final im in frames) {
+          im.dispose();
+        }
+        return;
+      }
+      for (final im in _gifFrames) {
+        im.dispose();
+      }
+      setState(() {
+        _gifFrames
+          ..clear()
+          ..addAll(frames);
+        _gifEndMs
+          ..clear()
+          ..addAll(ends);
+        _gifLoopMs = acc;
+        _gifMs = 0;
+        _gifFrameVN.value = 0;
+      });
+      _pos.value = _start;
+      _ensureGifTick();
+    } catch (_) {}
+  }
+
+  void _ensureGifTick() {
+    _gifTick ??= Timer.periodic(const Duration(milliseconds: 33), (_) {
+      if (!mounted || !_gifMode || !_playing) return;
+      _gifMs = (_gifMs + 33) % _gifLoopMs;
+      _syncGifFrame();
+    });
+  }
+
+  /// 由 _gifMs 更新目前幀與修剪條上的指針位置（比例對映回段落）
+  void _syncGifFrame() {
+    var lo = 0;
+    var hi = _gifEndMs.length - 1;
+    final ms = _gifMs.clamp(0, _gifLoopMs - 1);
+    while (lo < hi) {
+      final mid = (lo + hi) >> 1;
+      if (_gifEndMs[mid] > ms) {
+        hi = mid;
+      } else {
+        lo = mid + 1;
+      }
+    }
+    _gifFrameVN.value = lo;
+    _pos.value = _start + (_gifMs / _gifLoopMs) * _rangeLen;
+  }
+
+  /// 指針位置（來源秒）→ GIF 時鐘（比例對映）
+  void _gifSeekToSrc(double t) {
+    if (!_gifMode) return;
+    final frac = ((t - _start) / _rangeLen).clamp(0.0, 0.999);
+    _gifMs = frac * _gifLoopMs;
+    _syncGifFrame();
+  }
+
   void _schedulePreview() {
     final key = _keyFor();
     if (key == _previewKey) return;
@@ -114,6 +214,7 @@ class _GifScreenState extends State<GifScreen> {
         _gifPreview = hit;
         _previewKey = key;
       });
+      unawaited(_decodeGifFrames(hit));
       // 換上快取＝閒置：接著把這一組的隔壁選項也補起來
       unawaited(_prefetchSiblings());
       return;
@@ -134,6 +235,7 @@ class _GifScreenState extends State<GifScreen> {
         _gifPreview = hit;
         _previewKey = key;
       });
+      unawaited(_decodeGifFrames(hit));
       return;
     }
     setState(() => _building = true);
@@ -155,6 +257,7 @@ class _GifScreenState extends State<GifScreen> {
         _previewCache[key] = path;
       }
     });
+    if (path != null) unawaited(_decodeGifFrames(path));
     // 跑完的時候設定可能又被改過了（使用者連按了好幾個），
     // 那就接著做最新的那一組
     if (mounted && _keyFor() != _previewKey) _schedulePreview();
@@ -255,6 +358,7 @@ class _GifScreenState extends State<GifScreen> {
     // 播放頭跟出界檢查共用一條 timer：拉把手時即時看到位置，
     // 播放時碰到迄點就跳回起點循環——預覽跟成品的循環感一致
     _tick = Timer.periodic(const Duration(milliseconds: 120), (_) async {
+      if (_gifMode) return; // 指針由 GIF 時鐘驅動
       final pl = _player;
       if (pl == null || !mounted) return;
       final now = await pl.positionNow();
@@ -270,6 +374,11 @@ class _GifScreenState extends State<GifScreen> {
   @override
   void dispose() {
     _tick?.cancel();
+    _gifTick?.cancel();
+    for (final im in _gifFrames) {
+      im.dispose();
+    }
+    _gifFrameVN.dispose();
     _previewTimer?.cancel();
     for (final p in {..._previewCache.values, ?_gifPreview}) {
       if (GifStore.isAsset(p)) continue;
@@ -283,6 +392,12 @@ class _GifScreenState extends State<GifScreen> {
   }
 
   Future<void> _togglePlay() async {
+    // GIF 模式：播的是成果本人，時鐘在 _gifTick 手上
+    if (_gifMode) {
+      setState(() => _playing = !_playing);
+      _ensureGifTick();
+      return;
+    }
     final p = _player;
     if (p == null || !_ready) return;
     if (_playing) {
@@ -464,49 +579,50 @@ class _GifScreenState extends State<GifScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return SwipeBack(
-      child: Scaffold(
-        backgroundColor: kBg,
-        appBar: AppBar(backgroundColor: kBg),
-        body: SafeArea(
-          child: !_ready
-              ? const Center(child: CircularProgressIndicator())
-              : Column(
-                  children: [
-                    Expanded(child: _preview()),
-                    _playbackRow(),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          _rangeReadout(),
-                          const SizedBox(height: 8),
-                          _trimStrip(),
-                          const SizedBox(height: 16),
-                          _chipsRow('尺寸', [320, 480, 640], _size, (v) {
-                            setState(() => _size = v);
-                            _schedulePreview();
-                          }, (v) => '${v}p'),
-                          const SizedBox(height: 10),
-                          _chipsRow('順暢度', [10, 12, 15], _fps, (v) {
-                            setState(() => _fps = v);
-                            _schedulePreview();
-                          }, (v) => '$v fps'),
-                          const SizedBox(height: 10),
-                          _speedRow(),
-                          const SizedBox(height: 16),
-                          primaryAction(
-                            label: '做成 GIF',
-                            icon: Icons.gif_box_outlined,
-                            onPressed: _exporting ? null : _export,
-                          ),
-                        ],
-                      ),
+    // 不放右滑返回：這頁滿是橫向手勢（指針速覽、修剪把手），
+    // 跟返回判定天生打架（實測回報：一滑就滑到上一頁）。
+    // 返回走左上角的返回鍵
+    return Scaffold(
+      backgroundColor: kBg,
+      appBar: AppBar(backgroundColor: kBg),
+      body: SafeArea(
+        child: !_ready
+            ? const Center(child: CircularProgressIndicator())
+            : Column(
+                children: [
+                  Expanded(child: _preview()),
+                  _playbackRow(),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _rangeReadout(),
+                        const SizedBox(height: 8),
+                        _trimStrip(),
+                        const SizedBox(height: 16),
+                        _chipsRow('尺寸', [320, 480, 640], _size, (v) {
+                          setState(() => _size = v);
+                          _schedulePreview();
+                        }, (v) => '${v}p'),
+                        const SizedBox(height: 10),
+                        _chipsRow('順暢度', [10, 12, 15], _fps, (v) {
+                          setState(() => _fps = v);
+                          _schedulePreview();
+                        }, (v) => '$v fps'),
+                        const SizedBox(height: 10),
+                        _speedRow(),
+                        const SizedBox(height: 16),
+                        primaryAction(
+                          label: '做成 GIF',
+                          icon: Icons.gif_box_outlined,
+                          onPressed: _exporting ? null : _export,
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-        ),
+                  ),
+                ],
+              ),
       ),
     );
   }
@@ -622,6 +738,12 @@ class _GifScreenState extends State<GifScreen> {
     final from = _scrubFrom;
     if (from == null) return;
     _scrubAcc += dx;
+    // GIF 模式：指針只在段落內移動，直接撥 GIF 的時鐘
+    if (_gifMode) {
+      final t = (from + _scrubAcc / width * _dur).clamp(_start, _end);
+      _gifSeekToSrc(t);
+      return;
+    }
     final t = (from + _scrubAcc / width * _dur).clamp(0.0, _dur);
     _pos.value = t;
     // seek 節流：60ms 一發（每個手指事件都 seek 會把解碼器打爆），
@@ -636,6 +758,7 @@ class _GifScreenState extends State<GifScreen> {
   void _scrubEnd() {
     if (_scrubFrom == null) return;
     _scrubFrom = null;
+    if (_gifMode) return; // GIF 時鐘已經在位置上了
     _player?.seekTo(Duration(milliseconds: (_pos.value * 1000).round()));
   }
 
@@ -663,7 +786,21 @@ class _GifScreenState extends State<GifScreen> {
               child: Stack(
                 alignment: Alignment.center,
                 children: [
-                  AspectRatio(aspectRatio: aspect, child: p.view()),
+                  AspectRatio(
+                    aspectRatio: aspect,
+                    // 成果做好後看的就是 GIF 本人（時鐘在我們手上，
+                    // 指針才對得到位置）；還沒做好前先看影片
+                    child: _gifMode
+                        ? ValueListenableBuilder<int>(
+                            valueListenable: _gifFrameVN,
+                            builder: (context, i, _) => RawImage(
+                              image:
+                                  _gifFrames[i.clamp(0, _gifFrames.length - 1)],
+                              fit: BoxFit.contain,
+                            ),
+                          )
+                        : p.view(),
+                  ),
                   // 暫停時給一顆播放鈕；播放中畫面乾淨
                   if (!_playing)
                     Container(
@@ -744,6 +881,10 @@ class _GifScreenState extends State<GifScreen> {
                   behavior: HitTestBehavior.opaque,
                   onTapDown: (d) {
                     final t = (d.localPosition.dx / w * _dur).clamp(0.0, _dur);
+                    if (_gifMode) {
+                      _gifSeekToSrc(t.clamp(_start, _end));
+                      return;
+                    }
                     _pos.value = t;
                     _player?.seekTo(Duration(milliseconds: (t * 1000).round()));
                   },
