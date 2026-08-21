@@ -2540,6 +2540,8 @@ final class CompPlayer: NSObject, FlutterTexture {
     }
     var segments: [Seg] = []
     var vTracks: [Int: (track: AVMutableCompositionTrack, end: CMTime)] = [:]
+    // 每層最後插入的媒體（來源軌＋來源區間），片尾鋪滿（見 needsCI）用
+    var lastMedia: [Int: (src: AVAssetTrack, rng: CMTimeRange)] = [:]
 
     // 聲音也可能同時好幾層（影片自己的聲音＋配樂），一條軌塞不下重疊的
     // 時間範圍——需要幾條就開幾條
@@ -2561,6 +2563,20 @@ final class CompPlayer: NSObject, FlutterTexture {
       let b = m["end"] as? Double ?? -1
       return "z\(tk) \(String(format: "%.2f", a))~\(String(format: "%.2f", b))"
     }.joined(separator: " ")
+
+    // 這些效果標準的 layer instruction 畫不出來，得掛 CI 合成器。
+    // 這件事在插軌之前就得知道：CI 路線（自訂合成器）的軌道必須
+    // 從頭到尾鋪滿媒體、一個空範圍都不能留——AVFoundation 的自訂
+    // 合成器遇到「這一刻這條軌沒有媒體」會供格失敗：抽格器直接
+    // 報錯（診斷的「抽格檢查失敗」）、播放進出空範圍的邊界打嗝
+    //（接縫閃黑卡頓）。內建合成器沒這個問題，所以標準路線照舊留空
+    let needsCI =
+      !mosaics.isEmpty
+      || ordered.contains { c in
+        (c["crop"] as? [Double]) != nil
+          || abs(c["rotation"] as? Double ?? 0) > 0.05
+          || (c["opacity"] as? Double ?? 1) < 0.999
+      }
 
     for clip in ordered {
       guard let path = clip["path"] as? String else { continue }
@@ -2609,10 +2625,40 @@ final class CompPlayer: NSObject, FlutterTexture {
         buildError = "第 \(layer) 層的合成軌不見了"
         return false
       }
-      // 補到位：同一條軌上一段結束到這一段開始之間留空（畫面留黑）
+      // 補到位：同一條軌上一段結束到這一段開始之間的縫。
+      // CI 路線不能留空範圍（見 needsCI），改用「本片開頭的一小段」
+      // 拉長鋪滿：指令不會列它、畫面看不見，但解碼器全程有東西吃，
+      // 而且到本片進場那一刻剛好就停在它的開頭附近——零冷啟動
       if slot.end < at {
-        slot.track.insertEmptyTimeRange(
-          CMTimeRange(start: slot.end, duration: at - slot.end))
+        var filled = false
+        if needsCI {
+          let gap = at - slot.end
+          // 儘量拿「本片入點前 0.2 秒」當填充：解碼器一路順流進
+          // 本片第一格，完全不跳針；素材開頭沒餘裕才退而用本片
+          // 開頭一小段（會小倒帶 0.2 秒，關鍵幀密，代價很小）
+          let leadIn = min(0.2, start)
+          let snip =
+            leadIn > 0.05
+            ? CMTimeRange(
+              start: CMTime(seconds: start - leadIn, preferredTimescale: scale),
+              duration: CMTime(seconds: leadIn, preferredTimescale: scale))
+            : CMTimeRange(
+              start: range.start,
+              duration: CMTime(
+                seconds: min(0.2, end - start), preferredTimescale: scale))
+          if (try? slot.track.insertTimeRange(snip, of: src, at: slot.end))
+            != nil
+          {
+            slot.track.scaleTimeRange(
+              CMTimeRange(start: slot.end, duration: snip.duration),
+              toDuration: gap)
+            filled = true
+          }
+        }
+        if !filled {
+          slot.track.insertEmptyTimeRange(
+            CMTimeRange(start: slot.end, duration: at - slot.end))
+        }
         slot.end = at
       }
       // 同一層若真的重疊（理論上不會，時間軸不允許），往後推一格避免蓋掉
@@ -2635,6 +2681,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       }
       slot.end = putAt + outDur
       vTracks[layer] = slot
+      lastMedia[layer] = (src, range)
 
       // 聲音：找一條這個時間點空著的軌，沒有就開新的
       if let sa = asset.tracks(withMediaType: .audio).first {
@@ -2701,6 +2748,28 @@ final class CompPlayer: NSObject, FlutterTexture {
     if segments.isEmpty {
       buildError = "沒有一段畫面接得進去"
       return false
+    }
+
+    // CI 路線：每條畫面軌「最後一段結束到合成結尾」也要鋪滿——
+    // 對自訂合成器來說，軌道提早結束跟空範圍是同一回事（+79 的
+    // 軌 0 只到 0.48s、合成長 1.76s，抽格就是這樣壞的）。
+    // 用該軌最後一段的結尾一小格拉長蓋過去，畫面照樣由指令決定
+    if needsCI {
+      for (layer, slot) in vTracks where slot.end < comp.duration {
+        guard let m = lastMedia[layer] else { continue }
+        let gap = comp.duration - slot.end
+        let snipDur = CMTime(
+          seconds: min(0.2, m.rng.duration.seconds), preferredTimescale: scale)
+        let snip = CMTimeRange(start: m.rng.end - snipDur, duration: snipDur)
+        if (try? slot.track.insertTimeRange(snip, of: m.src, at: slot.end))
+          != nil
+        {
+          slot.track.scaleTimeRange(
+            CMTimeRange(start: slot.end, duration: snip.duration),
+            toDuration: gap)
+          vTracks[layer]?.end = comp.duration
+        }
+      }
     }
 
     // 畫面大小以「最底層、最早出現」的那一段轉正之後的尺寸為準。
@@ -2875,12 +2944,8 @@ final class CompPlayer: NSObject, FlutterTexture {
         }
       }
       if marks.count < 2 { marks = [CMTime.zero, comp.duration] }
-      // 這些效果標準的 layer instruction 畫不出來，得掛 CI 合成器
-      let needsCI =
-        !mosaics.isEmpty
-        || segments.contains { seg in
-          seg.crop != nil || abs(seg.rotation) > 0.05 || seg.opacity < 0.999
-        }
+      // needsCI 在插軌之前就算好了（CI 路線的軌道有沒有鋪滿全看它，
+      // 這裡沿用同一個值才不會兩邊打架）
       if needsCI {
         // 馬賽克要逐格打在畫面上，標準的 layer instruction 做不到——
         // 掛跟匯出同一顆 CI 合成器（CIExportCompositor）：濃度、柔邊、
