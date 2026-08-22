@@ -1174,12 +1174,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 重建播放器與縮圖；素材檔案不見了（例如系統清掉 app 快取）就剔除該片段，
     // 免得留下永遠黑畫面的片段、到匯出才爆錯
     final deadSources = <int>{};
-    for (var i = 0; i < _tl.sources.length; i++) {
+    // 每個素材各查各的（讀圖檔、查檔案在不在、工作檔救援互不相干），
+    // 全部並行。以前一支一支 await：素材多的專案光是逐一碰磁碟
+    // 就能拖上好幾秒（實測回報：開專案太慢）
+    Future<void> checkSource(int i) async {
       final s = _tl.sources[i];
       if (s.kind == ClipKind.text ||
           s.kind == ClipKind.wm ||
           s.kind == ClipKind.mosaic) {
-        continue; // 這幾種素材沒有檔案
+        return; // 這幾種素材沒有檔案
       }
       // Web：blob 連結活不過重新整理，留著只會是永遠黑畫面
       // 又不報錯的片段——剔除並讓下面的提示講清楚
@@ -1187,7 +1190,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           (s.kind == ClipKind.video || s.kind == ClipKind.audio) &&
           s.path.startsWith('blob:')) {
         deadSources.add(i);
-        continue;
+        return;
       }
       if (s.kind == ClipKind.image) {
         final bytes = await readFileBytes(s.path);
@@ -1224,6 +1227,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         _ensureScrubSlots(i, s.duration);
       }
     }
+
+    await Future.wait([
+      for (var i = 0; i < _tl.sources.length; i++) checkSource(i),
+    ]);
     _droppedOnLoad = _tl.clips
         .where((c) => deadSources.contains(c.sourceIndex))
         .length;

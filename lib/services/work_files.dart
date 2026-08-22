@@ -111,6 +111,48 @@ class WorkFiles {
     final dir = await _dir();
     final name = 'w${DateTime.now().microsecondsSinceEpoch}_${_seq++}.mp4';
     final dest = '${dir.path}${Platform.pathSeparator}$name';
+
+    // 快速通道：素材本來就符合工作檔規格（H.264 SDR、短邊 ≤1080、
+    // 沒有旋轉旗標、關鍵幀夠密）就不重編碼，直接複製一份。
+    // 複製只花磁碟 I/O 幾秒；重編碼要把整支影片跑一遍——「匯入素材
+    // 太慢」大半是把已經合格的素材又原樣轉了一次。
+    // 還是要複製、不能直接拿原檔當工作檔：原檔常是相簿給的暫存路徑
+    //（一週左右會被系統回收），工作檔同時兼任素材的備份（見
+    // _rescueFromWorkFile）
+    if (await _qualifiesAsIs(src)) {
+      try {
+        _inFlight.add(dest);
+        await File(src).copy(dest);
+        onProgress?.call(1);
+        final idx = await _load();
+        idx[src] = {
+          'work': dest,
+          'stamp': _stamp(src),
+          'at': DateTime.now().millisecondsSinceEpoch,
+        };
+        // 索引寫成功才解除 in-flight 保護；沒寫成功就讓它掛著整個
+        // 行程，sweep 才不會把這支當孤兒清掉（跟轉檔那條同一套）
+        if (await _save()) {
+          _inFlight.remove(dest);
+        } else {
+          Diag.note('工作檔索引寫入失敗（本次照用，先不給清掃碰）');
+        }
+        Diag.note(
+          '工作檔免轉直用（規格已合，複製 '
+          '${(File(dest).lengthSync() / 1048576).round()}MB）：'
+          '${src.split('/').last}',
+        );
+        Diag.count('工作檔免轉');
+        unawaited(sweep());
+        return dest;
+      } catch (_) {
+        // 複製失敗（空間不足之類）就照舊走轉檔
+        _inFlight.remove(dest);
+        try {
+          File(dest).deleteSync();
+        } catch (_) {}
+      }
+    }
     final sw = Stopwatch()..start();
     await Diag.mark('工作檔：轉檔中', data: {'檔案': src.split('/').last});
     _inFlight.add(dest);
@@ -168,6 +210,38 @@ class WorkFiles {
     }
     unawaited(sweep());
     return made;
+  }
+
+  /// 素材本身是不是已經符合工作檔規格，可以免轉直接用。
+  ///
+  /// 條件全部要成立：
+  /// - H.264（avc1）：HEVC 幾乎都伴隨 HDR/高解碼成本，照舊重轉。
+  ///   這一條同時排掉了 iPhone 的 HDR 素材（HLG/PQ 都走 HEVC）
+  /// - 短邊 ≤1088：跟工作檔的目標尺寸同級（1088 容忍編碼器取整）
+  /// - 沒有旋轉旗標：帶旗標的檔會讓合成播放器被迫逐格重畫
+  /// - 關鍵幀夠密（平均 ≤8 格、最疏 ≤16 格）：疏的話拖曳會鈍，
+  ///   重轉的主要目的之一就是把關鍵幀補密
+  ///
+  /// probe 沒實作的平台（Android）回 false，照舊全部重轉
+  static Future<bool> _qualifiesAsIs(String src) async {
+    try {
+      final m = await MediaPrep.probe(src);
+      if (m == null || m['error'] != null) return false;
+      if (m['codec'] != 'avc1') return false;
+      final w = (m['w'] as num?)?.toInt() ?? 0;
+      final h = (m['h'] as num?)?.toInt() ?? 0;
+      if (w <= 0 || h <= 0 || (w < h ? w : h) > 1088) return false;
+      if (m['rotated'] == true) return false;
+      final frames = (m['frames'] as num?)?.toInt() ?? 0;
+      final keys = (m['keyframes'] as num?)?.toInt() ?? 0;
+      final maxGop = (m['maxGopFrames'] as num?)?.toInt();
+      if (keys <= 0 || frames <= 0) return false;
+      if (frames / keys > 8) return false;
+      if (maxGop == null || maxGop > 16) return false;
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// 這份工作檔畫得出東西嗎。
