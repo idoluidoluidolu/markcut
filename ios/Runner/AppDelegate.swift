@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreImage
 import Flutter
+import ImageIO
 import UIKit
 
 extension Double {
@@ -131,9 +132,85 @@ final class CIOverlaySpec {
 /// start/end 是這一層自己的完整顯示窗（輸出秒）。淡入淡出照它算，
 /// 不照指令的範圍——指令會被圖層邊界切成好幾段，照指令算的話
 /// 每一段都會重新淡一次
+/// 會動的 GIF 圖層：影格用 ImageIO 隨取隨解。
+///
+/// 不整包解開——一支 15 秒 640px 的 GIF 全解是幾百 MB，匯出中
+/// 扛不起。匯出是照時間順序走的，連續請求幾乎都命中同一格，
+/// 快取「上一格」就夠了。定位變形（縮放/位移/翻轉）跟靜態圖層
+/// 同一套烘法，建構時算一次、每一格套用
+final class CIGifSpec {
+  private let src: CGImageSource
+  private let endsMs: [Int]  // 每一格的累計結束時間（毫秒）
+  private let loopMs: Int
+  private let placement: CGAffineTransform
+  private let clipStart: Double  // 圖層進場的輸出秒（迴圈從這裡起算）
+  private var lastIdx = -1
+  private var lastImg: CIImage?
+  private let lock = NSLock()
+
+  init?(path: String, placement: CGAffineTransform, clipStart: Double) {
+    guard
+      let s = CGImageSourceCreateWithURL(
+        URL(fileURLWithPath: path) as CFURL, nil),
+      CGImageSourceGetCount(s) > 1
+    else { return nil }
+    var ends: [Int] = []
+    var acc = 0
+    for i in 0..<CGImageSourceGetCount(s) {
+      var d = 0.1
+      if let props = CGImageSourceCopyPropertiesAtIndex(s, i, nil)
+        as? [CFString: Any],
+        let g = props[kCGImagePropertyGIFDictionary] as? [CFString: Any]
+      {
+        let un = g[kCGImagePropertyGIFUnclampedDelayTime] as? Double
+        let cl = g[kCGImagePropertyGIFDelayTime] as? Double
+        d = (un ?? cl ?? 0.1)
+      }
+      // 太短的間隔照瀏覽器慣例當 100ms（跟預覽端 _decodeGifFrames 一致）
+      if d < 0.011 { d = 0.1 }
+      acc += Int(d * 1000)
+      ends.append(acc)
+    }
+    guard acc > 0 else { return nil }
+    self.src = s
+    self.endsMs = ends
+    self.loopMs = acc
+    self.placement = placement
+    self.clipStart = clipStart
+  }
+
+  /// 輸出時間 t（秒）該畫哪一格（照 GIF 自己的節奏循環）
+  func image(at t: Double) -> CIImage? {
+    let ms = Int(
+      max(0, t - clipStart)
+        .truncatingRemainder(dividingBy: Double(loopMs) / 1000) * 1000)
+    var lo = 0
+    var hi = endsMs.count - 1
+    while lo < hi {
+      let mid = (lo + hi) / 2
+      if endsMs[mid] > ms { hi = mid } else { lo = mid + 1 }
+    }
+    lock.lock()
+    defer { lock.unlock() }
+    if lo == lastIdx, let img = lastImg { return img }
+    guard let cg = CGImageSourceCreateImageAtIndex(src, lo, nil) else {
+      return lastImg
+    }
+    let img = CIImage(cgImage: cg).transformed(by: placement)
+    lastIdx = lo
+    lastImg = img
+    return img
+  }
+}
+
 final class CILayerSpec {
   let trackID: CMPersistentTrackID  // Invalid ＝ 靜態圖層（still 有值）
   let still: CIImage?
+
+  /// 會動的 GIF（still 為 nil、trackID 為 Invalid 時可有）。
+  /// 影格照輸出時間循環，其餘（裁切/旋轉/透明/調色/淡化）跟
+  /// 靜態圖層走同一條處理
+  let gif: CIGifSpec?
   let transform: CGAffineTransform
   let srcHeight: CGFloat
   let start: Double
@@ -163,10 +240,11 @@ final class CILayerSpec {
     start: Double, end: Double, fadeIn: Double, fadeOut: Double,
     colorMatrix: [Double]?,
     crop: CGRect? = nil, rotation: Double = 0, opacity: Double = 1,
-    z: Int = 0
+    z: Int = 0, gif: CIGifSpec? = nil
   ) {
     self.trackID = trackID
     self.still = still
+    self.gif = gif
     self.transform = transform
     self.srcHeight = srcHeight
     self.start = start
@@ -585,6 +663,10 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             img = base.transformed(
               by: flipSrc.concatenating(layer.transform)
                 .concatenating(flipCanvas))
+          } else if let gif = layer.gif {
+            // 會動的 GIF：照輸出時間挑格（定位變形已烘在 spec 裡）
+            guard let g = gif.image(at: t) else { continue }
+            img = g
           } else if let still = layer.still {
             img = still  // 靜態圖層在建圖時就定位好了
           } else {
@@ -1768,8 +1850,19 @@ final class AtomicFlag {
         let flipSrc = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: dh)
         let flipCanvas = CGAffineTransform(
           a: 1, b: 0, c: 0, d: -1, tx: 0, ty: canvas.height)
-        img = img.transformed(
-          by: flipSrc.concatenating(t).concatenating(flipCanvas))
+        let placement = flipSrc.concatenating(t).concatenating(flipCanvas)
+        // GIF：不烘成單張，把定位矩陣連同 ImageIO 來源包成
+        // CIGifSpec，合成器照輸出時間逐幀取（見 CIGifSpec）。
+        // 只有一格的「GIF」照舊當靜態圖
+        var gifSpec: CIGifSpec? = nil
+        if st["gif"] as? Bool ?? false {
+          gifSpec = CIGifSpec(
+            path: path, placement: placement,
+            clipStart: st["start"] as? Double ?? 0)
+        }
+        if gifSpec == nil {
+          img = img.transformed(by: placement)
+        }
         var stCrop: CGRect? = nil
         if let ca = st["crop"] as? [Double], ca.count >= 4, ca[2] > 0.001,
           ca[3] > 0.001
@@ -1781,7 +1874,8 @@ final class AtomicFlag {
         layerBasket.append((
           z: st["track"] as? Int ?? 0, order: layerBasket.count,
           layer: CILayerSpec(
-            trackID: kCMPersistentTrackID_Invalid, still: img,
+            trackID: kCMPersistentTrackID_Invalid,
+            still: gifSpec == nil ? img : nil,
             transform: .identity, srcHeight: dh,
             start: st["start"] as? Double ?? 0,
             end: st["end"] as? Double ?? 0,
@@ -1791,7 +1885,7 @@ final class AtomicFlag {
             crop: stCrop,
             rotation: st["rotation"] as? Double ?? 0,
             opacity: st["opacity"] as? Double ?? 1,
-            z: st["track"] as? Int ?? 0)
+            z: st["track"] as? Int ?? 0, gif: gifSpec)
         ))
       }
       // z 序排定（同 z 保持進籃順序）

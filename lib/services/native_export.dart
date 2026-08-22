@@ -71,10 +71,10 @@ class NativeExport {
       final src = spec.sources[c.sourceIndex];
       if (src.kind == ClipKind.video) vids.add(c);
       if (c.reverse) return '有倒轉的片段（前置處理漏了）';
-      // GIF 素材只有 FFmpeg 那條會動（-ignore_loop 0 循環播）；
-      // 原生的照片圖層拿它當靜態圖，只會畫第一格——
-      // 「GIF 匯出變成靜止的」（實測回報）就是這裡來的
-      if (src.isGif) return '有 GIF 素材（原生合成器只畫得出第一格）';
+      // GIF 素材現在原生也會動：stills 帶 gif 旗標，Swift 端用
+      // ImageIO 逐幀解、CI 合成器照輸出時間循環播（見 CIGifSpec）。
+      // 之前這裡整條退 FFmpeg（原生只畫第一格），含 GIF 的專案
+      // 匯出慢一個量級
       // 裁切／旋轉／透明度現在 CI 合成器都畫得出來（跟預覽同一套
       // 數學），不再退 FFmpeg——HDR 專案才走得到系統的色調映射
     }
@@ -155,6 +155,9 @@ class NativeExport {
       if (src.kind == ClipKind.image) {
         stills.add({
           'path': src.path,
+          // GIF 素材：Swift 端逐幀解、照輸出時間循環（同 FFmpeg 的
+          // -ignore_loop 0 語意）
+          if (src.isGif) 'gif': true,
           'start': c.offset / sp,
           'end': c.end / sp,
           'track': c.track,
