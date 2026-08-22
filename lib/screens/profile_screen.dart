@@ -227,9 +227,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget _presetAddTile() => GestureDetector(
     onTap: () => Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => const WatermarkStudioScreen(),
-      ),
+      MaterialPageRoute(builder: (_) => const WatermarkStudioScreen()),
     ).then((_) => _reload()),
     child: Column(
       children: [
@@ -906,9 +904,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
     if (mounted) setState(() {});
   }
 
-  /// 建立時間，當草稿的名字用（草稿沒有名字，見 DraftStore）
-  String _dateLabel(DateTime t) => dateLabel(t);
-
   String _savedAtLabel(Map<String, dynamic> j) {
     final raw = j['savedAt'];
     if (raw is! String) return '';
@@ -945,6 +940,137 @@ class _DraftsScreenState extends State<DraftsScreen> {
       await DraftStore.remove(m.id);
       _reload();
     }
+  }
+
+  // ── 瀑布流（C 案）：封面照專案畫布原比例排，日期小 chip 浮在
+  // 左上角、時長在右下角，卡片本身零文字列——最像相簿、畫面最純。
+  // 片段數不顯示（要看的話點進去就知道）；刪除走長按或選取模式
+
+  /// 這份草稿在瀑布流裡的高寬比（沒封面的用 1:1 的圖示磚佔位）
+  double _tileAspect(DraftMeta m) =>
+      _covers[m.id] != null ? (m.thumbAspect ?? 9 / 16) : 1.0;
+
+  /// 兩欄瀑布流：每一份丟進目前比較短的那一欄（跟「我的 GIF」同一套）
+  List<List<DraftMeta>> _draftColumns(double colW) {
+    final cols = <List<DraftMeta>>[[], []];
+    final h = [0.0, 0.0];
+    for (final m in _drafts) {
+      final i = h[0] <= h[1] ? 0 : 1;
+      cols[i].add(m);
+      h[i] += colW / _tileAspect(m) + 10;
+    }
+    return cols;
+  }
+
+  /// chip 的日期：今天/昨天講人話，更早的用 8/22 這種短格式
+  static String _chipDate(DateTime t) {
+    final now = DateTime.now();
+    final d0 = DateTime(now.year, now.month, now.day);
+    final d = DateTime(t.year, t.month, t.day);
+    final diff = d0.difference(d).inDays;
+    if (diff <= 0) return '今天';
+    if (diff == 1) return '昨天';
+    return '${t.month}/${t.day}';
+  }
+
+  static String _mmss(double sec) {
+    final s = sec.round();
+    return '${(s ~/ 60).toString().padLeft(2, '0')}:'
+        '${(s % 60).toString().padLeft(2, '0')}';
+  }
+
+  /// 封面角落的小標（日期、時長共用一款）
+  static Widget _cornerChip(String text) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+    decoration: BoxDecoration(
+      color: Colors.black.withValues(alpha: 0.55),
+      borderRadius: BorderRadius.circular(5),
+    ),
+    child: Text(
+      text,
+      style: const TextStyle(
+        fontSize: 10,
+        color: Colors.white,
+        fontFeatures: [FontFeature.tabularFigures()],
+      ),
+    ),
+  );
+
+  Widget _draftTile(DraftMeta m) {
+    final cover = _covers[m.id];
+    final picked = _picked.contains(m.id);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: GestureDetector(
+        onTap: _selecting
+            ? () => setState(() {
+                picked ? _picked.remove(m.id) : _picked.add(m.id);
+              })
+            : () => _resume(m),
+        onLongPress: _selecting ? null : () => _delete(m),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: AspectRatio(
+            aspectRatio: _tileAspect(m),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (cover != null)
+                  Image.memory(cover, fit: BoxFit.cover, gaplessPlayback: true)
+                else
+                  const ColoredBox(
+                    color: kLTile,
+                    child: Icon(
+                      Icons.movie_outlined,
+                      size: 26,
+                      color: kLAccent,
+                    ),
+                  ),
+                Positioned(
+                  left: 6,
+                  top: 6,
+                  child: _cornerChip(_chipDate(m.savedAt)),
+                ),
+                if (m.duration > 0.05)
+                  Positioned(
+                    right: 6,
+                    bottom: 6,
+                    child: _cornerChip(_mmss(m.duration)),
+                  ),
+                // 選取模式：整張壓暗＋右上角勾勾
+                if (_selecting) ...[
+                  ColoredBox(
+                    color: Colors.black.withValues(alpha: picked ? 0.35 : 0.12),
+                  ),
+                  Positioned(
+                    right: 6,
+                    top: 6,
+                    child: Container(
+                      width: 20,
+                      height: 20,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: picked
+                            ? const Color(0xFFE53935)
+                            : Colors.black38,
+                        border: Border.all(color: Colors.white, width: 1.5),
+                      ),
+                      child: picked
+                          ? const Icon(
+                              Icons.check,
+                              size: 13,
+                              color: Colors.white,
+                            )
+                          : null,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -989,40 +1115,35 @@ class _DraftsScreenState extends State<DraftsScreen> {
             : ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                  for (final m in ds) ...[
-                    _draftCard(
-                      // 縮圖裁進固定的方框。以前框寬會跟著影片比例跑
-                      //（直片 30、橫片 92），兩張卡的文字起點就對不齊
-                      cover: _covers[m.id] != null
-                          ? Image.memory(
-                              _covers[m.id]!,
-                              fit: BoxFit.cover,
-                              gaplessPlayback: true,
-                            )
-                          : const Icon(
-                              Icons.movie_outlined,
-                              size: 20,
-                              color: kLAccent,
+                  // 影片草稿走瀑布流（C 案）：封面原比例、日期 chip
+                  // 在左上、時長在右下。照片/批次草稿維持一列一卡
+                  if (ds.isNotEmpty)
+                    LayoutBuilder(
+                      builder: (context, cons) {
+                        final colW = (cons.maxWidth - 10) / 2;
+                        final cols = _draftColumns(colW);
+                        return Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Column(
+                                children: [
+                                  for (final m in cols[0]) _draftTile(m),
+                                ],
+                              ),
                             ),
-                      coverAspect: _covers[m.id] == null
-                          ? null
-                          : (m.thumbAspect ?? 9 / 16),
-                      // 只顯示一個時間（最後存檔），段數不顯示——
-                      // 之前「建立＋更新」兩行日期看起來就是重複
-                      title: _dateLabel(m.savedAt),
-                      subtitle: '',
-                      onTap: _selecting
-                          ? () => setState(() {
-                              _picked.contains(m.id)
-                                  ? _picked.remove(m.id)
-                                  : _picked.add(m.id);
-                            })
-                          : () => _resume(m),
-                      onDelete: () => _delete(m),
-                      picked: _selecting ? _picked.contains(m.id) : null,
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                children: [
+                                  for (final m in cols[1]) _draftTile(m),
+                                ],
+                              ),
+                            ),
+                          ],
+                        );
+                      },
                     ),
-                    const SizedBox(height: 12),
-                  ],
                   if (p != null)
                     _draftCard(
                       // 照片草稿沒有存縮圖（那張照片還在裝置上，
