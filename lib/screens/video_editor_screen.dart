@@ -1651,20 +1651,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   // ===== 匯入素材 =====
 
-  Future<void> _importVideoFromPath(
-    String path, {
-    required int track,
-    String? name,
-  }) async {
-    // 剛匯入一定是原檔：走系統解碼器（見 _ensureCtrlFor 的說明）
-    final c = makeVideoController(path, system: true);
-    await c.initialize();
-    await _importVideoWithCtrl(path, c, track: track, name: name);
-  }
-
-  /// 匯入的後半段：解碼器已經初始化好，把素材與片段接進時間軸。
-  /// 拆出來是為了多選匯入能把「初始化」全部並行（見 initState 的
-  /// 匯入迴圈）——一支幾百 ms 的 init 串起來，十支就是好幾秒白等
+  /// 匯入的後半段：解碼器已經初始化好（呼叫端自己
+  /// makeVideoController(system: true) 並 initialize——剛匯入一定是
+  /// 原檔，走系統解碼器，見 _ensureCtrlFor 的說明），這裡把素材與
+  /// 片段接進時間軸。init 由呼叫端負責是為了多選匯入能把「初始化」
+  /// 全部並行——一支幾百 ms 串起來，十支就是好幾秒白等
   Future<void> _importVideoWithCtrl(
     String path,
     PlayerX c, {
@@ -2495,6 +2486,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final t = (sameTrack || i == 0) ? track : _tl.usedTracks;
       await _importVideoWithCtrl(vids[i].path, c, track: t, name: vids[i].name);
     }
+    if (!mounted) return;
     setState(() {});
     // 極少數情況相簿還是會塞進非影片（web 那條路是混合選取），
     // 略過就好，但要講一聲，不然會以為漏加了
