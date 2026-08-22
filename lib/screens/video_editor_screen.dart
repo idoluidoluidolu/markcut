@@ -394,6 +394,39 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _ready = false;
   bool _exporting = false;
 
+  /// 進場前的「打扮」：使用者授權最多等 3 秒，把「看起來已經全好」
+  /// 的三件事湊齊——合成器起來（畫面有第一幀）、縮圖帶鋪滿、
+  /// 拖曳快取第一段抽好。湊齊哪一刻就放行，3 秒到了沒湊齊也放行
+  ///（缺的在背景補完）。轉檔（30 秒起跳）不在預算內，照舊背景跑。
+  /// 空白專案、照片批次不經過這裡
+  Future<void> _dressUp() async {
+    if (!_tl.sources.any((s) => s.isVideo)) return;
+    final deadline = DateTime.now().add(const Duration(seconds: 3));
+    // 合成器先叫起來（await＝組好或確定組不起來才回來）
+    await _ensureComp();
+    bool thumbsReady() => _tl.sources.every(
+      (s) =>
+          !s.isVideo || (_thumbs[_tl.sources.indexOf(s)]?.isNotEmpty ?? false),
+    );
+    // 沒工作檔的素材，拖曳快取至少有第一批格子（有工作檔的 seek
+    // 本來就快，不用等）
+    bool scrubReady() {
+      for (var i = 0; i < _tl.sources.length; i++) {
+        final s = _tl.sources[i];
+        if (!s.isVideo || s.workPath != null) continue;
+        final slots = _scrubFrames[i];
+        if (slots == null || !slots.any((b) => b != null)) return false;
+      }
+      return true;
+    }
+
+    while (mounted &&
+        DateTime.now().isBefore(deadline) &&
+        !(thumbsReady() && scrubReady())) {
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+    }
+  }
+
   TimelineClip? _clipboard; // 複製的片段（貼上時以播放頭為起點）
   // 時間軸雙指縮放：在整個分頁層級偵測，空白處一樣能捏
   bool _tlPinching = false;
@@ -1346,7 +1379,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               showHint(context, '這份草稿有部分資料壞了，已盡量載入', error: true);
             }
           })
-          .then((_) {
+          .then((_) async {
+            await _dressUp();
             if (!mounted) return;
             setState(() => _ready = true);
             unawaited(_measureSrcKbps());
@@ -1374,6 +1408,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 每一支進來就先能播（工作檔在背景備），不會卡在載入畫面
       final list = widget.videoPaths ?? [widget.videoPath!];
       () async {
+        var first = true;
         for (final path in list) {
           try {
             await _importVideoFromPath(path, track: 0);
@@ -1381,6 +1416,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             // 某一支讀不進來不該讓整批進不去
           }
           if (!mounted) return;
+          // 第一支先「打扮好」再亮相（3 秒預算，見 _dressUp）；
+          // 後面幾支在編輯器裡陸續接上，不再擋
+          if (first) {
+            first = false;
+            await _dressUp();
+            if (!mounted) return;
+          }
           setState(() => _ready = true);
         }
         // 匯入會順手選中剛加的片段（加素材時的正確行為），
@@ -2197,8 +2239,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 每段約 6 秒，抽完立刻可用、逐段補滿。
     // 播放或拖曳中先暫停：抽幀跟播放搶 CPU 會讓畫面跳針
     final segFrames = (_scrubFps * 6).round();
-    // 剛匯入先讓 UI 安頓，再開始背景抽
-    await Future<void>.delayed(const Duration(milliseconds: 1500));
+    // 稍等一拍再開抽。以前是 1500ms「讓 UI 安頓」——但現在進場
+    // 有 3 秒的打扮預算在等第一段格子（見 _dressUp），拖 1.5 秒
+    // 等於預算先被自己吃掉一半
+    await Future<void>.delayed(const Duration(milliseconds: 300));
     for (var s = 0; s < n; s += segFrames) {
       // 匯出中一定要停：抽幀的 FFmpeg 跟匯出的 FFmpeg 同時跑，
       // 記憶體疊加會把整個 App 弄死（OOM 直接閃退）
