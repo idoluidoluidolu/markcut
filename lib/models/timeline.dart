@@ -157,7 +157,7 @@ class MediaSource {
       // % 防護：新版種類存進草稿後被舊版打開也不至於整包炸掉
       kind: kind,
       isSticker: sticker,
-    isGif: j['gif'] == true,
+      isGif: j['gif'] == true,
       w: (j['w'] ?? 0) as int,
       h: (j['h'] ?? 0) as int,
       duration: (j['duration'] ?? 0).toDouble(),
@@ -527,8 +527,13 @@ class TimelineModel {
   }
 
   /// 一鍵補洞：把片段依時間排好、頭尾接齊，中間的空隙全部收掉。
-  /// track 給 null 就整理所有軌道。回傳實際收掉的總秒數
-  double closeGaps({int? track}) {
+  /// track 給 null 就整理所有軌道。回傳實際收掉的總秒數。
+  ///
+  /// [fromZero]＝連片頭的空白一起收，整軌拉回 0 秒開始——
+  /// 手動按「整理」走這條（使用者回報：前面空白時按整理沒反應，
+  /// 預期是回到最開始）；編輯後的自動整理仍只補中間空隙，
+  /// 片頭刻意留白（等音樂進來）的排法不會在剪兩刀後被吸走
+  double closeGaps({int? track, bool fromZero = false}) {
     final targets = track != null
         ? [track]
         : (clips.map((c) => c.track).toSet().toList()..sort());
@@ -536,10 +541,7 @@ class TimelineModel {
     for (final t in targets) {
       final list = onTrack(t);
       if (list.isEmpty) continue;
-      // 從第一段自己的位置起算：整理是「把中間的空隙收掉」，
-      // 不是把整軌拖回 0 秒——片頭刻意留白（等音樂進來）是常見排法，
-      // 一開自動整理就被吸到最開始等於這個排法直接不能用
-      var cursor = list.first.offset;
+      var cursor = fromZero ? 0.0 : list.first.offset;
       for (final c in list) {
         // 只補「空隙」，不動刻意重疊的片段——重疊時 c.offset < cursor，
         // 照原本的寫法會把它往後推開，還把負數算進「收掉的秒數」

@@ -64,7 +64,6 @@ enum _AddKind {
   paste,
 }
 
-
 /// 速度滑桿的檔位（帶號）：負的＝倒著放。
 /// 左端最快的倒轉 → 往中間變慢 → 過中線轉正 → 右端最快正播
 const kSpeedStops = <double>[
@@ -588,7 +587,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (fixedIds > 0) Diag.note('快照裡有 $fixedIds 個撞號的片段 id，已補新號');
       _fsMuted = j['muted'] == true;
       _fps = ((j['fps'] ?? 0) as num).toInt();
-    _exportHdr = (j['hdrOut'] ?? true) == true;
+      _exportHdr = (j['hdrOut'] ?? true) == true;
       _wmStart = (j['wmStart'] ?? 0).toDouble();
       _wmEnd = j['wmEnd'] == null ? null : (j['wmEnd'] as num).toDouble();
       if (j['wm'] != null) {
@@ -701,8 +700,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     String f(double v) => v.toStringAsFixed(2);
     final tracks = byTrack.keys.toList()..sort();
     for (final t in tracks.reversed) {
-      final clips = byTrack[t]!
-        ..sort((a, b) => a.offset.compareTo(b.offset));
+      final clips = byTrack[t]!..sort((a, b) => a.offset.compareTo(b.offset));
       final parts = <String>[];
       double? prevEnd;
       for (final c in clips) {
@@ -710,8 +708,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         final kind = switch (src.kind) {
           ClipKind.video => '影片',
           ClipKind.audio => '聲音',
-          ClipKind.image =>
-            src.isGif ? 'GIF' : (src.isSticker ? '貼圖' : '圖片'),
+          ClipKind.image => src.isGif ? 'GIF' : (src.isSticker ? '貼圖' : '圖片'),
           ClipKind.text => '文字',
           ClipKind.wm => '浮水印',
           ClipKind.mosaic => '馬賽克',
@@ -739,7 +736,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     return b.toString().trimRight();
   }
-
 
   /// 草稿封面縮圖：時間軸上最早出現、有縮圖的影片/圖片片段（帶長寬比）
   /// 草稿封面的快取。個人中心是拿它當大圖顯示的，不能再借用時間軸
@@ -783,15 +779,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final ch = math.max(2, (rawH * shrink).round());
       final canvasAspect = cw / ch;
       const t0 = 0.02;
-      final visible =
-          _tl.clips.where((c) {
-              final kind = _tl.sourceOf(c).kind;
-              if (kind != ClipKind.video && kind != ClipKind.image) {
-                return false;
-              }
-              return c.offset <= t0 && c.end > t0;
-            }).toList()
-            ..sort((a, b) => a.track.compareTo(b.track));
+      final visible = _tl.clips.where((c) {
+        final kind = _tl.sourceOf(c).kind;
+        if (kind != ClipKind.video && kind != ClipKind.image) {
+          return false;
+        }
+        return c.offset <= t0 && c.end > t0;
+      }).toList()..sort((a, b) => a.track.compareTo(b.track));
       if (visible.isEmpty) return null;
       final rec = ui.PictureRecorder();
       final canvas = ui.Canvas(rec);
@@ -815,10 +809,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (bytes == null) continue;
         ui.Image img;
         try {
-          final codec = await ui.instantiateImageCodec(
-            bytes,
-            targetWidth: 720,
-          );
+          final codec = await ui.instantiateImageCodec(bytes, targetWidth: 720);
           img = (await codec.getNextFrame()).image;
           codec.dispose();
         } catch (_) {
@@ -837,12 +828,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         final h2 = fitH * c.scale;
         canvas.drawImageRect(
           img,
-          ui.Rect.fromLTWH(
-            0,
-            0,
-            img.width.toDouble(),
-            img.height.toDouble(),
-          ),
+          ui.Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
           ui.Rect.fromLTWH(c.px * cw - w2 / 2, c.py * ch - h2 / 2, w2, h2),
           ui.Paint()..filterQuality = ui.FilterQuality.medium,
         );
@@ -851,11 +837,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       if (!drew) return null;
       if (!_wmHidden && _settings.hasAnyMark) {
-        final png = await WatermarkRenderer.renderOverlayPng(
-          _settings,
-          cw,
-          ch,
-        );
+        final png = await WatermarkRenderer.renderOverlayPng(_settings, cw, ch);
         {
           try {
             final codec = await ui.instantiateImageCodec(png);
@@ -863,12 +845,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             codec.dispose();
             canvas.drawImageRect(
               wm,
-              ui.Rect.fromLTWH(
-                0,
-                0,
-                wm.width.toDouble(),
-                wm.height.toDouble(),
-              ),
+              ui.Rect.fromLTWH(0, 0, wm.width.toDouble(), wm.height.toDouble()),
               ui.Rect.fromLTWH(0, 0, cw.toDouble(), ch.toDouble()),
               ui.Paint()..filterQuality = ui.FilterQuality.medium,
             );
@@ -1154,9 +1131,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         .length;
     if (outOfRange > 0) {
       broken += outOfRange;
-      _tl.clips.removeWhere(
-        (c) => c.sourceIndex < 0 || c.sourceIndex >= nSrc,
-      );
+      _tl.clips.removeWhere((c) => c.sourceIndex < 0 || c.sourceIndex >= nSrc);
     }
     if (broken > 0) Diag.note('草稿裡有 $broken 筆壞資料，已跳過');
     final fixedIds = _tl.fixDuplicateIds();
@@ -1332,23 +1307,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (widget.draft != null) {
       // 保底：就算 _loadDraft 有沒料到的例外，也要離開讀取畫面並
       // 講清楚，不能永遠卡在轉圈圈（而且半載入狀態不該被自動存檔蓋）
-      _loadDraft(widget.draft!).catchError((Object e) {
-        Diag.note('草稿載入炸了：$e');
-        if (mounted) {
-          showHint(context, '這份草稿有部分資料壞了，已盡量載入', error: true);
-        }
-      }).then((_) {
-        if (!mounted) return;
-        setState(() => _ready = true);
-        unawaited(_measureSrcKbps());
-        if (_droppedOnLoad > 0) {
-          showHint(
-            context,
-            '有 $_droppedOnLoad 段素材已找不到，已從專案中移除',
-            duration: const Duration(seconds: 5),
-          );
-        }
-      });
+      _loadDraft(widget.draft!)
+          .catchError((Object e) {
+            Diag.note('草稿載入炸了：$e');
+            if (mounted) {
+              showHint(context, '這份草稿有部分資料壞了，已盡量載入', error: true);
+            }
+          })
+          .then((_) {
+            if (!mounted) return;
+            setState(() => _ready = true);
+            unawaited(_measureSrcKbps());
+            if (_droppedOnLoad > 0) {
+              showHint(
+                context,
+                '有 $_droppedOnLoad 段素材已找不到，已從專案中移除',
+                duration: const Duration(seconds: 5),
+              );
+            }
+          });
     } else if (widget.photoPaths != null) {
       // 一批照片串成影片：進場先問每張幾秒，再照順序接起來
       _ready = true;
@@ -2646,10 +2623,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     await _dispatchAdd(kind, track);
   }
 
-  /// 圖片／GIF 素材的調整視窗：大小、左右翻轉，GIF 另外可以換一個。
+  /// 圖片／GIF／影片素材的調整視窗：大小、旋轉、透明度，
+  /// GIF 另外可以換一個。
   ///
   /// 本來點選取中的圖片素材沒有任何反應——文字、浮水印、馬賽克都
-  /// 點得開自己的設定，只有圖片沒有
+  /// 點得開自己的設定，只有圖片、影片沒有
   Future<void> _editImageClip(TimelineClip clip) async {
     final src = _tl.sourceOf(clip);
     _pause();
@@ -2682,13 +2660,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       Icon(
                         src.isGif
                             ? Icons.gif_box_outlined
+                            : src.isVideo
+                            ? Icons.movie_outlined
                             : Icons.image_outlined,
                         size: 18,
                         color: kAmber,
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        src.isGif ? 'GIF' : '圖片',
+                        src.isGif
+                            ? 'GIF'
+                            : src.isVideo
+                            ? '影片'
+                            : '圖片',
                         style: const TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w700,
@@ -3849,6 +3833,54 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       valueColor: st.rotation.round() == 0 ? kTextDim : kText,
                       onReset: () => both(() => st.rotation = 0),
                     ),
+                    // 動畫：跟浮水印同一組（固定/閃爍/飄移/跑馬燈），
+                    // 速度與幅度用預設值，不另外開滑桿
+                    SizedBox(
+                      height: 40,
+                      child: Row(
+                        children: [
+                          const Text(
+                            '動畫',
+                            style: TextStyle(fontSize: 12, color: kTextDim),
+                          ),
+                          const Spacer(),
+                          for (final a in WmAnimation.values)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 6),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(999),
+                                onTap: () => both(() => st.animation = a),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 5,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: st.animation == a
+                                        ? kPanelHi
+                                        : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(999),
+                                    border: Border.all(
+                                      color: st.animation == a
+                                          ? kSelect
+                                          : kBorder,
+                                    ),
+                                  ),
+                                  child: Text(
+                                    a.label,
+                                    style: TextStyle(
+                                      fontSize: 11.5,
+                                      color: st.animation == a
+                                          ? kText
+                                          : kTextDim,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
                     toggle('陰影', st.shadow, (v) => st.shadow = v),
                     toggle('描邊', st.outline, (v) => st.outline = v),
                     if (st.outline) ...[
@@ -4851,9 +4883,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     tr.env(
       '快取記帳',
       '拖曳幀 ${(_scrubBytes / 1048576).toStringAsFixed(1)}MB'
-      '（${_scrubFrames.length} 個素材，預算 ${_scrubBudgetBytes >> 20}MB）'
-      '／縮圖帶 ${(thumbB / 1048576).toStringAsFixed(1)}MB'
-      '／拖曳解碼器 ${_scrubDecoders.length} 顆',
+          '（${_scrubFrames.length} 個素材，預算 ${_scrubBudgetBytes >> 20}MB）'
+          '／縮圖帶 ${(thumbB / 1048576).toStringAsFixed(1)}MB'
+          '／拖曳解碼器 ${_scrubDecoders.length} 顆',
     );
     unawaited(engine.hdrChainName().then((n) => tr.env('HDR 轉換', n)));
     // 工作檔到底有沒有生效：這一格對不對，決定了「順不順」是不是
@@ -5672,10 +5704,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           // 的語意改成「往前生長」：起點前移、右緣不動、長度變長
           final endT = c.end;
           final minLen = minSrc / c.speed;
-          c.offset = (c.offset + dSec).clamp(
-            0.0,
-            math.max(0.0, endT - minLen),
-          );
+          c.offset = (c.offset + dSec).clamp(0.0, math.max(0.0, endT - minLen));
           c.trimEnd = c.trimStart + (endT - c.offset) * c.speed;
         } else if (!c.reverse) {
           if (fromLeft) {
@@ -6068,7 +6097,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _pushUndo();
     double removed = 0;
-    setState(() => removed = _tl.closeGaps(track: t));
+    // 手動整理連片頭空白一起收：按這顆的人要的是「全部接齊從頭開始」
+    setState(() => removed = _tl.closeGaps(track: t, fromZero: true));
     _resyncPlayback();
     _saveDraft();
     if (removed < 0.05) {
@@ -7476,27 +7506,36 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       vidTrack,
                                       Positioned.fromRect(
                                         rect: rect,
-                                        // 兩條路：系統的影片圖層（跟相簿
-                                        // 播放同一條，零複製）或 Flutter
-                                        // 材質（影格要複製一次再合成）
-                                        child: KeyedSubtree(
-                                          key: _compViewKey,
-                                          child: Diag.playerLayer.value
-                                              ? const UiKitView(
-                                                  viewType:
-                                                      'markcut/player_view',
-                                                )
-                                              : FittedBox(
-                                                  fit: BoxFit.contain,
-                                                  child: SizedBox(
-                                                    width: _comp!.width,
-                                                    height: _comp!.height,
-                                                    child: Texture(
-                                                      textureId:
-                                                          _comp!.textureId,
+                                        // 播放頭底下沒有影片片段（過了最後
+                                        // 一段、或落在空隙）就把這層藏起來：
+                                        // 材質只會停在最後解出的那一幀，
+                                        // 不藏就是「時間軸沒畫面了，最後
+                                        // 一幀卻一直留著」。用透明不拆掛——
+                                        // 拆掛原生圖層重掛那一瞬會閃黑
+                                        child: Opacity(
+                                          opacity: cur == null ? 0 : 1,
+                                          // 兩條路：系統的影片圖層（跟相簿
+                                          // 播放同一條，零複製）或 Flutter
+                                          // 材質（影格要複製一次再合成）
+                                          child: KeyedSubtree(
+                                            key: _compViewKey,
+                                            child: Diag.playerLayer.value
+                                                ? const UiKitView(
+                                                    viewType:
+                                                        'markcut/player_view',
+                                                  )
+                                                : FittedBox(
+                                                    fit: BoxFit.contain,
+                                                    child: SizedBox(
+                                                      width: _comp!.width,
+                                                      height: _comp!.height,
+                                                      child: Texture(
+                                                        textureId:
+                                                            _comp!.textureId,
+                                                      ),
                                                     ),
                                                   ),
-                                                ),
+                                          ),
                                         ),
                                       ),
                                     );
@@ -8151,11 +8190,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         style: s2,
                                       );
                                       addHit(c.track, c.id, r);
+                                      // 文字動畫：跟浮水印同一套數學，
+                                      // 預覽跟匯出的位移才對得上
+                                      final av = st.animAt(_position);
                                       addLayer(
                                         c.track,
                                         Positioned(
-                                          left: r.left,
-                                          top: r.top,
+                                          left: r.left + av.dx * w,
+                                          top: r.top + av.dy * h,
                                           child: GestureDetector(
                                             // 點文字＝選取＋直接進入編輯
                                             onTap: () {
@@ -8166,9 +8208,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               _editTextClip(c);
                                             },
                                             child: Opacity(
-                                              opacity: c.fadeFactorAt(
-                                                _position,
-                                              ),
+                                              opacity:
+                                                  c.fadeFactorAt(_position) *
+                                                  av.alpha,
                                               child: Transform.rotate(
                                                 angle:
                                                     st.rotation *
@@ -9382,9 +9424,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     }
                                   } else if (k == ClipKind.mosaic) {
                                     _editMosaicClip(c);
-                                  } else if (k == ClipKind.image) {
-                                    // 圖片與 GIF 本來點了沒反應
+                                  } else if (k == ClipKind.image ||
+                                      k == ClipKind.video) {
+                                    // 圖片、GIF、影片本來點了沒反應
+                                    //（使用者回報：選取素材後再點一下，
+                                    // 預期進入調整彈窗）
                                     _editImageClip(c);
+                                  } else if (k == ClipKind.audio) {
+                                    _openVolumeSheet(c);
                                   }
                                 },
                                 onLiftChanged: (v) => _lifting = v,

@@ -68,8 +68,13 @@ class NativeExport {
   static String? whyNot(ExportSpec spec) {
     final vids = <TimelineClip>[];
     for (final c in spec.clips) {
-      if (spec.sources[c.sourceIndex].kind == ClipKind.video) vids.add(c);
+      final src = spec.sources[c.sourceIndex];
+      if (src.kind == ClipKind.video) vids.add(c);
       if (c.reverse) return '有倒轉的片段（前置處理漏了）';
+      // GIF 素材只有 FFmpeg 那條會動（-ignore_loop 0 循環播）；
+      // 原生的照片圖層拿它當靜態圖，只會畫第一格——
+      // 「GIF 匯出變成靜止的」（實測回報）就是這裡來的
+      if (src.isGif) return '有 GIF 素材（原生合成器只畫得出第一格）';
       // 裁切／旋轉／透明度現在 CI 合成器都畫得出來（跟預覽同一套
       // 數學），不再退 FFmpeg——HDR 專案才走得到系統的色調映射
     }
@@ -206,11 +211,37 @@ class NativeExport {
     for (final c in spec.clips) {
       final png = spec.overlayPngs[c.id];
       if (png == null) continue;
+      // 素材自己的動畫：浮水印素材吃 wmStyle 的、文字素材吃 textStyle
+      // 的（速度/幅度固定 1）。以前這裡寫死 'none'——素材化的浮水印
+      // 跟文字選了動畫，FFmpeg 那條路會動、原生這條卻是靜止的
+      final src = spec.sources[c.sourceIndex];
+      final wmSt = src.kind == ClipKind.wm ? src.wmStyle : null;
+      final anim =
+          wmSt?.animation ??
+          (src.kind == ClipKind.text
+              ? (src.textStyle?.animation ?? WmAnimation.none)
+              : WmAnimation.none);
+      final aSpd = wmSt?.animSpeed ?? 1.0;
+      final aRng = wmSt?.animRange ?? 1.0;
       overlays.add({
         'png': png,
         'start': c.offset / sp,
         'end': c.end / sp,
-        'anim': 'none',
+        'anim': switch (anim) {
+          WmAnimation.none => 'none',
+          WmAnimation.blink => 'blink',
+          WmAnimation.drift => 'drift',
+          WmAnimation.marquee => 'marquee',
+        },
+        // 動畫週期是「時間軸秒」，輸出時間要換算回去（同全域浮水印）
+        'cycle':
+            (anim == WmAnimation.blink
+                ? wmBlinkCycle(aSpd)
+                : wmMarqueeCycle(aSpd)) /
+            sp,
+        'on': wmBlinkOn(aSpd, aRng) / sp,
+        'animSpeed': aSpd * sp,
+        'range': aRng,
       });
     }
     final wm = spec.watermarkPng;

@@ -193,9 +193,8 @@ Future<bool> _zscaleAvailable() async {
 }
 
 /// 這次實際會用哪條 HDR 轉換鏈（診斷用）
-Future<String> hdrChainName() async => await _zscaleAvailable()
-    ? 'zscale+tonemap（正確）'
-    : 'colorspace（退路，會退色）';
+Future<String> hdrChainName() async =>
+    await _zscaleAvailable() ? 'zscale+tonemap（正確）' : 'colorspace（退路，會退色）';
 
 /// 依素材挑 HDR→SDR 的濾鏡鏈。HLG 和 PQ 目前走同一條 hable 鏈，
 /// 差別只在告訴 zscale 輸入是哪一種曲線
@@ -269,7 +268,8 @@ Future<_SourceProbe> _probe(String path) async {
         }
         final trc = '${s.getProperty('color_transfer') ?? ''}';
         final prim = '${s.getProperty('color_primaries') ?? ''}';
-        hdr = trc == 'smpte2084' ||
+        hdr =
+            trc == 'smpte2084' ||
             trc == 'arib-std-b67' ||
             prim.startsWith('bt2020');
         trcOut = trc;
@@ -342,6 +342,7 @@ Future<String> _buildCommand(
     if (probes[i]!.hdr) hdrTrc[i] = probes[i]!.trc;
   }
   final zOk = hdrTrc.isEmpty ? false : await _zscaleAvailable();
+
   /// 某個來源在「輸出高度 h」下要用的 HDR 轉換鏈（含結尾逗號）；
   /// 不是 HDR 就回空字串
   String hdrTrcOf(int srcIndex, int h) {
@@ -691,33 +692,41 @@ Future<String> _buildCommand(
         '$toSeg'
         '[lv$k];',
       );
-      // 浮水印素材的動畫跟全域浮水印同一套 overlay 時間運算式：
-      // 閃爍＝enable 週期開關；飄移/跑馬燈＝x,y 隨 t 變化
+      // 浮水印／文字素材的動畫跟全域浮水印同一套 overlay 時間運算式：
+      // 閃爍＝enable 週期開關；飄移/跑馬燈＝x,y 隨 t 變化。
+      // 文字素材的速度/幅度用預設 1（不另外開滑桿）
       var enable = _window(a - w0, b - w0);
       var pos = '0:0';
       var evalFrame = '';
       final wmSt = src.kind == ClipKind.wm ? src.wmStyle : null;
-      if (wmSt != null && wmSt.animation != WmAnimation.none) {
+      final anim =
+          wmSt?.animation ??
+          (src.kind == ClipKind.text
+              ? (src.textStyle?.animation ?? WmAnimation.none)
+              : WmAnimation.none);
+      final aSpd = wmSt?.animSpeed ?? 1.0;
+      final aRng = wmSt?.animRange ?? 1.0;
+      if (anim != WmAnimation.none) {
         evalFrame = 'eval=frame:';
         // 動畫週期是「時間軸秒」；輸出時間 t 要乘回全域速度，
         // 不然 2 倍速匯出時動畫會慢一半、跟預覽對不上。
         // 分段渲染時 t 是段內時間，要先加回這一段的起點，
         // 不然每一段的動畫都會從頭開始
         final ts = sp == 1.0 ? tAbs : '($tAbs*${_f(sp)})';
-        switch (wmSt.animation) {
+        switch (anim) {
           case WmAnimation.none:
             break;
           case WmAnimation.blink:
             enable =
-                '$enable*lt(mod($ts\\,${_f(wmSt.blinkCycle)})'
-                '\\,${_f(wmSt.blinkOn)})';
+                '$enable*lt(mod($ts\\,${_f(wmBlinkCycle(aSpd))})'
+                '\\,${_f(wmBlinkOn(aSpd, aRng))})';
           case WmAnimation.drift:
-            final f = _f(1.3 * wmSt.animSpeed);
-            final f2 = _f(0.9 * wmSt.animSpeed);
-            final amp = _f(0.02 * wmSt.animRange);
+            final f = _f(1.3 * aSpd);
+            final f2 = _f(0.9 * aSpd);
+            final amp = _f(0.02 * aRng);
             pos = "x='sin($ts*$f)*W*$amp':y='cos($ts*$f2)*H*$amp'";
           case WmAnimation.marquee:
-            final cy = _f(wmSt.marqueeCycle);
+            final cy = _f(wmMarqueeCycle(aSpd));
             pos = "x='W-mod($ts\\,$cy)*2*W/$cy':y=0";
         }
       }
@@ -1020,8 +1029,7 @@ String _hwEncoder() => (Platform.isIOS || Platform.isMacOS)
 /// Android 的 mediacodec hwaccel 要接 surface，風險高，先不上。
 /// 跑不動時 runFF 會把這面旗子剝掉重跑（見下面的保底）
 const kHwDecodeFlag = '-hwaccel videotoolbox ';
-String _hwDecode() =>
-    (Platform.isIOS || Platform.isMacOS) ? kHwDecodeFlag : '';
+String _hwDecode() => (Platform.isIOS || Platform.isMacOS) ? kHwDecodeFlag : '';
 
 /// 畫質檔位 → 位元率。表在 ExportQuality 上（video_processor.dart），
 /// 兩邊共用一張——各自維護一份的話，加檔位時漏改一邊就會有兩檔
@@ -1268,8 +1276,7 @@ Future<String?> _buildAudioMux(
   var filter = fc.toString();
   if (filter.endsWith(';')) filter = filter.substring(0, filter.length - 1);
 
-  final cmd = StringBuffer()
-    ..write('-y -i "$videoPath" ');
+  final cmd = StringBuffer()..write('-y -i "$videoPath" ');
   final ordered = srcIn.entries.toList()
     ..sort((a, b) => a.value.compareTo(b.value));
   for (final e in ordered) {
@@ -1652,8 +1659,7 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     final segFiles = <String>[];
     var done = 0.0;
     for (var i = 0; i < bounds.length - 1; i++) {
-      final segPath =
-          '${dir.path}${Platform.pathSeparator}seg_${ts}_$i.mp4';
+      final segPath = '${dir.path}${Platform.pathSeparator}seg_${ts}_$i.mp4';
       final cmd = await _buildCommand(
         spec,
         wmPath,
@@ -1681,16 +1687,12 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
 
     if (ok) {
       // 串接：每一段的編碼參數完全一樣，可以直接 copy 不重編碼
-      final listPath =
-          '${dir.path}${Platform.pathSeparator}seg_$ts.txt';
+      final listPath = '${dir.path}${Platform.pathSeparator}seg_$ts.txt';
       await File(listPath).writeAsString(
-        segFiles
-            .map((p) => "file '${p.replaceAll("'", r"'\''")}'")
-            .join('\n'),
+        segFiles.map((p) => "file '${p.replaceAll("'", r"'\''")}'").join('\n'),
       );
       segTemps.add(listPath);
-      final joined =
-          '${dir.path}${Platform.pathSeparator}joined_$ts.mp4';
+      final joined = '${dir.path}${Platform.pathSeparator}joined_$ts.mp4';
       trackProgress(0, total, 0.92, 0.94);
       await Diag.mark('匯出：串接');
       final r = await runFF(
@@ -1796,9 +1798,7 @@ Future<String?> makeGifFile({
   final dur = math.max(0.05, end - start);
   // 變速用 setpts 壓時間戳，接在 fps 之前——先改時間再抽格，
   // 抽出來的每一格才是照新的節奏走
-  final speedF = (sp - 1).abs() < 0.001
-      ? ''
-      : 'setpts=${_f(1 / sp)}*PTS,';
+  final speedF = (sp - 1).abs() < 0.001 ? '' : 'setpts=${_f(1 / sp)}*PTS,';
   // 裁切用比例表示（0~1），換成 FFmpeg 的 crop：長寬用 iw/ih 算，
   // 不必先知道影片實際幾 px
   final cropF = crop == null
@@ -1808,7 +1808,8 @@ Future<String?> makeGifFile({
   try {
     final session = await FFmpegKit.execute(
       '-y -ss ${_f(start)} -t ${_f(dur)} -i "$inputPath" -filter_complex '
-      '"[0:v]$cropF$speedF' 'fps=$fps,'
+      '"[0:v]$cropF$speedF'
+      'fps=$fps,'
       'scale=w=$maxSide:h=$maxSide:force_original_aspect_ratio=decrease'
       ':flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];'
       '[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle[g]" '
@@ -1919,8 +1920,7 @@ Future<List<Uint8List>> _makeThumbnails(
   // 縮小這一步必須由 zscale 自己做、不能用 scale：swscale 會把畫格的
   // 色彩標記換掉，換掉之後 zscale 就不知道來源是 HLG/PQ 了（這正是
   // 之前匯出退色的成因）。zscale 縮完再轉，像素少 16 倍、標記也還在
-  final hdrFix =
-      p0.hdr ? '${await _hdrChainFor(p0.trc, scaleH: height)},' : '';
+  final hdrFix = p0.hdr ? '${await _hdrChainFor(p0.trc, scaleH: height)},' : '';
   // 旋轉不用自己處理：FFmpeg 預設就會依 display matrix 自動轉正
   //（本機用 ffmpeg 8.1 實測：3840x2160＋rotation=-90 的素材，
   // 不加任何 transpose 抽出來就是直的）。自己再加一次是轉兩次

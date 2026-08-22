@@ -1282,7 +1282,6 @@ class _EagerPanRecognizer extends PanGestureRecognizer {
 /// 修剪把手的熱區往片段外多伸出去多少（見 _TrimHandle.overhang）
 const double _kHandleOverhang = 14;
 
-
 /// 修剪的「畫面煞車」寬度：把手拖到片段在目前縮放下只剩這麼寬
 /// 就停（兩顆 13px 把手＋中間一絲縫，再窄就抓不住了）。
 ///
@@ -1292,6 +1291,12 @@ const double _kHandleOverhang = 14;
 /// 0.05 秒，總長歸零、播放鍵看似卡死。想剪得比煞車短就放大，
 /// 放大後同樣的 56px 對應更短的秒數，煞車自然跟著鬆開
 const double kTrimStopWidth = 32;
+
+/// 畫修剪把手的最小片段寬。窄於這個寬度只給「拖曳移動」：
+/// 兩顆把手一畫上去中間只剩一絲縫，想移動短片段永遠被判成修剪
+/// （使用者回報：要移動小片段一直被以為要縮放）。要修剪就先放大，
+/// 跟煞車同一套邏輯
+const double kHandleMinWidth = 48;
 
 /// 時間軸的最大縮放（每秒幾 px）。跟 [kTrimStopWidth] 一起決定
 /// 修剪的絕對極限：1200px/秒 時煞車在 32/1200 ≈ 0.027 秒
@@ -1470,11 +1475,10 @@ class _ClipBlock extends StatelessWidget {
                     ],
                   ),
                 ),
-                // 原本的雙把手，貼在片段內側兩緣。窄於煞車寬
-                // （kTrimStopWidth）就不畫：在這個縮放下修剪的煞車
-                // 本來就不會放行，畫了也只是把 16px 的本體整個蓋住，
-                // 想移動都抓不到。整條讓給「拖曳移動」，要修剪就放大
-                if (isSelected && !lifted && w >= kTrimStopWidth)
+                // 原本的雙把手，貼在片段內側兩緣。窄於 kHandleMinWidth
+                // 就不畫：把手一畫上去中間剩不到 20px，想移動短片段
+                // 永遠被判成修剪。整條讓給「拖曳移動」，要修剪就放大
+                if (isSelected && !lifted && w >= kHandleMinWidth)
                   // 熱區跟著片段長度給，短片段不會被兩個把手佔滿；
                   // 位置夾在可視範圍內，片段拉得比畫面長時
                   // 把手會貼在邊緣而不是跑到畫面外
@@ -1498,38 +1502,46 @@ class _ClipBlock extends StatelessWidget {
                         final left = clip.offset * pxPerSec;
                         final vL = off - leadPad - left;
                         final vR = vL + viewWidth;
-                        final maxX = math.max(0.0, w - hw);
+                        // 那一側的邊被螢幕切掉就不畫那顆把手：
+                        // 拉一個看不到的邊等於盲剪，畫在螢幕邊上
+                        // 又跟片段內容疊在一起、更常被誤按
+                        // （使用者回報：尾巴不在畫面裡不要顯示右拉桿）。
+                        // 捲到邊出現，把手就回來
+                        final headVisible = vL <= 0.5;
+                        final tailVisible = w <= vR + 0.5;
                         return Stack(
                           children: [
-                            Positioned(
-                              left: vL.clamp(0.0, maxX) - _kHandleOverhang,
-                              top: 0,
-                              bottom: 0,
-                              child: _TrimHandle(
-                                isLeft: true,
-                                width: hw,
-                                overhang: over,
-                                onStart: onTrimStart,
-                                onEnd: onTrimEnd,
-                                onDrag: (d) => onTrim(clip.id, d, true),
-                                pxPerSec: pxPerSec,
+                            if (headVisible)
+                              Positioned(
+                                left: -_kHandleOverhang,
+                                top: 0,
+                                bottom: 0,
+                                child: _TrimHandle(
+                                  isLeft: true,
+                                  width: hw,
+                                  overhang: over,
+                                  onStart: onTrimStart,
+                                  onEnd: onTrimEnd,
+                                  onDrag: (d) => onTrim(clip.id, d, true),
+                                  pxPerSec: pxPerSec,
+                                ),
                               ),
-                            ),
-                            Positioned(
-                              left: (vR - hw).clamp(0.0, maxX),
-                              // 右把手的熱區往右長，位置不用退
-                              top: 0,
-                              bottom: 0,
-                              child: _TrimHandle(
-                                isLeft: false,
-                                width: hw,
-                                overhang: over,
-                                onStart: onTrimStart,
-                                onEnd: onTrimEnd,
-                                onDrag: (d) => onTrim(clip.id, d, false),
-                                pxPerSec: pxPerSec,
+                            if (tailVisible)
+                              Positioned(
+                                left: w - hw,
+                                // 右把手的熱區往右長，位置不用退
+                                top: 0,
+                                bottom: 0,
+                                child: _TrimHandle(
+                                  isLeft: false,
+                                  width: hw,
+                                  overhang: over,
+                                  onStart: onTrimStart,
+                                  onEnd: onTrimEnd,
+                                  onDrag: (d) => onTrim(clip.id, d, false),
+                                  pxPerSec: pxPerSec,
+                                ),
                               ),
-                            ),
                           ],
                         );
                       },
@@ -1614,9 +1626,7 @@ class _TrackLabelState extends State<_TrackLabel> {
       height: widget.height,
       margin: const EdgeInsets.only(right: 6),
       decoration: BoxDecoration(
-        color: widget.isRecording
-            ? kRecord.withValues(alpha: 0.2)
-            : kPanel,
+        color: widget.isRecording ? kRecord.withValues(alpha: 0.2) : kPanel,
         borderRadius: BorderRadius.circular(4),
         // 旁白軌的紅框是常駐的（不會切換，不位移）；琥珀的選取框
         // 畫在下面的前景，寬度切換不影響版面

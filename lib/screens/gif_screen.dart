@@ -939,9 +939,14 @@ class _GifScreenState extends State<GifScreen> {
                   ),
                 ),
               ),
+              _handle(x: xOf(_start), left: true, width: w),
+              _handle(x: xOf(_end), left: false, width: w),
               // 播放頭：整根可拖＝滑動速覽（C 案）。長相跟影片編輯區
               // 時間軸的播放頭一致——純白 2px 細線；36pt 觸控區是
-              // 隱形的，拖起來不用瞄準
+              // 隱形的，拖起來不用瞄準。
+              // 畫在把手「之後」＝壓在最上面：停在段落起點時它剛好
+              // 疊在左把手上，畫在底下就整根被蓋住（使用者回報：
+              // 看不到指針、不知道播到哪）
               ValueListenableBuilder<double>(
                 valueListenable: _pos,
                 builder: (context, t, _) => Positioned(
@@ -964,8 +969,6 @@ class _GifScreenState extends State<GifScreen> {
                   ),
                 ),
               ),
-              _handle(x: xOf(_start), left: true, width: w),
-              _handle(x: xOf(_end), left: false, width: w),
             ],
           );
         },
@@ -973,7 +976,10 @@ class _GifScreenState extends State<GifScreen> {
     );
   }
 
-  /// 一個把手：44pt 觸控區、視覺上是一根圓頭短棒
+  /// 一個把手：44pt 觸控區。長相跟影片編輯區時間軸的修剪把手
+  /// 一致——13px 琥珀色直條＋拖曳點點，貼在選取範圍的內緣
+  /// （使用者回報：修剪條要跟編輯器的軌道素材同一套長相，
+  /// 不要兩頁兩種東西）
   Widget _handle({
     required double x,
     required bool left,
@@ -981,8 +987,8 @@ class _GifScreenState extends State<GifScreen> {
   }) {
     return Positioned(
       left: x - 22,
-      top: -6,
-      bottom: -6,
+      top: 0,
+      bottom: 0,
       width: 44,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
@@ -1012,14 +1018,20 @@ class _GifScreenState extends State<GifScreen> {
             _playing = false;
           }
         },
-        child: Center(
-          child: Container(
-            width: 5,
-            height: 40,
-            decoration: BoxDecoration(
-              color: kSelect,
-              borderRadius: BorderRadius.circular(3),
+        // 44 寬的熱區裡，13px 的視覺把手貼在範圍內緣：
+        // 左把手佔 [x, x+13]、右把手佔 [x-13, x]，跟編輯器
+        // 選取片段的內側雙把手同一個位置關係
+        child: Container(
+          margin: EdgeInsets.only(left: left ? 22 : 9, right: left ? 9 : 22),
+          decoration: BoxDecoration(
+            color: kSelect,
+            borderRadius: BorderRadius.horizontal(
+              left: left ? const Radius.circular(4) : Radius.zero,
+              right: left ? Radius.zero : const Radius.circular(4),
             ),
+          ),
+          child: const Center(
+            child: Icon(Icons.drag_indicator, size: 11, color: Colors.black87),
           ),
         ),
       ),

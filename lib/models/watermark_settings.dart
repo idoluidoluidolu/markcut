@@ -45,6 +45,10 @@ class TextMark {
   double bgCorner; // 底色圓角（相對字級 0~1）
   double bgPad; // 底色留白倍率（1 = 標準）
 
+  /// 動畫（文字「素材」用；速度與幅度用預設值，不另外開滑桿）。
+  /// 全域浮水印的動畫仍在 WatermarkSettings 上，這個欄位在那邊不用
+  WmAnimation animation;
+
   TextMark({
     this.enabled = true,
     this.text = '@我的浮水印',
@@ -67,57 +71,65 @@ class TextMark {
     this.bgOpacity = 0.45,
     this.bgCorner = 0.25,
     this.bgPad = 1.0,
+    this.animation = WmAnimation.none,
   });
+
+  /// 動畫在某個時間點的位移與透明度（速度/幅度固定 1）
+  ({double dx, double dy, double alpha}) animAt(double t) =>
+      wmAnimOffset(animation, t);
 
   Color get color => Color(colorValue);
   Color get outlineColor => Color(outlineColorValue);
   Color get bgColor => Color(bgColorValue);
 
   Map<String, dynamic> toJson() => {
-        'enabled': enabled,
-        'text': text,
-        'fontFamily': fontFamily,
-        'colorValue': colorValue,
-        'opacity': opacity,
-        'sizeFrac': sizeFrac,
-        'spacing': spacing,
-        'x': x,
-        'y': y,
-        'rotation': rotation,
-        'tiled': tiled,
-        'shadow': shadow,
-        'outline': outline,
-        'outlineColorValue': outlineColorValue,
-        'outlineWidth': outlineWidth,
-        'bg': bg,
-        'bgColorValue': bgColorValue,
-        'bgOpacity': bgOpacity,
-        'bgCorner': bgCorner,
-        'bgPad': bgPad,
-      };
+    'enabled': enabled,
+    'text': text,
+    'fontFamily': fontFamily,
+    'colorValue': colorValue,
+    'opacity': opacity,
+    'sizeFrac': sizeFrac,
+    'spacing': spacing,
+    'x': x,
+    'y': y,
+    'rotation': rotation,
+    'tiled': tiled,
+    'shadow': shadow,
+    'outline': outline,
+    'outlineColorValue': outlineColorValue,
+    'outlineWidth': outlineWidth,
+    'bg': bg,
+    'bgColorValue': bgColorValue,
+    'bgOpacity': bgOpacity,
+    'bgCorner': bgCorner,
+    'bgPad': bgPad,
+    if (animation != WmAnimation.none) 'anim': animation.index,
+  };
 
   factory TextMark.fromJson(Map<String, dynamic> j) => TextMark(
-        enabled: j['enabled'] ?? true,
-        text: j['text'] ?? '',
-        fontFamily: j['fontFamily'] ?? 'NotoSansTC',
-        colorValue: j['colorValue'] ?? 0xFFFFFFFF,
-        opacity: (j['opacity'] ?? 0.8).toDouble(),
-        sizeFrac: (j['sizeFrac'] ?? 0.05).toDouble(),
-        spacing: (j['spacing'] ?? 0).toDouble(),
-        x: (j['x'] ?? 0.82).toDouble(),
-        y: (j['y'] ?? 0.92).toDouble(),
-        rotation: (j['rotation'] ?? 0).toDouble(),
-        tiled: j['tiled'] ?? false,
-        shadow: j['shadow'] ?? true,
-        outline: j['outline'] ?? false,
-        outlineColorValue: j['outlineColorValue'] ?? 0xFF000000,
-        outlineWidth: (j['outlineWidth'] ?? 0.07).toDouble(),
-        bg: j['bg'] ?? false,
-        bgColorValue: j['bgColorValue'] ?? 0xFF000000,
-        bgOpacity: (j['bgOpacity'] ?? 0.45).toDouble(),
-        bgCorner: (j['bgCorner'] ?? 0.25).toDouble(),
-        bgPad: (j['bgPad'] ?? 1.0).toDouble(),
-      );
+    enabled: j['enabled'] ?? true,
+    text: j['text'] ?? '',
+    fontFamily: j['fontFamily'] ?? 'NotoSansTC',
+    colorValue: j['colorValue'] ?? 0xFFFFFFFF,
+    opacity: (j['opacity'] ?? 0.8).toDouble(),
+    sizeFrac: (j['sizeFrac'] ?? 0.05).toDouble(),
+    spacing: (j['spacing'] ?? 0).toDouble(),
+    x: (j['x'] ?? 0.82).toDouble(),
+    y: (j['y'] ?? 0.92).toDouble(),
+    rotation: (j['rotation'] ?? 0).toDouble(),
+    tiled: j['tiled'] ?? false,
+    shadow: j['shadow'] ?? true,
+    outline: j['outline'] ?? false,
+    outlineColorValue: j['outlineColorValue'] ?? 0xFF000000,
+    outlineWidth: (j['outlineWidth'] ?? 0.07).toDouble(),
+    bg: j['bg'] ?? false,
+    bgColorValue: j['bgColorValue'] ?? 0xFF000000,
+    bgOpacity: (j['bgOpacity'] ?? 0.45).toDouble(),
+    bgCorner: (j['bgCorner'] ?? 0.25).toDouble(),
+    bgPad: (j['bgPad'] ?? 1.0).toDouble(),
+    animation: WmAnimation
+        .values[((j['anim'] ?? 0) as int) % WmAnimation.values.length],
+  );
 
   TextMark copy() => TextMark.fromJson(toJson());
 }
@@ -200,32 +212,32 @@ class LogoMark {
   }
 
   Map<String, dynamic> toJson() => {
-        'enabled': enabled,
-        'b64': b64,
-        'opacity': opacity,
-        'sizeFrac': sizeFrac,
-        'x': x,
-        'y': y,
-        'rotation': rotation,
-        'corner': corner,
-        'tiled': tiled,
-        if (drawn) 'drawn': true,
-        if (drawData != null) 'drawData': drawData,
-      };
+    'enabled': enabled,
+    'b64': b64,
+    'opacity': opacity,
+    'sizeFrac': sizeFrac,
+    'x': x,
+    'y': y,
+    'rotation': rotation,
+    'corner': corner,
+    'tiled': tiled,
+    if (drawn) 'drawn': true,
+    if (drawData != null) 'drawData': drawData,
+  };
 
   factory LogoMark.fromJson(Map<String, dynamic> j) => LogoMark(
-        enabled: j['enabled'] ?? false,
-        b64: j['b64'],
-        opacity: (j['opacity'] ?? 0.8).toDouble(),
-        sizeFrac: (j['sizeFrac'] ?? 0.18).toDouble(),
-        x: (j['x'] ?? 0.15).toDouble(),
-        y: (j['y'] ?? 0.9).toDouble(),
-        rotation: (j['rotation'] ?? 0).toDouble(),
-        corner: (j['corner'] ?? 0).toDouble(),
-        tiled: j['tiled'] ?? false,
-        drawn: j['drawn'] ?? false,
-        drawData: j['drawData'],
-      );
+    enabled: j['enabled'] ?? false,
+    b64: j['b64'],
+    opacity: (j['opacity'] ?? 0.8).toDouble(),
+    sizeFrac: (j['sizeFrac'] ?? 0.18).toDouble(),
+    x: (j['x'] ?? 0.15).toDouble(),
+    y: (j['y'] ?? 0.9).toDouble(),
+    rotation: (j['rotation'] ?? 0).toDouble(),
+    corner: (j['corner'] ?? 0).toDouble(),
+    tiled: j['tiled'] ?? false,
+    drawn: j['drawn'] ?? false,
+    drawData: j['drawData'],
+  );
 
   LogoMark copy() => LogoMark.fromJson(toJson());
 }
@@ -233,20 +245,57 @@ class LogoMark {
 /// 浮水印動畫（只對影片有效，照片輸出忽略）
 enum WmAnimation { none, blink, drift, marquee }
 
+/// 動畫的共用數學（浮水印設定與文字素材同一套，
+/// 預覽跟兩條匯出路算出來的位移才會一致）
+double wmBlinkCycle(double speed) => 1.2 / speed;
+double wmBlinkOn(double speed, double range) =>
+    wmBlinkCycle(speed) * (0.58 * range).clamp(0.1, 0.92);
+double wmMarqueeCycle(double speed) => 8 / speed;
+
+/// 動畫在某個時間點的位移（相對畫面寬高的比例）與透明度倍率
+({double dx, double dy, double alpha}) wmAnimOffset(
+  WmAnimation animation,
+  double t, {
+  double speed = 1,
+  double range = 1,
+}) {
+  switch (animation) {
+    case WmAnimation.none:
+      return (dx: 0, dy: 0, alpha: 1);
+    case WmAnimation.blink:
+      return (
+        dx: 0,
+        dy: 0,
+        alpha: (t % wmBlinkCycle(speed)) < wmBlinkOn(speed, range) ? 1.0 : 0.0,
+      );
+    case WmAnimation.drift:
+      final amp = 0.02 * range;
+      return (
+        dx: math.sin(t * 1.3 * speed) * amp,
+        dy: math.cos(t * 0.9 * speed) * amp,
+        alpha: 1,
+      );
+    case WmAnimation.marquee:
+      // 一輪從畫面右外側進、左外側出
+      final cy = wmMarqueeCycle(speed);
+      return (dx: 1 - (t % cy) / (cy / 2), dy: 0, alpha: 1);
+  }
+}
+
 extension WmAnimationInfo on WmAnimation {
   String get label => switch (this) {
-        WmAnimation.none => '固定',
-        WmAnimation.blink => '閃爍',
-        WmAnimation.drift => '飄移',
-        WmAnimation.marquee => '跑馬燈',
-      };
+    WmAnimation.none => '固定',
+    WmAnimation.blink => '閃爍',
+    WmAnimation.drift => '飄移',
+    WmAnimation.marquee => '跑馬燈',
+  };
 
   String get note => switch (this) {
-        WmAnimation.none => '不動',
-        WmAnimation.blink => '規律出現與消失',
-        WmAnimation.drift => '原地輕輕漂浮',
-        WmAnimation.marquee => '橫向掃過畫面',
-      };
+    WmAnimation.none => '不動',
+    WmAnimation.blink => '規律出現與消失',
+    WmAnimation.drift => '原地輕輕漂浮',
+    WmAnimation.marquee => '橫向掃過畫面',
+  };
 }
 
 /// 一組完整的浮水印設定（文字 + 圖片）
@@ -292,18 +341,14 @@ class WatermarkSettings {
     this.animRange = 1.0,
     this.designAspect = 16 / 9,
     List<PhotoMosaic>? mosaics,
-  })  : // text（單個）是舊的建構參數，留著讓既有呼叫端不用改
-        texts = (texts == null || texts.isEmpty)
-            ? [text ?? TextMark()]
-            : texts,
-        // 參數名 activeText 對應私有欄位，initializing formal 用不上
-        // ignore: prefer_initializing_formals
-        _activeText = activeText,
-        logos = (logos == null || logos.isEmpty)
-            ? [logo ?? LogoMark()]
-            : logos,
-        _active = activeLogo,
-        mosaics = mosaics ?? [];
+  }) : // text（單個）是舊的建構參數，留著讓既有呼叫端不用改
+       texts = (texts == null || texts.isEmpty) ? [text ?? TextMark()] : texts,
+       // 參數名 activeText 對應私有欄位，initializing formal 用不上
+       // ignore: prefer_initializing_formals
+       _activeText = activeText,
+       logos = (logos == null || logos.isEmpty) ? [logo ?? LogoMark()] : logos,
+       _active = activeLogo,
+       mosaics = mosaics ?? [];
 
   /// 目前操作中的那一個文字。索引夾在範圍內
   TextMark get text => texts[activeText];
@@ -411,42 +456,17 @@ class WatermarkSettings {
   }
 
   /// 閃爍一輪的秒數
-  double get blinkCycle => 1.2 / animSpeed;
+  double get blinkCycle => wmBlinkCycle(animSpeed);
 
   /// 閃爍時「亮著」的秒數
-  double get blinkOn =>
-      blinkCycle * (0.58 * animRange).clamp(0.1, 0.92);
+  double get blinkOn => wmBlinkOn(animSpeed, animRange);
 
   /// 跑馬燈掃過一輪的秒數
-  double get marqueeCycle => 8 / animSpeed;
+  double get marqueeCycle => wmMarqueeCycle(animSpeed);
 
   /// 動畫在某個時間點的位移（相對畫面寬高的比例）與透明度倍率
-  ({double dx, double dy, double alpha}) animAt(double t) {
-    switch (animation) {
-      case WmAnimation.none:
-        return (dx: 0, dy: 0, alpha: 1);
-      case WmAnimation.blink:
-        return (
-          dx: 0,
-          dy: 0,
-          alpha: (t % blinkCycle) < blinkOn ? 1.0 : 0.0
-        );
-      case WmAnimation.drift:
-        final amp = 0.02 * animRange;
-        return (
-          dx: math.sin(t * 1.3 * animSpeed) * amp,
-          dy: math.cos(t * 0.9 * animSpeed) * amp,
-          alpha: 1
-        );
-      case WmAnimation.marquee:
-        // 一輪從畫面右外側進、左外側出
-        return (
-          dx: 1 - (t % marqueeCycle) / (marqueeCycle / 2),
-          dy: 0,
-          alpha: 1
-        );
-    }
-  }
+  ({double dx, double dy, double alpha}) animAt(double t) =>
+      wmAnimOffset(animation, t, speed: animSpeed, range: animRange);
 
   bool get hasAnyMark =>
       texts.any((t) => t.enabled && t.text.trim().isNotEmpty) ||
@@ -455,51 +475,44 @@ class WatermarkSettings {
   // 只寫 logos，不再寫舊的 logo 鍵：圖片是 base64 存在設定裡的，
   // 兩份等於草稿與範本的體積翻倍（web 的 localStorage 只有 5MB）
   Map<String, dynamic> toJson() => {
-        'texts': texts.map((t) => t.toJson()).toList(),
-        'activeText': activeText,
-        'logos': logos.map((l) => l.toJson()).toList(),
-        'activeLogo': activeLogo,
-        'animation': animation.index,
-        'animSpeed': animSpeed,
-        'animRange': animRange,
-        'designAspect': designAspect,
-        if (mosaics.isNotEmpty)
-          'mosaics': mosaics.map((m) => m.toJson()).toList(),
-      };
+    'texts': texts.map((t) => t.toJson()).toList(),
+    'activeText': activeText,
+    'logos': logos.map((l) => l.toJson()).toList(),
+    'activeLogo': activeLogo,
+    'animation': animation.index,
+    'animSpeed': animSpeed,
+    'animRange': animRange,
+    'designAspect': designAspect,
+    if (mosaics.isNotEmpty) 'mosaics': mosaics.map((m) => m.toJson()).toList(),
+  };
 
-  factory WatermarkSettings.fromJson(Map<String, dynamic> j) =>
-      WatermarkSettings(
-        // 舊資料（草稿、範本）只有單個的 text，讀成一個的清單
-        texts: ((j['texts'] as List?) ?? [j['text'] ?? const {}])
-            .map((e) =>
-                TextMark.fromJson(Map<String, dynamic>.from(e as Map)))
-            .toList(),
-        activeText: (j['activeText'] ?? 0) as int,
-        // 舊資料（草稿、範本）只有單張的 logo，讀成一張的清單
-        logos: ((j['logos'] as List?) ?? [j['logo'] ?? const {}])
-            .map((e) => LogoMark.fromJson(Map<String, dynamic>.from(e as Map)))
-            .toList(),
-        activeLogo: (j['activeLogo'] ?? 0) as int,
-        mosaics: ((j['mosaics'] as List?) ?? const [])
-            .map((e) =>
-                PhotoMosaic.fromJson(Map<String, dynamic>.from(e as Map)))
-            .toList(),
-        animation: WmAnimation.values[
-            ((j['animation'] ?? 0) as int) % WmAnimation.values.length],
-        // clamp 到滑桿範圍：0 會讓閃爍週期變 Infinity，
-        // 進到 FFmpeg 濾鏡整個匯出直接失敗
-        animSpeed: ((j['animSpeed'] ?? 1.0).toDouble() as double).clamp(
-          0.2,
-          3.0,
-        ),
-        animRange: ((j['animRange'] ?? 1.0).toDouble() as double).clamp(
-          0.2,
-          3.0,
-        ),
-        designAspect:
-            ((j['designAspect'] ?? (16 / 9)).toDouble() as double)
-                .clamp(0.2, 5.0),
-      );
+  factory WatermarkSettings.fromJson(
+    Map<String, dynamic> j,
+  ) => WatermarkSettings(
+    // 舊資料（草稿、範本）只有單個的 text，讀成一個的清單
+    texts: ((j['texts'] as List?) ?? [j['text'] ?? const {}])
+        .map((e) => TextMark.fromJson(Map<String, dynamic>.from(e as Map)))
+        .toList(),
+    activeText: (j['activeText'] ?? 0) as int,
+    // 舊資料（草稿、範本）只有單張的 logo，讀成一張的清單
+    logos: ((j['logos'] as List?) ?? [j['logo'] ?? const {}])
+        .map((e) => LogoMark.fromJson(Map<String, dynamic>.from(e as Map)))
+        .toList(),
+    activeLogo: (j['activeLogo'] ?? 0) as int,
+    mosaics: ((j['mosaics'] as List?) ?? const [])
+        .map((e) => PhotoMosaic.fromJson(Map<String, dynamic>.from(e as Map)))
+        .toList(),
+    animation: WmAnimation
+        .values[((j['animation'] ?? 0) as int) % WmAnimation.values.length],
+    // clamp 到滑桿範圍：0 會讓閃爍週期變 Infinity，
+    // 進到 FFmpeg 濾鏡整個匯出直接失敗
+    animSpeed: ((j['animSpeed'] ?? 1.0).toDouble() as double).clamp(0.2, 3.0),
+    animRange: ((j['animRange'] ?? 1.0).toDouble() as double).clamp(0.2, 3.0),
+    designAspect: ((j['designAspect'] ?? (16 / 9)).toDouble() as double).clamp(
+      0.2,
+      5.0,
+    ),
+  );
 
   WatermarkSettings copy() => WatermarkSettings.fromJson(toJson());
 }
