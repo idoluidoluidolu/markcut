@@ -579,50 +579,58 @@ class _GifScreenState extends State<GifScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // 不放右滑返回：這頁滿是橫向手勢（指針速覽、修剪把手），
+    // 不放右滑返回：這頁滿是橫向手勢（預覽速覽、指針、修剪把手），
     // 跟返回判定天生打架（實測回報：一滑就滑到上一頁）。
-    // 返回走左上角的返回鍵
-    return Scaffold(
-      backgroundColor: kBg,
-      appBar: AppBar(backgroundColor: kBg),
-      body: SafeArea(
-        child: !_ready
-            ? const Center(child: CircularProgressIndicator())
-            : Column(
-                children: [
-                  Expanded(child: _preview()),
-                  _playbackRow(),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        _rangeReadout(),
-                        const SizedBox(height: 8),
-                        _trimStrip(),
-                        const SizedBox(height: 16),
-                        _chipsRow('尺寸', [320, 480, 640], _size, (v) {
-                          setState(() => _size = v);
-                          _schedulePreview();
-                        }, (v) => '${v}p'),
-                        const SizedBox(height: 10),
-                        _chipsRow('順暢度', [10, 12, 15], _fps, (v) {
-                          setState(() => _fps = v);
-                          _schedulePreview();
-                        }, (v) => '$v fps'),
-                        const SizedBox(height: 10),
-                        _speedRow(),
-                        const SizedBox(height: 16),
-                        primaryAction(
-                          label: '做成 GIF',
-                          icon: Icons.gif_box_outlined,
-                          onPressed: _exporting ? null : _export,
-                        ),
-                      ],
+    // canPop: false 同時把 iOS 系統的左緣右滑返回也關掉——自家的
+    // SwipeBack 拿掉之後，拖到螢幕左緣還是會誤觸系統那條（實測回報）。
+    // 返回走左上角的返回鍵：maybePop 被擋下後從回呼手動放行
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && mounted) Navigator.of(context).pop();
+      },
+      child: Scaffold(
+        backgroundColor: kBg,
+        appBar: AppBar(backgroundColor: kBg),
+        body: SafeArea(
+          child: !_ready
+              ? const Center(child: CircularProgressIndicator())
+              : Column(
+                  children: [
+                    Expanded(child: _preview()),
+                    _playbackRow(),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _rangeReadout(),
+                          const SizedBox(height: 8),
+                          _trimStrip(),
+                          const SizedBox(height: 16),
+                          _chipsRow('尺寸', [320, 480, 640], _size, (v) {
+                            setState(() => _size = v);
+                            _schedulePreview();
+                          }, (v) => '${v}p'),
+                          const SizedBox(height: 10),
+                          _chipsRow('順暢度', [10, 12, 15], _fps, (v) {
+                            setState(() => _fps = v);
+                            _schedulePreview();
+                          }, (v) => '$v fps'),
+                          const SizedBox(height: 10),
+                          _speedRow(),
+                          const SizedBox(height: 16),
+                          primaryAction(
+                            label: '做成 GIF',
+                            icon: Icons.gif_box_outlined,
+                            onPressed: _exporting ? null : _export,
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                ],
-              ),
+                  ],
+                ),
+        ),
       ),
     );
   }
