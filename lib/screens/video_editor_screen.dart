@@ -404,14 +404,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final deadline = DateTime.now().add(const Duration(seconds: 3));
     // 合成器先叫起來（await＝組好或確定組不起來才回來）
     await _ensureComp();
-    bool thumbsReady() => _tl.sources.every(
-      (s) =>
-          !s.isVideo || (_thumbs[_tl.sources.indexOf(s)]?.isNotEmpty ?? false),
-    );
+    // 只等「真的有片段在用」的素材：清單裡可能躺著沒被引用的素材
+    //（量位元率用的、剪掉片段後留下的），它們的縮圖沒人急、
+    // 也可能永遠不會來——等它們就是白白吃滿 3 秒
+    final used = {for (final c in _tl.clips) c.sourceIndex};
+    bool thumbsReady() {
+      for (final i in used) {
+        if (i < 0 || i >= _tl.sources.length) continue;
+        if (!_tl.sources[i].isVideo) continue;
+        if (!(_thumbs[i]?.isNotEmpty ?? false)) return false;
+      }
+      return true;
+    }
+
     // 沒工作檔的素材，拖曳快取至少有第一批格子（有工作檔的 seek
     // 本來就快，不用等）
     bool scrubReady() {
-      for (var i = 0; i < _tl.sources.length; i++) {
+      for (final i in used) {
+        if (i < 0 || i >= _tl.sources.length) continue;
         final s = _tl.sources[i];
         if (!s.isVideo || s.workPath != null) continue;
         final slots = _scrubFrames[i];
