@@ -960,9 +960,14 @@ class _GifScreenState extends State<GifScreen> {
                     onHorizontalDragUpdate: (d) => _scrubBy(d.delta.dx, w),
                     onHorizontalDragEnd: (_) => _scrubEnd(),
                     onHorizontalDragCancel: _scrubEnd,
+                    // height 一定要給滿：SizedBox 只給寬的話，
+                    // 裡面的 ColoredBox 沒有子元件、鬆約束下高度
+                    // 縮成 0——一條 2×0 的隱形線（實測回報：
+                    // 一直說沒有指針，其實是從來沒畫出來過）
                     child: const Center(
                       child: SizedBox(
                         width: 2,
+                        height: double.infinity,
                         child: ColoredBox(color: kText),
                       ),
                     ),
