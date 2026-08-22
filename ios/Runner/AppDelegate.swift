@@ -2878,6 +2878,21 @@ final class PlayerViewFactory: NSObject, FlutterPlatformViewFactory {
 /// 影格用 AVPlayerItemVideoOutput 取出來交給 Flutter 材質，
 /// 由 CADisplayLink 驅動——跟 video_player 內部同一套機制
 final class CompPlayer: NSObject, FlutterTexture {
+  /// 這個檔的視訊軌是不是 HDR（有色彩轉換標記且不是 709）。
+  /// 判定跟 probeFile/alreadyGoodEnough 同一套；只讀容器中繼資料
+  static func isHDRSource(_ path: String) -> Bool {
+    let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+    guard let t = asset.tracks(withMediaType: .video).first,
+      let fdAny = t.formatDescriptions.first
+    else { return false }
+    let fd = fdAny as! CMFormatDescription
+    guard
+      let trc = CMFormatDescriptionGetExtension(
+        fd, extensionKey: kCMFormatDescriptionExtension_TransferFunction)
+    else { return false }
+    return !CFEqual(trc, kCMFormatDescriptionTransferFunction_ITU_R_709_2)
+  }
+
   /// 讓 AVPlayerLayer 的 PlatformView 拿得到（見 PlayerHostView）
   let player = AVPlayer()
   private var output: AVPlayerItemVideoOutput?
@@ -2989,8 +3004,19 @@ final class CompPlayer: NSObject, FlutterTexture {
     // 合成器遇到「這一刻這條軌沒有媒體」會供格失敗：抽格器直接
     // 報錯（診斷的「抽格檢查失敗」）、播放進出空範圍的邊界打嗝
     //（接縫閃黑卡頓）。內建合成器沒這個問題，所以標準路線照舊留空
+    // 秒進之後合成可能直接吃 4K HLG 原檔。不掛合成器的話系統照 HDR
+    // 顯示（跟相簿一樣被 EDR 拉亮），旁邊 SDR 的浮水印/文字相對就
+    // 變灰——工作檔（SDR）換上才恢復，看起來就是「文字先變色、
+    // 讀取好才正常」（實測回報）。掛 CI 合成器強制 toneMapHDRtoSDR，
+    // 預覽全程 SDR、跟成品同一條曲線；工作檔全好後重組，來源都是
+    // SDR，這裡自然回到輕的路
+    let anyHDR = ordered.contains { c in
+      guard let p = c["path"] as? String else { return false }
+      return CompPlayer.isHDRSource(p)
+    }
     let needsCI =
       !mosaics.isEmpty
+      || anyHDR
       || ordered.contains { c in
         (c["crop"] as? [Double]) != nil
           || abs(c["rotation"] as? Double ?? 0) > 0.05
@@ -3279,6 +3305,8 @@ final class CompPlayer: NSObject, FlutterTexture {
       || (texture && !uniformTransform.isIdentity)
       // 馬賽克要烘進畫面，一定得走合成器；裁切/旋轉/透明度同理
       || !mosaics.isEmpty
+      // HDR 原檔要靠合成器做 toneMapHDRtoSDR（見 needsCI 的說明）
+      || anyHDR
       || segments.contains { seg in
         seg.crop != nil || abs(seg.rotation) > 0.05 || seg.opacity < 0.999
       }

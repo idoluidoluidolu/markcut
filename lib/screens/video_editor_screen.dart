@@ -367,8 +367,29 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool get _wmVisibleNow =>
       !_wmHidden &&
       _settings.hasAnyMark &&
+      _previewHasPicture &&
       _position >= _wmStart &&
       _position <= _wmEndEff + 0.001;
+
+  /// 播放頭下的影片畫得出來了嗎。
+  ///
+  /// 秒進之後（不等轉檔）進場的頭幾百毫秒影片第一幀還沒上，底下是
+  /// 黑畫布——半透明的浮水印壓在黑上看起來是灰的，畫面一出來又
+  /// 「變回正常」（實測回報：文字先變色、讀取好才恢復）。
+  /// 在那之前先不畫浮水印，有畫面才讓它進場。
+  /// 沒有影片片段的時間點（空白專案、純文字）照常畫
+  bool get _previewHasPicture {
+    final vids = _tl.videosAt(_position);
+    if (vids.isEmpty) return true;
+    if (_compOn) return true;
+    for (final c in vids) {
+      final ct = _ctrls[c.id];
+      if (ct != null && ct.value.isInitialized) return true;
+      if (_thumbs[c.sourceIndex]?.isNotEmpty ?? false) return true;
+      if (_nfLatest.containsKey(c.sourceIndex)) return true;
+    }
+    return false;
+  }
 
   bool _ready = false;
   bool _exporting = false;
