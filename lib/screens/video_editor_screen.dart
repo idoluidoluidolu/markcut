@@ -1225,6 +1225,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           if (mounted && t.isNotEmpty) setState(() => _thumbs[i] = t);
         });
         _ensureScrubSlots(i, s.duration);
+        // 原檔期間先把拖曳快取整條抽起來（同 _importVideoFromPath）
+        if (s.workPath == null && !kIsWeb) {
+          unawaited(_makeScrubCache(i, s.previewPath, s.duration));
+        }
       }
     }
 
@@ -1396,6 +1400,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _position = t; // 位置 UI 由 _posVN 小範圍重繪，不整頁 setState
     _scrubbing = true; // 快取幀模式（下一次 30fps 重繪就生效）
     if (_compOn) {
+      // 素材還在用原檔（秒進、工作檔還在背景轉）：拖曳走快取幀
+      if (_compScrubViaCache()) return;
       // 合成播放器接手時，畫面直接由它出：手指每動一次就把最新位置送
       // 過去（原生端只追最新的那個目標，不會排隊塞車），停手再補一發
       // 精準的。不抽幀、不疊快取幀、不動底下那幾顆播放器——那些在這條
@@ -1592,8 +1598,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (mounted && t.isNotEmpty) setState(() => _thumbs[srcIndex] = t);
     });
     _ensureScrubSlots(srcIndex, dur);
+    // 秒進的配套：原檔期間就把拖曳快取整條抽起來（背景、分段、
+    // 播放/拖曳/匯出時自動讓路），一進去拖曳就有格子可吃＝零 seek。
+    // 工作檔換上時會重建槽位改抽工作檔（解得快）
+    if (!kIsWeb) unawaited(_makeScrubCache(srcIndex, path, dur));
     unawaited(_measureSrcKbps());
-    // 排進轉檔佇列（遮罩會蓋著等它做完）
+    // 排進轉檔佇列（能不擋就不擋，見 _drainPrep）
     _enqueuePrep(srcIndex);
   }
 
@@ -2040,13 +2050,51 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 按需抽幀：滑到哪、跟系統的硬體解碼器要哪一格。
   /// 一次只飛一個請求，永遠抽「最新想要的」那格——手指比解碼快時，
   /// 中間滑過的格子直接跳過，不排隊（排了也只是顯示過期的畫面）
-  final List<({int src, int fi, double t, String path})> _nfWant = [];
+  final List<({int src, int fi, double t, String path, int side})> _nfWant = [];
   bool _nfBusy = false;
+
+  /// 原檔期間「跟手那一格」的解析度：1080 長邊，肉眼跟正片沒差
+  ///（使用者要求：拖曳不能看得出畫質降級）。只有這一格用高解析，
+  /// 背景掃的格子快取維持 540——那些只在快滑時墊底，動態下看不出
+  static const _scrubSharpSide = 1080;
 
   /// 每個素材「最近抽到的一格」。滑動顯示以它為底：格子快取是
   /// 慢慢累積的，手指快的時候沿路都是空格，等格子＝畫面卡住不動；
   /// 最新一格永遠跟著手指（頂多慢一個解碼的時間）
   final Map<int, Uint8List> _nfLatest = {};
+
+  /// 最近那格對應的素材時間。合成模式的原檔蓋層用它決定「用哪份」：
+  /// 慢慢拖時最近那格（1080 高解析）就在手指附近＝優先用它，
+  /// 快滑時它追不上＝退回 540 格子快取（動態下看不出解析度差）
+  final Map<int, double> _nfLatestT = {};
+
+  /// 播放頭下還有素材在用原檔（工作檔沒換上）嗎。
+  /// 有＝合成模式的拖曳改走快取幀：原檔關鍵幀疏，逐格 seek 跟不上
+  /// 手指，就是「一進去拖曳一格一格跳」的來源
+  bool get _scrubRawUnderHead {
+    for (final c in _tl.videosAt(_position)) {
+      if (_tl.sourceOf(c).workPath == null) return true;
+    }
+    return false;
+  }
+
+  /// 合成模式下的拖曳：素材還在用原檔就走快取幀，拖曳期間完全不
+  /// 叫合成器 seek，手一停（120ms）才一次 seek 到位；蓋層在
+  /// 220ms 後退場，露出的是合成器已經到位的全解析度畫面——
+  /// 快取幀只在手指移動時短暫可見，動態下看不出解析度差。
+  /// 回 true＝這一格已處理，false＝照舊直接追時 seek
+  bool _compScrubViaCache() {
+    if (!_scrubRawUnderHead) return false;
+    _requestScrubFrames();
+    _scrubEndTimer?.cancel();
+    _scrubEndTimer = Timer(const Duration(milliseconds: 220), _tryEndScrub);
+    _scrubSettleTimer?.cancel();
+    _scrubSettleTimer = Timer(
+      const Duration(milliseconds: 120),
+      () => _compSeek(exact: true),
+    );
+    return true;
+  }
 
   void _requestScrubFrames() {
     if (kIsWeb || !Diag.scrubPrefetch.value) return;
@@ -2069,8 +2117,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         0,
         slots.length - 1,
       );
-      if (slots[fi] != null) continue;
-      _nfWant.add((src: c.sourceIndex, fi: fi, t: t, path: src.previewPath));
+      // 原檔期間跟手那格抽高解析（見 _scrubSharpSide）；
+      // 已有低解析格照樣重抽高的，不然慢慢拖時畫面一直是軟的
+      final sharp = _compOn && src.workPath == null;
+      if (!sharp && slots[fi] != null) continue;
+      _nfWant.add((
+        src: c.sourceIndex,
+        fi: fi,
+        t: t,
+        path: src.previewPath,
+        side: sharp ? _scrubSharpSide : _scrubLongSide,
+      ));
     }
     unawaited(_nfPump());
   }
@@ -2082,7 +2139,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       while (_nfWant.isNotEmpty && mounted) {
         final w = _nfWant.removeLast();
         final sw = Stopwatch()..start();
-        final bytes = await nativeFrameAt(w.path, w.t, maxH: _scrubLongSide);
+        final bytes = await nativeFrameAt(w.path, w.t, maxH: w.side);
         PlaybackTrace.instance.log(
           '原生抽幀 ${sw.elapsedMilliseconds}ms（素材 ${w.src} 格 ${w.fi}）'
           '${bytes == null ? '＝拿不到' : ''}',
@@ -2091,6 +2148,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         final slots = _scrubFrames[w.src];
         if (bytes != null) {
           _nfLatest[w.src] = bytes;
+          _nfLatestT[w.src] = w.t;
           _noteScrubTouch(w.src);
           if (slots != null && w.fi < slots.length && slots[w.fi] == null) {
             slots[w.fi] = bytes;
@@ -5520,6 +5578,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (edge != null) _position = edge.clamp(0.0, _tl.duration);
     _scrubbing = true;
     if (_compOn) {
+      // 素材還在用原檔（秒進、工作檔還在背景轉）：拖曳走快取幀
+      if (_compScrubViaCache()) return;
       // 合成播放器接手時，畫面直接由它出：手指每動一次就把最新位置送
       // 過去（原生端只追最新的那個目標，不會排隊塞車），停手再補一發
       // 精準的。不抽幀、不疊快取幀、不動底下那幾顆播放器——那些在這條
@@ -7612,6 +7672,55 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         ),
                                       ),
                                     );
+                                    // 拖曳中且播放頭下的素材還在用原檔
+                                    //（秒進、工作檔還在背景轉）：合成
+                                    // 畫面上蓋一層快取幀。原檔關鍵幀疏，
+                                    // 叫合成器逐格 seek 跟不上手指（畫面
+                                    // 一格一格跳）；拖曳期間畫面走快取幀
+                                    //（慢拖優先用跟手的 1080 高解析格），
+                                    // 手一停 220ms 蓋層退場，露出合成器
+                                    // 已 seek 到位的全解析度畫面
+                                    if (_scrubbing && cur != null) {
+                                      final src0 = _tl.sourceOf(cur);
+                                      if (src0.workPath == null) {
+                                        final t0 = cur.sourceTimeAt(_position);
+                                        Uint8List? fb;
+                                        final lt = _nfLatestT[cur.sourceIndex];
+                                        if (lt != null &&
+                                            (lt - t0).abs() <= 0.35) {
+                                          fb = _nfLatest[cur.sourceIndex];
+                                        }
+                                        final fs =
+                                            _scrubFrames[cur.sourceIndex];
+                                        if (fb == null &&
+                                            fs != null &&
+                                            fs.isNotEmpty &&
+                                            src0.duration > 0.01) {
+                                          final fi =
+                                              (t0 / src0.duration * fs.length)
+                                                  .floor()
+                                                  .clamp(0, fs.length - 1);
+                                          fb =
+                                              fs[fi] ??
+                                              _nfLatest[cur.sourceIndex] ??
+                                              _nearestFrame(fs, fi);
+                                        }
+                                        fb ??= _nfLatest[cur.sourceIndex];
+                                        if (fb != null) {
+                                          addLayer(
+                                            vidTrack,
+                                            Positioned.fromRect(
+                                              rect: layerBox(cur, src0.aspect),
+                                              child: Image.memory(
+                                                fb,
+                                                fit: BoxFit.fill,
+                                                gaplessPlayback: true,
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                      }
+                                    }
                                     vids.clear();
                                   }
                                   for (final c in vids) {
