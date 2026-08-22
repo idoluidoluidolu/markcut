@@ -1688,8 +1688,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 剩下的在背景轉完（進去後先播原檔，暫停的空檔無感換上工作檔）。
   ///
   /// 75% 的取捨：放行後到轉完之間播的是 4K/HDR 原檔（會頓），
-  /// 更早放行＝頓的尾巴更長；更晚放行＝省不到幾秒。再配 5 秒下限：
-  /// 短素材整個轉檔就十來秒，遮罩才閃出來就收掉，畫面等於跳兩次
+  /// 更早放行＝頓的尾巴更長；更晚放行＝省不到幾秒。
+  /// 75% 準則只在遮罩已經亮超過 5 秒後才啟用：短素材整個轉檔就
+  /// 十來秒，遮罩才閃出來就收掉，畫面等於跳兩次。
+  /// 放行不提示，安靜收掉遮罩就好——講了反而打斷正要開始的操作
   void _maybeEarlyRelease() {
     if (!_prepGate) return;
     if (_prepFraction < 0.75) return;
@@ -1698,7 +1700,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     setState(() => _prepSkipped = true);
-    showHint(context, '差不多了，先開始剪吧——剩下的在背景轉完');
   }
 
   void _enqueuePrep(int srcIndex) {
