@@ -219,19 +219,26 @@ class WorkFiles {
   ///   這一條同時排掉了 iPhone 的 HDR 素材（HLG/PQ 都走 HEVC）
   /// - 短邊 ≤1088：跟工作檔的目標尺寸同級（1088 容忍編碼器取整）
   /// - 沒有旋轉旗標：帶旗標的檔會讓合成播放器被迫逐格重畫
+  /// - SDR(709)：HDR 一定要轉，色調映射要交給系統做
   /// - 關鍵幀夠密（平均 ≤8 格、最疏 ≤16 格）：疏的話拖曳會鈍，
   ///   重轉的主要目的之一就是把關鍵幀補密
   ///
   /// probe 沒實作的平台（Android）回 false，照舊全部重轉
   static Future<bool> _qualifiesAsIs(String src) async {
     try {
+      // 先用輕量探測快篩（只讀容器中繼資料）：編碼/尺寸/旋轉/HDR
+      // 不合格的素材（4K、HEVC…）馬上出局，不用把整支檔掃一遍
+      final lite = await MediaPrep.probeLite(src);
+      if (lite == null || lite['error'] != null) return false;
+      if (lite['codec'] != 'avc1') return false;
+      final w = (lite['w'] as num?)?.toInt() ?? 0;
+      final h = (lite['h'] as num?)?.toInt() ?? 0;
+      if (w <= 0 || h <= 0 || (w < h ? w : h) > 1088) return false;
+      if (lite['rotated'] == true) return false;
+      if (lite['sdr709'] != true) return false;
+      // 快篩過了才做貴的那一步：掃關鍵幀（要把整支檔讀過一遍）
       final m = await MediaPrep.probe(src);
       if (m == null || m['error'] != null) return false;
-      if (m['codec'] != 'avc1') return false;
-      final w = (m['w'] as num?)?.toInt() ?? 0;
-      final h = (m['h'] as num?)?.toInt() ?? 0;
-      if (w <= 0 || h <= 0 || (w < h ? w : h) > 1088) return false;
-      if (m['rotated'] == true) return false;
       final frames = (m['frames'] as num?)?.toInt() ?? 0;
       final keys = (m['keyframes'] as num?)?.toInt() ?? 0;
       final maxGop = (m['maxGopFrames'] as num?)?.toInt();

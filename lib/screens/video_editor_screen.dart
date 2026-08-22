@@ -1645,8 +1645,41 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Timer? _prepEscapeTimer;
   bool _prepEscapeReady = false;
 
+  /// 這一批的轉檔不需要擋人（見 _prepGateNeeded）：遮罩不蓋、
+  /// 背景默默補工作檔，暫停時無感換上
+  bool _prepSilent = false;
+
   /// 這一刻要不要蓋讀取遮罩
-  bool get _prepGate => _prepBusy && !_prepSkipped;
+  bool get _prepGate => _prepBusy && !_prepSkipped && !_prepSilent;
+
+  /// 這支素材在等工作檔的期間，播原檔擋不擋人？
+  ///
+  /// 1080p SDR H.264 的原檔播起來本來就順（解碼便宜）、顏色也跟
+  /// 匯出同一套（不經色調映射），不必讓使用者等轉檔——工作檔只是
+  /// 把關鍵幀補密讓拖曳更順，背景補就好。4K/HDR/HEVC/帶旋轉旗標
+  /// 照舊要等：拿那種原檔播就是卡頓的來源。
+  /// probeLite 沒實作的平台（Android）一律回「要擋」，行為跟以前一樣
+  final Map<String, bool> _gateNeedCache = {};
+  Future<bool> _prepGateNeeded(int srcIndex) async {
+    if (srcIndex < 0 || srcIndex >= _tl.sources.length) return false;
+    final path = _tl.sources[srcIndex].path;
+    final hit = _gateNeedCache[path];
+    if (hit != null) return hit;
+    var need = true;
+    final m = await MediaPrep.probeLite(path);
+    if (m != null && m['error'] == null) {
+      final w = (m['w'] as num?)?.toInt() ?? 0;
+      final h = (m['h'] as num?)?.toInt() ?? 0;
+      need =
+          !(m['codec'] == 'avc1' &&
+              w > 0 &&
+              h > 0 &&
+              (w < h ? w : h) <= 1088 &&
+              m['rotated'] != true &&
+              m['sdr709'] == true);
+    }
+    return _gateNeedCache[path] = need;
+  }
 
   void _enqueuePrep(int srcIndex) {
     if (srcIndex < 0 || srcIndex >= _tl.sources.length) return;
@@ -1665,8 +1698,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     if (!mounted) return;
+    // 先看這一批需不需要遮罩：全是「播原檔就夠順」的素材就默默背景轉
+    var silent = true;
+    for (final i in List<int>.of(_prepQueue)) {
+      if (await _prepGateNeeded(i)) {
+        silent = false;
+        break;
+      }
+    }
+    if (!mounted) return;
     setState(() {
       _prepBusy = true;
+      _prepSilent = silent;
       _prepSkipped = false;
       _prepEscapeReady = false;
       _prepDone = 0;
@@ -1686,6 +1729,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 一支一支加的），只撈一次的話那些會留在佇列裡沒人理——上一版就是
     // 這樣，五支素材只轉好一支，其他全程用 4K 原檔播
     while (_prepQueue.isNotEmpty && mounted) {
+      // 背景模式跑到一半又排進需要擋的素材（例如中途加了一支 4K）
+      // 就把遮罩亮起來
+      if (_prepSilent) {
+        for (final i in List<int>.of(_prepQueue)) {
+          if (await _prepGateNeeded(i)) {
+            if (mounted) setState(() => _prepSilent = false);
+            break;
+          }
+        }
+        if (!mounted) return;
+      }
       final jobs = <Future<void>>[];
       while (_prepQueue.isNotEmpty) {
         final i = _prepQueue.removeAt(0);
@@ -1721,6 +1775,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _prepEscapeTimer?.cancel();
     setState(() {
       _prepBusy = false;
+      _prepSilent = false;
       _prepEscapeReady = false;
       _prepCur.clear();
     });
@@ -1751,7 +1806,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final made = await WorkFiles.ensure(
       src.path,
       onProgress: (v) {
-        if (!mounted || !_prepBusy) return;
+        // 用 _prepGate 不用 _prepBusy：背景（silent）模式沒有遮罩，
+        // 這時每一格進度都 setState 等於邊剪邊整頁重建
+        if (!mounted || !_prepGate) return;
         setState(() => _prepCur[srcIndex] = v.clamp(0.0, 1.0));
       },
     );

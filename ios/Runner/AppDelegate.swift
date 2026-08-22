@@ -2215,6 +2215,19 @@ final class AtomicFlag {
           let m = self.probeFile(path)
           DispatchQueue.main.async { result(m) }
         }
+      case "probeLite":
+        // 輕量版：只讀容器層的中繼資料（尺寸/編碼/旋轉/色彩），
+        // 不掃關鍵幀——完整 probe 要把整支檔的取樣讀過一遍，
+        // 幾 GB 的素材光探測就要好幾秒。給「要不要蓋讀取遮罩」
+        // 這種只看規格的判斷用
+        guard let path = call.arguments as? String else {
+          result(nil)
+          return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+          let m = self.probeFile(path, keyframes: false)
+          DispatchQueue.main.async { result(m) }
+        }
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -2587,7 +2600,7 @@ final class AtomicFlag {
   /// 關鍵幀間隔是「左右滑動順不順」的決定性數字：seek 一定要從前一個
   /// 關鍵幀解過來，間隔 60 格就是每滑一下解 60 格。這裡用 passthrough
   /// 讀（不解碼）數每一格的 sync 旗標，一支十秒的檔幾十毫秒就數完
-  private func probeFile(_ path: String) -> [String: Any] {
+  private func probeFile(_ path: String, keyframes: Bool = true) -> [String: Any] {
     var m: [String: Any] = ["path": (path as NSString).lastPathComponent]
     if let attr = try? FileManager.default.attributesOfItem(atPath: path),
       let bytes = attr[.size] as? NSNumber
@@ -2611,10 +2624,20 @@ final class AtomicFlag {
       m["codec"] = String(
         format: "%c%c%c%c", (c >> 24) & 255, (c >> 16) & 255, (c >> 8) & 255,
         c & 255)
+      // SDR(709) 判定跟 alreadyGoodEnough 同一套：沒有標記當 SDR，
+      // 有標記但不是 709 才算 HDR
+      let trc = CMFormatDescriptionGetExtension(
+        fd, extensionKey: kCMFormatDescriptionExtension_TransferFunction)
+      if let trc = trc {
+        m["sdr709"] = CFEqual(trc, kCMFormatDescriptionTransferFunction_ITU_R_709_2)
+      } else {
+        m["sdr709"] = true
+      }
     }
     // 有沒有旋轉旗標：有的話合成播放器要靠 layer instruction 轉正，
     // 沒有的話是已經燒進畫面的（工作檔第一次轉成功就會是這種）
     m["rotated"] = !t.preferredTransform.isIdentity
+    if !keyframes { return m }
     if let reader = try? AVAssetReader(asset: asset) {
       let out = AVAssetReaderTrackOutput(track: t, outputSettings: nil)
       out.alwaysCopiesSampleData = false

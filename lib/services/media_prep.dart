@@ -107,6 +107,19 @@ class MediaPrep {
     }
   }
 
+  /// [probe] 的輕量版：只讀容器層的中繼資料（尺寸/編碼/旋轉/SDR），
+  /// 不掃關鍵幀——完整 probe 要把整支檔的取樣讀過一遍，幾 GB 的素材
+  /// 光探測就要好幾秒。給「要不要蓋讀取遮罩」這種只看規格的判斷用。
+  /// 沒實作的平台（Android）回 null
+  static Future<Map<String, dynamic>?> probeLite(String path) async {
+    try {
+      if (!await available) return null;
+      return await _ch.invokeMapMethod<String, dynamic>('probeLite', path);
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// [probe] 的結果排成一行人看得懂的字
   static String describe(Map<String, dynamic> m) {
     if (m['error'] != null) return '${m['path']}：${m['error']}';
