@@ -20,6 +20,7 @@ import 'diagnostics.dart';
 import 'gif_store.dart';
 import 'native_export.dart';
 import 'video_processor.dart';
+import 'work_files.dart';
 
 /// 這個平台是否支援影片匯出
 const bool videoExportSupported = true;
@@ -1806,9 +1807,23 @@ Future<String?> makeGifFile({
       : 'crop=iw*${_f(crop.width)}:ih*${_f(crop.height)}'
             ':iw*${_f(crop.left)}:ih*${_f(crop.top)},';
   try {
+    // 有現成的工作檔就用它當輸入：1080p SDR H.264，解碼比
+    // 4K HEVC 便宜一個量級（GIF 長邊才幾百 px，1080p 綽綽有餘），
+    // 而且已經是 709——不用再做色調映射
+    final work = await WorkFiles.lookup(inputPath);
+    final input = work ?? inputPath;
+    // 用原檔時 HDR 要自己轉：不轉的話 HLG 會被 FFmpeg 當 709 解讀，
+    // 整張 GIF 洗白（顏色淡、對比塌）。放在 crop 之後、fps 之前：
+    // 色調映射是浮點運算、成本跟像素數成正比，讓 zscale 先縮到
+    // 目標高度再轉，省十幾倍
+    var hdrF = '';
+    if (work == null) {
+      final p = await _probe(inputPath);
+      if (p.hdr) hdrF = '${await _hdrChainFor(p.trc, scaleH: maxSide)},';
+    }
     final session = await FFmpegKit.execute(
-      '-y -ss ${_f(start)} -t ${_f(dur)} -i "$inputPath" -filter_complex '
-      '"[0:v]$cropF$speedF'
+      '-y -ss ${_f(start)} -t ${_f(dur)} -i "$input" -filter_complex '
+      '"[0:v]$cropF$hdrF$speedF'
       'fps=$fps,'
       'scale=w=$maxSide:h=$maxSide:force_original_aspect_ratio=decrease'
       ':flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];'
