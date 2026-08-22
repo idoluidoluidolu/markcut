@@ -775,48 +775,61 @@ class _GifScreenState extends State<GifScreen> {
     return Stack(
       children: [
         Positioned.fill(
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: _togglePlay,
-            child: Container(
-              // 跟影片編輯的預覽同一個底色：純黑會在預覽區與下面的
-              // 控制區之間切出一條分界，整頁看起來像被切成兩塊
-              color: kPreviewBg,
-              alignment: Alignment.center,
-              child: Stack(
+          // 在預覽畫面上左右滑＝快速預覽（跟拖修剪條上的白針同一套
+          // scrub）：手指掃過整個預覽寬度＝掃過整支影片。挑段落時
+          // 眼睛本來就盯著大畫面，不必特地移到下面的細針上瞄準
+          child: LayoutBuilder(
+            builder: (context, cons) => GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _togglePlay,
+              onHorizontalDragStart: (_) => _scrubBegin(),
+              onHorizontalDragUpdate: (d) =>
+                  _scrubBy(d.delta.dx, math.max(1, cons.maxWidth)),
+              onHorizontalDragEnd: (_) => _scrubEnd(),
+              onHorizontalDragCancel: _scrubEnd,
+              child: Container(
+                // 跟影片編輯的預覽同一個底色：純黑會在預覽區與下面的
+                // 控制區之間切出一條分界，整頁看起來像被切成兩塊
+                color: kPreviewBg,
                 alignment: Alignment.center,
-                children: [
-                  AspectRatio(
-                    aspectRatio: aspect,
-                    // 成果做好後看的就是 GIF 本人（時鐘在我們手上，
-                    // 指針才對得到位置）；還沒做好前先看影片
-                    child: _gifMode
-                        ? ValueListenableBuilder<int>(
-                            valueListenable: _gifFrameVN,
-                            builder: (context, i, _) => RawImage(
-                              image:
-                                  _gifFrames[i.clamp(0, _gifFrames.length - 1)],
-                              fit: BoxFit.contain,
-                            ),
-                          )
-                        : p.view(),
-                  ),
-                  // 暫停時給一顆播放鈕；播放中畫面乾淨
-                  if (!_playing)
-                    Container(
-                      width: 54,
-                      height: 54,
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.45),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.play_arrow,
-                        size: 34,
-                        color: kText,
-                      ),
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    AspectRatio(
+                      aspectRatio: aspect,
+                      // 成果做好後看的就是 GIF 本人（時鐘在我們手上，
+                      // 指針才對得到位置）；還沒做好前先看影片
+                      child: _gifMode
+                          ? ValueListenableBuilder<int>(
+                              valueListenable: _gifFrameVN,
+                              builder: (context, i, _) => RawImage(
+                                image:
+                                    _gifFrames[i.clamp(
+                                      0,
+                                      _gifFrames.length - 1,
+                                    )],
+                                fit: BoxFit.contain,
+                              ),
+                            )
+                          : p.view(),
                     ),
-                ],
+                    // 暫停時給一顆播放鈕；播放中畫面乾淨
+                    if (!_playing)
+                      Container(
+                        width: 54,
+                        height: 54,
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.45),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.play_arrow,
+                          size: 34,
+                          color: kText,
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
           ),
