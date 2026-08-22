@@ -1681,6 +1681,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return _gateNeedCache[path] = need;
   }
 
+  /// 遮罩亮起來的時間（甜蜜點放行的下限用）
+  DateTime? _gateShownAt;
+
+  /// 甜蜜點放行：整批轉檔過了 75% 就把遮罩收掉、讓人先進去剪，
+  /// 剩下的在背景轉完（進去後先播原檔，暫停的空檔無感換上工作檔）。
+  ///
+  /// 75% 的取捨：放行後到轉完之間播的是 4K/HDR 原檔（會頓），
+  /// 更早放行＝頓的尾巴更長；更晚放行＝省不到幾秒。再配 5 秒下限：
+  /// 短素材整個轉檔就十來秒，遮罩才閃出來就收掉，畫面等於跳兩次
+  void _maybeEarlyRelease() {
+    if (!_prepGate) return;
+    if (_prepFraction < 0.75) return;
+    final shown = _gateShownAt;
+    if (shown == null || DateTime.now().difference(shown).inSeconds < 5) {
+      return;
+    }
+    setState(() => _prepSkipped = true);
+    showHint(context, '差不多了，先開始剪吧——剩下的在背景轉完');
+  }
+
   void _enqueuePrep(int srcIndex) {
     if (srcIndex < 0 || srcIndex >= _tl.sources.length) return;
     final src = _tl.sources[srcIndex];
@@ -1716,6 +1736,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _prepCur.clear();
       _prepTotal = _prepQueue.length;
     });
+    if (!silent) _gateShownAt = DateTime.now();
     // 轉檔偶爾會卡在某一支（硬體編碼器被佔住、素材有問題）。這一頁擋著
     // 整個編輯器，沒有退路的話使用者只能關掉 App 重來
     _prepEscapeTimer?.cancel();
@@ -1734,7 +1755,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (_prepSilent) {
         for (final i in List<int>.of(_prepQueue)) {
           if (await _prepGateNeeded(i)) {
-            if (mounted) setState(() => _prepSilent = false);
+            if (mounted) {
+              setState(() => _prepSilent = false);
+              _gateShownAt = DateTime.now();
+            }
             break;
           }
         }
@@ -1750,6 +1774,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               _prepDone++;
               _prepCur.remove(i);
             });
+            _maybeEarlyRelease();
           }),
         );
       }
@@ -1810,6 +1835,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 這時每一格進度都 setState 等於邊剪邊整頁重建
         if (!mounted || !_prepGate) return;
         setState(() => _prepCur[srcIndex] = v.clamp(0.0, 1.0));
+        _maybeEarlyRelease();
       },
     );
     if (!mounted) return;
