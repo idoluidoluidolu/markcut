@@ -1698,12 +1698,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     if (!mounted) return;
-    // 先看這一批需不需要遮罩：全是「播原檔就夠順」的素材就默默背景轉
+    // 秒進：先試著把合成播放器叫起來。合成接手＝整條時間軸一顆
+    // 解碼器，4K HDR 原檔播起來跟相簿一樣順（CompPlayer 本來就
+    // 「工作檔沒好也照組」），不必擋人等轉檔——工作檔照樣背景補
+    //（拖曳抽幀、旋轉燒正、FFmpeg 匯出還是要它），補好在暫停空檔
+    // 無感換上。合成器用不了（倒轉/調色/圖片素材/原生端組失敗）
+    // 才退回「一片段一顆播放器」的舊路，那條路播 4K/HDR 原檔真的
+    // 會卡，照舊用 probeLite 分類決定要不要擋
     var silent = true;
-    for (final i in List<int>.of(_prepQueue)) {
-      if (await _prepGateNeeded(i)) {
-        silent = false;
-        break;
+    if (!_compOn) await _ensureComp();
+    if (!_compOn) {
+      for (final i in List<int>.of(_prepQueue)) {
+        if (await _prepGateNeeded(i)) {
+          silent = false;
+          break;
+        }
       }
     }
     if (!mounted) return;
@@ -1730,8 +1739,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 這樣，五支素材只轉好一支，其他全程用 4K 原檔播
     while (_prepQueue.isNotEmpty && mounted) {
       // 背景模式跑到一半又排進需要擋的素材（例如中途加了一支 4K）
-      // 就把遮罩亮起來
-      if (_prepSilent) {
+      // 就把遮罩亮起來——但合成播放器還在場的話照樣不用擋
+      if (_prepSilent && !_compOn) {
         for (final i in List<int>.of(_prepQueue)) {
           if (await _prepGateNeeded(i)) {
             if (mounted) setState(() => _prepSilent = false);
