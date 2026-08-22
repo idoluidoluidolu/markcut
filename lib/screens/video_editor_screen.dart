@@ -1418,14 +1418,31 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 每一支進來就先能播（工作檔在背景備），不會卡在載入畫面
       final list = widget.videoPaths ?? [widget.videoPath!];
       () async {
-        var first = true;
-        for (final path in list) {
+        // 解碼器初始化全部並行（一支幾百 ms，串行十支就是好幾秒），
+        // 接進時間軸仍照選取順序一支一支來——順序是使用者選的
+        Future<PlayerX?> initOne(String p) async {
           try {
-            await _importVideoFromPath(path, track: 0);
+            final c = makeVideoController(p, system: true);
+            await c.initialize();
+            return c;
           } catch (_) {
-            // 某一支讀不進來不該讓整批進不去
+            return null; // 某一支讀不進來不該讓整批進不去
           }
-          if (!mounted) return;
+        }
+
+        final inits = [for (final p in list) initOne(p)];
+        var first = true;
+        for (var i = 0; i < list.length; i++) {
+          final c = await inits[i];
+          if (!mounted) {
+            c?.dispose();
+            return;
+          }
+          if (c != null) {
+            try {
+              await _importVideoWithCtrl(list[i], c, track: 0);
+            } catch (_) {}
+          }
           // 第一支先「打扮好」再亮相（3 秒預算，見 _dressUp）；
           // 後面幾支在編輯器裡陸續接上，不再擋
           if (first) {
@@ -1642,6 +1659,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 剛匯入一定是原檔：走系統解碼器（見 _ensureCtrlFor 的說明）
     final c = makeVideoController(path, system: true);
     await c.initialize();
+    await _importVideoWithCtrl(path, c, track: track, name: name);
+  }
+
+  /// 匯入的後半段：解碼器已經初始化好，把素材與片段接進時間軸。
+  /// 拆出來是為了多選匯入能把「初始化」全部並行（見 initState 的
+  /// 匯入迴圈）——一支幾百 ms 的 init 串起來，十支就是好幾秒白等
+  Future<void> _importVideoWithCtrl(
+    String path,
+    PlayerX c, {
+    required int track,
+    String? name,
+  }) async {
     final dur = c.value.duration.inMilliseconds / 1000.0;
     final srcIndex = _tl.sources.length;
     _tl.sources.add(
@@ -2441,12 +2470,30 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
     _pause();
     _pushUndo();
+    // 初始化並行、接軌照序（同 initState 的匯入迴圈）
+    final inits = [
+      for (final v in vids)
+        () async {
+          try {
+            final c = makeVideoController(v.path, system: true);
+            await c.initialize();
+            return c;
+          } catch (_) {
+            return null;
+          }
+        }(),
+    ];
     for (var i = 0; i < vids.length; i++) {
+      final c = await inits[i];
+      if (!mounted) {
+        c?.dispose();
+        return;
+      }
+      if (c == null) continue;
       // 各自一軌時，第二部以後每部都開一條新的空軌；
       // usedTracks 每加一部就長一格，所以這裡每輪重新算
       final t = (sameTrack || i == 0) ? track : _tl.usedTracks;
-      await _importVideoFromPath(vids[i].path, track: t, name: vids[i].name);
-      if (!mounted) return;
+      await _importVideoWithCtrl(vids[i].path, c, track: t, name: vids[i].name);
     }
     setState(() {});
     // 極少數情況相簿還是會塞進非影片（web 那條路是混合選取），
