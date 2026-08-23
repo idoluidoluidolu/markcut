@@ -2302,18 +2302,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 每段約 6 秒，抽完立刻可用、逐段補滿。
     // 播放或拖曳中先暫停：抽幀跟播放搶 CPU 會讓畫面跳針
     final segFrames = (_scrubFps * 6).round();
+    // 第一批只抽 1 秒份：進場打扮在等「第一批格子」（見 _dressUp
+    // 的 scrubReady），4K HEVC 軟解 48 格要好幾秒、一定吃滿 3 秒
+    // 預算——先給 8 格讓打扮提早放行，之後照 6 秒一段補滿
+    final firstFrames = _scrubFps.round().clamp(1, segFrames);
     // 稍等一拍再開抽。以前是 1500ms「讓 UI 安頓」——但現在進場
     // 有 3 秒的打扮預算在等第一段格子（見 _dressUp），拖 1.5 秒
     // 等於預算先被自己吃掉一半
     await Future<void>.delayed(const Duration(milliseconds: 300));
-    for (var s = 0; s < n; s += segFrames) {
+    for (var s = 0; s < n; s += s == 0 ? firstFrames : segFrames) {
       // 匯出中一定要停：抽幀的 FFmpeg 跟匯出的 FFmpeg 同時跑，
       // 記憶體疊加會把整個 App 弄死（OOM 直接閃退）
       while (mounted && (_playing || _scrubbing || _exporting)) {
         await Future<void>.delayed(const Duration(milliseconds: 400));
       }
       if (!mounted || !identical(_scrubFrames[srcIndex], slots)) return;
-      final count = math.min(segFrames, n - s);
+      final count = math.min(s == 0 ? firstFrames : segFrames, n - s);
       _scrubExtracting++;
       PlaybackTrace.instance.log('開始背景抽幀（素材 $srcIndex，$count 格）');
       List<Uint8List> t;
