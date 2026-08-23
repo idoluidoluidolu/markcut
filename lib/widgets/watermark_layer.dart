@@ -107,9 +107,7 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
     }
     // 琥珀而不是白：這個框疊的是使用者的照片／影片，白框落在白色縮圖
     // 或亮背景上會整個看不見
-    return BoxDecoration(
-      border: Border.all(color: kSelect, width: 1.4),
-    );
+    return BoxDecoration(border: Border.all(color: kSelect, width: 1.4));
   }
 
   /// 這個部件現在能不能拖：
@@ -183,14 +181,18 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
     if (known != null) return known;
     // 還沒量到先當正方形，量好了再重畫
     _aspects[bytes] = 1;
-    ui.instantiateImageCodec(bytes).then((c) => c.getNextFrame()).then((f) {
-      final a = f.image.width / f.image.height;
-      f.image.dispose();
-      if (!mounted) return;
-      if ((a - (_aspects[bytes] ?? 1)).abs() > 0.001) {
-        setState(() => _aspects[bytes] = a);
-      }
-    }).catchError((_) {});
+    ui
+        .instantiateImageCodec(bytes)
+        .then((c) => c.getNextFrame())
+        .then((f) {
+          final a = f.image.width / f.image.height;
+          f.image.dispose();
+          if (!mounted) return;
+          if ((a - (_aspects[bytes] ?? 1)).abs() > 0.001) {
+            setState(() => _aspects[bytes] = a);
+          }
+        })
+        .catchError((_) {});
     return 1;
   }
 
@@ -326,168 +328,197 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
         // 文字可以放很多個（跟圖片同一套）：照清單順序畫，
         // 碰到哪一個就把它設成「操作中」（settings.activeText）
         for (var ti = 0; ti < settings.texts.length; ti++) {
-        final t = settings.texts[ti];
-        // 滿版平鋪（棋盤格）：整面重複，不能拖曳（位置無意義）
-        if (t.enabled && t.text.trim().isNotEmpty && t.tiled) {
-          children.add(
-            Positioned.fill(
-              child: IgnorePointer(
-                child: CustomPaint(painter: _TiledTextPainter(t, math.min(w, h))),
+          final t = settings.texts[ti];
+          // 滿版平鋪（棋盤格）：整面重複，不能拖曳（位置無意義）
+          if (t.enabled && t.text.trim().isNotEmpty && t.tiled) {
+            children.add(
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: CustomPaint(
+                    painter: _TiledTextPainter(t, math.min(w, h)),
+                  ),
+                ),
               ),
-            ),
-          );
-        } else if (t.enabled && t.text.trim().isNotEmpty) {
-          // 不自動換行、也不自動縮小：使用者調多大就多大，
-          // 超出畫面是允許的（跟匯出同一套規則）
-          final fontSize = t.sizeFrac * math.min(w, h); // 短邊基準
+            );
+          } else if (t.enabled && t.text.trim().isNotEmpty) {
+            // 不自動換行、也不自動縮小：使用者調多大就多大，
+            // 超出畫面是允許的（跟匯出同一套規則）
+            final fontSize = t.sizeFrac * math.min(w, h); // 短邊基準
 
-          final probe = _measureText(t, fontSize);
+            final probe = _measureText(t, fontSize);
 
-          final style = TextStyle(
-            fontFamily: t.fontFamily,
-            fontSize: fontSize,
-            letterSpacing: fontSize * t.spacing,
-            color: t.color.withValues(alpha: t.opacity),
-            shadows: t.shadow
-                ? [
-                    Shadow(
-                      color: Colors.black.withValues(alpha: 0.55 * t.opacity),
-                      blurRadius: fontSize * 0.08,
-                      offset: Offset(fontSize * 0.03, fontSize * 0.03),
-                    ),
-                  ]
-                : null,
-          );
-          // 開底色時外框會往外長一圈 padding，Positioned 的原點是
-          // 「含底色的框」；不先扣掉的話文字會被推到右下，
-          // 跟匯出（底色往外擴、文字不動）差一個 padding
-          final padH = t.bg ? fontSize * 0.35 * t.bgPad : 0.0;
-          final padV = t.bg ? fontSize * 0.18 * t.bgPad : 0.0;
-          // 不夾限（理由同 Logo）
-          final boxW = probe.width + padH * 2;
-          final boxH = probe.height + padV * 2;
-          final left = t.x * w - probe.width / 2 - padH;
-          final top = t.y * h - probe.height / 2 - padV;
-          // 框比量到的字再放寬一點點。
-          //
-          // TextPainter 回的是「行高」，而不少字型的墨水會超出行高
-          //（粉圓這種圓體最明顯，筆畫的圓頭往上下多凸一截）——照行高
-          // 畫框，字就會壓在框線上、甚至凸出去。放寬只動框與點擊範圍，
-          // 文字本身的位置一個像素都沒變，跟匯出還是對得上
-          final inkH = fontSize * 0.07;
-          final inkW = fontSize * 0.04;
-          hitTexts[ti] = Rect.fromLTWH(
-            left - inkW,
-            top - inkH,
-            boxW + inkW * 2,
-            boxH + inkH * 2,
-          );
-          void makeActive() => settings.activeText = ti;
+            final style = TextStyle(
+              fontFamily: t.fontFamily,
+              fontSize: fontSize,
+              letterSpacing: fontSize * t.spacing,
+              color: t.color.withValues(alpha: t.opacity),
+            );
+            // 陰影＝手工蓋印（跟匯出渲染器同一套數學與常數；
+            // 理由見 _TiledTextPainter）
+            final shadowStyle = TextStyle(
+              fontFamily: t.fontFamily,
+              fontSize: fontSize,
+              letterSpacing: fontSize * t.spacing,
+              color: Colors.black.withValues(
+                alpha: (0.22 * t.opacity).clamp(0.0, 1.0),
+              ),
+            );
+            // 開底色時外框會往外長一圈 padding，Positioned 的原點是
+            // 「含底色的框」；不先扣掉的話文字會被推到右下，
+            // 跟匯出（底色往外擴、文字不動）差一個 padding
+            final padH = t.bg ? fontSize * 0.35 * t.bgPad : 0.0;
+            final padV = t.bg ? fontSize * 0.18 * t.bgPad : 0.0;
+            // 不夾限（理由同 Logo）
+            final boxW = probe.width + padH * 2;
+            final boxH = probe.height + padV * 2;
+            final left = t.x * w - probe.width / 2 - padH;
+            final top = t.y * h - probe.height / 2 - padV;
+            // 框比量到的字再放寬一點點。
+            //
+            // TextPainter 回的是「行高」，而不少字型的墨水會超出行高
+            //（粉圓這種圓體最明顯，筆畫的圓頭往上下多凸一截）——照行高
+            // 畫框，字就會壓在框線上、甚至凸出去。放寬只動框與點擊範圍，
+            // 文字本身的位置一個像素都沒變，跟匯出還是對得上
+            final inkH = fontSize * 0.07;
+            final inkW = fontSize * 0.04;
+            hitTexts[ti] = Rect.fromLTWH(
+              left - inkW,
+              top - inkH,
+              boxW + inkW * 2,
+              boxH + inkH * 2,
+            );
+            void makeActive() => settings.activeText = ti;
 
-          Widget textWidget(TextStyle st) => Text(
-            t.text,
-            softWrap: false,
-            overflow: TextOverflow.visible,
-            textScaler: TextScaler.noScaling,
-            style: st,
-          );
+            Widget textWidget(TextStyle st) => Text(
+              t.text,
+              softWrap: false,
+              overflow: TextOverflow.visible,
+              textScaler: TextScaler.noScaling,
+              style: st,
+            );
 
-          children.add(
-            Positioned(
-              left: left,
-              top: top,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () {
-                  makeActive();
-                  widget.onSelectPart?.call(WmPart.text);
-                  (onTapText ?? onTap)?.call();
-                },
-                // 雙擊＝回正中央、恢復預設大小（同 Logo）
-                onDoubleTap: () {
-                  makeActive();
-                  onDragStart?.call();
-                  t.x = 0.5;
-                  t.y = 0.5;
-                  t.sizeFrac = 0.12;
-                  onChanged();
-                },
-                // 單指拖＝移動（雙指縮放由預覽層的 Listener 處理）
-                onPanStart: !_canDrag(WmPart.text)
-                    ? null
-                    : (_) {
-                        if (widget.panLocked?.call() ?? false) return;
-                        makeActive();
-                        _rawX = t.x;
-                        _rawY = t.y;
-                        setState(() => _panning = WmPart.text);
-                        onDragStart?.call();
-                      },
-                onPanUpdate: !_canDrag(WmPart.text)
-                    ? null
-                    : (d) {
-                        if (widget.panLocked?.call() ?? false) return;
-                        // 手指位置累積在原始座標上；顯示值才吸中線,
-                        // 拖離吸附半徑就自然脫離
-                        _rawX = (_rawX + d.delta.dx / w).clamp(0.0, 1.0);
-                        _rawY = (_rawY + d.delta.dy / h).clamp(0.0, 1.0);
-                        t.x = _snapCenter(_rawX);
-                        t.y = _snapCenter(_rawY);
-                        _feedbackCenter(t.x, t.y);
-                        onChanged();
-                      },
-                onPanEnd: !_canDrag(WmPart.text)
-                    ? null
-                    : (_) => setState(() => _panning = WmPart.none),
-                onPanCancel: !_canDrag(WmPart.text)
-                    ? null
-                    : () => setState(() => _panning = WmPart.none),
-                child: Transform.rotate(
-                  angle: t.rotation * math.pi / 180,
-                  child: Container(
-                    foregroundDecoration: _deco(WmPart.text, textIndex: ti),
+            children.add(
+              Positioned(
+                left: left,
+                top: top,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () {
+                    makeActive();
+                    widget.onSelectPart?.call(WmPart.text);
+                    (onTapText ?? onTap)?.call();
+                  },
+                  // 雙擊＝回正中央、恢復預設大小（同 Logo）
+                  onDoubleTap: () {
+                    makeActive();
+                    onDragStart?.call();
+                    t.x = 0.5;
+                    t.y = 0.5;
+                    t.sizeFrac = 0.12;
+                    onChanged();
+                  },
+                  // 單指拖＝移動（雙指縮放由預覽層的 Listener 處理）
+                  onPanStart: !_canDrag(WmPart.text)
+                      ? null
+                      : (_) {
+                          if (widget.panLocked?.call() ?? false) return;
+                          makeActive();
+                          _rawX = t.x;
+                          _rawY = t.y;
+                          setState(() => _panning = WmPart.text);
+                          onDragStart?.call();
+                        },
+                  onPanUpdate: !_canDrag(WmPart.text)
+                      ? null
+                      : (d) {
+                          if (widget.panLocked?.call() ?? false) return;
+                          // 手指位置累積在原始座標上；顯示值才吸中線,
+                          // 拖離吸附半徑就自然脫離
+                          _rawX = (_rawX + d.delta.dx / w).clamp(0.0, 1.0);
+                          _rawY = (_rawY + d.delta.dy / h).clamp(0.0, 1.0);
+                          t.x = _snapCenter(_rawX);
+                          t.y = _snapCenter(_rawY);
+                          _feedbackCenter(t.x, t.y);
+                          onChanged();
+                        },
+                  onPanEnd: !_canDrag(WmPart.text)
+                      ? null
+                      : (_) => setState(() => _panning = WmPart.none),
+                  onPanCancel: !_canDrag(WmPart.text)
+                      ? null
+                      : () => setState(() => _panning = WmPart.none),
+                  child: Transform.rotate(
+                    angle: t.rotation * math.pi / 180,
                     child: Container(
-                      padding: EdgeInsets.symmetric(
-                        horizontal: padH,
-                        vertical: padV,
-                      ),
-                      decoration: t.bg
-                          ? BoxDecoration(
-                              color: t.bgColor.withValues(alpha: t.bgOpacity),
-                              borderRadius: BorderRadius.circular(
-                                fontSize * t.bgCorner,
-                              ),
-                            )
-                          : null,
-                      child: t.outline
-                          ? Stack(
-                              children: [
-                                textWidget(
-                                  style.copyWith(
-                                    color: null,
-                                    shadows: null,
-                                    foreground: Paint()
-                                      ..style = PaintingStyle.stroke
-                                      ..strokeWidth = math.max(
-                                        1,
-                                        fontSize * t.outlineWidth,
-                                      )
-                                      ..color = t.outlineColor.withValues(
-                                        alpha: t.opacity,
-                                      ),
-                                  ),
+                      foregroundDecoration: _deco(WmPart.text, textIndex: ti),
+                      child: Container(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: padH,
+                          vertical: padV,
+                        ),
+                        decoration: t.bg
+                            ? BoxDecoration(
+                                color: t.bgColor.withValues(alpha: t.bgOpacity),
+                                borderRadius: BorderRadius.circular(
+                                  fontSize * t.bgCorner,
                                 ),
-                                textWidget(style),
-                              ],
-                            )
-                          : textWidget(style),
+                              )
+                            : null,
+                        // 疊法＝陰影蓋印（5 印）→ 描邊 → 本體，
+                        // 跟匯出渲染器同一個順序與常數
+                        child: Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            if (t.shadow)
+                              for (final o in [
+                                Offset(fontSize * 0.03, fontSize * 0.03),
+                                Offset(
+                                  fontSize * 0.03 + fontSize * 0.05,
+                                  fontSize * 0.03,
+                                ),
+                                Offset(
+                                  fontSize * 0.03 - fontSize * 0.05,
+                                  fontSize * 0.03,
+                                ),
+                                Offset(
+                                  fontSize * 0.03,
+                                  fontSize * 0.03 + fontSize * 0.05,
+                                ),
+                                Offset(
+                                  fontSize * 0.03,
+                                  fontSize * 0.03 - fontSize * 0.05,
+                                ),
+                              ])
+                                Transform.translate(
+                                  offset: o,
+                                  child: textWidget(shadowStyle),
+                                ),
+                            if (t.outline)
+                              textWidget(
+                                style.copyWith(
+                                  color: null,
+                                  shadows: null,
+                                  foreground: Paint()
+                                    ..style = PaintingStyle.stroke
+                                    ..strokeWidth = math.max(
+                                      1,
+                                      fontSize * t.outlineWidth,
+                                    )
+                                    ..color = t.outlineColor.withValues(
+                                      alpha: t.opacity,
+                                    ),
+                                ),
+                              ),
+                            textWidget(style),
+                          ],
+                        ),
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-          );
-        }
+            );
+          }
         }
 
         // 置中輔助線：拖曳中吸在中線上時，畫出垂直／水平線
@@ -530,11 +561,10 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
 
         // 動畫會整組位移，回報的框也要跟著移，不然點擊判定跟看到的錯開
         final shift = Offset(anim.dx * w, anim.dy * h);
-        widget.onHitBox?.call([
-          for (final r in hitTexts) r?.shift(shift),
-        ], [
-          for (final r in hitLogos) r?.shift(shift),
-        ]);
+        widget.onHitBox?.call(
+          [for (final r in hitTexts) r?.shift(shift)],
+          [for (final r in hitLogos) r?.shift(shift)],
+        );
 
         // 被選部件的框回報給外層畫（見 frameNotifier 的說明）
         final fn = widget.frameNotifier;
@@ -723,19 +753,42 @@ class _TiledTextPainter extends CustomPainter {
           fontSize: fontSize,
           letterSpacing: fontSize * t.spacing,
           color: t.color.withValues(alpha: t.opacity),
-          shadows: t.shadow
-              ? [
-                  Shadow(
-                    color: Colors.black.withValues(alpha: 0.55 * t.opacity),
-                    blurRadius: fontSize * 0.08,
-                    offset: Offset(fontSize * 0.03, fontSize * 0.03),
-                  ),
-                ]
-              : null,
         ),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
+    // 陰影＝手工蓋印（跟匯出渲染器同一套數學）。不用 TextStyle.shadows：
+    // 預覽與匯出必須是「同一種畫法」，兩套實作永遠對不齊——
+    // 而且引擎濾鏡在離屏渲染會被丟掉（匯出端踩過）
+    TextPainter? shadowPainter;
+    if (t.shadow) {
+      shadowPainter = TextPainter(
+        text: TextSpan(
+          text: t.text,
+          style: TextStyle(
+            fontFamily: t.fontFamily,
+            fontSize: fontSize,
+            letterSpacing: fontSize * t.spacing,
+            color: Colors.black.withValues(
+              alpha: (0.22 * t.opacity).clamp(0.0, 1.0),
+            ),
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+    }
+    void stampShadow(double x, double y) {
+      final sp2 = shadowPainter;
+      if (sp2 == null) return;
+      final ox = fontSize * 0.03;
+      final oy = fontSize * 0.03;
+      final r = fontSize * 0.05;
+      sp2.paint(canvas, Offset(x + ox, y + oy));
+      sp2.paint(canvas, Offset(x + ox + r, y + oy));
+      sp2.paint(canvas, Offset(x + ox - r, y + oy));
+      sp2.paint(canvas, Offset(x + ox, y + oy + r));
+      sp2.paint(canvas, Offset(x + ox, y + oy - r));
+    }
 
     // 描邊層（跟匯出同一套）
     TextPainter? strokePainter;
@@ -789,6 +842,7 @@ class _TiledTextPainter extends CustomPainter {
             Paint()..color = t.bgColor.withValues(alpha: t.bgOpacity),
           );
         }
+        stampShadow(x, y);
         strokePainter?.paint(canvas, Offset(x, y));
         painter.paint(canvas, Offset(x, y));
       }
@@ -822,17 +876,11 @@ class CenterGuides extends StatelessWidget {
         children: [
           if (vertical)
             Center(
-              child: Container(
-                width: 1,
-                color: line.withValues(alpha: 0.9),
-              ),
+              child: Container(width: 1, color: line.withValues(alpha: 0.9)),
             ),
           if (horizontal)
             Center(
-              child: Container(
-                height: 1,
-                color: line.withValues(alpha: 0.9),
-              ),
+              child: Container(height: 1, color: line.withValues(alpha: 0.9)),
             ),
         ],
       ),

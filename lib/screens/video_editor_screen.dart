@@ -8,10 +8,12 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart' show compute, kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart'
     show Clipboard, ClipboardData, HapticFeedback;
 import 'package:file_picker/file_picker.dart';
+import 'package:gal/gal.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
@@ -7643,6 +7645,97 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       '對照模式：左＝預覽、右＝成品。換位置後再長按一次更新',
       duration: const Duration(seconds: 4),
     );
+
+    // 順手產一張 AB 檢驗卡存相簿：左＝預覽引擎畫的浮水印、
+    // 右＝匯出渲染器畫的同一組，同尺寸灰底、無影片無編碼干擾——
+    // 直接回答「兩個文字渲染器在這支手機上畫得一不一樣」
+    unawaited(_saveWmAbCard());
+  }
+
+  /// AB 檢驗卡：左半用「預覽的 widget 管線」隱形掛載後截圖，
+  /// 右半用「匯出的 WatermarkRenderer」直接畫，拼成一張存相簿。
+  /// 兩邊都在本機的同一個引擎上跑，差異就是渲染實作的差異
+  Future<void> _saveWmAbCard() async {
+    if (kIsWeb || !_settings.hasAnyMark) return;
+    try {
+      const lw = 360.0, lh = 640.0; // 邏輯尺寸；x3 截成 1080x1920
+      final key = GlobalKey();
+      final entry = OverlayEntry(
+        builder: (_) => Positioned(
+          left: 0,
+          top: 0,
+          // 透明度 0.01：0 會被引擎直接跳過不畫，截不到圖
+          child: Opacity(
+            opacity: 0.01,
+            child: IgnorePointer(
+              child: RepaintBoundary(
+                key: key,
+                child: SizedBox(
+                  width: lw,
+                  height: lh,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      const ColoredBox(color: Color(0xFF888888)),
+                      WatermarkLayer(
+                        settings: _settings,
+                        onChanged: () {},
+                        time: 0,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      final overlay = Overlay.of(context);
+      overlay.insert(entry);
+      await WidgetsBinding.instance.endOfFrame;
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      ui.Image? a;
+      final ro = key.currentContext?.findRenderObject();
+      if (ro is RenderRepaintBoundary) {
+        a = await ro.toImage(pixelRatio: 3);
+      }
+      entry.remove();
+      if (a == null) return;
+
+      const w = 1080, h = 1920;
+      final rec = ui.PictureRecorder();
+      final c = ui.Canvas(rec);
+      c.drawRect(
+        const ui.Rect.fromLTWH(0, 0, w * 2 + 4, h * 1.0),
+        ui.Paint()..color = const Color(0xFF888888),
+      );
+      c.drawImage(a, ui.Offset.zero, ui.Paint());
+      c.drawRect(
+        const ui.Rect.fromLTWH(w * 1.0, 0, 4, h * 1.0),
+        ui.Paint()..color = const Color(0xFFFFC24B),
+      );
+      c.save();
+      c.translate(w + 4, 0);
+      await WatermarkRenderer.drawMarks(c, _settings, w * 1.0, h * 1.0);
+      c.restore();
+      final img = await rec.endRecording().toImage(w * 2 + 4, h);
+      final data = await img.toByteData(format: ui.ImageByteFormat.png);
+      a.dispose();
+      img.dispose();
+      if (data == null) return;
+      final dir = await getTemporaryDirectory();
+      final path =
+          '${dir.path}${Platform.pathSeparator}'
+          'wm_ab_${DateTime.now().millisecondsSinceEpoch}.png';
+      await File(path).writeAsBytes(data.buffer.asUint8List());
+      await Gal.putImage(path, album: '浮水印');
+      Diag.note('浮水印 AB 檢驗卡已存相簿（左＝預覽引擎、右＝匯出渲染器）');
+      if (mounted) {
+        showHint(context, 'AB 檢驗卡已存相簿（左預覽引擎/右匯出渲染器）');
+      }
+    } catch (e) {
+      Diag.note('AB 檢驗卡失敗：$e');
+    }
   }
 
   Widget _buildPreview() {
@@ -8565,22 +8658,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         color: st.color.withValues(
                                           alpha: st.opacity,
                                         ),
-                                        shadows: st.shadow
-                                            ? [
-                                                Shadow(
-                                                  color: Colors.black
-                                                      .withValues(
-                                                        alpha:
-                                                            0.55 * st.opacity,
-                                                      ),
-                                                  blurRadius: fontSize * 0.08,
-                                                  offset: Offset(
-                                                    fontSize * 0.03,
-                                                    fontSize * 0.03,
-                                                  ),
-                                                ),
-                                              ]
-                                            : null,
+                                      );
+                                      // 陰影＝手工蓋印，跟匯出渲染器
+                                      // 同一套數學（理由見
+                                      // _TiledTextPainter）
+                                      final shadowStyle = TextStyle(
+                                        fontFamily: st.fontFamily,
+                                        fontSize: fontSize,
+                                        letterSpacing: fontSize * st.spacing,
+                                        color: Colors.black.withValues(
+                                          alpha: (0.22 * st.opacity).clamp(
+                                            0.0,
+                                            1.0,
+                                          ),
+                                        ),
                                       );
                                       final painter = TextPainter(
                                         text: TextSpan(
@@ -8666,32 +8757,61 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                               ),
                                                         )
                                                       : null,
-                                                  child: st.outline
-                                                      ? Stack(
-                                                          children: [
-                                                            textW(
-                                                              style.copyWith(
-                                                                color: null,
-                                                                shadows: null,
-                                                                foreground: Paint()
-                                                                  ..style =
-                                                                      PaintingStyle
-                                                                          .stroke
-                                                                  ..strokeWidth =
-                                                                      fontSize *
-                                                                      st.outlineWidth
-                                                                  ..color = st
-                                                                      .outlineColor
-                                                                      .withValues(
-                                                                        alpha: st
-                                                                            .opacity,
-                                                                      ),
-                                                              ),
+                                                  child: Stack(
+                                                    clipBehavior: Clip.none,
+                                                    children: [
+                                                      if (st.shadow)
+                                                        for (final o in [
+                                                          Offset(
+                                                            fontSize * 0.03,
+                                                            fontSize * 0.03,
+                                                          ),
+                                                          Offset(
+                                                            fontSize * 0.08,
+                                                            fontSize * 0.03,
+                                                          ),
+                                                          Offset(
+                                                            fontSize * -0.02,
+                                                            fontSize * 0.03,
+                                                          ),
+                                                          Offset(
+                                                            fontSize * 0.03,
+                                                            fontSize * 0.08,
+                                                          ),
+                                                          Offset(
+                                                            fontSize * 0.03,
+                                                            fontSize * -0.02,
+                                                          ),
+                                                        ])
+                                                          Transform.translate(
+                                                            offset: o,
+                                                            child: textW(
+                                                              shadowStyle,
                                                             ),
-                                                            textW(style),
-                                                          ],
-                                                        )
-                                                      : textW(style),
+                                                          ),
+                                                      if (st.outline)
+                                                        textW(
+                                                          style.copyWith(
+                                                            color: null,
+                                                            shadows: null,
+                                                            foreground: Paint()
+                                                              ..style =
+                                                                  PaintingStyle
+                                                                      .stroke
+                                                              ..strokeWidth =
+                                                                  fontSize *
+                                                                  st.outlineWidth
+                                                              ..color = st
+                                                                  .outlineColor
+                                                                  .withValues(
+                                                                    alpha: st
+                                                                        .opacity,
+                                                                  ),
+                                                          ),
+                                                        ),
+                                                      textW(style),
+                                                    ],
+                                                  ),
                                                 ),
                                               ),
                                             ),
