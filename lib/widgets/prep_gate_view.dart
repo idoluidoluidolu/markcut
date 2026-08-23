@@ -31,6 +31,10 @@ class PrepGateView extends StatelessWidget {
   /// 擋著整個編輯器。沒有退路的話使用者只能關掉 App 重來
   final VoidCallback? onSkip;
 
+  /// 進度下方的小字。null＝「準備素材 done/total」（轉檔用）；
+  /// 進場打扮那條路傳自己的說法（沒有「幾支」可數）
+  final String? label;
+
   const PrepGateView({
     super.key,
     required this.done,
@@ -38,6 +42,7 @@ class PrepGateView extends StatelessWidget {
     this.fraction = 0,
     this.ready = true,
     this.onSkip,
+    this.label,
   });
 
   @override
@@ -93,7 +98,7 @@ class PrepGateView extends StatelessWidget {
           if (counting) ...[
             const SizedBox(height: 14),
             Text(
-              '準備素材 $done／$total',
+              label ?? '準備素材 $done／$total',
               style: const TextStyle(fontSize: 12, color: kTextDim),
             ),
           ],

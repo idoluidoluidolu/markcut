@@ -399,9 +399,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 拖曳快取第一段抽好。湊齊哪一刻就放行，3 秒到了沒湊齊也放行
   ///（缺的在背景補完）。轉檔（30 秒起跳）不在預算內，照舊背景跑。
   /// 空白專案、照片批次不經過這裡
+  /// 打扮進度（0~1），讀取畫面的 % 數看它。三件事各佔一段，
+  /// 另配時間爬升——就算某件事卡著，數字也一直在動
+  final ValueNotifier<double> _dressVN = ValueNotifier(0);
+
   Future<void> _dressUp() async {
     if (!_tl.sources.any((s) => s.isVideo)) return;
     final deadline = DateTime.now().add(const Duration(seconds: 3));
+    _dressVN.value = 0.06;
     // 合成器先叫起來（await＝組好或確定組不起來才回來）
     await _ensureComp();
     // 只等「真的有片段在用」的素材：清單裡可能躺著沒被引用的素材
@@ -433,8 +438,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     while (mounted &&
         DateTime.now().isBefore(deadline) &&
         !(thumbsReady() && scrubReady())) {
+      // 三件事各佔一段；時間爬升保底（卡著也要看得到數字在動）
+      final left = deadline.difference(DateTime.now()).inMilliseconds;
+      var v = 0.35;
+      if (thumbsReady()) v += 0.35;
+      if (scrubReady()) v += 0.25;
+      _dressVN.value = math
+          .max(v, (1 - left / 3000) * 0.9)
+          .clamp(_dressVN.value, 0.97);
       await Future<void>.delayed(const Duration(milliseconds: 80));
     }
+    _dressVN.value = 1;
   }
 
   TimelineClip? _clipboard; // 複製的片段（貼上時以播放頭為起點）
@@ -1095,6 +1109,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             '|${_tl.sourceOf(c).mosaicStyle?.strength}'
             '|${_tl.sourceOf(c).mosaicStyle?.color}'
             '|${_tl.sourceOf(c).mosaicStyle?.feather}',
+    // 圖片素材只記軌道：它們不進合成（Flutter 畫在上面），但
+    // 「在影片之上還是之下」決定合成能不能用（見 CompPlayer.whyNot）
+    // ——拖到影片下層的那一刻要觸發重評估，不然合成照播、圖片被蓋掉
+    for (final c in _tl.clips)
+      if (_tl.sourceOf(c).kind == ClipKind.image) 'im${c.track}',
     // 整軌靜音是烘進合成的音量參數的，切了要重組——不記的話
     // 預覽照樣有聲音，匯出卻是靜音的（匯出另外走自己的靜音處理）
     'mute${(_mutedTracks.toList()..sort()).join(',')}',
@@ -6706,6 +6725,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _prepEscapeTimer?.cancel();
     _posVN.dispose();
     _frameVN.dispose();
+    _dressVN.dispose();
     _wmFrameInfo.dispose();
     unawaited(Diag.deactivateAudio());
     unawaited(_comp?.dispose() ?? Future<void>.value());
@@ -9431,13 +9451,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 右上角比例小標籤：常駐顯示目前畫面比例，點了直接開比例選單
   /// 進場的讀取畫面（元件在 widgets/prep_gate_view.dart）
-  Widget _buildPrepGate() => PrepGateView(
-    done: _prepDone,
-    total: _prepTotal,
-    fraction: _prepFraction,
-    ready: _ready,
-    onSkip: _prepEscapeReady ? () => setState(() => _prepSkipped = true) : null,
-  );
+  Widget _buildPrepGate() {
+    // 進場打扮（3 秒預算，見 _dressUp）：用同一張讀取畫面顯示 %
+    //（使用者指定：開頭讀取要有 % 數、跟匯入的 UI 同一套）
+    if (!_ready) {
+      return ValueListenableBuilder<double>(
+        valueListenable: _dressVN,
+        builder: (context, v, _) =>
+            PrepGateView(done: 0, total: 1, fraction: v, label: '正在準備畫面'),
+      );
+    }
+    return PrepGateView(
+      done: _prepDone,
+      total: _prepTotal,
+      fraction: _prepFraction,
+      ready: _ready,
+      onSkip: _prepEscapeReady
+          ? () => setState(() => _prepSkipped = true)
+          : null,
+    );
+  }
 
   Widget _canvasHint() {
     return Align(

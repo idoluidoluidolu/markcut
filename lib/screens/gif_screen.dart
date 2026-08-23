@@ -595,40 +595,53 @@ class _GifScreenState extends State<GifScreen> {
         body: SafeArea(
           child: !_ready
               ? const Center(child: CircularProgressIndicator())
-              : Column(
-                  children: [
-                    Expanded(child: _preview()),
-                    _playbackRow(),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          _rangeReadout(),
-                          const SizedBox(height: 8),
-                          _trimStrip(),
-                          const SizedBox(height: 16),
-                          _chipsRow('尺寸', [320, 480, 640], _size, (v) {
-                            setState(() => _size = v);
-                            _schedulePreview();
-                          }, (v) => '${v}p'),
-                          const SizedBox(height: 10),
-                          _chipsRow('順暢度', [10, 12, 15], _fps, (v) {
-                            setState(() => _fps = v);
-                            _schedulePreview();
-                          }, (v) => '$v fps'),
-                          const SizedBox(height: 10),
-                          _speedRow(),
-                          const SizedBox(height: 16),
-                          primaryAction(
-                            label: '做成 GIF',
-                            icon: Icons.gif_box_outlined,
-                            onPressed: _exporting ? null : _export,
-                          ),
-                        ],
+              // 整頁左右滑＝速覽（使用者指定：這一頁任何地方橫滑都是
+              // 滑指針）。修剪把手、指針、縮圖帶自己的橫向手勢在
+              // 競技場裡比這層深、照樣先贏，這裡只接住其他空白處
+              : GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onHorizontalDragStart: (_) => _scrubBegin(),
+                  onHorizontalDragUpdate: (d) => _scrubBy(
+                    d.delta.dx,
+                    math.max(1, MediaQuery.of(context).size.width),
+                  ),
+                  onHorizontalDragEnd: (_) => _scrubEnd(),
+                  onHorizontalDragCancel: _scrubEnd,
+                  child: Column(
+                    children: [
+                      Expanded(child: _preview()),
+                      _playbackRow(),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            _rangeReadout(),
+                            const SizedBox(height: 8),
+                            _trimStrip(),
+                            const SizedBox(height: 16),
+                            _chipsRow('尺寸', [320, 480, 640], _size, (v) {
+                              setState(() => _size = v);
+                              _schedulePreview();
+                            }, (v) => '${v}p'),
+                            const SizedBox(height: 10),
+                            _chipsRow('順暢度', [10, 12, 15], _fps, (v) {
+                              setState(() => _fps = v);
+                              _schedulePreview();
+                            }, (v) => '$v fps'),
+                            const SizedBox(height: 10),
+                            _speedRow(),
+                            const SizedBox(height: 16),
+                            primaryAction(
+                              label: '做成 GIF',
+                              icon: Icons.gif_box_outlined,
+                              onPressed: _exporting ? null : _export,
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
         ),
       ),
@@ -857,6 +870,36 @@ class _GifScreenState extends State<GifScreen> {
     );
   }
 
+  /// 把指針現在的位置設成起點／終點（使用者指定：滑到哪、按一下
+  /// 就從哪開始/結束，不用去瞄準把手）
+  void _setEdgeHere({required bool start}) {
+    final t = _pos.value.clamp(0.0, _dur);
+    setState(() {
+      if (start) {
+        _start = math.min(t, _end - 0.2);
+      } else {
+        _end = math.max(t, _start + 0.2);
+      }
+    });
+    _schedulePreview();
+  }
+
+  Widget _edgeBtn(String label, bool start) => Padding(
+    padding: const EdgeInsets.only(left: 8),
+    child: InkWell(
+      borderRadius: BorderRadius.circular(999),
+      onTap: () => _setEdgeHere(start: start),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: kClipBorder),
+        ),
+        child: Text(label, style: const TextStyle(fontSize: 11, color: kText)),
+      ),
+    ),
+  );
+
   Widget _rangeReadout() {
     final over = _outLen > 15;
     return Row(
@@ -869,6 +912,8 @@ class _GifScreenState extends State<GifScreen> {
             fontFeatures: [FontFeature.tabularFigures()],
           ),
         ),
+        _edgeBtn('設起點', true),
+        _edgeBtn('設終點', false),
         const Spacer(),
         Text(
           over

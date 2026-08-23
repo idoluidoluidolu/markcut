@@ -65,10 +65,23 @@ class CompPlayer {
     // 馬賽克不再是阻擋條件：改成烘進合成本身——原生端掛上跟匯出
     // 同一顆 CI 合成器，逐格在 GPU 上打碼。Flutter 的 BackdropFilter
     // 版馬賽克在合成模式下會關掉（不然是打兩次碼）
-    // 圖片素材進不了合成（合成只裝得下影片軌），而系統的播放器圖層是
-    // 不透明的——墊在影片下層的圖片會被整片蓋黑，影片縮小移開也露不出來
+    // 圖片素材：只有「壓在所有影片之上」的放行——預覽時它們由
+    // Flutter 圖層畫在合成畫面上面（overlaysAt 那個迴圈本來就會畫，
+    // 跟非合成模式同一套）。墊在影片下層的仍然擋：系統的播放器圖層
+    // 不透明，會被整片蓋黑。
+    // 以前是一有圖片就整個放棄合成（實測診斷刷滿「有圖片素材」），
+    // 加一張 GIF 就退回一片段一顆播放器——片段交界的開頭卡頓、
+    // 播放變鈍全是這樣來的。
+    // 小已知限制：馬賽克軌在圖片之上時，合成裡的馬賽克只糊得到
+    // 影片、糊不到圖片（圖片不在合成裡）——極罕見的疊法，先接受
+    var topVideoTrack = -1;
+    for (final c in vids) {
+      if (c.track > topVideoTrack) topVideoTrack = c.track;
+    }
     for (final c in tl.clips) {
-      if (tl.sourceOf(c).kind == ClipKind.image) return '有圖片素材';
+      if (tl.sourceOf(c).kind == ClipKind.image && c.track <= topVideoTrack) {
+        return '有圖片素材壓在影片下層';
+      }
     }
     // 影片全部播完之後時間軸還有別的東西（圖片、文字拖得比影片長）：
     // 合成的總長只到影片結尾，播放時鐘走到那裡就卡住原地跳針，

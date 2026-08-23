@@ -539,7 +539,7 @@ void main() {
       expect(CompPlayer.whyNot(tl), isNull);
     });
 
-    test('有圖片素材就退回：墊在影片下層的圖片會被播放器圖層蓋黑', () {
+    test('圖片素材墊在影片下層（同軌或更低）才退回：會被播放器圖層蓋黑', () {
       final tl = base();
       tl.sources.add(MediaSource(
           path: '/p.png', name: 'p', kind: ClipKind.image, duration: 3600));
@@ -551,7 +551,22 @@ void main() {
         offset: 0,
         track: 0,
       ));
-      expect(CompPlayer.whyNot(tl), '有圖片素材');
+      expect(CompPlayer.whyNot(tl), '有圖片素材壓在影片下層');
+    });
+
+    test('圖片素材壓在所有影片之上：放行（Flutter 圖層畫在合成上面）', () {
+      final tl = base();
+      tl.sources.add(MediaSource(
+          path: '/p.png', name: 'p', kind: ClipKind.image, duration: 3600));
+      tl.clips.add(TimelineClip(
+        id: tl.nextId(),
+        sourceIndex: 1,
+        trimStart: 0,
+        trimEnd: 3, // 不超過影片結尾（超過另有「影片結束後還有其他素材」擋）
+        offset: 0,
+        track: 1,
+      ));
+      expect(CompPlayer.whyNot(tl), isNull);
     });
 
     test('影片播完後面還有文字：合成只到影片結尾，時鐘會卡住', () {
