@@ -597,12 +597,13 @@ class _GifScreenState extends State<GifScreen> {
               ? const Center(child: CircularProgressIndicator())
               // 整頁左右滑＝速覽（使用者指定：這一頁任何地方橫滑都是
               // 滑指針）。修剪把手、指針、縮圖帶自己的橫向手勢在
-              // 競技場裡比這層深、照樣先贏，這裡只接住其他空白處
+              // 競技場裡比這層深、照樣先贏，這裡只接住其他空白處。
+              // 方向跟預覽區一致：「拖底片」語意，手指往左＝時間往前
               : GestureDetector(
                   behavior: HitTestBehavior.translucent,
                   onHorizontalDragStart: (_) => _scrubBegin(),
                   onHorizontalDragUpdate: (d) => _scrubBy(
-                    d.delta.dx,
+                    -d.delta.dx,
                     math.max(1, MediaQuery.of(context).size.width),
                   ),
                   onHorizontalDragEnd: (_) => _scrubEnd(),
