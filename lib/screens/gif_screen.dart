@@ -885,7 +885,7 @@ class _GifScreenState extends State<GifScreen> {
   }
 
   Widget _edgeBtn(String label, bool start) => Padding(
-    padding: const EdgeInsets.only(left: 8),
+    padding: const EdgeInsets.only(right: 8),
     child: InkWell(
       borderRadius: BorderRadius.circular(999),
       onTap: () => _setEdgeHere(start: start),
@@ -902,16 +902,10 @@ class _GifScreenState extends State<GifScreen> {
 
   Widget _rangeReadout() {
     final over = _outLen > 15;
+    // 不顯示起訖秒數（使用者指定）：範圍看修剪條本身就夠，
+    // 這一列只放兩顆設定鈕＋右邊的長度
     return Row(
       children: [
-        Text(
-          '${_start.toStringAsFixed(1)} s — ${_end.toStringAsFixed(1)} s',
-          style: const TextStyle(
-            fontSize: 12.5,
-            color: kTextDim,
-            fontFeatures: [FontFeature.tabularFigures()],
-          ),
-        ),
         _edgeBtn('設起點', true),
         _edgeBtn('設終點', false),
         const Spacer(),
