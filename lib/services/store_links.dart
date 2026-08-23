@@ -47,7 +47,8 @@ Future<bool> openLiuJiKan() async {
   if (!kIsWeb) {
     try {
       if (Platform.isAndroid) {
-        url = 'https://play.google.com/store/apps/details'
+        url =
+            'https://play.google.com/store/apps/details'
             '?id=$kLiuJiKanAndroidPackage';
       }
     } catch (_) {}

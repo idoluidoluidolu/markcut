@@ -4,8 +4,10 @@ import 'package:file_picker/file_picker.dart';
 import 'package:web/web.dart' as web;
 
 Future<({String url, String name})?> pickAudioFile() async {
-  final r = await FilePicker.platform
-      .pickFiles(type: FileType.audio, withData: true);
+  final r = await FilePicker.platform.pickFiles(
+    type: FileType.audio,
+    withData: true,
+  );
   if (r == null || r.files.isEmpty) return null;
   final f = r.files.first;
   final bytes = f.bytes;

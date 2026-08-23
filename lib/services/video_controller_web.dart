@@ -6,8 +6,7 @@ import 'player_value.dart';
 /// Web 版播放控制器＝video_player（瀏覽器的 <video>，本來就順）。
 /// 介面與手機版（media_kit）一致，編輯器無感切換。
 class PlayerX {
-  PlayerX(this.path)
-      : _c = VideoPlayerController.networkUrl(Uri.parse(path));
+  PlayerX(this.path) : _c = VideoPlayerController.networkUrl(Uri.parse(path));
 
   final String path;
   final VideoPlayerController _c;
@@ -15,12 +14,12 @@ class PlayerX {
   Future<void> initialize() => _c.initialize();
 
   PlayerValueX get value => PlayerValueX(
-        isInitialized: _c.value.isInitialized,
-        isPlaying: _c.value.isPlaying,
-        duration: _c.value.duration,
-        position: _c.value.position,
-        size: _c.value.size,
-      );
+    isInitialized: _c.value.isInitialized,
+    isPlaying: _c.value.isPlaying,
+    duration: _c.value.duration,
+    position: _c.value.position,
+    size: _c.value.size,
+  );
 
   Future<Duration?> positionNow() => _c.position;
 

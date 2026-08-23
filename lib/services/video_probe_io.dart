@@ -62,22 +62,24 @@ Future<void> runVideoProbe(String path, void Function(String) log) async {
     if (streams.isEmpty) log('（讀不到串流）');
     for (final s in streams) {
       final p = s.getAllProperties() ?? {};
-      log([
-        for (final k in [
-          'codec_type',
-          'codec_name',
-          'profile',
-          'width',
-          'height',
-          'pix_fmt',
-          'avg_frame_rate',
-          'r_frame_rate',
-          'color_space',
-          'color_transfer',
-          'nb_frames',
-        ])
-          if (p[k] != null) '$k=${p[k]}',
-      ].join(' '));
+      log(
+        [
+          for (final k in [
+            'codec_type',
+            'codec_name',
+            'profile',
+            'width',
+            'height',
+            'pix_fmt',
+            'avg_frame_rate',
+            'r_frame_rate',
+            'color_space',
+            'color_transfer',
+            'nb_frames',
+          ])
+            if (p[k] != null) '$k=${p[k]}',
+        ].join(' '),
+      );
     }
   } catch (e) {
     log('FFprobe 失敗：$e');

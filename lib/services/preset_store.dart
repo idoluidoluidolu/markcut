@@ -33,8 +33,7 @@ class PresetStore {
         ),
       ),
     ];
-    await prefs.setStringList(
-        _key, demos.map((p) => p.encode()).toList());
+    await prefs.setStringList(_key, demos.map((p) => p.encode()).toList());
     // 旗標最後才立：寫到一半被殺掉的話下次還會重種
     await prefs.setBool(_seededKey, true);
   }
@@ -210,15 +209,7 @@ class PresetStore {
     const k4 = 'wm_presets_seeded_v4';
     if (prefs.getBool(k4) ?? false) return;
 
-    const removals = {
-      '大字滿版',
-      '棋盤格',
-      '底部橫幅',
-      '描邊標題',
-      '膠囊標籤',
-      '手寫簽名',
-      '角落細字',
-    };
+    const removals = {'大字滿版', '棋盤格', '底部橫幅', '描邊標題', '膠囊標籤', '手寫簽名', '角落細字'};
     if (!await _allParseable()) return; // 有壞筆就別回寫，下次再試
     final cur = await load();
     cur.removeWhere((p) => removals.contains(p.name));
@@ -280,8 +271,7 @@ class PresetStore {
     if (presets.any((p) => p.name == newName)) return false;
     final i = presets.indexWhere((p) => p.name == oldName);
     if (i < 0) return false;
-    presets[i] = WatermarkPreset(
-        name: newName, settings: presets[i].settings);
+    presets[i] = WatermarkPreset(name: newName, settings: presets[i].settings);
     await saveAll(presets);
     return true;
   }

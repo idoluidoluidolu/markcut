@@ -137,10 +137,7 @@ class _FeedbackFormState extends State<_FeedbackForm> {
                   )
                 : const Text(
                     '送出',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                    ),
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
                   ),
           ),
           // 分成兩條路：填表單、或直接私訊。

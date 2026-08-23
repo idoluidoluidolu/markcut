@@ -16,6 +16,7 @@ import '../theme.dart';
 import '../widgets/gif_image.dart';
 import '../widgets/swipe_back.dart';
 import '../widgets/watermark_layer.dart';
+import '../widgets/baked_watermark.dart';
 import 'about_screen.dart';
 import 'donate_screen.dart';
 import 'feedback_screen.dart';
@@ -182,10 +183,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               borderRadius: BorderRadius.circular(20),
             ),
             child: IgnorePointer(
-              child: WatermarkLayer(
-                settings: preset.settings,
-                onChanged: () {},
-              ),
+              child: BakedWatermark(settings: preset.settings, shortSide: 256),
             ),
           ),
           const SizedBox(height: 7),

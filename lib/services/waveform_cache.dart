@@ -28,21 +28,23 @@ class WaveformCache extends ChangeNotifier {
     }
     if (_failed.contains(path) || _loading.contains(path)) return null;
     _loading.add(path);
-    decodeWaveformPeaks(path).then((v) {
-      _loading.remove(path);
-      if (v != null && v.isNotEmpty) {
-        _peaks[path] = v;
-        while (_peaks.length > _maxEntries) {
-          _peaks.remove(_peaks.keys.first);
-        }
-        notifyListeners();
-      } else {
-        _failed.add(path);
-      }
-    }).catchError((_) {
-      _loading.remove(path);
-      _failed.add(path);
-    });
+    decodeWaveformPeaks(path)
+        .then((v) {
+          _loading.remove(path);
+          if (v != null && v.isNotEmpty) {
+            _peaks[path] = v;
+            while (_peaks.length > _maxEntries) {
+              _peaks.remove(_peaks.keys.first);
+            }
+            notifyListeners();
+          } else {
+            _failed.add(path);
+          }
+        })
+        .catchError((_) {
+          _loading.remove(path);
+          _failed.add(path);
+        });
     return null;
   }
 }

@@ -12,7 +12,8 @@ Future<List<double>?> decodeWaveformPeaks(String path) async {
   final out =
       '${dir.path}${Platform.pathSeparator}wave_${path.hashCode.toRadixString(16)}.pcm';
   final session = await FFmpegKit.execute(
-      '-y -i "$path" -vn -ac 1 -ar 8000 -f s16le "$out"');
+    '-y -i "$path" -vn -ac 1 -ar 8000 -f s16le "$out"',
+  );
   final rc = await session.getReturnCode();
   if (!ReturnCode.isSuccess(rc)) return null;
 
@@ -24,15 +25,20 @@ Future<List<double>?> decodeWaveformPeaks(String path) async {
   } catch (_) {}
   if (bytes.length < 4) return null;
 
-  final samples =
-      Int16List.view(bytes.buffer, bytes.offsetInBytes, bytes.length ~/ 2);
-  return peaksFromSamples(
-      samples.length, (i) => samples[i].abs() / 32768.0);
+  final samples = Int16List.view(
+    bytes.buffer,
+    bytes.offsetInBytes,
+    bytes.length ~/ 2,
+  );
+  return peaksFromSamples(samples.length, (i) => samples[i].abs() / 32768.0);
 }
 
 /// 把樣本分桶取峰值：每秒約 40 格、全長上限 6000 格
-List<double>? peaksFromSamples(int length, double Function(int) sampleAt,
-    {int sampleRate = 8000}) {
+List<double>? peaksFromSamples(
+  int length,
+  double Function(int) sampleAt, {
+  int sampleRate = 8000,
+}) {
   if (length == 0) return null;
   var bucket = (sampleRate / 40).round();
   var n = length ~/ bucket;

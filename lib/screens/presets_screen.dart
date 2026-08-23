@@ -4,6 +4,7 @@ import '../models/watermark_settings.dart';
 import '../services/preset_store.dart';
 import '../theme.dart';
 import '../widgets/watermark_layer.dart';
+import '../widgets/baked_watermark.dart';
 import '../widgets/swipe_back.dart';
 import 'watermark_studio_screen.dart';
 
@@ -200,7 +201,7 @@ class _PresetsScreenState extends State<PresetsScreen> {
             Container(
               color: Colors.black,
               child: IgnorePointer(
-                child: WatermarkLayer(settings: p.settings, onChanged: () {}),
+                child: BakedWatermark(settings: p.settings, shortSide: 256),
               ),
             ),
             // 名字＝左上角小膠囊（UI 感明確，不會被誤認成浮水印）
@@ -244,49 +245,51 @@ class _PresetsScreenState extends State<PresetsScreen> {
             ? const Center(child: CircularProgressIndicator())
             // 兩欄瀑布流：卡片照各自的設計比例（16:9 扁、9:16 高、
             // 1:1 方），比塞進同一種格子誠實——預覽就是設計時的樣子
-            : Builder(builder: (context) {
-                final left = <Widget>[];
-                final right = <Widget>[];
-                var hl = 0.0, hr = 0.0;
-                void put(Widget w, double h) {
-                  if (hl <= hr) {
-                    left.add(w);
-                    hl += h;
-                  } else {
-                    right.add(w);
-                    hr += h;
+            : Builder(
+                builder: (context) {
+                  final left = <Widget>[];
+                  final right = <Widget>[];
+                  var hl = 0.0, hr = 0.0;
+                  void put(Widget w, double h) {
+                    if (hl <= hr) {
+                      left.add(w);
+                      hl += h;
+                    } else {
+                      right.add(w);
+                      hr += h;
+                    }
                   }
-                }
 
-                for (final p in _presets) {
-                  final a = p.settings.designAspect;
-                  put(
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: AspectRatio(
-                        aspectRatio: a,
-                        child: _presetCard(p),
+                  for (final p in _presets) {
+                    final a = p.settings.designAspect;
+                    put(
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: AspectRatio(
+                          aspectRatio: a,
+                          child: _presetCard(p),
+                        ),
                       ),
-                    ),
-                    1 / a,
+                      1 / a,
+                    );
+                  }
+                  put(
+                    AspectRatio(aspectRatio: 16 / 10, child: _addCard()),
+                    10 / 16,
                   );
-                }
-                put(
-                  AspectRatio(aspectRatio: 16 / 10, child: _addCard()),
-                  10 / 16,
-                );
-                return SingleChildScrollView(
-                  padding: const EdgeInsets.all(14),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(child: Column(children: left)),
-                      const SizedBox(width: 10),
-                      Expanded(child: Column(children: right)),
-                    ],
-                  ),
-                );
-              }),
+                  return SingleChildScrollView(
+                    padding: const EdgeInsets.all(14),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(child: Column(children: left)),
+                        const SizedBox(width: 10),
+                        Expanded(child: Column(children: right)),
+                      ],
+                    ),
+                  );
+                },
+              ),
       ),
     );
   }

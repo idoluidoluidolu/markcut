@@ -190,81 +190,81 @@ class _DonateScreenState extends State<DonateScreen> {
   Widget build(BuildContext context) {
     return SwipeBack(
       child: Scaffold(
-      backgroundColor: kLBg,
-      appBar: AppBar(backgroundColor: kLBg),
-      body: SafeArea(
-        child: Column(
-          children: [
-            Expanded(
-              // 內容垂直置中；畫面太矮放不下才變成可捲
-              child: LayoutBuilder(
-                builder: (context, cons) => SingleChildScrollView(
-                  padding: const EdgeInsets.symmetric(horizontal: 24),
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(minHeight: cons.maxHeight),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        const Text(
-                          '真的那麼好用？',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 19,
-                            fontWeight: FontWeight.w800,
+        backgroundColor: kLBg,
+        appBar: AppBar(backgroundColor: kLBg),
+        body: SafeArea(
+          child: Column(
+            children: [
+              Expanded(
+                // 內容垂直置中；畫面太矮放不下才變成可捲
+                child: LayoutBuilder(
+                  builder: (context, cons) => SingleChildScrollView(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(minHeight: cons.maxHeight),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const Text(
+                            '真的那麼好用？',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 19,
+                              fontWeight: FontWeight.w800,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 8),
-                        const Text(
-                          '好用到會想給我一點加菜金？\n'
-                          '如果你想斗內的話，\n'
-                          '那我當然是不會拒絕的！',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: kLTextDim,
-                            height: 1.7,
+                          const SizedBox(height: 8),
+                          const Text(
+                            '好用到會想給我一點加菜金？\n'
+                            '如果你想斗內的話，\n'
+                            '那我當然是不會拒絕的！',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: kLTextDim,
+                              height: 1.7,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 22),
-                        Row(
-                          children: [
-                            for (var i = 0; i < _kTiers.length; i++) ...[
-                              if (i > 0) const SizedBox(width: 10),
-                              _tierCard(
-                                _kTiers[i].$1,
-                                _kTiers[i].$2,
-                                _kTiers[i].$3,
-                                // 中間那檔當推薦：三選一時人會挑中間的，
-                                // 直接標出來省得猶豫
-                                strong: i == 1,
-                              ),
+                          const SizedBox(height: 22),
+                          Row(
+                            children: [
+                              for (var i = 0; i < _kTiers.length; i++) ...[
+                                if (i > 0) const SizedBox(width: 10),
+                                _tierCard(
+                                  _kTiers[i].$1,
+                                  _kTiers[i].$2,
+                                  _kTiers[i].$3,
+                                  // 中間那檔當推薦：三選一時人會挑中間的，
+                                  // 直接標出來省得猶豫
+                                  strong: i == 1,
+                                ),
+                              ],
                             ],
-                          ],
-                        ),
-                      ],
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-            // logo 釘在畫面底部置中（不跟內容捲動）
-            Padding(
-              padding: const EdgeInsets.only(bottom: 14),
-              child: SizedBox(
-                width: 120,
-                height: 48,
-                child: Image.asset(
-                  'assets/icon/home_logo.png',
-                  fit: BoxFit.cover,
-                  filterQuality: FilterQuality.medium,
+              // logo 釘在畫面底部置中（不跟內容捲動）
+              Padding(
+                padding: const EdgeInsets.only(bottom: 14),
+                child: SizedBox(
+                  width: 120,
+                  height: 48,
+                  child: Image.asset(
+                    'assets/icon/home_logo.png',
+                    fit: BoxFit.cover,
+                    filterQuality: FilterQuality.medium,
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
-    ),
     );
   }
 }

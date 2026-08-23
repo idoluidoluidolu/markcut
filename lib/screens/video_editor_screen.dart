@@ -47,6 +47,7 @@ import '../widgets/color_grade_panel.dart';
 import '../widgets/timeline_editor.dart';
 import '../widgets/prep_gate_view.dart';
 import '../widgets/watermark_layer.dart';
+import '../widgets/baked_watermark.dart';
 import '../widgets/sticker_picker.dart';
 import '../widgets/gif_image.dart';
 import '../widgets/watermark_panel.dart';
@@ -8664,74 +8665,91 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         Positioned.fill(
                                           child: Opacity(
                                             opacity: c.fadeFactorAt(_position),
-                                            child: WatermarkLayer(
-                                              settings: st,
-                                              onChanged: () => setState(() {}),
-                                              onDragStart: _pushUndo,
-                                              time: pos,
-                                              // 貼圖是一個素材，選取時就該
-                                              // 看得到框（浮水印素材的框在
-                                              // 浮水印面板那邊自己畫）
-                                              selectedPart:
-                                                  (src.isSticker &&
-                                                      _sel == c.id &&
-                                                      !_hideSelUi)
-                                                  ? WmPart.logo
-                                                  : WmPart.none,
-                                              onHitBox: (t, l) =>
-                                                  _addWmHit(c.id, t, l),
-                                              panLocked: () =>
-                                                  _pvPts.length >= 2,
-                                              // 有別的東西被選取時不吃拖曳，
-                                              // 讓給選取路由
-                                              panAllowed: (_) =>
-                                                  _sel == c.id ||
-                                                  (_sel == -1 && !_wmSel),
-                                              // 浮水印片段：點了＝選取＋
-                                              // 進浮水印分頁編輯。
-                                              // 貼圖不進浮水印模式——它就是
-                                              // 一個素材，點一下選取，再點
-                                              // 一下開它自己的調整視窗
-                                              onTap: () {
-                                                // 換路選取＝重新開始，
-                                                // 不接續上一輪的連點循環
-                                                _cycleAt = null;
-                                                final was = _sel == c.id;
-                                                setState(() {
-                                                  _sel = c.id;
-                                                  _wmSel = false;
-                                                });
-                                                if (src.isSticker) {
-                                                  // 人在浮水印分頁點貼圖：
-                                                  // 帶回剪輯分頁，不然選取
-                                                  // 換了、面板還在編浮水印
-                                                  if (_tabs.index == 1) {
-                                                    _tabs.animateTo(0);
-                                                  }
-                                                  if (was) {
-                                                    unawaited(
-                                                      _editStickerClip(c),
+                                            child: Stack(
+                                              fit: StackFit.expand,
+                                              children: [
+                                                IgnorePointer(
+                                                  child: BakedWatermark(
+                                                    key: ValueKey(
+                                                      'wmclip${c.id}',
+                                                    ),
+                                                    settings: st,
+                                                    shortSide: 720,
+                                                    time: pos,
+                                                  ),
+                                                ),
+                                                WatermarkLayer(
+                                                  paintContent: false,
+                                                  settings: st,
+                                                  onChanged: () =>
+                                                      setState(() {}),
+                                                  onDragStart: _pushUndo,
+                                                  time: pos,
+                                                  // 貼圖是一個素材，選取時就該
+                                                  // 看得到框（浮水印素材的框在
+                                                  // 浮水印面板那邊自己畫）
+                                                  selectedPart:
+                                                      (src.isSticker &&
+                                                          _sel == c.id &&
+                                                          !_hideSelUi)
+                                                      ? WmPart.logo
+                                                      : WmPart.none,
+                                                  onHitBox: (t, l) =>
+                                                      _addWmHit(c.id, t, l),
+                                                  panLocked: () =>
+                                                      _pvPts.length >= 2,
+                                                  // 有別的東西被選取時不吃拖曳，
+                                                  // 讓給選取路由
+                                                  panAllowed: (_) =>
+                                                      _sel == c.id ||
+                                                      (_sel == -1 && !_wmSel),
+                                                  // 浮水印片段：點了＝選取＋
+                                                  // 進浮水印分頁編輯。
+                                                  // 貼圖不進浮水印模式——它就是
+                                                  // 一個素材，點一下選取，再點
+                                                  // 一下開它自己的調整視窗
+                                                  onTap: () {
+                                                    // 換路選取＝重新開始，
+                                                    // 不接續上一輪的連點循環
+                                                    _cycleAt = null;
+                                                    final was = _sel == c.id;
+                                                    setState(() {
+                                                      _sel = c.id;
+                                                      _wmSel = false;
+                                                    });
+                                                    if (src.isSticker) {
+                                                      // 人在浮水印分頁點貼圖：
+                                                      // 帶回剪輯分頁，不然選取
+                                                      // 換了、面板還在編浮水印
+                                                      if (_tabs.index == 1) {
+                                                        _tabs.animateTo(0);
+                                                      }
+                                                      if (was) {
+                                                        unawaited(
+                                                          _editStickerClip(c),
+                                                        );
+                                                      }
+                                                      return;
+                                                    }
+                                                    _tabs.animateTo(1);
+                                                    _wmPanelCtrl.scrollTo(
+                                                      WmPart.logo,
                                                     );
-                                                  }
-                                                  return;
-                                                }
-                                                _tabs.animateTo(1);
-                                                _wmPanelCtrl.scrollTo(
-                                                  WmPart.logo,
-                                                );
-                                              },
-                                              // 點文字＝面板直接捲到
-                                              // 文字設定，不用自己找
-                                              onTapText: () {
-                                                setState(() {
-                                                  _sel = c.id;
-                                                  _wmSel = false;
-                                                });
-                                                _tabs.animateTo(1);
-                                                _wmPanelCtrl.scrollTo(
-                                                  WmPart.text,
-                                                );
-                                              },
+                                                  },
+                                                  // 點文字＝面板直接捲到
+                                                  // 文字設定，不用自己找
+                                                  onTapText: () {
+                                                    setState(() {
+                                                      _sel = c.id;
+                                                      _wmSel = false;
+                                                    });
+                                                    _tabs.animateTo(1);
+                                                    _wmPanelCtrl.scrollTo(
+                                                      WmPart.text,
+                                                    );
+                                                  },
+                                                ),
+                                              ],
                                             ),
                                           ),
                                         ),

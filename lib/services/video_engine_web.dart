@@ -28,11 +28,7 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   ExportSpec spec, {
   void Function(double progress)? onProgress,
 }) async {
-  return (
-    ok: false,
-    message: 'Web 版僅供預覽測試，影片匯出請用手機 App',
-    cancelled: false,
-  );
+  return (ok: false, message: 'Web 版僅供預覽測試，影片匯出請用手機 App', cancelled: false);
 }
 
 /// 取消匯出（Web 版沒有匯出，不用做事）
@@ -71,11 +67,14 @@ Future<String?> makeGifFile({
 }
 
 Future<List<Uint8List>> makeThumbnails(
-    String inputPath, double durationSec, int count,
-    {int height = 200,
-    bool longSide = false,
-    double startAt = 0,
-    bool fastDecode = false}) async {
+  String inputPath,
+  double durationSec,
+  int count, {
+  int height = 200,
+  bool longSide = false,
+  double startAt = 0,
+  bool fastDecode = false,
+}) async {
   // fastDecode 在 Web 不需要：<video> 是硬體解碼
   try {
     final video = web.HTMLVideoElement()
@@ -99,13 +98,11 @@ Future<List<Uint8List>> makeThumbnails(
     final dur = startAt > 0.001
         ? durationSec
         : (video.duration.isFinite && video.duration > 0
-            ? video.duration
-            : durationSec);
+              ? video.duration
+              : durationSec);
 
     // longSide＝把「長邊」縮到 height（直式影片才不會糊）
-    final scale = longSide
-        ? height / math.max(w, h)
-        : height / h;
+    final scale = longSide ? height / math.max(w, h) : height / h;
     final targetH = (h * scale).round().clamp(2, 2048);
     final targetW = (w * scale).round().clamp(2, 2048);
     final canvas = web.HTMLCanvasElement()
@@ -139,14 +136,14 @@ Future<List<Uint8List>> makeThumbnails(
             return;
           }
           b.arrayBuffer().toDart.then(
-              (buf) => blobDone.complete(buf.toDart.asUint8List()),
-              onError: (_) => blobDone.complete(null));
+            (buf) => blobDone.complete(buf.toDart.asUint8List()),
+            onError: (_) => blobDone.complete(null),
+          );
         }).toJS,
         'image/jpeg',
         0.82.toJS,
       );
-      final bytes =
-          await blobDone.future.timeout(const Duration(seconds: 4));
+      final bytes = await blobDone.future.timeout(const Duration(seconds: 4));
       if (bytes != null) result.add(bytes);
       // 讓 UI 喘口氣，抽幀永遠讓路給播放
       await Future<void>.delayed(const Duration(milliseconds: 30));

@@ -75,8 +75,7 @@ class DraftStore {
         final j = Map<String, dynamic>.from(
           jsonDecode(prefs.getString(k) ?? '') as Map,
         );
-        savedAt =
-            DateTime.tryParse(j['savedAt'] as String? ?? '') ?? savedAt;
+        savedAt = DateTime.tryParse(j['savedAt'] as String? ?? '') ?? savedAt;
         clips = (j['clips'] as List?)?.length ?? 0;
       } catch (_) {
         // 內容也壞了：仍列出來讓使用者看得到、自己決定刪不刪

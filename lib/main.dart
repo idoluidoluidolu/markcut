@@ -62,9 +62,11 @@ void main() {
     );
   });
   // 版本標填進診斷（播放診斷／播放偵測的第一行要能對版）
-  PackageInfo.fromPlatform().then((i) {
-    appVersionTag = '${i.version}+${i.buildNumber}';
-  }).catchError((_) {});
+  PackageInfo.fromPlatform()
+      .then((i) {
+        appVersionTag = '${i.version}+${i.buildNumber}';
+      })
+      .catchError((_) {});
   runApp(const MarkCutApp());
 }
 

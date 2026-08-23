@@ -19,14 +19,70 @@ class StickerStore {
 
   /// 內建的 Emoji 貼圖（常用的表情、手勢、符號、動物、食物）
   static const emojis = <String>[
-    '😀', '😂', '🥹', '😍', '🤩', '😎', '🥳', '😭',
-    '😱', '🤔', '😴', '🤗', '😤', '🙄', '😇', '🤯',
-    '❤️', '💔', '✨', '⭐', '🔥', '💯', '🎉', '🎊',
-    '👍', '👎', '👏', '🙏', '💪', '👀', '🤙', '✌️',
-    '🐶', '🐱', '🐰', '🐻', '🦊', '🐼', '🐷', '🦄',
-    '🍎', '🍰', '🍕', '🍜', '🍺', '☕', '🍓', '🍿',
-    '☀️', '🌙', '☁️', '🌈', '❄️', '💧', '🌸', '🍀',
-    '📌', '🔔', '💡', '🎵', '📷', '🎬', '💰', '🚀',
+    '😀',
+    '😂',
+    '🥹',
+    '😍',
+    '🤩',
+    '😎',
+    '🥳',
+    '😭',
+    '😱',
+    '🤔',
+    '😴',
+    '🤗',
+    '😤',
+    '🙄',
+    '😇',
+    '🤯',
+    '❤️',
+    '💔',
+    '✨',
+    '⭐',
+    '🔥',
+    '💯',
+    '🎉',
+    '🎊',
+    '👍',
+    '👎',
+    '👏',
+    '🙏',
+    '💪',
+    '👀',
+    '🤙',
+    '✌️',
+    '🐶',
+    '🐱',
+    '🐰',
+    '🐻',
+    '🦊',
+    '🐼',
+    '🐷',
+    '🦄',
+    '🍎',
+    '🍰',
+    '🍕',
+    '🍜',
+    '🍺',
+    '☕',
+    '🍓',
+    '🍿',
+    '☀️',
+    '🌙',
+    '☁️',
+    '🌈',
+    '❄️',
+    '💧',
+    '🌸',
+    '🍀',
+    '📌',
+    '🔔',
+    '💡',
+    '🎵',
+    '📷',
+    '🎬',
+    '💰',
+    '🚀',
   ];
 
   /// 使用者收藏的圖片貼圖（新的排在最前面）
@@ -73,10 +129,15 @@ class StickerStore {
   ///
   /// 1024：使用者會把 emoji 拉到滿版（sizeFrac 最大 2.0），
   /// 256px 的圖放到 1080p 畫布上是一團糊
-  static Future<Uint8List?> renderEmoji(String emoji,
-      {double size = 1024}) async {
+  static Future<Uint8List?> renderEmoji(
+    String emoji, {
+    double size = 1024,
+  }) async {
     final painter = TextPainter(
-      text: TextSpan(text: emoji, style: TextStyle(fontSize: size * 0.82)),
+      text: TextSpan(
+        text: emoji,
+        style: TextStyle(fontSize: size * 0.82),
+      ),
       textDirection: TextDirection.ltr,
     )..layout();
     final w = painter.width;

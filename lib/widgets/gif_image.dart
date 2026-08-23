@@ -14,10 +14,6 @@ class GifImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => GifStore.isAsset(ref)
-      ? Image.asset(
-          GifStore.assetKey(ref),
-          fit: fit,
-          gaplessPlayback: true,
-        )
+      ? Image.asset(GifStore.assetKey(ref), fit: fit, gaplessPlayback: true)
       : Image.file(File(ref), fit: fit, gaplessPlayback: true);
 }

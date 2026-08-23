@@ -26,47 +26,45 @@ Future<DrawResult?> drawWatermark(
   BuildContext context, {
   String? initialData,
   Uint8List? initial,
-}) =>
-    Navigator.push<DrawResult>(
-      context,
-      MaterialPageRoute(
-        builder: (_) =>
-            _DrawScreen(initialData: initialData, initial: initial),
-      ),
-    );
+}) => Navigator.push<DrawResult>(
+  context,
+  MaterialPageRoute(
+    builder: (_) => _DrawScreen(initialData: initialData, initial: initial),
+  ),
+);
 
 /// 筆刷：每種差在透明度、寬度倍率、筆頭形狀
 enum _Brush { pen, marker, highlight, eraser }
 
 extension _BrushInfo on _Brush {
   String get label => switch (this) {
-        _Brush.pen => '鋼筆',
-        _Brush.marker => '麥克筆',
-        _Brush.highlight => '螢光筆',
-        _Brush.eraser => '橡皮擦',
-      };
+    _Brush.pen => '鋼筆',
+    _Brush.marker => '麥克筆',
+    _Brush.highlight => '螢光筆',
+    _Brush.eraser => '橡皮擦',
+  };
 
   IconData get icon => switch (this) {
-        _Brush.pen => Icons.edit_outlined,
-        _Brush.marker => Icons.brush_outlined,
-        _Brush.highlight => Icons.border_color_outlined,
-        _Brush.eraser => Icons.cleaning_services_outlined,
-      };
+    _Brush.pen => Icons.edit_outlined,
+    _Brush.marker => Icons.brush_outlined,
+    _Brush.highlight => Icons.border_color_outlined,
+    _Brush.eraser => Icons.cleaning_services_outlined,
+  };
 
   /// 透明度：麥克筆半透明、螢光筆更透（疊起來有層次）
   double get alpha => switch (this) {
-        _Brush.marker => 0.65,
-        _Brush.highlight => 0.4,
-        _ => 1.0,
-      };
+    _Brush.marker => 0.65,
+    _Brush.highlight => 0.4,
+    _ => 1.0,
+  };
 
   /// 寬度倍率：同一支粗細滑桿，不同筆刷有自己的手感
   double get widthK => switch (this) {
-        _Brush.marker => 1.6,
-        _Brush.highlight => 2.4,
-        _Brush.eraser => 1.4,
-        _ => 1.0,
-      };
+    _Brush.marker => 1.6,
+    _Brush.highlight => 2.4,
+    _Brush.eraser => 1.4,
+    _ => 1.0,
+  };
 }
 
 /// 一筆：路徑點＋顏色＋粗細＋筆刷。
@@ -88,24 +86,24 @@ class _Stroke {
 
   /// 序列化（座標取一位小數就夠，省一半體積）
   Map<String, dynamic> toJson() => {
-        'c': color.toARGB32(),
-        'w': double.parse(width.toStringAsFixed(1)),
-        'b': brush.index,
-        'p': [
-          for (final p in points) ...[
-            double.parse(p.dx.toStringAsFixed(1)),
-            double.parse(p.dy.toStringAsFixed(1)),
-          ],
-        ],
-      };
+    'c': color.toARGB32(),
+    'w': double.parse(width.toStringAsFixed(1)),
+    'b': brush.index,
+    'p': [
+      for (final p in points) ...[
+        double.parse(p.dx.toStringAsFixed(1)),
+        double.parse(p.dy.toStringAsFixed(1)),
+      ],
+    ],
+  };
 
   factory _Stroke.fromJson(Map<String, dynamic> j) {
     final raw = (j['p'] as List).cast<num>();
     return _Stroke(
       color: Color((j['c'] as num).toInt()),
       width: (j['w'] as num).toDouble(),
-      brush: _Brush
-          .values[((j['b'] ?? 0) as num).toInt() % _Brush.values.length],
+      brush:
+          _Brush.values[((j['b'] ?? 0) as num).toInt() % _Brush.values.length],
       points: [
         for (var i = 0; i + 1 < raw.length; i += 2)
           Offset(raw[i].toDouble(), raw[i + 1].toDouble()),
@@ -141,8 +139,10 @@ class _Stroke {
     final ab = b - a;
     final len2 = ab.dx * ab.dx + ab.dy * ab.dy;
     if (len2 <= 1e-9) return (p - a).distance;
-    final t =
-        (((p - a).dx * ab.dx + (p - a).dy * ab.dy) / len2).clamp(0.0, 1.0);
+    final t = (((p - a).dx * ab.dx + (p - a).dy * ab.dy) / len2).clamp(
+      0.0,
+      1.0,
+    );
     return (p - (a + ab * t)).distance;
   }
 }
@@ -173,10 +173,13 @@ class _DrawScreenState extends State<_DrawScreen> {
     // 有筆畫資料就不鋪底圖：筆畫本身就是完整的畫作
     final b = _pendingData != null ? null : widget.initial;
     if (b != null) {
-      ui.instantiateImageCodec(b).then((codec) async {
-        final frame = await codec.getNextFrame();
-        if (mounted) setState(() => _base = frame.image);
-      }).catchError((_) {});
+      ui
+          .instantiateImageCodec(b)
+          .then((codec) async {
+            final frame = await codec.getNextFrame();
+            if (mounted) setState(() => _base = frame.image);
+          })
+          .catchError((_) {});
     }
   }
 
@@ -208,14 +211,16 @@ class _DrawScreenState extends State<_DrawScreen> {
       final dy = (board.height - oh * k) / 2;
       for (final e in (j['s'] as List)) {
         final s = _Stroke.fromJson(Map<String, dynamic>.from(e as Map));
-        _strokes.add(_Stroke(
-          color: s.color,
-          width: s.width * k,
-          brush: s.brush,
-          points: [
-            for (final p in s.points) Offset(p.dx * k + dx, p.dy * k + dy),
-          ],
-        ));
+        _strokes.add(
+          _Stroke(
+            color: s.color,
+            width: s.width * k,
+            brush: s.brush,
+            points: [
+              for (final p in s.points) Offset(p.dx * k + dx, p.dy * k + dy),
+            ],
+          ),
+        );
       }
     } catch (_) {
       // 資料壞了就當全新的畫板，至少還能畫
@@ -225,12 +230,13 @@ class _DrawScreenState extends State<_DrawScreen> {
   /// 底圖鋪在畫板中央、留一點邊（畫板座標）
   Rect _baseRect(Size board) {
     final img = _base!;
-    final k = math.min(board.width * 0.86 / img.width,
-        board.height * 0.86 / img.height);
+    final k = math.min(
+      board.width * 0.86 / img.width,
+      board.height * 0.86 / img.height,
+    );
     final w = img.width * k;
     final h = img.height * k;
-    return Rect.fromLTWH(
-        (board.width - w) / 2, (board.height - h) / 2, w, h);
+    return Rect.fromLTWH((board.width - w) / 2, (board.height - h) / 2, w, h);
   }
 
   /// 重做堆疊：上一步收回來的筆放這裡，畫新的一筆就清掉
@@ -287,12 +293,9 @@ class _DrawScreenState extends State<_DrawScreen> {
     }
     // 點空白＝一個圓點
     setState(() {
-      _strokes.add(_Stroke(
-        points: [p],
-        color: _color,
-        width: _width,
-        brush: _brush,
-      ));
+      _strokes.add(
+        _Stroke(points: [p], color: _color, width: _width, brush: _brush),
+      );
       _undone.clear();
     });
   }
@@ -300,12 +303,7 @@ class _DrawScreenState extends State<_DrawScreen> {
   void _start(Offset p) {
     setState(() {
       _sel = -1; // 開始畫新的一筆＝取消選取
-      _live = _Stroke(
-        points: [p],
-        color: _color,
-        width: _width,
-        brush: _brush,
-      );
+      _live = _Stroke(points: [p], color: _color, width: _width, brush: _brush);
     });
   }
 
@@ -407,8 +405,14 @@ class _DrawScreenState extends State<_DrawScreen> {
     canvas.scale(scale);
     canvas.translate(-bounds.left, -bounds.top);
     // 跟預覽同一個畫法（saveLayer 讓橡皮擦真的擦成透明）
-    _paintStrokes(canvas, _strokes, null, Offset.zero & boardSize,
-        base: _base, baseRect: _base == null ? null : _baseRect(boardSize));
+    _paintStrokes(
+      canvas,
+      _strokes,
+      null,
+      Offset.zero & boardSize,
+      base: _base,
+      baseRect: _base == null ? null : _baseRect(boardSize),
+    );
     final img = await rec.endRecording().toImage(outW, outH);
     final data = await img.toByteData(format: ui.ImageByteFormat.png);
     img.dispose();
@@ -469,19 +473,25 @@ class _DrawScreenState extends State<_DrawScreen> {
             onPressed: _strokes.isEmpty
                 ? null
                 : () => setState(() {
-                      _undone.add(_strokes.removeLast());
-                      _sel = -1;
-                    }),
-            icon: Icon(Icons.undo,
-                size: 20, color: _strokes.isEmpty ? kTextDim : kSelect),
+                    _undone.add(_strokes.removeLast());
+                    _sel = -1;
+                  }),
+            icon: Icon(
+              Icons.undo,
+              size: 20,
+              color: _strokes.isEmpty ? kTextDim : kSelect,
+            ),
           ),
           IconButton(
             tooltip: '重做',
             onPressed: _undone.isEmpty
                 ? null
                 : () => setState(() => _strokes.add(_undone.removeLast())),
-            icon: Icon(Icons.redo,
-                size: 20, color: _undone.isEmpty ? kTextDim : kSelect),
+            icon: Icon(
+              Icons.redo,
+              size: 20,
+              color: _undone.isEmpty ? kTextDim : kSelect,
+            ),
           ),
           IconButton(
             tooltip: '存到相簿（透明背景 PNG）',
@@ -493,12 +503,12 @@ class _DrawScreenState extends State<_DrawScreen> {
             onPressed: _strokes.isEmpty
                 ? null
                 : () => setState(() {
-                      _undone
-                        ..clear()
-                        ..addAll(_strokes.reversed);
-                      _strokes.clear();
-                      _sel = -1;
-                    }),
+                    _undone
+                      ..clear()
+                      ..addAll(_strokes.reversed);
+                    _strokes.clear();
+                    _sel = -1;
+                  }),
             icon: const Icon(Icons.delete_outline, size: 20),
           ),
         ],
@@ -534,9 +544,7 @@ class _DrawScreenState extends State<_DrawScreen> {
                             live: _live,
                             selected: _sel,
                             base: _base,
-                            baseRect: _base == null
-                                ? null
-                                : _baseRect(size),
+                            baseRect: _base == null ? null : _baseRect(size),
                           ),
                           size: size,
                         ),
@@ -599,12 +607,12 @@ class _DrawScreenState extends State<_DrawScreen> {
                                 ],
                               ),
                               border: Border.all(
-                                color: _brush != _Brush.eraser &&
-                                        _color == _custom
+                                color:
+                                    _brush != _Brush.eraser && _color == _custom
                                     ? kSelect
                                     : kClipBorder,
-                                width: _brush != _Brush.eraser &&
-                                        _color == _custom
+                                width:
+                                    _brush != _Brush.eraser && _color == _custom
                                     ? 2.5
                                     : 1,
                               ),
@@ -627,12 +635,10 @@ class _DrawScreenState extends State<_DrawScreen> {
                                 color: c,
                                 shape: BoxShape.circle,
                                 border: Border.all(
-                                  color: _brush != _Brush.eraser &&
-                                          c == _color
+                                  color: _brush != _Brush.eraser && c == _color
                                       ? kSelect
                                       : kClipBorder,
-                                  width: _brush != _Brush.eraser &&
-                                          c == _color
+                                  width: _brush != _Brush.eraser && c == _color
                                       ? 2.5
                                       : 1,
                                 ),
@@ -649,57 +655,62 @@ class _DrawScreenState extends State<_DrawScreen> {
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     child: Row(
-                    children: [
-                      Text(
-                        sel == null ? '粗細' : '這一筆',
-                        style: TextStyle(
+                      children: [
+                        Text(
+                          sel == null ? '粗細' : '這一筆',
+                          style: TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
-                            color: sel == null ? kText : kSelect),
-                      ),
-                      Expanded(
-                        child: Slider(
-                          value: (sel?.width ?? _width).clamp(2.0, 36.0),
-                          min: 2,
-                          max: 36,
-                          onChanged: (v) => setState(() {
-                            if (sel != null) {
-                              sel.width = v;
-                            } else {
-                              _width = v;
-                            }
-                          }),
+                            color: sel == null ? kText : kSelect,
+                          ),
                         ),
-                      ),
-                      SizedBox(
-                        width: 40,
-                        height: 40,
-                        child: Center(
-                          child: Builder(builder: (context) {
-                            final w = sel?.drawWidth ??
-                                (_width * _brush.widthK);
-                            final showColor = sel == null
-                                ? (_brush == _Brush.eraser
-                                    ? kPanelHi
-                                    : _color
-                                        .withValues(alpha: _brush.alpha))
-                                : (sel.eraser
-                                    ? kPanelHi
-                                    : sel.color
-                                        .withValues(alpha: sel.brush.alpha));
-                            return Container(
-                              width: w.clamp(2, 40),
-                              height: w.clamp(2, 40),
-                              decoration: BoxDecoration(
-                                color: showColor,
-                                shape: BoxShape.circle,
-                                border: Border.all(color: kClipBorder),
-                              ),
-                            );
-                          }),
+                        Expanded(
+                          child: Slider(
+                            value: (sel?.width ?? _width).clamp(2.0, 36.0),
+                            min: 2,
+                            max: 36,
+                            onChanged: (v) => setState(() {
+                              if (sel != null) {
+                                sel.width = v;
+                              } else {
+                                _width = v;
+                              }
+                            }),
+                          ),
                         ),
-                      ),
-                    ],
+                        SizedBox(
+                          width: 40,
+                          height: 40,
+                          child: Center(
+                            child: Builder(
+                              builder: (context) {
+                                final w =
+                                    sel?.drawWidth ?? (_width * _brush.widthK);
+                                final showColor = sel == null
+                                    ? (_brush == _Brush.eraser
+                                          ? kPanelHi
+                                          : _color.withValues(
+                                              alpha: _brush.alpha,
+                                            ))
+                                    : (sel.eraser
+                                          ? kPanelHi
+                                          : sel.color.withValues(
+                                              alpha: sel.brush.alpha,
+                                            ));
+                                return Container(
+                                  width: w.clamp(2, 40),
+                                  height: w.clamp(2, 40),
+                                  decoration: BoxDecoration(
+                                    color: showColor,
+                                    shape: BoxShape.circle,
+                                    border: Border.all(color: kClipBorder),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                   const SizedBox(height: 6),
@@ -780,17 +791,22 @@ void _paintStrokes(
 }
 
 /// 一筆的實際繪製（光暈與本體共用同一條路徑）
-void _strokePath(Canvas canvas, _Stroke s, Paint paint,
-    {bool haloDot = false}) {
+void _strokePath(
+  Canvas canvas,
+  _Stroke s,
+  Paint paint, {
+  bool haloDot = false,
+}) {
   if (s.points.length == 1) {
     final dot = Paint()
       ..color = haloDot
           ? paint.color
           : (s.eraser
-              ? Colors.transparent
-              : s.color.withValues(alpha: s.brush.alpha))
-      ..blendMode =
-          (!haloDot && s.eraser) ? BlendMode.clear : BlendMode.srcOver;
+                ? Colors.transparent
+                : s.color.withValues(alpha: s.brush.alpha))
+      ..blendMode = (!haloDot && s.eraser)
+          ? BlendMode.clear
+          : BlendMode.srcOver;
     canvas.drawCircle(s.points.first, paint.strokeWidth / 2, dot);
     return;
   }
@@ -821,8 +837,15 @@ class _BoardPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    _paintStrokes(canvas, strokes, live, Offset.zero & size,
-        selected: selected, base: base, baseRect: baseRect);
+    _paintStrokes(
+      canvas,
+      strokes,
+      live,
+      Offset.zero & size,
+      selected: selected,
+      base: base,
+      baseRect: baseRect,
+    );
   }
 
   // 筆跡的點是就地 add 的，列表比對看不出變化——每次都重畫。

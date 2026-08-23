@@ -215,13 +215,13 @@ class _AvPlayerX implements PlayerX {
 
   @override
   PlayerValueX get value => PlayerValueX(
-        isInitialized: _c.value.isInitialized,
-        isPlaying: _c.value.isPlaying,
-        isBuffering: _c.value.isBuffering,
-        duration: _c.value.duration,
-        position: _c.value.position,
-        size: _c.value.size,
-      );
+    isInitialized: _c.value.isInitialized,
+    isPlaying: _c.value.isPlaying,
+    isBuffering: _c.value.isBuffering,
+    duration: _c.value.duration,
+    position: _c.value.position,
+    size: _c.value.size,
+  );
 
   @override
   Future<Duration?> positionNow() => _c.position;
@@ -295,18 +295,14 @@ class _MpvPlayerX implements PlayerX {
         final done = Completer<Size>();
         void onRect() {
           final r = _vc.rect.value;
-          if (r != null &&
-              r.width > 0 &&
-              r.height > 0 &&
-              !done.isCompleted) {
+          if (r != null && r.width > 0 && r.height > 0 && !done.isCompleted) {
             done.complete(r.size);
           }
         }
 
         _vc.rect.addListener(onRect);
         try {
-          texSize =
-              await done.future.timeout(const Duration(seconds: 4));
+          texSize = await done.future.timeout(const Duration(seconds: 4));
         } finally {
           _vc.rect.removeListener(onRect);
         }
@@ -355,14 +351,14 @@ class _MpvPlayerX implements PlayerX {
 
   @override
   PlayerValueX get value => PlayerValueX(
-        isInitialized: _inited,
-        isPlaying: _p.state.playing,
-        duration: _duration,
-        // media_kit 的 position 連續更新（比 video_player 的
-        // 500ms 輪詢即時得多），對時邏輯直接受惠
-        position: _p.state.position,
-        size: _size,
-      );
+    isInitialized: _inited,
+    isPlaying: _p.state.playing,
+    duration: _duration,
+    // media_kit 的 position 連續更新（比 video_player 的
+    // 500ms 輪詢即時得多），對時邏輯直接受惠
+    position: _p.state.position,
+    size: _size,
+  );
 
   @override
   Future<void> seekTo(Duration d) => _p.seek(d);
@@ -374,27 +370,26 @@ class _MpvPlayerX implements PlayerX {
   Future<void> pause() => _p.pause();
 
   @override
-  Future<void> setVolume(double v) =>
-      _p.setVolume((v * 100).clamp(0.0, 100.0));
+  Future<void> setVolume(double v) => _p.setVolume((v * 100).clamp(0.0, 100.0));
 
   @override
   Future<void> setPlaybackSpeed(double s) => _p.setRate(s);
 
   @override
-  Future<void> setLooping(bool loop) => _p.setPlaylistMode(
-      loop ? mk.PlaylistMode.loop : mk.PlaylistMode.none);
+  Future<void> setLooping(bool loop) =>
+      _p.setPlaylistMode(loop ? mk.PlaylistMode.loop : mk.PlaylistMode.none);
 
   @override
   void dispose() => _p.dispose();
 
   @override
   Widget view({Key? key}) => mkv.Video(
-        key: key,
-        controller: _vc,
-        controls: mkv.NoVideoControls,
-        fit: BoxFit.fill,
-        fill: Colors.transparent,
-      );
+    key: key,
+    controller: _vc,
+    controls: mkv.NoVideoControls,
+    fit: BoxFit.fill,
+    fill: Colors.transparent,
+  );
 
   @override
   String get debugInfo {

@@ -12,8 +12,11 @@ Future<List<double>?> decodeWaveformPeaks(String path) async {
     try {
       final audio = await ctx.decodeAudioData(jsBuf).toDart;
       final data = audio.getChannelData(0).toDart;
-      return peaksFromSamples(data.length, (i) => data[i].abs(),
-          sampleRate: audio.sampleRate.round());
+      return peaksFromSamples(
+        data.length,
+        (i) => data[i].abs(),
+        sampleRate: audio.sampleRate.round(),
+      );
     } finally {
       await ctx.close().toDart;
     }
@@ -23,8 +26,11 @@ Future<List<double>?> decodeWaveformPeaks(String path) async {
 }
 
 /// 把樣本分桶取峰值：每秒約 40 格、全長上限 6000 格
-List<double>? peaksFromSamples(int length, double Function(int) sampleAt,
-    {int sampleRate = 8000}) {
+List<double>? peaksFromSamples(
+  int length,
+  double Function(int) sampleAt, {
+  int sampleRate = 8000,
+}) {
   if (length == 0) return null;
   var bucket = (sampleRate / 40).round();
   var n = length ~/ bucket;

@@ -11,6 +11,7 @@ import '../screens/crop_screen.dart';
 import '../screens/draw_screen.dart';
 import '../theme.dart';
 import 'watermark_layer.dart';
+import '../widgets/baked_watermark.dart';
 
 /// 父層注入的額外區塊。置頂導覽列要列出它，所以不能只給 Widget——
 /// 名稱和圖示也要一起帶進來
@@ -1638,7 +1639,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
             Container(
               color: Colors.black,
               child: IgnorePointer(
-                child: WatermarkLayer(settings: p.settings, onChanged: () {}),
+                child: BakedWatermark(settings: p.settings, shortSide: 256),
               ),
             ),
             Positioned(

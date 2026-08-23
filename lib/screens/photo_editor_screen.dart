@@ -17,6 +17,7 @@ import '../theme.dart';
 import '../services/watermark_renderer.dart';
 import '../widgets/color_grade_panel.dart';
 import '../widgets/watermark_layer.dart';
+import '../widgets/baked_watermark.dart';
 import '../widgets/watermark_panel.dart';
 
 /// 預覽上一個可以點的東西：kind 0＝馬賽克、1＝主浮水印、2＝額外浮水印。
@@ -75,8 +76,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     final t = _settings.text;
     final lg = _settings.logo;
     return switch (_wmPart) {
-      WmPart.text
-          when t.enabled && !t.tiled && t.text.trim().isNotEmpty =>
+      WmPart.text when t.enabled && !t.tiled && t.text.trim().isNotEmpty =>
         WmPart.text,
       WmPart.logo when lg.enabled && !lg.tiled => WmPart.logo,
       _ => WmPart.none,
@@ -143,8 +143,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     final t = _extraWms[i].text;
     final lg = _extraWms[i].logo;
     return switch (_selExtraPart) {
-      WmPart.text
-          when t.enabled && !t.tiled && t.text.trim().isNotEmpty =>
+      WmPart.text when t.enabled && !t.tiled && t.text.trim().isNotEmpty =>
         WmPart.text,
       WmPart.logo when lg.enabled && !lg.tiled => WmPart.logo,
       _ => WmPart.none,
@@ -290,9 +289,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         ..clear()
         ..addAll(
           ((j['extraWms'] as List?) ?? const []).map(
-            (e) => WatermarkSettings.fromJson(
-              Map<String, dynamic>.from(e as Map),
-            ),
+            (e) =>
+                WatermarkSettings.fromJson(Map<String, dynamic>.from(e as Map)),
           ),
         );
       // 復原可能把被選取的部件變不見（例如撤銷加 Logo），
@@ -358,14 +356,15 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   /// 預覽與面板之間的控制列：上一步／重做（四個編輯畫面共用同一條）
   Widget _buildControlBar() => undoRedoBar(
-        onUndo: _undoStack.isEmpty ? null : _undoLast,
-        onRedo: _redoStack.isEmpty ? null : _redoLast,
-      );
+    onUndo: _undoStack.isEmpty ? null : _undoLast,
+    onRedo: _redoStack.isEmpty ? null : _redoLast,
+  );
 
   /// 加一組浮水印：以目前主浮水印為底複製一組，稍微錯開位置
   void _addExtraWm() {
     final t = _settings.text;
-    final hasAny = (t.enabled && t.text.trim().isNotEmpty) ||
+    final hasAny =
+        (t.enabled && t.text.trim().isNotEmpty) ||
         _settings.logos.any((l) => l.enabled);
     if (!hasAny) {
       showHint(context, '先把上面的浮水印設定好，再新增更多組');
@@ -396,8 +395,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       _selExtra = i;
       if (_extraPartAlive(i) == WmPart.none) {
         final t = _extraWms[i].text;
-        _selExtraPart =
-            (t.enabled && !t.tiled && t.text.trim().isNotEmpty)
+        _selExtraPart = (t.enabled && !t.tiled && t.text.trim().isNotEmpty)
             ? WmPart.text
             : WmPart.logo;
       }
@@ -441,10 +439,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                       });
                     },
                     icon: const Icon(Icons.delete_outline, size: 16),
-                    label: const Text(
-                      '刪除這組',
-                      style: TextStyle(fontSize: 12),
-                    ),
+                    label: const Text('刪除這組', style: TextStyle(fontSize: 12)),
                   ),
                 ],
               ),
@@ -689,11 +684,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   static const _phColorIdx = 5;
 
   Widget _sectionBar() => AnimatedBuilder(
-        // 面板捲動時會回報捲到第幾區。只重畫這一條，
-        // 不要整頁 setState——預覽跟著重建會頓
-        animation: _wmPanelCtrl,
-        builder: (context, _) => _sectionBarBody(),
-      );
+    // 面板捲動時會回報捲到第幾區。只重畫這一條，
+    // 不要整頁 setState——預覽跟著重建會頓
+    animation: _wmPanelCtrl,
+    builder: (context, _) => _sectionBarBody(),
+  );
 
   Widget _sectionBarBody() {
     // 調色模式時高亮最後一格，否則跟著面板捲到哪就亮哪。
@@ -733,15 +728,21 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(_phNav[i].icon,
-                          size: 17, color: i == active ? kSelect : kTextDim),
+                      Icon(
+                        _phNav[i].icon,
+                        size: 17,
+                        color: i == active ? kSelect : kTextDim,
+                      ),
                       const SizedBox(height: 3),
-                      Text(_phNav[i].label,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                              fontSize: 10.5,
-                              color: i == active ? kSelect : kTextDim)),
+                      Text(
+                        _phNav[i].label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          color: i == active ? kSelect : kTextDim,
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -767,54 +768,54 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 底下鋪一層漸層讓字不會糊在一起，面板的空間感才拉得開。
   /// 兩顆都寫字：存成範本縮成圖示就沒人知道那是什麼
   Widget _floatingExport() => Positioned(
-        left: 0,
-        right: 0,
-        bottom: 0,
-        child: IgnorePointer(
-          ignoring: false,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              IgnorePointer(
-                child: Container(
-                  height: 40,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [kBg.withValues(alpha: 0), kBg],
+    left: 0,
+    right: 0,
+    bottom: 0,
+    child: IgnorePointer(
+      ignoring: false,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IgnorePointer(
+            child: Container(
+              height: 40,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [kBg.withValues(alpha: 0), kBg],
+                ),
+              ),
+            ),
+          ),
+          Container(
+            color: kBg,
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+            child: SafeArea(
+              top: false,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: secondaryAction(
+                      label: '存成範本',
+                      onPressed: _exporting ? null : _savePresetFromBar,
                     ),
                   ),
-                ),
-              ),
-              Container(
-                color: kBg,
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
-                child: SafeArea(
-                  top: false,
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: secondaryAction(
-                          label: '存成範本',
-                          onPressed: _exporting ? null : _savePresetFromBar,
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: primaryAction(
-                          label: '輸出',
-                          onPressed: _exporting ? null : _confirmExport,
-                        ),
-                      ),
-                    ],
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: primaryAction(
+                      label: '輸出',
+                      onPressed: _exporting ? null : _confirmExport,
+                    ),
                   ),
-                ),
+                ],
               ),
-            ],
+            ),
           ),
-        ),
-      );
+        ],
+      ),
+    ),
+  );
 
   Widget _buildMosaics(double w, double h) {
     final children = <Widget>[];
@@ -868,10 +869,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         final sigma = 4.0 + 16 * m.style.strength;
         filter ??= ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma);
         effect = ClipRect(
-          child: BackdropFilter(
-            filter: filter,
-            child: const SizedBox.expand(),
-          ),
+          child: BackdropFilter(filter: filter, child: const SizedBox.expand()),
         );
       }
       _phBox[(kind: 0, index: i, part: WmPart.none, logo: -1)] = rect;
@@ -1173,7 +1171,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     await prefs.setString('photo_export_fmt', fmt);
     await _export(jpeg: fmt == 'jpg');
   }
-
 
   Future<void> _export({bool jpeg = false}) async {
     if (_exporting || _photoBytes == null) return;
@@ -1575,21 +1572,28 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                 if (_mosaics.isNotEmpty)
                                   Positioned.fill(
                                     child: LayoutBuilder(
-                                      builder: (context, box) =>
-                                          _buildMosaics(
-                                            box.maxWidth,
-                                            box.maxHeight,
-                                          ),
+                                      builder: (context, box) => _buildMosaics(
+                                        box.maxWidth,
+                                        box.maxHeight,
+                                      ),
                                     ),
                                   ),
+                                Positioned.fill(
+                                  child: IgnorePointer(
+                                    child: BakedWatermark(
+                                      settings: _settings,
+                                      shortSide: 720,
+                                    ),
+                                  ),
+                                ),
                                 WatermarkLayer(
+                                  paintContent: false,
                                   settings: _settings,
                                   onChanged: () => setState(() {}),
                                   onDragStart: _pushUndo,
                                   // 選取框畫在裁切外（見 _wmFrameInfo）
                                   frameNotifier: _wmFrameInfo,
-                                  onHitBox: (t, l) =>
-                                      _phSetBox(1, -1, t, l),
+                                  onHitBox: (t, l) => _phSetBox(1, -1, t, l),
                                   // 活性版：被選部件消失後視同沒選，
                                   // 拖曳才不會整個變死的
                                   selectedPart: _wmPartAlive,
@@ -1614,8 +1618,18 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                 ),
                                 // 更多浮水印：一組一層疊上去，各自拖曳；
                                 // 點一下＝選取（白框）＋直接開編輯面板
-                                for (var i = 0; i < _extraWms.length; i++)
+                                for (var i = 0; i < _extraWms.length; i++) ...[
+                                  Positioned.fill(
+                                    child: IgnorePointer(
+                                      child: BakedWatermark(
+                                        key: ValueKey('exwm$i'),
+                                        settings: _extraWms[i],
+                                        shortSide: 720,
+                                      ),
+                                    ),
+                                  ),
                                   WatermarkLayer(
+                                    paintContent: false,
                                     settings: _extraWms[i],
                                     onChanged: () => setState(() {}),
                                     onDragStart: _pushUndo,
@@ -1637,6 +1651,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                         _selMosaic == -1 &&
                                         (_selExtra == -1 || _selExtra == i),
                                   ),
+                                ],
                                 // 點擊判定層：疊在所有圖層之上，統一決定
                                 // 點到誰。translucent＝只搶點擊，
                                 // 拖曳照樣傳給下面的圖層與選取路由
@@ -1644,8 +1659,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                   child: LayoutBuilder(
                                     builder: (context, box) => GestureDetector(
                                       behavior: HitTestBehavior.translucent,
-                                      onTapUp: (d) =>
-                                          _phTapAt(d.localPosition),
+                                      onTapUp: (d) => _phTapAt(d.localPosition),
                                       child: const SizedBox.expand(),
                                     ),
                                   ),
@@ -1678,8 +1692,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                         final w = box.maxWidth;
                                         final h = box.maxHeight;
                                         return GestureDetector(
-                                          behavior:
-                                              HitTestBehavior.translucent,
+                                          behavior: HitTestBehavior.translucent,
                                           onPanStart: (_) {
                                             _phClearGuides();
                                             if (_pvPts.length < 2) {
@@ -1702,29 +1715,24 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                                 _phRawX ??= t.x;
                                                 _phRawY ??= t.y;
                                                 _phRawX =
-                                                    (_phRawX! +
-                                                            d.delta.dx / w)
+                                                    (_phRawX! + d.delta.dx / w)
                                                         .clamp(0.0, 1.0);
                                                 _phRawY =
-                                                    (_phRawY! +
-                                                            d.delta.dy / h)
+                                                    (_phRawY! + d.delta.dy / h)
                                                         .clamp(0.0, 1.0);
                                                 t.x = _snapC(_phRawX!);
                                                 t.y = _snapC(_phRawY!);
                                                 _phSetGuides(t.x, t.y);
-                                              } else if (part ==
-                                                      WmPart.logo &&
+                                              } else if (part == WmPart.logo &&
                                                   lg.enabled &&
                                                   !lg.tiled) {
                                                 _phRawX ??= lg.x;
                                                 _phRawY ??= lg.y;
                                                 _phRawX =
-                                                    (_phRawX! +
-                                                            d.delta.dx / w)
+                                                    (_phRawX! + d.delta.dx / w)
                                                         .clamp(0.0, 1.0);
                                                 _phRawY =
-                                                    (_phRawY! +
-                                                            d.delta.dy / h)
+                                                    (_phRawY! + d.delta.dy / h)
                                                         .clamp(0.0, 1.0);
                                                 lg.x = _snapC(_phRawX!);
                                                 lg.y = _snapC(_phRawY!);
@@ -1756,52 +1764,52 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                       children: [
                         Positioned.fill(
                           child: switch (_tab) {
-                      1 => ColorGradePanel(
-                        grade: _grade,
-                        onChanged: () => setState(() {}),
-                        onBeforeChange: _pushUndo,
-                        // 上面的區段導覽列已經寫著「調色」了
-                        showTitle: false,
-                        // 給浮在上面的按鈕列讓位，最後一條滑桿
-                        // 才不會被蓋住
-                        bottomInset: 78,
-                        // 面板 dispose 的回呼可能落在這頁收掉之後——要擋
-                        onCompare: (on) {
-                          if (mounted) setState(() => _colorCompare = on);
-                        },
-                      ),
-                      _ => WatermarkPanel(
-                        controller: _wmPanelCtrl,
-                        // 導覽列由這一頁自己畫（要多一格「調色」）
-                        showNav: false,
-                        // 給浮在上面的輸出鍵讓位，最後一張卡才捲得完
-                        bottomInset: 78,
-                        settings: _settings,
-                        // 這一頁的面板比影片編輯高，九宮格給大一點
-                        posGridCap: 280,
-                        onChanged: () => setState(() {}),
-                        onBeforeChange: _pushUndo,
-                        syncVersion: _sync,
-                        key: _panelKey,
-                        // 儲存範本改成輸出後才問：一顆白色大鈕釘在捲動區
-                        // 最底，跟浮在上面的輸出鍵長得一樣重，互相搶
-                        hideSaveButton: true,
-                        // 剛加的圖片直接選起來，可以馬上拖／縮放
-                        onLogoAdded: () =>
-                            setState(() => _wmPart = WmPart.logo),
-                        // 馬賽克卡：插在圖片卡下面（照片模式限定）
-                        extraSections: [
-                          (
-                            label: '馬賽克',
-                            icon: Icons.blur_on,
-                            child: _mosaicSection(),
-                          ),
-                        ],
-                        // 「更多浮水印」跟主浮水印同一頁：導覽列不再給它
-                        // 一格，而面板是分頁的，沒掛在別人下面就進不去了
-                        textSectionExtra: _extraWmSection(),
-                      ),
-                    },
+                            1 => ColorGradePanel(
+                              grade: _grade,
+                              onChanged: () => setState(() {}),
+                              onBeforeChange: _pushUndo,
+                              // 上面的區段導覽列已經寫著「調色」了
+                              showTitle: false,
+                              // 給浮在上面的按鈕列讓位，最後一條滑桿
+                              // 才不會被蓋住
+                              bottomInset: 78,
+                              // 面板 dispose 的回呼可能落在這頁收掉之後——要擋
+                              onCompare: (on) {
+                                if (mounted) setState(() => _colorCompare = on);
+                              },
+                            ),
+                            _ => WatermarkPanel(
+                              controller: _wmPanelCtrl,
+                              // 導覽列由這一頁自己畫（要多一格「調色」）
+                              showNav: false,
+                              // 給浮在上面的輸出鍵讓位，最後一張卡才捲得完
+                              bottomInset: 78,
+                              settings: _settings,
+                              // 這一頁的面板比影片編輯高，九宮格給大一點
+                              posGridCap: 280,
+                              onChanged: () => setState(() {}),
+                              onBeforeChange: _pushUndo,
+                              syncVersion: _sync,
+                              key: _panelKey,
+                              // 儲存範本改成輸出後才問：一顆白色大鈕釘在捲動區
+                              // 最底，跟浮在上面的輸出鍵長得一樣重，互相搶
+                              hideSaveButton: true,
+                              // 剛加的圖片直接選起來，可以馬上拖／縮放
+                              onLogoAdded: () =>
+                                  setState(() => _wmPart = WmPart.logo),
+                              // 馬賽克卡：插在圖片卡下面（照片模式限定）
+                              extraSections: [
+                                (
+                                  label: '馬賽克',
+                                  icon: Icons.blur_on,
+                                  child: _mosaicSection(),
+                                ),
+                              ],
+                              // 「更多浮水印」跟主浮水印同一頁：導覽列不再給它
+                              // 一格，而面板是分頁的，沒掛在別人下面就進不去了
+                              textSectionExtra: _extraWmSection(),
+                            ),
+                          },
                         ),
                         _floatingExport(),
                       ],
@@ -1812,7 +1820,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       ),
     );
   }
-
 }
 
 /// 預覽用的馬賽克補丁：直接取樣照片畫「真效果」，
@@ -1916,7 +1923,8 @@ class _MosaicPatchPainter extends CustomPainter {
       canvas.clipRect(bounds);
       canvas.saveLayer(
         bounds,
-        Paint()..imageFilter = ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
+        Paint()
+          ..imageFilter = ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
       );
       canvas.drawImageRect(
         img,
