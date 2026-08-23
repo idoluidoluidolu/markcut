@@ -802,12 +802,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
 
     Uint8List? wmPng;
     if (wm.hasAnyMark) {
-      wmPng = await WatermarkRenderer.renderOverlayPng(
-        wm,
-        w,
-        h,
-        codecShadowBoost: true, // 批次也是影片輸出
-      );
+      wmPng = await WatermarkRenderer.renderOverlayPng(wm, w, h);
     }
     final src = MediaSource(
       path: f.path,

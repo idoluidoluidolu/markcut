@@ -17,18 +17,11 @@ class WatermarkRenderer {
   static Future<Uint8List> renderOverlayPng(
     WatermarkSettings s,
     int outW,
-    int outH, {
-    bool codecShadowBoost = false,
-  }) async {
+    int outH,
+  ) async {
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(recorder);
-    await drawMarks(
-      canvas,
-      s,
-      outW.toDouble(),
-      outH.toDouble(),
-      codecShadowBoost: codecShadowBoost,
-    );
+    await drawMarks(canvas, s, outW.toDouble(), outH.toDouble());
     final picture = recorder.endRecording();
     final image = await picture.toImage(outW, outH);
     final data = await image.toByteData(format: ui.ImageByteFormat.png);
@@ -185,32 +178,24 @@ class WatermarkRenderer {
     double py,
     double scale,
     int outW,
-    int outH, {
-    bool codecShadowBoost = false,
-  }) async {
+    int outH,
+  ) async {
     final t = style.copy()
       ..enabled = true
       ..x = px
       ..y = py
       ..sizeFrac = style.sizeFrac * scale;
     final s = WatermarkSettings(text: t, logo: LogoMark(enabled: false));
-    return renderOverlayPng(s, outW, outH, codecShadowBoost: codecShadowBoost);
+    return renderOverlayPng(s, outW, outH);
   }
 
   /// 在指定大小的畫布上畫出文字與 Logo 浮水印
-  /// [codecShadowBoost]：給「會被影片編碼器咬過」的輸出用。
-  /// 4:2:0＋量化最先吃掉的就是亮底上低對比的軟陰影——實測回報
-  /// 「預覽有浮雕感、成品扁平」，管線逐層排除後定罪編碼器
-  ///（黑色在混色/預乘錯誤下是不變量，殺不掉陰影卻留白字的只有它）。
-  /// 補償＝陰影加濃、收緊，被咬掉一層後落回預覽的觀感。
-  /// 照片輸出（無損 PNG）不經編碼，不補償
   static Future<void> drawMarks(
     ui.Canvas canvas,
     WatermarkSettings s,
     double w,
-    double h, {
-    bool codecShadowBoost = false,
-  }) async {
+    double h,
+  ) async {
     // 圖片先畫（讓文字可以壓在圖片上面）。多張時照清單順序，
     // 後加的那張蓋在前面的上面——跟預覽的疊法一致
     for (final logo in s.logos) {
@@ -299,7 +284,7 @@ class WatermarkRenderer {
       img.dispose();
     }
 
-    _drawText(canvas, s, w, h, codecShadowBoost: codecShadowBoost);
+    _drawText(canvas, s, w, h);
   }
 
   /// 文字浮水印（含平鋪、底色、描邊、旋轉）。
@@ -308,28 +293,21 @@ class WatermarkRenderer {
     ui.Canvas canvas,
     WatermarkSettings s,
     double w,
-    double h, {
-    bool codecShadowBoost = false,
-  }) {
+    double h,
+  ) {
     for (final t in s.texts) {
       if (t.enabled && t.text.trim().isNotEmpty) {
         // 不自動換行、也不自動縮小：使用者調多大就多大，
         // 超出畫面是允許的（明確換行 \n 仍有效）
         final fontSize = t.sizeFrac * math.min(w, h); // 短邊基準（跟預覽一致）
 
-        // 編碼補償見 drawMarks 的說明
-        final shAlpha = (0.55 * (codecShadowBoost ? 1.45 : 1.0) * t.opacity)
-            .clamp(0.0, 0.9);
-        final shBlur = fontSize * 0.08 * (codecShadowBoost ? 0.7 : 1.0);
-        final shadows = t.shadow
-            ? [
-                Shadow(
-                  color: const ui.Color(0xFF000000).withValues(alpha: shAlpha),
-                  blurRadius: shBlur,
-                  offset: ui.Offset(fontSize * 0.03, fontSize * 0.03),
-                ),
-              ]
-            : null;
+        // 陰影不走 TextStyle.shadows：那條路吃 GPU 濾鏡，Impeller 的
+        // 離屏 toImage 會把它整個丟掉——螢幕上（預覽）畫得出來、
+        // 烘進匯出 PNG 就消失，就是「預覽有浮雕、成品扁平」的真兇
+        //（追查紀錄：渲染端桌面測試有陰影、實機成品沒有；黑色在
+        // 混色錯誤下是不變量，合成端殺不掉它——唯一能讓它消失的
+        // 就是離屏渲染本身）。改成手工蓋印：黑字在偏移點附近多次
+        // 低透明度蓋印，純幾何＋alpha，任何渲染後端都畫得出來
         final painter = TextPainter(
           text: TextSpan(
             text: t.text,
@@ -338,11 +316,44 @@ class WatermarkRenderer {
               fontSize: fontSize,
               letterSpacing: fontSize * t.spacing,
               color: t.color.withValues(alpha: t.opacity),
-              shadows: shadows,
             ),
           ),
           textDirection: TextDirection.ltr,
         )..layout();
+        TextPainter? shadowPainter;
+        if (t.shadow) {
+          shadowPainter = TextPainter(
+            text: TextSpan(
+              text: t.text,
+              style: TextStyle(
+                fontFamily: t.fontFamily,
+                fontSize: fontSize,
+                letterSpacing: fontSize * t.spacing,
+                // 每印一次疊一點，五印疊出來 ≈ 預覽陰影的 0.55×opacity
+                color: const ui.Color(
+                  0xFF000000,
+                ).withValues(alpha: (0.22 * t.opacity).clamp(0.0, 1.0)),
+              ),
+            ),
+            textDirection: TextDirection.ltr,
+          )..layout();
+        }
+
+        // 手工陰影：中心一印＋四方位微位移各一印（半徑≈預覽 blur 的
+        // 六成），視覺上等同小半徑高斯陰影
+        void stampShadow(double x, double y) {
+          final sp2 = shadowPainter;
+          if (sp2 == null) return;
+          final ox = fontSize * 0.03;
+          final oy = fontSize * 0.03;
+          final r = fontSize * 0.05;
+          sp2.paint(canvas, ui.Offset(x + ox, y + oy));
+          sp2.paint(canvas, ui.Offset(x + ox + r, y + oy));
+          sp2.paint(canvas, ui.Offset(x + ox - r, y + oy));
+          sp2.paint(canvas, ui.Offset(x + ox, y + oy + r));
+          sp2.paint(canvas, ui.Offset(x + ox, y + oy - r));
+        }
+
         // 描邊畫筆（平鋪與單顆共用）
         TextPainter? strokePainter;
         if (t.outline) {
@@ -394,6 +405,7 @@ class WatermarkRenderer {
                   ui.Paint()..color = t.bgColor.withValues(alpha: t.bgOpacity),
                 );
               }
+              stampShadow(x, y);
               strokePainter?.paint(canvas, ui.Offset(x, y));
               painter.paint(canvas, ui.Offset(x, y));
             }
@@ -432,7 +444,8 @@ class WatermarkRenderer {
             ui.Paint()..color = t.bgColor.withValues(alpha: t.bgOpacity),
           );
         }
-        // 描邊（自訂顏色與粗度）
+        // 手工陰影 → 描邊 → 文字（跟預覽的視覺順序一致）
+        stampShadow(left, top);
         strokePainter?.paint(canvas, ui.Offset(left, top));
         painter.paint(canvas, ui.Offset(left, top));
         canvas.restore();
