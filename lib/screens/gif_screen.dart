@@ -709,6 +709,26 @@ class _GifScreenState extends State<GifScreen> {
   /// 播放控制列：播放/暫停＋目前秒數。
   /// 位置選擇（滑動速覽）由修剪條上的白色播放頭負責（C 案：
   /// 不另外加一條，播放頭直接長在修剪條上、拖了即時換畫面）
+  /// 跳回選取範圍的起點並開始播。GIF 成果模式＝把循環撥回 0；
+  /// 影片模式＝seek 到起點再播
+  Future<void> _replayFromStart() async {
+    if (_gifMode) {
+      _gifMs = 0;
+      _syncGifFrame();
+      if (!_playing) setState(() => _playing = true);
+      _ensureGifTick();
+      return;
+    }
+    final p = _player;
+    if (p == null || !_ready) return;
+    _pos.value = _start;
+    await p.seekTo(Duration(milliseconds: (_start * 1000).round()));
+    if (!_playing) {
+      await p.play();
+      if (mounted) setState(() => _playing = true);
+    }
+  }
+
   Widget _playbackRow() {
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 2, 16, 0),
@@ -722,6 +742,14 @@ class _GifScreenState extends State<GifScreen> {
             ),
             visualDensity: VisualDensity.compact,
             onPressed: _togglePlay,
+          ),
+          // 從起點重播：調完起訖點想「再看一次這一段」是最高頻的
+          // 動作，不該要先拖指針回去再按播放
+          IconButton(
+            icon: const Icon(Icons.replay_rounded, size: 21, color: kTextDim),
+            visualDensity: VisualDensity.compact,
+            tooltip: '從起點重播',
+            onPressed: _replayFromStart,
           ),
           const Spacer(),
           ValueListenableBuilder<double>(
