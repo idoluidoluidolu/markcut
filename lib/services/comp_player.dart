@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart';
 
 import '../models/timeline.dart';
+import 'media_prep.dart';
 
 /// 合成播放器：整條時間軸交給系統的一顆播放器。
 ///
@@ -108,6 +109,18 @@ class CompPlayer {
   /// 上一次組不起來的原因（原生端回報的）。呼叫端拿去寫進診斷
   static String? lastError;
 
+  /// 這個檔是不是 HDR（probeLite 的 sdr709 判定；同一個路徑問過
+  /// 就記住——檔案內容不會變）。probeLite 沒實作的平台回 false
+  static final Map<String, bool> _hdrCache = {};
+  static Future<bool> _isHdrPath(String path) async {
+    final hit = _hdrCache[path];
+    if (hit != null) return hit;
+    var hdr = false;
+    final m = await MediaPrep.probeLite(path);
+    if (m != null && m['error'] == null) hdr = m['sdr709'] != true;
+    return _hdrCache[path] = hdr;
+  }
+
   /// [mutedTracks] 整軌靜音的軌號：音量在組合成時就烘進去，
   /// 所以切靜音要重組（呼叫端的指紋有把它算進去）
   static Future<CompPlayer?> build(
@@ -127,11 +140,28 @@ class CompPlayer {
           return t != 0 ? t : a.track.compareTo(b.track);
         });
     if (vids.isEmpty) return null;
+    // 每支來源是不是 HDR（工作檔一定是 SDR，不用問）。
+    // 在 Dart 端用 probeLite 算好傳過去：Swift 端自己同步讀軌道
+    // 的判定在實機上有拿不到資料的情況（實測：進場的合成沒掛
+    // CI、HDR 原檔整段白白的），probeLite 那條路已被證明可靠
+    final hdrOf = <int, bool>{};
+    for (final c in vids) {
+      final i = c.sourceIndex;
+      if (hdrOf.containsKey(i)) continue;
+      final s = tl.sourceOf(c);
+      if (s.workPath != null) {
+        hdrOf[i] = false;
+        continue;
+      }
+      hdrOf[i] = await _isHdrPath(s.path);
+    }
     final clips = [
       for (final c in vids)
         {
           // 一律用工作檔：轉正過、SDR、H.264，一條軌接得起來
           'path': tl.sourceOf(c).previewPath,
+          // HDR 原檔要在原生端掛 CI 做 toneMap（見上）
+          'hdr': hdrOf[c.sourceIndex] ?? false,
           'start': c.trimStart,
           'end': c.trimEnd,
           // 絕對時間＋軌道編號：原生端一條軌道開一條合成軌，
@@ -331,7 +361,7 @@ class CompPlayer {
         b.write(
           '\n  組建：收到 ${bi['收到'] ?? '?'}'
           '／馬賽克 ${bi['馬賽克'] ?? '無'}'
-          '／合成軌 ${bi['合成軌']}／CI ${bi['CI']}'
+          '／合成軌 ${bi['合成軌']}／CI ${bi['CI']}／HDR ${bi['HDR']}'
           '\n  指令：${bi['指令'] ?? '?'}',
         );
         // 軌道實況：媒＝正常媒體、填＝拉長的填充、空＝空範圍。

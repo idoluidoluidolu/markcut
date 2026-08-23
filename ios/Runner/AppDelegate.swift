@@ -3112,7 +3112,12 @@ final class CompPlayer: NSObject, FlutterTexture {
     // 讀取好才正常」（實測回報）。掛 CI 合成器強制 toneMapHDRtoSDR，
     // 預覽全程 SDR、跟成品同一條曲線；工作檔全好後重組，來源都是
     // SDR，這裡自然回到輕的路
+    // HDR 判定以 Dart 端傳來的 'hdr' 旗標為準（probeLite 算的，
+    // 實機驗證可靠）；自家同步讀軌道的 isHDRSource 當備援——
+    // 實測它在進場當下有拿不到資料回 false 的情況，合成沒掛 CI、
+    // HDR 原檔整段白白的
     let anyHDR = ordered.contains { c in
+      if (c["hdr"] as? Bool) == true { return true }
       guard let p = c["path"] as? String else { return false }
       return CompPlayer.isHDRSource(p)
     }
@@ -3124,6 +3129,9 @@ final class CompPlayer: NSObject, FlutterTexture {
           || abs(c["rotation"] as? Double ?? 0) > 0.05
           || (c["opacity"] as? Double ?? 1) < 0.999
       }
+    // 寫進組建內視鏡：下次「進場顏色白白的」的回報，一眼就能看出
+    // HDR 判定有沒有中、CI 有沒有掛（上一輪就是缺這格查了半天）
+    buildInfo["HDR"] = anyHDR
 
     for clip in ordered {
       guard let path = clip["path"] as? String else { continue }
