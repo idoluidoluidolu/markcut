@@ -1199,6 +1199,29 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                   ),
                                 ],
                               ),
+                              if (s.text.shadow) ...[
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 16),
+                                  child: _sliderRow(
+                                    '濃度',
+                                    s.text.shadowOpacity,
+                                    0.05,
+                                    1.0,
+                                    (v) =>
+                                        _update(() => s.text.shadowOpacity = v),
+                                  ),
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 16),
+                                  child: _sliderRow(
+                                    '模糊',
+                                    s.text.shadowBlur,
+                                    0.0,
+                                    0.2,
+                                    (v) => _update(() => s.text.shadowBlur = v),
+                                  ),
+                                ),
+                              ],
                               Row(
                                 children: [
                                   const Text(

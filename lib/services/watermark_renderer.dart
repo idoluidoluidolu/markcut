@@ -320,11 +320,44 @@ class WatermarkRenderer {
         )..layout();
         // 柔影小圖：把黑字以 1/k 縮小畫進離屏圖（邊緣留 blur 的
         // 出血），貼回來時用取樣放大——等效半徑 ≈ k/2 像素
+        // 一步放大超過 4× 會出現菱形拖影（實測回報：大字的陰影
+        // 糊成一團、跟描邊攪在一起）——分段放大，每步 ≤4×，
+        // 視覺等同高斯
+        Future<ui.Image> upscaleSteps(ui.Image src, double total) async {
+          var img = src;
+          var remain = total;
+          while (remain > 4.0) {
+            const step = 4.0;
+            final rec2 = ui.PictureRecorder();
+            final c2 = ui.Canvas(rec2);
+            c2.drawImageRect(
+              img,
+              ui.Rect.fromLTWH(
+                0,
+                0,
+                img.width.toDouble(),
+                img.height.toDouble(),
+              ),
+              ui.Rect.fromLTWH(0, 0, img.width * step, img.height * step),
+              ui.Paint()..filterQuality = ui.FilterQuality.medium,
+            );
+            final next = await rec2.endRecording().toImage(
+              (img.width * step).round().clamp(1, 8192),
+              (img.height * step).round().clamp(1, 8192),
+            );
+            img.dispose();
+            img = next;
+            remain /= step;
+          }
+          return img;
+        }
+
         ui.Image? shadowImg;
         var shadowMargin = 0.0;
         var shadowScale = 1.0;
         if (t.shadow) {
-          final blur = fontSize * 0.08;
+          // 濃度/模糊可調（使用者要求）；預設值＝原本的固定常數
+          final blur = fontSize * t.shadowBlur;
           shadowScale = (blur * 0.9).clamp(2.0, 64.0);
           shadowMargin = blur * 2;
           final rec = ui.PictureRecorder();
@@ -337,9 +370,9 @@ class WatermarkRenderer {
                 fontFamily: t.fontFamily,
                 fontSize: fontSize,
                 letterSpacing: fontSize * t.spacing,
-                color: const ui.Color(
-                  0xFF000000,
-                ).withValues(alpha: (0.55 * t.opacity).clamp(0.0, 1.0)),
+                color: const ui.Color(0xFF000000).withValues(
+                  alpha: (t.shadowOpacity * t.opacity).clamp(0.0, 1.0),
+                ),
               ),
             ),
             textDirection: TextDirection.ltr,
@@ -351,7 +384,12 @@ class WatermarkRenderer {
           final sh2 = ((sp2.height + shadowMargin * 2) / shadowScale)
               .ceil()
               .clamp(1, 4096);
-          shadowImg = await rec.endRecording().toImage(sw2, sh2);
+          var raw = await rec.endRecording().toImage(sw2, sh2);
+          if (shadowScale > 4.0) {
+            raw = await upscaleSteps(raw, shadowScale / 4.0);
+            shadowScale = 4.0;
+          }
+          shadowImg = raw;
         }
 
         void stampShadow(double x, double y) {

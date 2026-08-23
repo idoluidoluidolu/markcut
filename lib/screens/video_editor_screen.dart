@@ -4172,6 +4172,28 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       ),
                     ),
                     toggle('陰影', st.shadow, (v) => st.shadow = v),
+                    if (st.shadow) ...[
+                      Padding(
+                        padding: const EdgeInsets.only(left: 16),
+                        child: slider(
+                          '濃度',
+                          st.shadowOpacity,
+                          0.05,
+                          1.0,
+                          (v) => st.shadowOpacity = v,
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.only(left: 16),
+                        child: slider(
+                          '模糊',
+                          st.shadowBlur,
+                          0.0,
+                          0.2,
+                          (v) => st.shadowBlur = v,
+                        ),
+                      ),
+                    ],
                     toggle('描邊', st.outline, (v) => st.outline = v),
                     if (st.outline) ...[
                       colorRow(

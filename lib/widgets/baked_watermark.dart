@@ -36,9 +36,10 @@ class BakedWatermark extends StatefulWidget {
 
 class _BakedWatermarkState extends State<BakedWatermark> {
   Uint8List? _png;
-  String? _sig;
-  String? _baking; // 正在烘的指紋（去重）
-  Timer? _debounce;
+  String? _sig; // 已顯示圖的指紋（不含解析度檔位）
+  bool _sigIsFull = false; // 顯示中的是全解析版嗎
+  bool _baking = false;
+  Timer? _settle;
 
   /// 輕量指紋：不 jsonEncode（Logo 的 base64 動輒幾百 KB，每一格
   /// 編碼一次會把預覽拖垮）。b64 用「同一個字串物件」當身分——
@@ -49,7 +50,8 @@ class _BakedWatermarkState extends State<BakedWatermark> {
       b.write(
         '|T${t.enabled}|${t.text}|${t.fontFamily}|${t.colorValue}'
         '|${t.opacity}|${t.sizeFrac}|${t.spacing}|${t.x}|${t.y}'
-        '|${t.rotation}|${t.tiled}|${t.shadow}|${t.outline}'
+        '|${t.rotation}|${t.tiled}|${t.shadow}'
+        '|${t.shadowOpacity}|${t.shadowBlur}|${t.outline}'
         '|${t.outlineColorValue}|${t.outlineWidth}|${t.bg}'
         '|${t.bgColorValue}|${t.bgOpacity}|${t.bgCorner}|${t.bgPad}',
       );
@@ -64,37 +66,49 @@ class _BakedWatermarkState extends State<BakedWatermark> {
     return b.toString();
   }
 
+  /// 雙檔位：設定一變就立刻以低解析（短邊 288，~幾 ms）連續
+  /// 烘——滑桿拖曳即時跟手；停手 250ms 後換全解析正式版
   void _maybeBake(int bw, int bh) {
     final sig = _lightSig(widget.settings, bw, bh);
-    if (sig == _sig || sig == _baking) return;
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 80), () async {
-      final want = _lightSig(widget.settings, bw, bh);
-      if (want == _sig || want == _baking) return;
-      _baking = want;
-      try {
-        final png = await WatermarkRenderer.renderOverlayPng(
-          widget.settings,
-          bw,
-          bh,
-        );
-        if (!mounted) return;
-        // 烘的過程中設定又變了：畫面先換上這張，下一輪 build 會再烘
-        setState(() {
-          _png = png;
-          _sig = want;
-        });
-      } catch (_) {
-        // 烘不出來就維持上一張；完全沒有的話這一層是空的
-      } finally {
-        _baking = null;
-      }
+    if (sig == _sig && _sigIsFull) return;
+    if (sig != _sig) {
+      // 設定變了：快檔位馬上跟（不防抖，靠 _baking 串流）
+      unawaited(_bake(bw, bh, full: false));
+    }
+    _settle?.cancel();
+    _settle = Timer(const Duration(milliseconds: 250), () {
+      unawaited(_bake(bw, bh, full: true));
     });
+  }
+
+  Future<void> _bake(int bw, int bh, {required bool full}) async {
+    if (_baking) return; // 上一張還在烘：下一輪 build 會再來
+    final want = _lightSig(widget.settings, bw, bh);
+    if (want == _sig && (_sigIsFull || !full)) return;
+    _baking = true;
+    try {
+      final k = full ? 1.0 : (288 / widget.shortSide).clamp(0.1, 1.0);
+      final png = await WatermarkRenderer.renderOverlayPng(
+        widget.settings,
+        (bw * k).round().clamp(1, 4096),
+        (bh * k).round().clamp(1, 4096),
+      );
+      if (!mounted) return;
+      setState(() {
+        _png = png;
+        _sig = want;
+        _sigIsFull = full;
+      });
+    } catch (_) {
+      // 烘不出來就維持上一張
+    } finally {
+      _baking = false;
+    }
   }
 
   @override
   void dispose() {
-    _debounce?.cancel();
+    _settle?.cancel();
     super.dispose();
   }
 

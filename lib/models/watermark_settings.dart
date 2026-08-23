@@ -36,6 +36,12 @@ class TextMark {
   double rotation; // 旋轉角度 -180 ~ 180
   bool tiled; // 滿版平鋪（棋盤格防盜：整個畫面重複鋪排，忽略 x/y）
   bool shadow; // 陰影讓浮水印在亮背景上也看得清楚
+
+  /// 陰影濃度（0.05~1；最終 alpha 還會乘上文字透明度）
+  double shadowOpacity;
+
+  /// 陰影模糊（相對字級 0~0.2）
+  double shadowBlur;
   bool outline; // 描邊
   int outlineColorValue;
   double outlineWidth; // 粗度，相對字級 0.02~0.2
@@ -63,6 +69,8 @@ class TextMark {
     this.rotation = 0,
     this.tiled = false,
     this.shadow = true,
+    this.shadowOpacity = 0.55,
+    this.shadowBlur = 0.08,
     this.outline = false,
     this.outlineColorValue = 0xFF000000,
     this.outlineWidth = 0.07,
@@ -95,6 +103,8 @@ class TextMark {
     'rotation': rotation,
     'tiled': tiled,
     'shadow': shadow,
+    'shadowOpacity': shadowOpacity,
+    'shadowBlur': shadowBlur,
     'outline': outline,
     'outlineColorValue': outlineColorValue,
     'outlineWidth': outlineWidth,
@@ -119,6 +129,14 @@ class TextMark {
     rotation: (j['rotation'] ?? 0).toDouble(),
     tiled: j['tiled'] ?? false,
     shadow: j['shadow'] ?? true,
+    shadowOpacity: ((j['shadowOpacity'] ?? 0.55).toDouble() as double).clamp(
+      0.05,
+      1.0,
+    ),
+    shadowBlur: ((j['shadowBlur'] ?? 0.08).toDouble() as double).clamp(
+      0.0,
+      0.2,
+    ),
     outline: j['outline'] ?? false,
     outlineColorValue: j['outlineColorValue'] ?? 0xFF000000,
     outlineWidth: (j['outlineWidth'] ?? 0.07).toDouble(),
