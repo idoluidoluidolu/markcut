@@ -344,6 +344,9 @@ class _GifScreenState extends State<GifScreen> {
       return;
     }
     await p.setLooping(false);
+    // GIF 沒有聲音這回事：預覽播放器全程靜音（實測回報：
+    // 挑段落時一直有原片的聲音，跟成品對不上）
+    await p.setVolume(0);
     _dur = p.value.duration.inMilliseconds / 1000.0;
     _start = 0;
     _end = math.min(_dur, 15);
