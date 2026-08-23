@@ -1459,8 +1459,20 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     } catch (e) {
       return (ok: false, message: '存到相簿失敗：$e', cancelled: false);
     }
-    // 留給「預覽 vs 成品」對照模式抽幀用（暫存檔，系統晚點會清）
-    lastExportPath = outPath;
+    // 留一份給「預覽 vs 成品」對照模式：搬到固定檔名（rename 零成本、
+    // 永遠只留一份）。呼叫端存完相簿會把 outPath 刪掉——第一版就是
+    // 忘了這件事，對照模式永遠說「先匯出一次」；搬走之後那個刪除
+    // 自然落空（有 catch）
+    try {
+      final cmp = '${dir.path}${Platform.pathSeparator}last_export.mp4';
+      try {
+        File(cmp).deleteSync();
+      } catch (_) {}
+      File(outPath).renameSync(cmp);
+      lastExportPath = cmp;
+    } catch (_) {
+      lastExportPath = outPath; // 搬不動就指原位（可能稍後被呼叫端刪掉）
+    }
     return (ok: true, message: '已存到「浮水印」相簿', cancelled: false);
   }
 
