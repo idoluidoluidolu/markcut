@@ -25,6 +25,10 @@ import 'work_files.dart';
 /// 這個平台是否支援影片匯出
 const bool videoExportSupported = true;
 
+/// 最近一次匯出成功的成品暫存路徑（「預覽 vs 成品」對照模式抽幀用；
+/// 檔案在暫存目錄，系統晚點會清，用前要再確認存在）
+String? lastExportPath;
+
 /// 把來源的某一段做成「已經倒轉好」的影片檔（按下倒轉時呼叫）。
 ///
 /// 做完之後這段就是普通素材：預覽有聲音、播放流暢、匯出不用特殊處理。
@@ -1455,6 +1459,8 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     } catch (e) {
       return (ok: false, message: '存到相簿失敗：$e', cancelled: false);
     }
+    // 留給「預覽 vs 成品」對照模式抽幀用（暫存檔，系統晚點會清）
+    lastExportPath = outPath;
     return (ok: true, message: '已存到「浮水印」相簿', cancelled: false);
   }
 

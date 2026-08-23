@@ -7325,11 +7325,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         height: 54,
                         iconMargin: EdgeInsets.only(bottom: 2),
                       ),
+                      // 長按＝預覽 vs 成品對照模式（診斷 WYSIWYG 用，
+                      // 見 _toggleCompare）。只掛長按不掛點擊，
+                      // 分頁本身的切換不受影響
                       Tab(
-                        icon: Icon(Icons.ios_share, size: 20),
-                        text: '匯出',
                         height: 54,
-                        iconMargin: EdgeInsets.only(bottom: 2),
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.translucent,
+                          onLongPress: _toggleCompare,
+                          child: const Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.ios_share, size: 20),
+                              SizedBox(height: 2),
+                              Text('匯出'),
+                            ],
+                          ),
+                        ),
                       ),
                     ],
                   ),
@@ -7587,6 +7599,50 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 提示訊息錨定用：貼在預覽區下緣
   final _previewKey = GlobalKey();
+
+  // ── 預覽 vs 成品對照模式 ──────────────────────────────────
+  // 長按「匯出」分頁進入/退出：預覽畫布右半蓋上「成品同一時間的
+  // 幀」，中線分隔＋左右標籤——一張截圖就能把預覽/匯出的渲染差異
+  //（字重、陰影、顏色）完整送出來，而且兩邊走同一個螢幕顯示管線
+  bool _cmpMode = false;
+  Uint8List? _cmpFrame;
+
+  Future<void> _toggleCompare() async {
+    if (_cmpMode) {
+      setState(() {
+        _cmpMode = false;
+        _cmpFrame = null;
+      });
+      return;
+    }
+    final p = engine.lastExportPath;
+    if (p == null || !await fileExists(p)) {
+      if (mounted) showHint(context, '先匯出一次，才有成品可以對照');
+      return;
+    }
+    _pause();
+    // 成品的時間軸＝輸出秒（整體變速已除掉）
+    final fb = await nativeFrameAt(
+      p,
+      _position / (_speed <= 0 ? 1 : _speed),
+      maxH: 1440,
+      quality: 0.92,
+    );
+    if (!mounted) return;
+    if (fb == null) {
+      showHint(context, '抽不到成品的畫面（成品暫存檔可能已被系統清掉）', error: true);
+      return;
+    }
+    setState(() {
+      _cmpMode = true;
+      _cmpFrame = fb;
+    });
+    showHint(
+      context,
+      '對照模式：左＝預覽、右＝成品。換位置後再長按一次更新',
+      duration: const Duration(seconds: 4),
+    );
+  }
 
   Widget _buildPreview() {
     final baseVideo = _activeVideo;
@@ -9105,6 +9161,31 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   ),
                 ),
               ),
+              // 預覽 vs 成品對照：右半蓋成品幀（見 _toggleCompare）
+              if (_cmpMode && _cmpFrame != null)
+                Center(
+                  child: AspectRatio(
+                    aspectRatio: canvasAspect,
+                    child: IgnorePointer(
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          ClipRect(
+                            clipper: _RightHalfClipper(),
+                            child: Image.memory(
+                              _cmpFrame!,
+                              fit: BoxFit.fill,
+                              gaplessPlayback: true,
+                            ),
+                          ),
+                          Align(child: Container(width: 1.5, color: kSelect)),
+                          Positioned(left: 6, top: 6, child: _cmpTag('預覽')),
+                          Positioned(right: 6, top: 6, child: _cmpTag('成品')),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
               // 比例膠囊釘在整個預覽區右上角（不跟畫布走）。
               // 全螢幕時整組收掉：那是「編輯用的資訊」，看片時
               // 只會擋畫面——退出全螢幕的鈕在膠囊上，這裡不需要
@@ -9521,6 +9602,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           : null,
     );
   }
+
+  static Widget _cmpTag(String s) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+    decoration: BoxDecoration(
+      color: Colors.black.withValues(alpha: 0.65),
+      borderRadius: BorderRadius.circular(5),
+    ),
+    child: Text(
+      s,
+      style: const TextStyle(
+        fontSize: 10.5,
+        color: kSelect,
+        fontWeight: FontWeight.w700,
+      ),
+    ),
+  );
 
   Widget _canvasHint() {
     return Align(
@@ -11569,4 +11666,14 @@ class _CropClipper extends CustomClipper<Rect> {
   @override
   bool shouldReclip(_CropClipper old) =>
       old.l != l || old.t != t || old.w != w || old.h != h;
+}
+
+/// 對照模式的右半裁切（左半留給活的預覽）
+class _RightHalfClipper extends CustomClipper<Rect> {
+  @override
+  Rect getClip(Size size) =>
+      Rect.fromLTWH(size.width / 2, 0, size.width / 2, size.height);
+
+  @override
+  bool shouldReclip(covariant CustomClipper<Rect> oldClipper) => false;
 }

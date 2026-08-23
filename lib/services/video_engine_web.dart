@@ -11,6 +11,9 @@ import 'video_processor.dart';
 /// Web 版沒有 FFmpeg，只提供介面預覽，不支援影片匯出。
 const bool videoExportSupported = false;
 
+/// Web 沒有真的匯出，「預覽 vs 成品」對照模式永遠沒有成品可抽
+String? lastExportPath;
+
 /// Web 沒有 FFmpeg，做不了倒轉檔——回 null，介面會退回抽幀預覽模式
 Future<String?> renderReversedClip(
   String srcPath,
