@@ -366,6 +366,12 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   // 重新編一次管線——首編譯那幾十 ms 正好落在畫面上變成一頓
   private static let ctxSDR = CIContext(options: [
     .cacheIntermediates: false, .workingFormat: CIFormat.RGBA8,
+    // 半透明疊加要在 gamma 空間混色：Flutter 預覽跟 FFmpeg 的
+    // overlay 都是 gamma 混，CI 預設的「線性光」混出來，同一個
+    // 55% 白字會更實、陰影的柔度被吃掉——實測回報「預覽字較淺
+    // 有厚度、匯出變濃變扁」就是這個。HDR 管線維持線性（色調
+    // 映射要在線性光上算）
+    .workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
   ])
   // HDR 要在半浮點工作格式上算，8 位元會把高光截掉
   private static let ctxHDR = CIContext(options: [
