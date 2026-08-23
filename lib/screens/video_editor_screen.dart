@@ -1071,6 +1071,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 單一來源浮水印：任何編輯都先當作可能動到浮水印，
     // 立刻退回即時繪製（跟手），併批完再烘回單一來源
     _wmBakedFresh = false;
+    _wmScheduleFastBake();
     _draftSaveTimer?.cancel();
     _draftSaveTimer = Timer(const Duration(milliseconds: 900), () {
       _saveDraftNow();
@@ -7619,6 +7620,30 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   // 跟手；停手（_saveDraft 併批 900ms）後烘一張換回
   Uint8List? _wmBakedPng;
   bool _wmBakeKicked = false;
+
+  /// 編輯中的快烘（短邊 540，~十幾 ms）：拖曳/拉滑桿時
+  /// 畫面以 ~90ms 節奏跟手；停手後 _saveDraft 併批再烘
+  /// 回短邊 1080 的正式版
+  Timer? _wmFastBakeTimer;
+  void _wmScheduleFastBake() {
+    _wmFastBakeTimer ??= Timer(const Duration(milliseconds: 90), () async {
+      _wmFastBakeTimer = null;
+      if (!mounted || !_settings.hasAnyMark) return;
+      try {
+        final aspect = _canvasAspectNow;
+        final bw = aspect >= 1 ? (540 * aspect).round() : 540;
+        final bh = aspect >= 1 ? 540 : (540 / aspect).round();
+        final png = await WatermarkRenderer.renderOverlayPng(_settings, bw, bh);
+        if (!mounted) return;
+        setState(() {
+          _wmBakedPng = png;
+          _wmBakedSig = null; // 低解析版：讓正式烘焙一定重做
+          _wmBakedFresh = false;
+        });
+      } catch (_) {}
+    });
+  }
+
   String? _wmBakedSig;
   bool _wmBakedFresh = false;
   bool _wmBakeBusy = false;
@@ -9001,12 +9026,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     // widget 跟手。手勢層永遠掛著
                                     //（透明時 Opacity 0，點擊拖曳
                                     // 照常）
-                                    final wmBaked =
-                                        !_wmSel &&
-                                            _wmBakedFresh &&
-                                            _wmBakedPng != null
-                                        ? _wmBakedPng
-                                        : null;
+                                    // 永遠畫烘焙 PNG（單一來源）；
+                                    // 編輯中由快烘（~90ms）跟手。
+                                    // 烘不出來才退回 widget 自畫
+                                    final wmBaked = _wmBakedPng;
                                     if (wmBaked != null) {
                                       final av = _settings.animAt(pos);
                                       children.add(
@@ -9033,52 +9056,50 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       );
                                     }
                                     children.add(
-                                      Opacity(
-                                        opacity: wmBaked != null ? 0.0 : 1.0,
-                                        child: WatermarkLayer(
-                                          settings: _settings,
-                                          onChanged: () => setState(() {}),
-                                          onDragStart: _pushWmUndo,
-                                          // 選取框畫在裁切外（見 _wmFrameInfo）
-                                          frameNotifier: _wmFrameInfo,
-                                          onHitBox: (t, l) =>
-                                              _addWmHit(_kWmId, t, l),
-                                          selectedPart: (_wmSel && !_hideSelUi)
-                                              ? _wmPart
-                                              : WmPart.none,
-                                          onSelectPart: (p) =>
-                                              setState(() => _wmPart = p),
-                                          // 捏合期間鎖拖曳，手指滑過別的
-                                          // 元素才不會把它拖走
-                                          panLocked: () => _pvPts.length >= 2,
-                                          // 有片段被選取時不吃拖曳，
-                                          // 讓給選取路由
-                                          panAllowed: (_) => _sel == -1,
-                                          time: pos, // 動畫跟著播放頭走
-                                          // 點浮水印 Logo＝選取＋切到浮水印
-                                          // 分頁，面板捲到圖片設定
-                                          onTap: () {
-                                            _cycleAt = null;
-                                            setState(() {
-                                              _wmSel = true;
-                                              _sel = -1;
-                                            });
-                                            _tabs.animateTo(1);
-                                            _wmPanelCtrl.scrollTo(WmPart.logo);
-                                          },
-                                          // 點浮水印文字＝切到浮水印分頁並
-                                          // 捲到文字設定。不直接跳鍵盤——
-                                          // 要改字在面板裡改
-                                          onTapText: () {
-                                            _cycleAt = null;
-                                            setState(() {
-                                              _wmSel = true;
-                                              _sel = -1;
-                                            });
-                                            _tabs.animateTo(1);
-                                            _wmPanelCtrl.scrollTo(WmPart.text);
-                                          },
-                                        ),
+                                      WatermarkLayer(
+                                        paintContent: wmBaked == null,
+                                        settings: _settings,
+                                        onChanged: () => setState(() {}),
+                                        onDragStart: _pushWmUndo,
+                                        // 選取框畫在裁切外（見 _wmFrameInfo）
+                                        frameNotifier: _wmFrameInfo,
+                                        onHitBox: (t, l) =>
+                                            _addWmHit(_kWmId, t, l),
+                                        selectedPart: (_wmSel && !_hideSelUi)
+                                            ? _wmPart
+                                            : WmPart.none,
+                                        onSelectPart: (p) =>
+                                            setState(() => _wmPart = p),
+                                        // 捏合期間鎖拖曳，手指滑過別的
+                                        // 元素才不會把它拖走
+                                        panLocked: () => _pvPts.length >= 2,
+                                        // 有片段被選取時不吃拖曳，
+                                        // 讓給選取路由
+                                        panAllowed: (_) => _sel == -1,
+                                        time: pos, // 動畫跟著播放頭走
+                                        // 點浮水印 Logo＝選取＋切到浮水印
+                                        // 分頁，面板捲到圖片設定
+                                        onTap: () {
+                                          _cycleAt = null;
+                                          setState(() {
+                                            _wmSel = true;
+                                            _sel = -1;
+                                          });
+                                          _tabs.animateTo(1);
+                                          _wmPanelCtrl.scrollTo(WmPart.logo);
+                                        },
+                                        // 點浮水印文字＝切到浮水印分頁並
+                                        // 捲到文字設定。不直接跳鍵盤——
+                                        // 要改字在面板裡改
+                                        onTapText: () {
+                                          _cycleAt = null;
+                                          setState(() {
+                                            _wmSel = true;
+                                            _sel = -1;
+                                          });
+                                          _tabs.animateTo(1);
+                                          _wmPanelCtrl.scrollTo(WmPart.text);
+                                        },
                                       ),
                                     );
                                   }

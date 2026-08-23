@@ -53,6 +53,11 @@ class WatermarkLayer extends StatefulWidget {
   /// 目前播放時間（秒）；動畫預覽用，靜態畫面給 null
   final double? time;
 
+  /// false＝只當「手勢與選取框」的透明骨架，不畫文字/Logo 本體——
+  /// 內容由外層的「單一來源烘焙 PNG」畫（跟匯出同一張圖）。
+  /// 幾何（點擊範圍、選取框、frameNotifier）照常計算與回報
+  final bool paintContent;
+
   /// 回傳 true 時暫停單指拖曳。
   /// 兩指捏合縮放時，其中一指滑過別的元素會把它拖走——
   /// 捏合期間要把拖曳整個鎖住
@@ -76,6 +81,7 @@ class WatermarkLayer extends StatefulWidget {
     this.time,
     this.panLocked,
     this.panAllowed,
+    this.paintContent = true,
   });
 
   @override
@@ -226,6 +232,7 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
           if (!logo.enabled || logoBytes == null) continue;
           // 滿版平鋪：整面重複，不能拖曳（位置無意義）
           if (logo.tiled) {
+            if (!widget.paintContent) continue; // 內容由烘焙 PNG 畫
             children.add(
               Positioned.fill(
                 child: IgnorePointer(child: _TiledLogo(logo: logo)),
@@ -306,17 +313,19 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                     angle: logo.rotation * math.pi / 180,
                     child: Container(
                       foregroundDecoration: _deco(WmPart.logo, logoIndex: li),
-                      child: ClipRRect(
-                        // 圓角基準也跟匯出一致：短邊
-                        borderRadius: BorderRadius.circular(
-                          logo.corner * math.min(logoW, logoH) / 2,
-                        ),
-                        child: Image.memory(
-                          logoBytes,
-                          width: logoW,
-                          gaplessPlayback: true,
-                        ),
-                      ),
+                      child: !widget.paintContent
+                          ? SizedBox(width: logoW, height: logoH)
+                          : ClipRRect(
+                              // 圓角基準跟匯出一致：短邊
+                              borderRadius: BorderRadius.circular(
+                                logo.corner * math.min(logoW, logoH) / 2,
+                              ),
+                              child: Image.memory(
+                                logoBytes,
+                                width: logoW,
+                                gaplessPlayback: true,
+                              ),
+                            ),
                     ),
                   ),
                 ),
@@ -330,7 +339,10 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
         for (var ti = 0; ti < settings.texts.length; ti++) {
           final t = settings.texts[ti];
           // 滿版平鋪（棋盤格）：整面重複，不能拖曳（位置無意義）
-          if (t.enabled && t.text.trim().isNotEmpty && t.tiled) {
+          if (t.enabled &&
+              t.text.trim().isNotEmpty &&
+              t.tiled &&
+              widget.paintContent) {
             children.add(
               Positioned.fill(
                 child: IgnorePointer(
@@ -464,54 +476,57 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                                 ),
                               )
                             : null,
-                        // 疊法＝陰影蓋印（5 印）→ 描邊 → 本體，
-                        // 跟匯出渲染器同一個順序與常數
-                        child: Stack(
-                          clipBehavior: Clip.none,
-                          children: [
-                            if (t.shadow)
-                              for (final o in [
-                                Offset(fontSize * 0.03, fontSize * 0.03),
-                                Offset(
-                                  fontSize * 0.03 + fontSize * 0.05,
-                                  fontSize * 0.03,
-                                ),
-                                Offset(
-                                  fontSize * 0.03 - fontSize * 0.05,
-                                  fontSize * 0.03,
-                                ),
-                                Offset(
-                                  fontSize * 0.03,
-                                  fontSize * 0.03 + fontSize * 0.05,
-                                ),
-                                Offset(
-                                  fontSize * 0.03,
-                                  fontSize * 0.03 - fontSize * 0.05,
-                                ),
-                              ])
-                                Transform.translate(
-                                  offset: o,
-                                  child: textWidget(shadowStyle),
-                                ),
-                            if (t.outline)
-                              textWidget(
-                                style.copyWith(
-                                  color: null,
-                                  shadows: null,
-                                  foreground: Paint()
-                                    ..style = PaintingStyle.stroke
-                                    ..strokeWidth = math.max(
-                                      1,
-                                      fontSize * t.outlineWidth,
-                                    )
-                                    ..color = t.outlineColor.withValues(
-                                      alpha: t.opacity,
+                        // paintContent=false：內容由單一來源烘焙
+                        // PNG 畫，這裡只留同尺寸的透明佔位
+                        //（點擊/拖曳/選取框照常）
+                        child: !widget.paintContent
+                            ? SizedBox(width: probe.width, height: probe.height)
+                            : Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  if (t.shadow)
+                                    for (final o in [
+                                      Offset(fontSize * 0.03, fontSize * 0.03),
+                                      Offset(
+                                        fontSize * 0.03 + fontSize * 0.05,
+                                        fontSize * 0.03,
+                                      ),
+                                      Offset(
+                                        fontSize * 0.03 - fontSize * 0.05,
+                                        fontSize * 0.03,
+                                      ),
+                                      Offset(
+                                        fontSize * 0.03,
+                                        fontSize * 0.03 + fontSize * 0.05,
+                                      ),
+                                      Offset(
+                                        fontSize * 0.03,
+                                        fontSize * 0.03 - fontSize * 0.05,
+                                      ),
+                                    ])
+                                      Transform.translate(
+                                        offset: o,
+                                        child: textWidget(shadowStyle),
+                                      ),
+                                  if (t.outline)
+                                    textWidget(
+                                      style.copyWith(
+                                        color: null,
+                                        shadows: null,
+                                        foreground: Paint()
+                                          ..style = PaintingStyle.stroke
+                                          ..strokeWidth = math.max(
+                                            1,
+                                            fontSize * t.outlineWidth,
+                                          )
+                                          ..color = t.outlineColor.withValues(
+                                            alpha: t.opacity,
+                                          ),
+                                      ),
                                     ),
-                                ),
+                                  textWidget(style),
+                                ],
                               ),
-                            textWidget(style),
-                          ],
-                        ),
                       ),
                     ),
                   ),
