@@ -842,8 +842,10 @@ final class AtomicFlag {
         gen.maximumSize = CGSize(width: maxH, height: maxH)
         // HDR（HLG）素材一定要壓回 SDR：copyCGImage 不會自己轉，
         // HLG 像素直接進 JPEG 就是「拖曳預覽顏色超飽和」（實測回報）
-        // ——跟合成播放器的 toneMap 同一個目的，兩邊顏色才一致
-        if #available(iOS 16.0, *) {
+        // ——跟合成播放器的 toneMap 同一個目的，兩邊顏色才一致。
+        // dynamicRangePolicy 是 iOS 18 的 API（16 會編譯失敗，CI 踩過）；
+        // 17 以下維持舊行為（拖曳幀偏飽和，放開就正常）
+        if #available(iOS 18.0, *) {
           gen.dynamicRangePolicy = .forceSDR
         }
         // 容忍 0.15 秒：允許解碼器就近取材，不必逐格精準解到底，
