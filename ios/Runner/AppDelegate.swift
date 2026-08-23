@@ -3443,6 +3443,14 @@ final class CompPlayer: NSObject, FlutterTexture {
       let vc = AVMutableVideoComposition()
       vc.renderSize = size
       vc.frameDuration = CMTime(value: 1, timescale: 30)
+      // 輸出色彩明確標 709。HDR 原檔進 CI 合成器時像素已經被
+      // toneMap 成 SDR，但不標的話 HDR 的色彩標記會原封傳下去，
+      // 播放器對「已經是 SDR 的像素」再套一次 HLG 顯示曲線——
+      // 就是「進場 CI 有掛、顏色照樣洗白」（+93 診斷定罪）。
+      // 匯出路早就標了（同一個教訓），播放路漏掉
+      vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
+      vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
+      vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
 
       /// 一段畫面貼進畫布：轉正 → 等比縮放貼齊 → 置中 → 使用者的縮放位移
       func fitTransform(_ seg: Seg) -> CGAffineTransform? {
