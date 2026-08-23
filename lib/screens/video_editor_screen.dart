@@ -6924,7 +6924,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       Uint8List? wmPng;
       // 浮水印軌關掉時匯出也不要有——所見即所得
       if (!_wmHidden && _settings.hasAnyMark) {
-        wmPng = await WatermarkRenderer.renderOverlayPng(_settings, outW, outH);
+        wmPng = await WatermarkRenderer.renderOverlayPng(
+          _settings,
+          outW,
+          outH,
+          codecShadowBoost: true, // 影片會過編碼器，陰影要補償
+        );
       }
       // 文字素材 → 渲染成整版透明 PNG
       // 文字圖層：每個片段渲染一張（位置/縮放/樣式烘進 PNG）
@@ -6941,12 +6946,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             c.scale,
             outW,
             outH,
+            codecShadowBoost: true,
           );
         } else if (src.kind == ClipKind.wm) {
           overlayPngs[c.id] = await WatermarkRenderer.renderOverlayPng(
             src.wmStyle ?? WatermarkSettings(),
             outW,
             outH,
+            codecShadowBoost: true,
           );
         }
       }
