@@ -840,6 +840,12 @@ final class AtomicFlag {
         let gen = AVAssetImageGenerator(asset: asset)
         gen.appliesPreferredTrackTransform = true  // 直式影片轉正
         gen.maximumSize = CGSize(width: maxH, height: maxH)
+        // HDR（HLG）素材一定要壓回 SDR：copyCGImage 不會自己轉，
+        // HLG 像素直接進 JPEG 就是「拖曳預覽顏色超飽和」（實測回報）
+        // ——跟合成播放器的 toneMap 同一個目的，兩邊顏色才一致
+        if #available(iOS 16.0, *) {
+          gen.dynamicRangePolicy = .forceSDR
+        }
         // 容忍 0.15 秒：允許解碼器就近取材，不必逐格精準解到底，
         // 這是「快」的關鍵；拖曳預覽差半格人眼看不出來
         gen.requestedTimeToleranceBefore = CMTime(seconds: 0.15, preferredTimescale: 600)

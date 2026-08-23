@@ -826,14 +826,16 @@ class _GifScreenState extends State<GifScreen> {
         Positioned.fill(
           // 在預覽畫面上左右滑＝快速預覽（跟拖修剪條上的白針同一套
           // scrub）：手指掃過整個預覽寬度＝掃過整支影片。挑段落時
-          // 眼睛本來就盯著大畫面，不必特地移到下面的細針上瞄準
+          // 眼睛本來就盯著大畫面，不必特地移到下面的細針上瞄準。
+          // 方向是「拖動底片」語意：手指往左＝時間往前（使用者指定；
+          // 跟捲時間軸同一個手感）。直接拖白針仍是跟手的
           child: LayoutBuilder(
             builder: (context, cons) => GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: _togglePlay,
               onHorizontalDragStart: (_) => _scrubBegin(),
               onHorizontalDragUpdate: (d) =>
-                  _scrubBy(d.delta.dx, math.max(1, cons.maxWidth)),
+                  _scrubBy(-d.delta.dx, math.max(1, cons.maxWidth)),
               onHorizontalDragEnd: (_) => _scrubEnd(),
               onHorizontalDragCancel: _scrubEnd,
               child: Container(
