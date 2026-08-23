@@ -1101,14 +1101,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             '|${c.opacity}|${c.rotation}',
     // 馬賽克的幾何與樣式都要記：它是烘進合成畫面裡的（CI 合成器），
     // 拖了位置、調了濃度都得重組。重組有併批（900ms 停手後才做），
-    // 拖曳中畫面暫時停在舊碼位，停手一拍後跟上
-    for (final c in _tl.clips)
-      if (_tl.sourceOf(c).kind == ClipKind.mosaic)
-        'mz${c.offset}|${c.end}|${c.px}|${c.py}|${c.scale}|${c.track}'
-            '|${_tl.sourceOf(c).mosaicStyle?.type}'
-            '|${_tl.sourceOf(c).mosaicStyle?.strength}'
-            '|${_tl.sourceOf(c).mosaicStyle?.color}'
-            '|${_tl.sourceOf(c).mosaicStyle?.feather}',
+    // 空窗期間 Flutter 版馬賽克先頂上（見 _compMosaicStale）
+    _mosaicSig(),
     // 圖片素材只記軌道：它們不進合成（Flutter 畫在上面），但
     // 「在影片之上還是之下」決定合成能不能用（見 CompPlayer.whyNot）
     // ——拖到影片下層的那一刻要觸發重評估，不然合成照播、圖片被蓋掉
@@ -1119,8 +1113,28 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     'mute${(_mutedTracks.toList()..sort()).join(',')}',
   ].join(';');
 
+  /// 馬賽克那部分的指紋（幾何＋樣式＋軌道）。
+  /// 單獨抽出來是為了 [_compMosaicStale]：判斷「畫面上這份合成
+  /// 烘的馬賽克」跟「現在的馬賽克」是不是同一套
+  String _mosaicSig() => [
+    for (final c in _tl.clips)
+      if (_tl.sourceOf(c).kind == ClipKind.mosaic)
+        'mz${c.offset}|${c.end}|${c.px}|${c.py}|${c.scale}|${c.track}'
+            '|${_tl.sourceOf(c).mosaicStyle?.type}'
+            '|${_tl.sourceOf(c).mosaicStyle?.strength}'
+            '|${_tl.sourceOf(c).mosaicStyle?.color}'
+            '|${_tl.sourceOf(c).mosaicStyle?.feather}',
+  ].join(';');
+
   String? _lastCompSig;
   String? _lastCompEditSig;
+
+  /// 這份合成烘的馬賽克是不是已經過期（剛加了/拖了馬賽克、重烘還沒
+  /// 完成的空窗）。過期期間 Flutter 版馬賽克先頂上——不頂的話，
+  /// 剛加馬賽克到重烘完成之間畫面上什麼都沒有，看起來就是
+  /// 「加了沒反應、過一下才亂跳出來」（實測回報：讀取時間錯亂）
+  String? _lastCompMosaicSig;
+  bool get _compMosaicStale => _compOn && _lastCompMosaicSig != _mosaicSig();
 
   void _compRefreshIfChanged() {
     if (!Diag.compPlayer.value || !mounted) return;
@@ -4808,9 +4822,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     Diag.note('合成播放器就緒：${made.duration.toStringAsFixed(1)} 秒');
-    // 這一版烘的就是現在的值，兩份指紋一起同步
+    // 這一版烘的就是現在的值，指紋一起同步（馬賽克那份給
+    // _compMosaicStale 判空窗用）
     _lastCompSig = _compSig();
     _lastCompEditSig = _compSig(withPaths: false);
+    _lastCompMosaicSig = _mosaicSig();
     setState(() => _comp = made);
     // 合成接手了，舊的那幾顆播放器立刻放掉（見 _trimPlayers）
     _trimPlayers();
@@ -8094,8 +8110,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             // 到 HTML 影片，效果以匯出為準。
                                             // 合成播放器接手時，馬賽克已
                                             // 經烘進它的畫面裡（CI 合成
-                                            // 器），這裡再畫就是打兩次碼
-                                            child: _compOn
+                                            // 器），這裡再畫就是打兩次碼。
+                                            // 但剛加/拖了馬賽克、重烘還沒
+                                            // 完成的空窗（_compMosaicStale）
+                                            // 要頂上——不頂的話這段期間
+                                            // 什麼都看不到
+                                            child: _compOn && !_compMosaicStale
                                                 ? const SizedBox.expand()
                                                 : Builder(
                                                     builder: (context) {
