@@ -15,7 +15,14 @@ import 'media_prep.dart';
 ///
 /// 目前只有 iOS 有原生實作；拿不到就回 null，呼叫端退回原本的多播放器路徑
 class CompPlayer {
-  CompPlayer._(this.textureId, this.duration, this.width, this.height);
+  CompPlayer._(
+    this.textureId,
+    this.duration,
+    this.width,
+    this.height,
+    this.ciOn,
+    this.hdrIn,
+  );
 
   static const _ch = MethodChannel('markcut/comp');
 
@@ -23,6 +30,11 @@ class CompPlayer {
   final double duration;
   final double width;
   final double height;
+
+  /// 這一次組建有沒有掛 CI 合成器／HDR 判定結果（寫進「就緒」的
+  /// 診斷歷史用——組建內視鏡只留最後一次，進場那次會被蓋掉）
+  final bool ciOn;
+  final bool hdrIn;
 
   double get aspect => (width <= 0 || height <= 0) ? 16 / 9 : width / height;
 
@@ -115,7 +127,9 @@ class CompPlayer {
   static Future<bool> _isHdrPath(String path) async {
     final hit = _hdrCache[path];
     if (hit != null) return hit;
-    var hdr = false;
+    // 讀不到（探測失敗/沒實作）就當 HDR：CI 的 toneMap 對 SDR 輸入
+    // 是無害的空操作，多掛只是原檔期間多一點 GPU；漏掛就是整段白白
+    var hdr = true;
     final m = await MediaPrep.probeLite(path);
     if (m != null && m['error'] == null) hdr = m['sdr709'] != true;
     return _hdrCache[path] = hdr;
@@ -231,6 +245,8 @@ class CompPlayer {
         (m['duration'] as num).toDouble(),
         (m['width'] as num?)?.toDouble() ?? 0,
         (m['height'] as num?)?.toDouble() ?? 0,
+        m['ci'] == true,
+        m['hdr'] == true,
       );
     } catch (_) {
       return null;

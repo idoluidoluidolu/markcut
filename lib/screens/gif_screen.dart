@@ -351,7 +351,16 @@ class _GifScreenState extends State<GifScreen> {
     _start = 0;
     _end = math.min(_dur, 15);
     _schedulePreview();
-    if (mounted) setState(() => _ready = true);
+    // 一進來就用影片循環播選取段落（_tick 播到段尾會跳回起點，
+    // 就是 GIF 的循環感；聲音已靜音）——真的 GIF 預覽生成好會
+    // 無縫換上。使用者指定：不要等生成完才能預覽循環的樣子
+    unawaited(p.play());
+    if (mounted) {
+      setState(() {
+        _ready = true;
+        _playing = true;
+      });
+    }
     // 縮圖帶：先走系統硬體解碼，抽不到再退 FFmpeg
     var thumbs = await nativeStrip(widget.path, _dur, 10, maxH: 120);
     if (thumbs.isEmpty) {
@@ -890,14 +899,42 @@ class _GifScreenState extends State<GifScreen> {
           ),
         ),
         if (_building)
-          const Positioned(
+          Positioned(
             right: 12,
             top: 12,
-            child: SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
+            // 第一份還沒好：講清楚現在看的是影片、GIF 在路上
+            //（做好會無縫換成真的 GIF 幀）。之後的重做只給小圈
+            child: _gifMode
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.6),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 11,
+                          height: 11,
+                          child: CircularProgressIndicator(strokeWidth: 1.6),
+                        ),
+                        SizedBox(width: 7),
+                        Text(
+                          'GIF 預覽生成中',
+                          style: TextStyle(fontSize: 11, color: kText),
+                        ),
+                      ],
+                    ),
+                  ),
           ),
         _cropButton(),
       ],

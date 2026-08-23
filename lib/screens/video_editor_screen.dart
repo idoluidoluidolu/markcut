@@ -4825,7 +4825,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _restoreClipPlayers();
       return;
     }
-    Diag.note('合成播放器就緒：${made.duration.toStringAsFixed(1)} 秒');
+    Diag.note(
+      '合成播放器就緒：${made.duration.toStringAsFixed(1)} 秒'
+      '（CI ${made.ciOn ? '開' : '關'}／HDR ${made.hdrIn ? '有' : '無'}）',
+    );
     // 這一版烘的就是現在的值，指紋一起同步（馬賽克那份給
     // _compMosaicStale 判空窗用）
     _lastCompSig = _compSig();

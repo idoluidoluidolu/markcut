@@ -921,6 +921,10 @@ final class AtomicFlag {
           "duration": p.duration,
           "width": Double(p.size.width),
           "height": Double(p.size.height),
+          // 這一次組建有沒有掛 CI／HDR 判定（Dart 端寫進「就緒」的
+          // 診斷歷史——組建內視鏡只留最後一次，進場那次會被蓋掉）
+          "ci": (p.buildInfo["CI"] as? Bool) ?? false,
+          "hdr": (p.buildInfo["HDR"] as? Bool) ?? false,
         ])
       case "play":
         let st = self.comp?.playStatus()
