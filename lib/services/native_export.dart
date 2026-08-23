@@ -31,6 +31,11 @@ class NativeExport {
       if (call.method == 'progress' && call.arguments is num) {
         _onProgress?.call((call.arguments as num).toDouble().clamp(0.0, 1.0));
       }
+      // 原生端的過程訊息（走哪條合成路、退路原因）進診斷歷史——
+      // 之前只聽 progress，「原生匯出路徑：CI/CA」那行被默默丟掉
+      if (call.method == 'note' && call.arguments is String) {
+        Diag.note(call.arguments as String);
+      }
       return null;
     });
   }
