@@ -8147,14 +8147,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                         // 強度是沒用的——最外圈就
                                                         // 已經全糊，邊界照樣是一條
                                                         // 硬線，拉柔邊看不出差別
+                                                        // 強度與柔邊寬對齊
+                                                        // 匯出（見下面 sigma
+                                                        // 的說明；柔邊總寬
+                                                        // 兩條匯出路都是
+                                                        // 0.35×短邊）
                                                         final sg =
-                                                            (4.0 +
-                                                                16 *
-                                                                    ms.strength) *
-                                                            0.4;
+                                                            (1 +
+                                                                6 * ms.strength) *
+                                                            math.min(w, h) /
+                                                            1080 *
+                                                            2.4;
                                                         final step =
                                                             ms.feather *
-                                                            0.07 *
+                                                            0.35 /
+                                                            6 *
                                                             math.min(
                                                               r.width,
                                                               r.height,
@@ -8289,9 +8296,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                         }
                                                         filter = pix(cell);
                                                       }
+                                                      // 模糊強度對齊匯出：
+                                                      // 兩條匯出路都是「縮小
+                                                      // 2+12s 倍再放大」，等效
+                                                      // 半徑約 (1+6s) 個輸出
+                                                      // 像素（輸出短邊約
+                                                      // 1080），換算回預覽
+                                                      // 畫布。以前固定
+                                                      // σ=4+16s 邏輯px，
+                                                      // 比成品糊 5~10 倍
                                                       final sigma =
-                                                          4.0 +
-                                                          16 * ms.strength;
+                                                          (1 +
+                                                              6 * ms.strength) *
+                                                          math.min(w, h) /
+                                                          1080 *
+                                                          2.4;
                                                       filter ??=
                                                           ui.ImageFilter.blur(
                                                             sigmaX: sigma,
