@@ -1716,6 +1716,14 @@ final class AtomicFlag {
         useCI = false
       }
     }
+    // 走哪條合成路寫進診斷：浮水印「預覽有浮雕、匯出扁平」查了
+    // 兩輪都在猜這格——CI（gamma 混色，跟預覽一致）還是 CA 圖層
+    channel.invokeMethod(
+      "note",
+      arguments:
+        "原生匯出路徑：\(useCI ? "CI 合成器（gamma 混色）" : "CA 圖層")"
+        + (wantHDR ? "／HDR 輸出" : "")
+        + "／疊加 \(overlays.count) 張")
     // GPU 路：疊加物先整批解好（PNG → 畫布大小的 CIImage），
     // 每段指令都帶同一份
     let ciOverlays: [CIOverlaySpec] =
