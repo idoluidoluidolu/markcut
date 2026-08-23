@@ -7312,14 +7312,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       letterSpacing: 0.3,
                       fontFamily: 'NotoSansTC',
                     ),
-                    tabs: const [
-                      Tab(
+                    // 不能整包 const：匯出分頁掛了長按回呼（對照模式）
+                    tabs: [
+                      const Tab(
                         icon: Icon(Icons.content_cut, size: 20),
                         text: '剪輯',
                         height: 54,
                         iconMargin: EdgeInsets.only(bottom: 2),
                       ),
-                      Tab(
+                      const Tab(
                         icon: Icon(Icons.branding_watermark, size: 20),
                         text: '浮水印',
                         height: 54,
