@@ -7352,11 +7352,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             // 動不了。不擋的話手指一劃就把浮水印拖走了，而且
             // 全螢幕本來就沒有「撤銷」可以按
             Positioned.fill(child: IgnorePointer(child: _buildPreview())),
-            // 點畫面＝收起／叫出控制列（看片時不要有東西擋著）
+            // 點畫面＝收起／叫出控制列（看片時不要有東西擋著）；
+            // 下滑＝離開全螢幕（使用者指定，跟各家看片 App 同手勢）
             Positioned.fill(
               child: GestureDetector(
                 behavior: HitTestBehavior.translucent,
                 onTap: () => setState(() => _fsBar = !_fsBar),
+                onVerticalDragEnd: (d) {
+                  if ((d.primaryVelocity ?? 0) > 250) _toggleFullscreen();
+                },
               ),
             ),
             if (_fsBar) ...[
