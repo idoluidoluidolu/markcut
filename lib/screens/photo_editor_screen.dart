@@ -992,8 +992,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               fit: StackFit.expand,
               children: [
                 effect,
-                // 選取框跟浮水印同一套：細白框
-                if (_selMosaic == i)
+                // 選取框跟浮水印同一套：細白框。
+                // 筆刷塗抹中不畫——正在畫的那一筆被框住很干擾
+                if (_selMosaic == i && !_brushMode)
                   IgnorePointer(
                     child: Container(
                       decoration: BoxDecoration(
@@ -1027,14 +1028,133 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 筆刷模式中：預覽整面接管拖曳，一筆＝一塊筆畫馬賽克
   bool _brushMode = false;
 
+  /// 筆刷工具列上選的樣式與粗細（給接下來畫的每一筆；
+  /// 改的當下也套用到剛畫好的那一筆——塗完才想換樣式是常態）
+  final MosaicStyle _brushStyle = MosaicStyle();
+  double _brushSize = 0.16;
+
+  /// 剛畫好、還在筆刷模式裡選取中的那一筆（沒有就 null）
+  PhotoMosaic? get _brushSel =>
+      (_selMosaic >= 0 &&
+          _selMosaic < _mosaics.length &&
+          _mosaics[_selMosaic].isStroke)
+      ? _mosaics[_selMosaic]
+      : null;
+
+  /// 筆刷模式的工具列：樣式 chip＋粗細＋完成（夾在照片和面板之間，
+  /// 不遮照片也不擋塗抹——B 案）
+  Widget _brushBar() {
+    Widget chip(String label, int type) {
+      final on = _brushStyle.type == type;
+      return InkWell(
+        borderRadius: BorderRadius.circular(9),
+        onTap: () => setState(() {
+          _brushStyle.type = type;
+          _brushSel?.style.type = type;
+        }),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: on ? kPanelHi : Colors.transparent,
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(
+              color: on ? kAmber : kClipBorder,
+              width: on ? 1.4 : 1,
+            ),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 11.5,
+              color: kText,
+              fontWeight: on ? FontWeight.w700 : FontWeight.w400,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      color: kPanel,
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.brush_outlined, size: 15, color: kAmber),
+              const SizedBox(width: 8),
+              chip('像素化', 0),
+              const SizedBox(width: 6),
+              chip('模糊', 1),
+              const SizedBox(width: 6),
+              chip('純色', 2),
+              const Spacer(),
+              InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () => setState(() => _brushMode = false),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 5,
+                  ),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: kAmber, width: 1.2),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Text(
+                    '完成',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: kAmber,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              const Text(
+                '粗細',
+                style: TextStyle(fontSize: 11.5, color: kTextDim),
+              ),
+              Expanded(
+                child: Slider(
+                  value: _brushSize.clamp(0.03, 0.5),
+                  min: 0.03,
+                  max: 0.5,
+                  onChanged: (v) => setState(() {
+                    _brushSize = v;
+                    _brushSel?.brush = v;
+                  }),
+                ),
+              ),
+              SizedBox(
+                width: 36,
+                child: Text(
+                  '${(_brushSize * 100).round()}%',
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(fontSize: 11, color: kTextDim),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   void _brushStart(Offset p, double w, double h) {
     if (_pvPts.length >= 2) return;
     _pushUndo();
     setState(() {
       _mosaics.add(
         PhotoMosaic(
-          // 樣式沿用最後一塊（人通常整張用同一種碼）
-          style: _mosaics.isNotEmpty ? _mosaics.last.style.copy() : null,
+          // 樣式與粗細照工具列上選的
+          style: _brushStyle.copy(),
+          brush: _brushSize,
           stroke: [(p.dx / w).clamp(0.0, 1.0), (p.dy / h).clamp(0.0, 1.0)],
         ),
       );
@@ -1879,54 +1999,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                       },
                                     ),
                                   ),
-                                if (_brushMode)
-                                  Positioned(
-                                    left: 0,
-                                    right: 0,
-                                    bottom: 12,
-                                    child: Center(
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 14,
-                                          vertical: 7,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: Colors.black.withValues(
-                                            alpha: 0.65,
-                                          ),
-                                          borderRadius: BorderRadius.circular(
-                                            20,
-                                          ),
-                                        ),
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            const Text(
-                                              '在照片上塗抹要打碼的地方',
-                                              style: TextStyle(
-                                                fontSize: 12.5,
-                                                color: Colors.white,
-                                              ),
-                                            ),
-                                            const SizedBox(width: 12),
-                                            GestureDetector(
-                                              onTap: () => setState(
-                                                () => _brushMode = false,
-                                              ),
-                                              child: const Text(
-                                                '完成',
-                                                style: TextStyle(
-                                                  fontSize: 12.5,
-                                                  fontWeight: FontWeight.w700,
-                                                  color: kAmber,
-                                                ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ),
                               ],
                             ),
                           ),
@@ -1934,6 +2006,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                       ),
                     ),
                   ),
+                  // 筆刷工具列：夾在照片和控制列之間（B 案）
+                  if (_brushMode) _brushBar(),
                   // 控制列：跟影片編輯的控制列同一個位置，
                   // 固定不動也不擋畫面
                   _buildControlBar(),
