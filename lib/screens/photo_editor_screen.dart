@@ -1197,7 +1197,19 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                 ),
                 pct(_brushStyle.feather),
               ),
-          ] else
+          ] else ...[
+            // 純色遮蓋：自己的柔邊（跟模糊各記各的）＋顏色
+            row(
+              '柔邊',
+              Slider(
+                value: _brushStyle.feather,
+                onChanged: (v) => setState(() {
+                  _brushStyle.feather = v;
+                  _brushSel?.style.feather = v;
+                }),
+              ),
+              pct(_brushStyle.feather),
+            ),
             SizedBox(
               height: 32,
               child: Row(
@@ -1234,6 +1246,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                 ],
               ),
             ),
+          ],
         ],
       ),
     );
