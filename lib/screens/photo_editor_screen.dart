@@ -1132,7 +1132,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               const SizedBox(width: 10),
               const Expanded(
                 child: Text(
-                  '直接塗在照片上',
+                  '點擊照片右上角可以放大',
                   style: TextStyle(fontSize: 11.5, color: kTextDim),
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -1392,7 +1392,63 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   ),
                   const SizedBox(height: 12),
                   Row(
-                    children: [chip('像素化', 0), chip('模糊', 1), chip('純色遮蓋', 2)],
+                    children: [
+                      chip('像素化', 0),
+                      chip('模糊', 1),
+                      chip('純色', 2),
+                      // 第四格不是樣式是動作：直接進筆刷模式，
+                      // 樣式沿用這一塊調好的（換個手法碼同一種效果）
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(10),
+                            onTap: () {
+                              Navigator.pop(context);
+                              setState(() {
+                                _brushStyle.type = m.style.type;
+                                _brushStyle.strength = m.style.strength;
+                                _brushStyle.feather = m.style.feather;
+                                _brushStyle.color = m.style.color;
+                                _brushMode = true;
+                                _selMosaic = -1;
+                                _wmPart = WmPart.none;
+                                _selExtra = -1;
+                              });
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: kClipBorder,
+                                  width: 1,
+                                ),
+                              ),
+                              child: const Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.brush_outlined,
+                                    size: 14,
+                                    color: kText,
+                                  ),
+                                  SizedBox(width: 4),
+                                  Text(
+                                    '筆刷',
+                                    style: TextStyle(
+                                      fontSize: 12.5,
+                                      color: kText,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 14),
                   if (m.isStroke)
