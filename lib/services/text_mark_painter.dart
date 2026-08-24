@@ -10,15 +10,18 @@ import '../models/watermark_settings.dart';
 /// 都直接執行這一個函式——同一段程式碼跑兩次，輸出跟預覽在數學上
 /// 是同一件事，不存在「對不齊」。
 ///
-/// 鐵律：只用「填色文字／描邊文字」兩種原語。
-/// - 不用 TextStyle.shadows / MaskFilter / ImageFilter：引擎濾鏡在
+/// 鐵律：文字本身只用「填色文字／描邊文字」兩種原語。
+/// - 不用 TextStyle.shadows / MaskFilter：這種「字型層」濾鏡在
 ///   Impeller 的離屏 toImage 會被丟掉（預覽有、成品沒有的慘案）
 /// - 不用離屏影像縮放模擬模糊：放大取樣會走樣，還踩過「餘數沒乘、
 ///   陰影縮小錯位」的坑
 /// - 同步、無狀態：預覽每一格直接重畫，滑桿即時跟手
 ///
-/// 陰影＝三圈描邊光暈＋本體影：由外而內漸濃的圓頭描邊疊出柔邊，
-/// 視覺近似高斯；shadowBlur=0 時就是俐落的硬影。
+/// 陰影＝把「填色黑字」畫進一層 saveLayer，用合成層級的
+/// ImageFilter.blur 做真高斯——這是畫布合成功能（BackdropFilter
+/// 同一套管線），不是字型濾鏡，離屏 toImage 照樣生效。
+/// 之前試過的描邊光暈近似在大字會現出一圈圈「空心管」，棄用。
+/// shadowBlur=0 時直接畫，就是俐落的硬影。
 void paintMarkGlyphs(
   ui.Canvas canvas,
   TextMark t,
@@ -36,33 +39,37 @@ void paintMarkGlyphs(
     letterSpacing: fontSize * t.spacing,
   );
 
-  // ── 陰影（光暈三圈＋本體影）──
+  // ── 陰影（saveLayer＋真高斯）──
   if (t.shadow && t.shadowOpacity > 0.01) {
     final off = ui.Offset(at.dx + fontSize * 0.03, at.dy + fontSize * 0.03);
-    final blur = fontSize * t.shadowBlur;
+    final sigma = fontSize * t.shadowBlur;
     final a = (t.shadowOpacity * t.opacity).clamp(0.0, 1.0);
-    if (blur > 0.5) {
-      // (描邊寬倍率, 透明度倍率)：外圈寬而淡、內圈窄而濃
-      for (final ring in const [(2.2, 0.14), (1.2, 0.24), (0.5, 0.40)]) {
-        layout(
-          base.copyWith(
-            foreground: ui.Paint()
-              ..style = ui.PaintingStyle.stroke
-              ..strokeWidth = blur * ring.$1
-              ..strokeJoin = ui.StrokeJoin.round
-              ..strokeCap = ui.StrokeCap.round
-              ..color = const ui.Color(
-                0xFF000000,
-              ).withValues(alpha: a * ring.$2),
+    final sp = layout(
+      base.copyWith(color: const ui.Color(0xFF000000).withValues(alpha: a)),
+    );
+    if (sigma > 0.3) {
+      // 圖層邊界收在文字附近：模糊尾巴 3σ 之外就看不見了，
+      // 不用整張畫布都進離屏層
+      final bounds = ui.Rect.fromLTWH(
+        off.dx,
+        off.dy,
+        sp.width,
+        sp.height,
+      ).inflate(sigma * 3 + 1);
+      canvas.saveLayer(
+        bounds,
+        ui.Paint()
+          ..imageFilter = ui.ImageFilter.blur(
+            sigmaX: sigma,
+            sigmaY: sigma,
+            tileMode: ui.TileMode.decal,
           ),
-        ).paint(canvas, off);
-      }
+      );
+      sp.paint(canvas, off);
+      canvas.restore();
+    } else {
+      sp.paint(canvas, off);
     }
-    layout(
-      base.copyWith(
-        color: const ui.Color(0xFF000000).withValues(alpha: a * 0.55),
-      ),
-    ).paint(canvas, off);
   }
 
   // ── 描邊 ──

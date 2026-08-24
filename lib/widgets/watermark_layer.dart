@@ -653,7 +653,7 @@ class _TiledLogoPainter extends CustomPainter {
 /// 滿版平鋪浮水印：跟匯出（WatermarkRenderer）同一套排列邏輯
 class _TiledTextPainter extends CustomPainter {
   final TextMark t;
-  final double canvasW; // 字級以畫面寬為基準
+  final double canvasW; // 字級基準：呼叫端傳畫面短邊 min(w,h)，跟匯出一致
 
   /// 同 _TiledLogoPainter：物件是原地改的，要比值不能比 reference
   final List<Object?> _sig;
@@ -668,6 +668,8 @@ class _TiledTextPainter extends CustomPainter {
         t.opacity,
         t.rotation,
         t.shadow,
+        t.shadowOpacity,
+        t.shadowBlur,
         t.outline,
         t.outlineWidth,
         t.outlineColorValue,
