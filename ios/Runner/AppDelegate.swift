@@ -2677,6 +2677,13 @@ final class AtomicFlag {
             size.width * size.height * CGFloat(min(fps, 60)) * 0.2),
           AVVideoExpectedSourceFrameRateKey: Int(fps.rounded()),
         ] as [String: Any],
+        // CI 合成器輸出的 BGRA 緩衝不帶色彩附註，編碼器會自己猜——
+        // 明確標成 709，播放端才不會再套一次別的曲線
+        AVVideoColorPropertiesKey: [
+          AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+          AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
+          AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
+        ] as [String: Any],
       ])
     vIn.expectsMediaDataInRealTime = false
     guard writer.canAdd(vIn) else {
@@ -2993,16 +3000,46 @@ final class AtomicFlag {
       comp.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
       comp.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
       comp.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
-      let instruction = AVMutableVideoCompositionInstruction()
-      instruction.timeRange = CMTimeRange(start: .zero, duration: asset.duration)
-      let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: track)
-      // 先轉正（直式影片是「橫著存＋旋轉旗標」）再縮
-      layer.setTransform(
-        track.preferredTransform.concatenating(
-          CGAffineTransform(scaleX: scale, y: scale)),
-        at: .zero)
-      instruction.layerInstructions = [layer]
-      comp.instructions = [instruction]
+      // HDR：跟一趟轉檔同一顆 CI 合成器（同一條 toneMap 曲線）。
+      // 這條是一趟轉失敗的退路，退路走系統舊曲線的話，
+      // 「預覽比較淡」又會從這個縫鑽回來
+      if CompPlayer.isHDRSource(src) {
+        let fit = track.preferredTransform
+          .concatenating(CGAffineTransform(scaleX: scale, y: scale))
+          .concatenating(
+            CGAffineTransform(
+              translationX: (comp.renderSize.width - dispW * scale) / 2,
+              y: (comp.renderSize.height - dispH * scale) / 2))
+        comp.customVideoCompositorClass = CIExportCompositor.self
+        comp.instructions = [
+          CIExportInstruction(
+            timeRange: CMTimeRange(start: .zero, duration: asset.duration),
+            layers: [
+              CILayerSpec(
+                trackID: track.trackID, still: nil,
+                transform: fit, srcHeight: track.naturalSize.height,
+                start: 0, end: asset.duration.seconds,
+                fadeIn: 0, fadeOut: 0, colorMatrix: nil,
+                crop: nil, rotation: 0, opacity: 1, z: 0)
+            ],
+            mosaics: [], overlays: [],
+            prerollTrackIDs: [NSNumber(value: track.trackID)],
+            holdIfEmpty: true)
+        ]
+      } else {
+        let instruction = AVMutableVideoCompositionInstruction()
+        instruction.timeRange = CMTimeRange(
+          start: .zero, duration: asset.duration)
+        let layer = AVMutableVideoCompositionLayerInstruction(
+          assetTrack: track)
+        // 先轉正（直式影片是「橫著存＋旋轉旗標」）再縮
+        layer.setTransform(
+          track.preferredTransform.concatenating(
+            CGAffineTransform(scaleX: scale, y: scale)),
+          at: .zero)
+        instruction.layerInstructions = [layer]
+        comp.instructions = [instruction]
+      }
       session.videoComposition = comp
     }
 
