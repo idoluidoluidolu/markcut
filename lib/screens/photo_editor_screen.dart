@@ -1798,12 +1798,15 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 全都畫），只是唯讀＋可捏合縮放
   Widget _fsPhotoView() => GestureDetector(
     behavior: HitTestBehavior.opaque,
-    // 下滑＝離開（跟影片編輯的全螢幕同手勢）
-    onVerticalDragEnd: (d) {
-      if ((d.primaryVelocity ?? 0) > 250) {
-        setState(() => _fsView = false);
-      }
-    },
+    // 下滑＝離開（跟影片編輯的全螢幕同手勢）。
+    // 筆刷塗抹中不收：直直往下畫一筆會被當成要離開
+    onVerticalDragEnd: _brushMode
+        ? null
+        : (d) {
+            if ((d.primaryVelocity ?? 0) > 250) {
+              setState(() => _fsView = false);
+            }
+          },
     child: Container(
       color: Colors.black,
       child: Stack(
@@ -1812,40 +1815,96 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             child: InteractiveViewer(
               minScale: 1,
               maxScale: 6,
+              // 筆刷塗抹中單指要留給畫筆；平移縮放都用雙指
+              panEnabled: !_brushMode,
               child: Center(
                 child: AspectRatio(
                   aspectRatio: _aspect!,
-                  child: IgnorePointer(
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        if (_grade.hasColor)
-                          ColorFiltered(
-                            colorFilter: ColorFilter.matrix(_grade.matrix),
-                            child: Image.memory(
-                              _photoBytes!,
-                              fit: BoxFit.contain,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      IgnorePointer(
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            if (_grade.hasColor)
+                              ColorFiltered(
+                                colorFilter: ColorFilter.matrix(_grade.matrix),
+                                child: Image.memory(
+                                  _photoBytes!,
+                                  fit: BoxFit.contain,
+                                ),
+                              )
+                            else
+                              Image.memory(_photoBytes!, fit: BoxFit.contain),
+                            if (_mosaics.isNotEmpty)
+                              Positioned.fill(
+                                child: LayoutBuilder(
+                                  builder: (context, box) => _buildMosaics(
+                                    box.maxWidth,
+                                    box.maxHeight,
+                                  ),
+                                ),
+                              ),
+                            WatermarkLayer(
+                              settings: _settings,
+                              onChanged: () {},
                             ),
-                          )
-                        else
-                          Image.memory(_photoBytes!, fit: BoxFit.contain),
-                        if (_mosaics.isNotEmpty)
-                          Positioned.fill(
-                            child: LayoutBuilder(
-                              builder: (context, box) =>
-                                  _buildMosaics(box.maxWidth, box.maxHeight),
-                            ),
+                            for (final e in _extraWms)
+                              WatermarkLayer(settings: e, onChanged: () {}),
+                          ],
+                        ),
+                      ),
+                      // 筆刷模式：放大後照樣塗抹（座標在 IV 的子座標系
+                      // 裡，命中測試自動反算縮放平移，不用自己換算）
+                      if (_brushMode)
+                        Positioned.fill(
+                          child: LayoutBuilder(
+                            builder: (context, box) {
+                              final w = box.maxWidth;
+                              final h = box.maxHeight;
+                              return GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onPanStart: (d) =>
+                                    _brushStart(d.localPosition, w, h),
+                                onPanUpdate: (d) =>
+                                    _brushMove(d.localPosition, w, h),
+                                child: const SizedBox.expand(),
+                              );
+                            },
                           ),
-                        WatermarkLayer(settings: _settings, onChanged: () {}),
-                        for (final e in _extraWms)
-                          WatermarkLayer(settings: e, onChanged: () {}),
-                      ],
-                    ),
+                        ),
+                    ],
                   ),
                 ),
               ),
             ),
           ),
+          // 筆刷模式的操作提示（底部小膠囊，不擋畫面）
+          if (_brushMode)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 24,
+              child: IgnorePointer(
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.55),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: const Text(
+                      '單指塗抹｜雙指縮放移動',
+                      style: TextStyle(fontSize: 11.5, color: Colors.white),
+                    ),
+                  ),
+                ),
+              ),
+            ),
           // 右上角：離開全螢幕
           SafeArea(
             child: Align(
