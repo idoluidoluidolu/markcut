@@ -695,6 +695,7 @@ class _TiledTextPainter extends CustomPainter {
         t.shadow,
         t.shadowOpacity,
         t.shadowBlur,
+        t.weight,
         t.outline,
         t.outlineWidth,
         t.outlineColorValue,

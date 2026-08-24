@@ -3236,7 +3236,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ..text = TextMark(text: '', enabled: false);
     style.logo
       ..enabled = true
-      ..sizeFrac = 0.28
+      // 貼圖是「要被看到」的東西，預設就給夠大（原本 0.28 太小）
+      ..sizeFrac = 0.42
       ..bytesValue = png;
     final srcIndex = _tl.sources.length;
     _tl.sources.add(

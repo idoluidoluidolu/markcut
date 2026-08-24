@@ -72,23 +72,40 @@ void paintMarkGlyphs(
     }
   }
 
-  // ── 描邊 ──
+  // 加粗量（描邊式）：字型多半只有一個字重，換 fontWeight 沒反應，
+  // 用同色描邊把字撐粗才是每個字型都吃得到的做法
+  final boldPx = fontSize * 0.06 * t.weight;
+
+  // ── 描邊 ──（外框要包住加粗後的字，所以寬度含 boldPx）
   if (t.outline) {
     layout(
       base.copyWith(
         foreground: ui.Paint()
           ..style = ui.PaintingStyle.stroke
-          ..strokeWidth = (fontSize * t.outlineWidth).clamp(1.0, 4096.0)
+          ..strokeWidth = (fontSize * t.outlineWidth + boldPx).clamp(
+            1.0,
+            4096.0,
+          )
           ..strokeJoin = ui.StrokeJoin.round
           ..color = Color(t.outlineColorValue).withValues(alpha: t.opacity),
       ),
     ).paint(canvas, at);
   }
 
-  // ── 本體 ──
-  layout(
-    base.copyWith(color: Color(t.colorValue).withValues(alpha: t.opacity)),
-  ).paint(canvas, at);
+  // ── 本體 ──（先用同色描邊撐粗，再填字）
+  final body = Color(t.colorValue).withValues(alpha: t.opacity);
+  if (boldPx > 0.2) {
+    layout(
+      base.copyWith(
+        foreground: ui.Paint()
+          ..style = ui.PaintingStyle.stroke
+          ..strokeWidth = boldPx
+          ..strokeJoin = ui.StrokeJoin.round
+          ..color = body,
+      ),
+    ).paint(canvas, at);
+  }
+  layout(base.copyWith(color: body)).paint(canvas, at);
 }
 
 /// 量文字的版面大小（跟 [paintMarkGlyphs] 同一套字型參數）
@@ -127,6 +144,7 @@ class MarkGlyphPainter extends CustomPainter {
         t.shadow,
         t.shadowOpacity,
         t.shadowBlur,
+        t.weight,
         t.outline,
         t.outlineColorValue,
         t.outlineWidth,

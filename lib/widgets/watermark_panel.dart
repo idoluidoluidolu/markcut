@@ -1155,6 +1155,13 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                 curve: 2.2,
                               ),
                               _sliderRow(
+                                '粗細',
+                                s.text.weight,
+                                0,
+                                1,
+                                (v) => _update(() => s.text.weight = v),
+                              ),
+                              _sliderRow(
                                 '透明',
                                 s.text.opacity,
                                 0.05,

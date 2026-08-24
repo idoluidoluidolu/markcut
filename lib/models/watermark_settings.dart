@@ -42,6 +42,10 @@ class TextMark {
 
   /// 陰影模糊（相對字級 0~0.2）
   double shadowBlur;
+
+  /// 字體粗細（0~1）。用「同色描邊」加粗，不是換字重——
+  /// 內建字型多半只有一個字重，換字重的話大部分字型根本沒反應
+  double weight;
   bool outline; // 描邊
   int outlineColorValue;
   double outlineWidth; // 粗度，相對字級 0.02~0.2
@@ -73,6 +77,7 @@ class TextMark {
     this.shadowOpacity = 0.35,
     // 預設 0＝俐落硬影（使用者指定）；要柔邊自己拉模糊滑桿
     this.shadowBlur = 0.0,
+    this.weight = 0.0,
     this.outline = false,
     this.outlineColorValue = 0xFF000000,
     this.outlineWidth = 0.07,
@@ -107,6 +112,7 @@ class TextMark {
     'shadow': shadow,
     'shadowOpacity': shadowOpacity,
     'shadowBlur': shadowBlur,
+    'weight': weight,
     'outline': outline,
     'outlineColorValue': outlineColorValue,
     'outlineWidth': outlineWidth,
@@ -136,6 +142,7 @@ class TextMark {
       1.0,
     ),
     shadowBlur: ((j['shadowBlur'] ?? 0.0).toDouble() as double).clamp(0.0, 0.2),
+    weight: ((j['weight'] ?? 0.0).toDouble() as double).clamp(0.0, 1.0),
     outline: j['outline'] ?? false,
     outlineColorValue: j['outlineColorValue'] ?? 0xFF000000,
     outlineWidth: (j['outlineWidth'] ?? 0.07).toDouble(),
@@ -186,7 +193,8 @@ class LogoMark {
     this.enabled = false,
     this.b64,
     this.opacity = 0.8,
-    this.sizeFrac = 0.18,
+    // 加進來就要看得清楚：0.18 在手機上小得像雜訊，每次都得先放大
+    this.sizeFrac = 0.32,
     this.x = 0.15,
     this.y = 0.9,
     this.rotation = 0,
@@ -246,7 +254,7 @@ class LogoMark {
     enabled: j['enabled'] ?? false,
     b64: j['b64'],
     opacity: (j['opacity'] ?? 0.8).toDouble(),
-    sizeFrac: (j['sizeFrac'] ?? 0.18).toDouble(),
+    sizeFrac: (j['sizeFrac'] ?? 0.32).toDouble(),
     x: (j['x'] ?? 0.15).toDouble(),
     y: (j['y'] ?? 0.9).toDouble(),
     rotation: (j['rotation'] ?? 0).toDouble(),
