@@ -1519,7 +1519,12 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                 Padding(
                   padding: const EdgeInsets.only(top: 10),
                   child: _saveBar(),
-                ),
+                )
+              else if (_on(_posCardKey))
+                // 沒有儲存鈕（照片編輯）時「位置」分頁要補一個
+                // 尾端空元素：spaceBetween 少了下端點，九宮格會被
+                // 推到最底而不是置中（實測回報：九宮格沒置中）
+                const SizedBox.shrink(),
             ],
           ),
         ),

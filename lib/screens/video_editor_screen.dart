@@ -4888,7 +4888,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     setState(() => _comp = made);
     // 合成接手了，舊的那幾顆播放器立刻放掉（見 _trimPlayers）
     _trimPlayers();
-    await made.seek(_position);
+    // 暫停中換上新合成：精準 seek 逼它把「現在這一格」重新合成
+    // 出來——不精準的話剛烘進去的馬賽克/圖片要按播放才看得到
+    //（實測回報：「加素材第一幀就要有，現在要按播放才有」）。
+    // 播放中照舊寬容，精準 seek 會把 rate 壓到 0 造成頓一下
+    await made.seek(_position, exact: !_playing);
   }
 
   /// 現在這一刻是不是真的走合成播放器
