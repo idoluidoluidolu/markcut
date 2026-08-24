@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreImage
+import VideoToolbox
 import Flutter
 import ImageIO
 import UIKit
