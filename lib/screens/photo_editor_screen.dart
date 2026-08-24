@@ -361,8 +361,37 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     }
   }
 
-  /// 預覽與面板之間的控制列：上一步／重做（四個編輯畫面共用同一條）
+  /// 預覽與面板之間的控制列：檢視縮放＋上一步／重做
+  ///（跟影片編輯同一條的長相，鈕都收在這排）
   Widget _buildControlBar() => undoRedoBar(
+    leading: [
+      IconButton(
+        tooltip: _viewZoom ? '結束檢視縮放' : '檢視縮放（捏合放大）',
+        icon: Icon(
+          Icons.zoom_in,
+          size: 20,
+          color: _viewZoom ? kSelect : kTextDim,
+        ),
+        onPressed: () => setState(() => _viewZoom = !_viewZoom),
+        visualDensity: VisualDensity.compact,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 42, minHeight: 30),
+      ),
+      if (_viewZoomed)
+        TextButton(
+          onPressed: () => setState(() => _viewCtrl.value = Matrix4.identity()),
+          style: TextButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            minimumSize: const Size(36, 30),
+            foregroundColor: kSelect,
+          ),
+          child: const Text(
+            '1x',
+            style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700),
+          ),
+        ),
+    ],
     onUndo: _undoStack.isEmpty ? null : _undoLast,
     onRedo: _redoStack.isEmpty ? null : _redoLast,
   );
@@ -1799,45 +1828,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 目前有沒有真的放大（>1x）：決定裁切與「回 1x」鈕要不要出現
   bool _viewZoomed = false;
 
-  Widget _zoomChip(String label, VoidCallback onTap) => InkWell(
-    borderRadius: BorderRadius.circular(14),
-    onTap: onTap,
-    child: Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.55),
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Text(
-        label,
-        style: const TextStyle(
-          fontSize: 11.5,
-          fontWeight: FontWeight.w700,
-          color: Colors.white,
-        ),
-      ),
-    ),
-  );
-
-  Widget _zoomToggle() => InkWell(
-    borderRadius: BorderRadius.circular(16),
-    onTap: () => setState(() => _viewZoom = !_viewZoom),
-    child: Container(
-      width: 30,
-      height: 30,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: _viewZoom ? kAmber : Colors.black.withValues(alpha: 0.55),
-        shape: BoxShape.circle,
-      ),
-      child: Icon(
-        Icons.zoom_in,
-        size: 18,
-        color: _viewZoom ? const Color(0xFF1A1A1A) : Colors.white,
-      ),
-    ),
-  );
-
   final Map<int, Offset> _pvPts = {};
   double? _pvBaseDist;
   double _pvBaseText = 0;
@@ -2235,30 +2225,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                       ],
                                     ),
                                   ),
-                                ),
-                              ),
-                              // 放大鏡開關＋回 1x（浮在預覽右上，
-                              // 不跟著畫面縮放）
-                              Positioned(
-                                top: 8,
-                                right: 8,
-                                child: Row(
-                                  children: [
-                                    if (_viewZoomed)
-                                      Padding(
-                                        padding: const EdgeInsets.only(
-                                          right: 6,
-                                        ),
-                                        child: _zoomChip(
-                                          '1x',
-                                          () => setState(
-                                            () => _viewCtrl.value =
-                                                Matrix4.identity(),
-                                          ),
-                                        ),
-                                      ),
-                                    _zoomToggle(),
-                                  ],
                                 ),
                               ),
                             ],
