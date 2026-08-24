@@ -109,6 +109,21 @@ class WorkFiles {
     return work;
   }
 
+  /// 草稿裡記的工作檔還能不能用。
+  ///
+  /// 草稿存的是路徑本人，載入時若直接沿用，等於繞過 [lookup] 的
+  /// 版本檢查——HDR 代理換了色調映射曲線（cv2）之後，舊專案就是
+  /// 這樣一直播著舊曲線的代理、預覽跟成品對不上。
+  /// 索引裡有這筆＝交給 lookup（含 stamp 與 cv 檢查）；索引丟了
+  /// （舊版沒記/被清）就探測來源：SDR 照用、HDR 作廢重轉
+  static Future<bool> stillValid(String src, String work) async {
+    if (kIsWeb) return true;
+    final v = await lookup(src);
+    if (v != null) return v == work;
+    final lite = await MediaPrep.probeLite(src);
+    return lite != null && lite['error'] == null && lite['sdr709'] == true;
+  }
+
   /// 確保這支素材有工作檔：已經有就直接回，沒有就轉一份。
   /// 轉不出來（平台不支援、格式怪、使用者取消）回 null，呼叫端用原檔
   static Future<String?> ensure(

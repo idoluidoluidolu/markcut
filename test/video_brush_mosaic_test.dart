@@ -1,5 +1,4 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:markcut/models/mosaic.dart';
 import 'package:markcut/models/timeline.dart';
 
 void main() {

@@ -1392,8 +1392,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         }
       } else if (s.kind == ClipKind.video) {
         // 草稿裡記的工作檔可能已經被清掉（或是舊草稿根本沒有），
-        // 沒有就先用原檔，等下面的 _prepAllWorkFiles 在背景補
+        // 沒有就先用原檔，等下面的 _prepAllWorkFiles 在背景補。
+        // 檔案還在也要再驗一次版本：HDR 代理換了色調映射曲線之後，
+        // 舊曲線轉的要作廢重轉——不驗的話草稿路徑會繞過 lookup，
+        // 預覽永遠播著顏色不對的舊代理（實測：成品對了預覽不對）
         if (s.workPath != null && !await fileExists(s.workPath!)) {
+          s.workPath = null;
+        } else if (s.workPath != null &&
+            !await WorkFiles.stillValid(s.path, s.workPath!)) {
           s.workPath = null;
         }
         _thumbStrip(s.previewPath, s.duration).then((t) {
