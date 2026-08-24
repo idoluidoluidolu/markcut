@@ -1898,7 +1898,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                       borderRadius: BorderRadius.circular(14),
                     ),
                     child: const Text(
-                      '單指塗抹｜雙指縮放移動',
+                      '單指塗抹｜雙指縮放',
                       style: TextStyle(fontSize: 11.5, color: Colors.white),
                     ),
                   ),
