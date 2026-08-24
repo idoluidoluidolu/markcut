@@ -69,8 +69,10 @@ class TextMark {
     this.rotation = 0,
     this.tiled = false,
     this.shadow = true,
-    this.shadowOpacity = 0.55,
-    this.shadowBlur = 0.08,
+    // 預設濃度 0.35／模糊 0：使用者從對照樣張挑的（淡而俐落的硬影）
+    this.shadowOpacity = 0.35,
+    // 預設 0＝俐落硬影（使用者指定）；要柔邊自己拉模糊滑桿
+    this.shadowBlur = 0.0,
     this.outline = false,
     this.outlineColorValue = 0xFF000000,
     this.outlineWidth = 0.07,
@@ -129,14 +131,11 @@ class TextMark {
     rotation: (j['rotation'] ?? 0).toDouble(),
     tiled: j['tiled'] ?? false,
     shadow: j['shadow'] ?? true,
-    shadowOpacity: ((j['shadowOpacity'] ?? 0.55).toDouble() as double).clamp(
+    shadowOpacity: ((j['shadowOpacity'] ?? 0.35).toDouble() as double).clamp(
       0.05,
       1.0,
     ),
-    shadowBlur: ((j['shadowBlur'] ?? 0.08).toDouble() as double).clamp(
-      0.0,
-      0.2,
-    ),
+    shadowBlur: ((j['shadowBlur'] ?? 0.0).toDouble() as double).clamp(0.0, 0.2),
     outline: j['outline'] ?? false,
     outlineColorValue: j['outlineColorValue'] ?? 0xFF000000,
     outlineWidth: (j['outlineWidth'] ?? 0.07).toDouble(),
