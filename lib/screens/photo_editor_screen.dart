@@ -1119,7 +1119,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               const SizedBox(width: 10),
               const Expanded(
                 child: Text(
-                  '在照片上塗到哪、碼到哪',
+                  '直接塗在照片上',
                   style: TextStyle(fontSize: 11.5, color: kTextDim),
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -1176,17 +1176,20 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               ),
               pct(_brushStyle.strength),
             ),
-            row(
-              '柔邊',
-              Slider(
-                value: _brushStyle.feather,
-                onChanged: (v) => setState(() {
-                  _brushStyle.feather = v;
-                  _brushSel?.style.feather = v;
-                }),
+            // 柔邊只給模糊：像素化的重點就是硬邊的格子，
+            // 暈開反而奇怪（使用者指定拿掉）
+            if (_brushStyle.type == 1)
+              row(
+                '柔邊',
+                Slider(
+                  value: _brushStyle.feather,
+                  onChanged: (v) => setState(() {
+                    _brushStyle.feather = v;
+                    _brushSel?.style.feather = v;
+                  }),
+                ),
+                pct(_brushStyle.feather),
               ),
-              pct(_brushStyle.feather),
-            ),
           ] else
             SizedBox(
               height: 32,
