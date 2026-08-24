@@ -142,9 +142,11 @@ ui.Rect strokeBoundsPx(List<ui.Offset> pts, double brushPx, double featherPx) {
   return ui.Rect.fromLTRB(l, t, r, b).inflate(brushPx / 2 + featherPx + 2);
 }
 
-/// 筆刷筆畫的柔邊寬度（相對筆刷粗細；方形版是相對補丁大小）
+/// 筆刷筆畫的柔邊寬度（相對筆刷粗細；方形版是相對補丁大小）。
+/// 純色遮蓋一律硬邊——它沒有柔邊這回事，別的模式殘留的
+/// 柔邊值也不能跑過來（預覽跟匯出都從這裡拿，兩邊一致）
 double strokeFeatherPx(MosaicStyle st, double brushPx) =>
-    st.feather * 0.5 * brushPx;
+    st.type == 2 ? 0.0 : st.feather * 0.5 * brushPx;
 
 /// 筆刷筆畫：效果鋪滿 [dstRect]，再用「筆畫本身」當 alpha 遮罩。
 /// [srcPts]／[srcBrush]／[srcRect] 都是照片像素座標；

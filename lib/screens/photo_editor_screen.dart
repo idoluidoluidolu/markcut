@@ -1033,6 +1033,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   final MosaicStyle _brushStyle = MosaicStyle();
   double _brushSize = 0.16;
 
+  /// 柔邊每個模式各記各的：模糊調過的柔邊不能跑到像素化／純色去
+  final Map<int, double> _brushFeatherByType = {};
+
   /// 剛畫好、還在筆刷模式裡選取中的那一筆（沒有就 null）
   PhotoMosaic? get _brushSel =>
       (_selMosaic >= 0 &&
@@ -1052,8 +1055,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
           child: InkWell(
             borderRadius: BorderRadius.circular(10),
             onTap: () => setState(() {
+              // 柔邊各模式自己的：先把現在的存回去，再拿新模式的出來
+              _brushFeatherByType[_brushStyle.type] = _brushStyle.feather;
               _brushStyle.type = type;
+              _brushStyle.feather = _brushFeatherByType[type] ?? 0.0;
               _brushSel?.style.type = type;
+              _brushSel?.style.feather = _brushStyle.feather;
             }),
             child: Container(
               padding: const EdgeInsets.symmetric(vertical: 10),
