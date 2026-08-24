@@ -101,11 +101,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       }
     }
     _initialJson = _stateJson;
-    // 檢視縮放：真的放大了才裁切、才亮「回 1x」
-    _viewCtrl.addListener(() {
-      final z = _viewCtrl.value.getMaxScaleOnAxis() > 1.001;
-      if (z != _viewZoomed && mounted) setState(() => _viewZoomed = z);
-    });
     _loadMosaicShader();
     _load();
   }
@@ -222,6 +217,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   /// 離開保護：調過浮水印但沒輸出就問一下
   Future<void> _confirmLeave() async {
+    // 全螢幕檢視中按返回：先退回編輯畫面，不要一按就離開專案
+    //（跟影片編輯同一個規則）
+    if (_fsView) {
+      setState(() => _fsView = false);
+      return;
+    }
     if (!_dirty) {
       Navigator.of(context).pop();
       return;
@@ -328,7 +329,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   @override
   void dispose() {
     _photoImg?.dispose();
-    _viewCtrl.dispose();
     super.dispose();
   }
 
@@ -361,37 +361,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     }
   }
 
-  /// 預覽與面板之間的控制列：檢視縮放＋上一步／重做
-  ///（跟影片編輯同一條的長相，鈕都收在這排）
+  /// 預覽與面板之間的控制列：上一步／重做（四個編輯畫面共用同一條）
   Widget _buildControlBar() => undoRedoBar(
-    leading: [
-      IconButton(
-        tooltip: _viewZoom ? '結束檢視縮放' : '檢視縮放（捏合放大）',
-        icon: Icon(
-          Icons.zoom_in,
-          size: 20,
-          color: _viewZoom ? kSelect : kTextDim,
-        ),
-        onPressed: () => setState(() => _viewZoom = !_viewZoom),
-        visualDensity: VisualDensity.compact,
-        padding: EdgeInsets.zero,
-        constraints: const BoxConstraints(minWidth: 42, minHeight: 30),
-      ),
-      if (_viewZoomed)
-        TextButton(
-          onPressed: () => setState(() => _viewCtrl.value = Matrix4.identity()),
-          style: TextButton.styleFrom(
-            visualDensity: VisualDensity.compact,
-            padding: const EdgeInsets.symmetric(horizontal: 6),
-            minimumSize: const Size(36, 30),
-            foregroundColor: kSelect,
-          ),
-          child: const Text(
-            '1x',
-            style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700),
-          ),
-        ),
-    ],
     onUndo: _undoStack.isEmpty ? null : _undoLast,
     onRedo: _redoStack.isEmpty ? null : _redoLast,
   );
@@ -1818,15 +1789,92 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   }
 
   // ===== 預覽區雙指縮放（照片上的浮水印／選中的馬賽克）=====
-  // ===== 檢視縮放（放大鏡）=====
-  /// 畫面縮放的變換（縮放值與平移都在裡面，關掉模式也保留）
-  final TransformationController _viewCtrl = TransformationController();
+  // ===== 全螢幕檢視（放大看照片；跟影片編輯的全螢幕同一套語言）=====
+  /// 開著＝照片鋪滿整頁、黑底，可捏合放大細看；編輯手勢全關。
+  /// 右上角膠囊或下滑離開
+  bool _fsView = false;
 
-  /// 放大鏡模式：開著＝捏合縮放/拖曳平移畫面，元素不吃手勢
-  bool _viewZoom = false;
-
-  /// 目前有沒有真的放大（>1x）：決定裁切與「回 1x」鈕要不要出現
-  bool _viewZoomed = false;
+  /// 全螢幕檢視：跟編輯畫面看到的完全一樣（調色、馬賽克、浮水印
+  /// 全都畫），只是唯讀＋可捏合縮放
+  Widget _fsPhotoView() => GestureDetector(
+    behavior: HitTestBehavior.opaque,
+    // 下滑＝離開（跟影片編輯的全螢幕同手勢）
+    onVerticalDragEnd: (d) {
+      if ((d.primaryVelocity ?? 0) > 250) {
+        setState(() => _fsView = false);
+      }
+    },
+    child: Container(
+      color: Colors.black,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: InteractiveViewer(
+              minScale: 1,
+              maxScale: 6,
+              child: Center(
+                child: AspectRatio(
+                  aspectRatio: _aspect!,
+                  child: IgnorePointer(
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        if (_grade.hasColor)
+                          ColorFiltered(
+                            colorFilter: ColorFilter.matrix(_grade.matrix),
+                            child: Image.memory(
+                              _photoBytes!,
+                              fit: BoxFit.contain,
+                            ),
+                          )
+                        else
+                          Image.memory(_photoBytes!, fit: BoxFit.contain),
+                        if (_mosaics.isNotEmpty)
+                          Positioned.fill(
+                            child: LayoutBuilder(
+                              builder: (context, box) =>
+                                  _buildMosaics(box.maxWidth, box.maxHeight),
+                            ),
+                          ),
+                        WatermarkLayer(settings: _settings, onChanged: () {}),
+                        for (final e in _extraWms)
+                          WatermarkLayer(settings: e, onChanged: () {}),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          // 右上角：離開全螢幕
+          SafeArea(
+            child: Align(
+              alignment: Alignment.topRight,
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(999),
+                  onTap: () => setState(() => _fsView = false),
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.45),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.fullscreen_exit,
+                      size: 22,
+                      color: kText,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 
   final Map<int, Offset> _pvPts = {};
   double? _pvBaseDist;
@@ -1837,7 +1885,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   double _pvBaseExtraLogo = 0.18;
 
   void _pinchDown(PointerDownEvent e) {
-    if (_viewZoom) return; // 放大鏡模式：捏合歸畫面縮放
     _pvPts[e.pointer] = e.position;
     if (_pvPts.length != 2) return;
     final p = _pvPts.values.toList();
@@ -1857,7 +1904,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   }
 
   void _pinchMove(PointerMoveEvent e) {
-    if (_viewZoom) return;
     if (!_pvPts.containsKey(e.pointer)) return;
     _pvPts[e.pointer] = e.position;
     if (_pvBaseDist == null || _pvPts.length < 2) return;
@@ -1912,9 +1958,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         if (!didPop) _confirmLeave();
       },
       child: Scaffold(
-        appBar: AppBar(),
+        // 全螢幕檢視：整頁只有照片，連標題列都收掉
+        appBar: _fsView ? null : AppBar(),
         body: _photoBytes == null || _aspect == null
             ? const Center(child: CircularProgressIndicator())
+            : _fsView
+            ? _fsPhotoView()
             : Column(
                 children: [
                   // 上 4 下 6：面板是主要工作區，太窄的話每次調整都在
@@ -1952,277 +2001,260 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                             children: [
                               AspectRatio(
                                 aspectRatio: _aspect!,
-                                // 檢視縮放：放大鏡模式開著時捏合縮放、
-                                // 拖曳平移；關掉後縮放狀態保留，可以在
-                                // 放大的畫面上精準塗抹／拖元素（手勢
-                                // 座標由命中測試自動反算，元素程式碼
-                                // 一行不用改）
-                                child: InteractiveViewer(
-                                  transformationController: _viewCtrl,
-                                  panEnabled: _viewZoom,
-                                  scaleEnabled: _viewZoom,
-                                  minScale: 1,
-                                  maxScale: 6,
-                                  clipBehavior: _viewZoomed
-                                      ? Clip.hardEdge
-                                      : Clip.none,
-                                  child: AbsorbPointer(
-                                    absorbing: _viewZoom,
-                                    child: Stack(
-                                      fit: StackFit.expand,
-                                      // 不裁切：浮水印選取框要能畫到照片外
-                                      //（內容由 WatermarkLayer 自己的 Stack 裁）
-                                      clipBehavior: Clip.none,
-                                      children: [
-                                        // 調色即時反映在預覽上
-                                        if (_grade.hasColor && !_colorCompare)
-                                          ColorFiltered(
-                                            colorFilter: ColorFilter.matrix(
-                                              _grade.matrix,
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  // 不裁切：浮水印選取框要能畫到照片外
+                                  //（內容由 WatermarkLayer 自己的 Stack 裁）
+                                  clipBehavior: Clip.none,
+                                  children: [
+                                    // 調色即時反映在預覽上
+                                    if (_grade.hasColor && !_colorCompare)
+                                      ColorFiltered(
+                                        colorFilter: ColorFilter.matrix(
+                                          _grade.matrix,
+                                        ),
+                                        child: Image.memory(
+                                          _photoBytes!,
+                                          fit: BoxFit.contain,
+                                        ),
+                                      )
+                                    else
+                                      Image.memory(
+                                        _photoBytes!,
+                                        fit: BoxFit.contain,
+                                      ),
+                                    // 馬賽克層：畫在照片上、浮水印下
+                                    if (_mosaics.isNotEmpty)
+                                      Positioned.fill(
+                                        child: LayoutBuilder(
+                                          builder: (context, box) =>
+                                              _buildMosaics(
+                                                box.maxWidth,
+                                                box.maxHeight,
+                                              ),
+                                        ),
+                                      ),
+                                    WatermarkLayer(
+                                      settings: _settings,
+                                      onChanged: () => setState(() {}),
+                                      onDragStart: _pushUndo,
+                                      // 選取框畫在裁切外（見 _wmFrameInfo）
+                                      frameNotifier: _wmFrameInfo,
+                                      onHitBox: (t, l) =>
+                                          _phSetBox(1, -1, t, l),
+                                      // 活性版：被選部件消失後視同沒選，
+                                      // 拖曳才不會整個變死的
+                                      selectedPart: _wmPartAlive,
+                                      // 選浮水印部件＝取消馬賽克選取，
+                                      // 同時只會有一種東西被選（單一選取）
+                                      onSelectPart: (p) {
+                                        setState(() {
+                                          _wmPart = p;
+                                          _selMosaic = -1;
+                                          _selExtra = -1;
+                                        });
+                                        // 點文字就把面板捲到文字設定
+                                        //（點圖片同理），不用自己找
+                                        _wmPanelCtrl.scrollTo(p);
+                                      },
+                                      panLocked: () => _pvPts.length >= 2,
+                                      // 別的東西被選取時完全不吃拖曳，讓給下面的
+                                      // 選取路由——不然選了馬賽克在畫面上拖，
+                                      // 手指剛好經過浮水印就會把浮水印拖走
+                                      panAllowed: (_) =>
+                                          _selMosaic == -1 && _selExtra == -1,
+                                    ),
+                                    // 更多浮水印：一組一層疊上去，各自拖曳；
+                                    // 點一下＝選取（白框）＋直接開編輯面板
+                                    for (var i = 0; i < _extraWms.length; i++)
+                                      WatermarkLayer(
+                                        settings: _extraWms[i],
+                                        onChanged: () => setState(() {}),
+                                        onDragStart: _pushUndo,
+                                        onHitBox: (t, l) =>
+                                            _phSetBox(2, i, t, l),
+                                        selectedPart: _extraPartAlive(i),
+                                        onSelectPart: (p) {
+                                          setState(() {
+                                            _selExtra = i;
+                                            _selExtraPart = p;
+                                            _wmPart = WmPart.none;
+                                            _selMosaic = -1;
+                                          });
+                                          _editExtraWm(i);
+                                        },
+                                        panLocked: () => _pvPts.length >= 2,
+                                        // 同上：馬賽克選取中誰都不准拖；
+                                        // 選了別組浮水印時這一組也不吃
+                                        panAllowed: (_) =>
+                                            _selMosaic == -1 &&
+                                            (_selExtra == -1 || _selExtra == i),
+                                      ),
+                                    // 點擊判定層：疊在所有圖層之上，統一決定
+                                    // 點到誰。translucent＝只搶點擊，
+                                    // 拖曳照樣傳給下面的圖層與選取路由
+                                    Positioned.fill(
+                                      child: LayoutBuilder(
+                                        builder: (context, box) =>
+                                            GestureDetector(
+                                              behavior:
+                                                  HitTestBehavior.translucent,
+                                              onTapUp: (d) =>
+                                                  _phTapAt(d.localPosition),
+                                              child: const SizedBox.expand(),
                                             ),
-                                            child: Image.memory(
-                                              _photoBytes!,
-                                              fit: BoxFit.contain,
-                                            ),
-                                          )
-                                        else
-                                          Image.memory(
-                                            _photoBytes!,
-                                            fit: BoxFit.contain,
-                                          ),
-                                        // 馬賽克層：畫在照片上、浮水印下
-                                        if (_mosaics.isNotEmpty)
-                                          Positioned.fill(
-                                            child: LayoutBuilder(
-                                              builder: (context, box) =>
-                                                  _buildMosaics(
-                                                    box.maxWidth,
-                                                    box.maxHeight,
-                                                  ),
-                                            ),
-                                          ),
-                                        WatermarkLayer(
-                                          settings: _settings,
-                                          onChanged: () => setState(() {}),
-                                          onDragStart: _pushUndo,
-                                          // 選取框畫在裁切外（見 _wmFrameInfo）
-                                          frameNotifier: _wmFrameInfo,
-                                          onHitBox: (t, l) =>
-                                              _phSetBox(1, -1, t, l),
-                                          // 活性版：被選部件消失後視同沒選，
-                                          // 拖曳才不會整個變死的
-                                          selectedPart: _wmPartAlive,
-                                          // 選浮水印部件＝取消馬賽克選取，
-                                          // 同時只會有一種東西被選（單一選取）
-                                          onSelectPart: (p) {
-                                            setState(() {
-                                              _wmPart = p;
-                                              _selMosaic = -1;
-                                              _selExtra = -1;
-                                            });
-                                            // 點文字就把面板捲到文字設定
-                                            //（點圖片同理），不用自己找
-                                            _wmPanelCtrl.scrollTo(p);
+                                      ),
+                                    ),
+                                    // 置中輔助線（路由/馬賽克拖曳吸中線時）。
+                                    // 一定要「永遠佔一個位置」，不能用 if 增減：
+                                    // 線一出現就會把後面圖層的索引往後推，
+                                    // Flutter 因此重建下面那個手勢層＝拖曳被中斷，
+                                    // 下一輪又從已吸附的中線值重新開始，
+                                    // 結果就是吸上中線後再也拖不出來
+                                    Positioned.fill(
+                                      child: CenterGuides(
+                                        vertical: _phGuideV,
+                                        horizontal: _phGuideH,
+                                      ),
+                                    ),
+                                    // 浮水印選取框：畫在真實位置（部件拖出
+                                    // 照片時內容被裁、框照畫）
+                                    Positioned.fill(
+                                      child: WmFrameOverlay(_wmFrameInfo),
+                                    ),
+                                    // 選取路由：有部件被選取（白框）時，
+                                    // 整個預覽的拖曳都只動被選的那個——
+                                    // 跟影片編輯同一套規則
+                                    if (_wmPartAlive != WmPart.none)
+                                      Positioned.fill(
+                                        key: const ValueKey('wm-route'),
+                                        child: LayoutBuilder(
+                                          builder: (context, box) {
+                                            final w = box.maxWidth;
+                                            final h = box.maxHeight;
+                                            return GestureDetector(
+                                              behavior:
+                                                  HitTestBehavior.translucent,
+                                              onPanStart: (_) {
+                                                _phClearGuides();
+                                                if (_pvPts.length < 2) {
+                                                  _phUndoPending = true;
+                                                }
+                                              },
+                                              onPanUpdate: (d) {
+                                                if (_pvPts.length >= 2) {
+                                                  return;
+                                                }
+                                                _phPushUndoIfNeeded();
+                                                final t = _settings.text;
+                                                final lg = _settings.logo;
+                                                final part = _wmPartAlive;
+                                                setState(() {
+                                                  // 原始座標累積、顯示值吸中線
+                                                  //（同 WatermarkLayer 手感）
+                                                  if (part == WmPart.text &&
+                                                      t.enabled &&
+                                                      !t.tiled &&
+                                                      t.text
+                                                          .trim()
+                                                          .isNotEmpty) {
+                                                    _phRawX ??= t.x;
+                                                    _phRawY ??= t.y;
+                                                    _phRawX =
+                                                        (_phRawX! +
+                                                                d.delta.dx / w)
+                                                            .clamp(0.0, 1.0);
+                                                    _phRawY =
+                                                        (_phRawY! +
+                                                                d.delta.dy / h)
+                                                            .clamp(0.0, 1.0);
+                                                    t.x = _snapC(_phRawX!);
+                                                    t.y = _snapC(_phRawY!);
+                                                    _phSetGuides(t.x, t.y);
+                                                  } else if (part ==
+                                                          WmPart.logo &&
+                                                      lg.enabled &&
+                                                      !lg.tiled) {
+                                                    _phRawX ??= lg.x;
+                                                    _phRawY ??= lg.y;
+                                                    _phRawX =
+                                                        (_phRawX! +
+                                                                d.delta.dx / w)
+                                                            .clamp(0.0, 1.0);
+                                                    _phRawY =
+                                                        (_phRawY! +
+                                                                d.delta.dy / h)
+                                                            .clamp(0.0, 1.0);
+                                                    lg.x = _snapC(_phRawX!);
+                                                    lg.y = _snapC(_phRawY!);
+                                                    _phSetGuides(lg.x, lg.y);
+                                                  }
+                                                });
+                                              },
+                                              onPanEnd: (_) => _phClearGuides(),
+                                              onPanCancel: _phClearGuides,
+                                              child: const SizedBox.expand(),
+                                            );
                                           },
-                                          panLocked: () => _pvPts.length >= 2,
-                                          // 別的東西被選取時完全不吃拖曳，讓給下面的
-                                          // 選取路由——不然選了馬賽克在畫面上拖，
-                                          // 手指剛好經過浮水印就會把浮水印拖走
-                                          panAllowed: (_) =>
-                                              _selMosaic == -1 &&
-                                              _selExtra == -1,
                                         ),
-                                        // 更多浮水印：一組一層疊上去，各自拖曳；
-                                        // 點一下＝選取（白框）＋直接開編輯面板
-                                        for (
-                                          var i = 0;
-                                          i < _extraWms.length;
-                                          i++
-                                        )
-                                          WatermarkLayer(
-                                            settings: _extraWms[i],
-                                            onChanged: () => setState(() {}),
-                                            onDragStart: _pushUndo,
-                                            onHitBox: (t, l) =>
-                                                _phSetBox(2, i, t, l),
-                                            selectedPart: _extraPartAlive(i),
-                                            onSelectPart: (p) {
-                                              setState(() {
-                                                _selExtra = i;
-                                                _selExtraPart = p;
-                                                _wmPart = WmPart.none;
-                                                _selMosaic = -1;
-                                              });
-                                              _editExtraWm(i);
-                                            },
-                                            panLocked: () => _pvPts.length >= 2,
-                                            // 同上：馬賽克選取中誰都不准拖；
-                                            // 選了別組浮水印時這一組也不吃
-                                            panAllowed: (_) =>
-                                                _selMosaic == -1 &&
-                                                (_selExtra == -1 ||
-                                                    _selExtra == i),
-                                          ),
-                                        // 點擊判定層：疊在所有圖層之上，統一決定
-                                        // 點到誰。translucent＝只搶點擊，
-                                        // 拖曳照樣傳給下面的圖層與選取路由
-                                        Positioned.fill(
-                                          child: LayoutBuilder(
-                                            builder: (context, box) =>
-                                                GestureDetector(
-                                                  behavior: HitTestBehavior
-                                                      .translucent,
-                                                  onTapUp: (d) =>
-                                                      _phTapAt(d.localPosition),
-                                                  child:
-                                                      const SizedBox.expand(),
-                                                ),
-                                          ),
+                                      ),
+                                    // 筆刷模式：整面接管拖曳，塗到哪碼到哪
+                                    //（疊最上層，其他選取/拖曳全讓路）
+                                    if (_brushMode)
+                                      Positioned.fill(
+                                        child: LayoutBuilder(
+                                          builder: (context, box) {
+                                            final w = box.maxWidth;
+                                            final h = box.maxHeight;
+                                            return GestureDetector(
+                                              behavior: HitTestBehavior.opaque,
+                                              onPanStart: (d) => _brushStart(
+                                                d.localPosition,
+                                                w,
+                                                h,
+                                              ),
+                                              onPanUpdate: (d) => _brushMove(
+                                                d.localPosition,
+                                                w,
+                                                h,
+                                              ),
+                                              child: const SizedBox.expand(),
+                                            );
+                                          },
                                         ),
-                                        // 置中輔助線（路由/馬賽克拖曳吸中線時）。
-                                        // 一定要「永遠佔一個位置」，不能用 if 增減：
-                                        // 線一出現就會把後面圖層的索引往後推，
-                                        // Flutter 因此重建下面那個手勢層＝拖曳被中斷，
-                                        // 下一輪又從已吸附的中線值重新開始，
-                                        // 結果就是吸上中線後再也拖不出來
-                                        Positioned.fill(
-                                          child: CenterGuides(
-                                            vertical: _phGuideV,
-                                            horizontal: _phGuideH,
-                                          ),
-                                        ),
-                                        // 浮水印選取框：畫在真實位置（部件拖出
-                                        // 照片時內容被裁、框照畫）
-                                        Positioned.fill(
-                                          child: WmFrameOverlay(_wmFrameInfo),
-                                        ),
-                                        // 選取路由：有部件被選取（白框）時，
-                                        // 整個預覽的拖曳都只動被選的那個——
-                                        // 跟影片編輯同一套規則
-                                        if (_wmPartAlive != WmPart.none)
-                                          Positioned.fill(
-                                            key: const ValueKey('wm-route'),
-                                            child: LayoutBuilder(
-                                              builder: (context, box) {
-                                                final w = box.maxWidth;
-                                                final h = box.maxHeight;
-                                                return GestureDetector(
-                                                  behavior: HitTestBehavior
-                                                      .translucent,
-                                                  onPanStart: (_) {
-                                                    _phClearGuides();
-                                                    if (_pvPts.length < 2) {
-                                                      _phUndoPending = true;
-                                                    }
-                                                  },
-                                                  onPanUpdate: (d) {
-                                                    if (_pvPts.length >= 2) {
-                                                      return;
-                                                    }
-                                                    _phPushUndoIfNeeded();
-                                                    final t = _settings.text;
-                                                    final lg = _settings.logo;
-                                                    final part = _wmPartAlive;
-                                                    setState(() {
-                                                      // 原始座標累積、顯示值吸中線
-                                                      //（同 WatermarkLayer 手感）
-                                                      if (part == WmPart.text &&
-                                                          t.enabled &&
-                                                          !t.tiled &&
-                                                          t.text
-                                                              .trim()
-                                                              .isNotEmpty) {
-                                                        _phRawX ??= t.x;
-                                                        _phRawY ??= t.y;
-                                                        _phRawX =
-                                                            (_phRawX! +
-                                                                    d.delta.dx /
-                                                                        w)
-                                                                .clamp(
-                                                                  0.0,
-                                                                  1.0,
-                                                                );
-                                                        _phRawY =
-                                                            (_phRawY! +
-                                                                    d.delta.dy /
-                                                                        h)
-                                                                .clamp(
-                                                                  0.0,
-                                                                  1.0,
-                                                                );
-                                                        t.x = _snapC(_phRawX!);
-                                                        t.y = _snapC(_phRawY!);
-                                                        _phSetGuides(t.x, t.y);
-                                                      } else if (part ==
-                                                              WmPart.logo &&
-                                                          lg.enabled &&
-                                                          !lg.tiled) {
-                                                        _phRawX ??= lg.x;
-                                                        _phRawY ??= lg.y;
-                                                        _phRawX =
-                                                            (_phRawX! +
-                                                                    d.delta.dx /
-                                                                        w)
-                                                                .clamp(
-                                                                  0.0,
-                                                                  1.0,
-                                                                );
-                                                        _phRawY =
-                                                            (_phRawY! +
-                                                                    d.delta.dy /
-                                                                        h)
-                                                                .clamp(
-                                                                  0.0,
-                                                                  1.0,
-                                                                );
-                                                        lg.x = _snapC(_phRawX!);
-                                                        lg.y = _snapC(_phRawY!);
-                                                        _phSetGuides(
-                                                          lg.x,
-                                                          lg.y,
-                                                        );
-                                                      }
-                                                    });
-                                                  },
-                                                  onPanEnd: (_) =>
-                                                      _phClearGuides(),
-                                                  onPanCancel: _phClearGuides,
-                                                  child:
-                                                      const SizedBox.expand(),
-                                                );
-                                              },
-                                            ),
-                                          ),
-                                        // 筆刷模式：整面接管拖曳，塗到哪碼到哪
-                                        //（疊最上層，其他選取/拖曳全讓路）
-                                        if (_brushMode)
-                                          Positioned.fill(
-                                            child: LayoutBuilder(
-                                              builder: (context, box) {
-                                                final w = box.maxWidth;
-                                                final h = box.maxHeight;
-                                                return GestureDetector(
-                                                  behavior:
-                                                      HitTestBehavior.opaque,
-                                                  onPanStart: (d) =>
-                                                      _brushStart(
-                                                        d.localPosition,
-                                                        w,
-                                                        h,
-                                                      ),
-                                                  onPanUpdate: (d) =>
-                                                      _brushMove(
-                                                        d.localPosition,
-                                                        w,
-                                                        h,
-                                                      ),
-                                                  child:
-                                                      const SizedBox.expand(),
-                                                );
-                                              },
-                                            ),
-                                          ),
-                                      ],
+                                      ),
+                                  ],
+                                ),
+                              ),
+                              // 全螢幕檢視的入口：跟影片編輯的角落
+                              // 膠囊同一種長相（白 10% 底、小圖示）
+                              Positioned(
+                                top: 6,
+                                right: 6,
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(
+                                    kTagRadius,
+                                  ),
+                                  onTap: () => setState(() {
+                                    _fsView = true;
+                                    _wmPart = WmPart.none;
+                                    _selMosaic = -1;
+                                    _selExtra = -1;
+                                  }),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(5),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white.withValues(
+                                        alpha: 0.10,
+                                      ),
+                                      borderRadius: BorderRadius.circular(
+                                        kTagRadius,
+                                      ),
+                                    ),
+                                    child: const Icon(
+                                      Icons.fullscreen,
+                                      size: 15,
+                                      color: kIcon,
                                     ),
                                   ),
                                 ),
