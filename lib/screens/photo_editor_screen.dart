@@ -1795,7 +1795,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   bool _fsView = false;
 
   /// 全螢幕塗抹時，筆刷工具列有沒有叫出來（浮在畫面下緣）
-  bool _fsBrushOpen = false;
+  bool _fsBrushOpen = true;
 
   /// 全螢幕版的筆刷工具列：跟下面那張面板同一組值
   ///（_brushStyle/_brushSize，改了一樣即時套到剛畫的那一筆），
@@ -1850,7 +1850,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       double hi,
       ValueChanged<double> onChanged,
     ) => SizedBox(
-      height: 34,
+      height: 30,
       child: Row(
         children: [
           SizedBox(
@@ -1880,75 +1880,103 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       ),
     );
 
-    return Container(
-      padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.78),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(children: [chip('像素化', 0), chip('模糊', 1), chip('純色', 2)]),
-          slider('粗細', _brushSize, 0.03, 0.5, (v) {
-            setState(() {
-              _brushSize = v;
-              _brushSel?.brush = v;
-            });
-          }),
-          if (_brushStyle.type != 2)
-            slider('濃度', _brushStyle.strength, 0.0, 1.0, (v) {
-              setState(() {
-                _brushStyle.strength = v;
-                _brushSel?.style.strength = v;
-              });
-            }),
-          // 柔邊：像素化沒有（硬邊格子才是重點），模糊與純色各記各的
-          if (_brushStyle.type != 0)
-            slider('柔邊', _brushStyle.feather, 0.0, 1.0, (v) {
-              setState(() {
-                _brushStyle.feather = v;
-                _brushSel?.style.feather = v;
-              });
-            }),
-          if (_brushStyle.type == 2)
-            SizedBox(
-              height: 34,
-              child: Row(
-                children: [
-                  const Text(
-                    '顏色',
-                    style: TextStyle(fontSize: 11, color: Colors.white70),
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      // 往下滑＝收起工具列（把手就是抓的地方）
+      onVerticalDragEnd: (d) {
+        if ((d.primaryVelocity ?? 0) > 200) {
+          setState(() => _fsBrushOpen = false);
+        }
+      },
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(12, 5, 12, 2),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.8),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 收合把手：點或下滑都收起
+            GestureDetector(
+              onTap: () => setState(() => _fsBrushOpen = false),
+              behavior: HitTestBehavior.opaque,
+              child: Container(
+                width: 40,
+                height: 14,
+                alignment: Alignment.center,
+                child: Container(
+                  width: 32,
+                  height: 3,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.3),
+                    borderRadius: BorderRadius.circular(2),
                   ),
-                  const Spacer(),
-                  InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: () async {
-                      final picked = await pickColor(
-                        context,
-                        Color(_brushStyle.color),
-                      );
-                      if (picked != null) {
-                        setState(() {
-                          _brushStyle.color = picked;
-                          _brushSel?.style.color = picked;
-                        });
-                      }
-                    },
-                    child: Container(
-                      width: 22,
-                      height: 22,
-                      decoration: BoxDecoration(
-                        color: Color(_brushStyle.color),
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white24, width: 1.5),
-                      ),
-                    ),
-                  ),
-                ],
+                ),
               ),
             ),
-        ],
+            const SizedBox(height: 4),
+            Row(children: [chip('像素化', 0), chip('模糊', 1), chip('純色', 2)]),
+            slider('粗細', _brushSize, 0.03, 0.5, (v) {
+              setState(() {
+                _brushSize = v;
+                _brushSel?.brush = v;
+              });
+            }),
+            if (_brushStyle.type != 2)
+              slider('濃度', _brushStyle.strength, 0.0, 1.0, (v) {
+                setState(() {
+                  _brushStyle.strength = v;
+                  _brushSel?.style.strength = v;
+                });
+              }),
+            // 柔邊：像素化沒有（硬邊格子才是重點），模糊與純色各記各的
+            if (_brushStyle.type != 0)
+              slider('柔邊', _brushStyle.feather, 0.0, 1.0, (v) {
+                setState(() {
+                  _brushStyle.feather = v;
+                  _brushSel?.style.feather = v;
+                });
+              }),
+            if (_brushStyle.type == 2)
+              SizedBox(
+                height: 30,
+                child: Row(
+                  children: [
+                    const Text(
+                      '顏色',
+                      style: TextStyle(fontSize: 11, color: Colors.white70),
+                    ),
+                    const Spacer(),
+                    InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () async {
+                        final picked = await pickColor(
+                          context,
+                          Color(_brushStyle.color),
+                        );
+                        if (picked != null) {
+                          setState(() {
+                            _brushStyle.color = picked;
+                            _brushSel?.style.color = picked;
+                          });
+                        }
+                      },
+                      child: Container(
+                        width: 22,
+                        height: 22,
+                        decoration: BoxDecoration(
+                          color: Color(_brushStyle.color),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white24, width: 1.5),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -2039,11 +2067,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               bottom: 0,
               child: SafeArea(
                 top: false,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
-                  child: _fsBrushOpen
-                      ? _fsBrushTools()
-                      : Center(
+                child: _fsBrushOpen
+                    ? _fsBrushTools()
+                    : Padding(
+                        padding: const EdgeInsets.only(bottom: 16),
+                        child: Center(
                           child: IgnorePointer(
                             child: Container(
                               padding: const EdgeInsets.symmetric(
@@ -2064,7 +2092,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                             ),
                           ),
                         ),
-                ),
+                      ),
               ),
             ),
           // 右上角：筆刷工具列開關（塗抹中才有）＋離開全螢幕
