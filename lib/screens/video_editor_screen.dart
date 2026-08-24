@@ -1106,11 +1106,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 拖了位置、調了濃度都得重組。重組有併批（900ms 停手後才做），
     // 空窗期間 Flutter 版馬賽克先頂上（見 _compMosaicStale）
     _mosaicSig(),
-    // 圖片素材只記軌道：它們不進合成（Flutter 畫在上面），但
-    // 「在影片之上還是之下」決定合成能不能用（見 CompPlayer.whyNot）
-    // ——拖到影片下層的那一刻要觸發重評估，不然合成照播、圖片被蓋掉
-    for (final c in _tl.clips)
-      if (_tl.sourceOf(c).kind == ClipKind.image) 'im${c.track}',
+    // 圖片素材：墊在影片下層的是烘進合成的（still/GIF 層），
+    // 幾何樣式全記；壓在影片之上的只記軌道（Flutter 畫的，拖它
+    // 不用重組合成）
+    _stillSig(),
     // 整軌靜音是烘進合成的音量參數的，切了要重組——不記的話
     // 預覽照樣有聲音，匯出卻是靜音的（匯出另外走自己的靜音處理）
     'mute${(_mutedTracks.toList()..sort()).join(',')}',
@@ -1128,6 +1127,31 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             '|${_tl.sourceOf(c).mosaicStyle?.color}'
             '|${_tl.sourceOf(c).mosaicStyle?.feather}',
   ].join(';');
+
+  /// 圖片素材那部分的指紋。烘進合成的（影片下層）記完整幾何；
+  /// Flutter 畫的（影片之上）只記軌道——拖它不觸發重組
+  String _stillSig() {
+    final baked = CompPlayer.bakedImageIds(_tl);
+    return [
+      for (final c in _tl.clips)
+        if (_tl.sourceOf(c).kind == ClipKind.image)
+          baked.contains(c.id)
+              ? 'im${c.id}|${c.track}|${c.offset}|${c.end}|${c.px}|${c.py}'
+                    '|${c.scale}|${c.mirror}|${c.fadeIn}|${c.fadeOut}'
+                    '|${c.rotation}|${c.opacity}|${c.cropped}|${c.cropL}'
+                    '|${c.cropT}|${c.cropW}|${c.cropH}'
+              : 'im${c.track}',
+    ].join(';');
+  }
+
+  /// 這份合成烘的圖片層是不是已經過期（剛拖了/調了一張墊底圖片、
+  /// 重烘還沒完成的空窗）。過期期間 Flutter 版先頂上，
+  /// 跟馬賽克的 [_compMosaicStale] 同一套
+  String? _lastCompStillSig;
+  bool get _compStillsStale => _compOn && _lastCompStillSig != _stillSig();
+
+  /// 這份合成烘進去的圖片片段 id（合成新鮮時預覽不再重畫它們）
+  Set<int> _compBakedStills = const {};
 
   String? _lastCompSig;
   String? _lastCompEditSig;
@@ -4859,6 +4883,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _lastCompSig = _compSig();
     _lastCompEditSig = _compSig(withPaths: false);
     _lastCompMosaicSig = _mosaicSig();
+    _lastCompStillSig = _stillSig();
+    _compBakedStills = CompPlayer.bakedImageIds(_tl);
     setState(() => _comp = made);
     // 合成接手了，舊的那幾顆播放器立刻放掉（見 _trimPlayers）
     _trimPlayers();
@@ -8510,6 +8536,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     if (src.kind == ClipKind.image) {
                                       final r = layerBox(c, src.aspect);
                                       addHit(c.track, c.id, cropBox(r, c));
+                                      // 烘進合成的圖片（墊在影片下層）：
+                                      // 合成新鮮時畫面由合成出，這裡再畫
+                                      // 就是疊兩張；重烘空窗先頂上
+                                      //（同 _compMosaicStale 的規則）
+                                      if (_compOn &&
+                                          !_compStillsStale &&
+                                          _compBakedStills.contains(c.id)) {
+                                        if (c.id == _sel) {
+                                          selRect = cropBox(r, c);
+                                          selVisual = c;
+                                        }
+                                        continue;
+                                      }
                                       final bytes = _thumbs[c.sourceIndex];
                                       final hasBytes =
                                           bytes != null && bytes.isNotEmpty;

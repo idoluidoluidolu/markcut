@@ -906,12 +906,16 @@ final class AtomicFlag {
         // 使用者說的「按了切割整個畫面都消失」就是這條路
         let p = CompPlayer(registry: textures)
         let mosaics = args["mosaics"] as? [[String: Any]] ?? []
-        // 馬賽克要走 CI 合成器：先把濾鏡管線暖起來，接縫不吃首編譯
-        if !mosaics.isEmpty { CIExportCompositor.warmUp() }
+        let stills = args["stills"] as? [[String: Any]] ?? []
+        // 馬賽克/圖片層要走 CI 合成器：先把濾鏡管線暖起來，
+        // 接縫不吃首編譯
+        if !mosaics.isEmpty || !stills.isEmpty {
+          CIExportCompositor.warmUp()
+        }
         guard
           p.build(
             clips: clips, texture: (args["texture"] as? Bool) ?? true,
-            mosaics: mosaics)
+            mosaics: mosaics, stills: stills)
         else {
           let why = p.buildError ?? "未知原因"
           p.dispose()
@@ -3063,7 +3067,8 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// [mosaics] 跟原生匯出同一套欄位（px/py/scale/type/strength/
   /// color/feather/start/end）。非空時掛 CI 合成器把碼烘進畫面
   func build(
-    clips: [[String: Any]], texture: Bool, mosaics: [[String: Any]] = []
+    clips: [[String: Any]], texture: Bool, mosaics: [[String: Any]] = [],
+    stills: [[String: Any]] = []
   ) -> Bool {
     let comp = AVMutableComposition()
     let scale: CMTimeScale = 600
@@ -3141,6 +3146,9 @@ final class CompPlayer: NSObject, FlutterTexture {
     }
     let needsCI =
       !mosaics.isEmpty
+      // 墊在影片下層的圖片/GIF：烘進合成（標準 layer instruction
+      // 畫不了外來影像，得走 CI 合成器）
+      || !stills.isEmpty
       || anyHDR
       || ordered.contains { c in
         (c["crop"] as? [Double]) != nil
@@ -3433,6 +3441,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       || (texture && !uniformTransform.isIdentity)
       // 馬賽克要烘進畫面，一定得走合成器；裁切/旋轉/透明度同理
       || !mosaics.isEmpty
+      || !stills.isEmpty
       // HDR 原檔要靠合成器做 toneMapHDRtoSDR（見 needsCI 的說明）
       || anyHDR
       || segments.contains { seg in
@@ -3465,6 +3474,86 @@ final class CompPlayer: NSObject, FlutterTexture {
       vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
       vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
       vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
+
+      // 墊在影片下層的圖片/GIF：組成 CI 層（跟匯出同一套定位數學，
+      // 畫布用預覽的 renderSize）。GIF 包成 CIGifSpec 逐幀取
+      var stillSpecs: [(z: Int, order: Int, layer: CILayerSpec)] = []
+      for (idx, st) in stills.enumerated() {
+        guard let path = st["path"] as? String,
+          let ui = UIImage(contentsOfFile: path), let cg = ui.cgImage
+        else { continue }
+        var img = CIImage(cgImage: cg)
+        let dw = img.extent.width
+        let dh = img.extent.height
+        guard dw > 1, dh > 1 else { continue }
+        var t = CGAffineTransform.identity
+        if st["mirror"] as? Bool ?? false {
+          t = t.concatenating(CGAffineTransform(scaleX: -1, y: 1))
+            .concatenating(CGAffineTransform(translationX: dw, y: 0))
+        }
+        let k = min(size.width / dw, size.height / dh)
+        t = t.concatenating(CGAffineTransform(scaleX: k, y: k))
+          .concatenating(
+            CGAffineTransform(
+              translationX: (size.width - dw * k) / 2,
+              y: (size.height - dh * k) / 2))
+        let u = CGFloat(st["scale"] as? Double ?? 1)
+        let spx = st["px"] as? Double ?? 0.5
+        let spy = st["py"] as? Double ?? 0.5
+        if abs(Double(u) - 1) > 0.001 || abs(spx - 0.5) > 0.001
+          || abs(spy - 0.5) > 0.001
+        {
+          t = t
+            .concatenating(
+              CGAffineTransform(
+                translationX: -size.width / 2, y: -size.height / 2)
+            )
+            .concatenating(CGAffineTransform(scaleX: u, y: u))
+            .concatenating(
+              CGAffineTransform(
+                translationX: size.width / 2 + CGFloat(spx - 0.5)
+                  * size.width,
+                y: size.height / 2 + CGFloat(spy - 0.5) * size.height))
+        }
+        let flipSrc = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: dh)
+        let flipCanvas = CGAffineTransform(
+          a: 1, b: 0, c: 0, d: -1, tx: 0, ty: size.height)
+        let placement = flipSrc.concatenating(t).concatenating(flipCanvas)
+        var gifSpec: CIGifSpec? = nil
+        if st["gif"] as? Bool ?? false {
+          gifSpec = CIGifSpec(
+            path: path, placement: placement,
+            clipStart: st["start"] as? Double ?? 0)
+        }
+        if gifSpec == nil {
+          img = img.transformed(by: placement)
+        }
+        var stCrop: CGRect? = nil
+        if let ca = st["crop"] as? [Double], ca.count >= 4, ca[2] > 0.001,
+          ca[3] > 0.001
+        {
+          let mir = st["mirror"] as? Bool ?? false
+          let l = mir ? 1 - ca[0] - ca[2] : ca[0]
+          stCrop = CGRect(x: l, y: ca[1], width: ca[2], height: ca[3])
+        }
+        stillSpecs.append((
+          z: st["track"] as? Int ?? 0, order: idx,
+          layer: CILayerSpec(
+            trackID: kCMPersistentTrackID_Invalid,
+            still: gifSpec == nil ? img : nil,
+            transform: .identity, srcHeight: dh,
+            start: st["start"] as? Double ?? 0,
+            end: st["end"] as? Double ?? 0,
+            fadeIn: st["fadeIn"] as? Double ?? 0,
+            fadeOut: st["fadeOut"] as? Double ?? 0,
+            colorMatrix: st["color"] as? [Double],
+            crop: stCrop,
+            rotation: st["rotation"] as? Double ?? 0,
+            opacity: st["opacity"] as? Double ?? 1,
+            z: st["track"] as? Int ?? 0, gif: gifSpec)
+        ))
+      }
+      buildInfo["圖片層"] = stillSpecs.count
 
       /// 一段畫面貼進畫布：轉正 → 等比縮放貼齊 → 置中 → 使用者的縮放位移
       func fitTransform(_ seg: Seg) -> CGAffineTransform? {
@@ -3534,6 +3623,10 @@ final class CompPlayer: NSObject, FlutterTexture {
         rawT.append(seg.range.start)
         rawT.append(seg.range.end)
       }
+      for sp in stillSpecs {
+        rawT.append(CMTime(seconds: sp.layer.start, preferredTimescale: 600))
+        rawT.append(CMTime(seconds: sp.layer.end, preferredTimescale: 600))
+      }
       // 去重要帶容差，而且是在這裡去掉，不是排完之後跳過太短的區間——
       // 跳過會在時間軸上留一條沒有指令的縫，而指令必須首尾相接把整條
       // 蓋滿，缺一段系統就當這份合成有問題
@@ -3578,9 +3671,11 @@ final class CompPlayer: NSObject, FlutterTexture {
             $0.range.start.seconds <= mid + 0.0005
               && $0.range.end.seconds >= mid - 0.0005
           }.sorted { $0.layer < $1.layer }
-          // CI 合成器照陣列順序由下往上疊
-          var layers: [CILayerSpec] = []
-          for seg in here {
+          // CI 合成器照陣列順序由下往上疊。影片段跟圖片層
+          // 併在一起照 z（軌道編號）排——圖片墊在影片下層時
+          // 會先畫、被影片正確蓋住（就是它進合成的意義）
+          var entries: [(z: Int, order: Int, spec: CILayerSpec)] = []
+          for (oi, seg) in here.enumerated() {
             guard let t = fitTransform(seg) else { continue }
             // 裁切窗：預覽是「先裁再鏡像」，transform 已含鏡像，
             // 鏡像時窗的水平位置要翻過來（跟匯出同一套換算）
@@ -3591,8 +3686,9 @@ final class CompPlayer: NSObject, FlutterTexture {
               let l = seg.mirror ? 1 - ca[0] - ca[2] : ca[0]
               cropRect = CGRect(x: l, y: ca[1], width: ca[2], height: ca[3])
             }
-            layers.append(
-              CILayerSpec(
+            entries.append((
+              z: seg.layer, order: oi,
+              spec: CILayerSpec(
                 trackID: seg.track.trackID, still: nil,
                 transform: t, srcHeight: seg.size.height,
                 start: seg.range.start.seconds,
@@ -3600,8 +3696,17 @@ final class CompPlayer: NSObject, FlutterTexture {
                 fadeIn: seg.fadeIn, fadeOut: seg.fadeOut,
                 colorMatrix: nil,
                 crop: cropRect, rotation: seg.rotation,
-                opacity: seg.opacity, z: seg.layer))
+                opacity: seg.opacity, z: seg.layer)
+            ))
           }
+          for sp in stillSpecs
+          where sp.layer.start <= mid + 0.0005
+            && sp.layer.end >= mid - 0.0005
+          {
+            entries.append((z: sp.z, order: 1000 + sp.order, spec: sp.layer))
+          }
+          entries.sort { $0.z != $1.z ? $0.z < $1.z : $0.order < $1.order }
+          let layers = entries.map { $0.spec }
           // 片尾（最後一個可見片段之後，例如音樂比畫面長）不留黑：
           // 無條件重播最後一格，畫面停在最後一幀直到播完
           let tail = a.seconds >= lastShow - 0.001

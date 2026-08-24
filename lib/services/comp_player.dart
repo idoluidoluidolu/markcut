@@ -78,24 +78,13 @@ class CompPlayer {
     // 馬賽克不再是阻擋條件：改成烘進合成本身——原生端掛上跟匯出
     // 同一顆 CI 合成器，逐格在 GPU 上打碼。Flutter 的 BackdropFilter
     // 版馬賽克在合成模式下會關掉（不然是打兩次碼）
-    // 圖片素材：只有「壓在所有影片之上」的放行——預覽時它們由
-    // Flutter 圖層畫在合成畫面上面（overlaysAt 那個迴圈本來就會畫，
-    // 跟非合成模式同一套）。墊在影片下層的仍然擋：系統的播放器圖層
-    // 不透明，會被整片蓋黑。
-    // 以前是一有圖片就整個放棄合成（實測診斷刷滿「有圖片素材」），
-    // 加一張 GIF 就退回一片段一顆播放器——片段交界的開頭卡頓、
-    // 播放變鈍全是這樣來的。
-    // 小已知限制：馬賽克軌在圖片之上時，合成裡的馬賽克只糊得到
-    // 影片、糊不到圖片（圖片不在合成裡）——極罕見的疊法，先接受
-    var topVideoTrack = -1;
-    for (final c in vids) {
-      if (c.track > topVideoTrack) topVideoTrack = c.track;
-    }
-    for (final c in tl.clips) {
-      if (tl.sourceOf(c).kind == ClipKind.image && c.track <= topVideoTrack) {
-        return '有圖片素材壓在影片下層';
-      }
-    }
+    // 圖片素材不再是阻擋條件：
+    // - 壓在所有影片之上的：由 Flutter 圖層畫在合成畫面上面
+    //  （跟非合成模式同一套），可以即時拖曳
+    // - 墊在影片下層的：烘進合成本身（still/GIF 層，跟匯出同一顆
+    //   CI 合成器、同一套定位數學），見 [bakedImageIds]。
+    //   以前這種疊法整個放棄合成、退回一片段一顆播放器——
+    //   「加一張 GIF 之後開頭又開始卡」就是這樣來的
     // 影片全部播完之後時間軸還有別的東西（圖片、文字拖得比影片長）：
     // 合成的總長只到影片結尾，播放時鐘走到那裡就卡住原地跳針，
     // 位置甚至會跑到比總長還大。
@@ -113,6 +102,21 @@ class CompPlayer {
     }
     if (lastEnd - vidEnd > 0.05) return '影片結束後還有其他素材';
     return null;
+  }
+
+  /// 要烘進合成的圖片素材（片段 id）：墊在「最高的影片軌」之下的
+  /// 那些。壓在所有影片之上的不烘——Flutter 畫在上面，拖曳即時。
+  /// build 的 payload 跟編輯器「合成新鮮時別重畫」都用這一個，
+  /// 兩邊的判定不可能走鐘
+  static Set<int> bakedImageIds(TimelineModel tl) {
+    var top = -1;
+    for (final c in tl.clips) {
+      if (tl.sourceOf(c).isVideo && c.track > top) top = c.track;
+    }
+    return {
+      for (final c in tl.clips)
+        if (tl.sourceOf(c).kind == ClipKind.image && c.track <= top) c.id,
+    };
   }
 
   /// 用時間軸組一份合成。組不起來（平台不支援、素材有問題）回 null
@@ -226,11 +230,38 @@ class CompPlayer {
       });
     }
     mosaics.sort((a, b) => (a['track'] as int).compareTo(b['track'] as int));
+    // 墊在影片下層的圖片/GIF：烘進合成（跟原生匯出同一套欄位，
+    // Swift 端組 CILayerSpec/CIGifSpec）。時間是時間軸秒數
+    final baked = bakedImageIds(tl);
+    final stills = <Map<String, dynamic>>[];
+    for (final c in tl.clips) {
+      if (!baked.contains(c.id)) continue;
+      if (c.offset >= compEnd) continue;
+      final src = tl.sourceOf(c);
+      stills.add({
+        'path': src.path,
+        if (src.isGif) 'gif': true,
+        'start': c.offset,
+        'end': c.end > compEnd ? compEnd : c.end,
+        'track': c.track,
+        'px': c.px,
+        'py': c.py,
+        'scale': c.scale,
+        'mirror': c.mirror,
+        'fadeIn': c.fadeIn,
+        'fadeOut': c.fadeOut,
+        'color': c.color.hasColor ? c.color.matrix : null,
+        if (c.cropped) 'crop': [c.cropL, c.cropT, c.cropW, c.cropH],
+        'rotation': c.rotation,
+        'opacity': c.opacity,
+      });
+    }
     try {
       final m = await _ch.invokeMapMethod<String, dynamic>('build', {
         'clips': clips,
         'texture': texture,
         'mosaics': mosaics,
+        'stills': stills,
       });
       if (m == null) return null;
       // 原生端組不起來時會回原因，不要讓它只變成一句「組不起來」

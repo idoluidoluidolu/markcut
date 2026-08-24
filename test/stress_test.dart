@@ -187,8 +187,13 @@ void main() {
               if (r.nextBool()) tl.compactTracks();
             case 6: // 變速
               if (tl.clips.isEmpty) break;
-              tl.clips[r.nextInt(tl.clips.length)].speed =
-                  [0.1, 0.25, 1.0, 4.0, 16.0][r.nextInt(5)];
+              tl.clips[r.nextInt(tl.clips.length)].speed = [
+                0.1,
+                0.25,
+                1.0,
+                4.0,
+                16.0,
+              ][r.nextInt(5)];
             case 7: // 快照 → 亂改 → 還原，必須完全回到原狀
               final snap = snapshot(tl);
               if (tl.clips.isNotEmpty) {
@@ -196,14 +201,13 @@ void main() {
               }
               tl.sources.add(randomSource(r));
               restore(tl, snap);
-              expect(
-                snapshot(tl),
-                snap,
-                reason: 'seed=$seed 復原後狀態跟快照不一致',
-              );
+              expect(snapshot(tl), snap, reason: 'seed=$seed 復原後狀態跟快照不一致');
             case 8: // 整段位移
-              tl.shiftAfter(r.nextInt(5), r.nextDouble() * 30,
-                  (r.nextDouble() - 0.5) * 20);
+              tl.shiftAfter(
+                r.nextInt(5),
+                r.nextDouble() * 30,
+                (r.nextDouble() - 0.5) * 20,
+              );
           }
           checkInvariants(tl, 'seed=$seed step=$step op=$op');
         }
@@ -279,7 +283,9 @@ void main() {
           ..balR = r.nextDouble() * 2 - 1
           ..balG = r.nextDouble() * 2 - 1
           ..balB = r.nextDouble() * 2 - 1
-          ..saturation = r.nextDouble() * 2 // 面板上限 2.0
+          ..saturation =
+              r.nextDouble() *
+              2 // 面板上限 2.0
           ..brightness = r.nextDouble() * 2 - 1
           ..contrast = r.nextDouble() * 3
           ..exposure = r.nextDouble() * 2 - 1;
@@ -346,8 +352,11 @@ void main() {
           expect(s.marqueeCycle > 0, isTrue);
           for (final t in [0.0, 1.0, 37.5, 1e6]) {
             final a = s.animAt(t);
-            expect(a.dx.isFinite && a.dy.isFinite && a.alpha.isFinite, isTrue,
-                reason: 'animAt($t) 在 animSpeed=$sp 時爆掉');
+            expect(
+              a.dx.isFinite && a.dy.isFinite && a.alpha.isFinite,
+              isTrue,
+              reason: 'animAt($t) 在 animSpeed=$sp 時爆掉',
+            );
           }
         }
       }
@@ -357,8 +366,14 @@ void main() {
       final r = math.Random(5);
       for (var i = 0; i < 5000; i++) {
         final s = WatermarkSettings();
-        s.text.text = ['', '@我的頻道', 'a' * 200, '換\n行', '引"號', '逗,號'][
-            r.nextInt(6)];
+        s.text.text = [
+          '',
+          '@我的頻道',
+          'a' * 200,
+          '換\n行',
+          '引"號',
+          '逗,號',
+        ][r.nextInt(6)];
         s.text.x = r.nextDouble();
         s.text.y = r.nextDouble();
         s.text.sizeFrac = 0.015 + r.nextDouble() * 2;
@@ -371,14 +386,20 @@ void main() {
         s.animSpeed = 0.2 + r.nextDouble() * 2.8;
         s.animRange = 0.2 + r.nextDouble() * 2.8;
         final a = jsonEncode(s.toJson());
-        final b = jsonEncode(WatermarkSettings.fromJson(jsonDecode(a)).toJson());
+        final b = jsonEncode(
+          WatermarkSettings.fromJson(jsonDecode(a)).toJson(),
+        );
         expect(b, a, reason: '第 $i 組浮水印設定來回後不一樣');
         // copy() 必須是深拷貝，改複本不能動到本尊
         final cp = s.copy();
         cp.text.x = 0.123456;
         cp.logo.sizeFrac = 1.987654;
         expect(s.text.x == 0.123456, isFalse, reason: 'copy() 不是深拷貝（文字）');
-        expect(s.logo.sizeFrac == 1.987654, isFalse, reason: 'copy() 不是深拷貝（Logo）');
+        expect(
+          s.logo.sizeFrac == 1.987654,
+          isFalse,
+          reason: 'copy() 不是深拷貝（Logo）',
+        );
       }
     });
 
@@ -396,8 +417,11 @@ void main() {
             s.activeLogo = r.nextInt(12) - 4;
         }
         expect(s.logos.isNotEmpty, isTrue, reason: '清單被清空了');
-        expect(s.activeLogo >= 0 && s.activeLogo < s.logos.length, isTrue,
-            reason: '操作中的索引跑出範圍：${s.activeLogo}/${s.logos.length}');
+        expect(
+          s.activeLogo >= 0 && s.activeLogo < s.logos.length,
+          isTrue,
+          reason: '操作中的索引跑出範圍：${s.activeLogo}/${s.logos.length}',
+        );
         expect(s.logo, same(s.logos[s.activeLogo]));
       }
     });
@@ -445,19 +469,33 @@ void main() {
     // 合成播放器三邊都得同一套，不然「預覽長這樣、匯出不一樣」
     TimelineModel twoLayers() {
       final tl = TimelineModel();
-      tl.sources.add(MediaSource(
-          path: '/a.mp4', name: 'a', kind: ClipKind.video, duration: 100));
-      tl.sources.add(MediaSource(
-          path: '/b.png', name: 'b', kind: ClipKind.image, duration: 100));
+      tl.sources.add(
+        MediaSource(
+          path: '/a.mp4',
+          name: 'a',
+          kind: ClipKind.video,
+          duration: 100,
+        ),
+      );
+      tl.sources.add(
+        MediaSource(
+          path: '/b.png',
+          name: 'b',
+          kind: ClipKind.image,
+          duration: 100,
+        ),
+      );
       for (final (src, track) in [(0, 0), (0, 1), (1, 0), (1, 2)]) {
-        tl.clips.add(TimelineClip(
-          id: tl.nextId(),
-          sourceIndex: src,
-          trimStart: 0,
-          trimEnd: 10,
-          offset: 0,
-          track: track,
-        ));
+        tl.clips.add(
+          TimelineClip(
+            id: tl.nextId(),
+            sourceIndex: src,
+            trimStart: 0,
+            trimEnd: 10,
+            offset: 0,
+            track: track,
+          ),
+        );
       }
       return tl;
     }
@@ -475,16 +513,24 @@ void main() {
   group('合成播放器的適用範圍', () {
     TimelineModel base() {
       final tl = TimelineModel();
-      tl.sources.add(MediaSource(
-          path: '/a.mp4', name: 'a', kind: ClipKind.video, duration: 100));
-      tl.clips.add(TimelineClip(
-        id: tl.nextId(),
-        sourceIndex: 0,
-        trimStart: 0,
-        trimEnd: 5,
-        offset: 0,
-        track: 0,
-      ));
+      tl.sources.add(
+        MediaSource(
+          path: '/a.mp4',
+          name: 'a',
+          kind: ClipKind.video,
+          duration: 100,
+        ),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 0,
+          trimStart: 0,
+          trimEnd: 5,
+          offset: 0,
+          track: 0,
+        ),
+      );
       return tl;
     }
 
@@ -494,113 +540,176 @@ void main() {
 
     test('馬賽克拖得比影片長：照樣用合成（尾巴會被夾掉，不該整組放棄）', () {
       final tl = base();
-      tl.sources.add(MediaSource(
-          path: '', name: '', kind: ClipKind.mosaic, duration: 3600));
+      tl.sources.add(
+        MediaSource(path: '', name: '', kind: ClipKind.mosaic, duration: 3600),
+      );
       // 影片 5 秒（base 的預設），馬賽克拖到 8 秒——預設 3 秒的馬賽克
       // 在短片上幾乎永遠是這個形狀，之前因此永遠用不到合成播放器
-      tl.clips.add(TimelineClip(
-        id: tl.nextId(),
-        sourceIndex: 1,
-        trimStart: 0,
-        trimEnd: 8,
-        offset: 0,
-        track: 1,
-      ));
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 1,
+          trimStart: 0,
+          trimEnd: 8,
+          offset: 0,
+          track: 1,
+        ),
+      );
       expect(CompPlayer.whyNot(tl), isNull);
     });
 
     test('文字拖得比影片長：還是要退回（播放時鐘到影片結尾就停了）', () {
       final tl = base();
-      tl.sources.add(MediaSource(
-          path: '', name: 'T', kind: ClipKind.text, duration: 3600));
-      tl.clips.add(TimelineClip(
-        id: tl.nextId(),
-        sourceIndex: 1,
-        trimStart: 0,
-        trimEnd: 9,
-        offset: 0,
-        track: 1,
-      ));
+      tl.sources.add(
+        MediaSource(path: '', name: 'T', kind: ClipKind.text, duration: 3600),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 1,
+          trimStart: 0,
+          trimEnd: 9,
+          offset: 0,
+          track: 1,
+        ),
+      );
       expect(CompPlayer.whyNot(tl), isNotNull);
     });
 
     test('有馬賽克不再退回：改烘進合成（CI 合成器）', () {
       final tl = base();
-      tl.sources.add(MediaSource(
-          path: '', name: '', kind: ClipKind.mosaic, duration: 3600));
-      tl.clips.add(TimelineClip(
-        id: tl.nextId(),
-        sourceIndex: 1,
-        trimStart: 0,
-        trimEnd: 3,
-        offset: 0,
-        track: 1,
-      ));
+      tl.sources.add(
+        MediaSource(path: '', name: '', kind: ClipKind.mosaic, duration: 3600),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 1,
+          trimStart: 0,
+          trimEnd: 3,
+          offset: 0,
+          track: 1,
+        ),
+      );
       expect(CompPlayer.whyNot(tl), isNull);
     });
 
-    test('圖片素材墊在影片下層（同軌或更低）才退回：會被播放器圖層蓋黑', () {
+    test('圖片素材墊在影片下層：不再退回（烘進合成），並列進 bakedImageIds', () {
       final tl = base();
-      tl.sources.add(MediaSource(
-          path: '/p.png', name: 'p', kind: ClipKind.image, duration: 3600));
-      tl.clips.add(TimelineClip(
-        id: tl.nextId(),
-        sourceIndex: 1,
-        trimStart: 0,
-        trimEnd: 3,
-        offset: 0,
-        track: 0,
-      ));
-      expect(CompPlayer.whyNot(tl), '有圖片素材壓在影片下層');
+      tl.sources.add(
+        MediaSource(
+          path: '/p.png',
+          name: 'p',
+          kind: ClipKind.image,
+          duration: 3600,
+        ),
+      );
+      final id = tl.nextId();
+      tl.clips.add(
+        TimelineClip(
+          id: id,
+          sourceIndex: 1,
+          trimStart: 0,
+          trimEnd: 3,
+          offset: 0,
+          track: 0,
+        ),
+      );
+      expect(CompPlayer.whyNot(tl), isNull);
+      expect(CompPlayer.bakedImageIds(tl), {id});
+    });
+
+    test('圖片壓在所有影片之上：不烘進合成（Flutter 畫、可即時拖）', () {
+      final tl = base();
+      tl.sources.add(
+        MediaSource(
+          path: '/p.png',
+          name: 'p',
+          kind: ClipKind.image,
+          duration: 3600,
+        ),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 1,
+          trimStart: 0,
+          trimEnd: 3,
+          offset: 0,
+          track: 5,
+        ),
+      );
+      expect(CompPlayer.bakedImageIds(tl), isEmpty);
     });
 
     test('圖片素材壓在所有影片之上：放行（Flutter 圖層畫在合成上面）', () {
       final tl = base();
-      tl.sources.add(MediaSource(
-          path: '/p.png', name: 'p', kind: ClipKind.image, duration: 3600));
-      tl.clips.add(TimelineClip(
-        id: tl.nextId(),
-        sourceIndex: 1,
-        trimStart: 0,
-        trimEnd: 3, // 不超過影片結尾（超過另有「影片結束後還有其他素材」擋）
-        offset: 0,
-        track: 1,
-      ));
+      tl.sources.add(
+        MediaSource(
+          path: '/p.png',
+          name: 'p',
+          kind: ClipKind.image,
+          duration: 3600,
+        ),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 1,
+          trimStart: 0,
+          trimEnd: 3, // 不超過影片結尾（超過另有「影片結束後還有其他素材」擋）
+          offset: 0,
+          track: 1,
+        ),
+      );
       expect(CompPlayer.whyNot(tl), isNull);
     });
 
     test('影片播完後面還有文字：合成只到影片結尾，時鐘會卡住', () {
       final tl = base(); // 影片 0~5 秒
-      tl.sources.add(MediaSource(
+      tl.sources.add(
+        MediaSource(
           path: '',
           name: '哈囉',
           kind: ClipKind.text,
           duration: 3600,
-          textStyle: TextMark(text: '哈囉')));
-      tl.clips.add(TimelineClip(
-        id: tl.nextId(),
-        sourceIndex: 1,
-        trimStart: 0,
-        trimEnd: 9, // 文字拖到 9 秒，比影片長
-        offset: 0,
-        track: 1,
-      ));
+          textStyle: TextMark(text: '哈囉'),
+        ),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 1,
+          trimStart: 0,
+          trimEnd: 9, // 文字拖到 9 秒，比影片長
+          offset: 0,
+          track: 1,
+        ),
+      );
       expect(CompPlayer.whyNot(tl), '影片結束後還有其他素材');
     });
 
     test('撞號的片段 id 載入時要補新號（兩軌同時亮燈的根因）', () {
       final tl = TimelineModel();
-      tl.sources.add(MediaSource(
-          path: '/a.mp4', name: 'a', kind: ClipKind.video, duration: 100));
+      tl.sources.add(
+        MediaSource(
+          path: '/a.mp4',
+          name: 'a',
+          kind: ClipKind.video,
+          duration: 100,
+        ),
+      );
       for (final t in [0, 1, 2]) {
-        tl.clips.add(TimelineClip(
-          id: 7, // 三個全撞同一號
-          sourceIndex: 0,
-          trimStart: 0,
-          trimEnd: 5,
-          offset: 0,
-          track: t,
-        ));
+        tl.clips.add(
+          TimelineClip(
+            id: 7, // 三個全撞同一號
+            sourceIndex: 0,
+            trimStart: 0,
+            trimEnd: 5,
+            offset: 0,
+            track: t,
+          ),
+        );
       }
       final fixed = tl.fixDuplicateIds();
       expect(fixed, 2, reason: '第一個保留原號，後兩個補新號');
@@ -612,20 +721,25 @@ void main() {
 
     test('文字跟影片一樣長（或更短）不影響合成', () {
       final tl = base();
-      tl.sources.add(MediaSource(
+      tl.sources.add(
+        MediaSource(
           path: '',
           name: '哈囉',
           kind: ClipKind.text,
           duration: 3600,
-          textStyle: TextMark(text: '哈囉')));
-      tl.clips.add(TimelineClip(
-        id: tl.nextId(),
-        sourceIndex: 1,
-        trimStart: 0,
-        trimEnd: 5,
-        offset: 0,
-        track: 1,
-      ));
+          textStyle: TextMark(text: '哈囉'),
+        ),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 1,
+          trimStart: 0,
+          trimEnd: 5,
+          offset: 0,
+          track: 1,
+        ),
+      );
       expect(CompPlayer.whyNot(tl), isNull);
     });
   });
@@ -633,17 +747,25 @@ void main() {
   group('覆寫（同軌不重疊）', () {
     TimelineModel base() {
       final tl = TimelineModel();
-      tl.sources.add(MediaSource(
-          path: '/a.mp4', name: 'a', kind: ClipKind.video, duration: 100));
+      tl.sources.add(
+        MediaSource(
+          path: '/a.mp4',
+          name: 'a',
+          kind: ClipKind.video,
+          duration: 100,
+        ),
+      );
       // 一段 0~10 秒躺在第 0 軌
-      tl.clips.add(TimelineClip(
-        id: tl.nextId(),
-        sourceIndex: 0,
-        trimStart: 20,
-        trimEnd: 30,
-        offset: 0,
-        track: 0,
-      ));
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 0,
+          trimStart: 20,
+          trimEnd: 30,
+          offset: 0,
+          track: 0,
+        ),
+      );
       return tl;
     }
 
@@ -702,14 +824,16 @@ void main() {
 
     test('別的軌、放下的自己都不受影響', () {
       final tl = base();
-      tl.clips.add(TimelineClip(
-        id: tl.nextId(),
-        sourceIndex: 0,
-        trimStart: 0,
-        trimEnd: 5,
-        offset: 2,
-        track: 1,
-      ));
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 0,
+          trimStart: 0,
+          trimEnd: 5,
+          offset: 2,
+          track: 1,
+        ),
+      );
       tl.carveRange(0, 10, 0, exceptId: tl.clips.first.id);
       expect(tl.clips.length, 2);
     });
@@ -718,17 +842,25 @@ void main() {
   group('整理（closeGaps）', () {
     test('只收中間的空隙，第一段留在原地', () {
       final tl = TimelineModel();
-      tl.sources.add(MediaSource(
-          path: '/a.mp4', name: 'a', kind: ClipKind.video, duration: 100));
+      tl.sources.add(
+        MediaSource(
+          path: '/a.mp4',
+          name: 'a',
+          kind: ClipKind.video,
+          duration: 100,
+        ),
+      );
       for (final off in [2.0, 8.0, 15.0]) {
-        tl.clips.add(TimelineClip(
-          id: tl.nextId(),
-          sourceIndex: 0,
-          trimStart: 0,
-          trimEnd: 3,
-          offset: off,
-          track: 0,
-        ));
+        tl.clips.add(
+          TimelineClip(
+            id: tl.nextId(),
+            sourceIndex: 0,
+            trimStart: 0,
+            trimEnd: 3,
+            offset: off,
+            track: 0,
+          ),
+        );
       }
       tl.closeGaps(track: 0);
       final offs = (tl.clips.map((c) => c.offset).toList()..sort());
@@ -745,16 +877,22 @@ void main() {
       final tl = TimelineModel();
       tl.sources.add(
         MediaSource(
-            path: '/a.mp4', name: 'a', kind: ClipKind.video, duration: 100),
+          path: '/a.mp4',
+          name: 'a',
+          kind: ClipKind.video,
+          duration: 100,
+        ),
       );
-      tl.clips.add(TimelineClip(
-        id: tl.nextId(),
-        sourceIndex: 0,
-        trimStart: 0,
-        trimEnd: 5,
-        offset: 12,
-        track: 0,
-      ));
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 0,
+          trimStart: 0,
+          trimEnd: 5,
+          offset: 12,
+          track: 0,
+        ),
+      );
       return tl;
     }
 
@@ -769,14 +907,16 @@ void main() {
 
     test('拖到片尾附近會跟現有素材的結尾對齊', () {
       final tl = oneClip();
-      tl.clips.add(TimelineClip(
-        id: tl.nextId(),
-        sourceIndex: 0,
-        trimStart: 0,
-        trimEnd: 8,
-        offset: 30,
-        track: 0,
-      ));
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 0,
+          trimStart: 0,
+          trimEnd: 8,
+          offset: 30,
+          track: 0,
+        ),
+      );
       final moving = tl.clips.first; // 長 5 秒
       // 別段的結尾在 38 秒：這一段的結尾要對過去，開頭就是 33
       expect(tl.snapOffset(moving, 33.1, 60), closeTo(33, 0.0001));
@@ -792,18 +932,24 @@ void main() {
       final r = math.Random(13);
       final tl = TimelineModel();
       tl.sources.add(
-        MediaSource(path: '/a.mp4', name: 'a', kind: ClipKind.video,
-            duration: 100),
+        MediaSource(
+          path: '/a.mp4',
+          name: 'a',
+          kind: ClipKind.video,
+          duration: 100,
+        ),
       );
       for (var i = 0; i < 6; i++) {
-        tl.clips.add(TimelineClip(
-          id: tl.nextId(),
-          sourceIndex: 0,
-          trimStart: 0,
-          trimEnd: 5,
-          offset: i * 7.0,
-          track: 0,
-        ));
+        tl.clips.add(
+          TimelineClip(
+            id: tl.nextId(),
+            sourceIndex: 0,
+            trimStart: 0,
+            trimEnd: 5,
+            offset: i * 7.0,
+            track: 0,
+          ),
+        );
       }
       final moving = tl.clips.first;
       for (var i = 0; i < 20000; i++) {
