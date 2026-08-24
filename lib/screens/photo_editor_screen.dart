@@ -1812,70 +1812,61 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       child: Stack(
         children: [
           Positioned.fill(
-            child: InteractiveViewer(
-              minScale: 1,
-              maxScale: 6,
-              // 筆刷塗抹中單指要留給畫筆；平移縮放都用雙指
-              panEnabled: !_brushMode,
-              child: Center(
-                child: AspectRatio(
-                  aspectRatio: _aspect!,
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      IgnorePointer(
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            if (_grade.hasColor)
-                              ColorFiltered(
-                                colorFilter: ColorFilter.matrix(_grade.matrix),
-                                child: Image.memory(
-                                  _photoBytes!,
-                                  fit: BoxFit.contain,
-                                ),
-                              )
-                            else
-                              Image.memory(_photoBytes!, fit: BoxFit.contain),
-                            if (_mosaics.isNotEmpty)
-                              Positioned.fill(
-                                child: LayoutBuilder(
-                                  builder: (context, box) => _buildMosaics(
-                                    box.maxWidth,
-                                    box.maxHeight,
-                                  ),
-                                ),
+            // 全螢幕一律不縮放也不平移（使用者指定）：就是把成品
+            // 鋪滿螢幕看，手勢全部留給筆刷
+            child: Center(
+              child: AspectRatio(
+                aspectRatio: _aspect!,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    IgnorePointer(
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          if (_grade.hasColor)
+                            ColorFiltered(
+                              colorFilter: ColorFilter.matrix(_grade.matrix),
+                              child: Image.memory(
+                                _photoBytes!,
+                                fit: BoxFit.contain,
                               ),
-                            WatermarkLayer(
-                              settings: _settings,
-                              onChanged: () {},
+                            )
+                          else
+                            Image.memory(_photoBytes!, fit: BoxFit.contain),
+                          if (_mosaics.isNotEmpty)
+                            Positioned.fill(
+                              child: LayoutBuilder(
+                                builder: (context, box) =>
+                                    _buildMosaics(box.maxWidth, box.maxHeight),
+                              ),
                             ),
-                            for (final e in _extraWms)
-                              WatermarkLayer(settings: e, onChanged: () {}),
-                          ],
+                          WatermarkLayer(settings: _settings, onChanged: () {}),
+                          for (final e in _extraWms)
+                            WatermarkLayer(settings: e, onChanged: () {}),
+                        ],
+                      ),
+                    ),
+                    // 筆刷模式：放大後照樣塗抹（座標在 IV 的子座標系
+                    // 裡，命中測試自動反算縮放平移，不用自己換算）
+                    if (_brushMode)
+                      Positioned.fill(
+                        child: LayoutBuilder(
+                          builder: (context, box) {
+                            final w = box.maxWidth;
+                            final h = box.maxHeight;
+                            return GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onPanStart: (d) =>
+                                  _brushStart(d.localPosition, w, h),
+                              onPanUpdate: (d) =>
+                                  _brushMove(d.localPosition, w, h),
+                              child: const SizedBox.expand(),
+                            );
+                          },
                         ),
                       ),
-                      // 筆刷模式：放大後照樣塗抹（座標在 IV 的子座標系
-                      // 裡，命中測試自動反算縮放平移，不用自己換算）
-                      if (_brushMode)
-                        Positioned.fill(
-                          child: LayoutBuilder(
-                            builder: (context, box) {
-                              final w = box.maxWidth;
-                              final h = box.maxHeight;
-                              return GestureDetector(
-                                behavior: HitTestBehavior.opaque,
-                                onPanStart: (d) =>
-                                    _brushStart(d.localPosition, w, h),
-                                onPanUpdate: (d) =>
-                                    _brushMove(d.localPosition, w, h),
-                                child: const SizedBox.expand(),
-                              );
-                            },
-                          ),
-                        ),
-                    ],
-                  ),
+                  ],
                 ),
               ),
             ),
@@ -1898,7 +1889,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                       borderRadius: BorderRadius.circular(14),
                     ),
                     child: const Text(
-                      '單指塗抹｜雙指縮放',
+                      '在照片上塗抹要打碼的地方',
                       style: TextStyle(fontSize: 11.5, color: Colors.white),
                     ),
                   ),
