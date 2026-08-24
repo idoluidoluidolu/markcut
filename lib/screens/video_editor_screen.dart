@@ -1094,7 +1094,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   String _compSig({bool withPaths = true}) => [
     for (final c in _tl.clips)
       if (_tl.sourceOf(c).isVideo)
-        '${withPaths ? _tl.sourceOf(c).previewPath : c.sourceIndex}|'
+        '${withPaths ? '${_tl.sourceOf(c).previewPath}'
+                      '~${_tl.sourceOf(c).workHdrPath ?? ''}' : c.sourceIndex}|'
             '${c.trimStart}|${c.trimEnd}|'
             '${c.offset}|${c.volume}|${c.speed}|${c.fadeIn}|${c.fadeOut}|'
             // 調色也要記：有調色就得退回舊路徑（系統影片圖層疊不上
@@ -1407,6 +1408,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         } else if (s.workPath != null &&
             !await WorkFiles.stillValid(s.path, s.workPath!)) {
           s.workPath = null;
+        }
+        // HDR 代理同樣驗一下檔案還在不在
+        if (s.workHdrPath != null && !await fileExists(s.workHdrPath!)) {
+          s.workHdrPath = null;
         }
         _thumbStrip(s.previewPath, s.duration).then((t) {
           if (mounted && t.isNotEmpty) setState(() => _thumbs[i] = t);
@@ -2027,6 +2032,28 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 每轉好一支就重烘一次合成，畫面重載了三次
   bool get _allWorkFilesReady =>
       _tl.sources.every((s) => !s.isVideo || s.workPath != null);
+
+  /// 背景補 HDR 代理（一支接一支）。SDR 素材 ensureHdr 自己會回
+  /// null，這裡不用先分辨
+  final Set<int> _hdrPrepping = {};
+
+  Future<void> _prepHdrWorkFiles() async {
+    for (var i = 0; i < _tl.sources.length; i++) {
+      if (!(_exportHdr && _hdrAvail == true) || !mounted) return;
+      final s = _tl.sources[i];
+      if (s.kind != ClipKind.video || s.workHdrPath != null) continue;
+      if (_hdrPrepping.contains(i)) continue;
+      _hdrPrepping.add(i);
+      final made = await WorkFiles.ensureHdr(s.path);
+      _hdrPrepping.remove(i);
+      if (!mounted) return;
+      if (made == null || i >= _tl.sources.length) continue;
+      _tl.sources[i].workHdrPath = made;
+      _saveDraft();
+      // 暫停中直接換上；播放中等暫停後的重估
+      if (!_playing) _compRefreshIfChanged();
+    }
+  }
 
   Future<void> _prepWorkFile(int srcIndex) async {
     if (srcIndex < 0 || srcIndex >= _tl.sources.length) return;
@@ -5181,6 +5208,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 匯出選「保留 HDR」＝預覽也走 HDR（跟成品同一個顯示管線）
       hdrOut: _exportHdr && _hdrAvail == true,
     );
+    // HDR 模式：背景把 HDR 代理補齊（HLG 直通、密關鍵幀），
+    // 轉好換上就恢復跟 SDR 工作檔同級的順度
+    if (_exportHdr && _hdrAvail == true) {
+      unawaited(_prepHdrWorkFiles());
+    }
     _compDirty = false;
     if (!mounted) {
       await made?.dispose();

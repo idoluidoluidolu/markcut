@@ -109,6 +109,65 @@ class WorkFiles {
     return work;
   }
 
+  /// HDR 代理（HLG 直通、密關鍵幀）。HDR 預覽模式播它——
+  /// SDR 工作檔在那個模式下永遠比成品淡，原檔又是 4K 解起來重。
+  /// 索引 key 用「原檔路徑#hdr」，跟 SDR 工作檔各記各的
+  static Future<String?> lookupHdr(String src) async {
+    if (kIsWeb) return null;
+    final idx = await _load();
+    final e = idx['$src#hdr'];
+    if (e is! Map) return null;
+    final work = e['work'] as String?;
+    if (work == null || !File(work).existsSync()) return null;
+    final stamp = _stamp(src);
+    if (stamp != null && e['stamp'] != null && e['stamp'] != stamp) return null;
+    return work;
+  }
+
+  /// 確保這支 HDR 素材有 HDR 代理。SDR 素材回 null（不需要）；
+  /// 轉不出來也回 null，呼叫端照播原檔
+  static Future<String?> ensureHdr(
+    String src, {
+    void Function(double progress)? onProgress,
+  }) async {
+    if (kIsWeb) return null;
+    final have = await lookupHdr(src);
+    if (have != null) return have;
+    if (!await MediaPrep.available) return null;
+    final lite = await MediaPrep.probeLite(src);
+    if (lite == null || lite['error'] != null || lite['sdr709'] == true) {
+      return null; // SDR（或判不出來）：不做 HDR 代理
+    }
+    final dir = await _dir();
+    final name = 'wh${DateTime.now().microsecondsSinceEpoch}_${_seq++}.mp4';
+    final dest = '${dir.path}${Platform.pathSeparator}$name';
+    _inFlight.add(dest);
+    String? made;
+    try {
+      made = await MediaPrep.toWorkFile(
+        src,
+        dest,
+        hdr: true,
+        onProgress: onProgress,
+      );
+    } finally {
+      _inFlight.remove(dest);
+    }
+    if (made == null) return null;
+    final idx = await _load();
+    idx['$src#hdr'] = {
+      'work': made,
+      'stamp': _stamp(src),
+      'at': DateTime.now().millisecondsSinceEpoch,
+    };
+    await _save();
+    Diag.note(
+      'HDR 代理完成 ${(File(made).lengthSync() / 1048576).round()}MB（HLG 直通）',
+    );
+    unawaited(sweep());
+    return made;
+  }
+
   /// 草稿裡記的工作檔還能不能用。
   ///
   /// 草稿存的是路徑本人，載入時若直接沿用，等於繞過 [lookup] 的

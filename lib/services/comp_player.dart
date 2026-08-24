@@ -172,7 +172,11 @@ class CompPlayer {
       if (hdrOf.containsKey(i)) continue;
       final s = tl.sourceOf(c);
       // HDR 輸出模式：一律探測原檔（工作檔捷徑會把 HDR 判成 SDR，
-      // 那正是要繞開的東西）
+      // 那正是要繞開的東西）。有 HDR 代理＝一定是 HDR，免探
+      if (hdrOut && s.workHdrPath != null) {
+        hdrOf[i] = true;
+        continue;
+      }
       if (!hdrOut && s.workPath != null) {
         hdrOf[i] = false;
         continue;
@@ -183,9 +187,10 @@ class CompPlayer {
       for (final c in vids)
         {
           // 一律用工作檔（轉正過、SDR、H.264）；HDR 輸出模式的
-          // HDR 素材例外：播原檔，畫面才是 HDR（工作檔是 SDR）
+          // HDR 素材例外：播 HDR 代理（HLG 直通、1080、密關鍵幀，
+          // 順度跟 SDR 工作檔同級），還沒轉好先播原檔
           'path': hdrOut && (hdrOf[c.sourceIndex] ?? false)
-              ? tl.sourceOf(c).path
+              ? (tl.sourceOf(c).workHdrPath ?? tl.sourceOf(c).path)
               : tl.sourceOf(c).previewPath,
           // HDR 原檔要在原生端掛 CI 做 toneMap（見上）
           'hdr': hdrOf[c.sourceIndex] ?? false,

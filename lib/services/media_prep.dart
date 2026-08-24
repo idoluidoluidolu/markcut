@@ -153,6 +153,8 @@ class MediaPrep {
     String src,
     String dest, {
     int maxShortSide = 1080,
+    // HDR 直通代理（HLG 10-bit，不做色調映射）——HDR 預覽模式用
+    bool hdr = false,
     void Function(double progress)? onProgress,
   }) async {
     if (!await available) return null;
@@ -166,6 +168,7 @@ class MediaPrep {
         'dest': dest,
         'maxShortSide': maxShortSide,
         'job': job,
+        if (hdr) 'hdr': true,
       });
     } catch (_) {
       return null;

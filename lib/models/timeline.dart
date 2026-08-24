@@ -70,6 +70,10 @@ class MediaSource {
   /// 不是必要條件，所以進場當下就能播，轉好了再換過去
   String? workPath;
 
+  /// HDR 代理（HLG 直通、密關鍵幀）：HDR 預覽模式播它。
+  /// null＝還沒轉好（先播原檔）或素材本來就是 SDR
+  String? workHdrPath;
+
   /// 預覽／抽幀要用的路徑
   String get previewPath => workPath ?? path;
 
@@ -87,6 +91,7 @@ class MediaSource {
     this.w = 0,
     this.h = 0,
     this.workPath,
+    this.workHdrPath,
     this.textStyle,
     this.wmStyle,
     this.mosaicStyle,
@@ -137,6 +142,7 @@ class MediaSource {
     'h': h,
     'duration': duration,
     if (workPath != null) 'workPath': workPath,
+    if (workHdrPath != null) 'workHdr': workHdrPath,
     if (textStyle != null) 'textStyle': textStyle!.toJson(),
     if (wmStyle != null) 'wmStyle': wmStyle!.toJson(),
     if (mosaicStyle != null) 'mosaicStyle': mosaicStyle!.toJson(),
@@ -176,6 +182,7 @@ class MediaSource {
       h: (j['h'] ?? 0) as int,
       duration: (j['duration'] ?? 0).toDouble(),
       workPath: j['workPath'] as String?,
+      workHdrPath: j['workHdr'] as String?,
       textStyle: j['textStyle'] == null
           ? null
           : TextMark.fromJson(Map<String, dynamic>.from(j['textStyle'] as Map)),

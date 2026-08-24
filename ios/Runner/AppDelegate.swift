@@ -2425,6 +2425,17 @@ final class AtomicFlag {
         }
         let maxShortSide = args["maxShortSide"] as? Int ?? 1080
         let job = args["job"] as? Int ?? 0
+        // HDR 直通代理：HLG 10-bit、不映射、密關鍵幀。
+        // 失敗就回 nil（呼叫端照播原檔），不走兩段式退路——
+        // 退路轉出來是 SDR，對 HDR 預覽是錯的畫面
+        if args["hdr"] as? Bool ?? false {
+          self.transcodeWorkFile(
+            src: src, dest: dest, maxShortSide: maxShortSide,
+            channel: channel, label: "HDR 代理一趟轉好", job: job,
+            hdrPass: true
+          ) { err in result(err == nil ? dest : nil) }
+          return
+        }
         // 已經符合規格的素材直接用原檔，一格都不用重編。
         // 自己匯出過的影片、下載回來的 1080p H.264 都會命中
         if let why = self.alreadyGoodEnough(src, maxShortSide: maxShortSide) {
@@ -2557,6 +2568,7 @@ final class AtomicFlag {
   private func transcodeWorkFile(
     src: String, dest: String, maxShortSide: Int,
     channel: FlutterMethodChannel, label: String, job: Int = 0,
+    hdrPass: Bool = false,
     done: @escaping (String?) -> Void
   ) {
     try? FileManager.default.removeItem(atPath: dest)
@@ -2573,13 +2585,16 @@ final class AtomicFlag {
     let fps = vTrack.nominalFrameRate > 1 ? vTrack.nominalFrameRate : 30
     // HDR 來源：掛跟匯出/合成播放器同一顆 CI 合成器做色調映射。
     // 內建合成器的 HDR→SDR 是另一條曲線——「預覽（播工作檔）跟
-    // 成品（CI toneMap）顏色不一樣」的根因就是工作檔在這裡分家
-    let isHDR = CompPlayer.isHDRSource(src)
+    // 成品（CI toneMap）顏色不一樣」的根因就是工作檔在這裡分家。
+    // HDR 直通模式（hdrPass）不映射：10-bit 進、10-bit 出
+    let isHDR = hdrPass ? false : CompPlayer.isHDRSource(src)
     let pixels: [String: Any] = [
       kCVPixelBufferPixelFormatTypeKey as String: Int(
-        isHDR
-          ? kCVPixelFormatType_32BGRA
-          : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+        hdrPass
+          ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+          : (isHDR
+            ? kCVPixelFormatType_32BGRA
+            : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange))
     ]
 
     // 輸出尺寸縮的是短邊：直式拿到 1080x1920、橫式拿到 1920x1080，
@@ -2608,9 +2623,16 @@ final class AtomicFlag {
     vc.renderSize = size
     vc.frameDuration = CMTime(
       value: 1, timescale: CMTimeScale(max(1, min(60, fps.rounded()))))
-    vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
-    vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
-    vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
+    if hdrPass {
+      // HLG 直通：跟 HDR 匯出同一組標記
+      vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_2020
+      vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_2100_HLG
+      vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_2020
+    } else {
+      vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
+      vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
+      vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
+    }
     if isHDR {
       // 跟合成播放器的 fitTransform 同一套數學：轉正 → 等比縮放 →
       // 置中（滿版貼齊，這裡沒有使用者縮放位移）。座標翻轉由
@@ -2662,29 +2684,40 @@ final class AtomicFlag {
     }
     reader.add(vOut)
 
+    var vCompression: [String: Any] = [
+      // 每 5 格一個關鍵幀、不用 B 幀：拖曳的每一次 seek 最多只要
+      // 解 5 格。系統轉出來的檔關鍵幀間隔一兩秒，那是滑動跟不上
+      // 手指的根本原因
+      AVVideoMaxKeyFrameIntervalKey: 5,
+      AVVideoAllowFrameReorderingKey: false,
+      AVVideoAverageBitRateKey: Int(
+        size.width * size.height * CGFloat(min(fps, 60)) * 0.2),
+      AVVideoExpectedSourceFrameRateKey: Int(fps.rounded()),
+    ]
+    if hdrPass {
+      vCompression[AVVideoProfileLevelKey] =
+        kVTProfileLevel_HEVC_Main10_AutoLevel as String
+    }
     let vIn = AVAssetWriterInput(
       mediaType: .video,
       outputSettings: [
-        AVVideoCodecKey: AVVideoCodecType.h264,
+        AVVideoCodecKey: hdrPass ? AVVideoCodecType.hevc : .h264,
         AVVideoWidthKey: Int(size.width),
         AVVideoHeightKey: Int(size.height),
-        AVVideoCompressionPropertiesKey: [
-          // 每 5 格一個關鍵幀、不用 B 幀：拖曳的每一次 seek 最多只要
-          // 解 5 格。系統轉出來的檔關鍵幀間隔一兩秒，那是滑動跟不上
-          // 手指的根本原因
-          AVVideoMaxKeyFrameIntervalKey: 5,
-          AVVideoAllowFrameReorderingKey: false,
-          AVVideoAverageBitRateKey: Int(
-            size.width * size.height * CGFloat(min(fps, 60)) * 0.2),
-          AVVideoExpectedSourceFrameRateKey: Int(fps.rounded()),
-        ] as [String: Any],
-        // CI 合成器輸出的 BGRA 緩衝不帶色彩附註，編碼器會自己猜——
-        // 明確標成 709，播放端才不會再套一次別的曲線
-        AVVideoColorPropertiesKey: [
-          AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
-          AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
-          AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
-        ] as [String: Any],
+        AVVideoCompressionPropertiesKey: vCompression,
+        // 明確標色彩：CI 合成器輸出的緩衝不帶附註，編碼器會自己猜
+        AVVideoColorPropertiesKey: hdrPass
+          ? [
+            AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
+            AVVideoTransferFunctionKey:
+              AVVideoTransferFunction_ITU_R_2100_HLG,
+            AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020,
+          ] as [String: Any]
+          : [
+            AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+            AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
+            AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
+          ] as [String: Any],
       ])
     vIn.expectsMediaDataInRealTime = false
     guard writer.canAdd(vIn) else {
