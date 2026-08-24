@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../models/watermark_settings.dart';
+import '../services/text_mark_painter.dart';
 import '../theme.dart';
 
 /// 疊在預覽畫面上的浮水印圖層：單指拖曳調位置、雙指捏合調大小。
@@ -53,11 +54,6 @@ class WatermarkLayer extends StatefulWidget {
   /// 目前播放時間（秒）；動畫預覽用，靜態畫面給 null
   final double? time;
 
-  /// false＝只當「手勢與選取框」的透明骨架，不畫文字/Logo 本體——
-  /// 內容由外層的「單一來源烘焙 PNG」畫（跟匯出同一張圖）。
-  /// 幾何（點擊範圍、選取框、frameNotifier）照常計算與回報
-  final bool paintContent;
-
   /// 回傳 true 時暫停單指拖曳。
   /// 兩指捏合縮放時，其中一指滑過別的元素會把它拖走——
   /// 捏合期間要把拖曳整個鎖住
@@ -81,7 +77,6 @@ class WatermarkLayer extends StatefulWidget {
     this.time,
     this.panLocked,
     this.panAllowed,
-    this.paintContent = true,
   });
 
   @override
@@ -232,7 +227,6 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
           if (!logo.enabled || logoBytes == null) continue;
           // 滿版平鋪：整面重複，不能拖曳（位置無意義）
           if (logo.tiled) {
-            if (!widget.paintContent) continue; // 內容由烘焙 PNG 畫
             children.add(
               Positioned.fill(
                 child: IgnorePointer(child: _TiledLogo(logo: logo)),
@@ -313,19 +307,17 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                     angle: logo.rotation * math.pi / 180,
                     child: Container(
                       foregroundDecoration: _deco(WmPart.logo, logoIndex: li),
-                      child: !widget.paintContent
-                          ? SizedBox(width: logoW, height: logoH)
-                          : ClipRRect(
-                              // 圓角基準跟匯出一致：短邊
-                              borderRadius: BorderRadius.circular(
-                                logo.corner * math.min(logoW, logoH) / 2,
-                              ),
-                              child: Image.memory(
-                                logoBytes,
-                                width: logoW,
-                                gaplessPlayback: true,
-                              ),
-                            ),
+                      child: ClipRRect(
+                        // 圓角基準跟匯出一致：短邊
+                        borderRadius: BorderRadius.circular(
+                          logo.corner * math.min(logoW, logoH) / 2,
+                        ),
+                        child: Image.memory(
+                          logoBytes,
+                          width: logoW,
+                          gaplessPlayback: true,
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -339,10 +331,7 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
         for (var ti = 0; ti < settings.texts.length; ti++) {
           final t = settings.texts[ti];
           // 滿版平鋪（棋盤格）：整面重複，不能拖曳（位置無意義）
-          if (t.enabled &&
-              t.text.trim().isNotEmpty &&
-              t.tiled &&
-              widget.paintContent) {
+          if (t.enabled && t.text.trim().isNotEmpty && t.tiled) {
             children.add(
               Positioned.fill(
                 child: IgnorePointer(
@@ -359,22 +348,6 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
 
             final probe = _measureText(t, fontSize);
 
-            final style = TextStyle(
-              fontFamily: t.fontFamily,
-              fontSize: fontSize,
-              letterSpacing: fontSize * t.spacing,
-              color: t.color.withValues(alpha: t.opacity),
-            );
-            // 陰影＝手工蓋印（跟匯出渲染器同一套數學與常數；
-            // 理由見 _TiledTextPainter）
-            final shadowStyle = TextStyle(
-              fontFamily: t.fontFamily,
-              fontSize: fontSize,
-              letterSpacing: fontSize * t.spacing,
-              color: Colors.black.withValues(
-                alpha: (0.22 * t.opacity).clamp(0.0, 1.0),
-              ),
-            );
             // 開底色時外框會往外長一圈 padding，Positioned 的原點是
             // 「含底色的框」；不先扣掉的話文字會被推到右下，
             // 跟匯出（底色往外擴、文字不動）差一個 padding
@@ -400,14 +373,6 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
               boxH + inkH * 2,
             );
             void makeActive() => settings.activeText = ti;
-
-            Widget textWidget(TextStyle st) => Text(
-              t.text,
-              softWrap: false,
-              overflow: TextOverflow.visible,
-              textScaler: TextScaler.noScaling,
-              style: st,
-            );
 
             children.add(
               Positioned(
@@ -476,57 +441,13 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                                 ),
                               )
                             : null,
-                        // paintContent=false：內容由單一來源烘焙
-                        // PNG 畫，這裡只留同尺寸的透明佔位
-                        //（點擊/拖曳/選取框照常）
-                        child: !widget.paintContent
-                            ? SizedBox(width: probe.width, height: probe.height)
-                            : Stack(
-                                clipBehavior: Clip.none,
-                                children: [
-                                  if (t.shadow)
-                                    for (final o in [
-                                      Offset(fontSize * 0.03, fontSize * 0.03),
-                                      Offset(
-                                        fontSize * 0.03 + fontSize * 0.05,
-                                        fontSize * 0.03,
-                                      ),
-                                      Offset(
-                                        fontSize * 0.03 - fontSize * 0.05,
-                                        fontSize * 0.03,
-                                      ),
-                                      Offset(
-                                        fontSize * 0.03,
-                                        fontSize * 0.03 + fontSize * 0.05,
-                                      ),
-                                      Offset(
-                                        fontSize * 0.03,
-                                        fontSize * 0.03 - fontSize * 0.05,
-                                      ),
-                                    ])
-                                      Transform.translate(
-                                        offset: o,
-                                        child: textWidget(shadowStyle),
-                                      ),
-                                  if (t.outline)
-                                    textWidget(
-                                      style.copyWith(
-                                        color: null,
-                                        shadows: null,
-                                        foreground: Paint()
-                                          ..style = PaintingStyle.stroke
-                                          ..strokeWidth = math.max(
-                                            1,
-                                            fontSize * t.outlineWidth,
-                                          )
-                                          ..color = t.outlineColor.withValues(
-                                            alpha: t.opacity,
-                                          ),
-                                      ),
-                                    ),
-                                  textWidget(style),
-                                ],
-                              ),
+                        // 內容＝共用畫家 paintMarkGlyphs：跟匯出執行
+                        // 同一段程式碼，預覽即成品；同步繪製，
+                        // 滑桿/拖曳即時零延遲
+                        child: CustomPaint(
+                          size: Size(probe.width, probe.height),
+                          painter: MarkGlyphPainter(t, fontSize),
+                        ),
                       ),
                     ),
                   ),
@@ -760,75 +681,13 @@ class _TiledTextPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final fontSize = t.sizeFrac * canvasW;
-    final painter = TextPainter(
-      text: TextSpan(
-        text: t.text,
-        style: TextStyle(
-          fontFamily: t.fontFamily,
-          fontSize: fontSize,
-          letterSpacing: fontSize * t.spacing,
-          color: t.color.withValues(alpha: t.opacity),
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    // 陰影＝手工蓋印（跟匯出渲染器同一套數學）。不用 TextStyle.shadows：
-    // 預覽與匯出必須是「同一種畫法」，兩套實作永遠對不齊——
-    // 而且引擎濾鏡在離屏渲染會被丟掉（匯出端踩過）
-    TextPainter? shadowPainter;
-    if (t.shadow) {
-      shadowPainter = TextPainter(
-        text: TextSpan(
-          text: t.text,
-          style: TextStyle(
-            fontFamily: t.fontFamily,
-            fontSize: fontSize,
-            letterSpacing: fontSize * t.spacing,
-            color: Colors.black.withValues(
-              alpha: (0.22 * t.opacity).clamp(0.0, 1.0),
-            ),
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-    }
-    void stampShadow(double x, double y) {
-      final sp2 = shadowPainter;
-      if (sp2 == null) return;
-      final ox = fontSize * 0.03;
-      final oy = fontSize * 0.03;
-      final r = fontSize * 0.05;
-      sp2.paint(canvas, Offset(x + ox, y + oy));
-      sp2.paint(canvas, Offset(x + ox + r, y + oy));
-      sp2.paint(canvas, Offset(x + ox - r, y + oy));
-      sp2.paint(canvas, Offset(x + ox, y + oy + r));
-      sp2.paint(canvas, Offset(x + ox, y + oy - r));
-    }
-
-    // 描邊層（跟匯出同一套）
-    TextPainter? strokePainter;
-    if (t.outline) {
-      strokePainter = TextPainter(
-        text: TextSpan(
-          text: t.text,
-          style: TextStyle(
-            fontFamily: t.fontFamily,
-            fontSize: fontSize,
-            letterSpacing: fontSize * t.spacing,
-            foreground: Paint()
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = math.max(1, fontSize * t.outlineWidth)
-              ..color = t.outlineColor.withValues(alpha: t.opacity),
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-    }
-
+    // 字形交給共用畫家 paintMarkGlyphs（跟匯出同一段程式碼）；
+    // 這裡只管平鋪的步進、底色與旋轉
+    final m = measureMark(t, fontSize);
     final w = size.width;
     final h = size.height;
-    final stepX = painter.width + fontSize * 2.2;
-    final stepY = painter.height + fontSize * 2.6;
+    final stepX = m.width + fontSize * 2.2;
+    final stepY = m.height + fontSize * 2.6;
     final padH = fontSize * 0.35 * t.bgPad;
     final padV = fontSize * 0.18 * t.bgPad;
     canvas.save();
@@ -842,24 +701,21 @@ class _TiledTextPainter extends CustomPainter {
     for (var y = -h; y < h * 2; y += stepY, row++) {
       final shift = row.isOdd ? stepX / 2 : 0.0;
       for (var x = -w - shift; x < w * 2; x += stepX) {
-        // 每一顆都畫完整的底色→描邊→文字
         if (t.bg) {
           canvas.drawRRect(
             RRect.fromRectAndRadius(
               Rect.fromLTWH(
                 x - padH,
                 y - padV,
-                painter.width + padH * 2,
-                painter.height + padV * 2,
+                m.width + padH * 2,
+                m.height + padV * 2,
               ),
               Radius.circular(fontSize * t.bgCorner),
             ),
             Paint()..color = t.bgColor.withValues(alpha: t.bgOpacity),
           );
         }
-        stampShadow(x, y);
-        strokePainter?.paint(canvas, Offset(x, y));
-        painter.paint(canvas, Offset(x, y));
+        paintMarkGlyphs(canvas, t, fontSize, Offset(x, y));
       }
     }
     canvas.restore();

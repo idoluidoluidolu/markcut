@@ -2,11 +2,10 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:flutter/painting.dart';
-
 import '../models/color_grade.dart';
 import '../models/mosaic.dart';
 import '../models/watermark_settings.dart';
+import 'text_mark_painter.dart';
 
 /// 把浮水印設定畫成點陣圖。
 /// 預覽和輸出走同一套繪製邏輯，所以「看到的就是輸出的」。
@@ -284,230 +283,83 @@ class WatermarkRenderer {
       img.dispose();
     }
 
-    await _drawText(canvas, s, w, h);
+    _drawText(canvas, s, w, h);
   }
 
   /// 文字浮水印（含平鋪、底色、描邊、旋轉）。
   /// 文字可以有很多個，照清單順序畫（後加的在上）
-  static Future<void> _drawText(
+  /// 把每一顆文字浮水印畫上畫布。
+  ///
+  /// 字形（陰影/描邊/本體）一律交給 [paintMarkGlyphs]——那是預覽
+  /// 與匯出共用的「唯一畫法」，同一段程式碼跑兩次，輸出跟預覽
+  /// 在數學上是同一件事。這裡只管：位置、旋轉、底色、滿版平鋪
+  static void _drawText(
     ui.Canvas canvas,
     WatermarkSettings s,
     double w,
     double h,
-  ) async {
+  ) {
     for (final t in s.texts) {
-      if (t.enabled && t.text.trim().isNotEmpty) {
-        // 不自動換行、也不自動縮小：使用者調多大就多大，
-        // 超出畫面是允許的（明確換行 \n 仍有效）
-        final fontSize = t.sizeFrac * math.min(w, h); // 短邊基準（跟預覽一致）
+      if (!t.enabled || t.text.trim().isEmpty) continue;
+      // 不自動換行、也不自動縮小：使用者調多大就多大，
+      // 超出畫面是允許的
+      final fontSize = t.sizeFrac * math.min(w, h); // 短邊基準（跟預覽一致）
+      final m = measureMark(t, fontSize);
+      final padH = fontSize * 0.35 * t.bgPad;
+      final padV = fontSize * 0.18 * t.bgPad;
 
-        // 陰影不走 TextStyle.shadows（Impeller 離屏 toImage 會丟），
-        // 也不用五印近似（大字會露出離散鬼影，實測回報「樣式很怪」）。
-        // 真柔影：黑字畫進縮小的離屏圖，再拉回原尺寸貼上——
-        // 縮小→雙線性放大就是真實模糊，只用取樣、不用任何濾鏡，
-        // 任何渲染後端都支援
-        final painter = TextPainter(
-          text: TextSpan(
-            text: t.text,
-            style: TextStyle(
-              fontFamily: t.fontFamily,
-              fontSize: fontSize,
-              letterSpacing: fontSize * t.spacing,
-              color: t.color.withValues(alpha: t.opacity),
-            ),
-          ),
-          textDirection: TextDirection.ltr,
-        )..layout();
-        // 柔影小圖：把黑字以 1/k 縮小畫進離屏圖（邊緣留 blur 的
-        // 出血），貼回來時用取樣放大——等效半徑 ≈ k/2 像素
-        // 一步放大超過 4× 會出現菱形拖影（實測回報：大字的陰影
-        // 糊成一團、跟描邊攪在一起）——分段放大，每步 ≤4×，
-        // 視覺等同高斯
-        Future<ui.Image> upscaleSteps(ui.Image src, double total) async {
-          var img = src;
-          var remain = total;
-          while (remain > 4.0) {
-            const step = 4.0;
-            final rec2 = ui.PictureRecorder();
-            final c2 = ui.Canvas(rec2);
-            c2.drawImageRect(
-              img,
-              ui.Rect.fromLTWH(
-                0,
-                0,
-                img.width.toDouble(),
-                img.height.toDouble(),
-              ),
-              ui.Rect.fromLTWH(0, 0, img.width * step, img.height * step),
-              ui.Paint()..filterQuality = ui.FilterQuality.medium,
-            );
-            final next = await rec2.endRecording().toImage(
-              (img.width * step).round().clamp(1, 8192),
-              (img.height * step).round().clamp(1, 8192),
-            );
-            img.dispose();
-            img = next;
-            remain /= step;
-          }
-          return img;
-        }
-
-        ui.Image? shadowImg;
-        var shadowMargin = 0.0;
-        var shadowScale = 1.0;
-        if (t.shadow) {
-          // 濃度/模糊可調（使用者要求）；預設值＝原本的固定常數
-          final blur = fontSize * t.shadowBlur;
-          shadowScale = (blur * 0.9).clamp(2.0, 64.0);
-          shadowMargin = blur * 2;
-          final rec = ui.PictureRecorder();
-          final sc = ui.Canvas(rec);
-          sc.scale(1 / shadowScale);
-          final sp2 = TextPainter(
-            text: TextSpan(
-              text: t.text,
-              style: TextStyle(
-                fontFamily: t.fontFamily,
-                fontSize: fontSize,
-                letterSpacing: fontSize * t.spacing,
-                color: const ui.Color(0xFF000000).withValues(
-                  alpha: (t.shadowOpacity * t.opacity).clamp(0.0, 1.0),
-                ),
-              ),
-            ),
-            textDirection: TextDirection.ltr,
-          )..layout();
-          sp2.paint(sc, ui.Offset(shadowMargin, shadowMargin));
-          final sw2 = ((sp2.width + shadowMargin * 2) / shadowScale)
-              .ceil()
-              .clamp(1, 4096);
-          final sh2 = ((sp2.height + shadowMargin * 2) / shadowScale)
-              .ceil()
-              .clamp(1, 4096);
-          var raw = await rec.endRecording().toImage(sw2, sh2);
-          if (shadowScale > 4.0) {
-            raw = await upscaleSteps(raw, shadowScale / 4.0);
-            shadowScale = 4.0;
-          }
-          shadowImg = raw;
-        }
-
-        void stampShadow(double x, double y) {
-          final img = shadowImg;
-          if (img == null) return;
-          final ox = fontSize * 0.03;
-          final oy = fontSize * 0.03;
-          canvas.drawImageRect(
-            img,
-            ui.Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+      void bgRect(double x, double y) {
+        if (!t.bg) return;
+        canvas.drawRRect(
+          ui.RRect.fromRectAndRadius(
             ui.Rect.fromLTWH(
-              x + ox - shadowMargin,
-              y + oy - shadowMargin,
-              img.width * shadowScale,
-              img.height * shadowScale,
+              x - padH,
+              y - padV,
+              m.width + padH * 2,
+              m.height + padV * 2,
             ),
-            ui.Paint()..filterQuality = ui.FilterQuality.medium,
-          );
-        }
+            ui.Radius.circular(fontSize * t.bgCorner),
+          ),
+          ui.Paint()..color = t.bgColor.withValues(alpha: t.bgOpacity),
+        );
+      }
 
-        // 描邊畫筆（平鋪與單顆共用）
-        TextPainter? strokePainter;
-        if (t.outline) {
-          strokePainter = TextPainter(
-            text: TextSpan(
-              text: t.text,
-              style: TextStyle(
-                fontFamily: t.fontFamily,
-                fontSize: fontSize,
-                letterSpacing: fontSize * t.spacing,
-                foreground: ui.Paint()
-                  ..style = ui.PaintingStyle.stroke
-                  ..strokeWidth = math.max(1, fontSize * t.outlineWidth)
-                  ..color = t.outlineColor.withValues(alpha: t.opacity),
-              ),
-            ),
-            textDirection: TextDirection.ltr,
-          )..layout();
-        }
-
-        // 滿版平鋪（棋盤格）：整個畫面交錯重複，忽略 x/y
-        if (t.tiled) {
-          final stepX = painter.width + fontSize * 2.2;
-          final stepY = painter.height + fontSize * 2.6;
-          final padH = fontSize * 0.35 * t.bgPad;
-          final padV = fontSize * 0.18 * t.bgPad;
-          canvas.save();
-          if (t.rotation.abs() > 0.01) {
-            canvas.translate(w / 2, h / 2);
-            canvas.rotate(t.rotation * math.pi / 180);
-            canvas.translate(-w / 2, -h / 2);
-          }
-          var row = 0;
-          for (var y = -h; y < h * 2; y += stepY, row++) {
-            final shift = row.isOdd ? stepX / 2 : 0.0;
-            for (var x = -w - shift; x < w * 2; x += stepX) {
-              // 每一顆都畫完整的底色→描邊→文字
-              if (t.bg) {
-                canvas.drawRRect(
-                  ui.RRect.fromRectAndRadius(
-                    ui.Rect.fromLTWH(
-                      x - padH,
-                      y - padV,
-                      painter.width + padH * 2,
-                      painter.height + padV * 2,
-                    ),
-                    ui.Radius.circular(fontSize * t.bgCorner),
-                  ),
-                  ui.Paint()..color = t.bgColor.withValues(alpha: t.bgOpacity),
-                );
-              }
-              stampShadow(x, y);
-              strokePainter?.paint(canvas, ui.Offset(x, y));
-              painter.paint(canvas, ui.Offset(x, y));
-            }
-          }
-          canvas.restore();
-          shadowImg?.dispose();
-          return;
-        }
-
-        // 不夾限（理由同 Logo）
-        final left = t.x * w - painter.width / 2;
-        final top = t.y * h - painter.height / 2;
-
-        // 旋轉：整組（底色＋描邊＋文字）以文字中心為軸
+      // 滿版平鋪（棋盤格）：整個畫面交錯重複，忽略 x/y
+      if (t.tiled) {
+        final stepX = m.width + fontSize * 2.2;
+        final stepY = m.height + fontSize * 2.6;
         canvas.save();
         if (t.rotation.abs() > 0.01) {
-          final cx = left + painter.width / 2;
-          final cy = top + painter.height / 2;
-          canvas.translate(cx, cy);
+          canvas.translate(w / 2, h / 2);
           canvas.rotate(t.rotation * math.pi / 180);
-          canvas.translate(-cx, -cy);
+          canvas.translate(-w / 2, -h / 2);
         }
-        // 底色塊（自訂顏色、透明度、留白倍率、圓角）
-        if (t.bg) {
-          final padH = fontSize * 0.35 * t.bgPad;
-          final padV = fontSize * 0.18 * t.bgPad;
-          canvas.drawRRect(
-            ui.RRect.fromRectAndRadius(
-              ui.Rect.fromLTWH(
-                left - padH,
-                top - padV,
-                painter.width + padH * 2,
-                painter.height + padV * 2,
-              ),
-              ui.Radius.circular(fontSize * t.bgCorner),
-            ),
-            ui.Paint()..color = t.bgColor.withValues(alpha: t.bgOpacity),
-          );
+        var row = 0;
+        for (var y = -h; y < h * 2; y += stepY, row++) {
+          final shift = row.isOdd ? stepX / 2 : 0.0;
+          for (var x = -w - shift; x < w * 2; x += stepX) {
+            bgRect(x, y);
+            paintMarkGlyphs(canvas, t, fontSize, ui.Offset(x, y));
+          }
         }
-        // 柔影 → 描邊 → 文字
-        stampShadow(left, top);
-        strokePainter?.paint(canvas, ui.Offset(left, top));
-        painter.paint(canvas, ui.Offset(left, top));
         canvas.restore();
-        shadowImg?.dispose();
+        continue;
       }
+
+      // 單顆：中心點定位（不夾限，可拖出畫面）＋以中心為軸旋轉
+      final left = t.x * w - m.width / 2;
+      final top = t.y * h - m.height / 2;
+      canvas.save();
+      if (t.rotation.abs() > 0.01) {
+        final cx = left + m.width / 2;
+        final cy = top + m.height / 2;
+        canvas.translate(cx, cy);
+        canvas.rotate(t.rotation * math.pi / 180);
+        canvas.translate(-cx, -cy);
+      }
+      bgRect(left, top);
+      paintMarkGlyphs(canvas, t, fontSize, ui.Offset(left, top));
+      canvas.restore();
     }
   }
 }

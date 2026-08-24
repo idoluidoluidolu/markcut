@@ -17,7 +17,6 @@ import '../theme.dart';
 import '../services/watermark_renderer.dart';
 import '../widgets/color_grade_panel.dart';
 import '../widgets/watermark_layer.dart';
-import '../widgets/baked_watermark.dart';
 import '../widgets/watermark_panel.dart';
 
 /// 預覽上一個可以點的東西：kind 0＝馬賽克、1＝主浮水印、2＝額外浮水印。
@@ -1578,16 +1577,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                       ),
                                     ),
                                   ),
-                                Positioned.fill(
-                                  child: IgnorePointer(
-                                    child: BakedWatermark(
-                                      settings: _settings,
-                                      shortSide: 720,
-                                    ),
-                                  ),
-                                ),
                                 WatermarkLayer(
-                                  paintContent: false,
                                   settings: _settings,
                                   onChanged: () => setState(() {}),
                                   onDragStart: _pushUndo,
@@ -1618,18 +1608,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                 ),
                                 // 更多浮水印：一組一層疊上去，各自拖曳；
                                 // 點一下＝選取（白框）＋直接開編輯面板
-                                for (var i = 0; i < _extraWms.length; i++) ...[
-                                  Positioned.fill(
-                                    child: IgnorePointer(
-                                      child: BakedWatermark(
-                                        key: ValueKey('exwm$i'),
-                                        settings: _extraWms[i],
-                                        shortSide: 720,
-                                      ),
-                                    ),
-                                  ),
+                                for (var i = 0; i < _extraWms.length; i++)
                                   WatermarkLayer(
-                                    paintContent: false,
                                     settings: _extraWms[i],
                                     onChanged: () => setState(() {}),
                                     onDragStart: _pushUndo,
@@ -1651,7 +1631,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                         _selMosaic == -1 &&
                                         (_selExtra == -1 || _selExtra == i),
                                   ),
-                                ],
                                 // 點擊判定層：疊在所有圖層之上，統一決定
                                 // 點到誰。translucent＝只搶點擊，
                                 // 拖曳照樣傳給下面的圖層與選取路由

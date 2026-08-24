@@ -1,0 +1,141 @@
+import 'dart:ui' as ui;
+
+import 'package:flutter/rendering.dart';
+
+import '../models/watermark_settings.dart';
+
+/// 文字浮水印的「唯一畫法」。
+///
+/// 預覽（WatermarkLayer 的 CustomPaint）與匯出（WatermarkRenderer）
+/// 都直接執行這一個函式——同一段程式碼跑兩次，輸出跟預覽在數學上
+/// 是同一件事，不存在「對不齊」。
+///
+/// 鐵律：只用「填色文字／描邊文字」兩種原語。
+/// - 不用 TextStyle.shadows / MaskFilter / ImageFilter：引擎濾鏡在
+///   Impeller 的離屏 toImage 會被丟掉（預覽有、成品沒有的慘案）
+/// - 不用離屏影像縮放模擬模糊：放大取樣會走樣，還踩過「餘數沒乘、
+///   陰影縮小錯位」的坑
+/// - 同步、無狀態：預覽每一格直接重畫，滑桿即時跟手
+///
+/// 陰影＝三圈描邊光暈＋本體影：由外而內漸濃的圓頭描邊疊出柔邊，
+/// 視覺近似高斯；shadowBlur=0 時就是俐落的硬影。
+void paintMarkGlyphs(
+  ui.Canvas canvas,
+  TextMark t,
+  double fontSize,
+  ui.Offset at,
+) {
+  TextPainter layout(TextStyle style) => TextPainter(
+    text: TextSpan(text: t.text, style: style),
+    textDirection: TextDirection.ltr,
+  )..layout();
+
+  final base = TextStyle(
+    fontFamily: t.fontFamily,
+    fontSize: fontSize,
+    letterSpacing: fontSize * t.spacing,
+  );
+
+  // ── 陰影（光暈三圈＋本體影）──
+  if (t.shadow && t.shadowOpacity > 0.01) {
+    final off = ui.Offset(at.dx + fontSize * 0.03, at.dy + fontSize * 0.03);
+    final blur = fontSize * t.shadowBlur;
+    final a = (t.shadowOpacity * t.opacity).clamp(0.0, 1.0);
+    if (blur > 0.5) {
+      // (描邊寬倍率, 透明度倍率)：外圈寬而淡、內圈窄而濃
+      for (final ring in const [(2.2, 0.14), (1.2, 0.24), (0.5, 0.40)]) {
+        layout(
+          base.copyWith(
+            foreground: ui.Paint()
+              ..style = ui.PaintingStyle.stroke
+              ..strokeWidth = blur * ring.$1
+              ..strokeJoin = ui.StrokeJoin.round
+              ..strokeCap = ui.StrokeCap.round
+              ..color = const ui.Color(
+                0xFF000000,
+              ).withValues(alpha: a * ring.$2),
+          ),
+        ).paint(canvas, off);
+      }
+    }
+    layout(
+      base.copyWith(
+        color: const ui.Color(0xFF000000).withValues(alpha: a * 0.55),
+      ),
+    ).paint(canvas, off);
+  }
+
+  // ── 描邊 ──
+  if (t.outline) {
+    layout(
+      base.copyWith(
+        foreground: ui.Paint()
+          ..style = ui.PaintingStyle.stroke
+          ..strokeWidth = (fontSize * t.outlineWidth).clamp(1.0, 4096.0)
+          ..strokeJoin = ui.StrokeJoin.round
+          ..color = Color(t.outlineColorValue).withValues(alpha: t.opacity),
+      ),
+    ).paint(canvas, at);
+  }
+
+  // ── 本體 ──
+  layout(
+    base.copyWith(color: Color(t.colorValue).withValues(alpha: t.opacity)),
+  ).paint(canvas, at);
+}
+
+/// 量文字的版面大小（跟 [paintMarkGlyphs] 同一套字型參數）
+Size measureMark(TextMark t, double fontSize) {
+  final p = TextPainter(
+    text: TextSpan(
+      text: t.text,
+      style: TextStyle(
+        fontFamily: t.fontFamily,
+        fontSize: fontSize,
+        letterSpacing: fontSize * t.spacing,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  return Size(p.width, p.height);
+}
+
+/// 給 widget 用的畫家：在自己的座標原點畫一顆文字浮水印。
+/// 陰影會凸出版面（CustomPaint 預設不裁切，凸出照畫）
+class MarkGlyphPainter extends CustomPainter {
+  final TextMark t;
+  final double fontSize;
+
+  /// 內容值的快照（TextMark 是就地修改的，比 reference 沒有意義）
+  final List<Object?> _sig;
+
+  MarkGlyphPainter(this.t, this.fontSize)
+    : _sig = [
+        t.text,
+        t.fontFamily,
+        fontSize,
+        t.spacing,
+        t.colorValue,
+        t.opacity,
+        t.shadow,
+        t.shadowOpacity,
+        t.shadowBlur,
+        t.outline,
+        t.outlineColorValue,
+        t.outlineWidth,
+      ];
+
+  @override
+  void paint(ui.Canvas canvas, Size size) {
+    paintMarkGlyphs(canvas, t, fontSize, ui.Offset.zero);
+  }
+
+  @override
+  bool shouldRepaint(covariant MarkGlyphPainter old) {
+    if (old._sig.length != _sig.length) return true;
+    for (var i = 0; i < _sig.length; i++) {
+      if (old._sig[i] != _sig[i]) return true;
+    }
+    return false;
+  }
+}

@@ -8,7 +8,6 @@ import 'package:flutter/services.dart' show HapticFeedback;
 import '../models/watermark_settings.dart';
 import '../theme.dart';
 import '../widgets/watermark_layer.dart';
-import '../widgets/baked_watermark.dart';
 import '../widgets/watermark_panel.dart';
 
 /// 製作浮水印：在示意畫面上設計浮水印、存成範本。
@@ -538,23 +537,7 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
                                     ),
                                   // 底就是純色，不放示意圖示——那個山形圖案
                                   // 會被誤認成浮水印的一部分
-                                  // 單一來源：畫面＝匯出渲染器的 PNG；
-                                  // 下面的 WatermarkLayer 只當手勢骨架
-                                  Positioned.fill(
-                                    child: IgnorePointer(
-                                      child: BakedWatermark(
-                                        settings: _settings,
-                                        shortSide: 720,
-                                        time:
-                                            _settings.animation ==
-                                                WmAnimation.none
-                                            ? null
-                                            : _animT,
-                                      ),
-                                    ),
-                                  ),
                                   WatermarkLayer(
-                                    paintContent: false,
                                     frameNotifier: _wmFrameInfo,
                                     settings: _settings,
                                     // 動畫預覽：選了動畫才給時間，固定＝靜態

@@ -40,6 +40,7 @@ import '../services/video_controller.dart';
 import '../services/video_engine.dart' as engine;
 import '../services/video_processor.dart';
 import '../services/watermark_renderer.dart';
+import '../services/text_mark_painter.dart';
 import '../services/work_files.dart';
 import '../theme.dart';
 import 'playback_test_screen.dart';
@@ -47,7 +48,6 @@ import '../widgets/color_grade_panel.dart';
 import '../widgets/timeline_editor.dart';
 import '../widgets/prep_gate_view.dart';
 import '../widgets/watermark_layer.dart';
-import '../widgets/baked_watermark.dart';
 import '../widgets/sticker_picker.dart';
 import '../widgets/gif_image.dart';
 import '../widgets/watermark_panel.dart';
@@ -1069,10 +1069,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 而整包 jsonEncode（含 Logo base64）在主執行緒要好幾毫秒，
   /// 連續操作時會吃掉幀——延後一拍、把連續呼叫併成一次真正的寫入
   Future<void> _saveDraft() async {
-    // 單一來源浮水印：任何編輯都先當作可能動到浮水印，
-    // 立刻退回即時繪製（跟手），併批完再烘回單一來源
-    _wmBakedFresh = false;
-    _wmScheduleFastBake();
     _draftSaveTimer?.cancel();
     _draftSaveTimer = Timer(const Duration(milliseconds: 900), () {
       _saveDraftNow();
@@ -1080,7 +1076,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 拖曳過程中連續變——_pushUndo 只在起手時重組一次，結束時的最終
       // 值會漏掉。跟存草稿共用同一個併批節奏：停手後比對指紋，變了才重組
       _compRefreshIfChanged();
-      unawaited(_bakeWm());
     });
   }
 
@@ -7217,11 +7212,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   @override
   Widget build(BuildContext context) {
-    // 單一來源浮水印的第一次烘焙（之後由 _saveDraft 併批接手）
-    if (_ready && !_wmBakeKicked) {
-      _wmBakeKicked = true;
-      unawaited(_bakeWm());
-    }
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
@@ -7635,91 +7625,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 提示訊息錨定用：貼在預覽區下緣
   final _previewKey = GlobalKey();
-
-  // ── 單一來源浮水印（最佳解）──────────────────────────────
-  // 預覽平常顯示的就是「匯出渲染器產的那張 PNG」——跟成品共用同一
-  // 份點陣，物理上不可能不一樣（專業引擎「一套管線兩個出口」的
-  // 精神）。只有選取中／剛編輯完還沒烘好時，才切回即時 widget
-  // 跟手；停手（_saveDraft 併批 900ms）後烘一張換回
-  Uint8List? _wmBakedPng;
-  bool _wmBakeKicked = false;
-
-  /// 編輯中的快烘（短邊 540，~十幾 ms）：拖曳/拉滑桿時
-  /// 畫面以 ~90ms 節奏跟手；停手後 _saveDraft 併批再烘
-  /// 回短邊 1080 的正式版
-  Timer? _wmFastBakeTimer;
-  void _wmScheduleFastBake() {
-    _wmFastBakeTimer ??= Timer(const Duration(milliseconds: 90), () async {
-      _wmFastBakeTimer = null;
-      if (!mounted || !_settings.hasAnyMark) return;
-      try {
-        final aspect = _canvasAspectNow;
-        final bw = aspect >= 1 ? (540 * aspect).round() : 540;
-        final bh = aspect >= 1 ? 540 : (540 / aspect).round();
-        final png = await WatermarkRenderer.renderOverlayPng(_settings, bw, bh);
-        if (!mounted) return;
-        setState(() {
-          _wmBakedPng = png;
-          _wmBakedSig = null; // 低解析版：讓正式烘焙一定重做
-          _wmBakedFresh = false;
-        });
-      } catch (_) {}
-    });
-  }
-
-  String? _wmBakedSig;
-  bool _wmBakedFresh = false;
-  bool _wmBakeBusy = false;
-
-  /// 目前畫布比例（跟 _buildPreview 的 canvasAspect 同一條）
-  double get _canvasAspectNow {
-    final baseVideo = _activeVideo;
-    final baseCtrl = baseVideo == null ? null : _ctrls[baseVideo.id];
-    final baseAspect = (baseCtrl != null && baseCtrl.value.isInitialized)
-        ? baseCtrl.value.aspectRatio
-        : (_tl.sources.isEmpty ? 16 / 9 : _tl.sources.first.aspect);
-    return _ratioAspect ?? baseAspect;
-  }
-
-  Future<void> _bakeWm() async {
-    if (_wmBakeBusy) return;
-    if (!_settings.hasAnyMark) {
-      _wmBakedPng = null;
-      _wmBakedFresh = true;
-      return;
-    }
-    _wmBakeBusy = true;
-    try {
-      // 短邊 1080＝跟快速匯出同級的解析度，畫面上縮放顯示綽綽有餘
-      final aspect = _canvasAspectNow;
-      final int bw;
-      final int bh;
-      if (aspect >= 1) {
-        bh = 1080;
-        bw = (1080 * aspect).round();
-      } else {
-        bw = 1080;
-        bh = (1080 / aspect).round();
-      }
-      final sig = '${jsonEncode(_settings.toJson())}|${bw}x$bh';
-      if (sig == _wmBakedSig && _wmBakedPng != null) {
-        _wmBakedFresh = true;
-        if (mounted) setState(() {});
-        return;
-      }
-      final png = await WatermarkRenderer.renderOverlayPng(_settings, bw, bh);
-      if (!mounted) return;
-      setState(() {
-        _wmBakedPng = png;
-        _wmBakedSig = sig;
-        _wmBakedFresh = true;
-      });
-    } catch (e) {
-      Diag.note('浮水印烘焦失敗（退回即時繪製）：$e');
-    } finally {
-      _wmBakeBusy = false;
-    }
-  }
 
   // ── 預覽 vs 成品對照模式 ──────────────────────────────────
   // 長按「匯出」分頁進入/退出：預覽畫布右半蓋上「成品同一時間的
@@ -8687,91 +8592,74 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         Positioned.fill(
                                           child: Opacity(
                                             opacity: c.fadeFactorAt(_position),
-                                            child: Stack(
-                                              fit: StackFit.expand,
-                                              children: [
-                                                IgnorePointer(
-                                                  child: BakedWatermark(
-                                                    key: ValueKey(
-                                                      'wmclip${c.id}',
-                                                    ),
-                                                    settings: st,
-                                                    shortSide: 720,
-                                                    time: pos,
-                                                  ),
-                                                ),
-                                                WatermarkLayer(
-                                                  paintContent: false,
-                                                  settings: st,
-                                                  onChanged: () =>
-                                                      setState(() {}),
-                                                  onDragStart: _pushUndo,
-                                                  time: pos,
-                                                  // 貼圖是一個素材，選取時就該
-                                                  // 看得到框（浮水印素材的框在
-                                                  // 浮水印面板那邊自己畫）
-                                                  selectedPart:
-                                                      (src.isSticker &&
-                                                          _sel == c.id &&
-                                                          !_hideSelUi)
-                                                      ? WmPart.logo
-                                                      : WmPart.none,
-                                                  onHitBox: (t, l) =>
-                                                      _addWmHit(c.id, t, l),
-                                                  panLocked: () =>
-                                                      _pvPts.length >= 2,
-                                                  // 有別的東西被選取時不吃拖曳，
-                                                  // 讓給選取路由
-                                                  panAllowed: (_) =>
-                                                      _sel == c.id ||
-                                                      (_sel == -1 && !_wmSel),
-                                                  // 浮水印片段：點了＝選取＋
-                                                  // 進浮水印分頁編輯。
-                                                  // 貼圖不進浮水印模式——它就是
-                                                  // 一個素材，點一下選取，再點
-                                                  // 一下開它自己的調整視窗
-                                                  onTap: () {
-                                                    // 換路選取＝重新開始，
-                                                    // 不接續上一輪的連點循環
-                                                    _cycleAt = null;
-                                                    final was = _sel == c.id;
-                                                    setState(() {
-                                                      _sel = c.id;
-                                                      _wmSel = false;
-                                                    });
-                                                    if (src.isSticker) {
-                                                      // 人在浮水印分頁點貼圖：
-                                                      // 帶回剪輯分頁，不然選取
-                                                      // 換了、面板還在編浮水印
-                                                      if (_tabs.index == 1) {
-                                                        _tabs.animateTo(0);
-                                                      }
-                                                      if (was) {
-                                                        unawaited(
-                                                          _editStickerClip(c),
-                                                        );
-                                                      }
-                                                      return;
-                                                    }
-                                                    _tabs.animateTo(1);
-                                                    _wmPanelCtrl.scrollTo(
-                                                      WmPart.logo,
+                                            child: WatermarkLayer(
+                                              settings: st,
+                                              onChanged: () => setState(() {}),
+                                              onDragStart: _pushUndo,
+                                              time: pos,
+                                              // 貼圖是一個素材，選取時就該
+                                              // 看得到框（浮水印素材的框在
+                                              // 浮水印面板那邊自己畫）
+                                              selectedPart:
+                                                  (src.isSticker &&
+                                                      _sel == c.id &&
+                                                      !_hideSelUi)
+                                                  ? WmPart.logo
+                                                  : WmPart.none,
+                                              onHitBox: (t, l) =>
+                                                  _addWmHit(c.id, t, l),
+                                              panLocked: () =>
+                                                  _pvPts.length >= 2,
+                                              // 有別的東西被選取時不吃拖曳，
+                                              // 讓給選取路由
+                                              panAllowed: (_) =>
+                                                  _sel == c.id ||
+                                                  (_sel == -1 && !_wmSel),
+                                              // 浮水印片段：點了＝選取＋
+                                              // 進浮水印分頁編輯。
+                                              // 貼圖不進浮水印模式——它就是
+                                              // 一個素材，點一下選取，再點
+                                              // 一下開它自己的調整視窗
+                                              onTap: () {
+                                                // 換路選取＝重新開始，
+                                                // 不接續上一輪的連點循環
+                                                _cycleAt = null;
+                                                final was = _sel == c.id;
+                                                setState(() {
+                                                  _sel = c.id;
+                                                  _wmSel = false;
+                                                });
+                                                if (src.isSticker) {
+                                                  // 人在浮水印分頁點貼圖：
+                                                  // 帶回剪輯分頁，不然選取
+                                                  // 換了、面板還在編浮水印
+                                                  if (_tabs.index == 1) {
+                                                    _tabs.animateTo(0);
+                                                  }
+                                                  if (was) {
+                                                    unawaited(
+                                                      _editStickerClip(c),
                                                     );
-                                                  },
-                                                  // 點文字＝面板直接捲到
-                                                  // 文字設定，不用自己找
-                                                  onTapText: () {
-                                                    setState(() {
-                                                      _sel = c.id;
-                                                      _wmSel = false;
-                                                    });
-                                                    _tabs.animateTo(1);
-                                                    _wmPanelCtrl.scrollTo(
-                                                      WmPart.text,
-                                                    );
-                                                  },
-                                                ),
-                                              ],
+                                                  }
+                                                  return;
+                                                }
+                                                _tabs.animateTo(1);
+                                                _wmPanelCtrl.scrollTo(
+                                                  WmPart.logo,
+                                                );
+                                              },
+                                              // 點文字＝面板直接捲到
+                                              // 文字設定，不用自己找
+                                              onTapText: () {
+                                                setState(() {
+                                                  _sel = c.id;
+                                                  _wmSel = false;
+                                                });
+                                                _tabs.animateTo(1);
+                                                _wmPanelCtrl.scrollTo(
+                                                  WmPart.text,
+                                                );
+                                              },
                                             ),
                                           ),
                                         ),
@@ -8786,35 +8674,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           st.sizeFrac *
                                           math.min(w, h) *
                                           c.scale;
-                                      final style = TextStyle(
-                                        fontFamily: st.fontFamily,
-                                        fontSize: fontSize,
-                                        letterSpacing: fontSize * st.spacing,
-                                        color: st.color.withValues(
-                                          alpha: st.opacity,
-                                        ),
-                                      );
-                                      // 陰影＝手工蓋印，跟匯出渲染器
-                                      // 同一套數學（理由見
-                                      // _TiledTextPainter）
-                                      final shadowStyle = TextStyle(
-                                        fontFamily: st.fontFamily,
-                                        fontSize: fontSize,
-                                        letterSpacing: fontSize * st.spacing,
-                                        color: Colors.black.withValues(
-                                          alpha: (0.22 * st.opacity).clamp(
-                                            0.0,
-                                            1.0,
-                                          ),
-                                        ),
-                                      );
-                                      final painter = TextPainter(
-                                        text: TextSpan(
-                                          text: src.name,
-                                          style: style,
-                                        ),
-                                        textDirection: TextDirection.ltr,
-                                      )..layout();
+                                      // 共用畫家量測：跟匯出同一套
+                                      final m = measureMark(st, fontSize);
                                       // 框含底色的留白：Positioned 用的是
                                       // 「整個盒子」的左上角，不把 padding
                                       // 算進來的話，開底色的瞬間文字會被
@@ -8828,15 +8689,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           : 0.0;
                                       final r = Rect.fromCenter(
                                         center: Offset(c.px * w, c.py * h),
-                                        width: painter.width + padH * 2,
-                                        height: painter.height + padV * 2,
-                                      );
-                                      Widget textW(TextStyle s2) => Text(
-                                        src.name,
-                                        softWrap: false,
-                                        overflow: TextOverflow.visible,
-                                        textScaler: TextScaler.noScaling,
-                                        style: s2,
+                                        width: m.width + padH * 2,
+                                        height: m.height + padV * 2,
                                       );
                                       addHit(c.track, c.id, r);
                                       // 文字動畫：跟浮水印同一套數學，
@@ -8892,60 +8746,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                               ),
                                                         )
                                                       : null,
-                                                  child: Stack(
-                                                    clipBehavior: Clip.none,
-                                                    children: [
-                                                      if (st.shadow)
-                                                        for (final o in [
-                                                          Offset(
-                                                            fontSize * 0.03,
-                                                            fontSize * 0.03,
-                                                          ),
-                                                          Offset(
-                                                            fontSize * 0.08,
-                                                            fontSize * 0.03,
-                                                          ),
-                                                          Offset(
-                                                            fontSize * -0.02,
-                                                            fontSize * 0.03,
-                                                          ),
-                                                          Offset(
-                                                            fontSize * 0.03,
-                                                            fontSize * 0.08,
-                                                          ),
-                                                          Offset(
-                                                            fontSize * 0.03,
-                                                            fontSize * -0.02,
-                                                          ),
-                                                        ])
-                                                          Transform.translate(
-                                                            offset: o,
-                                                            child: textW(
-                                                              shadowStyle,
-                                                            ),
-                                                          ),
-                                                      if (st.outline)
-                                                        textW(
-                                                          style.copyWith(
-                                                            color: null,
-                                                            shadows: null,
-                                                            foreground: Paint()
-                                                              ..style =
-                                                                  PaintingStyle
-                                                                      .stroke
-                                                              ..strokeWidth =
-                                                                  fontSize *
-                                                                  st.outlineWidth
-                                                              ..color = st
-                                                                  .outlineColor
-                                                                  .withValues(
-                                                                    alpha: st
-                                                                        .opacity,
-                                                                  ),
-                                                          ),
-                                                        ),
-                                                      textW(style),
-                                                    ],
+                                                  // 內容＝共用畫家，跟匯出
+                                                  // 同一段程式碼
+                                                  child: CustomPaint(
+                                                    size: Size(
+                                                      m.width,
+                                                      m.height,
+                                                    ),
+                                                    painter: MarkGlyphPainter(
+                                                      st,
+                                                      fontSize,
+                                                    ),
                                                   ),
                                                 ),
                                               ),
@@ -9059,45 +8870,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   }
 
                                   if (_wmVisibleNow) {
-                                    // 單一來源：沒在編輯浮水印時，
-                                    // 畫的就是匯出渲染器產的 PNG
-                                    //（跟成品同一張圖）；選取中／
-                                    // 剛編輯完還沒烘好才用即時
-                                    // widget 跟手。手勢層永遠掛著
-                                    //（透明時 Opacity 0，點擊拖曳
-                                    // 照常）
-                                    // 永遠畫烘焙 PNG（單一來源）；
-                                    // 編輯中由快烘（~90ms）跟手。
-                                    // 烘不出來才退回 widget 自畫
-                                    final wmBaked = _wmBakedPng;
-                                    if (wmBaked != null) {
-                                      final av = _settings.animAt(pos);
-                                      children.add(
-                                        Positioned.fill(
-                                          child: IgnorePointer(
-                                            child: Transform.translate(
-                                              offset: Offset(
-                                                av.dx * w,
-                                                av.dy * h,
-                                              ),
-                                              child: Opacity(
-                                                opacity: av.alpha
-                                                    .clamp(0.0, 1.0)
-                                                    .toDouble(),
-                                                child: Image.memory(
-                                                  wmBaked,
-                                                  fit: BoxFit.fill,
-                                                  gaplessPlayback: true,
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      );
-                                    }
                                     children.add(
                                       WatermarkLayer(
-                                        paintContent: wmBaked == null,
                                         settings: _settings,
                                         onChanged: () => setState(() {}),
                                         onDragStart: _pushWmUndo,

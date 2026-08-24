@@ -22,7 +22,6 @@ import '../services/video_processor.dart';
 import '../services/watermark_renderer.dart';
 import '../theme.dart';
 import '../widgets/watermark_layer.dart';
-import '../widgets/baked_watermark.dart';
 import '../widgets/watermark_panel.dart';
 
 /// 批次浮水印：一次選多個檔案（照片/影片混合），
@@ -932,16 +931,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                                     _items[_previewIndex].thumb!,
                                     fit: BoxFit.contain,
                                   ),
-                                Positioned.fill(
-                                  child: IgnorePointer(
-                                    child: BakedWatermark(
-                                      settings: _effectiveOf(_previewIndex),
-                                      shortSide: 720,
-                                    ),
-                                  ),
-                                ),
                                 WatermarkLayer(
-                                  paintContent: false,
                                   settings: _effectiveOf(_previewIndex),
                                   // 選取框畫在裁切外（見 _wmFrameInfo）
                                   frameNotifier: _wmFrameInfo,

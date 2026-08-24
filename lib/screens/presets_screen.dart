@@ -4,7 +4,6 @@ import '../models/watermark_settings.dart';
 import '../services/preset_store.dart';
 import '../theme.dart';
 import '../widgets/watermark_layer.dart';
-import '../widgets/baked_watermark.dart';
 import '../widgets/swipe_back.dart';
 import 'watermark_studio_screen.dart';
 
@@ -201,7 +200,7 @@ class _PresetsScreenState extends State<PresetsScreen> {
             Container(
               color: Colors.black,
               child: IgnorePointer(
-                child: BakedWatermark(settings: p.settings, shortSide: 256),
+                child: WatermarkLayer(settings: p.settings, onChanged: () {}),
               ),
             ),
             // 名字＝左上角小膠囊（UI 感明確，不會被誤認成浮水印）
