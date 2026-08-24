@@ -1794,6 +1794,165 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 右上角膠囊或下滑離開
   bool _fsView = false;
 
+  /// 全螢幕塗抹時，筆刷工具列有沒有叫出來（浮在畫面下緣）
+  bool _fsBrushOpen = false;
+
+  /// 全螢幕版的筆刷工具列：跟下面那張面板同一組值
+  ///（_brushStyle/_brushSize，改了一樣即時套到剛畫的那一筆），
+  /// 只是排得緊湊、浮在畫面上——放大看著細節就能直接微調
+  Widget _fsBrushTools() {
+    Widget chip(String label, int type) {
+      final on = _brushStyle.type == type;
+      return Expanded(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 3),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(9),
+            onTap: () => setState(() {
+              // 柔邊各模式各記各的（同 _brushPanel）
+              _brushFeatherByType[_brushStyle.type] = _brushStyle.feather;
+              _brushStyle.type = type;
+              _brushStyle.feather = _brushFeatherByType[type] ?? 0.0;
+              _brushSel?.style.type = type;
+              _brushSel?.style.feather = _brushStyle.feather;
+            }),
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 7),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: on
+                    ? Colors.white.withValues(alpha: 0.14)
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(9),
+                border: Border.all(
+                  color: on ? kAmber : Colors.white.withValues(alpha: 0.25),
+                  width: on ? 1.4 : 1,
+                ),
+              ),
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  color: Colors.white,
+                  fontWeight: on ? FontWeight.w700 : FontWeight.w400,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    Widget slider(
+      String label,
+      double value,
+      double lo,
+      double hi,
+      ValueChanged<double> onChanged,
+    ) => SizedBox(
+      height: 34,
+      child: Row(
+        children: [
+          SizedBox(
+            width: 34,
+            child: Text(
+              label,
+              style: const TextStyle(fontSize: 11, color: Colors.white70),
+            ),
+          ),
+          Expanded(
+            child: Slider(
+              value: value.clamp(lo, hi),
+              min: lo,
+              max: hi,
+              onChanged: onChanged,
+            ),
+          ),
+          SizedBox(
+            width: 34,
+            child: Text(
+              '${(value * 100).round()}%',
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontSize: 11, color: Colors.white70),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.78),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(children: [chip('像素化', 0), chip('模糊', 1), chip('純色', 2)]),
+          slider('粗細', _brushSize, 0.03, 0.5, (v) {
+            setState(() {
+              _brushSize = v;
+              _brushSel?.brush = v;
+            });
+          }),
+          if (_brushStyle.type != 2)
+            slider('濃度', _brushStyle.strength, 0.0, 1.0, (v) {
+              setState(() {
+                _brushStyle.strength = v;
+                _brushSel?.style.strength = v;
+              });
+            }),
+          // 柔邊：像素化沒有（硬邊格子才是重點），模糊與純色各記各的
+          if (_brushStyle.type != 0)
+            slider('柔邊', _brushStyle.feather, 0.0, 1.0, (v) {
+              setState(() {
+                _brushStyle.feather = v;
+                _brushSel?.style.feather = v;
+              });
+            }),
+          if (_brushStyle.type == 2)
+            SizedBox(
+              height: 34,
+              child: Row(
+                children: [
+                  const Text(
+                    '顏色',
+                    style: TextStyle(fontSize: 11, color: Colors.white70),
+                  ),
+                  const Spacer(),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: () async {
+                      final picked = await pickColor(
+                        context,
+                        Color(_brushStyle.color),
+                      );
+                      if (picked != null) {
+                        setState(() {
+                          _brushStyle.color = picked;
+                          _brushSel?.style.color = picked;
+                        });
+                      }
+                    },
+                    child: Container(
+                      width: 22,
+                      height: 22,
+                      decoration: BoxDecoration(
+                        color: Color(_brushStyle.color),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white24, width: 1.5),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   /// 全螢幕檢視：跟編輯畫面看到的完全一樣（調色、馬賽克、浮水印
   /// 全都畫），只是唯讀＋可捏合縮放
   Widget _fsPhotoView() => GestureDetector(
@@ -1871,52 +2030,94 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               ),
             ),
           ),
-          // 筆刷模式的操作提示（底部小膠囊，不擋畫面）
+          // 底部：收起時是一句提示，叫出來就是完整的筆刷工具列
+          //（放大看著細節直接微調，不用退出全螢幕）
           if (_brushMode)
             Positioned(
               left: 0,
               right: 0,
-              bottom: 24,
-              child: IgnorePointer(
-                child: Center(
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 5,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.55),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: const Text(
-                      '在照片上塗抹要打碼的地方',
-                      style: TextStyle(fontSize: 11.5, color: Colors.white),
-                    ),
-                  ),
+              bottom: 0,
+              child: SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
+                  child: _fsBrushOpen
+                      ? _fsBrushTools()
+                      : Center(
+                          child: IgnorePointer(
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 5,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.55),
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              child: const Text(
+                                '在照片上塗抹要打碼的地方',
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
                 ),
               ),
             ),
-          // 右上角：離開全螢幕
+          // 右上角：筆刷工具列開關（塗抹中才有）＋離開全螢幕
           SafeArea(
             child: Align(
               alignment: Alignment.topRight,
               child: Padding(
                 padding: const EdgeInsets.all(10),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(999),
-                  onTap: () => setState(() => _fsView = false),
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.45),
-                      shape: BoxShape.circle,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_brushMode)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(999),
+                          onTap: () =>
+                              setState(() => _fsBrushOpen = !_fsBrushOpen),
+                          child: Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: _fsBrushOpen
+                                  ? kAmber
+                                  : Colors.black.withValues(alpha: 0.45),
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(
+                              Icons.tune,
+                              size: 22,
+                              color: _fsBrushOpen
+                                  ? const Color(0xFF1A1A1A)
+                                  : kText,
+                            ),
+                          ),
+                        ),
+                      ),
+                    InkWell(
+                      borderRadius: BorderRadius.circular(999),
+                      onTap: () => setState(() => _fsView = false),
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.45),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.fullscreen_exit,
+                          size: 22,
+                          color: kText,
+                        ),
+                      ),
                     ),
-                    child: const Icon(
-                      Icons.fullscreen_exit,
-                      size: 22,
-                      color: kText,
-                    ),
-                  ),
+                  ],
                 ),
               ),
             ),
