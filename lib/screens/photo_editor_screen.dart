@@ -1129,14 +1129,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                 '筆刷塗抹',
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
               ),
-              const SizedBox(width: 10),
-              const Expanded(
-                child: Text(
-                  '點擊照片右上角可以放大',
-                  style: TextStyle(fontSize: 11.5, color: kTextDim),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
+              const Spacer(),
               InkWell(
                 borderRadius: BorderRadius.circular(14),
                 onTap: () => setState(() => _brushMode = false),
@@ -1160,6 +1153,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                 ),
               ),
             ],
+          ),
+          // 提示降一階：小一號、更暗，排在標題底下不跟它搶
+          const Padding(
+            padding: EdgeInsets.only(top: 3, left: 24),
+            child: Text(
+              '點右上角可以放大照片來塗',
+              style: TextStyle(fontSize: 10.5, color: Color(0xFF6E6E7A)),
+            ),
           ),
           const SizedBox(height: 12),
           Row(children: [chip('像素化', 0), chip('模糊', 1), chip('純色遮蓋', 2)]),
