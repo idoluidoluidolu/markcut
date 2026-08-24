@@ -293,6 +293,16 @@ class CompPlayer {
     }
   }
 
+  /// 抽「現在畫面上這一格」（合成後的輸出，JPEG）。
+  /// 給編輯器的重烘空窗鋪面用；抽不到（剛換 item、web）回 null
+  Future<Uint8List?> grab({int maxH = 1080}) async {
+    try {
+      return await _ch.invokeMethod<Uint8List>('grab', {'maxH': maxH});
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> pause() => _quiet('pause');
   Future<void> setRate(double r) => _quiet('rate', r);
 

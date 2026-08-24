@@ -959,6 +959,17 @@ final class AtomicFlag {
         result(nil)
       case "position":
         result(self.comp?.positionMs ?? 0)
+      case "grab":
+        let maxH = (call.arguments as? [String: Any])?["maxH"] as? Int ?? 1080
+        if let c = self.comp {
+          c.grabFrame(maxH: maxH) { data in
+            DispatchQueue.main.async {
+              result(data == nil ? nil : FlutterStandardTypedData(bytes: data!))
+            }
+          }
+        } else {
+          result(nil)
+        }
       case "gaps":
         result(self.comp?.gapStats() ?? ["count": 0])
       case "health":
@@ -2464,9 +2475,15 @@ final class AtomicFlag {
     }
     let dur = asset.duration.seconds
     let fps = vTrack.nominalFrameRate > 1 ? vTrack.nominalFrameRate : 30
+    // HDR 來源：掛跟匯出/合成播放器同一顆 CI 合成器做色調映射。
+    // 內建合成器的 HDR→SDR 是另一條曲線——「預覽（播工作檔）跟
+    // 成品（CI toneMap）顏色不一樣」的根因就是工作檔在這裡分家
+    let isHDR = CompPlayer.isHDRSource(src)
     let pixels: [String: Any] = [
       kCVPixelBufferPixelFormatTypeKey as String: Int(
-        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+        isHDR
+          ? kCVPixelFormatType_32BGRA
+          : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
     ]
 
     // 輸出尺寸縮的是短邊：直式拿到 1080x1920、橫式拿到 1920x1080，
@@ -2498,15 +2515,47 @@ final class AtomicFlag {
     vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
     vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
     vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
-    let ins = AVMutableVideoCompositionInstruction()
-    ins.timeRange = CMTimeRange(start: .zero, duration: asset.duration)
-    let li = AVMutableVideoCompositionLayerInstruction(assetTrack: vTrack)
-    li.setTransform(
-      vTrack.preferredTransform.concatenating(
-        CGAffineTransform(scaleX: shrink, y: shrink)),
-      at: .zero)
-    ins.layerInstructions = [li]
-    vc.instructions = [ins]
+    if isHDR {
+      // 跟合成播放器的 fitTransform 同一套數學：轉正 → 等比縮放 →
+      // 置中（滿版貼齊，這裡沒有使用者縮放位移）。座標翻轉由
+      // CIExportCompositor 用 srcHeight 自己處理
+      let fit = vTrack.preferredTransform
+        .concatenating(CGAffineTransform(scaleX: shrink, y: shrink))
+        .concatenating(
+          CGAffineTransform(
+            translationX: (size.width - dw * shrink) / 2,
+            y: (size.height - dh * shrink) / 2))
+      vc.customVideoCompositorClass = CIExportCompositor.self
+      vc.instructions = [
+        CIExportInstruction(
+          timeRange: CMTimeRange(start: .zero, duration: asset.duration),
+          layers: [
+            CILayerSpec(
+              trackID: vTrack.trackID, still: nil,
+              transform: fit, srcHeight: vTrack.naturalSize.height,
+              start: 0, end: dur,
+              fadeIn: 0, fadeOut: 0, colorMatrix: nil,
+              crop: nil, rotation: 0, opacity: 1, z: 0)
+          ],
+          mosaics: [], overlays: [],
+          prerollTrackIDs: [NSNumber(value: vTrack.trackID)],
+          holdIfEmpty: true)
+      ]
+      DispatchQueue.main.async {
+        channel.invokeMethod(
+          "note", arguments: "工作檔（HDR）：CI 色調映射，跟成品同一條曲線")
+      }
+    } else {
+      let ins = AVMutableVideoCompositionInstruction()
+      ins.timeRange = CMTimeRange(start: .zero, duration: asset.duration)
+      let li = AVMutableVideoCompositionLayerInstruction(assetTrack: vTrack)
+      li.setTransform(
+        vTrack.preferredTransform.concatenating(
+          CGAffineTransform(scaleX: shrink, y: shrink)),
+        at: .zero)
+      ins.layerInstructions = [li]
+      vc.instructions = [ins]
+    }
     let vOut = AVAssetReaderVideoCompositionOutput(
       videoTracks: [vTrack], videoSettings: pixels)
     vOut.videoComposition = vc
@@ -3038,6 +3087,10 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 這份合成本身（診斷用：軌數、抽格）
   private var composition: AVMutableComposition?
 
+  /// 抽「目前渲染輸出」用（見 grabFrame）。產生器不支援自訂合成器，
+  /// video output 拿的是實際送畫面的那一格，CI 路線也抽得到
+  private var videoOut: AVPlayerItemVideoOutput?
+
   /// 組建內視鏡：Swift 實際收到什麼、組出什麼（診斷用）。
   /// 「程式碼看起來對、裝置行為不對」的僵局只有它拆得開
   private(set) var buildInfo: [String: Any] = [:]
@@ -3394,6 +3447,13 @@ final class CompPlayer: NSObject, FlutterTexture {
     mix.inputParameters = aParams
     let item = AVPlayerItem(asset: comp)
     item.audioMix = mix
+    // 抽幀口：只在被要求時才 copy 一格，平常零成本
+    let vOutTap = AVPlayerItemVideoOutput(pixelBufferAttributes: [
+      kCVPixelBufferPixelFormatTypeKey as String: Int(
+        kCVPixelFormatType_32BGRA)
+    ])
+    item.add(vOutTap)
+    videoOut = vOutTap
     // 變速時聲音保持音高（跟主流剪輯 App 一致）
     item.audioTimePitchAlgorithm = .timeDomain
     // 系統自己喊的「播放卡住了」：時間點記下來，跟供格節奏對照
@@ -4043,6 +4103,37 @@ final class CompPlayer: NSObject, FlutterTexture {
         // 停下來了：把管線熱著，下次按播放就不用等
         self.player.preroll(atRate: self.targetRate, completionHandler: nil)
       }
+    }
+  }
+
+  /// 抽「現在畫面上這一格」（合成後的輸出）。給編輯器的
+  /// 「重烘空窗即時鋪面」用：剛加的馬賽克先用這格＋Flutter 畫出來，
+  /// 重烘好再換真的
+  func grabFrame(maxH: Int, done: @escaping (Data?) -> Void) {
+    guard let vo = videoOut else {
+      done(nil)
+      return
+    }
+    let t = player.currentTime()
+    DispatchQueue.global(qos: .userInitiated).async {
+      guard let pb = vo.copyPixelBuffer(
+        forItemTime: t, itemTimeForDisplay: nil)
+      else {
+        done(nil)
+        return
+      }
+      var img = CIImage(cvPixelBuffer: pb)
+      let h = img.extent.height
+      if maxH > 0, h > CGFloat(maxH) {
+        let k = CGFloat(maxH) / h
+        img = img.transformed(by: CGAffineTransform(scaleX: k, y: k))
+      }
+      let ctx = CIContext(options: [.workingColorSpace: NSNull()])
+      guard let cg = ctx.createCGImage(img, from: img.extent) else {
+        done(nil)
+        return
+      }
+      done(UIImage(cgImage: cg).jpegData(compressionQuality: 0.85))
     }
   }
 

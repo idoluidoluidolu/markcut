@@ -93,6 +93,19 @@ class WorkFiles {
     // 原檔換過內容就不能再用舊的工作檔
     final stamp = _stamp(src);
     if (stamp != null && e['stamp'] != null && e['stamp'] != stamp) return null;
+    // 色彩版本：v2 起 HDR 素材的工作檔改走 CI 色調映射（跟成品同一條
+    // 曲線）。舊版轉出來的 HDR 工作檔顏色是另一套，繼續用等於預覽跟
+    // 成品永遠對不上——淘汰重轉。SDR 素材兩版沒差，照用
+    if ((e['cv'] as int? ?? 1) < 2) {
+      final lite = await MediaPrep.probeLite(src);
+      final sdr = lite == null || lite['error'] != null
+          ? false // 判不出來當 HDR：重轉一次換正確顏色，成本可接受
+          : lite['sdr709'] == true;
+      if (!sdr) return null;
+      // SDR：補記版本，下次不用再探測
+      e['cv'] = 2;
+      unawaited(_save());
+    }
     return work;
   }
 
@@ -128,6 +141,7 @@ class WorkFiles {
         idx[src] = {
           'work': dest,
           'stamp': _stamp(src),
+          'cv': 2,
           'at': DateTime.now().millisecondsSinceEpoch,
         };
         // 索引寫成功才解除 in-flight 保護；沒寫成功就讓它掛著整個
@@ -200,6 +214,7 @@ class WorkFiles {
     idx[src] = {
       'work': made,
       'stamp': _stamp(src),
+      'cv': 2,
       'at': DateTime.now().millisecondsSinceEpoch,
     };
     if (!await _save()) {

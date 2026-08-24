@@ -40,6 +40,7 @@ import '../services/video_controller.dart';
 import '../services/video_engine.dart' as engine;
 import '../services/video_processor.dart';
 import '../services/watermark_renderer.dart';
+import '../services/mosaic_patch_painter.dart';
 import '../services/text_mark_painter.dart';
 import '../services/work_files.dart';
 import '../theme.dart';
@@ -1152,6 +1153,52 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 這份合成烘進去的圖片片段 id（合成新鮮時預覽不再重畫它們）
   Set<int> _compBakedStills = const {};
+
+  // ── 馬賽克重烘空窗的「即時鋪面」──────────────────────────
+  /// 暫停中剛加/剛調馬賽克：合成重烘要一兩秒，這段期間畫面上的
+  /// 系統影片圖層還是舊的（沒有新馬賽克），Flutter 的 BackdropFilter
+  /// 又蓋不到原生圖層——看起來就是「加了沒反應，要按播放才有」。
+  /// 解法：跟合成播放器抽「現在顯示中的這一格」，用共用畫家
+  ///（paintMosaicPatch，跟照片匯出同一段程式碼）把馬賽克直接
+  /// 畫在那格上鋪回去，第一幀立即可見；重烘好換真的
+  ui.Image? _staleShotImg;
+  String? _staleShotSig;
+  bool _staleShotBusy = false;
+
+  bool get _staleShotActive =>
+      _compOn && !_playing && _compMosaicStale && _staleShotImg != null;
+
+  void _kickStaleShot() {
+    if (!_compOn || _playing || !_compMosaicStale) return;
+    final sig = _position.toStringAsFixed(2);
+    if (_staleShotSig == sig || _staleShotBusy) return;
+    _staleShotBusy = true;
+    _staleShotSig = sig;
+    unawaited(() async {
+      final b = await _comp?.grab();
+      if (b != null && mounted) {
+        try {
+          final codec = await ui.instantiateImageCodec(b);
+          final frame = await codec.getNextFrame();
+          if (mounted) {
+            setState(() {
+              _staleShotImg?.dispose();
+              _staleShotImg = frame.image;
+            });
+          } else {
+            frame.image.dispose();
+          }
+        } catch (_) {}
+      }
+      _staleShotBusy = false;
+    }());
+  }
+
+  void _clearStaleShot() {
+    _staleShotImg?.dispose();
+    _staleShotImg = null;
+    _staleShotSig = null;
+  }
 
   String? _lastCompSig;
   String? _lastCompEditSig;
@@ -4886,6 +4933,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _lastCompMosaicSig = _mosaicSig();
     _lastCompStillSig = _stillSig();
     _compBakedStills = CompPlayer.bakedImageIds(_tl);
+    _clearStaleShot();
     setState(() => _comp = made);
     // 合成接手了，舊的那幾顆播放器立刻放掉（見 _trimPlayers）
     _trimPlayers();
@@ -8037,6 +8085,45 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         ),
                                       ),
                                     );
+                                    // 馬賽克重烘空窗的即時鋪面（見
+                                    // _kickStaleShot）：抽到的合成幀
+                                    // ＋剛改完的馬賽克，蓋在影片圖層
+                                    // 正上方，同一格畫面無縫接
+                                    _kickStaleShot();
+                                    if (_staleShotActive) {
+                                      addLayer(
+                                        vidTrack,
+                                        Positioned.fromRect(
+                                          rect: rect,
+                                          child: IgnorePointer(
+                                            child: CustomPaint(
+                                              painter: _StaleShotPainter(
+                                                _staleShotImg!,
+                                                [
+                                                  for (final c
+                                                      in _tl.overlaysAt(
+                                                        _position,
+                                                      ))
+                                                    if (_tl.sourceOf(c).kind ==
+                                                        ClipKind.mosaic)
+                                                      (
+                                                        style:
+                                                            _tl
+                                                                .sourceOf(c)
+                                                                .mosaicStyle ??
+                                                            MosaicStyle(),
+                                                        px: c.px,
+                                                        py: c.py,
+                                                        scale: c.scale,
+                                                        track: c.track,
+                                                      ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    }
                                     // 拖曳中且播放頭下的素材還在用原檔
                                     //（秒進、工作檔還在背景轉）：合成
                                     // 畫面上蓋一層快取幀。原檔關鍵幀疏，
@@ -8330,7 +8417,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             // 完成的空窗（_compMosaicStale）
                                             // 要頂上——不頂的話這段期間
                                             // 什麼都看不到
-                                            child: _compOn && !_compMosaicStale
+                                            child:
+                                                _compOn &&
+                                                    (!_compMosaicStale ||
+                                                        _staleShotActive)
                                                 ? const SizedBox.expand()
                                                 : Builder(
                                                     builder: (context) {
@@ -11787,4 +11877,51 @@ class _RightHalfClipper extends CustomClipper<Rect> {
 
   @override
   bool shouldReclip(covariant CustomClipper<Rect> oldClipper) => false;
+}
+
+/// 馬賽克重烘空窗的鋪面畫家：把抽到的合成幀原樣鋪滿，再用共用畫家
+///（paintMosaicPatch，跟照片匯出同一段程式碼）把現在的馬賽克畫上去。
+/// 影格是「舊合成」的輸出，馬賽克是「新調好」的值——正好就是
+/// 重烘完成後會看到的樣子
+class _StaleShotPainter extends CustomPainter {
+  final ui.Image shot;
+  final List<
+    ({MosaicStyle style, double px, double py, double scale, int track})
+  >
+  mosaics;
+
+  _StaleShotPainter(this.shot, this.mosaics);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.width < 2 || size.height < 2) return;
+    canvas.drawImageRect(
+      shot,
+      Rect.fromLTWH(0, 0, shot.width.toDouble(), shot.height.toDouble()),
+      Offset.zero & size,
+      Paint()..filterQuality = FilterQuality.medium,
+    );
+    final k = shot.width / size.width; // 畫布 → 幀像素
+    final list = [...mosaics]..sort((a, b) => a.track.compareTo(b.track));
+    for (final m in list) {
+      // 大小基準跟 CIMosaicSpec 同一套：短邊 × scale
+      final side = m.scale * math.min(size.width, size.height);
+      final dst = Rect.fromCenter(
+        center: Offset(m.px * size.width, m.py * size.height),
+        width: side,
+        height: side,
+      ).intersect(Offset.zero & size);
+      if (dst.width < 2 || dst.height < 2) continue;
+      final src = Rect.fromLTWH(
+        dst.left * k,
+        dst.top * k,
+        dst.width * k,
+        dst.height * k,
+      );
+      paintMosaicPatch(canvas, shot, m.style, src, dst);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_StaleShotPainter old) => true;
 }
