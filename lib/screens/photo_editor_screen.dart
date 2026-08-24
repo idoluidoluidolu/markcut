@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter_image_compress/flutter_image_compress.dart';
@@ -561,6 +562,17 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               ),
               const Spacer(),
               IconButton(
+                tooltip: '筆刷塗抹打碼',
+                visualDensity: VisualDensity.compact,
+                onPressed: () => setState(() {
+                  _brushMode = true;
+                  _selMosaic = -1;
+                  _wmPart = WmPart.none;
+                  _selExtra = -1;
+                }),
+                icon: const Icon(Icons.brush_outlined, size: 18, color: kIcon),
+              ),
+              IconButton(
                 tooltip: '加一塊馬賽克',
                 visualDensity: VisualDensity.compact,
                 onPressed: _addMosaic,
@@ -580,7 +592,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             child: Row(
               children: [
                 Icon(
-                  _mosaics[i].style.type == 2
+                  _mosaics[i].isStroke
+                      ? Icons.brush_outlined
+                      : _mosaics[i].style.type == 2
                       ? Icons.square_rounded
                       : Icons.blur_on,
                   size: 15,
@@ -590,7 +604,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  '第 ${i + 1} 塊 · ${typeNames[_mosaics[i].style.type]}',
+                  '第 ${i + 1} 塊 · ${_mosaics[i].isStroke ? '筆刷 · ' : ''}'
+                  '${typeNames[_mosaics[i].style.type]}',
                   style: TextStyle(
                     fontSize: 12,
                     color: _selMosaic == i ? kSelect : kTextDim,
@@ -821,14 +836,59 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     final children = <Widget>[];
     for (var i = 0; i < _mosaics.length; i++) {
       final m = _mosaics[i];
-      final side = m.scale * math.min(w, h);
-      final rect = Rect.fromCenter(
-        center: Offset(m.x * w, m.y * h),
-        width: side,
-        height: side,
-      );
+      Rect rect;
+      if (m.isStroke) {
+        // 筆畫：範圍＝包圍盒。用照片座標算好再等比換到畫布，
+        // 跟匯出的外框是同一個算式
+        final imgW = _photoImg?.width ?? 1000;
+        final imgH = _photoImg?.height ?? math.max(1, (1000 * h / w).round());
+        final pts = [
+          for (var k = 0; k + 1 < m.stroke!.length; k += 2)
+            Offset(m.stroke![k] * imgW, m.stroke![k + 1] * imgH),
+        ];
+        final brushPx = m.brush * math.min(imgW, imgH).toDouble();
+        final box = strokeBoundsPx(
+          pts,
+          brushPx,
+          strokeFeatherPx(m.style, brushPx),
+        );
+        final sc = w / imgW;
+        rect = Rect.fromLTWH(
+          box.left * sc,
+          box.top * sc,
+          box.width * sc,
+          box.height * sc,
+        );
+      } else {
+        final side = m.scale * math.min(w, h);
+        rect = Rect.fromCenter(
+          center: Offset(m.x * w, m.y * h),
+          width: side,
+          height: side,
+        );
+      }
       Widget effect;
-      if (m.style.type == 2) {
+      if (m.isStroke) {
+        // 筆畫效果＝共用畫家（跟匯出同一段程式碼）；
+        // 調色時同一個矩陣套在補丁上，顏色才會對
+        Widget patch = _photoImg == null
+            ? const SizedBox.shrink()
+            : CustomPaint(
+                painter: _MosaicStrokePainter(
+                  img: _photoImg!,
+                  style: m.style,
+                  strokePts: m.stroke!,
+                  brush: m.brush,
+                ),
+              );
+        if (_grade.hasColor && !_colorCompare) {
+          patch = ColorFiltered(
+            colorFilter: ColorFilter.matrix(_grade.matrix),
+            child: patch,
+          );
+        }
+        effect = patch;
+      } else if (m.style.type == 2) {
         effect = Container(color: Color(m.style.color));
       } else if (_photoImg != null) {
         // 直接取樣照片畫效果：真像素塊、真羽化（跟匯出同一套畫法，
@@ -857,7 +917,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         if (m.style.type == 0 && _mosaicProg != null) {
           final cells = (26 - 20 * m.style.strength).round().clamp(4, 40);
           final dpr = MediaQuery.of(context).devicePixelRatio;
-          final cell = math.max(2.0, side * dpr / cells);
+          final cell = math.max(2.0, rect.width * dpr / cells);
           try {
             final sh = _mosaicProg!.fragmentShader();
             sh.setFloat(2, cell);
@@ -904,6 +964,17 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             onPanUpdate: (d) {
               if (_pvPts.length >= 2) return;
               _phPushUndoIfNeeded();
+              if (m.isStroke) {
+                // 筆畫＝所有點一起平移（不吸中線，形狀是自由的）
+                setState(() {
+                  final s = m.stroke!;
+                  for (var k = 0; k + 1 < s.length; k += 2) {
+                    s[k] += d.delta.dx / w;
+                    s[k + 1] += d.delta.dy / h;
+                  }
+                });
+                return;
+              }
               setState(() {
                 // 原始座標累積、顯示值吸中線（同浮水印手感）
                 _phRawX ??= m.x;
@@ -950,6 +1021,49 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       _wmPart = WmPart.none;
       _selExtra = -1;
     });
+  }
+
+  // ===== 筆刷馬賽克：塗到哪、碼到哪 =====
+  /// 筆刷模式中：預覽整面接管拖曳，一筆＝一塊筆畫馬賽克
+  bool _brushMode = false;
+
+  void _brushStart(Offset p, double w, double h) {
+    if (_pvPts.length >= 2) return;
+    _pushUndo();
+    setState(() {
+      _mosaics.add(
+        PhotoMosaic(
+          // 樣式沿用最後一塊（人通常整張用同一種碼）
+          style: _mosaics.isNotEmpty ? _mosaics.last.style.copy() : null,
+          stroke: [(p.dx / w).clamp(0.0, 1.0), (p.dy / h).clamp(0.0, 1.0)],
+        ),
+      );
+      _selMosaic = _mosaics.length - 1;
+      _wmPart = WmPart.none;
+      _selExtra = -1;
+    });
+  }
+
+  void _brushMove(Offset p, double w, double h) {
+    if (_pvPts.length >= 2) return;
+    if (_selMosaic < 0 || _selMosaic >= _mosaics.length) return;
+    final m = _mosaics[_selMosaic];
+    final s = m.stroke;
+    if (s == null || s.length < 2) return;
+    final nx = (p.dx / w).clamp(0.0, 1.0);
+    final ny = (p.dy / h).clamp(0.0, 1.0);
+    // 點太密不收（間隔門檻＝筆刷的 8%）：省記憶體也省每幀重繪；
+    // 1200 點是安全帽，正常塗抹到不了
+    final dist = Offset(
+      (nx - s[s.length - 2]) * w,
+      (ny - s[s.length - 1]) * h,
+    ).distance;
+    if (dist < m.brush * math.min(w, h) * 0.08 || s.length >= 1200) return;
+    setState(
+      () => s
+        ..add(nx)
+        ..add(ny),
+    );
   }
 
   /// 馬賽克樣式表（照片版）：樣式＋大小＋濃度/顏色＋移除
@@ -1049,22 +1163,38 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                     children: [chip('像素化', 0), chip('模糊', 1), chip('純色遮蓋', 2)],
                   ),
                   const SizedBox(height: 14),
-                  row(
-                    '大小',
-                    // 上限跟影片端一致（原本這裡是 1.5、那邊 3.0，
-                    // 同一個功能能拉的範圍卻不一樣）
-                    Slider(
-                      value: m.scale.clamp(0.05, 3.0),
-                      min: 0.05,
-                      max: 3.0,
-                      onChanged: (v) => change(() => m.scale = v),
+                  if (m.isStroke)
+                    row(
+                      '粗細',
+                      Slider(
+                        value: m.brush.clamp(0.03, 0.5),
+                        min: 0.03,
+                        max: 0.5,
+                        onChanged: (v) => change(() => m.brush = v),
+                      ),
+                      Text(
+                        '${(m.brush * 100).round()}%',
+                        textAlign: TextAlign.right,
+                        style: const TextStyle(fontSize: 11.5, color: kTextDim),
+                      ),
+                    )
+                  else
+                    row(
+                      '大小',
+                      // 上限跟影片端一致（原本這裡是 1.5、那邊 3.0，
+                      // 同一個功能能拉的範圍卻不一樣）
+                      Slider(
+                        value: m.scale.clamp(0.05, 3.0),
+                        min: 0.05,
+                        max: 3.0,
+                        onChanged: (v) => change(() => m.scale = v),
+                      ),
+                      Text(
+                        '${(m.scale * 100).round()}%',
+                        textAlign: TextAlign.right,
+                        style: const TextStyle(fontSize: 11.5, color: kTextDim),
+                      ),
                     ),
-                    Text(
-                      '${(m.scale * 100).round()}%',
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(fontSize: 11.5, color: kTextDim),
-                    ),
-                  ),
                   if (m.style.type != 2) ...[
                     row(
                       '濃度',
@@ -1727,6 +1857,76 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                       },
                                     ),
                                   ),
+                                // 筆刷模式：整面接管拖曳，塗到哪碼到哪
+                                //（疊最上層，其他選取/拖曳全讓路）
+                                if (_brushMode)
+                                  Positioned.fill(
+                                    child: LayoutBuilder(
+                                      builder: (context, box) {
+                                        final w = box.maxWidth;
+                                        final h = box.maxHeight;
+                                        return GestureDetector(
+                                          behavior: HitTestBehavior.opaque,
+                                          onPanStart: (d) => _brushStart(
+                                            d.localPosition,
+                                            w,
+                                            h,
+                                          ),
+                                          onPanUpdate: (d) =>
+                                              _brushMove(d.localPosition, w, h),
+                                          child: const SizedBox.expand(),
+                                        );
+                                      },
+                                    ),
+                                  ),
+                                if (_brushMode)
+                                  Positioned(
+                                    left: 0,
+                                    right: 0,
+                                    bottom: 12,
+                                    child: Center(
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 14,
+                                          vertical: 7,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: Colors.black.withValues(
+                                            alpha: 0.65,
+                                          ),
+                                          borderRadius: BorderRadius.circular(
+                                            20,
+                                          ),
+                                        ),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Text(
+                                              '在照片上塗抹要打碼的地方',
+                                              style: TextStyle(
+                                                fontSize: 12.5,
+                                                color: Colors.white,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 12),
+                                            GestureDetector(
+                                              onTap: () => setState(
+                                                () => _brushMode = false,
+                                              ),
+                                              child: const Text(
+                                                '完成',
+                                                style: TextStyle(
+                                                  fontSize: 12.5,
+                                                  fontWeight: FontWeight.w700,
+                                                  color: kAmber,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
                               ],
                             ),
                           ),
@@ -1807,6 +2007,60 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 /// - 像素化：每格取「格中心那顆像素」鋪滿整格（真色塊）
 /// - 模糊：整張圖經模糊層畫進來，柔邊用「內縮白方塊＋霧化」
 ///   當 alpha 遮罩（dstIn），邊緣平滑淡出、沒有分界線
+/// 筆刷筆畫的預覽補丁：把照片座標的筆畫交給共用畫家
+/// paintMosaicStroke（跟照片匯出同一段程式碼）
+class _MosaicStrokePainter extends CustomPainter {
+  final ui.Image img;
+
+  // 值拷貝，理由同 _MosaicPatchPainter（原地改值要能觸發重繪）
+  final MosaicStyle _style;
+  final int type;
+  final double strength;
+  final double feather;
+  final double brush;
+  final List<double> stroke;
+
+  _MosaicStrokePainter({
+    required this.img,
+    required MosaicStyle style,
+    required List<double> strokePts,
+    required this.brush,
+  }) : _style = style.copy(),
+       type = style.type,
+       strength = style.strength,
+       feather = style.feather,
+       stroke = List.of(strokePts);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final pts = [
+      for (var k = 0; k + 1 < stroke.length; k += 2)
+        Offset(stroke[k] * img.width, stroke[k + 1] * img.height),
+    ];
+    if (pts.isEmpty) return;
+    final brushPx = brush * math.min(img.width, img.height).toDouble();
+    final box = strokeBoundsPx(pts, brushPx, strokeFeatherPx(_style, brushPx));
+    paintMosaicStroke(
+      canvas,
+      img,
+      _style,
+      pts,
+      brushPx,
+      box,
+      Offset.zero & size,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_MosaicStrokePainter old) =>
+      old.img != img ||
+      old.type != type ||
+      old.strength != strength ||
+      old.feather != feather ||
+      old.brush != brush ||
+      !listEquals(old.stroke, stroke);
+}
+
 class _MosaicPatchPainter extends CustomPainter {
   final ui.Image img;
 

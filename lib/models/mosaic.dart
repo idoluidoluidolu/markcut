@@ -42,7 +42,11 @@ class MosaicStyle {
   );
 }
 
-/// 照片上的一塊馬賽克區域：中心座標（0~1）＋大小（短邊比例）＋樣式。
+/// 照片上的一塊馬賽克：
+/// - 方形區域：中心座標（0~1）＋大小（短邊比例）
+/// - 筆刷筆畫（[stroke] 非 null）：一串 0~1 的點（x,y 交錯攤平）＋
+///   筆刷粗細 [brush]（短邊比例）。這時 x/y/scale 不使用，
+///   移動＝把每個點一起平移
 /// 掛在 WatermarkSettings 上，跟著範本一起存／套用
 class PhotoMosaic {
   double x;
@@ -50,19 +54,31 @@ class PhotoMosaic {
   double scale;
   MosaicStyle style;
 
+  /// 筆刷筆畫的點（0~1，x,y 交錯攤平）。null＝方形區域
+  List<double>? stroke;
+
+  /// 筆刷直徑（短邊比例）
+  double brush;
+
   PhotoMosaic({
     this.x = 0.5,
     this.y = 0.5,
     // 預設就要蓋得住主體，太小每次都得先放大（跟影片編輯同一個值）
     this.scale = 0.72,
     MosaicStyle? style,
+    this.stroke,
+    this.brush = 0.16,
   }) : style = style ?? MosaicStyle();
+
+  bool get isStroke => stroke != null && stroke!.length >= 2;
 
   Map<String, dynamic> toJson() => {
     'x': x,
     'y': y,
     'scale': scale,
     'style': style.toJson(),
+    if (stroke != null) 'stroke': stroke,
+    if (stroke != null) 'brush': brush,
   };
 
   factory PhotoMosaic.fromJson(Map<String, dynamic> j) => PhotoMosaic(
@@ -72,8 +88,18 @@ class PhotoMosaic {
     style: j['style'] is Map
         ? MosaicStyle.fromJson(Map<String, dynamic>.from(j['style'] as Map))
         : MosaicStyle(),
+    stroke: j['stroke'] is List
+        ? (j['stroke'] as List).map((e) => (e as num).toDouble()).toList()
+        : null,
+    brush: ((j['brush'] ?? 0.16).toDouble() as double).clamp(0.02, 0.6),
   );
 
-  PhotoMosaic copy() =>
-      PhotoMosaic(x: x, y: y, scale: scale, style: style.copy());
+  PhotoMosaic copy() => PhotoMosaic(
+    x: x,
+    y: y,
+    scale: scale,
+    style: style.copy(),
+    stroke: stroke == null ? null : List.of(stroke!),
+    brush: brush,
+  );
 }

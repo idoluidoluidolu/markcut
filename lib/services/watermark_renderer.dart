@@ -87,6 +87,21 @@ class WatermarkRenderer {
     int w,
     int h,
   ) {
+    // 筆刷筆畫：範圍＝筆畫包圍盒，效果交給共用畫家
+    if (m.isStroke) {
+      final pts = <ui.Offset>[
+        for (var i = 0; i + 1 < m.stroke!.length; i += 2)
+          ui.Offset(m.stroke![i] * w, m.stroke![i + 1] * h),
+      ];
+      final brushPx = m.brush * math.min(w, h);
+      final box = strokeBoundsPx(
+        pts,
+        brushPx,
+        strokeFeatherPx(m.style, brushPx),
+      );
+      paintMosaicStroke(canvas, photo, m.style, pts, brushPx, box, box);
+      return;
+    }
     final side = m.scale * math.min(w, h);
     final rect = ui.Rect.fromCenter(
       center: ui.Offset(m.x * w, m.y * h),
