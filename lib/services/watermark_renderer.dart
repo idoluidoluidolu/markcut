@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 import '../models/color_grade.dart';
 import '../models/mosaic.dart';
 import '../models/watermark_settings.dart';
+import 'logo_mark_painter.dart';
 import 'text_mark_painter.dart';
 
 /// 把浮水印設定畫成點陣圖。
@@ -204,81 +205,28 @@ class WatermarkRenderer {
       final frame = await codec.getNextFrame();
       final img = frame.image;
 
-      final targetW = logo.sizeFrac * math.min(w, h); // 短邊基準（跟預覽一致）
-      final targetH = targetW * img.height / img.width;
-      final srcRect = ui.Rect.fromLTWH(
-        0,
-        0,
-        img.width.toDouble(),
-        img.height.toDouble(),
-      );
-
-      // Logo 滿版平鋪（棋盤格）：整面交錯重複，忽略 x/y
+      // 縮放/圓角/透明度/平鋪全交給共用畫家（跟預覽同一段程式碼）
       if (logo.tiled) {
-        final stepX = targetW * 1.8;
-        final stepY = targetH * 1.9;
-        final tilePaint = ui.Paint()
-          ..filterQuality = ui.FilterQuality.high
-          ..color = const ui.Color(0xFFFFFFFF).withValues(alpha: logo.opacity);
-        canvas.save();
-        canvas.clipRect(ui.Rect.fromLTWH(0, 0, w, h));
-        if (logo.rotation.abs() > 0.01) {
-          canvas.translate(w / 2, h / 2);
-          canvas.rotate(logo.rotation * math.pi / 180);
-          canvas.translate(-w / 2, -h / 2);
-        }
-        var row = 0;
-        for (var y = -h; y < h * 2; y += stepY, row++) {
-          final shift = row.isOdd ? stepX / 2 : 0.0;
-          for (var x = -w - shift; x < w * 2; x += stepX) {
-            final rect = ui.Rect.fromLTWH(x, y, targetW, targetH);
-            if (logo.corner > 0.01) {
-              final r = logo.corner * math.min(targetW, targetH) / 2;
-              canvas.save();
-              canvas.clipRRect(
-                ui.RRect.fromRectAndRadius(rect, ui.Radius.circular(r)),
-              );
-              canvas.drawImageRect(img, srcRect, rect, tilePaint);
-              canvas.restore();
-            } else {
-              canvas.drawImageRect(img, srcRect, rect, tilePaint);
-            }
-          }
-        }
-        canvas.restore();
+        paintLogoTiled(canvas, logo, img, w, h);
         img.dispose();
         continue; // 平鋪的這張畫完，換下一張
       }
 
       // 不夾限：跟預覽同一套——拖出畫面的部分就讓它被畫布切掉
+      final targetW = logo.sizeFrac * math.min(w, h); // 短邊基準
+      final targetH = targetW * img.height / img.width;
       final left = logo.x * w - targetW / 2;
       final top = logo.y * h - targetH / 2;
       final rect = ui.Rect.fromLTWH(left, top, targetW, targetH);
-      final paint = ui.Paint()
-        ..filterQuality = ui.FilterQuality.high
-        ..color = const ui.Color(0xFFFFFFFF).withValues(alpha: logo.opacity);
-
       canvas.save();
-      // 旋轉：以圖片中心為軸
+      // 旋轉：以圖片中心為軸（預覽是 Transform.rotate 同軸心）
       if (logo.rotation.abs() > 0.01) {
         final c = rect.center;
         canvas.translate(c.dx, c.dy);
         canvas.rotate(logo.rotation * math.pi / 180);
         canvas.translate(-c.dx, -c.dy);
       }
-      // 圓角：先裁再畫
-      if (logo.corner > 0.01) {
-        final r = logo.corner * math.min(targetW, targetH) / 2;
-        canvas.clipRRect(
-          ui.RRect.fromRectAndRadius(rect, ui.Radius.circular(r)),
-        );
-      }
-      canvas.drawImageRect(
-        img,
-        ui.Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
-        rect,
-        paint,
-      );
+      paintLogoUnit(canvas, logo, img, rect);
       canvas.restore();
       img.dispose();
     }

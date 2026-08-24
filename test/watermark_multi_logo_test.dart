@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:markcut/models/watermark_settings.dart';
+import 'package:markcut/services/logo_mark_painter.dart';
 import 'package:markcut/services/watermark_renderer.dart';
 import 'package:markcut/widgets/watermark_layer.dart';
 
@@ -72,7 +73,14 @@ void main() {
       await t.pump(const Duration(milliseconds: 40));
     }
 
-    expect(find.byType(Image), findsNWidgets(2), reason: '兩張圖都要畫出來');
+    // 圖片內容改由共用畫家（LogoUnitPainter）畫，不再是 Image widget
+    expect(
+      find.byWidgetPredicate(
+        (w) => w is CustomPaint && w.painter is LogoUnitPainter,
+      ),
+      findsNWidgets(2),
+      reason: '兩張圖都要畫出來',
+    );
 
     // 右下那張（第二張）：中心在 (300, 300)
     await t.tapAt(const Offset(300, 300));

@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../models/watermark_settings.dart';
+import '../services/logo_mark_painter.dart';
 import '../services/text_mark_painter.dart';
 import '../theme.dart';
 
@@ -300,25 +301,16 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                     ? null
                     : () => setState(() => _panning = WmPart.none),
                 // 選取框放在旋轉「裡面」：框才會跟著 Logo 轉
-                //（文字那邊本來就是這樣，兩邊要一致）
-                child: Opacity(
-                  opacity: logo.opacity,
-                  child: Transform.rotate(
-                    angle: logo.rotation * math.pi / 180,
-                    child: Container(
-                      foregroundDecoration: _deco(WmPart.logo, logoIndex: li),
-                      child: ClipRRect(
-                        // 圓角基準跟匯出一致：短邊
-                        borderRadius: BorderRadius.circular(
-                          logo.corner * math.min(logoW, logoH) / 2,
-                        ),
-                        child: Image.memory(
-                          logoBytes,
-                          width: logoW,
-                          gaplessPlayback: true,
-                        ),
-                      ),
-                    ),
+                //（文字那邊本來就是這樣，兩邊要一致）。
+                // 透明度由共用畫家自己乘，這裡不能再包 Opacity
+                //（會乘兩次）；選取框因此保持全濃度，更清楚
+                child: Transform.rotate(
+                  angle: logo.rotation * math.pi / 180,
+                  child: Container(
+                    foregroundDecoration: _deco(WmPart.logo, logoIndex: li),
+                    // 內容＝共用畫家 paintLogoUnit：跟匯出執行
+                    // 同一段程式碼（圓角/透明度/取樣都在裡面）
+                    child: _LogoUnit(logo: logo, width: logoW, height: logoH),
                   ),
                 ),
               ),
@@ -544,6 +536,72 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
   }
 }
 
+/// 單顆 Logo：解碼一次，內容交給共用畫家 LogoUnitPainter
+///（跟匯出同一段程式碼）。bytes 換了（重新裁切）就重解，
+/// 解好前先留著舊圖，行為跟 Image.memory 的 gaplessPlayback 一樣
+class _LogoUnit extends StatefulWidget {
+  final LogoMark logo;
+  final double width;
+  final double height;
+
+  const _LogoUnit({
+    required this.logo,
+    required this.width,
+    required this.height,
+  });
+
+  @override
+  State<_LogoUnit> createState() => _LogoUnitState();
+}
+
+class _LogoUnitState extends State<_LogoUnit> {
+  ui.Image? _img;
+  Uint8List? _decodedFrom;
+
+  @override
+  void initState() {
+    super.initState();
+    _decode();
+  }
+
+  @override
+  void didUpdateWidget(_LogoUnit old) {
+    super.didUpdateWidget(old);
+    if (widget.logo.bytes != _decodedFrom) _decode();
+  }
+
+  void _decode() {
+    final b = widget.logo.bytes;
+    if (b == null) return;
+    _decodedFrom = b;
+    ui.decodeImageFromList(b, (img) {
+      if (mounted) {
+        setState(() {
+          _img?.dispose();
+          _img = img;
+        });
+      } else {
+        img.dispose();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _img?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: widget.width,
+      height: widget.height,
+      child: CustomPaint(painter: LogoUnitPainter(widget.logo, _img)),
+    );
+  }
+}
+
 /// Logo 滿版平鋪：解碼一次，之後用 CustomPaint 重複畫
 class _TiledLogo extends StatefulWidget {
   final LogoMark logo;
@@ -608,41 +666,8 @@ class _TiledLogoPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final im = img;
     if (im == null) return;
-    final w = size.width;
-    final h = size.height;
-    final targetW = logo.sizeFrac * math.min(w, h); // 短邊基準
-    final targetH = targetW * im.height / im.width;
-    final stepX = targetW * 1.8;
-    final stepY = targetH * 1.9;
-    final src = Rect.fromLTWH(0, 0, im.width.toDouble(), im.height.toDouble());
-    final paint = Paint()
-      ..filterQuality = FilterQuality.medium
-      ..color = Colors.white.withValues(alpha: logo.opacity);
-
-    canvas.save();
-    canvas.clipRect(Offset.zero & size);
-    if (logo.rotation.abs() > 0.01) {
-      canvas.translate(w / 2, h / 2);
-      canvas.rotate(logo.rotation * math.pi / 180);
-      canvas.translate(-w / 2, -h / 2);
-    }
-    var row = 0;
-    for (var y = -h; y < h * 2; y += stepY, row++) {
-      final shift = row.isOdd ? stepX / 2 : 0.0;
-      for (var x = -w - shift; x < w * 2; x += stepX) {
-        final rect = Rect.fromLTWH(x, y, targetW, targetH);
-        if (logo.corner > 0.01) {
-          final r = logo.corner * math.min(targetW, targetH) / 2;
-          canvas.save();
-          canvas.clipRRect(RRect.fromRectAndRadius(rect, Radius.circular(r)));
-          canvas.drawImageRect(im, src, rect, paint);
-          canvas.restore();
-        } else {
-          canvas.drawImageRect(im, src, rect, paint);
-        }
-      }
-    }
-    canvas.restore();
+    // 排列與繪製全交給共用畫家（跟匯出同一段程式碼）
+    paintLogoTiled(canvas, logo, im, size.width, size.height);
   }
 
   @override
