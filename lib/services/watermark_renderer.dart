@@ -6,6 +6,7 @@ import '../models/color_grade.dart';
 import '../models/mosaic.dart';
 import '../models/watermark_settings.dart';
 import 'logo_mark_painter.dart';
+import 'mosaic_patch_painter.dart';
 import 'text_mark_painter.dart';
 
 /// 把浮水印設定畫成點陣圖。
@@ -62,7 +63,7 @@ class WatermarkRenderer {
     canvas.drawImage(photo, ui.Offset.zero, ui.Paint());
     // 馬賽克畫在浮水印下面（打碼的是照片，不是浮水印）
     for (final m in mosaics ?? const <PhotoMosaic>[]) {
-      await _drawMosaic(canvas, photo, m, w, h);
+      _drawMosaic(canvas, photo, m, w, h);
     }
     await drawMarks(canvas, s, w.toDouble(), h.toDouble());
     // 更多浮水印：一組一組疊上去（照片模式可加好幾組）
@@ -77,98 +78,25 @@ class WatermarkRenderer {
     return data!.buffer.asUint8List();
   }
 
-  /// 在照片上畫一塊馬賽克（像素化＝縮小再鄰近放大、模糊、純色）。
-  /// 格數/半徑公式跟影片匯出同一套，兩邊效果一致
-  static Future<void> _drawMosaic(
+  /// 在照片上畫一塊馬賽克。這裡只算「畫在哪」，
+  /// 效果本身交給共用畫家 paintMosaicPatch（跟預覽同一段程式碼）
+  static void _drawMosaic(
     ui.Canvas canvas,
     ui.Image photo,
     PhotoMosaic m,
     int w,
     int h,
-  ) async {
+  ) {
     final side = m.scale * math.min(w, h);
-    var rect = ui.Rect.fromCenter(
+    final rect = ui.Rect.fromCenter(
       center: ui.Offset(m.x * w, m.y * h),
       width: side,
       height: side,
     ).intersect(ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()));
     if (rect.width < 2 || rect.height < 2) return;
-
-    final st = m.style;
-    if (st.type == 2) {
-      canvas.drawRect(rect, ui.Paint()..color = ui.Color(st.color));
-      return;
-    }
-    if (st.type == 1) {
-      // 模糊：半徑跟影片匯出同公式，按輸出解析度等比放大
-      final sigma = math.max(
-        2.0,
-        (2 + st.strength * 18) * math.min(w, h) / 540,
-      );
-      final featherPx = st.feather * 0.2 * math.min(rect.width, rect.height);
-      if (featherPx >= 1) {
-        // 真羽化：模糊補丁先畫進一層，再用「內縮＋霧化」的白色方塊
-        // 當 alpha 遮罩（dstIn），邊緣平滑淡出
-        canvas.saveLayer(rect, ui.Paint());
-        canvas.save();
-        canvas.clipRect(rect);
-        canvas.saveLayer(
-          rect,
-          ui.Paint()
-            ..imageFilter = ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
-        );
-        canvas.drawImage(photo, ui.Offset.zero, ui.Paint());
-        canvas.restore();
-        canvas.restore();
-        // 遮罩用「圖層模糊」而不是 MaskFilter——web 支援不完整會硬邊
-        canvas.saveLayer(
-          rect,
-          ui.Paint()
-            ..blendMode = ui.BlendMode.dstIn
-            ..imageFilter = ui.ImageFilter.blur(
-              sigmaX: featherPx * 0.5,
-              sigmaY: featherPx * 0.5,
-            ),
-        );
-        canvas.drawRect(
-          rect.deflate(featherPx),
-          ui.Paint()..color = const ui.Color(0xFFFFFFFF),
-        );
-        canvas.restore();
-        canvas.restore();
-        return;
-      }
-      canvas.save();
-      canvas.clipRect(rect);
-      canvas.saveLayer(
-        rect,
-        ui.Paint()
-          ..imageFilter = ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
-      );
-      canvas.drawImage(photo, ui.Offset.zero, ui.Paint());
-      canvas.restore();
-      canvas.restore();
-      return;
-    }
-    // 像素化：區域縮到 N 格再用「不插值」放大回去
-    final cells = (26 - 20 * st.strength).round().clamp(4, 40);
-    final sw = math.max(2, math.min(cells, rect.width ~/ 2));
-    final sh = math.max(2, (sw * rect.height / rect.width).round());
-    final rec = ui.PictureRecorder();
-    ui.Canvas(rec).drawImageRect(
-      photo,
-      rect,
-      ui.Rect.fromLTWH(0, 0, sw.toDouble(), sh.toDouble()),
-      ui.Paint()..filterQuality = ui.FilterQuality.medium,
-    );
-    final small = await rec.endRecording().toImage(sw, sh);
-    canvas.drawImageRect(
-      small,
-      ui.Rect.fromLTWH(0, 0, sw.toDouble(), sh.toDouble()),
-      rect,
-      ui.Paint()..filterQuality = ui.FilterQuality.none,
-    );
-    small.dispose();
+    // 畫布就是照片座標：src＝dst，效果全交給共用畫家
+    //（跟照片編輯器的預覽補丁同一段程式碼）
+    paintMosaicPatch(canvas, photo, m.style, rect, rect);
   }
 
   /// 文字素材：以完整樣式＋位置＋縮放渲染成整版透明 PNG（匯出 overlay 用）

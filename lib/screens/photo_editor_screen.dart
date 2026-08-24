@@ -14,6 +14,7 @@ import '../models/mosaic.dart';
 import '../models/watermark_settings.dart';
 import '../services/photo_saver.dart';
 import '../theme.dart';
+import '../services/mosaic_patch_painter.dart';
 import '../services/watermark_renderer.dart';
 import '../widgets/color_grade_panel.dart';
 import '../widgets/watermark_layer.dart';
@@ -1815,6 +1816,9 @@ class _MosaicPatchPainter extends CustomPainter {
   final double strength;
   final double feather;
 
+  /// 給共用畫家用的快照（值拷貝，理由同上）
+  final MosaicStyle _style;
+
   /// 這塊區域對應到照片上的範圍（照片像素座標）
   final Rect srcRect;
 
@@ -1824,112 +1828,14 @@ class _MosaicPatchPainter extends CustomPainter {
     required this.srcRect,
   }) : type = style.type,
        strength = style.strength,
-       feather = style.feather;
+       feather = style.feather,
+       _style = style.copy();
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (size.width < 1 || size.height < 1) return;
-    final scale = size.width / srcRect.width;
-    // 「整張圖」在此補丁座標系裡的位置：srcRect 對齊 (0,0)~size
-    final dstFull = Rect.fromLTWH(
-      -srcRect.left * scale,
-      -srcRect.top * scale,
-      img.width * scale,
-      img.height * scale,
-    );
-
-    // 柔邊的遮罩寬度（像素化與模糊共用同一條公式）
-    final featherPx = feather * 0.2 * math.min(size.width, size.height);
-    final bounds = Offset.zero & size;
-
-    /// 把剛畫好的那一層用「中間實、邊緣淡」的遮罩收邊。
-    /// 遮罩用圖層模糊而不是 MaskFilter——web 的繪圖引擎對 MaskFilter
-    /// 支援不完整，會變成硬邊
-    void softEdge() {
-      canvas.saveLayer(
-        bounds,
-        Paint()
-          ..blendMode = BlendMode.dstIn
-          ..imageFilter = ui.ImageFilter.blur(
-            sigmaX: featherPx * 0.5,
-            sigmaY: featherPx * 0.5,
-          ),
-      );
-      canvas.drawRect(
-        bounds.deflate(featherPx),
-        Paint()..color = const Color(0xFFFFFFFF),
-      );
-      canvas.restore();
-      canvas.restore();
-    }
-
-    if (type == 0) {
-      // 真像素塊：每格取格中心像素
-      final soft = featherPx >= 1;
-      if (soft) canvas.saveLayer(bounds, Paint());
-      final cells = (26 - 20 * strength).round().clamp(4, 40);
-      final nx = cells;
-      final ny = math.max(1, (cells * size.height / size.width).round());
-      final cw = size.width / nx;
-      final ch = size.height / ny;
-      final paintCell = Paint()..filterQuality = FilterQuality.none;
-      for (var iy = 0; iy < ny; iy++) {
-        for (var ix = 0; ix < nx; ix++) {
-          final sx = srcRect.left + (ix + 0.5) / nx * srcRect.width;
-          final sy = srcRect.top + (iy + 0.5) / ny * srcRect.height;
-          canvas.drawImageRect(
-            img,
-            Rect.fromLTWH(
-              sx.clamp(0.0, img.width - 1.0),
-              sy.clamp(0.0, img.height - 1.0),
-              1,
-              1,
-            ),
-            Rect.fromLTWH(ix * cw, iy * ch, cw + 0.5, ch + 0.5),
-            paintCell,
-          );
-        }
-      }
-      if (soft) softEdge();
-      return;
-    }
-
-    // 模糊
-    final sigma = 4.0 + 16 * strength;
-    if (featherPx >= 1) {
-      canvas.saveLayer(bounds, Paint());
-      canvas.save();
-      canvas.clipRect(bounds);
-      canvas.saveLayer(
-        bounds,
-        Paint()
-          ..imageFilter = ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
-      );
-      canvas.drawImageRect(
-        img,
-        Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
-        dstFull,
-        Paint()..filterQuality = FilterQuality.medium,
-      );
-      canvas.restore();
-      canvas.restore();
-      softEdge();
-      return;
-    }
-    canvas.save();
-    canvas.clipRect(bounds);
-    canvas.saveLayer(
-      bounds,
-      Paint()..imageFilter = ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
-    );
-    canvas.drawImageRect(
-      img,
-      Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
-      dstFull,
-      Paint()..filterQuality = FilterQuality.medium,
-    );
-    canvas.restore();
-    canvas.restore();
+    // 格數/取色/模糊半徑/羽化全交給共用畫家
+    //（跟照片匯出執行同一段程式碼）
+    paintMosaicPatch(canvas, img, _style, srcRect, Offset.zero & size);
   }
 
   @override
