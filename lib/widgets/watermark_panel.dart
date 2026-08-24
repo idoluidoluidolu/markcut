@@ -213,7 +213,13 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     // 請求可能在這個 State 出生之前就發出了（點浮水印的同時
     // 才切到浮水印分頁／才換編輯目標），一掛上就先看有沒有待辦
     _onScrollRequest();
-    // 分頁模式：預設停在「位置」，並回報給父層畫的導覽列
+    // 分頁模式：面板被收掉重掛（放大預覽進出、切去調色再回來）要
+    // 接手上一個 State 停留的分頁，不能把人踢回「位置」。上一輪的
+    // 分頁記在 controller（它活在父層，State 重建也還在）；沒有前科
+    // 才用預設的「位置」。索引失效（那一格被收掉）由 build 的守門
+    // 退回位置
+    final keep = widget.controller?.activeSection ?? 0;
+    if (keep > 0) _navAt = keep;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) widget.controller?.reportSection(_navAt);
     });
