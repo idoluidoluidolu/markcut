@@ -92,20 +92,42 @@ void paintMarkGlyphs(
     ).paint(canvas, at);
   }
 
-  // ── 本體 ──（先用同色描邊撐粗，再填字）
-  final body = Color(t.colorValue).withValues(alpha: t.opacity);
+  // ── 本體 ──（加粗＝同色描邊撐粗）。
+  // 半透明時不能直接疊：stroke 跟 fill 各自半透明地疊在一起，
+  // 交界處透明度相乘變濃，字緣會浮出一圈更深的框（實測「粗細
+  // 調起來怪怪的」）。所以先在 saveLayer 裡用不透明畫好描邊＋
+  // 填字，整層再按文字透明度合成一次——粗細均勻、透明度正確
+  final bodyOpaque = Color(t.colorValue);
   if (boldPx > 0.2) {
+    final sp = layout(base.copyWith(color: bodyOpaque));
+    final bounds = ui.Rect.fromLTWH(
+      at.dx,
+      at.dy,
+      sp.width,
+      sp.height,
+    ).inflate(boldPx + 2);
+    canvas.saveLayer(
+      bounds,
+      ui.Paint()
+        ..color = const ui.Color(0xFFFFFFFF).withValues(alpha: t.opacity),
+    );
     layout(
       base.copyWith(
         foreground: ui.Paint()
           ..style = ui.PaintingStyle.stroke
           ..strokeWidth = boldPx
           ..strokeJoin = ui.StrokeJoin.round
-          ..color = body,
+          ..strokeCap = ui.StrokeCap.round
+          ..color = bodyOpaque,
       ),
     ).paint(canvas, at);
+    sp.paint(canvas, at);
+    canvas.restore();
+  } else {
+    layout(
+      base.copyWith(color: bodyOpaque.withValues(alpha: t.opacity)),
+    ).paint(canvas, at);
   }
-  layout(base.copyWith(color: body)).paint(canvas, at);
 }
 
 /// 量文字的版面大小（跟 [paintMarkGlyphs] 同一套字型參數）

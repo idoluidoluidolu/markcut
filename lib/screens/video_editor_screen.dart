@@ -7663,8 +7663,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   child: TabBar(
                     controller: _tabs,
                     // 調色模式沒有「完成」鈕：點任何分頁＝離開調色
-                    onTap: (_) {
+                    onTap: (i) {
                       if (_colorMode) _exitColorMode();
+                      // 已經在匯出分頁再按一次「匯出」＝直接開始匯出
+                      //（鎮宇：按兩下就出，不用再找頁裡的大鈕）。
+                      // indexIsChanging＝從別的分頁切過來的那一下，
+                      // 那不算第二次
+                      if (i == 2 && !_tabs.indexIsChanging && !_exporting) {
+                        _export();
+                      }
                     },
                     indicatorColor: Colors.transparent,
                     dividerHeight: 0,
