@@ -1041,106 +1041,189 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       ? _mosaics[_selMosaic]
       : null;
 
-  /// 筆刷模式的工具列：樣式 chip＋粗細＋完成（夾在照片和面板之間，
-  /// 不遮照片也不擋塗抹——B 案）
-  Widget _brushBar() {
+  /// 筆刷塗抹中的調整面板：塗抹時整個下面的面板換成它
+  ///（樣式、粗細、濃度、柔邊、顏色全在這裡，跟其他卡同一種長相）
+  Widget _brushPanel() {
     Widget chip(String label, int type) {
       final on = _brushStyle.type == type;
-      return InkWell(
-        borderRadius: BorderRadius.circular(9),
-        onTap: () => setState(() {
-          _brushStyle.type = type;
-          _brushSel?.style.type = type;
-        }),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          decoration: BoxDecoration(
-            color: on ? kPanelHi : Colors.transparent,
-            borderRadius: BorderRadius.circular(9),
-            border: Border.all(
-              color: on ? kAmber : kClipBorder,
-              width: on ? 1.4 : 1,
-            ),
-          ),
-          child: Text(
-            label,
-            style: TextStyle(
-              fontSize: 11.5,
-              color: kText,
-              fontWeight: on ? FontWeight.w700 : FontWeight.w400,
+      return Expanded(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: () => setState(() {
+              _brushStyle.type = type;
+              _brushSel?.style.type = type;
+            }),
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: on ? kPanelHi : Colors.transparent,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: kClipBorder, width: 1),
+              ),
+              foregroundDecoration: on
+                  ? BoxDecoration(
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: kAmber, width: 1.5),
+                    )
+                  : null,
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: on ? FontWeight.w700 : FontWeight.w400,
+                  color: kText,
+                ),
+              ),
             ),
           ),
         ),
       );
     }
 
-    return Container(
-      color: kPanel,
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+    Widget row(String label, Widget child, [Widget? trail]) => Row(
+      children: [
+        SizedBox(
+          width: kSliderLabelW,
+          child: Text(
+            label,
+            style: const TextStyle(fontSize: 12, color: kTextDim),
+          ),
+        ),
+        Expanded(child: child),
+        if (trail != null) SizedBox(width: 40, child: trail),
+      ],
+    );
+
+    Text pct(double v) => Text(
+      '${(v * 100).round()}%',
+      textAlign: TextAlign.right,
+      style: const TextStyle(fontSize: 11.5, color: kTextDim),
+    );
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 10, 20, 90),
       child: Column(
-        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Icon(Icons.brush_outlined, size: 15, color: kAmber),
+              const Icon(Icons.brush_outlined, size: 16, color: kAmber),
               const SizedBox(width: 8),
-              chip('像素化', 0),
-              const SizedBox(width: 6),
-              chip('模糊', 1),
-              const SizedBox(width: 6),
-              chip('純色', 2),
-              const Spacer(),
+              const Text(
+                '筆刷塗抹',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  '在照片上塗到哪、碼到哪',
+                  style: TextStyle(fontSize: 11.5, color: kTextDim),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
               InkWell(
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(14),
                 onTap: () => setState(() => _brushMode = false),
                 child: Container(
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 5,
+                    horizontal: 18,
+                    vertical: 6,
                   ),
                   decoration: BoxDecoration(
-                    border: Border.all(color: kAmber, width: 1.2),
-                    borderRadius: BorderRadius.circular(12),
+                    color: kAmber,
+                    borderRadius: BorderRadius.circular(14),
                   ),
                   child: const Text(
                     '完成',
                     style: TextStyle(
-                      fontSize: 12,
+                      fontSize: 12.5,
                       fontWeight: FontWeight.w700,
-                      color: kAmber,
+                      color: Color(0xFF1A1A1A),
                     ),
                   ),
                 ),
               ),
             ],
           ),
-          Row(
-            children: [
-              const Text(
-                '粗細',
-                style: TextStyle(fontSize: 11.5, color: kTextDim),
-              ),
-              Expanded(
-                child: Slider(
-                  value: _brushSize.clamp(0.03, 0.5),
-                  min: 0.03,
-                  max: 0.5,
-                  onChanged: (v) => setState(() {
-                    _brushSize = v;
-                    _brushSel?.brush = v;
-                  }),
-                ),
-              ),
-              SizedBox(
-                width: 36,
-                child: Text(
-                  '${(_brushSize * 100).round()}%',
-                  textAlign: TextAlign.right,
-                  style: const TextStyle(fontSize: 11, color: kTextDim),
-                ),
-              ),
-            ],
+          const SizedBox(height: 12),
+          Row(children: [chip('像素化', 0), chip('模糊', 1), chip('純色遮蓋', 2)]),
+          const SizedBox(height: 12),
+          row(
+            '粗細',
+            Slider(
+              value: _brushSize.clamp(0.03, 0.5),
+              min: 0.03,
+              max: 0.5,
+              onChanged: (v) => setState(() {
+                _brushSize = v;
+                _brushSel?.brush = v;
+              }),
+            ),
+            pct(_brushSize),
           ),
+          if (_brushStyle.type != 2) ...[
+            row(
+              '濃度',
+              Slider(
+                value: _brushStyle.strength,
+                onChanged: (v) => setState(() {
+                  _brushStyle.strength = v;
+                  _brushSel?.style.strength = v;
+                }),
+              ),
+              pct(_brushStyle.strength),
+            ),
+            row(
+              '柔邊',
+              Slider(
+                value: _brushStyle.feather,
+                onChanged: (v) => setState(() {
+                  _brushStyle.feather = v;
+                  _brushSel?.style.feather = v;
+                }),
+              ),
+              pct(_brushStyle.feather),
+            ),
+          ] else
+            SizedBox(
+              height: 32,
+              child: Row(
+                children: [
+                  const Text(
+                    '顏色',
+                    style: TextStyle(fontSize: 12, color: kTextDim),
+                  ),
+                  const Spacer(),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: () async {
+                      final picked = await pickColor(
+                        context,
+                        Color(_brushStyle.color),
+                      );
+                      if (picked != null) {
+                        setState(() {
+                          _brushStyle.color = picked;
+                          _brushSel?.style.color = picked;
+                        });
+                      }
+                    },
+                    child: Container(
+                      width: 24,
+                      height: 24,
+                      decoration: BoxDecoration(
+                        color: Color(_brushStyle.color),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: kBorder, width: 1.5),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );
@@ -2006,8 +2089,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                       ),
                     ),
                   ),
-                  // 筆刷工具列：夾在照片和控制列之間（B 案）
-                  if (_brushMode) _brushBar(),
                   // 控制列：跟影片編輯的控制列同一個位置，
                   // 固定不動也不擋畫面
                   _buildControlBar(),
@@ -2017,53 +2098,59 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                     child: Stack(
                       children: [
                         Positioned.fill(
-                          child: switch (_tab) {
-                            1 => ColorGradePanel(
-                              grade: _grade,
-                              onChanged: () => setState(() {}),
-                              onBeforeChange: _pushUndo,
-                              // 上面的區段導覽列已經寫著「調色」了
-                              showTitle: false,
-                              // 給浮在上面的按鈕列讓位，最後一條滑桿
-                              // 才不會被蓋住
-                              bottomInset: 78,
-                              // 面板 dispose 的回呼可能落在這頁收掉之後——要擋
-                              onCompare: (on) {
-                                if (mounted) setState(() => _colorCompare = on);
-                              },
-                            ),
-                            _ => WatermarkPanel(
-                              controller: _wmPanelCtrl,
-                              // 導覽列由這一頁自己畫（要多一格「調色」）
-                              showNav: false,
-                              // 給浮在上面的輸出鍵讓位，最後一張卡才捲得完
-                              bottomInset: 78,
-                              settings: _settings,
-                              // 這一頁的面板比影片編輯高，九宮格給大一點
-                              posGridCap: 280,
-                              onChanged: () => setState(() {}),
-                              onBeforeChange: _pushUndo,
-                              syncVersion: _sync,
-                              key: _panelKey,
-                              // 儲存範本改成輸出後才問：一顆白色大鈕釘在捲動區
-                              // 最底，跟浮在上面的輸出鍵長得一樣重，互相搶
-                              hideSaveButton: true,
-                              // 剛加的圖片直接選起來，可以馬上拖／縮放
-                              onLogoAdded: () =>
-                                  setState(() => _wmPart = WmPart.logo),
-                              // 馬賽克卡：插在圖片卡下面（照片模式限定）
-                              extraSections: [
-                                (
-                                  label: '馬賽克',
-                                  icon: Icons.blur_on,
-                                  child: _mosaicSection(),
-                                ),
-                              ],
-                              // 「更多浮水印」跟主浮水印同一頁：導覽列不再給它
-                              // 一格，而面板是分頁的，沒掛在別人下面就進不去了
-                              textSectionExtra: _extraWmSection(),
-                            ),
-                          },
+                          // 筆刷塗抹中：下面的面板整個換成筆刷調整
+                          //（樣式/粗細/濃度/柔邊都在這裡調）
+                          child: _brushMode
+                              ? _brushPanel()
+                              : switch (_tab) {
+                                  1 => ColorGradePanel(
+                                    grade: _grade,
+                                    onChanged: () => setState(() {}),
+                                    onBeforeChange: _pushUndo,
+                                    // 上面的區段導覽列已經寫著「調色」了
+                                    showTitle: false,
+                                    // 給浮在上面的按鈕列讓位，最後一條滑桿
+                                    // 才不會被蓋住
+                                    bottomInset: 78,
+                                    // 面板 dispose 的回呼可能落在這頁收掉之後——要擋
+                                    onCompare: (on) {
+                                      if (mounted) {
+                                        setState(() => _colorCompare = on);
+                                      }
+                                    },
+                                  ),
+                                  _ => WatermarkPanel(
+                                    controller: _wmPanelCtrl,
+                                    // 導覽列由這一頁自己畫（要多一格「調色」）
+                                    showNav: false,
+                                    // 給浮在上面的輸出鍵讓位，最後一張卡才捲得完
+                                    bottomInset: 78,
+                                    settings: _settings,
+                                    // 這一頁的面板比影片編輯高，九宮格給大一點
+                                    posGridCap: 280,
+                                    onChanged: () => setState(() {}),
+                                    onBeforeChange: _pushUndo,
+                                    syncVersion: _sync,
+                                    key: _panelKey,
+                                    // 儲存範本改成輸出後才問：一顆白色大鈕釘在捲動區
+                                    // 最底，跟浮在上面的輸出鍵長得一樣重，互相搶
+                                    hideSaveButton: true,
+                                    // 剛加的圖片直接選起來，可以馬上拖／縮放
+                                    onLogoAdded: () =>
+                                        setState(() => _wmPart = WmPart.logo),
+                                    // 馬賽克卡：插在圖片卡下面（照片模式限定）
+                                    extraSections: [
+                                      (
+                                        label: '馬賽克',
+                                        icon: Icons.blur_on,
+                                        child: _mosaicSection(),
+                                      ),
+                                    ],
+                                    // 「更多浮水印」跟主浮水印同一頁：導覽列不再給它
+                                    // 一格，而面板是分頁的，沒掛在別人下面就進不去了
+                                    textSectionExtra: _extraWmSection(),
+                                  ),
+                                },
                         ),
                         _floatingExport(),
                       ],
