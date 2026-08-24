@@ -38,6 +38,14 @@ class MediaSource {
   /// 馬賽克素材的樣式（濃度、像素化/模糊/黑色）
   MosaicStyle? mosaicStyle;
 
+  /// 筆刷馬賽克的筆畫（0~1 畫布座標，x,y 交錯攤平）。
+  /// null＝一般方形馬賽克。有筆畫時 clip 的 px/py/scale 不使用，
+  /// 移動＝把每個點一起平移（跟照片編輯器的筆刷同一套語意）
+  List<double>? mosaicStroke;
+
+  /// 筆刷直徑（畫布短邊比例）
+  double mosaicBrush;
+
   /// 這份浮水印素材其實是一張貼圖。
   ///
   /// 畫法與匯出跟浮水印素材完全一樣（整版透明 PNG，見 overlayPngs），
@@ -82,6 +90,8 @@ class MediaSource {
     this.textStyle,
     this.wmStyle,
     this.mosaicStyle,
+    this.mosaicStroke,
+    this.mosaicBrush = 0.16,
     this.revOf,
     this.revStart = 0,
     this.revEnd = 0,
@@ -103,6 +113,8 @@ class MediaSource {
     textStyle: textStyle,
     wmStyle: wmStyle,
     mosaicStyle: mosaicStyle,
+    mosaicStroke: mosaicStroke,
+    mosaicBrush: mosaicBrush,
     isSticker: isSticker,
     isGif: isGif,
     revOf: revOf,
@@ -128,6 +140,8 @@ class MediaSource {
     if (textStyle != null) 'textStyle': textStyle!.toJson(),
     if (wmStyle != null) 'wmStyle': wmStyle!.toJson(),
     if (mosaicStyle != null) 'mosaicStyle': mosaicStyle!.toJson(),
+    if (mosaicStroke != null) 'mzStroke': mosaicStroke,
+    if (mosaicStroke != null) 'mzBrush': mosaicBrush,
     if (revOf != null) 'revOf': revOf,
     if (revOf != null) 'revStart': revStart,
     if (revOf != null) 'revEnd': revEnd,
@@ -171,6 +185,10 @@ class MediaSource {
           : MosaicStyle.fromJson(
               Map<String, dynamic>.from(j['mosaicStyle'] as Map),
             ),
+      mosaicStroke: j['mzStroke'] is List
+          ? (j['mzStroke'] as List).map((e) => (e as num).toDouble()).toList()
+          : null,
+      mosaicBrush: ((j['mzBrush'] ?? 0.16) as num).toDouble().clamp(0.02, 0.6),
       revOf: j['revOf'] as String?,
       revStart: (j['revStart'] ?? 0).toDouble(),
       revEnd: (j['revEnd'] ?? 0).toDouble(),

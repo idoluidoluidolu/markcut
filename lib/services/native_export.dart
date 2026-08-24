@@ -190,6 +190,9 @@ class NativeExport {
           'strength': ms.strength,
           'color': ms.color,
           'feather': ms.feather,
+          // 筆刷筆畫：跟合成播放器同一套欄位（Swift 端組遮罩）
+          if (src.mosaicStroke != null) 'stroke': src.mosaicStroke,
+          if (src.mosaicStroke != null) 'brush': src.mosaicBrush,
         });
       }
     }

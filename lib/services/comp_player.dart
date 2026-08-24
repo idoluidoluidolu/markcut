@@ -227,6 +227,10 @@ class CompPlayer {
         'strength': ms.strength,
         'color': ms.color,
         'feather': ms.feather,
+        // 筆刷筆畫（0~1 畫布座標）：Swift 端組成遮罩，
+        // 塗到哪碼到哪（跟匯出同一套欄位）
+        if (src.mosaicStroke != null) 'stroke': src.mosaicStroke,
+        if (src.mosaicStroke != null) 'brush': src.mosaicBrush,
       });
     }
     mosaics.sort((a, b) => (a['track'] as int).compareTo(b['track'] as int));

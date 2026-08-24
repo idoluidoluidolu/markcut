@@ -64,6 +64,7 @@ enum _AddKind {
   audio,
   record,
   mosaic,
+  brushMosaic,
   blankTrack,
   paste,
 }
@@ -1126,7 +1127,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             '|${_tl.sourceOf(c).mosaicStyle?.type}'
             '|${_tl.sourceOf(c).mosaicStyle?.strength}'
             '|${_tl.sourceOf(c).mosaicStyle?.color}'
-            '|${_tl.sourceOf(c).mosaicStyle?.feather}',
+            '|${_tl.sourceOf(c).mosaicStyle?.feather}'
+            // 筆畫（點列＋粗細）也是烘進合成的一部分
+            '|${_tl.sourceOf(c).mosaicStroke?.join(',') ?? ''}'
+            '|${_tl.sourceOf(c).mosaicBrush}',
   ].join(';');
 
   /// 圖片素材那部分的指紋。烘進合成的（影片下層）記完整幾何；
@@ -2898,6 +2902,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               item(context, Icons.title, '文字', _AddKind.text),
               item(context, Icons.branding_watermark, '浮水印', _AddKind.wm),
               item(context, Icons.blur_on, '馬賽克', _AddKind.mosaic),
+              item(
+                context,
+                Icons.brush_outlined,
+                '筆刷馬賽克',
+                _AddKind.brushMosaic,
+              ),
               group('從裝置匯入'),
               item(context, Icons.videocam_outlined, '影片', _AddKind.video),
               item(context, Icons.image_outlined, '圖片', _AddKind.image),
@@ -2942,6 +2952,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         await _recordVoice(track);
       case _AddKind.mosaic:
         _addMosaicClip(track);
+      case _AddKind.brushMosaic:
+        _startVBrush(track);
       case _AddKind.paste:
         // 貼到「點下去的那一軌」的播放頭位置。空軌點進來最常做的事
         // 就是把剛複製的東西放上去，卻要先關掉選單、再長按空白處找
@@ -4393,6 +4405,244 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _saveDraft();
   }
 
+  // ===== 筆刷馬賽克（影片）：塗到哪碼到哪 =====
+  /// 筆刷模式中：預覽整面接管拖曳，一筆＝一段筆畫馬賽克素材
+  bool _vBrushMode = false;
+  int _vBrushTrack = 0;
+  final MosaicStyle _vBrushStyle = MosaicStyle();
+  double _vBrushSize = 0.16;
+  int _vBrushClipId = -1;
+
+  /// 柔邊各模式各記各的（跟照片編輯器同一套）
+  final Map<int, double> _vBrushFeatherByType = {};
+
+  MediaSource? get _vBrushSelSrc {
+    final c = _selClipById(_vBrushClipId);
+    if (c == null) return null;
+    final src = _tl.sourceOf(c);
+    return src.mosaicStroke == null ? null : src;
+  }
+
+  void _startVBrush(int track) {
+    _pause();
+    setState(() {
+      _vBrushMode = true;
+      _vBrushTrack = track;
+      _vBrushClipId = -1;
+      _sel = -1;
+      _wmSel = false;
+    });
+  }
+
+  void _vBrushStart(Offset p, double w, double h) {
+    _pushUndo();
+    final srcIndex = _tl.sources.length;
+    _tl.sources.add(
+      MediaSource(
+        path: '',
+        name: '筆刷馬賽克',
+        kind: ClipKind.mosaic,
+        duration: 3600,
+        mosaicStyle: _vBrushStyle.copy(),
+        mosaicStroke: [(p.dx / w).clamp(0.0, 1.0), (p.dy / h).clamp(0.0, 1.0)],
+        mosaicBrush: _vBrushSize,
+      ),
+    );
+    final clip = TimelineClip(
+      id: _tl.nextId(),
+      sourceIndex: srcIndex,
+      trimStart: 0,
+      trimEnd: _newClipLen(3),
+      offset: _position,
+      track: _vBrushTrack,
+    );
+    setState(() {
+      _tl.clips.add(clip);
+      _vBrushClipId = clip.id;
+    });
+  }
+
+  void _vBrushMove(Offset p, double w, double h) {
+    final src = _vBrushSelSrc;
+    final s = src?.mosaicStroke;
+    if (src == null || s == null || s.length < 2) return;
+    final nx = (p.dx / w).clamp(0.0, 1.0);
+    final ny = (p.dy / h).clamp(0.0, 1.0);
+    // 點太密不收（間隔門檻＝筆刷的 8%）；1200 點是安全帽
+    final dist = Offset(
+      (nx - s[s.length - 2]) * w,
+      (ny - s[s.length - 1]) * h,
+    ).distance;
+    if (dist < src.mosaicBrush * math.min(w, h) * 0.08 || s.length >= 1200) {
+      return;
+    }
+    setState(
+      () => s
+        ..add(nx)
+        ..add(ny),
+    );
+  }
+
+  void _vBrushEnd() {
+    // 停筆＝立刻烘進合成；空窗由鋪面（_kickStaleShot）頂著
+    _saveDraft();
+    _compRefreshIfChanged();
+  }
+
+  /// 筆刷模式的浮動工具列（疊在預覽下緣）：樣式/粗細/濃度/柔邊/完成。
+  /// 改的當下也套用到剛畫好的那一筆
+  Widget _vBrushBar() {
+    final sel = _vBrushSelSrc;
+    void apply(void Function(MosaicStyle st) f) {
+      f(_vBrushStyle);
+      final st = sel?.mosaicStyle;
+      if (st != null) f(st);
+    }
+
+    Widget chip(String label, int type) {
+      final on = _vBrushStyle.type == type;
+      return Expanded(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 3),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(9),
+            onTap: () => setState(() {
+              _vBrushFeatherByType[_vBrushStyle.type] = _vBrushStyle.feather;
+              final fea = _vBrushFeatherByType[type] ?? 0.0;
+              apply((st) {
+                st.type = type;
+                st.feather = fea;
+              });
+              _vBrushEnd();
+            }),
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: on
+                    ? Colors.white.withValues(alpha: 0.14)
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(9),
+                border: Border.all(
+                  color: on ? kAmber : Colors.white.withValues(alpha: 0.25),
+                  width: on ? 1.4 : 1,
+                ),
+              ),
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.white,
+                  fontWeight: on ? FontWeight.w700 : FontWeight.w400,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    Widget slider(
+      String label,
+      double value,
+      double lo,
+      double hi,
+      ValueChanged<double> onChanged,
+    ) => SizedBox(
+      height: 26,
+      child: Row(
+        children: [
+          SizedBox(
+            width: 30,
+            child: Text(
+              label,
+              style: const TextStyle(fontSize: 10.5, color: Colors.white70),
+            ),
+          ),
+          Expanded(
+            child: Slider(
+              value: value.clamp(lo, hi),
+              min: lo,
+              max: hi,
+              onChanged: onChanged,
+              onChangeEnd: (_) => _vBrushEnd(),
+            ),
+          ),
+          SizedBox(
+            width: 32,
+            child: Text(
+              '${(value * 100).round()}%',
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontSize: 10.5, color: Colors.white70),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 6, 10, 2),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.78),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.brush_outlined, size: 13, color: kAmber),
+              const SizedBox(width: 6),
+              chip('像素化', 0),
+              chip('模糊', 1),
+              chip('純色', 2),
+              const SizedBox(width: 6),
+              InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () {
+                  setState(() => _vBrushMode = false);
+                  _vBrushEnd();
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: kAmber,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Text(
+                    '完成',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF1A1A1A),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          slider('粗細', _vBrushSize, 0.03, 0.5, (v) {
+            setState(() {
+              _vBrushSize = v;
+              sel?.mosaicBrush = v;
+            });
+          }),
+          if (_vBrushStyle.type != 2)
+            slider('濃度', _vBrushStyle.strength, 0.0, 1.0, (v) {
+              setState(() => apply((st) => st.strength = v));
+            }),
+          if (_vBrushStyle.type != 0)
+            slider('柔邊', _vBrushStyle.feather, 0.0, 1.0, (v) {
+              setState(() => apply((st) => st.feather = v));
+            }),
+        ],
+      ),
+    );
+  }
+
   /// 馬賽克樣式表：樣式（像素化/模糊/純色遮蓋）＋濃度/顏色
   void _editMosaicClip(TimelineClip clip) {
     final src = _tl.sourceOf(clip);
@@ -4478,15 +4728,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     children: [chip('像素化', 0), chip('模糊', 1), chip('純色遮蓋', 2)],
                   ),
                   const SizedBox(height: 14),
-                  sliderRow(
-                    label: '縮放',
-                    value: clip.scale,
-                    min: 0.02,
-                    max: 3.0,
-                    onChanged: (v) => change(() => clip.scale = v),
-                    readout: '${(clip.scale * 100).round()}',
-                    unit: '%',
-                  ),
+                  if (src.mosaicStroke != null)
+                    sliderRow(
+                      label: '粗細',
+                      value: src.mosaicBrush,
+                      min: 0.02,
+                      max: 0.6,
+                      onChanged: (v) => change(() => src.mosaicBrush = v),
+                      readout: '${(src.mosaicBrush * 100).round()}',
+                      unit: '%',
+                    )
+                  else
+                    sliderRow(
+                      label: '縮放',
+                      value: clip.scale,
+                      min: 0.02,
+                      max: 3.0,
+                      onChanged: (v) => change(() => clip.scale = v),
+                      readout: '${(clip.scale * 100).round()}',
+                      unit: '%',
+                    ),
                   if (st.type != 2) ...[
                     const SizedBox(height: 14),
                     Row(
@@ -8116,6 +8377,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                         py: c.py,
                                                         scale: c.scale,
                                                         track: c.track,
+                                                        stroke: _tl
+                                                            .sourceOf(c)
+                                                            .mosaicStroke,
+                                                        brush: _tl
+                                                            .sourceOf(c)
+                                                            .mosaicBrush,
                                                       ),
                                                 ],
                                               ),
@@ -8393,7 +8660,35 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   for (final c in _tl.overlaysAt(_position)) {
                                     final src = _tl.sourceOf(c);
                                     if (src.kind == ClipKind.mosaic) {
-                                      final r = layerBox(c, 1.0);
+                                      Rect r;
+                                      final stk0 = src.mosaicStroke;
+                                      if (stk0 != null && stk0.length >= 2) {
+                                        // 筆畫：範圍＝包圍盒（點選、
+                                        // 選取框用；效果在合成裡）
+                                        var l0 = stk0[0] * w, t0 = stk0[1] * h;
+                                        var r0 = l0, b0 = t0;
+                                        for (
+                                          var i2 = 0;
+                                          i2 + 1 < stk0.length;
+                                          i2 += 2
+                                        ) {
+                                          final x0 = stk0[i2] * w;
+                                          final y0 = stk0[i2 + 1] * h;
+                                          l0 = math.min(l0, x0);
+                                          t0 = math.min(t0, y0);
+                                          r0 = math.max(r0, x0);
+                                          b0 = math.max(b0, y0);
+                                        }
+                                        r = Rect.fromLTRB(l0, t0, r0, b0)
+                                            .inflate(
+                                              src.mosaicBrush *
+                                                      math.min(w, h) /
+                                                      2 +
+                                                  2,
+                                            );
+                                      } else {
+                                        r = layerBox(c, 1.0);
+                                      }
                                       addHit(c.track, c.id, r);
                                       addLayer(
                                         c.track,
@@ -9091,6 +9386,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               _gestureStartPy = selVis.py;
                                               _gestureStartScale = selVis.scale;
                                               _gestureStartFocal = d.focalPoint;
+                                              final s0 = _tl.sourceOf(selVis);
+                                              _gestureStartStroke =
+                                                  s0.mosaicStroke == null
+                                                  ? null
+                                                  : List.of(s0.mosaicStroke!);
+                                              _gestureStartBrush =
+                                                  s0.mosaicBrush;
                                             }
                                             _routerLast = d.focalPoint;
                                           },
@@ -9118,6 +9420,44 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             //（見 SteadyPointerBinding）
                                             if (selVis != null) {
                                               _routerPushUndoIfNeeded();
+                                              // 筆畫馬賽克：整條平移＋
+                                              // 捏合調粗細（px/py/scale
+                                              // 對筆畫沒有意義）
+                                              final selSrc0 = _tl.sourceOf(
+                                                selVis,
+                                              );
+                                              final stk1 = selSrc0.mosaicStroke;
+                                              if (stk1 != null &&
+                                                  _gestureStartStroke != null) {
+                                                final ddx =
+                                                    (d.focalPoint.dx -
+                                                        _gestureStartFocal.dx) /
+                                                    w;
+                                                final ddy =
+                                                    (d.focalPoint.dy -
+                                                        _gestureStartFocal.dy) /
+                                                    h;
+                                                setState(() {
+                                                  for (
+                                                    var i2 = 0;
+                                                    i2 + 1 < stk1.length;
+                                                    i2 += 2
+                                                  ) {
+                                                    stk1[i2] =
+                                                        _gestureStartStroke![i2] +
+                                                        ddx;
+                                                    stk1[i2 + 1] =
+                                                        _gestureStartStroke![i2 +
+                                                            1] +
+                                                        ddy;
+                                                  }
+                                                  selSrc0.mosaicBrush =
+                                                      (_gestureStartBrush *
+                                                              d.scale)
+                                                          .clamp(0.02, 0.6);
+                                                });
+                                                return;
+                                              }
                                               // 文字素材可以放大到 12 倍
                                               //（跟捏合 Listener 同一套），
                                               // 其他 3 倍
@@ -9330,6 +9670,37 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       ),
                                     );
                                   }
+                                  // 筆刷馬賽克模式：整面接管拖曳，
+                                  // 塗到哪碼到哪；工具列浮在下緣
+                                  if (_vBrushMode) {
+                                    children.add(
+                                      Positioned.fill(
+                                        child: GestureDetector(
+                                          behavior: HitTestBehavior.opaque,
+                                          onPanStart: (d) => _vBrushStart(
+                                            d.localPosition,
+                                            w,
+                                            h,
+                                          ),
+                                          onPanUpdate: (d) => _vBrushMove(
+                                            d.localPosition,
+                                            w,
+                                            h,
+                                          ),
+                                          onPanEnd: (_) => _vBrushEnd(),
+                                          child: const SizedBox.expand(),
+                                        ),
+                                      ),
+                                    );
+                                    children.add(
+                                      Positioned(
+                                        left: 8,
+                                        right: 8,
+                                        bottom: 8,
+                                        child: _vBrushBar(),
+                                      ),
+                                    );
+                                  }
                                   // 置中輔助線（路由拖曳吸到中線時）。
                                   // 無條件插入，跟照片／工作室同一種寫法：
                                   // 用 if 增減會把後面圖層的索引推掉、
@@ -9410,6 +9781,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 選取路由的上一個拖曳點（算增量用）
   Offset _routerLast = Offset.zero;
+
+  /// 筆畫馬賽克的起手快照（整條平移／捏合調粗細用）
+  List<double>? _gestureStartStroke;
+  double _gestureStartBrush = 0.16;
 
   // ===== 選取路由的置中吸附（跟 WatermarkLayer 內建拖曳同手感）=====
   /// 未吸附的原始座標（吸附只作用在顯示值上，不然吸上就拖不出來）
@@ -11886,7 +12261,15 @@ class _RightHalfClipper extends CustomClipper<Rect> {
 class _StaleShotPainter extends CustomPainter {
   final ui.Image shot;
   final List<
-    ({MosaicStyle style, double px, double py, double scale, int track})
+    ({
+      MosaicStyle style,
+      double px,
+      double py,
+      double scale,
+      int track,
+      List<double>? stroke,
+      double brush,
+    })
   >
   mosaics;
 
@@ -11904,6 +12287,28 @@ class _StaleShotPainter extends CustomPainter {
     final k = shot.width / size.width; // 畫布 → 幀像素
     final list = [...mosaics]..sort((a, b) => a.track.compareTo(b.track));
     for (final m in list) {
+      // 筆畫：共用畫家 paintMosaicStroke（跟照片匯出同一段程式碼）
+      final stk = m.stroke;
+      if (stk != null && stk.length >= 2) {
+        final pts = [
+          for (var i = 0; i + 1 < stk.length; i += 2)
+            Offset(stk[i] * size.width * k, stk[i + 1] * size.height * k),
+        ];
+        final brushPx = m.brush * math.min(size.width, size.height) * k;
+        final box = strokeBoundsPx(
+          pts,
+          brushPx,
+          strokeFeatherPx(m.style, brushPx),
+        );
+        final dst = Rect.fromLTWH(
+          box.left / k,
+          box.top / k,
+          box.width / k,
+          box.height / k,
+        );
+        paintMosaicStroke(canvas, shot, m.style, pts, brushPx, box, dst);
+        continue;
+      }
       // 大小基準跟 CIMosaicSpec 同一套：短邊 × scale
       final side = m.scale * math.min(size.width, size.height);
       final dst = Rect.fromCenter(

@@ -282,17 +282,11 @@ final class CIMosaicSpec {
   /// 疊放層級（時間軸軌道編號）：只糊 z 比它低的層
   let z: Int
 
+  /// 筆刷筆畫的遮罩（CI 座標、跟畫布同尺寸；nil＝一般方形）。
+  /// 建構時就畫好（CGContext 一次），逐格只做 CIBlendWithMask
+  let strokeMask: CIImage?
+
   init?(_ m: [String: Any], canvas: CGSize) {
-    let px = m["px"] as? Double ?? 0.5
-    let py = m["py"] as? Double ?? 0.5
-    let scale = m["scale"] as? Double ?? 1
-    let aspect = canvas.width / canvas.height
-    let side = (aspect <= 1 ? canvas.width : canvas.height) * CGFloat(scale)
-    guard side > 2 else { return nil }
-    rect = CGRect(
-      x: CGFloat(px) * canvas.width - side / 2,
-      y: CGFloat(py) * canvas.height - side / 2,
-      width: side, height: side)
     type = m["type"] as? Int ?? 0
     strength = min(1, max(0, m["strength"] as? Double ?? 0.5))
     let argb = m["color"] as? Int ?? 0xFF00_0000
@@ -305,6 +299,94 @@ final class CIMosaicSpec {
     start = m["start"] as? Double ?? 0
     end = m["end"] as? Double ?? 0
     if end <= start { return nil }
+
+    // 筆刷筆畫：範圍＝包圍盒；遮罩＝圓頭圓角粗線畫在跟畫布同尺寸的
+    // 灰階圖上（CI 是左下原點，畫的時候 y 翻過去），柔邊＝先收線寬
+    // 再整張高斯暈開——跟照片編輯器的共用畫家同一套規則
+    if let raw = m["stroke"] as? [Double], raw.count >= 2 {
+      let brushPx =
+        CGFloat(m["brush"] as? Double ?? 0.16)
+        * min(canvas.width, canvas.height)
+      let featherPx = CGFloat(feather) * 0.5 * brushPx
+      var pts: [CGPoint] = []
+      var i = 0
+      while i + 1 < raw.count {
+        pts.append(
+          CGPoint(
+            x: CGFloat(raw[i]) * canvas.width,
+            y: canvas.height - CGFloat(raw[i + 1]) * canvas.height))
+        i += 2
+      }
+      var minX = pts[0].x
+      var minY = pts[0].y
+      var maxX = minX
+      var maxY = minY
+      for p in pts {
+        minX = min(minX, p.x)
+        minY = min(minY, p.y)
+        maxX = max(maxX, p.x)
+        maxY = max(maxY, p.y)
+      }
+      let margin = brushPx / 2 + featherPx + 2
+      rect = CGRect(
+        x: minX - margin, y: minY - margin,
+        width: maxX - minX + margin * 2, height: maxY - minY + margin * 2)
+      var maskImg: CIImage? = nil
+      let w = Int(canvas.width.rounded())
+      let h = Int(canvas.height.rounded())
+      if w > 1, h > 1,
+        let cg = CGContext(
+          data: nil, width: w, height: h, bitsPerComponent: 8,
+          bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(),
+          bitmapInfo: CGImageAlphaInfo.none.rawValue)
+      {
+        cg.setFillColor(gray: 0, alpha: 1)
+        cg.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        cg.setStrokeColor(gray: 1, alpha: 1)
+        cg.setLineWidth(max(1, brushPx - (featherPx >= 1 ? featherPx : 0)))
+        cg.setLineCap(.round)
+        cg.setLineJoin(.round)
+        if pts.count == 1 {
+          let r0 = max(0.5, (brushPx - featherPx) / 2)
+          cg.setFillColor(gray: 1, alpha: 1)
+          cg.fillEllipse(
+            in: CGRect(
+              x: pts[0].x - r0, y: pts[0].y - r0,
+              width: r0 * 2, height: r0 * 2))
+        } else {
+          cg.beginPath()
+          cg.move(to: pts[0])
+          for p in pts.dropFirst() { cg.addLine(to: p) }
+          cg.strokePath()
+        }
+        if let img = cg.makeImage() {
+          var ci = CIImage(cgImage: img)
+          if featherPx >= 1 {
+            ci = ci.clampedToExtent()
+              .applyingFilter(
+                "CIGaussianBlur",
+                parameters: ["inputRadius": featherPx * 0.5])
+              .cropped(to: CGRect(x: 0, y: 0, width: w, height: h))
+          }
+          maskImg = ci
+        }
+      }
+      strokeMask = maskImg
+      guard rect.width > 2, rect.height > 2 else { return nil }
+      return
+    }
+    strokeMask = nil
+
+    let px = m["px"] as? Double ?? 0.5
+    let py = m["py"] as? Double ?? 0.5
+    let scale = m["scale"] as? Double ?? 1
+    let aspect = canvas.width / canvas.height
+    let side = (aspect <= 1 ? canvas.width : canvas.height) * CGFloat(scale)
+    guard side > 2 else { return nil }
+    rect = CGRect(
+      x: CGFloat(px) * canvas.width - side / 2,
+      y: CGFloat(py) * canvas.height - side / 2,
+      width: side, height: side)
   }
 }
 
@@ -511,6 +593,19 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             ])
           .cropped(to: region)
       }
+    }
+
+    // 筆刷筆畫：效果鋪滿包圍盒、筆畫遮罩決定哪裡吃效果
+    //（柔邊已烘進遮罩本身）。跟照片編輯器的 paintMosaicStroke
+    // 同一套語意，塗到哪碼到哪
+    if let mask = mz.strokeMask {
+      let fx = patch(r, 1).composited(over: base)
+      return fx.applyingFilter(
+        "CIBlendWithMask",
+        parameters: [
+          kCIInputBackgroundImageKey: base,
+          kCIInputMaskImageKey: mask,
+        ])
     }
 
     let margin = mz.feather * 0.35 * Double(min(r.width, r.height))
