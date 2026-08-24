@@ -141,10 +141,14 @@ class CompPlayer {
 
   /// [mutedTracks] 整軌靜音的軌號：音量在組合成時就烘進去，
   /// 所以切靜音要重組（呼叫端的指紋有把它算進去）
+  /// [hdrOut]：匯出選「保留 HDR」時預覽也走 HDR——HDR 素材播原檔
+  ///（工作檔是 SDR，播它永遠比成品淡）、合成不做 toneMap。
+  /// SDR 輸出時照舊（工作檔＋toneMap，已與成品同曲線）
   static Future<CompPlayer?> build(
     TimelineModel tl, {
     bool texture = true,
     Set<int> mutedTracks = const {},
+    bool hdrOut = false,
   }) async {
     if (!await available) return null;
     // 裁切/旋轉/透明度不再是阻擋條件：原生端會為它們掛 CI 合成器，
@@ -167,7 +171,9 @@ class CompPlayer {
       final i = c.sourceIndex;
       if (hdrOf.containsKey(i)) continue;
       final s = tl.sourceOf(c);
-      if (s.workPath != null) {
+      // HDR 輸出模式：一律探測原檔（工作檔捷徑會把 HDR 判成 SDR，
+      // 那正是要繞開的東西）
+      if (!hdrOut && s.workPath != null) {
         hdrOf[i] = false;
         continue;
       }
@@ -176,8 +182,11 @@ class CompPlayer {
     final clips = [
       for (final c in vids)
         {
-          // 一律用工作檔：轉正過、SDR、H.264，一條軌接得起來
-          'path': tl.sourceOf(c).previewPath,
+          // 一律用工作檔（轉正過、SDR、H.264）；HDR 輸出模式的
+          // HDR 素材例外：播原檔，畫面才是 HDR（工作檔是 SDR）
+          'path': hdrOut && (hdrOf[c.sourceIndex] ?? false)
+              ? tl.sourceOf(c).path
+              : tl.sourceOf(c).previewPath,
           // HDR 原檔要在原生端掛 CI 做 toneMap（見上）
           'hdr': hdrOf[c.sourceIndex] ?? false,
           'start': c.trimStart,
@@ -266,6 +275,7 @@ class CompPlayer {
         'texture': texture,
         'mosaics': mosaics,
         'stills': stills,
+        'hdrOut': hdrOut,
       });
       if (m == null) return null;
       // 原生端組不起來時會回原因，不要讓它只變成一句「組不起來」

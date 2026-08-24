@@ -1002,6 +1002,7 @@ final class AtomicFlag {
         let p = CompPlayer(registry: textures)
         let mosaics = args["mosaics"] as? [[String: Any]] ?? []
         let stills = args["stills"] as? [[String: Any]] ?? []
+        let hdrOut = args["hdrOut"] as? Bool ?? false
         // 馬賽克/圖片層要走 CI 合成器：先把濾鏡管線暖起來，
         // 接縫不吃首編譯
         if !mosaics.isEmpty || !stills.isEmpty {
@@ -1010,7 +1011,7 @@ final class AtomicFlag {
         guard
           p.build(
             clips: clips, texture: (args["texture"] as? Bool) ?? true,
-            mosaics: mosaics, stills: stills)
+            mosaics: mosaics, stills: stills, hdrOut: hdrOut)
         else {
           let why = p.buildError ?? "未知原因"
           p.dispose()
@@ -3253,7 +3254,7 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// color/feather/start/end）。非空時掛 CI 合成器把碼烘進畫面
   func build(
     clips: [[String: Any]], texture: Bool, mosaics: [[String: Any]] = [],
-    stills: [[String: Any]] = []
+    stills: [[String: Any]] = [], hdrOut: Bool = false
   ) -> Bool {
     let comp = AVMutableComposition()
     let scale: CMTimeScale = 600
@@ -3334,7 +3335,9 @@ final class CompPlayer: NSObject, FlutterTexture {
       // 墊在影片下層的圖片/GIF：烘進合成（標準 layer instruction
       // 畫不了外來影像，得走 CI 合成器）
       || !stills.isEmpty
-      || anyHDR
+      // HDR 輸出模式不做 toneMap：沒有別的效果時整個不掛合成器，
+      // 系統照 HDR 顯示（EDR，跟相簿/成品同一條）
+      || (anyHDR && !hdrOut)
       || ordered.contains { c in
         (c["crop"] as? [Double]) != nil
           || abs(c["rotation"] as? Double ?? 0) > 0.05
@@ -3634,8 +3637,9 @@ final class CompPlayer: NSObject, FlutterTexture {
       // 馬賽克要烘進畫面，一定得走合成器；裁切/旋轉/透明度同理
       || !mosaics.isEmpty
       || !stills.isEmpty
-      // HDR 原檔要靠合成器做 toneMapHDRtoSDR（見 needsCI 的說明）
-      || anyHDR
+      // HDR 原檔要靠合成器做 toneMapHDRtoSDR（見 needsCI 的說明）；
+      // HDR 輸出模式不映射，沒別的效果就不掛
+      || (anyHDR && !hdrOut)
       || segments.contains { seg in
         seg.crop != nil || abs(seg.rotation) > 0.05 || seg.opacity < 0.999
       }
@@ -3663,9 +3667,16 @@ final class CompPlayer: NSObject, FlutterTexture {
       // 播放器對「已經是 SDR 的像素」再套一次 HLG 顯示曲線——
       // 就是「進場 CI 有掛、顏色照樣洗白」（+93 診斷定罪）。
       // 匯出路早就標了（同一個教訓），播放路漏掉
-      vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
-      vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
-      vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
+      if hdrOut && anyHDR {
+        // HDR 預覽：跟 HDR 匯出同一組標記（HLG），像素不做映射
+        vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_2020
+        vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_2100_HLG
+        vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_2020
+      } else {
+        vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
+        vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
+        vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
+      }
 
       // 墊在影片下層的圖片/GIF：組成 CI 層（跟匯出同一套定位數學，
       // 畫布用預覽的 renderSize）。GIF 包成 CIGifSpec 逐幀取
@@ -3910,7 +3921,11 @@ final class CompPlayer: NSObject, FlutterTexture {
               holdIfEmpty: layers.isEmpty
                 && ((b - a).seconds < 0.12 || tail)))
         }
-        vc.customVideoCompositorClass = CIExportCompositor.self
+        // HDR 輸出模式掛 HDR 版合成器：同一套疊圖，不做色調映射、
+        // 輸出走 HLG 管線（跟 HDR 匯出同一顆）
+        vc.customVideoCompositorClass =
+          hdrOut && anyHDR
+          ? CIExportCompositorHDR.self : CIExportCompositor.self
         vc.instructions = built
         buildInfo["CI"] = true
         buildInfo["指令"] = built.map { ins -> String in

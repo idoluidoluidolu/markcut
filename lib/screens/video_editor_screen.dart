@@ -262,7 +262,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (key == _hdrCheckKey) return;
     _hdrCheckKey = key;
     NativeExport.anyHDR(paths).then((v) {
-      if (mounted && v != _hdrAvail) setState(() => _hdrAvail = v);
+      if (mounted && v != _hdrAvail) {
+        setState(() => _hdrAvail = v);
+        // HDR 判定出爐可能改變預覽管線（保留 HDR 是預設值）
+        _compRefreshIfChanged();
+      }
     });
   }
 
@@ -1115,6 +1119,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 整軌靜音是烘進合成的音量參數的，切了要重組——不記的話
     // 預覽照樣有聲音，匯出卻是靜音的（匯出另外走自己的靜音處理）
     'mute${(_mutedTracks.toList()..sort()).join(',')}',
+    // HDR 輸出開關：預覽管線跟著它切（HDR 素材播原檔 vs 工作檔）
+    'hdrOut${_exportHdr && _hdrAvail == true}',
   ].join(';');
 
   /// 馬賽克那部分的指紋（幾何＋樣式＋軌道）。
@@ -5172,6 +5178,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tl,
       texture: !Diag.playerLayer.value,
       mutedTracks: _mutedTracks,
+      // 匯出選「保留 HDR」＝預覽也走 HDR（跟成品同一個顯示管線）
+      hdrOut: _exportHdr && _hdrAvail == true,
     );
     _compDirty = false;
     if (!mounted) {
@@ -11799,12 +11807,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               // 來源是 HDR 才出現：SDR 匯出在 HDR 螢幕上永遠跟原片
               // 有落差（亮度被壓縮），要一樣只有輸出檔本身就是 HDR
               if (_hdrAvail == true)
-                row(
-                  'HDR',
-                  _exportHdr ? '保留（跟原片一樣）' : '轉成 SDR',
-                  () => setState(() => _exportHdr = !_exportHdr),
-                  divider: false,
-                ),
+                row('HDR', _exportHdr ? '保留（跟原片一樣）' : '轉成 SDR', () {
+                  setState(() => _exportHdr = !_exportHdr);
+                  // 預覽跟著切換 HDR/SDR 管線
+                  _compRefreshIfChanged();
+                }, divider: false),
               const SizedBox(height: 22),
               // 預估貼在匯出鈕正上方。它唯一的用途就是讓人在按下去之前
               // 決定要不要回頭改設定，放在最靠近手指的地方最有用。
