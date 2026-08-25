@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/services.dart';
 
 import '../models/timeline.dart';
@@ -110,12 +112,21 @@ class CompPlayer {
   /// 兩邊的判定不可能走鐘
   static Set<int> bakedImageIds(TimelineModel tl) {
     var top = -1;
+    // 合成只到影片結尾：整塊落在影片之後的圖片烘不進去（build 會
+    // 跳過），這裡也要用同一條件排除——不排除的話編輯器把它當
+    // 「已烘」不畫，預覽看不見、匯出卻有
+    var vidEnd = 0.0;
     for (final c in tl.clips) {
-      if (tl.sourceOf(c).isVideo && c.track > top) top = c.track;
+      if (!tl.sourceOf(c).isVideo) continue;
+      if (c.track > top) top = c.track;
+      if (c.end > vidEnd) vidEnd = c.end;
     }
     return {
       for (final c in tl.clips)
-        if (tl.sourceOf(c).kind == ClipKind.image && c.track <= top) c.id,
+        if (tl.sourceOf(c).kind == ClipKind.image &&
+            c.track <= top &&
+            c.offset < vidEnd)
+          c.id,
     };
   }
 
@@ -125,18 +136,26 @@ class CompPlayer {
   /// 上一次組不起來的原因（原生端回報的）。呼叫端拿去寫進診斷
   static String? lastError;
 
-  /// 這個檔是不是 HDR（probeLite 的 sdr709 判定；同一個路徑問過
-  /// 就記住——檔案內容不會變）。probeLite 沒實作的平台回 false
+  /// 這個檔是不是 HDR（probeLite 的 sdr709 判定）。
+  /// 快取鍵含檔案大小與修改時間：相簿的暫存路徑會重複使用
+  ///（work_files 自己就寫明了），只記路徑的話同一路徑換了
+  /// 另一支影片會沿用舊判定——SDR 被當 HDR 播原檔，或 HDR
+  /// 被當 SDR 整段發白
   static final Map<String, bool> _hdrCache = {};
   static Future<bool> _isHdrPath(String path) async {
-    final hit = _hdrCache[path];
+    var key = path;
+    try {
+      final st = await File(path).stat();
+      key = '$path#${st.size}#${st.modified.millisecondsSinceEpoch}';
+    } catch (_) {}
+    final hit = _hdrCache[key];
     if (hit != null) return hit;
     // 讀不到（探測失敗/沒實作）就當 HDR：CI 的 toneMap 對 SDR 輸入
-    // 是無害的空操作，多掛只是原檔期間多一點 GPU；漏掛就是整段白白
-    var hdr = true;
+    // 是無害的空操作，多掛只是原檔期間多一點 GPU；漏掛就是整段白白。
+    // 失敗的結果不進快取——之後重試還有機會拿到正確判定
     final m = await MediaPrep.probeLite(path);
-    if (m != null && m['error'] == null) hdr = m['sdr709'] != true;
-    return _hdrCache[path] = hdr;
+    if (m == null || m['error'] != null) return true;
+    return _hdrCache[key] = m['sdr709'] != true;
   }
 
   /// [mutedTracks] 整軌靜音的軌號：音量在組合成時就烘進去，

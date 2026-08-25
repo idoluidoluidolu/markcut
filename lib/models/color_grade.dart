@@ -82,7 +82,10 @@ class ColorGrade {
     balR: (j['balR'] ?? 0).toDouble(),
     balG: (j['balG'] ?? 0).toDouble(),
     balB: (j['balB'] ?? 0).toDouble(),
-    saturation: (j['saturation'] ?? 1.0).toDouble(),
+    // 夾到跟滑桿與 FFmpeg 路徑一致（colorchannelmixer 硬上限 2.0，
+    // 見 ffmpeg getter）：舊草稿若存了 >2 的值，預覽矩陣不夾、
+    // FFmpeg 退路夾，成品會比預覽淡
+    saturation: (j['saturation'] ?? 1.0).toDouble().clamp(0.0, 2.0),
     brightness: (j['brightness'] ?? 0).toDouble(),
     contrast: (j['contrast'] ?? 1.0).toDouble(),
     exposure: (j['exposure'] ?? 0).toDouble(),

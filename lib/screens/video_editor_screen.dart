@@ -300,7 +300,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     var best = 0.0;
     var bestCodec = '';
     var maxFps = 0.0;
-    for (final src in _tl.sources) {
+    // 拷貝一份再逐支 await：多選匯入時每支都會呼叫這裡，而下一支
+    // 的 sources.add 會讓迭代中的原清單丟 ConcurrentModificationError
+    for (final src in List.of(_tl.sources)) {
       if (!src.isVideo || src.duration <= 0) continue;
       final bytes = await fileSizeBytes(src.path);
       if (bytes <= 0) continue;
@@ -455,7 +457,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           .clamp(_dressVN.value, 0.97);
       await Future<void>.delayed(const Duration(milliseconds: 80));
     }
-    _dressVN.value = 1;
+    // 打扮期間按返回：notifier 已在 dispose 被釋放，再寫會炸斷言
+    if (mounted) _dressVN.value = 1;
   }
 
   TimelineClip? _clipboard; // 複製的片段（貼上時以播放頭為起點）
@@ -481,7 +484,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// _tryEndScrub 的「對齊回彈」看這個：手指還在就不准動時間軸
   int _tlFingers = 0;
 
+  /// 手指最後有動靜的時間：抬手事件遺失時（檔內其他地方已實測
+  /// 會發生）計數卡在 >0，_tryEndScrub 每 80ms 無限重排、拖曳
+  /// 收尾永不執行。超過 3 秒沒動靜就當殘指歸零
+  DateTime _tlFingersAt = DateTime.fromMillisecondsSinceEpoch(0);
+
   void _pinchDown(PointerDownEvent e) {
+    if (_tlFingers > 0 &&
+        DateTime.now().difference(_tlFingersAt).inSeconds > 3) {
+      _tlFingers = 0;
+    }
+    _tlFingersAt = DateTime.now();
     _tlFingers++;
     // 對齊動畫進行到一半被新的一指打斷時，_suppressScroll 可能
     // 還卡在 true——那會把接下來整段拖曳的 seek 全部吃掉
@@ -516,6 +529,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   void _pinchMove(PointerMoveEvent e) {
+    _tlFingersAt = DateTime.now(); // 有動靜＝不是殘指（不分種類）
     if (e.kind != ui.PointerDeviceKind.touch) return;
     if (!_pinchPts.containsKey(e.pointer)) return;
     _pinchSeen[e.pointer] = DateTime.now();
@@ -606,6 +620,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 存在來源上，漏掉的話那些編輯按復原根本退不回去
       'sources': [for (final s in _tl.sources) s.toJson()],
       'muted': _fsMuted,
+      // 匯出設定也要進快照：_restoreSnapshot 會讀這兩鍵，
+      // 不寫的話按一次上一步 fps 被重設成自動、HDR 變回開——
+      // undo 悄悄改掉匯出設定
+      'fps': _fps,
+      'hdrOut': _exportHdr,
+      'mutedTracks': _mutedTracks.toList(),
       'wmStart': _wmStart,
       'wmEnd': _wmEnd,
       'wm': wm,
@@ -671,8 +691,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final fixedIds = _tl.fixDuplicateIds();
       if (fixedIds > 0) Diag.note('快照裡有 $fixedIds 個撞號的片段 id，已補新號');
       _fsMuted = j['muted'] == true;
-      _fps = ((j['fps'] ?? 0) as num).toInt();
-      _exportHdr = (j['hdrOut'] ?? true) == true;
+      // 舊快照沒這幾鍵（升級前拍的）：沿用現況，不要硬還原成預設
+      if (j['fps'] != null) _fps = (j['fps'] as num).toInt();
+      if (j['hdrOut'] != null) _exportHdr = j['hdrOut'] == true;
+      if (j['mutedTracks'] is List) {
+        _mutedTracks
+          ..clear()
+          ..addAll([for (final t in (j['mutedTracks'] as List)) t as int]);
+      }
       _wmStart = (j['wmStart'] ?? 0).toDouble();
       _wmEnd = j['wmEnd'] == null ? null : (j['wmEnd'] as num).toDouble();
       if (j['wm'] != null) {
@@ -965,7 +991,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (t.enabled)
           't${t.text}|${t.fontFamily}|${t.colorValue}|${t.opacity}'
               '|${t.sizeFrac}|${t.spacing}|${t.x}|${t.y}|${t.rotation}'
-              '|${t.tiled}|${t.shadow}|${t.outline}|${t.outlineColorValue}',
+              '|${t.tiled}|${t.shadow}|${t.outline}|${t.outlineColorValue}'
+              // 字重、底色、陰影參數也會改畫面，漏了封面不重畫
+              '|${t.weight}|${t.bg}|${t.bgColorValue}|${t.bgOpacity}'
+              '|${t.bgPad}|${t.bgCorner}|${t.shadowOpacity}'
+              '|${t.shadowBlur}|${t.outlineWidth}',
       for (final l in _settings.logos)
         if (l.enabled)
           'l${l.b64?.length ?? 0}|${l.opacity}|${l.sizeFrac}|${l.x}'
@@ -1054,6 +1084,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       'fps': _fps,
       'hdrOut': _exportHdr,
       'qualityAuto': _qualityAuto,
+      // 靜音狀態也要進草稿：_loadDraft 讀 j['muted']，這裡以前
+      // 沒寫；軌道靜音更是兩頭都沒有——存草稿重開靜音全消失，
+      // 匯出音量跟著使用者記憶中的設定不同
+      'muted': _fsMuted,
+      'mutedTracks': _mutedTracks.toList(),
       'wm': _settings.toJson(),
       'wmStart': _wmStart,
       'wmEnd': _wmEnd,
@@ -1146,10 +1181,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       for (final c in _tl.clips)
         if (_tl.sourceOf(c).kind == ClipKind.image)
           baked.contains(c.id)
+              // 來源路徑與調色也要進指紋：payload 有送（path/gif/
+              // color），指紋沒記的話「換一個」換了圖、只調了調色
+              // 都不會觸發重烘，預覽持續顯示舊圖
               ? 'im${c.id}|${c.track}|${c.offset}|${c.end}|${c.px}|${c.py}'
                     '|${c.scale}|${c.mirror}|${c.fadeIn}|${c.fadeOut}'
                     '|${c.rotation}|${c.opacity}|${c.cropped}|${c.cropL}'
                     '|${c.cropT}|${c.cropW}|${c.cropH}'
+                    '|${_tl.sourceOf(c).path}|${_tl.sourceOf(c).isGif}'
+                    '|${c.color.hasColor ? c.color.matrix.join(',') : '-'}'
               : 'im${c.track}',
     ].join(';');
   }
@@ -1317,6 +1357,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _wmStart = ((j['wmStart'] ?? 0) as num).toDouble();
     _wmEnd = j['wmEnd'] == null ? null : (j['wmEnd'] as num).toDouble();
     _fsMuted = j['muted'] == true;
+    if (j['mutedTracks'] is List) {
+      _mutedTracks
+        ..clear()
+        ..addAll([for (final t in (j['mutedTracks'] as List)) t as int]);
+    }
     _fps = ((j['fps'] ?? 0) as num).toInt();
     _exportHdr = (j['hdrOut'] ?? true) == true;
     _extraBlankTracks = ((j['extraTracks'] ?? 0) as num).toInt();
@@ -2097,6 +2142,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     for (final c in _tl.clips) {
       if (c.sourceIndex != srcIndex) continue;
       _ctrls.remove(c.id)?.dispose();
+      // 音量/速度快取跟著舊播放器走：新播放器是預設值，不清的話
+      // _play/_syncMediaBody 看到「值沒變」就跳過設定——靜音的
+      // 片段換完工作檔變有聲、2x 片段用 1x 播
+      _lastVol.remove(c.id);
+      _lastSpeed.remove(c.id);
       // 合成播放器接手時畫面不由這些播放器出，開回來只是白佔解碼資源
       if (!_compOn) _ensureCtrlFor(c);
     }
@@ -2487,6 +2537,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 直接打架。往左滑沒事是因為向前 seek 快、_seekInFlight 早就清了，
     // 收尾多半趕在手指停頓前就結束；向後 seek 要回到前一個關鍵幀
     // 重解，_seekInFlight 拖很久，收尾正好撞上手指
+    if (_tlFingers > 0 &&
+        DateTime.now().difference(_tlFingersAt).inSeconds > 3) {
+      // 殘指自癒：抬手事件遺失時計數會卡住，收尾從此排不進來
+      _tlFingers = 0;
+    }
     if (_seekInFlight || _tlFingers > 0) {
       _scrubEndTimer = Timer(const Duration(milliseconds: 80), _tryEndScrub);
       return;
@@ -3557,7 +3612,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tl.sources.add(
         MediaSource(
           path: path,
-          name: path.split(Platform.pathSeparator).last,
+          // web 沒有 Platform（會丟 Unsupported operation）；
+          // blob 連結用 '/' 切就好
+          name: kIsWeb
+              ? path.split('/').last
+              : path.split(Platform.pathSeparator).last,
           kind: ClipKind.image,
           duration: 3600,
           w: imgW,
@@ -5292,7 +5351,27 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (mounted) setState(() {});
   }
 
+  /// 組建進行中的鎖：匯入排程（_drainPrep）與編輯重烘
+  ///（_compRefreshIfChanged）可能併發進來，各組一顆的話後完成者
+  /// 直接覆蓋前者——留在 _comp 裡的可能是原生端已經收掉的那顆
+  ///（畫面全黑）。一次只組一顆；排隊等到的人重跑檢查，
+  /// 該重組自然會再組、已新鮮就直接返回
+  Future<void>? _compBuilding;
+
   Future<void> _ensureComp() async {
+    while (_compBuilding != null) {
+      await _compBuilding;
+    }
+    final task = _ensureCompInner();
+    _compBuilding = task;
+    try {
+      await task;
+    } finally {
+      _compBuilding = null;
+    }
+  }
+
+  Future<void> _ensureCompInner() async {
     if (!Diag.compPlayer.value) {
       if (_comp != null) {
         await _comp!.dispose();
@@ -7213,27 +7292,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _pasteClipboard({double? at, int? track}) async {
     final cb = _clipboard;
     if (cb == null) return;
+    // 剪貼簿可能指著已被復原掉的來源（undo 整包換掉 sources）：
+    // 裸下標會 RangeError；先驗界，失效就清掉剪貼簿
+    if (cb.sourceIndex < 0 || cb.sourceIndex >= _tl.sources.length) {
+      _clipboard = null;
+      showHint(context, '剛剛複製的素材已經不在了');
+      return;
+    }
     _pushUndo();
     // 浮水印／文字／馬賽克素材：樣式在來源上，貼上要有自己的一份，
-    // 不然改貼出來那份的樣式，原本那份會跟著變
+    // 不然改貼出來那份的樣式，原本那份會跟著變。
+    // 用 dupStyle：手抄欄位漏過 isSticker 與筆刷筆畫（貼上貼圖
+    // 變回浮水印、貼上筆刷馬賽克筆畫蒸發）
     var srcIdx = cb.sourceIndex;
     final cbSrc = _tl.sources[srcIdx];
     if (cbSrc.kind == ClipKind.wm ||
         cbSrc.kind == ClipKind.text ||
         cbSrc.kind == ClipKind.mosaic) {
-      _tl.sources.add(
-        MediaSource(
-          path: cbSrc.path,
-          name: cbSrc.name,
-          kind: cbSrc.kind,
-          w: cbSrc.w,
-          h: cbSrc.h,
-          duration: cbSrc.duration,
-          textStyle: cbSrc.textStyle?.copy(),
-          wmStyle: cbSrc.wmStyle?.copy(),
-          mosaicStyle: cbSrc.mosaicStyle?.copy(),
-        ),
-      );
+      _tl.sources.add(cbSrc.dupStyle());
       srcIdx = _tl.sources.length - 1;
     }
     final clip = TimelineClip(
@@ -7254,12 +7330,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 調好位置大小的疊圖會跳回置中原尺寸、倒轉的片段會變正播
       speed: cb.speed,
       reverse: cb.reverse,
+      mirror: cb.mirror,
       px: cb.px,
       py: cb.py,
       scale: cb.scale,
       fadeIn: cb.fadeIn,
       fadeOut: cb.fadeOut,
       color: cb.color.copy(),
+      cropL: cb.cropL,
+      cropT: cb.cropT,
+      cropW: cb.cropW,
+      cropH: cb.cropH,
+      opacity: cb.opacity,
+      rotation: cb.rotation,
     );
     // 播放器交給 _ensureCtrlFor（有種類判斷＋錯誤保護）
     _ensureCtrlFor(clip);
@@ -7375,7 +7458,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     for (var i = 0; i < 100 && _scrubExtracting > 0; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
-    if (!mounted) return;
+    if (!mounted) {
+      // 等待期間使用者離開了：全域狀態要還原再走——不還原的話
+      // 整個 App 的圖片快取永久停用、工作檔清理永久停擺
+      PaintingBinding.instance.imageCache
+        ..maximumSize = 300
+        ..maximumSizeBytes = 96 << 20;
+      WorkFiles.holdSweep = false;
+      _exporting = false;
+      return;
+    }
 
     final progress = ValueNotifier<double>(0);
     // 剩餘時間用實際進度速率推，比任何靜態公式都準
@@ -7555,13 +7647,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     PaintingBinding.instance.imageCache
       ..maximumSize = 300
       ..maximumSizeBytes = 96 << 20;
-    // 播放器匯出前全放掉了，現在重建
+    // 播放器匯出前全放掉了，現在重建。音量/速度快取一起清：
+    // 新播放器是預設值，不清的話「值沒變」的判定會跳過設定，
+    // 靜音片段匯出完變有聲
+    _lastVol.clear();
+    _lastSpeed.clear();
     for (final c in _tl.clips) {
       _ensureCtrlFor(c);
     }
     _resyncPlayback();
     WorkFiles.holdSweep = false;
-    setState(() => _exporting = false);
+    // 匯出後畫面可能已經 unmount（匯出中離開）：旗標照清，
+    // 但不能對死畫面 setState
+    if (mounted) {
+      setState(() => _exporting = false);
+    } else {
+      _exporting = false;
+    }
     // 匯出前把抽幀快取清光了，現在重新抽回來（拖曳預覽要用）
     for (var i = 0; i < _tl.sources.length; i++) {
       final s = _tl.sources[i];

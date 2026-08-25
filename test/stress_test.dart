@@ -324,7 +324,9 @@ void main() {
           ..balR = r.nextDouble() * 2 - 1
           ..balG = r.nextDouble() * 2 - 1
           ..balB = r.nextDouble() * 2 - 1
-          ..saturation = r.nextDouble() * 3
+          // 飽和度有效範圍是 0~2（滑桿上限＝FFmpeg
+          // colorchannelmixer 的硬上限；fromJson 會夾）
+          ..saturation = r.nextDouble() * 2
           ..brightness = r.nextDouble() * 2 - 1
           ..contrast = r.nextDouble() * 3
           ..exposure = r.nextDouble() * 2 - 1;
