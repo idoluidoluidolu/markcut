@@ -8029,11 +8029,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _cmpMode = false;
   Uint8List? _cmpFrame;
 
+  /// HDR 模式的左半快照：對照時兩半都用「系統 toneMap 的快照」。
+  /// 不這樣的話，左半是活的 HDR 圖層（EDR 高亮）、右半是 SDR
+  /// JPEG——就算預覽 100% 正確，左邊也一定比右邊亮，
+  /// 這把尺本身就是歪的（鬼打牆的來源）
+  Uint8List? _cmpFrameL;
+
   Future<void> _toggleCompare() async {
     if (_cmpMode) {
       setState(() {
         _cmpMode = false;
         _cmpFrame = null;
+        _cmpFrameL = null;
       });
       return;
     }
@@ -8055,14 +8062,41 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       showHint(context, '抽不到成品的畫面（成品暫存檔可能已被系統清掉）', error: true);
       return;
     }
+    // HDR 模式：左半也抽快照（預覽現在播的那支檔、同一格），
+    // 兩半走同一條系統 toneMap，比的才是「像素一不一樣」
+    Uint8List? lb;
+    final hdrCmp = _exportHdr && _hdrAvail == true;
+    if (hdrCmp) {
+      TimelineClip? top;
+      for (final c in _tl.clips) {
+        if (!_tl.sourceOf(c).isVideo) continue;
+        if (c.offset <= _position && c.end > _position) {
+          if (top == null || c.track > top.track) top = c;
+        }
+      }
+      if (top != null) {
+        final s = _tl.sourceOf(top);
+        lb = await nativeFrameAt(
+          s.workHdrPath ?? s.path,
+          top.sourceTimeAt(_position),
+          maxH: 1440,
+          quality: 0.92,
+        );
+      }
+    }
+    if (!mounted) return;
     setState(() {
       _cmpMode = true;
       _cmpFrame = fb;
+      _cmpFrameL = lb;
     });
     showHint(
       context,
-      '對照模式：左＝預覽、右＝成品。換位置後再長按一次更新',
-      duration: const Duration(seconds: 4),
+      hdrCmp
+          ? '對照模式（HDR）：兩半都是同一套 SDR 快照，比的是像素曲線；'
+                'HDR 實際亮度請到相簿比原片與成品'
+          : '對照模式：左＝預覽、右＝成品。換位置後再長按一次更新',
+      duration: const Duration(seconds: 5),
     );
 
     // 順手產一張 AB 檢驗卡存相簿：左＝預覽引擎畫的浮水印、
@@ -9798,6 +9832,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       child: Stack(
                         fit: StackFit.expand,
                         children: [
+                          // HDR 模式：左半也蓋快照（同一把尺，見
+                          // _cmpFrameL 的說明）
+                          if (_cmpFrameL != null)
+                            ClipRect(
+                              clipper: _LeftHalfClipper(),
+                              child: Image.memory(
+                                _cmpFrameL!,
+                                fit: BoxFit.fill,
+                                gaplessPlayback: true,
+                              ),
+                            ),
                           ClipRect(
                             clipper: _RightHalfClipper(),
                             child: Image.memory(
@@ -12300,6 +12345,14 @@ class _CropClipper extends CustomClipper<Rect> {
 }
 
 /// 對照模式的右半裁切（左半留給活的預覽）
+class _LeftHalfClipper extends CustomClipper<Rect> {
+  @override
+  Rect getClip(Size size) => Rect.fromLTWH(0, 0, size.width / 2, size.height);
+
+  @override
+  bool shouldReclip(covariant CustomClipper<Rect> old) => false;
+}
+
 class _RightHalfClipper extends CustomClipper<Rect> {
   @override
   Rect getClip(Size size) =>

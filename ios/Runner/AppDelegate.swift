@@ -2573,6 +2573,12 @@ final class AtomicFlag {
     done: @escaping (String?) -> Void
   ) {
     try? FileManager.default.removeItem(atPath: dest)
+    if hdrPass {
+      DispatchQueue.main.async {
+        channel.invokeMethod(
+          "note", arguments: "HDR 代理：零處理（解碼→縮放→重編碼，不動色彩）")
+      }
+    }
     let asset = AVURLAsset(url: URL(fileURLWithPath: src))
     guard let vTrack = asset.tracks(withMediaType: .video).first,
       let reader = try? AVAssetReader(asset: asset),
@@ -2587,11 +2593,10 @@ final class AtomicFlag {
     // HDR 來源：掛跟匯出/合成播放器同一顆 CI 合成器做色調映射。
     // 內建合成器的 HDR→SDR 是另一條曲線——「預覽（播工作檔）跟
     // 成品（CI toneMap）顏色不一樣」的根因就是工作檔在這裡分家。
-    // HDR 直通模式（hdrPass）不映射：10-bit 進、10-bit 出。
-    // 直通也要走 CI 合成器（HDR 版）——內建合成器的「直通」在
-    // 這條 reader 路上其實會把像素轉掉，檔案卻標著 HLG，播放端
-    // 再做 EDR 增益就是「整個顏色爆炸」（+106 實測）
-    let isHDR = hdrPass || CompPlayer.isHDRSource(src)
+    // HDR 直通模式（hdrPass）＝零處理：純解碼→縮放→重編碼，
+    // 不掛任何合成器（內建的、CI 的都不掛）、色彩標記照抄來源、
+    // 方向保留旗標。像素不經過任何色彩管線，物理上不可能變色
+    let isHDR = hdrPass ? false : CompPlayer.isHDRSource(src)
     let pixels: [String: Any] = [
       kCVPixelBufferPixelFormatTypeKey as String: Int(
         hdrPass
@@ -2604,7 +2609,11 @@ final class AtomicFlag {
     // 輸出尺寸縮的是短邊：直式拿到 1080x1920、橫式拿到 1920x1080，
     // 兩種方向的清晰度與解碼成本都一樣。系統預設的「塞進 1920x1080」
     // 會把直式 4K 縮成 607x1080，長邊只剩六成，預覽就糊了
-    let disp = vTrack.naturalSize.applying(vTrack.preferredTransform)
+    // 零處理（hdrPass）不轉正：畫框尺寸用未旋轉的原始尺寸，
+    // 方向靠旗標帶著走（跟原檔一樣）
+    let disp = hdrPass
+      ? vTrack.naturalSize
+      : vTrack.naturalSize.applying(vTrack.preferredTransform)
     let dw = abs(disp.width)
     let dh = abs(disp.height)
     guard dw > 1, dh > 1 else {
@@ -2669,9 +2678,7 @@ final class AtomicFlag {
       DispatchQueue.main.async {
         channel.invokeMethod(
           "note",
-          arguments: hdrPass
-            ? "HDR 代理：CI HLG 直通（跟 HDR 匯出同一顆合成器）"
-            : "工作檔（HDR）：CI 色調映射，跟成品同一條曲線")
+          arguments: "工作檔（HDR）：CI 色調映射，跟成品同一條曲線")
       }
     } else {
       let ins = AVMutableVideoCompositionInstruction()
@@ -2684,10 +2691,19 @@ final class AtomicFlag {
       ins.layerInstructions = [li]
       vc.instructions = [ins]
     }
-    let vOut = AVAssetReaderVideoCompositionOutput(
-      videoTracks: [vTrack], videoSettings: pixels)
-    vOut.videoComposition = vc
-    vOut.alwaysCopiesSampleData = false
+    let vOut: AVAssetReaderOutput
+    if hdrPass {
+      // 零處理：純解碼，不經過任何合成器
+      let o = AVAssetReaderTrackOutput(track: vTrack, outputSettings: pixels)
+      o.alwaysCopiesSampleData = false
+      vOut = o
+    } else {
+      let o = AVAssetReaderVideoCompositionOutput(
+        videoTracks: [vTrack], videoSettings: pixels)
+      o.videoComposition = vc
+      o.alwaysCopiesSampleData = false
+      vOut = o
+    }
     guard reader.canAdd(vOut) else {
       done("讀取端建不起來")
       return
@@ -2708,27 +2724,57 @@ final class AtomicFlag {
       vCompression[AVVideoProfileLevelKey] =
         kVTProfileLevel_HEVC_Main10_AutoLevel as String
     }
-    let vIn = AVAssetWriterInput(
-      mediaType: .video,
-      outputSettings: [
-        AVVideoCodecKey: hdrPass ? AVVideoCodecType.hevc : .h264,
-        AVVideoWidthKey: Int(size.width),
-        AVVideoHeightKey: Int(size.height),
-        AVVideoCompressionPropertiesKey: vCompression,
-        // 明確標色彩：CI 合成器輸出的緩衝不帶附註，編碼器會自己猜
-        AVVideoColorPropertiesKey: hdrPass
-          ? [
-            AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
-            AVVideoTransferFunctionKey:
-              AVVideoTransferFunction_ITU_R_2100_HLG,
-            AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020,
-          ] as [String: Any]
-          : [
-            AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
-            AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
-            AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
-          ] as [String: Any],
-      ])
+    // 零處理的色彩標記照抄來源（讀不到才退回 HLG 常見組合）——
+    // 像素沒動，標記也原封，播放端的解讀跟原檔一字不差
+    var hdrColor: [String: Any] = [
+      AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
+      AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_2100_HLG,
+      AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020,
+    ]
+    if hdrPass, let fdAny = vTrack.formatDescriptions.first {
+      let fd = fdAny as! CMFormatDescription
+      if let v = CMFormatDescriptionGetExtension(
+        fd, extensionKey: kCMFormatDescriptionExtension_ColorPrimaries)
+        as? String
+      {
+        hdrColor[AVVideoColorPrimariesKey] = v
+      }
+      if let v = CMFormatDescriptionGetExtension(
+        fd, extensionKey: kCMFormatDescriptionExtension_TransferFunction)
+        as? String
+      {
+        hdrColor[AVVideoTransferFunctionKey] = v
+      }
+      if let v = CMFormatDescriptionGetExtension(
+        fd, extensionKey: kCMFormatDescriptionExtension_YCbCrMatrix)
+        as? String
+      {
+        hdrColor[AVVideoYCbCrMatrixKey] = v
+      }
+    }
+    var vSettings: [String: Any] = [
+      AVVideoCodecKey: hdrPass ? AVVideoCodecType.hevc : .h264,
+      AVVideoWidthKey: Int(size.width),
+      AVVideoHeightKey: Int(size.height),
+      AVVideoCompressionPropertiesKey: vCompression,
+      // 明確標色彩：不標的話編碼器會自己猜
+      AVVideoColorPropertiesKey: hdrPass
+        ? hdrColor
+        : [
+          AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+          AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
+          AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
+        ] as [String: Any],
+    ]
+    if hdrPass {
+      // 4K 進 1080 出：縮放交給編碼器（YUV 域等比縮，無色彩轉換）
+      vSettings[AVVideoScalingModeKey] = AVVideoScalingModeResize
+    }
+    let vIn = AVAssetWriterInput(mediaType: .video, outputSettings: vSettings)
+    if hdrPass {
+      // 方向照原檔留旗標（零處理不轉正）
+      vIn.transform = vTrack.preferredTransform
+    }
     vIn.expectsMediaDataInRealTime = false
     guard writer.canAdd(vIn) else {
       done("寫入端建不起來")
