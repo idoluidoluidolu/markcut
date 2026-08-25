@@ -7283,6 +7283,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _frameSettle?.cancel();
     _playProbe?.cancel();
     _prepEscapeTimer?.cancel();
+    _staleKickTimer?.cancel();
     _posVN.dispose();
     _frameVN.dispose();
     _dressVN.dispose();
