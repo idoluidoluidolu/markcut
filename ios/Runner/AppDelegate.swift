@@ -3671,13 +3671,10 @@ final class CompPlayer: NSObject, FlutterTexture {
     mix.inputParameters = aParams
     let item = AVPlayerItem(asset: comp)
     item.audioMix = mix
-    // 抽幀口：只在被要求時才 copy 一格，平常零成本
-    let vOutTap = AVPlayerItemVideoOutput(pixelBufferAttributes: [
-      kCVPixelBufferPixelFormatTypeKey as String: Int(
-        kCVPixelFormatType_32BGRA)
-    ])
-    item.add(vOutTap)
-    videoOut = vOutTap
+    // 抽幀口改「用到才掛」（見 grabFrame）：常駐掛一個 BGRA 輸出
+    // 會讓顯示管線退化——HDR 原檔在圖層上過飽和爆掉（+109 實驗：
+    // 同一個檔相簿正常、我們爆，唯一差異就是這個 tap）
+    videoOut = nil
     // 變速時聲音保持音高（跟主流剪輯 App 一致）
     item.audioTimePitchAlgorithm = .timeDomain
     // 系統自己喊的「播放卡住了」：時間點記下來，跟供格節奏對照
@@ -4346,15 +4343,35 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 「重烘空窗即時鋪面」用：剛加的馬賽克先用這格＋Flutter 畫出來，
   /// 重烘好再換真的
   func grabFrame(maxH: Int, done: @escaping (Data?) -> Void) {
+    // 用到才掛：常駐的 BGRA 輸出會讓顯示管線退化（HDR 爆色）。
+    // 掛上去的當下畫面上那格還沒送進 tap，原地精準 seek 一發
+    // 逼它重繪，再輪詢把那格抄出來
+    if videoOut == nil, let item = player.currentItem {
+      let vo = AVPlayerItemVideoOutput(pixelBufferAttributes: [
+        kCVPixelBufferPixelFormatTypeKey as String: Int(
+          kCVPixelFormatType_32BGRA)
+      ])
+      item.add(vo)
+      videoOut = vo
+      let t0 = player.currentTime()
+      player.seek(to: t0, toleranceBefore: .zero, toleranceAfter: .zero)
+    }
     guard let vo = videoOut else {
       done(nil)
       return
     }
     let t = player.currentTime()
     DispatchQueue.global(qos: .userInitiated).async {
-      guard let pb = vo.copyPixelBuffer(
+      var pb: CVPixelBuffer? = vo.copyPixelBuffer(
         forItemTime: t, itemTimeForDisplay: nil)
-      else {
+      // 剛掛上的 tap 要等重繪那格到位（最多等 0.6 秒）
+      var waited = 0
+      while pb == nil, waited < 30 {
+        Thread.sleep(forTimeInterval: 0.02)
+        waited += 1
+        pb = vo.copyPixelBuffer(forItemTime: t, itemTimeForDisplay: nil)
+      }
+      guard let pb = pb else {
         done(nil)
         return
       }
@@ -4369,7 +4386,16 @@ final class CompPlayer: NSObject, FlutterTexture {
         done(nil)
         return
       }
-      done(UIImage(cgImage: cg).jpegData(compressionQuality: 0.85))
+      let data = UIImage(cgImage: cg).jpegData(compressionQuality: 0.85)
+      // 抄完就拆：tap 留著顯示管線就一直退化
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { return }
+        if let vo2 = self.videoOut, let item = self.player.currentItem {
+          item.remove(vo2)
+        }
+        self.videoOut = nil
+      }
+      done(data)
     }
   }
 
