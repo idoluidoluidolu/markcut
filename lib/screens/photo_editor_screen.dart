@@ -2410,6 +2410,39 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   double _pvBaseExtraText = 0.12;
   double _pvBaseExtraLogo = 0.18;
 
+  // 兩指旋轉（跟影片編輯器同一套手感：轉多少是多少、15 度吸附）
+  double _pvBaseAngle = 0;
+  double _pvBaseRotText = 0;
+  double _pvBaseRotLogo = 0;
+  double _pvBaseRotExtraText = 0;
+  double _pvBaseRotExtraLogo = 0;
+  double? _rotSnapAt;
+
+  /// 每 15 度吸一次，附近 4 度內就黏上去（黏住的瞬間震一下）
+  double _snapAngle(double deg) {
+    final near = (deg / 15.0).roundToDouble() * 15.0;
+    if ((deg - near).abs() <= 4) {
+      if (_rotSnapAt != near) {
+        _rotSnapAt = near;
+        HapticFeedback.selectionClick();
+      }
+      return near;
+    }
+    if (_rotSnapAt != null) _rotSnapAt = null;
+    return deg;
+  }
+
+  static double _wrapDeg(double v) {
+    var x = v;
+    while (x > 180) {
+      x -= 360;
+    }
+    while (x < -180) {
+      x += 360;
+    }
+    return x;
+  }
+
   void _pinchDown(PointerDownEvent e) {
     // 只有觸控算捏合（跟影片端時間軸同一套防護）：滑鼠／觸控筆
     // 不可能兩指，而 web 上滑鼠在視窗外放開時 pointer-up 常整顆
@@ -2431,14 +2464,19 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     final d = (p[0] - p[1]).distance;
     if (d <= 20) return;
     _pvBaseDist = d;
+    _pvBaseAngle = math.atan2(p[1].dy - p[0].dy, p[1].dx - p[0].dx);
     _pvBaseText = _settings.text.sizeFrac;
     _pvBaseLogo = _settings.logo.sizeFrac;
+    _pvBaseRotText = _settings.text.rotation;
+    _pvBaseRotLogo = _settings.logo.rotation;
     if (_selMosaic >= 0 && _selMosaic < _mosaics.length) {
       _pvBaseMosaic = _mosaics[_selMosaic].scale;
     }
     if (_selExtra >= 0 && _selExtra < _extraWms.length) {
       _pvBaseExtraText = _extraWms[_selExtra].text.sizeFrac;
       _pvBaseExtraLogo = _extraWms[_selExtra].logo.sizeFrac;
+      _pvBaseRotExtraText = _extraWms[_selExtra].text.rotation;
+      _pvBaseRotExtraLogo = _extraWms[_selExtra].logo.rotation;
     }
     _phUndoPending = true;
   }
@@ -2450,9 +2488,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     if (_pvBaseDist == null || _pvPts.length < 2) return;
     final p = _pvPts.values.toList();
     final f = (p[0] - p[1]).distance / _pvBaseDist!;
+    // 兩指轉多少就轉多少（跟影片編輯器同一套）。手指幾乎沒轉時
+    // 不動它——單純想縮放的人不該被順手轉歪
+    final ang = math.atan2(p[1].dy - p[0].dy, p[1].dx - p[0].dx);
+    final dDeg = _wrapDeg((ang - _pvBaseAngle) * 180 / math.pi);
+    final doRot = dDeg.abs() > 3;
     _phPushUndoIfNeeded(); // 真的縮到東西了才拍
     setState(() {
-      // 有選中馬賽克：雙指縮它，不動浮水印
+      // 有選中馬賽克：雙指縮它，不動浮水印（打碼區域不支援旋轉）
       if (_selMosaic >= 0 && _selMosaic < _mosaics.length) {
         // 上限跟樣式表滑桿一致（3.0）：以前夾 1.5，用滑桿放大到
         // 200% 的馬賽克一做捏合就瞬間跳縮回 150%
@@ -2467,9 +2510,15 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         final hasLogo = e.logo.enabled;
         if (hasText && (part != WmPart.logo || !hasLogo)) {
           e.text.sizeFrac = (_pvBaseExtraText * f).clamp(0.015, 2.0);
+          if (doRot) {
+            e.text.rotation = _snapAngle(_wrapDeg(_pvBaseRotExtraText + dDeg));
+          }
         }
         if (hasLogo && (part != WmPart.text || !hasText)) {
           e.logo.sizeFrac = (_pvBaseExtraLogo * f).clamp(0.03, 2.0);
+          if (doRot) {
+            e.logo.rotation = _snapAngle(_wrapDeg(_pvBaseRotExtraLogo + dDeg));
+          }
         }
         return;
       }
@@ -2481,9 +2530,17 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       final part = _wmPartAlive;
       final doText = hasText && (part != WmPart.logo || !hasLogo);
       final doLogo = hasLogo && (part != WmPart.text || !hasText);
-      if (doText) t.sizeFrac = (_pvBaseText * f).clamp(0.015, 2.0);
+      if (doText) {
+        t.sizeFrac = (_pvBaseText * f).clamp(0.015, 2.0);
+        if (doRot) {
+          t.rotation = _snapAngle(_wrapDeg(_pvBaseRotText + dDeg));
+        }
+      }
       if (doLogo) {
         _settings.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
+        if (doRot) {
+          _settings.logo.rotation = _snapAngle(_wrapDeg(_pvBaseRotLogo + dDeg));
+        }
       }
     });
   }

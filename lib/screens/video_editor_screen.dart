@@ -9641,7 +9641,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       width: 12,
                                       height: 12,
                                     );
-                                  } else if (selRect != null) {
+                                  } else if (selRect != null &&
+                                      !(selVisual?.rotated ?? false) &&
+                                      ((selVisual == null
+                                                  ? 0
+                                                  : _tl
+                                                            .sourceOf(selVisual)
+                                                            .textStyle
+                                                            ?.rotation ??
+                                                        0)
+                                              .abs() <
+                                          0.05)) {
+                                    // 旋轉中的素材不裁：裁完中心偏移，
+                                    // 框繞著錯的軸轉、跟素材對不上。
+                                    // 出界就讓它出界（跟浮水印框一樣）
                                     selRect = selRect.intersect(canvasRect);
                                   }
                                   if (selRect != null &&
@@ -9659,20 +9672,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           onTapUp: (d) => _tapSelectAt(
                                             selRect!.topLeft + d.localPosition,
                                           ),
-                                          // 雙擊＝回正中央、恢復原始大小（不小心拖歪的救援）
+                                          // 雙擊＝回正中央、恢復原始大小
+                                          // 與角度（不小心拖歪轉歪的救援）
                                           onDoubleTap: () {
                                             _pushUndo();
                                             setState(() {
                                               sc.px = 0.5;
                                               sc.py = 0.5;
                                               sc.scale = 1.0;
+                                              sc.rotation = 0;
                                             });
                                             _saveDraft();
                                           },
                                           // 移動／縮放手勢在最上層的
                                           // 「選取路由」處理（拖曳整個
                                           // 預覽區都只作用在選中的素材）
-                                          // 文字素材有旋轉時，選取框跟著轉
+                                          // 素材有旋轉時選取框跟著轉：
+                                          // 文字用樣式角度，其他用
+                                          // clip.rotation——不轉的話素材
+                                          // 歪了框還是正的，完全對不上
                                           child: Transform.rotate(
                                             angle:
                                                 (_tl.sourceOf(sc).kind ==
@@ -9682,7 +9700,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                               .textStyle
                                                               ?.rotation ??
                                                           0)
-                                                    : 0.0) *
+                                                    : sc.rotation) *
                                                 math.pi /
                                                 180,
                                             child: CustomPaint(
@@ -10401,6 +10419,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   double _pvBaseRotText = 0;
   double _pvBaseRotLogo = 0;
 
+  /// 影片/圖片片段的旋轉底值（兩指旋轉用）
+  double _pvBaseRotClip = 0;
+
   /// 每 15 度吸一次，附近 4 度內就黏上去（黏住的瞬間震一下）
   double _snapAngle(double deg) {
     final near = (deg / 15.0).roundToDouble() * 15.0;
@@ -10438,12 +10459,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _pvBaseText = _settings.text.sizeFrac;
     _pvBaseLogo = _settings.logo.sizeFrac;
     _pvBaseClip = _selClipById(_sel)?.scale ?? 1.0;
+    _pvBaseRotClip = _selClipById(_sel)?.rotation ?? 0;
     // 選中的是浮水印素材：記它樣式裡的底值（clip.scale 對它沒作用）
     final selC = _selClipById(_sel);
     final selWm = selC == null ? null : _tl.sourceOf(selC).wmStyle;
     if (selC != null && _tl.sourceOf(selC).kind == ClipKind.wm) {
       _pvBaseClipWmText = selWm?.text.sizeFrac ?? 0.08;
       _pvBaseClipWmLogo = selWm?.logo.sizeFrac ?? 0.2;
+    }
+    // 旋轉底值也要抓「被選素材自己的」角度：以前一律拿全域浮水印
+    // 的角度當底，轉浮水印素材/文字素材時起點錯了會先跳一下
+    if (selC != null) {
+      final src = _tl.sourceOf(selC);
+      if (src.wmStyle != null) {
+        _pvBaseRotText = src.wmStyle!.text.rotation;
+        _pvBaseRotLogo = src.wmStyle!.logo.rotation;
+      } else if (src.textStyle != null) {
+        _pvBaseRotText = src.textStyle!.rotation;
+      }
     }
     if (_wmSel) _pickPinchTarget((p[0] + p[1]) / 2);
     // 沒選任何東西的捏合什麼都不會動——別拍快照、別清 redo。
@@ -10521,10 +10554,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               st.logo.rotation = _snapAngle(_wrapDeg(_pvBaseRotLogo + dDeg));
             }
           } else if (c != null) {
-            final ts = _tl.sourceOf(c).textStyle;
-            // 文字素材有自己的角度；影片／圖片片段目前不轉
+            final src = _tl.sourceOf(c);
+            final ts = src.textStyle;
             if (ts != null) {
               ts.rotation = _snapAngle(_wrapDeg(_pvBaseRotText + dDeg));
+            } else if (src.kind == ClipKind.video ||
+                src.kind == ClipKind.image) {
+              // 影片／圖片片段：轉 clip.rotation（跟調整視窗的滑桿
+              // 同一個欄位，預覽與匯出都吃它）。馬賽克不轉——
+              // 打碼區域的旋轉匯出端不支援，轉了預覽≠成品
+              c.rotation = _snapAngle(_wrapDeg(_pvBaseRotClip + dDeg));
             }
           }
         }
