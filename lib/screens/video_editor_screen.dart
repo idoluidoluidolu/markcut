@@ -1163,6 +1163,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 這份合成烘進去的圖片片段 id（合成新鮮時預覽不再重畫它們）
   Set<int> _compBakedStills = const {};
 
+  /// 空窗自癒：畫面停在「素材載入中」時，值一停穩（450ms 沒再變）
+  /// 就自動觸發重烘。之前開著樣式表拉滑桿只改值、沒人排重烘，
+  /// 膠囊會永遠轉圈（實測回報：跑載入中一直出不來）
+  String? _staleKickSig;
+  Timer? _staleKickTimer;
+
+  void _kickStaleRebuild() {
+    final sig = '${_mosaicSig()}#${_stillSig()}';
+    if (_staleKickSig == sig) return; // 這一版已排程過
+    _staleKickSig = sig;
+    _staleKickTimer?.cancel();
+    _staleKickTimer = Timer(const Duration(milliseconds: 450), () {
+      if (mounted) _compRefreshIfChanged();
+    });
+  }
+
   String? _lastCompSig;
   String? _lastCompEditSig;
 
@@ -8619,6 +8635,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         !_playing &&
                                         (_compMosaicStale ||
                                             _compStillsStale)) {
+                                      _kickStaleRebuild();
                                       addLayer(
                                         vidTrack,
                                         Positioned.fromRect(

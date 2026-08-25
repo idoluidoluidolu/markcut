@@ -309,29 +309,31 @@ final class CIMosaicSpec {
         CGFloat(m["brush"] as? Double ?? 0.16)
         * min(canvas.width, canvas.height)
       let featherPx = CGFloat(feather) * 0.5 * brushPx
+      // 遮罩用 CI 座標（y 往上）畫；包圍盒 rect 存「左上原點」座標
+      // ——applyMosaic 進場會統一把 rect 翻成 CI 座標，這裡先翻的話
+      // 會被翻兩次，效果區域跑到鏡像位置、跟遮罩對不上（實測：
+      // 只看得到白遮罩、永遠沒有馬賽克）
       var pts: [CGPoint] = []
+      var topMinX = CGFloat.greatestFiniteMagnitude
+      var topMinY = CGFloat.greatestFiniteMagnitude
+      var topMaxX = -CGFloat.greatestFiniteMagnitude
+      var topMaxY = -CGFloat.greatestFiniteMagnitude
       var i = 0
       while i + 1 < raw.count {
-        pts.append(
-          CGPoint(
-            x: CGFloat(raw[i]) * canvas.width,
-            y: canvas.height - CGFloat(raw[i + 1]) * canvas.height))
+        let tx = CGFloat(raw[i]) * canvas.width
+        let ty = CGFloat(raw[i + 1]) * canvas.height
+        topMinX = min(topMinX, tx)
+        topMinY = min(topMinY, ty)
+        topMaxX = max(topMaxX, tx)
+        topMaxY = max(topMaxY, ty)
+        pts.append(CGPoint(x: tx, y: canvas.height - ty))
         i += 2
-      }
-      var minX = pts[0].x
-      var minY = pts[0].y
-      var maxX = minX
-      var maxY = minY
-      for p in pts {
-        minX = min(minX, p.x)
-        minY = min(minY, p.y)
-        maxX = max(maxX, p.x)
-        maxY = max(maxY, p.y)
       }
       let margin = brushPx / 2 + featherPx + 2
       rect = CGRect(
-        x: minX - margin, y: minY - margin,
-        width: maxX - minX + margin * 2, height: maxY - minY + margin * 2)
+        x: topMinX - margin, y: topMinY - margin,
+        width: topMaxX - topMinX + margin * 2,
+        height: topMaxY - topMinY + margin * 2)
       var maskImg: CIImage? = nil
       let w = Int(canvas.width.rounded())
       let h = Int(canvas.height.rounded())
