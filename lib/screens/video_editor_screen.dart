@@ -4445,6 +4445,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   // ===== 筆刷馬賽克（影片）：塗到哪碼到哪 =====
   /// 筆刷模式中：預覽整面接管拖曳，一筆＝一段筆畫馬賽克素材
   bool _vBrushMode = false;
+
+  /// 工具列收闔：塗抹點剛好被工具列蓋住時收起來塗，塗完再叫出
+  bool _vBrushBarOpen = true;
   int _vBrushTrack = 0;
   final MosaicStyle _vBrushStyle = MosaicStyle();
   double _vBrushSize = 0.16;
@@ -4472,6 +4475,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 「完成」一起退出全螢幕
       _fullscreen = true;
       _fsBar = false;
+      _vBrushBarOpen = true;
     });
   }
 
@@ -4671,6 +4675,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     Icons.redo,
                     size: 17,
                     color: _redoStack.isEmpty ? Colors.white24 : Colors.white,
+                  ),
+                ),
+              ),
+              // 收起工具列（塗抹點被擋住時用；右下小圓鈕叫回來）
+              InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () => setState(() => _vBrushBarOpen = false),
+                child: const Padding(
+                  padding: EdgeInsets.all(5),
+                  child: Icon(
+                    Icons.keyboard_arrow_down,
+                    size: 18,
+                    color: Colors.white,
                   ),
                 ),
               ),
@@ -10018,8 +10035,30 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               // 只會擋畫面——退出全螢幕的鈕在膠囊上，這裡不需要
               // 筆刷工具列：浮在整個預覽區下緣（放畫布裡會被
               // 窄畫布擠成一團——直式影片的畫布只有兩百多點寬）
-              if (_vBrushMode)
+              if (_vBrushMode && _vBrushBarOpen)
                 Positioned(left: 10, right: 10, bottom: 8, child: _vBrushBar()),
+              // 收起時只剩右下小圓鈕：整個下緣都能塗
+              if (_vBrushMode && !_vBrushBarOpen)
+                Positioned(
+                  right: 10,
+                  bottom: 8,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(999),
+                    onTap: () => setState(() => _vBrushBarOpen = true),
+                    child: Container(
+                      padding: const EdgeInsets.all(9),
+                      decoration: const BoxDecoration(
+                        color: kAmber,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.tune,
+                        size: 18,
+                        color: Color(0xFF1A1A1A),
+                      ),
+                    ),
+                  ),
+                ),
               if (!_fullscreen) _canvasHint(),
               // 工作檔在背景備，不出現在畫面上：進場就能剪，
               // 好了自己換過去。別家剪輯 App 也沒有那個讀取條
