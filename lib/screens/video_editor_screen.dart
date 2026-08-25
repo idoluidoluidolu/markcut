@@ -64,7 +64,6 @@ enum _AddKind {
   audio,
   record,
   mosaic,
-  brushMosaic,
   blankTrack,
   paste,
 }
@@ -1181,6 +1180,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _kickStaleShot() {
     if (!_compOn || _playing || !_compMosaicStale) return;
+    // HDR 預覽不鋪快照：快照是 SDR，蓋上去畫面瞬間掉 HDR、
+    // 換回來又閃一下。這個模式改走「烘焙中」讀取（見預覽層），
+    // 好了直接出現——比閃兩下舒服（使用者指定）
+    if (_exportHdr && _hdrAvail == true) return;
     final sig = _position.toStringAsFixed(2);
     if (_staleShotSig == sig || _staleShotBusy) return;
     _staleShotBusy = true;
@@ -2944,12 +2947,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               item(context, Icons.title, '文字', _AddKind.text),
               item(context, Icons.branding_watermark, '浮水印', _AddKind.wm),
               item(context, Icons.blur_on, '馬賽克', _AddKind.mosaic),
-              item(
-                context,
-                Icons.brush_outlined,
-                '筆刷馬賽克',
-                _AddKind.brushMosaic,
-              ),
               group('從裝置匯入'),
               item(context, Icons.videocam_outlined, '影片', _AddKind.video),
               item(context, Icons.image_outlined, '圖片', _AddKind.image),
@@ -2994,8 +2991,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         await _recordVoice(track);
       case _AddKind.mosaic:
         _addMosaicClip(track);
-      case _AddKind.brushMosaic:
-        _startVBrush(track);
       case _AddKind.paste:
         // 貼到「點下去的那一軌」的播放頭位置。空軌點進來最常做的事
         // 就是把剛複製的東西放上去，卻要先關掉選單、再長按空白處找
@@ -4767,7 +4762,60 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   ),
                   const SizedBox(height: 12),
                   Row(
-                    children: [chip('像素化', 0), chip('模糊', 1), chip('純色遮蓋', 2)],
+                    children: [
+                      chip('像素化', 0),
+                      chip('模糊', 1),
+                      chip('純色', 2),
+                      // 第四格是動作不是樣式：關掉樣式表、直接進
+                      // 筆刷模式（樣式沿用這一塊調好的；
+                      // 跟照片編輯器同一套入口）
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(10),
+                            onTap: () {
+                              Navigator.pop(context);
+                              _vBrushStyle
+                                ..type = st.type
+                                ..strength = st.strength
+                                ..feather = st.feather
+                                ..color = st.color;
+                              _startVBrush(clip.track);
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: kClipBorder,
+                                  width: 1,
+                                ),
+                              ),
+                              child: const Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.brush_outlined,
+                                    size: 14,
+                                    color: kText,
+                                  ),
+                                  SizedBox(width: 4),
+                                  Text(
+                                    '筆刷',
+                                    style: TextStyle(
+                                      fontSize: 12.5,
+                                      color: kText,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 14),
                   if (src.mosaicStroke != null)
@@ -8441,6 +8489,64 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     // ＋剛改完的馬賽克，蓋在影片圖層
                                     // 正上方，同一格畫面無縫接
                                     _kickStaleShot();
+                                    // HDR 模式：空窗顯示「烘焙中」，
+                                    // 不動畫面（見 _kickStaleShot）
+                                    if (_exportHdr &&
+                                        _hdrAvail == true &&
+                                        !_playing &&
+                                        (_compMosaicStale ||
+                                            _compStillsStale)) {
+                                      addLayer(
+                                        vidTrack,
+                                        Positioned.fromRect(
+                                          rect: rect,
+                                          child: IgnorePointer(
+                                            child: Container(
+                                              alignment: Alignment.center,
+                                              color: Colors.black.withValues(
+                                                alpha: 0.25,
+                                              ),
+                                              child: Container(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 14,
+                                                      vertical: 8,
+                                                    ),
+                                                decoration: BoxDecoration(
+                                                  color: Colors.black
+                                                      .withValues(alpha: 0.7),
+                                                  borderRadius:
+                                                      BorderRadius.circular(16),
+                                                ),
+                                                child: const Row(
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  children: [
+                                                    SizedBox(
+                                                      width: 14,
+                                                      height: 14,
+                                                      child:
+                                                          CircularProgressIndicator(
+                                                            strokeWidth: 2,
+                                                            color: kAmber,
+                                                          ),
+                                                    ),
+                                                    SizedBox(width: 8),
+                                                    Text(
+                                                      '效果烘焙中…',
+                                                      style: TextStyle(
+                                                        fontSize: 12,
+                                                        color: Colors.white,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    }
                                     if (_staleShotActive) {
                                       addLayer(
                                         vidTrack,
@@ -9782,14 +9888,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         ),
                                       ),
                                     );
-                                    children.add(
-                                      Positioned(
-                                        left: 8,
-                                        right: 8,
-                                        bottom: 8,
-                                        child: _vBrushBar(),
-                                      ),
-                                    );
                                   }
                                   // 置中輔助線（路由拖曳吸到中線時）。
                                   // 無條件插入，跟照片／工作室同一種寫法：
@@ -9862,6 +9960,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               // 比例膠囊釘在整個預覽區右上角（不跟畫布走）。
               // 全螢幕時整組收掉：那是「編輯用的資訊」，看片時
               // 只會擋畫面——退出全螢幕的鈕在膠囊上，這裡不需要
+              // 筆刷工具列：浮在整個預覽區下緣（放畫布裡會被
+              // 窄畫布擠成一團——直式影片的畫布只有兩百多點寬）
+              if (_vBrushMode)
+                Positioned(left: 10, right: 10, bottom: 8, child: _vBrushBar()),
               if (!_fullscreen) _canvasHint(),
               // 工作檔在背景備，不出現在畫面上：進場就能剪，
               // 好了自己換過去。別家剪輯 App 也沒有那個讀取條
