@@ -127,6 +127,27 @@ class MediaSource {
     revEnd: revEnd,
   );
 
+  /// 樣式素材（浮水印/文字/馬賽克）切割時要複製一份來源，
+  /// 改一半才不會動到另一半。欄位集中在這裡抄——散在呼叫端
+  /// 各抄各的結果就是漏（實際漏過：isSticker 沒抄，切割貼圖
+  /// 後半段變回浮水印；mosaicStroke 沒抄，切割筆刷馬賽克
+  /// 後半段筆畫直接蒸發）
+  MediaSource dupStyle() => MediaSource(
+    path: path,
+    name: name,
+    kind: kind,
+    w: w,
+    h: h,
+    duration: duration,
+    textStyle: textStyle?.copy(),
+    wmStyle: wmStyle?.copy(),
+    mosaicStyle: mosaicStyle?.copy(),
+    mosaicStroke: mosaicStroke == null ? null : List.of(mosaicStroke!),
+    mosaicBrush: mosaicBrush,
+    isSticker: isSticker,
+    isGif: isGif,
+  );
+
   /// 疊在畫面上的靜態素材（圖片、文字、浮水印）
   bool get isOverlay =>
       kind == ClipKind.image || kind == ClipKind.text || kind == ClipKind.wm;
@@ -299,6 +320,40 @@ class TimelineClip {
 
   bool covers(double t) => t >= offset && t < end;
 
+  /// 切割產生的「後半段」：除了給定的時間欄位，其他全部照抄。
+  /// 欄位集中在這裡——以前 splitAt/carveRange 各自手抄，
+  /// mirror/裁切/透明度/旋轉全漏了，切一刀後半段就變回原樣
+  TimelineClip tailClone({
+    required int id,
+    required int sourceIndex,
+    required double trimStart,
+    required double trimEnd,
+    required double offset,
+  }) => TimelineClip(
+    id: id,
+    sourceIndex: sourceIndex,
+    trimStart: trimStart,
+    trimEnd: trimEnd,
+    offset: offset,
+    track: track,
+    volume: volume,
+    px: px,
+    py: py,
+    scale: scale,
+    // 淡入屬於「開頭」留在前半；淡出屬於「結尾」跟著後半走
+    fadeOut: fadeOut,
+    speed: speed,
+    reverse: reverse,
+    mirror: mirror,
+    color: color.copy(),
+    cropL: cropL,
+    cropT: cropT,
+    cropW: cropW,
+    cropH: cropH,
+    opacity: opacity,
+    rotation: rotation,
+  );
+
   /// 畫面用的覆蓋判定：播到最後停在總長那一點時，[covers] 對每個片段
   /// 都不成立（結尾是開區間），畫面就整片黑。這裡讓「剛好停在結尾」
   /// 的那一刻仍算最後一格，播完保留最後一幀
@@ -357,7 +412,10 @@ class TimelineClip {
     scale: (j['scale'] ?? 1.0).toDouble(),
     fadeIn: (j['fadeIn'] ?? 0).toDouble(),
     fadeOut: (j['fadeOut'] ?? 0).toDouble(),
-    speed: (j['speed'] ?? 1.0).toDouble(),
+    // 速度跟音量同理要夾：length 算長度用的是夾過的值，但合成/匯出
+    // payload 送原值——壞草稿的 speed=0 會讓原生端除以零、
+    // 0<speed<0.1 則兩邊時長對不上（音畫錯位）
+    speed: (j['speed'] ?? 1.0).toDouble().clamp(0.1, 16.0),
     reverse: (j['reverse'] ?? false) as bool,
     mirror: (j['mirror'] ?? false) as bool,
     opacity: ((j['opacity'] ?? 1) as num).toDouble(),
@@ -616,38 +674,16 @@ class TimelineModel {
         if (src.kind == ClipKind.wm ||
             src.kind == ClipKind.text ||
             src.kind == ClipKind.mosaic) {
-          sources.add(
-            MediaSource(
-              path: src.path,
-              name: src.name,
-              kind: src.kind,
-              w: src.w,
-              h: src.h,
-              duration: src.duration,
-              textStyle: src.textStyle?.copy(),
-              wmStyle: src.wmStyle?.copy(),
-              mosaicStyle: src.mosaicStyle?.copy(),
-            ),
-          );
+          sources.add(src.dupStyle());
           srcIdx = sources.length - 1;
         }
         clips.add(
-          TimelineClip(
+          c.tailClone(
             id: nextId(),
             sourceIndex: srcIdx,
             trimStart: c.reverse ? c.trimStart : srcB,
             trimEnd: c.reverse ? srcB : c.trimEnd,
             offset: b,
-            track: c.track,
-            volume: c.volume,
-            speed: c.speed,
-            reverse: c.reverse,
-            mirror: c.mirror,
-            px: c.px,
-            py: c.py,
-            scale: c.scale,
-            fadeOut: c.fadeOut,
-            color: c.color.copy(),
           ),
         );
         if (c.reverse) {
@@ -717,40 +753,17 @@ class TimelineModel {
     if (src.kind == ClipKind.wm ||
         src.kind == ClipKind.text ||
         src.kind == ClipKind.mosaic) {
-      sources.add(
-        MediaSource(
-          path: src.path,
-          name: src.name,
-          kind: src.kind,
-          w: src.w,
-          h: src.h,
-          duration: src.duration,
-          textStyle: src.textStyle?.copy(),
-          wmStyle: src.wmStyle?.copy(),
-          mosaicStyle: src.mosaicStyle?.copy(),
-        ),
-      );
+      sources.add(src.dupStyle());
       srcIdx = sources.length - 1;
     }
     // 倒轉片段的時間軸左緣對應素材的尾端，所以前後兩半要反過來配；
     // 照正向切會讓兩半的長度對調，切完直接重疊
-    final second = TimelineClip(
+    final second = c.tailClone(
       id: nextId(),
       sourceIndex: srcIdx,
       trimStart: c.reverse ? c.trimStart : srcT,
       trimEnd: c.reverse ? srcT : c.trimEnd,
       offset: t,
-      track: c.track,
-      volume: c.volume,
-      speed: c.speed, // 切割後兩段維持相同變速
-      reverse: c.reverse,
-      px: c.px,
-      py: c.py,
-      scale: c.scale,
-      color: c.color.copy(),
-      // 淡出屬於「結尾」，跟著後半走；前半的淡出清掉，
-      // 不然會在切點處憑空淡出。淡入同理留在前半
-      fadeOut: c.fadeOut,
     );
     c.fadeOut = 0;
     if (c.reverse) {

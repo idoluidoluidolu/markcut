@@ -217,7 +217,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       kPhotoDraftKey,
       jsonEncode({
         'photo': widget.photo.path,
-        'state': _stateJson,
+        // 一定要完整版：池子代號存到磁碟等於把 Logo 圖片丟掉
+        'state': _stateJsonFull,
         'savedAt': DateTime.now().toIso8601String(),
       }),
     );
@@ -316,6 +317,21 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     for (final e in (j['extraWms'] as List)) {
       _packLogo(e);
     }
+    return jsonEncode(j);
+  }
+
+  /// 完整版狀態（b64 原文，不走池子）。草稿一定要用這份——
+  /// 池子只活在記憶體，`@@b64:N` 代號存進 SharedPreferences 後
+  /// 下次開啟池子是空的，_unpackLogo 只能填 null：加了圖片浮水印
+  /// 的草稿一重開，所有 Logo 無聲消失。池子版（[_stateJson]）
+  /// 只給 undo 快照與 _dirty 比對用（同一個工作階段內池子有效）
+  String get _stateJsonFull {
+    final j = <String, dynamic>{
+      ..._settings.toJson(),
+      'color': _grade.toJson(),
+      'extraWms': _extraWms.map((e) => e.toJson()).toList(),
+      if (_canvasAspect != null) 'canvasAspect': _canvasAspect,
+    };
     return jsonEncode(j);
   }
 
@@ -971,11 +987,16 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         );
       } else {
         final side = m.scale * math.min(w, h);
+        // 出界要裁到照片邊界——匯出端有裁（renderPhotoComposite 的
+        // intersect），預覽不裁的話拖到邊緣時兩邊的 rect 不同，
+        // 像素化格數是「對 rect 均分」、羽化寬是「rect 短邊比例」，
+        // 格子大小跟柔邊就對不上成品
         rect = Rect.fromCenter(
           center: Offset(m.x * w, m.y * h),
           width: side,
           height: side,
-        );
+        ).intersect(Rect.fromLTWH(0, 0, w, h));
+        if (rect.width <= 0 || rect.height <= 0) continue;
       }
       Widget effect;
       if (m.isStroke) {
@@ -2379,6 +2400,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   );
 
   final Map<int, Offset> _pvPts = {};
+
+  /// 每根指標最後出現的時間：殘指自癒用（見 _pinchDown）
+  final Map<int, DateTime> _pvSeen = {};
   double? _pvBaseDist;
   double _pvBaseText = 0;
   double _pvBaseLogo = 0;
@@ -2387,6 +2411,20 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   double _pvBaseExtraLogo = 0.18;
 
   void _pinchDown(PointerDownEvent e) {
+    // 只有觸控算捏合（跟影片端時間軸同一套防護）：滑鼠／觸控筆
+    // 不可能兩指，而 web 上滑鼠在視窗外放開時 pointer-up 常整顆
+    // 遺失——幽靈殘指跟下一次按下湊成「兩指」，panLocked 一開，
+    // 浮水印與馬賽克從此拖不動
+    if (e.kind != ui.PointerDeviceKind.touch) return;
+    final now = DateTime.now();
+    _pvPts.removeWhere((id, _) {
+      final seen = _pvSeen[id];
+      // 3 秒沒動靜＝殘指清掉。真的要捏合，第二指 1 秒內就會下來
+      final stale = seen == null || now.difference(seen).inSeconds > 3;
+      if (stale) _pvSeen.remove(id);
+      return stale;
+    });
+    _pvSeen[e.pointer] = now;
     _pvPts[e.pointer] = e.position;
     if (_pvPts.length != 2) return;
     final p = _pvPts.values.toList();
@@ -2407,6 +2445,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   void _pinchMove(PointerMoveEvent e) {
     if (!_pvPts.containsKey(e.pointer)) return;
+    _pvSeen[e.pointer] = DateTime.now();
     _pvPts[e.pointer] = e.position;
     if (_pvBaseDist == null || _pvPts.length < 2) return;
     final p = _pvPts.values.toList();
@@ -2415,7 +2454,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     setState(() {
       // 有選中馬賽克：雙指縮它，不動浮水印
       if (_selMosaic >= 0 && _selMosaic < _mosaics.length) {
-        _mosaics[_selMosaic].scale = (_pvBaseMosaic * f).clamp(0.05, 1.5);
+        // 上限跟樣式表滑桿一致（3.0）：以前夾 1.5，用滑桿放大到
+        // 200% 的馬賽克一做捏合就瞬間跳縮回 150%
+        _mosaics[_selMosaic].scale = (_pvBaseMosaic * f).clamp(0.05, 3.0);
         return;
       }
       // 有選中額外那幾組浮水印：縮的是那一組，不是主浮水印
@@ -2449,6 +2490,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   void _pinchUp(int pointer) {
     _pvPts.remove(pointer);
+    _pvSeen.remove(pointer);
     if (_pvBaseDist != null && _pvPts.length < 2) _pvBaseDist = null;
   }
 

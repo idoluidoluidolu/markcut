@@ -84,7 +84,9 @@ class PhotoMosaic {
   factory PhotoMosaic.fromJson(Map<String, dynamic> j) => PhotoMosaic(
     x: ((j['x'] ?? 0.5).toDouble() as double).clamp(0.0, 1.0),
     y: ((j['y'] ?? 0.5).toDouble() as double).clamp(0.0, 1.0),
-    scale: ((j['scale'] ?? 0.35).toDouble() as double).clamp(0.02, 3.0),
+    // 預設跟建構子一致（0.72）：不一致的話殘缺 JSON 會拿到
+    // 跟新建不同的大小
+    scale: ((j['scale'] ?? 0.72).toDouble() as double).clamp(0.02, 3.0),
     style: j['style'] is Map
         ? MosaicStyle.fromJson(Map<String, dynamic>.from(j['style'] as Map))
         : MosaicStyle(),

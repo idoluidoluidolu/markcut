@@ -175,14 +175,15 @@ class WorkFiles {
   /// 草稿存的是路徑本人，載入時若直接沿用，等於繞過 [lookup] 的
   /// 版本檢查——HDR 代理換了色調映射曲線（cv2）之後，舊專案就是
   /// 這樣一直播著舊曲線的代理、預覽跟成品對不上。
-  /// 索引裡有這筆＝交給 lookup（含 stamp 與 cv 檢查）；索引丟了
-  /// （舊版沒記/被清）就探測來源：SDR 照用、HDR 作廢重轉
+  /// 索引裡有這筆＝交給 lookup（含 stamp 與 cv 檢查）。
+  /// 索引沒有＝作廢重轉。以前這裡有條「探測來源，SDR 就照用」的
+  /// 後備，但它自打兩槍：版本跳號本來就是要作廢舊檔，後備把 SDR
+  /// 的舊檔全放行、繞過作廢；而且放行的檔不在新索引裡，使用者一
+  /// 匯入新素材（空索引保險絲失效），sweep 就把草稿還在用的檔
+  /// 當孤兒刪掉——編輯到一半縮圖全掛。重轉一次是正確的代價
   static Future<bool> stillValid(String src, String work) async {
     if (kIsWeb) return true;
-    final v = await lookup(src);
-    if (v != null) return v == work;
-    final lite = await MediaPrep.probeLite(src);
-    return lite != null && lite['error'] == null && lite['sdr709'] == true;
+    return await lookup(src) == work;
   }
 
   /// 確保這支素材有工作檔：已經有就直接回，沒有就轉一份。
