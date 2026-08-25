@@ -3245,6 +3245,13 @@ final class PlayerHosts: NSObject {
   private var gen = 0
   private var pendingObs: [NSKeyValueObservation] = []
 
+  /// 還沒執行的收尾（舊播放器 dispose）。上一輪換手被新一輪作廢
+  /// 時不能直接丟：那輪的舊播放器可能還掛在前面圖層顯示中，
+  /// 立刻收會黑；不收則 CADisplayLink 抓著它永不釋放，快速重烘
+  /// 一次就漏一顆。做法＝接力：作廢輪的收尾轉交給新一輪，
+  /// 等新畫面真的上檔一起執行
+  private var pendingVisible: (() -> Void)?
+
   func register(_ v: PlayerHostView) {
     views.add(v)
     v.front.player = current
@@ -3260,17 +3267,29 @@ final class PlayerHosts: NSObject {
     let g = gen
     pendingObs.removeAll()
     current = p
+    // 上一輪沒跑完的收尾接力進來，跟這一輪的一起等新畫面上檔
+    let carried = pendingVisible
+    let done: () -> Void = {
+      carried?()
+      whenVisible?()
+    }
+    pendingVisible = done
+    let finishNow: () -> Void = { [weak self] in
+      guard let self = self else { return }
+      self.pendingVisible = nil
+      done()
+    }
     guard let p = p else {
       for v in views.allObjects {
         v.front.player = nil
         v.back.player = nil
       }
-      whenVisible?()
+      finishNow()
       return
     }
     let vs = views.allObjects
     if vs.isEmpty {
-      whenVisible?()
+      finishNow()
       return
     }
     var remaining = vs.count
@@ -3281,7 +3300,7 @@ final class PlayerHosts: NSObject {
       else { return }
       finished = true
       self.pendingObs.removeAll()
-      whenVisible?()
+      finishNow()
     }
     for v in vs {
       let incoming = v.back
@@ -3296,7 +3315,11 @@ final class PlayerHosts: NSObject {
         guard layer.isReadyForDisplay else { return }
         DispatchQueue.main.async {
           guard let self = self, self.gen == g else { return }
-          if v.front.player !== p { v.flip() }
+          // 已經翻過面的視圖再收到 KVO（true→false→true 抖動）
+          // 直接忽略——不擋的話 remaining 會被多扣，多視圖時
+          // 另一個視圖的觀察者被提早作廢、永遠翻不了面
+          guard v.front.player !== p else { return }
+          v.flip()
           oneDone()
         }
       }
@@ -3312,7 +3335,7 @@ final class PlayerHosts: NSObject {
         if v.back.player !== p { v.back.player = p }
         v.flip()
       }
-      whenVisible?()
+      finishNow()
     }
   }
 }
