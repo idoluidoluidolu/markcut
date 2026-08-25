@@ -4662,8 +4662,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             ),
             Row(
               children: [
-                const Icon(Icons.brush_outlined, size: 13, color: kSelect),
-                const SizedBox(width: 6),
                 chip('像素化', 0),
                 chip('模糊', 1),
                 chip('純色', 2),
@@ -7967,30 +7965,60 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   },
                 ),
               ),
-            // 筆刷模式：右上角工具列開關（跟照片全螢幕筆刷同款）
+            // 筆刷模式：右上角＝工具列開關＋離開（跟照片全螢幕
+            // 筆刷同款兩顆並排；影片的離開＝完成筆刷並退出全螢幕）
             if (_vBrushMode)
               Positioned(
                 right: 8,
                 top: 8,
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(999),
-                  onTap: () => setState(() => _vBrushBarOpen = !_vBrushBarOpen),
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: _vBrushBarOpen
-                          ? Colors.white
-                          : Colors.black.withValues(alpha: 0.45),
-                      shape: BoxShape.circle,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    InkWell(
+                      borderRadius: BorderRadius.circular(999),
+                      onTap: () =>
+                          setState(() => _vBrushBarOpen = !_vBrushBarOpen),
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        margin: const EdgeInsets.only(right: 8),
+                        decoration: BoxDecoration(
+                          color: _vBrushBarOpen
+                              ? Colors.white
+                              : Colors.black.withValues(alpha: 0.45),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          Icons.tune,
+                          size: 20,
+                          color: _vBrushBarOpen
+                              ? const Color(0xFF1A1A1A)
+                              : Colors.white,
+                        ),
+                      ),
                     ),
-                    child: Icon(
-                      Icons.tune,
-                      size: 20,
-                      color: _vBrushBarOpen
-                          ? const Color(0xFF1A1A1A)
-                          : Colors.white,
+                    InkWell(
+                      borderRadius: BorderRadius.circular(999),
+                      onTap: () {
+                        setState(() {
+                          _vBrushMode = false;
+                          _fullscreen = false;
+                        });
+                        _vBrushEnd();
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.45),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.fullscreen_exit,
+                          size: 20,
+                          color: kText,
+                        ),
+                      ),
                     ),
-                  ),
+                  ],
                 ),
               ),
             if (_fsBar && !_vBrushMode) ...[
