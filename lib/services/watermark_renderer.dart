@@ -37,12 +37,49 @@ class WatermarkRenderer {
     ColorGrade? grade,
     List<PhotoMosaic>? mosaics,
     List<WatermarkSettings>? extraMarks,
+    // 畫布比例（null＝跟照片一樣）：照片置中 contain 貼在黑底
+    // 畫布上，之後所有座標與馬賽克取樣都以畫布為準（跟預覽同一套）
+    double? canvasAspect,
   }) async {
     final codec = await ui.instantiateImageCodec(photoBytes);
     final frame = await codec.getNextFrame();
     var photo = frame.image;
-    final w = photo.width;
-    final h = photo.height;
+    var w = photo.width;
+    var h = photo.height;
+
+    if (canvasAspect != null && (canvasAspect - w / h).abs() > 0.001) {
+      // 畫布尺寸：照片一邊貼滿、另一邊補黑，像素不縮水
+      final int cw, ch;
+      if (canvasAspect >= w / h) {
+        ch = h;
+        cw = (h * canvasAspect).round();
+      } else {
+        cw = w;
+        ch = (w / canvasAspect).round();
+      }
+      final rec = ui.PictureRecorder();
+      final c = ui.Canvas(rec);
+      c.drawRect(
+        ui.Rect.fromLTWH(0, 0, cw.toDouble(), ch.toDouble()),
+        ui.Paint()..color = const ui.Color(0xFF000000),
+      );
+      c.drawImageRect(
+        photo,
+        ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+        ui.Rect.fromLTWH(
+          (cw - w) / 2,
+          (ch - h) / 2,
+          w.toDouble(),
+          h.toDouble(),
+        ),
+        ui.Paint()..filterQuality = ui.FilterQuality.high,
+      );
+      final canvased = await rec.endRecording().toImage(cw, ch);
+      photo.dispose();
+      photo = canvased;
+      w = cw;
+      h = ch;
+    }
 
     // 有調色時先把「調完色的照片」烙成一張圖——
     // 馬賽克要取樣的是調色後的畫面（跟預覽/影片匯出一致）

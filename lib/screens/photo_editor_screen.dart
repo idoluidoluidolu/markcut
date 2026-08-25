@@ -56,6 +56,111 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   final _wmFrameInfo = ValueNotifier<WmFrameInfo?>(null);
   Uint8List? _photoBytes;
   double? _aspect; // 照片長寬比
+
+  /// 畫布比例（null＝跟照片一樣）。改了之後照片置中貼黑底，
+  /// 所有座標以畫布為準——跟匯出同一套（renderPhotoComposite）
+  double? _canvasAspect;
+
+  /// 目前生效的畫布比例
+  double get _canvasAspectEff => _canvasAspect ?? _aspect ?? 1;
+
+  /// 畫布底圖（照片貼黑底）：馬賽克取樣用。null＝畫布跟照片一樣，
+  /// 直接取樣照片本人
+  ui.Image? _canvasImg;
+
+  /// 馬賽克取樣的底圖（畫布優先）
+  ui.Image? get _mosaicBase =>
+      _canvasAspect == null ? _photoImg : (_canvasImg ?? _photoImg);
+
+  /// 重算畫布底圖（換比例、照片載好時）
+  Future<void> _rebuildCanvasImg() async {
+    final photo = _photoImg;
+    final ca = _canvasAspect;
+    if (photo == null || ca == null) {
+      _canvasImg?.dispose();
+      if (mounted) setState(() => _canvasImg = null);
+      return;
+    }
+    final w = photo.width, h = photo.height;
+    final int cw, ch;
+    if (ca >= w / h) {
+      ch = h;
+      cw = (h * ca).round();
+    } else {
+      cw = w;
+      ch = (w / ca).round();
+    }
+    final rec = ui.PictureRecorder();
+    final c = ui.Canvas(rec);
+    c.drawRect(
+      ui.Rect.fromLTWH(0, 0, cw.toDouble(), ch.toDouble()),
+      ui.Paint()..color = const ui.Color(0xFF000000),
+    );
+    c.drawImageRect(
+      photo,
+      ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+      ui.Rect.fromLTWH((cw - w) / 2, (ch - h) / 2, w.toDouble(), h.toDouble()),
+      ui.Paint()..filterQuality = ui.FilterQuality.high,
+    );
+    final img = await rec.endRecording().toImage(cw, ch);
+    if (!mounted) {
+      img.dispose();
+      return;
+    }
+    setState(() {
+      _canvasImg?.dispose();
+      _canvasImg = img;
+    });
+  }
+
+  static const _ratioOptions = <({String label, double? aspect})>[
+    (label: '原始', aspect: null),
+    (label: '1:1', aspect: 1.0),
+    (label: '4:5', aspect: 0.8),
+    (label: '3:4', aspect: 0.75),
+    (label: '9:16', aspect: 9 / 16),
+    (label: '16:9', aspect: 16 / 9),
+  ];
+
+  String get _ratioLabel => _ratioOptions
+      .firstWhere(
+        (o) => o.aspect == _canvasAspect,
+        orElse: () => (label: '自訂', aspect: _canvasAspect),
+      )
+      .label;
+
+  void _openRatioSheet() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('畫布比例'),
+        contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
+        content: SizedBox(
+          width: 270,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final (i, o) in _ratioOptions.indexed)
+                optionRow(
+                  context: context,
+                  title: o.label,
+                  selected: _canvasAspect == o.aspect,
+                  first: i == 0,
+                  onTap: () {
+                    Navigator.pop(context);
+                    if (_canvasAspect == o.aspect) return;
+                    _pushUndo();
+                    setState(() => _canvasAspect = o.aspect);
+                    unawaited(_rebuildCanvasImg());
+                  },
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   bool _exporting = false;
 
   /// 調色（跟影片編輯共用同一組模型與面板）
@@ -205,6 +310,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       ..._settings.toJson(),
       'color': _grade.toJson(),
       'extraWms': _extraWms.map((e) => e.toJson()).toList(),
+      if (_canvasAspect != null) 'canvasAspect': _canvasAspect,
     };
     _packLogo(j);
     for (final e in (j['extraWms'] as List)) {
@@ -284,6 +390,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       _unpackLogo(e);
     }
     final wm = WatermarkSettings.fromJson(j);
+    final ca = (j['canvasAspect'] as num?)?.toDouble();
+    if (ca != _canvasAspect) {
+      _canvasAspect = ca;
+      unawaited(_rebuildCanvasImg());
+    }
     setState(() {
       _settings.copyMarksFrom(wm);
       _grade.copyFrom(
@@ -329,6 +440,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   @override
   void dispose() {
     _photoImg?.dispose();
+    _canvasImg?.dispose();
     super.dispose();
   }
 
@@ -346,6 +458,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         _photoImg = frame.image;
         _aspect = frame.image.width / frame.image.height;
       });
+      if (_canvasAspect != null) unawaited(_rebuildCanvasImg());
     } catch (_) {
       // 壞檔或不支援的格式：不能讓畫面永遠轉圈
       if (!mounted) return;
@@ -848,8 +961,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       if (m.isStroke) {
         // 筆畫：範圍＝包圍盒。用照片座標算好再等比換到畫布，
         // 跟匯出的外框是同一個算式
-        final imgW = _photoImg?.width ?? 1000;
-        final imgH = _photoImg?.height ?? math.max(1, (1000 * h / w).round());
+        final imgW = _mosaicBase?.width ?? 1000;
+        final imgH = _mosaicBase?.height ?? math.max(1, (1000 * h / w).round());
         final pts = [
           for (var k = 0; k + 1 < m.stroke!.length; k += 2)
             Offset(m.stroke![k] * imgW, m.stroke![k + 1] * imgH),
@@ -879,11 +992,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       if (m.isStroke) {
         // 筆畫效果＝共用畫家（跟匯出同一段程式碼）；
         // 調色時同一個矩陣套在補丁上，顏色才會對
-        Widget patch = _photoImg == null
+        Widget patch = _mosaicBase == null
             ? const SizedBox.shrink()
             : CustomPaint(
                 painter: _MosaicStrokePainter(
-                  img: _photoImg!,
+                  img: _mosaicBase!,
                   style: m.style,
                   strokePts: m.stroke!,
                   brush: m.brush,
@@ -898,18 +1011,18 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         effect = patch;
       } else if (m.style.type == 2) {
         effect = Container(color: Color(m.style.color));
-      } else if (_photoImg != null) {
+      } else if (_mosaicBase != null) {
         // 直接取樣照片畫效果：真像素塊、真羽化（跟匯出同一套畫法，
         // web 也一樣）。調色時把同一個矩陣套在補丁上，顏色才會對
         Widget patch = CustomPaint(
           painter: _MosaicPatchPainter(
-            img: _photoImg!,
+            img: _mosaicBase!,
             style: m.style,
             srcRect: Rect.fromLTWH(
-              rect.left * _photoImg!.width / w,
-              rect.top * _photoImg!.height / h,
-              rect.width * _photoImg!.width / w,
-              rect.height * _photoImg!.height / h,
+              rect.left * _mosaicBase!.width / w,
+              rect.top * _mosaicBase!.height / h,
+              rect.width * _mosaicBase!.width / w,
+              rect.height * _mosaicBase!.height / h,
             ),
           ),
         );
@@ -1623,6 +1736,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         grade: _grade,
         mosaics: _mosaics,
         extraMarks: _extraWms,
+        canvasAspect: _canvasAspect,
       );
       var ext = 'png';
       if (jpeg) {
@@ -2060,7 +2174,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             // 鋪滿螢幕看，手勢全部留給筆刷
             child: Center(
               child: AspectRatio(
-                aspectRatio: _aspect!,
+                aspectRatio: _canvasAspectEff,
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
@@ -2068,6 +2182,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                       child: Stack(
                         fit: StackFit.expand,
                         children: [
+                          const Positioned.fill(
+                            child: ColoredBox(color: Colors.black),
+                          ),
                           if (_grade.hasColor)
                             ColorFiltered(
                               colorFilter: ColorFilter.matrix(_grade.matrix),
@@ -2339,13 +2456,20 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                   alignment: Alignment.center,
                                   children: [
                                     AspectRatio(
-                                      aspectRatio: _aspect!,
+                                      aspectRatio: _canvasAspectEff,
                                       child: Stack(
                                         fit: StackFit.expand,
                                         // 不裁切：浮水印選取框要能畫到照片外
                                         //（內容由 WatermarkLayer 自己的 Stack 裁）
                                         clipBehavior: Clip.none,
                                         children: [
+                                          // 畫布底：換比例後照片置中、
+                                          // 留邊補黑（跟匯出一致）
+                                          const Positioned.fill(
+                                            child: ColoredBox(
+                                              color: Colors.black,
+                                            ),
+                                          ),
                                           // 調色即時反映在預覽上
                                           if (_grade.hasColor && !_colorCompare)
                                             ColorFiltered(
@@ -2621,28 +2745,78 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                             Positioned(
                               top: 8,
                               right: 8,
-                              child: InkWell(
-                                borderRadius: BorderRadius.circular(kTagRadius),
-                                onTap: () => setState(() {
-                                  _fsView = true;
-                                  _wmPart = WmPart.none;
-                                  _selMosaic = -1;
-                                  _selExtra = -1;
-                                }),
-                                child: Container(
-                                  padding: const EdgeInsets.all(5),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withValues(alpha: 0.10),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  InkWell(
                                     borderRadius: BorderRadius.circular(
                                       kTagRadius,
                                     ),
+                                    onTap: () => setState(() {
+                                      _fsView = true;
+                                      _wmPart = WmPart.none;
+                                      _selMosaic = -1;
+                                      _selExtra = -1;
+                                    }),
+                                    child: Container(
+                                      padding: const EdgeInsets.all(5),
+                                      margin: const EdgeInsets.only(right: 6),
+                                      decoration: BoxDecoration(
+                                        color: Colors.white.withValues(
+                                          alpha: 0.10,
+                                        ),
+                                        borderRadius: BorderRadius.circular(
+                                          kTagRadius,
+                                        ),
+                                      ),
+                                      child: const Icon(
+                                        Icons.fullscreen,
+                                        size: 15,
+                                        color: kIcon,
+                                      ),
+                                    ),
                                   ),
-                                  child: const Icon(
-                                    Icons.fullscreen,
-                                    size: 15,
-                                    color: kIcon,
+                                  // 畫布比例（跟影片編輯的膠囊同語言）
+                                  InkWell(
+                                    borderRadius: BorderRadius.circular(
+                                      kTagRadius,
+                                    ),
+                                    onTap: _openRatioSheet,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 4,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.white.withValues(
+                                          alpha: 0.10,
+                                        ),
+                                        borderRadius: BorderRadius.circular(
+                                          kTagRadius,
+                                        ),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(
+                                            Icons.aspect_ratio,
+                                            size: 12,
+                                            color: kTextDim,
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            _ratioLabel,
+                                            style: const TextStyle(
+                                              fontSize: 10.5,
+                                              color: kIcon,
+                                              height: 1.2,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
                                   ),
-                                ),
+                                ],
                               ),
                             ),
                           ],
