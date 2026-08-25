@@ -187,10 +187,15 @@ class CompPlayer {
       for (final c in vids)
         {
           // 一律用工作檔（轉正過、SDR、H.264）；HDR 輸出模式的
-          // HDR 素材例外：播 HDR 代理（HLG 直通、1080、密關鍵幀，
-          // 順度跟 SDR 工作檔同級），還沒轉好先播原檔
+          // HDR 素材例外：直接播原檔。
+          // 【決定性實驗，+109】代理先停用：iPhone 原檔是
+          // Dolby Vision（HLG 相容層），相簿靠 DV 中繼資料做顯示
+          // 管理；任何重編碼都會剝掉 DV 變純 HLG，顯示就過飽和
+          //（「顏色爆炸」的頭號嫌疑）。原檔直出＝跟相簿完全同一
+          // 個檔同一條路——這版還爆，問題就在圖層；不爆，就是
+          // DV 被剝，代理要換保留 DV 的做法
           'path': hdrOut && (hdrOf[c.sourceIndex] ?? false)
-              ? (tl.sourceOf(c).workHdrPath ?? tl.sourceOf(c).path)
+              ? tl.sourceOf(c).path
               : tl.sourceOf(c).previewPath,
           // HDR 原檔要在原生端掛 CI 做 toneMap（見上）
           'hdr': hdrOf[c.sourceIndex] ?? false,
