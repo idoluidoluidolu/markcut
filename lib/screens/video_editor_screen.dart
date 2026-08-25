@@ -4637,7 +4637,44 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               chip('像素化', 0),
               chip('模糊', 1),
               chip('純色', 2),
-              const SizedBox(width: 6),
+              const SizedBox(width: 4),
+              // 上一步／下一步：塗錯一筆馬上退（每一筆起筆都拍
+              // 快照，退一步＝收回上一筆）
+              InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: _undoStack.isEmpty
+                    ? null
+                    : () {
+                        _undoAction();
+                        _vBrushEnd();
+                      },
+                child: Padding(
+                  padding: const EdgeInsets.all(5),
+                  child: Icon(
+                    Icons.undo,
+                    size: 17,
+                    color: _undoStack.isEmpty ? Colors.white24 : Colors.white,
+                  ),
+                ),
+              ),
+              InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: _redoStack.isEmpty
+                    ? null
+                    : () {
+                        _redoAction();
+                        _vBrushEnd();
+                      },
+                child: Padding(
+                  padding: const EdgeInsets.all(5),
+                  child: Icon(
+                    Icons.redo,
+                    size: 17,
+                    color: _redoStack.isEmpty ? Colors.white24 : Colors.white,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 4),
               InkWell(
                 borderRadius: BorderRadius.circular(12),
                 onTap: () {
