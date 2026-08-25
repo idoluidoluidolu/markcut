@@ -4389,6 +4389,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _wmSel = false;
     });
     _saveDraft();
+    // 立即重烘：不等草稿併批，載入膠囊到效果出現的時間縮到最短
+    _compRefreshIfChanged();
   }
 
   // ===== 筆刷馬賽克（影片）：塗到哪碼到哪 =====
