@@ -4468,6 +4468,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _vBrushClipId = -1;
       _sel = -1;
       _wmSel = false;
+      // 直接進全螢幕塗抹（使用者指定）：畫面大、塗得準；
+      // 「完成」一起退出全螢幕
+      _fullscreen = true;
+      _fsBar = false;
     });
   }
 
@@ -4637,7 +4641,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               InkWell(
                 borderRadius: BorderRadius.circular(12),
                 onTap: () {
-                  setState(() => _vBrushMode = false);
+                  setState(() {
+                    _vBrushMode = false;
+                    _fullscreen = false;
+                  });
                   _vBrushEnd();
                 },
                 child: Container(
@@ -7520,7 +7527,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _handleBack() {
     // 全螢幕先退回編輯畫面，不要一按就離開專案
     if (_fullscreen) {
-      setState(() => _fullscreen = false);
+      setState(() {
+        _fullscreen = false;
+        if (_vBrushMode) _vBrushMode = false;
+      });
+      _compRefreshIfChanged();
       return;
     }
     // 調色模式先退出去，不要直接跳掉整個分頁
@@ -7832,20 +7843,28 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           children: [
             // 全螢幕＝純看片：預覽整層不吃手勢，素材與浮水印都
             // 動不了。不擋的話手指一劃就把浮水印拖走了，而且
-            // 全螢幕本來就沒有「撤銷」可以按
-            Positioned.fill(child: IgnorePointer(child: _buildPreview())),
-            // 點畫面＝收起／叫出控制列（看片時不要有東西擋著）；
-            // 下滑＝離開全螢幕（使用者指定，跟各家看片 App 同手勢）
+            // 全螢幕本來就沒有「撤銷」可以按。
+            // 例外：筆刷塗抹的全螢幕要吃手勢（塗抹層自己在最上面
+            // 接管，其他素材不會被摸到）
             Positioned.fill(
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onTap: () => setState(() => _fsBar = !_fsBar),
-                onVerticalDragEnd: (d) {
-                  if ((d.primaryVelocity ?? 0) > 250) _toggleFullscreen();
-                },
-              ),
+              child: _vBrushMode
+                  ? _buildPreview()
+                  : IgnorePointer(child: _buildPreview()),
             ),
-            if (_fsBar) ...[
+            // 點畫面＝收起／叫出控制列（看片時不要有東西擋著）；
+            // 下滑＝離開全螢幕（使用者指定，跟各家看片 App 同手勢）。
+            // 筆刷塗抹中都不掛：往下畫一筆不該退出
+            if (!_vBrushMode)
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onTap: () => setState(() => _fsBar = !_fsBar),
+                  onVerticalDragEnd: (d) {
+                    if ((d.primaryVelocity ?? 0) > 250) _toggleFullscreen();
+                  },
+                ),
+              ),
+            if (_fsBar && !_vBrushMode) ...[
               // 右上角：離開全螢幕
               Positioned(
                 right: 8,
