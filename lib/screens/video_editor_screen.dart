@@ -40,7 +40,6 @@ import '../services/video_controller.dart';
 import '../services/video_engine.dart' as engine;
 import '../services/video_processor.dart';
 import '../services/watermark_renderer.dart';
-import '../services/mosaic_patch_painter.dart';
 import '../services/text_mark_painter.dart';
 import '../services/work_files.dart';
 import '../theme.dart';
@@ -1163,56 +1162,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 這份合成烘進去的圖片片段 id（合成新鮮時預覽不再重畫它們）
   Set<int> _compBakedStills = const {};
-
-  // ── 馬賽克重烘空窗的「即時鋪面」──────────────────────────
-  /// 暫停中剛加/剛調馬賽克：合成重烘要一兩秒，這段期間畫面上的
-  /// 系統影片圖層還是舊的（沒有新馬賽克），Flutter 的 BackdropFilter
-  /// 又蓋不到原生圖層——看起來就是「加了沒反應，要按播放才有」。
-  /// 解法：跟合成播放器抽「現在顯示中的這一格」，用共用畫家
-  ///（paintMosaicPatch，跟照片匯出同一段程式碼）把馬賽克直接
-  /// 畫在那格上鋪回去，第一幀立即可見；重烘好換真的
-  ui.Image? _staleShotImg;
-  String? _staleShotSig;
-  bool _staleShotBusy = false;
-
-  bool get _staleShotActive =>
-      _compOn && !_playing && _compMosaicStale && _staleShotImg != null;
-
-  void _kickStaleShot() {
-    if (!_compOn || _playing || !_compMosaicStale) return;
-    // HDR 預覽不鋪快照：快照是 SDR，蓋上去畫面瞬間掉 HDR、
-    // 換回來又閃一下。這個模式改走「烘焙中」讀取（見預覽層），
-    // 好了直接出現——比閃兩下舒服（使用者指定）
-    if (_exportHdr && _hdrAvail == true) return;
-    final sig = _position.toStringAsFixed(2);
-    if (_staleShotSig == sig || _staleShotBusy) return;
-    _staleShotBusy = true;
-    _staleShotSig = sig;
-    unawaited(() async {
-      final b = await _comp?.grab();
-      if (b != null && mounted) {
-        try {
-          final codec = await ui.instantiateImageCodec(b);
-          final frame = await codec.getNextFrame();
-          if (mounted) {
-            setState(() {
-              _staleShotImg?.dispose();
-              _staleShotImg = frame.image;
-            });
-          } else {
-            frame.image.dispose();
-          }
-        } catch (_) {}
-      }
-      _staleShotBusy = false;
-    }());
-  }
-
-  void _clearStaleShot() {
-    _staleShotImg?.dispose();
-    _staleShotImg = null;
-    _staleShotSig = null;
-  }
 
   String? _lastCompSig;
   String? _lastCompEditSig;
@@ -4530,7 +4479,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   void _vBrushEnd() {
-    // 停筆＝立刻烘進合成；空窗由鋪面（_kickStaleShot）頂著
+    // 停筆＝立刻烘進合成；塗抹的即時回饋由遮罩預覽層畫
+    //（_BrushMaskPainter），跟合成無關、零延遲
     _saveDraft();
     _compRefreshIfChanged();
   }
@@ -5399,7 +5349,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _lastCompMosaicSig = _mosaicSig();
     _lastCompStillSig = _stillSig();
     _compBakedStills = CompPlayer.bakedImageIds(_tl);
-    _clearStaleShot();
     setState(() => _comp = made);
     // 合成接手了，舊的那幾顆播放器立刻放掉（見 _trimPlayers）
     _trimPlayers();
@@ -8660,15 +8609,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         ),
                                       ),
                                     );
-                                    // 馬賽克重烘空窗的即時鋪面（見
-                                    // _kickStaleShot）：抽到的合成幀
-                                    // ＋剛改完的馬賽克，蓋在影片圖層
-                                    // 正上方，同一格畫面無縫接
-                                    _kickStaleShot();
-                                    // HDR 模式：空窗顯示「烘焙中」，
-                                    // 不動畫面（見 _kickStaleShot）
-                                    if (_exportHdr &&
-                                        _hdrAvail == true &&
+                                    // 重烘空窗：一律「素材載入中」
+                                    // 膠囊（SDR/HDR 同一套；筆刷模式
+                                    // 有自己的遮罩預覽，不疊膠囊）
+                                    if (!_vBrushMode &&
+                                        _compOn &&
                                         !_playing &&
                                         (_compMosaicStale ||
                                             _compStillsStale)) {
@@ -8717,46 +8662,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                     ),
                                                   ],
                                                 ),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      );
-                                    }
-                                    if (_staleShotActive) {
-                                      addLayer(
-                                        vidTrack,
-                                        Positioned.fromRect(
-                                          rect: rect,
-                                          child: IgnorePointer(
-                                            child: CustomPaint(
-                                              painter: _StaleShotPainter(
-                                                _staleShotImg!,
-                                                [
-                                                  for (final c
-                                                      in _tl.overlaysAt(
-                                                        _position,
-                                                      ))
-                                                    if (_tl.sourceOf(c).kind ==
-                                                        ClipKind.mosaic)
-                                                      (
-                                                        style:
-                                                            _tl
-                                                                .sourceOf(c)
-                                                                .mosaicStyle ??
-                                                            MosaicStyle(),
-                                                        px: c.px,
-                                                        py: c.py,
-                                                        scale: c.scale,
-                                                        track: c.track,
-                                                        stroke: _tl
-                                                            .sourceOf(c)
-                                                            .mosaicStroke,
-                                                        brush: _tl
-                                                            .sourceOf(c)
-                                                            .mosaicBrush,
-                                                      ),
-                                                ],
                                               ),
                                             ),
                                           ),
@@ -9084,10 +8989,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             // 完成的空窗（_compMosaicStale）
                                             // 要頂上——不頂的話這段期間
                                             // 什麼都看不到
-                                            child:
-                                                _compOn &&
-                                                    (!_compMosaicStale ||
-                                                        _staleShotActive)
+                                            child: _compOn
                                                 ? const SizedBox.expand()
                                                 : Builder(
                                                     builder: (context) {
@@ -10043,8 +9945,37 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     );
                                   }
                                   // 筆刷馬賽克模式：整面接管拖曳，
-                                  // 塗到哪碼到哪；工具列浮在下緣
+                                  // 塗到哪碼到哪；工具列浮在下緣。
+                                  // 遮罩預覽：畫好的每一筆用半透明
+                                  // 白畫出來——純 Flutter、跟合成無關，
+                                  // 每一個點落下立即可見；真正的效果
+                                  // 停筆重烘後出現在遮罩下面
                                   if (_vBrushMode) {
+                                    children.add(
+                                      Positioned.fill(
+                                        child: IgnorePointer(
+                                          child: CustomPaint(
+                                            painter: _BrushMaskPainter([
+                                              for (final c in _tl.overlaysAt(
+                                                _position,
+                                              ))
+                                                if (_tl
+                                                        .sourceOf(c)
+                                                        .mosaicStroke !=
+                                                    null)
+                                                  (
+                                                    pts: _tl
+                                                        .sourceOf(c)
+                                                        .mosaicStroke!,
+                                                    brush: _tl
+                                                        .sourceOf(c)
+                                                        .mosaicBrush,
+                                                  ),
+                                            ]),
+                                          ),
+                                        ),
+                                      ),
+                                    );
                                     children.add(
                                       Positioned.fill(
                                         child: GestureDetector(
@@ -12645,79 +12576,42 @@ class _RightHalfClipper extends CustomClipper<Rect> {
   bool shouldReclip(covariant CustomClipper<Rect> oldClipper) => false;
 }
 
-/// 馬賽克重烘空窗的鋪面畫家：把抽到的合成幀原樣鋪滿，再用共用畫家
-///（paintMosaicPatch，跟照片匯出同一段程式碼）把現在的馬賽克畫上去。
-/// 影格是「舊合成」的輸出，馬賽克是「新調好」的值——正好就是
-/// 重烘完成後會看到的樣子
-class _StaleShotPainter extends CustomPainter {
-  final ui.Image shot;
-  final List<
-    ({
-      MosaicStyle style,
-      double px,
-      double py,
-      double scale,
-      int track,
-      List<double>? stroke,
-      double brush,
-    })
-  >
-  mosaics;
+/// 筆刷塗抹的遮罩預覽：半透明白筆畫（圓頭圓角）。
+/// 純 Flutter 繪製、跟合成播放器無關——手指每落一個點就重畫，
+/// 零延遲；真正的馬賽克效果由合成重烘後出現在遮罩下面
+class _BrushMaskPainter extends CustomPainter {
+  final List<({List<double> pts, double brush})> strokes;
 
-  _StaleShotPainter(this.shot, this.mosaics);
+  _BrushMaskPainter(this.strokes);
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (size.width < 2 || size.height < 2) return;
-    canvas.drawImageRect(
-      shot,
-      Rect.fromLTWH(0, 0, shot.width.toDouble(), shot.height.toDouble()),
-      Offset.zero & size,
-      Paint()..filterQuality = FilterQuality.medium,
-    );
-    final k = shot.width / size.width; // 畫布 → 幀像素
-    final list = [...mosaics]..sort((a, b) => a.track.compareTo(b.track));
-    for (final m in list) {
-      // 筆畫：共用畫家 paintMosaicStroke（跟照片匯出同一段程式碼）
-      final stk = m.stroke;
-      if (stk != null && stk.length >= 2) {
-        final pts = [
-          for (var i = 0; i + 1 < stk.length; i += 2)
-            Offset(stk[i] * size.width * k, stk[i + 1] * size.height * k),
-        ];
-        final brushPx = m.brush * math.min(size.width, size.height) * k;
-        final box = strokeBoundsPx(
-          pts,
-          brushPx,
-          strokeFeatherPx(m.style, brushPx),
+    for (final st in strokes) {
+      final pts = st.pts;
+      if (pts.length < 2) continue;
+      final brushPx = st.brush * math.min(size.width, size.height);
+      final paint = Paint()
+        ..color = Colors.white.withValues(alpha: 0.35)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = brushPx
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round;
+      if (pts.length == 2) {
+        canvas.drawCircle(
+          Offset(pts[0] * size.width, pts[1] * size.height),
+          brushPx / 2,
+          Paint()..color = Colors.white.withValues(alpha: 0.35),
         );
-        final dst = Rect.fromLTWH(
-          box.left / k,
-          box.top / k,
-          box.width / k,
-          box.height / k,
-        );
-        paintMosaicStroke(canvas, shot, m.style, pts, brushPx, box, dst);
         continue;
       }
-      // 大小基準跟 CIMosaicSpec 同一套：短邊 × scale
-      final side = m.scale * math.min(size.width, size.height);
-      final dst = Rect.fromCenter(
-        center: Offset(m.px * size.width, m.py * size.height),
-        width: side,
-        height: side,
-      ).intersect(Offset.zero & size);
-      if (dst.width < 2 || dst.height < 2) continue;
-      final src = Rect.fromLTWH(
-        dst.left * k,
-        dst.top * k,
-        dst.width * k,
-        dst.height * k,
-      );
-      paintMosaicPatch(canvas, shot, m.style, src, dst);
+      final path = Path()..moveTo(pts[0] * size.width, pts[1] * size.height);
+      for (var i = 2; i + 1 < pts.length; i += 2) {
+        path.lineTo(pts[i] * size.width, pts[i + 1] * size.height);
+      }
+      canvas.drawPath(path, paint);
     }
   }
 
   @override
-  bool shouldRepaint(_StaleShotPainter old) => true;
+  bool shouldRepaint(_BrushMaskPainter old) => true;
 }
