@@ -4446,6 +4446,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 筆刷模式中：預覽整面接管拖曳，一筆＝一段筆畫馬賽克素材
   bool _vBrushMode = false;
 
+  /// 筆刷工具列開關（右上角圓鈕；跟照片全螢幕筆刷同一套）
+  bool _vBrushBarOpen = true;
+
   int _vBrushTrack = 0;
   final MosaicStyle _vBrushStyle = MosaicStyle();
   double _vBrushSize = 0.16;
@@ -4473,6 +4476,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 「完成」一起退出全螢幕
       _fullscreen = true;
       _fsBar = false;
+      _vBrushBarOpen = true;
     });
   }
 
@@ -4622,140 +4626,166 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ),
     );
 
-    return Container(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.8),
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.brush_outlined, size: 13, color: kSelect),
-              const SizedBox(width: 6),
-              chip('像素化', 0),
-              chip('模糊', 1),
-              chip('純色', 2),
-              const SizedBox(width: 4),
-              // 上一步／下一步：塗錯一筆馬上退（每一筆起筆都拍
-              // 快照，退一步＝收回上一筆）
-              InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: _undoStack.isEmpty
-                    ? null
-                    : () {
-                        _undoAction();
-                        _vBrushEnd();
-                      },
-                child: Padding(
-                  padding: const EdgeInsets.all(5),
-                  child: Icon(
-                    Icons.undo,
-                    size: 17,
-                    color: _undoStack.isEmpty ? Colors.white24 : Colors.white,
-                  ),
-                ),
-              ),
-              InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: _redoStack.isEmpty
-                    ? null
-                    : () {
-                        _redoAction();
-                        _vBrushEnd();
-                      },
-                child: Padding(
-                  padding: const EdgeInsets.all(5),
-                  child: Icon(
-                    Icons.redo,
-                    size: 17,
-                    color: _redoStack.isEmpty ? Colors.white24 : Colors.white,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 6),
-              InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: () {
-                  setState(() {
-                    _vBrushMode = false;
-                    _fullscreen = false;
-                  });
-                  _vBrushEnd();
-                },
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      // 往下滑＝收起（把手就是抓的地方；右上圓鈕叫回來）
+      onVerticalDragEnd: (d) {
+        if ((d.primaryVelocity ?? 0) > 200) {
+          setState(() => _vBrushBarOpen = false);
+        }
+      },
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(12, 5, 12, 4),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.8),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => setState(() => _vBrushBarOpen = false),
+              child: Container(
+                width: 44,
+                height: 12,
+                alignment: Alignment.center,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 4,
-                  ),
+                  width: 32,
+                  height: 3,
                   decoration: BoxDecoration(
-                    color: kSelect,
-                    borderRadius: BorderRadius.circular(12),
+                    color: Colors.white.withValues(alpha: 0.35),
+                    borderRadius: BorderRadius.circular(2),
                   ),
-                  child: const Text(
-                    '完成',
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.w700,
-                      color: Color(0xFF1A1A1A),
+                ),
+              ),
+            ),
+            Row(
+              children: [
+                const Icon(Icons.brush_outlined, size: 13, color: kSelect),
+                const SizedBox(width: 6),
+                chip('像素化', 0),
+                chip('模糊', 1),
+                chip('純色', 2),
+                const SizedBox(width: 4),
+                // 上一步／下一步：塗錯一筆馬上退（每一筆起筆都拍
+                // 快照，退一步＝收回上一筆）
+                InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: _undoStack.isEmpty
+                      ? null
+                      : () {
+                          _undoAction();
+                          _vBrushEnd();
+                        },
+                  child: Padding(
+                    padding: const EdgeInsets.all(5),
+                    child: Icon(
+                      Icons.undo,
+                      size: 17,
+                      color: _undoStack.isEmpty ? Colors.white24 : Colors.white,
                     ),
                   ),
                 ),
-              ),
-            ],
-          ),
-          slider('粗細', _vBrushSize, 0.03, 0.5, (v) {
-            setState(() {
-              _vBrushSize = v;
-              sel?.mosaicBrush = v;
-            });
-          }),
-          if (_vBrushStyle.type != 2)
-            slider('濃度', _vBrushStyle.strength, 0.0, 1.0, (v) {
-              setState(() => apply((st) => st.strength = v));
-            }),
-          if (_vBrushStyle.type != 0)
-            slider('柔邊', _vBrushStyle.feather, 0.0, 1.0, (v) {
-              setState(() => apply((st) => st.feather = v));
-            }),
-          if (_vBrushStyle.type == 2)
-            SizedBox(
-              height: 28,
-              child: Row(
-                children: [
-                  const Text(
-                    '顏色',
-                    style: TextStyle(fontSize: 10.5, color: Colors.white70),
+                InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: _redoStack.isEmpty
+                      ? null
+                      : () {
+                          _redoAction();
+                          _vBrushEnd();
+                        },
+                  child: Padding(
+                    padding: const EdgeInsets.all(5),
+                    child: Icon(
+                      Icons.redo,
+                      size: 17,
+                      color: _redoStack.isEmpty ? Colors.white24 : Colors.white,
+                    ),
                   ),
-                  const Spacer(),
-                  InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: () async {
-                      final picked = await pickColor(
-                        context,
-                        Color(_vBrushStyle.color),
-                      );
-                      if (picked != null) {
-                        setState(() => apply((st) => st.color = picked));
-                        _vBrushEnd();
-                      }
-                    },
-                    child: Container(
-                      width: 22,
-                      height: 22,
-                      decoration: BoxDecoration(
-                        color: Color(_vBrushStyle.color),
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white24, width: 1.5),
+                ),
+                const SizedBox(width: 6),
+                InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: () {
+                    setState(() {
+                      _vBrushMode = false;
+                      _fullscreen = false;
+                    });
+                    _vBrushEnd();
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: kSelect,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Text(
+                      '完成',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF1A1A1A),
                       ),
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
-        ],
+            slider('粗細', _vBrushSize, 0.03, 0.5, (v) {
+              setState(() {
+                _vBrushSize = v;
+                sel?.mosaicBrush = v;
+              });
+            }),
+            if (_vBrushStyle.type != 2)
+              slider('濃度', _vBrushStyle.strength, 0.0, 1.0, (v) {
+                setState(() => apply((st) => st.strength = v));
+              }),
+            if (_vBrushStyle.type != 0)
+              slider('柔邊', _vBrushStyle.feather, 0.0, 1.0, (v) {
+                setState(() => apply((st) => st.feather = v));
+              }),
+            if (_vBrushStyle.type == 2)
+              SizedBox(
+                height: 28,
+                child: Row(
+                  children: [
+                    const Text(
+                      '顏色',
+                      style: TextStyle(fontSize: 10.5, color: Colors.white70),
+                    ),
+                    const Spacer(),
+                    InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () async {
+                        final picked = await pickColor(
+                          context,
+                          Color(_vBrushStyle.color),
+                        );
+                        if (picked != null) {
+                          setState(() => apply((st) => st.color = picked));
+                          _vBrushEnd();
+                        }
+                      },
+                      child: Container(
+                        width: 22,
+                        height: 22,
+                        decoration: BoxDecoration(
+                          color: Color(_vBrushStyle.color),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white24, width: 1.5),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -7937,6 +7967,32 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   },
                 ),
               ),
+            // 筆刷模式：右上角工具列開關（跟照片全螢幕筆刷同款）
+            if (_vBrushMode)
+              Positioned(
+                right: 8,
+                top: 8,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(999),
+                  onTap: () => setState(() => _vBrushBarOpen = !_vBrushBarOpen),
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: _vBrushBarOpen
+                          ? Colors.white
+                          : Colors.black.withValues(alpha: 0.45),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      Icons.tune,
+                      size: 20,
+                      color: _vBrushBarOpen
+                          ? const Color(0xFF1A1A1A)
+                          : Colors.white,
+                    ),
+                  ),
+                ),
+              ),
             if (_fsBar && !_vBrushMode) ...[
               // 右上角：離開全螢幕
               Positioned(
@@ -10054,7 +10110,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               // 只會擋畫面——退出全螢幕的鈕在膠囊上，這裡不需要
               // 筆刷工具列：浮在整個預覽區下緣（放畫布裡會被
               // 窄畫布擠成一團——直式影片的畫布只有兩百多點寬）
-              if (_vBrushMode)
+              if (_vBrushMode && _vBrushBarOpen)
                 Positioned(
                   left: 0,
                   right: 0,
