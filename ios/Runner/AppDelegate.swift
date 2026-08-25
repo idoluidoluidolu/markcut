@@ -577,8 +577,13 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
       case 2:
         return CIImage(color: mz.color).cropped(to: region)
       case 1:
-        // 濃度 → FFmpeg 的縮小倍數（2~14），拿它當高斯半徑的基準
-        let down = 2.0 + mz.strength * 12.0
+        // 濃度 → FFmpeg 的縮小倍數（2~14），拿它當高斯半徑的基準。
+        // 半徑要隨畫布縮放（以短邊 1080 為基準）：絕對像素的話
+        // 預覽（上限 1080）跟 4K 匯出的相對模糊強度差一倍，
+        // FFmpeg 的「縮小倍數」語意本來就是尺度不變的
+        let down =
+          (2.0 + mz.strength * 12.0)
+          * Double(min(canvas.width, canvas.height)) / 1080.0
         return base.clampedToExtent()
           .applyingFilter(
             "CIGaussianBlur", parameters: ["inputRadius": down * k])
@@ -1404,14 +1409,20 @@ final class AtomicFlag {
       let step = (wEnd - wStart) / Double(max(1, frames.count))
       for (j, f) in frames.reversed().enumerated() {
         while !vIn.isReadyForMoreMediaData {
-          if reverseCancelled { break }
+          // writer 中途失敗（磁碟滿等）時 isReadyForMoreMediaData
+          // 可能永遠不變 true——沒有這個出口就是背景執行緒無限
+          // 自旋、channel 永遠等不到回覆
+          if reverseCancelled || writer.status != .writing { break }
           usleep(5000)
         }
-        if reverseCancelled { continue }
-        adaptor.append(
+        if reverseCancelled || writer.status != .writing { continue }
+        if !adaptor.append(
           f.0,
           withPresentationTime: CMTime(
             seconds: outBase + Double(j) * step, preferredTimescale: 600))
+        {
+          break  // append 失敗＝writer 已壞，剩下的丟了也一樣
+        }
       }
       frames.removeAll()
 
@@ -1449,10 +1460,12 @@ final class AtomicFlag {
             packetDescriptions: nil, sampleBufferOut: &sb)
           if let s2 = sb {
             while !input.isReadyForMoreMediaData {
-              if reverseCancelled { break }
+              if reverseCancelled || writer.status != .writing { break }
               usleep(5000)
             }
-            if !reverseCancelled { input.append(s2) }
+            if !reverseCancelled && writer.status == .writing {
+              input.append(s2)
+            }
             outAudioFrames += Int64(nFrames)
           }
         }
@@ -1580,6 +1593,15 @@ final class AtomicFlag {
         let track = audioTrack(from: at)
       else { return }
       do {
+        // 先補空白再插（跟 CompPlayer 的同名邏輯一致）：插在超過
+        // 軌道長度的時間點時，「會不會自動補空白」文件講得含糊，
+        // 不補的話配樂可能整段往前擠、聲音跟畫面對不上——預覽那條
+        // 路是被實測逼出來的，匯出不能少這一道
+        for i in aTracks.indices
+        where aTracks[i].track === track && aTracks[i].end < at {
+          track.insertEmptyTimeRange(
+            CMTimeRange(start: aTracks[i].end, duration: at - aTracks[i].end))
+        }
         try track.insertTimeRange(range, of: src, at: at)
         if outDur != range.duration {
           track.scaleTimeRange(
@@ -2018,10 +2040,14 @@ final class AtomicFlag {
             trackID: kCMPersistentTrackID_Invalid,
             still: gifSpec == nil ? img : nil,
             transform: .identity, srcHeight: dh,
-            start: st["start"] as? Double ?? 0,
-            end: st["end"] as? Double ?? 0,
-            fadeIn: st["fadeIn"] as? Double ?? 0,
-            fadeOut: st["fadeOut"] as? Double ?? 0,
+            // 時間全是「時間軸秒」；整體變速時合成的時間基準已被
+            // scaleTimeRange 除過 globalSpeed，影片段的時間有跟著
+            // 除（見上面 segments 的換算），這裡不除的話圖片/GIF
+            // 會出現在未換算的時間點、跟畫面錯位
+            start: (st["start"] as? Double ?? 0) / globalSpeed,
+            end: (st["end"] as? Double ?? 0) / globalSpeed,
+            fadeIn: (st["fadeIn"] as? Double ?? 0) / globalSpeed,
+            fadeOut: (st["fadeOut"] as? Double ?? 0) / globalSpeed,
             colorMatrix: st["color"] as? [Double],
             crop: stCrop,
             rotation: st["rotation"] as? Double ?? 0,
@@ -2031,7 +2057,16 @@ final class AtomicFlag {
       }
       // z 序排定（同 z 保持進籃順序）
       layerBasket.sort { $0.z != $1.z ? $0.z < $1.z : $0.order < $1.order }
-      let ciMosaics = mosaicsIn.compactMap { CIMosaicSpec($0, canvas: canvas) }
+      // 馬賽克時間同理要除整體變速（切點是從這些值長出來的，
+      // 一併對齊）
+      let ciMosaics = mosaicsIn.compactMap { m -> CIMosaicSpec? in
+        var mm = m
+        if abs(globalSpeed - 1) > 0.001 {
+          mm["start"] = (m["start"] as? Double ?? 0) / globalSpeed
+          mm["end"] = (m["end"] as? Double ?? 0) / globalSpeed
+        }
+        return CIMosaicSpec(mm, canvas: canvas)
+      }
       // 全部影像軌都預捲（跟合成播放器同一個治本，見
       // CIExportInstruction.requiredSourceTrackIDs）
       let prerollIDs = Array(
@@ -2899,8 +2934,12 @@ final class AtomicFlag {
       }
     }
     // 逾時保險：硬體編碼器被別的工作佔住時 requestMediaDataWhenReady
-    // 可能一直不回來，沒有這道就卡在「工作檔轉不完」，畫面永遠是原檔
-    DispatchQueue.main.asyncAfter(deadline: .now() + 120) {
+    // 可能一直不回來，沒有這道就卡在「工作檔轉不完」，畫面永遠是原檔。
+    // 額度隨片長：寫死 120 秒的話長片一趟正常轉檔就會超過、被誤判
+    // 逾時砍掉，最後整段編輯拿 4K HDR 原檔播——正是要避免的卡頓。
+    // 給「片長的 3 倍」（硬體轉檔實測遠快於實時），下限 120 秒
+    let timeoutSec = max(120.0, asset.duration.seconds * 3.0)
+    DispatchQueue.main.asyncAfter(deadline: .now() + timeoutSec) {
       guard !replied.isSet else { return }
       reader.cancelReading()
       writer.cancelWriting()
@@ -3807,9 +3846,11 @@ final class CompPlayer: NSObject, FlutterTexture {
     item.audioTimePitchAlgorithm = .timeDomain
     // 系統自己喊的「播放卡住了」：時間點記下來，跟供格節奏對照
     if let o = stallObs { NotificationCenter.default.removeObserver(o) }
+    // queue: .main——nil 是「發通知的那條執行緒」，stallNotes 同時
+    // 被主執行緒的 healthStats 讀，無鎖交錯理論上可 crash
     stallObs = NotificationCenter.default.addObserver(
       forName: NSNotification.Name.AVPlayerItemPlaybackStalled,
-      object: item, queue: nil
+      object: item, queue: .main
     ) { [weak self] _ in
       guard let self = self else { return }
       self.stallCount += 1
@@ -4451,18 +4492,25 @@ final class CompPlayer: NSObject, FlutterTexture {
     seekStart = CACurrentMediaTime()
     player.seek(to: t, toleranceBefore: tol, toleranceAfter: tol) {
       [weak self] _ in
-      guard let self = self else { return }
-      if self.seekMs.count < 400 {
-        self.seekMs.append(Int((CACurrentMediaTime() - self.seekStart) * 1000))
-      }
-      self.seeking = false
-      if self.seekTarget.isValid {
-        self.chase()  // 手指又動了，追過去
-      } else if self.player.rate == 0,
-        self.player.currentItem?.status == .readyToPlay
-      {
-        // 停下來了：把管線熱著，下次按播放就不用等
-        self.player.preroll(atRate: self.targetRate, completionHandler: nil)
+      // 完成回呼在 AVFoundation 的背景佇列跑，seeking/seekTarget
+      // 卻是主執行緒（method channel）在寫——無鎖交錯下最後那發
+      // 「停手精準 seek」可能被安靜吞掉、seeking 卡在 true 之後
+      // 全部 seek 都被合併。整段跳回主執行緒，狀態單線化
+      DispatchQueue.main.async {
+        guard let self = self else { return }
+        if self.seekMs.count < 400 {
+          self.seekMs.append(
+            Int((CACurrentMediaTime() - self.seekStart) * 1000))
+        }
+        self.seeking = false
+        if self.seekTarget.isValid {
+          self.chase()  // 手指又動了，追過去
+        } else if self.player.rate == 0,
+          self.player.currentItem?.status == .readyToPlay
+        {
+          // 停下來了：把管線熱著，下次按播放就不用等
+          self.player.preroll(atRate: self.targetRate, completionHandler: nil)
+        }
       }
     }
   }
