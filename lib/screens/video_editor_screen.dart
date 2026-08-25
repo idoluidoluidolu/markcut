@@ -909,13 +909,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         final src = _tl.sourceOf(c);
         Uint8List? bytes;
         if (src.kind == ClipKind.video) {
-          if (kIsWeb) continue;
-          final st = c.sourceTimeAt(t0);
-          bytes = await nativeFrameAt(src.previewPath, st, maxH: 720);
+          if (kIsWeb) {
+            // web 抽不了原生幀：拿時間軸縮圖的第一格頂上。解析度低
+            // 一點，但封面照樣是「畫面＋浮水印」的合成——以前直接
+            // continue，web 的草稿永遠組不出封面、只剩灰底，
+            // 跟 App 兩個樣（實測回報）
+            bytes = _thumbs[c.sourceIndex]?.firstOrNull;
+          } else {
+            final st = c.sourceTimeAt(t0);
+            bytes = await nativeFrameAt(src.previewPath, st, maxH: 720);
+          }
         } else {
-          try {
-            bytes = await File(src.path).readAsBytes();
-          } catch (_) {}
+          // readFileBytes 跨平台（web 的 blob 路徑 dart:io 讀不到）
+          bytes = await readFileBytes(src.path);
         }
         if (bytes == null) continue;
         ui.Image img;
