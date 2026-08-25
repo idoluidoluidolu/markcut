@@ -8533,7 +8533,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                     ),
                                                     SizedBox(width: 8),
                                                     Text(
-                                                      '效果烘焙中…',
+                                                      '素材載入中…',
                                                       style: TextStyle(
                                                         fontSize: 12,
                                                         color: Colors.white,
