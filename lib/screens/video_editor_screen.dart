@@ -9968,29 +9968,33 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   // 塗到哪碼到哪；工具列浮在下緣。
                                   // 遮罩預覽：畫好的每一筆用半透明
                                   // 白畫出來——純 Flutter、跟合成無關，
-                                  // 每一個點落下立即可見；真正的效果
-                                  // 停筆重烘後出現在遮罩下面
+                                  // 每一個點落下立即可見。每筆放開
+                                  // 就重烘；烘好（指紋同步）遮罩讓位，
+                                  // 直接看到真正的馬賽克，不會被半透
+                                  // 明白洗掉。合成關著（web）沒真效果
+                                  // 可讓，遮罩就一直畫著當回饋
                                   if (_vBrushMode) {
                                     children.add(
                                       Positioned.fill(
                                         child: IgnorePointer(
                                           child: CustomPaint(
                                             painter: _BrushMaskPainter([
-                                              for (final c in _tl.overlaysAt(
-                                                _position,
-                                              ))
-                                                if (_tl
-                                                        .sourceOf(c)
-                                                        .mosaicStroke !=
-                                                    null)
-                                                  (
-                                                    pts: _tl
-                                                        .sourceOf(c)
-                                                        .mosaicStroke!,
-                                                    brush: _tl
-                                                        .sourceOf(c)
-                                                        .mosaicBrush,
-                                                  ),
+                                              if (!_compOn || _compMosaicStale)
+                                                for (final c in _tl.overlaysAt(
+                                                  _position,
+                                                ))
+                                                  if (_tl
+                                                          .sourceOf(c)
+                                                          .mosaicStroke !=
+                                                      null)
+                                                    (
+                                                      pts: _tl
+                                                          .sourceOf(c)
+                                                          .mosaicStroke!,
+                                                      brush: _tl
+                                                          .sourceOf(c)
+                                                          .mosaicBrush,
+                                                    ),
                                             ]),
                                           ),
                                         ),
