@@ -688,6 +688,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   _selMosaic = -1;
                   _wmPart = WmPart.none;
                   _selExtra = -1;
+                  // 全站統一：點筆刷＝直接進放大（全螢幕）塗抹
+                  _fsView = true;
+                  _fsBrushOpen = true;
                 }),
                 icon: const Icon(Icons.brush_outlined, size: 18, color: kIcon),
               ),
@@ -1528,6 +1531,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                 _selMosaic = -1;
                                 _wmPart = WmPart.none;
                                 _selExtra = -1;
+                                _fsView = true;
+                                _fsBrushOpen = true;
                               });
                             },
                             child: Container(
@@ -2087,7 +2092,39 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               ),
             ),
             const SizedBox(height: 4),
-            Row(children: [chip('像素化', 0), chip('模糊', 1), chip('純色', 2)]),
+            Row(
+              children: [
+                chip('像素化', 0),
+                chip('模糊', 1),
+                chip('純色', 2),
+                const SizedBox(width: 4),
+                InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: () => setState(() {
+                    _brushMode = false;
+                    _fsView = false;
+                  }),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: kSelect,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Text(
+                      '完成',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF1A1A1A),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
             slider('粗細', _brushSize, 0.03, 0.5, (v) {
               setState(() {
                 _brushSize = v;
