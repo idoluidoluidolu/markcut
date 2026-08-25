@@ -1409,8 +1409,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             !await WorkFiles.stillValid(s.path, s.workPath!)) {
           s.workPath = null;
         }
-        // HDR 代理同樣驗一下檔案還在不在
-        if (s.workHdrPath != null && !await fileExists(s.workHdrPath!)) {
+        // HDR 代理：檔案在不在＋索引裡還認不認（v106 那批轉壞的
+        // 代理換了索引 key 整批作廢，草稿路徑不能繞過）
+        if (s.workHdrPath != null &&
+            (!await fileExists(s.workHdrPath!) ||
+                await WorkFiles.lookupHdr(s.path) != s.workHdrPath)) {
           s.workHdrPath = null;
         }
         _thumbStrip(s.previewPath, s.duration).then((t) {
