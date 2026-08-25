@@ -2587,8 +2587,11 @@ final class AtomicFlag {
     // HDR 來源：掛跟匯出/合成播放器同一顆 CI 合成器做色調映射。
     // 內建合成器的 HDR→SDR 是另一條曲線——「預覽（播工作檔）跟
     // 成品（CI toneMap）顏色不一樣」的根因就是工作檔在這裡分家。
-    // HDR 直通模式（hdrPass）不映射：10-bit 進、10-bit 出
-    let isHDR = hdrPass ? false : CompPlayer.isHDRSource(src)
+    // HDR 直通模式（hdrPass）不映射：10-bit 進、10-bit 出。
+    // 直通也要走 CI 合成器（HDR 版）——內建合成器的「直通」在
+    // 這條 reader 路上其實會把像素轉掉，檔案卻標著 HLG，播放端
+    // 再做 EDR 增益就是「整個顏色爆炸」（+106 實測）
+    let isHDR = hdrPass || CompPlayer.isHDRSource(src)
     let pixels: [String: Any] = [
       kCVPixelBufferPixelFormatTypeKey as String: Int(
         hdrPass
@@ -2644,7 +2647,10 @@ final class AtomicFlag {
           CGAffineTransform(
             translationX: (size.width - dw * shrink) / 2,
             y: (size.height - dh * shrink) / 2))
-      vc.customVideoCompositorClass = CIExportCompositor.self
+      // 直通用 HDR 版（不映射、HLG 輸出）；SDR 工作檔用一般版
+      //（toneMap，跟成品同一條曲線）——都是匯出驗證過的那兩顆
+      vc.customVideoCompositorClass =
+        hdrPass ? CIExportCompositorHDR.self : CIExportCompositor.self
       vc.instructions = [
         CIExportInstruction(
           timeRange: CMTimeRange(start: .zero, duration: asset.duration),
@@ -2662,7 +2668,10 @@ final class AtomicFlag {
       ]
       DispatchQueue.main.async {
         channel.invokeMethod(
-          "note", arguments: "工作檔（HDR）：CI 色調映射，跟成品同一條曲線")
+          "note",
+          arguments: hdrPass
+            ? "HDR 代理：CI HLG 直通（跟 HDR 匯出同一顆合成器）"
+            : "工作檔（HDR）：CI 色調映射，跟成品同一條曲線")
       }
     } else {
       let ins = AVMutableVideoCompositionInstruction()
