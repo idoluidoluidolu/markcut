@@ -4569,7 +4569,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     : Colors.transparent,
                 borderRadius: BorderRadius.circular(9),
                 border: Border.all(
-                  color: on ? kAmber : Colors.white.withValues(alpha: 0.25),
+                  color: on ? kSelect : Colors.white.withValues(alpha: 0.25),
                   width: on ? 1.4 : 1,
                 ),
               ),
@@ -4636,7 +4636,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         children: [
           Row(
             children: [
-              const Icon(Icons.brush_outlined, size: 13, color: kAmber),
+              const Icon(Icons.brush_outlined, size: 13, color: kSelect),
               const SizedBox(width: 6),
               chip('像素化', 0),
               chip('模糊', 1),
@@ -4716,7 +4716,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     vertical: 4,
                   ),
                   decoration: BoxDecoration(
-                    color: kAmber,
+                    color: kSelect,
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: const Text(
@@ -10077,7 +10077,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             const Icon(
                               Icons.brush_outlined,
                               size: 12,
-                              color: kAmber,
+                              color: kSelect,
                             ),
                             const SizedBox(width: 8),
                             Container(
