@@ -4692,46 +4692,78 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 chip('像素化', 0),
                 chip('模糊', 1),
                 chip('純色', 2),
-                const SizedBox(width: 4),
+                const SizedBox(width: 6),
                 // 上一步／下一步：塗錯一筆馬上退（每一筆起筆都拍
-                // 快照，退一步＝收回上一筆）
-                InkWell(
-                  borderRadius: BorderRadius.circular(12),
-                  onTap: _undoStack.isEmpty
-                      ? null
-                      : () {
-                          _undoAction();
-                          _vBrushEnd();
-                        },
-                  child: Padding(
-                    padding: const EdgeInsets.all(5),
-                    child: Icon(
-                      Icons.undo,
-                      size: 17,
-                      color: _undoStack.isEmpty ? Colors.white24 : kSelect,
-                    ),
+                // 快照，退一步＝收回上一筆）。分段膠囊：合成一顆、
+                // 中間細分隔線，38px 高好按又不加高工具列（B 案）
+                Container(
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(999),
                   ),
-                ),
-                InkWell(
-                  borderRadius: BorderRadius.circular(12),
-                  onTap: _redoStack.isEmpty
-                      ? null
-                      : () {
-                          _redoAction();
-                          _vBrushEnd();
-                        },
-                  child: Padding(
-                    padding: const EdgeInsets.all(5),
-                    child: Icon(
-                      Icons.redo,
-                      size: 17,
-                      color: _redoStack.isEmpty ? Colors.white24 : kSelect,
-                    ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      InkWell(
+                        borderRadius: const BorderRadius.horizontal(
+                          left: Radius.circular(999),
+                        ),
+                        onTap: _undoStack.isEmpty
+                            ? null
+                            : () {
+                                _undoAction();
+                                _vBrushEnd();
+                              },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 9,
+                          ),
+                          child: Icon(
+                            Icons.undo,
+                            size: 20,
+                            color: _undoStack.isEmpty
+                                ? Colors.white24
+                                : kSelect,
+                          ),
+                        ),
+                      ),
+                      Container(
+                        width: 1,
+                        height: 18,
+                        color: Colors.white.withValues(alpha: 0.25),
+                      ),
+                      InkWell(
+                        borderRadius: const BorderRadius.horizontal(
+                          right: Radius.circular(999),
+                        ),
+                        onTap: _redoStack.isEmpty
+                            ? null
+                            : () {
+                                _redoAction();
+                                _vBrushEnd();
+                              },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 9,
+                          ),
+                          child: Icon(
+                            Icons.redo,
+                            size: 20,
+                            color: _redoStack.isEmpty
+                                ? Colors.white24
+                                : kSelect,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 const SizedBox(width: 6),
                 InkWell(
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(999),
                   onTap: () {
                     setState(() {
                       _vBrushMode = false;
@@ -4739,19 +4771,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     });
                     _vBrushEnd();
                   },
+                  // 跟膠囊等高（38px），並排才不會矮一截
                   child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 4,
-                    ),
+                    height: 38,
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    alignment: Alignment.center,
                     decoration: BoxDecoration(
                       color: kSelect,
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(999),
                     ),
                     child: const Text(
                       '完成',
                       style: TextStyle(
-                        fontSize: 11.5,
+                        fontSize: 12.5,
                         fontWeight: FontWeight.w700,
                         color: Color(0xFF1A1A1A),
                       ),
