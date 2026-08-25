@@ -1023,8 +1023,9 @@ final class AtomicFlag {
         }
         let old = self.comp
         self.comp = p
-        PlayerHosts.shared.use(p.player)
-        old?.dispose()
+        // 舊的等新畫面真的上檔（第一格就緒翻面）才收：
+        // 收早了前面那層還指著它，就是使用者看到的閃黑
+        PlayerHosts.shared.use(p.player) { old?.dispose() }
         result([
           "textureId": p.textureId,
           "duration": p.duration,
@@ -3186,8 +3187,46 @@ final class AtomicFlag {
 /// AVPlayerLayer 是系統自己的影片圖層，跟相簿播放走同一條路：零複製、
 /// 影格節奏由系統排程
 final class PlayerHostView: UIView {
-  override class var layerClass: AnyClass { AVPlayerLayer.self }
-  var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+  // 疊兩層：換播放器時新的先掛背面，第一格解出來（isReadyForDisplay）
+  // 才翻到前面——舊畫面全程在前面撐著，換手過程沒有黑幕
+  private let layerA = AVPlayerLayer()
+  private let layerB = AVPlayerLayer()
+  private(set) lazy var front: AVPlayerLayer = layerA
+  var back: AVPlayerLayer { front === layerA ? layerB : layerA }
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    for l in [layerB, layerA] {
+      l.videoGravity = .resizeAspect
+      layer.addSublayer(l)
+    }
+    layerA.zPosition = 1
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) 不支援") }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    // 圖層 frame 有隱式動畫，轉向/縮放時會拖影——關掉
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    layerA.frame = bounds
+    layerB.frame = bounds
+    CATransaction.commit()
+  }
+
+  /// 背面翻到前面；翻完舊的那層退到背面並卸下播放器
+  func flip() {
+    let old = front
+    let new = back
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    new.zPosition = 1
+    old.zPosition = 0
+    CATransaction.commit()
+    front = new
+    old.player = nil
+  }
 }
 
 /// 目前該顯示哪一顆播放器，以及畫面上還活著的影片圖層。
@@ -3201,15 +3240,80 @@ final class PlayerHosts: NSObject {
   private let views = NSHashTable<PlayerHostView>.weakObjects()
   private(set) var current: AVPlayer?
 
+  /// 進行中的換手：世代編號＋觀察者。新一輪換手直接作廢上一輪
+  ///（連按兩下重烘時，只有最後一顆播放器算數）
+  private var gen = 0
+  private var pendingObs: [NSKeyValueObservation] = []
+
   func register(_ v: PlayerHostView) {
     views.add(v)
-    v.playerLayer.player = current
+    v.front.player = current
   }
 
-  /// 換成新的播放器：所有還活著的圖層一起指過去
-  func use(_ p: AVPlayer?) {
+  /// 換成新的播放器——但畫面不立刻換：新播放器先掛每個視圖的
+  /// 背面圖層，等它第一格真的解出來（isReadyForDisplay）才翻面。
+  /// 舊畫面全程在前面撐著，重烘換手不再閃黑。
+  /// [whenVisible] 新畫面上檔（或保底逾時）後呼叫——舊播放器
+  /// 留到這一刻才收，收早了圖層還指著它就黑了
+  func use(_ p: AVPlayer?, whenVisible: (() -> Void)? = nil) {
+    gen += 1
+    let g = gen
+    pendingObs.removeAll()
     current = p
-    for v in views.allObjects { v.playerLayer.player = p }
+    guard let p = p else {
+      for v in views.allObjects {
+        v.front.player = nil
+        v.back.player = nil
+      }
+      whenVisible?()
+      return
+    }
+    let vs = views.allObjects
+    if vs.isEmpty {
+      whenVisible?()
+      return
+    }
+    var remaining = vs.count
+    var finished = false
+    let oneDone: () -> Void = { [weak self] in
+      remaining -= 1
+      guard remaining == 0, !finished, let self = self, self.gen == g
+      else { return }
+      finished = true
+      self.pendingObs.removeAll()
+      whenVisible?()
+    }
+    for v in vs {
+      let incoming = v.back
+      incoming.player = p
+      if incoming.isReadyForDisplay {
+        v.flip()
+        oneDone()
+        continue
+      }
+      let obs = incoming.observe(\.isReadyForDisplay, options: [.new]) {
+        [weak self] layer, _ in
+        guard layer.isReadyForDisplay else { return }
+        DispatchQueue.main.async {
+          guard let self = self, self.gen == g else { return }
+          if v.front.player !== p { v.flip() }
+          oneDone()
+        }
+      }
+      pendingObs.append(obs)
+    }
+    // 保底：素材壞掉 readyForDisplay 永遠不來——1.5 秒硬翻，
+    // 寧可閃一下也不能卡在舊畫面（聲音已經是新的了）
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+      guard let self = self, self.gen == g, !finished else { return }
+      finished = true
+      self.pendingObs.removeAll()
+      for v in vs where v.front.player !== p {
+        if v.back.player !== p { v.back.player = p }
+        v.flip()
+      }
+      whenVisible?()
+    }
   }
 }
 
@@ -3226,7 +3330,6 @@ final class PlayerPlatformView: NSObject, FlutterPlatformView {
   init(frame: CGRect) {
     host = PlayerHostView(frame: frame)
     host.backgroundColor = .black
-    host.playerLayer.videoGravity = .resizeAspect
     super.init()
     PlayerHosts.shared.register(host)
     Self.statLock.lock()
