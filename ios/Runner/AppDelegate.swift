@@ -4353,23 +4353,32 @@ final class CompPlayer: NSObject, FlutterTexture {
       ])
       item.add(vo)
       videoOut = vo
+      // 原地 seek 會被系統當 no-op 略過（目標＝現在位置就不重繪），
+      // tap 永遠等不到畫面——往前挪一格（34ms）逼它真的重繪。
+      // 暫停中差一格肉眼無感；重烘完成後會再精準 seek 回正
       let t0 = player.currentTime()
-      player.seek(to: t0, toleranceBefore: .zero, toleranceAfter: .zero)
+      let nudge = CMTime(
+        seconds: max(0, t0.seconds - 0.034), preferredTimescale: 600)
+      player.seek(to: nudge, toleranceBefore: .zero, toleranceAfter: .zero)
     }
     guard let vo = videoOut else {
       done(nil)
       return
     }
-    let t = player.currentTime()
     DispatchQueue.global(qos: .userInitiated).async {
-      var pb: CVPixelBuffer? = vo.copyPixelBuffer(
-        forItemTime: t, itemTimeForDisplay: nil)
+      // 抄「現在顯示中的那格」：時間用 tap 的 host 時間對映——
+      // 上面可能剛做過挪格 seek，抓固定時間點會抓不到
+      func tryCopy() -> CVPixelBuffer? {
+        let t = vo.itemTime(forHostTime: CACurrentMediaTime())
+        return vo.copyPixelBuffer(forItemTime: t, itemTimeForDisplay: nil)
+      }
+      var pb: CVPixelBuffer? = tryCopy()
       // 剛掛上的 tap 要等重繪那格到位（最多等 0.6 秒）
       var waited = 0
       while pb == nil, waited < 30 {
         Thread.sleep(forTimeInterval: 0.02)
         waited += 1
-        pb = vo.copyPixelBuffer(forItemTime: t, itemTimeForDisplay: nil)
+        pb = tryCopy()
       }
       guard let pb = pb else {
         done(nil)
