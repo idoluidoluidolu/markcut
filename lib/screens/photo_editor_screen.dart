@@ -681,20 +681,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               ),
               const Spacer(),
               IconButton(
-                tooltip: '筆刷塗抹打碼',
-                visualDensity: VisualDensity.compact,
-                onPressed: () => setState(() {
-                  _brushMode = true;
-                  _selMosaic = -1;
-                  _wmPart = WmPart.none;
-                  _selExtra = -1;
-                  // 全站統一：點筆刷＝直接進放大（全螢幕）塗抹
-                  _fsView = true;
-                  _fsBrushOpen = true;
-                }),
-                icon: const Icon(Icons.brush_outlined, size: 18, color: kIcon),
-              ),
-              IconButton(
                 tooltip: '加一塊馬賽克',
                 visualDensity: VisualDensity.compact,
                 onPressed: _addMosaic,
