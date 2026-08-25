@@ -4446,8 +4446,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 筆刷模式中：預覽整面接管拖曳，一筆＝一段筆畫馬賽克素材
   bool _vBrushMode = false;
 
-  /// 工具列收闔：塗抹點剛好被工具列蓋住時收起來塗，塗完再叫出
-  bool _vBrushBarOpen = true;
   int _vBrushTrack = 0;
   final MosaicStyle _vBrushStyle = MosaicStyle();
   double _vBrushSize = 0.16;
@@ -4475,7 +4473,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 「完成」一起退出全螢幕
       _fullscreen = true;
       _fsBar = false;
-      _vBrushBarOpen = true;
     });
   }
 
@@ -4626,10 +4623,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(10, 6, 10, 2),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.78),
-        borderRadius: BorderRadius.circular(14),
+        color: Colors.black.withValues(alpha: 0.8),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -4678,28 +4675,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   ),
                 ),
               ),
-              // 收起工具列（塗抹點被擋住時用；底部把手條叫回來）
-              InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: () => setState(() => _vBrushBarOpen = false),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.5),
-                      width: 1,
-                    ),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Text(
-                    '收起',
-                    style: TextStyle(fontSize: 11, color: Colors.white),
-                  ),
-                ),
-              ),
               const SizedBox(width: 6),
               InkWell(
                 borderRadius: BorderRadius.circular(12),
@@ -4745,6 +4720,41 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             slider('柔邊', _vBrushStyle.feather, 0.0, 1.0, (v) {
               setState(() => apply((st) => st.feather = v));
             }),
+          if (_vBrushStyle.type == 2)
+            SizedBox(
+              height: 28,
+              child: Row(
+                children: [
+                  const Text(
+                    '顏色',
+                    style: TextStyle(fontSize: 10.5, color: Colors.white70),
+                  ),
+                  const Spacer(),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: () async {
+                      final picked = await pickColor(
+                        context,
+                        Color(_vBrushStyle.color),
+                      );
+                      if (picked != null) {
+                        setState(() => apply((st) => st.color = picked));
+                        _vBrushEnd();
+                      }
+                    },
+                    child: Container(
+                      width: 22,
+                      height: 22,
+                      decoration: BoxDecoration(
+                        color: Color(_vBrushStyle.color),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white24, width: 1.5),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );
@@ -10044,61 +10054,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               // 只會擋畫面——退出全螢幕的鈕在膠囊上，這裡不需要
               // 筆刷工具列：浮在整個預覽區下緣（放畫布裡會被
               // 窄畫布擠成一團——直式影片的畫布只有兩百多點寬）
-              if (_vBrushMode && _vBrushBarOpen)
-                Positioned(left: 10, right: 10, bottom: 8, child: _vBrushBar()),
-              // 收起時：底部置中一條迷你把手條（筆刷圖示＋橫槓＋↑），
-              // 位置固定、意圖明顯；點或上滑展開
-              if (_vBrushMode && !_vBrushBarOpen)
+              if (_vBrushMode)
                 Positioned(
                   left: 0,
                   right: 0,
-                  bottom: 8,
-                  child: Center(
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () => setState(() => _vBrushBarOpen = true),
-                      onVerticalDragEnd: (d) {
-                        if ((d.primaryVelocity ?? 0) < -150) {
-                          setState(() => _vBrushBarOpen = true);
-                        }
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 6,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.75),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(
-                              Icons.brush_outlined,
-                              size: 12,
-                              color: kSelect,
-                            ),
-                            const SizedBox(width: 8),
-                            Container(
-                              width: 28,
-                              height: 4,
-                              decoration: BoxDecoration(
-                                color: Colors.white.withValues(alpha: 0.7),
-                                borderRadius: BorderRadius.circular(2),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            const Icon(
-                              Icons.keyboard_arrow_up,
-                              size: 15,
-                              color: Colors.white,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
+                  bottom: 0,
+                  child: SafeArea(top: false, child: _vBrushBar()),
                 ),
               if (!_fullscreen) _canvasHint(),
               // 工作檔在背景備，不出現在畫面上：進場就能剪，
