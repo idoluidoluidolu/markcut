@@ -449,7 +449,8 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   // context 用靜態共用：CI 的濾鏡管線編譯快取掛在 context 上，
   // 每個合成器實例各開一顆的話，抽格器、播放器、匯出各自都要
   // 重新編一次管線——首編譯那幾十 ms 正好落在畫面上變成一頓
-  private static let ctxSDR = CIContext(options: [
+  // 抽格器（frameAt）也共用這顆做 HDR 影格的色調映射，不另開
+  static let ctxSDR = CIContext(options: [
     .cacheIntermediates: false, .workingFormat: CIFormat.RGBA8,
     // 半透明疊加要在 gamma 空間混色：Flutter 預覽跟 FFmpeg 的
     // overlay 都是 gamma 混，CI 預設的「線性光」混出來，同一個
@@ -950,12 +951,15 @@ final class AtomicFlag {
         gen.appliesPreferredTrackTransform = true  // 直式影片轉正
         gen.maximumSize = CGSize(width: maxH, height: maxH)
         // HDR（HLG）素材一定要壓回 SDR：copyCGImage 不會自己轉，
-        // HLG 像素直接進 JPEG 就是「拖曳預覽顏色超飽和」（實測回報）
-        // ——跟合成播放器的 toneMap 同一個目的，兩邊顏色才一致。
+        // HLG 像素直接進 JPEG 就是「拖曳預覽顏色超飽和」（實測回報）。
+        // 之前用 .forceSDR：它的轉換又平又淡，草稿封面「偏淡比起
+        // 原圖」就是它（實測回報）。改成 .matchSource 拿回 HDR 影格，
+        // 下面用跟合成播放器/工作檔同一條系統 toneMap 曲線壓 SDR
+        // ——全 App 的顏色只有一套。
         // dynamicRangePolicy 是 iOS 18 的 API（16 會編譯失敗，CI 踩過）；
         // 17 以下維持舊行為（拖曳幀偏飽和，放開就正常）
         if #available(iOS 18.0, *) {
-          gen.dynamicRangePolicy = .forceSDR
+          gen.dynamicRangePolicy = .matchSource
         }
         // 容忍 0.15 秒：允許解碼器就近取材，不必逐格精準解到底，
         // 這是「快」的關鍵；拖曳預覽差半格人眼看不出來
@@ -963,10 +967,24 @@ final class AtomicFlag {
         gen.requestedTimeToleranceAfter = CMTime(seconds: 0.15, preferredTimescale: 600)
         var payload: FlutterStandardTypedData?
         if let cg = try? gen.copyCGImage(
-          at: CMTime(value: Int64(ms), timescale: 1000), actualTime: nil),
-          let data = UIImage(cgImage: cg).jpegData(compressionQuality: jpegQ)
+          at: CMTime(value: Int64(ms), timescale: 1000), actualTime: nil)
         {
-          payload = FlutterStandardTypedData(bytes: data)
+          var flat = UIImage(cgImage: cg)
+          // HDR 影格（HLG/PQ 色彩空間）：用跟合成播放器/工作檔同一條
+          // 系統 toneMap 曲線壓回 SDR。壓不成再退回原樣（頂多偏色，
+          // 不能沒圖）
+          if let cs = cg.colorSpace, CGColorSpaceUsesITUR_2100TF(cs) {
+            let ci = CIImage(cgImage: cg, options: [.toneMapHDRtoSDR: true])
+            if let sdr = CIExportCompositor.ctxSDR.createCGImage(
+              ci, from: ci.extent, format: .RGBA8,
+              colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+            {
+              flat = UIImage(cgImage: sdr)
+            }
+          }
+          if let data = flat.jpegData(compressionQuality: jpegQ) {
+            payload = FlutterStandardTypedData(bytes: data)
+          }
         }
         DispatchQueue.main.async { result(payload) }
       }

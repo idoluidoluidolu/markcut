@@ -433,18 +433,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
       child: Scaffold(
         backgroundColor: kLBg,
         appBar: AppBar(backgroundColor: kLBg),
+        // bottom 不留 SafeArea：留了整頁底下就是一條釘死的白帶，
+        // 內容捲不進去（實測回報「底下白邊 sticky」）。改讓內容
+        // 捲到螢幕最底，home 條的位置由捲動內容自己的底部留白扛
         body: SafeArea(
           top: false,
+          bottom: false,
           // 左右留白改由各段自己給：範本那排要滿版出血（捲出畫面外），
           // 外層一留白它就被切在邊上，看起來像少畫了一格
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(0, 10, 0, 12),
+            padding: const EdgeInsets.fromLTRB(0, 10, 0, 0),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // 上面可以捲，下面的行動鈕釘在底：草稿再多也不會把它推走
                 Expanded(
                   child: SingleChildScrollView(
+                    padding: EdgeInsets.only(
+                      bottom: 12 + MediaQuery.of(context).padding.bottom,
+                    ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
@@ -979,9 +985,12 @@ class _DraftsScreenState extends State<DraftsScreen> {
         '${(s % 60).toString().padLeft(2, '0')}';
   }
 
-  /// 封面角落的小標（日期、時長共用一款）
+  /// 封面角落的小標（日期、時長共用一款）。
+  /// 固定高＋置中＋行高 1.0：預設行高會讓數字在膠囊裡偏下
   static Widget _cornerChip(String text) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+    padding: const EdgeInsets.symmetric(horizontal: 6),
+    height: 17,
+    alignment: Alignment.center,
     decoration: BoxDecoration(
       color: Colors.black.withValues(alpha: 0.55),
       borderRadius: BorderRadius.circular(5),
@@ -990,6 +999,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
       text,
       style: const TextStyle(
         fontSize: 10,
+        height: 1.0,
         color: Colors.white,
         fontFeatures: [FontFeature.tabularFigures()],
       ),

@@ -986,8 +986,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _canvasRatio.index,
       _resolution.index,
       for (final c in _tl.clips)
+        // previewPath 也要進指紋：HDR 素材的第一版封面是從原檔抽的
+        //（色調映射前，偏淡），工作檔轉好後 previewPath 變了要重生
+        // 一次——不進指紋的話洗白的那版封面永遠卡著
         '${c.id}|${c.track}|${c.offset.toStringAsFixed(2)}'
-            '|${c.trimStart.toStringAsFixed(2)}|${c.scale}|${c.px}|${c.py}',
+            '|${c.trimStart.toStringAsFixed(2)}|${c.scale}|${c.px}|${c.py}'
+            '|${_tl.sourceOf(c).previewPath}',
       _settings.hasAnyMark,
       _wmHidden,
       // 浮水印「內容」也要進指紋：只記有沒有的話，換了樣式/文字/
