@@ -4678,20 +4678,29 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   ),
                 ),
               ),
-              // 收起工具列（塗抹點被擋住時用；右下小圓鈕叫回來）
+              // 收起工具列（塗抹點被擋住時用；底部把手條叫回來）
               InkWell(
                 borderRadius: BorderRadius.circular(12),
                 onTap: () => setState(() => _vBrushBarOpen = false),
-                child: const Padding(
-                  padding: EdgeInsets.all(5),
-                  child: Icon(
-                    Icons.keyboard_arrow_down,
-                    size: 18,
-                    color: Colors.white,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.5),
+                      width: 1,
+                    ),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Text(
+                    '收起',
+                    style: TextStyle(fontSize: 11, color: Colors.white),
                   ),
                 ),
               ),
-              const SizedBox(width: 4),
+              const SizedBox(width: 6),
               InkWell(
                 borderRadius: BorderRadius.circular(12),
                 onTap: () {
@@ -10037,24 +10046,56 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               // 窄畫布擠成一團——直式影片的畫布只有兩百多點寬）
               if (_vBrushMode && _vBrushBarOpen)
                 Positioned(left: 10, right: 10, bottom: 8, child: _vBrushBar()),
-              // 收起時只剩右下小圓鈕：整個下緣都能塗
+              // 收起時：底部置中一條迷你把手條（筆刷圖示＋橫槓＋↑），
+              // 位置固定、意圖明顯；點或上滑展開
               if (_vBrushMode && !_vBrushBarOpen)
                 Positioned(
-                  right: 10,
+                  left: 0,
+                  right: 0,
                   bottom: 8,
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(999),
-                    onTap: () => setState(() => _vBrushBarOpen = true),
-                    child: Container(
-                      padding: const EdgeInsets.all(9),
-                      decoration: const BoxDecoration(
-                        color: kAmber,
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.tune,
-                        size: 18,
-                        color: Color(0xFF1A1A1A),
+                  child: Center(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => setState(() => _vBrushBarOpen = true),
+                      onVerticalDragEnd: (d) {
+                        if ((d.primaryVelocity ?? 0) < -150) {
+                          setState(() => _vBrushBarOpen = true);
+                        }
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.75),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.brush_outlined,
+                              size: 12,
+                              color: kAmber,
+                            ),
+                            const SizedBox(width: 8),
+                            Container(
+                              width: 28,
+                              height: 4,
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.7),
+                                borderRadius: BorderRadius.circular(2),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            const Icon(
+                              Icons.keyboard_arrow_up,
+                              size: 15,
+                              color: Colors.white,
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
