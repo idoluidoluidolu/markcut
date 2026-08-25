@@ -4681,7 +4681,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     child: Icon(
                       Icons.undo,
                       size: 17,
-                      color: _undoStack.isEmpty ? Colors.white24 : Colors.white,
+                      color: _undoStack.isEmpty ? Colors.white24 : kSelect,
                     ),
                   ),
                 ),
@@ -4698,7 +4698,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     child: Icon(
                       Icons.redo,
                       size: 17,
-                      color: _redoStack.isEmpty ? Colors.white24 : Colors.white,
+                      color: _redoStack.isEmpty ? Colors.white24 : kSelect,
                     ),
                   ),
                 ),
