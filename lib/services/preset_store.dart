@@ -255,7 +255,10 @@ class PresetStore {
     final presets = await load();
     // 同名的直接覆蓋
     presets.removeWhere((p) => p.name == preset.name);
-    presets.add(preset);
+    // 插在最前面：清單各處（個人中心、範本夾、挑選面板）都是
+    // 「新的／最近編輯過的排前面」。以前 append 在尾巴，主頁的
+    // 「最新兩組」拿到的其實是最舊的兩組
+    presets.insert(0, preset);
     await saveAll(presets);
   }
 
