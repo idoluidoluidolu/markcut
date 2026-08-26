@@ -203,6 +203,11 @@ class _GifScreenState extends State<GifScreen> {
     _syncGifFrame();
   }
 
+  /// 目前這份 GIF 幀是照哪段時間做的：拖把手時把把手位置映射回
+  /// 對應的幀（連續跟手），要靠這兩個值換算
+  double _gifBuiltStart = 0;
+  double _gifBuiltEnd = 0;
+
   void _schedulePreview() {
     final key = _keyFor();
     if (key == _previewKey) return;
@@ -214,6 +219,8 @@ class _GifScreenState extends State<GifScreen> {
         _gifPreview = hit;
         _previewKey = key;
       });
+      _gifBuiltStart = _start;
+      _gifBuiltEnd = _end;
       unawaited(_decodeGifFrames(hit));
       // 換上快取＝閒置：接著把這一組的隔壁選項也補起來
       unawaited(_prefetchSiblings());
@@ -235,10 +242,15 @@ class _GifScreenState extends State<GifScreen> {
         _gifPreview = hit;
         _previewKey = key;
       });
+      _gifBuiltStart = _start;
+      _gifBuiltEnd = _end;
       unawaited(_decodeGifFrames(hit));
       return;
     }
     setState(() => _building = true);
+    // 做的當下的剪點（做完手可能又在拉了，不能拿最新值當這份的範圍）
+    final builtStart = _start;
+    final builtEnd = _end;
     final path = await engine.makeGifFile(
       inputPath: widget.path,
       start: _start,
@@ -257,7 +269,11 @@ class _GifScreenState extends State<GifScreen> {
         _previewCache[key] = path;
       }
     });
-    if (path != null) unawaited(_decodeGifFrames(path));
+    if (path != null) {
+      _gifBuiltStart = builtStart;
+      _gifBuiltEnd = builtEnd;
+      unawaited(_decodeGifFrames(path));
+    }
     // 跑完的時候設定可能又被改過了（使用者連按了好幾個），
     // 那就接著做最新的那一組
     if (mounted && _keyFor() != _previewKey) _schedulePreview();
@@ -1198,11 +1214,19 @@ class _GifScreenState extends State<GifScreen> {
             _seek(left ? _start : math.min(_end, _dur - 0.03));
           }
           if (_gifMode && _gifFrames.isNotEmpty) {
-            // GIF 模式畫面走 GIF 時鐘、不理 seek：拖把手時直接把
-            // 對應端點那格擺出來（左＝第一格、右＝最後一格），
-            // 停手重做預覽後換成新剪點的成果
+            // GIF 模式畫面走 GIF 時鐘、不理 seek：把手位置映射回
+            // 「這份 GIF 做的時間段」裡對應的幀，一路連續跟手
+            //（之前擺固定端點幀，只跟一下就凍住——實測回報）。
+            // 拖出舊範圍外會停在端點幀，停手重做後換新剪點成果
             if (_playing) _playing = false;
-            _gifFrameVN.value = left ? 0 : _gifFrames.length - 1;
+            final len = _gifBuiltEnd - _gifBuiltStart;
+            if (len > 0.01) {
+              final tt = left ? _start : _end;
+              _gifFrameVN.value =
+                  (((tt - _gifBuiltStart) / len) * _gifFrames.length)
+                      .floor()
+                      .clamp(0, _gifFrames.length - 1);
+            }
           }
           final p = _player;
           if (_playing && p != null) {
