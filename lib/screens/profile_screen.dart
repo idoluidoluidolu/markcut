@@ -518,27 +518,38 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         )
                       else ...[
                         const SizedBox(height: 14),
-                        SizedBox(
-                          height: 96,
-                          child: ListView.separated(
-                            scrollDirection: Axis.horizontal,
-                            padding: _side,
-                            itemCount: _gifs.length.clamp(0, 8),
-                            separatorBuilder: (_, _) =>
-                                const SizedBox(width: 10),
-                            itemBuilder: (context, i) => GestureDetector(
-                              onTap: _openGifs,
-                              child: Container(
-                                width: 96,
-                                decoration: BoxDecoration(
-                                  color: kLTile,
-                                  borderRadius: BorderRadius.circular(12),
-                                  boxShadow: _tileShadow,
-                                ),
-                                clipBehavior: Clip.antiAlias,
-                                child: GifImage(_gifs[i]),
-                              ),
-                            ),
+                        // 固定三格、不出血（使用者指定：以前橫向清單
+                        // 一直延伸出畫面）。其餘按「全部」進 GIF 夾
+                        Padding(
+                          padding: _side,
+                          child: LayoutBuilder(
+                            builder: (context, cons) {
+                              final w = (cons.maxWidth - 20) / 3;
+                              return Row(
+                                children: [
+                                  for (final (i, g)
+                                      in _gifs.take(3).toList().indexed) ...[
+                                    if (i > 0) const SizedBox(width: 10),
+                                    GestureDetector(
+                                      onTap: _openGifs,
+                                      child: Container(
+                                        width: w,
+                                        height: w,
+                                        decoration: BoxDecoration(
+                                          color: kLTile,
+                                          borderRadius: BorderRadius.circular(
+                                            12,
+                                          ),
+                                          boxShadow: _tileShadow,
+                                        ),
+                                        clipBehavior: Clip.antiAlias,
+                                        child: GifImage(g),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              );
+                            },
                           ),
                         ),
                       ],
