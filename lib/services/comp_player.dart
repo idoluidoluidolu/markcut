@@ -24,6 +24,7 @@ class CompPlayer {
     this.height,
     this.ciOn,
     this.hdrIn,
+    this.wmLive,
   );
 
   static const _ch = MethodChannel('markcut/comp');
@@ -37,6 +38,12 @@ class CompPlayer {
   /// 診斷歷史用——組建內視鏡只留最後一次，進場那次會被蓋掉）
   final bool ciOn;
   final bool hdrIn;
+
+  /// HDR 預覽的疊加物走「即時清單」：浮水印/文字/貼圖烘進合成、
+  /// 用 EDR 顯示（白色才是白色，提亮跟匯出同一段程式碼）。
+  /// 之後改樣式/拖曳用 [setOverlays] 換清單，不必整組重建。
+  /// false＝疊加物照舊由 Flutter 圖層畫（SDR 預覽本來就準）
+  final bool wmLive;
 
   double get aspect => (width <= 0 || height <= 0) ? 16 / 9 : width / height;
 
@@ -184,6 +191,7 @@ class CompPlayer {
     Set<int> mutedTracks = const {},
     Set<int> hiddenTracks = const {},
     bool hdrOut = false,
+    List<Map<String, dynamic>> overlays = const [],
   }) async {
     if (!await available) return null;
     // 裁切/旋轉/透明度不再是阻擋條件：原生端會為它們掛 CI 合成器，
@@ -324,6 +332,9 @@ class CompPlayer {
         'mosaics': mosaics,
         'stills': stills,
         'hdrOut': hdrOut,
+        // HDR 預覽的疊加物（浮水印/文字/貼圖的整版 PNG，跟匯出
+        // 同一套欄位；rect 描述使用者畫布落在合成畫框的哪裡）
+        'overlays': overlays,
       });
       if (m == null) return null;
       // 原生端組不起來時會回原因，不要讓它只變成一句「組不起來」
@@ -340,9 +351,24 @@ class CompPlayer {
         (m['height'] as num?)?.toDouble() ?? 0,
         m['ci'] == true,
         m['hdr'] == true,
+        m['wmLive'] == true,
       );
     } catch (_) {
       return null;
+    }
+  }
+
+  /// 換 HDR 預覽的即時疊加物清單（不重建合成）。
+  /// 只有 [wmLive] 的合成收得下；成功回 true。暫停中呼叫端要補一個
+  /// 精準 seek，逼合成器用新清單重畫當下這一格
+  static Future<bool> setOverlays(List<Map<String, dynamic>> overlays) async {
+    try {
+      return await _ch.invokeMethod<bool>('setOverlays', {
+            'overlays': overlays,
+          }) ??
+          false;
+    } catch (_) {
+      return false;
     }
   }
 

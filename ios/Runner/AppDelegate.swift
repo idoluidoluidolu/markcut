@@ -71,7 +71,7 @@ final class VCValidator: NSObject, AVVideoCompositionValidationHandling {
 
 /// 一張疊加物（浮水印／文字 PNG）＋它的顯示窗與動畫參數
 final class CIOverlaySpec {
-  let image: CIImage  // 已縮放到畫布大小
+  let image: CIImage  // 已縮放/定位到畫布座標
   let start: Double
   let end: Double
   let anim: String
@@ -79,6 +79,10 @@ final class CIOverlaySpec {
   let on: Double
   let animSpeed: Double
   let range: Double
+  /// 動畫幅度的基準尺寸＝疊加物自己的畫布（套過 rect 之後）。
+  /// 匯出不帶 rect 時就是輸出畫布，行為跟原本一模一樣
+  let effW: Double
+  let effH: Double
 
   init?(_ ov: [String: Any], canvas: CGSize) {
     guard let data = (ov["png"] as? FlutterStandardTypedData)?.data,
@@ -87,10 +91,24 @@ final class CIOverlaySpec {
     var img = CIImage(cgImage: cg)
     let ext = img.extent
     guard ext.width > 1, ext.height > 1 else { return nil }
+    // 預覽合成的畫布是「影片畫框」，使用者的畫布（固定比例）可能更寬
+    // 或更高：PNG 是照使用者畫布畫的，rect 描述使用者畫布落在這個
+    // 畫框座標系的哪裡（左上原點、normalized，允許超出邊界——超出的
+    // 部分合成時自然被裁掉）。匯出不帶 rect＝整版，跟原本相同
+    var r: [Double] = ov["rect"] as? [Double] ?? [0, 0, 1, 1]
+    if r.count < 4 || r[2] <= 0 || r[3] <= 0 { r = [0, 0, 1, 1] }
+    let w = canvas.width * CGFloat(r[2])
+    let h = canvas.height * CGFloat(r[3])
+    img = img.transformed(
+      by: CGAffineTransform(scaleX: w / ext.width, y: h / ext.height))
+    // CI 是左下原點、y 往上，rect 是左上原點：垂直要反過來
     img = img.transformed(
       by: CGAffineTransform(
-        scaleX: canvas.width / ext.width, y: canvas.height / ext.height))
+        translationX: canvas.width * CGFloat(r[0]),
+        y: canvas.height * CGFloat(1 - r[1] - r[3])))
     image = img
+    effW = Double(w)
+    effH = Double(h)
     start = max(0, ov["start"] as? Double ?? 0)
     end = ov["end"] as? Double ?? .greatestFiniteMagnitude
     anim = ov["anim"] as? String ?? "none"
@@ -113,14 +131,16 @@ final class CIOverlaySpec {
       }
       return image
     case "drift":
+      // 幅度照「疊加物自己的畫布」算：預覽合成的畫框比使用者畫布
+      // 小的時候，用畫框算會讓擺動比成品小一截
       let amp = 0.02 * range
-      let dx = sin(t * 1.3 * animSpeed) * Double(canvas.width) * amp
-      let dy = cos(t * 0.9 * animSpeed) * Double(canvas.height) * amp
+      let dx = sin(t * 1.3 * animSpeed) * effW * amp
+      let dy = cos(t * 0.9 * animSpeed) * effH * amp
       return image.transformed(
         by: CGAffineTransform(translationX: dx, y: -dy))
     case "marquee":
       let ph = t.truncatingRemainder(dividingBy: cycle) / cycle
-      let dx = Double(canvas.width) * (1 - 2 * ph)
+      let dx = effW * (1 - 2 * ph)
       return image.transformed(by: CGAffineTransform(translationX: dx, y: 0))
     default:
       return image
@@ -445,6 +465,28 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   /// HDR 輸出模式（見 CIExportCompositorHDR）：來源不做色調映射、
   /// 輸出 10-bit HLG。SDR（預設）＝原本的 8-bit 709
   var hdrOut: Bool { false }
+
+  /// 預覽合成的「即時疊加物」（浮水印/文字/貼圖）。
+  ///
+  /// HDR 預覽把疊加物烘進合成，白色才能跟成品一樣亮（EDR）；
+  /// 但拖曳、調樣式如果每次都整組重建合成，手感就毀了——Dart 端
+  /// 重畫 PNG 後直接換這份清單，下一格就生效。只有預覽合成器
+  ///（livePreview）讀它，匯出照走指令裡的 overlays，互不相干
+  static let ovLock = NSLock()
+  private static var previewOvs: [CIOverlaySpec] = []
+  static func setPreviewOverlays(_ o: [CIOverlaySpec]) {
+    ovLock.lock()
+    previewOvs = o
+    ovLock.unlock()
+  }
+  static func currentPreviewOverlays() -> [CIOverlaySpec] {
+    ovLock.lock()
+    defer { ovLock.unlock() }
+    return previewOvs
+  }
+
+  /// 讀「即時疊加物」而不是指令裡那份（只有 HDR 預覽合成器開）
+  var livePreview: Bool { false }
 
   // context 用靜態共用：CI 的濾鏡管線編譯快取掛在 context 上，
   // 每個合成器實例各開一顆的話，抽格器、播放器、匯出各自都要
@@ -839,7 +881,10 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             out = self.applyMosaic(activeMz[mzIdx], to: out, canvas: size)
             mzIdx += 1
           }
-          for ov in ins.overlays {
+          let ovs =
+            self.livePreview
+            ? CIExportCompositor.currentPreviewOverlays() : ins.overlays
+          for ov in ovs {
             if var o = ov.frame(at: t, canvas: size) {
               if self.hdrOut {
                 // HDR 輸出：疊加物（文字/浮水印/貼圖）在線性光提亮
@@ -877,8 +922,15 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
 
 /// HDR 匯出用的合成器：同一套疊圖邏輯，只是不做色調映射、
 /// 輸出 10-bit HLG（見 CIExportCompositor.hdrOut）
-final class CIExportCompositorHDR: CIExportCompositor {
+class CIExportCompositorHDR: CIExportCompositor {
   override var hdrOut: Bool { true }
+}
+
+/// HDR「預覽」合成器：跟 HDR 匯出同一套疊圖，另外改讀即時疊加物
+///（浮水印/文字直接烘在 HDR 畫面上、走 EDR 顯示——白色才是白色，
+/// 而且提亮數學跟匯出同一段程式碼，預覽即所得）
+final class CIPreviewCompositorHDR: CIExportCompositorHDR {
+  override var livePreview: Bool { true }
 }
 
 /// 跨執行緒的一次性旗標。轉檔那條路上有兩個地方需要它：
@@ -1044,15 +1096,17 @@ final class AtomicFlag {
         let mosaics = args["mosaics"] as? [[String: Any]] ?? []
         let stills = args["stills"] as? [[String: Any]] ?? []
         let hdrOut = args["hdrOut"] as? Bool ?? false
-        // 馬賽克/圖片層要走 CI 合成器：先把濾鏡管線暖起來，
+        let overlays = args["overlays"] as? [[String: Any]] ?? []
+        // 馬賽克/圖片/疊加層要走 CI 合成器：先把濾鏡管線暖起來，
         // 接縫不吃首編譯
-        if !mosaics.isEmpty || !stills.isEmpty {
+        if !mosaics.isEmpty || !stills.isEmpty || !overlays.isEmpty {
           CIExportCompositor.warmUp()
         }
         guard
           p.build(
             clips: clips, texture: (args["texture"] as? Bool) ?? true,
-            mosaics: mosaics, stills: stills, hdrOut: hdrOut)
+            mosaics: mosaics, stills: stills, hdrOut: hdrOut,
+            overlays: overlays)
         else {
           let why = p.buildError ?? "未知原因"
           p.dispose()
@@ -1073,7 +1127,23 @@ final class AtomicFlag {
           // 診斷歷史——組建內視鏡只留最後一次，進場那次會被蓋掉）
           "ci": (p.buildInfo["CI"] as? Bool) ?? false,
           "hdr": (p.buildInfo["HDR"] as? Bool) ?? false,
+          // 疊加物有沒有走「即時清單」（HDR 預覽）：有的話 Dart 端
+          // 把 Flutter 版藏起來、之後用 setOverlays 更新
+          "wmLive": p.wmLive,
         ])
+      case "setOverlays":
+        // HDR 預覽的即時疊加物：換清單不重建合成（拖曳/改樣式用）。
+        // 換完 Dart 端會補一個精準 seek 逼它重畫當下這一格
+        let list =
+          (call.arguments as? [String: Any])?["overlays"]
+          as? [[String: Any]] ?? []
+        guard let p = self.comp, p.wmLive, p.ciCanvas.width > 1 else {
+          result(false)
+          return
+        }
+        CIExportCompositor.setPreviewOverlays(
+          list.compactMap { CIOverlaySpec($0, canvas: p.ciCanvas) })
+        result(true)
       case "play":
         let st = self.comp?.playStatus()
         self.comp?.play()
@@ -3499,6 +3569,13 @@ final class CompPlayer: NSObject, FlutterTexture {
 
   /// 讓 AVPlayerLayer 的 PlatformView 拿得到（見 PlayerHostView）
   let player = AVPlayer()
+
+  /// HDR 預覽的即時疊加物（浮水印/文字）：這一版合成有沒有掛
+  /// 讀即時清單的合成器（CIPreviewCompositorHDR），以及它的畫布
+  /// 尺寸——之後 setOverlays 換清單要用同一個座標系
+  private(set) var wmLive = false
+  private(set) var ciCanvas = CGSize.zero
+
   private var output: AVPlayerItemVideoOutput?
   private var link: CADisplayLink?
   private var latest: CVPixelBuffer?
@@ -3552,7 +3629,8 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// color/feather/start/end）。非空時掛 CI 合成器把碼烘進畫面
   func build(
     clips: [[String: Any]], texture: Bool, mosaics: [[String: Any]] = [],
-    stills: [[String: Any]] = [], hdrOut: Bool = false
+    stills: [[String: Any]] = [], hdrOut: Bool = false,
+    overlays: [[String: Any]] = []
   ) -> Bool {
     let comp = AVMutableComposition()
     let scale: CMTimeScale = 600
@@ -3636,6 +3714,9 @@ final class CompPlayer: NSObject, FlutterTexture {
       // HDR 輸出模式不做 toneMap：沒有別的效果時整個不掛合成器，
       // 系統照 HDR 顯示（EDR，跟相簿/成品同一條）
       || (anyHDR && !hdrOut)
+      // HDR 預覽的疊加物（浮水印/文字）：要烘進合成用 EDR 顯示，
+      // Flutter 畫的白色最多只有基準白，旁邊 HDR 高光一比就是灰的
+      || (hdrOut && anyHDR && !overlays.isEmpty)
       || ordered.contains { c in
         (c["crop"] as? [Double]) != nil
           || abs(c["rotation"] as? Double ?? 0) > 0.05
@@ -3937,6 +4018,8 @@ final class CompPlayer: NSObject, FlutterTexture {
       // HDR 原檔要靠合成器做 toneMapHDRtoSDR（見 needsCI 的說明）；
       // HDR 輸出模式不映射，沒別的效果就不掛
       || (anyHDR && !hdrOut)
+      // HDR 預覽的疊加物：跟 needsCI 同一條（掛 CI 的前提是有 VC）
+      || (hdrOut && anyHDR && !overlays.isEmpty)
       || segments.contains { seg in
         seg.crop != nil || abs(seg.rotation) > 0.05 || seg.opacity < 0.999
       }
@@ -4218,11 +4301,19 @@ final class CompPlayer: NSObject, FlutterTexture {
               holdIfEmpty: layers.isEmpty
                 && ((b - a).seconds < 0.12 || tail)))
         }
-        // HDR 輸出模式掛 HDR 版合成器：同一套疊圖，不做色調映射、
-        // 輸出走 HLG 管線（跟 HDR 匯出同一顆）
+        // HDR 輸出模式掛「HDR 預覽」合成器：同一套疊圖、不做色調
+        // 映射、輸出走 HLG 管線（跟 HDR 匯出同一顆），另外讀即時
+        // 疊加物——浮水印/文字烘在 HDR 畫面上用 EDR 顯示，
+        // 白色才是真的白（跟成品同一段提亮程式碼）
         vc.customVideoCompositorClass =
           hdrOut && anyHDR
-          ? CIExportCompositorHDR.self : CIExportCompositor.self
+          ? CIPreviewCompositorHDR.self : CIExportCompositor.self
+        if hdrOut && anyHDR {
+          CIExportCompositor.setPreviewOverlays(
+            overlays.compactMap { CIOverlaySpec($0, canvas: size) })
+          ciCanvas = size
+          wmLive = true
+        }
         vc.instructions = built
         buildInfo["CI"] = true
         buildInfo["指令"] = built.map { ins -> String in

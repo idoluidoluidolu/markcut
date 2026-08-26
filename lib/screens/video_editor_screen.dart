@@ -380,6 +380,54 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _position >= _wmStart &&
       _position <= _wmEndEff + 0.001;
 
+  // ===== HDR 預覽的疊加物（浮水印/文字/貼圖）烘進合成 =====
+  //
+  // Flutter 圖層畫的白色最多只有「基準白」，HDR 影片的高光比它亮
+  // 好幾倍，白字看起來就是灰的（實測回報：選白色、預覽完全不像白色）。
+  // 治本：HDR 預覽把疊加物用匯出那套整版 PNG 烘進合成（原生端 EDR
+  // 顯示、提亮跟匯出同一段程式碼），Flutter 版藏起來。
+  // 編輯持有（選取/拖曳/浮水印分頁開著）期間換回 Flutter 版，
+  // 手感即時；放手/收面板就換回烘好的（跟馬賽克佔位同一套哲學）
+
+  /// 原生端目前有沒有在畫疊加物（setOverlays 送出非空清單成功）
+  bool _ovNativeShown = false;
+
+  /// 上一次成功同步到原生端的疊加物指紋
+  String _lastOvSig = 'off';
+
+  /// 疊加物拖曳中（放手＝預覽區沒有手指了才解除）
+  bool _ovDragging = false;
+  bool _ovHoldLast = false;
+  bool _ovSyncBusy = false;
+  Timer? _ovSyncTimer;
+
+  /// 這份合成收不收即時疊加物（HDR 預覽且原生端掛了預覽合成器）
+  bool get _ovLiveOn => _compOn && (_comp?.wmLive ?? false);
+
+  /// 使用者正在編輯疊加物：Flutter 版接手畫（即時），原生端清空
+  bool get _ovHold {
+    if (_wmSel || _ovDragging) return true;
+    if (_tabs.index == 1) return true; // 浮水印分頁開著＝調整中
+    final c = _selClipById(_sel);
+    if (c == null) return false;
+    final k = _tl.sourceOf(c).kind;
+    return k == ClipKind.text || k == ClipKind.wm;
+  }
+
+  /// Flutter 版疊加物要不要藏（原生烘好的在畫、又沒有人在編輯）
+  bool get _ovFlutterHidden => _ovLiveOn && _ovNativeShown && !_ovHold;
+
+  /// 時間軸上有沒有任何疊加物內容（決定合成要不要掛預覽合成器）
+  bool get _ovAnyContent {
+    if (!_wmHidden && _settings.hasAnyMark) return true;
+    for (final c in _tl.clips) {
+      if (_hiddenTracks.contains(c.track)) continue;
+      final k = _tl.sourceOf(c).kind;
+      if (k == ClipKind.text || k == ClipKind.wm) return true;
+    }
+    return false;
+  }
+
   /// 播放頭下的影片畫得出來了嗎。
   ///
   /// 秒進之後（不等轉檔）進場的頭幾百毫秒影片第一幀還沒上，底下是
@@ -1187,6 +1235,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     'hide${(_hiddenTracks.toList()..sort()).join(',')}',
     // HDR 輸出開關：預覽管線跟著它切（HDR 素材播原檔 vs 工作檔）
     'hdrOut${_exportHdr && _hdrAvail == true}',
+    // HDR 預覽有沒有疊加物要烘：從無到有（掛預覽合成器）/從有到無
+    //（拆掉，回到純 EDR 直通）要重組；內容本身的變化走 setOverlays
+    // 即時清單，不進這份指紋
+    'ovNeed${_exportHdr && _hdrAvail == true && _ovAnyContent}',
   ].join(';');
 
   /// 馬賽克那部分的指紋（幾何＋樣式＋軌道）。
@@ -1273,6 +1325,215 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _lastCompEditSig = editSig;
     _compDirty = true;
     unawaited(_ensureComp());
+  }
+
+  /// 疊加物內容的指紋（不含「這份合成收不收」的判定，重建合成
+  /// 過程中也要算得出來）。'hold'＝編輯持有中該清空、'empty'＝
+  /// 沒有內容。
+  /// [ignoreHold]：重建合成時用——就算編輯持有中也要把疊加物一起
+  /// 烘進去（不烘的話合成不掛預覽合成器，之後 setOverlays 永遠
+  /// 收不下，放手也換不回白色那份）；持有中多出來的那份由
+  /// 下一輪同步清掉
+  String _ovContentSig({bool ignoreHold = false}) {
+    if (!ignoreHold && _ovHold) return 'hold';
+    if (!_ovAnyContent) return 'empty';
+    final b = StringBuffer();
+    // 畫布/畫框比例進指紋：比例變了 rect 換算跟著變，要重送
+    final compA = (_comp != null && _comp!.height > 0)
+        ? _comp!.width / _comp!.height
+        : 0.0;
+    b.write(
+      'a${(_ratioAspect ?? compA).toStringAsFixed(3)}'
+      '~${compA.toStringAsFixed(3)};',
+    );
+    if (!_wmHidden && _settings.hasAnyMark) {
+      b.write('wm${jsonEncode(_settings.toJson())}|$_wmStart|$_wmEndEff;');
+    }
+    for (final c in _tl.clips) {
+      if (_hiddenTracks.contains(c.track)) continue;
+      final src = _tl.sourceOf(c);
+      if (src.kind == ClipKind.text) {
+        b.write(
+          'tx${c.id}|${src.name}|${c.px}|${c.py}|${c.scale}'
+          '|${c.offset}|${c.end}'
+          '|${jsonEncode((src.textStyle ?? TextMark(text: src.name)).toJson())};',
+        );
+      } else if (src.kind == ClipKind.wm) {
+        b.write(
+          'wc${c.id}|${c.offset}|${c.end}'
+          '|${jsonEncode((src.wmStyle ?? WatermarkSettings()).toJson())};',
+        );
+      }
+    }
+    return b.toString();
+  }
+
+  /// 使用者畫布落在合成畫框座標系的哪裡（見 Swift CIOverlaySpec 的
+  /// rect）。合成畫框＝底層影片的畫框；固定比例畫布比它寬/高時，
+  /// 疊加物 PNG 要放大平移過去，超出的部分原生端自然裁掉
+  List<double> _ovRect() {
+    final cw = _comp?.width ?? 0, ch = _comp?.height ?? 0;
+    if (cw <= 0 || ch <= 0) return const [0, 0, 1, 1];
+    final compA = cw / ch;
+    final ca = _ratioAspect ?? compA;
+    double vw, vh;
+    if (compA >= ca) {
+      vw = 1;
+      vh = ca / compA;
+    } else {
+      vh = 1;
+      vw = compA / ca;
+    }
+    if ((vw - 1).abs() < 0.002 && (vh - 1).abs() < 0.002) {
+      return const [0, 0, 1, 1];
+    }
+    final vx = (1 - vw) / 2, vy = (1 - vh) / 2;
+    return [-vx / vw, -vy / vh, 1 / vw, 1 / vh];
+  }
+
+  /// 疊加物整版 PNG 清單（跟原生匯出同一套欄位）。時間一律是
+  /// 時間軸秒——合成的時間基準就是時間軸，整體變速由播放速率處理，
+  /// 動畫參數不用除變速（匯出那邊是輸出秒才要除）
+  Future<List<Map<String, dynamic>>> _ovMaps() async {
+    final out = <Map<String, dynamic>>[];
+    // 渲染解析度跟預覽合成一樣短邊 1080 就好；版面是照比例算的
+    //（sizeFrac × 短邊），解析度不影響位置大小
+    final ca =
+        _ratioAspect ??
+        ((_comp != null && _comp!.height > 0)
+            ? _comp!.width / _comp!.height
+            : 16 / 9);
+    int ow, oh;
+    if (ca >= 1) {
+      oh = 1080;
+      ow = ((1080 * ca) / 2).round() * 2;
+    } else {
+      ow = 1080;
+      oh = ((1080 / ca) / 2).round() * 2;
+    }
+    final rect = _ovRect();
+    String animName(WmAnimation a) => switch (a) {
+      WmAnimation.none => 'none',
+      WmAnimation.blink => 'blink',
+      WmAnimation.drift => 'drift',
+      WmAnimation.marquee => 'marquee',
+    };
+    for (final c in _tl.clips) {
+      if (_hiddenTracks.contains(c.track)) continue;
+      final src = _tl.sourceOf(c);
+      if (src.kind != ClipKind.text && src.kind != ClipKind.wm) continue;
+      try {
+        final Uint8List png;
+        if (src.kind == ClipKind.text) {
+          final st = (src.textStyle ?? TextMark(text: src.name)).copy()
+            ..text = src.name;
+          png = await WatermarkRenderer.renderTextClipPng(
+            st,
+            c.px,
+            c.py,
+            c.scale,
+            ow,
+            oh,
+          );
+        } else {
+          png = await WatermarkRenderer.renderOverlayPng(
+            src.wmStyle ?? WatermarkSettings(),
+            ow,
+            oh,
+          );
+        }
+        final wmSt = src.kind == ClipKind.wm ? src.wmStyle : null;
+        final anim =
+            wmSt?.animation ??
+            (src.kind == ClipKind.text
+                ? (src.textStyle?.animation ?? WmAnimation.none)
+                : WmAnimation.none);
+        final aSpd = wmSt?.animSpeed ?? 1.0;
+        final aRng = wmSt?.animRange ?? 1.0;
+        out.add({
+          'png': png,
+          'rect': rect,
+          'start': c.offset,
+          'end': c.end,
+          'anim': animName(anim),
+          'cycle': anim == WmAnimation.blink
+              ? wmBlinkCycle(aSpd)
+              : wmMarqueeCycle(aSpd),
+          'on': wmBlinkOn(aSpd, aRng),
+          'animSpeed': aSpd,
+          'range': aRng,
+        });
+      } catch (e) {
+        Diag.note('疊加物 PNG 畫不出來（片段 ${c.id}）：$e');
+      }
+    }
+    if (!_wmHidden && _settings.hasAnyMark) {
+      try {
+        out.add({
+          'png': await WatermarkRenderer.renderOverlayPng(_settings, ow, oh),
+          'rect': rect,
+          'start': _wmStart,
+          'end': _wmEndEff,
+          'anim': animName(_settings.animation),
+          'cycle': _settings.animation == WmAnimation.marquee
+              ? wmMarqueeCycle(_settings.animSpeed)
+              : wmBlinkCycle(_settings.animSpeed),
+          'on': wmBlinkOn(_settings.animSpeed, _settings.animRange),
+          'animSpeed': _settings.animSpeed,
+          'range': _settings.animRange,
+        });
+      } catch (e) {
+        Diag.note('浮水印 PNG 畫不出來：$e');
+      }
+    }
+    return out;
+  }
+
+  /// 把疊加物同步到原生端（重畫 PNG → setOverlays → 精準 seek
+  /// 逼它重畫這一格）。指紋沒變就什麼都不做
+  Future<void> _syncPreviewOverlays() async {
+    if (_ovSyncBusy || !mounted || !_ovLiveOn) return;
+    final sig = _ovContentSig();
+    if (sig == _lastOvSig) return;
+    _ovSyncBusy = true;
+    try {
+      final maps = (sig == 'hold' || sig == 'empty')
+          ? <Map<String, dynamic>>[]
+          : await _ovMaps();
+      // 渲染期間又變了：這一版作廢，讓下一輪重做
+      if (!mounted || !_ovLiveOn || _ovContentSig() != sig) return;
+      if (!await CompPlayer.setOverlays(maps)) return;
+      _lastOvSig = sig;
+      final shown = maps.isNotEmpty;
+      if (mounted && _ovNativeShown != shown) {
+        setState(() => _ovNativeShown = shown);
+      }
+      if (!_playing) await _comp?.seek(_position, exact: true);
+    } finally {
+      _ovSyncBusy = false;
+    }
+  }
+
+  /// 每次預覽重建都呼叫：進出「編輯持有」立刻切（清空很便宜），
+  /// 其他變化併批 250ms 再同步（重畫 PNG 有成本）
+  void _scheduleOvSync() {
+    if (!_ovLiveOn) return;
+    final holdNow = _ovHold;
+    if (holdNow != _ovHoldLast) {
+      _ovHoldLast = holdNow;
+      Timer.run(() {
+        if (mounted) unawaited(_syncPreviewOverlays());
+      });
+      return;
+    }
+    if (_ovSyncTimer?.isActive ?? false) return;
+    _ovSyncTimer = Timer(const Duration(milliseconds: 250), () {
+      if (!mounted) return;
+      // 放手偵測：預覽區已經沒有手指＝拖曳結束，換回烘好的
+      if (_ovDragging && _pvPts.isEmpty) _ovDragging = false;
+      if (_ovContentSig() != _lastOvSig) unawaited(_syncPreviewOverlays());
+      if (_ovDragging) _scheduleOvSync();
+    });
   }
 
   /// 草稿存檔失敗提示過了沒（整場只煩一次）
@@ -5541,6 +5802,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _restoreClipPlayers();
       return;
     }
+    // HDR 預覽的疊加物：組建當下就把浮水印/文字的整版 PNG 一起
+    // 送進去烘（原生端 EDR 顯示，白色才是白色）。編輯持有中也照烘
+    //（ignoreHold 的說明），之後的變化走 setOverlays 即時換
+    var ovSigAtBuild = 'off';
+    var ovMaps = const <Map<String, dynamic>>[];
+    if (_exportHdr && _hdrAvail == true) {
+      ovSigAtBuild = _ovContentSig(ignoreHold: true);
+      if (ovSigAtBuild != 'empty') ovMaps = await _ovMaps();
+    }
     // 用系統影片圖層顯示時不要另外出一份材質：那份沒有人看，
     // 卻是每一格都在複製一張 4K 畫面，等於跟解碼搶頻寬
     final made = await CompPlayer.build(
@@ -5550,6 +5820,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       hiddenTracks: _hiddenTracks,
       // 匯出選「保留 HDR」＝預覽也走 HDR（跟成品同一個顯示管線）
       hdrOut: _exportHdr && _hdrAvail == true,
+      overlays: ovMaps,
     );
     // HDR 模式：背景把 HDR 代理補齊（HLG 直通、密關鍵幀），
     // 轉好換上就恢復跟 SDR 工作檔同級的順度。
@@ -5584,6 +5855,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _lastCompMosaicSig = _mosaicSig();
     _lastCompStillSig = _stillSig();
     _compBakedStills = CompPlayer.bakedImageIds(_tl);
+    // 疊加物：這一版合成收不收即時清單、目前畫的是哪一版
+    _lastOvSig = made.wmLive ? ovSigAtBuild : 'off';
+    _ovNativeShown = made.wmLive && ovMaps.isNotEmpty;
     setState(() => _comp = made);
     // 合成接手了，舊的那幾顆播放器立刻放掉（見 _trimPlayers）
     _trimPlayers();
@@ -7571,6 +7845,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _playProbe?.cancel();
     _prepEscapeTimer?.cancel();
     _staleKickTimer?.cancel();
+    _ovSyncTimer?.cancel();
     _posVN.dispose();
     _frameVN.dispose();
     _dressVN.dispose();
@@ -8695,6 +8970,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   Widget _buildPreview() {
+    // HDR 預覽的疊加物同步：這裡是所有相關狀態變化（選取、拖曳、
+    // 面板調整）一定會經過的地方，排程本身很便宜（查旗標＋計時器）
+    _scheduleOvSync();
     final baseVideo = _activeVideo;
     final baseCtrl = baseVideo == null ? null : _ctrls[baseVideo.id];
     final baseAspect = (baseCtrl != null && baseCtrl.value.isInitialized)
@@ -9652,11 +9930,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         c.track,
                                         Positioned.fill(
                                           child: Opacity(
-                                            opacity: c.fadeFactorAt(_position),
+                                            // HDR 預覽：烘進合成時藏起
+                                            // Flutter 版（判定留著）
+                                            opacity: _ovFlutterHidden
+                                                ? 0.0
+                                                : c.fadeFactorAt(_position),
                                             child: WatermarkLayer(
                                               settings: st,
                                               onChanged: () => setState(() {}),
-                                              onDragStart: _pushUndo,
+                                              onDragStart: () {
+                                                _ovDragging = true;
+                                                _pushUndo();
+                                              },
                                               time: pos,
                                               // 貼圖是一個素材，選取時就該
                                               // 看得到框（浮水印素材的框在
@@ -9772,9 +10057,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               _editTextClip(c);
                                             },
                                             child: Opacity(
-                                              opacity:
-                                                  c.fadeFactorAt(_position) *
-                                                  av.alpha,
+                                              // HDR 預覽：烘進合成時藏起
+                                              // Flutter 版（判定留著）
+                                              opacity: _ovFlutterHidden
+                                                  ? 0.0
+                                                  : c.fadeFactorAt(_position) *
+                                                        av.alpha,
                                               child: Transform.rotate(
                                                 angle:
                                                     st.rotation *
@@ -9950,49 +10238,60 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
                                   if (_wmVisibleNow) {
                                     children.add(
-                                      WatermarkLayer(
-                                        settings: _settings,
-                                        onChanged: () => setState(() {}),
-                                        onDragStart: _pushWmUndo,
-                                        // 選取框畫在裁切外（見 _wmFrameInfo）
-                                        frameNotifier: _wmFrameInfo,
-                                        onHitBox: (t, l) =>
-                                            _addWmHit(_kWmId, t, l),
-                                        selectedPart: (_wmSel && !_hideSelUi)
-                                            ? _wmPart
-                                            : WmPart.none,
-                                        onSelectPart: (p) =>
-                                            setState(() => _wmPart = p),
-                                        // 捏合期間鎖拖曳，手指滑過別的
-                                        // 元素才不會把它拖走
-                                        panLocked: () => _pvPts.length >= 2,
-                                        // 有片段被選取時不吃拖曳，
-                                        // 讓給選取路由
-                                        panAllowed: (_) => _sel == -1,
-                                        time: pos, // 動畫跟著播放頭走
-                                        // 點浮水印 Logo＝選取＋切到浮水印
-                                        // 分頁，面板捲到圖片設定
-                                        onTap: () {
-                                          _cycleAt = null;
-                                          setState(() {
-                                            _wmSel = true;
-                                            _sel = -1;
-                                          });
-                                          _tabs.animateTo(1);
-                                          _wmPanelCtrl.scrollTo(WmPart.logo);
-                                        },
-                                        // 點浮水印文字＝切到浮水印分頁並
-                                        // 捲到文字設定。不直接跳鍵盤——
-                                        // 要改字在面板裡改
-                                        onTapText: () {
-                                          _cycleAt = null;
-                                          setState(() {
-                                            _wmSel = true;
-                                            _sel = -1;
-                                          });
-                                          _tabs.animateTo(1);
-                                          _wmPanelCtrl.scrollTo(WmPart.text);
-                                        },
+                                      // HDR 預覽：烘進合成的那份在畫時
+                                      // Flutter 版藏起來（透明不拆——
+                                      // 點擊/拖曳的判定要留著）
+                                      Opacity(
+                                        opacity: _ovFlutterHidden ? 0.0 : 1.0,
+                                        child: WatermarkLayer(
+                                          settings: _settings,
+                                          onChanged: () => setState(() {}),
+                                          onDragStart: () {
+                                            // 拖曳持有：Flutter 版接手畫，
+                                            // 原生端清空（見 _ovHold）
+                                            _ovDragging = true;
+                                            _pushWmUndo();
+                                          },
+                                          // 選取框畫在裁切外（見 _wmFrameInfo）
+                                          frameNotifier: _wmFrameInfo,
+                                          onHitBox: (t, l) =>
+                                              _addWmHit(_kWmId, t, l),
+                                          selectedPart: (_wmSel && !_hideSelUi)
+                                              ? _wmPart
+                                              : WmPart.none,
+                                          onSelectPart: (p) =>
+                                              setState(() => _wmPart = p),
+                                          // 捏合期間鎖拖曳，手指滑過別的
+                                          // 元素才不會把它拖走
+                                          panLocked: () => _pvPts.length >= 2,
+                                          // 有片段被選取時不吃拖曳，
+                                          // 讓給選取路由
+                                          panAllowed: (_) => _sel == -1,
+                                          time: pos, // 動畫跟著播放頭走
+                                          // 點浮水印 Logo＝選取＋切到浮水印
+                                          // 分頁，面板捲到圖片設定
+                                          onTap: () {
+                                            _cycleAt = null;
+                                            setState(() {
+                                              _wmSel = true;
+                                              _sel = -1;
+                                            });
+                                            _tabs.animateTo(1);
+                                            _wmPanelCtrl.scrollTo(WmPart.logo);
+                                          },
+                                          // 點浮水印文字＝切到浮水印分頁並
+                                          // 捲到文字設定。不直接跳鍵盤——
+                                          // 要改字在面板裡改
+                                          onTapText: () {
+                                            _cycleAt = null;
+                                            setState(() {
+                                              _wmSel = true;
+                                              _sel = -1;
+                                            });
+                                            _tabs.animateTo(1);
+                                            _wmPanelCtrl.scrollTo(WmPart.text);
+                                          },
+                                        ),
                                       ),
                                     );
                                   }
