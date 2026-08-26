@@ -357,7 +357,24 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       codec.dispose();
       return png?.buffer.asUint8List();
     } catch (_) {
-      return null;
+      // web 的 ImageDescriptor 會炸（跟 _dimsOf 同一個洞）：
+      // 縮圖列因此整排空白。退回逐格解碼縮小，各平台都通
+      try {
+        final codec = await ui.instantiateImageCodec(
+          src,
+          targetWidth: longSide,
+        );
+        final frame = await codec.getNextFrame();
+        final png = await frame.image.toByteData(
+          format: ui.ImageByteFormat.png,
+        );
+        frame.image.dispose();
+        codec.dispose();
+        return png?.buffer.asUint8List() ?? src;
+      } catch (_) {
+        // 連解碼都不行就直接用原圖當縮圖：寧可肥一點也不能空白
+        return src;
+      }
     } finally {
       desc?.dispose();
       buf?.dispose();
