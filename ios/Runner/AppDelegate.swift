@@ -4454,9 +4454,15 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 壓在 0——按下播放剛好撞上它，畫面就是不動。拖曳中一律寬容，
   /// 停手之後才補一次精準的
   func seek(_ seconds: Double, exact: Bool) {
+    var t = seconds
+    // 精準 seek（停手/點時間軸）偏移半格：指針吸在片段邊界（例如
+    // 馬賽克起點 4.5s）時，來源取樣格的 PTS 常常是 4.4711 之類
+    //（29.97fps 對不齊），畫面顯示的是「邊界前一格」——那格還不在
+    // 效果的時間段裡，看起來就是「指針指到素材開頭卻沒有馬賽克」
+    //（實測回報）。往前偏半格保證顯示的是邊界上或之後的取樣格
+    if exact { t += 0.02 }
     // 目標夾在「最後一格之前」：seek 到正好等於總長的位置，指令已經
     // 出界，畫面可能刷成黑的——拖到底或播完停在結尾都要停在最後一幀
-    var t = seconds
     if duration > 0.1, t > duration - 0.034 { t = duration - 0.034 }
     seekTarget = CMTime(seconds: t, preferredTimescale: 600)
     seekTargetExact = exact

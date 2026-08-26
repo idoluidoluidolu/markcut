@@ -39,8 +39,11 @@ void main() {
         await tester.pump(const Duration(milliseconds: 5));
       }
       await tester.pumpAndSettle();
-      expect(find.text('單支影片').evaluate().length <= 1, isTrue,
-          reason: '連點之後疊出了不只一個選取視窗');
+      expect(
+        find.text('單支影片').evaluate().length <= 1,
+        isTrue,
+        reason: '連點之後疊出了不只一個選取視窗',
+      );
 
       // 關掉（點視窗外）
       await tester.tapAt(const Offset(10, 10));
@@ -61,7 +64,11 @@ void main() {
         for (final label in ['範本夾', '關於作者', '意見回饋']) {
           final f = find.text(label);
           if (f.evaluate().isEmpty) continue;
-          await tester.tap(f);
+          // 內容改成整頁捲動（頂部讓過浮動返回鈕）後，這些連結
+          // 可能在畫面外——先捲到看得見再點，不然點的是空氣
+          await tester.ensureVisible(f.first);
+          await tester.pumpAndSettle();
+          await tester.tap(f.first);
           await tester.pumpAndSettle();
           expect(tester.takeException(), isNull, reason: '$label 開不起來');
           // 回上一頁（意見回饋是對話框，點關閉）
@@ -111,9 +118,9 @@ void main() {
   group('浮水印面板亂拉', () {
     testWidgets('隨機拖曳每一條滑桿 500 次不會炸', (tester) async {
       final s = WatermarkSettings()..text.text = '@測試';
-      await tester.pumpWidget(host(
-        WatermarkPanel(settings: s, onChanged: () {}),
-      ));
+      await tester.pumpWidget(
+        host(WatermarkPanel(settings: s, onChanged: () {})),
+      );
       await tester.pumpAndSettle();
 
       final r = math.Random(1);
@@ -139,9 +146,9 @@ void main() {
 
     testWidgets('所有開關反覆切換不會炸，設定仍然有效', (tester) async {
       final s = WatermarkSettings()..text.text = '@測試';
-      await tester.pumpWidget(host(
-        WatermarkPanel(settings: s, onChanged: () {}),
-      ));
+      await tester.pumpWidget(
+        host(WatermarkPanel(settings: s, onChanged: () {})),
+      );
       await tester.pumpAndSettle();
 
       for (var round = 0; round < 20; round++) {
@@ -169,13 +176,15 @@ void main() {
     testWidgets('隨機拉滑桿 + 切分頁 + 重設 500 次不會炸', (tester) async {
       final g = ColorGrade();
       var undoCount = 0;
-      await tester.pumpWidget(host(
-        ColorGradePanel(
-          grade: g,
-          onChanged: () {},
-          onBeforeChange: () => undoCount++,
+      await tester.pumpWidget(
+        host(
+          ColorGradePanel(
+            grade: g,
+            onChanged: () {},
+            onBeforeChange: () => undoCount++,
+          ),
         ),
-      ));
+      );
       await tester.pumpAndSettle();
 
       final r = math.Random(2);
@@ -220,13 +229,15 @@ void main() {
     testWidgets('一次拖曳＝一步復原（拖三次就是三步）', (tester) async {
       final g = ColorGrade();
       var pushes = 0;
-      await tester.pumpWidget(host(
-        ColorGradePanel(
-          grade: g,
-          onChanged: () {},
-          onBeforeChange: () => pushes++,
+      await tester.pumpWidget(
+        host(
+          ColorGradePanel(
+            grade: g,
+            onChanged: () {},
+            onBeforeChange: () => pushes++,
+          ),
         ),
-      ));
+      );
       await tester.pumpAndSettle();
 
       final slider = find.byType(Slider).first;
@@ -242,22 +253,28 @@ void main() {
         await tester.pump(const Duration(milliseconds: 200));
       }
       await tester.pumpAndSettle();
-      expect(pushes, 3,
-          reason: '拖了 3 次卻拍了 $pushes 次快照'
-              '（一次拖曳必須剛好算一步，中途停頓也不能被切開）');
+      expect(
+        pushes,
+        3,
+        reason:
+            '拖了 3 次卻拍了 $pushes 次快照'
+            '（一次拖曳必須剛好算一步，中途停頓也不能被切開）',
+      );
       expect(tester.takeException(), isNull);
     });
 
     testWidgets('按住「原圖」超過長按時間，比較狀態要一直維持', (tester) async {
       final g = ColorGrade()..saturation = 0.2;
       var comparing = false;
-      await tester.pumpWidget(host(
-        ColorGradePanel(
-          grade: g,
-          onChanged: () {},
-          onCompare: (v) => comparing = v,
+      await tester.pumpWidget(
+        host(
+          ColorGradePanel(
+            grade: g,
+            onChanged: () {},
+            onCompare: (v) => comparing = v,
+          ),
         ),
-      ));
+      );
       await tester.pumpAndSettle();
 
       final btn = find.text('原圖');
@@ -267,8 +284,7 @@ void main() {
         expect(comparing, isTrue, reason: '按下去沒有進入比較狀態');
         // 撐過長按門檻（500ms）＋再久一點
         await tester.pump(const Duration(milliseconds: 900));
-        expect(comparing, isTrue,
-            reason: '按住超過長按時間就自己彈回去了（比較功能等於壞的）');
+        expect(comparing, isTrue, reason: '按住超過長按時間就自己彈回去了（比較功能等於壞的）');
         await tester.pump(const Duration(seconds: 2));
         expect(comparing, isTrue, reason: '按住兩秒後比較狀態消失');
         await g1.up();
@@ -287,8 +303,11 @@ void main() {
         await tester.pump(const Duration(milliseconds: 1));
         await tester.pumpWidget(host(const SizedBox()));
         await tester.pump(const Duration(milliseconds: 50));
-        expect(tester.takeException(), isNull,
-            reason: '載入途中離開範本夾會炸（setState after dispose）');
+        expect(
+          tester.takeException(),
+          isNull,
+          reason: '載入途中離開範本夾會炸（setState after dispose）',
+        );
       }
       await tester.pumpAndSettle();
     });

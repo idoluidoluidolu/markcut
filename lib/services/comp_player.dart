@@ -121,10 +121,22 @@ class CompPlayer {
       if (c.track > top) top = c.track;
       if (c.end > vidEnd) vidEnd = c.end;
     }
+    // 馬賽克壓在圖片/GIF 上面（軌道更高、時間重疊）：那張圖也要烘
+    // 進合成——Flutter 畫的圖層在合成畫面「上方」，原生端的馬賽克
+    // 永遠打不到它（實測回報：馬賽克無法覆蓋 GIF，儘管圖層在上；
+    // 匯出端本來就是 z 交錯、蓋得住，預覽不烘就跟成品不一致）。
+    // 代價跟墊底圖片一樣：拖曳它要等重烘，不能即時
+    final mosaics = [
+      for (final c in tl.clips)
+        if (tl.sourceOf(c).kind == ClipKind.mosaic) c,
+    ];
+    bool mosaicAbove(TimelineClip img) => mosaics.any(
+      (m) => m.track > img.track && m.offset < img.end && m.end > img.offset,
+    );
     return {
       for (final c in tl.clips)
         if (tl.sourceOf(c).kind == ClipKind.image &&
-            c.track <= top &&
+            (c.track <= top || mosaicAbove(c)) &&
             c.offset < vidEnd)
           c.id,
     };

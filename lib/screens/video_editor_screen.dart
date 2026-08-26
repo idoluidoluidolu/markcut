@@ -6483,8 +6483,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 「要整理哪一軌」看的是當下選取的片段——所以放開的位置明明是
     // 對的，等到去點別的素材才整個飄一下。要收就當場收，眼睛看到
     // 的落點才是最後的落點
+    final droppedAt = clip.offset;
     _autoTidyIfOn(track: t);
+    // 拖出去的位置被整理吸回來了：講清楚為什麼，不然看起來像拖曳
+    // 失敗（使用者指定的提示）。8 秒內不重複唸
+    if (_autoTidy && (clip.offset - droppedAt).abs() > 0.01) {
+      final now = DateTime.now();
+      if (now.difference(_lastTidyHintAt).inSeconds >= 8) {
+        _lastTidyHintAt = now;
+        showHint(context, '位置被自動接齊了，點「整理」關閉後可自由拖移');
+      }
+    }
   }
+
+  DateTime _lastTidyHintAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   /// 點畫面上的浮水印時，叫下面的面板捲到對應的設定區塊
   final _wmPanelCtrl = WatermarkPanelController();

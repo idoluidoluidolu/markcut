@@ -64,8 +64,8 @@ class TextMark {
     this.text = '@我的浮水印',
     this.fontFamily = 'NotoSansTC',
     this.colorValue = 0xFFFFFFFF,
-    // 預設：置中、大字、較透明（一眼看得出浮水印在哪、怎麼調）
-    this.opacity = 0.55,
+    // 預設：置中、大字、微透（0.55 太淡，使用者指定調高）
+    this.opacity = 0.7,
     this.sizeFrac = 0.12, // 上限見面板滑桿（可放到超出畫面）
     this.spacing = 0,
     this.x = 0.5,

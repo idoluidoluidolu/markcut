@@ -13,7 +13,9 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   test('renderOverlayPng 的文字帶陰影（暗色半透明像素存在）', () async {
     final s = WatermarkSettings(
-      text: TextMark(text: '@我的浮水印'), // 預設樣式：白字、陰影開
+      // 透明度固定 0.55：下面的門檻是照它校的（預設值後來調成 0.7，
+      // 這支測的是渲染行為，不是預設值）
+      text: TextMark(text: '@我的浮水印', opacity: 0.55),
     );
     final png = await WatermarkRenderer.renderOverlayPng(s, 540, 960);
     final codec = await ui.instantiateImageCodec(png);

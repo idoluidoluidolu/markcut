@@ -827,9 +827,44 @@ class _GifScreenState extends State<GifScreen> {
   Widget _preview() {
     final p = _player!;
     final size = p.value.size;
-    final aspect = (size.width > 0 && size.height > 0)
+    final fullAspect = (size.width > 0 && size.height > 0)
         ? size.width / size.height
         : 16 / 9;
+    // 裁切後預覽就用裁切後的比例，畫面最適化貼滿畫布——
+    // 不然裁完還是原比例的框，成果小小一塊躺在中間（實測回報）。
+    // GIF 成果已經是裁好的尺寸，直接用它的幀比例
+    final crop = _crop;
+    final aspect = _gifMode && _gifFrames.isNotEmpty
+        ? _gifFrames.first.width / _gifFrames.first.height
+        : (crop == null ? fullAspect : fullAspect * crop.width / crop.height);
+    // 影片模式＋裁切：外框是裁切比例，內容把整支影片放大平移到
+    // 只露出裁切區（跟成品同一塊畫面）
+    Widget clipped(Widget child) {
+      if (crop == null) return child;
+      return LayoutBuilder(
+        builder: (context, cons) {
+          final w = cons.maxWidth;
+          final h = cons.maxHeight;
+          final vw = w / crop.width;
+          final vh = h / crop.height;
+          double ax(double lo, double frac) =>
+              frac >= 0.999 ? 0 : (2 * lo / (1 - frac) - 1);
+          return ClipRect(
+            child: OverflowBox(
+              minWidth: vw,
+              maxWidth: vw,
+              minHeight: vh,
+              maxHeight: vh,
+              alignment: Alignment(
+                ax(crop.left, crop.width),
+                ax(crop.top, crop.height),
+              ),
+              child: SizedBox(width: vw, height: vh, child: child),
+            ),
+          );
+        },
+      );
+    }
 
     // 外層這個 Stack 撐滿整個預覽區，裁切鈕才釘得住。
     // 疊在「內容」上面的話，框會跟著影片的比例縮放——直式換橫式，
@@ -863,6 +898,7 @@ class _GifScreenState extends State<GifScreen> {
                       aspectRatio: aspect,
                       // 成果做好後看的就是 GIF 本人（時鐘在我們手上，
                       // 指針才對得到位置）；還沒做好前先看影片
+                      //（裁切時只露出裁切區，跟成品同一塊畫面）
                       child: _gifMode
                           ? ValueListenableBuilder<int>(
                               valueListenable: _gifFrameVN,
@@ -875,7 +911,7 @@ class _GifScreenState extends State<GifScreen> {
                                 fit: BoxFit.contain,
                               ),
                             )
-                          : p.view(),
+                          : clipped(p.view()),
                     ),
                     // 暫停時給一顆播放鈕；播放中畫面乾淨
                     if (!_playing)
@@ -1145,8 +1181,17 @@ class _GifScreenState extends State<GifScreen> {
               _end = math.max(t, _start + 0.2);
             }
           });
-          // 拉哪個把手，畫面就停在哪個把手的位置——邊拉邊看剪在哪
-          _seek(left ? _start : _end);
+          // 拉哪個把手，畫面就停在哪個把手的位置——邊拉邊看剪在哪。
+          // 終點夾在最後一格之前：seek 到正好等於總長會沒畫面，
+          // 拖右把手到底就看不到尾端那格（實測回報）
+          _seek(left ? _start : math.min(_end, _dur - 0.03));
+          if (_gifMode && _gifFrames.isNotEmpty) {
+            // GIF 模式畫面走 GIF 時鐘、不理 seek：拖把手時直接把
+            // 對應端點那格擺出來（左＝第一格、右＝最後一格），
+            // 停手重做預覽後換成新剪點的成果
+            if (_playing) _playing = false;
+            _gifFrameVN.value = left ? 0 : _gifFrames.length - 1;
+          }
           _schedulePreview();
           final p = _player;
           if (_playing && p != null) {
