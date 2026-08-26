@@ -1168,7 +1168,14 @@ class _GifScreenState extends State<GifScreen> {
           _dragFrom = left ? _start : _end;
           _dragAcc = 0;
         },
-        onHorizontalDragEnd: (_) => _dragFrom = null,
+        onHorizontalDragEnd: (_) {
+          _dragFrom = null;
+          // 停手才補精準 seek 與重做預覽：拖曳中每動一格就排
+          // 重做，web 的 FFmpeg（wasm）一跑好幾秒，loading
+          // 會一直閃；拖曳中的畫面已經有節流 seek 頂著
+          _seek(left ? _start : math.min(_end, _dur - 0.03));
+          _schedulePreview();
+        },
         onHorizontalDragCancel: () => _dragFrom = null,
         onHorizontalDragUpdate: (d) {
           final from = _dragFrom ?? (left ? _start : _end);
@@ -1182,9 +1189,14 @@ class _GifScreenState extends State<GifScreen> {
             }
           });
           // 拉哪個把手，畫面就停在哪個把手的位置——邊拉邊看剪在哪。
-          // 終點夾在最後一格之前：seek 到正好等於總長會沒畫面，
-          // 拖右把手到底就看不到尾端那格（實測回報）
-          _seek(left ? _start : math.min(_end, _dur - 0.03));
+          // seek 節流 60ms（跟指針拖曳同一套）：每個指標事件都發
+          // 的話 seek 在解碼器裡排隊，就是「拉起來跟不上」的手感。
+          // 終點夾在最後一格之前：seek 到正好等於總長會沒畫面
+          final now = DateTime.now();
+          if (now.difference(_lastScrubSeek).inMilliseconds >= 60) {
+            _lastScrubSeek = now;
+            _seek(left ? _start : math.min(_end, _dur - 0.03));
+          }
           if (_gifMode && _gifFrames.isNotEmpty) {
             // GIF 模式畫面走 GIF 時鐘、不理 seek：拖把手時直接把
             // 對應端點那格擺出來（左＝第一格、右＝最後一格），
@@ -1192,7 +1204,6 @@ class _GifScreenState extends State<GifScreen> {
             if (_playing) _playing = false;
             _gifFrameVN.value = left ? 0 : _gifFrames.length - 1;
           }
-          _schedulePreview();
           final p = _player;
           if (_playing && p != null) {
             p.pause();
