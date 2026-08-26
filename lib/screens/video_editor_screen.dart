@@ -11722,7 +11722,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               ),
             ),
           ),
-          // 「套用到全部素材」已拿掉（使用者指定）：音量各段各調
+          // 點喇叭靜音的功能藏得深，補一行簡介（使用者指定）
+          const Padding(
+            padding: EdgeInsets.only(left: 2, top: 2),
+            child: Text(
+              '點「音量」可以直接靜音，再點一下復原',
+              style: TextStyle(fontSize: 10.5, color: kTextDim),
+            ),
+          ),
         ],
       );
     });
