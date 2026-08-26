@@ -1673,41 +1673,13 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                 border: Border.all(color: kSelect, width: 1.5),
               )
             : null,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            Container(
-              color: Colors.black,
-              child: IgnorePointer(
-                child: WatermarkLayer(settings: p.settings, onChanged: () {}),
-              ),
-            ),
-            Positioned(
-              left: 5,
-              top: 5,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 2.5,
-                ),
-                decoration: BoxDecoration(
-                  color: kPanelHi.withValues(alpha: 0.92),
-                  borderRadius: BorderRadius.circular(99),
-                  border: Border.all(color: kClipBorder),
-                ),
-                child: Text(
-                  p.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 10,
-                    color: kIcon,
-                    height: 1.3,
-                  ),
-                ),
-              ),
-            ),
-          ],
+        // 不放名稱膠囊（使用者指定）：挑範本看的是長相，
+        // 名字要看去範本夾
+        child: Container(
+          color: Colors.black,
+          child: IgnorePointer(
+            child: WatermarkLayer(settings: p.settings, onChanged: () {}),
+          ),
         ),
       ),
     );
