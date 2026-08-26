@@ -354,7 +354,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     final act = await showLeaveChoice(
       context,
       title: '還沒輸出',
-      message: '留著草稿的話，下次可以從首頁接著改',
+      // 全 App 統一的說法（使用者指定）
+      message: '可以在個人頁面的「草稿」繼續未完成的編輯',
       keepLabel: '保留草稿',
       discardLabel: '捨棄',
     );

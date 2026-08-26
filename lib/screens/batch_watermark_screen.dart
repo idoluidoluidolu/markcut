@@ -188,7 +188,8 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     final act = await showLeaveChoice(
       context,
       title: '這批還沒匯出',
-      message: '保留草稿的話，下次從個人頁的「未完成的批次」繼續',
+      // 全 App 統一的說法（使用者指定）
+      message: '可以在個人頁面的「草稿」繼續未完成的編輯',
       keepLabel: '保留草稿',
     );
     if (!mounted) return;

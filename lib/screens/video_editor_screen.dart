@@ -7944,7 +7944,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                           horizontal: 16,
                         ),
                         child: const Text(
-                          '保留草稿之後可以繼續剪',
+                          // 全 App 統一的說法（使用者指定）
+                          '可以在個人頁面的「草稿」繼續未完成的編輯',
                           style: TextStyle(fontSize: 12, color: kTextDim),
                         ),
                       ),
