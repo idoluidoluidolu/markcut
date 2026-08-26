@@ -395,15 +395,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
         // 釘死的白帶（實測回報「上面不要白條 sticky」）。
         // scrolledUnderElevation 也要關：Material 3 捲動時會自己
         // 補一層 tint，白條就回來了
-        extendBodyBehindAppBar: true,
-        appBar: AppBar(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          scrolledUnderElevation: 0,
-        ),
-        // bottom 不留 SafeArea：留了整頁底下就是一條釘死的白帶，
-        // 內容捲不進去（實測回報「底下白邊 sticky」）。改讓內容
-        // 捲到螢幕最底，home 條的位置由捲動內容自己的底部留白扛
+        // 返回鍵跟著內容捲（使用者指定「上方箭頭不要 sticky」）：
+        // 不掛 appBar，箭頭當捲動內容的第一列。
+        // 上下都不留 SafeArea：留了就是一條釘死的白帶，
+        // 內容捲不進去；狀態列/home 條的位置由內容自己的留白扛
         body: SafeArea(
           top: false,
           bottom: false,
@@ -415,17 +410,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
               Expanded(
                 child: SingleChildScrollView(
                   padding: EdgeInsets.only(
-                    // 內容起點讓過浮動的返回鈕（appBar 透明、
-                    // body 從螢幕頂開始）
-                    top:
-                        10 +
-                        kToolbarHeight +
-                        MediaQuery.of(context).padding.top,
+                    top: 4 + MediaQuery.of(context).padding.top,
                     bottom: 12 + MediaQuery.of(context).padding.bottom,
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
+                      Padding(
+                        padding: const EdgeInsets.only(left: 8, bottom: 4),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: IconButton(
+                            onPressed: () => Navigator.maybePop(context),
+                            // tooltip 'Back'：跟系統返回鈕同語意，
+                            // 無障礙與測試（pageBack）都認得
+                            tooltip: 'Back',
+                            icon: const Icon(Icons.arrow_back_ios_new),
+                          ),
+                        ),
+                      ),
                       Padding(
                         padding: _side,
                         child: _sectionTitle(
@@ -1111,122 +1114,135 @@ class _DraftsScreenState extends State<DraftsScreen> {
               ),
           ],
         ),
-        body: _loading
-            ? const Center(child: CircularProgressIndicator())
-            : empty
-            ? const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(32),
-                  child: Text(
-                    '沒有草稿。\n\n編輯到一半離開時選「保留草稿」，'
-                    '就會存在這裡。',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: kLTextDim, height: 1.6),
+        // 刪除列疊在 body 的 Stack 裡，不用 Scaffold.bottomSheet：
+        // bottomSheet 會把內容包一層主題的白底圓角 Material，
+        // 滑出動畫只滑走內容物、外皮留在原地——就是使用者回報的
+        // 「底下白條」
+        body: Stack(
+          children: [
+            _loading
+                ? const Center(child: CircularProgressIndicator())
+                : empty
+                ? const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(32),
+                      child: Text(
+                        '沒有草稿。\n\n編輯到一半離開時選「保留草稿」，'
+                        '就會存在這裡。',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: kLTextDim, height: 1.6),
+                      ),
+                    ),
+                  )
+                : ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      // 影片草稿走瀑布流（C 案）：封面原比例、日期 chip
+                      // 在左上、時長在右下。照片/批次草稿維持一列一卡
+                      if (ds.isNotEmpty)
+                        LayoutBuilder(
+                          builder: (context, cons) {
+                            final colW = (cons.maxWidth - 10) / 2;
+                            final cols = _draftColumns(colW);
+                            return Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    children: [
+                                      for (final m in cols[0]) _draftTile(m),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    children: [
+                                      for (final m in cols[1]) _draftTile(m),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            );
+                          },
+                        ),
+                      if (p != null)
+                        _draftCard(
+                          // 照片草稿沒有存縮圖（那張照片還在裝置上，
+                          // 再存一份只是浪費空間），用圖示就好
+                          cover: const Icon(
+                            Icons.image_outlined,
+                            size: 20,
+                            color: kLAccent,
+                          ),
+                          title: '未完成的照片',
+                          subtitle: _savedAtLabel(p),
+                          onTap: _resumePhoto,
+                          onDelete: _deletePhoto,
+                        ),
+                      if (_batchDraft != null) ...[
+                        const SizedBox(height: 12),
+                        _draftCard(
+                          cover: const Icon(
+                            Icons.collections_outlined,
+                            size: 20,
+                            color: kLAccent,
+                          ),
+                          title: '未完成的批次浮水印',
+                          subtitle: _savedAtLabel(_batchDraft!),
+                          onTap: _resumeBatch,
+                          onDelete: _deleteBatch,
+                        ),
+                      ],
+                      // 底部刪除列滑上來時，最後一張卡不被蓋住
+                      if (_selecting) const SizedBox(height: 88),
+                    ],
                   ),
-                ),
-              )
-            : ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  // 影片草稿走瀑布流（C 案）：封面原比例、日期 chip
-                  // 在左上、時長在右下。照片/批次草稿維持一列一卡
-                  if (ds.isNotEmpty)
-                    LayoutBuilder(
-                      builder: (context, cons) {
-                        final colW = (cons.maxWidth - 10) / 2;
-                        final cols = _draftColumns(colW);
-                        return Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(
-                              child: Column(
-                                children: [
-                                  for (final m in cols[0]) _draftTile(m),
-                                ],
-                              ),
+            // 選取模式勾了至少一張，刪除列才從最下方浮上來
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: AnimatedSlide(
+                offset: _selecting && _picked.isNotEmpty
+                    ? Offset.zero
+                    : const Offset(0, 1.2),
+                duration: const Duration(milliseconds: 260),
+                curve: Curves.easeOutCubic,
+                child: IgnorePointer(
+                  ignoring: !(_selecting && _picked.isNotEmpty),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+                    decoration: const BoxDecoration(
+                      color: Colors.white,
+                      border: Border(top: BorderSide(color: Color(0xFFECECEF))),
+                    ),
+                    child: SafeArea(
+                      top: false,
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: FilledButton(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFFE53935),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: const StadiumBorder(),
+                            textStyle: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
                             ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Column(
-                                children: [
-                                  for (final m in cols[1]) _draftTile(m),
-                                ],
-                              ),
-                            ),
-                          ],
-                        );
-                      },
-                    ),
-                  if (p != null)
-                    _draftCard(
-                      // 照片草稿沒有存縮圖（那張照片還在裝置上，
-                      // 再存一份只是浪費空間），用圖示就好
-                      cover: const Icon(
-                        Icons.image_outlined,
-                        size: 20,
-                        color: kLAccent,
-                      ),
-                      title: '未完成的照片',
-                      subtitle: _savedAtLabel(p),
-                      onTap: _resumePhoto,
-                      onDelete: _deletePhoto,
-                    ),
-                  if (_batchDraft != null) ...[
-                    const SizedBox(height: 12),
-                    _draftCard(
-                      cover: const Icon(
-                        Icons.collections_outlined,
-                        size: 20,
-                        color: kLAccent,
-                      ),
-                      title: '未完成的批次浮水印',
-                      subtitle: _savedAtLabel(_batchDraft!),
-                      onTap: _resumeBatch,
-                      onDelete: _deleteBatch,
-                    ),
-                  ],
-                  // 底部刪除列滑上來時，最後一張卡不被蓋住
-                  if (_selecting) const SizedBox(height: 88),
-                ],
-              ),
-        // 選取模式勾了至少一張，刪除列才從最下方漸漸浮上來（sticky）
-        bottomSheet: AnimatedSlide(
-          offset: _selecting && _picked.isNotEmpty
-              ? Offset.zero
-              : const Offset(0, 1.2),
-          duration: const Duration(milliseconds: 260),
-          curve: Curves.easeOutCubic,
-          child: IgnorePointer(
-            ignoring: !(_selecting && _picked.isNotEmpty),
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                border: Border(top: BorderSide(color: Color(0xFFECECEF))),
-              ),
-              child: SafeArea(
-                top: false,
-                child: SizedBox(
-                  width: double.infinity,
-                  child: FilledButton(
-                    style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFFE53935),
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: const StadiumBorder(),
-                      textStyle: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700,
+                          ),
+                          onPressed: _deletePicked,
+                          child: Text('刪除 ${_picked.length} 份草稿'),
+                        ),
                       ),
                     ),
-                    onPressed: _deletePicked,
-                    child: Text('刪除 ${_picked.length} 份草稿'),
                   ),
                 ),
               ),
             ),
-          ),
+          ],
         ),
       ),
     );

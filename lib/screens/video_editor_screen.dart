@@ -1855,13 +1855,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         duration: dur,
       ),
     );
+    // 同一軌上接在既有素材後面；放到「新的空軌」則落在指針處
+    //（使用者指定：以前一律落在 0，多選各自一軌時全部疊在開頭，
+    // 看起來像通通擠在同一個位置）。專案全空的第一支照樣從 0 開始
+    final hasOnTrack = _tl.clips.any((c) => c.track == track);
     final clip = TimelineClip(
       id: _tl.nextId(),
       sourceIndex: srcIndex,
       trimStart: 0,
       trimEnd: dur,
-      // 同一軌上接在既有素材後面
-      offset: _tl.appendPointOnTrack(track),
+      offset: hasOnTrack
+          ? _tl.appendPointOnTrack(track)
+          : (_tl.clips.isEmpty ? 0.0 : _position),
       track: track,
     );
     _tl.clips.add(clip);
@@ -1874,8 +1879,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _ensureScrubSlots(srcIndex, dur);
     // 秒進的配套：原檔期間就把拖曳快取整條抽起來（背景、分段、
     // 播放/拖曳/匯出時自動讓路），一進去拖曳就有格子可吃＝零 seek。
-    // 工作檔換上時會重建槽位改抽工作檔（解得快）
-    if (!kIsWeb) unawaited(_makeScrubCache(srcIndex, path, dur));
+    // 工作檔換上時會重建槽位改抽工作檔（解得快）。
+    // 多支同時匯入時「後面那幾支」先不抽：六條 4K 密集抽幀同時開
+    // ＝解碼器與記憶體瞬間爆量（實測：多選匯入直接當機）；
+    // 它們的快取等工作檔換上時重建，只慢幾秒
+    if (!kIsWeb && _prepQueue.length + _prepping.length <= 1) {
+      unawaited(_makeScrubCache(srcIndex, path, dur));
+    }
     unawaited(_measureSrcKbps());
     // 排進轉檔佇列（能不擋就不擋，見 _drainPrep）
     _enqueuePrep(srcIndex);

@@ -193,43 +193,13 @@ class _PresetsScreenState extends State<PresetsScreen> {
           borderRadius: BorderRadius.circular(8),
           border: Border.all(color: kLBorder),
         ),
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            // 黑底滿版預覽：浮水印照真實位置／顏色／效果渲染
-            Container(
-              color: Colors.black,
-              child: IgnorePointer(
-                child: WatermarkLayer(settings: p.settings, onChanged: () {}),
-              ),
-            ),
-            // 名字＝左上角小膠囊（UI 感明確，不會被誤認成浮水印）
-            Positioned(
-              left: 5,
-              top: 5,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 2.5,
-                ),
-                decoration: BoxDecoration(
-                  color: kLTile.withValues(alpha: 0.92),
-                  borderRadius: BorderRadius.circular(99),
-                  border: Border.all(color: kLBorder),
-                ),
-                child: Text(
-                  p.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 10,
-                    color: kLIcon,
-                    height: 1.3,
-                  ),
-                ),
-              ),
-            ),
-          ],
+        // 不放名稱膠囊（使用者指定）：卡片本身就是內容，
+        // 名字在長按選單（改名/刪除）還看得到
+        child: Container(
+          color: Colors.black,
+          child: IgnorePointer(
+            child: WatermarkLayer(settings: p.settings, onChanged: () {}),
+          ),
         ),
       ),
     );

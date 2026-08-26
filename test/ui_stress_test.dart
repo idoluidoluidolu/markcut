@@ -60,33 +60,47 @@ void main() {
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull, reason: '個人中心開不起來');
 
-        // 個人中心裡的每張卡片都點進去再回來
-        for (final label in ['範本夾', '關於作者', '意見回饋']) {
-          final f = find.text(label);
+        // 個人中心裡的連結都點進去再回來（用現行頁面上真的存在
+        // 的字樣；不存在就跳過）
+        for (final label in ['關於這個 App', '意見回饋']) {
+          final f = find.text(label).hitTestable();
           if (f.evaluate().isEmpty) continue;
-          // 內容改成整頁捲動（頂部讓過浮動返回鈕）後，這些連結
-          // 可能在畫面外——先捲到看得見再點，不然點的是空氣
           await tester.ensureVisible(f.first);
           await tester.pumpAndSettle();
           await tester.tap(f.first);
           await tester.pumpAndSettle();
           expect(tester.takeException(), isNull, reason: '$label 開不起來');
-          // 回上一頁（意見回饋是對話框，點關閉）
-          final close = find.text('關閉');
+          // 收掉：對話框點「關閉」；頁面點「點得到的」Back（個人
+          // 中心自己的返回鍵被蓋住時不可點，不會誤點退掉整頁）；
+          // 都沒有＝對話框沒有關閉鈕，點外面收
+          final close = find.text('關閉').hitTestable();
+          final back = find.byTooltip('Back').hitTestable();
           if (close.evaluate().isNotEmpty) {
-            await tester.tap(close);
+            await tester.tap(close.first);
+          } else if (back.evaluate().isNotEmpty) {
+            await tester.tap(back.first);
           } else {
-            final back = find.byTooltip('Back');
-            if (back.evaluate().isNotEmpty) {
-              await tester.tap(back.first);
-            } else {
-              await tester.pageBack();
-            }
+            await tester.tapAt(const Offset(10, 10));
           }
           await tester.pumpAndSettle();
         }
-        await tester.pageBack();
+        expect(
+          find.text('範本').hitTestable(),
+          findsOneWidget,
+          reason: '第 $round 輪內圈結束沒有回到個人中心',
+        );
+        final backOut = find.byTooltip('Back').hitTestable();
+        if (backOut.evaluate().isNotEmpty) {
+          await tester.tap(backOut.first);
+        } else {
+          await tester.pageBack();
+        }
         await tester.pumpAndSettle();
+        expect(
+          find.byIcon(Icons.person_outline).hitTestable(),
+          findsOneWidget,
+          reason: '第 $round 輪結束沒有退回首頁',
+        );
       }
       expect(tester.takeException(), isNull);
     });

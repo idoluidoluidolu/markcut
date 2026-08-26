@@ -2494,16 +2494,25 @@ final class AtomicFlag {
           return
         }
         // 已經符合規格的素材直接用原檔，一格都不用重編。
-        // 自己匯出過的影片、下載回來的 1080p H.264 都會命中
-        if let why = self.alreadyGoodEnough(src, maxShortSide: maxShortSide) {
-          channel.invokeMethod("note", arguments: "素材本來就合用（\(why)）")
-          result(src)
-          return
+        // 自己匯出過的影片、下載回來的 1080p H.264 都會命中。
+        // 判定搬到背景：它會同步載軌道、命中前還要掃整支檔的
+        // 關鍵幀——在主執行緒跑，多支排隊時 UI 凍住，卡超過
+        // 系統容忍就是整個 App 被 watchdog 處決
+        DispatchQueue.global(qos: .userInitiated).async {
+          if let why = self.alreadyGoodEnough(src, maxShortSide: maxShortSide) {
+            DispatchQueue.main.async {
+              channel.invokeMethod("note", arguments: "素材本來就合用（\(why)）")
+              result(src)
+            }
+            return
+          }
+          DispatchQueue.main.async {
+            self.makeWorkFile(
+              src: src, dest: dest, maxShortSide: maxShortSide,
+              channel: channel, job: job
+            ) { path in result(path) }
+          }
         }
-        self.makeWorkFile(
-          src: src, dest: dest, maxShortSide: maxShortSide, channel: channel,
-          job: job
-        ) { path in result(path) }
       case "probe":
         guard let path = call.arguments as? String else {
           result(nil)
