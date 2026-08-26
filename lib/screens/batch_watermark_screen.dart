@@ -895,6 +895,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     final aspect = dims == null
         ? 16 / 9
         : dims.$1 / (dims.$2 == 0 ? 1 : dims.$2);
+    // 實際偵測到的畫布尺寸（左下小字）：使用者回報「畫布比例不對」
+    // 時，一眼分辨是片源本來就這樣、還是探測讀歪了
+    final dimsLabel = dims == null ? '尺寸讀取中…' : '${dims.$1}×${dims.$2}';
     // 鍵盤打開時把預覽、縮圖列、底欄全收起來：不收的話面板被擠成
     // 一條縫，文字輸入框整個藏在鍵盤後面（實測回報）
     final kbOpen = MediaQuery.of(context).viewInsets.bottom > 60;
@@ -1093,6 +1096,13 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                         ),
                       ),
                     ),
+                  ),
+                  const SizedBox(width: 8),
+                  // 這一張偵測到的畫布尺寸：回報「比例不對」時
+                  // 一眼分辨是片源本來就這樣還是探測讀歪
+                  Text(
+                    dimsLabel,
+                    style: const TextStyle(fontSize: 10.5, color: kTextDim),
                   ),
                 ],
               ),
