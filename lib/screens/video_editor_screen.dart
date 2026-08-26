@@ -2064,8 +2064,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   final Set<int> _hdrPrepping = {};
 
   Future<void> _prepHdrWorkFiles() async {
+    var madeAny = false;
     for (var i = 0; i < _tl.sources.length; i++) {
-      if (!(_exportHdr && _hdrAvail == true) || !mounted) return;
+      // 匯入轉檔中讓道：工作檔佇列已經佔了兩個硬體編碼 session，
+      // HDR 代理再插一腳就是三個同時跑——多影片匯入實測就是這樣
+      // 把 mediaserverd 打到重置（-11819）甚至整個 App 被殺。
+      // 佇列清空後 _drainPrep 尾巴的 _ensureComp 會再叫回來
+      if (!(_exportHdr && _hdrAvail == true) || !mounted || _prepBusy) break;
       final s = _tl.sources[i];
       if (s.kind != ClipKind.video || s.workHdrPath != null) continue;
       if (_hdrPrepping.contains(i)) continue;
@@ -2075,10 +2080,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (!mounted) return;
       if (made == null || i >= _tl.sources.length) continue;
       _tl.sources[i].workHdrPath = made;
+      madeAny = true;
       _saveDraft();
-      // 暫停中直接換上；播放中等暫停後的重估
-      if (!_playing) _compRefreshIfChanged();
     }
+    // 全部補完才重烘一次：以前每好一支就重烘，六支素材就是六次
+    // 播放器重載（實測診斷裡「就緒」刷了一整排）
+    if (madeAny && mounted && !_playing) _compRefreshIfChanged();
   }
 
   Future<void> _prepWorkFile(int srcIndex) async {
@@ -5457,8 +5464,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       hdrOut: _exportHdr && _hdrAvail == true,
     );
     // HDR 模式：背景把 HDR 代理補齊（HLG 直通、密關鍵幀），
-    // 轉好換上就恢復跟 SDR 工作檔同級的順度
-    if (_exportHdr && _hdrAvail == true) {
+    // 轉好換上就恢復跟 SDR 工作檔同級的順度。
+    // 匯入轉檔中不搶（見 _prepHdrWorkFiles 的說明）
+    if (_exportHdr && _hdrAvail == true && !_prepBusy) {
       unawaited(_prepHdrWorkFiles());
     }
     _compDirty = false;
@@ -5508,6 +5516,35 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 才分得出來，而那正是「輸出的檔案很順、App 裡就是卡」的形狀
   Timer? _playProbe;
 
+  /// 播放中位置連續沒前進的次數（死亡偵測用，見 _reviveDeadComp）
+  int _playStuck = 0;
+  bool _reviving = false;
+
+  /// 播放器整組重建：系統媒體服務被重置（-11819，多半是匯入轉檔
+  /// 打太兇）之後，AVPlayer 全部變殭屍——rate 起得來、時間不前進、
+  /// 抽不到畫面，脫節校正只會一直把指針拉回開頭（實測回報
+  /// 「按播放一直跳針在前面」）。唯一的救法是整顆放掉重組
+  Future<void> _reviveDeadComp() async {
+    if (_reviving || !mounted) return;
+    _reviving = true;
+    try {
+      Diag.note('播放器卡死（疑似系統媒體服務重置），整組重建');
+      final at = _position;
+      final wasPlaying = _playing;
+      if (wasPlaying) _pause();
+      final old = _comp;
+      if (mounted) setState(() => _comp = null);
+      await old?.dispose();
+      _compDirty = true;
+      await _ensureComp();
+      if (!mounted) return;
+      await _comp?.seek(at, exact: true);
+      if (wasPlaying) unawaited(_play());
+    } finally {
+      _reviving = false;
+    }
+  }
+
   void _startPlayProbe() {
     _playProbe?.cancel();
     final wall = Stopwatch()..start();
@@ -5537,6 +5574,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         basePlayer = pos;
         wall.reset();
         return;
+      }
+      // 死亡偵測：播放中連續 2 秒位置一動不動＝播放器已經是
+      // 殭屍（媒體服務重置），整組重建救回來
+      if (_compOn && pos - basePlayer <= 0) {
+        _playStuck++;
+        if (_playStuck >= 5) {
+          _playStuck = 0;
+          unawaited(_reviveDeadComp());
+        }
+      } else {
+        _playStuck = 0;
       }
       Diag.notePlaybackSample(
         wall.elapsedMilliseconds,
