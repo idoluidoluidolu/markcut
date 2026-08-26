@@ -1626,11 +1626,9 @@ class _TrackLabelState extends State<_TrackLabel> {
   double _dy = 0;
   bool _moved = false;
 
-  /// 按下去的位置（標籤內的 y）：分派點的是上半的喇叭還是下半的眼睛
-  double _downDy = 0;
-
   void _fireTap() {
-    if (widget.onToggleHidden != null && _downDy > widget.height / 2) {
+    // 一般軌整格＝隱藏切換（靜音鈕已拿掉）；空軌/旁白走 onTap
+    if (widget.onToggleHidden != null) {
       widget.onToggleHidden!();
     } else {
       widget.onTap();
@@ -1678,8 +1676,8 @@ class _TrackLabelState extends State<_TrackLabel> {
               border: Border.all(color: kSelect, width: 2),
             )
           : null,
-      // 一般軌分上下兩半：上＝喇叭（靜音）、下＝眼睛（顯示）。
-      // 空軌／旁白軌維持單一圖示（整條軌道仍可上下拖曳換順序）
+      // 只放一顆「隱藏」鈕（使用者指定：靜音鈕拿掉，隱藏本來就
+      // 連聲音一起關）。空軌＝加號、旁白軌＝錄音鈕照舊
       child: Center(
         child: widget.isVoice
             // 旁白軌：紅色圓鈕，錄音中變成方形停止
@@ -1696,30 +1694,14 @@ class _TrackLabelState extends State<_TrackLabel> {
                   color: Colors.white,
                 ),
               )
-            : widget.onToggleHidden == null
-            ? Icon(
+            : Icon(
                 widget.isEmptyRow
                     ? Icons.add
-                    : (widget.muted ? Icons.volume_off : Icons.volume_up),
+                    : (widget.hidden
+                          ? Icons.visibility_off
+                          : Icons.visibility_outlined),
                 size: 15,
-                color: (widget.muted || amber) ? kSelect : kTextDim,
-              )
-            : Column(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  Icon(
-                    widget.muted ? Icons.volume_off : Icons.volume_up,
-                    size: 14,
-                    color: (widget.muted || amber) ? kSelect : kTextDim,
-                  ),
-                  Icon(
-                    widget.hidden
-                        ? Icons.visibility_off
-                        : Icons.visibility_outlined,
-                    size: 14,
-                    color: (widget.hidden || amber) ? kSelect : kTextDim,
-                  ),
-                ],
+                color: (widget.hidden || amber) ? kSelect : kTextDim,
               ),
       ),
     );
@@ -1729,10 +1711,7 @@ class _TrackLabelState extends State<_TrackLabel> {
         height: widget.height,
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTapUp: (d) {
-            _downDy = d.localPosition.dy;
-            _fireTap();
-          },
+          onTap: _fireTap,
           onLongPress: widget.onLongPress,
           child: label,
         ),
@@ -1751,8 +1730,7 @@ class _TrackLabelState extends State<_TrackLabel> {
               GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
                 () => _EagerPanRecognizer(),
                 (r) => r
-                  ..onStart = (d) {
-                    _downDy = d.localPosition.dy;
+                  ..onStart = (_) {
                     _dy = 0;
                     _moved = false;
                     // 拖曳辨識器會直接吃掉手勢，長按只能自己算：
