@@ -38,6 +38,11 @@ class ProfileScreen extends StatefulWidget {
 /// 由每一段自己給
 const _side = EdgeInsets.symmetric(horizontal: 22);
 
+/// 卡片的柔和陰影（C 案的層次感：白底之上讓封面微微浮起）
+const _tileShadow = [
+  BoxShadow(color: Color(0x1E000000), blurRadius: 10, offset: Offset(0, 4)),
+];
+
 /// 從相簿收一個 GIF 進「我的 GIF」（跟編輯器挑 GIF 的驗證同一套）。
 /// 成功回存好的參照；取消或失敗回 null（失敗會自己提示）
 Future<String?> importGifFromGallery(BuildContext context) async {
@@ -181,6 +186,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         decoration: BoxDecoration(
           color: const Color(0xFF1B1B20),
           borderRadius: BorderRadius.circular(18),
+          boxShadow: _tileShadow,
         ),
         child: IgnorePointer(
           child: WatermarkLayer(settings: preset.settings, onChanged: () {}),
@@ -253,6 +259,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             decoration: BoxDecoration(
               color: const Color(0xFFF1F1F5),
               borderRadius: BorderRadius.circular(18),
+              boxShadow: _tileShadow,
             ),
             clipBehavior: Clip.antiAlias,
             alignment: Alignment.center,
@@ -429,6 +436,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           ),
                         ),
                       ),
+                      // 頁面大標（C 案的層次感：大標壓陣，白底不動）
+                      const Padding(
+                        padding: EdgeInsets.fromLTRB(22, 2, 22, 24),
+                        child: Text(
+                          '我的東西',
+                          style: TextStyle(
+                            fontSize: 27,
+                            fontWeight: FontWeight.w900,
+                            height: 1.1,
+                          ),
+                        ),
+                      ),
                       Padding(
                         padding: _side,
                         child: _sectionTitle(
@@ -523,6 +542,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 decoration: BoxDecoration(
                                   color: kLTile,
                                   borderRadius: BorderRadius.circular(12),
+                                  boxShadow: _tileShadow,
                                 ),
                                 clipBehavior: Clip.antiAlias,
                                 child: GifImage(_gifs[i]),
