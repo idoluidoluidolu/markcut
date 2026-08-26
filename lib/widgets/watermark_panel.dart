@@ -1567,27 +1567,41 @@ class WatermarkPanelState extends State<WatermarkPanel> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                const Text(
-                  '選擇範本',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
-                ),
-                const Spacer(),
-                // 新增釘在標題列（使用者指定）：範本一多，
-                // 排在瀑布流尾端要捲半天才找得到
-                TextButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    setState(() => _presetSel = null);
-                    showHint(context, '調好浮水印後，按下方「儲存範本」');
-                  },
-                  icon: const Icon(Icons.add, size: 17),
-                  label: const Text('新增範本', style: TextStyle(fontSize: 12.5)),
-                ),
-              ],
+            const Text(
+              '選擇範本',
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 10),
+            // 新增＝頂端滿版細長卡（D 案，使用者選定）：永遠在
+            // 第一眼位置、不跟著瀑布流捲，也不佔卡片的高度
+            InkWell(
+              borderRadius: BorderRadius.circular(9),
+              onTap: () {
+                Navigator.pop(context);
+                setState(() => _presetSel = null);
+                showHint(context, '調好浮水印後，按下方「儲存範本」');
+              },
+              child: Container(
+                height: 40,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(9),
+                  border: Border.all(color: kClipBorder),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.add, size: 16, color: kTextDim),
+                    SizedBox(width: 5),
+                    Text(
+                      '新增範本',
+                      style: TextStyle(fontSize: 12.5, color: kTextDim),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
             // 兩欄瀑布流：卡片照各自的設計比例（跟範本管理頁同款）
             Flexible(
               child: Builder(
@@ -1618,17 +1632,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                       1 / a,
                     );
                   }
-                  // 新增卡只在完全沒有範本時當入口；有範本時
-                  // 新增在標題列（sticky，不用捲到底找）
-                  if (_presets.isEmpty) {
-                    put(
-                      AspectRatio(
-                        aspectRatio: 16 / 10,
-                        child: _addPresetCard(),
-                      ),
-                      10 / 16,
-                    );
-                  }
+                  // 新增在頂端細長卡（D 案），瀑布流裡不再放新增卡
                   return SingleChildScrollView(
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1642,33 +1646,6 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                 },
               ),
             ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 「＋ 新增範本」卡：關掉挑選視窗，直接在目前畫面上設計，
-  /// 調好按下方「儲存範本」就存成新的（不另開視窗）
-  Widget _addPresetCard() {
-    return InkWell(
-      borderRadius: BorderRadius.circular(8),
-      onTap: () {
-        Navigator.pop(context);
-        setState(() => _presetSel = null); // 存檔時視為新範本
-        showHint(context, '調好浮水印後，按下方「儲存範本」');
-      },
-      child: Container(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: kClipBorder),
-        ),
-        child: const Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.add, size: 22, color: kTextDim),
-            SizedBox(height: 4),
-            Text('新增範本', style: TextStyle(fontSize: 11, color: kTextDim)),
           ],
         ),
       ),
