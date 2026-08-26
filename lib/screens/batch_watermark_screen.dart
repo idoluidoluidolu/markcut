@@ -407,12 +407,22 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
             t = await engine.makeThumbnails(f.path, 1, 1, height: 240);
           }
           if (t.isNotEmpty) item.thumb = t.first;
-          // 尺寸問影片本身，不要拿縮圖反推：縮圖只有在旋轉被正確
-          // 套用時才等於顯示方向，一有落差畫布就會變成橫的
+          // 尺寸問影片本身（像素數精確），但「方向」以縮圖為準：
+          // 縮圖兩條抽取路都套過旋轉、一定是顯示方向；probe 的
+          // 旋轉旗標讀歪時畫布會轉 90 度，影片看起來超出畫布
+          //（實測回報）。方向對不上就把 probe 的長寬對調
           final info = await engine.probeVideoInfo(f.path);
-          item.dims = (info.w > 0 && info.h > 0)
-              ? (info.w, info.h)
-              : (t.isNotEmpty ? await _dimsOf(t.first) : null);
+          var d = (info.w > 0 && info.h > 0) ? (info.w, info.h) : null;
+          final td = t.isNotEmpty ? await _dimsOf(t.first) : null;
+          if (d != null && td != null && td.$1 > 0 && td.$2 > 0) {
+            final probePortrait = d.$1 < d.$2;
+            final thumbPortrait = td.$1 < td.$2;
+            final probeSquare = (d.$1 / d.$2 - 1).abs() < 0.02;
+            if (!probeSquare && probePortrait != thumbPortrait) {
+              d = (d.$2, d.$1);
+            }
+          }
+          item.dims = d ?? td;
         } else {
           final bytes = await f.readAsBytes();
           item.dims = await _dimsOf(bytes);
@@ -804,6 +814,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     if (wm.hasAnyMark) {
       wmPng = await WatermarkRenderer.renderOverlayPng(wm, w, h);
     }
+    // 來源是 HDR 就保留 HDR（HEVC HLG，跟單支編輯器同一條原生路）
+    //——以前批次一律走 SDR 色調映射，成品比原片淡（實測回報）
+    final probe = await engine.probeVideoInfo(f.path);
     final src = MediaSource(
       path: f.path,
       name: f.name,
@@ -833,6 +846,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         wmSpeed: wm.animSpeed,
         wmRange: wm.animRange,
         crf: _quality.crf,
+        hdr: probe.hdr,
       ),
       onProgress: onProgress,
     );

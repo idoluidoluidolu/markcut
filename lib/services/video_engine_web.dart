@@ -38,9 +38,9 @@ Future<void> cancelExport() async {}
 Future<String> hdrChainName() async => '不適用（web 沒有 FFmpeg）';
 
 /// Web 量不到（素材是 blob URL），回空值＝畫質自動挑不啟用
-Future<({String codec, double fps, int w, int h})> probeVideoInfo(
+Future<({String codec, double fps, int w, int h, bool hdr})> probeVideoInfo(
   String path,
-) async => (codec: '', fps: 0.0, w: 0, h: 0);
+) async => (codec: '', fps: 0.0, w: 0, h: 0, hdr: false);
 
 /// Web 沒有 FFmpeg：用隱形 <video> + canvas 抓格做縮圖，
 /// 時間軸 filmstrip 與草稿封面才有畫面

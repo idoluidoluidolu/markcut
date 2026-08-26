@@ -1044,11 +1044,11 @@ int _kbpsFor(ExportSpec spec, double fps) =>
 
 /// 素材的視訊編碼、影格率與「旋轉校正後」的顯示長寬。
 /// 讀不到就回空值（w/h 為 0）
-Future<({String codec, double fps, int w, int h})> probeVideoInfo(
+Future<({String codec, double fps, int w, int h, bool hdr})> probeVideoInfo(
   String path,
 ) async {
   final p = await _probe(path);
-  return (codec: p.codec, fps: p.fps, w: p.dispW, h: p.dispH);
+  return (codec: p.codec, fps: p.fps, w: p.dispW, h: p.dispH, hdr: p.hdr);
 }
 
 /// 取消正在進行的匯出。兩條路都要通知：原生那條在跑的時候 FFmpeg 是閒著
