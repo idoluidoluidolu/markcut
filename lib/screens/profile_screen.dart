@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart' show XFile;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -36,6 +37,26 @@ class ProfileScreen extends StatefulWidget {
 /// 頁面左右的留白。範本那排要出血，所以留白不放在外層，
 /// 由每一段自己給
 const _side = EdgeInsets.symmetric(horizontal: 22);
+
+/// 從相簿收一個 GIF 進「我的 GIF」（跟編輯器挑 GIF 的驗證同一套）。
+/// 成功回存好的參照；取消或失敗回 null（失敗會自己提示）
+Future<String?> importGifFromGallery(BuildContext context) async {
+  final r = await FilePicker.platform.pickFiles(type: FileType.image);
+  final path = (r == null || r.files.isEmpty) ? null : r.files.first.path;
+  if (path == null) return null;
+  if (!path.toLowerCase().endsWith('.gif')) {
+    if (context.mounted) {
+      showHint(context, '這不是 GIF，請選會動的那種', error: true);
+    }
+    return null;
+  }
+  final saved = await GifStore.add(path);
+  if (saved == null && context.mounted) {
+    // web 存不了檔（展示模式只有內建範例）
+    showHint(context, '這裡收不進來，請在手機 App 上用', error: true);
+  }
+  return saved;
+}
 
 class _ProfileScreenState extends State<ProfileScreen> {
   List<WatermarkPreset> _presets = const [];
@@ -462,34 +483,53 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         padding: _side,
                         child: _sectionTitle(
                           '我的 GIF',
-                          trailing: _gifs.isEmpty ? null : '全部',
+                          trailing: _gifs.isEmpty ? '還沒有' : '全部',
                           onTap: _gifs.isEmpty ? null : _openGifs,
                         ),
                       ),
-                      if (_gifs.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.only(top: 16, bottom: 4),
-                          child: Center(
-                            child: Text(
-                              '還沒有 GIF',
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Color(0xFFA8A8B4),
-                              ),
-                            ),
-                          ),
-                        )
-                      else ...[
-                        const SizedBox(height: 14),
-                        SizedBox(
-                          height: 96,
-                          child: ListView.separated(
-                            scrollDirection: Axis.horizontal,
-                            padding: _side,
-                            itemCount: _gifs.length.clamp(0, 8),
-                            separatorBuilder: (_, _) =>
-                                const SizedBox(width: 10),
-                            itemBuilder: (context, i) => GestureDetector(
+                      const SizedBox(height: 14),
+                      // 尾端一顆「＋」：把相簿裡自己的 GIF 收進來
+                      //（使用者指定）。空的時候就剩這顆＋，
+                      // 跟範本區的空狀態同一套
+                      SizedBox(
+                        height: 96,
+                        child: ListView.separated(
+                          scrollDirection: Axis.horizontal,
+                          padding: _side,
+                          itemCount: _gifs.length.clamp(0, 8) + 1,
+                          separatorBuilder: (_, _) => const SizedBox(width: 10),
+                          itemBuilder: (context, i) {
+                            if (i >= _gifs.length.clamp(0, 8)) {
+                              return GestureDetector(
+                                onTap: () async {
+                                  final saved = await importGifFromGallery(
+                                    context,
+                                  );
+                                  if (saved != null) _reload();
+                                },
+                                child: Container(
+                                  width: 96,
+                                  alignment: Alignment.center,
+                                  decoration: BoxDecoration(
+                                    color: kLCard,
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                      color: kLBorder,
+                                      width: 1.4,
+                                    ),
+                                  ),
+                                  child: const Text(
+                                    '＋',
+                                    style: TextStyle(
+                                      fontSize: 24,
+                                      color: Color(0xFFB0B0BA),
+                                      fontWeight: FontWeight.w300,
+                                    ),
+                                  ),
+                                ),
+                              );
+                            }
+                            return GestureDetector(
                               onTap: _openGifs,
                               child: Container(
                                 width: 96,
@@ -500,10 +540,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 clipBehavior: Clip.antiAlias,
                                 child: GifImage(_gifs[i]),
                               ),
-                            ),
-                          ),
+                            );
+                          },
                         ),
-                      ],
+                      ),
                       // 跟下面那一區隔開，不然「草稿」會黏在
                       // GIF 那排的下緣上
                       const SizedBox(height: 26),
@@ -1326,6 +1366,17 @@ class _GifsScreenState extends State<GifsScreen> {
     return SwipeBack(
       child: Scaffold(
         appBar: AppBar(),
+        // 右下浮動黑圓 +（跟範本夾同款）：把相簿裡自己的 GIF 收進來
+        floatingActionButton: FloatingActionButton(
+          onPressed: () async {
+            final saved = await importGifFromGallery(context);
+            if (saved != null) _reload();
+          },
+          backgroundColor: Colors.black,
+          foregroundColor: Colors.white,
+          shape: const CircleBorder(),
+          child: const Icon(Icons.add, size: 28),
+        ),
         body: _loading
             ? const Center(child: CircularProgressIndicator())
             : _gifs.isEmpty
@@ -1335,7 +1386,7 @@ class _GifsScreenState extends State<GifsScreen> {
                   child: Text(
                     '還沒有 GIF。\n\n'
                     '首頁「加入浮水印 → 製作 GIF」做一個，'
-                    '做好會自動留一份在這裡。',
+                    '或按右下角的＋把相簿裡的 GIF 收進來。',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: kLTextDim, height: 1.6),
                   ),
@@ -1347,7 +1398,8 @@ class _GifsScreenState extends State<GifsScreen> {
                   final colW = (box.maxWidth - 16 * 2 - 10) / 2;
                   final cols = _columns(colW);
                   return SingleChildScrollView(
-                    padding: const EdgeInsets.all(16),
+                    // 底部多留：最後一張不被浮動 + 蓋住
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
