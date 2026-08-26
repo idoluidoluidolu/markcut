@@ -1528,8 +1528,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return null;
   }
 
-  /// 目前畫面上該顯示的影片片段
-  TimelineClip? get _activeVideo => _tl.videoAt(_position);
+  /// 目前畫面上該顯示的影片片段（隱藏軌跳過，上層隱藏露出下層）
+  TimelineClip? get _activeVideo =>
+      _tl.videoAt(_position, skipTracks: _hiddenTracks);
 
   /// 馬賽克預覽 shader 程式（載不到就退回霧化，web/舊 GPU 都走得下去）。
   /// 存「程式」不存實例：多塊馬賽克同幀各建各的實例，
@@ -5646,7 +5647,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         pos = ((await _comp!.position()) * 1000).round();
         who = _comp;
       } else {
-        final c = _ctrls[_tl.videoAt(_position)?.id ?? -1];
+        final c =
+            _ctrls[_tl.videoAt(_position, skipTracks: _hiddenTracks)?.id ?? -1];
         if (c == null || !c.value.isInitialized) return;
         pos = (await c.positionNow())?.inMilliseconds;
         who = c;
@@ -8842,8 +8844,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   //（匯出兩條路同一套規則）
                                   const warmTrack = -999;
 
-                                  // 影片圖層（由下層往上疊 = 真 PiP）
-                                  final vids = _tl.videosAt(_position);
+                                  // 影片圖層（由下層往上疊 = 真 PiP）。
+                                  // 隱藏軌整條不畫：上層隱藏就露出下層
+                                  //（合成路在組建排除；這裡是逐片段
+                                  // 疊圖層的舊路，web 全靠它）
+                                  final vids = _tl
+                                      .videosAt(_position)
+                                      .where(
+                                        (c) => !_hiddenTracks.contains(c.track),
+                                      )
+                                      .toList();
                                   // 播放中：快進場的影片先以幾乎看不見
                                   // 的透明度掛在最底層——材質先附著、
                                   // 第一幀先畫上去，跨過交界只是變回
@@ -8867,7 +8877,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   // 合成播放器接手時，畫面就是它那一張材質
                                   //（整條時間軸都在裡面），不再逐片段疊圖層
                                   if (_compOn) {
-                                    final cur = _tl.videoAt(_position);
+                                    final cur = _tl.videoAt(
+                                      _position,
+                                      skipTracks: _hiddenTracks,
+                                    );
                                     final rect = Rect.fromLTWH(0, 0, w, h);
                                     if (cur != null) {
                                       addHit(cur.track, cur.id, rect);

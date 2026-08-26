@@ -466,9 +466,12 @@ class TimelineModel {
 
   /// 某時刻該顯示哪個影片片段。
   /// 上層優先（編號大的在上）；同一層疊在一起時，後放進來的蓋住先放的。
-  TimelineClip? videoAt(double t) {
+  /// [skipTracks]＝關閉顯示的軌：挑選時跳過，上層隱藏就露出下層
+  ///（合成路徑在組建時排除；逐片段播放的舊路徑靠這裡）
+  TimelineClip? videoAt(double t, {Set<int> skipTracks = const {}}) {
     TimelineClip? best;
     for (final c in clips) {
+      if (skipTracks.contains(c.track)) continue;
       if (!sourceOf(c).isVideo || !c.coversForDisplay(t)) continue;
       if (best == null || c.track >= best.track) best = c;
     }
