@@ -8784,17 +8784,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         ),
                                       ),
                                     );
-                                    // 重烘空窗：右上角一顆轉圈小點
-                                    //（D 案，使用者選定）——不壓暗、
-                                    // 不擋畫面中心，看得到自己在調什麼。
-                                    // SDR/HDR 同一套；筆刷模式有自己的
-                                    // 遮罩預覽，不疊
+                                    // 重烘空窗：馬賽克那塊由「效果區
+                                    // 佔位」講話（C 案，見馬賽克圖層）；
+                                    // 只有圖片層在烘時才在右上角放一顆
+                                    // 轉圈小點——圖片空窗畫面看起來
+                                    // 是正常的（Flutter 版先頂上），
+                                    // 沒有小點會以為沒在動
                                     if (!_vBrushMode &&
                                         _compOn &&
                                         !_playing &&
                                         (_compMosaicStale ||
                                             _compStillsStale)) {
                                       _kickStaleRebuild();
+                                    }
+                                    if (!_vBrushMode &&
+                                        _compOn &&
+                                        !_playing &&
+                                        _compStillsStale &&
+                                        !_compMosaicStale) {
                                       addLayer(
                                         vidTrack,
                                         Positioned(
@@ -9142,12 +9149,35 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             // 合成播放器接手時，馬賽克已
                                             // 經烘進它的畫面裡（CI 合成
                                             // 器），這裡再畫就是打兩次碼。
-                                            // 但剛加/拖了馬賽克、重烘還沒
-                                            // 完成的空窗（_compMosaicStale）
-                                            // 要頂上——不頂的話這段期間
-                                            // 什麼都看不到
+                                            // 重烘空窗改畫「效果區佔位」
+                                            //（C 案，使用者選定）：半透明
+                                            // 白＋細白框蓋在效果那一塊，
+                                            // 跟筆刷的白遮罩同一套語言，
+                                            // 烘好換真效果
                                             child: _compOn
-                                                ? const SizedBox.expand()
+                                                ? (_compMosaicStale &&
+                                                          !_playing &&
+                                                          !_vBrushMode
+                                                      ? IgnorePointer(
+                                                          child: Container(
+                                                            decoration: BoxDecoration(
+                                                              color: Colors
+                                                                  .white
+                                                                  .withValues(
+                                                                    alpha: 0.16,
+                                                                  ),
+                                                              border: Border.all(
+                                                                color: Colors
+                                                                    .white
+                                                                    .withValues(
+                                                                      alpha:
+                                                                          0.55,
+                                                                    ),
+                                                              ),
+                                                            ),
+                                                          ),
+                                                        )
+                                                      : const SizedBox.expand())
                                                 : Builder(
                                                     builder: (context) {
                                                       final ms =
