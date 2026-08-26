@@ -481,18 +481,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ),
                       const SizedBox(height: 14),
                       // 範本跟草稿同一套兩欄流（使用者指定）：
-                      // 最多三格＋「新增」磚，其餘按「全部」進範本夾
+                      // 只放一排（使用者指定）：最新一組＋「新增」磚，
+                      // 其餘按「全部」進範本夾
                       Padding(
                         padding: _side,
                         child: LayoutBuilder(
                           builder: (context, cons) {
                             final colW = (cons.maxWidth - 10) / 2;
-                            return Wrap(
-                              spacing: 10,
-                              runSpacing: 16,
+                            return Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                for (final pr in _presets.take(3))
-                                  _presetTile(pr, w: colW),
+                                if (_presets.isNotEmpty) ...[
+                                  _presetTile(_presets.first, w: colW),
+                                  const SizedBox(width: 10),
+                                ],
                                 _presetAddTile(w: colW),
                               ],
                             );
