@@ -64,6 +64,8 @@ class TimelineEditor extends StatefulWidget {
   final void Function(int from, int to) onReorderTrack; // 整條軌道換順序
   final Set<int> mutedTracks; // 靜音的軌道
   final ValueChanged<int> onToggleMute; // 點標籤喇叭切換整軌靜音
+  final Set<int> hiddenTracks; // 關閉顯示的軌道
+  final ValueChanged<int>? onToggleHidden; // 點標籤眼睛切換整軌顯示
 
   /// 預備好的旁白軌：這一軌的標籤變成紅色錄音鈕
   final int? voiceTrack;
@@ -153,6 +155,8 @@ class TimelineEditor extends StatefulWidget {
     required this.onReorderTrack,
     this.mutedTracks = const {},
     required this.onToggleMute,
+    this.hiddenTracks = const {},
+    this.onToggleHidden,
     this.voiceTrack,
     this.voiceRecording = false,
     this.onVoiceRecordTap,
@@ -1124,6 +1128,11 @@ class _TimelineEditorState extends State<TimelineEditor> {
       canDrag: !isEmptyRow && timeline.usedTracks > 1 && !isVoice,
       isEmptyRow: isEmptyRow,
       muted: widget.mutedTracks.contains(t),
+      hidden: widget.hiddenTracks.contains(t),
+      // 眼睛只給有內容的一般軌（空軌沒東西可藏、旁白軌是錄音鈕）
+      onToggleHidden: (isEmptyRow || isVoice || widget.onToggleHidden == null)
+          ? null
+          : () => widget.onToggleHidden!(t),
       isVoice: isVoice,
       isRecording: isVoice && widget.voiceRecording,
       // 選中的片段在這一軌 → 標籤跟著亮，指出選取落在哪一層。
@@ -1564,6 +1573,12 @@ class _TrackLabel extends StatefulWidget {
   final bool canDrag;
   final bool isEmptyRow;
   final bool muted;
+
+  /// 這一軌關閉顯示中（眼睛按鈕亮琥珀）
+  final bool hidden;
+
+  /// 點下半的眼睛＝切換整軌顯示（null＝這一軌不提供，標籤只有喇叭）
+  final VoidCallback? onToggleHidden;
   final bool isVoice; // 旁白軌：標籤變紅色錄音鈕
   final bool isRecording;
 
@@ -1589,6 +1604,8 @@ class _TrackLabel extends StatefulWidget {
     required this.canDrag,
     required this.isEmptyRow,
     this.muted = false,
+    this.hidden = false,
+    this.onToggleHidden,
     this.isVoice = false,
     this.isRecording = false,
     this.hasSelection = false,
@@ -1608,6 +1625,17 @@ class _TrackLabel extends StatefulWidget {
 class _TrackLabelState extends State<_TrackLabel> {
   double _dy = 0;
   bool _moved = false;
+
+  /// 按下去的位置（標籤內的 y）：分派點的是上半的喇叭還是下半的眼睛
+  double _downDy = 0;
+
+  void _fireTap() {
+    if (widget.onToggleHidden != null && _downDy > widget.height / 2) {
+      widget.onToggleHidden!();
+    } else {
+      widget.onTap();
+    }
+  }
 
   /// 長按偵測（拖曳辨識器會吃掉手勢，長按得自己算）
   Timer? _pressTimer;
@@ -1650,7 +1678,8 @@ class _TrackLabelState extends State<_TrackLabel> {
               border: Border.all(color: kSelect, width: 2),
             )
           : null,
-      // 只放一個圖示，乾淨就好（整條軌道仍可上下拖曳換順序）
+      // 一般軌分上下兩半：上＝喇叭（靜音）、下＝眼睛（顯示）。
+      // 空軌／旁白軌維持單一圖示（整條軌道仍可上下拖曳換順序）
       child: Center(
         child: widget.isVoice
             // 旁白軌：紅色圓鈕，錄音中變成方形停止
@@ -1667,12 +1696,30 @@ class _TrackLabelState extends State<_TrackLabel> {
                   color: Colors.white,
                 ),
               )
-            : Icon(
+            : widget.onToggleHidden == null
+            ? Icon(
                 widget.isEmptyRow
                     ? Icons.add
                     : (widget.muted ? Icons.volume_off : Icons.volume_up),
                 size: 15,
                 color: (widget.muted || amber) ? kSelect : kTextDim,
+              )
+            : Column(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  Icon(
+                    widget.muted ? Icons.volume_off : Icons.volume_up,
+                    size: 14,
+                    color: (widget.muted || amber) ? kSelect : kTextDim,
+                  ),
+                  Icon(
+                    widget.hidden
+                        ? Icons.visibility_off
+                        : Icons.visibility_outlined,
+                    size: 14,
+                    color: (widget.hidden || amber) ? kSelect : kTextDim,
+                  ),
+                ],
               ),
       ),
     );
@@ -1680,8 +1727,12 @@ class _TrackLabelState extends State<_TrackLabel> {
     if (!widget.canDrag) {
       return SizedBox(
         height: widget.height,
-        child: InkWell(
-          onTap: widget.onTap,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapUp: (d) {
+            _downDy = d.localPosition.dy;
+            _fireTap();
+          },
           onLongPress: widget.onLongPress,
           child: label,
         ),
@@ -1700,7 +1751,8 @@ class _TrackLabelState extends State<_TrackLabel> {
               GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
                 () => _EagerPanRecognizer(),
                 (r) => r
-                  ..onStart = (_) {
+                  ..onStart = (d) {
+                    _downDy = d.localPosition.dy;
                     _dy = 0;
                     _moved = false;
                     // 拖曳辨識器會直接吃掉手勢，長按只能自己算：
@@ -1747,7 +1799,7 @@ class _TrackLabelState extends State<_TrackLabel> {
                     } else {
                       widget.onDragUpdate(0);
                       widget.onDragEnd();
-                      widget.onTap();
+                      _fireTap();
                     }
                     _dy = 0;
                     _moved = false;
@@ -1766,7 +1818,7 @@ class _TrackLabelState extends State<_TrackLabel> {
                     final wasTap = !_moved;
                     widget.onDragUpdate(0);
                     widget.onDragEnd();
-                    if (wasTap) widget.onTap();
+                    if (wasTap) _fireTap();
                     _dy = 0;
                     _moved = false;
                   },

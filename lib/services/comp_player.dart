@@ -67,10 +67,12 @@ class CompPlayer {
   ///
   /// 工作檔沒好也照組——用原檔組一樣播得動，而且是一顆播放器一組解碼
   /// 資源，比舊路徑輕得多
-  static String? whyNot(TimelineModel tl) {
+  static String? whyNot(TimelineModel tl, {Set<int> hiddenTracks = const {}}) {
+    // 隱藏軌整條不進合成：判定也用同一份視角，不然「隱藏了唯一
+    // 會擋路的片段」還是被判組不起來
     final vids = [
       for (final c in tl.clips)
-        if (tl.sourceOf(c).isVideo) c,
+        if (tl.sourceOf(c).isVideo && !hiddenTracks.contains(c.track)) c,
     ];
     if (vids.isEmpty) return '沒有影片片段';
     for (final c in vids) {
@@ -100,6 +102,7 @@ class CompPlayer {
     var lastEnd = 0.0;
     for (final c in tl.clips) {
       if (tl.sourceOf(c).kind == ClipKind.mosaic) continue;
+      if (hiddenTracks.contains(c.track)) continue;
       if (c.end > lastEnd) lastEnd = c.end;
     }
     if (lastEnd - vidEnd > 0.05) return '影片結束後還有其他素材';
@@ -179,15 +182,17 @@ class CompPlayer {
     TimelineModel tl, {
     bool texture = true,
     Set<int> mutedTracks = const {},
+    Set<int> hiddenTracks = const {},
     bool hdrOut = false,
   }) async {
     if (!await available) return null;
     // 裁切/旋轉/透明度不再是阻擋條件：原生端會為它們掛 CI 合成器，
-    // 直接烘進合成畫面（跟匯出同一套數學）
+    // 直接烘進合成畫面（跟匯出同一套數學）。
+    // 隱藏軌整條排除（畫面與聲音都不進，跟匯出一致）
     final vids =
         [
           for (final c in tl.clips)
-            if (tl.sourceOf(c).isVideo) c,
+            if (tl.sourceOf(c).isVideo && !hiddenTracks.contains(c.track)) c,
         ]..sort((a, b) {
           final t = a.offset.compareTo(b.offset);
           return t != 0 ? t : a.track.compareTo(b.track);
@@ -264,6 +269,7 @@ class CompPlayer {
     for (final c in tl.clips) {
       final src = tl.sourceOf(c);
       if (src.kind != ClipKind.mosaic) continue;
+      if (hiddenTracks.contains(c.track)) continue; // 隱藏軌不打碼
       if (c.offset >= compEnd) continue; // 整塊都在影片之後：沒東西可糊
       final ms = src.mosaicStyle ?? MosaicStyle();
       mosaics.add({
@@ -290,6 +296,7 @@ class CompPlayer {
     final stills = <Map<String, dynamic>>[];
     for (final c in tl.clips) {
       if (!baked.contains(c.id)) continue;
+      if (hiddenTracks.contains(c.track)) continue; // 隱藏軌不烘
       if (c.offset >= compEnd) continue;
       final src = tl.sourceOf(c);
       stills.add({

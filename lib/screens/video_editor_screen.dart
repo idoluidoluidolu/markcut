@@ -579,15 +579,28 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 靜音的軌道（點軌道標籤的喇叭切換）
   final Set<int> _mutedTracks = {};
 
-  /// 軌號被重編之後，把靜音狀態一起搬過去。
-  /// 不搬的話靜音會落在別軌，而且匯出時是照這個集合把音量寫成 0，
-  /// 成品的聲音會跟預覽不一樣
+  /// 關閉顯示的軌道（點軌道標籤的眼睛切換）。
+  /// 關掉＝這一軌整條從預覽「和匯出」消失（畫面與聲音都不進），
+  /// 所見即所得；時間軸上照樣看得到、可以編輯
+  final Set<int> _hiddenTracks = {};
+
+  /// 軌號被重編之後，把靜音／隱藏狀態一起搬過去。
+  /// 不搬的話會落在別軌，而且匯出是照這兩個集合處理的，
+  /// 成品會跟預覽不一樣
   void _remapMuted(Map<int, int> map) {
-    if (_mutedTracks.isEmpty || map.isEmpty) return;
-    final moved = _mutedTracks.map((k) => map[k] ?? k).toSet();
-    _mutedTracks
-      ..clear()
-      ..addAll(moved);
+    if (map.isEmpty) return;
+    if (_mutedTracks.isNotEmpty) {
+      final moved = _mutedTracks.map((k) => map[k] ?? k).toSet();
+      _mutedTracks
+        ..clear()
+        ..addAll(moved);
+    }
+    if (_hiddenTracks.isNotEmpty) {
+      final moved = _hiddenTracks.map((k) => map[k] ?? k).toSet();
+      _hiddenTracks
+        ..clear()
+        ..addAll(moved);
+    }
   }
 
   // ===== 復原 / 重做 =====
@@ -626,6 +639,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       'fps': _fps,
       'hdrOut': _exportHdr,
       'mutedTracks': _mutedTracks.toList(),
+      'hiddenTracks': _hiddenTracks.toList(),
       'wmStart': _wmStart,
       'wmEnd': _wmEnd,
       'wm': wm,
@@ -698,6 +712,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         _mutedTracks
           ..clear()
           ..addAll([for (final t in (j['mutedTracks'] as List)) t as int]);
+      }
+      if (j['hiddenTracks'] is List) {
+        _hiddenTracks
+          ..clear()
+          ..addAll([for (final t in (j['hiddenTracks'] as List)) t as int]);
       }
       _wmStart = (j['wmStart'] ?? 0).toDouble();
       _wmEnd = j['wmEnd'] == null ? null : (j['wmEnd'] as num).toDouble();
@@ -1099,6 +1118,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 匯出音量跟著使用者記憶中的設定不同
       'muted': _fsMuted,
       'mutedTracks': _mutedTracks.toList(),
+      'hiddenTracks': _hiddenTracks.toList(),
       'wm': _settings.toJson(),
       'wmStart': _wmStart,
       'wmEnd': _wmEnd,
@@ -1163,6 +1183,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 整軌靜音是烘進合成的音量參數的，切了要重組——不記的話
     // 預覽照樣有聲音，匯出卻是靜音的（匯出另外走自己的靜音處理）
     'mute${(_mutedTracks.toList()..sort()).join(',')}',
+    // 隱藏軌會改變合成的內容（整軌不進 payload），指紋要記
+    'hide${(_hiddenTracks.toList()..sort()).join(',')}',
     // HDR 輸出開關：預覽管線跟著它切（HDR 素材播原檔 vs 工作檔）
     'hdrOut${_exportHdr && _hdrAvail == true}',
   ].join(';');
@@ -1371,6 +1393,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _mutedTracks
         ..clear()
         ..addAll([for (final t in (j['mutedTracks'] as List)) t as int]);
+    }
+    if (j['hiddenTracks'] is List) {
+      _hiddenTracks
+        ..clear()
+        ..addAll([for (final t in (j['hiddenTracks'] as List)) t as int]);
     }
     _fps = ((j['fps'] ?? 0) as num).toInt();
     _exportHdr = (j['hdrOut'] ?? true) == true;
@@ -5443,7 +5470,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 合成播放器、重建每個片段的播放器，那一下就是使用者說的
     //「第一次拉會頓一下、閃一下才開始變色」。改成進調色時就先換好，
     // 手指還在往滑桿移動的那段時間把它做完
-    final why = _colorMode ? '調色模式' : CompPlayer.whyNot(_tl);
+    final why = _colorMode
+        ? '調色模式'
+        : CompPlayer.whyNot(_tl, hiddenTracks: _hiddenTracks);
     _compWhyNot = why;
     if (why != null) {
       Diag.note('合成播放器用不了：$why');
@@ -5460,6 +5489,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tl,
       texture: !Diag.playerLayer.value,
       mutedTracks: _mutedTracks,
+      hiddenTracks: _hiddenTracks,
       // 匯出選「保留 HDR」＝預覽也走 HDR（跟成品同一個顯示管線）
       hdrOut: _exportHdr && _hdrAvail == true,
     );
@@ -6127,7 +6157,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   double _rawVolOf(TimelineClip clip) {
     // 專案靜音（見 _fsMuted）：素材本身的音量不動，關掉就回來
     if (_fsMuted) return 0;
-    final trackMute = _mutedTracks.contains(clip.track) ? 0.0 : 1.0;
+    // 隱藏軌在舊路徑至少要靜音（合成路整條已排除；退回逐片段
+    // 播放器時畫面藏不掉，聲音不能跟著漏出來）
+    final trackMute =
+        (_mutedTracks.contains(clip.track) ||
+            _hiddenTracks.contains(clip.track))
+        ? 0.0
+        : 1.0;
     // 倒轉的片段預覽時靜音：播放器只會正著播，聲音是反的內容，
     // 放出來只會干擾（匯出時會用 areverse 正確倒過來）
     final revMute = clip.reverse ? 0.0 : 1.0;
@@ -6513,12 +6549,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tl.clips.add(clip);
       // 搬到最底下那條空軌時不要收斂，否則會被拉回原本的層
       if (insert) {
-        // 插入時 t 以下的軌整批往下移一格，靜音要跟著搬
-        //（不然靜音會掉到別軌，匯出時那一軌的聲音也會被寫成 0）
+        // 插入時 t 以下的軌整批往下移一格，靜音／隱藏要跟著搬
+        //（不搬會掉到別軌，匯出是照這兩個集合處理的）
         final moved = _mutedTracks.map((k) => k >= t ? k + 1 : k).toSet();
         _mutedTracks
           ..clear()
           ..addAll(moved);
+        final movedHide = _hiddenTracks.map((k) => k >= t ? k + 1 : k).toSet();
+        _hiddenTracks
+          ..clear()
+          ..addAll(movedHide);
       }
       if (insert || t < oldUsed) _remapMuted(_tl.compactTracks());
       // 插入/收斂會重編軌號，選取的軌道指不準了——直接清掉
@@ -7140,6 +7180,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _pushUndo();
       setState(() {
         _mutedTracks.remove(track);
+        _hiddenTracks.remove(track);
         _remapMuted(_tl.removeTrack(track));
         _sel = -1;
         _selTrack = -1;
@@ -7160,6 +7201,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     setState(() {
       // 被刪那一軌的靜音狀態要拿掉，下面遞補上來的軌則跟著搬
       _mutedTracks.remove(track);
+      _hiddenTracks.remove(track);
       _remapMuted(_tl.removeTrack(track));
       _sel = -1;
       _selTrack = -1;
@@ -7262,6 +7304,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_tl.onTrack(track).isEmpty && track < _tl.usedTracks) {
       setState(() {
         _mutedTracks.remove(track);
+        _hiddenTracks.remove(track);
         _remapMuted(_tl.removeTrack(track));
         if (_selTrack == track) _selTrack = -1;
       });
@@ -7662,6 +7705,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 文字圖層：每個片段渲染一張（位置/縮放/樣式烘進 PNG）
       final overlayPngs = <int, Uint8List>{};
       for (final c in _tl.clips) {
+        // 隱藏軌：整條不進成品（跟預覽一致）
+        if (_hiddenTracks.contains(c.track)) continue;
         final src = _tl.sources[c.sourceIndex];
         if (src.kind == ClipKind.text) {
           final st = (src.textStyle ?? TextMark(text: src.name)).copy()
@@ -7686,11 +7731,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         ExportSpec(
           sources: exportSources,
           clips: [
+            // 隱藏軌整條不進成品（畫面與聲音都不進，跟預覽一致）
             for (final c in _tl.clips)
-              c.copy()
-                ..volume = (_fsMuted || _mutedTracks.contains(c.track))
-                    ? 0
-                    : c.volume,
+              if (!_hiddenTracks.contains(c.track))
+                c.copy()
+                  ..volume = (_fsMuted || _mutedTracks.contains(c.track))
+                      ? 0
+                      : c.volume,
           ],
           timelineDuration: _tl.duration,
           speed: _speed,
@@ -9147,6 +9194,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   // 圖片 / 文字圖層（插進上面那條 z 序，
                                   // 位置由自己的軌道決定）
                                   for (final c in _tl.overlaysAt(_position)) {
+                                    // 隱藏軌：整條不畫（所見即所得，
+                                    // 匯出也一樣不進）
+                                    if (_hiddenTracks.contains(c.track)) {
+                                      continue;
+                                    }
                                     final src = _tl.sourceOf(c);
                                     if (src.kind == ClipKind.mosaic) {
                                       Rect r;
@@ -10216,10 +10268,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                 for (final c in _tl.overlaysAt(
                                                   _position,
                                                 ))
-                                                  if (_tl
-                                                          .sourceOf(c)
-                                                          .mosaicStroke !=
-                                                      null)
+                                                  if (!_hiddenTracks.contains(
+                                                        c.track,
+                                                      ) &&
+                                                      _tl
+                                                              .sourceOf(c)
+                                                              .mosaicStroke !=
+                                                          null)
                                                     (
                                                       pts: _tl
                                                           .sourceOf(c)
@@ -11049,6 +11104,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   // 合成播放器的音量是組合成時烘進去的，
                                   // 切靜音要重組一次才聽得到差別
                                   _compRefreshIfChanged();
+                                },
+                                hiddenTracks: _hiddenTracks,
+                                onToggleHidden: (t) {
+                                  setState(() {
+                                    if (!_hiddenTracks.remove(t)) {
+                                      _hiddenTracks.add(t);
+                                    }
+                                    _syncMedia();
+                                  });
+                                  // 隱藏是烘在合成內容裡的，切了要重組
+                                  _compRefreshIfChanged();
+                                  _saveDraft();
                                 },
                                 // 窄到擺不下修剪把手的片段：點一下自動
                                 // 放大。不然使用者只看到把手憑空不見，
