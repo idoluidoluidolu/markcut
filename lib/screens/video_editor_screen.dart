@@ -11671,11 +11671,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     ).whenComplete(_saveDraft);
   }
 
-  /// 音量：滑桿＋一鍵靜音＋套用到全部
+  /// 音量：滑桿＋點喇叭一鍵靜音
   void _openVolumeSheet(TimelineClip clip) {
     // 按靜音之前的音量，再按一次原音量回來
     var lastVol = clip.volume > 0 ? clip.volume : 1.0;
-    final audioCount = _tl.clips.where(_clipHasAudio).length;
     _optSheet('音量', (setSheet) {
       void setVol(double v) {
         setSheet(() {});
@@ -11723,29 +11722,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               ),
             ),
           ),
-          // 一段一段調太累：一鍵套到所有有聲音的素材
-          if (audioCount > 1)
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: () {
-                  setState(() {
-                    for (final c in _tl.clips) {
-                      if (!_clipHasAudio(c)) continue;
-                      c.volume = clip.volume;
-                      _ctrls[c.id]?.setVolume(c.volume.clamp(0.0, 1.0));
-                    }
-                  });
-                  showHint(
-                    context,
-                    '全部 $audioCount 個素材都設成 '
-                    '${(clip.volume * 100).round()}%',
-                  );
-                },
-                icon: const Icon(Icons.done_all, size: 16),
-                label: const Text('套用到全部素材', style: TextStyle(fontSize: 12)),
-              ),
-            ),
+          // 「套用到全部素材」已拿掉（使用者指定）：音量各段各調
         ],
       );
     });
