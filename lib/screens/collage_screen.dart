@@ -802,11 +802,7 @@ class _CollageScreenState extends State<CollageScreen> {
                 _stepper('欄', _cols, (v) => _setGrid(cols: v)),
                 const SizedBox(width: 10),
                 _stepper('列', _rows, (v) => _setGrid(rows: v)),
-                const Spacer(),
-                Text(
-                  '$_cellCount 格',
-                  style: const TextStyle(fontSize: 12, color: kTextDim),
-                ),
+                // 「N 格」不顯示（使用者指定）：欄×列本身就講完了
               ],
             ),
           ],
