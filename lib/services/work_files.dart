@@ -186,6 +186,24 @@ class WorkFiles {
     return await lookup(src) == work;
   }
 
+  /// 作廢一支壞掉的工作檔（索引移除＋檔案刪掉）。
+  /// 硬體編碼器被打掛（mediaserverd 重置）的窗口裡會吐出「只有
+  /// 聲音、沒有視訊軌」的殘廢檔，卻照樣回報成功——實測就是它
+  /// 讓合成長度變 0、播放跳針卡死。呼叫端驗出來就送來這裡
+  static Future<void> invalidate(String src) async {
+    if (kIsWeb) return;
+    try {
+      final idx = await _load();
+      final e = idx[src];
+      final work = (e is Map) ? e['work'] as String? : null;
+      if (idx.remove(src) != null) await _save();
+      if (work != null) {
+        final f = File(work);
+        if (f.existsSync()) await f.delete();
+      }
+    } catch (_) {}
+  }
+
   /// 確保這支素材有工作檔：已經有就直接回，沒有就轉一份。
   /// 轉不出來（平台不支援、格式怪、使用者取消）回 null，呼叫端用原檔
   static Future<String?> ensure(

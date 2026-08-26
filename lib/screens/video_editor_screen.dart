@@ -1458,6 +1458,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         } else if (s.workPath != null &&
             !await WorkFiles.stillValid(s.path, s.workPath!)) {
           s.workPath = null;
+        } else if (s.workPath != null && s.workPath != s.path) {
+          // 殘廢檔驗一次（沒有視訊軌的壞工作檔，見 _prepWorkFile
+          // 的出廠檢驗）：已經收進索引的壞檔要在這裡攔下來作廢
+          final lite = await MediaPrep.probeLite(s.workPath!);
+          final ok =
+              lite != null &&
+              lite['error'] == null &&
+              ((lite['w'] as num?) ?? 0) > 0;
+          if (!ok) {
+            Diag.note('草稿的工作檔沒有畫面，作廢重轉：${s.name}');
+            await WorkFiles.invalidate(s.path);
+            s.workPath = null;
+          }
         }
         // HDR 代理：檔案在不在＋索引裡還認不認（v106 那批轉壞的
         // 代理換了索引 key 整批作廢，草稿路徑不能繞過）
@@ -1843,7 +1856,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     required int track,
     String? name,
   }) async {
-    final dur = c.value.duration.inMilliseconds / 1000.0;
+    var dur = c.value.duration.inMilliseconds / 1000.0;
+    if (dur <= 0.05) {
+      // 播放器回報長度 0：多支並行初始化撞上編碼器風暴（媒體服務
+      // 重置）時會這樣——照收的話片段全變 0.1 秒小碎片疊成一團
+      //（實測回報：第二部之後都重疊）。改問容器中繼資料補救，
+      // 還是拿不到就略過這支並講清楚
+      final lite = await MediaPrep.probeLite(path);
+      final probed = ((lite?['durSec'] as num?) ?? 0).toDouble();
+      if (probed > 0.05) {
+        dur = probed;
+      } else {
+        if (mounted) {
+          showHint(context, '有一支影片讀不到長度，已略過', error: true);
+        }
+        return;
+      }
+    }
     final srcIndex = _tl.sources.length;
     _tl.sources.add(
       MediaSource(
@@ -2148,6 +2177,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _prepping.remove(srcIndex);
     _prepCur.remove(srcIndex);
     if (made == null || srcIndex >= _tl.sources.length) return;
+    // 出廠檢驗：媒體服務被重置（-11819）的窗口裡，硬體編碼器會吐出
+    // 「只有聲音、沒有視訊軌」的殘廢檔卻回報成功——這種檔一進合成，
+    // 合成長度直接變 0，播放跳針卡死、畫面全黑（實測診斷：三支
+    // 工作檔「沒有視訊軌」、長 0.0s）。驗到壞的就作廢，讓補試
+    // 機制（_prepRetried）重轉一次
+    if (made != src.path) {
+      final lite = await MediaPrep.probeLite(made);
+      final ok =
+          lite != null &&
+          lite['error'] == null &&
+          ((lite['w'] as num?) ?? 0) > 0;
+      if (!ok) {
+        Diag.note('工作檔沒有畫面（編碼器被重置吐出壞檔），作廢重轉：${src.name}');
+        await WorkFiles.invalidate(src.path);
+        return; // workPath 留空，_drainPrep 的補試會再排一次
+      }
+    }
+    if (!mounted || srcIndex >= _tl.sources.length) return;
     src.workPath = made;
     // 播放中絕對不換媒體。換播放器會 pause→重建→play，合成重組會換掉
     // AVPlayerItem——兩個都會把畫面重設回 seek 的位置，看起來就是

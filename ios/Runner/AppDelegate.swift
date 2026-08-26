@@ -4307,6 +4307,14 @@ final class CompPlayer: NSObject, FlutterTexture {
     }
     buildInfo["合成軌"] = vTracks.count
     buildInfo["usesVC"] = usesVC
+    // 長度 0＝合成是空的（多半是「沒有視訊軌」的壞工作檔混進來）。
+    // 照樣回報就緒的話，播放器抱著空合成跳針卡死、畫面全黑，
+    // 連看門狗重建都只會重建出同一份空的——直接判失敗，
+    // 讓呼叫端退回逐片段播放器
+    guard comp.duration.seconds > 0.05 else {
+      buildError = "合成長度為 0（可能有壞掉的工作檔，重進編輯器會自動重轉）"
+      return false
+    }
     composition = comp
     player.replaceCurrentItem(with: item)
 
