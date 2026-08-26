@@ -173,37 +173,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
         MaterialPageRoute(builder: (_) => WatermarkStudioScreen(edit: preset)),
       ).then((_) => _reload()),
       onLongPress: () => _confirmDeletePreset(preset),
-      child: SizedBox(
+      // 不放名字（使用者指定）：封面本身就是內容，名字進範本夾看
+      child: Container(
         width: w,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              width: w,
-              height: w,
-              clipBehavior: Clip.antiAlias,
-              decoration: BoxDecoration(
-                color: const Color(0xFF1B1B20),
-                borderRadius: BorderRadius.circular(18),
-              ),
-              child: IgnorePointer(
-                child: WatermarkLayer(
-                  settings: preset.settings,
-                  onChanged: () {},
-                ),
-              ),
-            ),
-            const SizedBox(height: 9),
-            Text(
-              preset.name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 13.5,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-          ],
+        height: w,
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          color: const Color(0xFF1B1B20),
+          borderRadius: BorderRadius.circular(18),
+        ),
+        child: IgnorePointer(
+          child: WatermarkLayer(settings: preset.settings, onChanged: () {}),
         ),
       ),
     );
@@ -229,35 +209,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
       context,
       MaterialPageRoute(builder: (_) => const WatermarkStudioScreen()),
     ).then((_) => _reload()),
-    child: SizedBox(
+    child: Container(
       width: w,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: w,
-            height: w,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: kLCard,
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: kLBorder, width: 1.4),
-            ),
-            child: const Text(
-              '＋',
-              style: TextStyle(
-                fontSize: 30,
-                color: Color(0xFFB0B0BA),
-                fontWeight: FontWeight.w300,
-              ),
-            ),
-          ),
-          const SizedBox(height: 9),
-          const Text(
-            '新增',
-            style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w800),
-          ),
-        ],
+      height: w,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: kLCard,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: kLBorder, width: 1.4),
+      ),
+      child: const Text(
+        '＋',
+        style: TextStyle(
+          fontSize: 30,
+          color: Color(0xFFB0B0BA),
+          fontWeight: FontWeight.w300,
+        ),
       ),
     ),
   );
@@ -481,21 +448,28 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ),
                       const SizedBox(height: 14),
                       // 範本跟草稿同一套兩欄流（使用者指定）：
-                      // 只放一排（使用者指定）：最新一組＋「新增」磚，
-                      // 其餘按「全部」進範本夾
+                      // 只放一排、優先放兩組範本（使用者指定）：
+                      // 不足兩組才用「新增」磚補位，其餘按「全部」
+                      // 進範本夾
                       Padding(
                         padding: _side,
                         child: LayoutBuilder(
                           builder: (context, cons) {
                             final colW = (cons.maxWidth - 10) / 2;
+                            final tiles = <Widget>[
+                              for (final pr in _presets.take(2))
+                                _presetTile(pr, w: colW),
+                            ];
+                            if (tiles.length < 2) {
+                              tiles.add(_presetAddTile(w: colW));
+                            }
                             return Row(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                if (_presets.isNotEmpty) ...[
-                                  _presetTile(_presets.first, w: colW),
-                                  const SizedBox(width: 10),
+                                for (var i = 0; i < tiles.length; i++) ...[
+                                  if (i > 0) const SizedBox(width: 10),
+                                  tiles[i],
                                 ],
-                                _presetAddTile(w: colW),
                               ],
                             );
                           },
