@@ -1567,11 +1567,27 @@ class WatermarkPanelState extends State<WatermarkPanel> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              '選擇範本',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+            Row(
+              children: [
+                const Text(
+                  '選擇範本',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+                ),
+                const Spacer(),
+                // 新增釘在標題列（使用者指定）：範本一多，
+                // 排在瀑布流尾端要捲半天才找得到
+                TextButton.icon(
+                  onPressed: () {
+                    Navigator.pop(context);
+                    setState(() => _presetSel = null);
+                    showHint(context, '調好浮水印後，按下方「儲存範本」');
+                  },
+                  icon: const Icon(Icons.add, size: 17),
+                  label: const Text('新增範本', style: TextStyle(fontSize: 12.5)),
+                ),
+              ],
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 6),
             // 兩欄瀑布流：卡片照各自的設計比例（跟範本管理頁同款）
             Flexible(
               child: Builder(
@@ -1602,10 +1618,17 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                       1 / a,
                     );
                   }
-                  put(
-                    AspectRatio(aspectRatio: 16 / 10, child: _addPresetCard()),
-                    10 / 16,
-                  );
+                  // 新增卡只在完全沒有範本時當入口；有範本時
+                  // 新增在標題列（sticky，不用捲到底找）
+                  if (_presets.isEmpty) {
+                    put(
+                      AspectRatio(
+                        aspectRatio: 16 / 10,
+                        child: _addPresetCard(),
+                      ),
+                      10 / 16,
+                    );
+                  }
                   return SingleChildScrollView(
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,

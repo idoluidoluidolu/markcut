@@ -974,44 +974,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
     return cols;
   }
 
-  /// chip 的日期：今天/昨天講人話，更早的用 8/22 這種短格式
-  static String _chipDate(DateTime t) {
-    final now = DateTime.now();
-    final d0 = DateTime(now.year, now.month, now.day);
-    final d = DateTime(t.year, t.month, t.day);
-    final diff = d0.difference(d).inDays;
-    if (diff <= 0) return '今天';
-    if (diff == 1) return '昨天';
-    return '${t.month}/${t.day}';
-  }
-
-  static String _mmss(double sec) {
-    final s = sec.round();
-    return '${(s ~/ 60).toString().padLeft(2, '0')}:'
-        '${(s % 60).toString().padLeft(2, '0')}';
-  }
-
-  /// 封面角落的小標（日期、時長共用一款）。
-  /// 固定高＋置中＋行高 1.0：預設行高會讓數字在膠囊裡偏下
-  static Widget _cornerChip(String text) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 6),
-    height: 17,
-    alignment: Alignment.center,
-    decoration: BoxDecoration(
-      color: Colors.black.withValues(alpha: 0.55),
-      borderRadius: BorderRadius.circular(5),
-    ),
-    child: Text(
-      text,
-      style: const TextStyle(
-        fontSize: 10,
-        height: 1.0,
-        color: Colors.white,
-        fontFeatures: [FontFeature.tabularFigures()],
-      ),
-    ),
-  );
-
   Widget _draftTile(DraftMeta m) {
     final cover = _covers[m.id];
     final picked = _picked.contains(m.id);
@@ -1042,17 +1004,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
                       color: kLAccent,
                     ),
                   ),
-                Positioned(
-                  left: 6,
-                  top: 6,
-                  child: _cornerChip(_chipDate(m.savedAt)),
-                ),
-                if (m.duration > 0.05)
-                  Positioned(
-                    right: 6,
-                    bottom: 6,
-                    child: _cornerChip(_mmss(m.duration)),
-                  ),
+                // 不放日期/時長角標（使用者指定）：封面本身就是內容
                 // 選取模式：整張壓暗＋右上角勾勾
                 if (_selecting) ...[
                   ColoredBox(

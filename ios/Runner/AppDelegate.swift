@@ -840,7 +840,22 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             mzIdx += 1
           }
           for ov in ins.overlays {
-            if let o = ov.frame(at: t, canvas: size) {
+            if var o = ov.frame(at: t, canvas: size) {
+              if self.hdrOut {
+                // HDR 輸出：疊加物（文字/浮水印/貼圖）在線性光提亮
+                // 一檔（×2）。SDR 白疊在 HDR 畫面上只有基準白
+                //（~203 尼特），旁邊高光動輒上千尼特，使用者挑的
+                // 「白色」看起來就是灰的（實測回報：成品顏色跟挑的
+                // 差很多）。提一檔後視覺上才是挑的那個顏色；
+                // 預覽與匯出同一段程式碼，兩邊一起亮
+                o = o.applyingFilter(
+                  "CIColorMatrix",
+                  parameters: [
+                    "inputRVector": CIVector(x: 2, y: 0, z: 0, w: 0),
+                    "inputGVector": CIVector(x: 0, y: 2, z: 0, w: 0),
+                    "inputBVector": CIVector(x: 0, y: 0, z: 2, w: 0),
+                  ])
+              }
               out = o.composited(over: out)
             }
           }
