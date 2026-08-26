@@ -106,27 +106,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (mounted) setState(() {});
   }
 
-  /// 存檔時間講人話：剛剛／N 分鐘前／今天 HH:mm／M/D
-  String _whenOf(Map<String, dynamic> j) {
-    final raw = j['savedAt'];
-    if (raw is! String) return '';
-    final t = DateTime.tryParse(raw);
-    return t == null ? '' : _whenLabel(t);
-  }
-
-  /// 建立時間，當草稿的名字用（草稿沒有名字，見 DraftStore）
-  String _dateLabel(DateTime t) => dateLabel(t);
-
-  /// 存檔時間講人話：剛剛／N 分鐘前／今天 HH:mm／M/D
-  String _whenLabel(DateTime t) {
-    final d = DateTime.now().difference(t);
-    if (d.inMinutes < 1) return '剛剛';
-    if (d.inMinutes < 60) return '${d.inMinutes} 分鐘前';
-    if (d.inHours < 24) return '${d.inHours} 小時前';
-    if (d.inDays == 1) return '昨天';
-    return '${t.month}/${t.day}';
-  }
-
   // ── 區塊標題：一行大粗字，右邊放次要資訊 ────────────────────
   // 點「標題」或右邊的「全部」都能進該區的總覽（使用者指定），
   // 所以整列包一個 GestureDetector，不是只有右邊的小字能點
@@ -236,10 +215,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
   /// 本來是「白卡包著一塊灰底、灰底裡再放縮圖」——兩層框、三種底色，
   /// 而畫面上真正有資訊的只有縮圖。拿掉外框之後縮圖可以直接鋪滿，
   /// 也就是相簿、專案列表那種長相
+  /// 卡片不寫時間（使用者指定）：影片草稿只留封面；照片/批次草稿
+  /// 沒有縮圖，留一行說明字不然認不出是什麼
   Widget _draftTile({
     required Widget cover,
-    required String title,
-    required String when,
+    String? title,
     required VoidCallback onTap,
   }) => GestureDetector(
     onTap: onTap,
@@ -258,15 +238,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
             child: cover,
           ),
         ),
-        const SizedBox(height: 9),
-        Text(
-          title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w800),
-        ),
-        const SizedBox(height: 2),
-        Text(when, style: const TextStyle(fontSize: 11.5, color: kLTextDim)),
+        if (title != null) ...[
+          const SizedBox(height: 9),
+          Text(
+            title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w800),
+          ),
+        ],
       ],
     ),
   );
@@ -328,8 +308,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   size: 26,
                   color: Color(0xFFAFAFBB),
                 ),
-          title: _dateLabel(m.createdAt),
-          when: _whenLabel(m.savedAt),
           onTap: () => _openDraft(m),
         ),
       if (p != null)
@@ -342,7 +320,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
             color: Color(0xFFAFAFBB),
           ),
           title: '未完成的照片',
-          when: _whenOf(p),
           onTap: _openDrafts,
         ),
       if (_batchDraft != null)
@@ -353,7 +330,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
             color: Color(0xFFAFAFBB),
           ),
           title: '未完成的批次浮水印',
-          when: _whenOf(_batchDraft!),
           onTap: _openDrafts,
         ),
     ];
