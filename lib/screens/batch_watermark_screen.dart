@@ -317,7 +317,19 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       desc = await ui.ImageDescriptor.encoded(buf);
       return (desc.width, desc.height);
     } catch (_) {
-      return null;
+      // web 的 ImageDescriptor 會丟例外——整段被外層 catch 吞掉、
+      // 尺寸永遠量不到，畫布退到 16:9 預設（實測回報：批次的
+      // 直片畫布永遠是橫的）。退回逐格解碼，每個平台都通
+      try {
+        final codec = await ui.instantiateImageCodec(bytes);
+        final fr = await codec.getNextFrame();
+        final d = (fr.image.width, fr.image.height);
+        fr.image.dispose();
+        codec.dispose();
+        return d;
+      } catch (_) {
+        return null;
+      }
     } finally {
       desc?.dispose();
       buf?.dispose();
@@ -410,10 +422,18 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
           // 尺寸問影片本身（像素數精確），但「方向」以縮圖為準：
           // 縮圖兩條抽取路都套過旋轉、一定是顯示方向；probe 的
           // 旋轉旗標讀歪時畫布會轉 90 度，影片看起來超出畫布
-          //（實測回報）。方向對不上就把 probe 的長寬對調
-          final info = await engine.probeVideoInfo(f.path);
-          var d = (info.w > 0 && info.h > 0) ? (info.w, info.h) : null;
-          final td = t.isNotEmpty ? await _dimsOf(t.first) : null;
+          //（實測回報）。方向對不上就把 probe 的長寬對調。
+          // 每一步各自 try：任何一步炸掉都不能讓「尺寸賦值」
+          // 被跳過——以前整段一個 catch，炸在中途畫布就永遠 16:9
+          (int, int)? d;
+          (int, int)? td;
+          try {
+            final info = await engine.probeVideoInfo(f.path);
+            if (info.w > 0 && info.h > 0) d = (info.w, info.h);
+          } catch (_) {}
+          try {
+            if (t.isNotEmpty) td = await _dimsOf(t.first);
+          } catch (_) {}
           if (d != null && td != null && td.$1 > 0 && td.$2 > 0) {
             final probePortrait = d.$1 < d.$2;
             final thumbPortrait = td.$1 < td.$2;
@@ -422,7 +442,24 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
               d = (d.$2, d.$1);
             }
           }
-          item.dims = d ?? td;
+          var dims = d ?? td;
+          if (dims == null) {
+            // 最後保底：跟單支編輯器同一招——開一顆播放器問尺寸
+            //（它回報的一定是顯示方向），問完即丟
+            try {
+              final c = makeVideoController(f.path, system: true);
+              try {
+                await c.initialize();
+                final s = c.value.size;
+                if (s.width > 0 && s.height > 0) {
+                  dims = (s.width.round(), s.height.round());
+                }
+              } finally {
+                c.dispose();
+              }
+            } catch (_) {}
+          }
+          item.dims = dims;
         } else {
           final bytes = await f.readAsBytes();
           item.dims = await _dimsOf(bytes);
