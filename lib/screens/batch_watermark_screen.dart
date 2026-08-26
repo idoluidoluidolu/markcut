@@ -229,7 +229,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
 
   /// 被選部件還活著嗎（存在、非平鋪）；不活一律當沒選
   WmPart get _wmPartAlive {
-    final st = _effectiveOf(_previewIndex);
+    final st = _editTarget;
     final t = st.text;
     final lg = st.logo;
     return switch (_wmPart) {
@@ -261,10 +261,8 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     _lastPush = now;
     // 連同「這一步是改哪一份設定」一起記：單張模式的上一步要還原到
     // 那一張的 override，還原到共用設定的話畫面完全沒反應
-    final target = _items[_previewIndex].override != null ? _previewIndex : -1;
-    _undoStack.add(
-      _UndoStep(target, jsonEncode(_effectiveOf(_previewIndex).toJson())),
-    );
+    final target = _singleNow ? _previewIndex : -1;
+    _undoStack.add(_UndoStep(target, jsonEncode(_editTarget.toJson())));
     if (_undoStack.length > 60) _undoStack.removeAt(0);
     _redoStack.clear(); // 改了新的東西，原本的重做路線就斷了
     setState(() {}); // 讓上一步鈕亮起來
@@ -272,8 +270,8 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
 
   /// 目前這一刻的快照（撤銷前先存起來，才回得去）
   _UndoStep get _snapshot => _UndoStep(
-    _items[_previewIndex].override != null ? _previewIndex : -1,
-    jsonEncode(_effectiveOf(_previewIndex).toJson()),
+    _singleNow ? _previewIndex : -1,
+    jsonEncode(_editTarget.toJson()),
   );
 
   /// 把一筆快照套回去
@@ -540,36 +538,44 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   /// 這張實際生效的設定（有單張覆寫用覆寫，否則整批共用）
   WatermarkSettings _effectiveOf(int i) => _items[i].override ?? _settings;
 
+  /// 編輯範圍開關：true＝現在調的是「這一張」（前提是它有 override）。
+  /// 跟「有沒有 override」拆開：切回整批不會丟掉單張的覆寫
+  ///（使用者指定「更動不會改掉、整批就調整剩下其他的」），
+  /// 只是編輯目標換回共用設定
+  bool _editSingle = false;
+
+  /// 這一刻是不是真的在單張模式（有覆寫且開關開著）
+  bool get _singleNow => _editSingle && _items[_previewIndex].override != null;
+
+  /// 目前編輯的目標（面板、預覽拖曳、捏合都綁它）
+  WatermarkSettings get _editTarget =>
+      _singleNow ? _items[_previewIndex].override! : _settings;
+
   /// 切成「單張模式」：把目前生效的設定複製成這張自己的，
   /// 之後怎麼調都不影響其他張。只由預覽下方的範圍開關觸發——
   /// 以前預覽上一動手就自動切，使用者以為在調整批（實測回報）
   void _ensureOverride() {
     final item = _items[_previewIndex];
-    if (item.override != null) return;
-    item.override = _settings.copy();
-    setState(() => _sync++); // 面板換綁到 override，內部狀態要重新同步
+    item.override ??= _settings.copy();
+    setState(() {
+      _editSingle = true;
+      _sync++; // 面板換綁到 override，內部狀態要重新同步
+    });
     showHint(context, '已切換為單張調整，只影響這一張');
   }
 
-  /// 範圍開關：整批 ↔ 單張
+  /// 範圍開關：整批 ↔ 單張。切回整批「不會」丟掉這張的單獨調整
+  ///（使用者指定），只是之後的編輯落到共用設定（影響其他張）
   Future<void> _toggleScope() async {
-    final item = _items[_previewIndex];
-    if (item.override == null) {
+    if (!_singleNow) {
       _ensureOverride();
       return;
     }
-    final ok = await showConfirm(
-      context,
-      title: '回到整批調整？',
-      message: '這張單獨調過的部分會被丟掉，改用整批共用的設定',
-      action: '回到整批',
-    );
-    if (!ok || !mounted) return;
     setState(() {
-      item.override = null;
+      _editSingle = false;
       _sync++;
     });
-    showHint(context, '已還原成整批設定');
+    showHint(context, '回到整批調整（這張的單獨調整保留）');
   }
 
   // ===== 預覽區雙指縮放浮水印（跟照片編輯同一套）=====
@@ -590,7 +596,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     // 按上一步就會把值寫回共用設定＝預覽完全沒反應
     // 不再自動切單張：沒開開關就是調整批（見 _toggleScope）
     _btUndoPending = true; // 真的縮到才拍（見 _btPushUndoIfNeeded）
-    final eff = _effectiveOf(_previewIndex);
+    final eff = _editTarget;
     _pvBaseText = eff.text.sizeFrac;
     _pvBaseLogo = eff.logo.sizeFrac;
   }
@@ -649,7 +655,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     final f = (p[0] - p[1]).distance / _pvBaseDist!;
     _btPushUndoIfNeeded(); // 真的縮到東西了才拍快照
     setState(() {
-      final eff = _effectiveOf(_previewIndex);
+      final eff = _editTarget;
       final t = eff.text;
       final hasText = t.enabled && t.text.trim().isNotEmpty;
       final hasLogo = eff.logo.enabled;
@@ -932,9 +938,6 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     final aspect = dims == null
         ? 16 / 9
         : dims.$1 / (dims.$2 == 0 ? 1 : dims.$2);
-    // 實際偵測到的畫布尺寸（左下小字）：使用者回報「畫布比例不對」
-    // 時，一眼分辨是片源本來就這樣、還是探測讀歪了
-    final dimsLabel = dims == null ? '尺寸讀取中…' : '${dims.$1}×${dims.$2}';
     // 鍵盤打開時把預覽、縮圖列、底欄全收起來：不收的話面板被擠成
     // 一條縫，文字輸入框整個藏在鍵盤後面（實測回報）
     final kbOpen = MediaQuery.of(context).viewInsets.bottom > 60;
@@ -986,7 +989,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                                     fit: BoxFit.contain,
                                   ),
                                 WatermarkLayer(
-                                  settings: _effectiveOf(_previewIndex),
+                                  settings: _editTarget,
                                   // 選取框畫在裁切外（見 _wmFrameInfo）
                                   frameNotifier: _wmFrameInfo,
                                   onChanged: () => setState(() {}),
@@ -1110,35 +1113,29 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                         vertical: 4,
                       ),
                       decoration: BoxDecoration(
-                        color: _items[_previewIndex].override != null
+                        color: _singleNow
                             ? kSelect.withValues(alpha: 0.15)
                             : kPanelHi,
                         borderRadius: BorderRadius.circular(999),
                         border: Border.all(
-                          color: _items[_previewIndex].override != null
-                              ? kSelect
-                              : kBorder,
+                          color: _singleNow ? kSelect : kBorder,
                         ),
                       ),
                       child: Text(
-                        _items[_previewIndex].override != null
-                            ? '單張調整中'
-                            : '整批調整中',
+                        _singleNow ? '單張調整' : '整批調整',
                         style: TextStyle(
                           fontSize: 11.5,
                           fontWeight: FontWeight.w600,
-                          color: _items[_previewIndex].override != null
-                              ? kSelect
-                              : kTextDim,
+                          color: _singleNow ? kSelect : kTextDim,
                         ),
                       ),
                     ),
                   ),
                   const SizedBox(width: 8),
-                  // 這一張偵測到的畫布尺寸：回報「比例不對」時
-                  // 一眼分辨是片源本來就這樣還是探測讀歪
+                  // 提示這顆是開關（使用者指定）：點了在整批/單張
+                  // 之間切換；單張的調整永遠保留
                   Text(
-                    dimsLabel,
+                    _singleNow ? '只調這張，點一下改回整批' : '點一下改為只調這張',
                     style: const TextStyle(fontSize: 10.5, color: kTextDim),
                   ),
                 ],
@@ -1302,7 +1299,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                     // 綁「這張實際生效的設定」：單張模式下要改的是那張的
                     // override，綁 _settings 的話面板改了預覽不動、
                     // 其他張反而被改到
-                    settings: _effectiveOf(_previewIndex),
+                    settings: _editTarget,
                     // 剛加的圖片直接選起來，可以馬上拖／縮放
                     onLogoAdded: () => setState(() => _wmPart = WmPart.logo),
                     onChanged: () => setState(() {}),
