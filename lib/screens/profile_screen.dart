@@ -455,16 +455,31 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       // 26 疊起來，範本跟 GIF 的間隔比別區大一倍）
                       const SizedBox(height: 26),
                       // GIF 做好會存一份在 App 裡（相簿那份跟幾千張
-                      // 照片混在一起，要拿它當素材根本找不到）
-                      if (_gifs.isNotEmpty) ...[
-                        Padding(
-                          padding: _side,
-                          child: _sectionTitle(
-                            '我的 GIF',
-                            trailing: '全部',
-                            onTap: _openGifs,
-                          ),
+                      // 照片混在一起，要拿它當素材根本找不到）。
+                      // 空的時候區塊留著（使用者指定）：標題＋一行
+                      // 灰字，跟草稿的空狀態同一套
+                      Padding(
+                        padding: _side,
+                        child: _sectionTitle(
+                          '我的 GIF',
+                          trailing: _gifs.isEmpty ? null : '全部',
+                          onTap: _gifs.isEmpty ? null : _openGifs,
                         ),
+                      ),
+                      if (_gifs.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.only(top: 16, bottom: 4),
+                          child: Center(
+                            child: Text(
+                              '還沒有 GIF',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Color(0xFFA8A8B4),
+                              ),
+                            ),
+                          ),
+                        )
+                      else ...[
                         const SizedBox(height: 14),
                         SizedBox(
                           height: 96,
@@ -488,10 +503,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             ),
                           ),
                         ),
-                        // 跟下面那一區隔開，不然「草稿」會黏在
-                        // GIF 那排的下緣上
-                        const SizedBox(height: 26),
                       ],
+                      // 跟下面那一區隔開，不然「草稿」會黏在
+                      // GIF 那排的下緣上
+                      const SizedBox(height: 26),
                       Padding(
                         padding: _side,
                         child: _sectionTitle(
