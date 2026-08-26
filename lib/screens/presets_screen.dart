@@ -272,12 +272,17 @@ class _PresetsScreenState extends State<PresetsScreen> {
                       1 / a,
                     );
                   }
-                  put(
-                    AspectRatio(aspectRatio: 16 / 10, child: _addCard()),
-                    10 / 16,
-                  );
+                  if (_presets.isEmpty) {
+                    // 空的時候至少給一張入口卡，不然整頁空白
+                    // 只剩右下角一顆 +
+                    put(
+                      AspectRatio(aspectRatio: 16 / 10, child: _addCard()),
+                      10 / 16,
+                    );
+                  }
                   return SingleChildScrollView(
-                    padding: const EdgeInsets.all(14),
+                    // 底部多留一段：最後一張卡不被浮動 + 蓋住
+                    padding: const EdgeInsets.fromLTRB(14, 14, 14, 96),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -289,6 +294,15 @@ class _PresetsScreenState extends State<PresetsScreen> {
                   );
                 },
               ),
+        // 新增改成右下角浮動黑圓 +（使用者指定）：清單裡不再
+        // 混一張「新增卡」
+        floatingActionButton: FloatingActionButton(
+          onPressed: _addNew,
+          backgroundColor: Colors.black,
+          foregroundColor: Colors.white,
+          shape: const CircleBorder(),
+          child: const Icon(Icons.add, size: 28),
+        ),
       ),
     );
   }
