@@ -11726,7 +11726,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           const Padding(
             padding: EdgeInsets.only(left: 2, top: 2),
             child: Text(
-              '點「音量」可以直接靜音，再點一下復原',
+              '點選「音量」可以直接靜音',
               style: TextStyle(fontSize: 10.5, color: kTextDim),
             ),
           ),
