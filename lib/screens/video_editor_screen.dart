@@ -8784,9 +8784,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         ),
                                       ),
                                     );
-                                    // 重烘空窗：一律「素材載入中」
-                                    // 膠囊（SDR/HDR 同一套；筆刷模式
-                                    // 有自己的遮罩預覽，不疊膠囊）
+                                    // 重烘空窗：右上角一顆轉圈小點
+                                    //（D 案，使用者選定）——不壓暗、
+                                    // 不擋畫面中心，看得到自己在調什麼。
+                                    // SDR/HDR 同一套；筆刷模式有自己的
+                                    // 遮罩預覽，不疊
                                     if (!_vBrushMode &&
                                         _compOn &&
                                         !_playing &&
@@ -8795,49 +8797,28 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       _kickStaleRebuild();
                                       addLayer(
                                         vidTrack,
-                                        Positioned.fromRect(
-                                          rect: rect,
+                                        Positioned(
+                                          left: rect.right - 32,
+                                          top: rect.top + 8,
                                           child: IgnorePointer(
                                             child: Container(
+                                              width: 24,
+                                              height: 24,
                                               alignment: Alignment.center,
-                                              color: Colors.black.withValues(
-                                                alpha: 0.25,
+                                              decoration: BoxDecoration(
+                                                color: Colors.black.withValues(
+                                                  alpha: 0.6,
+                                                ),
+                                                shape: BoxShape.circle,
                                               ),
-                                              child: Container(
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                      horizontal: 14,
-                                                      vertical: 8,
+                                              child: const SizedBox(
+                                                width: 12,
+                                                height: 12,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                      strokeWidth: 1.8,
+                                                      color: Colors.white,
                                                     ),
-                                                decoration: BoxDecoration(
-                                                  color: Colors.black
-                                                      .withValues(alpha: 0.7),
-                                                  borderRadius:
-                                                      BorderRadius.circular(16),
-                                                ),
-                                                child: const Row(
-                                                  mainAxisSize:
-                                                      MainAxisSize.min,
-                                                  children: [
-                                                    SizedBox(
-                                                      width: 14,
-                                                      height: 14,
-                                                      child:
-                                                          CircularProgressIndicator(
-                                                            strokeWidth: 2,
-                                                            color: kAmber,
-                                                          ),
-                                                    ),
-                                                    SizedBox(width: 8),
-                                                    Text(
-                                                      '素材載入中…',
-                                                      style: TextStyle(
-                                                        fontSize: 12,
-                                                        color: Colors.white,
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
                                               ),
                                             ),
                                           ),
