@@ -901,24 +901,72 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   /// 這裡不列檔案大小——一批裡每個檔案的長度與尺寸都不一樣，
   /// 加總出來的數字只會誤導
   Future<bool> _askQuality() async {
+    // 每個選項卡片化（有框、像按鈕）：以前是純文字列，使用者
+    // 不知道「點一個就會開始輸出」（實測回報）。點卡＝選定並繼續
     final picked = await showDialog<ExportQuality>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('畫質'),
-        contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
+        contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
         content: SizedBox(
           width: 270,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              for (final (i, q) in qualityOrder.indexed)
-                optionRow(
-                  context: context,
-                  title: q.label,
-                  subtitle: q.note,
-                  selected: _quality == q,
-                  first: i == 0,
-                  onTap: () => Navigator.pop(context, q),
+              for (final q in qualityOrder)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: () => Navigator.pop(context, q),
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                      decoration: BoxDecoration(
+                        color: _quality == q
+                            ? kSelect.withValues(alpha: 0.08)
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: _quality == q ? kSelect : kClipBorder,
+                          width: _quality == q ? 1.5 : 1,
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Text(
+                                q.label,
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w700,
+                                  color: _quality == q ? kSelect : kText,
+                                ),
+                              ),
+                              if (_quality == q) ...[
+                                const SizedBox(width: 6),
+                                const Icon(
+                                  Icons.check,
+                                  size: 15,
+                                  color: kSelect,
+                                ),
+                              ],
+                            ],
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            q.note,
+                            style: const TextStyle(
+                              fontSize: 11.5,
+                              color: kTextDim,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
             ],
           ),
