@@ -145,19 +145,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
             Expanded(
               child: Text(
                 title,
+                // 區塊標題是「次標」：降到 15.5/w700，讓頁面大標
+                // 獨大（實測回報：標題整個都太大、沒有主次）
                 style: const TextStyle(
-                  fontSize: 21,
-                  fontWeight: FontWeight.w900,
+                  fontSize: 15.5,
+                  fontWeight: FontWeight.w700,
                   height: 1.1,
                 ),
               ),
             ),
             if (trailing != null)
               Padding(
-                padding: const EdgeInsets.only(bottom: 3, left: 12),
+                padding: const EdgeInsets.only(bottom: 1, left: 12),
                 child: Text(
                   trailing,
-                  style: const TextStyle(fontSize: 12.5, color: kLTextDim),
+                  style: const TextStyle(fontSize: 11.5, color: kLTextDim),
                 ),
               ),
           ],
@@ -423,26 +425,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Padding(
-                        padding: const EdgeInsets.only(left: 8, bottom: 4),
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: IconButton(
-                            onPressed: () => Navigator.maybePop(context),
-                            // tooltip 'Back'：跟系統返回鈕同語意，
-                            // 無障礙與測試（pageBack）都認得
-                            tooltip: 'Back',
-                            icon: const Icon(Icons.arrow_back_ios_new),
-                          ),
-                        ),
-                      ),
-                      // 頁面大標（C 案的層次感：大標壓陣，白底不動）
+                      // 頁面大標壓陣（返回不放按鈕：整頁右滑就能回，
+                      // 使用者指定拿掉）。主次：大標 26 獨大，
+                      // 區塊標題降到 15.5（見 _sectionTitle）
                       const Padding(
-                        padding: EdgeInsets.fromLTRB(22, 2, 22, 24),
+                        padding: EdgeInsets.fromLTRB(22, 10, 22, 22),
                         child: Text(
                           '我的東西',
                           style: TextStyle(
-                            fontSize: 27,
+                            fontSize: 26,
                             fontWeight: FontWeight.w900,
                             height: 1.1,
                           ),

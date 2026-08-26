@@ -93,7 +93,10 @@ void main() {
         if (backOut.evaluate().isNotEmpty) {
           await tester.tap(backOut.first);
         } else {
-          await tester.pageBack();
+          // 個人中心沒有返回鈕（整頁右滑返回），程式化退一頁
+          Navigator.of(
+            tester.element(find.byType(Scaffold).hitTestable().first),
+          ).maybePop();
         }
         await tester.pumpAndSettle();
         expect(
