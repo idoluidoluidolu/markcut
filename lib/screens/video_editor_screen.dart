@@ -427,9 +427,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 這份合成收不收即時疊加物（HDR 預覽且原生端掛了預覽合成器）
   bool get _ovLiveOn => _compOn && (_comp?.wmLive ?? false);
 
+  /// 拖曳快取幀蓋著畫面的期間（原檔直播、無工作檔才有）：
+  /// 快取幀是「沒有浮水印的原始影格」，烘進合成的浮水印被它蓋住
+  /// ——這段時間把 Flutter 版疊回去，浮水印才不會滑動中消失
+  ///（實測回報）。純 Flutter 合成，零效能成本
+  bool get _ovScrubPeek {
+    if (!_scrubbing) return false;
+    final cur = _tl.videoAt(_position, skipTracks: _hiddenTracks);
+    return cur != null && _tl.sourceOf(cur).workPath == null;
+  }
+
   /// Flutter 版疊加物要不要藏（原生烘好的在畫就藏——拖/縮/轉
   /// 全部走即時幾何，原生直接跟手，不再需要 Flutter 接手）
-  bool get _ovFlutterHidden => _ovLiveOn && _ovNativeShown;
+  bool get _ovFlutterHidden => _ovLiveOn && _ovNativeShown && !_ovScrubPeek;
 
   /// 時間軸上有沒有任何疊加物內容（決定合成要不要掛預覽合成器）
   bool get _ovAnyContent {
