@@ -553,7 +553,37 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     await _loadPresets();
     widget.onSaved?.call(); // 父層拿去重設「有沒有改過」的基準
     if (mounted) {
-      showHint(context, existed ? '已更新範本' : '已存成範本');
+      // 存成功用「視窗」講（使用者指定：toast 太容易錯過）
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.check_circle_outline, size: 34, color: kSelect),
+              const SizedBox(height: 10),
+              Text(
+                existed ? '已更新範本' : '已存成範本',
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                '之後在「範本」分頁或個人頁都找得到',
+                style: TextStyle(fontSize: 12, color: kTextDim),
+              ),
+            ],
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('好'),
+            ),
+          ],
+        ),
+      );
     }
   }
 
@@ -1614,7 +1644,8 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     ),
     icon: const Icon(Icons.bookmark_add_outlined, size: 18),
     label: Text(
-      _presetSel == null ? '儲存範本' : '儲存範本「$_presetSel」',
+      // 名稱只是內部的 key，不給使用者看（自動編號露出來很怪）
+      '儲存範本',
       style: const TextStyle(fontSize: 14),
     ),
   );

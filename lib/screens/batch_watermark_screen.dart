@@ -24,6 +24,7 @@ import '../services/watermark_renderer.dart';
 import '../theme.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
+import '../widgets/edge_back.dart';
 
 /// 批次浮水印：一次選多個檔案（照片/影片混合），
 /// 批次浮水印的草稿鍵（個人頁「未完成的批次」讀這裡）
@@ -511,6 +512,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
 
   /// 拿來呼叫面板的「存成範本」（按鈕搬到底部那一排了）
   final _panelKey = GlobalKey<WatermarkPanelState>();
+
+  /// 左緣返回手勢的畫布排除區（見 EdgeBack）
+  final _edgeCanvasKey = GlobalKey();
 
   // 大預覽只留「目前這一張」的高解析度，換張就換掉
   Uint8List? _previewBytes;
@@ -1147,440 +1151,450 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         }
         _confirmLeave();
       },
-      child: Scaffold(
-        appBar: _fsPreview ? null : AppBar(),
-        body: Column(
-          children: [
-            // 預覽：目前選中的檔案縮圖 + 浮水印圖層
-            if (!kbOpen)
-              Expanded(
-                flex: 4,
-                child: Listener(
-                  // 雙指縮放浮水印（跟照片編輯同一套，用 Listener 不搶單指拖曳）
-                  onPointerDown: _pinchDown,
-                  onPointerMove: _pinchMove,
-                  onPointerUp: (e) => _pinchUp(e.pointer),
-                  onPointerCancel: (e) => _pinchUp(e.pointer),
-                  child: Container(
-                    color: kPreviewBg,
-                    child: Stack(
-                      children: [
-                        Center(
-                          // 換檔案時整個預覽子樹重建，浮水印圖層不會殘留舊狀態
-                          child: KeyedSubtree(
-                            key: ValueKey(_previewIndex),
-                            child: AspectRatio(
-                              aspectRatio: aspect,
-                              child: Container(
-                                color: Colors.black,
-                                child: Stack(
-                                  fit: StackFit.expand,
-                                  // 不裁切：浮水印選取框要能畫到畫面外
-                                  clipBehavior: Clip.none,
-                                  children: [
-                                    // 大圖還在讀的時候先用小縮圖頂著，不要閃黑
-                                    if (_previewBytes != null)
-                                      Image.memory(
-                                        _previewBytes!,
-                                        fit: BoxFit.contain,
-                                        cacheWidth: 1280,
-                                        gaplessPlayback: true,
-                                      )
-                                    else if (_items[_previewIndex].thumb !=
-                                        null)
-                                      Image.memory(
-                                        _items[_previewIndex].thumb!,
-                                        fit: BoxFit.contain,
-                                      ),
-                                    WatermarkLayer(
-                                      settings: _editTarget,
-                                      // 選取框畫在裁切外（見 _wmFrameInfo）
-                                      frameNotifier: _wmFrameInfo,
-                                      onChanged: () => setState(() {}),
-                                      // 拖曳落在目前生效的設定上：
-                                      // 整批模式改整批、單張模式改這張（見開關）
-                                      onDragStart: _pushUndo,
-                                      selectedPart: _wmPartAlive,
-                                      onSelectPart: (p) {
-                                        setState(() => _wmPart = p);
-                                        _wmPanelCtrl.scrollTo(p);
-                                      },
-                                      panLocked: () => _pvPts.length >= 2,
-                                    ),
-                                    // 置中輔助線。無條件插入、不要用 if 增減：
-                                    // 線一出現會把後面手勢層的索引推掉，拖曳被
-                                    // 中斷後又從已吸附的中線重新開始，就再也
-                                    // 拖不出來了（其他三個編輯畫面同一種寫法）
-                                    Positioned.fill(
-                                      child: CenterGuides(
-                                        vertical: _btGuideV,
-                                        horizontal: _btGuideH,
-                                      ),
-                                    ),
-                                    // 浮水印選取框：畫在真實位置（拖出畫面也看得到）
-                                    Positioned.fill(
-                                      child: WmFrameOverlay(_wmFrameInfo),
-                                    ),
-                                    // 選取路由：有部件被選取時，整個預覽的拖曳
-                                    // 都只動被選的那個——手指滑過另一個部件
-                                    // 才不會把它一起拖走
-                                    if (_wmPartAlive != WmPart.none)
-                                      Positioned.fill(
-                                        child: LayoutBuilder(
-                                          builder: (context, box) =>
-                                              GestureDetector(
-                                                behavior:
-                                                    HitTestBehavior.translucent,
-                                                // 點空白＝取消選取（不取消的話另一個
-                                                // 部件會永遠拖不動）
-                                                onTap: _clearWmSel,
-                                                onPanStart: (_) {
-                                                  if (_pvPts.length >= 2) {
-                                                    return;
-                                                  }
-                                                  _btUndoPending = true;
-                                                  _btRawX = null;
-                                                  _btRawY = null;
-                                                },
-                                                onPanUpdate: (d) {
-                                                  if (_pvPts.length >= 2) {
-                                                    return;
-                                                  }
-                                                  _btPushUndoIfNeeded();
-                                                  final st = _effectiveOf(
-                                                    _previewIndex,
-                                                  );
-                                                  final part = _wmPartAlive;
-                                                  final mark =
-                                                      part == WmPart.text
-                                                      ? (
-                                                          x: st.text.x,
-                                                          y: st.text.y,
-                                                        )
-                                                      : (
-                                                          x: st.logo.x,
-                                                          y: st.logo.y,
-                                                        );
-                                                  if (part != WmPart.text &&
-                                                      part != WmPart.logo) {
-                                                    return;
-                                                  }
-                                                  // 累加在「未吸附」的原始座標上，
-                                                  // 顯示值才吸中線
-                                                  _btRawX ??= mark.x;
-                                                  _btRawY ??= mark.y;
-                                                  _btRawX =
-                                                      (_btRawX! +
-                                                              d.delta.dx /
-                                                                  box.maxWidth)
-                                                          .clamp(0.0, 1.0);
-                                                  _btRawY =
-                                                      (_btRawY! +
-                                                              d.delta.dy /
-                                                                  box.maxHeight)
-                                                          .clamp(0.0, 1.0);
-                                                  final sx = _snapC(_btRawX!);
-                                                  final sy = _snapC(_btRawY!);
-                                                  setState(() {
-                                                    if (part == WmPart.text) {
-                                                      st.text.x = sx;
-                                                      st.text.y = sy;
-                                                    } else {
-                                                      st.logo.x = sx;
-                                                      st.logo.y = sy;
-                                                    }
-                                                  });
-                                                  _btSetGuides(sx, sy);
-                                                },
-                                                onPanEnd: (_) =>
-                                                    _btClearGuides(),
-                                                onPanCancel: _btClearGuides,
-                                                child: const SizedBox.expand(),
-                                              ),
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                        // 右上角：放大＋畫布比例（跟影片編輯器同款，
-                        // 使用者指定批次也要有）
-                        _previewCorner(),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            // 上一步／重做跟影片、照片同一個位置（預覽下方）。
-            // 原本在標題列右上角，大螢幕手機拇指按不到
-            if (!kbOpen && !_fsPreview)
-              undoRedoBar(
-                onUndo: _undoStack.isEmpty ? null : _undoLast,
-                onRedo: _redoStack.isEmpty ? null : _redoLast,
-                leading: [
-                  const SizedBox(width: 12),
-                  // 範圍開關：預設整批；「單張」要在這裡特別切換
-                  //（以前預覽上一動手就自動變單張，使用者以為在調整批）
-                  GestureDetector(
-                    onTap: _toggleScope,
+      child: EdgeBack(
+        exclude: [_edgeCanvasKey],
+        child: Scaffold(
+          appBar: _fsPreview ? null : AppBar(),
+          body: Column(
+            children: [
+              // 預覽：目前選中的檔案縮圖 + 浮水印圖層
+              if (!kbOpen)
+                Expanded(
+                  flex: 4,
+                  child: Listener(
+                    // 雙指縮放浮水印（跟照片編輯同一套，用 Listener 不搶單指拖曳）
+                    onPointerDown: _pinchDown,
+                    onPointerMove: _pinchMove,
+                    onPointerUp: (e) => _pinchUp(e.pointer),
+                    onPointerCancel: (e) => _pinchUp(e.pointer),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: _singleNow
-                            ? kSelect.withValues(alpha: 0.15)
-                            : kPanelHi,
-                        borderRadius: BorderRadius.circular(999),
-                        border: Border.all(
-                          color: _singleNow ? kSelect : kBorder,
-                        ),
-                      ),
-                      child: Text(
-                        _singleNow ? '單張調整' : '整批調整',
-                        style: TextStyle(
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.w600,
-                          color: _singleNow ? kSelect : kTextDim,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  // 提示這顆是開關（使用者指定）：點了在整批/單張
-                  // 之間切換；單張的調整永遠保留
-                  Text(
-                    _singleNow ? '只調這張，點一下改回整批' : '點一下改為只調這張',
-                    style: const TextStyle(fontSize: 10.5, color: kTextDim),
-                  ),
-                ],
-              ),
-            // 檔案縮圖列：點了切換預覽、長按從批次移除。
-            // 高 72：扣掉上下 8 的留白，縮圖是 56×56 正方形
-            //（以前 56 高擠成 56×40 的橫式，使用者指定要正方形）
-            if (!kbOpen && !_fsPreview)
-              SizedBox(
-                height: 72,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 8,
-                  ),
-                  itemCount: _items.length + 1,
-                  separatorBuilder: (_, i) => const SizedBox(width: 6),
-                  itemBuilder: (context, i) => i == _items.length
-                      ? _addTile()
-                      : InkWell(
-                          borderRadius: BorderRadius.circular(6),
-                          onTap: () => _selectPreview(i),
-                          onLongPress: () async {
-                            HapticFeedback.mediumImpact(); // 長按成立的觸覺回饋
-                            final hasOverride = _items[i].override != null;
-                            final action = await showModalBottomSheet<String>(
-                              context: context,
-                              showDragHandle: true,
-                              builder: (context) => SafeArea(
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const SizedBox(height: 8),
-                                    if (hasOverride)
-                                      ListTile(
-                                        leading: const Icon(
-                                          Icons.sync,
-                                          color: kAmber,
+                      key: _edgeCanvasKey,
+                      color: kPreviewBg,
+                      child: Stack(
+                        children: [
+                          Center(
+                            // 換檔案時整個預覽子樹重建，浮水印圖層不會殘留舊狀態
+                            child: KeyedSubtree(
+                              key: ValueKey(_previewIndex),
+                              child: AspectRatio(
+                                aspectRatio: aspect,
+                                child: Container(
+                                  color: Colors.black,
+                                  child: Stack(
+                                    fit: StackFit.expand,
+                                    // 不裁切：浮水印選取框要能畫到畫面外
+                                    clipBehavior: Clip.none,
+                                    children: [
+                                      // 大圖還在讀的時候先用小縮圖頂著，不要閃黑
+                                      if (_previewBytes != null)
+                                        Image.memory(
+                                          _previewBytes!,
+                                          fit: BoxFit.contain,
+                                          cacheWidth: 1280,
+                                          gaplessPlayback: true,
+                                        )
+                                      else if (_items[_previewIndex].thumb !=
+                                          null)
+                                        Image.memory(
+                                          _items[_previewIndex].thumb!,
+                                          fit: BoxFit.contain,
                                         ),
-                                        title: const Text('還原成整批設定'),
-                                        subtitle: const Text(
-                                          '丟掉這張的單獨調整',
-                                          style: TextStyle(
-                                            fontSize: 11.5,
-                                            color: kTextDim,
+                                      WatermarkLayer(
+                                        settings: _editTarget,
+                                        // 選取框畫在裁切外（見 _wmFrameInfo）
+                                        frameNotifier: _wmFrameInfo,
+                                        onChanged: () => setState(() {}),
+                                        // 拖曳落在目前生效的設定上：
+                                        // 整批模式改整批、單張模式改這張（見開關）
+                                        onDragStart: _pushUndo,
+                                        selectedPart: _wmPartAlive,
+                                        onSelectPart: (p) {
+                                          setState(() => _wmPart = p);
+                                          _wmPanelCtrl.scrollTo(p);
+                                        },
+                                        panLocked: () => _pvPts.length >= 2,
+                                      ),
+                                      // 置中輔助線。無條件插入、不要用 if 增減：
+                                      // 線一出現會把後面手勢層的索引推掉，拖曳被
+                                      // 中斷後又從已吸附的中線重新開始，就再也
+                                      // 拖不出來了（其他三個編輯畫面同一種寫法）
+                                      Positioned.fill(
+                                        child: CenterGuides(
+                                          vertical: _btGuideV,
+                                          horizontal: _btGuideH,
+                                        ),
+                                      ),
+                                      // 浮水印選取框：畫在真實位置（拖出畫面也看得到）
+                                      Positioned.fill(
+                                        child: WmFrameOverlay(_wmFrameInfo),
+                                      ),
+                                      // 選取路由：有部件被選取時，整個預覽的拖曳
+                                      // 都只動被選的那個——手指滑過另一個部件
+                                      // 才不會把它一起拖走
+                                      if (_wmPartAlive != WmPart.none)
+                                        Positioned.fill(
+                                          child: LayoutBuilder(
+                                            builder: (context, box) =>
+                                                GestureDetector(
+                                                  behavior: HitTestBehavior
+                                                      .translucent,
+                                                  // 點空白＝取消選取（不取消的話另一個
+                                                  // 部件會永遠拖不動）
+                                                  onTap: _clearWmSel,
+                                                  onPanStart: (_) {
+                                                    if (_pvPts.length >= 2) {
+                                                      return;
+                                                    }
+                                                    _btUndoPending = true;
+                                                    _btRawX = null;
+                                                    _btRawY = null;
+                                                  },
+                                                  onPanUpdate: (d) {
+                                                    if (_pvPts.length >= 2) {
+                                                      return;
+                                                    }
+                                                    _btPushUndoIfNeeded();
+                                                    final st = _effectiveOf(
+                                                      _previewIndex,
+                                                    );
+                                                    final part = _wmPartAlive;
+                                                    final mark =
+                                                        part == WmPart.text
+                                                        ? (
+                                                            x: st.text.x,
+                                                            y: st.text.y,
+                                                          )
+                                                        : (
+                                                            x: st.logo.x,
+                                                            y: st.logo.y,
+                                                          );
+                                                    if (part != WmPart.text &&
+                                                        part != WmPart.logo) {
+                                                      return;
+                                                    }
+                                                    // 累加在「未吸附」的原始座標上，
+                                                    // 顯示值才吸中線
+                                                    _btRawX ??= mark.x;
+                                                    _btRawY ??= mark.y;
+                                                    _btRawX =
+                                                        (_btRawX! +
+                                                                d.delta.dx /
+                                                                    box.maxWidth)
+                                                            .clamp(0.0, 1.0);
+                                                    _btRawY =
+                                                        (_btRawY! +
+                                                                d.delta.dy /
+                                                                    box.maxHeight)
+                                                            .clamp(0.0, 1.0);
+                                                    final sx = _snapC(_btRawX!);
+                                                    final sy = _snapC(_btRawY!);
+                                                    setState(() {
+                                                      if (part == WmPart.text) {
+                                                        st.text.x = sx;
+                                                        st.text.y = sy;
+                                                      } else {
+                                                        st.logo.x = sx;
+                                                        st.logo.y = sy;
+                                                      }
+                                                    });
+                                                    _btSetGuides(sx, sy);
+                                                  },
+                                                  onPanEnd: (_) =>
+                                                      _btClearGuides(),
+                                                  onPanCancel: _btClearGuides,
+                                                  child:
+                                                      const SizedBox.expand(),
+                                                ),
                                           ),
                                         ),
-                                        onTap: () =>
-                                            Navigator.pop(context, 'reset'),
-                                      ),
-                                    ListTile(
-                                      leading: const Icon(
-                                        Icons.delete_outline,
-                                        color: kAmber,
-                                      ),
-                                      title: const Text('從批次移除'),
-                                      enabled: _items.length > 1,
-                                      onTap: () =>
-                                          Navigator.pop(context, 'remove'),
-                                    ),
-                                    const SizedBox(height: 8),
-                                  ],
+                                    ],
+                                  ),
                                 ),
                               ),
-                            );
-                            if (!mounted) return;
-                            if (action == 'reset') {
-                              setState(() => _items[i].override = null);
-                              showHint(this.context, '已還原成整批設定');
-                              return;
-                            }
-                            if (action != 'remove') return;
-                            if (_items.length <= 1) {
-                              showHint(this.context, '批次至少要留一個檔案', error: true);
-                              return;
-                            }
-                            final ok = await showConfirm(
-                              this.context,
-                              title: '從批次移除這個檔案？',
-                              message: _items[i].file.name,
-                              action: '移除',
-                            );
-                            if (!ok || !mounted) return;
-                            _removeItem(i);
-                            showHint(this.context, '已從批次移除');
-                          },
-                          child: Container(
-                            width: 56,
-                            clipBehavior: Clip.antiAlias,
-                            decoration: BoxDecoration(
-                              color: kPanelHi,
-                              borderRadius: BorderRadius.circular(6),
-                              border: Border.all(color: kBorder, width: 1),
-                            ),
-                            // 選取框畫在前景，縮圖不位移
-                            foregroundDecoration: i == _previewIndex
-                                ? BoxDecoration(
-                                    borderRadius: BorderRadius.circular(6),
-                                    border: Border.all(
-                                      color: kSelect,
-                                      width: 1.5,
-                                    ),
-                                  )
-                                : null,
-                            child: Stack(
-                              fit: StackFit.expand,
-                              children: [
-                                if (_items[i].thumb != null)
-                                  Image.memory(
-                                    _items[i].thumb!,
-                                    fit: BoxFit.cover,
-                                    cacheWidth: _thumbLongSide,
-                                    gaplessPlayback: true,
-                                  ),
-                                // 單張模式標記：左上角一顆琥珀小點
-                                if (_items[i].override != null)
-                                  Align(
-                                    alignment: Alignment.topLeft,
-                                    child: Container(
-                                      margin: const EdgeInsets.all(3),
-                                      width: 8,
-                                      height: 8,
-                                      decoration: const BoxDecoration(
-                                        color: kSelect,
-                                        shape: BoxShape.circle,
-                                      ),
-                                    ),
-                                  ),
-                                if (_isVideo(_items[i].file))
-                                  const Align(
-                                    alignment: Alignment.bottomRight,
-                                    child: Padding(
-                                      padding: EdgeInsets.all(2),
-                                      child: Icon(
-                                        Icons.videocam,
-                                        size: 11,
-                                        color: Colors.white70,
-                                      ),
-                                    ),
-                                  ),
-                              ],
                             ),
                           ),
-                        ),
-                ),
-              ),
-            if (!_fsPreview) Container(height: 1, color: kBorder),
-            // 浮水印設定面板（跟編輯器同一套）；
-            // 底部疊一段漸層淡出，內容是淡出去、不是被底欄硬切
-            if (!_fsPreview)
-              Expanded(
-                flex: 5,
-                child: Stack(
-                  children: [
-                    WatermarkPanel(
-                      key: _panelKey,
-                      // 手繪直接畫在目前這張的畫面上（畫在哪、印在哪）
-                      grabFrame: () async =>
-                          _previewBytes ?? _items[_previewIndex].thumb,
-                      controller: _wmPanelCtrl,
-                      // 面板內的「儲存範本」藏起來，改放底部那一排
-                      //（跟照片編輯同一個位置、同一個樣式）
-                      hideSaveButton: true,
-                      // 綁「這張實際生效的設定」：單張模式下要改的是那張的
-                      // override，綁 _settings 的話面板改了預覽不動、
-                      // 其他張反而被改到
-                      settings: _editTarget,
-                      // 剛加的圖片直接選起來，可以馬上拖／縮放
-                      onLogoAdded: () => setState(() => _wmPart = WmPart.logo),
-                      onChanged: () => setState(() {}),
-                      onBeforeChange: _pushUndo,
-                      syncVersion: _sync,
-                      // 有影片才顯示動畫選項
-                      showAnimation: _items.any((it) => _isVideo(it.file)),
+                          // 右上角：放大＋畫布比例（跟影片編輯器同款，
+                          // 使用者指定批次也要有）
+                          _previewCorner(),
+                        ],
+                      ),
                     ),
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      height: 32,
-                      child: IgnorePointer(
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                              colors: [kBg.withValues(alpha: 0), kBg],
-                            ),
+                  ),
+                ),
+              // 上一步／重做跟影片、照片同一個位置（預覽下方）。
+              // 原本在標題列右上角，大螢幕手機拇指按不到
+              if (!kbOpen && !_fsPreview)
+                undoRedoBar(
+                  onUndo: _undoStack.isEmpty ? null : _undoLast,
+                  onRedo: _redoStack.isEmpty ? null : _redoLast,
+                  leading: [
+                    const SizedBox(width: 12),
+                    // 範圍開關：預設整批；「單張」要在這裡特別切換
+                    //（以前預覽上一動手就自動變單張，使用者以為在調整批）
+                    GestureDetector(
+                      onTap: _toggleScope,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: _singleNow
+                              ? kSelect.withValues(alpha: 0.15)
+                              : kPanelHi,
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(
+                            color: _singleNow ? kSelect : kBorder,
+                          ),
+                        ),
+                        child: Text(
+                          _singleNow ? '單張調整' : '整批調整',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w600,
+                            color: _singleNow ? kSelect : kTextDim,
                           ),
                         ),
                       ),
+                    ),
+                    const SizedBox(width: 8),
+                    // 提示這顆是開關（使用者指定）：點了在整批/單張
+                    // 之間切換；單張的調整永遠保留
+                    Text(
+                      _singleNow ? '只調這張，點一下改回整批' : '點一下改為只調這張',
+                      style: const TextStyle(fontSize: 10.5, color: kTextDim),
                     ),
                   ],
                 ),
-              ),
-            // 底部那一排跟照片編輯完全一樣：存成範本（次要）＋輸出（主要）。
-            // 畫質不放這裡：那是「輸出的參數」，按下輸出時才問（見
-            // _confirmExportAll），編輯畫面上擺一顆常駐的只會讓人分心。
-            // 打字中收起來，空間讓給輸入框
-            if (!kbOpen && !_fsPreview)
-              SafeArea(
-                top: false,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
-                  child: Row(
+              // 檔案縮圖列：點了切換預覽、長按從批次移除。
+              // 高 72：扣掉上下 8 的留白，縮圖是 56×56 正方形
+              //（以前 56 高擠成 56×40 的橫式，使用者指定要正方形）
+              if (!kbOpen && !_fsPreview)
+                SizedBox(
+                  height: 72,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 8,
+                    ),
+                    itemCount: _items.length + 1,
+                    separatorBuilder: (_, i) => const SizedBox(width: 6),
+                    itemBuilder: (context, i) => i == _items.length
+                        ? _addTile()
+                        : InkWell(
+                            borderRadius: BorderRadius.circular(6),
+                            onTap: () => _selectPreview(i),
+                            onLongPress: () async {
+                              HapticFeedback.mediumImpact(); // 長按成立的觸覺回饋
+                              final hasOverride = _items[i].override != null;
+                              final action = await showModalBottomSheet<String>(
+                                context: context,
+                                showDragHandle: true,
+                                builder: (context) => SafeArea(
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const SizedBox(height: 8),
+                                      if (hasOverride)
+                                        ListTile(
+                                          leading: const Icon(
+                                            Icons.sync,
+                                            color: kAmber,
+                                          ),
+                                          title: const Text('還原成整批設定'),
+                                          subtitle: const Text(
+                                            '丟掉這張的單獨調整',
+                                            style: TextStyle(
+                                              fontSize: 11.5,
+                                              color: kTextDim,
+                                            ),
+                                          ),
+                                          onTap: () =>
+                                              Navigator.pop(context, 'reset'),
+                                        ),
+                                      ListTile(
+                                        leading: const Icon(
+                                          Icons.delete_outline,
+                                          color: kAmber,
+                                        ),
+                                        title: const Text('從批次移除'),
+                                        enabled: _items.length > 1,
+                                        onTap: () =>
+                                            Navigator.pop(context, 'remove'),
+                                      ),
+                                      const SizedBox(height: 8),
+                                    ],
+                                  ),
+                                ),
+                              );
+                              if (!mounted) return;
+                              if (action == 'reset') {
+                                setState(() => _items[i].override = null);
+                                showHint(this.context, '已還原成整批設定');
+                                return;
+                              }
+                              if (action != 'remove') return;
+                              if (_items.length <= 1) {
+                                showHint(
+                                  this.context,
+                                  '批次至少要留一個檔案',
+                                  error: true,
+                                );
+                                return;
+                              }
+                              final ok = await showConfirm(
+                                this.context,
+                                title: '從批次移除這個檔案？',
+                                message: _items[i].file.name,
+                                action: '移除',
+                              );
+                              if (!ok || !mounted) return;
+                              _removeItem(i);
+                              showHint(this.context, '已從批次移除');
+                            },
+                            child: Container(
+                              width: 56,
+                              clipBehavior: Clip.antiAlias,
+                              decoration: BoxDecoration(
+                                color: kPanelHi,
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: kBorder, width: 1),
+                              ),
+                              // 選取框畫在前景，縮圖不位移
+                              foregroundDecoration: i == _previewIndex
+                                  ? BoxDecoration(
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(
+                                        color: kSelect,
+                                        width: 1.5,
+                                      ),
+                                    )
+                                  : null,
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  if (_items[i].thumb != null)
+                                    Image.memory(
+                                      _items[i].thumb!,
+                                      fit: BoxFit.cover,
+                                      cacheWidth: _thumbLongSide,
+                                      gaplessPlayback: true,
+                                    ),
+                                  // 單張模式標記：左上角一顆琥珀小點
+                                  if (_items[i].override != null)
+                                    Align(
+                                      alignment: Alignment.topLeft,
+                                      child: Container(
+                                        margin: const EdgeInsets.all(3),
+                                        width: 8,
+                                        height: 8,
+                                        decoration: const BoxDecoration(
+                                          color: kSelect,
+                                          shape: BoxShape.circle,
+                                        ),
+                                      ),
+                                    ),
+                                  if (_isVideo(_items[i].file))
+                                    const Align(
+                                      alignment: Alignment.bottomRight,
+                                      child: Padding(
+                                        padding: EdgeInsets.all(2),
+                                        child: Icon(
+                                          Icons.videocam,
+                                          size: 11,
+                                          color: Colors.white70,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ),
+                  ),
+                ),
+              if (!_fsPreview) Container(height: 1, color: kBorder),
+              // 浮水印設定面板（跟編輯器同一套）；
+              // 底部疊一段漸層淡出，內容是淡出去、不是被底欄硬切
+              if (!_fsPreview)
+                Expanded(
+                  flex: 5,
+                  child: Stack(
                     children: [
-                      Expanded(
-                        child: secondaryAction(
-                          label: '存成範本',
-                          onPressed: _exporting
-                              ? null
-                              : () => _panelKey.currentState?.savePreset(),
-                        ),
+                      WatermarkPanel(
+                        key: _panelKey,
+                        // 手繪直接畫在目前這張的畫面上（畫在哪、印在哪）
+                        grabFrame: () async =>
+                            _previewBytes ?? _items[_previewIndex].thumb,
+                        controller: _wmPanelCtrl,
+                        // 面板內的「儲存範本」藏起來，改放底部那一排
+                        //（跟照片編輯同一個位置、同一個樣式）
+                        hideSaveButton: true,
+                        // 綁「這張實際生效的設定」：單張模式下要改的是那張的
+                        // override，綁 _settings 的話面板改了預覽不動、
+                        // 其他張反而被改到
+                        settings: _editTarget,
+                        // 剛加的圖片直接選起來，可以馬上拖／縮放
+                        onLogoAdded: () =>
+                            setState(() => _wmPart = WmPart.logo),
+                        onChanged: () => setState(() {}),
+                        onBeforeChange: _pushUndo,
+                        syncVersion: _sync,
+                        // 有影片才顯示動畫選項
+                        showAnimation: _items.any((it) => _isVideo(it.file)),
                       ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: primaryAction(
-                          label: '匯出',
-                          onPressed: _exporting ? null : _confirmExportAll,
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        height: 32,
+                        child: IgnorePointer(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [kBg.withValues(alpha: 0), kBg],
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                     ],
                   ),
                 ),
-              ),
-          ],
+              // 底部那一排跟照片編輯完全一樣：存成範本（次要）＋輸出（主要）。
+              // 畫質不放這裡：那是「輸出的參數」，按下輸出時才問（見
+              // _confirmExportAll），編輯畫面上擺一顆常駐的只會讓人分心。
+              // 打字中收起來，空間讓給輸入框
+              if (!kbOpen && !_fsPreview)
+                SafeArea(
+                  top: false,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: secondaryAction(
+                            label: '存成範本',
+                            onPressed: _exporting
+                                ? null
+                                : () => _panelKey.currentState?.savePreset(),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: primaryAction(
+                            label: '匯出',
+                            onPressed: _exporting ? null : _confirmExportAll,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );

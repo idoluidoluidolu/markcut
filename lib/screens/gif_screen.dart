@@ -17,6 +17,7 @@ import '../services/gif_store.dart';
 import '../services/video_engine.dart' as engine;
 import 'crop_screen.dart';
 import '../theme.dart';
+import '../widgets/edge_back.dart';
 
 /// 專屬的 GIF 製作頁：選一支影片進來，拉兩個把手決定要剪哪一段，
 /// 挑尺寸跟順暢度，直接出 GIF。
@@ -115,6 +116,10 @@ class _GifScreenState extends State<GifScreen> {
   double? _dragFrom;
   double _dragAcc = 0;
 
+  /// 左緣返回手勢的排除區：預覽與修剪條（見 EdgeBack）
+  final _edgeCanvasKey = GlobalKey();
+  final _edgeStripKey = GlobalKey();
+
   Timer? _tick;
   bool _exporting = false;
 
@@ -164,6 +169,11 @@ class _GifScreenState extends State<GifScreen> {
   Timer? _gifTick;
 
   bool get _gifMode => _gifFrames.isNotEmpty && _gifLoopMs > 0;
+
+  /// 把手拖出「已做好的 GIF 範圍」時，暫時改看影片本人——
+  /// 之前凍在端點幀，往回拉什麼都看不到（實測回報）。
+  /// 新的預覽做好就關
+  bool _gifPeek = false;
   double get _rangeLen => math.max(0.05, _end - _start);
 
   Future<void> _decodeGifFrames(String path) async {
@@ -210,6 +220,7 @@ class _GifScreenState extends State<GifScreen> {
         _gifLoopMs = acc;
         _gifMs = 0;
         _gifFrameVN.value = 0;
+        _gifPeek = false; // 新成果上檔，回到看 GIF 本人
       });
       _pos.value = _start;
       _ensureGifTick();
@@ -264,6 +275,7 @@ class _GifScreenState extends State<GifScreen> {
       setState(() {
         _gifPreview = hit;
         _previewKey = key;
+        _gifPeek = false;
       });
       _gifBuiltStart = _start;
       _gifBuiltEnd = _end;
@@ -723,61 +735,64 @@ class _GifScreenState extends State<GifScreen> {
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop && mounted) unawaited(_confirmLeave());
       },
-      child: Scaffold(
-        backgroundColor: kBg,
-        appBar: AppBar(backgroundColor: kBg),
-        body: SafeArea(
-          child: !_ready
-              ? const Center(child: CircularProgressIndicator())
-              // 整頁左右滑＝速覽（使用者指定：這一頁任何地方橫滑都是
-              // 滑指針）。修剪把手、指針、縮圖帶自己的橫向手勢在
-              // 競技場裡比這層深、照樣先贏，這裡只接住其他空白處。
-              // 方向跟預覽區一致：「拖底片」語意，手指往左＝時間往前
-              : GestureDetector(
-                  behavior: HitTestBehavior.translucent,
-                  onHorizontalDragStart: (_) => _scrubBegin(),
-                  onHorizontalDragUpdate: (d) => _scrubBy(
-                    -d.delta.dx,
-                    math.max(1, MediaQuery.of(context).size.width),
-                  ),
-                  onHorizontalDragEnd: (_) => _scrubEnd(),
-                  onHorizontalDragCancel: _scrubEnd,
-                  child: Column(
-                    children: [
-                      Expanded(child: _preview()),
-                      _playbackRow(),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            _rangeReadout(),
-                            const SizedBox(height: 8),
-                            _trimStrip(),
-                            const SizedBox(height: 16),
-                            _chipsRow('尺寸', [320, 480, 640], _size, (v) {
-                              setState(() => _size = v);
-                              _schedulePreview();
-                            }, (v) => '${v}p'),
-                            const SizedBox(height: 10),
-                            _chipsRow('順暢度', [10, 12, 15], _fps, (v) {
-                              setState(() => _fps = v);
-                              _schedulePreview();
-                            }, (v) => '$v fps'),
-                            const SizedBox(height: 10),
-                            _speedRow(),
-                            const SizedBox(height: 16),
-                            primaryAction(
-                              label: '做成 GIF',
-                              icon: Icons.gif_box_outlined,
-                              onPressed: _exporting ? null : _export,
-                            ),
-                          ],
+      child: EdgeBack(
+        exclude: [_edgeCanvasKey, _edgeStripKey],
+        child: Scaffold(
+          backgroundColor: kBg,
+          appBar: AppBar(backgroundColor: kBg),
+          body: SafeArea(
+            child: !_ready
+                ? const Center(child: CircularProgressIndicator())
+                // 整頁左右滑＝速覽（使用者指定：這一頁任何地方橫滑都是
+                // 滑指針）。修剪把手、指針、縮圖帶自己的橫向手勢在
+                // 競技場裡比這層深、照樣先贏，這裡只接住其他空白處。
+                // 方向跟預覽區一致：「拖底片」語意，手指往左＝時間往前
+                : GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onHorizontalDragStart: (_) => _scrubBegin(),
+                    onHorizontalDragUpdate: (d) => _scrubBy(
+                      -d.delta.dx,
+                      math.max(1, MediaQuery.of(context).size.width),
+                    ),
+                    onHorizontalDragEnd: (_) => _scrubEnd(),
+                    onHorizontalDragCancel: _scrubEnd,
+                    child: Column(
+                      children: [
+                        Expanded(child: _preview()),
+                        _playbackRow(),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              _rangeReadout(),
+                              const SizedBox(height: 8),
+                              _trimStrip(),
+                              const SizedBox(height: 16),
+                              _chipsRow('尺寸', [320, 480, 640], _size, (v) {
+                                setState(() => _size = v);
+                                _schedulePreview();
+                              }, (v) => '${v}p'),
+                              const SizedBox(height: 10),
+                              _chipsRow('順暢度', [10, 12, 15], _fps, (v) {
+                                setState(() => _fps = v);
+                                _schedulePreview();
+                              }, (v) => '$v fps'),
+                              const SizedBox(height: 10),
+                              _speedRow(),
+                              const SizedBox(height: 16),
+                              primaryAction(
+                                label: '做成 GIF',
+                                icon: Icons.gif_box_outlined,
+                                onPressed: _exporting ? null : _export,
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
+          ),
         ),
       ),
     );
@@ -956,7 +971,8 @@ class _GifScreenState extends State<GifScreen> {
     // 不然裁完還是原比例的框，成果小小一塊躺在中間（實測回報）。
     // GIF 成果已經是裁好的尺寸，直接用它的幀比例
     final crop = _crop;
-    final aspect = _gifMode && _gifFrames.isNotEmpty
+    final showGif = _gifMode && !_gifPeek && _gifFrames.isNotEmpty;
+    final aspect = showGif
         ? _gifFrames.first.width / _gifFrames.first.height
         : (crop == null ? fullAspect : fullAspect * crop.width / crop.height);
     // 影片模式＋裁切：外框是裁切比例，內容把整支影片放大平移到
@@ -1009,6 +1025,7 @@ class _GifScreenState extends State<GifScreen> {
               onHorizontalDragEnd: (_) => _scrubEnd(),
               onHorizontalDragCancel: _scrubEnd,
               child: Container(
+                key: _edgeCanvasKey,
                 // 跟影片編輯的預覽同一個底色：純黑會在預覽區與下面的
                 // 控制區之間切出一條分界，整頁看起來像被切成兩塊
                 color: kPreviewBg,
@@ -1021,7 +1038,7 @@ class _GifScreenState extends State<GifScreen> {
                       // 成果做好後看的就是 GIF 本人（時鐘在我們手上，
                       // 指針才對得到位置）；還沒做好前先看影片
                       //（裁切時只露出裁切區，跟成品同一塊畫面）
-                      child: _gifMode
+                      child: showGif
                           ? ValueListenableBuilder<int>(
                               valueListenable: _gifFrameVN,
                               builder: (context, i, _) => RawImage(
@@ -1156,6 +1173,7 @@ class _GifScreenState extends State<GifScreen> {
   /// 縮圖帶＋兩個把手。把手蓋在縮圖上，看得到自己剪掉了哪些畫面
   Widget _trimStrip() {
     return SizedBox(
+      key: _edgeStripKey,
       height: 56,
       child: LayoutBuilder(
         builder: (context, cons) {
@@ -1322,17 +1340,24 @@ class _GifScreenState extends State<GifScreen> {
           }
           if (_gifMode && _gifFrames.isNotEmpty) {
             // GIF 模式畫面走 GIF 時鐘、不理 seek：把手位置映射回
-            // 「這份 GIF 做的時間段」裡對應的幀，一路連續跟手
-            //（之前擺固定端點幀，只跟一下就凍住——實測回報）。
-            // 拖出舊範圍外會停在端點幀，停手重做後換新剪點成果
+            // 「這份 GIF 做的時間段」裡對應的幀，一路連續跟手。
+            // 拖出已做好的範圍＝改看影片本人（上面的節流 seek 本來
+            // 就在跟）——之前凍在端點幀，往回拉什麼都看不到
             if (_playing) _playing = false;
             final len = _gifBuiltEnd - _gifBuiltStart;
-            if (len > 0.01) {
-              final tt = left ? _start : _end;
-              _gifFrameVN.value =
-                  (((tt - _gifBuiltStart) / len) * _gifFrames.length)
-                      .floor()
-                      .clamp(0, _gifFrames.length - 1);
+            final tt = left ? _start : _end;
+            final inside =
+                tt >= _gifBuiltStart - 0.01 && tt <= _gifBuiltEnd + 0.01;
+            if (!inside) {
+              if (!_gifPeek) setState(() => _gifPeek = true);
+            } else {
+              if (_gifPeek) setState(() => _gifPeek = false);
+              if (len > 0.01) {
+                _gifFrameVN.value =
+                    (((tt - _gifBuiltStart) / len) * _gifFrames.length)
+                        .floor()
+                        .clamp(0, _gifFrames.length - 1);
+              }
             }
           }
           final p = _player;
