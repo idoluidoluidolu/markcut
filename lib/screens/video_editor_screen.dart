@@ -416,7 +416,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 原生端清空。
   /// 只認真的手勢（拖曳/兩指縮放）——「選取」本身不算：一選取就
   /// 換 Flutter 版的話，HDR 預覽裡點一下浮水印字就變灰
-  ///（實測回報），看起來像壞掉。面板調數值走 180ms 併批的
+  ///（實測回報），看起來像壞掉。面板調數值走 120ms 併批的
   /// setOverlays 重烘，白色的版直接跟著變
   bool get _ovHold {
     if (_ovDragging) return true;
@@ -1534,7 +1534,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 每次預覽重建都呼叫：進出「編輯持有」立刻切（清空很便宜），
-  /// 其他變化併批 180ms 再同步（重畫 PNG 有成本）
+  /// 其他變化併批 120ms 再同步（重畫 PNG 有成本）
   void _scheduleOvSync() {
     if (!_ovLiveOn) return;
     final holdNow = _ovHold;
@@ -1546,7 +1546,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     if (_ovSyncTimer?.isActive ?? false) return;
-    _ovSyncTimer = Timer(const Duration(milliseconds: 180), () {
+    _ovSyncTimer = Timer(const Duration(milliseconds: 120), () {
       if (!mounted) return;
       // 放手偵測：預覽區已經沒有手指＝拖曳結束，換回烘好的
       if (_ovDragging && _pvPts.isEmpty) _ovDragging = false;
@@ -12176,6 +12176,31 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             padding: EdgeInsets.only(left: 2, top: 2),
             child: Text(
               '點選「音量」可以直接靜音',
+              style: TextStyle(fontSize: 10.5, color: kTextDim),
+            ),
+          ),
+          const SizedBox(height: 6),
+          // 整軌：這一軌所有片段一起調（使用者指定要多這一個）
+          _optRow(
+            label: '整軌',
+            value: clip.volume,
+            max: 1,
+            suffix: '${(clip.volume * 100).round()}%',
+            onChanged: (v) {
+              setSheet(() {});
+              setState(() {
+                for (final c in _tl.clips) {
+                  if (c.track != clip.track) continue;
+                  c.volume = v;
+                  _ctrls[c.id]?.setVolume(v.clamp(0.0, 1.0));
+                }
+              });
+            },
+          ),
+          const Padding(
+            padding: EdgeInsets.only(left: 2, top: 2),
+            child: Text(
+              '「整軌」把這一軌的所有片段一起調',
               style: TextStyle(fontSize: 10.5, color: kTextDim),
             ),
           ),

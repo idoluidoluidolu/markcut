@@ -523,31 +523,18 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   }
 
   Future<void> _savePreset() async {
-    // 有選中的範本就預填它的名字：直接儲存＝更新該範本，改名＝另存新的
-    final nameCtrl = TextEditingController(text: _presetSel ?? '');
-    final name = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('儲存為常用範本'),
-        content: TextField(
-          controller: nameCtrl,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: '範本名稱，例如「我的頻道」'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, nameCtrl.text.trim()),
-            child: const Text('儲存'),
-          ),
-        ],
-      ),
-    );
-    nameCtrl.dispose();
-    if (name == null || name.isEmpty) return;
+    // 不再問名字（使用者指定）：範本卡上本來就不顯示名稱了，取名
+    // 純粹是多一步。有選中的範本＝直接更新它；沒有＝自動編一個
+    // 不重複的內部名稱（名稱只當儲存的 key 用）
+    var name = _presetSel ?? '';
+    if (name.isEmpty) {
+      var n = _presets.length + 1;
+      name = '範本 $n';
+      while (_presets.any((p) => p.name == name)) {
+        n++;
+        name = '範本 $n';
+      }
+    }
     final existed = _presets.any((p) => p.name == name);
     try {
       // 範本不收馬賽克：每張照片內容不同，同位置的碼帶著走沒有意義
@@ -566,7 +553,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     await _loadPresets();
     widget.onSaved?.call(); // 父層拿去重設「有沒有改過」的基準
     if (mounted) {
-      showHint(context, existed ? '已更新範本「$name」' : '已儲存範本「$name」');
+      showHint(context, existed ? '已更新範本' : '已存成範本');
     }
   }
 

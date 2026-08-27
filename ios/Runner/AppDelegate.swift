@@ -896,9 +896,11 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
                 o = o.applyingFilter(
                   "CIColorMatrix",
                   parameters: [
-                    "inputRVector": CIVector(x: 2, y: 0, z: 0, w: 0),
-                    "inputGVector": CIVector(x: 0, y: 2, z: 0, w: 0),
-                    "inputBVector": CIVector(x: 0, y: 0, z: 2, w: 0),
+                    // ×3（原本 ×2）：實測回報 ×2 在 HLG 高光旁邊
+                    // 還是偏灰，再提半檔（約 600 尼特）
+                    "inputRVector": CIVector(x: 3, y: 0, z: 0, w: 0),
+                    "inputGVector": CIVector(x: 0, y: 3, z: 0, w: 0),
+                    "inputBVector": CIVector(x: 0, y: 0, z: 3, w: 0),
                   ])
               }
               out = o.composited(over: out)
@@ -1168,6 +1170,10 @@ final class AtomicFlag {
         }
         CIExportCompositor.setPreviewOverlays(
           list.compactMap { CIOverlaySpec($0, canvas: p.ciCanvas) })
+        // 暫停中換清單要逼播放器重畫這一格：光 seek 回同一個時間點
+        // 會被當 no-op（實測回報：打字改浮水印、預覽完全不動）。
+        // 跟即時變形同一招——重產一份 vc 換上，一定重組目前這格
+        if p.player.rate == 0 { _ = p.applyXform(nil) }
         result(true)
       case "play":
         let st = self.comp?.playStatus()

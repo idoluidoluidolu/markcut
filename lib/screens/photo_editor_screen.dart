@@ -914,55 +914,62 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 浮在面板上的按鈕列。不佔版面高度——內容從它下面穿過去，
   /// 底下鋪一層漸層讓字不會糊在一起，面板的空間感才拉得開。
   /// 兩顆都寫字：存成範本縮成圖示就沒人知道那是什麼
-  Widget _floatingExport() => Positioned(
-    left: 0,
-    right: 0,
-    bottom: 0,
-    child: IgnorePointer(
-      ignoring: false,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          IgnorePointer(
-            child: Container(
-              height: 40,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [kBg.withValues(alpha: 0), kBg],
+  Widget _floatingExport() {
+    // 鍵盤開著就收起來：浮鍵會壓在文字輸入框上（實測回報：
+    // 照片浮水印這裡鍵盤會擋道）
+    if (MediaQuery.of(context).viewInsets.bottom > 60) {
+      return const SizedBox.shrink();
+    }
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 0,
+      child: IgnorePointer(
+        ignoring: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IgnorePointer(
+              child: Container(
+                height: 40,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [kBg.withValues(alpha: 0), kBg],
+                  ),
                 ),
               ),
             ),
-          ),
-          Container(
-            color: kBg,
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
-            child: SafeArea(
-              top: false,
-              child: Row(
-                children: [
-                  Expanded(
-                    child: secondaryAction(
-                      label: '存成範本',
-                      onPressed: _exporting ? null : _savePresetFromBar,
+            Container(
+              color: kBg,
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+              child: SafeArea(
+                top: false,
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: secondaryAction(
+                        label: '存成範本',
+                        onPressed: _exporting ? null : _savePresetFromBar,
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: primaryAction(
-                      label: '匯出',
-                      onPressed: _exporting ? null : _confirmExport,
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: primaryAction(
+                        label: '匯出',
+                        onPressed: _exporting ? null : _confirmExport,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
-    ),
-  );
+    );
+  }
 
   Widget _buildMosaics(double w, double h) {
     final children = <Widget>[];

@@ -1520,21 +1520,22 @@ class _ClipBlock extends StatelessWidget {
                         final headVisible = vL <= 0.5;
                         final tailVisible = w <= vR + 0.5;
                         // 窄片段：把手整支移到片段「外側」，中間整條
-                        // 留給拖曳移動（實測回報：小到一定程度沒有拉桿）
+                        // 留給拖曳移動（實測回報：小到一定程度沒有拉桿）。
+                        // 外側把手「不加」向外熱區：加了會蓋到隔壁的
+                        // 時間軸，往左滑動被它吃掉（實測回報：滑動鎖死）
                         final outside = w < kHandleMinWidth;
+                        final oOver = outside ? 0.0 : over;
                         return Stack(
                           children: [
                             if (headVisible)
                               Positioned(
-                                left: outside
-                                    ? -13.0 - _kHandleOverhang
-                                    : -_kHandleOverhang,
+                                left: outside ? -13.0 : -_kHandleOverhang,
                                 top: 0,
                                 bottom: 0,
                                 child: _TrimHandle(
                                   isLeft: true,
                                   width: outside ? 13 : hw,
-                                  overhang: over,
+                                  overhang: oOver,
                                   onStart: onTrimStart,
                                   onEnd: onTrimEnd,
                                   onDrag: (d) => onTrim(clip.id, d, true),
@@ -1550,7 +1551,7 @@ class _ClipBlock extends StatelessWidget {
                                 child: _TrimHandle(
                                   isLeft: false,
                                   width: outside ? 13 : hw,
-                                  overhang: over,
+                                  overhang: oOver,
                                   onStart: onTrimStart,
                                   onEnd: onTrimEnd,
                                   onDrag: (d) => onTrim(clip.id, d, false),

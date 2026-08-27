@@ -184,6 +184,9 @@ void main() {
           }
         }
       }
+      // 亂點可能點到「存成範本」（現在不問名字、直接存＋跳提示），
+      // 提示的自動消失計時器要走完，不然測試結束時還掛著
+      await tester.pump(const Duration(seconds: 5));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
     });
