@@ -5823,6 +5823,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   // ===== 播放 =====
 
+  /// 對時要慢慢吃掉的校正量（正＝往前追、負＝往回讓）。
+  /// 起步空窗本地時鐘會多跑 0.2~0.5 秒，第一次對時如果硬跳回去，
+  /// 指針就往回頓一下（實測回報：指針卡頓、播放本身不會）——
+  /// 改成攤進速率滑回去，肉眼看不出來
+  double _clockBias = 0;
+
   void _onTick(Duration elapsed) {
     if (!_playing) return;
     final dt = (elapsed - _lastTick).inMicroseconds / 1e6;
@@ -5831,6 +5837,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (dt > 0.05) Diag.count('掉格');
     // 時間軸位置以原速計；播放速度反映在實際前進速率上
     _position += dt * _speed;
+    // 對時校正用「滑」的：每秒最多吃 0.6 秒（速率 ±60%），
+    // 指針不會有可見的跳動
+    if (_clockBias.abs() > 0.001) {
+      final eat = _clockBias.clamp(-dt * 0.6, dt * 0.6);
+      _position += eat;
+      _clockBias -= eat;
+    }
     if (_position >= _tl.duration) {
       _position = _tl.duration;
       _pause();
@@ -6239,8 +6252,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             p >= compEnd - 0.1) {
           return;
         }
-        // 差太多才拉回去：每次都硬設會讓播放頭一直微跳
-        if ((p - _position).abs() > 0.12) _position = p;
+        // 差一點＝攤進速率慢慢滑回去（見 _clockBias）；
+        // 真的脫節（>0.6s，卡死/跳針那種）才硬跳
+        final diff = p - _position;
+        if (diff.abs() > 0.6) {
+          _position = p;
+          _clockBias = 0;
+        } else if (diff.abs() > 0.12) {
+          _clockBias = diff;
+        }
       }),
     );
   }
@@ -6255,6 +6275,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _play() async {
     if (_tl.duration <= 0) return;
     if (_position >= _tl.duration - 0.01) _position = 0;
+    _clockBias = 0; // 上一輪沒吃完的校正不能帶進新的一輪
     final tr = PlaybackTrace.instance..start();
 
     // 拖曳收尾排在後面的那幾件事，按下播放的當下全部取消：
@@ -6397,6 +6418,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   void _pause() {
+    _clockBias = 0;
     _playProbe?.cancel();
     _playProbe = null;
     if (_comp != null) unawaited(_comp!.pause());
