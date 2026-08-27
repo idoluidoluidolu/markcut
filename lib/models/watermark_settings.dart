@@ -30,7 +30,7 @@ class TextMark {
   int colorValue;
   double opacity; // 0~1
   double sizeFrac; // 字體大小佔畫面寬度的比例
-  double spacing; // 字距（相對字級 0~0.6）
+  double spacing; // 字距（相對字級 -0.2~0.6；負值＝字疊近一點）
   double x; // 中心點位置 0~1
   double y;
   double rotation; // 旋轉角度 -180 ~ 180
@@ -74,7 +74,8 @@ class TextMark {
     this.tiled = false,
     this.shadow = true,
     // 預設濃度 0.35／模糊 0：使用者從對照樣張挑的（淡而俐落的硬影）
-    this.shadowOpacity = 0.35,
+    // 預設 55：35 在亮背景上撐不住（使用者指定調高）
+    this.shadowOpacity = 0.55,
     // 預設 0＝俐落硬影（使用者指定）；要柔邊自己拉模糊滑桿
     this.shadowBlur = 0.0,
     this.weight = 0.0,
@@ -137,7 +138,7 @@ class TextMark {
     rotation: (j['rotation'] ?? 0).toDouble(),
     tiled: j['tiled'] ?? false,
     shadow: j['shadow'] ?? true,
-    shadowOpacity: ((j['shadowOpacity'] ?? 0.35).toDouble() as double).clamp(
+    shadowOpacity: ((j['shadowOpacity'] ?? 0.55).toDouble() as double).clamp(
       0.05,
       1.0,
     ),

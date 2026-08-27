@@ -4713,7 +4713,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       (v) => st.sizeFrac = v,
                     ),
                     slider('透明', st.opacity, 0.05, 1, (v) => st.opacity = v),
-                    slider('間距', st.spacing, 0, 0.6, (v) => st.spacing = v),
+                    // 間距可以負值：字疊近一點（跟面板同範圍）
+                    slider('間距', st.spacing, -0.2, 0.6, (v) => st.spacing = v),
                     // 旋轉：±4° 內吸附回正，點角度數字一鍵歸零
                     sliderRow(
                       label: '旋轉',

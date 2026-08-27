@@ -1246,7 +1246,8 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                               _sliderRow(
                                 '間距',
                                 s.text.spacing,
-                                0,
+                                // 可以拉成負值：字疊近一點（使用者指定）
+                                -0.2,
                                 0.6,
                                 (v) => _update(() => s.text.spacing = v),
                               ),
