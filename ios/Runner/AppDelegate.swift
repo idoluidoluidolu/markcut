@@ -887,6 +887,25 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           for ov in ovs {
             if var o = ov.frame(at: t, canvas: size) {
               if self.hdrOut {
+                // 治本（半透明變灰的根）：疊加物蓋到的地方，先把
+                // 「字底下」的畫面夾回 SDR 白以內再混色。半透明白字
+                // 在 SDR 是 70% 白＋30% 背景（背景最亮 1.0）＝白；
+                // HDR 背景可以亮到 SDR 白的好幾倍，30% 的背景就把
+                // 70% 的字沖成灰——問題不在字不夠亮，在字縫裡透進來
+                // 的超亮畫面。夾住之後混色數學跟 SDR 一字不差；
+                // 字外的畫面完全不動、HDR 照樣亮
+                let capped = out.applyingFilter(
+                  "CIColorClamp",
+                  parameters: [
+                    "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
+                    "inputMaxComponents": CIVector(x: 1, y: 1, z: 1, w: 1),
+                  ])
+                out = capped.applyingFilter(
+                  "CIBlendWithAlphaMask",
+                  parameters: [
+                    kCIInputBackgroundImageKey: out,
+                    kCIInputMaskImageKey: o,
+                  ])
                 // HDR 輸出：疊加物（文字/浮水印/貼圖）在線性光提亮
                 // 一檔（×2）。SDR 白疊在 HDR 畫面上只有基準白
                 //（~203 尼特），旁邊高光動輒上千尼特，使用者挑的

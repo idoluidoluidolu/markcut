@@ -197,8 +197,10 @@ class LogoMark {
     this.opacity = 0.8,
     // 加進來就要看得清楚：0.18 在手機上小得像雜訊，每次都得先放大
     this.sizeFrac = 0.32,
-    this.x = 0.15,
-    this.y = 0.9,
+    // 預設置中（使用者指定：任何素材加進來都先在正中間，
+    // 以前是左下角）。多張時 addLogo 會再錯開一點
+    this.x = 0.5,
+    this.y = 0.5,
     this.rotation = 0,
     this.corner = 0,
     this.tiled = false,
@@ -257,8 +259,8 @@ class LogoMark {
     b64: j['b64'],
     opacity: (j['opacity'] ?? 0.8).toDouble(),
     sizeFrac: (j['sizeFrac'] ?? 0.32).toDouble(),
-    x: (j['x'] ?? 0.15).toDouble(),
-    y: (j['y'] ?? 0.9).toDouble(),
+    x: (j['x'] ?? 0.5).toDouble(),
+    y: (j['y'] ?? 0.5).toDouble(),
     rotation: (j['rotation'] ?? 0).toDouble(),
     corner: (j['corner'] ?? 0).toDouble(),
     tiled: j['tiled'] ?? false,
