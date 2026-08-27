@@ -45,7 +45,6 @@ import '../services/work_files.dart';
 import '../theme.dart';
 import 'playback_test_screen.dart';
 import '../widgets/color_grade_panel.dart';
-import '../widgets/edge_back.dart';
 import '../widgets/kaomoji_sheet.dart';
 import '../widgets/timeline_editor.dart';
 import '../widgets/prep_gate_view.dart';
@@ -8643,182 +8642,177 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _handleBack();
       },
-      child: EdgeBack(
-        // 整頁甩動＝返回（使用者指定）；畫布與時間軸整塊排除，
-        // 它們自己吃橫向手勢
-        exclude: [_previewKey, _edgeTlKey],
-        child: Scaffold(
-          appBar: _fullscreen
-              ? null
-              : AppBar(
-                  // 標題文字拿掉了，但「長按開播放診斷」這個隱藏入口要留著：
-                  // 改成一塊透明的感應區佔著原本標題的位置，看不到但按得到
-                  title: GestureDetector(
-                    onLongPress: _openTrace,
-                    behavior: HitTestBehavior.opaque,
-                    child: const SizedBox(width: 200, height: kToolbarHeight),
+      child: Scaffold(
+        appBar: _fullscreen
+            ? null
+            : AppBar(
+                // 標題文字拿掉了，但「長按開播放診斷」這個隱藏入口要留著：
+                // 改成一塊透明的感應區佔著原本標題的位置，看不到但按得到
+                title: GestureDetector(
+                  onLongPress: _openTrace,
+                  behavior: HitTestBehavior.opaque,
+                  child: const SizedBox(width: 200, height: kToolbarHeight),
+                ),
+              ),
+        // 素材還在備就整頁擋著等它做完。使用者的原話是「既然一定要跑
+        // 讀取，那請改成先跑一下讀取再進入，比進入後閃東閃西讀取還好」
+        body: !_ready || _prepGate
+            ? _buildPrepGate()
+            : _fullscreen
+            ? _buildFullscreen()
+            // 編輯模式「不放」右滑返回：時間軸捲動、拖片段、移浮水印
+            // 全是橫向手勢，跟返回判定天生打架。返回走上一頁鍵／返回鍵
+            : Column(
+                children: [
+                  // 軌道多的時候把預覽讓一點空間給時間軸，
+                  // 不然四軌以上只剩一條縫可以捲
+                  Expanded(
+                    flex: _tl.usedTracks >= 3 ? 4 : 5,
+                    child: _buildPreview(),
                   ),
-                ),
-          // 素材還在備就整頁擋著等它做完。使用者的原話是「既然一定要跑
-          // 讀取，那請改成先跑一下讀取再進入，比進入後閃東閃西讀取還好」
-          body: !_ready || _prepGate
-              ? _buildPrepGate()
-              : _fullscreen
-              ? _buildFullscreen()
-              // 編輯模式「不放」右滑返回：時間軸捲動、拖片段、移浮水印
-              // 全是橫向手勢，跟返回判定天生打架。返回走上一頁鍵／返回鍵
-              : Column(
-                  children: [
-                    // 軌道多的時候把預覽讓一點空間給時間軸，
-                    // 不然四軌以上只剩一條縫可以捲
-                    Expanded(
-                      flex: _tl.usedTracks >= 3 ? 4 : 5,
-                      child: _buildPreview(),
-                    ),
-                    _buildControlBar(),
-                    Expanded(
-                      flex: _tl.usedTracks >= 3 ? 6 : 5,
-                      child: TabBarView(
-                        controller: _tabs,
-                        // 左右滑動保留給時間軸，分頁只用底部按鈕切換
-                        physics: const NeverScrollableScrollPhysics(),
-                        children: [
-                          // 調色模式接管下半部，預覽照常在上面看得到
-                          _colorMode ? _buildColorPanel() : _buildTimelineTab(),
-                          // 浮水印分頁認選取目標：選中的是浮水印素材
-                          // 就編它，否則編全域浮水印。key 綁目標，
-                          // 切換目標時面板內部狀態才會重置
-                          Builder(
-                            builder: (context) {
-                              final c = _selClipById(_sel);
-                              final src = c == null ? null : _tl.sourceOf(c);
-                              // 貼圖不算：它有自己的調整視窗，選著一張貼圖
-                              // 切到浮水印分頁時，該編的是全域浮水印
-                              final isClipWm =
-                                  src != null &&
-                                  src.kind == ClipKind.wm &&
-                                  !src.isSticker;
-                              if (isClipWm) src.wmStyle ??= WatermarkSettings();
-                              return WatermarkPanel(
-                                key: ValueKey(isClipWm ? _sel : -1),
-                                // 手繪直接畫在「播放頭這一格」上（畫在哪、
-                                // 印在哪）。合成播放器抽得到就給；退回
-                                // 逐片段路徑（web/調色中）就維持透明畫板
-                                grabFrame: () async {
-                                  final c = _comp;
-                                  if (!_compOn || c == null) return null;
-                                  return c.grab(maxH: 1080);
-                                },
-                                controller: _wmPanelCtrl,
-                                settings: isClipWm ? src.wmStyle! : _settings,
-                                onChanged: () => setState(() {
-                                  if (isClipWm) {
-                                    // 名字跟著文字走，時間軸上才認得出來
-                                    final st = src.wmStyle!;
-                                    src.name =
-                                        st.text.enabled &&
-                                            st.text.text.trim().isNotEmpty
-                                        ? st.text.text
-                                        : '浮水印';
-                                  }
-                                }),
-                                onBeforeChange: _pushWmUndo,
-                                syncVersion: _wmSync,
-                                showAnimation: true,
-                                // 剛加的圖片直接選起來，可以馬上拖／縮放
-                                onLogoAdded: () => setState(() {
-                                  _wmPart = WmPart.logo;
-                                  if (!isClipWm) _wmSel = true;
-                                }),
-                                // GIF 得當時間軸素材才會動（浮水印是烘成
-                                // 一張靜態 PNG 的），所以從這裡加也是加到
-                                // 時間軸上，加完把人帶回剪輯分頁看
-                                onAddGif: () async {
-                                  await _pickGif(_tl.usedTracks);
-                                  if (mounted) _tabs.animateTo(0);
-                                },
-                              );
-                            },
-                          ),
-                          _buildExportTab(),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-          bottomNavigationBar: !_ready || _fullscreen
-              ? null
-              : Container(
-                  color: kBg,
-                  child: SafeArea(
-                    top: false,
-                    child: TabBar(
+                  _buildControlBar(),
+                  Expanded(
+                    flex: _tl.usedTracks >= 3 ? 6 : 5,
+                    child: TabBarView(
                       controller: _tabs,
-                      // 調色模式沒有「完成」鈕：點任何分頁＝離開調色
-                      onTap: (i) {
-                        if (_colorMode) _exitColorMode();
-                        // 已經在匯出分頁再按一次「匯出」＝直接開始匯出
-                        //（鎮宇：按兩下就出，不用再找頁裡的大鈕）。
-                        // indexIsChanging＝從別的分頁切過來的那一下，
-                        // 那不算第二次
-                        if (i == 2 && !_tabs.indexIsChanging && !_exporting) {
-                          _export();
-                        }
-                      },
-                      indicatorColor: Colors.transparent,
-                      dividerHeight: 0,
-                      // 選中分頁跟浮水印面板同一套語言：字＋圖示直接轉琥珀
-                      labelColor: kSelect,
-                      unselectedLabelColor: kTextDim,
-                      labelStyle: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0.3,
-                        fontFamily: 'NotoSansTC',
-                      ),
-                      unselectedLabelStyle: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500,
-                        letterSpacing: 0.3,
-                        fontFamily: 'NotoSansTC',
-                      ),
-                      // 不能整包 const：匯出分頁掛了長按回呼（對照模式）
-                      tabs: [
-                        const Tab(
-                          icon: Icon(Icons.content_cut, size: 20),
-                          text: '剪輯',
-                          height: 54,
-                          iconMargin: EdgeInsets.only(bottom: 2),
+                      // 左右滑動保留給時間軸，分頁只用底部按鈕切換
+                      physics: const NeverScrollableScrollPhysics(),
+                      children: [
+                        // 調色模式接管下半部，預覽照常在上面看得到
+                        _colorMode ? _buildColorPanel() : _buildTimelineTab(),
+                        // 浮水印分頁認選取目標：選中的是浮水印素材
+                        // 就編它，否則編全域浮水印。key 綁目標，
+                        // 切換目標時面板內部狀態才會重置
+                        Builder(
+                          builder: (context) {
+                            final c = _selClipById(_sel);
+                            final src = c == null ? null : _tl.sourceOf(c);
+                            // 貼圖不算：它有自己的調整視窗，選著一張貼圖
+                            // 切到浮水印分頁時，該編的是全域浮水印
+                            final isClipWm =
+                                src != null &&
+                                src.kind == ClipKind.wm &&
+                                !src.isSticker;
+                            if (isClipWm) src.wmStyle ??= WatermarkSettings();
+                            return WatermarkPanel(
+                              key: ValueKey(isClipWm ? _sel : -1),
+                              // 手繪直接畫在「播放頭這一格」上（畫在哪、
+                              // 印在哪）。合成播放器抽得到就給；退回
+                              // 逐片段路徑（web/調色中）就維持透明畫板
+                              grabFrame: () async {
+                                final c = _comp;
+                                if (!_compOn || c == null) return null;
+                                return c.grab(maxH: 1080);
+                              },
+                              controller: _wmPanelCtrl,
+                              settings: isClipWm ? src.wmStyle! : _settings,
+                              onChanged: () => setState(() {
+                                if (isClipWm) {
+                                  // 名字跟著文字走，時間軸上才認得出來
+                                  final st = src.wmStyle!;
+                                  src.name =
+                                      st.text.enabled &&
+                                          st.text.text.trim().isNotEmpty
+                                      ? st.text.text
+                                      : '浮水印';
+                                }
+                              }),
+                              onBeforeChange: _pushWmUndo,
+                              syncVersion: _wmSync,
+                              showAnimation: true,
+                              // 剛加的圖片直接選起來，可以馬上拖／縮放
+                              onLogoAdded: () => setState(() {
+                                _wmPart = WmPart.logo;
+                                if (!isClipWm) _wmSel = true;
+                              }),
+                              // GIF 得當時間軸素材才會動（浮水印是烘成
+                              // 一張靜態 PNG 的），所以從這裡加也是加到
+                              // 時間軸上，加完把人帶回剪輯分頁看
+                              onAddGif: () async {
+                                await _pickGif(_tl.usedTracks);
+                                if (mounted) _tabs.animateTo(0);
+                              },
+                            );
+                          },
                         ),
-                        const Tab(
-                          icon: Icon(Icons.branding_watermark, size: 20),
-                          text: '浮水印',
-                          height: 54,
-                          iconMargin: EdgeInsets.only(bottom: 2),
-                        ),
-                        // 長按＝預覽 vs 成品對照模式（診斷 WYSIWYG 用，
-                        // 見 _toggleCompare）。只掛長按不掛點擊，
-                        // 分頁本身的切換不受影響
-                        Tab(
-                          height: 54,
-                          child: GestureDetector(
-                            behavior: HitTestBehavior.translucent,
-                            onLongPress: _toggleCompare,
-                            child: const Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.ios_share, size: 20),
-                                SizedBox(height: 2),
-                                Text('匯出'),
-                              ],
-                            ),
-                          ),
-                        ),
+                        _buildExportTab(),
                       ],
                     ),
                   ),
+                ],
+              ),
+        bottomNavigationBar: !_ready || _fullscreen
+            ? null
+            : Container(
+                color: kBg,
+                child: SafeArea(
+                  top: false,
+                  child: TabBar(
+                    controller: _tabs,
+                    // 調色模式沒有「完成」鈕：點任何分頁＝離開調色
+                    onTap: (i) {
+                      if (_colorMode) _exitColorMode();
+                      // 已經在匯出分頁再按一次「匯出」＝直接開始匯出
+                      //（鎮宇：按兩下就出，不用再找頁裡的大鈕）。
+                      // indexIsChanging＝從別的分頁切過來的那一下，
+                      // 那不算第二次
+                      if (i == 2 && !_tabs.indexIsChanging && !_exporting) {
+                        _export();
+                      }
+                    },
+                    indicatorColor: Colors.transparent,
+                    dividerHeight: 0,
+                    // 選中分頁跟浮水印面板同一套語言：字＋圖示直接轉琥珀
+                    labelColor: kSelect,
+                    unselectedLabelColor: kTextDim,
+                    labelStyle: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.3,
+                      fontFamily: 'NotoSansTC',
+                    ),
+                    unselectedLabelStyle: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: 0.3,
+                      fontFamily: 'NotoSansTC',
+                    ),
+                    // 不能整包 const：匯出分頁掛了長按回呼（對照模式）
+                    tabs: [
+                      const Tab(
+                        icon: Icon(Icons.content_cut, size: 20),
+                        text: '剪輯',
+                        height: 54,
+                        iconMargin: EdgeInsets.only(bottom: 2),
+                      ),
+                      const Tab(
+                        icon: Icon(Icons.branding_watermark, size: 20),
+                        text: '浮水印',
+                        height: 54,
+                        iconMargin: EdgeInsets.only(bottom: 2),
+                      ),
+                      // 長按＝預覽 vs 成品對照模式（診斷 WYSIWYG 用，
+                      // 見 _toggleCompare）。只掛長按不掛點擊，
+                      // 分頁本身的切換不受影響
+                      Tab(
+                        height: 54,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.translucent,
+                          onLongPress: _toggleCompare,
+                          child: const Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.ios_share, size: 20),
+                              SizedBox(height: 2),
+                              Text('匯出'),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-        ),
+              ),
       ),
     );
   }
@@ -9135,9 +9129,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 提示訊息錨定用：貼在預覽區下緣
   final _previewKey = GlobalKey();
-
-  /// 整頁甩動返回的排除區：時間軸整塊（見 EdgeBack）
-  final _edgeTlKey = GlobalKey();
 
   // ── 預覽 vs 成品對照模式 ──────────────────────────────────
   // 長按「匯出」分頁進入/退出：預覽畫布右半蓋上「成品同一時間的
@@ -11726,7 +11717,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             // 時間軸（需要時自己捲動；下方空白區的橫滑也捲時間軸）
             Expanded(
               child: Listener(
-                key: _edgeTlKey,
                 // 捏合偵測放在整個分頁最外層：空白處一樣能縮放
                 onPointerDown: _pinchDown,
                 onPointerMove: _pinchMove,
