@@ -145,11 +145,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
             Expanded(
               child: Text(
                 title,
-                // 區塊標題是「次標」：降到 15.5/w700，讓頁面大標
-                // 獨大（實測回報：標題整個都太大、沒有主次）
+                // 頁面大標拿掉後，區塊標題升為主角：20/w800
+                //（A 案，使用者指定「標題有點小」）
                 style: const TextStyle(
-                  fontSize: 15.5,
-                  fontWeight: FontWeight.w700,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
                   height: 1.1,
                 ),
               ),
@@ -159,7 +159,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 padding: const EdgeInsets.only(bottom: 1, left: 12),
                 child: Text(
                   trailing,
-                  style: const TextStyle(fontSize: 11.5, color: kLTextDim),
+                  // 跟著標題放大一點，不然比例失衡（A 案 mockup 是 13）
+                  style: const TextStyle(fontSize: 13, color: kLTextDim),
                 ),
               ),
           ],
@@ -425,17 +426,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      // 頁面大標壓陣（返回不放按鈕：整頁右滑就能回，
-                      // 使用者指定拿掉）。主次：大標 26 獨大，
-                      // 區塊標題降到 15.5（見 _sectionTitle）
-                      const Padding(
-                        padding: EdgeInsets.fromLTRB(22, 10, 22, 22),
-                        child: Text(
-                          '我的東西',
-                          style: TextStyle(
-                            fontSize: 26,
-                            fontWeight: FontWeight.w900,
-                            height: 1.1,
+                      // 「我的東西」大字拿掉，只放上一頁箭頭（A 案，
+                      // 使用者指定）；主標的重量讓給各區塊標題（20）
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(14, 6, 22, 16),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: IconButton(
+                            onPressed: () => Navigator.of(context).maybePop(),
+                            icon: const Icon(
+                              Icons.arrow_back_ios_new,
+                              size: 22,
+                              color: kLText,
+                            ),
                           ),
                         ),
                       ),
