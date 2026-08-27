@@ -1442,36 +1442,38 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     };
     // 一個部件一張 PNG、各帶幾何基準：拖/縮/轉哪個部件，原生就
     // 只動那張（差量繞部件中心），PNG 不重畫——跟手的關鍵。
-    // 分層疊出來的結果跟壓平的一張一樣（同順序、同混色）
+    // 分層疊出來的結果跟壓平的一張一樣（同順序、同混色）。
+    // 渲染平行跑（Future.wait），一張一張排隊等於把延遲乘上
+    // 部件數；組裝照 jobs 順序，疊放次序不變
     final pending = <String, List<double>>{};
+    final jobs = <Future<Map<String, dynamic>?>>[];
 
-    Future<void> addSettingsParts(
+    void addSettingsParts(
       String prefix,
       WatermarkSettings st,
       Map<String, dynamic> shared,
-    ) async {
-      Future<void> addPart(
-        String id,
-        WatermarkSettings ps,
-        List<double>? geom,
-      ) async {
-        try {
-          out.add({
-            'png': await WatermarkRenderer.renderOverlayPng(ps, ow, oh),
-            ...shared,
-            // 平鋪的部件沒有「位置」可言，不參與即時幾何
-            if (geom != null) ...{
-              'id': id,
-              'bx': geom[0],
-              'by': geom[1],
-              'bs': geom[2],
-              'br': geom[3],
-            },
-          });
-          if (geom != null) pending[id] = geom;
-        } catch (e) {
-          Diag.note('浮水印 PNG 畫不出來（$id）：$e');
-        }
+    ) {
+      void addPart(String id, WatermarkSettings ps, List<double>? geom) {
+        if (geom != null) pending[id] = geom;
+        jobs.add(() async {
+          try {
+            return {
+              'png': await WatermarkRenderer.renderOverlayPng(ps, ow, oh),
+              ...shared,
+              // 平鋪的部件沒有「位置」可言，不參與即時幾何
+              if (geom != null) ...{
+                'id': id,
+                'bx': geom[0],
+                'by': geom[1],
+                'bs': geom[2],
+                'br': geom[3],
+              },
+            };
+          } catch (e) {
+            Diag.note('浮水印 PNG 畫不出來（$id）：$e');
+            return null;
+          }
+        }());
       }
 
       final t = st.text;
@@ -1480,7 +1482,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         for (final l in ps.logos) {
           l.enabled = false;
         }
-        await addPart(
+        addPart(
           '$prefix:t',
           ps,
           t.tiled ? null : [t.x, t.y, t.sizeFrac, t.rotation],
@@ -1494,7 +1496,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         for (var j = 0; j < ps.logos.length; j++) {
           ps.logos[j].enabled = j == i;
         }
-        await addPart(
+        addPart(
           '$prefix:l$i',
           ps,
           lg.tiled ? null : [lg.x, lg.y, lg.sizeFrac, lg.rotation],
@@ -1527,32 +1529,36 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         'range': aRng,
       };
       if (src.kind == ClipKind.text) {
-        try {
-          final st = (src.textStyle ?? TextMark(text: src.name)).copy()
-            ..text = src.name;
-          final id = 'c${c.id}:t';
-          out.add({
-            'png': await WatermarkRenderer.renderTextClipPng(
-              st,
-              c.px,
-              c.py,
-              c.scale,
-              ow,
-              oh,
-            ),
-            ...shared,
-            'id': id,
-            'bx': c.px,
-            'by': c.py,
-            'bs': c.scale,
-            'br': st.rotation,
-          });
-          pending[id] = [c.px, c.py, c.scale, st.rotation];
-        } catch (e) {
-          Diag.note('疊加物 PNG 畫不出來（片段 ${c.id}）：$e');
-        }
+        final st = (src.textStyle ?? TextMark(text: src.name)).copy()
+          ..text = src.name;
+        final id = 'c${c.id}:t';
+        final px = c.px, py = c.py, sc = c.scale;
+        pending[id] = [px, py, sc, st.rotation];
+        jobs.add(() async {
+          try {
+            return {
+              'png': await WatermarkRenderer.renderTextClipPng(
+                st,
+                px,
+                py,
+                sc,
+                ow,
+                oh,
+              ),
+              ...shared,
+              'id': id,
+              'bx': px,
+              'by': py,
+              'bs': sc,
+              'br': st.rotation,
+            };
+          } catch (e) {
+            Diag.note('疊加物 PNG 畫不出來（片段 ${c.id}）：$e');
+            return null;
+          }
+        }());
       } else {
-        await addSettingsParts(
+        addSettingsParts(
           'c${c.id}',
           src.wmStyle ?? WatermarkSettings(),
           shared,
@@ -1561,7 +1567,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     // 全域浮水印
     if (!_wmHidden && _settings.hasAnyMark) {
-      await addSettingsParts('g', _settings, {
+      addSettingsParts('g', _settings, {
         'rect': rect,
         'start': _wmStart,
         'end': _wmEndEff,
@@ -1573,6 +1579,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         'animSpeed': _settings.animSpeed,
         'range': _settings.animRange,
       });
+    }
+    for (final m in await Future.wait(jobs)) {
+      if (m != null) out.add(m);
     }
     _ovGeomPending = pending;
     return out;

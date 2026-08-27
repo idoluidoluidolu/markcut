@@ -4317,8 +4317,13 @@ final class CompPlayer: NSObject, FlutterTexture {
     if size.width > 1, size.height > 1 {
       // 預覽用的合成不需要原始解析度：手機螢幕短邊不到 1200，
       // 用 4K 去重畫每一格只是把解碼省下來的錢又花掉。這也是別家
-      // 「預覽解析度」設定在做的事
-      let cap: CGFloat = 1080
+      // 「預覽解析度」設定在做的事。
+      // 自適應再降一級：HDR 半浮點與多軌逐格重畫都是平方成本
+      //（實測診斷：4 層 HDR 最慢一格 963ms、拖曳 seek 九成 227ms），
+      // 疊越重降越多——手機預覽尺寸下肉眼幾乎無感，seek 直接快一倍
+      let heavy = hdrOut && anyHDR
+      let many = vTracks.count >= 3
+      let cap: CGFloat = heavy ? (many ? 720 : 900) : (many ? 900 : 1080)
       let shrink = min(1, cap / min(size.width, size.height))
       if shrink < 1 {
         size = CGSize(
