@@ -1454,6 +1454,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                   children: [
                     WatermarkPanel(
                       key: _panelKey,
+                      // 手繪直接畫在目前這張的畫面上（畫在哪、印在哪）
+                      grabFrame: () async =>
+                          _previewBytes ?? _items[_previewIndex].thumb,
                       controller: _wmPanelCtrl,
                       // 面板內的「儲存範本」藏起來，改放底部那一排
                       //（跟照片編輯同一個位置、同一個樣式）
