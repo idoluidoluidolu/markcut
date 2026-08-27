@@ -3849,15 +3849,40 @@ final class CompPlayer: NSObject, FlutterTexture {
 
   /// 暫停中催播放器重畫這一格：往同一個時間 seek 會被當 no-op，
   /// 改成在 ±1 個時間刻（1.7ms）之間來回擺——位置看不出差別、
-  /// 不累積漂移，每次都真的重組
+  /// 不累積漂移，每次都真的重組。
+  ///
+  /// 兩條規矩（實測回報「滑動中畫面不動、放開才跳」的根）：
+  /// 1. 使用者的拖曳 seek 進行中「不催」——那發 seek 完成時本來
+  ///    就會用最新的靜態參數重組這一格；催下去反而把使用者的
+  ///    seek 蓋回原地，預覽就凍住了
+  /// 2. 自己也排隊：一發催在跑就記 pending，跑完再補一發，
+  ///    不對播放器灌併發 seek
   private var nudgeFlip = false
+  private var nudging = false
+  private var nudgePending = false
   func nudgeRedrawIfPaused() {
     guard player.rate == 0 else { return }
+    if seeking || seekTarget.isValid { return }
+    if nudging {
+      nudgePending = true
+      return
+    }
+    nudging = true
     nudgeFlip.toggle()
     let eps = CMTime(value: nudgeFlip ? 1 : -1, timescale: 600)
     var t = player.currentTime() + eps
     if t < .zero { t = CMTime(value: 1, timescale: 600) }
-    player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
+    player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) {
+      [weak self] _ in
+      DispatchQueue.main.async {
+        guard let self = self else { return }
+        self.nudging = false
+        if self.nudgePending {
+          self.nudgePending = false
+          self.nudgeRedrawIfPaused()
+        }
+      }
+    }
   }
 
   /// 重產 vc 換上（不重建合成）。即時變形第一次在「CI 沒掛」的
