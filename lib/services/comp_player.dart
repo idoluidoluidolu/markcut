@@ -29,6 +29,22 @@ class CompPlayer {
 
   static const _ch = MethodChannel('markcut/comp');
 
+  /// 原生端回報「新合成的畫面真的上檔了」（第一格就緒翻面／保底）。
+  /// HDR 預覽的 Flutter 版浮水印要等這一刻才藏——早藏的話舊畫面
+  /// 還在前面撐著，浮水印會憑空消失一下（實測回報：讀取時浮水印
+  /// 消失、讀取完才出來）
+  static void Function()? onCompVisible;
+
+  static bool _handlerSet = false;
+  static void _ensureHandler() {
+    if (_handlerSet) return;
+    _handlerSet = true;
+    _ch.setMethodCallHandler((call) async {
+      if (call.method == 'compVisible') onCompVisible?.call();
+      return null;
+    });
+  }
+
   final int textureId;
   final double duration;
   final double width;
@@ -194,6 +210,7 @@ class CompPlayer {
     List<Map<String, dynamic>> overlays = const [],
   }) async {
     if (!await available) return null;
+    _ensureHandler();
     // 裁切/旋轉/透明度不再是阻擋條件：原生端會為它們掛 CI 合成器，
     // 直接烘進合成畫面（跟匯出同一套數學）。
     // 隱藏軌整條排除（畫面與聲音都不進，跟匯出一致）

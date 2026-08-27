@@ -1485,9 +1485,10 @@ class _ClipBlock extends StatelessWidget {
                   ),
                 ),
                 // 原本的雙把手，貼在片段內側兩緣。窄於 kHandleMinWidth
-                // 就不畫：把手一畫上去中間剩不到 20px，想移動短片段
-                // 永遠被判成修剪。整條讓給「拖曳移動」，要修剪就放大
-                if (isSelected && !lifted && w >= kHandleMinWidth)
+                // 改成「貼在片段外側」：以前直接不畫（怕把手吃光中間、
+                // 短片段永遠被判成修剪），但實測回報「小到一定程度沒有
+                // 拉桿」——外掛式把手中間整條留給移動，兩全
+                if (isSelected && !lifted)
                   // 熱區跟著片段長度給，短片段不會被兩個把手佔滿；
                   // 位置夾在可視範圍內，片段拉得比畫面長時
                   // 把手會貼在邊緣而不是跑到畫面外
@@ -1518,16 +1519,21 @@ class _ClipBlock extends StatelessWidget {
                         // 捲到邊出現，把手就回來
                         final headVisible = vL <= 0.5;
                         final tailVisible = w <= vR + 0.5;
+                        // 窄片段：把手整支移到片段「外側」，中間整條
+                        // 留給拖曳移動（實測回報：小到一定程度沒有拉桿）
+                        final outside = w < kHandleMinWidth;
                         return Stack(
                           children: [
                             if (headVisible)
                               Positioned(
-                                left: -_kHandleOverhang,
+                                left: outside
+                                    ? -13.0 - _kHandleOverhang
+                                    : -_kHandleOverhang,
                                 top: 0,
                                 bottom: 0,
                                 child: _TrimHandle(
                                   isLeft: true,
-                                  width: hw,
+                                  width: outside ? 13 : hw,
                                   overhang: over,
                                   onStart: onTrimStart,
                                   onEnd: onTrimEnd,
@@ -1537,13 +1543,13 @@ class _ClipBlock extends StatelessWidget {
                               ),
                             if (tailVisible)
                               Positioned(
-                                left: w - hw,
+                                left: outside ? w : w - hw,
                                 // 右把手的熱區往右長，位置不用退
                                 top: 0,
                                 bottom: 0,
                                 child: _TrimHandle(
                                   isLeft: false,
-                                  width: hw,
+                                  width: outside ? 13 : hw,
                                   overhang: over,
                                   onStart: onTrimStart,
                                   onEnd: onTrimEnd,

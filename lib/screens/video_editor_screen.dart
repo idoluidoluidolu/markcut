@@ -389,8 +389,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   // 編輯持有（選取/拖曳/浮水印分頁開著）期間換回 Flutter 版，
   // 手感即時；放手/收面板就換回烘好的（跟馬賽克佔位同一套哲學）
 
-  /// 原生端目前有沒有在畫疊加物（setOverlays 送出非空清單成功）
+  /// 原生端目前有沒有在畫疊加物（setOverlays 送出非空清單成功）。
+  /// 描述的是「畫面上這份」——重建合成時舊畫面還在前面撐著，
+  /// 這個值到新畫面上檔（compVisible）才換成 [_ovNativePending]，
+  /// 早換的話 Flutter 版先藏、新畫面又還沒上，浮水印會憑空消失
+  ///（實測回報：讀取時浮水印消失、讀取完才出來）
   bool _ovNativeShown = false;
+
+  /// 重建中的那份合成「上檔之後」原生端會不會在畫疊加物
+  bool _ovNativePending = false;
 
   /// 上一次成功同步到原生端的疊加物指紋
   String _lastOvSig = 'off';
@@ -404,14 +411,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 這份合成收不收即時疊加物（HDR 預覽且原生端掛了預覽合成器）
   bool get _ovLiveOn => _compOn && (_comp?.wmLive ?? false);
 
-  /// 使用者正在編輯疊加物：Flutter 版接手畫（即時），原生端清空
+  /// 使用者正在「動手」編輯疊加物：Flutter 版接手畫（即時跟手），
+  /// 原生端清空。
+  /// 只認真的手勢（拖曳/兩指縮放）——「選取」本身不算：一選取就
+  /// 換 Flutter 版的話，HDR 預覽裡點一下浮水印字就變灰
+  ///（實測回報），看起來像壞掉。面板調數值走 180ms 併批的
+  /// setOverlays 重烘，白色的版直接跟著變
   bool get _ovHold {
-    if (_wmSel || _ovDragging) return true;
-    if (_tabs.index == 1) return true; // 浮水印分頁開著＝調整中
-    final c = _selClipById(_sel);
-    if (c == null) return false;
-    final k = _tl.sourceOf(c).kind;
-    return k == ClipKind.text || k == ClipKind.wm;
+    if (_ovDragging) return true;
+    // 兩指縮放要選取才作用；選的是疊加物＝正在捏它
+    if (_pvPts.length >= 2) {
+      if (_wmSel) return true;
+      final c = _selClipById(_sel);
+      if (c != null) {
+        final k = _tl.sourceOf(c).kind;
+        if (k == ClipKind.text || k == ClipKind.wm) return true;
+      }
+    }
+    return false;
   }
 
   /// Flutter 版疊加物要不要藏（原生烘好的在畫、又沒有人在編輯）
@@ -1505,6 +1522,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (!await CompPlayer.setOverlays(maps)) return;
       _lastOvSig = sig;
       final shown = maps.isNotEmpty;
+      _ovNativePending = shown; // 之後的 compVisible 不要把它翻回去
       if (mounted && _ovNativeShown != shown) {
         setState(() => _ovNativeShown = shown);
       }
@@ -1515,7 +1533,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 每次預覽重建都呼叫：進出「編輯持有」立刻切（清空很便宜），
-  /// 其他變化併批 250ms 再同步（重畫 PNG 有成本）
+  /// 其他變化併批 180ms 再同步（重畫 PNG 有成本）
   void _scheduleOvSync() {
     if (!_ovLiveOn) return;
     final holdNow = _ovHold;
@@ -1527,7 +1545,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     if (_ovSyncTimer?.isActive ?? false) return;
-    _ovSyncTimer = Timer(const Duration(milliseconds: 250), () {
+    _ovSyncTimer = Timer(const Duration(milliseconds: 180), () {
       if (!mounted) return;
       // 放手偵測：預覽區已經沒有手指＝拖曳結束，換回烘好的
       if (_ovDragging && _pvPts.isEmpty) _ovDragging = false;
@@ -1809,6 +1827,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void initState() {
     super.initState();
     _tabs = TabController(length: 3, vsync: this);
+    // HDR 預覽疊加物：新合成「畫面真的上檔」那一刻才切換
+    // Flutter 版顯示與否（見 _ovNativePending 的說明）
+    CompPlayer.onCompVisible = () {
+      if (!mounted) return;
+      if (_ovNativeShown != _ovNativePending) {
+        setState(() => _ovNativeShown = _ovNativePending);
+      }
+    };
     // 量「誰在卡」：UI 執行緒、合成執行緒、還是影片本身。
     // 這三種的處理方式完全不同，沒有數字就只能猜
     Diag.watchFrames();
@@ -5855,9 +5881,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _lastCompMosaicSig = _mosaicSig();
     _lastCompStillSig = _stillSig();
     _compBakedStills = CompPlayer.bakedImageIds(_tl);
-    // 疊加物：這一版合成收不收即時清單、目前畫的是哪一版
+    // 疊加物：這一版合成收不收即時清單、目前畫的是哪一版。
+    // _ovNativeShown 不在這裡動——舊畫面還在前面撐著，等原生端
+    // 回報 compVisible（新畫面真的上檔）才切；保底計時器對齊
+    // 原生換手的 1.5 秒逾時
     _lastOvSig = made.wmLive ? ovSigAtBuild : 'off';
-    _ovNativeShown = made.wmLive && ovMaps.isNotEmpty;
+    _ovNativePending = made.wmLive && ovMaps.isNotEmpty;
+    Timer(const Duration(milliseconds: 1700), () {
+      if (mounted && _comp == made && _ovNativeShown != _ovNativePending) {
+        setState(() => _ovNativeShown = _ovNativePending);
+      }
+    });
     setState(() => _comp = made);
     // 合成接手了，舊的那幾顆播放器立刻放掉（見 _trimPlayers）
     _trimPlayers();
@@ -7846,6 +7880,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _prepEscapeTimer?.cancel();
     _staleKickTimer?.cancel();
     _ovSyncTimer?.cancel();
+    CompPlayer.onCompVisible = null;
     _posVN.dispose();
     _frameVN.dispose();
     _dressVN.dispose();
@@ -9931,9 +9966,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         Positioned.fill(
                                           child: Opacity(
                                             // HDR 預覽：烘進合成時藏起
-                                            // Flutter 版（判定留著）
+                                            // Flutter 版（判定留著；
+                                            // 0.01 不是 0——0 會跳過
+                                            // paint，選取框回報會凍結）
                                             opacity: _ovFlutterHidden
-                                                ? 0.0
+                                                ? 0.01
                                                 : c.fadeFactorAt(_position),
                                             child: WatermarkLayer(
                                               settings: st,
@@ -10058,9 +10095,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             },
                                             child: Opacity(
                                               // HDR 預覽：烘進合成時藏起
-                                              // Flutter 版（判定留著）
+                                              // Flutter 版（判定留著；
+                                              // 0.01 見浮水印層的說明）
                                               opacity: _ovFlutterHidden
-                                                  ? 0.0
+                                                  ? 0.01
                                                   : c.fadeFactorAt(_position) *
                                                         av.alpha,
                                               child: Transform.rotate(
@@ -10242,7 +10280,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       // Flutter 版藏起來（透明不拆——
                                       // 點擊/拖曳的判定要留著）
                                       Opacity(
-                                        opacity: _ovFlutterHidden ? 0.0 : 1.0,
+                                        // 0.01 不是 0：透明度 0 引擎直接
+                                        // 跳過不畫，選取框回報（frame
+                                        // Notifier 在 paint 裡發）會凍結
+                                        opacity: _ovFlutterHidden ? 0.01 : 1.0,
                                         child: WatermarkLayer(
                                           settings: _settings,
                                           onChanged: () => setState(() {}),
@@ -10359,6 +10400,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                 return;
                                               }
                                               _rtArmed = true;
+                                              // 疊加物真的被搬起來了：
+                                              // HDR 預覽換 Flutter 版接手
+                                              //（見 _ovHold 的說明）
+                                              if (_wmSel ||
+                                                  (selVis != null &&
+                                                      (_tl
+                                                                  .sourceOf(
+                                                                    selVis,
+                                                                  )
+                                                                  .kind ==
+                                                              ClipKind.text ||
+                                                          _tl
+                                                                  .sourceOf(
+                                                                    selVis,
+                                                                  )
+                                                                  .kind ==
+                                                              ClipKind.wm))) {
+                                                _ovDragging = true;
+                                              }
                                               // 起算點移到「越過門檻的這
                                               // 一刻」，不然會憑空跳 6px
                                               _gestureStartFocal = d.focalPoint;

@@ -1116,8 +1116,15 @@ final class AtomicFlag {
         let old = self.comp
         self.comp = p
         // 舊的等新畫面真的上檔（第一格就緒翻面）才收：
-        // 收早了前面那層還指著它，就是使用者看到的閃黑
-        PlayerHosts.shared.use(p.player) { old?.dispose() }
+        // 收早了前面那層還指著它，就是使用者看到的閃黑。
+        // 順便告訴 Dart「新合成真的顯示了」——HDR 預覽的 Flutter 版
+        // 浮水印要等這一刻才藏（早藏＝舊畫面還在、浮水印憑空消失）
+        PlayerHosts.shared.use(p.player) {
+          old?.dispose()
+          DispatchQueue.main.async {
+            channel.invokeMethod("compVisible", arguments: nil)
+          }
+        }
         result([
           "textureId": p.textureId,
           "duration": p.duration,

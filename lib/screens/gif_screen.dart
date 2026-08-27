@@ -1164,8 +1164,9 @@ class _GifScreenState extends State<GifScreen> {
     );
   }
 
-  /// 一個把手：44pt 觸控區。長相跟影片編輯區時間軸的修剪把手
-  /// 一致——13px 琥珀色直條＋拖曳點點，貼在選取範圍的內緣
+  /// 一個把手：64pt 觸控區（實測回報 44 太難按到，加寬）。
+  /// 長相跟影片編輯區時間軸的修剪把手一致——13px 琥珀色直條＋
+  /// 拖曳點點，貼在選取範圍的內緣
   /// （使用者回報：修剪條要跟編輯器的軌道素材同一套長相，
   /// 不要兩頁兩種東西）
   Widget _handle({
@@ -1174,10 +1175,10 @@ class _GifScreenState extends State<GifScreen> {
     required double width,
   }) {
     return Positioned(
-      left: x - 22,
+      left: x - 32,
       top: 0,
       bottom: 0,
-      width: 44,
+      width: 64,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onHorizontalDragStart: (_) {
@@ -1234,11 +1235,11 @@ class _GifScreenState extends State<GifScreen> {
             _playing = false;
           }
         },
-        // 44 寬的熱區裡，13px 的視覺把手貼在範圍內緣：
+        // 64 寬的熱區裡，13px 的視覺把手貼在範圍內緣：
         // 左把手佔 [x, x+13]、右把手佔 [x-13, x]，跟編輯器
         // 選取片段的內側雙把手同一個位置關係
         child: Container(
-          margin: EdgeInsets.only(left: left ? 22 : 9, right: left ? 9 : 22),
+          margin: EdgeInsets.only(left: left ? 32 : 19, right: left ? 19 : 32),
           decoration: BoxDecoration(
             color: kSelect,
             borderRadius: BorderRadius.horizontal(
