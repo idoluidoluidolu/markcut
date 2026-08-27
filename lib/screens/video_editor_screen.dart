@@ -418,6 +418,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   List<Map<String, dynamic>> _ovMapsCache = const [];
   Map<String, List<double>> _ovGeomCache = const {};
   String? _ovXfLastKey;
+  int _ovXfFailNoted = 0;
+  int _ovSetFails = 0;
   DateTime _ovXfLastAt = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _ovGeomActiveAt = DateTime.fromMillisecondsSinceEpoch(0);
   Timer? _ovXfTrail;
@@ -1659,7 +1661,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _ovXfLastAt = DateTime.now();
     _ovXfLastKey = key;
-    unawaited(CompPlayer.setOvXforms(hits));
+    unawaited(
+      CompPlayer.setOvXforms(hits).then((ok) {
+        if (ok || !mounted) return;
+        // 原生拒收（wmLive 對不上/合成剛換手）：不能靜默，也不能
+        // 讓畫面跟框分家——立刻改走整包重烘，位置照樣會到
+        if (_ovXfFailNoted < 3) {
+          _ovXfFailNoted++;
+          Diag.note('即時幾何被拒收，改走整包重烘（第 $_ovXfFailNoted 次）');
+        }
+        _ovGeomActiveAt = DateTime.fromMillisecondsSinceEpoch(0);
+        _ovXfLastKey = null;
+        _scheduleOvSync();
+      }),
+    );
   }
 
   /// 把疊加物同步到原生端（重畫 PNG → setOverlays → 精準 seek
@@ -1673,7 +1688,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final maps = sig == 'empty' ? <Map<String, dynamic>>[] : await _ovMaps();
       // 渲染期間又變了：這一版作廢，讓下一輪重做
       if (!mounted || !_ovLiveOn || _ovContentSig() != sig) return;
-      if (!await CompPlayer.setOverlays(maps)) return;
+      if (!await CompPlayer.setOverlays(maps)) {
+        // 原生拒收＝這份合成的 wmLive 跟 Dart 認知走鐘了。連三次
+        // 就整組重組自救，不能讓浮水印卡在舊位置（實測回報：
+        // 九宮格點了框到了、字不動）
+        _ovSetFails++;
+        Diag.note('疊加物清單被拒收（第 $_ovSetFails 次）');
+        if (_ovSetFails >= 3 && mounted) {
+          _ovSetFails = 0;
+          _compDirty = true;
+          _lastCompSig = null;
+          unawaited(_ensureComp());
+        }
+        return;
+      }
+      _ovSetFails = 0;
       _lastOvSig = sig;
       _ovBakedGeom = _ovGeomPending; // 即時幾何的差量基準跟著換
       final shown = maps.isNotEmpty;
