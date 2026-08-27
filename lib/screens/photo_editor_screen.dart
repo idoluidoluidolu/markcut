@@ -817,8 +817,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   static const _phNav = [
     (label: '範本', icon: Icons.bookmarks_outlined, sec: 0),
     (label: '位置', icon: Icons.grid_view, sec: 1),
-    // 這一區調的是「文字浮水印」，但對使用者來說它就是浮水印本體
-    (label: '浮水印', icon: Icons.title, sec: 2),
+    // 跟其他畫面的面板同一個叫法（使用者指定：這格叫「文字」）
+    (label: '文字', icon: Icons.title, sec: 2),
     (label: '圖片', icon: Icons.image_outlined, sec: 3),
     (label: '馬賽克', icon: Icons.blur_on, sec: 4),
     (label: '調色', icon: Icons.tune, sec: -1),
