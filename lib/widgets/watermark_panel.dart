@@ -10,6 +10,7 @@ import '../services/preset_store.dart';
 import '../screens/crop_screen.dart';
 import '../screens/draw_screen.dart';
 import '../theme.dart';
+import 'kaomoji_sheet.dart';
 import 'watermark_layer.dart';
 
 /// 父層注入的額外區塊。置頂導覽列要列出它，所以不能只給 Widget——
@@ -1050,6 +1051,31 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                       ),
                                       onChanged: (v) =>
                                           _update(() => s.text.text = v),
+                                    ),
+                                  ),
+                                  // 顏文字面板：點一個複製、回來貼上；
+                                  // 最近用過的排最上面（使用者指定）
+                                  Positioned(
+                                    left: 2,
+                                    bottom: 2,
+                                    child: TextButton.icon(
+                                      onPressed: () =>
+                                          showKaomojiSheet(context),
+                                      style: TextButton.styleFrom(
+                                        visualDensity: VisualDensity.compact,
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                        ),
+                                        foregroundColor: kTextDim,
+                                      ),
+                                      icon: const Icon(
+                                        Icons.emoji_emotions_outlined,
+                                        size: 16,
+                                      ),
+                                      label: const Text(
+                                        '顏文字',
+                                        style: TextStyle(fontSize: 11.5),
+                                      ),
                                     ),
                                   ),
                                   Positioned(

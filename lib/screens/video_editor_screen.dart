@@ -45,6 +45,7 @@ import '../services/work_files.dart';
 import '../theme.dart';
 import 'playback_test_screen.dart';
 import '../widgets/color_grade_panel.dart';
+import '../widgets/kaomoji_sheet.dart';
 import '../widgets/timeline_editor.dart';
 import '../widgets/prep_gate_view.dart';
 import '../widgets/watermark_layer.dart';
@@ -4585,6 +4586,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         src.name = v;
                         st.text = v;
                       }),
+                    ),
+                    // 顏文字：點一個複製、回來貼上（跟浮水印面板同一顆）
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        onPressed: () => showKaomojiSheet(context),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                          foregroundColor: kTextDim,
+                        ),
+                        icon: const Icon(
+                          Icons.emoji_emotions_outlined,
+                          size: 16,
+                        ),
+                        label: const Text(
+                          '顏文字',
+                          style: TextStyle(fontSize: 11.5),
+                        ),
+                      ),
                     ),
                     const SizedBox(height: 12),
                     Row(
