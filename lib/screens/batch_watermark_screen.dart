@@ -13,6 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
+import '../services/media_prep.dart';
 import '../services/native_frames.dart';
 import '../services/photo_saver.dart';
 import '../services/screen_awake.dart';
@@ -67,6 +68,11 @@ class _BatchItem {
   final XFile file;
   Uint8List? thumb;
   (int, int)? dims;
+
+  /// 檔案大小估計用的快取：影片長度（秒）與原檔位元數。
+  /// 問過一次就記住，畫質視窗重開不用重探
+  double? durSec;
+  int? byteLen;
 
   /// 單張模式：這張有自己的浮水印設定（在預覽上調過就會建立），
   /// null＝跟著整批的設定走
@@ -848,7 +854,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     Navigator.of(context, rootNavigator: true).pop();
     var msg = _stopRequested
         ? '已取消，完成 $done 個'
-        : (failed == 0 ? '完成！已輸出 $done 個檔案' : '完成 $done 個，$failed 個失敗');
+        : (failed == 0 ? '完成！已匯出 $done 個檔案' : '完成 $done 個，$failed 個失敗');
     if (skipped > 0) msg += '（$skipped 部影片略過：此平台不支援）';
     setState(() => _exporting = false);
     // 全部成功才問下一步；有失敗或略過就用提示講清楚，
@@ -946,11 +952,58 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     return result.ok;
   }
 
-  /// 畫質：按下「輸出」時才問（畫質是輸出的參數，不是編輯的狀態）。
-  /// 點一個選項＝選定並繼續；點外面＝取消整個輸出。
-  /// 這裡不列檔案大小——一批裡每個檔案的長度與尺寸都不一樣，
-  /// 加總出來的數字只會誤導
+  /// 整批的檔案大小估計（每個畫質檔位一個總和，MB）。
+  /// 影片照位元率模型（跟單支編輯器同一張表）×長度；照片粗估
+  /// 原檔大小×檔位係數。探不到的（web、壞檔）就跳過；
+  /// 一個都估不出來回 null，視窗就不顯示大小欄
+  Future<Map<ExportQuality, double>?> _estimateMb() async {
+    try {
+      var any = false;
+      final out = {for (final q in qualityOrder) q: 0.0};
+      for (final it in _items) {
+        if (_isVideo(it.file)) {
+          if (it.durSec == null) {
+            final m = await MediaPrep.probeLite(it.file.path);
+            final d = (m?['durSec'] as num?)?.toDouble();
+            if (d != null && d > 0) it.durSec = d;
+          }
+          final d = it.durSec ?? 0;
+          final dims = it.dims;
+          if (d <= 0 || dims == null || dims.$1 <= 0) continue;
+          for (final q in qualityOrder) {
+            final kbps = q.kbpsFor(dims.$1, dims.$2);
+            out[q] = out[q]! + (kbps * 125.0 + 32000) * d / (1024 * 1024);
+          }
+          any = true;
+        } else {
+          it.byteLen ??= await it.file.length();
+          final len = (it.byteLen ?? 0).toDouble();
+          if (len <= 0) continue;
+          for (final q in qualityOrder) {
+            final k = switch (q) {
+              ExportQuality.low => 0.6,
+              ExportQuality.standard => 1.0,
+              ExportQuality.ultra => 1.4,
+              ExportQuality.lossless => 2.2,
+            };
+            out[q] = out[q]! + len * k / (1024 * 1024);
+          }
+          any = true;
+        }
+      }
+      return any ? out : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 畫質：按下「匯出」時才問（畫質是匯出的參數，不是編輯的狀態）。
+  /// 點一個選項＝選定並繼續；點外面＝取消整個匯出。
+  /// 跟單支影片同一個長相（使用者指定統一）：右邊列整批的
+  /// 大小估計、預設檔位掛「推薦」
   Future<bool> _askQuality() async {
+    final est = await _estimateMb();
+    if (!mounted) return false;
     final picked = await showDialog<ExportQuality>(
       context: context,
       builder: (context) => AlertDialog(
@@ -966,6 +1019,10 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                   context: context,
                   title: q.label,
                   subtitle: q.note,
+                  badge: q == ExportQuality.standard ? '推薦' : null,
+                  trailing: est == null
+                      ? null
+                      : '約 ${est[q]!.clamp(1, 1e9).toStringAsFixed(0)} MB',
                   selected: _quality == q,
                   first: i == 0,
                   onTap: () => Navigator.pop(context, q),
@@ -1050,7 +1107,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              for (final (i, r) in CanvasRatio.values.indexed)
+              for (final (i, r) in ratioOrder.indexed)
                 optionRow(
                   context: context,
                   title: r.label,
@@ -1515,7 +1572,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                       const SizedBox(width: 10),
                       Expanded(
                         child: primaryAction(
-                          label: '輸出',
+                          label: '匯出',
                           onPressed: _exporting ? null : _confirmExportAll,
                         ),
                       ),

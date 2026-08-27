@@ -11918,7 +11918,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              for (final (i, r) in CanvasRatio.values.indexed)
+              for (final (i, r) in ratioOrder.indexed)
                 Builder(
                   builder: (context) {
                     final (w, h) = computeCanvasSize(_tl, _resolution, r);

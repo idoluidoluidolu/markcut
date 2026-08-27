@@ -21,6 +21,8 @@ import 'about_screen.dart';
 import 'donate_screen.dart';
 import 'feedback_screen.dart';
 import 'batch_watermark_screen.dart';
+import 'collage_screen.dart';
+import 'gif_screen.dart';
 import 'photo_editor_screen.dart';
 import 'presets_screen.dart';
 import 'watermark_studio_screen.dart';
@@ -78,6 +80,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
   /// 批次浮水印的未完成草稿（見 kBatchDraftKey）
   Map<String, dynamic>? _batchDraft;
 
+  /// GIF 製作／拼圖的未完成草稿（見 kGifDraftKey / kCollageDraftKey）
+  Map<String, dynamic>? _gifDraft;
+  Map<String, dynamic>? _collageDraft;
+
   @override
   void initState() {
     super.initState();
@@ -110,6 +116,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
       _gifs = gifs;
       _photoDraft = readDraft(kPhotoDraftKey, 'photo');
       _batchDraft = readDraft(kBatchDraftKey, 'files');
+      _gifDraft = readDraft(kGifDraftKey, 'path');
+      _collageDraft = readDraft(kCollageDraftKey, 'photos');
     });
     unawaited(_loadCovers(videoDrafts));
   }
@@ -361,6 +369,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
             color: Color(0xFFAFAFBB),
           ),
           title: '未完成的批次浮水印',
+          onTap: _openDrafts,
+        ),
+      if (_gifDraft != null)
+        _draftTile(
+          cover: const Icon(
+            Icons.gif_box_outlined,
+            size: 26,
+            color: Color(0xFFAFAFBB),
+          ),
+          title: '未完成的 GIF',
+          onTap: _openDrafts,
+        ),
+      if (_collageDraft != null)
+        _draftTile(
+          cover: const Icon(
+            Icons.grid_view,
+            size: 26,
+            color: Color(0xFFAFAFBB),
+          ),
+          title: '未完成的拼圖',
           onTap: _openDrafts,
         ),
     ];
@@ -690,6 +718,10 @@ class _DraftsScreenState extends State<DraftsScreen> {
 
   /// 批次浮水印的草稿（見 kBatchDraftKey）
   Map<String, dynamic>? _batchDraft;
+
+  /// GIF 製作／拼圖的草稿（見 kGifDraftKey / kCollageDraftKey）
+  Map<String, dynamic>? _gifDraft;
+  Map<String, dynamic>? _collageDraft;
   bool _loading = true;
 
   /// 選取模式：勾好幾份、右上角垃圾桶一次刪
@@ -740,14 +772,94 @@ class _DraftsScreenState extends State<DraftsScreen> {
         if ((j['files'] as List?)?.isNotEmpty ?? false) batch = j;
       } catch (_) {}
     }
+    Map<String, dynamic>? gif;
+    final gs = prefs.getString(kGifDraftKey);
+    if (gs != null) {
+      try {
+        final j = jsonDecode(gs) as Map<String, dynamic>;
+        if ((j['path'] as String?)?.isNotEmpty ?? false) gif = j;
+      } catch (_) {}
+    }
+    Map<String, dynamic>? collage;
+    final cs = prefs.getString(kCollageDraftKey);
+    if (cs != null) {
+      try {
+        final j = jsonDecode(cs) as Map<String, dynamic>;
+        if ((j['photos'] as List?)?.isNotEmpty ?? false) collage = j;
+      } catch (_) {}
+    }
     if (mounted) {
       setState(() {
         _drafts = found;
         _photoDraft = photo;
         _batchDraft = batch;
+        _gifDraft = gif;
+        _collageDraft = collage;
         _loading = false;
       });
       unawaited(_loadCovers(found));
+    }
+  }
+
+  /// 續作 GIF：影片還在就帶回 GIF 製作頁
+  Future<void> _resumeGif() async {
+    final d = _gifDraft;
+    if (d == null) return;
+    final path = d['path'] as String? ?? '';
+    if (!await fileExists(path)) {
+      if (mounted) showHint(context, '這支影片已經不在了，草稿無法續作', error: true);
+      return;
+    }
+    if (!mounted) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => GifScreen(
+          path: path,
+          name: d['name'] as String? ?? 'video',
+          restore: d,
+        ),
+      ),
+    );
+    _reload();
+  }
+
+  Future<void> _deleteGif() async {
+    final ok = await showConfirm(
+      context,
+      title: '刪除 GIF 草稿？',
+      message: '剪選範圍與設定會被移除，無法復原',
+      action: '刪除',
+    );
+    if (ok) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(kGifDraftKey);
+      _reload();
+    }
+  }
+
+  /// 續作拼圖：照片還在的帶回去（拼圖頁自己會略過不見的）
+  Future<void> _resumeCollage() async {
+    final d = _collageDraft;
+    if (d == null) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => CollageScreen(restore: d)),
+    );
+    _reload();
+  }
+
+  Future<void> _deleteCollage() async {
+    final ok = await showConfirm(
+      context,
+      title: '刪除拼圖草稿？',
+      message: '排法與設定會被移除，無法復原',
+      action: '刪除',
+    );
+    if (ok) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(kCollageDraftKey);
+      _reload();
     }
   }
 
@@ -1070,7 +1182,12 @@ class _DraftsScreenState extends State<DraftsScreen> {
   Widget build(BuildContext context) {
     final ds = _drafts;
     final p = _photoDraft;
-    final empty = ds.isEmpty && p == null && _batchDraft == null;
+    final empty =
+        ds.isEmpty &&
+        p == null &&
+        _batchDraft == null &&
+        _gifDraft == null &&
+        _collageDraft == null;
     return SwipeBack(
       child: Scaffold(
         appBar: AppBar(
@@ -1169,6 +1286,34 @@ class _DraftsScreenState extends State<DraftsScreen> {
                           subtitle: _savedAtLabel(_batchDraft!),
                           onTap: _resumeBatch,
                           onDelete: _deleteBatch,
+                        ),
+                      ],
+                      if (_gifDraft != null) ...[
+                        const SizedBox(height: 12),
+                        _draftCard(
+                          cover: const Icon(
+                            Icons.gif_box_outlined,
+                            size: 20,
+                            color: kLAccent,
+                          ),
+                          title: '未完成的 GIF',
+                          subtitle: _savedAtLabel(_gifDraft!),
+                          onTap: _resumeGif,
+                          onDelete: _deleteGif,
+                        ),
+                      ],
+                      if (_collageDraft != null) ...[
+                        const SizedBox(height: 12),
+                        _draftCard(
+                          cover: const Icon(
+                            Icons.grid_view,
+                            size: 20,
+                            color: kLAccent,
+                          ),
+                          title: '未完成的拼圖',
+                          subtitle: _savedAtLabel(_collageDraft!),
+                          onTap: _resumeCollage,
+                          onDelete: _deleteCollage,
                         ),
                       ],
                       // 底部刪除列滑上來時，最後一張卡不被蓋住

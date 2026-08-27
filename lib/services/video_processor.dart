@@ -28,8 +28,22 @@ extension ExportResolutionLabel on ExportResolution {
   };
 }
 
-/// 輸出畫面比例（原始 = 跟第一個影片一樣）
-enum CanvasRatio { original, r16_9, r9_16, r1_1, r4_3, r3_4 }
+/// 輸出畫面比例（原始 = 跟第一個影片一樣）。
+/// 4:5 補在最後而不是插在中間——草稿存的是 enum 索引，
+/// 插在中間會讓舊專案的比例整個跑掉；顯示順序由 [ratioOrder] 決定
+enum CanvasRatio { original, r16_9, r9_16, r1_1, r4_3, r3_4, r4_5 }
+
+/// 比例視窗的顯示順序：原始最前，其餘照首位數字由小到大
+///（使用者指定；全 App 的比例視窗都用這一份，照片編輯也對齊它）
+const ratioOrder = [
+  CanvasRatio.original,
+  CanvasRatio.r1_1,
+  CanvasRatio.r3_4,
+  CanvasRatio.r4_3,
+  CanvasRatio.r4_5,
+  CanvasRatio.r9_16,
+  CanvasRatio.r16_9,
+];
 
 extension CanvasRatioInfo on CanvasRatio {
   String get label => switch (this) {
@@ -39,6 +53,7 @@ extension CanvasRatioInfo on CanvasRatio {
     CanvasRatio.r1_1 => '1:1',
     CanvasRatio.r4_3 => '4:3',
     CanvasRatio.r3_4 => '3:4',
+    CanvasRatio.r4_5 => '4:5',
   };
 
   /// 寬/高；null = 依素材
@@ -49,6 +64,7 @@ extension CanvasRatioInfo on CanvasRatio {
     CanvasRatio.r1_1 => 1,
     CanvasRatio.r4_3 => 4 / 3,
     CanvasRatio.r3_4 => 3 / 4,
+    CanvasRatio.r4_5 => 4 / 5,
   };
 }
 

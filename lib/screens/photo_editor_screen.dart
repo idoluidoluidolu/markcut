@@ -113,11 +113,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     });
   }
 
+  // 跟影片/批次的比例視窗同一套選項與順序（原始最前、
+  // 其餘照首位數字由小到大——使用者指定全 App 統一）
   static const _ratioOptions = <({String label, double? aspect})>[
     (label: '原始', aspect: null),
     (label: '1:1', aspect: 1.0),
-    (label: '4:5', aspect: 0.8),
     (label: '3:4', aspect: 0.75),
+    (label: '4:3', aspect: 4 / 3),
+    (label: '4:5', aspect: 0.8),
     (label: '9:16', aspect: 9 / 16),
     (label: '16:9', aspect: 16 / 9),
   ];
@@ -133,7 +136,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('畫布比例'),
+        title: const Text('畫面比例'),
         contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
         content: SizedBox(
           width: 270,
@@ -948,7 +951,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   const SizedBox(width: 10),
                   Expanded(
                     child: primaryAction(
-                      label: '輸出',
+                      label: '匯出',
                       onPressed: _exporting ? null : _confirmExport,
                     ),
                   ),
@@ -1731,7 +1734,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       builder: (context) => const PopScope(
         canPop: false,
         child: AlertDialog(
-          title: Text('輸出中…'),
+          title: Text('匯出中…'),
           content: SizedBox(
             height: 48,
             child: Center(child: CircularProgressIndicator()),
@@ -1774,7 +1777,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       // 這句是次要說明，不要接在主訊息後面變成一長串括號
       if (jpeg && ext == 'png') note = '這個裝置不支援 JPEG，已改存 PNG';
     } catch (e) {
-      message = '輸出失敗：$e';
+      message = '匯出失敗：$e';
       ok = false;
     }
     if (ok) {

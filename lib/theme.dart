@@ -524,7 +524,7 @@ Future<String> askAfterExport(
               Icon(Icons.check_circle_outline, size: 34, color: c.accent),
               SizedBox(height: 12),
               Text(
-                '輸出完成',
+                '匯出完成',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 15.5,

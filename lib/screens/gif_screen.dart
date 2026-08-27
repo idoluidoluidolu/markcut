@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -6,6 +7,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/export_speed.dart' show fmtDuration;
 import '../services/native_frames.dart';
@@ -22,11 +24,22 @@ import '../theme.dart';
 /// 不走影片編輯器——做 GIF 的人只想要「這幾秒變成 GIF」，
 /// 不需要時間軸、多軌、浮水印那一整套。這一頁只有三件事：
 /// 預覽、剪多長、出檔。
+/// GIF 製作的草稿鍵（個人頁「未完成的 GIF」讀這裡）
+const kGifDraftKey = 'gif_draft_v1';
+
 class GifScreen extends StatefulWidget {
   final String path;
   final String name;
 
-  const GifScreen({super.key, required this.path, required this.name});
+  /// 從草稿續作：剪選範圍與輸出設定（見 kGifDraftKey）
+  final Map<String, dynamic>? restore;
+
+  const GifScreen({
+    super.key,
+    required this.path,
+    required this.name,
+    this.restore,
+  });
 
   @override
   State<GifScreen> createState() => _GifScreenState();
@@ -59,6 +72,39 @@ class _GifScreenState extends State<GifScreen> {
 
   /// 播放速度倍率。GIF 常常要放慢看細節、或加快變成有梗的節奏
   double _speed = 1.0;
+
+  /// 「有沒有改過」基準：進場（含草稿還原）後拍一次，
+  /// 匯出成功後重拍——跟批次/照片同一套離開保護
+  String _baseline = '';
+
+  String _stateJson() => jsonEncode({
+    'path': widget.path,
+    'name': widget.name,
+    'start': double.parse(_start.toStringAsFixed(2)),
+    'end': double.parse(_end.toStringAsFixed(2)),
+    'size': _size,
+    'fps': _fps,
+    'speed': _speed,
+    if (_crop != null)
+      'crop': [_crop!.left, _crop!.top, _crop!.width, _crop!.height],
+    'savedAt': DateTime.now().toIso8601String(),
+  });
+
+  /// savedAt 每次都不一樣，比對前拿掉
+  String _dirtyKey() {
+    final j = jsonDecode(_stateJson()) as Map<String, dynamic>;
+    j.remove('savedAt');
+    return jsonEncode(j);
+  }
+
+  bool get _dirty => _baseline.isNotEmpty && _dirtyKey() != _baseline;
+
+  Future<void> _saveGifDraft() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(kGifDraftKey, _stateJson());
+    } catch (_) {}
+  }
 
   /// 拖把手時的起手值與累計位移。
   ///
@@ -366,6 +412,33 @@ class _GifScreenState extends State<GifScreen> {
     _dur = p.value.duration.inMilliseconds / 1000.0;
     _start = 0;
     _end = math.min(_dur, 15);
+    // 草稿續作：把上次的剪選範圍與設定套回來（夾在有效範圍內）
+    final r = widget.restore;
+    if (r != null) {
+      try {
+        _start = ((r['start'] as num?)?.toDouble() ?? 0).clamp(0.0, _dur);
+        _end = ((r['end'] as num?)?.toDouble() ?? _end).clamp(
+          math.min(_start + 0.2, _dur),
+          _dur,
+        );
+        final sz = (r['size'] as num?)?.toInt();
+        if (sz != null && sz > 0) _size = sz;
+        final f = (r['fps'] as num?)?.toInt();
+        if (f != null && f > 0) _fps = f;
+        final sp = (r['speed'] as num?)?.toDouble();
+        if (sp != null && sp > 0) _speed = sp;
+        final c = (r['crop'] as List?)?.cast<num>();
+        if (c != null && c.length >= 4 && c[2] > 0.01 && c[3] > 0.01) {
+          _crop = Rect.fromLTWH(
+            c[0].toDouble(),
+            c[1].toDouble(),
+            c[2].toDouble(),
+            c[3].toDouble(),
+          );
+        }
+      } catch (_) {}
+    }
+    _baseline = _dirtyKey();
     _schedulePreview();
     // 一進來就用影片循環播選取段落（_tick 播到段尾會跳回起點，
     // 就是 GIF 的循環感；聲音已靜音）——真的 GIF 預覽生成好會
@@ -557,7 +630,14 @@ class _GifScreenState extends State<GifScreen> {
       showHint(context, message, error: true);
       return;
     }
-    // 成功統一走「輸出完成」對話框（跟影片/照片/批次同一顆），
+    // 匯出成功＝基準重拍、草稿清掉：之後離開不再問保留
+    _baseline = _dirtyKey();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(kGifDraftKey);
+    } catch (_) {}
+    if (!mounted) return;
+    // 成功統一走「匯出完成」對話框（跟影片/照片/批次同一顆），
     // 小 toast 太不明顯（實測回報）
     final act = await askAfterExport(context, message);
     if (act == 'home' && mounted) Navigator.of(context).pop();
@@ -603,6 +683,32 @@ class _GifScreenState extends State<GifScreen> {
     _schedulePreview();
   }
 
+  /// 離開保護：調過還沒匯出就問一下（跟影片/照片/批次同一套）
+  Future<void> _confirmLeave() async {
+    if (!_dirty) {
+      Navigator.of(context).pop();
+      return;
+    }
+    final act = await showLeaveChoice(
+      context,
+      title: '這個 GIF 還沒匯出',
+      // 全 App 統一的說法（使用者指定）
+      message: '可以在個人頁面的「草稿」繼續未完成的編輯',
+      keepLabel: '保留草稿',
+    );
+    if (!mounted) return;
+    if (act == 'keep') {
+      await _saveGifDraft();
+      if (mounted) Navigator.of(context).pop();
+    } else if (act == 'discard') {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove(kGifDraftKey);
+      } catch (_) {}
+      if (mounted) Navigator.of(context).pop();
+    }
+  }
+
   // ===== UI =====
 
   @override
@@ -615,7 +721,7 @@ class _GifScreenState extends State<GifScreen> {
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && mounted) Navigator.of(context).pop();
+        if (!didPop && mounted) unawaited(_confirmLeave());
       },
       child: Scaffold(
         backgroundColor: kBg,

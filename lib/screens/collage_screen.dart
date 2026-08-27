@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -8,8 +9,10 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'crop_screen.dart';
+import '../services/file_reader.dart';
 import '../theme.dart';
 import '../widgets/watermark_layer.dart';
 import 'photo_editor_screen.dart';
@@ -19,12 +22,18 @@ import 'photo_editor_screen.dart';
 /// 畫布比例可選（1:1/4:5/3:4/16:9/9:16）、格子等分、照片置中裁滿（cover）；
 /// 拖曳格子互換位置、點一下鎖定後可調構圖（右上角鈕換照片），
 /// 也能開純格線（調線寬、選顏色）。
+/// 拼圖的草稿鍵（個人頁「未完成的拼圖」讀這裡）
+const kCollageDraftKey = 'collage_draft_v1';
+
 class CollageScreen extends StatefulWidget {
   /// 進場時就帶進來的照片。可以是空的——空手進來先排宮格、
   /// 再用底下的「批次匯入照片」或每一格的「＋」放照片
   final List<XFile> photos;
 
-  const CollageScreen({super.key, this.photos = const []});
+  /// 從草稿續作：照片路徑＋排法＋設定（見 kCollageDraftKey）
+  final Map<String, dynamic>? restore;
+
+  const CollageScreen({super.key, this.photos = const [], this.restore});
 
   @override
   State<CollageScreen> createState() => _CollageScreenState();
@@ -46,6 +55,10 @@ class _CollageScreenState extends State<CollageScreen> {
   /// 已解碼的照片。換掉之後不再被任何格子用到的會被釋放並留 null，
   /// 索引保持穩定（_order 存的是這裡的索引）
   final List<ui.Image?> _images = [];
+
+  /// 每張照片的來源路徑（跟 _images 同索引；存草稿用）。
+  /// 換單張時換上的是裁切版，路徑仍記原圖——續作時裁切會回到原圖
+  final List<String?> _srcPaths = [];
 
   /// 一開始選進來的那批數量：換版型時還會用到，不能釋放
   int _poolSize = 0;
@@ -192,7 +205,157 @@ class _CollageScreenState extends State<CollageScreen> {
     return heic ? '瀏覽器解不了 HEIC 格式，請先轉成 JPG（或改用手機版）' : '照片讀不出來';
   }
 
+  // ===== 草稿（離開保護；跟批次同一套 prefs 存法）=====
+
+  bool get _hasContent => _images.any((i) => i != null);
+
+  String _draftJson() => jsonEncode({
+    'photos': [for (final p in _srcPaths) p ?? ''],
+    'order': _order,
+    'cols': _cols,
+    'rows': _rows,
+    'free': _free,
+    'aspect': _canvasAspect,
+    'lines': _lines,
+    'gapN': _gapN,
+    'lineColor': _lineColor,
+    'fits': [
+      for (final f in _fits) {'z': f.zoom, 'x': f.panX, 'y': f.panY},
+    ],
+    'freeItems': [
+      for (final t in _items)
+        {
+          'img': t.img,
+          'l': t.rect.left,
+          't': t.rect.top,
+          'w': t.rect.width,
+          'h': t.rect.height,
+        },
+    ],
+    'savedAt': DateTime.now().toIso8601String(),
+  });
+
+  Future<void> _saveDraft() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(kCollageDraftKey, _draftJson());
+    } catch (_) {}
+  }
+
+  /// 從草稿把照片與排法還原。照片不在了就略過並講清楚；
+  /// 一張都讀不回來回 false，退回一般載入（空盤）
+  Future<bool> _restoreDraft(Map<String, dynamic> r) async {
+    try {
+      final paths = (r['photos'] as List? ?? []);
+      final map = <int, int>{}; // 草稿裡的索引 → 現在的索引
+      var gone = 0;
+      for (var i = 0; i < paths.length; i++) {
+        final p0 = paths[i];
+        if (p0 is! String || p0.isEmpty) continue;
+        if (!await fileExists(p0)) {
+          gone++;
+          continue;
+        }
+        try {
+          final img = await _decode(await XFile(p0).readAsBytes());
+          if (!mounted) {
+            img.dispose();
+            return true;
+          }
+          map[i] = _images.length;
+          _images.add(img);
+          _srcPaths.add(p0);
+        } catch (_) {
+          gone++;
+        }
+      }
+      if (_images.isEmpty) {
+        if (mounted && paths.isNotEmpty) {
+          showHint(context, '這份拼圖的照片都已經不在了，從空白開始', error: true);
+        }
+        return false;
+      }
+      _poolSize = _images.length;
+      _free = r['free'] == true;
+      _canvasAspect = ((r['aspect'] as num?)?.toDouble() ?? 1.0).clamp(
+        0.3,
+        3.5,
+      );
+      _lines = r['lines'] == true;
+      _gapN = ((r['gapN'] as num?)?.toDouble() ?? 0.008).clamp(0.0, 0.05);
+      final lc = (r['lineColor'] as num?)?.toInt();
+      if (lc != null) _lineColor = lc;
+      _cols = ((r['cols'] as num?)?.toInt() ?? 2).clamp(1, _kMaxSide);
+      _rows = ((r['rows'] as num?)?.toInt() ?? 2).clamp(1, _kMaxSide);
+      final ord = (r['order'] as List? ?? []).cast<num>();
+      _order = List.generate(
+        _cellCount,
+        (n) => n < ord.length ? (map[ord[n].toInt()] ?? -1) : -1,
+      );
+      final fs = (r['fits'] as List? ?? []);
+      _fits = List.generate(_cellCount, (n) {
+        final f = _CellFit();
+        if (n < fs.length && fs[n] is Map) {
+          final m = fs[n] as Map;
+          f.zoom = ((m['z'] as num?)?.toDouble() ?? 1.0).clamp(1.0, 8.0);
+          f.panX = (m['x'] as num?)?.toDouble() ?? 0;
+          f.panY = (m['y'] as num?)?.toDouble() ?? 0;
+        }
+        return f;
+      });
+      _items.clear();
+      for (final e in (r['freeItems'] as List? ?? [])) {
+        if (e is! Map) continue;
+        final ni = map[(e['img'] as num?)?.toInt() ?? -1];
+        if (ni == null) continue;
+        _items.add(
+          _FreeItem(
+            img: ni,
+            rect: ui.Rect.fromLTWH(
+              ((e['l'] as num?)?.toDouble() ?? 0.1).clamp(-0.5, 1.5),
+              ((e['t'] as num?)?.toDouble() ?? 0.1).clamp(-0.5, 1.5),
+              ((e['w'] as num?)?.toDouble() ?? 0.4).clamp(0.05, 2.0),
+              ((e['h'] as num?)?.toDouble() ?? 0.4).clamp(0.05, 2.0),
+            ),
+          ),
+        );
+      }
+      if (gone > 0 && mounted) showHint(context, '有 $gone 張照片已不在，已略過');
+      if (mounted) setState(() {});
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 離開保護：畫布上有照片就問一下（跟其他編輯畫面同一套）
+  Future<void> _confirmLeave() async {
+    if (!_hasContent) {
+      Navigator.of(context).pop();
+      return;
+    }
+    final act = await showLeaveChoice(
+      context,
+      title: '這份拼圖還沒完成',
+      // 全 App 統一的說法（使用者指定）
+      message: '可以在個人頁面的「草稿」繼續未完成的編輯',
+      keepLabel: '保留草稿',
+    );
+    if (!mounted) return;
+    if (act == 'keep') {
+      await _saveDraft();
+      if (mounted) Navigator.of(context).pop();
+    } else if (act == 'discard') {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove(kCollageDraftKey);
+      } catch (_) {}
+      if (mounted) Navigator.of(context).pop();
+    }
+  }
+
   Future<void> _load() async {
+    if (widget.restore != null && await _restoreDraft(widget.restore!)) return;
     for (final f in widget.photos) {
       try {
         final img = await _decode(await f.readAsBytes());
@@ -203,6 +366,7 @@ class _CollageScreenState extends State<CollageScreen> {
           return;
         }
         _images.add(img);
+        _srcPaths.add(f.path);
       } catch (_) {}
       if (_images.length >= _kMaxCells) break;
     }
@@ -297,6 +461,7 @@ class _CollageScreenState extends State<CollageScreen> {
           break; // 沒有空格了
         }
         _images.add(img);
+        _srcPaths.add(f.path);
         _order[slot] = _images.length - 1;
         _fits[slot] = _CellFit();
         filled++;
@@ -355,6 +520,7 @@ class _CollageScreenState extends State<CollageScreen> {
       setState(() {
         final old = _order[cell];
         _images.add(img);
+        _srcPaths.add(f.path);
         _order[cell] = _images.length - 1;
         _fits[cell] = _CellFit();
         _selCell = cell;
@@ -377,6 +543,7 @@ class _CollageScreenState extends State<CollageScreen> {
     if (_items.any((t) => t.img == idx)) return; // 自由模式還在用
     _images[idx]?.dispose();
     _images[idx] = null;
+    if (idx < _srcPaths.length) _srcPaths[idx] = null;
   }
 
   // ===== 自由模式：狀態操作 =====
@@ -429,6 +596,7 @@ class _CollageScreenState extends State<CollageScreen> {
           return;
         }
         _images.add(img);
+        _srcPaths.add(f.path);
         // 方塊照照片比例開（寬 45% 畫布），太長太扁的夾一下。
         // 高度的比例座標要把畫布比例算進去，方塊才真的是照片的形狀
         final a = img.width / img.height;
@@ -1014,80 +1182,89 @@ class _CollageScreenState extends State<CollageScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // 不包 SwipeBack：拖曳格子互換會誤觸右滑返回、被踢回首頁
-    return Scaffold(
-      backgroundColor: kBg,
-      appBar: AppBar(backgroundColor: kBg),
-      body: _cols == 0
-          ? const Center(child: CircularProgressIndicator())
-          : SafeArea(
-              child: Column(
-                children: [
-                  Expanded(
-                    // 點畫布外的黑邊＝取消選取。窄長畫布（9:16）兩側
-                    // 一大片留白，點那裡沒反應會以為選取卡住了
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () => setState(() {
-                        _selItem = -1;
-                        _selCell = -1;
-                      }),
-                      child: Center(
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: AspectRatio(
-                            // 畫布比例兩種模式共用（宮格＝把它等分）
-                            aspectRatio: _canvasAspect,
-                            child: _free ? _buildFree() : _buildGrid(),
+    // 不包 SwipeBack：拖曳格子互換會誤觸右滑返回、被踢回首頁。
+    // 離開保護：畫布上有照片就先問（保留草稿／不保留）
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && mounted) unawaited(_confirmLeave());
+      },
+      child: Scaffold(
+        backgroundColor: kBg,
+        appBar: AppBar(backgroundColor: kBg),
+        body: _cols == 0
+            ? const Center(child: CircularProgressIndicator())
+            : SafeArea(
+                child: Column(
+                  children: [
+                    Expanded(
+                      // 點畫布外的黑邊＝取消選取。窄長畫布（9:16）兩側
+                      // 一大片留白，點那裡沒反應會以為選取卡住了
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => setState(() {
+                          _selItem = -1;
+                          _selCell = -1;
+                        }),
+                        child: Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: AspectRatio(
+                              // 畫布比例兩種模式共用（宮格＝把它等分）
+                              aspectRatio: _canvasAspect,
+                              child: _free ? _buildFree() : _buildGrid(),
+                            ),
                           ),
                         ),
                       ),
                     ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
-                    child: _settingsCard(),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6),
-                    child: Text(
-                      _free ? '最後選取的照片會在最上層' : '按住可拖曳交換照片位置；點一下鎖定 可調照片顯示位置',
-                      style: const TextStyle(fontSize: 11, color: kTextDim),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+                      child: _settingsCard(),
                     ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
-                    // 還有空格就先幫人把照片放進來，不要讓他按了
-                    // 才被告知「還有空格子」。放滿了才換成完成
-                    child: _free
-                        ? (_items.isEmpty
-                              ? primaryAction(
-                                  label: '匯入照片',
-                                  icon: Icons.add_photo_alternate_outlined,
-                                  onPressed: _building ? null : _addFreePhotos,
-                                )
-                              : primaryAction(
-                                  label: _building ? '合成中…' : '完成，上浮水印',
-                                  icon: Icons.check,
-                                  onPressed: _building ? null : _done,
-                                ))
-                        : _order.contains(-1)
-                        ? primaryAction(
-                            label: _filled == 0
-                                ? '匯入照片'
-                                : '再匯入照片（還有 ${_order.where((k) => k < 0).length} 格）',
-                            icon: Icons.add_photo_alternate_outlined,
-                            onPressed: _building ? null : () => _fillCell(-1),
-                          )
-                        : primaryAction(
-                            label: _building ? '合成中…' : '完成，上浮水印',
-                            icon: Icons.check,
-                            onPressed: _building ? null : _done,
-                          ),
-                  ),
-                ],
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        _free ? '最後選取的照片會在最上層' : '按住可拖曳交換照片位置；點一下鎖定 可調照片顯示位置',
+                        style: const TextStyle(fontSize: 11, color: kTextDim),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
+                      // 還有空格就先幫人把照片放進來，不要讓他按了
+                      // 才被告知「還有空格子」。放滿了才換成完成
+                      child: _free
+                          ? (_items.isEmpty
+                                ? primaryAction(
+                                    label: '匯入照片',
+                                    icon: Icons.add_photo_alternate_outlined,
+                                    onPressed: _building
+                                        ? null
+                                        : _addFreePhotos,
+                                  )
+                                : primaryAction(
+                                    label: _building ? '合成中…' : '完成，上浮水印',
+                                    icon: Icons.check,
+                                    onPressed: _building ? null : _done,
+                                  ))
+                          : _order.contains(-1)
+                          ? primaryAction(
+                              label: _filled == 0
+                                  ? '匯入照片'
+                                  : '再匯入照片（還有 ${_order.where((k) => k < 0).length} 格）',
+                              icon: Icons.add_photo_alternate_outlined,
+                              onPressed: _building ? null : () => _fillCell(-1),
+                            )
+                          : primaryAction(
+                              label: _building ? '合成中…' : '完成，上浮水印',
+                              icon: Icons.check,
+                              onPressed: _building ? null : _done,
+                            ),
+                    ),
+                  ],
+                ),
               ),
-            ),
+      ),
     );
   }
 
