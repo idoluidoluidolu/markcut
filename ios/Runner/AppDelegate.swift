@@ -4103,6 +4103,9 @@ final class CompPlayer: NSObject, FlutterTexture {
           width: (size.width * shrink / 2).rounded() * 2,
           height: (size.height * shrink / 2).rounded() * 2)
       }
+      // 逃逸閉包（vcRegen 存在屬性上）不能隱式抓 self：
+      // 畫布尺寸先落地成區域常數，下面一律用它
+      let canvas = size
 
       // 墊在影片下層的圖片/GIF：組成 CI 層（跟匯出同一套定位數學，
       // 畫布用預覽的 renderSize）。GIF 包成 CIGifSpec 逐幀取
@@ -4120,12 +4123,12 @@ final class CompPlayer: NSObject, FlutterTexture {
           t = t.concatenating(CGAffineTransform(scaleX: -1, y: 1))
             .concatenating(CGAffineTransform(translationX: dw, y: 0))
         }
-        let k = min(size.width / dw, size.height / dh)
+        let k = min(canvas.width / dw, canvas.height / dh)
         t = t.concatenating(CGAffineTransform(scaleX: k, y: k))
           .concatenating(
             CGAffineTransform(
-              translationX: (size.width - dw * k) / 2,
-              y: (size.height - dh * k) / 2))
+              translationX: (canvas.width - dw * k) / 2,
+              y: (canvas.height - dh * k) / 2))
         let u = CGFloat(st["scale"] as? Double ?? 1)
         let spx = st["px"] as? Double ?? 0.5
         let spy = st["py"] as? Double ?? 0.5
@@ -4135,18 +4138,18 @@ final class CompPlayer: NSObject, FlutterTexture {
           t = t
             .concatenating(
               CGAffineTransform(
-                translationX: -size.width / 2, y: -size.height / 2)
+                translationX: -canvas.width / 2, y: -canvas.height / 2)
             )
             .concatenating(CGAffineTransform(scaleX: u, y: u))
             .concatenating(
               CGAffineTransform(
-                translationX: size.width / 2 + CGFloat(spx - 0.5)
-                  * size.width,
-                y: size.height / 2 + CGFloat(spy - 0.5) * size.height))
+                translationX: canvas.width / 2 + CGFloat(spx - 0.5)
+                  * canvas.width,
+                y: canvas.height / 2 + CGFloat(spy - 0.5) * canvas.height))
         }
         let flipSrc = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: dh)
         let flipCanvas = CGAffineTransform(
-          a: 1, b: 0, c: 0, d: -1, tx: 0, ty: size.height)
+          a: 1, b: 0, c: 0, d: -1, tx: 0, ty: canvas.height)
         let placement = flipSrc.concatenating(t).concatenating(flipCanvas)
         var gifSpec: CIGifSpec? = nil
         if st["gif"] as? Bool ?? false {
@@ -4190,7 +4193,7 @@ final class CompPlayer: NSObject, FlutterTexture {
         let dw = abs(disp.width)
         let dh = abs(disp.height)
         guard dw > 1, dh > 1 else { return nil }
-        let k = min(size.width / dw, size.height / dh)
+        let k = min(canvas.width / dw, canvas.height / dh)
         // 鏡像在「轉正之後的顯示座標」上做：先左右翻，再推回原位
         var t = seg.transform
         if seg.mirror {
@@ -4201,8 +4204,8 @@ final class CompPlayer: NSObject, FlutterTexture {
           .concatenating(CGAffineTransform(scaleX: k, y: k))
           .concatenating(
             CGAffineTransform(
-              translationX: (size.width - dw * k) / 2,
-              y: (size.height - dh * k) / 2))
+              translationX: (canvas.width - dw * k) / 2,
+              y: (canvas.height - dh * k) / 2))
         let u = CGFloat(seg.userScale)
         if abs(seg.userScale - 1) > 0.001 || abs(seg.px - 0.5) > 0.001
           || abs(seg.py - 0.5) > 0.001
@@ -4210,14 +4213,14 @@ final class CompPlayer: NSObject, FlutterTexture {
           t = t
             .concatenating(
               CGAffineTransform(
-                translationX: -size.width / 2, y: -size.height / 2)
+                translationX: -canvas.width / 2, y: -canvas.height / 2)
             )
             .concatenating(CGAffineTransform(scaleX: u, y: u))
             .concatenating(
               CGAffineTransform(
-                translationX: size.width / 2 + CGFloat(seg.px - 0.5)
-                  * size.width,
-                y: size.height / 2 + CGFloat(seg.py - 0.5) * size.height))
+                translationX: canvas.width / 2 + CGFloat(seg.px - 0.5)
+                  * canvas.width,
+                y: canvas.height / 2 + CGFloat(seg.py - 0.5) * canvas.height))
         }
         return t
       }
@@ -4282,7 +4285,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       // 畫不了旋轉）。馬賽克逐格打碼、濃度柔邊顏色的數學跟成品
       // 一字不差（CIExportCompositor），HDR 來源 toneMapHDRtoSDR
       // 跟相簿同一條曲線
-      let ciMosaics = mosaics.compactMap { CIMosaicSpec($0, canvas: size) }
+      let ciMosaics = mosaics.compactMap { CIMosaicSpec($0, canvas: canvas) }
       // 全部影像軌：每段指令都列，解碼器全程保持熱的（見
       // CIExportInstruction.requiredSourceTrackIDs 的說明）
       let prerollIDs = Array(Set(segments.map { $0.track.trackID }))
@@ -4307,7 +4310,7 @@ final class CompPlayer: NSObject, FlutterTexture {
           }
         }
         let vc = AVMutableVideoComposition()
-        vc.renderSize = size
+        vc.renderSize = canvas
         vc.frameDuration = CMTime(value: 1, timescale: 30)
         // 輸出色彩明確標 709。HDR 原檔進 CI 合成器時像素已經被
         // toneMap 成 SDR，但不標的話 HDR 的色彩標記會原封傳下去，
@@ -4443,8 +4446,8 @@ final class CompPlayer: NSObject, FlutterTexture {
       // 「CI 有掛」時收清單（needsCI false＝沒有合成器在讀）
       if hdrOut && anyHDR && needsCI {
         CIExportCompositor.setPreviewOverlays(
-          overlays.compactMap { CIOverlaySpec($0, canvas: size) })
-        ciCanvas = size
+          overlays.compactMap { CIOverlaySpec($0, canvas: canvas) })
+        ciCanvas = canvas
         wmLive = true
       }
       if needsVC {
