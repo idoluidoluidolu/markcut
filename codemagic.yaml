@@ -95,6 +95,28 @@ workflows:
         auth: integration
         submit_to_testflight: true
 
+  # 快速編譯檢查：不簽章、不上傳，只驗 Swift/Dart 編得過。
+  # 給 AI 助手的迴圈用：push 之後用 Codemagic API 觸發這條，
+  # ~10 分鐘拿到編譯錯誤自己修，不用等 TestFlight 整條跑完、
+  # 也不用真機測試員當編譯器
+  ios-compile:
+    name: iOS 編譯檢查（不簽章）
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Flutter 依賴
+        script: flutter pub get
+      - name: CocoaPods
+        script: |
+          cd ios
+          pod install
+      - name: 編譯（不簽章）
+        script: flutter build ios --release --no-codesign
+
   # Android：產出 release APK 當備份（可選）
   android-apk:
     name: Android APK
