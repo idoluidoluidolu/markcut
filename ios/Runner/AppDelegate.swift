@@ -4538,10 +4538,6 @@ final class CompPlayer: NSObject, FlutterTexture {
       // 一字不差（CIExportCompositor），HDR 來源 toneMapHDRtoSDR
       // 跟相簿同一條曲線
       let ciMosaics = mosaics.compactMap { CIMosaicSpec($0, canvas: canvas) }
-      // 全部影像軌：每段指令都列，解碼器全程保持熱的（見
-      // CIExportInstruction.requiredSourceTrackIDs 的說明）
-      let prerollIDs = Array(Set(segments.map { $0.track.trackID }))
-        .sorted().map { NSNumber(value: $0) }
       // 最後一個可見片段結束的時間：之後的區間就是「片尾」
       let lastShow = segments.map { $0.range.end.seconds }.max() ?? 0
       // 產一份 videoComposition（可帶捏合中的即時變形覆寫 ov）。
@@ -4584,7 +4580,8 @@ final class CompPlayer: NSObject, FlutterTexture {
         // 用上一格頂一下；放手重組就正確）
         let useCI = needsCI || ov != nil
         if useCI {
-        var built: [CIExportInstruction] = []
+        var proto: [(a: CMTime, b: CMTime, layers: [CILayerSpec], hold: Bool)] =
+          []
         for i in 0..<(marks.count - 1) {
           let a = marks[i]
           let b = marks[i + 1]
@@ -4634,13 +4631,36 @@ final class CompPlayer: NSObject, FlutterTexture {
           // 片尾（最後一個可見片段之後，例如音樂比畫面長）不留黑：
           // 無條件重播最後一格，畫面停在最後一幀直到播完
           let tail = a.seconds >= lastShow - 0.001
+          proto.append((
+            a: a, b: b, layers: layers,
+            hold: layers.isEmpty && ((b - a).seconds < 0.12 || tail)
+          ))
+        }
+        // 預捲窗：這一段「用到的軌」＋往後 1.5 秒內會進場的軌。
+        // 原本每段都列全部軌道（解碼器全程熱機、接縫不冷啟動），
+        // 代價是 5 軌專案在單軌區間 seek 也要等 5 顆解碼器供格——
+        // 就是「多部影片後滑動就定位很久」（實測回報）。
+        // 改成只看近未來：接縫照樣提前 1.5 秒熱機，seek 只等該等的
+        var built: [CIExportInstruction] = []
+        for (i, pi) in proto.enumerated() {
+          var ids = Set(
+            pi.layers.compactMap { l -> CMPersistentTrackID? in
+              l.trackID == kCMPersistentTrackID_Invalid ? nil : l.trackID
+            })
+          let horizon = pi.b.seconds + 1.5
+          for pj in proto.dropFirst(i + 1) {
+            if pj.a.seconds >= horizon { break }
+            for l in pj.layers
+            where l.trackID != kCMPersistentTrackID_Invalid {
+              ids.insert(l.trackID)
+            }
+          }
           built.append(
             CIExportInstruction(
-              timeRange: CMTimeRange(start: a, end: b),
-              layers: layers, mosaics: ciMosaics, overlays: [],
-              prerollTrackIDs: prerollIDs,
-              holdIfEmpty: layers.isEmpty
-                && ((b - a).seconds < 0.12 || tail)))
+              timeRange: CMTimeRange(start: pi.a, end: pi.b),
+              layers: pi.layers, mosaics: ciMosaics, overlays: [],
+              prerollTrackIDs: ids.sorted().map { NSNumber(value: $0) },
+              holdIfEmpty: pi.hold))
         }
         // HDR 輸出模式掛「HDR 預覽」合成器：同一套疊圖、不做色調
         // 映射、輸出走 HLG 管線（跟 HDR 匯出同一顆），另外讀即時
