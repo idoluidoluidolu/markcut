@@ -685,6 +685,8 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
                 key: _panelKey,
                 controller: _wmPanelCtrl,
                 settings: _settings,
+                // 手繪只留在這裡（使用者指定：其他畫面的入口全拿掉）
+                showDraw: true,
                 // 這裡是「做範本」的地方，動畫當然要能設定。
                 // 示意畫面沒有時間軸（time 為 null）所以不會動，
                 // 但值會存進範本，套到影片上就看得到

@@ -56,9 +56,9 @@ void main() {
     );
     await _settle(t, 20);
 
-    // 面板是分頁的：浮水印組的卡片掛在「浮水印」那一頁，先切過去
-    // （「更多」那格已經拿掉，見 _phNav）
-    await t.tap(find.text('浮水印').first);
+    // 面板是分頁的：浮水印組的卡片掛在「文字」那一頁（導覽列那格
+    // 改叫「文字」了），先切過去
+    await t.tap(find.text('文字').first);
     await _settle(t);
 
     // 面板裡的「浮水印」加號卡。導覽列那格也叫「浮水印」，

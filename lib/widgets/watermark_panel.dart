@@ -117,6 +117,10 @@ class WatermarkPanel extends StatefulWidget {
   /// 跟主浮水印同一頁，不必為它多佔一格
   final Widget? textSectionExtra;
 
+  /// 顯示「手繪」入口。只有「製作浮水印」那一頁開（使用者指定：
+  /// 其他畫面全拿掉——要手繪就去範本工作室做，做好套進來）
+  final bool showDraw;
+
   /// 手繪「畫在目前畫面上」的底圖來源：照片本人／播放頭那一格。
   /// 給了，畫板就鋪著現場畫面畫（可關）；筆跡畫在哪、浮水印落在哪。
   /// 不給＝維持透明畫板（例如純範本工作室沒有現場畫面）
@@ -151,6 +155,7 @@ class WatermarkPanel extends StatefulWidget {
     this.hideSaveButton = false,
     this.extraSections = const [],
     this.textSectionExtra,
+    this.showDraw = false,
     this.grabFrame,
     this.controller,
     this.showNav = true,
@@ -679,7 +684,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
           key: null,
           action: widget.onAddGif!,
         ),
-      if (widget.showNav)
+      if (widget.showNav && widget.showDraw)
         (
           label: '手繪',
           icon: Icons.draw_outlined,
