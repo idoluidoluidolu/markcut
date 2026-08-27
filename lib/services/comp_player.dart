@@ -402,6 +402,29 @@ class CompPlayer {
     }
   }
 
+  /// 浮水印部件的即時幾何（拖曳/縮放/旋轉；絕對值，原生跟烘進
+  /// PNG 的基準算差量）。PNG 不重畫、合成不重建——跟手的關鍵
+  static Future<bool> setOvXform({
+    required String id,
+    required double x,
+    required double y,
+    required double scale,
+    required double rot,
+  }) async {
+    try {
+      return await _ch.invokeMethod<bool>('setOvXform', {
+            'id': id,
+            'x': x,
+            'y': y,
+            'scale': scale,
+            'rot': rot,
+          }) ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// 取消即時變形覆寫（重組完成、烘定值已含最終位置時呼叫；
   /// 值相同所以畫面不動，只是把覆寫收掉，免得之後改了縮放
   /// 又被舊覆寫算錯差量）

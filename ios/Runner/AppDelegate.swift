@@ -84,7 +84,21 @@ final class CIOverlaySpec {
   let effW: Double
   let effH: Double
 
+  /// 即時幾何（見 CompLiveOv）：id 對得上就套差量。
+  /// bx/by/bs/br＝這張 PNG 烘的時候的位置/大小/旋轉基準。
+  /// 匯出跟舊呼叫端不帶＝不參與
+  let id: String?
+  let bx: Double
+  let by: Double
+  let bs: Double
+  let br: Double
+
   init?(_ ov: [String: Any], canvas: CGSize) {
+    id = ov["id"] as? String
+    bx = ov["bx"] as? Double ?? 0.5
+    by = ov["by"] as? Double ?? 0.5
+    bs = ov["bs"] as? Double ?? 1
+    br = ov["br"] as? Double ?? 0
     guard let data = (ov["png"] as? FlutterStandardTypedData)?.data,
       let ui = UIImage(data: data), let cg = ui.cgImage
     else { return nil }
@@ -517,6 +531,18 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
     return liveXf
   }
 
+  private static var liveOv: CompLiveOv?
+  static func setLiveOv(_ x: CompLiveOv?) {
+    xfLock.lock()
+    liveOv = x
+    xfLock.unlock()
+  }
+  static func currentLiveOv() -> CompLiveOv? {
+    xfLock.lock()
+    defer { xfLock.unlock() }
+    return liveOv
+  }
+
   // context 用靜態共用：CI 的濾鏡管線編譯快取掛在 context 上，
   // 每個合成器實例各開一顆的話，抽格器、播放器、匯出各自都要
   // 重新編一次管線——首編譯那幾十 ms 正好落在畫面上變成一頓
@@ -945,8 +971,30 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           let ovs =
             self.livePreview
             ? CIExportCompositor.currentPreviewOverlays() : ins.overlays
+          let lov = self.liveComp ? CIExportCompositor.currentLiveOv() : nil
           for ov in ovs {
             if var o = ov.frame(at: t, canvas: size) {
+              // 浮水印部件的即時幾何：拖/縮/轉只是差量，PNG 不重畫。
+              // 差量繞「部件中心」算（跟預覽的拖曳手感同一個原點）
+              if let lov = lov, let oid = ov.id, oid == lov.id {
+                let cx = CGFloat(ov.bx) * size.width
+                let cy = (1 - CGFloat(ov.by)) * size.height
+                let sc = CGFloat(lov.scale / max(0.0001, ov.bs))
+                var d = CGAffineTransform(translationX: -cx, y: -cy)
+                  .concatenating(CGAffineTransform(scaleX: sc, y: sc))
+                let dr = lov.rot - ov.br
+                if abs(dr) > 0.01 {
+                  // CI 是 y 往上：畫面上的順時針＝數學上的負角
+                  d = d.concatenating(
+                    CGAffineTransform(
+                      rotationAngle: CGFloat(-dr * Double.pi / 180)))
+                }
+                d = d.concatenating(
+                  CGAffineTransform(
+                    translationX: cx + CGFloat(lov.x - ov.bx) * size.width,
+                    y: cy - CGFloat(lov.y - ov.by) * size.height))
+                o = o.transformed(by: d)
+              }
               if self.hdrOut {
                 // 治本（半透明變灰的根）：疊加物蓋到的地方，先把
                 // 「字底下」的畫面夾回 SDR 白以內再混色。半透明白字
@@ -1258,6 +1306,24 @@ final class AtomicFlag {
         } else {
           result(p.applyXform(ov))
         }
+      case "setOvXform":
+        // 浮水印部件的即時幾何（拖曳/縮放/旋轉）：改靜態參數＋催一格
+        // 重畫，PNG 不重畫、合成不重建——跟手的關鍵
+        guard let a = call.arguments as? [String: Any], let p = self.comp,
+          p.wmLive, let oid = a["id"] as? String
+        else {
+          result(false)
+          return
+        }
+        CIExportCompositor.setLiveOv(
+          CompLiveOv(
+            id: oid,
+            x: a["x"] as? Double ?? 0.5,
+            y: a["y"] as? Double ?? 0.5,
+            scale: a["scale"] as? Double ?? 1,
+            rot: a["rot"] as? Double ?? 0))
+        p.nudgeRedrawIfPaused()
+        result(true)
       case "setOverlays":
         // HDR 預覽的即時疊加物：換清單不重建合成（拖曳/改樣式用）。
         // 換完 Dart 端會補一個精準 seek 逼它重畫當下這一格
@@ -3703,6 +3769,17 @@ private struct CompSeg {
   var crop: [Double]?
   var rotation: Double
   var opacity: Double
+}
+
+/// 浮水印部件的即時幾何覆寫（拖曳/縮放/旋轉），絕對值：
+/// 原生端跟烘進 PNG 的基準（bx/by/bs/br）算差量，每一格直接套。
+/// 內容（字/色）沒變就不用重畫 PNG——這才追得上手指
+struct CompLiveOv {
+  let id: String
+  let x: Double
+  let y: Double
+  let scale: Double
+  let rot: Double
 }
 
 /// 捏合/拖曳中的即時變形覆寫：z＝軌道編號、start＝片段在時間軸的開頭

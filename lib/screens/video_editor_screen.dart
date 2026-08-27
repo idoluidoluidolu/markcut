@@ -403,11 +403,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 上一次成功同步到原生端的疊加物指紋
   String _lastOvSig = 'off';
 
-  /// 疊加物拖曳中（放手＝預覽區沒有手指了才解除）
+  /// 「素材化」浮水印/文字拖曳中（放手＝預覽區沒手指才解除）。
+  /// 全域浮水印不用這套——它有即時幾何（見 _liveOvSync）
   bool _ovDragging = false;
   bool _ovHoldLast = false;
   bool _ovSyncBusy = false;
   Timer? _ovSyncTimer;
+
+  /// 全域浮水印各部件烘進 PNG 時的幾何基準（id → [x,y,size,rot]）。
+  /// 現值偏離基準＝把絕對值丟給原生套差量（PNG 不重畫，跟手的關鍵）
+  Map<String, List<double>> _ovBakedGeom = const {};
+  Map<String, List<double>> _ovGeomPending = const {};
+  String? _ovXfLastKey;
+  DateTime _ovXfLastAt = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _ovGeomActiveAt = DateTime.fromMillisecondsSinceEpoch(0);
+  Timer? _ovXfTrail;
 
   /// 這份合成收不收即時疊加物（HDR 預覽且原生端掛了預覽合成器）
   bool get _ovLiveOn => _compOn && (_comp?.wmLive ?? false);
@@ -420,9 +430,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// setOverlays 重烘，白色的版直接跟著變
   bool get _ovHold {
     if (_ovDragging) return true;
-    // 兩指縮放要選取才作用；選的是疊加物＝正在捏它
+    // 兩指縮放要選取才作用；選的是「素材化」疊加物＝正在捏它。
+    // 全域浮水印不進持有——它的拖/縮/轉走即時幾何，原生直接跟手
     if (_pvPts.length >= 2) {
-      if (_wmSel) return true;
       final c = _selClipById(_sel);
       if (c != null) {
         final k = _tl.sourceOf(c).kind;
@@ -1485,26 +1495,120 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         Diag.note('疊加物 PNG 畫不出來（片段 ${c.id}）：$e');
       }
     }
+    // 全域浮水印：一個部件一張 PNG（文字一張、每張圖各一張）。
+    // 分開烘才能各自套「即時幾何」——拖/縮/轉哪個部件，原生就只
+    // 動那張，PNG 不重畫（跟手的關鍵）。分層疊出來的結果跟壓平
+    // 的一張一樣（同順序、同混色）
+    final pending = <String, List<double>>{};
     if (!_wmHidden && _settings.hasAnyMark) {
-      try {
-        out.add({
-          'png': await WatermarkRenderer.renderOverlayPng(_settings, ow, oh),
-          'rect': rect,
-          'start': _wmStart,
-          'end': _wmEndEff,
-          'anim': animName(_settings.animation),
-          'cycle': _settings.animation == WmAnimation.marquee
-              ? wmMarqueeCycle(_settings.animSpeed)
-              : wmBlinkCycle(_settings.animSpeed),
-          'on': wmBlinkOn(_settings.animSpeed, _settings.animRange),
-          'animSpeed': _settings.animSpeed,
-          'range': _settings.animRange,
-        });
-      } catch (e) {
-        Diag.note('浮水印 PNG 畫不出來：$e');
+      Future<void> addPart(
+        String id,
+        WatermarkSettings ps,
+        List<double>? geom,
+      ) async {
+        try {
+          out.add({
+            'png': await WatermarkRenderer.renderOverlayPng(ps, ow, oh),
+            'rect': rect,
+            'start': _wmStart,
+            'end': _wmEndEff,
+            'anim': animName(_settings.animation),
+            'cycle': _settings.animation == WmAnimation.marquee
+                ? wmMarqueeCycle(_settings.animSpeed)
+                : wmBlinkCycle(_settings.animSpeed),
+            'on': wmBlinkOn(_settings.animSpeed, _settings.animRange),
+            'animSpeed': _settings.animSpeed,
+            'range': _settings.animRange,
+            // 平鋪的部件沒有「位置」可言，不參與即時幾何
+            if (geom != null) ...{
+              'id': id,
+              'bx': geom[0],
+              'by': geom[1],
+              'bs': geom[2],
+              'br': geom[3],
+            },
+          });
+          if (geom != null) pending[id] = geom;
+        } catch (e) {
+          Diag.note('浮水印 PNG 畫不出來（$id）：$e');
+        }
+      }
+
+      final t = _settings.text;
+      if (t.enabled && t.text.trim().isNotEmpty) {
+        final ps = _settings.copy();
+        for (final l in ps.logos) {
+          l.enabled = false;
+        }
+        await addPart(
+          'g:t',
+          ps,
+          t.tiled ? null : [t.x, t.y, t.sizeFrac, t.rotation],
+        );
+      }
+      for (var i = 0; i < _settings.logos.length; i++) {
+        final lg = _settings.logos[i];
+        if (!lg.enabled || lg.b64 == null) continue;
+        final ps = _settings.copy();
+        ps.text.enabled = false;
+        for (var j = 0; j < ps.logos.length; j++) {
+          ps.logos[j].enabled = j == i;
+        }
+        await addPart(
+          'g:l$i',
+          ps,
+          lg.tiled ? null : [lg.x, lg.y, lg.sizeFrac, lg.rotation],
+        );
       }
     }
+    _ovGeomPending = pending;
     return out;
+  }
+
+  /// 全域浮水印的即時幾何：現值偏離「烘進 PNG 的基準」就把絕對值
+  /// 丟給原生套差量（33ms 節流＋尾發）。PNG 不重畫、合成不重建，
+  /// 拖曳/縮放/旋轉全程顯示顏色正確的烘焙版
+  void _liveOvSync() {
+    if (!_ovLiveOn || _ovBakedGeom.isEmpty) return;
+    ({String id, double x, double y, double sc, double r})? hit;
+    void check(String id, double x, double y, double sc, double r) {
+      final b = _ovBakedGeom[id];
+      if (b == null || hit != null) return;
+      if ((b[0] - x).abs() > 1e-4 ||
+          (b[1] - y).abs() > 1e-4 ||
+          (b[2] - sc).abs() > 1e-4 ||
+          (b[3] - r).abs() > 1e-3) {
+        hit = (id: id, x: x, y: y, sc: sc, r: r);
+      }
+    }
+
+    final t = _settings.text;
+    if (t.enabled && !t.tiled) check('g:t', t.x, t.y, t.sizeFrac, t.rotation);
+    for (var i = 0; i < _settings.logos.length; i++) {
+      final l = _settings.logos[i];
+      if (l.enabled && !l.tiled && l.b64 != null) {
+        check('g:l$i', l.x, l.y, l.sizeFrac, l.rotation);
+      }
+    }
+    final h = hit;
+    if (h == null) return;
+    _ovGeomActiveAt = DateTime.now();
+    final key =
+        '${h.id}|${h.x.toStringAsFixed(4)}|${h.y.toStringAsFixed(4)}'
+        '|${h.sc.toStringAsFixed(4)}|${h.r.toStringAsFixed(2)}';
+    if (key == _ovXfLastKey) return;
+    if (DateTime.now().difference(_ovXfLastAt).inMilliseconds < 33) {
+      _ovXfTrail?.cancel();
+      _ovXfTrail = Timer(const Duration(milliseconds: 40), () {
+        if (mounted) _liveOvSync();
+      });
+      return;
+    }
+    _ovXfLastAt = DateTime.now();
+    _ovXfLastKey = key;
+    unawaited(
+      CompPlayer.setOvXform(id: h.id, x: h.x, y: h.y, scale: h.sc, rot: h.r),
+    );
   }
 
   /// 把疊加物同步到原生端（重畫 PNG → setOverlays → 精準 seek
@@ -1522,6 +1626,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (!mounted || !_ovLiveOn || _ovContentSig() != sig) return;
       if (!await CompPlayer.setOverlays(maps)) return;
       _lastOvSig = sig;
+      _ovBakedGeom = _ovGeomPending; // 即時幾何的差量基準跟著換
       final shown = maps.isNotEmpty;
       _ovNativePending = shown; // 之後的 compVisible 不要把它翻回去
       if (mounted && _ovNativeShown != shown) {
@@ -1550,7 +1655,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (!mounted) return;
       // 放手偵測：預覽區已經沒有手指＝拖曳結束，換回烘好的
       if (_ovDragging && _pvPts.isEmpty) _ovDragging = false;
-      if (_ovContentSig() != _lastOvSig) unawaited(_syncPreviewOverlays());
+      if (_ovContentSig() != _lastOvSig) {
+        // 全域浮水印的幾何還在動：即時幾何正在跟手，停穩 400ms
+        // 才整包重烘（歸位畫質；基準＝現值，換上無感）
+        if (DateTime.now().difference(_ovGeomActiveAt).inMilliseconds < 400) {
+          _scheduleOvSync();
+          return;
+        }
+        unawaited(_syncPreviewOverlays());
+      }
       if (_ovDragging) _scheduleOvSync();
     });
   }
@@ -5965,6 +6078,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 回報 compVisible（新畫面真的上檔）才切；保底計時器對齊
     // 原生換手的 1.5 秒逾時
     _lastOvSig = made.wmLive ? ovSigAtBuild : 'off';
+    _ovBakedGeom = made.wmLive ? _ovGeomPending : const {};
     _ovNativePending = made.wmLive && ovMaps.isNotEmpty;
     // 新合成烘的就是現在的變形值：即時變形的基準重取
     _xfLastSent = null;
@@ -7963,6 +8077,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _prepEscapeTimer?.cancel();
     _staleKickTimer?.cancel();
     _ovSyncTimer?.cancel();
+    _ovXfTrail?.cancel();
     _xfTrail?.cancel();
     CompPlayer.onCompVisible = null;
     _posVN.dispose();
@@ -9102,6 +9217,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _scheduleOvSync();
     // 選取中片段的即時變形（捏合/拖曳跟手）：同一個入口，節流在裡面
     _liveXformSync();
+    // 全域浮水印的即時幾何（拖/縮/轉跟手，PNG 不重畫）
+    _liveOvSync();
     final baseVideo = _activeVideo;
     final baseCtrl = baseVideo == null ? null : _ctrls[baseVideo.id];
     final baseAspect = (baseCtrl != null && baseCtrl.value.isInitialized)
@@ -10381,12 +10498,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         child: WatermarkLayer(
                                           settings: _settings,
                                           onChanged: () => setState(() {}),
-                                          onDragStart: () {
-                                            // 拖曳持有：Flutter 版接手畫，
-                                            // 原生端清空（見 _ovHold）
-                                            _ovDragging = true;
-                                            _pushWmUndo();
-                                          },
+                                          onDragStart: _pushWmUndo,
                                           // 選取框畫在裁切外（見 _wmFrameInfo）
                                           frameNotifier: _wmFrameInfo,
                                           onHitBox: (t, l) =>
@@ -10494,23 +10606,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                 return;
                                               }
                                               _rtArmed = true;
-                                              // 疊加物真的被搬起來了：
+                                              // 「素材化」疊加物被搬起來：
                                               // HDR 預覽換 Flutter 版接手
-                                              //（見 _ovHold 的說明）
-                                              if (_wmSel ||
-                                                  (selVis != null &&
-                                                      (_tl
-                                                                  .sourceOf(
-                                                                    selVis,
-                                                                  )
-                                                                  .kind ==
-                                                              ClipKind.text ||
-                                                          _tl
-                                                                  .sourceOf(
-                                                                    selVis,
-                                                                  )
-                                                                  .kind ==
-                                                              ClipKind.wm))) {
+                                              //（全域浮水印不用——即時幾何）
+                                              if (selVis != null &&
+                                                  (_tl.sourceOf(selVis).kind ==
+                                                          ClipKind.text ||
+                                                      _tl
+                                                              .sourceOf(selVis)
+                                                              .kind ==
+                                                          ClipKind.wm)) {
                                                 _ovDragging = true;
                                               }
                                               // 起算點移到「越過門檻的這
