@@ -133,14 +133,16 @@ const _kGroups = <(String, List<String>)>[
   ),
 ];
 
-/// 複製成功的提示：畫面中央的深色大卡（顏文字本人放大），
-/// 約 1.2 秒自動消失。底部那條小 toast 太不明顯（實測回報）
+/// 複製成功的提示：整頁壓暗 45%＋畫面中央的深色大卡（顏文字本人
+/// 放大），約 1.2 秒自動消失（A 案，使用者指定）
 void _showCopied(BuildContext context, String k) {
   final overlay = Overlay.of(context, rootOverlay: true);
   late final OverlayEntry entry;
   entry = OverlayEntry(
-    builder: (_) => Center(
-      child: IgnorePointer(
+    builder: (_) => IgnorePointer(
+      child: Container(
+        color: const Color(0x73000000), // 暗幕：提示在跳的時候背景壓暗
+        alignment: Alignment.center,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
           decoration: BoxDecoration(
@@ -170,7 +172,7 @@ void _showCopied(BuildContext context, String k) {
               ),
               const SizedBox(height: 5),
               const Text(
-                '已複製，貼上就能用',
+                '已複製',
                 style: TextStyle(
                   fontSize: 12.5,
                   color: Color(0xFFB9B9BF),
