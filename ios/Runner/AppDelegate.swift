@@ -1,4 +1,5 @@
 import AVFoundation
+import MetalKit
 import CoreImage
 import VideoToolbox
 import Flutter
@@ -93,7 +94,11 @@ final class CIOverlaySpec {
   let bs: Double
   let br: Double
 
+  /// 原始 PNG（Metal 引擎自己上傳紋理用）
+  let pngData: Data?
+
   init?(_ ov: [String: Any], canvas: CGSize) {
+    pngData = (ov["png"] as? FlutterStandardTypedData)?.data
     id = ov["id"] as? String
     bx = ov["bx"] as? Double ?? 0.5
     by = ov["by"] as? Double ?? 0.5
@@ -1220,6 +1225,7 @@ final class AtomicFlag {
     let textures = registrar.textures()
     // AVPlayerLayer 版的預覽：跟相簿播放同一條路，零複製
     registrar.register(PlayerViewFactory(), withId: "markcut/player_view")
+    registrar.register(MetalViewFactory(), withId: "markcut/metal_view")
     channel.setMethodCallHandler { [weak self] call, result in
       guard let self = self else {
         result(nil)
@@ -1286,6 +1292,52 @@ final class AtomicFlag {
           // 把 Flutter 版藏起來、之後用 setOverlays 更新
           "wmLive": p.wmLive,
         ])
+      case "mbuild":
+        // Metal 預覽引擎（滑動/暫停接管）：換佈局。組不了回 false，
+        // Dart 端照舊走現有路徑
+        guard let a = call.arguments as? [String: Any],
+          let ls = a["layers"] as? [[String: Any]]
+        else {
+          result(false)
+          return
+        }
+        let specs: [MetalLayerSpec] = ls.compactMap { m in
+          guard let path = m["path"] as? String else { return nil }
+          return MetalLayerSpec(
+            id: m["id"] as? Int ?? 0,
+            path: path,
+            offset: m["offset"] as? Double ?? 0,
+            end: m["end"] as? Double ?? 0,
+            trimStart: m["trimStart"] as? Double ?? 0,
+            speed: m["speed"] as? Double ?? 1,
+            z: m["z"] as? Int ?? 0,
+            px: m["px"] as? Double ?? 0.5,
+            py: m["py"] as? Double ?? 0.5,
+            scale: m["scale"] as? Double ?? 1,
+            mirror: m["mirror"] as? Bool ?? false,
+            rotation: m["rotation"] as? Double ?? 0,
+            opacity: m["opacity"] as? Double ?? 1,
+            fadeIn: m["fadeIn"] as? Double ?? 0,
+            fadeOut: m["fadeOut"] as? Double ?? 0,
+            crop: m["crop"] as? [Double],
+            srcW: m["srcW"] as? Double ?? 16,
+            srcH: m["srcH"] as? Double ?? 9)
+        }
+        result(
+          MetalPreviewEngine.shared.build(
+            canvasW: a["w"] as? Double ?? 1080,
+            canvasH: a["h"] as? Double ?? 1920,
+            hdr: a["hdr"] as? Bool ?? false,
+            specs: specs))
+      case "mshow":
+        MetalPreviewEngine.shared.show(call.arguments as? Bool ?? false)
+        result(nil)
+      case "mseek":
+        MetalPreviewEngine.shared.seek(call.arguments as? Double ?? 0)
+        result(nil)
+      case "mdispose":
+        MetalPreviewEngine.shared.disposeAll()
+        result(nil)
       case "setXform":
         // 捏合/拖曳中的即時變形。走「合成器每一格直接讀的靜態參數」
         // ——之前每次更新都重產 videoComposition 換上，AVFoundation
@@ -5262,3 +5314,513 @@ final class CompPlayer: NSObject, FlutterTexture {
     lock.unlock()
   }
 }
+
+// ============================================================
+// Metal 預覽引擎（Phase 1：暫停與滑動）
+//
+// LAG 家族的終局解。AVFoundation 的合成播放器繼續負責「播放」
+//（它播起來本來就穩），這顆引擎接管所有「互動」：滑動、暫停中
+// 改參數——也就是延遲住的地方。
+//
+// 做法：每個可見片段一顆輕量 AVPlayer 當「供格幫浦」（各自
+// tolerant seek、互不等待），影格以 64RGBAHalf（extended linear）
+// 拉進 Metal 紋理，一個 render pass 疊合、CAMetalLayer EDR 顯示。
+// 滑動＝先畫緩衝裡最近的格、解到更準的再補——零等待手感。
+// 顏色數學（HDR 夾白＋疊加物提亮）從 CIExportCompositor 原封搬進
+// shader，兩邊同一套。
+//
+// Phase 1 不畫馬賽克與墊底圖層（滑動的暫態省略）；
+// 任何一步失敗都回報 unavailable，Dart 端自動退回現有路徑。
+// ============================================================
+
+/// 一個片段的供格幫浦：獨立 AVPlayer＋影格輸出，tolerant seek，
+/// 拿得到就换新紋理、拿不到就沿用上一張（stale-while-refine）
+final class MetalPump {
+  let player = AVPlayer()
+  private var output: AVPlayerItemVideoOutput?
+  private(set) var ready = false
+  private var lastSeek = -1.0
+  var lastTexture: MTLTexture?
+
+  let path: String
+
+  init(path: String) {
+    self.path = path
+    let item = AVPlayerItem(url: URL(fileURLWithPath: path))
+    let attrs: [String: Any] = [
+      kCVPixelBufferPixelFormatTypeKey as String: Int(
+        kCVPixelFormatType_64RGBAHalf),
+      kCVPixelBufferMetalCompatibilityKey as String: true,
+    ]
+    let out = AVPlayerItemVideoOutput(pixelBufferAttributes: attrs)
+    item.add(out)
+    output = out
+    player.isMuted = true
+    player.replaceCurrentItem(with: item)
+  }
+
+  /// 目標時間變超過半格才重新 seek（AVPlayer 自己會合併）
+  func want(_ t: Double) {
+    guard let item = player.currentItem else { return }
+    if item.status == .readyToPlay { ready = true }
+    guard ready else { return }
+    if abs(t - lastSeek) < 0.04 { return }
+    lastSeek = t
+    let tol = CMTimeMakeWithSeconds(0.05, preferredTimescale: 600)
+    player.seek(
+      to: CMTime(seconds: t, preferredTimescale: 600),
+      toleranceBefore: tol, toleranceAfter: tol)
+  }
+
+  /// 有新格就換上紋理；沒有就回傳上一張（可能是 nil＝還沒供過）
+  func texture(at t: Double, cache: CVMetalTextureCache) -> MTLTexture? {
+    guard let out = output else { return lastTexture }
+    let it = CMTime(seconds: t, preferredTimescale: 600)
+    if out.hasNewPixelBuffer(forItemTime: it),
+      let buf = out.copyPixelBuffer(forItemTime: it, itemTimeForDisplay: nil)
+    {
+      var cv: CVMetalTexture?
+      let w = CVPixelBufferGetWidth(buf)
+      let h = CVPixelBufferGetHeight(buf)
+      if CVMetalTextureCacheCreateTextureFromImage(
+        kCFAllocatorDefault, cache, buf, nil, .rgba16Float, w, h, 0, &cv)
+        == kCVReturnSuccess, let cv = cv, let tex = CVMetalTextureGetTexture(cv)
+      {
+        lastTexture = tex
+      }
+    }
+    return lastTexture
+  }
+
+  func dispose() {
+    player.replaceCurrentItem(with: nil)
+    lastTexture = nil
+  }
+}
+
+/// 引擎收的一層（幾何跟合成器同一套欄位；時間都是時間軸秒）
+struct MetalLayerSpec {
+  let id: Int
+  let path: String
+  let offset: Double
+  let end: Double
+  let trimStart: Double
+  let speed: Double
+  let z: Int
+  let px: Double
+  let py: Double
+  let scale: Double
+  let mirror: Bool
+  let rotation: Double
+  let opacity: Double
+  let fadeIn: Double
+  let fadeOut: Double
+  let crop: [Double]?
+  let srcW: Double
+  let srcH: Double
+}
+
+final class MetalPreviewEngine: NSObject {
+  static let shared = MetalPreviewEngine()
+
+  private var device: MTLDevice?
+  private var queue: MTLCommandQueue?
+  private var videoPipe: MTLRenderPipelineState?
+  private var overlayPipe: MTLRenderPipelineState?
+  private var sampler: MTLSamplerState?
+  private var texCache: CVMetalTextureCache?
+
+  private(set) var available = false
+  private var buildFailed = false
+
+  private var layers: [MetalLayerSpec] = []
+  private var pumps: [Int: MetalPump] = [:]
+  private var canvasW: Double = 1080
+  private var canvasH: Double = 1920
+  private var hdr = false
+
+  /// 疊加物 PNG → 紋理（鍵＝資料長度雜湊，同一張不重上傳）
+  private var ovTextures: [Int: MTLTexture] = [:]
+
+  weak var layerHost: MetalPreviewView?
+  private var link: CADisplayLink?
+  private(set) var active = false
+  private var curT: Double = 0
+
+  private let shaderSrc = """
+    #include <metal_stdlib>
+    using namespace metal;
+    struct VOut { float4 pos [[position]]; float2 uv; };
+    vertex VOut vtx(uint vid [[vertex_id]],
+                    constant float4 *verts [[buffer(0)]]) {
+      VOut o;
+      float4 v = verts[vid];
+      o.pos = float4(v.xy, 0.0, 1.0);
+      o.uv = v.zw;
+      return o;
+    }
+    fragment half4 fragVideo(VOut in [[stage_in]],
+                             texture2d<half> tex [[texture(0)]],
+                             constant float &alpha [[buffer(0)]],
+                             sampler s [[sampler(0)]]) {
+      half4 c = tex.sample(s, in.uv);
+      half a = half(alpha);
+      return half4(c.rgb * a, a);
+    }
+    // 疊加物：跟 CIExportCompositor 同一套數學——字底下的畫面
+    // 夾回 SDR 白再混（半透明不被 HDR 高光沖淡），白位再乘 boost
+    fragment half4 fragOverlay(VOut in [[stage_in]],
+                               half4 dst [[color(0)]],
+                               texture2d<half> tex [[texture(0)]],
+                               constant float2 &p [[buffer(0)]],
+                               sampler s [[sampler(0)]]) {
+      half4 o = tex.sample(s, in.uv);
+      half a = o.a;
+      half boost = half(p.x);
+      half3 bg = dst.rgb;
+      if (p.y > 0.5) {
+        half3 capped = min(dst.rgb, half3(1.0h));
+        bg = capped * a + dst.rgb * (1.0h - a);
+      }
+      half3 rgb = o.rgb * boost + bg * (1.0h - a);
+      return half4(rgb, 1.0h);
+    }
+    """
+
+  private func setUp() -> Bool {
+    if available { return true }
+    if buildFailed { return false }
+    guard let dev = MTLCreateSystemDefaultDevice(),
+      let q = dev.makeCommandQueue()
+    else {
+      buildFailed = true
+      return false
+    }
+    do {
+      let lib = try dev.makeLibrary(source: shaderSrc, options: nil)
+      let vfn = lib.makeFunction(name: "vtx")
+      let d1 = MTLRenderPipelineDescriptor()
+      d1.vertexFunction = vfn
+      d1.fragmentFunction = lib.makeFunction(name: "fragVideo")
+      d1.colorAttachments[0].pixelFormat = .rgba16Float
+      d1.colorAttachments[0].isBlendingEnabled = true
+      d1.colorAttachments[0].sourceRGBBlendFactor = .one
+      d1.colorAttachments[0].sourceAlphaBlendFactor = .one
+      d1.colorAttachments[0].destinationRGBBlendFactor =
+        .oneMinusSourceAlpha
+      d1.colorAttachments[0].destinationAlphaBlendFactor =
+        .oneMinusSourceAlpha
+      let d2 = MTLRenderPipelineDescriptor()
+      d2.vertexFunction = vfn
+      d2.fragmentFunction = lib.makeFunction(name: "fragOverlay")
+      d2.colorAttachments[0].pixelFormat = .rgba16Float
+      d2.colorAttachments[0].isBlendingEnabled = false
+      videoPipe = try dev.makeRenderPipelineState(descriptor: d1)
+      overlayPipe = try dev.makeRenderPipelineState(descriptor: d2)
+    } catch {
+      buildFailed = true
+      return false
+    }
+    let sd = MTLSamplerDescriptor()
+    sd.minFilter = .linear
+    sd.magFilter = .linear
+    sd.sAddressMode = .clampToEdge
+    sd.tAddressMode = .clampToEdge
+    sampler = dev.makeSamplerState(descriptor: sd)
+    var cache: CVMetalTextureCache?
+    CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, dev, nil, &cache)
+    guard sampler != nil, cache != nil else {
+      buildFailed = true
+      return false
+    }
+    texCache = cache
+    device = dev
+    queue = q
+    available = true
+    return true
+  }
+
+  /// 換一份時間軸佈局（滑動起手時呼叫；佈局沒變成本≈0）
+  func build(canvasW: Double, canvasH: Double, hdr: Bool,
+             specs: [MetalLayerSpec]) -> Bool {
+    guard setUp() else { return false }
+    self.canvasW = max(2, canvasW)
+    self.canvasH = max(2, canvasH)
+    self.hdr = hdr
+    layers = specs.sorted { $0.z < $1.z }
+    // 幫浦照片段開；不在新佈局裡的收掉
+    let want = Set(specs.map { $0.id })
+    for (id, p) in pumps where !want.contains(id) {
+      p.dispose()
+      pumps.removeValue(forKey: id)
+    }
+    for sp in specs {
+      if let old = pumps[sp.id], old.path != sp.path {
+        old.dispose()
+        pumps.removeValue(forKey: sp.id)
+      }
+      if pumps[sp.id] == nil {
+        pumps[sp.id] = MetalPump(path: sp.path)
+      }
+    }
+    return true
+  }
+
+  func show(_ on: Bool) {
+    active = on && available
+    layerHost?.setVisible(active)
+    if active {
+      if link == nil {
+        let l = CADisplayLink(target: self, selector: #selector(tick))
+        l.add(to: .main, forMode: .common)
+        link = l
+      }
+    } else {
+      link?.invalidate()
+      link = nil
+    }
+  }
+
+  func seek(_ t: Double) {
+    curT = t
+  }
+
+  @objc private func tick() {
+    guard active else { return }
+    render()
+  }
+
+  /// 疊加物紋理（premultiplied sRGB PNG → 線性取樣）
+  private func ovTexture(_ data: Data) -> MTLTexture? {
+    let key = data.count &* 31 &+ Int(data.prefix(64).reduce(0) {
+      ($0 &* 31 &+ Int($1)) & 0xFFFFFF
+    })
+    if let t = ovTextures[key] { return t }
+    guard let dev = device, let ui = UIImage(data: data),
+      let cg = ui.cgImage
+    else { return nil }
+    let loader = MTKTextureLoader(device: dev)
+    let tex = try? loader.newTexture(
+      cgImage: cg,
+      options: [MTKTextureLoader.Option.SRGB: true as NSNumber])
+    if let tex = tex {
+      if ovTextures.count > 24 { ovTextures.removeAll() }
+      ovTextures[key] = tex
+    }
+    return tex
+  }
+
+  /// 一層的四個角（NDC）＋UV，含 contain-fit／使用者縮放位移／
+  /// 鏡像／旋轉／裁切——跟 fitTransform 同一套數學
+  private func quad(for sp: MetalLayerSpec) -> [Float]? {
+    let W = canvasW
+    let H = canvasH
+    guard sp.srcW > 1, sp.srcH > 1 else { return nil }
+    let k = min(W / sp.srcW, H / sp.srcH)
+    var w = sp.srcW * k * sp.scale
+    var h = sp.srcH * k * sp.scale
+    var cx = sp.px * W
+    var cy = sp.py * H
+    // 裁切（顯示座標比例、左上原點；鏡像時水平窗翻過來）
+    var u0 = 0.0, v0 = 0.0, u1 = 1.0, v1 = 1.0
+    if let ca = sp.crop, ca.count >= 4, ca[2] > 0.001, ca[3] > 0.001 {
+      let l = sp.mirror ? 1 - ca[0] - ca[2] : ca[0]
+      // 方框縮到裁切窗；中心照裁切窗的中心移（繞原框中心）
+      let fullCx = cx
+      let fullCy = cy
+      cx = fullCx + (l + ca[2] / 2 - 0.5) * w
+      cy = fullCy + (ca[1] + ca[3] / 2 - 0.5) * h
+      u0 = l
+      u1 = l + ca[2]
+      v0 = ca[1]
+      v1 = ca[1] + ca[3]
+      w *= ca[2]
+      h *= ca[3]
+    }
+    if sp.mirror {
+      swap(&u0, &u1)
+    }
+    // 旋轉繞整個片段框的中心（跟 CI 一致）
+    let rad = sp.rotation * Double.pi / 180
+    let cr = cos(rad)
+    let sr = sin(rad)
+    func corner(_ dx: Double, _ dy: Double, _ u: Double, _ v: Double)
+      -> [Float]
+    {
+      let x0 = dx * w / 2
+      let y0 = dy * h / 2
+      let x = cx + x0 * cr - y0 * sr
+      let y = cy + x0 * sr + y0 * cr
+      return [
+        Float(2 * x / W - 1), Float(1 - 2 * y / H), Float(u), Float(v),
+      ]
+    }
+    let a = corner(-1, -1, u0, v0)
+    let b = corner(1, -1, u1, v0)
+    let c = corner(-1, 1, u0, v1)
+    let d = corner(1, 1, u1, v1)
+    return a + b + c + b + d + c
+  }
+
+  private func render() {
+    guard let host = layerHost, let queue = queue,
+      let videoPipe = videoPipe, let overlayPipe = overlayPipe,
+      let sampler = sampler, let cache = texCache
+    else { return }
+    host.layoutNow()
+    let mlayer = host.metalLayer
+    guard mlayer.drawableSize.width > 1,
+      let drawable = mlayer.nextDrawable(),
+      let cmd = queue.makeCommandBuffer()
+    else { return }
+    let t = curT
+    let rp = MTLRenderPassDescriptor()
+    rp.colorAttachments[0].texture = drawable.texture
+    rp.colorAttachments[0].loadAction = .clear
+    rp.colorAttachments[0].storeAction = .store
+    rp.colorAttachments[0].clearColor = MTLClearColor(
+      red: 0, green: 0, blue: 0, alpha: 1)
+    guard let enc = cmd.makeRenderCommandEncoder(descriptor: rp) else {
+      cmd.commit()
+      return
+    }
+    enc.setFragmentSamplerState(sampler, index: 0)
+    // 影片層（照 z 由下往上）
+    for sp in layers where sp.offset <= t && t < sp.end {
+      guard let pump = pumps[sp.id] else { continue }
+      let srcT = sp.trimStart + (t - sp.offset) * sp.speed
+      pump.want(srcT)
+      guard let tex = pump.texture(at: srcT, cache: cache),
+        let verts = quad(for: sp)
+      else { continue }
+      // 淡入淡出×固定透明度
+      var a = sp.opacity
+      if sp.fadeIn > 0.01 {
+        a = min(a, max(0, min(1, (t - sp.offset) / sp.fadeIn)))
+      }
+      if sp.fadeOut > 0.01 {
+        a = min(a, max(0, min(1, (sp.end - t) / sp.fadeOut)))
+      }
+      var af = Float(a)
+      enc.setRenderPipelineState(videoPipe)
+      enc.setVertexBytes(verts, length: verts.count * 4, index: 0)
+      enc.setFragmentBytes(&af, length: 4, index: 0)
+      enc.setFragmentTexture(tex, index: 0)
+      enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+    }
+    // 疊加物（浮水印/文字）：讀合成器同一份即時清單與即時幾何
+    let ovs = CIExportCompositor.currentPreviewOverlays()
+    let lovs = CIExportCompositor.currentLiveOvs()
+    for ov in ovs {
+      guard ov.start <= t, t < ov.end, let data = ov.pngData,
+        let tex = ovTexture(data)
+      else { continue }
+      var x = ov.bx
+      var y = ov.by
+      var sc = 1.0
+      var rot = 0.0
+      if let oid = ov.id, let lov = lovs[oid] {
+        x = lov.x
+        y = lov.y
+        sc = lov.scale / max(0.0001, ov.bs)
+        rot = lov.rot - ov.br
+      }
+      // 整版 PNG：以部件中心為原點套差量（跟合成器同一套）
+      let W = canvasW
+      let H = canvasH
+      let cx0 = ov.bx * W
+      let cy0 = ov.by * H
+      let cx = x * W
+      let cy = y * H
+      let rad = rot * Double.pi / 180
+      let cr = cos(rad)
+      let sr = sin(rad)
+      func c2(_ px0: Double, _ py0: Double, _ u: Double, _ v: Double)
+        -> [Float]
+      {
+        let dx = (px0 - cx0) * sc
+        let dy = (py0 - cy0) * sc
+        let xx = cx + dx * cr - dy * sr
+        let yy = cy + dx * sr + dy * cr
+        return [
+          Float(2 * xx / W - 1), Float(1 - 2 * yy / H), Float(u),
+          Float(v),
+        ]
+      }
+      let a0 = c2(0, 0, 0, 0)
+      let b0 = c2(W, 0, 1, 0)
+      let c0 = c2(0, H, 0, 1)
+      let d0 = c2(W, H, 1, 1)
+      let verts = a0 + b0 + c0 + b0 + d0 + c0
+      var p = SIMD2<Float>(hdr ? 3.0 : 1.0, hdr ? 1.0 : 0.0)
+      enc.setRenderPipelineState(overlayPipe)
+      enc.setVertexBytes(verts, length: verts.count * 4, index: 0)
+      enc.setFragmentBytes(&p, length: 8, index: 0)
+      enc.setFragmentTexture(tex, index: 0)
+      enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+    }
+    enc.endEncoding()
+    cmd.present(drawable)
+    cmd.commit()
+  }
+
+  func disposeAll() {
+    show(false)
+    for (_, p) in pumps { p.dispose() }
+    pumps.removeAll()
+    layers = []
+    ovTextures.removeAll()
+  }
+}
+
+/// Metal 圖層的 PlatformView（跟 PlayerHostView 同一種掛法）
+final class MetalPreviewView: NSObject, FlutterPlatformView {
+  private let holder = UIView()
+  let metalLayer = CAMetalLayer()
+
+  override init() {
+    super.init()
+    metalLayer.pixelFormat = .rgba16Float
+    metalLayer.isOpaque = true
+    // EDR：iOS 16 才有這個開關；更舊的系統照畫，只是白位被夾在
+    // SDR（滑動暫態可接受）
+    if #available(iOS 16.0, *) {
+      metalLayer.wantsExtendedDynamicRangeContent = true
+    }
+    metalLayer.colorspace =
+      CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020)
+      ?? CGColorSpace(name: CGColorSpace.extendedLinearSRGB)
+    holder.layer.addSublayer(metalLayer)
+    holder.backgroundColor = .clear
+    metalLayer.isHidden = true
+    MetalPreviewEngine.shared.layerHost = self
+  }
+
+  func view() -> UIView {
+    holder
+  }
+
+  func setVisible(_ v: Bool) {
+    metalLayer.isHidden = !v
+  }
+
+  func layoutNow() {
+    metalLayer.frame = holder.bounds
+    let s = UIScreen.main.scale
+    metalLayer.drawableSize = CGSize(
+      width: max(2, holder.bounds.width * s),
+      height: max(2, holder.bounds.height * s))
+  }
+}
+
+final class MetalViewFactory: NSObject, FlutterPlatformViewFactory {
+  func create(
+    withFrame frame: CGRect, viewIdentifier viewId: Int64, arguments args: Any?
+  ) -> FlutterPlatformView {
+    let v = MetalPreviewView()
+    DispatchQueue.main.async { v.layoutNow() }
+    // 版面變了要跟著調 drawableSize（簡單起見用觀察輪詢一次）
+    return v
+  }
+}
+

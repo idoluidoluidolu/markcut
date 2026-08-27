@@ -243,6 +243,10 @@ class Diag {
   /// 過飽和（DV 中繼資料被剝），關掉就回原檔路
   static final hdrProxyPreview = ValueNotifier(true);
 
+  /// Metal 預覽引擎：滑動/暫停中的畫面改由自家 Metal 管線出
+  ///（每軌獨立供格、GPU 疊合、EDR 直出）。關掉＝回合成播放器路
+  static final metalPreview = ValueNotifier(true);
+
   static String get tuning =>
       '預熱=${preheat.value ? '開' : '關'}／'
       '脫節校正=${driftFix.value ? '開' : '關'}／'
@@ -251,7 +255,8 @@ class Diag {
       '合成播放器=${compPlayer.value ? '開' : '關'}／'
       '系統影片圖層=${playerLayer.value ? '開' : '關'}／'
       'GPU匯出=${ciExport.value ? '開' : '關'}／'
-      'HDR代理預覽=${hdrProxyPreview.value ? '開' : '關'}';
+      'HDR代理預覽=${hdrProxyPreview.value ? '開' : '關'}／'
+      'Metal預覽=${metalPreview.value ? '開' : '關'}';
 
   static void count(String key, [int n = 1]) {
     _counts[key] = (_counts[key] ?? 0) + n;

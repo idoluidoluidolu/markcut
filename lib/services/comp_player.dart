@@ -6,6 +6,42 @@ import '../models/timeline.dart';
 import 'diagnostics.dart';
 import 'media_prep.dart';
 
+/// Metal 預覽引擎（滑動/暫停接管；見 AppDelegate 的
+/// MetalPreviewEngine）。組不了或平台不支援一律回 false，
+/// 呼叫端照舊走合成播放器路
+class MetalPreview {
+  /// 引擎目前有沒有在畫（Dart 端的顯示開關跟它走）
+  static bool active = false;
+
+  static Future<bool> build(Map<String, dynamic> payload) async {
+    try {
+      return await CompPlayer._ch.invokeMethod<bool>('mbuild', payload) ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<void> show(bool on) async {
+    try {
+      await CompPlayer._ch.invokeMethod<void>('mshow', on);
+    } catch (_) {}
+  }
+
+  static Future<void> seek(double t) async {
+    try {
+      await CompPlayer._ch.invokeMethod<void>('mseek', t);
+    } catch (_) {}
+  }
+
+  static Future<void> disposeEngine() async {
+    active = false;
+    try {
+      await CompPlayer._ch.invokeMethod<void>('mdispose');
+    } catch (_) {}
+  }
+}
+
 /// 合成播放器：整條時間軸交給系統的一顆播放器。
 ///
 /// 原本是「一個片段一顆播放器」，由 App 自己的時鐘驅動、交界前預先開播

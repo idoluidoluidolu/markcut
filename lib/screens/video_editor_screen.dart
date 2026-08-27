@@ -433,6 +433,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   ///（實測回報）。純 Flutter 合成，零效能成本
   bool get _ovScrubPeek {
     if (!_scrubbing) return false;
+    if (MetalPreview.active) return false; // 引擎自己畫浮水印
     final cur = _tl.videoAt(_position, skipTracks: _hiddenTracks);
     if (cur == null) return false;
     final s = _tl.sourceOf(cur);
@@ -2221,7 +2222,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final t = (edge ?? raw).clamp(0.0, _tl.duration);
     if ((t - _position).abs() < 0.001) return;
     _position = t; // 位置 UI 由 _posVN 小範圍重繪，不整頁 setState
-    _scrubbing = true; // 快取幀模式（下一次 30fps 重繪就生效）
+    _scrubbing = true;
+    unawaited(_metalScrubBegin()); // 快取幀模式（下一次 30fps 重繪就生效）
     if (_compOn) {
       // 素材還在用原檔（秒進、工作檔還在背景轉）：拖曳走快取幀
       if (_compScrubViaCache()) return;
@@ -2330,6 +2332,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _compSeek({bool exact = false}) {
     if (_compOn && !_playing) {
       unawaited(_comp!.seek(_position, exact: exact));
+      if (MetalPreview.active) {
+        final now = DateTime.now();
+        if (now.difference(_mSeekAt).inMilliseconds >= 16) {
+          _mSeekAt = now;
+          unawaited(MetalPreview.seek(_position));
+        }
+      }
     }
   }
 
@@ -2925,6 +2934,87 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   bool _scrubbing = false;
+
+  // ===== Metal 預覽引擎（滑動接管）=====
+  DateTime _mSeekAt = DateTime.fromMillisecondsSinceEpoch(0);
+  Timer? _mHideTimer;
+
+  /// 滑動起手：把目前佈局交給 Metal 引擎，成了就換它出畫面。
+  /// 組不了（平台/素材不支援）安靜退回現有路徑
+  Future<void> _metalScrubBegin() async {
+    if (kIsWeb ||
+        !Platform.isIOS ||
+        !Diag.metalPreview.value ||
+        !_compOn ||
+        _playing ||
+        MetalPreview.active) {
+      return;
+    }
+    _mHideTimer?.cancel();
+    final comp = _comp;
+    if (comp == null) return;
+    final hdrMode = _exportHdr && _hdrAvail == true;
+    final specs = <Map<String, dynamic>>[];
+    for (final c in _tl.clips) {
+      final src = _tl.sourceOf(c);
+      if (!src.isVideo || _hiddenTracks.contains(c.track)) continue;
+      if (c.reverse) return; // 倒轉走現有路徑
+      specs.add({
+        'id': c.id,
+        'path': hdrMode && src.workHdrPath != null
+            ? src.workHdrPath!
+            : src.previewPath,
+        'offset': c.offset,
+        'end': c.end,
+        'trimStart': c.trimStart,
+        'speed': c.speed,
+        'z': c.track,
+        'px': c.px,
+        'py': c.py,
+        'scale': c.scale,
+        'mirror': c.mirror,
+        'rotation': c.rotation,
+        'opacity': c.opacity,
+        'fadeIn': c.fadeIn,
+        'fadeOut': c.fadeOut,
+        if (c.cropped) 'crop': [c.cropL, c.cropT, c.cropW, c.cropH],
+        'srcW': src.w.toDouble(),
+        'srcH': src.h.toDouble(),
+      });
+    }
+    if (specs.isEmpty) return;
+    final ok = await MetalPreview.build({
+      'w': comp.width,
+      'h': comp.height,
+      'hdr': hdrMode,
+      'layers': specs,
+    });
+    if (!ok || !mounted || !_scrubbing || _playing) return;
+    MetalPreview.active = true;
+    unawaited(MetalPreview.seek(_position));
+    unawaited(MetalPreview.show(true));
+    setState(() {});
+  }
+
+  /// 滑動停手：讓合成播放器在底下就定位，300ms 後把引擎收起來
+  void _metalScrubEnd() {
+    if (!MetalPreview.active) return;
+    _mHideTimer?.cancel();
+    _mHideTimer = Timer(const Duration(milliseconds: 300), () {
+      MetalPreview.active = false;
+      unawaited(MetalPreview.show(false));
+      if (mounted) setState(() {});
+    });
+  }
+
+  /// 立刻收（按播放前一刻用，不能讓引擎蓋著播放畫面）
+  void _metalHideNow() {
+    _mHideTimer?.cancel();
+    if (!MetalPreview.active) return;
+    MetalPreview.active = false;
+    unawaited(MetalPreview.show(false));
+  }
+
   Timer? _scrubEndTimer;
 
   /// 正在跑的抽幀 FFmpeg 段數（匯出前要等它歸零，
@@ -3210,6 +3300,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
     }
     if (_scrubbing && mounted) setState(() => _scrubbing = false);
+    _metalScrubEnd();
   }
 
   /// 這個檔是影片嗎。優先看 mimeType，拿不到就退回看副檔名
@@ -6328,6 +6419,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_tl.duration <= 0) return;
     if (_position >= _tl.duration - 0.01) _position = 0;
     _clockBias = 0; // 上一輪沒吃完的校正不能帶進新的一輪
+    _metalHideNow(); // 引擎不能蓋著播放畫面
     final tr = PlaybackTrace.instance..start();
 
     // 拖曳收尾排在後面的那幾件事，按下播放的當下全部取消：
@@ -6341,6 +6433,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _scrubEndTimer?.cancel();
     _seekInFlight = false;
     if (_scrubbing) setState(() => _scrubbing = false);
+    _metalHideNow();
 
     // 合成播放器接手時，整條時間軸就是它一顆在播：舊的逐片段播放器
     // 一個都不要碰。上一版兩邊同時在播——兩倍解碼、兩份聲音，
@@ -7141,6 +7234,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     if (edge != null) _position = edge.clamp(0.0, _tl.duration);
     _scrubbing = true;
+    unawaited(_metalScrubBegin());
     if (_compOn) {
       // 素材還在用原檔（秒進、工作檔還在背景轉）：拖曳走快取幀
       if (_compScrubViaCache()) return;
@@ -8180,6 +8274,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _staleKickTimer?.cancel();
     _ovSyncTimer?.cancel();
     _ovXfTrail?.cancel();
+    _mHideTimer?.cancel();
+    unawaited(MetalPreview.disposeEngine());
     _xfTrail?.cancel();
     CompPlayer.onCompVisible = null;
     _posVN.dispose();
@@ -9576,6 +9672,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         ),
                                       ),
                                     );
+                                    // Metal 引擎的畫面層：常駐掛著
+                                    //（藏著時透明），滑動時亮起來
+                                    if (!kIsWeb &&
+                                        Platform.isIOS &&
+                                        Diag.metalPreview.value) {
+                                      addLayer(
+                                        vidTrack,
+                                        Positioned.fromRect(
+                                          rect: rect,
+                                          child: const IgnorePointer(
+                                            child: UiKitView(
+                                              viewType: 'markcut/metal_view',
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    }
                                     // 重烘空窗：馬賽克那塊由「效果區
                                     // 佔位」講話（C 案，見馬賽克圖層）；
                                     // 只有圖片層在烘時才在右上角放一顆
@@ -9639,6 +9752,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       // 合成器 seek 本人跟得上手指，
                                       // 蓋層反而把浮水印遮掉
                                       final sparse =
+                                          !MetalPreview.active &&
                                           src0.workPath == null &&
                                           !(Diag.hdrProxyPreview.value &&
                                               src0.workHdrPath != null);
