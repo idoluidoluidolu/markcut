@@ -976,6 +976,18 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             ? CIExportCompositor.currentPreviewOverlays() : ins.overlays
           let lovs =
             self.liveComp ? CIExportCompositor.currentLiveOvs() : [:]
+          // 夾白的底每格算一次就好（原本每個部件各夾一次）。
+          // 部件彼此重疊的極端情況會少算前一個部件的亮度，肉眼
+          // 看不出來；換來的是 N 個部件省 N-1 次全畫布濾鏡
+          var cappedBase: CIImage?
+          if self.hdrOut && !ovs.isEmpty {
+            cappedBase = out.applyingFilter(
+              "CIColorClamp",
+              parameters: [
+                "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
+                "inputMaxComponents": CIVector(x: 1, y: 1, z: 1, w: 1),
+              ])
+          }
           for ov in ovs {
             if var o = ov.frame(at: t, canvas: size) {
               // 浮水印部件的即時幾何：拖/縮/轉只是差量，PNG 不重畫。
@@ -999,7 +1011,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
                     y: cy - CGFloat(lov.y - ov.by) * size.height))
                 o = o.transformed(by: d)
               }
-              if self.hdrOut {
+              if self.hdrOut, let capped = cappedBase {
                 // 治本（半透明變灰的根）：疊加物蓋到的地方，先把
                 // 「字底下」的畫面夾回 SDR 白以內再混色。半透明白字
                 // 在 SDR 是 70% 白＋30% 背景（背景最亮 1.0）＝白；
@@ -1007,12 +1019,6 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
                 // 70% 的字沖成灰——問題不在字不夠亮，在字縫裡透進來
                 // 的超亮畫面。夾住之後混色數學跟 SDR 一字不差；
                 // 字外的畫面完全不動、HDR 照樣亮
-                let capped = out.applyingFilter(
-                  "CIColorClamp",
-                  parameters: [
-                    "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
-                    "inputMaxComponents": CIVector(x: 1, y: 1, z: 1, w: 1),
-                  ])
                 out = capped.applyingFilter(
                   "CIBlendWithAlphaMask",
                   parameters: [

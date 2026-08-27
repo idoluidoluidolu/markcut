@@ -410,6 +410,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 現值偏離基準＝把絕對值丟給原生套差量（PNG 不重畫，跟手的關鍵）
   Map<String, List<double>> _ovBakedGeom = const {};
   Map<String, List<double>> _ovGeomPending = const {};
+
+  /// 疊加物 PNG 的快取（鍵＝內容指紋）。匯入期間每支工作檔轉好
+  /// 就重組一次合成，內容根本沒變卻每次都整套重畫 PNG——
+  /// 匯入變慢的主因（實測回報）。指紋沒變＝整包重用
+  String _ovMapsCacheSig = '';
+  List<Map<String, dynamic>> _ovMapsCache = const [];
+  Map<String, List<double>> _ovGeomCache = const {};
   String? _ovXfLastKey;
   DateTime _ovXfLastAt = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _ovGeomActiveAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -1394,6 +1401,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 時間軸秒——合成的時間基準就是時間軸，整體變速由播放速率處理，
   /// 動畫參數不用除變速（匯出那邊是輸出秒才要除）
   Future<List<Map<String, dynamic>>> _ovMaps() async {
+    final sig = _ovContentSig();
+    if (sig == _ovMapsCacheSig && _ovMapsCache.isNotEmpty) {
+      _ovGeomPending = _ovGeomCache; // 幾何基準跟 PNG 一起重用
+      return _ovMapsCache;
+    }
+    final maps = await _ovMapsBuild();
+    // 過程中內容又變了就不進快取（下一輪重做）
+    if (_ovContentSig() == sig) {
+      _ovMapsCacheSig = sig;
+      _ovMapsCache = maps;
+      _ovGeomCache = _ovGeomPending;
+    }
+    return maps;
+  }
+
+  Future<List<Map<String, dynamic>>> _ovMapsBuild() async {
     final out = <Map<String, dynamic>>[];
     // 渲染解析度跟預覽合成一樣短邊 1080 就好；版面是照比例算的
     //（sizeFrac × 短邊），解析度不影響位置大小
