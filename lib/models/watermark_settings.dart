@@ -78,7 +78,8 @@ class TextMark {
     this.shadowOpacity = 0.55,
     // 預設 0＝俐落硬影（使用者指定）；要柔邊自己拉模糊滑桿
     this.shadowBlur = 0.0,
-    this.weight = 0.0,
+    // 預設 20：全細體在影片上存在感太弱（使用者指定）
+    this.weight = 0.2,
     this.outline = false,
     this.outlineColorValue = 0xFF000000,
     this.outlineWidth = 0.07,
@@ -143,7 +144,7 @@ class TextMark {
       1.0,
     ),
     shadowBlur: ((j['shadowBlur'] ?? 0.0).toDouble() as double).clamp(0.0, 0.2),
-    weight: ((j['weight'] ?? 0.0).toDouble() as double).clamp(0.0, 1.0),
+    weight: ((j['weight'] ?? 0.2).toDouble() as double).clamp(0.0, 1.0),
     outline: j['outline'] ?? false,
     outlineColorValue: j['outlineColorValue'] ?? 0xFF000000,
     outlineWidth: (j['outlineWidth'] ?? 0.07).toDouble(),
