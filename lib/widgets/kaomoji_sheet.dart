@@ -218,7 +218,9 @@ Future<void> showKaomojiSheet(BuildContext context) async {
             }
           },
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            // 窄一點：顏文字多是全形字，字距鬆＋留白大看起來會太寬
+            //（實測回報），padding 收小、字距收緊
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
             decoration: BoxDecoration(
               color: kPanelHi,
               borderRadius: BorderRadius.circular(10),
@@ -226,7 +228,12 @@ Future<void> showKaomojiSheet(BuildContext context) async {
             ),
             child: Text(
               k,
-              style: const TextStyle(fontSize: 15, color: kText, height: 1.2),
+              style: const TextStyle(
+                fontSize: 13.5,
+                color: kText,
+                height: 1.15,
+                letterSpacing: -0.8,
+              ),
             ),
           ),
         );
@@ -247,8 +254,8 @@ Future<void> showKaomojiSheet(BuildContext context) async {
                   ),
                 ),
                 Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
+                  spacing: 6,
+                  runSpacing: 6,
                   children: [for (final k in items) chip(k)],
                 ),
               ],
