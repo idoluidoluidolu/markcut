@@ -403,22 +403,12 @@ class CompPlayer {
   }
 
   /// 浮水印部件的即時幾何（拖曳/縮放/旋轉；絕對值，原生跟烘進
-  /// PNG 的基準算差量）。PNG 不重畫、合成不重建——跟手的關鍵
-  static Future<bool> setOvXform({
-    required String id,
-    required double x,
-    required double y,
-    required double scale,
-    required double rot,
-  }) async {
+  /// PNG 的基準算差量）。一次送「所有偏離基準的部件」整包——
+  /// 位置九宮格是文字＋圖片一起跳，漏送誰誰就不動。
+  /// PNG 不重畫、合成不重建——跟手的關鍵
+  static Future<bool> setOvXforms(List<Map<String, dynamic>> items) async {
     try {
-      return await _ch.invokeMethod<bool>('setOvXform', {
-            'id': id,
-            'x': x,
-            'y': y,
-            'scale': scale,
-            'rot': rot,
-          }) ??
+      return await _ch.invokeMethod<bool>('setOvXform', {'items': items}) ??
           false;
     } catch (_) {
       return false;

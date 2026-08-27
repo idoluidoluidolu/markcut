@@ -1560,15 +1560,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 拖曳/縮放/旋轉全程顯示顏色正確的烘焙版
   void _liveOvSync() {
     if (!_ovLiveOn || _ovBakedGeom.isEmpty) return;
-    ({String id, double x, double y, double sc, double r})? hit;
+    // 「所有」偏離基準的部件整包送：位置九宮格是文字＋圖片一起跳，
+    // 只送第一個的話另一個永遠不動（實測回報：點置中就是不過來）
+    final hits = <Map<String, dynamic>>[];
     void check(String id, double x, double y, double sc, double r) {
       final b = _ovBakedGeom[id];
-      if (b == null || hit != null) return;
+      if (b == null) return;
       if ((b[0] - x).abs() > 1e-4 ||
           (b[1] - y).abs() > 1e-4 ||
           (b[2] - sc).abs() > 1e-4 ||
           (b[3] - r).abs() > 1e-3) {
-        hit = (id: id, x: x, y: y, sc: sc, r: r);
+        hits.add({'id': id, 'x': x, 'y': y, 'scale': sc, 'rot': r});
       }
     }
 
@@ -1582,7 +1584,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     // 素材化的浮水印/文字：同一套（最終版，全部走即時幾何）
     for (final c in _tl.clips) {
-      if (hit != null) break;
       if (_hiddenTracks.contains(c.track)) continue;
       final src = _tl.sourceOf(c);
       if (src.kind == ClipKind.text) {
@@ -1602,25 +1603,31 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         }
       }
     }
-    final h = hit;
-    if (h == null) return;
-    _ovGeomActiveAt = DateTime.now();
-    final key =
-        '${h.id}|${h.x.toStringAsFixed(4)}|${h.y.toStringAsFixed(4)}'
-        '|${h.sc.toStringAsFixed(4)}|${h.r.toStringAsFixed(2)}';
+    if (hits.isEmpty) return;
+    final key = hits
+        .map(
+          (h) =>
+              '${h['id']}|${(h['x'] as double).toStringAsFixed(4)}'
+              '|${(h['y'] as double).toStringAsFixed(4)}'
+              '|${(h['scale'] as double).toStringAsFixed(4)}'
+              '|${(h['rot'] as double).toStringAsFixed(2)}',
+        )
+        .join(';');
+    // 值沒再變就不重送、也「不」刷新活動時間戳——之前只要偏離
+    // 基準就一直刷新，停穩重烘被無限展期，部件永遠回不去
+    //（實測回報：過很久還是一樣）
     if (key == _ovXfLastKey) return;
-    if (DateTime.now().difference(_ovXfLastAt).inMilliseconds < 33) {
+    _ovGeomActiveAt = DateTime.now();
+    if (DateTime.now().difference(_ovXfLastAt).inMilliseconds < 16) {
       _ovXfTrail?.cancel();
-      _ovXfTrail = Timer(const Duration(milliseconds: 40), () {
+      _ovXfTrail = Timer(const Duration(milliseconds: 20), () {
         if (mounted) _liveOvSync();
       });
       return;
     }
     _ovXfLastAt = DateTime.now();
     _ovXfLastKey = key;
-    unawaited(
-      CompPlayer.setOvXform(id: h.id, x: h.x, y: h.y, scale: h.sc, rot: h.r),
-    );
+    unawaited(CompPlayer.setOvXforms(hits));
   }
 
   /// 把疊加物同步到原生端（重畫 PNG → setOverlays → 精準 seek

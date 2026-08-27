@@ -932,31 +932,40 @@ class _TimelineEditorState extends State<TimelineEditor> {
           top: 0,
           bottom: 0,
           child: RawGestureDetector(
-            gestures: {
-              _EagerPanRecognizer:
-                  GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
-                    () => _EagerPanRecognizer(),
-                    (r) => r
-                      // 按下＝「安靜選取」不切分頁。跳分頁放在放開時
-                      // 用移動距離判斷（幾乎沒動＝點擊）：
-                      // 拖曳調範圍不能中途被拉去浮水印分頁，
-                      // 雙指縮放誤觸也不能跳
-                      ..onStart = ((_) {
-                        if (_pinching) return;
-                        _wmDragDist = 0;
-                        (widget.onSelectWmDrag ?? widget.onSelectWm)();
-                      })
-                      ..onUpdate = ((d) {
-                        if (_pinching) return;
-                        _wmDragDist += d.delta.dx.abs() + d.delta.dy.abs();
-                        widget.onMoveWm(wm.start + d.delta.dx / pxPerSec);
-                      })
-                      ..onEnd = ((_) {
-                        if (_pinching || _wmDragDist >= 6) return;
-                        widget.onSelectWm(); // 點擊＝進浮水印分頁
-                      }),
-                  ),
-            },
+            // 浮水印帶預設橫跨整條時間軸——沒選取也用 eager pan 搶的
+            // 話，手指落在最上排就永遠在「搬浮水印」，時間軸捲不動
+            //（實測回報：切回來滑動鎖死）。沒選取＝不搶，讓捲動贏；
+            // 點一下選取，選取後才能拖
+            gestures: !widget.wmSelected
+                ? const <Type, GestureRecognizerFactory>{}
+                : {
+                    _EagerPanRecognizer:
+                        GestureRecognizerFactoryWithHandlers<
+                          _EagerPanRecognizer
+                        >(
+                          () => _EagerPanRecognizer(),
+                          (r) => r
+                            // 按下＝「安靜選取」不切分頁。跳分頁放在放開時
+                            // 用移動距離判斷（幾乎沒動＝點擊）：
+                            // 拖曳調範圍不能中途被拉去浮水印分頁，
+                            // 雙指縮放誤觸也不能跳
+                            ..onStart = ((_) {
+                              if (_pinching) return;
+                              _wmDragDist = 0;
+                              (widget.onSelectWmDrag ?? widget.onSelectWm)();
+                            })
+                            ..onUpdate = ((d) {
+                              if (_pinching) return;
+                              _wmDragDist +=
+                                  d.delta.dx.abs() + d.delta.dy.abs();
+                              widget.onMoveWm(wm.start + d.delta.dx / pxPerSec);
+                            })
+                            ..onEnd = ((_) {
+                              if (_pinching || _wmDragDist >= 6) return;
+                              widget.onSelectWm(); // 點擊＝進浮水印分頁
+                            }),
+                        ),
+                  },
             child: GestureDetector(
               onTap: () {
                 if (_pinching) return;

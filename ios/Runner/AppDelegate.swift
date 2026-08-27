@@ -531,16 +531,19 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
     return liveXf
   }
 
-  private static var liveOv: CompLiveOv?
-  static func setLiveOv(_ x: CompLiveOv?) {
+  // 一次可以有好幾個部件在動（位置九宮格＝文字＋圖片一起跳），
+  // 用字典存、整包替換——單格存放會漏掉第二個部件（實測回報：
+  // 點置中就是不過來）
+  private static var liveOvs: [String: CompLiveOv] = [:]
+  static func setLiveOvs(_ xs: [CompLiveOv]) {
     xfLock.lock()
-    liveOv = x
+    liveOvs = Dictionary(uniqueKeysWithValues: xs.map { ($0.id, $0) })
     xfLock.unlock()
   }
-  static func currentLiveOv() -> CompLiveOv? {
+  static func currentLiveOvs() -> [String: CompLiveOv] {
     xfLock.lock()
     defer { xfLock.unlock() }
-    return liveOv
+    return liveOvs
   }
 
   // context 用靜態共用：CI 的濾鏡管線編譯快取掛在 context 上，
@@ -971,12 +974,13 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           let ovs =
             self.livePreview
             ? CIExportCompositor.currentPreviewOverlays() : ins.overlays
-          let lov = self.liveComp ? CIExportCompositor.currentLiveOv() : nil
+          let lovs =
+            self.liveComp ? CIExportCompositor.currentLiveOvs() : [:]
           for ov in ovs {
             if var o = ov.frame(at: t, canvas: size) {
               // 浮水印部件的即時幾何：拖/縮/轉只是差量，PNG 不重畫。
               // 差量繞「部件中心」算（跟預覽的拖曳手感同一個原點）
-              if let lov = lov, let oid = ov.id, oid == lov.id {
+              if let oid = ov.id, let lov = lovs[oid] {
                 let cx = CGFloat(ov.bx) * size.width
                 let cy = (1 - CGFloat(ov.by)) * size.height
                 let sc = CGFloat(lov.scale / max(0.0001, ov.bs))
@@ -1308,20 +1312,24 @@ final class AtomicFlag {
         }
       case "setOvXform":
         // 浮水印部件的即時幾何（拖曳/縮放/旋轉）：改靜態參數＋催一格
-        // 重畫，PNG 不重畫、合成不重建——跟手的關鍵
+        // 重畫，PNG 不重畫、合成不重建——跟手的關鍵。
+        // items＝「目前所有偏離基準的部件」整包（見 setLiveOvs）
         guard let a = call.arguments as? [String: Any], let p = self.comp,
-          p.wmLive, let oid = a["id"] as? String
+          p.wmLive, let items = a["items"] as? [[String: Any]]
         else {
           result(false)
           return
         }
-        CIExportCompositor.setLiveOv(
-          CompLiveOv(
-            id: oid,
-            x: a["x"] as? Double ?? 0.5,
-            y: a["y"] as? Double ?? 0.5,
-            scale: a["scale"] as? Double ?? 1,
-            rot: a["rot"] as? Double ?? 0))
+        CIExportCompositor.setLiveOvs(
+          items.compactMap { m in
+            guard let oid = m["id"] as? String else { return nil }
+            return CompLiveOv(
+              id: oid,
+              x: m["x"] as? Double ?? 0.5,
+              y: m["y"] as? Double ?? 0.5,
+              scale: m["scale"] as? Double ?? 1,
+              rot: m["rot"] as? Double ?? 0)
+          })
         p.nudgeRedrawIfPaused()
         result(true)
       case "setOverlays":
