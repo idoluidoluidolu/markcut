@@ -236,6 +236,13 @@ class Diag {
   /// Core Animation 的離線繪製。關掉＝退回舊路徑（成品有異狀時的備援）
   static final ciExport = ValueNotifier(true);
 
+  /// HDR 預覽播「HLG 代理」而不是 4K 原檔。
+  /// 原檔關鍵幀疏（seek 慢、要靠拖曳快取幀補）；代理是 HLG 直通
+  /// 密關鍵幀（不動色彩、seek 快）。當初為了驗 Dolby Vision 顯示
+  /// 管理才直接播原檔——實驗做完沒收回。留開關：實機若出現
+  /// 過飽和（DV 中繼資料被剝），關掉就回原檔路
+  static final hdrProxyPreview = ValueNotifier(true);
+
   static String get tuning =>
       '預熱=${preheat.value ? '開' : '關'}／'
       '脫節校正=${driftFix.value ? '開' : '關'}／'
@@ -243,7 +250,8 @@ class Diag {
       '只養一顆播放器=${singlePlayer.value ? '開' : '關'}／'
       '合成播放器=${compPlayer.value ? '開' : '關'}／'
       '系統影片圖層=${playerLayer.value ? '開' : '關'}／'
-      'GPU匯出=${ciExport.value ? '開' : '關'}';
+      'GPU匯出=${ciExport.value ? '開' : '關'}／'
+      'HDR代理預覽=${hdrProxyPreview.value ? '開' : '關'}';
 
   static void count(String key, [int n = 1]) {
     _counts[key] = (_counts[key] ?? 0) + n;

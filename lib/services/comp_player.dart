@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 
 import '../models/timeline.dart';
+import 'diagnostics.dart';
 import 'media_prep.dart';
 
 /// 合成播放器：整條時間軸交給系統的一顆播放器。
@@ -248,15 +249,17 @@ class CompPlayer {
       for (final c in vids)
         {
           // 一律用工作檔（轉正過、SDR、H.264）；HDR 輸出模式的
-          // HDR 素材例外：直接播原檔。
-          // 【決定性實驗，+109】代理先停用：iPhone 原檔是
-          // Dolby Vision（HLG 相容層），相簿靠 DV 中繼資料做顯示
-          // 管理；任何重編碼都會剝掉 DV 變純 HLG，顯示就過飽和
-          //（「顏色爆炸」的頭號嫌疑）。原檔直出＝跟相簿完全同一
-          // 個檔同一條路——這版還爆，問題就在圖層；不爆，就是
-          // DV 被剝，代理要換保留 DV 的做法
+          // HDR 素材播「HLG 代理」（密關鍵幀、HLG 直通不動色彩）
+          // ——原檔關鍵幀疏是 seek 慢的地板，播放 LAG 家族的根之一。
+          // 當初為驗 Dolby Vision 顯示管理直接播原檔（+109 實驗），
+          // 實驗結束收回；Diag.hdrProxyPreview 留退路：實機若出現
+          // 過飽和（DV 中繼資料被剝）關掉就回原檔。代理還沒轉好前
+          // 照舊播原檔，轉好那刻換手（指紋含 workHdrPath）
           'path': hdrOut && (hdrOf[c.sourceIndex] ?? false)
-              ? tl.sourceOf(c).path
+              ? ((Diag.hdrProxyPreview.value
+                        ? tl.sourceOf(c).workHdrPath
+                        : null) ??
+                    tl.sourceOf(c).path)
               : tl.sourceOf(c).previewPath,
           // HDR 原檔要在原生端掛 CI 做 toneMap（見上）
           'hdr': hdrOf[c.sourceIndex] ?? false,

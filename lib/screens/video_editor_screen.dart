@@ -434,7 +434,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool get _ovScrubPeek {
     if (!_scrubbing) return false;
     final cur = _tl.videoAt(_position, skipTracks: _hiddenTracks);
-    return cur != null && _tl.sourceOf(cur).workPath == null;
+    if (cur == null) return false;
+    final s = _tl.sourceOf(cur);
+    // 跟快取幀蓋層同一個條件（見預覽層）：播密關鍵幀檔＝沒有蓋層
+    return s.workPath == null &&
+        !(Diag.hdrProxyPreview.value && s.workHdrPath != null);
   }
 
   /// Flutter 版疊加物要不要藏（原生烘好的在畫就藏——拖/縮/轉
@@ -9630,7 +9634,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     // 已 seek 到位的全解析度畫面
                                     if (_scrubbing && cur != null) {
                                       final src0 = _tl.sourceOf(cur);
-                                      if (src0.workPath == null) {
+                                      // 播的是密關鍵幀的檔（工作檔或
+                                      // HLG 代理）就不用快取幀蓋層：
+                                      // 合成器 seek 本人跟得上手指，
+                                      // 蓋層反而把浮水印遮掉
+                                      final sparse =
+                                          src0.workPath == null &&
+                                          !(Diag.hdrProxyPreview.value &&
+                                              src0.workHdrPath != null);
+                                      if (sparse) {
                                         final t0 = cur.sourceTimeAt(_position);
                                         Uint8List? fb;
                                         final lt = _nfLatestT[cur.sourceIndex];
