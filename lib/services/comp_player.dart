@@ -375,6 +375,33 @@ class CompPlayer {
     }
   }
 
+  /// 捏合/拖曳中的即時變形（不重建合成）：原生端只重產
+  /// videoComposition 換上，同一個播放器、不閃。放手後照舊由
+  /// 指紋觸發重組烘定——數學同一段，不會跳位。
+  /// [z]＋[start] 一起定位「哪一段」（同一軌可以有很多片段）
+  static Future<bool> setXform({
+    required int z,
+    required double start,
+    required double scale,
+    required double px,
+    required double py,
+    required double rotation,
+  }) async {
+    try {
+      return await _ch.invokeMethod<bool>('setXform', {
+            'z': z,
+            'start': start,
+            'scale': scale,
+            'px': px,
+            'py': py,
+            'rotation': rotation,
+          }) ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// 換 HDR 預覽的即時疊加物清單（不重建合成）。
   /// 只有 [wmLive] 的合成收得下；成功回 true。暫停中呼叫端要補一個
   /// 精準 seek，逼合成器用新清單重畫當下這一格

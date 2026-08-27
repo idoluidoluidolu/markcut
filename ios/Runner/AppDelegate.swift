@@ -1138,6 +1138,24 @@ final class AtomicFlag {
           // 把 Flutter 版藏起來、之後用 setOverlays 更新
           "wmLive": p.wmLive,
         ])
+      case "setXform":
+        // 捏合/拖曳中的即時變形：只重產 videoComposition 換上，
+        // 不重建合成（放手後 Dart 端照舊觸發重組烘定）
+        guard let a = call.arguments as? [String: Any], let p = self.comp
+        else {
+          result(false)
+          return
+        }
+        let ov: CompLiveXform? = (a["clear"] as? Bool ?? false)
+          ? nil
+          : CompLiveXform(
+            z: a["z"] as? Int ?? 0,
+            start: a["start"] as? Double ?? 0,
+            scale: a["scale"] as? Double ?? 1,
+            px: a["px"] as? Double ?? 0.5,
+            py: a["py"] as? Double ?? 0.5,
+            rotation: a["rotation"] as? Double ?? 0)
+        result(p.applyXform(ov))
       case "setOverlays":
         // HDR 預覽的即時疊加物：換清單不重建合成（拖曳/改樣式用）。
         // 換完 Dart 端會補一個精準 seek 逼它重畫當下這一格
@@ -3558,6 +3576,36 @@ final class PlayerViewFactory: NSObject, FlutterPlatformViewFactory {
 ///
 /// 影格用 AVPlayerItemVideoOutput 取出來交給 Flutter 材質，
 /// 由 CADisplayLink 驅動——跟 video_player 內部同一套機制
+/// 預覽合成裡的一段畫面（一個時間軸片段落在某條合成軌上）。
+/// 檔案層級是因為即時變形的重產閉包（vcRegen）要存在屬性上
+private struct CompSeg {
+  var range: CMTimeRange
+  var transform: CGAffineTransform
+  var size: CGSize
+  var fadeIn: Double
+  var fadeOut: Double
+  var userScale: Double
+  var px: Double
+  var py: Double
+  var mirror: Bool
+  var track: AVMutableCompositionTrack
+  var layer: Int
+  var crop: [Double]?
+  var rotation: Double
+  var opacity: Double
+}
+
+/// 捏合/拖曳中的即時變形覆寫：z＝軌道編號、start＝片段在時間軸的開頭
+/// （兩個一起才對得到「哪一段」——同一軌可以有很多片段）
+struct CompLiveXform {
+  let z: Int
+  let start: Double
+  let scale: Double
+  let px: Double
+  let py: Double
+  let rotation: Double
+}
+
 final class CompPlayer: NSObject, FlutterTexture {
   /// 這個檔的視訊軌是不是 HDR（有色彩轉換標記且不是 709）。
   /// 判定跟 probeFile/alreadyGoodEnough 同一套；只讀容器中繼資料
@@ -3582,6 +3630,28 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 尺寸——之後 setOverlays 換清單要用同一個座標系
   private(set) var wmLive = false
   private(set) var ciCanvas = CGSize.zero
+
+  /// 即時變形：用組建時留下的材料重產一份 videoComposition。
+  /// 重建合成最貴的是拆插軌道＋換播放器（要等新畫面上檔）；
+  /// 片段的縮放/位移/旋轉只活在 vc 的變形指令裡——捏合中每次
+  /// 只換 vc（同一個 item、不閃），放手才真正重組烘定。
+  /// 數學跟烘定走同一段程式碼，放手不會跳位
+  private var vcRegen: ((CompLiveXform?) -> AVMutableVideoComposition)?
+
+  /// 捏合/拖曳中的即時變形：重產 vc 換上（不重建合成）。
+  /// 暫停中換 vc 不一定會重畫這一格，補一個原地精準 seek 逼它。
+  /// 回 false＝這份合成產不出 vc（呼叫端當沒這回事，照舊等重組）
+  func applyXform(_ ov: CompLiveXform?) -> Bool {
+    guard let regen = vcRegen, let item = player.currentItem else {
+      return false
+    }
+    item.videoComposition = regen(ov)
+    if player.rate == 0 {
+      let t = player.currentTime()
+      player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+    return true
+  }
 
   private var output: AVPlayerItemVideoOutput?
   private var link: CADisplayLink?
@@ -3647,24 +3717,9 @@ final class CompPlayer: NSObject, FlutterTexture {
     // 本來只開一條，所以「同一時刻有兩層畫面」（子母畫面）就整組退回
     // 舊的一片段一顆播放器——那正是使用者說的「多軌之後變超 LAG」。
     // AVFoundation 本來就支援多軌疊合，逐段的 layer instruction 決定
-    // 每一刻誰在上面、怎麼擺
-    struct Seg {
-      var range: CMTimeRange
-      var transform: CGAffineTransform
-      var size: CGSize
-      var fadeIn: Double
-      var fadeOut: Double
-      var userScale: Double
-      var px: Double
-      var py: Double
-      var mirror: Bool
-      var track: AVMutableCompositionTrack
-      var layer: Int
-      var crop: [Double]?
-      var rotation: Double
-      var opacity: Double
-    }
-    var segments: [Seg] = []
+    // 每一刻誰在上面、怎麼擺（CompSeg 移到檔案層級：即時變形的
+    // 重產閉包要存在屬性上，區域型別存不了）
+    var segments: [CompSeg] = []
     var vTracks: [Int: (track: AVMutableCompositionTrack, end: CMTime)] = [:]
     // 每層最後插入的媒體（來源軌＋來源區間），片尾鋪滿（見 needsCI）用
     var lastMedia: [Int: (src: AVAssetTrack, rng: CMTimeRange)] = [:]
@@ -3893,7 +3948,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       }
 
       segments.append(
-        Seg(
+        CompSeg(
           range: CMTimeRange(start: putAt, duration: outDur),
           transform: src.preferredTransform, size: src.naturalSize,
           fadeIn: fadeIn, fadeOut: fadeOut, userScale: userScale, px: px,
@@ -4035,7 +4090,9 @@ final class CompPlayer: NSObject, FlutterTexture {
     }
     usesVC = needsVC
 
-    if needsVC, size.width > 1, size.height > 1 {
+    // 注意：這一段不再被 needsVC 擋——沒掛 vc 的簡單合成也要備好
+    // 「重產 vc」的材料（vcRegen）：捏合那一刻才臨時掛上去做即時變形
+    if size.width > 1, size.height > 1 {
       // 預覽用的合成不需要原始解析度：手機螢幕短邊不到 1200，
       // 用 4K 去重畫每一格只是把解碼省下來的錢又花掉。這也是別家
       // 「預覽解析度」設定在做的事
@@ -4045,24 +4102,6 @@ final class CompPlayer: NSObject, FlutterTexture {
         size = CGSize(
           width: (size.width * shrink / 2).rounded() * 2,
           height: (size.height * shrink / 2).rounded() * 2)
-      }
-      let vc = AVMutableVideoComposition()
-      vc.renderSize = size
-      vc.frameDuration = CMTime(value: 1, timescale: 30)
-      // 輸出色彩明確標 709。HDR 原檔進 CI 合成器時像素已經被
-      // toneMap 成 SDR，但不標的話 HDR 的色彩標記會原封傳下去，
-      // 播放器對「已經是 SDR 的像素」再套一次 HLG 顯示曲線——
-      // 就是「進場 CI 有掛、顏色照樣洗白」（+93 診斷定罪）。
-      // 匯出路早就標了（同一個教訓），播放路漏掉
-      if hdrOut && anyHDR {
-        // HDR 預覽：跟 HDR 匯出同一組標記（HLG），像素不做映射
-        vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_2020
-        vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_2100_HLG
-        vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_2020
-      } else {
-        vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
-        vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
-        vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
       }
 
       // 墊在影片下層的圖片/GIF：組成 CI 層（跟匯出同一套定位數學，
@@ -4146,7 +4185,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       buildInfo["圖片層"] = stillSpecs.count
 
       /// 一段畫面貼進畫布：轉正 → 等比縮放貼齊 → 置中 → 使用者的縮放位移
-      func fitTransform(_ seg: Seg) -> CGAffineTransform? {
+      func fitTransform(_ seg: CompSeg) -> CGAffineTransform? {
         let disp = seg.size.applying(seg.transform)
         let dw = abs(disp.width)
         let dh = abs(disp.height)
@@ -4184,7 +4223,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       }
 
       /// 一段畫面在 [t] 這一刻該有多不透明（0~1）。淡入淡出是線性的
-      func opacity(_ seg: Seg, at t: Double) -> Double {
+      func opacity(_ seg: CompSeg, at t: Double) -> Double {
         let s = seg.range.start.seconds
         let e = seg.range.end.seconds
         var o = 1.0
@@ -4238,26 +4277,63 @@ final class CompPlayer: NSObject, FlutterTexture {
         }
       }
       if marks.count < 2 { marks = [CMTime.zero, comp.duration] }
-      // needsCI 在插軌之前就算好了（CI 路線的軌道有沒有鋪滿全看它，
-      // 這裡沿用同一個值才不會兩邊打架）
-      if needsCI {
-        // 馬賽克要逐格打在畫面上，標準的 layer instruction 做不到——
-        // 掛跟匯出同一顆 CI 合成器（CIExportCompositor）：濃度、柔邊、
-        // 顏色的數學跟成品一字不差，預覽即所得。
-        // HDR 來源它會做 toneMapHDRtoSDR，顏色跟相簿同一條曲線
-        let ciMosaics = mosaics.compactMap { CIMosaicSpec($0, canvas: size) }
-        // 全部影像軌：每段指令都列，解碼器全程保持熱的（見
-        // CIExportInstruction.requiredSourceTrackIDs 的說明）
-        let prerollIDs = Array(Set(segments.map { $0.track.trackID }))
-          .sorted().map { NSNumber(value: $0) }
-        // 最後一個可見片段結束的時間：之後的區間就是「片尾」
-        let lastShow = segments.map { $0.range.end.seconds }.max() ?? 0
+      // CI 的材料一律先備好：就算這一版不走 CI（needsCI false），
+      // 捏合中出現「旋轉」會臨時切到 CI 路（標準 layer instruction
+      // 畫不了旋轉）。馬賽克逐格打碼、濃度柔邊顏色的數學跟成品
+      // 一字不差（CIExportCompositor），HDR 來源 toneMapHDRtoSDR
+      // 跟相簿同一條曲線
+      let ciMosaics = mosaics.compactMap { CIMosaicSpec($0, canvas: size) }
+      // 全部影像軌：每段指令都列，解碼器全程保持熱的（見
+      // CIExportInstruction.requiredSourceTrackIDs 的說明）
+      let prerollIDs = Array(Set(segments.map { $0.track.trackID }))
+        .sorted().map { NSNumber(value: $0) }
+      // 最後一個可見片段結束的時間：之後的區間就是「片尾」
+      let lastShow = segments.map { $0.range.end.seconds }.max() ?? 0
+      // 產一份 videoComposition（可帶捏合中的即時變形覆寫 ov）。
+      // 組建與即時變形共用同一段數學：放手烘定不會跳位。
+      // 閉包刻意不碰 self（buildInfo/wmLive 都在外面做）——
+      // vcRegen 存在屬性上，碰了 self 就是保留循環
+      let makeVC: (CompLiveXform?) -> AVMutableVideoComposition = { ov in
+        var segs = segments
+        if let ov = ov {
+          for i in segs.indices
+          where segs[i].layer == ov.z
+            && abs(segs[i].range.start.seconds - ov.start) < 0.02
+          {
+            segs[i].userScale = ov.scale
+            segs[i].px = ov.px
+            segs[i].py = ov.py
+            segs[i].rotation = ov.rotation
+          }
+        }
+        let vc = AVMutableVideoComposition()
+        vc.renderSize = size
+        vc.frameDuration = CMTime(value: 1, timescale: 30)
+        // 輸出色彩明確標 709。HDR 原檔進 CI 合成器時像素已經被
+        // toneMap 成 SDR，但不標的話 HDR 的色彩標記會原封傳下去，
+        // 播放器對「已經是 SDR 的像素」再套一次 HLG 顯示曲線——
+        // 就是「進場 CI 有掛、顏色照樣洗白」（+93 診斷定罪）。
+        // 匯出路早就標了（同一個教訓），播放路漏掉
+        if hdrOut && anyHDR {
+          // HDR 預覽：跟 HDR 匯出同一組標記（HLG），像素不做映射
+          vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_2020
+          vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_2100_HLG
+          vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_2020
+        } else {
+          vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
+          vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
+          vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
+        }
+        // 旋轉只有 CI 畫得出來：非 CI 合成捏出旋轉時臨時走 CI
+        //（軌道沒為 CI 鋪滿，接縫可能用上一格頂一下；放手重組就正確）
+        let useCI = needsCI || (ov.map { abs($0.rotation) > 0.05 } ?? false)
+        if useCI {
         var built: [CIExportInstruction] = []
         for i in 0..<(marks.count - 1) {
           let a = marks[i]
           let b = marks[i + 1]
           let mid = (a.seconds + b.seconds) / 2
-          let here = segments.filter {
+          let here = segs.filter {
             $0.range.start.seconds <= mid + 0.0005
               && $0.range.end.seconds >= mid - 0.0005
           }.sorted { $0.layer < $1.layer }
@@ -4315,26 +4391,14 @@ final class CompPlayer: NSObject, FlutterTexture {
         vc.customVideoCompositorClass =
           hdrOut && anyHDR
           ? CIPreviewCompositorHDR.self : CIExportCompositor.self
-        if hdrOut && anyHDR {
-          CIExportCompositor.setPreviewOverlays(
-            overlays.compactMap { CIOverlaySpec($0, canvas: size) })
-          ciCanvas = size
-          wmLive = true
-        }
         vc.instructions = built
-        buildInfo["CI"] = true
-        buildInfo["指令"] = built.map { ins -> String in
-          "\(String(format: "%.2f", ins.timeRange.start.seconds))~"
-            + "\(String(format: "%.2f", ins.timeRange.end.seconds))"
-            + " 層z=\(ins.layers.map { $0.z })"
-        }.joined(separator: "；")
       } else {
       var instructions: [AVMutableVideoCompositionInstruction] = []
       for i in 0..<(marks.count - 1) {
         let a = marks[i]
         let b = marks[i + 1]
         let mid = (a.seconds + b.seconds) / 2
-        let here = segments.filter {
+        let here = segs.filter {
           $0.range.start.seconds <= mid + 0.0005
             && $0.range.end.seconds >= mid - 0.0005
         }.sorted { $0.layer < $1.layer }  // 軌道編號小的在下面
@@ -4371,26 +4435,48 @@ final class CompPlayer: NSObject, FlutterTexture {
         instructions.append(ins)
       }
       vc.instructions = instructions
-      buildInfo["CI"] = false
-      buildInfo["指令"] = instructions.map { ins -> String in
-        "\(String(format: "%.2f", ins.timeRange.start.seconds))~"
-          + "\(String(format: "%.2f", ins.timeRange.end.seconds))"
-          + " 層數\(ins.layerInstructions.count)"
-      }.joined(separator: "；")
       }
-      // 交出去之前先讓 AVFoundation 自己驗一遍。壞掉的合成不會丟例外，
-      // 只會安靜地變成一片黑——那正是「拉到新軌道預覽就消失」
-      let v = VCValidator()
-      if !vc.isValid(
-        for: comp, timeRange: CMTimeRange(start: .zero, duration: comp.duration),
-        validationDelegate: v)
-      {
-        buildError =
-          "合成指令不合法：" + (v.problems.first ?? "沒有細節")
-          + (v.problems.count > 1 ? "（共 \(v.problems.count) 處）" : "")
-        return false
+        return vc
       }
-      item.videoComposition = vc
+      vcRegen = makeVC
+      // HDR 預覽的即時疊加物（浮水印/文字）：跟原本一樣只在
+      // 「CI 有掛」時收清單（needsCI false＝沒有合成器在讀）
+      if hdrOut && anyHDR && needsCI {
+        CIExportCompositor.setPreviewOverlays(
+          overlays.compactMap { CIOverlaySpec($0, canvas: size) })
+        ciCanvas = size
+        wmLive = true
+      }
+      if needsVC {
+        let vc = makeVC(nil)
+        buildInfo["CI"] = needsCI
+        buildInfo["指令"] = vc.instructions.map { raw -> String in
+          let head =
+            "\(String(format: "%.2f", raw.timeRange.start.seconds))~"
+            + "\(String(format: "%.2f", raw.timeRange.end.seconds))"
+          if let ci = raw as? CIExportInstruction {
+            return head + " 層z=\(ci.layers.map { $0.z })"
+          }
+          let n =
+            (raw as? AVMutableVideoCompositionInstruction)?
+            .layerInstructions.count ?? 0
+          return head + " 層數\(n)"
+        }.joined(separator: "；")
+        // 交出去之前先讓 AVFoundation 自己驗一遍。壞掉的合成不會丟例外，
+        // 只會安靜地變成一片黑——那正是「拉到新軌道預覽就消失」
+        let v = VCValidator()
+        if !vc.isValid(
+          for: comp,
+          timeRange: CMTimeRange(start: .zero, duration: comp.duration),
+          validationDelegate: v)
+        {
+          buildError =
+            "合成指令不合法：" + (v.problems.first ?? "沒有細節")
+            + (v.problems.count > 1 ? "（共 \(v.problems.count) 處）" : "")
+          return false
+        }
+        item.videoComposition = vc
+      }
     }
     // 影格輸出：BGRA 直接給 Flutter 材質用
     // 屬性字典的型別要寫死：空字典字面值 Swift 推不出型別會直接編不過
@@ -4877,6 +4963,8 @@ final class CompPlayer: NSObject, FlutterTexture {
 
   func dispose() {
     disposeWatch()
+    // 重產閉包抓著整組合成軌，不放掉的話合成跟著這顆殭屍活著
+    vcRegen = nil
     if let o = stallObs {
       NotificationCenter.default.removeObserver(o)
       stallObs = nil

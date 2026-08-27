@@ -1554,6 +1554,61 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     });
   }
 
+  // ===== 片段的即時變形（捏合/拖曳跟手）=====
+  //
+  // 片段的縮放/位移/旋轉是烘進合成的，以前改了要整組重建才看得到
+  //（實測回報：螢幕縮放跟移動反應都不夠即時）。治本：原生端把
+  // 「產 videoComposition」留成可重呼叫的閉包，捏合中只重產 vc
+  // 換上（同一個播放器、不閃），放手才真正重組烘定。
+  // 這裡負責把「選取中影片片段的目前變形」節流送過去
+
+  /// 上一次送出的變形值（同值不重送——選取當下的基準也只記不送）
+  String? _xfLastSent;
+  int _xfSelId = -1;
+  DateTime _xfLastAt = DateTime.fromMillisecondsSinceEpoch(0);
+  Timer? _xfTrail;
+
+  void _liveXformSync() {
+    if (!_compOn) return;
+    final c = _selClipById(_sel);
+    if (c == null || !_tl.sourceOf(c).isVideo) {
+      _xfSelId = -1;
+      _xfLastSent = null;
+      return;
+    }
+    final key =
+        '${c.track}|${c.offset}|${c.scale}|${c.px}|${c.py}|${c.rotation}';
+    if (c.id != _xfSelId || _xfLastSent == null) {
+      // 剛選取（或剛重組完）：記基準就好。值沒變就不重產 vc，
+      // 免得光是點選取就換一次合成指令
+      _xfSelId = c.id;
+      _xfLastSent = key;
+      return;
+    }
+    if (key == _xfLastSent) return;
+    final now = DateTime.now();
+    if (now.difference(_xfLastAt).inMilliseconds < 33) {
+      // 節流中：尾巴補一發，手指停下的最後位置一定落地
+      _xfTrail?.cancel();
+      _xfTrail = Timer(const Duration(milliseconds: 40), () {
+        if (mounted) _liveXformSync();
+      });
+      return;
+    }
+    _xfLastAt = now;
+    _xfLastSent = key;
+    unawaited(
+      CompPlayer.setXform(
+        z: c.track,
+        start: c.offset,
+        scale: c.scale,
+        px: c.px,
+        py: c.py,
+        rotation: c.rotation,
+      ),
+    );
+  }
+
   /// 草稿存檔失敗提示過了沒（整場只煩一次）
   bool _draftSaveWarned = false;
 
@@ -5887,6 +5942,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 原生換手的 1.5 秒逾時
     _lastOvSig = made.wmLive ? ovSigAtBuild : 'off';
     _ovNativePending = made.wmLive && ovMaps.isNotEmpty;
+    // 新合成烘的就是現在的變形值：即時變形的基準重取
+    _xfLastSent = null;
     Timer(const Duration(milliseconds: 1700), () {
       if (mounted && _comp == made && _ovNativeShown != _ovNativePending) {
         setState(() => _ovNativeShown = _ovNativePending);
@@ -7880,6 +7937,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _prepEscapeTimer?.cancel();
     _staleKickTimer?.cancel();
     _ovSyncTimer?.cancel();
+    _xfTrail?.cancel();
     CompPlayer.onCompVisible = null;
     _posVN.dispose();
     _frameVN.dispose();
@@ -9008,6 +9066,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // HDR 預覽的疊加物同步：這裡是所有相關狀態變化（選取、拖曳、
     // 面板調整）一定會經過的地方，排程本身很便宜（查旗標＋計時器）
     _scheduleOvSync();
+    // 選取中片段的即時變形（捏合/拖曳跟手）：同一個入口，節流在裡面
+    _liveXformSync();
     final baseVideo = _activeVideo;
     final baseCtrl = baseVideo == null ? null : _ctrls[baseVideo.id];
     final baseAspect = (baseCtrl != null && baseCtrl.value.isInitialized)
