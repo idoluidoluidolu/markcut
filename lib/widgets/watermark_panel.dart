@@ -117,6 +117,11 @@ class WatermarkPanel extends StatefulWidget {
   /// 跟主浮水印同一頁，不必為它多佔一格
   final Widget? textSectionExtra;
 
+  /// 手繪「畫在目前畫面上」的底圖來源：照片本人／播放頭那一格。
+  /// 給了，畫板就鋪著現場畫面畫（可關）；筆跡畫在哪、浮水印落在哪。
+  /// 不給＝維持透明畫板（例如純範本工作室沒有現場畫面）
+  final Future<Uint8List?> Function()? grabFrame;
+
   /// 父層用它叫面板捲到文字／圖片區塊
   final WatermarkPanelController? controller;
 
@@ -146,6 +151,7 @@ class WatermarkPanel extends StatefulWidget {
     this.hideSaveButton = false,
     this.extraSections = const [],
     this.textSectionExtra,
+    this.grabFrame,
     this.controller,
     this.showNav = true,
     this.bottomInset = 0,
@@ -332,8 +338,19 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     if (s.logo.b64 == null) _update(() => s.removeLogo(s.activeLogo));
   }
 
+  /// 現場畫面（照片／播放頭那一格）。拿不到就回 null，畫板退回透明底
+  Future<Uint8List?> _frameForDraw() async {
+    try {
+      return await widget.grabFrame?.call();
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> _pickDrawing() async {
-    final res = await drawWatermark(context);
+    final bg = await _frameForDraw();
+    if (!mounted) return;
+    final res = await drawWatermark(context, backdrop: bg);
     if (res == null || !mounted) return;
     _update(() {
       s.logo.bytesValue = res.png;
@@ -342,6 +359,13 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       s.logo.enabled = true;
       s.logo.drawn = true; // 之後「編輯」看這個旗標
       s.logo.drawData = res.data; // 筆畫資料：編輯時還原成活的
+      // 開著「目前畫面」畫的：畫在哪、印在哪（位置與大小照筆跡落點）
+      final pl = res.place;
+      if (pl != null) {
+        s.logo.x = pl.x;
+        s.logo.y = pl.y;
+        s.logo.sizeFrac = pl.sizeFrac;
+      }
       // 選了手繪＝主角是那張畫，預設的「@浮水印」文字先關掉——
       // 幾乎沒有人要兩個一起出現，要的話再自己打開
       s.text.enabled = false;
@@ -357,16 +381,26 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   Future<void> _editDrawing() async {
     final cur = s.logo.bytes;
     if (cur == null) return;
+    final bg = await _frameForDraw();
+    if (!mounted) return;
     final res = await drawWatermark(
       context,
       initialData: s.logo.drawData,
       initial: cur,
+      backdrop: bg,
     );
     if (res == null || !mounted) return;
     _update(() {
       s.logo.bytesValue = res.png;
       s.logo.origBytes = res.png;
       s.logo.drawData = res.data;
+      // 開著「目前畫面」改的：筆跡移去哪、浮水印就跟去哪
+      final pl = res.place;
+      if (pl != null) {
+        s.logo.x = pl.x;
+        s.logo.y = pl.y;
+        s.logo.sizeFrac = pl.sizeFrac;
+      }
     });
   }
 

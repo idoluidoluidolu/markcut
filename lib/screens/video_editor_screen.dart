@@ -8467,6 +8467,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             if (isClipWm) src.wmStyle ??= WatermarkSettings();
                             return WatermarkPanel(
                               key: ValueKey(isClipWm ? _sel : -1),
+                              // 手繪直接畫在「播放頭這一格」上（畫在哪、
+                              // 印在哪）。合成播放器抽得到就給；退回
+                              // 逐片段路徑（web/調色中）就維持透明畫板
+                              grabFrame: () async {
+                                final c = _comp;
+                                if (!_compOn || c == null) return null;
+                                return c.grab(maxH: 1080);
+                              },
                               controller: _wmPanelCtrl,
                               settings: isClipWm ? src.wmStyle! : _settings,
                               onChanged: () => setState(() {

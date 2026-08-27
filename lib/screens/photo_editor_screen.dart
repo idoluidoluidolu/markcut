@@ -584,6 +584,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             Expanded(
               child: WatermarkPanel(
                 settings: target,
+                // 手繪直接畫在照片上（畫在哪、印在哪）
+                grabFrame: () async => _photoBytes,
                 onChanged: () => setState(() {}),
                 onBeforeChange: () {
                   if (!pushed) {
@@ -3038,6 +3040,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                     },
                                   ),
                                   _ => WatermarkPanel(
+                                    // 手繪直接畫在照片上（畫在哪、印在哪）
+                                    grabFrame: () async => _photoBytes,
                                     controller: _wmPanelCtrl,
                                     // 導覽列由這一頁自己畫（要多一格「調色」）
                                     showNav: false,

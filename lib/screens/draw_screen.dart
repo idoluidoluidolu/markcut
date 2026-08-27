@@ -14,22 +14,37 @@ import '../widgets/watermark_layer.dart' show CheckerPainter;
 /// 拿到的 PNG 走現有的圖片浮水印那條路——位置、縮放、旋轉、透明度、
 /// 平鋪、匯出全部直接繼承，這一頁只負責「把筆跡變成一張圖」。
 ///
-/// 手繪的成果：壓平的 PNG（給浮水印流程用）＋筆畫資料（再編輯用）
-typedef DrawResult = ({Uint8List png, String data});
+/// 手繪的成果：壓平的 PNG（給浮水印流程用）＋筆畫資料（再編輯用）＋
+/// 位置（開著「目前畫面」畫的話，筆跡畫在哪、浮水印就落在哪：
+/// x/y＝中心的畫面座標 0~1、sizeFrac＝寬佔畫面短邊的比例）
+typedef DrawResult = ({
+  Uint8List png,
+  String data,
+  ({double x, double y, double sizeFrac})? place,
+});
 
 /// [initialData] 是上次存下來的筆畫資料：載回來就是一筆一筆活的，
 /// 上一步、點選調粗細全部可用。舊資料只有 PNG（[initial]）時退回
 /// 「鋪在畫板中央當底」的做法——還是能加筆畫、用橡皮擦擦。
+///
+/// [backdrop] 是「目前畫面」（照片本人／播放頭那一格）：給了畫板
+/// 就直接鋪著它畫（使用者指定：手繪要有直接畫在現場畫面上的選項），
+/// 右上角可以關回透明畫板。底圖只是參考，不會進輸出的 PNG。
 ///
 /// 回傳 null＝取消。
 Future<DrawResult?> drawWatermark(
   BuildContext context, {
   String? initialData,
   Uint8List? initial,
+  Uint8List? backdrop,
 }) => Navigator.push<DrawResult>(
   context,
   MaterialPageRoute(
-    builder: (_) => _DrawScreen(initialData: initialData, initial: initial),
+    builder: (_) => _DrawScreen(
+      initialData: initialData,
+      initial: initial,
+      backdrop: backdrop,
+    ),
   ),
 );
 
@@ -150,8 +165,9 @@ class _Stroke {
 class _DrawScreen extends StatefulWidget {
   final String? initialData;
   final Uint8List? initial;
+  final Uint8List? backdrop;
 
-  const _DrawScreen({this.initialData, this.initial});
+  const _DrawScreen({this.initialData, this.initial, this.backdrop});
 
   @override
   State<_DrawScreen> createState() => _DrawScreenState();
@@ -163,12 +179,32 @@ class _DrawScreenState extends State<_DrawScreen> {
   /// 再編輯時鋪在底下的舊畫作（跟筆畫同一個圖層，橡皮擦擦得到）
   ui.Image? _base;
 
+  /// 「目前畫面」底圖：畫在筆畫圖層之外（橡皮擦擦不到、不進輸出），
+  /// 純參考——看得到自己畫在畫面的哪裡
+  ui.Image? _bg;
+  bool _bgOn = false;
+
   /// 還沒還原的筆畫資料（要等第一次知道畫板尺寸才能換算座標）
   String? _pendingData;
 
   @override
   void initState() {
     super.initState();
+    final bd = widget.backdrop;
+    if (bd != null) {
+      _bgOn = true;
+      ui
+          .instantiateImageCodec(bd)
+          .then((codec) async {
+            final frame = await codec.getNextFrame();
+            if (mounted) {
+              setState(() => _bg = frame.image);
+            } else {
+              frame.image.dispose();
+            }
+          })
+          .catchError((_) {});
+    }
     _pendingData = widget.initialData;
     // 有筆畫資料就不鋪底圖：筆畫本身就是完整的畫作
     final b = _pendingData != null ? null : widget.initial;
@@ -186,6 +222,7 @@ class _DrawScreenState extends State<_DrawScreen> {
   @override
   void dispose() {
     _base?.dispose();
+    _bg?.dispose();
     super.dispose();
   }
 
@@ -225,6 +262,16 @@ class _DrawScreenState extends State<_DrawScreen> {
     } catch (_) {
       // 資料壞了就當全新的畫板，至少還能畫
     }
+  }
+
+  /// 「目前畫面」contain 進畫板（畫板座標）。
+  /// 位置換算（畫在哪、浮水印落在哪）也用同一個框
+  Rect _bgRect(Size board) {
+    final img = _bg!;
+    final k = math.min(board.width / img.width, board.height / img.height);
+    final w = img.width * k;
+    final h = img.height * k;
+    return Rect.fromLTWH((board.width - w) / 2, (board.height - h) / 2, w, h);
   }
 
   /// 底圖鋪在畫板中央、留一點邊（畫板座標）
@@ -373,7 +420,27 @@ class _DrawScreenState extends State<_DrawScreen> {
       'h': double.parse(boardSize.height.toStringAsFixed(1)),
       's': [for (final s in _strokes) s.toJson()],
     });
-    Navigator.pop(context, (png: png, data: data));
+    // 開著「目前畫面」畫的：把筆跡的位置換算成畫面座標帶回去，
+    // 浮水印就落在畫的地方（畫在哪、印在哪）
+    ({double x, double y, double sizeFrac})? place;
+    if (_bgOn && _bg != null) {
+      Rect? ink;
+      if (_base != null) ink = _baseRect(boardSize);
+      for (final s in _strokes) {
+        if (s.eraser) continue;
+        ink = ink == null ? s.bounds : ink.expandToInclude(s.bounds);
+      }
+      ink = ink?.intersect(Offset.zero & boardSize);
+      final b = _bgRect(boardSize);
+      if (ink != null && ink.width > 2 && b.width > 1 && b.height > 1) {
+        place = (
+          x: ((ink.center.dx - b.left) / b.width).clamp(0.0, 1.0),
+          y: ((ink.center.dy - b.top) / b.height).clamp(0.0, 1.0),
+          sizeFrac: (ink.width / math.min(b.width, b.height)).clamp(0.02, 2.0),
+        );
+      }
+    }
+    Navigator.pop(context, (png: png, data: data, place: place));
   }
 
   /// 把筆跡畫成 PNG：只取「筆跡的外框＋一點邊距」，不是整塊畫板——
@@ -468,6 +535,16 @@ class _DrawScreenState extends State<_DrawScreen> {
       appBar: AppBar(
         backgroundColor: kBg,
         actions: [
+          if (widget.backdrop != null)
+            IconButton(
+              tooltip: _bgOn ? '收起目前畫面（回透明畫板）' : '鋪上目前畫面（畫在哪、印在哪）',
+              onPressed: () => setState(() => _bgOn = !_bgOn),
+              icon: Icon(
+                Icons.image_outlined,
+                size: 20,
+                color: _bgOn ? kSelect : kTextDim,
+              ),
+            ),
           IconButton(
             tooltip: '上一步',
             onPressed: _strokes.isEmpty
@@ -545,6 +622,10 @@ class _DrawScreenState extends State<_DrawScreen> {
                             selected: _sel,
                             base: _base,
                             baseRect: _base == null ? null : _baseRect(size),
+                            bg: _bgOn ? _bg : null,
+                            bgRect: (_bgOn && _bg != null)
+                                ? _bgRect(size)
+                                : null,
                           ),
                           size: size,
                         ),
@@ -827,16 +908,31 @@ class _BoardPainter extends CustomPainter {
   final ui.Image? base;
   final Rect? baseRect;
 
+  /// 「目前畫面」參考底圖：畫在筆畫圖層之外——橡皮擦擦不到、
+  /// 也不會進輸出（輸出走 _renderPng，根本不知道它）
+  final ui.Image? bg;
+  final Rect? bgRect;
+
   const _BoardPainter({
     required this.strokes,
     required this.live,
     required this.selected,
     this.base,
     this.baseRect,
+    this.bg,
+    this.bgRect,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
+    if (bg != null && bgRect != null) {
+      canvas.drawImageRect(
+        bg!,
+        Rect.fromLTWH(0, 0, bg!.width.toDouble(), bg!.height.toDouble()),
+        bgRect!,
+        Paint()..filterQuality = FilterQuality.medium,
+      );
+    }
     _paintStrokes(
       canvas,
       strokes,
