@@ -133,6 +133,63 @@ const _kGroups = <(String, List<String>)>[
   ),
 ];
 
+/// 複製成功的提示：畫面中央的深色大卡（顏文字本人放大），
+/// 約 1.2 秒自動消失。底部那條小 toast 太不明顯（實測回報）
+void _showCopied(BuildContext context, String k) {
+  final overlay = Overlay.of(context, rootOverlay: true);
+  late final OverlayEntry entry;
+  entry = OverlayEntry(
+    builder: (_) => Center(
+      child: IgnorePointer(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+          decoration: BoxDecoration(
+            color: const Color(0xF2141418),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFF3A3A40)),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x80000000),
+                blurRadius: 30,
+                offset: Offset(0, 8),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                k,
+                style: const TextStyle(
+                  fontSize: 24,
+                  color: Colors.white,
+                  height: 1.3,
+                  decoration: TextDecoration.none,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 5),
+              const Text(
+                '已複製，貼上就能用',
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: Color(0xFFB9B9BF),
+                  decoration: TextDecoration.none,
+                  fontWeight: FontWeight.w400,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+  overlay.insert(entry);
+  Future<void>.delayed(const Duration(milliseconds: 1200), () {
+    if (entry.mounted) entry.remove();
+  });
+}
+
 Future<void> showKaomojiSheet(BuildContext context) async {
   final prefs = await SharedPreferences.getInstance();
   var recent = prefs.getStringList(_kRecentKey) ?? const [];
@@ -155,7 +212,7 @@ Future<void> showKaomojiSheet(BuildContext context) async {
             await prefs.setStringList(_kRecentKey, recent);
             if (context.mounted) {
               setSheet(() {});
-              showHint(context, '已複製 $k，貼上就能用');
+              _showCopied(context, k);
             }
           },
           child: Container(

@@ -1053,31 +1053,6 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                           _update(() => s.text.text = v),
                                     ),
                                   ),
-                                  // 顏文字面板：點一個複製、回來貼上；
-                                  // 最近用過的排最上面（使用者指定）
-                                  Positioned(
-                                    left: 2,
-                                    bottom: 2,
-                                    child: TextButton.icon(
-                                      onPressed: () =>
-                                          showKaomojiSheet(context),
-                                      style: TextButton.styleFrom(
-                                        visualDensity: VisualDensity.compact,
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 10,
-                                        ),
-                                        foregroundColor: kTextDim,
-                                      ),
-                                      icon: const Icon(
-                                        Icons.emoji_emotions_outlined,
-                                        size: 16,
-                                      ),
-                                      label: const Text(
-                                        '顏文字',
-                                        style: TextStyle(fontSize: 11.5),
-                                      ),
-                                    ),
-                                  ),
                                   Positioned(
                                     right: 2,
                                     top: 2,
@@ -1197,6 +1172,41 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                           const SizedBox(width: 8),
                                           const Text(
                                             '顏色',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: kTextDim,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  // 顏文字：跟字型/顏色同一排同語言（C 案，
+                                  // 使用者指定）。點一個＝複製，回來貼上
+                                  InkWell(
+                                    onTap: () => showKaomojiSheet(context),
+                                    borderRadius: BorderRadius.circular(6),
+                                    child: Container(
+                                      height: 38,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 12,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        border: Border.all(color: kBorder),
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: const Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            Icons.emoji_emotions_outlined,
+                                            size: 16,
+                                            color: kIcon,
+                                          ),
+                                          SizedBox(width: 6),
+                                          Text(
+                                            '顏文字',
                                             style: TextStyle(
                                               fontSize: 12,
                                               color: kTextDim,
