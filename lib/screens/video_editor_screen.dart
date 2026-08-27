@@ -1887,6 +1887,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // Flutter 版顯示與否（見 _ovNativePending 的說明）
     CompPlayer.onCompVisible = () {
       if (!mounted) return;
+      // 新合成烘的就是最終值：即時變形的覆寫功成身退
+      unawaited(CompPlayer.clearXform());
       if (_ovNativeShown != _ovNativePending) {
         setState(() => _ovNativeShown = _ovNativePending);
       }
@@ -5967,7 +5969,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 新合成烘的就是現在的變形值：即時變形的基準重取
     _xfLastSent = null;
     Timer(const Duration(milliseconds: 1700), () {
-      if (mounted && _comp == made && _ovNativeShown != _ovNativePending) {
+      if (!mounted || _comp != made) return;
+      unawaited(CompPlayer.clearXform());
+      if (_ovNativeShown != _ovNativePending) {
         setState(() => _ovNativeShown = _ovNativePending);
       }
     });

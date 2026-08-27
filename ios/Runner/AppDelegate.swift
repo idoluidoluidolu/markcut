@@ -255,13 +255,21 @@ final class CILayerSpec {
   /// 疊放層級（時間軸軌道編號）。馬賽克只糊 z 比它低的層
   let z: Int
 
+  /// 這一層烘進 transform 的「使用者變形」基準值（縮放/位置）。
+  /// 即時變形（liveXform）要靠它算差量：新值 ∘ 舊值⁻¹ 疊上去。
+  /// 只有預覽的影片層會帶；匯出/圖層用預設值（等於不參與）
+  let uScale: Double
+  let uPx: Double
+  let uPy: Double
+
   init(
     trackID: CMPersistentTrackID, still: CIImage?,
     transform: CGAffineTransform, srcHeight: CGFloat,
     start: Double, end: Double, fadeIn: Double, fadeOut: Double,
     colorMatrix: [Double]?,
     crop: CGRect? = nil, rotation: Double = 0, opacity: Double = 1,
-    z: Int = 0, gif: CIGifSpec? = nil
+    z: Int = 0, gif: CIGifSpec? = nil,
+    uScale: Double = 1, uPx: Double = 0.5, uPy: Double = 0.5
   ) {
     self.trackID = trackID
     self.still = still
@@ -277,6 +285,9 @@ final class CILayerSpec {
     self.rotation = rotation
     self.opacity = opacity
     self.z = z
+    self.uScale = uScale
+    self.uPx = uPx
+    self.uPy = uPy
   }
 
   /// 這一格的不透明度（線性淡入淡出）
@@ -487,6 +498,24 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
 
   /// 讀「即時疊加物」而不是指令裡那份（只有 HDR 預覽合成器開）
   var livePreview: Bool { false }
+
+  /// 讀「即時變形」（兩個預覽合成器都開；匯出不讀）
+  var liveComp: Bool { false }
+
+  /// 捏合/拖曳中的即時變形（見 CompLiveXform）：每一格合成時直接
+  /// 讀，零重建。只有預覽合成器（livePreview/liveCI）讀它
+  static let xfLock = NSLock()
+  private static var liveXf: CompLiveXform?
+  static func setLiveXform(_ x: CompLiveXform?) {
+    xfLock.lock()
+    liveXf = x
+    xfLock.unlock()
+  }
+  static func currentLiveXform() -> CompLiveXform? {
+    xfLock.lock()
+    defer { xfLock.unlock() }
+    return liveXf
+  }
 
   // context 用靜態共用：CI 的濾鏡管線編譯快取掛在 context 上，
   // 每個合成器實例各開一顆的話，抽格器、播放器、匯出各自都要
@@ -782,6 +811,8 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         let activeMz = ins.mosaics
           .filter { t >= $0.start && t < $0.end }
           .sorted { $0.z < $1.z }
+        // 捏合/拖曳中的即時變形：每一格讀一次（只有預覽合成器讀）
+        let lx = self.liveComp ? CIExportCompositor.currentLiveXform() : nil
         var mzIdx = 0
         var missing = false
         for layer in ins.layers {
@@ -824,11 +855,41 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           } else {
             continue
           }
+          // 捏合/拖曳中的即時變形：把「新值 ∘ 舊值⁻¹」的差量疊上去，
+          // 數學跟 fitTransform 的使用者段同構——放手烘定不會跳位。
+          // 只作用在被捏的那一段（軌道編號＋片段開頭一起對）
+          var rot = layer.rotation
+          if let lx = lx, lx.z == layer.z,
+            abs(lx.start - layer.start) < 0.02,
+            layer.trackID != kCMPersistentTrackID_Invalid
+          {
+            func userXf(
+              _ u: Double, _ px: Double, _ py: Double
+            ) -> CGAffineTransform {
+              CGAffineTransform(
+                translationX: -size.width / 2, y: -size.height / 2
+              )
+              .concatenating(
+                CGAffineTransform(scaleX: CGFloat(u), y: CGFloat(u)))
+              .concatenating(
+                CGAffineTransform(
+                  translationX: size.width / 2 + CGFloat(px - 0.5)
+                    * size.width,
+                  y: size.height / 2 + CGFloat(py - 0.5) * size.height))
+            }
+            // 差量在 AV 座標（y 往下）算，前後各翻一次進 CI 座標
+            let extra = userXf(layer.uScale, layer.uPx, layer.uPy)
+              .inverted()
+              .concatenating(userXf(lx.scale, lx.px, lx.py))
+            img = img.transformed(
+              by: flipCanvas.concatenating(extra).concatenating(flipCanvas))
+            rot = lx.rotation
+          }
           // 裁切：transform 沒有旋轉成分，貼上畫布是軸對齊的方框，
           // 直接照 extent 的比例切窗。比例是左上原點，CI 是左下——
           // y 要反過來。旋轉繞「整個片段框」的中心（跟預覽一致），
           // 所以中心用裁切前的 extent 算
-          if layer.crop != nil || abs(layer.rotation) > 0.05 {
+          if layer.crop != nil || abs(rot) > 0.05 {
             let full = img.extent
             if full.width > 1, full.height > 1 {
               if let cr = layer.crop {
@@ -839,9 +900,9 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
                     width: cr.width * full.width,
                     height: cr.height * full.height))
               }
-              if abs(layer.rotation) > 0.05 {
+              if abs(rot) > 0.05 {
                 img = Self.spin(
-                  img, degrees: layer.rotation,
+                  img, degrees: rot,
                   around: CGPoint(x: full.midX, y: full.midY))
               }
             }
@@ -952,6 +1013,14 @@ class CIExportCompositorHDR: CIExportCompositor {
 /// 而且提亮數學跟匯出同一段程式碼，預覽即所得）
 final class CIPreviewCompositorHDR: CIExportCompositorHDR {
   override var livePreview: Bool { true }
+  override var liveComp: Bool { true }
+}
+
+/// SDR「預覽」合成器：跟匯出同一套疊圖，只是會讀即時變形
+///（liveXform）。匯出用的基底類不讀——匯出中使用者捏預覽
+/// 不能弄髒成品
+final class CIPreviewCompositorSDR: CIExportCompositor {
+  override var liveComp: Bool { true }
 }
 
 /// 跨執行緒的一次性旗標。轉檔那條路上有兩個地方需要它：
@@ -1160,23 +1229,35 @@ final class AtomicFlag {
           "wmLive": p.wmLive,
         ])
       case "setXform":
-        // 捏合/拖曳中的即時變形：只重產 videoComposition 換上，
-        // 不重建合成（放手後 Dart 端照舊觸發重組烘定）
+        // 捏合/拖曳中的即時變形。走「合成器每一格直接讀的靜態參數」
+        // ——之前每次更新都重產 videoComposition 換上，AVFoundation
+        // 吞不了 30 次/秒（實測回報：素材落後框框、縮放不即時）。
+        // CI 沒掛的簡單合成：第一次先帶覆寫重產一次 vc 掛上 CI 路，
+        // 之後同樣走靜態參數
         guard let a = call.arguments as? [String: Any], let p = self.comp
         else {
           result(false)
           return
         }
-        let ov: CompLiveXform? = (a["clear"] as? Bool ?? false)
-          ? nil
-          : CompLiveXform(
-            z: a["z"] as? Int ?? 0,
-            start: a["start"] as? Double ?? 0,
-            scale: a["scale"] as? Double ?? 1,
-            px: a["px"] as? Double ?? 0.5,
-            py: a["py"] as? Double ?? 0.5,
-            rotation: a["rotation"] as? Double ?? 0)
-        result(p.applyXform(ov))
+        if a["clear"] as? Bool ?? false {
+          CIExportCompositor.setLiveXform(nil)
+          result(true)
+          return
+        }
+        let ov = CompLiveXform(
+          z: a["z"] as? Int ?? 0,
+          start: a["start"] as? Double ?? 0,
+          scale: a["scale"] as? Double ?? 1,
+          px: a["px"] as? Double ?? 0.5,
+          py: a["py"] as? Double ?? 0.5,
+          rotation: a["rotation"] as? Double ?? 0)
+        CIExportCompositor.setLiveXform(ov)
+        if p.liveCIOn {
+          p.nudgeRedrawIfPaused()
+          result(true)
+        } else {
+          result(p.applyXform(ov))
+        }
       case "setOverlays":
         // HDR 預覽的即時疊加物：換清單不重建合成（拖曳/改樣式用）。
         // 換完 Dart 端會補一個精準 seek 逼它重畫當下這一格
@@ -1191,8 +1272,12 @@ final class AtomicFlag {
           list.compactMap { CIOverlaySpec($0, canvas: p.ciCanvas) })
         // 暫停中換清單要逼播放器重畫這一格：光 seek 回同一個時間點
         // 會被當 no-op（實測回報：打字改浮水印、預覽完全不動）。
-        // 跟即時變形同一招——重產一份 vc 換上，一定重組目前這格
-        if p.player.rate == 0 { _ = p.applyXform(nil) }
+        // CI 掛著＝擺動半格催重畫就夠；沒掛才重產 vc
+        if p.liveCIOn {
+          p.nudgeRedrawIfPaused()
+        } else if p.player.rate == 0 {
+          _ = p.applyXform(nil)
+        }
         result(true)
       case "play":
         let st = self.comp?.playStatus()
@@ -3663,17 +3748,38 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 數學跟烘定走同一段程式碼，放手不會跳位
   private var vcRegen: ((CompLiveXform?) -> AVMutableVideoComposition)?
 
-  /// 捏合/拖曳中的即時變形：重產 vc 換上（不重建合成）。
-  /// 暫停中換 vc 不一定會重畫這一格，補一個原地精準 seek 逼它。
+  /// 現役的 videoComposition 是不是走「預覽 CI 合成器」——是的話
+  /// 即時變形/疊加物只要改靜態參數＋催一格重畫，零重建
+  private(set) var liveCIOn = false
+
+  /// 這一版組建算出來的 needsCI（applyXform 重產 vc 時要知道
+  /// 換回無覆寫版之後 CI 還在不在）
+  var builtNeedsCI = false
+
+  /// 暫停中催播放器重畫這一格：往同一個時間 seek 會被當 no-op，
+  /// 改成在 ±1 個時間刻（1.7ms）之間來回擺——位置看不出差別、
+  /// 不累積漂移，每次都真的重組
+  private var nudgeFlip = false
+  func nudgeRedrawIfPaused() {
+    guard player.rate == 0 else { return }
+    nudgeFlip.toggle()
+    let eps = CMTime(value: nudgeFlip ? 1 : -1, timescale: 600)
+    var t = player.currentTime() + eps
+    if t < .zero { t = CMTime(value: 1, timescale: 600) }
+    player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
+  }
+
+  /// 重產 vc 換上（不重建合成）。即時變形第一次在「CI 沒掛」的
+  /// 合成上發動時走這裡把 CI 路掛起來；之後的更新走靜態參數。
   /// 回 false＝這份合成產不出 vc（呼叫端當沒這回事，照舊等重組）
   func applyXform(_ ov: CompLiveXform?) -> Bool {
     guard let regen = vcRegen, let item = player.currentItem else {
       return false
     }
     item.videoComposition = regen(ov)
+    liveCIOn = ov != nil || builtNeedsCI
     if player.rate == 0 {
-      let t = player.currentTime()
-      player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
+      nudgeRedrawIfPaused()
     }
     return true
   }
@@ -4352,9 +4458,10 @@ final class CompPlayer: NSObject, FlutterTexture {
           vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
           vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
         }
-        // 旋轉只有 CI 畫得出來：非 CI 合成捏出旋轉時臨時走 CI
-        //（軌道沒為 CI 鋪滿，接縫可能用上一格頂一下；放手重組就正確）
-        let useCI = needsCI || (ov.map { abs($0.rotation) > 0.05 } ?? false)
+        // 即時變形要 CI 才吃得到（標準 layer instruction 不會逐格
+        // 問我們）：有覆寫一律走 CI 路（軌道沒為 CI 鋪滿，接縫可能
+        // 用上一格頂一下；放手重組就正確）
+        let useCI = needsCI || ov != nil
         if useCI {
         var built: [CIExportInstruction] = []
         for i in 0..<(marks.count - 1) {
@@ -4390,7 +4497,9 @@ final class CompPlayer: NSObject, FlutterTexture {
                 fadeIn: seg.fadeIn, fadeOut: seg.fadeOut,
                 colorMatrix: nil,
                 crop: cropRect, rotation: seg.rotation,
-                opacity: seg.opacity, z: seg.layer)
+                opacity: seg.opacity, z: seg.layer,
+                // 即時變形的差量基準（見 CILayerSpec.uScale）
+                uScale: seg.userScale, uPx: seg.px, uPy: seg.py)
             ))
           }
           for sp in stillSpecs
@@ -4418,7 +4527,7 @@ final class CompPlayer: NSObject, FlutterTexture {
         // 白色才是真的白（跟成品同一段提亮程式碼）
         vc.customVideoCompositorClass =
           hdrOut && anyHDR
-          ? CIPreviewCompositorHDR.self : CIExportCompositor.self
+          ? CIPreviewCompositorHDR.self : CIPreviewCompositorSDR.self
         vc.instructions = built
       } else {
       var instructions: [AVMutableVideoCompositionInstruction] = []
@@ -4475,8 +4584,10 @@ final class CompPlayer: NSObject, FlutterTexture {
         ciCanvas = canvas
         wmLive = true
       }
+      builtNeedsCI = needsCI
       if needsVC {
         let vc = makeVC(nil)
+        liveCIOn = needsCI
         buildInfo["CI"] = needsCI
         buildInfo["指令"] = vc.instructions.map { raw -> String in
           let head =

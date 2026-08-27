@@ -402,6 +402,15 @@ class CompPlayer {
     }
   }
 
+  /// 取消即時變形覆寫（重組完成、烘定值已含最終位置時呼叫；
+  /// 值相同所以畫面不動，只是把覆寫收掉，免得之後改了縮放
+  /// 又被舊覆寫算錯差量）
+  static Future<void> clearXform() async {
+    try {
+      await _ch.invokeMethod<bool>('setXform', {'clear': true});
+    } catch (_) {}
+  }
+
   /// 換 HDR 預覽的即時疊加物清單（不重建合成）。
   /// 只有 [wmLive] 的合成收得下；成功回 true。暫停中呼叫端要補一個
   /// 精準 seek，逼合成器用新清單重畫當下這一格
