@@ -403,10 +403,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 上一次成功同步到原生端的疊加物指紋
   String _lastOvSig = 'off';
 
-  /// 「素材化」浮水印/文字拖曳中（放手＝預覽區沒手指才解除）。
-  /// 全域浮水印不用這套——它有即時幾何（見 _liveOvSync）
-  bool _ovDragging = false;
-  bool _ovHoldLast = false;
   bool _ovSyncBusy = false;
   Timer? _ovSyncTimer;
 
@@ -422,28 +418,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 這份合成收不收即時疊加物（HDR 預覽且原生端掛了預覽合成器）
   bool get _ovLiveOn => _compOn && (_comp?.wmLive ?? false);
 
-  /// 使用者正在「動手」編輯疊加物：Flutter 版接手畫（即時跟手），
-  /// 原生端清空。
-  /// 只認真的手勢（拖曳/兩指縮放）——「選取」本身不算：一選取就
-  /// 換 Flutter 版的話，HDR 預覽裡點一下浮水印字就變灰
-  ///（實測回報），看起來像壞掉。面板調數值走 120ms 併批的
-  /// setOverlays 重烘，白色的版直接跟著變
-  bool get _ovHold {
-    if (_ovDragging) return true;
-    // 兩指縮放要選取才作用；選的是「素材化」疊加物＝正在捏它。
-    // 全域浮水印不進持有——它的拖/縮/轉走即時幾何，原生直接跟手
-    if (_pvPts.length >= 2) {
-      final c = _selClipById(_sel);
-      if (c != null) {
-        final k = _tl.sourceOf(c).kind;
-        if (k == ClipKind.text || k == ClipKind.wm) return true;
-      }
-    }
-    return false;
-  }
-
-  /// Flutter 版疊加物要不要藏（原生烘好的在畫、又沒有人在編輯）
-  bool get _ovFlutterHidden => _ovLiveOn && _ovNativeShown && !_ovHold;
+  /// Flutter 版疊加物要不要藏（原生烘好的在畫就藏——拖/縮/轉
+  /// 全部走即時幾何，原生直接跟手，不再需要 Flutter 接手）
+  bool get _ovFlutterHidden => _ovLiveOn && _ovNativeShown;
 
   /// 時間軸上有沒有任何疊加物內容（決定合成要不要掛預覽合成器）
   bool get _ovAnyContent {
@@ -1356,14 +1333,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 疊加物內容的指紋（不含「這份合成收不收」的判定，重建合成
-  /// 過程中也要算得出來）。'hold'＝編輯持有中該清空、'empty'＝
-  /// 沒有內容。
-  /// [ignoreHold]：重建合成時用——就算編輯持有中也要把疊加物一起
-  /// 烘進去（不烘的話合成不掛預覽合成器，之後 setOverlays 永遠
-  /// 收不下，放手也換不回白色那份）；持有中多出來的那份由
-  /// 下一輪同步清掉
-  String _ovContentSig({bool ignoreHold = false}) {
-    if (!ignoreHold && _ovHold) return 'hold';
+  /// 過程中也要算得出來）。'empty'＝沒有內容
+  String _ovContentSig() {
     if (!_ovAnyContent) return 'empty';
     final b = StringBuffer();
     // 畫布/畫框比例進指紋：比例變了 rect 換算跟著變，要重送
@@ -1446,61 +1417,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       WmAnimation.drift => 'drift',
       WmAnimation.marquee => 'marquee',
     };
-    for (final c in _tl.clips) {
-      if (_hiddenTracks.contains(c.track)) continue;
-      final src = _tl.sourceOf(c);
-      if (src.kind != ClipKind.text && src.kind != ClipKind.wm) continue;
-      try {
-        final Uint8List png;
-        if (src.kind == ClipKind.text) {
-          final st = (src.textStyle ?? TextMark(text: src.name)).copy()
-            ..text = src.name;
-          png = await WatermarkRenderer.renderTextClipPng(
-            st,
-            c.px,
-            c.py,
-            c.scale,
-            ow,
-            oh,
-          );
-        } else {
-          png = await WatermarkRenderer.renderOverlayPng(
-            src.wmStyle ?? WatermarkSettings(),
-            ow,
-            oh,
-          );
-        }
-        final wmSt = src.kind == ClipKind.wm ? src.wmStyle : null;
-        final anim =
-            wmSt?.animation ??
-            (src.kind == ClipKind.text
-                ? (src.textStyle?.animation ?? WmAnimation.none)
-                : WmAnimation.none);
-        final aSpd = wmSt?.animSpeed ?? 1.0;
-        final aRng = wmSt?.animRange ?? 1.0;
-        out.add({
-          'png': png,
-          'rect': rect,
-          'start': c.offset,
-          'end': c.end,
-          'anim': animName(anim),
-          'cycle': anim == WmAnimation.blink
-              ? wmBlinkCycle(aSpd)
-              : wmMarqueeCycle(aSpd),
-          'on': wmBlinkOn(aSpd, aRng),
-          'animSpeed': aSpd,
-          'range': aRng,
-        });
-      } catch (e) {
-        Diag.note('疊加物 PNG 畫不出來（片段 ${c.id}）：$e');
-      }
-    }
-    // 全域浮水印：一個部件一張 PNG（文字一張、每張圖各一張）。
-    // 分開烘才能各自套「即時幾何」——拖/縮/轉哪個部件，原生就只
-    // 動那張，PNG 不重畫（跟手的關鍵）。分層疊出來的結果跟壓平
-    // 的一張一樣（同順序、同混色）
+    // 一個部件一張 PNG、各帶幾何基準：拖/縮/轉哪個部件，原生就
+    // 只動那張（差量繞部件中心），PNG 不重畫——跟手的關鍵。
+    // 分層疊出來的結果跟壓平的一張一樣（同順序、同混色）
     final pending = <String, List<double>>{};
-    if (!_wmHidden && _settings.hasAnyMark) {
+
+    Future<void> addSettingsParts(
+      String prefix,
+      WatermarkSettings st,
+      Map<String, dynamic> shared,
+    ) async {
       Future<void> addPart(
         String id,
         WatermarkSettings ps,
@@ -1509,16 +1435,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         try {
           out.add({
             'png': await WatermarkRenderer.renderOverlayPng(ps, ow, oh),
-            'rect': rect,
-            'start': _wmStart,
-            'end': _wmEndEff,
-            'anim': animName(_settings.animation),
-            'cycle': _settings.animation == WmAnimation.marquee
-                ? wmMarqueeCycle(_settings.animSpeed)
-                : wmBlinkCycle(_settings.animSpeed),
-            'on': wmBlinkOn(_settings.animSpeed, _settings.animRange),
-            'animSpeed': _settings.animSpeed,
-            'range': _settings.animRange,
+            ...shared,
             // 平鋪的部件沒有「位置」可言，不參與即時幾何
             if (geom != null) ...{
               'id': id,
@@ -1534,32 +1451,105 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         }
       }
 
-      final t = _settings.text;
+      final t = st.text;
       if (t.enabled && t.text.trim().isNotEmpty) {
-        final ps = _settings.copy();
+        final ps = st.copy();
         for (final l in ps.logos) {
           l.enabled = false;
         }
         await addPart(
-          'g:t',
+          '$prefix:t',
           ps,
           t.tiled ? null : [t.x, t.y, t.sizeFrac, t.rotation],
         );
       }
-      for (var i = 0; i < _settings.logos.length; i++) {
-        final lg = _settings.logos[i];
+      for (var i = 0; i < st.logos.length; i++) {
+        final lg = st.logos[i];
         if (!lg.enabled || lg.b64 == null) continue;
-        final ps = _settings.copy();
+        final ps = st.copy();
         ps.text.enabled = false;
         for (var j = 0; j < ps.logos.length; j++) {
           ps.logos[j].enabled = j == i;
         }
         await addPart(
-          'g:l$i',
+          '$prefix:l$i',
           ps,
           lg.tiled ? null : [lg.x, lg.y, lg.sizeFrac, lg.rotation],
         );
       }
+    }
+
+    for (final c in _tl.clips) {
+      if (_hiddenTracks.contains(c.track)) continue;
+      final src = _tl.sourceOf(c);
+      if (src.kind != ClipKind.text && src.kind != ClipKind.wm) continue;
+      final wmSt = src.kind == ClipKind.wm ? src.wmStyle : null;
+      final anim =
+          wmSt?.animation ??
+          (src.kind == ClipKind.text
+              ? (src.textStyle?.animation ?? WmAnimation.none)
+              : WmAnimation.none);
+      final aSpd = wmSt?.animSpeed ?? 1.0;
+      final aRng = wmSt?.animRange ?? 1.0;
+      final shared = <String, dynamic>{
+        'rect': rect,
+        'start': c.offset,
+        'end': c.end,
+        'anim': animName(anim),
+        'cycle': anim == WmAnimation.blink
+            ? wmBlinkCycle(aSpd)
+            : wmMarqueeCycle(aSpd),
+        'on': wmBlinkOn(aSpd, aRng),
+        'animSpeed': aSpd,
+        'range': aRng,
+      };
+      if (src.kind == ClipKind.text) {
+        try {
+          final st = (src.textStyle ?? TextMark(text: src.name)).copy()
+            ..text = src.name;
+          final id = 'c${c.id}:t';
+          out.add({
+            'png': await WatermarkRenderer.renderTextClipPng(
+              st,
+              c.px,
+              c.py,
+              c.scale,
+              ow,
+              oh,
+            ),
+            ...shared,
+            'id': id,
+            'bx': c.px,
+            'by': c.py,
+            'bs': c.scale,
+            'br': st.rotation,
+          });
+          pending[id] = [c.px, c.py, c.scale, st.rotation];
+        } catch (e) {
+          Diag.note('疊加物 PNG 畫不出來（片段 ${c.id}）：$e');
+        }
+      } else {
+        await addSettingsParts(
+          'c${c.id}',
+          src.wmStyle ?? WatermarkSettings(),
+          shared,
+        );
+      }
+    }
+    // 全域浮水印
+    if (!_wmHidden && _settings.hasAnyMark) {
+      await addSettingsParts('g', _settings, {
+        'rect': rect,
+        'start': _wmStart,
+        'end': _wmEndEff,
+        'anim': animName(_settings.animation),
+        'cycle': _settings.animation == WmAnimation.marquee
+            ? wmMarqueeCycle(_settings.animSpeed)
+            : wmBlinkCycle(_settings.animSpeed),
+        'on': wmBlinkOn(_settings.animSpeed, _settings.animRange),
+        'animSpeed': _settings.animSpeed,
+        'range': _settings.animRange,
+      });
     }
     _ovGeomPending = pending;
     return out;
@@ -1588,6 +1578,28 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final l = _settings.logos[i];
       if (l.enabled && !l.tiled && l.b64 != null) {
         check('g:l$i', l.x, l.y, l.sizeFrac, l.rotation);
+      }
+    }
+    // 素材化的浮水印/文字：同一套（最終版，全部走即時幾何）
+    for (final c in _tl.clips) {
+      if (hit != null) break;
+      if (_hiddenTracks.contains(c.track)) continue;
+      final src = _tl.sourceOf(c);
+      if (src.kind == ClipKind.text) {
+        check('c${c.id}:t', c.px, c.py, c.scale, src.textStyle?.rotation ?? 0);
+      } else if (src.kind == ClipKind.wm) {
+        final st = src.wmStyle;
+        if (st == null) continue;
+        final ct = st.text;
+        if (ct.enabled && !ct.tiled) {
+          check('c${c.id}:t', ct.x, ct.y, ct.sizeFrac, ct.rotation);
+        }
+        for (var i = 0; i < st.logos.length; i++) {
+          final l = st.logos[i];
+          if (l.enabled && !l.tiled && l.b64 != null) {
+            check('c${c.id}:l$i', l.x, l.y, l.sizeFrac, l.rotation);
+          }
+        }
       }
     }
     final h = hit;
@@ -1619,9 +1631,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (sig == _lastOvSig) return;
     _ovSyncBusy = true;
     try {
-      final maps = (sig == 'hold' || sig == 'empty')
-          ? <Map<String, dynamic>>[]
-          : await _ovMaps();
+      final maps = sig == 'empty' ? <Map<String, dynamic>>[] : await _ovMaps();
       // 渲染期間又變了：這一版作廢，讓下一輪重做
       if (!mounted || !_ovLiveOn || _ovContentSig() != sig) return;
       if (!await CompPlayer.setOverlays(maps)) return;
@@ -1638,33 +1648,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
   }
 
-  /// 每次預覽重建都呼叫：進出「編輯持有」立刻切（清空很便宜），
-  /// 其他變化併批 120ms 再同步（重畫 PNG 有成本）
+  /// 每次預覽重建都呼叫：變化併批 120ms 再同步（重畫 PNG 有成本）
   void _scheduleOvSync() {
     if (!_ovLiveOn) return;
-    final holdNow = _ovHold;
-    if (holdNow != _ovHoldLast) {
-      _ovHoldLast = holdNow;
-      Timer.run(() {
-        if (mounted) unawaited(_syncPreviewOverlays());
-      });
-      return;
-    }
     if (_ovSyncTimer?.isActive ?? false) return;
     _ovSyncTimer = Timer(const Duration(milliseconds: 120), () {
       if (!mounted) return;
-      // 放手偵測：預覽區已經沒有手指＝拖曳結束，換回烘好的
-      if (_ovDragging && _pvPts.isEmpty) _ovDragging = false;
       if (_ovContentSig() != _lastOvSig) {
-        // 全域浮水印的幾何還在動：即時幾何正在跟手，停穩 400ms
-        // 才整包重烘（歸位畫質；基準＝現值，換上無感）
+        // 幾何還在動：即時幾何正在跟手，停穩 400ms 才整包重烘
+        //（歸位畫質；基準＝現值，換上無感）
         if (DateTime.now().difference(_ovGeomActiveAt).inMilliseconds < 400) {
           _scheduleOvSync();
           return;
         }
         unawaited(_syncPreviewOverlays());
       }
-      if (_ovDragging) _scheduleOvSync();
     });
   }
 
@@ -6020,13 +6018,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _restoreClipPlayers();
       return;
     }
-    // HDR 預覽的疊加物：組建當下就把浮水印/文字的整版 PNG 一起
-    // 送進去烘（原生端 EDR 顯示，白色才是白色）。編輯持有中也照烘
-    //（ignoreHold 的說明），之後的變化走 setOverlays 即時換
+    // HDR 預覽的疊加物：組建當下就把浮水印/文字的 PNG 一起送進去
+    // 烘（原生端 EDR 顯示，白色才是白色）；之後內容變化走
+    // setOverlays、幾何變化走 setOvXform 即時換
     var ovSigAtBuild = 'off';
     var ovMaps = const <Map<String, dynamic>>[];
     if (_exportHdr && _hdrAvail == true) {
-      ovSigAtBuild = _ovContentSig(ignoreHold: true);
+      ovSigAtBuild = _ovContentSig();
       if (ovSigAtBuild != 'empty') ovMaps = await _ovMaps();
     }
     // 用系統影片圖層顯示時不要另外出一份材質：那份沒有人看，
@@ -10186,10 +10184,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             child: WatermarkLayer(
                                               settings: st,
                                               onChanged: () => setState(() {}),
-                                              onDragStart: () {
-                                                _ovDragging = true;
-                                                _pushUndo();
-                                              },
+                                              onDragStart: _pushUndo,
                                               time: pos,
                                               // 貼圖是一個素材，選取時就該
                                               // 看得到框（浮水印素材的框在
@@ -10606,18 +10601,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                 return;
                                               }
                                               _rtArmed = true;
-                                              // 「素材化」疊加物被搬起來：
-                                              // HDR 預覽換 Flutter 版接手
-                                              //（全域浮水印不用——即時幾何）
-                                              if (selVis != null &&
-                                                  (_tl.sourceOf(selVis).kind ==
-                                                          ClipKind.text ||
-                                                      _tl
-                                                              .sourceOf(selVis)
-                                                              .kind ==
-                                                          ClipKind.wm)) {
-                                                _ovDragging = true;
-                                              }
                                               // 起算點移到「越過門檻的這
                                               // 一刻」，不然會憑空跳 6px
                                               _gestureStartFocal = d.focalPoint;
