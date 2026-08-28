@@ -6024,6 +6024,15 @@ final class MetalPreviewEngine: NSObject {
         out.append(Double(Float(Float16(bitPattern: p[x * 4 + c]))))
       }
     }
+    // 尾巴掛層診斷：這一刻畫了哪些層、各自的標籤（id, HLG, 2020,
+    // 旋轉, 顯示寬）——「HLG 分支有沒有跑」一看便知
+    for sp in layers where sp.offset <= t && t < sp.end {
+      guard let pump = pumps[sp.id] else { continue }
+      out.append(contentsOf: [
+        Double(sp.id), pump.isHLG ? 1 : 0, pump.is2020 ? 1 : 0,
+        Double(pump.orient), pump.dispW,
+      ])
+    }
     return out
   }
 
