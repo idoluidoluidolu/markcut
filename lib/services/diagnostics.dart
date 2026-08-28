@@ -249,8 +249,15 @@ class Diag {
 
   /// 播放接管（最終型態）：播放中的畫面也由引擎出——每軌 pump
   /// 各自硬解、CADisplayLink 逐格合成，合成播放器退居幕後只出
-  /// 聲音跟時鐘。關掉＝播放畫面回合成播放器
-  static final metalPlayback = ValueNotifier(true);
+  /// 聲音跟時鐘。關掉＝播放畫面回合成播放器。
+  /// 預設關：build 129 實機「播放超卡頓」——pump 就緒時序在真機
+  /// 與模擬器完全不同，證明穩定前不搶播放
+  static final metalPlayback = ValueNotifier(false);
+
+  /// 引擎常駐（畫面唯一來源、進場即亮）。預設關：build 129 實機
+  /// 「點浮水印畫面全黑」——常駐亮起時 pump 紋理未就緒＝黑畫布。
+  /// 就緒檢查與真機驗證完成前只做暫態接管
+  static final metalResident = ValueNotifier(false);
 
   static String get tuning =>
       '預熱=${preheat.value ? '開' : '關'}／'
@@ -262,7 +269,8 @@ class Diag {
       'GPU匯出=${ciExport.value ? '開' : '關'}／'
       'HDR代理預覽=${hdrProxyPreview.value ? '開' : '關'}／'
       'Metal預覽=${metalPreview.value ? '開' : '關'}／'
-      'Metal播放=${metalPlayback.value ? '開' : '關'}';
+      'Metal播放=${metalPlayback.value ? '開' : '關'}／'
+      'Metal常駐=${metalResident.value ? '開' : '關'}';
 
   static void count(String key, [int n = 1]) {
     _counts[key] = (_counts[key] ?? 0) + n;

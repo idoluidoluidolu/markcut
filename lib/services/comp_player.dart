@@ -51,6 +51,16 @@ class MetalPreview {
     } catch (_) {}
   }
 
+  /// [t] 這一刻引擎畫面就緒了嗎（所有覆蓋層都有紋理）。
+  /// 接管前先問，沒好就等下一個事件——不讓黑畫布上台
+  static Future<bool> ready(double t) async {
+    try {
+      return await CompPlayer._ch.invokeMethod<bool>('mready', t) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// 數值法庭：離屏渲染 [t] 的影片層、回讀中線 5 點線性值
   ///（驗色用，跟顯示器無關）
   static Future<List<double>?> grab(double t) async {

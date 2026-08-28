@@ -2985,6 +2985,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 不能常駐——那些佈局引擎只做暫態接管
   bool _mViewSafe = false;
 
+  /// 常駐開關（旗標×佈局都允許才常駐）。build 129 實機黑畫面後
+  /// 預設關，只做暫態接管
+  bool get _mResident => Diag.metalResident.value && _mViewSafe;
+
   /// 現在的時間軸佈局 → 引擎 payload。組不了（沒素材、倒轉、
   /// 平台不支援）回 null，呼叫端走現有路徑
   Map<String, dynamic>? _metalPayload() {
@@ -3131,7 +3135,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 暫停也是它，之後的合成重烘/換手全部發生在它背後（隱形）。
     // 佈局變成不能常駐（加了馬賽克/GIF）就讓位還給合成畫面
     if (_playing || _scrubbing) return;
-    if (_mViewSafe && _mBuiltSig != null && _comp != null) {
+    if (_mResident && _mBuiltSig != null && _comp != null) {
       if (!MetalPreview.active) {
         _mHideTimer?.cancel();
         MetalPreview.active = true;
@@ -3139,7 +3143,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         unawaited(MetalPreview.show(true));
         setState(() {});
       }
-    } else if (!_mViewSafe && MetalPreview.active) {
+    } else if (!_mResident && MetalPreview.active && !_scrubbing) {
       _metalHideNow();
       setState(() {});
     }
@@ -3166,8 +3170,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _mBuiltSig = ok ? sig : null;
       if (!ok || !_scrubbing || _playing) return;
     }
-    MetalPreview.active = true;
+    // 畫面沒就緒不上台（黑畫布比慢半拍糟糕得多）：先丟位置讓
+    // pump 對位，下一個滑動事件再試
     unawaited(MetalPreview.seek(_position));
+    if (!await MetalPreview.ready(_position)) return;
+    if (!mounted || !_scrubbing || _playing || MetalPreview.active) return;
+    MetalPreview.active = true;
     unawaited(MetalPreview.show(true));
     setState(() {});
   }
@@ -3182,17 +3190,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _mOvIdleTimer = Timer(const Duration(milliseconds: 600), _metalScrubEnd);
     if (MetalPreview.active) return;
     _mHideTimer?.cancel();
-    MetalPreview.active = true;
-    unawaited(MetalPreview.seek(_position));
-    unawaited(MetalPreview.show(true));
-    setState(() {});
+    // 就緒才上台（黑畫布比延遲糟糕）：拖曳中每個事件都會再試
+    unawaited(
+      MetalPreview.seek(_position).then((_) async {
+        if (!await MetalPreview.ready(_position)) return;
+        if (!mounted || _playing || MetalPreview.active) return;
+        MetalPreview.active = true;
+        unawaited(MetalPreview.show(true));
+        setState(() {});
+      }),
+    );
   }
 
   /// 滑動停手：常駐佈局引擎不讓位（它就是畫面）；
   /// 非常駐佈局讓合成在底下就定位，300ms 後把引擎收起來
   void _metalScrubEnd() {
     if (!MetalPreview.active) return;
-    if (_mViewSafe) return;
+    if (_mResident) return;
     _mHideTimer?.cancel();
     _mHideTimer = Timer(const Duration(milliseconds: 300), () {
       MetalPreview.active = false;
@@ -6627,7 +6641,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _clockBias = 0; // 上一輪沒吃完的校正不能帶進新的一輪
     // 常駐佈局不藏：引擎馬上要接管播放，讓它停格頂到 mplay 接手
     //（無縫）；接不了再藏。非常駐佈局照舊先讓合成出畫面
-    if (!_mViewSafe || _mBuiltSig == null) _metalHideNow();
+    if (!_mResident || _mBuiltSig == null) _metalHideNow();
     final tr = PlaybackTrace.instance..start();
 
     // 拖曳收尾排在後面的那幾件事，按下播放的當下全部取消：
@@ -6641,7 +6655,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _scrubEndTimer?.cancel();
     _seekInFlight = false;
     if (_scrubbing) setState(() => _scrubbing = false);
-    if (!_mViewSafe || _mBuiltSig == null) _metalHideNow();
+    if (!_mResident || _mBuiltSig == null) _metalHideNow();
 
     // 合成播放器接手時，整條時間軸就是它一顆在播：舊的逐片段播放器
     // 一個都不要碰。上一版兩邊同時在播——兩倍解碼、兩份聲音，

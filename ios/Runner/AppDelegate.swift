@@ -1374,6 +1374,10 @@ final class AtomicFlag {
       case "mstop":
         MetalPreviewEngine.shared.stop()
         result(nil)
+      case "mready":
+        result(
+          MetalPreviewEngine.shared.readyAt(
+            call.arguments as? Double ?? 0))
       case "mgrab":
         // 數值法庭：離屏渲染回讀線性值（驗色用，跟顯示器無關）
         result(
@@ -5448,11 +5452,19 @@ final class MetalPump {
     player.replaceCurrentItem(with: item)
   }
 
+  /// item 還沒 ready 時被丟掉的 seek——ready 後第一次取樣補發。
+  /// 沒有它，進場早期的 want 全部蒸發＝引擎亮起是黑畫布
+  ///（build 129 實機「點浮水印畫面全黑」的根）
+  private var pendingSeek: Double?
+
   /// 目標時間變超過半格才重新 seek（AVPlayer 自己會合併）
   func want(_ t: Double) {
     guard let item = player.currentItem else { return }
     if item.status == .readyToPlay { ready = true }
-    guard ready else { return }
+    guard ready else {
+      pendingSeek = t
+      return
+    }
     if abs(t - lastSeek) < 0.04 { return }
     lastSeek = t
     let tol = CMTimeMakeWithSeconds(0.05, preferredTimescale: 600)
@@ -5461,8 +5473,21 @@ final class MetalPump {
       toleranceBefore: tol, toleranceAfter: tol)
   }
 
+  /// ready 之後把欠的 seek 補上（texture/playTexture 每次先問）
+  private func flushPending() {
+    if !ready, let item = player.currentItem,
+      item.status == .readyToPlay
+    {
+      ready = true
+    }
+    guard ready, let p = pendingSeek else { return }
+    pendingSeek = nil
+    want(p)
+  }
+
   /// 有新格就換上紋理；沒有就回傳上一張（可能是 nil＝還沒供過）
   func texture(at t: Double, cache: CVMetalTextureCache) -> MTLTexture? {
+    flushPending()
     guard let out = output else { return lastTexture }
     let it = CMTime(seconds: t, preferredTimescale: 600)
     return sample(out, at: it, cache: cache)
@@ -5490,6 +5515,7 @@ final class MetalPump {
   /// 播放中的取樣：跟著主機時鐘拿「現在該顯示的那格」——
   /// AVPlayer 自己前進，60fps 逐格問有沒有新格
   func playTexture(cache: CVMetalTextureCache) -> MTLTexture? {
+    flushPending()
     guard let out = output else { return lastTexture }
     let it = out.itemTime(forHostTime: CACurrentMediaTime())
     return sample(out, at: it, cache: cache)
@@ -6131,6 +6157,17 @@ final class MetalPreviewEngine: NSObject {
       link?.invalidate()
       link = nil
     }
+  }
+
+  /// [t] 這一刻的畫面「畫得出來了嗎」——所有覆蓋這一刻的影片層
+  /// 都有紋理才算。接管前先問這個，沒好就下一個事件再試，
+  /// 不讓黑畫布上台（build 129 實機教訓）
+  func readyAt(_ t: Double) -> Bool {
+    guard available, !layers.isEmpty else { return false }
+    for sp in layers where sp.offset <= t && t < sp.end {
+      guard let p = pumps[sp.id], p.lastTexture != nil else { return false }
+    }
+    return true
   }
 
   func seek(_ t: Double) {
