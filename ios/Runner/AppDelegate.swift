@@ -6163,11 +6163,21 @@ final class MetalPreviewEngine: NSObject {
   /// 都有紋理才算。接管前先問這個，沒好就下一個事件再試，
   /// 不讓黑畫布上台（build 129 實機教訓）
   func readyAt(_ t: Double) -> Bool {
-    guard available, !layers.isEmpty else { return false }
-    for sp in layers where sp.offset <= t && t < sp.end {
-      guard let p = pumps[sp.id], p.lastTexture != nil else { return false }
+    guard available, !layers.isEmpty, let cache = texCache else {
+      return false
     }
-    return true
+    // 查詢本身就取樣一次：引擎還沒上台不會有人呼叫 texture()，
+    // 只看 lastTexture 會死鎖在「永遠沒紋理→永不上台」
+    var ok = true
+    for sp in layers where sp.offset <= t && t < sp.end {
+      guard let p = pumps[sp.id] else {
+        ok = false
+        continue
+      }
+      let srcT = sp.trimStart + (t - sp.offset) * sp.speed
+      if p.texture(at: srcT, cache: cache) == nil { ok = false }
+    }
+    return ok
   }
 
   func seek(_ t: Double) {
