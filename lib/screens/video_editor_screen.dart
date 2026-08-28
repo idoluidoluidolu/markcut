@@ -2341,16 +2341,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _compSeek({bool exact = false}) {
     if (_compOn && !_playing) {
-      // 引擎接管畫面時，合成播放器退成粗跟（250ms 一發）：
-      // 它每個 seek 都是 CI 整格重畫，跟引擎的 pump 搶解碼器
-      //（實測 build 128：滑動中 CI 單格 4967ms、「超頓」）。
-      // 放手那發（exact）照舊精準——讓位時畫面要就位
+      // 引擎接管畫面時，合成播放器「一發 seek 都不收」：它每個
+      // seek 都是 CI 整格重畫（實測 128 診斷：滑動中單格 719~
+      // 4967ms 的怪獸格），畫的東西根本沒人看——純燒 CPU 跟
+      // 引擎搶資源。放手那發（exact）照舊精準，且讓位等它完成
       if (MetalPreview.active && !exact) {
-        final now = DateTime.now();
-        if (now.difference(_compCoarseAt).inMilliseconds >= 250) {
-          _compCoarseAt = now;
-          unawaited(_comp!.seek(_position));
-        }
+        // 不餵
+      } else if (MetalPreview.active && exact) {
+        // 放手：精準 seek「完成」才開始讓位倒數——你手機上一格
+        // CI 可以到 1 秒，300ms 固定倒數等於讓位給舊幀/黑
+        unawaited(
+          _comp!.seek(_position, exact: true).then((_) {
+            if (mounted) _metalScrubEnd();
+          }),
+        );
       } else {
         unawaited(_comp!.seek(_position, exact: exact));
       }
@@ -3508,7 +3512,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
     }
     if (_scrubbing && mounted) setState(() => _scrubbing = false);
-    _metalScrubEnd();
+    // 引擎在畫時，讓位交給「精準 seek 完成」的回呼（_compSeek）；
+    // 這裡搶先開 300ms 倒數會讓位給還沒畫好的舊幀
+    if (!MetalPreview.active) _metalScrubEnd();
   }
 
   /// 這個檔是影片嗎。優先看 mimeType，拿不到就退回看副檔名
