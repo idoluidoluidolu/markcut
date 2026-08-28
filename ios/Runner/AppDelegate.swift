@@ -5793,6 +5793,7 @@ final class MetalPreviewEngine: NSObject {
 
   func show(_ on: Bool) {
     active = on && available
+    layerHost?.setHDR(hdr)
     layerHost?.setVisible(active)
     if active {
       if link == nil {
@@ -6140,13 +6141,21 @@ final class MetalPreviewView: NSObject, FlutterPlatformView {
     if #available(iOS 16.0, *) {
       metalLayer.wantsExtendedDynamicRangeContent = true
     }
-    metalLayer.colorspace =
-      CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020)
-      ?? CGColorSpace(name: CGColorSpace.extendedLinearSRGB)
+    setHDR(false)
     holder.layer.addSublayer(metalLayer)
     holder.backgroundColor = .clear
     metalLayer.isHidden = true
     MetalPreviewEngine.shared.layerHost = self
+  }
+
+  /// 圖層色彩空間跟著佈局走：SDR＝線性 sRGB（709 原色），
+  /// HDR＝線性 BT.2020。SDR 內容掛 2020 會被系統當廣色域解讀
+  /// ——整體過飽和偏亮（實測引擎 vs 合成幀 mean 差 29/255 的根因）
+  func setHDR(_ hdr: Bool) {
+    metalLayer.colorspace = hdr
+      ? (CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020)
+        ?? CGColorSpace(name: CGColorSpace.extendedLinearSRGB))
+      : CGColorSpace(name: CGColorSpace.extendedLinearSRGB)
   }
 
   func view() -> UIView {
