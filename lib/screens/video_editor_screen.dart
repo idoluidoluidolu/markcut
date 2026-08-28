@@ -9057,6 +9057,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             if (isClipWm) src.wmStyle ??= WatermarkSettings();
                             return WatermarkPanel(
                               key: ValueKey(isClipWm ? _sel : -1),
+                              // 九宮格「貼邊」要知道畫布比例才夾得準
+                              canvasAspect:
+                                  _comp != null &&
+                                      _comp!.width > 1 &&
+                                      _comp!.height > 1
+                                  ? _comp!.width / _comp!.height
+                                  : null,
                               // 手繪直接畫在「播放頭這一格」上（畫在哪、
                               // 印在哪）。合成播放器抽得到就給；退回
                               // 逐片段路徑（web/調色中）就維持透明畫板

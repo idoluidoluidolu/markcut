@@ -142,6 +142,11 @@ class WatermarkPanel extends StatefulWidget {
   /// 照片編輯的面板高，太小旁邊又空一大片——由父層自己給
   final double posGridCap;
 
+  /// 畫布長寬比（W/H）。給了，九宮格「靠邊」會依部件實際大小
+  /// 夾成「完整貼邊」——寬文字在窄畫布點左格不再被切掉
+  ///（build 129 實機回報）。自由拖曳照舊可拖出畫面
+  final double? canvasAspect;
+
   const WatermarkPanel({
     super.key,
     required this.settings,
@@ -162,6 +167,7 @@ class WatermarkPanel extends StatefulWidget {
     this.showNav = true,
     this.bottomInset = 0,
     this.posGridCap = 210,
+    this.canvasAspect,
   });
 
   @override
@@ -1809,13 +1815,55 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       } else {
         if (s.logo.tiled) _setTiled(isLogo: true, on: false);
       }
+      // 「對齊」語意：靠邊＝完整貼邊，不是中心硬放在 14% 被畫布
+      // 切掉（build 129 實機：窄畫布＋寬文字點左格「@我」被切）。
+      // 依部件實際大小把中心夾回「整個都在畫面內」；部件比畫布
+      // 還大就置中。自由拖曳不走這裡，照舊可拖出畫面
+      var cx = gx;
+      var cy = gy;
+      final ar = widget.canvasAspect;
+      if (ar != null && ar > 0) {
+        double relW;
+        double relH;
+        if (target == 'text') {
+          final t = s.text;
+          const base = 100.0;
+          final tp = TextPainter(
+            text: TextSpan(
+              text: t.text.isEmpty ? ' ' : t.text,
+              style: TextStyle(
+                fontSize: base,
+                fontFamily: t.fontFamily,
+                fontWeight: FontWeight.w600,
+                letterSpacing: base * t.spacing,
+              ),
+            ),
+            textDirection: TextDirection.ltr,
+          )..layout();
+          // sizeFrac 是「字級相對畫布短邊」；換成相對寬/高
+          final shortOverW = ar >= 1 ? 1 / ar : 1.0;
+          final shortOverH = ar >= 1 ? 1.0 : ar;
+          relW = tp.width / base * t.sizeFrac * shortOverW;
+          relH = tp.height / base * t.sizeFrac * shortOverH;
+        } else {
+          // Logo 目標寬＝sizeFrac×短邊，方形近似
+          final shortOverW = ar >= 1 ? 1 / ar : 1.0;
+          final shortOverH = ar >= 1 ? 1.0 : ar;
+          relW = s.logo.sizeFrac * shortOverW;
+          relH = s.logo.sizeFrac * shortOverH;
+        }
+        final hw = (relW / 2).clamp(0.0, 0.5);
+        final hh = (relH / 2).clamp(0.0, 0.5);
+        cx = gx.clamp(hw, 1 - hw);
+        cy = gy.clamp(hh, 1 - hh);
+      }
       _update(() {
         if (target == 'text') {
-          s.text.x = gx;
-          s.text.y = gy;
+          s.text.x = cx;
+          s.text.y = cy;
         } else {
-          s.logo.x = gx;
-          s.logo.y = gy;
+          s.logo.x = cx;
+          s.logo.y = cy;
         }
       });
     }
@@ -1858,34 +1906,38 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                             InkWell(
                               onTap: () => pick(gx, gy),
                               customBorder: const CircleBorder(),
-                              child: Container(
-                                width: w / 6,
-                                height: w / 6,
-                                alignment: Alignment.center,
-                                child: Container(
-                                  width:
-                                      ((x - gx).abs() < 0.17 &&
-                                          (y - gy).abs() < 0.18)
-                                      ? w / 13
-                                      : w / 18,
-                                  height:
-                                      ((x - gx).abs() < 0.17 &&
-                                          (y - gy).abs() < 0.18)
-                                      ? w / 13
-                                      : w / 18,
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    color:
-                                        ((x - gx).abs() < 0.17 &&
-                                            (y - gy).abs() < 0.18)
-                                        ? kSelect
-                                        : kPanelHi,
-                                    border: Border.all(
-                                      color: kBorder,
-                                      width: 0.5,
+                              child: Builder(
+                                builder: (context) {
+                                  // 亮點＝離現值最近的那格（夾限後
+                                  // 中心可能離格點很遠，用距離門檻
+                                  // 會全部不亮）
+                                  bool nearest(
+                                    double v,
+                                    double g,
+                                    List<double> all,
+                                  ) => all.every(
+                                    (o) => (v - g).abs() <= (v - o).abs(),
+                                  );
+                                  final sel =
+                                      nearest(x, gx, xs) && nearest(y, gy, ys);
+                                  return Container(
+                                    width: w / 6,
+                                    height: w / 6,
+                                    alignment: Alignment.center,
+                                    child: Container(
+                                      width: sel ? w / 13 : w / 18,
+                                      height: sel ? w / 13 : w / 18,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: sel ? kSelect : kPanelHi,
+                                        border: Border.all(
+                                          color: kBorder,
+                                          width: 0.5,
+                                        ),
+                                      ),
                                     ),
-                                  ),
-                                ),
+                                  );
+                                },
                               ),
                             ),
                         ],
