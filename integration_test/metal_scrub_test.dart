@@ -68,18 +68,24 @@ void main() {
     final center = tester.getCenter(timeline);
     debugPrint('=== 滑動起點 $center，時間 $timeBefore ===');
 
-    // 真手勢：快起手（避開長按判定）、慢慢掃 2.4 秒，
-    // 中途逐步檢查引擎有沒有亮起來
+    // 真手勢、真手速：每格 16ms 挪 20px（一步就破 18px 觸控閾值），
+    // 中途逐格檢查引擎有沒有亮起來——這個數字就是使用者感受到的
+    // 「開始滑到畫面接手」延遲
     Duration? tookOver;
     final sw = Stopwatch()..start();
     final g = await tester.startGesture(center);
-    for (var i = 0; i < 48; i++) {
-      await g.moveBy(const Offset(-6, 0));
-      await tester.pump(const Duration(milliseconds: 50));
+    for (var i = 0; i < 40; i++) {
+      await g.moveBy(const Offset(-8, 0));
+      await tester.pump(const Duration(milliseconds: 16));
       if (tookOver == null && MetalPreview.active) {
         tookOver = sw.elapsed;
         debugPrint('=== Metal 接管於 ${tookOver.inMilliseconds}ms ===');
       }
+    }
+    // 後段放慢，把播放頭確實拖出一段距離
+    for (var i = 0; i < 20; i++) {
+      await g.moveBy(const Offset(-8, 0));
+      await tester.pump(const Duration(milliseconds: 33));
     }
     await g.up();
     await tester.pump();
