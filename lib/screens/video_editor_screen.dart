@@ -2984,7 +2984,37 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       });
     }
     if (specs.isEmpty) return null;
-    return {'w': comp.width, 'h': comp.height, 'hdr': hdrMode, 'layers': specs};
+    // 靜態圖層（圖片/貼圖/GIF 首幀）：跟烘進合成的是同一個集合、
+    // 同一套欄位——滑動中少了它們就不是「預覽=匯出」
+    final baked = CompPlayer.bakedImageIds(_tl);
+    final stills = <Map<String, dynamic>>[];
+    for (final c in _tl.clips) {
+      if (!baked.contains(c.id)) continue;
+      if (_hiddenTracks.contains(c.track)) continue;
+      final src = _tl.sourceOf(c);
+      stills.add({
+        'path': src.path,
+        'start': c.offset,
+        'end': c.end,
+        'track': c.track,
+        'px': c.px,
+        'py': c.py,
+        'scale': c.scale,
+        'mirror': c.mirror,
+        'fadeIn': c.fadeIn,
+        'fadeOut': c.fadeOut,
+        if (c.cropped) 'crop': [c.cropL, c.cropT, c.cropW, c.cropH],
+        'rotation': c.rotation,
+        'opacity': c.opacity,
+      });
+    }
+    return {
+      'w': comp.width,
+      'h': comp.height,
+      'hdr': hdrMode,
+      'layers': specs,
+      'stills': stills,
+    };
   }
 
   bool get _metalUsable =>

@@ -1323,12 +1323,31 @@ final class AtomicFlag {
             srcW: m["srcW"] as? Double ?? 16,
             srcH: m["srcH"] as? Double ?? 9)
         }
+        let stillSpecs: [MetalStillSpec] =
+          ((a["stills"] as? [[String: Any]]) ?? []).compactMap { m in
+            guard let path = m["path"] as? String else { return nil }
+            return MetalStillSpec(
+              path: path,
+              start: m["start"] as? Double ?? 0,
+              end: m["end"] as? Double ?? 0,
+              z: m["track"] as? Int ?? 0,
+              px: m["px"] as? Double ?? 0.5,
+              py: m["py"] as? Double ?? 0.5,
+              scale: m["scale"] as? Double ?? 1,
+              mirror: m["mirror"] as? Bool ?? false,
+              rotation: m["rotation"] as? Double ?? 0,
+              opacity: m["opacity"] as? Double ?? 1,
+              fadeIn: m["fadeIn"] as? Double ?? 0,
+              fadeOut: m["fadeOut"] as? Double ?? 0,
+              crop: m["crop"] as? [Double])
+          }
         result(
           MetalPreviewEngine.shared.build(
             canvasW: a["w"] as? Double ?? 1080,
             canvasH: a["h"] as? Double ?? 1920,
             hdr: a["hdr"] as? Bool ?? false,
-            specs: specs))
+            specs: specs,
+            stillSpecs: stillSpecs))
       case "mshow":
         MetalPreviewEngine.shared.show(call.arguments as? Bool ?? false)
         result(nil)
@@ -5420,6 +5439,24 @@ struct MetalLayerSpec {
   let srcH: Double
 }
 
+/// 引擎收的一張靜態圖層（圖片/貼圖/GIF 首幀；欄位跟 still 烘進
+/// 合成那套一致，時間都是時間軸秒）
+struct MetalStillSpec {
+  let path: String
+  let start: Double
+  let end: Double
+  let z: Int
+  let px: Double
+  let py: Double
+  let scale: Double
+  let mirror: Bool
+  let rotation: Double
+  let opacity: Double
+  let fadeIn: Double
+  let fadeOut: Double
+  let crop: [Double]?
+}
+
 final class MetalPreviewEngine: NSObject {
   static let shared = MetalPreviewEngine()
 
@@ -5434,6 +5471,10 @@ final class MetalPreviewEngine: NSObject {
   private var buildFailed = false
 
   private var layers: [MetalLayerSpec] = []
+  private var stills: [MetalStillSpec] = []
+  /// 靜態圖層紋理（鍵＝檔案路徑；GIF 只取首幀——滑動瞬間有畫面
+  /// 比消失好，動起來交給合成播放器）
+  private var stillTextures: [String: MTLTexture] = [:]
   private var pumps: [Int: MetalPump] = [:]
   private var canvasW: Double = 1080
   private var canvasH: Double = 1920
@@ -5476,14 +5517,17 @@ final class MetalPreviewEngine: NSObject {
   // 模擬器——不支援讀 rendertarget（CompilerError: reading from a
   // rendertarget is not supported），退回固定混色、跳過夾白：
   // 顏色驗證本來就以真機為準，模擬器管幾何與順暢度
+  // 參數 p：x=白位 boost（只乘色）、y=夾白開關、z=淡入淡出
+  //（同乘色與 alpha——只乘色會變暗、只乘 alpha 會漏底）
   #if targetEnvironment(simulator)
     private let overlaySrc = """
       fragment half4 fragOverlay(VOut in [[stage_in]],
                                  texture2d<half> tex [[texture(0)]],
-                                 constant float2 &p [[buffer(0)]],
+                                 constant float4 &p [[buffer(0)]],
                                  sampler s [[sampler(0)]]) {
         half4 o = tex.sample(s, in.uv);
-        return half4(o.rgb * half(p.x), o.a);
+        half f = half(p.z);
+        return half4(o.rgb * half(p.x) * f, o.a * f);
       }
       """
   #else
@@ -5491,17 +5535,18 @@ final class MetalPreviewEngine: NSObject {
       fragment half4 fragOverlay(VOut in [[stage_in]],
                                  half4 dst [[color(0)]],
                                  texture2d<half> tex [[texture(0)]],
-                                 constant float2 &p [[buffer(0)]],
+                                 constant float4 &p [[buffer(0)]],
                                  sampler s [[sampler(0)]]) {
         half4 o = tex.sample(s, in.uv);
-        half a = o.a;
+        half f = half(p.z);
+        half a = o.a * f;
         half boost = half(p.x);
         half3 bg = dst.rgb;
         if (p.y > 0.5) {
           half3 capped = min(dst.rgb, half3(1.0h));
           bg = capped * a + dst.rgb * (1.0h - a);
         }
-        half3 rgb = o.rgb * boost + bg * (1.0h - a);
+        half3 rgb = o.rgb * boost * f + bg * (1.0h - a);
         return half4(rgb, 1.0h);
       }
       """
@@ -5578,12 +5623,30 @@ final class MetalPreviewEngine: NSObject {
 
   /// 換一份時間軸佈局（滑動起手時呼叫；佈局沒變成本≈0）
   func build(canvasW: Double, canvasH: Double, hdr: Bool,
-             specs: [MetalLayerSpec]) -> Bool {
+             specs: [MetalLayerSpec],
+             stillSpecs: [MetalStillSpec] = []) -> Bool {
     guard setUp() else { return false }
     self.canvasW = max(2, canvasW)
     self.canvasH = max(2, canvasH)
     self.hdr = hdr
     layers = specs.sorted { $0.z < $1.z }
+    stills = stillSpecs
+    // 靜態圖層紋理趁建佈局先載好（滑動中零載入）；不在佈局裡的放掉
+    let wantStills = Set(stillSpecs.map { $0.path })
+    for k in stillTextures.keys where !wantStills.contains(k) {
+      stillTextures.removeValue(forKey: k)
+    }
+    if let dev = device {
+      let loader = MTKTextureLoader(device: dev)
+      for sp in stillSpecs where stillTextures[sp.path] == nil {
+        guard let ui = UIImage(contentsOfFile: sp.path),
+          let cg = ui.cgImage
+        else { continue }
+        stillTextures[sp.path] = try? loader.newTexture(
+          cgImage: cg,
+          options: [MTKTextureLoader.Option.SRGB: true as NSNumber])
+      }
+    }
     // 幫浦照片段開；不在新佈局裡的收掉
     let want = Set(specs.map { $0.id })
     for (id, p) in pumps where !want.contains(id) {
@@ -5721,28 +5784,64 @@ final class MetalPreviewEngine: NSObject {
       return
     }
     enc.setFragmentSamplerState(sampler, index: 0)
-    // 影片層（照 z 由下往上）
+    // 影片層與靜態圖層混排（照 z 由下往上，跟合成器同一個順序）
+    enum Draw {
+      case video(MetalLayerSpec)
+      case still(MetalStillSpec)
+    }
+    var draws: [(Int, Draw)] = []
     for sp in layers where sp.offset <= t && t < sp.end {
-      guard let pump = pumps[sp.id] else { continue }
-      let srcT = sp.trimStart + (t - sp.offset) * sp.speed
-      pump.want(srcT)
-      guard let tex = pump.texture(at: srcT, cache: cache),
-        let verts = quad(for: sp)
-      else { continue }
-      // 淡入淡出×固定透明度
-      var a = sp.opacity
-      if sp.fadeIn > 0.01 {
-        a = min(a, max(0, min(1, (t - sp.offset) / sp.fadeIn)))
+      draws.append((sp.z, .video(sp)))
+    }
+    for st in stills where st.start <= t && t < st.end {
+      draws.append((st.z, .still(st)))
+    }
+    draws.sort { $0.0 < $1.0 }
+    func fade(
+      _ base: Double, _ s: Double, _ e: Double, _ fi: Double, _ fo: Double
+    ) -> Double {
+      var a = base
+      if fi > 0.01 { a = min(a, max(0, min(1, (t - s) / fi))) }
+      if fo > 0.01 { a = min(a, max(0, min(1, (e - t) / fo))) }
+      return a
+    }
+    for (_, d) in draws {
+      switch d {
+      case .video(let sp):
+        guard let pump = pumps[sp.id] else { continue }
+        let srcT = sp.trimStart + (t - sp.offset) * sp.speed
+        pump.want(srcT)
+        guard let tex = pump.texture(at: srcT, cache: cache),
+          let verts = quad(for: sp)
+        else { continue }
+        var af = Float(
+          fade(sp.opacity, sp.offset, sp.end, sp.fadeIn, sp.fadeOut))
+        enc.setRenderPipelineState(videoPipe)
+        enc.setVertexBytes(verts, length: verts.count * 4, index: 0)
+        enc.setFragmentBytes(&af, length: 4, index: 0)
+        enc.setFragmentTexture(tex, index: 0)
+        enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+      case .still(let st):
+        guard let tex = stillTextures[st.path] else { continue }
+        // 幾何跟影片層同一套（contain-fit／縮放位移／鏡像旋轉裁切），
+        // 原始尺寸取紋理本人
+        let asLayer = MetalLayerSpec(
+          id: 0, path: st.path, offset: st.start, end: st.end,
+          trimStart: 0, speed: 1, z: st.z, px: st.px, py: st.py,
+          scale: st.scale, mirror: st.mirror, rotation: st.rotation,
+          opacity: st.opacity, fadeIn: st.fadeIn, fadeOut: st.fadeOut,
+          crop: st.crop, srcW: Double(tex.width), srcH: Double(tex.height))
+        guard let verts = quad(for: asLayer) else { continue }
+        let a = fade(st.opacity, st.start, st.end, st.fadeIn, st.fadeOut)
+        // 匯出對 still 是一般 sourceOver：不加亮（boost=1）、不夾白，
+        // 淡入淡出走 z（同乘色與 alpha）
+        var p = SIMD4<Float>(1.0, 0.0, Float(a), 0.0)
+        enc.setRenderPipelineState(overlayPipe)
+        enc.setVertexBytes(verts, length: verts.count * 4, index: 0)
+        enc.setFragmentBytes(&p, length: 16, index: 0)
+        enc.setFragmentTexture(tex, index: 0)
+        enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
       }
-      if sp.fadeOut > 0.01 {
-        a = min(a, max(0, min(1, (sp.end - t) / sp.fadeOut)))
-      }
-      var af = Float(a)
-      enc.setRenderPipelineState(videoPipe)
-      enc.setVertexBytes(verts, length: verts.count * 4, index: 0)
-      enc.setFragmentBytes(&af, length: 4, index: 0)
-      enc.setFragmentTexture(tex, index: 0)
-      enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
     }
     // 疊加物（浮水印/文字）：讀合成器同一份即時清單與即時幾何
     let ovs = CIExportCompositor.currentPreviewOverlays()
@@ -5788,10 +5887,10 @@ final class MetalPreviewEngine: NSObject {
       let c0 = c2(0, H, 0, 1)
       let d0 = c2(W, H, 1, 1)
       let verts = a0 + b0 + c0 + b0 + d0 + c0
-      var p = SIMD2<Float>(hdr ? 3.0 : 1.0, hdr ? 1.0 : 0.0)
+      var p = SIMD4<Float>(hdr ? 3.0 : 1.0, hdr ? 1.0 : 0.0, 1.0, 0.0)
       enc.setRenderPipelineState(overlayPipe)
       enc.setVertexBytes(verts, length: verts.count * 4, index: 0)
-      enc.setFragmentBytes(&p, length: 8, index: 0)
+      enc.setFragmentBytes(&p, length: 16, index: 0)
       enc.setFragmentTexture(tex, index: 0)
       enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
     }
@@ -5805,6 +5904,8 @@ final class MetalPreviewEngine: NSObject {
     for (_, p) in pumps { p.dispose() }
     pumps.removeAll()
     layers = []
+    stills = []
+    stillTextures.removeAll()
     ovTextures.removeAll()
   }
 }
