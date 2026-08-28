@@ -3004,6 +3004,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final ok = await MetalPreview.build(p);
     if (!mounted) return;
     _mBuiltSig = ok ? sig : null;
+    Diag.note(ok ? '引擎佈局預建好' : '引擎佈局預建失敗');
   }
 
   /// 滑動起手：把目前佈局交給 Metal 引擎，成了就換它出畫面。
@@ -3016,6 +3017,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (p == null) return;
     final sig = jsonEncode(p);
     if (sig != _mBuiltSig) {
+      // 不該常走到：預建有掛在合成/工作檔就緒點。這行出現在診斷裡
+      // 代表有沒蓋到的佈局變更點（或預建失敗），要去補
+      Diag.note(_mBuiltSig == null ? '引擎滑動時現場建（沒預建過）' : '引擎滑動時現場建（指紋不同）');
       final ok = await MetalPreview.build(p);
       if (!mounted) return;
       _mBuiltSig = ok ? sig : null;
