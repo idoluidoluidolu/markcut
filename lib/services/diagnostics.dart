@@ -254,10 +254,11 @@ class Diag {
   /// 硬體級停用（AV 分離，解碼器 100% 歸引擎），預設開
   static final metalPlayback = ValueNotifier(true);
 
-  /// 引擎常駐（畫面唯一來源、進場即亮）。預設關：build 129 實機
-  /// 「點浮水印畫面全黑」——常駐亮起時 pump 紋理未就緒＝黑畫布。
-  /// 就緒檢查與真機驗證完成前只做暫態接管
-  static final metalResident = ValueNotifier(false);
+  /// 引擎常駐（畫面唯一來源、進場即亮，重建/換手全部隱形）。
+  /// 129 的黑畫面根因（無就緒檢查、seek 被吞）已修：現在
+  /// 「紋理就緒才上台、沒就緒 200ms 重試」，加上關鍵幀瞬滑，
+  /// 原檔也能立刻亮
+  static final metalResident = ValueNotifier(true);
 
   static String get tuning =>
       '預熱=${preheat.value ? '開' : '關'}／'

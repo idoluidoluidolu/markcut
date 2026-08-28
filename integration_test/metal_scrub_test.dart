@@ -241,11 +241,11 @@ void main() {
     expect(tookOver, isNotNull, reason: '滑動全程 Metal 引擎都沒接管');
     // 常駐/播放接管預設關（build 129 實機回歸後回穩）：
     // 放手/暫停後引擎讓位、播放走合成畫面
-    expect(released, false, reason: '放開後引擎沒讓位');
+    // 常駐（預設開）：放手/暫停後引擎續留——它就是畫面
+    expect(released, true, reason: '常駐佈局放手後引擎不該讓位');
     expect(second, isNotNull, reason: '第二次滑動引擎沒接管');
-    // AV 分離版播放接管（預設開）：接管、位置前進、暫停讓位
     expect(tookPlay, true, reason: '播放時引擎沒接管');
     expect(tPlay2 != tPlay1, true, reason: '播放接管中位置沒前進');
-    expect(afterPause, false, reason: '暫停後引擎沒讓位');
+    expect(afterPause, true, reason: '常駐佈局暫停後引擎不該讓位');
   });
 }

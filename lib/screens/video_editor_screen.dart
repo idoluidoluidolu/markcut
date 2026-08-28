@@ -3141,17 +3141,41 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 佈局變成不能常駐（加了馬賽克/GIF）就讓位還給合成畫面
     if (_playing || _scrubbing) return;
     if (_mResident && _mBuiltSig != null && _comp != null) {
-      if (!MetalPreview.active) {
-        _mHideTimer?.cancel();
-        MetalPreview.active = true;
-        unawaited(MetalPreview.seek(_position));
-        unawaited(MetalPreview.show(true));
-        setState(() {});
-      }
+      if (!MetalPreview.active) _metalResidentTry();
     } else if (!_mResident && MetalPreview.active && !_scrubbing) {
       _metalHideNow();
       setState(() {});
     }
+  }
+
+  Timer? _mResTimer;
+
+  /// 常駐上台：紋理就緒才亮（129 黑畫面的教訓——寧可晚 200ms
+  /// 也不上黑畫布）；沒就緒 200ms 後重試，最多 15 次（3 秒）
+  void _metalResidentTry([int attempt = 0]) {
+    if (!mounted || _playing || _scrubbing || MetalPreview.active) return;
+    if (!_mResident || _mBuiltSig == null) return;
+    unawaited(
+      MetalPreview.seek(_position).then((_) async {
+        if (!await MetalPreview.ready(_position)) {
+          if (attempt < 15 && mounted) {
+            _mResTimer?.cancel();
+            _mResTimer = Timer(
+              const Duration(milliseconds: 200),
+              () => _metalResidentTry(attempt + 1),
+            );
+          }
+          return;
+        }
+        if (!mounted || _playing || _scrubbing || MetalPreview.active) {
+          return;
+        }
+        _mHideTimer?.cancel();
+        MetalPreview.active = true;
+        unawaited(MetalPreview.show(true));
+        setState(() {});
+      }),
+    );
   }
 
   /// 滑動起手：把目前佈局交給 Metal 引擎，成了就換它出畫面。
@@ -8560,6 +8584,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _ovXfTrail?.cancel();
     _mHideTimer?.cancel();
     _mOvIdleTimer?.cancel();
+    _mResTimer?.cancel();
     unawaited(MetalPreview.disposeEngine());
     _xfTrail?.cancel();
     CompPlayer.onCompVisible = null;
