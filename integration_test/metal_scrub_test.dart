@@ -201,6 +201,19 @@ void main() {
     final afterPause = MetalPreview.active;
     debugPrint('=== 暫停後 1s active=$afterPause ===');
 
+    // 數值法庭：離屏取兩段各 5 點線性值（跟顯示器無關），
+    // 與測試片的授權值換算比對——「顏色準」的最終判準
+    String fmt(List<double>? g) =>
+        g == null ? '(null)' : g.map((v) => v.toStringAsFixed(4)).join(', ');
+    await MetalPreview.grab(9.9); // 先觸發 pump seek
+    await tester.pump(const Duration(milliseconds: 900));
+    final gSdr = await MetalPreview.grab(9.9);
+    debugPrint('=== GRAB sdr@9.9: ${fmt(gSdr)} ===');
+    await MetalPreview.grab(3.0);
+    await tester.pump(const Duration(milliseconds: 900));
+    final gHlg = await MetalPreview.grab(3.0);
+    debugPrint('=== GRAB hlg@3.0: ${fmt(gHlg)} ===');
+
     debugPrint('=== 診斷報告 ===\n${Diag.report()}');
 
     expect(tookOver, isNotNull, reason: '滑動全程 Metal 引擎都沒接管');

@@ -51,6 +51,17 @@ class MetalPreview {
     } catch (_) {}
   }
 
+  /// 數值法庭：離屏渲染 [t] 的影片層、回讀中線 5 點線性值
+  ///（驗色用，跟顯示器無關）
+  static Future<List<double>?> grab(double t) async {
+    try {
+      final r = await CompPlayer._ch.invokeMethod<List<dynamic>>('mgrab', t);
+      return r?.map((e) => (e as num).toDouble()).toList();
+    } catch (_) {
+      return null;
+    }
+  }
+
   static Future<void> disposeEngine() async {
     active = false;
     try {

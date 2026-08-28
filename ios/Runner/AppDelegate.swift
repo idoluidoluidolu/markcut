@@ -1363,6 +1363,10 @@ final class AtomicFlag {
       case "mstop":
         MetalPreviewEngine.shared.stop()
         result(nil)
+      case "mgrab":
+        // 數值法庭：離屏渲染回讀線性值（驗色用，跟顯示器無關）
+        result(
+          MetalPreviewEngine.shared.grab(call.arguments as? Double ?? 0))
       case "mdispose":
         MetalPreviewEngine.shared.disposeAll()
         result(nil)
@@ -5958,6 +5962,69 @@ final class MetalPreviewEngine: NSObject {
       }
     }
     return true
+  }
+
+  /// 數值法庭：把 [t] 的影片層渲進離屏 rgba16Float、回讀中線
+  /// 5 個取樣點的線性值——跟顯示器無關，直接驗線性化/色域數學。
+  /// 回傳 [r,g,b]×5（左 10% 到右 90%）
+  func grab(_ t: Double) -> [Double]? {
+    guard setUp(), let queue = queue, let dev = device,
+      let videoPipe = videoPipe, let sampler = sampler,
+      let cache = texCache
+    else { return nil }
+    curT = t
+    let w = 512
+    let h = max(2, Int(512.0 * canvasH / canvasW))
+    let td = MTLTextureDescriptor.texture2DDescriptor(
+      pixelFormat: .rgba16Float, width: w, height: h, mipmapped: false)
+    td.usage = [.renderTarget]
+    td.storageMode = .shared
+    guard let target = dev.makeTexture(descriptor: td) else { return nil }
+    let rp = MTLRenderPassDescriptor()
+    rp.colorAttachments[0].texture = target
+    rp.colorAttachments[0].loadAction = .clear
+    rp.colorAttachments[0].storeAction = .store
+    rp.colorAttachments[0].clearColor = MTLClearColor(
+      red: 0, green: 0, blue: 0, alpha: 1)
+    guard let cmd = queue.makeCommandBuffer(),
+      let enc = cmd.makeRenderCommandEncoder(descriptor: rp)
+    else { return nil }
+    enc.setFragmentSamplerState(sampler, index: 0)
+    for sp in layers where sp.offset <= t && t < sp.end {
+      guard let pump = pumps[sp.id] else { continue }
+      let srcT = sp.trimStart + (t - sp.offset) * sp.speed
+      pump.want(srcT)
+      guard let tex = pump.texture(at: srcT, cache: cache),
+        let verts = quad(
+          for: sp, texOrient: pump.orient,
+          texW: pump.dispW, texH: pump.dispH)
+      else { continue }
+      var vp = SIMD4<Float>(
+        1, pump.isHLG ? 1 : 0, pump.is2020 ? 1 : 0, 3.77)
+      enc.setRenderPipelineState(videoPipe)
+      enc.setVertexBytes(verts, length: verts.count * 4, index: 0)
+      enc.setFragmentBytes(&vp, length: 16, index: 0)
+      enc.setFragmentTexture(tex, index: 0)
+      enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+    }
+    enc.endEncoding()
+    cmd.commit()
+    cmd.waitUntilCompleted()
+    var out: [Double] = []
+    let row = UnsafeMutableRawPointer.allocate(
+      byteCount: w * 8, alignment: 8)
+    defer { row.deallocate() }
+    target.getBytes(
+      row, bytesPerRow: w * 8,
+      from: MTLRegionMake2D(0, h / 2, w, 1), mipmapLevel: 0)
+    let p = row.assumingMemoryBound(to: UInt16.self)
+    for fx in [0.1, 0.3, 0.5, 0.7, 0.9] {
+      let x = Int(Double(w) * fx)
+      for c in 0..<3 {
+        out.append(Double(Float(Float16(bitPattern: p[x * 4 + c]))))
+      }
+    }
+    return out
   }
 
   func show(_ on: Bool) {
