@@ -5467,25 +5467,45 @@ final class MetalPreviewEngine: NSObject {
       half a = half(alpha);
       return half4(c.rgb * a, a);
     }
-    // 疊加物：跟 CIExportCompositor 同一套數學——字底下的畫面
-    // 夾回 SDR 白再混（半透明不被 HDR 高光沖淡），白位再乘 boost
-    fragment half4 fragOverlay(VOut in [[stage_in]],
-                               half4 dst [[color(0)]],
-                               texture2d<half> tex [[texture(0)]],
-                               constant float2 &p [[buffer(0)]],
-                               sampler s [[sampler(0)]]) {
-      half4 o = tex.sample(s, in.uv);
-      half a = o.a;
-      half boost = half(p.x);
-      half3 bg = dst.rgb;
-      if (p.y > 0.5) {
-        half3 capped = min(dst.rgb, half3(1.0h));
-        bg = capped * a + dst.rgb * (1.0h - a);
-      }
-      half3 rgb = o.rgb * boost + bg * (1.0h - a);
-      return half4(rgb, 1.0h);
-    }
     """
+
+  // 疊加物 shader 分真機/模擬器兩版：
+  // 真機——programmable blending 讀底色（dst [[color(0)]]），跟
+  // CIExportCompositor 同一套數學：字底下的畫面夾回 SDR 白再混
+  //（半透明不被 HDR 高光沖淡），白位再乘 boost。
+  // 模擬器——不支援讀 rendertarget（CompilerError: reading from a
+  // rendertarget is not supported），退回固定混色、跳過夾白：
+  // 顏色驗證本來就以真機為準，模擬器管幾何與順暢度
+  #if targetEnvironment(simulator)
+    private let overlaySrc = """
+      fragment half4 fragOverlay(VOut in [[stage_in]],
+                                 texture2d<half> tex [[texture(0)]],
+                                 constant float2 &p [[buffer(0)]],
+                                 sampler s [[sampler(0)]]) {
+        half4 o = tex.sample(s, in.uv);
+        return half4(o.rgb * half(p.x), o.a);
+      }
+      """
+  #else
+    private let overlaySrc = """
+      fragment half4 fragOverlay(VOut in [[stage_in]],
+                                 half4 dst [[color(0)]],
+                                 texture2d<half> tex [[texture(0)]],
+                                 constant float2 &p [[buffer(0)]],
+                                 sampler s [[sampler(0)]]) {
+        half4 o = tex.sample(s, in.uv);
+        half a = o.a;
+        half boost = half(p.x);
+        half3 bg = dst.rgb;
+        if (p.y > 0.5) {
+          half3 capped = min(dst.rgb, half3(1.0h));
+          bg = capped * a + dst.rgb * (1.0h - a);
+        }
+        half3 rgb = o.rgb * boost + bg * (1.0h - a);
+        return half4(rgb, 1.0h);
+      }
+      """
+  #endif
 
   private func setUp() -> Bool {
     if available { return true }
@@ -5498,7 +5518,8 @@ final class MetalPreviewEngine: NSObject {
       return false
     }
     do {
-      let lib = try dev.makeLibrary(source: shaderSrc, options: nil)
+      let lib = try dev.makeLibrary(
+        source: shaderSrc + "\n" + overlaySrc, options: nil)
       let vfn = lib.makeFunction(name: "vtx")
       let d1 = MTLRenderPipelineDescriptor()
       d1.vertexFunction = vfn
@@ -5515,7 +5536,19 @@ final class MetalPreviewEngine: NSObject {
       d2.vertexFunction = vfn
       d2.fragmentFunction = lib.makeFunction(name: "fragOverlay")
       d2.colorAttachments[0].pixelFormat = .rgba16Float
-      d2.colorAttachments[0].isBlendingEnabled = false
+      #if targetEnvironment(simulator)
+        // 模擬器版 shader 不讀底色，混色交給固定管線（預乘 over）
+        d2.colorAttachments[0].isBlendingEnabled = true
+        d2.colorAttachments[0].sourceRGBBlendFactor = .one
+        d2.colorAttachments[0].sourceAlphaBlendFactor = .one
+        d2.colorAttachments[0].destinationRGBBlendFactor =
+          .oneMinusSourceAlpha
+        d2.colorAttachments[0].destinationAlphaBlendFactor =
+          .oneMinusSourceAlpha
+      #else
+        // 真機版 shader 自己讀底色算最終色，關掉固定混色
+        d2.colorAttachments[0].isBlendingEnabled = false
+      #endif
       videoPipe = try dev.makeRenderPipelineState(descriptor: d1)
       overlayPipe = try dev.makeRenderPipelineState(descriptor: d2)
     } catch {
