@@ -504,9 +504,15 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   ///（livePreview）讀它，匯出照走指令裡的 overlays，互不相干
   static let ovLock = NSLock()
   private static var previewOvs: [CIOverlaySpec] = []
+
+  /// 即時內容的世代號：疊加物/變形每次更新 +1。Metal 引擎靜止
+  /// 降頻用它判斷「畫面有沒有東西變了」——沒變就不重繪（省電）
+  static var liveEpoch = 0
+
   static func setPreviewOverlays(_ o: [CIOverlaySpec]) {
     ovLock.lock()
     previewOvs = o
+    liveEpoch &+= 1
     ovLock.unlock()
   }
   static func currentPreviewOverlays() -> [CIOverlaySpec] {
@@ -528,6 +534,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   static func setLiveXform(_ x: CompLiveXform?) {
     xfLock.lock()
     liveXf = x
+    liveEpoch &+= 1
     xfLock.unlock()
   }
   static func currentLiveXform() -> CompLiveXform? {
@@ -543,6 +550,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   static func setLiveOvs(_ xs: [CompLiveOv]) {
     xfLock.lock()
     liveOvs = Dictionary(uniqueKeysWithValues: xs.map { ($0.id, $0) })
+    liveEpoch &+= 1
     xfLock.unlock()
   }
   static func currentLiveOvs() -> [String: CompLiveOv] {
@@ -5963,6 +5971,7 @@ final class MetalPreviewEngine: NSObject {
     playSafe =
       mosaicMaps.isEmpty
       && !stillSpecs.contains { $0.gif || $0.hasColor }
+    layoutEpoch &+= 1  // 佈局變了＝畫面該重繪（靜止降頻歸零）
     // pump 走「靠近才建、遠離回收」（見 pumpFor/trimPumps）：
     // 二十支片的時間軸也只養播放頭附近那幾顆解碼器
     // 靜態圖層紋理趁建佈局先載好（滑動中零載入）；不在佈局裡的放掉
@@ -6143,11 +6152,29 @@ final class MetalPreviewEngine: NSObject {
     }
   }
 
+  /// 靜止降頻：畫面內容（時刻/即時幾何/佈局）沒變的話——
+  /// 200ms 後降到 10fps（pump 晚到的紋理還補得上）、10 秒後
+  /// 完全停畫。任何變化立刻回 60fps。常駐引擎暫停時不燒 GPU
+  private var idleTicks = 0
+  private var drawnT = -1.0
+  private var drawnEpoch = -1
+  private var layoutEpoch = 0
+
   @objc private func tick() {
     guard active else { return }
     if playing {
       curT = engineT
       syncPumps(curT)
+    }
+    let ep = CIExportCompositor.liveEpoch &+ layoutEpoch
+    if !playing && curT == drawnT && ep == drawnEpoch {
+      idleTicks += 1
+      if idleTicks > 600 { return }
+      if idleTicks > 12 && idleTicks % 6 != 0 { return }
+    } else {
+      idleTicks = 0
+      drawnT = curT
+      drawnEpoch = ep
     }
     render()
   }
