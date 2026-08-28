@@ -1798,6 +1798,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _xfLastAt = now;
     _xfLastSent = key;
+    // 拖曳影片素材中：引擎接管（每格讀同一份即時變形，60fps 跟手）
+    _metalOvDragTakeover();
     unawaited(
       CompPlayer.setXform(
         z: c.track,
@@ -3008,6 +3010,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         'fadeIn': c.fadeIn,
         'fadeOut': c.fadeOut,
         if (c.cropped) 'crop': [c.cropL, c.cropT, c.cropW, c.cropH],
+        'color': c.color.hasColor ? c.color.matrix : null,
         'srcW': src.w.toDouble(),
         'srcH': src.h.toDouble(),
       });
@@ -3023,6 +3026,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final src = _tl.sourceOf(c);
       stills.add({
         'path': src.path,
+        if (src.isGif) 'gif': true,
+        'color': c.color.hasColor ? c.color.matrix : null,
         'start': c.offset,
         'end': c.end,
         'track': c.track,

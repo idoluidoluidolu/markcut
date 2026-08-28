@@ -1321,7 +1321,8 @@ final class AtomicFlag {
             fadeOut: m["fadeOut"] as? Double ?? 0,
             crop: m["crop"] as? [Double],
             srcW: m["srcW"] as? Double ?? 16,
-            srcH: m["srcH"] as? Double ?? 9)
+            srcH: m["srcH"] as? Double ?? 9,
+            color: m["color"] as? [Double])
         }
         let stillSpecs: [MetalStillSpec] =
           ((a["stills"] as? [[String: Any]]) ?? []).compactMap { m in
@@ -1339,7 +1340,9 @@ final class AtomicFlag {
               opacity: m["opacity"] as? Double ?? 1,
               fadeIn: m["fadeIn"] as? Double ?? 0,
               fadeOut: m["fadeOut"] as? Double ?? 0,
-              crop: m["crop"] as? [Double])
+              crop: m["crop"] as? [Double],
+              gif: m["gif"] as? Bool ?? false,
+              hasColor: (m["color"] as? [Double]) != nil)
           }
         result(
           MetalPreviewEngine.shared.build(
@@ -5519,17 +5522,20 @@ struct MetalLayerSpec {
   let trimStart: Double
   let speed: Double
   let z: Int
-  let px: Double
-  let py: Double
-  let scale: Double
+  // px/py/scale/rotation 是 var：拖曳中被即時變形（liveXf）逐格蓋過
+  var px: Double
+  var py: Double
+  var scale: Double
   let mirror: Bool
-  let rotation: Double
+  var rotation: Double
   let opacity: Double
   let fadeIn: Double
   let fadeOut: Double
   let crop: [Double]?
   let srcW: Double
   let srcH: Double
+  /// 色彩濾鏡（5x4 矩陣 20 元素，跟 CI applyColor 同格式）
+  var color: [Double]? = nil
 }
 
 /// 引擎收的一張靜態圖層（圖片/貼圖/GIF 首幀；欄位跟 still 烘進
@@ -5548,6 +5554,8 @@ struct MetalStillSpec {
   let fadeIn: Double
   let fadeOut: Double
   let crop: [Double]?
+  var gif = false
+  var hasColor = false
 }
 
 /// 引擎收的一塊馬賽克（幾何/遮罩直接重用 CIMosaicSpec 的解析，
@@ -5609,6 +5617,11 @@ final class MetalPreviewEngine: NSObject {
   private var playT0 = 0.0
   private var host0 = 0.0
 
+  /// 播放接管的安全閘：滑動暫態的近似（GIF 停首幀、馬賽克蓋全
+  /// 層、貼圖不吃濾鏡）在「持續播放」中是持續的錯——這些佈局
+  /// 播放不接管，畫面照舊給合成播放器（正確優先）
+  private var playSafe = true
+
   /// 播放中引擎認定的時間軸時刻（主機時鐘推進；Dart 每半秒對時）
   private var engineT: Double {
     playing ? playT0 + (CACurrentMediaTime() - host0) : curT
@@ -5617,7 +5630,7 @@ final class MetalPreviewEngine: NSObject {
   /// 進入播放模式：pump 各自起播（靜音），畫面由 tick 逐格合成。
   /// 佈局沒建過（build 沒成）回 false，呼叫端照舊走合成播放器畫面
   func play(_ t: Double) -> Bool {
-    guard available, !layers.isEmpty else { return false }
+    guard available, !layers.isEmpty, playSafe else { return false }
     playT0 = t
     host0 = CACurrentMediaTime()
     playing = true
@@ -5677,6 +5690,7 @@ final class MetalPreviewEngine: NSObject {
     fragment half4 fragVideo(VOut in [[stage_in]],
                              texture2d<half> tex [[texture(0)]],
                              constant float4 &vp [[buffer(0)]],
+                             constant float4 *cm [[buffer(1)]],
                              sampler s [[sampler(0)]]) {
       half4 c = tex.sample(s, in.uv);
       float3 v = float3(c.rgb);
@@ -5700,6 +5714,20 @@ final class MetalPreviewEngine: NSObject {
           1.6605 * v.r - 0.5876 * v.g - 0.0728 * v.b,
           -0.1246 * v.r + 1.1329 * v.g - 0.0083 * v.b,
           -0.0182 * v.r - 0.1006 * v.g + 1.1187 * v.b);
+      }
+      // 色彩濾鏡：跟 CI applyColor 同語意——gamma 空間套 5x4 矩陣
+      //（cm[0..2]=R/G/B 列、cm[3]=偏移；cm[3].w>0.5＝有濾鏡）
+      if (cm[3].w > 0.5) {
+        float3 g = select(
+          v * 12.92, 1.055 * pow(abs(v), 1.0 / 2.4) - 0.055,
+          v > 0.0031308);
+        g = float3(
+          dot(cm[0].xyz, g), dot(cm[1].xyz, g), dot(cm[2].xyz, g))
+          + cm[3].xyz;
+        g = clamp(g, 0.0, 1.0);
+        float3 lo = g / 12.92;
+        float3 hi = pow((abs(g) + 0.055) / 1.055, 2.4);
+        v = select(lo, hi, g > 0.04045);
       }
       half a = half(vp.x);
       half3 rgb = half3(max(v, 0.0));
@@ -5930,6 +5958,9 @@ final class MetalPreviewEngine: NSObject {
     }
     layers = specs.sorted { $0.z < $1.z }
     stills = stillSpecs
+    playSafe =
+      mosaicMaps.isEmpty
+      && !stillSpecs.contains { $0.gif || $0.hasColor }
     // 靜態圖層紋理趁建佈局先載好（滑動中零載入）；不在佈局裡的放掉
     let wantStills = Set(stillSpecs.map { $0.path })
     for k in stillTextures.keys where !wantStills.contains(k) {
@@ -5962,6 +5993,22 @@ final class MetalPreviewEngine: NSObject {
       }
     }
     return true
+  }
+
+  /// 色彩濾鏡 → shader 的 4×float4（R/G/B 列＋偏移；bias.w＝
+  /// 有沒有濾鏡的旗標）。格式跟 CI applyColor 同一份 5x4 矩陣
+  private static func colorU(_ m: [Double]?) -> [Float] {
+    guard let m = m, m.count >= 20 else {
+      return [
+        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,
+      ]
+    }
+    return [
+      Float(m[0]), Float(m[1]), Float(m[2]), 0,
+      Float(m[5]), Float(m[6]), Float(m[7]), 0,
+      Float(m[10]), Float(m[11]), Float(m[12]), 0,
+      Float(m[4] / 255), Float(m[9] / 255), Float(m[14] / 255), 1,
+    ]
   }
 
   /// 數值法庭：把 [t] 的影片層渲進離屏 rgba16Float、回讀中線
@@ -6004,6 +6051,7 @@ final class MetalPreviewEngine: NSObject {
       enc.setRenderPipelineState(videoPipe)
       enc.setVertexBytes(verts, length: verts.count * 4, index: 0)
       enc.setFragmentBytes(&vp, length: 16, index: 0)
+      enc.setFragmentBytes(Self.colorU(sp.color), length: 64, index: 1)
       enc.setFragmentTexture(tex, index: 0)
       enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
     }
@@ -6255,9 +6303,19 @@ final class MetalPreviewEngine: NSObject {
           pump.want(srcT)
           tex = pump.texture(at: srcT, cache: cache)
         }
+        // 拖曳/捏合中的即時變形：跟合成器讀同一份靜態，逐格蓋過
+        var spEff = sp
+        if let lx = CIExportCompositor.currentLiveXform(),
+          lx.z == sp.z, abs(lx.start - sp.offset) < 0.02
+        {
+          spEff.px = lx.px
+          spEff.py = lx.py
+          spEff.scale = lx.scale
+          spEff.rotation = lx.rotation
+        }
         guard let tex = tex,
           let verts = quad(
-            for: sp, texOrient: pump.orient,
+            for: spEff, texOrient: pump.orient,
             texW: pump.dispW, texH: pump.dispH)
         else { continue }
         let af = Float(
@@ -6265,9 +6323,11 @@ final class MetalPreviewEngine: NSObject {
         // HLG 增益 3.77＝參考白（75% 訊號）對齊 SDR 白 1.0
         var vp = SIMD4<Float>(
           af, pump.isHLG ? 1 : 0, pump.is2020 ? 1 : 0, 3.77)
+        let cmU = Self.colorU(sp.color)
         enc.setRenderPipelineState(videoPipe)
         enc.setVertexBytes(verts, length: verts.count * 4, index: 0)
         enc.setFragmentBytes(&vp, length: 16, index: 0)
+        enc.setFragmentBytes(cmU, length: 64, index: 1)
         enc.setFragmentTexture(tex, index: 0)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
       case .still(let st):
@@ -6315,6 +6375,7 @@ final class MetalPreviewEngine: NSObject {
       e2.setRenderPipelineState(videoPipe)
       e2.setVertexBytes(full, length: full.count * 4, index: 0)
       e2.setFragmentBytes(&passthru, length: 16, index: 0)
+      e2.setFragmentBytes(Self.colorU(nil), length: 64, index: 1)
       e2.setFragmentTexture(st, index: 0)
       e2.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
       let W = canvasW
