@@ -2980,11 +2980,41 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 一毫秒都不等（無延遲的關鍵：建佈局的錢在閒置時先付掉）
   String? _mBuiltSig;
 
+  /// 這份佈局能不能當「常駐畫面」（進場即亮、暫停也是它）：
+  /// 滑動暫態的近似（GIF 首幀、馬賽克蓋全層、貼圖無濾鏡）
+  /// 不能常駐——那些佈局引擎只做暫態接管
+  bool _mViewSafe = false;
+
   /// 現在的時間軸佈局 → 引擎 payload。組不了（沒素材、倒轉、
   /// 平台不支援）回 null，呼叫端走現有路徑
   Map<String, dynamic>? _metalPayload() {
     final comp = _comp;
-    if (comp == null) return null;
+    // 合成還沒好時畫布用第一支可見影片的比例（短邊 1080）——
+    // 引擎先行起畫；合成就緒後預建刷新換正式畫布（座標全是
+    // 相對值，切換無感）
+    double cw, ch;
+    if (comp != null && comp.width > 1) {
+      cw = comp.width;
+      ch = comp.height;
+    } else {
+      MediaSource? f;
+      for (final c in _tl.clips) {
+        final s = _tl.sourceOf(c);
+        if (s.isVideo && !_hiddenTracks.contains(c.track)) {
+          f = s;
+          break;
+        }
+      }
+      if (f == null || f.w <= 0 || f.h <= 0) return null;
+      final ar = f.w / f.h;
+      if (ar >= 1) {
+        ch = 1080;
+        cw = (1080 * ar).roundToDouble();
+      } else {
+        cw = 1080;
+        ch = (1080 / ar).roundToDouble();
+      }
+    }
     final hdrMode = _exportHdr && _hdrAvail == true;
     final specs = <Map<String, dynamic>>[];
     for (final c in _tl.clips) {
@@ -3065,9 +3095,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (src.mosaicStroke != null) 'brush': src.mosaicBrush,
       });
     }
+    _mViewSafe =
+        mosaics.isEmpty &&
+        !stills.any((s) => s['gif'] == true || s['color'] != null);
     return {
-      'w': comp.width,
-      'h': comp.height,
+      'w': cw,
+      'h': ch,
       'hdr': hdrMode,
       'layers': specs,
       'stills': stills,
@@ -3088,11 +3121,28 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     final sig = jsonEncode(p);
-    if (sig == _mBuiltSig) return;
-    final ok = await MetalPreview.build(p);
-    if (!mounted) return;
-    _mBuiltSig = ok ? sig : null;
-    Diag.note(ok ? '引擎佈局預建好' : '引擎佈局預建失敗');
+    if (sig != _mBuiltSig) {
+      final ok = await MetalPreview.build(p);
+      if (!mounted) return;
+      _mBuiltSig = ok ? sig : null;
+      Diag.note(ok ? '引擎佈局預建好' : '引擎佈局預建失敗');
+    }
+    // 常駐（專業剪輯架構）：佈局能常駐就讓引擎當家——進場即亮、
+    // 暫停也是它，之後的合成重烘/換手全部發生在它背後（隱形）。
+    // 佈局變成不能常駐（加了馬賽克/GIF）就讓位還給合成畫面
+    if (_playing || _scrubbing) return;
+    if (_mViewSafe && _mBuiltSig != null && _comp != null) {
+      if (!MetalPreview.active) {
+        _mHideTimer?.cancel();
+        MetalPreview.active = true;
+        unawaited(MetalPreview.seek(_position));
+        unawaited(MetalPreview.show(true));
+        setState(() {});
+      }
+    } else if (!_mViewSafe && MetalPreview.active) {
+      _metalHideNow();
+      setState(() {});
+    }
   }
 
   /// 滑動起手：把目前佈局交給 Metal 引擎，成了就換它出畫面。
@@ -3138,9 +3188,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     setState(() {});
   }
 
-  /// 滑動停手：讓合成播放器在底下就定位，300ms 後把引擎收起來
+  /// 滑動停手：常駐佈局引擎不讓位（它就是畫面）；
+  /// 非常駐佈局讓合成在底下就定位，300ms 後把引擎收起來
   void _metalScrubEnd() {
     if (!MetalPreview.active) return;
+    if (_mViewSafe) return;
     _mHideTimer?.cancel();
     _mHideTimer = Timer(const Duration(milliseconds: 300), () {
       MetalPreview.active = false;
@@ -6573,7 +6625,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_tl.duration <= 0) return;
     if (_position >= _tl.duration - 0.01) _position = 0;
     _clockBias = 0; // 上一輪沒吃完的校正不能帶進新的一輪
-    _metalHideNow(); // 引擎不能蓋著播放畫面
+    // 常駐佈局不藏：引擎馬上要接管播放，讓它停格頂到 mplay 接手
+    //（無縫）；接不了再藏。非常駐佈局照舊先讓合成出畫面
+    if (!_mViewSafe || _mBuiltSig == null) _metalHideNow();
     final tr = PlaybackTrace.instance..start();
 
     // 拖曳收尾排在後面的那幾件事，按下播放的當下全部取消：
@@ -6587,7 +6641,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _scrubEndTimer?.cancel();
     _seekInFlight = false;
     if (_scrubbing) setState(() => _scrubbing = false);
-    _metalHideNow();
+    if (!_mViewSafe || _mBuiltSig == null) _metalHideNow();
 
     // 合成播放器接手時，整條時間軸就是它一顆在播：舊的逐片段播放器
     // 一個都不要碰。上一版兩邊同時在播——兩倍解碼、兩份聲音，
@@ -6626,12 +6680,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (_metalUsable && Diag.metalPlayback.value && _mBuiltSig != null) {
         unawaited(
           MetalPreview.play(_position).then((ok) {
-            if (!ok || !mounted || !_playing) return;
+            if (!mounted) return;
+            if (!ok) {
+              // 接不了（安全閘/佈局沒建成）：讓合成畫面出來
+              _metalHideNow();
+              setState(() {});
+              return;
+            }
+            if (!_playing) return;
             _mHideTimer?.cancel();
             MetalPreview.active = true;
             setState(() {});
           }),
         );
+      } else if (MetalPreview.active) {
+        _metalHideNow();
       }
       _lastTick = Duration.zero;
       _ticker.start();

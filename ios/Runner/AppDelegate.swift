@@ -5651,8 +5651,8 @@ final class MetalPreviewEngine: NSObject {
   /// 播著的偏移超過 0.15s 就重對（want 自帶去抖）
   private func syncPumps(_ t: Double, force: Bool = false) {
     for sp in layers {
-      guard let pump = pumps[sp.id] else { continue }
       if sp.offset <= t && t < sp.end {
+        let pump = pumpFor(sp)
         let want = sp.trimStart + (t - sp.offset) * sp.speed
         if pump.playingRate == 0 || force {
           pump.want(want)
@@ -5662,12 +5662,14 @@ final class MetalPreviewEngine: NSObject {
           if abs(cur - want) > 0.15 { pump.want(want) }
         }
       } else if sp.offset - 1.5 <= t && t < sp.offset {
+        let pump = pumpFor(sp)
         pump.pause()
         pump.want(sp.trimStart)
       } else {
-        pump.pause()
+        pumps[sp.id]?.pause()
       }
     }
+    trimPumps(t)
   }
 
   private let shaderSrc = """
@@ -5961,6 +5963,8 @@ final class MetalPreviewEngine: NSObject {
     playSafe =
       mosaicMaps.isEmpty
       && !stillSpecs.contains { $0.gif || $0.hasColor }
+    // pump 走「靠近才建、遠離回收」（見 pumpFor/trimPumps）：
+    // 二十支片的時間軸也只養播放頭附近那幾顆解碼器
     // 靜態圖層紋理趁建佈局先載好（滑動中零載入）；不在佈局裡的放掉
     let wantStills = Set(stillSpecs.map { $0.path })
     for k in stillTextures.keys where !wantStills.contains(k) {
@@ -5988,11 +5992,30 @@ final class MetalPreviewEngine: NSObject {
         old.dispose()
         pumps.removeValue(forKey: sp.id)
       }
-      if pumps[sp.id] == nil {
-        pumps[sp.id] = MetalPump(path: sp.path)
-      }
     }
     return true
+  }
+
+  /// 靠近才建：這一層的 pump（AVPlayer＋供格器）在用到的那一刻
+  /// 才生。配合 trimPumps，長時間軸只養播放頭附近那幾顆解碼器
+  private func pumpFor(_ sp: MetalLayerSpec) -> MetalPump {
+    if let p = pumps[sp.id] { return p }
+    let p = MetalPump(path: sp.path)
+    pumps[sp.id] = p
+    return p
+  }
+
+  /// 遠離回收：離播放頭前後 8 秒以外的 pump 放掉（超過 6 顆才
+  /// 開始收——小專案全養著，切來切去零成本）
+  private func trimPumps(_ t: Double) {
+    guard pumps.count > 6 else { return }
+    for sp in layers {
+      guard let p = pumps[sp.id] else { continue }
+      if t < sp.offset - 8 || t > sp.end + 8 {
+        p.dispose()
+        pumps.removeValue(forKey: sp.id)
+      }
+    }
   }
 
   /// 色彩濾鏡 → shader 的 4×float4（R/G/B 列＋偏移；bias.w＝
@@ -6114,8 +6137,9 @@ final class MetalPreviewEngine: NSObject {
       // 預熱：沒在畫也先把 pump 對到位——之後（拖曳文字/滑動）
       // 接管的第一格就是對的，不閃舊畫面
       for sp in layers where sp.offset <= t && t < sp.end {
-        pumps[sp.id]?.want(sp.trimStart + (t - sp.offset) * sp.speed)
+        pumpFor(sp).want(sp.trimStart + (t - sp.offset) * sp.speed)
       }
+      trimPumps(t)
     }
   }
 

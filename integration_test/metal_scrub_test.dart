@@ -217,10 +217,12 @@ void main() {
     debugPrint('=== 診斷報告 ===\n${Diag.report()}');
 
     expect(tookOver, isNotNull, reason: '滑動全程 Metal 引擎都沒接管');
-    expect(released, false, reason: '放開後引擎沒讓位，會蓋住播放畫面');
+    // 常駐架構：能常駐的佈局（無馬賽克/GIF/濾鏡貼圖）放手後引擎
+    // 「不」讓位——它就是畫面。這裡的素材正是常駐佈局
+    expect(released, true, reason: '常駐佈局放手後引擎不該讓位');
     expect(second, isNotNull, reason: '第二次滑動引擎沒接管');
     expect(tookPlay, true, reason: '播放時引擎沒接管（播放接管沒生效）');
     expect(tPlay2 != tPlay1, true, reason: '播放接管中位置沒前進');
-    expect(afterPause, false, reason: '暫停後引擎沒讓位');
+    expect(afterPause, true, reason: '常駐佈局暫停後引擎不該讓位');
   });
 }
