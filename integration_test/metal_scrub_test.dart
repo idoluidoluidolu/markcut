@@ -20,9 +20,11 @@ void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   testWidgets('時間軸滑動時 Metal 引擎接管，放開後讓位', (tester) async {
+    // 素材：優先撿 App 匯入過的拷貝；沒有就直接讀宿主機的測試片
+    //（模擬器不強制沙盒，讀得到 Mac 的路徑——重裝清掉容器也不怕）
     final docs = await getApplicationDocumentsDirectory();
     final dir = Directory('${docs.path}/picked_images');
-    final vids =
+    var vids =
         (dir.existsSync()
               ? dir
                     .listSync()
@@ -32,10 +34,23 @@ void main() {
                     .toList()
               : <String>[])
           ..sort();
+    if (vids.length < 2) {
+      final host = Directory('/Users/m1/vids');
+      if (host.existsSync()) {
+        vids =
+            host
+                .listSync()
+                .whereType<File>()
+                .map((f) => f.path)
+                .where((p) => p.endsWith('.mp4'))
+                .toList()
+              ..sort();
+      }
+    }
     expect(
       vids.length >= 2,
       true,
-      reason: '要先在模擬器的 App 裡匯入過至少兩支影片（picked_images 是空的）',
+      reason: '找不到測試影片（picked_images 與 ~/vids 都空）',
     );
 
     await tester.pumpWidget(
