@@ -247,6 +247,11 @@ class Diag {
   ///（每軌獨立供格、GPU 疊合、EDR 直出）。關掉＝回合成播放器路
   static final metalPreview = ValueNotifier(true);
 
+  /// 播放接管（最終型態）：播放中的畫面也由引擎出——每軌 pump
+  /// 各自硬解、CADisplayLink 逐格合成，合成播放器退居幕後只出
+  /// 聲音跟時鐘。關掉＝播放畫面回合成播放器
+  static final metalPlayback = ValueNotifier(true);
+
   static String get tuning =>
       '預熱=${preheat.value ? '開' : '關'}／'
       '脫節校正=${driftFix.value ? '開' : '關'}／'
@@ -256,7 +261,8 @@ class Diag {
       '系統影片圖層=${playerLayer.value ? '開' : '關'}／'
       'GPU匯出=${ciExport.value ? '開' : '關'}／'
       'HDR代理預覽=${hdrProxyPreview.value ? '開' : '關'}／'
-      'Metal預覽=${metalPreview.value ? '開' : '關'}';
+      'Metal預覽=${metalPreview.value ? '開' : '關'}／'
+      'Metal播放=${metalPlayback.value ? '開' : '關'}';
 
   static void count(String key, [int n = 1]) {
     _counts[key] = (_counts[key] ?? 0) + n;

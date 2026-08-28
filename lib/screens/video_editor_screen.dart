@@ -2943,6 +2943,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   // ===== Metal 預覽引擎（滑動接管）=====
   DateTime _mSeekAt = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _mPlaySyncAt = DateTime.fromMillisecondsSinceEpoch(0);
   Timer? _mHideTimer;
 
   /// 引擎目前烘好的佈局指紋。滑動起手時指紋沒變就直接亮，
@@ -3065,6 +3066,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 預建命中時整段是同步的（不 await），這一格就亮。
   /// 組不了（平台/素材不支援）安靜退回現有路徑
   Future<void> _metalScrubBegin() async {
+    // 讓位計時器先取消：播放→暫停→立刻滑動的接縫裡，引擎
+    // 正顯示停點幀，這時把它收掉會閃一下合成畫面再亮回來
+    if (!_playing && MetalPreview.active) _mHideTimer?.cancel();
     if (!_metalUsable || _playing || MetalPreview.active) return;
     _mHideTimer?.cancel();
     final p = _metalPayload();
@@ -6080,6 +6084,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _position = _tl.duration;
       _pause();
     }
+    // 播放接管中：引擎有自己的時鐘，每半秒對一次時（引擎端只在
+    // 偏差 >0.25s 時重定，音訊時鐘是主）
+    if (MetalPreview.active) {
+      final now = DateTime.now();
+      if (now.difference(_mPlaySyncAt).inMilliseconds >= 500) {
+        _mPlaySyncAt = now;
+        unawaited(MetalPreview.seek(_position));
+      }
+    }
     // 合成播放器是唯一的時鐘來源：位置以它為準，Dart 這邊只在兩次
     // 回報之間補間。原本的做法是 App 自己算時間再回頭校正播放器，
     // 那個校正每次都會讓畫面停一下
@@ -6558,6 +6571,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       Diag.notePlayLatency(sw.elapsedMilliseconds);
       if (!mounted) return;
+      // 播放接管（最終型態）：畫面交給引擎——每軌 pump 各自硬解、
+      // CADisplayLink 逐格合成；合成播放器退居幕後出聲音跟時鐘。
+      // 佈局沒預建成（mplay 回 false）照舊看合成播放器的畫面
+      if (_metalUsable && Diag.metalPlayback.value && _mBuiltSig != null) {
+        unawaited(
+          MetalPreview.play(_position).then((ok) {
+            if (!ok || !mounted || !_playing) return;
+            _mHideTimer?.cancel();
+            MetalPreview.active = true;
+            setState(() {});
+          }),
+        );
+      }
       _lastTick = Duration.zero;
       _ticker.start();
       tr.log('◀ 時間軸開始走');
@@ -6659,6 +6685,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _playProbe?.cancel();
     _playProbe = null;
     if (_comp != null) unawaited(_comp!.pause());
+    // 播放接管收場：引擎停在停點那格，等合成播放器就位再讓位
+    //（沿用滑動讓位的 300ms 計時器）
+    if (MetalPreview.active) {
+      unawaited(MetalPreview.stopPlay());
+      _metalScrubEnd();
+    }
     if (_ticker.isActive) _ticker.stop();
     for (final c in _ctrls.values) {
       if (c.value.isPlaying) c.pause();

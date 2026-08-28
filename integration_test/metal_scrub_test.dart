@@ -173,10 +173,41 @@ void main() {
       '=== HOLD_COMP_END ${DateTime.now().millisecondsSinceEpoch} ===',
     );
 
+    // 第四段：播放接管（最終型態）——按播放，引擎要接管、位置要走
+    var tookPlay = false;
+    final play = find.byIcon(Icons.play_arrow_rounded);
+    expect(play.evaluate().isNotEmpty, true, reason: '找不到播放鍵');
+    await tester.tap(play.first);
+    for (var i = 0; i < 30; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+      if (MetalPreview.active) {
+        tookPlay = true;
+        break;
+      }
+    }
+    final tPlay1 = timeText();
+    for (var i = 0; i < 25; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    final tPlay2 = timeText();
+    debugPrint('=== 播放接管 $tookPlay，位置 $tPlay1 → $tPlay2 ===');
+    final pause = find.byIcon(Icons.pause_rounded);
+    if (pause.evaluate().isNotEmpty) {
+      await tester.tap(pause.first);
+    }
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    final afterPause = MetalPreview.active;
+    debugPrint('=== 暫停後 1s active=$afterPause ===');
+
     debugPrint('=== 診斷報告 ===\n${Diag.report()}');
 
     expect(tookOver, isNotNull, reason: '滑動全程 Metal 引擎都沒接管');
     expect(released, false, reason: '放開後引擎沒讓位，會蓋住播放畫面');
     expect(second, isNotNull, reason: '第二次滑動引擎沒接管');
+    expect(tookPlay, true, reason: '播放時引擎沒接管（播放接管沒生效）');
+    expect(tPlay2 != tPlay1, true, reason: '播放接管中位置沒前進');
+    expect(afterPause, false, reason: '暫停後引擎沒讓位');
   });
 }

@@ -1355,6 +1355,14 @@ final class AtomicFlag {
       case "mseek":
         MetalPreviewEngine.shared.seek(call.arguments as? Double ?? 0)
         result(nil)
+      case "mplay":
+        // 播放接管：引擎自己的時鐘＋每軌 pump 起播。
+        // 佈局沒建成回 false，Dart 照舊讓合成播放器出畫面
+        result(
+          MetalPreviewEngine.shared.play(call.arguments as? Double ?? 0))
+      case "mstop":
+        MetalPreviewEngine.shared.stop()
+        result(nil)
       case "mdispose":
         MetalPreviewEngine.shared.disposeAll()
         result(nil)
@@ -5396,6 +5404,40 @@ final class MetalPump {
   func texture(at t: Double, cache: CVMetalTextureCache) -> MTLTexture? {
     guard let out = output else { return lastTexture }
     let it = CMTime(seconds: t, preferredTimescale: 600)
+    return sample(out, at: it, cache: cache)
+  }
+
+  // ===== 播放模式（播放接管）=====
+
+  /// 目前的播放速率（0＝暫停）。engine 逐格管理，不重複下指令
+  private(set) var playingRate = 0.0
+
+  func play(rate: Double) {
+    if abs(playingRate - rate) > 0.001 {
+      playingRate = rate
+      player.rate = Float(rate)
+    }
+  }
+
+  func pause() {
+    if playingRate != 0 {
+      playingRate = 0
+      player.pause()
+    }
+  }
+
+  /// 播放中的取樣：跟著主機時鐘拿「現在該顯示的那格」——
+  /// AVPlayer 自己前進，60fps 逐格問有沒有新格
+  func playTexture(cache: CVMetalTextureCache) -> MTLTexture? {
+    guard let out = output else { return lastTexture }
+    let it = out.itemTime(forHostTime: CACurrentMediaTime())
+    return sample(out, at: it, cache: cache)
+  }
+
+  private func sample(
+    _ out: AVPlayerItemVideoOutput, at it: CMTime,
+    cache: CVMetalTextureCache
+  ) -> MTLTexture? {
     if out.hasNewPixelBuffer(forItemTime: it),
       let buf = out.copyPixelBuffer(forItemTime: it, itemTimeForDisplay: nil)
     {
@@ -5511,6 +5553,59 @@ final class MetalPreviewEngine: NSObject {
   private var link: CADisplayLink?
   private(set) var active = false
   private var curT: Double = 0
+
+  // ===== 播放接管：引擎自己的時鐘 =====
+  private(set) var playing = false
+  private var playT0 = 0.0
+  private var host0 = 0.0
+
+  /// 播放中引擎認定的時間軸時刻（主機時鐘推進；Dart 每半秒對時）
+  private var engineT: Double {
+    playing ? playT0 + (CACurrentMediaTime() - host0) : curT
+  }
+
+  /// 進入播放模式：pump 各自起播（靜音），畫面由 tick 逐格合成。
+  /// 佈局沒建過（build 沒成）回 false，呼叫端照舊走合成播放器畫面
+  func play(_ t: Double) -> Bool {
+    guard available, !layers.isEmpty else { return false }
+    playT0 = t
+    host0 = CACurrentMediaTime()
+    playing = true
+    syncPumps(t, force: true)
+    show(true)
+    return true
+  }
+
+  /// 停播：pump 全停，畫面停在停點那格（讓位交給 Dart 的計時器）
+  func stop() {
+    guard playing else { return }
+    curT = engineT
+    playing = false
+    for (_, p) in pumps { p.pause() }
+  }
+
+  /// 播放中的 pump 管理：進窗起播、快進窗先就位、出窗暫停；
+  /// 播著的偏移超過 0.15s 就重對（want 自帶去抖）
+  private func syncPumps(_ t: Double, force: Bool = false) {
+    for sp in layers {
+      guard let pump = pumps[sp.id] else { continue }
+      if sp.offset <= t && t < sp.end {
+        let want = sp.trimStart + (t - sp.offset) * sp.speed
+        if pump.playingRate == 0 || force {
+          pump.want(want)
+          pump.play(rate: sp.speed)
+        } else {
+          let cur = pump.player.currentTime().seconds
+          if abs(cur - want) > 0.15 { pump.want(want) }
+        }
+      } else if sp.offset - 1.5 <= t && t < sp.offset {
+        pump.pause()
+        pump.want(sp.trimStart)
+      } else {
+        pump.pause()
+      }
+    }
+  }
 
   private let shaderSrc = """
     #include <metal_stdlib>
@@ -5792,6 +5887,7 @@ final class MetalPreviewEngine: NSObject {
   }
 
   func show(_ on: Bool) {
+    if !on { stop() }
     active = on && available
     layerHost?.setHDR(hdr)
     layerHost?.setVisible(active)
@@ -5808,11 +5904,24 @@ final class MetalPreviewEngine: NSObject {
   }
 
   func seek(_ t: Double) {
-    curT = t
+    if playing {
+      // 播放中的 seek 是「對時」：偏差大才重定（音訊時鐘是主）
+      if abs(engineT - t) > 0.25 {
+        playT0 = t
+        host0 = CACurrentMediaTime()
+        syncPumps(t, force: true)
+      }
+    } else {
+      curT = t
+    }
   }
 
   @objc private func tick() {
     guard active else { return }
+    if playing {
+      curT = engineT
+      syncPumps(curT)
+    }
     render()
   }
 
@@ -5958,11 +6067,16 @@ final class MetalPreviewEngine: NSObject {
       switch d {
       case .video(let sp):
         guard let pump = pumps[sp.id] else { continue }
-        let srcT = sp.trimStart + (t - sp.offset) * sp.speed
-        pump.want(srcT)
-        guard let tex = pump.texture(at: srcT, cache: cache),
-          let verts = quad(for: sp)
-        else { continue }
+        let tex: MTLTexture?
+        if playing && pump.playingRate != 0 {
+          // 播放模式：pump 自己在跑，逐格問「現在該顯示哪格」
+          tex = pump.playTexture(cache: cache)
+        } else {
+          let srcT = sp.trimStart + (t - sp.offset) * sp.speed
+          pump.want(srcT)
+          tex = pump.texture(at: srcT, cache: cache)
+        }
+        guard let tex = tex, let verts = quad(for: sp) else { continue }
         var af = Float(
           fade(sp.opacity, sp.offset, sp.end, sp.fadeIn, sp.fadeOut))
         enc.setRenderPipelineState(videoPipe)

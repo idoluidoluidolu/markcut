@@ -34,6 +34,23 @@ class MetalPreview {
     } catch (_) {}
   }
 
+  /// 播放接管：引擎自己的時鐘＋每軌 pump 起播。回 false＝佈局
+  /// 沒建成，呼叫端照舊讓合成播放器出畫面
+  static Future<bool> play(double t) async {
+    try {
+      return await CompPlayer._ch.invokeMethod<bool>('mplay', t) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 停播（畫面停在停點那格；讓位時機由呼叫端決定）
+  static Future<void> stopPlay() async {
+    try {
+      await CompPlayer._ch.invokeMethod<void>('mstop');
+    } catch (_) {}
+  }
+
   static Future<void> disposeEngine() async {
     active = false;
     try {
