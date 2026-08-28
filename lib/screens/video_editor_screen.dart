@@ -6829,11 +6829,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       unawaited(MetalPreview.stopPlay());
       final c = _comp;
       if (c != null) {
+        // 視訊管線恢復＋精準 seek「完成」才開始讓位倒數——
+        // 早讓位＝合成畫面還沒就位，讓出去就是黑或舊幀
+        //（實測 build 130：「按暫停螢幕 FADEOUT 變黑」）
         unawaited(
-          c.setVideoTracks(true).then((_) => c.seek(_position, exact: true)),
+          c
+              .setVideoTracks(true)
+              .then((_) => c.seek(_position, exact: true))
+              .then((_) {
+                if (mounted) _metalScrubEnd();
+              }),
         );
+      } else {
+        _metalScrubEnd();
       }
-      _metalScrubEnd();
     }
     if (_ticker.isActive) _ticker.stop();
     for (final c in _ctrls.values) {

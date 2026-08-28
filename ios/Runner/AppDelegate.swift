@@ -5487,6 +5487,9 @@ final class MetalPump {
     item.add(out)
     output = out
     player.isMuted = true
+    // 本地密關鍵幀檔不需要「防斷流等待」——留著的話起播先緩衝
+    // 幾秒才動（實測 build 130：「按播放先卡頓幾秒後面才順」）
+    player.automaticallyWaitsToMinimizeStalling = false
     player.replaceCurrentItem(with: item)
   }
 
@@ -5539,7 +5542,8 @@ final class MetalPump {
   func play(rate: Double) {
     if abs(playingRate - rate) > 0.001 {
       playingRate = rate
-      player.rate = Float(rate)
+      // playImmediately：現在有什麼就從什麼開始播，不等緩衝
+      player.playImmediately(atRate: Float(rate))
     }
   }
 
