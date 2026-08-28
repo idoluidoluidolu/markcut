@@ -5791,6 +5791,12 @@ final class MetalPreviewEngine: NSObject {
       NSLog(
         "[MetalPreview] mplay 拒絕：佈局不宜（全代理=%@）",
         layers.allSatisfy { $0.proxy } ? "是" : "否")
+      for sp in layers {
+        NSLog(
+          "[MetalPreview]   層 id=%d proxy=%@ path=…%@",
+          sp.id, sp.proxy ? "T" : "F",
+          String(sp.path.suffix(28)))
+      }
     }
     guard available, !layers.isEmpty, playSafe else { return false }
     playT0 = t
