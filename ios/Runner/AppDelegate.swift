@@ -5494,6 +5494,7 @@ final class MetalPreviewEngine: NSObject {
       let q = dev.makeCommandQueue()
     else {
       buildFailed = true
+      NSLog("[MetalPreview] 拿不到 Metal 裝置/命令佇列")
       return false
     }
     do {
@@ -5519,6 +5520,7 @@ final class MetalPreviewEngine: NSObject {
       overlayPipe = try dev.makeRenderPipelineState(descriptor: d2)
     } catch {
       buildFailed = true
+      NSLog("[MetalPreview] shader/管線建置失敗：%@", "\(error)")
       return false
     }
     let sd = MTLSamplerDescriptor()
@@ -5531,6 +5533,7 @@ final class MetalPreviewEngine: NSObject {
     CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, dev, nil, &cache)
     guard sampler != nil, cache != nil else {
       buildFailed = true
+      NSLog("[MetalPreview] 取樣器/紋理快取建不起來")
       return false
     }
     texCache = cache
