@@ -2337,8 +2337,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// seek 疊 seek 會在解碼器裡排隊，是拖曳卡頓的主因
   bool _seekInFlight = false;
 
-  DateTime _compCoarseAt = DateTime.fromMillisecondsSinceEpoch(0);
-
   void _compSeek({bool exact = false}) {
     if (_compOn && !_playing) {
       // 引擎接管畫面時，合成播放器「一發 seek 都不收」：它每個
