@@ -6692,8 +6692,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // CADisplayLink 逐格合成；合成播放器退居幕後出聲音跟時鐘。
       // 佈局沒預建成（mplay 回 false）照舊看合成播放器的畫面
       if (_metalUsable && Diag.metalPlayback.value && _mBuiltSig != null) {
+        // 用合成播放器「此刻」的位置起跑，不用按下播放前的舊值——
+        // 音訊已經先跑了兩三百毫秒，拿舊值＝畫面落後聲音半秒內
+        final liveT = await _comp!.position();
         unawaited(
-          MetalPreview.play(_position).then((ok) {
+          MetalPreview.play(liveT > 0 ? liveT : _position).then((ok) {
             if (!mounted) return;
             if (!ok) {
               // 接不了（安全閘/佈局沒建成）：讓合成畫面出來、泊車
