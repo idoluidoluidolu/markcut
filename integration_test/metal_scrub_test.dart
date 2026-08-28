@@ -201,6 +201,28 @@ void main() {
     final afterPause = MetalPreview.active;
     debugPrint('=== 暫停後 1s active=$afterPause ===');
 
+    // 播放已泊車（pump 全放掉）：暫停後再滑，pump 要能懶建回來
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    Duration? third;
+    final sw3 = Stopwatch()..start();
+    final g4 = await tester.startGesture(center);
+    for (var i = 0; i < 40; i++) {
+      await g4.moveBy(const Offset(5, 0));
+      await tester.pump(const Duration(milliseconds: 50));
+      if (third == null && MetalPreview.active) {
+        third = sw3.elapsed;
+        debugPrint('=== 泊車後再滑接管於 ${third.inMilliseconds}ms ===');
+      }
+    }
+    await g4.up();
+    await tester.pump();
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(third, isNotNull, reason: '泊車後再滑引擎沒接管（pump 沒重建）');
+
     // 數值法庭：離屏取兩段各 5 點線性值（跟顯示器無關），
     // 與測試片的授權值換算比對——「顏色準」的最終判準
     String fmt(List<double>? g) =>
@@ -221,8 +243,9 @@ void main() {
     // 放手/暫停後引擎讓位、播放走合成畫面
     expect(released, false, reason: '放開後引擎沒讓位');
     expect(second, isNotNull, reason: '第二次滑動引擎沒接管');
-    expect(tookPlay, false, reason: '播放接管預設關，不該接管');
+    // AV 分離版播放接管（預設開）：接管、位置前進、暫停讓位
+    expect(tookPlay, true, reason: '播放時引擎沒接管');
+    expect(tPlay2 != tPlay1, true, reason: '播放接管中位置沒前進');
     expect(afterPause, false, reason: '暫停後引擎沒讓位');
-    debugPrint('=== 播放位置參考 $tPlay1 → $tPlay2 ===');
   });
 }

@@ -1374,6 +1374,9 @@ final class AtomicFlag {
       case "mstop":
         MetalPreviewEngine.shared.stop()
         result(nil)
+      case "mpark":
+        MetalPreviewEngine.shared.park()
+        result(nil)
       case "mready":
         result(
           MetalPreviewEngine.shared.readyAt(
@@ -1470,6 +1473,10 @@ final class AtomicFlag {
         result(nil)
       case "muted":
         self.comp?.setMuted((call.arguments as? Bool) ?? false)
+        result(nil)
+      case "vtracks":
+        self.comp?.setVideoTracksEnabled(
+          (call.arguments as? Bool) ?? true)
         result(nil)
       case "seek":
         if let a = call.arguments as? [String: Any] {
@@ -5032,6 +5039,17 @@ final class CompPlayer: NSObject, FlutterTexture {
     player.isMuted = m
   }
 
+  /// 專業 AV 分離：引擎接管播放時，視訊軌硬體級停用（解碼器
+  /// 100% 讓給引擎的 pump），這顆只出聲音＋當時鐘。停用/啟用
+  /// 都是即時的、不重建 item
+  func setVideoTracksEnabled(_ on: Bool) {
+    guard let item = player.currentItem else { return }
+    for tr in item.tracks
+    where tr.assetTrack?.mediaType == .video {
+      tr.isEnabled = on
+    }
+  }
+
   private var seekTarget: CMTime = .invalid
   private var seekTargetExact = false
   private var seeking = false
@@ -6140,6 +6158,15 @@ final class MetalPreviewEngine: NSObject {
       ])
     }
     return out
+  }
+
+  /// 泊車：播放（引擎不接管時）起跑前把 pump 全放掉——每顆都是
+  /// 一台 AVPlayer＋供格器＋解碼器，播放中留著就是跟合成播放器
+  /// 搶硬體解碼器和記憶體（實機回報：127 起「播放卡到不行」，
+  /// 正是引擎預建開始存在的版本）。暫停後懶建機制自動重建
+  func park() {
+    for (_, p) in pumps { p.dispose() }
+    pumps.removeAll()
   }
 
   func show(_ on: Bool) {

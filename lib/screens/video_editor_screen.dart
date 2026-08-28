@@ -6696,19 +6696,30 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           MetalPreview.play(_position).then((ok) {
             if (!mounted) return;
             if (!ok) {
-              // 接不了（安全閘/佈局沒建成）：讓合成畫面出來
+              // 接不了（安全閘/佈局沒建成）：讓合成畫面出來、泊車
               _metalHideNow();
+              unawaited(MetalPreview.park());
+              unawaited(_comp?.setVideoTracks(true) ?? Future.value());
               setState(() {});
               return;
             }
             if (!_playing) return;
+            // 專業 AV 分離：畫面歸引擎，合成的視訊軌硬體級停用
+            //（解碼器 100% 讓給 pump）——129「播放超卡」的根是
+            // 引擎與合成同時解全部視訊，這裡治本
+            unawaited(_comp?.setVideoTracks(false) ?? Future.value());
             _mHideTimer?.cancel();
             MetalPreview.active = true;
             setState(() {});
           }),
         );
-      } else if (MetalPreview.active) {
-        _metalHideNow();
+      } else {
+        // 引擎不接管播放：泊車——pump 的解碼器全還給合成播放器，
+        // 不然播放全程被分掉硬解資源（實機 127 起「播放卡到不行」
+        // 的根：引擎預建從那一版開始存在）
+        if (MetalPreview.active) _metalHideNow();
+        unawaited(MetalPreview.park());
+        unawaited(_comp?.setVideoTracks(true) ?? Future.value());
       }
       _lastTick = Duration.zero;
       _ticker.start();
@@ -6811,10 +6822,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _playProbe?.cancel();
     _playProbe = null;
     if (_comp != null) unawaited(_comp!.pause());
-    // 播放接管收場：引擎停在停點那格，等合成播放器就位再讓位
-    //（沿用滑動讓位的 300ms 計時器）
+    // 播放接管收場：引擎停在停點那格；合成的視訊軌開回來
+    //（暫停畫面之後要靠它），就位後讓位（300ms 計時器）
     if (MetalPreview.active) {
       unawaited(MetalPreview.stopPlay());
+      unawaited(_comp?.setVideoTracks(true) ?? Future.value());
       _metalScrubEnd();
     }
     if (_ticker.isActive) _ticker.stop();

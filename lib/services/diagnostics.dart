@@ -250,9 +250,9 @@ class Diag {
   /// 播放接管（最終型態）：播放中的畫面也由引擎出——每軌 pump
   /// 各自硬解、CADisplayLink 逐格合成，合成播放器退居幕後只出
   /// 聲音跟時鐘。關掉＝播放畫面回合成播放器。
-  /// 預設關：build 129 實機「播放超卡頓」——pump 就緒時序在真機
-  /// 與模擬器完全不同，證明穩定前不搶播放
-  static final metalPlayback = ValueNotifier(false);
+  /// 129 卡頓根因＝引擎與合成雙重解碼；現在接管時合成的視訊軌
+  /// 硬體級停用（AV 分離，解碼器 100% 歸引擎），預設開
+  static final metalPlayback = ValueNotifier(true);
 
   /// 引擎常駐（畫面唯一來源、進場即亮）。預設關：build 129 實機
   /// 「點浮水印畫面全黑」——常駐亮起時 pump 紋理未就緒＝黑畫布。

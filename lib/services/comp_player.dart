@@ -51,6 +51,14 @@ class MetalPreview {
     } catch (_) {}
   }
 
+  /// 泊車：播放起跑前把引擎的 pump（每軌一台 AVPlayer＋解碼器）
+  /// 全放掉，別跟合成播放器搶硬體。暫停後懶建自動重建
+  static Future<void> park() async {
+    try {
+      await CompPlayer._ch.invokeMethod<void>('mpark');
+    } catch (_) {}
+  }
+
   /// [t] 這一刻引擎畫面就緒了嗎（所有覆蓋層都有紋理）。
   /// 接管前先問，沒好就等下一個事件——不讓黑畫布上台
   static Future<bool> ready(double t) async {
@@ -539,6 +547,10 @@ class CompPlayer {
 
   /// 預覽靜音（原生端走播放器的 isMuted，不重組合成）
   Future<void> setMuted(bool m) => _quiet('muted', m);
+
+  /// 專業 AV 分離：引擎接管播放時視訊軌硬體級停用（解碼器全讓
+  /// 給引擎），這顆只出聲音＋當時鐘。即時切換、不重建
+  Future<void> setVideoTracks(bool on) => _quiet('vtracks', on);
 
   /// [exact] 只有「停手要對準那一格」時才給 true。拖曳中與按下播放前
   /// 一律寬容——精準 seek 跑完之前播放器的 rate 會被壓在 0
