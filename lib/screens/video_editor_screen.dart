@@ -3008,12 +3008,36 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         'opacity': c.opacity,
       });
     }
+    // 馬賽克：跟烘進合成同一套欄位（Swift 端直接重用 CIMosaicSpec
+    // 解析幾何與筆刷遮罩）
+    final mosaics = <Map<String, dynamic>>[];
+    for (final c in _tl.clips) {
+      final src = _tl.sourceOf(c);
+      if (src.kind != ClipKind.mosaic) continue;
+      if (_hiddenTracks.contains(c.track)) continue;
+      final ms = src.mosaicStyle ?? MosaicStyle();
+      mosaics.add({
+        'start': c.offset,
+        'end': c.end,
+        'track': c.track,
+        'px': c.px,
+        'py': c.py,
+        'scale': c.scale,
+        'type': ms.type,
+        'strength': ms.strength,
+        'color': ms.color,
+        'feather': ms.feather,
+        if (src.mosaicStroke != null) 'stroke': src.mosaicStroke,
+        if (src.mosaicStroke != null) 'brush': src.mosaicBrush,
+      });
+    }
     return {
       'w': comp.width,
       'h': comp.height,
       'hdr': hdrMode,
       'layers': specs,
       'stills': stills,
+      'mosaics': mosaics,
     };
   }
 

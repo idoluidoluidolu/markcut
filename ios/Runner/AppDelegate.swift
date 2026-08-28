@@ -1347,7 +1347,8 @@ final class AtomicFlag {
             canvasH: a["h"] as? Double ?? 1920,
             hdr: a["hdr"] as? Bool ?? false,
             specs: specs,
-            stillSpecs: stillSpecs))
+            stillSpecs: stillSpecs,
+            mosaicMaps: (a["mosaics"] as? [[String: Any]]) ?? []))
       case "mshow":
         MetalPreviewEngine.shared.show(call.arguments as? Bool ?? false)
         result(nil)
@@ -5457,6 +5458,21 @@ struct MetalStillSpec {
   let crop: [Double]?
 }
 
+/// 引擎收的一塊馬賽克（幾何/遮罩直接重用 CIMosaicSpec 的解析，
+/// 遮罩已烙成灰階紋理）
+struct MetalMosaicSpec {
+  let start: Double
+  let end: Double
+  let type: Int
+  let strength: Double
+  let colorR: Double
+  let colorG: Double
+  let colorB: Double
+  let featherMarginPx: Double
+  let rect: CGRect  // 畫布座標（左上原點）
+  let maskTex: MTLTexture?
+}
+
 final class MetalPreviewEngine: NSObject {
   static let shared = MetalPreviewEngine()
 
@@ -5464,14 +5480,22 @@ final class MetalPreviewEngine: NSObject {
   private var queue: MTLCommandQueue?
   private var videoPipe: MTLRenderPipelineState?
   private var overlayPipe: MTLRenderPipelineState?
+  private var mosaicPipe: MTLRenderPipelineState?
   private var sampler: MTLSamplerState?
   private var texCache: CVMetalTextureCache?
+  /// 場景離屏紋理（two-pass：先畫圖層，再讓馬賽克取樣它）。
+  /// 只在有馬賽克的佈局才建；drawable 尺寸變了重建
+  private var sceneTex: MTLTexture?
+  /// 筆刷遮罩 CIImage → 灰階紋理用（一次性建）
+  private lazy var ciCtx: CIContext? =
+    device.map { CIContext(mtlDevice: $0) }
 
   private(set) var available = false
   private var buildFailed = false
 
   private var layers: [MetalLayerSpec] = []
   private var stills: [MetalStillSpec] = []
+  private var mosaics: [MetalMosaicSpec] = []
   /// 靜態圖層紋理（鍵＝檔案路徑；GIF 只取首幀——滑動瞬間有畫面
   /// 比消失好，動起來交給合成播放器）
   private var stillTextures: [String: MTLTexture] = [:]
@@ -5507,6 +5531,61 @@ final class MetalPreviewEngine: NSObject {
       half4 c = tex.sample(s, in.uv);
       half a = half(alpha);
       return half4(c.rgb * a, a);
+    }
+    // 馬賽克：取樣「畫好的場景」紋理做像素化/模糊/純色，
+    // uv 一律是畫布 uv。跟 CI 那套同一組換算（cells、down、羽化），
+    // 模糊用 12 點 poisson 近似高斯——滑動瞬間的近似，放手就回
+    // 合成器的精確幀
+    struct MosaicU {
+      float4 a; // type, strength, cellPx 或 radiusPx, 羽化 margin px
+      float4 b; // rect uv: minU, minV, maxU, maxV
+      float4 c; // canvasW, canvasH, 筆刷遮罩開關, 0
+      float4 d; // 純色 r, g, b, 1
+    };
+    fragment half4 fragMosaic(VOut in [[stage_in]],
+                              texture2d<half> scene [[texture(0)]],
+                              texture2d<half> mask [[texture(1)]],
+                              constant MosaicU &u [[buffer(0)]],
+                              sampler s [[sampler(0)]]) {
+      float2 uv = in.uv;
+      float2 cv = u.c.xy;
+      int type = int(u.a.x);
+      half3 rgb;
+      if (type == 2) {
+        rgb = half3(u.d.xyz);
+      } else if (type == 1) {
+        float2 r = u.a.z / cv;
+        half3 acc = half3(0.0h);
+        const float2 taps[12] = {
+          float2(-0.326, -0.406), float2(-0.840, -0.074),
+          float2(-0.696, 0.457),  float2(-0.203, 0.621),
+          float2(0.962, -0.195),  float2(0.473, -0.480),
+          float2(0.519, 0.767),   float2(0.185, -0.893),
+          float2(0.507, 0.064),   float2(0.896, 0.412),
+          float2(-0.322, -0.933), float2(-0.792, -0.598)
+        };
+        for (int i = 0; i < 12; i++) {
+          acc += scene.sample(s, uv + taps[i] * r).rgb;
+        }
+        rgb = acc / 12.0h;
+      } else {
+        float2 cell = u.a.z / cv;
+        float2 q = u.b.xy
+          + (floor((uv - u.b.xy) / cell) + 0.5) * cell;
+        q = clamp(q, u.b.xy, u.b.zw);
+        rgb = scene.sample(s, q).rgb;
+      }
+      // 羽化：離方框邊緣的距離（畫布 px）在 margin 內線性收掉
+      half fA = 1.0h;
+      if (u.a.w > 0.5) {
+        float2 dpx = min(uv - u.b.xy, u.b.zw - uv) * cv;
+        float d = min(dpx.x, dpx.y);
+        fA = half(clamp(d / u.a.w, 0.0, 1.0));
+      }
+      if (u.c.z > 0.5) {
+        fA *= mask.sample(s, uv).r;
+      }
+      return half4(rgb * fA, fA);
     }
     """
 
@@ -5594,8 +5673,20 @@ final class MetalPreviewEngine: NSObject {
         // 真機版 shader 自己讀底色算最終色，關掉固定混色
         d2.colorAttachments[0].isBlendingEnabled = false
       #endif
+      let d3 = MTLRenderPipelineDescriptor()
+      d3.vertexFunction = vfn
+      d3.fragmentFunction = lib.makeFunction(name: "fragMosaic")
+      d3.colorAttachments[0].pixelFormat = .rgba16Float
+      d3.colorAttachments[0].isBlendingEnabled = true
+      d3.colorAttachments[0].sourceRGBBlendFactor = .one
+      d3.colorAttachments[0].sourceAlphaBlendFactor = .one
+      d3.colorAttachments[0].destinationRGBBlendFactor =
+        .oneMinusSourceAlpha
+      d3.colorAttachments[0].destinationAlphaBlendFactor =
+        .oneMinusSourceAlpha
       videoPipe = try dev.makeRenderPipelineState(descriptor: d1)
       overlayPipe = try dev.makeRenderPipelineState(descriptor: d2)
+      mosaicPipe = try dev.makeRenderPipelineState(descriptor: d3)
     } catch {
       buildFailed = true
       NSLog("[MetalPreview] shader/管線建置失敗：%@", "\(error)")
@@ -5624,11 +5715,46 @@ final class MetalPreviewEngine: NSObject {
   /// 換一份時間軸佈局（滑動起手時呼叫；佈局沒變成本≈0）
   func build(canvasW: Double, canvasH: Double, hdr: Bool,
              specs: [MetalLayerSpec],
-             stillSpecs: [MetalStillSpec] = []) -> Bool {
+             stillSpecs: [MetalStillSpec] = [],
+             mosaicMaps: [[String: Any]] = []) -> Bool {
     guard setUp() else { return false }
     self.canvasW = max(2, canvasW)
     self.canvasH = max(2, canvasH)
     self.hdr = hdr
+    // 馬賽克：幾何/筆刷遮罩解析直接重用 CI 那顆（同一套數學），
+    // 遮罩趁建佈局烙成灰階紋理（滑動中零轉換）
+    let cvSize = CGSize(width: self.canvasW, height: self.canvasH)
+    mosaics = mosaicMaps.compactMap { m in
+      guard let spec = CIMosaicSpec(m, canvas: cvSize) else { return nil }
+      var maskTex: MTLTexture? = nil
+      if let ci = spec.strokeMask, let dev = device, let ctx = ciCtx {
+        let w = Int(cvSize.width.rounded())
+        let h = Int(cvSize.height.rounded())
+        let td = MTLTextureDescriptor.texture2DDescriptor(
+          pixelFormat: .r8Unorm, width: w, height: h, mipmapped: false)
+        td.usage = [.shaderRead, .shaderWrite]
+        if let t = dev.makeTexture(descriptor: td) {
+          ctx.render(
+            ci, to: t, commandBuffer: nil,
+            bounds: CGRect(x: 0, y: 0, width: w, height: h),
+            colorSpace: CGColorSpaceCreateDeviceGray())
+          maskTex = t
+        }
+      }
+      // 羽化圈寬：跟 CI 的 margin 同一條換算（純色/筆刷不吃羽化圈——
+      // 筆刷的柔邊已烘進遮罩）
+      let margin = (spec.type == 2 || spec.strokeMask != nil)
+        ? 0.0
+        : spec.feather * 0.35
+          * Double(min(spec.rect.width, spec.rect.height))
+      return MetalMosaicSpec(
+        start: spec.start, end: spec.end, type: spec.type,
+        strength: spec.strength,
+        colorR: Double(spec.color.red),
+        colorG: Double(spec.color.green),
+        colorB: Double(spec.color.blue),
+        featherMarginPx: margin, rect: spec.rect, maskTex: maskTex)
+    }
     layers = specs.sorted { $0.z < $1.z }
     stills = stillSpecs
     // 靜態圖層紋理趁建佈局先載好（滑動中零載入）；不在佈局裡的放掉
@@ -5773,8 +5899,30 @@ final class MetalPreviewEngine: NSObject {
       let cmd = queue.makeCommandBuffer()
     else { return }
     let t = curT
+    // 有馬賽克的佈局走 two-pass：圖層先畫進離屏場景紋理，
+    // 馬賽克 shader 取樣它（模擬器也行——不讀 framebuffer），
+    // 最後整張搬上 drawable 再蓋疊加物。近似：馬賽克蓋「所有」
+    // 圖層（CI 是只糊 z 較低的層；馬賽克上面還有影片的排法極少，
+    // 放手後合成器的精確幀就回來）
+    let activeMz = mosaics.filter { $0.start <= t && t < $0.end }
+    let twoPass = !activeMz.isEmpty && mosaicPipe != nil
+    var target = drawable.texture
+    if twoPass {
+      let dw = Int(mlayer.drawableSize.width)
+      let dh = Int(mlayer.drawableSize.height)
+      if sceneTex == nil || sceneTex!.width != dw
+        || sceneTex!.height != dh
+      {
+        let td = MTLTextureDescriptor.texture2DDescriptor(
+          pixelFormat: .rgba16Float, width: dw, height: dh,
+          mipmapped: false)
+        td.usage = [.renderTarget, .shaderRead]
+        sceneTex = device?.makeTexture(descriptor: td)
+      }
+      if let st = sceneTex { target = st }
+    }
     let rp = MTLRenderPassDescriptor()
-    rp.colorAttachments[0].texture = drawable.texture
+    rp.colorAttachments[0].texture = target
     rp.colorAttachments[0].loadAction = .clear
     rp.colorAttachments[0].storeAction = .store
     rp.colorAttachments[0].clearColor = MTLClearColor(
@@ -5843,6 +5991,72 @@ final class MetalPreviewEngine: NSObject {
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
       }
     }
+    // two-pass 第二段：場景整張搬上 drawable，馬賽克取樣場景蓋上去
+    var out = enc
+    if twoPass, let st = sceneTex, let mzPipe = mosaicPipe {
+      enc.endEncoding()
+      let rp2 = MTLRenderPassDescriptor()
+      rp2.colorAttachments[0].texture = drawable.texture
+      rp2.colorAttachments[0].loadAction = .clear
+      rp2.colorAttachments[0].storeAction = .store
+      rp2.colorAttachments[0].clearColor = MTLClearColor(
+        red: 0, green: 0, blue: 0, alpha: 1)
+      guard let e2 = cmd.makeRenderCommandEncoder(descriptor: rp2) else {
+        cmd.commit()
+        return
+      }
+      e2.setFragmentSamplerState(sampler, index: 0)
+      let full: [Float] = [
+        -1, 1, 0, 0, 1, 1, 1, 0, -1, -1, 0, 1,
+        1, 1, 1, 0, 1, -1, 1, 1, -1, -1, 0, 1,
+      ]
+      var one: Float = 1
+      e2.setRenderPipelineState(videoPipe)
+      e2.setVertexBytes(full, length: full.count * 4, index: 0)
+      e2.setFragmentBytes(&one, length: 4, index: 0)
+      e2.setFragmentTexture(st, index: 0)
+      e2.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+      let W = canvasW
+      let H = canvasH
+      for mz in activeMz {
+        let r = mz.rect.intersection(
+          CGRect(x: 0, y: 0, width: W, height: H))
+        guard r.width > 2, r.height > 2 else { continue }
+        let u0 = Double(r.minX) / W
+        let v0 = Double(r.minY) / H
+        let u1 = Double(r.maxX) / W
+        let v1 = Double(r.maxY) / H
+        func vtx(_ u: Double, _ v: Double) -> [Float] {
+          [Float(2 * u - 1), Float(1 - 2 * v), Float(u), Float(v)]
+        }
+        let verts =
+          vtx(u0, v0) + vtx(u1, v0) + vtx(u0, v1)
+          + vtx(u1, v0) + vtx(u1, v1) + vtx(u0, v1)
+        // 濃度換算跟 CI 同一條：模糊＝縮小倍數當半徑（隨畫布縮放）、
+        // 像素化＝橫向格數
+        var third = 0.0
+        if mz.type == 1 {
+          third = (2.0 + mz.strength * 12.0) * min(W, H) / 1080.0
+        } else if mz.type != 2 {
+          let cells = min(40.0, max(4.0, 26.0 - 20.0 * mz.strength))
+          third = max(2.0, Double(r.width) / cells)
+        }
+        let U: [Float] = [
+          Float(mz.type), Float(mz.strength), Float(third),
+          Float(mz.featherMarginPx),
+          Float(u0), Float(v0), Float(u1), Float(v1),
+          Float(W), Float(H), mz.maskTex != nil ? 1 : 0, 0,
+          Float(mz.colorR), Float(mz.colorG), Float(mz.colorB), 1,
+        ]
+        e2.setRenderPipelineState(mzPipe)
+        e2.setVertexBytes(verts, length: verts.count * 4, index: 0)
+        e2.setFragmentBytes(U, length: 64, index: 0)
+        e2.setFragmentTexture(st, index: 0)
+        e2.setFragmentTexture(mz.maskTex ?? st, index: 1)
+        e2.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+      }
+      out = e2
+    }
     // 疊加物（浮水印/文字）：讀合成器同一份即時清單與即時幾何
     let ovs = CIExportCompositor.currentPreviewOverlays()
     let lovs = CIExportCompositor.currentLiveOvs()
@@ -5888,13 +6102,13 @@ final class MetalPreviewEngine: NSObject {
       let d0 = c2(W, H, 1, 1)
       let verts = a0 + b0 + c0 + b0 + d0 + c0
       var p = SIMD4<Float>(hdr ? 3.0 : 1.0, hdr ? 1.0 : 0.0, 1.0, 0.0)
-      enc.setRenderPipelineState(overlayPipe)
-      enc.setVertexBytes(verts, length: verts.count * 4, index: 0)
-      enc.setFragmentBytes(&p, length: 16, index: 0)
-      enc.setFragmentTexture(tex, index: 0)
-      enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+      out.setRenderPipelineState(overlayPipe)
+      out.setVertexBytes(verts, length: verts.count * 4, index: 0)
+      out.setFragmentBytes(&p, length: 16, index: 0)
+      out.setFragmentTexture(tex, index: 0)
+      out.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
     }
-    enc.endEncoding()
+    out.endEncoding()
     cmd.present(drawable)
     cmd.commit()
   }
@@ -5905,8 +6119,10 @@ final class MetalPreviewEngine: NSObject {
     pumps.removeAll()
     layers = []
     stills = []
+    mosaics = []
     stillTextures.removeAll()
     ovTextures.removeAll()
+    sceneTex = nil
   }
 }
 
