@@ -1378,6 +1378,8 @@ final class AtomicFlag {
       case "mpark":
         MetalPreviewEngine.shared.park()
         result(nil)
+      case "mstats":
+        result(MetalPreviewEngine.shared.statsReport())
       case "mready":
         result(
           MetalPreviewEngine.shared.readyAt(
@@ -6331,8 +6333,37 @@ final class MetalPreviewEngine: NSObject {
   private var drawnEpoch = -1
   private var layoutEpoch = 0
 
+  // ===== 引擎實測統計（真機頓在哪，看數字不用猜）=====
+  private var stTicks = 0
+  private var stDropped = 0
+  private var stRenderMsMax = 0.0
+  private var stRenderMsSum = 0.0
+  private var stRenders = 0
+  private var stPumpMiss = 0
+  private var lastTickAt = 0.0
+
+  func statsReport() -> [String: Any] {
+    return [
+      "ticks": stTicks,
+      "dropped": stDropped,
+      "renders": stRenders,
+      "renderAvgMs": stRenders > 0
+        ? (stRenderMsSum / Double(stRenders) * 1000).rounded() : 0,
+      "renderMaxMs": (stRenderMsMax * 1000).rounded(),
+      "pumpMiss": stPumpMiss,
+    ]
+  }
+
+  func noteMiss() { stPumpMiss += 1 }
+
   @objc private func tick() {
     guard active else { return }
+    let now = CACurrentMediaTime()
+    if lastTickAt > 0, playing, now - lastTickAt > 0.026 {
+      stDropped += 1
+    }
+    lastTickAt = now
+    stTicks += 1
     if playing {
       curT = engineT
       syncPumps(curT)
@@ -6347,7 +6378,12 @@ final class MetalPreviewEngine: NSObject {
       drawnT = curT
       drawnEpoch = ep
     }
+    let t0 = CACurrentMediaTime()
     render()
+    let dt = CACurrentMediaTime() - t0
+    stRenders += 1
+    stRenderMsSum += dt
+    if dt > stRenderMsMax { stRenderMsMax = dt }
   }
 
   /// 疊加物紋理（premultiplied sRGB PNG → 線性取樣）
@@ -6519,7 +6555,9 @@ final class MetalPreviewEngine: NSObject {
         let tex: MTLTexture?
         if playing && pump.playingRate != 0 {
           // 播放模式：pump 自己在跑，逐格問「現在該顯示哪格」
+          let before = pump.lastTexture
           tex = pump.playTexture(cache: cache)
+          if playing, tex === before { noteMiss() }
         } else {
           let srcT = sp.trimStart + (t - sp.offset) * sp.speed
           pump.want(srcT)

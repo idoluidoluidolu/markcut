@@ -6939,6 +6939,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           '／拖曳解碼器 ${_scrubDecoders.length} 顆',
     );
     unawaited(engine.hdrChainName().then((n) => tr.env('HDR 轉換', n)));
+    // 引擎實測：真機頓在哪，看這排數字不用猜——
+    // dropped=引擎自己掉的格、renderMax=單格渲染最久、
+    // pumpMiss=播放中供格開天窗的次數
+    unawaited(
+      MetalPreview.stats().then((m) {
+        if (m == null) return;
+        tr.env(
+          'Metal引擎',
+          'tick ${m['ticks']}／掉格 ${m['dropped']}'
+              '／渲染 ${m['renders']} 格'
+              '（平均 ${m['renderAvgMs']}ms、最久 ${m['renderMaxMs']}ms）'
+              '／播放供格miss ${m['pumpMiss']}',
+        );
+      }),
+    );
     // 工作檔到底有沒有生效：這一格對不對，決定了「順不順」是不是
     // 還在原檔上跑
     final vids = _tl.sources.where((s) => s.isVideo).toList();

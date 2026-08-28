@@ -51,6 +51,15 @@ class MetalPreview {
     } catch (_) {}
   }
 
+  /// 引擎實測統計（tick/掉格/渲染耗時/供格 miss）——診斷用
+  static Future<Map<dynamic, dynamic>?> stats() async {
+    try {
+      return await CompPlayer._ch.invokeMethod<Map<dynamic, dynamic>>('mstats');
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// 泊車：播放起跑前把引擎的 pump（每軌一台 AVPlayer＋解碼器）
   /// 全放掉，別跟合成播放器搶硬體。暫停後懶建自動重建
   static Future<void> park() async {
