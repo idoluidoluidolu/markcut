@@ -49,38 +49,6 @@ void main() {
     }
     debugPrint('=== 匯入等待結束 ===');
 
-    // 探針 1：直接測引擎本體（跳過手勢）。false = Swift 端建不起來
-    //（看模擬器 log 的 [MetalPreview] 行），true = 引擎沒問題，
-    // 剩下就是手勢→scrub 的路
-    final probe = await MetalPreview.build({
-      'w': 1280.0,
-      'h': 720.0,
-      'hdr': false,
-      'layers': [
-        {
-          'id': 99001,
-          'path': vids.first,
-          'offset': 0.0,
-          'end': 3.0,
-          'trimStart': 0.0,
-          'speed': 1.0,
-          'z': 0,
-          'px': 0.5,
-          'py': 0.5,
-          'scale': 1.0,
-          'mirror': false,
-          'rotation': 0.0,
-          'opacity': 1.0,
-          'fadeIn': 0.0,
-          'fadeOut': 0.0,
-          'srcW': 1280.0,
-          'srcH': 720.0,
-        },
-      ],
-    });
-    debugPrint('=== 引擎直測 mbuild=$probe ===');
-    await MetalPreview.disposeEngine(); // 探針的佈局不能留著干擾正式流程
-
     // 位置顯示可能是 Text 或 RichText，兩種都撈
     String timeText() {
       for (final e in find.byType(RichText).evaluate()) {

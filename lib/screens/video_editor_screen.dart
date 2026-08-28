@@ -2700,6 +2700,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 全部補完才重烘一次：以前每好一支就重烘，六支素材就是六次
     // 播放器重載（實測診斷裡「就緒」刷了一整排）
     if (madeAny && mounted && !_playing) _compRefreshIfChanged();
+    // HDR 代理就緒會改變 Metal 引擎吃的檔案路徑（workHdrPath），
+    // 合成指紋卻可能沒變（不重烘）——引擎佈局要自己刷，不然
+    // 下一次滑動指紋沒中又要現場建
+    if (madeAny && mounted) unawaited(_metalPrebuild());
   }
 
   Future<void> _prepWorkFile(int srcIndex) async {
@@ -2752,6 +2756,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 全部轉完才動合成：每好一支就重烘的話畫面會重載好幾次
     if (!_playing && _allWorkFilesReady) _flushPendingSwaps();
     _saveDraft();
+    // 工作檔就緒＝previewPath 換人：Metal 引擎佈局跟著刷
+    unawaited(_metalPrebuild());
   }
 
   /// 這份素材的播放器全部換成吃工作檔的新播放器
