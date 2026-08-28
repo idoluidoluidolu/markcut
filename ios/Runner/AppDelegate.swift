@@ -4955,11 +4955,16 @@ final class CompPlayer: NSObject, FlutterTexture {
   private let audioPlayer = AVPlayer()
   private(set) var takeover = false
 
+  /// 分身有沒有真的聲音可播（無音軌素材＝空分身，時鐘改用引擎）
+  private var audioValid = false
+
   /// 播放接管：畫面歸 Metal 引擎、聲音與時鐘歸音訊分身，
   /// 主播放器原地凍結（合成管線完整保留，暫停畫面隨叫隨到）
   func setTakeover(_ on: Bool) {
     takeover = on
     if on {
+      audioValid =
+        (audioPlayer.currentItem?.duration.seconds ?? 0) > 0.05
       player.pause()
       let t = player.currentTime()
       audioPlayer.seek(
@@ -5293,9 +5298,14 @@ final class CompPlayer: NSObject, FlutterTexture {
   }
 
   var positionMs: Int {
-    // 播放接管中時鐘在音訊分身身上
-    let p = takeover ? audioPlayer : player
-    return Int(p.currentTime().seconds * 1000)
+    // 播放接管中：有聲＝音訊分身當時鐘；無音軌素材＝分身是空的
+    //（時間永遠 0），改用引擎的主機時鐘
+    if takeover {
+      return audioValid
+        ? Int(audioPlayer.currentTime().seconds * 1000)
+        : Int(MetalPreviewEngine.shared.clockT * 1000)
+    }
+    return Int(player.currentTime().seconds * 1000)
   }
 
   /// 系統自己記的播放品質。這幾個數字是 AVPlayer 內部統計，
@@ -5757,6 +5767,9 @@ final class MetalPreviewEngine: NSObject {
   private var engineT: Double {
     playing ? playT0 + (CACurrentMediaTime() - host0) : curT
   }
+
+  /// 外部可讀的引擎時刻（無音軌素材的播放接管拿它當時鐘）
+  var clockT: Double { engineT }
 
   /// 進入播放模式：pump 各自起播（靜音），畫面由 tick 逐格合成。
   /// 佈局沒建過（build 沒成）回 false，呼叫端照舊走合成播放器畫面
