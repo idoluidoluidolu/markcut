@@ -5785,6 +5785,13 @@ final class MetalPreviewEngine: NSObject {
   /// 進入播放模式：pump 各自起播（靜音），畫面由 tick 逐格合成。
   /// 佈局沒建過（build 沒成）回 false，呼叫端照舊走合成播放器畫面
   func play(_ t: Double) -> Bool {
+    if !available { NSLog("[MetalPreview] mplay 拒絕：引擎未就緒") }
+    if layers.isEmpty { NSLog("[MetalPreview] mplay 拒絕：沒有佈局") }
+    if !playSafe {
+      NSLog(
+        "[MetalPreview] mplay 拒絕：佈局不宜（全代理=%@）",
+        layers.allSatisfy { $0.proxy } ? "是" : "否")
+    }
     guard available, !layers.isEmpty, playSafe else { return false }
     playT0 = t
     host0 = CACurrentMediaTime()
