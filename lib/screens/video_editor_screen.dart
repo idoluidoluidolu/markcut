@@ -3123,7 +3123,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 閒置預建：合成就緒/佈局變更後把引擎佈局先建好，
   /// 滑動起手就不用付建置的錢（實測省下 300~500ms 的首次接管延遲）
   Future<void> _metalPrebuild() async {
-    if (!_metalUsable || MetalPreview.active) return;
+    // 注意：不能因為「引擎在畫」就跳過——常駐後引擎永遠在畫，
+    // 跳過＝佈局永遠停在進場第一份（單層、原檔），工作檔換手、
+    // 新素材全都進不了引擎（實測：常駐後播放被「全代理=否」拒絕，
+    // 佈局裡躺著的是最早那支原檔）。build 本來就是熱切換
+    if (!_metalUsable) return;
     final p = _metalPayload();
     if (p == null) {
       _mBuiltSig = null;
