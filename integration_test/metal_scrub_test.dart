@@ -120,6 +120,43 @@ void main() {
     }
     await g2.up();
     await tester.pump();
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    // 第三段：按住不放——引擎畫面停在同一格 8 秒（給外部截圖），
+    // 放開等合成器精準幀就位再停 8 秒。兩段截圖相減＝
+    // 「引擎畫的」vs「合成器畫的」一致性
+    final g3 = await tester.startGesture(center);
+    for (var i = 0; i < 10; i++) {
+      await g3.moveBy(const Offset(-8, 0));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    debugPrint(
+      '=== HOLD_ENGINE ${DateTime.now().millisecondsSinceEpoch} '
+      'active=${MetalPreview.active} ===',
+    );
+    for (var i = 0; i < 80; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    debugPrint(
+      '=== HOLD_ENGINE_END ${DateTime.now().millisecondsSinceEpoch} ===',
+    );
+    await g3.up();
+    await tester.pump();
+    for (var i = 0; i < 25; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    debugPrint(
+      '=== HOLD_COMP ${DateTime.now().millisecondsSinceEpoch} '
+      'active=${MetalPreview.active} ===',
+    );
+    for (var i = 0; i < 80; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    debugPrint(
+      '=== HOLD_COMP_END ${DateTime.now().millisecondsSinceEpoch} ===',
+    );
 
     debugPrint('=== 診斷報告 ===\n${Diag.report()}');
 
