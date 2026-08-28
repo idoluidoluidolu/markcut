@@ -1478,6 +1478,9 @@ final class AtomicFlag {
         self.comp?.setVideoTracksEnabled(
           (call.arguments as? Bool) ?? true)
         result(nil)
+      case "takeover":
+        self.comp?.setTakeover((call.arguments as? Bool) ?? false)
+        result(nil)
       case "seek":
         if let a = call.arguments as? [String: Any] {
           self.comp?.seek(
@@ -4887,6 +4890,20 @@ final class CompPlayer: NSObject, FlutterTexture {
     }
     composition = comp
     player.replaceCurrentItem(with: item)
+    // 播放接管的「音訊分身」：同一份合成拷貝後拆掉視訊軌，
+    // 從建好那一刻就是純音訊。播放接管＝分身出聲＋主播放器
+    // 原地凍結——管線永不拆裝（拆裝 videoComposition 在實機上
+    // 會重建合成器：暫停黑畫面、時鐘亂跳針，build 131 實測）
+    if let acomp = comp.mutableCopy() as? AVMutableComposition {
+      for tr in acomp.tracks(withMediaType: .video) {
+        acomp.removeTrack(tr)
+      }
+      let aItem = AVPlayerItem(asset: acomp)
+      aItem.audioMix = mix
+      audioPlayer.replaceCurrentItem(with: aItem)
+      audioPlayer.automaticallyWaitsToMinimizeStalling = false
+      audioPlayer.isMuted = player.isMuted
+    }
 
     if texture {
       if textureId == 0, let registry = registry {
@@ -4934,6 +4951,28 @@ final class CompPlayer: NSObject, FlutterTexture {
 
   private var targetRate: Float = 1
 
+  // ===== 播放接管（音訊分身）=====
+  private let audioPlayer = AVPlayer()
+  private(set) var takeover = false
+
+  /// 播放接管：畫面歸 Metal 引擎、聲音與時鐘歸音訊分身，
+  /// 主播放器原地凍結（合成管線完整保留，暫停畫面隨叫隨到）
+  func setTakeover(_ on: Bool) {
+    takeover = on
+    if on {
+      player.pause()
+      let t = player.currentTime()
+      audioPlayer.seek(
+        to: t, toleranceBefore: .zero, toleranceAfter: .zero
+      ) { [weak self] _ in
+        guard let self = self, self.takeover else { return }
+        self.audioPlayer.playImmediately(atRate: self.targetRate)
+      }
+    } else {
+      audioPlayer.pause()
+    }
+  }
+
   /// 按下播放那一刻播放器在忙什麼——量出來，不用猜。
   /// 「seek進行中」＝畫面要等那發 seek 跑完才會動；
   /// 「緩衝是空的」＝暫停期間 buffer 被回收了，要先重新解
@@ -4952,6 +4991,10 @@ final class CompPlayer: NSObject, FlutterTexture {
 
   /// playImmediately 而不是 play：後者會先跑一輪緩衝條件才讓畫面真的動
   func play() {
+    if takeover {
+      audioPlayer.playImmediately(atRate: targetRate)
+      return
+    }
     // 還沒跑完的 preroll 會把播放壓住，先取消
     player.cancelPendingPrerolls()
     startPlayWatch()
@@ -5018,6 +5061,7 @@ final class CompPlayer: NSObject, FlutterTexture {
   }
 
   func pause() {
+    audioPlayer.pause()
     CIExportCompositor.slowLock.lock()
     CIExportCompositor.watchSupply = false
     CIExportCompositor.slowLock.unlock()
@@ -5030,6 +5074,12 @@ final class CompPlayer: NSObject, FlutterTexture {
 
   func setRate(_ r: Double) {
     targetRate = Float(r)
+    if takeover {
+      if audioPlayer.rate != 0 {
+        audioPlayer.playImmediately(atRate: targetRate)
+      }
+      return
+    }
     if player.rate != 0 { player.playImmediately(atRate: targetRate) }
   }
 
@@ -5037,6 +5087,7 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 改音量參數要整份重組，按一下靜音就會卡一拍
   func setMuted(_ m: Bool) {
     player.isMuted = m
+    audioPlayer.isMuted = m
   }
 
   /// 讓位期間收起來的 videoComposition（恢復時原樣掛回）
@@ -5241,7 +5292,11 @@ final class CompPlayer: NSObject, FlutterTexture {
     }
   }
 
-  var positionMs: Int { Int(player.currentTime().seconds * 1000) }
+  var positionMs: Int {
+    // 播放接管中時鐘在音訊分身身上
+    let p = takeover ? audioPlayer : player
+    return Int(p.currentTime().seconds * 1000)
+  }
 
   /// 系統自己記的播放品質。這幾個數字是 AVPlayer 內部統計，
   /// Flutter 端的任何指標都看不到：

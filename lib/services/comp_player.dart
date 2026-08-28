@@ -552,6 +552,10 @@ class CompPlayer {
   /// 給引擎），這顆只出聲音＋當時鐘。即時切換、不重建
   Future<void> setVideoTracks(bool on) => _quiet('vtracks', on);
 
+  /// 播放接管（音訊分身版）：聲音與時鐘交給純音訊分身，
+  /// 主播放器原地凍結——管線永不拆裝、暫停畫面隨叫隨到
+  Future<void> setTakeover(bool on) => _quiet('takeover', on);
+
   /// [exact] 只有「停手要對準那一格」時才給 true。拖曳中與按下播放前
   /// 一律寬容——精準 seek 跑完之前播放器的 rate 會被壓在 0
   Future<void> seek(double seconds, {bool exact = false}) =>

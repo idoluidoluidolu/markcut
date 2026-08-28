@@ -6678,56 +6678,40 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         await _comp!.seek(_position);
       }
       await _comp!.setRate(_speed);
-      final st = await _comp!.play();
-      tr.log('呼叫 play()（合成播放器，狀態：${st ?? '？'}）');
-      final sw = Stopwatch()..start();
-      final p0 = now;
-      while (mounted && sw.elapsedMilliseconds < 250) {
-        await Future<void>.delayed(const Duration(milliseconds: 16));
-        final p = await _comp!.position();
-        if ((p - p0).abs() > 0.001) {
-          tr.log('影格開始滾動（合成播放器）');
-          break;
+      // 播放接管（音訊分身版）：畫面歸引擎、聲音與時鐘歸音訊
+      // 分身、主播放器原地凍結——合成管線從頭到尾不動，暫停
+      // 畫面隨叫隨到（拆裝管線在實機上＝暫停黑畫面＋跳針）
+      var tookOver = false;
+      if (_metalUsable && Diag.metalPlayback.value && _mBuiltSig != null) {
+        tookOver = await MetalPreview.play(_position);
+        if (tookOver && mounted && _playing) {
+          await _comp!.setTakeover(true);
+          _mHideTimer?.cancel();
+          MetalPreview.active = true;
+          Diag.notePlayLatency(0);
+          tr.log('引擎接管播放（音訊分身出聲）');
+          setState(() {});
         }
       }
-      Diag.notePlayLatency(sw.elapsedMilliseconds);
-      if (!mounted) return;
-      // 播放接管（最終型態）：畫面交給引擎——每軌 pump 各自硬解、
-      // CADisplayLink 逐格合成；合成播放器退居幕後出聲音跟時鐘。
-      // 佈局沒預建成（mplay 回 false）照舊看合成播放器的畫面
-      if (_metalUsable && Diag.metalPlayback.value && _mBuiltSig != null) {
-        // 用合成播放器「此刻」的位置起跑，不用按下播放前的舊值——
-        // 音訊已經先跑了兩三百毫秒，拿舊值＝畫面落後聲音半秒內
-        final liveT = await _comp!.position();
-        unawaited(
-          MetalPreview.play(liveT > 0 ? liveT : _position).then((ok) {
-            if (!mounted) return;
-            if (!ok) {
-              // 接不了（安全閘/佈局沒建成）：讓合成畫面出來、泊車
-              _metalHideNow();
-              unawaited(MetalPreview.park());
-              unawaited(_comp?.setVideoTracks(true) ?? Future.value());
-              setState(() {});
-              return;
-            }
-            if (!_playing) return;
-            // 專業 AV 分離：畫面歸引擎，合成的視訊軌硬體級停用
-            //（解碼器 100% 讓給 pump）——129「播放超卡」的根是
-            // 引擎與合成同時解全部視訊，這裡治本
-            unawaited(_comp?.setVideoTracks(false) ?? Future.value());
-            _mHideTimer?.cancel();
-            MetalPreview.active = true;
-            setState(() {});
-          }),
-        );
-      } else {
-        // 引擎不接管播放：泊車——pump 的解碼器全還給合成播放器，
-        // 不然播放全程被分掉硬解資源（實機 127 起「播放卡到不行」
-        // 的根：引擎預建從那一版開始存在）
+      if (!tookOver) {
+        // 引擎不接管：泊車（pump 解碼器全還給合成），照舊路播
         if (MetalPreview.active) _metalHideNow();
         unawaited(MetalPreview.park());
-        unawaited(_comp?.setVideoTracks(true) ?? Future.value());
+        final st = await _comp!.play();
+        tr.log('呼叫 play()（合成播放器，狀態：${st ?? '？'}）');
+        final sw = Stopwatch()..start();
+        final p0 = now;
+        while (mounted && sw.elapsedMilliseconds < 250) {
+          await Future<void>.delayed(const Duration(milliseconds: 16));
+          final p = await _comp!.position();
+          if ((p - p0).abs() > 0.001) {
+            tr.log('影格開始滾動（合成播放器）');
+            break;
+          }
+        }
+        Diag.notePlayLatency(sw.elapsedMilliseconds);
       }
+      if (!mounted) return;
       _lastTick = Duration.zero;
       _ticker.start();
       tr.log('◀ 時間軸開始走');
@@ -6836,16 +6820,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       unawaited(MetalPreview.stopPlay());
       final c = _comp;
       if (c != null) {
-        // 視訊管線恢復＋精準 seek「完成」才開始讓位倒數——
-        // 早讓位＝合成畫面還沒就位，讓出去就是黑或舊幀
-        //（實測 build 130：「按暫停螢幕 FADEOUT 變黑」）
+        // 音訊分身停、主播放器管線本來就活著——精準 seek「完成」
+        // 才讓位（合成畫面必然就位，不透黑）
         unawaited(
-          c
-              .setVideoTracks(true)
-              .then((_) => c.seek(_position, exact: true))
-              .then((_) {
-                if (mounted) _metalScrubEnd();
-              }),
+          c.setTakeover(false).then((_) => c.seek(_position, exact: true)).then(
+            (_) {
+              if (mounted) _metalScrubEnd();
+            },
+          ),
         );
       } else {
         _metalScrubEnd();
