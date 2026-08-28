@@ -2332,9 +2332,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// seek 疊 seek 會在解碼器裡排隊，是拖曳卡頓的主因
   bool _seekInFlight = false;
 
+  DateTime _compCoarseAt = DateTime.fromMillisecondsSinceEpoch(0);
+
   void _compSeek({bool exact = false}) {
     if (_compOn && !_playing) {
-      unawaited(_comp!.seek(_position, exact: exact));
+      // 引擎接管畫面時，合成播放器退成粗跟（250ms 一發）：
+      // 它每個 seek 都是 CI 整格重畫，跟引擎的 pump 搶解碼器
+      //（實測 build 128：滑動中 CI 單格 4967ms、「超頓」）。
+      // 放手那發（exact）照舊精準——讓位時畫面要就位
+      if (MetalPreview.active && !exact) {
+        final now = DateTime.now();
+        if (now.difference(_compCoarseAt).inMilliseconds >= 250) {
+          _compCoarseAt = now;
+          unawaited(_comp!.seek(_position));
+        }
+      } else {
+        unawaited(_comp!.seek(_position, exact: exact));
+      }
       if (MetalPreview.active) {
         final now = DateTime.now();
         if (now.difference(_mSeekAt).inMilliseconds >= 16) {
