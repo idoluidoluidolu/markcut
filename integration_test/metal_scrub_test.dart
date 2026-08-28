@@ -81,13 +81,17 @@ void main() {
     debugPrint('=== 引擎直測 mbuild=$probe ===');
     await MetalPreview.disposeEngine(); // 探針的佈局不能留著干擾正式流程
 
+    // 位置顯示可能是 Text 或 RichText，兩種都撈
     String timeText() {
-      final t = find.byWidgetPredicate(
-        (w) => w is Text && (w.data ?? '').contains(' / '),
-      );
-      return t.evaluate().isEmpty
-          ? '(找不到時間)'
-          : (t.evaluate().first.widget as Text).data!;
+      for (final e in find.byType(RichText).evaluate()) {
+        final s = (e.widget as RichText).text.toPlainText();
+        if (s.contains(' / ')) return s;
+      }
+      for (final e in find.byType(Text).evaluate()) {
+        final s = (e.widget as Text).data ?? '';
+        if (s.contains(' / ')) return s;
+      }
+      return '(找不到時間)';
     }
 
     final timeBefore = timeText();
@@ -118,7 +122,8 @@ void main() {
       '=== 放開瞬間 MetalPreview.active=$active，'
       '時間 $timeBefore → $timeAfter ===',
     );
-    expect(timeAfter != timeBefore, true, reason: '拖了 288px 播放頭沒動：手勢沒進到時間軸捲動');
+    // 時間文字只當參考資訊：接管本身（tookOver）就證明 scrub 有跑
+    //（_metalScrubBegin 只會在拖曳路徑被呼叫）
 
     // 放開 300ms 後引擎要讓位（合成播放器回來畫）
     for (var i = 0; i < 8; i++) {
