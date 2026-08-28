@@ -6822,11 +6822,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _playProbe?.cancel();
     _playProbe = null;
     if (_comp != null) unawaited(_comp!.pause());
-    // 播放接管收場：引擎停在停點那格；合成的視訊軌開回來
-    //（暫停畫面之後要靠它），就位後讓位（300ms 計時器）
+    // 播放接管收場：引擎停在停點那格；合成的視訊管線開回來
+    //（軌＋videoComposition），再精準 seek 一發——恢復瞬間它的
+    // 畫面還停在停用前的舊幀，不對準就讓位跳圖
     if (MetalPreview.active) {
       unawaited(MetalPreview.stopPlay());
-      unawaited(_comp?.setVideoTracks(true) ?? Future.value());
+      final c = _comp;
+      if (c != null) {
+        unawaited(
+          c.setVideoTracks(true).then((_) => c.seek(_position, exact: true)),
+        );
+      }
       _metalScrubEnd();
     }
     if (_ticker.isActive) _ticker.stop();

@@ -5039,14 +5039,34 @@ final class CompPlayer: NSObject, FlutterTexture {
     player.isMuted = m
   }
 
-  /// 專業 AV 分離：引擎接管播放時，視訊軌硬體級停用（解碼器
-  /// 100% 讓給引擎的 pump），這顆只出聲音＋當時鐘。停用/啟用
-  /// 都是即時的、不重建 item
+  /// 讓位期間收起來的 videoComposition（恢復時原樣掛回）
+  private var parkedVC: AVVideoComposition?
+
+  /// 專業 AV 分離：引擎接管播放時「整條視訊管線」停工——
+  /// videoComposition 先撤（不撤的話 CI 合成器照樣每格開工，
+  /// 軌又停用＝拿不到影格→缺格風暴＋保底重播狂燒 CPU，實測
+  /// build 130「軌1 給不出影格×60」就是它），再停用視訊軌
+  ///（解碼器 100% 讓給引擎）。恢復時原樣掛回、即時、不重建
   func setVideoTracksEnabled(_ on: Bool) {
     guard let item = player.currentItem else { return }
-    for tr in item.tracks
-    where tr.assetTrack?.mediaType == .video {
-      tr.isEnabled = on
+    if on {
+      for tr in item.tracks
+      where tr.assetTrack?.mediaType == .video {
+        tr.isEnabled = true
+      }
+      if let vc = parkedVC {
+        item.videoComposition = vc
+        parkedVC = nil
+      }
+    } else {
+      if item.videoComposition != nil {
+        parkedVC = item.videoComposition
+        item.videoComposition = nil
+      }
+      for tr in item.tracks
+      where tr.assetTrack?.mediaType == .video {
+        tr.isEnabled = false
+      }
     }
   }
 
@@ -6649,7 +6669,13 @@ final class MetalPreviewView: NSObject, FlutterPlatformView {
   }
 
   func setVisible(_ v: Bool) {
+    // 關掉隱式動畫：isHidden 切換預設帶 0.25s fade，上台/讓位
+    // 交錯期會透出底下的黑＋「淡入淡出感」（實測 build 130：
+    // 「停下來再滑有 FADE 感，然後螢幕一片黑」）。切換必須是瞬時的
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
     metalLayer.isHidden = !v
+    CATransaction.commit()
   }
 
   func layoutNow() {

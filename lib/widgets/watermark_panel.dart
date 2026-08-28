@@ -194,6 +194,12 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   double? _sizeBeforeTileText;
   double? _sizeBeforeTileLogo;
 
+  // 九宮格「最後點的格」＋當時夾出的中心值。亮點顯示以它為準：
+  // 寬文字點左格會被夾到接近中央，用「最近格」反推會亮錯格
+  //（實測 build 130：「左邊點下去不會顯示有點」）。之後被拖走
+  //（現值偏離夾出值）就失效、回退最近格判定
+  double? _pickGx, _pickGy, _pickCx, _pickCy;
+
   /// 大小滑桿的下限（跟 _sliderRow 給的值一致）
   static const double _minTextSize = 0.015;
   static const double _minLogoSize = 0.05;
@@ -1857,6 +1863,10 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         cx = gx.clamp(hw, 1 - hw);
         cy = gy.clamp(hh, 1 - hh);
       }
+      _pickGx = gx;
+      _pickGy = gy;
+      _pickCx = cx;
+      _pickCy = cy;
       _update(() {
         if (target == 'text') {
           s.text.x = cx;
@@ -1918,8 +1928,16 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                   ) => all.every(
                                     (o) => (v - g).abs() <= (v - o).abs(),
                                   );
-                                  final sel =
-                                      nearest(x, gx, xs) && nearest(y, gy, ys);
+                                  // 最後點過的格優先（現值還等於當時
+                                  // 夾出的中心才算；被拖走就回退）
+                                  final pickAlive =
+                                      _pickCx != null &&
+                                      (x - _pickCx!).abs() < 0.02 &&
+                                      (y - _pickCy!).abs() < 0.02;
+                                  final sel = pickAlive
+                                      ? (gx == _pickGx && gy == _pickGy)
+                                      : nearest(x, gx, xs) &&
+                                            nearest(y, gy, ys);
                                   return Container(
                                     width: w / 6,
                                     height: w / 6,
