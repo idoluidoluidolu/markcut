@@ -1,0 +1,211 @@
+00:00 +0: loading D:/dev/projects/markcut/test/canvas_size_test.dart
+00:00 +0: D:/dev/projects/markcut/test/canvas_size_test.dart: 各種素材尺寸 × 解析度：畫布永遠偶數、不小於 2、不放大
+00:00 +1: D:/dev/projects/markcut/test/canvas_size_test.dart: 各種素材尺寸 × 解析度：畫布永遠偶數、不小於 2、不放大
+00:00 +2: D:/dev/projects/markcut/test/canvas_size_test.dart: 各種素材尺寸 × 解析度：畫布永遠偶數、不小於 2、不放大
+00:00 +3: D:/dev/projects/markcut/test/canvas_size_test.dart: 各種素材尺寸 × 解析度：畫布永遠偶數、不小於 2、不放大
+00:00 +4: D:/dev/projects/markcut/test/canvas_size_test.dart: 各種素材尺寸 × 解析度：畫布永遠偶數、不小於 2、不放大
+00:00 +5: D:/dev/projects/markcut/test/canvas_size_test.dart: 各種素材尺寸 × 解析度：畫布永遠偶數、不小於 2、不放大
+00:00 +6: D:/dev/projects/markcut/test/clip_crop_test.dart: 片段裁切 裁切框存得進 JSON 也讀得回來
+00:00 +7: D:/dev/projects/markcut/test/clip_crop_test.dart: 片段裁切 裁切框存得進 JSON 也讀得回來
+00:00 +8: D:/dev/projects/markcut/test/clip_crop_test.dart: 片段裁切 裁切框存得進 JSON 也讀得回來
+00:00 +9: D:/dev/projects/markcut/test/canvas_size_test.dart: 比例選項：算出來的畫布比例要貼合要求（誤差 < 2%）
+00:00 +10: D:/dev/projects/markcut/test/canvas_size_test.dart: 比例選項：算出來的畫布比例要貼合要求（誤差 < 2%）
+00:00 +11: D:/dev/projects/markcut/test/canvas_size_test.dart: 比例選項：算出來的畫布比例要貼合要求（誤差 < 2%）
+00:00 +12: D:/dev/projects/markcut/test/canvas_size_test.dart: 比例選項：算出來的畫布比例要貼合要求（誤差 < 2%）
+00:00 +13: D:/dev/projects/markcut/test/canvas_size_test.dart: 比例選項：算出來的畫布比例要貼合要求（誤差 < 2%）
+00:00 +14: D:/dev/projects/markcut/test/canvas_size_test.dart: 比例選項：算出來的畫布比例要貼合要求（誤差 < 2%）
+00:00 +15: D:/dev/projects/markcut/test/canvas_size_test.dart: 自訂比例：極端值與壞值都不炸、不出壞尺寸
+00:00 +16: D:/dev/projects/markcut/test/canvas_size_test.dart: 順暢度：超過 60 的來源在 4K 以上會被壓到 60
+00:01 +17: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:01 +18: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:01 +19: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:01 +20: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:01 +21: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:01 +22: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:01 +23: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:01 +24: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:01 +25: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:01 +26: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:01 +27: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:01 +28: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:01 +29: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:01 +30: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:01 +31: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:03 +32: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:03 +33: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:03 +34: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:03 +35: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:03 +36: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:03 +37: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:03 +38: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:03 +39: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:03 +40: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:03 +41: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:03 +42: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:03 +43: D:/dev/projects/markcut/test/collage_test.dart: 拼圖：拖曳互換、鎖定拖曳構圖、開格線都不炸
+00:03 +44: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 隨機片段、隨機蓋範圍：範圍外每一格都不許變
+00:03 +45: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 隨機片段、隨機蓋範圍：範圍外每一格都不許變
+00:03 +46: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 隨機片段、隨機蓋範圍：範圍外每一格都不許變
+00:03 +47: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 隨機片段、隨機蓋範圍：範圍外每一格都不許變
+00:03 +48: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 隨機片段、隨機蓋範圍：範圍外每一格都不許變
+00:03 +49: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 隨機片段、隨機蓋範圍：範圍外每一格都不許變
+00:03 +50: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 隨機片段、隨機蓋範圍：範圍外每一格都不許變
+00:03 +51: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 隨機片段、隨機蓋範圍：範圍外每一格都不許變
+00:03 +52: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 隨機片段、隨機蓋範圍：範圍外每一格都不許變
+00:03 +53: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 隨機片段、隨機蓋範圍：範圍外每一格都不許變
+00:03 +54: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 隨機片段、隨機蓋範圍：範圍外每一格都不許變
+00:03 +55: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 隨機片段、隨機蓋範圍：範圍外每一格都不許變
+00:03 +56: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 隨機片段、隨機蓋範圍：範圍外每一格都不許變
+00:03 +57: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 隨機片段、隨機蓋範圍：範圍外每一格都不許變
+00:03 +58: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 隨機片段、隨機蓋範圍：範圍外每一格都不許變
+00:04 +59: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 隨機片段、隨機蓋範圍：範圍外每一格都不許變
+00:04 +60: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 隨機片段、隨機蓋範圍：範圍外每一格都不許變
+00:04 +61: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 隨機片段、隨機蓋範圍：範圍外每一格都不許變
+00:04 +62: D:/dev/projects/markcut/test/export_segment_test.dart: 沒有分段時（單段專案）聲音照舊在同一趟做
+00:04 +63: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 樣式素材（文字）切半後兩半不共用來源
+00:04 +64: D:/dev/projects/markcut/test/edge_stress_test.dart: carveRange 內容守恆 樣式素材（文字）切半後兩半不共用來源
+00:04 +65: D:/dev/projects/markcut/test/export_segment_test.dart: 倒出指令給 ffmpeg 實測
+00:04 +66: D:/dev/projects/markcut/test/edge_stress_test.dart: closeGaps 邊緣 多軌一起整理：每一軌各自保住第一段的位置
+00:04 +67: D:/dev/projects/markcut/test/edge_stress_test.dart: closeGaps 邊緣 刻意重疊的片段不被推開、不算進收掉的秒數
+00:04 +68: D:/dev/projects/markcut/test/edge_stress_test.dart: 吸附邊緣 整條軸空的：想放哪就放哪，只有片頭附近會吸 0
+00:04 +69: D:/dev/projects/markcut/test/edge_stress_test.dart: 吸附邊緣 候選點是負數（cand - len < 0）永不外洩
+00:04 +70: D:/dev/projects/markcut/test/edge_stress_test.dart: 裁切換算邊緣 鏡像來回：翻框→換算→再換算→翻回，仍包住原框
+00:04 +71: D:/dev/projects/markcut/test/edge_stress_test.dart: fastExportSources 邊緣 一支都沒換時回傳同一份清單（不白抄）
+00:04 +72: D:/dev/projects/markcut/test/export_source_test.dart: 快速匯出的來源選擇 1080p＋標準畫質：有工作檔的影片換成工作檔
+00:04 +73: D:/dev/projects/markcut/test/export_source_test.dart: 快速匯出的來源選擇 極致／無損畫質不換：畫質不妥協
+00:04 +74: D:/dev/projects/markcut/test/export_source_test.dart: 快速匯出的來源選擇 輸出超過 1080p 不換：工作檔只有 1080p
+00:04 +75: D:/dev/projects/markcut/test/export_source_test.dart: 快速匯出的來源選擇 照片、聲音、浮水印素材一律不動
+00:04 +76: D:/dev/projects/markcut/test/export_source_test.dart: 快速匯出的來源選擇 低畫質也吃工作檔
+00:06 +77: D:/dev/projects/markcut/test/export_tab_golden_test.dart: (setUpAll)
+00:06 +78: D:/dev/projects/markcut/test/export_tab_golden_test.dart: (setUpAll)
+00:06 +79: D:/dev/projects/markcut/test/export_tab_golden_test.dart: (setUpAll)
+00:06 +80: D:/dev/projects/markcut/test/export_tab_golden_test.dart: (setUpAll)
+00:06 +81: D:/dev/projects/markcut/test/export_tab_golden_test.dart: (setUpAll)
+00:06 +82: D:/dev/projects/markcut/test/export_tab_golden_test.dart: (setUpAll)
+00:06 +83: D:/dev/projects/markcut/test/export_tab_golden_test.dart: (setUpAll)
+00:06 +84: D:/dev/projects/markcut/test/export_tab_golden_test.dart: (setUpAll)
+00:06 +85: D:/dev/projects/markcut/test/export_tab_golden_test.dart: (setUpAll)
+00:06 +85: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+Loading ffmpeg-kit-flutter.
+00:08 +86: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:08 +87: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:08 +88: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:08 +89: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:09 +90: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:09 +91: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:09 +92: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:09 +93: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:09 +94: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:09 +95: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:09 +96: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:09 +97: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:09 +98: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:09 +99: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:09 +100: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:09 +101: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:09 +102: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:09 +103: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:10 +104: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:10 +105: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:10 +106: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:10 +107: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質依素材自動挑
+00:10 +108: D:/dev/projects/markcut/test/gif_golden_test.dart: 首頁：加入浮水印（多了製作 GIF）
+00:11 +109: D:/dev/projects/markcut/test/gif_golden_test.dart: 首頁：加入浮水印（多了製作 GIF）
+00:11 +110: D:/dev/projects/markcut/test/gif_golden_test.dart: 首頁：加入浮水印（多了製作 GIF）
+00:11 +111: D:/dev/projects/markcut/test/gif_golden_test.dart: 首頁：加入浮水印（多了製作 GIF）
+00:11 +112: D:/dev/projects/markcut/test/gif_golden_test.dart: 首頁：加入浮水印（多了製作 GIF）
+00:11 +113: D:/dev/projects/markcut/test/gif_golden_test.dart: 首頁：加入浮水印（多了製作 GIF）
+00:11 +114: D:/dev/projects/markcut/test/gif_golden_test.dart: 首頁：加入浮水印（多了製作 GIF）
+00:11 +115: D:/dev/projects/markcut/test/gif_golden_test.dart: 首頁：加入浮水印（多了製作 GIF）
+00:11 +116: D:/dev/projects/markcut/test/gif_golden_test.dart: 首頁：加入浮水印（多了製作 GIF）
+00:12 +117: D:/dev/projects/markcut/test/photo_editor_test.dart: 照片編輯器：加浮水印組、開編輯面板、刪除、undo 都不炸
+00:13 +118: D:/dev/projects/markcut/test/photo_editor_test.dart: 照片編輯器：加浮水印組、開編輯面板、刪除、undo 都不炸
+00:13 +119: D:/dev/projects/markcut/test/photo_editor_test.dart: 照片編輯器：加浮水印組、開編輯面板、刪除、undo 都不炸
+00:13 +119: D:/dev/projects/markcut/test/gif_golden_test.dart: 編輯器：加素材選單（多了 GIF）
+Loading ffmpeg-kit-flutter.
+00:14 +120: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質選單
+00:15 +121: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質選單
+00:15 +122: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質選單
+00:15 +123: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質選單
+00:15 +124: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質選單
+00:15 +125: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質選單
+00:15 +126: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質選單
+00:15 +127: D:/dev/projects/markcut/test/export_tab_golden_test.dart: 匯出頁：畫質選單
+00:15 +128: D:/dev/projects/markcut/test/gif_golden_test.dart: 編輯器：加素材選單（多了 GIF）
+00:15 +129: D:/dev/projects/markcut/test/gif_golden_test.dart: 編輯器：加素材選單（多了 GIF）
+00:15 +130: D:/dev/projects/markcut/test/gif_golden_test.dart: 編輯器：加素材選單（多了 GIF）
+00:16 +131: D:/dev/projects/markcut/test/gif_golden_test.dart: 編輯器：加素材選單（多了 GIF）
+00:16 +132: D:/dev/projects/markcut/test/recent_changes_stress_test.dart: 手繪畫板 畫兩筆→選取調粗細→上一步→重做都不炸
+00:16 +133: D:/dev/projects/markcut/test/recent_changes_stress_test.dart: 手繪畫板 畫兩筆→選取調粗細→上一步→重做都不炸
+00:16 +134: D:/dev/projects/markcut/test/recent_changes_stress_test.dart: 手繪畫板 畫兩筆→選取調粗細→上一步→重做都不炸
+00:16 +135: D:/dev/projects/markcut/test/recent_changes_stress_test.dart: 手繪畫板 畫兩筆→選取調粗細→上一步→重做都不炸
+00:16 +136: D:/dev/projects/markcut/test/recent_changes_stress_test.dart: 手繪畫板 畫兩筆→選取調粗細→上一步→重做都不炸
+00:17 +137: D:/dev/projects/markcut/test/reorder_sheet_golden_test.dart: 調整片段順序：橫排縮圖
+00:17 +138: D:/dev/projects/markcut/test/reorder_sheet_golden_test.dart: 調整片段順序：橫排縮圖
+00:17 +139: D:/dev/projects/markcut/test/reorder_sheet_golden_test.dart: 調整片段順序：橫排縮圖
+00:17 +140: D:/dev/projects/markcut/test/reorder_sheet_golden_test.dart: 調整片段順序：橫排縮圖
+00:17 +141: D:/dev/projects/markcut/test/reorder_sheet_golden_test.dart: 調整片段順序：橫排縮圖
+00:17 +142: D:/dev/projects/markcut/test/reorder_sheet_golden_test.dart: 調整片段順序：橫排縮圖
+00:17 +143: D:/dev/projects/markcut/test/reorder_sheet_golden_test.dart: 調整片段順序：橫排縮圖
+00:17 +144: D:/dev/projects/markcut/test/reorder_sheet_golden_test.dart: 調整片段順序：橫排縮圖
+00:17 +145: D:/dev/projects/markcut/test/reorder_sheet_golden_test.dart: 調整片段順序：橫排縮圖
+00:18 +146: D:/dev/projects/markcut/test/reorder_sheet_golden_test.dart: 調整片段順序：橫排縮圖
+00:19 +147: D:/dev/projects/markcut/test/reorder_sheet_golden_test.dart: 調整片段順序：橫排縮圖
+00:19 +148: D:/dev/projects/markcut/test/reorder_sheet_golden_test.dart: 調整片段順序：橫排縮圖
+00:19 +149: D:/dev/projects/markcut/test/reorder_sheet_golden_test.dart: 調整片段順序：橫排縮圖
+00:19 +150: D:/dev/projects/markcut/test/reorder_sheet_golden_test.dart: 調整片段順序：橫排縮圖
+00:19 +151: D:/dev/projects/markcut/test/reorder_sheet_golden_test.dart: 調整片段順序：橫排縮圖
+00:20 +152: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:21 +153: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:23 +154: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:23 +155: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:23 +156: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:23 +157: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:25 +158: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:25 +159: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:25 +160: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:25 +161: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:25 +162: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:25 +163: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:26 +164: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:26 +165: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:27 +166: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:27 +167: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:27 +168: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:27 +169: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:30 +170: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:31 +171: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:31 +172: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:31 +173: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+00:31 +174: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 20 萬次隨機操作後不變條件都成立
+02:00 +175: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 片段 JSON 來回不失真（含調色、淡化、變速）
+02:01 +176: D:/dev/projects/markcut/test/stress_test.dart: 時間軸暴力測試 壞掉的草稿 JSON 不會讓 App 爆掉
+02:01 +177: D:/dev/projects/markcut/test/stress_test.dart: 調色暴力測試 任何組合產生的 FFmpeg 濾鏡都是合法的
+02:07 +178: D:/dev/projects/markcut/test/stress_test.dart: 調色暴力測試 調色 JSON 來回不失真
+02:07 +179: D:/dev/projects/markcut/test/stress_test.dart: 浮水印設定暴力測試 動畫參數再怎麼亂都不會產生 Infinity（會炸匯出）
+02:07 +180: D:/dev/projects/markcut/test/stress_test.dart: 浮水印設定暴力測試 浮水印設定 JSON 來回不失真（含 Logo 位元組）
+02:08 +181: D:/dev/projects/markcut/test/stress_test.dart: 浮水印設定暴力測試 多張圖片：加、刪、切換都不會越界，logo 永遠有東西可回傳
+02:08 +182: D:/dev/projects/markcut/test/stress_test.dart: 浮水印設定暴力測試 多張圖片：JSON 來回不失真，舊版單張草稿也讀得回來
+02:08 +183: D:/dev/projects/markcut/test/stress_test.dart: 圖層上下關係 編號大的疊在上面
+02:08 +184: D:/dev/projects/markcut/test/stress_test.dart: 合成播放器的適用範圍 乾淨的時間軸走合成播放器
+02:08 +185: D:/dev/projects/markcut/test/stress_test.dart: 合成播放器的適用範圍 馬賽克拖得比影片長：照樣用合成（尾巴會被夾掉，不該整組放棄）
+02:08 +186: D:/dev/projects/markcut/test/stress_test.dart: 合成播放器的適用範圍 文字拖得比影片長：還是要退回（播放時鐘到影片結尾就停了）
+02:08 +187: D:/dev/projects/markcut/test/stress_test.dart: 合成播放器的適用範圍 有馬賽克不再退回：改烘進合成（CI 合成器）
+02:08 +188: D:/dev/projects/markcut/test/stress_test.dart: 合成播放器的適用範圍 圖片素材墊在影片下層：不再退回（烘進合成），並列進 bakedImageIds
+02:08 +189: D:/dev/projects/markcut/test/stress_test.dart: 合成播放器的適用範圍 圖片壓在所有影片之上：不烘進合成（Flutter 畫、可即時拖）
+02:08 +190: D:/dev/projects/markcut/test/stress_test.dart: 合成播放器的適用範圍 圖片素材壓在所有影片之上：放行（Flutter 圖層畫在合成上面）
+02:08 +191: D:/dev/projects/markcut/test/stress_test.dart: 合成播放器的適用範圍 影片播完後面還有文字：合成只到影片結尾，時鐘會卡住
+02:08 +192: D:/dev/projects/markcut/test/stress_test.dart: 合成播放器的適用範圍 撞號的片段 id 載入時要補新號（兩軌同時亮燈的根因）
+02:08 +193: D:/dev/projects/markcut/test/stress_test.dart: 合成播放器的適用範圍 文字跟影片一樣長（或更短）不影響合成
+02:08 +194: D:/dev/projects/markcut/test/stress_test.dart: 覆寫（同軌不重疊） 完全被蓋住＝整段刪除
+02:08 +195: D:/dev/projects/markcut/test/stress_test.dart: 覆寫（同軌不重疊） 蓋到尾巴＝尾巴被裁掉
+02:08 +196: D:/dev/projects/markcut/test/stress_test.dart: 覆寫（同軌不重疊） 蓋到頭＝頭被裁掉、起點往後移
+02:08 +197: D:/dev/projects/markcut/test/stress_test.dart: 覆寫（同軌不重疊） 蓋在中段＝切成前後兩半
+02:08 +198: D:/dev/projects/markcut/test/stress_test.dart: 覆寫（同軌不重疊） 倒轉的片段蓋到中段，兩半的長度也要對
+02:08 +199: D:/dev/projects/markcut/test/stress_test.dart: 覆寫（同軌不重疊） 別的軌、放下的自己都不受影響
+02:08 +200: D:/dev/projects/markcut/test/stress_test.dart: 整理（closeGaps） 只收中間的空隙，第一段留在原地
+02:08 +201: D:/dev/projects/markcut/test/stress_test.dart: 吸附（磁鐵）行為 拖到片頭附近會黏在 0（就算沒有別的素材可以吸）
+02:08 +202: D:/dev/projects/markcut/test/stress_test.dart: 吸附（磁鐵）行為 拖到片尾附近會跟現有素材的結尾對齊
+02:08 +203: D:/dev/projects/markcut/test/stress_test.dart: 吸附（磁鐵）行為 時間點吸附也吃得到片頭
+02:08 +204: D:/dev/projects/markcut/test/stress_test.dart: 吸附（磁鐵）行為 縮放到極端時吸附範圍仍受控，且永不回傳負值
+02:08 +205: All tests passed!

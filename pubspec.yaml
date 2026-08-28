@@ -76,6 +76,9 @@ dependency_overrides:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  # 模擬器上跑真手勢的整合測試（雲端 Mac 驗證迴圈用，不進成品）
+  integration_test:
+    sdk: flutter
   flutter_launcher_icons: ^0.14.3
 
   # The "flutter_lints" package below contains a set of recommended lints to
