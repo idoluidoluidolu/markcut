@@ -5378,6 +5378,10 @@ final class MetalPump {
   private(set) var dispW = 0.0
   private(set) var dispH = 0.0
 
+  /// 源的色彩標籤（輸出的 half 值保持源編碼，shader 按這個解）
+  private(set) var isHLG = false
+  private(set) var is2020 = false
+
   let path: String
 
   init(path: String) {
@@ -5394,6 +5398,26 @@ final class MetalPump {
         orient = 180
       } else if t.a == 0 && t.b == -1 && t.c == 1 {
         orient = 270
+      }
+      if let fdAny = tr.formatDescriptions.first {
+        let fd = fdAny as! CMFormatDescription
+        if let tf = CMFormatDescriptionGetExtension(
+          fd, extensionKey: kCMFormatDescriptionExtension_TransferFunction)
+          as? String
+        {
+          isHLG =
+            tf == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG
+              as String)
+            || tf == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ
+              as String)
+        }
+        if let pr = CMFormatDescriptionGetExtension(
+          fd, extensionKey: kCMFormatDescriptionExtension_ColorPrimaries)
+          as? String
+        {
+          is2020 =
+            pr == (kCMFormatDescriptionColorPrimaries_ITU_R_2020 as String)
+        }
       }
     }
     let item = AVPlayerItem(asset: asset)
@@ -5641,13 +5665,41 @@ final class MetalPreviewEngine: NSObject {
       o.uv = v.zw;
       return o;
     }
+    // 影片層：AVFoundation 的 64RGBAHalf 不做任何色彩轉換——值保持
+    // 源的非線性編碼（實測：SDR=gamma 原樣、HLG=HLG 編碼原樣，
+    // 附件標籤照抄）。這裡按源標籤自己線性化＋轉到 sRGB 原色，
+    // 跟 CI 合成器（匯出）同一套語意。
+    // vp = (透明度, 1=HLG, 1=BT.2020 原色, HLG 增益)
     fragment half4 fragVideo(VOut in [[stage_in]],
                              texture2d<half> tex [[texture(0)]],
-                             constant float &alpha [[buffer(0)]],
+                             constant float4 &vp [[buffer(0)]],
                              sampler s [[sampler(0)]]) {
       half4 c = tex.sample(s, in.uv);
-      half a = half(alpha);
-      return half4(c.rgb * a, a);
+      float3 v = float3(c.rgb);
+      if (vp.y < -0.5) {
+        // 直通（two-pass 搬運：場景已是線性，不能再解一次）
+      } else if (vp.y > 0.5) {
+        // HLG OETF 反轉 → 場景線性，再乘增益對齊 SDR 白
+        float3 lo = v * v / 3.0;
+        float3 hi = (exp((v - 0.55991073) / 0.17883277) + 0.28466892)
+          / 12.0;
+        v = select(lo, hi, v > 0.5) * vp.w;
+      } else {
+        // sRGB/709 gamma → 線性
+        float3 lo = v / 12.92;
+        float3 hi = pow((abs(v) + 0.055) / 1.055, 2.4);
+        v = select(lo, hi, v > 0.04045);
+      }
+      if (vp.z > 0.5) {
+        // BT.2020 → 709 原色（線性域）
+        v = float3(
+          1.6605 * v.r - 0.5876 * v.g - 0.0728 * v.b,
+          -0.1246 * v.r + 1.1329 * v.g - 0.0083 * v.b,
+          -0.0182 * v.r - 0.1006 * v.g + 1.1187 * v.b);
+      }
+      half a = half(vp.x);
+      half3 rgb = half3(max(v, 0.0));
+      return half4(rgb * a, a);
     }
     // 馬賽克：取樣「畫好的場景」紋理做像素化/模糊/純色，
     // uv 一律是畫布 uv。跟 CI 那套同一組換算（cells、down、羽化），
@@ -6127,11 +6179,14 @@ final class MetalPreviewEngine: NSObject {
             for: sp, texOrient: pump.orient,
             texW: pump.dispW, texH: pump.dispH)
         else { continue }
-        var af = Float(
+        let af = Float(
           fade(sp.opacity, sp.offset, sp.end, sp.fadeIn, sp.fadeOut))
+        // HLG 增益 3.77＝參考白（75% 訊號）對齊 SDR 白 1.0
+        var vp = SIMD4<Float>(
+          af, pump.isHLG ? 1 : 0, pump.is2020 ? 1 : 0, 3.77)
         enc.setRenderPipelineState(videoPipe)
         enc.setVertexBytes(verts, length: verts.count * 4, index: 0)
-        enc.setFragmentBytes(&af, length: 4, index: 0)
+        enc.setFragmentBytes(&vp, length: 16, index: 0)
         enc.setFragmentTexture(tex, index: 0)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
       case .still(let st):
@@ -6175,10 +6230,10 @@ final class MetalPreviewEngine: NSObject {
         -1, 1, 0, 0, 1, 1, 1, 0, -1, -1, 0, 1,
         1, 1, 1, 0, 1, -1, 1, 1, -1, -1, 0, 1,
       ]
-      var one: Float = 1
+      var passthru = SIMD4<Float>(1, -1, 0, 0)
       e2.setRenderPipelineState(videoPipe)
       e2.setVertexBytes(full, length: full.count * 4, index: 0)
-      e2.setFragmentBytes(&one, length: 4, index: 0)
+      e2.setFragmentBytes(&passthru, length: 16, index: 0)
       e2.setFragmentTexture(st, index: 0)
       e2.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
       let W = canvasW
