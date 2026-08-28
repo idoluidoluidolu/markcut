@@ -5566,17 +5566,22 @@ final class MetalPump {
   ///（build 129 實機「點浮水印畫面全黑」的根）
   private var pendingSeek: Double?
 
-  /// 目標時間變超過半格才重新 seek（AVPlayer 自己會合併）
-  func want(_ t: Double) {
+  /// 目標時間變超過半格才重新 seek（AVPlayer 自己會合併）。
+  /// [coarse]＝快滑模式：容差無限大＝貼齊最近的關鍵幀，任何檔
+  ///（4K 疏關鍵幀原檔也一樣）都是瞬間出圖——剪映「匯入完馬上
+  /// 能滑」的做法就是這個；停手後呼叫端再補一發精確的
+  func want(_ t: Double, coarse: Bool = false) {
     guard let item = player.currentItem else { return }
     if item.status == .readyToPlay { ready = true }
     guard ready else {
       pendingSeek = t
       return
     }
-    if abs(t - lastSeek) < 0.04 { return }
+    if abs(t - lastSeek) < (coarse ? 0.1 : 0.04) { return }
     lastSeek = t
-    let tol = CMTimeMakeWithSeconds(0.05, preferredTimescale: 600)
+    let tol = coarse
+      ? CMTime.positiveInfinity
+      : CMTimeMakeWithSeconds(0.05, preferredTimescale: 600)
     player.seek(
       to: CMTime(seconds: t, preferredTimescale: 600),
       toleranceBefore: tol, toleranceAfter: tol)
@@ -6316,14 +6321,21 @@ final class MetalPreviewEngine: NSObject {
       }
     } else {
       curT = t
-      // 預熱：沒在畫也先把 pump 對到位——之後（拖曳文字/滑動）
-      // 接管的第一格就是對的，不閃舊畫面
+      // 滑動中一律關鍵幀貼齊（瞬間出圖，4K 原檔也順）；
+      // 停手 150ms 後 tick 補一發精確幀（見 settle 機制）
       for sp in layers where sp.offset <= t && t < sp.end {
-        pumpFor(sp).want(sp.trimStart + (t - sp.offset) * sp.speed)
+        pumpFor(sp).want(
+          sp.trimStart + (t - sp.offset) * sp.speed, coarse: true)
       }
+      lastSeekHost = CACurrentMediaTime()
+      seekSettled = false
       trimPumps(t)
     }
   }
+
+  /// 停手精修：seek 停 150ms 沒新目標＝手停了，補精確幀
+  private var lastSeekHost = 0.0
+  private var seekSettled = true
 
   /// 靜止降頻：畫面內容（時刻/即時幾何/佈局）沒變的話——
   /// 200ms 後降到 10fps（pump 晚到的紋理還補得上）、10 秒後
@@ -6367,6 +6379,14 @@ final class MetalPreviewEngine: NSObject {
     if playing {
       curT = engineT
       syncPumps(curT)
+    } else if !seekSettled,
+      CACurrentMediaTime() - lastSeekHost > 0.15
+    {
+      // 手停了：補精確幀（滑動中全是關鍵幀貼齊的粗略幀）
+      seekSettled = true
+      for sp in layers where sp.offset <= curT && curT < sp.end {
+        pumpFor(sp).want(sp.trimStart + (curT - sp.offset) * sp.speed)
+      }
     }
     let ep = CIExportCompositor.liveEpoch &+ layoutEpoch
     if !playing && curT == drawnT && ep == drawnEpoch {
