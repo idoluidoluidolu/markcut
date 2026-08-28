@@ -52,3 +52,4 @@ ios_cert_key.pem
 
 # golden 測試失敗時的比對圖（本機產物）
 test/failures/
+t.txt
