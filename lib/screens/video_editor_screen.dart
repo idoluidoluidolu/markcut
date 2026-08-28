@@ -1669,6 +1669,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 基準就一直刷新，停穩重烘被無限展期，部件永遠回不去
     //（實測回報：過很久還是一樣）
     if (key == _ovXfLastKey) return;
+    // 拖曳文字/浮水印中：讓引擎出畫面（它每格都讀這份即時幾何，
+    // 60fps 跟手），合成的逼重繪路徑退場——「改文字位置延遲」的治本
+    _metalOvDragTakeover();
     _ovGeomActiveAt = DateTime.now();
     if (DateTime.now().difference(_ovXfLastAt).inMilliseconds < 16) {
       _ovXfTrail?.cancel();
@@ -2352,6 +2355,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (MetalPreview.active) {
         final now = DateTime.now();
         if (now.difference(_mSeekAt).inMilliseconds >= 16) {
+          _mSeekAt = now;
+          unawaited(MetalPreview.seek(_position));
+        }
+      } else if (_mBuiltSig != null) {
+        // 引擎沒在畫也節流丟位置＝pump 預熱（原生端 want 對位），
+        // 下一次接管（滑動/拖文字）第一格就是對的
+        final now = DateTime.now();
+        if (now.difference(_mSeekAt).inMilliseconds >= 250) {
           _mSeekAt = now;
           unawaited(MetalPreview.seek(_position));
         }
@@ -3100,6 +3111,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _mBuiltSig = ok ? sig : null;
       if (!ok || !_scrubbing || _playing) return;
     }
+    MetalPreview.active = true;
+    unawaited(MetalPreview.seek(_position));
+    unawaited(MetalPreview.show(true));
+    setState(() {});
+  }
+
+  Timer? _mOvIdleTimer;
+
+  /// 文字/浮水印拖曳接管：拖曳中引擎出畫面（每格讀即時幾何、
+  /// 60fps 跟手）；幾何停止變化 600ms 讓位回合成的烘焙路
+  void _metalOvDragTakeover() {
+    if (_playing || !_metalUsable || _mBuiltSig == null) return;
+    _mOvIdleTimer?.cancel();
+    _mOvIdleTimer = Timer(const Duration(milliseconds: 600), _metalScrubEnd);
+    if (MetalPreview.active) return;
+    _mHideTimer?.cancel();
     MetalPreview.active = true;
     unawaited(MetalPreview.seek(_position));
     unawaited(MetalPreview.show(true));
@@ -8416,6 +8443,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _ovSyncTimer?.cancel();
     _ovXfTrail?.cancel();
     _mHideTimer?.cancel();
+    _mOvIdleTimer?.cancel();
     unawaited(MetalPreview.disposeEngine());
     _xfTrail?.cancel();
     CompPlayer.onCompVisible = null;

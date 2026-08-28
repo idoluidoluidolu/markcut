@@ -6063,6 +6063,11 @@ final class MetalPreviewEngine: NSObject {
       }
     } else {
       curT = t
+      // 預熱：沒在畫也先把 pump 對到位——之後（拖曳文字/滑動）
+      // 接管的第一格就是對的，不閃舊畫面
+      for sp in layers where sp.offset <= t && t < sp.end {
+        pumps[sp.id]?.want(sp.trimStart + (t - sp.offset) * sp.speed)
+      }
     }
   }
 
