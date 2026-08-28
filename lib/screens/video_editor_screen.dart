@@ -265,6 +265,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         setState(() => _hdrAvail = v);
         // HDR 判定出爐可能改變預覽管線（保留 HDR 是預設值）
         _compRefreshIfChanged();
+        // 也會改變 Metal 引擎吃的檔（workHdrPath vs previewPath）：
+        // 佈局跟著刷，不然滑動時指紋沒中又現場建（實測 build 127）
+        unawaited(_metalPrebuild());
       }
     });
   }

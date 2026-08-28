@@ -5370,11 +5370,33 @@ final class MetalPump {
   private var lastSeek = -1.0
   var lastTexture: MTLTexture?
 
+  /// 檔案的旋轉旗標（顯示要順時針轉幾度）與轉正後的顯示尺寸。
+  /// iPhone 直式影片＝橫存＋90° 旗標；HDR 代理（HLG 直通）刻意
+  /// 保留旗標不轉正——引擎不看旗標的話畫面就轉錯邊、比例爆炸
+  ///（實測 build 127：「整個畫面爆炸 比例亂跑」的根因）
+  private(set) var orient = 0
+  private(set) var dispW = 0.0
+  private(set) var dispH = 0.0
+
   let path: String
 
   init(path: String) {
     self.path = path
-    let item = AVPlayerItem(url: URL(fileURLWithPath: path))
+    let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+    if let tr = asset.tracks(withMediaType: .video).first {
+      let t = tr.preferredTransform
+      let d = tr.naturalSize.applying(t)
+      dispW = abs(d.width)
+      dispH = abs(d.height)
+      if t.a == 0 && t.b == 1 && t.c == -1 {
+        orient = 90
+      } else if t.a == -1 && t.d == -1 {
+        orient = 180
+      } else if t.a == 0 && t.b == -1 && t.c == 1 {
+        orient = 270
+      }
+    }
+    let item = AVPlayerItem(asset: asset)
     let attrs: [String: Any] = [
       kCVPixelBufferPixelFormatTypeKey as String: Int(
         kCVPixelFormatType_64RGBAHalf),
@@ -5946,14 +5968,22 @@ final class MetalPreviewEngine: NSObject {
   }
 
   /// 一層的四個角（NDC）＋UV，含 contain-fit／使用者縮放位移／
-  /// 鏡像／旋轉／裁切——跟 fitTransform 同一套數學
-  private func quad(for sp: MetalLayerSpec) -> [Float]? {
+  /// 鏡像／旋轉／裁切——跟 fitTransform 同一套數學。
+  /// [texOrient]＝紋理的旋轉旗標（顯示要順時針轉幾度）：UV 最後
+  /// 映射回未旋轉的紋理座標；[texW]/[texH]＝轉正後的顯示尺寸
+  ///（有值就蓋過 Dart 給的 srcW/srcH——紋理本人比較準）
+  private func quad(
+    for sp: MetalLayerSpec, texOrient: Int = 0,
+    texW: Double = 0, texH: Double = 0
+  ) -> [Float]? {
     let W = canvasW
     let H = canvasH
-    guard sp.srcW > 1, sp.srcH > 1 else { return nil }
-    let k = min(W / sp.srcW, H / sp.srcH)
-    var w = sp.srcW * k * sp.scale
-    var h = sp.srcH * k * sp.scale
+    let sw = texW > 1 ? texW : sp.srcW
+    let sh = texH > 1 ? texH : sp.srcH
+    guard sw > 1, sh > 1 else { return nil }
+    let k = min(W / sw, H / sh)
+    var w = sw * k * sp.scale
+    var h = sh * k * sp.scale
     var cx = sp.px * W
     var cy = sp.py * H
     // 裁切（顯示座標比例、左上原點；鏡像時水平窗翻過來）
@@ -5979,13 +6009,29 @@ final class MetalPreviewEngine: NSObject {
     let rad = sp.rotation * Double.pi / 180
     let cr = cos(rad)
     let sr = sin(rad)
-    func corner(_ dx: Double, _ dy: Double, _ u: Double, _ v: Double)
+    func corner(_ dx: Double, _ dy: Double, _ u0: Double, _ v0: Double)
       -> [Float]
     {
       let x0 = dx * w / 2
       let y0 = dy * h / 2
       let x = cx + x0 * cr - y0 * sr
       let y = cy + x0 * sr + y0 * cr
+      // 顯示 UV → 未旋轉的紋理 UV（旋轉旗標）
+      var u = u0
+      var v = v0
+      switch texOrient {
+      case 90:
+        u = v0
+        v = 1 - u0
+      case 180:
+        u = 1 - u0
+        v = 1 - v0
+      case 270:
+        u = 1 - v0
+        v = u0
+      default:
+        break
+      }
       return [
         Float(2 * x / W - 1), Float(1 - 2 * y / H), Float(u), Float(v),
       ]
@@ -6076,7 +6122,11 @@ final class MetalPreviewEngine: NSObject {
           pump.want(srcT)
           tex = pump.texture(at: srcT, cache: cache)
         }
-        guard let tex = tex, let verts = quad(for: sp) else { continue }
+        guard let tex = tex,
+          let verts = quad(
+            for: sp, texOrient: pump.orient,
+            texW: pump.dispW, texH: pump.dispH)
+        else { continue }
         var af = Float(
           fade(sp.opacity, sp.offset, sp.end, sp.fadeIn, sp.fadeOut))
         enc.setRenderPipelineState(videoPipe)
