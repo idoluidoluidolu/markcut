@@ -3049,6 +3049,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         'color': c.color.hasColor ? c.color.matrix : null,
         'srcW': src.w.toDouble(),
         'srcH': src.h.toDouble(),
+        // 這層吃的是代理還是原檔——原檔（4K HEVC）浮點輸出的
+        // 頻寬撐不起持續播放，引擎只在「全代理」時接管播放
+        'proxy': (hdrMode && src.workHdrPath != null) || src.workPath != null,
       });
     }
     if (specs.isEmpty) return null;

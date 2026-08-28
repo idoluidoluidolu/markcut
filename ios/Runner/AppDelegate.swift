@@ -1330,7 +1330,8 @@ final class AtomicFlag {
             crop: m["crop"] as? [Double],
             srcW: m["srcW"] as? Double ?? 16,
             srcH: m["srcH"] as? Double ?? 9,
-            color: m["color"] as? [Double])
+            color: m["color"] as? [Double],
+            proxy: m["proxy"] as? Bool ?? false)
         }
         let stillSpecs: [MetalStillSpec] =
           ((a["stills"] as? [[String: Any]]) ?? []).compactMap { m in
@@ -5677,6 +5678,9 @@ struct MetalLayerSpec {
   let srcH: Double
   /// 色彩濾鏡（5x4 矩陣 20 元素，跟 CI applyColor 同格式）
   var color: [Double]? = nil
+  /// 吃的是代理檔（工作檔/HDR 代理）。原檔（4K）只准滑動停格，
+  /// 持續播放的浮點輸出頻寬撐不起——播放接管要求全代理
+  var proxy = false
 }
 
 /// 引擎收的一張靜態圖層（圖片/貼圖/GIF 首幀；欄位跟 still 烘進
@@ -6107,6 +6111,7 @@ final class MetalPreviewEngine: NSObject {
     playSafe =
       mosaicMaps.isEmpty
       && !stillSpecs.contains { $0.gif || $0.hasColor }
+      && specs.allSatisfy { $0.proxy }
     layoutEpoch &+= 1  // 佈局變了＝畫面該重繪（靜止降頻歸零）
     // pump 走「靠近才建、遠離回收」（見 pumpFor/trimPumps）：
     // 二十支片的時間軸也只養播放頭附近那幾顆解碼器
