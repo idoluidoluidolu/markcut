@@ -178,15 +178,13 @@ void main() {
     final play = find.byIcon(Icons.play_arrow_rounded);
     expect(play.evaluate().isNotEmpty, true, reason: '找不到播放鍵');
     await tester.tap(play.first);
-    for (var i = 0; i < 30; i++) {
+    // 起播點可能離片尾很近：立即取樣，別先耗秒數輪詢旗標
+    for (var i = 0; i < 5; i++) {
       await tester.pump(const Duration(milliseconds: 100));
-      if (MetalPreview.active) {
-        tookPlay = true;
-        break;
-      }
     }
+    tookPlay = MetalPreview.active;
     final tPlay1 = timeText();
-    for (var i = 0; i < 25; i++) {
+    for (var i = 0; i < 15; i++) {
       await tester.pump(const Duration(milliseconds: 100));
       if (i % 5 == 0) debugPrint('=== 播放中 UI=${timeText()} ===');
     }
