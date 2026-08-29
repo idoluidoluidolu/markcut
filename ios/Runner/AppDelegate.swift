@@ -625,8 +625,14 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
       x: min(p0.x, p1.x), y: min(p0.y, p1.y),
       width: abs(p1.x - p0.x), height: abs(p1.y - p0.y))
     let c = CGRect(origin: .zero, size: canvas)
-    return abs(r.minX - c.minX) < 1 && abs(r.minY - c.minY) < 1
+    let ok = abs(r.minX - c.minX) < 1 && abs(r.minY - c.minY) < 1
       && abs(r.maxX - c.maxX) < 1 && abs(r.maxY - c.maxY) < 1
+    if !ok, Self.stFastFrames == 0, Self.stCIFrames < 30 {
+      NSLog(
+        "[FastPath] 非滿版 r=%@ canvas=%@",
+        NSCoder.string(for: r), NSCoder.string(for: c))
+    }
+    return ok
   }
 
   /// 上一格合成完的畫面（指向我們自己輸出池的緩衝）。
@@ -1169,9 +1175,12 @@ final class MetalYUVBlit {
   private var cache: CVMetalTextureCache?
   private var pipeY: MTLRenderPipelineState?
   private var pipeC: MTLRenderPipelineState?
+  private var pipeY8: MTLRenderPipelineState?
+  private var pipeC8: MTLRenderPipelineState?
   private var sampler: MTLSamplerState?
   private var ready = false
   private var failed = false
+  private var noteN = 0
   private let lock = NSLock()
 
   /// 每平面一條 passthrough（雙線性縮放由 sampler 做）。
@@ -1234,6 +1243,8 @@ final class MetalYUVBlit {
       }
       pipeY = try pipe("fragY", .r16Unorm)
       pipeC = try pipe("fragC", .rg16Unorm)
+      pipeY8 = try pipe("fragY", .r8Unorm)
+      pipeC8 = try pipe("fragC", .rg8Unorm)
       let sd = MTLSamplerDescriptor()
       sd.minFilter = .linear
       sd.magFilter = .linear
@@ -1272,24 +1283,40 @@ final class MetalYUVBlit {
   func blit(from srcBuf: CVPixelBuffer, to dstBuf: CVPixelBuffer) -> Bool {
     lock.lock()
     defer { lock.unlock() }
-    guard setUp(), let queue = queue, let sampler = sampler,
-      let pipeY = pipeY, let pipeC = pipeC
+    guard setUp(), let queue = queue, let sampler = sampler
     else { return false }
     let sf = CVPixelBufferGetPixelFormatType(srcBuf)
     let df = CVPixelBufferGetPixelFormatType(dstBuf)
-    // 只吃「同為 10-bit bi-planar」的組合；其他退 CI
+    // 吃「同 bit 深的 bi-planar」組合（10-bit 或 8-bit）；其他退 CI
     let tenBit: Set<OSType> = [
       kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
       kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
     ]
-    guard tenBit.contains(sf), tenBit.contains(df), sf == df,
+    let eightBit: Set<OSType> = [
+      kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+      kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+    ]
+    let is10 = tenBit.contains(sf) && tenBit.contains(df)
+    let is8 = eightBit.contains(sf) && eightBit.contains(df)
+    guard is10 || is8,
       CVPixelBufferGetPlaneCount(srcBuf) == 2,
       CVPixelBufferGetPlaneCount(dstBuf) == 2
-    else { return false }
-    guard let sy = planeTex(srcBuf, 0, .r16Unorm),
-      let sc = planeTex(srcBuf, 1, .rg16Unorm),
-      let dy = planeTex(dstBuf, 0, .r16Unorm),
-      let dc = planeTex(dstBuf, 1, .rg16Unorm),
+    else {
+      if noteN < 3 {
+        noteN += 1
+        NSLog("[FastPath] blit 格式不合 src=%08x dst=%08x", sf, df)
+      }
+      return false
+    }
+    let yFmt: MTLPixelFormat = is10 ? .r16Unorm : .r8Unorm
+    let cFmt: MTLPixelFormat = is10 ? .rg16Unorm : .rg8Unorm
+    let pY = is10 ? pipeY : pipeY8
+    let pC = is10 ? pipeC : pipeC8
+    guard let sy = planeTex(srcBuf, 0, yFmt),
+      let sc = planeTex(srcBuf, 1, cFmt),
+      let dy = planeTex(dstBuf, 0, yFmt),
+      let dc = planeTex(dstBuf, 1, cFmt),
+      let pipeYx = pY, let pipeCx = pC,
       let cmd = queue.makeCommandBuffer()
     else { return false }
     func pass(
@@ -1310,7 +1337,7 @@ final class MetalYUVBlit {
       e.endEncoding()
       return true
     }
-    guard pass(dy, sy, pipeY), pass(dc, sc, pipeC) else {
+    guard pass(dy, sy, pipeYx), pass(dc, sc, pipeCx) else {
       cmd.commit()
       return false
     }
