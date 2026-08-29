@@ -5815,9 +5815,16 @@ final class MetalPreviewEngine: NSObject {
     for (_, p) in pumps { p.pause() }
   }
 
-  /// 播放中的 pump 管理：進窗起播、快進窗先就位、出窗暫停；
-  /// 播著的偏移超過 0.15s 就重對（want 自帶去抖）
+  /// 每顆 pump 上次被重對的時刻（冷卻用）
+  private var lastChase: [Int: Double] = [:]
+
+  /// 播放中的 pump 管理：進窗起播、快進窗預捲就位、出窗暫停。
+  /// 重對鐵律：影片追時鐘用「容忍」，不准頻繁 seek——seek 會
+  /// 打斷解碼流，落後 0.15 就 seek 的舊邏輯＝每秒好幾發 seek
+  /// 風暴，播放流永遠起不來（實測 133：播放供格 miss 666）。
+  /// 現在：偏差 >0.5s 且冷卻 1.5s 才重對一次
   private func syncPumps(_ t: Double, force: Bool = false) {
+    let now = CACurrentMediaTime()
     for sp in layers {
       if sp.offset <= t && t < sp.end {
         let pump = pumpFor(sp)
@@ -5825,14 +5832,22 @@ final class MetalPreviewEngine: NSObject {
         if pump.playingRate == 0 || force {
           pump.want(want)
           pump.play(rate: sp.speed)
+          lastChase[sp.id] = now
         } else {
           let cur = pump.player.currentTime().seconds
-          if abs(cur - want) > 0.15 { pump.want(want) }
+          if abs(cur - want) > 0.5,
+            now - (lastChase[sp.id] ?? 0) > 1.5
+          {
+            lastChase[sp.id] = now
+            pump.want(want)
+          }
         }
       } else if sp.offset - 1.5 <= t && t < sp.offset {
+        // 快進窗：對到入點＋預捲——交界那一刻起播即出圖
         let pump = pumpFor(sp)
         pump.pause()
         pump.want(sp.trimStart)
+        pump.player.preroll(atRate: Float(sp.speed), completionHandler: nil)
       } else {
         pumps[sp.id]?.pause()
       }
@@ -6379,7 +6394,17 @@ final class MetalPreviewEngine: NSObject {
     ]
   }
 
-  func noteMiss() { stPumpMiss += 1 }
+  /// 連續無新格的長度：30fps 內容在 60fps tick 下每兩 tick 沒
+  /// 新格是「正常節奏」，連續 4 tick（>65ms）沒格才是真缺
+  private var missStreak = 0
+  func noteMiss(_ miss: Bool) {
+    if miss {
+      missStreak += 1
+      if missStreak == 4 { stPumpMiss += 1 }
+    } else {
+      missStreak = 0
+    }
+  }
 
   @objc private func tick() {
     guard active else { return }
@@ -6590,7 +6615,7 @@ final class MetalPreviewEngine: NSObject {
           // 播放模式：pump 自己在跑，逐格問「現在該顯示哪格」
           let before = pump.lastTexture
           tex = pump.playTexture(cache: cache)
-          if playing, tex === before { noteMiss() }
+          noteMiss(tex === before)
         } else {
           let srcT = sp.trimStart + (t - sp.offset) * sp.speed
           pump.want(srcT)
