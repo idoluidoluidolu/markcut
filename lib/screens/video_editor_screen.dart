@@ -7128,18 +7128,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   '關掉試試：iOS 上兩顆 AVPlayer 同時解碼可能就是那個頓',
                   Diag.preheat,
                 ),
-                ('脫節校正（播放中自動 seek）', '關掉試試：每次校正都會讓畫面停一下', Diag.driftFix),
-                ('背景抽幀', '關掉試試：抽幀會跟播放搶硬體解碼器', Diag.scrubPrefetch),
+                ('脫節校正（播放中自動 seek）', '舊路徑專用，引擎模式下本來就不跑——不用動它', Diag.driftFix),
+                ('背景抽幀', '舊機制，引擎模式下已自動停用——不用動它', Diag.scrubPrefetch),
                 ('GPU 匯出合成', '浮水印在 GPU 上逐格疊（快）。成品有異狀時關掉退回舊路徑', Diag.ciExport),
                 (
                   '只養一顆播放器',
                   '打開試試：三顆 AVPlayer 一起養，系統會在它們之間排隊',
                   Diag.singlePlayer,
                 ),
-                ('合成播放器（整條時間軸交給系統）', '預設開。關掉＝退回一片段一顆播放器的舊路徑', Diag.compPlayer),
                 (
-                  '系統影片圖層（要先開合成播放器）',
-                  '預設開。關掉＝影格複製一份進 Flutter 材質再合成',
+                  '⚠ 合成播放器【引擎地基，請保持開】',
+                  '關掉＝Metal 引擎整個停擺，退回一片段一顆播放器的上古路徑'
+                      '（交界必卡）。它不是舊機制，是新架構的地基',
+                  Diag.compPlayer,
+                ),
+                (
+                  '⚠ 系統影片圖層【引擎地基，請保持開】',
+                  '關掉＝影格多複製一份進 Flutter 材質（慢）。跟上面一樣是地基',
                   Diag.playerLayer,
                 ),
               ])
