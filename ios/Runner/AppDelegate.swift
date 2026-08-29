@@ -5709,6 +5709,8 @@ final class ClipReader {
   /// HDR 才用 64RGBAHalf（10-bit 要保留精度）。多 reader 全上
   /// half float 的話 3 層 ≈ +350MB，4GB 機種直接 jetsam（閃退）
   private var texFormat = MTLPixelFormat.rgba16Float
+  /// 診斷探針計數（播放黑畫面查因）
+  private var probeN = 0
 
   init(path: String) { self.path = path }
 
@@ -5777,6 +5779,9 @@ final class ClipReader {
       markDead(gen: g)
       return
     }
+    NSLog(
+      "[ClipReader] 起 srcT=%.2f hdr=%@ path=…%@", srcT,
+      hdr ? "T" : "F", String(path.suffix(24)))
     lock.lock()
     if gen == self.gen {
       reader = r
@@ -5847,6 +5852,31 @@ final class ClipReader {
       lock.lock()
       let fmt = texFormat
       lock.unlock()
+      // 診斷探針：每 30 格印一次中心像素實際值（播放黑畫面查因）
+      probeN += 1
+      if probeN % 30 == 1 {
+        CVPixelBufferLockBaseAddress(buf, .readOnly)
+        let pf = CVPixelBufferGetPixelFormatType(buf)
+        let stride = CVPixelBufferGetBytesPerRow(buf)
+        var vals = "?"
+        if let base = CVPixelBufferGetBaseAddress(buf) {
+          let bpp = pf == kCVPixelFormatType_64RGBAHalf ? 8 : 4
+          let p = base.advanced(by: (h / 2) * stride + (w / 2) * bpp)
+          if pf == kCVPixelFormatType_64RGBAHalf {
+            let hp = p.assumingMemoryBound(to: Float16.self)
+            vals = String(
+              format: "half(%.3f %.3f %.3f %.3f)", Float(hp[0]),
+              Float(hp[1]), Float(hp[2]), Float(hp[3]))
+          } else {
+            let bp = p.assumingMemoryBound(to: UInt8.self)
+            vals = "bgra(\(bp[0]) \(bp[1]) \(bp[2]) \(bp[3]))"
+          }
+        }
+        CVPixelBufferUnlockBaseAddress(buf, .readOnly)
+        NSLog(
+          "[ClipReader] 探針 pts=%.2f fmt=%08x %dx%d stride=%d %@",
+          lastPts, pf, w, h, stride, vals)
+      }
       if CVMetalTextureCacheCreateTextureFromImage(
         kCFAllocatorDefault, cache, buf, nil, fmt, w, h, 0, &cv)
         == kCVReturnSuccess, let cv = cv,
