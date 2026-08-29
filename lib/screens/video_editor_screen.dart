@@ -6806,6 +6806,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 同一個坑：seek 沒跑完之前播放器的 rate 壓在 0，畫面不會動。
       // 真的要移動時也用寬容 seek，反正接下來就要滾過去了
       final now = await _comp!.position();
+      debugPrint('[PLAYDBG] pos=$_position compNow=$now dur=${_tl.duration}');
       if ((now - _position).abs() <= 0.15) {
         // 播放器已經在附近（chase 的寬容度是 0.1，別跟它打架）：
         // 一發 seek 都不送，時間軸直接對齊播放器——它本來就是唯一的時鐘
@@ -6836,6 +6837,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         }
       }
       Diag.notePlayLatency(sw.elapsedMilliseconds);
+      debugPrint('[PLAYDBG] 起播完成 probe=${sw.elapsedMilliseconds}ms');
+      unawaited(() async {
+        for (var i = 0; i < 8; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 500));
+          if (!mounted) return;
+          final p = await _comp?.position();
+          debugPrint('[PLAYDBG] +${(i + 1) * 500}ms comp=$p ui=$_position');
+        }
+      }());
       if (!mounted) return;
       _lastTick = Duration.zero;
       _ticker.start();
