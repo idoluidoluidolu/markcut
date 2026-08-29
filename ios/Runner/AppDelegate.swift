@@ -5006,6 +5006,12 @@ final class CompPlayer: NSObject, FlutterTexture {
       ) { [weak self] _ in
         guard let self = self, self.takeover else { return }
         self.audioPlayer.playImmediately(atRate: self.targetRate)
+        // 聲音從這一刻起跑：引擎時鐘對到同一點，音畫同步起步
+        DispatchQueue.main.async {
+          guard self.takeover else { return }
+          MetalPreviewEngine.shared.rebase(
+            to: self.audioPlayer.currentTime().seconds)
+        }
       }
     } else {
       audioPlayer.pause()
@@ -6232,6 +6238,17 @@ final class MetalPreviewEngine: NSObject {
     syncReaders(t)
     show(true)
     return true
+  }
+
+  /// 音訊分身真正轉起來那一刻的對表：playT0 直接跳到音訊時刻。
+  /// 分身 seek+起步要 ~100ms，引擎先跑掉 0.1s，之後 ±6% 滑動要
+  /// 吸兩秒——實測 141 時鐘軌跡「擎恆超前音 0.10~0.15」＝跳動感。
+  /// 對表不動解碼佇列（時鐘回退 0.1s 只是同一格多顯示一下）
+  func rebase(to t: Double) {
+    guard playing else { return }
+    playT0 = t
+    host0 = CACurrentMediaTime()
+    slideBias = 0
   }
 
   /// 停播：畫面停在停點那格。解碼佇列「不殺」——沒人消費它就

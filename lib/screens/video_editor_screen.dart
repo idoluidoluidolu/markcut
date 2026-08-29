@@ -3080,7 +3080,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         ch = (1080 / ar).roundToDouble();
       }
     }
-    final hdrMode = _exportHdr && _hdrAvail == true;
+    // 「未知」不算「無」：_hdrAvail 在轉檔過程有短暫 null/false 的
+    // 窗（實測 141 事件流：層0 原檔→SDR工作檔→原檔 一秒內往返＝
+    // 畫面閃一下 SDR 色）。引擎佈局的 HDR 判定只認「明確關掉」
+    final hdrMode = _exportHdr && _hdrAvail != false;
     final specs = <Map<String, dynamic>>[];
     for (final c in _tl.clips) {
       final src = _tl.sourceOf(c);
@@ -7105,7 +7108,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               '（平均 ${m['renderAvgMs']}ms、最久 ${m['renderMaxMs']}ms）'
               '／播放供格miss ${m['pumpMiss']}\n'
               '  起播到首格 ${m['playStartMs']}ms'
-              '／miss爆發點 [$missAt]s\n'
+              '／miss爆發點 [$missAt]s'
+              '／最大幀隙 ${m['maxGapMs']}ms\n'
+              '  供格來源：${m['supply']}\n'
               '  常駐=${m['resident'] == true ? '亮' : '暗'}'
               '／播放中=${m['playing'] == true ? '是' : '否'}'
               '／可接管=${m['playSafe'] == true ? '是' : '否'}'
