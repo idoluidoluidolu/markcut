@@ -881,8 +881,12 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           L.fadeIn < 0.01 || t0 >= L.start + L.fadeIn,
           L.fadeOut < 0.01 || t0 <= L.end - L.fadeOut,
           !self.liveComp || CIExportCompositor.currentLiveXform() == nil,
+          // 浮水印：引擎常駐在台上時它畫在最上層，合成器的輸出被
+          // 蓋住看不見——此時合成器烘浮水印是浪費，快路放行。
+          // 引擎讓位（罕見）時照舊 CI 全路，浮水印不會消失
           !self.livePreview
-            || CIExportCompositor.currentPreviewOverlays().isEmpty,
+            || CIExportCompositor.currentPreviewOverlays().isEmpty
+            || MetalPreviewEngine.shared.isOnStage,
           self.isFullCanvas(L, canvas: size),
           let sbuf = req.sourceFrame(byTrackID: L.trackID),
           MetalYUVBlit.shared.blit(from: sbuf, to: dst)
@@ -6402,6 +6406,11 @@ final class MetalPreviewEngine: NSObject {
   weak var layerHost: MetalPreviewView?
   private var link: CADisplayLink?
   private(set) var active = false
+
+  /// 跨執行緒可讀的「引擎是否在台上」（合成器快路用；bool 原子性
+  /// 在此讀取容忍度內——錯一格只是那格走 CI 全路）。
+  /// 不讀 UIKit 屬性（背景執行緒），show() 時同步維護
+  private(set) var isOnStage = false
   private var curT: Double = 0
 
   // ===== 播放接管：引擎自己的時鐘 =====
@@ -7069,6 +7078,7 @@ final class MetalPreviewEngine: NSObject {
   func show(_ on: Bool) {
     if !on { stop() }
     active = on && available
+    isOnStage = active
     layerHost?.setHDR(hdr)
     layerHost?.setVisible(active)
     if active {
