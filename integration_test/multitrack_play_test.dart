@@ -135,6 +135,25 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
     }
 
+    // 長拖曳的起點可能落在片段上、把片段拖走（前一輪實測 z2 被
+    // 拖到尾端，播放段只剩兩層疊放）——起播前重套一次並硬驗證
+    applyLayout();
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+    var preplay = true;
+    VideoEditorScreen.debugTimeline!((tl) {
+      final cs = [...tl.clips]..sort((a, b) => a.id.compareTo(b.id));
+      preplay =
+          cs.length >= 3 &&
+          (cs[1].offset - 3.0).abs() < 0.01 &&
+          (cs[2].offset - 0.6).abs() < 0.01;
+    });
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+    expect(preplay, true, reason: '起播前三層疊放不成立');
+
     // ── 壓力 2：整段播放穿過所有交界 ──
     var took = false;
     await tester.tap(find.byIcon(Icons.play_arrow_rounded).first);
