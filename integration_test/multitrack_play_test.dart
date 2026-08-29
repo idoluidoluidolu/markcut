@@ -61,20 +61,40 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
     }
 
-    // 疊放佈局：測試鉤子直接改軌（UI 手勢組不出穩定疊放）
-    VideoEditorScreen.debugTimeline!((tl) {
-      final cs = [...tl.clips]..sort((a, b) => a.offset.compareTo(b.offset));
-      expect(cs.length >= 3, true, reason: '匯入後不足 3 個片段');
-      cs[1].track = 1;
-      cs[1].offset = 3.0;
-      cs[2].track = 2;
-      cs[2].offset = 0.6;
-      cs[2].trimEnd = cs[2].trimStart + 1.5;
-    });
-    // 等重組＋引擎預建＋常駐接管
+    // 疊放佈局：測試鉤子直接改軌（UI 手勢組不出穩定疊放）。
+    // 匯入的工作檔轉檔是背景事件，完成時可能把片段重新排位——
+    // 所以套完等一輪、再套一次、驗證穩定才算就緒
+    void applyLayout() {
+      VideoEditorScreen.debugTimeline!((tl) {
+        final cs = [...tl.clips]..sort((a, b) => a.id.compareTo(b.id));
+        expect(cs.length >= 3, true, reason: '匯入後不足 3 個片段');
+        cs[1].track = 1;
+        cs[1].offset = 3.0;
+        cs[2].track = 2;
+        cs[2].offset = 0.6;
+        cs[2].trimEnd = cs[2].trimStart + 1.5;
+      });
+    }
+
+    applyLayout();
     for (var i = 0; i < 50; i++) {
       await tester.pump(const Duration(milliseconds: 250));
     }
+    applyLayout();
+    for (var i = 0; i < 30; i++) {
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+    var stable = true;
+    VideoEditorScreen.debugTimeline!((tl) {
+      final cs = [...tl.clips]..sort((a, b) => a.id.compareTo(b.id));
+      stable =
+          cs.length >= 3 &&
+          (cs[1].offset - 3.0).abs() < 0.01 &&
+          (cs[2].offset - 0.6).abs() < 0.01 &&
+          cs[1].track == 1 &&
+          cs[2].track == 2;
+    });
+    expect(stable, true, reason: '疊放佈局被背景事件改掉，起播前不成立');
     debugPrint('=== 疊放佈局就緒 active=${MetalPreview.active} ===');
 
     String timeText() {
