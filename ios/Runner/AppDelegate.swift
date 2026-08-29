@@ -6171,23 +6171,10 @@ final class MetalPreviewEngine: NSObject {
       lastReject = "沒有佈局"
       NSLog("[MetalPreview] mplay 拒絕：沒有佈局")
     }
-    if !playSafe {
-      lastReject = layers.allSatisfy { $0.proxy }
-        ? "佈局含馬賽克/GIF/濾鏡貼圖" : "有層還在吃原檔（代理未就緒）"
+    guard available, !layers.isEmpty else {
       NSLog(
-        "[MetalPreview] mplay 拒絕：佈局不宜（全代理=%@）",
-        layers.allSatisfy { $0.proxy } ? "是" : "否")
-      for sp in layers {
-        NSLog(
-          "[MetalPreview]   層 id=%d proxy=%@ path=…%@",
-          sp.id, sp.proxy ? "T" : "F",
-          String(sp.path.suffix(28)))
-      }
-    }
-    guard available, !layers.isEmpty, playSafe else {
-      NSLog(
-        "[MetalPreview] mplay 拒 available=%@ layers=%d playSafe=%@",
-        available ? "T" : "F", layers.count, playSafe ? "T" : "F")
+        "[MetalPreview] mplay 拒 available=%@ layers=%d",
+        available ? "T" : "F", layers.count)
       return false
     }
     NSLog("[MetalPreview] mplay 接管 t=%.2f", t)
@@ -6233,6 +6220,22 @@ final class MetalPreviewEngine: NSObject {
     let now = CACurrentMediaTime()
     for sp in layers {
       let want = sp.trimStart + (t - sp.offset) * sp.speed
+      if !sp.proxy {
+        // 轉檔期過渡：原檔（4K）不開解碼佇列（記憶體/頻寬扛不住），
+        // 播放交給系統播放器硬解供格——畫面仍由引擎渲染，不換手。
+        // 代理轉好後（停播時佈局重建）自動升級成解碼佇列
+        if sp.offset <= t && t < sp.end {
+          let p = pumpFor(sp)
+          if playing {
+            p.play(rate: 1.0)
+          } else {
+            p.pause()
+          }
+        } else {
+          pumps[sp.id]?.pause()
+        }
+        continue
+      }
       if sp.offset <= t && t < sp.end {
         var r = readers[sp.id]
         if r == nil {
@@ -6605,10 +6608,10 @@ final class MetalPreviewEngine: NSObject {
     }
     layers = specs.sorted { $0.z < $1.z }
     stills = stillSpecs
-    // 2.0：GIF 動畫、貼圖調色、馬賽克 z 分段引擎全會了——
-    // 唯一擋持續播放的是「還在吃原檔」（4K 原檔持續解碼的頻寬
-    // 是真實硬體限制，代理轉好前讓合成器扛）
-    playSafe = specs.allSatisfy { $0.proxy }
+    // 2.0：引擎全時段當家，播放不再有任何佈局閘門。
+    // 還在吃原檔的層走「系統播放器過渡供格」（play/syncReaders），
+    // 代理轉好、下次停播重建佈局後自動升級成解碼佇列
+    playSafe = true
     layoutEpoch &+= 1  // 佈局變了＝畫面該重繪（靜止降頻歸零）
     // pump 走「靠近才建、遠離回收」（見 pumpFor/trimPumps）：
     // 二十支片的時間軸也只養播放頭附近那幾顆解碼器
@@ -6961,7 +6964,7 @@ final class MetalPreviewEngine: NSObject {
       for sp in layers where sp.offset <= curT && curT < sp.end {
         pumpFor(sp).want(sp.trimStart + (curT - sp.offset) * sp.speed)
       }
-      if playSafe { syncReaders(curT, force: true) }
+      syncReaders(curT, force: true)
     }
     let ep = CIExportCompositor.liveEpoch &+ layoutEpoch
     // GIF 動畫是時變內容：有它在台上就不能靜止降頻（會凍住）
@@ -7251,7 +7254,10 @@ final class MetalPreviewEngine: NSObject {
         var dispH = pump?.dispH ?? sp.srcH
         var hlg = pump?.isHLG ?? false
         var p2020 = pump?.is2020 ?? false
-        if playing, let rd = readers[sp.id] {
+        if playing, readers[sp.id] == nil, !sp.proxy, let pump = pump {
+          // 轉檔期過渡：系統播放器自走時鐘、逐格取樣（見 syncReaders）
+          tex = pump.playTexture(cache: cache) ?? pump.lastTexture
+        } else if playing, let rd = readers[sp.id] {
           // 確定性播放：從解碼佇列取「時鐘這一刻該顯示的那格」
           let srcT = sp.trimStart + (t - sp.offset) * sp.speed
           let before = rd.lastTexture
