@@ -1373,8 +1373,7 @@ final class AtomicFlag {
         result(
           MetalPreviewEngine.shared.play(call.arguments as? Double ?? 0))
       case "mstop":
-        MetalPreviewEngine.shared.stop()
-        result(nil)
+        result(MetalPreviewEngine.shared.stop())
       case "mpark":
         MetalPreviewEngine.shared.park()
         result(nil)
@@ -5693,9 +5692,21 @@ final class ClipReader {
     let buf: CVPixelBuffer
     let cv: CVMetalTexture
   }
+  /// 三代環形保留：CAMetalLayer 的 GPU 管線深度是 3 幀，
+  /// 兩代在多軌高壓下第三幀還在 GPU 手上就被釋放回收＝黑/撕裂
   private var held: Held?
-  private var heldPrev: Held?
+  private var heldRing: [Held] = []
   private var lastPts = -1.0
+  /// 世代權杖：start() 每次 +1。舊解碼執行緒醒來對不上號就自行
+  /// 收乾淨退出——沒有它，快速重啟時新 start 把 running 設回
+  /// true，「舊執行緒以為自己還活著」→ 兩條執行緒同時對同一個
+  /// AVAssetReaderTrackOutput 取樣（非執行緒安全）→ 閃退。
+  /// 多軌 3 層 reader 頻繁開關時命中（實測 136：多軌會閃退）
+  private var gen = 0
+  /// SDR 來源（8-bit）解 32BGRA：記憶體砍半、色彩零損失。
+  /// HDR 才用 64RGBAHalf（10-bit 要保留精度）。多 reader 全上
+  /// half float 的話 3 層 ≈ +350MB，4GB 機種直接 jetsam（閃退）
+  private var texFormat = MTLPixelFormat.rgba16Float
 
   init(path: String) { self.path = path }
 
@@ -5705,40 +5716,49 @@ final class ClipReader {
   func start(at srcT: Double) {
     stop()
     lock.lock()
+    gen += 1
+    let g = gen
     running = true
     finished = false
     lock.unlock()
     Thread.detachNewThread { [weak self] in
-      self?.setupAndPump(at: srcT)
+      self?.setupAndPump(at: srcT, gen: g)
     }
   }
 
-  private func setupAndPump(at srcT: Double) {
+  private func setupAndPump(at srcT: Double, gen g: Int) {
     let asset = AVURLAsset(url: URL(fileURLWithPath: path))
     guard let tr = asset.tracks(withMediaType: .video).first,
       let r = try? AVAssetReader(asset: asset)
     else {
-      lock.lock()
-      running = false
-      finished = true
-      lock.unlock()
+      markDead(gen: g)
       return
     }
-    // 輸出跟 pump 同一種（64RGBAHalf）：色彩語意與 shader
-    // 線性化管線完全共用，不另開 YUV 路
+    // HDR 判定跟 pump 同一套（PQ 也算）
+    var hdr = false
+    if let fdAny = tr.formatDescriptions.first {
+      let fd = fdAny as! CMFormatDescription
+      if let tf = CMFormatDescriptionGetExtension(
+        fd, extensionKey: kCMFormatDescriptionExtension_TransferFunction)
+        as? String
+      {
+        hdr =
+          tf == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String)
+          || tf
+            == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String)
+      }
+    }
+    // 色彩語意與 shader 線性化管線共用，不另開 YUV 路
     let o = AVAssetReaderTrackOutput(
       track: tr,
       outputSettings: [
         kCVPixelBufferPixelFormatTypeKey as String: Int(
-          kCVPixelFormatType_64RGBAHalf),
+          hdr ? kCVPixelFormatType_64RGBAHalf : kCVPixelFormatType_32BGRA),
         kCVPixelBufferMetalCompatibilityKey as String: true,
       ])
     o.alwaysCopiesSampleData = false
     guard r.canAdd(o) else {
-      lock.lock()
-      running = false
-      finished = true
-      lock.unlock()
+      markDead(gen: g)
       return
     }
     r.add(o)
@@ -5748,27 +5768,42 @@ final class ClipReader {
       start: CMTime(seconds: max(0, srcT - 0.5), preferredTimescale: 600),
       duration: .positiveInfinity)
     lock.lock()
-    let go = running
+    let go = running && gen == self.gen
     lock.unlock()
     guard go, r.startReading() else {
-      lock.lock()
-      running = false
-      finished = true
-      lock.unlock()
+      markDead(gen: g)
       return
     }
     lock.lock()
-    reader = r
-    out = o
-    lock.unlock()
-    pumpLoop()
+    if gen == self.gen {
+      reader = r
+      out = o
+      texFormat = hdr ? .rgba16Float : .bgra8Unorm
+      lock.unlock()
+    } else {
+      // 過期世代：別動共享狀態，自己收乾淨
+      lock.unlock()
+      r.cancelReading()
+      return
+    }
+    pumpLoop(gen: g)
   }
 
-  private func pumpLoop() {
+  /// 只有「自己還是現任世代」才准把共享旗標標成死掉
+  private func markDead(gen g: Int) {
+    lock.lock()
+    if gen == self.gen {
+      running = false
+      finished = true
+    }
+    lock.unlock()
+  }
+
+  private func pumpLoop(gen g: Int) {
     while true {
       lock.lock()
-      let go = running
-      let full = queue.count >= 4
+      let go = running && gen == g
+      let full = queue.count >= 3
       lock.unlock()
       if !go { return }
       if full {
@@ -5776,20 +5811,17 @@ final class ClipReader {
         continue
       }
       lock.lock()
-      let oo = out
+      let oo = gen == g ? out : nil
       lock.unlock()
       guard let o = oo, let sb = o.copyNextSampleBuffer(),
         let buf = CMSampleBufferGetImageBuffer(sb)
       else {
-        lock.lock()
-        finished = true
-        running = false
-        lock.unlock()
+        markDead(gen: g)
         return
       }
       let pts = CMSampleBufferGetPresentationTimeStamp(sb).seconds
       lock.lock()
-      queue.append((pts, buf))
+      if gen == g { queue.append((pts, buf)) }
       lock.unlock()
     }
   }
@@ -5809,13 +5841,17 @@ final class ClipReader {
       var cv: CVMetalTexture?
       let w = CVPixelBufferGetWidth(buf)
       let h = CVPixelBufferGetHeight(buf)
+      lock.lock()
+      let fmt = texFormat
+      lock.unlock()
       if CVMetalTextureCacheCreateTextureFromImage(
-        kCFAllocatorDefault, cache, buf, nil, .rgba16Float, w, h, 0, &cv)
+        kCFAllocatorDefault, cache, buf, nil, fmt, w, h, 0, &cv)
         == kCVReturnSuccess, let cv = cv,
         let tex = CVMetalTextureGetTexture(cv)
       {
         lock.lock()
-        heldPrev = held
+        if let h = held { heldRing.append(h) }
+        if heldRing.count > 3 { heldRing.removeFirst() }
         held = Held(tex: tex, buf: buf, cv: cv)
         lock.unlock()
       }
@@ -5849,7 +5885,7 @@ final class ClipReader {
     running = false
     queue.removeAll()
     held = nil
-    heldPrev = nil
+    heldRing.removeAll()
     let r = reader
     reader = nil
     out = nil
@@ -6018,12 +6054,16 @@ final class MetalPreviewEngine: NSObject {
   }
 
   /// 停播：畫面停在停點那格。解碼佇列「不殺」——沒人消費它就
-  /// 自己填滿睡著（primed），再按播放＝直接消費，真 0ms 起播
-  func stop() {
-    guard playing else { return }
+  /// 自己填滿睡著（primed），再按播放＝直接消費，真 0ms 起播。
+  /// 回傳精確停點：Dart 讓位的 exact seek 要用它——用音訊時鐘的
+  /// 位置差幾十 ms，讓位瞬間畫面跳半格（實測 136「暫停抖一下」）
+  @discardableResult
+  func stop() -> Double {
+    guard playing else { return curT }
     curT = engineT
     playing = false
     for (_, p) in pumps { p.pause() }
+    return curT
   }
 
   /// 確定性播放供格：每個進窗片段一條 ClipReader（順序硬解＋

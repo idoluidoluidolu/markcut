@@ -130,6 +130,12 @@ class VideoEditorScreen extends StatefulWidget {
              blank,
        );
 
+  /// 測試鉤子（僅整合測試用）：拿到時間軸直接改 clip.track/offset
+  /// 組出多軌疊放，再由編輯器觸發重組＋引擎預建。實機 136 的閃退
+  /// 是三層疊放播放踩出來的，UI 手勢在測試裡組不出穩定疊放
+  @visibleForTesting
+  static void Function(void Function(TimelineModel tl))? debugTimeline;
+
   @override
   State<VideoEditorScreen> createState() => _VideoEditorScreenState();
 }
@@ -2085,6 +2091,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void initState() {
     super.initState();
     _tabs = TabController(length: 3, vsync: this);
+    // 測試鉤子：整合測試用它組多軌疊放（見 VideoEditorScreen 上的說明）
+    VideoEditorScreen.debugTimeline = (fn) {
+      fn(_tl);
+      if (!mounted) return;
+      setState(() {});
+      _compRefreshIfChanged();
+      _metalPrebuild();
+    };
     // HDR 預覽疊加物：新合成「畫面真的上檔」那一刻才切換
     // Flutter 版顯示與否（見 _ovNativePending 的說明）
     CompPlayer.onCompVisible = () {
@@ -6855,21 +6869,29 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     //（軌＋videoComposition），再精準 seek 一發——恢復瞬間它的
     // 畫面還停在停用前的舊幀，不對準就讓位跳圖
     if (MetalPreview.active) {
-      unawaited(MetalPreview.stopPlay());
       final c = _comp;
-      if (c != null) {
-        // 音訊分身停、主播放器管線本來就活著——精準 seek「完成」
-        // 才讓位（合成畫面必然就位，不透黑）
-        unawaited(
-          c.setTakeover(false).then((_) => c.seek(_position, exact: true)).then(
-            (_) {
-              if (mounted) _metalScrubEnd();
-            },
-          ),
-        );
-      } else {
-        _metalScrubEnd();
-      }
+      // 引擎回報「精確停點」——用它對齊 Dart 位置與合成的 exact
+      // seek。用音訊時鐘的 _position 差幾十 ms，讓位瞬間跳半格
+      unawaited(
+        MetalPreview.stopPlay().then((stopT) {
+          if (stopT != null && mounted && (stopT - _position).abs() < 0.4) {
+            _position = stopT;
+            _syncScrollToPosition();
+          }
+          if (c != null) {
+            // 音訊分身停、主播放器管線本來就活著——精準 seek「完成」
+            // 才讓位（合成畫面必然就位，不透黑）
+            return c
+                .setTakeover(false)
+                .then((_) => c.seek(_position, exact: true))
+                .then((_) {
+                  if (mounted) _metalScrubEnd();
+                });
+          }
+          if (mounted) _metalScrubEnd();
+          return null;
+        }),
+      );
     }
     if (_ticker.isActive) _ticker.stop();
     for (final c in _ctrls.values) {

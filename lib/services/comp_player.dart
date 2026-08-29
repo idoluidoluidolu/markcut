@@ -44,11 +44,16 @@ class MetalPreview {
     }
   }
 
-  /// 停播（畫面停在停點那格；讓位時機由呼叫端決定）
-  static Future<void> stopPlay() async {
+  /// 停播（畫面停在停點那格；讓位時機由呼叫端決定）。
+  /// 回傳引擎的精確停點（秒）：讓位 exact seek 必須用它——
+  /// 音訊時鐘的位置差幾十 ms，讓位瞬間畫面會跳半格（136「暫停抖」）
+  static Future<double?> stopPlay() async {
     try {
-      await CompPlayer._ch.invokeMethod<void>('mstop');
-    } catch (_) {}
+      final t = await CompPlayer._ch.invokeMethod<double>('mstop');
+      return t;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// 引擎實測統計（tick/掉格/渲染耗時/供格 miss）——診斷用
