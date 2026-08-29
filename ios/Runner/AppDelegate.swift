@@ -5703,6 +5703,8 @@ final class ClipReader {
   /// AVAssetReaderTrackOutput 取樣（非執行緒安全）→ 閃退。
   /// 多軌 3 層 reader 頻繁開關時命中（實測 136：多軌會閃退）
   private var gen = 0
+  /// 這一代 reader 起跑的主機時刻——重啟判定要先讓它暖身滿一秒
+  private var startHost = 0.0
   /// SDR 來源（8-bit）解 32BGRA：記憶體砍半、色彩零損失。
   /// HDR 才用 64RGBAHalf（10-bit 要保留精度）。多 reader 全上
   /// half float 的話 3 層 ≈ +350MB，4GB 機種直接 jetsam（閃退）
@@ -5720,6 +5722,7 @@ final class ClipReader {
     let g = gen
     running = true
     finished = false
+    startHost = CACurrentMediaTime()
     lock.unlock()
     Thread.detachNewThread { [weak self] in
       self?.setupAndPump(at: srcT, gen: g)
@@ -5872,6 +5875,13 @@ final class ClipReader {
     lock.lock()
     defer { lock.unlock() }
     return running || !queue.isEmpty
+  }
+
+  /// 這一代跑了多久（秒）
+  var age: Double {
+    lock.lock()
+    defer { lock.unlock() }
+    return CACurrentMediaTime() - startHost
   }
 
   var lastTexture: MTLTexture? {
@@ -6072,7 +6082,11 @@ final class MetalPreviewEngine: NSObject {
   /// 時鐘只管消費（晚了丟、早了等）
   private var readers: [Int: ClipReader] = [:]
 
+  /// 每個 reader 上次被重啟的時刻（重啟風暴防線，見下）
+  private var restartAt: [Int: Double] = [:]
+
   private func syncReaders(_ t: Double, force: Bool = false) {
+    let now = CACurrentMediaTime()
     for sp in layers {
       let want = sp.trimStart + (t - sp.offset) * sp.speed
       if sp.offset <= t && t < sp.end {
@@ -6094,14 +6108,26 @@ final class MetalPreviewEngine: NSObject {
           }
         } else if force {
           r!.start(at: want)
-        } else if !r!.isRunning && r!.bufferedTo < sp.trimStart
-          + (sp.end - sp.offset) * sp.speed - 0.1
-        {
-          // 斷流（讀掛了）而且還沒到片尾：從當下重啟
-          r!.start(at: want)
-        } else if r!.bufferedTo < want - 0.8 {
-          // 落後太多丟不完：重啟一次（正常情況永不發生）
-          r!.start(at: want)
+        } else if r!.age > 1.0, now - (restartAt[sp.id] ?? 0) > 1.0 {
+          // 重啟只留給兩種確定壞掉的情況，而且一秒最多一次、
+          // 新 reader 先給滿一秒暖身。之前每格（60次/秒）判定：
+          // 新 reader 還沒出格時備量是 -1，被誤判成「落後」→
+          // 每格「建 reader→立刻取消」→ CoreMedia 內部對「已失效
+          // 物件」無限重試、錯誤每毫秒數十條洗版、執行緒絞死——
+          // 實機 137「一進去黑畫面＋按播放馬上當機」的真兇
+          //（模擬機日誌 err=-12790 洪流實證）。解碼慢＝顯示上一格
+          // 等它追，不重啟：重啟會逼它從關鍵幀重解，只會更慢
+          if !r!.isRunning && r!.bufferedTo < sp.trimStart
+            + (sp.end - sp.offset) * sp.speed - 0.1
+          {
+            // 斷流（讀掛了）而且還沒到片尾：從當下重啟
+            restartAt[sp.id] = now
+            r!.start(at: want)
+          } else if r!.bufferedTo >= 0, r!.bufferedTo < want - 2.0 {
+            // 真的整段落後（已出過格才算數）：重啟一次
+            restartAt[sp.id] = now
+            r!.start(at: want)
+          }
         }
       } else if sp.offset - 1.5 <= t && t < sp.offset {
         if readers[sp.id] == nil {
@@ -6110,6 +6136,9 @@ final class MetalPreviewEngine: NSObject {
           r.start(at: sp.trimStart)
         }
       } else {
+        // 剛出生的 reader 不當場取消（取消撞上 preroll 進行中
+        // ＝CoreMedia 對失效物件無限重試，見上）：晾到下一輪再收
+        if let r = readers[sp.id], r.age < 0.5 { continue }
         readers[sp.id]?.stop()
         readers.removeValue(forKey: sp.id)
       }
