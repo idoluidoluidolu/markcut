@@ -24,6 +24,21 @@ void main() {
     await tester.pumpWidget(
       const MaterialApp(home: VideoEditorScreen(videoPath: vid)),
     );
+
+    String timeText() {
+      for (final e in find.byType(RichText).evaluate()) {
+        final s = (e.widget as RichText).text.toPlainText();
+        if (s.contains(' / ')) return s;
+      }
+      return '?';
+    }
+
+    double posSec() {
+      final t = timeText();
+      final m = RegExp(r'^(\d+):(\d+\.\d)').firstMatch(t);
+      if (m == null) return 0;
+      return int.parse(m.group(1)!) * 60 + double.parse(m.group(2)!);
+    }
     // ── A) 進場（時間軸一出現、轉檔一定沒完）立刻滑動 ──
     var waited = 0;
     while (find.byType(TimelineEditor).evaluate().isEmpty && waited < 40) {
@@ -57,6 +72,9 @@ void main() {
 
     // ── B) 同檔切段跨三軌（交界 0.5/0.8/1.0/1.8/3.0）──
     // 整份重寫時間軸（先前手勢可能拖動過素材，clear 保純淨）
+    // 佈局以播放頭當下位置為基準起排（B ≈ pos）：起播即在 z0a 內，
+    // 0.5s 後開始依序穿越 B+0.5/B+0.8/B+1.0/B+1.8/B+2.5 全部交界
+    final base = posSec();
     void buildBoundaryLayout() {
       VideoEditorScreen.debugTimeline!((tl) {
         expect(tl.clips.isNotEmpty, true);
@@ -69,7 +87,7 @@ void main() {
               sourceIndex: si,
               trimStart: ts,
               trimEnd: te,
-              offset: off,
+              offset: base + off,
               track: track,
             );
         tl.clips.addAll([
@@ -90,15 +108,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
     }
 
-    String timeText() {
-      for (final e in find.byType(RichText).evaluate()) {
-        final s = (e.widget as RichText).text.toPlainText();
-        if (s.contains(' / ')) return s;
-      }
-      return '?';
-    }
-
-    // 整段播放穿全部交界（總長 6s，從當前位置播即可穿越）
+    // 整段播放穿全部交界（佈局已排在播放頭前方，整段穿越）
     var took = false;
     await tester.tap(find.byIcon(Icons.play_arrow_rounded).first);
     for (var i = 0; i < 10; i++) {
@@ -126,7 +136,9 @@ void main() {
     final st = await MetalPreview.stats();
     debugPrint(
       '=== 引擎統計 miss=${st?['pumpMiss']} missWho=${st?['missWho']} '
-      'supply=${st?['supply']} maxGap=${st?['maxGapMs']} ===',
+      'supply=${st?['supply']} maxGap=${st?['maxGapMs']}
+'
+      '佈局 ${st?['layers']} ===',
     );
     debugPrint('=== 診斷報告 ===\n${Diag.report()}');
   });
