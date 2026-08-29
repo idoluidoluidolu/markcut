@@ -3046,8 +3046,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (c.reverse) return null; // 倒轉走現有路徑
       specs.add({
         'id': c.id,
-        'path': hdrMode && src.workHdrPath != null
-            ? src.workHdrPath!
+        // HDR 模式：代理沒好就用「原檔」，永不上 SDR 色調映射工作檔
+        // ——之前進場會經歷「原檔→SDR 檔→HDR 代理」三連切，中間那段
+        // 顏色灰平（實機 140：「一進去就是顏色不對」）。原檔雖重，
+        // 但轉檔期有系統播放器過渡供格扛（2.0 里程碑③）
+        'path': hdrMode
+            ? (src.workHdrPath ?? src.path)
             : src.previewPath,
         'offset': c.offset,
         'end': c.end,
@@ -3068,7 +3072,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         'srcH': src.h.toDouble(),
         // 這層吃的是代理還是原檔——原檔（4K HEVC）浮點輸出的
         // 頻寬撐不起持續播放，引擎只在「全代理」時接管播放
-        'proxy': (hdrMode && src.workHdrPath != null) || src.workPath != null,
+        // proxy 必須跟上面的 path 一致：HDR 模式下只有 HDR 代理算數
+        //（不一致的話會對 4K 原檔開解碼佇列＝記憶體爆）
+        'proxy': hdrMode
+            ? src.workHdrPath != null
+            : src.workPath != null,
       });
     }
     if (specs.isEmpty) return null;

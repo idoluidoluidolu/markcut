@@ -5304,7 +5304,11 @@ final class CompPlayer: NSObject, FlutterTexture {
     // 播放接管中：有聲＝音訊分身當時鐘；無音軌素材＝分身是空的
     //（時間永遠 0），改用引擎的主機時鐘
     if takeover {
-      return audioValid
+      // 分身還沒真的轉起來（seek+起播要 100~300ms）前用引擎時鐘：
+      // 用停滯的音訊時間會讓位置「停→本地推進→被拉回→跳前」，
+      // 就是實機「暫停再播放有跳動感」（140 回報）。轉起來再交棒
+      // ——兩個時鐘此時已對齊（分身從引擎位置起播），無縫
+      return audioValid && audioPlayer.rate > 0.01
         ? Int(audioPlayer.currentTime().seconds * 1000)
         : Int(MetalPreviewEngine.shared.clockT * 1000)
     }
