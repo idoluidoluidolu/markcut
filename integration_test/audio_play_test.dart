@@ -35,6 +35,26 @@ void main() {
       return '?';
     }
 
+    // 工作檔拷出去給主機解剖（查 w 檔為何 pump/reader 都解不出）
+    VideoEditorScreen.debugTimeline!((tl) {
+      var i = 0;
+      for (final s in tl.sources) {
+        debugPrint(
+          '=== 素材$i path=${s.path} work=${s.workPath} '
+          'hdr=${s.workHdrPath} ===',
+        );
+        final wp = s.workPath;
+        if (wp != null && File(wp).existsSync()) {
+          File(wp).copySync('/Users/m1/wcopy_$i.mp4');
+        }
+        final hp = s.workHdrPath;
+        if (hp != null && File(hp).existsSync()) {
+          File(hp).copySync('/Users/m1/hcopy_$i.mp4');
+        }
+        i++;
+      }
+    });
+
     // 進場停 6 秒給截圖迴圈拍「進場畫面」——實機回報一進去就黑
     debugPrint(
       '=== ENTRY_HOLD ${DateTime.now().millisecondsSinceEpoch} '
