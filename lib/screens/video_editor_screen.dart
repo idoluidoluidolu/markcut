@@ -6811,9 +6811,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 一發 seek 都不送，時間軸直接對齊播放器——它本來就是唯一的時鐘
         _position = now;
       } else {
-        // 不 await：遠距 seek（例如片尾歸零重播）在模擬機上是秒級，
-        // await 會把起播整個擋住。系統播放器 seek 完成自己會接著播
-        unawaited(_comp!.seek(_position));
+        // 遠距（例如片尾歸零重播）：先 seek 完成才 play——順序反了
+        // 的話 play 在片尾立即自停、seek 完成後沒人再叫 play，
+        // 播放器停在新位置永遠不動（實測：播完再按播放沒反應）
+        await _comp!.seek(_position);
       }
       await _comp!.setRate(_speed);
       // ══ 3.0 終局：播放交還系統播放器 ══

@@ -188,6 +188,7 @@ void main() {
     final tPlay1 = timeText();
     for (var i = 0; i < 25; i++) {
       await tester.pump(const Duration(milliseconds: 100));
+      if (i % 5 == 0) debugPrint('=== 播放中 UI=${timeText()} ===');
     }
     final tPlay2 = timeText();
     debugPrint('=== 播放接管 $tookPlay，位置 $tPlay1 → $tPlay2 ===');
