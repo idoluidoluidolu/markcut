@@ -6090,7 +6090,13 @@ final class MetalPreviewEngine: NSObject {
           String(sp.path.suffix(28)))
       }
     }
-    guard available, !layers.isEmpty, playSafe else { return false }
+    guard available, !layers.isEmpty, playSafe else {
+      NSLog(
+        "[MetalPreview] mplay 拒 available=%@ layers=%d playSafe=%@",
+        available ? "T" : "F", layers.count, playSafe ? "T" : "F")
+      return false
+    }
+    NSLog("[MetalPreview] mplay 接管 t=%.2f", t)
     playT0 = t
     host0 = CACurrentMediaTime()
     slideBias = 0
@@ -6797,6 +6803,18 @@ final class MetalPreviewEngine: NSObject {
     }
     lastTickAt = now
     stTicks += 1
+    // 診斷心跳（黑幀查因）：每秒印引擎狀態與第一層供給
+    if stTicks % 60 == 1 {
+      let sp0 = layers.first
+      let rd0 = sp0.flatMap { readers[$0.id] }
+      let pm0 = sp0.flatMap { pumps[$0.id] }
+      NSLog(
+        "[MetalPreview] 心跳 playing=%@ curT=%.2f rd=%@ buf=%.2f pumpTex=%@",
+        playing ? "T" : "F", curT,
+        rd0 == nil ? "無" : (rd0!.isRunning ? "跑" : "死"),
+        rd0?.bufferedTo ?? -9,
+        pm0?.lastTexture == nil ? "無" : "有")
+    }
     if playing {
       // 對時偏差滑著吃（±6% 速率）：見 seek() 播放分支的說明
       if abs(slideBias) > 0.0005, lastSlideHost > 0 {
