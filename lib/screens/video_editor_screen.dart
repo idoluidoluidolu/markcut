@@ -6989,7 +6989,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               '（平均 ${m['renderAvgMs']}ms、最久 ${m['renderMaxMs']}ms）'
               '／播放供格miss ${m['pumpMiss']}\n'
               '  起播到首格 ${m['playStartMs']}ms'
-              '／miss爆發點 [${missAt}]s\n'
+              '／miss爆發點 [$missAt]s\n'
               '  常駐=${m['resident'] == true ? '亮' : '暗'}'
               '／播放中=${m['playing'] == true ? '是' : '否'}'
               '／可接管=${m['playSafe'] == true ? '是' : '否'}'
