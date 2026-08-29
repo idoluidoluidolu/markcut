@@ -876,6 +876,14 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         }
         let size = req.renderContext.size
         let t0 = req.compositionTime.seconds
+        if Self.stCIFrames + Self.stFastFrames < 3 {
+          NSLog(
+            "[FastPath] 格況 hdrOut=%@ layers=%d live=%@ ovs=%d 台上=%@",
+            self.hdrOut ? "T" : "F", ins.layers.count,
+            self.livePreview ? "T" : "F",
+            CIExportCompositor.currentPreviewOverlays().count,
+            MetalPreviewEngine.shared.isOnStage ? "T" : "F")
+        }
         // ── Engine 3.0 快路：單層滿版無效果 → YUV 平面直拷 ──
         // 色彩零轉換（位元級一致）、<1ms。任何條件不合就走 CI 原路
         if self.hdrOut,
