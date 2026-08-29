@@ -6010,6 +6010,10 @@ final class MetalPreviewEngine: NSObject {
   private(set) var playing = false
   private var playT0 = 0.0
   private var host0 = 0.0
+  /// 對時要慢慢吃掉的偏差（正＝往前追）。tick 每格吃 ≤6%×dt，
+  /// 相當於 ±6% 速率微調——肉眼看不出來，也不用動 reader
+  private var slideBias = 0.0
+  private var lastSlideHost = 0.0
 
   /// 播放接管的安全閘：滑動暫態的近似（GIF 停首幀、馬賽克蓋全
   /// 層、貼圖不吃濾鏡）在「持續播放」中是持續的錯——這些佈局
@@ -6051,6 +6055,8 @@ final class MetalPreviewEngine: NSObject {
     guard available, !layers.isEmpty, playSafe else { return false }
     playT0 = t
     host0 = CACurrentMediaTime()
+    slideBias = 0
+    lastSlideHost = 0
     playing = true
     playStartHost = host0
     stPlayStartMs = -1
@@ -6633,11 +6639,19 @@ final class MetalPreviewEngine: NSObject {
 
   func seek(_ t: Double) {
     if playing {
-      // 播放中的 seek 是「對時」：偏差大才重定（音訊時鐘是主）
-      if abs(engineT - t) > 0.25 {
+      // 播放中的 seek 是「對時」（音訊時鐘是主）。硬跳＋強制重啟
+      // 只留給真失聯（>1s）——音訊分身起步慢 ~300ms，開播後第一次
+      // 對時若硬跳（舊值 0.25s 門檻）＝畫面跳一格＋解碼斷一拍，
+      // 就是實機「暫停再播放頓一下、抖一下」。小偏差改用 ±6% 速率
+      // 滑著吃，肉眼看不見，reader 完全不用動
+      let diff = t - engineT
+      if abs(diff) > 1.0 {
         playT0 = t
         host0 = CACurrentMediaTime()
+        slideBias = 0
         syncReaders(t, force: true)
+      } else if abs(diff) > 0.04 {
+        slideBias = diff
       }
     } else {
       curT = t
@@ -6746,6 +6760,14 @@ final class MetalPreviewEngine: NSObject {
     lastTickAt = now
     stTicks += 1
     if playing {
+      // 對時偏差滑著吃（±6% 速率）：見 seek() 播放分支的說明
+      if abs(slideBias) > 0.0005, lastSlideHost > 0 {
+        let dt = min(now - lastSlideHost, 0.1)
+        let eat = max(-dt * 0.06, min(dt * 0.06, slideBias))
+        playT0 += eat
+        slideBias -= eat
+      }
+      lastSlideHost = now
       curT = engineT
       syncReaders(curT)
     } else if !seekSettled,
