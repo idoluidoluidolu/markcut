@@ -6980,15 +6980,34 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     unawaited(
       MetalPreview.stats().then((m) {
         if (m == null) return;
+        final reject = (m['lastReject'] as String?) ?? '';
+        final missAt = (m['missAt'] as List?)?.join(', ') ?? '';
         tr.env(
           'Metal引擎',
           'tick ${m['ticks']}／掉格 ${m['dropped']}'
               '／渲染 ${m['renders']} 格'
               '（平均 ${m['renderAvgMs']}ms、最久 ${m['renderMaxMs']}ms）'
-              '／播放供格miss ${m['pumpMiss']}',
+              '／播放供格miss ${m['pumpMiss']}\n'
+              '  起播到首格 ${m['playStartMs']}ms'
+              '／miss爆發點 [${missAt}]s\n'
+              '  常駐=${m['resident'] == true ? '亮' : '暗'}'
+              '／播放中=${m['playing'] == true ? '是' : '否'}'
+              '／可接管=${m['playSafe'] == true ? '是' : '否'}'
+              '${reject.isEmpty ? '' : '／上次拒絕：$reject'}\n'
+              '  佈局：${m['layers']}\n'
+              '  佇列：${m['queues']}',
         );
       }),
     );
+    // 地基開關被關＝整個新架構停擺（實測 133 的「交界必卡」），
+    // 報告第一眼就要看到
+    if (!Diag.compPlayer.value || !Diag.playerLayer.value) {
+      tr.env(
+        '⚠⚠ 架構警報',
+        '合成播放器/系統影片圖層被關掉了——'
+            '引擎停擺、退回上古路徑。請到診斷開關把「⚠ 引擎地基」開回',
+      );
+    }
     // 工作檔到底有沒有生效：這一格對不對，決定了「順不順」是不是
     // 還在原檔上跑
     final vids = _tl.sources.where((s) => s.isVideo).toList();

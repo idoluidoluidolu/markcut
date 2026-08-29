@@ -5919,9 +5919,17 @@ final class MetalPreviewEngine: NSObject {
   /// 進入播放模式：pump 各自起播（靜音），畫面由 tick 逐格合成。
   /// 佈局沒建過（build 沒成）回 false，呼叫端照舊走合成播放器畫面
   func play(_ t: Double) -> Bool {
-    if !available { NSLog("[MetalPreview] mplay 拒絕：引擎未就緒") }
-    if layers.isEmpty { NSLog("[MetalPreview] mplay 拒絕：沒有佈局") }
+    if !available {
+      lastReject = "引擎未就緒"
+      NSLog("[MetalPreview] mplay 拒絕：引擎未就緒")
+    }
+    if layers.isEmpty {
+      lastReject = "沒有佈局"
+      NSLog("[MetalPreview] mplay 拒絕：沒有佈局")
+    }
     if !playSafe {
+      lastReject = layers.allSatisfy { $0.proxy }
+        ? "佈局含馬賽克/GIF/濾鏡貼圖" : "有層還在吃原檔（代理未就緒）"
       NSLog(
         "[MetalPreview] mplay 拒絕：佈局不宜（全代理=%@）",
         layers.allSatisfy { $0.proxy } ? "是" : "否")
@@ -5936,6 +5944,10 @@ final class MetalPreviewEngine: NSObject {
     playT0 = t
     host0 = CACurrentMediaTime()
     playing = true
+    playStartHost = host0
+    stPlayStartMs = -1
+    stMissAt.removeAll()
+    lastReject = ""
     // 不 force：暫停時 primed 好的佇列直接消費（真 0ms 起播）；
     // 位置變過的 settle 機制已經重新 prime 過
     syncReaders(t)
@@ -6520,8 +6532,30 @@ final class MetalPreviewEngine: NSObject {
   private var stRenders = 0
   private var stPumpMiss = 0
   private var lastTickAt = 0.0
+  /// 起播→首個新格的毫秒（真 0ms 起播的驗收數字）
+  private var playStartHost = 0.0
+  private var stPlayStartMs = -1.0
+  /// miss 爆發（連續 4 tick 沒格）發生的時間軸秒——直接看是不是
+  /// 交界（前 8 筆）
+  private var stMissAt: [Double] = []
+  /// 最近一次 mplay 被拒的原因（報告要看得到，不只 NSLog）
+  private(set) var lastReject = ""
 
   func statsReport() -> [String: Any] {
+    var layerInfo: [String] = []
+    for sp in layers {
+      let tail = String(sp.path.suffix(18))
+      layerInfo.append(
+        "z\(sp.z)@\(String(format: "%.1f", sp.offset))"
+          + "~\(String(format: "%.1f", sp.end))"
+          + (sp.proxy ? "代理" : "⚠原檔")
+          + "(…\(tail))")
+    }
+    var queueInfo: [String] = []
+    for (id, r) in readers {
+      queueInfo.append(
+        "id\(id) 備到 \(String(format: "%.2f", r.bufferedTo))s")
+    }
     return [
       "ticks": stTicks,
       "dropped": stDropped,
@@ -6530,6 +6564,14 @@ final class MetalPreviewEngine: NSObject {
         ? (stRenderMsSum / Double(stRenders) * 1000).rounded() : 0,
       "renderMaxMs": (stRenderMsMax * 1000).rounded(),
       "pumpMiss": stPumpMiss,
+      "playStartMs": stPlayStartMs.rounded(),
+      "missAt": stMissAt.map { ($0 * 10).rounded() / 10 },
+      "layers": layerInfo.joined(separator: "、"),
+      "queues": queueInfo.joined(separator: "、"),
+      "playSafe": playSafe,
+      "resident": active,
+      "playing": playing,
+      "lastReject": lastReject,
     ]
   }
 
@@ -6539,8 +6581,17 @@ final class MetalPreviewEngine: NSObject {
   func noteMiss(_ miss: Bool) {
     if miss {
       missStreak += 1
-      if missStreak == 4 { stPumpMiss += 1 }
+      if missStreak == 4 {
+        stPumpMiss += 1
+        if stMissAt.count < 8 { stMissAt.append(curT) }
+      }
     } else {
+      if missStreak >= 1, playing, stPlayStartMs < 0 {
+        stPlayStartMs = (CACurrentMediaTime() - playStartHost) * 1000
+      }
+      if playing, stPlayStartMs < 0 {
+        stPlayStartMs = (CACurrentMediaTime() - playStartHost) * 1000
+      }
       missStreak = 0
     }
   }

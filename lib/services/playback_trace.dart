@@ -17,8 +17,9 @@ class PlaybackTrace {
   PlaybackTrace._();
   static final instance = PlaybackTrace._();
 
-  /// 預設關閉。從診斷畫面打開，避免平常白白累積字串
-  bool enabled = false;
+  /// 常駐開啟（環形緩衝 400 行字串，成本可忽略）：使用者回報
+  /// 問題時「當下那份」記錄已經在——不用先開開關再重播一次
+  bool enabled = true;
 
   static const _cap = 400;
   final _lines = <String>[];
