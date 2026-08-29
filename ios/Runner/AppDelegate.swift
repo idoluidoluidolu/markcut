@@ -5936,18 +5936,19 @@ final class MetalPreviewEngine: NSObject {
     playT0 = t
     host0 = CACurrentMediaTime()
     playing = true
-    syncReaders(t, force: true)
+    // 不 force：暫停時 primed 好的佇列直接消費（真 0ms 起播）；
+    // 位置變過的 settle 機制已經重新 prime 過
+    syncReaders(t)
     show(true)
     return true
   }
 
-  /// 停播：解碼佇列全停，畫面停在停點那格（讓位交給 Dart 計時器）
+  /// 停播：畫面停在停點那格。解碼佇列「不殺」——沒人消費它就
+  /// 自己填滿睡著（primed），再按播放＝直接消費，真 0ms 起播
   func stop() {
     guard playing else { return }
     curT = engineT
     playing = false
-    for (_, r) in readers { r.stop() }
-    readers.removeAll()
     for (_, p) in pumps { p.pause() }
   }
 
@@ -6558,11 +6559,13 @@ final class MetalPreviewEngine: NSObject {
     } else if !seekSettled,
       CACurrentMediaTime() - lastSeekHost > 0.15
     {
-      // 手停了：補精確幀（滑動中全是關鍵幀貼齊的粗略幀）
+      // 手停了：補精確幀（滑動中全是關鍵幀貼齊的粗略幀），
+      // 播放佇列同步 prime 到新位置——之後按播放即刻起
       seekSettled = true
       for sp in layers where sp.offset <= curT && curT < sp.end {
         pumpFor(sp).want(sp.trimStart + (curT - sp.offset) * sp.speed)
       }
+      if playSafe { syncReaders(curT, force: true) }
     }
     let ep = CIExportCompositor.liveEpoch &+ layoutEpoch
     if !playing && curT == drawnT && ep == drawnEpoch {
