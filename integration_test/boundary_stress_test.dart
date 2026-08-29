@@ -56,42 +56,37 @@ void main() {
     }
 
     // ── B) 同檔切段跨三軌（交界 0.5/0.8/1.0/1.8/3.0）──
-    VideoEditorScreen.debugTimeline!((tl) {
-      expect(tl.clips.isNotEmpty, true);
-      final c0 = tl.clips.first;
-      final si = c0.sourceIndex;
-      c0.trimStart = 0;
-      c0.trimEnd = 1.0;
-      c0.offset = 0;
-      c0.track = 0;
-      tl.clips.addAll([
-        TimelineClip(
-          id: tl.nextId(),
-          sourceIndex: si,
-          trimStart: 1.0,
-          trimEnd: 2.5,
-          offset: 1.0,
-          track: 0,
-        ),
-        TimelineClip(
-          id: tl.nextId(),
-          sourceIndex: si,
-          trimStart: 2.5,
-          trimEnd: 3.5,
-          offset: 0.8,
-          track: 1,
-        ),
-        TimelineClip(
-          id: tl.nextId(),
-          sourceIndex: si,
-          trimStart: 3.5,
-          trimEnd: 6.0,
-          offset: 0.5,
-          track: 2,
-        ),
-      ]);
-    });
-    for (var i = 0; i < 40; i++) {
+    // 整份重寫時間軸（先前手勢可能拖動過素材，clear 保純淨）
+    void buildBoundaryLayout() {
+      VideoEditorScreen.debugTimeline!((tl) {
+        expect(tl.clips.isNotEmpty, true);
+        final si = tl.clips.first.sourceIndex;
+        tl.clips.clear();
+        var id = 0;
+        TimelineClip mk(double ts, double te, double off, int track) =>
+            TimelineClip(
+              id: id++,
+              sourceIndex: si,
+              trimStart: ts,
+              trimEnd: te,
+              offset: off,
+              track: track,
+            );
+        tl.clips.addAll([
+          mk(0.0, 1.0, 0.0, 0),
+          mk(1.0, 2.5, 1.0, 0),
+          mk(2.5, 3.5, 0.8, 1),
+          mk(3.5, 6.0, 0.5, 2),
+        ]);
+      });
+    }
+
+    buildBoundaryLayout();
+    for (var i = 0; i < 30; i++) {
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+    buildBoundaryLayout();
+    for (var i = 0; i < 20; i++) {
       await tester.pump(const Duration(milliseconds: 250));
     }
 
@@ -103,18 +98,7 @@ void main() {
       return '?';
     }
 
-    // 拉回開頭
-    final g0 = await tester.startGesture(center);
-    for (var i = 0; i < 40; i++) {
-      await g0.moveBy(const Offset(40, 0));
-      await tester.pump(const Duration(milliseconds: 16));
-    }
-    await g0.up();
-    for (var i = 0; i < 10; i++) {
-      await tester.pump(const Duration(milliseconds: 100));
-    }
-
-    // 整段播放穿全部交界
+    // 整段播放穿全部交界（總長 6s，從當前位置播即可穿越）
     var took = false;
     await tester.tap(find.byIcon(Icons.play_arrow_rounded).first);
     for (var i = 0; i < 10; i++) {
