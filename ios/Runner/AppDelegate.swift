@@ -5699,13 +5699,31 @@ final class ClipReader {
 
   init(path: String) { self.path = path }
 
-  /// 從 [srcT] 開始順序解碼（會貼齊往前最近的可解點）
+  /// 從 [srcT] 開始順序解碼（貼齊往前最近的可解點）。
+  /// 開檔/建讀取器整套在解碼執行緒做——在主執行緒做的話，
+  /// 起播與交界瞬間主執行緒卡 50~200ms（實測 134：引擎掉格 62）
   func start(at srcT: Double) {
     stop()
+    lock.lock()
+    running = true
+    finished = false
+    lock.unlock()
+    Thread.detachNewThread { [weak self] in
+      self?.setupAndPump(at: srcT)
+    }
+  }
+
+  private func setupAndPump(at srcT: Double) {
     let asset = AVURLAsset(url: URL(fileURLWithPath: path))
     guard let tr = asset.tracks(withMediaType: .video).first,
       let r = try? AVAssetReader(asset: asset)
-    else { return }
+    else {
+      lock.lock()
+      running = false
+      finished = true
+      lock.unlock()
+      return
+    }
     // 輸出跟 pump 同一種（64RGBAHalf）：色彩語意與 shader
     // 線性化管線完全共用，不另開 YUV 路
     let o = AVAssetReaderTrackOutput(
@@ -5716,19 +5734,32 @@ final class ClipReader {
         kCVPixelBufferMetalCompatibilityKey as String: true,
       ])
     o.alwaysCopiesSampleData = false
-    guard r.canAdd(o) else { return }
+    guard r.canAdd(o) else {
+      lock.lock()
+      running = false
+      finished = true
+      lock.unlock()
+      return
+    }
     r.add(o)
     r.timeRange = CMTimeRange(
       start: CMTime(seconds: max(0, srcT), preferredTimescale: 600),
       duration: .positiveInfinity)
-    guard r.startReading() else { return }
+    lock.lock()
+    let go = running
+    lock.unlock()
+    guard go, r.startReading() else {
+      lock.lock()
+      running = false
+      finished = true
+      lock.unlock()
+      return
+    }
+    lock.lock()
     reader = r
     out = o
-    running = true
-    finished = false
-    Thread.detachNewThread { [weak self] in
-      self?.pumpLoop()
-    }
+    lock.unlock()
+    pumpLoop()
   }
 
   private func pumpLoop() {
@@ -5742,7 +5773,10 @@ final class ClipReader {
         usleep(4000)
         continue
       }
-      guard let o = out, let sb = o.copyNextSampleBuffer(),
+      lock.lock()
+      let oo = out
+      lock.unlock()
+      guard let o = oo, let sb = o.copyNextSampleBuffer(),
         let buf = CMSampleBufferGetImageBuffer(sb)
       else {
         lock.lock()
@@ -5814,10 +5848,11 @@ final class ClipReader {
     queue.removeAll()
     held = nil
     heldPrev = nil
-    lock.unlock()
-    reader?.cancelReading()
+    let r = reader
     reader = nil
     out = nil
+    lock.unlock()
+    r?.cancelReading()
   }
 }
 
