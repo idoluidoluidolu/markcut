@@ -5742,8 +5742,10 @@ final class ClipReader {
       return
     }
     r.add(o)
+    // 從目標前 0.5s 起解、消費端丟到目標格：首幀正好是停格
+    // 那一格（從目標起解的話首幀=目標後第一格，起播跳一格=抖）
     r.timeRange = CMTimeRange(
-      start: CMTime(seconds: max(0, srcT), preferredTimescale: 600),
+      start: CMTime(seconds: max(0, srcT - 0.5), preferredTimescale: 600),
       duration: .positiveInfinity)
     lock.lock()
     let go = running
@@ -6035,11 +6037,21 @@ final class MetalPreviewEngine: NSObject {
       let want = sp.trimStart + (t - sp.offset) * sp.speed
       if sp.offset <= t && t < sp.end {
         var r = readers[sp.id]
-        if r == nil || r!.path != sp.path {
-          r?.stop()
+        if r == nil {
           r = ClipReader(path: sp.path)
           readers[sp.id] = r
           r!.start(at: want)
+        } else if r!.path != sp.path {
+          if playing {
+            // 播放中不換檔：換檔＝新解碼器就緒前該層沒畫面＝
+            // 閃黑（實測 135：代理完成觸發熱更新的瞬間閃黑）。
+            // 沿用舊檔畫完這一輪，停播後 primed 重建自然升級
+          } else {
+            r!.stop()
+            r = ClipReader(path: sp.path)
+            readers[sp.id] = r
+            r!.start(at: want)
+          }
         } else if force {
           r!.start(at: want)
         } else if !r!.isRunning && r!.bufferedTo < sp.trimStart
