@@ -6768,7 +6768,10 @@ final class MetalPreviewEngine: NSObject {
       let drawable = mlayer.nextDrawable(),
       let cmd = queue.makeCommandBuffer()
     else { return }
-    let t = curT
+    // 播畢（時鐘超過所有層）停在最後一幀，不變黑
+    var t = curT
+    let maxEnd = layers.map { $0.end }.max() ?? 0
+    if maxEnd > 0, t >= maxEnd { t = maxEnd - 0.001 }
     // 有馬賽克的佈局走 two-pass：圖層先畫進離屏場景紋理，
     // 馬賽克 shader 取樣它（模擬器也行——不讀 framebuffer），
     // 最後整張搬上 drawable 再蓋疊加物。近似：馬賽克蓋「所有」
