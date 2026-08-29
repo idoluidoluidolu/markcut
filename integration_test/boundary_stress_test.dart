@@ -24,10 +24,17 @@ void main() {
     await tester.pumpWidget(
       const MaterialApp(home: VideoEditorScreen(videoPath: vid)),
     );
-    // ── A) 進場 2.5 秒（轉檔一定沒完）立刻滑動 ──
-    for (var i = 0; i < 10; i++) {
+    // ── A) 進場（時間軸一出現、轉檔一定沒完）立刻滑動 ──
+    var waited = 0;
+    while (find.byType(TimelineEditor).evaluate().isEmpty && waited < 40) {
       await tester.pump(const Duration(milliseconds: 250));
+      waited++;
     }
+    expect(
+      find.byType(TimelineEditor).evaluate().isNotEmpty,
+      true,
+      reason: '時間軸 10 秒內沒出現',
+    );
     final timeline = find.byType(TimelineEditor);
     final center = tester.getCenter(timeline);
     for (var round = 0; round < 3; round++) {
