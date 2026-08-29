@@ -888,6 +888,9 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           MetalYUVBlit.shared.blit(from: sbuf, to: dst)
         {
           Self.stFastFrames += 1
+          if Self.stFastFrames == 1 || Self.stFastFrames % 300 == 0 {
+            NSLog("[FastPath] 快路命中 %d 格", Self.stFastFrames)
+          }
           Self.noteFrame(
             t: t0, ms: (CFAbsoluteTimeGetCurrent() - tick) * 1000,
             layers: 1, missing: false)
