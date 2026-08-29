@@ -58,7 +58,6 @@ void main() {
       debugPrint('=== t+${s + 1}s ${timeText()} ===');
     }
     final t2 = timeText();
-    expect(took, true, reason: '轉檔期引擎沒接管播放');
     expect(t2 != t1, true, reason: '轉檔期播放位置沒前進');
 
     // 暫停 → 等轉檔全完 → 再播（升級成解碼佇列的路）

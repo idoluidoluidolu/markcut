@@ -3027,7 +3027,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   // ===== Metal 預覽引擎（滑動接管）=====
   DateTime _mSeekAt = DateTime.fromMillisecondsSinceEpoch(0);
-  DateTime _mPlaySyncAt = DateTime.fromMillisecondsSinceEpoch(0);
   Timer? _mHideTimer;
 
   /// 引擎目前烘好的佈局指紋。滑動起手時指紋沒變就直接亮，
@@ -6349,13 +6348,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     // 播放接管中：引擎有自己的時鐘，每半秒對一次時（引擎端只在
     // 偏差 >0.25s 時重定，音訊時鐘是主）
-    if (MetalPreview.active) {
-      final now = DateTime.now();
-      if (now.difference(_mPlaySyncAt).inMilliseconds >= 500) {
-        _mPlaySyncAt = now;
-        unawaited(MetalPreview.seek(_position));
-      }
-    }
+
     // 合成播放器是唯一的時鐘來源：位置以它為準，Dart 這邊只在兩次
     // 回報之間補間。原本的做法是 App 自己算時間再回頭校正播放器，
     // 那個校正每次都會讓畫面停一下
@@ -6787,9 +6780,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_tl.duration <= 0) return;
     if (_position >= _tl.duration - 0.01) _position = 0;
     _clockBias = 0; // 上一輪沒吃完的校正不能帶進新的一輪
-    // 常駐佈局不藏：引擎馬上要接管播放，讓它停格頂到 mplay 接手
-    //（無縫）；接不了再藏。非常駐佈局照舊先讓合成出畫面
-    if (!_mResident || _mBuiltSig == null) _metalHideNow();
+    // 3.0：播放畫面永遠是系統播放器的——引擎讓位
+    _metalHideNow();
     final tr = PlaybackTrace.instance..start();
 
     // 拖曳收尾排在後面的那幾件事，按下播放的當下全部取消：
@@ -6803,7 +6795,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _scrubEndTimer?.cancel();
     _seekInFlight = false;
     if (_scrubbing) setState(() => _scrubbing = false);
-    if (!_mResident || _mBuiltSig == null) _metalHideNow();
+    _metalHideNow();
 
     // 合成播放器接手時，整條時間軸就是它一顆在播：舊的逐片段播放器
     // 一個都不要碰。上一版兩邊同時在播——兩倍解碼、兩份聲音，
@@ -6822,39 +6814,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         await _comp!.seek(_position);
       }
       await _comp!.setRate(_speed);
-      // 播放接管（音訊分身版）：畫面歸引擎、聲音與時鐘歸音訊
-      // 分身、主播放器原地凍結——合成管線從頭到尾不動，暫停
-      // 畫面隨叫隨到（拆裝管線在實機上＝暫停黑畫面＋跳針）
-      var tookOver = false;
-      if (_metalUsable && Diag.metalPlayback.value && _mBuiltSig != null) {
-        tookOver = await MetalPreview.play(_position);
-        if (tookOver && mounted && _playing) {
-          await _comp!.setTakeover(true);
-          _mHideTimer?.cancel();
-          MetalPreview.active = true;
-          Diag.notePlayLatency(0);
-          tr.log('引擎接管播放（音訊分身出聲）');
-          setState(() {});
+      // ══ 3.0 終局：播放交還系統播放器 ══
+      // 畫面/聲音/同步全由系統負責（跟剪映同一條路）——
+      // 播放接管/音訊分身/追時鐘機制全部退役；引擎只留
+      // 滑動與暫停畫面；合成器快路讓系統播放逐格 <1ms
+      if (MetalPreview.active) _metalHideNow();
+      unawaited(MetalPreview.park());
+      final st = await _comp!.play();
+      tr.log('系統播放器起播（狀態：${st ?? '？'}）');
+      final sw = Stopwatch()..start();
+      final p0 = now;
+      while (mounted && sw.elapsedMilliseconds < 250) {
+        await Future<void>.delayed(const Duration(milliseconds: 16));
+        final p = await _comp!.position();
+        if ((p - p0).abs() > 0.001) {
+          tr.log('影格開始滾動（系統播放器）');
+          break;
         }
       }
-      if (!tookOver) {
-        // 引擎不接管：泊車（pump 解碼器全還給合成），照舊路播
-        if (MetalPreview.active) _metalHideNow();
-        unawaited(MetalPreview.park());
-        final st = await _comp!.play();
-        tr.log('呼叫 play()（合成播放器，狀態：${st ?? '？'}）');
-        final sw = Stopwatch()..start();
-        final p0 = now;
-        while (mounted && sw.elapsedMilliseconds < 250) {
-          await Future<void>.delayed(const Duration(milliseconds: 16));
-          final p = await _comp!.position();
-          if ((p - p0).abs() > 0.001) {
-            tr.log('影格開始滾動（合成播放器）');
-            break;
-          }
-        }
-        Diag.notePlayLatency(sw.elapsedMilliseconds);
-      }
+      Diag.notePlayLatency(sw.elapsedMilliseconds);
       if (!mounted) return;
       _lastTick = Duration.zero;
       _ticker.start();
@@ -6956,35 +6934,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _clockBias = 0;
     _playProbe?.cancel();
     _playProbe = null;
-    if (_comp != null) unawaited(_comp!.pause());
-    // 播放接管收場：引擎停在停點那格；合成的視訊管線開回來
-    //（軌＋videoComposition），再精準 seek 一發——恢復瞬間它的
-    // 畫面還停在停用前的舊幀，不對準就讓位跳圖
-    if (MetalPreview.active) {
-      final c = _comp;
-      // 引擎回報「精確停點」——用它對齊 Dart 位置與合成的 exact
-      // seek。用音訊時鐘的 _position 差幾十 ms，讓位瞬間跳半格
+    if (_comp != null) {
+      final c = _comp!;
+      // 3.0：系統暫停→精確 seek 到停點→常駐引擎回台顯示停格
       unawaited(
-        MetalPreview.stopPlay().then((stopT) {
-          if (stopT != null && mounted && (stopT - _position).abs() < 0.4) {
-            _position = stopT;
-            _syncScrollToPosition();
-          }
-          if (c != null) {
-            // 音訊分身停、主播放器管線本來就活著——精準 seek「完成」
-            // 才讓位（合成畫面必然就位，不透黑）
-            return c
-                .setTakeover(false)
-                .then((_) => c.seek(_position, exact: true))
-                .then((_) {
-                  if (mounted) _metalScrubEnd();
-                });
-          }
-          if (mounted) _metalScrubEnd();
-          return null;
+        c.pause().then((_) async {
+          _position = await c.position();
+          _syncScrollToPosition();
+          await c.seek(_position, exact: true);
+          // 常駐引擎回台顯示停格（滑動/暫停是它僅剩的兩個舞台）
+          if (mounted) _metalResidentTry();
         }),
       );
     }
+    // 播放接管收場：引擎停在停點那格；合成的視訊管線開回來
+    //（軌＋videoComposition），再精準 seek 一發——恢復瞬間它的
+    // 畫面還停在停用前的舊幀，不對準就讓位跳圖
     if (_ticker.isActive) _ticker.stop();
     for (final c in _ctrls.values) {
       if (c.value.isPlaying) c.pause();

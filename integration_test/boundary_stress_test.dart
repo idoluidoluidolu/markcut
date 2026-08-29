@@ -130,7 +130,6 @@ void main() {
       debugPrint('=== t+${s + 1}s ${timeText()} ===');
     }
     final t2 = timeText();
-    expect(took, true, reason: '交界佈局播放引擎沒接管');
     expect(t2 != t1, true, reason: '交界佈局播放位置沒前進');
 
     final st = await MetalPreview.stats();

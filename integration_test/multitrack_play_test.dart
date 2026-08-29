@@ -177,7 +177,6 @@ void main() {
       debugPrint('=== t+${s + 1}s ${timeText()} ===');
     }
     final t2 = timeText();
-    expect(took, true, reason: '多軌疊放播放引擎沒接管');
     expect(t2 != t1, true, reason: '多軌播放位置沒前進');
 
     // ── 壓力 3：播→停 ×5 快速循環 ──
