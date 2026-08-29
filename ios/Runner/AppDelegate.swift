@@ -5636,6 +5636,10 @@ final class MetalPump {
     return sample(out, at: it, cache: cache)
   }
 
+  /// 紋理與像素緩衝成對持有（防池回收覆寫，理由見 ClipReader.Held）
+  private var heldBuf: CVPixelBuffer?
+  private var heldCv: CVMetalTexture?
+
   private func sample(
     _ out: AVPlayerItemVideoOutput, at it: CMTime,
     cache: CVMetalTextureCache
@@ -5651,6 +5655,8 @@ final class MetalPump {
         == kCVReturnSuccess, let cv = cv, let tex = CVMetalTextureGetTexture(cv)
       {
         lastTexture = tex
+        heldBuf = buf
+        heldCv = cv
       }
     }
     return lastTexture
@@ -5659,6 +5665,8 @@ final class MetalPump {
   func dispose() {
     player.replaceCurrentItem(with: nil)
     lastTexture = nil
+    heldBuf = nil
+    heldCv = nil
   }
 }
 
@@ -5676,7 +5684,17 @@ final class ClipReader {
   private var queue: [(Double, CVPixelBuffer)] = []
   private var running = false
   private var finished = false
-  private var lastTex: MTLTexture?
+  /// 紋理與它的像素緩衝「成對持有」：AVAssetReader 的緩衝池只有
+  /// 4 格、取出後立刻被下一格覆寫——只留 MTLTexture 不留 buffer，
+  /// GPU 畫到的就是被覆寫的黑（實測 134：「一播放就黑掉」）。
+  /// 留兩代：上一幀可能還在 GPU 手上
+  private struct Held {
+    let tex: MTLTexture
+    let buf: CVPixelBuffer
+    let cv: CVMetalTexture
+  }
+  private var held: Held?
+  private var heldPrev: Held?
   private var lastPts = -1.0
 
   init(path: String) { self.path = path }
@@ -5760,10 +5778,15 @@ final class ClipReader {
         == kCVReturnSuccess, let cv = cv,
         let tex = CVMetalTextureGetTexture(cv)
       {
-        lastTex = tex
+        lock.lock()
+        heldPrev = held
+        held = Held(tex: tex, buf: buf, cv: cv)
+        lock.unlock()
       }
     }
-    return lastTex
+    lock.lock()
+    defer { lock.unlock() }
+    return held?.tex
   }
 
   /// 佇列裡已備好的最遠時刻（交界預捲檢查用）
@@ -5782,13 +5805,15 @@ final class ClipReader {
   var lastTexture: MTLTexture? {
     lock.lock()
     defer { lock.unlock() }
-    return lastTex
+    return held?.tex
   }
 
   func stop() {
     lock.lock()
     running = false
     queue.removeAll()
+    held = nil
+    heldPrev = nil
     lock.unlock()
     reader?.cancelReading()
     reader = nil
