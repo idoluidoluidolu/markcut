@@ -3121,9 +3121,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (src.mosaicStroke != null) 'brush': src.mosaicBrush,
       });
     }
-    _mViewSafe =
-        mosaics.isEmpty &&
-        !stills.any((s) => s['gif'] == true || s['color'] != null);
+    // 2.0：GIF 動畫、貼圖調色、馬賽克 z 分段引擎全會了——
+    // 引擎全時段當家，不再有任何佈局需要讓位
+    _mViewSafe = true;
     return {
       'w': cw,
       'h': ch,

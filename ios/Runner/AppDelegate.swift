@@ -1351,7 +1351,8 @@ final class AtomicFlag {
               fadeOut: m["fadeOut"] as? Double ?? 0,
               crop: m["crop"] as? [Double],
               gif: m["gif"] as? Bool ?? false,
-              hasColor: (m["color"] as? [Double]) != nil)
+              hasColor: (m["color"] as? [Double]) != nil,
+              color: m["color"] as? [Double])
           }
         result(
           MetalPreviewEngine.shared.build(
@@ -5995,6 +5996,86 @@ struct MetalStillSpec {
   let crop: [Double]?
   var gif = false
   var hasColor = false
+  /// 5x4 調色矩陣（跟影片層同格式；nil＝沒調色）
+  var color: [Double]? = nil
+}
+
+/// GIF 動畫（引擎播放用）：幀紋理＋各幀「累計」時間表。
+/// 建佈局時解一次（縮到長邊 ≤512、最多 96 幀），render 按時刻取幀
+struct GifAnim {
+  let frames: [MTLTexture]
+  let cum: [Double]  // cum[i] = 第 i 幀結束時刻（秒）
+  var total: Double { cum.last ?? 0.1 }
+
+  func frame(at t: Double) -> MTLTexture? {
+    guard !frames.isEmpty else { return nil }
+    let m = t.truncatingRemainder(dividingBy: total)
+    // 幀數 ≤96，線性掃就好
+    for (i, c) in cum.enumerated() where m < c { return frames[i] }
+    return frames.last
+  }
+
+  /// CGImageSource 解 GIF（含 APNG 也吃得下）：取各幀延遲、縮圖上傳
+  static func load(path: String, device: MTLDevice) -> GifAnim? {
+    guard
+      let src = CGImageSourceCreateWithURL(
+        URL(fileURLWithPath: path) as CFURL, nil)
+    else { return nil }
+    let n = CGImageSourceGetCount(src)
+    guard n > 1 else { return nil }
+    let take = min(n, 96)
+    let loader = MTKTextureLoader(device: device)
+    var frames: [MTLTexture] = []
+    var cum: [Double] = []
+    var acc = 0.0
+    for i in 0..<take {
+      // 幀取樣：超過上限就等距抽
+      let idx = n == take ? i : Int(Double(i) * Double(n) / Double(take))
+      guard var cg = CGImageSourceCreateImageAtIndex(src, idx, nil) else {
+        continue
+      }
+      // 長邊縮到 512：GIF 貼圖上屏就這麼大，全解析度只是燒記憶體
+      let w = cg.width
+      let h = cg.height
+      let long = max(w, h)
+      if long > 512 {
+        let sc = 512.0 / Double(long)
+        let nw = Int(Double(w) * sc)
+        let nh = Int(Double(h) * sc)
+        if let ctx = CGContext(
+          data: nil, width: nw, height: nh, bitsPerComponent: 8,
+          bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        {
+          ctx.interpolationQuality = .medium
+          ctx.draw(cg, in: CGRect(x: 0, y: 0, width: nw, height: nh))
+          if let scaled = ctx.makeImage() { cg = scaled }
+        }
+      }
+      // 幀延遲（沒標就 0.1s，跟瀏覽器同一套慣例）
+      var delay = 0.1
+      if let props = CGImageSourceCopyPropertiesAtIndex(src, idx, nil)
+        as? [String: Any],
+        let g = props[kCGImagePropertyGIFDictionary as String]
+          as? [String: Any]
+      {
+        let d =
+          (g[kCGImagePropertyGIFUnclampedDelayTime as String] as? Double)
+          ?? (g[kCGImagePropertyGIFDelayTime as String] as? Double) ?? 0.1
+        delay = d < 0.011 ? 0.1 : d
+      }
+      guard
+        let tex = try? loader.newTexture(
+          cgImage: cg, options: [MTKTextureLoader.Option.SRGB: true as NSNumber]
+        )
+      else { continue }
+      frames.append(tex)
+      acc += delay
+      cum.append(acc)
+    }
+    guard frames.count > 1 else { return nil }
+    return GifAnim(frames: frames, cum: cum)
+  }
 }
 
 /// 引擎收的一塊馬賽克（幾何/遮罩直接重用 CIMosaicSpec 的解析，
@@ -6002,6 +6083,8 @@ struct MetalStillSpec {
 struct MetalMosaicSpec {
   let start: Double
   let end: Double
+  /// 疊放層級：只糊 z 比它低的層（跟 CI 同語意）
+  let z: Int
   let type: Int
   let strength: Double
   let colorR: Double
@@ -6025,6 +6108,8 @@ final class MetalPreviewEngine: NSObject {
   /// 場景離屏紋理（two-pass：先畫圖層，再讓馬賽克取樣它）。
   /// 只在有馬賽克的佈局才建；drawable 尺寸變了重建
   private var sceneTex: MTLTexture?
+  /// 乒乓第二張（馬賽克按 z 分段時「取樣上一段、畫進這一段」）
+  private var sceneTex2: MTLTexture?
   /// 筆刷遮罩 CIImage → 灰階紋理用（一次性建）
   private lazy var ciCtx: CIContext? =
     device.map { CIContext(mtlDevice: $0) }
@@ -6038,6 +6123,8 @@ final class MetalPreviewEngine: NSObject {
   /// 靜態圖層紋理（鍵＝檔案路徑；GIF 只取首幀——滑動瞬間有畫面
   /// 比消失好，動起來交給合成播放器）
   private var stillTextures: [String: MTLTexture] = [:]
+  /// GIF 動畫快取（路徑→幀序列）；value 為 nil＝解過但失敗，不重試
+  private var gifAnims: [String: GifAnim?] = [:]
   private var pumps: [Int: MetalPump] = [:]
   private var canvasW: Double = 1080
   private var canvasH: Double = 1920
@@ -6336,9 +6423,23 @@ final class MetalPreviewEngine: NSObject {
       fragment half4 fragOverlay(VOut in [[stage_in]],
                                  texture2d<half> tex [[texture(0)]],
                                  constant float4 &p [[buffer(0)]],
+                                 constant float4 *cm [[buffer(1)]],
                                  sampler s [[sampler(0)]]) {
         half4 o = tex.sample(s, in.uv);
-        half f = half(p.z);
+        if (cm[3].w > 0.5 && o.a > 0.001h) {
+        float3 v = float3(o.rgb) / float(o.a);
+        float3 g = select(
+          v * 12.92, 1.055 * pow(abs(v), 1.0 / 2.4) - 0.055,
+          v > 0.0031308);
+        g = float3(
+          dot(cm[0].xyz, g), dot(cm[1].xyz, g), dot(cm[2].xyz, g))
+          + cm[3].xyz;
+        g = clamp(g, 0.0, 1.0);
+        float3 lo = g / 12.92;
+        float3 hi = pow((abs(g) + 0.055) / 1.055, 2.4);
+        o.rgb = half3(select(lo, hi, g > 0.04045)) * o.a;
+      }
+      half f = half(p.z);
         return half4(o.rgb * half(p.x) * f, o.a * f);
       }
       """
@@ -6348,9 +6449,23 @@ final class MetalPreviewEngine: NSObject {
                                  half4 dst [[color(0)]],
                                  texture2d<half> tex [[texture(0)]],
                                  constant float4 &p [[buffer(0)]],
+                                 constant float4 *cm [[buffer(1)]],
                                  sampler s [[sampler(0)]]) {
         half4 o = tex.sample(s, in.uv);
-        half f = half(p.z);
+        if (cm[3].w > 0.5 && o.a > 0.001h) {
+        float3 v = float3(o.rgb) / float(o.a);
+        float3 g = select(
+          v * 12.92, 1.055 * pow(abs(v), 1.0 / 2.4) - 0.055,
+          v > 0.0031308);
+        g = float3(
+          dot(cm[0].xyz, g), dot(cm[1].xyz, g), dot(cm[2].xyz, g))
+          + cm[3].xyz;
+        g = clamp(g, 0.0, 1.0);
+        float3 lo = g / 12.92;
+        float3 hi = pow((abs(g) + 0.055) / 1.055, 2.4);
+        o.rgb = half3(select(lo, hi, g > 0.04045)) * o.a;
+      }
+      half f = half(p.z);
         half a = o.a * f;
         half boost = half(p.x);
         half3 bg = dst.rgb;
@@ -6481,7 +6596,7 @@ final class MetalPreviewEngine: NSObject {
         : spec.feather * 0.35
           * Double(min(spec.rect.width, spec.rect.height))
       return MetalMosaicSpec(
-        start: spec.start, end: spec.end, type: spec.type,
+        start: spec.start, end: spec.end, z: spec.z, type: spec.type,
         strength: spec.strength,
         colorR: Double(spec.color.red),
         colorG: Double(spec.color.green),
@@ -6490,10 +6605,10 @@ final class MetalPreviewEngine: NSObject {
     }
     layers = specs.sorted { $0.z < $1.z }
     stills = stillSpecs
-    playSafe =
-      mosaicMaps.isEmpty
-      && !stillSpecs.contains { $0.gif || $0.hasColor }
-      && specs.allSatisfy { $0.proxy }
+    // 2.0：GIF 動畫、貼圖調色、馬賽克 z 分段引擎全會了——
+    // 唯一擋持續播放的是「還在吃原檔」（4K 原檔持續解碼的頻寬
+    // 是真實硬體限制，代理轉好前讓合成器扛）
+    playSafe = specs.allSatisfy { $0.proxy }
     layoutEpoch &+= 1  // 佈局變了＝畫面該重繪（靜止降頻歸零）
     // pump 走「靠近才建、遠離回收」（見 pumpFor/trimPumps）：
     // 二十支片的時間軸也只養播放頭附近那幾顆解碼器
@@ -6511,6 +6626,13 @@ final class MetalPreviewEngine: NSObject {
         stillTextures[sp.path] = try? loader.newTexture(
           cgImage: cg,
           options: [MTKTextureLoader.Option.SRGB: true as NSNumber])
+      }
+      // GIF 動畫幀（首幀已在 stillTextures 當保底）
+      for k in gifAnims.keys where !wantStills.contains(k) {
+        gifAnims.removeValue(forKey: k)
+      }
+      for sp in stillSpecs where sp.gif && gifAnims[sp.path] == nil {
+        gifAnims[sp.path] = GifAnim.load(path: sp.path, device: dev)
       }
     }
     // 幫浦照片段開；不在新佈局裡的收掉
@@ -6842,7 +6964,12 @@ final class MetalPreviewEngine: NSObject {
       if playSafe { syncReaders(curT, force: true) }
     }
     let ep = CIExportCompositor.liveEpoch &+ layoutEpoch
-    if !playing && curT == drawnT && ep == drawnEpoch {
+    // GIF 動畫是時變內容：有它在台上就不能靜止降頻（會凍住）
+    let liveGif = stills.contains {
+      $0.gif && $0.start <= curT && curT < $0.end
+        && (gifAnims[$0.path] ?? nil) != nil
+    }
+    if !playing && !liveGif && curT == drawnT && ep == drawnEpoch {
       idleTicks += 1
       if idleTicks > 600 { return }
       if idleTicks > 12 && idleTicks % 6 != 0 { return }
@@ -6989,6 +7116,7 @@ final class MetalPreviewEngine: NSObject {
           mipmapped: false)
         td.usage = [.renderTarget, .shaderRead]
         sceneTex = device?.makeTexture(descriptor: td)
+        sceneTex2 = device?.makeTexture(descriptor: td)
       }
       if let st = sceneTex { target = st }
     }
@@ -7003,6 +7131,92 @@ final class MetalPreviewEngine: NSObject {
       return
     }
     enc.setFragmentSamplerState(sampler, index: 0)
+    // 分段狀態：目前畫到哪個 encoder／哪張場景（乒乓）
+    var curEnc = enc
+    var curScene = sceneTex
+    var altScene = sceneTex2
+    let fullQuad: [Float] = [
+      -1, 1, 0, 0, 1, 1, 1, 0, -1, -1, 0, 1,
+      1, 1, 1, 0, 1, -1, 1, 1, -1, -1, 0, 1,
+    ]
+    // 整張搬運（場景已線性，vp.y=-1 直通）
+    func blit(_ e: MTLRenderCommandEncoder, _ src: MTLTexture) {
+      var passthru = SIMD4<Float>(1, -1, 0, 0)
+      e.setRenderPipelineState(videoPipe)
+      e.setVertexBytes(fullQuad, length: fullQuad.count * 4, index: 0)
+      e.setFragmentBytes(&passthru, length: 16, index: 0)
+      e.setFragmentBytes(Self.colorU(nil), length: 64, index: 1)
+      e.setFragmentTexture(src, index: 0)
+      e.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+    }
+    // 馬賽克方塊：取樣 [src] 畫到目前 encoder
+    func applyMz(
+      _ e: MTLRenderCommandEncoder, _ group: [MetalMosaicSpec],
+      src: MTLTexture, mzPipe: MTLRenderPipelineState
+    ) {
+      let W = canvasW
+      let H = canvasH
+      for mz in group {
+        let r = mz.rect.intersection(
+          CGRect(x: 0, y: 0, width: W, height: H))
+        guard r.width > 2, r.height > 2 else { continue }
+        let u0 = Double(r.minX) / W
+        let v0 = Double(r.minY) / H
+        let u1 = Double(r.maxX) / W
+        let v1 = Double(r.maxY) / H
+        func vtx(_ u: Double, _ v: Double) -> [Float] {
+          [Float(2 * u - 1), Float(1 - 2 * v), Float(u), Float(v)]
+        }
+        let verts =
+          vtx(u0, v0) + vtx(u1, v0) + vtx(u0, v1)
+          + vtx(u1, v0) + vtx(u1, v1) + vtx(u0, v1)
+        // 濃度換算跟 CI 同一條：模糊＝縮小倍數當半徑（隨畫布縮放）、
+        // 像素化＝橫向格數
+        var third = 0.0
+        if mz.type == 1 {
+          third = (2.0 + mz.strength * 12.0) * min(W, H) / 1080.0
+        } else if mz.type != 2 {
+          let cells = min(40.0, max(4.0, 26.0 - 20.0 * mz.strength))
+          third = max(2.0, Double(r.width) / cells)
+        }
+        let U: [Float] = [
+          Float(mz.type), Float(mz.strength), Float(third),
+          Float(mz.featherMarginPx),
+          Float(u0), Float(v0), Float(u1), Float(v1),
+          Float(W), Float(H), mz.maskTex != nil ? 1 : 0, 0,
+          Float(mz.colorR), Float(mz.colorG), Float(mz.colorB), 1,
+        ]
+        e.setRenderPipelineState(mzPipe)
+        e.setVertexBytes(verts, length: verts.count * 4, index: 0)
+        e.setFragmentBytes(U, length: 64, index: 0)
+        e.setFragmentTexture(src, index: 0)
+        e.setFragmentTexture(mz.maskTex ?? src, index: 1)
+        e.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+      }
+    }
+    // 乒乓一輪：目前場景收工 → 換到另一張（先整張搬過去、再把
+    // 這群馬賽克取樣舊場景蓋上）→ 後續圖層繼續畫在新場景上
+    func pingPong(_ group: [MetalMosaicSpec]) {
+      guard let src = curScene, let dst = altScene,
+        let mzPipe = mosaicPipe
+      else { return }
+      curEnc.endEncoding()
+      let rp = MTLRenderPassDescriptor()
+      rp.colorAttachments[0].texture = dst
+      rp.colorAttachments[0].loadAction = .clear
+      rp.colorAttachments[0].storeAction = .store
+      rp.colorAttachments[0].clearColor = MTLClearColor(
+        red: 0, green: 0, blue: 0, alpha: 1)
+      guard let e = cmd.makeRenderCommandEncoder(descriptor: rp) else {
+        return
+      }
+      e.setFragmentSamplerState(sampler, index: 0)
+      blit(e, src)
+      applyMz(e, group, src: src, mzPipe: mzPipe)
+      curEnc = e
+      curScene = dst
+      altScene = src
+    }
     // 影片層與靜態圖層混排（照 z 由下往上，跟合成器同一個順序）
     enum Draw {
       case video(MetalLayerSpec)
@@ -7024,7 +7238,7 @@ final class MetalPreviewEngine: NSObject {
       if fo > 0.01 { a = min(a, max(0, min(1, (e - t) / fo))) }
       return a
     }
-    for (_, d) in draws {
+    func drawItem(_ enc: MTLRenderCommandEncoder, _ d: Draw) {
       switch d {
       case .video(let sp):
         // 播放路徑完全不依賴 pump：幾何/色彩標籤 reader 自己有。
@@ -7078,7 +7292,7 @@ final class MetalPreviewEngine: NSObject {
           let verts = quad(
             for: spEff, texOrient: orient,
             texW: dispW, texH: dispH)
-        else { continue }
+        else { return }
         let af = Float(
           fade(sp.opacity, sp.offset, sp.end, sp.fadeIn, sp.fadeOut))
         // HLG 增益 3.77＝參考白（75% 訊號）對齊 SDR 白 1.0
@@ -7092,7 +7306,10 @@ final class MetalPreviewEngine: NSObject {
         enc.setFragmentTexture(tex, index: 0)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
       case .still(let st):
-        guard let tex = stillTextures[st.path] else { continue }
+        // GIF：取這一刻該顯示的動畫幀；解不出＝停首幀（原行為）
+        let animTex = st.gif
+          ? gifAnims[st.path]?.flatMap { $0.frame(at: t - st.start) } : nil
+        guard let tex = animTex ?? stillTextures[st.path] else { return }
         // 幾何跟影片層同一套（contain-fit／縮放位移／鏡像旋轉裁切），
         // 原始尺寸取紋理本人
         let asLayer = MetalLayerSpec(
@@ -7101,7 +7318,7 @@ final class MetalPreviewEngine: NSObject {
           scale: st.scale, mirror: st.mirror, rotation: st.rotation,
           opacity: st.opacity, fadeIn: st.fadeIn, fadeOut: st.fadeOut,
           crop: st.crop, srcW: Double(tex.width), srcH: Double(tex.height))
-        guard let verts = quad(for: asLayer) else { continue }
+        guard let verts = quad(for: asLayer) else { return }
         let a = fade(st.opacity, st.start, st.end, st.fadeIn, st.fadeOut)
         // 匯出對 still 是一般 sourceOver：不加亮（boost=1）、不夾白，
         // 淡入淡出走 z（同乘色與 alpha）
@@ -7109,14 +7326,35 @@ final class MetalPreviewEngine: NSObject {
         enc.setRenderPipelineState(overlayPipe)
         enc.setVertexBytes(verts, length: verts.count * 4, index: 0)
         enc.setFragmentBytes(&p, length: 16, index: 0)
+        // 貼圖調色（跟 CI applyColor 同語意；沒調色＝旗標 0 直通）
+        enc.setFragmentBytes(Self.colorU(st.color), length: 64, index: 1)
         enc.setFragmentTexture(tex, index: 0)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
       }
     }
-    // two-pass 第二段：場景整張搬上 drawable，馬賽克取樣場景蓋上去
-    var out = enc
-    if twoPass, let st = sceneTex, let mzPipe = mosaicPipe {
-      enc.endEncoding()
+    // 馬賽克按 z 分組（只糊 z 比它低的層——跟 CI 同語意）。
+    // 沒有馬賽克＝整串畫在同一個 encoder（原路徑，零開銷）
+    let mzGroups = Dictionary(grouping: activeMz) { $0.z }
+      .sorted { $0.key < $1.key }
+    var gi = 0
+    for (z, d) in draws {
+      // 這個 z 之前該套的馬賽克群先套（乒乓一輪）：
+      // 馬賽克(z=m) 蓋住 z<m 的層——同 z 的層畫在馬賽克之上
+      while twoPass, gi < mzGroups.count, mzGroups[gi].key <= z {
+        pingPong(mzGroups[gi].value)
+        gi += 1
+      }
+      drawItem(curEnc, d)
+    }
+    while twoPass, gi < mzGroups.count {
+      pingPong(mzGroups[gi].value)
+      gi += 1
+    }
+    // 收尾：two-pass 把最終場景整張搬上 drawable（馬賽克已在
+    // 各自的 z 邊界內聯套完），疊加物再畫在它上面
+    var out = curEnc
+    if twoPass, let st = curScene {
+      curEnc.endEncoding()
       let rp2 = MTLRenderPassDescriptor()
       rp2.colorAttachments[0].texture = drawable.texture
       rp2.colorAttachments[0].loadAction = .clear
@@ -7128,56 +7366,7 @@ final class MetalPreviewEngine: NSObject {
         return
       }
       e2.setFragmentSamplerState(sampler, index: 0)
-      let full: [Float] = [
-        -1, 1, 0, 0, 1, 1, 1, 0, -1, -1, 0, 1,
-        1, 1, 1, 0, 1, -1, 1, 1, -1, -1, 0, 1,
-      ]
-      var passthru = SIMD4<Float>(1, -1, 0, 0)
-      e2.setRenderPipelineState(videoPipe)
-      e2.setVertexBytes(full, length: full.count * 4, index: 0)
-      e2.setFragmentBytes(&passthru, length: 16, index: 0)
-      e2.setFragmentBytes(Self.colorU(nil), length: 64, index: 1)
-      e2.setFragmentTexture(st, index: 0)
-      e2.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
-      let W = canvasW
-      let H = canvasH
-      for mz in activeMz {
-        let r = mz.rect.intersection(
-          CGRect(x: 0, y: 0, width: W, height: H))
-        guard r.width > 2, r.height > 2 else { continue }
-        let u0 = Double(r.minX) / W
-        let v0 = Double(r.minY) / H
-        let u1 = Double(r.maxX) / W
-        let v1 = Double(r.maxY) / H
-        func vtx(_ u: Double, _ v: Double) -> [Float] {
-          [Float(2 * u - 1), Float(1 - 2 * v), Float(u), Float(v)]
-        }
-        let verts =
-          vtx(u0, v0) + vtx(u1, v0) + vtx(u0, v1)
-          + vtx(u1, v0) + vtx(u1, v1) + vtx(u0, v1)
-        // 濃度換算跟 CI 同一條：模糊＝縮小倍數當半徑（隨畫布縮放）、
-        // 像素化＝橫向格數
-        var third = 0.0
-        if mz.type == 1 {
-          third = (2.0 + mz.strength * 12.0) * min(W, H) / 1080.0
-        } else if mz.type != 2 {
-          let cells = min(40.0, max(4.0, 26.0 - 20.0 * mz.strength))
-          third = max(2.0, Double(r.width) / cells)
-        }
-        let U: [Float] = [
-          Float(mz.type), Float(mz.strength), Float(third),
-          Float(mz.featherMarginPx),
-          Float(u0), Float(v0), Float(u1), Float(v1),
-          Float(W), Float(H), mz.maskTex != nil ? 1 : 0, 0,
-          Float(mz.colorR), Float(mz.colorG), Float(mz.colorB), 1,
-        ]
-        e2.setRenderPipelineState(mzPipe)
-        e2.setVertexBytes(verts, length: verts.count * 4, index: 0)
-        e2.setFragmentBytes(U, length: 64, index: 0)
-        e2.setFragmentTexture(st, index: 0)
-        e2.setFragmentTexture(mz.maskTex ?? st, index: 1)
-        e2.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
-      }
+      blit(e2, st)
       out = e2
     }
     // 疊加物（浮水印/文字）：讀合成器同一份即時清單與即時幾何
@@ -7228,6 +7417,7 @@ final class MetalPreviewEngine: NSObject {
       out.setRenderPipelineState(overlayPipe)
       out.setVertexBytes(verts, length: verts.count * 4, index: 0)
       out.setFragmentBytes(&p, length: 16, index: 0)
+      out.setFragmentBytes(Self.colorU(nil), length: 64, index: 1)
       out.setFragmentTexture(tex, index: 0)
       out.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
     }
