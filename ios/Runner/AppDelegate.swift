@@ -5662,6 +5662,140 @@ final class MetalPump {
   }
 }
 
+/// 確定性播放供格器：AVAssetReader 在背景執行緒順序硬解進
+/// 幀佇列（帶來源時間戳、預解 4 格），渲染時鐘從佇列取「該顯示
+/// 的那格」——晚了丟、早了等。沒有 AVPlayer 黑盒的緩衝／節奏／
+/// seek 行為，播放供格完全確定（治本：pump 播放路的每一輪補丁
+/// 都是在馴服黑盒的突發行為）
+final class ClipReader {
+  let path: String
+  private var reader: AVAssetReader?
+  private var out: AVAssetReaderTrackOutput?
+  private let lock = NSLock()
+  /// (來源秒, 影格)。佇列滿 4 就等，消費後解碼執行緒自動補
+  private var queue: [(Double, CVPixelBuffer)] = []
+  private var running = false
+  private var finished = false
+  private var lastTex: MTLTexture?
+  private var lastPts = -1.0
+
+  init(path: String) { self.path = path }
+
+  /// 從 [srcT] 開始順序解碼（會貼齊往前最近的可解點）
+  func start(at srcT: Double) {
+    stop()
+    let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+    guard let tr = asset.tracks(withMediaType: .video).first,
+      let r = try? AVAssetReader(asset: asset)
+    else { return }
+    // 輸出跟 pump 同一種（64RGBAHalf）：色彩語意與 shader
+    // 線性化管線完全共用，不另開 YUV 路
+    let o = AVAssetReaderTrackOutput(
+      track: tr,
+      outputSettings: [
+        kCVPixelBufferPixelFormatTypeKey as String: Int(
+          kCVPixelFormatType_64RGBAHalf),
+        kCVPixelBufferMetalCompatibilityKey as String: true,
+      ])
+    o.alwaysCopiesSampleData = false
+    guard r.canAdd(o) else { return }
+    r.add(o)
+    r.timeRange = CMTimeRange(
+      start: CMTime(seconds: max(0, srcT), preferredTimescale: 600),
+      duration: .positiveInfinity)
+    guard r.startReading() else { return }
+    reader = r
+    out = o
+    running = true
+    finished = false
+    Thread.detachNewThread { [weak self] in
+      self?.pumpLoop()
+    }
+  }
+
+  private func pumpLoop() {
+    while true {
+      lock.lock()
+      let go = running
+      let full = queue.count >= 4
+      lock.unlock()
+      if !go { return }
+      if full {
+        usleep(4000)
+        continue
+      }
+      guard let o = out, let sb = o.copyNextSampleBuffer(),
+        let buf = CMSampleBufferGetImageBuffer(sb)
+      else {
+        lock.lock()
+        finished = true
+        running = false
+        lock.unlock()
+        return
+      }
+      let pts = CMSampleBufferGetPresentationTimeStamp(sb).seconds
+      lock.lock()
+      queue.append((pts, buf))
+      lock.unlock()
+    }
+  }
+
+  /// 渲染時鐘來取「來源時刻 [srcT] 該顯示的那格」：把已過期的
+  /// 丟掉、留最新不超前的。佇列空＝解碼沒跟上（回上一張）
+  func frame(at srcT: Double, cache: CVMetalTextureCache) -> MTLTexture? {
+    lock.lock()
+    var picked: CVPixelBuffer?
+    while let first = queue.first, first.0 <= srcT + 0.017 {
+      picked = first.1
+      lastPts = first.0
+      queue.removeFirst()
+    }
+    lock.unlock()
+    if let buf = picked {
+      var cv: CVMetalTexture?
+      let w = CVPixelBufferGetWidth(buf)
+      let h = CVPixelBufferGetHeight(buf)
+      if CVMetalTextureCacheCreateTextureFromImage(
+        kCFAllocatorDefault, cache, buf, nil, .rgba16Float, w, h, 0, &cv)
+        == kCVReturnSuccess, let cv = cv,
+        let tex = CVMetalTextureGetTexture(cv)
+      {
+        lastTex = tex
+      }
+    }
+    return lastTex
+  }
+
+  /// 佇列裡已備好的最遠時刻（交界預捲檢查用）
+  var bufferedTo: Double {
+    lock.lock()
+    defer { lock.unlock() }
+    return queue.last?.0 ?? lastPts
+  }
+
+  var isRunning: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return running || !queue.isEmpty
+  }
+
+  var lastTexture: MTLTexture? {
+    lock.lock()
+    defer { lock.unlock() }
+    return lastTex
+  }
+
+  func stop() {
+    lock.lock()
+    running = false
+    queue.removeAll()
+    lock.unlock()
+    reader?.cancelReading()
+    reader = nil
+    out = nil
+  }
+}
+
 /// 引擎收的一層（幾何跟合成器同一套欄位；時間都是時間軸秒）
 struct MetalLayerSpec {
   let id: Int
@@ -5802,57 +5936,59 @@ final class MetalPreviewEngine: NSObject {
     playT0 = t
     host0 = CACurrentMediaTime()
     playing = true
-    syncPumps(t, force: true)
+    syncReaders(t, force: true)
     show(true)
     return true
   }
 
-  /// 停播：pump 全停，畫面停在停點那格（讓位交給 Dart 的計時器）
+  /// 停播：解碼佇列全停，畫面停在停點那格（讓位交給 Dart 計時器）
   func stop() {
     guard playing else { return }
     curT = engineT
     playing = false
+    for (_, r) in readers { r.stop() }
+    readers.removeAll()
     for (_, p) in pumps { p.pause() }
   }
 
-  /// 每顆 pump 上次被重對的時刻（冷卻用）
-  private var lastChase: [Int: Double] = [:]
+  /// 確定性播放供格：每個進窗片段一條 ClipReader（順序硬解＋
+  /// 幀佇列），快進窗 1.5 秒前就開始填下一段的佇列——交界＝
+  /// 換一條已填滿的佇列，零延遲零 seek。解碼器永遠順序全速跑，
+  /// 時鐘只管消費（晚了丟、早了等）
+  private var readers: [Int: ClipReader] = [:]
 
-  /// 播放中的 pump 管理：進窗起播、快進窗預捲就位、出窗暫停。
-  /// 重對鐵律：影片追時鐘用「容忍」，不准頻繁 seek——seek 會
-  /// 打斷解碼流，落後 0.15 就 seek 的舊邏輯＝每秒好幾發 seek
-  /// 風暴，播放流永遠起不來（實測 133：播放供格 miss 666）。
-  /// 現在：偏差 >0.5s 且冷卻 1.5s 才重對一次
-  private func syncPumps(_ t: Double, force: Bool = false) {
-    let now = CACurrentMediaTime()
+  private func syncReaders(_ t: Double, force: Bool = false) {
     for sp in layers {
+      let want = sp.trimStart + (t - sp.offset) * sp.speed
       if sp.offset <= t && t < sp.end {
-        let pump = pumpFor(sp)
-        let want = sp.trimStart + (t - sp.offset) * sp.speed
-        if pump.playingRate == 0 || force {
-          pump.want(want)
-          pump.play(rate: sp.speed)
-          lastChase[sp.id] = now
-        } else {
-          let cur = pump.player.currentTime().seconds
-          if abs(cur - want) > 0.5,
-            now - (lastChase[sp.id] ?? 0) > 1.5
-          {
-            lastChase[sp.id] = now
-            pump.want(want)
-          }
+        var r = readers[sp.id]
+        if r == nil || r!.path != sp.path {
+          r?.stop()
+          r = ClipReader(path: sp.path)
+          readers[sp.id] = r
+          r!.start(at: want)
+        } else if force {
+          r!.start(at: want)
+        } else if !r!.isRunning && r!.bufferedTo < sp.trimStart
+          + (sp.end - sp.offset) * sp.speed - 0.1
+        {
+          // 斷流（讀掛了）而且還沒到片尾：從當下重啟
+          r!.start(at: want)
+        } else if r!.bufferedTo < want - 0.8 {
+          // 落後太多丟不完：重啟一次（正常情況永不發生）
+          r!.start(at: want)
         }
       } else if sp.offset - 1.5 <= t && t < sp.offset {
-        // 快進窗：對到入點＋預捲——交界那一刻起播即出圖
-        let pump = pumpFor(sp)
-        pump.pause()
-        pump.want(sp.trimStart)
-        pump.player.preroll(atRate: Float(sp.speed), completionHandler: nil)
+        if readers[sp.id] == nil {
+          let r = ClipReader(path: sp.path)
+          readers[sp.id] = r
+          r.start(at: sp.trimStart)
+        }
       } else {
-        pumps[sp.id]?.pause()
+        readers[sp.id]?.stop()
+        readers.removeValue(forKey: sp.id)
       }
     }
-    trimPumps(t)
   }
 
   private let shaderSrc = """
@@ -6297,6 +6433,8 @@ final class MetalPreviewEngine: NSObject {
   /// 搶硬體解碼器和記憶體（實機回報：127 起「播放卡到不行」，
   /// 正是引擎預建開始存在的版本）。暫停後懶建機制自動重建
   func park() {
+    for (_, r) in readers { r.stop() }
+    readers.removeAll()
     for (_, p) in pumps { p.dispose() }
     pumps.removeAll()
   }
@@ -6345,7 +6483,7 @@ final class MetalPreviewEngine: NSObject {
       if abs(engineT - t) > 0.25 {
         playT0 = t
         host0 = CACurrentMediaTime()
-        syncPumps(t, force: true)
+        syncReaders(t, force: true)
       }
     } else {
       curT = t
@@ -6416,7 +6554,7 @@ final class MetalPreviewEngine: NSObject {
     stTicks += 1
     if playing {
       curT = engineT
-      syncPumps(curT)
+      syncReaders(curT)
     } else if !seekSettled,
       CACurrentMediaTime() - lastSeekHost > 0.15
     {
@@ -6611,10 +6749,11 @@ final class MetalPreviewEngine: NSObject {
       case .video(let sp):
         guard let pump = pumps[sp.id] else { continue }
         let tex: MTLTexture?
-        if playing && pump.playingRate != 0 {
-          // 播放模式：pump 自己在跑，逐格問「現在該顯示哪格」
-          let before = pump.lastTexture
-          tex = pump.playTexture(cache: cache)
+        if playing, let rd = readers[sp.id] {
+          // 確定性播放：從解碼佇列取「時鐘這一刻該顯示的那格」
+          let srcT = sp.trimStart + (t - sp.offset) * sp.speed
+          let before = rd.lastTexture
+          tex = rd.frame(at: srcT, cache: cache)
           noteMiss(tex === before)
         } else {
           let srcT = sp.trimStart + (t - sp.offset) * sp.speed
@@ -6795,6 +6934,8 @@ final class MetalPreviewEngine: NSObject {
 
   func disposeAll() {
     show(false)
+    for (_, r) in readers { r.stop() }
+    readers.removeAll()
     for (_, p) in pumps { p.dispose() }
     pumps.removeAll()
     layers = []
