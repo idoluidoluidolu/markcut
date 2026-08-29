@@ -136,8 +136,7 @@ void main() {
     final st = await MetalPreview.stats();
     debugPrint(
       '=== 引擎統計 miss=${st?['pumpMiss']} missWho=${st?['missWho']} '
-      'supply=${st?['supply']} maxGap=${st?['maxGapMs']}
-'
+      'supply=${st?['supply']} maxGap=${st?['maxGapMs']} '
       '佈局 ${st?['layers']} ===',
     );
     debugPrint('=== 診斷報告 ===\n${Diag.report()}');
