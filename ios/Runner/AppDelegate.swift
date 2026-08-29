@@ -5824,6 +5824,14 @@ final class ClipReader {
       guard let o = oo, let sb = o.copyNextSampleBuffer(),
         let buf = CMSampleBufferGetImageBuffer(sb)
       else {
+        lock.lock()
+        let r = reader
+        lock.unlock()
+        NSLog(
+          "[ClipReader] 斷 status=%d err=%@ path=…%@",
+          r?.status.rawValue ?? -1,
+          r?.error.map(String.init(describing:)) ?? "無",
+          String(path.suffix(24)))
         markDead(gen: g)
         return
       }
