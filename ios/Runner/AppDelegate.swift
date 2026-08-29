@@ -5711,6 +5711,15 @@ final class ClipReader {
   private var texFormat = MTLPixelFormat.rgba16Float
   /// 診斷探針計數（播放黑畫面查因）
   private var probeN = 0
+  /// 幾何與色彩標籤（解碼執行緒讀 track 填入）：播放路徑完全
+  /// 不碰 pump——實機 137 播放全黑就是「reader 有格、但 render
+  /// 先 guard pump 存在」，工作檔換路徑銷毀 pump 後整層被跳過
+  private(set) var orient = 0
+  private(set) var dispW = 0.0
+  private(set) var dispH = 0.0
+  private(set) var isHLG = false
+  private(set) var is2020 = false
+  private(set) var infoReady = false
 
   init(path: String) { self.path = path }
 
@@ -5739,8 +5748,10 @@ final class ClipReader {
       markDead(gen: g)
       return
     }
-    // HDR 判定跟 pump 同一套（PQ 也算）
+    // HDR/原色判定跟 pump 同一套（PQ 也算）；幾何一併讀齊——
+    // 播放路徑要能不依賴 pump 獨立運作
     var hdr = false
+    var p2020 = false
     if let fdAny = tr.formatDescriptions.first {
       let fd = fdAny as! CMFormatDescription
       if let tf = CMFormatDescriptionGetExtension(
@@ -5752,6 +5763,22 @@ final class ClipReader {
           || tf
             == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String)
       }
+      if let pr = CMFormatDescriptionGetExtension(
+        fd, extensionKey: kCMFormatDescriptionExtension_ColorPrimaries)
+        as? String
+      {
+        p2020 = pr == (kCMFormatDescriptionColorPrimaries_ITU_R_2020 as String)
+      }
+    }
+    let sz = tr.naturalSize
+    let xf = tr.preferredTransform
+    var ori = 0
+    if xf.a == 0 && xf.b == 1 && xf.c == -1 {
+      ori = 90
+    } else if xf.a == -1 && xf.d == -1 {
+      ori = 180
+    } else if xf.a == 0 && xf.b == -1 && xf.c == 1 {
+      ori = 270
     }
     // 色彩語意與 shader 線性化管線共用，不另開 YUV 路
     let o = AVAssetReaderTrackOutput(
@@ -5787,6 +5814,12 @@ final class ClipReader {
       reader = r
       out = o
       texFormat = hdr ? .rgba16Float : .bgra8Unorm
+      isHLG = hdr
+      is2020 = p2020
+      orient = ori
+      dispW = Double(sz.width)
+      dispH = Double(sz.height)
+      infoReady = true
       lock.unlock()
     } else {
       // 過期世代：別動共享狀態，自己收乾淨
@@ -6516,8 +6549,17 @@ final class MetalPreviewEngine: NSObject {
       if let old = pumps[sp.id], old.path != sp.path {
         old.dispose()
         pumps.removeValue(forKey: sp.id)
+        // 換檔（工作檔轉好）當場重建＋預熱到現在位置：不重建的話
+        // 沒有下一次 seek 就沒人建 pump——閒置節流又停了 render，
+        // 畫面就凍在舊檔最後一張（實機 137「預覽跑不出」）
+        if sp.offset <= curT && curT < sp.end {
+          pumpFor(sp).want(sp.trimStart + (curT - sp.offset) * sp.speed)
+        }
       }
     }
+    // 佈局換過＝重畫一輪（closure 內的 epoch 已 +1，這裡把
+    // 閒置計數歸零，確保換檔幀真的上屏）
+    idleTicks = 0
     return true
   }
 
@@ -7023,22 +7065,38 @@ final class MetalPreviewEngine: NSObject {
     for (_, d) in draws {
       switch d {
       case .video(let sp):
-        guard let pump = pumps[sp.id] else { continue }
+        // 播放路徑完全不依賴 pump：幾何/色彩標籤 reader 自己有。
+        // 舊寫法先 guard pump 存在——工作檔轉好換路徑會銷毀 pump，
+        // 播放中沒人重建 → 整層被跳過 → 全黑（實機 137 播放黑）
+        let pump = pumps[sp.id]
         let tex: MTLTexture?
+        var orient = pump?.orient ?? 0
+        var dispW = pump?.dispW ?? sp.srcW
+        var dispH = pump?.dispH ?? sp.srcH
+        var hlg = pump?.isHLG ?? false
+        var p2020 = pump?.is2020 ?? false
         if playing, let rd = readers[sp.id] {
           // 確定性播放：從解碼佇列取「時鐘這一刻該顯示的那格」
           let srcT = sp.trimStart + (t - sp.offset) * sp.speed
           let before = rd.lastTexture
           // reader 剛開（開檔 50~200ms）或短暫斷供＝拿不出格。
           // 直接 continue 的話該層整層不畫——滿版底層缺格＝整個
-          // 畫面黑（實機 136 多軌黑畫面）。退回 pump 最後畫面，
-          // 寧可舊一格也不透黑
-          tex = rd.frame(at: srcT, cache: cache) ?? pump.lastTexture
+          // 畫面黑。退回上一張或 pump 暫停幀，寧可舊一格也不透黑
+          tex = rd.frame(at: srcT, cache: cache) ?? pump?.lastTexture
           noteMiss(tex === before)
-        } else {
+          if rd.infoReady {
+            orient = rd.orient
+            dispW = rd.dispW
+            dispH = rd.dispH
+            hlg = rd.isHLG
+            p2020 = rd.is2020
+          }
+        } else if let pump = pump {
           let srcT = sp.trimStart + (t - sp.offset) * sp.speed
           pump.want(srcT)
           tex = pump.texture(at: srcT, cache: cache)
+        } else {
+          tex = nil
         }
         // 拖曳/捏合中的即時變形：跟合成器讀同一份靜態，逐格蓋過
         var spEff = sp
@@ -7052,14 +7110,14 @@ final class MetalPreviewEngine: NSObject {
         }
         guard let tex = tex,
           let verts = quad(
-            for: spEff, texOrient: pump.orient,
-            texW: pump.dispW, texH: pump.dispH)
+            for: spEff, texOrient: orient,
+            texW: dispW, texH: dispH)
         else { continue }
         let af = Float(
           fade(sp.opacity, sp.offset, sp.end, sp.fadeIn, sp.fadeOut))
         // HLG 增益 3.77＝參考白（75% 訊號）對齊 SDR 白 1.0
         var vp = SIMD4<Float>(
-          af, pump.isHLG ? 1 : 0, pump.is2020 ? 1 : 0, 3.77)
+          af, hlg ? 1 : 0, p2020 ? 1 : 0, 3.77)
         let cmU = Self.colorU(sp.color)
         enc.setRenderPipelineState(videoPipe)
         enc.setVertexBytes(verts, length: verts.count * 4, index: 0)
