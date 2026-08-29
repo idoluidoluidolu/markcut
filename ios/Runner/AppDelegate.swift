@@ -7056,9 +7056,13 @@ final class MetalPreviewEngine: NSObject {
         } else if let pump = pump {
           let srcT = sp.trimStart + (t - sp.offset) * sp.speed
           pump.want(srcT)
-          tex = pump.texture(at: srcT, cache: cache)
+          // pump 剛重建（換工作檔）或 seek 未完＝暫時沒圖：用播放
+          // 停格那張頂住——那本來就是正確的暫停幀，不透黑
+          tex =
+            pump.texture(at: srcT, cache: cache)
+            ?? readers[sp.id]?.lastTexture
         } else {
-          tex = nil
+          tex = readers[sp.id]?.lastTexture
         }
         // 拖曳/捏合中的即時變形：跟合成器讀同一份靜態，逐格蓋過
         var spEff = sp

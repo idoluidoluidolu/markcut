@@ -2996,6 +2996,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 一毫秒都不等（無延遲的關鍵：建佈局的錢在閒置時先付掉）
   String? _mBuiltSig;
 
+  /// 播放中被擋下的佈局重建（見 _metalPrebuild）：停播後補做
+  bool _mPendingPrebuild = false;
+
   /// 這份佈局能不能當「常駐畫面」（進場即亮、暫停也是它）：
   /// 滑動暫態的近似（GIF 首幀、馬賽克蓋全層、貼圖無濾鏡）
   /// 不能常駐——那些佈局引擎只做暫態接管
@@ -3142,6 +3145,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 新素材全都進不了引擎（實測：常駐後播放被「全代理=否」拒絕，
     // 佈局裡躺著的是最早那支原檔）。build 本來就是熱切換
     if (!_metalUsable) return;
+    // 播放中不重建佈局：build 會銷毀重建 pump（暫停畫面來源）——
+    // 播放中工作檔轉好觸發重建＝暫停瞬間 pump 沒圖＝黑幾百 ms
+    //（實機 139「暫停依樣黑畫面」）。記下來，停播後補做
+    if (_playing) {
+      _mPendingPrebuild = true;
+      return;
+    }
     final p = _metalPayload();
     if (p == null) {
       _mBuiltSig = null;
@@ -6903,6 +6913,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 播放中推遲掉的媒體抽換，現在補做
     if (_pendingSwaps.isNotEmpty || _pendingCompRebuild) {
       _flushPendingSwaps();
+    }
+    // 播放中被擋下的引擎佈局重建，現在補做（畫面已停格，pump
+    // 重建的空窗不會被看到）
+    if (_mPendingPrebuild) {
+      _mPendingPrebuild = false;
+      unawaited(_metalPrebuild());
     }
   }
 
