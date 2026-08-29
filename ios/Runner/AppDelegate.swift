@@ -6232,6 +6232,7 @@ final class MetalPreviewEngine: NSObject {
     stSupplyPump = 0
     stSupplyHold = 0
     stMaxGapMs = 0
+    stMissWho.removeAll()
     lastReject = ""
     // 不 force：暫停時 primed 好的佇列直接消費（真 0ms 起播）；
     // 位置變過的 settle 機制已經重新 prime 過
@@ -6930,6 +6931,8 @@ final class MetalPreviewEngine: NSObject {
   private var stSupplyHold = 0
   /// 播放中 tick 間隔最大值（ms）——「跳動感」的數字證據
   private var stMaxGapMs = 0
+  /// miss 發生時的層脈絡（層z/佇列備量/解碼器狀態）
+  private var stMissWho: [String] = []
   private var stRenderMsMax = 0.0
   private var stRenderMsSum = 0.0
   private var stRenders = 0
@@ -6974,6 +6977,7 @@ final class MetalPreviewEngine: NSObject {
       "playSafe": playSafe,
       "supply": "佇列\(stSupplyReader)/過渡\(stSupplyPump)/保底\(stSupplyHold)",
       "maxGapMs": stMaxGapMs,
+      "missWho": stMissWho.joined(separator: "、"),
       "resident": active,
       "playing": playing,
       "lastReject": lastReject,
@@ -6983,12 +6987,20 @@ final class MetalPreviewEngine: NSObject {
   /// 連續無新格的長度：30fps 內容在 60fps tick 下每兩 tick 沒
   /// 新格是「正常節奏」，連續 4 tick（>65ms）沒格才是真缺
   private var missStreak = 0
-  func noteMiss(_ miss: Bool) {
+  func noteMiss(_ miss: Bool, layer: MetalLayerSpec? = nil) {
     if miss {
       missStreak += 1
       if missStreak == 4 {
         stPumpMiss += 1
         if stMissAt.count < 8 { stMissAt.append(curT) }
+        // 交界卡頓的指名道姓：哪一層、佇列剩多少、解碼器活著沒
+        if stMissWho.count < 8, let sp = layer {
+          let rd = readers[sp.id]
+          stMissWho.append(String(
+            format: "%.1fs層%d佇%.2f%@", curT, sp.z,
+            rd?.bufferedTo ?? -1,
+            rd?.isRunning == true ? "跑" : "死"))
+        }
       }
     } else {
       if missStreak >= 1, playing, stPlayStartMs < 0 {
@@ -7344,7 +7356,7 @@ final class MetalPreviewEngine: NSObject {
             tex = pump?.lastTexture
             stSupplyHold += 1
           }
-          noteMiss(tex === before)
+          noteMiss(tex === before, layer: sp)
           if rd.infoReady {
             orient = rd.orient
             dispW = rd.dispW
