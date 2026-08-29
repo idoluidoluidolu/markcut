@@ -604,6 +604,9 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   /// Engine 3.0 快路統計：多少格走了 Metal 直拷、多少格走 CI
   static var stFastFrames = 0
   static var stCIFrames = 0
+  /// 快路未命中原因計數（實機定罪用）
+  static var stSkip: [String: Int] = [:]
+  static func skip(_ why: String) { stSkip[why, default: 0] += 1 }
 
   /// 這一層的變形是否把來源滿版貼合畫布（誤差 1px 內）——
   /// 滿版單層無效果的格可以走 YUV 直拷快路
@@ -886,23 +889,65 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         }
         // ── Engine 3.0 快路：單層滿版無效果 → YUV 平面直拷 ──
         // 色彩零轉換（位元級一致）、<1ms。任何條件不合就走 CI 原路
-        if self.hdrOut,
-          ins.mosaics.allSatisfy({ t0 < $0.start || t0 >= $0.end }),
-          ins.layers.count == 1, let L = ins.layers.first,
-          L.trackID != kCMPersistentTrackID_Invalid,
-          L.gif == nil, L.still == nil, L.colorMatrix == nil,
-          L.crop == nil, L.rotation == 0, L.opacity > 0.999,
-          L.fadeIn < 0.01 || t0 >= L.start + L.fadeIn,
-          L.fadeOut < 0.01 || t0 <= L.end - L.fadeOut,
-          !self.liveComp || CIExportCompositor.currentLiveXform() == nil,
+        // 逐項判定並記錄未命中原因（實機診斷直接指認）
+        func fastEligible() -> CVPixelBuffer? {
+          guard self.hdrOut else {
+            Self.skip("非HDR輸出")
+            return nil
+          }
+          guard ins.mosaics.allSatisfy({ t0 < $0.start || t0 >= $0.end })
+          else {
+            Self.skip("馬賽克")
+            return nil
+          }
+          guard ins.layers.count == 1, let L = ins.layers.first else {
+            Self.skip("多層")
+            return nil
+          }
+          guard L.trackID != kCMPersistentTrackID_Invalid, L.gif == nil,
+            L.still == nil
+          else {
+            Self.skip("圖層")
+            return nil
+          }
+          guard L.colorMatrix == nil, L.crop == nil, L.rotation == 0,
+            L.opacity > 0.999
+          else {
+            Self.skip("效果")
+            return nil
+          }
+          guard L.fadeIn < 0.01 || t0 >= L.start + L.fadeIn,
+            L.fadeOut < 0.01 || t0 <= L.end - L.fadeOut
+          else {
+            Self.skip("淡化中")
+            return nil
+          }
+          guard !self.liveComp
+            || CIExportCompositor.currentLiveXform() == nil
+          else {
+            Self.skip("即時變形")
+            return nil
+          }
           // 浮水印：引擎常駐在台上時它畫在最上層，合成器的輸出被
-          // 蓋住看不見——此時合成器烘浮水印是浪費，快路放行。
-          // 引擎讓位（罕見）時照舊 CI 全路，浮水印不會消失
-          !self.livePreview
+          // 蓋住看不見——此時烘浮水印是浪費，快路放行
+          guard !self.livePreview
             || CIExportCompositor.currentPreviewOverlays().isEmpty
-            || MetalPreviewEngine.shared.isOnStage,
-          self.isFullCanvas(L, canvas: size),
-          let sbuf = req.sourceFrame(byTrackID: L.trackID),
+            || MetalPreviewEngine.shared.isOnStage
+          else {
+            Self.skip("浮水印且引擎不在台上")
+            return nil
+          }
+          guard self.isFullCanvas(L, canvas: size) else {
+            Self.skip("非滿版")
+            return nil
+          }
+          guard let sbuf = req.sourceFrame(byTrackID: L.trackID) else {
+            Self.skip("缺來源格")
+            return nil
+          }
+          return sbuf
+        }
+        if let sbuf = fastEligible(),
           MetalYUVBlit.shared.blit(from: sbuf, to: dst)
         {
           Self.stFastFrames += 1
@@ -5224,6 +5269,16 @@ final class CompPlayer: NSObject, FlutterTexture {
   private var clockTrace: [String] = []
   private var clockTimer: Timer?
 
+  /// 引擎側塞時鐘事件（對表等）——static ring，dump 時合併
+  static let clockEvLock = NSLock()
+  static var clockEvents: [String] = []
+  static func noteClockEvent(_ e: String) {
+    clockEvLock.lock()
+    clockEvents.append(e)
+    if clockEvents.count > 12 { clockEvents.removeFirst(6) }
+    clockEvLock.unlock()
+  }
+
   private func traceClocks(_ tag: String) {
     clockTimer?.invalidate()
     var n = 0
@@ -5247,7 +5302,12 @@ final class CompPlayer: NSObject, FlutterTexture {
     clockTimer = t
   }
 
-  var clockTraceDump: String { clockTrace.joined(separator: "\n") }
+  var clockTraceDump: String {
+    Self.clockEvLock.lock()
+    let ev = Self.clockEvents.joined(separator: " ")
+    Self.clockEvLock.unlock()
+    return (ev.isEmpty ? "" : ev + "\n") + clockTrace.joined(separator: "\n")
+  }
 
   /// 分身有沒有真的聲音可播（無音軌素材＝空分身，時鐘改用引擎）
   private var audioValid = false
@@ -5676,6 +5736,10 @@ final class CompPlayer: NSObject, FlutterTexture {
     m["buildInfo"] = buildInfo
     CIExportCompositor.slowLock.lock()
     m["ciFrames"] = CIExportCompositor.frameCount
+    m["fastSkip"] = CIExportCompositor.stSkip
+      .sorted { $0.value > $1.value }
+      .map { "\($0.key)\($0.value)" }
+      .joined(separator: "、")
     m["fastFrames"] =
       "快路\(CIExportCompositor.stFastFrames)/CI\(CIExportCompositor.stCIFrames)"
     m["ciWorstMs"] = CIExportCompositor.worstMs
@@ -6515,9 +6579,12 @@ final class MetalPreviewEngine: NSObject {
   /// 對表不動解碼佇列（時鐘回退 0.1s 只是同一格多顯示一下）
   func rebase(to t: Double) {
     guard playing else { return }
+    let before = engineT
     playT0 = t
     host0 = CACurrentMediaTime()
     slideBias = 0
+    CompPlayer.noteClockEvent(
+      String(format: "[對表 擎%.2f→%.2f]", before, t))
   }
 
   /// 停播：畫面停在停點那格。解碼佇列「不殺」——沒人消費它就

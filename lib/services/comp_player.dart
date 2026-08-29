@@ -642,6 +642,10 @@ class CompPlayer {
       // 「幾秒的那一格花了幾 ms、幾層、有沒有缺格」——不用再猜
       final fast = m['fastFrames'] as String?;
       if (fast != null) b.write('\n  合成路徑：$fast（快路=Metal直拷）');
+      final skips = m['fastSkip'] as String?;
+      if (skips?.isNotEmpty == true) {
+        b.write('\n  快路未命中原因：$skips');
+      }
       final ciFrames = (m['ciFrames'] as num?)?.toInt() ?? 0;
       if (ciFrames > 0) {
         b.write(

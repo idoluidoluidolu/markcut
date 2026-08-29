@@ -3251,7 +3251,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       await Future<void>.delayed(const Duration(milliseconds: 700));
       final g = await MetalPreview.grab(_position);
       if (g == null || g.length < 15) return;
-      final v = g.take(15).map((x) => x.toStringAsFixed(3)).join(',');
+      // 前 15=五點色彩；尾段=每層診斷（id/isHLG/is2020/…）——HLG 標籤閃失查案用
+      final v = g.map((x) => x.toStringAsFixed(3)).join(',');
       final kinds = _mPathKind.values.toSet().join('/');
       Diag.note('🎨 色彩取樣[$tag] 來源=$kinds 值=$v');
     } catch (_) {}
