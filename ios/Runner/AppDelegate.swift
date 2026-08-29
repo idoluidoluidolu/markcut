@@ -601,6 +601,34 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   }
   private let queue = DispatchQueue(label: "markcut.ciexport")
 
+  /// Engine 3.0 快路統計：多少格走了 Metal 直拷、多少格走 CI
+  static var stFastFrames = 0
+  static var stCIFrames = 0
+
+  /// 這一層的變形是否把來源滿版貼合畫布（誤差 1px 內）——
+  /// 滿版單層無效果的格可以走 YUV 直拷快路
+  func isFullCanvas(_ L: CILayerSpec, canvas: CGSize) -> Bool {
+    let flipSrc = CGAffineTransform(
+      a: 1, b: 0, c: 0, d: -1, tx: 0, ty: L.srcHeight)
+    let flipCanvas = CGAffineTransform(
+      a: 1, b: 0, c: 0, d: -1, tx: 0, ty: canvas.height)
+    let chain = flipSrc.concatenating(L.transform)
+      .concatenating(flipCanvas)
+    // srcWidth 從 transform 推不出——用「單位矩形」不行；
+    // 以 srcHeight 搭配畫布比例估：檢查 (0,0) 與 (w,h) 兩角。
+    // 來源寬用變形把畫布反推回去驗證（無旋轉時 a,d 即縮放）
+    guard abs(chain.b) < 0.001, abs(chain.c) < 0.001 else { return false }
+    let srcW = canvas.width / max(0.0001, abs(chain.a))
+    let p0 = CGPoint(x: 0, y: 0).applying(chain)
+    let p1 = CGPoint(x: srcW, y: L.srcHeight).applying(chain)
+    let r = CGRect(
+      x: min(p0.x, p1.x), y: min(p0.y, p1.y),
+      width: abs(p1.x - p0.x), height: abs(p1.y - p0.y))
+    let c = CGRect(origin: .zero, size: canvas)
+    return abs(r.minX - c.minX) < 1 && abs(r.minY - c.minY) < 1
+      && abs(r.maxX - c.maxX) < 1 && abs(r.maxY - c.maxY) < 1
+  }
+
   /// 上一格合成完的畫面（指向我們自己輸出池的緩衝）。
   /// 指令邊界的瞬間，某一軌的來源格常常還沒到位——那一格畫黑底
   /// 就是使用者看到的「接縫閃黑」。缺格就重播上一格頂住，
@@ -841,6 +869,32 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           return
         }
         let size = req.renderContext.size
+        let t0 = req.compositionTime.seconds
+        // ── Engine 3.0 快路：單層滿版無效果 → YUV 平面直拷 ──
+        // 色彩零轉換（位元級一致）、<1ms。任何條件不合就走 CI 原路
+        if self.hdrOut,
+          ins.mosaics.allSatisfy({ t0 < $0.start || t0 >= $0.end }),
+          ins.layers.count == 1, let L = ins.layers.first,
+          L.trackID != kCMPersistentTrackID_Invalid,
+          L.gif == nil, L.still == nil, L.colorMatrix == nil,
+          L.crop == nil, L.rotation == 0, L.opacity > 0.999,
+          L.fadeIn < 0.01 || t0 >= L.start + L.fadeIn,
+          L.fadeOut < 0.01 || t0 <= L.end - L.fadeOut,
+          !self.liveComp || CIExportCompositor.currentLiveXform() == nil,
+          !self.livePreview
+            || CIExportCompositor.currentPreviewOverlays().isEmpty,
+          self.isFullCanvas(L, canvas: size),
+          let sbuf = req.sourceFrame(byTrackID: L.trackID),
+          MetalYUVBlit.shared.blit(from: sbuf, to: dst)
+        {
+          Self.stFastFrames += 1
+          Self.noteFrame(
+            t: t0, ms: (CFAbsoluteTimeGetCurrent() - tick) * 1000,
+            layers: 1, missing: false)
+          req.finish(withComposedVideoFrame: dst)
+          return
+        }
+        Self.stCIFrames += 1
         let canvasRect = CGRect(origin: .zero, size: size)
         var out = CIImage(color: CIColor(red: 0, green: 0, blue: 0))
           .cropped(to: canvasRect)
@@ -1092,6 +1146,171 @@ final class CIPreviewCompositorHDR: CIExportCompositorHDR {
 /// 不能弄髒成品
 final class CIPreviewCompositorSDR: CIExportCompositor {
   override var liveComp: Bool { true }
+}
+
+/// Engine 3.0 第一刀：Metal 快路合成核心。
+///
+/// 時間軸播放的大宗是「單一影片層滿版、無效果」的格——這種格
+/// 不需要任何色彩處理，YUV 平面直接（縮放）搬運：色彩零轉換、
+/// 跟來源位元級一致、GPU 耗時 <1ms。CI 慢格（實測 383ms）的主體
+/// 就是這些格白白走了整條 CoreImage 管線。
+/// 多層/濾鏡/貼圖/馬賽克/即時變形的格照走 CI（數值已驗證）。
+final class MetalYUVBlit {
+  static let shared = MetalYUVBlit()
+  private var device: MTLDevice?
+  private var queue: MTLCommandQueue?
+  private var cache: CVMetalTextureCache?
+  private var pipeY: MTLRenderPipelineState?
+  private var pipeC: MTLRenderPipelineState?
+  private var sampler: MTLSamplerState?
+  private var ready = false
+  private var failed = false
+  private let lock = NSLock()
+
+  /// 每平面一條 passthrough（雙線性縮放由 sampler 做）。
+  /// Y 平面 r16Unorm、CbCr 平面 rg16Unorm——值原樣搬，不解碼
+  private let src = """
+    #include <metal_stdlib>
+    using namespace metal;
+    struct VOut { float4 pos [[position]]; float2 uv; };
+    vertex VOut vtxBlit(uint vid [[vertex_id]]) {
+      float2 p[6] = {
+        float2(-1, 1), float2(1, 1), float2(-1, -1),
+        float2(1, 1), float2(1, -1), float2(-1, -1)};
+      float2 t[6] = {
+        float2(0, 0), float2(1, 0), float2(0, 1),
+        float2(1, 0), float2(1, 1), float2(0, 1)};
+      VOut o;
+      o.pos = float4(p[vid], 0, 1);
+      o.uv = t[vid];
+      return o;
+    }
+    fragment float4 fragY(VOut in [[stage_in]],
+                          texture2d<float> tex [[texture(0)]],
+                          sampler s [[sampler(0)]]) {
+      return float4(tex.sample(s, in.uv).r, 0, 0, 1);
+    }
+    fragment float4 fragC(VOut in [[stage_in]],
+                          texture2d<float> tex [[texture(0)]],
+                          sampler s [[sampler(0)]]) {
+      float2 c = tex.sample(s, in.uv).rg;
+      return float4(c.r, c.g, 0, 1);
+    }
+    """
+
+  private func setUp() -> Bool {
+    if ready { return true }
+    if failed { return false }
+    guard let dev = MTLCreateSystemDefaultDevice(),
+      let q = dev.makeCommandQueue()
+    else {
+      failed = true
+      return false
+    }
+    var c: CVMetalTextureCache?
+    CVMetalTextureCacheCreate(nil, nil, dev, nil, &c)
+    guard let cc = c else {
+      failed = true
+      return false
+    }
+    do {
+      let lib = try dev.makeLibrary(source: src, options: nil)
+      let v = lib.makeFunction(name: "vtxBlit")
+      func pipe(_ frag: String, _ fmt: MTLPixelFormat) throws
+        -> MTLRenderPipelineState
+      {
+        let d = MTLRenderPipelineDescriptor()
+        d.vertexFunction = v
+        d.fragmentFunction = lib.makeFunction(name: frag)
+        d.colorAttachments[0].pixelFormat = fmt
+        return try dev.makeRenderPipelineState(descriptor: d)
+      }
+      pipeY = try pipe("fragY", .r16Unorm)
+      pipeC = try pipe("fragC", .rg16Unorm)
+      let sd = MTLSamplerDescriptor()
+      sd.minFilter = .linear
+      sd.magFilter = .linear
+      sd.sAddressMode = .clampToEdge
+      sd.tAddressMode = .clampToEdge
+      sampler = dev.makeSamplerState(descriptor: sd)
+      device = dev
+      queue = q
+      cache = cc
+      ready = true
+      return true
+    } catch {
+      NSLog("[MetalYUVBlit] 建管線失敗 %@", String(describing: error))
+      failed = true
+      return false
+    }
+  }
+
+  private func planeTex(
+    _ buf: CVPixelBuffer, _ plane: Int, _ fmt: MTLPixelFormat
+  ) -> MTLTexture? {
+    guard let cache = cache else { return nil }
+    var cv: CVMetalTexture?
+    let w = CVPixelBufferGetWidthOfPlane(buf, plane)
+    let h = CVPixelBufferGetHeightOfPlane(buf, plane)
+    guard
+      CVMetalTextureCacheCreateTextureFromImage(
+        kCFAllocatorDefault, cache, buf, nil, fmt, w, h, plane, &cv)
+        == kCVReturnSuccess, let cv = cv
+    else { return nil }
+    return CVMetalTextureGetTexture(cv)
+  }
+
+  /// 兩平面縮放搬運（10-bit bi-planar → 同格式）。同步等完成
+  ///（合成器本來就在背景佇列，等 <1ms）。回 false＝呼叫端走 CI
+  func blit(from srcBuf: CVPixelBuffer, to dstBuf: CVPixelBuffer) -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    guard setUp(), let queue = queue, let sampler = sampler,
+      let pipeY = pipeY, let pipeC = pipeC
+    else { return false }
+    let sf = CVPixelBufferGetPixelFormatType(srcBuf)
+    let df = CVPixelBufferGetPixelFormatType(dstBuf)
+    // 只吃「同為 10-bit bi-planar」的組合；其他退 CI
+    let tenBit: Set<OSType> = [
+      kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+      kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+    ]
+    guard tenBit.contains(sf), tenBit.contains(df), sf == df,
+      CVPixelBufferGetPlaneCount(srcBuf) == 2,
+      CVPixelBufferGetPlaneCount(dstBuf) == 2
+    else { return false }
+    guard let sy = planeTex(srcBuf, 0, .r16Unorm),
+      let sc = planeTex(srcBuf, 1, .rg16Unorm),
+      let dy = planeTex(dstBuf, 0, .r16Unorm),
+      let dc = planeTex(dstBuf, 1, .rg16Unorm),
+      let cmd = queue.makeCommandBuffer()
+    else { return false }
+    func pass(
+      _ dst: MTLTexture, _ srcTex: MTLTexture,
+      _ pipe: MTLRenderPipelineState
+    ) -> Bool {
+      let rp = MTLRenderPassDescriptor()
+      rp.colorAttachments[0].texture = dst
+      rp.colorAttachments[0].loadAction = .dontCare
+      rp.colorAttachments[0].storeAction = .store
+      guard let e = cmd.makeRenderCommandEncoder(descriptor: rp) else {
+        return false
+      }
+      e.setRenderPipelineState(pipe)
+      e.setFragmentTexture(srcTex, index: 0)
+      e.setFragmentSamplerState(sampler, index: 0)
+      e.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+      e.endEncoding()
+      return true
+    }
+    guard pass(dy, sy, pipeY), pass(dc, sc, pipeC) else {
+      cmd.commit()
+      return false
+    }
+    cmd.commit()
+    cmd.waitUntilCompleted()
+    return cmd.status == .completed
+  }
 }
 
 /// 跨執行緒的一次性旗標。轉檔那條路上有兩個地方需要它：
@@ -5415,6 +5634,8 @@ final class CompPlayer: NSObject, FlutterTexture {
     m["buildInfo"] = buildInfo
     CIExportCompositor.slowLock.lock()
     m["ciFrames"] = CIExportCompositor.frameCount
+    m["fastFrames"] =
+      "快路\(CIExportCompositor.stFastFrames)/CI\(CIExportCompositor.stCIFrames)"
     m["ciWorstMs"] = CIExportCompositor.worstMs
     m["ciSlow"] = CIExportCompositor.slowFrames
     m["ciSupplyWorst"] = CIExportCompositor.worstSupplyMs

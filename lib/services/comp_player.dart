@@ -640,6 +640,8 @@ class CompPlayer {
       }
       // CI 合成器的逐格計時：接縫頓的話，慢格清單會直接寫著
       // 「幾秒的那一格花了幾 ms、幾層、有沒有缺格」——不用再猜
+      final fast = m['fastFrames'] as String?;
+      if (fast != null) b.write('\n  合成路徑：$fast（快路=Metal直拷）');
       final ciFrames = (m['ciFrames'] as num?)?.toInt() ?? 0;
       if (ciFrames > 0) {
         b.write(
