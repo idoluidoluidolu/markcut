@@ -4958,6 +4958,37 @@ final class CompPlayer: NSObject, FlutterTexture {
   private let audioPlayer = AVPlayer()
   private(set) var takeover = false
 
+  /// 時鐘偵探：接管/讓位後每 100ms 錄一點（音訊率/音訊時間/引擎
+  /// 時鐘），共 15 點——「暫停再播跳動感」直接變成數字曲線
+  private var clockTrace: [String] = []
+  private var clockTimer: Timer?
+
+  private func traceClocks(_ tag: String) {
+    clockTimer?.invalidate()
+    var n = 0
+    clockTrace.append("[\(tag)]")
+    if clockTrace.count > 80 { clockTrace.removeFirst(40) }
+    let t = Timer(timeInterval: 0.1, repeats: true) { [weak self] tm in
+      guard let self = self else {
+        tm.invalidate()
+        return
+      }
+      n += 1
+      let line = String(
+        format: "%d0:率%.2f 音%.2f 擎%.2f", n,
+        self.audioPlayer.rate,
+        self.audioPlayer.currentTime().seconds,
+        MetalPreviewEngine.shared.clockT)
+      self.clockTrace.append(line)
+      if n >= 15 { tm.invalidate() }
+    }
+    RunLoop.main.add(t, forMode: .common)
+    clockTimer = t
+  }
+
+  var clockTraceDump: String { clockTrace.joined(separator: "
+") }
+
   /// 分身有沒有真的聲音可播（無音軌素材＝空分身，時鐘改用引擎）
   private var audioValid = false
 
@@ -4965,6 +4996,7 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 主播放器原地凍結（合成管線完整保留，暫停畫面隨叫隨到）
   func setTakeover(_ on: Bool) {
     takeover = on
+    traceClocks(on ? "接管" : "讓位")
     if on {
       audioValid =
         (audioPlayer.currentItem?.duration.seconds ?? 0) > 0.05
@@ -5394,6 +5426,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     m["viewCreateAt"] = PlayerPlatformView.createNotes
     PlayerPlatformView.statLock.unlock()
     m["frameProbe"] = frameProbe()
+    m["clockTrace"] = clockTraceDump
     switch player.timeControlStatus {
     case .paused: m["timeControl"] = "暫停"
     case .waitingToPlayAtSpecifiedRate: m["timeControl"] = "想播但在等"
@@ -6190,6 +6223,10 @@ final class MetalPreviewEngine: NSObject {
     playStartHost = host0
     stPlayStartMs = -1
     stMissAt.removeAll()
+    stSupplyReader = 0
+    stSupplyPump = 0
+    stSupplyHold = 0
+    stMaxGapMs = 0
     lastReject = ""
     // 不 force：暫停時 primed 好的佇列直接消費（真 0ms 起播）；
     // 位置變過的 settle 機制已經重新 prime 過
@@ -6871,6 +6908,12 @@ final class MetalPreviewEngine: NSObject {
   // ===== 引擎實測統計（真機頓在哪，看數字不用猜）=====
   private var stTicks = 0
   private var stDropped = 0
+  /// 播放中畫面來源計數：解碼佇列／過渡供格／保底停格
+  private var stSupplyReader = 0
+  private var stSupplyPump = 0
+  private var stSupplyHold = 0
+  /// 播放中 tick 間隔最大值（ms）——「跳動感」的數字證據
+  private var stMaxGapMs = 0
   private var stRenderMsMax = 0.0
   private var stRenderMsSum = 0.0
   private var stRenders = 0
@@ -6913,6 +6956,8 @@ final class MetalPreviewEngine: NSObject {
       "layers": layerInfo.joined(separator: "、"),
       "queues": queueInfo.joined(separator: "、"),
       "playSafe": playSafe,
+      "supply": "佇列\(stSupplyReader)/過渡\(stSupplyPump)/保底\(stSupplyHold)",
+      "maxGapMs": stMaxGapMs,
       "resident": active,
       "playing": playing,
       "lastReject": lastReject,
@@ -6943,8 +6988,10 @@ final class MetalPreviewEngine: NSObject {
   @objc private func tick() {
     guard active else { return }
     let now = CACurrentMediaTime()
-    if lastTickAt > 0, playing, now - lastTickAt > 0.026 {
-      stDropped += 1
+    if lastTickAt > 0, playing {
+      let gapMs = Int((now - lastTickAt) * 1000)
+      if gapMs > stMaxGapMs { stMaxGapMs = gapMs }
+      if gapMs > 26 { stDropped += 1 }
     }
     lastTickAt = now
     stTicks += 1
@@ -7260,7 +7307,13 @@ final class MetalPreviewEngine: NSObject {
         var p2020 = pump?.is2020 ?? false
         if playing, readers[sp.id] == nil, !sp.proxy, let pump = pump {
           // 轉檔期過渡：系統播放器自走時鐘、逐格取樣（見 syncReaders）
-          tex = pump.playTexture(cache: cache) ?? pump.lastTexture
+          if let pt = pump.playTexture(cache: cache) {
+            tex = pt
+            stSupplyPump += 1
+          } else {
+            tex = pump.lastTexture
+            stSupplyHold += 1
+          }
         } else if playing, let rd = readers[sp.id] {
           // 確定性播放：從解碼佇列取「時鐘這一刻該顯示的那格」
           let srcT = sp.trimStart + (t - sp.offset) * sp.speed
@@ -7268,7 +7321,13 @@ final class MetalPreviewEngine: NSObject {
           // reader 剛開（開檔 50~200ms）或短暫斷供＝拿不出格。
           // 直接 continue 的話該層整層不畫——滿版底層缺格＝整個
           // 畫面黑。退回上一張或 pump 暫停幀，寧可舊一格也不透黑
-          tex = rd.frame(at: srcT, cache: cache) ?? pump?.lastTexture
+          if let rt = rd.frame(at: srcT, cache: cache) {
+            tex = rt
+            stSupplyReader += 1
+          } else {
+            tex = pump?.lastTexture
+            stSupplyHold += 1
+          }
           noteMiss(tex === before)
           if rd.infoReady {
             orient = rd.orient

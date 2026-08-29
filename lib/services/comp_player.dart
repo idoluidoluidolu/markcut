@@ -631,6 +631,13 @@ class CompPlayer {
       if (m['frameProbe'] != null) {
         b.write('\n  抽格檢查：${m['frameProbe']}');
       }
+      // 時鐘偵探：接管/讓位後 1.5 秒的三時鐘軌跡（音訊率/音訊時間/
+      // 引擎時鐘）——「暫停再播跳動」直接看曲線，不用重現
+      final ct = m['clockTrace'] as String?;
+      if (ct != null && ct.isNotEmpty) {
+        b.write('\n  時鐘軌跡（率=音訊分身速率）：\n    ');
+        b.write(ct.replaceAll('\n', '\n    '));
+      }
       // CI 合成器的逐格計時：接縫頓的話，慢格清單會直接寫著
       // 「幾秒的那一格花了幾 ms、幾層、有沒有缺格」——不用再猜
       final ciFrames = (m['ciFrames'] as num?)?.toInt() ?? 0;

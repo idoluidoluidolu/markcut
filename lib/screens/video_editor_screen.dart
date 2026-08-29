@@ -2245,6 +2245,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if ((t - _position).abs() < 0.001) return;
     _position = t; // 位置 UI 由 _posVN 小範圍重繪，不整頁 setState
     _scrubbing = true;
+    _scrubProbeBegin();
     unawaited(_metalScrubBegin()); // 快取幀模式（下一次 30fps 重繪就生效）
     if (_compOn) {
       // 素材還在用原檔（秒進、工作檔還在背景轉）：拖曳走快取幀
@@ -2804,6 +2805,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _saveDraft();
     // 工作檔就緒＝previewPath 換人：Metal 引擎佈局跟著刷
     unawaited(_metalPrebuild());
+    // 色彩偵探：全轉好後自動取樣一次（跟進場那次對照＝有無變色）
+    if (_allWorkFilesReady) {
+      unawaited(
+        Future<void>.delayed(
+          const Duration(seconds: 2),
+        ).then((_) => _mColorProbe('轉檔完')),
+      );
+    }
   }
 
   /// 這份素材的播放器全部換成吃工作檔的新播放器
@@ -2987,6 +2996,35 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   bool _scrubbing = false;
 
+  /// 滑動偵探：手勢起點時間與引擎渲染計數——結束時算出圖率，
+  /// 「滑動卡」直接分辨是出圖慢還是不跟手
+  DateTime? _scrubT0;
+  int _scrubRenders0 = 0;
+
+  void _scrubProbeBegin() {
+    _scrubT0 = DateTime.now();
+    unawaited(
+      MetalPreview.stats().then((st) {
+        _scrubRenders0 = (st?['renders'] as num?)?.toInt() ?? 0;
+      }),
+    );
+  }
+
+  void _scrubProbeEnd() {
+    final t0 = _scrubT0;
+    if (t0 == null) return;
+    _scrubT0 = null;
+    final ms = DateTime.now().difference(t0).inMilliseconds;
+    if (ms < 120) return; // 點一下不算滑
+    unawaited(
+      MetalPreview.stats().then((st) {
+        final r = ((st?['renders'] as num?)?.toInt() ?? 0) - _scrubRenders0;
+        final fps = ms > 0 ? (r * 1000 / ms).toStringAsFixed(0) : '?';
+        Diag.note('🖐 滑動 ${ms}ms 出圖$r張(${fps}fps/秒)');
+      }),
+    );
+  }
+
   // ===== Metal 預覽引擎（滑動接管）=====
   DateTime _mSeekAt = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _mPlaySyncAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -2998,6 +3036,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 播放中被擋下的佈局重建（見 _metalPrebuild）：停播後補做
   bool _mPendingPrebuild = false;
+
+  /// 色彩偵探：每層目前餵引擎的檔案種類（原檔/SDR工作檔/HDR代理），
+  /// 變化即記——「進場顏色不對」直接看這裡是不是餵錯檔
+  final Map<int, String> _mPathKind = {};
 
   /// 這份佈局能不能當「常駐畫面」（進場即亮、暫停也是它）：
   /// 滑動暫態的近似（GIF 首幀、馬賽克蓋全層、貼圖無濾鏡）
@@ -3044,15 +3086,27 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final src = _tl.sourceOf(c);
       if (!src.isVideo || _hiddenTracks.contains(c.track)) continue;
       if (c.reverse) return null; // 倒轉走現有路徑
+      final layerPath = hdrMode
+          ? (src.workHdrPath ?? src.path)
+          : src.previewPath;
+      final kind = layerPath == src.path
+          ? '原檔'
+          : layerPath == src.workHdrPath
+          ? 'HDR代理'
+          : 'SDR工作檔';
+      if (_mPathKind[c.id] != kind) {
+        if (_mPathKind.containsKey(c.id)) {
+          Diag.note('🎨 層${c.track} 畫面來源：${_mPathKind[c.id]}→$kind');
+        }
+        _mPathKind[c.id] = kind;
+      }
       specs.add({
         'id': c.id,
         // HDR 模式：代理沒好就用「原檔」，永不上 SDR 色調映射工作檔
         // ——之前進場會經歷「原檔→SDR 檔→HDR 代理」三連切，中間那段
         // 顏色灰平（實機 140：「一進去就是顏色不對」）。原檔雖重，
         // 但轉檔期有系統播放器過渡供格扛（2.0 里程碑③）
-        'path': hdrMode
-            ? (src.workHdrPath ?? src.path)
-            : src.previewPath,
+        'path': layerPath,
         'offset': c.offset,
         'end': c.end,
         'trimStart': c.trimStart,
@@ -3186,6 +3240,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   Timer? _mResTimer;
 
+  /// 色彩偵探（自動）：離屏 5 點數值取樣＋當下各層來源種類。
+  /// [tag] 標記時機（進場/轉檔完）。失敗靜默——它是偵測不是功能
+  Future<void> _mColorProbe(String tag) async {
+    try {
+      await MetalPreview.grab(_position);
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      final g = await MetalPreview.grab(_position);
+      if (g == null || g.length < 15) return;
+      final v = g.take(15).map((x) => x.toStringAsFixed(3)).join(',');
+      final kinds = _mPathKind.values.toSet().join('/');
+      Diag.note('🎨 色彩取樣[$tag] 來源=$kinds 值=$v');
+    } catch (_) {}
+  }
+
   /// 常駐上台：紋理就緒才亮（129 黑畫面的教訓——寧可晚 200ms
   /// 也不上黑畫布）；沒就緒 200ms 後重試，最多 15 次（3 秒）
   void _metalResidentTry([int attempt = 0]) {
@@ -3210,6 +3278,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         MetalPreview.active = true;
         unawaited(MetalPreview.show(true));
         setState(() {});
+        unawaited(_mColorProbe('進場'));
       }),
     );
   }
@@ -3579,6 +3648,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             });
       }
     }
+    _scrubProbeEnd();
     if (_scrubbing && mounted) setState(() => _scrubbing = false);
     // 引擎在畫時，讓位交給「精準 seek 完成」的回呼（_compSeek）；
     // 這裡搶先開 300ms 倒數會讓位給還沒畫好的舊幀
@@ -7623,6 +7693,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     if (edge != null) _position = edge.clamp(0.0, _tl.duration);
     _scrubbing = true;
+    _scrubProbeBegin();
     unawaited(_metalScrubBegin());
     if (_compOn) {
       // 素材還在用原檔（秒進、工作檔還在背景轉）：拖曳走快取幀
