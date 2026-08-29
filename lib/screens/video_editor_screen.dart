@@ -3333,6 +3333,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _requestScrubFrames() {
     if (kIsWeb || !Diag.scrubPrefetch.value) return;
+    // 引擎瞬滑取代按需抽幀（理由同 _makeScrubCache）
+    if (Platform.isIOS && Diag.metalPreview.value) return;
     // 播放中不要跟播放器搶解碼器：抽幀是給拖曳用的，
     // 播放的時候一格都不需要
     if (_playing) {
@@ -3403,6 +3405,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   Future<void> _makeScrubCache(int srcIndex, String path, double dur) async {
     if (dur <= 0) return;
+    // 引擎瞬滑（關鍵幀貼齊）已完全取代快取幀：這套 FFmpeg 背景
+    // 抽幀在引擎模式下純粹是搶硬體——實測 131 診斷：按下播放的
+    // 同一毫秒「開始背景抽幀 84 格」、6.5 秒才結束、期間掉格
+    // 417ms，正是「按播放先卡幾秒」的另一半真凶。整套不啟動
+    if (!kIsWeb && Platform.isIOS && Diag.metalPreview.value) return;
     // 上限 2400 張（8fps 約 5 分鐘）；更長的片自動降密度保住記憶體
     final n = (dur * _scrubFps).ceil().clamp(4, 2400);
     final step = dur / n;
