@@ -4986,8 +4986,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     clockTimer = t
   }
 
-  var clockTraceDump: String { clockTrace.joined(separator: "
-") }
+  var clockTraceDump: String { clockTrace.joined(separator: "\n") }
 
   /// 分身有沒有真的聲音可播（無音軌素材＝空分身，時鐘改用引擎）
   private var audioValid = false
