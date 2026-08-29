@@ -6922,7 +6922,11 @@ final class MetalPreviewEngine: NSObject {
           // 確定性播放：從解碼佇列取「時鐘這一刻該顯示的那格」
           let srcT = sp.trimStart + (t - sp.offset) * sp.speed
           let before = rd.lastTexture
-          tex = rd.frame(at: srcT, cache: cache)
+          // reader 剛開（開檔 50~200ms）或短暫斷供＝拿不出格。
+          // 直接 continue 的話該層整層不畫——滿版底層缺格＝整個
+          // 畫面黑（實機 136 多軌黑畫面）。退回 pump 最後畫面，
+          // 寧可舊一格也不透黑
+          tex = rd.frame(at: srcT, cache: cache) ?? pump.lastTexture
           noteMiss(tex === before)
         } else {
           let srcT = sp.trimStart + (t - sp.offset) * sp.speed
