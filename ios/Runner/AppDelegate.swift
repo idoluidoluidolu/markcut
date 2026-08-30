@@ -694,7 +694,13 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
     [
       kCVPixelBufferPixelFormatTypeKey as String: hdrOut
         ? Int(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
-        : Int(kCVPixelFormatType_32BGRA)
+        : Int(kCVPixelFormatType_32BGRA),
+      // IOSurface 支援：沒有它的話合成出來的緩衝「顯示不出來」——
+      // 匯出（寫檔）不受影響，但 AVPlayerLayer 拿到就是一片黑。
+      // 舊架構播放時畫面由 Metal 引擎蓋在上面，所以一直沒露出來；
+      // 播放交還系統播放器後就變成「按播放全黑」（實機 143~146）
+      kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+      kCVPixelBufferMetalCompatibilityKey as String: true,
     ]
   }
 
