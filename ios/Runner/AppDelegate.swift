@@ -8077,6 +8077,7 @@ final class MetalPreviewEngine: NSObject {
         enc.setFragmentBytes(cmU, length: 64, index: 1)
         enc.setFragmentTexture(tex, index: 0)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+        drewAny = true
       case .still(let st):
         // GIF：取這一刻該顯示的動畫幀；解不出＝停首幀（原行為）
         let animTex = st.gif
@@ -8102,29 +8103,15 @@ final class MetalPreviewEngine: NSObject {
         enc.setFragmentBytes(Self.colorU(st.color), length: 64, index: 1)
         enc.setFragmentTexture(tex, index: 0)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+        drewAny = true
       }
     }
     // 馬賽克按 z 分組（只糊 z 比它低的層——跟 CI 同語意）。
     // 沒有馬賽克＝整串畫在同一個 encoder（原路徑，零開銷）
-    // 沒東西可畫就不畫：清成黑底再 present 就是使用者看到的
-    // 「引擎在最上層蓋一層黑」（實機 143~147：泊車後引擎
-    // 沒紋理卻繼續渲染）。保留上一幀比一片黑安全得多
-    var anyTex = stills.contains { $0.start <= t && t < $0.end }
-    if !anyTex {
-      for sp in layers where sp.offset <= t && t < sp.end {
-        if readers[sp.id]?.lastTexture != nil
-          || pumps[sp.id]?.lastTexture != nil
-        {
-          anyTex = true
-          break
-        }
-      }
-    }
-    if !anyTex {
-      enc.endEncoding()
-      cmd.commit()
-      return
-    }
+    // 一層都沒畫成才不上屏（見結尾的 drewAny）：不能在這裡用
+    // 「有沒有紋理」提早跳過——紋理正是靠渲染時去取樣才生出來的，
+    // 提早跳過＝永遠不取樣＝畫面凍住（實機 151：滑動停在暫停那格）
+    var drewAny = false
     let mzGroups = Dictionary(grouping: activeMz) { $0.z }
       .sorted { $0.key < $1.key }
     var gi = 0
@@ -8213,7 +8200,9 @@ final class MetalPreviewEngine: NSObject {
       out.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
     }
     out.endEncoding()
-    cmd.present(drawable)
+    // 一層都沒畫成（解碼器還沒出第一格）就不上屏：保留上一幀，
+    // 既不會蓋黑、也不會擋住取樣（取樣已經在上面做過了）
+    if drewAny { cmd.present(drawable) }
     cmd.commit()
   }
 
