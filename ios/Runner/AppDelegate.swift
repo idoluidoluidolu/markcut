@@ -6637,13 +6637,6 @@ final class ClipReader {
     return held?.tex
   }
 
-  /// 目前顯示到的來源時刻（滑動倒退時要判斷是否重啟）
-  var lastShown: Double {
-    lock.lock()
-    defer { lock.unlock() }
-    return lastPts
-  }
-
   /// 佇列裡已備好的最遠時刻（交界預捲檢查用）
   var bufferedTo: Double {
     lock.lock()
@@ -7608,25 +7601,11 @@ final class MetalPreviewEngine: NSObject {
       }
     } else {
       curT = t
-      // 滑動＝連續解碼，不是逐格 seek：AVPlayer.seek 在這台機器
-      // 一發要 100~200ms，一秒只給得出 5 張新畫面（實機 156：
-      // 渲染 1237/新格 96）。改成用解碼佇列順序解，跟手才有可能
+      // 滑動中一律關鍵幀貼齊（瞬間出圖，4K 原檔也順）；
+      // 停手 150ms 後 tick 補一發精確幀（見 settle 機制）
       for sp in layers where sp.offset <= t && t < sp.end {
-        let want = sp.trimStart + (t - sp.offset) * sp.speed
-        var r = readers[sp.id]
-        if r == nil || r!.path != sp.path {
-          r?.stop()
-          r = ClipReader(path: sp.path)
-          readers[sp.id] = r
-          r!.start(at: want)
-        } else if want < r!.lastShown - 0.05 || want > r!.bufferedTo + 0.8
-          || !r!.isRunning
-        {
-          // 倒退、跳太遠、或讀完了：從新位置重新順序解
-          r!.start(at: want)
-        }
-        // 保底：解碼佇列還沒出第一格時，pump 的關鍵幀貼齊先頂著
-        pumpFor(sp).want(want, coarse: true)
+        pumpFor(sp).want(
+          sp.trimStart + (t - sp.offset) * sp.speed, coarse: true)
       }
       lastSeekHost = CACurrentMediaTime()
       seekSettled = false
@@ -7659,7 +7638,6 @@ final class MetalPreviewEngine: NSObject {
   /// 兩者差很大＝渲染沒問題，是解碼器供不出新格（滑動落後的證據）
   private var stIdleRenders = 0
   private var stIdleFresh = 0
-  private weak var idleLastTex: MTLTexture?
   /// miss 發生時的層脈絡（層z/佇列備量/解碼器狀態）
   private var stMissWho: [String] = []
   private var stRenderMsMax = 0.0
@@ -8096,15 +8074,6 @@ final class MetalPreviewEngine: NSObject {
             hlg = rd.isHLG
             p2020 = rd.is2020
           }
-        } else if let rd = readers[sp.id], !playing,
-          let rtex = rd.frame(at: sp.trimStart + (t - sp.offset) * sp.speed,
-            cache: cache)
-        {
-          // 滑動：解碼佇列供格（連續解碼，跟得上手指）
-          stIdleRenders += 1
-          if rtex !== idleLastTex { stIdleFresh += 1 }
-          idleLastTex = rtex
-          tex = rtex
         } else if let pump = pump {
           let srcT = sp.trimStart + (t - sp.offset) * sp.speed
           let beforeTex = pump.lastTexture
