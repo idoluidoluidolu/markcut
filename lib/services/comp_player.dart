@@ -56,6 +56,13 @@ class MetalPreview {
     }
   }
 
+  /// 影片圖層重新綁定到現役播放器（見原生 PlayerHosts.reassert）
+  static Future<void> reattach() async {
+    try {
+      await CompPlayer._ch.invokeMethod<void>('reattach');
+    } catch (_) {}
+  }
+
   /// 引擎實測統計（tick/掉格/渲染耗時/供格 miss）——診斷用
   static Future<Map<dynamic, dynamic>?> stats() async {
     try {
@@ -627,6 +634,9 @@ class CompPlayer {
           '、${m['instructions']} 段指令'
           '、長 ${(m['compDur'] as num?)?.toStringAsFixed(1)}s',
         );
+      }
+      if (m['layerBound'] == false) {
+        b.write('\n  ⚠ 影片圖層綁在舊播放器（畫面會全黑）');
       }
       if (m['frameProbe'] != null) {
         b.write('\n  抽格檢查：${m['frameProbe']}');

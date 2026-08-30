@@ -6854,6 +6854,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 滑動與暫停畫面；合成器快路讓系統播放逐格 <1ms
       if (MetalPreview.active) _metalHideNow();
       unawaited(MetalPreview.park());
+      // 起播前確認影片圖層綁在現役播放器：翻面被打斷過的話，
+      // 前層還指著已收掉的舊播放器＝播放全黑（實機 145）
+      await MetalPreview.reattach();
       final st = await _comp!.play();
       tr.log('系統播放器起播（狀態：${st ?? '？'}）');
       final sw = Stopwatch()..start();
@@ -6973,8 +6976,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 3.0：系統暫停→精確 seek 到停點→常駐引擎回台顯示停格
       unawaited(
         c.pause().then((_) async {
-          _position = await c.position();
-          _syncScrollToPosition();
+          // 指針不改：Dart 這一刻的位置就是使用者看到的位置。
+          // 覆寫成播放器位置的話，播放器剛重建（回報 0）就會把指針
+          // 拉回開頭（實機 145：暫停後指針跳回最一開始）
           await c.seek(_position, exact: true);
           // 常駐引擎回台顯示停格（滑動/暫停是它僅剩的兩個舞台）
           if (mounted) _metalResidentTry();

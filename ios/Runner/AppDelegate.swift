@@ -1897,6 +1897,9 @@ final class AtomicFlag {
         // 佈局沒建成回 false，Dart 照舊讓合成播放器出畫面
         result(
           MetalPreviewEngine.shared.play(call.arguments as? Double ?? 0))
+      case "reattach":
+        PlayerHosts.shared.reassert()
+        result(nil)
       case "mstop":
         result(MetalPreviewEngine.shared.stop())
       case "mpark":
@@ -4259,6 +4262,24 @@ final class PlayerHosts: NSObject {
     v.front.player = current
   }
 
+  /// 前面那層是不是真的綁在現役播放器上（診斷用）
+  var bound: Bool {
+    let vs = views.allObjects
+    if vs.isEmpty { return true }
+    return vs.allSatisfy { $0.front.player === current }
+  }
+
+  /// 重新確認綁定：翻面過程被打斷、或視圖重掛時序沒對上，
+  /// 前面那層會留在「已經被收掉的舊播放器」上＝畫面永久黑。
+  /// 播放前呼叫一次，冪等、零成本（已經對的就不動）
+  func reassert() {
+    guard let p = current else { return }
+    for v in views.allObjects where v.front.player !== p {
+      v.front.player = p
+      NSLog("[PlayerHosts] 圖層重新綁定（前層指著舊播放器）")
+    }
+  }
+
   /// 換成新的播放器——但畫面不立刻換：新播放器先掛每個視圖的
   /// 背面圖層，等它第一格真的解出來（isReadyForDisplay）才翻面。
   /// 舊畫面全程在前面撐著，重烘換手不再閃黑。
@@ -5976,6 +5997,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     m["viewCreateAt"] = PlayerPlatformView.createNotes
     PlayerPlatformView.statLock.unlock()
     m["frameProbe"] = frameProbe()
+    m["layerBound"] = PlayerHosts.shared.bound
     m["clockTrace"] = clockTraceDump
     switch player.timeControlStatus {
     case .paused: m["timeControl"] = "暫停"
