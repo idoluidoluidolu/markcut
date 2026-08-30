@@ -3067,6 +3067,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 播放中被擋下的佈局重建（見 _metalPrebuild）：停播後補做
   bool _mPendingPrebuild = false;
 
+  /// 正在起播（_play 從第一行到時鐘開走的整段）。
+  /// 這段有好幾個 await 空窗，_playing 還沒 true——暫停時排下的
+  /// 常駐重試會鑽進來把引擎推上台，接著泊車讓它渲染黑畫面
+  bool _playStarting = false;
+
   /// 色彩偵探：每層目前餵引擎的檔案種類（原檔/SDR工作檔/HDR代理），
   /// 變化即記——「進場顏色不對」直接看這裡是不是餵錯檔
   final Map<int, String> _mPathKind = {};
@@ -3291,7 +3296,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 常駐上台：紋理就緒才亮（129 黑畫面的教訓——寧可晚 200ms
   /// 也不上黑畫布）；沒就緒 200ms 後重試，最多 15 次（3 秒）
   void _metalResidentTry([int attempt = 0]) {
-    if (!mounted || _playing || _scrubbing || MetalPreview.active) return;
+    if (!mounted || _playing || _playStarting || _scrubbing) return;
+    if (MetalPreview.active) return;
     if (!_mResident || _mBuiltSig == null) return;
     unawaited(
       MetalPreview.seek(_position).then((_) async {
@@ -3305,9 +3311,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           }
           return;
         }
-        if (!mounted || _playing || _scrubbing || MetalPreview.active) {
-          return;
-        }
+        if (!mounted || _playing || _playStarting || _scrubbing) return;
+        if (MetalPreview.active) return;
         _mHideTimer?.cancel();
         MetalPreview.active = true;
         unawaited(MetalPreview.show(true));
@@ -3324,7 +3329,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 讓位計時器先取消：播放→暫停→立刻滑動的接縫裡，引擎
     // 正顯示停點幀，這時把它收掉會閃一下合成畫面再亮回來
     if (!_playing && MetalPreview.active) _mHideTimer?.cancel();
-    if (!_metalUsable || _playing || MetalPreview.active) return;
+    if (!_metalUsable || _playing || _playStarting || MetalPreview.active) {
+      return;
+    }
     _mHideTimer?.cancel();
     final p = _metalPayload();
     if (p == null) return;
@@ -3353,7 +3360,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 文字/浮水印拖曳接管：拖曳中引擎出畫面（每格讀即時幾何、
   /// 60fps 跟手）；幾何停止變化 600ms 讓位回合成的烘焙路
   void _metalOvDragTakeover() {
-    if (_playing || !_metalUsable || _mBuiltSig == null) return;
+    if (_playing || _playStarting || !_metalUsable || _mBuiltSig == null) {
+      return;
+    }
     _mOvIdleTimer?.cancel();
     _mOvIdleTimer = Timer(const Duration(milliseconds: 600), _metalScrubEnd);
     if (MetalPreview.active) return;
@@ -6809,6 +6818,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 因為那些是提早 1.2 秒預先對位過的（見 _syncMedia 的 pre-roll）
   Future<void> _play() async {
     if (_tl.duration <= 0) return;
+    // 先宣告起播、掐掉待命中的常駐重試（見 _playStarting）
+    _playStarting = true;
+    _mResTimer?.cancel();
+    _mOvIdleTimer?.cancel();
     if (_position >= _tl.duration - 0.01) _position = 0;
     _clockBias = 0; // 上一輪沒吃完的校正不能帶進新的一輪
     // 3.0：播放畫面永遠是系統播放器的——引擎讓位
@@ -6854,6 +6867,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 滑動與暫停畫面；合成器快路讓系統播放逐格 <1ms
       if (MetalPreview.active) _metalHideNow();
       unawaited(MetalPreview.park());
+      // 無條件再壓一次隱藏：Dart 的 active 旗標與原生脫節時，
+      // _metalHideNow 會早退，引擎就留在最上層渲染黑
+      unawaited(MetalPreview.show(false));
+      MetalPreview.active = false;
       // 起播前確認影片圖層綁在現役播放器：翻面被打斷過的話，
       // 前層還指著已收掉的舊播放器＝播放全黑（實機 145）
       await MetalPreview.reattach();
@@ -6873,6 +6890,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (!mounted) return;
       _lastTick = Duration.zero;
       _ticker.start();
+      _playStarting = false;
       tr.log('◀ 時間軸開始走');
       return;
     }
@@ -6962,12 +6980,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _lastTick = Duration.zero;
     _ticker.start();
+    _playStarting = false;
     _startPlayProbe();
     tr.log('◀ 時間軸開始走');
     _syncMedia();
   }
 
   void _pause() {
+    _playStarting = false;
     _clockBias = 0;
     _playProbe?.cancel();
     _playProbe = null;
