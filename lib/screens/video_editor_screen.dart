@@ -6996,11 +6996,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 3.0：系統暫停→精確 seek 到停點→常駐引擎回台顯示停格
       unawaited(
         c.pause().then((_) async {
-          // 指針不改：Dart 這一刻的位置就是使用者看到的位置。
-          // 覆寫成播放器位置的話，播放器剛重建（回報 0）就會把指針
-          // 拉回開頭（實機 145：暫停後指針跳回最一開始）
-          await c.seek(_position, exact: true);
-          // 常駐引擎回台顯示停格（滑動/暫停是它僅剩的兩個舞台）
+          // 兩邊對同一格，暫停才不會閃：
+          // 1) 用播放器「真正停在哪」當基準（差太多＝重建中回報 0，
+          //    那就不信它，見 145 指針歸零）
+          // 2) 不再送精準 seek——播放器已經停在該格，再 seek 會把
+          //    畫面往前挪半格，交接瞬間就是使用者看到的閃動
+          final p = await c.position();
+          if (mounted && p > 0.001 && (p - _position).abs() < 1.0) {
+            _position = p;
+            _syncScrollToPosition();
+          }
+          // 常駐引擎回台顯示停格（它 seek 到同一個 _position）
           if (mounted) _metalResidentTry();
         }),
       );
