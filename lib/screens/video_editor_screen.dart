@@ -2103,6 +2103,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // Flutter 版顯示與否（見 _ovNativePending 的說明）
     CompPlayer.onCompVisible = () {
       if (!mounted) return;
+      if (MetalPreview.active && !_playing && !_scrubbing) {
+        unawaited(
+          MetalPreview.ready(_position).then((ok) {
+            if (!ok && mounted && MetalPreview.active) {
+              _metalHideNow();
+              setState(() {});
+            }
+          }),
+        );
+      }
       // 新合成烘的就是最終值：即時變形的覆寫功成身退
       unawaited(CompPlayer.clearXform());
       if (_ovNativeShown != _ovNativePending) {

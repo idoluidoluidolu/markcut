@@ -891,10 +891,6 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         // 色彩零轉換（位元級一致）、<1ms。任何條件不合就走 CI 原路
         // 逐項判定並記錄未命中原因（實機診斷直接指認）
         func fastEligible() -> CVPixelBuffer? {
-          guard self.hdrOut else {
-            Self.skip("非HDR輸出")
-            return nil
-          }
           guard ins.mosaics.allSatisfy({ t0 < $0.start || t0 >= $0.end })
           else {
             Self.skip("馬賽克")
@@ -928,14 +924,17 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             Self.skip("即時變形")
             return nil
           }
-          // 浮水印：引擎常駐在台上時它畫在最上層，合成器的輸出被
-          // 蓋住看不見——此時烘浮水印是浪費，快路放行
-          guard !self.livePreview
-            || CIExportCompositor.currentPreviewOverlays().isEmpty
-            || MetalPreviewEngine.shared.isOnStage
-          else {
-            Self.skip("浮水印且引擎不在台上")
-            return nil
+          // 浮水印：SDR 輸出在快路內直接疊整版 PNG；
+          // HDR 輸出的提亮數學未搬入快路，有浮水印且引擎
+          // 不在台上時退 CI
+          if self.hdrOut {
+            guard !self.livePreview
+              || CIExportCompositor.currentPreviewOverlays().isEmpty
+              || MetalPreviewEngine.shared.isOnStage
+            else {
+              Self.skip("HDR浮水印")
+              return nil
+            }
           }
           guard self.isFullCanvas(L, canvas: size) else {
             Self.skip("非滿版")
@@ -947,8 +946,18 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           }
           return sbuf
         }
+        var fastOvs: [Data] = []
+        if !self.hdrOut, self.liveComp {
+          for ov in CIExportCompositor.currentPreviewOverlays()
+          where ov.start <= t0 && t0 < ov.end {
+            if let d = ov.pngData { fastOvs.append(d) }
+          }
+        }
         if let sbuf = fastEligible(),
-          MetalYUVBlit.shared.blit(from: sbuf, to: dst)
+          self.hdrOut
+            ? MetalYUVBlit.shared.blit(from: sbuf, to: dst)
+            : MetalYUVBlit.shared.sdrCompose(
+              from: sbuf, to: dst, overlays: fastOvs)
         {
           Self.stFastFrames += 1
           if Self.stFastFrames == 1 || Self.stFastFrames % 300 == 0 {
@@ -1230,6 +1239,12 @@ final class MetalYUVBlit {
   private var pipeC: MTLRenderPipelineState?
   private var pipeY8: MTLRenderPipelineState?
   private var pipeC8: MTLRenderPipelineState?
+  private var pipeYUVBGRA: MTLRenderPipelineState?
+  private var pipeOv: MTLRenderPipelineState?
+  /// 浮水印 PNG 紋理快取（以 Data 物件位址為鍵；預覽清單換了
+  /// 就自然換新）
+  private var ovTexCache: [ObjectIdentifier: MTLTexture] = [:]
+  private var ovTexOrder: [ObjectIdentifier] = []
   private var sampler: MTLSamplerState?
   private var ready = false
   private var failed = false
@@ -1265,6 +1280,32 @@ final class MetalYUVBlit {
       float2 c = tex.sample(s, in.uv).rg;
       return float4(c.r, c.g, 0, 1);
     }
+    // SDR 快路：8-bit YUV（BT.709 limited）→ BGRA（gamma 域直出，
+    // 跟來源同義——不做任何色彩轉換以外的處理）
+    fragment float4 fragYUVBGRA(VOut in [[stage_in]],
+                                texture2d<float> texY [[texture(0)]],
+                                texture2d<float> texC [[texture(1)]],
+                                constant float &fullRange [[buffer(0)]],
+                                sampler s [[sampler(0)]]) {
+      float y = texY.sample(s, in.uv).r;
+      float2 cbcr = texC.sample(s, in.uv).rg;
+      float Y = fullRange > 0.5
+        ? y : (y - 16.0 / 255.0) * (255.0 / 219.0);
+      float sc = fullRange > 0.5 ? 1.0 : (255.0 / 224.0);
+      float Cb = (cbcr.x - 0.5) * sc;
+      float Cr = (cbcr.y - 0.5) * sc;
+      float3 rgb = float3(
+        Y + 1.5748 * Cr,
+        Y - 0.18732 * Cb - 0.46812 * Cr,
+        Y + 1.8556 * Cb);
+      return float4(clamp(rgb, 0.0, 1.0), 1.0);
+    }
+    // 浮水印整版 PNG 疊加（straight alpha，blend 在 pipeline 設）
+    fragment float4 fragOv(VOut in [[stage_in]],
+                           texture2d<float> tex [[texture(0)]],
+                           sampler s [[sampler(0)]]) {
+      return tex.sample(s, in.uv);
+    }
     """
 
   private func setUp() -> Bool {
@@ -1298,6 +1339,19 @@ final class MetalYUVBlit {
       pipeC = try pipe("fragC", .rg16Unorm)
       pipeY8 = try pipe("fragY", .r8Unorm)
       pipeC8 = try pipe("fragC", .rg8Unorm)
+      pipeYUVBGRA = try pipe("fragYUVBGRA", .bgra8Unorm)
+      let od = MTLRenderPipelineDescriptor()
+      od.vertexFunction = v
+      od.fragmentFunction = lib.makeFunction(name: "fragOv")
+      od.colorAttachments[0].pixelFormat = .bgra8Unorm
+      od.colorAttachments[0].isBlendingEnabled = true
+      od.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+      od.colorAttachments[0].destinationRGBBlendFactor =
+        .oneMinusSourceAlpha
+      od.colorAttachments[0].sourceAlphaBlendFactor = .one
+      od.colorAttachments[0].destinationAlphaBlendFactor =
+        .oneMinusSourceAlpha
+      pipeOv = try dev.makeRenderPipelineState(descriptor: od)
       let sd = MTLSamplerDescriptor()
       sd.minFilter = .linear
       sd.magFilter = .linear
@@ -1394,6 +1448,93 @@ final class MetalYUVBlit {
       cmd.commit()
       return false
     }
+    cmd.commit()
+    cmd.waitUntilCompleted()
+    return cmd.status == .completed
+  }
+
+  private func ovTexture(_ data: Data, dev: MTLDevice) -> MTLTexture? {
+    let key = ObjectIdentifier(data as NSData)
+    if let t = ovTexCache[key] { return t }
+    guard let ui = UIImage(data: data), let cg = ui.cgImage,
+      let t = try? MTKTextureLoader(device: dev).newTexture(
+        cgImage: cg, options: [MTKTextureLoader.Option.SRGB: false as NSNumber])
+    else { return nil }
+    ovTexCache[key] = t
+    ovTexOrder.append(key)
+    if ovTexOrder.count > 12 {
+      ovTexCache.removeValue(forKey: ovTexOrder.removeFirst())
+    }
+    return t
+  }
+
+  /// SDR 快路：8-bit YUV 單層滿版 → BGRA，再把浮水印整版 PNG
+  /// 疊上。回 false＝呼叫端走 CI 原路
+  func sdrCompose(
+    from srcBuf: CVPixelBuffer, to dstBuf: CVPixelBuffer,
+    overlays: [Data]
+  ) -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    guard setUp(), let queue = queue, let sampler = sampler,
+      let dev = device, let pYUV = pipeYUVBGRA, let pOv = pipeOv
+    else { return false }
+    let sf = CVPixelBufferGetPixelFormatType(srcBuf)
+    let df = CVPixelBufferGetPixelFormatType(dstBuf)
+    let full = sf == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+    guard df == kCVPixelFormatType_32BGRA,
+      sf == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange || full,
+      CVPixelBufferGetPlaneCount(srcBuf) == 2
+    else {
+      if noteN < 3 {
+        noteN += 1
+        NSLog("[FastPath] sdr 格式不合 src=%08x dst=%08x", sf, df)
+      }
+      return false
+    }
+    // 來源若標 HLG/PQ（HDR 原檔期）退 CI：快路不做色調映射
+    if let tf = CVBufferGetAttachment(
+      srcBuf, kCVImageBufferTransferFunctionKey, nil)?
+      .takeUnretainedValue() as? String,
+      tf == (kCVImageBufferTransferFunction_ITU_R_2100_HLG as String)
+        || tf == (kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String)
+    {
+      return false
+    }
+    var dcv: CVMetalTexture?
+    let dw = CVPixelBufferGetWidth(dstBuf)
+    let dh = CVPixelBufferGetHeight(dstBuf)
+    guard let cache = cache,
+      CVMetalTextureCacheCreateTextureFromImage(
+        kCFAllocatorDefault, cache, dstBuf, nil, .bgra8Unorm, dw, dh, 0,
+        &dcv) == kCVReturnSuccess, let dcv = dcv,
+      let dtex = CVMetalTextureGetTexture(dcv),
+      let sy = planeTex(srcBuf, 0, .r8Unorm),
+      let sc = planeTex(srcBuf, 1, .rg8Unorm),
+      let cmd = queue.makeCommandBuffer()
+    else { return false }
+    let rp = MTLRenderPassDescriptor()
+    rp.colorAttachments[0].texture = dtex
+    rp.colorAttachments[0].loadAction = .dontCare
+    rp.colorAttachments[0].storeAction = .store
+    guard let e = cmd.makeRenderCommandEncoder(descriptor: rp) else {
+      return false
+    }
+    var fr: Float = full ? 1 : 0
+    e.setRenderPipelineState(pYUV)
+    e.setFragmentTexture(sy, index: 0)
+    e.setFragmentTexture(sc, index: 1)
+    e.setFragmentBytes(&fr, length: 4, index: 0)
+    e.setFragmentSamplerState(sampler, index: 0)
+    e.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+    for data in overlays {
+      guard let t = ovTexture(data, dev: dev) else { continue }
+      e.setRenderPipelineState(pOv)
+      e.setFragmentTexture(t, index: 0)
+      e.setFragmentSamplerState(sampler, index: 0)
+      e.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+    }
+    e.endEncoding()
     cmd.commit()
     cmd.waitUntilCompleted()
     return cmd.status == .completed
