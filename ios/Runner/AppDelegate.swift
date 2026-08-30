@@ -906,6 +906,13 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         // 色彩零轉換（位元級一致）、<1ms。任何條件不合就走 CI 原路
         // 逐項判定並記錄未命中原因（實機診斷直接指認）
         func fastEligible() -> CVPixelBuffer? {
+          // HDR 直拷暫停用：實機 144 命中 19 格且回報黑畫面，
+          // x420 平面搬運的正確性未經數值驗證——先退 CI，
+          // 等 SDR 快路穩定、且有逐格數值比對後再開
+          guard !self.hdrOut else {
+            Self.skip("HDR直拷暫停用")
+            return nil
+          }
           guard ins.mosaics.allSatisfy({ t0 < $0.start || t0 >= $0.end })
           else {
             Self.skip("馬賽克")
@@ -1400,6 +1407,16 @@ final class MetalYUVBlit {
       failed = true
       return false
     }
+  }
+
+  /// 預熱：建佈局時先把 Metal 管線編譯好。
+  /// 不預熱的話第一次呼叫落在合成器的第一格上，
+  /// makeLibrary(source:) 要幾百 ms——實機 144：首格 695ms，
+  /// 使用者看到的就是「按播放後畫面遲遲不出來」
+  func prewarm() {
+    lock.lock()
+    _ = setUp()
+    lock.unlock()
   }
 
   private func planeTex(
@@ -7235,6 +7252,10 @@ final class MetalPreviewEngine: NSObject {
     // 佈局換過＝重畫一輪（closure 內的 epoch 已 +1，這裡把
     // 閒置計數歸零，確保換檔幀真的上屏）
     idleTicks = 0
+    // 合成器快路的 Metal 管線預熱（見 MetalYUVBlit.prewarm）
+    DispatchQueue.global(qos: .userInitiated).async {
+      MetalYUVBlit.shared.prewarm()
+    }
     return true
   }
 
