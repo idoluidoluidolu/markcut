@@ -881,6 +881,46 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
     slowLock.unlock()
   }
 
+  /// 交出去那一格的中心亮度（0~1）取樣紀錄：每 30 格量一次。
+  /// 全 0＝合成器真的交黑格；有值＝畫面在顯示端被吃掉
+  static var lumaProbe: [String] = []
+  private static var lumaN = 0
+
+  static func noteLuma(_ buf: CVPixelBuffer, t: Double) {
+    lumaN += 1
+    guard lumaN % 30 == 1 else { return }
+    CVPixelBufferLockBaseAddress(buf, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(buf, .readOnly) }
+    let fmt = CVPixelBufferGetPixelFormatType(buf)
+    let planar = CVPixelBufferGetPlaneCount(buf) > 0
+    let w = planar
+      ? CVPixelBufferGetWidthOfPlane(buf, 0) : CVPixelBufferGetWidth(buf)
+    let h = planar
+      ? CVPixelBufferGetHeightOfPlane(buf, 0) : CVPixelBufferGetHeight(buf)
+    let stride = planar
+      ? CVPixelBufferGetBytesPerRowOfPlane(buf, 0)
+      : CVPixelBufferGetBytesPerRow(buf)
+    guard
+      let base = planar
+        ? CVPixelBufferGetBaseAddressOfPlane(buf, 0)
+        : CVPixelBufferGetBaseAddress(buf), w > 4, h > 4
+    else { return }
+    var v = 0.0
+    if fmt == kCVPixelFormatType_32BGRA {
+      let p = base.advanced(by: (h / 2) * stride + (w / 2) * 4)
+        .assumingMemoryBound(to: UInt8.self)
+      v = (Double(p[0]) + Double(p[1]) + Double(p[2])) / (3 * 255)
+    } else {
+      // 10-bit Y 平面（x420）：16-bit word 取高位
+      let p = base.advanced(by: (h / 2) * stride + (w / 2) * 2)
+        .assumingMemoryBound(to: UInt16.self)
+      v = Double(p[0]) / 65535.0
+    }
+    if lumaProbe.count < 6 {
+      lumaProbe.append(String(format: "%.1fs:%.3f", t, v))
+    }
+  }
+
   static func noteFrame(t: Double, ms: Double, layers: Int, missing: Bool) {
     slowLock.lock()
     frameCount += 1
@@ -1014,7 +1054,8 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           Self.noteFrame(
             t: t0, ms: (CFAbsoluteTimeGetCurrent() - tick) * 1000,
             layers: 1, missing: false)
-          req.finish(withComposedVideoFrame: dst)
+          Self.noteLuma(dst, t: t0)
+        req.finish(withComposedVideoFrame: dst)
           return
         }
         Self.stCIFrames += 1
@@ -1241,6 +1282,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           // 只多佔用池子裡的一顆
           self.lastComposed = CIImage(cvPixelBuffer: dst)
         }
+        Self.noteLuma(dst, t: t0)
         req.finish(withComposedVideoFrame: dst)
         Self.noteFrame(
           t: t, ms: (CFAbsoluteTimeGetCurrent() - tick) * 1000,
@@ -6004,6 +6046,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     PlayerPlatformView.statLock.unlock()
     m["frameProbe"] = frameProbe()
     m["layerBound"] = PlayerHosts.shared.bound
+    m["lumaProbe"] = CIExportCompositor.lumaProbe.joined(separator: "、")
     m["clockTrace"] = clockTraceDump
     switch player.timeControlStatus {
     case .paused: m["timeControl"] = "暫停"

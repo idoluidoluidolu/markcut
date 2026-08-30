@@ -635,6 +635,10 @@ class CompPlayer {
           '、長 ${(m['compDur'] as num?)?.toStringAsFixed(1)}s',
         );
       }
+      final luma = m['lumaProbe'] as String?;
+      if (luma?.isNotEmpty == true) {
+        b.write('\n  交格亮度：$luma（全 0＝合成器真的交黑格）');
+      }
       if (m['layerBound'] == false) {
         b.write('\n  ⚠ 影片圖層綁在舊播放器（畫面會全黑）');
       }
