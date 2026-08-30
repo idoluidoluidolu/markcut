@@ -910,7 +910,9 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
       buf, kCVImageBufferYCbCrMatrixKey, mat, .shouldPropagate)
   }
 
-  static func noteLuma(_ buf: CVPixelBuffer, t: Double) {
+  static func noteLuma(
+    _ buf: CVPixelBuffer, t: Double, drawn: Int = -1, missing: Bool = false
+  ) {
     lumaN += 1
     guard lumaN % 30 == 1 else { return }
     CVPixelBufferLockBaseAddress(buf, .readOnly)
@@ -940,7 +942,12 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         .assumingMemoryBound(to: UInt16.self)
       v = Double(p[0]) / 65535.0
     }
-    lumaProbe.append(String(format: "%.1fs:%.3f", t, v))
+    lumaProbe.append(
+      drawn < 0
+        ? String(format: "%.1fs:%.3f", t, v)
+        : String(
+          format: "%.1fs:%.3f(畫%d層%@)", t, v, drawn,
+          missing ? "缺源" : ""))
     if lumaProbe.count > 6 { lumaProbe.removeFirst() }
   }
 
@@ -1078,7 +1085,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             t: t0, ms: (CFAbsoluteTimeGetCurrent() - tick) * 1000,
             layers: 1, missing: false)
           self.tagColors(dst)
-        Self.noteLuma(dst, t: t0)
+        Self.noteLuma(dst, t: t0, drawn: drawnCount, missing: missing)
         req.finish(withComposedVideoFrame: dst)
           return
         }
@@ -1099,6 +1106,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         let lx = self.liveComp ? CIExportCompositor.currentLiveXform() : nil
         var mzIdx = 0
         var missing = false
+        var drawnCount = 0
         for layer in ins.layers {
           while mzIdx < activeMz.count, activeMz[mzIdx].z <= layer.z {
             out = self.applyMosaic(activeMz[mzIdx], to: out, canvas: size)
@@ -1208,6 +1216,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
               ])
           }
           out = img.cropped(to: canvasRect).composited(over: out)
+          drawnCount += 1
         }
         let tinyGap =
           ins.layers.isEmpty && ins.holdIfEmpty && self.lastComposed != nil
@@ -1307,7 +1316,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           self.lastComposed = CIImage(cvPixelBuffer: dst)
         }
         self.tagColors(dst)
-        Self.noteLuma(dst, t: t0)
+        Self.noteLuma(dst, t: t0, drawn: drawnCount, missing: missing)
         req.finish(withComposedVideoFrame: dst)
         Self.noteFrame(
           t: t, ms: (CFAbsoluteTimeGetCurrent() - tick) * 1000,
