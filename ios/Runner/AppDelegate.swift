@@ -606,7 +606,10 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   static var stCIFrames = 0
   /// 快路未命中原因計數（實機定罪用）
   static var stSkip: [String: Int] = [:]
-  static func skip(_ why: String) { stSkip[why, default: 0] += 1 }
+  static func skip(_ why: String) {
+    stSkip[why, default: 0] += 1
+    if stSkip[why] == 1 { NSLog("[FastPath] skip=%@", why) }
+  }
 
   /// 這一層的變形是否把來源滿版貼合畫布（誤差 1px 內）——
   /// 滿版單層無效果的格可以走 YUV 直拷快路
