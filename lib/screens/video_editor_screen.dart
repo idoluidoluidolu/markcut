@@ -2551,7 +2551,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   final Set<int> _prepRetried = {};
   bool _prepBusy = false;
   int _prepDone = 0;
-  int _prepTotal = 0;
 
   /// 正在轉的每一支各做到哪（0~1），素材索引 → 進度。
   ///
@@ -2559,11 +2558,37 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 大半時間是停著的。同時可能有兩支在轉，所以是一張表不是一個值
   final Map<int, double> _prepCur = {};
 
-  /// 這一刻的整體進度（0~1）
+  /// 這一批要備的影片素材數（＝畫面上的 X/Y 的 Y）
+  int get _prepSrcTotal => _tl.sources.where((s) => s.isVideo).length;
+
+  /// 已經完全備好的素材數（工作檔＋需要的話還有 HDR 代理）
+  int get _prepSrcDone {
+    final wantHdr = _exportHdr && _hdrAvail != false;
+    return _tl.sources
+        .where(
+          (s) =>
+              s.isVideo &&
+              s.workPath != null &&
+              (!wantHdr || s.workHdrPath != null),
+        )
+        .length;
+  }
+
+  /// 整體進度（0~1）：工作檔與 HDR 代理算同一條進度，不再各跑一輪
+  /// 100%（使用者回報：「跑完一個 100% 又有新的」）。
+  /// 每支素材要做的工作＝工作檔（＋HDR 代理），所以總單位＝素材數×階段數
   double get _prepFraction {
-    if (_prepTotal <= 0) return 0;
+    final srcs = _tl.sources.where((s) => s.isVideo).toList();
+    if (srcs.isEmpty) return 0;
+    final wantHdr = _exportHdr && _hdrAvail != false;
+    final units = srcs.length * (wantHdr ? 2 : 1);
+    var doneUnits = 0;
+    for (final s in srcs) {
+      if (s.workPath != null) doneUnits++;
+      if (wantHdr && s.workHdrPath != null) doneUnits++;
+    }
     final inFlight = _prepCur.values.fold(0.0, (a, b) => a + b);
-    return ((_prepDone + inFlight) / _prepTotal).clamp(0.0, 1.0);
+    return ((doneUnits + inFlight) / units).clamp(0.0, 1.0);
   }
 
   /// 使用者按了「先進去編輯」——遮罩收掉，轉檔繼續在背景跑
@@ -2621,7 +2646,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (src.kind != ClipKind.video || src.workPath != null) return;
     if (_prepQueue.contains(srcIndex) || _prepping.contains(srcIndex)) return;
     _prepQueue.add(srcIndex);
-    _prepTotal = _prepDone + _prepQueue.length + _prepping.length;
     unawaited(_drainPrep());
   }
 
@@ -2653,7 +2677,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _prepEscapeReady = false;
       _prepDone = 0;
       _prepCur.clear();
-      _prepTotal = _prepQueue.length;
     });
     // 轉檔偶爾會卡在某一支（硬體編碼器被佔住、素材有問題）。這一頁擋著
     // 整個編輯器，沒有退路的話使用者只能關掉 App 重來
@@ -2695,7 +2718,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       await Future.wait(jobs);
       if (!mounted) return;
       // 這一批做完之後可能又進來新的，總數要跟著長
-      setState(() => _prepTotal = _prepDone + _prepQueue.length);
       // 沒轉成功的補試一次（每支只補一次）
       if (_prepQueue.isEmpty) {
         for (var i = 0; i < _tl.sources.length; i++) {
@@ -2706,7 +2728,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           _prepQueue.add(i);
         }
         if (_prepQueue.isNotEmpty && mounted) {
-          setState(() => _prepTotal = _prepDone + _prepQueue.length);
         }
       }
     }
@@ -2725,7 +2746,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (need > 0) {
         setState(() {
           _prepHdrPhase = true;
-          _prepTotal = need;
           _prepDone = 0;
           _prepCur.clear();
         });
@@ -12183,8 +12203,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       );
     }
     return PrepGateView(
-      done: _prepDone,
-      total: _prepTotal,
+      done: _prepSrcDone,
+      total: _prepSrcTotal,
       fraction: _prepFraction,
       ready: _ready,
       onSkip: _prepEscapeReady

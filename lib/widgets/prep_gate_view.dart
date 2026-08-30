@@ -98,7 +98,7 @@ class PrepGateView extends StatelessWidget {
           if (counting) ...[
             const SizedBox(height: 14),
             Text(
-              label ?? '準備素材 $done／$total',
+              label ?? '素材 ${done + 1 > total ? total : done + 1}／$total 準備中',
               style: const TextStyle(fontSize: 12, color: kTextDim),
             ),
           ],
