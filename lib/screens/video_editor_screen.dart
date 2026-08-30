@@ -1362,8 +1362,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _lastCompSig = sig;
     _lastCompEditSig = editSig;
     _compDirty = true;
-    unawaited(_ensureComp());
+    // 合併重建：調樣式/拉滑桿時每一格變化都會走到這裡，每次都重建
+    // 播放器＝每動一下卡一下（實機 152：調浮水印時診斷刷滿
+    //「合成播放器就緒」）。連續變更只留最後一次，停手 350ms 才重建；
+    // 這段期間畫面由即時疊加物清單（setPreviewOverlays）跟手
+    _compRebuildTimer?.cancel();
+    _compRebuildTimer = Timer(const Duration(milliseconds: 350), () {
+      if (!mounted || _playing) return;
+      unawaited(_ensureComp());
+    });
   }
+
+  Timer? _compRebuildTimer;
 
   /// 疊加物內容的指紋（不含「這份合成收不收」的判定，重建合成
   /// 過程中也要算得出來）。'empty'＝沒有內容
