@@ -3268,7 +3268,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 暫停也是它，之後的合成重烘/換手全部發生在它背後（隱形）。
     // 佈局變成不能常駐（加了馬賽克/GIF）就讓位還給合成畫面
     if (_playing || _scrubbing) return;
-    if (_mResident && _mBuiltSig != null && _comp != null) {
+    // 引擎只在滑動/拖曳時上台：閒置時自動上台＝下一次操作又要換手，
+    // 每次換手就是一下閃動（實機 149）。合成畫面本身已經顯示得出來
+    if (_mResident && _mBuiltSig != null && _comp != null && _scrubbing) {
       if (!MetalPreview.active) _metalResidentTry();
     } else if (!_mResident && MetalPreview.active && !_scrubbing) {
       _metalHideNow();
@@ -7006,8 +7008,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             _position = p;
             _syncScrollToPosition();
           }
-          // 常駐引擎回台顯示停格（它 seek 到同一個 _position）
-          if (mounted) _metalResidentTry();
+          // 暫停不換手：合成畫面現在顯示得出來（色彩標記補齊後），
+          // 停格就留在系統播放器上。換成引擎＝兩套渲染管線的畫面
+          // 略有差異，交接那一下就是使用者看到的閃動（實機 149：
+          // 上下台歷程「上7.5 下7.5」正好對上每一次暫停）。
+          // 引擎只在滑動/拖曳時上台（它在那裡才有優勢）
         }),
       );
     }
