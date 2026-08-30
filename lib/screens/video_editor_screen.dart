@@ -453,7 +453,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// Flutter 版疊加物要不要藏（原生烘好的在畫就藏——拖/縮/轉
   /// 全部走即時幾何，原生直接跟手，不再需要 Flutter 接手）
-  bool get _ovFlutterHidden => _ovLiveOn && _ovNativeShown && !_ovScrubPeek;
+  /// 正在浮水印分頁調整（且沒在播）：浮水印改由 Flutter 即時畫。
+  /// HDR 預覽模式把浮水印烘進影片合成，改一次樣式就要整份重新合成
+  /// ——粗細/濃度/位置都跟不上手（實機 153）。編輯期間交給介面層，
+  /// 離開分頁或按播放才烘回去（那時畫面靜止，換手看不出來）
+  bool get _ovEditingLive => _tabs.index == 1 && !_playing;
+
+  bool get _ovFlutterHidden =>
+      _ovLiveOn && _ovNativeShown && !_ovScrubPeek && !_ovEditingLive;
 
   /// 時間軸上有沒有任何疊加物內容（決定合成要不要掛預覽合成器）
   bool get _ovAnyContent {
@@ -1369,6 +1376,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _compRebuildTimer?.cancel();
     _compRebuildTimer = Timer(const Duration(milliseconds: 350), () {
       if (!mounted || _playing) return;
+      // 浮水印分頁調整中：畫面由 Flutter 即時畫，先不重建合成
+      //（重建幾百 ms＝每動一下卡一下）。離開分頁時分頁監聽會再叫一次
+      // 會再叫一次，那時才烘回去
+      if (_ovEditingLive) return;
       unawaited(_ensureComp());
     });
   }
@@ -2153,6 +2164,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     });
     // 分頁一換就把捏合簿記歸零：手勢中途換分頁會讓抬手事件沒人收
     _tabs.addListener(_resetTlPinch);
+    // 離開浮水印分頁＝把編輯期間的樣式烘回影片合成（編輯中是
+    // Flutter 即時畫的，見 _ovEditingLive）
+    _tabs.addListener(() {
+      if (!mounted || _tabs.indexIsChanging) return;
+      if (_tabs.index != 1) {
+        _compDirty = true;
+        unawaited(_ensureComp());
+        unawaited(_syncPreviewOverlays());
+      }
+      setState(() {});
+    });
     _loadSnapPref(); // 記住上次磁吸開還關
     _loadTidyPref(); // 記住上次自動整理開還關
     if (widget.draft != null) {
