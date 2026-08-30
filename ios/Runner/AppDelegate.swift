@@ -8060,6 +8060,25 @@ final class MetalPreviewEngine: NSObject {
     }
     // 馬賽克按 z 分組（只糊 z 比它低的層——跟 CI 同語意）。
     // 沒有馬賽克＝整串畫在同一個 encoder（原路徑，零開銷）
+    // 沒東西可畫就不畫：清成黑底再 present 就是使用者看到的
+    // 「引擎在最上層蓋一層黑」（實機 143~147：泊車後引擎
+    // 沒紋理卻繼續渲染）。保留上一幀比一片黑安全得多
+    var anyTex = stills.contains { $0.start <= t && t < $0.end }
+    if !anyTex {
+      for sp in layers where sp.offset <= t && t < sp.end {
+        if readers[sp.id]?.lastTexture != nil
+          || pumps[sp.id]?.lastTexture != nil
+        {
+          anyTex = true
+          break
+        }
+      }
+    }
+    if !anyTex {
+      enc.endEncoding()
+      cmd.commit()
+      return
+    }
     let mzGroups = Dictionary(grouping: activeMz) { $0.z }
       .sorted { $0.key < $1.key }
     var gi = 0
