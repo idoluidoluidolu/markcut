@@ -453,11 +453,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// Flutter 版疊加物要不要藏（原生烘好的在畫就藏——拖/縮/轉
   /// 全部走即時幾何，原生直接跟手，不再需要 Flutter 接手）
-  /// 正在浮水印分頁調整（且沒在播）：浮水印改由 Flutter 即時畫。
-  /// HDR 預覽模式把浮水印烘進影片合成，改一次樣式就要整份重新合成
-  /// ——粗細/濃度/位置都跟不上手（實機 153）。編輯期間交給介面層，
-  /// 離開分頁或按播放才烘回去（那時畫面靜止，換手看不出來）
-  bool get _ovEditingLive => _tabs.index == 1 && !_playing;
+  /// 沒在播放＝浮水印一律由介面層即時畫（任何分頁、任何操作都跟手）。
+  ///
+  /// HDR 預覽把浮水印烘進影片合成，改一次樣式就要整份重新合成
+  /// （幾百 ms）——粗細/濃度/位置全都跟不上手（實機 153）。
+  /// 編輯時交給介面層畫、按播放前才烘回影片一次：那一下被起播
+  /// 動作蓋住，使用者看不到換手，而播放與匯出的畫面完全不變
+  bool get _ovEditingLive => !_playing;
 
   bool get _ovFlutterHidden =>
       _ovLiveOn && _ovNativeShown && !_ovScrubPeek && !_ovEditingLive;
@@ -6948,6 +6950,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 畫面/聲音/同步全由系統負責（跟剪映同一條路）——
       // 播放接管/音訊分身/追時鐘機制全部退役；引擎只留
       // 滑動與暫停畫面；合成器快路讓系統播放逐格 <1ms
+      // 起播前把編輯期間的浮水印烘回影片：編輯時是介面層畫的
+      //（見 _ovEditingLive），播放要走合成才會出現在影片畫面上
+      _compRebuildTimer?.cancel();
+      if (_compDirty) await _ensureComp();
+      if (!mounted) return;
+      await _syncPreviewOverlays();
+      if (!mounted) return;
       if (MetalPreview.active) _metalHideNow();
       unawaited(MetalPreview.park());
       // 無條件再壓一次隱藏：Dart 的 active 旗標與原生脫節時，
