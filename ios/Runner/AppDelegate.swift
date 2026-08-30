@@ -911,7 +911,8 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   }
 
   static func noteLuma(
-    _ buf: CVPixelBuffer, t: Double, drawn: Int = -1, missing: Bool = false
+    _ buf: CVPixelBuffer, t: Double, drawn: Int = -1, missing: Bool = false,
+    srcH: CGFloat = -1, canvasH: CGFloat = -1
   ) {
     lumaN += 1
     guard lumaN % 30 == 1 else { return }
@@ -946,8 +947,8 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
       drawn < 0
         ? String(format: "%.1fs:%.3f", t, v)
         : String(
-          format: "%.1fs:%.3f(畫%d層%@)", t, v, drawn,
-          missing ? "缺源" : ""))
+          format: "%.1fs:%.3f(畫%d層%@ 源高%.0f/布高%.0f)", t, v, drawn,
+          missing ? "缺源" : "", Double(srcH), Double(canvasH)))
     if lumaProbe.count > 6 { lumaProbe.removeFirst() }
   }
 
@@ -1085,7 +1086,9 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             t: t0, ms: (CFAbsoluteTimeGetCurrent() - tick) * 1000,
             layers: 1, missing: false)
           self.tagColors(dst)
-        Self.noteLuma(dst, t: t0, drawn: drawnCount, missing: missing)
+        Self.noteLuma(
+          dst, t: t0, drawn: drawnCount, missing: missing,
+          srcH: ins.layers.first?.srcHeight ?? -1, canvasH: size.height)
         req.finish(withComposedVideoFrame: dst)
           return
         }
@@ -1316,7 +1319,9 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           self.lastComposed = CIImage(cvPixelBuffer: dst)
         }
         self.tagColors(dst)
-        Self.noteLuma(dst, t: t0, drawn: drawnCount, missing: missing)
+        Self.noteLuma(
+          dst, t: t0, drawn: drawnCount, missing: missing,
+          srcH: ins.layers.first?.srcHeight ?? -1, canvasH: size.height)
         req.finish(withComposedVideoFrame: dst)
         Self.noteFrame(
           t: t, ms: (CFAbsoluteTimeGetCurrent() - tick) * 1000,

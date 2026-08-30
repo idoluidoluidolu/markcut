@@ -241,7 +241,10 @@ class Diag {
   /// 密關鍵幀（不動色彩、seek 快）。當初為了驗 Dolby Vision 顯示
   /// 管理才直接播原檔——實驗做完沒收回。留開關：實機若出現
   /// 過飽和（DV 中繼資料被剝），關掉就回原檔路
-  static final hdrProxyPreview = ValueNotifier(true);
+  /// 149 實測：合成器吃 HDR 代理後交黑格（交格亮度 0.5→0.063），
+  /// 吃原檔正常——先關掉，代理仍供引擎滑動用。查明代理路徑的
+  /// 真因（層數/幾何探針）後再開回
+  static final hdrProxyPreview = ValueNotifier(false);
 
   /// Metal 預覽引擎：滑動/暫停中的畫面改由自家 Metal 管線出
   ///（每軌獨立供格、GPU 疊合、EDR 直出）。關掉＝回合成播放器路
