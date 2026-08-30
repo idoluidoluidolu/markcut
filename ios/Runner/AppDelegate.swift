@@ -614,31 +614,37 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   /// 這一層的變形是否把來源滿版貼合畫布（誤差 1.5px 內）。
   /// 支援 0/90/180/270 旋轉（直式素材帶旋轉 flag 是實機常態）。
   /// 回傳旋轉角；nil＝非滿版或非直角旋轉，呼叫端走 CI
-  func fullCanvasOrient(
+  /// 快路取樣參數：畫布四角 → 來源 UV（用 chain 反矩陣）。
+  /// 回 nil＝這一層沒有滿版貼合畫布（或矩陣退化），呼叫端走 CI。
+  /// 不再把幾何分類成 0/90/180/270——鏡像會被誤判成正立
+  ///（實機 144：匯入後畫面顏倒）；仿射反矩陣一式通吃
+  func fastUV(
     _ L: CILayerSpec, srcW: CGFloat, srcH: CGFloat, canvas: CGSize
-  ) -> Int? {
+  ) -> (SIMD4<Float>, SIMD2<Float>)? {
+    guard srcW > 1, srcH > 1 else { return nil }
     let flipSrc = CGAffineTransform(
       a: 1, b: 0, c: 0, d: -1, tx: 0, ty: L.srcHeight)
     let flipCanvas = CGAffineTransform(
       a: 1, b: 0, c: 0, d: -1, tx: 0, ty: canvas.height)
     let chain = flipSrc.concatenating(L.transform)
       .concatenating(flipCanvas)
-    let axial = abs(chain.b) < 0.001 && abs(chain.c) < 0.001
-    let rotated = abs(chain.a) < 0.001 && abs(chain.d) < 0.001
-    guard axial || rotated else { return nil }
-    let pts = [
+    // 退化（行列式≈ 0）不可逆
+    let det = chain.a * chain.d - chain.b * chain.c
+    guard abs(det) > 0.000001 else { return nil }
+    // 滿版檢查：來源四角映到畫布的包圍盒要蓋滿畫布
+    let corners = [
       CGPoint(x: 0, y: 0), CGPoint(x: srcW, y: 0),
       CGPoint(x: 0, y: srcH), CGPoint(x: srcW, y: srcH),
     ].map { $0.applying(chain) }
-    let xs = pts.map { $0.x }
-    let ys = pts.map { $0.y }
+    let xs = corners.map { $0.x }
+    let ys = corners.map { $0.y }
     let r = CGRect(
       x: xs.min()!, y: ys.min()!,
       width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
     let c = CGRect(origin: .zero, size: canvas)
-    let ok = abs(r.minX - c.minX) < 1.5 && abs(r.minY - c.minY) < 1.5
-      && abs(r.maxX - c.maxX) < 1.5 && abs(r.maxY - c.maxY) < 1.5
-    if !ok {
+    guard abs(r.minX - c.minX) < 1.5, abs(r.minY - c.minY) < 1.5,
+      abs(r.maxX - c.maxX) < 1.5, abs(r.maxY - c.maxY) < 1.5
+    else {
       if Self.stFastFrames == 0, Self.stCIFrames < 30 {
         NSLog(
           "[FastPath] 非滿版 r=%@ canvas=%@",
@@ -646,11 +652,15 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
       }
       return nil
     }
-    // 旋轉角判定（鍵盤：chain 把 src x 軸投到哪）
-    if axial {
-      return chain.a > 0 ? 0 : 180
+    let inv = chain.inverted()
+    func uv(_ x: CGFloat, _ y: CGFloat) -> SIMD2<Float> {
+      let p = CGPoint(x: x, y: y).applying(inv)
+      return SIMD2<Float>(Float(p.x / srcW), Float(p.y / srcH))
     }
-    return chain.b > 0 ? 90 : 270
+    let uv0 = uv(0, 0)
+    let du = uv(canvas.width, 0) - uv0
+    let dv = uv(0, canvas.height) - uv0
+    return (SIMD4<Float>(uv0.x, uv0.y, du.x, du.y), dv)
   }
 
   /// 上一格合成完的畫面（指向我們自己輸出池的緩衝）。
@@ -963,17 +973,19 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             return nil
           }
           guard
-            let o = self.fullCanvasOrient(
+            let uvp = self.fastUV(
               L, srcW: CGFloat(CVPixelBufferGetWidth(sbuf)),
               srcH: CGFloat(CVPixelBufferGetHeight(sbuf)), canvas: size)
           else {
             Self.skip("非滿版")
             return nil
           }
-          fastOrient = o
+          fastUVA = uvp.0
+          fastUVB = uvp.1
           return sbuf
         }
-        var fastOrient = 0
+        var fastUVA = SIMD4<Float>(0, 0, 1, 0)
+        var fastUVB = SIMD2<Float>(0, 1)
         var fastOvs: [Data] = []
         if !self.hdrOut, self.liveComp {
           for ov in CIExportCompositor.currentPreviewOverlays()
@@ -984,9 +996,10 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         if let sbuf = fastEligible(),
           self.hdrOut
             ? MetalYUVBlit.shared.blit(
-              from: sbuf, to: dst, orient: fastOrient)
+              from: sbuf, to: dst, uvA: fastUVA, uvB: fastUVB)
             : MetalYUVBlit.shared.sdrCompose(
-              from: sbuf, to: dst, overlays: fastOvs, orient: fastOrient)
+              from: sbuf, to: dst, overlays: fastOvs,
+              uvA: fastUVA, uvB: fastUVB)
         {
           Self.stFastFrames += 1
           if Self.stFastFrames == 1 || Self.stFastFrames % 300 == 0 {
@@ -1286,8 +1299,13 @@ final class MetalYUVBlit {
     #include <metal_stdlib>
     using namespace metal;
     struct VOut { float4 pos [[position]]; float2 uv; };
+    // 取樣坐標由呼叫端用「畫布→來源」反矩陣算好：
+    // uv = uv0 + t.x*du + t.y*dv（仿射→三個向量就完全描述）。
+    // 旋轉、鏡像、縮放全包、不需要分類——實機 144
+    // 「畫面顏倒」就是分類法漏了垂直鏡像
     vertex VOut vtxBlit(uint vid [[vertex_id]],
-                        constant int &orient [[buffer(0)]]) {
+                        constant float4 &uvA [[buffer(0)]],
+                        constant float2 &uvB [[buffer(1)]]) {
       float2 p[6] = {
         float2(-1, 1), float2(1, 1), float2(-1, -1),
         float2(1, 1), float2(1, -1), float2(-1, -1)};
@@ -1296,16 +1314,8 @@ final class MetalYUVBlit {
         float2(1, 0), float2(1, 1), float2(0, 1)};
       VOut o;
       o.pos = float4(p[vid], 0, 1);
-      float2 uv = t[vid];
-      // 旋轉取樣：輸出 uv 對應到來源的哪個點
-      if (orient == 1) {        // 90°（直式帶旋轉 flag 的常態）
-        uv = float2(uv.y, 1.0 - uv.x);
-      } else if (orient == 2) { // 180°
-        uv = float2(1.0 - uv.x, 1.0 - uv.y);
-      } else if (orient == 3) { // 270°
-        uv = float2(1.0 - uv.y, uv.x);
-      }
-      o.uv = uv;
+      float2 tt = t[vid];
+      o.uv = uvA.xy + tt.x * uvA.zw + tt.y * uvB;
       return o;
     }
     fragment float4 fragY(VOut in [[stage_in]],
@@ -1437,7 +1447,9 @@ final class MetalYUVBlit {
   /// 兩平面縮放搬運（10-bit bi-planar → 同格式）。同步等完成
   ///（合成器本來就在背景佇列，等 <1ms）。回 false＝呼叫端走 CI
   func blit(
-    from srcBuf: CVPixelBuffer, to dstBuf: CVPixelBuffer, orient: Int = 0
+    from srcBuf: CVPixelBuffer, to dstBuf: CVPixelBuffer,
+    uvA: SIMD4<Float> = SIMD4<Float>(0, 0, 1, 0),
+    uvB: SIMD2<Float> = SIMD2<Float>(0, 1)
   ) -> Bool {
     lock.lock()
     defer { lock.unlock() }
@@ -1477,8 +1489,8 @@ final class MetalYUVBlit {
       let pipeYx = pY, let pipeCx = pC,
       let cmd = queue.makeCommandBuffer()
     else { return false }
-    var ori = Int32(orient == 90 ? 1 : orient == 180 ? 2
-      : orient == 270 ? 3 : 0)
+    var va = uvA
+    var vb = uvB
     func pass(
       _ dst: MTLTexture, _ srcTex: MTLTexture,
       _ pipe: MTLRenderPipelineState
@@ -1491,7 +1503,8 @@ final class MetalYUVBlit {
         return false
       }
       e.setRenderPipelineState(pipe)
-      e.setVertexBytes(&ori, length: 4, index: 0)
+      e.setVertexBytes(&va, length: 16, index: 0)
+      e.setVertexBytes(&vb, length: 8, index: 1)
       e.setFragmentTexture(srcTex, index: 0)
       e.setFragmentSamplerState(sampler, index: 0)
       e.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
@@ -1526,7 +1539,9 @@ final class MetalYUVBlit {
   /// 疊上。回 false＝呼叫端走 CI 原路
   func sdrCompose(
     from srcBuf: CVPixelBuffer, to dstBuf: CVPixelBuffer,
-    overlays: [Data], orient: Int = 0
+    overlays: [Data],
+    uvA: SIMD4<Float> = SIMD4<Float>(0, 0, 1, 0),
+    uvB: SIMD2<Float> = SIMD2<Float>(0, 1)
   ) -> Bool {
     lock.lock()
     defer { lock.unlock() }
@@ -1575,11 +1590,13 @@ final class MetalYUVBlit {
       return false
     }
     var fr: Float = full ? 1 : 0
-    var ori = Int32(orient == 90 ? 1 : orient == 180 ? 2
-      : orient == 270 ? 3 : 0)
-    var oriZero = Int32(0)
+    var va = uvA
+    var vb = uvB
+    var idA = SIMD4<Float>(0, 0, 1, 0)
+    var idB = SIMD2<Float>(0, 1)
     e.setRenderPipelineState(pYUV)
-    e.setVertexBytes(&ori, length: 4, index: 0)
+    e.setVertexBytes(&va, length: 16, index: 0)
+    e.setVertexBytes(&vb, length: 8, index: 1)
     e.setFragmentTexture(sy, index: 0)
     e.setFragmentTexture(sc, index: 1)
     e.setFragmentBytes(&fr, length: 4, index: 0)
@@ -1588,7 +1605,8 @@ final class MetalYUVBlit {
     for data in overlays {
       guard let t = ovTexture(data, dev: dev) else { continue }
       e.setRenderPipelineState(pOv)
-      e.setVertexBytes(&oriZero, length: 4, index: 0)
+      e.setVertexBytes(&idA, length: 16, index: 0)
+      e.setVertexBytes(&idB, length: 8, index: 1)
       e.setFragmentTexture(t, index: 0)
       e.setFragmentSamplerState(sampler, index: 0)
       e.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)

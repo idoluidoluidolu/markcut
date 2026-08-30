@@ -2577,8 +2577,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 背景默默補工作檔，暫停時無感換上
   bool _prepSilent = false;
 
+  /// 第二階段：HDR 代理（跟工作檔同一段等待）。
+  /// 不等它的話使用者進去之後代理才轉好，畫面來源從
+  /// 原檔換成代理——佈局重建、顏色跡象、卡頓全發生在眼前
+  bool _prepHdrPhase = false;
+
   /// 這一刻要不要蓋讀取遮罩
-  bool get _prepGate => _prepBusy && !_prepSkipped && !_prepSilent;
+  bool get _prepGate =>
+      (_prepBusy || _prepHdrPhase) && !_prepSkipped && !_prepSilent;
 
   /// 這支素材在等工作檔的期間，播原檔擋不擋人？
   ///
@@ -2633,16 +2639,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 無感換上。合成器用不了（倒轉/調色/圖片素材/原生端組失敗）
     // 才退回「一片段一顆播放器」的舊路，那條路播 4K/HDR 原檔真的
     // 會卡，照舊用 probeLite 分類決定要不要擋
-    var silent = true;
+    // 匯入即轉完才進畫面（使用者指定）：不再背景静默轉。
+    // 背景轉的代價是「進去之後才換檔」——佈局重建、
+    // 顏色從原檔跳成代理、解碼器跟播放互搶，全發生在
+    // 使用者眼前（實機 139~144 的「要等讀取完才順」）
+    var silent = false;
     if (!_compOn) await _ensureComp();
-    if (!_compOn) {
-      for (final i in List<int>.of(_prepQueue)) {
-        if (await _prepGateNeeded(i)) {
-          silent = false;
-          break;
-        }
-      }
-    }
     if (!mounted) return;
     setState(() {
       _prepBusy = true;
@@ -2656,7 +2658,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 轉檔偶爾會卡在某一支（硬體編碼器被佔住、素材有問題）。這一頁擋著
     // 整個編輯器，沒有退路的話使用者只能關掉 App 重來
     _prepEscapeTimer?.cancel();
-    _prepEscapeTimer = Timer(const Duration(seconds: 8), () {
+    _prepEscapeTimer = Timer(const Duration(seconds: 20), () {
       if (mounted && _prepBusy) setState(() => _prepEscapeReady = true);
     });
     // 全部一起送出去，同時跑幾支由 MediaPrep 控（現在是兩支）。
@@ -2709,13 +2711,31 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
     }
     if (!mounted) return;
-    _prepEscapeTimer?.cancel();
     setState(() {
       _prepBusy = false;
       _prepSilent = false;
-      _prepEscapeReady = false;
       _prepCur.clear();
     });
+    // 第二階段：HDR 代理也在遮罩下跑完——進畫面時
+    // 每一層吃的就是最終檔，不再有換檔/重建/變色
+    if (_exportHdr && _hdrAvail == true && mounted) {
+      final need = _tl.sources
+          .where((s) => s.isVideo && s.workHdrPath == null)
+          .length;
+      if (need > 0) {
+        setState(() {
+          _prepHdrPhase = true;
+          _prepTotal = need;
+          _prepDone = 0;
+          _prepCur.clear();
+        });
+        await _prepHdrWorkFiles();
+        if (!mounted) return;
+        setState(() => _prepHdrPhase = false);
+      }
+    }
+    _prepEscapeTimer?.cancel();
+    if (mounted) setState(() => _prepEscapeReady = false);
     // 這時候才組合成：全部素材都是工作檔，方向與編碼一致，
     // 合成器不會被叫醒，而且之後不必再重烘一次
     _compDirty = true;
@@ -2752,6 +2772,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (made == null || i >= _tl.sources.length) continue;
       _tl.sources[i].workHdrPath = made;
       madeAny = true;
+      if (_prepHdrPhase && mounted) setState(() => _prepDone++);
       _saveDraft();
     }
     // 全部補完才重烘一次：以前每好一支就重烘，六支素材就是六次
