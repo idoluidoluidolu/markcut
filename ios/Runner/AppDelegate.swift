@@ -886,6 +886,30 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   static var lumaProbe: [String] = []
   private static var lumaN = 0
 
+  /// 交格前補上色彩標記：CoreImage 渲染「不會」寫緩衝的色彩附件，
+  /// 播放器圖層拿到沒有標記的 HLG/709 緩衝就顯示不出來（黑）。
+  /// 匯出寫檔不受影響（走 videoComposition 的宣告），播放才需要
+  func tagColors(_ buf: CVPixelBuffer) {
+    let prim: CFString =
+      hdrOut
+      ? kCVImageBufferColorPrimaries_ITU_R_2020
+      : kCVImageBufferColorPrimaries_ITU_R_709_2
+    let trc: CFString =
+      hdrOut
+      ? kCVImageBufferTransferFunction_ITU_R_2100_HLG
+      : kCVImageBufferTransferFunction_ITU_R_709_2
+    let mat: CFString =
+      hdrOut
+      ? kCVImageBufferYCbCrMatrix_ITU_R_2020
+      : kCVImageBufferYCbCrMatrix_ITU_R_709_2
+    CVBufferSetAttachment(
+      buf, kCVImageBufferColorPrimariesKey, prim, .shouldPropagate)
+    CVBufferSetAttachment(
+      buf, kCVImageBufferTransferFunctionKey, trc, .shouldPropagate)
+    CVBufferSetAttachment(
+      buf, kCVImageBufferYCbCrMatrixKey, mat, .shouldPropagate)
+  }
+
   static func noteLuma(_ buf: CVPixelBuffer, t: Double) {
     lumaN += 1
     guard lumaN % 30 == 1 else { return }
@@ -916,9 +940,8 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         .assumingMemoryBound(to: UInt16.self)
       v = Double(p[0]) / 65535.0
     }
-    if lumaProbe.count < 6 {
-      lumaProbe.append(String(format: "%.1fs:%.3f", t, v))
-    }
+    lumaProbe.append(String(format: "%.1fs:%.3f", t, v))
+    if lumaProbe.count > 6 { lumaProbe.removeFirst() }
   }
 
   static func noteFrame(t: Double, ms: Double, layers: Int, missing: Bool) {
@@ -1054,7 +1077,8 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           Self.noteFrame(
             t: t0, ms: (CFAbsoluteTimeGetCurrent() - tick) * 1000,
             layers: 1, missing: false)
-          Self.noteLuma(dst, t: t0)
+          self.tagColors(dst)
+        Self.noteLuma(dst, t: t0)
         req.finish(withComposedVideoFrame: dst)
           return
         }
@@ -1282,6 +1306,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           // 只多佔用池子裡的一顆
           self.lastComposed = CIImage(cvPixelBuffer: dst)
         }
+        self.tagColors(dst)
         Self.noteLuma(dst, t: t0)
         req.finish(withComposedVideoFrame: dst)
         Self.noteFrame(
@@ -7470,7 +7495,12 @@ final class MetalPreviewEngine: NSObject {
     pumps.removeAll()
   }
 
+  /// 上/下台歷程（診斷用）：播放中若還出現「上」就是引擎又爬上來
+  static var stageLog: [String] = []
+
   func show(_ on: Bool) {
+    Self.stageLog.append(String(format: "%@%.1f", on ? "上" : "下", curT))
+    if Self.stageLog.count > 10 { Self.stageLog.removeFirst() }
     if !on { stop() }
     active = on && available
     isOnStage = active
@@ -7606,6 +7636,8 @@ final class MetalPreviewEngine: NSObject {
       "playSafe": playSafe,
       "supply": "佇列\(stSupplyReader)/過渡\(stSupplyPump)/保底\(stSupplyHold)",
       "maxGapMs": stMaxGapMs,
+      "stage": Self.stageLog.joined(separator: " "),
+      "onStage": isOnStage,
       "missWho": stMissWho.joined(separator: "、"),
       "resident": active,
       "playing": playing,

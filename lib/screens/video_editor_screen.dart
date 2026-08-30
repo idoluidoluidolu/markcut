@@ -7141,6 +7141,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               '／miss爆發點 [$missAt]s'
               '／最大幀隙 ${m['maxGapMs']}ms\n'
               '  供格來源：${m['supply']}'
+              '／在台上=${m['onStage'] == true ? '是' : '否'}\n'
+              '  上下台：${m['stage']}'
               '${(m['missWho'] as String?)?.isNotEmpty == true ? '\n  miss層脈絡：${m['missWho']}' : ''}\n'
               '  常駐=${m['resident'] == true ? '亮' : '暗'}'
               '／播放中=${m['playing'] == true ? '是' : '否'}'
