@@ -8267,11 +8267,17 @@ final class MetalPreviewView: NSObject, FlutterPlatformView {
   }
 
   func layoutNow() {
+    // 關掉隱式動畫：圖層第一次上台時 frame 從零長到滿版，系統會
+    // 幫它做 0.25s 的動畫——看起來就是「畫面從旁邊飄進來」
+    //（實機 151 回報）。尺寸變更必須是瞬時的
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
     metalLayer.frame = holder.bounds
     let s = UIScreen.main.scale
     metalLayer.drawableSize = CGSize(
       width: max(2, holder.bounds.width * s),
       height: max(2, holder.bounds.height * s))
+    CATransaction.commit()
   }
 }
 
