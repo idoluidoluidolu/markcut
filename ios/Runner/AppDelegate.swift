@@ -6274,14 +6274,44 @@ final class MetalPump {
       pendingSeek = t
       return
     }
-    if abs(t - lastSeek) < (coarse ? 0.1 : 0.04) { return }
+    // 只追最新目標，不把每一發都做完：手指每動一次就灌一發 seek，
+    // AVPlayer 會排隊一發一發做，畫面永遠落在手指後面、停手才追上
+    //（實機 155 回報）。中途那些位置使用者根本沒在看
+    if abs(t - lastSeek) < (coarse ? 0.04 : 0.02) { return }
     lastSeek = t
-    let tol = coarse
+    seekWanted = t
+    seekCoarse = coarse
+    if !seeking { chaseSeek() }
+  }
+
+  /// 進行中的 seek 與最新目標（見 want 的說明）
+  private var seeking = false
+  private var seekWanted: Double?
+  private var seekCoarse = true
+
+  private func chaseSeek() {
+    guard let t = seekWanted, let _ = player.currentItem else {
+      seeking = false
+      return
+    }
+    seekWanted = nil
+    seeking = true
+    let tol = seekCoarse
       ? CMTime.positiveInfinity
       : CMTimeMakeWithSeconds(0.05, preferredTimescale: 600)
     player.seek(
       to: CMTime(seconds: t, preferredTimescale: 600),
-      toleranceBefore: tol, toleranceAfter: tol)
+      toleranceBefore: tol, toleranceAfter: tol
+    ) { [weak self] _ in
+      DispatchQueue.main.async {
+        guard let self = self else { return }
+        if self.seekWanted != nil {
+          self.chaseSeek()  // 手指又動了，直接追最新的
+        } else {
+          self.seeking = false
+        }
+      }
+    }
   }
 
   /// ready 之後把欠的 seek 補上（texture/playTexture 每次先問）
@@ -7604,6 +7634,10 @@ final class MetalPreviewEngine: NSObject {
   private var stSupplyHold = 0
   /// 播放中 tick 間隔最大值（ms）——「跳動感」的數字證據
   private var stMaxGapMs = 0
+  /// 非播放（滑動/編輯）中：渲染幾格、其中幾格是真的新畫面。
+  /// 兩者差很大＝渲染沒問題，是解碼器供不出新格（滑動落後的證據）
+  private var stIdleRenders = 0
+  private var stIdleFresh = 0
   /// miss 發生時的層脈絡（層z/佇列備量/解碼器狀態）
   private var stMissWho: [String] = []
   private var stRenderMsMax = 0.0
@@ -7650,6 +7684,7 @@ final class MetalPreviewEngine: NSObject {
       "playSafe": playSafe,
       "supply": "佇列\(stSupplyReader)/過渡\(stSupplyPump)/保底\(stSupplyHold)",
       "maxGapMs": stMaxGapMs,
+      "idleFresh": "渲染\(stIdleRenders)/新格\(stIdleFresh)",
       "stage": Self.stageLog.joined(separator: " "),
       "onStage": isOnStage,
       "missWho": stMissWho.joined(separator: "、"),
@@ -8041,12 +8076,17 @@ final class MetalPreviewEngine: NSObject {
           }
         } else if let pump = pump {
           let srcT = sp.trimStart + (t - sp.offset) * sp.speed
+          let beforeTex = pump.lastTexture
           pump.want(srcT)
           // pump 剛重建（換工作檔）或 seek 未完＝暫時沒圖：用播放
           // 停格那張頂住——那本來就是正確的暫停幀，不透黑
           tex =
             pump.texture(at: srcT, cache: cache)
             ?? readers[sp.id]?.lastTexture
+          if !playing {
+            stIdleRenders += 1
+            if tex !== beforeTex { stIdleFresh += 1 }
+          }
         } else {
           tex = readers[sp.id]?.lastTexture
         }
