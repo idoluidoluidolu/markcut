@@ -1086,10 +1086,10 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             t: t0, ms: (CFAbsoluteTimeGetCurrent() - tick) * 1000,
             layers: 1, missing: false)
           self.tagColors(dst)
-        Self.noteLuma(
-          dst, t: t0, drawn: drawnCount, missing: missing,
-          srcH: ins.layers.first?.srcHeight ?? -1, canvasH: size.height)
-        req.finish(withComposedVideoFrame: dst)
+          Self.noteLuma(
+            dst, t: t0, drawn: 1, missing: false,
+            srcH: ins.layers.first?.srcHeight ?? -1, canvasH: size.height)
+          req.finish(withComposedVideoFrame: dst)
           return
         }
         Self.stCIFrames += 1
