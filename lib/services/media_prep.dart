@@ -31,7 +31,10 @@ class MediaPrep {
   ///
   /// 同時可以跑兩支：iPhone 的硬體編碼器吃得下，兩支一起跑的總時間
   /// 明顯比排隊短。再多就會互搶，而且記憶體跟著翻倍
-  static const _maxConcurrent = 2;
+  // 同時兩支硬體編碼在多素材匯入時會把 mediaserverd 打到重置
+  // （實機 150：6 支素材壞了 5 支工作檔，只好退回 4K 原檔，
+  // 關鍵幀疏＝滑動鈍）。匯入本來就有等待遮罩，慢一點換可靠
+  static const _maxConcurrent = 1;
   static final Map<int, void Function(double)> _progressOf = {};
   static int _nextJob = 1;
 

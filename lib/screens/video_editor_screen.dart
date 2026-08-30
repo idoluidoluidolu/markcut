@@ -3270,8 +3270,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_playing || _scrubbing) return;
     // 引擎只在滑動/拖曳時上台：閒置時自動上台＝下一次操作又要換手，
     // 每次換手就是一下閃動（實機 149）。合成畫面本身已經顯示得出來
-    if (_mResident && _mBuiltSig != null && _comp != null && _scrubbing) {
-      if (!MetalPreview.active) _metalResidentTry();
+    if (_mResident && _mBuiltSig != null && _comp != null) {
+      if (_scrubbing) {
+        if (!MetalPreview.active) _metalResidentTry();
+      } else {
+        _metalWarm(); // 暖機不上台：滑動一來就能瞬間接手
+      }
     } else if (!_mResident && MetalPreview.active && !_scrubbing) {
       _metalHideNow();
       setState(() {});
@@ -3279,6 +3283,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   Timer? _mResTimer;
+
+  /// 暖機（不上台）：把引擎的解碼器對到目前位置、主動取樣到紋理，
+  /// 這樣滑動一開始就能瞬間接手。上台會造成畫面換手的閃動
+  ///（實機 149），所以暖機跟上台要拆開
+  void _metalWarm() {
+    if (!_metalUsable || _playing || _playStarting) return;
+    if (_mBuiltSig == null || MetalPreview.active) return;
+    unawaited(
+      MetalPreview.seek(_position).then((_) => MetalPreview.ready(_position)),
+    );
+  }
 
   /// 色彩偵探（自動）：離屏 5 點數值取樣＋當下各層來源種類。
   /// [tag] 標記時機（進場/轉檔完）。失敗靜默——它是偵測不是功能
@@ -7008,6 +7023,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             _position = p;
             _syncScrollToPosition();
           }
+          if (mounted) _metalWarm();
           // 暫停不換手：合成畫面現在顯示得出來（色彩標記補齊後），
           // 停格就留在系統播放器上。換成引擎＝兩套渲染管線的畫面
           // 略有差異，交接那一下就是使用者看到的閃動（實機 149：
