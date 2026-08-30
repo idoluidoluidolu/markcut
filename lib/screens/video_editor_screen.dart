@@ -3307,11 +3307,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 暖機（不上台）：把引擎的解碼器對到目前位置、主動取樣到紋理，
   /// 這樣滑動一開始就能瞬間接手。上台會造成畫面換手的閃動
   ///（實機 149），所以暖機跟上台要拆開
-  void _metalWarm() {
+  Timer? _mWarmTimer;
+
+  void _metalWarm([int attempt = 0]) {
+    _mWarmTimer?.cancel();
     if (!_metalUsable || _playing || _playStarting) return;
     if (_mBuiltSig == null || MetalPreview.active) return;
     unawaited(
-      MetalPreview.seek(_position).then((_) => MetalPreview.ready(_position)),
+      MetalPreview.seek(_position).then((_) async {
+        final ok = await MetalPreview.ready(_position);
+        // 解碼器剛建起來要幾十毫秒才出得了第一格：沒好就再試，
+        // 直到暖起來為止（最多 2 秒）。只試一次的話滑動一來還是
+        // 要現場等（實機 150：滑動很頓、有時只顯示固定畫面）
+        if (!ok && attempt < 10 && mounted && !_playing && !_scrubbing) {
+          _mWarmTimer = Timer(
+            const Duration(milliseconds: 200),
+            () => _metalWarm(attempt + 1),
+          );
+        }
+      }),
     );
   }
 
