@@ -6637,6 +6637,25 @@ final class ClipReader {
     return held?.tex
   }
 
+  /// 目前顯示到的來源時刻（滑動重啟判定用；-1=還沒出過圖）
+  var lastShown: Double {
+    lock.lock()
+    defer { lock.unlock() }
+    return lastPts
+  }
+
+  /// 滑動供格：跟 frame(at:) 一樣消費佇列，但顯示中的格離目標
+  /// 超過 0.3s 就回 nil——讓呼叫端走 pump 保底，不讓舊格冒充
+  /// 新畫面（v1 教訓：永遠回上一張＝倒退滑動整段舊圖）
+  func scrubFrame(at srcT: Double, cache: CVMetalTextureCache) -> MTLTexture? {
+    let tex = frame(at: srcT, cache: cache)
+    lock.lock()
+    let shown = lastPts
+    lock.unlock()
+    guard tex != nil, shown >= 0, abs(shown - srcT) <= 0.3 else { return nil }
+    return tex
+  }
+
   /// 佇列裡已備好的最遠時刻（交界預捲檢查用）
   var bufferedTo: Double {
     lock.lock()
@@ -6966,6 +6985,8 @@ final class MetalPreviewEngine: NSObject {
 
   /// 每個 reader 上次被重啟的時刻（重啟風暴防線，見下）
   private var restartAt: [Int: Double] = [:]
+  /// 滑動路徑的重啟冷卻（與播放路徑的 restartAt 分開記）
+  private var scrubRestartAt: [Int: Double] = [:]
 
   private func syncReaders(_ t: Double, force: Bool = false) {
     let now = CACurrentMediaTime()
@@ -7601,11 +7622,40 @@ final class MetalPreviewEngine: NSObject {
       }
     } else {
       curT = t
-      // 滑動中一律關鍵幀貼齊（瞬間出圖，4K 原檔也順）；
-      // 停手 150ms 後 tick 補一發精確幀（見 settle 機制）
+      // 滑動供格＝連續解碼，不是逐格 seek：AVPlayer.seek 一發
+      // 100~200ms，一秒只供得出 5 張新畫面（實機 156：渲染1237/
+      // 新格96）。順向滑動解碼佇列順著解就是滿速；倒退/跳遠才
+      // 重啟，而且要過暖身（age>0.3）＋冷卻（0.2s）兩道門——
+      // v1 沒有這兩道門，倒退滑動＝每秒 60 次重建解碼器（風暴）
       for sp in layers where sp.offset <= t && t < sp.end {
-        pumpFor(sp).want(
-          sp.trimStart + (t - sp.offset) * sp.speed, coarse: true)
+        let want = sp.trimStart + (t - sp.offset) * sp.speed
+        if sp.proxy {
+          // 原檔（轉檔期過渡）不開解碼佇列，理由同 syncReaders
+          var r = readers[sp.id]
+          if r == nil || r!.path != sp.path {
+            r?.stop()
+            r = ClipReader(path: sp.path)
+            readers[sp.id] = r
+            r!.start(at: want)
+            scrubRestartAt[sp.id] = CACurrentMediaTime()
+          } else {
+            let now = CACurrentMediaTime()
+            let shown = r!.lastShown
+            let buffered = r!.bufferedTo
+            let behind = shown >= 0 && want < shown - 0.05
+            let ahead = buffered >= 0 && want > buffered + 1.0
+            let dead =
+              !r!.isRunning && (shown < 0 || abs(want - shown) > 0.05)
+            if behind || ahead || dead, r!.age > 0.3,
+              now - (scrubRestartAt[sp.id] ?? 0) > 0.2
+            {
+              r!.start(at: want)
+              scrubRestartAt[sp.id] = now
+            }
+          }
+        }
+        // 關鍵幀貼齊照舊：解碼佇列就緒前的保底
+        pumpFor(sp).want(want, coarse: true)
       }
       lastSeekHost = CACurrentMediaTime()
       seekSettled = false
@@ -7638,6 +7688,7 @@ final class MetalPreviewEngine: NSObject {
   /// 兩者差很大＝渲染沒問題，是解碼器供不出新格（滑動落後的證據）
   private var stIdleRenders = 0
   private var stIdleFresh = 0
+  private weak var idleLastTex: MTLTexture?
   /// miss 發生時的層脈絡（層z/佇列備量/解碼器狀態）
   private var stMissWho: [String] = []
   private var stRenderMsMax = 0.0
@@ -8067,6 +8118,24 @@ final class MetalPreviewEngine: NSObject {
             stSupplyHold += 1
           }
           noteMiss(tex === before, layer: sp)
+          if rd.infoReady {
+            orient = rd.orient
+            dispW = rd.dispW
+            dispH = rd.dispH
+            hlg = rd.isHLG
+            p2020 = rd.is2020
+          }
+        } else if !playing, let rd = readers[sp.id],
+          let rt = rd.scrubFrame(
+            at: sp.trimStart + (t - sp.offset) * sp.speed, cache: cache)
+        {
+          // 滑動供格：解碼佇列（連續解碼，跟得上手指）。
+          // 幾何從 reader 帶——proxy 與 pump 同檔同幾何，但
+          // 播放分支就是這樣做的，兩路必須同一套（准）
+          tex = rt
+          stIdleRenders += 1
+          if rt !== idleLastTex { stIdleFresh += 1 }
+          idleLastTex = rt
           if rd.infoReady {
             orient = rd.orient
             dispW = rd.dispW
