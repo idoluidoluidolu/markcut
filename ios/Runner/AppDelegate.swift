@@ -7790,6 +7790,7 @@ final class MetalPreviewEngine: NSObject {
         // 關鍵幀貼齊照舊：解碼佇列就緒前的保底
         pumpFor(sp).want(want, coarse: true)
       }
+      prevSeekGap = CACurrentMediaTime() - lastSeekHost
       lastSeekHost = CACurrentMediaTime()
       seekSettled = false
       trimPumps(t)
@@ -7835,9 +7836,13 @@ final class MetalPreviewEngine: NSObject {
   private var stageAt = 0.0
   private var lastShownPts = -1.0
   private var stStageRoll = 0
-  /// 手指正在滑（最後一次 seek 150ms 內）——容差與統計都看它
+  /// 手指正在滑：最後一次 seek 在 150ms 內「而且」它跟上一發
+  /// 的間隔也短（連續事件才算）。少了第二個條件，暫停上台那
+  /// 單獨一發 seek 也算滑動＝寬容差漏進來＝上台畫面快轉滾
+  ///（實機 158：暫停上台滾動 3 次）
+  private var prevSeekGap = 999.0
   private var scrubbingNow: Bool {
-    CACurrentMediaTime() - lastSeekHost < 0.15
+    CACurrentMediaTime() - lastSeekHost < 0.15 && prevSeekGap < 0.3
   }
   /// miss 發生時的層脈絡（層z/佇列備量/解碼器狀態）
   private var stMissWho: [String] = []

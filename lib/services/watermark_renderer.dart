@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import '../models/color_grade.dart';
+import 'diagnostics.dart';
 import '../models/mosaic.dart';
 import '../models/watermark_settings.dart';
 import 'logo_mark_painter.dart';
@@ -20,12 +21,30 @@ class WatermarkRenderer {
     int outW,
     int outH,
   ) async {
+    return _renderOverlay(s, outW, outH, ui.ImageByteFormat.png);
+  }
+
+  static Future<Uint8List> _renderOverlay(
+    WatermarkSettings s,
+    int outW,
+    int outH,
+    ui.ImageByteFormat fmt,
+  ) async {
+    final t0 = DateTime.now();
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(recorder);
     await drawMarks(canvas, s, outW.toDouble(), outH.toDouble());
     final picture = recorder.endRecording();
+    final t1 = DateTime.now();
     final image = await picture.toImage(outW, outH);
-    final data = await image.toByteData(format: ui.ImageByteFormat.png);
+    final t2 = DateTime.now();
+    final data = await image.toByteData(format: fmt);
+    final t3 = DateTime.now();
+    WmDiag.noteBakeDetail(
+      t1.difference(t0).inMilliseconds,
+      t2.difference(t1).inMilliseconds,
+      t3.difference(t2).inMilliseconds,
+    );
     image.dispose();
     return data!.buffer.asUint8List();
   }
@@ -37,14 +56,7 @@ class WatermarkRenderer {
     int outW,
     int outH,
   ) async {
-    final recorder = ui.PictureRecorder();
-    final canvas = ui.Canvas(recorder);
-    await drawMarks(canvas, s, outW.toDouble(), outH.toDouble());
-    final picture = recorder.endRecording();
-    final image = await picture.toImage(outW, outH);
-    final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
-    image.dispose();
-    return data!.buffer.asUint8List();
+    return _renderOverlay(s, outW, outH, ui.ImageByteFormat.rawRgba);
   }
 
   /// 照片浮水印：以原始解析度合成照片 + 馬賽克 + 浮水印，輸出 PNG（無損）。
@@ -187,6 +199,21 @@ class WatermarkRenderer {
   }
 
   /// 在指定大小的畫布上畫出文字與 Logo 浮水印
+  /// logo 解碼快取：每次烘圖都重新解碼的話，大圖一次幾百 ms——
+  /// 實機 158「烘圖平均 292ms／最久 1299ms」的大頭。鍵是 bytes
+  /// 物件本身（b64 解碼結果有池，同一顆 logo 拿到同一個物件），
+  /// Expando 跟著物件活、物件回收快取自然消
+  static final Expando<ui.Image> _logoDecoded = Expando();
+
+  static Future<ui.Image> _logoImage(Uint8List bytes) async {
+    final hit = _logoDecoded[bytes];
+    if (hit != null) return hit;
+    final codec = await ui.instantiateImageCodec(bytes);
+    final frame = await codec.getNextFrame();
+    _logoDecoded[bytes] = frame.image;
+    return frame.image;
+  }
+
   static Future<void> drawMarks(
     ui.Canvas canvas,
     WatermarkSettings s,
@@ -198,14 +225,11 @@ class WatermarkRenderer {
     for (final logo in s.logos) {
       final logoBytes = logo.bytes;
       if (!logo.enabled || logoBytes == null) continue;
-      final codec = await ui.instantiateImageCodec(logoBytes);
-      final frame = await codec.getNextFrame();
-      final img = frame.image;
+      final img = await _logoImage(logoBytes);
 
       // 縮放/圓角/透明度/平鋪全交給共用畫家（跟預覽同一段程式碼）
       if (logo.tiled) {
         paintLogoTiled(canvas, logo, img, w, h);
-        img.dispose();
         continue; // 平鋪的這張畫完，換下一張
       }
 
@@ -225,7 +249,6 @@ class WatermarkRenderer {
       }
       paintLogoUnit(canvas, logo, img, rect);
       canvas.restore();
-      img.dispose();
     }
 
     _drawText(canvas, s, w, h);

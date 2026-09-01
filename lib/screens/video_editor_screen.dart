@@ -6499,10 +6499,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _onTick(Duration elapsed) {
     if (!_playing) return;
-    final dt = (elapsed - _lastTick).inMicroseconds / 1e6;
+    var dt = (elapsed - _lastTick).inMicroseconds / 1e6;
     _lastTick = elapsed;
+    // 跨暫停邊界／計時器重啟的第一格 dt 是垃圾（負值或整段暫停
+    // 時長）——「播放時指針跳動」就是它（實機 158）。整格丟掉
+    if (dt <= 0 || dt > 1.0) return;
     PlaybackTrace.instance.tick(dt);
     if (dt > 0.05) Diag.count('掉格');
+    // UI 執行緒卡了一下（過熱降頻等）：別讓指針一口氣跳過去，
+    // 超出的部分交給對時滑動每秒最多 60% 慢慢吃，肉眼看不出跳
+    if (dt > 0.25) {
+      _clockBias += dt - 0.25;
+      dt = 0.25;
+    }
     // 時間軸位置以原速計；播放速度反映在實際前進速率上
     _position += dt * _speed;
     // 對時校正用「滑」的：每秒最多吃 0.6 秒（速率 ±60%），

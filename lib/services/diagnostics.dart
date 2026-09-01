@@ -480,6 +480,16 @@ class WmDiag {
   static final List<int> _lag = [];
   static final List<int> _bake = [];
   static final List<int> _send = [];
+  static final List<int> _draw = [];
+  static final List<int> _raster = [];
+  static final List<int> _encode = [];
+
+  /// 烘圖細目：畫（drawMarks）／點陣（toImage）／讀出（byteData）
+  static void noteBakeDetail(int drawMs, int rasterMs, int encodeMs) {
+    _push(_draw, drawMs);
+    _push(_raster, rasterMs);
+    _push(_encode, encodeMs);
+  }
 
   static void noteSync({
     required bool fast,
@@ -520,6 +530,10 @@ class WmDiag {
     );
     b.writeln('  改變到上屏：${_stat(_lag)}（>150ms 就會有「跟」的感覺）');
     b.writeln('  烘圖：${_stat(_bake)}／傳輸：${_stat(_send)}');
+    b.writeln(
+      '  烘圖細目：畫 ${_stat(_draw)}／點陣 ${_stat(_raster)}'
+      '／讀出 ${_stat(_encode)}',
+    );
     b.writeln('  最近一版：$lastParts 個部件／${(lastBytes / 1024).round()} KB');
     if (xfSends > 0) {
       b.writeln('  拖曳即時幾何：送 $xfSends 發／被拒收 $xfRejects 發');
@@ -533,5 +547,8 @@ class WmDiag {
     _lag.clear();
     _bake.clear();
     _send.clear();
+    _draw.clear();
+    _raster.clear();
+    _encode.clear();
   }
 }
