@@ -7800,7 +7800,9 @@ final class MetalPreviewEngine: NSObject {
             let shown = r!.lastShown
             let buffered = r!.bufferedTo
             let behind = shown >= 0 && want < shown - 0.05
-            let ahead = buffered >= 0 && want > buffered + 1.0
+            // 順向超前不急著重啟：順序解碼追 1~2 秒只要 ~100ms 而且
+            // 沿路有畫面；重啟反而是 100~200ms 空窗。跳太遠才重啟
+            let ahead = buffered >= 0 && want > buffered + 2.5
             let dead =
               !r!.isRunning && (shown < 0 || abs(want - shown) > 0.05)
             if behind || ahead || dead, r!.age > 0.3,
@@ -7812,8 +7814,13 @@ final class MetalPreviewEngine: NSObject {
             }
           }
         }
-        // 關鍵幀貼齊照舊：解碼佇列就緒前的保底
-        pumpFor(sp).want(want, coarse: true)
+        // 保底 pump 只在解碼佇列沒罩到時才餵：兩邊同時全速餵＝
+        // 同一支檔案兩套解碼互搶硬體解碼器，佇列被 seek 風暴掐住，
+        // 連續拖動就週期性卡住（實機 162：拖曳 seek 每發 63~82ms）
+        let rr = readers[sp.id]
+        if rr == nil || !rr!.isRunning || abs(rr!.lastShown - want) > 0.25 {
+          pumpFor(sp).want(want, coarse: true)
+        }
       }
       prevSeekGap = CACurrentMediaTime() - lastSeekHost
       lastSeekHost = CACurrentMediaTime()
