@@ -433,6 +433,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   List<Map<String, dynamic>> _ovMapsCache = const [];
   Map<String, List<double>> _ovGeomCache = const {};
   String? _ovXfLastKey;
+  bool _ovXfSentAny = false;
   int _ovXfFailNoted = 0;
   int _ovSetFails = 0;
   DateTime _ovXfLastAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -1700,7 +1701,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         }
       }
     }
-    if (hits.isEmpty) return;
+    if (hits.isEmpty) {
+      // 基準剛換（烘圖落地）而部件已歸位：清掉原生端殘留的舊差量
+      // ——留著的話會拿「舊差量×新基準」畫，尺寸跳一下
+      //（實機 160：大小拉動亂跳）
+      if (_ovXfSentAny) {
+        _ovXfSentAny = false;
+        _ovXfLastKey = null;
+        unawaited(CompPlayer.setOvXforms(const []));
+      }
+      return;
+    }
     final key = hits
         .map(
           (h) =>
@@ -1728,6 +1739,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _ovXfLastAt = DateTime.now();
     _ovXfLastKey = key;
     WmDiag.xfSends++;
+    _ovXfSentAny = true;
     unawaited(
       CompPlayer.setOvXforms(hits).then((ok) {
         if (ok || !mounted) return;
@@ -1837,6 +1849,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (fast && !stale) _scheduleOvSync(); // 停穩後補全解析
 
       _ovBakedGeom = _ovGeomPending; // 即時幾何的差量基準跟著換
+      // 基準換了就立刻重算差量（或清空殘留）：兩通道在每次烘圖
+      // 落地時對齊，尺寸不再跳（實機 160）
+      _ovXfLastKey = null;
+      _liveOvSync();
       final shown = maps.isNotEmpty;
       _ovNativePending = shown; // 之後的 compVisible 不要把它翻回去
       if (mounted && _ovNativeShown != shown) {
@@ -7081,7 +7097,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             _position = p;
             _syncScrollToPosition();
           }
-          if (mounted) _metalResidentTry();
+          if (mounted && _mResident) _metalResidentTry();
           // 暫停不換手：合成畫面現在顯示得出來（色彩標記補齊後），
           // 停格就留在系統播放器上。換成引擎＝兩套渲染管線的畫面
           // 略有差異，交接那一下就是使用者看到的閃動（實機 149：

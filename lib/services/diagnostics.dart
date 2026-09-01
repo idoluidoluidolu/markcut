@@ -257,11 +257,13 @@ class Diag {
   /// 硬體級停用（AV 分離，解碼器 100% 歸引擎），預設開
   static final metalPlayback = ValueNotifier(true);
 
-  /// 引擎常駐（畫面唯一來源、進場即亮，重建/換手全部隱形）。
-  /// 129 的黑畫面根因（無就緒檢查、seek 被吞）已修：現在
-  /// 「紋理就緒才上台、沒就緒 200ms 重試」，加上關鍵幀瞬滑，
-  /// 原檔也能立刻亮
-  static final metalResident = ValueNotifier(true);
+  /// 引擎常駐＝關（實機 160 定案）：暫停時引擎上台＝播放器畫面
+  /// 換成引擎畫面，兩套管線輸出差半格/一絲色差，每按一次暫停就
+  /// 閃一次——使用者回報五個版本的「暫停閃動」就是這個換手。
+  /// 暫停畫面留在系統播放器（它的停格就是精確幀）；樣式/幾何調整
+  /// 由合成器催重畫即時顯示（setOverlays/setOvXform 都有 nudge）；
+  /// 引擎只在滑動/拖曳接管時上台（有就緒檢查＋首格護持，不閃）
+  static final metalResident = ValueNotifier(false);
 
   static String get tuning =>
       '預熱=${preheat.value ? '開' : '關'}／'
