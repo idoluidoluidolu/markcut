@@ -5703,6 +5703,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       return false
     }
     composition = comp
+    stItemSwaps += 1
     player.replaceCurrentItem(with: item)
     // 播放接管的「音訊分身」：同一份合成拷貝後拆掉視訊軌，
     // 從建好那一刻就是純音訊。播放接管＝分身出聲＋主播放器
@@ -6437,7 +6438,6 @@ final class MetalPump {
     // 本地密關鍵幀檔不需要「防斷流等待」——留著的話起播先緩衝
     // 幾秒才動（實測 build 130：「按播放先卡頓幾秒後面才順」）
     player.automaticallyWaitsToMinimizeStalling = false
-    stItemSwaps += 1
     player.replaceCurrentItem(with: item)
   }
 
