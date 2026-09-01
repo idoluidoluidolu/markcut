@@ -1827,10 +1827,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 基準循環 13 次＝樣式斷流 5.5 秒的犯人）。它當初防的「烘圖
     // 與差量分兩包落地爆閃」已由 162 的同包原子套用解決——烘圖
     // 20ms 級，幾何拖動中照烘，差量跟著同包走，不爆不搶
-    // 樣式拖動＝讓引擎上台顯示（60fps、不催合成器）：合成器路每
-    // 換一版就要重解一格 4K 原檔（50~150ms）＝調樣式卡頓閃動暗掉
-    //（實機 163）。引擎有就緒檢查＋首格護持，上台不閃
-    if (fast && !_playing && !MetalPreview.active) _metalOvDragTakeover();
     // 節拍器：快路兩版之間至少 80ms（12 版/秒）。錄影逐格分析
     // 定罪：無節制連發（20版/秒 x 8MB raw）把 GPU 回讀與通道
     // 搬運擠爆，UI 整屏凍結 0.3~0.9 秒連環
@@ -2582,10 +2578,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _compSeek({bool exact = false}) {
     if (_compOn && !_playing) {
-      // 引擎接管畫面時，合成播放器「一發 seek 都不收」：它每個
-      // seek 都是 CI 整格重畫（實測 128 診斷：滑動中單格 719~
-      // 4967ms 的怪獸格），畫的東西根本沒人看——純燒 CPU 跟
-      // 引擎搶資源。放手那發（exact）照舊精準，且讓位等它完成
+      // 單一畫面：滑動的每一發都餵合成播放器（畫面就是它；
+      // 代理密關鍵幀 seek 實測 2~9ms）。引擎在台上的殘餘情境
+      // 維持舊行為
       if (MetalPreview.active && !exact) {
         // 不餵
       } else if (MetalPreview.active && exact) {
@@ -3591,6 +3586,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 預建命中時整段是同步的（不 await），這一格就亮。
   /// 組不了（平台/素材不支援）安靜退回現有路徑
   Future<void> _metalScrubBegin() async {
+    // ══ 單一畫面重作：合成播放器在場＝畫面永遠只有它一個。
+    // 引擎接管是「seek 一發 100~200ms」年代的產物；現在代理是
+    // 轉正密關鍵幀，播放器 seek 實測 2~9ms，接管只剩換手閃爍
+    // 與機制內戰（166~172 全在修這個）。整套停用 ══
+    if (_compOn) return;
     // 讓位計時器先取消：播放→暫停→立刻滑動的接縫裡，引擎
     // 正顯示停點幀，這時把它收掉會閃一下合成畫面再亮回來
     if (!_playing && MetalPreview.active) _mHideTimer?.cancel();
@@ -3625,6 +3625,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 文字/浮水印拖曳接管：拖曳中引擎出畫面（每格讀即時幾何、
   /// 60fps 跟手）；幾何停止變化 600ms 讓位回合成的烘焙路
   void _metalOvDragTakeover() {
+    // 單一畫面重作：合成在場不接管（畫面由合成器原地重畫）
+    if (_compOn) return;
     if (_playing || _playStarting || !_metalUsable || _mBuiltSig == null) {
       return;
     }

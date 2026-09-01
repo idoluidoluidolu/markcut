@@ -4778,7 +4778,8 @@ final class CompPlayer: NSObject, FlutterTexture {
     // seek 風暴，解碼器被打到交黑格（實機 165：交格亮度 0.063、
     // 源高1080）。90ms 一發夠即時；最後狀態由停穩重烘補畫
     let nowN = CACurrentMediaTime()
-    if nowN - lastNudgeAt < 0.09 {
+    // 單一畫面重作：合成器就是唯一畫面，重畫節奏放到 20fps
+    if nowN - lastNudgeAt < 0.05 {
       stNudgeDropped += 1
       return
     }
