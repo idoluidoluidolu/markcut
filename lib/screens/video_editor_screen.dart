@@ -421,7 +421,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _ovFastApplied = false;
   bool _ovSyncAgain = false;
   DateTime? _wmLastApplyAt;
-  DateTime? _xfLoopSampleAt;
   DateTime? _wmLastBakeStart;
   bool _ovPadGesture = false;
   int _wmGestureN = 0;
@@ -429,7 +428,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 全域浮水印各部件烘進 PNG 時的幾何基準（id → [x,y,size,rot]）。
   /// 現值偏離基準＝把絕對值丟給原生套差量（PNG 不重畫，跟手的關鍵）
-  Map<String, List<double>> _ovBakedGeom = const {};
   Map<String, List<double>> _ovGeomPending = const {};
 
   /// 疊加物 PNG 的快取（鍵＝內容指紋）。匯入期間每支工作檔轉好
@@ -438,11 +436,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   String _ovMapsCacheSig = '';
   List<Map<String, dynamic>> _ovMapsCache = const [];
   Map<String, List<double>> _ovGeomCache = const {};
-  String? _ovXfLastKey;
-  bool _ovXfSentAny = false;
-  int _ovXfFailNoted = 0;
   int _ovSetFails = 0;
-  DateTime _ovXfLastAt = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _ovGeomActiveAt = DateTime.fromMillisecondsSinceEpoch(0);
   Timer? _ovXfTrail;
 
@@ -1694,129 +1688,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 全域浮水印的即時幾何：現值偏離「烘進 PNG 的基準」就把絕對值
   /// 丟給原生套差量（33ms 節流＋尾發）。PNG 不重畫、合成不重建，
   /// 拖曳/縮放/旋轉全程顯示顏色正確的烘焙版
-  List<Map<String, dynamic>> _ovLiveHits(Map<String, List<double>> base) {
-    // 「所有」偏離基準的部件整包送：位置九宮格是文字＋圖片一起跳，
-    // 只送第一個的話另一個永遠不動（實測回報：點置中就是不過來）
-    final hits = <Map<String, dynamic>>[];
-    void check(String id, double x, double y, double sc, double r) {
-      final b = base[id];
-      if (b == null) return;
-      if ((b[0] - x).abs() > 1e-4 ||
-          (b[1] - y).abs() > 1e-4 ||
-          (b[2] - sc).abs() > 1e-4 ||
-          (b[3] - r).abs() > 1e-3) {
-        hits.add({'id': id, 'x': x, 'y': y, 'scale': sc, 'rot': r});
-      }
-    }
-
-    final t = _settings.text;
-    if (t.enabled && !t.tiled) check('g:t', t.x, t.y, t.sizeFrac, t.rotation);
-    for (var i = 0; i < _settings.logos.length; i++) {
-      final l = _settings.logos[i];
-      if (l.enabled && !l.tiled && l.b64 != null) {
-        check('g:l$i', l.x, l.y, l.sizeFrac, l.rotation);
-      }
-    }
-    // 素材化的浮水印/文字：同一套（最終版，全部走即時幾何）
-    for (final c in _tl.clips) {
-      if (_hiddenTracks.contains(c.track)) continue;
-      final src = _tl.sourceOf(c);
-      if (src.kind == ClipKind.text) {
-        check('c${c.id}:t', c.px, c.py, c.scale, src.textStyle?.rotation ?? 0);
-      } else if (src.kind == ClipKind.wm) {
-        final st = src.wmStyle;
-        if (st == null) continue;
-        final ct = st.text;
-        if (ct.enabled && !ct.tiled) {
-          check('c${c.id}:t', ct.x, ct.y, ct.sizeFrac, ct.rotation);
-        }
-        for (var i = 0; i < st.logos.length; i++) {
-          final l = st.logos[i];
-          if (l.enabled && !l.tiled && l.b64 != null) {
-            check('c${c.id}:l$i', l.x, l.y, l.sizeFrac, l.rotation);
-          }
-        }
-      }
-    }
-    return hits;
-  }
 
   void _liveOvSync() {
-    if (!_ovLiveOn || _ovBakedGeom.isEmpty) return;
-    final hits = _ovLiveHits(_ovBakedGeom);
-    if (hits.isEmpty) {
-      // 基準剛換（烘圖落地）而部件已歸位：清掉原生端殘留的舊差量
-      // ——留著的話會拿「舊差量×新基準」畫，尺寸跳一下
-      //（實機 160：大小拉動亂跳）
-      if (_ovXfSentAny) {
-        _ovXfSentAny = false;
-        _ovXfLastKey = null;
-        unawaited(CompPlayer.setOvXforms(const []));
-      }
-      return;
-    }
-    final key = hits
-        .map(
-          (h) =>
-              '${h['id']}|${(h['x'] as double).toStringAsFixed(4)}'
-              '|${(h['y'] as double).toStringAsFixed(4)}'
-              '|${(h['scale'] as double).toStringAsFixed(4)}'
-              '|${(h['rot'] as double).toStringAsFixed(2)}',
-        )
-        .join(';');
-    // 值沒再變就不重送、也「不」刷新活動時間戳——之前只要偏離
-    // 基準就一直刷新，停穩重烘被無限展期，部件永遠回不去
-    //（實測回報：過很久還是一樣）
-    if (key == _ovXfLastKey) return;
-    // 拖曳文字/浮水印中：讓引擎出畫面（它每格都讀這份即時幾何，
-    // 60fps 跟手），合成的逼重繪路徑退場——「改文字位置延遲」的治本
-    _metalOvDragTakeover();
-    _ovGeomActiveAt = DateTime.now();
-    if (DateTime.now().difference(_ovXfLastAt).inMilliseconds < 16) {
-      _ovXfTrail?.cancel();
-      _ovXfTrail = Timer(const Duration(milliseconds: 20), () {
-        if (mounted) _liveOvSync();
-      });
-      return;
-    }
-    _ovXfLastAt = DateTime.now();
-    _ovXfLastKey = key;
-    WmDiag.xfSends++;
-    _ovXfSentAny = true;
-    if (_wmLastApplyAt != null &&
-        DateTime.now().difference(_wmLastApplyAt!).inMilliseconds < 200) {
-      WmDiag.xfAfterBake++;
-      // 採樣：把漂移的欄位印進事件流（2 秒最多一筆，抓現行用）
-      if (_xfLoopSampleAt == null ||
-          DateTime.now().difference(_xfLoopSampleAt!).inMilliseconds > 2000) {
-        _xfLoopSampleAt = DateTime.now();
-        final h = hits.first;
-        final b0 = _ovBakedGeom[h['id']];
-        Diag.ev(
-          '基準循環樣本 ${h['id']}: '
-          '基準=${b0?.map((v) => v.toStringAsFixed(4)).join(',')} '
-          '現值=${(h['x'] as double).toStringAsFixed(4)},'
-          '${(h['y'] as double).toStringAsFixed(4)},'
-          '${(h['scale'] as double).toStringAsFixed(4)},'
-          '${(h['rot'] as double).toStringAsFixed(2)}',
-        );
-      }
-    }
-    unawaited(
-      CompPlayer.setOvXforms(hits, noNudge: MetalPreview.active).then((ok) {
-        if (ok || !mounted) return;
-        WmDiag.xfRejects++;
-        // 原生拒收（wmLive 對不上/合成剛換手）：不能靜默，也不能
-        // 讓畫面跟框分家——立刻改走整包重烘，位置照樣會到
-        if (_ovXfFailNoted < 3) {
-          _ovXfFailNoted++;
-          Diag.note('即時幾何被拒收，改走整包重烘（第 $_ovXfFailNoted 次）');
-        }
-        _ovGeomActiveAt = DateTime.fromMillisecondsSinceEpoch(0);
-        _ovXfLastKey = null;
-        _scheduleOvSync();
-      }),
-    );
+    // ══ 重建（單通道）：幾何變化跟樣式變化走同一條路——排一次
+    // 重烘（12fps、同包、最新版直上）。舊的「獨立差量通道」拆除：
+    // 兩條通道的時序競賽（爆閃/基準循環/中途翻面）從此沒有載體
+    if (!_ovLiveOn) return;
+    _scheduleOvSync();
   }
 
   /// 把疊加物同步到原生端（重畫 PNG → setOverlays → 精準 seek
@@ -1880,10 +1758,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         return;
       }
       final wmT1 = DateTime.now();
-      // 差量跟這次烘圖的新基準綁同一包，原生一次套用（治拉動爆閃）
-      final liveNow = sig == 'empty'
-          ? const <Map<String, dynamic>>[]
-          : _ovLiveHits(_ovGeomPending);
+      // 單通道重建：不再有差量——每包附空差量清單，原子清掉
+      // 原生端任何殘留（幾何已烘在圖裡）
+      const liveNow = <Map<String, dynamic>>[];
       if (!await CompPlayer.setOverlays(
         maps,
         live: liveNow,
@@ -1945,11 +1822,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (stale) _ovSyncAgain = true;
       if (fast && !stale) _scheduleOvSync(); // 停穩後補全解析
 
-      _ovBakedGeom = _ovGeomPending; // 即時幾何的差量基準跟著換
-      // 差量已跟這次烘圖綁包送達（liveNow）；清 key 讓下一次
-      // 拖曳事件照常重送
-      _ovXfLastKey = null;
-      _ovXfSentAny = liveNow.isNotEmpty;
       final shown = maps.isNotEmpty;
       _ovNativePending = shown; // 之後的 compVisible 不要把它翻回去
       if (mounted && _ovNativeShown != shown) {
@@ -3647,32 +3519,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 文字/浮水印拖曳接管：拖曳中引擎出畫面（每格讀即時幾何、
   /// 60fps 跟手）；幾何停止變化 600ms 讓位回合成的烘焙路
   void _metalOvDragTakeover() {
-    // 單一畫面重作：合成在場不接管（畫面由合成器原地重畫）
-    if (_compOn) return;
-    if (_playing || _playStarting || !_metalUsable || _mBuiltSig == null) {
-      return;
-    }
-    _mOvIdleTimer?.cancel();
-    _mOvIdleTimer = Timer(
-      const Duration(milliseconds: 1500),
-      _metalScrubEnd,
-    );
-    if (MetalPreview.active) return;
-    _mHideTimer?.cancel();
-    // 就緒才上台（黑畫布比延遲糟糕）：拖曳中每個事件都會再試
-    unawaited(
-      MetalPreview.seek(_position).then((_) async {
-        if (!await MetalPreview.ready(_position)) {
-          Diag.ev('接管:紋理沒就緒（下個事件再試）');
-          return;
-        }
-        if (!mounted || _playing || MetalPreview.active) return;
-        MetalPreview.active = true;
-        Diag.ev('引擎上台（拖曳/樣式接管）');
-        unawaited(MetalPreview.show(true));
-        setState(() {});
-      }),
-    );
+    // 重建後為空：畫面永遠是合成播放器，拖曳由重烘直線更新
   }
 
   /// 滑動停手：常駐佈局引擎不讓位（它就是畫面）；
@@ -6861,7 +6708,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 回報 compVisible（新畫面真的上檔）才切；保底計時器對齊
     // 原生換手的 1.5 秒逾時
     _lastOvSig = made.wmLive ? ovSigAtBuild : 'off';
-    _ovBakedGeom = made.wmLive ? _ovGeomPending : const {};
     _ovNativePending = made.wmLive && ovMaps.isNotEmpty;
     // 新合成烘的就是現在的變形值：即時變形的基準重取
     _xfLastSent = null;
