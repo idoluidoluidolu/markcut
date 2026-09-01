@@ -38,6 +38,16 @@ class Diag {
 
   static final Map<String, int> _counts = {};
   static final List<String> _notes = [];
+
+  /// 互動事件流：毫秒級時間線（上下台/換件/重建/斷流/卡格），
+  /// 使用者不用口述，報告自己講「幾秒幾毫秒發生了什麼」
+  static final List<String> _evs = [];
+  static final _evT0 = DateTime.now();
+  static void ev(String msg) {
+    final t = DateTime.now().difference(_evT0).inMilliseconds;
+    _evs.add('${(t / 1000).toStringAsFixed(2)}s  $msg');
+    if (_evs.length > 90) _evs.removeAt(0);
+  }
   static Timer? _sampler;
 
   /// 上次執行沒有正常結束時留下的現場（開 App 時讀一次）
@@ -173,6 +183,8 @@ class Diag {
         final r = t.rasterDuration.inMilliseconds;
         if (b > _budgetMs) jankBuild++;
         if (r > _budgetMs) jankRaster++;
+        if (b > 120) ev('UI卡 ${b}ms');
+        if (r > 120) ev('合成執行緒卡 ${r}ms');
         if (b > worstBuildMs) worstBuildMs = b;
         if (r > worstRasterMs) worstRasterMs = r;
       }
@@ -408,6 +420,7 @@ class Diag {
   static void reset() {
     _counts.clear();
     _notes.clear();
+    _evs.clear();
     peakMb = 0;
     frames = jankBuild = jankRaster = worstBuildMs = worstRasterMs = 0;
     playSamples = playStalls = worstStallMs = 0;
@@ -458,6 +471,12 @@ class Diag {
     }
     final wm = WmDiag.section();
     if (wm.isNotEmpty) b.write(wm);
+    if (_evs.isNotEmpty) {
+      b.writeln('--- 互動事件流（進場起算，最後 ${_evs.length} 筆）---');
+      for (final e in _evs) {
+        b.writeln('  $e');
+      }
+    }
     if (_counts.isNotEmpty) {
       b.writeln('--- 計數 ---');
       _counts.forEach((k, v) => b.writeln('  $k：$v'));

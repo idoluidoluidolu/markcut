@@ -4769,6 +4769,9 @@ final class CompPlayer: NSObject, FlutterTexture {
   private var nudging = false
   private var nudgePending = false
   private var lastNudgeAt = 0.0
+  var stNudgeFired = 0
+  var stNudgeDropped = 0
+  var stItemSwaps = 0
 
   func nudgeRedrawIfPaused() {
     guard player.rate == 0 else { return }
@@ -4776,8 +4779,12 @@ final class CompPlayer: NSObject, FlutterTexture {
     // seek 風暴，解碼器被打到交黑格（實機 165：交格亮度 0.063、
     // 源高1080）。90ms 一發夠即時；最後狀態由停穩重烘補畫
     let nowN = CACurrentMediaTime()
-    if nowN - lastNudgeAt < 0.09 { return }
+    if nowN - lastNudgeAt < 0.09 {
+      stNudgeDropped += 1
+      return
+    }
     lastNudgeAt = nowN
+    stNudgeFired += 1
     if seeking || seekTarget.isValid { return }
     if nudging {
       nudgePending = true
@@ -6289,6 +6296,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     if !seekMs.isEmpty {
       let sorted = seekMs.sorted()
       m["seekCount"] = seekMs.count
+      m["nudgeInfo"] = "\(stNudgeFired)發/丟\(stNudgeDropped)/換件\(stItemSwaps)次"
       m["seekAvgMs"] = seekMs.reduce(0, +) / seekMs.count
       m["seekP50Ms"] = sorted[sorted.count / 2]
       m["seekP90Ms"] = sorted[min(sorted.count - 1, sorted.count * 9 / 10)]
@@ -6429,6 +6437,7 @@ final class MetalPump {
     // 本地密關鍵幀檔不需要「防斷流等待」——留著的話起播先緩衝
     // 幾秒才動（實測 build 130：「按播放先卡頓幾秒後面才順」）
     player.automaticallyWaitsToMinimizeStalling = false
+    stItemSwaps += 1
     player.replaceCurrentItem(with: item)
   }
 

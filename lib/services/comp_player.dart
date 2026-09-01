@@ -790,6 +790,7 @@ class CompPlayer {
       }
       if (n != null) {
         b.write(
+          '\n  催重畫：${m['nudgeInfo'] ?? '—'}'
           '\n  拖曳 seek：$n 發／平均 ${m['seekAvgMs']}ms'
           '／一半在 ${m['seekP50Ms']}ms 內／九成在 ${m['seekP90Ms']}ms 內'
           '／最久 ${m['seekMaxMs']}ms／被合併掉 ${m['seekCoalesced']} 發',

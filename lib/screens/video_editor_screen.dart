@@ -420,6 +420,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   DateTime _ovChangeAt = DateTime.fromMillisecondsSinceEpoch(0);
   bool _ovFastApplied = false;
   bool _ovSyncAgain = false;
+  DateTime? _wmLastApplyAt;
+  int _wmGestureN = 0;
+  Timer? _wmGestureTimer;
 
   /// 全域浮水印各部件烘進 PNG 時的幾何基準（id → [x,y,size,rot]）。
   /// 現值偏離基準＝把絕對值丟給原生套差量（PNG 不重畫，跟手的關鍵）
@@ -1880,6 +1883,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           return a + (d is List<int> ? d.length : 0);
         }),
       );
+      // 上屏斷流偵測：拖動中兩次上屏間隔 >250ms＝使用者看到的
+      // 「頓一下」，直接記進事件流（不用口述）
+      final nowAp = DateTime.now();
+      if (fast && _wmLastApplyAt != null) {
+        final gap = nowAp.difference(_wmLastApplyAt!).inMilliseconds;
+        if (gap > 250) Diag.ev('樣式上屏斷流 ${gap}ms');
+      }
+      _wmLastApplyAt = nowAp;
+      if (fast) {
+        _wmGestureN++;
+        _wmGestureTimer?.cancel();
+        _wmGestureTimer = Timer(const Duration(milliseconds: 700), () {
+          if (_wmGestureN > 2) {
+            Diag.ev('樣式手勢結束：共 $_wmGestureN 版上屏');
+          }
+          _wmGestureN = 0;
+        });
+      }
       if (stale) WmDiag.stale++;
       if (stale) _ovSyncAgain = true;
       if (fast && !stale) _scheduleOvSync(); // 停穩後補全解析
@@ -3481,6 +3502,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 原本只認時間軸滑動、不認浮水印拖曳，每一格都把引擎踢下
       // 台、下一個拖曳事件又推上來——上下台打架＝螢幕抖動
       //（實機 162：上下台「上1.7 下1.7」連環）
+      Diag.ev('引擎讓位（閒置自動）');
       unawaited(_comp?.seek(_position, exact: true));
       _metalHideNow();
       setState(() {});
@@ -3597,9 +3619,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 就緒才上台（黑畫布比延遲糟糕）：拖曳中每個事件都會再試
     unawaited(
       MetalPreview.seek(_position).then((_) async {
-        if (!await MetalPreview.ready(_position)) return;
+        if (!await MetalPreview.ready(_position)) {
+          Diag.ev('接管:紋理沒就緒（下個事件再試）');
+          return;
+        }
         if (!mounted || _playing || MetalPreview.active) return;
         MetalPreview.active = true;
+        Diag.ev('引擎上台（拖曳/樣式接管）');
         unawaited(MetalPreview.show(true));
         setState(() {});
       }),
@@ -3615,6 +3641,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _mHideTimer = Timer(const Duration(milliseconds: 300), () async {
       // 下台前先把「現在這一格」畫新鮮：引擎蓋著的期間合成器被
       // noNudge 停更，直接下台會露出舊格/黑格（實機 165）
+      Diag.ev('引擎讓位（互動結束）：先補新鮮一格');
       await (_comp?.seek(_position, exact: true) ?? Future<void>.value());
       if (!mounted) return;
       MetalPreview.active = false;
@@ -6680,6 +6707,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void>? _compBuilding;
 
   Future<void> _ensureComp() async {
+    Diag.ev('合成重建開始');
     while (_compBuilding != null) {
       await _compBuilding;
     }
