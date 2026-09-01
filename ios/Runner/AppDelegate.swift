@@ -775,6 +775,9 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   /// 就是使用者看到的「接縫閃黑」。缺格就重播上一格頂住，
   /// 解碼器下一格就追上了
   private var lastComposed: CIImage?
+  /// 缺格重播用的底（含馬賽克、不含疊加物）：重播整格會把「舊樣式
+  /// 的浮水印」帶回螢幕＝拖滑桿時新→舊→新閃爍（獨立審查 #2 定罪）
+  private var lastComposedBase: CIImage?
   private lazy var outCS: CGColorSpace = {
     if hdrOut, #available(iOS 14.0, *),
       let hlg = CGColorSpace(name: CGColorSpace.itur_2100_HLG)
@@ -822,7 +825,10 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   func renderContextChanged(_ newContext: AVVideoCompositionRenderContext) {
     // 渲染環境換了（理論上一個 item 一生只有一次）：上一格的緩衝
     // 尺寸可能對不上了，別再重播它
-    queue.async { self.lastComposed = nil }
+    queue.async {
+      self.lastComposed = nil
+      self.lastComposedBase = nil
+    }
   }
   func cancelAllPendingVideoCompositionRequests() {}
 
@@ -1348,10 +1354,12 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           drawnCount += 1
         }
         let tinyGap =
-          ins.layers.isEmpty && ins.holdIfEmpty && self.lastComposed != nil
-        if missing || tinyGap, let held = self.lastComposed {
-          // 邊界缺格或極短空窗：上一格原封重播（已含馬賽克與疊加物）
-          out = held
+          ins.layers.isEmpty && ins.holdIfEmpty
+          && self.lastComposedBase != nil
+        if missing || tinyGap, let heldB = self.lastComposedBase {
+          // 邊界缺格或極短空窗：重播「不含疊加物」的底，疊加物
+          // 照當下清單往下重畫——重播整格＝舊樣式浮水印回魂
+          out = heldB
           Self.slowLock.lock()
           if missing {
             Self.holdMissCount += 1
@@ -1364,6 +1372,10 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             out = self.applyMosaic(activeMz[mzIdx], to: out, canvas: size)
             mzIdx += 1
           }
+          // 底（馬賽克後、疊加物前）留給缺格重播
+          self.lastComposedBase = out
+        }
+        do {
           let ovs =
             self.livePreview
             ? CIExportCompositor.currentPreviewOverlays() : ins.overlays
@@ -1438,6 +1450,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             }
           }
         }
+        // （上：疊加物區塊——缺格重播也會走到，樣式永遠是當下版）
         self.ctx.render(out, to: dst, bounds: canvasRect, colorSpace: self.outCS)
         if !missing && !tinyGap {
           // 引用的是我們自己的輸出緩衝（不是解碼器的），
@@ -4788,7 +4801,9 @@ final class CompPlayer: NSObject, FlutterTexture {
     }
     nudging = true
     nudgeFlip.toggle()
-    let eps = CMTime(value: nudgeFlip ? 1 : -1, timescale: 600)
+    // 只往前擺（+1/600 與 +2/600 交替）：± 擺在不巧的停點會跨到
+    // 上一格，整片影像每版前後跳一格（獨立審查 #3）
+    let eps = CMTime(value: nudgeFlip ? 1 : 2, timescale: 600)
     var t = player.currentTime() + eps
     if t < .zero { t = CMTime(value: 1, timescale: 600) }
     player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) {
@@ -6082,9 +6097,13 @@ final class CompPlayer: NSObject, FlutterTexture {
         if self.seekTarget.isValid {
           self.chase()  // 手指又動了，追過去
         } else if self.player.rate == 0,
-          self.player.currentItem?.status == .readyToPlay
+          self.player.currentItem?.status == .readyToPlay,
+          CACurrentMediaTime() - self.lastNudgeAt > 0.5
         {
-          // 停下來了：把管線熱著，下次按播放就不用等
+          // 停下來了：把管線熱著，下次按播放就不用等。
+          // 疊加物驅動的重畫（拖滑桿中）後「不」預捲——每版一次
+          // 預捲＝對暫停中的 10-bit 檔連環開工又取消，解碼器被
+          // 餓死（獨立審查 #1）
           self.player.preroll(atRate: self.targetRate, completionHandler: nil)
         }
       }

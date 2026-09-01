@@ -1717,7 +1717,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final fast =
         !full &&
         sig != 'empty' &&
-        DateTime.now().difference(_ovChangeAt).inMilliseconds < 400;
+        DateTime.now().difference(_ovChangeAt).inMilliseconds < 700;
     if (sig == _lastOvSig && _ovFastApplied && fast) {
       _scheduleOvSync(); // 還在拖但內容沒變：等停穩再補全解析
       WmDiag.skipHold++;
@@ -1827,9 +1827,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (mounted && _ovNativeShown != shown) {
         setState(() => _ovNativeShown = shown);
       }
-      if (!_playing && !full && !MetalPreview.active) {
-        await _comp?.seek(_position, exact: true);
-      }
+      // （原生 setOverlays 的催重畫已涵蓋暫停重繪且有節流；這裡
+      // 原本還補一發精準 seek＝每版兩發 seek 轟暫停中的解碼器，
+      // 獨立審查 #1 定罪後拆除）
     } finally {
       _ovSyncBusy = false;
       if (_ovSyncAgain && mounted) {
@@ -6708,6 +6708,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 回報 compVisible（新畫面真的上檔）才切；保底計時器對齊
     // 原生換手的 1.5 秒逾時
     _lastOvSig = made.wmLive ? ovSigAtBuild : 'off';
+    // 重建期間使用者若又改了樣式，原生清單被建置快照蓋回舊版——
+    // 補排一次同步追回最新（獨立審查 #5）
+    _scheduleOvSync();
     _ovNativePending = made.wmLive && ovMaps.isNotEmpty;
     // 新合成烘的就是現在的變形值：即時變形的基準重取
     _xfLastSent = null;
