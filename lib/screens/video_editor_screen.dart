@@ -6801,6 +6801,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       '合成播放器就緒：${made.duration.toStringAsFixed(1)} 秒'
       '（CI ${made.ciOn ? '開' : '關'}／HDR ${made.hdrIn ? '有' : '無'}）',
     );
+    // 轉向偵測：就緒事件帶畫布尺寸——比例翻掉的那一次重建，
+    // 事件流會直接顯示 900x1600 → 1600x900 之類的翻轉
+    Diag.ev('合成就緒 ${made.width}x${made.height}'
+        '（CI ${made.ciOn ? '開' : '關'}）');
     // 這一版烘的就是現在的值，指紋一起同步（馬賽克那份給
     // _compMosaicStale 判空窗用）
     _lastCompSig = _compSig();

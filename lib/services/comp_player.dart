@@ -753,6 +753,12 @@ class CompPlayer {
         if (bi['軌道段'] != null) {
           b.write('\n  軌道段：${bi['軌道段']}');
         }
+        if (m['trackGeo'] != null) {
+          b.write(
+            '\n  軌道幾何：${m['trackGeo']}'
+            '／合成畫布 ${m['canvasWH'] ?? '?'}',
+          );
+        }
       }
       b.write('／狀態 ${m['timeControl'] ?? '?'}');
       if (m['waiting'] != null) b.write('（在等：${m['waiting']}）');

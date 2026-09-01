@@ -6251,6 +6251,18 @@ final class CompPlayer: NSObject, FlutterTexture {
     m["ciSlow"] = CIExportCompositor.slowFrames
     m["ciSupplyWorst"] = CIExportCompositor.worstSupplyMs
     m["ciSupplyGaps"] = CIExportCompositor.supplyGaps
+    if let comp = composition {
+      // 轉向/比例跑掉定位：軌道的原生尺寸與變換角度。轉正代理
+      // 應為 identity（0°）；出現 90°/270°＝雙重旋轉現行犯
+      m["trackGeo"] = comp.tracks(withMediaType: .video).map { t -> String in
+        let n = t.naturalSize
+        let x = t.preferredTransform
+        let ang = Int((atan2(Double(x.b), Double(x.a)) * 180 / .pi).rounded())
+        return "\(Int(n.width))x\(Int(n.height))@\(ang)°"
+      }.joined(separator: "、")
+      m["canvasWH"] =
+        "\(Int(ciCanvas.width))x\(Int(ciCanvas.height))"
+    }
     m["ciBurst"] = CIExportCompositor.burstGaps
       .map(String.init).joined(separator: ",")
     m["ciMiss"] = CIExportCompositor.missTotal
