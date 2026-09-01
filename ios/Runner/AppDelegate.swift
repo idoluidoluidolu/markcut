@@ -7987,13 +7987,15 @@ final class MetalPreviewEngine: NSObject {
     } else if !seekSettled,
       CACurrentMediaTime() - lastSeekHost > 0.15
     {
-      // 手停了：補精確幀（滑動中全是關鍵幀貼齊的粗略幀），
-      // 播放佇列同步 prime 到新位置——之後按播放即刻起
+      // 手停了：pump 補一發精確幀當保底就好。
+      // 不再 force 重啟解碼佇列——滑動的佇列本來就停在這個位置，
+      // 重啟＝正在顯示的供格鏈被砍斷 50~200ms＝「拉一拉停住會
+      // 卡住讀取」（實機 162 回報）。播放已交還系統播放器，
+      // 這裡的佇列不需要為起播預熱（舊架構遺物）
       seekSettled = true
       for sp in layers where sp.offset <= curT && curT < sp.end {
         pumpFor(sp).want(sp.trimStart + (curT - sp.offset) * sp.speed)
       }
-      syncReaders(curT, force: true)
     }
     let ep = CIExportCompositor.liveEpoch &+ layoutEpoch
     // GIF 動畫是時變內容：有它在台上就不能靜止降頻（會凍住）
