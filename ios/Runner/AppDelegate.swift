@@ -2213,7 +2213,11 @@ final class AtomicFlag {
         // 暫停中換清單要逼播放器重畫這一格：光 seek 回同一個時間點
         // 會被當 no-op（實測回報：打字改浮水印、預覽完全不動）。
         // CI 掛著＝擺動半格催重畫就夠；沒掛才重產 vc
-        if p.liveCIOn {
+        if (call.arguments as? [String: Any])?["noNudge"] as? Bool == true {
+          // 引擎在台上顯示中：不催合成器重畫——催一次＝重解一格
+          // 4K HDR 原檔（50~150ms），拖滑桿每秒催十幾次＝卡頓閃動
+          //（實機 163：調樣式螢幕暗掉）
+        } else if p.liveCIOn {
           p.nudgeRedrawIfPaused()
         } else if p.player.rate == 0 {
           _ = p.applyXform(nil)
@@ -7799,7 +7803,10 @@ final class MetalPreviewEngine: NSObject {
             let now = CACurrentMediaTime()
             let shown = r!.lastShown
             let buffered = r!.bufferedTo
-            let behind = shown >= 0 && want < shown - 0.05
+            // 倒退門檻放寬：來回滑動的小幅反向若都觸發重啟，
+            // 每次反向就是 100~200ms 空窗（實機 163：來回滑會卡住）。
+            // 小倒退讓 pump 關鍵幀頂著，真的往回拖才重啟
+            let behind = shown >= 0 && want < shown - 0.2
             // 順向超前不急著重啟：順序解碼追 1~2 秒只要 ~100ms 而且
             // 沿路有畫面；重啟反而是 100~200ms 空窗。跳太遠才重啟
             let ahead = buffered >= 0 && want > buffered + 2.5

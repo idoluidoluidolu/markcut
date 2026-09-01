@@ -559,11 +559,13 @@ class CompPlayer {
   static Future<bool> setOverlays(
     List<Map<String, dynamic>> overlays, {
     List<Map<String, dynamic>>? live,
+    bool noNudge = false,
   }) async {
     try {
       return await _ch.invokeMethod<bool>('setOverlays', {
             'overlays': overlays,
             'live': ?live,
+            'noNudge': noNudge,
           }) ??
           false;
     } catch (_) {

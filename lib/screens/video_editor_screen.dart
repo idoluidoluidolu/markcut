@@ -1813,6 +1813,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _scheduleOvSync();
       return;
     }
+    // 樣式拖動＝讓引擎上台顯示（60fps、不催合成器）：合成器路每
+    // 換一版就要重解一格 4K 原檔（50~150ms）＝調樣式卡頓閃動暗掉
+    //（實機 163）。引擎有就緒檢查＋首格護持，上台不閃
+    if (fast && !_playing && !MetalPreview.active) _metalOvDragTakeover();
     _ovSyncBusy = true;
     final wmT0 = DateTime.now();
     try {
@@ -1839,7 +1843,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final liveNow = sig == 'empty'
           ? const <Map<String, dynamic>>[]
           : _ovLiveHits(_ovGeomPending);
-      if (!await CompPlayer.setOverlays(maps, live: liveNow)) {
+      if (!await CompPlayer.setOverlays(
+        maps,
+        live: liveNow,
+        noNudge: MetalPreview.active,
+      )) {
         WmDiag.rejects++;
         // 原生拒收＝這份合成的 wmLive 跟 Dart 認知走鐘了。連三次
         // 就整組重組自救，不能讓浮水印卡在舊位置（實測回報：
@@ -1886,7 +1894,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (mounted && _ovNativeShown != shown) {
         setState(() => _ovNativeShown = shown);
       }
-      if (!_playing && !full) await _comp?.seek(_position, exact: true);
+      if (!_playing && !full && !MetalPreview.active) {
+        await _comp?.seek(_position, exact: true);
+      }
     } finally {
       _ovSyncBusy = false;
       if (_ovSyncAgain && mounted) {
@@ -2303,9 +2313,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _tabs.addListener(() {
       if (!mounted || _tabs.indexIsChanging) return;
       if (_tabs.index != 1) {
-        _compDirty = true;
-        unawaited(_ensureComp());
-        unawaited(_syncPreviewOverlays());
+        // 152 時代的「離開分頁烘回」強制重建已無必要（疊圖全即時，
+        // 合成指紋本來就不含浮水印內容）——留著＝每次切分頁播放器
+        // 換件、畫面暗一下、引擎被拆下台（實機 163：上下台連環）
+        _compRefreshIfChanged();
+        unawaited(_syncPreviewOverlays(full: true));
       }
       setState(() {});
     });
@@ -3463,7 +3475,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     } else if (!_mResident &&
         MetalPreview.active &&
         !_scrubbing &&
-        DateTime.now().difference(_ovGeomActiveAt).inMilliseconds > 600) {
+        DateTime.now().difference(_ovGeomActiveAt).inMilliseconds > 600 &&
+        DateTime.now().difference(_ovChangeAt).inMilliseconds > 600) {
       // 讓位要等互動真的結束：拖浮水印時接管把引擎推上台，這裡
       // 原本只認時間軸滑動、不認浮水印拖曳，每一格都把引擎踢下
       // 台、下一個拖曳事件又推上來——上下台打架＝螢幕抖動
