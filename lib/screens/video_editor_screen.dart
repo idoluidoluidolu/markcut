@@ -43,7 +43,6 @@ import '../services/watermark_renderer.dart';
 import '../services/text_mark_painter.dart';
 import '../services/work_files.dart';
 import '../theme.dart';
-import 'playback_test_screen.dart';
 import '../widgets/color_grade_panel.dart';
 import '../widgets/kaomoji_sheet.dart';
 import '../widgets/timeline_editor.dart';
@@ -6471,120 +6470,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 不做 setState：位置相關 UI 由 _posVN 各自小範圍重繪
   }
 
-  /// 自動排查：依序把每個可疑的東西關掉各播一輪，最後直接說是哪個。
-  ///
-  /// 一輪一個假設地問使用者，一次來回就是一天。這裡把四種設定一次跑完，
-  /// 每一輪都在同一支專案、同一段時間上量同一組數字，最後比出來——
-  /// 唯一可靠的比較方式是「同一支手機、同一個當下、只差一個變因」
-  bool _selfTesting = false;
-
-  /// 上一次自動排查的結論（複製報告時一起帶出去）
-  String? _selfTestResult;
-
-  Future<String> _runSelfTest() async {
-    if (_tl.clips.isEmpty) return '時間軸是空的，先放點素材再測';
-    final was = (
-      Diag.preheat.value,
-      Diag.driftFix.value,
-      Diag.scrubPrefetch.value,
-      Diag.singlePlayer.value,
-    );
-    _selfTesting = true;
-    await Diag.readDeviceState();
-
-    // 每一輪播幾秒：太短量不到交界，太長使用者會等到不耐煩
-    final dur = math.min(8.0, math.max(3.0, _tl.duration));
-    final rounds =
-        <({String name, bool pre, bool drift, bool fetch, bool single})>[
-          (name: '現況（全開）', pre: true, drift: true, fetch: true, single: false),
-          (name: '關掉交界預熱', pre: false, drift: true, fetch: true, single: false),
-          (name: '關掉脫節校正', pre: true, drift: false, fetch: true, single: false),
-          (name: '三個都關', pre: false, drift: false, fetch: false, single: false),
-          (
-            name: '只養一顆播放器',
-            pre: false,
-            drift: false,
-            fetch: false,
-            single: true,
-          ),
-        ];
-    final results =
-        <({String name, int stalls, int samples, int jankB, int jankR})>[];
-
-    for (final r in rounds) {
-      Diag.preheat.value = r.pre;
-      Diag.driftFix.value = r.drift;
-      Diag.scrubPrefetch.value = r.fetch;
-      Diag.singlePlayer.value = r.single;
-      _pause();
-      setState(() => _position = 0);
-      await Future<void>.delayed(const Duration(milliseconds: 600));
-      final before = Diag.snapshot();
-      await _play();
-      await Future<void>.delayed(Duration(milliseconds: (dur * 1000).round()));
-      _pause();
-      final d = Diag.since(before);
-      results.add((
-        name: r.name,
-        stalls: d.stalls,
-        samples: d.samples,
-        jankB: d.jankB,
-        jankR: d.jankR,
-      ));
-      await Future<void>.delayed(const Duration(milliseconds: 400));
-    }
-
-    Diag.preheat.value = was.$1;
-    Diag.driftFix.value = was.$2;
-    Diag.scrubPrefetch.value = was.$3;
-    Diag.singlePlayer.value = was.$4;
-    _selfTesting = false;
-    if (!mounted) return '（已離開畫面）';
-    setState(() => _position = 0);
-
-    // 結論：拿「影格落後的比例」比，比不出來就看是不是整台機器都在慢
-    final b = StringBuffer()..writeln('=== 自動排查 ===');
-    b.writeln('每輪播 ${dur.toStringAsFixed(0)} 秒，同一段素材');
-    double rate(
-      ({String name, int stalls, int samples, int jankB, int jankR}) r,
-    ) => r.samples == 0 ? 0 : r.stalls / r.samples;
-    for (final r in results) {
-      b.writeln(
-        '  ${r.name}：影格落後 ${r.stalls}/${r.samples} 次'
-        '（${(rate(r) * 100).round()}%）'
-        '／UI 超時 ${r.jankB}／合成超時 ${r.jankR}',
-      );
-    }
-    final base = results.first;
-    final best = results.reduce((a, c) => rate(c) < rate(a) ? c : a);
-    b.writeln('--- 結論 ---');
-    if (base.samples == 0) {
-      b.writeln('沒量到東西（可能太短或沒播起來），再測一次');
-    } else if (rate(base) < 0.08) {
-      b.writeln(
-        '這一輪播放本身是順的（落後 ${(rate(base) * 100).round()}%）。'
-        '如果你看畫面還是覺得卡，那不是影格沒送上來的問題，'
-        '請連同「裝置狀態」與「畫面」兩段一起回報',
-      );
-    } else if (identical(best, base) || rate(best) > rate(base) * 0.6) {
-      b.writeln(
-        '關掉哪一個都沒有明顯變好（最好的一輪還有 '
-        '${(rate(best) * 100).round()}%）——'
-        '問題不在這三個機制，而在播放引擎或裝置本身。'
-        '${Diag.thermal.contains('過熱') ? '注意：裝置正在過熱降頻，先讓它涼下來再測一次。' : ''}'
-        '下一步請用診斷面板裡的「純播放測試」比原檔與工作檔',
-      );
-    } else {
-      b.writeln(
-        '「${best.name}」明顯比較順（'
-        '${(rate(base) * 100).round()}% → ${(rate(best) * 100).round()}%），'
-        '元凶就是被關掉的那個機制',
-      );
-    }
-    _selfTestResult = b.toString();
-    return _selfTestResult!;
-  }
-
   // ===== 合成播放器 =====
   //
   // 整條時間軸組成一份 AVComposition 交給系統的一顆播放器。條件不符
@@ -7308,135 +7193,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              SwitchListTile(
-                value: tr.enabled,
-                onChanged: (v) => setSheet(() {
-                  tr.enabled = v;
-                  if (v) tr.clear();
-                }),
-                title: const Text('記錄播放診斷'),
-                subtitle: const Text('打開後按播放跑一次，再回來看'),
-              ),
-              // 一鍵自動排查：四種設定各播一輪，直接說是哪個。
-              // 一輪一個假設地問使用者，一次來回就是一天
-              ListTile(
-                leading: _selfTesting
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: kAmber,
-                        ),
-                      )
-                    : const Icon(Icons.troubleshoot, color: kAmber),
-                title: Text(_selfTesting ? '排查中…請不要離開這一頁' : '一鍵自動排查'),
-                subtitle: const Text('四種設定各播一輪，直接告訴你是哪個機制'),
-                enabled: !_selfTesting,
-                onTap: () async {
-                  setSheet(() => _selfTesting = true);
-                  final r = await _runSelfTest();
-                  if (!context.mounted) return;
-                  setSheet(() {});
-                  await showDialog<void>(
-                    context: context,
-                    builder: (context) => AlertDialog(
-                      title: const Text('排查結果'),
-                      content: SingleChildScrollView(
-                        child: Text(
-                          r,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            height: 1.5,
-                            fontFamily: 'monospace',
-                          ),
-                        ),
-                      ),
-                      actions: [
-                        TextButton(
-                          onPressed: () {
-                            Clipboard.setData(ClipboardData(text: r));
-                            Navigator.pop(context);
-                          },
-                          child: const Text('複製'),
-                        ),
-                        TextButton(
-                          onPressed: () => Navigator.pop(context),
-                          child: const Text('關閉'),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-              const Divider(height: 1),
-              // 現場實驗開關：關掉一個東西再播一次，卡頓有沒有消失
-              // 當場就知道，不用等下一版
-              for (final t in [
-                (
-                  '交界預熱（多開一顆播放器）',
-                  '關掉試試：iOS 上兩顆 AVPlayer 同時解碼可能就是那個頓',
-                  Diag.preheat,
-                ),
-                ('脫節校正（播放中自動 seek）', '舊路徑專用，引擎模式下本來就不跑——不用動它', Diag.driftFix),
-                ('背景抽幀', '舊機制，引擎模式下已自動停用——不用動它', Diag.scrubPrefetch),
-                ('GPU 匯出合成', '浮水印在 GPU 上逐格疊（快）。成品有異狀時關掉退回舊路徑', Diag.ciExport),
-                (
-                  '只養一顆播放器',
-                  '打開試試：三顆 AVPlayer 一起養，系統會在它們之間排隊',
-                  Diag.singlePlayer,
-                ),
-                (
-                  '⚠ 合成播放器【引擎地基，請保持開】',
-                  '關掉＝Metal 引擎整個停擺，退回一片段一顆播放器的上古路徑'
-                      '（交界必卡）。它不是舊機制，是新架構的地基',
-                  Diag.compPlayer,
-                ),
-                (
-                  '⚠ 系統影片圖層【引擎地基，請保持開】',
-                  '關掉＝影格多複製一份進 Flutter 材質（慢）。跟上面一樣是地基',
-                  Diag.playerLayer,
-                ),
-              ])
-                SwitchListTile(
-                  value: t.$3.value,
-                  onChanged: (v) {
-                    setSheet(() => t.$3.value = v);
-                    // 圖層開關也要重組：材質那份是在組的時候決定要不要
-                    // 出的，切了不重組等於什麼都沒變
-                    if (identical(t.$3, Diag.compPlayer) ||
-                        identical(t.$3, Diag.playerLayer)) {
-                      _pause();
-                      _compDirty = true;
-                      unawaited(_ensureComp());
-                    }
-                  },
-                  title: Text(t.$1, style: const TextStyle(fontSize: 13.5)),
-                  subtitle: Text(
-                    t.$2,
-                    style: const TextStyle(fontSize: 11, color: kTextDim),
-                  ),
-                  dense: true,
-                ),
-              const Divider(height: 1),
-              // 同一支影片裸播一次：沒有時間軸、沒有 ticker、沒有圖層。
-              // 這裡順而編輯器卡＝編輯器的問題；這裡也卡＝引擎或裝置。
-              // 進去還能切「原檔／工作檔」再比一次，範圍一次縮到最小
-              ListTile(
-                leading: const Icon(Icons.play_circle_outline, color: kAmber),
-                title: const Text('純播放測試'),
-                subtitle: const Text('裸播一支影片，比對原檔與工作檔'),
-                onTap: () {
-                  Navigator.pop(context);
-                  Navigator.push(
-                    this.context,
-                    MaterialPageRoute(
-                      builder: (_) => const PlaybackTestScreen(),
-                    ),
-                  );
-                },
-              ),
-              const Divider(height: 1),
               Flexible(
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.all(16),
@@ -7463,13 +7219,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     const SizedBox(width: 10),
                     Expanded(
                       child: primaryAction(
-                        label: '複製報告',
+                        label: '出報告',
                         onPressed: () {
                           Clipboard.setData(
                             ClipboardData(
-                              text:
-                                  '${tr.report()}\n${Diag.report()}'
-                                  '\n${_selfTestResult ?? ''}',
+                              text: '${tr.report()}\n${Diag.report()}',
                             ),
                           );
                           showHint(context, '已複製，貼給開發者就好');
