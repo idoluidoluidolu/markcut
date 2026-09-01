@@ -3460,7 +3460,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 跟匯出同一套疊加數學），拖曳/調樣式才會即時又跟成品一致
     if (_mResident && _mBuiltSig != null && _comp != null) {
       if (!MetalPreview.active) _metalResidentTry();
-    } else if (!_mResident && MetalPreview.active && !_scrubbing) {
+    } else if (!_mResident &&
+        MetalPreview.active &&
+        !_scrubbing &&
+        DateTime.now().difference(_ovGeomActiveAt).inMilliseconds > 600) {
+      // 讓位要等互動真的結束：拖浮水印時接管把引擎推上台，這裡
+      // 原本只認時間軸滑動、不認浮水印拖曳，每一格都把引擎踢下
+      // 台、下一個拖曳事件又推上來——上下台打架＝螢幕抖動
+      //（實機 162：上下台「上1.7 下1.7」連環）
       _metalHideNow();
       setState(() {});
     }
