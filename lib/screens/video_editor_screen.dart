@@ -1814,16 +1814,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       WmDiag.skipHold++;
       return;
     }
-    // 幾何拖動中讓路要短：讓 150ms、上限 600ms。原本 400ms/2s 會
-    // 跟「上台↔讓位」循環共振，樣式烘圖被卡成秒級斷流
-    //（實機 168 事件流：上台→斷流1.4~1.6s→讓位 連環）
-    if (!full &&
-        DateTime.now().difference(_ovGeomActiveAt).inMilliseconds < 150 &&
-        DateTime.now().difference(_ovChangeAt).inMilliseconds < 600) {
-      _scheduleOvSync();
-      WmDiag.skipGeom++;
-      return;
-    }
+    // 「讓路給幾何」整個拆除（實機 170 計數定罪：被擋 69 次＋
+    // 基準循環 13 次＝樣式斷流 5.5 秒的犯人）。它當初防的「烘圖
+    // 與差量分兩包落地爆閃」已由 162 的同包原子套用解決——烘圖
+    // 20ms 級，幾何拖動中照烘，差量跟著同包走，不爆不搶
     // 樣式拖動＝讓引擎上台顯示（60fps、不催合成器）：合成器路每
     // 換一版就要重解一格 4K 原檔（50~150ms）＝調樣式卡頓閃動暗掉
     //（實機 163）。引擎有就緒檢查＋首格護持，上台不閃
