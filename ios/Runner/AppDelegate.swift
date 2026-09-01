@@ -1021,12 +1021,8 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
       buf, kCVImageBufferYCbCrMatrixKey, mat, .shouldPropagate)
   }
 
-  static func noteLuma(
-    _ buf: CVPixelBuffer, t: Double, drawn: Int = -1, missing: Bool = false,
-    srcH: CGFloat = -1, canvasH: CGFloat = -1
-  ) {
-    lumaN += 1
-    guard lumaN % 30 == 1 else { return }
+  /// 中央一點亮度（0~1）；黑階＝0.063（video range）
+  static func centerLuma(_ buf: CVPixelBuffer) -> Double {
     CVPixelBufferLockBaseAddress(buf, .readOnly)
     defer { CVPixelBufferUnlockBaseAddress(buf, .readOnly) }
     let fmt = CVPixelBufferGetPixelFormatType(buf)
@@ -1042,24 +1038,41 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
       let base = planar
         ? CVPixelBufferGetBaseAddressOfPlane(buf, 0)
         : CVPixelBufferGetBaseAddress(buf), w > 4, h > 4
-    else { return }
-    var v = 0.0
+    else { return -1 }
     if fmt == kCVPixelFormatType_32BGRA {
       let p = base.advanced(by: (h / 2) * stride + (w / 2) * 4)
         .assumingMemoryBound(to: UInt8.self)
-      v = (Double(p[0]) + Double(p[1]) + Double(p[2])) / (3 * 255)
-    } else {
-      // 10-bit Y 平面（x420）：16-bit word 取高位
-      let p = base.advanced(by: (h / 2) * stride + (w / 2) * 2)
-        .assumingMemoryBound(to: UInt16.self)
-      v = Double(p[0]) / 65535.0
+      return (Double(p[0]) + Double(p[1]) + Double(p[2])) / (3 * 255)
     }
+    if fmt == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+      || fmt == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+    {
+      let p = base.advanced(by: (h / 2) * stride + (w / 2))
+        .assumingMemoryBound(to: UInt8.self)
+      return Double(p[0]) / 255.0
+    }
+    // 10-bit Y 平面（x420）：16-bit word 取高位
+    let p = base.advanced(by: (h / 2) * stride + (w / 2) * 2)
+      .assumingMemoryBound(to: UInt16.self)
+    return Double(p[0]) / 65535.0
+  }
+
+  static func noteLuma(
+    _ buf: CVPixelBuffer, t: Double, drawn: Int = -1, missing: Bool = false,
+    srcH: CGFloat = -1, canvasH: CGFloat = -1, src: CVPixelBuffer? = nil
+  ) {
+    lumaN += 1
+    guard lumaN % 30 == 1 else { return }
+    let v = centerLuma(buf)
+    // 輸出黑而來源亮＝CI 染黑；來源也黑＝解碼器交黑（165 定罪用）
+    let sv = src.map(centerLuma)
     lumaProbe.append(
       drawn < 0
         ? String(format: "%.1fs:%.3f", t, v)
         : String(
-          format: "%.1fs:%.3f(畫%d層%@ 源高%.0f/布高%.0f)", t, v, drawn,
-          missing ? "缺源" : "", Double(srcH), Double(canvasH)))
+          format: "%.1fs:%.3f(畫%d層%@ 源高%.0f/布高%.0f%@)", t, v, drawn,
+          missing ? "缺源" : "", Double(srcH), Double(canvasH),
+          sv.map { String(format: " 源亮%.3f", $0) } ?? ""))
     if lumaProbe.count > 6 { lumaProbe.removeFirst() }
   }
 
@@ -1221,6 +1234,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         var mzIdx = 0
         var missing = false
         var drawnCount = 0
+        var probeSrc: CVPixelBuffer?
         for layer in ins.layers {
           while mzIdx < activeMz.count, activeMz[mzIdx].z <= layer.z {
             out = self.applyMosaic(activeMz[mzIdx], to: out, canvas: size)
@@ -1233,6 +1247,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
               Self.noteMiss(t: t, track: Int(layer.trackID))
               continue
             }
+            if probeSrc == nil { probeSrc = buf }
             // HDR（HLG/PQ）來源：開系統的色調映射轉成 SDR，跟相簿、
             // 跟內建合成器同一套曲線。SDR 來源開著沒有影響
             let base: CIImage
@@ -1432,7 +1447,8 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         self.tagColors(dst)
         Self.noteLuma(
           dst, t: t0, drawn: drawnCount, missing: missing,
-          srcH: ins.layers.first?.srcHeight ?? -1, canvasH: size.height)
+          srcH: ins.layers.first?.srcHeight ?? -1, canvasH: size.height,
+          src: probeSrc)
         req.finish(withComposedVideoFrame: dst)
         Self.noteFrame(
           t: t, ms: (CFAbsoluteTimeGetCurrent() - tick) * 1000,
@@ -2180,7 +2196,9 @@ final class AtomicFlag {
               scale: m["scale"] as? Double ?? 1,
               rot: m["rot"] as? Double ?? 0)
           })
-        p.nudgeRedrawIfPaused()
+        if a["noNudge"] as? Bool != true {
+          p.nudgeRedrawIfPaused()
+        }
         result(true)
       case "setOverlays":
         // HDR 預覽的即時疊加物：換清單不重建合成（拖曳/改樣式用）。
@@ -4749,8 +4767,16 @@ final class CompPlayer: NSObject, FlutterTexture {
   private var nudgeFlip = false
   private var nudging = false
   private var nudgePending = false
+  private var lastNudgeAt = 0.0
+
   func nudgeRedrawIfPaused() {
     guard player.rate == 0 else { return }
+    // 節流：連續催（每 16ms 一發）＝對暫停中的 10-bit 代理做精準
+    // seek 風暴，解碼器被打到交黑格（實機 165：交格亮度 0.063、
+    // 源高1080）。90ms 一發夠即時；最後狀態由停穩重烘補畫
+    let nowN = CACurrentMediaTime()
+    if nowN - lastNudgeAt < 0.09 { return }
+    lastNudgeAt = nowN
     if seeking || seekTarget.isValid { return }
     if nudging {
       nudgePending = true

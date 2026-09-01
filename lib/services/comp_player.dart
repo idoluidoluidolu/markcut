@@ -535,9 +535,15 @@ class CompPlayer {
   /// PNG 的基準算差量）。一次送「所有偏離基準的部件」整包——
   /// 位置九宮格是文字＋圖片一起跳，漏送誰誰就不動。
   /// PNG 不重畫、合成不重建——跟手的關鍵
-  static Future<bool> setOvXforms(List<Map<String, dynamic>> items) async {
+  static Future<bool> setOvXforms(
+    List<Map<String, dynamic>> items, {
+    bool noNudge = false,
+  }) async {
     try {
-      return await _ch.invokeMethod<bool>('setOvXform', {'items': items}) ??
+      return await _ch.invokeMethod<bool>('setOvXform', {
+            'items': items,
+            'noNudge': noNudge,
+          }) ??
           false;
     } catch (_) {
       return false;

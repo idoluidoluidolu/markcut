@@ -1765,7 +1765,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     WmDiag.xfSends++;
     _ovXfSentAny = true;
     unawaited(
-      CompPlayer.setOvXforms(hits).then((ok) {
+      CompPlayer.setOvXforms(hits, noNudge: MetalPreview.active).then((ok) {
         if (ok || !mounted) return;
         WmDiag.xfRejects++;
         // 原生拒收（wmLive 對不上/合成剛換手）：不能靜默，也不能
@@ -3481,6 +3481,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 原本只認時間軸滑動、不認浮水印拖曳，每一格都把引擎踢下
       // 台、下一個拖曳事件又推上來——上下台打架＝螢幕抖動
       //（實機 162：上下台「上1.7 下1.7」連環）
+      unawaited(_comp?.seek(_position, exact: true));
       _metalHideNow();
       setState(() {});
     }
@@ -3587,7 +3588,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     _mOvIdleTimer?.cancel();
-    _mOvIdleTimer = Timer(const Duration(milliseconds: 600), _metalScrubEnd);
+    _mOvIdleTimer = Timer(
+      const Duration(milliseconds: 1500),
+      _metalScrubEnd,
+    );
     if (MetalPreview.active) return;
     _mHideTimer?.cancel();
     // 就緒才上台（黑畫布比延遲糟糕）：拖曳中每個事件都會再試
@@ -3608,10 +3612,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (!MetalPreview.active) return;
     if (_mResident) return;
     _mHideTimer?.cancel();
-    _mHideTimer = Timer(const Duration(milliseconds: 300), () {
+    _mHideTimer = Timer(const Duration(milliseconds: 300), () async {
+      // 下台前先把「現在這一格」畫新鮮：引擎蓋著的期間合成器被
+      // noNudge 停更，直接下台會露出舊格/黑格（實機 165）
+      await (_comp?.seek(_position, exact: true) ?? Future<void>.value());
+      if (!mounted) return;
       MetalPreview.active = false;
       unawaited(MetalPreview.show(false));
-      if (mounted) setState(() {});
+      setState(() {});
     });
   }
 
