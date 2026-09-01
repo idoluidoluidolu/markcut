@@ -472,6 +472,7 @@ class WmDiag {
   static int syncs = 0;
   static int fastSyncs = 0;
   static int rejects = 0;
+  static int dropped = 0;
   static int stale = 0;
   static int xfSends = 0;
   static int xfRejects = 0;
@@ -526,7 +527,7 @@ class WmDiag {
     final b = StringBuffer()..writeln('--- 浮水印管線 ---');
     b.writeln(
       '  樣式更新：$syncs 次（即時快路 $fastSyncs／全解析 ${syncs - fastSyncs}）'
-      '／烘完追最新：$stale 次／被拒收：$rejects 次',
+      '／烘完追最新：$stale 次／被拒收：$rejects 次／丟過期：$dropped 次',
     );
     b.writeln('  改變到上屏：${_stat(_lag)}（>150ms 就會有「跟」的感覺）');
     b.writeln('  烘圖：${_stat(_bake)}／傳輸：${_stat(_send)}');
@@ -543,6 +544,7 @@ class WmDiag {
 
   static void clear() {
     syncs = fastSyncs = rejects = stale = xfSends = xfRejects = 0;
+    dropped = 0;
     lastParts = lastBytes = 0;
     _lag.clear();
     _bake.clear();

@@ -7699,10 +7699,16 @@ final class MetalPreviewEngine: NSObject {
     if active, !isOnStage {
       stageAt = CACurrentMediaTime()
       lastShownPts = -1
+      pendingReveal = true
     }
     isOnStage = active
     layerHost?.setHDR(hdr)
-    layerHost?.setVisible(active)
+    if active {
+      // 上台不立刻亮：先渲染出正確的這一格（render 的 reveal 才亮）
+      if !pendingReveal { layerHost?.setVisible(true) }
+    } else {
+      layerHost?.setVisible(false)
+    }
     if active {
       if link == nil {
         let l = CADisplayLink(target: self, selector: #selector(tick))
@@ -7836,6 +7842,11 @@ final class MetalPreviewEngine: NSObject {
   private var stageAt = 0.0
   private var lastShownPts = -1.0
   private var stStageRoll = 0
+  /// 上台亮燈延遲：圖層裡還是上一輪的舊畫面，先渲染出正確的
+  /// 這一格再亮（按暫停閃一下＝舊畫面先露出來）
+  private var pendingReveal = false
+  /// 護持中跳過的上屏數（上台後等精確幀）
+  private var stHoldPres = 0
   /// 手指正在滑：最後一次 seek 在 150ms 內「而且」它跟上一發
   /// 的間隔也短（連續事件才算）。少了第二個條件，暫停上台那
   /// 單獨一發 seek 也算滑動＝寬容差漏進來＝上台畫面快轉滾
@@ -7894,6 +7905,7 @@ final class MetalPreviewEngine: NSObject {
       "ovTex": "貼\(stOvDraws)張/上傳\(stOvUploads)次/最久\(stOvUpMaxMs)ms",
       "scrubSrc": "佇列\(stScrubReader)/保底\(stScrubPump)/重啟\(stScrubRestart)",
       "stageRoll": stStageRoll,
+      "holdPres": stHoldPres,
       "stage": Self.stageLog.joined(separator: " "),
       "onStage": isOnStage,
       "missWho": stMissWho.joined(separator: "、"),
@@ -8326,6 +8338,7 @@ final class MetalPreviewEngine: NSObject {
             if tex !== beforeTex { stIdleFresh += 1 }
             stScrubPump += 1
           }
+          if !playing, readers[sp.id] != nil { usedCoarse = true }
         } else {
           tex = readers[sp.id]?.lastTexture
         }
@@ -8391,6 +8404,7 @@ final class MetalPreviewEngine: NSObject {
     // 「有沒有紋理」提早跳過——紋理正是靠渲染時去取樣才生出來的，
     // 提早跳過＝永遠不取樣＝畫面凍住（實機 151：滑動停在暫停那格）
     var drewAny = false
+    var usedCoarse = false
     let mzGroups = Dictionary(grouping: activeMz) { $0.z }
       .sorted { $0.key < $1.key }
     var gi = 0
@@ -8481,7 +8495,21 @@ final class MetalPreviewEngine: NSObject {
     out.endEncoding()
     // 一層都沒畫成（解碼器還沒出第一格）就不上屏：保留上一幀，
     // 既不會蓋黑、也不會擋住取樣（取樣已經在上面做過了）
-    if drewAny { cmd.present(drawable) }
+    // 上台護持：頭 0.4s 內若影片層還只有 pump 粗略幀（關鍵幀貼齊，
+    // 差半格～幾格），先不上屏——底下播放器停著的就是精確幀，等
+    // 解碼佇列補上精確幀再亮，換手零閃動。滑動中不護持（要跟手）
+    let holdOff =
+      CACurrentMediaTime() - stageAt < 0.4 && usedCoarse && !scrubbingNow
+      && !playing
+    if drewAny, !holdOff {
+      cmd.present(drawable)
+      if pendingReveal {
+        pendingReveal = false
+        layerHost?.setVisible(true)
+      }
+    } else if drewAny {
+      stHoldPres += 1
+    }
     cmd.commit()
   }
 

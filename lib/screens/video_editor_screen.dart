@@ -419,6 +419,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   String? _ovSigSeen;
   DateTime _ovChangeAt = DateTime.fromMillisecondsSinceEpoch(0);
   bool _ovFastApplied = false;
+  bool _ovSyncAgain = false;
 
   /// 全域浮水印各部件烘進 PNG 時的幾何基準（id → [x,y,size,rot]）。
   /// 現值偏離基準＝把絕對值丟給原生套差量（PNG 不重畫，跟手的關鍵）
@@ -1747,7 +1748,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 把疊加物同步到原生端（重畫 PNG → setOverlays → 精準 seek
   /// 逼它重畫這一格）。指紋沒變就什麼都不做
   Future<void> _syncPreviewOverlays({bool full = false}) async {
-    if (_ovSyncBusy || !mounted || !_ovLiveOn) return;
+    if (!mounted || !_ovLiveOn) return;
+    if (_ovSyncBusy) {
+      _ovSyncAgain = true; // 烘完自動續跑，不靠計時器（防斷鏈）
+      return;
+    }
     final sig = _ovContentSig();
     if (sig != _ovSigSeen) {
       _ovSigSeen = sig;
@@ -1764,6 +1769,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _scheduleOvSync(); // 還在拖但內容沒變：等停穩再補全解析
       return;
     }
+    // 幾何拖動中（大小/位置/旋轉走即時通道在跟手）：重烘等停穩，
+    // 不跟它搶 GPU——但最多讓 2 秒，防被幾何活動釘死
+    if (!full &&
+        DateTime.now().difference(_ovGeomActiveAt).inMilliseconds < 400 &&
+        DateTime.now().difference(_ovChangeAt).inMilliseconds < 2000) {
+      _scheduleOvSync();
+      return;
+    }
     _ovSyncBusy = true;
     final wmT0 = DateTime.now();
     try {
@@ -1777,6 +1790,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 滑桿連續拖動時每一版都作廢＝放手前畫面永遠不更新
       //（實機 157：樣式拖到定位才變）
       final stale = _ovContentSig() != sig;
+      // 過期丟棄：烘太久（點陣偶發 400ms）期間內容又變了，這版
+      // 上屏＝舊樣式蓋掉新樣式＝「粗細亂跳」（實機 159）。丟掉，
+      // finally 立刻續烘最新版
+      if (stale && DateTime.now().difference(wmT0).inMilliseconds > 250) {
+        WmDiag.dropped++;
+        _ovSyncAgain = true;
+        return;
+      }
       final wmT1 = DateTime.now();
       if (!await CompPlayer.setOverlays(maps)) {
         WmDiag.rejects++;
@@ -1812,7 +1833,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         }),
       );
       if (stale) WmDiag.stale++;
-      if (stale || fast) _scheduleOvSync();
+      if (stale) _ovSyncAgain = true;
+      if (fast && !stale) _scheduleOvSync(); // 停穩後補全解析
+
       _ovBakedGeom = _ovGeomPending; // 即時幾何的差量基準跟著換
       final shown = maps.isNotEmpty;
       _ovNativePending = shown; // 之後的 compVisible 不要把它翻回去
@@ -1822,6 +1845,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (!_playing) await _comp?.seek(_position, exact: true);
     } finally {
       _ovSyncBusy = false;
+      if (_ovSyncAgain && mounted) {
+        _ovSyncAgain = false;
+        scheduleMicrotask(() {
+          if (mounted) _syncPreviewOverlays();
+        });
+      }
     }
   }
 
@@ -6900,12 +6929,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       await _syncPreviewOverlays(full: true);
       if (!mounted) return;
       final msOvSync = swPlay.elapsedMilliseconds;
-      if (MetalPreview.active) _metalHideNow();
-      unawaited(MetalPreview.park());
-      // 無條件再壓一次隱藏：Dart 的 active 旗標與原生脫節時，
-      // _metalHideNow 會早退，引擎就留在最上層渲染黑
-      unawaited(MetalPreview.show(false));
-      MetalPreview.active = false;
+      // ══ 換手空窗修法：引擎留在台上蓋著（顯示的就是這一格暫停
+      // 幀），等系統播放器的影格真的滾起來才下台。原本按下播放就
+      // 下台，播放器第一格要 100~250ms 才到，中間露出圖層裡的
+      // 舊格＝「按播放閃一下」（實機 159）══
       // 起播前確認影片圖層綁在現役播放器：翻面被打斷過的話，
       // 前層還指著已收掉的舊播放器＝播放全黑（實機 145）
       await MetalPreview.reattach();
@@ -6919,7 +6946,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       tr.log('系統播放器起播（狀態：${st ?? '？'}）');
       final sw = Stopwatch()..start();
       final p0 = now;
-      while (mounted && sw.elapsedMilliseconds < 250) {
+      while (mounted && sw.elapsedMilliseconds < 400) {
         await Future<void>.delayed(const Duration(milliseconds: 16));
         final p = await _comp!.position();
         if ((p - p0).abs() > 0.001) {
@@ -6927,6 +6954,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           break;
         }
       }
+      // 影格滾起來了（或等超過 400ms 保底）：引擎此刻才下台
+      if (MetalPreview.active) _metalHideNow();
+      unawaited(MetalPreview.park());
+      // 無條件再壓一次隱藏：Dart 的 active 旗標與原生脫節時，
+      // _metalHideNow 會早退，引擎就留在最上層渲染黑
+      unawaited(MetalPreview.show(false));
+      MetalPreview.active = false;
       Diag.notePlayLatency(sw.elapsedMilliseconds);
       if (!mounted) return;
       _lastTick = Duration.zero;
@@ -7190,6 +7224,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               '／浮水印 ${m['ovTex']}'
               '\n  滑動來源：${m['scrubSrc']}'
               '／暫停上台滾動 ${m['stageRoll']} 次'
+              '／首格護持 ${m['holdPres']} 格'
               '／在台上=${m['onStage'] == true ? '是' : '否'}\n'
               '  上下台：${m['stage']}'
               '${(m['missWho'] as String?)?.isNotEmpty == true ? '\n  miss層脈絡：${m['missWho']}' : ''}\n'
