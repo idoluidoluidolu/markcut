@@ -111,13 +111,13 @@ class WorkFiles {
 
   /// HDR 代理（HLG 直通、密關鍵幀）。HDR 預覽模式播它——
   /// SDR 工作檔在那個模式下永遠比成品淡，原檔又是 4K 解起來重。
-  /// 索引 key 用「原檔路徑#hdr4」，跟 SDR 工作檔各記各的。
+  /// 索引 key 用「原檔路徑#hdr5」，跟 SDR 工作檔各記各的。
   /// #hdr（v106）那一批像素是內建合成器轉壞的（標 HLG 裝 SDR），
   /// 換 key 整批作廢，舊檔變孤兒由 sweep 清掉
   static Future<String?> lookupHdr(String src) async {
     if (kIsWeb) return null;
     final idx = await _load();
-    final e = idx['$src#hdr4'];
+    final e = idx['$src#hdr5'];
     if (e is! Map) return null;
     final work = e['work'] as String?;
     if (work == null || !File(work).existsSync()) return null;
@@ -157,7 +157,7 @@ class WorkFiles {
     }
     if (made == null) return null;
     final idx = await _load();
-    idx['$src#hdr4'] = {
+    idx['$src#hdr5'] = {
       'work': made,
       'stamp': _stamp(src),
       'at': DateTime.now().millisecondsSinceEpoch,

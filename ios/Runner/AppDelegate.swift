@@ -4026,10 +4026,9 @@ final class AtomicFlag {
       vSettings[AVVideoScalingModeKey] = AVVideoScalingModeResize
     }
     let vIn = AVAssetWriterInput(mediaType: .video, outputSettings: vSettings)
-    if hdrPass {
-      // 方向照原檔留旗標（零處理不轉正）
-      vIn.transform = vTrack.preferredTransform
-    }
+    // 不再抄旋轉旗標：畫面已由合成器烘正（167 起），再留旗標＝
+    // 雙重旋轉——直式素材被當橫式、畫布翻成 1600x900
+    //（實機 168：暫停幾次影片比例整個跑掉）
     vIn.expectsMediaDataInRealTime = false
     guard writer.canAdd(vIn) else {
       done("寫入端建不起來")

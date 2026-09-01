@@ -1808,11 +1808,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _scheduleOvSync(); // 還在拖但內容沒變：等停穩再補全解析
       return;
     }
-    // 幾何拖動中（大小/位置/旋轉走即時通道在跟手）：重烘等停穩，
-    // 不跟它搶 GPU——但最多讓 2 秒，防被幾何活動釘死
+    // 幾何拖動中讓路要短：讓 150ms、上限 600ms。原本 400ms/2s 會
+    // 跟「上台↔讓位」循環共振，樣式烘圖被卡成秒級斷流
+    //（實機 168 事件流：上台→斷流1.4~1.6s→讓位 連環）
     if (!full &&
-        DateTime.now().difference(_ovGeomActiveAt).inMilliseconds < 400 &&
-        DateTime.now().difference(_ovChangeAt).inMilliseconds < 2000) {
+        DateTime.now().difference(_ovGeomActiveAt).inMilliseconds < 150 &&
+        DateTime.now().difference(_ovChangeAt).inMilliseconds < 600) {
       _scheduleOvSync();
       return;
     }
