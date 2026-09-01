@@ -1738,8 +1738,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _ovSyncBusy = true;
     try {
       final maps = sig == 'empty' ? <Map<String, dynamic>>[] : await _ovMaps();
-      // 渲染期間又變了：這一版作廢，讓下一輪重做
-      if (!mounted || !_ovLiveOn || _ovContentSig() != sig) return;
+      if (!mounted || !_ovLiveOn) return;
+      // 烘的期間內容又變了：這一版照樣先上（比螢幕上的新），
+      // 上完馬上再排一輪追最新。原本的「作廢讓下一輪重做」在
+      // 滑桿連續拖動時每一版都作廢＝放手前畫面永遠不更新
+      //（實機 157：樣式拖到定位才變）
+      final stale = _ovContentSig() != sig;
       if (!await CompPlayer.setOverlays(maps)) {
         // 原生拒收＝這份合成的 wmLive 跟 Dart 認知走鐘了。連三次
         // 就整組重組自救，不能讓浮水印卡在舊位置（實測回報：
@@ -1756,6 +1760,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       _ovSetFails = 0;
       _lastOvSig = sig;
+      if (stale) _scheduleOvSync();
       _ovBakedGeom = _ovGeomPending; // 即時幾何的差量基準跟著換
       final shown = maps.isNotEmpty;
       _ovNativePending = shown; // 之後的 compVisible 不要把它翻回去

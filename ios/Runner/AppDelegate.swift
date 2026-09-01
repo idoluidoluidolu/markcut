@@ -6645,14 +6645,18 @@ final class ClipReader {
   }
 
   /// 滑動供格：跟 frame(at:) 一樣消費佇列，但顯示中的格離目標
-  /// 超過 0.3s 就回 nil——讓呼叫端走 pump 保底，不讓舊格冒充
-  /// 新畫面（v1 教訓：永遠回上一張＝倒退滑動整段舊圖）
-  func scrubFrame(at srcT: Double, cache: CVMetalTextureCache) -> MTLTexture? {
+  /// 超過 [tol] 就回 nil——讓呼叫端走 pump 保底，不讓舊格冒充
+  /// 新畫面。容差要分兩檔：滑動中 0.3（解碼追手指，差一點沒關係）、
+  /// 靜止 0.025（暫停上台時解碼器從目標前 0.5s 起解，容差放寬＝
+  /// 螢幕肉眼可見地「快轉滾」到定點——實機 157 按暫停畫面晃動）
+  func scrubFrame(at srcT: Double, tol: Double, cache: CVMetalTextureCache)
+    -> MTLTexture?
+  {
     let tex = frame(at: srcT, cache: cache)
     lock.lock()
     let shown = lastPts
     lock.unlock()
-    guard tex != nil, shown >= 0, abs(shown - srcT) <= 0.3 else { return nil }
+    guard tex != nil, shown >= 0, abs(shown - srcT) <= tol else { return nil }
     return tex
   }
 
@@ -7689,6 +7693,10 @@ final class MetalPreviewEngine: NSObject {
   private var stIdleRenders = 0
   private var stIdleFresh = 0
   private weak var idleLastTex: MTLTexture?
+  /// 手指正在滑（最後一次 seek 150ms 內）——容差與統計都看它
+  private var scrubbingNow: Bool {
+    CACurrentMediaTime() - lastSeekHost < 0.15
+  }
   /// miss 發生時的層脈絡（層z/佇列備量/解碼器狀態）
   private var stMissWho: [String] = []
   private var stRenderMsMax = 0.0
@@ -8127,14 +8135,17 @@ final class MetalPreviewEngine: NSObject {
           }
         } else if !playing, let rd = readers[sp.id],
           let rt = rd.scrubFrame(
-            at: sp.trimStart + (t - sp.offset) * sp.speed, cache: cache)
+            at: sp.trimStart + (t - sp.offset) * sp.speed,
+            tol: scrubbingNow ? 0.3 : 0.025, cache: cache)
         {
           // 滑動供格：解碼佇列（連續解碼，跟得上手指）。
           // 幾何從 reader 帶——proxy 與 pump 同檔同幾何，但
           // 播放分支就是這樣做的，兩路必須同一套（准）
           tex = rt
-          stIdleRenders += 1
-          if rt !== idleLastTex { stIdleFresh += 1 }
+          if scrubbingNow {
+            stIdleRenders += 1
+            if rt !== idleLastTex { stIdleFresh += 1 }
+          }
           idleLastTex = rt
           if rd.infoReady {
             orient = rd.orient
@@ -8152,7 +8163,7 @@ final class MetalPreviewEngine: NSObject {
           tex =
             pump.texture(at: srcT, cache: cache)
             ?? readers[sp.id]?.lastTexture
-          if !playing {
+          if !playing, scrubbingNow {
             stIdleRenders += 1
             if tex !== beforeTex { stIdleFresh += 1 }
           }
