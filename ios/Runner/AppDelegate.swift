@@ -3946,13 +3946,12 @@ final class AtomicFlag {
       ins.layerInstructions = [li]
       vc.instructions = [ins]
     }
+    // 獨立審查定罪（fresh-eyes）：hdrPass 原本走純軌道輸出，
+    // 上面蓋好的旋轉合成器整段是死碼——原始橫向畫格被 Resize
+    // 硬壓進直式尺寸＝中繼資料完美、像素橫躺變形（「方向反了」
+    // 的真根）。兩條路統一走合成器輸出
     let vOut: AVAssetReaderOutput
-    if hdrPass {
-      // 零處理：純解碼，不經過任何合成器
-      let o = AVAssetReaderTrackOutput(track: vTrack, outputSettings: pixels)
-      o.alwaysCopiesSampleData = false
-      vOut = o
-    } else {
+    do {
       let o = AVAssetReaderVideoCompositionOutput(
         videoTracks: [vTrack], videoSettings: pixels)
       o.videoComposition = vc
@@ -4021,10 +4020,7 @@ final class AtomicFlag {
           AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
         ] as [String: Any],
     ]
-    if hdrPass {
-      // 4K 進 1080 出：縮放交給編碼器（YUV 域等比縮，無色彩轉換）
-      vSettings[AVVideoScalingModeKey] = AVVideoScalingModeResize
-    }
+
     let vIn = AVAssetWriterInput(mediaType: .video, outputSettings: vSettings)
     // 不再抄旋轉旗標：畫面已由合成器烘正（167 起），再留旗標＝
     // 雙重旋轉——直式素材被當橫式、畫布翻成 1600x900
