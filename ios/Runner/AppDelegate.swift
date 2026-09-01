@@ -3830,7 +3830,7 @@ final class AtomicFlag {
     if hdrPass {
       DispatchQueue.main.async {
         channel.invokeMethod(
-          "note", arguments: "HDR 代理：零處理（解碼→縮放→重編碼，不動色彩）")
+          "note", arguments: "HDR 代理：HLG 直通（HDR 合成器轉正，不動色調）")
       }
     }
     let asset = AVURLAsset(url: URL(fileURLWithPath: src))
@@ -3850,7 +3850,12 @@ final class AtomicFlag {
     // HDR 直通模式（hdrPass）＝零處理：純解碼→縮放→重編碼，
     // 不掛任何合成器（內建的、CI 的都不掛）、色彩標記照抄來源、
     // 方向保留旗標。像素不經過任何色彩管線，物理上不可能變色
-    let isHDR = hdrPass ? false : CompPlayer.isHDRSource(src)
+    // hdrPass＝HLG 直通「但走 HDR 合成器」：方向烘死、HLG 標記寫進
+    // 檔（跟 HDR 匯出同一顆合成器、同一組標記；像素不做色調映射）。
+    // 舊的「零處理不掛合成器」把旋轉旗標與未轉正畫框帶進代理，
+    // 預覽合成器吃它時轉正數學對不上＝來源亮、輸出黑
+    //（實機 166 探針：交格亮度 0.063、源亮 0.449）
+    let isHDR = hdrPass ? true : CompPlayer.isHDRSource(src)
     let pixels: [String: Any] = [
       kCVPixelBufferPixelFormatTypeKey as String: Int(
         hdrPass
@@ -3863,11 +3868,7 @@ final class AtomicFlag {
     // 輸出尺寸縮的是短邊：直式拿到 1080x1920、橫式拿到 1920x1080，
     // 兩種方向的清晰度與解碼成本都一樣。系統預設的「塞進 1920x1080」
     // 會把直式 4K 縮成 607x1080，長邊只剩六成，預覽就糊了
-    // 零處理（hdrPass）不轉正：畫框尺寸用未旋轉的原始尺寸，
-    // 方向靠旗標帶著走（跟原檔一樣）
-    let disp = hdrPass
-      ? vTrack.naturalSize
-      : vTrack.naturalSize.applying(vTrack.preferredTransform)
+    let disp = vTrack.naturalSize.applying(vTrack.preferredTransform)
     let dw = abs(disp.width)
     let dh = abs(disp.height)
     guard dw > 1, dh > 1 else {
