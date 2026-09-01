@@ -421,6 +421,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _ovFastApplied = false;
   bool _ovSyncAgain = false;
   DateTime? _wmLastApplyAt;
+  DateTime? _wmLastBakeStart;
   int _wmGestureN = 0;
   Timer? _wmGestureTimer;
 
@@ -1463,14 +1464,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 時間軸秒——合成的時間基準就是時間軸，整體變速由播放速率處理，
   /// 動畫參數不用除變速（匯出那邊是輸出秒才要除）
   Future<List<Map<String, dynamic>>> _ovMaps({bool fast = false}) async {
-    final sig = '${_ovContentSig()}${fast ? ':f' : ''}';
+    // 外擴（防拖出畫框缺塊）只在幾何拖動時開：它是 4 倍像素量，
+    // 樣式拖動用不到卻吃 4 倍搬運（錄影定罪的凍結來源之一）
+    final padF = fast &&
+        DateTime.now().difference(_ovGeomActiveAt).inMilliseconds < 1000;
+    final sig =
+        '${_ovContentSig()}${fast ? (padF ? ':fp' : ':f') : ''}';
     if (sig == _ovMapsCacheSig && _ovMapsCache.isNotEmpty) {
       _ovGeomPending = _ovGeomCache; // 幾何基準跟 PNG 一起重用
       return _ovMapsCache;
     }
-    final maps = await _ovMapsBuild(fast: fast);
+    final maps = await _ovMapsBuild(fast: fast, pad: padF);
     // 過程中內容又變了就不進快取（下一輪重做）
-    if ('${_ovContentSig()}${fast ? ':f' : ''}' == sig) {
+    if ('${_ovContentSig()}${fast ? (padF ? ':fp' : ':f') : ''}' == sig) {
       _ovMapsCacheSig = sig;
       _ovMapsCache = maps;
       _ovGeomCache = _ovGeomPending;
@@ -1484,7 +1490,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return [r[0] - 0.5 * r[2], r[1] - 0.5 * r[3], r[2] * 2, r[3] * 2];
   }
 
-  Future<List<Map<String, dynamic>>> _ovMapsBuild({bool fast = false}) async {
+  Future<List<Map<String, dynamic>>> _ovMapsBuild({
+    bool fast = false,
+    bool pad = false,
+  }) async {
     final out = <Map<String, dynamic>>[];
     // 渲染解析度跟預覽合成一樣短邊 1080 就好；版面是照比例算的
     //（sizeFrac × 短邊），解析度不影響位置大小
@@ -1527,7 +1536,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (geom != null) pending[id] = geom;
         jobs.add(() async {
           try {
-            final padded = fast && geom != null;
+            final padded = fast && pad && geom != null;
             return {
               if (fast) ...{
                 'raw': await WatermarkRenderer.renderOverlayRaw(
@@ -1822,6 +1831,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 換一版就要重解一格 4K 原檔（50~150ms）＝調樣式卡頓閃動暗掉
     //（實機 163）。引擎有就緒檢查＋首格護持，上台不閃
     if (fast && !_playing && !MetalPreview.active) _metalOvDragTakeover();
+    // 節拍器：快路兩版之間至少 80ms（12 版/秒）。錄影逐格分析
+    // 定罪：無節制連發（20版/秒 x 8MB raw）把 GPU 回讀與通道
+    // 搬運擠爆，UI 整屏凍結 0.3~0.9 秒連環
+    if (fast && _wmLastBakeStart != null &&
+        DateTime.now().difference(_wmLastBakeStart!).inMilliseconds < 80) {
+      _scheduleOvSync();
+      return;
+    }
+    _wmLastBakeStart = DateTime.now();
     _ovSyncBusy = true;
     final wmT0 = DateTime.now();
     try {
@@ -1888,9 +1906,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 上屏斷流偵測：拖動中兩次上屏間隔 >250ms＝使用者看到的
       // 「頓一下」，直接記進事件流（不用口述）
       final nowAp = DateTime.now();
-      if (fast && _wmLastApplyAt != null) {
+      if (fast && _wmGestureN > 0 && _wmLastApplyAt != null) {
         final gap = nowAp.difference(_wmLastApplyAt!).inMilliseconds;
-        if (gap > 250) Diag.ev('樣式上屏斷流 ${gap}ms');
+        // 手勢進行中才算斷流；跨手勢的閒置間隔是誤報（實機 171
+        // 的 6690ms 就是兩個手勢之間的空檔）
+        if (gap > 250 && gap < 5000) Diag.ev('樣式上屏斷流 ${gap}ms');
       }
       _wmLastApplyAt = nowAp;
       if (fast) {
