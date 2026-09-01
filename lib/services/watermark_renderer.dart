@@ -30,6 +30,23 @@ class WatermarkRenderer {
     return data!.buffer.asUint8List();
   }
 
+  /// 即時路：raw RGBA（預乘）直出，免 PNG 編碼——調樣式拖動中用，
+  /// 尺寸就是 [outW]x[outH]
+  static Future<Uint8List> renderOverlayRaw(
+    WatermarkSettings s,
+    int outW,
+    int outH,
+  ) async {
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(recorder);
+    await drawMarks(canvas, s, outW.toDouble(), outH.toDouble());
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(outW, outH);
+    final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+    image.dispose();
+    return data!.buffer.asUint8List();
+  }
+
   /// 照片浮水印：以原始解析度合成照片 + 馬賽克 + 浮水印，輸出 PNG（無損）。
   static Future<Uint8List> renderPhotoComposite(
     Uint8List photoBytes,

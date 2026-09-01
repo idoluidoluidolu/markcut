@@ -94,19 +94,40 @@ final class CIOverlaySpec {
   let bs: Double
   let br: Double
 
-  /// 原始 PNG（Metal 引擎自己上傳紋理用）
-  let pngData: Data?
+  /// 解好的點陣（引擎上傳紋理、CI 合成共用同一份）
+  let cgImg: CGImage
 
   init?(_ ov: [String: Any], canvas: CGSize) {
-    pngData = (ov["png"] as? FlutterStandardTypedData)?.data
     id = ov["id"] as? String
     bx = ov["bx"] as? Double ?? 0.5
     by = ov["by"] as? Double ?? 0.5
     bs = ov["bs"] as? Double ?? 1
     br = ov["br"] as? Double ?? 0
-    guard let data = (ov["png"] as? FlutterStandardTypedData)?.data,
-      let ui = UIImage(data: data), let cg = ui.cgImage
-    else { return nil }
+    // 兩種載體：png（匯出/停手全解析）或 raw RGBA（調樣式即時路——
+    // PNG 編碼+解碼一來回 100~300ms，就是實機 157「樣式硬跟」的大頭）
+    var decoded: CGImage?
+    if let data = (ov["png"] as? FlutterStandardTypedData)?.data,
+      let ui = UIImage(data: data)
+    {
+      decoded = ui.cgImage
+    } else if let td = ov["raw"] as? FlutterStandardTypedData,
+      let rw = ov["rw"] as? Int, let rh = ov["rh"] as? Int,
+      rw > 1, rh > 1, td.data.count >= rw * rh * 4,
+      let prov = CGDataProvider(data: td.data as CFData)
+    {
+      // Flutter rawRgba＝預乘 RGBA、sRGB
+      decoded = CGImage(
+        width: rw, height: rh, bitsPerComponent: 8, bitsPerPixel: 32,
+        bytesPerRow: rw * 4,
+        space: CGColorSpace(name: CGColorSpace.sRGB)
+          ?? CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGBitmapInfo(
+          rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+        provider: prov, decode: nil, shouldInterpolate: true,
+        intent: .defaultIntent)
+    }
+    guard let cg = decoded else { return nil }
+    cgImg = cg
     var img = CIImage(cgImage: cg)
     let ext = img.extent
     guard ext.width > 1, ext.height > 1 else { return nil }
@@ -1063,11 +1084,11 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         }
         var fastUVA = SIMD4<Float>(0, 0, 1, 0)
         var fastUVB = SIMD2<Float>(0, 1)
-        var fastOvs: [Data] = []
+        var fastOvs: [CGImage] = []
         if !self.hdrOut, self.liveComp {
           for ov in CIExportCompositor.currentPreviewOverlays()
           where ov.start <= t0 && t0 < ov.end {
-            if let d = ov.pngData { fastOvs.append(d) }
+            fastOvs.append(ov.cgImg)
           }
         }
         if let sbuf = fastEligible(),
@@ -1607,11 +1628,10 @@ final class MetalYUVBlit {
     return cmd.status == .completed
   }
 
-  private func ovTexture(_ data: Data, dev: MTLDevice) -> MTLTexture? {
-    let key = ObjectIdentifier(data as NSData)
+  private func ovTexture(_ cg: CGImage, dev: MTLDevice) -> MTLTexture? {
+    let key = ObjectIdentifier(cg)
     if let t = ovTexCache[key] { return t }
-    guard let ui = UIImage(data: data), let cg = ui.cgImage,
-      let t = try? MTKTextureLoader(device: dev).newTexture(
+    guard let t = try? MTKTextureLoader(device: dev).newTexture(
         cgImage: cg, options: [MTKTextureLoader.Option.SRGB: false as NSNumber])
     else { return nil }
     ovTexCache[key] = t
@@ -1626,7 +1646,7 @@ final class MetalYUVBlit {
   /// 疊上。回 false＝呼叫端走 CI 原路
   func sdrCompose(
     from srcBuf: CVPixelBuffer, to dstBuf: CVPixelBuffer,
-    overlays: [Data],
+    overlays: [CGImage],
     uvA: SIMD4<Float> = SIMD4<Float>(0, 0, 1, 0),
     uvB: SIMD2<Float> = SIMD2<Float>(0, 1)
   ) -> Bool {
@@ -1689,8 +1709,8 @@ final class MetalYUVBlit {
     e.setFragmentBytes(&fr, length: 4, index: 0)
     e.setFragmentSamplerState(sampler, index: 0)
     e.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
-    for data in overlays {
-      guard let t = ovTexture(data, dev: dev) else { continue }
+    for cg in overlays {
+      guard let t = ovTexture(cg, dev: dev) else { continue }
       e.setRenderPipelineState(pOv)
       e.setVertexBytes(&idA, length: 16, index: 0)
       e.setVertexBytes(&idB, length: 8, index: 1)
@@ -6881,7 +6901,7 @@ final class MetalPreviewEngine: NSObject {
   private var hdr = false
 
   /// 疊加物 PNG → 紋理（鍵＝資料長度雜湊，同一張不重上傳）
-  private var ovTextures: [Int: MTLTexture] = [:]
+  private var ovTextures: [ObjectIdentifier: MTLTexture] = [:]
 
   weak var layerHost: MetalPreviewView?
   private var link: CADisplayLink?
@@ -7838,14 +7858,10 @@ final class MetalPreviewEngine: NSObject {
   }
 
   /// 疊加物紋理（premultiplied sRGB PNG → 線性取樣）
-  private func ovTexture(_ data: Data) -> MTLTexture? {
-    let key = data.count &* 31 &+ Int(data.prefix(64).reduce(0) {
-      ($0 &* 31 &+ Int($1)) & 0xFFFFFF
-    })
+  private func ovTexture(_ cg: CGImage) -> MTLTexture? {
+    let key = ObjectIdentifier(cg)
     if let t = ovTextures[key] { return t }
-    guard let dev = device, let ui = UIImage(data: data),
-      let cg = ui.cgImage
-    else { return nil }
+    guard let dev = device else { return nil }
     let loader = MTKTextureLoader(device: dev)
     let tex = try? loader.newTexture(
       cgImage: cg,
@@ -8271,8 +8287,7 @@ final class MetalPreviewEngine: NSObject {
     let ovs = CIExportCompositor.currentPreviewOverlays()
     let lovs = CIExportCompositor.currentLiveOvs()
     for ov in ovs {
-      guard ov.start <= t, t < ov.end, let data = ov.pngData,
-        let tex = ovTexture(data)
+      guard ov.start <= t, t < ov.end, let tex = ovTexture(ov.cgImg)
       else { continue }
       var x = ov.bx
       var y = ov.by

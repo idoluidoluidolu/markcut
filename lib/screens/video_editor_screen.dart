@@ -414,6 +414,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _ovSyncBusy = false;
   Timer? _ovSyncTimer;
 
+  /// 快路狀態：最近一次看到的內容指紋／它變動的時刻／目前畫面上
+  /// 是不是半解析度版（是的話停穩要補全解析）
+  String? _ovSigSeen;
+  DateTime _ovChangeAt = DateTime.fromMillisecondsSinceEpoch(0);
+  bool _ovFastApplied = false;
+
   /// 全域浮水印各部件烘進 PNG 時的幾何基準（id → [x,y,size,rot]）。
   /// 現值偏離基準＝把絕對值丟給原生套差量（PNG 不重畫，跟手的關鍵）
   Map<String, List<double>> _ovBakedGeom = const {};
@@ -1451,15 +1457,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 疊加物整版 PNG 清單（跟原生匯出同一套欄位）。時間一律是
   /// 時間軸秒——合成的時間基準就是時間軸，整體變速由播放速率處理，
   /// 動畫參數不用除變速（匯出那邊是輸出秒才要除）
-  Future<List<Map<String, dynamic>>> _ovMaps() async {
-    final sig = _ovContentSig();
+  Future<List<Map<String, dynamic>>> _ovMaps({bool fast = false}) async {
+    final sig = '${_ovContentSig()}${fast ? ':f' : ''}';
     if (sig == _ovMapsCacheSig && _ovMapsCache.isNotEmpty) {
       _ovGeomPending = _ovGeomCache; // 幾何基準跟 PNG 一起重用
       return _ovMapsCache;
     }
-    final maps = await _ovMapsBuild();
+    final maps = await _ovMapsBuild(fast: fast);
     // 過程中內容又變了就不進快取（下一輪重做）
-    if (_ovContentSig() == sig) {
+    if ('${_ovContentSig()}${fast ? ':f' : ''}' == sig) {
       _ovMapsCacheSig = sig;
       _ovMapsCache = maps;
       _ovGeomCache = _ovGeomPending;
@@ -1467,7 +1473,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return maps;
   }
 
-  Future<List<Map<String, dynamic>>> _ovMapsBuild() async {
+  Future<List<Map<String, dynamic>>> _ovMapsBuild({bool fast = false}) async {
     final out = <Map<String, dynamic>>[];
     // 渲染解析度跟預覽合成一樣短邊 1080 就好；版面是照比例算的
     //（sizeFrac × 短邊），解析度不影響位置大小
@@ -1476,13 +1482,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         ((_comp != null && _comp!.height > 0)
             ? _comp!.width / _comp!.height
             : 16 / 9);
+    // 快路（調樣式拖動中）：半解析度足夠看，停穩 400ms 自動補全解析
+    final short = fast ? 540 : 1080;
     int ow, oh;
     if (ca >= 1) {
-      oh = 1080;
-      ow = ((1080 * ca) / 2).round() * 2;
+      oh = short;
+      ow = ((short * ca) / 2).round() * 2;
     } else {
-      ow = 1080;
-      oh = ((1080 / ca) / 2).round() * 2;
+      ow = short;
+      oh = ((short / ca) / 2).round() * 2;
     }
     final rect = _ovRect();
     String animName(WmAnimation a) => switch (a) {
@@ -1509,7 +1517,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         jobs.add(() async {
           try {
             return {
-              'png': await WatermarkRenderer.renderOverlayPng(ps, ow, oh),
+              if (fast) ...{
+                'raw': await WatermarkRenderer.renderOverlayRaw(ps, ow, oh),
+                'rw': ow,
+                'rh': oh,
+              } else
+                'png': await WatermarkRenderer.renderOverlayPng(ps, ow, oh),
               ...shared,
               // 平鋪的部件沒有「位置」可言，不參與即時幾何
               if (geom != null) ...{
@@ -1731,13 +1744,29 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 把疊加物同步到原生端（重畫 PNG → setOverlays → 精準 seek
   /// 逼它重畫這一格）。指紋沒變就什麼都不做
-  Future<void> _syncPreviewOverlays() async {
+  Future<void> _syncPreviewOverlays({bool full = false}) async {
     if (_ovSyncBusy || !mounted || !_ovLiveOn) return;
     final sig = _ovContentSig();
-    if (sig == _lastOvSig) return;
+    if (sig != _ovSigSeen) {
+      _ovSigSeen = sig;
+      _ovChangeAt = DateTime.now();
+    }
+    if (sig == _lastOvSig && !_ovFastApplied) return;
+    // 內容剛在變（滑桿拖動中）＝快路：半解析度＋raw 直傳，畫面跟著
+    // 滑桿動；停穩 400ms 後自動補一版全解析（畫質歸位）
+    final fast =
+        !full &&
+        sig != 'empty' &&
+        DateTime.now().difference(_ovChangeAt).inMilliseconds < 400;
+    if (sig == _lastOvSig && _ovFastApplied && fast) {
+      _scheduleOvSync(); // 還在拖但內容沒變：等停穩再補全解析
+      return;
+    }
     _ovSyncBusy = true;
     try {
-      final maps = sig == 'empty' ? <Map<String, dynamic>>[] : await _ovMaps();
+      final maps = sig == 'empty'
+          ? <Map<String, dynamic>>[]
+          : await _ovMaps(fast: fast);
       if (!mounted || !_ovLiveOn) return;
       // 烘的期間內容又變了：這一版照樣先上（比螢幕上的新），
       // 上完馬上再排一輪追最新。原本的「作廢讓下一輪重做」在
@@ -1760,7 +1789,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       _ovSetFails = 0;
       _lastOvSig = sig;
-      if (stale) _scheduleOvSync();
+      _ovFastApplied = fast;
+      if (stale || fast) _scheduleOvSync();
       _ovBakedGeom = _ovGeomPending; // 即時幾何的差量基準跟著換
       final shown = maps.isNotEmpty;
       _ovNativePending = shown; // 之後的 compVisible 不要把它翻回去
@@ -1777,9 +1807,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _scheduleOvSync() {
     if (!_ovLiveOn) return;
     if (_ovSyncTimer?.isActive ?? false) return;
-    _ovSyncTimer = Timer(const Duration(milliseconds: 120), () {
+    _ovSyncTimer = Timer(const Duration(milliseconds: 40), () {
       if (!mounted) return;
-      if (_ovContentSig() != _lastOvSig) {
+      if (_ovContentSig() != _lastOvSig || _ovFastApplied) {
         // 幾何還在動：即時幾何正在跟手，停穩 400ms 才整包重烘
         //（歸位畫質；基準＝現值，換上無感）
         if (DateTime.now().difference(_ovGeomActiveAt).inMilliseconds < 400) {
@@ -6825,7 +6855,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _compRebuildTimer?.cancel();
       if (_compDirty) await _ensureComp();
       if (!mounted) return;
-      await _syncPreviewOverlays();
+      await _syncPreviewOverlays(full: true);
       if (!mounted) return;
       if (MetalPreview.active) _metalHideNow();
       unawaited(MetalPreview.park());
