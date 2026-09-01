@@ -71,6 +71,89 @@ final class VCValidator: NSObject, AVVideoCompositionValidationHandling {
 //（閃爍＝週期開關、飄移＝sin/cos、跑馬燈＝線性位移），逐格算正好
 
 /// 一張疊加物（浮水印／文字 PNG）＋它的顯示窗與動畫參數
+/// 檔案的畫面軌格式與色彩標籤，一行字（診斷用）
+func mcFileInfo(_ path: String) -> String {
+  guard !path.isEmpty else { return "無路徑" }
+  let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+  guard let tr = asset.tracks(withMediaType: .video).first else {
+    return "無畫面軌"
+  }
+  var s = "\(Int(tr.naturalSize.width))x\(Int(tr.naturalSize.height))"
+  if let fdAny = tr.formatDescriptions.first {
+    let fd = fdAny as! CMFormatDescription
+    let sub = CMFormatDescriptionGetMediaSubType(fd)
+    let cc = [24, 16, 8, 0].map { sh -> String in
+      let c = UInt8((sub >> UInt32(sh)) & 255)
+      return c >= 32 && c < 127 ? String(UnicodeScalar(c)) : "?"
+    }.joined()
+    let pr =
+      CMFormatDescriptionGetExtension(
+        fd, extensionKey: kCMFormatDescriptionExtension_ColorPrimaries)
+      as? String ?? "無"
+    let tf =
+      CMFormatDescriptionGetExtension(
+        fd, extensionKey: kCMFormatDescriptionExtension_TransferFunction)
+      as? String ?? "無"
+    s += " \(cc) 原色=\(pr.replacingOccurrences(of: "ITU_R_", with: ""))"
+    s += " 曲線=\(tf.replacingOccurrences(of: "ITU_R_", with: ""))"
+  }
+  return s
+}
+
+/// 成品檔抽 3 格（10%/50%/90%），中央 50% 區平均 RGB（顯示轉換後）
+func mcSampleFile(_ path: String) -> String {
+  let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+  let d = CMTimeGetSeconds(asset.duration)
+  guard d > 0.2 else { return "讀不到長度" }
+  let gen = AVAssetImageGenerator(asset: asset)
+  gen.appliesPreferredTrackTransform = true
+  gen.maximumSize = CGSize(width: 160, height: 160)
+  gen.requestedTimeToleranceBefore = .zero
+  gen.requestedTimeToleranceAfter = CMTime(
+    seconds: 0.5, preferredTimescale: 600)
+  var out: [String] = []
+  for t in [d * 0.1, d * 0.5, d * 0.9] {
+    guard
+      let cg = try? gen.copyCGImage(
+        at: CMTime(seconds: t, preferredTimescale: 600), actualTime: nil)
+    else {
+      out.append(String(format: "%.1fs:抽不到", t))
+      continue
+    }
+    let w = cg.width
+    let h = cg.height
+    guard w > 3, h > 3,
+      let ctx = CGContext(
+        data: nil, width: w, height: h, bitsPerComponent: 8,
+        bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    else { continue }
+    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+    guard let dp = ctx.data else { continue }
+    let buf = dp.bindMemory(to: UInt8.self, capacity: w * h * 4)
+    var r = 0.0
+    var g = 0.0
+    var b = 0.0
+    var n = 0.0
+    for y in (h / 4)..<(3 * h / 4) {
+      for x in (w / 4)..<(3 * w / 4) {
+        let i = (y * w + x) * 4
+        r += Double(buf[i])
+        g += Double(buf[i + 1])
+        b += Double(buf[i + 2])
+        n += 1
+      }
+    }
+    if n > 0 {
+      out.append(
+        String(
+          format: "%.1fs:%.3f,%.3f,%.3f", t, r / n / 255, g / n / 255,
+          b / n / 255))
+    }
+  }
+  return out.joined(separator: "；")
+}
+
 final class CIOverlaySpec {
   let image: CIImage  // 已縮放/定位到畫布座標
   let start: Double
@@ -868,6 +951,8 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   /// 保底出動次數：缺格重播上一格／短縫頂住
   static var holdMissCount = 0
   static var holdGapCount = 0
+  /// 起播節奏：閒置 >300ms 後重新收集，前 40 格的到格間隔（ms）
+  static var burstGaps: [Int] = []
 
   static func noteSupply(t: Double, wall: Double) {
     slowLock.lock()
@@ -875,6 +960,8 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
     if watchSupply, lastReqT >= 0 {
       let dt = t - lastReqT
       let dw = wall - lastReqWall
+      if dw > 0.3 { burstGaps = [] }
+      if burstGaps.count < 40 { burstGaps.append(Int(dw * 1000)) }
       // 只看連續播放的相鄰格（畫面差半秒內）；seek、暫停造成的大跳
       // 不算。牆鐘比畫面多等 80ms 以上＝系統在這一格卡住了
       if dt > 0, dt <= 0.5 {
@@ -1993,6 +2080,21 @@ final class AtomicFlag {
             specs: specs,
             stillSpecs: stillSpecs,
             mosaicMaps: (a["mosaics"] as? [[String: Any]]) ?? []))
+      case "finfo":
+        // 檔案格式/色彩標籤（取樣全零查因、成品驗證用）
+        result(mcFileInfo((call.arguments as? String) ?? ""))
+      case "sampleOut":
+        // 成品檔抽格取樣：預覽=輸出的數字證據
+        if let a = call.arguments as? [String: Any],
+          let path = a["path"] as? String
+        {
+          DispatchQueue.global(qos: .utility).async {
+            let r = mcSampleFile(path)
+            DispatchQueue.main.async { result(r) }
+          }
+        } else {
+          result("?")
+        }
       case "mshow":
         MetalPreviewEngine.shared.show(call.arguments as? Bool ?? false)
         result(nil)
@@ -6092,6 +6194,8 @@ final class CompPlayer: NSObject, FlutterTexture {
     m["ciSlow"] = CIExportCompositor.slowFrames
     m["ciSupplyWorst"] = CIExportCompositor.worstSupplyMs
     m["ciSupplyGaps"] = CIExportCompositor.supplyGaps
+    m["ciBurst"] = CIExportCompositor.burstGaps
+      .map(String.init).joined(separator: ",")
     m["ciMiss"] = CIExportCompositor.missTotal
     m["ciMissNotes"] = CIExportCompositor.missNotes
     m["ciHoldMiss"] = CIExportCompositor.holdMissCount
@@ -7592,6 +7696,10 @@ final class MetalPreviewEngine: NSObject {
     if Self.stageLog.count > 10 { Self.stageLog.removeFirst() }
     if !on { stop() }
     active = on && available
+    if active, !isOnStage {
+      stageAt = CACurrentMediaTime()
+      lastShownPts = -1
+    }
     isOnStage = active
     layerHost?.setHDR(hdr)
     layerHost?.setVisible(active)
@@ -7675,6 +7783,7 @@ final class MetalPreviewEngine: NSObject {
             {
               r!.start(at: want)
               scrubRestartAt[sp.id] = now
+              stScrubRestart += 1
             }
           }
         }
@@ -7717,6 +7826,15 @@ final class MetalPreviewEngine: NSObject {
   private var stOvDraws = 0
   private var stOvUploads = 0
   private var stOvUpMaxMs = 0
+  /// 滑動供格來源：解碼佇列命中／pump 保底／解碼器重啟次數
+  private var stScrubReader = 0
+  private var stScrubPump = 0
+  private var stScrubRestart = 0
+  /// 暫停上台滾動偵測：上台 300ms 內畫面倒跳或跳 >0.1s 的次數
+  ///（=「按暫停畫面晃動」的數字證據；0 才算修好）
+  private var stageAt = 0.0
+  private var lastShownPts = -1.0
+  private var stStageRoll = 0
   /// 手指正在滑（最後一次 seek 150ms 內）——容差與統計都看它
   private var scrubbingNow: Bool {
     CACurrentMediaTime() - lastSeekHost < 0.15
@@ -7769,6 +7887,8 @@ final class MetalPreviewEngine: NSObject {
       "maxGapMs": stMaxGapMs,
       "idleFresh": "渲染\(stIdleRenders)/新格\(stIdleFresh)",
       "ovTex": "貼\(stOvDraws)張/上傳\(stOvUploads)次/最久\(stOvUpMaxMs)ms",
+      "scrubSrc": "佇列\(stScrubReader)/保底\(stScrubPump)/重啟\(stScrubRestart)",
+      "stageRoll": stStageRoll,
       "stage": Self.stageLog.joined(separator: " "),
       "onStage": isOnStage,
       "missWho": stMissWho.joined(separator: "、"),
@@ -8170,8 +8290,16 @@ final class MetalPreviewEngine: NSObject {
           if scrubbingNow {
             stIdleRenders += 1
             if rt !== idleLastTex { stIdleFresh += 1 }
+            stScrubReader += 1
           }
           idleLastTex = rt
+          let sPts = rd.lastShown
+          if CACurrentMediaTime() - stageAt < 0.3, lastShownPts >= 0,
+            sPts < lastShownPts - 0.001 || sPts > lastShownPts + 0.1
+          {
+            stStageRoll += 1
+          }
+          lastShownPts = sPts
           if rd.infoReady {
             orient = rd.orient
             dispW = rd.dispW
@@ -8191,6 +8319,7 @@ final class MetalPreviewEngine: NSObject {
           if !playing, scrubbingNow {
             stIdleRenders += 1
             if tex !== beforeTex { stIdleFresh += 1 }
+            stScrubPump += 1
           }
         } else {
           tex = readers[sp.id]?.lastTexture

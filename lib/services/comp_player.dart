@@ -305,6 +305,26 @@ class CompPlayer {
   /// [hdrOut]：匯出選「保留 HDR」時預覽也走 HDR——HDR 素材播原檔
   ///（工作檔是 SDR，播它永遠比成品淡）、合成不做 toneMap。
   /// SDR 輸出時照舊（工作檔＋toneMap，已與成品同曲線）
+  /// 最後一次組建餵給原生的來源路徑（取樣全零時查檔用）
+  static List<String> lastPaths = [];
+
+  static Future<String> sampleOut(String path) async {
+    try {
+      return await _ch.invokeMethod<String>('sampleOut', {'path': path}) ??
+          '?';
+    } catch (_) {
+      return '?';
+    }
+  }
+
+  static Future<String> finfo(String path) async {
+    try {
+      return await _ch.invokeMethod<String>('finfo', path) ?? '?';
+    } catch (_) {
+      return '?';
+    }
+  }
+
   static Future<CompPlayer?> build(
     TimelineModel tl, {
     bool texture = true,
@@ -448,6 +468,9 @@ class CompPlayer {
         'opacity': c.opacity,
       });
     }
+    lastPaths = [
+      for (final c in clips) (c['path'] as String?) ?? '',
+    ];
     try {
       final m = await _ch.invokeMapMethod<String, dynamic>('build', {
         'clips': clips,
@@ -683,6 +706,10 @@ class CompPlayer {
           b.write('／卡住的點：${gaps.join('；')}');
         } else {
           b.write('／沒有等超過 80ms 的格');
+        }
+        final burst = m['ciBurst'];
+        if (burst is String && burst.isNotEmpty) {
+          b.write('\n  起播前40格到格間隔(ms)：$burst');
         }
         // 缺格與保底：哪一軌在什麼時候給不出影格、保底出動了幾次
         final miss = (m['ciMiss'] as num?)?.toInt() ?? 0;

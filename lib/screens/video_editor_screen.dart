@@ -3411,6 +3411,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final v = g.map((x) => x.toStringAsFixed(3)).join(',');
       final kinds = _mPathKind.values.toSet().join('/');
       Diag.note('🎨 色彩取樣[$tag] 來源=$kinds 值=$v');
+      // 全零＝取樣端解不出這個檔（實機 157：HDR 代理取樣全 0）——
+      // 自動附上該檔的格式與色彩標籤，一份報告直接定罪
+      if (g.take(15).every((x) => x.abs() < 0.001)) {
+        for (final p0 in CompPlayer.lastPaths.take(3)) {
+          final inf = await CompPlayer.finfo(p0);
+          final tail = p0.length > 24 ? p0.substring(p0.length - 24) : p0;
+          Diag.note('⚠ 取樣全零，查檔 …$tail → $inf');
+        }
+      }
     } catch (_) {}
   }
 
@@ -6875,10 +6884,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 起播前把編輯期間的浮水印烘回影片：編輯時是介面層畫的
       //（見 _ovEditingLive），播放要走合成才會出現在影片畫面上
       _compRebuildTimer?.cancel();
+      final swPlay = Stopwatch()..start();
       if (_compDirty) await _ensureComp();
       if (!mounted) return;
+      final msRebuild = swPlay.elapsedMilliseconds;
       await _syncPreviewOverlays(full: true);
       if (!mounted) return;
+      final msOvSync = swPlay.elapsedMilliseconds;
       if (MetalPreview.active) _metalHideNow();
       unawaited(MetalPreview.park());
       // 無條件再壓一次隱藏：Dart 的 active 旗標與原生脫節時，
@@ -6888,7 +6900,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 起播前確認影片圖層綁在現役播放器：翻面被打斷過的話，
       // 前層還指著已收掉的舊播放器＝播放全黑（實機 145）
       await MetalPreview.reattach();
+      final msYield = swPlay.elapsedMilliseconds - msOvSync;
       final st = await _comp!.play();
+      tr.log(
+        '起播分段：重組 ${msRebuild}ms／浮水印烘回 ${msOvSync - msRebuild}ms'
+        '／引擎讓位 ${msYield}ms'
+        '／起播呼叫 ${swPlay.elapsedMilliseconds - msOvSync - msYield}ms',
+      );
       tr.log('系統播放器起播（狀態：${st ?? '？'}）');
       final sw = Stopwatch()..start();
       final p0 = now;
@@ -7161,6 +7179,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               '  供格來源：${m['supply']}'
               '／滑動供格 ${m['idleFresh']}'
               '／浮水印 ${m['ovTex']}'
+              '\n  滑動來源：${m['scrubSrc']}'
+              '／暫停上台滾動 ${m['stageRoll']} 次'
               '／在台上=${m['onStage'] == true ? '是' : '否'}\n'
               '  上下台：${m['stage']}'
               '${(m['missWho'] as String?)?.isNotEmpty == true ? '\n  miss層脈絡：${m['missWho']}' : ''}\n'

@@ -16,6 +16,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
+import 'comp_player.dart';
 import 'diagnostics.dart';
 import 'gif_store.dart';
 import 'native_export.dart';
@@ -1548,6 +1549,12 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
       final err = await NativeExport.run(spec, outPath, onProgress: onProgress);
       if (err == null) {
         Diag.note('原生匯出完成（峰值 ${Diag.peakMb} MB）');
+        // 成品驗證：抽 3 格取樣＋讀色彩標籤（預覽=輸出的數字證據）。
+        // 失敗靜默——它是偵測不是功能
+        try {
+          Diag.note('🎨 成品取樣 ${await CompPlayer.sampleOut(outPath)}');
+          Diag.note('成品格式 ${await CompPlayer.finfo(outPath)}');
+        } catch (_) {}
         delRevTemps();
         final r = spec.gif ? await saveAsGif() : await saveToGallery();
         try {
