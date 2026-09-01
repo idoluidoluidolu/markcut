@@ -501,6 +501,10 @@ class WmDiag {
   static int stale = 0;
   static int xfSends = 0;
   static int xfRejects = 0;
+  static int skipBusy = 0;
+  static int skipHold = 0;
+  static int skipGeom = 0;
+  static int xfAfterBake = 0;
   static int lastParts = 0;
   static int lastBytes = 0;
   static final List<int> _lag = [];
@@ -562,14 +566,21 @@ class WmDiag {
     );
     b.writeln('  最近一版：$lastParts 個部件／${(lastBytes / 1024).round()} KB');
     if (xfSends > 0) {
-      b.writeln('  拖曳即時幾何：送 $xfSends 發／被拒收 $xfRejects 發');
+      b.writeln(
+        '  拖曳即時幾何：送 $xfSends 發／被拒收 $xfRejects 發'
+        '／烘完200ms內又送 $xfAfterBake 發（>0 可疑：基準循環）',
+      );
     }
+    b.writeln(
+      '  同步被擋：佔線 $skipBusy／等停穩 $skipHold／讓幾何 $skipGeom',
+    );
     return b.toString();
   }
 
   static void clear() {
     syncs = fastSyncs = rejects = stale = xfSends = xfRejects = 0;
     dropped = 0;
+    skipBusy = skipHold = skipGeom = xfAfterBake = 0;
     lastParts = lastBytes = 0;
     _lag.clear();
     _bake.clear();

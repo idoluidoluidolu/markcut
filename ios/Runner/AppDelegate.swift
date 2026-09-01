@@ -7943,10 +7943,16 @@ final class MetalPreviewEngine: NSObject {
     var layerInfo: [String] = []
     for sp in layers {
       let tail = String(sp.path.suffix(18))
+      // 幾何一併印：轉向/比例問題一眼定位（畫框尺寸與方向旗標）
+      let r = readers[sp.id]
+      let geo = r?.infoReady == true
+        ? "\(Int(r!.dispW))x\(Int(r!.dispH))轉\(r!.orient)"
+        : "\(Int(sp.srcW))x\(Int(sp.srcH))?"
       layerInfo.append(
         "z\(sp.z)@\(String(format: "%.1f", sp.offset))"
           + "~\(String(format: "%.1f", sp.end))"
           + (sp.proxy ? "代理" : "⚠原檔")
+          + "[\(geo)]"
           + "(…\(tail))")
     }
     var queueInfo: [String] = []

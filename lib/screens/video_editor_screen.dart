@@ -1767,6 +1767,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _ovXfLastKey = key;
     WmDiag.xfSends++;
     _ovXfSentAny = true;
+    if (_wmLastApplyAt != null &&
+        DateTime.now().difference(_wmLastApplyAt!).inMilliseconds < 200) {
+      WmDiag.xfAfterBake++;
+    }
     unawaited(
       CompPlayer.setOvXforms(hits, noNudge: MetalPreview.active).then((ok) {
         if (ok || !mounted) return;
@@ -1790,6 +1794,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (!mounted || !_ovLiveOn) return;
     if (_ovSyncBusy) {
       _ovSyncAgain = true; // 烘完自動續跑，不靠計時器（防斷鏈）
+      WmDiag.skipBusy++;
       return;
     }
     final sig = _ovContentSig();
@@ -1806,6 +1811,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         DateTime.now().difference(_ovChangeAt).inMilliseconds < 400;
     if (sig == _lastOvSig && _ovFastApplied && fast) {
       _scheduleOvSync(); // 還在拖但內容沒變：等停穩再補全解析
+      WmDiag.skipHold++;
       return;
     }
     // 幾何拖動中讓路要短：讓 150ms、上限 600ms。原本 400ms/2s 會
@@ -1815,6 +1821,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         DateTime.now().difference(_ovGeomActiveAt).inMilliseconds < 150 &&
         DateTime.now().difference(_ovChangeAt).inMilliseconds < 600) {
       _scheduleOvSync();
+      WmDiag.skipGeom++;
       return;
     }
     // 樣式拖動＝讓引擎上台顯示（60fps、不催合成器）：合成器路每
@@ -1937,12 +1944,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _ovSyncTimer = Timer(const Duration(milliseconds: 40), () {
       if (!mounted) return;
       if (_ovContentSig() != _lastOvSig || _ovFastApplied) {
-        // 幾何還在動：即時幾何正在跟手，停穩 400ms 才整包重烘
-        //（歸位畫質；基準＝現值，換上無感）
-        if (DateTime.now().difference(_ovGeomActiveAt).inMilliseconds < 400) {
-          _scheduleOvSync();
-          return;
-        }
+        // 讓路只留同步入口那一道（150ms/上限 600ms）：這裡原本
+        // 還有一道 400ms「無上限」的讓路，跟「烘圖落地→誤判幾何
+        // 有動」的循環咬住＝樣式秒級斷流（實機 169 事件流）
         unawaited(_syncPreviewOverlays());
       }
     });
