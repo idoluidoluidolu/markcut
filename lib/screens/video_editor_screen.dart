@@ -421,7 +421,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _ovFastApplied = false;
   bool _ovSyncAgain = false;
   DateTime? _wmLastApplyAt;
+  DateTime? _xfLoopSampleAt;
   DateTime? _wmLastBakeStart;
+  bool _ovPadGesture = false;
   int _wmGestureN = 0;
   Timer? _wmGestureTimer;
 
@@ -1466,8 +1468,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<List<Map<String, dynamic>>> _ovMaps({bool fast = false}) async {
     // 外擴（防拖出畫框缺塊）只在幾何拖動時開：它是 4 倍像素量，
     // 樣式拖動用不到卻吃 4 倍搬運（錄影定罪的凍結來源之一）
-    final padF = fast &&
-        DateTime.now().difference(_ovGeomActiveAt).inMilliseconds < 1000;
+    // 外擴與否在手勢開頭決定一次、整個手勢固定：中途翻面＝
+    // rect/pad 交替＝浮水印跳一下（實機 172 樣式閃爍嫌疑之一）
+    if (fast && !_ovFastApplied) {
+      _ovPadGesture =
+          DateTime.now().difference(_ovGeomActiveAt).inMilliseconds < 1000;
+    }
+    final padF = fast && _ovPadGesture;
     final sig =
         '${_ovContentSig()}${fast ? (padF ? ':fp' : ':f') : ''}';
     if (sig == _ovMapsCacheSig && _ovMapsCache.isNotEmpty) {
@@ -1779,6 +1786,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_wmLastApplyAt != null &&
         DateTime.now().difference(_wmLastApplyAt!).inMilliseconds < 200) {
       WmDiag.xfAfterBake++;
+      // 採樣：把漂移的欄位印進事件流（2 秒最多一筆，抓現行用）
+      if (_xfLoopSampleAt == null ||
+          DateTime.now().difference(_xfLoopSampleAt!).inMilliseconds > 2000) {
+        _xfLoopSampleAt = DateTime.now();
+        final h = hits.first;
+        final b0 = _ovBakedGeom[h['id']];
+        Diag.ev(
+          '基準循環樣本 ${h['id']}: '
+          '基準=${b0?.map((v) => v.toStringAsFixed(4)).join(',')} '
+          '現值=${(h['x'] as double).toStringAsFixed(4)},'
+          '${(h['y'] as double).toStringAsFixed(4)},'
+          '${(h['scale'] as double).toStringAsFixed(4)},'
+          '${(h['rot'] as double).toStringAsFixed(2)}',
+        );
+      }
     }
     unawaited(
       CompPlayer.setOvXforms(hits, noNudge: MetalPreview.active).then((ok) {
