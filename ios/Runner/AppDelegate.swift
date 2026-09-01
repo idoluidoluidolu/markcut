@@ -7713,6 +7713,10 @@ final class MetalPreviewEngine: NSObject {
   private var stIdleRenders = 0
   private var stIdleFresh = 0
   private weak var idleLastTex: MTLTexture?
+  /// 浮水印貼圖：畫了幾張／新上傳幾次／單次上傳最久（ms）
+  private var stOvDraws = 0
+  private var stOvUploads = 0
+  private var stOvUpMaxMs = 0
   /// 手指正在滑（最後一次 seek 150ms 內）——容差與統計都看它
   private var scrubbingNow: Bool {
     CACurrentMediaTime() - lastSeekHost < 0.15
@@ -7764,6 +7768,7 @@ final class MetalPreviewEngine: NSObject {
       "supply": "佇列\(stSupplyReader)/過渡\(stSupplyPump)/保底\(stSupplyHold)",
       "maxGapMs": stMaxGapMs,
       "idleFresh": "渲染\(stIdleRenders)/新格\(stIdleFresh)",
+      "ovTex": "貼\(stOvDraws)張/上傳\(stOvUploads)次/最久\(stOvUpMaxMs)ms",
       "stage": Self.stageLog.joined(separator: " "),
       "onStage": isOnStage,
       "missWho": stMissWho.joined(separator: "、"),
@@ -7863,10 +7868,14 @@ final class MetalPreviewEngine: NSObject {
     if let t = ovTextures[key] { return t }
     guard let dev = device else { return nil }
     let loader = MTKTextureLoader(device: dev)
+    let up0 = CACurrentMediaTime()
     let tex = try? loader.newTexture(
       cgImage: cg,
       options: [MTKTextureLoader.Option.SRGB: true as NSNumber])
     if let tex = tex {
+      stOvUploads += 1
+      stOvUpMaxMs = max(
+        stOvUpMaxMs, Int((CACurrentMediaTime() - up0) * 1000))
       if ovTextures.count > 24 { ovTextures.removeAll() }
       ovTextures[key] = tex
     }
@@ -8289,6 +8298,7 @@ final class MetalPreviewEngine: NSObject {
     for ov in ovs {
       guard ov.start <= t, t < ov.end, let tex = ovTexture(ov.cgImg)
       else { continue }
+      stOvDraws += 1
       var x = ov.bx
       var y = ov.by
       var sc = 1.0

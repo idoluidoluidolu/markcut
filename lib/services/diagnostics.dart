@@ -450,6 +450,8 @@ class Diag {
         ..writeln('--- 播放器跟不跟得上（取樣 $playSamples 次）---')
         ..writeln('  影格落後：$playStalls 次（最久落後 $worstStallMs ms）');
     }
+    final wm = WmDiag.section();
+    if (wm.isNotEmpty) b.write(wm);
     if (_counts.isNotEmpty) {
       b.writeln('--- 計數 ---');
       _counts.forEach((k, v) => b.writeln('  $k：$v'));
@@ -461,5 +463,75 @@ class Diag {
       }
     }
     return b.toString();
+  }
+}
+
+/// 浮水印管線偵測器：樣式改變→畫面更新的每一段成本（烘圖/傳輸/
+/// 上屏延遲/快路使用率/拒收/即時幾何），一份報告全照出來
+class WmDiag {
+  static int syncs = 0;
+  static int fastSyncs = 0;
+  static int rejects = 0;
+  static int stale = 0;
+  static int xfSends = 0;
+  static int xfRejects = 0;
+  static int lastParts = 0;
+  static int lastBytes = 0;
+  static final List<int> _lag = [];
+  static final List<int> _bake = [];
+  static final List<int> _send = [];
+
+  static void noteSync({
+    required bool fast,
+    required int lagMs,
+    required int bakeMs,
+    required int sendMs,
+    required int partsN,
+    required int bytesN,
+  }) {
+    syncs++;
+    if (fast) fastSyncs++;
+    lastParts = partsN;
+    lastBytes = bytesN;
+    _push(_lag, lagMs);
+    _push(_bake, bakeMs);
+    _push(_send, sendMs);
+  }
+
+  static void _push(List<int> l, int v) {
+    l.add(v < 0 ? 0 : v);
+    if (l.length > 300) l.removeAt(0);
+  }
+
+  static String _stat(List<int> l) {
+    if (l.isEmpty) return '—';
+    final s = [...l]..sort();
+    final avg = (l.reduce((a, b) => a + b) / l.length).round();
+    final p90 = s[((s.length * 9) ~/ 10).clamp(0, s.length - 1)];
+    return '平均 ${avg}ms／九成 ${p90}ms／最久 ${s.last}ms';
+  }
+
+  static String section() {
+    if (syncs == 0 && xfSends == 0) return '';
+    final b = StringBuffer()..writeln('--- 浮水印管線 ---');
+    b.writeln(
+      '  樣式更新：$syncs 次（即時快路 $fastSyncs／全解析 ${syncs - fastSyncs}）'
+      '／烘完追最新：$stale 次／被拒收：$rejects 次',
+    );
+    b.writeln('  改變到上屏：${_stat(_lag)}（>150ms 就會有「跟」的感覺）');
+    b.writeln('  烘圖：${_stat(_bake)}／傳輸：${_stat(_send)}');
+    b.writeln('  最近一版：$lastParts 個部件／${(lastBytes / 1024).round()} KB');
+    if (xfSends > 0) {
+      b.writeln('  拖曳即時幾何：送 $xfSends 發／被拒收 $xfRejects 發');
+    }
+    return b.toString();
+  }
+
+  static void clear() {
+    syncs = fastSyncs = rejects = stale = xfSends = xfRejects = 0;
+    lastParts = lastBytes = 0;
+    _lag.clear();
+    _bake.clear();
+    _send.clear();
   }
 }

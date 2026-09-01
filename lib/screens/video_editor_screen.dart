@@ -1726,9 +1726,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _ovXfLastAt = DateTime.now();
     _ovXfLastKey = key;
+    WmDiag.xfSends++;
     unawaited(
       CompPlayer.setOvXforms(hits).then((ok) {
         if (ok || !mounted) return;
+        WmDiag.xfRejects++;
         // 原生拒收（wmLive 對不上/合成剛換手）：不能靜默，也不能
         // 讓畫面跟框分家——立刻改走整包重烘，位置照樣會到
         if (_ovXfFailNoted < 3) {
@@ -1763,17 +1765,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     _ovSyncBusy = true;
+    final wmT0 = DateTime.now();
     try {
       final maps = sig == 'empty'
           ? <Map<String, dynamic>>[]
           : await _ovMaps(fast: fast);
+      final wmBakeMs = DateTime.now().difference(wmT0).inMilliseconds;
       if (!mounted || !_ovLiveOn) return;
       // 烘的期間內容又變了：這一版照樣先上（比螢幕上的新），
       // 上完馬上再排一輪追最新。原本的「作廢讓下一輪重做」在
       // 滑桿連續拖動時每一版都作廢＝放手前畫面永遠不更新
       //（實機 157：樣式拖到定位才變）
       final stale = _ovContentSig() != sig;
+      final wmT1 = DateTime.now();
       if (!await CompPlayer.setOverlays(maps)) {
+        WmDiag.rejects++;
         // 原生拒收＝這份合成的 wmLive 跟 Dart 認知走鐘了。連三次
         // 就整組重組自救，不能讓浮水印卡在舊位置（實測回報：
         // 九宮格點了框到了、字不動）
@@ -1790,6 +1796,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _ovSetFails = 0;
       _lastOvSig = sig;
       _ovFastApplied = fast;
+      var wmLag = DateTime.now().difference(_ovChangeAt).inMilliseconds;
+      final wmSend = DateTime.now().difference(wmT1).inMilliseconds;
+      // 不是使用者改動觸發（起播前整包重烘等）就只記工時
+      if (wmLag > 5000) wmLag = wmBakeMs + wmSend;
+      WmDiag.noteSync(
+        fast: fast,
+        lagMs: wmLag,
+        bakeMs: wmBakeMs,
+        sendMs: wmSend,
+        partsN: maps.length,
+        bytesN: maps.fold<int>(0, (a, m) {
+          final d = m['raw'] ?? m['png'];
+          return a + (d is List<int> ? d.length : 0);
+        }),
+      );
+      if (stale) WmDiag.stale++;
       if (stale || fast) _scheduleOvSync();
       _ovBakedGeom = _ovGeomPending; // 即時幾何的差量基準跟著換
       final shown = maps.isNotEmpty;
@@ -7138,6 +7160,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               '／最大幀隙 ${m['maxGapMs']}ms\n'
               '  供格來源：${m['supply']}'
               '／滑動供格 ${m['idleFresh']}'
+              '／浮水印 ${m['ovTex']}'
               '／在台上=${m['onStage'] == true ? '是' : '否'}\n'
               '  上下台：${m['stage']}'
               '${(m['missWho'] as String?)?.isNotEmpty == true ? '\n  miss層脈絡：${m['missWho']}' : ''}\n'
@@ -7248,7 +7271,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     Expanded(
                       child: secondaryAction(
                         label: '清除',
-                        onPressed: () => setSheet(tr.clear),
+                        onPressed: () => setSheet(() {
+                          tr.clear();
+                          WmDiag.clear();
+                        }),
                       ),
                     ),
                     const SizedBox(width: 10),
