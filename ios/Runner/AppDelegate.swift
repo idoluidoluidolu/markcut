@@ -176,12 +176,15 @@ final class CIOverlaySpec {
   let by: Double
   let bs: Double
   let br: Double
+  /// 烘圖畫布外擴比例（每邊）：快路用，拖出畫框再拉回不會缺一塊
+  let pad: Double
 
   /// 解好的點陣（引擎上傳紋理、CI 合成共用同一份）
   let cgImg: CGImage
 
   init?(_ ov: [String: Any], canvas: CGSize) {
     id = ov["id"] as? String
+    pad = ov["pad"] as? Double ?? 0
     bx = ov["bx"] as? Double ?? 0.5
     by = ov["by"] as? Double ?? 0.5
     bs = ov["bs"] as? Double ?? 1
@@ -2191,6 +2194,22 @@ final class AtomicFlag {
         }
         CIExportCompositor.setPreviewOverlays(
           list.compactMap { CIOverlaySpec($0, canvas: p.ciCanvas) })
+        // 差量跟新基準同包到、同一輪主執行緒套用完——分兩發送的話
+        // 引擎會在中間畫出「新圖×舊差量」的爆閃格（實機 161 抖動）
+        if let lv = (call.arguments as? [String: Any])?["live"]
+          as? [[String: Any]]
+        {
+          CIExportCompositor.setLiveOvs(
+            lv.compactMap { m in
+              guard let oid = m["id"] as? String else { return nil }
+              return CompLiveOv(
+                id: oid,
+                x: m["x"] as? Double ?? 0.5,
+                y: m["y"] as? Double ?? 0.5,
+                scale: m["scale"] as? Double ?? 1,
+                rot: m["rot"] as? Double ?? 0)
+            })
+        }
         // 暫停中換清單要逼播放器重畫這一格：光 seek 回同一個時間點
         // 會被當 no-op（實測回報：打字改浮水印、預覽完全不動）。
         // CI 掛著＝擺動半格催重畫就夠；沒掛才重產 vc
@@ -8479,10 +8498,12 @@ final class MetalPreviewEngine: NSObject {
           Float(v),
         ]
       }
-      let a0 = c2(0, 0, 0, 0)
-      let b0 = c2(W, 0, 1, 0)
-      let c0 = c2(0, H, 0, 1)
-      let d0 = c2(W, H, 1, 1)
+      let pw = ov.pad * W
+      let ph = ov.pad * H
+      let a0 = c2(-pw, -ph, 0, 0)
+      let b0 = c2(W + pw, -ph, 1, 0)
+      let c0 = c2(-pw, H + ph, 0, 1)
+      let d0 = c2(W + pw, H + ph, 1, 1)
       let verts = a0 + b0 + c0 + b0 + d0 + c0
       var p = SIMD4<Float>(hdr ? 3.0 : 1.0, hdr ? 1.0 : 0.0, 1.0, 0.0)
       out.setRenderPipelineState(overlayPipe)

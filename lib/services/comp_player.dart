@@ -556,10 +556,14 @@ class CompPlayer {
   /// 換 HDR 預覽的即時疊加物清單（不重建合成）。
   /// 只有 [wmLive] 的合成收得下；成功回 true。暫停中呼叫端要補一個
   /// 精準 seek，逼合成器用新清單重畫當下這一格
-  static Future<bool> setOverlays(List<Map<String, dynamic>> overlays) async {
+  static Future<bool> setOverlays(
+    List<Map<String, dynamic>> overlays, {
+    List<Map<String, dynamic>>? live,
+  }) async {
     try {
       return await _ch.invokeMethod<bool>('setOverlays', {
             'overlays': overlays,
+            'live': ?live,
           }) ??
           false;
     } catch (_) {

@@ -28,15 +28,20 @@ class WatermarkRenderer {
     WatermarkSettings s,
     int outW,
     int outH,
-    ui.ImageByteFormat fmt,
-  ) async {
+    ui.ImageByteFormat fmt, {
+    bool pad = false,
+  }) async {
     final t0 = DateTime.now();
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(recorder);
+    if (pad) canvas.translate(outW * 0.5, outH * 0.5);
     await drawMarks(canvas, s, outW.toDouble(), outH.toDouble());
     final picture = recorder.endRecording();
     final t1 = DateTime.now();
-    final image = await picture.toImage(outW, outH);
+    final image = await picture.toImage(
+      pad ? outW * 2 : outW,
+      pad ? outH * 2 : outH,
+    );
     final t2 = DateTime.now();
     final data = await image.toByteData(format: fmt);
     final t3 = DateTime.now();
@@ -51,12 +56,16 @@ class WatermarkRenderer {
 
   /// 即時路：raw RGBA（預乘）直出，免 PNG 編碼——調樣式拖動中用，
   /// 尺寸就是 [outW]x[outH]
+  /// [pad]＝外擴烘圖：畫布放大成 2 倍、內容置中——拖出畫框再拉
+  /// 回來，框外那截也在圖裡（實機 161：被切掉的先消失才回來）。
+  /// 輸出尺寸是 2*outW x 2*outH
   static Future<Uint8List> renderOverlayRaw(
     WatermarkSettings s,
     int outW,
-    int outH,
-  ) async {
-    return _renderOverlay(s, outW, outH, ui.ImageByteFormat.rawRgba);
+    int outH, {
+    bool pad = false,
+  }) async {
+    return _renderOverlay(s, outW, outH, ui.ImageByteFormat.rawRgba, pad: pad);
   }
 
   /// 照片浮水印：以原始解析度合成照片 + 馬賽克 + 浮水印，輸出 PNG（無損）。

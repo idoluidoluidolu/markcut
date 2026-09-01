@@ -1475,6 +1475,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return maps;
   }
 
+  /// 外擴烘圖的 rect：畫布放大 2 倍、內容置中
+  List<double> _padRect(List<double> r) {
+    if (r.length < 4) return r;
+    return [r[0] - 0.5 * r[2], r[1] - 0.5 * r[3], r[2] * 2, r[3] * 2];
+  }
+
   Future<List<Map<String, dynamic>>> _ovMapsBuild({bool fast = false}) async {
     final out = <Map<String, dynamic>>[];
     // 渲染解析度跟預覽合成一樣短邊 1080 就好；版面是照比例算的
@@ -1518,14 +1524,27 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (geom != null) pending[id] = geom;
         jobs.add(() async {
           try {
+            final padded = fast && geom != null;
             return {
               if (fast) ...{
-                'raw': await WatermarkRenderer.renderOverlayRaw(ps, ow, oh),
-                'rw': ow,
-                'rh': oh,
+                'raw': await WatermarkRenderer.renderOverlayRaw(
+                  ps,
+                  ow,
+                  oh,
+                  pad: padded,
+                ),
+                'rw': padded ? ow * 2 : ow,
+                'rh': padded ? oh * 2 : oh,
               } else
                 'png': await WatermarkRenderer.renderOverlayPng(ps, ow, oh),
               ...shared,
+              // 外擴烘圖：rect 跟著放大一倍（原生裁掉超出畫框的）
+              if (padded) ...{
+                'pad': 0.5,
+                'rect': _padRect(
+                  (shared['rect'] as List<double>?) ?? const [0, 0, 1, 1],
+                ),
+              },
               // 平鋪的部件沒有「位置」可言，不參與即時幾何
               if (geom != null) ...{
                 'id': id,
@@ -1656,13 +1675,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 全域浮水印的即時幾何：現值偏離「烘進 PNG 的基準」就把絕對值
   /// 丟給原生套差量（33ms 節流＋尾發）。PNG 不重畫、合成不重建，
   /// 拖曳/縮放/旋轉全程顯示顏色正確的烘焙版
-  void _liveOvSync() {
-    if (!_ovLiveOn || _ovBakedGeom.isEmpty) return;
+  List<Map<String, dynamic>> _ovLiveHits(Map<String, List<double>> base) {
     // 「所有」偏離基準的部件整包送：位置九宮格是文字＋圖片一起跳，
     // 只送第一個的話另一個永遠不動（實測回報：點置中就是不過來）
     final hits = <Map<String, dynamic>>[];
     void check(String id, double x, double y, double sc, double r) {
-      final b = _ovBakedGeom[id];
+      final b = base[id];
       if (b == null) return;
       if ((b[0] - x).abs() > 1e-4 ||
           (b[1] - y).abs() > 1e-4 ||
@@ -1701,6 +1719,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         }
       }
     }
+    return hits;
+  }
+
+  void _liveOvSync() {
+    if (!_ovLiveOn || _ovBakedGeom.isEmpty) return;
+    final hits = _ovLiveHits(_ovBakedGeom);
     if (hits.isEmpty) {
       // 基準剛換（烘圖落地）而部件已歸位：清掉原生端殘留的舊差量
       // ——留著的話會拿「舊差量×新基準」畫，尺寸跳一下
@@ -1811,7 +1835,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         return;
       }
       final wmT1 = DateTime.now();
-      if (!await CompPlayer.setOverlays(maps)) {
+      // 差量跟這次烘圖的新基準綁同一包，原生一次套用（治拉動爆閃）
+      final liveNow = sig == 'empty'
+          ? const <Map<String, dynamic>>[]
+          : _ovLiveHits(_ovGeomPending);
+      if (!await CompPlayer.setOverlays(maps, live: liveNow)) {
         WmDiag.rejects++;
         // 原生拒收＝這份合成的 wmLive 跟 Dart 認知走鐘了。連三次
         // 就整組重組自救，不能讓浮水印卡在舊位置（實測回報：
@@ -1849,16 +1877,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (fast && !stale) _scheduleOvSync(); // 停穩後補全解析
 
       _ovBakedGeom = _ovGeomPending; // 即時幾何的差量基準跟著換
-      // 基準換了就立刻重算差量（或清空殘留）：兩通道在每次烘圖
-      // 落地時對齊，尺寸不再跳（實機 160）
+      // 差量已跟這次烘圖綁包送達（liveNow）；清 key 讓下一次
+      // 拖曳事件照常重送
       _ovXfLastKey = null;
-      _liveOvSync();
+      _ovXfSentAny = liveNow.isNotEmpty;
       final shown = maps.isNotEmpty;
       _ovNativePending = shown; // 之後的 compVisible 不要把它翻回去
       if (mounted && _ovNativeShown != shown) {
         setState(() => _ovNativeShown = shown);
       }
-      if (!_playing) await _comp?.seek(_position, exact: true);
+      if (!_playing && !full) await _comp?.seek(_position, exact: true);
     } finally {
       _ovSyncBusy = false;
       if (_ovSyncAgain && mounted) {
