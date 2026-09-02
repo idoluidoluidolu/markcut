@@ -1991,9 +1991,13 @@ final class AtomicFlag {
           gen.dynamicRangePolicy = .matchSource
         }
         // 容忍 0.15 秒：允許解碼器就近取材，不必逐格精準解到底，
-        // 這是「快」的關鍵；拖曳預覽差半格人眼看不出來
-        gen.requestedTimeToleranceBefore = CMTime(seconds: 0.15, preferredTimescale: 600)
-        gen.requestedTimeToleranceAfter = CMTime(seconds: 0.15, preferredTimescale: 600)
+        // 這是「快」的關鍵；拖曳預覽差半格人眼看不出來。
+        // 呼叫端可以給更寬的 tolMs（GIF 頁縮圖帶：粗抽給整支長度＝
+        // 直接拿最近的關鍵幀、一格只解一張；細抽再收到半格）
+        let tolMs = max(0, args["tolMs"] as? Int ?? 150)
+        let tol = CMTime(value: Int64(tolMs), timescale: 1000)
+        gen.requestedTimeToleranceBefore = tol
+        gen.requestedTimeToleranceAfter = tol
         var payload: FlutterStandardTypedData?
         if let cg = try? gen.copyCGImage(
           at: CMTime(value: Int64(ms), timescale: 1000), actualTime: nil)
@@ -4859,6 +4863,27 @@ final class CompPlayer: NSObject, FlutterTexture {
   static var stNudgeFired = 0
   static var stNudgeDropped = 0
   static var stItemSwaps = 0
+  /// 催重畫「落地」花多久（毫秒）：冷起手（上一發在 1 秒以前＝暫停很久
+  /// 之後的第一版）跟熱發分開記。Dart 端只量得到送出、量不到落地——
+  /// 「第一下改樣式先頓一下」是不是暫停中的解碼器冷起手，看這兩組
+  static var stNudgeColdMs: [Int] = []
+  static var stNudgeWarmMs: [Int] = []
+  static func noteNudgeLanded(ms: Int, cold: Bool) {
+    if cold {
+      stNudgeColdMs.append(ms)
+      if stNudgeColdMs.count > 40 { stNudgeColdMs.removeFirst() }
+    } else {
+      stNudgeWarmMs.append(ms)
+      if stNudgeWarmMs.count > 200 { stNudgeWarmMs.removeFirst() }
+    }
+  }
+  static func nudgeLandInfo() -> String {
+    func stat(_ a: [Int]) -> String {
+      if a.isEmpty { return "—" }
+      return "\(a.count)發 平均\(a.reduce(0, +) / a.count)ms 最久\(a.max() ?? 0)ms"
+    }
+    return "/落地 冷起手 \(stat(stNudgeColdMs))；熱 \(stat(stNudgeWarmMs))"
+  }
 
   /// 暫停中「只換 vc、不 seek」的重畫（見 rerenderPaused）：
   /// 真的換了幾次／被延到窗尾合併掉幾發
@@ -4902,6 +4927,8 @@ final class CompPlayer: NSObject, FlutterTexture {
       }
       return
     }
+    // 落地計時：上一發在 1 秒以前＝冷起手（見 stNudgeColdMs）
+    let cold = nowN - lastNudgeAt > 1.0
     lastNudgeAt = nowN
     Self.stNudgeFired += 1
     nudging = true
@@ -4916,6 +4943,8 @@ final class CompPlayer: NSObject, FlutterTexture {
       [weak self] _ in
       DispatchQueue.main.async {
         guard let self = self else { return }
+        CompPlayer.noteNudgeLanded(
+          ms: Int((CACurrentMediaTime() - nowN) * 1000), cold: cold)
         self.nudging = false
         if self.nudgePending {
           self.nudgePending = false
@@ -6537,6 +6566,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       m["nudgeInfo"] =
         "\(Self.stNudgeFired)發/丟\(Self.stNudgeDropped)/換件\(Self.stItemSwaps)次"
         + "/vc換\(Self.stVcSwaps)延\(Self.stVcDeferred)"
+        + CompPlayer.nudgeLandInfo()
       m["seekAvgMs"] = seekMs.reduce(0, +) / seekMs.count
       m["seekP50Ms"] = sorted[sorted.count / 2]
       m["seekP90Ms"] = sorted[min(sorted.count - 1, sorted.count * 9 / 10)]
