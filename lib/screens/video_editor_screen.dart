@@ -446,14 +446,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 面板滑桿按著沒放（onLiveChange 進來＝拖動中；放手那一下的
-  /// onChanged 收掉）。保底：一秒沒有新的一格就當放手了。
+  /// onChanged 收掉）。保底：[_wmHoldMs] 沒有新的一格就當放手了——
+  /// 放手一定會走 onChanged，保底只防面板中途被拆掉。之前是一秒：
+  /// 按住滑桿想一下再拉（觸下那一格就算一格），一秒一到全解析、
+  /// 存草稿、排隊的合成重建全落在手指底下，接著一拉就是「沒反應」
   /// 這段期間：疊加物同步一律走快路、不起烘全解析；合成不重組、
   /// 不換工作檔、不存草稿——那三樣任何一件落在手指還在動的時候，
   /// 都是「拉到一半硬停、過一會兒才跟上」
   bool _wmSliding = false;
   DateTime _wmLiveAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const int _wmHoldMs = 2500;
   bool get _wmGestureOn =>
-      _wmSliding && DateTime.now().difference(_wmLiveAt).inMilliseconds < 1000;
+      _wmSliding &&
+      DateTime.now().difference(_wmLiveAt).inMilliseconds < _wmHoldMs;
 
   /// 診斷：手勢中上屏節奏（斷流偵測、每手勢幾版）
   DateTime? _wmLastApplyAt;
@@ -466,6 +471,27 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   String _ovMapsCacheSig = '';
   List<Map<String, dynamic>> _ovMapsCache = const [];
   int _ovSetFails = 0;
+
+  /// 疊加物同步為什麼會沒有收件方／被拒收（診斷事件用；Dart 這邊
+  /// 看得到的狀態，原生端拒收的條件跟這幾個一一對應）
+  String _ovNoReceiverWhy() {
+    if (_compBuilding != null) return '合成重建中';
+    final c = _comp;
+    if (c == null) return '沒有合成';
+    if (!c.wmLive) return '這份合成不收即時清單';
+    return '原生端沒有即時合成器';
+  }
+
+  /// [OverlaySync.onNoReceiver]：HDR 預覽（收件方本來就該在）時才記，
+  /// SDR 由 Flutter 畫、沒收件方是常態；半秒內只記一筆
+  DateTime _ovNoReceiverAt = DateTime.fromMillisecondsSinceEpoch(0);
+  void _ovNoteNoReceiver() {
+    if (!mounted || !(_exportHdr && _hdrAvail == true)) return;
+    final now = DateTime.now();
+    if (now.difference(_ovNoReceiverAt).inMilliseconds < 500) return;
+    _ovNoReceiverAt = now;
+    Diag.ev('疊加物請求沒有收件方（${_ovNoReceiverWhy()}）');
+  }
 
   /// 這份合成收不收即時疊加物（HDR 預覽且原生端掛了預覽合成器）
   bool get _ovLiveOn => _compOn && (_comp?.wmLive ?? false);
@@ -535,8 +561,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (!_tl.sources.any((s) => s.isVideo)) return;
     final deadline = DateTime.now().add(const Duration(seconds: 3));
     _dressVN.value = 0.06;
-    // 合成器先叫起來（await＝組好或確定組不起來才回來）
-    await _ensureComp();
+    // 合成器先叫起來（await＝組好或確定組不起來才回來）。
+    // 讀取遮罩在場（匯入／草稿補檔中）就交給 _drainPrep：它問過
+    // HDR/SDR 模式才組（這裡組的那顆管線多半是錯的，收尾還得重組），
+    // 遮罩收掉之前使用者也看不到編輯器，不缺這一顆
+    if (!_prepBusy) await _ensureComp();
     // 只等「真的有片段在用」的素材：清單裡可能躺著沒被引用的素材
     //（量位元率用的、剪掉片段後留下的），它們的縮圖沒人急、
     // 也可能永遠不會來——等它們就是白白吃滿 3 秒
@@ -1429,7 +1458,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       );
       return;
     }
-    unawaited(_ensureComp());
+    unawaited(_ensureComp(yieldToGesture: true));
   }
 
   Timer? _compRebuildTimer;
@@ -1497,13 +1526,27 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 跑馬燈）540p raw 一張 2MB。滿了整包清掉（下一版重畫）
   static const int _ovPartCacheCap = 32 << 20;
 
+  /// 同一張正在畫的（鍵相同）等同一份：停手後的全解析跟緊接著的
+  /// 合成重建要的是同一批 1080 圖，各畫一份＝主執行緒與點陣化
+  /// 排兩倍的工，下一手的快路就排在它們後面（實機：斷流 250~435ms）
+  final Map<String, Future<OverlayPartImage?>> _ovPartInflight = {};
+
   Future<OverlayPartImage?> _ovPartBaked(
     String key,
     Future<OverlayPartImage?> Function() draw,
   ) async {
     final hit = _ovPartCache[key];
     if (hit != null) return hit;
-    final part = await draw();
+    final going = _ovPartInflight[key];
+    if (going != null) return going;
+    final task = draw();
+    _ovPartInflight[key] = task;
+    OverlayPartImage? part;
+    try {
+      part = await task;
+    } finally {
+      if (identical(_ovPartInflight[key], task)) _ovPartInflight.remove(key);
+    }
     if (part == null) return null; // 整個在畫布外：沒東西可畫，不進快取
     if (_ovPartCacheBytes + part.bytes.length > _ovPartCacheCap) {
       _ovPartCache.clear();
@@ -1828,6 +1871,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 九宮格點了框到了、字不動）
       _ovSetFails++;
       Diag.note('疊加物清單被拒收（第 $_ovSetFails 次）');
+      // 事件流也記一筆（帶原因）：拒收落在哪個手勢、哪次換件旁邊，
+      // 報告自己會講。狀態機會在 retryMs 後補送這版
+      Diag.ev('疊加物拒收 #$_ovSetFails（${_ovNoReceiverWhy()}）');
       if (_ovSetFails >= 3 && mounted) {
         _ovSetFails = 0;
         _compDirty = true;
@@ -2232,6 +2278,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       apply: _ovApply,
       // 滑桿按著＝手勢中（不靠指紋停 500ms 推測），全解析等放手
       gestureActive: () => _wmGestureOn,
+      onNoReceiver: _ovNoteNoReceiver,
     );
     _ovWired = true;
     // 量「誰在卡」：UI 執行緒、合成執行緒、還是影片本身。
@@ -3043,7 +3090,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_pendingCompRebuild) {
       _pendingCompRebuild = false;
       _compDirty = true;
-      unawaited(_ensureComp());
+      unawaited(_ensureComp(yieldToGesture: true));
     }
   }
 
@@ -6519,12 +6566,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 該重組自然會再組、已新鮮就直接返回
   Future<void>? _compBuilding;
 
-  Future<void> _ensureComp() async {
+  /// [yieldToGesture]：面板滑桿按著就先不換（編輯類的併批重建走這條；
+  /// 進場／匯入／調色那些不等）。見 [_compYieldToGesture]
+  Future<void> _ensureComp({bool yieldToGesture = false}) async {
     Diag.ev('合成重建開始');
     while (_compBuilding != null) {
       await _compBuilding;
     }
-    final task = _ensureCompInner();
+    final task = _ensureCompInner(yieldToGesture: yieldToGesture);
     _compBuilding = task;
     try {
       await task;
@@ -6533,7 +6582,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
   }
 
-  Future<void> _ensureCompInner() async {
+  /// 換 item 不能落在面板滑桿按著的時候。換手空窗（原生組好新的到
+  /// 新畫面上檔）裡舊畫面不再重畫、新畫面還沒出來，這段期間拖滑桿
+  /// 就是「沒反應」，上檔那一刻才一次跳到最新（實機：重建緊貼在
+  /// 手勢起手前，第一下拉沒反應）。重建前的整版烘圖要幾百毫秒，
+  /// 起手常常落在那裡面——烘完再看一次。讓一手：髒旗標留著，
+  /// 停手 350ms 後 [_compRebuildTick] 再來（圖已進快取，幾乎不用等）
+  bool _compYieldToGesture() {
+    if (!_wmGestureOn) return false;
+    Diag.ev('合成重建讓給滑桿');
+    _compRebuildTimer?.cancel();
+    _compRebuildTimer = Timer(
+      const Duration(milliseconds: 350),
+      _compRebuildTick,
+    );
+    return true;
+  }
+
+  Future<void> _ensureCompInner({bool yieldToGesture = false}) async {
     if (!Diag.compPlayer.value) {
       if (_comp != null) {
         await _comp!.dispose();
@@ -6551,6 +6617,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _pendingCompRebuild = true;
       return;
     }
+    if (yieldToGesture && _compYieldToGesture()) return;
     // 調色模式一開就退回材質路徑：畫面走系統影片圖層時 Flutter 的濾鏡
     // 疊不上去，本來是「拉到有顏色的那一刻」才換路徑——換路徑要拆掉
     // 合成播放器、重建每個片段的播放器，那一下就是使用者說的
@@ -6578,6 +6645,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ovSigAtBuild = _ovContentSig();
       if (ovSigAtBuild != OverlaySync.empty) {
         ovMaps = await _ovMaps(ovSigAtBuild);
+        // 烘圖這幾百毫秒裡使用者可能按上了滑桿：現在換 item 就是
+        // 把換手空窗放在手指底下
+        if (yieldToGesture && _compYieldToGesture()) return;
       }
     }
     // 用系統影片圖層顯示時不要另外出一份材質：那份沒有人看，

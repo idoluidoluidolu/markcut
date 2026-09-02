@@ -5,6 +5,9 @@
 // 3. gestureActive 期間不起烘全解析（拖到一半停手半秒也不會）；
 //    放手後補一版
 // 4. 合成重建帶著最新版（reset）之後，在途的快路版本不會倒退上屏
+// 5. 原生拒收（換件那一下）：retryMs 後自己補送一次，同一版最多
+//    maxRetries 次，不會無限打原生
+// 6. 沒有收件方時的 request 不丟：reset（新合成上檔）時補跑
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -18,6 +21,10 @@ class _Rig {
   String sig = 'a';
   bool gesture = false;
   bool on = true;
+
+  /// 接下來幾次 apply 要拒收（模擬原生換件中）／沒有收件方被叫了幾次
+  int rejectN = 0;
+  int noReceiver = 0;
   DateTime t = DateTime(2026, 1, 1);
   final List<(String, bool)> baked = [];
   final List<(String, bool)> applied = [];
@@ -26,6 +33,7 @@ class _Rig {
     enabled: () => on,
     signature: () => sig,
     gestureActive: () => gesture,
+    onNoReceiver: () => noReceiver++,
     now: () => t,
     bake: (s, fast) async {
       baked.add((s, fast));
@@ -38,6 +46,10 @@ class _Rig {
     },
     apply: (maps, s, fast) async {
       applied.add((s, fast));
+      if (rejectN > 0) {
+        rejectN--;
+        return false;
+      }
       return true;
     },
   );
@@ -192,6 +204,65 @@ void main() {
     await r.elapse(tester, 2000);
     expect(done, isTrue);
     expect(r.applied.last, ('b', false));
+    r.sync.dispose();
+  });
+
+  testWidgets('原生拒收：retryMs 後自己補送一次，成功才記為已上屏', (
+    tester,
+  ) async {
+    final r = _Rig();
+    r.rejectN = 1;
+    r.sync.request();
+    await r.turn(tester);
+    await r.elapse(tester, r.fastMs);
+    expect(r.applied, [('a', true)]);
+    expect(r.sync.appliedSig, isNull, reason: '被拒收的不算上屏');
+    expect(r.sync.rejects, 1);
+    // 沒有人再叫 request：retryMs 後自己補送（不是立刻硬打原生）
+    await r.elapse(tester, r.sync.retryMs - 5);
+    expect(r.applied.length, 1);
+    await r.elapse(tester, 10 + r.fastMs);
+    expect(r.applied, [('a', true), ('a', true)]);
+    expect(r.sync.appliedSig, 'a');
+    expect(r.sync.appliedFast, isTrue);
+    r.sync.dispose();
+  });
+
+  testWidgets('一直拒收：同一版最多補 maxRetries 次，指紋一變重新計', (
+    tester,
+  ) async {
+    final r = _Rig();
+    r.rejectN = 99;
+    r.sync.request();
+    await r.elapse(tester, 3000);
+    expect(r.applied.length, 1 + r.sync.maxRetries);
+    expect(r.sync.appliedSig, isNull);
+    // 內容一變：新的一版照樣送（補送額度重新計）
+    r.sig = 'b';
+    r.sync.request();
+    await r.turn(tester);
+    await r.elapse(tester, r.fastMs);
+    expect(r.applied.last, ('b', true));
+    r.sync.dispose();
+  });
+
+  testWidgets('沒有收件方時的 request 不丟：reset 之後自己補跑', (
+    tester,
+  ) async {
+    final r = _Rig();
+    r.on = false;
+    r.sync.request();
+    await r.turn(tester);
+    expect(r.baked, isEmpty);
+    expect(r.sync.offDrops, 1);
+    expect(r.noReceiver, 1);
+    // 合成組好了（沒帶疊加物）：不靠別人再叫 request
+    r.on = true;
+    r.sync.reset(appliedSig: 'off');
+    await r.turn(tester);
+    expect(r.baked, [('a', true)]);
+    await r.elapse(tester, r.fastMs);
+    expect(r.sync.appliedSig, 'a');
     r.sync.dispose();
   });
 }

@@ -16,6 +16,11 @@ import 'dart:async';
 ///    [gestureActive] 回 true 的期間一律不起烘全解析。
 /// 6. 烘的期間指紋又變了：這版照樣上（比螢幕上的新），烘完立刻追；
 ///    螢幕上已經是最新內容的話這版就丟（上了會閃回舊內容）。
+/// 7. 沒有收件方（[enabled] 回 false：合成還沒組好／換手中）時的
+///    [request] 不丟：記著，[reset]（新合成上檔）時補跑一次。
+/// 8. 原生拒收（換件那一下）：這版沒記為已上屏，[retryMs] 後自己補送
+///    一次（同一版最多 [maxRetries] 次；指紋一變就重新計）——沒有
+///    人會再叫 [request] 的話，那一格就永遠停在舊樣式。
 class OverlaySync {
   OverlaySync({
     required this.enabled,
@@ -23,9 +28,12 @@ class OverlaySync {
     required this.bake,
     required this.apply,
     this.gestureActive,
+    this.onNoReceiver,
     this.debounceMs = 40,
     this.minGapMs = 80,
     this.quietMs = 500,
+    this.retryMs = 120,
+    this.maxRetries = 3,
     this.now = DateTime.now,
   });
 
@@ -54,9 +62,16 @@ class OverlaySync {
   /// 拉到一半硬停、過一會兒才跟上）。沒給＝只靠指紋推測
   final bool Function()? gestureActive;
 
+  /// 診斷：一次檢查因為沒有收件方而略過（呼叫端自己決定記不記）
+  final void Function()? onNoReceiver;
+
   final int debounceMs;
   final int minGapMs;
   final int quietMs;
+
+  /// 原生拒收後多久補送、同一版最多補幾次
+  final int retryMs;
+  final int maxRetries;
 
   /// 時鐘（測試注入假時鐘用）
   final DateTime Function() now;
@@ -83,16 +98,23 @@ class OverlaySync {
   bool _inflightFull = false;
   Future<void>? _bg;
   bool _again = false;
+  // 沒有收件方時有人叫過 request（reset 時補跑）／這一輪被拒收要補送
+  bool _offDropped = false;
+  bool _retry = false;
+  int _retryN = 0;
   Timer? _timer;
   DateTime? _due;
   bool _disposed = false;
 
   /// 計數（診斷）：佔線略過／等停穩／丟過期／烘完追最新／全解析退背景
+  /// ／沒有收件方略過／原生拒收
   int skipBusy = 0;
   int skipHold = 0;
   int dropped = 0;
   int stale = 0;
   int demoted = 0;
+  int offDrops = 0;
+  int rejects = 0;
 
   /// 內容可能變了。任何地方都可以隨便叫，便宜（只排計時器）。
   /// 閒置後的第一次變更不等併批（點一格九宮格的延遲不該從
@@ -123,7 +145,16 @@ class OverlaySync {
     final sig = _observe();
     this.appliedSig = appliedSig;
     appliedFast = false;
+    // 新收件方：舊合成的拒收帳一筆勾銷
+    _retry = false;
+    _retryN = 0;
     if (appliedSig == sig) _appliedSeq = _seq;
+    // 組建期間被略過的 request 在這裡補跑（呼叫端多半也會再叫一次
+    // request；同時刻的兩個排程會併成一個）
+    if (_offDropped) {
+      _offDropped = false;
+      _armIn(0);
+    }
   }
 
   void dispose() {
@@ -137,6 +168,7 @@ class OverlaySync {
       _seenSig = sig;
       _seq++;
       _changedAt = now();
+      _retryN = 0; // 新的一版，補送次數重新計
     }
     return sig;
   }
@@ -160,7 +192,14 @@ class OverlaySync {
   }
 
   Future<void> _run({bool full = false}) async {
-    if (_disposed || !enabled()) return;
+    if (_disposed) return;
+    if (!enabled()) {
+      // 沒有收件方（合成還沒組好／換手中）：不丟，reset 時補跑
+      _offDropped = true;
+      offDrops++;
+      onNoReceiver?.call();
+      return;
+    }
     _lastRun = now();
     final sig = _observe();
     if (_inflight != null) {
@@ -222,11 +261,17 @@ class OverlaySync {
       } else if (identical(_inflight, task)) {
         _inflight = null;
       }
-      if (!_disposed && (_again || appliedFast)) {
-        final chase = _again;
-        _again = false;
-        // 追最新不等併批（節拍由 minGapMs 管）／排停穩後的全解析
-        _armIn(chase ? 0 : debounceMs);
+      if (!_disposed) {
+        if (_again) {
+          _again = false;
+          _retry = false;
+          _armIn(0); // 追最新不等併批（節拍由 minGapMs 管）
+        } else if (_retry) {
+          _retry = false;
+          _armIn(retryMs); // 被拒收：換件那一下過了再補送這版
+        } else if (appliedFast) {
+          _armIn(debounceMs); // 排停穩後的全解析
+        }
       }
     }
   }
@@ -258,7 +303,17 @@ class OverlaySync {
     final n = ++_sendN;
     // 回來時只有「最後送的那版」能記為已上屏——送出後又送了更新的
     // 一版的話，螢幕上是那一版，由它自己回來記
-    if (await apply(maps, sig, fast) && n == _sendN) {
+    if (!await apply(maps, sig, fast)) {
+      // 拒收：指紋沒記、序號已記（更舊的照樣丟）。沒有人會再叫
+      // request 的話這版就永遠上不去——排一次補送（見規則 8）
+      rejects++;
+      if (_retryN < maxRetries) {
+        _retryN++;
+        _retry = true;
+      }
+      return;
+    }
+    if (n == _sendN) {
       appliedSig = sig;
       appliedFast = fast;
     }

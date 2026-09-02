@@ -143,6 +143,7 @@ class WorkFiles {
     final dir = await _dir();
     final name = 'wh${DateTime.now().microsecondsSinceEpoch}_${_seq++}.mp4';
     final dest = '${dir.path}${Platform.pathSeparator}$name';
+    final sw = Stopwatch()..start();
     _inFlight.add(dest);
     String? made;
     try {
@@ -163,11 +164,31 @@ class WorkFiles {
       'at': DateTime.now().millisecondsSinceEpoch,
     };
     await _save();
+    // 秒數跟工作檔那條一樣記下來：匯入慢在哪一段，報告裡直接看得到
     Diag.note(
-      'HDR 代理完成 ${(File(made).lengthSync() / 1048576).round()}MB（HLG 直通）',
+      'HDR 代理完成 ${sw.elapsed.inSeconds}秒 '
+      '${(File(made).lengthSync() / 1048576).round()}MB（HLG 直通）',
     );
     unawaited(sweep());
     return made;
+  }
+
+  /// 作廢一支壞掉的 HDR 代理（索引移除＋檔案刪掉），理由跟
+  /// [invalidate] 同一個：媒體服務重置的窗口裡編碼器會吐出沒有視訊軌
+  /// 的殘檔卻回報成功，呼叫端驗出來就送來這裡
+  static Future<void> invalidateHdr(String src) async {
+    if (kIsWeb) return;
+    try {
+      final idx = await _load();
+      final key = '$src#hdr6';
+      final e = idx[key];
+      final work = (e is Map) ? e['work'] as String? : null;
+      if (idx.remove(key) != null) await _save();
+      if (work != null) {
+        final f = File(work);
+        if (f.existsSync()) await f.delete();
+      }
+    } catch (_) {}
   }
 
   /// 草稿裡記的工作檔還能不能用。
