@@ -724,33 +724,9 @@ class _DraftsScreenState extends State<DraftsScreen> {
   Map<String, dynamic>? _collageDraft;
   bool _loading = true;
 
-  /// 影片草稿最多留幾份（超過自動刪最舊的，見 DraftStore.prune）
-  int _cap = DraftStore.defaultMax;
-
   /// 選取模式：勾好幾份、右上角垃圾桶一次刪
   bool _selecting = false;
   final Set<String> _picked = {};
-
-  /// 調草稿上限。調小到會刪掉現有草稿時先講清楚哪幾份要走，
-  /// 確認了才存設定＋清理
-  Future<void> _editCap() async {
-    final picked = await _pickCap(context, current: _cap);
-    if (picked == null || !mounted) return;
-    final over = _drafts.length - picked;
-    if (over > 0) {
-      final ok = await showConfirm(
-        context,
-        title: '上限改成 $picked 份？',
-        message: '現在有 ${_drafts.length} 份影片草稿，最舊的 $over 份會被刪掉，無法復原',
-        action: '改成 $picked 份',
-      );
-      if (!ok || !mounted) return;
-    }
-    await DraftStore.setMaxDrafts(picked);
-    await DraftStore.prune();
-    if (mounted) showHint(context, '草稿最多保留 $picked 份');
-    _reload();
-  }
 
   Future<void> _deletePicked() async {
     if (_picked.isEmpty) return;
@@ -779,7 +755,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
 
   Future<void> _reload() async {
     final found = await DraftStore.list();
-    final cap = await DraftStore.maxDrafts();
     final prefs = await SharedPreferences.getInstance();
     Map<String, dynamic>? photo;
     final ps = prefs.getString(kPhotoDraftKey);
@@ -816,7 +791,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
     if (mounted) {
       setState(() {
         _drafts = found;
-        _cap = cap;
         _photoDraft = photo;
         _batchDraft = batch;
         _gifDraft = gif;
@@ -1227,19 +1201,11 @@ class _DraftsScreenState extends State<DraftsScreen> {
                 }),
                 child: const Text('取消'),
               ),
-            ] else ...[
-              // 草稿上限（每個影片專案都會自動存成草稿，總得有個上限）
-              IconButton(
-                tooltip: '草稿上限',
-                icon: const Icon(Icons.tune, size: 22),
-                onPressed: _editCap,
+            ] else if (ds.isNotEmpty)
+              TextButton(
+                onPressed: () => setState(() => _selecting = true),
+                child: const Text('選取'),
               ),
-              if (ds.isNotEmpty)
-                TextButton(
-                  onPressed: () => setState(() => _selecting = true),
-                  child: const Text('選取'),
-                ),
-            ],
           ],
         ),
         // 刪除列疊在 body 的 Stack 裡，不用 Scaffold.bottomSheet：
@@ -1255,8 +1221,8 @@ class _DraftsScreenState extends State<DraftsScreen> {
                     child: Padding(
                       padding: EdgeInsets.all(32),
                       child: Text(
-                        '沒有草稿。\n\n影片專案會自動存成草稿放在這裡；\n'
-                        '照片、批次、GIF 與拼圖要在離開時選「保留草稿」。',
+                        '沒有草稿。\n\n編輯到一半離開時選「保留草稿」，'
+                        '就會存在這裡。',
                         textAlign: TextAlign.center,
                         style: TextStyle(color: kLTextDim, height: 1.6),
                       ),
@@ -1350,22 +1316,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
                           onDelete: _deleteCollage,
                         ),
                       ],
-                      // 上限的說明放在清單尾巴：草稿哪天少了一份，
-                      // 這裡就是答案（不是壞掉、是自動清了最舊的）
-                      if (ds.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(8, 18, 8, 8),
-                          child: Text(
-                            '影片專案會自動存成草稿，最多保留 $_cap 份；'
-                            '超過時最舊的會自動刪掉（右上角可以調）',
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: kLTextDim,
-                              height: 1.5,
-                            ),
-                          ),
-                        ),
                       // 底部刪除列滑上來時，最後一張卡不被蓋住
                       if (_selecting) const SizedBox(height: 88),
                     ],
@@ -1419,84 +1369,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
       ),
     );
   }
-}
-
-/// 草稿上限的選單：從 DraftStore.maxChoices 挑一個，目前的打勾。
-/// 回 null＝取消
-Future<int?> _pickCap(BuildContext context, {required int current}) {
-  final c = pageColors(context);
-  return showDialog<int>(
-    context: context,
-    builder: (context) => Dialog(
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: c.line),
-      ),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: kDialogWidth),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 24, 20, 10),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                '草稿最多保留幾份',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 15.5,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.3,
-                  color: c.text,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                '每個影片專案都會自動存成草稿；超過上限時，最舊的會自動刪掉',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 12.5, color: c.dim, height: 1.55),
-              ),
-              const SizedBox(height: 12),
-              for (final n in DraftStore.maxChoices)
-                InkWell(
-                  borderRadius: BorderRadius.circular(10),
-                  onTap: () => Navigator.pop(context, n),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      vertical: 11,
-                      horizontal: 8,
-                    ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            '$n 份',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: n == current
-                                  ? FontWeight.w700
-                                  : FontWeight.w500,
-                              color: c.text,
-                            ),
-                          ),
-                        ),
-                        if (n == current)
-                          Icon(Icons.check, size: 18, color: c.accent),
-                      ],
-                    ),
-                  ),
-                ),
-              const SizedBox(height: 4),
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('取消'),
-              ),
-            ],
-          ),
-        ),
-      ),
-    ),
-  );
 }
 
 /// 我的 GIF：做好的 GIF 都留一份在這裡。

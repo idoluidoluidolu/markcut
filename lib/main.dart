@@ -3,14 +3,12 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:image_picker_android/image_picker_android.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 import 'package:media_kit/media_kit.dart';
 
 import 'screens/home_screen.dart';
 import 'services/diagnostics.dart';
-import 'services/draft_store.dart';
 import 'services/steady_pointer.dart';
 import 'services/playback_trace.dart';
 import 'theme.dart';
@@ -35,9 +33,6 @@ void main() {
   // 上次執行有沒有做到一半就被系統收掉（匯出閃退不會留當機報告，
   // 只有這個黑盒子留得下現場）。讀完就刪，診斷畫面看得到
   unawaited(Diag.loadLastRun());
-  // 草稿超過上限的部分在啟動時清掉（最舊的先走）。這時候還沒開任何
-  // 專案，不會清到正在編輯的；每次存草稿也各清一次，見 DraftStore.prune
-  unawaited(DraftStore.prune());
   // 拖曳預覽的快取幀很密，預設 100 張一下就滿、一滿就要重新解碼＝卡頓，
   // 所以要放大一點。但不能放太大：手機上這裡吃掉的記憶體會讓匯出時
   // FFmpeg 要不到記憶體、整個 App 被系統殺掉（拖曳的影格另有自己的
@@ -87,33 +82,6 @@ class MarkCutApp extends StatelessWidget {
         debugShowCheckedModeBanner: false,
         showPerformanceOverlay: perf,
         theme: buildStudioTheme(),
-        // 整個 App 的介面都是繁體中文，Flutter 自己畫的那些字串也要跟上：
-        // 文字欄位的選單（貼上／全選／掃描文字）、日期選擇器、
-        // 返回鍵的提示……不掛這幾個 delegate 一律是英文。
-        // 語系直接釘在 zh-Hant-TW，不看系統設定——介面本來就沒有別的語言，
-        // 選單跟著系統變英文反而不搭。
-        // iOS 16+ 的文字選單是系統畫的，字串跟著 App 宣告的語系走，
-        // 那一半在 ios/Runner/Info.plist 的 CFBundleLocalizations
-        locale: const Locale.fromSubtags(
-          languageCode: 'zh',
-          scriptCode: 'Hant',
-          countryCode: 'TW',
-        ),
-        localizationsDelegates: const [
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        supportedLocales: const [
-          Locale.fromSubtags(
-            languageCode: 'zh',
-            scriptCode: 'Hant',
-            countryCode: 'TW',
-          ),
-          Locale('zh', 'TW'),
-          Locale('zh'),
-          Locale('en'),
-        ],
         builder: (context, child) => MediaQuery.withClampedTextScaling(
           // 系統字級最多吃到 1.2 倍。
           //

@@ -8,17 +8,8 @@
 	     屬出口管制免申報；標記後上傳不會再跳加密文件詢問 -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
-	<!-- App 的介面只有繁體中文，宣告成唯一支援的語系：iOS 自己畫的
-	     文字選單（貼上／全選／掃描文字）用的是 UIKit 的字串，語言跟著
-	     App 宣告的語系走——以前只有 Base(en)，選單永遠是英文。
-	     要讓英文系統的人看到英文選單，就在陣列補一個 en -->
 	<key>CFBundleDevelopmentRegion</key>
-	<string>zh-Hant</string>
-	<key>CFBundleLocalizations</key>
-	<array>
-		<string>zh-Hant</string>
-		<string>zh_TW</string>
-	</array>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
 	<string>浮水印</string>
 	<key>NSPhotoLibraryUsageDescription</key>

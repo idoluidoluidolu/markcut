@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -64,72 +64,11 @@ class WorkFiles {
     }
   }
 
-  /// 測試用：把 Application Support 換成一個暫存目錄（真機不會設）
-  @visibleForTesting
-  static Directory? supportDirOverride;
-
-  /// 測試用：丟掉記憶體裡的索引，下一次從 prefs 重讀
-  @visibleForTesting
-  static void resetForTest() => _index = null;
-
-  static Future<Directory> _support() async =>
-      supportDirOverride ?? await getApplicationSupportDirectory();
-
   static Future<Directory> _dir() async {
-    final base = await _support();
+    final base = await getApplicationSupportDirectory();
     final d = Directory('${base.path}${Platform.pathSeparator}workfiles');
     if (!d.existsSync()) d.createSync(recursive: true);
     return d;
-  }
-
-  /// 草稿被上限清理刪掉時（見 DraftStore.prune），把「只有它在用」的
-  /// App 自有檔案一起清掉：工作檔／HDR 代理（workfiles/）與救回來的
-  /// 素材（imports/，見 _rescueFromWorkFile）。回傳真的刪掉幾個。
-  ///
-  /// 只碰這兩個目錄底下的檔——使用者相簿的原檔、相簿選取器放在暫存
-  /// 目錄的複本一律不動（暫存目錄系統自己會清）。
-  /// [referenced]：這條路徑、或這支工作檔的原始來源，還有沒有別份草稿
-  /// 在用。來源還有人用就連工作檔一起留著：那份草稿可能是在工作檔轉好
-  /// 之前存的（還沒記到路徑），它開起來時才不用整支重轉
-  static Future<int> releaseFiles(
-    Set<String> paths, {
-    required bool Function(String path) referenced,
-  }) async {
-    if (kIsWeb || paths.isEmpty) return 0;
-    // 匯出期間不動任何工作檔（跟 sweep 同一條規矩）
-    if (holdSweep) return 0;
-    var n = 0;
-    try {
-      final base = (await _support()).path;
-      final sep = Platform.pathSeparator;
-      final own = ['$base${sep}workfiles$sep', '$base${sep}imports$sep'];
-      final idx = await _load();
-      var idxDirty = false;
-      for (final p in paths) {
-        if (!own.any(p.startsWith)) continue; // 不是 App 自己的檔
-        if (_inFlight.contains(p)) continue; // 還在寫
-        final keys = [
-          for (final e in idx.entries)
-            if (e.value is Map && (e.value as Map)['work'] == p) e.key,
-        ];
-        // 索引 key 是原檔路徑（HDR 代理多一個 #hdr 尾巴）
-        if (keys.any((k) => referenced(k.split('#hdr').first))) continue;
-        for (final k in keys) {
-          idx.remove(k);
-          idxDirty = true;
-        }
-        try {
-          final f = File(p);
-          if (await f.exists()) {
-            await f.delete();
-            n++;
-          }
-        } catch (_) {}
-      }
-      if (idxDirty) await _save();
-    } catch (_) {}
-    if (n > 0) Diag.note('清掉的草稿連帶清了 $n 個工作檔／救回的素材');
-    return n;
   }
 
   /// 原檔現在的「身分證」：大小＋修改時間。換了內容就對不上

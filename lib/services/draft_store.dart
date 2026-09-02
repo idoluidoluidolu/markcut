@@ -1,18 +1,6 @@
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
-
-import 'diagnostics.dart';
-import 'work_files.dart';
-
-/// 清掉草稿時連帶清 App 自有檔案的那一手（見 [WorkFiles.releaseFiles]）。
-/// [referenced]：這條路徑（或工作檔的原始來源）還有沒有活著的草稿在用
-typedef DraftFileReleaser =
-    Future<int> Function(
-      Set<String> paths, {
-      required bool Function(String path) referenced,
-    });
 
 /// 影片專案草稿：可以同時存好幾個，每個有自己的名字。
 ///
@@ -23,10 +11,6 @@ typedef DraftFileReleaser =
 /// 每個草稿的內容各自一個鍵。分開存是因為內容整包含縮圖與 Logo 的
 /// base64，動輒好幾百 KB——每次列清單都要把全部解碼一次的話，
 /// 首頁進場就會卡住
-///
-/// 每個影片專案進編輯器就自動存成草稿（不用選「保留」），所以數量
-/// 只會越來越多：有一個上限（[maxDrafts]，預設 [defaultMax]），
-/// 超過就從最舊的開始自動刪，見 [prune]
 class DraftStore {
   /// 索引：[DraftMeta] 的清單
   static const _indexKey = 'projects_index_v1';
@@ -44,64 +28,8 @@ class DraftStore {
   /// 舊版那個唯一的草稿鍵（搬完就刪）
   static const _legacyKey = 'project_draft_v1';
 
-  /// 草稿數量上限的設定鍵（草稿夾右上角可以調）
-  static const _maxKey = 'drafts_max_v1';
-
-  /// 預設最多留幾份。超過就從最舊的開始自動刪（見 [prune]）
-  static const defaultMax = 30;
-
-  /// 上限可以調的範圍。0 或負數沒有「不限」的意思——草稿一份好幾百 KB
-  /// 都塞在 SharedPreferences，放任不管會把整個 prefs 拖垮
-  static const minMax = 1;
-  static const maxMax = 500;
-
-  /// 草稿夾的設定給人選的那幾個
-  static const maxChoices = [10, 20, 30, 50, 100];
-
   static String _dataKey(String id) => '$_dataPrefix$id';
   static String _thumbKey(String id) => '$_thumbPrefix$id';
-
-  /// 最多留幾份草稿（沒設過就是 [defaultMax]）。
-  /// 不快取：prefs 本身就在記憶體裡，讀一次是一次 map 查找
-  static Future<int> maxDrafts() async {
-    final prefs = await SharedPreferences.getInstance();
-    final n = prefs.getInt(_maxKey);
-    return n == null ? defaultMax : n.clamp(minMax, maxMax);
-  }
-
-  /// 改上限。只存數字，不順手清——要清的話呼叫端自己跑 [prune]
-  ///（草稿夾會先告訴使用者哪幾份要被刪，確認了才清）
-  static Future<void> setMaxDrafts(int n) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_maxKey, n.clamp(minMax, maxMax));
-  }
-
-  /// 正在編輯中的草稿：上限清理絕不能碰。
-  /// 編輯器一存草稿／一載入草稿就登記，離開專案時解除
-  static final Set<String> _open = {};
-
-  static void holdOpen(String id) => _open.add(id);
-  static void releaseOpen(String id) => _open.remove(id);
-
-  /// 所有會改動草稿的操作（存、刪、清理）排成一列輪流做。
-  /// 清理跟存檔交錯的話，正在寫的那份可能被當成最舊的刪到一半：
-  /// 內容剛寫進去、索引還沒更新，清理拿舊索引重寫就把它抹掉了
-  static Future<void> _queue = Future<void>.value();
-
-  static Future<T> _serial<T>(Future<T> Function() body) {
-    final done = Completer<void>();
-    final prev = _queue;
-    _queue = done.future;
-    return prev.then((_) => body()).whenComplete(done.complete);
-  }
-
-  /// 清掉草稿時連帶清檔案的那一手。測試換成假的，看清理算出哪些檔
-  static DraftFileReleaser fileReleaser = defaultFileReleaser;
-
-  static Future<int> defaultFileReleaser(
-    Set<String> paths, {
-    required bool Function(String path) referenced,
-  }) => WorkFiles.releaseFiles(paths, referenced: referenced);
 
   /// 讀某一份草稿的封面（base64 PNG/JPEG）
   static Future<String?> thumb(String id) async {
@@ -187,8 +115,7 @@ class DraftStore {
   /// 存一份草稿。[json] 已經是編碼好的字串（編碼在背景執行緒做，
   /// 見 _saveDraftNow——那是每個編輯動作都會走到的路）
   /// 回傳有沒有真的寫進去。SharedPreferences 寫入失敗（空間滿、
-  /// prefs 損毀）以前被吞掉，使用者整場都以為有自動存。
-  /// 存完順手把超過上限的最舊草稿清掉（這一份跟正在編輯的不碰）
+  /// prefs 損毀）以前被吞掉，使用者整場都以為有自動存
   static Future<bool> save(
     String id,
     String json, {
@@ -198,19 +125,14 @@ class DraftStore {
     double duration = 0,
   }) async {
     try {
-      return await _serial(() async {
-        final ok = await _saveInner(
-          id,
-          json,
-          thumb: thumb,
-          thumbAspect: thumbAspect,
-          clipCount: clipCount,
-          duration: duration,
-        );
-        // 清理失敗不能拖累「存成功」這個事實（_pruneInner 自己吞例外）
-        if (ok) await _pruneInner(keep: {id});
-        return ok;
-      });
+      return await _saveInner(
+        id,
+        json,
+        thumb: thumb,
+        thumbAspect: thumbAspect,
+        clipCount: clipCount,
+        duration: duration,
+      );
     } catch (_) {
       return false;
     }
@@ -257,122 +179,13 @@ class DraftStore {
     return true;
   }
 
-  static Future<void> remove(String id) => _serial(() => _removeInner(id));
-
-  static Future<void> _removeInner(String id) async {
+  static Future<void> remove(String id) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_dataKey(id));
     await prefs.remove(_thumbKey(id));
     final metas = await list()
       ..removeWhere((m) => m.id == id);
     await _writeIndex(prefs, metas);
-  }
-
-  /// 超過上限就把最舊的草稿刪掉，回傳刪掉的 id（新到舊排序無關，
-  /// 就是被刪的那幾個）。
-  ///
-  /// 連帶清「只有它們在用」的 App 自有檔案：工作檔、HDR 代理、
-  /// 救回來的素材（見 [WorkFiles.releaseFiles]）。別份草稿還在用的
-  /// 一律不碰；使用者相簿裡的原檔本來就不在清理範圍。
-  ///
-  /// [keep]：這一輪絕不碰的 id（剛存完的那一份）。正在編輯中的
-  /// （[holdOpen]）也一律不碰。App 啟動時與每次存草稿各跑一次；
-  /// 草稿夾調小上限時也會跑
-  static Future<List<String>> prune({Set<String> keep = const {}}) =>
-      _serial(() => _pruneInner(keep: keep));
-
-  static Future<List<String>> _pruneInner({
-    Set<String> keep = const {},
-  }) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final cap = await maxDrafts();
-      final metas = await list(); // 新到舊
-      if (metas.length <= cap) return const [];
-      final protected = {...keep, ..._open};
-      var excess = metas.length - cap;
-      final victims = <DraftMeta>[];
-      for (final m in metas.reversed) {
-        // 最舊的先走
-        if (excess <= 0) break;
-        if (protected.contains(m.id)) continue;
-        victims.add(m);
-        excess--;
-      }
-      if (victims.isEmpty) return const [];
-      final victimIds = {for (final v in victims) v.id};
-
-      // 要刪的草稿引用到哪些檔案——只有這幾份要解碼（一份好幾百 KB，
-      // 上限清理一次通常只刪一份）
-      final candidates = <String>{};
-      for (final v in victims) {
-        final raw = prefs.getString(_dataKey(v.id));
-        if (raw != null) candidates.addAll(_filesIn(raw));
-      }
-      // 活下來的草稿不解碼：一條路徑還有沒有人在用，看它編碼後的字串
-      // 有沒有出現在別份的原始 JSON 裡就夠了（誤判只會往「不刪」偏）。
-      // 也認檔名：iOS 每次更新 App 容器路徑的 UUID 都會換，舊草稿記的
-      // 是舊前綴，只比整條路徑會漏
-      final survivorsRaw = <String>[];
-      for (final m in metas) {
-        if (victimIds.contains(m.id)) continue;
-        final raw = prefs.getString(_dataKey(m.id));
-        if (raw != null) survivorsRaw.add(raw);
-      }
-      bool referenced(String p) {
-        final full = jsonEncode(p);
-        final name = p.split(RegExp(r'[\\/]')).last;
-        final byName = name.isEmpty ? null : '/$name"';
-        return survivorsRaw.any(
-          (s) => s.contains(full) || (byName != null && s.contains(byName)),
-        );
-      }
-
-      final orphans = {
-        for (final p in candidates)
-          if (!referenced(p)) p,
-      };
-
-      // 先刪內容再重寫索引（跟 remove 同一個順序）
-      for (final v in victims) {
-        await prefs.remove(_dataKey(v.id));
-        await prefs.remove(_thumbKey(v.id));
-      }
-      final rest = [
-        for (final m in metas)
-          if (!victimIds.contains(m.id)) m,
-      ];
-      await _writeIndex(prefs, rest);
-      Diag.note('草稿超過上限 $cap，清掉最舊的 ${victims.length} 份');
-      if (orphans.isNotEmpty) {
-        try {
-          await fileReleaser(orphans, referenced: referenced);
-        } catch (_) {
-          // 檔案清不掉只是佔空間，草稿本身已經清好了
-        }
-      }
-      return [for (final v in victims) v.id];
-    } catch (_) {
-      return const [];
-    }
-  }
-
-  /// 一份草稿 JSON 裡引用到的檔案路徑：素材原檔、工作檔、HDR 代理、
-  /// 倒轉前的來源。解析失敗回空——寧可少清也不能亂清
-  static Set<String> _filesIn(String raw) {
-    final out = <String>{};
-    try {
-      final j = jsonDecode(raw);
-      if (j is! Map) return out;
-      for (final s in (j['sources'] as List? ?? const [])) {
-        if (s is! Map) continue;
-        for (final k in const ['path', 'workPath', 'workHdr', 'revOf']) {
-          final v = s[k];
-          if (v is String && v.isNotEmpty) out.add(v);
-        }
-      }
-    } catch (_) {}
-    return out;
   }
 
   /// 同一微秒內連開兩個專案時，光靠時間戳會撞號——補一個序號

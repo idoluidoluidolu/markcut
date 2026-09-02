@@ -221,95 +221,6 @@ class _TimelineEditorState extends State<TimelineEditor> {
   Offset _pressPos = Offset.zero;
   bool _liftWasSelected = false; // 按下時片段是否本來就選取（點兩下編輯用）
 
-  // ===== 多指鎖：第二根手指落下＝捏合，單指的素材手勢一律讓路 =====
-  //
-  // 使用者回報雙指縮放時常誤拖、誤長按到素材。根因：素材的拖曳辨識器
-  // 一按下就贏得競技場（_EagerPanRecognizer），第一指落在素材上那一刻
-  // 拖曳與 450ms 長按計時就已經開跑；父層的 pinching 旗標要等第二指落下、
-  // 再重建一輪才傳得下來，而錨定不動的那根手指之後根本不會再送 move
-  // 事件，計時器就一路走到底開了選單。第一指先滑了 8px 的話更慘：父層
-  // 看到 _lifting 就不轉縮放，兩根手指一起把素材拖走。
-  //
-  // 這裡自己在 pointerRouter 的全域路由上數螢幕上的觸控手指（每個
-  // pointer 事件都會經過，不限於時間軸範圍、也不用等重建）：第二指一落
-  // 下，在同一個事件派送裡就把進行中的拿起／長按整個作廢、後續落下的
-  // 手指也不再開任何單指素材手勢；要等所有手指離開螢幕、再過一小段冷卻
-  // 才解鎖——抬手時手指會滾一下、兩指也不會同時離開，那一下不能被當成
-  // 點擊或拖曳
-  final Map<int, DateTime> _fingers = {}; // 觸控 pointer → 最後有動靜的時間
-  bool _multiTouch = false; // 這一輪出現過第二指（到全部抬起為止都算）
-  bool _cooling = false; // 全部抬起後的冷卻期
-  Timer? _coolTimer;
-
-  /// 全部手指離開之後再鎖這麼久
-  static const _pinchCooldown = Duration(milliseconds: 150);
-
-  /// 單指的素材手勢（拿起／拖曳／點擊／長按／修剪）此刻該不該讓路
-  bool get _locked => widget.pinching || _multiTouch || _cooling;
-
-  /// 剛落下的 [pointer] 可不可以開始一個單指素材手勢：沒鎖住，而且
-  /// 螢幕上沒有「別的」手指——有的話這根就是捏合的第二指，不是拖曳。
-  /// 給 _EagerPanRecognizer 在按下時問，回 false 就不參加競技場
-  bool _maySingle(int pointer) {
-    if (_locked) return false;
-    _purgeStaleFingers();
-    return !_fingers.keys.any((p) => p != pointer);
-  }
-
-  /// 抬手事件掉了（元件在手勢中途被換掉、平台漏送）會留下殘指，從此
-  /// 每一次單指觸碰都被當成第二指。太久沒動靜的當殘指清掉；真的在
-  /// 捏合的手指幾百毫秒內一定有 move
-  void _purgeStaleFingers() {
-    final now = DateTime.now();
-    _fingers.removeWhere((_, seen) => now.difference(seen).inSeconds > 3);
-  }
-
-  void _globalPointer(PointerEvent e) {
-    if (e.kind != PointerDeviceKind.touch) return;
-    if (e is PointerDownEvent) {
-      _purgeStaleFingers();
-      _fingers[e.pointer] = DateTime.now();
-      if (_fingers.length >= 2) _lockOn();
-    } else if (e is PointerMoveEvent) {
-      if (_fingers.containsKey(e.pointer)) _fingers[e.pointer] = DateTime.now();
-    } else if (e is PointerUpEvent || e is PointerCancelEvent) {
-      _fingers.remove(e.pointer);
-      _maybeUnlock();
-    }
-  }
-
-  /// 第二指到了（自己數到的，或父層說在捏合）：鎖住並放掉手上的素材
-  void _lockOn({bool rebuild = true}) {
-    _multiTouch = true;
-    _abortLift(rebuild: rebuild);
-  }
-
-  /// 自己數到的手指全走了、父層也不再捏合，這一輪才結束、開始冷卻
-  void _maybeUnlock() {
-    if (!_multiTouch || _fingers.isNotEmpty || widget.pinching) return;
-    _multiTouch = false;
-    _cooling = true;
-    _coolTimer?.cancel();
-    _coolTimer = Timer(_pinchCooldown, () => _cooling = false);
-  }
-
-  /// 捏合接手：放棄進行中的拿起／拖曳／長按。資料本來就要放開才寫回
-  ///（幽靈模型），「放回原位」＝把幽靈丟掉、不呼叫 onDrop 就好。
-  /// [rebuild] false＝從 didUpdateWidget 來的，框架接著就會 build，
-  /// 不必（也不該）再 setState
-  void _abortLift({bool rebuild = true}) {
-    _pressTimer?.cancel();
-    _liftArmed = false;
-    _stopAutoScroll();
-    if (_lift == null || !mounted) return;
-    if (rebuild) {
-      setState(() => _lift = null);
-    } else {
-      _lift = null;
-    }
-    widget.onLiftChanged?.call(false);
-  }
-
   TimelineModel get timeline => widget.timeline;
   double get pxPerSec => widget.pxPerSec;
   double get trackH => 54 * widget.trackScale;
@@ -343,30 +254,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
       TimelineEditor.rulerH + _rulerGap + _wmExtra + _rows * rowStride + 4;
 
   @override
-  void initState() {
-    super.initState();
-    GestureBinding.instance.pointerRouter.addGlobalRoute(_globalPointer);
-  }
-
-  @override
-  void didUpdateWidget(TimelineEditor old) {
-    super.didUpdateWidget(old);
-    if (widget.pinching == old.pinching) return;
-    // 父層在整個分頁層級數手指（空白處也能捏），它說在捏合就一律讓路；
-    // 它說結束時還要等自己數到的手指全部離開，這一輪才算完
-    if (widget.pinching) {
-      _lockOn(rebuild: false);
-    } else {
-      _maybeUnlock();
-    }
-  }
-
-  @override
   void dispose() {
-    GestureBinding.instance.pointerRouter.removeGlobalRoute(_globalPointer);
     _autoScrollTimer?.cancel();
     _pressTimer?.cancel();
-    _coolTimer?.cancel();
     super.dispose();
   }
 
@@ -380,9 +270,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
   // ===== 拿起 / 移動 / 放下 =====
 
   void _liftStart(TimelineClip c, Offset globalPos) {
-    // 捏合中、或剛結束還在冷卻：不把素材拿起來，這整段手勢當沒發生
-    //（辨識器在按下時通常已經棄權了，見 _maySingle；這裡是雙保險）
-    if (_locked) return;
+    if (_pinching) return; // 雙指縮放時間軸中：不要把素材拿起來
     _liftArmed = false; // 移動超過門檻才算真的在拖（見 _liftUpdate）
     _liftWasSelected = widget.selectedId == c.id;
     // 這裡「不」選取：第一指按在素材上、第二指跟著落下變成縮放時，
@@ -406,24 +294,27 @@ class _TimelineEditorState extends State<TimelineEditor> {
     _pressTimer?.cancel();
     _pressTimer = Timer(const Duration(milliseconds: 450), () {
       final l = _lift;
-      // 中途變成捏合的話計時器已被 _abortLift 取消；再看一次 _locked
-      // 是雙保險——這個選單絕不能在兩根手指還在螢幕上時跳出來
-      if (_locked || l == null || l.dx.abs() >= 6 || l.dy.abs() >= 6) return;
-      setState(() => _lift = null);
-      _stopAutoScroll();
-      widget.onLiftChanged?.call(false);
-      widget.onSelect(c.id); // 延後的選取（見 _liftStart）
-      HapticFeedback.mediumImpact(); // 長按成立的觸覺回饋
-      widget.onLongPressClip(c.id, _pressPos);
+      if (l != null && l.dx.abs() < 6 && l.dy.abs() < 6) {
+        setState(() => _lift = null);
+        _stopAutoScroll();
+        widget.onLiftChanged?.call(false);
+        widget.onSelect(c.id); // 延後的選取（見 _liftStart）
+        HapticFeedback.mediumImpact(); // 長按成立的觸覺回饋
+        widget.onLongPressClip(c.id, _pressPos);
+      }
     });
   }
 
   void _liftUpdate(double ddx, double ddy, Offset globalPos) {
-    // 拖到一半第二指下來（變成縮放）：整個放棄這次拖曳，素材留在原地，
-    // 不然縮放的同時素材會被拖走。正常情況第二指落下的當下 _lockOn
-    // 就處理掉了，這裡兜底（例如只有父層的 pinching 旗標翻起來）
-    if (_locked) {
-      _abortLift();
+    // 拖到一半第二指下來（變成縮放）：整個放棄這次拖曳，
+    // 素材留在原地，不然縮放的同時素材會被拖走
+    if (_pinching) {
+      if (_lift != null) {
+        _pressTimer?.cancel();
+        setState(() => _lift = null);
+        _stopAutoScroll();
+        widget.onLiftChanged?.call(false);
+      }
       return;
     }
     final l = _lift;
@@ -487,20 +378,6 @@ class _TimelineEditorState extends State<TimelineEditor> {
     }
     if (spec == null) return;
     widget.onDrop(l.clipId, spec.offset, spec.track, spec.insert);
-  }
-
-  /// 片段內層 GestureDetector 的點擊。eager pan 平常搶先贏走，只有辨識器
-  /// 棄權時才輪得到它——也就是捏合的第二指落在素材上——鎖住時不選取
-  void _tapClip(int id) {
-    if (_locked) return;
-    widget.onSelect(id);
-  }
-
-  /// 修剪把手的增量：第二指落下後就不再套用。父層還有一道 pinching
-  /// 檢查，但那個旗標要等重建才傳得下來
-  void _trimGuarded(int id, double dSec, bool fromLeft) {
-    if (_locked) return;
-    widget.onTrim(id, dSec, fromLeft);
   }
 
   /// 幽靈目前的落點：位置（含吸附）、軌道、是否插新層。
@@ -723,19 +600,13 @@ class _TimelineEditorState extends State<TimelineEditor> {
                                     // 時間刻度尺（可點、可拖播放頭）
                                     GestureDetector(
                                       behavior: HitTestBehavior.opaque,
-                                      // 捏合的手指落在刻度尺上不算 seek
-                                      onTapDown: (d) {
-                                        if (_locked) return;
-                                        widget.onSeek(
-                                          d.localPosition.dx / pxPerSec,
-                                        );
-                                      },
-                                      onHorizontalDragUpdate: (d) {
-                                        if (_locked) return;
-                                        widget.onSeek(
-                                          d.localPosition.dx / pxPerSec,
-                                        );
-                                      },
+                                      onTapDown: (d) => widget.onSeek(
+                                        d.localPosition.dx / pxPerSec,
+                                      ),
+                                      onHorizontalDragUpdate: (d) =>
+                                          widget.onSeek(
+                                            d.localPosition.dx / pxPerSec,
+                                          ),
                                       // 只畫看得見的一段刻度：長片放大後整條
                                       // 可以到十幾萬 px，全畫的話雙指縮放
                                       // 每一幀都要排幾千個刻度＝掉幀。
@@ -885,7 +756,6 @@ class _TimelineEditorState extends State<TimelineEditor> {
             // 不然使用者照著字點下去只會看到一個框亮起來，什麼也沒發生。
             // 那一軌還是可以當貼上目標——長按空白處的選單裡有「貼上」
             onTap: () {
-              if (_locked) return; // 捏合的第二指落在空白處不算點擊
               if (isInviteRow) {
                 widget.onAddMedia(track);
                 return;
@@ -894,8 +764,6 @@ class _TimelineEditorState extends State<TimelineEditor> {
               widget.onTapTrack?.call(track);
             },
             onLongPressStart: (d) {
-              // 捏合時錨定不動的那根手指按滿 500ms 也不能開貼上選單
-              if (_locked) return;
               HapticFeedback.mediumImpact(); // 長按成立的觸覺回饋
               widget.onLongPressEmpty(
                 track,
@@ -951,11 +819,10 @@ class _TimelineEditorState extends State<TimelineEditor> {
             lifted: _liftArmed && _lift?.clipId == c.id,
             pxPerSec: pxPerSec,
             height: trackH,
-            onSelect: _tapClip,
-            onTrim: _trimGuarded,
+            onSelect: widget.onSelect,
+            onTrim: widget.onTrim,
             onTrimStart: widget.onTrimStart,
             onTrimEnd: widget.onTrimEnd,
-            canStart: _maySingle,
             onLiftStart: (pos) => _liftStart(c, pos),
             onLiftUpdate: _liftUpdate,
             onLiftEnd: _liftEnd,
@@ -1006,12 +873,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
     final hidden = widget.wmHidden;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTap: widget.onToggleWmVisible == null
-          ? null
-          : () {
-              if (_locked) return; // 捏合的手指落在標籤上不算點擊
-              widget.onToggleWmVisible!();
-            },
+      onTap: widget.onToggleWmVisible,
       child: Container(
         height: TimelineEditor.wmH,
         margin: const EdgeInsets.only(right: 6),
@@ -1083,32 +945,30 @@ class _TimelineEditorState extends State<TimelineEditor> {
                         >(
                           () => _EagerPanRecognizer(),
                           (r) => r
-                            // 第二指落下時不參賽（見 _maySingle）
-                            ..canStart = _maySingle
                             // 按下＝「安靜選取」不切分頁。跳分頁放在放開時
                             // 用移動距離判斷（幾乎沒動＝點擊）：
                             // 拖曳調範圍不能中途被拉去浮水印分頁，
                             // 雙指縮放誤觸也不能跳
                             ..onStart = ((_) {
-                              if (_locked) return;
+                              if (_pinching) return;
                               _wmDragDist = 0;
                               (widget.onSelectWmDrag ?? widget.onSelectWm)();
                             })
                             ..onUpdate = ((d) {
-                              if (_locked) return;
+                              if (_pinching) return;
                               _wmDragDist +=
                                   d.delta.dx.abs() + d.delta.dy.abs();
                               widget.onMoveWm(wm.start + d.delta.dx / pxPerSec);
                             })
                             ..onEnd = ((_) {
-                              if (_locked || _wmDragDist >= 6) return;
+                              if (_pinching || _wmDragDist >= 6) return;
                               widget.onSelectWm(); // 點擊＝進浮水印分頁
                             }),
                         ),
                   },
             child: GestureDetector(
               onTap: () {
-                if (_locked) return;
+                if (_pinching) return;
                 widget.onSelectWm();
               },
               child: Container(
@@ -1175,11 +1035,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
                         alignment: Alignment.centerLeft,
                         child: _TrimHandle(
                           isLeft: true,
-                          canStart: _maySingle,
-                          onDrag: (dxSec) {
-                            if (_locked) return;
-                            widget.onTrimWm(dxSec, true);
-                          },
+                          onDrag: (dxSec) => widget.onTrimWm(dxSec, true),
                           onStart: widget.onTrimWmStart,
                           pxPerSec: pxPerSec,
                         ),
@@ -1188,11 +1044,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
                         alignment: Alignment.centerRight,
                         child: _TrimHandle(
                           isLeft: false,
-                          canStart: _maySingle,
-                          onDrag: (dxSec) {
-                            if (_locked) return;
-                            widget.onTrimWm(dxSec, false);
-                          },
+                          onDrag: (dxSec) => widget.onTrimWm(dxSec, false),
                           onStart: widget.onTrimWmStart,
                           pxPerSec: pxPerSec,
                         ),
@@ -1314,9 +1166,6 @@ class _TimelineEditorState extends State<TimelineEditor> {
       onLongPress: isEmptyRow || isVoice
           ? null
           : () => widget.onDeleteTrack?.call(t),
-      // 捏合的手指落在標籤上：不點、不長按（刪軌！）、不搬軌
-      canStart: _maySingle,
-      locked: () => _locked,
       onDragUpdate: (dy) => setState(() {
         _dragTrack = t;
         _dragDy = dy;
@@ -1440,18 +1289,7 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
 
 /// 一按下就立刻贏得競技場的 pan，
 /// 避免拖曳被外層的捲動列表搶走。
-///
-/// [canStart] 在按下時回 false ＝ 這根手指不參加競技場（例如螢幕上已經
-/// 有另一根手指：那這根是捏合的第二指，不是拖曳），事件留給捲動／捏合。
-/// 走 isPointerAllowed 而不是事後忽略回呼：沒參賽就不會有 onStart，
-/// 也不會在辨識器已經接受的狀態下把第二指併進同一個拖曳
 class _EagerPanRecognizer extends PanGestureRecognizer {
-  bool Function(int pointer)? canStart;
-
-  @override
-  bool isPointerAllowed(PointerEvent event) =>
-      (canStart?.call(event.pointer) ?? true) && super.isPointerAllowed(event);
-
   @override
   void addAllowedPointer(PointerDownEvent event) {
     super.addAllowedPointer(event);
@@ -1495,9 +1333,6 @@ class _ClipBlock extends StatelessWidget {
   final void Function(int id, double deltaSec, bool fromLeft) onTrim;
   final VoidCallback? onTrimStart;
   final VoidCallback? onTrimEnd;
-
-  /// 這根手指可不可以開始拖曳／修剪（捏合的第二指不行，見 _maySingle）
-  final bool Function(int pointer) canStart;
   final ValueChanged<Offset> onLiftStart;
   final void Function(double ddx, double ddy, Offset globalPos) onLiftUpdate;
   final VoidCallback onLiftEnd;
@@ -1522,7 +1357,6 @@ class _ClipBlock extends StatelessWidget {
     required this.onTrim,
     this.onTrimStart,
     this.onTrimEnd,
-    required this.canStart,
     required this.onLiftStart,
     required this.onLiftUpdate,
     required this.onLiftEnd,
@@ -1568,7 +1402,6 @@ class _ClipBlock extends StatelessWidget {
                 GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
                   () => _EagerPanRecognizer(),
                   (r) => r
-                    ..canStart = canStart
                     ..onStart = ((d) => onLiftStart(d.globalPosition))
                     ..onUpdate = ((d) =>
                         onLiftUpdate(d.delta.dx, d.delta.dy, d.globalPosition))
@@ -1712,7 +1545,6 @@ class _ClipBlock extends StatelessWidget {
                                   isLeft: true,
                                   width: outside ? 13 : hw,
                                   overhang: oOver,
-                                  canStart: canStart,
                                   onStart: onTrimStart,
                                   onEnd: onTrimEnd,
                                   onDrag: (d) => onTrim(clip.id, d, true),
@@ -1729,7 +1561,6 @@ class _ClipBlock extends StatelessWidget {
                                   isLeft: false,
                                   width: outside ? 13 : hw,
                                   overhang: oOver,
-                                  canStart: canStart,
                                   onStart: onTrimStart,
                                   onEnd: onTrimEnd,
                                   onDrag: (d) => onTrim(clip.id, d, false),
@@ -1782,12 +1613,6 @@ class _TrackLabel extends StatefulWidget {
   final ValueChanged<double> onDragUpdate;
   final VoidCallback onDragEnd;
 
-  /// 這根手指可不可以開始標籤手勢（捏合的第二指不行，見 _maySingle）
-  final bool Function(int pointer)? canStart;
-
-  /// 此刻是不是捏合中／冷卻中：點擊、長按（刪軌）、換軌都要讓路
-  final bool Function()? locked;
-
   const _TrackLabel({
     required this.index,
     required this.height,
@@ -1807,8 +1632,6 @@ class _TrackLabel extends StatefulWidget {
     this.onLongPress,
     required this.onDragUpdate,
     required this.onDragEnd,
-    this.canStart,
-    this.locked,
   });
 
   @override
@@ -1819,23 +1642,7 @@ class _TrackLabelState extends State<_TrackLabel> {
   double _dy = 0;
   bool _moved = false;
 
-  bool get _isLocked => widget.locked?.call() ?? false;
-
-  /// 手勢中途變成捏合：整條軌放回去，之後放開也不算點擊
-  bool _aborted = false;
-
-  void _abortDrag() {
-    _aborted = true;
-    _pressTimer?.cancel();
-    _dy = 0;
-    _moved = false;
-    widget.onDragUpdate(0);
-    widget.onDragEnd();
-  }
-
   void _fireTap() {
-    // 捏合的手指落在標籤上放開：不是點擊（加素材／錄音鈕都不能誤觸）
-    if (_isLocked) return;
     // 一般軌整格＝隱藏切換（靜音鈕已拿掉）；空軌/旁白走 onTap
     if (widget.onToggleHidden != null) {
       widget.onToggleHidden!();
@@ -1921,12 +1728,7 @@ class _TrackLabelState extends State<_TrackLabel> {
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: _fireTap,
-          onLongPress: widget.onLongPress == null
-              ? null
-              : () {
-                  if (_isLocked) return;
-                  widget.onLongPress!();
-                },
+          onLongPress: widget.onLongPress,
           child: label,
         ),
       );
@@ -1944,20 +1746,17 @@ class _TrackLabelState extends State<_TrackLabel> {
               GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
                 () => _EagerPanRecognizer(),
                 (r) => r
-                  ..canStart = widget.canStart
                   ..onStart = (_) {
                     _dy = 0;
                     _moved = false;
-                    _aborted = _isLocked; // 鎖住時整段手勢當沒發生
                     // 拖曳辨識器會直接吃掉手勢，長按只能自己算：
                     // 按住不動 0.5 秒就當長按（刪整軌）
                     _pressTimer?.cancel();
-                    if (widget.onLongPress != null && !_aborted) {
+                    if (widget.onLongPress != null) {
                       _pressTimer = Timer(
                         const Duration(milliseconds: 500),
                         () {
-                          // 捏合中錨定在標籤上的手指按滿 0.5 秒不算長按
-                          if (!_moved && !_isLocked && mounted) {
+                          if (!_moved && mounted) {
                             _longFired = true;
                             HapticFeedback.mediumImpact(); // 長按觸覺回饋
                             widget.onDragUpdate(0);
@@ -1969,11 +1768,7 @@ class _TrackLabelState extends State<_TrackLabel> {
                     }
                   }
                   ..onUpdate = (d) {
-                    if (_longFired || _aborted) return;
-                    if (_isLocked) {
-                      _abortDrag(); // 拖到一半第二指下來：軌放回原位
-                      return;
-                    }
+                    if (_longFired) return;
                     // 往下拖是往編號小的走（時間軸上面＝編號大）
                     _dy = (_dy + d.delta.dy).clamp(
                       -(widget.maxTrack - widget.index) * widget.rowStride,
@@ -1987,9 +1782,8 @@ class _TrackLabelState extends State<_TrackLabel> {
                   }
                   ..onEnd = (_) {
                     _pressTimer?.cancel();
-                    if (_longFired || _aborted) {
+                    if (_longFired) {
                       _longFired = false;
-                      _aborted = false;
                       _dy = 0;
                       _moved = false;
                       return;
@@ -2006,9 +1800,8 @@ class _TrackLabelState extends State<_TrackLabel> {
                   }
                   ..onCancel = () {
                     _pressTimer?.cancel();
-                    if (_longFired || _aborted) {
+                    if (_longFired) {
                       _longFired = false;
-                      _aborted = false;
                       _dy = 0;
                       _moved = false;
                       return;
@@ -2051,9 +1844,6 @@ class _TrimHandle extends StatelessWidget {
   /// 打到底下的軌道背景，變成捲動時間軸
   final double overhang;
 
-  /// 這根手指可不可以開始修剪（捏合的第二指不行，見 _maySingle）
-  final bool Function(int pointer)? canStart;
-
   const _TrimHandle({
     required this.isLeft,
     required this.pxPerSec,
@@ -2062,7 +1852,6 @@ class _TrimHandle extends StatelessWidget {
     this.overhang = 0,
     this.onStart,
     this.onEnd,
-    this.canStart,
   });
 
   @override
@@ -2076,7 +1865,6 @@ class _TrimHandle extends StatelessWidget {
             GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
               () => _EagerPanRecognizer(),
               (r) => r
-                ..canStart = canStart
                 ..onStart = ((_) => onStart?.call())
                 ..onUpdate = ((d) => onDrag(d.delta.dx / pxPerSec))
                 ..onEnd = ((_) => onEnd?.call())

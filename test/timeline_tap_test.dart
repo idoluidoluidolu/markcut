@@ -54,8 +54,7 @@ TimelineModel _model() {
 
 void main() {
   setUpAll(() {
-    final v = TestWidgetsFlutterBinding.ensureInitialized()
-        .platformDispatcher
+    final v = TestWidgetsFlutterBinding.ensureInitialized().platformDispatcher
         .views
         .first;
     v.physicalSize = const Size(1200, 2200);
@@ -116,7 +115,11 @@ void main() {
     await t.tapAt(r.center);
     await t.pumpAndSettle();
 
-    expect(selected, imageClipId, reason: '點一下圖片素材應該要選取它（目前拖曳辨識器可能把點擊吃掉）');
+    expect(
+      selected,
+      imageClipId,
+      reason: '點一下圖片素材應該要選取它（目前拖曳辨識器可能把點擊吃掉）',
+    );
   });
 
   testWidgets('影片已被選取時，點圖片素材要換選成圖片', (t) async {
@@ -228,7 +231,7 @@ void main() {
     expect(selected, imageClipId);
   });
 
-  testWidgets('螢幕上已經有另一根手指時，第二指點素材不算點擊（那是捏合）', (t) async {
+  testWidgets('螢幕上已經有另一根手指時，點圖片素材仍要選得到', (t) async {
     final tl = _model();
     final imageClipId = tl.clips[1].id;
     final videoClipId = tl.clips[0].id;
@@ -277,27 +280,20 @@ void main() {
     final vr = t.getRect(find.byKey(ValueKey('clip$videoClipId')));
     final ir = t.getRect(find.byKey(ValueKey('clip$imageClipId')));
 
-    // 第一根手指按在影片上不放
+    // 第一根手指按在影片上不放（例如另一手還沒離開螢幕）
     final hold = await t.startGesture(Offset(vr.left + 200, vr.center.dy));
     await t.pump(const Duration(milliseconds: 30));
     selected = -1; // 只看第二根手指的結果
 
-    // 第二根手指點圖片素材：兩指同時在螢幕上＝捏合，不能順便選到素材
-    //（使用者回報雙指縮放常誤觸素材；第二指一落下單指手勢全部讓路，
-    // 見 timeline_pinch_test）
+    // 第二根手指點圖片素材
     final tap = await t.startGesture(ir.center);
     await t.pump(const Duration(milliseconds: 30));
     await tap.up();
     await t.pump(const Duration(milliseconds: 30));
     await hold.up();
     await t.pumpAndSettle();
-    expect(selected, -1, reason: '第二指的點擊要被當成捏合的一部分吃掉');
 
-    // 全部放開、冷卻過後，單指點擊照常
-    await t.pump(const Duration(milliseconds: 200));
-    await t.tapAt(ir.center);
-    await t.pumpAndSettle();
-    expect(selected, imageClipId, reason: '冷卻過後點擊要恢復');
+    expect(selected, imageClipId, reason: '第二根手指的點擊不該被吃掉');
   });
 
   testWidgets('點一下影片素材也要能選取', (t) async {

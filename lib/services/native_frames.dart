@@ -30,18 +30,12 @@ Future<List<Uint8List>> nativeStrip(
 }
 
 /// [quality] 是 JPEG 品質。拖曳預覽求快，壓得兇一點沒人看得出來；
-/// 但拿去當裁切畫面的底圖時會被放大到滿版，壓縮痕跡就很明顯。
-///
-/// [tolMs]：允許差多少毫秒（iOS 的 AVAssetImageGenerator 容忍值；
-/// 不給＝原生端預設 0.15 秒）。給得寬，解碼器就能直接拿最近的關鍵幀、
-/// 一格只解一張——縮圖帶的粗抽靠這個。Android 本來就只拿關鍵幀，
-/// 這個值沒作用
+/// 但拿去當裁切畫面的底圖時會被放大到滿版，壓縮痕跡就很明顯
 Future<Uint8List?> nativeFrameAt(
   String path,
   double seconds, {
   int maxH = 540,
   double quality = 0.7,
-  int? tolMs,
 }) async {
   try {
     return await _ch.invokeMethod<Uint8List>('frameAt', {
@@ -49,7 +43,6 @@ Future<Uint8List?> nativeFrameAt(
       'ms': (seconds * 1000).round(),
       'maxH': maxH,
       'q': quality,
-      'tolMs': ?tolMs,
     });
   } catch (_) {
     return null;
