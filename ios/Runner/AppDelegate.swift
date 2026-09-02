@@ -2210,13 +2210,14 @@ final class AtomicFlag {
               scale: m["scale"] as? Double ?? 1,
               rot: m["rot"] as? Double ?? 0)
           })
+        // 暫停中的重畫走「換 vc」不 seek（見 rerenderPaused）
         if a["noNudge"] as? Bool != true {
-          p.nudgeRedrawIfPaused()
+          p.rerenderPaused()
         }
         result(true)
       case "setOverlays":
         // HDR 預覽的即時疊加物：換清單不重建合成（拖曳/改樣式用）。
-        // 換完 Dart 端會補一個精準 seek 逼它重畫當下這一格
+        // 暫停中換完由原生換 vc 重畫當下這一格（不 seek，見下）
         let list =
           (call.arguments as? [String: Any])?["overlays"]
           as? [[String: Any]] ?? []
@@ -2240,12 +2241,14 @@ final class AtomicFlag {
               scale: m["scale"] as? Double ?? 1,
               rot: m["rot"] as? Double ?? 0)
           })
-        // 暫停中換清單要逼播放器重畫這一格：光 seek 回同一個時間點
-        // 會被當 no-op（實測回報：打字改浮水印、預覽完全不動）。
-        // wmLive 成立＝CI 一定掛著，擺動一刻催重畫就夠
+        // 暫停中換清單要逼合成器重畫這一格。改樣式不准碰解碼器：
+        // 不 seek（擺動一刻＝對暫停中的解碼器做精準 seek、還可能跨格），
+        // 改成把同一份 videoComposition 重產新物件換上——AVFoundation
+        // 認物件換了就為現在這個時間重跑合成器，時間軸一動不動
+        //（見 rerenderPaused）。wmLive 成立＝CI 一定掛著。
         // noNudge＝呼叫端自己安排重畫（例如緊接一發精準 seek）
         if (call.arguments as? [String: Any])?["noNudge"] as? Bool != true {
-          p.nudgeRedrawIfPaused()
+          p.rerenderPaused()
         }
         result(true)
       case "play":
@@ -4772,7 +4775,8 @@ final class CompPlayer: NSObject, FlutterTexture {
   private var vcRegen: ((CompLiveXform?) -> AVMutableVideoComposition)?
 
   /// 現役的 videoComposition 是不是走「預覽 CI 合成器」——是的話
-  /// 即時變形/疊加物只要改靜態參數＋催一格重畫，零重建
+  /// 即時變形/疊加物只要改靜態參數＋催一格重畫（暫停中：疊加物
+  /// 走換 vc 的 rerenderPaused，不 seek），零重建
   private(set) var liveCIOn = false
 
   /// 這一版組建算出來的 needsCI（applyXform 重產 vc 時要知道
@@ -4789,6 +4793,9 @@ final class CompPlayer: NSObject, FlutterTexture {
   ///    seek 蓋回原地，預覽就凍住了
   /// 2. 自己也排隊：一發催在跑就記 pending，跑完再補一發，
   ///    不對播放器灌併發 seek
+  /// 疊加物（setOverlays/setOvXform）暫停中的重畫已改走 rerenderPaused
+  ///（換 vc、不 seek、不碰時間軸）；這裡留給真的要動時間的路
+  ///（片段捏合 applyXform 預設仍催、grabFrame 自己挪格）
   private var nudgeFlip = false
   private var nudging = false
   private var nudgePending = false
@@ -4802,6 +4809,20 @@ final class CompPlayer: NSObject, FlutterTexture {
   var stNudgeFired = 0
   var stNudgeDropped = 0
   var stItemSwaps = 0
+
+  /// 暫停中「只換 vc、不 seek」的重畫（見 rerenderPaused）：
+  /// 真的換了幾次／被延到窗尾合併掉幾發
+  var stVcSwaps = 0
+  var stVcDeferred = 0
+  private var vcSwapTimerArmed = false
+  private var vcSwapRetries = 0
+  private var lastVcSwapAt = 0.0
+  /// 上一次 applyXform 帶上的覆寫：暫停重畫用同一份重產 vc，
+  /// 幾何一個位元都不變，只有物件換新（組建時 nil，跟 makeVC(nil) 對齊）
+  private var lastXformOv: CompLiveXform?
+  /// 暫停重畫的路：true＝換 vc（不碰時間軸）；false＝退回催 seek。
+  /// 實機若發現換 vc 不觸發重繪，改這一個字就退回舊路
+  static var pausedRedrawViaVC = true
 
   func nudgeRedrawIfPaused() {
     guard player.rate == 0 else { return }
@@ -4853,17 +4874,67 @@ final class CompPlayer: NSObject, FlutterTexture {
 
   /// 重產 vc 換上（不重建合成）。即時變形第一次在「CI 沒掛」的
   /// 合成上發動時走這裡把 CI 路掛起來；之後的更新走靜態參數。
+  /// [nudge] false＝只換 vc、不催 seek（rerenderPaused 用）
   /// 回 false＝這份合成產不出 vc（呼叫端當沒這回事，照舊等重組）
-  func applyXform(_ ov: CompLiveXform?) -> Bool {
+  func applyXform(_ ov: CompLiveXform?, nudge: Bool = true) -> Bool {
     guard let regen = vcRegen, let item = player.currentItem else {
       return false
     }
     item.videoComposition = regen(ov)
+    lastXformOv = ov
     liveCIOn = ov != nil || builtNeedsCI
-    if player.rate == 0 {
+    if nudge && player.rate == 0 {
       nudgeRedrawIfPaused()
     }
     return true
+  }
+
+  /// 暫停中催合成器重畫「現在這一格」而不碰時間軸（疊加物換清單／
+  /// 改樣式／部件差量用）：把同一份 vc 重產一個新物件換上。
+  /// AVFoundation 對 videoComposition 只認「物件換了」——內容相同也會
+  /// 為現在這個時間重跑一次合成器；同一個 item、同一個 currentTime、
+  /// 沒有 seek、不跨格、不回第 0 格、不換件。合成器每格直讀
+  /// previewOvs／liveOvs 快照，所以清單本身不用進指令。
+  /// 規矩：
+  /// 1. 播放中不催（下一格自然用新快照）
+  /// 2. 使用者 seek／催 seek 在飛時不換：排到窗尾再看（最多 1 秒）
+  ///    ——那發落地本來就用最新快照重組；換 vc 也不去干擾在飛的 seek
+  /// 3. 沒掛 vc 的 item（讓位中 parkedVC／接管中）絕不「掛上」：只換不裝
+  /// 4. 40ms 一發、窗內合併成尾發：滑桿風暴不排隊，最後一發一定畫到
+  func rerenderPaused() {
+    guard Self.pausedRedrawViaVC else {
+      nudgeRedrawIfPaused()
+      return
+    }
+    guard player.rate == 0, !takeover, let item = player.currentItem,
+      item.videoComposition != nil, item.status == .readyToPlay
+    else { return }
+    let busy = seeking || seekTarget.isValid || nudging
+    let nowN = CACurrentMediaTime()
+    let wait = busy ? 0.04 : 0.04 - (nowN - lastVcSwapAt)
+    if wait > 0.001 {
+      if busy && vcSwapRetries >= 25 {
+        vcSwapRetries = 0
+        return
+      }
+      if !vcSwapTimerArmed {
+        vcSwapTimerArmed = true
+        stVcDeferred += 1
+        if busy { vcSwapRetries += 1 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
+          [weak self] in
+          guard let self = self else { return }
+          self.vcSwapTimerArmed = false
+          self.rerenderPaused()
+        }
+      }
+      return
+    }
+    vcSwapRetries = 0
+    lastVcSwapAt = nowN
+    if applyXform(lastXformOv, nudge: false) {
+      stVcSwaps += 1
+    }
   }
 
   private var output: AVPlayerItemVideoOutput?
@@ -5684,6 +5755,7 @@ final class CompPlayer: NSObject, FlutterTexture {
         return vc
       }
       vcRegen = makeVC
+      lastXformOv = nil  // 新合成不帶舊的即時變形（審查員建議的加固）
       // HDR 預覽的即時疊加物（浮水印/文字）：跟原本一樣只在
       // 「CI 有掛」時收清單（needsCI false＝沒有合成器在讀）。
       // 這份清單的 bx/by/bs/br 就是當下位置，部件差量一併歸零
@@ -6381,7 +6453,9 @@ final class CompPlayer: NSObject, FlutterTexture {
     if !seekMs.isEmpty {
       let sorted = seekMs.sorted()
       m["seekCount"] = seekMs.count
-      m["nudgeInfo"] = "\(stNudgeFired)發/丟\(stNudgeDropped)/換件\(stItemSwaps)次"
+      m["nudgeInfo"] =
+        "\(stNudgeFired)發/丟\(stNudgeDropped)/換件\(stItemSwaps)次"
+        + "/vc換\(stVcSwaps)延\(stVcDeferred)"
       m["seekAvgMs"] = seekMs.reduce(0, +) / seekMs.count
       m["seekP50Ms"] = sorted[sorted.count / 2]
       m["seekP90Ms"] = sorted[min(sorted.count - 1, sorted.count * 9 / 10)]

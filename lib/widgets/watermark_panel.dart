@@ -83,6 +83,12 @@ class WatermarkPanel extends StatefulWidget {
   /// 每次修改前呼叫（父層拿來拍「上一步」快照）
   final VoidCallback? onBeforeChange;
 
+  /// 滑桿拖動中的每一格改動（值已經寫進 settings）。給了，拖動中就叫
+  /// 它而不是 [onChanged]，放手時再叫一次 [onChanged] 收尾——父層可以
+  /// 只重繪預覽層，不必每一格重建整個編輯器（影片編輯器的 build 有
+  /// 一萬多行，每格一次追不上手指）。沒給＝每一格都走 [onChanged]
+  final VoidCallback? onLiveChange;
+
   /// 顯示動畫選項（只有影片相關的畫面才有意義；照片輸出忽略動畫）
   final bool showAnimation;
 
@@ -152,6 +158,7 @@ class WatermarkPanel extends StatefulWidget {
     required this.settings,
     required this.onChanged,
     this.onBeforeChange,
+    this.onLiveChange,
     this.showAnimation = false,
     this.syncVersion = 0,
     this.initialPresetName,
@@ -305,8 +312,13 @@ class WatermarkPanelState extends State<WatermarkPanel> {
 
   void _update(VoidCallback fn) {
     if (!_sliderDragging) widget.onBeforeChange?.call();
-    setState(fn);
-    widget.onChanged();
+    setState(fn); // 只重建面板自己（這一區的卡片）
+    final live = widget.onLiveChange;
+    if (_sliderDragging && live != null) {
+      live(); // 拖動中：父層走便宜的那條（放手時 _sliderEnd 補整頁）
+    } else {
+      widget.onChanged();
+    }
   }
 
   void _sliderStart() {
@@ -314,7 +326,12 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     _sliderDragging = true;
   }
 
-  void _sliderEnd() => _sliderDragging = false;
+  void _sliderEnd() {
+    _sliderDragging = false;
+    // 拖動中每一格都只走 onLiveChange，放手這一下補一次 onChanged，
+    // 父層才有機會做整頁該做的事（改名、存草稿那類）
+    if (widget.onLiveChange != null) widget.onChanged();
+  }
 
   @override
   void didUpdateWidget(WatermarkPanel oldWidget) {

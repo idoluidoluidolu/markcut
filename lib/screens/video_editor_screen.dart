@@ -412,6 +412,36 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 疊加物同步狀態機（單通道：最新指紋 → 烘 → setOverlays）。
   /// 接線在 initState；烘與送分別是 [_ovBake]／[_ovApply]
   late final OverlaySync _ovSync;
+  bool _ovWired = false;
+
+  /// 疊加物同步的「狀態變更點」。這個 State 所有會影響疊加物的變化
+  ///（選取、拖曳、面板、時間軸編輯、復原、隱藏軌……）都經過 setState，
+  /// 就在這裡排同步——不在 build 裡當副作用：build 不該有副作用，而且
+  /// 父層重建／MediaQuery 變化也會跑 build，那些跟疊加物毫無關係。
+  /// request 本身很便宜（只排計時器）；即時變形有自己的節流。
+  /// 面板滑桿拖動中的每一格不走 setState（見 [_wmLiveTick]）
+  @override
+  void setState(VoidCallback fn) {
+    super.setState(fn);
+    _ovStateChanged();
+  }
+
+  void _ovStateChanged() {
+    if (!_ovWired || !mounted) return;
+    _ovSync.request();
+    // 選取中片段的即時變形（捏合/拖曳跟手）：節流在裡面
+    _liveXformSync();
+  }
+
+  /// 浮水印面板滑桿拖動中的每一格：值已經寫進 settings（面板跟預覽層
+  /// 拿的是同一個物件），只要預覽層重畫＋排疊加物同步就好——不整頁
+  /// setState（一萬四千行的 build，每格一次追不上手指）。放手時面板會
+  /// 再叫一次 onChanged 走整頁那條收尾
+  void _wmLiveTick() {
+    if (!mounted) return;
+    _pokeFrame();
+    if (_ovWired) _ovSync.request();
+  }
 
   /// 診斷：手勢中上屏節奏（斷流偵測、每手勢幾版）
   DateTime? _wmLastApplyAt;
@@ -1436,23 +1466,47 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return jsonEncode(j);
   }
 
-  /// 部件圖快取（鍵＝部件內容＋尺寸＋快/全）。拖文字大小時 Logo 那張
-  /// 一個像素都沒變，以前照樣整張重畫＋回讀——烘圖時間跟部件數成正比，
-  /// 只重畫變了的那一張
-  final Map<String, Uint8List> _ovPartCache = {};
+  /// 部件圖快取（鍵＝部件內容＋尺寸＋快/全＋包圍盒/整版）。拖文字大小
+  /// 時 Logo 那張一個像素都沒變，以前照樣整張重畫＋回讀——烘圖時間跟
+  /// 部件數成正比，只重畫變了的那一張。
+  /// 值是包圍盒烘圖（點陣＋它佔畫布的比例；整版＝[0,0,1,1]）
+  final Map<String, OverlayPartImage> _ovPartCache = {};
+  int _ovPartCacheBytes = 0;
 
-  Future<Uint8List> _ovPartBytes(
+  /// 快取總量上限：包圍盒烘圖一張幾十～幾百 KB，整版（平鋪／飄移／
+  /// 跑馬燈）540p raw 一張 2MB。滿了整包清掉（下一版重畫）
+  static const int _ovPartCacheCap = 32 << 20;
+
+  Future<OverlayPartImage?> _ovPartBaked(
     String key,
-    Future<Uint8List> Function() draw,
+    Future<OverlayPartImage?> Function() draw,
   ) async {
     final hit = _ovPartCache[key];
     if (hit != null) return hit;
-    final bytes = await draw();
-    // 快路的 raw 一張約 2MB：上限 8 張，滿了整包清掉（下一版重畫）
-    if (_ovPartCache.length >= 8) _ovPartCache.clear();
-    _ovPartCache[key] = bytes;
-    return bytes;
+    final part = await draw();
+    if (part == null) return null; // 整個在畫布外：沒東西可畫，不進快取
+    if (_ovPartCacheBytes + part.bytes.length > _ovPartCacheCap) {
+      _ovPartCache.clear();
+      _ovPartCacheBytes = 0;
+    }
+    _ovPartCache[key] = part;
+    _ovPartCacheBytes += part.bytes.length;
+    return part;
   }
+
+  /// 快路一版 raw 的預算：文字部件的包圍盒在 720 超過這個量就退回 540。
+  /// 540→1080 放大會軟的是「小字」（每個字沒幾個像素），小字的包圍盒
+  /// 本來就小、720 放得下；大字在 540 取樣已經夠密，沒必要為它多送
+  static const int _ovFastRawBudget = 300 << 10;
+
+  /// 部件包圍盒（佔使用者畫布的比例）疊上「使用者畫布落在合成畫框的
+  /// 哪裡」（[_ovRect]）＝這張點陣在合成畫框的 rect
+  static List<double> _ovComposeRect(List<double> base, List<double> f) => [
+    base[0] + f[0] * base[2],
+    base[1] + f[1] * base[3],
+    f[2] * base[2],
+    f[3] * base[3],
+  ];
 
   /// 使用者畫布落在合成畫框座標系的哪裡（見 Swift CIOverlaySpec 的
   /// rect）。合成畫框＝底層影片的畫框；固定比例畫布比它寬/高時，
@@ -1500,23 +1554,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   Future<List<Map<String, dynamic>>> _ovMapsBuild({bool fast = false}) async {
     final out = <Map<String, dynamic>>[];
-    // 渲染解析度跟預覽合成一樣短邊 1080 就好；版面是照比例算的
-    //（sizeFrac × 短邊），解析度不影響位置大小
+    // 版面是照比例算的（sizeFrac × 短邊），渲染解析度不影響位置大小。
+    // 全解析短邊 1080（跟預覽合成一樣）；快路（調樣式拖動中）文字 720、
+    // Logo 540——文字便宜、540→1080 放大會軟；停穩後自動補全解析
     final ca =
         _ratioAspect ??
         ((_comp != null && _comp!.height > 0)
             ? _comp!.width / _comp!.height
             : 16 / 9);
-    // 快路（調樣式拖動中）：半解析度足夠看，停穩 400ms 自動補全解析
-    final short = fast ? 540 : 1080;
-    int ow, oh;
-    if (ca >= 1) {
-      oh = short;
-      ow = ((short * ca) / 2).round() * 2;
-    } else {
-      ow = short;
-      oh = ((short / ca) / 2).round() * 2;
-    }
+    (int, int) dims(int short) => ca >= 1
+        ? (((short * ca) / 2).round() * 2, short)
+        : (short, ((short / ca) / 2).round() * 2);
     final rect = _ovRect();
     String animName(WmAnimation a) => switch (a) {
       WmAnimation.none => 'none',
@@ -1524,51 +1572,102 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       WmAnimation.drift => 'drift',
       WmAnimation.marquee => 'marquee',
     };
+    // 動畫的位移幅度原生端是照「這張點陣的 rect」算的（飄移＝rect 寬的
+    // 2%、跑馬燈掃過 rect 一整寬）：這兩種一定整版烘，包圍盒會讓幅度
+    // 縮成部件那麼大。固定／閃爍照包圍盒
+    bool needFull(WmAnimation a) =>
+        a == WmAnimation.drift || a == WmAnimation.marquee;
     // 一個部件一張圖、各帶幾何基準欄位（id/bx/by/bs/br 是原生
-    // CIOverlaySpec 既有欄位，照送）。分層疊出來的結果跟壓平的一張
-    // 一樣（同順序、同混色）。渲染平行跑（Future.wait），一張一張
-    // 排隊等於把延遲乘上部件數；組裝照 jobs 順序，疊放次序不變
+    // CIOverlaySpec 既有欄位，照送；一律是部件中心／大小／旋轉在
+    // 「使用者畫布」的比例，跟點陣裁多大無關）。分層疊出來的結果跟
+    // 壓平的一張一樣（同順序、同混色）。渲染平行跑（Future.wait），
+    // 一張一張排隊等於把延遲乘上部件數；組裝照 jobs 順序，疊放次序不變
     final jobs = <Future<Map<String, dynamic>?>>[];
+
+    /// 一個部件：只烘包圍盒（見 WatermarkRenderer.renderPart），點陣連同
+    /// 它在合成畫框的 rect 一起送。[text]＝純文字部件（快路 720）；
+    /// [full]＝整版烘（平鋪、飄移、跑馬燈）；[pngOnly]＝一律 PNG（文字
+    /// 素材不走快路 raw，跟以前一樣一版只烘一次）；[geom]＝
+    /// [x, y, size, rotation] 基準（平鋪的部件沒有「位置」可言＝null）
+    void addPart({
+      required String id,
+      required WatermarkSettings ps,
+      required Map<String, dynamic> shared,
+      required bool text,
+      required bool full,
+      bool pngOnly = false,
+      List<double>? geom,
+    }) {
+      jobs.add(() async {
+        try {
+          final raw = fast && !pngOnly;
+          var short = raw ? (text ? 720 : 540) : 1080;
+          if (raw && text && !full) {
+            // 快路預算：包圍盒在 720 超過預算就退回 540
+            final (w7, h7) = dims(720);
+            final b = await WatermarkRenderer.partBounds(
+              ps,
+              w7.toDouble(),
+              h7.toDouble(),
+            );
+            final vis = b?.intersect(
+              ui.Rect.fromLTWH(0, 0, w7.toDouble(), h7.toDouble()),
+            );
+            if (b == null ||
+                (!vis!.isEmpty &&
+                    vis.width * vis.height * 4 > _ovFastRawBudget)) {
+              short = 540;
+            }
+          }
+          final (ow, oh) = dims(short);
+          final key =
+              '$id|$ow|$oh|${raw ? 'r' : 'p'}|${full ? 'F' : 'B'}'
+              '|${_wmSigJson(ps)}';
+          final part = await _ovPartBaked(
+            key,
+            () => WatermarkRenderer.renderPart(
+              ps,
+              ow,
+              oh,
+              raw ? ui.ImageByteFormat.rawRgba : ui.ImageByteFormat.png,
+              fullCanvas: full,
+            ),
+          );
+          if (part == null) return null; // 整個在畫布外：沒東西可畫
+          return {
+            if (raw) ...{
+              'raw': part.bytes,
+              'rw': part.width,
+              'rh': part.height,
+            } else
+              'png': part.bytes,
+            ...shared,
+            'rect': part.fullCanvas
+                ? rect
+                : _ovComposeRect(rect, part.fraction),
+            if (geom != null) ...{
+              'id': id,
+              'bx': geom[0],
+              'by': geom[1],
+              'bs': geom[2],
+              'br': geom[3],
+            },
+          };
+        } catch (e) {
+          Diag.note('浮水印圖畫不出來（$id）：$e');
+          return null;
+        }
+      }());
+    }
 
     void addSettingsParts(
       String prefix,
       WatermarkSettings st,
       Map<String, dynamic> shared,
+      WmAnimation anim,
     ) {
-      void addPart(String id, WatermarkSettings ps, List<double>? geom) {
-        final key = '$id|$ow|$oh|${fast ? 'f' : 'p'}|${_wmSigJson(ps)}';
-        jobs.add(() async {
-          try {
-            return {
-              if (fast) ...{
-                'raw': await _ovPartBytes(
-                  key,
-                  () => WatermarkRenderer.renderOverlayRaw(ps, ow, oh),
-                ),
-                'rw': ow,
-                'rh': oh,
-              } else
-                'png': await _ovPartBytes(
-                  key,
-                  () => WatermarkRenderer.renderOverlayPng(ps, ow, oh),
-                ),
-              ...shared,
-              // 平鋪的部件沒有「位置」可言
-              if (geom != null) ...{
-                'id': id,
-                'bx': geom[0],
-                'by': geom[1],
-                'bs': geom[2],
-                'br': geom[3],
-              },
-            };
-          } catch (e) {
-            Diag.note('浮水印 PNG 畫不出來（$id）：$e');
-            return null;
-          }
-        }());
-      }
-
+      // 文字部件＝這組設定裡所有的文字（多文字一張圖；基準是操作中
+      // 的那一個）；Logo 一張一個部件
       final t = st.text;
       if (t.enabled && t.text.trim().isNotEmpty) {
         final ps = st.copy();
@@ -1576,9 +1675,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           l.enabled = false;
         }
         addPart(
-          '$prefix:t',
-          ps,
-          t.tiled ? null : [t.x, t.y, t.sizeFrac, t.rotation],
+          id: '$prefix:t',
+          ps: ps,
+          shared: shared,
+          text: true,
+          full: t.tiled || needFull(anim),
+          geom: t.tiled ? null : [t.x, t.y, t.sizeFrac, t.rotation],
         );
       }
       for (var i = 0; i < st.logos.length; i++) {
@@ -1590,9 +1692,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           ps.logos[j].enabled = j == i;
         }
         addPart(
-          '$prefix:l$i',
-          ps,
-          lg.tiled ? null : [lg.x, lg.y, lg.sizeFrac, lg.rotation],
+          id: '$prefix:l$i',
+          ps: ps,
+          shared: shared,
+          text: false,
+          full: lg.tiled || needFull(anim),
+          geom: lg.tiled ? null : [lg.x, lg.y, lg.sizeFrac, lg.rotation],
         );
       }
     }
@@ -1610,7 +1715,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final aSpd = wmSt?.animSpeed ?? 1.0;
       final aRng = wmSt?.animRange ?? 1.0;
       final shared = <String, dynamic>{
-        'rect': rect,
         'start': c.offset,
         'end': c.end,
         'anim': animName(anim),
@@ -1624,47 +1728,37 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (src.kind == ClipKind.text) {
         final st = (src.textStyle ?? TextMark(text: src.name)).copy()
           ..text = src.name;
-        final id = 'c${c.id}:t';
-        final px = c.px, py = c.py, sc = c.scale;
-        final key = '$id|$ow|$oh|p|$px|$py|$sc|${jsonEncode(st.toJson())}';
-        jobs.add(() async {
-          try {
-            return {
-              'png': await _ovPartBytes(
-                key,
-                () => WatermarkRenderer.renderTextClipPng(
-                  st,
-                  px,
-                  py,
-                  sc,
-                  ow,
-                  oh,
-                ),
-              ),
-              ...shared,
-              'id': id,
-              'bx': px,
-              'by': py,
-              'bs': sc,
-              'br': st.rotation,
-            };
-          } catch (e) {
-            Diag.note('疊加物 PNG 畫不出來（片段 ${c.id}）：$e');
-            return null;
-          }
-        }());
+        // 跟 renderTextClipPng 同一套：位置／縮放寫進樣式，當成一顆
+        // 文字浮水印烘（匯出那條路也是這麼畫的）
+        final ps = WatermarkSettings(
+          text: st.copy()
+            ..enabled = true
+            ..x = c.px
+            ..y = c.py
+            ..sizeFrac = st.sizeFrac * c.scale,
+          logo: LogoMark(enabled: false),
+        );
+        addPart(
+          id: 'c${c.id}:t',
+          ps: ps,
+          shared: shared,
+          text: true,
+          full: st.tiled || needFull(anim),
+          pngOnly: true,
+          geom: [c.px, c.py, c.scale, st.rotation],
+        );
       } else {
         addSettingsParts(
           'c${c.id}',
           src.wmStyle ?? WatermarkSettings(),
           shared,
+          anim,
         );
       }
     }
     // 全域浮水印
     if (!_wmHidden && _settings.hasAnyMark) {
       addSettingsParts('g', _settings, {
-        'rect': rect,
         'start': _wmStart,
         'end': _wmEndEff,
         'anim': animName(_settings.animation),
@@ -1674,7 +1768,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         'on': wmBlinkOn(_settings.animSpeed, _settings.animRange),
         'animSpeed': _settings.animSpeed,
         'range': _settings.animRange,
-      });
+      }, _settings.animation);
     }
     for (final m in await Future.wait(jobs)) {
       if (m != null) out.add(m);
@@ -2112,6 +2206,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       bake: _ovBake,
       apply: _ovApply,
     );
+    _ovWired = true;
     // 量「誰在卡」：UI 執行緒、合成執行緒、還是影片本身。
     // 這三種的處理方式完全不同，沒有數字就只能猜
     Diag.watchFrames();
@@ -9047,6 +9142,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 }
                               }),
                               onBeforeChange: _pushWmUndo,
+                              // 滑桿拖動中每一格只重繪預覽層（放手時
+                              // 面板補一次 onChanged 走上面整頁那條）
+                              onLiveChange: _wmLiveTick,
                               syncVersion: _wmSync,
                               showAnimation: true,
                               // 剛加的圖片直接選起來，可以馬上拖／縮放
@@ -9629,11 +9727,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   Widget _buildPreview() {
-    // 疊加物同步：這裡是所有相關狀態變化（選取、拖曳、面板調整）
-    // 一定會經過的地方；request 本身很便宜（只排計時器）
-    _ovSync.request();
-    // 選取中片段的即時變形（捏合/拖曳跟手）：同一個入口，節流在裡面
-    _liveXformSync();
+    // 疊加物同步與即時變形不在這裡排：build 沒有副作用，狀態變更點
+    // 是 setState（見 _ovStateChanged）與面板滑桿的 _wmLiveTick
     final baseVideo = _activeVideo;
     final baseCtrl = baseVideo == null ? null : _ctrls[baseVideo.id];
     final baseAspect = (baseCtrl != null && baseCtrl.value.isInitialized)
@@ -9889,23 +9984,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         ),
                                       ),
                                     );
-                                    // Metal 引擎的畫面層：常駐掛著
-                                    //（藏著時透明），滑動時亮起來
-                                    if (!kIsWeb &&
-                                        Platform.isIOS &&
-                                        Diag.metalPreview.value) {
-                                      addLayer(
-                                        vidTrack,
-                                        Positioned.fromRect(
-                                          rect: rect,
-                                          child: const IgnorePointer(
-                                            child: UiKitView(
-                                              viewType: 'markcut/metal_view',
-                                            ),
-                                          ),
-                                        ),
-                                      );
-                                    }
+                                    // 合成播放器在場時不掛 Metal 引擎的
+                                    // 畫面層（markcut/metal_view）：引擎在
+                                    // 合成在場時永不建、永不上台（見
+                                    // _metalPrebuild），那一層只是多一個
+                                    // 平台視圖，還把 Flutter 的點陣化逼到
+                                    // 主執行緒
                                     // 重烘空窗：馬賽克那塊由「效果區
                                     // 佔位」講話（C 案，見馬賽克圖層）；
                                     // 只有圖片層在烘時才在右上角放一顆
