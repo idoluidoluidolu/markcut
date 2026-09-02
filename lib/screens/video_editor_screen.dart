@@ -1350,6 +1350,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // ＝等全部轉完再一次換
     final editSig = _compSig(withPaths: false);
     if (editSig == _lastCompEditSig && !_allWorkFilesReady) return;
+    // HDR 代理也是一支接一支好的：每好一支 workHdrPath 就變一次，
+    // 而 _prepHdrWorkFiles 每支都存草稿、草稿又會走到這裡——
+    // 「全部補完才重烘一次」實際上每支都重烘（實機：進場 8 秒內
+    // 重建六次，每次換 item 就閃一下）。路徑類變化等整批做完
+    //（_prepHdrWorkFiles 收尾會親自來叫）
+    if (editSig == _lastCompEditSig && _hdrPrepBusy) return;
     _lastCompSig = sig;
     _lastCompEditSig = editSig;
     _compDirty = true;
@@ -1392,7 +1398,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       '~${compA.toStringAsFixed(3)};',
     );
     if (!_wmHidden && _settings.hasAnyMark) {
-      b.write('wm${jsonEncode(_settings.toJson())}|$_wmStart|$_wmEndEff;');
+      b.write('wm${_wmSigJson(_settings)}|$_wmStart|$_wmEndEff;');
     }
     for (final c in _tl.clips) {
       if (_hiddenTracks.contains(c.track)) continue;
@@ -1406,11 +1412,46 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       } else if (src.kind == ClipKind.wm) {
         b.write(
           'wc${c.id}|${c.offset}|${c.end}'
-          '|${jsonEncode((src.wmStyle ?? WatermarkSettings()).toJson())};',
+          '|${_wmSigJson(src.wmStyle ?? WatermarkSettings())};',
         );
       }
     }
     return b.toString();
+  }
+
+  /// 浮水印設定的指紋 JSON。Logo 的 b64（一張圖幾百 KB～幾 MB）換成
+  /// 「長度＋雜湊」：指紋每版要算兩三次，整包 b64 走 jsonEncode 一次
+  /// 就是幾毫秒，全落在拖滑桿那條線上
+  static String _wmSigJson(WatermarkSettings s) {
+    final j = s.toJson();
+    final logos = j['logos'];
+    if (logos is List) {
+      for (final l in logos) {
+        if (l is Map<String, dynamic>) {
+          final b = l['b64'];
+          if (b is String) l['b64'] = '${b.length}#${b.hashCode}';
+        }
+      }
+    }
+    return jsonEncode(j);
+  }
+
+  /// 部件圖快取（鍵＝部件內容＋尺寸＋快/全）。拖文字大小時 Logo 那張
+  /// 一個像素都沒變，以前照樣整張重畫＋回讀——烘圖時間跟部件數成正比，
+  /// 只重畫變了的那一張
+  final Map<String, Uint8List> _ovPartCache = {};
+
+  Future<Uint8List> _ovPartBytes(
+    String key,
+    Future<Uint8List> Function() draw,
+  ) async {
+    final hit = _ovPartCache[key];
+    if (hit != null) return hit;
+    final bytes = await draw();
+    // 快路的 raw 一張約 2MB：上限 8 張，滿了整包清掉（下一版重畫）
+    if (_ovPartCache.length >= 8) _ovPartCache.clear();
+    _ovPartCache[key] = bytes;
+    return bytes;
   }
 
   /// 使用者畫布落在合成畫框座標系的哪裡（見 Swift CIOverlaySpec 的
@@ -1495,15 +1536,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       Map<String, dynamic> shared,
     ) {
       void addPart(String id, WatermarkSettings ps, List<double>? geom) {
+        final key = '$id|$ow|$oh|${fast ? 'f' : 'p'}|${_wmSigJson(ps)}';
         jobs.add(() async {
           try {
             return {
               if (fast) ...{
-                'raw': await WatermarkRenderer.renderOverlayRaw(ps, ow, oh),
+                'raw': await _ovPartBytes(
+                  key,
+                  () => WatermarkRenderer.renderOverlayRaw(ps, ow, oh),
+                ),
                 'rw': ow,
                 'rh': oh,
               } else
-                'png': await WatermarkRenderer.renderOverlayPng(ps, ow, oh),
+                'png': await _ovPartBytes(
+                  key,
+                  () => WatermarkRenderer.renderOverlayPng(ps, ow, oh),
+                ),
               ...shared,
               // 平鋪的部件沒有「位置」可言
               if (geom != null) ...{
@@ -1578,16 +1626,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           ..text = src.name;
         final id = 'c${c.id}:t';
         final px = c.px, py = c.py, sc = c.scale;
+        final key = '$id|$ow|$oh|p|$px|$py|$sc|${jsonEncode(st.toJson())}';
         jobs.add(() async {
           try {
             return {
-              'png': await WatermarkRenderer.renderTextClipPng(
-                st,
-                px,
-                py,
-                sc,
-                ow,
-                oh,
+              'png': await _ovPartBytes(
+                key,
+                () => WatermarkRenderer.renderTextClipPng(
+                  st,
+                  px,
+                  py,
+                  sc,
+                  ow,
+                  oh,
+                ),
               ),
               ...shared,
               'id': id,
@@ -2218,11 +2270,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _scrubEndTimer?.cancel();
       _scrubEndTimer = Timer(const Duration(milliseconds: 220), _tryEndScrub);
       _prepEscapeTimer?.cancel();
+      // 精準 seek 只在收尾（_tryEndScrub）補一發。以前手指停 120ms
+      // 就發精準的：多軌合成一發精準 seek＝從關鍵幀一路解到目標格再
+      // 整張 CI 合成，手指再動時後面的寬容 seek 全排在它後面等——
+      // 就是「拉一拉會停住」
       _scrubSettleTimer?.cancel();
-      _scrubSettleTimer = Timer(
-        const Duration(milliseconds: 120),
-        () => _compSeek(exact: true),
-      );
       return;
     }
     _requestScrubFrames();
@@ -2598,8 +2650,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 顏色從原檔跳成代理、解碼器跟播放互搶，全發生在
     // 使用者眼前（實機 139~144 的「要等讀取完才順」）
     var silent = false;
-    if (!_compOn) await _ensureComp();
-    if (!mounted) return;
+    // 遮罩先亮、再去等合成：以前是「等 available、等合成組好」之後
+    // 才把 _prepBusy 翻上來，而進場打扮（_dressUp）等的是同一次
+    // 組建，縮圖有快取時它先放行——使用者已經在拉時間軸了，
+    // 讀取頁才突然蓋上來（實測回報：一開始拉一拉會停下來跑讀取）
     setState(() {
       _prepBusy = true;
       _prepSilent = silent;
@@ -2608,6 +2662,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _prepDone = 0;
       _prepCur.clear();
     });
+    if (!_compOn) await _ensureComp();
+    if (!mounted) return;
     // 轉檔偶爾會卡在某一支（硬體編碼器被佔住、素材有問題）。這一頁擋著
     // 整個編輯器，沒有退路的話使用者只能關掉 App 重來
     _prepEscapeTimer?.cancel();
@@ -2704,7 +2760,30 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// null，這裡不用先分辨
   final Set<int> _hdrPrepping = {};
 
+  /// 整批 HDR 代理進行中：路徑類的合成重烘先壓著（見
+  /// _compRefreshIfChanged），批次收尾一次換上
+  bool _hdrPrepBusy = false;
+  Future<void>? _hdrPrepRun;
+
+  /// 一次只跑一輪（每輪逐支掃 sources；排隊等到的那輪多半整輪略過）。
+  /// 排隊而不是直接返回：_drainPrep 的 HDR 階段要等到「真的做完」
+  /// 才收遮罩
   Future<void> _prepHdrWorkFiles() async {
+    while (_hdrPrepRun != null) {
+      await _hdrPrepRun;
+    }
+    final run = _prepHdrWorkFilesInner();
+    _hdrPrepRun = run;
+    _hdrPrepBusy = true;
+    try {
+      await run;
+    } finally {
+      _hdrPrepRun = null;
+      _hdrPrepBusy = false;
+    }
+  }
+
+  Future<void> _prepHdrWorkFilesInner() async {
     var madeAny = false;
     for (var i = 0; i < _tl.sources.length; i++) {
       // 匯入轉檔中讓道：工作檔佇列已經佔了兩個硬體編碼 session，
@@ -2726,7 +2805,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _saveDraft();
     }
     // 全部補完才重烘一次：以前每好一支就重烘，六支素材就是六次
-    // 播放器重載（實測診斷裡「就緒」刷了一整排）
+    // 播放器重載（實測診斷裡「就緒」刷了一整排）。
+    // 這一輪的旗標先收（_compRefreshIfChanged 看它決定要不要壓住）
+    _hdrPrepBusy = false;
     if (madeAny && mounted && !_playing) _compRefreshIfChanged();
     // HDR 代理就緒會改變 Metal 引擎吃的檔案路徑（workHdrPath），
     // 合成指紋卻可能沒變（不重烘）——引擎佈局要自己刷，不然
@@ -2802,6 +2883,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 播放中發生過、被推遲的合成重組
   bool _pendingCompRebuild = false;
+
+  /// 暫停後補做媒體抽換的延遲（見 _pause）
+  Timer? _swapFlushTimer;
+
+  /// 手指還在時間軸上（滑動/拖片段/捏合）就再等一拍——換 item 的
+  /// 那一下不能落在手勢中間
+  void _flushSwapsWhenIdle() {
+    if (!mounted) return;
+    if (_scrubbing || _lifting || _tlPinching) {
+      _swapFlushTimer = Timer(
+        const Duration(milliseconds: 400),
+        _flushSwapsWhenIdle,
+      );
+      return;
+    }
+    _flushPendingSwaps();
+  }
 
   /// 沖洗中（_swapToWorkFile 內部會再呼叫一次 _pause，別讓它遞迴進來
   /// 重組第二次合成）
@@ -3290,10 +3388,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _requestScrubFrames();
     _scrubEndTimer?.cancel();
     _scrubEndTimer = Timer(const Duration(milliseconds: 220), _tryEndScrub);
+    // 手停 120ms 先把合成器寬容地帶到附近（蓋層退場時底下不是舊格）；
+    // 精準的那一發留給收尾（_tryEndScrub）——原檔關鍵幀疏，拖曳中
+    // 連發精準 seek 就是停住轉圈的來源
     _scrubSettleTimer?.cancel();
     _scrubSettleTimer = Timer(
       const Duration(milliseconds: 120),
-      () => _compSeek(exact: true),
+      () => _compSeek(),
     );
     return true;
   }
@@ -3514,6 +3615,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             });
       }
     }
+    // 放手了：這時才對準那一格（拖曳中一律寬容，見 _compSeek）。
+    // 同一格只送一次（_compExactAt），上面對齊回彈那條也會再要一次
+    _scrubSettleTimer?.cancel();
+    _compSeek(exact: true);
     _scrubProbeEnd();
     if (_scrubbing && mounted) setState(() => _scrubbing = false);
   }
@@ -6749,9 +6854,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 預熱中的播放器也一起停了，下次播放要重新預熱
     _warmed.clear();
     if (_playing) setState(() => _playing = false);
-    // 播放中推遲掉的媒體抽換，現在補做
+    // 播放中推遲掉的媒體抽換，稍後補做。不在按下暫停的同一刻做：
+    // 換 AVPlayerItem 是主執行緒同步組合成（幾百 ms）＋新畫面上檔
+    // 換手，正好疊在使用者看著停格的那一瞬（實機：進場十秒內
+    // 按暫停會閃）。等 400ms 沒再播才換；期間又按播放的話
+    // _flushPendingSwaps 看到 _playing 自己讓開，留到下一次暫停
     if (_pendingSwaps.isNotEmpty || _pendingCompRebuild) {
-      _flushPendingSwaps();
+      _swapFlushTimer?.cancel();
+      _swapFlushTimer = Timer(
+        const Duration(milliseconds: 400),
+        _flushSwapsWhenIdle,
+      );
     }
     // 播放中被擋下的引擎佈局重建，現在補做（畫面已停格，pump
     // 重建的空窗不會被看到）
@@ -7347,11 +7460,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _compSeek();
       _scrubEndTimer?.cancel();
       _scrubEndTimer = Timer(const Duration(milliseconds: 220), _tryEndScrub);
+      // 精準 seek 留給收尾（理由見 _onTimelineScroll）
       _scrubSettleTimer?.cancel();
-      _scrubSettleTimer = Timer(
-        const Duration(milliseconds: 120),
-        () => _compSeek(exact: true),
-      );
       return;
     }
     _requestScrubFrames();
@@ -8374,6 +8484,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _playProbe?.cancel();
     _prepEscapeTimer?.cancel();
     _staleKickTimer?.cancel();
+    _swapFlushTimer?.cancel();
     _ovSync.dispose();
     _wmGestureTimer?.cancel();
     unawaited(MetalPreview.disposeEngine());

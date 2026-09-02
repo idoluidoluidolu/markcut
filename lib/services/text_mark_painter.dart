@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/rendering.dart';
@@ -16,12 +17,22 @@ import '../models/watermark_settings.dart';
 /// - 不用離屏影像縮放模擬模糊：放大取樣會走樣，還踩過「餘數沒乘、
 ///   陰影縮小錯位」的坑
 /// - 同步、無狀態：預覽每一格直接重畫，滑桿即時跟手
+/// - 所有尺寸一律是字級的倍數，不准出現絕對像素常數：540p 快烘、
+///   1080p 全解析、螢幕預覽三邊只差重取樣，幾何完全一樣
 ///
-/// 陰影＝把「填色黑字」畫進一層 saveLayer，用合成層級的
-/// ImageFilter.blur 做真高斯——這是畫布合成功能（BackdropFilter
-/// 同一套管線），不是字型濾鏡，離屏 toImage 照樣生效。
-/// 之前試過的描邊光暈近似在大字會現出一圈圈「空心管」，棄用。
-/// shadowBlur=0 時直接畫，就是俐落的硬影。
+/// 透明度模型（跟業界文字工具一樣：透明度作用在「整個文字物件」）：
+/// 陰影、描邊、加粗、本體全部先以不透明畫進同一層 saveLayer，整層
+/// 再按文字透明度合成一次。這樣：
+/// - 半透明字的字肚裡不會透出自己的陰影（以前 70% 白字下面壓著
+///   黑影，字肚變灰）
+/// - 描邊跟本體交界不會 alpha 相乘變濃（以前描邊在層外、本體在
+///   層內，字緣浮出一圈更深的框——「粗細調起來怪怪的」）
+/// - 陰影的剪影＝描邊＋加粗後的整個字（以前只有字形本身，描邊
+///   一開、3% 的影子整個被 3.5% 的描邊圈蓋掉＝陰影消失）
+///
+/// 陰影＝把剪影畫進一層 saveLayer，用合成層級的 ImageFilter.blur
+/// 做真高斯——這是畫布合成功能（BackdropFilter 同一套管線），不是
+/// 字型濾鏡，離屏 toImage 照樣生效。shadowBlur=0 就是俐落的硬影。
 void paintMarkGlyphs(
   ui.Canvas canvas,
   TextMark t,
@@ -39,95 +50,100 @@ void paintMarkGlyphs(
     letterSpacing: fontSize * t.spacing,
   );
 
-  // ── 陰影（saveLayer＋真高斯）──
-  if (t.shadow && t.shadowOpacity > 0.01) {
-    final off = ui.Offset(at.dx + fontSize * 0.03, at.dy + fontSize * 0.03);
-    final sigma = fontSize * t.shadowBlur;
-    final a = (t.shadowOpacity * t.opacity).clamp(0.0, 1.0);
-    final sp = layout(
-      base.copyWith(color: const ui.Color(0xFF000000).withValues(alpha: a)),
+  ui.Paint strokePaint(double width, ui.Color color) => ui.Paint()
+    ..style = ui.PaintingStyle.stroke
+    ..strokeWidth = width
+    ..strokeJoin = ui.StrokeJoin.round
+    ..strokeCap = ui.StrokeCap.round
+    ..color = color;
+
+  // 加粗量（描邊式）：字型多半只有一個字重，換 fontWeight 沒反應，
+  // 用同色描邊把字撐粗才是每個字型都吃得到的做法。
+  // 門檻比「滑桿值」不比像素：預覽縮圖跟成品才會在同一個設定值切換
+  final hasBold = t.weight > 0.005;
+  final boldPx = hasBold ? fontSize * 0.06 * t.weight : 0.0;
+  // 描邊要包住加粗後的字，所以寬度含 boldPx（描邊線一半在字內、
+  // 一半在字外，露在外面的圈＝fontSize×outlineWidth/2）
+  final outlinePx = t.outline ? fontSize * t.outlineWidth + boldPx : 0.0;
+  final hasShadow = t.shadow && t.shadowOpacity > 0.01;
+  final shadowOff = fontSize * 0.03;
+  final sigma = hasShadow ? fontSize * t.shadowBlur : 0.0;
+  final blurred = hasShadow && t.shadowBlur > 0.001;
+  // 剪影往字外長的量（描邊／加粗各有一半在字外）
+  final spread = math.max(outlinePx, boldPx) / 2;
+  // 墨水常凸出行高（圓體筆頭、花體字尾），離屏層邊界要留餘裕：
+  // Impeller 會把內容裁到 saveLayer 邊界，以前只留 boldPx+2px，
+  // 開加粗就把凸出的筆畫削掉
+  final inkSlack = fontSize * 0.3;
+
+  final bodyOpaque = Color(t.colorValue);
+  final fill = layout(base.copyWith(color: bodyOpaque));
+  final inkBox = ui.Rect.fromLTWH(at.dx, at.dy, fill.width, fill.height);
+
+  // ── 整組一層 ──（不透明時不用開層：不透明的本體本來就蓋住底下）
+  final opacity = t.opacity.clamp(0.0, 1.0);
+  final grouped = opacity < 0.999;
+  if (grouped) {
+    final reach = inkSlack + spread + (hasShadow ? shadowOff + sigma * 3 : 0.0);
+    canvas.saveLayer(
+      inkBox.inflate(reach),
+      ui.Paint()..color = const ui.Color(0xFFFFFFFF).withValues(alpha: opacity),
     );
-    if (sigma > 0.3) {
-      // 圖層邊界收在文字附近：模糊尾巴 3σ 之外就看不見了，
-      // 不用整張畫布都進離屏層
-      final bounds = ui.Rect.fromLTWH(
-        off.dx,
-        off.dy,
-        sp.width,
-        sp.height,
-      ).inflate(sigma * 3 + 1);
-      canvas.saveLayer(
-        bounds,
-        ui.Paint()
-          ..imageFilter = ui.ImageFilter.blur(
-            sigmaX: sigma,
-            sigmaY: sigma,
-            tileMode: ui.TileMode.decal,
-          ),
-      );
-      sp.paint(canvas, off);
-      canvas.restore();
+  }
+
+  // ── 陰影 ──（剪影＝描邊＋加粗後的整個字；濃度在層上一次套）
+  if (hasShadow) {
+    const black = ui.Color(0xFF000000);
+    final off = ui.Offset(at.dx + shadowOff, at.dy + shadowOff);
+    if (!blurred && spread <= 0) {
+      // 硬影、沒描邊沒加粗：剪影就是字形本身，直接畫最省
+      layout(
+        base.copyWith(color: black.withValues(alpha: t.shadowOpacity)),
+      ).paint(canvas, off);
     } else {
-      sp.paint(canvas, off);
+      // 描邊跟填字要是各自半透明地疊，交界處 alpha 相乘會出現一圈
+      // 更深的框；先不透明畫好剪影，整層再按濃度（＋模糊）合成
+      final bounds = inkBox
+          .shift(ui.Offset(shadowOff, shadowOff))
+          .inflate(inkSlack + spread + sigma * 3);
+      final lp = ui.Paint()
+        ..color = const ui.Color(0xFFFFFFFF).withValues(alpha: t.shadowOpacity);
+      if (blurred) {
+        lp.imageFilter = ui.ImageFilter.blur(
+          sigmaX: sigma,
+          sigmaY: sigma,
+          tileMode: ui.TileMode.decal,
+        );
+      }
+      canvas.saveLayer(bounds, lp);
+      if (spread > 0) {
+        layout(
+          base.copyWith(foreground: strokePaint(spread * 2, black)),
+        ).paint(canvas, off);
+      }
+      layout(base.copyWith(color: black)).paint(canvas, off);
+      canvas.restore();
     }
   }
 
-  // 加粗量（描邊式）：字型多半只有一個字重，換 fontWeight 沒反應，
-  // 用同色描邊把字撐粗才是每個字型都吃得到的做法
-  final boldPx = fontSize * 0.06 * t.weight;
-
-  // ── 描邊 ──（外框要包住加粗後的字，所以寬度含 boldPx）
+  // ── 描邊 ──（在本體底下；不透明，透明度由整組那層套）
   if (t.outline) {
     layout(
       base.copyWith(
-        foreground: ui.Paint()
-          ..style = ui.PaintingStyle.stroke
-          ..strokeWidth = (fontSize * t.outlineWidth + boldPx).clamp(
-            1.0,
-            4096.0,
-          )
-          ..strokeJoin = ui.StrokeJoin.round
-          ..color = Color(t.outlineColorValue).withValues(alpha: t.opacity),
+        foreground: strokePaint(outlinePx, Color(t.outlineColorValue)),
       ),
     ).paint(canvas, at);
   }
 
-  // ── 本體 ──（加粗＝同色描邊撐粗）。
-  // 半透明時不能直接疊：stroke 跟 fill 各自半透明地疊在一起，
-  // 交界處透明度相乘變濃，字緣會浮出一圈更深的框（實測「粗細
-  // 調起來怪怪的」）。所以先在 saveLayer 裡用不透明畫好描邊＋
-  // 填字，整層再按文字透明度合成一次——粗細均勻、透明度正確
-  final bodyOpaque = Color(t.colorValue);
-  if (boldPx > 0.2) {
-    final sp = layout(base.copyWith(color: bodyOpaque));
-    final bounds = ui.Rect.fromLTWH(
-      at.dx,
-      at.dy,
-      sp.width,
-      sp.height,
-    ).inflate(boldPx + 2);
-    canvas.saveLayer(
-      bounds,
-      ui.Paint()
-        ..color = const ui.Color(0xFFFFFFFF).withValues(alpha: t.opacity),
-    );
+  // ── 本體 ──（加粗＝同色描邊撐粗，再蓋上填字）
+  if (hasBold) {
     layout(
-      base.copyWith(
-        foreground: ui.Paint()
-          ..style = ui.PaintingStyle.stroke
-          ..strokeWidth = boldPx
-          ..strokeJoin = ui.StrokeJoin.round
-          ..strokeCap = ui.StrokeCap.round
-          ..color = bodyOpaque,
-      ),
-    ).paint(canvas, at);
-    sp.paint(canvas, at);
-    canvas.restore();
-  } else {
-    layout(
-      base.copyWith(color: bodyOpaque.withValues(alpha: t.opacity)),
+      base.copyWith(foreground: strokePaint(boldPx, bodyOpaque)),
     ).paint(canvas, at);
   }
+  fill.paint(canvas, at);
+
+  if (grouped) canvas.restore();
 }
 
 /// 量文字的版面大小（跟 [paintMarkGlyphs] 同一套字型參數）

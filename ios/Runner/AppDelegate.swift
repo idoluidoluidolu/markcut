@@ -4490,6 +4490,27 @@ final class PlayerHosts: NSObject {
   /// 等新畫面真的上檔一起執行
   private var pendingVisible: (() -> Void)?
 
+  /// 換手中的新播放器「還沒對到位」：剛組好的 item 停在 0 秒，
+  /// 第一格就緒就翻面會先露一下開頭的畫面，等 Dart 的定位 seek 落地
+  /// 才回到停點（實機：進場十秒內按播放/暫停閃一下）。
+  /// CompPlayer.build 先 hold，第一發 seek 完成或起播才 release；
+  /// 1.5 秒保底照舊硬翻
+  private weak var heldPlayer: AVPlayer?
+  private var flipWhenReleased: [() -> Void] = []
+
+  func hold(_ p: AVPlayer) {
+    heldPlayer = p
+    flipWhenReleased.removeAll()
+  }
+
+  func release(_ p: AVPlayer) {
+    guard heldPlayer === p else { return }
+    heldPlayer = nil
+    let fs = flipWhenReleased
+    flipWhenReleased.removeAll()
+    for f in fs { f() }
+  }
+
   func register(_ v: PlayerHostView) {
     views.add(v)
     v.front.player = current
@@ -4535,7 +4556,9 @@ final class PlayerHosts: NSObject {
       self.pendingVisible = nil
       done()
     }
+    flipWhenReleased.removeAll()
     guard let p = p else {
+      heldPlayer = nil
       for v in views.allObjects {
         v.front.player = nil
         v.back.player = nil
@@ -4561,9 +4584,27 @@ final class PlayerHosts: NSObject {
     for v in vs {
       let incoming = v.back
       incoming.player = p
-      if incoming.isReadyForDisplay {
+      // 翻面本體。已經翻過的視圖（前層就是 p）直接略過——KVO
+      // true→false→true 抖動、或 hold 期間重複排進來，都不會把
+      // remaining 多扣（多視圖時另一個視圖的觀察者會被提早作廢）
+      let flipNow: () -> Void = { [weak self] in
+        guard let self = self, self.gen == g, v.front.player !== p else {
+          return
+        }
         v.flip()
         oneDone()
+      }
+      // 第一格就緒但還在 hold（定位 seek 沒落地）：排到 release 再翻
+      let flipOrDefer: () -> Void = { [weak self] in
+        guard let self = self else { return }
+        if self.heldPlayer === p {
+          self.flipWhenReleased.append(flipNow)
+        } else {
+          flipNow()
+        }
+      }
+      if incoming.isReadyForDisplay {
+        flipOrDefer()
         continue
       }
       let obs = incoming.observe(\.isReadyForDisplay, options: [.new]) {
@@ -4571,22 +4612,23 @@ final class PlayerHosts: NSObject {
         guard layer.isReadyForDisplay else { return }
         DispatchQueue.main.async {
           guard let self = self, self.gen == g else { return }
-          // 已經翻過面的視圖再收到 KVO（true→false→true 抖動）
-          // 直接忽略——不擋的話 remaining 會被多扣，多視圖時
-          // 另一個視圖的觀察者被提早作廢、永遠翻不了面
           guard v.front.player !== p else { return }
-          v.flip()
-          oneDone()
+          flipOrDefer()
         }
       }
       pendingObs.append(obs)
     }
-    // 保底：素材壞掉 readyForDisplay 永遠不來——1.5 秒硬翻，
-    // 寧可閃一下也不能卡在舊畫面（聲音已經是新的了）
+    // 保底：素材壞掉 readyForDisplay 永遠不來（或定位 seek 一直沒
+    // 落地）——1.5 秒硬翻，寧可閃一下也不能卡在舊畫面（聲音已經是
+    // 新的了）
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
       guard let self = self, self.gen == g, !finished else { return }
       finished = true
       self.pendingObs.removeAll()
+      if self.heldPlayer === p {
+        self.heldPlayer = nil
+        self.flipWhenReleased.removeAll()
+      }
       for v in vs where v.front.player !== p {
         if v.back.player !== p { v.back.player = p }
         v.flip()
@@ -5708,6 +5750,9 @@ final class CompPlayer: NSObject, FlutterTexture {
     }
     composition = comp
     stItemSwaps += 1
+    // 新 item 停在 0 秒：畫面翻面要等 Dart 的定位 seek 落地
+    //（見 PlayerHosts.hold；chase 完成／play 時 release）
+    PlayerHosts.shared.hold(player)
     player.replaceCurrentItem(with: item)
     // 播放接管的「音訊分身」改成用到才建（見 ensureAudioClone）：
     // 每次重組都多養一顆載著同一份合成的播放器，跟主播放器搶
@@ -5885,6 +5930,8 @@ final class CompPlayer: NSObject, FlutterTexture {
     // 還沒跑完的 preroll 會把播放壓住，先取消
     player.cancelPendingPrerolls()
     nudgeAnchor = .invalid
+    // 要播了：換手中的新畫面不能再壓在後面（見 PlayerHosts.hold）
+    PlayerHosts.shared.release(player)
     startPlayWatch()
     CIExportCompositor.slowLock.lock()
     CIExportCompositor.watchSupply = true
@@ -6089,7 +6136,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       exact ? CMTime.zero : CMTimeMakeWithSeconds(0.1, preferredTimescale: 600)
     seekStart = CACurrentMediaTime()
     player.seek(to: t, toleranceBefore: tol, toleranceAfter: tol) {
-      [weak self] _ in
+      [weak self] ok in
       // 完成回呼在 AVFoundation 的背景佇列跑，seeking/seekTarget
       // 卻是主執行緒（method channel）在寫——無鎖交錯下最後那發
       // 「停手精準 seek」可能被安靜吞掉、seeking 卡在 true 之後
@@ -6101,6 +6148,8 @@ final class CompPlayer: NSObject, FlutterTexture {
             Int((CACurrentMediaTime() - self.seekStart) * 1000))
         }
         self.seeking = false
+        // 定位落地（沒被下一發打斷）：換手中的新畫面可以翻上來了
+        if ok { PlayerHosts.shared.release(self.player) }
         if self.seekTarget.isValid {
           self.chase()  // 手指又動了，追過去
         } else if self.player.rate == 0,
@@ -6363,6 +6412,7 @@ final class CompPlayer: NSObject, FlutterTexture {
 
   func dispose() {
     disposeWatch()
+    PlayerHosts.shared.release(player)
     // 重產閉包抓著整組合成軌，不放掉的話合成跟著這顆殭屍活著
     vcRegen = nil
     if let o = stallObs {
