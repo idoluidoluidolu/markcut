@@ -846,7 +846,13 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
       self.lastComposedBase = nil
     }
   }
-  func cancelAllPendingVideoCompositionRequests() {}
+  func cancelAllPendingVideoCompositionRequests() {
+    // 佇列裡還沒開工的請求，開工時看到世代對不上就回報取消
+    //（見 startRequest 開頭）；正在合成的那格照常做完
+    Self.slowLock.lock()
+    reqGen &+= 1
+    Self.slowLock.unlock()
+  }
 
   /// 調色：預覽的 4x5 矩陣是在「已編碼（gamma）」的像素值上做的，
   /// Core Image 的工作空間是線性——直接套會跟預覽對不上。先轉去
@@ -960,6 +966,22 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   static var slowFrames: [String] = []
   static var frameCount = 0
   static var worstMs = 0.0
+
+  /// 拖曳模式（CompPlayer 依 seek 節奏切：暫停中的寬容發＝手指在動；
+  /// 精準發／播放／暫停＝結束）。合成器只省「看不見」的工作：診斷
+  /// 亮度取樣不做、合成 block 用互動優先權排程。畫布尺寸、層數、
+  /// 疊加物、馬賽克一律照常——任何一樣動了就是放手那一刻閃一下
+  private static var scrubbing = false
+  static func setScrubbing(_ on: Bool) {
+    slowLock.lock()
+    scrubbing = on
+    slowLock.unlock()
+  }
+
+  /// 待處理請求的世代：AVFoundation 喊取消（新 seek 打斷、換件）時 +1，
+  /// 佇列裡還沒開工的舊格直接回報取消，不白算一張沒人看的畫面——
+  /// 拖曳中每發 seek 的那一格不必排在前一發多要的預備格後面
+  private var reqGen = 0
 
   /// 供格節奏：播放中相鄰兩格「牆鐘等了多久 vs 畫面差多少」。
   /// 合成再快，系統若在接縫供不出下一格，卡頓就在這裡現形——
@@ -1117,8 +1139,23 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   }
 
   func startRequest(_ req: AVAsynchronousVideoCompositionRequest) {
-    queue.async {
+    // 世代號在呼叫端（AVFoundation 的執行緒）就取：之後被取消的話，
+    // block 開工時對不上就直接回報取消（見 cancelAllPending…）
+    Self.slowLock.lock()
+    let gen = reqGen
+    let scrub = Self.scrubbing
+    Self.slowLock.unlock()
+    // 拖曳中的格是使用者正在等的畫面：用跟主執行緒同一級的優先權排程
+    //（合成佇列沒指定 QoS，會排在 UI 之後；播放／匯出照舊）
+    queue.async(qos: scrub ? .userInteractive : .unspecified) {
       autoreleasepool {
+        Self.slowLock.lock()
+        let stale = self.reqGen != gen
+        Self.slowLock.unlock()
+        if stale {
+          req.finishCancelledRequest()
+          return
+        }
         let tick = CFAbsoluteTimeGetCurrent()
         Self.noteSupply(t: req.compositionTime.seconds, wall: tick)
         guard
@@ -1220,9 +1257,11 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             t: t0, ms: (CFAbsoluteTimeGetCurrent() - tick) * 1000,
             layers: 1, missing: false)
           self.tagColors(dst)
-          Self.noteLuma(
-            dst, t: t0, drawn: 1, missing: false,
-            srcH: ins.layers.first?.srcHeight ?? -1, canvasH: size.height)
+          if !scrub {
+            Self.noteLuma(
+              dst, t: t0, drawn: 1, missing: false,
+              srcH: ins.layers.first?.srcHeight ?? -1, canvasH: size.height)
+          }
           req.finish(withComposedVideoFrame: dst)
           return
         }
@@ -1430,12 +1469,19 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
                 // 70% 的字沖成灰——問題不在字不夠亮，在字縫裡透進來
                 // 的超亮畫面。夾住之後混色數學跟 SDR 一字不差；
                 // 字外的畫面完全不動、HDR 照樣亮
-                out = capped.applyingFilter(
-                  "CIBlendWithAlphaMask",
-                  parameters: [
-                    kCIInputBackgroundImageKey: out,
-                    kCIInputMaskImageKey: o,
-                  ])
+                // 只算部件蓋到的範圍：遮罩外的混色結果本來就等於背景，
+                // 裁到部件的 extent 再疊回去，像素一個位元都不變；省的是
+                // 原本每個部件各跑一次的整張畫布濾鏡（夾白＋遮罩混色）
+                let roi = o.extent.intersection(canvasRect)
+                if !roi.isEmpty {
+                  out = capped.applyingFilter(
+                    "CIBlendWithAlphaMask",
+                    parameters: [
+                      kCIInputBackgroundImageKey: out,
+                      kCIInputMaskImageKey: o,
+                    ]
+                  ).cropped(to: roi).composited(over: out)
+                }
                 // HDR 輸出：疊加物（文字/浮水印/貼圖）在線性光提亮
                 // 一檔（×2）。SDR 白疊在 HDR 畫面上只有基準白
                 //（~203 尼特），旁邊高光動輒上千尼特，使用者挑的
@@ -1459,10 +1505,14 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         // （上：疊加物區塊——缺格重播也會走到，樣式永遠是當下版）
         self.ctx.render(out, to: dst, bounds: canvasRect, colorSpace: self.outCS)
         self.tagColors(dst)
-        Self.noteLuma(
-          dst, t: t0, drawn: drawnCount, missing: missing,
-          srcH: ins.layers.first?.srcHeight ?? -1, canvasH: size.height,
-          src: probeSrc)
+        // 拖曳中不做亮度取樣（要把剛渲染好的緩衝鎖回 CPU 讀一點）：
+        // 純診斷，放手那發照樣量
+        if !scrub {
+          Self.noteLuma(
+            dst, t: t0, drawn: drawnCount, missing: missing,
+            srcH: ins.layers.first?.srcHeight ?? -1, canvasH: size.height,
+            src: probeSrc)
+        }
         req.finish(withComposedVideoFrame: dst)
         Self.noteFrame(
           t: t, ms: (CFAbsoluteTimeGetCurrent() - tick) * 1000,
@@ -4976,6 +5026,8 @@ final class CompPlayer: NSObject, FlutterTexture {
   init(registry: FlutterTextureRegistry) {
     self.registry = registry
     super.init()
+    // 新合成從一般模式起算（拖曳模式只在拖曳 seek 之間活著）
+    CIExportCompositor.setScrubbing(false)
     player.actionAtItemEnd = .pause
     // 一顆播放器負責整條時間軸，不需要任何緩衝以外的等待
     player.automaticallyWaitsToMinimizeStalling = false
@@ -6001,6 +6053,9 @@ final class CompPlayer: NSObject, FlutterTexture {
     }
     // 還沒跑完的 preroll 會把播放壓住，先取消
     player.cancelPendingPrerolls()
+    prerollArmed = false
+    // 播放中的格不是拖曳格：合成器回一般模式
+    CIExportCompositor.setScrubbing(false)
     nudgeAnchor = .invalid
     // 要播了：換手中的新畫面不能再壓在後面（見 PlayerHosts.hold）
     PlayerHosts.shared.release(player)
@@ -6074,8 +6129,11 @@ final class CompPlayer: NSObject, FlutterTexture {
     CIExportCompositor.slowLock.unlock()
     player.pause()
     nudgeAnchor = .invalid
-    // 暫停時把管線熱著，下次按播放就不用等
+    CIExportCompositor.setScrubbing(false)
+    // 暫停時把管線熱著，下次按播放就不用等（緊接著拖曳的話，
+    // 第一發 seek 會先把它取消，見 chase）
     if player.currentItem?.status == .readyToPlay {
+      prerollArmed = true
       player.preroll(atRate: targetRate, completionHandler: nil)
     }
   }
@@ -6139,26 +6197,37 @@ final class CompPlayer: NSObject, FlutterTexture {
   private(set) var seekMs: [Int] = []
   private(set) var seekCoalesced = 0
   private var seekStart: CFTimeInterval = 0
+  /// 落地的 seek 總數（seekMs 只留前 400 發；拖曳偵探要的是不封頂的計數）
+  private(set) var seekDone = 0
+
+  /// 停手後排過預捲、還沒被取消：下一發 seek 開跑前先取消它。
+  /// 預捲＝對暫停中的合成連環解碼＋合成好幾格，跟緊接著的 seek 搶解碼器
+  private var prerollArmed = false
 
   /// [exact] 只有「使用者停手了、要對準那一格」時才給 true。
   ///
-  /// 精準 seek 要從前一個關鍵幀一路解到目標格，而且跑完之前 rate 會被
-  /// 壓在 0——按下播放剛好撞上它，畫面就是不動。拖曳中一律寬容，
-  /// 停手之後才補一次精準的
+  /// 拖曳發與停手發都鎖幀（容差 0）：預覽播的是密關鍵幀代理（每 4 格
+  /// 一個），鎖幀最多多解 3 格，換來拖曳中每一發都是「指針那一格」——
+  /// 慢拖每格都換、手指停住那格就是準的、放手不再從吸附格跳到準格
+  ///（原本拖曳寬容 0.1s＝永遠吸最近的關鍵幀，慢拖四格一跳）。
+  /// exact 只差在停手那發落地後預捲把管線熱著（拖曳中絕不預捲，見 chase）
   func seek(_ seconds: Double, exact: Bool) {
     var t = seconds
-    // 精準 seek（停手/點時間軸）偏移半格：指針吸在片段邊界（例如
-    // 馬賽克起點 4.5s）時，來源取樣格的 PTS 常常是 4.4711 之類
-    //（29.97fps 對不齊），畫面顯示的是「邊界前一格」——那格還不在
-    // 效果的時間段裡，看起來就是「指針指到素材開頭卻沒有馬賽克」
-    //（實測回報）。往前偏半格保證顯示的是邊界上或之後的取樣格
-    if exact { t += 0.02 }
+    // 偏移半格（拖曳與停手同一套——兩邊落在同一格，放手畫面不動）：
+    // 指針吸在片段邊界（例如馬賽克起點 4.5s）時，來源取樣格的 PTS
+    // 常常是 4.4711 之類（29.97fps 對不齊），畫面顯示的是「邊界前一格」
+    // ——那格還不在效果的時間段裡，看起來就是「指針指到素材開頭卻沒有
+    // 馬賽克」（實測回報）。往前偏半格保證顯示的是邊界上或之後的取樣格
+    t += 0.02
     // 目標夾在「最後一格之前」：seek 到正好等於總長的位置，指令已經
     // 出界，畫面可能刷成黑的——拖到底或播完停在結尾都要停在最後一幀
     if duration > 0.1, t > duration - 0.034 { t = duration - 0.034 }
     seekTarget = CMTime(seconds: t, preferredTimescale: 600)
     seekTargetExact = exact
     nudgeAnchor = .invalid
+    // 合成器的拖曳模式跟著 seek 節奏走：暫停中的寬容發＝手指在動，
+    // 精準發＝停手（播放／暫停也會關，見 play/pause）
+    CIExportCompositor.setScrubbing(!exact && player.rate == 0)
     // 已經有一發在跑：只要記住最新目標就好，跑完會自己追上去
     if seeking {
       seekCoalesced += 1
@@ -6204,10 +6273,14 @@ final class CompPlayer: NSObject, FlutterTexture {
     let exact = seekTargetExact
     seekTarget = .invalid
     seeking = true
-    let tol =
-      exact ? CMTime.zero : CMTimeMakeWithSeconds(0.1, preferredTimescale: 600)
+    // 上一次停手排的預捲還在跑：先取消，別讓它跟這發 seek 搶解碼器
+    if prerollArmed {
+      prerollArmed = false
+      player.cancelPendingPrerolls()
+    }
     seekStart = CACurrentMediaTime()
-    player.seek(to: t, toleranceBefore: tol, toleranceAfter: tol) {
+    // 鎖幀（拖曳與停手同一個容差，見 seek）：密關鍵幀代理最多多解 3 格
+    player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) {
       [weak self] ok in
       // 完成回呼在 AVFoundation 的背景佇列跑，seeking/seekTarget
       // 卻是主執行緒（method channel）在寫——無鎖交錯下最後那發
@@ -6219,19 +6292,24 @@ final class CompPlayer: NSObject, FlutterTexture {
           self.seekMs.append(
             Int((CACurrentMediaTime() - self.seekStart) * 1000))
         }
+        self.seekDone += 1
         self.seeking = false
         // 定位落地（沒被下一發打斷）：換手中的新畫面可以翻上來了
         if ok { PlayerHosts.shared.release(self.player) }
         if self.seekTarget.isValid {
           self.chase()  // 手指又動了，追過去
-        } else if self.player.rate == 0,
+        } else if exact, self.player.rate == 0,
           self.player.currentItem?.status == .readyToPlay,
           CACurrentMediaTime() - self.lastNudgeAt > 0.5
         {
-          // 停下來了：把管線熱著，下次按播放就不用等。
-          // 疊加物驅動的重畫（拖滑桿中）後「不」預捲——每版一次
+          // 停手那發落地、後面沒新目標：把管線熱著，下次按播放就不用等。
+          // 只有停手發（exact）才預捲——原本拖曳中每發落地都預捲，
+          // 手指一動下一發就得先等預捲取消／跟它搶解碼器，正是拖曳
+          // p90 拉長、手指停一下再動就頓一下的根。
+          // 疊加物驅動的重畫（拖滑桿中）後也「不」預捲——每版一次
           // 預捲＝對暫停中的 10-bit 檔連環開工又取消，解碼器被
           // 餓死（獨立審查 #1）
+          self.prerollArmed = true
           self.player.preroll(atRate: self.targetRate, completionHandler: nil)
         }
       }
@@ -6468,15 +6546,25 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 換圖間隔的統計：幾次、平均、最久、超過兩格的次數。
   /// 30fps 的素材理想值是每 33ms 一次；出現 60、80、100 就是 judder
   func gapStats() -> [String: Any] {
-    let g = frameGaps
-    guard !g.isEmpty else { return ["count": 0] }
-    let sum = g.reduce(0, +)
-    return [
-      "count": g.count,
-      "avgMs": Double(sum) / Double(g.count),
-      "maxMs": g.max() ?? 0,
-      "over2x": g.filter { $0 > 66 }.count,
+    // 拖曳偵探的計數一併帶（便宜的整數；health 那條會做抽格檢查，
+    // 拖曳中不能叫）：seek 落地幾發／合併幾發／合成器交了幾格
+    CIExportCompositor.slowLock.lock()
+    let frames = CIExportCompositor.frameCount
+    CIExportCompositor.slowLock.unlock()
+    var m: [String: Any] = [
+      "seeks": seekDone, "coalesced": seekCoalesced, "frames": frames,
     ]
+    let g = frameGaps
+    guard !g.isEmpty else {
+      m["count"] = 0
+      return m
+    }
+    let sum = g.reduce(0, +)
+    m["count"] = g.count
+    m["avgMs"] = Double(sum) / Double(g.count)
+    m["maxMs"] = g.max() ?? 0
+    m["over2x"] = g.filter { $0 > 66 }.count
+    return m
   }
 
   func disposeWatch() {

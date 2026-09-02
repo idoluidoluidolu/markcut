@@ -2352,8 +2352,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final t = (edge ?? raw).clamp(0.0, _tl.duration);
     if ((t - _position).abs() < 0.001) return;
     _position = t; // 位置 UI 由 _posVN 小範圍重繪，不整頁 setState
+    _scrubProbeBegin(); // 要在 _scrubbing 翻 true 之前（它靠這個認起手）
     _scrubbing = true;
-    _scrubProbeBegin();
     if (_compOn) {
       // 素材還在用原檔（秒進、工作檔還在背景轉）：拖曳走快取幀
       if (_compScrubViaCache()) return;
@@ -3170,18 +3170,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   bool _scrubbing = false;
 
-  /// 滑動偵探：手勢起點時間與引擎渲染計數——結束時算出圖率，
-  /// 「滑動卡」直接分辨是出圖慢還是不跟手
+  /// 滑動偵探：手勢起點時間與合成播放器的計數（seek 落地幾發／合併
+  /// 幾發／合成器交了幾格）——結束時相減，算出「這一手每秒滑出幾張
+  /// 不同的畫面」。「滑動卡」直接分辨是 seek 慢（發數少）還是被合併
+  ///（手指快過 seek）。畫面只有合成播放器一個（引擎永遠不上台），
+  /// 量引擎的渲染數是空的。一個手勢只量一次：原本每個捲動事件都重起，
+  /// 等於每個事件多一次原生呼叫，而且量到的永遠只有最後 220ms
   DateTime? _scrubT0;
-  int _scrubRenders0 = 0;
+  ({int seeks, int coalesced, int frames}) _scrubC0 = (
+    seeks: 0,
+    coalesced: 0,
+    frames: 0,
+  );
 
   void _scrubProbeBegin() {
+    if (_scrubbing) return; // 手勢進行中（呼叫端在翻 _scrubbing 之前叫）
     _scrubT0 = DateTime.now();
-    unawaited(
-      MetalPreview.stats().then((st) {
-        _scrubRenders0 = (st?['renders'] as num?)?.toInt() ?? 0;
-      }),
-    );
+    _scrubC0 = (seeks: 0, coalesced: 0, frames: 0);
+    final comp = _comp;
+    if (comp == null) return;
+    unawaited(comp.scrubCounters().then((c) => _scrubC0 = c));
   }
 
   void _scrubProbeEnd() {
@@ -3190,11 +3198,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _scrubT0 = null;
     final ms = DateTime.now().difference(t0).inMilliseconds;
     if (ms < 120) return; // 點一下不算滑
+    final comp = _comp;
+    if (comp == null) return;
+    final c0 = _scrubC0;
     unawaited(
-      MetalPreview.stats().then((st) {
-        final r = ((st?['renders'] as num?)?.toInt() ?? 0) - _scrubRenders0;
-        final fps = ms > 0 ? (r * 1000 / ms).toStringAsFixed(0) : '?';
-        Diag.note('🖐 滑動 ${ms}ms 出圖$r張(${fps}fps/秒)');
+      comp.scrubCounters().then((c) {
+        final seeks = c.seeks - c0.seeks;
+        final merged = c.coalesced - c0.coalesced;
+        // 掛了合成器時「交格數」才是真的換了幾張畫面；沒掛（硬體直送）
+        // 交格數不動，就拿 seek 數當畫面數（密關鍵幀鎖幀＝每發一格）
+        final frames = c.frames - c0.frames;
+        final shown = frames > 0 ? frames : seeks;
+        final fps = (shown * 1000 / ms).toStringAsFixed(0);
+        Diag.note(
+          '🖐 滑動 ${ms}ms：seek $seeks 發（合併 $merged）'
+          '／畫面 $shown 張（$fps 張/秒）',
+        );
       }),
     );
   }
@@ -3463,14 +3482,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 快滑時它追不上＝退回 540 格子快取（動態下看不出解析度差）
   final Map<int, double> _nfLatestT = {};
 
-  /// 播放頭下還有素材在用原檔（工作檔沒換上）嗎。
-  /// 有＝合成模式的拖曳改走快取幀：原檔關鍵幀疏，逐格 seek 跟不上
-  /// 手指，就是「一進去拖曳一格一格跳」的來源
+  /// 播放頭下的素材是不是在播「關鍵幀疏的原檔」（工作檔／HDR 代理
+  /// 都沒換上）。是＝合成模式的拖曳改走快取幀：原檔逐格 seek 跟不上
+  /// 手指，就是「一進去拖曳一格一格跳」的來源。
+  /// 判定跟預覽層「畫不畫快取幀蓋層」的 sparse 條件一字不差（同一個
+  /// 最上層片段；HLG 代理算密關鍵幀）：蓋層沒畫卻壓住即時 seek＝
+  /// 拖曳中畫面凍住（HDR 模式代理轉好後，舊判定只看 workPath 就是這樣）
   bool get _scrubRawUnderHead {
-    for (final c in _tl.videosAt(_position)) {
-      if (_tl.sourceOf(c).workPath == null) return true;
-    }
-    return false;
+    final cur = _tl.videoAt(_position, skipTracks: _hiddenTracks);
+    if (cur == null) return false;
+    final s = _tl.sourceOf(cur);
+    return s.workPath == null &&
+        !(Diag.hdrProxyPreview.value && s.workHdrPath != null);
   }
 
   /// 合成模式下的拖曳：素材還在用原檔就走快取幀，拖曳期間完全不
@@ -3496,8 +3519,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _requestScrubFrames() {
     if (kIsWeb || !Diag.scrubPrefetch.value) return;
-    // 引擎瞬滑取代按需抽幀（理由同 _makeScrubCache）
-    if (Platform.isIOS && Diag.metalPreview.value) return;
+    // 舊閘門「引擎瞬滑取代按需抽幀」已拆：引擎在合成模式永不上台，
+    // 留著＝原檔期拖曳既不 seek 也沒快取幀可蓋＝畫面凍住到放手
+    //（S3 審查發現）
     // 播放中不要跟播放器搶解碼器：抽幀是給拖曳用的，
     // 播放的時候一格都不需要
     if (_playing) {
@@ -7543,8 +7567,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (edge != null) HapticFeedback.selectionClick();
     }
     if (edge != null) _position = edge.clamp(0.0, _tl.duration);
+    _scrubProbeBegin(); // 要在 _scrubbing 翻 true 之前（它靠這個認起手）
     _scrubbing = true;
-    _scrubProbeBegin();
     if (_compOn) {
       // 素材還在用原檔（秒進、工作檔還在背景轉）：拖曳走快取幀
       if (_compScrubViaCache()) return;

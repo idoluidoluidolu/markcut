@@ -647,6 +647,22 @@ class CompPlayer {
     }
   }
 
+  /// 拖曳偵探用的計數（原生端便宜的整數：seek 落地幾發／合併幾發／
+  /// 合成器交了幾格）。手勢頭尾各讀一次相減＝這一手滑出幾張畫面。
+  /// 走 'gaps' 這條（不做抽格檢查，拖曳中叫得起；health 會抽格）
+  Future<({int seeks, int coalesced, int frames})> scrubCounters() async {
+    try {
+      final m = await _ch.invokeMapMethod<String, dynamic>('gaps');
+      return (
+        seeks: (m?['seeks'] as num?)?.toInt() ?? 0,
+        coalesced: (m?['coalesced'] as num?)?.toInt() ?? 0,
+        frames: (m?['frames'] as num?)?.toInt() ?? 0,
+      );
+    } catch (_) {
+      return (seeks: 0, coalesced: 0, frames: 0);
+    }
+  }
+
   /// 播放器自己回報的狀況：seek 成本、掉格、卡頓、在等什麼。
   /// 這幾個數字 Flutter 端一個都量不到
   Future<String> health() async {
