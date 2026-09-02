@@ -454,8 +454,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 再叫一次 onChanged 走整頁那條收尾
   void _wmLiveTick() {
     if (!mounted) return;
+    final now = DateTime.now();
+    if (!_wmGestureOn) {
+      // 這一手的第一格：記起手時間，第一版上屏時把「起手→上屏」拆成
+      // 等／烘／送記進事件流（見 _ovApply）
+      _wmFirstTickAt = now;
+      _wmFirstApplyWait = true;
+    }
     _wmSliding = true;
-    _wmLiveAt = DateTime.now();
+    _wmLiveAt = now;
     _pokeFrame();
     if (_ovWired) _ovSync.request();
   }
@@ -479,6 +486,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   DateTime? _wmLastApplyAt;
   int _wmGestureN = 0;
   Timer? _wmGestureTimer;
+
+  /// 診斷：這一手的第一格何時按下、第一版還沒上屏（上屏那一下記
+  /// 「樣式起手→上屏」；之後的版才算斷流偵測）
+  DateTime? _wmFirstTickAt;
+  bool _wmFirstApplyWait = false;
 
   /// 疊加物 PNG 的快取（鍵＝內容指紋＋解析度）。匯入期間每支工作檔
   /// 轉好就重組一次合成，內容根本沒變卻每次都整套重畫 PNG——
@@ -652,8 +664,31 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _resetTlPinch() {
     _pinchPts.clear();
     _pinchSeen.clear();
-    _pinchBaseDist = null;
-    if (_tlPinching && mounted) setState(() => _tlPinching = false);
+    _setTlPinching(false);
+  }
+
+  /// 捏合剛結束的冷卻：抬手那一下的點擊是餘波，分頁層級的「點空白＝
+  /// 取消選取」也要放過它（時間軸內部的素材手勢有自己的一套鎖）
+  bool _tlPinchCooling = false;
+  Timer? _tlPinchCoolTimer;
+  bool get _tlPinchSettling => _tlPinching || _tlPinchCooling;
+
+  void _setTlPinching(bool v) {
+    if (_tlPinching == v) return;
+    if (!v) _pinchBaseDist = null;
+    if (!mounted) {
+      _tlPinching = v;
+      return;
+    }
+    if (!v) {
+      _tlPinchCooling = true;
+      _tlPinchCoolTimer?.cancel();
+      _tlPinchCoolTimer = Timer(
+        const Duration(milliseconds: 150),
+        () => _tlPinchCooling = false,
+      );
+    }
+    setState(() => _tlPinching = v);
   }
 
   /// 目前有幾根手指壓在時間軸上（不分觸控／滑鼠）。
@@ -688,19 +723,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (stale) _pinchSeen.remove(id);
       return stale;
     });
+    // 殘指清完一根都不剩＝上一輪其實早就結束了，別讓鎖一直掛著
+    if (_pinchPts.isEmpty) _setTlPinching(false);
     _pinchSeen[e.pointer] = now;
     _pinchPts[e.pointer] = e.position;
-    // _lifting 只在素材「真的被拖動」時才是 true（見 timeline 的 armed 判定）。
-    // 手指剛按上去還沒移動就不算，這樣第二指下來仍然轉得成縮放——
-    // 不然按著素材再放第二指，會變成一路把素材拖走
-    if (_pinchPts.length == 2 && !_lifting) {
-      final p = _pinchPts.values.toList();
-      final d = (p[0] - p[1]).distance;
-      if (d > 20) {
-        _pinchBaseDist = d;
-        _pinchBasePx = _pxPerSec;
-        setState(() => _tlPinching = true);
-      }
+    // 第二指一落下就是捏合——不管第一指是不是正按著、甚至拖著素材：
+    // 時間軸自己會在同一個事件裡把拿起的素材放回原位（onLiftChanged
+    // 會回 false），這裡不用等它。以前這裡看 _lifting 讓拖曳優先，結果
+    // 第一指先滑了 8px 就永遠轉不成縮放，兩根手指一起把素材拖走
+    //（使用者回報「縮放時誤拖」）。兩指距離也不再當門檻：鎖先上，
+    // 縮放基準等兩指張開超過 20px 再定（見 _pinchMove）
+    if (_pinchPts.length >= 2) {
+      _pinchBaseDist = null;
+      _setTlPinching(true);
     }
   }
 
@@ -713,6 +748,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_tlPinching && _pinchPts.length >= 2) {
       final p = _pinchPts.values.toList();
       final d = (p[0] - p[1]).distance;
+      // 基準延到兩指張開超過 20px 才定：太近的距離拿來除會爆
+      if (_pinchBaseDist == null) {
+        if (d > 20) {
+          _pinchBaseDist = d;
+          _pinchBasePx = _pxPerSec;
+        }
+        return;
+      }
       setState(
         () => _pxPerSec = (_pinchBasePx * d / _pinchBaseDist!).clamp(
           1.0,
@@ -729,9 +772,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_tlFingers > 0) _tlFingers--;
     _pinchPts.remove(pointer);
     _pinchSeen.remove(pointer);
-    if (_tlPinching && _pinchPts.length < 2) {
-      _pinchBaseDist = null;
-      setState(() => _tlPinching = false);
+    if (!_tlPinching) return;
+    if (_pinchPts.isEmpty) {
+      // 全部抬起才算結束：剩一根手指時照樣鎖著，不然先抬的那根一走，
+      // 留下的那根立刻變成單指拖曳／捲動／點擊（使用者回報「抬手誤觸」）
+      _setTlPinching(false);
+    } else if (_pinchPts.length >= 2) {
+      _pinchBaseDist = null; // 換了一對手指，基準重定（見 _pinchMove）
     }
   }
 
@@ -1322,9 +1369,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _saveDraft() async {
     _draftSaveTimer?.cancel();
     _draftSaveTimer = Timer(const Duration(milliseconds: 900), () {
-      if (_wmGestureOn) {
-        // 滑桿還按著（起手那一下就排了這顆計時器，900ms 後多半還在
-        // 拖）：整包 JSON＋封面＋寫檔別落在手指還在動的時候，放手再存
+      // 滑桿還按著（起手那一下就排了這顆計時器，900ms 後多半還在
+      // 拖）、或放手還不到 2 秒：整包 JSON＋封面＋寫檔別落在手指還在
+      // 動、或下一手正要起手的時候。封面的指紋含樣式（改樣式就重生）
+      // ＝原生抽一格＋兩張 720 PNG 編解碼＋點陣化＋isolate 編碼＋prefs
+      // 寫入，幾百毫秒的混合工作；短手勢（<900ms）放手後它正好壓在
+      // 下一手的第一版上——「改樣式一開始先延遲一下」的一個確定來源。
+      // 放手 2 秒沒再碰滑桿才存（離開頁面照舊強制補存）
+      if (_wmGestureOn ||
+          DateTime.now().difference(_wmLiveAt).inMilliseconds < 2000) {
         _saveDraft();
         return;
       }
@@ -1889,6 +1942,37 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return mounted ? maps : null;
   }
 
+  /// 暖身（結果不上屏）：手指剛按上面板滑桿（值還沒變）／剛切進浮水印
+  /// 分頁那一刻，把「現在這一版」照快路（720/540 raw）烘一次、只進部件
+  /// 快取——字形點陣、離屏 toImage、回讀這條路先熱起來，第一格真的變
+  /// 的時候不必冷起手（實機回饋：改樣式一開始先延遲一下、之後就順）。
+  /// 不上屏：上屏會把畫面上的全解析換成半解析（沒改東西卻先變糊）。
+  /// 排在微任務：非滑桿的改動（開關、選色）是 onBeforeChange 緊接著
+  /// 改值，等它改完再看指紋，烘的就是新版——跟狀態機那版共用同一份
+  /// 在途部件（_ovPartInflight），不會畫兩次。1 秒內剛上過屏＝管線
+  /// 還熱，不做。有沒有暖到、暖了多久，記在「樣式起手→上屏」那行
+  DateTime _ovWarmAt = DateTime.fromMillisecondsSinceEpoch(0);
+  int _ovWarmMs = -1;
+
+  void _ovWarmUp() => unawaited(Future.microtask(_ovWarmUpNow));
+
+  Future<void> _ovWarmUpNow() async {
+    if (!mounted || !_ovWired || !_ovLiveOn) return;
+    final now = DateTime.now();
+    final last = _wmLastApplyAt;
+    if (last != null && now.difference(last).inMilliseconds < 1000) return;
+    if (now.difference(_ovWarmAt).inMilliseconds < 1000) return;
+    if (_ovContentSig() == OverlaySync.empty) return;
+    _ovWarmAt = now;
+    _ovWarmMs = -1;
+    try {
+      await _ovMapsBuild(fast: true);
+    } catch (_) {
+      // 暖身失敗不影響正路（真的烘那版會自己報）
+    }
+    if (mounted) _ovWarmMs = DateTime.now().difference(now).inMilliseconds;
+  }
+
   /// [OverlaySync.apply]：送原生（同包附空差量清單，原子清掉任何
   /// 殘留；幾何已烘在圖裡）。原生的催重畫涵蓋暫停重繪且有節流，
   /// 這裡不再補 seek
@@ -1937,10 +2021,36 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         return a + (d is List<int> ? d.length : 0);
       }),
     );
-    // 上屏斷流偵測：手勢中兩次上屏間隔 >250ms＝使用者看到的
-    // 「頓一下」，直接記進事件流
+    // 上屏節奏（事件流）：
+    // 1. 這一手的第一版：起手（第一格）到上屏拆成 等／烘／送——「一開始
+    //    先延遲一下」到底是排程等、烘圖冷、還是送原生慢，報告自己講；
+    //    附上暖身有沒有跑完、閒置多久、轉檔中與否（冷起手的三個嫌犯）。
+    //    原生那頭「催重畫落地」的時間 Dart 量不到，看播放器診斷的
+    //    「催重畫…落地 冷起手」那組
+    // 2. 之後的版：兩次上屏間隔 >250ms＝使用者看到的「頓一下」。第一版
+    //    不算——那段含使用者放手到再按的空檔，不是斷流（之前手勢起頭的
+    //    250~435ms 多半是這樣來的）
     final now = DateTime.now();
-    if (fast && _wmGestureN > 0 && _wmLastApplyAt != null) {
+    if (fast && _wmFirstApplyWait) {
+      _wmFirstApplyWait = false;
+      final t0 = _wmFirstTickAt;
+      final total = t0 == null ? -1 : now.difference(t0).inMilliseconds;
+      if (t0 != null && total >= 0 && total < 5000) {
+        final wait = math.max(0, total - bakeMs - sendMs);
+        final last = _wmLastApplyAt;
+        final idle = last == null
+            ? '—'
+            : '${(t0.difference(last).inMilliseconds / 1000).toStringAsFixed(1)}s';
+        final warm = t0.difference(_ovWarmAt).inMilliseconds < 3000
+            ? (_ovWarmMs < 0 ? '未完' : '${_ovWarmMs}ms')
+            : '無';
+        final busy = _prepBusy || _hdrPrepBusy ? '／轉檔中' : '';
+        Diag.ev(
+          '樣式起手→上屏 ${total}ms（等 $wait／烘 $bakeMs／送 $sendMs'
+          '／暖身 $warm／閒置 $idle$busy）',
+        );
+      }
+    } else if (fast && _wmGestureN > 0 && _wmLastApplyAt != null) {
       final gap = now.difference(_wmLastApplyAt!).inMilliseconds;
       if (gap > 250 && gap < 5000) Diag.ev('樣式上屏斷流 ${gap}ms');
     }
@@ -2021,6 +2131,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// `mounted` 必為 false——以前這裡一檢查就 return，
   /// 「離開前補存」其實從來沒有存成功過
   Future<void> _saveDraftNow({bool force = false}) async {
+    // 這份專案正在編輯：草稿上限的自動清理（DraftStore.prune）不能把它
+    // 當成最舊的刪掉——登記起來，離開專案（_handleBack）時才解除
+    DraftStore.holdOpen(_draftId);
     // 封面要夠大：個人中心拿它當大圖顯示。抽過就快取，換了片段才重抽
     await _refreshCover();
     if (!mounted && !force) return;
@@ -2054,9 +2167,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 丟掉這一份草稿（離開時選「不保留」）
-  Future<void> clearThisDraft() => DraftStore.remove(_draftId);
+  Future<void> clearThisDraft() {
+    DraftStore.releaseOpen(_draftId);
+    return DraftStore.remove(_draftId);
+  }
 
   Future<void> _loadDraft(Map<String, dynamic> j) async {
+    // 從草稿夾開回來的專案從載入那一刻就算「編輯中」，上限清理不碰
+    //（還沒存過第一次之前它可能就是清單裡最舊的那份）
+    DraftStore.holdOpen(_draftId);
     // 逐筆容錯：一筆欄位壞掉只跳過那一筆，不能讓整份草稿打不開——
     // 以前一個型別對不上整個 _loadDraft 就丟例外，卡在讀取畫面，
     // 而且半載入的時間軸一被自動存檔就把好的那份蓋成殘缺版。
@@ -2346,6 +2465,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (_tabs.index != 1) {
         _compRefreshIfChanged();
         unawaited(_ovSync.flush());
+      } else {
+        _ovWarmUp(); // 進浮水印分頁：快路先熱起來（見 _ovWarmUp）
       }
       setState(() {});
     });
@@ -9022,6 +9143,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     for (final c in _ctrls.values) {
       c.dispose();
     }
+    _tlPinchCoolTimer?.cancel();
     _tlScroll.dispose();
     _tabs.dispose();
     super.dispose();
@@ -9453,6 +9575,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 離開前要真的落地，不能等併批計時器（頁面要關了）
       _draftSaveTimer?.cancel();
       await _saveDraftNow();
+      // 存完才解除「編輯中」：從這一刻起它跟別的草稿一樣排隊等上限清理
+      DraftStore.releaseOpen(_draftId);
       if (mounted) Navigator.of(context).pop();
     } else if (action == 'discard') {
       // 捨棄＝整個專案永久刪除，而這顆就貼在「保留草稿」旁邊——
@@ -9561,7 +9685,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       : '浮水印';
                                 }
                               }),
-                              onBeforeChange: _pushWmUndo,
+                              onBeforeChange: () {
+                                _pushWmUndo();
+                                // 手指剛按上、值還沒變：快路先熱起來
+                                //（見 _ovWarmUp）
+                                _ovWarmUp();
+                              },
                               // 滑桿拖動中每一格只重繪預覽層（放手時
                               // 面板補一次 onChanged 走上面整頁那條）
                               onLiveChange: _wmLiveTick,
@@ -12591,6 +12720,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   behavior: HitTestBehavior.opaque,
                   // 點時間軸區域的任何空白＝取消所有選取＋收鍵盤
                   onTap: () {
+                    // 捏合的手指抬起那一下不算點擊，選取不能被它清掉
+                    if (_tlPinchSettling) return;
                     FocusManager.instance.primaryFocus?.unfocus();
                     setState(() {
                       _sel = -1;

@@ -10,6 +10,8 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/export_speed.dart' show fmtDuration;
+import '../services/gif_strip.dart';
+import '../services/gif_trim_hit.dart';
 import '../services/native_frames.dart';
 import '../services/screen_awake.dart';
 import '../services/video_controller.dart';
@@ -60,7 +62,13 @@ class _GifScreenState extends State<GifScreen> {
   /// 播放頭位置（秒），給進度細線用
   final ValueNotifier<double> _pos = ValueNotifier(0);
 
-  List<Uint8List> _thumbs = const [];
+  /// 縮圖帶（漸進：抽到一格畫一格，見 GifStripLoader）
+  static const int _stripCount = 10;
+  final List<Uint8List?> _cells = List<Uint8List?>.filled(_stripCount, null);
+  GifStripLoader? _strip;
+
+  /// 縮圖帶還在抽（這段時間不預做隔壁選項，解碼器留給它跟拖曳）
+  bool _stripLoading = true;
 
   /// GIF 長邊上限與影格率
   int _size = 480;
@@ -281,7 +289,7 @@ class _GifScreenState extends State<GifScreen> {
       _gifBuiltEnd = _end;
       unawaited(_decodeGifFrames(hit));
       // 換上快取＝閒置：接著把這一組的隔壁選項也補起來
-      unawaited(_prefetchSiblings());
+      _schedulePrefetch();
       return;
     }
     _previewTimer?.cancel();
@@ -337,11 +345,22 @@ class _GifScreenState extends State<GifScreen> {
     if (mounted && _keyFor() != _previewKey) _schedulePreview();
     _trimCache();
     // 目前這組做好了＝進入閒置：把隔壁選項在背景先做起來
-    if (mounted && _keyFor() == _previewKey) unawaited(_prefetchSiblings());
+    if (mounted && _keyFor() == _previewKey) _schedulePrefetch();
   }
 
   /// 背景有沒有正在預先做的東西（一次只跑一個，不跟使用者搶）
   bool _prefetching = false;
+  Timer? _prefetchTimer;
+
+  /// 隔壁選項的預做要等真的閒下來：剛做完預覽的當下使用者多半還在
+  /// 調，這時在背景一口氣跑四支 FFmpeg 只會搶走拖曳要用的 CPU
+  /// （拉把手卡就是這樣來的）。1.2 秒沒再動才開始
+  void _schedulePrefetch() {
+    _prefetchTimer?.cancel();
+    _prefetchTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted) unawaited(_prefetchSiblings());
+    });
+  }
 
   /// 把「其他尺寸 × 目前順暢度」「目前尺寸 × 其他順暢度」預先做起來。
   ///
@@ -350,7 +369,10 @@ class _GifScreenState extends State<GifScreen> {
   /// 先做，點過去就是快取直接換上，零等待。
   /// 一次只跑一支；使用者改了任何設定就立刻讓路
   Future<void> _prefetchSiblings() async {
-    if (_prefetching || kIsWeb) return;
+    // 縮圖帶還在抽、手還在拉、使用者自己的預覽在做：都不算閒置
+    if (_prefetching || kIsWeb || _stripLoading || _gesturing || _building) {
+      return;
+    }
     _prefetching = true;
     try {
       final baseKey = _previewKey;
@@ -362,8 +384,8 @@ class _GifScreenState extends State<GifScreen> {
       ];
       for (final (fps, size) in jobs) {
         if (!mounted) return;
-        // 設定變了或使用者的 build 正在跑：讓路，等下一次閒置再說
-        if (_building || _keyFor() != baseKey) return;
+        // 設定變了、手又在拉、或使用者的 build 正在跑：讓路，等下一次閒置
+        if (_building || _gesturing || _keyFor() != baseKey) return;
         final key = _keyFor(fps: fps, size: size);
         if (_previewCache.containsKey(key)) continue;
         final path = await engine.makeGifFile(
@@ -462,26 +484,71 @@ class _GifScreenState extends State<GifScreen> {
         _playing = true;
       });
     }
-    // 縮圖帶：先走系統硬體解碼，抽不到再退 FFmpeg
-    var thumbs = await nativeStrip(widget.path, _dur, 10, maxH: 120);
-    if (thumbs.isEmpty) {
-      thumbs = await engine.makeThumbnails(widget.path, _dur, 10, height: 120);
-    }
-    if (mounted) setState(() => _thumbs = thumbs);
     // 播放頭跟出界檢查共用一條 timer：拉把手時即時看到位置，
-    // 播放時碰到迄點就跳回起點循環——預覽跟成品的循環感一致
+    // 播放時碰到迄點就跳回起點循環——預覽跟成品的循環感一致。
+    // 先開 timer 再抽縮圖帶：之前是抽完才開，縮圖帶沒好前指針不動
     _tick = Timer.periodic(const Duration(milliseconds: 120), (_) async {
       if (_gifMode) return; // 指針由 GIF 時鐘驅動
       final pl = _player;
-      if (pl == null || !mounted) return;
+      if (pl == null || !mounted || _gesturing) return;
       final now = await pl.positionNow();
-      if (now == null || !mounted) return;
+      // 拖曳中指針跟手指走，不看播放器：它還在追 seek，
+      // 拿它的位置蓋回去指針就來回抖
+      if (now == null || !mounted || _gesturing) return;
       final t = now.inMilliseconds / 1000.0;
       _pos.value = t;
       if (_playing && t >= _end - 0.05) {
         await pl.seekTo(Duration(milliseconds: (_start * 1000).round()));
       }
     });
+    // 縮圖帶：系統硬體解碼、漸進上畫面（先粗後細），抽不到再退 FFmpeg。
+    // 不等它：把手跟預覽從第一秒就要能拉
+    unawaited(_loadStrip());
+  }
+
+  Future<void> _loadStrip() async {
+    if (!mounted) return;
+    // 解析度夾在縮圖帶實際畫出來的高度（56pt × 螢幕倍率）：
+    // 一格才三十幾 pt 寬，解到 1080p 是白花的
+    final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 3.0;
+    final maxH = math.min(168, (56 * dpr).round());
+    final loader = GifStripLoader(
+      duration: _dur,
+      count: _stripCount,
+      // Android 的抽幀器只拿關鍵幀、容忍值沒作用，細抽等於白跑
+      refine: !kIsWeb && Platform.isIOS,
+      fetch: (t, {required tolMs}) =>
+          nativeFrameAt(widget.path, t, maxH: maxH, tolMs: tolMs),
+      isBusy: () => _gesturing,
+      onFrame: (i, bytes) {
+        if (mounted) setState(() => _cells[i] = bytes);
+      },
+    );
+    _strip = loader;
+    await loader.run();
+    if (!mounted || loader.cancelled) return;
+    if (_cells.every((c) => c == null)) {
+      // 系統解碼器吃不下這支（少見的封裝／編碼）：退 FFmpeg，只解
+      // 關鍵幀——軟解整支 4K 只為了十張縮圖會把 CPU 吃滿好幾分鐘
+      final thumbs = await engine.makeThumbnails(
+        widget.path,
+        _dur,
+        _stripCount,
+        height: maxH,
+        fastDecode: true,
+      );
+      if (!mounted) return;
+      if (thumbs.isNotEmpty) {
+        setState(() {
+          for (var i = 0; i < _cells.length && i < thumbs.length; i++) {
+            _cells[i] = thumbs[i];
+          }
+        });
+      }
+    }
+    setState(() => _stripLoading = false);
+    // 縮圖帶抽完＝解碼器閒下來，隔壁選項的預覽這時才開始預做
+    _schedulePrefetch();
   }
 
   @override
@@ -493,6 +560,8 @@ class _GifScreenState extends State<GifScreen> {
     }
     _gifFrameVN.dispose();
     _previewTimer?.cancel();
+    _prefetchTimer?.cancel();
+    _strip?.cancel();
     for (final p in {..._previewCache.values, ?_gifPreview}) {
       if (GifStore.isAsset(p)) continue;
       try {
@@ -526,12 +595,70 @@ class _GifScreenState extends State<GifScreen> {
     setState(() => _playing = !_playing);
   }
 
-  Future<void> _seek(double t) async {
+  // ── 拖曳中的 seek：一次只讓一發在路上 ─────────────────────
+  //
+  // 之前是每 60ms 射後不理：AVPlayer 收到新的 seek 會把還沒完成的
+  // 那發取消，手指一直動就一直取消、畫面反而不更新，停下來才跳一格
+  //（「拉起來跟不上」）。改成路上有一發就先記住最新目標、完成再補發
+  // ——每一發都跑得完，畫面就以解碼器的節奏一路跟著手指。
+  // iOS 的播放外掛在暫停中走「寬容 seek → 停手 250ms 才精準」那條
+  //（見 packages/video_player_avfoundation），所以拖曳前一定先暫停
+  double? _seekWanted;
+  bool _seekBusy = false;
+  DateTime _seekIssuedAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  void _seekDuringDrag(double t) {
+    _pos.value = t;
     final p = _player;
     if (p == null) return;
-    _pos.value = t;
-    await p.seekTo(Duration(milliseconds: (t * 1000).round()));
+    if (_seekBusy) {
+      _seekWanted = t;
+      return;
+    }
+    _seekBusy = true;
+    unawaited(_seekChain(p, t));
   }
+
+  Future<void> _seekChain(PlayerX p, double first) async {
+    var t = first;
+    try {
+      while (true) {
+        // 有些平台的 seekTo 立刻就回（不等真的 seek 完）：至少隔 40ms
+        final since = DateTime.now().difference(_seekIssuedAt);
+        if (since < const Duration(milliseconds: 40)) {
+          await Future<void>.delayed(const Duration(milliseconds: 40) - since);
+        }
+        _seekIssuedAt = DateTime.now();
+        try {
+          await p.seekTo(Duration(milliseconds: (t * 1000).round()));
+        } catch (_) {}
+        if (!mounted) return;
+        final next = _seekWanted;
+        _seekWanted = null;
+        if (next == null || (next - t).abs() < 0.0005) return;
+        t = next;
+      }
+    } finally {
+      _seekBusy = false;
+    }
+  }
+
+  /// 拖曳前先暫停：iOS 外掛只在暫停中走寬容 seek 的快路，播放中的
+  /// seek 一律逐格精準（慢）；之前是先 seek 才暫停，第一發就慢
+  void _pauseForDrag() {
+    if (!_playing) return;
+    _player?.pause();
+    setState(() => _playing = false);
+  }
+
+  /// 終點那格的 seek 目標：夾在最後一格之前（seek 到正好等於總長
+  /// 會沒畫面）
+  double get _endSeekT => math.max(0.0, math.min(_end, _dur - 0.03));
+
+  /// [t] 秒落在縮圖帶的第幾格
+  int _cellIndexAt(double t) => _dur <= 0
+      ? 0
+      : ((t / _dur) * _stripCount).floor().clamp(0, _stripCount - 1);
 
   /// 選取範圍的長度（原速）
   double get _len => math.max(0.1, _end - _start);
@@ -677,7 +804,7 @@ class _GifScreenState extends State<GifScreen> {
         frame = one.firstOrNull;
       } catch (_) {}
     }
-    frame ??= _thumbs.firstOrNull;
+    frame ??= nearestLoaded(_cells, _cellIndexAt(_start));
     if (frame == null || !mounted) {
       if (mounted) showHint(context, '抓不到畫面，沒辦法裁切', error: true);
       return;
@@ -918,19 +1045,15 @@ class _GifScreenState extends State<GifScreen> {
     );
   }
 
-  // ── 播放頭速覽拖曳（修剪條上的白針）───────────────────────
+  // ── 播放頭速覽拖曳（預覽區、整頁空白、修剪條上的白針共用）──────
   double? _scrubFrom;
   double _scrubAcc = 0;
-  DateTime _lastScrubSeek = DateTime.fromMillisecondsSinceEpoch(0);
 
   void _scrubBegin() {
     _scrubFrom = _pos.value;
     _scrubAcc = 0;
     // 拖曳中不播：畫面完全跟著手指
-    if (_playing) {
-      _player?.pause();
-      setState(() => _playing = false);
-    }
+    _pauseForDrag();
   }
 
   void _scrubBy(double dx, double width) {
@@ -944,21 +1067,16 @@ class _GifScreenState extends State<GifScreen> {
       return;
     }
     final t = (from + _scrubAcc / width * _dur).clamp(0.0, _dur);
-    _pos.value = t;
-    // seek 節流：60ms 一發（每個手指事件都 seek 會把解碼器打爆），
-    // 放手在 _scrubEnd 補一發精準的
-    final now = DateTime.now();
-    if (now.difference(_lastScrubSeek).inMilliseconds >= 60) {
-      _lastScrubSeek = now;
-      _player?.seekTo(Duration(milliseconds: (t * 1000).round()));
-    }
+    // 一次一發、最新目標優先（見 _seekDuringDrag），放手在 _scrubEnd
+    // 補最後一發
+    _seekDuringDrag(t);
   }
 
   void _scrubEnd() {
     if (_scrubFrom == null) return;
     _scrubFrom = null;
     if (_gifMode) return; // GIF 時鐘已經在位置上了
-    _player?.seekTo(Duration(milliseconds: (_pos.value * 1000).round()));
+    _seekDuringDrag(_pos.value);
   }
 
   Widget _preview() {
@@ -1122,9 +1240,9 @@ class _GifScreenState extends State<GifScreen> {
     final t = _pos.value.clamp(0.0, _dur);
     setState(() {
       if (start) {
-        _start = math.min(t, _end - 0.2);
+        _start = clampTrimStart(t, _end);
       } else {
-        _end = math.max(t, _start + 0.2);
+        _end = clampTrimEnd(t, _start, _dur);
       }
     });
     _schedulePreview();
@@ -1170,7 +1288,163 @@ class _GifScreenState extends State<GifScreen> {
     );
   }
 
-  /// 縮圖帶＋兩個把手。把手蓋在縮圖上，看得到自己剪掉了哪些畫面
+  // ── 修剪條的手勢：整條只有最上層一個 GestureDetector ────────────
+  //
+  // 之前起點把手、終點把手、播放頭各自一個 64/64/36pt 的 opaque 熱區
+  // 疊在 Stack 裡，範圍拉到 0.2 秒時三個熱區整個重疊：最上層的終點
+  // 把手接走每一次觸碰，往左拉被 start+0.2 夾住＝一動不動；停手後
+  // 播放頭又剛好停在把手上、把把手整根蓋住（GIF 模式指針只在範圍內
+  // 動，範圍才兩格寬＝看起來什麼都沒動）。使用者回報的「拉近就再也
+  // 拉不開」就是這兩件事。現在落點交給 TrimHit 判定，兩根貼在一起
+  // 就看第一下的方向：往左動起點、往右動終點
+  TrimTarget? _stripTarget;
+
+  /// 修剪條或速覽手勢進行中（縮圖帶抽幀、指針對時都要讓路）
+  bool get _gesturing => _stripTarget != null || _scrubFrom != null;
+
+  double _xOf(double t, double w) => _dur <= 0 ? 0 : w * (t / _dur);
+
+  TrimTarget _pickAt(double x, double w) => TrimHit.pick(
+    x: x,
+    xs: _xOf(_start, w),
+    xe: _xOf(_end, w),
+    xp: _xOf(_pos.value.clamp(0.0, _dur), w),
+  );
+
+  /// 點一下：點在把手上不跳（那裡是拉把手的）；其他地方點哪跳哪
+  void _stripTap(double x, double w) {
+    final target = _pickAt(x, w);
+    if (target != TrimTarget.playhead && target != TrimTarget.background) {
+      return;
+    }
+    final t = (x / w * _dur).clamp(0.0, _dur);
+    if (_gifMode) {
+      _gifSeekToSrc(t.clamp(_start, _end));
+      return;
+    }
+    _pos.value = t;
+    _player?.seekTo(Duration(milliseconds: (t * 1000).round()));
+  }
+
+  void _stripDragStart(double x, double w) {
+    final target = _pickAt(x, w);
+    _stripTarget = target;
+    switch (target) {
+      case TrimTarget.start:
+        _beginHandle(left: true);
+      case TrimTarget.end:
+        _beginHandle(left: false);
+      case TrimTarget.either:
+        // 等第一下的方向再決定是哪一根
+        _dragFrom = null;
+        _dragAcc = 0;
+        _pauseForDrag();
+      case TrimTarget.playhead:
+        _scrubBegin();
+      case TrimTarget.background:
+        // 空白處：指針先跳到手指下面，之後跟著走（跟點一下同一套）
+        _scrubBegin();
+        final t = (x / w * _dur).clamp(0.0, _dur);
+        _scrubFrom = _gifMode ? t.clamp(_start, _end) : t;
+        _scrubBy(0, w);
+    }
+  }
+
+  void _stripDragUpdate(double dx, double w) {
+    var target = _stripTarget;
+    if (target == null) return;
+    if (target == TrimTarget.either) {
+      target = TrimHit.byDirection(dx);
+      if (target == TrimTarget.either) return; // 還沒動
+      _stripTarget = target;
+      _beginHandle(left: target == TrimTarget.start);
+    }
+    switch (target) {
+      case TrimTarget.start:
+        _handleDrag(left: true, dx: dx, width: w);
+      case TrimTarget.end:
+        _handleDrag(left: false, dx: dx, width: w);
+      case TrimTarget.playhead || TrimTarget.background:
+        _scrubBy(dx, w);
+      case TrimTarget.either:
+        break;
+    }
+  }
+
+  void _stripDragEnd() {
+    final target = _stripTarget;
+    _stripTarget = null;
+    switch (target) {
+      case null:
+        return;
+      case TrimTarget.start:
+        _endHandle(left: true);
+      case TrimTarget.end:
+        _endHandle(left: false);
+      case TrimTarget.either:
+        _dragFrom = null; // 按了沒動：什麼都不改
+      case TrimTarget.playhead || TrimTarget.background:
+        _scrubEnd();
+    }
+  }
+
+  void _beginHandle({required bool left}) {
+    _dragFrom = left ? _start : _end;
+    _dragAcc = 0;
+    _pauseForDrag();
+  }
+
+  void _handleDrag({
+    required bool left,
+    required double dx,
+    required double width,
+  }) {
+    final from = _dragFrom ?? (left ? _start : _end);
+    _dragAcc += dx;
+    final t = (from + _dragAcc / width * _dur).clamp(0.0, _dur);
+    setState(() {
+      // 最短 0.2 秒只擋往內；往外永遠拉得動
+      if (left) {
+        _start = clampTrimStart(t, _end);
+      } else {
+        _end = clampTrimEnd(t, _start, _dur);
+      }
+    });
+    // 拉哪個把手，畫面就停在哪個把手的位置——邊拉邊看剪在哪
+    _seekDuringDrag(left ? _start : _endSeekT);
+    if (_gifMode && _gifFrames.isNotEmpty) {
+      // GIF 模式畫面走 GIF 時鐘、不理 seek：把手位置映射回
+      // 「這份 GIF 做的時間段」裡對應的幀，一路連續跟手。
+      // 拖出已做好的範圍＝改看影片本人（上面的 seek 本來就在跟）
+      // ——之前凍在端點幀，往回拉什麼都看不到
+      final len = _gifBuiltEnd - _gifBuiltStart;
+      final tt = left ? _start : _end;
+      final inside = tt >= _gifBuiltStart - 0.01 && tt <= _gifBuiltEnd + 0.01;
+      if (!inside) {
+        if (!_gifPeek) setState(() => _gifPeek = true);
+      } else {
+        if (_gifPeek) setState(() => _gifPeek = false);
+        if (len > 0.01) {
+          _gifFrameVN.value =
+              (((tt - _gifBuiltStart) / len) * _gifFrames.length).floor().clamp(
+                0,
+                _gifFrames.length - 1,
+              );
+        }
+      }
+    }
+  }
+
+  void _endHandle({required bool left}) {
+    _dragFrom = null;
+    // 停手才補最後一發 seek 與重做預覽：拖曳中每動一格就排重做，
+    // web 的 FFmpeg（wasm）一跑好幾秒，loading 會一直閃
+    _seekDuringDrag(left ? _start : _endSeekT);
+    _schedulePreview();
+  }
+
+  /// 縮圖帶＋兩個把手＋播放頭。把手蓋在縮圖上，看得到自己剪掉了哪些
+  /// 畫面。觸控全部交給最上層的手勢層分派（見 _stripDragStart）
   Widget _trimStrip() {
     return SizedBox(
       key: _edgeStripKey,
@@ -1178,41 +1452,15 @@ class _GifScreenState extends State<GifScreen> {
       child: LayoutBuilder(
         builder: (context, cons) {
           final w = cons.maxWidth;
-          double xOf(double t) => _dur <= 0 ? 0 : w * (t / _dur);
+          final xs = _xOf(_start, w);
+          final xe = _xOf(_end, w);
           return Stack(
             clipBehavior: Clip.none,
             children: [
-              // 縮圖帶：點哪跳哪（跟播放頭拖曳互補）
               Positioned.fill(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTapDown: (d) {
-                    final t = (d.localPosition.dx / w * _dur).clamp(0.0, _dur);
-                    if (_gifMode) {
-                      _gifSeekToSrc(t.clamp(_start, _end));
-                      return;
-                    }
-                    _pos.value = t;
-                    _player?.seekTo(Duration(milliseconds: (t * 1000).round()));
-                  },
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: _thumbs.isEmpty
-                        ? const ColoredBox(color: kPanelHi)
-                        : Row(
-                            children: [
-                              for (final b in _thumbs)
-                                Expanded(
-                                  child: Image.memory(
-                                    b,
-                                    fit: BoxFit.cover,
-                                    height: 56,
-                                    gaplessPlayback: true,
-                                  ),
-                                ),
-                            ],
-                          ),
-                  ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: _stripCells(),
                 ),
               ),
               // 範圍外壓暗
@@ -1220,11 +1468,11 @@ class _GifScreenState extends State<GifScreen> {
                 left: 0,
                 top: 0,
                 bottom: 0,
-                width: xOf(_start),
+                width: xs,
                 child: ColoredBox(color: Colors.black.withValues(alpha: 0.62)),
               ),
               Positioned(
-                left: xOf(_end),
+                left: xe,
                 top: 0,
                 bottom: 0,
                 right: 0,
@@ -1232,53 +1480,45 @@ class _GifScreenState extends State<GifScreen> {
               ),
               // 選取範圍的上下框線
               Positioned(
-                left: xOf(_start),
-                width: math.max(0, xOf(_end) - xOf(_start)),
+                left: xs,
+                width: math.max(0, xe - xs),
                 top: 0,
                 bottom: 0,
-                child: IgnorePointer(
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      border: Border.symmetric(
-                        horizontal: BorderSide(color: kSelect, width: 2),
-                      ),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    border: Border.symmetric(
+                      horizontal: BorderSide(color: kSelect, width: 2),
                     ),
                   ),
                 ),
               ),
-              _handle(x: xOf(_start), left: true, width: w),
-              _handle(x: xOf(_end), left: false, width: w),
-              // 播放頭：整根可拖＝滑動速覽（C 案）。長相跟影片編輯區
-              // 時間軸的播放頭一致——純白 2px 細線；36pt 觸控區是
-              // 隱形的，拖起來不用瞄準。
+              _handleBar(x: xs, left: true),
+              _handleBar(x: xe, left: false),
+              // 播放頭：純白 2px 細線，長相跟影片編輯區時間軸的一致。
               // 畫在把手「之後」＝壓在最上面：停在段落起點時它剛好
               // 疊在左把手上，畫在底下就整根被蓋住（使用者回報：
-              // 看不到指針、不知道播到哪）
+              // 看不到指針、不知道播到哪）。只管畫，拖曳由手勢層分派
               ValueListenableBuilder<double>(
                 valueListenable: _pos,
                 builder: (context, t, _) => Positioned(
-                  left: xOf(t.clamp(0, _dur)) - 18,
+                  left: _xOf(t.clamp(0.0, _dur), w) - 1,
                   top: -2,
                   bottom: -2,
-                  width: 36,
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onHorizontalDragStart: (_) => _scrubBegin(),
-                    onHorizontalDragUpdate: (d) => _scrubBy(d.delta.dx, w),
-                    onHorizontalDragEnd: (_) => _scrubEnd(),
-                    onHorizontalDragCancel: _scrubEnd,
-                    // height 一定要給滿：SizedBox 只給寬的話，
-                    // 裡面的 ColoredBox 沒有子元件、鬆約束下高度
-                    // 縮成 0——一條 2×0 的隱形線（實測回報：
-                    // 一直說沒有指針，其實是從來沒畫出來過）
-                    child: const Center(
-                      child: SizedBox(
-                        width: 2,
-                        height: double.infinity,
-                        child: ColoredBox(color: kText),
-                      ),
-                    ),
-                  ),
+                  width: 2,
+                  child: const ColoredBox(color: kText),
+                ),
+              ),
+              // 手勢層：落點交給 TrimHit 判定要動誰
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapDown: (d) => _stripTap(d.localPosition.dx, w),
+                  onHorizontalDragStart: (d) =>
+                      _stripDragStart(d.localPosition.dx, w),
+                  onHorizontalDragUpdate: (d) =>
+                      _stripDragUpdate(d.delta.dx, w),
+                  onHorizontalDragEnd: (_) => _stripDragEnd(),
+                  onHorizontalDragCancel: _stripDragEnd,
                 ),
               ),
             ],
@@ -1288,103 +1528,49 @@ class _GifScreenState extends State<GifScreen> {
     );
   }
 
-  /// 一個把手：64pt 觸控區（實測回報 44 太難按到，加寬）。
-  /// 長相跟影片編輯區時間軸的修剪把手一致——13px 琥珀色直條＋
-  /// 拖曳點點，貼在選取範圍的內緣
-  /// （使用者回報：修剪條要跟編輯器的軌道素材同一套長相，
-  /// 不要兩頁兩種東西）
-  Widget _handle({
-    required double x,
-    required bool left,
-    required double width,
-  }) {
-    return Positioned(
-      left: x - 32,
-      top: 0,
-      bottom: 0,
-      width: 64,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onHorizontalDragStart: (_) {
-          _dragFrom = left ? _start : _end;
-          _dragAcc = 0;
-        },
-        onHorizontalDragEnd: (_) {
-          _dragFrom = null;
-          // 停手才補精準 seek 與重做預覽：拖曳中每動一格就排
-          // 重做，web 的 FFmpeg（wasm）一跑好幾秒，loading
-          // 會一直閃；拖曳中的畫面已經有節流 seek 頂著
-          _seek(left ? _start : math.min(_end, _dur - 0.03));
-          _schedulePreview();
-        },
-        onHorizontalDragCancel: () => _dragFrom = null,
-        onHorizontalDragUpdate: (d) {
-          final from = _dragFrom ?? (left ? _start : _end);
-          _dragAcc += d.delta.dx;
-          final t = (from + _dragAcc / width * _dur).clamp(0.0, _dur);
-          setState(() {
-            if (left) {
-              _start = math.min(t, _end - 0.2);
-            } else {
-              _end = math.max(t, _start + 0.2);
-            }
-          });
-          // 拉哪個把手，畫面就停在哪個把手的位置——邊拉邊看剪在哪。
-          // seek 節流 60ms（跟指針拖曳同一套）：每個指標事件都發
-          // 的話 seek 在解碼器裡排隊，就是「拉起來跟不上」的手感。
-          // 終點夾在最後一格之前：seek 到正好等於總長會沒畫面
-          final now = DateTime.now();
-          if (now.difference(_lastScrubSeek).inMilliseconds >= 60) {
-            _lastScrubSeek = now;
-            _seek(left ? _start : math.min(_end, _dur - 0.03));
-          }
-          if (_gifMode && _gifFrames.isNotEmpty) {
-            // GIF 模式畫面走 GIF 時鐘、不理 seek：把手位置映射回
-            // 「這份 GIF 做的時間段」裡對應的幀，一路連續跟手。
-            // 拖出已做好的範圍＝改看影片本人（上面的節流 seek 本來
-            // 就在跟）——之前凍在端點幀，往回拉什麼都看不到
-            if (_playing) _playing = false;
-            final len = _gifBuiltEnd - _gifBuiltStart;
-            final tt = left ? _start : _end;
-            final inside =
-                tt >= _gifBuiltStart - 0.01 && tt <= _gifBuiltEnd + 0.01;
-            if (!inside) {
-              if (!_gifPeek) setState(() => _gifPeek = true);
-            } else {
-              if (_gifPeek) setState(() => _gifPeek = false);
-              if (len > 0.01) {
-                _gifFrameVN.value =
-                    (((tt - _gifBuiltStart) / len) * _gifFrames.length)
-                        .floor()
-                        .clamp(0, _gifFrames.length - 1);
-              }
-            }
-          }
-          final p = _player;
-          if (_playing && p != null) {
-            p.pause();
-            _playing = false;
-          }
-        },
-        // 64 寬的熱區裡，13px 的視覺把手貼在範圍內緣：
-        // 左把手佔 [x, x+13]、右把手佔 [x-13, x]，跟編輯器
-        // 選取片段的內側雙把手同一個位置關係
-        child: Container(
-          margin: EdgeInsets.only(left: left ? 32 : 19, right: left ? 19 : 32),
-          decoration: BoxDecoration(
-            color: kSelect,
-            borderRadius: BorderRadius.horizontal(
-              left: left ? const Radius.circular(4) : Radius.zero,
-              right: left ? Radius.zero : const Radius.circular(4),
+  /// 縮圖帶的格子：抽到的畫自己，還沒到的先借最近一格（整條很快就有
+  /// 輪廓，細節之後一格一格補上）；一格都沒有先用底色
+  Widget _stripCells() {
+    if (_cells.every((c) => c == null)) {
+      return const ColoredBox(color: kPanelHi);
+    }
+    return Row(
+      children: [
+        for (var i = 0; i < _cells.length; i++)
+          Expanded(
+            child: Image.memory(
+              nearestLoaded(_cells, i)!,
+              fit: BoxFit.cover,
+              height: 56,
+              gaplessPlayback: true,
             ),
           ),
-          child: const Center(
-            child: Icon(Icons.drag_indicator, size: 11, color: Colors.black87),
-          ),
-        ),
-      ),
+      ],
     );
   }
+
+  /// 把手的長相：13px 琥珀色直條＋拖曳點點，貼在選取範圍的內緣
+  /// （起點佔 [x, x+13]、終點佔 [x-13, x]，跟編輯器選取片段的內側
+  /// 雙把手同一個位置關係；使用者回報：修剪條要跟編輯器的軌道素材
+  /// 同一套長相）。只管畫，64pt 熱區由手勢層負責（見 TrimHit）
+  Widget _handleBar({required double x, required bool left}) => Positioned(
+    left: left ? x : x - TrimHit.barWidth,
+    top: 0,
+    bottom: 0,
+    width: TrimHit.barWidth,
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        color: kSelect,
+        borderRadius: BorderRadius.horizontal(
+          left: left ? const Radius.circular(4) : Radius.zero,
+          right: left ? Radius.zero : const Radius.circular(4),
+        ),
+      ),
+      child: const Center(
+        child: Icon(Icons.drag_indicator, size: 11, color: Colors.black87),
+      ),
+    ),
+  );
 
   /// 速度那一排。用 chips 跟尺寸／順暢度同型，不另外發明一種東西
   Widget _speedRow() => _chipsRow<double>(
