@@ -53,6 +53,21 @@ import '../widgets/sticker_picker.dart';
 import '../widgets/gif_image.dart';
 import '../widgets/watermark_panel.dart';
 
+/// 一支影片素材在目前輸出模式下還缺哪一種備好的檔（見 _prepNeedOf）
+enum _PrepNeed {
+  /// 都齊了（或不是影片）
+  none,
+
+  /// HDR 輸出模式下的 HDR 素材：缺 HLG 代理
+  hdrProxy,
+
+  /// 缺 SDR 工作檔（SDR 輸出模式的每一支；HDR 模式下的 SDR 素材）
+  sdrWork,
+
+  /// 還沒探過是不是 HDR、兩種檔都沒有：一定缺，缺哪種探完才知道
+  unknown,
+}
+
 /// 「加素材」選單的項目（錄旁白不是一種素材類型，所以另立一個 enum）
 enum _AddKind {
   video,
@@ -561,11 +576,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (!_tl.sources.any((s) => s.isVideo)) return;
     final deadline = DateTime.now().add(const Duration(seconds: 3));
     _dressVN.value = 0.06;
-    // 合成器先叫起來（await＝組好或確定組不起來才回來）。
-    // 讀取遮罩在場（匯入／草稿補檔中）就交給 _drainPrep：它問過
-    // HDR/SDR 模式才組（這裡組的那顆管線多半是錯的，收尾還得重組），
-    // 遮罩收掉之前使用者也看不到編輯器，不缺這一顆
-    if (!_prepBusy) await _ensureComp();
+    // 讀取遮罩那條路在跑（匯入／草稿補檔）：交給 _drainPrep——它備完
+    // 最終檔才組合成、遮罩收掉前使用者看不到編輯器。這裡只等它「探完、
+    // 決定要不要擋」（幾十毫秒）：要擋就放行讓遮罩接手（縮圖帶等遮罩
+    // 收掉再補；在這裡等只會白吃 3 秒，後面幾支素材也跟著晚 3 秒才排進
+    // 轉檔）；不用擋（東西都齊）就照常打扮
+    while (mounted &&
+        _prepBusy &&
+        !_prepShow &&
+        DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+    }
+    if (!mounted) return;
+    if (_prepBusy) {
+      _dressVN.value = 1;
+      return;
+    }
+    // 合成器先叫起來（await＝組好或確定組不起來才回來）
+    await _ensureComp();
     // 只等「真的有片段在用」的素材：清單裡可能躺著沒被引用的素材
     //（量位元率用的、剪掉片段後留下的），它們的縮圖沒人急、
     // 也可能永遠不會來——等它們就是白白吃滿 3 秒
@@ -912,6 +940,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       system: src.workPath == null,
     );
     _ctrls[c.id] = ctrl;
+    Diag.peak('同時活著的片段播放器', _ctrls.length);
     ctrl
         .initialize()
         .then((_) {
@@ -943,7 +972,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _rescued = false;
 
   Future<bool> _rescueFromWorkFile(MediaSource s) async {
-    final wp = s.workPath;
+    // HDR 模式現在只轉 HLG 代理、不轉 SDR 工作檔：救援也要認代理
+    final fromHdr = s.workPath == null;
+    final wp = s.workPath ?? s.workHdrPath;
     if (wp == null || !await fileExists(wp)) return false;
     try {
       final base = await getApplicationSupportDirectory();
@@ -956,9 +987,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 下一次存檔才落地——中間退出的話兩個路徑都沒了，素材真的消失。
       // copy 讓原工作檔留在原地當保險，救回的那份歸 imports 自己管
       await File(wp).copy(dest);
-      s
-        ..path = dest
-        ..workPath = dest;
+      s.path = dest;
+      if (fromHdr) {
+        s.workHdrPath = dest;
+      } else {
+        s.workPath = dest;
+      }
       _rescued = true;
       Diag.note('素材原檔被系統清掉，用工作檔救回：${s.name}');
       return true;
@@ -2356,34 +2390,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 每一支進來就先能播（工作檔在背景備），不會卡在載入畫面
       final list = widget.videoPaths ?? [widget.videoPath!];
       () async {
-        // 解碼器初始化全部並行（一支幾百 ms，串行十支就是好幾秒），
-        // 接進時間軸仍照選取順序一支一支來——順序是使用者選的
-        Future<PlayerX?> initOne(String p) async {
-          try {
-            final c = makeVideoController(p, system: true);
-            await c.initialize();
-            return c;
-          } catch (_) {
-            return null; // 某一支讀不進來不該讓整批進不去
-          }
-        }
-
-        final inits = [for (final p in list) initOne(p)];
+        // 一支一支問中繼資料、接進時間軸（順序是使用者選的）。不再
+        // 先開播放器：十支並行 initialize＝十顆 4K HDR 解碼器同時活著，
+        // 還沒轉檔 App 就被收掉（實機回報）；畫面由合成播放器出，
+        // 一顆都不用養（見 _importVideoPath）
         var first = true;
         for (var i = 0; i < list.length; i++) {
-          final c = await inits[i];
-          if (!mounted) {
-            c?.dispose();
-            return;
-          }
-          if (c != null) {
-            try {
-              await _importVideoWithCtrl(list[i], c, track: 0);
-            } catch (_) {}
-          }
-          // 第一支先「打扮好」再亮相（3 秒預算，見 _dressUp）；
-          // 後面幾支在編輯器裡陸續接上，不再擋
-          if (first) {
+          var ok = false;
+          try {
+            ok = await _importVideoPath(list[i], track: 0);
+          } catch (_) {}
+          if (!mounted) return;
+          // 第一支接上就「打扮好」再亮相（3 秒預算，見 _dressUp）；
+          // 後面幾支在遮罩下陸續接上
+          if (ok && first) {
             first = false;
             await _dressUp();
             if (!mounted) return;
@@ -2601,12 +2621,64 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   // ===== 匯入素材 =====
 
-  /// 匯入的後半段：解碼器已經初始化好（呼叫端自己
-  /// makeVideoController(system: true) 並 initialize——剛匯入一定是
-  /// 原檔，走系統解碼器，見 _ensureCtrlFor 的說明），這裡把素材與
-  /// 片段接進時間軸。init 由呼叫端負責是為了多選匯入能把「初始化」
-  /// 全部並行——一支幾百 ms 串起來，十支就是好幾秒白等
-  Future<void> _importVideoWithCtrl(
+  /// 匯入一支影片：問清楚長度與尺寸，接進時間軸。
+  ///
+  /// 以前是先開一顆系統播放器 initialize、再讀它的 value——而多選是
+  /// 全部並行：十支就是十顆 4K HDR 解碼器同時活著（每顆連解碼緩衝
+  /// 幾百 MB），還沒開始轉檔 App 就被 jetsam 收掉（實機回報：十支
+  /// 一起匯入閃退）。播放器只是拿來問「多長、多大」，這兩個數字容器
+  /// 中繼資料就有（probeLite，不開解碼器）；畫面由合成播放器出，
+  /// 一顆播放器都不用養。probeLite 沒實作的平台（Android）才退回
+  /// 開播放器，而且一次一顆。回 true＝接進去了
+  Future<bool> _importVideoPath(
+    String path, {
+    required int track,
+    String? name,
+  }) async {
+    final meta = await _probeImportMeta(path);
+    if (!mounted) return false;
+    if (meta != null) {
+      _importVideoMeta(
+        path,
+        dur: meta.dur,
+        w: meta.w,
+        h: meta.h,
+        track: track,
+        name: name,
+      );
+      return true;
+    }
+    PlayerX? c;
+    try {
+      c = makeVideoController(path, system: true);
+      Diag.peak('同時活著的片段播放器', _ctrls.length + 1);
+      await c.initialize();
+    } catch (_) {
+      c?.dispose();
+      return false; // 某一支讀不進來不該讓整批進不去
+    }
+    if (!mounted) {
+      c.dispose();
+      return false;
+    }
+    return _importVideoWithCtrl(path, c, track: track, name: name);
+  }
+
+  /// 匯入用的中繼資料（長度、轉正後的尺寸）。讀不到回 null
+  Future<({double dur, int w, int h})?> _probeImportMeta(String path) async {
+    if (kIsWeb) return null;
+    final lite = await MediaPrep.probeLite(path);
+    if (lite == null || lite['error'] != null) return null;
+    final dur = ((lite['durSec'] as num?) ?? 0).toDouble();
+    final w = (lite['w'] as num?)?.toInt() ?? 0;
+    final h = (lite['h'] as num?)?.toInt() ?? 0;
+    if (dur <= 0.05 || w <= 0 || h <= 0) return null;
+    return (dur: dur, w: w, h: h);
+  }
+
+  /// 開好播放器那條路的後半段（probeLite 沒有的平台）：讀長度與尺寸，
+  /// 播放器留給片段用（合成播放器接手時 _trimPlayers 會放掉）
+  Future<bool> _importVideoWithCtrl(
     String path,
     PlayerX c, {
     required int track,
@@ -2614,29 +2686,55 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }) async {
     var dur = c.value.duration.inMilliseconds / 1000.0;
     if (dur <= 0.05) {
-      // 播放器回報長度 0：多支並行初始化撞上編碼器風暴（媒體服務
-      // 重置）時會這樣——照收的話片段全變 0.1 秒小碎片疊成一團
-      //（實測回報：第二部之後都重疊）。改問容器中繼資料補救，
+      // 播放器回報長度 0（媒體服務重置的窗口會這樣）——照收的話片段
+      // 全變 0.1 秒小碎片疊成一團。改問容器中繼資料補救，
       // 還是拿不到就略過這支並講清楚
       final lite = await MediaPrep.probeLite(path);
       final probed = ((lite?['durSec'] as num?) ?? 0).toDouble();
       if (probed > 0.05) {
         dur = probed;
       } else {
+        c.dispose();
         if (mounted) {
           showHint(context, '有一支影片讀不到長度，已略過', error: true);
         }
-        return;
+        return false;
       }
     }
+    if (!mounted) {
+      c.dispose();
+      return false;
+    }
+    final clipId = _importVideoMeta(
+      path,
+      dur: dur,
+      w: c.value.size.width.round(),
+      h: c.value.size.height.round(),
+      track: track,
+      name: name,
+    );
+    _ctrls[clipId] = c;
+    Diag.peak('同時活著的片段播放器', _ctrls.length);
+    return true;
+  }
+
+  /// 把素材與片段接進時間軸（同步），回片段 id
+  int _importVideoMeta(
+    String path, {
+    required double dur,
+    required int w,
+    required int h,
+    required int track,
+    String? name,
+  }) {
     final srcIndex = _tl.sources.length;
     _tl.sources.add(
       MediaSource(
         path: path,
         name: name ?? '影片 ${srcIndex + 1}',
         kind: ClipKind.video,
-        w: c.value.size.width.round(),
-        h: c.value.size.height.round(),
+        w: w,
+        h: h,
         duration: dur,
       ),
     );
@@ -2655,12 +2753,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       track: track,
     );
     _tl.clips.add(clip);
-    _ctrls[clip.id] = c;
     _sel = clip.id;
-
-    _thumbStrip(path, dur).then((t) {
-      if (mounted && t.isNotEmpty) setState(() => _thumbs[srcIndex] = t);
-    });
+    // 縮圖帶不在這裡抽：這時候手上只有 4K 原檔，十支一起排＝每格開一顆
+    // 解碼器地跟轉檔搶硬體。等素材備好再從代理／工作檔一支一支抽
+    //（_thumbsAfterPrep）
     _ensureScrubSlots(srcIndex, dur);
     // 秒進的配套：原檔期間就把拖曳快取整條抽起來（背景、分段、
     // 播放/拖曳/匯出時自動讓路），一進去拖曳就有格子可吃＝零 seek。
@@ -2668,78 +2764,142 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 多支同時匯入時「後面那幾支」先不抽：六條 4K 密集抽幀同時開
     // ＝解碼器與記憶體瞬間爆量（實測：多選匯入直接當機）；
     // 它們的快取等工作檔換上時重建，只慢幾秒
-    if (!kIsWeb && _prepQueue.length + _prepping.length <= 1) {
+    if (!kIsWeb &&
+        _prepQueue.length + _prepping.length + _hdrPrepping.length <= 1) {
       unawaited(_makeScrubCache(srcIndex, path, dur));
     }
-    unawaited(_measureSrcKbps());
-    // 排進轉檔佇列（能不擋就不擋，見 _drainPrep）
+    _scheduleMeasureKbps();
+    // 排進轉檔佇列（見 _drainPrep）
     _enqueuePrep(srcIndex);
+    // 遮罩期間合成只能由 _drainPrep 收尾時組。存草稿那條路（_saveDraft→
+    // _compRefreshIfChanged）認「編輯指紋變了」就會偷組一顆——而剛接上
+    // 的每一支都是新片段。指紋對齊現在的時間軸，它就會讓開
+    if (_prepBusy && _comp == null) {
+      _lastCompEditSig = _compSig(withPaths: false);
+    }
+    return clip.id;
+  }
+
+  /// 位元率量測併批：多選匯入每支都會叫，而每次都把全部素材 FFprobe
+  /// 一輪（快取要等第一輪做完才有）——十支就是十輪疊在一起跟轉檔
+  /// 搶 I/O。停手 600ms 量一次就夠（匯出前才用得到）
+  Timer? _kbpsTimer;
+  void _scheduleMeasureKbps() {
+    _kbpsTimer?.cancel();
+    _kbpsTimer = Timer(const Duration(milliseconds: 600), () {
+      if (mounted) unawaited(_measureSrcKbps());
+    });
   }
 
   // ===== 素材工作檔 =====
   //
   // iPhone 預設錄 4K HLG。拿原檔直接用的話，每個片段都要養一顆 4K HDR
-  // 解碼器（三段就是三顆同時活著，預熱時還會有兩顆在解），拖曳抽幀也是
-  // 從 4K 解起——那就是「播放超 LAG、左右滑動不順」的來源。
+  // 解碼器，拖曳抽幀也是從 4K 解起——那就是「播放超 LAG、左右滑動
+  // 不順」的來源。
   //
-  // 解法是剪輯 App 的標準做法：進場先用原檔（不能讓使用者等），背景用
-  // 系統的硬體管線轉一份 1080p SDR 的工作檔，轉好了再換過去。換過去之後
-  // 播放、抽幀、縮圖都只碰 1080p SDR，而且顏色是系統轉的，跟匯出一致
+  // 進場前用系統的硬體管線把素材備成 1080p 的檔，備完才進畫面
+  //（使用者指定：轉完才進場，不要進場後畫面跳）。備哪一種看輸出模式：
+  // - HDR 輸出（iPhone HLG 素材的預設）：HDR 素材備「HLG 代理」（密
+  //   關鍵幀、不動色彩）——合成播放器在這個模式吃的就是它；SDR 素材
+  //   備 SDR 工作檔。HDR 素材的 SDR 工作檔這裡不做：那是一趟完整的
+  //   4K 解碼＋色調映射＋重編，而 HDR 模式下沒有人吃它（合成播代理、
+  //   縮圖從代理抽、匯出走原生管線讀原檔）。以前每支素材都先轉 SDR
+  //   再轉 HDR，兩趟串著跑，匯入時間直接翻倍
+  // - SDR 輸出：每支備 SDR 工作檔（跟成品同一條色調映射曲線）
 
-  /// 正在備工作檔的素材（全部備完才把合成換成工作檔版）
+  /// 正在備 SDR 工作檔的素材
   final Set<int> _prepping = {};
 
-  /// 還沒開始備的素材，以及「這一批總共幾支、做完幾支」。
+  /// 正在備 HDR 代理的素材
+  final Set<int> _hdrPrepping = {};
+
+  /// 還沒開始備的素材。
   ///
   /// 使用者要的是「先等一下，然後進去就都好了」，不是「進去之後閃東
-  /// 閃西」——所以轉檔排成一批做完，期間畫面上蓋一層遮罩擋住互動。
-  /// 一支一支各自開跑的話，遮罩會閃三次，比等一次還煩
+  /// 閃西」——所以排成一批做完，期間畫面上蓋一層遮罩擋住互動
   final List<int> _prepQueue = [];
 
   /// 已經補試過一次的素材：轉檔失敗的後果是那支一路用 4K 原檔播
   /// （拖曳會鈍、記憶體也高），值得再試一次；但只再試一次，
   /// 不然壞掉的素材會無限重跑
   final Set<int> _prepRetried = {};
+  final Set<int> _hdrPrepRetried = {};
+
+  /// 遮罩下補試過還是失敗的 HDR 代理：之後不再背景重試。
+  /// 沒有這張名單的話，每次合成重組（_ensureCompInner 收尾會叫
+  /// _prepHdrWorkFiles）都會對這支 4K 原檔再跑一次整支轉檔
+  final Set<int> _hdrPrepFailed = {};
+
+  /// _drainPrep 正在跑（也是它的重入鎖）
   bool _prepBusy = false;
-  int _prepDone = 0;
+
+  /// 遮罩要不要真的亮：_drainPrep 確定有東西要轉才亮。
+  /// 東西都齊的草稿（探測幾十毫秒就知道）不用閃一下遮罩
+  bool _prepShow = false;
+
+  /// 檔都備好了、正在組合成（遮罩的最後一段）
+  bool _prepComposing = false;
 
   /// 正在轉的每一支各做到哪（0~1），素材索引 → 進度。
   ///
   /// 沒有它的話百分比只會跳 33、67、100，三支素材的畫面上那個大數字
-  /// 大半時間是停著的。同時可能有兩支在轉，所以是一張表不是一個值
+  /// 大半時間是停著的
   final Map<int, double> _prepCur = {};
 
-  /// 這一批要備的影片素材數（＝畫面上的 X/Y 的 Y）
-  int get _prepSrcTotal => _tl.sources.where((s) => s.isVideo).length;
+  /// 每支素材是不是 HDR（路徑 → 探過的結果）
+  final Map<String, bool> _srcHdr = {};
 
-  /// 已經完全備好的素材數（工作檔＋需要的話還有 HDR 代理）
-  int get _prepSrcDone {
-    final wantHdr = _exportHdr && _hdrAvail != false;
-    return _tl.sources
-        .where(
-          (s) =>
-              s.isVideo &&
-              s.workPath != null &&
-              (!wantHdr || s.workHdrPath != null),
-        )
-        .length;
+  /// 現在備的是哪一種檔（見上面的說明）。「還沒查出來」算 HDR，跟
+  /// _metalPayload 同一個判法：iPhone 素材預設就是 HLG
+  bool get _prepHdrMode => _exportHdr && _hdrAvail != false;
+
+  /// 這支素材在目前模式下還缺什麼
+  _PrepNeed _prepNeedOf(MediaSource s) {
+    if (!s.isVideo) return _PrepNeed.none;
+    // 有代理的一定是 HDR（SDR 素材 ensureHdr 不會做代理）
+    final hdr = _srcHdr[s.path] ?? (s.workHdrPath != null ? true : null);
+    if (_prepHdrMode) {
+      if (hdr == true) {
+        return s.workHdrPath == null ? _PrepNeed.hdrProxy : _PrepNeed.none;
+      }
+      if (hdr == false) {
+        return s.workPath == null ? _PrepNeed.sdrWork : _PrepNeed.none;
+      }
+      // 還沒探：兩種檔都沒有＝一定缺；有工作檔的先當齊，探完再算
+      return s.workPath == null ? _PrepNeed.unknown : _PrepNeed.none;
+    }
+    return s.workPath == null ? _PrepNeed.sdrWork : _PrepNeed.none;
   }
 
-  /// 整體進度（0~1）：工作檔與 HDR 代理算同一條進度，不再各跑一輪
-  /// 100%（使用者回報：「跑完一個 100% 又有新的」）。
-  /// 每支素材要做的工作＝工作檔（＋HDR 代理），所以總單位＝素材數×階段數
+  /// 這一批要備的影片素材數（＝畫面上 X／N 的 N）
+  int get _prepSrcTotal => _tl.sources.where((s) => s.isVideo).length;
+
+  /// 已經備好的素材數（X 從它算：X＝正在備的那一支）。
+  /// 以前這裡要求「工作檔＋HDR 代理都有」，而 _hdrAvail 在遮罩期間
+  /// 根本還沒查（只有匯出頁會查，匯出頁在遮罩下不會建）——每支都
+  /// 永遠差一份代理，X 整段匯入停在 1（實機回報）
+  int get _prepSrcDone => _tl.sources
+      .where((s) => s.isVideo && _prepNeedOf(s) == _PrepNeed.none)
+      .length;
+
+  /// 整體進度（0~1）：一支素材一個單位（它要備的那一種檔），已備好的
+  /// 算 1、正在轉的算轉檔進度——大數字從頭到尾連續走，不會「跑完一個
+  /// 100% 又有新的」
   double get _prepFraction {
-    final srcs = _tl.sources.where((s) => s.isVideo).toList();
-    if (srcs.isEmpty) return 0;
-    final wantHdr = _exportHdr && _hdrAvail != false;
-    final units = srcs.length * (wantHdr ? 2 : 1);
-    var doneUnits = 0;
-    for (final s in srcs) {
-      if (s.workPath != null) doneUnits++;
-      if (wantHdr && s.workHdrPath != null) doneUnits++;
+    final total = _prepSrcTotal;
+    if (total == 0) return 0;
+    var done = 0;
+    var inFlight = 0.0;
+    for (var i = 0; i < _tl.sources.length; i++) {
+      final s = _tl.sources[i];
+      if (!s.isVideo) continue;
+      if (_prepNeedOf(s) == _PrepNeed.none) {
+        done++;
+      } else {
+        inFlight += _prepCur[i] ?? 0;
+      }
     }
-    final inFlight = _prepCur.values.fold(0.0, (a, b) => a + b);
-    return ((doneUnits + inFlight) / units).clamp(0.0, 1.0);
+    return ((done + inFlight) / total).clamp(0.0, 1.0);
   }
 
   /// 使用者按了「先進去編輯」——遮罩收掉，轉檔繼續在背景跑
@@ -2749,198 +2909,243 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Timer? _prepEscapeTimer;
   bool _prepEscapeReady = false;
 
-  /// 這一批的轉檔不需要擋人（見 _prepGateNeeded）：遮罩不蓋、
-  /// 背景默默補工作檔，暫停時無感換上
-  bool _prepSilent = false;
-
-  /// 第二階段：HDR 代理（跟工作檔同一段等待）。
-  /// 不等它的話使用者進去之後代理才轉好，畫面來源從
-  /// 原檔換成代理——佈局重建、顏色跡象、卡頓全發生在眼前
-  bool _prepHdrPhase = false;
-
   /// 這一刻要不要蓋讀取遮罩
-  bool get _prepGate =>
-      (_prepBusy || _prepHdrPhase) && !_prepSkipped && !_prepSilent;
+  bool get _prepGate => _prepBusy && _prepShow && !_prepSkipped;
 
-  /// 這支素材在等工作檔的期間，播原檔擋不擋人？
-  ///
-  /// 1080p SDR H.264 的原檔播起來本來就順（解碼便宜）、顏色也跟
-  /// 匯出同一套（不經色調映射），不必讓使用者等轉檔——工作檔只是
-  /// 把關鍵幀補密讓拖曳更順，背景補就好。4K/HDR/HEVC/帶旋轉旗標
-  /// 照舊要等：拿那種原檔播就是卡頓的來源。
-  /// probeLite 沒實作的平台（Android）一律回「要擋」，行為跟以前一樣
-  final Map<String, bool> _gateNeedCache = {};
-  Future<bool> _prepGateNeeded(int srcIndex) async {
-    if (srcIndex < 0 || srcIndex >= _tl.sources.length) return false;
+  /// 探一次容器中繼資料，記下這支素材是不是 HDR（決定備哪種檔）。
+  /// probeLite 沒實作的平台（Android）當 SDR：HDR 代理那條路在那裡
+  /// 本來就走不了，SDR 工作檔才是它有的東西
+  Future<void> _classifySource(int srcIndex) async {
+    if (srcIndex < 0 || srcIndex >= _tl.sources.length) return;
     final path = _tl.sources[srcIndex].path;
-    final hit = _gateNeedCache[path];
-    if (hit != null) return hit;
-    var need = true;
+    if (_srcHdr.containsKey(path)) return;
     final m = await MediaPrep.probeLite(path);
-    if (m != null && m['error'] == null) {
-      final w = (m['w'] as num?)?.toInt() ?? 0;
-      final h = (m['h'] as num?)?.toInt() ?? 0;
-      need =
-          !(m['codec'] == 'avc1' &&
-              w > 0 &&
-              h > 0 &&
-              (w < h ? w : h) <= 1088 &&
-              m['rotated'] != true &&
-              m['sdr709'] == true);
-    }
-    return _gateNeedCache[path] = need;
+    _srcHdr[path] = m != null && m['error'] == null && m['sdr709'] != true;
   }
 
   void _enqueuePrep(int srcIndex) {
     if (srcIndex < 0 || srcIndex >= _tl.sources.length) return;
     final src = _tl.sources[srcIndex];
-    if (src.kind != ClipKind.video || src.workPath != null) return;
-    if (_prepQueue.contains(srcIndex) || _prepping.contains(srcIndex)) return;
+    if (!src.isVideo || _prepNeedOf(src) == _PrepNeed.none) return;
+    if (_prepQueue.contains(srcIndex) ||
+        _prepping.contains(srcIndex) ||
+        _hdrPrepping.contains(srcIndex)) {
+      return;
+    }
     _prepQueue.add(srcIndex);
     unawaited(_drainPrep());
   }
 
   Future<void> _drainPrep() async {
     if (_prepBusy) return;
-    if (!await MediaPrep.available) {
-      _prepQueue.clear();
-      return;
-    }
-    if (!mounted) return;
-    // 秒進：先試著把合成播放器叫起來。合成接手＝整條時間軸一顆
-    // 解碼器，4K HDR 原檔播起來跟相簿一樣順（CompPlayer 本來就
-    // 「工作檔沒好也照組」），不必擋人等轉檔——工作檔照樣背景補
-    //（拖曳抽幀、旋轉燒正、FFmpeg 匯出還是要它），補好在暫停空檔
-    // 無感換上。合成器用不了（倒轉/調色/圖片素材/原生端組失敗）
-    // 才退回「一片段一顆播放器」的舊路，那條路播 4K/HDR 原檔真的
-    // 會卡，照舊用 probeLite 分類決定要不要擋
-    // 匯入即轉完才進畫面（使用者指定）：不再背景静默轉。
-    // 背景轉的代價是「進去之後才換檔」——佈局重建、
-    // 顏色從原檔跳成代理、解碼器跟播放互搶，全發生在
-    // 使用者眼前（實機 139~144 的「要等讀取完才順」）
-    var silent = false;
-    // 遮罩先亮、再去等合成：以前是「等 available、等合成組好」之後
-    // 才把 _prepBusy 翻上來，而進場打扮（_dressUp）等的是同一次
-    // 組建，縮圖有快取時它先放行——使用者已經在拉時間軸了，
-    // 讀取頁才突然蓋上來（實測回報：一開始拉一拉會停下來跑讀取）
-    setState(() {
-      _prepBusy = true;
-      _prepSilent = silent;
-      _prepSkipped = false;
-      _prepEscapeReady = false;
-      _prepDone = 0;
-      _prepCur.clear();
-    });
-    if (!_compOn) await _ensureComp();
-    if (!mounted) return;
-    // 轉檔偶爾會卡在某一支（硬體編碼器被佔住、素材有問題）。這一頁擋著
-    // 整個編輯器，沒有退路的話使用者只能關掉 App 重來
-    _prepEscapeTimer?.cancel();
-    _prepEscapeTimer = Timer(const Duration(seconds: 20), () {
-      if (mounted && _prepBusy) setState(() => _prepEscapeReady = true);
-    });
-    // 全部一起送出去，同時跑幾支由 MediaPrep 控（現在是兩支）。
-    // 一支做完就送下一支進去，硬體編碼器不會有空檔。
-    //
-    // 外面這層 while 不能省：轉檔進行中還會有素材被排進來（多選匯入是
-    // 一支一支加的），只撈一次的話那些會留在佇列裡沒人理——上一版就是
-    // 這樣，五支素材只轉好一支，其他全程用 4K 原檔播
-    while (_prepQueue.isNotEmpty && mounted) {
-      // 背景模式跑到一半又排進需要擋的素材（例如中途加了一支 4K）
-      // 就把遮罩亮起來——但合成播放器還在場的話照樣不用擋
-      if (_prepSilent && !_compOn) {
-        for (final i in List<int>.of(_prepQueue)) {
-          if (await _prepGateNeeded(i)) {
-            if (mounted) setState(() => _prepSilent = false);
-            break;
+    // 鎖要同步翻上來：呼叫端接著就 await _dressUp()，它看 _prepBusy 決定
+    // 要不要自己組合成——晚一個 await 翻，它就搶先拿 4K 原檔組了一顆
+    _prepBusy = true;
+    _prepSkipped = false;
+    _prepShow = false;
+    _prepComposing = false;
+    _prepEscapeReady = false;
+    _prepCur.clear();
+    // 遮罩期間合成只能由這裡收尾時組（每一層都要吃最終檔）。存草稿那條
+    // 路（_saveDraft→_compRefreshIfChanged）看「編輯指紋沒變＋整批代理
+    // 進行中」就會讓開，兩個旗標都在這裡顧著
+    _hdrPrepBusy = true;
+    if (_comp == null) _lastCompEditSig = _compSig(withPaths: false);
+    final sw = Stopwatch()..start();
+    var madeHdr = 0;
+    var madeSdr = 0;
+    Diag.startSampling();
+    try {
+      if (!await MediaPrep.available) {
+        _prepQueue.clear();
+        return;
+      }
+      if (!mounted) return;
+      // 遮罩要不要亮，探測前就能定一半：連工作檔都沒有的（剛匯入的）
+      // 一定要轉，馬上亮——晚亮的話使用者已經在拉時間軸了，讀取頁
+      // 才突然蓋上來（實測回報）。只差 HDR 代理與否的（草稿）探完再說
+      if (_prepQueue.any(
+        (i) =>
+            i < _tl.sources.length &&
+            _tl.sources[i].workPath == null &&
+            _tl.sources[i].workHdrPath == null,
+      )) {
+        _showPrepGate();
+      }
+      // 外面這層迴圈不能省：轉檔進行中還會有素材被排進來（多選匯入是
+      // 一支一支加的），只撈一次的話那些會留在佇列裡沒人理——上一版
+      // 就是這樣，五支素材只轉好一支，其他全程用 4K 原檔播
+      while (_prepQueue.isNotEmpty && mounted) {
+        final i = _prepQueue.removeAt(0);
+        if (i >= _tl.sources.length) continue;
+        await _classifySource(i);
+        if (!mounted) return;
+        // 來源裡有沒有 HDR：這個答案決定備哪種檔、合成走哪條管線，要在
+        // 轉檔「之前」就問清楚。以前它只在匯出頁建構時才問，而匯出頁在
+        // 遮罩期間根本不會建——整段匯入 _hdrAvail 都是 null：X／N 用
+        // 「不是 false」算（永遠差一份代理＝停在 1），HDR 階段用「== true」
+        // 判（永遠跳過），代理變成進場後才在背景補，畫面就跳
+        await _resolveHdrAvail();
+        if (!mounted) return;
+        // 背景那條（_prepHdrWorkFiles）正好在做同一支：等它，別開第二趟
+        await _waitPrepIdle(i);
+        if (!mounted || i >= _tl.sources.length) return;
+        final src = _tl.sources[i];
+        final need = _prepNeedOf(src);
+        if (need == _PrepNeed.none) continue;
+        _showPrepGate();
+        if (need == _PrepNeed.hdrProxy) {
+          if (await _prepHdrProxy(i)) madeHdr++;
+        } else {
+          await _prepWorkFile(i);
+          if (mounted &&
+              i < _tl.sources.length &&
+              _tl.sources[i].workPath != null) {
+            madeSdr++;
           }
         }
         if (!mounted) return;
+        // 佇列空了：沒轉成功的補試一次（每支一次），試過還是不行的
+        // 記進失敗名單，之後不再背景重跑
+        if (_prepQueue.isEmpty) _requeueFailedPrep();
       }
-      final jobs = <Future<void>>[];
-      while (_prepQueue.isNotEmpty) {
-        final i = _prepQueue.removeAt(0);
-        jobs.add(
-          _prepWorkFile(i).then((_) {
-            if (!mounted) return;
-            setState(() {
-              _prepDone++;
-              _prepCur.remove(i);
-            });
-          }),
-        );
-      }
-      await Future.wait(jobs);
       if (!mounted) return;
-      // 這一批做完之後可能又進來新的，總數要跟著長
-      // 沒轉成功的補試一次（每支只補一次）
-      if (_prepQueue.isEmpty) {
-        for (var i = 0; i < _tl.sources.length; i++) {
-          final src = _tl.sources[i];
-          if (!src.isVideo || src.workPath != null) continue;
-          if (!_prepRetried.add(i)) continue;
-          Diag.note('工作檔沒轉成功，再試一次：${src.name}');
-          _prepQueue.add(i);
-        }
-        if (_prepQueue.isNotEmpty && mounted) {
-        }
+      // SDR 工作檔換上的收尾（原本走 _swapToWorkFile）：合成還沒組，
+      // 那條路會為每個片段開一顆播放器（合成一組好又整批放掉，十支就是
+      // 十顆解碼器的瞬間尖峰）。這裡只做真正需要的：從原檔抽的拖曳快取
+      // 作廢、格子重配；縮圖帶收尾統一補（_thumbsAfterPrep）
+      for (final i in _pendingSwaps.toList()) {
+        if (i < 0 || i >= _tl.sources.length) continue;
+        _scrubBytes -= _scrubBytesOf(i);
+        _scrubFrames.remove(i);
+        _scrubDecoders.remove(i)?.dispose();
+        _decoderLru.remove(i);
+        _ensureScrubSlots(i, _tl.sources[i].duration);
       }
-    }
-    if (!mounted) return;
-    setState(() {
+      _pendingSwaps.clear();
+      // 這時候才組合成：每一層吃的都是最終檔（HDR 代理／工作檔），
+      // 遮罩收掉的那一刻畫面就是完成品，不再有換檔/重建/變色。
+      // 組合成也在遮罩下等完——先收遮罩再組，使用者會看到黑畫面
+      // 變出圖來那一下
+      _hdrPrepBusy = false;
+      if (_comp == null || _compSig() != _lastCompSig) _compDirty = true;
+      if (_prepShow && mounted) setState(() => _prepComposing = true);
+      await _ensureComp().timeout(
+        const Duration(seconds: 15),
+        onTimeout: () => Diag.note('進場合成組太久，先放人進去'),
+      );
+    } finally {
+      _hdrPrepBusy = false;
+      _prepEscapeTimer?.cancel();
+      if (!_exporting) Diag.stopSampling();
       _prepBusy = false;
-      _prepSilent = false;
+      _prepShow = false;
+      _prepComposing = false;
+      _prepEscapeReady = false;
       _prepCur.clear();
-    });
-    // 第二階段：HDR 代理也在遮罩下跑完——進畫面時
-    // 每一層吃的就是最終檔，不再有換檔/重建/變色
-    if (_exportHdr && _hdrAvail == true && mounted) {
-      final need = _tl.sources
-          .where((s) => s.isVideo && s.workHdrPath == null)
-          .length;
-      if (need > 0) {
-        setState(() {
-          _prepHdrPhase = true;
-          _prepDone = 0;
-          _prepCur.clear();
-        });
-        await _prepHdrWorkFiles();
-        if (!mounted) return;
-        setState(() => _prepHdrPhase = false);
+      if (mounted) {
+        setState(() {});
+        // 遮罩收掉之後才做的雜事：縮圖帶從代理／工作檔一支一支抽。
+        // 放在 finally：轉檔通道沒接上（web）那條路上面是直接 return 的，
+        // 縮圖帶照樣要有
+        unawaited(_thumbsAfterPrep());
       }
     }
-    _prepEscapeTimer?.cancel();
-    if (mounted) setState(() => _prepEscapeReady = false);
-    // 這時候才組合成：全部素材都是工作檔，方向與編碼一致，
-    // 合成器不會被叫醒，而且之後不必再重烘一次
-    _compDirty = true;
-    unawaited(_ensureComp());
+    if (madeHdr + madeSdr > 0 || sw.elapsed.inSeconds >= 2) {
+      Diag.note(
+        '素材備妥 ${sw.elapsed.inSeconds}秒（${_prepHdrMode ? 'HDR' : 'SDR'} 模式）：'
+        'HDR 代理 $madeHdr 支、工作檔 $madeSdr 支，峰值 ${Diag.peakMb}MB',
+      );
+    }
   }
 
-  /// 影片素材是不是全部都有工作檔了。
+  /// 遮罩亮起來（一次），並開始數退路的秒數。
+  /// 轉檔偶爾會卡在某一支（硬體編碼器被佔住、素材有問題）。這一頁擋著
+  /// 整個編輯器，沒有退路的話使用者只能關掉 App 重來
+  void _showPrepGate() {
+    if (_prepShow || !mounted) return;
+    setState(() => _prepShow = true);
+    _prepEscapeTimer?.cancel();
+    _prepEscapeTimer = Timer(const Duration(seconds: 20), () {
+      if (mounted && _prepGate) setState(() => _prepEscapeReady = true);
+    });
+  }
+
+  /// 跟 _checkHdrSources 同一個問法、同一把 key，只是等得到答案
+  Future<void> _resolveHdrAvail() async {
+    final paths = [
+      for (final s in _tl.sources)
+        if (s.isVideo) s.path,
+    ]..sort();
+    final key = paths.join('|');
+    if (key == _hdrCheckKey && _hdrAvail != null) return;
+    _hdrCheckKey = key;
+    // 已經是「有 HDR」：多加素材不會變成沒有，不用再問（多選匯入是
+    // 一支一支加的，每加一支重問一輪＝十支問十輪）
+    if (_hdrAvail == true) return;
+    final v = await NativeExport.anyHDR(paths);
+    if (!mounted) return;
+    if (v != _hdrAvail) setState(() => _hdrAvail = v);
+  }
+
+  /// 這支正在別條路上轉（背景補代理）就等它做完
+  Future<void> _waitPrepIdle(int i) async {
+    while (mounted && (_prepping.contains(i) || _hdrPrepping.contains(i))) {
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+    }
+  }
+
+  /// 佇列清空後：還缺檔的補試一次（每支一次）；補試過還是缺的記進
+  /// 失敗名單（HDR 代理），之後不再背景重跑
+  void _requeueFailedPrep() {
+    for (var j = 0; j < _tl.sources.length; j++) {
+      final s = _tl.sources[j];
+      if (!s.isVideo) continue;
+      final n = _prepNeedOf(s);
+      if (n == _PrepNeed.none || n == _PrepNeed.unknown) continue;
+      if (_prepQueue.contains(j) ||
+          _prepping.contains(j) ||
+          _hdrPrepping.contains(j)) {
+        continue;
+      }
+      final retried = n == _PrepNeed.hdrProxy ? _hdrPrepRetried : _prepRetried;
+      if (!retried.add(j)) {
+        if (n == _PrepNeed.hdrProxy) _hdrPrepFailed.add(j);
+        continue;
+      }
+      Diag.note(
+        '${n == _PrepNeed.hdrProxy ? 'HDR 代理' : '工作檔'}沒轉成功，'
+        '再試一次：${s.name}',
+      );
+      _prepQueue.add(j);
+    }
+  }
+
+  /// 影片素材是不是都備好了「目前模式要播的檔」（HDR 輸出：HDR 素材的
+  /// HLG 代理＋SDR 素材的工作檔；SDR 輸出：每支的工作檔）。
   ///
   /// 不能用 _prepping.isEmpty 判斷：轉檔是一支接一支排隊做的，第一支
   /// 做完的瞬間第二支還沒進佇列，_prepping 是空的——上一版就是這樣
   /// 每轉好一支就重烘一次合成，畫面重載了三次
-  bool get _allWorkFilesReady =>
-      _tl.sources.every((s) => !s.isVideo || s.workPath != null);
-
-  /// 背景補 HDR 代理（一支接一支）。SDR 素材 ensureHdr 自己會回
-  /// null，這裡不用先分辨
-  final Set<int> _hdrPrepping = {};
+  bool get _allWorkFilesReady => _tl.sources.every(
+    (s) => !s.isVideo || _prepNeedOf(s) == _PrepNeed.none,
+  );
 
   /// 整批 HDR 代理進行中：路徑類的合成重烘先壓著（見
-  /// _compRefreshIfChanged），批次收尾一次換上
+  /// _compRefreshIfChanged），批次收尾一次換上。_drainPrep 整段也把它
+  /// 舉著（遮罩下合成只在收尾組一次）
   bool _hdrPrepBusy = false;
   Future<void>? _hdrPrepRun;
 
-  /// 一次只跑一輪（每輪逐支掃 sources；排隊等到的那輪多半整輪略過）。
-  /// 排隊而不是直接返回：_drainPrep 的 HDR 階段要等到「真的做完」
-  /// 才收遮罩
+  /// 背景補 HDR 代理（合成重組收尾會叫）：遮罩下該做的都做完了，這裡
+  /// 只剩零星補漏。一次只跑一輪；遮罩那條路在跑時整輪讓開——代理由它
+  /// 備，別開第二趟
   Future<void> _prepHdrWorkFiles() async {
+    if (_prepBusy) return;
     while (_hdrPrepRun != null) {
       await _hdrPrepRun;
     }
+    if (_prepBusy || !mounted) return;
     final run = _prepHdrWorkFilesInner();
     _hdrPrepRun = run;
     _hdrPrepBusy = true;
@@ -2955,23 +3160,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _prepHdrWorkFilesInner() async {
     var madeAny = false;
     for (var i = 0; i < _tl.sources.length; i++) {
-      // 匯入轉檔中讓道：工作檔佇列已經佔了兩個硬體編碼 session，
-      // HDR 代理再插一腳就是三個同時跑——多影片匯入實測就是這樣
-      // 把 mediaserverd 打到重置（-11819）甚至整個 App 被殺。
-      // 佇列清空後 _drainPrep 尾巴的 _ensureComp 會再叫回來
+      // 匯入轉檔中讓道：遮罩那條路自己會備代理，這裡插一腳就是兩支
+      // 硬體編碼同時跑——多影片匯入實測就是這樣把 mediaserverd 打到
+      // 重置（-11819）甚至整個 App 被殺
       if (!(_exportHdr && _hdrAvail == true) || !mounted || _prepBusy) break;
       final s = _tl.sources[i];
-      if (s.kind != ClipKind.video || s.workHdrPath != null) continue;
-      if (_hdrPrepping.contains(i)) continue;
-      _hdrPrepping.add(i);
-      final made = await WorkFiles.ensureHdr(s.path);
-      _hdrPrepping.remove(i);
+      if (!s.isVideo || s.workHdrPath != null) continue;
+      if (_hdrPrepping.contains(i) || _hdrPrepFailed.contains(i)) continue;
+      // 只補「確定是 HDR」的：SDR 素材 ensureHdr 探一次就回 null，
+      // 但每次合成重組都探一遍也是白工
+      if (_srcHdr[s.path] == false) continue;
+      if (await _prepHdrProxy(i)) {
+        madeAny = true;
+      } else if (mounted) {
+        _hdrPrepFailed.add(i);
+      }
       if (!mounted) return;
-      if (made == null || i >= _tl.sources.length) continue;
-      _tl.sources[i].workHdrPath = made;
-      madeAny = true;
-      if (_prepHdrPhase && mounted) setState(() => _prepDone++);
-      _saveDraft();
     }
     // 全部補完才重烘一次：以前每好一支就重烘，六支素材就是六次
     // 播放器重載（實測診斷裡「就緒」刷了一整排）。
@@ -2984,6 +3188,45 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (madeAny && mounted) unawaited(_metalPrebuild());
   }
 
+  /// 備一支 HDR 代理（遮罩下與背景共用）。回 true＝這支好了
+  Future<bool> _prepHdrProxy(int srcIndex) async {
+    if (srcIndex < 0 || srcIndex >= _tl.sources.length) return false;
+    final src = _tl.sources[srcIndex];
+    if (!src.isVideo) return false;
+    if (src.workHdrPath != null) return true;
+    if (!await MediaPrep.available) return false;
+    if (!mounted) return false;
+    _hdrPrepping.add(srcIndex);
+    Diag.peak('同時轉檔（素材）', _prepping.length + _hdrPrepping.length);
+    String? made;
+    try {
+      made = await WorkFiles.ensureHdr(
+        src.path,
+        onProgress: (v) {
+          // 進度只在讀取遮罩蓋著的時候收：那時候畫面上只有遮罩本身，
+          // 重建一次很便宜；背景補的時候每一格進度都 setState 等於
+          // 邊剪邊整頁重建
+          if (!mounted || !_prepGate) return;
+          setState(() => _prepCur[srcIndex] = v.clamp(0.0, 1.0));
+        },
+      );
+    } finally {
+      _hdrPrepping.remove(srcIndex);
+      _prepCur.remove(srcIndex);
+    }
+    if (!mounted) return false;
+    // 轉檔期間素材清單可能被動過（保險：位置上還是同一支才寫回）
+    if (srcIndex >= _tl.sources.length ||
+        !identical(_tl.sources[srcIndex], src)) {
+      return false;
+    }
+    if (made == null) return false;
+    // 畫面上的 X／N 就是在這裡前進的
+    setState(() => src.workHdrPath = made);
+    _saveDraft();
+    return true;
+  }
+
   Future<void> _prepWorkFile(int srcIndex) async {
     if (srcIndex < 0 || srcIndex >= _tl.sources.length) return;
     final src = _tl.sources[srcIndex];
@@ -2991,21 +3234,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (!await MediaPrep.available) return;
     if (!mounted) return;
     _prepping.add(srcIndex);
+    Diag.peak('同時轉檔（素材）', _prepping.length + _hdrPrepping.length);
     // 進度只在讀取遮罩蓋著的時候收。那時候畫面上只有遮罩本身，
     // 重建一次很便宜；遮罩收掉之後就不再理它（以前那個回呼是每
     // 250ms 重建一次整頁編輯器）
-    final made = await WorkFiles.ensure(
-      src.path,
-      onProgress: (v) {
-        // 用 _prepGate 不用 _prepBusy：背景（silent）模式沒有遮罩，
-        // 這時每一格進度都 setState 等於邊剪邊整頁重建
-        if (!mounted || !_prepGate) return;
-        setState(() => _prepCur[srcIndex] = v.clamp(0.0, 1.0));
-      },
-    );
+    String? made;
+    try {
+      made = await WorkFiles.ensure(
+        src.path,
+        onProgress: (v) {
+          // 用 _prepGate 不用 _prepBusy：遮罩收掉（先進去編輯）之後
+          // 每一格進度都 setState 等於邊剪邊整頁重建
+          if (!mounted || !_prepGate) return;
+          setState(() => _prepCur[srcIndex] = v.clamp(0.0, 1.0));
+        },
+      );
+    } finally {
+      _prepping.remove(srcIndex);
+      _prepCur.remove(srcIndex);
+    }
     if (!mounted) return;
-    _prepping.remove(srcIndex);
-    _prepCur.remove(srcIndex);
     if (made == null || srcIndex >= _tl.sources.length) return;
     // 出廠檢驗：媒體服務被重置（-11819）的窗口裡，硬體編碼器會吐出
     // 「只有聲音、沒有視訊軌」的殘廢檔卻回報成功——這種檔一進合成，
@@ -3025,14 +3273,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
     }
     if (!mounted || srcIndex >= _tl.sources.length) return;
-    src.workPath = made;
+    // 遮罩上的 X／N 靠這一次重建前進
+    setState(() => src.workPath = made);
     // 播放中絕對不換媒體。換播放器會 pause→重建→play，合成重組會換掉
     // AVPlayerItem——兩個都會把畫面重設回 seek 的位置，看起來就是
     // 「一進去點播放就跳回去」。真正的剪輯 App 不會在播放中抽換媒體，
     // 排到暫停後再一次做完
     _pendingSwaps.add(srcIndex);
-    // 全部轉完才動合成：每好一支就重烘的話畫面會重載好幾次
-    if (!_playing && _allWorkFilesReady) _flushPendingSwaps();
+    // 全部轉完才動合成：每好一支就重烘的話畫面會重載好幾次。
+    // 遮罩那條路在跑時交給它收尾（它組合成之前不開任何播放器）
+    if (!_playing && !_prepBusy && _allWorkFilesReady) _flushPendingSwaps();
     _saveDraft();
     // 工作檔就緒＝previewPath 換人：Metal 引擎佈局跟著刷
     unawaited(_metalPrebuild());
@@ -3127,16 +3377,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (was) _play();
   }
 
-  /// 讀草稿之後補做：草稿裡記的工作檔可能已經被清掉了
+  /// 讀草稿之後補做：草稿裡記的檔可能已經被清掉，或是這份草稿是舊
+  /// 管線留下的（有 SDR 工作檔、沒 HDR 代理）。缺什麼由目前模式決定
+  ///（_prepNeedOf），缺代理的要先探是不是 HDR 才知道缺不缺
   Future<void> _prepAllWorkFiles() async {
     if (!await MediaPrep.available) return;
     for (var i = 0; i < _tl.sources.length; i++) {
       final src = _tl.sources[i];
-      if (src.kind != ClipKind.video) continue;
-      if (src.workPath != null && await fileExists(src.workPath!)) continue;
-      src.workPath = null;
-      _enqueuePrep(i);
+      if (!src.isVideo) continue;
+      if (src.workPath != null && !await fileExists(src.workPath!)) {
+        src.workPath = null;
+      }
+      if (src.workHdrPath == null) await _classifySource(i);
       if (!mounted) return;
+      _enqueuePrep(i);
     }
   }
 
@@ -3517,13 +3771,71 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 時間軸縮圖帶：先問系統解碼器（顏色跟播放一致、還會自動轉正），
   /// 拿不到才退 FFmpeg。拖曳預覽早就走原生了，縮圖帶不跟上的話
-  /// 就會出現「預覽顏色對、時間軸顏色錯」的分裂
-  Future<List<Uint8List>> _thumbStrip(String path, double dur) async {
-    if (!kIsWeb) {
-      final t = await nativeStrip(path, dur, 10, maxH: 200);
-      if (t.isNotEmpty) return t;
+  /// 就會出現「預覽顏色對、時間軸顏色錯」的分裂。
+  ///
+  /// 同一個檔在抽就共用那一趟；同時最多兩支在抽（原生那條工作緒本來
+  /// 就是序列的，這裡擋的是 Dart 端一口氣排進去的十支、每支十格）
+  final Map<String, Future<List<Uint8List>>> _thumbJobs = {};
+  int _thumbActive = 0;
+  final List<Completer<void>> _thumbWaiters = [];
+  static const _thumbMaxActive = 2;
+
+  Future<List<Uint8List>> _thumbStrip(String path, double dur) {
+    // 有 HLG 代理的素材從代理抽（1080p、密關鍵幀，一格幾十毫秒）：
+    // 呼叫端多半傳 previewPath，而 HDR 模式下它就是 4K 原檔——十格
+    // 從 4K 原檔一格開一顆解碼器，是縮圖帶慢、跟播放搶硬體的來源
+    var src = path;
+    for (final s in _tl.sources) {
+      if (s.isVideo && s.path == path && s.workHdrPath != null) {
+        src = s.workHdrPath!;
+        break;
+      }
     }
-    return engine.makeThumbnails(path, dur, 10, fastDecode: true);
+    final running = _thumbJobs[src];
+    if (running != null) return running;
+    late final Future<List<Uint8List>> job;
+    job = _thumbStripRun(src, dur).whenComplete(() {
+      if (identical(_thumbJobs[src], job)) _thumbJobs.remove(src);
+    });
+    _thumbJobs[src] = job;
+    return job;
+  }
+
+  Future<List<Uint8List>> _thumbStripRun(String path, double dur) async {
+    while (_thumbActive >= _thumbMaxActive) {
+      final c = Completer<void>();
+      _thumbWaiters.add(c);
+      await c.future;
+    }
+    _thumbActive++;
+    Diag.peak('同時抽縮圖帶', _thumbActive);
+    try {
+      if (!kIsWeb) {
+        final t = await nativeStrip(path, dur, 10, maxH: 200);
+        if (t.isNotEmpty) return t;
+      }
+      return await engine.makeThumbnails(path, dur, 10, fastDecode: true);
+    } finally {
+      _thumbActive--;
+      if (_thumbWaiters.isNotEmpty) _thumbWaiters.removeAt(0).complete();
+    }
+  }
+
+  /// 遮罩收掉之後補縮圖帶：一支一支、從代理／工作檔抽。
+  /// 匯入當下不抽（見 _importVideoMeta）
+  Future<void> _thumbsAfterPrep() async {
+    for (var i = 0; i < _tl.sources.length && mounted; i++) {
+      final s = _tl.sources[i];
+      if (!s.isVideo || (_thumbs[i]?.isNotEmpty ?? false)) continue;
+      if (!_tl.clips.any((c) => c.sourceIndex == i)) continue;
+      final t = await _thumbStrip(s.previewPath, s.duration);
+      if (!mounted) return;
+      if (t.isNotEmpty &&
+          i < _tl.sources.length &&
+          identical(_tl.sources[i], s)) {
+        setState(() => _thumbs[i] = t);
+      }
+    }
   }
 
   /// 配好某個素材的快取幀格子（不抽任何幀）。
@@ -3885,32 +4197,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
     _pause();
     _pushUndo();
-    // 初始化並行、接軌照序（同 initState 的匯入迴圈）
-    final inits = [
-      for (final v in vids)
-        () async {
-          try {
-            final c = makeVideoController(v.path, system: true);
-            await c.initialize();
-            return c;
-          } catch (_) {
-            return null;
-          }
-        }(),
-    ];
+    // 一支一支問中繼資料、接軌（同 initState 的匯入迴圈；不開播放器，
+    // 見 _importVideoPath）
     for (var i = 0; i < vids.length; i++) {
-      final c = await inits[i];
-      if (!mounted) {
-        c?.dispose();
-        return;
-      }
-      if (c == null) continue;
       // 各自一軌時，第二部以後每部都開一條新的空軌；
       // usedTracks 每加一部就長一格，所以這裡每輪重新算
       final t = (sameTrack || i == 0) ? track : _tl.usedTracks;
-      await _importVideoWithCtrl(vids[i].path, c, track: t, name: vids[i].name);
+      try {
+        await _importVideoPath(vids[i].path, track: t, name: vids[i].name);
+      } catch (_) {}
+      if (!mounted) return;
     }
-    if (!mounted) return;
     setState(() {});
     // 極少數情況相簿還是會塞進非影片（web 那條路是混合選取），
     // 略過就好，但要講一聲，不然會以為漏加了
@@ -12082,8 +12379,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       total: _prepSrcTotal,
       fraction: _prepFraction,
       ready: _ready,
+      label: _prepComposing ? '正在組畫面' : null,
       onSkip: _prepEscapeReady
-          ? () => setState(() => _prepSkipped = true)
+          ? () {
+              setState(() => _prepSkipped = true);
+              // 先進去：遮罩下本來是「備完才組合成」，現在得先給畫面——
+              // 拿手上有的檔（好了的代理／原檔）先組一顆，備完的再換
+              if (_comp == null) {
+                _compDirty = true;
+                unawaited(_ensureComp());
+              }
+            }
           : null,
     );
   }

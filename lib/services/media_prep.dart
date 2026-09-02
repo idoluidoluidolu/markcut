@@ -45,10 +45,12 @@ class MediaPrep {
   static Future<void> _acquire() {
     if (_running < _maxConcurrent) {
       _running++;
+      Diag.peak('同時轉檔（原生硬體）', _running);
       return Future.value();
     }
     final c = Completer<void>();
     _waiting.add(c);
+    Diag.peak('轉檔排隊等硬體', _waiting.length);
     return c.future;
   }
 

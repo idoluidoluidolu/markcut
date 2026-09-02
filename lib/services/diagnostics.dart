@@ -298,6 +298,15 @@ class Diag {
     _counts[key] = (_counts[key] ?? 0) + n;
   }
 
+  /// 「同時幾個」的峰值：匯入期間同時活著的播放器／轉檔／抽縮圖。
+  /// 多素材匯入閃退查的就是這個——十支一起匯入時到底有幾顆解碼器
+  /// 同時活著，報告裡直接看得到，不用再猜
+  static final Map<String, int> _peaks = {};
+
+  static void peak(String key, int now) {
+    if (now > (_peaks[key] ?? 0)) _peaks[key] = now;
+  }
+
   /// 按下播放到畫面真的動（毫秒）。使用者說的「撥放延遲」就是它——
   /// 一直被我讀成「卡頓」而查錯方向，其實數字從第一份報告就在 trace 裡
   static final List<int> playLatencies = [];
@@ -419,6 +428,7 @@ class Diag {
 
   static void reset() {
     _counts.clear();
+    _peaks.clear();
     _notes.clear();
     _evs.clear();
     peakMb = 0;
@@ -480,6 +490,10 @@ class Diag {
     if (_counts.isNotEmpty) {
       b.writeln('--- 計數 ---');
       _counts.forEach((k, v) => b.writeln('  $k：$v'));
+    }
+    if (_peaks.isNotEmpty) {
+      b.writeln('--- 同時峰值 ---');
+      _peaks.forEach((k, v) => b.writeln('  $k：$v'));
     }
     if (_notes.isNotEmpty) {
       b.writeln('--- 過程 ---');

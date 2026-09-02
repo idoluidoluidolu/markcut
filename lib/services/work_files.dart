@@ -144,6 +144,9 @@ class WorkFiles {
     final name = 'wh${DateTime.now().microsecondsSinceEpoch}_${_seq++}.mp4';
     final dest = '${dir.path}${Platform.pathSeparator}$name';
     final sw = Stopwatch()..start();
+    // 黑盒子跟工作檔那條一樣留：多素材匯入被系統收掉時，下次開 App
+    // 才知道是死在哪一支代理
+    await Diag.mark('HDR 代理：轉檔中', data: {'檔案': src.split('/').last});
     _inFlight.add(dest);
     String? made;
     try {
@@ -156,19 +159,49 @@ class WorkFiles {
     } finally {
       _inFlight.remove(dest);
     }
-    if (made == null) return null;
+    await Diag.clearMark();
+    if (made == null || !File(made).existsSync()) {
+      Diag.note('HDR 代理失敗（用原檔）：${src.split('/').last}');
+      Diag.count('HDR 代理失敗');
+      try {
+        File(dest).deleteSync();
+      } catch (_) {}
+      return null;
+    }
+    // 出廠檢驗（跟工作檔那條同一套）：媒體服務被重置（-11819）的窗口裡
+    // 硬體編碼器會吐出「只有聲音、沒有視訊軌」的殘檔卻回報成功。
+    // 壞的不進索引、當場刪掉，呼叫端的補試再轉一次
+    final check = await MediaPrep.probeLite(made);
+    final usable =
+        check != null &&
+        check['error'] == null &&
+        ((check['w'] as num?) ?? 0) > 0;
+    if (!usable) {
+      Diag.note('HDR 代理沒有畫面（編碼器被重置吐出壞檔），作廢：${src.split('/').last}');
+      Diag.count('HDR 代理壞掉');
+      try {
+        File(made).deleteSync();
+      } catch (_) {}
+      return null;
+    }
     final idx = await _load();
     idx['$src#hdr6'] = {
       'work': made,
       'stamp': _stamp(src),
       'at': DateTime.now().millisecondsSinceEpoch,
     };
-    await _save();
+    if (!await _save()) {
+      // 索引沒寫成功：sweep 會把這支當孤兒刪掉。掛在 in-flight 名單
+      // 讓它整個行程都不被清，檔案照用（跟工作檔那條同一套）
+      _inFlight.add(made);
+      Diag.note('HDR 代理索引寫入失敗（本次照用，先不給清掃碰）');
+    }
     // 秒數跟工作檔那條一樣記下來：匯入慢在哪一段，報告裡直接看得到
     Diag.note(
       'HDR 代理完成 ${sw.elapsed.inSeconds}秒 '
       '${(File(made).lengthSync() / 1048576).round()}MB（HLG 直通）',
     );
+    Diag.count('HDR 代理完成');
     unawaited(sweep());
     return made;
   }
