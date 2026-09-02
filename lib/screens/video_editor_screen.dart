@@ -439,9 +439,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 再叫一次 onChanged 走整頁那條收尾
   void _wmLiveTick() {
     if (!mounted) return;
+    _wmSliding = true;
+    _wmLiveAt = DateTime.now();
     _pokeFrame();
     if (_ovWired) _ovSync.request();
   }
+
+  /// 面板滑桿按著沒放（onLiveChange 進來＝拖動中；放手那一下的
+  /// onChanged 收掉）。保底：一秒沒有新的一格就當放手了。
+  /// 這段期間：疊加物同步一律走快路、不起烘全解析；合成不重組、
+  /// 不換工作檔、不存草稿——那三樣任何一件落在手指還在動的時候，
+  /// 都是「拉到一半硬停、過一會兒才跟上」
+  bool _wmSliding = false;
+  DateTime _wmLiveAt = DateTime.fromMillisecondsSinceEpoch(0);
+  bool get _wmGestureOn =>
+      _wmSliding && DateTime.now().difference(_wmLiveAt).inMilliseconds < 1000;
 
   /// 診斷：手勢中上屏節奏（斷流偵測、每手勢幾版）
   DateTime? _wmLastApplyAt;
@@ -1247,6 +1259,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _saveDraft() async {
     _draftSaveTimer?.cancel();
     _draftSaveTimer = Timer(const Duration(milliseconds: 900), () {
+      if (_wmGestureOn) {
+        // 滑桿還按著（起手那一下就排了這顆計時器，900ms 後多半還在
+        // 拖）：整包 JSON＋封面＋寫檔別落在手指還在動的時候，放手再存
+        _saveDraft();
+        return;
+      }
       _saveDraftNow();
       // 合成把 trim、變速、淡入淡出、縮放位移都烘在裡面，而這些值在
       // 拖曳過程中連續變——_pushUndo 只在起手時重組一次，結束時的最終
@@ -1401,7 +1419,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 換 AVPlayerItem 會把畫面重設，手勢中換＝閃一下
   void _compRebuildTick() {
     if (!mounted || _playing) return;
-    if (_scrubbing || _lifting || _tlPinching) {
+    // 面板滑桿按著也算手勢：重組會整套重烘全解析疊加物＋換
+    // AVPlayerItem，落在拖動中就是畫面硬停
+    if (_scrubbing || _lifting || _tlPinching || _wmGestureOn) {
       _compRebuildTimer?.cancel();
       _compRebuildTimer = Timer(
         const Duration(milliseconds: 350),
@@ -1778,14 +1798,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   // ===== 疊加物同步（狀態機在 OverlaySync，這裡只有烘與送）=====
 
-  DateTime? _ovBakeT0;
-  int _ovBakeMs = 0;
+  /// 每一版烘了多久（鍵＝指紋＋快/全；送出時取走）。退到背景的
+  /// 全解析跟新版快路會同時在烘，單一欄位會把兩版的時間串在一起
+  final Map<String, int> _ovBakeMsBy = {};
 
   /// [OverlaySync.bake]：畫這一版的圖（快路＝半解析度 raw）
   Future<List<Map<String, dynamic>>?> _ovBake(String sig, bool fast) async {
-    _ovBakeT0 = DateTime.now();
+    final t0 = DateTime.now();
     final maps = await _ovMaps(sig, fast: fast);
-    _ovBakeMs = DateTime.now().difference(_ovBakeT0!).inMilliseconds;
+    // 被丟掉的版本不會走到送出、不會被取走：滿了整包清（幾個整數）
+    if (_ovBakeMsBy.length > 64) _ovBakeMsBy.clear();
+    _ovBakeMsBy['$sig|$fast'] = DateTime.now().difference(t0).inMilliseconds;
     return mounted ? maps : null;
   }
 
@@ -1821,10 +1844,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     WmDiag.skipHold = _ovSync.skipHold;
     WmDiag.dropped = _ovSync.dropped;
     WmDiag.stale = _ovSync.stale;
+    WmDiag.demoted = _ovSync.demoted;
+    final bakeMs = _ovBakeMsBy.remove('$sig|$fast') ?? 0;
     WmDiag.noteSync(
       fast: fast,
-      lagMs: _ovBakeMs + sendMs,
-      bakeMs: _ovBakeMs,
+      lagMs: bakeMs + sendMs,
+      bakeMs: bakeMs,
       sendMs: sendMs,
       partsN: maps.length,
       bytesN: maps.fold<int>(0, (a, m) {
@@ -2205,6 +2230,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       signature: _ovContentSig,
       bake: _ovBake,
       apply: _ovApply,
+      // 滑桿按著＝手勢中（不靠指紋停 500ms 推測），全解析等放手
+      gestureActive: () => _wmGestureOn,
     );
     _ovWired = true;
     // 量「誰在卡」：UI 執行緒、合成執行緒、還是影片本身。
@@ -2986,7 +3013,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 那一下不能落在手勢中間
   void _flushSwapsWhenIdle() {
     if (!mounted) return;
-    if (_scrubbing || _lifting || _tlPinching) {
+    if (_scrubbing || _lifting || _tlPinching || _wmGestureOn) {
       _swapFlushTimer = Timer(
         const Duration(milliseconds: 400),
         _flushSwapsWhenIdle,
@@ -9155,6 +9182,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                               controller: _wmPanelCtrl,
                               settings: isClipWm ? src.wmStyle! : _settings,
                               onChanged: () => setState(() {
+                                // 滑桿放手（或非滑桿的改動）：手勢結束
+                                _wmSliding = false;
                                 if (isClipWm) {
                                   // 名字跟著文字走，時間軸上才認得出來
                                   final st = src.wmStyle!;

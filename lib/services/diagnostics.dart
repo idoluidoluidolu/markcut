@@ -504,6 +504,7 @@ class WmDiag {
   static int skipBusy = 0;
   static int skipHold = 0;
   static int skipGeom = 0;
+  static int demoted = 0;
   static int xfAfterBake = 0;
   static int lastParts = 0;
   static int lastBytes = 0;
@@ -572,14 +573,15 @@ class WmDiag {
       );
     }
     b.writeln(
-      '  同步被擋：佔線 $skipBusy／等停穩 $skipHold／讓幾何 $skipGeom',
+      '  同步被擋：佔線 $skipBusy／等停穩 $skipHold／讓幾何 $skipGeom'
+      '／全解析退背景 $demoted',
     );
     return b.toString();
   }
 
   static void clear() {
     syncs = fastSyncs = rejects = stale = xfSends = xfRejects = 0;
-    dropped = 0;
+    dropped = demoted = 0;
     skipBusy = skipHold = skipGeom = xfAfterBake = 0;
     lastParts = lastBytes = 0;
     _lag.clear();
