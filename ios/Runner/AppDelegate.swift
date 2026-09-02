@@ -4856,14 +4856,14 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 一刻，拖滑桿一秒就漂過一格（畫面跳、位置回報也跟著漂）。
   /// 使用者 seek／播放／暫停後失效，下一發重新取
   private var nudgeAnchor: CMTime = .invalid
-  var stNudgeFired = 0
-  var stNudgeDropped = 0
-  var stItemSwaps = 0
+  static var stNudgeFired = 0
+  static var stNudgeDropped = 0
+  static var stItemSwaps = 0
 
   /// 暫停中「只換 vc、不 seek」的重畫（見 rerenderPaused）：
   /// 真的換了幾次／被延到窗尾合併掉幾發
-  var stVcSwaps = 0
-  var stVcDeferred = 0
+  static var stVcSwaps = 0
+  static var stVcDeferred = 0
   private var vcSwapTimerArmed = false
   private var vcSwapRetries = 0
   private var lastVcSwapAt = 0.0
@@ -4872,7 +4872,10 @@ final class CompPlayer: NSObject, FlutterTexture {
   private var lastXformOv: CompLiveXform?
   /// 暫停重畫的路：true＝換 vc（不碰時間軸）；false＝退回催 seek。
   /// 實機若發現換 vc 不觸發重繪，改這一個字就退回舊路
-  static var pausedRedrawViaVC = true
+  /// 實機 174 定案：換 vc 重畫在拖動中每 40ms 重建一次渲染上下文
+  /// ＝「第一次拉要讀取、拉一半硬停」；173 的節流催重畫手感較好，
+  /// 預設退回。留開關供日後驗證
+  static var pausedRedrawViaVC = false
 
   func nudgeRedrawIfPaused() {
     guard player.rate == 0 else { return }
@@ -4889,7 +4892,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     if wait > 0.001 {
       if !nudgeTimerArmed {
         nudgeTimerArmed = true
-        stNudgeDropped += 1
+        Self.stNudgeDropped += 1
         DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
           [weak self] in
           guard let self = self else { return }
@@ -4900,7 +4903,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       return
     }
     lastNudgeAt = nowN
-    stNudgeFired += 1
+    Self.stNudgeFired += 1
     nudging = true
     nudgeFlip.toggle()
     if !nudgeAnchor.isValid { nudgeAnchor = player.currentTime() }
@@ -4969,7 +4972,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       }
       if !vcSwapTimerArmed {
         vcSwapTimerArmed = true
-        stVcDeferred += 1
+        Self.stVcDeferred += 1
         if busy { vcSwapRetries += 1 }
         DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
           [weak self] in
@@ -4983,7 +4986,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     vcSwapRetries = 0
     lastVcSwapAt = nowN
     if applyXform(lastXformOv, nudge: false) {
-      stVcSwaps += 1
+      Self.stVcSwaps += 1
     }
   }
 
@@ -5873,7 +5876,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       return false
     }
     composition = comp
-    stItemSwaps += 1
+    Self.stItemSwaps += 1
     // 新 item 停在 0 秒：畫面翻面要等 Dart 的定位 seek 落地
     //（見 PlayerHosts.hold；chase 完成／play 時 release）
     PlayerHosts.shared.hold(player)
@@ -6532,8 +6535,8 @@ final class CompPlayer: NSObject, FlutterTexture {
       let sorted = seekMs.sorted()
       m["seekCount"] = seekMs.count
       m["nudgeInfo"] =
-        "\(stNudgeFired)發/丟\(stNudgeDropped)/換件\(stItemSwaps)次"
-        + "/vc換\(stVcSwaps)延\(stVcDeferred)"
+        "\(Self.stNudgeFired)發/丟\(Self.stNudgeDropped)/換件\(Self.stItemSwaps)次"
+        + "/vc換\(Self.stVcSwaps)延\(Self.stVcDeferred)"
       m["seekAvgMs"] = seekMs.reduce(0, +) / seekMs.count
       m["seekP50Ms"] = sorted[sorted.count / 2]
       m["seekP90Ms"] = sorted[min(sorted.count - 1, sorted.count * 9 / 10)]
