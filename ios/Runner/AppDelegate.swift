@@ -616,9 +616,16 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   /// 降頻用它判斷「畫面有沒有東西變了」——沒變就不重繪（省電）
   static var liveEpoch = 0
 
-  static func setPreviewOverlays(_ o: [CIOverlaySpec]) {
+  /// 換清單。[live] 給了就連部件的即時幾何一起換（同一把鎖、同一
+  /// 瞬間）——分兩發送的話合成器可能在中間畫出「新圖×舊差量」的
+  /// 錯位格；nil＝差量不動
+  static func setPreviewOverlays(_ o: [CIOverlaySpec], live: [CompLiveOv]? = nil) {
     ovLock.lock()
     previewOvs = o
+    if let xs = live {
+      liveOvs = Dictionary(
+        xs.map { ($0.id, $0) }, uniquingKeysWith: { _, b in b })
+    }
     liveEpoch &+= 1
     ovLock.unlock()
   }
@@ -626,6 +633,12 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
     ovLock.lock()
     defer { ovLock.unlock() }
     return previewOvs
+  }
+  /// 清單＋部件差量一次讀（同一把鎖，兩者必定同一版）
+  static func previewSnapshot() -> ([CIOverlaySpec], [String: CompLiveOv]) {
+    ovLock.lock()
+    defer { ovLock.unlock() }
+    return (previewOvs, liveOvs)
   }
 
   /// 讀「即時疊加物」而不是指令裡那份（只有 HDR 預覽合成器開）
@@ -653,16 +666,18 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   // 一次可以有好幾個部件在動（位置九宮格＝文字＋圖片一起跳），
   // 用字典存、整包替換——單格存放會漏掉第二個部件（實測回報：
   // 點置中就是不過來）
+  // 跟 previewOvs 同一把鎖（ovLock）：清單與差量永遠同一版
   private static var liveOvs: [String: CompLiveOv] = [:]
   static func setLiveOvs(_ xs: [CompLiveOv]) {
-    xfLock.lock()
-    liveOvs = Dictionary(uniqueKeysWithValues: xs.map { ($0.id, $0) })
+    ovLock.lock()
+    liveOvs = Dictionary(
+      xs.map { ($0.id, $0) }, uniquingKeysWith: { _, b in b })
     liveEpoch &+= 1
-    xfLock.unlock()
+    ovLock.unlock()
   }
   static func currentLiveOvs() -> [String: CompLiveOv] {
-    xfLock.lock()
-    defer { xfLock.unlock() }
+    ovLock.lock()
+    defer { ovLock.unlock() }
     return liveOvs
   }
 
@@ -714,8 +729,13 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   /// 快路未命中原因計數（實機定罪用）
   static var stSkip: [String: Int] = [:]
   static func skip(_ why: String) {
+    // 好幾顆合成器（預覽、匯出、HDR 代理轉檔）各自的佇列同時寫：
+    // 字典無鎖併寫會 crash
+    slowLock.lock()
     stSkip[why, default: 0] += 1
-    if stSkip[why] == 1 { NSLog("[FastPath] skip=%@", why) }
+    let first = stSkip[why] == 1
+    slowLock.unlock()
+    if first { NSLog("[FastPath] skip=%@", why) }
   }
 
   /// 這一層的變形是否把來源滿版貼合畫布（誤差 1.5px 內）。
@@ -770,13 +790,10 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
     return (SIMD4<Float>(uv0.x, uv0.y, du.x, du.y), dv)
   }
 
-  /// 上一格合成完的畫面（指向我們自己輸出池的緩衝）。
-  /// 指令邊界的瞬間，某一軌的來源格常常還沒到位——那一格畫黑底
-  /// 就是使用者看到的「接縫閃黑」。缺格就重播上一格頂住，
-  /// 解碼器下一格就追上了
-  private var lastComposed: CIImage?
-  /// 缺格重播用的底（含馬賽克、不含疊加物）：重播整格會把「舊樣式
-  /// 的浮水印」帶回螢幕＝拖滑桿時新→舊→新閃爍（獨立審查 #2 定罪）
+  /// 缺格重播用的底（含馬賽克、不含疊加物）。指令邊界的瞬間，某一軌
+  /// 的來源格常常還沒到位——那一格畫黑底就是「接縫閃黑」，改重播
+  /// 這份底、疊加物照當下清單重畫（重播整格會把舊樣式的浮水印帶
+  /// 回螢幕＝拖滑桿時新→舊→新閃爍）
   private var lastComposedBase: CIImage?
   private lazy var outCS: CGColorSpace = {
     if hdrOut, #available(iOS 14.0, *),
@@ -826,7 +843,6 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
     // 渲染環境換了（理論上一個 item 一生只有一次）：上一格的緩衝
     // 尺寸可能對不上了，別再重播它
     queue.async {
-      self.lastComposed = nil
       self.lastComposedBase = nil
     }
   }
@@ -1067,6 +1083,10 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
     _ buf: CVPixelBuffer, t: Double, drawn: Int = -1, missing: Bool = false,
     srcH: CGFloat = -1, canvasH: CGFloat = -1, src: CVPixelBuffer? = nil
   ) {
+    // 多顆合成器各自的佇列同時進來（預覽＋HDR 代理轉檔）：陣列無鎖
+    // 併寫會 crash，整段鎖住
+    slowLock.lock()
+    defer { slowLock.unlock() }
     lumaN += 1
     guard lumaN % 30 == 1 else { return }
     let v = centerLuma(buf)
@@ -1163,18 +1183,6 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             Self.skip("即時變形")
             return nil
           }
-          // 浮水印：SDR 輸出在快路內直接疊整版 PNG；
-          // HDR 輸出的提亮數學未搬入快路，有浮水印且引擎
-          // 不在台上時退 CI
-          if self.hdrOut {
-            guard !self.livePreview
-              || CIExportCompositor.currentPreviewOverlays().isEmpty
-              || MetalPreviewEngine.shared.isOnStage
-            else {
-              Self.skip("HDR浮水印")
-              return nil
-            }
-          }
           guard let sbuf = req.sourceFrame(byTrackID: L.trackID) else {
             Self.skip("缺來源格")
             return nil
@@ -1193,19 +1201,15 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         }
         var fastUVA = SIMD4<Float>(0, 0, 1, 0)
         var fastUVB = SIMD2<Float>(0, 1)
-        var fastOvs: [CGImage] = []
-        if !self.hdrOut, self.liveComp {
-          for ov in CIExportCompositor.currentPreviewOverlays()
-          where ov.start <= t0 && t0 < ov.end {
-            fastOvs.append(ov.cgImg)
-          }
-        }
+        // SDR 預覽的疊加物由 Flutter 畫（wmLive 只在 HDR 開），
+        // 即時清單只有 livePreview（HDR）合成器讀——快路不疊任何
+        // PNG，跟同一顆合成器的 CI 路一致（否則兩條路交替＝閃）
         if let sbuf = fastEligible(),
           self.hdrOut
             ? MetalYUVBlit.shared.blit(
               from: sbuf, to: dst, uvA: fastUVA, uvB: fastUVB)
             : MetalYUVBlit.shared.sdrCompose(
-              from: sbuf, to: dst, overlays: fastOvs,
+              from: sbuf, to: dst, overlays: [],
               uvA: fastUVA, uvB: fastUVB)
         {
           Self.stFastFrames += 1
@@ -1376,11 +1380,13 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           self.lastComposedBase = out
         }
         do {
-          let ovs =
+          // 清單與部件差量一次讀（同一把鎖）：不會拿到新圖配舊差量
+          let snap: ([CIOverlaySpec], [String: CompLiveOv]) =
             self.livePreview
-            ? CIExportCompositor.currentPreviewOverlays() : ins.overlays
-          let lovs =
-            self.liveComp ? CIExportCompositor.currentLiveOvs() : [:]
+            ? CIExportCompositor.previewSnapshot()
+            : (ins.overlays, [String: CompLiveOv]())
+          let ovs = snap.0
+          let lovs = snap.1
           // 夾白的底每格算一次就好（原本每個部件各夾一次）。
           // 部件彼此重疊的極端情況會少算前一個部件的亮度，肉眼
           // 看不出來；換來的是 N 個部件省 N-1 次全畫布濾鏡
@@ -1452,11 +1458,6 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         }
         // （上：疊加物區塊——缺格重播也會走到，樣式永遠是當下版）
         self.ctx.render(out, to: dst, bounds: canvasRect, colorSpace: self.outCS)
-        if !missing && !tinyGap {
-          // 引用的是我們自己的輸出緩衝（不是解碼器的），
-          // 只多佔用池子裡的一顆
-          self.lastComposed = CIImage(cvPixelBuffer: dst)
-        }
         self.tagColors(dst)
         Self.noteLuma(
           dst, t: t0, drawn: drawnCount, missing: missing,
@@ -2223,35 +2224,28 @@ final class AtomicFlag {
           result(false)
           return
         }
-        CIExportCompositor.setPreviewOverlays(
-          list.compactMap { CIOverlaySpec($0, canvas: p.ciCanvas) })
-        // 差量跟新基準同包到、同一輪主執行緒套用完——分兩發送的話
-        // 引擎會在中間畫出「新圖×舊差量」的爆閃格（實機 161 抖動）
-        if let lv = (call.arguments as? [String: Any])?["live"]
+        // 差量跟新基準同一把鎖、同一瞬間換上——分兩發的話合成器
+        // 可能在中間畫出「新圖×舊差量」的錯位格（實機 161 抖動）。
+        // live 沒帶＝差量不動
+        let lv = (call.arguments as? [String: Any])?["live"]
           as? [[String: Any]]
-        {
-          CIExportCompositor.setLiveOvs(
-            lv.compactMap { m in
-              guard let oid = m["id"] as? String else { return nil }
-              return CompLiveOv(
-                id: oid,
-                x: m["x"] as? Double ?? 0.5,
-                y: m["y"] as? Double ?? 0.5,
-                scale: m["scale"] as? Double ?? 1,
-                rot: m["rot"] as? Double ?? 0)
-            })
-        }
+        CIExportCompositor.setPreviewOverlays(
+          list.compactMap { CIOverlaySpec($0, canvas: p.ciCanvas) },
+          live: lv?.compactMap { (m: [String: Any]) -> CompLiveOv? in
+            guard let oid = m["id"] as? String else { return nil }
+            return CompLiveOv(
+              id: oid,
+              x: m["x"] as? Double ?? 0.5,
+              y: m["y"] as? Double ?? 0.5,
+              scale: m["scale"] as? Double ?? 1,
+              rot: m["rot"] as? Double ?? 0)
+          })
         // 暫停中換清單要逼播放器重畫這一格：光 seek 回同一個時間點
         // 會被當 no-op（實測回報：打字改浮水印、預覽完全不動）。
-        // CI 掛著＝擺動半格催重畫就夠；沒掛才重產 vc
-        if (call.arguments as? [String: Any])?["noNudge"] as? Bool == true {
-          // 引擎在台上顯示中：不催合成器重畫——催一次＝重解一格
-          // 4K HDR 原檔（50~150ms），拖滑桿每秒催十幾次＝卡頓閃動
-          //（實機 163：調樣式螢幕暗掉）
-        } else if p.liveCIOn {
+        // wmLive 成立＝CI 一定掛著，擺動一刻催重畫就夠
+        // noNudge＝呼叫端自己安排重畫（例如緊接一發精準 seek）
+        if (call.arguments as? [String: Any])?["noNudge"] as? Bool != true {
           p.nudgeRedrawIfPaused()
-        } else if p.player.rate == 0 {
-          _ = p.applyXform(nil)
         }
         result(true)
       case "play":
@@ -3991,34 +3985,14 @@ final class AtomicFlag {
       vCompression[AVVideoProfileLevelKey] =
         kVTProfileLevel_HEVC_Main10_AutoLevel as String
     }
-    // 零處理的色彩標記照抄來源（讀不到才退回 HLG 常見組合）——
-    // 像素沒動，標記也原封，播放端的解讀跟原檔一字不差
-    var hdrColor: [String: Any] = [
+    // HDR 代理的色彩標記固定 2020/HLG：像素是 CI HDR 合成器渲染進
+    // HLG 色彩空間的（outCS＋tagColors 都是 HLG），不能照抄來源——
+    // PQ（HDR10）來源抄成 PQ 標記＝像素 HLG、檔頭 PQ，整片顏色錯
+    let hdrColor: [String: Any] = [
       AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
       AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_2100_HLG,
       AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020,
     ]
-    if hdrPass, let fdAny = vTrack.formatDescriptions.first {
-      let fd = fdAny as! CMFormatDescription
-      if let v = CMFormatDescriptionGetExtension(
-        fd, extensionKey: kCMFormatDescriptionExtension_ColorPrimaries)
-        as? String
-      {
-        hdrColor[AVVideoColorPrimariesKey] = v
-      }
-      if let v = CMFormatDescriptionGetExtension(
-        fd, extensionKey: kCMFormatDescriptionExtension_TransferFunction)
-        as? String
-      {
-        hdrColor[AVVideoTransferFunctionKey] = v
-      }
-      if let v = CMFormatDescriptionGetExtension(
-        fd, extensionKey: kCMFormatDescriptionExtension_YCbCrMatrix)
-        as? String
-      {
-        hdrColor[AVVideoYCbCrMatrixKey] = v
-      }
-    }
     var vSettings: [String: Any] = [
       AVVideoCodecKey: hdrPass ? AVVideoCodecType.hevc : .h264,
       AVVideoWidthKey: Int(size.width),
@@ -4776,35 +4750,51 @@ final class CompPlayer: NSObject, FlutterTexture {
   private var nudgeFlip = false
   private var nudging = false
   private var nudgePending = false
+  private var nudgeTimerArmed = false
   private var lastNudgeAt = 0.0
+  /// 催重畫的錨點＝使用者最後停下的位置。每發都以它為基準擺
+  /// +1/600、+2/600，不以「現在位置」為基準——那樣每發都往前推
+  /// 一刻，拖滑桿一秒就漂過一格（畫面跳、位置回報也跟著漂）。
+  /// 使用者 seek／播放／暫停後失效，下一發重新取
+  private var nudgeAnchor: CMTime = .invalid
   var stNudgeFired = 0
   var stNudgeDropped = 0
   var stItemSwaps = 0
 
   func nudgeRedrawIfPaused() {
     guard player.rate == 0 else { return }
-    // 節流：連續催（每 16ms 一發）＝對暫停中的 10-bit 代理做精準
-    // seek 風暴，解碼器被打到交黑格（實機 165：交格亮度 0.063、
-    // 源高1080）。90ms 一發夠即時；最後狀態由停穩重烘補畫
-    let nowN = CACurrentMediaTime()
-    // 單一畫面重作：合成器就是唯一畫面，重畫節奏放到 20fps
-    if nowN - lastNudgeAt < 0.05 {
-      stNudgeDropped += 1
-      return
-    }
-    lastNudgeAt = nowN
-    stNudgeFired += 1
     if seeking || seekTarget.isValid { return }
     if nudging {
       nudgePending = true
       return
     }
+    // 節流 20fps：連續催＝對暫停中的 10-bit 代理做精準 seek 風暴，
+    // 解碼器被打到交黑格（實機 165）。窗內來的不丟、排到窗尾補一發
+    // ——丟掉的話「最後一次改樣式」可能永遠沒畫到
+    let nowN = CACurrentMediaTime()
+    let wait = 0.05 - (nowN - lastNudgeAt)
+    if wait > 0.001 {
+      if !nudgeTimerArmed {
+        nudgeTimerArmed = true
+        stNudgeDropped += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
+          [weak self] in
+          guard let self = self else { return }
+          self.nudgeTimerArmed = false
+          self.nudgeRedrawIfPaused()
+        }
+      }
+      return
+    }
+    lastNudgeAt = nowN
+    stNudgeFired += 1
     nudging = true
     nudgeFlip.toggle()
+    if !nudgeAnchor.isValid { nudgeAnchor = player.currentTime() }
     // 只往前擺（+1/600 與 +2/600 交替）：± 擺在不巧的停點會跨到
     // 上一格，整片影像每版前後跳一格（獨立審查 #3）
     let eps = CMTime(value: nudgeFlip ? 1 : 2, timescale: 600)
-    var t = player.currentTime() + eps
+    var t = nudgeAnchor + eps
     if t < .zero { t = CMTime(value: 1, timescale: 600) }
     player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) {
       [weak self] _ in
@@ -5202,6 +5192,7 @@ final class CompPlayer: NSObject, FlutterTexture {
 
     let mix = AVMutableAudioMix()
     mix.inputParameters = aParams
+    audioMix = mix
     let item = AVPlayerItem(asset: comp)
     item.audioMix = mix
     // 抽幀口改「用到才掛」（見 grabFrame）：常駐掛一個 BGRA 輸出
@@ -5652,10 +5643,12 @@ final class CompPlayer: NSObject, FlutterTexture {
       }
       vcRegen = makeVC
       // HDR 預覽的即時疊加物（浮水印/文字）：跟原本一樣只在
-      // 「CI 有掛」時收清單（needsCI false＝沒有合成器在讀）
+      // 「CI 有掛」時收清單（needsCI false＝沒有合成器在讀）。
+      // 這份清單的 bx/by/bs/br 就是當下位置，部件差量一併歸零
       if hdrOut && anyHDR && needsCI {
         CIExportCompositor.setPreviewOverlays(
-          overlays.compactMap { CIOverlaySpec($0, canvas: canvas) })
+          overlays.compactMap { CIOverlaySpec($0, canvas: canvas) },
+          live: [])
         ciCanvas = canvas
         wmLive = true
       }
@@ -5716,20 +5709,12 @@ final class CompPlayer: NSObject, FlutterTexture {
     composition = comp
     stItemSwaps += 1
     player.replaceCurrentItem(with: item)
-    // 播放接管的「音訊分身」：同一份合成拷貝後拆掉視訊軌，
-    // 從建好那一刻就是純音訊。播放接管＝分身出聲＋主播放器
-    // 原地凍結——管線永不拆裝（拆裝 videoComposition 在實機上
-    // 會重建合成器：暫停黑畫面、時鐘亂跳針，build 131 實測）
-    if let acomp = comp.mutableCopy() as? AVMutableComposition {
-      for tr in acomp.tracks(withMediaType: .video) {
-        acomp.removeTrack(tr)
-      }
-      let aItem = AVPlayerItem(asset: acomp)
-      aItem.audioMix = mix
-      audioPlayer.replaceCurrentItem(with: aItem)
-      audioPlayer.automaticallyWaitsToMinimizeStalling = false
-      audioPlayer.isMuted = player.isMuted
-    }
+    // 播放接管的「音訊分身」改成用到才建（見 ensureAudioClone）：
+    // 每次重組都多養一顆載著同一份合成的播放器，跟主播放器搶
+    // 讀檔／解碼資源，而接管路徑現在根本沒人走。
+    // 舊分身載的是上一份合成：丟掉，下次接管再照新合成建
+    audioPlayer.replaceCurrentItem(with: nil)
+    audioValid = false
 
     if texture {
       if textureId == 0, let registry = registry {
@@ -5829,14 +5814,33 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 分身有沒有真的聲音可播（無音軌素材＝空分身，時鐘改用引擎）
   private var audioValid = false
 
+  /// 這份合成的音量表（音訊分身要掛同一份）
+  private var audioMix: AVMutableAudioMix?
+
+  /// 音訊分身：同一份合成拷貝後拆掉視訊軌，純音訊。第一次接管
+  /// 才建，之後沿用（同一份合成）
+  private func ensureAudioClone() {
+    guard audioPlayer.currentItem == nil, let comp = composition,
+      let acomp = comp.mutableCopy() as? AVMutableComposition
+    else { return }
+    for tr in acomp.tracks(withMediaType: .video) {
+      acomp.removeTrack(tr)
+    }
+    audioValid = !acomp.tracks(withMediaType: .audio).isEmpty
+    let aItem = AVPlayerItem(asset: acomp)
+    aItem.audioMix = audioMix
+    audioPlayer.replaceCurrentItem(with: aItem)
+    audioPlayer.automaticallyWaitsToMinimizeStalling = false
+    audioPlayer.isMuted = player.isMuted
+  }
+
   /// 播放接管：畫面歸 Metal 引擎、聲音與時鐘歸音訊分身，
   /// 主播放器原地凍結（合成管線完整保留，暫停畫面隨叫隨到）
   func setTakeover(_ on: Bool) {
     takeover = on
     traceClocks(on ? "接管" : "讓位")
     if on {
-      audioValid =
-        (audioPlayer.currentItem?.duration.seconds ?? 0) > 0.05
+      ensureAudioClone()
       player.pause()
       let t = player.currentTime()
       audioPlayer.seek(
@@ -5880,6 +5884,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     }
     // 還沒跑完的 preroll 會把播放壓住，先取消
     player.cancelPendingPrerolls()
+    nudgeAnchor = .invalid
     startPlayWatch()
     CIExportCompositor.slowLock.lock()
     CIExportCompositor.watchSupply = true
@@ -5949,6 +5954,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     CIExportCompositor.watchSupply = false
     CIExportCompositor.slowLock.unlock()
     player.pause()
+    nudgeAnchor = .invalid
     // 暫停時把管線熱著，下次按播放就不用等
     if player.currentItem?.status == .readyToPlay {
       player.preroll(atRate: targetRate, completionHandler: nil)
@@ -6033,6 +6039,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     if duration > 0.1, t > duration - 0.034 { t = duration - 0.034 }
     seekTarget = CMTime(seconds: t, preferredTimescale: 600)
     seekTargetExact = exact
+    nudgeAnchor = .invalid
     // 已經有一發在跑：只要記住最新目標就好，跑完會自己追上去
     if seeking {
       seekCoalesced += 1
@@ -6130,6 +6137,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       let t0 = player.currentTime()
       let nudge = CMTime(
         seconds: max(0, t0.seconds - 0.034), preferredTimescale: 600)
+      nudgeAnchor = .invalid
       player.seek(to: nudge, toleranceBefore: .zero, toleranceAfter: .zero)
     }
     guard let vo = videoOut else {
@@ -6285,6 +6293,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     m["ciMissNotes"] = CIExportCompositor.missNotes
     m["ciHoldMiss"] = CIExportCompositor.holdMissCount
     m["ciHoldGap"] = CIExportCompositor.holdGapCount
+    m["lumaProbe"] = CIExportCompositor.lumaProbe.joined(separator: "、")
     CIExportCompositor.slowLock.unlock()
     m["stallNotify"] = stallCount
     m["stallNotifyAt"] = stallNotes
@@ -6294,7 +6303,6 @@ final class CompPlayer: NSObject, FlutterTexture {
     PlayerPlatformView.statLock.unlock()
     m["frameProbe"] = frameProbe()
     m["layerBound"] = PlayerHosts.shared.bound
-    m["lumaProbe"] = CIExportCompositor.lumaProbe.joined(separator: "、")
     m["clockTrace"] = clockTraceDump
     switch player.timeControlStatus {
     case .paused: m["timeControl"] = "暫停"
@@ -6363,8 +6371,12 @@ final class CompPlayer: NSObject, FlutterTexture {
     }
     link?.invalidate()
     link = nil
+    clockTimer?.invalidate()
+    clockTimer = nil
     player.pause()
     player.replaceCurrentItem(with: nil)
+    audioPlayer.pause()
+    audioPlayer.replaceCurrentItem(with: nil)
     if textureId != 0 {
       registry?.unregisterTexture(textureId)
       textureId = 0

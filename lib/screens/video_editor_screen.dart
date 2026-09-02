@@ -25,6 +25,7 @@ import '../models/watermark_settings.dart';
 import '../services/audio_picker.dart';
 import '../services/native_export.dart';
 import '../services/native_frames.dart';
+import '../services/overlay_sync.dart';
 import '../services/playback_trace.dart';
 import '../services/comp_player.dart';
 import '../services/video_picker.dart';
@@ -408,37 +409,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 重建中的那份合成「上檔之後」原生端會不會在畫疊加物
   bool _ovNativePending = false;
 
-  /// 上一次成功同步到原生端的疊加物指紋
-  String _lastOvSig = 'off';
+  /// 疊加物同步狀態機（單通道：最新指紋 → 烘 → setOverlays）。
+  /// 接線在 initState；烘與送分別是 [_ovBake]／[_ovApply]
+  late final OverlaySync _ovSync;
 
-  bool _ovSyncBusy = false;
-  Timer? _ovSyncTimer;
-
-  /// 快路狀態：最近一次看到的內容指紋／它變動的時刻／目前畫面上
-  /// 是不是半解析度版（是的話停穩要補全解析）
-  String? _ovSigSeen;
-  DateTime _ovChangeAt = DateTime.fromMillisecondsSinceEpoch(0);
-  bool _ovFastApplied = false;
-  bool _ovSyncAgain = false;
+  /// 診斷：手勢中上屏節奏（斷流偵測、每手勢幾版）
   DateTime? _wmLastApplyAt;
-  DateTime? _wmLastBakeStart;
-  bool _ovPadGesture = false;
   int _wmGestureN = 0;
   Timer? _wmGestureTimer;
 
-  /// 全域浮水印各部件烘進 PNG 時的幾何基準（id → [x,y,size,rot]）。
-  /// 現值偏離基準＝把絕對值丟給原生套差量（PNG 不重畫，跟手的關鍵）
-  Map<String, List<double>> _ovGeomPending = const {};
-
-  /// 疊加物 PNG 的快取（鍵＝內容指紋）。匯入期間每支工作檔轉好
-  /// 就重組一次合成，內容根本沒變卻每次都整套重畫 PNG——
+  /// 疊加物 PNG 的快取（鍵＝內容指紋＋解析度）。匯入期間每支工作檔
+  /// 轉好就重組一次合成，內容根本沒變卻每次都整套重畫 PNG——
   /// 匯入變慢的主因（實測回報）。指紋沒變＝整包重用
   String _ovMapsCacheSig = '';
   List<Map<String, dynamic>> _ovMapsCache = const [];
-  Map<String, List<double>> _ovGeomCache = const {};
   int _ovSetFails = 0;
-  DateTime _ovGeomActiveAt = DateTime.fromMillisecondsSinceEpoch(0);
-  Timer? _ovXfTrail;
 
   /// 這份合成收不收即時疊加物（HDR 預覽且原生端掛了預覽合成器）
   bool get _ovLiveOn => _compOn && (_comp?.wmLive ?? false);
@@ -449,7 +434,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   ///（實測回報）。純 Flutter 合成，零效能成本
   bool get _ovScrubPeek {
     if (!_scrubbing) return false;
-    if (MetalPreview.active) return false; // 引擎自己畫浮水印
     final cur = _tl.videoAt(_position, skipTracks: _hiddenTracks);
     if (cur == null) return false;
     final s = _tl.sourceOf(cur);
@@ -458,21 +442,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         !(Diag.hdrProxyPreview.value && s.workHdrPath != null);
   }
 
-  /// Flutter 版疊加物要不要藏（原生烘好的在畫就藏——拖/縮/轉
-  /// 全部走即時幾何，原生直接跟手，不再需要 Flutter 接手）
-  /// 沒在播放＝浮水印一律由介面層即時畫（任何分頁、任何操作都跟手）。
-  ///
-  /// HDR 預覽把浮水印烘進影片合成，改一次樣式就要整份重新合成
-  /// （幾百 ms）——粗細/濃度/位置全都跟不上手（實機 153）。
-  /// 編輯時交給介面層畫、按播放前才烘回影片一次：那一下被起播
-  /// 動作蓋住，使用者看不到換手，而播放與匯出的畫面完全不變
-  /// 已停用：介面層畫浮水印＝跟合成/引擎是兩套渲染，顏色對不上
-  ///（實機 154：播放與暫停的浮水印顏色不同）。改由引擎畫——
-  /// 它跟匯出共用同一套疊加數學，即時又跟成品一致
-  bool get _ovEditingLive => false;
-
-  bool get _ovFlutterHidden =>
-      _ovLiveOn && _ovNativeShown && !_ovScrubPeek && !_ovEditingLive;
+  /// Flutter 版疊加物要不要藏（原生烘好的在畫就藏；拖曳快取幀蓋著
+  /// 時例外，見 [_ovScrubPeek]）
+  bool get _ovFlutterHidden => _ovLiveOn && _ovNativeShown && !_ovScrubPeek;
 
   /// 時間軸上有沒有任何疊加物內容（決定合成要不要掛預覽合成器）
   bool get _ovAnyContent {
@@ -1386,14 +1358,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     //「合成播放器就緒」）。連續變更只留最後一次，停手 350ms 才重建；
     // 這段期間畫面由即時疊加物清單（setPreviewOverlays）跟手
     _compRebuildTimer?.cancel();
-    _compRebuildTimer = Timer(const Duration(milliseconds: 350), () {
-      if (!mounted || _playing) return;
-      // 浮水印分頁調整中：畫面由 Flutter 即時畫，先不重建合成
-      //（重建幾百 ms＝每動一下卡一下）。離開分頁時分頁監聽會再叫一次
-      // 會再叫一次，那時才烘回去
-      if (_ovEditingLive) return;
-      unawaited(_ensureComp());
-    });
+    _compRebuildTimer = Timer(const Duration(milliseconds: 350), _compRebuildTick);
+  }
+
+  /// 併批到期：手指還在時間軸上（滑動/拖片段/捏合）就再等——
+  /// 換 AVPlayerItem 會把畫面重設，手勢中換＝閃一下
+  void _compRebuildTick() {
+    if (!mounted || _playing) return;
+    if (_scrubbing || _lifting || _tlPinching) {
+      _compRebuildTimer?.cancel();
+      _compRebuildTimer = Timer(
+        const Duration(milliseconds: 350),
+        _compRebuildTick,
+      );
+      return;
+    }
+    unawaited(_ensureComp());
   }
 
   Timer? _compRebuildTimer;
@@ -1459,42 +1439,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 疊加物整版 PNG 清單（跟原生匯出同一套欄位）。時間一律是
   /// 時間軸秒——合成的時間基準就是時間軸，整體變速由播放速率處理，
   /// 動畫參數不用除變速（匯出那邊是輸出秒才要除）
-  Future<List<Map<String, dynamic>>> _ovMaps({bool fast = false}) async {
-    // 外擴（防拖出畫框缺塊）只在幾何拖動時開：它是 4 倍像素量，
-    // 樣式拖動用不到卻吃 4 倍搬運（錄影定罪的凍結來源之一）
-    // 外擴與否在手勢開頭決定一次、整個手勢固定：中途翻面＝
-    // rect/pad 交替＝浮水印跳一下（實機 172 樣式閃爍嫌疑之一）
-    if (fast && !_ovFastApplied) {
-      _ovPadGesture =
-          DateTime.now().difference(_ovGeomActiveAt).inMilliseconds < 1000;
-    }
-    final padF = fast && _ovPadGesture;
-    final sig =
-        '${_ovContentSig()}${fast ? (padF ? ':fp' : ':f') : ''}';
-    if (sig == _ovMapsCacheSig && _ovMapsCache.isNotEmpty) {
-      _ovGeomPending = _ovGeomCache; // 幾何基準跟 PNG 一起重用
+  /// [sig] 是呼叫端已經算好的 [_ovContentSig]（烘的就是這一版）
+  Future<List<Map<String, dynamic>>> _ovMaps(
+    String sig, {
+    bool fast = false,
+  }) async {
+    final key = '$sig${fast ? ':f' : ''}';
+    if (key == _ovMapsCacheSig && _ovMapsCache.isNotEmpty) {
       return _ovMapsCache;
     }
-    final maps = await _ovMapsBuild(fast: fast, pad: padF);
+    final maps = await _ovMapsBuild(fast: fast);
     // 過程中內容又變了就不進快取（下一輪重做）
-    if ('${_ovContentSig()}${fast ? (padF ? ':fp' : ':f') : ''}' == sig) {
-      _ovMapsCacheSig = sig;
+    if (_ovContentSig() == sig) {
+      _ovMapsCacheSig = key;
       _ovMapsCache = maps;
-      _ovGeomCache = _ovGeomPending;
     }
     return maps;
   }
 
-  /// 外擴烘圖的 rect：畫布放大 2 倍、內容置中
-  List<double> _padRect(List<double> r) {
-    if (r.length < 4) return r;
-    return [r[0] - 0.5 * r[2], r[1] - 0.5 * r[3], r[2] * 2, r[3] * 2];
-  }
-
-  Future<List<Map<String, dynamic>>> _ovMapsBuild({
-    bool fast = false,
-    bool pad = false,
-  }) async {
+  Future<List<Map<String, dynamic>>> _ovMapsBuild({bool fast = false}) async {
     final out = <Map<String, dynamic>>[];
     // 渲染解析度跟預覽合成一樣短邊 1080 就好；版面是照比例算的
     //（sizeFrac × 短邊），解析度不影響位置大小
@@ -1520,12 +1483,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       WmAnimation.drift => 'drift',
       WmAnimation.marquee => 'marquee',
     };
-    // 一個部件一張 PNG、各帶幾何基準：拖/縮/轉哪個部件，原生就
-    // 只動那張（差量繞部件中心），PNG 不重畫——跟手的關鍵。
-    // 分層疊出來的結果跟壓平的一張一樣（同順序、同混色）。
-    // 渲染平行跑（Future.wait），一張一張排隊等於把延遲乘上
-    // 部件數；組裝照 jobs 順序，疊放次序不變
-    final pending = <String, List<double>>{};
+    // 一個部件一張圖、各帶幾何基準欄位（id/bx/by/bs/br 是原生
+    // CIOverlaySpec 既有欄位，照送）。分層疊出來的結果跟壓平的一張
+    // 一樣（同順序、同混色）。渲染平行跑（Future.wait），一張一張
+    // 排隊等於把延遲乘上部件數；組裝照 jobs 順序，疊放次序不變
     final jobs = <Future<Map<String, dynamic>?>>[];
 
     void addSettingsParts(
@@ -1534,31 +1495,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       Map<String, dynamic> shared,
     ) {
       void addPart(String id, WatermarkSettings ps, List<double>? geom) {
-        if (geom != null) pending[id] = geom;
         jobs.add(() async {
           try {
-            final padded = fast && pad && geom != null;
             return {
               if (fast) ...{
-                'raw': await WatermarkRenderer.renderOverlayRaw(
-                  ps,
-                  ow,
-                  oh,
-                  pad: padded,
-                ),
-                'rw': padded ? ow * 2 : ow,
-                'rh': padded ? oh * 2 : oh,
+                'raw': await WatermarkRenderer.renderOverlayRaw(ps, ow, oh),
+                'rw': ow,
+                'rh': oh,
               } else
                 'png': await WatermarkRenderer.renderOverlayPng(ps, ow, oh),
               ...shared,
-              // 外擴烘圖：rect 跟著放大一倍（原生裁掉超出畫框的）
-              if (padded) ...{
-                'pad': 0.5,
-                'rect': _padRect(
-                  (shared['rect'] as List<double>?) ?? const [0, 0, 1, 1],
-                ),
-              },
-              // 平鋪的部件沒有「位置」可言，不參與即時幾何
+              // 平鋪的部件沒有「位置」可言
               if (geom != null) ...{
                 'id': id,
                 'bx': geom[0],
@@ -1631,7 +1578,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           ..text = src.name;
         final id = 'c${c.id}:t';
         final px = c.px, py = c.py, sc = c.scale;
-        pending[id] = [px, py, sc, st.rotation];
         jobs.add(() async {
           try {
             return {
@@ -1681,179 +1627,85 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     for (final m in await Future.wait(jobs)) {
       if (m != null) out.add(m);
     }
-    _ovGeomPending = pending;
     return out;
   }
 
-  /// 全域浮水印的即時幾何：現值偏離「烘進 PNG 的基準」就把絕對值
-  /// 丟給原生套差量（33ms 節流＋尾發）。PNG 不重畫、合成不重建，
-  /// 拖曳/縮放/旋轉全程顯示顏色正確的烘焙版
+  // ===== 疊加物同步（狀態機在 OverlaySync，這裡只有烘與送）=====
 
-  void _liveOvSync() {
-    // ══ 重建（單通道）：幾何變化跟樣式變化走同一條路——排一次
-    // 重烘（12fps、同包、最新版直上）。舊的「獨立差量通道」拆除：
-    // 兩條通道的時序競賽（爆閃/基準循環/中途翻面）從此沒有載體
-    if (!_ovLiveOn) return;
-    _scheduleOvSync();
+  DateTime? _ovBakeT0;
+  int _ovBakeMs = 0;
+
+  /// [OverlaySync.bake]：畫這一版的圖（快路＝半解析度 raw）
+  Future<List<Map<String, dynamic>>?> _ovBake(String sig, bool fast) async {
+    _ovBakeT0 = DateTime.now();
+    final maps = await _ovMaps(sig, fast: fast);
+    _ovBakeMs = DateTime.now().difference(_ovBakeT0!).inMilliseconds;
+    return mounted ? maps : null;
   }
 
-  /// 把疊加物同步到原生端（重畫 PNG → setOverlays → 精準 seek
-  /// 逼它重畫這一格）。指紋沒變就什麼都不做
-  Future<void> _syncPreviewOverlays({bool full = false}) async {
-    if (!mounted || !_ovLiveOn) return;
-    if (_ovSyncBusy) {
-      _ovSyncAgain = true; // 烘完自動續跑，不靠計時器（防斷鏈）
-      WmDiag.skipBusy++;
-      return;
+  /// [OverlaySync.apply]：送原生（同包附空差量清單，原子清掉任何
+  /// 殘留；幾何已烘在圖裡）。原生的催重畫涵蓋暫停重繪且有節流，
+  /// 這裡不再補 seek
+  Future<bool> _ovApply(
+    List<Map<String, dynamic>> maps,
+    String sig,
+    bool fast,
+  ) async {
+    final t1 = DateTime.now();
+    if (!await CompPlayer.setOverlays(maps, live: const [])) {
+      WmDiag.rejects++;
+      // 原生拒收＝這份合成的 wmLive 跟 Dart 認知走鐘了。連三次
+      // 就整組重組自救，不能讓浮水印卡在舊位置（實測回報：
+      // 九宮格點了框到了、字不動）
+      _ovSetFails++;
+      Diag.note('疊加物清單被拒收（第 $_ovSetFails 次）');
+      if (_ovSetFails >= 3 && mounted) {
+        _ovSetFails = 0;
+        _compDirty = true;
+        _lastCompSig = null;
+        unawaited(_ensureComp());
+      }
+      return false;
     }
-    final sig = _ovContentSig();
-    if (sig != _ovSigSeen) {
-      _ovSigSeen = sig;
-      _ovChangeAt = DateTime.now();
+    _ovSetFails = 0;
+    if (!mounted) return true;
+    final sendMs = DateTime.now().difference(t1).inMilliseconds;
+    // 狀態機的計數搬進診斷報告（便宜：四個整數）
+    WmDiag.skipBusy = _ovSync.skipBusy;
+    WmDiag.skipHold = _ovSync.skipHold;
+    WmDiag.dropped = _ovSync.dropped;
+    WmDiag.stale = _ovSync.stale;
+    WmDiag.noteSync(
+      fast: fast,
+      lagMs: _ovBakeMs + sendMs,
+      bakeMs: _ovBakeMs,
+      sendMs: sendMs,
+      partsN: maps.length,
+      bytesN: maps.fold<int>(0, (a, m) {
+        final d = m['raw'] ?? m['png'];
+        return a + (d is List<int> ? d.length : 0);
+      }),
+    );
+    // 上屏斷流偵測：手勢中兩次上屏間隔 >250ms＝使用者看到的
+    // 「頓一下」，直接記進事件流
+    final now = DateTime.now();
+    if (fast && _wmGestureN > 0 && _wmLastApplyAt != null) {
+      final gap = now.difference(_wmLastApplyAt!).inMilliseconds;
+      if (gap > 250 && gap < 5000) Diag.ev('樣式上屏斷流 ${gap}ms');
     }
-    if (sig == _lastOvSig && !_ovFastApplied) return;
-    // 內容剛在變（滑桿拖動中）＝快路：半解析度＋raw 直傳，畫面跟著
-    // 滑桿動；停穩 400ms 後自動補一版全解析（畫質歸位）
-    final fast =
-        !full &&
-        sig != 'empty' &&
-        DateTime.now().difference(_ovChangeAt).inMilliseconds < 700;
-    if (sig == _lastOvSig && _ovFastApplied && fast) {
-      _scheduleOvSync(); // 還在拖但內容沒變：等停穩再補全解析
-      WmDiag.skipHold++;
-      return;
+    _wmLastApplyAt = now;
+    if (fast) {
+      _wmGestureN++;
+      _wmGestureTimer?.cancel();
+      _wmGestureTimer = Timer(const Duration(milliseconds: 700), () {
+        if (_wmGestureN > 2) Diag.ev('樣式手勢結束：共 $_wmGestureN 版上屏');
+        _wmGestureN = 0;
+      });
     }
-    // 「讓路給幾何」整個拆除（實機 170 計數定罪：被擋 69 次＋
-    // 基準循環 13 次＝樣式斷流 5.5 秒的犯人）。它當初防的「烘圖
-    // 與差量分兩包落地爆閃」已由 162 的同包原子套用解決——烘圖
-    // 20ms 級，幾何拖動中照烘，差量跟著同包走，不爆不搶
-    // 節拍器：快路兩版之間至少 80ms（12 版/秒）。錄影逐格分析
-    // 定罪：無節制連發（20版/秒 x 8MB raw）把 GPU 回讀與通道
-    // 搬運擠爆，UI 整屏凍結 0.3~0.9 秒連環
-    if (fast && _wmLastBakeStart != null &&
-        DateTime.now().difference(_wmLastBakeStart!).inMilliseconds < 80) {
-      _scheduleOvSync();
-      return;
-    }
-    _wmLastBakeStart = DateTime.now();
-    _ovSyncBusy = true;
-    final wmT0 = DateTime.now();
-    try {
-      final maps = sig == 'empty'
-          ? <Map<String, dynamic>>[]
-          : await _ovMaps(fast: fast);
-      final wmBakeMs = DateTime.now().difference(wmT0).inMilliseconds;
-      if (!mounted || !_ovLiveOn) return;
-      // 烘的期間內容又變了：這一版照樣先上（比螢幕上的新），
-      // 上完馬上再排一輪追最新。原本的「作廢讓下一輪重做」在
-      // 滑桿連續拖動時每一版都作廢＝放手前畫面永遠不更新
-      //（實機 157：樣式拖到定位才變）
-      final stale = _ovContentSig() != sig;
-      // 過期丟棄：烘太久（點陣偶發 400ms）期間內容又變了，這版
-      // 上屏＝舊樣式蓋掉新樣式＝「粗細亂跳」（實機 159）。丟掉，
-      // finally 立刻續烘最新版
-      if (stale && DateTime.now().difference(wmT0).inMilliseconds > 250) {
-        WmDiag.dropped++;
-        _ovSyncAgain = true;
-        return;
-      }
-      final wmT1 = DateTime.now();
-      // 單通道重建：不再有差量——每包附空差量清單，原子清掉
-      // 原生端任何殘留（幾何已烘在圖裡）
-      const liveNow = <Map<String, dynamic>>[];
-      if (!await CompPlayer.setOverlays(
-        maps,
-        live: liveNow,
-        noNudge: MetalPreview.active,
-      )) {
-        WmDiag.rejects++;
-        // 原生拒收＝這份合成的 wmLive 跟 Dart 認知走鐘了。連三次
-        // 就整組重組自救，不能讓浮水印卡在舊位置（實測回報：
-        // 九宮格點了框到了、字不動）
-        _ovSetFails++;
-        Diag.note('疊加物清單被拒收（第 $_ovSetFails 次）');
-        if (_ovSetFails >= 3 && mounted) {
-          _ovSetFails = 0;
-          _compDirty = true;
-          _lastCompSig = null;
-          unawaited(_ensureComp());
-        }
-        return;
-      }
-      _ovSetFails = 0;
-      _lastOvSig = sig;
-      _ovFastApplied = fast;
-      var wmLag = DateTime.now().difference(_ovChangeAt).inMilliseconds;
-      final wmSend = DateTime.now().difference(wmT1).inMilliseconds;
-      // 不是使用者改動觸發（起播前整包重烘等）就只記工時
-      if (wmLag > 5000) wmLag = wmBakeMs + wmSend;
-      WmDiag.noteSync(
-        fast: fast,
-        lagMs: wmLag,
-        bakeMs: wmBakeMs,
-        sendMs: wmSend,
-        partsN: maps.length,
-        bytesN: maps.fold<int>(0, (a, m) {
-          final d = m['raw'] ?? m['png'];
-          return a + (d is List<int> ? d.length : 0);
-        }),
-      );
-      // 上屏斷流偵測：拖動中兩次上屏間隔 >250ms＝使用者看到的
-      // 「頓一下」，直接記進事件流（不用口述）
-      final nowAp = DateTime.now();
-      if (fast && _wmGestureN > 0 && _wmLastApplyAt != null) {
-        final gap = nowAp.difference(_wmLastApplyAt!).inMilliseconds;
-        // 手勢進行中才算斷流；跨手勢的閒置間隔是誤報（實機 171
-        // 的 6690ms 就是兩個手勢之間的空檔）
-        if (gap > 250 && gap < 5000) Diag.ev('樣式上屏斷流 ${gap}ms');
-      }
-      _wmLastApplyAt = nowAp;
-      if (fast) {
-        _wmGestureN++;
-        _wmGestureTimer?.cancel();
-        _wmGestureTimer = Timer(const Duration(milliseconds: 700), () {
-          if (_wmGestureN > 2) {
-            Diag.ev('樣式手勢結束：共 $_wmGestureN 版上屏');
-          }
-          _wmGestureN = 0;
-        });
-      }
-      if (stale) WmDiag.stale++;
-      if (stale) _ovSyncAgain = true;
-      if (fast && !stale) _scheduleOvSync(); // 停穩後補全解析
-
-      final shown = maps.isNotEmpty;
-      _ovNativePending = shown; // 之後的 compVisible 不要把它翻回去
-      if (mounted && _ovNativeShown != shown) {
-        setState(() => _ovNativeShown = shown);
-      }
-      // （原生 setOverlays 的催重畫已涵蓋暫停重繪且有節流；這裡
-      // 原本還補一發精準 seek＝每版兩發 seek 轟暫停中的解碼器，
-      // 獨立審查 #1 定罪後拆除）
-    } finally {
-      _ovSyncBusy = false;
-      if (_ovSyncAgain && mounted) {
-        _ovSyncAgain = false;
-        scheduleMicrotask(() {
-          if (mounted) _syncPreviewOverlays();
-        });
-      }
-    }
-  }
-
-  /// 每次預覽重建都呼叫：變化併批 120ms 再同步（重畫 PNG 有成本）
-  void _scheduleOvSync() {
-    if (!_ovLiveOn) return;
-    if (_ovSyncTimer?.isActive ?? false) return;
-    _ovSyncTimer = Timer(const Duration(milliseconds: 40), () {
-      if (!mounted) return;
-      if (_ovContentSig() != _lastOvSig || _ovFastApplied) {
-        // 讓路只留同步入口那一道（150ms/上限 600ms）：這裡原本
-        // 還有一道 400ms「無上限」的讓路，跟「烘圖落地→誤判幾何
-        // 有動」的循環咬住＝樣式秒級斷流（實機 169 事件流）
-        unawaited(_syncPreviewOverlays());
-      }
-    });
+    final shown = maps.isNotEmpty;
+    _ovNativePending = shown; // 之後的 compVisible 不要把它翻回去
+    if (_ovNativeShown != shown) setState(() => _ovNativeShown = shown);
+    return true;
   }
 
   // ===== 片段的即時變形（捏合/拖曳跟手）=====
@@ -1899,8 +1751,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _xfLastAt = now;
     _xfLastSent = key;
-    // 拖曳影片素材中：引擎接管（每格讀同一份即時變形，60fps 跟手）
-    _metalOvDragTakeover();
     unawaited(
       CompPlayer.setXform(
         z: c.track,
@@ -2198,22 +2048,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // Flutter 版顯示與否（見 _ovNativePending 的說明）
     CompPlayer.onCompVisible = () {
       if (!mounted) return;
-      if (MetalPreview.active && !_playing && !_scrubbing) {
-        unawaited(
-          MetalPreview.ready(_position).then((ok) {
-            if (!ok && mounted && MetalPreview.active) {
-              _metalHideNow();
-              setState(() {});
-            }
-          }),
-        );
-      }
       // 新合成烘的就是最終值：即時變形的覆寫功成身退
       unawaited(CompPlayer.clearXform());
       if (_ovNativeShown != _ovNativePending) {
         setState(() => _ovNativeShown = _ovNativePending);
       }
     };
+    _ovSync = OverlaySync(
+      enabled: () => mounted && _ovLiveOn,
+      signature: _ovContentSig,
+      bake: _ovBake,
+      apply: _ovApply,
+    );
     // 量「誰在卡」：UI 執行緒、合成執行緒、還是影片本身。
     // 這三種的處理方式完全不同，沒有數字就只能猜
     Diag.watchFrames();
@@ -2238,16 +2084,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     });
     // 分頁一換就把捏合簿記歸零：手勢中途換分頁會讓抬手事件沒人收
     _tabs.addListener(_resetTlPinch);
-    // 離開浮水印分頁＝把編輯期間的樣式烘回影片合成（編輯中是
-    // Flutter 即時畫的，見 _ovEditingLive）
+    // 離開浮水印分頁＝確保最新樣式以全解析度在畫面上（指紋沒變
+    // 就什麼都不做；合成指紋不含浮水印內容，不會重建播放器）
     _tabs.addListener(() {
       if (!mounted || _tabs.indexIsChanging) return;
       if (_tabs.index != 1) {
-        // 152 時代的「離開分頁烘回」強制重建已無必要（疊圖全即時，
-        // 合成指紋本來就不含浮水印內容）——留著＝每次切分頁播放器
-        // 換件、畫面暗一下、引擎被拆下台（實機 163：上下台連環）
         _compRefreshIfChanged();
-        unawaited(_syncPreviewOverlays(full: true));
+        unawaited(_ovSync.flush());
       }
       setState(() {});
     });
@@ -2364,7 +2207,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _position = t; // 位置 UI 由 _posVN 小範圍重繪，不整頁 setState
     _scrubbing = true;
     _scrubProbeBegin();
-    unawaited(_metalScrubBegin()); // 快取幀模式（下一次 30fps 重繪就生效）
     if (_compOn) {
       // 素材還在用原檔（秒進、工作檔還在背景轉）：拖曳走快取幀
       if (_compScrubViaCache()) return;
@@ -2470,40 +2312,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// seek 疊 seek 會在解碼器裡排隊，是拖曳卡頓的主因
   bool _seekInFlight = false;
 
+  /// 上一發精準 seek 的位置：放手後的收尾（120ms 補送、220ms 收尾
+  /// 的 animateTo 完成）都會再要一次精準 seek，同一格只送一次
+  double? _compExactAt;
+
+  /// 單一畫面：滑動的每一發都餵合成播放器（畫面就是它；代理密
+  /// 關鍵幀 seek 實測 2~9ms，原生端只追最新目標）。[exact] 放手用
   void _compSeek({bool exact = false}) {
-    if (_compOn && !_playing) {
-      // 單一畫面：滑動的每一發都餵合成播放器（畫面就是它；
-      // 代理密關鍵幀 seek 實測 2~9ms）。引擎在台上的殘餘情境
-      // 維持舊行為
-      if (MetalPreview.active && !exact) {
-        // 不餵
-      } else if (MetalPreview.active && exact) {
-        // 放手：精準 seek「完成」才開始讓位倒數——你手機上一格
-        // CI 可以到 1 秒，300ms 固定倒數等於讓位給舊幀/黑
-        unawaited(
-          _comp!.seek(_position, exact: true).then((_) {
-            if (mounted) _metalScrubEnd();
-          }),
-        );
-      } else {
-        unawaited(_comp!.seek(_position, exact: exact));
-      }
-      if (MetalPreview.active) {
-        final now = DateTime.now();
-        if (now.difference(_mSeekAt).inMilliseconds >= 16) {
-          _mSeekAt = now;
-          unawaited(MetalPreview.seek(_position));
-        }
-      } else if (_mBuiltSig != null) {
-        // 引擎沒在畫也節流丟位置＝pump 預熱（原生端 want 對位），
-        // 下一次接管（滑動/拖文字）第一格就是對的
-        final now = DateTime.now();
-        if (now.difference(_mSeekAt).inMilliseconds >= 250) {
-          _mSeekAt = now;
-          unawaited(MetalPreview.seek(_position));
-        }
-      }
+    if (!_compOn || _playing) return;
+    if (exact) {
+      if (_compExactAt == _position) return;
+      _compExactAt = _position;
+    } else {
+      _compExactAt = null;
     }
+    unawaited(_comp!.seek(_position, exact: exact));
   }
 
   void _scrubSeek({bool force = false}) {
@@ -3183,34 +3006,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
   }
 
-  // ===== Metal 預覽引擎（滑動接管）=====
-  DateTime _mSeekAt = DateTime.fromMillisecondsSinceEpoch(0);
-  Timer? _mHideTimer;
+  // ===== Metal 預覽引擎 =====
+  //
+  // 合成播放器在場時引擎永遠不上台（畫面只有一個）；這裡只剩
+  // 「佈局預建」（供離屏取樣/統計等診斷）與起播前的泊車
 
-  /// 引擎目前烘好的佈局指紋。滑動起手時指紋沒變就直接亮，
-  /// 一毫秒都不等（無延遲的關鍵：建佈局的錢在閒置時先付掉）
+  /// 引擎目前烘好的佈局指紋（指紋沒變就不重建）
   String? _mBuiltSig;
 
   /// 播放中被擋下的佈局重建（見 _metalPrebuild）：停播後補做
   bool _mPendingPrebuild = false;
 
-  /// 正在起播（_play 從第一行到時鐘開走的整段）。
-  /// 這段有好幾個 await 空窗，_playing 還沒 true——暫停時排下的
-  /// 常駐重試會鑽進來把引擎推上台，接著泊車讓它渲染黑畫面
-  bool _playStarting = false;
-
   /// 色彩偵探：每層目前餵引擎的檔案種類（原檔/SDR工作檔/HDR代理），
   /// 變化即記——「進場顏色不對」直接看這裡是不是餵錯檔
   final Map<int, String> _mPathKind = {};
-
-  /// 這份佈局能不能當「常駐畫面」（進場即亮、暫停也是它）：
-  /// 滑動暫態的近似（GIF 首幀、馬賽克蓋全層、貼圖無濾鏡）
-  /// 不能常駐——那些佈局引擎只做暫態接管
-  bool _mViewSafe = false;
-
-  /// 常駐開關（旗標×佈局都允許才常駐）。build 129 實機黑畫面後
-  /// 預設關，只做暫態接管
-  bool get _mResident => Diag.metalResident.value && _mViewSafe;
 
   /// 現在的時間軸佈局 → 引擎 payload。組不了（沒素材、倒轉、
   /// 平台不支援）回 null，呼叫端走現有路徑
@@ -3348,9 +3157,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (src.mosaicStroke != null) 'brush': src.mosaicBrush,
       });
     }
-    // 2.0：GIF 動畫、貼圖調色、馬賽克 z 分段引擎全會了——
-    // 引擎全時段當家，不再有任何佈局需要讓位
-    _mViewSafe = true;
     return {
       'w': cw,
       'h': ch,
@@ -3367,10 +3173,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 閒置預建：合成就緒/佈局變更後把引擎佈局先建好，
   /// 滑動起手就不用付建置的錢（實測省下 300~500ms 的首次接管延遲）
   Future<void> _metalPrebuild() async {
-    // 注意：不能因為「引擎在畫」就跳過——常駐後引擎永遠在畫，
-    // 跳過＝佈局永遠停在進場第一份（單層、原檔），工作檔換手、
-    // 新素材全都進不了引擎（實測：常駐後播放被「全代理=否」拒絕，
-    // 佈局裡躺著的是最早那支原檔）。build 本來就是熱切換
+    // 單一畫面重建後引擎永不上台：預建會在原生開一整組每軌一顆
+    // 的 AVPlayer 泵，播放時跟合成播放器搶解碼器直到起播才泊車
+    //（Fresh-eyes 團隊發現）。合成在場一律不建
+    if (_compOn) return;
     if (!_metalUsable) return;
     // 播放中不重建佈局：build 會銷毀重建 pump（暫停畫面來源）——
     // 播放中工作檔轉好觸發重建＝暫停瞬間 pump 沒圖＝黑幾百 ms
@@ -3391,37 +3197,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _mBuiltSig = ok ? sig : null;
       Diag.note(ok ? '引擎佈局預建好' : '引擎佈局預建失敗');
     }
-    // 常駐（專業剪輯架構）：佈局能常駐就讓引擎當家——進場即亮、
-    // 暫停也是它，之後的合成重烘/換手全部發生在它背後（隱形）。
-    // 佈局變成不能常駐（加了馬賽克/GIF）就讓位還給合成畫面
-    if (_playing || _scrubbing) return;
-    // 引擎只在滑動/拖曳時上台：閒置時自動上台＝下一次操作又要換手，
-    // 每次換手就是一下閃動（實機 149）。合成畫面本身已經顯示得出來
-    // 沒在播放就讓引擎上台：它同時畫影片與浮水印（GPU、60fps、
-    // 跟匯出同一套疊加數學），拖曳/調樣式才會即時又跟成品一致
-    if (_mResident && _mBuiltSig != null && _comp != null) {
-      if (!MetalPreview.active) _metalResidentTry();
-    } else if (!_mResident &&
-        MetalPreview.active &&
-        !_scrubbing &&
-        DateTime.now().difference(_ovGeomActiveAt).inMilliseconds > 600 &&
-        DateTime.now().difference(_ovChangeAt).inMilliseconds > 600) {
-      // 讓位要等互動真的結束：拖浮水印時接管把引擎推上台，這裡
-      // 原本只認時間軸滑動、不認浮水印拖曳，每一格都把引擎踢下
-      // 台、下一個拖曳事件又推上來——上下台打架＝螢幕抖動
-      //（實機 162：上下台「上1.7 下1.7」連環）
-      Diag.ev('引擎讓位（閒置自動）');
-      unawaited(_comp?.seek(_position, exact: true));
-      _metalHideNow();
-      setState(() {});
-    }
   }
-
-  Timer? _mResTimer;
-
-  /// 暖機（不上台）：把引擎的解碼器對到目前位置、主動取樣到紋理，
-  /// 這樣滑動一開始就能瞬間接手。上台會造成畫面換手的閃動
-  ///（實機 149），所以暖機跟上台要拆開
 
   /// 色彩偵探（自動）：離屏 5 點數值取樣＋當下各層來源種類。
   /// [tag] 標記時機（進場/轉檔完）。失敗靜默——它是偵測不是功能
@@ -3445,107 +3221,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         }
       }
     } catch (_) {}
-  }
-
-  /// 常駐上台：紋理就緒才亮（129 黑畫面的教訓——寧可晚 200ms
-  /// 也不上黑畫布）；沒就緒 200ms 後重試，最多 15 次（3 秒）
-  void _metalResidentTry([int attempt = 0]) {
-    if (!mounted || _playing || _playStarting || _scrubbing) return;
-    if (MetalPreview.active) return;
-    if (!_mResident || _mBuiltSig == null) return;
-    unawaited(
-      MetalPreview.seek(_position).then((_) async {
-        if (!await MetalPreview.ready(_position)) {
-          if (attempt < 15 && mounted) {
-            _mResTimer?.cancel();
-            _mResTimer = Timer(
-              const Duration(milliseconds: 200),
-              () => _metalResidentTry(attempt + 1),
-            );
-          }
-          return;
-        }
-        if (!mounted || _playing || _playStarting || _scrubbing) return;
-        if (MetalPreview.active) return;
-        _mHideTimer?.cancel();
-        MetalPreview.active = true;
-        unawaited(MetalPreview.show(true));
-        setState(() {});
-        unawaited(_mColorProbe('進場'));
-      }),
-    );
-  }
-
-  /// 滑動起手：把目前佈局交給 Metal 引擎，成了就換它出畫面。
-  /// 預建命中時整段是同步的（不 await），這一格就亮。
-  /// 組不了（平台/素材不支援）安靜退回現有路徑
-  Future<void> _metalScrubBegin() async {
-    // ══ 單一畫面重作：合成播放器在場＝畫面永遠只有它一個。
-    // 引擎接管是「seek 一發 100~200ms」年代的產物；現在代理是
-    // 轉正密關鍵幀，播放器 seek 實測 2~9ms，接管只剩換手閃爍
-    // 與機制內戰（166~172 全在修這個）。整套停用 ══
-    if (_compOn) return;
-    // 讓位計時器先取消：播放→暫停→立刻滑動的接縫裡，引擎
-    // 正顯示停點幀，這時把它收掉會閃一下合成畫面再亮回來
-    if (!_playing && MetalPreview.active) _mHideTimer?.cancel();
-    if (!_metalUsable || _playing || _playStarting || MetalPreview.active) {
-      return;
-    }
-    _mHideTimer?.cancel();
-    final p = _metalPayload();
-    if (p == null) return;
-    final sig = jsonEncode(p);
-    if (sig != _mBuiltSig) {
-      // 不該常走到：預建有掛在合成/工作檔就緒點。這行出現在診斷裡
-      // 代表有沒蓋到的佈局變更點（或預建失敗），要去補
-      Diag.note(_mBuiltSig == null ? '引擎滑動時現場建（沒預建過）' : '引擎滑動時現場建（指紋不同）');
-      final ok = await MetalPreview.build(p);
-      if (!mounted) return;
-      _mBuiltSig = ok ? sig : null;
-      if (!ok || !_scrubbing || _playing) return;
-    }
-    // 畫面沒就緒不上台（黑畫布比慢半拍糟糕得多）：先丟位置讓
-    // pump 對位，下一個滑動事件再試
-    unawaited(MetalPreview.seek(_position));
-    if (!await MetalPreview.ready(_position)) return;
-    if (!mounted || !_scrubbing || _playing || MetalPreview.active) return;
-    MetalPreview.active = true;
-    unawaited(MetalPreview.show(true));
-    setState(() {});
-  }
-
-  Timer? _mOvIdleTimer;
-
-  /// 文字/浮水印拖曳接管：拖曳中引擎出畫面（每格讀即時幾何、
-  /// 60fps 跟手）；幾何停止變化 600ms 讓位回合成的烘焙路
-  void _metalOvDragTakeover() {
-    // 重建後為空：畫面永遠是合成播放器，拖曳由重烘直線更新
-  }
-
-  /// 滑動停手：常駐佈局引擎不讓位（它就是畫面）；
-  /// 非常駐佈局讓合成在底下就定位，300ms 後把引擎收起來
-  void _metalScrubEnd() {
-    if (!MetalPreview.active) return;
-    if (_mResident) return;
-    _mHideTimer?.cancel();
-    _mHideTimer = Timer(const Duration(milliseconds: 300), () async {
-      // 下台前先把「現在這一格」畫新鮮：引擎蓋著的期間合成器被
-      // noNudge 停更，直接下台會露出舊格/黑格（實機 165）
-      Diag.ev('引擎讓位（互動結束）：先補新鮮一格');
-      await (_comp?.seek(_position, exact: true) ?? Future<void>.value());
-      if (!mounted) return;
-      MetalPreview.active = false;
-      unawaited(MetalPreview.show(false));
-      setState(() {});
-    });
-  }
-
-  /// 立刻收（按播放前一刻用，不能讓引擎蓋著播放畫面）
-  void _metalHideNow() {
-    _mHideTimer?.cancel();
-    if (!MetalPreview.active) return;
-    MetalPreview.active = false;
-    unawaited(MetalPreview.show(false));
   }
 
   Timer? _scrubEndTimer;
@@ -3841,9 +3516,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _scrubProbeEnd();
     if (_scrubbing && mounted) setState(() => _scrubbing = false);
-    // 引擎在畫時，讓位交給「精準 seek 完成」的回呼（_compSeek）；
-    // 這裡搶先開 300ms 倒數會讓位給還沒畫好的舊幀
-    if (!MetalPreview.active) _metalScrubEnd();
   }
 
   /// 這個檔是影片嗎。優先看 mimeType，拿不到就退回看副檔名
@@ -6648,12 +6320,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     // HDR 預覽的疊加物：組建當下就把浮水印/文字的 PNG 一起送進去
     // 烘（原生端 EDR 顯示，白色才是白色）；之後內容變化走
-    // setOverlays、幾何變化走 setOvXform 即時換
+    // setOverlays（_ovSync）即時換
     var ovSigAtBuild = 'off';
     var ovMaps = const <Map<String, dynamic>>[];
     if (_exportHdr && _hdrAvail == true) {
       ovSigAtBuild = _ovContentSig();
-      if (ovSigAtBuild != 'empty') ovMaps = await _ovMaps();
+      if (ovSigAtBuild != OverlaySync.empty) {
+        ovMaps = await _ovMaps(ovSigAtBuild);
+      }
     }
     // 用系統影片圖層顯示時不要另外出一份材質：那份沒有人看，
     // 卻是每一格都在複製一張 4K 畫面，等於跟解碼搶頻寬
@@ -6703,14 +6377,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _lastCompMosaicSig = _mosaicSig();
     _lastCompStillSig = _stillSig();
     _compBakedStills = CompPlayer.bakedImageIds(_tl);
-    // 疊加物：這一版合成收不收即時清單、目前畫的是哪一版。
-    // _ovNativeShown 不在這裡動——舊畫面還在前面撐著，等原生端
-    // 回報 compVisible（新畫面真的上檔）才切；保底計時器對齊
-    // 原生換手的 1.5 秒逾時
-    _lastOvSig = made.wmLive ? ovSigAtBuild : 'off';
-    // 重建期間使用者若又改了樣式，原生清單被建置快照蓋回舊版——
-    // 補排一次同步追回最新（獨立審查 #5）
-    _scheduleOvSync();
+    // 疊加物：_ovNativeShown 不在這裡動——舊畫面還在前面撐著，
+    // 等原生端回報 compVisible（新畫面真的上檔）才切；保底計時器
+    // 對齊原生換手的 1.5 秒逾時
     _ovNativePending = made.wmLive && ovMaps.isNotEmpty;
     // 新合成烘的就是現在的變形值：即時變形的基準重取
     _xfLastSent = null;
@@ -6722,6 +6391,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
     });
     setState(() => _comp = made);
+    // 新合成上檔了：它帶著建置快照那一版（或沒帶）。重建期間使用者
+    // 若又改了樣式，這裡補送最新版（指紋沒變＝快取整包重用）
+    _ovSync.reset(appliedSig: made.wmLive ? ovSigAtBuild : 'off');
+    _ovSync.request();
     // 合成接手了，舊的那幾顆播放器立刻放掉（見 _trimPlayers）
     _trimPlayers();
     // 暫停中換上新合成：精準 seek 逼它把「現在這一格」重新合成
@@ -6868,14 +6541,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 因為那些是提早 1.2 秒預先對位過的（見 _syncMedia 的 pre-roll）
   Future<void> _play() async {
     if (_tl.duration <= 0) return;
-    // 先宣告起播、掐掉待命中的常駐重試（見 _playStarting）
-    _playStarting = true;
-    _mResTimer?.cancel();
-    _mOvIdleTimer?.cancel();
     if (_position >= _tl.duration - 0.01) _position = 0;
     _clockBias = 0; // 上一輪沒吃完的校正不能帶進新的一輪
-    // 3.0：播放畫面永遠是系統播放器的——引擎讓位
-    _metalHideNow();
     final tr = PlaybackTrace.instance..start();
 
     // 拖曳收尾排在後面的那幾件事，按下播放的當下全部取消：
@@ -6889,7 +6556,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _scrubEndTimer?.cancel();
     _seekInFlight = false;
     if (_scrubbing) setState(() => _scrubbing = false);
-    _metalHideNow();
 
     // 合成播放器接手時，整條時間軸就是它一顆在播：舊的逐片段播放器
     // 一個都不要碰。上一版兩邊同時在播——兩倍解碼、兩份聲音，
@@ -6911,18 +6577,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         await _comp!.seek(_position);
       }
       await _comp!.setRate(_speed);
-      // ══ 3.0 終局：播放交還系統播放器 ══
-      // 畫面/聲音/同步全由系統負責（跟剪映同一條路）——
-      // 播放接管/音訊分身/追時鐘機制全部退役；引擎只留
-      // 滑動與暫停畫面；合成器快路讓系統播放逐格 <1ms
-      // 起播前把編輯期間的浮水印烘回影片：編輯時是介面層畫的
-      //（見 _ovEditingLive），播放要走合成才會出現在影片畫面上
+      // 畫面/聲音/同步全由系統播放器負責。起播前：待辦的合成重組
+      // 在 _playing 已為 true 時只會被記成 _pendingCompRebuild（暫停
+      // 後補做）——這裡的 await 只是等「正在進行中」的那次組完，
+      // 不在起播途中換 AVPlayerItem；再把最新浮水印以全解析度上屏
       _compRebuildTimer?.cancel();
       final swPlay = Stopwatch()..start();
       if (_compDirty) await _ensureComp();
       if (!mounted) return;
       final msRebuild = swPlay.elapsedMilliseconds;
-      await _syncPreviewOverlays(full: true);
+      await _ovSync.flush();
       if (!mounted) return;
       final msOvSync = swPlay.elapsedMilliseconds;
       // ══ 換手空窗修法：引擎留在台上蓋著（顯示的就是這一格暫停
@@ -6950,18 +6614,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           break;
         }
       }
-      // 影格滾起來了（或等超過 400ms 保底）：引擎此刻才下台
-      if (MetalPreview.active) _metalHideNow();
+      // 影格滾起來了（或等超過 400ms 保底）：引擎的 pump 泊車，
+      // 別跟播放搶解碼器；再壓一次隱藏（防原生端殘留在最上層）
       unawaited(MetalPreview.park());
-      // 無條件再壓一次隱藏：Dart 的 active 旗標與原生脫節時，
-      // _metalHideNow 會早退，引擎就留在最上層渲染黑
       unawaited(MetalPreview.show(false));
-      MetalPreview.active = false;
       Diag.notePlayLatency(sw.elapsedMilliseconds);
       if (!mounted) return;
       _lastTick = Duration.zero;
       _ticker.start();
-      _playStarting = false;
       tr.log('◀ 時間軸開始走');
       return;
     }
@@ -7051,14 +6711,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _lastTick = Duration.zero;
     _ticker.start();
-    _playStarting = false;
     _startPlayProbe();
     tr.log('◀ 時間軸開始走');
     _syncMedia();
   }
 
   void _pause() {
-    _playStarting = false;
     _clockBias = 0;
     _playProbe?.cancel();
     _playProbe = null;
@@ -7077,12 +6735,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             _position = p;
             _syncScrollToPosition();
           }
-          if (mounted && _mResident) _metalResidentTry();
-          // 暫停不換手：合成畫面現在顯示得出來（色彩標記補齊後），
-          // 停格就留在系統播放器上。換成引擎＝兩套渲染管線的畫面
-          // 略有差異，交接那一下就是使用者看到的閃動（實機 149：
-          // 上下台歷程「上7.5 下7.5」正好對上每一次暫停）。
-          // 引擎只在滑動/拖曳時上台（它在那裡才有優勢）
+          // 暫停不換手：停格留在系統播放器上（它的停格就是精確幀）
         }),
       );
     }
@@ -7684,7 +7337,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (edge != null) _position = edge.clamp(0.0, _tl.duration);
     _scrubbing = true;
     _scrubProbeBegin();
-    unawaited(_metalScrubBegin());
     if (_compOn) {
       // 素材還在用原檔（秒進、工作檔還在背景轉）：拖曳走快取幀
       if (_compScrubViaCache()) return;
@@ -8722,11 +8374,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _playProbe?.cancel();
     _prepEscapeTimer?.cancel();
     _staleKickTimer?.cancel();
-    _ovSyncTimer?.cancel();
-    _ovXfTrail?.cancel();
-    _mHideTimer?.cancel();
-    _mOvIdleTimer?.cancel();
-    _mResTimer?.cancel();
+    _ovSync.dispose();
+    _wmGestureTimer?.cancel();
     unawaited(MetalPreview.disposeEngine());
     _xfTrail?.cancel();
     CompPlayer.onCompVisible = null;
@@ -9869,13 +9518,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   Widget _buildPreview() {
-    // HDR 預覽的疊加物同步：這裡是所有相關狀態變化（選取、拖曳、
-    // 面板調整）一定會經過的地方，排程本身很便宜（查旗標＋計時器）
-    _scheduleOvSync();
+    // 疊加物同步：這裡是所有相關狀態變化（選取、拖曳、面板調整）
+    // 一定會經過的地方；request 本身很便宜（只排計時器）
+    _ovSync.request();
     // 選取中片段的即時變形（捏合/拖曳跟手）：同一個入口，節流在裡面
     _liveXformSync();
-    // 全域浮水印的即時幾何（拖/縮/轉跟手，PNG 不重畫）
-    _liveOvSync();
     final baseVideo = _activeVideo;
     final baseCtrl = baseVideo == null ? null : _ctrls[baseVideo.id];
     final baseAspect = (baseCtrl != null && baseCtrl.value.isInitialized)
@@ -10211,7 +9858,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       // 合成器 seek 本人跟得上手指，
                                       // 蓋層反而把浮水印遮掉
                                       final sparse =
-                                          !MetalPreview.active &&
                                           src0.workPath == null &&
                                           !(Diag.hdrProxyPreview.value &&
                                               src0.workHdrPath != null);
