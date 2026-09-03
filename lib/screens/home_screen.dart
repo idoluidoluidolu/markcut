@@ -228,7 +228,9 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         );
       case _PickKind.photo:
-        final list = await ImagePicker().pickMultiImage();
+        // iOS 拿相簿原檔：image_picker 會把每張照片重壓成 JPEG，
+        // HEIC 變 8-bit、HDR 增益圖在這一步就沒了（見 pickPhotoFiles）
+        final list = await pickPhotoFiles();
         await _openBatch(
           list,
           hint: _countHint(count: list.length, unit: '張照片', soft: 200),

@@ -49,6 +49,42 @@ Future<List<XFile>> pickVideoFiles() async {
   ];
 }
 
+/// 相簿混選（照片＋影片、可多選）：批次頁中途那顆「＋」用。
+///
+/// iOS 走 file_picker，拿到的是相簿裡的「原檔」（HEIC 就是 HEIC，只做
+/// 檔案複製）。image_picker 的 iOS 端不是這樣：每一張都先整張解成
+/// 點陣、再用 UIImageJPEGRepresentation(1.0) 壓一次 JPEG、再把 EXIF
+/// 塞回去——挑 30 張 12MP 就是 30 次全解析度解碼＋編碼之後才把控制權
+/// 還給 App，而且 q=1.0 的 JPEG 比原檔大兩三倍，之後每一步讀檔、
+/// 解碼都跟著慢。
+///
+/// Android 照舊 image_picker（系統相片選取器；file_picker 在安卓開的
+/// 是文件選取器，使用者找不到相簿）；web 也照舊
+Future<List<XFile>> pickMediaFiles() => _pickOriginals(FileType.media);
+
+/// 只挑照片（可多選）。理由同 [pickMediaFiles]；首頁的「照片批次」
+/// 目前還是直接叫 ImagePicker().pickMultiImage()，換成這個就好
+Future<List<XFile>> pickPhotoFiles() => _pickOriginals(FileType.image);
+
+Future<List<XFile>> _pickOriginals(FileType type) async {
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+    // compressionQuality 預設 0 ＝ 不壓：PHPicker 用 .current 表示法，
+    // 系統不轉檔、file_picker 只 copy 檔案
+    final r = await FilePicker.platform.pickFiles(
+      type: type,
+      allowMultiple: true,
+    );
+    return [
+      for (final f in r?.files ?? const <PlatformFile>[])
+        if (f.path != null) XFile(f.path!, name: f.name),
+    ];
+  }
+  final picker = ImagePicker();
+  return type == FileType.image
+      ? picker.pickMultiImage()
+      : picker.pickMultipleMedia();
+}
+
 /// 這個檔是影片嗎。優先看 mimeType，拿不到就退回看副檔名
 ///（相簿匯出的檔案不一定帶 mime）
 bool isVideoFile(XFile f) {

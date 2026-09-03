@@ -92,6 +92,7 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  image: ^4.9.2
 
 # App 圖示：使用者的寶寶像素圖（三隻並排、由亮到暗）
 #

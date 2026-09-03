@@ -175,11 +175,7 @@ class WatermarkRenderer {
     final fontSize = t.sizeFrac * math.min(w, h);
     final m = measureMark(t, fontSize);
     final c = ui.Offset(t.x * w, t.y * h);
-    final ink = ui.Rect.fromCenter(
-      center: c,
-      width: m.width,
-      height: m.height,
-    );
+    final ink = ui.Rect.fromCenter(center: c, width: m.width, height: m.height);
     final boldPx = t.weight > 0.005 ? fontSize * 0.06 * t.weight : 0.0;
     final outlinePx = t.outline ? fontSize * t.outlineWidth + boldPx : 0.0;
     final hasShadow = t.shadow && t.shadowOpacity > 0.01;
@@ -245,6 +241,30 @@ class WatermarkRenderer {
 
   /// 照片浮水印：以原始解析度合成照片 + 馬賽克 + 浮水印，輸出 PNG（無損）。
   static Future<Uint8List> renderPhotoComposite(
+    Uint8List photoBytes,
+    WatermarkSettings s, {
+    ColorGrade? grade,
+    List<PhotoMosaic>? mosaics,
+    List<WatermarkSettings>? extraMarks,
+    double? canvasAspect,
+  }) async {
+    final image = await renderPhotoImage(
+      photoBytes,
+      s,
+      grade: grade,
+      mosaics: mosaics,
+      extraMarks: extraMarks,
+      canvasAspect: canvasAspect,
+    );
+    final data = await image.toByteData(format: ui.ImageByteFormat.png);
+    image.dispose();
+    return data!.buffer.asUint8List();
+  }
+
+  /// 同 [renderPhotoComposite]，但回傳合成好的 [ui.Image] 而不是 PNG。
+  /// 呼叫端自己決定要把像素怎麼帶出去（PNG、raw RGBA…），
+  /// 也要自己 dispose。批次匯出走這裡：存 JPEG 時不必先過一手 PNG
+  static Future<ui.Image> renderPhotoImage(
     Uint8List photoBytes,
     WatermarkSettings s, {
     ColorGrade? grade,
@@ -322,10 +342,9 @@ class WatermarkRenderer {
     }
     final picture = recorder.endRecording();
     final image = await picture.toImage(w, h);
+    picture.dispose();
     photo.dispose();
-    final data = await image.toByteData(format: ui.ImageByteFormat.png);
-    image.dispose();
-    return data!.buffer.asUint8List();
+    return image;
   }
 
   /// 在照片上畫一塊馬賽克。這裡只算「畫在哪」，
