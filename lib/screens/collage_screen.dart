@@ -13,9 +13,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'crop_screen.dart';
 import '../services/file_reader.dart';
+import '../nav.dart';
 import '../theme.dart';
 import '../widgets/watermark_layer.dart';
-import '../widgets/edge_back.dart';
 import 'photo_editor_screen.dart';
 
 /// 宮格拼圖：把多張照片拼成一張（2/4/6/9 宮格），
@@ -147,9 +147,6 @@ class _CollageScreenState extends State<CollageScreen> {
   ];
 
   bool _building = false;
-
-  /// 左緣返回手勢的畫布排除區（見 EdgeBack）
-  final _edgeCanvasKey = GlobalKey();
 
   @override
   void initState() {
@@ -878,7 +875,7 @@ class _CollageScreenState extends State<CollageScreen> {
       // 用 push 保留拼圖頁：編輯器按上一步會回到宮格繼續調
       await Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => PhotoEditorScreen(photo: file)),
+        editRoute(builder: (_) => PhotoEditorScreen(photo: file)),
       );
     } finally {
       if (mounted) setState(() => _building = false);
@@ -1193,87 +1190,81 @@ class _CollageScreenState extends State<CollageScreen> {
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop && mounted) unawaited(_confirmLeave());
       },
-      child: EdgeBack(
-        exclude: [_edgeCanvasKey],
-        child: Scaffold(
-          backgroundColor: kBg,
-          appBar: AppBar(backgroundColor: kBg),
-          body: _cols == 0
-              ? const Center(child: CircularProgressIndicator())
-              : SafeArea(
-                  child: Column(
-                    children: [
-                      Expanded(
-                        // 點畫布外的黑邊＝取消選取。窄長畫布（9:16）兩側
-                        // 一大片留白，點那裡沒反應會以為選取卡住了
-                        child: GestureDetector(
-                          key: _edgeCanvasKey,
-                          behavior: HitTestBehavior.opaque,
-                          onTap: () => setState(() {
-                            _selItem = -1;
-                            _selCell = -1;
-                          }),
-                          child: Center(
-                            child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: AspectRatio(
-                                // 畫布比例兩種模式共用（宮格＝把它等分）
-                                aspectRatio: _canvasAspect,
-                                child: _free ? _buildFree() : _buildGrid(),
-                              ),
+      child: Scaffold(
+        backgroundColor: kBg,
+        appBar: AppBar(backgroundColor: kBg),
+        body: _cols == 0
+            ? const Center(child: CircularProgressIndicator())
+            : SafeArea(
+                child: Column(
+                  children: [
+                    Expanded(
+                      // 點畫布外的黑邊＝取消選取。窄長畫布（9:16）兩側
+                      // 一大片留白，點那裡沒反應會以為選取卡住了
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => setState(() {
+                          _selItem = -1;
+                          _selCell = -1;
+                        }),
+                        child: Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: AspectRatio(
+                              // 畫布比例兩種模式共用（宮格＝把它等分）
+                              aspectRatio: _canvasAspect,
+                              child: _free ? _buildFree() : _buildGrid(),
                             ),
                           ),
                         ),
                       ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
-                        child: _settingsCard(),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+                      child: _settingsCard(),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        _free ? '最後選取的照片會在最上層' : '按住可拖曳交換照片位置；點一下鎖定 可調照片顯示位置',
+                        style: const TextStyle(fontSize: 11, color: kTextDim),
                       ),
-                      Padding(
-                        padding: const EdgeInsets.only(top: 6),
-                        child: Text(
-                          _free ? '最後選取的照片會在最上層' : '按住可拖曳交換照片位置；點一下鎖定 可調照片顯示位置',
-                          style: const TextStyle(fontSize: 11, color: kTextDim),
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
-                        // 還有空格就先幫人把照片放進來，不要讓他按了
-                        // 才被告知「還有空格子」。放滿了才換成完成
-                        child: _free
-                            ? (_items.isEmpty
-                                  ? primaryAction(
-                                      label: '匯入照片',
-                                      icon: Icons.add_photo_alternate_outlined,
-                                      onPressed: _building
-                                          ? null
-                                          : _addFreePhotos,
-                                    )
-                                  : primaryAction(
-                                      label: _building ? '合成中…' : '完成，上浮水印',
-                                      icon: Icons.check,
-                                      onPressed: _building ? null : _done,
-                                    ))
-                            : _order.contains(-1)
-                            ? primaryAction(
-                                label: _filled == 0
-                                    ? '匯入照片'
-                                    : '再匯入照片（還有 ${_order.where((k) => k < 0).length} 格）',
-                                icon: Icons.add_photo_alternate_outlined,
-                                onPressed: _building
-                                    ? null
-                                    : () => _fillCell(-1),
-                              )
-                            : primaryAction(
-                                label: _building ? '合成中…' : '完成，上浮水印',
-                                icon: Icons.check,
-                                onPressed: _building ? null : _done,
-                              ),
-                      ),
-                    ],
-                  ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
+                      // 還有空格就先幫人把照片放進來，不要讓他按了
+                      // 才被告知「還有空格子」。放滿了才換成完成
+                      child: _free
+                          ? (_items.isEmpty
+                                ? primaryAction(
+                                    label: '匯入照片',
+                                    icon: Icons.add_photo_alternate_outlined,
+                                    onPressed: _building
+                                        ? null
+                                        : _addFreePhotos,
+                                  )
+                                : primaryAction(
+                                    label: _building ? '合成中…' : '完成，上浮水印',
+                                    icon: Icons.check,
+                                    onPressed: _building ? null : _done,
+                                  ))
+                          : _order.contains(-1)
+                          ? primaryAction(
+                              label: _filled == 0
+                                  ? '匯入照片'
+                                  : '再匯入照片（還有 ${_order.where((k) => k < 0).length} 格）',
+                              icon: Icons.add_photo_alternate_outlined,
+                              onPressed: _building ? null : () => _fillCell(-1),
+                            )
+                          : primaryAction(
+                              label: _building ? '合成中…' : '完成，上浮水印',
+                              icon: Icons.check,
+                              onPressed: _building ? null : _done,
+                            ),
+                    ),
+                  ],
                 ),
-        ),
+              ),
       ),
     );
   }

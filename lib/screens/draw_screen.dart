@@ -6,6 +6,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../services/photo_saver.dart';
+import '../nav.dart';
 import '../theme.dart';
 import '../widgets/watermark_layer.dart' show CheckerPainter;
 
@@ -39,7 +40,7 @@ Future<DrawResult?> drawWatermark(
   Uint8List? backdrop,
 }) => Navigator.push<DrawResult>(
   context,
-  MaterialPageRoute(
+  editRoute(
     builder: (_) => _DrawScreen(
       initialData: initialData,
       initial: initial,

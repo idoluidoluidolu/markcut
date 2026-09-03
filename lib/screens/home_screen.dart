@@ -5,6 +5,7 @@ import 'package:image_picker/image_picker.dart';
 import '../services/video_picker.dart';
 
 import '../services/preset_store.dart';
+import '../nav.dart';
 import '../theme.dart';
 import 'batch_watermark_screen.dart';
 import 'collage_screen.dart';
@@ -237,7 +238,7 @@ class _HomeScreenState extends State<HomeScreen> {
         // 宮格就得決定要幾張，挑錯還要退出去重來
         await Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => const CollageScreen()),
+          editRoute(builder: (_) => const CollageScreen()),
         );
       case _PickKind.gif:
         // GIF 一次做一支；多選了就拿第一支，這裡不值得再多問一輪
@@ -246,7 +247,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (v.isEmpty || !mounted) return;
         await Navigator.push(
           context,
-          MaterialPageRoute(
+          editRoute(
             builder: (_) => GifScreen(path: v.first.path, name: v.first.name),
           ),
         );
@@ -340,7 +341,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _openPhotosAsVideo(List<XFile> picked) async {
     await Navigator.push(
       context,
-      MaterialPageRoute(
+      editRoute(
         builder: (_) =>
             VideoEditorScreen(photoPaths: [for (final f in picked) f.path]),
       ),
@@ -375,7 +376,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     await Navigator.push(
       context,
-      MaterialPageRoute(
+      editRoute(
         builder: (_) => BatchWatermarkScreen(files: list, initialHint: hint),
       ),
     );
@@ -384,7 +385,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _openPhoto(XFile picked) async {
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => PhotoEditorScreen(photo: picked)),
+      editRoute(builder: (_) => PhotoEditorScreen(photo: picked)),
     );
   }
 
@@ -393,7 +394,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _openBlank() async {
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const VideoEditorScreen(blank: true)),
+      editRoute(builder: (_) => const VideoEditorScreen(blank: true)),
     );
     _checkDraft();
   }
@@ -402,7 +403,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _openVideos(List<XFile> picked) async {
     await Navigator.push(
       context,
-      MaterialPageRoute(
+      editRoute(
         builder: (_) =>
             VideoEditorScreen(videoPaths: [for (final f in picked) f.path]),
       ),
@@ -413,9 +414,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _openVideo(XFile picked) async {
     await Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => VideoEditorScreen(videoPath: picked.path),
-      ),
+      editRoute(builder: (_) => VideoEditorScreen(videoPath: picked.path)),
     );
     _checkDraft();
   }
@@ -423,7 +422,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void _makeWatermark() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const WatermarkStudioScreen()),
+      editRoute(builder: (_) => const WatermarkStudioScreen()),
     );
   }
 

@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
+import '../nav.dart';
 import '../theme.dart';
 
 /// 開裁切畫面，回傳裁好的 PNG；使用者取消回 null。
@@ -12,10 +13,7 @@ import '../theme.dart';
 /// 拿到的都是一份 bytes，裁完還是一份 bytes，呼叫端不用改自己的流程。
 Future<Uint8List?> cropImage(BuildContext context, Uint8List bytes) async {
   final out = await Navigator.of(context).push<Object>(
-    MaterialPageRoute(
-      fullscreenDialog: true,
-      builder: (_) => CropScreen(bytes: bytes),
-    ),
+    editRoute(fullscreenDialog: true, builder: (_) => CropScreen(bytes: bytes)),
   );
   return out is Uint8List ? out : null;
 }
@@ -32,7 +30,7 @@ Future<Rect?> pickCropRect(
   Rect? initial,
 }) async {
   final out = await Navigator.of(context).push<Object>(
-    MaterialPageRoute(
+    editRoute(
       fullscreenDialog: true,
       builder: (_) =>
           CropScreen(bytes: frame, rectOnly: true, initial: initial),

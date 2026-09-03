@@ -19,8 +19,8 @@ import 'work_files.dart';
 /// 首頁進場就會卡住
 ///
 /// 每個影片專案進編輯器就自動存成草稿（不用選「保留」），所以數量
-/// 只會越來越多：有一個上限（[maxDrafts]，預設 [defaultMax]），
-/// 超過就從最舊的開始自動刪，見 [prune]
+/// 只會越來越多：有一個固定的上限（[maxDrafts]），超過之後由使用者
+/// 在草稿夾按「清理」，從最舊的開始刪，見 [prune]
 class DraftStore {
   /// 索引：[DraftMeta] 的清單
   static const _indexKey = 'projects_index_v1';
@@ -38,37 +38,18 @@ class DraftStore {
   /// 舊版那個唯一的草稿鍵（搬完就刪）
   static const _legacyKey = 'project_draft_v1';
 
-  /// 草稿數量上限的設定鍵（草稿夾右上角可以調）
-  static const _maxKey = 'drafts_max_v1';
+  /// 舊版那個「保留份數」的設定鍵。上限不給調了（使用者指定：那顆
+  /// 按鈕刪掉，一律預設 30），這個鍵只剩下被刪的份——舊裝置上調過
+  /// 的值留著不管，會讓人以為它還有效（見 [_migrate]）
+  static const _staleMaxKey = 'drafts_max_v1';
 
-  /// 預設最多留幾份。超過就從最舊的開始自動刪（見 [prune]）
-  static const defaultMax = 30;
-
-  /// 上限可以調的範圍。0 或負數沒有「不限」的意思——草稿一份好幾百 KB
-  /// 都塞在 SharedPreferences，放任不管會把整個 prefs 拖垮
-  static const minMax = 1;
-  static const maxMax = 500;
-
-  /// 草稿夾的設定給人選的那幾個
-  static const maxChoices = [10, 20, 30, 50, 100];
+  /// 最多留幾份草稿。固定值，沒有設定可以調：草稿一份好幾百 KB 都塞在
+  /// SharedPreferences，放任不管會把整個 prefs 拖垮，而三十份對誰都夠。
+  /// 超過也不會自己刪，要使用者在草稿夾按「清理」（見 [prune]）
+  static const int maxDrafts = 30;
 
   static String _dataKey(String id) => '$_dataPrefix$id';
   static String _thumbKey(String id) => '$_thumbPrefix$id';
-
-  /// 最多留幾份草稿（沒設過就是 [defaultMax]）。
-  /// 不快取：prefs 本身就在記憶體裡，讀一次是一次 map 查找
-  static Future<int> maxDrafts() async {
-    final prefs = await SharedPreferences.getInstance();
-    final n = prefs.getInt(_maxKey);
-    return n == null ? defaultMax : n.clamp(minMax, maxMax);
-  }
-
-  /// 改上限。只存數字，不順手清——要清的話呼叫端自己跑 [prune]
-  ///（草稿夾會先告訴使用者哪幾份要被刪，確認了才清）
-  static Future<void> setMaxDrafts(int n) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_maxKey, n.clamp(minMax, maxMax));
-  }
 
   /// 正在編輯中的草稿：上限清理絕不能碰。
   /// 編輯器一存草稿／一載入草稿就登記，離開專案時解除
@@ -269,12 +250,10 @@ class DraftStore {
   static Future<List<String>> prune({Set<String> keep = const {}}) =>
       _serial(() => _pruneInner(keep: keep));
 
-  static Future<List<String>> _pruneInner({
-    Set<String> keep = const {},
-  }) async {
+  static Future<List<String>> _pruneInner({Set<String> keep = const {}}) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final cap = await maxDrafts();
+      const cap = maxDrafts;
       final metas = await list(); // 新到舊
       if (metas.length <= cap) return const [];
       final protected = {...keep, ..._open};
@@ -338,6 +317,9 @@ class DraftStore {
   /// 不用「跑過沒」的旗標把關：搬完就把舊鍵刪掉，之後每次都只是
   /// 一次 getString 落空。旗標反而讓同一個行程裡的第二次搬移失效
   static Future<void> _migrate(SharedPreferences prefs) async {
+    // 順手把舊版「保留份數」存下來的值刪掉：上限改成固定 30 之後
+    // 沒人會再讀它，留在 prefs 裡只會讓人以為自己調的還算數
+    if (prefs.containsKey(_staleMaxKey)) await prefs.remove(_staleMaxKey);
     final old = prefs.getString(_legacyKey);
     if (old == null) return;
     await prefs.remove(_legacyKey);

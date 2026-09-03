@@ -13,6 +13,7 @@ import '../services/draft_store.dart';
 import '../services/file_reader.dart';
 import '../services/gif_store.dart';
 import '../services/preset_store.dart';
+import '../nav.dart';
 import '../theme.dart';
 import '../widgets/gif_image.dart';
 import '../widgets/swipe_back.dart';
@@ -186,7 +187,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       // 長按＝刪除。右上角「全部」才是進範本夾
       onTap: () => Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => WatermarkStudioScreen(edit: preset)),
+        editRoute(builder: (_) => WatermarkStudioScreen(edit: preset)),
       ).then((_) => _reload()),
       onLongPress: () => _confirmDeletePreset(preset),
       // 不放名字（使用者指定）：封面本身就是內容，名字進範本夾看
@@ -226,7 +227,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget _presetAddTile({required double w}) => GestureDetector(
     onTap: () => Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const WatermarkStudioScreen()),
+      editRoute(builder: (_) => const WatermarkStudioScreen()),
     ).then((_) => _reload()),
     child: Container(
       width: w,
@@ -311,7 +312,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
     await Navigator.push(
       context,
-      MaterialPageRoute(
+      editRoute(
         builder: (_) => VideoEditorScreen(draft: data, draftId: m.id),
       ),
     );
@@ -727,22 +728,13 @@ class _DraftsScreenState extends State<DraftsScreen> {
   Map<String, dynamic>? _collageDraft;
   bool _loading = true;
 
-  /// 建議保留幾份（只是手動清理的基準，不會自動刪，見 _cleanupOld）
-  int _cap = DraftStore.defaultMax;
+  /// 保留幾份：固定 30，沒有設定可以調（使用者指定）。
+  /// 只是手動清理的基準，不會自動刪，見 _cleanupOld
+  static const _cap = DraftStore.maxDrafts;
 
   /// 選取模式：勾好幾份、右上角垃圾桶一次刪
   bool _selecting = false;
   final Set<String> _picked = {};
-
-  /// 調草稿上限。調小到會刪掉現有草稿時先講清楚哪幾份要走，
-  /// 確認了才存設定＋清理
-  Future<void> _editCap() async {
-    final picked = await _pickCap(context, current: _cap);
-    if (picked == null || !mounted) return;
-    await DraftStore.setMaxDrafts(picked);
-    if (mounted) showHint(context, '建議保留 $picked 份，要清的時候按「清理」');
-    _reload();
-  }
 
   /// 手動清理：只有使用者按下去才會刪。自動清理全部拿掉了——
   /// 它要把每份草稿的完整 JSON（含縮圖與圖片）讀進來比對引用，
@@ -757,7 +749,8 @@ class _DraftsScreenState extends State<DraftsScreen> {
     final ok = await showConfirm(
       context,
       title: '清掉最舊的 $over 份？',
-      message: '現在有 ${_drafts.length} 份影片草稿，保留最新的 $_cap 份，'
+      message:
+          '現在有 ${_drafts.length} 份影片草稿，保留最新的 $_cap 份，'
           '其餘連同它們自己的工作檔一起刪掉，無法復原',
       action: '清掉 $over 份',
     );
@@ -795,7 +788,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
 
   Future<void> _reload() async {
     final found = await DraftStore.list();
-    final cap = await DraftStore.maxDrafts();
     final prefs = await SharedPreferences.getInstance();
     Map<String, dynamic>? photo;
     final ps = prefs.getString(kPhotoDraftKey);
@@ -832,7 +824,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
     if (mounted) {
       setState(() {
         _drafts = found;
-        _cap = cap;
         _photoDraft = photo;
         _batchDraft = batch;
         _gifDraft = gif;
@@ -855,7 +846,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
     if (!mounted) return;
     await Navigator.push(
       context,
-      MaterialPageRoute(
+      editRoute(
         builder: (_) => GifScreen(
           path: path,
           name: d['name'] as String? ?? 'video',
@@ -886,7 +877,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
     if (d == null) return;
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => CollageScreen(restore: d)),
+      editRoute(builder: (_) => CollageScreen(restore: d)),
     );
     _reload();
   }
@@ -928,7 +919,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
     if (!mounted) return;
     await Navigator.push(
       context,
-      MaterialPageRoute(
+      editRoute(
         builder: (_) => BatchWatermarkScreen(
           files: alive,
           restore: d,
@@ -958,7 +949,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
     if (d == null) return;
     await Navigator.push(
       context,
-      MaterialPageRoute(
+      editRoute(
         builder: (_) => PhotoEditorScreen(
           photo: XFile(d['photo'] as String),
           draft: d['state'] as String?,
@@ -1113,7 +1104,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
     }
     await Navigator.push(
       context,
-      MaterialPageRoute(
+      editRoute(
         builder: (_) => VideoEditorScreen(draft: data, draftId: m.id),
       ),
     );
@@ -1244,12 +1235,8 @@ class _DraftsScreenState extends State<DraftsScreen> {
                 child: const Text('取消'),
               ),
             ] else ...[
-              // 保留份數（只是建議值，清不清由使用者自己按）
-              IconButton(
-                tooltip: '保留份數',
-                icon: const Icon(Icons.tune, size: 22),
-                onPressed: _editCap,
-              ),
+              // 保留份數不再給調（使用者指定：那顆鈕刪掉，一律 30 份）。
+              // 掃把是唯一會刪掉草稿的入口
               if (ds.isNotEmpty)
                 IconButton(
                   tooltip: '清理舊草稿',
@@ -1378,7 +1365,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
                           padding: const EdgeInsets.fromLTRB(8, 18, 8, 8),
                           child: Text(
                             '影片專案會自動存成草稿，不會自己刪掉；'
-                            '建議保留 $_cap 份，超過時按右上角的掃把清掉最舊的',
+                            '保留 $_cap 份，超過時按右上角的掃把清掉最舊的',
                             textAlign: TextAlign.center,
                             style: const TextStyle(
                               fontSize: 12,
@@ -1440,85 +1427,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
       ),
     );
   }
-}
-
-/// 草稿上限的選單：從 DraftStore.maxChoices 挑一個，目前的打勾。
-/// 回 null＝取消
-Future<int?> _pickCap(BuildContext context, {required int current}) {
-  final c = pageColors(context);
-  return showDialog<int>(
-    context: context,
-    builder: (context) => Dialog(
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: c.line),
-      ),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: kDialogWidth),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 24, 20, 10),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                '草稿最多保留幾份',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 15.5,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.3,
-                  color: c.text,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                '每個影片專案都會自動存成草稿；超過這個份數時，'
-                '草稿夾右上角的掃把會清掉最舊的（不會自動清）',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 12.5, color: c.dim, height: 1.55),
-              ),
-              const SizedBox(height: 12),
-              for (final n in DraftStore.maxChoices)
-                InkWell(
-                  borderRadius: BorderRadius.circular(10),
-                  onTap: () => Navigator.pop(context, n),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      vertical: 11,
-                      horizontal: 8,
-                    ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            '$n 份',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: n == current
-                                  ? FontWeight.w700
-                                  : FontWeight.w500,
-                              color: c.text,
-                            ),
-                          ),
-                        ),
-                        if (n == current)
-                          Icon(Icons.check, size: 18, color: c.accent),
-                      ],
-                    ),
-                  ),
-                ),
-              const SizedBox(height: 4),
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('取消'),
-              ),
-            ],
-          ),
-        ),
-      ),
-    ),
-  );
 }
 
 /// 我的 GIF：做好的 GIF 都留一份在這裡。

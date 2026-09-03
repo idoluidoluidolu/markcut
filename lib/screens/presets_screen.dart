@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/watermark_settings.dart';
 import '../services/preset_store.dart';
+import '../nav.dart';
 import '../theme.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/swipe_back.dart';
@@ -38,7 +39,7 @@ class _PresetsScreenState extends State<PresetsScreen> {
   Future<void> _edit(WatermarkPreset p) async {
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => WatermarkStudioScreen(edit: p)),
+      editRoute(builder: (_) => WatermarkStudioScreen(edit: p)),
     );
     _reload();
   }
@@ -155,7 +156,7 @@ class _PresetsScreenState extends State<PresetsScreen> {
   Future<void> _addNew() async {
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const WatermarkStudioScreen()),
+      editRoute(builder: (_) => const WatermarkStudioScreen()),
     );
     _reload();
   }
