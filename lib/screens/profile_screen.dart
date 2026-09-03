@@ -193,10 +193,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
       child: Container(
         width: w,
         height: w,
+        // 內容照卡片的圓角切齊：範本可以是一張鋪滿磚面的圖，
+        // 不切的話四個角會被方形的內容頂出去
         clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
           color: const Color(0xFF1B1B20),
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(kPresetRadius),
           boxShadow: _tileShadow,
         ),
         child: IgnorePointer(
@@ -230,9 +232,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
       width: w,
       height: w,
       alignment: Alignment.center,
+      clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
         color: kLCard,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(kPresetRadius),
         border: Border.all(color: kLBorder, width: 1.4),
       ),
       child: const Text(
@@ -1595,38 +1598,35 @@ class _GifsScreenState extends State<GifsScreen> {
     ),
   );
 
-  Future<void> _delete(String ref) async {
+  /// 回傳有沒有真的刪掉（確認視窗按取消就是 false）
+  Future<bool> _delete(String ref) async {
     final ok = await showConfirm(
       context,
       title: '刪除這個 GIF？',
       message: '只會刪掉 App 裡這一份，相簿裡的不受影響',
       action: '刪除',
     );
-    if (!ok) return;
+    if (!ok) return false;
     await GifStore.remove(ref);
     _reload();
+    return true;
   }
 
-  /// 點一下放大看：GIF 在小格子裡看不出動了什麼
+  /// 點一下放大看：GIF 在小格子裡看不出動了什麼。
+  /// 放大之後左右滑換上一張／下一張、往下滑關掉、長按刪掉眼前這張
   void _preview(String ref) {
+    final start = _gifs.indexOf(ref);
+    if (start < 0) return;
     showDialog<void>(
       context: context,
-      builder: (context) => Dialog(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        // 蓋掉主題的對話框外形：它帶一圈 side 框線，透明底也照畫
-        // ——就是燈箱那圈白線（實測回報「圓角不要框線」）。
-        // 圓角改切在 GIF 本人上，就沒有對不齊的白邊問題
-        shape: const RoundedRectangleBorder(),
-        insetPadding: const EdgeInsets.all(20),
-        child: GestureDetector(
-          onTap: () => Navigator.pop(context),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(16),
-            child: GifImage(ref, fit: BoxFit.contain),
-          ),
-        ),
-      ),
+      // 遮罩改成自己畫（見 _GifLightbox）：要跟著下滑的手指變淡，
+      // route 的 barrierColor 是固定值做不到。開關的淡入淡出照舊
+      // 走 showDialog 那條（150ms），手感不變
+      barrierColor: Colors.transparent,
+      // 遮罩要蓋到狀態列與底部（留白就露出後面的瀑布流）
+      useSafeArea: false,
+      builder: (context) =>
+          _GifLightbox(gifs: _gifs, start: start, onDelete: _delete),
     );
   }
 
@@ -1691,6 +1691,149 @@ class _GifsScreenState extends State<GifsScreen> {
                 },
               ),
       ),
+    );
+  }
+}
+
+/// GIF 燈箱（放大看那一張）。
+///
+/// 左右滑＝上一張／下一張，滑到頭會回彈而不繞回去——繞回去就分不清
+/// 自己在哪裡了；往下滑＝畫面跟著手指走、遮罩同步變淡，過門檻放手
+/// 就關掉，沒過就彈回原位；長按＝刪掉「眼前這一張」（翻過頁之後刪的
+/// 不是點進來的那張）。點一下關掉的老行為留著
+class _GifLightbox extends StatefulWidget {
+  final List<String> gifs;
+  final int start;
+
+  /// 回傳有沒有真的刪掉（使用者可能在確認視窗按取消）
+  final Future<bool> Function(String ref) onDelete;
+
+  const _GifLightbox({
+    required this.gifs,
+    required this.start,
+    required this.onDelete,
+  });
+
+  @override
+  State<_GifLightbox> createState() => _GifLightboxState();
+}
+
+class _GifLightboxState extends State<_GifLightbox> {
+  /// 遮罩濃度。原本用佈景的 0.35，後面的瀑布流看得一清二楚，
+  /// GIF 反而浮不起來（使用者回報「再壓暗一點點」）。
+  /// 0.85 跟深色佈景的對話框遮罩同一個值
+  static const _scrim = 0.85;
+
+  /// 下滑超過這麼多（或甩得夠快）就關掉
+  static const _closeAt = 120.0;
+
+  /// 遮罩／內容淡到底的行程
+  static const _fadeOver = 320.0;
+
+  late final PageController _pc = PageController(initialPage: widget.start);
+  late int _i = widget.start;
+
+  /// 目前的下滑位移（只吃往下，往上滑不該讓 GIF 飛出畫面）
+  double _dy = 0;
+  bool _dragging = false;
+
+  /// 已經按下關閉了。關閉動畫還在跑的時候元件仍然活著，沒有這道閘
+  /// 再滑一次就會多 pop 一層，把整個「我的 GIF」也收掉
+  bool _closing = false;
+
+  @override
+  void dispose() {
+    _pc.dispose();
+    super.dispose();
+  }
+
+  void _close() {
+    if (_closing) return;
+    _closing = true;
+    Navigator.pop(context);
+  }
+
+  void _dragUpdate(DragUpdateDetails d) {
+    final next = (_dy + d.delta.dy).clamp(0.0, 4000.0);
+    if (next == _dy) return;
+    setState(() => _dy = next);
+  }
+
+  void _dragEnd(DragEndDetails d) {
+    _dragging = false;
+    if (_dy > _closeAt || d.velocity.pixelsPerSecond.dy > 700) {
+      _close();
+      return;
+    }
+    setState(() => _dy = 0); // 沒過門檻：彈回原位
+  }
+
+  /// 手勢被判給別人（橫滑翻頁贏了競技場）或被系統取消：回原位
+  void _dragCancel() {
+    _dragging = false;
+    if (_dy != 0) setState(() => _dy = 0);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pager = GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: _close,
+      onLongPress: () async {
+        final gone = await widget.onDelete(widget.gifs[_i]);
+        if (gone && mounted) _close();
+      },
+      // 直向拖曳自己收：PageView 只吃橫向，兩邊在手勢競技場不打架
+      onVerticalDragStart: (_) => _dragging = true,
+      onVerticalDragUpdate: _dragUpdate,
+      onVerticalDragEnd: _dragEnd,
+      onVerticalDragCancel: _dragCancel,
+      child: PageView.builder(
+        controller: _pc,
+        // 到頭了輕輕回彈（iOS 那種橡皮筋），不繞回第一張
+        physics: const BouncingScrollPhysics(),
+        itemCount: widget.gifs.length,
+        onPageChanged: (i) => setState(() => _i = i),
+        itemBuilder: (context, i) => Padding(
+          padding: const EdgeInsets.all(20),
+          child: Center(
+            child: ClipRRect(
+              // 圓角切在 GIF 本人上（不是外面包一層框），
+              // 就沒有對不齊的白邊
+              borderRadius: BorderRadius.circular(16),
+              child: GifImage(widget.gifs[i], fit: BoxFit.contain),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    return TweenAnimationBuilder<double>(
+      tween: Tween(end: _dy),
+      // 拖著的時候不補間（畫面就黏在手指上），放手才用 180ms 收尾
+      duration: _dragging ? Duration.zero : const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+      builder: (context, dy, child) {
+        final t = (dy / _fadeOver).clamp(0.0, 1.0);
+        return Stack(
+          children: [
+            Positioned.fill(
+              child: ColoredBox(
+                color: Colors.black.withValues(alpha: _scrim * (1 - 0.7 * t)),
+              ),
+            ),
+            Positioned.fill(
+              child: Transform.translate(
+                offset: Offset(0, dy),
+                // 透明度 1 的時候 RenderOpacity 直接跳過圖層，
+                // 不拖著的時候沒有額外成本
+                child: Opacity(opacity: 1 - 0.5 * t, child: child),
+              ),
+            ),
+          ],
+        );
+      },
+      child: pager,
     );
   }
 }

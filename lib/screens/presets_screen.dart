@@ -163,11 +163,12 @@ class _PresetsScreenState extends State<PresetsScreen> {
   /// 「＋ 新增範本」卡：開浮水印工坊，做完回來清單自動刷新
   Widget _addCard() {
     return InkWell(
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: BorderRadius.circular(kPresetRadius),
       onTap: _addNew,
       child: Container(
+        clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(kPresetRadius),
           border: Border.all(color: kLBorder),
         ),
         child: const Column(
@@ -184,13 +185,15 @@ class _PresetsScreenState extends State<PresetsScreen> {
 
   Widget _presetCard(WatermarkPreset p) {
     return InkWell(
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: BorderRadius.circular(kPresetRadius),
       onTap: () => _edit(p),
       onLongPress: () => _showActions(p),
       child: Container(
+        // 內容（黑底＋照實渲染的浮水印，可能是一張鋪滿的圖）一律
+        // 切成跟卡片同一個圓角，四角才不會被方形的內容頂出去
         clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(kPresetRadius),
           border: Border.all(color: kLBorder),
         ),
         // 不放名稱膠囊（使用者指定）：卡片本身就是內容，

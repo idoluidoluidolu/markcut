@@ -1698,7 +1698,9 @@ class WatermarkPanelState extends State<WatermarkPanel> {
             // 新增＝頂端滿版細長卡（D 案，使用者選定）：永遠在
             // 第一眼位置、不跟著瀑布流捲，也不佔卡片的高度
             InkWell(
-              borderRadius: BorderRadius.circular(9),
+              // 細長條不用範本卡的 18（40 高配 18 幾乎變成膠囊），
+              // 用卡片標準圓角，跟下面那排卡是同一個家族
+              borderRadius: BorderRadius.circular(kCardRadius),
               onTap: () {
                 Navigator.pop(context);
                 setState(() => _presetSel = null);
@@ -1708,7 +1710,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                 height: 40,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(9),
+                  borderRadius: BorderRadius.circular(kCardRadius),
                   border: Border.all(color: kClipBorder),
                 ),
                 child: const Row(
@@ -1778,21 +1780,22 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   Widget _pickerCard(WatermarkPreset p) {
     final selected = _presetSel == p.name;
     return InkWell(
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: BorderRadius.circular(kPresetRadius),
       onTap: () {
         Navigator.pop(context);
         _applyPresetNow(p);
       },
       child: Container(
+        // 內容切齊卡片圓角（跟範本夾、個人中心的範本磚同一套）
         clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(kPresetRadius),
           border: Border.all(color: kBorder, width: 1),
         ),
         // 選取框畫在前景，內容不位移
         foregroundDecoration: selected
             ? BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(kPresetRadius),
                 border: Border.all(color: kSelect, width: 1.5),
               )
             : null,

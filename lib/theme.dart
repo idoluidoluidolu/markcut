@@ -50,6 +50,11 @@ const kCardRadius = 12.0; // 卡片
 const kDialogRadius = 16.0; // 對話框
 const kTagRadius = 6.0; // 小標籤、狀態標
 
+/// 範本預覽卡（個人中心的範本磚、範本夾、「選擇範本」彈窗）。
+/// 三處畫的是同一件東西、同一個尺寸，圓角就不能三種——範本夾原本
+/// 寫死 8，跟個人中心的 18 擺在一起看起來就是「範本夾的沒有圓角」
+const kPresetRadius = 18.0;
+
 /// 對話框最大寬度（窄的那些讀起來會太擠）
 const kDialogWidth = 280.0;
 
