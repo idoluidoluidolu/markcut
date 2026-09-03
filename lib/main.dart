@@ -10,7 +10,6 @@ import 'package:media_kit/media_kit.dart';
 
 import 'screens/home_screen.dart';
 import 'services/diagnostics.dart';
-import 'services/draft_store.dart';
 import 'services/steady_pointer.dart';
 import 'services/playback_trace.dart';
 import 'theme.dart';
@@ -35,9 +34,10 @@ void main() {
   // 上次執行有沒有做到一半就被系統收掉（匯出閃退不會留當機報告，
   // 只有這個黑盒子留得下現場）。讀完就刪，診斷畫面看得到
   unawaited(Diag.loadLastRun());
-  // 草稿超過上限的部分在啟動時清掉（最舊的先走）。這時候還沒開任何
-  // 專案，不會清到正在編輯的；每次存草稿也各清一次，見 DraftStore.prune
-  unawaited(DraftStore.prune());
+  // 草稿清理「不」在啟動時做：它要把每一份草稿的完整 JSON（含縮圖與
+  // 圖片，一份好幾百 KB）讀進來比對引用，草稿多的機器等於在啟動路徑上
+  // 掃幾十 MB——更新後第一次開就被系統judged 逾時殺掉（實機回報：開機即當）。
+  // 改成進草稿頁時清一次、每次存草稿也各清一次（見 DraftStore.prune）
   // 拖曳預覽的快取幀很密，預設 100 張一下就滿、一滿就要重新解碼＝卡頓，
   // 所以要放大一點。但不能放太大：手機上這裡吃掉的記憶體會讓匯出時
   // FFmpeg 要不到記憶體、整個 App 被系統殺掉（拖曳的影格另有自己的

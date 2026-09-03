@@ -774,7 +774,14 @@ class _DraftsScreenState extends State<DraftsScreen> {
   @override
   void initState() {
     super.initState();
-    _reload();
+    // 超過上限的清理挪到這裡（原本在 App 啟動時做：它要讀每一份草稿的
+    // 完整 JSON 比對引用，草稿多時等於在開機路徑上掃幾十 MB，更新後
+    // 第一次開就被系統當成沒回應殺掉——實機回報「連開機都不行」）
+    _reload().then((_) async {
+      if (!mounted) return;
+      final removed = await DraftStore.prune();
+      if (removed.isNotEmpty && mounted) await _reload();
+    });
   }
 
   Future<void> _reload() async {
