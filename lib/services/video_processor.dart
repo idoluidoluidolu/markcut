@@ -256,6 +256,34 @@ class ExportSpec {
     this.hdr = false,
   });
 
+  /// 換掉來源／片段、其餘欄位原封不動。倒轉片段先倒成暫存檔再重建 spec
+  /// 用的就是這個——以前是手抄一遍建構子，抄漏了 hdr／fps／gif 三組：
+  /// 有倒轉片段的 HDR 專案匯出來是 SDR、GIF 匯出來是影片
+  ExportSpec copyWith({
+    List<MediaSource>? sources,
+    List<TimelineClip>? clips,
+  }) => ExportSpec(
+    sources: sources ?? this.sources,
+    clips: clips ?? this.clips,
+    timelineDuration: timelineDuration,
+    speed: speed,
+    watermarkPng: watermarkPng,
+    outW: outW,
+    outH: outH,
+    wmStart: wmStart,
+    wmEnd: wmEnd,
+    wmAnimation: wmAnimation,
+    wmSpeed: wmSpeed,
+    wmRange: wmRange,
+    overlayPngs: overlayPngs,
+    crf: crf,
+    fps: fps,
+    gif: gif,
+    gifFps: gifFps,
+    gifMaxSide: gifMaxSide,
+    hdr: hdr,
+  );
+
   /// 輸出影片實際長度（變速後）
   double get outputDuration => math.max(0.01, timelineDuration / speed);
 

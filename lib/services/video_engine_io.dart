@@ -1425,22 +1425,9 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
         }),
       );
     }
-    spec = ExportSpec(
-      sources: sources,
-      clips: clips,
-      timelineDuration: spec.timelineDuration,
-      speed: spec.speed,
-      watermarkPng: spec.watermarkPng,
-      outW: spec.outW,
-      outH: spec.outH,
-      wmStart: spec.wmStart,
-      wmEnd: spec.wmEnd,
-      wmAnimation: spec.wmAnimation,
-      wmSpeed: spec.wmSpeed,
-      wmRange: spec.wmRange,
-      overlayPngs: spec.overlayPngs,
-      crf: spec.crf,
-    );
+    // copyWith 帶齊 hdr／fps／gif：以前手抄建構子漏了這三組，
+    // 有倒轉片段的 HDR 專案會靜默匯成 SDR
+    spec = spec.copyWith(sources: sources, clips: clips);
   }
 
   /// 做好的檔案存進相簿。原生與 FFmpeg 兩條路共用
