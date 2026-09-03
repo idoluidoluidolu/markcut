@@ -2044,6 +2044,7 @@ final class AtomicFlag {
     registerDiagChannel(engineBridge)
     registerCompChannel(engineBridge)
     registerExportChannel(engineBridge)
+    registerPhotoChannel(engineBridge)
 
     // 拖曳預覽的「按需抽幀」通道：滑到哪、跟硬體解碼器要那一格。
     // HDR 的色調映射由系統做，顏色跟 AVPlayer 播放畫面天生一致
@@ -9181,3 +9182,302 @@ final class MetalViewFactory: NSObject, FlutterPlatformViewFactory {
   }
 }
 
+// ===== HDR 照片匯出（markcut/photo）=====================================
+//
+// 整段貼到 ios/Runner/AppDelegate.swift 的最尾端（檔案已 import
+// AVFoundation / CoreImage / ImageIO / Flutter / UIKit，這裡不用再 import）。
+// 然後在 didInitializeImplicitFlutterEngine 裡、registerExportChannel 那行
+// 之後加一行：
+//
+//     registerPhotoChannel(engineBridge)
+//
+// 通道 "markcut/photo"：
+//   probe(String path) -> {hdr: Bool, w: Int, h: Int}
+//       只讀檔頭：轉正後的像素尺寸，以及「這張是 HDR、而且這台匯得出
+//       HDR」（iOS 17+ 才會回 true；<17 一律 false → Dart 走原本的 SDR 路）
+//   export({src, dest, outW, outH, photoX, photoY, overlay?, overlayGain?,
+//           quality?}) -> String?（nil＝成功；字串＝失敗原因，Dart 端退 SDR）
+//       把來源展開成 HDR（CIImage .expandToHDR），黑底畫布置中、疊上
+//       Dart 烘好的整版浮水印 PNG，寫成 10-bit HEIC（Rec.2100 HLG）。
+//
+// 疊加物的混色數學跟 CIExportCompositorHDR 一字不差：字底下的畫面先夾回
+// SDR 白（CIColorClamp 0…1）以 PNG 的 alpha 混進去，再把 PNG 疊上去；
+// overlayGain 對應影片路的 CIColorMatrix ×3（照片預設 1＝浮水印停在
+// SDR 基準白，跟 SDR 預覽同一個白）。
+//
+// 最低系統：probe/export 內部以 #available(iOS 17.0) 分流；
+// 用到的 API 與最低版本列在檔尾。
+//
+// [verified] 相對原稿的三處修改（都不改行為契約）：
+//   1. registerPhotoChannel 改 private（跟其他 registerXxxChannel 同）
+//   2. 背景 dispatch 區塊包 autoreleasepool：ImageIO/UIImage 的暫存物件
+//      在 GCD 工作執行緒上不保證馬上釋放，48MP 那級的圖要主動收
+//   3. 寫檔後的驗收：成品「打不開」也算失敗（原稿會當成功回 nil，
+//      而 gal 的 creationRequestForAssetFromImage(atFileURL:)! 是強制解包，
+//      打不開的檔會在存相簿那一步崩）；10-bit 判定放寬為
+//      depth ≥ 10 或 ProfileName 含 HLG/2100/PQ，失敗原因附上 profile
+//      名稱，這樣要是 ImageIO 對 10-bit HEIF 回報的 Depth 不是 10，
+//      不會整條路無聲地永遠退 SDR、而且看得出為什麼
+
+extension AppDelegate {
+  private func registerPhotoChannel(_ engineBridge: FlutterImplicitEngineBridge) {
+    guard let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "markcut.photo")
+    else { return }
+    let channel = FlutterMethodChannel(
+      name: "markcut/photo", binaryMessenger: registrar.messenger())
+    channel.setMethodCallHandler { call, result in
+      switch call.method {
+      case "probe":
+        guard let path = call.arguments as? String else {
+          result(nil)
+          return
+        }
+        // 讀檔頭而已，但增益圖那一問會碰到檔案 I/O，別擋主執行緒
+        DispatchQueue.global(qos: .userInitiated).async {
+          let m = autoreleasepool { HDRPhotoExport.probe(path) }
+          DispatchQueue.main.async { result(m) }
+        }
+      case "export":
+        guard let a = call.arguments as? [String: Any] else {
+          result("參數錯誤")
+          return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+          let err = autoreleasepool { HDRPhotoExport.export(a) }
+          DispatchQueue.main.async { result(err) }
+        }
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+}
+
+enum HDRPhotoExport {
+  // 跟 CIExportCompositor.ctxHDR 同一組設定：半浮點＋「明講延伸範圍的
+  // 線性空間」。只給 workingFormat 不給 workingColorSpace 的話，展開出來
+  // 的高光會在進工作空間那一步被收回 1.0 以內（影片路踩過的坑）
+  private static let ctx: CIContext = {
+    var opts: [CIContextOption: Any] = [
+      .cacheIntermediates: false,
+      .workingFormat: CIFormat.RGBAh,
+    ]
+    if let ws = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) {
+      opts[.workingColorSpace] = ws
+    }
+    return CIContext(options: opts)
+  }()
+
+  /// 檔頭探測：轉正後的尺寸 ＋ 這張要不要走 HDR 路
+  static func probe(_ path: String) -> [String: Any] {
+    var m: [String: Any] = ["hdr": false, "w": 0, "h": 0]
+    let url = URL(fileURLWithPath: path)
+    let opts = [kCGImageSourceShouldCache: false] as CFDictionary
+    guard let src = CGImageSourceCreateWithURL(url as CFURL, opts) else { return m }
+    guard
+      let props = CGImageSourceCopyPropertiesAtIndex(src, 0, opts) as? [String: Any]
+    else { return m }
+    var w = (props[kCGImagePropertyPixelWidth as String] as? NSNumber)?.intValue ?? 0
+    var h = (props[kCGImagePropertyPixelHeight as String] as? NSNumber)?.intValue ?? 0
+    // EXIF 方向 5~8 是轉 90°：Dart 端（dart:ui 解碼）看到的是轉正後的
+    // 尺寸，這裡要對齊
+    let orient = (props[kCGImagePropertyOrientation as String] as? NSNumber)?.intValue ?? 1
+    if orient >= 5 {
+      let t = w
+      w = h
+      h = t
+    }
+    m["w"] = w
+    m["h"] = h
+    guard #available(iOS 17.0, *) else { return m }
+    m["hdr"] = isHDR(src, props: props)
+    return m
+  }
+
+  /// 這張是 HDR 照片嗎（不解整張圖）
+  @available(iOS 17.0, *)
+  private static func isHDR(_ src: CGImageSource, props: [String: Any]) -> Bool {
+    // (1) Apple 增益圖（iPhone 12+ 的 HEIC／「相容性最佳」的 JPEG）。
+    //     iOS 18 拍的檔案照樣帶這份（ISO 21496-1 之外的相容表示），
+    //     所以這一問在 17 與 18 都命中。只有純 ISO 增益圖、沒有 Apple
+    //     那份的檔（例：Android Ultra HDR JPEG）會被當 SDR——走原路，
+    //     不會壞。想收進來的話在 iOS 18 加問
+    //     kCGImageAuxiliaryDataTypeISOGainMap（iOS 18.0+，本檔沒用，
+    //     沒編譯器不敢押那個符號）
+    if CGImageSourceCopyAuxiliaryDataInfoAtIndex(
+      src, 0, kCGImageAuxiliaryDataTypeHDRGainMap) != nil
+    {
+      return true
+    }
+    // (2) 純 HDR（10-bit PQ/HLG 的 HEIF，例：本 App 自己匯出的成品）
+    if let depth = (props[kCGImagePropertyDepth as String] as? NSNumber)?.intValue,
+      depth >= 10,
+      let name = props[kCGImagePropertyProfileName as String] as? String
+    {
+      let n = name.uppercased()
+      if n.contains("HLG") || n.contains("PQ") || n.contains("2100") { return true }
+    }
+    return false
+  }
+
+  /// 匯出。回 nil＝成功；回字串＝原因（Dart 端退回原本的 SDR 路）
+  static func export(_ a: [String: Any]) -> String? {
+    guard #available(iOS 17.0, *) else { return "需要 iOS 17" }
+    guard let srcPath = a["src"] as? String, let dest = a["dest"] as? String,
+      let outW = a["outW"] as? Int, let outH = a["outH"] as? Int,
+      outW > 1, outH > 1
+    else { return "參數錯誤" }
+    let photoX = a["photoX"] as? Double ?? 0
+    let photoY = a["photoY"] as? Double ?? 0
+    let gain = a["overlayGain"] as? Double ?? 1
+    let quality = min(1.0, max(0.05, a["quality"] as? Double ?? 0.92))
+    let overlayData = (a["overlay"] as? FlutterStandardTypedData)?.data
+
+    // 展開成 HDR：增益圖套上去、像素可以超過 1.0（線性、1.0＝SDR 白）。
+    // applyOrientationProperty：EXIF 方向烘進像素，跟 dart:ui 解碼一致
+    guard
+      let loaded = CIImage(
+        contentsOf: URL(fileURLWithPath: srcPath),
+        options: [.expandToHDR: true, .applyOrientationProperty: true])
+    else { return "讀不到照片" }
+    // 轉正後 extent 原點不一定在 0,0：先歸零，後面的定位才是絕對座標
+    var photo = loaded.transformed(
+      by: CGAffineTransform(
+        translationX: -loaded.extent.origin.x, y: -loaded.extent.origin.y))
+    let pw = photo.extent.width
+    let ph = photo.extent.height
+    guard pw > 1, ph > 1 else { return "照片尺寸不對" }
+
+    let canvasRect = CGRect(x: 0, y: 0, width: CGFloat(outW), height: CGFloat(outH))
+    // Dart 的 photoX/photoY 是左上原點；CI 是左下原點、y 往上
+    let ty = CGFloat(outH) - ph - CGFloat(photoY)
+    photo = photo.transformed(
+      by: CGAffineTransform(translationX: CGFloat(photoX), y: ty))
+    // 黑底畫布（不足的邊補黑，跟 renderPhotoComposite 一樣）
+    let black = CIImage(color: CIColor.black).cropped(to: canvasRect)
+    var out = photo.composited(over: black).cropped(to: canvasRect)
+
+    // ── 浮水印：跟 CIExportCompositorHDR 同一套 ─────────────────
+    if let data = overlayData, let ui = UIImage(data: data), let cg = ui.cgImage {
+      var ov = CIImage(cgImage: cg)
+      let ext = ov.extent
+      if ext.width > 1, ext.height > 1 {
+        // Dart 是照畫布尺寸烘的；萬一差一兩個像素就拉齊（不翻轉：
+        // CIImage(cgImage:) 的 PNG 在 CI 座標裡已經是正的，影片路的
+        // CIOverlaySpec 整版時也沒翻）
+        if abs(ext.width - canvasRect.width) > 0.5 || abs(ext.height - canvasRect.height) > 0.5 {
+          ov = ov.transformed(
+            by: CGAffineTransform(
+              scaleX: canvasRect.width / ext.width, y: canvasRect.height / ext.height))
+        }
+        ov = ov.transformed(
+          by: CGAffineTransform(translationX: -ov.extent.origin.x, y: -ov.extent.origin.y))
+        // 字底下的畫面先夾回 SDR 白以內，照 PNG 的 alpha 混進去：半透明
+        // 的字縫裡不會透進超亮的高光把字沖灰；字外的畫面一個位元都不動
+        let capped = out.applyingFilter(
+          "CIColorClamp",
+          parameters: [
+            "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
+            "inputMaxComponents": CIVector(x: 1, y: 1, z: 1, w: 1),
+          ])
+        out = capped.applyingFilter(
+          "CIBlendWithAlphaMask",
+          parameters: [
+            kCIInputBackgroundImageKey: out,
+            kCIInputMaskImageKey: ov,
+          ]
+        ).cropped(to: canvasRect)
+        // 影片路在這裡 ×3（HLG 高光旁邊白字才不灰）；照片預設 1＝
+        // 停在 SDR 基準白，跟預覽同一個白。要跟影片一樣就傳 3
+        if abs(gain - 1) > 0.001 {
+          let g = CGFloat(gain)
+          ov = ov.applyingFilter(
+            "CIColorMatrix",
+            parameters: [
+              "inputRVector": CIVector(x: g, y: 0, z: 0, w: 0),
+              "inputGVector": CIVector(x: 0, y: g, z: 0, w: 0),
+              "inputBVector": CIVector(x: 0, y: 0, z: g, w: 0),
+            ])
+        }
+        out = ov.composited(over: out).cropped(to: canvasRect)
+      }
+    }
+
+    // ── 中繼資料：EXIF/GPS/TIFF/IPTC 留著，方向已烘進像素所以改 1，
+    //    MakerApple 整包丟掉（裡面是舊增益圖的 headroom 標記，成品沒有
+    //    增益圖，留著會讓相簿誤判）
+    var props: [String: Any] = [:]
+    let keep: [CFString] = [
+      kCGImagePropertyExifDictionary, kCGImagePropertyGPSDictionary,
+      kCGImagePropertyTIFFDictionary, kCGImagePropertyIPTCDictionary,
+    ]
+    for k in keep {
+      if let v = loaded.properties[k as String] { props[k as String] = v }
+    }
+    props[kCGImagePropertyOrientation as String] = 1
+    if var tiff = props[kCGImagePropertyTIFFDictionary as String] as? [String: Any] {
+      tiff[kCGImagePropertyTIFFOrientation as String] = 1
+      props[kCGImagePropertyTIFFDictionary as String] = tiff
+    }
+    if var exif = props[kCGImagePropertyExifDictionary as String] as? [String: Any] {
+      exif[kCGImagePropertyExifPixelXDimension as String] = outW
+      exif[kCGImagePropertyExifPixelYDimension as String] = outH
+      props[kCGImagePropertyExifDictionary as String] = exif
+    }
+    out = out.settingProperties(props)
+
+    // ── 寫 10-bit HEIC（Rec.2100 HLG，跟影片路同一個色彩空間）────
+    guard let hlg = CGColorSpace(name: CGColorSpace.itur_2100_HLG) else {
+      return "沒有 HLG 色彩空間"
+    }
+    let qKey = CIImageRepresentationOption(
+      rawValue: kCGImageDestinationLossyCompressionQuality as String)
+    try? FileManager.default.removeItem(atPath: dest)
+    do {
+      try ctx.writeHEIF10Representation(
+        of: out, to: URL(fileURLWithPath: dest), colorSpace: hlg,
+        options: [qKey: quality])
+    } catch {
+      try? FileManager.default.removeItem(atPath: dest)
+      return "寫檔失敗：\(error.localizedDescription)"
+    }
+    // 驗收：成品要打得開（gal 存相簿那步是強制解包，打不開就崩），
+    // 而且真的是 10-bit／HLG 才算數（不是的話相簿不會當 HDR，
+    // 不如退回 SDR 路至少格式照使用者選的）
+    guard let s = CGImageSourceCreateWithURL(URL(fileURLWithPath: dest) as CFURL, nil),
+      let p = CGImageSourceCopyPropertiesAtIndex(s, 0, nil) as? [String: Any]
+    else {
+      try? FileManager.default.removeItem(atPath: dest)
+      return "成品打不開"
+    }
+    let depth = (p[kCGImagePropertyDepth as String] as? NSNumber)?.intValue ?? 0
+    let prof = ((p[kCGImagePropertyProfileName as String] as? String) ?? "").uppercased()
+    let profHDR = prof.contains("HLG") || prof.contains("2100") || prof.contains("PQ")
+    if depth < 10 && !profHDR {
+      try? FileManager.default.removeItem(atPath: dest)
+      return "成品不是 10-bit（depth=\(depth) profile=\(prof)）"
+    }
+    return nil
+  }
+}
+
+// ===== 用到的 API 與最低 iOS 版本 ========================================
+// FlutterImplicitEngineBridge.pluginRegistry.registrar(forPlugin:)  — 現有寫法
+// CGImageSourceCreateWithURL / CopyPropertiesAtIndex                 — iOS 4
+// kCGImageSourceShouldCache                                          — iOS 4
+// kCGImagePropertyPixelWidth/Height/Orientation/Depth/ProfileName    — iOS 4
+// CGImageSourceCopyAuxiliaryDataInfoAtIndex                          — iOS 11
+// kCGImageAuxiliaryDataTypeHDRGainMap                                — iOS 14.1
+// CIImageOption.expandToHDR                                          — iOS 17.0（整個 export 以 guard #available(iOS 17.0) 包住）
+// CIImageOption.applyOrientationProperty                             — iOS 11
+// CIContextOption.workingFormat / .workingColorSpace / .cacheIntermediates — iOS 9/9/10
+// CIFormat.RGBAh                                                     — iOS 9
+// CGColorSpace.extendedLinearSRGB                                    — iOS 10
+// CGColorSpace.itur_2100_HLG                                         — iOS 14.0
+// CIImage.transformed(by:) / composited(over:) / cropped(to:) / applyingFilter — iOS 8/8/8/8
+// CIImage(color:) / CIColor.black                                    — iOS 5 / 10
+// CIColorClamp / CIBlendWithAlphaMask / CIColorMatrix                 — iOS 7 / 5 / 5
+// CIImage.properties / settingProperties(_:)                         — iOS 5
+// CIContext.writeHEIF10Representation(of:to:colorSpace:options:)     — iOS 15.0
+// CIImageRepresentationOption(rawValue:) + kCGImageDestinationLossyCompressionQuality — iOS 11 / 4
+// UIImage(data:).cgImage / CIImage(cgImage:)                          — iOS 2 / 5
