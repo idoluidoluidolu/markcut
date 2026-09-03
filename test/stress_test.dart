@@ -644,6 +644,61 @@ void main() {
       expect(CompPlayer.bakedImageIds(tl), isEmpty);
     });
 
+    test('GIF 壓在影片之上、又跟浮水印重疊：要烘進合成（不然它會蓋掉浮水印）', () {
+      final tl = base(); // 影片 0~5 秒
+      tl.sources.add(
+        MediaSource(
+          path: '/g.gif',
+          name: 'g',
+          kind: ClipKind.image,
+          duration: 3600,
+          isGif: true,
+        ),
+      );
+      final id = tl.nextId();
+      tl.clips.add(
+        TimelineClip(
+          id: id,
+          sourceIndex: 1,
+          trimStart: 0,
+          trimEnd: 3, // 1~4 秒
+          offset: 1,
+          track: 5, // 比所有影片軌都高＝原本由 Flutter 畫在合成上面
+        ),
+      );
+      // 沒有浮水印（終點不大於起點）：照舊不烘，拖曳即時
+      expect(CompPlayer.bakedImageIds(tl), isEmpty);
+      // 浮水印蓋在同一段時間：要烘（合成器的 z 序才輪得到浮水印在上）
+      expect(CompPlayer.bakedImageIds(tl, wmStart: 0, wmEnd: 5), {id});
+      // 只有時間重疊才算：浮水印排在 GIF 之後就不必烘
+      expect(CompPlayer.bakedImageIds(tl, wmStart: 4, wmEnd: 5), isEmpty);
+      // 邊界貼齊（浮水印 4~5、GIF 到 4）不算重疊
+      expect(CompPlayer.bakedImageIds(tl, wmStart: 0, wmEnd: 1), isEmpty);
+    });
+
+    test('浮水印重疊的圖片整塊落在影片之後：還是不烘（合成只到影片結尾）', () {
+      final tl = base(); // 影片 0~5 秒
+      tl.sources.add(
+        MediaSource(
+          path: '/p.png',
+          name: 'p',
+          kind: ClipKind.image,
+          duration: 3600,
+        ),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 1,
+          trimStart: 0,
+          trimEnd: 2,
+          offset: 6, // 影片結束之後
+          track: 5,
+        ),
+      );
+      expect(CompPlayer.bakedImageIds(tl, wmStart: 0, wmEnd: 8), isEmpty);
+    });
+
     test('圖片素材壓在所有影片之上：放行（Flutter 圖層畫在合成上面）', () {
       final tl = base();
       tl.sources.add(
