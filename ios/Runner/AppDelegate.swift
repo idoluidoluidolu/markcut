@@ -381,9 +381,11 @@ final class CILayerSpec {
   /// 疊放層級（時間軸軌道編號）。馬賽克只糊 z 比它低的層
   let z: Int
 
-  /// 這一層烘進 transform 的「使用者變形」基準值（縮放/位置）。
-  /// 即時變形（liveXform）要靠它算差量：新值 ∘ 舊值⁻¹ 疊上去。
-  /// 只有預覽的影片層會帶；匯出/圖層用預設值（等於不參與）
+  /// 這一層烘進 transform／placement 的「使用者變形」基準值
+  ///（縮放/位置）。即時變形（liveXform）要靠它算差量：
+  /// 新值 ∘ 舊值⁻¹ 疊上去。預覽的影片層跟烘進合成的圖片/GIF 層
+  /// 都會帶（見 build() 的 stillSpecs 那段）；匯出用預設值
+  ///（等於不參與，反正匯出的合成器 liveComp 恆 false，不會讀 lx）
   let uScale: Double
   let uPx: Double
   let uPy: Double
@@ -1411,12 +1413,17 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             continue
           }
           // 捏合/拖曳中的即時變形：把「新值 ∘ 舊值⁻¹」的差量疊上去，
-          // 數學跟 fitTransform 的使用者段同構——放手烘定不會跳位。
-          // 只作用在被捏的那一段（軌道編號＋片段開頭一起對）
+          // 數學跟 fitTransform／圖片烘的使用者段同構——放手烘定不會
+          // 跳位。只作用在被捏的那一段（軌道編號＋片段開頭一起對）。
+          // 圖片/GIF 層（trackID＝Invalid）一樣吃這條路：baseline
+          // 由建圖時的 uScale/uPx/uPy 帶（見 stillSpecs 那段的
+          // CILayerSpec 建構），數學跟影片段完全同構——先前這裡排除
+          // trackID＝Invalid，等於烘進合成的圖片素材永遠沒有即時變形，
+          // 捏合時只能等 350ms 後的重組（使用者回報「圖片素材放大縮小
+          // 不夠跟手」的根）
           var rot = layer.rotation
           if let lx = lx, lx.z == layer.z,
-            abs(lx.start - layer.start) < 0.02,
-            layer.trackID != kCMPersistentTrackID_Invalid
+            abs(lx.start - layer.start) < 0.02
           {
             func userXf(
               _ u: Double, _ px: Double, _ py: Double
@@ -5720,7 +5727,12 @@ final class CompPlayer: NSObject, FlutterTexture {
             crop: stCrop,
             rotation: st["rotation"] as? Double ?? 0,
             opacity: st["opacity"] as? Double ?? 1,
-            z: st["track"] as? Int ?? 0, gif: gifSpec)
+            z: st["track"] as? Int ?? 0, gif: gifSpec,
+            // 即時變形的差量基準（見 CILayerSpec.uScale／render 迴圈
+            // 讀 lx 那段）：跟影片段的 uScale/uPx/uPy 同一套，捏合中
+            // 才拆得出「使用者這段變了多少」去疊差量。這裡的 u/spx/spy
+            // 正是烘進 placement 的那三個值，基準跟畫面完全對齊
+            uScale: Double(u), uPx: spx, uPy: spy)
         ))
       }
       buildInfo["圖片層"] = stillSpecs.count

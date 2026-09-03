@@ -1557,6 +1557,43 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 這份合成烘進去的圖片片段 id（合成新鮮時預覽不再重畫它們）
   Set<int> _compBakedStills = const {};
 
+  /// 單一張烘進合成的圖片，除了 px/py/scale/rotation 之外的簽章
+  /// （這四個欄位走 [_liveXformSync] 那條即時通道，原生端逐格用
+  /// [_xfSelId] 追的最新值畫，不用等重組）。鍵＝片段 id，值＝上次
+  /// 烘定時的簽章；跟現在算出來的對得上，才能放心讓 Flutter 版
+  /// 收手、信任原生畫面已經跟手——不然像是調色/裁切這種即時通道
+  /// 沒送的欄位變了，原生還停在舊值，收手就是白底/舊裁切窗晾在那
+  final Map<int, String> _lastStillStructSigs = {};
+
+  String _stillStructSig(TimelineClip c) {
+    final src = _tl.sourceOf(c);
+    return 'im${c.id}|${c.track}|${c.offset}|${c.end}|${c.mirror}'
+        '|${c.fadeIn}|${c.fadeOut}|${c.opacity}|${c.cropped}|${c.cropL}'
+        '|${c.cropT}|${c.cropW}|${c.cropH}|${src.path}|${src.isGif}'
+        '|${c.color.hasColor ? c.color.matrix.join(',') : '-'}';
+  }
+
+  /// 這張圖現在跟基準的差異是不是「只有位置/縮放/旋轉」——
+  /// 是的話原生端已經（或這一格就會）用 [_liveXformSync] 送的
+  /// liveXf 追上，Flutter 版可以放心不畫，讓原生那份（更準、
+  /// 零延遲）獨自撐著
+  bool _stillGeomOnlyStale(TimelineClip c) =>
+      c.id == _xfSelId &&
+      _lastStillStructSigs[c.id] == _stillStructSig(c);
+
+  /// 重烘空窗的轉圈點要不要出現：`_compStillsStale` 是全域的（一張圖
+  /// 一動，整份合成的圖片指紋就變），但如果變動的每一張都是「只有
+  /// liveXform 追得到的幾何」，畫面其實沒有空窗——原生已經跟著手指
+  /// 動了，不該還轉圈叫使用者以為卡住
+  bool get _compStillsNeedGhost {
+    if (!_compStillsStale) return false;
+    for (final c in _tl.clips) {
+      if (!_compBakedStills.contains(c.id)) continue;
+      if (!_stillGeomOnlyStale(c)) return true;
+    }
+    return false;
+  }
+
   /// 空窗自癒：畫面停在「素材載入中」時，值一停穩（450ms 沒再變）
   /// 就自動觸發重烘。之前開著樣式表拉滑桿只改值、沒人排重烘，
   /// 膠囊會永遠轉圈（實測回報：跑載入中一直出不來）
@@ -2155,7 +2192,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   //（實測回報：螢幕縮放跟移動反應都不夠即時）。治本：原生端把
   // 「產 videoComposition」留成可重呼叫的閉包，捏合中只重產 vc
   // 換上（同一個播放器、不閃），放手才真正重組烘定。
-  // 這裡負責把「選取中影片片段的目前變形」節流送過去
+  // 這裡負責把「選取中片段的目前變形」節流送過去。
+  //
+  // 烘進合成的圖片/GIF（_compBakedStills）一樣走這條路：原生端的
+  // CI 合成器逐格讀同一份 liveXf，只認 z（軌道）＋start（片段開頭），
+  // 不管這一層底下是影片段還是靜態圖層——見 AppDelegate 的
+  // CILayerSpec.uScale／render 迴圈那段。以前這裡只認影片，圖片
+  // 素材捏合只能等 350ms 後的重組，畫面停在舊位置、Flutter 版的
+  // 選取框先跑走，就是使用者說的「放大縮小不夠跟手」
+  bool _xfEligible(TimelineClip c) =>
+      _tl.sourceOf(c).isVideo ||
+      (_tl.sourceOf(c).kind == ClipKind.image &&
+          _compBakedStills.contains(c.id));
 
   /// 上一次送出的變形值（同值不重送——選取當下的基準也只記不送）
   String? _xfLastSent;
@@ -2166,7 +2214,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _liveXformSync() {
     if (!_compOn) return;
     final c = _selClipById(_sel);
-    if (c == null || !_tl.sourceOf(c).isVideo) {
+    if (c == null || !_xfEligible(c)) {
       _xfSelId = -1;
       _xfLastSent = null;
       return;
@@ -7238,6 +7286,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       wmStart: wmBake.$1,
       wmEnd: wmBake.$2,
     );
+    // 這一版烘的每張圖，非幾何欄位的簽章也記一份（見
+    // _stillGeomOnlyStale）：捏合/拖曳中要不要收回 Flutter 版鬼影，
+    // 只看這張圖「除了位置/縮放/旋轉」有沒有變，不是整份合成新不新鮮
+    _lastStillStructSigs
+      ..clear()
+      ..addEntries([
+        for (final c in _tl.clips)
+          if (_compBakedStills.contains(c.id))
+            MapEntry(c.id, _stillStructSig(c)),
+      ]);
     // 疊加物：_ovNativeShown 不在這裡動——舊畫面還在前面撐著，
     // 等原生端回報 compVisible（新畫面真的上檔）才切；保底計時器
     // 對齊原生換手的 1.5 秒逾時
@@ -10739,7 +10797,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     if (!_vBrushMode &&
                                         _compOn &&
                                         !_playing &&
-                                        _compStillsStale &&
+                                        _compStillsNeedGhost &&
                                         !_compMosaicStale) {
                                       addLayer(
                                         vidTrack,
@@ -11342,10 +11400,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       // 烘進合成的圖片（墊在影片下層）：
                                       // 合成新鮮時畫面由合成出，這裡再畫
                                       // 就是疊兩張；重烘空窗先頂上
-                                      //（同 _compMosaicStale 的規則）
+                                      //（同 _compMosaicStale 的規則）。
+                                      // 捏合/拖曳中這張圖本身：liveXform
+                                      // 已經（或這一格就會）把新位置送進
+                                      // 原生，原生那份更準、零延遲，
+                                      // Flutter 版不用跳出來擋——見
+                                      // _stillGeomOnlyStale
                                       if (_compOn &&
-                                          !_compStillsStale &&
-                                          _compBakedStills.contains(c.id)) {
+                                          _compBakedStills.contains(c.id) &&
+                                          (!_compStillsStale ||
+                                              _stillGeomOnlyStale(c))) {
                                         if (c.id == _sel) {
                                           selRect = cropBox(r, c);
                                           selVisual = c;
