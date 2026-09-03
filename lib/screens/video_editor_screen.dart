@@ -470,7 +470,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 這一版時間軸要烘進合成的圖片片段（統一入口，見 [_wmBakeRange]）
   Set<int> _bakedStillIds() {
     final r = _wmBakeRange;
-    return CompPlayer.bakedImageIds(_tl, wmStart: r.$1, wmEnd: r.$2);
+    return CompPlayer.bakedImageIds(
+      _tl,
+      wmStart: r.$1,
+      wmEnd: r.$2,
+      hiddenTracks: _hiddenTracks,
+    );
   }
 
   // ===== HDR 預覽的疊加物（浮水印/文字/貼圖）烘進合成 =====

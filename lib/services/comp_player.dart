@@ -270,19 +270,24 @@ class CompPlayer {
     TimelineModel tl, {
     double wmStart = 0,
     double wmEnd = 0,
+    Set<int> hiddenTracks = const {},
   }) {
     var top = -1;
     // 合成的終點：影片結尾，或補長之後的時間軸終點（見 [padTo]）。
     // 整塊落在合成終點之後的圖片烘不進去（build 會跳過），這裡也要
     // 用同一條件排除——不排除的話編輯器把它當「已烘」不畫，
-    // 預覽看不見、匯出卻有
+    // 預覽看不見、匯出卻有。
+    // 隱藏軌一律不算：build 那邊隱藏軌不鋪、不烘，這裡要是把它算進
+    // top／終點／結果，就會跟 build 各算各的（尾段圖片被編輯器當已烘、
+    // build 卻跳過＝預覽消失）
     var vidEnd = 0.0;
     for (final c in tl.clips) {
+      if (hiddenTracks.contains(c.track)) continue;
       if (!tl.sourceOf(c).isVideo) continue;
       if (c.track > top) top = c.track;
       if (c.end > vidEnd) vidEnd = c.end;
     }
-    final pad = padTo(tl);
+    final pad = padTo(tl, hiddenTracks: hiddenTracks);
     final compEnd = pad > vidEnd ? pad : vidEnd;
     // 馬賽克壓在圖片/GIF 上面（軌道更高、時間重疊）：那張圖也要烘
     // 進合成——Flutter 畫的圖層在合成畫面「上方」，原生端的馬賽克
@@ -302,6 +307,7 @@ class CompPlayer {
     return {
       for (final c in tl.clips)
         if (tl.sourceOf(c).kind == ClipKind.image &&
+            !hiddenTracks.contains(c.track) &&
             (c.track <= top || mosaicAbove(c) || underWm(c)) &&
             c.offset < compEnd)
           c.id,
@@ -490,7 +496,12 @@ class CompPlayer {
     mosaics.sort((a, b) => (a['track'] as int).compareTo(b['track'] as int));
     // 墊在影片下層的圖片/GIF：烘進合成（跟原生匯出同一套欄位，
     // Swift 端組 CILayerSpec/CIGifSpec）。時間是時間軸秒數
-    final baked = bakedImageIds(tl, wmStart: wmStart, wmEnd: wmEnd);
+    final baked = bakedImageIds(
+      tl,
+      wmStart: wmStart,
+      wmEnd: wmEnd,
+      hiddenTracks: hiddenTracks,
+    );
     final stills = <Map<String, dynamic>>[];
     for (final c in tl.clips) {
       if (!baked.contains(c.id)) continue;
