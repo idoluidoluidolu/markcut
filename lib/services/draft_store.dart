@@ -278,8 +278,8 @@ class DraftStore {
   /// 一律不碰；使用者相簿裡的原檔本來就不在清理範圍。
   ///
   /// [keep]：這一輪絕不碰的 id（剛存完的那一份）。正在編輯中的
-  /// （[holdOpen]）也一律不碰。只在「進草稿夾」與「調小上限」時跑——
-  /// 開機與存檔路徑上都不跑（掃描成本高，見上面的說明）
+  /// （[holdOpen]）也一律不碰。**只有使用者在草稿夾按「清理」才會跑**——
+  /// 開機、存檔、進草稿夾都不跑（掃描成本高，見上面的說明）
   static Future<List<String>> prune({Set<String> keep = const {}}) =>
       _serial(() => _pruneInner(keep: keep));
 

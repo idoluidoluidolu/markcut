@@ -736,19 +736,32 @@ class _DraftsScreenState extends State<DraftsScreen> {
   Future<void> _editCap() async {
     final picked = await _pickCap(context, current: _cap);
     if (picked == null || !mounted) return;
-    final over = _drafts.length - picked;
-    if (over > 0) {
-      final ok = await showConfirm(
-        context,
-        title: '上限改成 $picked 份？',
-        message: '現在有 ${_drafts.length} 份影片草稿，最舊的 $over 份會被刪掉，無法復原',
-        action: '改成 $picked 份',
-      );
-      if (!ok || !mounted) return;
-    }
     await DraftStore.setMaxDrafts(picked);
-    await DraftStore.prune();
-    if (mounted) showHint(context, '草稿最多保留 $picked 份');
+    if (mounted) showHint(context, '建議保留 $picked 份，要清的時候按「清理」');
+    _reload();
+  }
+
+  /// 手動清理：只有使用者按下去才會刪。自動清理全部拿掉了——
+  /// 它要把每份草稿的完整 JSON（含縮圖與圖片）讀進來比對引用，
+  /// 草稿多時是幾十 MB 的掃描，掛在開機/存檔路徑上會讓 App 被系統
+  /// 殺掉（實機回報：開機即當、匯入卡住後閃退）
+  Future<void> _cleanupOld() async {
+    final over = _drafts.length - _cap;
+    if (over <= 0) {
+      showHint(context, '草稿沒有超過 $_cap 份，不用清');
+      return;
+    }
+    final ok = await showConfirm(
+      context,
+      title: '清掉最舊的 $over 份？',
+      message: '現在有 ${_drafts.length} 份影片草稿，保留最新的 $_cap 份，'
+          '其餘連同它們自己的工作檔一起刪掉，無法復原',
+      action: '清掉 $over 份',
+    );
+    if (!ok || !mounted) return;
+    final removed = await DraftStore.prune();
+    if (!mounted) return;
+    showHint(context, '清掉了 ${removed.length} 份草稿');
     _reload();
   }
 
@@ -774,14 +787,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
   @override
   void initState() {
     super.initState();
-    // 超過上限的清理挪到這裡（原本在 App 啟動時做：它要讀每一份草稿的
-    // 完整 JSON 比對引用，草稿多時等於在開機路徑上掃幾十 MB，更新後
-    // 第一次開就被系統當成沒回應殺掉——實機回報「連開機都不行」）
-    _reload().then((_) async {
-      if (!mounted) return;
-      final removed = await DraftStore.prune();
-      if (removed.isNotEmpty && mounted) await _reload();
-    });
+    _reload();
   }
 
   Future<void> _reload() async {
@@ -1235,12 +1241,18 @@ class _DraftsScreenState extends State<DraftsScreen> {
                 child: const Text('取消'),
               ),
             ] else ...[
-              // 草稿上限（每個影片專案都會自動存成草稿，總得有個上限）
+              // 保留份數（只是建議值，清不清由使用者自己按）
               IconButton(
-                tooltip: '草稿上限',
+                tooltip: '保留份數',
                 icon: const Icon(Icons.tune, size: 22),
                 onPressed: _editCap,
               ),
+              if (ds.isNotEmpty)
+                IconButton(
+                  tooltip: '清理舊草稿',
+                  icon: const Icon(Icons.cleaning_services_outlined, size: 20),
+                  onPressed: _cleanupOld,
+                ),
               if (ds.isNotEmpty)
                 TextButton(
                   onPressed: () => setState(() => _selecting = true),
@@ -1357,14 +1369,13 @@ class _DraftsScreenState extends State<DraftsScreen> {
                           onDelete: _deleteCollage,
                         ),
                       ],
-                      // 上限的說明放在清單尾巴：草稿哪天少了一份，
-                      // 這裡就是答案（不是壞掉、是自動清了最舊的）
+                      // 說明放在清單尾巴：草稿不會自己消失，要清得自己按
                       if (ds.isNotEmpty)
                         Padding(
                           padding: const EdgeInsets.fromLTRB(8, 18, 8, 8),
                           child: Text(
-                            '影片專案會自動存成草稿，最多保留 $_cap 份；'
-                            '超過時最舊的會自動刪掉（右上角可以調）',
+                            '影片專案會自動存成草稿，不會自己刪掉；'
+                            '建議保留 $_cap 份，超過時按右上角的掃把清掉最舊的',
                             textAlign: TextAlign.center,
                             style: const TextStyle(
                               fontSize: 12,
@@ -1459,7 +1470,8 @@ Future<int?> _pickCap(BuildContext context, {required int current}) {
               ),
               const SizedBox(height: 6),
               Text(
-                '每個影片專案都會自動存成草稿；超過上限時，最舊的會自動刪掉',
+                '每個影片專案都會自動存成草稿；超過這個份數時，'
+                '草稿夾右上角的掃把會清掉最舊的（不會自動清）',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 12.5, color: c.dim, height: 1.55),
               ),
