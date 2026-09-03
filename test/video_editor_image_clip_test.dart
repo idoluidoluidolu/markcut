@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -9,8 +12,13 @@ import 'package:markcut/screens/video_editor_screen.dart';
 
 /// 用草稿啟動真實的影片編輯頁（不需要影片播放器），
 /// 重現「時間軸上新加入的圖片素材點不到」的回報
-const _png =
-    r'C:\Users\lesuc\AppData\Local\Temp\claude\C--Users-lesuc-OneDrive----III\01db0a8f-07f1-41b0-84dd-6a3034e24616\scratchpad\t.png';
+///
+/// 素材圖是測試自己寫出來的（8×8 紅色 PNG）。以前這裡寫死一條指向某次
+/// 對話暫存資料夾的絕對路徑，暫存被清掉、或換一台機器跑，整組就爛掉
+const _pngB64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGO4Y2ODFTEM'
+    'LQkAXrdVAdmuFfUAAAAASUVORK5CYII=';
+late final String _png;
 
 Map<String, dynamic> _draft() => {
   'savedAt': '2026-08-12T00:00:00.000',
@@ -53,7 +61,18 @@ Future<void> _settle(WidgetTester t, [int n = 25]) async {
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
+  late Directory tmpDir;
+  tearDownAll(() {
+    try {
+      tmpDir.deleteSync(recursive: true);
+    } catch (_) {}
+  });
   setUpAll(() {
+    tmpDir = Directory.systemTemp.createTempSync('markcut_img_clip_');
+    final f = File('${tmpDir.path}${Platform.pathSeparator}t.png')
+      ..writeAsBytesSync(base64Decode(_pngB64));
+    _png = f.path;
+
     final b = TestWidgetsFlutterBinding.ensureInitialized();
     final v = b.platformDispatcher.views.first;
     v.physicalSize = const Size(1100, 2200);
