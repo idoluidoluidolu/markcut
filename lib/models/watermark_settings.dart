@@ -73,13 +73,15 @@ class TextMark {
     this.rotation = 0,
     this.tiled = false,
     this.shadow = true,
-    // 預設濃度 0.35／模糊 0：使用者從對照樣張挑的（淡而俐落的硬影）
-    // 預設 55：35 在亮背景上撐不住（使用者指定調高）
-    this.shadowOpacity = 0.55,
+    // 預設濃度 75（面板讀數＝值×100）：55 在亮背景上還是撐不住
+    //（使用者指定再調高）。舊資料不受影響——fromJson 的缺欄位退回值
+    // 仍是 0.55，存過的範本／草稿照原樣讀回來
+    this.shadowOpacity = 0.75,
     // 預設 0＝俐落硬影（使用者指定）；要柔邊自己拉模糊滑桿
     this.shadowBlur = 0.0,
-    // 預設 20：全細體在影片上存在感太弱（使用者指定）
-    this.weight = 0.2,
+    // 預設 50（面板讀數＝值×100）：20 太細（使用者指定調高）。
+    // 同樣只影響新建的文字，舊資料走 fromJson 的 0.2
+    this.weight = 0.5,
     this.outline = false,
     this.outlineColorValue = 0xFF000000,
     this.outlineWidth = 0.07,
@@ -139,6 +141,8 @@ class TextMark {
     rotation: (j['rotation'] ?? 0).toDouble(),
     tiled: j['tiled'] ?? false,
     shadow: j['shadow'] ?? true,
+    // 這裡的退回值是「舊資料沒存這個欄位時」用的，刻意跟建構子的
+    // 新預設脫鉤：改預設不能回頭改掉已經存起來的範本／草稿的長相
     shadowOpacity: ((j['shadowOpacity'] ?? 0.55).toDouble() as double).clamp(
       0.05,
       1.0,

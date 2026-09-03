@@ -105,6 +105,15 @@ class WatermarkPanel extends StatefulWidget {
   /// 使用者回到畫面就能直接拖曳／縮放它
   final VoidCallback? onLogoAdded;
 
+  /// 面板裡切換「現在調哪一個」（圖片縮圖列、文字選取列）時回報。
+  ///
+  /// 面板的亮框只代表「滑桿調的是這一個」，跟預覽上的選取是兩件事；
+  /// 沒接起來的話，點了圖片縮圖（亮框）回到畫面還是拖不動它——文字
+  /// 圖層畫在圖片之上而且 opaque，重疊處的手指全被文字吃掉，而讓
+  /// 被選部件在整個預覽上都能拖的「選取路由」又只在父層有選取時才掛。
+  /// 父層接上就等於：面板選哪個，畫面上就能拖哪個
+  final ValueChanged<WmPart>? onSelectPart;
+
   /// 「加 GIF」的入口。給了才會在導覽列出現那一格——GIF 一定要當
   /// 時間軸素材才會動（浮水印是烘成一張靜態 PNG 的），所以真正
   /// 怎麼加是由影片編輯器決定，面板只負責把入口擺出來
@@ -164,6 +173,7 @@ class WatermarkPanel extends StatefulWidget {
     this.initialPresetName,
     this.onSaved,
     this.onLogoAdded,
+    this.onSelectPart,
     this.onAddGif,
     this.hideSaveButton = false,
     this.extraSections = const [],
@@ -1000,6 +1010,8 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                           s.activeText = i;
                                           _textCtrl.text = s.text.text;
                                         });
+                                        // 同圖片縮圖列：面板選它＝畫面上也選它
+                                        widget.onSelectPart?.call(WmPart.text);
                                         widget.onChanged();
                                       },
                                       child: Container(
@@ -1508,6 +1520,9 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                       // 切換要調哪一張，不算改動內容——不拍上一步快照
                                       onTap: () {
                                         setState(() => s.activeLogo = i);
+                                        // 面板選它＝畫面上也選它，
+                                        // 不然亮框歸亮框、預覽上還是拖不動
+                                        widget.onSelectPart?.call(WmPart.logo);
                                         widget.onChanged();
                                       },
                                       child: Container(

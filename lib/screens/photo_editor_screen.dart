@@ -3089,6 +3089,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                       // 剛加的圖片直接選起來，可以馬上拖／縮放
                                       onLogoAdded: () =>
                                           setState(() => _wmPart = WmPart.logo),
+                                      // 面板裡點縮圖／文字＝畫面上也選它（單一
+                                      // 選取，順手清掉馬賽克與額外浮水印的選取）。
+                                      // 沒有這一段，面板亮框的圖片在預覽上拖不動
+                                      onSelectPart: (p) => setState(() {
+                                        _wmPart = p;
+                                        _selMosaic = -1;
+                                        _selExtra = -1;
+                                      }),
                                       // 馬賽克卡：插在圖片卡下面（照片模式限定）
                                       extraSections: [
                                         (

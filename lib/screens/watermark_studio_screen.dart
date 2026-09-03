@@ -709,6 +709,9 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
                   // 不用再回畫面上找它點一下（其他三個編輯畫面本來就這樣，
                   // 只有這裡跟批次漏掛）
                   onLogoAdded: () => setState(() => _wmPart = WmPart.logo),
+                  // 面板裡點縮圖／文字＝畫面上也選它，不然面板亮框的
+                  // 圖片在示意畫面上拖不動（文字圖層疊在圖片之上）
+                  onSelectPart: (p) => setState(() => _wmPart = p),
                   onChanged: () {
                     _syncAnimTicker();
                     setState(() {});

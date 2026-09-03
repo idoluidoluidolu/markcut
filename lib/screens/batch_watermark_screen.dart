@@ -190,6 +190,11 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     }
   }
 
+  /// 這一批成功匯出過。跟影片編輯同一條規矩（video_editor_screen
+  /// 的 _exportedOk）：匯出成功過就不再問「要不要保留草稿」，
+  /// 靜靜留一份走人；沒匯出過才問
+  bool _exportedOk = false;
+
   // 匯出成功會把基準點重設（見 _exportAll），不能一匯出就永遠關掉保護
   /// 單張調整也算「改過」：只在預覽上拖過浮水印就離開，
   /// 原本會一聲不吭直接丟掉
@@ -197,6 +202,22 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       jsonEncode(_settings.toJson()) != _initialJson ||
       _canvasRatio != _initialRatio ||
       _items.any((it) => it.override != null);
+
+  /// 返回鍵／返回手勢：放大中先退出放大；匯出成功過就靜靜留草稿走人
+  ///（跟影片編輯 _handleBack 同一條規矩）；其餘走離開保護
+  void _handleBack() {
+    if (_fsPreview) {
+      setState(() => _fsPreview = false);
+      return;
+    }
+    if (_exportedOk) {
+      // 匯出成功過的不再問：草稿留著，之後想改再從個人頁續作
+      unawaited(_saveBatchDraft());
+      Navigator.of(context).pop();
+      return;
+    }
+    _confirmLeave();
+  }
 
   /// 離開保護：調過浮水印但整批還沒匯出就問一下
   Future<void> _confirmLeave() async {
@@ -227,21 +248,20 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
 
   Future<void> _saveBatchDraft() async {
     try {
+      // 先在同步這一段把內容組好：這個方法會在關頁的同一幀被
+      // unawaited 呼叫，await 之後才讀 state 欄位太晚
+      final text = jsonEncode({
+        'files': [for (final it in _items) it.file.path],
+        'settings': _settings.toJson(),
+        'ratio': _canvasRatio.index,
+        'overrides': {
+          for (var i = 0; i < _items.length; i++)
+            if (_items[i].override != null) '$i': _items[i].override!.toJson(),
+        },
+        'savedAt': DateTime.now().toIso8601String(),
+      });
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(
-        kBatchDraftKey,
-        jsonEncode({
-          'files': [for (final it in _items) it.file.path],
-          'settings': _settings.toJson(),
-          'ratio': _canvasRatio.index,
-          'overrides': {
-            for (var i = 0; i < _items.length; i++)
-              if (_items[i].override != null)
-                '$i': _items[i].override!.toJson(),
-          },
-          'savedAt': DateTime.now().toIso8601String(),
-        }),
-      );
+      await prefs.setString(kBatchDraftKey, text);
     } catch (_) {}
   }
 
@@ -851,6 +871,11 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     if (done > 0) {
       // 基準點重設到現在：之後又改了設定，離開一樣會問
       _initialJson = jsonEncode(_settings.toJson());
+      // 匯出成功＝靜靜留一份草稿（跟影片編輯同一條規矩：匯出過的
+      // 專案草稿留著、不再問）。這裡就存，回主畫面那條路
+      //（popUntil）不會經過 _handleBack，等到那時就來不及了
+      _exportedOk = true;
+      unawaited(_saveBatchDraft());
     }
     overall.dispose();
     label.dispose();
@@ -1044,57 +1069,67 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   // ===== 畫面 =====
 
   /// 預覽右上角：放大＋畫布比例（跟影片編輯器同一款、同一個位置）
-  Widget _previewCorner() => Align(
-    alignment: Alignment.topRight,
-    child: Padding(
-      padding: const EdgeInsets.all(6),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          InkWell(
-            borderRadius: BorderRadius.circular(kTagRadius),
-            onTap: () => setState(() => _fsPreview = !_fsPreview),
-            child: Container(
-              padding: const EdgeInsets.all(5),
-              margin: const EdgeInsets.only(right: 6),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.10),
-                borderRadius: BorderRadius.circular(kTagRadius),
-              ),
-              child: Icon(
-                _fsPreview ? Icons.fullscreen_exit : Icons.fullscreen,
-                size: 15,
-                color: kIcon,
+  ///
+  /// 外面包 SafeArea（只吃上緣，跟照片編輯全螢幕的右上角同一招）：
+  /// 放大預覽時 AppBar 整個收掉，預覽直接頂到螢幕最上緣，這兩顆就
+  /// 跟時鐘／瀏海重疊了。非放大狀態有 AppBar，Scaffold 早就把上緣
+  /// 內距從 body 的 MediaQuery 拿掉，這層等於 0——版面完全不變
+  Widget _previewCorner() => SafeArea(
+    bottom: false,
+    left: false,
+    right: false,
+    child: Align(
+      alignment: Alignment.topRight,
+      child: Padding(
+        padding: const EdgeInsets.all(6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            InkWell(
+              borderRadius: BorderRadius.circular(kTagRadius),
+              onTap: () => setState(() => _fsPreview = !_fsPreview),
+              child: Container(
+                padding: const EdgeInsets.all(5),
+                margin: const EdgeInsets.only(right: 6),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(kTagRadius),
+                ),
+                child: Icon(
+                  _fsPreview ? Icons.fullscreen_exit : Icons.fullscreen,
+                  size: 15,
+                  color: kIcon,
+                ),
               ),
             ),
-          ),
-          InkWell(
-            borderRadius: BorderRadius.circular(kTagRadius),
-            onTap: _openRatioSheet,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.10),
-                borderRadius: BorderRadius.circular(kTagRadius),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.aspect_ratio, size: 12, color: kTextDim),
-                  const SizedBox(width: 4),
-                  Text(
-                    _canvasRatio.label,
-                    style: const TextStyle(
-                      fontSize: 10.5,
-                      color: kIcon,
-                      height: 1.2,
+            InkWell(
+              borderRadius: BorderRadius.circular(kTagRadius),
+              onTap: _openRatioSheet,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(kTagRadius),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.aspect_ratio, size: 12, color: kTextDim),
+                    const SizedBox(width: 4),
+                    Text(
+                      _canvasRatio.label,
+                      style: const TextStyle(
+                        fontSize: 10.5,
+                        color: kIcon,
+                        height: 1.2,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     ),
   );
@@ -1144,12 +1179,8 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
-        // 放大中按返回＝先退出放大，不是離開頁面
-        if (_fsPreview) {
-          setState(() => _fsPreview = false);
-          return;
-        }
-        _confirmLeave();
+        // 放大中按返回＝先退出放大，不是離開頁面（見 _handleBack）
+        _handleBack();
       },
       child: EdgeBack(
         exclude: [_edgeCanvasKey],
@@ -1254,9 +1285,15 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                                                       return;
                                                     }
                                                     _btPushUndoIfNeeded();
-                                                    final st = _effectiveOf(
-                                                      _previewIndex,
-                                                    );
+                                                    // 一定要用 _editTarget：
+                                                    // 面板、捏合、預覽圖層綁的
+                                                    // 都是它。用 _effectiveOf
+                                                    // 的話，「這張有單獨調整
+                                                    // 但開關切回整批」時拖曳會
+                                                    // 寫進那張的 override，而
+                                                    // 畫面畫的是共用設定——
+                                                    // 看起來就是拖不動
+                                                    final st = _editTarget;
                                                     final part = _wmPartAlive;
                                                     final mark =
                                                         part == WmPart.text
@@ -1537,6 +1574,11 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                         // 剛加的圖片直接選起來，可以馬上拖／縮放
                         onLogoAdded: () =>
                             setState(() => _wmPart = WmPart.logo),
+                        // 面板裡點縮圖／文字＝畫面上也選它。沒有這一段，
+                        // 面板亮框的圖片在預覽上拖不動：文字圖層畫在圖片
+                        // 之上且 opaque，重疊處的手指全被文字吃掉，而
+                        // 「選取路由」（見上面）又只在有選取時才掛上來
+                        onSelectPart: (p) => setState(() => _wmPart = p),
                         onChanged: () => setState(() {}),
                         onBeforeChange: _pushUndo,
                         syncVersion: _sync,
