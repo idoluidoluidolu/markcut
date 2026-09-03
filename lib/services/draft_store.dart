@@ -207,8 +207,10 @@ class DraftStore {
           clipCount: clipCount,
           duration: duration,
         );
-        // 清理失敗不能拖累「存成功」這個事實（_pruneInner 自己吞例外）
-        if (ok) await _pruneInner(keep: {id});
+        // 存檔「不」順手清理：清理要把每一份草稿的完整 JSON（含縮圖與
+        // 圖片）讀進來比對引用，草稿多時是幾十 MB 的掃描。匯入一次會存
+        // 好幾次草稿，等於每存一次就掃一遍——實機回報「匯入卡住然後閃退」。
+        // 清理集中在進草稿夾時做（見 DraftsScreen），那裡等得起
         return ok;
       });
     } catch (_) {
@@ -276,8 +278,8 @@ class DraftStore {
   /// 一律不碰；使用者相簿裡的原檔本來就不在清理範圍。
   ///
   /// [keep]：這一輪絕不碰的 id（剛存完的那一份）。正在編輯中的
-  /// （[holdOpen]）也一律不碰。App 啟動時與每次存草稿各跑一次；
-  /// 草稿夾調小上限時也會跑
+  /// （[holdOpen]）也一律不碰。只在「進草稿夾」與「調小上限」時跑——
+  /// 開機與存檔路徑上都不跑（掃描成本高，見上面的說明）
   static Future<List<String>> prune({Set<String> keep = const {}}) =>
       _serial(() => _pruneInner(keep: keep));
 

@@ -143,12 +143,15 @@ void main() {
       expect(await DraftStore.maxDrafts(), DraftStore.maxMax);
     });
 
-    test('存草稿超過上限：最舊的被刪（內容、封面都清），剛存的留著', () async {
+    test('清理超過上限：最舊的被刪（內容、封面都清），剛存的留著', () async {
       SharedPreferences.setMockInitialValues(
         seeded({'old': '2026-01-01T00:00:00', 'mid': '2026-01-02T00:00:00'}),
       );
       await DraftStore.setMaxDrafts(2);
       expect(await DraftStore.save('new', '{"clips":[1]}'), isTrue);
+      // 存檔本身不清理（掃描太貴，見 DraftStore.save）：清理是進草稿夾時做
+      expect((await DraftStore.list()).map((m) => m.id), ['new', 'mid', 'old']);
+      await DraftStore.prune(keep: {'new'});
       expect((await DraftStore.list()).map((m) => m.id), ['new', 'mid']);
       expect(await DraftStore.load('old'), isNull);
       final prefs = await SharedPreferences.getInstance();
@@ -156,12 +159,13 @@ void main() {
       expect(prefs.getString('project_data_mid'), isNotNull);
     });
 
-    test('上限 1：剛存的那份永遠不會被自己觸發的清理刪掉', () async {
+    test('上限 1：剛存的那份永遠不會被清理刪掉', () async {
       SharedPreferences.setMockInitialValues(
         seeded({'a': '2026-01-01T00:00:00', 'b': '2026-01-02T00:00:00'}),
       );
       await DraftStore.setMaxDrafts(1);
       await DraftStore.save('c', '{"clips":[1]}');
+      await DraftStore.prune(keep: {'c'});
       expect((await DraftStore.list()).map((m) => m.id), ['c']);
     });
 
