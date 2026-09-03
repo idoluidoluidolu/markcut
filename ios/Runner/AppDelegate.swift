@@ -559,16 +559,24 @@ final class CIExportInstruction: NSObject, AVVideoCompositionInstructionProtocol
   let containsTweening = true
   let passthroughTrackID = kCMPersistentTrackID_Invalid
   var requiredSourceTrackIDs: [NSValue]? {
-    // 治本：全部影像軌每一段都列進去。AVFoundation 只替「這段指令
-    // 要求的軌」預捲解碼器——只列當下用到的話，上層片段進場那一刻
-    // 它的解碼器才冷啟動，來源格晚一兩格到位，就是接縫閃黑／停頓
-    // 的根。列了但這一段沒有媒體的軌是空範圍，沒有解碼成本
+    // AVFoundation 只替「這段指令要求的軌」預捲解碼器——只列當下
+    // 用到的話，上層片段進場那一刻它的解碼器才冷啟動，來源格晚一
+    // 兩格到位，就是接縫閃黑／停頓的根。所以組建端會把「這一段用到
+    // 的軌＋往後一段時間內會進場的軌」一起算好塞進 prerollTrackIDs
+    //（見 CompPlayer.build 的預捲窗）；有算過就照它
     if !prerollTrackIDs.isEmpty { return prerollTrackIDs }
     let ids = layers.compactMap { l -> NSNumber? in
       l.trackID == kCMPersistentTrackID_Invalid
         ? nil : NSNumber(value: l.trackID)
     }
-    return ids.isEmpty ? nil : ids
+    // 一條來源軌都不用（只有圖片層的段、補長出來的黑尾巴、或短縫
+    // 頂住的段）：一定要回「空陣列」，不能回 nil。
+    // AVVideoComposition.h 明講 nil＝「所有來源軌都是必要的」，
+    // 空陣列才是「這一段不需要任何來源」。回 nil 的話，畫面明明只有
+    // 一張圖片，AVFoundation 還是會把每一條合成軌的解碼器全部叫醒
+    // ——影片結束、圖片尾巴接上的那一刻同時冷啟三顆 4K 解碼器，
+    // 而那幾格的畫面根本沒有人去讀（startRequest 只畫 still 層）
+    return ids
   }
 
   let layers: [CILayerSpec]
@@ -1029,6 +1037,19 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   /// 起播節奏：閒置 >300ms 後重新收集，前 40 格的到格間隔（ms）
   static var burstGaps: [Int] = []
 
+  /// 片段接縫：合成軌真正切段的時間點（秒，時間軸座標）與它屬於哪一軌。
+  ///
+  /// 使用者回報的「把影片切成段落放到不同軌道，播到新段落會先卡頓
+  /// 一下」就發生在這些點上。組建時從 AVCompositionTrack.segments 直接
+  /// 抄下來（不是猜的），播放中每跨過一個就記一次「牆鐘等了多久 vs
+  /// 畫面才差多少」——有數字就是真的頓，全部貼著一格的時間就是乾淨。
+  /// 供格節奏那條只列「超過 80ms」的點，接縫是不是其中之一還要人去對；
+  /// 這條直接把接縫本身列出來，對不對得上不用再猜
+  static var seamTimes: [Double] = []
+  static var seamNames: [String] = []
+  static var seamHits: [String] = []
+  static var worstSeamMs = 0.0
+
   static func noteSupply(t: Double, wall: Double) {
     slowLock.lock()
     defer { slowLock.unlock() }
@@ -1048,6 +1069,18 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             String(
               format: "%.2fs 等了 %.0fms（畫面才差 %.0fms）",
               t, dw * 1000, dt * 1000))
+        }
+        // 這一格跨過了哪些片段接縫（見 seamTimes）。門檻刻意是「跨過
+        // 就記」而不是「慢了才記」：接縫乾淨也要留下證據，不然報告
+        // 上「沒有東西」分不出是沒卡還是根本沒播到那裡
+        for (i, s) in seamTimes.enumerated() where s > lastReqT && s <= t {
+          if extra > worstSeamMs { worstSeamMs = extra }
+          if seamHits.count > 12 { seamHits.removeFirst() }
+          seamHits.append(
+            String(
+              format: "%.2fs%@ 等了 %.0fms（畫面才差 %.0fms）", s,
+              i < seamNames.count ? seamNames[i] : "",
+              dw * 1000, dt * 1000))
         }
       }
     }
@@ -5227,6 +5260,13 @@ final class CompPlayer: NSObject, FlutterTexture {
     // HDR 判定有沒有中、CI 有沒有掛（上一輪就是缺這格查了半天）
     buildInfo["HDR"] = anyHDR
 
+    // 同一支素材被切成好幾段（使用者最常做的事）時，每段各開一顆
+    // AVURLAsset＝同一支檔的 moov 被重新解析好幾次，而 tracks(withMediaType:)
+    // 是同步的：4K HEVC 的那幾十毫秒直接記在「按下播放」的帳上。
+    // 合成軌記的是 sourceURL＋sourceTrackID（見 AVCompositionTrackSegment），
+    // 同一顆 asset 插進不同軌組出來的分段跟分開開一模一樣——共用純賺
+    var assetCache: [String: AVURLAsset] = [:]
+
     for clip in ordered {
       guard let path = clip["path"] as? String else { continue }
       let start = clip["start"] as? Double ?? 0
@@ -5247,7 +5287,13 @@ final class CompPlayer: NSObject, FlutterTexture {
       let opacity = clip["opacity"] as? Double ?? 1
       if end - start <= 0.01 { continue }
 
-      let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+      let asset: AVURLAsset
+      if let hit = assetCache[path] {
+        asset = hit
+      } else {
+        asset = AVURLAsset(url: URL(fileURLWithPath: path))
+        assetCache[path] = asset
+      }
       guard let src = asset.tracks(withMediaType: .video).first else { continue }
       let range = CMTimeRange(
         start: CMTime(seconds: start, preferredTimescale: scale),
@@ -6037,6 +6083,39 @@ final class CompPlayer: NSObject, FlutterTexture {
       buildError = "合成長度為 0（可能有壞掉的工作檔，重進編輯器會自動重轉）"
       return false
     }
+    // 片段接縫清單（診斷用，見 CIExportCompositor.seamTimes）。
+    // 抄的是軌道自己的分段表，不是我們以為的片段頭尾——鋪滿用的
+    // 填充段也會切一刀，而那正是「解碼器換來源」真正發生的地方。
+    // 這裡才設（不是在鋪完軌道那裡）：組到一半失敗的合成不會留下
+    // 一份對不上任何播放器的接縫表
+    var seamPairs: [(t: Double, who: String)] = []
+    for k in vTracks.keys.sorted() {
+      guard let tr = vTracks[k]?.track else { continue }
+      for sg in tr.segments {
+        let s = sg.timeMapping.target.start.seconds
+        if !s.isFinite || s <= 0.01 { continue }
+        seamPairs.append((t: s, who: "軌\(k)"))
+      }
+    }
+    seamPairs.sort { $0.t < $1.t }
+    var seamT: [Double] = []
+    var seamN: [String] = []
+    for p in seamPairs {
+      // 同一刻好幾軌一起換段（切割出來的片段接在一起就是這樣）：
+      // 併成一筆，不然報告上同一個時間會列好幾行一模一樣的數字
+      if let last = seamT.last, p.t - last < 0.01 {
+        seamN[seamN.count - 1] += "＋\(p.who)"
+        continue
+      }
+      seamT.append(p.t)
+      seamN.append(p.who)
+    }
+    CIExportCompositor.slowLock.lock()
+    CIExportCompositor.seamTimes = seamT
+    CIExportCompositor.seamNames = seamN
+    CIExportCompositor.seamHits = []
+    CIExportCompositor.worstSeamMs = 0
+    CIExportCompositor.slowLock.unlock()
     composition = comp
     Self.stItemSwaps += 1
     // 新 item 停在 0 秒：畫面翻面要等 Dart 的定位 seek 落地
@@ -6639,6 +6718,10 @@ final class CompPlayer: NSObject, FlutterTexture {
     m["ciSlow"] = CIExportCompositor.slowFrames
     m["ciSupplyWorst"] = CIExportCompositor.worstSupplyMs
     m["ciSupplyGaps"] = CIExportCompositor.supplyGaps
+    // 片段接縫：這條時間軸有幾個接縫、播放中跨過去時牆鐘落後多少
+    m["ciSeamCount"] = CIExportCompositor.seamTimes.count
+    m["ciSeamWorst"] = CIExportCompositor.worstSeamMs
+    m["ciSeams"] = CIExportCompositor.seamHits
     if let comp = composition {
       // 轉向/比例跑掉定位：軌道的原生尺寸與變換角度。轉正代理
       // 應為 identity（0°）；出現 90°/270°＝雙重旋轉現行犯

@@ -790,6 +790,23 @@ class CompPlayer {
         } else {
           b.write('／沒有等超過 80ms 的格');
         }
+        // 片段接縫：使用者說的「播到新段落先卡一下」的直接答案。
+        // 接縫的時間點是從合成軌自己的分段表抄來的（含鋪滿用的填充
+        // 段——換來源真正發生的地方），播放中每跨過一個就記一次。
+        // 「等了」貼著「畫面才差」＝接縫乾淨；多出好幾十毫秒＝真的頓
+        final seamN = (m['ciSeamCount'] as num?)?.toInt() ?? 0;
+        if (seamN > 0) {
+          b.write(
+            '\n  片段接縫：$seamN 個／跨接縫最多多等 '
+            '${(m['ciSeamWorst'] as num?)?.toStringAsFixed(0) ?? '?'}ms',
+          );
+          final seams = m['ciSeams'];
+          if (seams is List && seams.isNotEmpty) {
+            b.write('\n    ${seams.join('\n    ')}');
+          } else {
+            b.write('／這次播放一個都沒跨過');
+          }
+        }
         final burst = m['ciBurst'];
         if (burst is String && burst.isNotEmpty) {
           b.write('\n  起播前40格到格間隔(ms)：$burst');

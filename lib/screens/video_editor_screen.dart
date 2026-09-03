@@ -7772,14 +7772,34 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       MediaPrep.available.then((v) => tr.env('轉檔通道', v ? '可用' : '沒接上（一律用原檔）')),
     );
     // 實際在播的那份檔到底長什麼樣。關鍵幀間隔那一欄直接決定拖曳順不順，
-    // 以前只能從「有沒有轉好」猜，猜錯過很多次
-    for (var i = 0; i < vids.length; i++) {
-      final src = vids[i];
+    // 以前只能從「有沒有轉好」猜，猜錯過很多次。
+    //
+    // 檔要問「合成真的收到的那幾份」，不能問 previewPath：previewPath
+    // 只認 SDR 工作檔，而 HDR 模式根本不轉 SDR 工作檔、播的是 HLG 代理
+    //（見 CompPlayer.build）。照 previewPath 印的話這一行會寫著
+    //「原檔！2160x3840／關鍵幀 ✗疏」，而合成器一格都沒讀過那支檔——
+    // 上一輪就是這樣把「卡頓」記到一支沒在播的檔頭上
+    final playPaths = <String>{
+      if (_comp != null) ...CompPlayer.lastPaths.where((p) => p.isNotEmpty),
+    };
+    if (playPaths.isEmpty) {
+      playPaths.addAll(vids.map((s) => s.previewPath));
+    } else {
+      // 同一支素材被切成好幾段時，這一行直接回答「幾段共用幾支檔」
+      tr.env(
+        '合成來源',
+        '${CompPlayer.lastPaths.length} 段畫面 → ${playPaths.length} 支檔',
+      );
+    }
+    var pi = 0;
+    for (final p in playPaths) {
+      final n = ++pi;
+      final isRaw = vids.any((s) => s.path == p);
       unawaited(
-        MediaPrep.probe(src.previewPath).then((m) {
+        MediaPrep.probe(p).then((m) {
           if (m == null) return;
           tr.env(
-            '在播的檔 ${i + 1}${src.workPath == null ? '（原檔！）' : ''}',
+            '在播的檔 $n${isRaw ? '（原檔！）' : ''}',
             MediaPrep.describe(m),
           );
         }),
@@ -13121,15 +13141,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         tip: '在播放處切割',
                         quarterTurns: 1,
                       ),
-                      _toolBtn(
-                        Icons.delete_outline,
-                        '刪除',
-                        _wmSel
-                            ? _deleteWatermark
-                            : (sel == null ? null : _deleteSelected),
-                        tip: _wmSel ? '刪除浮水印' : '刪除片段',
-                        disabledHint: '先在時間軸點選一個片段',
-                      ),
+                      // 順序：切割 → 複製 → 刪除 → 貼上。刪除刻意不
+                      // 貼著切割放（兩顆都在改結構，手指按錯就是誤刪）
                       _toolBtn(
                         Icons.copy,
                         '複製',
@@ -13141,6 +13154,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       () => _clipboard = sel.copy(),
                                     )),
                         tip: _wmSel ? '複製浮水印成素材' : '複製選取片段',
+                        disabledHint: '先在時間軸點選一個片段',
+                      ),
+                      _toolBtn(
+                        Icons.delete_outline,
+                        '刪除',
+                        _wmSel
+                            ? _deleteWatermark
+                            : (sel == null ? null : _deleteSelected),
+                        tip: _wmSel ? '刪除浮水印' : '刪除片段',
                         disabledHint: '先在時間軸點選一個片段',
                       ),
                       _toolBtn(
