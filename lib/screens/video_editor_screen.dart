@@ -11514,6 +11514,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             child: WatermarkLayer(
                                               settings: st,
                                               onChanged: () => setState(() {}),
+                                              onLiveChange: _gestureLiveTick,
+                                              onDragEnd: _gestureLiveEnd,
                                               onDragStart: _pushUndo,
                                               time: pos,
                                               selectedPart: stkSel
@@ -11839,6 +11841,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         child: WatermarkLayer(
                                           settings: _settings,
                                           onChanged: () => setState(() {}),
+                                          // 拖曳中每一格只重畫預覽層，
+                                          // 放手補整頁（見 _gestureLiveTick）
+                                          onLiveChange: _gestureLiveTick,
+                                          onDragEnd: _gestureLiveEnd,
                                           onDragStart: _pushWmUndo,
                                           // 選取框畫在裁切外（見 _wmFrameInfo）
                                           frameNotifier: _wmFrameInfo,
@@ -11974,7 +11980,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                     (d.focalPoint.dy -
                                                         _gestureStartFocal.dy) /
                                                     h;
-                                                setState(() {
+                                                _setLive(() {
                                                   for (
                                                     var i2 = 0;
                                                     i2 + 1 < stk1.length;
@@ -12003,7 +12009,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                       ClipKind.text
                                                   ? 12.0
                                                   : 3.0;
-                                              setState(() {
+                                              _setLive(() {
                                                 // 起點+總位移=未吸附原始值，
                                                 // 顯示值才吸中線
                                                 final rx =
@@ -12047,7 +12053,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             // 平鋪滿版的部件沒有位置概念，
                                             // 移了沒效果，也不該吃 undo
                                             var moved = false;
-                                            setState(() {
+                                            _setLive(() {
                                               if (wmClipStyle != null) {
                                                 // 浮水印片段：整組一起移。
                                                 // 吸附以「領頭」（文字，
@@ -12196,6 +12202,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           },
                                           onScaleEnd: (_) {
                                             _rtClearGuides();
+                                            // 手勢中只畫預覽層，放手補整頁
+                                            if (_rtArmed) _gestureLiveEnd();
                                             // 拖的是片段的話，位置縮放要立刻
                                             // 烘回合成——等併批的 900ms 就是
                                             // 使用者說的「放開影片才跟上」
@@ -12389,10 +12397,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _rtSetGuides(double x, double y) {
     final v = x == 0.5, hh = y == 0.5;
     if (v != _rtGuideV || hh != _rtGuideH) {
-      setState(() {
-        _rtGuideV = v;
-        _rtGuideH = hh;
-      });
+      // 輔助線畫在預覽層裡（CenterGuides），撥預覽層就好
+      _rtGuideV = v;
+      _rtGuideH = hh;
+      _pokeFrame();
     }
     final on = v || hh;
     if (on != _rtSnapped) {
@@ -12406,11 +12414,53 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _rtRawY = null;
     _rtSnapped = false;
     if (_rtGuideV || _rtGuideH) {
-      setState(() {
-        _rtGuideV = false;
-        _rtGuideH = false;
-      });
+      _rtGuideV = false;
+      _rtGuideH = false;
+      _pokeFrame();
     }
+  }
+
+  // ===== 手勢中的每一格：只重畫預覽層，不整頁 setState =====
+  //
+  // 選取路由的拖曳、雙指捏合、WatermarkLayer 自己的拖曳，每一格都走
+  // 這裡。量過（test/perf/editor_rebuild_bench_test.dart）：整頁 setState
+  // 一次重建 ~680 個 element（時間軸 ~400、控制列／分頁列 ~300），桌機
+  // 上 15~40ms，一格就吃掉整個 16.7ms 預算——手指在動時每格來一次
+  // 就是「放大縮小不夠跟手」。預覽層本身只有 ~50 個 element：跟面板
+  // 滑桿的 _wmLiveTick 一樣，撥一下 _frameVN 讓預覽層的
+  // ValueListenableBuilder 重建就好。疊加物同步與即時變形（setXform）
+  // 照常每格排——跟 setState override 做的一樣。放手（_gestureLiveEnd）
+  // 才整頁 setState，把時間軸、面板、工具列補到最新值。
+  //
+  // 浮水印分頁開著時面板的滑桿要跟著手指動（以前每格整頁重建它就會），
+  // 那條整頁重建節流成每 150ms 最多一次
+
+  /// 手勢中的 setState 替身：改完值只重畫預覽層
+  void _setLive(VoidCallback fn) {
+    fn();
+    _gestureLiveTick();
+  }
+
+  DateTime _gestureCommitAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  void _gestureLiveTick() {
+    if (!mounted) return;
+    _pokeFrame();
+    _ovStateChanged();
+    if (_tabs.index == 1) {
+      final now = DateTime.now();
+      if (now.difference(_gestureCommitAt).inMilliseconds >= 150) {
+        _gestureCommitAt = now;
+        setState(() {});
+      }
+    }
+  }
+
+  /// 手勢結束：整頁 setState 一次，手勢中只畫在預覽層的值才會反映到
+  /// 頁面其他部分
+  void _gestureLiveEnd() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   /// 選取路由的 undo 快照「欠著」旗標：手勢開始先掛著，
@@ -12623,7 +12673,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_pvBaseDist == null || _pvPts.length < 2) return;
     final p = _pvPts.values.toList();
     final f = (p[0] - p[1]).distance / _pvBaseDist!;
-    setState(() {
+    // 每一格只重畫預覽層（見 _gestureLiveTick）；放手補整頁
+    _setLive(() {
       if (_wmSel) {
         // 只縮放「被選取」的那個部件。文字和圖片是兩個獨立的東西，
         // 一起縮放會把已經調好的搭配弄壞
@@ -12705,6 +12756,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_pvBaseDist != null && _pvPts.length < 2) {
       _pvBaseDist = null;
       _rotSnapAt = null;
+      _gestureLiveEnd();
       _saveDraft();
     }
   }

@@ -21,6 +21,14 @@ class WatermarkLayer extends StatefulWidget {
   final WatermarkSettings settings;
   final VoidCallback onChanged;
 
+  /// 單指拖曳中的每一格（值已經寫進 settings）。父層可以給一個只重畫
+  /// 預覽層的輕量版，避免每格整頁重建；沒給就走 [onChanged]。
+  /// 放手時另外叫 [onDragEnd]，父層在那裡做整頁的收尾
+  final VoidCallback? onLiveChange;
+
+  /// 單指拖曳結束／取消
+  final VoidCallback? onDragEnd;
+
   /// 開始拖曳（父層拿來拍「上一步」快照）
   final VoidCallback? onDragStart;
 
@@ -68,6 +76,8 @@ class WatermarkLayer extends StatefulWidget {
     super.key,
     required this.settings,
     required this.onChanged,
+    this.onLiveChange,
+    this.onDragEnd,
     this.onDragStart,
     this.selectedPart = WmPart.none,
     this.onSelectPart,
@@ -202,6 +212,8 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
   Widget build(BuildContext context) {
     final settings = widget.settings;
     final onChanged = widget.onChanged;
+    // 拖曳中的每一格：父層給了輕量版就用它，沒給就照舊走 onChanged
+    final onLive = widget.onLiveChange ?? onChanged;
     final onDragStart = widget.onDragStart;
     final onTap = widget.onTap;
     final onTapText = widget.onTapText;
@@ -292,14 +304,20 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                         logo.x = _snapCenter(_rawX);
                         logo.y = _snapCenter(_rawY);
                         _feedbackCenter(logo.x, logo.y);
-                        onChanged();
+                        onLive();
                       },
                 onPanEnd: !_canDrag(WmPart.logo)
                     ? null
-                    : (_) => setState(() => _panning = WmPart.none),
+                    : (_) {
+                        setState(() => _panning = WmPart.none);
+                        widget.onDragEnd?.call();
+                      },
                 onPanCancel: !_canDrag(WmPart.logo)
                     ? null
-                    : () => setState(() => _panning = WmPart.none),
+                    : () {
+                        setState(() => _panning = WmPart.none);
+                        widget.onDragEnd?.call();
+                      },
                 // 選取框放在旋轉「裡面」：框才會跟著 Logo 轉
                 //（文字那邊本來就是這樣，兩邊要一致）。
                 // 透明度由共用畫家自己乘，這裡不能再包 Opacity
@@ -408,14 +426,20 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                           t.x = _snapCenter(_rawX);
                           t.y = _snapCenter(_rawY);
                           _feedbackCenter(t.x, t.y);
-                          onChanged();
+                          onLive();
                         },
                   onPanEnd: !_canDrag(WmPart.text)
                       ? null
-                      : (_) => setState(() => _panning = WmPart.none),
+                      : (_) {
+                          setState(() => _panning = WmPart.none);
+                          widget.onDragEnd?.call();
+                        },
                   onPanCancel: !_canDrag(WmPart.text)
                       ? null
-                      : () => setState(() => _panning = WmPart.none),
+                      : () {
+                          setState(() => _panning = WmPart.none);
+                          widget.onDragEnd?.call();
+                        },
                   child: Transform.rotate(
                     angle: t.rotation * math.pi / 180,
                     child: Container(
