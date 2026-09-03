@@ -447,6 +447,21 @@ class _TimelineEditorState extends State<TimelineEditor> {
       // 移動超過 8px 才「武裝」：捏合的第一指落在素材上時，
       // 第二指還沒到的那幾十毫秒不會看到素材被拖走
       if (!_liftArmed && (_lift!.dx.abs() > 8 || _lift!.dy.abs() > 8)) {
+        // 沒被選起來的片段不准被拖走（使用者指定：先鎖定才能移動）。
+        // 手指移出門檻＝這一下不是點擊，就地放棄：素材留在原地，
+        // 放開時照樣把它選起來，第二次拖才真的搬得動
+        if (!_liftWasSelected) {
+          _liftArmed = false;
+          _pressTimer?.cancel();
+          _lift = (
+            clipId: l.clipId,
+            startOffset: l.startOffset,
+            startTrack: l.startTrack,
+            dx: 0,
+            dy: 0,
+          );
+          return;
+        }
         _liftArmed = true;
         widget.onSelect(l.clipId); // 延後的選取（見 _liftStart）
         // 到這裡才算真的在搬素材，父層現在才需要讓開
@@ -479,6 +494,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
     // 沒有武裝（幾乎沒動）= 點擊：現在才選取（見 _liftStart）；
     // 點已選取的片段 → 交給編輯回呼
     if (!armed) {
+      // 沒真的搬動（含「未選取所以不准搬」那一種）：這一下當選取
       widget.onSelect(l.clipId);
       if (_liftWasSelected && l.dx.abs() < 6 && l.dy.abs() < 6) {
         widget.onTapSelectedClip?.call(l.clipId);
@@ -1278,6 +1294,18 @@ class _TimelineEditorState extends State<TimelineEditor> {
   Widget _trackLabel(int t) {
     final isEmptyRow = t >= timeline.usedTracks;
     final isVoice = widget.voiceTrack == t;
+    // 純音訊軌：眼睛（隱藏圖層）沒有意義，改成音量鈕（使用者指定）。
+    // 動作照舊走「隱藏」——隱藏本來就連聲音一起關，對音訊軌來說
+    // 隱藏＝靜音，語意剛好對得上
+    final rowClips = [
+      for (final c in timeline.clips)
+        if (c.track == t) c,
+    ];
+    final isAudio =
+        !isEmptyRow &&
+        !isVoice &&
+        rowClips.isNotEmpty &&
+        rowClips.every((c) => timeline.sourceOf(c).kind == ClipKind.audio);
     return _TrackLabel(
       index: t,
       height: trackH,
@@ -1291,6 +1319,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
           ? null
           : () => widget.onToggleHidden!(t),
       isVoice: isVoice,
+      isAudio: isAudio,
       isRecording: isVoice && widget.voiceRecording,
       // 選中的片段在這一軌 → 標籤跟著亮，指出選取落在哪一層。
       // 「整條軌被選為貼上目標」不算：點標籤是靜音不是選取，
@@ -1765,6 +1794,7 @@ class _TrackLabel extends StatefulWidget {
   /// 點下半的眼睛＝切換整軌顯示（null＝這一軌不提供，標籤只有喇叭）
   final VoidCallback? onToggleHidden;
   final bool isVoice; // 旁白軌：標籤變紅色錄音鈕
+  final bool isAudio; // 純音訊軌：眼睛換成音量鈕
   final bool isRecording;
 
   /// 選中的片段在這一軌：標籤跟著亮，指出選取落在哪一層。
@@ -1798,6 +1828,7 @@ class _TrackLabel extends StatefulWidget {
     this.hidden = false,
     this.onToggleHidden,
     this.isVoice = false,
+    this.isAudio = false,
     this.isRecording = false,
     this.hasSelection = false,
     required this.isDragging,
@@ -1906,6 +1937,11 @@ class _TrackLabelState extends State<_TrackLabel> {
             : Icon(
                 widget.isEmptyRow
                     ? Icons.add
+                    : widget.isAudio
+                    // 音訊軌沒有畫面可藏，這顆就是音量開關
+                    ? (widget.hidden
+                          ? Icons.volume_off
+                          : Icons.volume_up_outlined)
                     : (widget.hidden
                           ? Icons.visibility_off
                           : Icons.visibility_outlined),

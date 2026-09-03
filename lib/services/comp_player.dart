@@ -240,7 +240,19 @@ class CompPlayer {
   /// 那些。壓在所有影片之上的不烘——Flutter 畫在上面，拖曳即時。
   /// build 的 payload 跟編輯器「合成新鮮時別重畫」都用這一個，
   /// 兩邊的判定不可能走鐘
-  static Set<int> bakedImageIds(TimelineModel tl) {
+  ///
+  /// [wmStart]~[wmEnd]＝浮水印烘在合成裡的那段時間（終點不大於起點
+  /// ＝沒有，見 [build] 的同名參數）。跟它重疊的圖片/GIF 也要烘：
+  /// 不烘的話 Flutter 會把那張畫在整顆播放器材質「上面」，而浮水印
+  /// 在材質「裡面」＝被蓋掉（實測回報：最上層的浮水印被 GIF 蓋過）；
+  /// 匯出的合成器是疊加物最後畫、永遠在最上面，預覽就跟成品不一致。
+  /// 一起烘之後兩邊都照同一條 z 序（層照軌道排、疊加物最後），
+  /// 代價跟墊底圖片一樣：拖它要等重烘，不能即時
+  static Set<int> bakedImageIds(
+    TimelineModel tl, {
+    double wmStart = 0,
+    double wmEnd = 0,
+  }) {
     var top = -1;
     // 合成只到影片結尾：整塊落在影片之後的圖片烘不進去（build 會
     // 跳過），這裡也要用同一條件排除——不排除的話編輯器把它當
@@ -263,10 +275,13 @@ class CompPlayer {
     bool mosaicAbove(TimelineClip img) => mosaics.any(
       (m) => m.track > img.track && m.offset < img.end && m.end > img.offset,
     );
+    // 浮水印看得見的那段時間（見上）
+    bool underWm(TimelineClip img) =>
+        wmEnd > wmStart && img.offset < wmEnd && img.end > wmStart;
     return {
       for (final c in tl.clips)
         if (tl.sourceOf(c).kind == ClipKind.image &&
-            (c.track <= top || mosaicAbove(c)) &&
+            (c.track <= top || mosaicAbove(c) || underWm(c)) &&
             c.offset < vidEnd)
           c.id,
     };
@@ -310,8 +325,7 @@ class CompPlayer {
 
   static Future<String> sampleOut(String path) async {
     try {
-      return await _ch.invokeMethod<String>('sampleOut', {'path': path}) ??
-          '?';
+      return await _ch.invokeMethod<String>('sampleOut', {'path': path}) ?? '?';
     } catch (_) {
       return '?';
     }
@@ -325,6 +339,10 @@ class CompPlayer {
     }
   }
 
+  /// [wmStart]~[wmEnd]：浮水印在合成裡看得見的那段時間（終點不大於
+  /// 起點＝沒有浮水印）。只拿來決定哪些圖片/GIF 必須烘進合成，
+  /// 見 [bakedImageIds]——呼叫端四個地方要送同一個值，不然「編輯器
+  /// 以為烘了不畫／合成其實沒烘」就是素材整個不見
   static Future<CompPlayer?> build(
     TimelineModel tl, {
     bool texture = true,
@@ -332,6 +350,8 @@ class CompPlayer {
     Set<int> hiddenTracks = const {},
     bool hdrOut = false,
     List<Map<String, dynamic>> overlays = const [],
+    double wmStart = 0,
+    double wmEnd = 0,
   }) async {
     if (!await available) return null;
     _ensureHandler();
@@ -443,7 +463,7 @@ class CompPlayer {
     mosaics.sort((a, b) => (a['track'] as int).compareTo(b['track'] as int));
     // 墊在影片下層的圖片/GIF：烘進合成（跟原生匯出同一套欄位，
     // Swift 端組 CILayerSpec/CIGifSpec）。時間是時間軸秒數
-    final baked = bakedImageIds(tl);
+    final baked = bakedImageIds(tl, wmStart: wmStart, wmEnd: wmEnd);
     final stills = <Map<String, dynamic>>[];
     for (final c in tl.clips) {
       if (!baked.contains(c.id)) continue;
@@ -468,9 +488,7 @@ class CompPlayer {
         'opacity': c.opacity,
       });
     }
-    lastPaths = [
-      for (final c in clips) (c['path'] as String?) ?? '',
-    ];
+    lastPaths = [for (final c in clips) (c['path'] as String?) ?? ''];
     try {
       final m = await _ch.invokeMapMethod<String, dynamic>('build', {
         'clips': clips,

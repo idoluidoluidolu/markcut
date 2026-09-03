@@ -365,6 +365,51 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 比例的顯示字樣（自訂時不硬湊成 x:y，那種數字多半很醜）
   String get _ratioLabel => _customAspect == null ? _canvasRatio.label : '裁切';
+
+  /// 預覽畫布的比例（寬/高）：選了固定比例就用它，否則跟著素材。
+  /// 跟 [_buildPreview] 是同一套判定（新素材要算「會不會佔滿畫面」）
+  double get _canvasAspectNow {
+    final v = _activeVideo;
+    final ct = v == null ? null : _ctrls[v.id];
+    final base = (ct != null && ct.value.isInitialized)
+        ? ct.value.aspectRatio
+        : (_tl.sources.isEmpty ? 16 / 9 : _tl.sources.first.aspect);
+    final a = _ratioAspect ?? base;
+    return a > 0 ? a : 16 / 9;
+  }
+
+  /// 新素材放上畫面時，預設大小會不會幾乎把整塊預覽畫布佔滿
+  /// （兩邊都到 [_fullCanvasFrac] 以上）。佔滿了預設縮到
+  /// [_newClipShrink]——不然使用者只看到「畫面整個被擋住」
+  ///（實測回報：GIF 匯入時佔滿整個螢幕）。小張的照原尺寸
+  static const double _fullCanvasFrac = 0.9;
+  static const double _newClipShrink = 0.7;
+
+  bool _coversCanvas(
+    double boxW,
+    double boxH,
+    double canvasW,
+    double canvasH,
+  ) =>
+      canvasW > 0 &&
+      canvasH > 0 &&
+      boxW >= canvasW * _fullCanvasFrac &&
+      boxH >= canvasH * _fullCanvasFrac;
+
+  /// 圖片/GIF 片段（scale=1 時是「貼齊畫布」）會不會佔滿畫面。
+  /// 貼齊是 contain：一邊一定貼滿，另一邊看比例差多少
+  bool _mediaFillsCanvas(int w, int h) {
+    if (w <= 0 || h <= 0) return false;
+    final ca = _canvasAspectNow;
+    // 畫布用 1×(1/ca) 的無單位框算，只跟比例有關
+    const cw = 1.0;
+    final ch = 1 / ca;
+    final a = w / h;
+    final fitW = a >= ca ? cw : ch * a;
+    final fitH = a >= ca ? cw / a : ch;
+    return _coversCanvas(fitW, fitH, cw, ch);
+  }
+
   double _pxPerSec = 0;
   final _tlScroll = ScrollController();
 
@@ -404,6 +449,29 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _previewHasPicture &&
       _position >= _wmStart &&
       _position <= _wmEndEff + 0.001;
+
+  /// 浮水印「烘在合成裡」的那段時間（終點不大於起點＝沒有）。
+  ///
+  /// HDR 預覽把浮水印烘進合成、Flutter 版藏起來（見 [_ovFlutterHidden]）。
+  /// 這段時間內壓在影片之上的圖片/GIF 如果還是由 Flutter 畫，就會蓋在
+  /// 整顆播放器材質上面把浮水印壓掉（實測回報：最上層的浮水印被 GIF
+  /// 蓋過），而匯出的疊加物永遠畫在最後——所以要一起烘進合成，讓
+  /// 預覽跟成品走同一條 z 序。SDR 預覽的浮水印本來就由 Flutter 畫在
+  /// 所有圖層之上，不必動（也就保住了那些 GIF 的即時拖曳）。
+  ///
+  /// 判定用的是 `_exportHdr && _hdrAvail == true`——跟送給 [CompPlayer.build]
+  /// 的 hdrOut、跟 [_compSig] 裡的 'hdrOut'/'ovNeed' 是同一個條件，
+  /// 四個呼叫點才不會各算各的
+  (double, double) get _wmBakeRange =>
+      (_exportHdr && _hdrAvail == true && !_wmHidden && _settings.hasAnyMark)
+      ? (_wmStart, _wmEndEff)
+      : (0.0, 0.0);
+
+  /// 這一版時間軸要烘進合成的圖片片段（統一入口，見 [_wmBakeRange]）
+  Set<int> _bakedStillIds() {
+    final r = _wmBakeRange;
+    return CompPlayer.bakedImageIds(_tl, wmStart: r.$1, wmEnd: r.$2);
+  }
 
   // ===== HDR 預覽的疊加物（浮水印/文字/貼圖）烘進合成 =====
   //
@@ -1453,7 +1521,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 圖片素材那部分的指紋。烘進合成的（影片下層）記完整幾何；
   /// Flutter 畫的（影片之上）只記軌道——拖它不觸發重組
   String _stillSig() {
-    final baked = CompPlayer.bakedImageIds(_tl);
+    final baked = _bakedStillIds();
     return [
       for (final c in _tl.clips)
         if (_tl.sourceOf(c).kind == ClipKind.image)
@@ -1528,7 +1596,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     //「合成播放器就緒」）。連續變更只留最後一次，停手 350ms 才重建；
     // 這段期間畫面由即時疊加物清單（setPreviewOverlays）跟手
     _compRebuildTimer?.cancel();
-    _compRebuildTimer = Timer(const Duration(milliseconds: 350), _compRebuildTick);
+    _compRebuildTimer = Timer(
+      const Duration(milliseconds: 350),
+      _compRebuildTick,
+    );
   }
 
   /// 併批到期：手指還在時間軸上（滑動/拖片段/捏合）就再等——
@@ -3248,9 +3319,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 不能用 _prepping.isEmpty 判斷：轉檔是一支接一支排隊做的，第一支
   /// 做完的瞬間第二支還沒進佇列，_prepping 是空的——上一版就是這樣
   /// 每轉好一支就重烘一次合成，畫面重載了三次
-  bool get _allWorkFilesReady => _tl.sources.every(
-    (s) => !s.isVideo || _prepNeedOf(s) == _PrepNeed.none,
-  );
+  bool get _allWorkFilesReady =>
+      _tl.sources.every((s) => !s.isVideo || _prepNeedOf(s) == _PrepNeed.none);
 
   /// 整批 HDR 代理進行中：路徑類的合成重烘先壓著（見
   /// _compRefreshIfChanged），批次收尾一次換上。_drainPrep 整段也把它
@@ -3763,15 +3833,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 頻寬撐不起持續播放，引擎只在「全代理」時接管播放
         // proxy 必須跟上面的 path 一致：HDR 模式下只有 HDR 代理算數
         //（不一致的話會對 4K 原檔開解碼佇列＝記憶體爆）
-        'proxy': hdrMode
-            ? src.workHdrPath != null
-            : src.workPath != null,
+        'proxy': hdrMode ? src.workHdrPath != null : src.workPath != null,
       });
     }
     if (specs.isEmpty) return null;
     // 靜態圖層（圖片/貼圖/GIF 首幀）：跟烘進合成的是同一個集合、
     // 同一套欄位——滑動中少了它們就不是「預覽=匯出」
-    final baked = CompPlayer.bakedImageIds(_tl);
+    final baked = _bakedStillIds();
     final stills = <Map<String, dynamic>>[];
     for (final c in _tl.clips) {
       if (!baked.contains(c.id)) continue;
@@ -4992,6 +5060,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       trimEnd: _newClipLen(4),
       offset: _position,
       track: track,
+      // 比例跟畫布差不多的 GIF 貼齊之後是整個蓋掉畫面，
+      // 加進來看起來就像「螢幕被擋住了」——預設先縮一點。
+      // 小張的（比例差很多）照原尺寸，見 [_mediaFillsCanvas]
+      scale: _mediaFillsCanvas(imgW, imgH) ? _newClipShrink : 1.0,
     );
     _tl.clips.add(clip);
     setState(() => _sel = clip.id);
@@ -5008,14 +5080,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _addSticker(int track) async {
     final png = await pickSticker(context);
     if (png == null || !mounted) return;
+    // 貼圖是「要被看到」的東西，預設就給夠大（原本 0.28 太小）；
+    // 但預設大小就把畫面整個蓋掉的（極端長寬比）先縮一點——
+    // 跟 GIF 匯入同一條規則。解圖放在拍快照之前，
+    // 中間不能有 await（不然 undo 快照跟實際新增之間會開一道縫）
+    var sizeFrac = 0.42;
+    if (await _stickerFillsCanvas(png, sizeFrac)) {
+      sizeFrac *= _newClipShrink;
+    }
+    if (!mounted) return;
     _pause();
     _pushUndo();
     final style = WatermarkSettings()
       ..text = TextMark(text: '', enabled: false);
     style.logo
       ..enabled = true
-      // 貼圖是「要被看到」的東西，預設就給夠大（原本 0.28 太小）
-      ..sizeFrac = 0.42
+      ..sizeFrac = sizeFrac
       ..bytesValue = png;
     final srcIndex = _tl.sources.length;
     _tl.sources.add(
@@ -5045,6 +5125,27 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _sel = clip.id;
     });
     _saveDraft();
+  }
+
+  /// 貼圖預設大小會不會把畫面整個蓋掉。貼圖畫的是「短邊 × sizeFrac」
+  /// 寬、高度照原圖比例（跟 GIF 的貼齊算法不同），但「佔滿就縮」
+  /// 是同一條規則（見 [_coversCanvas]）。讀不到圖就當不會
+  Future<bool> _stickerFillsCanvas(Uint8List png, double sizeFrac) async {
+    try {
+      final codec = await ui.instantiateImageCodec(png);
+      final frame = await codec.getNextFrame();
+      final aw = frame.image.width, ah = frame.image.height;
+      frame.image.dispose();
+      codec.dispose();
+      if (aw <= 0 || ah <= 0) return false;
+      // 畫布用 1×(1/比例) 的無單位框算，只跟比例有關
+      const cw = 1.0;
+      final ch = 1 / _canvasAspectNow;
+      final lw = sizeFrac * math.min(cw, ch);
+      return _coversCanvas(lw, lw * ah / aw, cw, ch);
+    } catch (_) {
+      return false;
+    }
   }
 
   /// 貼圖的調整視窗：大小、角度、透明度、圓角，外加換一張。
@@ -7070,6 +7171,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     // 用系統影片圖層顯示時不要另外出一份材質：那份沒有人看，
     // 卻是每一格都在複製一張 4K 畫面，等於跟解碼搶頻寬
+    // 浮水印範圍先落地：組建是 await 的，中途 _hdrAvail 之類翻掉的話
+    // 「送去烘的那份」跟「編輯器記成已烘的那份」就不是同一套了
+    final wmBake = _wmBakeRange;
     final made = await CompPlayer.build(
       _tl,
       texture: !Diag.playerLayer.value,
@@ -7078,6 +7182,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 匯出選「保留 HDR」＝預覽也走 HDR（跟成品同一個顯示管線）
       hdrOut: _exportHdr && _hdrAvail == true,
       overlays: ovMaps,
+      // 被浮水印蓋到的圖片/GIF 也要烘（見 CompPlayer.bakedImageIds）
+      wmStart: wmBake.$1,
+      wmEnd: wmBake.$2,
     );
     // HDR 模式：背景把 HDR 代理補齊（HLG 直通、密關鍵幀），
     // 轉好換上就恢復跟 SDR 工作檔同級的順度。
@@ -7107,15 +7214,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
     // 轉向偵測：就緒事件帶畫布尺寸——比例翻掉的那一次重建，
     // 事件流會直接顯示 900x1600 → 1600x900 之類的翻轉
-    Diag.ev('合成就緒 ${made.width}x${made.height}'
-        '（CI ${made.ciOn ? '開' : '關'}）');
+    Diag.ev(
+      '合成就緒 ${made.width}x${made.height}'
+      '（CI ${made.ciOn ? '開' : '關'}）',
+    );
     // 這一版烘的就是現在的值，指紋一起同步（馬賽克那份給
     // _compMosaicStale 判空窗用）
     _lastCompSig = _compSig();
     _lastCompEditSig = _compSig(withPaths: false);
     _lastCompMosaicSig = _mosaicSig();
     _lastCompStillSig = _stillSig();
-    _compBakedStills = CompPlayer.bakedImageIds(_tl);
+    _compBakedStills = CompPlayer.bakedImageIds(
+      _tl,
+      wmStart: wmBake.$1,
+      wmEnd: wmBake.$2,
+    );
     // 疊加物：_ovNativeShown 不在這裡動——舊畫面還在前面撐著，
     // 等原生端回報 compVisible（新畫面真的上檔）才切；保底計時器
     // 對齊原生換手的 1.5 秒逾時
@@ -8206,6 +8319,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 拖出畫面也看得到位置）
   final _wmFrameInfo = ValueNotifier<WmFrameInfo?>(null);
 
+  /// 被選中的「貼圖片段」的框。跟 [_wmFrameInfo] 同一套（外層畫，
+  /// 不被預覽裁切），但一定要分兩個 notifier：全域浮水印那層在沒被
+  /// 選時會回報 null，而它畫在貼圖層之後——共用一個的話貼圖的框
+  /// 每一格都被它清掉。
+  ///
+  /// 為什麼不畫在貼圖圖層裡（WatermarkLayer 自己的選取框）：HDR 預覽
+  /// 會把整個貼圖圖層壓到 0.01（畫面那份由原生烘，見 [_ovFlutterHidden]），
+  /// 框跟著看不見——實測回報「加入貼圖 EMOJI 沒有鎖定框框」
+  final _stkFrameInfo = ValueNotifier<WmFrameInfo?>(null);
+
   /// 上一次點預覽的位置：同一點再點一次就往下鑽一層
   Offset? _cycleAt;
 
@@ -9128,6 +9251,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _frameVN.dispose();
     _dressVN.dispose();
     _wmFrameInfo.dispose();
+    _stkFrameInfo.dispose();
     unawaited(Diag.deactivateAudio());
     unawaited(_comp?.dispose() ?? Future<void>.value());
     _scrubSettleTimer?.cancel();
@@ -10293,13 +10417,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Widget _buildPreview() {
     // 疊加物同步與即時變形不在這裡排：build 沒有副作用，狀態變更點
     // 是 setState（見 _ovStateChanged）與面板滑桿的 _wmLiveTick
-    final baseVideo = _activeVideo;
-    final baseCtrl = baseVideo == null ? null : _ctrls[baseVideo.id];
-    final baseAspect = (baseCtrl != null && baseCtrl.value.isInitialized)
-        ? baseCtrl.value.aspectRatio
-        : (_tl.sources.isEmpty ? 16 / 9 : _tl.sources.first.aspect);
     // 畫布比例：選了固定比例就用它（跟匯出一致）
-    final canvasAspect = _ratioAspect ?? baseAspect;
+    final canvasAspect = _canvasAspectNow;
 
     return Listener(
       // 雙指縮放選取中的元素（浮水印／片段）。
@@ -10402,6 +10521,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   _hitBoxes.clear();
                                   Rect? selRect;
                                   TimelineClip? selVisual;
+                                  // 這一輪有沒有貼圖會回報選取框
+                                  //（沒有的話要親自把上一輪的收掉，
+                                  // 見下面 _stkFrameInfo）
+                                  var stkFramed = false;
 
                                   // 圖層的上下關係一律照時間軸的軌道來：
                                   // track 小的是下層、先畫（編號越大越上面，
@@ -11260,6 +11383,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     } else if (src.kind == ClipKind.wm) {
                                       final st =
                                           src.wmStyle ?? WatermarkSettings();
+                                      // 貼圖是一個素材，選取時就該看得到框
+                                      //（浮水印素材的框在浮水印面板那邊自己畫）
+                                      final stkSel =
+                                          src.isSticker &&
+                                          _sel == c.id &&
+                                          !_hideSelUi;
+                                      if (stkSel) stkFramed = true;
                                       addLayer(
                                         c.track,
                                         Positioned.fill(
@@ -11276,15 +11406,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               onChanged: () => setState(() {}),
                                               onDragStart: _pushUndo,
                                               time: pos,
-                                              // 貼圖是一個素材，選取時就該
-                                              // 看得到框（浮水印素材的框在
-                                              // 浮水印面板那邊自己畫）
-                                              selectedPart:
-                                                  (src.isSticker &&
-                                                      _sel == c.id &&
-                                                      !_hideSelUi)
+                                              selectedPart: stkSel
                                                   ? WmPart.logo
                                                   : WmPart.none,
+                                              // 框交給外層畫：這一整層在 HDR
+                                              // 預覽被壓到 0.01，框畫在裡面
+                                              // 等於看不見（見 _stkFrameInfo）。
+                                              // 只有被選中的那顆拿 notifier，
+                                              // 沒選的會回報 null 把它清掉
+                                              frameNotifier: stkSel
+                                                  ? _stkFrameInfo
+                                                  : null,
                                               onHitBox: (t, l) =>
                                                   _addWmHit(c.id, t, l),
                                               panLocked: () =>
@@ -11452,6 +11584,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         selVisual = c;
                                       }
                                     }
+                                  }
+
+                                  // 這一輪沒有貼圖被選（換選別的、刪掉了、
+                                  // 播放頭離開它的範圍）：沒有人會來覆寫，
+                                  // 框會留在畫面上不走，親自收掉。
+                                  // build 中不能動 notifier，排到畫完那一格
+                                  if (!stkFramed &&
+                                      _stkFrameInfo.value != null) {
+                                    WidgetsBinding.instance
+                                        .addPostFrameCallback((_) {
+                                          if (mounted) {
+                                            _stkFrameInfo.value = null;
+                                          }
+                                        });
                                   }
 
                                   // 旋轉吸附的輔助線（吸住整數角度才出現）
@@ -12038,6 +12184,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       // 的兄弟），部件拖出畫面時內容被裁掉、框照畫在
                       // 真實位置，才知道東西跑到哪去了
                       Positioned.fill(child: WmFrameOverlay(_wmFrameInfo)),
+                      // 貼圖片段的選取框：同上，而且在 HDR 預覽裡
+                      // 貼圖圖層整層被壓成 0.01，框只能畫在這裡
+                      Positioned.fill(child: WmFrameOverlay(_stkFrameInfo)),
                     ],
                   ),
                 ),
@@ -13317,6 +13466,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _openVolumeSheet(TimelineClip clip) {
     // 按靜音之前的音量，再按一次原音量回來
     var lastVol = clip.volume > 0 ? clip.volume : 1.0;
+    // 「整軌」自己的值：原本直接綁在 clip.volume 上，拉上面那條
+    // 這條就跟著跑（實機回報：兩條一起動、單獨調不了）。整軌調下去
+    // 會連這個片段一起改，所以上面那條跟著動是對的；反過來不該動
+    var trackVol = clip.volume;
     _optSheet('音量', (setSheet) {
       void setVol(double v) {
         setSheet(() {});
@@ -13376,10 +13529,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           // 整軌：這一軌所有片段一起調（使用者指定要多這一個）
           _optRow(
             label: '整軌',
-            value: clip.volume,
+            value: trackVol,
             max: 1,
-            suffix: '${(clip.volume * 100).round()}%',
+            suffix: '${(trackVol * 100).round()}%',
             onChanged: (v) {
+              trackVol = v;
               setSheet(() {});
               setState(() {
                 for (final c in _tl.clips) {
@@ -13389,6 +13543,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 }
               });
             },
+            // 跟上面那條一樣有圖示才對得起來（使用者指定補上）
+            leading: Row(
+              children: [
+                Icon(
+                  trackVol > 0
+                      ? Icons.speaker_group_outlined
+                      : Icons.volume_off,
+                  size: 16,
+                  color: trackVol > 0 ? kTextDim : kSelect,
+                ),
+                const SizedBox(width: 4),
+                const Text(
+                  '整軌',
+                  style: TextStyle(fontSize: 12, color: kTextDim),
+                ),
+              ],
+            ),
           ),
           const Padding(
             padding: EdgeInsets.only(left: 2, top: 2),

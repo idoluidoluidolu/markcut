@@ -153,6 +153,16 @@ void main() {
     await t.pumpAndSettle();
   }
 
+  /// 新契約（使用者指定）：片段要先選起來才搬得動。點一下選取，
+  /// 再重畫一次讓新的 selectedId 傳進去
+  Future<void> selectFirstClip(WidgetTester t) async {
+    await t.tapAt(_onVideo(t, tl));
+    await t.pumpAndSettle();
+    await pumpEditor(t);
+    expect(spy.selected, tl.clips[0].id);
+    spy.lifts.clear();
+  }
+
   testWidgets('第一指按在素材上、第二指落下後捏合：不拖曳、不長按、不選取', (t) async {
     await pumpEditor(t);
     final a = await t.startGesture(_onVideo(t, tl));
@@ -182,6 +192,7 @@ void main() {
 
   testWidgets('第一指已經拖起素材、第二指才落下：當場放回原位、放開不寫回', (t) async {
     await pumpEditor(t);
+    await selectFirstClip(t);
     final a = await t.startGesture(_onVideo(t, tl));
     await t.pump(const Duration(milliseconds: 20));
     await a.moveBy(const Offset(12, 0)); // 超過 8px 的武裝門檻＝真的在拖
@@ -265,6 +276,13 @@ void main() {
     );
     await t.pumpAndSettle();
 
+    // 先選起來才搬得動（新契約）
+    await t.tapAt(_onVideo(t, tl));
+    await t.pumpAndSettle();
+    setLocal(() {});
+    await t.pump();
+    spy.lifts.clear();
+
     final a = await t.startGesture(_onVideo(t, tl));
     await t.pump(const Duration(milliseconds: 20));
     await a.moveBy(const Offset(12, 0));
@@ -297,8 +315,28 @@ void main() {
     expect(spy.drops, [tl.clips[0].id], reason: '單指拖曳要恢復');
   });
 
-  testWidgets('回歸：單指拖曳照樣搬得動、按住 450ms 照樣開長按選單', (t) async {
+  testWidgets('未選取的片段拖不動：只會被選起來，不會被搬走', (t) async {
     await pumpEditor(t);
+    final g = await t.startGesture(_onVideo(t, tl));
+    for (var i = 0; i < 4; i++) {
+      await g.moveBy(const Offset(15, 0));
+      await t.pump(const Duration(milliseconds: 30));
+    }
+    await g.up();
+    await t.pumpAndSettle();
+    expect(spy.drops, isEmpty, reason: '沒選起來就不該搬動');
+    expect(
+      spy.lifts,
+      isNot(contains(true)),
+      reason: '父層不該以為使用者在搬素材（收尾的 false 無所謂）',
+    );
+    expect(spy.selected, tl.clips[0].id, reason: '這一下當成選取');
+    expect(tl.clips[0].offset, 0);
+  });
+
+  testWidgets('回歸：選起來之後單指拖曳搬得動、按住 450ms 照樣開長按選單', (t) async {
+    await pumpEditor(t);
+    await selectFirstClip(t);
     final a = await t.startGesture(_onVideo(t, tl));
     for (var i = 0; i < 4; i++) {
       await a.moveBy(const Offset(15, 0));
