@@ -708,6 +708,13 @@ class CompPlayer {
       if (luma?.isNotEmpty == true) {
         b.write('\n  交格亮度：$luma（全 0＝合成器真的交黑格）');
       }
+      // HDR 管線探針：合成器真正收到／交出那一格的像素格式與傳遞函數。
+      // 「加了圖片素材 HDR 就不見」用這一行定罪：源不是 10-bit＋HLG
+      // ＝來源在進合成器之前就被壓成 SDR；出不是 HLG＝標記掉了
+      final hdrP = m['hdrProbe'] as String?;
+      if (hdrP?.isNotEmpty == true) {
+        b.write('\n  HDR 管線：$hdrP（源要 10-bit＋HLG，出要 HLG）');
+      }
       if (m['layerBound'] == false) {
         b.write('\n  ⚠ 影片圖層綁在舊播放器（畫面會全黑）');
       }

@@ -694,10 +694,25 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
     // 映射要在線性光上算）
     .workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
   ])
-  // HDR 要在半浮點工作格式上算，8 位元會把高光截掉
-  private static let ctxHDR = CIContext(options: [
-    .cacheIntermediates: false, .workingFormat: CIFormat.RGBAh,
-  ])
+  // HDR 要在半浮點工作格式上算，8 位元會把高光截掉。
+  //
+  // 工作色彩空間一定要「明講是延伸範圍的線性空間」：只給
+  // workingFormat 而不給 workingColorSpace 的話，用的是 CI 的預設
+  // 工作空間，HLG 來源在轉進去的那一步就沒有「1.0 以上還算數」的
+  // 保證——高光（HLG 的 0.75 以上）會被收在 SDR 白以內，輸出雖然
+  // 照樣標 2020/HLG，但畫面已經沒有 HDR 的量，看起來就是「HDR 沒了、
+  // 整片暗一階」。1.0＝SDR 基準白這個慣例跟預設一樣，所以疊加物那套
+  // 夾白（CIColorClamp 到 1）與 ×3 提亮的數學完全不受影響
+  private static let ctxHDR: CIContext = {
+    var opts: [CIContextOption: Any] = [
+      .cacheIntermediates: false,
+      .workingFormat: CIFormat.RGBAh,
+    ]
+    if let ws = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) {
+      opts[.workingColorSpace] = ws
+    }
+    return CIContext(options: opts)
+  }()
   private var ctx: CIContext { hdrOut ? Self.ctxHDR : Self.ctxSDR }
 
   /// 先把馬賽克那組濾鏡的 GPU 管線編譯起來。
@@ -808,15 +823,28 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   // 收原生格式（含 10-bit HDR）。只收 BGRA 的話，HDR 來源會在進到
   // 我們手上之前先被轉成 8-bit BGRA——那一步沒有色調映射，顏色就是
   // 在這裡被沖淡的。收原生 YUV，映射交給下面的 toneMapHDRtoSDR
-  var sourcePixelBufferAttributes: [String: Any]? = [
-    kCVPixelBufferPixelFormatTypeKey as String: [
+  //
+  // HDR 輸出模式只列 10-bit：這份清單是「我收得下哪些格式」，
+  // AVFoundation 從裡面挑一個給我們——8-bit 也在清單上，它就有權
+  // 把 HLG 來源先壓成 8-bit 再交過來，高光在進到合成器之前就沒了
+  //（上面那段註解講的正是這件事，但清單本身沒有把 8-bit 排除）。
+  // Apple 的 HDR 自訂合成器範例只列 420YpCbCr10BiPlanarVideoRange。
+  // SDR 路的清單一個字都不動（8-bit 來源照舊直收，不多做轉換）
+  var sourcePixelBufferAttributes: [String: Any]? {
+    let tenBit: [Int] = [
       Int(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange),
       Int(kCVPixelFormatType_420YpCbCr10BiPlanarFullRange),
-      Int(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
-      Int(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange),
-      Int(kCVPixelFormatType_32BGRA),
     ]
-  ]
+    let anyDepth: [Int] =
+      tenBit + [
+        Int(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+        Int(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange),
+        Int(kCVPixelFormatType_32BGRA),
+      ]
+    return [
+      kCVPixelBufferPixelFormatTypeKey as String: hdrOut ? tenBit : anyDepth
+    ]
+  }
   var requiredPixelBufferAttributesForRenderContext: [String: Any] {
     [
       kCVPixelBufferPixelFormatTypeKey as String: hdrOut
@@ -1040,6 +1068,30 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   /// 全 0＝合成器真的交黑格；有值＝畫面在顯示端被吃掉
   static var lumaProbe: [String] = []
   private static var lumaN = 0
+
+  /// HDR 管線探針（每次 App 生命週期記第一格）：合成器「真正收到」
+  /// 與「真正交出」的那一格是什麼像素格式、什麼傳遞函數。
+  ///
+  /// 「加了圖片素材 HDR 就不見」這種回報，兩個嫌疑的畫面長得一模一樣：
+  /// (a) 來源在進到合成器之前就被壓成 8-bit／SDR（源那格不是 x420
+  /// 加 HLG）、(b) 我們交出去的那格標記不對（出那格不是 HLG）。
+  /// 這一行直接分辨，不用再猜
+  static var hdrProbe = ""
+  private static var hdrProbeDone = false
+
+  /// 一格緩衝的「格式/傳遞函數」摘要（探針用）
+  static func describeBuf(_ b: CVPixelBuffer) -> String {
+    let f = CVPixelBufferGetPixelFormatType(b)
+    let bytes: [UInt8] = [
+      UInt8((f >> 24) & 0xFF), UInt8((f >> 16) & 0xFF),
+      UInt8((f >> 8) & 0xFF), UInt8(f & 0xFF),
+    ]
+    let fourCC = String(bytes: bytes, encoding: .ascii) ?? "\(f)"
+    let trc =
+      (CVBufferGetAttachment(b, kCVImageBufferTransferFunctionKey, nil)?
+        .takeUnretainedValue() as? String) ?? "無標記"
+    return "\(fourCC)/\(trc)"
+  }
 
   /// 交格前補上色彩標記：CoreImage 渲染「不會」寫緩衝的色彩附件，
   /// 播放器圖層拿到沒有標記的 HLG/709 緩衝就顯示不出來（黑）。
@@ -1505,6 +1557,19 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         // （上：疊加物區塊——缺格重播也會走到，樣式永遠是當下版）
         self.ctx.render(out, to: dst, bounds: canvasRect, colorSpace: self.outCS)
         self.tagColors(dst)
+        // HDR 管線探針：整個 App 生命週期只記第一格（見 hdrProbe）
+        if self.hdrOut, let ps = probeSrc {
+          Self.slowLock.lock()
+          var line: String? = nil
+          if !Self.hdrProbeDone {
+            Self.hdrProbeDone = true
+            Self.hdrProbe =
+              "源\(Self.describeBuf(ps))→出\(Self.describeBuf(dst))"
+            line = Self.hdrProbe
+          }
+          Self.slowLock.unlock()
+          if let line = line { NSLog("[HDR] %@", line) }
+        }
         // 拖曳中不做亮度取樣（要把剛渲染好的緩衝鎖回 CPU 讀一點）：
         // 純診斷，放手那發照樣量
         if !scrub {
@@ -6525,6 +6590,9 @@ final class CompPlayer: NSObject, FlutterTexture {
     m["ciHoldMiss"] = CIExportCompositor.holdMissCount
     m["ciHoldGap"] = CIExportCompositor.holdGapCount
     m["lumaProbe"] = CIExportCompositor.lumaProbe.joined(separator: "、")
+    // HDR 管線探針（見 CIExportCompositor.hdrProbe）：空字串＝這次
+    // 沒有任何 HDR 合成器跑過（＝預覽根本沒掛 CI，走系統直通）
+    m["hdrProbe"] = CIExportCompositor.hdrProbe
     CIExportCompositor.slowLock.unlock()
     m["stallNotify"] = stallCount
     m["stallNotifyAt"] = stallNotes
