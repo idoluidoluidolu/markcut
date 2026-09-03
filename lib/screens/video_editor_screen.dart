@@ -9844,6 +9844,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 _wmPart = WmPart.logo;
                                 if (!isClipWm) _wmSel = true;
                               }),
+                              // 面板裡點縮圖／文字＝畫面上也選它（同
+                              // onLogoAdded 的規矩）。沒有這一段，面板
+                              // 亮框的圖片在預覽上動不了：預覽的拖曳
+                              // 由「選取路由」統一收，而路由只認 _wmSel
+                              // ＋_wmPart——點縮圖以前只改 activeLogo，
+                              // 進場預選的又是文字，於是拖曳跑去搬文字；
+                              // 若先點過片段（_wmSel 被清掉）路由根本
+                              // 不掛，手指就被文字那層 opaque 的判定
+                              //（畫在圖片之上、預設又比圖片寬）整個吃掉。
+                              // _wmSel 的 setter 會順手把片段選取清成 -1，
+                              // 選著貼圖時拖曳也不會再跑去搬那張貼圖。
+                              // 浮水印素材（isClipWm）不設 _wmSel：那會
+                              // 清掉 _sel，面板下一幀就跳回全域浮水印
+                              onSelectPart: (p) => setState(() {
+                                _wmPart = p;
+                                if (!isClipWm) _wmSel = true;
+                              }),
                               // GIF 得當時間軸素材才會動（浮水印是烘成
                               // 一張靜態 PNG 的），所以從這裡加也是加到
                               // 時間軸上，加完把人帶回剪輯分頁看
