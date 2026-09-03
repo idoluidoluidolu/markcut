@@ -2131,7 +2131,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// `mounted` 必為 false——以前這裡一檢查就 return，
   /// 「離開前補存」其實從來沒有存成功過
   Future<void> _saveDraftNow({bool force = false}) async {
-    // 這份專案正在編輯：草稿上限的自動清理（DraftStore.prune）不能把它
+    // 這份專案正在編輯：手動清理（DraftStore.prune）不能把它
     // 當成最舊的刪掉——登記起來，離開專案（_handleBack）時才解除
     DraftStore.holdOpen(_draftId);
     // 封面要夠大：個人中心拿它當大圖顯示。抽過就快取，換了片段才重抽

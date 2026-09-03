@@ -724,7 +724,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
   Map<String, dynamic>? _collageDraft;
   bool _loading = true;
 
-  /// 影片草稿最多留幾份（超過自動刪最舊的，見 DraftStore.prune）
+  /// 建議保留幾份（只是手動清理的基準，不會自動刪，見 _cleanupOld）
   int _cap = DraftStore.defaultMax;
 
   /// 選取模式：勾好幾份、右上角垃圾桶一次刪
