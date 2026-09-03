@@ -66,18 +66,20 @@ abstract final class TrimHit {
       return TrimTarget.either; // 兩根直條中間
     }
 
-    // 離得夠遠：核心優先於播放頭、播放頭優先於熱區外圍
-    if (x >= xs - coreSlack && x <= xs + barWidth + coreSlack) {
+    // 離得夠遠：把手（含外圍熱區）一律優先於播放頭。
+    // 播放頭停手後永遠停在把手上（GIF 模式指針只在範圍內動），
+    // 讓它排在把手外圍之前＝從把手外側去抓抓到的是指針、範圍不動
+    //（實機回報：拖好幾次拖不到）。外側給得比內側寬——要拉開範圍
+    // 的手指本來就是從外面往外拉
+    if (x >= xs - handleReach && x <= xs + barWidth + coreSlack) {
       return TrimTarget.start;
     }
-    if (x >= xe - barWidth - coreSlack && x <= xe + coreSlack) {
+    if (x >= xe - barWidth - coreSlack && x <= xe + handleReach) {
       return TrimTarget.end;
     }
     if (xp != null && (x - xp).abs() <= playheadReach) {
       return TrimTarget.playhead;
     }
-    if ((x - xs).abs() <= handleReach) return TrimTarget.start;
-    if ((x - xe).abs() <= handleReach) return TrimTarget.end;
     return TrimTarget.background;
   }
 

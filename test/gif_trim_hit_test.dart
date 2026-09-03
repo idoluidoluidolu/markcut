@@ -71,10 +71,14 @@ void main() {
       expect(pick(xe - 6), TrimTarget.end);
     });
 
-    test('播放頭停在起點把手上：按直條拉把手、按播放頭左側拉播放頭', () {
+    test('播放頭停在把手上：整個把手熱區都還是拉把手（實機：拖不到）', () {
       expect(pick(xs + 6, xp: xs), TrimTarget.start);
       expect(pick(xs - 5, xp: xs), TrimTarget.start); // 核心內
-      expect(pick(xs - 15, xp: xs), TrimTarget.playhead);
+      // 外側熱區：以前這裡被播放頭吃掉＝從外面抓抓到指針、範圍不動
+      expect(pick(xs - 15, xp: xs), TrimTarget.start);
+      expect(pick(xs - 30, xp: xs), TrimTarget.start);
+      // 熱區之外才輪到播放頭
+      expect(pick(xs - 40, xp: xs - 40), TrimTarget.playhead);
     });
 
     test('中間空白：點哪跳哪；播放頭在中間可拖', () {
