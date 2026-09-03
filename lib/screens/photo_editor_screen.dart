@@ -14,6 +14,7 @@ import '../models/color_grade.dart';
 import '../models/mosaic.dart';
 import '../models/watermark_settings.dart';
 import '../services/photo_saver.dart';
+import '../services/png_size.dart';
 import '../theme.dart';
 import '../services/mosaic_patch_painter.dart';
 import '../services/watermark_renderer.dart';
@@ -1766,8 +1767,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       var ext = 'png';
       if (jpeg) {
         try {
+          // 一定要給尺寸：minWidth/minHeight 預設 1920x1080 在 iOS 是
+          //「上限」，不給的話 4000x3000 會被縮成 1920x1440 才壓 JPEG。
+          // 合成永遠是 PNG，尺寸直接讀檔頭（見 pngSize）
+          final size = pngSize(bytes);
           bytes = await FlutterImageCompress.compressWithList(
             bytes,
+            minWidth: size?.$1 ?? 1 << 14,
+            minHeight: size?.$2 ?? 1 << 14,
             quality: 92,
             format: CompressFormat.jpeg,
           );
