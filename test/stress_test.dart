@@ -560,7 +560,7 @@ void main() {
       expect(CompPlayer.whyNot(tl), isNull);
     });
 
-    test('文字拖得比影片長：還是要退回（播放時鐘到影片結尾就停了）', () {
+    test('文字拖得比影片長：照樣用合成，改把合成補長到 9 秒', () {
       final tl = base();
       tl.sources.add(
         MediaSource(path: '', name: 'T', kind: ClipKind.text, duration: 3600),
@@ -575,7 +575,9 @@ void main() {
           track: 1,
         ),
       );
-      expect(CompPlayer.whyNot(tl), isNotNull);
+      expect(CompPlayer.whyNot(tl), isNull);
+      // 原生端照這個值把畫面軌鋪到 9 秒，時鐘才走得完尾巴
+      expect(CompPlayer.padTo(tl), 9);
     });
 
     test('有馬賽克不再退回：改烘進合成（CI 合成器）', () {
@@ -676,7 +678,7 @@ void main() {
       expect(CompPlayer.bakedImageIds(tl, wmStart: 0, wmEnd: 1), isEmpty);
     });
 
-    test('浮水印重疊的圖片整塊落在影片之後：還是不烘（合成只到影片結尾）', () {
+    test('浮水印重疊的圖片整塊落在影片之後：合成補長之後蓋得到，要烘', () {
       final tl = base(); // 影片 0~5 秒
       tl.sources.add(
         MediaSource(
@@ -686,9 +688,10 @@ void main() {
           duration: 3600,
         ),
       );
+      final id = tl.nextId();
       tl.clips.add(
         TimelineClip(
-          id: tl.nextId(),
+          id: id,
           sourceIndex: 1,
           trimStart: 0,
           trimEnd: 2,
@@ -696,7 +699,11 @@ void main() {
           track: 5,
         ),
       );
-      expect(CompPlayer.bakedImageIds(tl, wmStart: 0, wmEnd: 8), isEmpty);
+      // 以前合成只到影片結尾，這張進不去所以不烘；現在合成補長到 8 秒
+      //（見 padTo），烘進去才有正確的 z 序——不烘的話 Flutter 會把它
+      // 畫在整顆播放器材質「上面」，而浮水印在材質「裡面」＝被蓋掉
+      expect(CompPlayer.padTo(tl), 8);
+      expect(CompPlayer.bakedImageIds(tl, wmStart: 0, wmEnd: 8), {id});
     });
 
     test('圖片素材壓在所有影片之上：放行（Flutter 圖層畫在合成上面）', () {
@@ -714,15 +721,25 @@ void main() {
           id: tl.nextId(),
           sourceIndex: 1,
           trimStart: 0,
-          trimEnd: 3, // 不超過影片結尾（超過另有「影片結束後還有其他素材」擋）
+          trimEnd: 3, // 不超過影片結尾（超過的話合成會補長，見 padTo 那幾則）
           offset: 0,
           track: 1,
         ),
       );
       expect(CompPlayer.whyNot(tl), isNull);
+      expect(CompPlayer.padTo(tl), 0, reason: '沒有尾巴＝一格都不補');
     });
 
-    test('影片播完後面還有文字：合成只到影片結尾，時鐘會卡住', () {
+    // ===== 時間軸尾巴：合成補長，不再整組退回 =====
+    //
+    // 以前只要有東西比最後一段影片晚結束就整個放棄合成，退回逐片段
+    // 材質播放器（8-bit BGRA，顯示不了 HDR）。而預設「加入圖片」是在
+    // 指針處放一段 4 秒的圖，靠近片尾加圖幾乎必中——「加入圖片素材後
+    // 為啥整個 HDR 效果都不見了」就是這樣來的。
+    // 現在改成把合成本身補長到時間軸終點（CompPlayer.padTo → 原生端
+    // build 的 timelineDuration → 畫面軌鋪到那裡），路徑不變、HDR 保住
+
+    test('影片播完後面還有文字：留在合成路徑，合成補長到文字結尾', () {
       final tl = base(); // 影片 0~5 秒
       tl.sources.add(
         MediaSource(
@@ -743,7 +760,205 @@ void main() {
           track: 1,
         ),
       );
-      expect(CompPlayer.whyNot(tl), '影片結束後還有其他素材');
+      expect(CompPlayer.whyNot(tl), isNull);
+      expect(CompPlayer.padTo(tl), 9);
+    });
+
+    test('靠近片尾按「加入圖片」：留在合成路徑（原本必退、HDR 跟著沒了）', () {
+      // 重現使用者那一步：預設加圖是「指針處放一段」，長度被
+      // _newClipLen 夾成 max(0.5, 剩下的空間)——指針離片尾不到 0.5 秒
+      // 時一定會凸出去，這是「加入圖片素材後為啥整個 HDR 效果都不見了」
+      // 最短的重現路徑
+      final tl = base(); // 影片 0~5 秒
+      tl.sources.add(
+        MediaSource(
+          path: '/p.png',
+          name: 'p',
+          kind: ClipKind.image,
+          duration: 3600,
+        ),
+      );
+      final id = tl.nextId();
+      tl.clips.add(
+        TimelineClip(
+          id: id,
+          sourceIndex: 1,
+          trimStart: 0,
+          trimEnd: 0.5, // 剩 0.25 秒不夠 0.5，_newClipLen 給的下限
+          offset: 4.75,
+          track: 1, // 加圖預設開新軌＝壓在影片之上
+        ),
+      );
+      expect(CompPlayer.whyNot(tl), isNull);
+      expect(CompPlayer.padTo(tl), 5.25);
+      // 壓在所有影片之上＝Flutter 畫（可即時拖曳），不烘進合成；
+      // 合成補長之後 Dart 時鐘走得到 5.25，這張才看得見
+      expect(CompPlayer.bakedImageIds(tl), isEmpty);
+    });
+
+    test('整塊都在影片之後的圖片也要烘（補長之後合成蓋得到）', () {
+      final tl = base(); // 影片 0~5 秒
+      tl.sources.add(
+        MediaSource(
+          path: '/p.png',
+          name: 'p',
+          kind: ClipKind.image,
+          duration: 3600,
+        ),
+      );
+      final id = tl.nextId();
+      tl.clips.add(
+        TimelineClip(
+          id: id,
+          sourceIndex: 1,
+          trimStart: 0,
+          trimEnd: 3,
+          offset: 6, // 6~9 秒，整塊在影片結束之後
+          track: 0,
+        ),
+      );
+      expect(CompPlayer.whyNot(tl), isNull);
+      expect(CompPlayer.padTo(tl), 9);
+      expect(CompPlayer.bakedImageIds(tl), {id});
+    });
+
+    test('配樂比影片長：留在合成路徑，合成補長到配樂結尾', () {
+      final tl = base(); // 影片 0~5 秒
+      tl.sources.add(
+        MediaSource(
+          path: '/m.m4a',
+          name: 'm',
+          kind: ClipKind.audio,
+          duration: 3600,
+        ),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 1,
+          trimStart: 0,
+          trimEnd: 12,
+          offset: 0,
+          track: 1,
+        ),
+      );
+      expect(CompPlayer.whyNot(tl), isNull);
+      expect(CompPlayer.padTo(tl), 12);
+    });
+
+    test('沒有尾巴的專案一格都不補（不能多出黑尾巴）', () {
+      // 乾淨的單軌
+      expect(CompPlayer.padTo(base()), 0);
+      // 文字跟影片一樣長
+      final same = base();
+      same.sources.add(
+        MediaSource(path: '', name: 'T', kind: ClipKind.text, duration: 3600),
+      );
+      same.clips.add(
+        TimelineClip(
+          id: same.nextId(),
+          sourceIndex: 1,
+          trimStart: 0,
+          trimEnd: 5,
+          offset: 0,
+          track: 1,
+        ),
+      );
+      expect(CompPlayer.padTo(same), 0);
+      // 只超出一點點（捨入等級）也不補：多補就是多一段沒必要的黑
+      final hair = base();
+      hair.sources.add(
+        MediaSource(path: '', name: 'T', kind: ClipKind.text, duration: 3600),
+      );
+      hair.clips.add(
+        TimelineClip(
+          id: hair.nextId(),
+          sourceIndex: 1,
+          trimStart: 0,
+          trimEnd: 5.02,
+          offset: 0,
+          track: 1,
+        ),
+      );
+      expect(CompPlayer.padTo(hair), 0);
+    });
+
+    test('馬賽克的尾巴不算：合成照舊只到影片結尾', () {
+      // 馬賽克只是糊底下的畫面，影片播完沒東西可糊；而預設 3 秒常常
+      // 比短片還長，算進來的話每個馬賽克專案都會多一段黑尾巴。
+      // 現行行為（尾巴讓 Dart 時鐘走完、畫面停在最後一幀）不該被波及
+      final tl = base(); // 影片 0~5 秒
+      tl.sources.add(
+        MediaSource(path: '', name: '', kind: ClipKind.mosaic, duration: 3600),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 1,
+          trimStart: 0,
+          trimEnd: 8,
+          offset: 0,
+          track: 1,
+        ),
+      );
+      expect(CompPlayer.whyNot(tl), isNull);
+      expect(CompPlayer.padTo(tl), 0);
+    });
+
+    test('尾巴在隱藏軌上：不補（隱藏軌整條不進合成）', () {
+      final tl = base(); // 影片 0~5 秒
+      tl.sources.add(
+        MediaSource(
+          path: '/p.png',
+          name: 'p',
+          kind: ClipKind.image,
+          duration: 3600,
+        ),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 1,
+          trimStart: 0,
+          trimEnd: 4,
+          offset: 6,
+          track: 1,
+        ),
+      );
+      expect(CompPlayer.padTo(tl), 10);
+      expect(CompPlayer.padTo(tl, hiddenTracks: {1}), 0);
+      expect(CompPlayer.whyNot(tl, hiddenTracks: {1}), isNull);
+    });
+
+    test('有尾巴也擋不住真正做不到的：倒轉／調色／沒有影片', () {
+      // 補長只解決「時鐘走不完」，其他退回理由一個都沒放寬
+      final rev = base();
+      rev.clips.first.reverse = true;
+      expect(CompPlayer.whyNot(rev), '有倒轉的片段');
+      final col = base();
+      col.clips.first.color.brightness = 0.5;
+      expect(CompPlayer.whyNot(col), '有調色的片段');
+      // 只有一張圖、沒有影片：合成沒有畫面軌可組（原生端也組不出畫布）
+      final noVid = TimelineModel();
+      noVid.sources.add(
+        MediaSource(
+          path: '/p.png',
+          name: 'p',
+          kind: ClipKind.image,
+          duration: 3600,
+        ),
+      );
+      noVid.clips.add(
+        TimelineClip(
+          id: noVid.nextId(),
+          sourceIndex: 0,
+          trimStart: 0,
+          trimEnd: 4,
+          offset: 0,
+          track: 0,
+        ),
+      );
+      expect(CompPlayer.whyNot(noVid), '沒有影片片段');
     });
 
     test('撞號的片段 id 載入時要補新號（兩軌同時亮燈的根因）', () {

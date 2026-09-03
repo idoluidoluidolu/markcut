@@ -216,24 +216,42 @@ class CompPlayer {
     //   CI 合成器、同一套定位數學），見 [bakedImageIds]。
     //   以前這種疊法整個放棄合成、退回一片段一顆播放器——
     //   「加一張 GIF 之後開頭又開始卡」就是這樣來的
-    // 影片全部播完之後時間軸還有別的東西（圖片、文字拖得比影片長）：
-    // 合成的總長只到影片結尾，播放時鐘走到那裡就卡住原地跳針，
-    // 位置甚至會跑到比總長還大。
-    // 馬賽克不算：它只是糊底下的畫面，影片播完沒東西可糊，而且
-    // 預設 3 秒常常比短片還長——因為它放棄合成，等於馬賽克永遠
-    // 用不到單一播放器（實測就是這樣壞的）
+    // 「影片播完之後時間軸還有別的東西」也不再是阻擋條件：改成把合成
+    // 本身補長到時間軸終點（見 [padTo]，原生端 build 的
+    // timelineDuration）。以前擋在這裡是因為合成的總長只到影片結尾、
+    // 時鐘走到那裡就停住；而預設「加入圖片」是在指針處放 4 秒，
+    // 靠近片尾加圖幾乎必中——整組退回逐片段材質播放器（8-bit BGRA，
+    // 根本顯示不了 HDR），就是「加入圖片素材後為啥整個 HDR 效果都不見了」
+    return null;
+  }
+
+  /// 合成要補到多長（秒）。0＝不用補，一般專案走這條、一格都不動。
+  ///
+  /// 合成的長度只到最後一段影片的結尾。圖片／文字／貼圖／配樂拖得比
+  /// 影片長時，播放時鐘走到影片結尾就停住：尾巴既播不到也拖不過去，
+  /// 位置甚至會跑到比總長還大。治本是把合成補長到時間軸終點——
+  /// 跟匯出同一個量（native_export 也叫 timelineDuration）。
+  /// 原生端怎麼鋪見 Swift 的 fillTail：匯出補的是空範圍，而空範圍加不到
+  /// 軌道尾端，所以預覽那邊是鋪媒體、不是照抄匯出那一手。
+  ///
+  /// 隱藏軌不算：整條不進合成，判定要用同一份視角。
+  ///
+  /// 馬賽克不算：它只是糊底下的畫面，影片播完沒東西可糊，而且預設
+  /// 3 秒常常比短片還長——算進來的話每個馬賽克專案都會多出一段黑尾巴，
+  /// 而現行行為（合成到影片結尾、尾巴讓 Dart 時鐘走完、畫面停在最後
+  /// 一幀）是好的，不該被這次改動波及
+  static double padTo(TimelineModel tl, {Set<int> hiddenTracks = const {}}) {
     var vidEnd = 0.0;
-    for (final c in vids) {
-      if (c.end > vidEnd) vidEnd = c.end;
-    }
     var lastEnd = 0.0;
     for (final c in tl.clips) {
-      if (tl.sourceOf(c).kind == ClipKind.mosaic) continue;
       if (hiddenTracks.contains(c.track)) continue;
+      if (tl.sourceOf(c).kind == ClipKind.mosaic) continue;
       if (c.end > lastEnd) lastEnd = c.end;
+      if (tl.sourceOf(c).isVideo && c.end > vidEnd) vidEnd = c.end;
     }
-    if (lastEnd - vidEnd > 0.05) return '影片結束後還有其他素材';
-    return null;
+    // 0.05 的門檻跟原生端一致：差這麼一點是 trim／timescale 的捨入，
+    // 不是真的有尾巴。補了反而多一段沒必要的黑
+    return lastEnd - vidEnd > 0.05 ? lastEnd : 0.0;
   }
 
   /// 要烘進合成的圖片素材（片段 id）：墊在「最高的影片軌」之下的
@@ -254,15 +272,18 @@ class CompPlayer {
     double wmEnd = 0,
   }) {
     var top = -1;
-    // 合成只到影片結尾：整塊落在影片之後的圖片烘不進去（build 會
-    // 跳過），這裡也要用同一條件排除——不排除的話編輯器把它當
-    // 「已烘」不畫，預覽看不見、匯出卻有
+    // 合成的終點：影片結尾，或補長之後的時間軸終點（見 [padTo]）。
+    // 整塊落在合成終點之後的圖片烘不進去（build 會跳過），這裡也要
+    // 用同一條件排除——不排除的話編輯器把它當「已烘」不畫，
+    // 預覽看不見、匯出卻有
     var vidEnd = 0.0;
     for (final c in tl.clips) {
       if (!tl.sourceOf(c).isVideo) continue;
       if (c.track > top) top = c.track;
       if (c.end > vidEnd) vidEnd = c.end;
     }
+    final pad = padTo(tl);
+    final compEnd = pad > vidEnd ? pad : vidEnd;
     // 馬賽克壓在圖片/GIF 上面（軌道更高、時間重疊）：那張圖也要烘
     // 進合成——Flutter 畫的圖層在合成畫面「上方」，原生端的馬賽克
     // 永遠打不到它（實測回報：馬賽克無法覆蓋 GIF，儘管圖層在上；
@@ -282,7 +303,7 @@ class CompPlayer {
       for (final c in tl.clips)
         if (tl.sourceOf(c).kind == ClipKind.image &&
             (c.track <= top || mosaicAbove(c) || underWm(c)) &&
-            c.offset < vidEnd)
+            c.offset < compEnd)
           c.id,
     };
   }
@@ -436,6 +457,12 @@ class CompPlayer {
     for (final c in vids) {
       if (c.end > compEnd) compEnd = c.end;
     }
+    // 時間軸尾巴（圖片/文字/貼圖/配樂拖得比影片長）：合成補長到這裡，
+    // 原生端照這個值鋪軌（見 [padTo]）。0＝不用補，一般專案完全不受影響。
+    // 圖片層可以畫到補長後的終點；馬賽克照舊夾在影片結尾（補出來的
+    // 尾巴是黑的，沒東西可糊）
+    final tailTo = padTo(tl, hiddenTracks: hiddenTracks);
+    final stillEnd = tailTo > compEnd ? tailTo : compEnd;
     final mosaics = <Map<String, dynamic>>[];
     for (final c in tl.clips) {
       final src = tl.sourceOf(c);
@@ -468,13 +495,13 @@ class CompPlayer {
     for (final c in tl.clips) {
       if (!baked.contains(c.id)) continue;
       if (hiddenTracks.contains(c.track)) continue; // 隱藏軌不烘
-      if (c.offset >= compEnd) continue;
+      if (c.offset >= stillEnd) continue;
       final src = tl.sourceOf(c);
       stills.add({
         'path': src.path,
         if (src.isGif) 'gif': true,
         'start': c.offset,
-        'end': c.end > compEnd ? compEnd : c.end,
+        'end': c.end > stillEnd ? stillEnd : c.end,
         'track': c.track,
         'px': c.px,
         'py': c.py,
@@ -496,6 +523,9 @@ class CompPlayer {
         'mosaics': mosaics,
         'stills': stills,
         'hdrOut': hdrOut,
+        // 合成要補到多長（0＝不用補）。原生端拿它把最底層那條畫面軌
+        // 鋪到時間軸終點，時鐘才走得完尾巴（見 [padTo]）
+        'timelineDuration': tailTo,
         // HDR 預覽的疊加物（浮水印/文字/貼圖的整版 PNG，跟匯出
         // 同一套欄位；rect 描述使用者畫布落在合成畫框的哪裡）
         'overlays': overlays,

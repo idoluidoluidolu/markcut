@@ -1500,6 +1500,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     //（拆掉，回到純 EDR 直通）要重組；內容本身的變化走 setOverlays
     // 即時清單，不進這份指紋
     'ovNeed${_exportHdr && _hdrAvail == true && _ovAnyContent}',
+    // 合成補長到哪（見 CompPlayer.padTo）：尾巴是文字/貼圖/配樂時，
+    // 上面那些欄位一個都不會變，但合成的總長要跟著改——不記的話
+    // 把文字拖過片尾不重組，時鐘照舊停在影片結尾
+    'pad${CompPlayer.padTo(_tl, hiddenTracks: _hiddenTracks).toStringAsFixed(3)}',
   ].join(';');
 
   /// 馬賽克那部分的指紋（幾何＋樣式＋軌道）。

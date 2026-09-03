@@ -2138,7 +2138,9 @@ final class AtomicFlag {
           p.build(
             clips: clips, texture: (args["texture"] as? Bool) ?? true,
             mosaics: mosaics, stills: stills, hdrOut: hdrOut,
-            overlays: overlays)
+            overlays: overlays,
+            // 合成要補到多長（0＝不用補；見 CompPlayer.build）
+            timelineDuration: args["timelineDuration"] as? Double ?? 0)
         else {
           let why = p.buildError ?? "未知原因"
           p.dispose()
@@ -5137,10 +5139,14 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 材質這份沒有人看，卻是每一格都在複製一張 4K 的畫面
   /// [mosaics] 跟原生匯出同一套欄位（px/py/scale/type/strength/
   /// color/feather/start/end）。非空時掛 CI 合成器把碼烘進畫面
+  /// [timelineDuration] 合成要補到多長（秒；0＝不用補）。圖片/文字/
+  /// 貼圖/配樂拖得比最後一段影片長時，合成的長度只到影片結尾、時鐘
+  /// 走到那裡就停住——照這個值把畫面軌鋪到時間軸終點（跟匯出的
+  /// timelineDuration 同一個量；鋪法見下面的 fillTail）
   func build(
     clips: [[String: Any]], texture: Bool, mosaics: [[String: Any]] = [],
     stills: [[String: Any]] = [], hdrOut: Bool = false,
-    overlays: [[String: Any]] = []
+    overlays: [[String: Any]] = [], timelineDuration: Double = 0
   ) -> Bool {
     let comp = AVMutableComposition()
     let scale: CMTimeScale = 600
@@ -5393,26 +5399,66 @@ final class CompPlayer: NSObject, FlutterTexture {
       return false
     }
 
+    // ── 時間軸尾巴：合成補長到總長 ─────────────────────────────
+    //
+    // 合成的長度只到最後一段影片的結尾。圖片/文字/貼圖/配樂拖得比影片
+    // 長時，播放時鐘走到影片結尾就停住：尾巴既播不到也拖不過去，位置
+    // 甚至會跑到比總長還大。Dart 端以前為了這件事整組放棄合成，退回
+    // 逐片段材質播放器（8-bit BGRA，根本顯示不了 HDR）——那就是
+    // 「加入圖片素材後為啥整個 HDR 效果都不見了」。
+    //
+    // 量跟匯出同一個（runExport 的 timelineDuration，Dart 端同一個
+    // CompPlayer.padTo 算出來的），結果也跟匯出一樣：補出來的那段是
+    // 黑底，圖片層由指令照樣畫在上面。
+    // 手法故意跟匯出不同——匯出補的是空範圍，而空範圍加不到軌道尾端
+    //（見下面 fillTail 的說明），所以這裡改用鋪媒體。
+    //
+    // naturalEnd＝沒補之前的長度（下面 makeVC 的片尾保底要用它分辨
+    // 「本來就有的片尾」跟「補出來的尾巴」）
+    let naturalEnd = comp.duration.seconds
+    let padEnd = CMTime(seconds: timelineDuration, preferredTimescale: scale)
+    // 0.05 的門檻＝真的有尾巴才補（跟 Dart 端 padTo 同一個數）。
+    // 沒有尾巴的專案這一整段是 no-op，一格都不動
+    let needsPad = timelineDuration > naturalEnd + 0.05
+
+    /// 把第 [layer] 層的畫面軌鋪到 [to]：拿該軌最後一段結尾的一小格
+    /// 拉長蓋過去。畫面看到什麼由指令決定、不是由軌道決定——鋪的是
+    /// 媒體，但補出來那段的指令沒有列這條軌，所以仍然是黑底
+    ///
+    /// 補尾巴刻意不用 insertEmptyTimeRange：
+    /// AVMutableCompositionTrack 的標頭明說「you cannot add empty time
+    /// ranges to the end of a composition track」——加在軌道尾端的空範圍
+    /// 等於沒加，合成長度不會變，補了跟沒補一樣。這個檔裡其他六處
+    /// insertEmptyTimeRange 全都是「片段之間的洞」（補完緊接著就插媒體），
+    /// 只有匯出 runExport 那一處（vTrack.insertEmptyTimeRange(ownEnd~want)）
+    /// 是加在尾端，同一個疑點——所以這裡改用已經在跑的鋪滿手法，
+    /// 兩種可能下都成立
+    func fillTail(_ layer: Int, to: CMTime) {
+      guard let slot = vTracks[layer], slot.end < to, let m = lastMedia[layer]
+      else { return }
+      let snipDur = CMTime(
+        seconds: min(0.2, m.rng.duration.seconds), preferredTimescale: scale)
+      let snip = CMTimeRange(start: m.rng.end - snipDur, duration: snipDur)
+      guard (try? slot.track.insertTimeRange(snip, of: m.src, at: slot.end))
+        != nil
+      else { return }
+      slot.track.scaleTimeRange(
+        CMTimeRange(start: slot.end, duration: snip.duration),
+        toDuration: to - slot.end)
+      vTracks[layer]?.end = to
+    }
+
+    // 補長：最底層那條軌先撐到總長（合成的長度＝最長的那條軌）
+    if needsPad, let baseLayer = vTracks.keys.min() {
+      fillTail(baseLayer, to: padEnd)
+    }
     // CI 路線：每條畫面軌「最後一段結束到合成結尾」也要鋪滿——
     // 對自訂合成器來說，軌道提早結束跟空範圍是同一回事（+79 的
     // 軌 0 只到 0.48s、合成長 1.76s，抽格就是這樣壞的）。
-    // 用該軌最後一段的結尾一小格拉長蓋過去，畫面照樣由指令決定
+    // 合成結尾已經是補長後的總長，其他軌自然一起被帶到那裡
     if needsCI {
-      for (layer, slot) in vTracks where slot.end < comp.duration {
-        guard let m = lastMedia[layer] else { continue }
-        let gap = comp.duration - slot.end
-        let snipDur = CMTime(
-          seconds: min(0.2, m.rng.duration.seconds), preferredTimescale: scale)
-        let snip = CMTimeRange(start: m.rng.end - snipDur, duration: snipDur)
-        if (try? slot.track.insertTimeRange(snip, of: m.src, at: slot.end))
-          != nil
-        {
-          slot.track.scaleTimeRange(
-            CMTimeRange(start: slot.end, duration: snip.duration),
-            toDuration: gap)
-          vTracks[layer]?.end = comp.duration
-        }
-      }
+      let fillTo = comp.duration
+      for layer in vTracks.keys.sorted() { fillTail(layer, to: fillTo) }
     }
 
     // 畫面大小以「最底層、最早出現」的那一段轉正之後的尺寸為準。
@@ -5519,6 +5565,12 @@ final class CompPlayer: NSObject, FlutterTexture {
       || segments.contains { seg in
         seg.crop != nil || abs(seg.rotation) > 0.05 || seg.opacity < 0.999
       }
+      // 補長的尾巴一定要掛合成器：不掛的話畫面直接由軌道決定，
+      // 而軌道上補的是「最後一格拉長」＝尾巴凍在最後一幀；掛了
+      // 才輪得到指令說話（那一段沒有任何層＝黑底，跟匯出一致）。
+      // 成本不是新增的：這些專案上一版根本進不了合成，走的是
+      // 一片段一顆播放器的舊路，比多掛一顆合成器貴得多
+      || needsPad
     if !needsVC, let only = vTracks.values.first {
       only.track.preferredTransform = uniformTransform
     }
@@ -5698,6 +5750,13 @@ final class CompPlayer: NSObject, FlutterTexture {
         rawT.append(CMTime(seconds: sp.layer.start, preferredTimescale: 600))
         rawT.append(CMTime(seconds: sp.layer.end, preferredTimescale: 600))
       }
+      // 補長的接縫本身也是切點。片尾保底（下面的 tail）只看段落的
+      // 「起點」在哪，不切的話「本來就有的片尾」跟「補出來的尾巴」
+      // 會落在同一段指令裡，整段被當成前者＝該黑的地方凍成最後一幀。
+      // 沒補的時候不加（needsPad 擋著），行為完全不變
+      if needsPad {
+        rawT.append(CMTime(seconds: naturalEnd, preferredTimescale: 600))
+      }
       // 去重要帶容差，而且是在這裡去掉，不是排完之後跳過太短的區間——
       // 跳過會在時間軸上留一條沒有指令的縫，而指令必須首尾相接把整條
       // 蓋滿，缺一段系統就當這份合成有問題
@@ -5816,8 +5875,17 @@ final class CompPlayer: NSObject, FlutterTexture {
           entries.sort { $0.z != $1.z ? $0.z < $1.z : $0.order < $1.order }
           let layers = entries.map { $0.spec }
           // 片尾（最後一個可見片段之後，例如音樂比畫面長）不留黑：
-          // 無條件重播最後一格，畫面停在最後一幀直到播完
-          let tail = a.seconds >= lastShow - 0.001
+          // 無條件重播最後一格，畫面停在最後一幀直到播完。
+          // 「為了時間軸尾巴補出來的那段」（naturalEnd 之後）不在此列：
+          // 匯出那段補的是空白＝黑底，預覽跟著黑才是所見即所得；
+          // 不擋的話文字/貼圖的尾巴在預覽是凍住的最後一幀、成品卻是
+          // 黑底，兩邊對不上。
+          // 只看段落起點就夠：needsPad 時 naturalEnd 一定是切點
+          //（見上面 rawT），不會有指令跨在接縫上。
+          // 沒補的專案 naturalEnd＝合成總長，每一段指令的起點都嚴格
+          // 小於它，這個條件恆真＝行為不變
+          let tail =
+            a.seconds >= lastShow - 0.001 && a.seconds < naturalEnd - 0.001
           proto.append((
             a: a, b: b, layers: layers,
             hold: layers.isEmpty && ((b - a).seconds < 0.12 || tail)
