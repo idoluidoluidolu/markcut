@@ -9375,6 +9375,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     } catch (e) {
       message = '匯出失敗：$e';
     }
+    // 匯出成功＝這份專案已經產出成品：草稿直接留著，離開時不再問
+    //（使用者指定：只有「編輯到一半離開」才需要問）
+    if (ok) {
+      _exportedOk = true;
+      unawaited(_saveDraftNow(force: true));
+    }
     // 這次實際跑多久 → 更新這台機器的速度係數，下次預估才準
     if (ok) {
       final (ow, oh) = computeCanvasSize(
@@ -9457,6 +9463,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 離開保護：問清楚要留草稿還是捨棄（D 款 iOS 動作清單風）
   /// 返回：先退回上一個分頁（匯出→浮水印→剪輯），
   /// 已經在剪輯分頁才問要不要離開專案
+  /// 匯出成功過：離開時直接保留草稿，不再跳「保留/捨棄」
+  bool _exportedOk = false;
+
   void _handleBack() {
     // 全螢幕先退回編輯畫面，不要一按就離開專案
     if (_fullscreen) {
@@ -9474,6 +9483,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     if (_tabs.index > 0) {
       _tabs.animateTo(_tabs.index - 1);
+      return;
+    }
+    // 匯出成功過的專案不再問：直接保留草稿走人
+    if (_exportedOk) {
+      unawaited(_saveDraftNow(force: true));
+      Navigator.of(context).pop();
       return;
     }
     _confirmLeave();

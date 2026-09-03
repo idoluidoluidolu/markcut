@@ -112,27 +112,6 @@ void main() {
       for (final e in savedAtById.entries) 'project_thumb_${e.key}': 'T',
     };
 
-    String withFiles(List<String> files) => jsonEncode({
-      'savedAt': '2026-01-01T00:00:00',
-      'sources': [
-        for (final f in files) {'path': f, 'workPath': '$f.work'},
-      ],
-      'clips': [1],
-    });
-
-    late List<Set<String>> released;
-    bool Function(String)? lastReferenced;
-    setUp(() {
-      released = [];
-      lastReferenced = null;
-      DraftStore.fileReleaser = (paths, {required referenced}) async {
-        released.add(paths);
-        lastReferenced = referenced;
-        return paths.length;
-      };
-    });
-    tearDown(() => DraftStore.fileReleaser = DraftStore.defaultFileReleaser);
-
     test('預設 30；設定會存起來，超出範圍夾回來', () async {
       expect(await DraftStore.maxDrafts(), 30);
       await DraftStore.setMaxDrafts(50);
@@ -176,7 +155,6 @@ void main() {
       await DraftStore.setMaxDrafts(3);
       expect(await DraftStore.prune(), isEmpty);
       expect((await DraftStore.list()).length, 2);
-      expect(released, isEmpty);
     });
 
     test('啟動清理（沒有 keep）：超過的最舊幾份全清、順序照存檔時間', () async {
@@ -228,26 +206,6 @@ void main() {
       }
     });
 
-    test('清掉的草稿的檔案：只有它在用的交給清理，別份還在用的不碰', () async {
-      SharedPreferences.setMockInitialValues(
-        seeded(
-          {'old': '2026-01-01T00:00:00', 'keep': '2026-01-02T00:00:00'},
-          data: {
-            'old': withFiles(['/w/only.mp4', '/w/shared.mp4']),
-            'keep': withFiles(['/w/shared.mp4']),
-          },
-        ),
-      );
-      await DraftStore.setMaxDrafts(1);
-      expect(await DraftStore.prune(), ['old']);
-      expect(released.single, {'/w/only.mp4', '/w/only.mp4.work'});
-      // 清理那頭還會再問一次「工作檔的原檔有沒有人用」
-      expect(lastReferenced!('/w/shared.mp4'), isTrue);
-      expect(lastReferenced!('/w/only.mp4'), isFalse);
-      // 只認檔名也算有人用（App 更新後容器路徑的 UUID 會換）
-      expect(lastReferenced!('/other/prefix/shared.mp4'), isTrue);
-    });
-
     test('內容壞掉的草稿也清得掉，不會卡住整輪清理', () async {
       SharedPreferences.setMockInitialValues(
         seeded(
@@ -258,7 +216,6 @@ void main() {
       await DraftStore.setMaxDrafts(1);
       expect(await DraftStore.prune(), ['old']);
       expect((await DraftStore.list()).map((m) => m.id), ['keep']);
-      expect(released, isEmpty);
     });
 
     test('存檔跟清理同時跑：排隊做，剛存的不會被清掉', () async {

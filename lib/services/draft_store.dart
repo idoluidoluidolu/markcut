@@ -8,12 +8,6 @@ import 'work_files.dart';
 
 /// 清掉草稿時連帶清 App 自有檔案的那一手（見 [WorkFiles.releaseFiles]）。
 /// [referenced]：這條路徑（或工作檔的原始來源）還有沒有活著的草稿在用
-typedef DraftFileReleaser =
-    Future<int> Function(
-      Set<String> paths, {
-      required bool Function(String path) referenced,
-    });
-
 /// 影片專案草稿：可以同時存好幾個，每個有自己的名字。
 ///
 /// 以前只有一個固定的鍵（`project_draft_v1`），第二次開新專案就把上一個
@@ -94,14 +88,6 @@ class DraftStore {
     _queue = done.future;
     return prev.then((_) => body()).whenComplete(done.complete);
   }
-
-  /// 清掉草稿時連帶清檔案的那一手。測試換成假的，看清理算出哪些檔
-  static DraftFileReleaser fileReleaser = defaultFileReleaser;
-
-  static Future<int> defaultFileReleaser(
-    Set<String> paths, {
-    required bool Function(String path) referenced,
-  }) => WorkFiles.releaseFiles(paths, referenced: referenced);
 
   /// 讀某一份草稿的封面（base64 PNG/JPEG）
   static Future<String?> thumb(String id) async {
@@ -304,80 +290,30 @@ class DraftStore {
       if (victims.isEmpty) return const [];
       final victimIds = {for (final v in victims) v.id};
 
-      // 要刪的草稿引用到哪些檔案——只有這幾份要解碼（一份好幾百 KB，
-      // 上限清理一次通常只刪一份）
-      final candidates = <String>{};
-      for (final v in victims) {
-        final raw = prefs.getString(_dataKey(v.id));
-        if (raw != null) candidates.addAll(_filesIn(raw));
-      }
-      // 活下來的草稿不解碼：一條路徑還有沒有人在用，看它編碼後的字串
-      // 有沒有出現在別份的原始 JSON 裡就夠了（誤判只會往「不刪」偏）。
-      // 也認檔名：iOS 每次更新 App 容器路徑的 UUID 都會換，舊草稿記的
-      // 是舊前綴，只比整條路徑會漏
-      final survivorsRaw = <String>[];
-      for (final m in metas) {
-        if (victimIds.contains(m.id)) continue;
-        final raw = prefs.getString(_dataKey(m.id));
-        if (raw != null) survivorsRaw.add(raw);
-      }
-      bool referenced(String p) {
-        final full = jsonEncode(p);
-        final name = p.split(RegExp(r'[\\/]')).last;
-        final byName = name.isEmpty ? null : '/$name"';
-        return survivorsRaw.any(
-          (s) => s.contains(full) || (byName != null && s.contains(byName)),
-        );
-      }
-
-      final orphans = {
-        for (final p in candidates)
-          if (!referenced(p)) p,
-      };
-
-      // 先刪內容再重寫索引（跟 remove 同一個順序）
+      // 只刪草稿紀錄本身。不再讀每一份草稿的內容去算「哪些檔案沒人用了」：
+      // 一份草稿好幾百 KB（內嵌封面與圖片），實機 113 份要刪 83 份時，那一輪
+      // 比對等於把上百 MB 讀進記憶體，App 直接被系統殺掉（回報：點清理就當機）。
+      // 工作檔／HDR 代理交給 WorkFiles.sweep 用自己的規則清（只看索引與檔案
+      // 在不在，成本跟草稿份數無關）
+      var done = 0;
       for (final v in victims) {
         await prefs.remove(_dataKey(v.id));
         await prefs.remove(_thumbKey(v.id));
+        // 每 10 份讓出一次主執行緒：一次刪上百份也不會整個畫面凍住
+        if (++done % 10 == 0) await Future<void>.delayed(Duration.zero);
       }
       final rest = [
         for (final m in metas)
           if (!victimIds.contains(m.id)) m,
       ];
       await _writeIndex(prefs, rest);
-      Diag.note('草稿超過上限 $cap，清掉最舊的 ${victims.length} 份');
-      if (orphans.isNotEmpty) {
-        try {
-          await fileReleaser(orphans, referenced: referenced);
-        } catch (_) {
-          // 檔案清不掉只是佔空間，草稿本身已經清好了
-        }
-      }
+      Diag.note('草稿清理：刪掉最舊的 ${victims.length} 份（保留 $cap 份）');
       return [for (final v in victims) v.id];
     } catch (_) {
       return const [];
     }
   }
 
-  /// 一份草稿 JSON 裡引用到的檔案路徑：素材原檔、工作檔、HDR 代理、
-  /// 倒轉前的來源。解析失敗回空——寧可少清也不能亂清
-  static Set<String> _filesIn(String raw) {
-    final out = <String>{};
-    try {
-      final j = jsonDecode(raw);
-      if (j is! Map) return out;
-      for (final s in (j['sources'] as List? ?? const [])) {
-        if (s is! Map) continue;
-        for (final k in const ['path', 'workPath', 'workHdr', 'revOf']) {
-          final v = s[k];
-          if (v is String && v.isNotEmpty) out.add(v);
-        }
-      }
-    } catch (_) {}
-    return out;
-  }
-
-  /// 同一微秒內連開兩個專案時，光靠時間戳會撞號——補一個序號
   static int _seq = 0;
 
   /// 產生一個新的草稿 id
