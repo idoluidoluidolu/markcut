@@ -475,6 +475,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       wmStart: r.$1,
       wmEnd: r.$2,
       hiddenTracks: _hiddenTracks,
+      hdrOut: _exportHdr && _hdrAvail == true,
     );
   }
 
@@ -5345,7 +5346,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _pickImage(int track) async {
     // 可一次多選：選多張就自動排成連續的幻燈片（每張 3 秒、頭尾相接），
     // 想做「多張圖片串成影片」不用一張一張加
-    final picked = await ImagePicker().pickMultiImage();
+    // 走 file_picker 拿原檔（見 pickPhotoFiles）：image_picker 的 iOS 端
+    // 會把 HEIC 重壓成 8 位元 JPEG，HDR 照片的增益圖就在那一步丟掉
+    final picked = await pickPhotoFiles();
     if (picked.isEmpty) return;
     // 先把每張都讀進來，才有東西可以裁、也才量得到尺寸
     final items = <({String path, String name, Uint8List bytes})>[];
@@ -7261,13 +7264,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 浮水印範圍先落地：組建是 await 的，中途 _hdrAvail 之類翻掉的話
     // 「送去烘的那份」跟「編輯器記成已烘的那份」就不是同一套了
     final wmBake = _wmBakeRange;
+    // 匯出選「保留 HDR」＝預覽也走 HDR（跟成品同一個顯示管線）。
+    // 跟 wmBake 一樣在 await 之前定住：組建中途翻掉的話，送去烘的
+    // 跟記成已烘的（_compBakedStills）才會是同一套
+    final hdrOut = _exportHdr && _hdrAvail == true;
     final made = await CompPlayer.build(
       _tl,
       texture: !Diag.playerLayer.value,
       mutedTracks: _mutedTracks,
       hiddenTracks: _hiddenTracks,
-      // 匯出選「保留 HDR」＝預覽也走 HDR（跟成品同一個顯示管線）
-      hdrOut: _exportHdr && _hdrAvail == true,
+      hdrOut: hdrOut,
       overlays: ovMaps,
       // 被浮水印蓋到的圖片/GIF 也要烘（見 CompPlayer.bakedImageIds）
       wmStart: wmBake.$1,
@@ -7315,6 +7321,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tl,
       wmStart: wmBake.$1,
       wmEnd: wmBake.$2,
+      hiddenTracks: _hiddenTracks,
+      hdrOut: hdrOut,
     );
     // 這一版烘的每張圖，非幾何欄位的簽章也記一份（見
     // _stillGeomOnlyStale）：捏合/拖曳中要不要收回 Flutter 版鬼影，
