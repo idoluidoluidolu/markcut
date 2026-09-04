@@ -15,6 +15,7 @@ import '../services/draft_store.dart';
 import '../services/file_reader.dart';
 import '../services/gif_store.dart';
 import '../services/preset_store.dart';
+import '../services/video_picker.dart' show isVideoFile, pickVideoFiles;
 import '../nav.dart';
 import '../theme.dart';
 import '../widgets/gif_image.dart';
@@ -155,8 +156,9 @@ class _Fit {
   final double slack;
 }
 
-/// 匯入 GIF 的來源（見 [addGifFromDevice]）
-enum _GifSource { gallery, files }
+/// 「我的 GIF」右下角 ＋ 的三件事（見 [addGifFromDevice]）：
+/// 現做一個，或從兩個看不到彼此的地方收一個現成的進來
+enum _GifSource { make, gallery, files }
 
 /// 收一個 GIF 進「我的 GIF」（跟編輯器挑 GIF 的驗證同一套）。
 ///
@@ -199,16 +201,26 @@ Future<String?> importGif(
   return saved;
 }
 
-/// 匯入一個自己的 GIF：先問從哪裡拿，再走 [importGif]。
+/// 弄一個 GIF 進「我的 GIF」：先問要現做還是收現成的，再各自往下走。
 ///
-/// 這一問不是多餘的——相簿跟檔案是兩個看不到彼此的地方：iOS 的相簿
-/// 選取器（PHPicker）沒有檔案 App 那一區，檔案選取器
+/// 「製作 GIF」跟首頁的「加入浮水印 → 製作 GIF」是同一條路（見
+/// home_screen 的 _PickKind.gif）：挑影片、進 GIF 製作頁。一次只做一支，
+/// 多選了就拿第一支，這裡不值得再多問一輪。做好的 GIF 是由匯出那一端
+/// 自己收進 GifStore 的（見 video_engine_io），製作頁不會把參照交回來，
+/// 所以從那裡回來一律當成「清單可能變了」。
+///
+/// 匯入那兩條要先問，是因為相簿跟檔案是兩個看不到彼此的地方：iOS 的
+/// 相簿選取器（PHPicker）沒有檔案 App 那一區，檔案選取器
 /// （UIDocumentPickerViewController）也列不出相簿，沒有一種設定同時
 /// 涵蓋兩邊。存在 iCloud 雲碟或下載項目裡的 GIF 以前就是這樣拿不到的
 ///
-/// Web 只有瀏覽器那一個檔案視窗，兩列會是同一件事——不問，直接開
-Future<String?> addGifFromDevice(BuildContext context) async {
-  if (kIsWeb) return importGif(context);
+/// Web 沒有相簿這個地方——瀏覽器只有一個檔案視窗，FileType 到了那邊
+/// 只是換 `<input accept>`（見 file_picker 的 _internal/file_picker_web），
+/// 兩條匯入路會是同一件事。所以 web 只列「製作 GIF」跟「從檔案選」，
+/// 留下的是 accept 講得出 `.gif` 的那一條
+///
+/// 回傳「清單要不要重讀」
+Future<bool> addGifFromDevice(BuildContext context) async {
   final source = await showModalBottomSheet<_GifSource>(
     context: context,
     showDragHandle: true,
@@ -218,13 +230,23 @@ Future<String?> addGifFromDevice(BuildContext context) async {
         children: [
           ListTile(
             leading: const Icon(
-              Icons.photo_library_outlined,
+              Icons.gif_box_outlined,
               size: 20,
               color: kLIcon,
             ),
-            title: const Text('從相簿選', style: TextStyle(fontSize: 13.5)),
-            onTap: () => Navigator.pop(context, _GifSource.gallery),
+            title: const Text('製作 GIF', style: TextStyle(fontSize: 13.5)),
+            onTap: () => Navigator.pop(context, _GifSource.make),
           ),
+          if (!kIsWeb)
+            ListTile(
+              leading: const Icon(
+                Icons.photo_library_outlined,
+                size: 20,
+                color: kLIcon,
+              ),
+              title: const Text('從相簿選', style: TextStyle(fontSize: 13.5)),
+              onTap: () => Navigator.pop(context, _GifSource.gallery),
+            ),
           ListTile(
             leading: const Icon(
               Icons.folder_open_outlined,
@@ -239,8 +261,24 @@ Future<String?> addGifFromDevice(BuildContext context) async {
       ),
     ),
   );
-  if (source == null || !context.mounted) return null;
-  return importGif(context, fromFiles: source == _GifSource.files);
+  if (source == null || !context.mounted) return false;
+  if (source == _GifSource.make) {
+    // 相簿只列影片（跟首頁同一支選取器）；選單上寫「製作 GIF」，
+    // 就不該讓照片跟著出現
+    final list = await pickVideoFiles();
+    final v = list.where(isVideoFile).toList();
+    if (v.isEmpty || !context.mounted) return false;
+    await Navigator.push(
+      context,
+      editRoute(
+        builder: (_) => GifScreen(path: v.first.path, name: v.first.name),
+      ),
+    );
+    // 製作頁不回報做了什麼（見上面），回來就重讀
+    return true;
+  }
+  return await importGif(context, fromFiles: source == _GifSource.files) !=
+      null;
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
@@ -1900,12 +1938,11 @@ class _GifsScreenState extends State<GifsScreen> {
     return SwipeBack(
       child: Scaffold(
         appBar: AppBar(),
-        // 右下浮動黑圓 +（跟範本夾同款）：把自己的 GIF 收進來，
-        // 相簿或檔案 App 都可以（見 addGifFromDevice）
+        // 右下浮動黑圓 +（跟範本夾同款）：現做一個 GIF，或把自己的
+        // 收進來（相簿或檔案 App 都可以，見 addGifFromDevice）
         floatingActionButton: FloatingActionButton(
           onPressed: () async {
-            final saved = await addGifFromDevice(context);
-            if (saved != null) _reload();
+            if (await addGifFromDevice(context)) _reload();
           },
           backgroundColor: Colors.black,
           foregroundColor: Colors.white,
@@ -1920,8 +1957,10 @@ class _GifsScreenState extends State<GifsScreen> {
                   padding: EdgeInsets.all(32),
                   child: Text(
                     '還沒有 GIF。\n\n'
-                    '首頁「加入浮水印 → 製作 GIF」做一個，'
-                    '或按右下角的＋把相簿或檔案裡的 GIF 收進來。',
+                    // 給「一個都沒有」的人看的，所以講這一頁就辦得到的事：
+                    // ＋ 現在自己能做 GIF，不必再繞回首頁
+                    '按右下角的＋做一個，'
+                    '或把相簿、檔案裡現成的 GIF 收進來。',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: kLTextDim, height: 1.6),
                   ),

@@ -4,7 +4,7 @@
     {
       "name": "web-preview",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8080", "-d", "build/web"],
+      "runtimeArgs": [".claude/serve_web.py", "8080", "build/web"],
       "port": 8080
     }
   ]

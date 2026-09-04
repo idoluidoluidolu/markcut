@@ -1,11 +1,15 @@
-// 「我的 GIF」總覽頁的 ＋：從哪裡收一個 GIF 進來（見 addGifFromDevice）。
+// 「我的 GIF」總覽頁的 ＋：弄一個 GIF 進來（見 addGifFromDevice）。
 //
-// 相簿跟檔案在裝置上是兩個看不到彼此的選取器（iOS 的 PHPicker 沒有
-// 檔案 App 那一區，UIDocumentPickerViewController 也列不出相簿），
-// 所以 ＋ 會先問一次。這支盯的是三件事：
-//   1. 兩條路都在，而且各自開的是對的選取器（型別／副檔名過濾）
-//   2. 挑到不是 GIF 的東西：照樣是那句提示，而且什麼都不會被收進來
-//   3. 挑到真的 GIF：檔案會落進 GifStore
+// ＋ 有三條路：現做一個，或從相簿／檔案收一個現成的。後兩條在裝置上
+// 是兩個看不到彼此的選取器（iOS 的 PHPicker 沒有檔案 App 那一區，
+// UIDocumentPickerViewController 也列不出相簿），所以 ＋ 會先問一次。
+// 這支盯的是五件事：
+//   1. 三列都在，順序是「製作 GIF／從相簿選／從檔案選」
+//   2. 「製作 GIF」開的是影片選取器（不是挑 GIF 的那一個），挑完走
+//      editRoute 進 GIF 製作頁——跟首頁「加入浮水印 → 製作 GIF」同一條
+//   3. 兩條匯入路各自開的是對的選取器（型別／副檔名過濾）
+//   4. 挑到不是 GIF 的東西：照樣是那句提示，而且什麼都不會被收進來
+//   5. 挑到真的 GIF：檔案會落進 GifStore
 //
 // FilePicker.platform 是可以換掉的平台實例，這裡換成假的——不然
 // 測試會去戳真的原生選取器
@@ -20,6 +24,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:markcut/nav.dart';
+import 'package:markcut/screens/gif_screen.dart';
 import 'package:markcut/screens/profile_screen.dart';
 import 'package:markcut/services/gif_store.dart';
 import 'package:markcut/theme.dart';
@@ -32,6 +38,9 @@ late String _gifDir;
 class _FakePicker extends FilePicker {
   FileType? lastType;
   List<String>? lastExtensions;
+
+  /// 製作 GIF 那條走的是多選的影片選取器（見 pickVideoFiles）
+  bool? lastMultiple;
   int calls = 0;
   String? next;
 
@@ -53,6 +62,7 @@ class _FakePicker extends FilePicker {
     calls++;
     lastType = type;
     lastExtensions = allowedExtensions;
+    lastMultiple = allowMultiple;
     final p = next;
     if (p == null) return null;
     return FilePickerResult([
@@ -96,11 +106,22 @@ Future<void> _settle(WidgetTester t, [int n = 40]) async {
   }
 }
 
-Future<void> _pump(WidgetTester t) async {
+/// 記下被推出去的頁：「製作 GIF」那條要進 GIF 製作頁
+class _RouteSpy extends NavigatorObserver {
+  final pushed = <Route<dynamic>>[];
+
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    pushed.add(route);
+  }
+}
+
+Future<void> _pump(WidgetTester t, [NavigatorObserver? spy]) async {
   await t.pumpWidget(
     MaterialApp(
       theme: buildStudioTheme(),
       debugShowCheckedModeBanner: false,
+      navigatorObservers: [?spy],
       home: const LightPage(child: GifsScreen()),
     ),
   );
@@ -136,7 +157,63 @@ void main() {
     FilePicker.platform = _picker;
   });
 
-  testWidgets('＋ 先問從哪裡拿：相簿走相簿選取器、檔案走文件選取器', (t) async {
+  testWidgets('＋ 有三列，順序是製作／相簿／檔案', (t) async {
+    await _pump(t);
+    await _tapAdd(t);
+
+    const rows = ['製作 GIF', '從相簿選', '從檔案選'];
+    for (final r in rows) {
+      expect(find.text(r), findsOneWidget, reason: '選單少了「$r」');
+    }
+    // 「製作 GIF」擺第一列（使用者指定）：由上而下量位置，
+    // 不是只確認三列都在
+    final ys = [for (final r in rows) t.getCenter(find.text(r)).dy];
+    expect(
+      ys[0] < ys[1] && ys[1] < ys[2],
+      isTrue,
+      reason: '順序不對（由上而下量到 $ys）',
+    );
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('製作 GIF：開影片選取器，然後走 editRoute 進 GIF 製作頁', (t) async {
+    // 挑到的要是「看得出是影片」的檔名——首頁那條也是照副檔名認的
+    final mp4 = '${_docs.path}${Platform.pathSeparator}clip.mp4';
+    File(mp4).writeAsBytesSync(List<int>.filled(64, 0));
+    _picker.next = mp4;
+
+    final spy = _RouteSpy();
+    await _pump(t, spy);
+    await _tapAdd(t);
+    await t.tap(find.text('製作 GIF'));
+    await _settle(t, 20);
+
+    // 開的是影片選取器（pickVideoFiles）：不是相簿匯入的
+    // FileType.image，也不是檔案匯入的 FileType.custom + gif
+    expect(_picker.calls, 1);
+    expect(_picker.lastType, FileType.video);
+    expect(_picker.lastExtensions, isNull);
+    expect(_picker.lastMultiple, isTrue);
+
+    // 進的是 GIF 製作頁，而且是編輯頁路由（不收右滑返回）
+    final pushed = spy.pushed.whereType<EditPageRoute<dynamic>>().toList();
+    expect(pushed, hasLength(1), reason: '沒有推出 GIF 製作頁');
+    final page = pushed.first.builder(t.element(find.byType(MaterialApp)));
+    expect(page, isA<GifScreen>());
+    // 路徑與檔名照挑到的那一支帶過去
+    expect((page as GifScreen).path, mp4);
+    expect(page.name, 'clip.mp4');
+
+    // 什麼都沒收進「我的 GIF」：GIF 是製作頁匯出時才存的
+    expect(await GifStore.list(), isEmpty);
+
+    // 測試環境沒有播放器外掛，製作頁開不了片會自己提示＋退回來，
+    // 那句提示的 2.4 秒計時器要跑完
+    await t.pump(const Duration(seconds: 3));
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('匯入兩條路：相簿走相簿選取器、檔案走文件選取器', (t) async {
     await _pump(t);
     await _tapAdd(t);
 
@@ -201,8 +278,10 @@ void main() {
     _picker.next = _writeGif('from_files.gif');
 
     await _pump(t);
-    // 空狀態那段話要講得出「檔案」這條路，不然只有相簿的人不知道
-    expect(find.textContaining('把相簿或檔案裡的 GIF'), findsOneWidget);
+    // 空狀態那段話要講得出「檔案」這條路，不然只有相簿的人不知道；
+    // 也要指向這一頁的＋（＋ 現在自己就能做 GIF）
+    expect(find.textContaining('相簿、檔案裡現成的 GIF'), findsOneWidget);
+    expect(find.textContaining('按右下角的＋做一個'), findsOneWidget);
 
     await _tapAdd(t);
     await t.tap(find.text('從檔案選'));
