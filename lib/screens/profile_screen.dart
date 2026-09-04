@@ -191,19 +191,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
       ).then((_) => _reload()),
       onLongPress: () => _confirmDeletePreset(preset),
       // 不放名字（使用者指定）：封面本身就是內容，名字進範本夾看
-      child: Container(
-        width: w,
-        height: w,
-        // 內容照卡片的圓角切齊：範本可以是一張鋪滿磚面的圖，
-        // 不切的話四個角會被方形的內容頂出去
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(
-          color: const Color(0xFF1B1B20),
-          borderRadius: BorderRadius.circular(kPresetRadius),
-          boxShadow: _tileShadow,
-        ),
-        child: IgnorePointer(
-          child: WatermarkLayer(settings: preset.settings, onChanged: () {}),
+      //
+      // 自己一層 RepaintBoundary：磚裡面是活的 WatermarkLayer，畫一次
+      // 要開兩層 saveLayer、把文字排版四遍（見 text_mark_painter 的
+      // paintMarkGlyphs）。沒有這一層的話它跟整頁共用捲動視窗那一個
+      // 圖層——頁面一捲、或旁邊哪個 GIF 換一格，這些排版就整組重跑。
+      // 實測：兩塊磚吃掉捲動時 paint 的一半（0.94ms → 0.43ms）
+      child: RepaintBoundary(
+        child: Container(
+          width: w,
+          height: w,
+          // 內容照卡片的圓角切齊：範本可以是一張鋪滿磚面的圖，
+          // 不切的話四個角會被方形的內容頂出去
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+            color: const Color(0xFF1B1B20),
+            borderRadius: BorderRadius.circular(kPresetRadius),
+            boxShadow: _tileShadow,
+          ),
+          child: IgnorePointer(
+            child: WatermarkLayer(settings: preset.settings, onChanged: () {}),
+          ),
         ),
       ),
     );
@@ -270,15 +278,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
       children: [
         AspectRatio(
           aspectRatio: 3 / 4,
-          child: Container(
-            decoration: BoxDecoration(
-              color: const Color(0xFFF1F1F5),
-              borderRadius: BorderRadius.circular(18),
-              boxShadow: _tileShadow,
+          // 一張卡自己一層：圓角裁切＋柔和陰影＋一張 720p 封面，
+          // 全部快取在自己的圖層裡，捲動時只是把圖層搬位置
+          child: RepaintBoundary(
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFFF1F1F5),
+                borderRadius: BorderRadius.circular(18),
+                boxShadow: _tileShadow,
+              ),
+              clipBehavior: Clip.antiAlias,
+              alignment: Alignment.center,
+              child: cover,
             ),
-            clipBehavior: Clip.antiAlias,
-            alignment: Alignment.center,
-            child: cover,
           ),
         ),
         if (title != null) ...[
@@ -334,9 +346,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
   /// 卡片是「縮圖＋兩行字」的直式 Column（高度看內容），GridView 要
   /// 指定長寬比反而每台機器都要重調——直接兩張一列手排
   Widget _draftGrid(Map<String, dynamic>? p) {
-    final tiles = <Widget>[
-      for (final m in _videoDrafts)
-        _draftTile(
+    // 最多兩張：整片列出來會把頁面吃光，其餘按「全部」進草稿夾。
+    // 「先全部做出來再 take(2)」是白做工——三十份草稿就是二十八個
+    // 用不到的 Image.memory，每次 setState 重來一次。滿了就不做了
+    final shown = <Widget>[];
+    void add(Widget Function() build) {
+      if (shown.length < 2) shown.add(build());
+    }
+
+    for (final m in _videoDrafts) {
+      if (shown.length >= 2) break;
+      add(
+        () => _draftTile(
           cover: _covers[m.id] != null
               ? Image.memory(
                   _covers[m.id]!,
@@ -353,8 +374,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ),
           onTap: () => _openDraft(m),
         ),
-      if (p != null)
-        _draftTile(
+      );
+    }
+    if (p != null) {
+      add(
+        () => _draftTile(
           // 照片草稿沒有存縮圖（那張照片還在裝置上，
           // 再存一份只是浪費空間）
           cover: const Icon(
@@ -365,8 +389,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
           title: '未完成的照片',
           onTap: _openDrafts,
         ),
-      if (_batchDraft != null)
-        _draftTile(
+      );
+    }
+    if (_batchDraft != null) {
+      add(
+        () => _draftTile(
           cover: const Icon(
             Icons.collections_outlined,
             size: 26,
@@ -375,8 +402,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
           title: '未完成的批次浮水印',
           onTap: _openDrafts,
         ),
-      if (_gifDraft != null)
-        _draftTile(
+      );
+    }
+    if (_gifDraft != null) {
+      add(
+        () => _draftTile(
           cover: const Icon(
             Icons.gif_box_outlined,
             size: 26,
@@ -385,8 +415,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
           title: '未完成的 GIF',
           onTap: _openDrafts,
         ),
-      if (_collageDraft != null)
-        _draftTile(
+      );
+    }
+    if (_collageDraft != null) {
+      add(
+        () => _draftTile(
           cover: const Icon(
             Icons.grid_view,
             size: 26,
@@ -395,9 +428,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
           title: '未完成的拼圖',
           onTap: _openDrafts,
         ),
-    ];
-    // 最多兩張：整片列出來會把頁面吃光，其餘按「全部」進草稿夾
-    final shown = tiles.take(2).toList();
+      );
+    }
     return Column(
       children: [
         for (var i = 0; i < shown.length; i += 2) ...[
@@ -567,18 +599,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                     if (i > 0) const SizedBox(width: 10),
                                     GestureDetector(
                                       onTap: _openGifs,
-                                      child: Container(
-                                        width: w,
-                                        height: w,
-                                        decoration: BoxDecoration(
-                                          color: kLTile,
-                                          borderRadius: BorderRadius.circular(
-                                            12,
+                                      // 動圖每換一格就對自己
+                                      // markNeedsPaint，往上找到最近的
+                                      // repaint boundary 才停。沒有這一層
+                                      // 的話停在捲動視窗——三個 GIF 各自
+                                      // 用自己的速度，把「整頁重畫」
+                                      // （含兩塊範本磚的文字排版）
+                                      // 一秒觸發幾十次，手指根本沒碰螢幕
+                                      child: RepaintBoundary(
+                                        child: Container(
+                                          width: w,
+                                          height: w,
+                                          decoration: BoxDecoration(
+                                            color: kLTile,
+                                            borderRadius: BorderRadius.circular(
+                                              12,
+                                            ),
+                                            boxShadow: _tileShadow,
                                           ),
-                                          boxShadow: _tileShadow,
+                                          clipBehavior: Clip.antiAlias,
+                                          child: GifImage(g),
                                         ),
-                                        clipBehavior: Clip.antiAlias,
-                                        child: GifImage(g),
                                       ),
                                     ),
                                   ],
@@ -1156,54 +1197,65 @@ class _DraftsScreenState extends State<DraftsScreen> {
               })
             : () => _resume(m),
         onLongPress: _selecting ? null : () => _delete(m),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(12),
-          child: AspectRatio(
-            aspectRatio: _tileAspect(m),
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                if (cover != null)
-                  Image.memory(cover, fit: BoxFit.cover, gaplessPlayback: true)
-                else
-                  const ColoredBox(
-                    color: kLTile,
-                    child: Icon(
-                      Icons.movie_outlined,
-                      size: 26,
-                      color: kLAccent,
-                    ),
-                  ),
-                // 不放日期/時長角標（使用者指定）：封面本身就是內容
-                // 選取模式：整張壓暗＋右上角勾勾
-                if (_selecting) ...[
-                  ColoredBox(
-                    color: Colors.black.withValues(alpha: picked ? 0.35 : 0.12),
-                  ),
-                  Positioned(
-                    right: 6,
-                    top: 6,
-                    child: Container(
-                      width: 20,
-                      height: 20,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: picked
-                            ? const Color(0xFFE53935)
-                            : Colors.black38,
-                        border: Border.all(color: Colors.white, width: 1.5),
+        // 一格自己一層：ListView 只給「整片瀑布流」一個 repaint
+        // boundary，裡面三十張封面共用同一張圖層——任何一張解碼完成、
+        // 或勾選狀態一改，三十張就整組重錄
+        child: RepaintBoundary(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: AspectRatio(
+              aspectRatio: _tileAspect(m),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (cover != null)
+                    Image.memory(
+                      cover,
+                      fit: BoxFit.cover,
+                      gaplessPlayback: true,
+                    )
+                  else
+                    const ColoredBox(
+                      color: kLTile,
+                      child: Icon(
+                        Icons.movie_outlined,
+                        size: 26,
+                        color: kLAccent,
                       ),
-                      child: picked
-                          ? const Icon(
-                              Icons.check,
-                              size: 13,
-                              color: Colors.white,
-                            )
-                          : null,
                     ),
-                  ),
+                  // 不放日期/時長角標（使用者指定）：封面本身就是內容
+                  // 選取模式：整張壓暗＋右上角勾勾
+                  if (_selecting) ...[
+                    ColoredBox(
+                      color: Colors.black.withValues(
+                        alpha: picked ? 0.35 : 0.12,
+                      ),
+                    ),
+                    Positioned(
+                      right: 6,
+                      top: 6,
+                      child: Container(
+                        width: 20,
+                        height: 20,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: picked
+                              ? const Color(0xFFE53935)
+                              : Colors.black38,
+                          border: Border.all(color: Colors.white, width: 1.5),
+                        ),
+                        child: picked
+                            ? const Icon(
+                                Icons.check,
+                                size: 13,
+                                color: Colors.white,
+                              )
+                            : null,
+                      ),
+                    ),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
         ),
@@ -1480,6 +1532,12 @@ class _GifsScreenState extends State<GifsScreen> {
     }
   }
 
+  /// 一格佔的高度（含跟下一格之間的 10）。比例還沒量到就先當正方形，
+  /// 量到了會 setState 重排——排欄、算總長、排版三邊用同一個式子，
+  /// 不然版面會自己對不齊
+  double _tileExtent(String ref, double colW) =>
+      colW / (_aspect[ref] ?? 1.0) + 10;
+
   /// 兩欄瀑布流：每一個丟進目前比較短的那一欄。
   /// 高度用寬高比推算（欄寬 ÷ 比例），不用等圖片真的畫出來
   List<List<String>> _columns(double colW) {
@@ -1488,7 +1546,7 @@ class _GifsScreenState extends State<GifsScreen> {
     for (final ref in _gifs) {
       final i = h[0] <= h[1] ? 0 : 1;
       cols[i].add(ref);
-      h[i] += colW / (_aspect[ref] ?? 1.0) + 10;
+      h[i] += _tileExtent(ref, colW);
     }
     return cols;
   }
@@ -1574,33 +1632,91 @@ class _GifsScreenState extends State<GifsScreen> {
                   // 兩欄瀑布流：左右各 16、中間 10
                   final colW = (box.maxWidth - 16 * 2 - 10) / 2;
                   final cols = _columns(colW);
-                  return SingleChildScrollView(
-                    // 底部多留：最後一張不被浮動 + 蓋住
-                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        for (var c = 0; c < cols.length; c++) ...[
-                          if (c > 0) const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                              children: [
-                                for (final f in cols[c]) ...[
-                                  _gifTile(f),
-                                  const SizedBox(height: 10),
-                                ],
-                              ],
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
+                  // 每一欄一條 SliverList：只做「看得到的那幾格」。
+                  //
+                  // 以前是 SingleChildScrollView 包兩個 Column，四十個
+                  // GIF 全部一次做出來——四十個動圖解碼器同時在跑，捲出
+                  // 畫面外照跑不誤；而且整片只有捲動視窗一個 repaint
+                  // boundary，任何一格換一格畫面，四十格就整組重錄一次
+                  //（實測一次 0.60ms，四十個各跑各的＝一秒好幾百次）。
+                  // SliverList 會自己回收看不到的格子（動圖跟著停）並
+                  // 給每一格一層 RepaintBoundary
+                  return CustomScrollView(
+                    slivers: [
+                      SliverPadding(
+                        // 底部多留：最後一張不被浮動 + 蓋住
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
+                        sliver: SliverCrossAxisGroup(
+                          slivers: [
+                            for (var c = 0; c < cols.length; c++)
+                              // 用 VariedExtent 而不是普通 SliverList：
+                              // 每一格的高度本來就算得出來（欄寬 ÷ 比例，
+                              // 跟 _columns 排欄用的是同一個式子），
+                              // 給了它，沒做出來的格子也定得出位置
+                              SliverVariedExtentList(
+                                itemExtentBuilder: (i, _) =>
+                                    _tileExtent(cols[c][i], colW),
+                                // 總長度也直接給（見 _ExactExtentDelegate）：
+                                // 預設是拿「已經做出來那幾格的平均」外插，
+                                // 高矮不一的瀑布流會猜歪，可捲距離跟著捲動
+                                // 一直變，甩到底就會頓一下
+                                delegate: _ExactExtentDelegate(
+                                  (_, i) => i < 0 || i >= cols[c].length
+                                      ? null
+                                      : Padding(
+                                          // 欄距 10：左欄右邊 5、右欄左邊 5。
+                                          // 兩欄各分到一半寬度，扣掉 5 之後
+                                          // 剛好是上面算的 colW，版面跟原本
+                                          // 的 Row + SizedBox(10) 完全一樣
+                                          padding: EdgeInsets.only(
+                                            left: c == 0 ? 0 : 5,
+                                            right: c == 0 ? 5 : 0,
+                                            bottom: 10,
+                                          ),
+                                          child: _gifTile(cols[c][i]),
+                                        ),
+                                  childCount: cols[c].length,
+                                  total: [
+                                    for (final ref in cols[c])
+                                      _tileExtent(ref, colW),
+                                  ].fold(0.0, (a, b) => a + b),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
                   );
                 },
               ),
       ),
     );
   }
+}
+
+/// 「這一條總共多長」直接給答案，不要框架去外插。
+///
+/// SliverList 家族預設是拿「已經做出來那幾格的平均高度」乘上剩下的
+/// 格數當總長。瀑布流的格子高矮差很多（直片是橫片的三倍高），猜出來
+/// 的數字跟真的差一截，而且會隨著捲動一直改——甩到底的那一下會頓。
+/// 每一格的高度我們本來就算得出來（欄寬 ÷ 比例），加總就是答案
+class _ExactExtentDelegate extends SliverChildBuilderDelegate {
+  /// 全部格子的高度總和
+  final double total;
+
+  _ExactExtentDelegate(
+    super.builder, {
+    required super.childCount,
+    required this.total,
+  });
+
+  @override
+  double? estimateMaxScrollOffset(
+    int firstIndex,
+    int lastIndex,
+    double leadingScrollOffset,
+    double trailingScrollOffset,
+  ) => total;
 }
 
 /// GIF 燈箱（放大看那一張）。
