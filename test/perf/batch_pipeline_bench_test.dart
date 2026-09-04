@@ -16,11 +16,14 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart' show listEquals;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, debugDefaultTargetPlatformOverride, listEquals;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:markcut/models/watermark_settings.dart';
 import 'package:markcut/services/bmp_wrap.dart';
+import 'package:markcut/services/native_photo_save.dart';
+import 'package:markcut/services/photo_export.dart';
 import 'package:markcut/services/photo_thumbs.dart';
 import 'package:markcut/services/watermark_renderer.dart';
 
@@ -171,6 +174,60 @@ void main() {
     expect(listEquals(old, neu), isTrue);
   });
 
+  test('編輯器路：compositePhoto(解好的圖) 跟 renderPhotoImage(bytes) 一模一樣、'
+      '不收傳進來的圖（每次都跑）', () async {
+    final raw = await _noiseRgba(320, 240);
+    final src = await _rawToPng(raw, 320, 240);
+    final s = WatermarkSettings();
+    final decoded = await _decode(src);
+    // 兩種：畫布＝照片（傳進來那張直接進合成）、畫布補邊（中途產生新圖）
+    for (final aspect in <double?>[null, 16 / 9]) {
+      final a = await WatermarkRenderer.renderPhotoImage(
+        src,
+        s,
+        canvasAspect: aspect,
+      );
+      final b = await WatermarkRenderer.compositePhoto(
+        decoded,
+        s,
+        canvasAspect: aspect,
+      );
+      final pa = (await a.toByteData(
+        format: ui.ImageByteFormat.png,
+      ))!.buffer.asUint8List();
+      final pb = (await b.toByteData(
+        format: ui.ImageByteFormat.png,
+      ))!.buffer.asUint8List();
+      expect(listEquals(pa, pb), isTrue, reason: 'aspect=$aspect');
+      a.dispose();
+      b.dispose();
+      // 傳進來的照片還活著（沒被 compositePhoto 收掉）
+      expect(decoded.debugDisposed, isFalse);
+      expect(await decoded.toByteData(), isNotNull);
+    }
+    decoded.dispose();
+  });
+
+  test('退路 PNG：encodePhotoImage 沒原生端時＝Skia toByteData(png) 位元組（每次都跑）', () async {
+    NativePhotoSave.debugReset();
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    try {
+      final raw = await _noiseRgba(320, 240);
+      final im = await _rawToImage(raw, 320, 240);
+      final ref = (await im.toByteData(
+        format: ui.ImageByteFormat.png,
+      ))!.buffer.asUint8List();
+      final enc = await encodePhotoImage(im, jpeg: false);
+      expect(enc.via, 'png');
+      expect(enc.ext, 'png');
+      expect(listEquals(enc.bytes, ref), isTrue);
+      im.dispose();
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+      NativePhotoSave.debugReset();
+    }
+  });
+
   test(
     '批次照片管線分段計時',
     () async {
@@ -249,6 +306,49 @@ void main() {
             () => im.toByteData(format: ui.ImageByteFormat.rawRgba),
           );
           final rawList = rawOut!.buffer.asUint8List();
+          // 編輯器路：照片已經解好，只做合成（少一次 12MP 解碼）
+          final decodedOnce = await _decode(bytes);
+          final comp = await _t(
+            'editor: compositePhoto(decoded) raster only',
+            () => WatermarkRenderer.compositePhoto(decodedOnce, settings),
+          );
+          comp.dispose();
+          decodedOnce.dispose();
+          // 統一編碼入口（原生端不在→退路）：PNG 應該就是 Skia 那條，
+          // JPEG 在桌機沒有 compress 外掛，也會落到 PNG
+          NativePhotoSave.debugReset();
+          debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+          final encPng = await _t(
+            'export: encodePhotoImage(png) [no native]',
+            () => encodePhotoImage(im, jpeg: false),
+          );
+          expect(encPng.via, 'png');
+          expect(listEquals(encPng.bytes, oldPng), isTrue, reason: '退路 PNG 不同');
+          final encJpg = await _t(
+            'export: encodePhotoImage(jpeg) [no native→png]',
+            () => encodePhotoImage(im, jpeg: true),
+          );
+          expect(encJpg.via, 'png');
+          // 原生路在 Dart 這邊的成本：raw 過 StandardMessageCodec 到
+          //（假的）平台端再回來——就是那份 48MB 的搬運；原生編碼本身量不到
+          NativePhotoSave.debugReset();
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+              .setMockMethodCallHandler(NativePhotoSave.channel, (c) async {
+                if (c.method == 'probe') return true;
+                final a = c.arguments as Map<Object?, Object?>;
+                // 摸一下位元組，確定真的到了
+                final b = a['bytes'] as Uint8List;
+                return Uint8List.fromList([b[0], b[b.length - 1]]);
+              });
+          final encNative = await _t(
+            'export: encodePhotoImage → mock channel (codec copy only)',
+            () => encodePhotoImage(im, jpeg: true),
+          );
+          expect(encNative.via, 'native');
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+              .setMockMethodCallHandler(NativePhotoSave.channel, null);
+          NativePhotoSave.debugReset();
+          debugDefaultTargetPlatformOverride = null;
           final bmp1 = await _t(
             'export: rgbaToBmp24 (main isolate)',
             () async => rgbaToBmp24(rawList, im.width, im.height),

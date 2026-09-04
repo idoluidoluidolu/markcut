@@ -6,17 +6,16 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
-// XFile 也是從這裡再匯出的，不用另外 import image_picker
-import 'package:flutter_image_compress/flutter_image_compress.dart';
+// XFile 由 image_picker 轉出來，不另外相依 cross_file
+import 'package:image_picker/image_picker.dart' show XFile;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
-import '../services/bmp_wrap.dart';
 import '../services/export_eta.dart';
 import '../services/media_prep.dart';
 import '../services/native_frames.dart';
-import '../services/photo_saver.dart';
+import '../services/photo_export.dart';
 import '../services/photo_thumbs.dart';
 import '../services/screen_awake.dart';
 import '../services/video_controller.dart';
@@ -754,71 +753,17 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   /// 合成好的一張照片 → 編碼 → 存相簿。永遠不丟例外（回 false 就是失敗），
   /// 呼叫端把它放在流水線後段，不用 try
   ///
-  /// JPEG 的快路：raw RGBA 包成 BMP 交給原生壓 JPEG。以前是先
-  /// toByteData(PNG)——Skia 對整張 12MP 做 zlib，實測一張 4.6 秒、佔整條
-  /// 匯出 96%——再讓原生把 PNG 解回點陣才壓 JPEG。像素本來就在手上，
-  /// PNG 那一手是白工；BMP 不壓縮，包起來跟解開都只是搬記憶體。
-  /// 原生端之後走的是同一個 JPEG 編碼器，成品像素跟以前一樣。
-  /// 任何一步不行（web、原生不認 BMP）就退回原本那條 PNG 路
+  /// 編碼那段跟單張編輯器共用 [savePhotoImage]：原生 ImageIO 直出
+  ///（raw RGBA 零複製建 CGImage，JPEG/PNG 都走這裡）→ 沒原生端時
+  /// JPEG 走 BMP 快路 → 最後才是 Skia 的 PNG。哪條路能走、輸出長什麼
+  /// 樣，見 photo_export.dart
   Future<bool> _encodeAndSavePhoto(ui.Image image, int i, bool jpeg) async {
     try {
-      Uint8List? out;
-      var ext = 'png';
-      final w = image.width, h = image.height;
-      if (jpeg && !kIsWeb) {
-        try {
-          final raw = await image.toByteData(
-            format: ui.ImageByteFormat.rawRgba,
-          );
-          if (raw != null) {
-            final bmp = await rgbaToBmp24InIsolate(
-              raw.buffer.asUint8List(),
-              w,
-              h,
-            );
-            final j = await FlutterImageCompress.compressWithList(
-              bmp,
-              // 一定要給：預設 1920x1080 在 iOS 是「上限」，比它大的圖
-              // 會被縮到 1920 才壓——12MP 的照片就這樣變成 2.7MP 出去
-              minWidth: w,
-              minHeight: h,
-              quality: _jpegQuality,
-              format: CompressFormat.jpeg,
-            );
-            if (j.isNotEmpty) {
-              out = j;
-              ext = 'jpg';
-            }
-          }
-        } catch (_) {
-          // 退回 PNG 路
-        }
-      }
-      if (out == null) {
-        final png = await image.toByteData(format: ui.ImageByteFormat.png);
-        out = png!.buffer.asUint8List();
-        if (jpeg) {
-          try {
-            out = await FlutterImageCompress.compressWithList(
-              out,
-              minWidth: w,
-              minHeight: h,
-              quality: _jpegQuality,
-              format: CompressFormat.jpeg,
-            );
-            ext = 'jpg';
-          } catch (_) {
-            // 這台機器轉不了 JPEG 就照樣給 PNG，總比整批失敗好
-          }
-        }
-      }
-      // 上面兩條路一定有一條把 out 填上；分析器看不穿 try 裡的指派
-      final bytesOut = out;
-      if (bytesOut == null) return false;
-      await savePhotoPng(
-        bytesOut,
-        'watermarker_${DateTime.now().millisecondsSinceEpoch}_$i',
-        ext: ext,
+      await savePhotoImage(
+        image,
+        jpeg: jpeg,
+        quality: _jpegQuality,
+        name: 'watermarker_${DateTime.now().millisecondsSinceEpoch}_$i',
       );
       return true;
     } catch (_) {

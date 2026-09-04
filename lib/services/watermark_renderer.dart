@@ -276,7 +276,37 @@ class WatermarkRenderer {
   }) async {
     final codec = await ui.instantiateImageCodec(photoBytes);
     final frame = await codec.getNextFrame();
-    var photo = frame.image;
+    codec.dispose();
+    final decoded = frame.image;
+    try {
+      return await compositePhoto(
+        decoded,
+        s,
+        grade: grade,
+        mosaics: mosaics,
+        extraMarks: extraMarks,
+        canvasAspect: canvasAspect,
+      );
+    } finally {
+      decoded.dispose();
+    }
+  }
+
+  /// [renderPhotoImage] 的後半：照片已經解好了，只做合成。
+  /// 單張編輯器手上本來就有解好的全尺寸照片（預覽跟馬賽克取樣用的
+  /// 那張），匯出時直接拿來合成，不必把 12MP 再解一次。
+  /// 像素跟 [renderPhotoImage] 一字不差（同一份解碼結果、同一段合成）。
+  /// 不 dispose 傳進來的 [photo]——呼叫端的東西呼叫端收；回傳的圖要自己 dispose
+  static Future<ui.Image> compositePhoto(
+    ui.Image photo,
+    WatermarkSettings s, {
+    ColorGrade? grade,
+    List<PhotoMosaic>? mosaics,
+    List<WatermarkSettings>? extraMarks,
+    double? canvasAspect,
+  }) async {
+    // 中途產生的（貼黑底、調完色）才是我們的，換掉時要收；傳進來的不碰
+    var owned = false;
     var w = photo.width;
     var h = photo.height;
 
@@ -308,8 +338,9 @@ class WatermarkRenderer {
         ui.Paint()..filterQuality = ui.FilterQuality.high,
       );
       final canvased = await rec.endRecording().toImage(cw, ch);
-      photo.dispose();
+      // 這時 photo 還是傳進來的那張，不收
       photo = canvased;
+      owned = true;
       w = cw;
       h = ch;
     }
@@ -324,8 +355,9 @@ class WatermarkRenderer {
         ui.Paint()..colorFilter = grade!.filter,
       );
       final graded = await rec.endRecording().toImage(w, h);
-      photo.dispose();
+      if (owned) photo.dispose();
       photo = graded;
+      owned = true;
     }
 
     final recorder = ui.PictureRecorder();
@@ -343,7 +375,7 @@ class WatermarkRenderer {
     final picture = recorder.endRecording();
     final image = await picture.toImage(w, h);
     picture.dispose();
-    photo.dispose();
+    if (owned) photo.dispose();
     return image;
   }
 

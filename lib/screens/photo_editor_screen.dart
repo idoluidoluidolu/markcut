@@ -7,14 +7,14 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
-import 'package:flutter_image_compress/flutter_image_compress.dart';
+// XFile 由 image_picker 轉出來，不另外相依 cross_file
+import 'package:image_picker/image_picker.dart' show XFile;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/color_grade.dart';
 import '../models/mosaic.dart';
 import '../models/watermark_settings.dart';
-import '../services/photo_saver.dart';
-import '../services/png_size.dart';
+import '../services/photo_export.dart';
 import '../theme.dart';
 import '../services/mosaic_patch_painter.dart';
 import '../services/watermark_renderer.dart';
@@ -1755,39 +1755,40 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     String? note;
     var ok = true;
     try {
-      // 以原始解析度合成（合成永遠是無損 PNG，要 JPEG 才轉檔）
-      var bytes = await WatermarkRenderer.renderPhotoComposite(
-        _photoBytes!,
-        _settings,
-        grade: _grade,
-        mosaics: _mosaics,
-        extraMarks: _extraWms,
-        canvasAspect: _canvasAspect,
-      );
-      var ext = 'png';
-      if (jpeg) {
-        try {
-          // 一定要給尺寸：minWidth/minHeight 預設 1920x1080 在 iOS 是
-          //「上限」，不給的話 4000x3000 會被縮成 1920x1440 才壓 JPEG。
-          // 合成永遠是 PNG，尺寸直接讀檔頭（見 pngSize）
-          final size = pngSize(bytes);
-          bytes = await FlutterImageCompress.compressWithList(
-            bytes,
-            minWidth: size?.$1 ?? 1 << 14,
-            minHeight: size?.$2 ?? 1 << 14,
-            quality: 92,
-            format: CompressFormat.jpeg,
-          );
-          ext = 'jpg';
-        } catch (_) {
-          // 這個平台轉不了 JPEG 就照樣給 PNG，總比失敗好
-        }
+      // 以原始解析度合成。手上那張解好的全尺寸照片（預覽／馬賽克
+      // 取樣用的 _photoImg）直接拿來合成，不把 12MP 再解一次；
+      // 沒有的話（理論上載入成功就一定有）才從位元組解
+      final photo = _photoImg;
+      final image = photo != null
+          ? await WatermarkRenderer.compositePhoto(
+              photo,
+              _settings,
+              grade: _grade,
+              mosaics: _mosaics,
+              extraMarks: _extraWms,
+              canvasAspect: _canvasAspect,
+            )
+          : await WatermarkRenderer.renderPhotoImage(
+              _photoBytes!,
+              _settings,
+              grade: _grade,
+              mosaics: _mosaics,
+              extraMarks: _extraWms,
+              canvasAspect: _canvasAspect,
+            );
+      // 編碼＋存檔跟批次同一條路（原生 ImageIO 直出 → BMP 快路 →
+      // Skia PNG，見 photo_export.dart）：不再「先出 PNG 再重壓 JPEG」
+      final String ext;
+      try {
+        (message, ext) = await savePhotoImage(
+          image,
+          jpeg: jpeg,
+          quality: 92,
+          name: 'watermarker_${DateTime.now().millisecondsSinceEpoch}',
+        );
+      } finally {
+        image.dispose();
       }
-      message = await savePhotoPng(
-        bytes,
-        'watermarker_${DateTime.now().millisecondsSinceEpoch}',
-        ext: ext,
-      );
       // 這句是次要說明，不要接在主訊息後面變成一長串括號
       if (jpeg && ext == 'png') note = '這個裝置不支援 JPEG，已改存 PNG';
     } catch (e) {
