@@ -173,11 +173,22 @@ void main() {
       expect(CompPlayer.bakedImageIds(tl, hdrOut: true), {tl.clips.last.id});
     });
 
-    test('hdrOut：SDR 照片烘進去時不帶 hdr 鍵（原生端照舊 8-bit 基底）', () async {
+    test('hdrOut：SDR 照片烘進去時帶 hdr:false（原生端不用再讀檔頭）', () async {
       final tl = base();
       addImage(tl, '/sdr.jpg', track: 0); // 墊在影片下層＝本來就烘
       expect(await CompPlayer.build(tl, hdrOut: true), isNotNull);
       expect(probed, contains('/sdr.jpg'));
+      final st = (sent.single['stills'] as List<Object?>).single
+          as Map<Object?, Object?>;
+      // 探過＝有定論，送 false：不送的話每次 build 原生端都重探一次
+      expect(st['hdr'], isFalse);
+    });
+
+    test('hdrOut：探不到的照片不帶 hdr 鍵（原生端自己再試）', () async {
+      final tl = base();
+      addImage(tl, '/unknown.jpg', track: 0); // 墊底＝本來就烘
+      expect(await CompPlayer.build(tl, hdrOut: true), isNotNull);
+      expect(probed, contains('/unknown.jpg'));
       final st = (sent.single['stills'] as List<Object?>).single
           as Map<Object?, Object?>;
       expect(st.containsKey('hdr'), isFalse);

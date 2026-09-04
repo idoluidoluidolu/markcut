@@ -608,9 +608,12 @@ class CompPlayer {
       stills.add({
         'path': src.path,
         if (src.isGif) 'gif': true,
-        // HDR 照片（探測過）：原生端在 HDR 合成裡展開（expandToHDR），
-        // 不用再讀一次檔頭。沒這個鍵＝原生端自己探
-        if (hdrOut && !src.isGif && isHdrStill(src.path)) 'hdr': true,
+        // 探測過的照片一律把結果送過去（true＝原生端在 HDR 合成裡
+        // expandToHDR；false＝照舊 8-bit 基底、原生端不用再讀檔頭——
+        // 不送的話每次 build 每張 SDR 圖都被原生重探一次）。
+        // 探不到的不送鍵＝原生端自己再試一次
+        if (hdrOut && !src.isGif && _hdrStillCache.containsKey(src.path))
+          'hdr': isHdrStill(src.path),
         'start': c.offset,
         'end': c.end > stillEnd ? stillEnd : c.end,
         'track': c.track,
