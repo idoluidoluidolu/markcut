@@ -127,7 +127,12 @@ class _DraftCard {
 
 /// 這一頁要縮多少才裝得下（見 [_ProfileScreenState._fit]）
 class _Fit {
-  const _Fit({required this.tile, required this.gap, required this.fits});
+  const _Fit({
+    required this.tile,
+    required this.gap,
+    required this.fits,
+    this.slack = 0,
+  });
 
   /// 塞不下：照以前那樣捲，尺寸一律原樣
   static const scroll = _Fit(tile: 1, gap: 0, fits: false);
@@ -142,6 +147,11 @@ class _Fit {
 
   /// 不用捲就裝得下
   final bool fits;
+
+  /// 用不完的高度（東西比一頁少的時候）。全部加到行動鈕前面那一段，
+  /// 讓行動鈕與頁尾靠著底部安全區——不然畫面下半截空一塊，
+  /// 看起來像沒載完（使用者指定「一頁就裝滿」）
+  final double slack;
 }
 
 /// 從相簿收一個 GIF 進「我的 GIF」（跟編輯器挑 GIF 的驗證同一套）。
@@ -381,7 +391,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     final avail = h - fixed;
     final short = tiles - avail;
-    if (short <= 0) return const _Fit(tile: 1, gap: 0, fits: true);
+    // 有剩：尺寸一律原樣，多出來的高度交給行動鈕前面那一段撐開
+    if (short <= 0) {
+      return _Fit(tile: 1, gap: 0, fits: true, slack: -short);
+    }
     // 先跟留白拿，拿不夠的才動磚
     final give = math.min(short, _kFlexGaps);
     final scale = (avail + give) / tiles;
@@ -897,7 +910,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             ),
                           // 行動鈕跟頁尾連結跟著內容捲（不釘底）：
                           // 釘底會一直吃掉一截可視高度，草稿多的時候很擠
-                          SizedBox(height: 30 * (1 - _kGiveLoose * fit.gap)),
+                          // 剩下的高度全給這一段（見 _Fit.slack）：
+                          // 行動鈕與頁尾貼著底部，中間不留一塊空白
+                          SizedBox(
+                            height:
+                                30 * (1 - _kGiveLoose * fit.gap) + fit.slack,
+                          ),
                           Padding(
                             padding: _side,
                             child: GestureDetector(
