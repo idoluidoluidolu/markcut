@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart' show XFile;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -154,10 +155,34 @@ class _Fit {
   final double slack;
 }
 
-/// 從相簿收一個 GIF 進「我的 GIF」（跟編輯器挑 GIF 的驗證同一套）。
+/// 匯入 GIF 的來源（見 [addGifFromDevice]）
+enum _GifSource { gallery, files }
+
+/// 收一個 GIF 進「我的 GIF」（跟編輯器挑 GIF 的驗證同一套）。
+///
+/// [fromFiles] 決定開哪一個選取器——這兩個是不同的地方，不是同一個
+/// 選取器的兩種寫法：
+/// - false（預設）＝相簿。iOS 是 PHPicker、Android 是 ACTION_PICK，
+///   兩邊都只列得到相簿裡的東西
+/// - true＝檔案。iOS 是 UIDocumentPickerViewController（檔案 App、
+///   iCloud 雲碟、下載項目…），Android 是 ACTION_OPEN_DOCUMENT
+///
+/// 檔案那條路順便把清單過濾成只剩 GIF：'gif' 在原生端會轉成過濾
+/// 條件（iOS 是 com.compuserve.gif 這個 UTI，Android 是 image/gif
+/// 這個 mime）。但那是「盡量」——轉不出來時兩邊都是退回不過濾，
+/// 而相簿那條路本來就什麼都選得到，所以副檔名一律自己再驗一次：
+/// 選到一般照片時要講清楚，不能默默當成 GIF 收進來只有一格
+///
 /// 成功回存好的參照；取消或失敗回 null（失敗會自己提示）
-Future<String?> importGifFromGallery(BuildContext context) async {
-  final r = await FilePicker.platform.pickFiles(type: FileType.image);
+Future<String?> importGif(
+  BuildContext context, {
+  bool fromFiles = false,
+}) async {
+  final r = await FilePicker.platform.pickFiles(
+    type: fromFiles ? FileType.custom : FileType.image,
+    // 只有 FileType.custom 收得了副檔名清單，別的型別給了會丟 ArgumentError
+    allowedExtensions: fromFiles ? const ['gif'] : null,
+  );
   final path = (r == null || r.files.isEmpty) ? null : r.files.first.path;
   if (path == null) return null;
   if (!path.toLowerCase().endsWith('.gif')) {
@@ -172,6 +197,50 @@ Future<String?> importGifFromGallery(BuildContext context) async {
     showHint(context, '這裡收不進來，請在手機 App 上用', error: true);
   }
   return saved;
+}
+
+/// 匯入一個自己的 GIF：先問從哪裡拿，再走 [importGif]。
+///
+/// 這一問不是多餘的——相簿跟檔案是兩個看不到彼此的地方：iOS 的相簿
+/// 選取器（PHPicker）沒有檔案 App 那一區，檔案選取器
+/// （UIDocumentPickerViewController）也列不出相簿，沒有一種設定同時
+/// 涵蓋兩邊。存在 iCloud 雲碟或下載項目裡的 GIF 以前就是這樣拿不到的
+///
+/// Web 只有瀏覽器那一個檔案視窗，兩列會是同一件事——不問，直接開
+Future<String?> addGifFromDevice(BuildContext context) async {
+  if (kIsWeb) return importGif(context);
+  final source = await showModalBottomSheet<_GifSource>(
+    context: context,
+    showDragHandle: true,
+    builder: (context) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: const Icon(
+              Icons.photo_library_outlined,
+              size: 20,
+              color: kLIcon,
+            ),
+            title: const Text('從相簿選', style: TextStyle(fontSize: 13.5)),
+            onTap: () => Navigator.pop(context, _GifSource.gallery),
+          ),
+          ListTile(
+            leading: const Icon(
+              Icons.folder_open_outlined,
+              size: 20,
+              color: kLIcon,
+            ),
+            title: const Text('從檔案選', style: TextStyle(fontSize: 13.5)),
+            onTap: () => Navigator.pop(context, _GifSource.files),
+          ),
+          const SizedBox(height: 6),
+        ],
+      ),
+    ),
+  );
+  if (source == null || !context.mounted) return null;
+  return importGif(context, fromFiles: source == _GifSource.files);
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
@@ -824,7 +893,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             child: _sectionTitle(
                               '我的 GIF',
                               trailing: _gifs.isEmpty ? '還沒有' : '全部',
-                              onTap: _gifs.isEmpty ? null : _openGifs,
+                              // 空的時候也要點得進去：標題與「全部」是
+                              // 進 GIF 夾的唯二入口（磚那排空了就不存在），
+                              // 兩個都關掉的話，一個 GIF 都沒有的人反而
+                              // 進不去那個「可以匯入 GIF」的頁面
+                              onTap: _openGifs,
                             ),
                           ),
                           // 主頁這排不放「＋」（使用者指定）：匯入自己的
@@ -1827,10 +1900,11 @@ class _GifsScreenState extends State<GifsScreen> {
     return SwipeBack(
       child: Scaffold(
         appBar: AppBar(),
-        // 右下浮動黑圓 +（跟範本夾同款）：把相簿裡自己的 GIF 收進來
+        // 右下浮動黑圓 +（跟範本夾同款）：把自己的 GIF 收進來，
+        // 相簿或檔案 App 都可以（見 addGifFromDevice）
         floatingActionButton: FloatingActionButton(
           onPressed: () async {
-            final saved = await importGifFromGallery(context);
+            final saved = await addGifFromDevice(context);
             if (saved != null) _reload();
           },
           backgroundColor: Colors.black,
@@ -1847,7 +1921,7 @@ class _GifsScreenState extends State<GifsScreen> {
                   child: Text(
                     '還沒有 GIF。\n\n'
                     '首頁「加入浮水印 → 製作 GIF」做一個，'
-                    '或按右下角的＋把相簿裡的 GIF 收進來。',
+                    '或按右下角的＋把相簿或檔案裡的 GIF 收進來。',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: kLTextDim, height: 1.6),
                   ),
