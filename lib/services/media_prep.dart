@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart';
 
 import 'diagnostics.dart';
@@ -119,11 +121,41 @@ class MediaPrep {
   static Future<Map<String, dynamic>?> probeLite(String path) async {
     try {
       if (!await available) return null;
-      return await _ch.invokeMapMethod<String, dynamic>('probeLite', path);
+      // 同一支檔匯入一趟會被問三次（接軌問長度、分類問 HDR、做代理
+      // 前再問一次），每次原生端都重開 AVURLAsset 同步解析 4K 的
+      // moov。檔案內容不變就不用再問：以「路徑＋大小＋修改時間」為
+      // 鍵，內容換了自然不中（相簿暫存路徑會重複使用）
+      final key = _liteKey(path);
+      if (key != null) {
+        final hit = _liteCache[key];
+        if (hit != null) return Map<String, dynamic>.of(hit);
+      }
+      final m = await _ch.invokeMapMethod<String, dynamic>('probeLite', path);
+      if (key != null && m != null && m['error'] == null) {
+        if (_liteCache.length >= 64) _liteCache.remove(_liteCache.keys.first);
+        _liteCache[key] = Map<String, dynamic>.of(m);
+      }
+      return m;
     } catch (_) {
       return null;
     }
   }
+
+  static final Map<String, Map<String, dynamic>> _liteCache = {};
+
+  static String? _liteKey(String path) {
+    try {
+      final st = File(path).statSync();
+      if (st.type == FileSystemEntityType.notFound) return null;
+      return '$path#${st.size}#${st.modified.millisecondsSinceEpoch}';
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 測試用：清掉 [probeLite] 的快取
+  @visibleForTesting
+  static void resetProbeCacheForTest() => _liteCache.clear();
 
   /// [probe] 的結果排成一行人看得懂的字
   static String describe(Map<String, dynamic> m) {
@@ -160,6 +192,10 @@ class MediaPrep {
     int maxShortSide = 1080,
     // HDR 直通代理（HLG 10-bit，不做色調映射）——HDR 預覽模式用
     bool hdr = false,
+    // Dart 端已經掃過整支檔、判定「不合規格、一定要轉」：原生端就別再
+    // 掃一次（alreadyGoodEnough 會再把整支檔的關鍵幀數一遍，而它的
+    // 條件比 Dart 端嚴，Dart 說不合它一定也說不合——長片白掃兩趟）
+    bool prechecked = false,
     void Function(double progress)? onProgress,
   }) async {
     if (!await available) return null;
@@ -174,6 +210,7 @@ class MediaPrep {
         'maxShortSide': maxShortSide,
         'job': job,
         if (hdr) 'hdr': true,
+        if (prechecked) 'prechecked': true,
       });
     } catch (_) {
       return null;

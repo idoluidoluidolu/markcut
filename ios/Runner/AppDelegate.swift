@@ -1211,9 +1211,19 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
     if lumaProbe.count > 6 { lumaProbe.removeFirst() }
   }
 
-  static func noteFrame(t: Double, ms: Double, layers: Int, missing: Bool) {
+  /// 合成格的累計耗時（ms）：匯出前後各抄一次，差值÷格數＝匯出期間
+  /// 每格平均（跟 frameCount 同一把鎖）
+  static var totalMs = 0.0
+
+  /// [fast]＝這格走了 Metal 快路：計數在這把鎖底下加（以前在合成
+  /// 佇列上無鎖 +=、主執行緒讀，兩邊撞的話數字錯）
+  static func noteFrame(
+    t: Double, ms: Double, layers: Int, missing: Bool, fast: Bool = false
+  ) {
     slowLock.lock()
     frameCount += 1
+    totalMs += ms
+    if fast { stFastFrames += 1 }
     if ms > worstMs { worstMs = ms }
     if ms > 20 {
       if slowFrames.count > 40 { slowFrames.removeFirst() }
@@ -1336,13 +1346,15 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
               from: sbuf, to: dst, overlays: [],
               uvA: fastUVA, uvB: fastUVB)
         {
-          Self.stFastFrames += 1
-          if Self.stFastFrames == 1 || Self.stFastFrames % 300 == 0 {
-            NSLog("[FastPath] 快路命中 %d 格", Self.stFastFrames)
-          }
           Self.noteFrame(
             t: t0, ms: (CFAbsoluteTimeGetCurrent() - tick) * 1000,
-            layers: 1, missing: false)
+            layers: 1, missing: false, fast: true)
+          Self.slowLock.lock()
+          let nFast = Self.stFastFrames
+          Self.slowLock.unlock()
+          if nFast == 1 || nFast % 300 == 0 {
+            NSLog("[FastPath] 快路命中 %d 格", nFast)
+          }
           self.tagColors(dst)
           if !scrub {
             Self.noteLuma(
@@ -2052,6 +2064,7 @@ final class AtomicFlag {
     registerCompChannel(engineBridge)
     registerExportChannel(engineBridge)
     registerPhotoChannel(engineBridge)
+    registerPhotoSaveChannel(engineBridge)
 
     // 拖曳預覽的「按需抽幀」通道：滑到哪、跟硬體解碼器要那一格。
     // HDR 的色調映射由系統做，顏色跟 AVPlayer 播放畫面天生一致
@@ -2883,6 +2896,8 @@ final class AtomicFlag {
       done("參數錯誤")
       return
     }
+    // 匯出分段：組合成（開每支素材、插軌、建指令）跟編碼分開計
+    let tBuild = CACurrentMediaTime()
     let audios = a["audios"] as? [[String: Any]] ?? []
     let overlays = a["overlays"] as? [[String: Any]] ?? []
     let globalSpeed = max(0.05, a["speed"] as? Double ?? 1)
@@ -3011,6 +3026,13 @@ final class AtomicFlag {
 
     // ── 影片：照時間順序接成一條軌 ──────────────────────────────
     var cursor = CMTime.zero
+    // 主軌最後插進去的媒體（來源軌＋來源區間）：片尾補長要拿它的
+    // 尾巴一小格來鋪（見下面「時間軸尾巴」）。
+    // asset 一起抓著：AVAssetTrack.asset 是 weak，迴圈裡的 asset 是
+    // 區域變數，迴圈跑完就放掉——只留軌道的話補尾巴那一刻軌道已經
+    // 沒有主人，insertTimeRange 會拒收（尾段又被切掉）
+    var lastMain: (asset: AVURLAsset, src: AVAssetTrack, rng: CMTimeRange)? =
+      nil
     var segments:
       [(
         range: CMTimeRange, transform: CGAffineTransform, size: CGSize,
@@ -3098,6 +3120,9 @@ final class AtomicFlag {
         done("素材接不進時間軸")
         return
       }
+      if destTrack === vTrack {
+        lastMain = (asset: asset, src: src, rng: range)
+      }
       if layered { noteVideoEnd(destTrack, cursor + outDur) }
       if volume > 0.001 {
         addAudio(
@@ -3113,20 +3138,47 @@ final class AtomicFlag {
       ))
       cursor = cursor + outDur
     }
-    if layered {
-      // 時間軸的尾巴可能是圖片素材：主軌補空白撐到總長，
-      // 不然合成在最後一段影片結束就收工了
-      var maxEnd = vTracks.map { $0.end }.max() ?? .zero
-      let want = CMTime(seconds: timelineDur, preferredTimescale: scale)
-      if want > maxEnd {
-        // 補在主軌自己的結尾之後（不是 maxEnd）：主軌可能比別的軌短，
-        // 從 maxEnd 開始補會在中間留一個洞，合成不接受
-        let ownEnd = vTracks[0].end
-        vTrack.insertEmptyTimeRange(CMTimeRange(start: ownEnd, end: want))
-        noteVideoEnd(vTrack, want)
-        maxEnd = want
+    // ── 時間軸尾巴：合成補長到總長 ─────────────────────────────
+    //
+    // 圖片/文字/貼圖/配樂可能比最後一段影片還晚結束。以前這裡（只有
+    // 圖層模式）用 insertEmptyTimeRange 補在主軌尾端——
+    // AVMutableCompositionTrack 的標頭明講「you cannot add empty time
+    // ranges to the end of a composition track」：加了等於沒加，合成
+    // 長度停在最後一格影片，尾段的圖片就默默被切掉；一般模式（尾段
+    // 只有文字/浮水印素材）則連補都沒補。改成跟預覽 build 的 fillTail
+    // 同一套（本週實機驗過）：拿主軌最後一段的尾巴一小格拉長蓋到總長。
+    // 畫面由指令決定——補出來那段的指令不列主軌，所以仍是黑底＋圖層
+    var mainEnd = layered ? vTracks[0].end : cursor
+    let naturalEnd = layered ? (vTracks.map { $0.end }.max() ?? .zero) : cursor
+    let want = CMTime(seconds: timelineDur, preferredTimescale: scale)
+    var padded = false
+    if timelineDur > naturalEnd.seconds + 0.05, want > mainEnd,
+      let m = lastMain
+    {
+      // 尾巴夾在來源視訊軌的範圍內：Dart 端的 end 多半是整個檔的長度，
+      // 聲音軌比視訊軌長的檔，rng.end 會超出視訊軌幾毫秒，
+      // 超出的子範圍 AVFoundation 會不會夾、還是直接拒收，查不到保證
+      let srcEnd = min(m.rng.end, m.src.timeRange.end)
+      let snipDur = CMTime(
+        seconds: min(0.2, (srcEnd - m.rng.start).seconds),
+        preferredTimescale: scale)
+      let snip = CMTimeRange(start: srcEnd - snipDur, duration: snipDur)
+      if (try? vTrack.insertTimeRange(snip, of: m.src, at: mainEnd)) != nil {
+        vTrack.scaleTimeRange(
+          CMTimeRange(start: mainEnd, duration: snip.duration),
+          toDuration: want - mainEnd)
+        mainEnd = want
+        if layered { noteVideoEnd(vTrack, want) }
+        padded = true
+      } else {
+        channel.invokeMethod(
+          "note", arguments: "匯出尾段補長失敗：尾巴的圖片/文字可能被切掉")
       }
-      cursor = maxEnd
+    }
+    if layered {
+      cursor = max(vTracks.map { $0.end }.max() ?? .zero, mainEnd)
+    } else if padded {
+      cursor = mainEnd
     }
     if cursor.seconds <= 0.01 {
       done("時間軸沒有內容")
@@ -3172,9 +3224,15 @@ final class AtomicFlag {
       } else {
         vTrack.scaleTimeRange(whole, toDuration: target)
       }
-      for t in aTracks {
+      // 聲音軌各自照自己的長度縮：以前一律縮到 target（＝主軌總長÷
+      // 倍速）。主軌現在可能補了尾巴（cursor＝時間軸總長），影片自己的
+      // 聲音 [0,V] 就被拉到 want/倍速——變慢又對不上畫面；圖層模式裡
+      // 聲音軌比最長視訊軌短時本來就已經是這樣錯的
+      for t in aTracks where t.end > .zero {
         t.track.scaleTimeRange(
-          CMTimeRange(start: .zero, duration: t.end), toDuration: target)
+          CMTimeRange(start: .zero, duration: t.end),
+          toDuration: CMTime(
+            seconds: t.end.seconds / globalSpeed, preferredTimescale: scale))
       }
       // 片段的時間範圍也跟著換算，圖層指令才對得上
       for i in segments.indices {
@@ -3190,6 +3248,15 @@ final class AtomicFlag {
       }
     }
     let total = comp.duration.seconds
+    // 守門：補了尾巴，合成就該有時間軸那麼長（整體變速已除）。
+    // 短了＝鋪媒體沒生效，尾段會被切——寫進診斷，別再默默發生
+    if padded, total + 0.05 < timelineDur / globalSpeed {
+      channel.invokeMethod(
+        "note",
+        arguments: String(
+          format: "匯出尾段補長沒生效：合成 %.2fs、時間軸 %.2fs", total,
+          timelineDur / globalSpeed))
+    }
 
     // ── 畫面：每段貼齊畫布（轉正 → 等比縮放 → 置中 → 使用者變形）──
     let vc = AVMutableVideoComposition()
@@ -3505,6 +3572,13 @@ final class AtomicFlag {
         wantHDR ? CIExportCompositorHDR.self : CIExportCompositor.self
       vc.instructions = ciInstructions
     } else {
+      // 補出來的尾巴也要有指令蓋住（沒有圖層＝黑底），不然合成的
+      // 指令沒鋪滿整條，內建合成器那段沒有定義
+      if padded, let last = segments.last, comp.duration > last.range.end {
+        let tail = AVMutableVideoCompositionInstruction()
+        tail.timeRange = CMTimeRange(start: last.range.end, end: comp.duration)
+        instructions.append(tail)
+      }
       vc.instructions = instructions
     }
 
@@ -3569,6 +3643,16 @@ final class AtomicFlag {
     // 沒有人在串流它——多的那一趟純粹是白等，長片尤其明顯
     session.shouldOptimizeForNetworkUse = false
 
+    // 匯出分段：編碼從這一刻起算；合成器的格數/耗時抄快照，完成時
+    // 差值就是這場匯出的每格成本（預覽在匯出期間是暫停的，不會混進來）
+    let tEnc = CACurrentMediaTime()
+    CIExportCompositor.slowLock.lock()
+    let frames0 = CIExportCompositor.frameCount
+    let ciMs0 = CIExportCompositor.totalMs
+    let fast0 = CIExportCompositor.stFastFrames
+    CIExportCompositor.slowLock.unlock()
+    let presetName = preset
+
     exportSession = session
     exportTimer?.invalidate()
     exportTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) {
@@ -3581,6 +3665,23 @@ final class AtomicFlag {
         self?.exportTimer?.invalidate()
         self?.exportTimer = nil
         self?.exportSession = nil
+        if session.status == .completed || session.status == .failed {
+          let encS = CACurrentMediaTime() - tEnc
+          CIExportCompositor.slowLock.lock()
+          let frames = CIExportCompositor.frameCount - frames0
+          let ciMs = CIExportCompositor.totalMs - ciMs0
+          let fast = CIExportCompositor.stFastFrames - fast0
+          CIExportCompositor.slowLock.unlock()
+          channel.invokeMethod(
+            "note",
+            arguments: String(
+              format:
+                "原生匯出分段：組合成 %dms｜編碼 %.1fs（成品 %.1fs → %.1f 倍速、%@）"
+                + "｜合成器 %d 格、平均 %.1fms/格、快路 %d 格",
+              Int((tEnc - tBuild) * 1000), encS, total,
+              encS > 0 ? total / encS : 0, presetName, frames,
+              frames > 0 ? ciMs / Double(frames) : 0, fast))
+        }
         switch session.status {
         case .completed:
           // 驗收：抽兩格看是不是整片黑。
@@ -3858,9 +3959,14 @@ final class AtomicFlag {
         // 自己匯出過的影片、下載回來的 1080p H.264 都會命中。
         // 判定搬到背景：它會同步載軌道、命中前還要掃整支檔的
         // 關鍵幀——在主執行緒跑，多支排隊時 UI 凍住，卡超過
-        // 系統容忍就是整個 App 被 watchdog 處決
+        // 系統容忍就是整個 App 被 watchdog 處決。
+        // prechecked＝Dart 端已經掃過整支檔判定不合（它的條件比這裡鬆，
+        // 它說不合這裡一定也不合）：別再把關鍵幀數第二遍
+        let prechecked = args["prechecked"] as? Bool ?? false
         DispatchQueue.global(qos: .userInitiated).async {
-          if let why = self.alreadyGoodEnough(src, maxShortSide: maxShortSide) {
+          if !prechecked,
+            let why = self.alreadyGoodEnough(src, maxShortSide: maxShortSide)
+          {
             DispatchQueue.main.async {
               channel.invokeMethod("note", arguments: "素材本來就合用（\(why)）")
               result(src)
@@ -4005,6 +4111,9 @@ final class AtomicFlag {
           "note", arguments: "HDR 代理：HLG 直通（HDR 合成器轉正，不動色調）")
       }
     }
+    // 匯入分段：開檔（同步解析 moov、載軌道、建 reader/writer）跟
+    // 真正的解碼→合成→編碼分開計，完成那行一起印
+    let tOpen = CACurrentMediaTime()
     let asset = AVURLAsset(url: URL(fileURLWithPath: src))
     guard let vTrack = asset.tracks(withMediaType: .video).first,
       let reader = try? AVAssetReader(asset: asset),
@@ -4332,7 +4441,17 @@ final class AtomicFlag {
           return
         }
         let ms = Int((CACurrentMediaTime() - t0) * 1000)
-        channel.invokeMethod("note", arguments: "\(label) \(ms)ms")
+        // 「幾倍速」＝素材秒數 ÷ 轉檔牆鐘：硬體管線（4K HEVC 解→
+        // 1080p 合成→HEVC/H.264 編）實測遠快於實時，這個數字掉到
+        // 1~2 倍就是有東西在排隊（散熱降頻、別的解碼器在搶）
+        let openMs = Int((t0 - tOpen) * 1000)
+        let ratio = ms > 0 ? dur * 1000 / Double(ms) : 0
+        channel.invokeMethod(
+          "note",
+          arguments: String(
+            format: "%@ %dms（開檔 %dms、素材 %.1fs %dx%d@%.0f → %.1f 倍速）",
+            label, ms, openMs, dur, Int(size.width), Int(size.height),
+            Double(fps), ratio))
         finish(nil)
       }
     }
@@ -9493,3 +9612,181 @@ enum HDRPhotoExport {
 // CIContext.writeHEIF10Representation(of:to:colorSpace:options:)     — iOS 15.0
 // CIImageRepresentationOption(rawValue:) + kCGImageDestinationLossyCompressionQuality — iOS 11 / 4
 // UIImage(data:).cgImage / CIImage(cgImage:)                          — iOS 2 / 5
+// ===== 照片原生編碼（markcut/photo_save）====================================
+//
+// 貼法（兩處，都在 ios/Runner/AppDelegate.swift）：
+//
+// (1) 在 didInitializeImplicitFlutterEngine 裡、registerPhotoChannel(engineBridge)
+//     那行之後加一行：
+//
+//     registerPhotoSaveChannel(engineBridge)
+//
+// (2) 下面 extension + enum 整段貼到檔案最尾端。
+//
+// 不用加 import：只用到 Flutter / CoreGraphics / ImageIO / Foundation，
+// 檔頭已經 import Flutter、ImageIO、UIKit（UIKit 再匯出 CoreGraphics 與
+// Foundation）。刻意不用 UniformTypeIdentifiers 的 UTType（iOS 14+，要多
+// 一個 import）：CGImageDestination 吃的是 UTI 字串，"public.jpeg" /
+// "public.png" 從 iOS 2 起就是這兩個字串，跟 UTType.jpeg.identifier 同值。
+//
+// 通道 "markcut/photo_save"：
+//   probe() -> true
+//       Dart 端一個 session 只問一次；沒人接（這段還沒貼）會收到
+//       MissingPluginException，之後就不再把 48MB 往這裡送
+//   encodeRgba({bytes, w, h, jpeg, quality}) -> FlutterStandardTypedData
+//       bytes：Flutter ui.Image.toByteData(rawRgba)——記憶體順序 R,G,B,A、
+//              8 bit、**預乘 alpha**、每列 w*4、沒有補齊，共 w*h*4 位元組
+//       w, h：像素尺寸（Int）
+//       jpeg：true=JPEG、false=PNG（Bool）
+//       quality：1~100（Int），只有 JPEG 用；Dart 端已夾好，這裡再夾一次
+//       回：編好的 JPEG/PNG 位元組；任何失敗回 FlutterError（Dart 端
+//       接到就退回原本那條路：BMP→flutter_image_compress 或 Skia PNG）
+//
+// 做的事：CGDataProvider 直接罩在 Flutter 送來的 Data 上（不複製）→
+// CGImage(bitsPerComponent 8, bitsPerPixel 32, bytesPerRow w*4, sRGB,
+// byteOrder32Big | premultipliedLast ＝ 記憶體 RGBA、A 在最後、預乘)→
+// CGImageDestination 出 JPEG（kCGImageDestinationLossyCompressionQuality）
+// 或 PNG。跟原本 flutter_image_compress 最後那步（UIImageJPEGRepresentation
+// / UIImagePNGRepresentation）是同一顆 ImageIO 編碼器；省掉的是它前面的
+// UIImage(data: BMP) 解碼＋整張 UIGraphicsImageRenderer 重畫（就算比例
+// 是 1 也會畫一遍），以及 Dart 端包 BMP 那 ~100ms。PNG 這條本來走 Skia 的
+// zlib（12MP 一張 3.6~4.6 秒），現在也是 ImageIO。
+//
+// alpha：合成出來的照片本來就不透明（照片鋪滿畫布或黑底補齊）。JPEG 沒有
+// alpha，ImageIO 會直接丟掉 A、留下預乘後的 RGB＝壓在黑底上，跟 BMP 路
+// （丟 A）一樣。PNG 會保留 alpha（ImageIO 會先反預乘再寫，跟 Skia 一樣是
+// 32 位元 RGBA PNG）——只有來源本身帶透明的 PNG 才會碰到這條差異，而且
+// 差的只是半透明像素反預乘的四捨五入，不是內容。
+//
+// 色彩：Flutter 的 raw 像素沒有色彩管理，標成 sRGB——跟 BMP 路（BMP 沒
+// profile，UIImage 當 sRGB）一致。
+//
+// 最低系統（全部遠低於專案的 iOS 15）：
+//   CGDataProvider(data:)                          iOS 2
+//   CGImage(width:height:bitsPerComponent:...)     iOS 2
+//   CGColorSpace(name: CGColorSpace.sRGB)          iOS 9
+//   CGImageDestinationCreateWithData / AddImage /
+//   Finalize、kCGImageDestinationLossyCompressionQuality   iOS 4
+//   FlutterStandardTypedData(bytes:)               Flutter
+//   DispatchQueue / autoreleasepool                iOS 8
+//   → 不需要任何 #available
+//
+// 執行緒：編碼在 global(qos: .userInitiated) 做，result 回主執行緒
+//（FlutterResult 只能在平台執行緒叫）。閉包抓住 td（FlutterStandardTypedData）
+// 讓 Data 活到編完；CGImage 又透過 provider 抓住同一份 CFData。
+//
+// [self-review 逐行當編譯器過的重點]
+//   - `rgba as CFData`：Data → CFData 是標準橋接（Data 是 NSData 的 Swift
+//     覆蓋型別，NSData 與 CFData toll-free bridged），`as` 不會失敗
+//   - `out as CFMutableData`：NSMutableData 與 CFMutableData toll-free
+//     bridged，`as` 合法（常見寫法 CGImageDestinationCreateWithData(data as
+//     CFMutableData, ...)）
+//   - CGBitmapInfo(rawValue:) 吃 UInt32；CGBitmapInfo.byteOrder32Big.rawValue
+//     與 CGImageAlphaInfo.premultipliedLast.rawValue 都是 UInt32，可 |
+//   - CGImage init 是 failable（回 Optional），guard let 接
+//   - CGImageDestinationAddImage(_:_:_:) 第三個參數 CFDictionary?；
+//     [CFString: Any] as CFDictionary 是標準橋接
+//   - CGImageDestinationFinalize 回 Bool
+//   - FlutterError(code:message:details:) 三個參數都有；details 給 nil
+//   - 這段不碰 self，handler 閉包不需要 [weak self]
+//
+// ===========================================================================
+
+extension AppDelegate {
+  private func registerPhotoSaveChannel(_ engineBridge: FlutterImplicitEngineBridge) {
+    guard let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "markcut.photo_save")
+    else { return }
+    let channel = FlutterMethodChannel(
+      name: "markcut/photo_save", binaryMessenger: registrar.messenger())
+    channel.setMethodCallHandler { call, result in
+      switch call.method {
+      case "probe":
+        result(true)
+      case "encodeRgba":
+        guard let a = call.arguments as? [String: Any],
+          let td = a["bytes"] as? FlutterStandardTypedData,
+          let w = (a["w"] as? NSNumber)?.intValue,
+          let h = (a["h"] as? NSNumber)?.intValue
+        else {
+          result(FlutterError(code: "args", message: "encodeRgba 參數錯誤", details: nil))
+          return
+        }
+        let jpeg = (a["jpeg"] as? NSNumber)?.boolValue ?? true
+        let quality = (a["quality"] as? NSNumber)?.intValue ?? 92
+        DispatchQueue.global(qos: .userInitiated).async {
+          let (data, err) = autoreleasepool {
+            PhotoRgbaEncode.encode(td.data, width: w, height: h, jpeg: jpeg, quality: quality)
+          }
+          DispatchQueue.main.async {
+            if let data = data {
+              result(FlutterStandardTypedData(bytes: data))
+            } else {
+              result(FlutterError(code: "encode", message: err ?? "編碼失敗", details: nil))
+            }
+          }
+        }
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+}
+
+enum PhotoRgbaEncode {
+  /// raw RGBA（預乘、每列 width*4）→ JPEG 或 PNG。回 (位元組, nil) 或 (nil, 失敗原因)
+  static func encode(
+    _ rgba: Data, width: Int, height: Int, jpeg: Bool, quality: Int
+  ) -> (Data?, String?) {
+    // 32768 一邊是 ImageIO JPEG 的上限附近；合成出來的照片不會到那裡
+    guard width > 0, height > 0, width <= 32768, height <= 32768 else {
+      return (nil, "尺寸不合理 \(width)x\(height)")
+    }
+    let bytesPerRow = width * 4
+    guard rgba.count >= bytesPerRow * height else {
+      return (nil, "位元組不夠：\(rgba.count) < \(bytesPerRow * height)")
+    }
+    guard let provider = CGDataProvider(data: rgba as CFData) else {
+      return (nil, "CGDataProvider 建不起來")
+    }
+    guard let space = CGColorSpace(name: CGColorSpace.sRGB) else {
+      return (nil, "sRGB 色彩空間建不起來")
+    }
+    // 記憶體順序 R,G,B,A、A 在最後——Flutter rawRgba 的定義。
+    // 跟本檔 ~L210（影片路吃同一種 raw 緩衝）同一組旗標：
+    //   PNG  → premultipliedLast：ImageIO 反預乘後寫 32 位元 RGBA PNG（同 Skia）
+    //   JPEG → noneSkipLast：同一塊位元組當「RGBX、不透明」看，第 4 位元組
+    //          直接略過。JPEG 本來就沒 alpha；這樣保證留下的是預乘後的 RGB
+    //         （＝壓在黑底上），跟 BMP 退路「丟 A」逐位元一致，也省掉 ImageIO
+    //          對帶 alpha 影像多做的一次反預乘／合成。
+    //   byteOrder 用預設（0）：對 8 bit/成分的 32 bpp 就是記憶體順序，
+    //   與 byteOrder32Big 等價；沿用本檔已編過的寫法。
+    let alpha: CGImageAlphaInfo = jpeg ? .noneSkipLast : .premultipliedLast
+    let info = CGBitmapInfo(rawValue: alpha.rawValue)
+    guard
+      let image = CGImage(
+        width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+        bytesPerRow: bytesPerRow, space: space, bitmapInfo: info, provider: provider,
+        decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    else {
+      return (nil, "CGImage 建不起來")
+    }
+    let out = NSMutableData()
+    let uti = (jpeg ? "public.jpeg" : "public.png") as CFString
+    guard let dest = CGImageDestinationCreateWithData(out as CFMutableData, uti, 1, nil) else {
+      return (nil, "CGImageDestination 建不起來（\(uti)）")
+    }
+    var props: [CFString: Any] = [:]
+    if jpeg {
+      let q = Double(min(max(quality, 1), 100)) / 100.0
+      props[kCGImageDestinationLossyCompressionQuality] = q
+    }
+    CGImageDestinationAddImage(dest, image, props as CFDictionary)
+    guard CGImageDestinationFinalize(dest) else {
+      return (nil, "CGImageDestinationFinalize 失敗")
+    }
+    guard out.length > 0 else {
+      return (nil, "編碼結果是空的")
+    }
+    return (out as Data, nil)
+  }
+}

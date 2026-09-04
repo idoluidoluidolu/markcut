@@ -3203,6 +3203,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final sw = Stopwatch()..start();
     var madeHdr = 0;
     var madeSdr = 0;
+    // 匯入分段：遮罩期間每一段各花多少（探測＝probeLite 分類、
+    // HDR 判定＝原生同步讀軌、轉檔＝代理／工作檔、合成＝進場前組
+    // 合成播放器）。轉檔的細目（開檔／倍速）由原生端另記一行
+    var msProbe = 0, msHdrAvail = 0, msXcode = 0, msComp = 0;
+    Future<T> lap<T>(Future<T> f, void Function(int ms) add) async {
+      final t = Stopwatch()..start();
+      try {
+        return await f;
+      } finally {
+        add(t.elapsedMilliseconds);
+      }
+    }
+
     Diag.startSampling();
     try {
       if (!await MediaPrep.available) {
@@ -3227,14 +3240,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       while (_prepQueue.isNotEmpty && mounted) {
         final i = _prepQueue.removeAt(0);
         if (i >= _tl.sources.length) continue;
-        await _classifySource(i);
+        await lap(_classifySource(i), (ms) => msProbe += ms);
         if (!mounted) return;
         // 來源裡有沒有 HDR：這個答案決定備哪種檔、合成走哪條管線，要在
         // 轉檔「之前」就問清楚。以前它只在匯出頁建構時才問，而匯出頁在
         // 遮罩期間根本不會建——整段匯入 _hdrAvail 都是 null：X／N 用
         // 「不是 false」算（永遠差一份代理＝停在 1），HDR 階段用「== true」
         // 判（永遠跳過），代理變成進場後才在背景補，畫面就跳
-        await _resolveHdrAvail();
+        await lap(_resolveHdrAvail(), (ms) => msHdrAvail += ms);
         if (!mounted) return;
         // 背景那條（_prepHdrWorkFiles）正好在做同一支：等它，別開第二趟
         await _waitPrepIdle(i);
@@ -3244,9 +3257,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (need == _PrepNeed.none) continue;
         _showPrepGate();
         if (need == _PrepNeed.hdrProxy) {
-          if (await _prepHdrProxy(i)) madeHdr++;
+          if (await lap(_prepHdrProxy(i), (ms) => msXcode += ms)) madeHdr++;
         } else {
-          await _prepWorkFile(i);
+          await lap(_prepWorkFile(i), (ms) => msXcode += ms);
           if (mounted &&
               i < _tl.sources.length &&
               _tl.sources[i].workPath != null) {
@@ -3279,9 +3292,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _hdrPrepBusy = false;
       if (_comp == null || _compSig() != _lastCompSig) _compDirty = true;
       if (_prepShow && mounted) setState(() => _prepComposing = true);
-      await _ensureComp().timeout(
-        const Duration(seconds: 15),
-        onTimeout: () => Diag.note('進場合成組太久，先放人進去'),
+      await lap(
+        _ensureComp().timeout(
+          const Duration(seconds: 15),
+          onTimeout: () => Diag.note('進場合成組太久，先放人進去'),
+        ),
+        (ms) => msComp += ms,
       );
     } finally {
       _hdrPrepBusy = false;
@@ -3304,6 +3320,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       Diag.note(
         '素材備妥 ${sw.elapsed.inSeconds}秒（${_prepHdrMode ? 'HDR' : 'SDR'} 模式）：'
         'HDR 代理 $madeHdr 支、工作檔 $madeSdr 支，峰值 ${Diag.peakMb}MB',
+      );
+      final total = sw.elapsedMilliseconds;
+      final other = total - msProbe - msHdrAvail - msXcode - msComp;
+      Diag.note(
+        '匯入分段：探測 ${msProbe}ms｜HDR判定 ${msHdrAvail}ms｜'
+        '轉檔 ${msXcode}ms｜合成 ${msComp}ms｜其他 ${other < 0 ? 0 : other}ms'
+        '（遮罩共 ${total}ms；縮圖帶在遮罩收掉後另計）',
       );
     }
   }
@@ -4070,17 +4093,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 遮罩收掉之後補縮圖帶：一支一支、從代理／工作檔抽。
   /// 匯入當下不抽（見 _importVideoMeta）
   Future<void> _thumbsAfterPrep() async {
+    final sw = Stopwatch()..start();
+    var n = 0;
     for (var i = 0; i < _tl.sources.length && mounted; i++) {
       final s = _tl.sources[i];
       if (!s.isVideo || (_thumbs[i]?.isNotEmpty ?? false)) continue;
       if (!_tl.clips.any((c) => c.sourceIndex == i)) continue;
       final t = await _thumbStrip(s.previewPath, s.duration);
       if (!mounted) return;
+      n++;
       if (t.isNotEmpty &&
           i < _tl.sources.length &&
           identical(_tl.sources[i], s)) {
         setState(() => _thumbs[i] = t);
       }
+    }
+    // 匯入分段的尾巴：縮圖帶不擋進場，但它跟播放搶解碼器，量多久
+    if (n > 0) {
+      Diag.note('匯入分段：縮圖帶（進場後）$n 支 ${sw.elapsedMilliseconds}ms');
     }
   }
 
@@ -9504,27 +9534,44 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         _canvasRatio,
         _customAspect,
       );
+      final hdrMode = _exportHdr && _hdrAvail == true;
       if (rawW != outW || rawH != outH) {
         Diag.note(
           '快速匯出：輸出 ${rawW}x$rawH → ${outW}x$outH'
-          '（標準畫質、全部影片有工作檔）',
+          '（標準畫質、全部影片有${hdrMode ? 'HLG 代理／' : ''}工作檔）',
         );
       }
-      // 快速匯出：條件成立時影片來源直接用工作檔（見 fastExportSources）
+      // 快速匯出：條件成立時影片來源直接用 1080p 代理（見
+      // fastExportSources）。HDR 模式挑 HLG 代理、SDR 模式挑工作檔；
+      // 是不是 HDR 素材用進場分類的答案（_srcHdr）
       final (exportSources, fastSwapped) = fastExportSources(
         _tl.sources,
         outW: outW,
         outH: outH,
         quality: _qualityEff,
+        hdr: hdrMode,
+        isHdr: (s) => _srcHdr[s.path],
       );
       if (fastSwapped > 0) {
-        Diag.note('快速匯出：$fastSwapped 支影片來源用工作檔（1080p SDR）');
+        Diag.note(
+          '快速匯出：$fastSwapped 支影片來源用 1080p 代理'
+          '（${hdrMode ? 'HLG 代理／SDR 素材用工作檔' : 'SDR 工作檔'}）',
+        );
+      } else {
+        Diag.note(
+          '匯出來源：原檔（畫質 ${_qualityEff.label}、輸出 ${outW}x$outH'
+          '${hdrMode ? '、HDR' : ''}）',
+        );
       }
+      // 匯出分段（準備）：浮水印/文字 PNG 是 Dart 在主 isolate 烘的，
+      // 4K 一張整版 PNG 編碼要幾百 ms，這段落在進度條動之前
+      final swPng = Stopwatch()..start();
       Uint8List? wmPng;
       // 浮水印軌關掉時匯出也不要有——所見即所得
       if (!_wmHidden && _settings.hasAnyMark) {
         wmPng = await WatermarkRenderer.renderOverlayPng(_settings, outW, outH);
       }
+      final msWm = swPng.elapsedMilliseconds;
       // 文字素材 → 渲染成整版透明 PNG
       // 文字圖層：每個片段渲染一張（位置/縮放/樣式烘進 PNG）
       final overlayPngs = <int, Uint8List>{};
@@ -9551,6 +9598,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           );
         }
       }
+      Diag.note(
+        '匯出分段（準備）：浮水印 PNG ${msWm}ms｜文字/浮水印素材 PNG '
+        '${overlayPngs.length} 張 ${swPng.elapsedMilliseconds - msWm}ms',
+      );
       final result = await engine.exportVideoToGallery(
         ExportSpec(
           sources: exportSources,
@@ -14386,8 +14437,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         _qualityEff == ExportQuality.standard ||
         _qualityEff == ExportQuality.low;
     if (!fastQ || math.min(w, h) <= 1080) return (w, h);
+    // 門票看「目前模式的代理」：HDR 模式是 HLG 代理（以前只認 SDR
+    // 工作檔，HDR 模式根本不做那份＝永遠拿不到門票，4K HDR 專案選
+    // 標準畫質照樣整支 4K 過合成器）
+    final hdrMode = _exportHdr && _hdrAvail == true;
     final videos = _tl.sources.where((s) => s.isVideo).toList();
-    if (videos.isEmpty || videos.any((s) => s.workPath == null)) {
+    if (videos.isEmpty ||
+        videos.any(
+          (s) => exportProxyPath(s, hdr: hdrMode, isHdr: _srcHdr[s.path]) == null,
+        )) {
       return (w, h);
     }
     final k = 1080 / math.min(w, h);

@@ -342,7 +342,8 @@ class WorkFiles {
     // 還是要複製、不能直接拿原檔當工作檔：原檔常是相簿給的暫存路徑
     //（一週左右會被系統回收），工作檔同時兼任素材的備份（見
     // _rescueFromWorkFile）
-    if (await _qualifiesAsIs(src)) {
+    final qualifies = await _qualifiesAsIs(src);
+    if (qualifies == true) {
       try {
         _inFlight.add(dest);
         await File(src).copy(dest);
@@ -386,6 +387,9 @@ class WorkFiles {
         src,
         dest,
         maxShortSide: maxShortSide,
+        // 這裡已經掃過整支檔判定要轉（false）；null＝沒能掃（Android
+        // 沒 probe／探測失敗），原生端自己判
+        prechecked: qualifies == false,
         onProgress: onProgress,
       );
     } finally {
@@ -448,13 +452,15 @@ class WorkFiles {
   /// - 關鍵幀夠密（平均 ≤8 格、最疏 ≤16 格）：疏的話拖曳會鈍，
   ///   重轉的主要目的之一就是把關鍵幀補密
   ///
-  /// probe 沒實作的平台（Android）回 false，照舊全部重轉
-  static Future<bool> _qualifiesAsIs(String src) async {
+  /// 回 true＝合用；false＝探過了、確定不合（原生端不用再掃一次——
+  /// 它的條件比這裡嚴，這裡不合它一定也不合）；null＝探測不動
+  ///（probe 沒實作的平台／探測失敗），照舊全部重轉、原生端自己判
+  static Future<bool?> _qualifiesAsIs(String src) async {
     try {
       // 先用輕量探測快篩（只讀容器中繼資料）：編碼/尺寸/旋轉/HDR
       // 不合格的素材（4K、HEVC…）馬上出局，不用把整支檔掃一遍
       final lite = await MediaPrep.probeLite(src);
-      if (lite == null || lite['error'] != null) return false;
+      if (lite == null || lite['error'] != null) return null;
       if (lite['codec'] != 'avc1') return false;
       final w = (lite['w'] as num?)?.toInt() ?? 0;
       final h = (lite['h'] as num?)?.toInt() ?? 0;
@@ -463,16 +469,16 @@ class WorkFiles {
       if (lite['sdr709'] != true) return false;
       // 快篩過了才做貴的那一步：掃關鍵幀（要把整支檔讀過一遍）
       final m = await MediaPrep.probe(src);
-      if (m == null || m['error'] != null) return false;
+      if (m == null || m['error'] != null) return null;
       final frames = (m['frames'] as num?)?.toInt() ?? 0;
       final keys = (m['keyframes'] as num?)?.toInt() ?? 0;
       final maxGop = (m['maxGopFrames'] as num?)?.toInt();
-      if (keys <= 0 || frames <= 0) return false;
+      if (keys <= 0 || frames <= 0) return null;
       if (frames / keys > 8) return false;
       if (maxGop == null || maxGop > 16) return false;
       return true;
     } catch (_) {
-      return false;
+      return null;
     }
   }
 

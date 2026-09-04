@@ -1372,10 +1372,37 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   final ts = DateTime.now().millisecondsSinceEpoch;
   final outPath = '${dir.path}${Platform.pathSeparator}watermarker_$ts.mp4';
   final revTemps = <String>[];
+  // 匯出分段：每一段的牆鐘（毫秒），最後排成一行進診斷
+  final laps = <String, int>{};
+  Future<T> lap<T>(String name, Future<T> Function() f) async {
+    final t = Stopwatch()..start();
+    try {
+      return await f();
+    } finally {
+      laps[name] = (laps[name] ?? 0) + t.elapsedMilliseconds;
+    }
+  }
+
+  void noteLaps(String path) {
+    final outS = spec.outputDuration;
+    final enc = laps['編碼'];
+    final speed = enc != null && enc > 0
+        ? '（成品 ${outS.toStringAsFixed(1)}s → '
+              '${(outS * 1000 / enc).toStringAsFixed(1)} 倍速）'
+        : '';
+    Diag.note(
+      '匯出分段（$path）：'
+      '${laps.entries.map((e) => '${e.key} ${e.value}ms').join('｜')}$speed',
+    );
+  }
 
   // 倒轉的片段先各自做成「已經倒好」的暫存檔，主濾鏡就當成一般素材用。
-  // 這樣長片段也倒得動（見 _prerenderReverse）
+  // 這樣長片段也倒得動（見 _prerenderReverse）。
+  // 正常情況走不到：編輯器倒轉時就已經用原生管線倒成一支新素材
+  //（_reverseClip），這裡只接「還掛著 reverse 旗標」的保險；
+  // 一旦走到就是整段 FFmpeg 軟體解碼 4K 的第二趟編碼，分段裡看得到
   if (spec.clips.any((c) => c.reverse)) {
+    final swRev = Stopwatch()..start();
     final sources = List<MediaSource>.of(spec.sources);
     final clips = <TimelineClip>[];
     for (final c in spec.clips) {
@@ -1428,6 +1455,7 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     // copyWith 帶齊 hdr／fps／gif：以前手抄建構子漏了這三組，
     // 有倒轉片段的 HDR 專案會靜默匯成 SDR
     spec = spec.copyWith(sources: sources, clips: clips);
+    laps['倒轉前置(FFmpeg)'] = swRev.elapsedMilliseconds;
   }
 
   /// 做好的檔案存進相簿。原生與 FFmpeg 兩條路共用
@@ -1533,20 +1561,28 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
       Diag.note('原生匯出用不了：$why（改用 FFmpeg）');
     } else {
       Diag.startSampling();
-      final err = await NativeExport.run(spec, outPath, onProgress: onProgress);
+      final err = await lap(
+        '編碼',
+        () => NativeExport.run(spec, outPath, onProgress: onProgress),
+      );
       if (err == null) {
         Diag.note('原生匯出完成（峰值 ${Diag.peakMb} MB）');
         // 成品驗證：抽 3 格取樣＋讀色彩標籤（預覽=輸出的數字證據）。
         // 失敗靜默——它是偵測不是功能
-        try {
-          Diag.note('🎨 成品取樣 ${await CompPlayer.sampleOut(outPath)}');
-          Diag.note('成品格式 ${await CompPlayer.finfo(outPath)}');
-        } catch (_) {}
+        await lap('驗收', () async {
+          try {
+            Diag.note('🎨 成品取樣 ${await CompPlayer.sampleOut(outPath)}');
+            Diag.note('成品格式 ${await CompPlayer.finfo(outPath)}');
+          } catch (_) {}
+        });
         delRevTemps();
-        final r = spec.gif ? await saveAsGif() : await saveToGallery();
+        final r = spec.gif
+            ? await lap('GIF後製(FFmpeg)', saveAsGif)
+            : await lap('存相簿', saveToGallery);
         try {
           File(outPath).deleteSync();
         } catch (_) {}
+        noteLaps('原生');
         return r;
       }
       if (err == '已取消') {

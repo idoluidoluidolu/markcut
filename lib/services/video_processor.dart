@@ -295,18 +295,44 @@ class ExportSpec {
   double get wmOn => wmCycle * (0.58 * wmRange).clamp(0.1, 0.92);
 }
 
-/// 快速匯出：影片來源換成工作檔的條件成立時，回傳替換過的來源清單。
+/// 快速匯出的門票：這支影片在目前輸出模式下「可以拿來當匯出來源的
+/// 1080p 代理」是哪一份。回 null＝沒有（得用原檔）。
 ///
-/// 工作檔是「1080p 短邊、SDR、H.264、轉正好」的版本——輸出不超過
-/// 1080p、畫質在標準以下時，拿它當匯出來源可以把「解 4K HEVC HDR ＋
-/// 色調映射」整段換成「解 1080p H.264」，是匯出最大宗的省。
-/// 選了極致／無損畫質、或輸出解析度超過工作檔時照舊用原檔，畫質不妥協。
+/// SDR 輸出：SDR 工作檔（709、H.264）。
+/// HDR 輸出：素材本身是 HDR 就要 HLG 代理（2020/HLG、HEVC 10-bit，
+/// 像素是 HDR 匯出同一顆合成器渲染的，標記與內容一致，進 HDR 匯出
+/// 顏色不會變）；素材是 SDR 的用 SDR 工作檔（跟原檔一樣是 709，進
+/// HDR 合成器走同一條色彩管理）。是不是 HDR 由 [isHdr] 講；沒人講
+/// 的話有 HLG 代理就一定是 HDR，其他一律當「不知道」＝不冒險——
+/// 把 HDR 素材換成 SDR 工作檔，Swift 端讀不到 HLG 標記，整支 HDR
+/// 匯出會靜默變成 SDR（原本的規則正是這樣：保留 HDR＋1080p＋標準
+/// 畫質＝所有 HDR 素材換成 SDR 工作檔）
+String? exportProxyPath(MediaSource s, {required bool hdr, bool? isHdr}) {
+  if (!s.isVideo) return null;
+  if (!hdr) return s.workPath;
+  final h = isHdr ?? (s.workHdrPath != null ? true : null);
+  if (h == true) return s.workHdrPath;
+  if (h == false) return s.workPath;
+  return null;
+}
+
+/// 快速匯出：影片來源換成代理的條件成立時，回傳替換過的來源清單。
+///
+/// 代理是「1080p 短邊、轉正好、密關鍵幀」的版本（哪一份見
+/// [exportProxyPath]）——輸出不超過 1080p、畫質在標準以下時，拿它當
+/// 匯出來源可以把「解 4K HEVC」換成「解 1080p」，合成器每格的像素
+/// 也少四倍，是匯出最大宗的省。HDR 模式以前完全走不到這裡（只認
+/// SDR 工作檔，而 HDR 模式根本不做那份）——4K HDR 專案選標準畫質
+/// 照樣整支從 4K 原檔過 4K 半浮點 CI 合成器，是全 App 最慢的一條路。
+/// 選了極致／無損畫質、或輸出解析度超過代理時照舊用原檔，畫質不妥協。
 /// 回傳 (來源清單, 換掉幾支)；一支都沒換時清單就是原本那份
 (List<MediaSource>, int) fastExportSources(
   List<MediaSource> sources, {
   required int outW,
   required int outH,
   required ExportQuality quality,
+  bool hdr = false,
+  bool? Function(MediaSource s)? isHdr,
 }) {
   final eligible =
       math.min(outW, outH) <= 1080 &&
@@ -315,8 +341,9 @@ class ExportSpec {
   var swapped = 0;
   final out = <MediaSource>[];
   for (final s in sources) {
-    if (s.isVideo && s.workPath != null) {
-      out.add(s.withPath(s.workPath!));
+    final p = exportProxyPath(s, hdr: hdr, isHdr: isHdr?.call(s));
+    if (p != null) {
+      out.add(s.withPath(p));
       swapped++;
     } else {
       out.add(s);
