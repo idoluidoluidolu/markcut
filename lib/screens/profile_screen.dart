@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -45,6 +46,103 @@ const _side = EdgeInsets.symmetric(horizontal: 22);
 const _tileShadow = [
   BoxShadow(color: Color(0x1E000000), blurRadius: 10, offset: Offset(0, 4)),
 ];
+
+// ── 一頁裝得下：這一頁不捲（使用者指定「那讓他不要能上下捲動」）──
+//
+// 版面本身不動，缺的高度分兩處拿：先壓可讓的留白（額度 [_kFlexGaps]），
+// 剩下的由三排磚一起等比縮小。磚縮到 [_kTileFloor] 還是塞不下（小螢幕、
+// 超大字級）就回去捲——寧可捲，也不能把東西截掉。
+
+/// 返回鍵那顆 IconButton 的高度。圖示只有 22，撐不到 IconButton 的
+/// 預設觸控範圍（kMinInteractiveDimension＝48），所以量到的是 48。
+/// 這個數字進了高度計算，有測試盯著它別悄悄變（見 profile_fit_test）
+const _kNavButton = 48.0;
+
+// 可以讓出來的留白有三種，各自的可壓縮上限不一樣（[_Fit.gap] 是
+// 「這次用掉幾成的額度」，0＝一點都不壓、1＝壓到底）：
+//
+// 三個 14（標題到自己那排磚）完全不動——那是「這個標題在講下面這排」
+// 的唯一線索，一鬆掉整頁就變成一疊沒有分組的東西。
+// 區塊之間的 26 只讓兩成：它必須明顯大於 14，不然區塊就黏成一片。
+// 返回鍵下面的 16 跟行動鈕前的 30 讓一半——它們不負責分組，
+// 純粹是喘口氣的空間。三個加起來的額度是 33.4pt
+
+/// 區塊之間（26）最多壓掉兩成
+const _kGiveSection = 0.2;
+
+/// 返回鍵下面（16）跟行動鈕前面（30）最多壓掉一半
+const _kGiveLoose = 0.5;
+
+/// 留白總共讓得出這麼多（用滿 [_Fit.gap]＝1 的時候）
+const _kFlexGaps = 26.0 * 2 * _kGiveSection + (16.0 + 30.0) * _kGiveLoose;
+
+/// 磚最小縮到原尺寸的 0.75。再小下去封面就認不出是哪一個專案了，
+/// 那還不如讓它捲
+const _kTileFloor = 0.75;
+
+/// 算高度時留的餘裕：文字量測與版面之間的次像素誤差，
+/// 不留一點的話「剛好塞滿」會變成「差 0.01 被截掉」
+const _kSlack = 0.5;
+
+// 這一頁每一種字的樣式都收在這裡：量高度的 TextPainter 跟畫出來的
+// Text 必須是同一份，抄兩份遲早會走岔（走岔就是「算得下、其實裝不下」）
+
+/// 區塊標題：頁面大標拿掉後升為主角，20/w800（A 案，使用者指定）
+const _kTitleStyle = TextStyle(
+  fontSize: 20,
+  fontWeight: FontWeight.w800,
+  height: 1.1,
+);
+
+/// 標題右邊的「全部」／「還沒有」
+const _kTrailStyle = TextStyle(fontSize: 13, color: kLTextDim);
+
+/// 空狀態那一行灰字
+const _kHintStyle = TextStyle(fontSize: 13, color: Color(0xFFA8A8B4));
+
+/// 草稿卡下面那行名字
+const _kCardTitleStyle = TextStyle(fontSize: 13.5, fontWeight: FontWeight.w800);
+
+/// 行動鈕上的字
+const _kCtaStyle = TextStyle(
+  fontSize: 15,
+  fontWeight: FontWeight.w800,
+  color: Colors.white,
+);
+
+/// 頁尾連結
+const _kFootStyle = TextStyle(fontSize: 12.5, color: kLTextDim);
+
+/// 頁尾兩個連結中間那一點
+const _kDotStyle = TextStyle(fontSize: 12, color: Color(0xFFB0B0BA));
+
+/// 草稿區的一張卡：[title] 給量高度用（有名字的卡多一行字、高一截），
+/// [build] 才真的把卡做出來——沒排到的卡就不用做
+class _DraftCard {
+  const _DraftCard(this.title, this.build);
+
+  final String? title;
+  final Widget Function() build;
+}
+
+/// 這一頁要縮多少才裝得下（見 [_ProfileScreenState._fit]）
+class _Fit {
+  const _Fit({required this.tile, required this.gap, required this.fits});
+
+  /// 塞不下：照以前那樣捲，尺寸一律原樣
+  static const scroll = _Fit(tile: 1, gap: 0, fits: false);
+
+  /// 三排磚共用的縮放（1＝原尺寸）。一個係數縮三排，
+  /// 比例跟長寬比才不會跑掉
+  final double tile;
+
+  /// 這次用掉幾成的留白額度（0＝間距原樣，1＝壓到各自的上限）。
+  /// 見 _kGiveSection / _kGiveLoose
+  final double gap;
+
+  /// 不用捲就裝得下
+  final bool fits;
+}
 
 /// 從相簿收一個 GIF 進「我的 GIF」（跟編輯器挑 GIF 的驗證同一套）。
 /// 成功回存好的參照；取消或失敗回 null（失敗會自己提示）
@@ -151,30 +249,145 @@ class _ProfileScreenState extends State<ProfileScreen> {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            Expanded(
-              child: Text(
-                title,
-                // 頁面大標拿掉後，區塊標題升為主角：20/w800
-                //（A 案，使用者指定「標題有點小」）
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w800,
-                  height: 1.1,
-                ),
-              ),
-            ),
+            // 頁面大標拿掉後，區塊標題升為主角：20/w800
+            //（A 案，使用者指定「標題有點小」）
+            Expanded(child: Text(title, style: _kTitleStyle)),
             if (trailing != null)
               Padding(
                 padding: const EdgeInsets.only(bottom: 1, left: 12),
-                child: Text(
-                  trailing,
-                  // 跟著標題放大一點，不然比例失衡（A 案 mockup 是 13）
-                  style: const TextStyle(fontSize: 13, color: kLTextDim),
-                ),
+                // 跟著標題放大一點，不然比例失衡（A 案 mockup 是 13）
+                child: Text(trailing, style: _kTrailStyle),
               ),
           ],
         ),
       );
+
+  // ── 量版面：固定的部分有多高，磚才知道剩多少可以用 ──────────
+  //
+  // 用 TextPainter 實量而不是寫死數字：使用者把系統字級調大時，
+  // 三個標題跟頁尾會一起長高，寫死的話就會算成「裝得下」然後截掉東西
+
+  Size _textSize(
+    BuildContext ctx,
+    String s,
+    TextStyle style, {
+    double maxWidth = double.infinity,
+    int? maxLines,
+  }) {
+    final tp = TextPainter(
+      text: TextSpan(
+        text: s,
+        style: DefaultTextStyle.of(ctx).style.merge(style),
+      ),
+      textDirection: Directionality.of(ctx),
+      textScaler: MediaQuery.textScalerOf(ctx),
+      maxLines: maxLines,
+    )..layout(maxWidth: maxWidth);
+    final size = tp.size;
+    tp.dispose();
+    return size;
+  }
+
+  /// 一列區塊標題的高度：標題被 Expanded 擠在「全部」左邊，
+  /// 字級大的時候會折行，所以要照實際拿得到的寬度量
+  double _titleRowH(
+    BuildContext ctx,
+    String title,
+    String? trailing,
+    double inner,
+  ) {
+    var trailW = 0.0;
+    var trailH = 0.0;
+    if (trailing != null) {
+      final s = _textSize(ctx, trailing, _kTrailStyle);
+      trailW = s.width + 12; // 左邊的留白
+      trailH = s.height + 1; // 下面的留白
+    }
+    final h = _textSize(
+      ctx,
+      title,
+      _kTitleStyle,
+      maxWidth: math.max(0, inner - trailW),
+    ).height;
+    return math.max(h, trailH);
+  }
+
+  /// 頁尾那一列：三段字裡最高的那一段
+  double _footerH(BuildContext ctx) {
+    var h = _textSize(ctx, '意見回饋', _kFootStyle).height;
+    h = math.max(h, _textSize(ctx, '·', _kDotStyle).height);
+    return math.max(h, _textSize(ctx, '關於這個 App', _kFootStyle).height);
+  }
+
+  /// 這一頁要縮多少才不用捲。
+  ///
+  /// 除了三排磚，其他每一段都是固定高度（留白、標題、行動鈕、頁尾），
+  /// 把它們加起來就知道磚還剩多少可以用。不夠的話先壓留白（額度
+  /// [_kFlexGaps]），剩下的差額才由三排磚用「同一個」係數一起縮——
+  /// 一排一個係數的話正方形跟 3:4 的相對比例就散了。
+  /// 縮到 [_kTileFloor] 還是不夠就回 [_Fit.scroll]：截掉東西是 bug，
+  /// 捲不是
+  _Fit _fit(
+    BuildContext ctx,
+    BoxConstraints cons,
+    int draftCount,
+    List<_DraftCard> cards,
+  ) {
+    final h = cons.maxHeight;
+    final inner = cons.maxWidth - _side.horizontal;
+    if (!h.isFinite || inner <= 0) return _Fit.scroll;
+    final pad = MediaQuery.paddingOf(ctx);
+
+    // 三排磚的自然高度（正方、正方、3:4），寬度公式跟畫的時候同一份
+    final preset = (inner - 10) / 2;
+    final gif = _gifs.isEmpty ? 0.0 : (inner - 20) / 3;
+    final draft = draftCount == 0 ? 0.0 : (inner - 12) / 2 * 4 / 3;
+    final tiles = preset + gif + draft;
+    if (tiles <= 0) return _Fit.scroll;
+
+    var fixed = _kSlack + 4 + pad.top + 12 + pad.bottom; // 捲動區上下留白
+    fixed += 6 + _kNavButton + 16; // 返回鍵那一列
+    fixed += _titleRowH(ctx, '範本', _presets.isEmpty ? '還沒有' : '全部', inner) + 14;
+    fixed += 26;
+    fixed += _titleRowH(ctx, '我的 GIF', _gifs.isEmpty ? '還沒有' : '全部', inner);
+    fixed += _gifs.isEmpty
+        ? 16 +
+              _textSize(ctx, '還沒有 GIF', _kHintStyle, maxWidth: inner).height +
+              4
+        : 14;
+    fixed += 26;
+    fixed += _titleRowH(ctx, '草稿', draftCount == 0 ? null : '全部', inner) + 14;
+    if (draftCount == 0) {
+      fixed +=
+          10 + _textSize(ctx, '還沒有草稿', _kHintStyle, maxWidth: inner).height + 4;
+    } else {
+      // 有名字的草稿卡比沒名字的高一截，整排跟著最高的那張
+      var label = 0.0;
+      for (final c in cards) {
+        if (c.title == null) continue;
+        final t = _textSize(
+          ctx,
+          c.title!,
+          _kCardTitleStyle,
+          maxLines: 1,
+        ).height;
+        label = math.max(label, 9 + t);
+      }
+      fixed += label;
+    }
+    fixed += 30; // 行動鈕前
+    fixed += math.max(54, _textSize(ctx, '太好用啦', _kCtaStyle).height);
+    fixed += 14 + _footerH(ctx);
+
+    final avail = h - fixed;
+    final short = tiles - avail;
+    if (short <= 0) return const _Fit(tile: 1, gap: 0, fits: true);
+    // 先跟留白拿，拿不夠的才動磚
+    final give = math.min(short, _kFlexGaps);
+    final scale = (avail + give) / tiles;
+    if (scale < _kTileFloor) return _Fit.scroll;
+    return _Fit(tile: scale, gap: give / _kFlexGaps, fits: true);
+  }
 
   /// 範本磚：深色方塊，裡面就是這組浮水印長什麼樣。
   /// 用真的 WatermarkLayer 照實渲染（多文字、多圖、平鋪全都畫）——
@@ -299,7 +512,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             title,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w800),
+            style: _kCardTitleStyle,
           ),
         ],
       ],
@@ -341,22 +554,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _reload();
   }
 
-  /// 草稿區：所有影片草稿＋照片草稿，兩欄排。
+  /// 草稿區要畫的那幾張卡（最多兩張）。
+  ///
+  /// 量高度跟真的畫都讀這一份：有名字的卡比沒名字的高一截（多一行字），
+  /// 兩邊各自判斷一次的話遲早會走岔，然後就是「算得下、其實裝不下」
   ///
   /// 卡片是「縮圖＋兩行字」的直式 Column（高度看內容），GridView 要
   /// 指定長寬比反而每台機器都要重調——直接兩張一列手排
-  Widget _draftGrid(Map<String, dynamic>? p) {
+  List<_DraftCard> _draftCards(Map<String, dynamic>? p) {
     // 最多兩張：整片列出來會把頁面吃光，其餘按「全部」進草稿夾。
     // 「先全部做出來再 take(2)」是白做工——三十份草稿就是二十八個
     // 用不到的 Image.memory，每次 setState 重來一次。滿了就不做了
-    final shown = <Widget>[];
-    void add(Widget Function() build) {
-      if (shown.length < 2) shown.add(build());
+    final shown = <_DraftCard>[];
+    void add(String? title, Widget Function() build) {
+      if (shown.length < 2) shown.add(_DraftCard(title, build));
     }
 
     for (final m in _videoDrafts) {
       if (shown.length >= 2) break;
       add(
+        null,
         () => _draftTile(
           cover: _covers[m.id] != null
               ? Image.memory(
@@ -378,6 +595,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
     if (p != null) {
       add(
+        '未完成的照片',
         () => _draftTile(
           // 照片草稿沒有存縮圖（那張照片還在裝置上，
           // 再存一份只是浪費空間）
@@ -393,6 +611,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
     if (_batchDraft != null) {
       add(
+        '未完成的批次浮水印',
         () => _draftTile(
           cover: const Icon(
             Icons.collections_outlined,
@@ -406,6 +625,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
     if (_gifDraft != null) {
       add(
+        '未完成的 GIF',
         () => _draftTile(
           cover: const Icon(
             Icons.gif_box_outlined,
@@ -419,6 +639,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
     if (_collageDraft != null) {
       add(
+        '未完成的拼圖',
         () => _draftTile(
           cover: const Icon(
             Icons.grid_view,
@@ -430,24 +651,37 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ),
       );
     }
-    return Column(
-      children: [
-        for (var i = 0; i < shown.length; i += 2) ...[
-          if (i > 0) const SizedBox(height: 18),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(child: shown[i]),
-              const SizedBox(width: 12),
-              // 奇數張時右邊補空，卡片才不會被撐成整排寬
-              Expanded(
-                child: i + 1 < shown.length ? shown[i + 1] : const SizedBox(),
-              ),
-            ],
-          ),
-        ],
+    return shown;
+  }
+
+  /// 一排磚：磚縮小之後左右各補一樣寬的邊，整排維持置中。
+  ///
+  /// 補邊、而不是把 Row 本身置中：磚不滿一排的時候（只有一個 GIF、
+  /// 只有一張草稿）原本就是靠左排的，Row 一置中它就自己跑到中間去，
+  /// 那是改版面，不是把版面縮小
+  Widget _row(double gutter, List<Widget> children) => Padding(
+    padding: EdgeInsets.symmetric(horizontal: gutter),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: children,
+    ),
+  );
+
+  /// 磚縮小之後那一排左右各要補多寬。[gaps] 是整排磚跟磚之間的間距
+  /// 總和——間距不跟著縮（10 縮成 8 只會看起來像沒對齊）
+  double _gutter(double inner, double gaps, double scale) =>
+      (1 - scale) * (inner - gaps) / 2;
+
+  /// 草稿那一排：兩欄，卡寬吃 [scale]（見 [_fit]）。
+  /// 一格空著也照樣佔位，只有一張時卡片才不會被撐成整排寬
+  Widget _draftGrid(List<_DraftCard> cards, double inner, double scale) {
+    final w = (inner - 12) / 2 * scale;
+    return _row(_gutter(inner, 12, scale), [
+      for (var i = 0; i < 2; i++) ...[
+        if (i > 0) const SizedBox(width: 12),
+        SizedBox(width: w, child: i < cards.length ? cards[i].build() : null),
       ],
-    );
+    ]);
   }
 
   void _openLove() {
@@ -461,6 +695,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
     final p = _photoDraft;
     final draftCount = _videoDrafts.length + (p == null ? 0 : 1);
+    // 草稿卡先列一次：量高度跟真的畫都讀這一份（見 _draftCards）
+    final cards = draftCount == 0 ? const <_DraftCard>[] : _draftCards(p);
     // 非編輯頁面全頁都能右滑返回（編輯畫面橫向手勢太多，刻意不放）
     return SwipeBack(
       child: Scaffold(
@@ -478,267 +714,239 @@ class _ProfileScreenState extends State<ProfileScreen> {
           bottom: false,
           // 左右留白改由各段自己給：範本那排要滿版出血（捲出畫面外），
           // 外層一留白它就被切在邊上，看起來像少畫了一格
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Expanded(
-                child: SingleChildScrollView(
-                  padding: EdgeInsets.only(
-                    top: 4 + MediaQuery.of(context).padding.top,
-                    bottom: 12 + MediaQuery.of(context).padding.bottom,
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      // 「我的東西」大字拿掉，只放上一頁箭頭（A 案，
-                      // 使用者指定）；主標的重量讓給各區塊標題（20）
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(14, 6, 22, 16),
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: IconButton(
-                            onPressed: () => Navigator.of(context).maybePop(),
-                            icon: const Icon(
-                              Icons.arrow_back_ios_new,
-                              size: 22,
-                              color: kLText,
+          //
+          // 這一頁不給上下捲（使用者指定「那讓他不要能上下捲動」）：
+          // 先量這台裝置剩多少高度，再決定留白壓多少、磚縮多少（見 _fit）
+          child: LayoutBuilder(
+            builder: (context, cons) {
+              final fit = _fit(context, cons, draftCount, cards);
+              final inner = cons.maxWidth - _side.horizontal;
+              // 範本跟草稿同一套兩欄流（使用者指定）：
+              // 只放一排、優先放兩組範本（使用者指定）：
+              // 不足兩組才用「新增」磚補位，其餘按「全部」進範本夾
+              final presetW = (inner - 10) / 2 * fit.tile;
+              final presetTiles = <Widget>[
+                for (final pr in _presets.take(2)) _presetTile(pr, w: presetW),
+              ];
+              if (presetTiles.length < 2) {
+                presetTiles.add(_presetAddTile(w: presetW));
+              }
+              // 固定三格、不出血（使用者指定：以前橫向清單一直延伸出畫面）
+              final gifW = (inner - 20) / 3 * fit.tile;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    child: SingleChildScrollView(
+                      // 裝得下就不讓它捲；裝不下（小螢幕、字級調很大）才
+                      // 回到原本的可捲——寧可捲，也不能把東西截掉
+                      physics: fit.fits
+                          ? const NeverScrollableScrollPhysics()
+                          : null,
+                      padding: EdgeInsets.only(
+                        top: 4 + MediaQuery.paddingOf(context).top,
+                        bottom: 12 + MediaQuery.paddingOf(context).bottom,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          // 「我的東西」大字拿掉，只放上一頁箭頭（A 案，
+                          // 使用者指定）；主標的重量讓給各區塊標題（20）
+                          Padding(
+                            padding: EdgeInsets.fromLTRB(
+                              14,
+                              6,
+                              22,
+                              16 * (1 - _kGiveLoose * fit.gap),
                             ),
-                          ),
-                        ),
-                      ),
-                      Padding(
-                        padding: _side,
-                        child: _sectionTitle(
-                          '範本',
-                          // 不顯示數量，一律「全部」（跟草稿區一致）
-                          trailing: _presets.isEmpty ? '還沒有' : '全部',
-                          // 點標題或「全部」都進範本總覽；
-                          // ＋磚才是直接新增（見 _presetAddTile）
-                          onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) =>
-                                  const LightPage(child: PresetsScreen()),
-                            ),
-                          ).then((_) => _reload()),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      // 範本跟草稿同一套兩欄流（使用者指定）：
-                      // 只放一排、優先放兩組範本（使用者指定）：
-                      // 不足兩組才用「新增」磚補位，其餘按「全部」
-                      // 進範本夾
-                      Padding(
-                        padding: _side,
-                        child: LayoutBuilder(
-                          builder: (context, cons) {
-                            final colW = (cons.maxWidth - 10) / 2;
-                            final tiles = <Widget>[
-                              for (final pr in _presets.take(2))
-                                _presetTile(pr, w: colW),
-                            ];
-                            if (tiles.length < 2) {
-                              tiles.add(_presetAddTile(w: colW));
-                            }
-                            return Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                for (var i = 0; i < tiles.length; i++) ...[
-                                  if (i > 0) const SizedBox(width: 10),
-                                  tiles[i],
-                                ],
-                              ],
-                            );
-                          },
-                        ),
-                      ),
-                      // 區塊間距統一 26（以前範本後、GIF 前各一個
-                      // 26 疊起來，範本跟 GIF 的間隔比別區大一倍）
-                      const SizedBox(height: 26),
-                      // GIF 做好會存一份在 App 裡（相簿那份跟幾千張
-                      // 照片混在一起，要拿它當素材根本找不到）。
-                      // 空的時候區塊留著（使用者指定）：標題＋一行
-                      // 灰字，跟草稿的空狀態同一套
-                      Padding(
-                        padding: _side,
-                        child: _sectionTitle(
-                          '我的 GIF',
-                          trailing: _gifs.isEmpty ? '還沒有' : '全部',
-                          onTap: _gifs.isEmpty ? null : _openGifs,
-                        ),
-                      ),
-                      // 主頁這排不放「＋」（使用者指定）：匯入自己的
-                      // GIF 走 GIF 夾右下角的浮動 +（或編輯器挑 GIF
-                      // 的「從相簿選」）。空的時候一行灰字
-                      if (_gifs.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.only(top: 16, bottom: 4),
-                          child: Center(
-                            child: Text(
-                              '還沒有 GIF',
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Color(0xFFA8A8B4),
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: IconButton(
+                                onPressed: () =>
+                                    Navigator.of(context).maybePop(),
+                                icon: const Icon(
+                                  Icons.arrow_back_ios_new,
+                                  size: 22,
+                                  color: kLText,
+                                ),
                               ),
                             ),
                           ),
-                        )
-                      else ...[
-                        const SizedBox(height: 14),
-                        // 固定三格、不出血（使用者指定：以前橫向清單
-                        // 一直延伸出畫面）。其餘按「全部」進 GIF 夾
-                        Padding(
-                          padding: _side,
-                          child: LayoutBuilder(
-                            builder: (context, cons) {
-                              final w = (cons.maxWidth - 20) / 3;
-                              return Row(
-                                children: [
-                                  for (final (i, g)
-                                      in _gifs.take(3).toList().indexed) ...[
-                                    if (i > 0) const SizedBox(width: 10),
-                                    GestureDetector(
-                                      onTap: _openGifs,
-                                      // 動圖每換一格就對自己
-                                      // markNeedsPaint，往上找到最近的
-                                      // repaint boundary 才停。沒有這一層
-                                      // 的話停在捲動視窗——三個 GIF 各自
-                                      // 用自己的速度，把「整頁重畫」
-                                      // （含兩塊範本磚的文字排版）
-                                      // 一秒觸發幾十次，手指根本沒碰螢幕
-                                      child: RepaintBoundary(
-                                        child: Container(
-                                          width: w,
-                                          height: w,
-                                          decoration: BoxDecoration(
-                                            color: kLTile,
-                                            borderRadius: BorderRadius.circular(
-                                              12,
-                                            ),
-                                            boxShadow: _tileShadow,
+                          Padding(
+                            padding: _side,
+                            child: _sectionTitle(
+                              '範本',
+                              // 不顯示數量，一律「全部」（跟草稿區一致）
+                              trailing: _presets.isEmpty ? '還沒有' : '全部',
+                              // 點標題或「全部」都進範本總覽；
+                              // ＋磚才是直接新增（見 _presetAddTile）
+                              onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) =>
+                                      const LightPage(child: PresetsScreen()),
+                                ),
+                              ).then((_) => _reload()),
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          Padding(
+                            padding: _side,
+                            child: _row(_gutter(inner, 10, fit.tile), [
+                              for (var i = 0; i < presetTiles.length; i++) ...[
+                                if (i > 0) const SizedBox(width: 10),
+                                presetTiles[i],
+                              ],
+                            ]),
+                          ),
+                          // 區塊間距統一 26（以前範本後、GIF 前各一個
+                          // 26 疊起來，範本跟 GIF 的間隔比別區大一倍）
+                          SizedBox(height: 26 * (1 - _kGiveSection * fit.gap)),
+                          // GIF 做好會存一份在 App 裡（相簿那份跟幾千張
+                          // 照片混在一起，要拿它當素材根本找不到）。
+                          // 空的時候區塊留著（使用者指定）：標題＋一行
+                          // 灰字，跟草稿的空狀態同一套
+                          Padding(
+                            padding: _side,
+                            child: _sectionTitle(
+                              '我的 GIF',
+                              trailing: _gifs.isEmpty ? '還沒有' : '全部',
+                              onTap: _gifs.isEmpty ? null : _openGifs,
+                            ),
+                          ),
+                          // 主頁這排不放「＋」（使用者指定）：匯入自己的
+                          // GIF 走 GIF 夾右下角的浮動 +（或編輯器挑 GIF
+                          // 的「從相簿選」）。空的時候一行灰字
+                          if (_gifs.isEmpty)
+                            const Padding(
+                              padding: EdgeInsets.only(top: 16, bottom: 4),
+                              child: Center(
+                                child: Text('還沒有 GIF', style: _kHintStyle),
+                              ),
+                            )
+                          else ...[
+                            const SizedBox(height: 14),
+                            // 其餘按「全部」進 GIF 夾
+                            Padding(
+                              padding: _side,
+                              child: _row(_gutter(inner, 20, fit.tile), [
+                                for (final (i, g)
+                                    in _gifs.take(3).toList().indexed) ...[
+                                  if (i > 0) const SizedBox(width: 10),
+                                  GestureDetector(
+                                    onTap: _openGifs,
+                                    // 動圖每換一格就對自己
+                                    // markNeedsPaint，往上找到最近的
+                                    // repaint boundary 才停。沒有這一層
+                                    // 的話停在捲動視窗——三個 GIF 各自
+                                    // 用自己的速度，把「整頁重畫」
+                                    // （含兩塊範本磚的文字排版）
+                                    // 一秒觸發幾十次，手指根本沒碰螢幕
+                                    child: RepaintBoundary(
+                                      child: Container(
+                                        width: gifW,
+                                        height: gifW,
+                                        decoration: BoxDecoration(
+                                          color: kLTile,
+                                          borderRadius: BorderRadius.circular(
+                                            12,
                                           ),
-                                          clipBehavior: Clip.antiAlias,
-                                          child: GifImage(g),
+                                          boxShadow: _tileShadow,
                                         ),
+                                        clipBehavior: Clip.antiAlias,
+                                        child: GifImage(g),
                                       ),
                                     ),
-                                  ],
+                                  ),
                                 ],
-                              );
-                            },
+                              ]),
+                            ),
+                          ],
+                          // 跟下面那一區隔開，不然「草稿」會黏在
+                          // GIF 那排的下緣上
+                          SizedBox(height: 26 * (1 - _kGiveSection * fit.gap)),
+                          Padding(
+                            padding: _side,
+                            child: _sectionTitle(
+                              '草稿',
+                              // 空的時候不放「沒有」：下面那行字已經說了，
+                              // 標題右邊再寫一次只是重複
+                              trailing: draftCount == 0 ? null : '全部',
+                              onTap: draftCount == 0 ? null : _openDrafts,
+                            ),
                           ),
-                        ),
-                      ],
-                      // 跟下面那一區隔開，不然「草稿」會黏在
-                      // GIF 那排的下緣上
-                      const SizedBox(height: 26),
-                      Padding(
-                        padding: _side,
-                        child: _sectionTitle(
-                          '草稿',
-                          // 空的時候不放「沒有」：下面那行字已經說了，
-                          // 標題右邊再寫一次只是重複
-                          trailing: draftCount == 0 ? null : '全部',
-                          onTap: draftCount == 0 ? null : _openDrafts,
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      if (draftCount == 0)
-                        // 空的時候不畫框：一個又扁又寬的空盒子跟旁邊
-                        // 的長條卡不是同一種東西，看起來像沒做完。
-                        // 也不解釋草稿怎麼來——真的存了一份之後這行
-                        // 就永遠不會再出現，講了也是白講
-                        const Padding(
-                          padding: EdgeInsets.only(top: 10, bottom: 4),
-                          child: Center(
-                            child: Text(
-                              '還沒有草稿',
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Color(0xFFA8A8B4),
+                          const SizedBox(height: 14),
+                          if (draftCount == 0)
+                            // 空的時候不畫框：一個又扁又寬的空盒子跟旁邊
+                            // 的長條卡不是同一種東西，看起來像沒做完。
+                            // 也不解釋草稿怎麼來——真的存了一份之後這行
+                            // 就永遠不會再出現，講了也是白講
+                            const Padding(
+                              padding: EdgeInsets.only(top: 10, bottom: 4),
+                              child: Center(
+                                child: Text('還沒有草稿', style: _kHintStyle),
                               ),
+                            )
+                          else
+                            Padding(
+                              padding: _side,
+                              // 全部列出來（兩欄）：本來只放最近一份、其餘
+                              // 要進草稿夾看，但清單就在這一頁，藏起來只是
+                              // 多一步
+                              child: _draftGrid(cards, inner, fit.tile),
                             ),
-                          ),
-                        )
-                      else
-                        Padding(
-                          padding: _side,
-                          // 全部列出來（兩欄）：本來只放最近一份、其餘要
-                          // 進草稿夾看，但清單就在這一頁，藏起來只是多一步
-                          child: _draftGrid(p),
-                        ),
-                      // 行動鈕跟頁尾連結跟著內容捲（不釘底）：
-                      // 釘底會一直吃掉一截可視高度，草稿多的時候很擠
-                      const SizedBox(height: 30),
-                      Padding(
-                        padding: _side,
-                        child: GestureDetector(
-                          onTap: _openLove,
-                          child: Container(
-                            height: 54,
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(
-                              color: kLAccent,
-                              borderRadius: BorderRadius.circular(999),
-                            ),
-                            child: const Text(
-                              '太好用啦',
-                              style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w800,
-                                color: Colors.white,
+                          // 行動鈕跟頁尾連結跟著內容捲（不釘底）：
+                          // 釘底會一直吃掉一截可視高度，草稿多的時候很擠
+                          SizedBox(height: 30 * (1 - _kGiveLoose * fit.gap)),
+                          Padding(
+                            padding: _side,
+                            child: GestureDetector(
+                              onTap: _openLove,
+                              child: Container(
+                                height: 54,
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  color: kLAccent,
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: const Text('太好用啦', style: _kCtaStyle),
                               ),
                             ),
                           ),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          GestureDetector(
-                            onTap: () => showFeedbackDialog(context),
-                            child: const Text(
-                              '意見回饋',
-                              style: TextStyle(
-                                fontSize: 12.5,
-                                color: kLTextDim,
+                          const SizedBox(height: 14),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              GestureDetector(
+                                onTap: () => showFeedbackDialog(context),
+                                child: const Text('意見回饋', style: _kFootStyle),
                               ),
-                            ),
-                          ),
-                          const Padding(
-                            padding: EdgeInsets.symmetric(horizontal: 10),
-                            child: Text(
-                              '·',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Color(0xFFB0B0BA),
+                              const Padding(
+                                padding: EdgeInsets.symmetric(horizontal: 10),
+                                child: Text('·', style: _kDotStyle),
                               ),
-                            ),
-                          ),
-                          GestureDetector(
-                            onTap: () => Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) =>
-                                    const LightPage(child: AboutScreen()),
+                              GestureDetector(
+                                onTap: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) =>
+                                        const LightPage(child: AboutScreen()),
+                                  ),
+                                ),
+                                child: const Text(
+                                  '關於這個 App',
+                                  style: _kFootStyle,
+                                ),
                               ),
-                            ),
-                            child: const Text(
-                              '關於這個 App',
-                              style: TextStyle(
-                                fontSize: 12.5,
-                                color: kLTextDim,
-                              ),
-                            ),
+                            ],
                           ),
                         ],
                       ),
-                    ],
+                    ),
                   ),
-                ),
-              ),
-            ],
+                ],
+              );
+            },
           ),
         ),
       ),
