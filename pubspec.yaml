@@ -77,6 +77,13 @@ dependencies:
 dependency_overrides:
   video_player_avfoundation:
     path: packages/video_player_avfoundation
+  # 自帶修改版的 file_picker 10.3.10（只動 iOS 的 PHPicker 回傳）：
+  # 上游把每個檔案「複製完成」的順序當回傳順序——多選十支影片，
+  # 大的、在 iCloud 的後到，時間軸就不是使用者點選的順序。改成
+  # 照 PHPicker 給的（＝點選）順序填格子。11.0.x 上游一樣沒修；
+  # 升級 file_picker 時記得把 FilePickerPlugin.m 裡 MarkCut patch 三段搬過去
+  file_picker:
+    path: packages/file_picker
 
 dev_dependencies:
   flutter_test:

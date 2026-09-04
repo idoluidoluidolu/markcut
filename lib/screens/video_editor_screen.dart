@@ -2762,7 +2762,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 讓他還要再做一次編輯才看到效果很怪
       _closeGaps();
     } else {
-      showHint(context, '自動整理已關閉');
+      showHint(context, '自動銜接已關閉');
     }
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kTidyPrefKey, _autoTidy);
@@ -8415,7 +8415,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final now = DateTime.now();
       if (now.difference(_lastTidyHintAt).inSeconds >= 8) {
         _lastTidyHintAt = now;
-        showHint(context, '位置被自動接齊了，點「整理」關閉後可自由拖移');
+        showHint(context, '位置被自動接齊了，點「銜接」關閉後可自由拖移');
       }
     }
   }
@@ -8998,7 +8998,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       showHint(context, t == null ? '沒有空隙可以補' : '第 ${t + 1} 軌沒有空隙');
       return;
     }
-    showHint(context, t == null ? '已補起空隙' : '已整理第 ${t + 1} 軌');
+    showHint(context, t == null ? '已補起空隙' : '已銜接第 ${t + 1} 軌');
   }
 
   /// 刪掉整條軌道（軌上所有片段一起消失）。
@@ -9261,7 +9261,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           '貼上',
           enabled: _clipboard != null,
         ),
-        _menuItem('tidy', Icons.compress, '整理這一軌'),
+        _menuItem('tidy', Icons.compress, '銜接這一軌'),
         // 空軌也能刪（收起空白軌／讓上面的軌遞補），所以不再依內容停用
         _menuItem('delTrack', Icons.delete_sweep_outlined, '刪除整軌'),
       ],
@@ -13346,14 +13346,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       ),
                       _toolDivider(),
                       // 直向的 compress 轉 90°＝把左右的空隙擠掉。
-                      // 跟磁吸一樣是開關：開著就自動接齊
+                      // 跟磁吸一樣是開關：開著就自動接齊。
+                      // 標籤本來叫「整理」，使用者指定改成「銜接」
+                      //（行為不變：仍是自動補空隙的開關）
                       _toolBtn(
                         Icons.compress,
-                        '整理',
+                        '銜接',
                         _toggleAutoTidy,
                         tip: _autoTidy
-                            ? '自動整理：開（剪短後自動接齊，點一下關掉）'
-                            : '自動整理：關（點一下打開，並立刻接齊一次）',
+                            ? '自動銜接：開（剪短後自動接齊，點一下關掉）'
+                            : '自動銜接：關（點一下打開，並立刻接齊一次）',
                         quarterTurns: 1,
                         color: _autoTidy ? kSelect : null,
                       ),

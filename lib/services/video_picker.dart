@@ -19,6 +19,10 @@ const _pickCh = MethodChannel('markcut/pick');
 /// file_picker 的 FileType.video 在安卓其實是 SAF 文件選取器，
 /// 開出來是檔案管理器的「最近」——使用者反映找不到影片。
 /// iOS 與舊安卓照舊走 file_picker；Web 拿不到檔案路徑，退回混合選取再濾
+///
+/// 回傳順序＝使用者點選的順序（時間軸照這個接）。Android 的 clipData
+/// 本來就是點選順序；iOS 走的是 packages/file_picker 的修改版——
+/// 上游 PHPicker 那條路是「誰先複製完誰先回」，順序會亂
 Future<List<XFile>> pickVideoFiles() async {
   if (kIsWeb) {
     final list = await ImagePicker().pickMultipleMedia();
@@ -59,7 +63,10 @@ Future<List<XFile>> pickVideoFiles() async {
 /// 解碼都跟著慢。
 ///
 /// Android 照舊 image_picker（系統相片選取器；file_picker 在安卓開的
-/// 是文件選取器，使用者找不到相簿）；web 也照舊
+/// 是文件選取器，使用者找不到相簿）；web 也照舊。
+///
+/// 回傳順序＝點選順序（見 [pickVideoFiles] 的說明；image_picker 的
+/// iOS/Android 端都是照 index 填回，本來就對）
 Future<List<XFile>> pickMediaFiles() => _pickOriginals(FileType.media);
 
 /// 只挑照片（可多選）。理由同 [pickMediaFiles]；首頁的「照片批次」
