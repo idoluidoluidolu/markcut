@@ -486,18 +486,18 @@ class WorkFiles {
   ///
   /// 抽兩格算亮度，跟原檔同一個時間點比：原檔看得見、工作檔卻是全黑
   /// （或根本解不開）＝編碼器吐了壞檔。
-  /// 只有在原檔本身夠亮的時候才判定——真的很暗的素材不能誤殺
+  /// 只有在原檔本身夠亮的時候才判定——真的很暗的素材不能誤殺。
+  ///
+  /// 順序有講究：先驗工作檔，只有它看起來不對才去抽原檔的基準。
+  /// 判定式裡每一條「不能用」的路都要求工作檔全黑或解不開，所以
+  /// 工作檔亮的時候原檔那兩格的答案根本不影響結論——而它是兩格
+  /// 4K HDR 硬體解碼（一格幾百毫秒，還跟排在後面的下一支轉檔搶
+  /// 同一顆解碼器）。以前每備一支素材都先付這筆
   static Future<bool> _looksUsable(String src, String work) async {
     try {
-      var srcMax = 0.0;
       var workMax = 0.0;
       var workReadable = false;
       for (final t in const [0.5, 2.0]) {
-        final sb = await nativeFrameAt(src, t, maxH: 120);
-        if (sb != null) {
-          final v = await meanLuminance(sb);
-          if (v != null && v > srcMax) srcMax = v;
-        }
         final wb = await nativeFrameAt(work, t, maxH: 120);
         if (wb != null) {
           final v = await meanLuminance(wb);
@@ -505,6 +505,16 @@ class WorkFiles {
             workReadable = true;
             if (v > workMax) workMax = v;
           }
+        }
+      }
+      // 工作檔解得開、而且不是全黑：不管原檔長怎樣，結論都是「可以用」
+      if (workReadable && workMax >= 2) return true;
+      var srcMax = 0.0;
+      for (final t in const [0.5, 2.0]) {
+        final sb = await nativeFrameAt(src, t, maxH: 120);
+        if (sb != null) {
+          final v = await meanLuminance(sb);
+          if (v != null && v > srcMax) srcMax = v;
         }
       }
       // 原檔也抽不到（權限、格式怪）＝沒有基準可比，不要亂判，放行

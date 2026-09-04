@@ -33,6 +33,7 @@ import '../services/crop_math.dart';
 import '../services/diagnostics.dart';
 import '../services/draft_store.dart';
 import '../services/gif_store.dart';
+import '../services/export_eta.dart';
 import '../services/export_speed.dart';
 import '../services/file_reader.dart';
 import '../services/media_prep.dart';
@@ -1455,6 +1456,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         _saveDraft();
         return;
       }
+      // 匯入遮罩蓋著也一樣要讓路：每轉好一支素材就會叫一次這裡，而
+      // 存一次＝封面（抽一格原檔＋兩張 720 PNG 編解碼）＋整包 JSON
+      // 編碼＋prefs 寫入，全都落在下一支轉檔的中間跟它搶。
+      // 遮罩收掉之後這顆計時器自然會醒過來存（最後一次呼叫還排著），
+      // 離開頁面也有 dispose 的強制補存
+      if (_prepGate) {
+        _saveDraft();
+        return;
+      }
       _saveDraftNow();
       // 合成把 trim、變速、淡入淡出、縮放位移都烘在裡面，而這些值在
       // 拖曳過程中連續變——_pushUndo 只在起手時重組一次，結束時的最終
@@ -2466,9 +2476,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 await WorkFiles.lookupHdr(s.path) != s.workHdrPath)) {
           s.workHdrPath = null;
         }
-        _thumbStrip(s.previewPath, s.duration).then((t) {
-          if (mounted && t.isNotEmpty) setState(() => _thumbs[i] = t);
-        });
+        // 缺檔的素材縮圖帶等備完再抽（跟匯入那條同一套，見
+        // _importVideoMeta／_thumbsAfterPrep）：這時候手上只有 4K 原檔，
+        // 一支就是十格硬體解碼，六支草稿＝六十格跟轉檔搶同一顆解碼器，
+        // 而且抽出來的還是要丟掉的那一版（代理換上時會重抽）
+        if (kIsWeb || _prepNeedOf(s) == _PrepNeed.none) {
+          _thumbStrip(s.previewPath, s.duration).then((t) {
+            if (mounted && t.isNotEmpty) setState(() => _thumbs[i] = t);
+          });
+        }
         _ensureScrubSlots(i, s.duration);
         // 原檔期間先把拖曳快取整條抽起來（同 _importVideoFromPath）
         if (s.workPath == null && !kIsWeb) {
@@ -2500,7 +2516,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _makeScrubCache(i, s.previewPath, s.duration);
     }
     // 沒有工作檔的素材在背景補上（進場不等它）
-    unawaited(_prepAllWorkFiles());
+    unawaited(
+      _prepAllWorkFiles().then((_) {
+        // 上面把「還缺檔」那些素材的縮圖帶讓給了收尾（_thumbsAfterPrep）。
+        // 但收尾只有在真的有東西要備時才會跑——平台不支援、或探完發現
+        // 其實都齊了，就沒有人補了。這裡兜底（有縮圖的會自己跳過）
+        if (mounted && !_prepBusy) unawaited(_thumbsAfterPrep());
+      }),
+    );
     unawaited(_ensureComp());
   }
 
@@ -2639,6 +2662,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 一支或一整批都走同一條路：照順序接在第一軌上。
       // 每一支進來就先能播（工作檔在背景備），不會卡在載入畫面
       final list = widget.videoPaths ?? [widget.videoPath!];
+      // 遮罩的 N 先寫上總數（見 _importExpected）：第一支接上就開始轉，
+      // 只數已接進來的會讓 N 一路往上跳
+      _importExpected = list.length;
       () async {
         // 一支一支問中繼資料、接進時間軸（順序是使用者選的）。不再
         // 先開播放器：十支並行 initialize＝十顆 4K HDR 解碼器同時活著，
@@ -2660,6 +2686,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           }
           setState(() => _ready = true);
         }
+        // 整批都接進來了：N 改回照實數（有的可能讀不進來被略過）
+        _importExpected = 0;
         // 匯入會順手選中剛加的片段（加素材時的正確行為），
         // 但「進場」的預設選取是浮水印——匯完整批把選取還回去
         if (mounted) {
@@ -3037,7 +3065,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _scheduleMeasureKbps() {
     _kbpsTimer?.cancel();
     _kbpsTimer = Timer(const Duration(milliseconds: 600), () {
-      if (mounted) unawaited(_measureSrcKbps());
+      if (!mounted) return;
+      // 遮罩還蓋著就再等：這一趟是每支素材一次 FFprobe（開檔、解封裝
+      // 4K 原檔）＋讀檔案大小，而它算出來的數字只有匯出頁用得到——
+      // 匯出頁在遮罩期間根本建不起來。進場之後再量，硬體讓給轉檔
+      if (_prepBusy) {
+        _scheduleMeasureKbps();
+        return;
+      }
+      unawaited(_measureSrcKbps());
     });
   }
 
@@ -3096,6 +3132,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 大半時間是停著的
   final Map<int, double> _prepCur = {};
 
+  /// 遮罩上的「約還要多久」（純算術在 ImportEta；_drainPrep 開跑時建、
+  /// 收尾清掉）。使用者要求：匯入也要有預估剩下時間
+  ImportEta? _eta;
+
+  /// 遮罩那一行現在顯示的字。每秒重算一次就好——轉檔進度每 200ms
+  /// 回報一次，跟著改的話數字會抖；讀數本身也只准每秒動一下
+  String? _etaText;
+  Timer? _etaTimer;
+
   /// 每支素材是不是 HDR（路徑 → 探過的結果）
   final Map<String, bool> _srcHdr = {};
 
@@ -3121,8 +3166,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return s.workPath == null ? _PrepNeed.sdrWork : _PrepNeed.none;
   }
 
+  /// 這一批匯入完會有幾支影片素材（還沒接進時間軸的也算）。
+  ///
+  /// 多選匯入是一支一支接的，而第一支接上就開始轉了——只數
+  /// 「已經接進來的」的話，N 會先寫 1、再變 2、再變 5（實測：兩支
+  /// 素材的遮罩先顯示「第 1 / 1 支」再跳成「第 2 / 2 支」）。
+  /// 挑檔的當下就知道總共幾支，先墊著
+  int _importExpected = 0;
+
   /// 這一批要備的影片素材數（＝畫面上 X／N 的 N）
-  int get _prepSrcTotal => _tl.sources.where((s) => s.isVideo).length;
+  int get _prepSrcTotal => math.max(
+    _tl.sources.where((s) => s.isVideo).length,
+    _importExpected,
+  );
 
   /// 已經備好的素材數（X 從它算：X＝正在備的那一支）。
   /// 以前這裡要求「工作檔＋HDR 代理都有」，而 _hdrAvail 在遮罩期間
@@ -3150,6 +3206,45 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
     }
     return ((done + inFlight) / total).clamp(0.0, 1.0);
+  }
+
+  /// 還沒備好的素材：總長度（秒）與支數。剩餘時間就是拿它除以倍速
+  ///（見 ImportEta）——長度在轉檔開始前就知道（probeLite 探過），
+  /// 所以「還有多少影片要轉」從第一秒就是準的，不用等
+  ({double sec, int items}) get _prepLeft {
+    var sec = 0.0;
+    var items = 0;
+    for (final s in _tl.sources) {
+      if (!s.isVideo || _prepNeedOf(s) == _PrepNeed.none) continue;
+      sec += s.duration;
+      items++;
+    }
+    return (sec: sec, items: items);
+  }
+
+  /// 遮罩那一行字。轉檔中「第 2 / 5 支 · 約還要 40 秒」、
+  /// 收尾「正在組畫面 · 快好了」；還估不出來就是「估算中…」
+  String? _prepEtaText() {
+    final eta = _eta;
+    if (eta == null) return _prepComposing ? '正在組畫面' : null;
+    final left = _prepLeft;
+    final text = eta.remainingText(
+      srcSecLeft: left.sec,
+      itemsLeft: left.items,
+    );
+    if (_prepComposing) return '正在組畫面 · $text';
+    final total = _prepSrcTotal;
+    if (total <= 0) return null;
+    // X 每備好一支就前進（_prepSrcDone），不是整段停在 1
+    final n = math.min(_prepSrcDone + 1, total);
+    return '第 $n / $total 支 · $text';
+  }
+
+  /// 每秒重算一行字；字沒變就不重建（進度回呼本來就會重建畫面）
+  void _etaTick() {
+    if (!mounted) return;
+    final t = _prepEtaText();
+    if (t != _etaText) setState(() => _etaText = t);
   }
 
   /// 使用者按了「先進去編輯」——遮罩收掉，轉檔繼續在背景跑
@@ -3201,6 +3296,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 進行中」就會讓開，兩個旗標都在這裡顧著
     _hdrPrepBusy = true;
     if (_comp == null) _lastCompEditSig = _compSig(withPaths: false);
+    // 剩餘時間從這一刻開始算（見 ImportEta）
+    _eta = ImportEta()..start();
+    _etaText = null;
+    // 遮罩期間不清掃工作檔目錄：每轉好一支 WorkFiles.ensure 都會順手
+    // sweep 一次（列整個目錄、逐檔 stat、可能刪檔），而那正好落在
+    // 下一支轉檔的中間。整批做完再清一次就好
+    final heldSweep = WorkFiles.holdSweep;
+    if (!heldSweep) WorkFiles.holdSweep = true;
     final sw = Stopwatch()..start();
     var madeHdr = 0;
     var madeSdr = 0;
@@ -3257,6 +3360,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         final need = _prepNeedOf(src);
         if (need == _PrepNeed.none) continue;
         _showPrepGate();
+        // 這一支開始轉了：素材長度就是「還要轉多少影片」的單位
+        _eta?.itemStart(src.duration);
+        _etaTick();
         if (need == _PrepNeed.hdrProxy) {
           if (await lap(_prepHdrProxy(i), (ms) => msXcode += ms)) madeHdr++;
         } else {
@@ -3267,6 +3373,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             madeSdr++;
           }
         }
+        // 成功失敗都要記：時間都花掉了，倍速要照實算
+        _eta?.itemDone();
         if (!mounted) return;
         // 佇列空了：沒轉成功的補試一次（每支一次），試過還是不行的
         // 記進失敗名單，之後不再背景重跑
@@ -3293,6 +3401,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _hdrPrepBusy = false;
       if (_comp == null || _compSig() != _lastCompSig) _compDirty = true;
       if (_prepShow && mounted) setState(() => _prepComposing = true);
+      // 剩下的是組合成那一段：讀數改成倒數尾巴，不會停在「快好了」
+      _eta?.composing();
+      _etaTick();
       await lap(
         _ensureComp().timeout(
           const Duration(seconds: 15),
@@ -3303,12 +3414,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     } finally {
       _hdrPrepBusy = false;
       _prepEscapeTimer?.cancel();
+      _etaTimer?.cancel();
+      _etaTimer = null;
+      _eta = null;
+      _etaText = null;
       if (!_exporting) Diag.stopSampling();
       _prepBusy = false;
       _prepShow = false;
       _prepComposing = false;
       _prepEscapeReady = false;
       _prepCur.clear();
+      if (!heldSweep) {
+        WorkFiles.holdSweep = false;
+        // 整批做完清一次（進行中都跳過了，見上面）
+        unawaited(WorkFiles.sweep());
+      }
       if (mounted) {
         setState(() {});
         // 遮罩收掉之後才做的雜事：縮圖帶從代理／工作檔一支一支抽。
@@ -3317,6 +3437,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         unawaited(_thumbsAfterPrep());
       }
     }
+    // 這一趟收尾（組合成）實際花的時間記起來，下一次匯入的尾巴用真數字
+    if (msComp > 0) ImportEta.noteTailSec(msComp / 1000);
     if (madeHdr + madeSdr > 0 || sw.elapsed.inSeconds >= 2) {
       Diag.note(
         '素材備妥 ${sw.elapsed.inSeconds}秒（${_prepHdrMode ? 'HDR' : 'SDR'} 模式）：'
@@ -3338,13 +3460,31 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _showPrepGate() {
     if (_prepShow || !mounted) return;
     setState(() => _prepShow = true);
+    // 剩餘時間：每秒重算一次（兩次進度回報之間自己倒數；組合成那一段
+    // 根本沒有回報，沒有這顆計時器就整段停著不動）
+    _etaTick();
+    _etaTimer?.cancel();
+    _etaTimer = Timer.periodic(const Duration(seconds: 1), (_) => _etaTick());
     _prepEscapeTimer?.cancel();
     _prepEscapeTimer = Timer(const Duration(seconds: 20), () {
       if (mounted && _prepGate) setState(() => _prepEscapeReady = true);
     });
   }
 
-  /// 跟 _checkHdrSources 同一個問法、同一把 key，只是等得到答案
+  /// 每一支問過的答案（路徑 → 有沒有 HLG/PQ 影像軌）
+  final Map<String, bool> _hdrOfPath = {};
+
+  /// 跟 _checkHdrSources 同一個問法、同一把 key，只是等得到答案。
+  ///
+  /// 一支一支問、問過就記住，而不是每次把「全部路徑」重問一輪：
+  /// 多選匯入是一支一支加進來的，每加一支這裡就被叫一次，而 key 是
+  /// 全部路徑串起來的——十支素材＝問十輪、每輪掃 1~10 支，原生端
+  /// 一共同步解析 55 份 moov。那是在 platform thread 上做的，
+  /// 排在它後面的 probeLite、轉檔進度回報全部跟著等（實測：匯入分段
+  /// 的「HDR判定」在多素材時整段是這裡）。
+  ///
+  /// probeLite 已經說是 709 的那些連問都不用問：hasHDR 只有 HLG/PQ
+  /// 才算 true，709 不可能是——全 SDR 素材的匯入因此一次都不用問
   Future<void> _resolveHdrAvail() async {
     final paths = [
       for (final s in _tl.sources)
@@ -3353,12 +3493,33 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final key = paths.join('|');
     if (key == _hdrCheckKey && _hdrAvail != null) return;
     _hdrCheckKey = key;
-    // 已經是「有 HDR」：多加素材不會變成沒有，不用再問（多選匯入是
-    // 一支一支加的，每加一支重問一輪＝十支問十輪）
+    // 已經是「有 HDR」：多加素材不會變成沒有，不用再問
     if (_hdrAvail == true) return;
-    final v = await NativeExport.anyHDR(paths);
+    var any = false;
+    for (final p in paths) {
+      final known = _hdrOfPath[p];
+      if (known != null) {
+        if (known) {
+          any = true;
+          break;
+        }
+        continue;
+      }
+      // 探測說它是 709（SDR）＝一定不是 HLG/PQ，省下這一趟原生呼叫
+      if (_srcHdr[p] == false) {
+        _hdrOfPath[p] = false;
+        continue;
+      }
+      final v = await NativeExport.anyHDR([p]);
+      if (!mounted) return;
+      _hdrOfPath[p] = v;
+      if (v) {
+        any = true;
+        break;
+      }
+    }
     if (!mounted) return;
-    if (v != _hdrAvail) setState(() => _hdrAvail = v);
+    if (any != _hdrAvail) setState(() => _hdrAvail = any);
   }
 
   /// 這支正在別條路上轉（背景補代理）就等它做完
@@ -3475,6 +3636,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       made = await WorkFiles.ensureHdr(
         src.path,
         onProgress: (v) {
+          // 剩餘時間先收（不重建畫面）：第一支的倍速就是從「轉到第幾秒
+          // ÷ 花了幾秒」量出來的，這是「估算中…」能在兩秒內變成真數字
+          // 的唯一來源
+          _eta?.noteProgress(v);
           // 進度只在讀取遮罩蓋著的時候收：那時候畫面上只有遮罩本身，
           // 重建一次很便宜；背景補的時候每一格進度都 setState 等於
           // 邊剪邊整頁重建
@@ -3515,6 +3680,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       made = await WorkFiles.ensure(
         src.path,
         onProgress: (v) {
+          // 剩餘時間先收（見 _prepHdrProxy 的同一段）
+          _eta?.noteProgress(v);
           // 用 _prepGate 不用 _prepBusy：遮罩收掉（先進去編輯）之後
           // 每一格進度都 setState 等於邊剪邊整頁重建
           if (!mounted || !_prepGate) return;
@@ -4474,6 +4641,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
     _pause();
     _pushUndo();
+    // 遮罩的 N 先寫上「加完會有幾支」（見 _importExpected）
+    _importExpected =
+        _tl.sources.where((s) => s.isVideo).length + vids.length;
     // 一支一支問中繼資料、接軌（同 initState 的匯入迴圈；不開播放器，
     // 見 _importVideoPath）
     for (var i = 0; i < vids.length; i++) {
@@ -4485,6 +4655,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       } catch (_) {}
       if (!mounted) return;
     }
+    _importExpected = 0;
     setState(() {});
     // 極少數情況相簿還是會塞進非影片（web 那條路是混合選取），
     // 略過就好，但要講一聲，不然會以為漏加了
@@ -9365,6 +9536,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _frameSettle?.cancel();
     _playProbe?.cancel();
     _prepEscapeTimer?.cancel();
+    _etaTimer?.cancel();
+    _kbpsTimer?.cancel();
     _staleKickTimer?.cancel();
     _swapFlushTimer?.cancel();
     _ovSync.dispose();
@@ -12893,7 +13066,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       total: _prepSrcTotal,
       fraction: _prepFraction,
       ready: _ready,
-      label: _prepComposing ? '正在組畫面' : null,
+      // 「第 2 / 5 支 · 約還要 40 秒」（見 _prepEtaText）。還沒開始算
+      // 的那一瞬間退回元件自己的說法（素材 X／N 準備中）
+      label: _etaText ?? (_prepComposing ? '正在組畫面' : null),
       onSkip: _prepEscapeReady
           ? () {
               setState(() => _prepSkipped = true);
