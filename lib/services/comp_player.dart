@@ -2,8 +2,11 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../models/timeline.dart';
 import 'diagnostics.dart';
+import 'hdr_photo_export.dart';
 import 'media_prep.dart';
 
 /// Metal 預覽引擎（滑動/暫停接管；見 AppDelegate 的
@@ -266,11 +269,20 @@ class CompPlayer {
   /// 匯出的合成器是疊加物最後畫、永遠在最上面，預覽就跟成品不一致。
   /// 一起烘之後兩邊都照同一條 z 序（層照軌道排、疊加物最後），
   /// 代價跟墊底圖片一樣：拖它要等重烘，不能即時
+  ///
+  /// [hdrOut]＝這份合成走 HDR（HLG）。HDR 照片（增益圖／10-bit，見
+  /// [isHdrStill]）在 HDR 合成裡由原生端展開（expandToHDR，高光跟相簿
+  /// 一樣亮）；Flutter 畫的那份永遠是 8-bit SDR 基底，兩份不一樣亮，
+  /// 一張圖在「壓在影片上」與「被浮水印蓋到」之間切換就會忽亮忽暗。
+  /// 所以 HDR 合成裡的 HDR 照片一律烘進合成——代價跟其他烘進去的圖一樣
+  ///（拖曳走 setXform 即時通道，放手才重烘）。SDR 合成不變：8-bit 基底
+  /// 兩邊本來就一樣。GIF 不算（增益圖只有照片才有）
   static Set<int> bakedImageIds(
     TimelineModel tl, {
     double wmStart = 0,
     double wmEnd = 0,
     Set<int> hiddenTracks = const {},
+    bool hdrOut = false,
   }) {
     var top = -1;
     // 合成的終點：影片結尾，或補長之後的時間軸終點（見 [padTo]）。
@@ -304,14 +316,94 @@ class CompPlayer {
     // 浮水印看得見的那段時間（見上）
     bool underWm(TimelineClip img) =>
         wmEnd > wmStart && img.offset < wmEnd && img.end > wmStart;
+    // HDR 合成裡的 HDR 照片（見上）：只認探測過的結果，沒探過＝SDR
+    bool hdrPhoto(TimelineClip img) {
+      if (!hdrOut) return false;
+      final s = tl.sourceOf(img);
+      return !s.isGif && isHdrStill(s.path);
+    }
+
     return {
       for (final c in tl.clips)
         if (tl.sourceOf(c).kind == ClipKind.image &&
             !hiddenTracks.contains(c.track) &&
-            (c.track <= top || mosaicAbove(c) || underWm(c)) &&
+            (c.track <= top ||
+                mosaicAbove(c) ||
+                underWm(c) ||
+                hdrPhoto(c)) &&
             c.offset < compEnd)
           c.id,
     };
+  }
+
+  // ===== HDR 照片（圖片素材）的探測 =====
+  //
+  // iPhone 的照片預設帶增益圖（HEIC／「相容性最佳」的 JPEG），相簿用
+  // HDR 顯示——高光比 SDR 白亮好幾倍。原本烘進合成的圖片只解 8-bit
+  // 基底（增益圖丟掉），在 HDR 專案裡跟相簿一比就是「有點暗、顏色
+  // 有點差」。原生端（MCStillLoader）現在會在 HDR 合成裡用 expandToHDR
+  // 展開，這裡負責：探哪些圖片是 HDR（同一支原生探測，跟批次照片的
+  // HDR 匯出同一套判定）、快取、把結果送進 build 的 payload（'hdr'），
+  // 以及讓 [bakedImageIds] 把它們烘進合成（Flutter 畫不了 HDR）。
+  //
+  // 注意「走過 image_picker／裁切」的圖片：image_picker 的 iOS 端把每
+  // 張照片重壓成 JPEG、裁切畫面存的是 dart:ui 的 PNG——兩條路都是
+  // 8-bit 基底、增益圖已經沒了，探出來就是 SDR，這裡救不回來。要真的
+  // 保住 HDR，匯入得拿相簿原檔（video_picker 的 pickPhotoFiles）而且
+  // 不重編碼（裁切改記框、不烘成 PNG）——見編輯器端
+
+  /// 路徑 → 這張是不是 HDR 照片（探過的才有）。
+  /// 值連同檔案大小/修改時間一起記：暫存路徑會被重複使用
+  static final Map<String, ({int size, int mtime, bool hdr})> _hdrStillCache =
+      {};
+
+  /// 測試用：換掉原生探測（沒有平台端）。回 null＝探不到（當 SDR、
+  /// 不進快取）
+  @visibleForTesting
+  static Future<bool?> Function(String path)? debugHdrProbe;
+
+  /// 測試用：直接寫入探測結果
+  @visibleForTesting
+  static void debugSetHdrStill(String path, bool hdr) {
+    _hdrStillCache[path] = (size: -1, mtime: -1, hdr: hdr);
+  }
+
+  @visibleForTesting
+  static void debugClearHdrStills() => _hdrStillCache.clear();
+
+  /// 這個路徑探過而且是 HDR 照片嗎。同步、只看快取：沒探過一律 false
+  ///（＝照舊當 SDR），[probeHdrStills] 探完才會變 true
+  static bool isHdrStill(String path) => _hdrStillCache[path]?.hdr ?? false;
+
+  /// 把時間軸上所有圖片素材（GIF 除外）探一遍、進快取。
+  /// 只在 HDR 合成需要時叫（[build] 的 hdrOut）；每張只探一次，
+  /// 檔案換了（大小/修改時間變）才重探。探不到（平台不支援、
+  /// iOS < 17、讀不到檔）不進快取＝當 SDR，之後還有機會重試
+  static Future<void> probeHdrStills(TimelineModel tl) async {
+    final paths = <String>{
+      for (final s in tl.sources)
+        if (s.kind == ClipKind.image && !s.isGif) s.path,
+    };
+    for (final p in paths) {
+      var size = -1;
+      var mtime = -1;
+      try {
+        final st = await File(p).stat();
+        size = st.size;
+        mtime = st.modified.millisecondsSinceEpoch;
+      } catch (_) {}
+      final hit = _hdrStillCache[p];
+      if (hit != null && hit.size == size && hit.mtime == mtime) continue;
+      bool? hdr;
+      final dbg = debugHdrProbe;
+      if (dbg != null) {
+        hdr = await dbg(p);
+      } else {
+        hdr = (await HdrPhotoExport.probe(p))?.hdr;
+      }
+      if (hdr == null) continue;
+      _hdrStillCache[p] = (size: size, mtime: mtime, hdr: hdr);
+    }
   }
 
   /// 用時間軸組一份合成。組不起來（平台不支援、素材有問題）回 null
@@ -496,11 +588,16 @@ class CompPlayer {
     mosaics.sort((a, b) => (a['track'] as int).compareTo(b['track'] as int));
     // 墊在影片下層的圖片/GIF：烘進合成（跟原生匯出同一套欄位，
     // Swift 端組 CILayerSpec/CIGifSpec）。時間是時間軸秒數
+    // HDR 合成：先探哪些圖片是 HDR 照片（進快取），烘的集合與 payload
+    // 的 'hdr' 旗標才是同一份判定。呼叫端組建完成後再算
+    // bakedImageIds（同樣傳 hdrOut）就會看到同一個快取
+    if (hdrOut) await probeHdrStills(tl);
     final baked = bakedImageIds(
       tl,
       wmStart: wmStart,
       wmEnd: wmEnd,
       hiddenTracks: hiddenTracks,
+      hdrOut: hdrOut,
     );
     final stills = <Map<String, dynamic>>[];
     for (final c in tl.clips) {
@@ -511,6 +608,9 @@ class CompPlayer {
       stills.add({
         'path': src.path,
         if (src.isGif) 'gif': true,
+        // HDR 照片（探測過）：原生端在 HDR 合成裡展開（expandToHDR），
+        // 不用再讀一次檔頭。沒這個鍵＝原生端自己探
+        if (hdrOut && !src.isGif && isHdrStill(src.path)) 'hdr': true,
         'start': c.offset,
         'end': c.end > stillEnd ? stillEnd : c.end,
         'track': c.track,

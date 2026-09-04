@@ -350,6 +350,57 @@ final class CIGifSpec {
   }
 }
 
+/// 靜態圖層（圖片素材）的載入：預覽的 CompPlayer.build 跟匯出的
+/// runExport（layered）共用這一個入口，兩邊的色彩／方向才是同一套。
+///
+/// 色彩：CIImage(contentsOf:) 保留檔案的 ICC（iPhone 照片是 Display P3），
+/// 進工作空間（延伸線性 sRGB）時由 CI 轉換——跟原本
+/// UIImage(contentsOfFile:).cgImage → CIImage(cgImage:) 一樣有標記，
+/// 這一步本來就沒有掉色（沒有標記的 PNG，例如 Flutter 裁切存的那份，
+/// ImageIO 兩條路都當 sRGB）。
+///
+/// 方向：applyOrientationProperty 把 EXIF 方向烘進像素。原本 .cgImage
+/// 拿的是未轉正的點陣（UIImage 只把方向記在 imageOrientation），
+/// 而 Flutter 那份（dart:ui）是轉正過的——多選匯入的 JPEG 帶 EXIF 方向
+/// 時，烘進合成的那份會躺著。轉正後 extent 原點可能不在 0,0，歸零，
+/// 後面的貼合／定位數學才是絕對座標（跟 HDRPhotoExport.export 同一手）。
+///
+/// HDR：[hdr]（這份合成走 HLG 輸出）而且這張有增益圖／10-bit
+///（HDRPhotoExport.probe 同一套判定；[hint] 是 Dart 端探過的結果，
+/// 有就不再讀檔頭）時用 expandToHDR 展開（iOS 17+）：像素可以超過 1.0
+///（線性、1.0＝SDR 白），高光才跟相簿裡看到的一樣亮。SDR 輸出一律
+/// 不展開——SDR 合成器的工作格式是 RGBA8，超過 1.0 的值只會被截掉。
+/// 展開失敗（CI 打不開）退回舊路：未轉正、不展開，至少有圖
+enum MCStillLoader {
+  static func load(path: String, hdr: Bool, hint: Bool? = nil) -> CIImage? {
+    var opts: [CIImageOption: Any] = [.applyOrientationProperty: true]
+    var expanded = false
+    if hdr, #available(iOS 17.0, *) {
+      let isHDR = hint ?? ((HDRPhotoExport.probe(path)["hdr"] as? Bool) ?? false)
+      if isHDR {
+        opts[.expandToHDR] = true
+        expanded = true
+      }
+    }
+    var loaded = CIImage(contentsOf: URL(fileURLWithPath: path), options: opts)
+    if loaded == nil, let ui = UIImage(contentsOfFile: path), let cg = ui.cgImage {
+      loaded = CIImage(cgImage: cg)
+      expanded = false
+    }
+    guard let img = loaded, img.extent.width > 1, img.extent.height > 1 else {
+      return nil
+    }
+    if expanded {
+      NSLog("[HDRStill] 展開 HDR：%@", (path as NSString).lastPathComponent)
+    }
+    let o = img.extent.origin
+    if abs(o.x) > 0.001 || abs(o.y) > 0.001 {
+      return img.transformed(by: CGAffineTransform(translationX: -o.x, y: -o.y))
+    }
+    return img
+  }
+}
+
 final class CILayerSpec {
   let trackID: CMPersistentTrackID  // Invalid ＝ 靜態圖層（still 有值）
   let still: CIImage?
@@ -3420,10 +3471,13 @@ final class AtomicFlag {
       // 照片素材：讀進來、照「貼合畫布 → 使用者變形」定位好，
       // 座標翻轉也在這裡一次做完（見 CIExportCompositor 的說明）
       for st in stillsIn {
+        // 載入（色彩／方向／HDR 展開）跟預覽同一個入口：wantHDR＝這份
+        // 成品走 HLG，HDR 照片才展開；SDR 成品照舊 8-bit 基底
         guard let path = st["path"] as? String,
-          let ui = UIImage(contentsOfFile: path), let cg = ui.cgImage
+          let loaded = MCStillLoader.load(
+            path: path, hdr: wantHDR, hint: st["hdr"] as? Bool)
         else { continue }
-        var img = CIImage(cgImage: cg)
+        var img = loaded
         let dw = img.extent.width
         let dh = img.extent.height
         guard dw > 1, dh > 1 else { continue }
@@ -5775,10 +5829,14 @@ final class CompPlayer: NSObject, FlutterTexture {
       // 畫布用預覽的 renderSize）。GIF 包成 CIGifSpec 逐幀取
       var stillSpecs: [(z: Int, order: Int, layer: CILayerSpec)] = []
       for (idx, st) in stills.enumerated() {
+        // 載入（色彩／方向／HDR 展開）跟匯出同一個入口。只有掛
+        // HDR 合成器（hdrOut && anyHDR，見 customVideoCompositorClass）
+        // 的合成才展開：SDR 合成器的 RGBA8 工作格式裝不下 1.0 以上
         guard let path = st["path"] as? String,
-          let ui = UIImage(contentsOfFile: path), let cg = ui.cgImage
+          let loaded = MCStillLoader.load(
+            path: path, hdr: hdrOut && anyHDR, hint: st["hdr"] as? Bool)
         else { continue }
-        var img = CIImage(cgImage: cg)
+        var img = loaded
         let dw = img.extent.width
         let dh = img.extent.height
         guard dw > 1, dh > 1 else { continue }
