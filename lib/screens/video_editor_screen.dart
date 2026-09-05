@@ -1582,8 +1582,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 這份合成烘進去的圖片片段 id（合成新鮮時預覽不再重畫它們）
   Set<int> _compBakedStills = const {};
 
-  /// 單一張烘進合成的圖片，除了 px/py/scale/rotation 之外的簽章
-  /// （這四個欄位走 [_liveXformSync] 那條即時通道，原生端逐格用
+  /// 單一張烘進合成的圖片，除了 px/py/scale/rotation/opacity 之外的簽章
+  /// （這五個欄位走 [_liveXformSync] 那條即時通道，原生端逐格用
   /// [_xfSelId] 追的最新值畫，不用等重組）。鍵＝片段 id，值＝上次
   /// 烘定時的簽章；跟現在算出來的對得上，才能放心讓 Flutter 版
   /// 收手、信任原生畫面已經跟手——不然像是調色/裁切這種即時通道
@@ -1593,12 +1593,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   String _stillStructSig(TimelineClip c) {
     final src = _tl.sourceOf(c);
     return 'im${c.id}|${c.track}|${c.offset}|${c.end}|${c.mirror}'
-        '|${c.fadeIn}|${c.fadeOut}|${c.opacity}|${c.cropped}|${c.cropL}'
+        '|${c.fadeIn}|${c.fadeOut}|${c.cropped}|${c.cropL}'
         '|${c.cropT}|${c.cropW}|${c.cropH}|${src.path}|${src.isGif}'
         '|${c.color.hasColor ? c.color.matrix.join(',') : '-'}';
   }
 
-  /// 這張圖現在跟基準的差異是不是「只有位置/縮放/旋轉」——
+  /// 這張圖現在跟基準的差異是不是「只有位置/縮放/旋轉/透明度」——
   /// 是的話原生端已經（或這一格就會）用 [_liveXformSync] 送的
   /// liveXf 追上，Flutter 版可以放心不畫，讓原生那份（更準、
   /// 零延遲）獨自撐著
@@ -2244,7 +2244,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     final key =
-        '${c.track}|${c.offset}|${c.scale}|${c.px}|${c.py}|${c.rotation}';
+        '${c.track}|${c.offset}|${c.scale}|${c.px}|${c.py}|${c.rotation}|${c.opacity}';
     if (c.id != _xfSelId || _xfLastSent == null) {
       // 剛選取（或剛重組完）：記基準就好。值沒變就不重產 vc，
       // 免得光是點選取就換一次合成指令
@@ -2264,6 +2264,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _xfLastAt = now;
     _xfLastSent = key;
+    _xfRevision++;
     unawaited(
       CompPlayer.setXform(
         z: c.track,
@@ -2272,6 +2273,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         px: c.px,
         py: c.py,
         rotation: c.rotation,
+        opacity: c.opacity,
       ),
     );
   }
@@ -2584,7 +2586,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     CompPlayer.onCompVisible = () {
       if (!mounted) return;
       // 新合成烘的就是最終值：即時變形的覆寫功成身退
-      unawaited(CompPlayer.clearXform());
+      if (_xfRevision == _xfBakedRevision) {
+        unawaited(CompPlayer.clearXform());
+      }
       if (_ovNativeShown != _ovNativePending) {
         setState(() => _ovNativeShown = _ovNativePending);
       }
@@ -5131,9 +5135,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   ///
   /// 本來點選取中的圖片素材沒有任何反應——文字、浮水印、馬賽克都
   /// 點得開自己的設定，只有圖片、影片沒有
+  bool _clipSliderActive = false;
+  int _xfRevision = 0;
+  int _xfBakedRevision = 0;
+
   Future<void> _editImageClip(TimelineClip clip) async {
     final src = _tl.sourceOf(clip);
     _pause();
+    _liveXformSync();
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -5143,6 +5152,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ),
       builder: (context) => StatefulBuilder(
         builder: (context, setSheet) {
+          void begin(double _) {
+            _clipSliderActive = true;
+            _liveXformSync();
+          }
+
+          void end(double _) {
+            _clipSliderActive = false;
+            _liveXformSync();
+            _compRefreshIfChanged();
+          }
+
           void change(VoidCallback f) {
             _pushUndo();
             setSheet(f);
@@ -5212,6 +5232,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   sliderRow(
                     label: '大小',
                     value: clip.scale,
+                    onChangeStart: begin,
+                    onChangeEnd: end,
                     min: 0.02,
                     max: 3.0,
                     curve: 1.8,
@@ -5228,6 +5250,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   sliderRow(
                     label: '旋轉',
                     value: clip.rotation,
+                    onChangeStart: begin,
+                    onChangeEnd: end,
                     min: -180,
                     max: 180,
                     onChanged: (v) => change(
@@ -5243,6 +5267,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   sliderRow(
                     label: '透明度',
                     value: clip.opacity,
+                    onChangeStart: begin,
+                    onChangeEnd: end,
                     min: 0.05,
                     max: 1,
                     onChanged: (v) => change(() => clip.opacity = v),
@@ -5255,7 +5281,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           );
         },
       ),
-    );
+    ).whenComplete(() {
+      _clipSliderActive = false;
+      if (mounted) _compRefreshIfChanged();
+    });
   }
 
   /// GIF 素材：從「我的 GIF」挑一個，或從相簿匯入。
@@ -7458,7 +7487,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 起手常常落在那裡面——烘完再看一次。讓一手：髒旗標留著，
   /// 停手 350ms 後 [_compRebuildTick] 再來（圖已進快取，幾乎不用等）
   bool _compYieldToGesture() {
-    if (!_wmGestureOn && !_scrubbing && !_lifting && !_tlPinching) return false;
+    if (!_wmGestureOn &&
+        !_scrubbing &&
+        !_lifting &&
+        !_tlPinching &&
+        !_clipSliderActive) {
+      return false;
+    }
     Diag.ev('合成重建讓給滑桿');
     _compRebuildTimer?.cancel();
     _compRebuildTimer = Timer(
@@ -7537,6 +7572,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 : _tl.sources[i].workPath == null))
           i,
     };
+    _xfBakedRevision = _xfRevision;
     final made = await CompPlayer.build(
       _tl,
       texture: !Diag.playerLayer.value,
@@ -7608,9 +7644,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 對齊原生換手的 1.5 秒逾時
     _ovNativePending = made.wmLive && ovMaps.isNotEmpty;
     // 新合成烘的就是現在的變形值：即時變形的基準重取
-    _xfLastSent = null;
+    if (_xfRevision == _xfBakedRevision) _xfLastSent = null;
+    final xformRevision = _xfBakedRevision;
     Timer(const Duration(milliseconds: 1700), () {
-      if (!mounted || _comp != made) return;
+      if (!mounted || _comp != made || _xfRevision != xformRevision) return;
       unawaited(CompPlayer.clearXform());
       if (_ovNativeShown != _ovNativePending) {
         setState(() => _ovNativeShown = _ovNativePending);

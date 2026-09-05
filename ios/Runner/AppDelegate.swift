@@ -402,11 +402,10 @@ enum MCStillLoader {
     if expanded {
       NSLog("[HDRStill] 展開 HDR：%@", (path as NSString).lastPathComponent)
     }
-    // 反 OOTF 只在 HLG 合成時套；套不套由探針決定（強制覆寫優先）。
+    // HLG 合成分別校正白基準與 OOTF；探針同時驗證白色及中灰。
     // 展開過的 HDR 照片也套：它的線性值一樣是「顯示光」（1.0＝SDR 白、
     // 增益圖往上乘），要修的是 CI 寫 HLG 碼那一步，跟 SDR 圖同一個病
-    let img =
-      (hdr && (inverseOotf ?? hlgProbe().apply)) ? inverseHlgOotf(raw) : raw
+    let img = hdr ? prepareForHLG(raw, inverseOotf: inverseOotf) : raw
     let o = img.extent.origin
     if abs(o.x) > 0.001 || abs(o.y) > 0.001 {
       return img.transformed(by: CGAffineTransform(translationX: -o.x, y: -o.y))
@@ -424,6 +423,49 @@ enum MCStillLoader {
 
   /// 線性 0.18 的中灰乘 Y^(1/γ−1) 之後應得的線性值：0.18^(1/1.2)＝0.239
   static let correctedMidGrey: Double = pow(0.18, 1.0 / hlgSystemGamma)
+
+  /// Measure the output transfer separately from its white level. A single
+  /// grey sample cannot distinguish a gamma error from a reference-white error.
+  struct HlgTransfer {
+    let sceneReferred: Bool
+    let whiteGain: Double
+  }
+
+  static func hlgScene(_ code: Double) -> Double {
+    let a = 0.17883277
+    let b = 1 - 4 * a
+    let c = 0.5 - a * log(4 * a)
+    return code <= 0.5 ? code * code / 3 : (exp((code - c) / a) + b) / 12
+  }
+
+  static func transfer(greyCode: Double, whiteCode: Double) -> HlgTransfer? {
+    guard greyCode.isFinite, whiteCode.isFinite,
+      greyCode > 0, greyCode < whiteCode, whiteCode <= 1 else { return nil }
+    let white = hlgScene(whiteCode)
+    let power = log(hlgScene(greyCode) / white) / log(0.18)
+    let scene = abs(power - 1) < 0.04
+    guard scene || abs(power - 1 / hlgSystemGamma) < 0.04 else { return nil }
+    // SDR reference white -> 75% HLG (BT.2408). Use the measured transfer
+    // exponent so display-referred output is not given inverse OOTF twice.
+    let gain = pow(hlgScene(0.75) / white, 1 / power)
+    guard gain.isFinite, gain >= 0.05, gain <= 16 else { return nil }
+    return HlgTransfer(sceneReferred: scene, whiteGain: gain)
+  }
+
+  static func scaleLinear(_ image: CIImage, gain: Double) -> CIImage {
+    image.applyingFilter("CIColorMatrix", parameters: [
+      "inputRVector": CIVector(x: CGFloat(gain), y: 0, z: 0, w: 0),
+      "inputGVector": CIVector(x: 0, y: CGFloat(gain), z: 0, w: 0),
+      "inputBVector": CIVector(x: 0, y: 0, z: CGFloat(gain), w: 0)
+    ])
+  }
+
+  static func prepareForHLG(_ image: CIImage, inverseOotf: Bool? = nil) -> CIImage {
+    let probe = hlgProbe()
+    let corrected = (inverseOotf ?? probe.apply)
+      ? applyOotf(image, method: probe.method) : image
+    return scaleLinear(corrected, gain: probe.whiteGain)
+  }
 
   /// 反 OOTF 的三條做法（自檢挑第一條真的動的；見 [runProbe]）
   enum OotfMethod: String {
@@ -529,13 +571,15 @@ enum MCStillLoader {
 
   /// 中灰探針的結果（一個行程量一次；見 [hlgProbe]）
   struct HlgProbe {
+    /// Linear RGB gain, independent of alpha and the inverse-OOTF decision.
+    var whiteGain: Double = 1
     /// 探針本身可信：色彩空間建得出來、線性讀回 ≈0.180
     let ok: Bool
     /// 線性工作空間讀回的中灰（應 0.180）
     let linear: Double
     /// Core Image 把線性 0.180 寫成的 HLG 碼
     let code: Double
-    /// 碼 < 0.407（0.378 與 0.436 的中點）＝場景參考
+    /// 中灰／白色還原成場景線性後的比值，辨識是否需要反 OOTF
     let sceneReferred: Bool
     /// 自檢後真的動的那條反 OOTF 路（.disabled＝三條都不動）
     let method: OotfMethod
@@ -576,7 +620,7 @@ enum MCStillLoader {
   private static func hlgLine(_ p: HlgProbe, override: Bool?) -> String {
     guard p.ok else { return "\(p.reading)→反OOTF 不套" }
     func f3(_ v: Double) -> String { String(format: "%.3f", v) }
-    var s = "中灰線性\(f3(p.linear))→HLG碼\(f3(p.code))（\(p.reading)）"
+    var s = "中灰線性\(f3(p.linear))→HLG碼\(f3(p.code))（\(p.reading)；白基準增益\(f3(p.whiteGain))）"
     if let o = override {
       s += o ? "→反OOTF 強制開（" : "→反OOTF 強制關（"
       s += p.apply ? "自動會套" : "自動不套"
@@ -600,9 +644,9 @@ enum MCStillLoader {
   /// 色彩空間——CIExportCompositor 的 outCS 就是它）讀回：(1) 線性工作
   /// 空間的值、(2) CI 寫成的 HLG 碼。色彩空間或 CIColor 建不出來回 nil
   private static func renderGrey(
-    _ transform: (CIImage) -> CIImage
+    _ transform: (CIImage) -> CIImage, srgbValue: CGFloat = 0.4614
   ) -> (linear: Double, code: Double)? {
-    let g: CGFloat = 0.4614
+    let g = srgbValue
     guard #available(iOS 14.0, *),
       let lin = CGColorSpace(name: CGColorSpace.extendedLinearSRGB),
       let hlg = CGColorSpace(name: CGColorSpace.itur_2100_HLG),
@@ -625,24 +669,16 @@ enum MCStillLoader {
 
   /// 中灰探針（健康報告「中灰探針」那行的資料）。
   ///
-  /// 線性 0.180 的中灰，CI 寫成 HLG 碼會是多少，決定圖片素材在 HLG
-  /// 合成裡的中間調對不對（影片是 HLG→線性→HLG 來回抵銷，只有圖片是
-  /// 從線性空間插進來的）：
-  ///   0.378＝純反 OETF（場景參考、基準白＝碼 0.75）：顯示端再套 BT.2100
-  ///         的 OOTF，圖片中間調暗約半檔（顯示光 0.18→0.128）→ 該套反 OOTF
-  ///   0.436＝含 BT.2100 OOTF（顯示參考）：圖片正確 → 不套
-  ///   0.325＝顯示參考、但 SDR 白對到 100 nit 而不是 203：整體暗一檔，
-  ///         是比例問題不是 γ 問題；反 OOTF 只補得回一部分（0.325→0.366）。
-  ///         按門檻仍算場景參考、照套，報告那行標「非預期」
-  ///   0.672＝以峰值正規化（線性 1.0＝碼 1.0）：另一種病，門檻上算顯示參考
-  /// 門檻：碼 < 0.407（0.378 與 0.436 的中點）＝場景參考。
+  /// 同時量中灰與白色：先以兩者比值辨識轉換曲線，再將白色對齊
+  /// HLG 0.75。舊版只看中灰 <0.407，會把「白基準偏暗」誤當 gamma
+  /// 問題；即使透明度 100%，白底仍灰，而且多套了一次反 OOTF。
   ///
   /// 自檢：同一顆中灰再走一次反 OOTF 路，線性應從 0.180 變成 ≈0.239
   ///（±0.01）。沒動＝那條路在這個 OS 上是死的（CIKL kernel 編不過、
   /// CIGammaAdjust 把負指數夾掉……），依序試 kernel → 內建亮度係數鏈 →
   /// 逐通道正指數；三條都不動就停用校正、報告那行明說。
   /// 探針本身先要可信：線性讀回不是 0.180（±0.01）就不判定、不快取。
-  /// 最多八張 1×1 的渲染（探針一趟兩張，自檢每種寫法各兩張），一個行程一次
+  /// 校正後再讀回白色及中灰驗證；通過才快取，一個行程一次。
   private static func runProbe() -> HlgProbe {
     func failed(_ why: String) -> HlgProbe {
       HlgProbe(
@@ -657,8 +693,7 @@ enum MCStillLoader {
         "探針異常：線性讀回" + String(format: "%.3f", plain.linear)
           + "（應0.180），不判定")
     }
-    // HLG 碼也要落在物理上可能的區間：那趟 RGBA16 render 要是沒寫入
-    // （讀回 0）或吐 NaN，< 0.407 會把它判成場景參考、套校正、還快取起來。
+    // HLG 碼也要落在物理上可能的區間，避免把未寫入或 NaN 當成樣本。
     // 文件上合理的讀值 0.325／0.378／0.436／0.672 全在區間內；NaN 兩邊
     // 比較都不成立，一樣落到 failed
     guard plain.code > 0.2, plain.code < 0.9 else {
@@ -666,19 +701,13 @@ enum MCStillLoader {
         "探針異常：HLG碼讀回" + String(format: "%.3f", plain.code)
           + "（應0.378或0.436），不判定")
     }
-    let scene = plain.code < 0.407
-    let reading: String
-    if abs(plain.code - 0.378) <= 0.02 {
-      reading = "場景參考"
-    } else if abs(plain.code - 0.436) <= 0.02 {
-      reading = "顯示參考"
-    } else if abs(plain.code - 0.325) <= 0.02 {
-      reading = "非預期：≈0.325＝顯示參考但SDR白=100nit，<0.407 按場景參考處理"
-    } else {
-      reading =
-        "非預期讀值，0.378＝場景參考／0.436＝顯示參考；"
-        + (scene ? "<0.407 按場景參考處理" : "≥0.407 按顯示參考處理")
-    }
+    guard let white = renderGrey({ $0 }, srgbValue: 1),
+      abs(white.linear - 1) <= 0.01,
+      let mapping = transfer(greyCode: plain.code, whiteCode: white.code)
+    else { return failed("白色／中灰轉換不符合可校正曲線，不判定") }
+    let scene = mapping.sceneReferred
+    let reading = (scene ? "場景參考" : "顯示參考")
+      + String(format: "；白HLG碼%.3f→0.750", white.code)
     var method = OotfMethod.disabled
     var corrected = plain.linear
     var tried: [String] = []
@@ -695,11 +724,24 @@ enum MCStillLoader {
         break
       }
     }
-    return HlgProbe(
+    // Check the complete conversion, including reference-white gain. Never
+    // cache an adjustment which only fixes grey while leaving white incorrect.
+    func correctedImage(_ image: CIImage) -> CIImage {
+      scaleLinear(scene ? applyOotf(image, method: method) : image,
+                  gain: mapping.whiteGain)
+    }
+    guard let finalWhite = renderGrey(correctedImage, srgbValue: 1),
+      let finalGrey = renderGrey(correctedImage),
+      abs(finalWhite.code - 0.75) < 0.01,
+      abs(hlgScene(finalGrey.code) / hlgScene(0.75) - correctedMidGrey) < 0.01
+    else { return failed("白色／中灰校正後自檢未通過，不套用") }
+    var result = HlgProbe(
       ok: true, linear: plain.linear, code: plain.code, sceneReferred: scene,
       method: method, corrected: corrected,
       apply: scene && method != .disabled, reading: reading,
       tried: tried.joined(separator: "／"))
+    result.whiteGain = mapping.whiteGain
+    return result
   }
 }
 
@@ -962,6 +1004,13 @@ final class CIExportInstruction: NSObject, AVVideoCompositionInstructionProtocol
 }
 
 class CIExportCompositor: NSObject, AVVideoCompositing {
+  /// CIColorMatrix operates on unpremultiplied colors. Scaling RGB as well
+  /// as alpha darkens the source a second time when it is composited.
+  static func applyingOpacity(_ image: CIImage, opacity: Double) -> CIImage {
+    image.applyingFilter("CIColorMatrix", parameters: [
+      "inputAVector": CIVector(x: 0, y: 0, z: 0, w: CGFloat(min(1, max(0, opacity))))
+    ])
+
   /// HDR 輸出模式（見 CIExportCompositorHDR）：來源不做色調映射、
   /// 輸出 10-bit HLG。SDR（預設）＝原本的 8-bit 709
   var hdrOut: Bool { false }
@@ -1789,6 +1838,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           // 捏合時只能等 350ms 後的重組（使用者回報「圖片素材放大縮小
           // 不夠跟手」的根）
           var rot = layer.rotation
+          var opacity = layer.opacity
           if let lx = lx, lx.z == layer.z,
             abs(lx.start - layer.start) < 0.02
           {
@@ -1813,6 +1863,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             img = img.transformed(
               by: flipCanvas.concatenating(extra).concatenating(flipCanvas))
             rot = lx.rotation
+            opacity = min(1, max(0, lx.opacity))
           }
           // 裁切：transform 沒有旋轉成分，貼上畫布是軸對齊的方框，
           // 直接照 extent 的比例切窗。比例是左上原點，CI 是左下——
@@ -1839,18 +1890,9 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           if let m = layer.colorMatrix {
             img = self.applyColor(img, m)
           }
-          let a = layer.alpha(at: t) * layer.opacity
+          let a = layer.alpha(at: t) * opacity
           if a < 0.999 {
-            // 淡入淡出＝RGBA 一起乘（premultiplied 直接壓係數）：
-            // 疊在下層畫面上就是正確的交叉淡化，疊在黑底上等同變暗
-            img = img.applyingFilter(
-              "CIColorMatrix",
-              parameters: [
-                "inputRVector": CIVector(x: CGFloat(a), y: 0, z: 0, w: 0),
-                "inputGVector": CIVector(x: 0, y: CGFloat(a), z: 0, w: 0),
-                "inputBVector": CIVector(x: 0, y: 0, z: CGFloat(a), w: 0),
-                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: CGFloat(a)),
-              ])
+            img = Self.applyingOpacity(img, opacity: a)
           }
           out = img.cropped(to: canvasRect).composited(over: out)
           drawnCount += 1
@@ -2715,7 +2757,8 @@ final class AtomicFlag {
           scale: a["scale"] as? Double ?? 1,
           px: a["px"] as? Double ?? 0.5,
           py: a["py"] as? Double ?? 0.5,
-          rotation: a["rotation"] as? Double ?? 0)
+          rotation: a["rotation"] as? Double ?? 0,
+          opacity: a["opacity"] as? Double ?? 1)
         CIExportCompositor.setLiveXform(ov)
         if p.liveCIOn {
           p.nudgeRedrawIfPaused()
@@ -5409,6 +5452,7 @@ struct CompLiveXform {
   let px: Double
   let py: Double
   let rotation: Double
+  let opacity: Double
 }
 
 final class CompPlayer: NSObject, FlutterTexture {

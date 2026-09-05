@@ -273,8 +273,25 @@ class WatermarkRenderer {
     // 畫布比例（null＝跟照片一樣）：照片置中 contain 貼在黑底
     // 畫布上，之後所有座標與馬賽克取樣都以畫布為準（跟預覽同一套）
     double? canvasAspect,
+    String? sourcePath,
   }) async {
-    final codec = await ui.instantiateImageCodec(photoBytes);
+    // On mobile the engine reads the source directly; no full-file copy over
+    // the Dart heap. Byte input remains available for web and existing callers.
+    ui.ImmutableBuffer? buffer;
+    ui.ImageDescriptor? descriptor;
+    ui.Codec codec;
+    try {
+      if (sourcePath != null) {
+        buffer = await ui.ImmutableBuffer.fromFilePath(sourcePath);
+        descriptor = await ui.ImageDescriptor.encoded(buffer);
+        codec = await descriptor.instantiateCodec();
+      } else {
+        codec = await ui.instantiateImageCodec(photoBytes);
+      }
+    } finally {
+      descriptor?.dispose();
+      buffer?.dispose();
+    }
     final frame = await codec.getNextFrame();
     codec.dispose();
     final decoded = frame.image;

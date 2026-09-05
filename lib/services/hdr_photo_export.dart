@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb, visibleForTesting;
@@ -12,6 +13,7 @@ import 'diagnostics.dart';
 import 'hdr_photo_temp_io.dart'
     if (dart.library.js_interop) 'hdr_photo_temp_web.dart';
 import 'watermark_renderer.dart';
+import 'batch_overlay_cache.dart';
 
 /// HDR 照片的批次匯出（iOS 17+，原生端 markcut/photo 通道）。
 ///
@@ -93,17 +95,22 @@ class HdrPhotoExport {
     double overlayGain = 1.0,
     String album = '浮水印',
     String? name,
+    BatchOverlayCache? overlayCache,
   }) async {
     if (!probe.hdr) return '來源不是 HDR';
     if (probe.w < 2 || probe.h < 2) return '照片尺寸探不到';
     final geo = photoCanvasGeometry(probe.w, probe.h, canvasAspect);
     Uint8List? overlay;
     if (settings.hasAnyMark) {
-      overlay = await WatermarkRenderer.renderOverlayPng(
-        settings,
-        geo.canvasW,
-        geo.canvasH,
+      Future<Uint8List> render() => WatermarkRenderer.renderOverlayPng(
+        settings, geo.canvasW, geo.canvasH,
       );
+      overlay = overlayCache == null
+          ? await render()
+          : await overlayCache.get(
+              '${geo.canvasW}|${geo.canvasH}|${jsonEncode(settings.toJson())}',
+              render,
+            );
     }
     final dir = await (debugTempDir?.call() ??
         getTemporaryDirectory().then((d) => d.path));

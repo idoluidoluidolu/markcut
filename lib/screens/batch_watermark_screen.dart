@@ -13,6 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
 import '../services/export_eta.dart';
+import '../services/batch_overlay_cache.dart';
 import '../services/native_frames.dart';
 import '../services/photo_export.dart';
 import '../services/photo_thumbs.dart';
@@ -533,7 +534,12 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         }
         if (t.isNotEmpty) bytes = t.first;
       } else {
-        bytes = await f.readAsBytes();
+        final preview = await probePhoto(
+          path: kIsWeb ? null : f.path,
+          readBytes: f.readAsBytes,
+          longSide: 1440,
+        );
+        bytes = preview?.thumb;
       }
     } catch (_) {}
     if (!mounted || _previewIndex != i) return;
@@ -852,6 +858,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     // 下一張已經在讀檔、解碼、畫。後段最多一張在飛——一張 12MP 的
     // raw 就是 48MB，堆兩張起來舊機器會被 jetsam 收掉
     Future<void>? tail;
+    final overlays = BatchOverlayCache();
     for (var i = 0; i < _items.length; i++) {
       if (_stopRequested) break;
       current = i;
@@ -872,7 +879,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
           final ok = await _exportVideo(f, _effectiveOf(i), (p) {
             overall.value = (i + p) / total;
             eta.noteProgress(p);
-          });
+          }, overlays);
           finished(i, ok);
         } else {
           // 來源是 HDR 照片（iOS 17+）：走原生 HDR 路，輸出 10-bit HEIC。
@@ -885,6 +892,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
             final err = await HdrPhotoExport.exportToGallery(
               srcPath: f.path,
               probe: hp,
+              overlayCache: overlays,
               settings: _effectiveOf(i),
               canvasAspect: _canvasRatio.value,
               quality: _jpegQuality,
@@ -895,10 +903,11 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
               continue;
             }
           }
-          final bytes = await f.readAsBytes();
+          final bytes = kIsWeb ? await f.readAsBytes() : Uint8List(0);
           final image = await WatermarkRenderer.renderPhotoImage(
             bytes,
             _effectiveOf(i),
+            sourcePath: kIsWeb ? null : f.path,
             // 畫布比例：照片置中、黑底補齊（跟預覽一致）
             canvasAspect: _canvasRatio.value,
           );
@@ -956,6 +965,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     XFile f,
     WatermarkSettings wm,
     void Function(double) onProgress,
+    BatchOverlayCache overlays,
   ) async {
     final c = makeVideoController(f.path, system: true);
     try {
@@ -988,7 +998,10 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
 
     Uint8List? wmPng;
     if (wm.hasAnyMark) {
-      wmPng = await WatermarkRenderer.renderOverlayPng(wm, ow, oh);
+      wmPng = await overlays.get(
+        '$ow|$oh|${jsonEncode(wm.toJson())}',
+        () => WatermarkRenderer.renderOverlayPng(wm, ow, oh),
+      );
     }
     // 來源是 HDR 就保留 HDR（HEVC HLG，跟單支編輯器同一條原生路）
     //——以前批次一律走 SDR 色調映射，成品比原片淡（實測回報）

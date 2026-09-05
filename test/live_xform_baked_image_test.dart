@@ -19,6 +19,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:markcut/models/timeline.dart';
 import 'package:markcut/screens/video_editor_screen.dart';
 import 'package:markcut/services/diagnostics.dart';
+import 'package:markcut/services/comp_player.dart';
+import 'package:markcut/widgets/timeline_editor.dart';
 
 Future<void> _tick(WidgetTester t, [int frames = 10, int ms = 40]) async {
   for (var i = 0; i < frames; i++) {
@@ -80,9 +82,7 @@ void main() {
   });
 
   testWidgets('烘進合成的圖片：捏合中送 setXform（跟手），不用等重組', (t) async {
-    await t.pumpWidget(
-      const MaterialApp(home: VideoEditorScreen(blank: true)),
-    );
+    await t.pumpWidget(const MaterialApp(home: VideoEditorScreen(blank: true)));
     await _tick(t, 5);
 
     final debugTimeline = VideoEditorScreen.debugTimeline;
@@ -141,6 +141,39 @@ void main() {
     await t.tapAt(selectPoint);
     await t.pump();
 
+    // 再點選取中的圖片開啟面板。透明度要走同一張原生圖層，最後一值
+    // 必須送到，不能等整份合成重建才出現。
+    int? imageId;
+    debugTimeline((tl) => imageId = tl.clips.last.id);
+    t.widget<TimelineEditor>(find.byType(TimelineEditor)).onTapSelectedClip!(
+      imageId!,
+    );
+    await _tick(t, 10);
+    expect(find.text('透明度'), findsOneWidget);
+    final opacitySlider = find.byType(Slider).last;
+    final slider = t.widget<Slider>(opacitySlider);
+    slider.onChangeStart!(slider.value);
+    slider.onChanged!(0.5);
+    await _tick(t, 2);
+    expect(xformCalls.last['opacity'], 0.5);
+    slider.onChanged!(0.94);
+    await _tick(t, 2);
+    expect(xformCalls.last['opacity'], 0.94);
+    CompPlayer.onCompVisible?.call();
+    await t.pump();
+    expect(xformCalls.last['opacity'], 0.94);
+    // 跨過舊的 1.7 秒清理計時器，不能抹掉正在調整的覆寫。
+    final callsBeforeHold = xformCalls.length;
+    await _tick(t, 50);
+    expect(
+      xformCalls.skip(callsBeforeHold).where((c) => c['clear'] == true),
+      isEmpty,
+    );
+    slider.onChangeEnd!(0.94);
+    Navigator.of(t.element(opacitySlider)).pop();
+    await _tick(t, 10);
+    xformCalls.clear();
+
     // 兩指捏合放大：東西一旦選上了，「選取路由」疊在最上層、整塊預覽區
     // 的拖曳／捏合都只作用在被選中的素材上（見 video_editor_screen.dart
     // 「選取路由」那段），這裡改回畫面正中央捏合沒問題
@@ -179,12 +212,8 @@ void main() {
     await _tick(t, 100);
   });
 
-  testWidgets('沒烘進合成的圖片（壓在影片之上）：捏合不送 setXform，SDR 那條路不變', (
-    t,
-  ) async {
-    await t.pumpWidget(
-      const MaterialApp(home: VideoEditorScreen(blank: true)),
-    );
+  testWidgets('沒烘進合成的圖片（壓在影片之上）：捏合不送 setXform，SDR 那條路不變', (t) async {
+    await t.pumpWidget(const MaterialApp(home: VideoEditorScreen(blank: true)));
     await _tick(t, 5);
 
     final debugTimeline = VideoEditorScreen.debugTimeline;

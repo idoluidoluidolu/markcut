@@ -371,10 +371,7 @@ class CompPlayer {
       for (final c in tl.clips)
         if (tl.sourceOf(c).kind == ClipKind.image &&
             !hiddenTracks.contains(c.track) &&
-            (c.track <= top ||
-                mosaicAbove(c) ||
-                underWm(c) ||
-                hdrPhoto(c)) &&
+            (c.track <= top || mosaicAbove(c) || underWm(c) || hdrPhoto(c)) &&
             c.offset < compEnd)
           c.id,
     };
@@ -726,6 +723,7 @@ class CompPlayer {
     required double px,
     required double py,
     required double rotation,
+    double opacity = 1,
   }) async {
     try {
       return await _ch.invokeMethod<bool>('setXform', {
@@ -735,6 +733,7 @@ class CompPlayer {
             'px': px,
             'py': py,
             'rotation': rotation,
+            'opacity': opacity,
           }) ??
           false;
     } catch (_) {
