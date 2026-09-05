@@ -12,17 +12,23 @@ import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'crop_screen.dart';
+import '../models/watermark_settings.dart';
+import '../services/collage_compose.dart';
 import '../services/file_reader.dart';
-import '../nav.dart';
+import '../services/photo_export.dart';
 import '../theme.dart';
 import '../widgets/watermark_layer.dart';
-import 'photo_editor_screen.dart';
+import '../widgets/watermark_panel.dart';
 
-/// 宮格拼圖：把多張照片拼成一張（2/4/6/9 宮格），
-/// 拼完直接進照片編輯器上浮水印。
+/// 照片拼圖：一個畫面、三個分頁（拼圖／浮水印／匯出），跟影片編輯器的
+/// 剪輯／浮水印／匯出同一套。拼圖分頁排照片（2/4/6/9 宮格或自由排版）、
+/// 浮水印分頁在同一個預覽上疊浮水印（共用的 WatermarkPanel＋
+/// WatermarkLayer，接法照批次浮水印那一頁）、匯出分頁把「拼圖＋浮水印」
+/// 一次合成存相簿。不再交給照片編輯器、沒有「完成」鈕（使用者指定：
+/// 乾淨拼圖就好）。
 /// 畫布比例可選（1:1/4:5/3:4/16:9/9:16）、格子等分、照片置中裁滿（cover）；
 /// 拖曳格子互換位置、點一下鎖定後可調構圖（右上角鈕換照片），
-/// 也能開純格線（調線寬、選顏色）。
+/// 也能開純格線（調線寬、選顏色）。空格子隨時允許，合成時留透明。
 /// 拼圖的草稿鍵（個人頁「未完成的拼圖」讀這裡）
 const kCollageDraftKey = 'collage_draft_v1';
 
@@ -52,7 +58,8 @@ const _kMaxCells = 30;
 /// 而輸出畫布最多 2400、單格最多幾百 px，畫質綽綽有餘
 const _kDecodeLongSide = 1600;
 
-class _CollageScreenState extends State<CollageScreen> {
+class _CollageScreenState extends State<CollageScreen>
+    with SingleTickerProviderStateMixin {
   /// 已解碼的照片。換掉之後不再被任何格子用到的會被釋放並留 null，
   /// 索引保持穩定（_order 存的是這裡的索引）
   final List<ui.Image?> _images = [];
@@ -76,8 +83,9 @@ class _CollageScreenState extends State<CollageScreen> {
   /// 選取中的格子（-1 = 沒有）：選中後可拖曳移動、雙指縮放調整構圖
   int _selCell = -1;
 
-  /// 每格的取景（縮放倍率＋來源像素平移）
-  List<_CellFit> _fits = [];
+  /// 每格的取景（縮放倍率＋來源像素平移；數學在 collage_compose.dart，
+  /// 預覽跟匯出同一段）
+  List<CollageCellFit> _fits = [];
 
   // 雙指縮放
   final Map<int, Offset> _pts = {};
@@ -125,7 +133,7 @@ class _CollageScreenState extends State<CollageScreen> {
   bool _free = false;
 
   /// 自由模式的照片方塊（畫的順序＝疊的順序，後面的在上面）
-  final List<_FreeItem> _items = [];
+  final List<CollageFreeItem> _items = [];
 
   /// 自由模式選取中的方塊（-1 = 沒有）
   int _selItem = -1;
@@ -146,17 +154,83 @@ class _CollageScreenState extends State<CollageScreen> {
     ('9:16', 9 / 16),
   ];
 
-  bool _building = false;
+  // ===== 分頁：拼圖／浮水印／匯出（跟影片編輯器的剪輯／浮水印／匯出同一套）=====
+
+  static const _kTabCollage = 0;
+  static const _kTabWatermark = 1;
+  static const _kTabExport = 2;
+
+  late final TabController _tabs = TabController(length: 3, vsync: this);
+
+  int get _tab => _tabs.index;
+
+  /// 換分頁：拼圖分頁上的選取、按住、拖曳全部收掉。浮水印／匯出分頁上
+  /// 拼圖本身不吃手勢，殘留的亮框會讓人以為還能動。
+  /// 三個分頁永遠都能切（照片還沒放也能先調浮水印，跟影片編輯器一樣）
+  void _onTabChanged() {
+    if (!mounted) return;
+    _cancelHold();
+    setState(() {
+      _selCell = -1;
+      _selItem = -1;
+      _fDrag = null;
+      _dragFrom = -1;
+      _dragPos = null;
+      _dragOver = -1;
+    });
+  }
+
+  // ===== 浮水印：整張拼圖一組（預覽與面板的接法照批次浮水印那一頁）=====
+
+  final _wm = WatermarkSettings();
+
+  /// 被選浮水印部件的框（畫在裁切外，拖出畫面也看得到位置）
+  final _wmFrameInfo = ValueNotifier<WmFrameInfo?>(null);
+
+  /// 點預覽上的浮水印時，叫下面的面板捲到對應的設定區塊
+  final _wmPanelCtrl = WatermarkPanelController();
+
+  /// 選取中的部件：選了圖片就鎖定圖片，拖曳／縮放都只動它
+  WmPart _wmPart = WmPart.none;
+
+  /// 被選部件還活著嗎（存在、非平鋪）；不活一律當沒選
+  WmPart get _wmPartAlive {
+    final t = _wm.text;
+    final lg = _wm.logo;
+    return switch (_wmPart) {
+      WmPart.text when t.enabled && !t.tiled && t.text.trim().isNotEmpty =>
+        WmPart.text,
+      WmPart.logo when lg.enabled && !lg.tiled => WmPart.logo,
+      _ => WmPart.none,
+    };
+  }
+
+  void _clearWmSel() {
+    if (_wmPart != WmPart.none) setState(() => _wmPart = WmPart.none);
+  }
+
+  // ===== 匯出 =====
+
+  bool _exporting = false;
+
+  /// 成功匯出過。跟影片、批次同一條規矩（batch_watermark_screen 的
+  /// _exportedOk）：匯出成功過就不再問「要不要保留草稿」，
+  /// 靜靜留一份走人；沒匯出過才問
+  bool _exportedOk = false;
 
   @override
   void initState() {
     super.initState();
+    _tabs.addListener(_onTabChanged);
     _load();
   }
 
   @override
   void dispose() {
     _cancelHold();
+    _tabs.dispose();
+    _wmFrameInfo.dispose();
+    _wmPanelCtrl.dispose();
     for (final img in _images) {
       img?.dispose();
     }
@@ -233,19 +307,34 @@ class _CollageScreenState extends State<CollageScreen> {
           'h': t.rect.height,
         },
     ],
+    // 整張拼圖那一組浮水印一起存：續作時浮水印要跟著回來
+    'wm': _wm.toJson(),
     'savedAt': DateTime.now().toIso8601String(),
   });
 
   Future<void> _saveDraft() async {
     try {
+      // 先在同步這一段把內容組好：匯出成功後關頁那條路是 unawaited
+      // 呼叫的，await 之後才讀 state 欄位太晚（跟批次同一個寫法）
+      final text = _draftJson();
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(kCollageDraftKey, _draftJson());
+      await prefs.setString(kCollageDraftKey, text);
     } catch (_) {}
   }
 
   /// 從草稿把照片與排法還原。照片不在了就略過並講清楚；
   /// 一張都讀不回來回 false，退回一般載入（空盤）
   Future<bool> _restoreDraft(Map<String, dynamic> r) async {
+    // 浮水印先還原：照片就算都不在了，調好的浮水印也不該跟著蒸發。
+    // 不換掉 _wm 物件（面板與預覽綁的是同一個參照），整組搬進去
+    final wm = r['wm'];
+    if (wm is Map) {
+      try {
+        _wm.copyMarksFrom(
+          WatermarkSettings.fromJson(Map<String, dynamic>.from(wm)),
+        );
+      } catch (_) {}
+    }
     try {
       final paths = (r['photos'] as List? ?? []);
       final map = <int, int>{}; // 草稿裡的索引 → 現在的索引
@@ -295,7 +384,7 @@ class _CollageScreenState extends State<CollageScreen> {
       );
       final fs = (r['fits'] as List? ?? []);
       _fits = List.generate(_cellCount, (n) {
-        final f = _CellFit();
+        final f = CollageCellFit();
         if (n < fs.length && fs[n] is Map) {
           final m = fs[n] as Map;
           f.zoom = ((m['z'] as num?)?.toDouble() ?? 1.0).clamp(1.0, 8.0);
@@ -310,7 +399,7 @@ class _CollageScreenState extends State<CollageScreen> {
         final ni = map[(e['img'] as num?)?.toInt() ?? -1];
         if (ni == null) continue;
         _items.add(
-          _FreeItem(
+          CollageFreeItem(
             img: ni,
             rect: ui.Rect.fromLTWH(
               ((e['l'] as num?)?.toDouble() ?? 0.1).clamp(-0.5, 1.5),
@@ -327,6 +416,18 @@ class _CollageScreenState extends State<CollageScreen> {
     } catch (_) {
       return false;
     }
+  }
+
+  /// 返回鍵／返回手勢：匯出成功過就靜靜留草稿走人（跟影片、批次的
+  /// _handleBack 同一條規矩）；其餘走離開保護
+  void _handleBack() {
+    if (_exportedOk) {
+      // 匯出成功過的不再問：草稿留著，之後想改再從個人頁續作
+      unawaited(_saveDraft());
+      Navigator.of(context).pop();
+      return;
+    }
+    unawaited(_confirmLeave());
   }
 
   /// 離開保護：畫布上有照片就問一下（跟其他編輯畫面同一套）
@@ -417,7 +518,7 @@ class _CollageScreenState extends State<CollageScreen> {
     });
     _fits = List.generate(
       _cellCount,
-      (n) => n < _fits.length ? _fits[n] : _CellFit(),
+      (n) => n < _fits.length ? _fits[n] : CollageCellFit(),
     );
   }
 
@@ -464,7 +565,7 @@ class _CollageScreenState extends State<CollageScreen> {
         _images.add(img);
         _srcPaths.add(f.path);
         _order[slot] = _images.length - 1;
-        _fits[slot] = _CellFit();
+        _fits[slot] = CollageCellFit();
         filled++;
       } catch (_) {
         failedNames.add(f.name);
@@ -523,7 +624,7 @@ class _CollageScreenState extends State<CollageScreen> {
         _images.add(img);
         _srcPaths.add(f.path);
         _order[cell] = _images.length - 1;
-        _fits[cell] = _CellFit();
+        _fits[cell] = CollageCellFit();
         _selCell = cell;
         // 被換掉的那張若沒有別的格子在用就釋放，
         // 不然連換幾張就是好幾十 MB 掛在那裡等到離開才放
@@ -567,7 +668,7 @@ class _CollageScreenState extends State<CollageScreen> {
         for (var i = 0; i < _cellCount; i++) {
           if (_imgAt(i) == null) continue;
           _items.add(
-            _FreeItem(
+            CollageFreeItem(
               img: _order[i],
               rect: ui.Rect.fromLTWH(
                 (i % _cols) / _cols,
@@ -605,7 +706,7 @@ class _CollageScreenState extends State<CollageScreen> {
         final h = (w * _canvasAspect / a).clamp(0.15, 0.8);
         final off = 0.04 * (_items.length % 5);
         _items.add(
-          _FreeItem(
+          CollageFreeItem(
             img: _images.length - 1,
             rect: ui.Rect.fromLTWH(
               (0.5 - w / 2 + off).clamp(0.0, 1.0 - w),
@@ -728,157 +829,108 @@ class _CollageScreenState extends State<CollageScreen> {
     });
   }
 
-  /// 這一格目前的取景窗（來源圖片座標）。cover 基準：
-  /// zoom=1 剛好蓋滿格子，只能再放大；平移夾在圖片範圍內。
-  /// 預覽跟合成都用這個算，所見即所得
-  (double, double) _srcSize(ui.Image img, _CellFit f, double cellAspect) {
-    final iw = img.width.toDouble();
-    final ih = img.height.toDouble();
-    double sw, sh;
-    if (iw / ih > cellAspect) {
-      sh = ih / f.zoom;
-      sw = sh * cellAspect;
-    } else {
-      sw = iw / f.zoom;
-      sh = sw / cellAspect;
-    }
-    return (math.min(sw, iw), math.min(sh, ih));
-  }
+  /// 合成用的排法快照（清單直接引用畫面上的那幾份，不複製）
+  CollageLayout _layout() => CollageLayout(
+    free: _free,
+    cols: _cols,
+    rows: _rows,
+    order: _order,
+    fits: _fits,
+    items: _items,
+    canvasAspect: _canvasAspect,
+    lines: _lines,
+    gapN: _gapN,
+    lineColor: _lineColor,
+  );
 
-  /// 把平移夾回「圖片還蓋得滿格子」的範圍。
-  /// 只在 _srcRect 裡夾的話，pan 本身會無上限累積
-  void _clampFit(ui.Image img, _CellFit f, double cellAspect) {
-    final (sw, sh) = _srcSize(img, f, cellAspect);
-    final mx = (img.width - sw) / 2;
-    final my = (img.height - sh) / 2;
-    f.panX = f.panX.clamp(-mx, math.max(0.0, mx));
-    f.panY = f.panY.clamp(-my, math.max(0.0, my));
-  }
+  /// 畫布上有沒有照片（宮格：有格子放了照片；自由：有方塊）。
+  /// 空格子隨時允許，只有「一張都沒有」才擋匯出
+  bool get _hasPhotos => _free ? _items.isNotEmpty : _filled > 0;
 
-  ui.Rect _srcRect(ui.Image img, _CellFit f, double cellAspect) {
-    final iw = img.width.toDouble();
-    final ih = img.height.toDouble();
-    // _srcSize 已經把取景窗夾在圖片內（web 的繪圖引擎對出界很嚴格）
-    final (sw, sh) = _srcSize(img, f, cellAspect);
-    // clamp 的上限不能是負的（浮點誤差會讓 iw-sw 變 -0.0001 直接炸）
-    final mx = (iw - sw) > 0 ? iw - sw : 0.0;
-    final my = (ih - sh) > 0 ? ih - sh : 0.0;
-    var cx = (iw - sw) / 2 + f.panX;
-    var cy = (ih - sh) / 2 + f.panY;
-    cx = cx.clamp(0.0, mx);
-    cy = cy.clamp(0.0, my);
-    return ui.Rect.fromLTWH(cx, cy, sw, sh);
-  }
-
-  /// 合成一張 2048×2048 的拼圖，交給照片編輯器
-  Future<void> _done() async {
-    if (_building) return;
-    if (_free) {
-      if (_items.isEmpty) {
-        showHint(context, '先加幾張照片再合成', error: true);
-        return;
-      }
-    } else if (_order.contains(-1)) {
-      showHint(context, '還有空格子：點「＋」補照片，或換個宮格數', error: true);
+  /// 匯出：先問格式（JPEG／PNG，跟照片、批次同一個視窗，只問這一個），
+  /// 點了格式就直接匯出（選擇即確認，不再多一層）
+  Future<void> _confirmExport() async {
+    if (_exporting) return;
+    if (!_hasPhotos) {
+      showHint(context, '先加幾張照片再匯出', error: true);
       return;
     }
-    setState(() => _building = true);
-    // 讓「合成中…」先畫出來再開始重活（PNG 編碼在 web 會卡主執行緒）
+    final fmt = await askPhotoFormat(context);
+    if (fmt == null || !mounted) return;
+    await _export(jpeg: fmt == 'jpg');
+  }
+
+  /// 拼圖＋浮水印一次合成（透明處保持透明：不畫白底，見
+  /// collage_compose.dart），走照片共用的編碼＋存相簿那條路
+  ///（photo_export.dart），完成後跟照片／批次一樣問下一步
+  Future<void> _export({required bool jpeg}) async {
+    if (_exporting || !_hasPhotos) return;
+    setState(() => _exporting = true);
+    // PopScope：不擋的話返回鍵會把進度框關掉，
+    // 匯出完成後那個 pop 就會把「拼圖頁本身」關掉，排好的全沒了
+    var dialogOpen = true;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const PopScope(
+        canPop: false,
+        child: AlertDialog(
+          title: Text('匯出中…'),
+          content: SizedBox(
+            height: 48,
+            child: Center(child: CircularProgressIndicator()),
+          ),
+        ),
+      ),
+    ).then((_) => dialogOpen = false);
+    // 讓進度框先畫出來再開始重活（PNG 編碼在 web 會卡主執行緒）
     await Future<void>.delayed(const Duration(milliseconds: 40));
-    // 這 40ms 裡使用者可能已經離開（照片都 dispose 了）或換了版型
     if (!mounted) return;
-    if (!_free && _order.contains(-1)) {
-      setState(() => _building = false);
+
+    String message;
+    String? note;
+    var ok = true;
+    try {
+      final image = await composeCollage(_layout(), _images, watermark: _wm);
+      // 編碼＋存檔跟照片、批次同一條路（原生 ImageIO 直出 → BMP 快路 →
+      // Skia PNG，見 photo_export.dart）；PNG 保留透明
+      final String ext;
+      try {
+        (message, ext) = await savePhotoImage(
+          image,
+          jpeg: jpeg,
+          quality: 92,
+          name: 'watermarker_${DateTime.now().millisecondsSinceEpoch}',
+        );
+      } finally {
+        image.dispose();
+      }
+      // 這句是次要說明，不要接在主訊息後面變成一長串括號
+      if (jpeg && ext == 'png') note = '這個裝置不支援 JPEG，已改存 PNG';
+    } catch (e) {
+      message = '匯出失敗：$e';
+      ok = false;
+    }
+    if (ok) {
+      // 匯出成功＝靜靜留一份草稿、之後離開不再問（跟批次同一條規矩）。
+      // 這裡就存：回主畫面那條路（popUntil）不會經過 _handleBack
+      _exportedOk = true;
+      unawaited(_saveDraft());
+    }
+
+    if (!mounted) return;
+    // 只有進度框還開著才 pop，不然會把拼圖頁本身關掉。
+    // rootNavigator：showDialog 開在 root，pop 也要對同一個 navigator
+    if (dialogOpen) Navigator.of(context, rootNavigator: true).pop();
+    setState(() => _exporting = false);
+    if (!ok) {
+      showHint(context, message, error: true);
       return;
     }
-    try {
-      final ui.Image image;
-      if (_free) {
-        // 自由排版：「透明」畫布，照疊放順序畫上去。方塊拉出畫布的
-        // 部分自然被裁掉（跟預覽看到的一樣）。長邊 2048，另一邊照比例。
-        // 不畫白底：沒被照片蓋到的地方就是透明，之後進浮水印、存 PNG
-        // 一路保留（朋友回報：透明的組圖按「加入浮水印」被強制上白底，
-        // 白底就是這裡烙下去的）
-        final cw = _canvasAspect >= 1 ? 2048.0 : 2048.0 * _canvasAspect;
-        final ch = _canvasAspect >= 1 ? 2048.0 / _canvasAspect : 2048.0;
-        final rec = ui.PictureRecorder();
-        final canvas = ui.Canvas(rec);
-        for (final it in _items) {
-          final img = (it.img >= 0 && it.img < _images.length)
-              ? _images[it.img]
-              : null;
-          if (img == null) continue;
-          final dst = ui.Rect.fromLTWH(
-            it.rect.left * cw,
-            it.rect.top * ch,
-            it.rect.width * cw,
-            it.rect.height * ch,
-          );
-          canvas.drawImageRect(
-            img,
-            _coverSrc(img, dst.width / dst.height),
-            dst,
-            ui.Paint()..filterQuality = ui.FilterQuality.high,
-          );
-        }
-        image = await rec.endRecording().toImage(cw.round(), ch.round());
-      } else {
-        // 畫布跟著格數長：格子多的時候固定 1600 會讓每格只剩百來 px。
-        // 上限 2400——再大 PNG 編碼在 web 會卡住主執行緒。
-        // 長邊照這個算，另一邊照選的畫布比例
-        final size = (math.max(_cols, _rows) * 420.0).clamp(1600.0, 2400.0);
-        final gw = _canvasAspect >= 1 ? size : size * _canvasAspect;
-        final gh = _canvasAspect >= 1 ? size / _canvasAspect : size;
-        final (count, cols, rows) = (_cellCount, _cols, _rows);
-        // 跟預覽同一套排法：照片貼齊排滿，格線最後疊上去畫
-        final cw = gw / cols;
-        final ch = gh / rows;
-        final rec = ui.PictureRecorder();
-        final canvas = ui.Canvas(rec);
-        for (var i = 0; i < count; i++) {
-          final img = _imgAt(i);
-          if (img == null) continue;
-          final dst = ui.Rect.fromLTWH(
-            (i % cols) * cw,
-            (i ~/ cols) * ch,
-            cw,
-            ch,
-          );
-          canvas.drawImageRect(
-            img,
-            _srcRect(img, _fits[i], cw / ch),
-            dst,
-            ui.Paint()..filterQuality = ui.FilterQuality.high,
-          );
-        }
-        if (_lines) {
-          final t = _gapN * gw;
-          final lp = ui.Paint()..color = ui.Color(_lineColor);
-          for (var c = 1; c < cols; c++) {
-            canvas.drawRect(ui.Rect.fromLTWH(c * cw - t / 2, 0, t, gh), lp);
-          }
-          for (var r = 1; r < rows; r++) {
-            canvas.drawRect(ui.Rect.fromLTWH(0, r * ch - t / 2, gw, t), lp);
-          }
-        }
-        image = await rec.endRecording().toImage(gw.round(), gh.round());
-      }
-
-      final data = await image.toByteData(format: ui.ImageByteFormat.png);
-      image.dispose();
-      if (!mounted || data == null) return;
-      final file = XFile.fromData(
-        data.buffer.asUint8List(),
-        name: 'collage.png',
-        mimeType: 'image/png',
-      );
-      // 用 push 保留拼圖頁：編輯器按上一步會回到宮格繼續調
-      await Navigator.push(
-        context,
-        editRoute(builder: (_) => PhotoEditorScreen(photo: file)),
-      );
-    } finally {
-      if (mounted) setState(() => _building = false);
+    // 成功：問要回主畫面還是留下來繼續改
+    final act = await askAfterExport(context, message, note: note);
+    if (act == 'home' && mounted) {
+      Navigator.of(context).popUntil((r) => r.isFirst);
     }
   }
 
@@ -1183,12 +1235,17 @@ class _CollageScreenState extends State<CollageScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // 鍵盤打開時（浮水印分頁打字）把預覽收起來：不收的話面板被擠成
+    // 一條縫，文字輸入框整個藏在鍵盤後面（批次那頁實測回報過）
+    final kbOpen = MediaQuery.of(context).viewInsets.bottom > 60;
+    final tab = _tab;
     // 不包 SwipeBack：拖曳格子互換會誤觸右滑返回、被踢回首頁。
-    // 離開保護：畫布上有照片就先問（保留草稿／不保留）
+    // 離開保護：匯出成功過靜靜留草稿；否則畫布上有照片就先問
+    //（保留草稿／捨棄，見 _handleBack）
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && mounted) unawaited(_confirmLeave());
+        if (!didPop && mounted) _handleBack();
       },
       child: Scaffold(
         backgroundColor: kBg,
@@ -1198,75 +1255,413 @@ class _CollageScreenState extends State<CollageScreen> {
             : SafeArea(
                 child: Column(
                   children: [
-                    Expanded(
-                      // 點畫布外的黑邊＝取消選取。窄長畫布（9:16）兩側
-                      // 一大片留白，點那裡沒反應會以為選取卡住了
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => setState(() {
-                          _selItem = -1;
-                          _selCell = -1;
-                        }),
-                        child: Center(
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: AspectRatio(
-                              // 畫布比例兩種模式共用（宮格＝把它等分）
-                              aspectRatio: _canvasAspect,
-                              child: _free ? _buildFree() : _buildGrid(),
-                            ),
-                          ),
-                        ),
+                    // 三個分頁共用同一個預覽（跟影片編輯器一樣，預覽永遠
+                    // 在上面）。浮水印分頁上 4 下 5：面板是主要工作區
+                    //（跟批次同一個比例）；另外兩頁底下只有一張卡，
+                    // 預覽拿剩下的全部
+                    if (!kbOpen)
+                      Expanded(
+                        flex: tab == _kTabWatermark ? 4 : 1,
+                        child: _buildPreview(tab),
                       ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
-                      child: _settingsCard(),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: Text(
-                        _free ? '最後選取的照片會在最上層' : '按住可拖曳交換照片位置；點一下鎖定 可調照片顯示位置',
-                        style: const TextStyle(fontSize: 11, color: kTextDim),
-                      ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
-                      // 還有空格就先幫人把照片放進來，不要讓他按了
-                      // 才被告知「還有空格子」。放滿了才換成完成
-                      child: _free
-                          ? (_items.isEmpty
-                                ? primaryAction(
-                                    label: '匯入照片',
-                                    icon: Icons.add_photo_alternate_outlined,
-                                    onPressed: _building
-                                        ? null
-                                        : _addFreePhotos,
-                                  )
-                                : primaryAction(
-                                    label: _building ? '合成中…' : '完成，上浮水印',
-                                    icon: Icons.check,
-                                    onPressed: _building ? null : _done,
-                                  ))
-                          : _order.contains(-1)
-                          ? primaryAction(
-                              label: _filled == 0
-                                  ? '匯入照片'
-                                  : '再匯入照片（還有 ${_order.where((k) => k < 0).length} 格）',
-                              icon: Icons.add_photo_alternate_outlined,
-                              onPressed: _building ? null : () => _fillCell(-1),
-                            )
-                          : primaryAction(
-                              label: _building ? '合成中…' : '完成，上浮水印',
-                              icon: Icons.check,
-                              onPressed: _building ? null : _done,
-                            ),
-                    ),
+                    if (tab == _kTabCollage) ..._collageTabBody(),
+                    if (tab == _kTabWatermark) _buildWatermarkTab(),
+                    if (tab == _kTabExport) _buildExportTab(),
                   ],
                 ),
               ),
+        bottomNavigationBar: _cols == 0 ? null : _bottomNav(),
       ),
     );
+  }
+
+  /// 底部分頁列：跟影片編輯器的剪輯／浮水印／匯出同一款（同樣式、
+  /// 同高度、同字級；選中轉琥珀）
+  Widget _bottomNav() => Container(
+    color: kBg,
+    child: SafeArea(
+      top: false,
+      child: TabBar(
+        controller: _tabs,
+        // 已經在匯出分頁再按一次「匯出」＝直接開始匯出（跟影片編輯器
+        // 同一個手感）。indexIsChanging＝從別的分頁切過來的那一下，
+        // 那不算第二次
+        onTap: (i) {
+          if (i == _kTabExport && !_tabs.indexIsChanging && !_exporting) {
+            _confirmExport();
+          }
+        },
+        indicatorColor: Colors.transparent,
+        dividerHeight: 0,
+        // 選中分頁跟浮水印面板同一套語言：字＋圖示直接轉琥珀
+        labelColor: kSelect,
+        unselectedLabelColor: kTextDim,
+        labelStyle: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.3,
+          fontFamily: 'NotoSansTC',
+        ),
+        unselectedLabelStyle: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w500,
+          letterSpacing: 0.3,
+          fontFamily: 'NotoSansTC',
+        ),
+        tabs: const [
+          Tab(
+            icon: Icon(Icons.grid_view, size: 20),
+            text: '拼圖',
+            height: 54,
+            iconMargin: EdgeInsets.only(bottom: 2),
+          ),
+          Tab(
+            icon: Icon(Icons.branding_watermark, size: 20),
+            text: '浮水印',
+            height: 54,
+            iconMargin: EdgeInsets.only(bottom: 2),
+          ),
+          Tab(
+            icon: Icon(Icons.ios_share, size: 20),
+            text: '匯出',
+            height: 54,
+            iconMargin: EdgeInsets.only(bottom: 2),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  /// 預覽：拼圖畫布＋浮水印圖層，三個分頁同一個。
+  /// 拼圖分頁：拼圖吃手勢（拖曳互換、鎖定調構圖），浮水印只是看得到；
+  /// 浮水印分頁反過來——拼圖不吃手勢，浮水印圖層可拖／捏合／點選
+  ///（選取框、置中輔助線、選取路由全照批次那一頁的接法）；匯出分頁純看
+  Widget _buildPreview(int tab) {
+    final wmTab = tab == _kTabWatermark;
+    final canvas = AspectRatio(
+      // 畫布比例兩種模式共用（宮格＝把它等分）
+      aspectRatio: _canvasAspect,
+      child: Stack(
+        fit: StackFit.expand,
+        // 不裁切：浮水印選取框要能畫到畫面外
+        clipBehavior: Clip.none,
+        children: [
+          IgnorePointer(
+            ignoring: tab != _kTabCollage,
+            child: _free ? _buildFree() : _buildGrid(),
+          ),
+          // 浮水印圖層：拼圖分頁只看不動（不然會跟格子的拖曳打架）
+          IgnorePointer(
+            ignoring: !wmTab,
+            child: WatermarkLayer(
+              settings: _wm,
+              // 選取框畫在裁切外（見 _wmFrameInfo）
+              frameNotifier: _wmFrameInfo,
+              onChanged: () => setState(() {}),
+              selectedPart: wmTab ? _wmPartAlive : WmPart.none,
+              onSelectPart: (p) {
+                setState(() => _wmPart = p);
+                _wmPanelCtrl.scrollTo(p);
+              },
+              panLocked: () => _pvPts.length >= 2,
+            ),
+          ),
+          if (wmTab) ...[
+            // 置中輔助線。在浮水印分頁裡永遠插著、不要用 if 增減：線一
+            // 出現會把後面手勢層的索引推掉，拖曳被中斷後又從已吸附的
+            // 中線重新開始，就再也拖不出來了（其他編輯畫面同一種寫法）
+            Positioned.fill(
+              child: CenterGuides(vertical: _btGuideV, horizontal: _btGuideH),
+            ),
+            // 浮水印選取框：畫在真實位置（拖出畫面也看得到）
+            Positioned.fill(child: WmFrameOverlay(_wmFrameInfo)),
+            // 選取路由：有部件被選取時，整個預覽的拖曳都只動被選的那個
+            // ——手指滑過另一個部件才不會把它一起拖走
+            if (_wmPartAlive != WmPart.none)
+              Positioned.fill(child: _wmSelectionRouter()),
+          ],
+        ],
+      ),
+    );
+    final body = GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      // 點畫布外的黑邊＝取消選取。窄長畫布（9:16）兩側一大片留白，
+      // 點那裡沒反應會以為選取卡住了。浮水印分頁取消的是部件選取
+      //（不取消的話另一個部件會永遠拖不動）
+      onTap: () {
+        if (wmTab) {
+          _clearWmSel();
+          return;
+        }
+        setState(() {
+          _selItem = -1;
+          _selCell = -1;
+        });
+      },
+      child: Center(
+        child: Padding(padding: const EdgeInsets.all(16), child: canvas),
+      ),
+    );
+    if (!wmTab) return body;
+    // 雙指縮放浮水印（跟照片、批次同一套，用 Listener 不搶單指拖曳）
+    return Listener(
+      onPointerDown: _pinchDown,
+      onPointerMove: _pinchMove,
+      onPointerUp: (e) => _pinchUp(e.pointer),
+      onPointerCancel: (e) => _pinchUp(e.pointer),
+      child: body,
+    );
+  }
+
+  /// 選取路由（照批次那頁）：有部件被選取時，整個預覽的拖曳都只動被選
+  /// 的那個。點空白＝取消選取
+  Widget _wmSelectionRouter() => LayoutBuilder(
+    builder: (context, box) => GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onTap: _clearWmSel,
+      onPanStart: (_) {
+        if (_pvPts.length >= 2) return;
+        _btRawX = null;
+        _btRawY = null;
+      },
+      onPanUpdate: (d) {
+        if (_pvPts.length >= 2) return;
+        final part = _wmPartAlive;
+        if (part != WmPart.text && part != WmPart.logo) return;
+        final mark = part == WmPart.text
+            ? (x: _wm.text.x, y: _wm.text.y)
+            : (x: _wm.logo.x, y: _wm.logo.y);
+        // 累加在「未吸附」的原始座標上，顯示值才吸中線
+        _btRawX ??= mark.x;
+        _btRawY ??= mark.y;
+        _btRawX = (_btRawX! + d.delta.dx / box.maxWidth).clamp(0.0, 1.0);
+        _btRawY = (_btRawY! + d.delta.dy / box.maxHeight).clamp(0.0, 1.0);
+        final sx = _snapC(_btRawX!);
+        final sy = _snapC(_btRawY!);
+        setState(() {
+          if (part == WmPart.text) {
+            _wm.text.x = sx;
+            _wm.text.y = sy;
+          } else {
+            _wm.logo.x = sx;
+            _wm.logo.y = sy;
+          }
+        });
+        _btSetGuides(sx, sy);
+      },
+      onPanEnd: (_) => _btClearGuides(),
+      onPanCancel: _btClearGuides,
+      child: const SizedBox.expand(),
+    ),
+  );
+
+  /// 拼圖分頁：設定卡＋一行提示。原本底下那顆「完成」／「匯入照片」
+  /// 大鈕拿掉了——上浮水印是隔壁分頁、匯出再隔壁，
+  /// 補照片點格子的「＋」（自由模式用卡上的「加照片」）
+  List<Widget> _collageTabBody() => [
+    Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+      child: _settingsCard(),
+    ),
+    Padding(
+      padding: const EdgeInsets.fromLTRB(16, 6, 16, 12),
+      child: Text(
+        _free ? '最後選取的照片會在最上層' : '按住可拖曳交換照片位置；點一下鎖定 可調照片顯示位置',
+        textAlign: TextAlign.center,
+        style: const TextStyle(fontSize: 11, color: kTextDim),
+      ),
+    ),
+  ];
+
+  /// 浮水印分頁：共用的設定面板（跟批次同一套接法）；
+  /// 底部疊一段漸層淡出，內容是淡出去、不是被底欄硬切
+  Widget _buildWatermarkTab() => Expanded(
+    flex: 5,
+    child: Column(
+      children: [
+        Container(height: 1, color: kBorder),
+        Expanded(
+          child: Stack(
+            children: [
+              WatermarkPanel(
+                controller: _wmPanelCtrl,
+                settings: _wm,
+                // 九宮格「貼邊」要知道畫布比例才夾得準
+                canvasAspect: _canvasAspect,
+                // 剛加的圖片直接選起來，可以馬上拖／縮放
+                onLogoAdded: () => setState(() => _wmPart = WmPart.logo),
+                // 面板裡點縮圖／文字＝畫面上也選它。沒有這一段，面板亮框
+                // 的圖片在預覽上拖不動：文字圖層畫在圖片之上且 opaque，
+                // 重疊處的手指全被文字吃掉，而「選取路由」又只在有選取
+                // 時才掛上來
+                onSelectPart: (p) => setState(() => _wmPart = p),
+                onChanged: () => setState(() {}),
+              ),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                height: 32,
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [kBg.withValues(alpha: 0), kBg],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+
+  /// 匯出分頁：跟影片編輯器的匯出分頁同一種列（標籤左、值右）＋
+  /// 同一顆匯出鈕。格式（JPEG／PNG）按下去才問，只問那一個
+  Widget _buildExportTab() {
+    final l = _layout();
+    final (w, h) = collageCanvasSize(l, collageLongSide(l));
+    final aspect = _kAspects
+        .firstWhere(
+          (a) => (a.$2 - _canvasAspect).abs() < 0.01,
+          orElse: () => ('自訂', _canvasAspect),
+        )
+        .$1;
+    final photos = _free ? _items.length : _filled;
+    Widget row(String label, String value, {bool divider = true}) => Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 15),
+      decoration: divider
+          ? const BoxDecoration(
+              border: Border(bottom: BorderSide(color: kBorder)),
+            )
+          : null,
+      child: Row(
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 13.5,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.3,
+              color: kText,
+            ),
+          ),
+          const SizedBox(width: 12),
+          // 值比標籤小一階也更淡：標籤是「這一列在講什麼」，值是內容
+          Expanded(
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                fontSize: 12.5,
+                height: 1.4,
+                color: kTextDim,
+                fontFeatures: [FontFeature.tabularFigures()],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          row('畫布', '$aspect·$w×$h'),
+          row('照片', photos == 0 ? '還沒放照片' : '$photos 張', divider: false),
+          const SizedBox(height: 14),
+          primaryAction(
+            label: '匯出',
+            onPressed: _exporting ? null : _confirmExport,
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ===== 預覽區雙指縮放浮水印（跟照片、批次同一套）=====
+  final Map<int, Offset> _pvPts = {};
+  double? _pvBaseDist;
+  double _pvBaseText = 0;
+  double _pvBaseLogo = 0;
+
+  void _pinchDown(PointerDownEvent e) {
+    _pvPts[e.pointer] = e.position;
+    if (_pvPts.length != 2) return;
+    final p = _pvPts.values.toList();
+    final d = (p[0] - p[1]).distance;
+    if (d <= 20) return;
+    _pvBaseDist = d;
+    _pvBaseText = _wm.text.sizeFrac;
+    _pvBaseLogo = _wm.logo.sizeFrac;
+  }
+
+  void _pinchMove(PointerMoveEvent e) {
+    if (!_pvPts.containsKey(e.pointer)) return;
+    _pvPts[e.pointer] = e.position;
+    if (_pvBaseDist == null || _pvPts.length < 2) return;
+    final p = _pvPts.values.toList();
+    final f = (p[0] - p[1]).distance / _pvBaseDist!;
+    setState(() {
+      final t = _wm.text;
+      final hasText = t.enabled && t.text.trim().isNotEmpty;
+      final hasLogo = _wm.logo.enabled;
+      // 有選取就只縮被選的那個（跟其他編輯畫面一致）；
+      // 都沒選而且兩個都在才一起縮
+      final part = _wmPartAlive;
+      final doText = hasText && (part != WmPart.logo || !hasLogo);
+      final doLogo = hasLogo && (part != WmPart.text || !hasText);
+      if (doText) t.sizeFrac = (_pvBaseText * f).clamp(0.015, 2.0);
+      if (doLogo) _wm.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
+    });
+  }
+
+  void _pinchUp(int pointer) {
+    _pvPts.remove(pointer);
+    if (_pvBaseDist != null && _pvPts.length < 2) _pvBaseDist = null;
+  }
+
+  // ===== 置中吸附與輔助線（跟影片／照片／批次同一套手感）=====
+  //
+  // 拖曳時記「未吸附」的原始座標：直接把吸完的值當下一刻的起點，
+  // 單次手指位移永遠小於吸附半徑，就再也拖不出中線了
+  double? _btRawX, _btRawY;
+  bool _btGuideV = false, _btGuideH = false;
+  bool _btSnapped = false;
+
+  double _snapC(double v) => (v - 0.5).abs() < 0.015 ? 0.5 : v;
+
+  void _btSetGuides(double x, double y) {
+    final v = x == 0.5, hh = y == 0.5;
+    if (v != _btGuideV || hh != _btGuideH) {
+      setState(() {
+        _btGuideV = v;
+        _btGuideH = hh;
+      });
+    }
+    final on = v || hh;
+    if (on != _btSnapped) {
+      _btSnapped = on;
+      if (on) HapticFeedback.selectionClick(); // 吸上去震一下
+    }
+  }
+
+  void _btClearGuides() {
+    _btRawX = null;
+    _btRawY = null;
+    _btSnapped = false;
+    if (_btGuideV || _btGuideH) {
+      setState(() {
+        _btGuideV = false;
+        _btGuideH = false;
+      });
+    }
   }
 
   Widget _buildGrid() {
@@ -1324,7 +1719,7 @@ class _CollageScreenState extends State<CollageScreen> {
                         child: CustomPaint(
                           painter: _CellPainter(
                             img: _imgAt(_dragFrom)!,
-                            src: _srcRect(
+                            src: collageSrcRect(
                               _imgAt(_dragFrom)!,
                               _fits[_dragFrom],
                               cw / ch,
@@ -1567,7 +1962,7 @@ class _CollageScreenState extends State<CollageScreen> {
 
   /// 選取框＋四個角點（都不吃事件：拖曳判斷在畫布那層做，
   /// 這裡吃掉的話拉角會變成拉不動）
-  List<Widget> _freeSelection(_FreeItem it, Size s) {
+  List<Widget> _freeSelection(CollageFreeItem it, Size s) {
     final r = Rect.fromLTWH(
       it.rect.left * s.width,
       it.rect.top * s.height,
@@ -1638,7 +2033,8 @@ class _CollageScreenState extends State<CollageScreen> {
       (i ~/ _cols) * (_gCh + _gG),
     );
     // 螢幕位移 → 來源像素位移的換算比
-    double dispScale() => cellW / _srcRect(img, fit, cellW / cellH).width;
+    double dispScale() =>
+        cellW / collageSrcRect(img, fit, cellW / cellH).width;
     return Listener(
       // 雙指縮放：判斷用「有沒有格子被選」而不是「這一格被選」——
       // 撐開時第二指多半落在隔壁格，用後者的話常常整個沒反應
@@ -1660,7 +2056,7 @@ class _CollageScreenState extends State<CollageScreen> {
           setState(() {
             sf.zoom = (_baseZoom * f).clamp(1.0, 4.0);
             final si = _imgAt(_selCell);
-            if (si != null) _clampFit(si, sf, cellW / cellH);
+            if (si != null) collageClampFit(si, sf, cellW / cellH);
           });
         }
       },
@@ -1716,7 +2112,7 @@ class _CollageScreenState extends State<CollageScreen> {
               fit.panY -= d.delta.dy / k;
               // 夾回可移動範圍：不夾的話拖到底之後還會一直累積，
               // 往回拖時要先抵銷那幾百 px，畫面看起來像卡住
-              _clampFit(img, fit, cellW / cellH);
+              collageClampFit(img, fit, cellW / cellH);
             });
           } else if (_dragFrom == i) {
             setState(() {
@@ -1761,7 +2157,7 @@ class _CollageScreenState extends State<CollageScreen> {
                   size: Size(cellW, cellH),
                   painter: _CellPainter(
                     img: img,
-                    src: _srcRect(img, fit, cellW / cellH),
+                    src: collageSrcRect(img, fit, cellW / cellH),
                   ),
                 ),
               ),
@@ -1827,15 +2223,6 @@ class _GridLinePainter extends CustomPainter {
       old.cols != cols || old.rows != rows || old.t != t || old.color != color;
 }
 
-/// 自由模式的一塊照片：哪張圖＋在畫布上的位置（0~1 比例座標，
-/// 可以稍微出畫布——出血構圖）
-class _FreeItem {
-  final int img;
-  ui.Rect rect;
-
-  _FreeItem({required this.img, required this.rect});
-}
-
 /// 自由模式進行中的手勢：corner -1＝整塊移動，0~3＝拉哪一角。
 /// 起手時記下方塊位置，之後只看指尖總位移（見 GIF 把手的教訓：
 /// 拿上一幀畫出來的值當基準會自己餵自己，抖）
@@ -1847,24 +2234,10 @@ class _FreeDrag {
   _FreeDrag({required this.corner, required this.start, required this.from});
 }
 
-/// 照片塞進某個長寬比的框時的取景窗（置中 cover，不變形）
-ui.Rect _coverSrc(ui.Image img, double aspect) {
-  final iw = img.width.toDouble();
-  final ih = img.height.toDouble();
-  double sw, sh;
-  if (iw / ih > aspect) {
-    sh = ih;
-    sw = sh * aspect;
-  } else {
-    sw = iw;
-    sh = sw / aspect;
-  }
-  return ui.Rect.fromLTWH((iw - sw) / 2, (ih - sh) / 2, sw, sh);
-}
-
-/// 自由模式的畫布：照清單順序畫（後面的疊上面）
+/// 自由模式的畫布：照清單順序畫（後面的疊上面）。
+/// 取景（置中 cover）跟匯出同一個算法：collageCoverSrc
 class _FreePainter extends CustomPainter {
-  final List<_FreeItem> items;
+  final List<CollageFreeItem> items;
   final List<ui.Image?> images;
 
   const _FreePainter({required this.items, required this.images});
@@ -1883,21 +2256,19 @@ class _FreePainter extends CustomPainter {
         it.rect.width * size.width,
         it.rect.height * size.height,
       );
-      canvas.drawImageRect(img, _coverSrc(img, dst.width / dst.height), dst, p);
+      canvas.drawImageRect(
+        img,
+        collageCoverSrc(img, dst.width / dst.height),
+        dst,
+        p,
+      );
     }
   }
 
-  // rect 是直接改在 _FreeItem 上的，新舊 painter 比不出差異——
+  // rect 是直接改在 CollageFreeItem 上的，新舊 painter 比不出差異——
   // 這頁只有拖曳時會 setState，每次都重畫是對的
   @override
   bool shouldRepaint(_FreePainter old) => true;
-}
-
-/// 每格的取景：cover 基準的縮放倍率（≥1）＋來源像素平移
-class _CellFit {
-  double zoom = 1;
-  double panX = 0;
-  double panY = 0;
 }
 
 /// 依取景窗畫出這一格的照片
