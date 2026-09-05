@@ -8,6 +8,7 @@
 // 這裡不模擬轉檔進度回報（那是原生端每 200ms 送一次的事，
 // 算術本身在 test/import_eta_test.dart 守）：第二支的讀數靠的是
 // 「第一支轉完」這個樣本，跟實機上第二支之後的情形一樣
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -19,8 +20,13 @@ import 'package:markcut/screens/video_editor_screen.dart';
 import 'package:markcut/services/export_eta.dart';
 import 'package:markcut/services/media_prep.dart';
 import 'package:markcut/services/work_files.dart';
+import 'package:markcut/services/diagnostics.dart';
+import 'package:markcut/widgets/timeline_editor.dart';
+import 'package:markcut/widgets/prep_gate_view.dart';
 
 late Directory _dir;
+Completer<void>? _holdWork;
+int _workStarted = 0;
 
 /// 每支素材：多長、假的原生端要轉多久
 const _videos = <String, ({double dur, int workMs})>{
@@ -114,6 +120,8 @@ void main() {
               'durSec': v?.dur ?? 5.0,
             };
           case 'toWorkFile':
+            _workStarted++;
+            await _holdWork?.future;
             final a = call.arguments as Map<Object?, Object?>;
             final src = a['src'] as String;
             final dest = a['dest'] as String;
@@ -134,6 +142,8 @@ void main() {
     MediaPrep.resetProbeCacheForTest();
     WorkFiles.resetForTest();
     ImportEta.resetLearnedTail();
+    _holdWork = null;
+    _workStarted = 0;
   });
 
   tearDownAll(() {
@@ -144,6 +154,61 @@ void main() {
     } catch (_) {}
   });
 
+  testWidgets('預設匯入：轉檔仍未完成時已可拖曳時間軸', (t) async {
+    t.view.physicalSize = const Size(1100, 2200);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    _holdWork = Completer<void>();
+    final oldLayer = Diag.playerLayer.value;
+    Diag.playerLayer.value = false;
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(const MethodChannel('markcut/comp'), (
+      call,
+    ) async {
+      if (call.method == 'available') return true;
+      if (call.method == 'build') {
+        return <String, dynamic>{
+          'textureId': 1,
+          'duration': 60.0,
+          'width': 1920.0,
+          'height': 1080.0,
+        };
+      }
+      return null;
+    });
+    addTearDown(() {
+      Diag.playerLayer.value = oldLayer;
+      messenger.setMockMethodCallHandler(
+        const MethodChannel('markcut/comp'),
+        null,
+      );
+      if (!_holdWork!.isCompleted) _holdWork!.complete();
+    });
+    await t.pumpWidget(
+      MaterialApp(
+        home: VideoEditorScreen(
+          videoPaths: [_p('first.mov'), _p('second.mov')],
+        ),
+      ),
+    );
+    await _settle(t, 40);
+    _swallowMediaKit(t);
+    expect(_workStarted, 1, reason: '背景轉檔已開始，而且仍被測試卡住');
+    expect(find.byType(PrepGateView), findsNothing);
+    expect(find.byType(TimelineEditor), findsOneWidget);
+    await t.drag(find.byType(TimelineEditor), const Offset(-150, 0));
+    await t.pump(const Duration(milliseconds: 300));
+    expect(find.byType(TimelineEditor), findsOneWidget);
+    expect(_holdWork!.isCompleted, false);
+    // Leave with a decode still in flight. Its completion must not touch UI.
+    await t.pumpWidget(const MaterialApp(home: SizedBox()));
+    _holdWork!.complete();
+    await _settle(t, 25);
+    await t.pump(const Duration(seconds: 5));
+    _swallowMediaKit(t);
+  });
+
   testWidgets('遮罩：估算中… → 量到倍速就變成倒數，X／N 跟著前進', (t) async {
     t.view.physicalSize = const Size(1100, 2200);
     t.view.devicePixelRatio = 1.0;
@@ -151,7 +216,10 @@ void main() {
 
     await t.pumpWidget(
       MaterialApp(
-        home: VideoEditorScreen(videoPaths: [_p('first.mov'), _p('second.mov')]),
+        home: VideoEditorScreen(
+          videoPaths: [_p('first.mov'), _p('second.mov')],
+          waitForPreparation: true,
+        ),
       ),
     );
 
