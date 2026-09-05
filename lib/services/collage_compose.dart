@@ -203,15 +203,24 @@ void drawCollage(
 /// [WatermarkRenderer.drawMarks]，跟預覽圖層同一段畫法）。
 /// [longSide] 不給就是 [collageLongSide]；測試給小一點驗像素。
 /// 回傳的圖要自己 dispose；傳進來的照片不碰
+/// [background]：先鋪一層底色再畫。JPEG 沒有透明，空格子總得是個顏色
+///（定黑）；PNG 不給＝空格留透明
 Future<ui.Image> composeCollage(
   CollageLayout l,
   List<ui.Image?> images, {
   WatermarkSettings? watermark,
   double? longSide,
+  ui.Color? background,
 }) async {
   final (w, h) = collageCanvasSize(l, longSide ?? collageLongSide(l));
   final rec = ui.PictureRecorder();
   final canvas = ui.Canvas(rec);
+  if (background != null) {
+    canvas.drawRect(
+      ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+      ui.Paint()..color = background,
+    );
+  }
   drawCollage(canvas, l, images, w.toDouble(), h.toDouble());
   if (watermark != null) {
     await WatermarkRenderer.drawMarks(

@@ -880,8 +880,8 @@ class _CollageScreenState extends State<CollageScreen>
     await _export(jpeg: fmt == 'jpg');
   }
 
-  /// 拼圖＋浮水印一次合成（透明處保持透明：不畫白底，見
-  /// collage_compose.dart），走照片共用的編碼＋存相簿那條路
+  /// 拼圖＋浮水印一次合成（PNG 透明處保持透明；JPEG 沒有透明，空格子
+  /// 鋪黑底，見 collage_compose.dart），走照片共用的編碼＋存相簿那條路
   ///（photo_export.dart），完成後跟照片／批次一樣問下一步
   Future<void> _export({required bool jpeg}) async {
     if (_exporting || !_hasPhotos) return;
@@ -911,7 +911,13 @@ class _CollageScreenState extends State<CollageScreen>
     String? note;
     var ok = true;
     try {
-      final image = await composeCollage(_layout(), _images, watermark: _wm);
+      final image = await composeCollage(
+        _layout(),
+        _images,
+        watermark: _wm,
+        // JPEG 沒有透明，空格子鋪黑；PNG 留透明（跟預覽的棋盤格說法一致）
+        background: jpeg ? const ui.Color(0xFF000000) : null,
+      );
       // 編碼＋存檔跟照片、批次同一條路（原生 ImageIO 直出 → BMP 快路 →
       // Skia PNG，見 photo_export.dart）；PNG 保留透明
       final String ext;
@@ -1945,7 +1951,7 @@ class _CollageScreenState extends State<CollageScreen>
           child: Container(
             decoration: BoxDecoration(border: Border.all(color: kBorder)),
             clipBehavior: Clip.antiAlias,
-            // 底改棋盤格＝把「這塊是透明的」講清楚：匯出就是透明 PNG
+            // 底改棋盤格＝把「這塊是透明的」講清楚：匯出 PNG 就是透明（JPEG 空格鋪黑）
             //（以前預覽用面板色、匯出卻烙白底，兩邊說法不一致）
             child: CustomPaint(
               painter: const CheckerPainter(),
@@ -2068,8 +2074,7 @@ class _CollageScreenState extends State<CollageScreen>
       (i ~/ _cols) * (_gCh + _gG),
     );
     // 螢幕位移 → 來源像素位移的換算比
-    double dispScale() =>
-        cellW / collageSrcRect(img, fit, cellW / cellH).width;
+    double dispScale() => cellW / collageSrcRect(img, fit, cellW / cellH).width;
     return Listener(
       // 雙指縮放：判斷用「有沒有格子被選」而不是「這一格被選」——
       // 撐開時第二指多半落在隔壁格，用後者的話常常整個沒反應

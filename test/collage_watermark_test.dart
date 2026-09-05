@@ -132,7 +132,9 @@ void main() {
     await _waitLoaded(t);
 
     // 分頁列：三格都在、順序固定、都在底部
-    final xs = [for (final l in ['拼圖', '浮水印', '匯出']) t.getCenter(_tab(l)).dx];
+    final xs = [
+      for (final l in ['拼圖', '浮水印', '匯出']) t.getCenter(_tab(l)).dx,
+    ];
     expect(xs[0] < xs[1] && xs[1] < xs[2], isTrue, reason: '順序要是 拼圖／浮水印／匯出');
     final screen = t.getRect(find.byType(Scaffold));
     expect(t.getCenter(_tab('拼圖')).dy, greaterThan(screen.bottom - 80));
@@ -341,6 +343,45 @@ void main() {
     red.dispose();
   });
 
+  test('空格子：不給底色留透明（PNG）、給黑底就是不透明黑（JPEG 用）', () async {
+    final red = await _img(const Color(0xFF802020), 100, 100);
+    final layout = CollageLayout(
+      free: true,
+      cols: 0,
+      rows: 0,
+      order: const [],
+      fits: const [],
+      items: [
+        CollageFreeItem(img: 0, rect: const Rect.fromLTWH(0, 0, 0.5, 0.5)),
+      ],
+      canvasAspect: 1,
+    );
+    const n = 100;
+    Future<List<int>> px(ui.Image im) async => (await im.toByteData(
+      format: ui.ImageByteFormat.rawRgba,
+    ))!.buffer.asUint8List();
+    final clear = await composeCollage(layout, [red], longSide: n.toDouble());
+    final black = await composeCollage(
+      layout,
+      [red],
+      longSide: n.toDouble(),
+      background: const ui.Color(0xFF000000),
+    );
+    final c = await px(clear), b = await px(black);
+    int o(int x, int y) => (y * n + x) * 4;
+    // 沒底色：空格透明（PNG 匯出就是這樣）
+    expect(c[o(75, 75) + 3], 0);
+    // 黑底：空格不透明純黑，照片那格跟沒底色時一模一樣
+    expect(b.sublist(o(75, 75), o(75, 75) + 4), [0, 0, 0, 255]);
+    expect(
+      b.sublist(o(25, 25), o(25, 25) + 4),
+      c.sublist(o(25, 25), o(25, 25) + 4),
+    );
+    for (final i in [clear, black, red]) {
+      i.dispose();
+    }
+  });
+
   test('輸出尺寸：自由 2048、宮格照格數 1600~2400、另一邊照畫布比例', () {
     CollageLayout l({
       bool free = false,
@@ -420,9 +461,7 @@ void main() {
     expect(t.takeException(), isNull);
   });
 
-  testWidgets('匯出：只問一個格式視窗、拼圖＋浮水印一次存相簿（空格透明）；匯出過離開不再問', (
-    t,
-  ) async {
+  testWidgets('匯出：只問一個格式視窗、拼圖＋浮水印一次存相簿（空格透明）；匯出過離開不再問', (t) async {
     SharedPreferences.setMockInitialValues({});
     // 相簿由 gal 套件寫入，測試裡接住它的通道拿到最後存出去的位元組
     Uint8List? saved;
@@ -635,7 +674,10 @@ void main() {
       WmPart.text,
       reason: '帶著選取一起過去',
     );
-    expect(t.widget<WmFrameOverlay>(find.byType(WmFrameOverlay)).info.value, isNotNull);
+    expect(
+      t.widget<WmFrameOverlay>(find.byType(WmFrameOverlay)).info.value,
+      isNotNull,
+    );
 
     // 回拼圖分頁，點遠離浮水印的角落（格子）：不會被切走
     await _goTab(t, '拼圖');
