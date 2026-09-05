@@ -13,8 +13,8 @@ import 'photo_editor_screen.dart';
 import 'profile_screen.dart';
 import 'video_editor_screen.dart';
 
-/// 首頁：logo ＋ 四張入口卡（浮水印／照片拼圖／GIF／影片編輯），
-/// 每一張直接進那個功能。以前是一顆「加入浮水印」先跳一個選單問
+/// 首頁：logo ＋ 四顆入口（浮水印／照片拼圖／GIF／影片編輯），
+/// 每一顆直接進那個功能。以前是一顆「加入浮水印」先跳一個選單問
 /// 「影片、照片、拼圖、GIF 還是空白專案」，現在少那一層。
 ///
 /// 「製作浮水印」（浮水印工作室）從首頁拿掉，走 個人中心 → 範本 → ＋
@@ -62,7 +62,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }.contains(ext);
   }
 
-  /// 四張入口共用的重入鎖：選取器（或推出去的頁）還開著就別再開第二個
+  /// 四顆入口共用的重入鎖：選取器（或推出去的頁）還開著就別再開第二個
   /// ——連點兩下會疊兩層
   bool _picking = false;
 
@@ -77,7 +77,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// 浮水印：相簿混選（影片、照片都行、可多選），不先問「影片還是照片」
-  ///（卡片上寫的「影片照片單支、批次快速上浮水印」）。
+  ///（使用者定的：「影片照片單支、批次快速上浮水印」）。
   /// 一個進單檔編輯器、多個問要接成一支還是各自上浮水印（見 _openBatch）。
   /// iOS 拿相簿原檔：image_picker 會把每張照片重壓成 JPEG，
   /// HEIC 變 8-bit、HDR 增益圖在這一步就沒了（見 pickMediaFiles）
@@ -116,7 +116,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   });
 
-  /// 影片編輯：不挑素材，直接開一條空的時間軸（卡片上寫的「開啟空軌道
+  /// 影片編輯：不挑素材，直接開一條空的時間軸（使用者定的：「開啟空軌道
   /// 編輯照片或影片」），照片、影片進去再加
   Future<void> _openBlank() => _guarded(() async {
     await Navigator.push(
@@ -301,19 +301,19 @@ class _HomeScreenState extends State<HomeScreen> {
           padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
           child: LayoutBuilder(
             builder: (context, c) {
-              // 四張卡加間距是固定的（372）；剩下的高度給 logo 跟上下留白。
-              // 手機直立（SE 的 375×667 起）都放得下完整的 logo；矮一點
-              //（超大字級）logo 等比縮小；連四張卡都放不下（橫向）就不畫
-              // logo、卡片自己捲——什麼高度都不會溢出
-              const cards = 4 * kHomeCardH + 3 * kHomeCardGap;
+              // 四顆按鈕加間距是固定的（260）；剩下的高度給 logo 跟上下
+              // 留白。手機直立（SE 的 375×667 起）都放得下完整的 logo；
+              // 矮一點（超大字級）logo 等比縮小；連四顆都放不下就不畫
+              // logo、按鈕自己捲——什麼高度都不會溢出
+              const buttons = 4 * kHomeBtnH + 3 * kHomeBtnGap;
               final spare = c.hasBoundedHeight
-                  ? c.maxHeight - cards
+                  ? c.maxHeight - buttons
                   : double.infinity;
               if (spare < 0) {
                 return SingleChildScrollView(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: _cards(),
+                    children: _buttons(),
                   ),
                 );
               }
@@ -325,7 +325,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   // logo 的高度位置＝上下這兩個 Spacer 的比例。
-                  // 卡片群本來就佔掉底部一大塊，所以「上下等分」看起來
+                  // 按鈕群本來就佔掉底部一大塊，所以「上下等分」看起來
                   // 已經略偏上了；再往上拉會變頭重腳輕
                   const Spacer(flex: 38),
                   Center(
@@ -345,7 +345,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                   const Spacer(flex: 32),
-                  ..._cards(),
+                  ..._buttons(),
                 ],
               );
             },
@@ -355,53 +355,54 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// 四張入口卡由上而下，中間隔 kHomeCardGap。全部靠底。
-  /// 說明文字是使用者親自定的，一字不改
-  List<Widget> _cards() => [
-    _HomeCard(
+  /// 四顆入口由上而下，中間隔 kHomeBtnGap。全部靠底。
+  /// 第一顆反白＝主要動作，其他三顆描邊（使用者挑的樣子）
+  List<Widget> _buttons() => [
+    _HomeButton(
+      primary: true,
       icon: Icons.branding_watermark_outlined,
       label: '浮水印',
-      sub: '影片照片單支、批次快速上浮水印',
       onTap: _pickMedia,
     ),
-    const SizedBox(height: kHomeCardGap),
-    _HomeCard(
+    const SizedBox(height: kHomeBtnGap),
+    _HomeButton(
       icon: Icons.grid_view_rounded,
       label: '照片拼圖',
-      sub: '快速組圖',
       onTap: _openCollage,
     ),
-    const SizedBox(height: kHomeCardGap),
-    _HomeCard(
-      icon: Icons.gif_box_outlined,
-      label: 'GIF',
-      sub: '影片轉成GIF',
-      onTap: _makeGif,
-    ),
-    const SizedBox(height: kHomeCardGap),
-    _HomeCard(
+    const SizedBox(height: kHomeBtnGap),
+    _HomeButton(icon: Icons.gif_box_outlined, label: 'GIF', onTap: _makeGif),
+    const SizedBox(height: kHomeBtnGap),
+    _HomeButton(
       icon: Icons.smart_display_outlined,
       label: '影片編輯',
-      sub: '開啟空軌道編輯照片或影片',
       onTap: _openBlank,
     ),
   ];
 }
 
-/// 首頁入口卡的高度、間距、圓角（版面算「放不放得下」也用這幾個數，見 build）。
-/// 改這裡四張一起變
-const double kHomeCardH = 84;
-const double kHomeCardGap = 12;
-const double kHomeCardRadius = 18;
+/// 首頁四顆按鈕的圓角。改這一個數字四顆一起變。
+/// 給一個夠大的值＝膠囊（全圓）：Skia 會自動把半徑夾到高度的一半。
+/// 想改回一般圓角就填 18 之類的實際值
+const double kHomeBtnRadius = 999;
 
-/// 卡片左邊那個淡灰底的圖示方塊：邊長、圓角、跟文字的間距。
-/// 方塊固定寬、貼卡片左緣，四張的圖示跟文字自然落在同一個 x
-const double kHomeTileSize = 44;
-const double kHomeTileRadius = 12;
-const double kHomeTileGap = 16;
+/// 按鈕高度與間距（版面算「放不放得下」也用這兩個數，見 build）
+const double kHomeBtnH = 56;
+const double kHomeBtnGap = 12;
 
-/// 圖示方塊裡的圖示大小
-const double kHomeTileIcon = 24;
+/// 「圖示＋文字」那一組的固定寬度。
+///
+/// 四顆的文字長短不一（「GIF」跟「照片拼圖」差很多），各自置中的話
+/// 圖示會左右飄；改成固定一個寬度、組內靠左、整組在膠囊裡置中，四個
+/// 圖示就落在同一個 x、四段文字也從同一個 x 起頭（使用者要的
+/// 「下面整齊一點」）。
+/// 128＝最寬的「照片拼圖」（20 圖示＋10 間距＋四個字約 68）再留系統
+/// 字級放大到 1.2 倍（main.dart 的上限）的餘裕
+const double kHomeBtnGroupW = 128;
+
+/// 圖示大小與它跟文字的間距（對齊的算式要用，見測試）
+const double kHomeBtnIcon = 20;
+const double kHomeBtnIconGap = 10;
 
 /// logo 的版面尺寸（home_logo.png 裁掉四周留白後的比例）
 const Size kHomeLogoSize = Size(190, 76);
@@ -409,90 +410,63 @@ const Size kHomeLogoSize = Size(190, 76);
 /// 縮小 logo 之前至少要留給它上下的一點喘息空間
 const double _kLogoAir = 24;
 
-/// 卡片右邊那個「>」：比 kLTextDim 再淡一階，只是提示可以點，不搶文字
-const Color _kChevron = Color(0xFFB0B0BA);
-
-/// 首頁入口卡：白底描邊、淡灰圖示方塊＋名稱＋一行說明＋右邊一個「>」。
-/// 四張同一個樣子——不反白任何一張（使用者定的：不要黑底）。
-/// 卡片本體是 Material（水波紋才畫得在白底上面，Container 會把它蓋掉）
-class _HomeCard extends StatelessWidget {
+/// 首頁按鈕：主鍵反白填滿、次鍵描邊，主次分明。
+/// 圖示＋文字是固定寬度的一組、組內靠左（見 kHomeBtnGroupW）。
+/// 外層是 Material（水波紋要畫在底色上面，包一層 Container 會蓋掉）
+class _HomeButton extends StatelessWidget {
+  final bool primary;
   final IconData icon;
   final String label;
-  final String sub;
   final VoidCallback onTap;
 
-  const _HomeCard({
+  const _HomeButton({
+    this.primary = false,
     required this.icon,
     required this.label,
-    required this.sub,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
+    final fg = primary ? kLBg : kLText;
     return Material(
-      color: kLCard,
+      color: primary ? kLAccent : Colors.transparent,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(kHomeCardRadius),
-        side: const BorderSide(color: kLBorder, width: 1.5),
+        borderRadius: BorderRadius.circular(kHomeBtnRadius),
+        side: primary
+            ? BorderSide.none
+            : const BorderSide(color: kLBorder, width: 1.5),
       ),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
         child: SizedBox(
-          height: kHomeCardH,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 18, 0),
-            child: Row(
-              children: [
-                Container(
-                  width: kHomeTileSize,
-                  height: kHomeTileSize,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: kLTile,
-                    borderRadius: BorderRadius.circular(kHomeTileRadius),
-                  ),
-                  child: Icon(icon, size: kHomeTileIcon, color: kLText),
-                ),
-                const SizedBox(width: kHomeTileGap),
-                Expanded(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // 名稱放不下（字級放大到極端）就淡出，不折行、
-                      // 不觸發溢出條紋
-                      Text(
-                        label,
-                        maxLines: 1,
-                        softWrap: false,
-                        overflow: TextOverflow.fade,
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 0.5,
-                          color: kLText,
-                        ),
+          height: kHomeBtnH,
+          child: Center(
+            child: SizedBox(
+              width: kHomeBtnGroupW,
+              child: Row(
+                children: [
+                  Icon(icon, size: kHomeBtnIcon, color: fg),
+                  const SizedBox(width: kHomeBtnIconGap),
+                  // 文字放不下（字級放大到極端）就淡出：不折行、不裁字，
+                  // 也不觸發 Row 的溢出條紋
+                  Expanded(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.fade,
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 1,
+                        color: fg,
                       ),
-                      const SizedBox(height: 3),
-                      // 說明最長那句在 SE 的寬度一行擠不下，讓它折成兩行
-                      //（84 高的卡兩行也放得下），再不夠才省略
-                      Text(
-                        sub,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 12.5,
-                          height: 1.3,
-                          color: kLTextDim,
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
-                ),
-                const Icon(Icons.chevron_right, size: 22, color: _kChevron),
-              ],
+                ],
+              ),
             ),
           ),
         ),

@@ -1,16 +1,15 @@
-// 首頁：四張入口卡（浮水印／照片拼圖／GIF／影片編輯），每一張直接進功能。
+// 首頁：四顆入口（浮水印／照片拼圖／GIF／影片編輯），每一顆直接進功能。
 //
 // 守的是：
-//   1. 四張的順序、名稱、說明（使用者親自定的文案，一字不差）、圖示，
-//      四張同一個樣子（白底描邊、沒有反白的那一張——使用者定的）——舊的
-//      「加入浮水印」「製作浮水印」不再出現，也沒有先問「影片還是照片」的選單
-//   2. 「下面整齊一點」（使用者的話）：四個圖示落在同一個 x、四段名稱
-//      跟說明也從同一個 x 起頭、右邊的「>」也在同一個 x；系統字級放大到
-//      1.2 倍照舊
-//   3. iPhone SE（375×667）放得下：不溢出、logo 完整、卡片貼底；
-//      更矮的畫面 logo 縮小、卡片不動；連卡片都放不下（橫向）就不畫
-//      logo、卡片自己捲
-//   4. 每一張點下去走的是對的選取器／對的頁：
+//   1. 四顆的順序、文案、圖示、主次（第一顆反白，使用者挑的樣子）——
+//      舊的「加入浮水印」「製作浮水印」不再出現，也沒有先問「影片還是
+//      照片」的選單，按鈕上也沒有說明文字
+//   2. 「下面整齊一點」（使用者的話）：四個圖示落在同一個 x、四段文字
+//      也從同一個 x 起頭，整組在膠囊裡置中；系統字級放大到 1.2 倍照舊
+//   3. iPhone SE（375×667）放得下：不溢出、logo 完整、按鈕貼底；
+//      更矮的畫面 logo 縮小、按鈕不動；連按鈕都放不下就不畫 logo、
+//      按鈕自己捲
+//   4. 每一顆點下去走的是對的選取器／對的頁：
 //        浮水印   → 相簿混選（影片、照片都行）→ 多個同類問「接成一支／串成
 //                   影片還是各自上浮水印」，混著選就直接進批次
 //        照片拼圖 → 不開選取器，直接推拼圖頁
@@ -47,9 +46,8 @@ const _pngB64 =
     'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGO4Y2ODFTEM'
     'LQkAXrdVAdmuFfUAAAAASUVORK5CYII=';
 
-/// 首頁四張，由上而下；說明是使用者親自定的文案，一字不差
+/// 首頁四顆，由上而下
 const _labels = ['浮水印', '照片拼圖', 'GIF', '影片編輯'];
-const _subs = ['影片照片單支、批次快速上浮水印', '快速組圖', '影片轉成GIF', '開啟空軌道編輯照片或影片'];
 const _icons = [
   Icons.branding_watermark_outlined,
   Icons.grid_view_rounded,
@@ -181,13 +179,12 @@ Future<void> _pump(WidgetTester t, {NavigatorObserver? spy}) async {
   await _settle(t);
 }
 
-/// 某一張卡本體（名稱往上找最近的 Material：卡片是 Material 畫的，
-/// 圖示方塊那個 Container 是它的兄弟不是祖先）
-Finder _card(String label) =>
+/// 某一顆膠囊本體（文字往上找最近的 Material）
+Finder _pill(String label) =>
     find.ancestor(of: find.text(label), matching: find.byType(Material)).first;
 
-/// 四張卡加間距的總高
-const _cardsH = 4 * kHomeCardH + 3 * kHomeCardGap;
+/// 四顆按鈕加間距的總高
+const _btnsH = 4 * kHomeBtnH + 3 * kHomeBtnGap;
 
 /// 模擬手機：邏輯 [w]×[h]、dpr 2、狀態列 20（SE 沒有瀏海也沒有 home 條）
 void _phone(WidgetTester t, double w, double h) {
@@ -251,11 +248,11 @@ void main() {
   });
 
   group('版面', () {
-    testWidgets('四張入口卡：順序、名稱、說明、圖示，四張同一個樣子', (t) async {
+    testWidgets('四顆入口：順序、文案、圖示、主次', (t) async {
       await _pump(t);
 
-      for (final s in const ['加入浮水印', '製作浮水印']) {
-        expect(find.text(s), findsNothing, reason: '舊的「$s」不該再出現在首頁');
+      for (final x in const ['加入浮水印', '製作浮水印']) {
+        expect(find.text(x), findsNothing, reason: '舊的「$x」不該再出現在首頁');
       }
       final ys = <double>[];
       for (var i = 0; i < 4; i++) {
@@ -263,70 +260,68 @@ void main() {
         final icon = find.byIcon(_icons[i]);
         expect(label, findsOneWidget, reason: '少了「${_labels[i]}」');
         expect(icon, findsOneWidget, reason: '「${_labels[i]}」的圖示不對');
-        // 圖示在卡片正中；名稱在中線上面、說明在中線下面
-        final mid = t.getCenter(_card(_labels[i])).dy;
-        expect(t.getCenter(icon).dy, moreOrLessEquals(mid, epsilon: 1));
-        expect(t.getCenter(label).dy, lessThan(mid));
-        expect(t.getCenter(find.text(_subs[i])).dy, greaterThan(mid));
+        // 圖示跟文字在同一列
+        expect(
+          t.getCenter(icon).dy,
+          moreOrLessEquals(t.getCenter(label).dy, epsilon: 1),
+        );
         ys.add(t.getCenter(label).dy);
       }
       for (var i = 1; i < 4; i++) {
         expect(ys[i] > ys[i - 1], isTrue, reason: '順序不對（由上而下量到 $ys）');
       }
 
-      // 卡片：84 高、間距 12、滿版（左右各 24）
+      // 膠囊：56 高、間距 12、滿版（左右各 24）
       final w = t.getSize(find.byType(MaterialApp)).width;
-      final cards = [for (final l in _labels) t.getRect(_card(l))];
-      for (final r in cards) {
-        expect(r.height, kHomeCardH);
+      final pills = [for (final l in _labels) t.getRect(_pill(l))];
+      for (final r in pills) {
+        expect(r.height, kHomeBtnH);
         expect(r.left, 24);
         expect(r.right, w - 24);
       }
       for (var i = 1; i < 4; i++) {
         expect(
-          cards[i].top - cards[i - 1].bottom,
-          moreOrLessEquals(kHomeCardGap, epsilon: 0.01),
+          pills[i].top - pills[i - 1].bottom,
+          moreOrLessEquals(kHomeBtnGap, epsilon: 0.01),
         );
       }
 
-      // 四張同一個樣子：白底、描邊、圓角 18，沒有反白的那一張；
-      // 圖示跟名稱是正文色、說明是淡字；右邊各有一個「>」
+      // 主次：第一顆反白填滿（近黑底、白圖示、白字），其他三顆描邊
       for (var i = 0; i < 4; i++) {
-        final m = t.widget<Material>(_card(_labels[i]));
-        expect(m.color, kLCard, reason: '「${_labels[i]}」不該有別的底色');
+        final primary = i == 0;
+        final m = t.widget<Material>(_pill(_labels[i]));
+        expect(m.color, primary ? kLAccent : Colors.transparent);
         expect(m.shape, isA<RoundedRectangleBorder>());
         final shape = m.shape! as RoundedRectangleBorder;
-        expect(shape.side.color, kLBorder);
-        expect(shape.borderRadius, BorderRadius.circular(kHomeCardRadius));
-        expect(t.widget<Icon>(find.byIcon(_icons[i])).color, kLText);
-        expect(t.widget<Text>(find.text(_labels[i])).style?.color, kLText);
-        // 說明在同一張卡上、一字不差、淡字
-        final sub = find.descendant(
-          of: _card(_labels[i]),
-          matching: find.text(_subs[i]),
+        expect(shape.borderRadius, BorderRadius.circular(kHomeBtnRadius));
+        expect(
+          shape.side.style,
+          primary ? BorderStyle.none : BorderStyle.solid,
+          reason: primary ? '反白那顆不該再描邊' : '「${_labels[i]}」少了邊線',
         );
-        expect(sub, findsOneWidget, reason: '「${_labels[i]}」的說明文字不對');
-        expect(t.widget<Text>(sub).style?.color, kLTextDim);
+        if (!primary) expect(shape.side.color, kLBorder);
+        final fg = primary ? kLBg : kLText;
+        expect(t.widget<Icon>(find.byIcon(_icons[i])).color, fg);
+        expect(t.widget<Text>(find.text(_labels[i])).style?.color, fg);
       }
-      expect(find.byIcon(Icons.chevron_right), findsNWidgets(4));
+      // 按鈕上只有名稱，沒有說明文字
+      expect(
+        find.descendant(of: _pill('浮水印'), matching: find.byType(Text)),
+        findsOneWidget,
+      );
 
       // 右上角的個人中心還在
       expect(find.byIcon(Icons.person_outline), findsOneWidget);
       expect(t.takeException(), isNull);
     });
 
-    /// 四個圖示同一個 x、四段名稱跟說明同一個 x、四個「>」同一個 x
+    /// 四個圖示同一個 x、四段文字同一個 x，整組在膠囊裡置中
     Future<void> expectAligned(WidgetTester t) async {
       final iconLefts = [
         for (final i in _icons) t.getRect(find.byIcon(i)).left,
       ];
       final labelLefts = [
         for (final l in _labels) t.getRect(find.text(l)).left,
-      ];
-      final subLefts = [for (final d in _subs) t.getRect(find.text(d)).left];
-      final chevrons = find.byIcon(Icons.chevron_right);
-      final chevronLefts = [
-        for (var i = 0; i < 4; i++) t.getRect(chevrons.at(i)).left,
       ];
       for (var i = 1; i < 4; i++) {
         expect(
@@ -337,57 +332,33 @@ void main() {
         expect(
           labelLefts[i],
           moreOrLessEquals(labelLefts[0], epsilon: 0.01),
-          reason: '名稱沒對齊：$labelLefts',
-        );
-        expect(
-          chevronLefts[i],
-          moreOrLessEquals(chevronLefts[0], epsilon: 0.01),
-          reason: '「>」沒對齊：$chevronLefts',
+          reason: '文字沒對齊：$labelLefts',
         );
       }
-      for (var i = 0; i < 4; i++) {
-        expect(
-          subLefts[i],
-          moreOrLessEquals(labelLefts[i], epsilon: 0.01),
-          reason: '說明沒有跟名稱對齊：$subLefts vs $labelLefts',
-        );
-      }
-      // 圖示方塊貼卡片左緣（內距 16），圖示在方塊正中；名稱緊接在方塊後面
-      final card = t.getRect(_card(_labels[0]));
-      expect(
-        iconLefts[0] - card.left,
-        moreOrLessEquals(
-          16 + (kHomeTileSize - kHomeTileIcon) / 2,
-          epsilon: 0.01,
-        ),
-      );
+      // 文字緊接在圖示後面
       expect(
         labelLefts[0] - iconLefts[0],
-        moreOrLessEquals(
-          kHomeTileSize + kHomeTileGap - (kHomeTileSize - kHomeTileIcon) / 2,
-          epsilon: 0.01,
-        ),
+        moreOrLessEquals(kHomeBtnIcon + kHomeBtnIconGap, epsilon: 0.01),
       );
-      // 名稱、說明跟「>」不打架；說明最多兩行，仍在卡片裡
-      for (var i = 0; i < 4; i++) {
-        final r = t.getRect(_card(_labels[i]));
-        for (final f in [find.text(_labels[i]), find.text(_subs[i])]) {
-          final tr = t.getRect(f);
-          expect(
-            tr.right <= chevronLefts[i] + 0.01,
-            isTrue,
-            reason: '「${_labels[i]}」的字撞到右邊的「>」',
-          );
-          expect(
-            tr.top >= r.top && tr.bottom <= r.bottom,
-            isTrue,
-            reason: '「${_labels[i]}」的字超出卡片',
-          );
-        }
+      // 整組（固定寬 kHomeBtnGroupW）在膠囊裡置中：左邊留白＝右邊留白
+      final pill = t.getRect(_pill(_labels[0]));
+      final groupRight = iconLefts[0] + kHomeBtnGroupW;
+      expect(
+        iconLefts[0] - pill.left,
+        moreOrLessEquals(pill.right - groupRight, epsilon: 0.01),
+        reason: '那一組沒有在膠囊裡置中',
+      );
+      // 最寬的文字也放得進那一組——放不下的話文字會被推出去，四顆又不齊了
+      for (final l in _labels) {
+        expect(
+          t.getRect(find.text(l)).right <= groupRight + 0.01,
+          isTrue,
+          reason: '「$l」超出固定寬度的那一組',
+        );
       }
     }
 
-    testWidgets('下面整齊一點：四個圖示同一個 x、名稱跟說明同一個 x、四個「>」同一個 x', (t) async {
+    testWidgets('下面整齊一點：四個圖示同一個 x、四段文字同一個 x、整組置中', (t) async {
       await _pump(t);
       await expectAligned(t);
       expect(t.takeException(), isNull);
@@ -401,7 +372,7 @@ void main() {
       expect(t.takeException(), isNull);
     });
 
-    testWidgets('iPhone SE（375×667）放得下：不溢出、logo 完整、卡片貼底', (t) async {
+    testWidgets('iPhone SE（375×667）放得下：不溢出、logo 完整、按鈕貼底', (t) async {
       _phone(t, 375, 667);
       await _pump(t);
       expect(t.takeException(), isNull, reason: 'SE 上溢出了');
@@ -409,21 +380,20 @@ void main() {
       final logo = t.getRect(find.byType(Image));
       expect(logo.width, kHomeLogoSize.width);
       expect(logo.height, kHomeLogoSize.height);
-      // logo 在標題列（狀態列 20＋56）底下、第一張卡上面
+      // logo 在標題列（狀態列 20＋56）底下、第一顆按鈕上面
       expect(logo.top, greaterThan(76));
-      final first = t.getRect(_card(_labels[0]));
-      final last = t.getRect(_card(_labels[3]));
+      final first = t.getRect(_pill(_labels[0]));
+      final last = t.getRect(_pill(_labels[3]));
       expect(logo.bottom, lessThan(first.top));
-      // 卡片群貼底（底部留白 20），四張佔 4×84＋3×12
+      // 按鈕群貼底（底部留白 20），四顆佔 4×56＋3×12
       expect(last.bottom, moreOrLessEquals(667 - 20, epsilon: 0.01));
-      expect(last.bottom - first.top, moreOrLessEquals(_cardsH, epsilon: 0.01));
-      // SE 的寬度最長那句說明一行擠不下：折兩行，不省略
+      expect(last.bottom - first.top, moreOrLessEquals(_btnsH, epsilon: 0.01));
       await expectAligned(t);
     });
 
-    testWidgets('更矮的畫面：logo 等比縮小、卡片群不動、不溢出', (t) async {
-      // 狀態列 20＋標題列 56＋底部留白 20，剩 424 給 logo＋卡片（372）
-      _phone(t, 375, 520);
+    testWidgets('更矮的畫面：logo 等比縮小、按鈕群不動、不溢出', (t) async {
+      // 狀態列 20＋標題列 56＋底部留白 20，剩 324 給 logo＋按鈕（260）
+      _phone(t, 375, 420);
       await _pump(t);
       expect(t.takeException(), isNull, reason: '矮畫面溢出了');
 
@@ -438,30 +408,30 @@ void main() {
         ),
         reason: 'logo 縮了但沒有等比',
       );
-      final first = t.getRect(_card(_labels[0]));
-      final last = t.getRect(_card(_labels[3]));
+      final first = t.getRect(_pill(_labels[0]));
+      final last = t.getRect(_pill(_labels[3]));
       expect(logo.bottom <= first.top, isTrue);
-      expect(last.bottom, moreOrLessEquals(520 - 20, epsilon: 0.01));
-      expect(last.bottom - first.top, moreOrLessEquals(_cardsH, epsilon: 0.01));
+      expect(last.bottom, moreOrLessEquals(420 - 20, epsilon: 0.01));
+      expect(last.bottom - first.top, moreOrLessEquals(_btnsH, epsilon: 0.01));
     });
 
-    testWidgets('連卡片都放不下（橫向 844×390）：logo 不畫、卡片自己捲、不溢出', (t) async {
-      // 狀態列 20＋標題列 56＋底部留白 20，剩 294 < 372
-      _phone(t, 844, 390);
+    testWidgets('連按鈕都放不下（330 高）：logo 不畫、按鈕自己捲、不溢出', (t) async {
+      // 狀態列 20＋標題列 56＋底部留白 20，剩 234 < 260
+      _phone(t, 844, 330);
       await _pump(t);
-      expect(t.takeException(), isNull, reason: '橫向溢出了');
+      expect(t.takeException(), isNull, reason: '矮畫面溢出了');
       expect(find.byType(Image), findsNothing, reason: '放不下就不該硬擠 logo');
       expect(find.byType(SingleChildScrollView), findsOneWidget);
       for (final l in _labels) {
         expect(find.text(l), findsOneWidget);
       }
-      // 最後一張一開始在可視區外，捲到底就貼著底部留白
-      expect(t.getRect(_card(_labels[3])).bottom, greaterThan(390 - 20));
+      // 最後一顆一開始在可視區外，捲到底就貼著底部留白
+      expect(t.getRect(_pill(_labels[3])).bottom, greaterThan(330 - 20));
       await t.drag(find.byType(SingleChildScrollView), const Offset(0, -400));
       await t.pumpAndSettle();
       expect(
-        t.getRect(_card(_labels[3])).bottom,
-        moreOrLessEquals(390 - 20, epsilon: 0.01),
+        t.getRect(_pill(_labels[3])).bottom,
+        moreOrLessEquals(330 - 20, epsilon: 0.01),
       );
       expect(t.takeException(), isNull);
     });
