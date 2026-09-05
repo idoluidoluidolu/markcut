@@ -1911,6 +1911,29 @@ Future<({bool ok, String message, bool cancelled})> saveGifToGallery(
   return (ok: true, message: '已把 GIF 存到「浮水印」相簿', cancelled: false);
 }
 
+/// 抽縮圖／拖曳快取幀該讀哪一份檔。
+///
+/// 這支素材有轉好的工作檔就讀工作檔（同一段內容、1080p、關鍵幀密，
+/// 軟解一格是 4K 的十六分之一）；正在轉的話先等它轉完（最多 [wait]）
+/// 再看，等不到就照讀原檔。
+/// 以前一律讀呼叫端給的路徑：匯入當下手上只有 4K 原檔，背景那條
+/// 14fps 的整條抽幀（倒轉片段用）就拿 FFmpeg 軟解 4K60 一整支、跟同時
+/// 在跑的硬體轉檔搶 CPU，而工作檔一換上這批格子又全部作廢重抽——
+/// 純粹白燒。等工作檔落地再抽，總時間反而更短
+Future<String> thumbnailSourceFor(
+  String path, {
+  Duration wait = const Duration(seconds: 45),
+}) async {
+  try {
+    if (WorkFiles.isPreparing(path)) {
+      await WorkFiles.whenNotPreparing(path, timeout: wait);
+    }
+    return await WorkFiles.lookup(path) ?? path;
+  } catch (_) {
+    return path;
+  }
+}
+
 /// 產生時間軸縮圖（height 可調：filmstrip 用 200、批次預覽用 720）
 /// 抽縮圖。抽不出來就回空清單——呼叫端全都處理得了「沒有縮圖」，
 /// 但處理不了例外：這些多半是射後不理的背景工作，例外跑出去就變成
@@ -1949,6 +1972,10 @@ Future<List<Uint8List>> _makeThumbnails(
   bool fastDecode = false,
 }) async {
   if (durationSec <= 0) return [];
+  // 有工作檔就讀工作檔（見 thumbnailSourceFor）；抽出來的格子只當
+  // 縮圖／拖曳預覽，內容與時間軸跟原檔一樣，看不出差別
+  final input = await thumbnailSourceFor(inputPath);
+  if (input != inputPath) Diag.count('縮圖改讀工作檔');
   final dir = await getTemporaryDirectory();
   final ts = DateTime.now().millisecondsSinceEpoch;
   final pattern = '${dir.path}${Platform.pathSeparator}mkthumb_${ts}_%02d.jpg';
@@ -1973,7 +2000,7 @@ Future<List<Uint8List>> _makeThumbnails(
   final skip = fastDecode ? '-skip_frame nokey ' : '';
   // HDR 素材先轉 SDR 再縮圖：不轉的話快取幀／時間軸縮圖整片
   // 灰白，拖曳預覽跟播放畫面顏色對不上（也就是「拖曳會退色」）
-  final p0 = await _probe(inputPath);
+  final p0 = await _probe(input);
   // HDR 縮圖：把「縮小」摺進轉換鏈的第一步。
   //
   // 色調映射是 32 位元浮點運算，成本跟像素數成正比。原本是先轉再縮，
@@ -1988,7 +2015,7 @@ Future<List<Uint8List>> _makeThumbnails(
   //（本機用 ffmpeg 8.1 實測：3840x2160＋rotation=-90 的素材，
   // 不加任何 transpose 抽出來就是直的）。自己再加一次是轉兩次
   final cmd =
-      '-y $skip$seek-i "$inputPath" '
+      '-y $skip$seek-i "$input" '
       '-vf "fps=${fps.toStringAsFixed(6)},$hdrFix$scale" '
       '-frames:v $count -q:v 4 "$pattern"';
   var session = await FFmpegKit.execute(cmd);

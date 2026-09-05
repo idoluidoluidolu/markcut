@@ -117,7 +117,11 @@ class MediaPrep {
   /// [probe] 的輕量版：只讀容器層的中繼資料（尺寸/編碼/旋轉/SDR），
   /// 不掃關鍵幀——完整 probe 要把整支檔的取樣讀過一遍，幾 GB 的素材
   /// 光探測就要好幾秒。給「要不要蓋讀取遮罩」這種只看規格的判斷用。
-  /// 沒實作的平台（Android）回 null
+  /// iOS（AVURLAsset）與 Android（MediaExtractor）都有實作、鍵一樣；
+  /// 沒實作的平台回 null。
+  /// 注意呼叫端拿 null 當「壞檔」的地方（編輯器的出廠檢驗）：Android
+  /// 以前沒實作，每一支轉好的工作檔都因此被作廢——原生端沒接上時
+  /// 這裡回 null 是「不知道」，不是「沒有畫面」
   static Future<Map<String, dynamic>?> probeLite(String path) async {
     try {
       if (!await available) return null;
@@ -196,6 +200,11 @@ class MediaPrep {
     // 掃一次（alreadyGoodEnough 會再把整支檔的關鍵幀數一遍，而它的
     // 條件比 Dart 端嚴，Dart 說不合它一定也說不合——長片白掃兩趟）
     bool prechecked = false,
+    // 上一次用一般參數轉出來的檔不能用（原生端回報失敗、或轉好卻全黑／
+    // 沒有視訊軌）：這一次叫原生端跳過第一段、直接走保守參數的退路
+    //（Android：media3 預設編碼參數→720p；見 MainActivity.rungsFor）。
+    // 同樣的參數再轉一次，多半只是再壞一次
+    bool safe = false,
     void Function(double progress)? onProgress,
   }) async {
     if (!await available) return null;
@@ -211,8 +220,12 @@ class MediaPrep {
         'job': job,
         if (hdr) 'hdr': true,
         if (prechecked) 'prechecked': true,
+        if (safe) 'safe': true,
       });
-    } catch (_) {
+    } catch (e) {
+      // 原生呼叫本身炸掉（不是轉檔失敗回 null）：以前無聲吞掉，報告裡
+      // 只剩「工作檔失敗」
+      Diag.note('工作檔原生呼叫失敗：$e');
       return null;
     } finally {
       _progressOf.remove(job);

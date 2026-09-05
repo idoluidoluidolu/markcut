@@ -41,6 +41,43 @@ class WorkFiles {
   /// 產生一個不會撞號的工作檔名。微秒時間戳在同一瞬間開兩支時會一樣
   static int _seq = 0;
 
+  /// 上一次轉檔「做出來的不能用」的素材：原生端回報失敗、轉好卻全黑
+  /// 或沒有視訊軌（呼叫端驗出來送 [invalidate]）。下一次 [ensure] 叫
+  /// 原生端跳過一般參數、直接走保守的退路（見 MediaPrep.toWorkFile 的
+  /// safe）。以前的補試是同樣參數立刻再轉一次——實機 2018 兩支素材
+  /// 各轉兩次，第二次跟第一次壞得一模一樣。轉成功就從名單拿掉
+  static final Set<String> _needSafe = {};
+
+  /// 正在備工作檔（轉檔／複製／出廠檢驗）的素材路徑，給
+  /// [isPreparing]／[whenNotPreparing] 用：抽縮圖那條路看到同一支
+  /// 正在轉，就等它轉完改讀工作檔，別拿 4K 原檔軟解一整條
+  static final Set<String> _ensuring = {};
+  static final Map<String, List<Completer<void>>> _ensureWaiters = {};
+
+  /// 這支素材的工作檔正在準備中（[ensure] 進行到轉檔那一段）
+  static bool isPreparing(String src) => _ensuring.contains(src);
+
+  /// 等這支素材的 [ensure] 做完（成功或失敗都算）。沒在準備就立刻回；
+  /// 超過 [timeout] 也回，呼叫端自己決定退路
+  static Future<void> whenNotPreparing(
+    String src, {
+    Duration timeout = const Duration(seconds: 45),
+  }) async {
+    if (!_ensuring.contains(src)) return;
+    final c = Completer<void>();
+    (_ensureWaiters[src] ??= []).add(c);
+    await c.future.timeout(timeout, onTimeout: () {});
+  }
+
+  static void _endEnsuring(String src) {
+    _ensuring.remove(src);
+    final ws = _ensureWaiters.remove(src);
+    if (ws == null) return;
+    for (final c in ws) {
+      if (!c.isCompleted) c.complete();
+    }
+  }
+
   static Future<Map<String, dynamic>> _load() async {
     if (_index != null) return _index!;
     try {
@@ -68,9 +105,19 @@ class WorkFiles {
   @visibleForTesting
   static Directory? supportDirOverride;
 
-  /// 測試用：丟掉記憶體裡的索引，下一次從 prefs 重讀
+  /// 測試用：丟掉記憶體裡的索引（下一次從 prefs 重讀）與各種名單
   @visibleForTesting
-  static void resetForTest() => _index = null;
+  static void resetForTest() {
+    _index = null;
+    _needSafe.clear();
+    for (final src in _ensuring.toList()) {
+      _endEnsuring(src);
+    }
+  }
+
+  /// 測試用：下一次 [ensure] 會不會走保守參數
+  @visibleForTesting
+  static bool needsSafeRetry(String src) => _needSafe.contains(src);
 
   static Future<Directory> _support() async =>
       supportDirOverride ?? await getApplicationSupportDirectory();
@@ -307,6 +354,9 @@ class WorkFiles {
   /// 讓合成長度變 0、播放跳針卡死。呼叫端驗出來就送來這裡
   static Future<void> invalidate(String src) async {
     if (kIsWeb) return;
+    // 原生端說成功、呼叫端驗出不能用＝一般參數在這台機器上會出壞檔，
+    // 下一次直接走保守參數重轉
+    _needSafe.add(src);
     try {
       final idx = await _load();
       final e = idx[src];
@@ -330,7 +380,23 @@ class WorkFiles {
     final have = await lookup(src);
     if (have != null) return have;
     if (!await MediaPrep.available) return null;
+    _ensuring.add(src);
+    try {
+      return await _ensureInner(
+        src,
+        maxShortSide: maxShortSide,
+        onProgress: onProgress,
+      );
+    } finally {
+      _endEnsuring(src);
+    }
+  }
 
+  static Future<String?> _ensureInner(
+    String src, {
+    required int maxShortSide,
+    void Function(double progress)? onProgress,
+  }) async {
     final dir = await _dir();
     final name = 'w${DateTime.now().microsecondsSinceEpoch}_${_seq++}.mp4';
     final dest = '${dir.path}${Platform.pathSeparator}$name';
@@ -379,6 +445,12 @@ class WorkFiles {
       }
     }
     final sw = Stopwatch()..start();
+    // 上一次做出來的不能用：這次走保守參數（原生端的退路階梯從第二段起）
+    final safe = _needSafe.contains(src);
+    if (safe) {
+      Diag.note('工作檔改用保守參數重轉（上一次轉出來的不能用）：${src.split('/').last}');
+      Diag.count('工作檔保守重轉');
+    }
     await Diag.mark('工作檔：轉檔中', data: {'檔案': src.split('/').last});
     _inFlight.add(dest);
     String? made;
@@ -387,9 +459,10 @@ class WorkFiles {
         src,
         dest,
         maxShortSide: maxShortSide,
-        // 這裡已經掃過整支檔判定要轉（false）；null＝沒能掃（Android
-        // 沒 probe／探測失敗），原生端自己判
+        // 這裡已經掃過整支檔判定要轉（false）；null＝沒能掃（探測
+        // 失敗），原生端自己判
         prechecked: qualifies == false,
+        safe: safe,
         onProgress: onProgress,
       );
     } finally {
@@ -400,10 +473,12 @@ class WorkFiles {
       made == null
           ? '工作檔失敗（用原檔）：${src.split('/').last}'
           : '工作檔完成 ${sw.elapsed.inSeconds}秒 '
-                '${(File(made).lengthSync() / 1048576).round()}MB',
+                '${(File(made).lengthSync() / 1048576).round()}MB'
+                '${safe ? '（保守參數）' : ''}',
     );
     Diag.count(made == null ? '工作檔失敗' : '工作檔完成');
     if (made == null || !File(made).existsSync()) {
+      _needSafe.add(src);
       try {
         File(dest).deleteSync();
       } catch (_) {}
@@ -419,11 +494,13 @@ class WorkFiles {
     if (!await _looksUsable(src, made)) {
       Diag.note('工作檔畫面壞掉，退回原檔：${src.split('/').last}');
       Diag.count('工作檔壞掉');
+      _needSafe.add(src);
       try {
         File(made).deleteSync();
       } catch (_) {}
       return null;
     }
+    _needSafe.remove(src);
     final idx = await _load();
     idx[src] = {
       'work': made,
