@@ -570,4 +570,79 @@ void main() {
     expect(src.contains('WatermarkPanel('), isTrue);
     expect(src.contains('WatermarkLayer('), isTrue);
   });
+
+  testWidgets('切進浮水印分頁就自動選好浮水印（有框、面板對得上）；點空白才取消', (t) async {
+    SharedPreferences.setMockInitialValues({});
+    await t.pumpWidget(
+      MaterialApp(home: CollageScreen(photos: await _twoPhotos(t))),
+    );
+    await _waitLoaded(t);
+    await _goTab(t, '浮水印');
+    // 一進來就是選取狀態：圖層知道選的是文字、外層有框
+    expect(
+      t.widget<WatermarkLayer>(find.byType(WatermarkLayer)).selectedPart,
+      WmPart.text,
+    );
+    await t.pump();
+    final overlay = t.widget<WmFrameOverlay>(find.byType(WmFrameOverlay));
+    expect(overlay.info.value, isNotNull, reason: '進來就該有選取框');
+
+    // 點在被選的文字框裡：維持選取（不是取消）
+    final frame = overlay.info.value!.rect;
+    final canvas = t.getRect(find.byType(AspectRatio).first);
+    await t.tapAt(canvas.topLeft + frame.center);
+    await t.pump(const Duration(milliseconds: 400));
+    await t.pumpAndSettle();
+    expect(overlay.info.value, isNotNull, reason: '點自己不該取消選取');
+
+    // 點畫布上遠離文字的空白：取消
+    await t.tapAt(Offset(canvas.left + 10, canvas.top + 10));
+    await t.pump(const Duration(milliseconds: 400));
+    await t.pumpAndSettle();
+    expect(find.byType(WmFrameOverlay), findsOneWidget);
+    expect(
+      t.widget<WmFrameOverlay>(find.byType(WmFrameOverlay)).info.value,
+      isNull,
+      reason: '點空白要取消選取',
+    );
+    // 取消之後留在這一頁不會被硬選回去（只有「剛切進來」那一下會自動選）
+    await t.pump(const Duration(milliseconds: 300));
+    expect(
+      t.widget<WatermarkLayer>(find.byType(WatermarkLayer)).selectedPart,
+      WmPart.none,
+    );
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('拼圖分頁點到浮水印框內：自動選取並切到浮水印分頁；框外照樣是格子', (t) async {
+    SharedPreferences.setMockInitialValues({});
+    await t.pumpWidget(
+      MaterialApp(home: CollageScreen(photos: await _twoPhotos(t))),
+    );
+    await _waitLoaded(t);
+    expect(find.text('版型'), findsOneWidget, reason: '起手在拼圖分頁');
+
+    // 預設文字浮水印在畫布正中央：點那裡
+    final canvas = t.getRect(find.byType(AspectRatio).first);
+    await t.tapAt(canvas.center);
+    // 圖層上有雙擊判定，單擊要等雙擊的等待時間過了才成立
+    await t.pump(const Duration(milliseconds: 400));
+    await t.pumpAndSettle();
+    expect(find.byType(WatermarkPanel), findsOneWidget, reason: '要切到浮水印分頁');
+    expect(find.text('版型'), findsNothing);
+    expect(
+      t.widget<WatermarkLayer>(find.byType(WatermarkLayer)).selectedPart,
+      WmPart.text,
+      reason: '帶著選取一起過去',
+    );
+    expect(t.widget<WmFrameOverlay>(find.byType(WmFrameOverlay)).info.value, isNotNull);
+
+    // 回拼圖分頁，點遠離浮水印的角落（格子）：不會被切走
+    await _goTab(t, '拼圖');
+    await t.tapAt(Offset(canvas.left + 8, canvas.top + 8));
+    await t.pump(const Duration(milliseconds: 400));
+    await t.pumpAndSettle();
+    expect(find.text('版型'), findsOneWidget, reason: '框外的點擊照樣是拼圖的');
+    expect(t.takeException(), isNull);
+  });
 }

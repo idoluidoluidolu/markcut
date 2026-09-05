@@ -170,6 +170,12 @@ class _CollageScreenState extends State<CollageScreen>
   void _onTabChanged() {
     if (!mounted) return;
     _cancelHold();
+    // 剛切進浮水印分頁就先把浮水印選起來（使用者指定：點浮水印時要
+    // 自動選取）——不然進來還得再點一下才有框、才拖得動。只在「換到」
+    // 這一頁的那一下做：在頁內自己取消選取的話不會被硬選回去
+    final entering =
+        _tabs.index == _kTabWatermark && _lastTab != _kTabWatermark;
+    _lastTab = _tabs.index;
     setState(() {
       _selCell = -1;
       _selItem = -1;
@@ -177,7 +183,21 @@ class _CollageScreenState extends State<CollageScreen>
       _dragFrom = -1;
       _dragPos = null;
       _dragOver = -1;
+      if (entering && _wmPartAlive == WmPart.none) _wmPart = _defaultWmPart;
     });
+  }
+
+  /// 上一次看到的分頁索引（判斷「剛切進來」用）
+  int _lastTab = _kTabCollage;
+
+  /// 進浮水印分頁時預設選哪個部件：有字的文字優先，不然就 Logo；
+  /// 平鋪的不能選（位置無意義）
+  WmPart get _defaultWmPart {
+    final t = _wm.text;
+    if (t.enabled && !t.tiled && t.text.trim().isNotEmpty) return WmPart.text;
+    final lg = _wm.logo;
+    if (lg.enabled && !lg.tiled) return WmPart.logo;
+    return WmPart.none;
   }
 
   // ===== 浮水印：整張拼圖一組（預覽與面板的接法照批次浮水印那一頁）=====
@@ -1350,9 +1370,12 @@ class _CollageScreenState extends State<CollageScreen>
             ignoring: tab != _kTabCollage,
             child: _free ? _buildFree() : _buildGrid(),
           ),
-          // 浮水印圖層：拼圖分頁只看不動（不然會跟格子的拖曳打架）
+          // 浮水印圖層：拼圖分頁「點得到、拖不動」——點到浮水印框內就
+          // 選起來並切到浮水印分頁（使用者指定）；拖曳鎖住，不然會跟
+          // 格子的拖曳打架。匯出分頁純看。圖層的觸控區只有部件本身那塊
+          //（opaque），框外的觸控照樣落到底下的格子
           IgnorePointer(
-            ignoring: !wmTab,
+            ignoring: tab == _kTabExport,
             child: WatermarkLayer(
               settings: _wm,
               // 選取框畫在裁切外（見 _wmFrameInfo）
@@ -1361,9 +1384,14 @@ class _CollageScreenState extends State<CollageScreen>
               selectedPart: wmTab ? _wmPartAlive : WmPart.none,
               onSelectPart: (p) {
                 setState(() => _wmPart = p);
+                if (!wmTab) {
+                  // 從拼圖分頁點到浮水印：帶著選取一起過去
+                  _tabs.animateTo(_kTabWatermark);
+                  return;
+                }
                 _wmPanelCtrl.scrollTo(p);
               },
-              panLocked: () => _pvPts.length >= 2,
+              panLocked: () => !wmTab || _pvPts.length >= 2,
             ),
           ),
           if (wmTab) ...[
@@ -1418,7 +1446,14 @@ class _CollageScreenState extends State<CollageScreen>
   Widget _wmSelectionRouter() => LayoutBuilder(
     builder: (context, box) => GestureDetector(
       behavior: HitTestBehavior.translucent,
-      onTap: _clearWmSel,
+      // 點空白＝取消選取；點在被選部件的框裡＝維持選取。這層在圖層之上
+      // 且 translucent，點到部件時它的 tap 會贏過圖層自己的 tap——
+      // 不看座標的話「點一下浮水印」反而變成取消選取
+      onTapUp: (d) {
+        final r = _wmFrameInfo.value?.rect;
+        if (r != null && r.contains(d.localPosition)) return;
+        _clearWmSel();
+      },
       onPanStart: (_) {
         if (_pvPts.length >= 2) return;
         _btRawX = null;

@@ -59,8 +59,10 @@ void main() {
     expect(find.byType(CircularProgressIndicator), findsNothing);
 
     final grid = t.getRect(find.byType(AspectRatio).first);
-    final cellA = Offset(grid.left + grid.width * 0.25, grid.center.dy);
-    final cellB = Offset(grid.left + grid.width * 0.75, grid.center.dy);
+    // 點在上排格子的中心，避開畫布正中央的預設浮水印：拼圖分頁點到
+    // 浮水印框內會選取並切到浮水印分頁（使用者指定），那不是這裡要測的
+    final cellA = Offset(grid.left + grid.width * 0.25, grid.top + grid.height * 0.25);
+    final cellB = Offset(grid.left + grid.width * 0.75, grid.top + grid.height * 0.25);
 
     // 沒選取：拖曳 A 到 B ＝ 互換
     await t.dragFrom(cellA, cellB - cellA);
