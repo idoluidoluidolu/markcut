@@ -453,7 +453,9 @@ enum MCStillLoader {
   }
 
   static func scaleLinear(_ image: CIImage, gain: Double) -> CIImage {
-    image.applyingFilter("CIColorMatrix", parameters: [
+    // 增益是 1 就別多掛一個恆等濾鏡（每張 HLG 靜態圖都會經過這裡）
+    if abs(gain - 1) < 1e-6 { return image }
+    return image.applyingFilter("CIColorMatrix", parameters: [
       "inputRVector": CIVector(x: CGFloat(gain), y: 0, z: 0, w: 0),
       "inputGVector": CIVector(x: 0, y: CGFloat(gain), z: 0, w: 0),
       "inputBVector": CIVector(x: 0, y: 0, z: CGFloat(gain), w: 0)
@@ -726,14 +728,20 @@ enum MCStillLoader {
     }
     // Check the complete conversion, including reference-white gain. Never
     // cache an adjustment which only fixes grey while leaving white incorrect.
+    // 場景參考但三種反 OOTF 寫法都不能用（method == .disabled）：這台就是
+    // 沒辦法校正中灰，只做白基準；自檢只驗白，不然這種裝置永遠 failed、
+    // 不進快取，每載一張圖就重跑十幾張 1×1 的渲染，報告也看不到 tried
+    let ootfUsable = !scene || method != .disabled
     func correctedImage(_ image: CIImage) -> CIImage {
-      scaleLinear(scene ? applyOotf(image, method: method) : image,
-                  gain: mapping.whiteGain)
+      scaleLinear(
+        ootfUsable && scene ? applyOotf(image, method: method) : image,
+        gain: mapping.whiteGain)
     }
     guard let finalWhite = renderGrey(correctedImage, srgbValue: 1),
       let finalGrey = renderGrey(correctedImage),
       abs(finalWhite.code - 0.75) < 0.01,
-      abs(hlgScene(finalGrey.code) / hlgScene(0.75) - correctedMidGrey) < 0.01
+      !ootfUsable
+        || abs(hlgScene(finalGrey.code) / hlgScene(0.75) - correctedMidGrey) < 0.01
     else { return failed("白色／中灰校正後自檢未通過，不套用") }
     var result = HlgProbe(
       ok: true, linear: plain.linear, code: plain.code, sceneReferred: scene,
@@ -1004,12 +1012,21 @@ final class CIExportInstruction: NSObject, AVVideoCompositionInstructionProtocol
 }
 
 class CIExportCompositor: NSObject, AVVideoCompositing {
-  /// CIColorMatrix operates on unpremultiplied colors. Scaling RGB as well
-  /// as alpha darkens the source a second time when it is composited.
+  /// Core Image 工作空間是預乘 alpha（見 lumaChainOotf 的說明）：RGBA
+  /// 一起乘才是「不透明度 a」。只乘 alpha 會留下 RGB > A 的超亮像素，
+  /// 疊底變成 src + dst×(1−a)：黑底不變暗、白底過曝、淡入淡出變加法
+  ///（RunnerTests 的像素測試期望的正是 RGBA 一起乘的結果）
   static func applyingOpacity(_ image: CIImage, opacity: Double) -> CIImage {
-    image.applyingFilter("CIColorMatrix", parameters: [
-      "inputAVector": CIVector(x: 0, y: 0, z: 0, w: CGFloat(min(1, max(0, opacity))))
-    ])
+    let a = CGFloat(min(1, max(0, opacity)))
+    return image.applyingFilter(
+      "CIColorMatrix",
+      parameters: [
+        "inputRVector": CIVector(x: a, y: 0, z: 0, w: 0),
+        "inputGVector": CIVector(x: 0, y: a, z: 0, w: 0),
+        "inputBVector": CIVector(x: 0, y: 0, z: a, w: 0),
+        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: a),
+      ])
+  }
 
   /// HDR 輸出模式（見 CIExportCompositorHDR）：來源不做色調映射、
   /// 輸出 10-bit HLG。SDR（預設）＝原本的 8-bit 709
