@@ -31,6 +31,8 @@ Future<void> _tick(WidgetTester t, [int frames = 10, int ms = 40]) async {
 void main() {
   const compCh = MethodChannel('markcut/comp');
   late List<Map<Object?, Object?>> xformCalls;
+  late List<List<Object?>> visibilityCalls;
+  var builds = 0;
 
   setUpAll(() {
     final b = TestWidgetsFlutterBinding.ensureInitialized();
@@ -55,12 +57,15 @@ void main() {
     // 不然那顆平台視圖會把整塊預覽區的點擊吃掉，選不到圖片
     Diag.playerLayer.value = false;
     xformCalls = [];
+    visibilityCalls = [];
+    builds = 0;
     final b = TestWidgetsFlutterBinding.ensureInitialized();
     b.defaultBinaryMessenger.setMockMethodCallHandler(compCh, (call) async {
       switch (call.method) {
         case 'available':
           return true;
         case 'build':
+          builds++;
           return <String, dynamic>{
             'textureId': 1,
             'duration': 10.0,
@@ -70,6 +75,11 @@ void main() {
           };
         case 'setXform':
           xformCalls.add(Map<Object?, Object?>.from(call.arguments as Map));
+          return true;
+        case 'setHiddenImageTracks':
+          visibilityCalls.add(
+            List<Object?>.from((call.arguments as Map)['tracks'] as List),
+          );
           return true;
       }
       return null;
@@ -106,10 +116,10 @@ void main() {
           trimStart: 0,
           trimEnd: 5,
           offset: 5,
-          track: 0,
+          track: 1,
         ),
       );
-      // 圖片跟影片同軌（track<=top）＝烘進合成，見 CompPlayer.bakedImageIds
+      // 圖片軌低於影片（track<=top），且獨立成軌，可即時切可見性。
       tl.sources.add(
         MediaSource(
           path: '/p.png',
@@ -132,6 +142,27 @@ void main() {
 
     // 等 350ms 併批計時器＋原生端（假的）build 回來，合成播放器就緒
     await _tick(t, 15);
+
+    final initialBuilds = builds;
+    final timelineWidget = t.widget<TimelineEditor>(
+      find.byType(TimelineEditor),
+    );
+    timelineWidget.onToggleHidden!(0);
+    await _tick(t, 20);
+    expect(visibilityCalls.last, [0]);
+    expect(
+      builds,
+      initialBuilds,
+      reason: 'hiding an image must not rebuild the player',
+    );
+    timelineWidget.onToggleHidden!(0);
+    await _tick(t, 20);
+    expect(visibilityCalls.last, isEmpty);
+    expect(
+      builds,
+      initialBuilds,
+      reason: 'showing the image must reuse its native layer',
+    );
 
     final previewRect = t.getRect(find.byType(AspectRatio).first);
     // 預設有一顆置中的浮水印文字（"@我的浮水印"，見

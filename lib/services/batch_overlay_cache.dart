@@ -9,10 +9,7 @@ class BatchOverlayCache {
   String? _key;
   Uint8List? _bytes;
 
-  Future<Uint8List> get(
-    String key,
-    Future<Uint8List> Function() render,
-  ) async {
+  Future<Uint8List> get(String key, Future<Uint8List> Function() render) async {
     if (_key == key && _bytes != null) return _bytes!;
     _key = null;
     _bytes = null;

@@ -103,7 +103,9 @@ class HdrPhotoExport {
     Uint8List? overlay;
     if (settings.hasAnyMark) {
       Future<Uint8List> render() => WatermarkRenderer.renderOverlayPng(
-        settings, geo.canvasW, geo.canvasH,
+        settings,
+        geo.canvasW,
+        geo.canvasH,
       );
       overlay = overlayCache == null
           ? await render()
@@ -112,8 +114,9 @@ class HdrPhotoExport {
               render,
             );
     }
-    final dir = await (debugTempDir?.call() ??
-        getTemporaryDirectory().then((d) => d.path));
+    final dir =
+        await (debugTempDir?.call() ??
+            getTemporaryDirectory().then((d) => d.path));
     final fname =
         name ?? 'watermarker_${DateTime.now().millisecondsSinceEpoch}';
     final dest = '$dir/$fname.heic';

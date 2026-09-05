@@ -113,6 +113,7 @@ class _SourceProbe {
 
   /// 影片的旋轉角度（0/90/180/270）
   final int rotation;
+  final double duration;
 
   const _SourceProbe(
     this.hasAudio,
@@ -123,6 +124,7 @@ class _SourceProbe {
     this.dispW = 0,
     this.dispH = 0,
     this.rotation = 0,
+    this.duration = 0,
   ]);
 }
 
@@ -293,6 +295,7 @@ Future<_SourceProbe> _probe(String path) async {
       swap ? vh : vw,
       swap ? vw : vh,
       rot,
+      double.tryParse(info?.getDuration() ?? '') ?? 0,
     );
     _probeCache[path] = r;
     return r;
@@ -1051,6 +1054,10 @@ Future<({String codec, double fps, int w, int h, bool hdr})> probeVideoInfo(
   final p = await _probe(path);
   return (codec: p.codec, fps: p.fps, w: p.dispW, h: p.dispH, hdr: p.hdr);
 }
+
+/// Reuses the metadata already read for thumbnails; no player/decoder needed.
+Future<double> probeVideoDuration(String path) async =>
+    (await _probe(path)).duration;
 
 /// 取消正在進行的匯出。兩條路都要通知：原生那條在跑的時候 FFmpeg 是閒著
 /// 的，反之亦然，對沒在跑的那條喊取消不會有事

@@ -42,6 +42,8 @@ Future<({String codec, double fps, int w, int h, bool hdr})> probeVideoInfo(
   String path,
 ) async => (codec: '', fps: 0.0, w: 0, h: 0, hdr: false);
 
+Future<double> probeVideoDuration(String path) async => 0;
+
 /// Web 沒有 FFmpeg：用隱形 <video> + canvas 抓格做縮圖，
 /// 時間軸 filmstrip 與草稿封面才有畫面
 /// Web 沒有相簿可以存（展示模式不會走到這裡）

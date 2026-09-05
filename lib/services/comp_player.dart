@@ -124,6 +124,27 @@ class MetalPreview {
 ///
 /// 目前只有 iOS 有原生實作；拿不到就回 null，呼叫端退回原本的多播放器路徑
 class CompPlayer {
+  /// Image-only tracks stay in the preview composition. Visibility is changed
+  /// in place; mixed/video/mosaic tracks still use the structural rebuild path.
+  static Set<int> structuralHiddenTracks(TimelineModel tl, Set<int> hidden) => {
+    for (final track in hidden)
+      if (tl.clips.any(
+        (c) => c.track == track && tl.sourceOf(c).kind != ClipKind.image,
+      ))
+        track,
+  };
+
+  static Future<bool> setHiddenImageTracks(Set<int> tracks) async {
+    try {
+      return await _ch.invokeMethod<bool>('setHiddenImageTracks', {
+            'tracks': tracks.toList()..sort(),
+          }) ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   CompPlayer._(
     this.textureId,
     this.duration,
@@ -507,6 +528,7 @@ class CompPlayer {
     TimelineModel tl, {
     bool texture = true,
     Set<int> mutedTracks = const {},
+    Set<int> hiddenImageTracks = const {},
     Set<int> hiddenTracks = const {},
     bool hdrOut = false,
     List<Map<String, dynamic>> overlays = const [],
@@ -677,6 +699,7 @@ class CompPlayer {
         'texture': texture,
         'mosaics': mosaics,
         'stills': stills,
+        'hiddenImageTracks': hiddenImageTracks.toList()..sort(),
         'hdrOut': hdrOut,
         // 合成要補到多長（0＝不用補）。原生端拿它把最底層那條畫面軌
         // 鋪到時間軸終點，時鐘才走得完尾巴（見 [padTo]）

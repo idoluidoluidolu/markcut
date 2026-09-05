@@ -22,6 +22,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:markcut/models/watermark_settings.dart';
 import 'package:markcut/services/bmp_wrap.dart';
+import 'package:markcut/services/batch_overlay_cache.dart';
 import 'package:markcut/services/native_photo_save.dart';
 import 'package:markcut/services/photo_export.dart';
 import 'package:markcut/services/photo_thumbs.dart';
@@ -125,6 +126,76 @@ Future<Uint8List?> _oldShrink(Uint8List src, int longSide) async {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('批次浮水印重用計時', () async {
+    final settings = WatermarkSettings();
+    Future<Uint8List> render() =>
+        WatermarkRenderer.renderOverlayPng(settings, 1080, 1920);
+    await render(); // Warm up the font/GPU path in both comparisons.
+    final baseline = Stopwatch()..start();
+    Uint8List? original;
+    for (var i = 0; i < 6; i++) {
+      original = await render();
+    }
+    baseline.stop();
+    final cache = BatchOverlayCache();
+    var renders = 0;
+    final cached = Stopwatch()..start();
+    for (var i = 0; i < 6; i++) {
+      final bytes = await cache.get('same-size-and-style', () {
+        renders++;
+        return render();
+      });
+      expect(listEquals(bytes, original), isTrue);
+    }
+    cached.stop();
+    expect(renders, 1);
+    // Desktop stage timing only; excludes video encoding and gallery saving.
+    // ignore: avoid_print -- opt-in benchmark output, not application code.
+    print(
+      '6 overlays 1080x1920: baseline=${baseline.elapsedMilliseconds}ms '
+      'cached=${cached.elapsedMilliseconds}ms; identical PNG bytes, renders=6->1',
+    );
+  }, skip: !_bench);
+
+  test('批次直接讀檔與 bytes 路徑的完整輸出像素相同', () async {
+    final dir = await Directory.systemTemp.createTemp('markcut-batch-');
+    try {
+      final src = await _rawToPng(await _noiseRgba(320, 240), 320, 240);
+      final file = await File('${dir.path}/source.png').writeAsBytes(src);
+      final settings = WatermarkSettings();
+      final bytesImage = await WatermarkRenderer.renderPhotoImage(
+        src,
+        settings,
+        canvasAspect: 1,
+      );
+      final pathImage = await WatermarkRenderer.renderPhotoImage(
+        Uint8List(0),
+        settings,
+        sourcePath: file.path,
+        canvasAspect: 1,
+      );
+      try {
+        final a = await bytesImage.toByteData(
+          format: ui.ImageByteFormat.rawRgba,
+        );
+        final b = await pathImage.toByteData(
+          format: ui.ImageByteFormat.rawRgba,
+        );
+        expect(pathImage.width, bytesImage.width);
+        expect(pathImage.height, bytesImage.height);
+        expect(
+          listEquals(a!.buffer.asUint8List(), b!.buffer.asUint8List()),
+          isTrue,
+        );
+      } finally {
+        bytesImage.dispose();
+        pathImage.dispose();
+      }
+    } finally {
+      await dir.delete(recursive: true);
+    }
+  });
+
   test('BMP 包裝：解回來跟 raw RGBA 逐像素相同（含列補齊）', () async {
     // 寬 5：一列 15 位元組，要補到 16——補齊那條路也要驗
     const w = 5, h = 3;
@@ -208,25 +279,28 @@ void main() {
     decoded.dispose();
   });
 
-  test('退路 PNG：encodePhotoImage 沒原生端時＝Skia toByteData(png) 位元組（每次都跑）', () async {
-    NativePhotoSave.debugReset();
-    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
-    try {
-      final raw = await _noiseRgba(320, 240);
-      final im = await _rawToImage(raw, 320, 240);
-      final ref = (await im.toByteData(
-        format: ui.ImageByteFormat.png,
-      ))!.buffer.asUint8List();
-      final enc = await encodePhotoImage(im, jpeg: false);
-      expect(enc.via, 'png');
-      expect(enc.ext, 'png');
-      expect(listEquals(enc.bytes, ref), isTrue);
-      im.dispose();
-    } finally {
-      debugDefaultTargetPlatformOverride = null;
+  test(
+    '退路 PNG：encodePhotoImage 沒原生端時＝Skia toByteData(png) 位元組（每次都跑）',
+    () async {
       NativePhotoSave.debugReset();
-    }
-  });
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      try {
+        final raw = await _noiseRgba(320, 240);
+        final im = await _rawToImage(raw, 320, 240);
+        final ref = (await im.toByteData(
+          format: ui.ImageByteFormat.png,
+        ))!.buffer.asUint8List();
+        final enc = await encodePhotoImage(im, jpeg: false);
+        expect(enc.via, 'png');
+        expect(enc.ext, 'png');
+        expect(listEquals(enc.bytes, ref), isTrue);
+        im.dispose();
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+        NativePhotoSave.debugReset();
+      }
+    },
+  );
 
   test(
     '批次照片管線分段計時',

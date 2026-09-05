@@ -14,6 +14,21 @@ ScrubFrameRequest frame(int slot, {int source = 0, String path = 'raw.mov'}) =>
 Future<void> tick() => Future<void>.delayed(Duration.zero);
 
 void main() {
+  test('failed in-flight decode does not block the latest viewport', () async {
+    final first = Completer<int?>();
+    final delivered = <int>[];
+    final q = ScrubFrameQueue<int>(
+      canRun: () => true,
+      load: (r) => r.slot == 0 ? first.future : Future.value(r.slot),
+      onFrame: (_, value) => delivered.add(value),
+    );
+    q.request([frame(0)]);
+    q.request([frame(100)]);
+    first.completeError(StateError('decoder unavailable'));
+    await tick();
+    expect(delivered, [100]);
+    q.dispose();
+  });
   test(
     'requesting the same frame after invalidation decodes it again',
     () async {

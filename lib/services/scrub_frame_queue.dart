@@ -61,6 +61,9 @@ class ScrubFrameQueue<T> {
             frame != null) {
           onFrame(r, frame);
         }
+      } catch (_) {
+        // A corrupt/unavailable frame must not abort the newest viewport's
+        // pending work or leak an unhandled error from this background task.
       } finally {
         _inFlight = null;
       }

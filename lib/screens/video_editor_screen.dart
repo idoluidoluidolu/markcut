@@ -480,7 +480,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tl,
       wmStart: r.$1,
       wmEnd: r.$2,
-      hiddenTracks: _hiddenTracks,
+      hiddenTracks: _compHiddenTracks,
       hdrOut: _exportHdr && _hdrAvail == true,
     );
   }
@@ -526,6 +526,29 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _ovSync.request();
     // 選取中片段的即時變形（捏合/拖曳跟手）：節流在裡面
     _liveXformSync();
+    _syncImageVisibility();
+  }
+
+  bool _liveImageVisibility = true;
+  String? _lastImageVisibility;
+  Set<int> get _compHiddenTracks => _liveImageVisibility
+      ? CompPlayer.structuralHiddenTracks(_tl, _hiddenTracks)
+      : _hiddenTracks;
+
+  void _syncImageVisibility({bool force = false}) {
+    if (!_compOn || !_liveImageVisibility) return;
+    final tracks = _hiddenTracks.difference(_compHiddenTracks);
+    final key = (tracks.toList()..sort()).join(',');
+    if (!force && _lastImageVisibility == key) return;
+    _lastImageVisibility = key;
+    unawaited(
+      CompPlayer.setHiddenImageTracks(tracks).then((ok) {
+        if (!ok && mounted) {
+          _liveImageVisibility = false;
+          _compRefreshIfChanged();
+        }
+      }),
+    );
   }
 
   /// 浮水印面板滑桿拖動中的每一格：值已經寫進 settings（面板跟預覽層
@@ -1522,8 +1545,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 整軌靜音是烘進合成的音量參數的，切了要重組——不記的話
     // 預覽照樣有聲音，匯出卻是靜音的（匯出另外走自己的靜音處理）
     'mute${(_mutedTracks.toList()..sort()).join(',')}',
-    // 隱藏軌會改變合成的內容（整軌不進 payload），指紋要記
-    'hide${(_hiddenTracks.toList()..sort()).join(',')}',
+    // 圖片專用軌走即時可見性；其他隱藏軌才改變合成結構。
+    'hide${(_compHiddenTracks.toList()..sort()).join(',')}',
     // HDR 輸出開關：預覽管線跟著它切（HDR 素材播原檔 vs 工作檔）
     'hdrOut${_exportHdr && _hdrAvail == true}',
     // HDR 預覽有沒有疊加物要烘：從無到有（掛預覽合成器）/從有到無
@@ -1533,7 +1556,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 合成補長到哪（見 CompPlayer.padTo）：尾巴是文字/貼圖/配樂時，
     // 上面那些欄位一個都不會變，但合成的總長要跟著改——不記的話
     // 把文字拖過片尾不重組，時鐘照舊停在影片結尾
-    'pad${CompPlayer.padTo(_tl, hiddenTracks: _hiddenTracks).toStringAsFixed(3)}',
+    'pad${CompPlayer.padTo(_tl, hiddenTracks: _compHiddenTracks).toStringAsFixed(3)}',
   ].join(';');
 
   /// 馬賽克那部分的指紋（幾何＋樣式＋軌道）。
@@ -2791,7 +2814,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 自動整理開關（記住上次的選擇）。開著的時候，只要有編輯讓某一軌
-  /// 出現空隙（修剪變短、刪片段、改速度），就自動把後面的素材接上來
+  /// 出現空隙（修剪變短、刪片段、改速度），就自動把後面的素材接上來，
+  /// 片頭那段空白也一起收——「銜接開著」的意思是這一軌從 0 開始、
+  /// 中間沒有洞
   bool _autoTidy = false;
   static const _kTidyPrefKey = 'timeline_auto_tidy';
 
@@ -2816,12 +2841,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 一次編輯做完之後補空隙（自動整理開著才做）。
   ///
+  /// fromZero：連片頭的空白一起收。使用者回報「銜接開著時，拖最前面
+  /// 那支的左把手往右，前面空出來的沒有自動補到最開始」——只補片段
+  /// 之間的洞，第一段被剪短之後就停在原地，片頭留一段黑的。手動那顆
+  /// 「銜接」本來就是連片頭一起收（見 _closeGaps），開關打開的當下也是，
+  /// 自動的這條不一致才是 bug
+  ///
   /// 不另外拍 undo：這是跟著剛才那次編輯一起發生的，按一次上一步
   /// 應該連同整理一起退回去，而不是退成「整理前但已經剪短」的半套狀態
   void _autoTidyIfOn({int? track}) {
     if (!_autoTidy || _tl.clips.isEmpty) return;
     final t = track ?? _selClip?.track ?? (_selTrack >= 0 ? _selTrack : null);
-    final removed = _tl.closeGaps(track: t);
+    final removed = _tl.closeGaps(track: t, fromZero: true);
     if (removed < 0.001) return;
     setState(() {});
     _resyncPlayback();
@@ -7577,7 +7608,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tl,
       texture: !Diag.playerLayer.value,
       mutedTracks: _mutedTracks,
-      hiddenTracks: _hiddenTracks,
+      hiddenTracks: _compHiddenTracks,
+      hiddenImageTracks: _hiddenTracks.difference(_compHiddenTracks),
       hdrOut: hdrOut,
       overlays: ovMaps,
       // 被浮水印蓋到的圖片/GIF 也要烘（見 CompPlayer.bakedImageIds）
@@ -7626,7 +7658,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tl,
       wmStart: wmBake.$1,
       wmEnd: wmBake.$2,
-      hiddenTracks: _hiddenTracks,
+      hiddenTracks: _compHiddenTracks,
       hdrOut: hdrOut,
     );
     // 這一版烘的每張圖，非幾何欄位的簽章也記一份（見
@@ -7655,6 +7687,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     });
     _compRawSources = rawSourcesAtBuild;
     setState(() => _comp = made);
+    _syncImageVisibility(force: true);
     // 新合成上檔了：它帶著建置快照那一版（或沒帶）。重建期間使用者
     // 若又改了樣式，這裡補送最新版（指紋沒變＝快取整包重用）
     _ovSync.reset(appliedSig: made.wmLive ? ovSigAtBuild : 'off');
@@ -13531,7 +13564,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     }
                                     _syncMedia();
                                   });
-                                  // 隱藏是烘在合成內容裡的，切了要重組
+                                  // 圖片專用軌的可見性由 setState 同步到原生；
+                                  // 結構指紋不變便不重建。混合軌仍照舊重組。
                                   _compRefreshIfChanged();
                                   _saveDraft();
                                 },

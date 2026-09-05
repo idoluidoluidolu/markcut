@@ -967,17 +967,23 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     void Function(double) onProgress,
     BatchOverlayCache overlays,
   ) async {
-    final c = makeVideoController(f.path, system: true);
-    try {
-      await c.initialize();
-    } catch (_) {
-      c.dispose();
-      return false;
+    final probe = await engine.probeVideoInfo(f.path);
+    var dur = await engine.probeVideoDuration(f.path);
+    var w = probe.w;
+    var h = probe.h;
+    if (dur <= 0 || w <= 0 || h <= 0) {
+      final c = makeVideoController(f.path, system: true);
+      try {
+        await c.initialize();
+        dur = c.value.duration.inMilliseconds / 1000.0;
+        w = c.value.size.width.round();
+        h = c.value.size.height.round();
+      } catch (_) {
+        return false;
+      } finally {
+        c.dispose();
+      }
     }
-    final dur = c.value.duration.inMilliseconds / 1000.0;
-    var w = c.value.size.width.round();
-    var h = c.value.size.height.round();
-    c.dispose();
     if (dur <= 0 || w == 0 || h == 0) return false;
     w -= w % 2;
     h -= h % 2;
@@ -1005,7 +1011,6 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     }
     // 來源是 HDR 就保留 HDR（HEVC HLG，跟單支編輯器同一條原生路）
     //——以前批次一律走 SDR 色調映射，成品比原片淡（實測回報）
-    final probe = await engine.probeVideoInfo(f.path);
     // 畫質不問人（批次只問照片格式那一個視窗）：跟影片編輯器沒動過
     // 設定時同一條規則——照來源位元率（檔案大小÷長度）挑一檔看不出
     // 被重壓的；量不到就是「標準」（＝以前寫死的 crf 17）

@@ -279,7 +279,8 @@ class WatermarkRenderer {
     // the Dart heap. Byte input remains available for web and existing callers.
     ui.ImmutableBuffer? buffer;
     ui.ImageDescriptor? descriptor;
-    ui.Codec codec;
+    ui.Codec? codec;
+    late ui.Image decoded;
     try {
       if (sourcePath != null) {
         buffer = await ui.ImmutableBuffer.fromFilePath(sourcePath);
@@ -288,13 +289,12 @@ class WatermarkRenderer {
       } else {
         codec = await ui.instantiateImageCodec(photoBytes);
       }
+      decoded = (await codec.getNextFrame()).image;
     } finally {
+      codec?.dispose();
       descriptor?.dispose();
       buffer?.dispose();
     }
-    final frame = await codec.getNextFrame();
-    codec.dispose();
-    final decoded = frame.image;
     try {
       return await compositePhoto(
         decoded,

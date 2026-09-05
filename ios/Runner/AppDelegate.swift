@@ -1084,6 +1084,18 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   /// 捏合/拖曳中的即時變形（見 CompLiveXform）：每一格合成時直接
   /// 讀，零重建。只有預覽合成器（livePreview/liveCI）讀它
   static let xfLock = NSLock()
+  private static var hiddenImageTracks: Set<Int> = []
+  static func setHiddenImageTracks(_ tracks: Set<Int>) {
+    xfLock.lock()
+    hiddenImageTracks = tracks
+    liveEpoch &+= 1
+    xfLock.unlock()
+  }
+  static func currentHiddenImageTracks() -> Set<Int> {
+    xfLock.lock()
+    defer { xfLock.unlock() }
+    return hiddenImageTracks
+  }
   private static var liveXf: CompLiveXform?
   static func setLiveXform(_ x: CompLiveXform?) {
     xfLock.lock()
@@ -1805,6 +1817,8 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           .sorted { $0.z < $1.z }
         // 捏合/拖曳中的即時變形：每一格讀一次（只有預覽合成器讀）
         let lx = self.liveComp ? CIExportCompositor.currentLiveXform() : nil
+        let hiddenImages: Set<Int> = self.liveComp
+          ? CIExportCompositor.currentHiddenImageTracks() : []
         var mzIdx = 0
         var missing = false
         var drawnCount = 0
@@ -1815,6 +1829,8 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             mzIdx += 1
           }
           var img: CIImage
+          if layer.trackID == kCMPersistentTrackID_Invalid,
+            hiddenImages.contains(layer.z) { continue }
           if layer.trackID != kCMPersistentTrackID_Invalid {
             guard let buf = req.sourceFrame(byTrackID: layer.trackID) else {
               missing = true
@@ -2601,6 +2617,7 @@ final class AtomicFlag {
         let mosaics = args["mosaics"] as? [[String: Any]] ?? []
         let stills = args["stills"] as? [[String: Any]] ?? []
         let hdrOut = args["hdrOut"] as? Bool ?? false
+        CIExportCompositor.setHiddenImageTracks(Set(args["hiddenImageTracks"] as? [Int] ?? []))
         let overlays = args["overlays"] as? [[String: Any]] ?? []
         // 馬賽克/圖片/疊加層要走 CI 合成器：先把濾鏡管線暖起來，
         // 接縫不吃首編譯
@@ -2757,6 +2774,14 @@ final class AtomicFlag {
       case "mdispose":
         MetalPreviewEngine.shared.disposeAll()
         result(nil)
+      case "setHiddenImageTracks":
+        guard let a = call.arguments as? [String: Any], let p = self.comp else {
+          result(false)
+          return
+        }
+        CIExportCompositor.setHiddenImageTracks(Set(a["tracks"] as? [Int] ?? []))
+        p.nudgeRedrawIfPaused()
+        result(true)
       case "setXform":
         // 捏合/拖曳中的即時變形。走「合成器每一格直接讀的靜態參數」
         // ——之前每次更新都重產 videoComposition 換上，AVFoundation
