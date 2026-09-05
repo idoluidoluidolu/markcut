@@ -497,6 +497,74 @@ Future<bool> showConfirm(
   return ok == true;
 }
 
+/// 只有「知道了」一顆鈕的通知視窗（存成範本之類的成功訊息）。
+/// 長相跟 [showConfirm] 一模一樣——同一個圓角、邊線、標題與說明字級、
+/// 同一顆 44pt 主鈕——只是少了「取消」那列。以前這種訊息各畫各的
+/// （琥珀大勾＋白色藥丸鈕），跟 App 其他視窗放在一起就是不像一家人
+Future<void> showNotice(
+  BuildContext context, {
+  required String title,
+  String message = '',
+  String action = '好',
+}) async {
+  final c = pageColors(context);
+  await showDialog<void>(
+    context: context,
+    builder: (context) => Dialog(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: c.line),
+      ),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: kDialogWidth),
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(20, 26, 20, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 15.5,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.3,
+                  color: c.text,
+                ),
+              ),
+              if (message.isNotEmpty) ...[
+                SizedBox(height: 8),
+                Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 12.5, color: c.dim, height: 1.55),
+                ),
+              ],
+              SizedBox(height: 20),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(44),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  textStyle: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    fontFamily: 'NotoSansTC',
+                  ),
+                ),
+                onPressed: () => Navigator.pop(context),
+                child: Text(action),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 /// 輸出完成後問下一步。回傳 true＝回主畫面、false＝留下來繼續編輯。
 ///
 /// 存完檔直接把人留在編輯頁，他不知道到底成功了沒、也不知道

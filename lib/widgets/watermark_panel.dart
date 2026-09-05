@@ -592,36 +592,13 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     await _loadPresets();
     widget.onSaved?.call(); // 父層拿去重設「有沒有改過」的基準
     if (mounted) {
-      // 存成功用「視窗」講（使用者指定：toast 太容易錯過）
-      await showDialog<void>(
-        context: context,
-        builder: (context) => AlertDialog(
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.check_circle_outline, size: 34, color: kSelect),
-              const SizedBox(height: 10),
-              Text(
-                existed ? '已更新範本' : '已存成範本',
-                style: const TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(height: 4),
-              const Text(
-                '之後在「範本」分頁或個人頁都找得到',
-                style: TextStyle(fontSize: 12, color: kTextDim),
-              ),
-            ],
-          ),
-          actions: [
-            FilledButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('好'),
-            ),
-          ],
-        ),
+      // 存成功用「視窗」講（使用者指定：toast 太容易錯過）。
+      // 走全 App 共用的通知視窗，跟 showConfirm 同一副長相——
+      // 以前這裡自己畫一個琥珀大勾＋藥丸鈕，跟其他視窗風格不合
+      await showNotice(
+        context,
+        title: existed ? '已更新範本' : '已存成範本',
+        message: '之後在「範本」分頁或個人頁都找得到',
       );
     }
   }
