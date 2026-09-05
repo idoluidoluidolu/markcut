@@ -194,6 +194,7 @@ class CompPlayer {
   static bool? _available;
 
   static Future<bool> get available async {
+    if (Platform.isAndroid) return false;
     if (_available != null) return _available!;
     try {
       _available = await _ch.invokeMethod<bool>('available') ?? false;

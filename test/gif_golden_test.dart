@@ -90,9 +90,7 @@ void main() {
       ('NotoSansTC', 'assets/fonts/NotoSansTC-Bold.ttf'),
     ]) {
       final loader = FontLoader(family)
-        ..addFont(
-          File(path).readAsBytes().then((b) => b.buffer.asByteData()),
-        );
+        ..addFont(File(path).readAsBytes().then((b) => b.buffer.asByteData()));
       await loader.load();
     }
 
@@ -138,7 +136,7 @@ void main() {
     );
   });
 
-  testWidgets('首頁：四顆入口（GIF 直接在首頁，不再藏在選單裡）', (tester) async {
+  testWidgets('首頁：四個入口方塊（GIF 直接在首頁，不再藏在選單裡）', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
         theme: buildLightTheme(),
@@ -147,7 +145,7 @@ void main() {
       ),
     );
     await _settle(tester);
-    // 四顆：浮水印／照片拼圖／GIF／影片編輯，圖示＋文字對齊在同一個 x
+    // 四個方塊：浮水印／照片拼圖／GIF／剪輯，名稱在方塊正下方
     //（圖示在這裡是空方框：測試環境沒載 Material Icons，跟其他快照一樣）
     expect(find.text('GIF'), findsOneWidget);
     await expectLater(
@@ -185,8 +183,9 @@ void main() {
       1, 0, 1, 0, 0, 2, 2, 76, 1, 0, 59,
     ];
     for (final n in ['a', 'b']) {
-      File('${gifDir.path}${Platform.pathSeparator}gif_$n.gif')
-          .writeAsBytesSync(gif);
+      File(
+        '${gifDir.path}${Platform.pathSeparator}gif_$n.gif',
+      ).writeAsBytesSync(gif);
     }
     await tester.pumpWidget(
       MaterialApp(

@@ -54,9 +54,9 @@ void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
   group('首頁亂點', () {
-    testWidgets('連點「浮水印」30 次：選取器只開一次、只問一次，不會炸', (tester) async {
-      // 首頁的「浮水印」直接開相簿混選（沒有選單了），
-      // 重入鎖要守的是「選取器開著時再點都不會再開一個」
+    testWidgets('連點「浮水印」30 次：只跳一次問題、選取器只開一次，不會炸', (tester) async {
+      // 首頁的「浮水印」先問「照片還是影片」，選了照片才開相簿。
+      // 重入鎖要守的是「問題還開著、選取器還開著時，再點都不會再開一個」
       final picker = _HoldPicker();
       final prev = ImagePickerPlatform.instance;
       ImagePickerPlatform.instance = picker;
@@ -65,11 +65,37 @@ void main() {
       await tester.pumpWidget(const MarkCutApp());
       await tester.pumpAndSettle();
 
+      // 連點：問題開著時點到的是遮罩（會關掉它），所以最後開著幾個看
+      // 次數的奇偶——重點是永遠不會疊出第二個，也不會偷偷開選取器
       for (var i = 0; i < 30; i++) {
+        await tester.tap(find.text('浮水印'), warnIfMissed: false);
+        await tester.pump(const Duration(milliseconds: 5));
+        expect(
+          find.text('要上浮水印的是').evaluate().length <= 1,
+          isTrue,
+          reason: '第 $i 次連點之後疊出了不只一個問題',
+        );
+      }
+      await tester.pumpAndSettle();
+      expect(picker.calls, 0, reason: '還沒選就開了選取器');
+
+      // 收乾淨再走一次正常流程：選照片 → 開相簿（假的選取器先不回，
+      // 模擬還開在畫面上）；這時候再連點也不能再開一個
+      if (find.text('要上浮水印的是').evaluate().isNotEmpty) {
+        await tester.tapAt(const Offset(10, 10));
+        await tester.pumpAndSettle();
+      }
+      await tester.tap(find.text('浮水印'));
+      await tester.pumpAndSettle();
+      expect(find.text('要上浮水印的是'), findsOneWidget);
+      await tester.tap(find.text('照片'));
+      await tester.pumpAndSettle();
+      for (var i = 0; i < 10; i++) {
         await tester.tap(find.text('浮水印'), warnIfMissed: false);
         await tester.pump(const Duration(milliseconds: 5));
       }
       expect(picker.calls, 1, reason: '連點之後選取器被開了 ${picker.calls} 次');
+      expect(find.text('要上浮水印的是'), findsNothing, reason: '選取器開著時又跳了問題');
 
       // 選好兩張：只會問一次「串成影片還是各自上浮水印」
       picker.finish([
@@ -83,13 +109,13 @@ void main() {
         reason: '連點之後疊出了不只一個（或沒有）選取視窗',
       );
 
-      // 關掉（點視窗外）：鎖要放開，再點一下要能再開選取器
+      // 關掉（點視窗外）：鎖要放開，再點一下要能再問一次
       await tester.tapAt(const Offset(10, 10));
       await tester.pumpAndSettle();
       expect(find.text('選了 2 張照片'), findsNothing);
       await tester.tap(find.text('浮水印'));
       await tester.pumpAndSettle();
-      expect(picker.calls, 2, reason: '視窗關掉之後鎖沒放開');
+      expect(find.text('要上浮水印的是'), findsOneWidget, reason: '視窗關掉之後鎖沒放開');
       await tester.tapAt(const Offset(10, 10));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);

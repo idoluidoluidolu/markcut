@@ -1,4 +1,5 @@
 import 'dart:async';
+import '../services/initial_preview_policy.dart';
 import 'dart:convert';
 import 'dart:io' show Directory, File, Platform;
 import 'dart:math' as math;
@@ -683,7 +684,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   Future<void> _dressUp() async {
     if (!_tl.sources.any((s) => s.isVideo)) return;
-    if (!widget.waitForPreparation) {
+    if (!_waitForPreparation) {
       // Metadata is enough to construct the timeline. Do not wait for the
       // entire movie, thumbnail strip, or background proxy before editing.
       for (var i = 0; i < _tl.sources.length && mounted; i++) {
@@ -760,6 +761,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 打扮期間按返回：notifier 已在 dispose 被釋放，再寫會炸斷言
     if (mounted) _dressVN.value = 1;
   }
+
+  bool get _waitForPreparation => waitForInitialPreview(
+    requested: widget.waitForPreparation,
+    android: !kIsWeb && Platform.isAndroid,
+  );
 
   TimelineClip? _clipboard; // 複製的片段（貼上時以播放頭為起點）
   // 時間軸雙指縮放：在整個分頁層級偵測，空白處一樣能捏
@@ -3345,7 +3351,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 鎖要同步翻上來：呼叫端接著就 await _dressUp()，它看 _prepBusy 決定
     // 要不要自己組合成——晚一個 await 翻，它就搶先拿 4K 原檔組了一顆
     _prepBusy = true;
-    _prepSkipped = !widget.waitForPreparation;
+    _prepSkipped = !_waitForPreparation;
     _prepShow = false;
     _prepComposing = false;
     _prepEscapeReady = false;
@@ -3403,7 +3409,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       while (_prepQueue.isNotEmpty && mounted) {
         // Only start another full encode after the editor has settled.
         // An already running hardware encode is allowed to finish.
-        if (!widget.waitForPreparation) {
+        if (!_waitForPreparation) {
           await _waitForPreviewIdle();
           if (!mounted) return;
         }
@@ -3446,7 +3452,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (_prepQueue.isEmpty) _requeueFailedPrep();
       }
       if (!mounted) return;
-      if (!widget.waitForPreparation) {
+      if (!_waitForPreparation) {
         // A background completion must never replace the player under a
         // playing movie or an active gesture. Keep the old cache until idle.
         _hdrPrepBusy = false;
@@ -3539,7 +3545,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 轉檔偶爾會卡在某一支（硬體編碼器被佔住、素材有問題）。這一頁擋著
   /// 整個編輯器，沒有退路的話使用者只能關掉 App 重來
   void _showPrepGate() {
-    if (!widget.waitForPreparation) return;
+    if (!_waitForPreparation) return;
     if (_prepShow || !mounted) return;
     setState(() => _prepShow = true);
     // 剩餘時間：每秒重算一次（兩次進度回報之間自己倒數；組合成那一段
@@ -3685,7 +3691,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 只補「確定是 HDR」的：SDR 素材 ensureHdr 探一次就回 null，
       // 但每次合成重組都探一遍也是白工
       if (_srcHdr[s.path] == false) continue;
-      if (!widget.waitForPreparation) {
+      if (!_waitForPreparation) {
         await _waitForPreviewIdle();
         if (!mounted || _prepBusy) break;
       }
@@ -4367,7 +4373,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (!s.isVideo || (_thumbs[i]?.length ?? 0) >= 10) continue;
         if (_prepBusy && (_thumbs[i]?.isNotEmpty ?? false)) continue;
         if (!_tl.clips.any((c) => c.sourceIndex == i)) continue;
-        if (!widget.waitForPreparation) {
+        if (!_waitForPreparation) {
           await _waitForPreviewIdle();
           if (!mounted) return;
         }
@@ -7535,6 +7541,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   Future<void> _ensureCompInner({bool yieldToGesture = false}) async {
+    if (!kIsWeb && Platform.isAndroid) {
+      _compWhyNot = 'Android 使用逐片段播放器';
+      return;
+    }
     if (!Diag.compPlayer.value) {
       if (_comp != null) {
         await _comp!.dispose();
@@ -8613,6 +8623,38 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       .inMilliseconds >
                   2000) {
             _lastDriftFix[clip.id] = now;
+            if (!kIsWeb && Platform.isAndroid) {
+              // Android's cached position can lag behind the actual player.
+              // Read it again before correcting; the lead video owns the clock.
+              unawaited(
+                c.positionNow().then((position) {
+                  if (!mounted ||
+                      !_playing ||
+                      _ctrls[clip.id] != c ||
+                      !clip.covers(_position) ||
+                      position == null) {
+                    return;
+                  }
+                  final fresh = position.inMicroseconds / 1e6;
+                  final target = clip.sourceTimeAt(_position);
+                  if ((fresh - target).abs() <= driftThr) return;
+                  final lead = _tl.videoAt(
+                    _position,
+                    skipTracks: _hiddenTracks,
+                  );
+                  if (lead?.id == clip.id && !clip.reverse && clip.speed > 0) {
+                    _position =
+                        (clip.offset + (fresh - clip.trimStart) / clip.speed)
+                            .clamp(clip.offset, clip.end);
+                    _clockBias = 0;
+                    Diag.count('Android 跟隨播放器對時');
+                  } else {
+                    c.seekTo(Duration(milliseconds: (target * 1000).round()));
+                  }
+                }),
+              );
+              continue;
+            }
             // 播放中的每一次 seek 都會讓畫面停一下。以前完全沒有紀錄，
             // 所以「卡頓」到底是不是自己 seek 出來的無從分辨
             Diag.count('播放中校正 seek');

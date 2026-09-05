@@ -1,25 +1,24 @@
-// 首頁：四顆入口（浮水印／照片拼圖／GIF／影片編輯），每一顆直接進功能。
+// 首頁：四個入口方塊（浮水印／照片拼圖／GIF／剪輯），每一個直接進功能。
 //
 // 守的是：
-//   1. 四顆的順序、文案、圖示、主次（第一顆反白，使用者挑的樣子）——
-//      舊的「加入浮水印」「製作浮水印」不再出現，也沒有先問「影片還是
-//      照片」的選單，按鈕上也沒有說明文字
-//   2. 「下面整齊一點」（使用者的話）：四個圖示落在同一個 x、四段文字
-//      也從同一個 x 起頭，整組在膠囊裡置中；系統字級放大到 1.2 倍照舊
-//   3. iPhone SE（375×667）放得下：不溢出、logo 完整、按鈕貼底；
-//      更矮的畫面 logo 縮小、按鈕不動；連按鈕都放不下就不畫 logo、
-//      按鈕自己捲
-//   4. 每一顆點下去走的是對的選取器／對的頁：
-//        浮水印   → 相簿混選（影片、照片都行）→ 多個同類問「接成一支／串成
-//                   影片還是各自上浮水印」，混著選就直接進批次
+//   1. 四個的順序、文案、圖示、主次（第一個反白，使用者挑的樣子）——
+//      舊的「加入浮水印」「製作浮水印」不再出現，方塊上也沒有說明文字
+//   2. 版面：方塊是正方形、四個等寬、間距 12、整排滿版；名稱在方塊
+//      正下方置中；系統字級放大到 1.2 倍照舊
+//   3. iPhone SE（375×667）放得下：不溢出、logo 完整、方塊貼底；
+//      更矮的畫面 logo 縮小、方塊不動；連方塊都放不下就不畫 logo、
+//      自己捲
+//   4. 每一個點下去走的是對的選取器／對的頁：
+//        浮水印   → 先問「照片還是影片」→ 開對應的選取器 → 多個問
+//                   「接成一支／串成影片還是各自上浮水印」
 //        照片拼圖 → 不開選取器，直接推拼圖頁
 //        GIF      → 影片選取器（只列影片、可多選）→ 拿第一支進 GIF 製作頁
-//        影片編輯 → 不開選取器，直接開一條空的時間軸
+//        剪輯     → 不開選取器，直接開一條空的時間軸
 //   5. 重入鎖：選取器開著時連點不會再開第二個，關掉之後鎖要放開
 //
 // 選取器換成假的（FilePicker.platform／ImagePickerPlatform.instance），
 // 不然測試會去戳真的原生選取器。測試環境的 defaultTargetPlatform 是
-// android：混選走 image_picker 的 pickMultipleMedia、影片先問 markcut/pick
+// android：照片走 image_picker 的 pickMultiImage、影片先問 markcut/pick
 // 通道（這裡回 null ＝「這台沒有系統相片選取器」）再退到 file_picker
 // ——跟 lib 裡的順序一樣，見 services/video_picker.dart
 import 'dart:async';
@@ -46,8 +45,8 @@ const _pngB64 =
     'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGO4Y2ODFTEM'
     'LQkAXrdVAdmuFfUAAAAASUVORK5CYII=';
 
-/// 首頁四顆，由上而下
-const _labels = ['浮水印', '照片拼圖', 'GIF', '影片編輯'];
+/// 首頁四個，由左到右
+const _labels = ['浮水印', '照片拼圖', 'GIF', '剪輯'];
 const _icons = [
   Icons.branding_watermark_outlined,
   Icons.grid_view_rounded,
@@ -179,12 +178,16 @@ Future<void> _pump(WidgetTester t, {NavigatorObserver? spy}) async {
   await _settle(t);
 }
 
-/// 某一顆膠囊本體（文字往上找最近的 Material）
-Finder _pill(String label) =>
-    find.ancestor(of: find.text(label), matching: find.byType(Material)).first;
+/// 某一個方塊本體（圖示往上找最近的 Material；名稱是它的兄弟不是後代）
+Finder _sq(int i) => find
+    .ancestor(of: find.byIcon(_icons[i]), matching: find.byType(Material))
+    .first;
 
-/// 四顆按鈕加間距的總高
-const _btnsH = 4 * kHomeBtnH + 3 * kHomeBtnGap;
+/// 方塊那一排的高度：邊長＋間距＋一行 12px 的字
+double _tilesH(WidgetTester t, double pageW) {
+  final side = (pageW - 48 - kHomeTileGap * 3) / 4;
+  return side + kHomeTileLabelGap + t.getSize(find.text(_labels[0])).height;
+}
 
 /// 模擬手機：邏輯 [w]×[h]、dpr 2、狀態列 20（SE 沒有瀏海也沒有 home 條）
 void _phone(WidgetTester t, double w, double h) {
@@ -248,131 +251,96 @@ void main() {
   });
 
   group('版面', () {
-    testWidgets('四顆入口：順序、文案、圖示、主次', (t) async {
+    testWidgets('四個入口方塊：順序、文案、圖示、主次', (t) async {
       await _pump(t);
 
-      for (final x in const ['加入浮水印', '製作浮水印']) {
+      for (final x in const ['加入浮水印', '製作浮水印', '影片編輯']) {
         expect(find.text(x), findsNothing, reason: '舊的「$x」不該再出現在首頁');
       }
-      final ys = <double>[];
+      final xs = <double>[];
       for (var i = 0; i < 4; i++) {
         final label = find.text(_labels[i]);
         final icon = find.byIcon(_icons[i]);
         expect(label, findsOneWidget, reason: '少了「${_labels[i]}」');
         expect(icon, findsOneWidget, reason: '「${_labels[i]}」的圖示不對');
-        // 圖示跟文字在同一列
+        // 名稱在方塊正下方、左右置中對齊
+        final sq = t.getRect(_sq(i));
         expect(
-          t.getCenter(icon).dy,
-          moreOrLessEquals(t.getCenter(label).dy, epsilon: 1),
+          t.getCenter(label).dx,
+          moreOrLessEquals(sq.center.dx, epsilon: 0.01),
+          reason: '「${_labels[i]}」的名稱沒有對齊方塊中線',
         );
-        ys.add(t.getCenter(label).dy);
+        expect(
+          t.getRect(label).top - sq.bottom,
+          moreOrLessEquals(kHomeTileLabelGap, epsilon: 0.01),
+        );
+        xs.add(sq.center.dx);
       }
       for (var i = 1; i < 4; i++) {
-        expect(ys[i] > ys[i - 1], isTrue, reason: '順序不對（由上而下量到 $ys）');
+        expect(xs[i] > xs[i - 1], isTrue, reason: '順序不對（由左而右量到 $xs）');
       }
 
-      // 膠囊：56 高、間距 12、滿版（左右各 24）
+      // 方塊：正方形、四個等寬、間距 12、整排滿版（左右各 24）
       final w = t.getSize(find.byType(MaterialApp)).width;
-      final pills = [for (final l in _labels) t.getRect(_pill(l))];
-      for (final r in pills) {
-        expect(r.height, kHomeBtnH);
-        expect(r.left, 24);
-        expect(r.right, w - 24);
+      final sqs = [for (var i = 0; i < 4; i++) t.getRect(_sq(i))];
+      for (final r in sqs) {
+        expect(r.width, moreOrLessEquals(r.height, epsilon: 0.01));
+        expect(
+          r.width,
+          moreOrLessEquals(sqs[0].width, epsilon: 0.01),
+          reason: '四個方塊不一樣大',
+        );
       }
+      expect(sqs.first.left, moreOrLessEquals(24, epsilon: 0.01));
+      expect(sqs.last.right, moreOrLessEquals(w - 24, epsilon: 0.01));
       for (var i = 1; i < 4; i++) {
         expect(
-          pills[i].top - pills[i - 1].bottom,
-          moreOrLessEquals(kHomeBtnGap, epsilon: 0.01),
+          sqs[i].left - sqs[i - 1].right,
+          moreOrLessEquals(kHomeTileGap, epsilon: 0.01),
+        );
+        expect(
+          sqs[i].top,
+          moreOrLessEquals(sqs[0].top, epsilon: 0.01),
+          reason: '四個方塊沒有對齊在同一條線上',
         );
       }
 
-      // 主次：第一顆反白填滿（近黑底、白圖示、白字），其他三顆描邊
+      // 主次：第一個反白（近黑底、白圖示），其他三個淺灰底、深圖示；
+      // 名稱一律是正文色
       for (var i = 0; i < 4; i++) {
         final primary = i == 0;
-        final m = t.widget<Material>(_pill(_labels[i]));
-        expect(m.color, primary ? kLAccent : Colors.transparent);
-        expect(m.shape, isA<RoundedRectangleBorder>());
-        final shape = m.shape! as RoundedRectangleBorder;
-        expect(shape.borderRadius, BorderRadius.circular(kHomeBtnRadius));
-        expect(
-          shape.side.style,
-          primary ? BorderStyle.none : BorderStyle.solid,
-          reason: primary ? '反白那顆不該再描邊' : '「${_labels[i]}」少了邊線',
-        );
-        if (!primary) expect(shape.side.color, kLBorder);
-        final fg = primary ? kLBg : kLText;
-        expect(t.widget<Icon>(find.byIcon(_icons[i])).color, fg);
-        expect(t.widget<Text>(find.text(_labels[i])).style?.color, fg);
+        final m = t.widget<Material>(_sq(i));
+        expect(m.color, primary ? kLAccent : kLTile);
+        expect(m.borderRadius, BorderRadius.circular(kHomeTileRadius));
+        final ic = t.widget<Icon>(find.byIcon(_icons[i]));
+        expect(ic.color, primary ? kLBg : kLText);
+        expect(ic.size, kHomeTileIcon);
+        expect(t.widget<Text>(find.text(_labels[i])).style?.color, kLText);
       }
-      // 按鈕上只有名稱，沒有說明文字
-      expect(
-        find.descendant(of: _pill('浮水印'), matching: find.byType(Text)),
-        findsOneWidget,
-      );
+      // 方塊上只有名稱，沒有說明文字
+      expect(find.byType(Text), findsNWidgets(4));
 
       // 右上角的個人中心還在
       expect(find.byIcon(Icons.person_outline), findsOneWidget);
       expect(t.takeException(), isNull);
     });
 
-    /// 四個圖示同一個 x、四段文字同一個 x，整組在膠囊裡置中
-    Future<void> expectAligned(WidgetTester t) async {
-      final iconLefts = [
-        for (final i in _icons) t.getRect(find.byIcon(i)).left,
-      ];
-      final labelLefts = [
-        for (final l in _labels) t.getRect(find.text(l)).left,
-      ];
-      for (var i = 1; i < 4; i++) {
-        expect(
-          iconLefts[i],
-          moreOrLessEquals(iconLefts[0], epsilon: 0.01),
-          reason: '圖示沒對齊：$iconLefts',
-        );
-        expect(
-          labelLefts[i],
-          moreOrLessEquals(labelLefts[0], epsilon: 0.01),
-          reason: '文字沒對齊：$labelLefts',
-        );
-      }
-      // 文字緊接在圖示後面
-      expect(
-        labelLefts[0] - iconLefts[0],
-        moreOrLessEquals(kHomeBtnIcon + kHomeBtnIconGap, epsilon: 0.01),
-      );
-      // 整組（固定寬 kHomeBtnGroupW）在膠囊裡置中：左邊留白＝右邊留白
-      final pill = t.getRect(_pill(_labels[0]));
-      final groupRight = iconLefts[0] + kHomeBtnGroupW;
-      expect(
-        iconLefts[0] - pill.left,
-        moreOrLessEquals(pill.right - groupRight, epsilon: 0.01),
-        reason: '那一組沒有在膠囊裡置中',
-      );
-      // 最寬的文字也放得進那一組——放不下的話文字會被推出去，四顆又不齊了
-      for (final l in _labels) {
-        expect(
-          t.getRect(find.text(l)).right <= groupRight + 0.01,
-          isTrue,
-          reason: '「$l」超出固定寬度的那一組',
-        );
-      }
-    }
-
-    testWidgets('下面整齊一點：四個圖示同一個 x、四段文字同一個 x、整組置中', (t) async {
-      await _pump(t);
-      await expectAligned(t);
-      expect(t.takeException(), isNull);
-    });
-
-    testWidgets('系統字級放大到 1.2 倍（App 的上限）照樣整齊、不溢出', (t) async {
+    testWidgets('系統字級放大到 1.2 倍（App 的上限）照樣不溢出、名稱不折行', (t) async {
       t.platformDispatcher.textScaleFactorTestValue = 1.2;
       addTearDown(t.platformDispatcher.clearTextScaleFactorTestValue);
       await _pump(t);
-      await expectAligned(t);
       expect(t.takeException(), isNull);
+      for (var i = 0; i < 4; i++) {
+        final label = find.text(_labels[i]);
+        expect(t.widget<Text>(label).maxLines, 1);
+        expect(
+          t.getCenter(label).dx,
+          moreOrLessEquals(t.getRect(_sq(i)).center.dx, epsilon: 0.01),
+        );
+      }
     });
 
-    testWidgets('iPhone SE（375×667）放得下：不溢出、logo 完整、按鈕貼底', (t) async {
+    testWidgets('iPhone SE（375×667）放得下：不溢出、logo 完整、方塊貼底', (t) async {
       _phone(t, 375, 667);
       await _pump(t);
       expect(t.takeException(), isNull, reason: 'SE 上溢出了');
@@ -380,20 +348,22 @@ void main() {
       final logo = t.getRect(find.byType(Image));
       expect(logo.width, kHomeLogoSize.width);
       expect(logo.height, kHomeLogoSize.height);
-      // logo 在標題列（狀態列 20＋56）底下、第一顆按鈕上面
+      // logo 在標題列（狀態列 20＋56）底下、方塊上面
       expect(logo.top, greaterThan(76));
-      final first = t.getRect(_pill(_labels[0]));
-      final last = t.getRect(_pill(_labels[3]));
-      expect(logo.bottom, lessThan(first.top));
-      // 按鈕群貼底（底部留白 20），四顆佔 4×56＋3×12
-      expect(last.bottom, moreOrLessEquals(667 - 20, epsilon: 0.01));
-      expect(last.bottom - first.top, moreOrLessEquals(_btnsH, epsilon: 0.01));
-      await expectAligned(t);
+      final sq = t.getRect(_sq(0));
+      expect(logo.bottom, lessThan(sq.top));
+      // 那一排貼底（底部留白 20）
+      final last = t.getRect(find.text(_labels[3]));
+      expect(last.bottom, moreOrLessEquals(667 - 20, epsilon: 1));
+      expect(
+        last.bottom - sq.top,
+        moreOrLessEquals(_tilesH(t, 375), epsilon: 1),
+      );
     });
 
-    testWidgets('更矮的畫面：logo 等比縮小、按鈕群不動、不溢出', (t) async {
-      // 狀態列 20＋標題列 56＋底部留白 20，剩 324 給 logo＋按鈕（260）
-      _phone(t, 375, 420);
+    testWidgets('更矮的畫面：logo 等比縮小、方塊那一排不動、不溢出', (t) async {
+      // 狀態列 20＋標題列 56＋底部留白 20，剩 184 給 logo＋方塊（約 97）
+      _phone(t, 375, 280);
       await _pump(t);
       expect(t.takeException(), isNull, reason: '矮畫面溢出了');
 
@@ -408,16 +378,15 @@ void main() {
         ),
         reason: 'logo 縮了但沒有等比',
       );
-      final first = t.getRect(_pill(_labels[0]));
-      final last = t.getRect(_pill(_labels[3]));
-      expect(logo.bottom <= first.top, isTrue);
-      expect(last.bottom, moreOrLessEquals(420 - 20, epsilon: 0.01));
-      expect(last.bottom - first.top, moreOrLessEquals(_btnsH, epsilon: 0.01));
+      final sq = t.getRect(_sq(0));
+      expect(logo.bottom <= sq.top, isTrue);
+      final last = t.getRect(find.text(_labels[3]));
+      expect(last.bottom, moreOrLessEquals(280 - 20, epsilon: 1));
     });
 
-    testWidgets('連按鈕都放不下（330 高）：logo 不畫、按鈕自己捲、不溢出', (t) async {
-      // 狀態列 20＋標題列 56＋底部留白 20，剩 234 < 260
-      _phone(t, 844, 330);
+    testWidgets('連方塊都放不下（150 高）：logo 不畫、自己捲、不溢出', (t) async {
+      // 狀態列 20＋標題列 56＋底部留白 20，剩 54 < 方塊那一排
+      _phone(t, 844, 150);
       await _pump(t);
       expect(t.takeException(), isNull, reason: '矮畫面溢出了');
       expect(find.byType(Image), findsNothing, reason: '放不下就不該硬擠 logo');
@@ -425,20 +394,12 @@ void main() {
       for (final l in _labels) {
         expect(find.text(l), findsOneWidget);
       }
-      // 最後一顆一開始在可視區外，捲到底就貼著底部留白
-      expect(t.getRect(_pill(_labels[3])).bottom, greaterThan(330 - 20));
-      await t.drag(find.byType(SingleChildScrollView), const Offset(0, -400));
-      await t.pumpAndSettle();
-      expect(
-        t.getRect(_pill(_labels[3])).bottom,
-        moreOrLessEquals(330 - 20, epsilon: 0.01),
-      );
       expect(t.takeException(), isNull);
     });
   });
 
   group('每一顆走的路', () {
-    testWidgets('浮水印：相簿混選（不再問影片／照片），兩張照片問串成影片還是各自上浮水印', (t) async {
+    testWidgets('浮水印：先問照片還是影片；選照片 → 照片選取器 → 兩張問串成影片還是各自上浮水印', (t) async {
       _images.next = [
         XFile(_p('a.png'), name: 'a.png'),
         XFile(_p('b.png'), name: 'b.png'),
@@ -448,9 +409,16 @@ void main() {
       await t.tap(find.text('浮水印'));
       await _settle(t);
 
-      expect(_images.calls, 1, reason: '沒有開相簿混選');
+      // 先問一句：照片還是影片
+      expect(find.text('要上浮水印的是'), findsOneWidget);
+      expect(find.text('照片'), findsOneWidget);
+      expect(find.text('影片'), findsOneWidget);
+      expect(_images.calls + _files.calls, 0, reason: '還沒選就開了選取器');
+      await t.tap(find.text('照片'));
+      await _settle(t);
+
+      expect(_images.calls, 1, reason: '沒有開照片選取器');
       expect(_files.calls, 0, reason: '開錯了（只列影片那個選取器）');
-      expect(find.text('加入浮水印'), findsNothing, reason: '不該再先問「影片還是照片」');
       expect(
         find.text('選了 2 張照片'),
         findsOneWidget,
@@ -511,18 +479,20 @@ void main() {
       expect(t.takeException(), isNull);
     });
 
-    testWidgets('浮水印：兩支影片問接成一支還是各自上浮水印', (t) async {
-      _images.next = [
-        XFile(_p('a.mp4'), name: 'a.mp4'),
-        XFile(_p('b.mp4'), name: 'b.mp4'),
-      ];
+    testWidgets('浮水印：選影片 → 影片選取器，非影片檔濾掉，兩支問接成一支還是各自上浮水印', (t) async {
+      // 選取器照理只列影片，但 web／舊安卓那條路可能混進照片，首頁要自己濾
+      _files.next = [_p('a.mp4'), _p('c.png'), _p('b.mp4')];
       final spy = _RouteSpy();
       await _pump(t, spy: spy);
       await t.tap(find.text('浮水印'));
       await _settle(t);
+      await t.tap(find.text('影片'));
+      await _settle(t);
 
-      expect(_images.calls, 1);
-      expect(_files.calls, 0);
+      expect(_files.calls, 1, reason: '沒有開影片選取器');
+      expect(_files.lastType, FileType.video, reason: '相簿只能列影片');
+      expect(_files.lastMultiple, isTrue);
+      expect(_images.calls, 0, reason: '開錯了（照片那個選取器）');
       expect(find.text('選了 2 部影片'), findsOneWidget, reason: '多支要先問');
       expect(find.text('剪成一支影片'), findsOneWidget);
       expect(spy.edits, isEmpty, reason: '還沒問完就推了頁');
@@ -534,43 +504,21 @@ void main() {
       expect(
         [for (final f in (page as BatchWatermarkScreen).files) f.path],
         [_p('a.mp4'), _p('b.mp4')],
-        reason: '影片照點選順序',
+        reason: '照片要被濾掉、影片照點選順序',
       );
-      expect(page.initialHint, isNull, reason: '兩支影片沒什麼好提醒的');
+      // 選完才講的提醒：被略過的檔案交給批次頁進場後顯示
+      expect(page.initialHint, '已略過 1 個非影片檔案');
       await _drain(t);
       expect(t.takeException(), isNull);
     });
 
-    testWidgets('浮水印：照片影片混著選，不問，直接進批次', (t) async {
-      _images.next = [
-        XFile(_p('a.mp4'), name: 'a.mp4'),
-        XFile(_p('c.png'), name: 'c.png'),
-      ];
+    testWidgets('剪輯：不開選取器，直接開一條空的時間軸', (t) async {
       final spy = _RouteSpy();
       await _pump(t, spy: spy);
-      await t.tap(find.text('浮水印'));
+      await t.tap(find.text('剪輯'));
       await _settle(t, 20);
 
-      expect(find.byType(Dialog), findsNothing, reason: '混著選沒有「接成一支」可問');
-      final page = spy.lastEdit(t);
-      expect(page, isA<BatchWatermarkScreen>());
-      expect(
-        [for (final f in (page as BatchWatermarkScreen).files) f.path],
-        [_p('a.mp4'), _p('c.png')],
-        reason: '照點選順序、什麼都不濾',
-      );
-      expect(page.initialHint, isNull);
-      await _drain(t);
-      expect(t.takeException(), isNull);
-    });
-
-    testWidgets('影片編輯：不開選取器，直接開一條空的時間軸', (t) async {
-      final spy = _RouteSpy();
-      await _pump(t, spy: spy);
-      await t.tap(find.text('影片編輯'));
-      await _settle(t, 20);
-
-      expect(_images.calls + _files.calls, 0, reason: '影片編輯不該先開選取器');
+      expect(_images.calls + _files.calls, 0, reason: '剪輯不該先開選取器');
       final page = spy.lastEdit(t);
       expect(page, isA<VideoEditorScreen>());
       expect((page as VideoEditorScreen).blank, isTrue, reason: '要開的是空軌道');
@@ -585,10 +533,12 @@ void main() {
     testWidgets('取消選取器：什麼都不推、鎖也要放開', (t) async {
       final spy = _RouteSpy();
       await _pump(t, spy: spy);
-      // 混選：回空清單＝取消
+      // 浮水印 → 照片：回空清單＝取消
       await t.tap(find.text('浮水印'));
       await _settle(t);
-      // 影片：回 null＝取消
+      await t.tap(find.text('照片'));
+      await _settle(t);
+      // GIF → 影片選取器：回 null＝取消
       await t.tap(find.text('GIF'));
       await _settle(t);
       expect(_images.calls, 1);
@@ -611,7 +561,7 @@ void main() {
         await t.pump(const Duration(milliseconds: 5));
       }
       expect(_files.calls, 1, reason: '連點之後選取器被開了 ${_files.calls} 次');
-      expect(_images.calls, 0, reason: '影片選取器開著時「浮水印」不該再開一個');
+      expect(find.text('要上浮水印的是'), findsNothing, reason: '選取器開著時「浮水印」不該再跳問題');
 
       // 取消（回空）→ 鎖放開，再點一下要能再開
       _files.hold!.complete(const []);

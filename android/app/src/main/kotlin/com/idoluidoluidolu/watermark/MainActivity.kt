@@ -475,8 +475,8 @@ class MainActivity : FlutterActivity() {
     }
 
     /// 退路階梯。第一段是我們要的規格：短邊精確縮到 shortSide、關鍵幀
-    /// 0.25 秒（拖曳抽幀只拿關鍵幀，密一點滑到哪就是哪；比 1 秒多花
-    /// 一成多的位元）。第二段退回 media3 的預設編碼參數，HDR 來源改由
+    /// 0.10 秒（60fps 約每 6 格，減少拖曳時從上一個關鍵幀解碼的距離）。
+    /// 第二段退回 media3 的預設編碼參數，HDR 來源改由
     /// MediaCodec 做色調映射（GL 那條壞了時的另一條路；SDR 來源沒差）。
     /// 第三段 720p 保底。[safe]＝Dart 端說上一次轉出來的不能用（轉好
     /// 卻全黑那種），直接從第二段起
@@ -490,7 +490,7 @@ class MainActivity : FlutterActivity() {
             }
         val all =
             listOf(
-                PrepRung("短邊 $shortSide、關鍵幀 0.25 秒", shortSide, 0.25f, gl),
+                PrepRung("短邊 $shortSide、關鍵幀 0.10 秒", shortSide, 0.10f, gl),
                 PrepRung("系統預設編碼參數", shortSide, null, mc),
                 PrepRung("720p 保底", minOf(720, shortSide), null, gl),
             )

@@ -91,7 +91,11 @@ Widget _app(Widget home, {bool light = false}) => RepaintBoundary(
       GlobalCupertinoLocalizations.delegate,
     ],
     supportedLocales: const [
-      Locale.fromSubtags(languageCode: 'zh', scriptCode: 'Hant', countryCode: 'TW'),
+      Locale.fromSubtags(
+        languageCode: 'zh',
+        scriptCode: 'Hant',
+        countryCode: 'TW',
+      ),
       Locale('zh', 'TW'),
       Locale('zh'),
       Locale('en'),
@@ -107,9 +111,9 @@ Future<void> _shot(WidgetTester t, String name) async {
     final im = await b.toImage(pixelRatio: 3);
     final bytes = await im.toByteData(format: ui.ImageByteFormat.png);
     im.dispose();
-    File('$_out${Platform.pathSeparator}$name.png').writeAsBytesSync(
-      bytes!.buffer.asUint8List(),
-    );
+    File(
+      '$_out${Platform.pathSeparator}$name.png',
+    ).writeAsBytesSync(bytes!.buffer.asUint8List());
   });
   _written.add(name);
 }
@@ -261,7 +265,9 @@ Finder _newestClip(WidgetTester t) {
     final k = w.key;
     return k is ValueKey<String> && k.value.startsWith('clip');
   }).evaluate()) {
-    final n = int.tryParse((e.widget.key! as ValueKey<String>).value.substring(4));
+    final n = int.tryParse(
+      (e.widget.key! as ValueKey<String>).value.substring(4),
+    );
     if (n != null && n > best) best = n;
   }
   expect(best, greaterThan(0), reason: '時間軸上找不到片段');
@@ -404,9 +410,9 @@ void main() {
   });
 
   tearDownAll(() {
-    File('$_out${Platform.pathSeparator}_written.txt').writeAsStringSync(
-      _written.join('\n'),
-    );
+    File(
+      '$_out${Platform.pathSeparator}_written.txt',
+    ).writeAsStringSync(_written.join('\n'));
   });
 
   // ---------- 影片編輯器 ----------
@@ -545,7 +551,9 @@ void main() {
 
   testWidgets('ve: 多張圖片串成影片（秒數對話框）', (t) async {
     _iphone14(t);
-    await t.pumpWidget(_app(VideoEditorScreen(photoPaths: [_png8, _png8, _png8])));
+    await t.pumpWidget(
+      _app(VideoEditorScreen(photoPaths: [_png8, _png8, _png8])),
+    );
     await _settle(t, 30);
     expect(find.text('3 張圖片串成影片'), findsOneWidget);
     await _shot(t, '18-ve-slide-seconds-dialog');
@@ -668,9 +676,7 @@ void main() {
                 ],
               ),
             ),
-            actions: [
-              TextButton(onPressed: () {}, child: const Text('取消')),
-            ],
+            actions: [TextButton(onPressed: () {}, child: const Text('取消'))],
           ),
         ),
       ),
@@ -727,7 +733,10 @@ void main() {
             children: [
               const SizedBox(height: 8),
               ListTile(
-                leading: const Icon(Icons.library_music_outlined, color: kAmber),
+                leading: const Icon(
+                  Icons.library_music_outlined,
+                  color: kAmber,
+                ),
                 title: const Text('音樂檔案'),
                 onTap: () => Navigator.pop(context, false),
               ),
@@ -787,9 +796,7 @@ void main() {
     await _close(t);
 
     final ctx = _ctx(t);
-    unawaited(
-      showNotice(ctx, title: '已存成範本', message: '之後在「範本」分頁或個人頁都找得到'),
-    );
+    unawaited(showNotice(ctx, title: '已存成範本', message: '之後在「範本」分頁或個人頁都找得到'));
     await _settle(t, 10);
     await _shot(t, '03-notice-dark-preset-saved');
     await _close(t);
@@ -834,9 +841,7 @@ void main() {
     await _shot(t, '07-leave-choice-dark-photo');
     await _close(t);
 
-    unawaited(
-      askAfterExport(ctx, '已存到相簿', note: '這個裝置不支援 JPEG，已改存 PNG'),
-    );
+    unawaited(askAfterExport(ctx, '已存到相簿', note: '這個裝置不支援 JPEG，已改存 PNG'));
     await _settle(t, 10);
     await _shot(t, '04-after-export-dark-with-note');
     await _close(t);
@@ -954,9 +959,7 @@ void main() {
                 ),
               ],
             ),
-            actions: [
-              TextButton(onPressed: () {}, child: const Text('取消')),
-            ],
+            actions: [TextButton(onPressed: () {}, child: const Text('取消'))],
           ),
         ),
       ),
@@ -1014,12 +1017,12 @@ void main() {
 
   // ---------- 首頁（淺色）----------
 
-  testWidgets('home: 首頁四顆入口 ＋ 重建的多選影片視窗', (t) async {
-    // 「加入浮水印」的選單沒了：四顆入口（浮水印／照片拼圖／GIF／
-    // 影片編輯）直接在首頁上，各自進功能
+  testWidgets('home: 首頁四個入口方塊 ＋ 重建的多選影片視窗', (t) async {
+    // 「加入浮水印」的選單沒了：四個入口方塊（浮水印／照片拼圖／GIF／
+    // 剪輯）直接在首頁上，各自進功能
     await _pumpLight(t, const HomeScreen());
     expect(find.text('照片拼圖'), findsOneWidget);
-    await _shot(t, '45-home-four-entries');
+    await _shot(t, '45-home-four-tiles');
 
     // 逐字重建：home_screen.dart _askMultiVideo 選了 N 部影片
     final ctx = _ctx(t);
