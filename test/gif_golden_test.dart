@@ -138,7 +138,7 @@ void main() {
     );
   });
 
-  testWidgets('首頁：加入浮水印（多了製作 GIF）', (tester) async {
+  testWidgets('首頁：四顆入口（GIF 直接在首頁，不再藏在選單裡）', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
         theme: buildLightTheme(),
@@ -147,11 +147,12 @@ void main() {
       ),
     );
     await _settle(tester);
-    await tester.tap(find.text('加入浮水印').first);
-    await _settle(tester);
+    // 四顆：浮水印／照片拼圖／GIF／影片編輯，圖示＋文字對齊在同一個 x
+    //（圖示在這裡是空方框：測試環境沒載 Material Icons，跟其他快照一樣）
+    expect(find.text('GIF'), findsOneWidget);
     await expectLater(
       find.byType(MaterialApp),
-      matchesGoldenFile('goldens/gif_home_pick.png'),
+      matchesGoldenFile('goldens/home.png'),
     );
   });
 

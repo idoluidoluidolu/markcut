@@ -4,10 +4,12 @@
 // 任何未捕捉的例外都會讓測試失敗——等於自動化的「亂點測試員」。
 //
 // 執行：flutter test test/ui_stress_test.dart
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 import 'package:markcut/main.dart';
 import 'package:markcut/models/color_grade.dart';
 import 'package:markcut/models/watermark_settings.dart';
@@ -24,28 +26,70 @@ Widget host(Widget child) => MaterialApp(
   theme: ThemeData.dark(),
 );
 
+/// 假的相簿選取器：開了先不回（模擬選取器還開在畫面上），
+/// 由測試決定什麼時候「選好」
+class _HoldPicker extends ImagePickerPlatform {
+  int calls = 0;
+  final _c = Completer<List<XFile>>();
+
+  void finish(List<XFile> files) => _c.complete(files);
+
+  @override
+  Future<List<XFile>> getMultiImageWithOptions({
+    MultiImagePickerOptions options = const MultiImagePickerOptions(),
+  }) {
+    calls++;
+    return _c.future;
+  }
+
+  /// 首頁「浮水印」走的是相簿混選（pickMultipleMedia）
+  @override
+  Future<List<XFile>> getMedia({required MediaOptions options}) {
+    calls++;
+    return _c.future;
+  }
+}
+
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
   group('首頁亂點', () {
-    testWidgets('連點主要按鈕 30 次不會疊出一堆對話框或炸掉', (tester) async {
+    testWidgets('連點「浮水印」30 次：選取器只開一次、只問一次，不會炸', (tester) async {
+      // 首頁的「浮水印」直接開相簿混選（沒有選單了），
+      // 重入鎖要守的是「選取器開著時再點都不會再開一個」
+      final picker = _HoldPicker();
+      final prev = ImagePickerPlatform.instance;
+      ImagePickerPlatform.instance = picker;
+      addTearDown(() => ImagePickerPlatform.instance = prev);
+
       await tester.pumpWidget(const MarkCutApp());
       await tester.pumpAndSettle();
 
-      // 連點「加入浮水印」：重入鎖要擋住，只能有一個選單。
-      // 用 .first：選單一開，標題也叫「加入浮水印」，會有兩個
       for (var i = 0; i < 30; i++) {
-        await tester.tap(find.text('加入浮水印').first, warnIfMissed: false);
+        await tester.tap(find.text('浮水印'), warnIfMissed: false);
         await tester.pump(const Duration(milliseconds: 5));
       }
+      expect(picker.calls, 1, reason: '連點之後選取器被開了 ${picker.calls} 次');
+
+      // 選好兩張：只會問一次「串成影片還是各自上浮水印」
+      picker.finish([
+        XFile('/x/a.png', name: 'a.png'),
+        XFile('/x/b.png', name: 'b.png'),
+      ]);
       await tester.pumpAndSettle();
       expect(
-        find.text('單支影片').evaluate().length <= 1,
-        isTrue,
-        reason: '連點之後疊出了不只一個選取視窗',
+        find.text('選了 2 張照片'),
+        findsOneWidget,
+        reason: '連點之後疊出了不只一個（或沒有）選取視窗',
       );
 
-      // 關掉（點視窗外）
+      // 關掉（點視窗外）：鎖要放開，再點一下要能再開選取器
+      await tester.tapAt(const Offset(10, 10));
+      await tester.pumpAndSettle();
+      expect(find.text('選了 2 張照片'), findsNothing);
+      await tester.tap(find.text('浮水印'));
+      await tester.pumpAndSettle();
+      expect(picker.calls, 2, reason: '視窗關掉之後鎖沒放開');
       await tester.tapAt(const Offset(10, 10));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
