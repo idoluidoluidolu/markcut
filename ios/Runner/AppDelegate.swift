@@ -478,9 +478,9 @@ enum MCStillLoader {
     }
   }
 
-  /// 反 OOTF 的 color kernel（CIKL）。CIKL 從 iOS 12 起被 Metal 取代、
-  /// iOS 17 SDK 正式標 deprecated，但 iOS 15～17 執行期照樣編得過；哪天
-  /// 編不過（回 nil）就自動退到內建濾鏡鏈，自檢再驗一次。
+  /// 反 OOTF 的 color kernel（CIKL）。init(source:) 從 iOS 12 SDK 起就標
+  /// deprecated（編譯只會給一個警告，專案沒開警告當錯誤），但 iOS 15～17
+  /// 執行期照樣編得過；哪天編不過（回 nil）就自動退到內建濾鏡鏈，自檢再驗一次。
   /// __sample 進來是預乘 alpha 的：先除回 alpha 算 Y（半透明邊緣的係數
   /// 才對），係數乘回預乘的 RGB，alpha 原樣直通——α=0 的像素 Y 被下限
   /// 夾住，永遠不會算 pow(0, 負數)
@@ -502,7 +502,11 @@ enum MCStillLoader {
   /// 不會算 pow(0, 負數)，乘回 (0,0,0,0) 還是 (0,0,0,0)
   static func lumaChainOotf(_ img: CIImage) -> CIImage {
     let w = CIVector(x: 0.2126, y: 0.7152, z: 0.0722, w: 0)
-    let luma = img.applyingFilter(
+    // Y 要從「未預乘」的 RGB 算：CIColorMatrix 不會自己除回 alpha，
+    // 半透明邊緣的 Y 會被 α 打折，係數 (αY)^(-1/6) 就比該有的大——
+    // α=0.5 多亮 12%、α=0.1 多亮 47%，透明 PNG 的鋸齒邊會浮一圈亮邊。
+    // 乘回去的仍是預乘的 img，輸出照樣正確
+    let luma = img.unpremultiplyingAlpha().applyingFilter(
       "CIColorMatrix",
       parameters: [
         "inputRVector": w, "inputGVector": w, "inputBVector": w,
@@ -638,7 +642,7 @@ enum MCStillLoader {
   /// CIGammaAdjust 把負指數夾掉……），依序試 kernel → 內建亮度係數鏈 →
   /// 逐通道正指數；三條都不動就停用校正、報告那行明說。
   /// 探針本身先要可信：線性讀回不是 0.180（±0.01）就不判定、不快取。
-  /// 最多五張 1×1 的渲染，一個行程一次
+  /// 最多八張 1×1 的渲染（探針一趟兩張，自檢每種寫法各兩張），一個行程一次
   private static func runProbe() -> HlgProbe {
     func failed(_ why: String) -> HlgProbe {
       HlgProbe(
@@ -652,6 +656,15 @@ enum MCStillLoader {
       return failed(
         "探針異常：線性讀回" + String(format: "%.3f", plain.linear)
           + "（應0.180），不判定")
+    }
+    // HLG 碼也要落在物理上可能的區間：那趟 RGBA16 render 要是沒寫入
+    // （讀回 0）或吐 NaN，< 0.407 會把它判成場景參考、套校正、還快取起來。
+    // 文件上合理的讀值 0.325／0.378／0.436／0.672 全在區間內；NaN 兩邊
+    // 比較都不成立，一樣落到 failed
+    guard plain.code > 0.2, plain.code < 0.9 else {
+      return failed(
+        "探針異常：HLG碼讀回" + String(format: "%.3f", plain.code)
+          + "（應0.378或0.436），不判定")
     }
     let scene = plain.code < 0.407
     let reading: String
