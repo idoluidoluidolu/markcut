@@ -42,7 +42,7 @@ void main() {
     b.defaultBinaryMessenger.setMockMethodCallHandler(ch, null);
     CompPlayer.debugHdrProbe = null;
     CompPlayer.debugClearHdrStills();
-    Diag.hlgStillInverseOotf.value = false;
+    Diag.hlgStillInverseOotf = null;
   });
 
   /// 影片 0~5 秒（給 workPath＝不會去探測 HDR，測試不碰檔案系統）
@@ -218,8 +218,9 @@ void main() {
       expect(st['end'], 4.0, reason: '尾巴 1~4 秒也要畫，不能夾到影片結尾');
       expect(st['track'], 1);
       expect(st['hdr'], isFalse);
-      // 反 OOTF 實驗開關預設關：原生端連分支都不進
-      expect(p['stillInverseOotf'], isFalse);
+      // 反 OOTF 沒有使用者開關：預設不送鍵＝原生端照中灰探針自動決定
+      //（送 false 反而是「強制關」，會蓋掉自動判定）
+      expect(p.containsKey('stillInverseOotf'), isFalse);
     });
 
     test('HDR 合成、沒有浮水印：壓在影片之上的圖片不烘（Flutter 畫），照樣補長', () async {
@@ -232,12 +233,23 @@ void main() {
       expect(sent.single['timelineDuration'], 4.0);
     });
 
-    test('反 OOTF 開關開了：payload 送 true（預覽與匯出同一個旗標）', () async {
-      Diag.hlgStillInverseOotf.value = true;
+    test('反 OOTF 診斷強制值：設了才送、true/false 都送（預覽與匯出同一個旗標）', () async {
       final tl = baseHdr();
       addImage(tl, at: 0, len: 4, track: 0);
+
+      Diag.hlgStillInverseOotf = true;
       expect(await CompPlayer.build(tl, hdrOut: true), isNotNull);
       expect(sent.single['stillInverseOotf'], isTrue);
+
+      sent.clear();
+      Diag.hlgStillInverseOotf = false;
+      expect(await CompPlayer.build(tl, hdrOut: true), isNotNull);
+      expect(sent.single['stillInverseOotf'], isFalse, reason: '強制關也要送出去');
+
+      sent.clear();
+      Diag.hlgStillInverseOotf = null;
+      expect(await CompPlayer.build(tl, hdrOut: true), isNotNull);
+      expect(sent.single.containsKey('stillInverseOotf'), isFalse, reason: 'null＝自動，不送鍵');
     });
   });
 

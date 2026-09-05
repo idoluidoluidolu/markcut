@@ -687,9 +687,11 @@ class CompPlayer {
         // HDR 預覽的疊加物（浮水印/文字/貼圖的整版 PNG，跟匯出
         // 同一套欄位；rect 描述使用者畫布落在合成畫框的哪裡）
         'overlays': overlays,
-        // HLG 合成裡的圖片素材反 OOTF（實驗開關，預設關；原生端只在
-        // 掛 HDR 合成器時讀，SDR 合成不受影響。見 Diag.hlgStillInverseOotf）
-        'stillInverseOotf': Diag.hlgStillInverseOotf.value,
+        // HLG 合成裡的圖片素材反 OOTF：不送鍵＝原生端自動（中灰探針
+        // 判定，沒有使用者開關）；只有診斷強制值（Diag.hlgStillInverseOotf
+        // 設了 true/false）才送。原生端只在掛 HDR 合成器時讀，SDR 不受影響
+        if (Diag.hlgStillInverseOotf != null)
+          'stillInverseOotf': Diag.hlgStillInverseOotf,
       });
       if (m == null) return null;
       // 原生端組不起來時會回原因，不要讓它只變成一句「組不起來」
@@ -1003,9 +1005,10 @@ class CompPlayer {
           b.write('\n  軌道段：${bi['軌道段']}');
         }
         // 中灰探針（HDR 合成且有圖片層時才有）：線性 0.18 的中灰經過
-        // 圖片素材那條路之後，CI 寫成的 HLG 碼多少（原生端那行自帶
-        // 判讀：0.378＝純反 OETF、圖片中間調暗半檔，該開
-        // Diag.hlgStillInverseOotf；0.436＝含 OOTF、圖片正確）
+        // 圖片素材那條路之後，CI 寫成的 HLG 碼多少，以及原生端據此
+        // 自動做了什麼（0.378＝場景參考→反 OOTF 套用、校正後線性應
+        // 0.239；0.436＝顯示參考→不套；濾鏡自檢不動→已停用）。
+        // 沒有開關，這一行就是決定與理由
         if (bi['中灰'] != null) {
           b.write('\n  中灰探針：${bi['中灰']}');
         }

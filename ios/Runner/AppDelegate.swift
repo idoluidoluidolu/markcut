@@ -372,11 +372,15 @@ final class CIGifSpec {
 /// 不展開——SDR 合成器的工作格式是 RGBA8，超過 1.0 的值只會被截掉。
 /// 展開失敗（CI 打不開）退回舊路：未轉正、不展開，至少有圖
 enum MCStillLoader {
-  /// [inverseOotf]：HLG 合成（[hdr]）時對載入的圖片套 [inverseHlgOotf]
-  ///（Dart 端實驗開關 Diag.hlgStillInverseOotf，預設關）。SDR 合成連
-  /// 判斷都不進，像素一個位元都不變
+  /// [inverseOotf]：HLG 合成（[hdr]）時要不要對載入的圖片套 [inverseHlgOotf]。
+  /// nil＝自動——照 [hlgProbe]（一個行程量一次的中灰探針）判定：CI 把
+  /// 線性寫成 HLG 碼那一步是場景參考才套、顯示參考不套、三條反 OOTF 路
+  /// 自檢都不動就停用。true/false＝診斷用的強制覆寫（Dart 端
+  /// Diag.hlgStillInverseOotf，預設 null；沒有使用者開關，決定是自動的，
+  /// 健康報告只寫決定了什麼、為什麼）。SDR 合成連判斷都不進，像素一個
+  /// 位元都不變
   static func load(
-    path: String, hdr: Bool, hint: Bool? = nil, inverseOotf: Bool = false
+    path: String, hdr: Bool, hint: Bool? = nil, inverseOotf: Bool? = nil
   ) -> CIImage? {
     var opts: [CIImageOption: Any] = [.applyOrientationProperty: true]
     var expanded = false
@@ -398,9 +402,11 @@ enum MCStillLoader {
     if expanded {
       NSLog("[HDRStill] 展開 HDR：%@", (path as NSString).lastPathComponent)
     }
-    // 反 OOTF 只在 HLG 合成＋開關開著時套。展開過的 HDR 照片也套：
-    // 它的線性值一樣是「顯示光」，開關要驗的是 CI 寫 HLG 碼那一步
-    let img = (hdr && inverseOotf) ? inverseHlgOotf(raw) : raw
+    // 反 OOTF 只在 HLG 合成時套；套不套由探針決定（強制覆寫優先）。
+    // 展開過的 HDR 照片也套：它的線性值一樣是「顯示光」（1.0＝SDR 白、
+    // 增益圖往上乘），要修的是 CI 寫 HLG 碼那一步，跟 SDR 圖同一個病
+    let img =
+      (hdr && (inverseOotf ?? hlgProbe().apply)) ? inverseHlgOotf(raw) : raw
     let o = img.extent.origin
     if abs(o.x) > 0.001 || abs(o.y) > 0.001 {
       return img.transformed(by: CGAffineTransform(translationX: -o.x, y: -o.y))
@@ -413,6 +419,28 @@ enum MCStillLoader {
   /// 反 OOTF 就是 Y^(1/γ)，沒有額外的比例常數
   static let hlgSystemGamma: Double = 1.2
 
+  /// 黑階下限：Y 的負指數在 0 會爆成無限大（0×∞＝NaN），Y 先夾到這裡
+  static let blackFloor: Double = 1.0 / 4096.0
+
+  /// 線性 0.18 的中灰乘 Y^(1/γ−1) 之後應得的線性值：0.18^(1/1.2)＝0.239
+  static let correctedMidGrey: Double = pow(0.18, 1.0 / hlgSystemGamma)
+
+  /// 反 OOTF 的三條做法（自檢挑第一條真的動的；見 [runProbe]）
+  enum OotfMethod: String {
+    /// 三條都不動＝校正已停用
+    case disabled = "無"
+    /// 自寫 color kernel（CIKL）：RGB × max(Y, 下限)^(1/γ−1)，alpha 直通。
+    /// 精確、保色度，不靠 CIGammaAdjust 吃不吃負指數
+    case kernel = "kernel"
+    /// 內建濾鏡鏈：CIColorMatrix 算 Y → CIColorClamp 夾黑 →
+    /// CIGammaAdjust(負指數) → CIMultiplyCompositing。保色度，但
+    /// CIGammaAdjust 的屬性表寫 min 0，負指數會不會被夾查不到
+    case lumaChain = "亮度係數"
+    /// 逐通道 CIGammaAdjust(1/γ)（正指數，一定吃）：灰階精確，
+    /// 飽和色的色度會偏一點（每通道各自壓，不是整體乘一個係數）
+    case perChannel = "逐通道γ"
+  }
+
   /// 反 OOTF：RGB_s = RGB_d × Y_d^(1/γ − 1)。
   ///
   /// 圖片素材是「顯示光」（sRGB/P3 解碼出來的線性值，1.0＝基準白）直接
@@ -423,23 +451,70 @@ enum MCStillLoader {
   /// 的顯示光。只乘亮度算出來的係數、RGB 一起乘：色度不變，跟 BT.2100
   /// 定義的 OOTF（作用在 Y 上）同構。Y 用 709 權重在線性 sRGB 工作空間
   /// 算——CIE Y 跟原色無關，在 sRGB 原色算的 Y 跟轉去 2020 再算是同一
-  /// 個數。全部用內建濾鏡（都是 color kernel，CI 會併成一趟），不自寫
-  /// kernel——這裡沒有編譯器可驗
+  /// 個數。走 [hlgProbe] 自檢挑出來的那條路（kernel → 內建亮度係數鏈 →
+  /// 逐通道），三條都不動時原圖照回
   static func inverseHlgOotf(_ img: CIImage) -> CIImage {
+    applyOotf(img, method: hlgProbe().method)
+  }
+
+  /// 指定做法的反 OOTF（自檢逐條試用；正常路走 [inverseHlgOotf]）。
+  /// 這裡不能碰 [hlgProbe]——[runProbe] 在探針鎖裡呼叫這條
+  static func applyOotf(_ img: CIImage, method: OotfMethod) -> CIImage {
+    switch method {
+    case .disabled:
+      return img
+    case .kernel:
+      guard let k = ootfKernel,
+        let out = k.apply(
+          extent: img.extent,
+          arguments: [img, 1.0 / hlgSystemGamma - 1.0, blackFloor])
+      else { return img }
+      return out
+    case .lumaChain:
+      return lumaChainOotf(img)
+    case .perChannel:
+      return img.applyingFilter(
+        "CIGammaAdjust", parameters: ["inputPower": 1.0 / hlgSystemGamma])
+    }
+  }
+
+  /// 反 OOTF 的 color kernel（CIKL）。CIKL 從 iOS 12 起被 Metal 取代、
+  /// iOS 17 SDK 正式標 deprecated，但 iOS 15～17 執行期照樣編得過；哪天
+  /// 編不過（回 nil）就自動退到內建濾鏡鏈，自檢再驗一次。
+  /// __sample 進來是預乘 alpha 的：先除回 alpha 算 Y（半透明邊緣的係數
+  /// 才對），係數乘回預乘的 RGB，alpha 原樣直通——α=0 的像素 Y 被下限
+  /// 夾住，永遠不會算 pow(0, 負數)
+  static let ootfKernel: CIColorKernel? = CIColorKernel(
+    source: """
+      kernel vec4 mcInverseHlgOotf(__sample s, float e, float floorY) {
+        vec3 c = s.rgb / max(s.a, floorY);
+        float y = max(dot(c, vec3(0.2126, 0.7152, 0.0722)), floorY);
+        return vec4(s.rgb * pow(y, e), s.a);
+      }
+      """)
+
+  /// 內建濾鏡版：係數圖＝Y^(1/γ−1)（CIColorMatrix → CIColorClamp →
+  /// CIGammaAdjust），CIMultiplyCompositing 乘回原圖。
+  /// 係數圖的 alpha 固定 1（inputAVector 全零＋bias w=1）：乘出來的
+  /// alpha 才正好是原圖的 α（以前係數圖帶著原圖的 α，乘完變 α²，半透明
+  /// 邊緣變薄）；bias 會把畫外也填成不透明、extent 變無限，裁回原圖範圍。
+  /// α=0 的像素：Y 是 0，先被 CIColorClamp 夾到下限才進 CIGammaAdjust，
+  /// 不會算 pow(0, 負數)，乘回 (0,0,0,0) 還是 (0,0,0,0)
+  static func lumaChainOotf(_ img: CIImage) -> CIImage {
     let w = CIVector(x: 0.2126, y: 0.7152, z: 0.0722, w: 0)
     let luma = img.applyingFilter(
       "CIColorMatrix",
       parameters: [
         "inputRVector": w, "inputGVector": w, "inputBVector": w,
-        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
-      ])
-    // 黑階夾住：Y 的負指數在 0 會爆成無限大（0×∞＝NaN）
-    let blackFloor: CGFloat = 1.0 / 4096.0
+        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+        "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+      ]
+    ).cropped(to: img.extent)
+    let f = CGFloat(blackFloor)
     let clamped = luma.applyingFilter(
       "CIColorClamp",
       parameters: [
-        "inputMinComponents": CIVector(
-          x: blackFloor, y: blackFloor, z: blackFloor, w: 0),
+        "inputMinComponents": CIVector(x: f, y: f, z: f, w: 1),
         "inputMaxComponents": CIVector(x: 65504, y: 65504, z: 65504, w: 1),
       ])
     let factor = clamped.applyingFilter(
@@ -448,26 +523,90 @@ enum MCStillLoader {
       "CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: factor])
   }
 
-  /// 中灰探針（健康報告的「中灰探針」）：sRGB 0.4614（＝線性 0.180 的
-  /// 18% 中灰）走跟圖片素材同一條路（同一顆 HDR 工作空間 context、同一
-  /// 個反 OOTF 開關）之後，(1) 在線性工作空間是多少、(2) Core Image 把它
-  /// 寫成 HLG 碼是多少。HLG 碼 0.378＝CI 的 HLG 轉換是純反 OETF（場景
-  /// 參考、以基準白＝碼 0.75 正規化），圖片在 HLG 預覽／成品裡中間調暗
-  /// 約半檔；0.436＝含 BT.2100 OOTF（顯示參考），圖片正確；0.672＝以
-  /// 峰值正規化（1.0＝碼 1.0），那是另一種病。反 OOTF 開著時線性應變
-  /// 0.239，場景參考的碼 0.378 應變成 0.436——線性沒變＝CIGammaAdjust
-  /// 吃不下負指數、開關無效，一樣看得出來。兩張 1×1 的渲染，每次組建一次
-  static func probeMidGrey(inverseOotf: Bool) -> String {
+  /// 中灰探針的結果（一個行程量一次；見 [hlgProbe]）
+  struct HlgProbe {
+    /// 探針本身可信：色彩空間建得出來、線性讀回 ≈0.180
+    let ok: Bool
+    /// 線性工作空間讀回的中灰（應 0.180）
+    let linear: Double
+    /// Core Image 把線性 0.180 寫成的 HLG 碼
+    let code: Double
+    /// 碼 < 0.407（0.378 與 0.436 的中點）＝場景參考
+    let sceneReferred: Bool
+    /// 自檢後真的動的那條反 OOTF 路（.disabled＝三條都不動）
+    let method: OotfMethod
+    /// 自檢：中灰走 [method] 之後的線性值（應 ≈0.239）
+    let corrected: Double
+    /// 自動模式的最後決定：場景參考、而且有一條路能動，才套
+    let apply: Bool
+    /// 讀值的判讀（報告那行括號裡的字）；探不到時是原因
+    let reading: String
+    /// 自檢每條路的讀值（停用時寫進報告定罪）
+    let tried: String
+  }
+
+  private static let probeLock = NSLock()
+  private static var probeCache: HlgProbe?
+
+  /// 中灰探針：一個行程只量一次，結果放靜態快取（鎖住量，同時來的
+  /// 等第一個量完）。探不到／讀回不對的結果不快取，下一張圖再試一次
+  static func hlgProbe() -> HlgProbe {
+    probeLock.lock()
+    defer { probeLock.unlock() }
+    if let p = probeCache { return p }
+    let p = runProbe()
+    if p.ok { probeCache = p }
+    return p
+  }
+
+  /// 健康報告「中灰探針」那行：讀值＋判讀＋這次組建的決定。
+  /// [override]＝Dart 端的診斷強制值（nil＝自動）。長相：
+  ///   中灰線性0.180→HLG碼0.378（場景參考）→反OOTF 套用（kernel），校正後線性0.239
+  ///   中灰線性0.180→HLG碼0.436（顯示參考）→不套
+  ///   中灰線性0.180→HLG碼0.378（場景參考）→反OOTF 無效，已停用（kernel 0.180／…）
+  ///   探針異常：線性讀回0.250（應0.180），不判定→反OOTF 不套
+  static func hlgReport(override: Bool?) -> String {
+    hlgLine(hlgProbe(), override: override)
+  }
+
+  private static func hlgLine(_ p: HlgProbe, override: Bool?) -> String {
+    guard p.ok else { return "\(p.reading)→反OOTF 不套" }
+    func f3(_ v: Double) -> String { String(format: "%.3f", v) }
+    var s = "中灰線性\(f3(p.linear))→HLG碼\(f3(p.code))（\(p.reading)）"
+    if let o = override {
+      s += o ? "→反OOTF 強制開（" : "→反OOTF 強制關（"
+      s += p.apply ? "自動會套" : "自動不套"
+      if !o {
+        return s + "）"
+      }
+      if p.method == .disabled {
+        return s + "；三條路都無效，實際沒動）"
+      }
+      return s + "；\(p.method.rawValue)），校正後線性\(f3(p.corrected))"
+    }
+    if !p.sceneReferred { return s + "→不套" }
+    if p.method == .disabled {
+      return s + "→反OOTF 無效，已停用（\(p.tried)）"
+    }
+    return s + "→反OOTF 套用（\(p.method.rawValue)），校正後線性\(f3(p.corrected))"
+  }
+
+  /// 1×1 中灰（sRGB 0.4614＝線性 0.180 的 18% 中灰）經 [transform] 之後，
+  /// 走跟圖片素材同一條路（同一顆 HDR 工作空間 context、同一個 HLG 輸出
+  /// 色彩空間——CIExportCompositor 的 outCS 就是它）讀回：(1) 線性工作
+  /// 空間的值、(2) CI 寫成的 HLG 碼。色彩空間或 CIColor 建不出來回 nil
+  private static func renderGrey(
+    _ transform: (CIImage) -> CIImage
+  ) -> (linear: Double, code: Double)? {
     let g: CGFloat = 0.4614
     guard #available(iOS 14.0, *),
       let lin = CGColorSpace(name: CGColorSpace.extendedLinearSRGB),
       let hlg = CGColorSpace(name: CGColorSpace.itur_2100_HLG),
       let srgb = CGColorSpace(name: CGColorSpace.sRGB),
       let grey = CIColor(red: g, green: g, blue: g, alpha: 1, colorSpace: srgb)
-    else { return "探不到" }
+    else { return nil }
     let px = CGRect(x: 0, y: 0, width: 1, height: 1)
-    var img = CIImage(color: grey).cropped(to: px)
-    if inverseOotf { img = inverseHlgOotf(img) }
+    let img = transform(CIImage(color: grey).cropped(to: px))
     let ctx = CIExportCompositor.ctxHDR
     var linear: [Float] = [0, 0, 0, 0]
     ctx.render(
@@ -477,10 +616,77 @@ enum MCStillLoader {
     ctx.render(
       img, toBitmap: &code, rowBytes: 8, bounds: px, format: .RGBA16,
       colorSpace: hlg)
-    return String(
-      format: "中灰線性%.3f→HLG碼%.3f（0.378＝場景參考/0.436＝顯示參考）%@",
-      Double(linear[0]), Double(code[0]) / 65535.0,
-      inverseOotf ? "反OOTF開：線性應≈0.239、碼應≈0.436" : "")
+    return (Double(linear[0]), Double(code[0]) / 65535.0)
+  }
+
+  /// 中灰探針（健康報告「中灰探針」那行的資料）。
+  ///
+  /// 線性 0.180 的中灰，CI 寫成 HLG 碼會是多少，決定圖片素材在 HLG
+  /// 合成裡的中間調對不對（影片是 HLG→線性→HLG 來回抵銷，只有圖片是
+  /// 從線性空間插進來的）：
+  ///   0.378＝純反 OETF（場景參考、基準白＝碼 0.75）：顯示端再套 BT.2100
+  ///         的 OOTF，圖片中間調暗約半檔（顯示光 0.18→0.128）→ 該套反 OOTF
+  ///   0.436＝含 BT.2100 OOTF（顯示參考）：圖片正確 → 不套
+  ///   0.325＝顯示參考、但 SDR 白對到 100 nit 而不是 203：整體暗一檔，
+  ///         是比例問題不是 γ 問題；反 OOTF 只補得回一部分（0.325→0.366）。
+  ///         按門檻仍算場景參考、照套，報告那行標「非預期」
+  ///   0.672＝以峰值正規化（線性 1.0＝碼 1.0）：另一種病，門檻上算顯示參考
+  /// 門檻：碼 < 0.407（0.378 與 0.436 的中點）＝場景參考。
+  ///
+  /// 自檢：同一顆中灰再走一次反 OOTF 路，線性應從 0.180 變成 ≈0.239
+  ///（±0.01）。沒動＝那條路在這個 OS 上是死的（CIKL kernel 編不過、
+  /// CIGammaAdjust 把負指數夾掉……），依序試 kernel → 內建亮度係數鏈 →
+  /// 逐通道正指數；三條都不動就停用校正、報告那行明說。
+  /// 探針本身先要可信：線性讀回不是 0.180（±0.01）就不判定、不快取。
+  /// 最多五張 1×1 的渲染，一個行程一次
+  private static func runProbe() -> HlgProbe {
+    func failed(_ why: String) -> HlgProbe {
+      HlgProbe(
+        ok: false, linear: 0, code: 0, sceneReferred: false,
+        method: .disabled, corrected: 0, apply: false, reading: why, tried: "")
+    }
+    guard let plain = renderGrey({ $0 }) else {
+      return failed("探不到（色彩空間或 CIColor 建不出來）")
+    }
+    guard abs(plain.linear - 0.18) <= 0.01 else {
+      return failed(
+        "探針異常：線性讀回" + String(format: "%.3f", plain.linear)
+          + "（應0.180），不判定")
+    }
+    let scene = plain.code < 0.407
+    let reading: String
+    if abs(plain.code - 0.378) <= 0.02 {
+      reading = "場景參考"
+    } else if abs(plain.code - 0.436) <= 0.02 {
+      reading = "顯示參考"
+    } else if abs(plain.code - 0.325) <= 0.02 {
+      reading = "非預期：≈0.325＝顯示參考但SDR白=100nit，<0.407 按場景參考處理"
+    } else {
+      reading =
+        "非預期讀值，0.378＝場景參考／0.436＝顯示參考；"
+        + (scene ? "<0.407 按場景參考處理" : "≥0.407 按顯示參考處理")
+    }
+    var method = OotfMethod.disabled
+    var corrected = plain.linear
+    var tried: [String] = []
+    for m in [OotfMethod.kernel, .lumaChain, .perChannel] {
+      if m == .kernel && ootfKernel == nil {
+        tried.append("kernel 編譯失敗")
+        continue
+      }
+      guard let r = renderGrey({ applyOotf($0, method: m) }) else { continue }
+      tried.append(m.rawValue + String(format: " %.3f", r.linear))
+      if abs(r.linear - correctedMidGrey) <= 0.01 {
+        method = m
+        corrected = r.linear
+        break
+      }
+    }
+    return HlgProbe(
+      ok: true, linear: plain.linear, code: plain.code, sceneReferred: scene,
+      method: method, corrected: corrected,
+      apply: scene && method != .disabled, reading: reading,
+      tried: tried.joined(separator: "／"))
   }
 }
 
@@ -847,7 +1053,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   // 照樣標 2020/HLG，但畫面已經沒有 HDR 的量，看起來就是「HDR 沒了、
   // 整片暗一階」。1.0＝SDR 基準白這個慣例跟預設一樣，所以疊加物那套
   // 夾白（CIColorClamp 到 1）與 ×3 提亮的數學完全不受影響
-  // 不是 private：MCStillLoader.probeMidGrey 借同一顆 context 量圖片素材
+  // 不是 private：MCStillLoader.hlgProbe 借同一顆 context 量圖片素材
   // 走的那條色彩鏈（CIContext 是執行緒安全的，合成佇列照跑）
   static let ctxHDR: CIContext = {
     var opts: [CIContextOption: Any] = [
@@ -2331,8 +2537,9 @@ final class AtomicFlag {
             overlays: overlays,
             // 合成要補到多長（0＝不用補；見 CompPlayer.build）
             timelineDuration: args["timelineDuration"] as? Double ?? 0,
-            // HLG 合成裡的圖片素材反 OOTF（Dart 端實驗開關，預設關）
-            stillInverseOotf: args["stillInverseOotf"] as? Bool ?? false)
+            // HLG 合成裡的圖片素材反 OOTF：沒送＝自動（中灰探針判定），
+            // 送了 true/false＝診斷強制值（見 MCStillLoader.load）
+            stillInverseOotf: args["stillInverseOotf"] as? Bool)
         else {
           let why = p.buildError ?? "未知原因"
           p.dispose()
@@ -3047,9 +3254,9 @@ final class AtomicFlag {
     // 時間軸總長（秒）：圖片素材可能比最後一段影片還晚結束，
     // 合成要補空白撐到這裡，不然片尾的圖會被切掉
     let timelineDur = a["timelineDuration"] as? Double ?? 0
-    // HLG 成品裡的圖片素材反 OOTF（Dart 端實驗開關，預設關；
-    // 見 MCStillLoader.inverseHlgOotf）
-    let stillInverseOotf = a["stillInverseOotf"] as? Bool ?? false
+    // HLG 成品裡的圖片素材反 OOTF：沒送＝自動（MCStillLoader.hlgProbe 的
+    // 中灰探針判定，跟預覽同一份快取），送了 true/false＝診斷強制值
+    let stillInverseOotf = a["stillInverseOotf"] as? Bool
     // GPU 合成（見 CIExportCompositor）。關掉＝退回 CoreAnimationTool
     // 舊路徑（實驗開關，成品有異狀時的備援）。
     // 沒有疊加物時不走：那種匯出本來就沒有 CoreAnimationTool 的瓶頸，
@@ -3646,6 +3853,13 @@ final class AtomicFlag {
             z: st["track"] as? Int ?? 0, gif: gifSpec)
         ))
       }
+      // HLG 成品有圖片素材：把中灰探針的判定＋這次的決定印進 log
+      //（探針一個行程一次、早就快取了，這裡只是組字串）
+      if wantHDR && !stillsIn.isEmpty {
+        NSLog(
+          "[HDRStill] 匯出 中灰探針 %@",
+          MCStillLoader.hlgReport(override: stillInverseOotf))
+      }
       // z 序排定（同 z 保持進籃順序）
       layerBasket.sort { $0.z != $1.z ? $0.z < $1.z : $0.order < $1.order }
       // 馬賽克時間同理要除整體變速（切點是從這些值長出來的，
@@ -3711,13 +3925,21 @@ final class AtomicFlag {
         // 補長出來的尾巴：主軌在這段有媒體（上面 padded 鋪的），列成
         // 必要來源——跟預覽 makeVC 的 baseTrack 同一個理由（標頭只寫明
         // 「有必要來源的段合成器一定跑」，空陣列沒寫）。沒補長的尾巴
-        //（配樂比畫面長、主軌沒媒體）不能列，列了會等不到來源格
+        //（配樂比畫面長、主軌沒媒體）不能列，列了會等不到來源格。
+        // 再對著主軌的分段表驗一次：尾段裡若有空段（isEmpty 的 segment
+        // 跟尾巴有交集），那格同樣等不到來源，照舊列空
+        let tail = CMTimeRange(start: ciCursor, end: comp.duration)
+        let tailHasGap = vTrack.segments.contains { sg in
+          sg.isEmpty
+            && sg.timeMapping.target.intersection(tail).duration.seconds
+              > 0.001
+        }
         let tailIDs: [NSNumber] =
-          padded && comp.duration <= mainEnd
+          padded && comp.duration <= mainEnd && !tailHasGap
           ? [NSNumber(value: vTrack.trackID)] : []
         ciInstructions.append(
           CIExportInstruction(
-            timeRange: CMTimeRange(start: ciCursor, end: comp.duration),
+            timeRange: tail,
             layers: [], mosaics: [], overlays: ciOverlays,
             prerollTrackIDs: tailIDs))
       }
@@ -5456,13 +5678,13 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 貼圖/配樂拖得比最後一段影片長時，合成的長度只到影片結尾、時鐘
   /// 走到那裡就停住——照這個值把畫面軌鋪到時間軸終點（跟匯出的
   /// timelineDuration 同一個量；鋪法見下面的 fillTail）
-  /// [stillInverseOotf] HLG 合成裡的圖片素材套反 OOTF（實驗開關，
-  /// 見 MCStillLoader.inverseHlgOotf；SDR 合成不讀）
+  /// [stillInverseOotf] HLG 合成裡的圖片素材反 OOTF 的診斷強制值：
+  /// nil＝自動（MCStillLoader.hlgProbe 的中灰探針判定）；SDR 合成不讀
   func build(
     clips: [[String: Any]], texture: Bool, mosaics: [[String: Any]] = [],
     stills: [[String: Any]] = [], hdrOut: Bool = false,
     overlays: [[String: Any]] = [], timelineDuration: Double = 0,
-    stillInverseOotf: Bool = false
+    stillInverseOotf: Bool? = nil
   ) -> Bool {
     let comp = AVMutableComposition()
     let scale: CMTimeScale = 600
@@ -6016,12 +6238,13 @@ final class CompPlayer: NSObject, FlutterTexture {
         ))
       }
       buildInfo["圖片層"] = stillSpecs.count
-      // 中灰探針（MCStillLoader.probeMidGrey）：只在「掛 HDR 合成器＋有
-      // 圖片層」時跑（兩張 1×1 的渲染）。下一份診斷報告用這一行定罪
-      // Core Image 的 HLG 轉換是場景參考還是顯示參考——圖片素材
-      // 「比原圖暗、顏色不合」的根，見 Diag.hlgStillInverseOotf
+      // 中灰探針（MCStillLoader.hlgProbe）：一個行程量一次、上面載入
+      // 第一張圖時就量過並快取了，這裡只把判定＋這次組建的決定寫進
+      // 報告（掛 HDR 合成器＋有圖片層時才有意義：圖片素材是唯一從線性
+      // 空間插進 HLG 鏈的東西）。沒有使用者開關——場景參考就套反 OOTF、
+      // 顯示參考不套、三條路自檢都不動就停用，這一行寫的是決定與理由
       if hdrOut && anyHDR && !stillSpecs.isEmpty {
-        let probe = MCStillLoader.probeMidGrey(inverseOotf: stillInverseOotf)
+        let probe = MCStillLoader.hlgReport(override: stillInverseOotf)
         buildInfo["中灰"] = probe
         NSLog("[HDRStill] 中灰探針 %@", probe)
       }
@@ -6281,6 +6504,9 @@ final class CompPlayer: NSObject, FlutterTexture {
         var built: [CIExportInstruction] = []
         for (i, pi) in proto.enumerated() {
           var ids = own[i]
+          // 往後 1.5 秒的聯集拿的是 own：只有圖片層的段列的是最底層軌，
+          // 所以有影片層的段若 1.5 秒內接著一段純圖片段，也會把最底層
+          // 軌列進來——那條軌本來就在跑，只是無害的預熱，維持原樣
           let horizon = pi.b.seconds + 1.5
           for j in (i + 1)..<proto.count {
             if proto[j].a.seconds >= horizon { break }
@@ -9806,6 +10032,12 @@ enum HDRPhotoExport {
 // CIImage.transformed(by:) / composited(over:) / cropped(to:) / applyingFilter — iOS 8/8/8/8
 // CIImage(color:) / CIColor.black                                    — iOS 5 / 10
 // CIColorClamp / CIBlendWithAlphaMask / CIColorMatrix                 — iOS 7 / 5 / 5
+// CIGammaAdjust / CIMultiplyCompositing                              — iOS 5 / 5
+// CIColorKernel(source:) / apply(extent:arguments:)                  — iOS 8（CIKL；iOS 17 SDK 標 deprecated、執行期仍編得過，編不過回 nil → 內建鏈）
+// CIContext.render(_:toBitmap:rowBytes:bounds:format:colorSpace:)    — iOS 5
+// CIFormat.RGBAf / .RGBA16                                           — iOS 5 / 10
+// CIColor(red:green:blue:alpha:colorSpace:)                          — iOS 10
+// AVAssetTrackSegment.isEmpty / timeMapping / CMTimeRange.intersection — iOS 4 / 4 / Swift overlay
 // CIImage.properties / settingProperties(_:)                         — iOS 5
 // CIContext.writeHEIF10Representation(of:to:colorSpace:options:)     — iOS 15.0
 // CIImageRepresentationOption(rawValue:) + kCGImageDestinationLossyCompressionQuality — iOS 11 / 4

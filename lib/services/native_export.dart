@@ -296,9 +296,11 @@ class NativeExport {
         'stills': stills,
         'mosaics': mosaics,
         'timelineDuration': spec.timelineDuration,
-        // HLG 成品裡的圖片素材反 OOTF（實驗開關；跟預覽同一個旗標、
-        // 原生端同一個載入器，見 Diag.hlgStillInverseOotf）
-        'stillInverseOotf': Diag.hlgStillInverseOotf.value,
+        // HLG 成品裡的圖片素材反 OOTF：不送鍵＝原生端自動（跟預覽同一份
+        // 中灰探針判定、同一個載入器）；只有診斷強制值才送，見
+        // Diag.hlgStillInverseOotf
+        if (Diag.hlgStillInverseOotf != null)
+          'stillInverseOotf': Diag.hlgStillInverseOotf,
       });
       if (err != null) Diag.note('原生匯出失敗：$err');
       return err;
