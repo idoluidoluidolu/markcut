@@ -1,15 +1,17 @@
 // 個人中心要「一頁就看得完」——不能上下捲（使用者指定
 // 「那讓他不要能上下捲動」）。
 //
-// 版面沒有重新設計：缺的高度先跟可壓縮的留白拿（區塊間距最多兩成、
-// 返回鍵下面與行動鈕前面最多一半，合計 33.4pt），剩下的由三排磚用
-// 同一個係數一起縮，長寬比與相對比例都不動。縮到 0.75 還是塞不下
-//（SE、字級調很大）就回去捲——**截掉東西才是 bug，捲不是**。
+// D 案之後磚不再縮：三排磚永遠原尺寸、滿版寬（實機回報「左右 PADDING
+// 很大」——以前磚縮小後兩邊各補 20 幾 pt 的邊）。缺的高度只跟可壓縮的
+// 留白拿（區塊間距最多兩成、返回鍵下面與行動鈕前面最多一半，合計
+// 33.4pt），壓到底還是塞不下（SE、字級調很大）就回去捲——
+// **截掉東西才是 bug，捲不是**。
 //
-// 所以這裡量的是兩件事：
+// 所以這裡量的是三件事：
 //   1. 說「不能捲」的時候，maxScrollExtent 必須是 0。
 //      不是 0 就代表有東西被切在畫面外，而且使用者捲不到它。
 //   2. 塞不下的時候一定要回到可捲，而不是硬畫、爆版。
+//   3. 不管捲不捲，磚都是原尺寸、貼著 22pt 的左右留白——沒有補邊。
 //
 // 安全區一定要給真的數字（瀏海 47＋home 條 34）：沒有安全區的測試
 // 少算了將近 100pt，量到的綠燈是假的。
@@ -45,10 +47,13 @@ const _proMax = (
 const _se = (name: 'iPhone SE', size: Size(375, 667), top: 20.0, bottom: 0.0);
 
 /// 左右留白（跟畫面裡的 _side 同一個數字）
-const _sideH = 44.0;
+const _side = 22.0;
 
-/// 磚最小縮到 0.75（跟畫面裡的 _kTileFloor 同一個數字）
-const _floor = 0.75;
+/// 三格一排的格寬：GIF 跟範本同一種格子（跟畫面裡的 cell 同一條公式）
+double _cell(double width) => (width - _side * 2 - 20) / 3;
+
+/// 草稿卡的寬（兩欄、中間 12）
+double _draftW(double width) => (width - _side * 2 - 12) / 2;
 
 late final String _tmp;
 
@@ -119,7 +124,10 @@ Future<void> _pump(WidgetTester t, Device d, {double textScale = 1.0}) async {
       // 測試也照同一種方式包，不然量到的不是真的長相
       theme: buildStudioTheme(),
       debugShowCheckedModeBanner: false,
-      home: const LightPage(child: ProfileScreen()),
+      // 每次都換一把 key：同一支測試連續 pump 好幾組資料時，樹長得
+      // 一樣 State 就會被沿用，_reload 不會再跑，畫面還是上一組的
+      // 東西（以前的掃描只量可捲距離，沒被這個咬到）
+      home: LightPage(child: ProfileScreen(key: UniqueKey())),
     ),
   );
   await _settle(t);
@@ -131,6 +139,85 @@ ScrollPosition _pos(WidgetTester t) =>
 bool _locked(WidgetTester t) =>
     t.widget<SingleChildScrollView>(find.byType(SingleChildScrollView)).physics
         is NeverScrollableScrollPhysics;
+
+/// 「＋ 新增範本」那塊磚（邊線算在磚裡）
+Finder get _addTile =>
+    find.ancestor(of: find.text('＋'), matching: find.byType(Container)).first;
+
+/// 磚永遠原尺寸、貼著左右留白：這是 D 案的合約，鎖住或捲都一樣。
+/// 磚的數量照 [presets]/[gifs]/[drafts] 給（範本不足三組會補「＋」）
+void _expectRowsUnscaled(
+  WidgetTester t,
+  Device d, {
+  int presets = 2,
+  int gifs = 3,
+  int drafts = 2,
+}) {
+  final w = d.size.width;
+  final cell = _cell(w);
+
+  // 範本：磚是正方、第一塊貼左；不足三組時「＋」補在下一格
+  expect(find.byType(WatermarkLayer), findsNWidgets(presets.clamp(0, 3)));
+  if (presets > 0) {
+    final first = t.getRect(find.byType(WatermarkLayer).first);
+    expect(first.width, closeTo(cell, 0.01), reason: '${d.name} 範本磚寬不對');
+    expect(first.height, closeTo(cell, 0.01), reason: '${d.name} 範本磚不是正方');
+    expect(first.left, closeTo(_side, 0.01), reason: '${d.name} 範本那排沒貼左');
+  }
+  if (presets < 3) {
+    final add = t.getRect(_addTile);
+    expect(add.width, closeTo(cell, 0.01), reason: '${d.name} ＋磚寬不對');
+    expect(add.height, closeTo(cell, 0.01));
+    expect(
+      add.left,
+      closeTo(_side + presets * (cell + 10), 0.01),
+      reason: '${d.name} ＋磚沒有接在第 ${presets + 1} 格',
+    );
+  } else {
+    expect(find.text('＋'), findsNothing, reason: '三組範本就不該再有＋磚');
+  }
+
+  // GIF：三格一排，第一塊貼左、第三塊貼右
+  expect(find.byType(GifImage), findsNWidgets(gifs.clamp(0, 3)));
+  if (gifs > 0) {
+    final first = t.getRect(find.byType(GifImage).first);
+    expect(first.width, closeTo(cell, 0.01), reason: '${d.name} GIF 磚寬不對');
+    expect(first.height, closeTo(cell, 0.01));
+    expect(first.left, closeTo(_side, 0.01), reason: '${d.name} GIF 那排沒貼左');
+    if (gifs >= 3) {
+      expect(
+        w - t.getRect(find.byType(GifImage).at(2)).right,
+        closeTo(_side, 0.01),
+        reason: '${d.name} GIF 那排右邊有補邊',
+      );
+    }
+  }
+
+  // 草稿：兩欄 3:4，第一張貼左
+  expect(find.byType(AspectRatio), findsNWidgets(drafts.clamp(0, 2)));
+  if (drafts > 0) {
+    final card = t.getRect(find.byType(AspectRatio).first);
+    expect(card.width, closeTo(_draftW(w), 0.01), reason: '${d.name} 草稿卡寬不對');
+    expect(card.width / card.height, closeTo(3 / 4, 0.001));
+    expect(card.left, closeTo(_side, 0.01), reason: '${d.name} 草稿卡沒貼左');
+    if (drafts >= 2) {
+      expect(
+        w - t.getRect(find.byType(AspectRatio).at(1)).right,
+        closeTo(_side, 0.01),
+        reason: '${d.name} 草稿那排右邊有補邊',
+      );
+    }
+  }
+}
+
+/// 鎖住就一定是 0 可捲距離；沒鎖就一定有東西要捲（不然鎖什麼）
+void _expectScrollContract(WidgetTester t, String name) {
+  if (_locked(t)) {
+    expect(_pos(t).maxScrollExtent, 0, reason: '$name 鎖住了卻還有東西在畫面外');
+  } else {
+    expect(_pos(t).maxScrollExtent, greaterThan(0), reason: '$name 沒鎖卻沒東西可捲');
+  }
+}
 
 void main() {
   setUpAll(() async {
@@ -160,96 +247,78 @@ void main() {
     expect(t.getSize(find.byType(IconButton)).height, 48);
   });
 
-  for (final d in [_iphone14, _proMax]) {
-    testWidgets('${d.name}：一頁裝得下，捲不動', (t) async {
+  // D 案的順序：草稿→我的 GIF→範本（最常回來找的放最上面）
+  testWidgets('區塊順序是草稿→我的 GIF→範本', (t) async {
+    _seed();
+    await _pump(t, _iphone14);
+    final drafts = t.getTopLeft(find.text('草稿')).dy;
+    final gifs = t.getTopLeft(find.text('我的 GIF')).dy;
+    final presets = t.getTopLeft(find.text('範本')).dy;
+    expect(drafts, lessThan(gifs), reason: '草稿要在我的 GIF 上面');
+    expect(gifs, lessThan(presets), reason: '我的 GIF 要在範本上面');
+  });
+
+  // 範本一排三格：三組就三塊磚、沒有＋；兩組＋一塊＋；一組＋一塊＋
+  for (final n in [3, 2, 1]) {
+    testWidgets('$n 組範本：一排三格，不足才補＋', (t) async {
+      _seed(presets: n);
+      await _pump(t, _iphone14);
+      expect(t.takeException(), isNull);
+      _expectRowsUnscaled(t, _iphone14, presets: n);
+    });
+  }
+
+  // 三台裝置、東西都滿（兩組範本＋＋磚、三個 GIF、兩份草稿）。
+  // 磚不縮，所以裝不裝得下全看留白讓不讓得出來：
+  //   Pro Max 讓得出來、鎖住；SE 讓不出來、退回可捲。
+  //   iPhone 14 實量：三排磚 440.0pt、固定部分 431.6pt（底墊那 12pt
+  //   拿掉之後，使用者指定貼底），差 27.6pt，留白額度 33.4pt 讓得出來
+  //   → 鎖住。要是哪天又多塞東西進固定部分，這裡會先紅
+  for (final (d, locked) in [
+    (_iphone14, true),
+    (_proMax, true),
+    (_se, false),
+  ]) {
+    testWidgets('${d.name}：磚原尺寸滿版；鎖住＝0 可捲、塞不下＝可捲', (t) async {
       _seed();
       await _pump(t, d);
       expect(t.takeException(), isNull);
-
-      // 有東西可捲＝有東西在畫面外＝被切掉了
-      expect(_pos(t).maxScrollExtent, 0, reason: '${d.name} 還有東西在畫面外');
-      expect(_locked(t), isTrue, reason: '${d.name} 應該是不能捲的');
-
-      // 三排磚都在
-      expect(find.byType(WatermarkLayer), findsNWidgets(2));
-      expect(find.byType(GifImage), findsNWidgets(3));
-      expect(find.byType(AspectRatio), findsNWidgets(2));
-
-      final inner = d.size.width - _sideH;
-      final preset = t.getSize(find.byType(WatermarkLayer).first);
-      final gif = t.getSize(find.byType(GifImage).first);
-      final draft = t.getSize(find.byType(AspectRatio).first);
-
-      // 長寬比不准跑掉：兩排正方、草稿 3:4
-      expect(preset.width, closeTo(preset.height, 0.01));
-      expect(gif.width, closeTo(gif.height, 0.01));
-      expect(draft.width / draft.height, closeTo(3 / 4, 0.001));
-
-      // 三排共用同一個縮放係數，相對比例才不會散掉
-      final sp = preset.width / ((inner - 10) / 2);
-      final sg = gif.width / ((inner - 20) / 3);
-      final sd = draft.width / ((inner - 12) / 2);
-      expect(sg, closeTo(sp, 0.001), reason: 'GIF 那排的縮放跟範本不一樣');
-      expect(sd, closeTo(sp, 0.001), reason: '草稿那排的縮放跟範本不一樣');
-      expect(sp, lessThanOrEqualTo(1.0));
-      expect(sp, greaterThanOrEqualTo(_floor));
-
-      // 縮小之後左右要一樣寬，不然整排會黏在左邊
-      final row = t.getRect(find.byType(GifImage).last);
+      _expectScrollContract(t, d.name);
+      _expectRowsUnscaled(t, d);
       expect(
-        d.size.width - row.right,
-        closeTo(t.getRect(find.byType(GifImage).first).left, 0.01),
-        reason: 'GIF 那排沒有置中',
+        _locked(t),
+        locked,
+        reason: locked ? '${d.name} 應該裝得下、不能捲' : '${d.name} 應該退回可捲',
       );
 
+      // 捲到底也還是好好的（沒有爆版）；鎖住的話拖了也不會動
+      await t.drag(find.byType(SingleChildScrollView), const Offset(0, -400));
+      await t.pump();
+      expect(t.takeException(), isNull);
+      if (_locked(t)) expect(_pos(t).pixels, 0);
+
+      final cell = _cell(d.size.width);
+      final draft = t.getSize(find.byType(AspectRatio).first);
       // ignore: avoid_print
       print(
-        '[fit] ${d.name}  縮放 ${sp.toStringAsFixed(3)}  '
-        '範本 ${preset.width.toStringAsFixed(1)}  '
-        'GIF ${gif.width.toStringAsFixed(1)}  '
+        '[fit] ${d.name}  ${_locked(t) ? '鎖住' : '可捲 ${_pos(t).maxScrollExtent.toStringAsFixed(1)}pt'}  '
+        '格 ${cell.toStringAsFixed(1)}  '
         '草稿 ${draft.width.toStringAsFixed(1)}×'
         '${draft.height.toStringAsFixed(1)}',
       );
     });
   }
 
-  testWidgets('${_se.name}：塞不下就回去捲，不是把東西截掉', (t) async {
-    _seed();
-    await _pump(t, _se);
-    expect(t.takeException(), isNull);
-    expect(_locked(t), isFalse, reason: 'SE 應該退回可捲');
-    expect(_pos(t).maxScrollExtent, greaterThan(0));
-
-    // 退回可捲＝完全照原本的尺寸畫，一格都不縮
-    final inner = _se.size.width - _sideH;
-    expect(
-      t.getSize(find.byType(WatermarkLayer).first).width,
-      closeTo((inner - 10) / 2, 0.01),
-    );
-    expect(
-      t.getSize(find.byType(GifImage).first).width,
-      closeTo((inner - 20) / 3, 0.01),
-    );
-
-    // 捲到底也還是好好的（沒有爆版）
-    await t.drag(find.byType(SingleChildScrollView), const Offset(0, -400));
-    await t.pump();
-    expect(t.takeException(), isNull);
-  });
-
-  // 字級調大 → 三個標題與頁尾一起長高 → 磚要讓出更多。
-  // 1.6 還撐得住（磚縮到 0.77，仍在 0.75 的底線上），2.0 就撐不住了，
-  // 這時**一定**要退回可捲：硬畫就是紅黃斜紋，或是字被切掉
+  // 字級調大 → 三個標題與頁尾一起長高 → 留白讓不出那麼多。
+  // 磚不縮，所以撐不住就**一定**要退回可捲：硬畫就是紅黃斜紋，
+  // 或是字被切掉
   for (final scale in [1.6, 2.0]) {
     testWidgets('字級 $scale：不硬擠、也不爆版', (t) async {
       _seed();
       await _pump(t, _iphone14, textScale: scale);
       expect(t.takeException(), isNull, reason: '字級 $scale 爆版了');
-      if (_locked(t)) {
-        expect(_pos(t).maxScrollExtent, 0, reason: '鎖住了卻還有東西在畫面外');
-      } else {
-        expect(_pos(t).maxScrollExtent, greaterThan(0));
-      }
+      _expectScrollContract(t, '字級 $scale');
+      _expectRowsUnscaled(t, _iphone14);
       if (scale == 2.0) {
         expect(_locked(t), isFalse, reason: '字級 2.0 應該退回可捲');
       }
@@ -265,19 +334,14 @@ void main() {
     expect(_pos(t).maxScrollExtent, 0);
     expect(_locked(t), isTrue);
 
-    // 內容少、本來就裝得下 → 縮放要卡在 1.0，跟以前逐點一樣
-    final inner = _iphone14.size.width - _sideH;
+    // 內容少、本來就裝得下 → 只有一塊「＋」磚，三格一排的第一格
     expect(t.getSize(find.byType(Padding).at(0)).width, _iphone14.size.width);
     expect(
       t.getSize(find.text('＋')).height,
       greaterThan(0),
       reason: '空的時候是一塊「＋」磚',
     );
-    final addTile = t.getSize(
-      find.ancestor(of: find.text('＋'), matching: find.byType(Container)).first,
-    );
-    expect(addTile.width, closeTo((inner - 10) / 2, 0.01));
-    expect(addTile.height, closeTo((inner - 10) / 2, 0.01));
+    _expectRowsUnscaled(t, _iphone14, presets: 0, gifs: 0, drafts: 0);
   });
 
   testWidgets('草稿只有一張時還是靠左，不會自己跑到中間', (t) async {
@@ -286,14 +350,11 @@ void main() {
     expect(t.takeException(), isNull);
     expect(find.byType(AspectRatio), findsOneWidget);
 
-    // 縮小是靠左右補一樣寬的邊做的，不是把 Row 置中——只有一張卡的
-    // 時候它必須還在整排的左邊，不能自己跑到畫面中間
-    final inner = _iphone14.size.width - _sideH;
+    // 沒有補邊、Row 也不置中——只有一張卡的時候它必須還在整排的
+    // 左邊，不能自己跑到畫面中間
     final card = t.getRect(find.byType(AspectRatio).first);
-    final scale = card.width / ((inner - 12) / 2);
-    final gutter = (1 - scale) * (inner - 12) / 2;
-    expect(card.left, closeTo(22 + gutter, 0.01), reason: '草稿卡沒有靠左');
-    expect(card.left, lessThan(_iphone14.size.width / 4), reason: '草稿卡跑到中間了');
+    expect(card.left, closeTo(_side, 0.01), reason: '草稿卡沒有靠左');
+    expect(card.width, closeTo(_draftW(_iphone14.size.width), 0.01));
   });
 
   testWidgets('轉成橫的：高度只剩 390，一定要退回可捲', (t) async {
@@ -310,26 +371,29 @@ void main() {
 
   // 說「不能捲」就一定要真的裝得下：高度計算是自己算出來的
   // （文字用 TextPainter 實量），算錯的方向永遠是「以為裝得下」，
-  // 而那就是內容被切掉又捲不到。掃一輪各種尺寸把它釘住
+  // 而那就是內容被切掉又捲不到。掃一輪各種尺寸把它釘住；
+  // 順便釘住「磚永遠原尺寸」——不管鎖住還是捲
   testWidgets('掃各種尺寸：只要鎖住不給捲，就一定是 0 可捲距離', (t) async {
     for (final w in [360.0, 390.0, 430.0]) {
       for (var h = 640.0; h <= 940.0; h += 20) {
         for (final content in [(2, 3, 2), (1, 0, 1), (0, 0, 0), (2, 2, 2)]) {
           _seed(presets: content.$1, gifs: content.$2, drafts: content.$3);
-          await _pump(t, (
+          final d = (
             name: '${w}x$h',
             size: Size(w, h),
             top: 47.0,
             bottom: 34.0,
-          ));
+          );
+          await _pump(t, d);
           expect(t.takeException(), isNull, reason: '$w×$h $content 爆版了');
-          if (_locked(t)) {
-            expect(
-              _pos(t).maxScrollExtent,
-              0,
-              reason: '$w×$h $content 鎖住了卻還有東西在畫面外',
-            );
-          }
+          _expectScrollContract(t, '$w×$h $content');
+          _expectRowsUnscaled(
+            t,
+            d,
+            presets: content.$1,
+            gifs: content.$2,
+            drafts: content.$3,
+          );
         }
       }
     }
