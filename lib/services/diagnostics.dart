@@ -281,6 +281,20 @@ class Diag {
   /// 引擎只在滑動/拖曳接管時上台（有就緒檢查＋首格護持，不閃）
   static final metalResident = ValueNotifier(false);
 
+  /// HLG 合成裡的圖片素材套「反 OOTF」（實驗開關，預設關）。
+  ///
+  /// 使用者回報：HDR 專案裡加進來的照片顏色跟原圖不合。合成器的色彩鏈
+  /// 是 照片(P3/sRGB)→延伸線性 sRGB→HLG 碼；影片是 HLG→線性→HLG，
+  /// 來回抵銷，只有圖片是「從線性空間插進來」的。Core Image 的 HLG
+  /// 轉換若是純反 OETF（場景參考），線性 0.18 會寫成 HLG 碼 0.378，
+  /// 顯示端再套 BT.2100 的 OOTF（γ1.2）就變成 0.128——中間調暗約半檔、
+  /// 白還是白，跟回報一模一樣；若含 OOTF（顯示參考）則 0.18 寫成 0.436、
+  /// 顯示正確。Apple 文件沒寫是哪一種，只能實機定罪：組建時的中灰探針
+  ///（健康報告「中灰探針」那行）直接印出 CI 給 0.18 的 HLG 碼。
+  /// 開了＝原生端在載入時對圖片乘 Y^(1/1.2−1)（BT.2100 OOTF 的反函數，
+  /// 色度不變），SDR 合成一個位元都不碰。診斷面板有開關，切了就重組
+  static final hlgStillInverseOotf = ValueNotifier(false);
+
   static String get tuning =>
       '預熱=${preheat.value ? '開' : '關'}／'
       '脫節校正=${driftFix.value ? '開' : '關'}／'
@@ -292,7 +306,8 @@ class Diag {
       'HDR代理預覽=${hdrProxyPreview.value ? '開' : '關'}／'
       'Metal預覽=${metalPreview.value ? '開' : '關'}／'
       'Metal播放=${metalPlayback.value ? '開' : '關'}／'
-      'Metal常駐=${metalResident.value ? '開' : '關'}';
+      'Metal常駐=${metalResident.value ? '開' : '關'}／'
+      'HLG圖片反OOTF=${hlgStillInverseOotf.value ? '開' : '關'}';
 
   static void count(String key, [int n = 1]) {
     _counts[key] = (_counts[key] ?? 0) + n;

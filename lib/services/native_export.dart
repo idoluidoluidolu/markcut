@@ -296,6 +296,9 @@ class NativeExport {
         'stills': stills,
         'mosaics': mosaics,
         'timelineDuration': spec.timelineDuration,
+        // HLG 成品裡的圖片素材反 OOTF（實驗開關；跟預覽同一個旗標、
+        // 原生端同一個載入器，見 Diag.hlgStillInverseOotf）
+        'stillInverseOotf': Diag.hlgStillInverseOotf.value,
       });
       if (err != null) Diag.note('原生匯出失敗：$err');
       return err;

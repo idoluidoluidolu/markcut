@@ -1534,6 +1534,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 上面那些欄位一個都不會變，但合成的總長要跟著改——不記的話
     // 把文字拖過片尾不重組，時鐘照舊停在影片結尾
     'pad${CompPlayer.padTo(_tl, hiddenTracks: _hiddenTracks).toStringAsFixed(3)}',
+    // HLG 圖片反 OOTF 的實驗開關是烘在載入的圖片裡的（原生載入器），
+    // 診斷面板切了要重組才看得到
+    'ootf${Diag.hlgStillInverseOotf.value}',
   ].join(';');
 
   /// 馬賽克那部分的指紋（幾何＋樣式＋軌道）。
@@ -8234,6 +8237,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   ),
                 ),
               ),
+              // 實驗開關（HDR 合成裡的圖片素材偏暗／顏色不合的定罪用，
+              // 見 Diag.hlgStillInverseOotf）：切了直接重組合成，同一張圖
+              // 當場比對；設定進指紋（_compSig 的 ootf），重組會自己來
+              SwitchListTile(
+                dense: true,
+                title: const Text(
+                  'HLG 圖片反 OOTF（HDR 專案的圖片偏暗時試開）',
+                  style: TextStyle(fontSize: 12),
+                ),
+                value: Diag.hlgStillInverseOotf.value,
+                onChanged: (v) {
+                  Diag.hlgStillInverseOotf.value = v;
+                  setSheet(() {});
+                  _compRefreshIfChanged();
+                },
+              ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
                 child: Row(
@@ -11086,9 +11105,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         // 材質只會停在最後解出的那一幀，
                                         // 不藏就是「時間軸沒畫面了，最後
                                         // 一幀卻一直留著」。用透明不拆掛——
-                                        // 拆掛原生圖層重掛那一瞬會閃黑
+                                        // 拆掛原生圖層重掛那一瞬會閃黑。
+                                        // 但合成補長到時間軸終點、或烘進
+                                        // 合成的圖片蓋著播放頭時，那一格是
+                                        // 原生合成器真的畫出來的（黑底＋
+                                        // 圖片），藏了就是「影片播完圖片
+                                        // 整個變黑」（實機回報）——
+                                        // 見 CompPlayer.paintsAt
                                         child: Opacity(
-                                          opacity: cur == null ? 0 : 1,
+                                          opacity:
+                                              cur != null ||
+                                                  CompPlayer.paintsAt(
+                                                    _tl,
+                                                    _position,
+                                                    hiddenTracks: _hiddenTracks,
+                                                    bakedIds: _compBakedStills,
+                                                    compDuration:
+                                                        _comp!.duration,
+                                                  )
+                                              ? 1
+                                              : 0,
                                           // 兩條路：系統的影片圖層（跟相簿
                                           // 播放同一條，零複製）或 Flutter
                                           // 材質（影格要複製一次再合成）

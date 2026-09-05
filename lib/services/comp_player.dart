@@ -257,6 +257,50 @@ class CompPlayer {
     return lastEnd - vidEnd > 0.05 ? lastEnd : 0.0;
   }
 
+  /// 合成畫面在 [t] 這一刻有沒有東西可看——預覽層用它決定要不要把
+  /// 合成材質露出來（露＝opacity 1，藏＝0）。
+  ///
+  /// 以前的判定是「播放頭底下有影片片段才露」：合成只到影片結尾的
+  /// 年代，過了結尾材質會停在最後解出的那一幀，藏起來是對的。合成補長
+  /// 到時間軸終點之後（[padTo]），尾巴是合成器畫的黑底＋烘進去的圖片，
+  /// 再用同一條規則藏就是「影片播完圖片整個變黑、只剩 Flutter 那份
+  /// 壓到 1% 透明度的浮水印隱約可見」（實機回報）——原生端明明每一格
+  /// 都畫了圖，Flutter 把整層蓋掉了。
+  ///
+  /// 露出來的條件（任一）：
+  /// - 播放頭底下有影片片段（原本的規則）
+  /// - 烘進這份合成的圖片/GIF（[bakedIds]＝編輯器記的那份）蓋著播放頭：
+  ///   有圖片層就一定掛 CI 合成器，畫面就是它畫的
+  /// - 播放頭落在補長出來的尾巴（最後一段影片結尾～[padTo]）：補長必掛
+  ///   合成器（原生 needsVC 的最後一條），那段是定義好的黑底
+  ///
+  /// 三者都要在合成長度 [compDuration] 之內：超過合成結尾播放器 seek
+  /// 不過去、材質停在最後一幀，該藏。畫面上那份合成若還是舊的（剛加
+  /// 圖片、重組還沒落地）長度就比較短，這裡會先藏、重組上檔才露——
+  /// 黑一下，不會露出凍住的最後一幀
+  static bool paintsAt(
+    TimelineModel tl,
+    double t, {
+    Set<int> hiddenTracks = const {},
+    Set<int> bakedIds = const {},
+    double compDuration = double.infinity,
+  }) {
+    if (t >= compDuration - 0.001) return false;
+    if (tl.videoAt(t, skipTracks: hiddenTracks) != null) return true;
+    for (final c in tl.clips) {
+      if (hiddenTracks.contains(c.track)) continue;
+      if (bakedIds.contains(c.id) && c.covers(t)) return true;
+    }
+    final tail = padTo(tl, hiddenTracks: hiddenTracks);
+    if (tail <= 0) return false;
+    var vidEnd = 0.0;
+    for (final c in tl.clips) {
+      if (hiddenTracks.contains(c.track)) continue;
+      if (tl.sourceOf(c).isVideo && c.end > vidEnd) vidEnd = c.end;
+    }
+    return t >= vidEnd - 0.001 && t < tail;
+  }
+
   /// 要烘進合成的圖片素材（片段 id）：墊在「最高的影片軌」之下的
   /// 那些。壓在所有影片之上的不烘——Flutter 畫在上面，拖曳即時。
   /// build 的 payload 跟編輯器「合成新鮮時別重畫」都用這一個，
@@ -643,6 +687,9 @@ class CompPlayer {
         // HDR 預覽的疊加物（浮水印/文字/貼圖的整版 PNG，跟匯出
         // 同一套欄位；rect 描述使用者畫布落在合成畫框的哪裡）
         'overlays': overlays,
+        // HLG 合成裡的圖片素材反 OOTF（實驗開關，預設關；原生端只在
+        // 掛 HDR 合成器時讀，SDR 合成不受影響。見 Diag.hlgStillInverseOotf）
+        'stillInverseOotf': Diag.hlgStillInverseOotf.value,
       });
       if (m == null) return null;
       // 原生端組不起來時會回原因，不要讓它只變成一句「組不起來」
@@ -954,6 +1001,13 @@ class CompPlayer {
         // CI 路線出現「空」＝鋪滿失敗，病灶直接定罪
         if (bi['軌道段'] != null) {
           b.write('\n  軌道段：${bi['軌道段']}');
+        }
+        // 中灰探針（HDR 合成且有圖片層時才有）：線性 0.18 的中灰經過
+        // 圖片素材那條路之後，CI 寫成的 HLG 碼多少（原生端那行自帶
+        // 判讀：0.378＝純反 OETF、圖片中間調暗半檔，該開
+        // Diag.hlgStillInverseOotf；0.436＝含 OOTF、圖片正確）
+        if (bi['中灰'] != null) {
+          b.write('\n  中灰探針：${bi['中灰']}');
         }
         if (m['trackGeo'] != null) {
           b.write(

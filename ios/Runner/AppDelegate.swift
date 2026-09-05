@@ -372,7 +372,12 @@ final class CIGifSpec {
 /// 不展開——SDR 合成器的工作格式是 RGBA8，超過 1.0 的值只會被截掉。
 /// 展開失敗（CI 打不開）退回舊路：未轉正、不展開，至少有圖
 enum MCStillLoader {
-  static func load(path: String, hdr: Bool, hint: Bool? = nil) -> CIImage? {
+  /// [inverseOotf]：HLG 合成（[hdr]）時對載入的圖片套 [inverseHlgOotf]
+  ///（Dart 端實驗開關 Diag.hlgStillInverseOotf，預設關）。SDR 合成連
+  /// 判斷都不進，像素一個位元都不變
+  static func load(
+    path: String, hdr: Bool, hint: Bool? = nil, inverseOotf: Bool = false
+  ) -> CIImage? {
     var opts: [CIImageOption: Any] = [.applyOrientationProperty: true]
     var expanded = false
     if hdr, #available(iOS 17.0, *) {
@@ -387,17 +392,95 @@ enum MCStillLoader {
       loaded = CIImage(cgImage: cg)
       expanded = false
     }
-    guard let img = loaded, img.extent.width > 1, img.extent.height > 1 else {
+    guard let raw = loaded, raw.extent.width > 1, raw.extent.height > 1 else {
       return nil
     }
     if expanded {
       NSLog("[HDRStill] 展開 HDR：%@", (path as NSString).lastPathComponent)
     }
+    // 反 OOTF 只在 HLG 合成＋開關開著時套。展開過的 HDR 照片也套：
+    // 它的線性值一樣是「顯示光」，開關要驗的是 CI 寫 HLG 碼那一步
+    let img = (hdr && inverseOotf) ? inverseHlgOotf(raw) : raw
     let o = img.extent.origin
     if abs(o.x) > 0.001 || abs(o.y) > 0.001 {
       return img.transformed(by: CGAffineTransform(translationX: -o.x, y: -o.y))
     }
     return img
+  }
+
+  /// BT.2100 HLG 的系統 γ（標稱 1000 nit 顯示器）。BT.2408 的 203 nit
+  /// 基準白正是 1000 × 0.265^1.2，所以以「基準白＝1.0」正規化之後，
+  /// 反 OOTF 就是 Y^(1/γ)，沒有額外的比例常數
+  static let hlgSystemGamma: Double = 1.2
+
+  /// 反 OOTF：RGB_s = RGB_d × Y_d^(1/γ − 1)。
+  ///
+  /// 圖片素材是「顯示光」（sRGB/P3 解碼出來的線性值，1.0＝基準白）直接
+  /// 插進線性工作空間；影片則是 HLG→線性→HLG 來回抵銷。Core Image 把
+  /// 線性值寫成 HLG 碼那一步若是純反 OETF（場景參考），顯示端再套一次
+  /// BT.2100 的 OOTF，圖片中間調就暗半檔（0.18→0.128）、白還是白。
+  /// 這個函數先把顯示光換成場景光，讓顯示端的 OOTF 剛好把它變回原來
+  /// 的顯示光。只乘亮度算出來的係數、RGB 一起乘：色度不變，跟 BT.2100
+  /// 定義的 OOTF（作用在 Y 上）同構。Y 用 709 權重在線性 sRGB 工作空間
+  /// 算——CIE Y 跟原色無關，在 sRGB 原色算的 Y 跟轉去 2020 再算是同一
+  /// 個數。全部用內建濾鏡（都是 color kernel，CI 會併成一趟），不自寫
+  /// kernel——這裡沒有編譯器可驗
+  static func inverseHlgOotf(_ img: CIImage) -> CIImage {
+    let w = CIVector(x: 0.2126, y: 0.7152, z: 0.0722, w: 0)
+    let luma = img.applyingFilter(
+      "CIColorMatrix",
+      parameters: [
+        "inputRVector": w, "inputGVector": w, "inputBVector": w,
+        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+      ])
+    // 黑階夾住：Y 的負指數在 0 會爆成無限大（0×∞＝NaN）
+    let blackFloor: CGFloat = 1.0 / 4096.0
+    let clamped = luma.applyingFilter(
+      "CIColorClamp",
+      parameters: [
+        "inputMinComponents": CIVector(
+          x: blackFloor, y: blackFloor, z: blackFloor, w: 0),
+        "inputMaxComponents": CIVector(x: 65504, y: 65504, z: 65504, w: 1),
+      ])
+    let factor = clamped.applyingFilter(
+      "CIGammaAdjust", parameters: ["inputPower": 1.0 / hlgSystemGamma - 1.0])
+    return img.applyingFilter(
+      "CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: factor])
+  }
+
+  /// 中灰探針（健康報告的「中灰探針」）：sRGB 0.4614（＝線性 0.180 的
+  /// 18% 中灰）走跟圖片素材同一條路（同一顆 HDR 工作空間 context、同一
+  /// 個反 OOTF 開關）之後，(1) 在線性工作空間是多少、(2) Core Image 把它
+  /// 寫成 HLG 碼是多少。HLG 碼 0.378＝CI 的 HLG 轉換是純反 OETF（場景
+  /// 參考、以基準白＝碼 0.75 正規化），圖片在 HLG 預覽／成品裡中間調暗
+  /// 約半檔；0.436＝含 BT.2100 OOTF（顯示參考），圖片正確；0.672＝以
+  /// 峰值正規化（1.0＝碼 1.0），那是另一種病。反 OOTF 開著時線性應變
+  /// 0.239，場景參考的碼 0.378 應變成 0.436——線性沒變＝CIGammaAdjust
+  /// 吃不下負指數、開關無效，一樣看得出來。兩張 1×1 的渲染，每次組建一次
+  static func probeMidGrey(inverseOotf: Bool) -> String {
+    let g: CGFloat = 0.4614
+    guard #available(iOS 14.0, *),
+      let lin = CGColorSpace(name: CGColorSpace.extendedLinearSRGB),
+      let hlg = CGColorSpace(name: CGColorSpace.itur_2100_HLG),
+      let srgb = CGColorSpace(name: CGColorSpace.sRGB),
+      let grey = CIColor(red: g, green: g, blue: g, alpha: 1, colorSpace: srgb)
+    else { return "探不到" }
+    let px = CGRect(x: 0, y: 0, width: 1, height: 1)
+    var img = CIImage(color: grey).cropped(to: px)
+    if inverseOotf { img = inverseHlgOotf(img) }
+    let ctx = CIExportCompositor.ctxHDR
+    var linear: [Float] = [0, 0, 0, 0]
+    ctx.render(
+      img, toBitmap: &linear, rowBytes: 16, bounds: px, format: .RGBAf,
+      colorSpace: lin)
+    var code: [UInt16] = [0, 0, 0, 0]
+    ctx.render(
+      img, toBitmap: &code, rowBytes: 8, bounds: px, format: .RGBA16,
+      colorSpace: hlg)
+    return String(
+      format: "中灰線性%.3f→HLG碼%.3f（0.378＝場景參考/0.436＝顯示參考）%@",
+      Double(linear[0]), Double(code[0]) / 65535.0,
+      inverseOotf ? "反OOTF開：線性應≈0.239、碼應≈0.436" : "")
   }
 }
 
@@ -764,7 +847,9 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   // 照樣標 2020/HLG，但畫面已經沒有 HDR 的量，看起來就是「HDR 沒了、
   // 整片暗一階」。1.0＝SDR 基準白這個慣例跟預設一樣，所以疊加物那套
   // 夾白（CIColorClamp 到 1）與 ×3 提亮的數學完全不受影響
-  private static let ctxHDR: CIContext = {
+  // 不是 private：MCStillLoader.probeMidGrey 借同一顆 context 量圖片素材
+  // 走的那條色彩鏈（CIContext 是執行緒安全的，合成佇列照跑）
+  static let ctxHDR: CIContext = {
     var opts: [CIContextOption: Any] = [
       .cacheIntermediates: false,
       .workingFormat: CIFormat.RGBAh,
@@ -2245,7 +2330,9 @@ final class AtomicFlag {
             mosaics: mosaics, stills: stills, hdrOut: hdrOut,
             overlays: overlays,
             // 合成要補到多長（0＝不用補；見 CompPlayer.build）
-            timelineDuration: args["timelineDuration"] as? Double ?? 0)
+            timelineDuration: args["timelineDuration"] as? Double ?? 0,
+            // HLG 合成裡的圖片素材反 OOTF（Dart 端實驗開關，預設關）
+            stillInverseOotf: args["stillInverseOotf"] as? Bool ?? false)
         else {
           let why = p.buildError ?? "未知原因"
           p.dispose()
@@ -2960,6 +3047,9 @@ final class AtomicFlag {
     // 時間軸總長（秒）：圖片素材可能比最後一段影片還晚結束，
     // 合成要補空白撐到這裡，不然片尾的圖會被切掉
     let timelineDur = a["timelineDuration"] as? Double ?? 0
+    // HLG 成品裡的圖片素材反 OOTF（Dart 端實驗開關，預設關；
+    // 見 MCStillLoader.inverseHlgOotf）
+    let stillInverseOotf = a["stillInverseOotf"] as? Bool ?? false
     // GPU 合成（見 CIExportCompositor）。關掉＝退回 CoreAnimationTool
     // 舊路徑（實驗開關，成品有異狀時的備援）。
     // 沒有疊加物時不走：那種匯出本來就沒有 CoreAnimationTool 的瓶頸，
@@ -3475,7 +3565,8 @@ final class AtomicFlag {
         // 成品走 HLG，HDR 照片才展開；SDR 成品照舊 8-bit 基底
         guard let path = st["path"] as? String,
           let loaded = MCStillLoader.load(
-            path: path, hdr: wantHDR, hint: st["hdr"] as? Bool)
+            path: path, hdr: wantHDR, hint: st["hdr"] as? Bool,
+            inverseOotf: stillInverseOotf)
         else { continue }
         var img = loaded
         let dw = img.extent.width
@@ -3617,10 +3708,18 @@ final class AtomicFlag {
       vc.instructions = built
     } else if useCI {
       if comp.duration > ciCursor {
+        // 補長出來的尾巴：主軌在這段有媒體（上面 padded 鋪的），列成
+        // 必要來源——跟預覽 makeVC 的 baseTrack 同一個理由（標頭只寫明
+        // 「有必要來源的段合成器一定跑」，空陣列沒寫）。沒補長的尾巴
+        //（配樂比畫面長、主軌沒媒體）不能列，列了會等不到來源格
+        let tailIDs: [NSNumber] =
+          padded && comp.duration <= mainEnd
+          ? [NSNumber(value: vTrack.trackID)] : []
         ciInstructions.append(
           CIExportInstruction(
             timeRange: CMTimeRange(start: ciCursor, end: comp.duration),
-            layers: [], mosaics: [], overlays: ciOverlays))
+            layers: [], mosaics: [], overlays: ciOverlays,
+            prerollTrackIDs: tailIDs))
       }
       vc.customVideoCompositorClass =
         wantHDR ? CIExportCompositorHDR.self : CIExportCompositor.self
@@ -5357,10 +5456,13 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 貼圖/配樂拖得比最後一段影片長時，合成的長度只到影片結尾、時鐘
   /// 走到那裡就停住——照這個值把畫面軌鋪到時間軸終點（跟匯出的
   /// timelineDuration 同一個量；鋪法見下面的 fillTail）
+  /// [stillInverseOotf] HLG 合成裡的圖片素材套反 OOTF（實驗開關，
+  /// 見 MCStillLoader.inverseHlgOotf；SDR 合成不讀）
   func build(
     clips: [[String: Any]], texture: Bool, mosaics: [[String: Any]] = [],
     stills: [[String: Any]] = [], hdrOut: Bool = false,
-    overlays: [[String: Any]] = [], timelineDuration: Double = 0
+    overlays: [[String: Any]] = [], timelineDuration: Double = 0,
+    stillInverseOotf: Bool = false
   ) -> Bool {
     let comp = AVMutableComposition()
     let scale: CMTimeScale = 600
@@ -5834,7 +5936,8 @@ final class CompPlayer: NSObject, FlutterTexture {
         // 的合成才展開：SDR 合成器的 RGBA8 工作格式裝不下 1.0 以上
         guard let path = st["path"] as? String,
           let loaded = MCStillLoader.load(
-            path: path, hdr: hdrOut && anyHDR, hint: st["hdr"] as? Bool)
+            path: path, hdr: hdrOut && anyHDR, hint: st["hdr"] as? Bool,
+            inverseOotf: stillInverseOotf)
         else { continue }
         var img = loaded
         let dw = img.extent.width
@@ -5913,6 +6016,15 @@ final class CompPlayer: NSObject, FlutterTexture {
         ))
       }
       buildInfo["圖片層"] = stillSpecs.count
+      // 中灰探針（MCStillLoader.probeMidGrey）：只在「掛 HDR 合成器＋有
+      // 圖片層」時跑（兩張 1×1 的渲染）。下一份診斷報告用這一行定罪
+      // Core Image 的 HLG 轉換是場景參考還是顯示參考——圖片素材
+      // 「比原圖暗、顏色不合」的根，見 Diag.hlgStillInverseOotf
+      if hdrOut && anyHDR && !stillSpecs.isEmpty {
+        let probe = MCStillLoader.probeMidGrey(inverseOotf: stillInverseOotf)
+        buildInfo["中灰"] = probe
+        NSLog("[HDRStill] 中灰探針 %@", probe)
+      }
 
       /// 一段畫面貼進畫布：轉正 → 等比縮放貼齊 → 置中 → 使用者的縮放位移
       func fitTransform(_ seg: CompSeg) -> CGAffineTransform? {
@@ -6132,19 +6244,47 @@ final class CompPlayer: NSObject, FlutterTexture {
         // 代價是 5 軌專案在單軌區間 seek 也要等 5 顆解碼器供格——
         // 就是「多部影片後滑動就定位很久」（實測回報）。
         // 改成只看近未來：接縫照樣提前 1.5 秒熱機，seek 只等該等的
-        var built: [CIExportInstruction] = []
-        for (i, pi) in proto.enumerated() {
-          var ids = Set(
+        // 沒有任何來源軌的段（只有圖片層、補長出來的黑尾巴、空縫）補列
+        // 最底層那條合成軌當必要來源。AVVideoComposition.h 對自訂合成器
+        // 只保證兩件事：passthroughTrackID 有值時「The compositor won't be
+        // run for the duration of the instruction」、requiredSourceTrackIDs
+        // 為 nil 時「all source tracks will be considered required」；
+        // 空陣列的段合成器會不會被叫，標頭一個字都沒有。列一條這一段確定
+        // 有媒體的軌（CI 路線每條軌都鋪滿到合成結尾，見 fillTail；這裡再
+        // 對著軌道分段表驗一次）就落回標頭寫明的一般情況：有必要來源格
+        // 的段，合成器一定跑；startRequest 照樣只畫圖片層、不讀那格。
+        // 代價是最底層那顆解碼器在尾段繼續熱著——它前一段本來就在跑，
+        // 不是 6d7da5c 擋掉的「三顆 4K 解碼器同時冷啟」。只在 needsCI
+        // 時做：沒鋪滿的軌列進去反而供格失敗
+        let baseTrack: AVMutableCompositionTrack? =
+          needsCI ? vTracks.keys.min().flatMap { vTracks[$0]?.track } : nil
+        func baseCovers(_ a: CMTime, _ b: CMTime) -> Bool {
+          guard let tr = baseTrack else { return false }
+          let mid = CMTime(
+            seconds: (a.seconds + b.seconds) / 2, preferredTimescale: 600)
+          return tr.segments.contains { sg in
+            !sg.isEmpty && sg.timeMapping.target.containsTime(mid)
+          }
+        }
+        // 每段自己需要的軌：層用到的；一條都沒有就是最底層軌（見上）
+        let own: [Set<CMPersistentTrackID>] = proto.map {
+          pi -> Set<CMPersistentTrackID> in
+          var s = Set(
             pi.layers.compactMap { l -> CMPersistentTrackID? in
               l.trackID == kCMPersistentTrackID_Invalid ? nil : l.trackID
             })
+          if s.isEmpty, let tr = baseTrack, baseCovers(pi.a, pi.b) {
+            s.insert(tr.trackID)
+          }
+          return s
+        }
+        var built: [CIExportInstruction] = []
+        for (i, pi) in proto.enumerated() {
+          var ids = own[i]
           let horizon = pi.b.seconds + 1.5
-          for pj in proto.dropFirst(i + 1) {
-            if pj.a.seconds >= horizon { break }
-            for l in pj.layers
-            where l.trackID != kCMPersistentTrackID_Invalid {
-              ids.insert(l.trackID)
-            }
+          for j in (i + 1)..<proto.count {
+            if proto[j].a.seconds >= horizon { break }
+            ids.formUnion(own[j])
           }
           built.append(
             CIExportInstruction(
