@@ -49,7 +49,7 @@ const _pngB64 =
 
 /// 首頁四張，由上而下；說明是使用者親自定的文案，一字不差
 const _labels = ['浮水印', '照片拼圖', 'GIF', '影片編輯'];
-const _subs = ['影片、照片單支或是批次快速上浮水印', '快速組圖', '影片轉成GIF', '開啟空軌道編輯照片或影片'];
+const _subs = ['影片照片單支、批次快速上浮水印', '快速組圖', '影片轉成GIF', '開啟空軌道編輯照片或影片'];
 const _icons = [
   Icons.branding_watermark_outlined,
   Icons.grid_view_rounded,

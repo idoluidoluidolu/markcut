@@ -77,7 +77,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// 浮水印：相簿混選（影片、照片都行、可多選），不先問「影片還是照片」
-  ///（卡片上寫的「影片、照片單支或是批次快速上浮水印」）。
+  ///（卡片上寫的「影片照片單支、批次快速上浮水印」）。
   /// 一個進單檔編輯器、多個問要接成一支還是各自上浮水印（見 _openBatch）。
   /// iOS 拿相簿原檔：image_picker 會把每張照片重壓成 JPEG，
   /// HEIC 變 8-bit、HDR 增益圖在這一步就沒了（見 pickMediaFiles）
@@ -361,7 +361,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _HomeCard(
       icon: Icons.branding_watermark_outlined,
       label: '浮水印',
-      sub: '影片、照片單支或是批次快速上浮水印',
+      sub: '影片照片單支、批次快速上浮水印',
       onTap: _pickMedia,
     ),
     const SizedBox(height: kHomeCardGap),
