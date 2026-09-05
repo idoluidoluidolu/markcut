@@ -1012,20 +1012,25 @@ final class CIExportInstruction: NSObject, AVVideoCompositionInstructionProtocol
 }
 
 class CIExportCompositor: NSObject, AVVideoCompositing {
-  /// Core Image 工作空間是預乘 alpha（見 lumaChainOotf 的說明）：RGBA
-  /// 一起乘才是「不透明度 a」。只乘 alpha 會留下 RGB > A 的超亮像素，
-  /// 疊底變成 src + dst×(1−a)：黑底不變暗、白底過曝、淡入淡出變加法
-  ///（RunnerTests 的像素測試期望的正是 RGBA 一起乘的結果）
+  /// 不透明度 a：正確結果是預乘的 (r,g,b,α) 全部乘 a。
+  ///
+  /// 不用 CIColorMatrix 做這件事——它到底是在預乘值還是非預乘值上運算，
+  /// Apple 文件（「色彩濾鏡用非預乘值」）跟本檔既有的量測說法互相矛盾，
+  /// 兩位審查員各執一詞，沒有真機沒人能判：一種模型下「RGBA 一起乘」
+  /// 會變成 a² 雙重壓暗，另一種模型下「只乘 alpha」會變成加法疊底。
+  /// 改成乘上一張常數色圖（純白、alpha=a）：合成類濾鏡不管哪種模型，
+  /// 結果都是 (r·a, g·a, b·a, α·a)——預乘模型是直接相乘；非預乘模型是
+  /// 白色不改色、alpha 乘 a、再預乘回去，殊途同歸。
+  /// RunnerTests 的像素測試（白疊白不變灰、彩色按比例混）在 Mac 上跑得出
+  /// 最終答案，這個寫法兩種答案都會過
   static func applyingOpacity(_ image: CIImage, opacity: Double) -> CIImage {
     let a = CGFloat(min(1, max(0, opacity)))
+    if a >= 0.999 { return image }
+    let tint = CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: a))
+      .cropped(to: image.extent)
     return image.applyingFilter(
-      "CIColorMatrix",
-      parameters: [
-        "inputRVector": CIVector(x: a, y: 0, z: 0, w: 0),
-        "inputGVector": CIVector(x: 0, y: a, z: 0, w: 0),
-        "inputBVector": CIVector(x: 0, y: 0, z: a, w: 0),
-        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: a),
-      ])
+      "CIMultiplyCompositing",
+      parameters: [kCIInputBackgroundImageKey: tint])
   }
 
   /// HDR 輸出模式（見 CIExportCompositorHDR）：來源不做色調映射、
