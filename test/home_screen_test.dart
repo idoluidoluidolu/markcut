@@ -1,9 +1,10 @@
-// 首頁：整片留給 logo，功能全收在右下角那顆＋（使用者指定：
-// 「首頁整個下方收掉，改成直接右下角＋號叫出選單」）。
+// 首頁：整片留給 logo，功能全收在底部那顆「＋ 開始」（使用者指定
+// 「首頁整個下方收掉，改成＋號叫出選單」，樣式挑了滿版膠囊）。
 //
 // 守的是：
-//   1. 首頁本體只有 logo、右上角個人中心、右下角的＋——沒有任何入口
-//      文字（舊的四個方塊、更舊的「加入浮水印」「製作浮水印」都不在）
+//   1. 首頁本體只有 logo、右上角個人中心、底部那顆「＋ 開始」——沒有
+//      任何入口文字（舊的四個方塊、更舊的「加入浮水印」「製作浮水印」
+//      都不在）
 //   2. ＋叫出來的第一層：四列 浮水印／照片拼圖／GIF／剪輯，順序、文案、
 //      一行說明、圖示；只有浮水印有第二層，也只有它畫箭頭（其餘三列
 //      點了就進功能，畫箭頭等於騙人）
@@ -253,7 +254,7 @@ void main() {
   });
 
   group('首頁本體', () {
-    testWidgets('只有 logo、個人中心、右下角的＋，沒有任何入口文字', (t) async {
+    testWidgets('只有 logo、個人中心、底部的「＋ 開始」，沒有任何入口文字', (t) async {
       await _pump(t);
 
       for (final x in const [
@@ -270,26 +271,30 @@ void main() {
       expect(find.byIcon(Icons.person_outline), findsOneWidget);
       expect(find.byType(Image), findsOneWidget);
       expect(find.byType(FloatingActionButton), findsOneWidget);
+      // 按鈕上只有「開始」兩個字，不劇透底下有哪些功能
+      expect(find.text('開始'), findsOneWidget);
       expect(t.takeException(), isNull);
     });
 
-    testWidgets('＋在右下角、直徑 62、黑底白＋；logo 原尺寸置中', (t) async {
+    testWidgets('「＋ 開始」貼底、左右各留 24、高 56、黑底白字；logo 原尺寸置中', (t) async {
       _phone(t, 390, 844);
       await _pump(t);
 
       final fab = t.getRect(find.byType(FloatingActionButton));
-      expect(fab.width, kHomeFabSize);
-      expect(fab.height, kHomeFabSize);
-      expect(fab.right, lessThan(390), reason: '＋不能超出畫面');
-      expect(fab.center.dx, greaterThan(390 * 0.7), reason: '＋要在右邊');
-      expect(fab.center.dy, greaterThan(844 * 0.7), reason: '＋要在下面');
+      expect(fab.width, 390 - kHomeStartPad * 2, reason: '左右各留 24');
+      expect(fab.height, moreOrLessEquals(kHomeStartH, epsilon: 0.1));
+      expect(fab.left, moreOrLessEquals(kHomeStartPad, epsilon: 0.5));
+      expect(fab.center.dx, moreOrLessEquals(195, epsilon: 0.5), reason: '要置中');
+      expect(fab.center.dy, greaterThan(844 * 0.8), reason: '要貼在最下面');
+      expect(fab.bottom, lessThan(844), reason: '不能超出畫面');
 
       final f = t.widget<FloatingActionButton>(
         find.byType(FloatingActionButton),
       );
       expect(f.backgroundColor, kLAccent);
       expect(f.foregroundColor, kLBg);
-      expect(f.shape, isA<CircleBorder>());
+      expect(f.shape, isA<StadiumBorder>());
+      expect(f.isExtended, isTrue, reason: '要帶字的那種');
 
       final logo = t.getRect(find.byType(Image));
       expect(logo.width, kHomeLogoSize.width);
@@ -303,10 +308,18 @@ void main() {
       await _pump(t);
       expect(t.takeException(), isNull, reason: 'SE 上溢出了');
       expect(t.getRect(find.byType(Image)).height, kHomeLogoSize.height);
-      expect(
-        t.getRect(find.byType(FloatingActionButton)).bottom,
-        lessThan(667),
-      );
+      final fab = t.getRect(find.byType(FloatingActionButton));
+      expect(fab.bottom, lessThan(667));
+      expect(fab.width, 375 - kHomeStartPad * 2, reason: '窄畫面也是左右各留 24');
+    });
+
+    testWidgets('很寬的畫面（平板橫向）：膠囊不跟著拉成長棒', (t) async {
+      _phone(t, 1024, 768);
+      await _pump(t);
+      final fab = t.getRect(find.byType(FloatingActionButton));
+      expect(fab.width, kHomeStartMaxW, reason: '寬度要封頂');
+      expect(fab.center.dx, moreOrLessEquals(512, epsilon: 0.5), reason: '置中');
+      expect(t.takeException(), isNull);
     });
   });
 

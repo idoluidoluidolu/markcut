@@ -13,8 +13,8 @@ import 'photo_editor_screen.dart';
 import 'profile_screen.dart';
 import 'video_editor_screen.dart';
 
-/// 首頁：整片留給 logo，功能全收在右下角那顆＋（使用者指定：
-/// 「首頁整個下方收掉，改成直接右下角＋號叫出選單」）。
+/// 首頁：整片留給 logo，功能全收在底部那顆「＋ 開始」（使用者指定
+/// 「首頁整個下方收掉，改成＋號叫出選單」，樣式從八種裡挑了滿版膠囊）。
 ///
 /// ＋叫出來的是一張底部面板，四列：浮水印／照片拼圖／GIF／剪輯，各帶
 /// 一行說明；只有浮水印還有第二層，也只有它右邊畫箭頭（使用者從六個
@@ -348,20 +348,30 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
-      // ＋比預設的 56 大一點（62）：它現在是整頁唯一的入口，
-      // 小一顆會像個附屬按鈕
+      // 整頁唯一的入口，所以給它整條寬度（使用者挑的樣式）。
+      // 位置交給 centerFloat：它會自己讓開底部的安全區，不會壓在
+      // home indicator 上——比自己算 bottom padding 可靠
       floatingActionButton: SizedBox(
-        width: kHomeFabSize,
-        height: kHomeFabSize,
-        child: FloatingActionButton(
+        width: _startWidth(context),
+        height: kHomeStartH,
+        child: FloatingActionButton.extended(
           tooltip: '開始',
           onPressed: _openMenu,
           backgroundColor: kLAccent,
           foregroundColor: kLBg,
-          shape: const CircleBorder(),
-          child: const Icon(Icons.add, size: 30),
+          shape: const StadiumBorder(),
+          icon: const Icon(Icons.add, size: 22),
+          label: const Text(
+            '開始',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1,
+            ),
+          ),
         ),
       ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
       body: SafeArea(
         child: Center(
           // logo 置中在整片留白裡。直接用圖檔原本的樣子，不套任何顏色：
@@ -380,6 +390,13 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+  }
+
+  /// 「＋ 開始」的寬度：左右各留 [kHomeStartPad]，但不讓它在平板／
+  /// 橫向上拉成一條誇張的長棒（[kHomeStartMaxW] 封頂）
+  double _startWidth(BuildContext context) {
+    final w = MediaQuery.sizeOf(context).width - kHomeStartPad * 2;
+    return w > kHomeStartMaxW ? kHomeStartMaxW : w;
   }
 
   /// ＋：叫出第一層面板，再照選到的往下走。
@@ -595,8 +612,14 @@ class _SheetRow<T> {
   final bool more;
 }
 
-/// 右下角那顆＋的直徑（預設的 56 在這一頁太小，見 build）
-const double kHomeFabSize = 62;
+/// 底部「＋ 開始」的高度
+const double kHomeStartH = 56;
+
+/// 它左右各留的邊
+const double kHomeStartPad = 24;
+
+/// 再寬也不超過這個（平板、橫向）
+const double kHomeStartMaxW = 420;
 
 /// 面板上一列的高度
 const double kHomeSheetRowH = 68;

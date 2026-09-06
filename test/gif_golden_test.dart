@@ -136,7 +136,7 @@ void main() {
     );
   });
 
-  testWidgets('首頁：收起來的樣子（入口全在右下角那顆＋裡）', (tester) async {
+  testWidgets('首頁：收起來的樣子（入口全在底部那顆「＋ 開始」裡）', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
         theme: buildLightTheme(),
@@ -145,7 +145,7 @@ void main() {
       ),
     );
     await _settle(tester);
-    // 收起來的首頁只有 logo、右上角個人中心、右下角的＋
+    // 收起來的首頁只有 logo、右上角個人中心、底部那顆「＋ 開始」
     //（圖示在這裡是空方框：測試環境沒載 Material Icons，跟其他快照一樣）
     expect(find.byType(FloatingActionButton), findsOneWidget);
     expect(find.text('GIF'), findsNothing);
