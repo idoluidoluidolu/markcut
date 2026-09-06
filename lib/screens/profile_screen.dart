@@ -22,6 +22,7 @@ import '../widgets/gif_image.dart';
 import '../widgets/swipe_back.dart';
 import '../widgets/watermark_layer.dart';
 import 'about_screen.dart';
+import 'feedback_screen.dart';
 import 'batch_watermark_screen.dart';
 import 'collage_screen.dart';
 import 'gif_screen.dart';
@@ -30,7 +31,7 @@ import 'presets_screen.dart';
 import 'watermark_studio_screen.dart';
 import 'video_editor_screen.dart';
 
-/// 個人中心：範本夾＋草稿夾
+/// 個人中心：範本夾＋草稿夾＋意見回饋
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
 
@@ -125,8 +126,11 @@ const _kHintStyle = TextStyle(fontSize: 13, color: Color(0xFFA8A8B4));
 /// 草稿卡下面那行名字
 const _kCardTitleStyle = TextStyle(fontSize: 13.5, fontWeight: FontWeight.w800);
 
-/// 頁尾連結（現在只剩「關於這個 App」一個，使用者指定）
+/// 頁尾連結
 const _kFootStyle = TextStyle(fontSize: 12.5, color: kLTextDim);
+
+/// 頁尾兩個連結中間那一點
+const _kDotStyle = TextStyle(fontSize: 12, color: Color(0xFFB0B0BA));
 
 /// 草稿區的一張卡：[title] 給量高度用（有名字的卡多一行字、高一截），
 /// [build] 才真的把卡做出來——沒排到的卡就不用做
@@ -431,9 +435,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return math.max(h, trailH);
   }
 
-  /// 頁尾那一行（只剩一個連結）
-  double _footerH(BuildContext ctx) =>
-      _textSize(ctx, '關於這個 App', _kFootStyle).height;
+  /// 頁尾那一列：三段字裡最高的那一段
+  double _footerH(BuildContext ctx) {
+    var h = _textSize(ctx, '意見回饋', _kFootStyle).height;
+    h = math.max(h, _textSize(ctx, '·', _kDotStyle).height);
+    return math.max(h, _textSize(ctx, '關於這個 App', _kFootStyle).height);
+  }
 
   /// 這一頁要壓多少留白才不用捲。
   ///
@@ -1014,24 +1021,38 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           // 剩下的高度全給這一段（見 _Fit.slack）：
                           // 頁尾貼著底部，中間不留一塊空白。
                           //
-                          // 「太好用啦」那顆黑色大鈕與「意見回饋」都是使用者
-                          // 指定拿掉的（見 _kSectionGap）
+                          // 「太好用啦」那顆黑色大鈕是使用者指定拿掉的
+                          //（見 _kSectionGap）；兩個文字連結留著
                           SizedBox(
                             height:
                                 _kFootGap * (1 - _kGiveLoose * fit.gap) +
                                 fit.slack,
                           ),
-                          Center(
-                            child: GestureDetector(
-                              onTap: () => Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) =>
-                                      const LightPage(child: AboutScreen()),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              GestureDetector(
+                                onTap: () => showFeedbackDialog(context),
+                                child: const Text('意見回饋', style: _kFootStyle),
+                              ),
+                              const Padding(
+                                padding: EdgeInsets.symmetric(horizontal: 10),
+                                child: Text('·', style: _kDotStyle),
+                              ),
+                              GestureDetector(
+                                onTap: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) =>
+                                        const LightPage(child: AboutScreen()),
+                                  ),
+                                ),
+                                child: const Text(
+                                  '關於這個 App',
+                                  style: _kFootStyle,
                                 ),
                               ),
-                              child: const Text('關於這個 App', style: _kFootStyle),
-                            ),
+                            ],
                           ),
                         ],
                       ),
