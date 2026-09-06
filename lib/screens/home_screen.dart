@@ -354,6 +354,8 @@ class _HomeScreenState extends State<HomeScreen> {
       floatingActionButton: Padding(
         // centerFloat 只給底部 16，貼得太低（使用者回報）。padding 算在
         // FAB 的框裡，Scaffold 會把整顆往上推，安全區照樣讓得開
+        //（所以有 home indicator 的機子上會再低一階——那 34 是它讓開的，
+        // 不是這裡多加的）
         padding: const EdgeInsets.only(bottom: kHomeStartLift),
         child: SizedBox(
           width: _startWidth(context),
@@ -613,8 +615,9 @@ const double kHomeStartPad = 24;
 /// 再寬也不超過這個（平板、橫向）
 const double kHomeStartMaxW = 420;
 
-/// 在 centerFloat 本來的 16 之上再抬多少（見 build）
-const double kHomeStartLift = 18;
+/// 在 centerFloat 本來的 16 之上再抬多少（見 build）。
+/// 16＋14＝30，就是使用者挑的那張比稿圖裡膠囊離畫面底邊的距離
+const double kHomeStartLift = 14;
 
 /// 面板上一列的高度
 const double kHomeSheetRowH = 68;
