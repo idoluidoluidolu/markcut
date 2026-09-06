@@ -4,7 +4,7 @@
 // 是兩個看不到彼此的選取器（iOS 的 PHPicker 沒有檔案 App 那一區，
 // UIDocumentPickerViewController 也列不出相簿），所以 ＋ 會先問一次。
 // 這支盯的是五件事：
-//   1. 三列都在，順序是「製作 GIF／從相簿選／從檔案選」
+//   1. 三列都在，順序是「製作 GIF／從相簿匯入 GIF／從檔案匯入 GIF」
 //   2. 「製作 GIF」開的是影片選取器（不是挑 GIF 的那一個），挑完走
 //      editRoute 進 GIF 製作頁——跟首頁的「GIF」那顆同一條
 //   3. 兩條匯入路各自開的是對的選取器（型別／副檔名過濾）
@@ -161,18 +161,14 @@ void main() {
     await _pump(t);
     await _tapAdd(t);
 
-    const rows = ['製作 GIF', '從相簿選', '從檔案選'];
+    const rows = ['製作 GIF', '從相簿匯入 GIF', '從檔案匯入 GIF'];
     for (final r in rows) {
       expect(find.text(r), findsOneWidget, reason: '選單少了「$r」');
     }
     // 「製作 GIF」擺第一列（使用者指定）：由上而下量位置，
     // 不是只確認三列都在
     final ys = [for (final r in rows) t.getCenter(find.text(r)).dy];
-    expect(
-      ys[0] < ys[1] && ys[1] < ys[2],
-      isTrue,
-      reason: '順序不對（由上而下量到 $ys）',
-    );
+    expect(ys[0] < ys[1] && ys[1] < ys[2], isTrue, reason: '順序不對（由上而下量到 $ys）');
     expect(t.takeException(), isNull);
   });
 
@@ -218,12 +214,12 @@ void main() {
     await _tapAdd(t);
 
     // 兩條路都在
-    expect(find.text('從相簿選'), findsOneWidget);
-    expect(find.text('從檔案選'), findsOneWidget);
+    expect(find.text('從相簿匯入 GIF'), findsOneWidget);
+    expect(find.text('從檔案匯入 GIF'), findsOneWidget);
 
     // 相簿：FileType.image（iOS 的 PHPicker／Android 的 ACTION_PICK）。
     // 這條路不能帶副檔名清單，帶了 file_picker 會丟 ArgumentError
-    await t.tap(find.text('從相簿選'));
+    await t.tap(find.text('從相簿匯入 GIF'));
     await _settle(t, 10);
     expect(_picker.calls, 1);
     expect(_picker.lastType, FileType.image);
@@ -233,7 +229,7 @@ void main() {
     // UTI 丟給 UIDocumentPickerViewController，Android 是
     // ACTION_OPEN_DOCUMENT 的 image/gif），清單裡只會出現 GIF
     await _tapAdd(t);
-    await t.tap(find.text('從檔案選'));
+    await t.tap(find.text('從檔案匯入 GIF'));
     await _settle(t, 10);
     expect(_picker.calls, 2);
     expect(_picker.lastType, FileType.custom);
@@ -249,7 +245,7 @@ void main() {
     await t.tapAt(const Offset(195, 60));
     await _settle(t, 10);
 
-    expect(find.text('從相簿選'), findsNothing);
+    expect(find.text('從相簿匯入 GIF'), findsNothing);
     expect(_picker.calls, 0);
     expect(Directory(_gifDir).listSync(), isEmpty);
     expect(t.takeException(), isNull);
@@ -262,7 +258,7 @@ void main() {
 
     await _pump(t);
     await _tapAdd(t);
-    await t.tap(find.text('從檔案選'));
+    await t.tap(find.text('從檔案匯入 GIF'));
     await _settle(t, 20);
 
     expect(find.text('這不是 GIF，請選會動的那種'), findsOneWidget);
@@ -284,7 +280,7 @@ void main() {
     expect(find.textContaining('按右下角的＋做一個'), findsOneWidget);
 
     await _tapAdd(t);
-    await t.tap(find.text('從檔案選'));
+    await t.tap(find.text('從檔案匯入 GIF'));
     await _settle(t, 40);
 
     final saved = await GifStore.list();
@@ -304,7 +300,7 @@ void main() {
 
     await _pump(t);
     await _tapAdd(t);
-    await t.tap(find.text('從相簿選'));
+    await t.tap(find.text('從相簿匯入 GIF'));
     await _settle(t, 40);
 
     expect(_picker.lastType, FileType.image);

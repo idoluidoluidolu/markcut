@@ -222,7 +222,7 @@ Future<String?> importGif(
 ///
 /// Web 沒有相簿這個地方——瀏覽器只有一個檔案視窗，FileType 到了那邊
 /// 只是換 `<input accept>`（見 file_picker 的 _internal/file_picker_web），
-/// 兩條匯入路會是同一件事。所以 web 只列「製作 GIF」跟「從檔案選」，
+/// 兩條匯入路會是同一件事。所以 web 只列「製作 GIF」跟「從檔案匯入 GIF」，
 /// 留下的是 accept 講得出 `.gif` 的那一條
 ///
 /// 回傳「清單要不要重讀」
@@ -250,7 +250,7 @@ Future<bool> addGifFromDevice(BuildContext context) async {
                 size: 20,
                 color: kLIcon,
               ),
-              title: const Text('從相簿選', style: TextStyle(fontSize: 13.5)),
+              title: const Text('從相簿匯入 GIF', style: TextStyle(fontSize: 13.5)),
               onTap: () => Navigator.pop(context, _GifSource.gallery),
             ),
           ListTile(
@@ -259,7 +259,7 @@ Future<bool> addGifFromDevice(BuildContext context) async {
               size: 20,
               color: kLIcon,
             ),
-            title: const Text('從檔案選', style: TextStyle(fontSize: 13.5)),
+            title: const Text('從檔案匯入 GIF', style: TextStyle(fontSize: 13.5)),
             onTap: () => Navigator.pop(context, _GifSource.files),
           ),
           const SizedBox(height: 6),
@@ -937,7 +937,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           ),
                           // 主頁這排不放「＋」（使用者指定）：匯入自己的
                           // GIF 走 GIF 夾右下角的浮動 +（或編輯器挑 GIF
-                          // 的「從相簿選」）。空的時候一行灰字
+                          // 的「從相簿匯入 GIF」）。空的時候一行灰字
                           if (_gifs.isEmpty)
                             const Padding(
                               padding: EdgeInsets.only(top: 16, bottom: 4),

@@ -1122,7 +1122,7 @@ void main() {
     await _pumpLight(t, const GifsScreen());
     await t.tap(find.byType(FloatingActionButton));
     await _settle(t, 10);
-    expect(find.text('從檔案選'), findsOneWidget);
+    expect(find.text('從檔案匯入 GIF'), findsOneWidget);
     await _shot(t, '51-gif-source-sheet');
     await _close(t);
 
