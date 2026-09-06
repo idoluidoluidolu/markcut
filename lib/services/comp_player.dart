@@ -525,6 +525,12 @@ class CompPlayer {
   /// 起點＝沒有浮水印）。只拿來決定哪些圖片/GIF 必須烘進合成，
   /// 見 [bakedImageIds]——呼叫端四個地方要送同一個值，不然「編輯器
   /// 以為烘了不畫／合成其實沒烘」就是素材整個不見
+  ///
+  /// [liveOverlays]：這份合成要收即時清單（[setOverlays]）——跟組建當下
+  /// [overlays] 空不空無關。原生端以前只看清單空不空決定掛不掛合成器：
+  /// 全域浮水印隱藏中重建出來的合成不收清單（[wmLive] false），之後打開
+  /// 只能由 Flutter 畫，HDR 畫面上就是灰的。有疊加物內容的 HDR 預覽
+  /// 一律 true（見編輯器的 _ovLiveNeeded）；SDR／沒有內容照舊 false
   static Future<CompPlayer?> build(
     TimelineModel tl, {
     bool texture = true,
@@ -533,6 +539,7 @@ class CompPlayer {
     Set<int> hiddenTracks = const {},
     bool hdrOut = false,
     List<Map<String, dynamic>> overlays = const [],
+    bool liveOverlays = false,
     double wmStart = 0,
     double wmEnd = 0,
   }) async {
@@ -708,6 +715,9 @@ class CompPlayer {
         // HDR 預覽的疊加物（浮水印/文字/貼圖的整版 PNG，跟匯出
         // 同一套欄位；rect 描述使用者畫布落在合成畫框的哪裡）
         'overlays': overlays,
+        // 收即時清單的合成器要掛著，就算上面的清單現在是空的
+        //（見 [liveOverlays]；原生端 needsCI／needsVC 讀它）
+        'ovLive': liveOverlays,
         // HLG 合成裡的圖片素材反 OOTF：不送鍵＝原生端自動（中灰探針
         // 判定，沒有使用者開關）；只有診斷強制值（Diag.hlgStillInverseOotf
         // 設了 true/false）才送。原生端只在掛 HDR 合成器時讀，SDR 不受影響

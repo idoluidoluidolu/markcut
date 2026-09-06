@@ -447,7 +447,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   WmPart _wmPart = WmPart.text;
 
   /// 點浮水印軌標籤＝關掉浮水印。預覽和匯出一起關，
-  /// 不然「看起來沒有、匯出卻有」更容易做白工
+  /// 不然「看起來沒有、匯出卻有」更容易做白工。
+  /// 隱藏只是「現在不畫」（HDR 預覽：即時清單送空），不是結構變化——
+  /// 合成照樣掛收清單的合成器，打開才回得去原生那條路（見 [_ovLiveNeeded]）
   bool _wmHidden = false;
 
   bool get _wmVisibleNow =>
@@ -468,9 +470,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   ///
   /// 判定用的是 `_exportHdr && _hdrAvail == true`——跟送給 [CompPlayer.build]
   /// 的 hdrOut、跟 [_compSig] 裡的 'hdrOut'/'ovNeed' 是同一個條件，
-  /// 四個呼叫點才不會各算各的
+  /// 四個呼叫點才不會各算各的。
+  ///
+  /// 全域浮水印隱藏中也算：隱藏／打開走即時清單、不重組合成（見
+  /// [_ovLiveNeeded]），被浮水印蓋到的圖片得一直烘在合成裡，打開那一刻
+  /// z 序才對——不然 Flutter 畫的圖會壓在原生浮水印上，或是隱藏／打開
+  /// 各重組一次合成（換 AVPlayerItem＝閃一下）
   (double, double) get _wmBakeRange =>
-      (_exportHdr && _hdrAvail == true && !_wmHidden && _settings.hasAnyMark)
+      (_exportHdr && _hdrAvail == true && _settings.hasAnyMark)
       ? (_wmStart, _wmEndEff)
       : (0.0, 0.0);
 
@@ -639,9 +646,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 時例外，見 [_ovScrubPeek]）
   bool get _ovFlutterHidden => _ovLiveOn && _ovNativeShown && !_ovScrubPeek;
 
-  /// 時間軸上有沒有任何疊加物內容（決定合成要不要掛預覽合成器）
-  bool get _ovAnyContent {
-    if (!_wmHidden && _settings.hasAnyMark) return true;
+  /// 現在有沒有疊加物要畫（即時清單的內容；隱藏中的全域浮水印不算）
+  bool get _ovAnyContent =>
+      (!_wmHidden && _settings.hasAnyMark) || _ovClipContent;
+
+  /// HDR 預覽要不要掛「收即時清單」的合成器（[CompPlayer.build] 的
+  /// liveOverlays、[_compSig] 的 ovNeed）——看的是「有沒有疊加物內容」，
+  /// 不看全域浮水印現在藏不藏。隱藏／打開走 setOverlays 即時清單
+  ///（空清單／完整清單），合成不重組。
+  ///
+  /// 以前這裡用的是 [_ovAnyContent]：隱藏會把浮水印從結構指紋拿掉，
+  /// 隱藏期間任何一次合成重建（存草稿、HDR 代理轉好、切分頁……）就組出
+  /// 不掛合成器、不收清單（wmLive=false）的合成；打開只走即時清單，
+  /// 被那份合成拒收、又沒有人排重建——浮水印只好由 Flutter 以 SDR
+  /// 基準白畫在 HDR 畫面上，看起來就是灰的（實測回報：隱藏再打開，
+  /// 原本白色變成灰色）
+  bool get _ovLiveNeeded => _settings.hasAnyMark || _ovClipContent;
+
+  /// 隱藏軌以外有沒有文字／浮水印素材片段
+  bool get _ovClipContent {
     for (final c in _tl.clips) {
       if (_hiddenTracks.contains(c.track)) continue;
       final k = _tl.sourceOf(c).kind;
@@ -1555,10 +1578,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     'hide${(_compHiddenTracks.toList()..sort()).join(',')}',
     // HDR 輸出開關：預覽管線跟著它切（HDR 素材播原檔 vs 工作檔）
     'hdrOut${_exportHdr && _hdrAvail == true}',
-    // HDR 預覽有沒有疊加物要烘：從無到有（掛預覽合成器）/從有到無
-    //（拆掉，回到純 EDR 直通）要重組；內容本身的變化走 setOverlays
-    // 即時清單，不進這份指紋
-    'ovNeed${_exportHdr && _hdrAvail == true && _ovAnyContent}',
+    // HDR 預覽有沒有疊加物內容：從無到有（掛預覽合成器）/從有到無
+    //（拆掉，回到純 EDR 直通）要重組；內容本身的變化、全域浮水印的
+    // 隱藏／打開走 setOverlays 即時清單，不進這份指紋（見 _ovLiveNeeded）
+    'ovNeed${_exportHdr && _hdrAvail == true && _ovLiveNeeded}',
     // 合成補長到哪（見 CompPlayer.padTo）：尾巴是文字/貼圖/配樂時，
     // 上面那些欄位一個都不會變，但合成的總長要跟著改——不記的話
     // 把文字拖過片尾不重組，時鐘照舊停在影片結尾
@@ -7622,6 +7645,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       hiddenImageTracks: _hiddenTracks.difference(_compHiddenTracks),
       hdrOut: hdrOut,
       overlays: ovMaps,
+      // 有疊加物內容就掛收即時清單的合成器——就算組建當下清單是空的
+      //（全域浮水印隱藏中）：之後打開走 setOverlays，不重組（見 _ovLiveNeeded）
+      liveOverlays: hdrOut && _ovLiveNeeded,
       // 被浮水印蓋到的圖片/GIF 也要烘（見 CompPlayer.bakedImageIds）
       wmStart: wmBake.$1,
       wmEnd: wmBake.$2,
@@ -13669,6 +13695,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     : '浮水印',
                                 wmSelected: _wmSel,
                                 wmHidden: _wmHidden,
+                                // 隱藏／打開只走即時清單：setState 會排
+                                // 疊加物同步（空清單／完整清單），合成
+                                // 本身不重組——結構指紋（_compSig）
+                                // 不看 _wmHidden（見 _ovLiveNeeded、
+                                // _wmBakeRange）
                                 onToggleWmVisible: () =>
                                     setState(() => _wmHidden = !_wmHidden),
                                 // 點浮水印軌＝選取＋自動切到浮水印分頁。
