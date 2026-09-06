@@ -189,11 +189,14 @@ Future<void> _tapFab(WidgetTester t) async {
 }
 
 /// 模擬手機：邏輯 [w]×[h]、dpr 2、狀態列 20（SE 沒有瀏海也沒有 home 條）
-void _phone(WidgetTester t, double w, double h) {
+/// [safeBottom] 是邏輯像素的底部安全區（home indicator 那條，
+/// iPhone 是 34）；FakeViewPadding 收的是實體像素，所以要乘 dpr
+void _phone(WidgetTester t, double w, double h, {double safeBottom = 0}) {
   t.view.devicePixelRatio = 2.0;
   t.view.physicalSize = Size(w * 2, h * 2);
-  t.view.padding = const FakeViewPadding(top: 40);
-  t.view.viewPadding = const FakeViewPadding(top: 40);
+  final pad = FakeViewPadding(top: 40, bottom: safeBottom * 2);
+  t.view.padding = pad;
+  t.view.viewPadding = pad;
   addTearDown(t.view.reset);
 }
 
@@ -283,12 +286,17 @@ void main() {
       expect(fab.center.dx, moreOrLessEquals(195, epsilon: 0.5), reason: '要置中');
       expect(fab.center.dy, greaterThan(844 * 0.8), reason: '要貼在最下面');
       expect(fab.bottom, lessThan(844), reason: '不能超出畫面');
-      // 但也不能真的貼死在邊上：centerFloat 的 16 之外再抬 kHomeStartLift
+      // 但也不能真的貼死在邊上
       expect(
         844 - fab.bottom,
-        moreOrLessEquals(16 + kHomeStartLift, epsilon: 0.5),
+        moreOrLessEquals(kHomeStartGap, epsilon: 0.5),
         reason: '離底邊的距離不對',
       );
+      final f2 = t.widget<FloatingActionButton>(
+        find.byType(FloatingActionButton),
+      );
+      expect(f2.elevation, kHomeStartElevation, reason: '陰影太重');
+      expect(f2.highlightElevation, kHomeStartElevation, reason: '按下去陰影會跳');
 
       final f = t.widget<FloatingActionButton>(
         find.byType(FloatingActionButton),
@@ -313,6 +321,32 @@ void main() {
       final fab = t.getRect(find.byType(FloatingActionButton));
       expect(fab.bottom, lessThan(667));
       expect(fab.width, 375 - kHomeStartPad * 2, reason: '窄畫面也是左右各留 24');
+    });
+
+    testWidgets('有 home indicator 的機子：「＋ 開始」不壓在安全區上', (t) async {
+      // 這條守的是「按鈕不能落在系統上滑手勢那一條裡」，同時也守著
+      // 反過來那件事：安全區不能整個加在 30 上面，那樣就浮太高了
+      //（測試回報「位置太上面」，見 _StartFabLocation）
+      _phone(t, 390, 844, safeBottom: 34);
+      await _pump(t);
+      final fab = t.getRect(find.byType(FloatingActionButton));
+      expect(
+        844 - fab.bottom,
+        moreOrLessEquals(34 + kHomeStartSafeGap, epsilon: 0.5),
+        reason: '有安全區時離底邊的距離不對',
+      );
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('logo 對整個畫面置中（不是對 AppBar 底下那塊）', (t) async {
+      // AppBar 會把 body 往下推，logo 就落在中線下面（測試回報
+      // 「寶寶沒置中」）；用 extendBodyBehindAppBar 讓它回到真的中線
+      _phone(t, 390, 844);
+      await _pump(t);
+      final logo = t.getRect(find.byType(Image));
+      expect(logo.center.dx, moreOrLessEquals(195, epsilon: 0.5));
+      expect(logo.center.dy, moreOrLessEquals(422, epsilon: 0.5));
+      expect(t.takeException(), isNull);
     });
 
     testWidgets('很寬的畫面（平板橫向）：膠囊不跟著拉成長棒', (t) async {

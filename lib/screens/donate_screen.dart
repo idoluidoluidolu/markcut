@@ -248,19 +248,6 @@ class _DonateScreenState extends State<DonateScreen> {
                   ),
                 ),
               ),
-              // logo 釘在畫面底部置中（不跟內容捲動）
-              Padding(
-                padding: const EdgeInsets.only(bottom: 14),
-                child: SizedBox(
-                  width: 120,
-                  height: 48,
-                  child: Image.asset(
-                    'assets/icon/home_logo.png',
-                    fit: BoxFit.cover,
-                    filterQuality: FilterQuality.medium,
-                  ),
-                ),
-              ),
             ],
           ),
         ),

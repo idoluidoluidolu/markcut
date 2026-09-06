@@ -1771,33 +1771,29 @@ class WatermarkPanelState extends State<WatermarkPanel> {
 
   Widget _pickerCard(WatermarkPreset p) {
     final selected = _presetSel == p.name;
-    return InkWell(
-      borderRadius: BorderRadius.circular(kPresetRadius),
-      onTap: () {
-        Navigator.pop(context);
-        _applyPresetNow(p);
-      },
-      child: Container(
-        // 內容切齊卡片圓角（跟範本夾、個人中心的範本磚同一套）
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(kPresetRadius),
-          border: Border.all(color: kBorder, width: 1),
+    // 圓角跟個人中心的範本磚同一套：超橢圓。普通圓弧角在跟直線邊接起來
+    // 的地方曲率是斷的，看起來就是「被切一角」（使用者回報，這一處漏改）。
+    // 底色、外框、切形狀都交給同一個 Material／同一條路徑，三層各畫各的
+    // 才會對不齊。外框由 shape 畫在前景，選取與否都不動版面
+    return Material(
+      color: Colors.black,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedSuperellipseBorder(
+        borderRadius: const BorderRadius.all(Radius.circular(kPresetRadius)),
+        side: BorderSide(
+          color: selected ? kSelect : kBorder,
+          width: selected ? 1.5 : 1,
         ),
-        // 選取框畫在前景，內容不位移
-        foregroundDecoration: selected
-            ? BoxDecoration(
-                borderRadius: BorderRadius.circular(kPresetRadius),
-                border: Border.all(color: kSelect, width: 1.5),
-              )
-            : null,
-        // 不放名稱膠囊（使用者指定）：挑範本看的是長相，
-        // 名字要看去範本夾
-        child: Container(
-          color: Colors.black,
-          child: IgnorePointer(
-            child: WatermarkLayer(settings: p.settings, onChanged: () {}),
-          ),
+      ),
+      // 不放名稱膠囊（使用者指定）：挑範本看的是長相，
+      // 名字要看去範本夾
+      child: InkWell(
+        onTap: () {
+          Navigator.pop(context);
+          _applyPresetNow(p);
+        },
+        child: IgnorePointer(
+          child: WatermarkLayer(settings: p.settings, onChanged: () {}),
         ),
       ),
     );

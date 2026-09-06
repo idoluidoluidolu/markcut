@@ -348,51 +348,52 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
-      // 整頁唯一的入口，所以給它整條寬度（使用者挑的樣式）。
-      // 位置交給 centerFloat：它會自己讓開底部的安全區，不會壓在
-      // home indicator 上——比自己算 bottom padding 可靠
-      floatingActionButton: Padding(
-        // centerFloat 只給底部 16，貼得太低（使用者回報）。padding 算在
-        // FAB 的框裡，Scaffold 會把整顆往上推，安全區照樣讓得開
-        //（所以有 home indicator 的機子上會再低一階——那 34 是它讓開的，
-        // 不是這裡多加的）
-        padding: const EdgeInsets.only(bottom: kHomeStartLift),
-        child: SizedBox(
-          width: _startWidth(context),
-          height: kHomeStartH,
-          child: FloatingActionButton.extended(
-            tooltip: '開始',
-            onPressed: _openMenu,
-            backgroundColor: kLAccent,
-            foregroundColor: kLBg,
-            shape: const StadiumBorder(),
-            icon: const Icon(Icons.add, size: 22),
-            label: const Text(
-              '開始',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 1,
-              ),
+      // 整頁唯一的入口，所以給它整條寬度（使用者挑的樣式）
+      floatingActionButton: SizedBox(
+        width: _startWidth(context),
+        height: kHomeStartH,
+        child: FloatingActionButton.extended(
+          tooltip: '開始',
+          onPressed: _openMenu,
+          backgroundColor: kLAccent,
+          foregroundColor: kLBg,
+          shape: const StadiumBorder(),
+          // 預設的 6 在一片白底上太重（測試回報）。黑膠囊本來就跟白底
+          // 對比到底了，陰影只要交代它浮在內容上面，不用再撐體積；
+          // 按下去也不跳成 12，那一下的影子比按鈕本身還顯眼
+          elevation: kHomeStartElevation,
+          focusElevation: kHomeStartElevation,
+          hoverElevation: kHomeStartElevation,
+          highlightElevation: kHomeStartElevation,
+          icon: const Icon(Icons.add, size: 22),
+          label: const Text(
+            '開始',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1,
             ),
           ),
         ),
       ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
-      body: SafeArea(
-        child: Center(
-          // logo 置中在整片留白裡。直接用圖檔原本的樣子，不套任何顏色：
-          // 三隻的淡出是烘在 PNG 的 alpha 裡的（左 75／中 42／右 16，
-          // 各佔 x 132-378、382-628、632-878），程式這邊調不動。
-          // icon_foreground.png 是啟動圖示前景，別共用
-          child: SizedBox(
-            width: kHomeLogoSize.width,
-            height: kHomeLogoSize.height,
-            child: Image.asset(
-              'assets/icon/home_logo.png',
-              fit: BoxFit.cover, // 裁掉原圖四周的留白
-              filterQuality: FilterQuality.medium,
-            ),
+      floatingActionButtonLocation: const _StartFabLocation(),
+      // AppBar 佔掉的高度本來會把 body 整個往下推，logo 因此落在畫面
+      // 中線下面約 50（測試回報「寶寶沒置中」）。讓 body 從畫面最上緣
+      // 開始畫，AppBar 浮在上面——它是不透明的白底，蓋住的也是白的。
+      // 這裡不包 SafeArea：包了等於又把上下的安全區扣掉一次，中線又歪
+      extendBodyBehindAppBar: true,
+      body: Center(
+        // logo 置中在整片留白裡。直接用圖檔原本的樣子，不套任何顏色：
+        // 三隻的淡出是烘在 PNG 的 alpha 裡的（左 75／中 42／右 16，
+        // 各佔 x 132-378、382-628、632-878），程式這邊調不動。
+        // icon_foreground.png 是啟動圖示前景，別共用
+        child: SizedBox(
+          width: kHomeLogoSize.width,
+          height: kHomeLogoSize.height,
+          child: Image.asset(
+            'assets/icon/home_logo.png',
+            fit: BoxFit.cover, // 裁掉原圖四周的留白
+            filterQuality: FilterQuality.medium,
           ),
         ),
       ),
@@ -615,9 +616,38 @@ const double kHomeStartPad = 24;
 /// 再寬也不超過這個（平板、橫向）
 const double kHomeStartMaxW = 420;
 
-/// 在 centerFloat 本來的 16 之上再抬多少（見 build）。
-/// 16＋14＝30，就是使用者挑的那張比稿圖裡膠囊離畫面底邊的距離
-const double kHomeStartLift = 14;
+/// 「＋ 開始」離畫面底邊多遠（沒有 home indicator 的機子）。
+/// 30 是使用者挑的那張比稿圖上的距離
+const double kHomeStartGap = 30;
+
+/// 有 home indicator 時，至少要離安全區這麼遠
+const double kHomeStartSafeGap = 8;
+
+/// 陰影（預設 6 太重，測試回報）
+const double kHomeStartElevation = 2;
+
+/// 「＋ 開始」的落點：離畫面底邊 [kHomeStartGap]，但不壓到 home
+/// indicator——安全區上面至少留 [kHomeStartSafeGap]。
+///
+/// 本來用 centerFloat，它是「安全區再加 16」：沒有安全區的機子上剛好，
+/// 有 home indicator 的就變成 16＋34＝50 起跳，看起來浮得太高
+/// （測試回報「位置太上面」）。這裡改成從畫面底邊算，安全區只當下限
+class _StartFabLocation extends FloatingActionButtonLocation {
+  const _StartFabLocation();
+
+  @override
+  Offset getOffset(ScaffoldPrelayoutGeometry g) {
+    final floor = g.minViewPadding.bottom + kHomeStartSafeGap;
+    final gap = floor > kHomeStartGap ? floor : kHomeStartGap;
+    return Offset(
+      (g.scaffoldSize.width - g.floatingActionButtonSize.width) / 2,
+      g.scaffoldSize.height - gap - g.floatingActionButtonSize.height,
+    );
+  }
+
+  @override
+  String toString() => 'HomeStartFabLocation';
+}
 
 /// 面板上一列的高度
 const double kHomeSheetRowH = 68;
