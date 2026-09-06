@@ -1,5 +1,5 @@
 import 'dart:math' as math;
-import 'dart:ui' show Rect;
+import 'dart:ui' show Offset, Rect;
 
 /// 影片裁切的換算。
 ///
@@ -68,3 +68,96 @@ Rect transformToCrop(
 /// 來回各翻一次（翻兩次＝原樣）
 Rect flipRectX(Rect r) =>
     Rect.fromLTWH(1 - r.left - r.width, r.top, r.width, r.height);
+
+// ── 裁切畫面的雙指縮放 ──────────────────────────────────────────────
+//
+// 下面兩個函式都在「畫面座標」上算，每次都從起手的框 [start] 算，不累乘
+// （累乘會飄）。極限三件事一致：框不出圖（[view]）、每邊不小於
+// [minSide]、永遠不反轉。
+
+/// 自由模式：兩指各自拉多遠，框那一側的邊就走多遠。
+///
+/// [fingersStart]／[fingers] 是「把所有手指包起來的方框」起手時與現在的
+/// 樣子。寬跟著方框的寬變、高跟著方框的高變、中心跟著方框的中心走——
+/// 沒撞到極限時這正好是「左邊跟左手指、右邊跟右手指、上下同理」：
+/// 水平拉開只變寬、垂直拉開只變高、斜拉兩軸各自照手指走、兩指一起移
+/// 就是搬。
+///
+/// 用「位移」不用「比例」：兩指擺得近乎水平時，垂直方向的起始距離只有
+/// 幾個像素，用比例（ScaleUpdateDetails.verticalScale 那種）會把手指
+/// 一點點抖動放大成好幾倍，框就亂跳；完全水平時比例根本算不出來。
+Rect pinchCropFree({
+  required Rect start,
+  required Rect view,
+  required double minSide,
+  required Rect fingersStart,
+  required Rect fingers,
+}) {
+  final w = _side(
+    start.width + (fingers.width - fingersStart.width),
+    minSide,
+    view.width,
+  );
+  final h = _side(
+    start.height + (fingers.height - fingersStart.height),
+    minSide,
+    view.height,
+  );
+  final c = start.center + (fingers.center - fingersStart.center);
+  return _keepInView(Rect.fromCenter(center: c, width: w, height: h), view);
+}
+
+/// 等比：兩指距離變成 [scale] 倍，框就變 [scale] 倍，繞著起手時的焦點
+/// [focal]（焦點在起手框裡的相對位置不變，所以手指按著的那塊內容留在
+/// 指尖底下），兩指中點移了 [pan] 框就跟著移。
+///
+/// [ratio] 有值＝鎖比例：寬決定一切，最小是「兩邊都不小於 [minSide]」、
+/// 最大是「兩邊都不出圖」，所以捏到底比例也不會破。null＝自由模式
+/// 但拿不到手指位置時（觸控板的捏合）的退路，兩軸各自夾。
+Rect pinchCropUniform({
+  required Rect start,
+  required Rect view,
+  required double minSide,
+  required double? ratio,
+  required double scale,
+  required Offset focal,
+  required Offset pan,
+}) {
+  final double w;
+  final double h;
+  if (ratio == null) {
+    w = _side(start.width * scale, minSide, view.width);
+    h = _side(start.height * scale, minSide, view.height);
+  } else {
+    w = _side(
+      start.width * scale,
+      math.max(minSide, minSide * ratio),
+      math.min(view.width, view.height * ratio),
+    );
+    h = w / ratio;
+  }
+  final rel = Offset(
+    start.width == 0 ? 0.5 : (focal.dx - start.left) / start.width,
+    start.height == 0 ? 0.5 : (focal.dy - start.top) / start.height,
+  );
+  return _keepInView(
+    Rect.fromLTWH(
+      focal.dx + pan.dx - rel.dx * w,
+      focal.dy + pan.dy - rel.dy * h,
+      w,
+      h,
+    ),
+    view,
+  );
+}
+
+/// 邊長夾在 [lo, hi]；圖比最小邊還小的極端情況以圖為準
+double _side(double v, double lo, double hi) => math.min(math.max(v, lo), hi);
+
+/// 框整個推回圖裡（大小不變，只搬）
+Rect _keepInView(Rect r, Rect view) => Rect.fromLTWH(
+  r.left.clamp(view.left, math.max(view.left, view.right - r.width)),
+  r.top.clamp(view.top, math.max(view.top, view.bottom - r.height)),
+  r.width,
+  r.height,
+);
