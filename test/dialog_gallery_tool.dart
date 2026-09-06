@@ -1017,12 +1017,15 @@ void main() {
 
   // ---------- 首頁（淺色）----------
 
-  testWidgets('home: 首頁四個入口方塊 ＋ 重建的多選影片視窗', (t) async {
-    // 「加入浮水印」的選單沒了：四個入口方塊（浮水印／照片拼圖／GIF／
-    // 剪輯）直接在首頁上，各自進功能
+  testWidgets('home: ＋選單 ＋ 重建的多選影片視窗', (t) async {
+    // 首頁下方整個收起來了：入口在右下角那顆＋叫出來的面板裡
+    //（浮水印／照片拼圖／GIF）
     await _pumpLight(t, const HomeScreen());
+    await t.tap(find.byType(FloatingActionButton));
+    await _settle(t, 10);
     expect(find.text('照片拼圖'), findsOneWidget);
-    await _shot(t, '45-home-four-tiles');
+    await _shot(t, '45-home-plus-sheet');
+    await _close(t);
 
     // 逐字重建：home_screen.dart _askMultiVideo 選了 N 部影片
     final ctx = _ctx(t);

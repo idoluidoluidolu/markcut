@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -10,18 +8,24 @@ import '../nav.dart';
 import '../theme.dart';
 import 'batch_watermark_screen.dart';
 import 'collage_screen.dart';
-import 'gif_screen.dart';
 import 'photo_editor_screen.dart';
 import 'profile_screen.dart';
 import 'video_editor_screen.dart';
 
-/// 首頁：logo ＋ 四個入口方塊（浮水印／照片拼圖／GIF／剪輯），
-/// 每一個直接進那個功能。以前是一顆「加入浮水印」先跳一個選單問
-/// 「影片、照片、拼圖、GIF 還是空白專案」，現在那一層只剩浮水印
-/// 自己要問的「照片還是影片」。
+/// 首頁：整片留給 logo，功能全收在右下角那顆＋（使用者指定：
+/// 「首頁整個下方收掉，改成直接右下角＋號叫出選單」）。
+///
+/// ＋叫出來的是一張底部面板，三列：浮水印／照片拼圖／GIF，各帶一行
+/// 說明；有第二層的那兩列右邊畫箭頭（使用者從六個版型裡挑的 D）。
+/// 第二層也是同一種面板，左上角一個返回箭頭：
+///   浮水印 → 照片／影片（挑完的流程跟以前一樣，見 _openBatch）
+///   照片拼圖 → 沒有第二層，直接進拼圖頁
+///   GIF → 製作 GIF／從相簿匯入 GIF／從檔案匯入 GIF
+///          （跟個人中心「我的 GIF」的＋同一支，見 addGifFromDevice）
 ///
 /// 「製作浮水印」（浮水印工作室）從首頁拿掉，走 個人中心 → 範本 → ＋
-/// （見 profile_screen 的 _presetAddTile）
+/// （見 profile_screen 的 _presetAddTile）。
+/// 「剪輯」（開一條空的時間軸）也不在這個選單裡——使用者列的就是這三項
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -65,7 +69,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }.contains(ext);
   }
 
-  /// 四個入口共用的重入鎖：選取器（或推出去的頁）還開著就別再開第二個
+  /// ＋選單共用的重入鎖：選取器（或推出去的頁）還開著就別再開第二個
   /// ——連點兩下會疊兩層
   bool _picking = false;
 
@@ -85,7 +89,10 @@ class _HomeScreenState extends State<HomeScreen> {
   /// 一個進單檔編輯器、多個問要接成一支還是各自上浮水印（見 _openBatch）。
   /// iOS 拿相簿原檔：image_picker 會把每張照片重壓成 JPEG，
   /// HEIC 變 8-bit、HDR 增益圖在這一步就沒了（見 pickPhotoFiles）
-  Future<void> _pickForWatermark() => _guarded(() async {
+  ///
+  /// 不再自己上重入鎖：唯一的呼叫點是 [_openMenu]，而它整段都在鎖裡
+  /// ——巢狀呼叫會被自己的鎖擋掉，第二層面板永遠開不出來
+  Future<void> _pickForWatermark() async {
     final video = await _askPhotoOrVideo();
     if (video == null || !mounted) return;
     // 提示交給批次頁進場後顯示——在這裡 show 會馬上被
@@ -110,71 +117,27 @@ class _HomeScreenState extends State<HomeScreen> {
         hint: _countHint(count: list.length, unit: '張照片', soft: 200),
       );
     }
-  });
+  }
 
-  /// 浮水印要上在哪一種素材上。true＝影片、false＝照片、null＝取消
-  Future<bool?> _askPhotoOrVideo() => showDialog<bool>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: const Text('要上浮水印的是'),
-      contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
-      content: SizedBox(
-        width: 270,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            optionRow(
-              context: context,
-              title: '照片',
-              subtitle: '單張或整批',
-              selected: false,
-              first: true,
-              onTap: () => Navigator.pop(context, false),
-            ),
-            optionRow(
-              context: context,
-              title: '影片',
-              subtitle: '單支或整批',
-              selected: false,
-              onTap: () => Navigator.pop(context, true),
-            ),
-          ],
-        ),
+  /// 浮水印的第二層：要上在哪一種素材上。true＝影片、false＝照片、
+  /// null＝返回或關掉
+  Future<bool?> _askPhotoOrVideo() => _showSheet<bool>(
+    back: '浮水印',
+    rows: [
+      _SheetRow(
+        icon: Icons.photo_outlined,
+        label: '照片',
+        sub: '單張或整批',
+        value: false,
       ),
-    ),
+      _SheetRow(
+        icon: Icons.movie_outlined,
+        label: '影片',
+        sub: '單支或整批',
+        value: true,
+      ),
+    ],
   );
-
-  /// 照片拼圖：直接進畫面，照片進去再挑。先挑照片的話，使用者還沒看到
-  /// 宮格就得決定要幾張，挑錯還要退出去重來
-  Future<void> _openCollage() => _guarded(() async {
-    await Navigator.push(
-      context,
-      editRoute(builder: (_) => const CollageScreen()),
-    );
-  });
-
-  /// GIF：挑一支影片進 GIF 製作頁。一次做一支；多選了就拿第一支，
-  /// 這裡不值得再多問一輪
-  Future<void> _makeGif() => _guarded(() async {
-    final list = await pickVideoFiles();
-    final v = list.where(_isVideoFile).toList();
-    if (v.isEmpty || !mounted) return;
-    await Navigator.push(
-      context,
-      editRoute(
-        builder: (_) => GifScreen(path: v.first.path, name: v.first.name),
-      ),
-    );
-  });
-
-  /// 剪輯：不挑素材，直接開一條空的時間軸，照片、影片進去再加
-  Future<void> _openBlank() => _guarded(() async {
-    await Navigator.push(
-      context,
-      editRoute(builder: (_) => const VideoEditorScreen(blank: true)),
-    );
-    _checkDraft();
-  });
 
   /// 選完才講的提醒（略過的檔案、數量偏多）。
   /// 數量上限以前寫在選單上，但使用者還沒開始挑就先看到限制沒什麼用，
@@ -353,181 +316,223 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
+      // ＋比預設的 56 大一點（62）：它現在是整頁唯一的入口，
+      // 小一顆會像個附屬按鈕
+      floatingActionButton: SizedBox(
+        width: kHomeFabSize,
+        height: kHomeFabSize,
+        child: FloatingActionButton(
+          tooltip: '開始',
+          onPressed: _openMenu,
+          backgroundColor: kLAccent,
+          foregroundColor: kLBg,
+          shape: const CircleBorder(),
+          child: const Icon(Icons.add, size: 30),
+        ),
+      ),
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
-          child: LayoutBuilder(
-            builder: (context, c) {
-              // 方塊是正方形、四個等寬，所以那一排的高度是算得出來的：
-              // 邊長（寬度扣掉三個間距再四等分）＋間距＋一行字。
-              // 剩下的高度全給 logo，Expanded 保證它拿到的是有界的高度，
-              // 放不下就等比縮小（縮到 0 也不會溢出）
-              final side = (c.maxWidth - kHomeTileGap * 3) / 4;
-              final labelH =
-                  MediaQuery.textScalerOf(context).scale(kHomeTileLabelSize) *
-                  1.4;
-              final tilesH = side + kHomeTileLabelGap + labelH;
-              // 連方塊那一排都放不下（橫向、超大字級）：不畫 logo、
-              // 讓它自己捲，什麼高度都不溢出
-              if (c.hasBoundedHeight && c.maxHeight < tilesH) {
-                return SingleChildScrollView(child: _tiles());
-              }
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Expanded(
-                    child: LayoutBuilder(
-                      builder: (context, lc) {
-                        // 至少留 _kLogoAir 給 logo 上下喘息；不夠就縮小
-                        final h = math.min(
-                          kHomeLogoSize.height,
-                          math.max(0.0, lc.maxHeight - _kLogoAir),
-                        );
-                        final w =
-                            h * kHomeLogoSize.width / kHomeLogoSize.height;
-                        return Center(
-                          child: SizedBox(
-                            width: w,
-                            height: h,
-                            // 直接用圖檔原本的樣子，不套任何顏色。
-                            // 三隻的淡出是烘在 PNG 的 alpha 裡的（左 75／
-                            // 中 42／右 16，各佔 x 132-378、382-628、
-                            // 632-878），程式這邊調不動，要改得動圖檔。
-                            // icon_foreground.png 是啟動圖示前景，別共用
-                            child: Image.asset(
-                              'assets/icon/home_logo.png',
-                              fit: BoxFit.cover, // 裁掉原圖四周的留白
-                              filterQuality: FilterQuality.medium,
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                  _tiles(),
-                ],
-              );
-            },
+        child: Center(
+          // logo 置中在整片留白裡。直接用圖檔原本的樣子，不套任何顏色：
+          // 三隻的淡出是烘在 PNG 的 alpha 裡的（左 75／中 42／右 16，
+          // 各佔 x 132-378、382-628、632-878），程式這邊調不動。
+          // icon_foreground.png 是啟動圖示前景，別共用
+          child: SizedBox(
+            width: kHomeLogoSize.width,
+            height: kHomeLogoSize.height,
+            child: Image.asset(
+              'assets/icon/home_logo.png',
+              fit: BoxFit.cover, // 裁掉原圖四周的留白
+              filterQuality: FilterQuality.medium,
+            ),
           ),
         ),
       ),
     );
   }
 
-  /// 四個入口方塊排成一排。第一個反白＝主要動作，其他三個淺灰
-  Widget _tiles() => Row(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Expanded(
-        child: _HomeTile(
-          primary: true,
+  /// ＋：叫出第一層面板，再照選到的往下走
+  Future<void> _openMenu() => _guarded(() async {
+    final pick = await _showSheet<_HomeAction>(
+      rows: const [
+        _SheetRow(
           icon: Icons.branding_watermark_outlined,
           label: '浮水印',
-          onTap: _pickForWatermark,
+          sub: '照片、影片，單支或整批',
+          value: _HomeAction.watermark,
+          more: true,
         ),
-      ),
-      const SizedBox(width: kHomeTileGap),
-      Expanded(
-        child: _HomeTile(
+        _SheetRow(
           icon: Icons.grid_view_rounded,
           label: '照片拼圖',
-          onTap: _openCollage,
+          sub: '多張照片拼成一張',
+          value: _HomeAction.collage,
         ),
-      ),
-      const SizedBox(width: kHomeTileGap),
-      Expanded(
-        child: _HomeTile(
+        _SheetRow(
           icon: Icons.gif_box_outlined,
           label: 'GIF',
-          onTap: _makeGif,
+          sub: '影片轉 GIF，或匯入現成的',
+          value: _HomeAction.gif,
+          more: true,
+        ),
+      ],
+    );
+    if (pick == null || !mounted) return;
+    switch (pick) {
+      case _HomeAction.watermark:
+        await _pickForWatermark();
+      case _HomeAction.collage:
+        // 直接進畫面，照片進去再挑：先挑照片的話，使用者還沒看到宮格
+        // 就得決定要幾張，挑錯還要退出去重來
+        await Navigator.push(
+          context,
+          editRoute(builder: (_) => const CollageScreen()),
+        );
+      case _HomeAction.gif:
+        // 跟個人中心「我的 GIF」的＋同一支：製作／從相簿匯入／從檔案匯入。
+        // 回傳的是「清單要不要重讀」，首頁沒有清單，不理它
+        await addGifFromDevice(context);
+    }
+  });
+
+  /// 這一頁的面板長相：白底、上緣圓角、一根抓把，每列是
+  /// 圖示方塊＋名稱＋一行說明（有第二層的右邊多一個箭頭）。
+  /// [back] 有值＝第二層，最上面多一行「← 那一項的名字」
+  Future<T?> _showSheet<T>({List<_SheetRow<T>> rows = const [], String? back}) {
+    return showModalBottomSheet<T>(
+      context: context,
+      backgroundColor: kLBg,
+      showDragHandle: true,
+      shape: const RoundedSuperellipseBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (back != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.chevron_left, size: 22, color: kLText),
+                      const SizedBox(width: 6),
+                      Text(
+                        back,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 1,
+                          color: kLText,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              for (final r in rows)
+                InkWell(
+                  onTap: () => Navigator.pop(context, r.value),
+                  child: SizedBox(
+                    height: kHomeSheetRowH,
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 40,
+                          height: 40,
+                          alignment: Alignment.center,
+                          decoration: const ShapeDecoration(
+                            color: kLTile,
+                            shape: RoundedSuperellipseBorder(
+                              borderRadius: BorderRadius.all(
+                                Radius.circular(12),
+                              ),
+                            ),
+                          ),
+                          child: Icon(r.icon, size: 22, color: kLText),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                r.label,
+                                maxLines: 1,
+                                overflow: TextOverflow.fade,
+                                softWrap: false,
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: 0.5,
+                                  color: kLText,
+                                ),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                r.sub,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: kLTextDim,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        // 只有真的還有第二層才畫箭頭：畫了卻直接進功能，
+                        // 等於騙人
+                        if (r.more)
+                          const Icon(
+                            Icons.chevron_right,
+                            size: 20,
+                            color: Color(0xFFB0B0BA),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
-      const SizedBox(width: kHomeTileGap),
-      Expanded(
-        child: _HomeTile(
-          icon: Icons.smart_display_outlined,
-          label: '剪輯',
-          onTap: _openBlank,
-        ),
-      ),
-    ],
-  );
+    );
+  }
 }
 
-/// 入口方塊之間的間距、圓角、圖示大小，以及名稱那一行（版面算
-/// 「放不放得下」也用這幾個數，見 build）。改這裡四個一起變
-const double kHomeTileGap = 12;
-const double kHomeTileRadius = 20;
-const double kHomeTileIcon = 30;
-const double kHomeTileLabelGap = 10;
-const double kHomeTileLabelSize = 12;
+/// ＋選單第一層的三個去處
+enum _HomeAction { watermark, collage, gif }
+
+/// 面板上的一列
+class _SheetRow<T> {
+  const _SheetRow({
+    required this.icon,
+    required this.label,
+    required this.sub,
+    required this.value,
+    this.more = false,
+  });
+
+  final IconData icon;
+  final String label;
+
+  /// 名稱底下那一行說明
+  final String sub;
+
+  /// 點下去 pop 出來的值
+  final T value;
+
+  /// 右邊要不要畫箭頭（＝點了還有第二層）
+  final bool more;
+}
+
+/// 右下角那顆＋的直徑（預設的 56 在這一頁太小，見 build）
+const double kHomeFabSize = 62;
+
+/// 面板上一列的高度
+const double kHomeSheetRowH = 68;
 
 /// logo 的版面尺寸（home_logo.png 裁掉四周留白後的比例）
 const Size kHomeLogoSize = Size(190, 76);
-
-/// 縮小 logo 之前至少要留給它上下的一點喘息空間
-const double _kLogoAir = 24;
-
-/// 首頁入口方塊：正方形圓角方塊裝一個圖示，名稱在下面。
-/// 第一個反白（近黑底、白圖示）＝主要動作，其他三個淺灰底。
-///
-/// 方塊本身是 Material＋InkWell（水波紋要畫在底色上面）；外面再包一層
-/// GestureDetector，讓下面那行字也按得到——手指本來就會落在字上，
-/// 只有方塊可按的話會有一半的點擊沒反應。方塊上的點擊由比較深的
-/// InkWell 贏走，不會兩邊都觸發
-class _HomeTile extends StatelessWidget {
-  final bool primary;
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-
-  const _HomeTile({
-    this.primary = false,
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final fg = primary ? kLBg : kLText;
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          AspectRatio(
-            aspectRatio: 1,
-            child: Material(
-              color: primary ? kLAccent : kLTile,
-              borderRadius: BorderRadius.circular(kHomeTileRadius),
-              clipBehavior: Clip.antiAlias,
-              child: InkWell(
-                onTap: onTap,
-                child: Center(
-                  child: Icon(icon, size: kHomeTileIcon, color: fg),
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: kHomeTileLabelGap),
-          // 名稱放不下（字級放大到極端）就淡出：不折行、不裁字，
-          // 也不觸發溢出條紋
-          Text(
-            label,
-            maxLines: 1,
-            softWrap: false,
-            overflow: TextOverflow.fade,
-            style: const TextStyle(
-              fontSize: kHomeTileLabelSize,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.3,
-              color: kLText,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}

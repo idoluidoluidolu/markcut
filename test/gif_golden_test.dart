@@ -136,7 +136,7 @@ void main() {
     );
   });
 
-  testWidgets('首頁：四個入口方塊（GIF 直接在首頁，不再藏在選單裡）', (tester) async {
+  testWidgets('首頁：收起來的樣子（入口全在右下角那顆＋裡）', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
         theme: buildLightTheme(),
@@ -145,9 +145,10 @@ void main() {
       ),
     );
     await _settle(tester);
-    // 四個方塊：浮水印／照片拼圖／GIF／剪輯，名稱在方塊正下方
+    // 收起來的首頁只有 logo、右上角個人中心、右下角的＋
     //（圖示在這裡是空方框：測試環境沒載 Material Icons，跟其他快照一樣）
-    expect(find.text('GIF'), findsOneWidget);
+    expect(find.byType(FloatingActionButton), findsOneWidget);
+    expect(find.text('GIF'), findsNothing);
     await expectLater(
       find.byType(MaterialApp),
       matchesGoldenFile('goldens/home.png'),
