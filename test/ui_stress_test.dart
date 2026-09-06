@@ -106,25 +106,16 @@ void main() {
       expect(picker.calls, 1, reason: '連點之後選取器被開了 ${picker.calls} 次');
       expect(find.text('照片拼圖'), findsNothing, reason: '選取器開著時又跳了面板');
 
-      // 選好兩張：只會問一次「串成影片還是各自上浮水印」
-      picker.finish([
-        XFile('/x/a.png', name: 'a.png'),
-        XFile('/x/b.png', name: 'b.png'),
-      ]);
+      // 按取消（回空清單）：什麼都不推，鎖要放開，再點＋要能再開面板。
+      // 這裡不真的選兩張——選了會推批次頁，那一頁會去讀不存在的檔案，
+      // 測到的就變成別的東西了；真的選完的路徑由 home_screen_test 用
+      // 真的暫存檔跑（見「兩張直接進批次頁」）
+      picker.finish(const []);
       await tester.pumpAndSettle();
-      expect(
-        find.text('選了 2 張照片'),
-        findsOneWidget,
-        reason: '連點之後疊出了不只一個（或沒有）選取視窗',
-      );
-
-      // 關掉（點視窗外）：鎖要放開，再點＋要能再開面板
-      await tester.tapAt(const Offset(10, 10));
-      await tester.pumpAndSettle();
-      expect(find.text('選了 2 張照片'), findsNothing);
+      expect(find.text('照片拼圖'), findsNothing, reason: '取消之後又冒出面板');
       await tester.tap(find.byType(FloatingActionButton));
       await tester.pumpAndSettle();
-      expect(find.text('照片拼圖'), findsOneWidget, reason: '視窗關掉之後鎖沒放開');
+      expect(find.text('照片拼圖'), findsOneWidget, reason: '選取器關掉之後鎖沒放開');
       await tester.tapAt(const Offset(10, 10));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);

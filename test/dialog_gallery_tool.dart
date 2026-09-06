@@ -1017,7 +1017,7 @@ void main() {
 
   // ---------- 首頁（淺色）----------
 
-  testWidgets('home: ＋選單 ＋ 重建的多選影片視窗', (t) async {
+  testWidgets('home: ＋選單', (t) async {
     // 首頁下方整個收起來了：入口在右下角那顆＋叫出來的面板裡
     //（浮水印／照片拼圖／GIF）
     await _pumpLight(t, const HomeScreen());
@@ -1027,43 +1027,6 @@ void main() {
     await _shot(t, '45-home-plus-sheet');
     await _close(t);
 
-    // 逐字重建：home_screen.dart _askMultiVideo 選了 N 部影片
-    final ctx = _ctx(t);
-    unawaited(
-      showDialog<bool>(
-        context: ctx,
-        builder: (context) => AlertDialog(
-          title: const Text('選了 3 部影片'),
-          contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
-          content: SizedBox(
-            width: 270,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                optionRow(
-                  context: context,
-                  title: '剪成一支影片',
-                  subtitle: '照選取順序接起來',
-                  selected: false,
-                  first: true,
-                  onTap: () => Navigator.pop(context, true),
-                ),
-                optionRow(
-                  context: context,
-                  title: '統一上浮水印',
-                  subtitle: '快速套用同一組浮水印',
-                  selected: false,
-                  onTap: () => Navigator.pop(context, false),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-    await _settle(t, 10);
-    await _shot(t, '46-recon-home-ask-multi-video');
-    await _close(t);
     await _drain(t);
   });
 

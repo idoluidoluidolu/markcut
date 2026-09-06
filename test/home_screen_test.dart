@@ -8,8 +8,9 @@
 //   2. ＋叫出來的第一層：四列 浮水印／照片拼圖／GIF／剪輯，順序、文案、
 //      一行說明、圖示；右邊不畫箭頭（使用者指定）
 //   3. 每一列走的路：
-//        浮水印   → 第二層「照片／影片」→ 對應的選取器 → 多個問
-//                   「接成一支／串成影片還是各自上浮水印」
+//        浮水印   → 第二層「照片／影片」→ 對應的選取器 →
+//                   一個進單檔編輯器、多個直接進批次頁（中間不再問
+//                   「要不要接成一支影片」，使用者指定拿掉）
 //        照片拼圖 → 不開選取器、不進第二層，直接推拼圖頁
 //        GIF      → 不進第二層，直接開影片選取器，挑一支進 GIF 製作頁
 //                   （匯入現成的 GIF 是 個人中心「我的 GIF」的事，
@@ -423,7 +424,7 @@ void main() {
       expect(t.takeException(), isNull);
     });
 
-    testWidgets('浮水印 → 第二層「照片／影片」；選照片 → 照片選取器 → 兩張問怎麼處理', (t) async {
+    testWidgets('浮水印 → 第二層「照片／影片」；選照片 → 照片選取器 → 兩張直接進批次頁', (t) async {
       _images.next = [
         XFile(_p('a.png'), name: 'a.png'),
         XFile(_p('b.png'), name: 'b.png'),
@@ -442,17 +443,13 @@ void main() {
       expect(_images.calls + _files.calls, 0, reason: '還沒選就開了選取器');
 
       await t.tap(find.text('照片'));
-      await _settle(t);
+      await _settle(t, 20);
       expect(_images.calls, 1, reason: '沒有開照片選取器');
       expect(_files.calls, 0, reason: '開錯了（只列影片那個選取器）');
-      expect(
-        find.text('選了 2 張照片'),
-        findsOneWidget,
-        reason: '多張沒有問要串成影片還是各自上浮水印',
-      );
-
-      await t.tap(find.text('統一上浮水印'));
-      await _settle(t, 20);
+      // 中間不再問「串成一段影片還是各自上浮水印」（使用者指定拿掉）
+      for (final x in const ['選了 2 張照片', '串成一段影片', '統一上浮水印']) {
+        expect(find.text(x), findsNothing, reason: '不該再問「$x」');
+      }
       final page = spy.lastEdit(t);
       expect(page, isA<BatchWatermarkScreen>());
       expect(
@@ -464,7 +461,7 @@ void main() {
       expect(t.takeException(), isNull);
     });
 
-    testWidgets('浮水印 → 影片：影片選取器，非影片檔濾掉，兩支問怎麼處理', (t) async {
+    testWidgets('浮水印 → 影片：影片選取器，非影片檔濾掉，兩支直接進批次頁', (t) async {
       // 選取器照理只列影片，但 web／舊安卓那條路可能混進照片，首頁要自己濾
       _files.next = [_p('a.mp4'), _p('c.png'), _p('b.mp4')];
       final spy = _RouteSpy();
@@ -473,16 +470,15 @@ void main() {
       await t.tap(find.text('浮水印'));
       await _settle(t);
       await t.tap(find.text('影片'));
-      await _settle(t);
+      await _settle(t, 20);
 
       expect(_files.calls, 1, reason: '沒有開影片選取器');
       expect(_files.lastType, FileType.video, reason: '相簿只能列影片');
       expect(_files.lastMultiple, isTrue);
       expect(_images.calls, 0, reason: '開錯了（照片那個選取器）');
-      expect(find.text('選了 2 部影片'), findsOneWidget);
-
-      await t.tap(find.text('統一上浮水印'));
-      await _settle(t, 20);
+      for (final x in const ['選了 2 部影片', '剪成一支影片', '統一上浮水印']) {
+        expect(find.text(x), findsNothing, reason: '不該再問「$x」');
+      }
       final page = spy.lastEdit(t);
       expect(page, isA<BatchWatermarkScreen>());
       expect(

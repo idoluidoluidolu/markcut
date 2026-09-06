@@ -90,7 +90,7 @@ class _HomeScreenState extends State<HomeScreen> {
   /// 浮水印：先問要上在照片還是影片上（使用者指定），再開對應的選取器
   /// ——相簿混選看得到兩種，但兩邊之後的流程差很多（照片問要不要串成
   /// 影片、影片問要不要接成一支），先問一句比挑完才發現猜錯好。
-  /// 一個進單檔編輯器、多個問要接成一支還是各自上浮水印（見 _openBatch）。
+  /// 一個進單檔編輯器，多個直接進批次頁（見 _openBatch）。
   /// iOS 拿相簿原檔：image_picker 會把每張照片重壓成 JPEG，
   /// HEIC 變 8-bit、HDR 增益圖在這一步就沒了（見 pickPhotoFiles）
   ///
@@ -187,107 +187,18 @@ class _HomeScreenState extends State<HomeScreen> {
     return parts.isEmpty ? null : parts.join('；');
   }
 
-  /// 多支影片：問要接成一支（進剪輯）還是各自上浮水印（進批次）。
-  /// 兩件事差很多，猜錯的代價是使用者整批重挑
-  Future<bool?> _askMultiVideo(int n) => showDialog<bool>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: Text('選了 $n 部影片'),
-      contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
-      content: SizedBox(
-        width: 270,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            optionRow(
-              context: context,
-              title: '剪成一支影片',
-              subtitle: '照選取順序接起來',
-              selected: false,
-              first: true,
-              onTap: () => Navigator.pop(context, true),
-            ),
-            optionRow(
-              context: context,
-              title: '統一上浮水印',
-              subtitle: '快速套用同一組浮水印',
-              selected: false,
-              onTap: () => Navigator.pop(context, false),
-            ),
-          ],
-        ),
-      ),
-    ),
-  );
-
-  /// 多張照片：問要串成一段影片（進剪輯）還是各自上浮水印（進批次）
-  Future<bool?> _askMultiPhoto(int n) => showDialog<bool>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: Text('選了 $n 張照片'),
-      contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
-      content: SizedBox(
-        width: 270,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            optionRow(
-              context: context,
-              title: '串成一段影片',
-              subtitle: '照選取順序串成影片',
-              selected: false,
-              first: true,
-              onTap: () => Navigator.pop(context, true),
-            ),
-            optionRow(
-              context: context,
-              title: '統一上浮水印',
-              subtitle: '快速套用同一個浮水印',
-              selected: false,
-              onTap: () => Navigator.pop(context, false),
-            ),
-          ],
-        ),
-      ),
-    ),
-  );
-
-  /// 一批照片串成影片：進影片編輯器，由它問每張幾秒
-  Future<void> _openPhotosAsVideo(List<XFile> picked) async {
-    await Navigator.push(
-      context,
-      editRoute(
-        builder: (_) =>
-            VideoEditorScreen(photoPaths: [for (final f in picked) f.path]),
-      ),
-    );
-    _checkDraft();
-  }
-
-  /// 一支就進單檔編輯器，多支先問要剪成一支還是各自處理
+  /// 一支就進單檔編輯器，多支直接進批次頁。
+  ///
+  /// 中間本來還有一問:多支影片問「剪成一支影片／統一上浮水印」、多張
+  /// 照片問「串成一段影片／統一上浮水印」。使用者指定拿掉——這條路是從
+  /// 「浮水印」進來的，要的就是上浮水印;要把素材接起來是「剪輯」那一列
+  /// 的事，在這裡多問一句等於每次都要再答一次已經答過的問題
   Future<void> _openBatch(List<XFile> list, {String? hint}) async {
     if (list.isEmpty || !mounted) return;
     if (list.length == 1) {
       final f = list.first;
       await (_isVideoFile(f) ? _openVideo(f) : _openPhoto(f));
       return;
-    }
-    if (list.every(_isVideoFile)) {
-      final joinThem = await _askMultiVideo(list.length);
-      if (joinThem == null || !mounted) return;
-      if (joinThem) {
-        await _openVideos(list);
-        return;
-      }
-    } else if (list.every((f) => !_isVideoFile(f))) {
-      // 一批照片：最常見的兩件事就是「串成一段影片」跟
-      //「每張各自上浮水印」，猜錯的代價是整批重挑
-      final joinThem = await _askMultiPhoto(list.length);
-      if (joinThem == null || !mounted) return;
-      if (joinThem) {
-        await _openPhotosAsVideo(list);
-        return;
-      }
     }
     await Navigator.push(
       context,
@@ -302,18 +213,6 @@ class _HomeScreenState extends State<HomeScreen> {
       context,
       editRoute(builder: (_) => PhotoEditorScreen(photo: picked)),
     );
-  }
-
-  /// 一整批影片接成一支專案
-  Future<void> _openVideos(List<XFile> picked) async {
-    await Navigator.push(
-      context,
-      editRoute(
-        builder: (_) =>
-            VideoEditorScreen(videoPaths: [for (final f in picked) f.path]),
-      ),
-    );
-    _checkDraft();
   }
 
   Future<void> _openVideo(XFile picked) async {
