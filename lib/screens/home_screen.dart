@@ -8,6 +8,7 @@ import '../nav.dart';
 import '../theme.dart';
 import 'batch_watermark_screen.dart';
 import 'collage_screen.dart';
+import 'gif_screen.dart';
 import 'photo_editor_screen.dart';
 import 'profile_screen.dart';
 import 'video_editor_screen.dart';
@@ -16,13 +17,16 @@ import 'video_editor_screen.dart';
 /// 「首頁整個下方收掉，改成直接右下角＋號叫出選單」）。
 ///
 /// ＋叫出來的是一張底部面板，四列：浮水印／照片拼圖／GIF／剪輯，各帶
-/// 一行說明；有第二層的那兩列右邊畫箭頭（使用者從六個版型裡挑的 D）。
-/// 第二層也是同一種面板，左上角一個返回箭頭：
+/// 一行說明；只有浮水印還有第二層，也只有它右邊畫箭頭（使用者從六個
+/// 版型裡挑的 D）。第二層也是同一種面板，左上角一個返回——按下去回
+/// 第一層，不是把整個選單關掉（見 _showSheet 的 backValue 與
+/// _openMenu 的迴圈）：
 ///   浮水印 → 照片／影片（挑完的流程跟以前一樣，見 _openBatch）
-///   照片拼圖 → 沒有第二層，直接進拼圖頁
-///   GIF → 製作 GIF／從相簿匯入 GIF／從檔案匯入 GIF
-///          （跟個人中心「我的 GIF」的＋同一支，見 addGifFromDevice）
-///   剪輯 → 沒有第二層，直接開一條空的時間軸
+///   照片拼圖 → 直接進拼圖頁
+///   GIF → 直接開影片選取器，挑一支進 GIF 製作頁。這裡只有「製作」
+///          一條路：把現成的 GIF 收進來是 個人中心 →「我的 GIF」那顆＋
+///          的事（使用者指定，見 addGifFromDevice）
+///   剪輯 → 直接開一條空的時間軸
 ///
 /// 「製作浮水印」（浮水印工作室）從首頁拿掉，走 個人中心 → 範本 → ＋
 /// （見 profile_screen 的 _presetAddTile）
@@ -92,9 +96,14 @@ class _HomeScreenState extends State<HomeScreen> {
   ///
   /// 不再自己上重入鎖：唯一的呼叫點是 [_openMenu]，而它整段都在鎖裡
   /// ——巢狀呼叫會被自己的鎖擋掉，第二層面板永遠開不出來
-  Future<void> _pickForWatermark() async {
-    final video = await _askPhotoOrVideo();
-    if (video == null || !mounted) return;
+  ///
+  /// 回傳「要不要回到第一層」：第二層按了返回是 true，其餘（挑完了、
+  /// 整個關掉、選取器按取消）都是 false
+  Future<bool> _pickForWatermark() async {
+    final kind = await _askPhotoOrVideo();
+    if (kind == null || !mounted) return false;
+    if (kind == _Media.back) return true;
+    final video = kind == _Media.video;
     // 提示交給批次頁進場後顯示——在這裡 show 會馬上被
     // 推上來的新頁面蓋住，使用者根本看不到
     if (video) {
@@ -117,27 +126,50 @@ class _HomeScreenState extends State<HomeScreen> {
         hint: _countHint(count: list.length, unit: '張照片', soft: 200),
       );
     }
+    return false;
   }
 
-  /// 浮水印的第二層：要上在哪一種素材上。true＝影片、false＝照片、
-  /// null＝返回或關掉
-  Future<bool?> _askPhotoOrVideo() => _showSheet<bool>(
+  /// 浮水印的第二層：要上在哪一種素材上。[_Media.back]＝按了左上角的
+  /// 返回（要回第一層）、null＝整個關掉（往下滑、點面板外面）
+  Future<_Media?> _askPhotoOrVideo() => _showSheet<_Media>(
     back: '浮水印',
-    rows: [
+    backValue: _Media.back,
+    rows: const [
       _SheetRow(
         icon: Icons.photo_outlined,
         label: '照片',
         sub: '單張或整批',
-        value: false,
+        value: _Media.photo,
       ),
       _SheetRow(
         icon: Icons.movie_outlined,
         label: '影片',
         sub: '單支或整批',
-        value: true,
+        value: _Media.video,
       ),
     ],
   );
+
+  /// GIF：挑一支影片進 GIF 製作頁。一次做一支；多選了就拿第一支，
+  /// 這裡不值得再多問一輪。
+  ///
+  /// 只有「製作」這一條（使用者指定：「GIF 不要有匯入現成的，就是製作
+  /// 就好」）——把現成的 GIF 收進來是 個人中心 →「我的 GIF」那顆＋的事
+  /// （見 addGifFromDevice），兩邊不重複。
+  ///
+  /// 跟 [_pickForWatermark] 一樣不自己上重入鎖：唯一的呼叫點 [_openMenu]
+  /// 整段都在鎖裡，巢狀呼叫會被自己的鎖擋掉
+  Future<void> _makeGif() async {
+    final list = await pickVideoFiles();
+    final v = list.where(_isVideoFile).toList();
+    if (v.isEmpty || !mounted) return;
+    await Navigator.push(
+      context,
+      editRoute(
+        builder: (_) => GifScreen(path: v.first.path, name: v.first.name),
+      ),
+    );
+  }
 
   /// 選完才講的提醒（略過的檔案、數量偏多）。
   /// 數量上限以前寫在選單上，但使用者還沒開始挑就先看到限制沒什麼用，
@@ -350,67 +382,80 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// ＋：叫出第一層面板，再照選到的往下走
+  /// ＋：叫出第一層面板，再照選到的往下走。
+  ///
+  /// 這裡是一個迴圈，不是一次性的：第二層左上角的返回要回到這一層
+  /// （[_pickForWatermark] 回 true），不是把整個選單關掉。整段都在
+  /// [_guarded] 裡，所以來回幾次都不會疊出第二個面板
   Future<void> _openMenu() => _guarded(() async {
-    final pick = await _showSheet<_HomeAction>(
-      rows: const [
-        _SheetRow(
-          icon: Icons.branding_watermark_outlined,
-          label: '浮水印',
-          sub: '照片、影片，單支或整批',
-          value: _HomeAction.watermark,
-          more: true,
-        ),
-        _SheetRow(
-          icon: Icons.grid_view_rounded,
-          label: '照片拼圖',
-          sub: '多張照片拼成一張',
-          value: _HomeAction.collage,
-        ),
-        _SheetRow(
-          icon: Icons.gif_box_outlined,
-          label: 'GIF',
-          sub: '影片轉 GIF，或匯入現成的',
-          value: _HomeAction.gif,
-          more: true,
-        ),
-        _SheetRow(
-          icon: Icons.smart_display_outlined,
-          label: '剪輯',
-          sub: '開一條空軌道，素材進去再加',
-          value: _HomeAction.cut,
-        ),
-      ],
-    );
-    if (pick == null || !mounted) return;
-    switch (pick) {
-      case _HomeAction.watermark:
-        await _pickForWatermark();
-      case _HomeAction.collage:
-        // 直接進畫面，照片進去再挑：先挑照片的話，使用者還沒看到宮格
-        // 就得決定要幾張，挑錯還要退出去重來
-        await Navigator.push(
-          context,
-          editRoute(builder: (_) => const CollageScreen()),
-        );
-      case _HomeAction.gif:
-        // 跟個人中心「我的 GIF」的＋同一支：製作／從相簿匯入／從檔案匯入。
-        // 回傳的是「清單要不要重讀」，首頁沒有清單，不理它
-        await addGifFromDevice(context);
-      case _HomeAction.cut:
-        // 不挑素材，直接開一條空的時間軸，照片、影片進去再加
-        await Navigator.push(
-          context,
-          editRoute(builder: (_) => const VideoEditorScreen(blank: true)),
-        );
-        _checkDraft();
+    var again = true;
+    while (again) {
+      again = false;
+      final pick = await _askAction();
+      if (pick == null || !mounted) return;
+      switch (pick) {
+        case _HomeAction.watermark:
+          again = await _pickForWatermark();
+        case _HomeAction.collage:
+          // 直接進畫面，照片進去再挑：先挑照片的話，使用者還沒看到宮格
+          // 就得決定要幾張，挑錯還要退出去重來
+          await Navigator.push(
+            context,
+            editRoute(builder: (_) => const CollageScreen()),
+          );
+        case _HomeAction.gif:
+          await _makeGif();
+        case _HomeAction.cut:
+          // 不挑素材，直接開一條空的時間軸，照片、影片進去再加
+          await Navigator.push(
+            context,
+            editRoute(builder: (_) => const VideoEditorScreen(blank: true)),
+          );
+          _checkDraft();
+      }
     }
   });
 
+  /// 第一層：四個去處
+  Future<_HomeAction?> _askAction() => _showSheet<_HomeAction>(
+    rows: const [
+      _SheetRow(
+        icon: Icons.branding_watermark_outlined,
+        label: '浮水印',
+        sub: '照片、影片，單支或整批快速加入浮水印',
+        value: _HomeAction.watermark,
+        more: true,
+      ),
+      _SheetRow(
+        icon: Icons.grid_view_rounded,
+        label: '照片拼圖',
+        sub: '多張照片拼成一張',
+        value: _HomeAction.collage,
+      ),
+      _SheetRow(
+        icon: Icons.gif_box_outlined,
+        label: 'GIF',
+        sub: '影片轉成 GIF',
+        value: _HomeAction.gif,
+      ),
+      _SheetRow(
+        icon: Icons.smart_display_outlined,
+        label: '剪輯',
+        sub: '開啟一個空專案自由編輯',
+        value: _HomeAction.cut,
+      ),
+    ],
+  );
+
   /// 這一頁的面板長相：白底、上緣圓角、一根抓把，每列是
   /// 圖示方塊＋名稱＋一行說明（有第二層的右邊多一個箭頭）。
-  /// [back] 有值＝第二層，最上面多一行「← 那一項的名字」
-  Future<T?> _showSheet<T>({List<_SheetRow<T>> rows = const [], String? back}) {
+  /// [back] 有值＝第二層，最上面多一行「‹ 那一項的名字」；按下去 pop 出
+  /// [backValue]，呼叫端據此重開第一層（不給就跟關掉一樣是 null）
+  Future<T?> _showSheet<T>({
+    List<_SheetRow<T>> rows = const [],
+    String? back,
+    T? backValue,
+  }) {
     return showModalBottomSheet<T>(
       context: context,
       backgroundColor: kLBg,
@@ -424,23 +469,29 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // 它長得就是一顆返回鍵，那就要真的能按：本來只是畫上去的
+              // 一行字，使用者按了沒反應。整條（含文字右邊的空白）都是
+              // 熱區——箭頭才 22，只有那一小塊按得到等於按不到
               if (back != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.chevron_left, size: 22, color: kLText),
-                      const SizedBox(width: 6),
-                      Text(
-                        back,
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w900,
-                          letterSpacing: 1,
-                          color: kLText,
+                InkWell(
+                  onTap: () => Navigator.pop(context, backValue),
+                  child: SizedBox(
+                    height: kHomeSheetBackH,
+                    child: Row(
+                      children: [
+                        const Icon(Icons.chevron_left, size: 22, color: kLText),
+                        const SizedBox(width: 6),
+                        Text(
+                          back,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 1,
+                            color: kLText,
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               for (final r in rows)
@@ -518,6 +569,9 @@ class _HomeScreenState extends State<HomeScreen> {
 /// ＋選單第一層的四個去處
 enum _HomeAction { watermark, collage, gif, cut }
 
+/// 浮水印第二層的結果：兩種素材，加上「回上一層」
+enum _Media { photo, video, back }
+
 /// 面板上的一列
 class _SheetRow<T> {
   const _SheetRow({
@@ -546,6 +600,9 @@ const double kHomeFabSize = 62;
 
 /// 面板上一列的高度
 const double kHomeSheetRowH = 68;
+
+/// 第二層最上面那條返回列的高度（＝它的觸控熱區）
+const double kHomeSheetBackH = 44;
 
 /// logo 的版面尺寸（home_logo.png 裁掉四周留白後的比例）
 const Size kHomeLogoSize = Size(190, 76);

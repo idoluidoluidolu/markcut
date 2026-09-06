@@ -5,16 +5,19 @@
 //   1. 首頁本體只有 logo、右上角個人中心、右下角的＋——沒有任何入口
 //      文字（舊的四個方塊、更舊的「加入浮水印」「製作浮水印」都不在）
 //   2. ＋叫出來的第一層：四列 浮水印／照片拼圖／GIF／剪輯，順序、文案、
-//      一行說明、圖示；有第二層的那兩列才畫箭頭（照片拼圖與剪輯直接進
-//      功能，畫箭頭等於騙人）
+//      一行說明、圖示；只有浮水印有第二層，也只有它畫箭頭（其餘三列
+//      點了就進功能，畫箭頭等於騙人）
 //   3. 每一列走的路：
 //        浮水印   → 第二層「照片／影片」→ 對應的選取器 → 多個問
 //                   「接成一支／串成影片還是各自上浮水印」
 //        照片拼圖 → 不開選取器、不進第二層，直接推拼圖頁
-//        GIF      → 第二層是「製作 GIF／從相簿匯入 GIF／從檔案匯入 GIF」
-//                   （跟個人中心「我的 GIF」的＋同一支）
+//        GIF      → 不進第二層，直接開影片選取器，挑一支進 GIF 製作頁
+//                   （匯入現成的 GIF 是 個人中心「我的 GIF」的事，
+//                   首頁這裡不問）
 //        剪輯     → 不開選取器、不進第二層，直接開一條空的時間軸
-//   4. 重入鎖：面板開著時連點＋不會疊出第二個；關掉之後鎖要放開
+//   4. 第二層左上角的返回：回到第一層（不是關掉整個選單），整條列
+//      都按得到
+//   5. 重入鎖：面板開著時連點＋不會疊出第二個；關掉之後鎖要放開
 //
 // 選取器換成假的（FilePicker.platform／ImagePickerPlatform.instance），
 // 不然測試會去戳真的原生選取器。測試環境的 defaultTargetPlatform 是
@@ -27,6 +30,7 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
@@ -47,7 +51,7 @@ const _pngB64 =
 
 /// ＋選單第一層，由上而下
 const _labels = ['浮水印', '照片拼圖', 'GIF', '剪輯'];
-const _subs = ['照片、影片，單支或整批', '多張照片拼成一張', '影片轉 GIF，或匯入現成的', '開一條空軌道，素材進去再加'];
+const _subs = ['照片、影片，單支或整批快速加入浮水印', '多張照片拼成一張', '影片轉成 GIF', '開啟一個空專案自由編輯'];
 const _icons = [
   Icons.branding_watermark_outlined,
   Icons.grid_view_rounded,
@@ -56,7 +60,7 @@ const _icons = [
 ];
 
 /// 哪幾列有第二層（右邊才畫箭頭）
-const _more = [true, false, true, false];
+const _more = [true, false, false, false];
 
 late Directory _dir;
 String _p(String name) => '${_dir.path}${Platform.pathSeparator}$name';
@@ -341,6 +345,19 @@ void main() {
       expect(t.takeException(), isNull);
     });
 
+    testWidgets('窄畫面（375）：四列的說明都放得下，不會被截成「…」', (t) async {
+      // 說明文字是使用者自己給的句子，改了就可能變長；截斷是 ellipsis
+      // 而不是溢出，眼睛不一定看得出來，所以直接問渲染器有沒有超行
+      _phone(t, 375, 667);
+      await _pump(t);
+      await _tapFab(t);
+      for (final x in [..._labels, ..._subs]) {
+        final rp = t.renderObject<RenderParagraph>(find.text(x));
+        expect(rp.didExceedMaxLines, isFalse, reason: '「$x」在 375 寬被截掉了');
+      }
+      expect(t.takeException(), isNull);
+    });
+
     testWidgets('照片拼圖：不開選取器、不進第二層，直接推拼圖頁', (t) async {
       final spy = _RouteSpy();
       await _pump(t, spy: spy);
@@ -429,31 +446,59 @@ void main() {
       expect(t.takeException(), isNull);
     });
 
-    testWidgets('GIF → 第二層是製作／從相簿匯入／從檔案匯入', (t) async {
-      await _pump(t);
+    testWidgets('第二層的返回：回到第一層，不是把整個選單關掉', (t) async {
+      final spy = _RouteSpy();
+      await _pump(t, spy: spy);
       await _tapFab(t);
-      await t.tap(find.text('GIF'));
+      await t.tap(find.text('浮水印'));
       await _settle(t);
+      expect(find.text('照片'), findsOneWidget);
+      expect(find.text('照片拼圖'), findsNothing, reason: '第二層開著時第一層要收掉');
 
-      for (final s in const ['製作 GIF', '從相簿匯入 GIF', '從檔案匯入 GIF']) {
-        expect(find.text(s), findsOneWidget, reason: '第二層少了「$s」');
+      await t.tap(find.byIcon(Icons.chevron_left));
+      await _settle(t);
+      expect(find.text('照片'), findsNothing, reason: '第二層沒收掉');
+      for (final x in _labels) {
+        expect(find.text(x), findsOneWidget, reason: '沒回到第一層（少了「$x」）');
       }
-      expect(_images.calls + _files.calls, 0, reason: '還沒選就開了選取器');
+      expect(_images.calls + _files.calls, 0, reason: '返回不該開選取器');
+      expect(spy.edits, isEmpty, reason: '返回不該推頁');
+
+      // 回到第一層之後照樣走得下去。這次按返回列右邊的空白處：整條
+      // 都是熱區，不是只有那個小箭頭
+      await t.tap(find.text('浮水印'));
+      await _settle(t);
+      expect(find.text('影片'), findsOneWidget, reason: '返回之後第二層開不出來');
+      final back = find
+          .ancestor(
+            of: find.byIcon(Icons.chevron_left),
+            matching: find.byType(InkWell),
+          )
+          .first;
+      final r = t.getRect(back);
+      expect(r.height, kHomeSheetBackH, reason: '返回列的熱區高度不對');
+      await t.tapAt(Offset(r.right - 8, r.center.dy));
+      await _settle(t);
+      expect(find.text('影片'), findsNothing, reason: '返回列只有箭頭按得到');
+      expect(find.text('照片拼圖'), findsOneWidget, reason: '沒回到第一層');
       expect(t.takeException(), isNull);
     });
 
-    testWidgets('GIF → 製作 GIF：影片選取器，拿第一支進 GIF 製作頁', (t) async {
+    testWidgets('GIF：不進第二層，直接開影片選取器，第一支進 GIF 製作頁', (t) async {
+      // 使用者指定「GIF 不要有匯入現成的，就是製作就好」：那三選一的
+      // 面板（製作／從相簿匯入／從檔案匯入）只留在 個人中心 →「我的 GIF」
       _files.next = [_p('a.mp4'), _p('b.mp4')];
       final spy = _RouteSpy();
       await _pump(t, spy: spy);
       await _tapFab(t);
       await t.tap(find.text('GIF'));
-      await _settle(t);
-      await t.tap(find.text('製作 GIF'));
       await _settle(t, 20);
 
-      expect(_files.calls, 1);
-      expect(_files.lastType, FileType.video);
+      expect(_files.calls, 1, reason: '沒有直接開選取器（中間又問了一輪？）');
+      expect(_files.lastType, FileType.video, reason: '要挑的是影片');
+      for (final x in const ['製作 GIF', '從相簿匯入 GIF', '從檔案匯入 GIF']) {
+        expect(find.text(x), findsNothing, reason: '首頁不該再問「$x」');
+      }
       final page = spy.lastEdit(t);
       expect(page, isA<GifScreen>());
       expect((page as GifScreen).path, _p('a.mp4'), reason: '多選了就拿第一支');
