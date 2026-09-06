@@ -17,9 +17,9 @@ import 'video_editor_screen.dart';
 /// 「首頁整個下方收掉，改成＋號叫出選單」，樣式從八種裡挑了滿版膠囊）。
 ///
 /// ＋叫出來的是一張底部面板，四列：浮水印／照片拼圖／GIF／剪輯，各帶
-/// 一行說明；只有浮水印還有第二層，也只有它右邊畫箭頭（使用者從六個
-/// 版型裡挑的 D）。第二層也是同一種面板，左上角一個返回——按下去回
-/// 第一層，不是把整個選單關掉（見 _showSheet 的 backValue 與
+/// 一行說明，右邊不畫箭頭（使用者指定；原本只有浮水印那列有，一列有
+/// 三列沒有反而像壞掉）。第二層也是同一種面板，左上角一個返回——按下去
+/// 回第一層，不是把整個選單關掉（見 _showSheet 的 backValue 與
 /// _openMenu 的迴圈）：
 ///   浮水印 → 照片／影片（挑完的流程跟以前一樣，見 _openBatch）
 ///   照片拼圖 → 直接進拼圖頁
@@ -351,22 +351,27 @@ class _HomeScreenState extends State<HomeScreen> {
       // 整頁唯一的入口，所以給它整條寬度（使用者挑的樣式）。
       // 位置交給 centerFloat：它會自己讓開底部的安全區，不會壓在
       // home indicator 上——比自己算 bottom padding 可靠
-      floatingActionButton: SizedBox(
-        width: _startWidth(context),
-        height: kHomeStartH,
-        child: FloatingActionButton.extended(
-          tooltip: '開始',
-          onPressed: _openMenu,
-          backgroundColor: kLAccent,
-          foregroundColor: kLBg,
-          shape: const StadiumBorder(),
-          icon: const Icon(Icons.add, size: 22),
-          label: const Text(
-            '開始',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 1,
+      floatingActionButton: Padding(
+        // centerFloat 只給底部 16，貼得太低（使用者回報）。padding 算在
+        // FAB 的框裡，Scaffold 會把整顆往上推，安全區照樣讓得開
+        padding: const EdgeInsets.only(bottom: kHomeStartLift),
+        child: SizedBox(
+          width: _startWidth(context),
+          height: kHomeStartH,
+          child: FloatingActionButton.extended(
+            tooltip: '開始',
+            onPressed: _openMenu,
+            backgroundColor: kLAccent,
+            foregroundColor: kLBg,
+            shape: const StadiumBorder(),
+            icon: const Icon(Icons.add, size: 22),
+            label: const Text(
+              '開始',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1,
+              ),
             ),
           ),
         ),
@@ -441,7 +446,6 @@ class _HomeScreenState extends State<HomeScreen> {
         label: '浮水印',
         sub: '照片、影片，單支或整批快速加入浮水印',
         value: _HomeAction.watermark,
-        more: true,
       ),
       _SheetRow(
         icon: Icons.grid_view_rounded,
@@ -465,7 +469,7 @@ class _HomeScreenState extends State<HomeScreen> {
   );
 
   /// 這一頁的面板長相：白底、上緣圓角、一根抓把，每列是
-  /// 圖示方塊＋名稱＋一行說明（有第二層的右邊多一個箭頭）。
+  /// 圖示方塊＋名稱＋一行說明。
   /// [back] 有值＝第二層，最上面多一行「‹ 那一項的名字」；按下去 pop 出
   /// [backValue]，呼叫端據此重開第一層（不給就跟關掉一樣是 null）
   Future<T?> _showSheet<T>({
@@ -563,14 +567,6 @@ class _HomeScreenState extends State<HomeScreen> {
                             ],
                           ),
                         ),
-                        // 只有真的還有第二層才畫箭頭：畫了卻直接進功能，
-                        // 等於騙人
-                        if (r.more)
-                          const Icon(
-                            Icons.chevron_right,
-                            size: 20,
-                            color: Color(0xFFB0B0BA),
-                          ),
                       ],
                     ),
                   ),
@@ -596,7 +592,6 @@ class _SheetRow<T> {
     required this.label,
     required this.sub,
     required this.value,
-    this.more = false,
   });
 
   final IconData icon;
@@ -607,9 +602,6 @@ class _SheetRow<T> {
 
   /// 點下去 pop 出來的值
   final T value;
-
-  /// 右邊要不要畫箭頭（＝點了還有第二層）
-  final bool more;
 }
 
 /// 底部「＋ 開始」的高度
@@ -620,6 +612,9 @@ const double kHomeStartPad = 24;
 
 /// 再寬也不超過這個（平板、橫向）
 const double kHomeStartMaxW = 420;
+
+/// 在 centerFloat 本來的 16 之上再抬多少（見 build）
+const double kHomeStartLift = 18;
 
 /// 面板上一列的高度
 const double kHomeSheetRowH = 68;

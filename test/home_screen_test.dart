@@ -6,8 +6,7 @@
 //      任何入口文字（舊的四個方塊、更舊的「加入浮水印」「製作浮水印」
 //      都不在）
 //   2. ＋叫出來的第一層：四列 浮水印／照片拼圖／GIF／剪輯，順序、文案、
-//      一行說明、圖示；只有浮水印有第二層，也只有它畫箭頭（其餘三列
-//      點了就進功能，畫箭頭等於騙人）
+//      一行說明、圖示；右邊不畫箭頭（使用者指定）
 //   3. 每一列走的路：
 //        浮水印   → 第二層「照片／影片」→ 對應的選取器 → 多個問
 //                   「接成一支／串成影片還是各自上浮水印」
@@ -59,9 +58,6 @@ const _icons = [
   Icons.gif_box_outlined,
   Icons.smart_display_outlined,
 ];
-
-/// 哪幾列有第二層（右邊才畫箭頭）
-const _more = [true, false, false, false];
 
 late Directory _dir;
 String _p(String name) => '${_dir.path}${Platform.pathSeparator}$name';
@@ -287,6 +283,12 @@ void main() {
       expect(fab.center.dx, moreOrLessEquals(195, epsilon: 0.5), reason: '要置中');
       expect(fab.center.dy, greaterThan(844 * 0.8), reason: '要貼在最下面');
       expect(fab.bottom, lessThan(844), reason: '不能超出畫面');
+      // 但也不能真的貼死在邊上：centerFloat 的 16 之外再抬 kHomeStartLift
+      expect(
+        844 - fab.bottom,
+        moreOrLessEquals(16 + kHomeStartLift, epsilon: 0.5),
+        reason: '離底邊的距離不對',
+      );
 
       final f = t.widget<FloatingActionButton>(
         find.byType(FloatingActionButton),
@@ -324,7 +326,7 @@ void main() {
   });
 
   group('＋叫出來的第一層', () {
-    testWidgets('四列：順序、文案、說明、圖示；有第二層的才畫箭頭', (t) async {
+    testWidgets('四列：順序、文案、說明、圖示；右邊不畫箭頭', (t) async {
       await _pump(t);
       await _tapFab(t);
 
@@ -350,10 +352,10 @@ void main() {
       for (var i = 1; i < _labels.length; i++) {
         expect(ys[i] > ys[i - 1], isTrue, reason: '順序不對（由上而下量到 $ys）');
       }
-      // 箭頭只有兩個（浮水印、GIF）；照片拼圖與剪輯直接進功能
       expect(
         find.byIcon(Icons.chevron_right),
-        findsNWidgets(_more.where((m) => m).length),
+        findsNothing,
+        reason: '面板上不畫右箭頭（使用者指定）',
       );
       expect(t.takeException(), isNull);
     });
