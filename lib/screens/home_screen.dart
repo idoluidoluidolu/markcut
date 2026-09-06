@@ -15,17 +15,17 @@ import 'video_editor_screen.dart';
 /// 首頁：整片留給 logo，功能全收在右下角那顆＋（使用者指定：
 /// 「首頁整個下方收掉，改成直接右下角＋號叫出選單」）。
 ///
-/// ＋叫出來的是一張底部面板，三列：浮水印／照片拼圖／GIF，各帶一行
-/// 說明；有第二層的那兩列右邊畫箭頭（使用者從六個版型裡挑的 D）。
+/// ＋叫出來的是一張底部面板，四列：浮水印／照片拼圖／GIF／剪輯，各帶
+/// 一行說明；有第二層的那兩列右邊畫箭頭（使用者從六個版型裡挑的 D）。
 /// 第二層也是同一種面板，左上角一個返回箭頭：
 ///   浮水印 → 照片／影片（挑完的流程跟以前一樣，見 _openBatch）
 ///   照片拼圖 → 沒有第二層，直接進拼圖頁
 ///   GIF → 製作 GIF／從相簿匯入 GIF／從檔案匯入 GIF
 ///          （跟個人中心「我的 GIF」的＋同一支，見 addGifFromDevice）
+///   剪輯 → 沒有第二層，直接開一條空的時間軸
 ///
 /// 「製作浮水印」（浮水印工作室）從首頁拿掉，走 個人中心 → 範本 → ＋
-/// （見 profile_screen 的 _presetAddTile）。
-/// 「剪輯」（開一條空的時間軸）也不在這個選單裡——使用者列的就是這三項
+/// （見 profile_screen 的 _presetAddTile）
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -374,6 +374,12 @@ class _HomeScreenState extends State<HomeScreen> {
           value: _HomeAction.gif,
           more: true,
         ),
+        _SheetRow(
+          icon: Icons.smart_display_outlined,
+          label: '剪輯',
+          sub: '開一條空軌道，素材進去再加',
+          value: _HomeAction.cut,
+        ),
       ],
     );
     if (pick == null || !mounted) return;
@@ -391,6 +397,13 @@ class _HomeScreenState extends State<HomeScreen> {
         // 跟個人中心「我的 GIF」的＋同一支：製作／從相簿匯入／從檔案匯入。
         // 回傳的是「清單要不要重讀」，首頁沒有清單，不理它
         await addGifFromDevice(context);
+      case _HomeAction.cut:
+        // 不挑素材，直接開一條空的時間軸，照片、影片進去再加
+        await Navigator.push(
+          context,
+          editRoute(builder: (_) => const VideoEditorScreen(blank: true)),
+        );
+        _checkDraft();
     }
   });
 
@@ -502,8 +515,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-/// ＋選單第一層的三個去處
-enum _HomeAction { watermark, collage, gif }
+/// ＋選單第一層的四個去處
+enum _HomeAction { watermark, collage, gif, cut }
 
 /// 面板上的一列
 class _SheetRow<T> {

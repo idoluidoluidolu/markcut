@@ -1,4 +1,4 @@
-// 首頁改成「右下角＋號叫出選單」的版型比較（產圖工具，不是回歸測試）。
+// 首頁那顆＋的樣式與位置比較（產圖工具，不是回歸測試）。
 //
 //   MARKCUT_SHOT_OUT=<資料夾> flutter test --no-pub test/home_fab_shot_tool.dart
 //
@@ -15,11 +15,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:markcut/theme.dart';
 
 final _shotKey = GlobalKey();
-
-const _wm = Icons.branding_watermark_outlined;
-const _collage = Icons.grid_view_rounded;
-const _gif = Icons.gif_box_outlined;
-const _cut = Icons.smart_display_outlined;
 
 String? _materialIconsPath() {
   final candidates = <String>[];
@@ -46,147 +41,152 @@ String? _materialIconsPath() {
   return null;
 }
 
-/// 首頁本體：logo 置中，下面空著，右下角一顆黑色＋
-Widget _home({required bool dim, Widget? overlay, bool showFab = true}) =>
-    Scaffold(
-      backgroundColor: kLBg,
-      appBar: AppBar(
-        backgroundColor: kLBg,
-        actions: const [
-          Padding(
-            padding: EdgeInsets.symmetric(horizontal: 14),
-            child: Icon(Icons.person_outline, size: 28),
-          ),
-        ],
+/// 一張首頁：logo 置中，底下放 [button]（位置由 [align] 與 [pad] 決定）
+Widget _home({
+  required Widget button,
+  Alignment align = Alignment.bottomRight,
+  EdgeInsets pad = const EdgeInsets.only(right: 22, bottom: 30),
+  String? note,
+}) => Scaffold(
+  backgroundColor: kLBg,
+  appBar: AppBar(
+    backgroundColor: kLBg,
+    actions: const [
+      Padding(
+        padding: EdgeInsets.symmetric(horizontal: 14),
+        child: Icon(Icons.person_outline, size: 28),
       ),
-      body: Stack(
-        children: [
-          Center(
-            child: SizedBox(
-              width: 190,
-              height: 76,
-              child: Image.asset(
-                'assets/icon/home_logo.png',
-                fit: BoxFit.cover,
-                filterQuality: FilterQuality.medium,
-              ),
-            ),
-          ),
-          if (dim)
-            const Positioned.fill(child: ColoredBox(color: Color(0x66121216))),
-          ?overlay,
-          if (showFab) Positioned(right: 22, bottom: 30, child: _fab()),
-        ],
-      ),
-    );
-
-Widget _fab({bool open = false}) => DecoratedBox(
-  decoration: const ShapeDecoration(color: kLAccent, shape: CircleBorder()),
-  child: SizedBox(
-    width: 62,
-    height: 62,
-    child: Center(
-      child: Transform.rotate(
-        angle: open ? 0.785 : 0,
-        child: const Icon(Icons.add, size: 30, color: kLBg),
-      ),
-    ),
+    ],
   ),
-);
-
-/// 一列：圖示方塊＋名稱（＋副標／箭頭）
-Widget _row(
-  IconData icon,
-  String label, {
-  String? sub,
-  bool chevron = false,
-  double h = 60,
-}) => SizedBox(
-  height: h,
-  child: Row(
+  body: Stack(
     children: [
-      Container(
-        width: 40,
-        height: 40,
-        alignment: Alignment.center,
-        decoration: const ShapeDecoration(
-          color: kLTile,
-          shape: RoundedSuperellipseBorder(
-            borderRadius: BorderRadius.all(Radius.circular(12)),
+      Center(
+        child: SizedBox(
+          width: 190,
+          height: 76,
+          child: Image.asset(
+            'assets/icon/home_logo.png',
+            fit: BoxFit.cover,
+            filterQuality: FilterQuality.medium,
           ),
         ),
-        child: Icon(icon, size: 22, color: kLText),
       ),
-      const SizedBox(width: 14),
-      Expanded(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              label,
+      if (note != null)
+        Align(
+          alignment: Alignment.topCenter,
+          child: Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              note,
               style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 0.5,
-                color: kLText,
+                fontSize: 12.5,
+                fontWeight: FontWeight.w700,
+                color: kLTextDim,
               ),
             ),
-            if (sub != null) ...[
-              const SizedBox(height: 3),
-              Text(sub, style: const TextStyle(fontSize: 12, color: kLTextDim)),
-            ],
-          ],
+          ),
         ),
+      Align(
+        alignment: align,
+        child: Padding(padding: pad, child: button),
       ),
-      if (chevron)
-        const Icon(Icons.chevron_right, size: 20, color: Color(0xFFB0B0BA)),
     ],
   ),
 );
 
-/// 底部浮起的白色面板
-Widget _sheet(List<Widget> children) => Align(
-  alignment: Alignment.bottomCenter,
-  child: DecoratedBox(
-    decoration: const ShapeDecoration(
-      color: kLBg,
-      shape: RoundedSuperellipseBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-      ),
+/// 圓形實心＋
+Widget _circle({double size = 62, double icon = 30}) => DecoratedBox(
+  decoration: const ShapeDecoration(color: kLAccent, shape: CircleBorder()),
+  child: SizedBox(
+    width: size,
+    height: size,
+    child: Center(
+      child: Icon(Icons.add, size: icon, color: kLBg),
     ),
-    child: Padding(
-      padding: const EdgeInsets.fromLTRB(24, 10, 24, 30),
-      child: Column(
+  ),
+);
+
+/// 圓角方形＋（超橢圓）
+Widget _squircle({double size = 62, double icon = 30, double radius = 20}) =>
+    DecoratedBox(
+      decoration: ShapeDecoration(
+        color: kLAccent,
+        shape: RoundedSuperellipseBorder(
+          borderRadius: BorderRadius.all(Radius.circular(radius)),
+        ),
+      ),
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: Center(
+          child: Icon(Icons.add, size: icon, color: kLBg),
+        ),
+      ),
+    );
+
+/// 描邊圓形＋（白底黑邊）
+Widget _outlined({double size = 62, double icon = 30}) => DecoratedBox(
+  decoration: const ShapeDecoration(
+    color: kLBg,
+    shape: CircleBorder(side: BorderSide(color: kLAccent, width: 2)),
+  ),
+  child: SizedBox(
+    width: size,
+    height: size,
+    child: Center(
+      child: Icon(Icons.add, size: icon, color: kLAccent),
+    ),
+  ),
+);
+
+/// 帶字的膠囊（＋ 開始）
+Widget _pill({String label = '開始'}) => DecoratedBox(
+  decoration: const ShapeDecoration(color: kLAccent, shape: StadiumBorder()),
+  child: Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 24),
+    child: SizedBox(
+      height: 56,
+      child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 38,
-            height: 5,
-            margin: const EdgeInsets.only(bottom: 14),
-            decoration: BoxDecoration(
-              color: const Color(0xFFD6D6DE),
-              borderRadius: BorderRadius.circular(999),
+          const Icon(Icons.add, size: 22, color: kLBg),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1,
+              color: kLBg,
             ),
           ),
-          ...children,
         ],
       ),
     ),
   ),
 );
 
-/// 小分類的膠囊（縮排在主項底下）
-Widget _chip(String label) => Container(
-  margin: const EdgeInsets.only(right: 8),
-  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-  decoration: const ShapeDecoration(color: kLTile, shape: StadiumBorder()),
-  child: Text(
-    label,
-    style: const TextStyle(
-      fontSize: 12.5,
-      fontWeight: FontWeight.w700,
-      color: kLText,
+/// 滿版膠囊（貼底、左右各留 24）
+Widget _wide({String label = '開始'}) => SizedBox(
+  width: 342,
+  height: 56,
+  child: DecoratedBox(
+    decoration: const ShapeDecoration(color: kLAccent, shape: StadiumBorder()),
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        const Icon(Icons.add, size: 22, color: kLBg),
+        const SizedBox(width: 8),
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 1,
+            color: kLBg,
+          ),
+        ),
+      ],
     ),
   ),
 );
@@ -250,183 +250,89 @@ void main() {
     });
   }
 
-  testWidgets('0 收起來的首頁', (t) async {
-    await shoot(t, 'fab-0-closed', _home(dim: false));
-  });
+  const bottomCenter = Alignment.bottomCenter;
+  const padCenter = EdgeInsets.only(bottom: 30);
 
-  testWidgets('A 底部表單三列，各列有箭頭（點了再進第二層）', (t) async {
+  testWidgets('1 現況：右下角圓形 62', (t) async {
     await shoot(
       t,
-      'fab-a-sheet-chevron',
+      'p1-right-circle',
+      _home(button: _circle(), note: '右下角 · 圓形 62'),
+    );
+  });
+
+  testWidgets('2 右下角圓形 72（大一號）', (t) async {
+    await shoot(
+      t,
+      'p2-right-circle-72',
+      _home(button: _circle(size: 72, icon: 34), note: '右下角 · 圓形 72'),
+    );
+  });
+
+  testWidgets('3 右下角圓角方形', (t) async {
+    await shoot(
+      t,
+      'p3-right-squircle',
+      _home(button: _squircle(), note: '右下角 · 圓角方形 62'),
+    );
+  });
+
+  testWidgets('4 右下角描邊圓形', (t) async {
+    await shoot(
+      t,
+      'p4-right-outlined',
+      _home(button: _outlined(), note: '右下角 · 描邊圓形 62'),
+    );
+  });
+
+  testWidgets('5 底部中間圓形 72', (t) async {
+    await shoot(
+      t,
+      'p5-center-circle',
       _home(
-        dim: true,
-        showFab: false,
-        overlay: _sheet([
-          _row(_wm, '浮水印', chevron: true),
-          _row(_collage, '照片拼圖', chevron: true),
-          _row(_gif, 'GIF', chevron: true),
-        ]),
+        button: _circle(size: 72, icon: 34),
+        align: bottomCenter,
+        pad: padCenter,
+        note: '底部中間 · 圓形 72',
       ),
     );
   });
 
-  testWidgets('B 底部表單，每項下面直接把小分類攤開', (t) async {
+  testWidgets('6 底部中間膠囊（＋ 開始）', (t) async {
     await shoot(
       t,
-      'fab-b-sheet-expanded',
+      'p6-center-pill',
       _home(
-        dim: true,
-        showFab: false,
-        overlay: _sheet([
-          _row(_wm, '浮水印', h: 50),
-          Padding(
-            padding: const EdgeInsets.only(left: 54, bottom: 16),
-            child: Row(children: [_chip('照片'), _chip('影片'), _chip('批次')]),
-          ),
-          _row(_collage, '照片拼圖', h: 50),
-          Padding(
-            padding: const EdgeInsets.only(left: 54, bottom: 16),
-            child: Row(children: [_chip('九宮格'), _chip('自由排')]),
-          ),
-          _row(_gif, 'GIF', h: 50),
-          Padding(
-            padding: const EdgeInsets.only(left: 54),
-            child: Row(children: [_chip('影片轉'), _chip('從相簿'), _chip('從檔案')]),
-          ),
-        ]),
+        button: _pill(),
+        align: bottomCenter,
+        pad: padCenter,
+        note: '底部中間 · 膠囊',
       ),
     );
   });
 
-  testWidgets('C ＋號旁邊彈出三顆小圓鈕（速撥）', (t) async {
+  testWidgets('7 底部滿版膠囊', (t) async {
     await shoot(
       t,
-      'fab-c-speeddial',
+      'p7-wide-pill',
       _home(
-        dim: true,
-        showFab: false,
-        overlay: Align(
-          alignment: Alignment.bottomRight,
-          child: Padding(
-            padding: const EdgeInsets.only(right: 22, bottom: 30),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                for (final (ic, label) in const [
-                  (_wm, '浮水印'),
-                  (_collage, '照片拼圖'),
-                  (_gif, 'GIF'),
-                ]) ...[
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 14),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 7,
-                          ),
-                          decoration: const ShapeDecoration(
-                            color: kLBg,
-                            shape: StadiumBorder(),
-                          ),
-                          child: Text(
-                            label,
-                            style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w800,
-                              color: kLText,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        DecoratedBox(
-                          decoration: const ShapeDecoration(
-                            color: kLBg,
-                            shape: CircleBorder(),
-                          ),
-                          child: SizedBox(
-                            width: 50,
-                            height: 50,
-                            child: Icon(ic, size: 24, color: kLText),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-                _fab(open: true),
-              ],
-            ),
-          ),
-        ),
+        button: _wide(),
+        align: bottomCenter,
+        pad: padCenter,
+        note: '底部滿版 · 膠囊',
       ),
     );
   });
 
-  testWidgets('D 底部表單三列＋副標說明', (t) async {
+  testWidgets('8 底部中間圓角方形 72', (t) async {
     await shoot(
       t,
-      'fab-d-sheet-sub',
+      'p8-center-squircle',
       _home(
-        dim: true,
-        showFab: false,
-        overlay: _sheet([
-          _row(_wm, '浮水印', sub: '照片、影片，單支或整批', chevron: true, h: 68),
-          _row(_collage, '照片拼圖', sub: '多張照片拼成一張', chevron: true, h: 68),
-          _row(_gif, 'GIF', sub: '影片轉 GIF，或匯入現成的', chevron: true, h: 68),
-        ]),
-      ),
-    );
-  });
-
-  testWidgets('E 四項（剪輯也放進來）', (t) async {
-    await shoot(
-      t,
-      'fab-e-sheet-four',
-      _home(
-        dim: true,
-        showFab: false,
-        overlay: _sheet([
-          _row(_wm, '浮水印', chevron: true),
-          _row(_collage, '照片拼圖', chevron: true),
-          _row(_gif, 'GIF', chevron: true),
-          _row(_cut, '剪輯', sub: '開一條空軌道'),
-        ]),
-      ),
-    );
-  });
-
-  testWidgets('F 第二層長怎樣（浮水印 → 照片／影片）', (t) async {
-    await shoot(
-      t,
-      'fab-f-second-level',
-      _home(
-        dim: true,
-        showFab: false,
-        overlay: _sheet([
-          Row(
-            children: [
-              const Icon(Icons.chevron_left, size: 22, color: kLText),
-              const SizedBox(width: 6),
-              const Text(
-                '浮水印',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 1,
-                  color: kLText,
-                ),
-              ),
-              const Spacer(),
-            ],
-          ),
-          const SizedBox(height: 10),
-          _row(Icons.photo_outlined, '照片', sub: '單張或整批'),
-          _row(Icons.movie_outlined, '影片', sub: '單支或整批'),
-        ]),
+        button: _squircle(size: 72, icon: 34, radius: 24),
+        align: bottomCenter,
+        pad: padCenter,
+        note: '底部中間 · 圓角方形 72',
       ),
     );
   });

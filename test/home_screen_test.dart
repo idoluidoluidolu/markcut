@@ -4,15 +4,16 @@
 // 守的是：
 //   1. 首頁本體只有 logo、右上角個人中心、右下角的＋——沒有任何入口
 //      文字（舊的四個方塊、更舊的「加入浮水印」「製作浮水印」都不在）
-//   2. ＋叫出來的第一層：三列 浮水印／照片拼圖／GIF，順序、文案、
-//      一行說明、圖示；有第二層的那兩列才畫箭頭（照片拼圖直接進功能，
-//      畫箭頭等於騙人）
+//   2. ＋叫出來的第一層：四列 浮水印／照片拼圖／GIF／剪輯，順序、文案、
+//      一行說明、圖示；有第二層的那兩列才畫箭頭（照片拼圖與剪輯直接進
+//      功能，畫箭頭等於騙人）
 //   3. 每一列走的路：
 //        浮水印   → 第二層「照片／影片」→ 對應的選取器 → 多個問
 //                   「接成一支／串成影片還是各自上浮水印」
 //        照片拼圖 → 不開選取器、不進第二層，直接推拼圖頁
 //        GIF      → 第二層是「製作 GIF／從相簿匯入 GIF／從檔案匯入 GIF」
 //                   （跟個人中心「我的 GIF」的＋同一支）
+//        剪輯     → 不開選取器、不進第二層，直接開一條空的時間軸
 //   4. 重入鎖：面板開著時連點＋不會疊出第二個；關掉之後鎖要放開
 //
 // 選取器換成假的（FilePicker.platform／ImagePickerPlatform.instance），
@@ -36,6 +37,7 @@ import 'package:markcut/screens/batch_watermark_screen.dart';
 import 'package:markcut/screens/collage_screen.dart';
 import 'package:markcut/screens/gif_screen.dart';
 import 'package:markcut/screens/home_screen.dart';
+import 'package:markcut/screens/video_editor_screen.dart';
 import 'package:markcut/theme.dart';
 
 /// 8×8 PNG（測試自己寫出來，不依賴任何外部檔案）
@@ -44,16 +46,17 @@ const _pngB64 =
     'LQkAXrdVAdmuFfUAAAAASUVORK5CYII=';
 
 /// ＋選單第一層，由上而下
-const _labels = ['浮水印', '照片拼圖', 'GIF'];
-const _subs = ['照片、影片，單支或整批', '多張照片拼成一張', '影片轉 GIF，或匯入現成的'];
+const _labels = ['浮水印', '照片拼圖', 'GIF', '剪輯'];
+const _subs = ['照片、影片，單支或整批', '多張照片拼成一張', '影片轉 GIF，或匯入現成的', '開一條空軌道，素材進去再加'];
 const _icons = [
   Icons.branding_watermark_outlined,
   Icons.grid_view_rounded,
   Icons.gif_box_outlined,
+  Icons.smart_display_outlined,
 ];
 
 /// 哪幾列有第二層（右邊才畫箭頭）
-const _more = [true, false, true];
+const _more = [true, false, true, false];
 
 late Directory _dir;
 String _p(String name) => '${_dir.path}${Platform.pathSeparator}$name';
@@ -304,12 +307,12 @@ void main() {
   });
 
   group('＋叫出來的第一層', () {
-    testWidgets('三列：順序、文案、說明、圖示；有第二層的才畫箭頭', (t) async {
+    testWidgets('四列：順序、文案、說明、圖示；有第二層的才畫箭頭', (t) async {
       await _pump(t);
       await _tapFab(t);
 
       final ys = <double>[];
-      for (var i = 0; i < 3; i++) {
+      for (var i = 0; i < _labels.length; i++) {
         expect(
           find.text(_labels[i]),
           findsOneWidget,
@@ -327,10 +330,10 @@ void main() {
         );
         ys.add(t.getCenter(find.text(_labels[i])).dy);
       }
-      for (var i = 1; i < 3; i++) {
+      for (var i = 1; i < _labels.length; i++) {
         expect(ys[i] > ys[i - 1], isTrue, reason: '順序不對（由上而下量到 $ys）');
       }
-      // 箭頭只有兩個（浮水印、GIF）；照片拼圖直接進功能
+      // 箭頭只有兩個（浮水印、GIF）；照片拼圖與剪輯直接進功能
       expect(
         find.byIcon(Icons.chevron_right),
         findsNWidgets(_more.where((m) => m).length),
@@ -454,6 +457,24 @@ void main() {
       final page = spy.lastEdit(t);
       expect(page, isA<GifScreen>());
       expect((page as GifScreen).path, _p('a.mp4'), reason: '多選了就拿第一支');
+      await _drain(t);
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('剪輯：不開選取器、不進第二層，直接開一條空的時間軸', (t) async {
+      final spy = _RouteSpy();
+      await _pump(t, spy: spy);
+      await _tapFab(t);
+      await t.tap(find.text('剪輯'));
+      await _settle(t, 20);
+
+      expect(_images.calls + _files.calls, 0, reason: '剪輯不該先開選取器');
+      final page = spy.lastEdit(t);
+      expect(page, isA<VideoEditorScreen>());
+      expect((page as VideoEditorScreen).blank, isTrue, reason: '要開的是空軌道');
+      expect(page.videoPath, isNull);
+      expect(page.videoPaths, isNull);
+      expect(page.photoPaths, isNull);
       await _drain(t);
       expect(t.takeException(), isNull);
     });
