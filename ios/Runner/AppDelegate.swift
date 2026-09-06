@@ -2629,6 +2629,9 @@ final class AtomicFlag {
             clips: clips, texture: (args["texture"] as? Bool) ?? true,
             mosaics: mosaics, stills: stills, hdrOut: hdrOut,
             overlays: overlays,
+            // 收即時清單的合成器要掛著，就算 overlays 現在是空的
+            //（全域浮水印隱藏中；見 CompPlayer.build 的 liveOverlays）
+            ovLive: args["ovLive"] as? Bool ?? false,
             // 合成要補到多長（0＝不用補；見 CompPlayer.build）
             timelineDuration: args["timelineDuration"] as? Double ?? 0,
             // HLG 合成裡的圖片素材反 OOTF：沒送＝自動（中灰探針判定），
@@ -5793,10 +5796,14 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// timelineDuration 同一個量；鋪法見下面的 fillTail）
   /// [stillInverseOotf] HLG 合成裡的圖片素材反 OOTF 的診斷強制值：
   /// nil＝自動（MCStillLoader.hlgProbe 的中灰探針判定）；SDR 合成不讀
+  /// [ovLive] HDR 預覽要收即時疊加物清單（setOverlays）：就算 overlays
+  /// 現在是空的（全域浮水印隱藏中）也要掛 CI 合成器、wmLive 打開——
+  /// 不然隱藏中重建出來的合成不收清單，打開只能由 Flutter 畫（HDR 上是灰的）
   func build(
     clips: [[String: Any]], texture: Bool, mosaics: [[String: Any]] = [],
     stills: [[String: Any]] = [], hdrOut: Bool = false,
-    overlays: [[String: Any]] = [], timelineDuration: Double = 0,
+    overlays: [[String: Any]] = [], ovLive: Bool = false,
+    timelineDuration: Double = 0,
     stillInverseOotf: Bool? = nil
   ) -> Bool {
     let comp = AVMutableComposition()
@@ -5867,8 +5874,9 @@ final class CompPlayer: NSObject, FlutterTexture {
       // 系統照 HDR 顯示（EDR，跟相簿/成品同一條）
       || (anyHDR && !hdrOut)
       // HDR 預覽的疊加物（浮水印/文字）：要烘進合成用 EDR 顯示，
-      // Flutter 畫的白色最多只有基準白，旁邊 HDR 高光一比就是灰的
-      || (hdrOut && anyHDR && !overlays.isEmpty)
+      // Flutter 畫的白色最多只有基準白，旁邊 HDR 高光一比就是灰的。
+      // ovLive＝清單現在空的（浮水印隱藏中）也要掛：之後打開走 setOverlays
+      || (hdrOut && anyHDR && (!overlays.isEmpty || ovLive))
       || ordered.contains { c in
         (c["crop"] as? [Double]) != nil
           || abs(c["rotation"] as? Double ?? 0) > 0.05
@@ -6225,7 +6233,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       // HDR 輸出模式不映射，沒別的效果就不掛
       || (anyHDR && !hdrOut)
       // HDR 預覽的疊加物：跟 needsCI 同一條（掛 CI 的前提是有 VC）
-      || (hdrOut && anyHDR && !overlays.isEmpty)
+      || (hdrOut && anyHDR && (!overlays.isEmpty || ovLive))
       || segments.contains { seg in
         seg.crop != nil || abs(seg.rotation) > 0.05 || seg.opacity < 0.999
       }

@@ -3,6 +3,13 @@
 > 記錄「預覽畫面」這條線的最終架構、已定罪的根因、以及三條紀律。
 > 歷史（2026-08-30 版）見 git 歷史；本版以團隊重建後的程式碼為準。
 
+## 2026-09-06：浮水印隱藏再打開變灰（HLG 素材）
+
+使用者回報：在編輯頁把浮水印隱藏再打開，原本白色變成灰色。根因不在色彩數學，在「打開之後浮水印換了畫家」：HDR 預覽的浮水印本來由原生 CI 合成器烘進合成（底圖夾白、線性 ×3），Flutter 版只留 1% 給觸控；「隱藏」以前會把浮水印從合成的結構指紋（`_compSig` 的 `ovNeed`）拿掉，隱藏期間任何一次合成重建（存草稿、HDR 代理轉好、切分頁）都組出不掛合成器、`wmLive=false` 的合成，「打開」只走 `setOverlays` 即時清單，被那份合成拒收（`OverlaySync` 記成沒有收件方）又沒人排重建——浮水印只好由 Flutter 以 SDR 基準白畫在 HDR 畫面上，就是灰的。
+
+- 隱藏／打開改成純「內容」變化：`_ovLiveNeeded`（有沒有疊加物內容，不看藏不藏）進結構指紋與 `CompPlayer.build(liveOverlays:)`→payload `ovLive`；原生 `needsCI`／`needsVC` 對 `ovLive` 也掛 CI 合成器、`wmLive` 打開，就算組建當下清單是空的。被浮水印蓋到的圖片（`_wmBakeRange`）隱藏中也照烘，隱藏／打開都不重組合成（不換 AVPlayerItem、不閃）。
+- 驗證：`wm_hide_show_hdr_test`（假原生端照抄 needsCI／wmLive／setOverlays 收件規則：HDR 隱藏→重建→打開回到原生清單、Flutter 版 1%；SDR 一個位元不變；被蓋到的圖片一直烘著）、`comp_overlay_live_payload_test`。Swift 的四處小改（參數、handler、needsCI、needsVC）此環境無編譯器，需 Mac 編譯與 HLG 實機看圖。
+
 ## 2026-09-05：圖片透明度與額外變暗修正
 
 後續回報：圖片透明度 100% 仍偏色，因此透明度修正不能解釋完整現象。追查發現 `MCStillLoader` 僅以中灰 HLG 碼 <0.407 分類，會把「顯示參考但白基準偏低」誤判成場景參考，且完全未校正白基準。改以白色／中灰比值辨識曲線，獨立計算 RGB 白基準增益，使 SDR 白對齊 0.75 HLG；校正後兩個樣本都驗證通過才快取。預覽與匯出共用載入器，SDR 輸出不進此校正。原生新增 100% 不透明 PNG 載入／HLG 像素測試與六種曲線／白基準組合測試；此 Windows 環境無 Swift／iOS SDK，尚未執行，不能據此宣稱實機偏色已消失。
