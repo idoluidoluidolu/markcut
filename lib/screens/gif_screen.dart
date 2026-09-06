@@ -1275,27 +1275,17 @@ class _GifScreenState extends State<GifScreen> {
   /// 把指針現在的位置設成起點／終點（使用者指定：滑到哪、按一下
   /// 就從哪開始/結束——把手不吃觸控之後，這是唯一的入口）。
   ///
-  /// 指針跑到另一端的另一邊、或近到範圍會短於 [kTrimMinGap]：
-  /// 不動、出提示說清楚。不偷偷夾回去——按了鈕卻換來一個自己沒選
-  /// 的位置，看起來就像按鈕壞了
+  /// 永遠算數：指針跑到另一端上或另一側時，整段範圍平移過去、長度
+  /// 不變（使用者指定「起點設在終點之後不要擋，自動把長度橫移過去，
+  /// 終點自動改後面就好」；終點對稱）。規則在 gif_trim_range.dart
   void _setEdgeHere({required bool start}) {
     final t = _pos.value.clamp(0.0, _dur);
-    final v = start ? trimStartAt(t, _end) : trimEndAt(t, _start, _dur);
-    if (v == null) {
-      final gap = kTrimMinGap.toStringAsFixed(1);
-      showHint(
-        context,
-        start ? '起點要在終點前至少 $gap 秒，指針再往左一點' : '終點要在起點後至少 $gap 秒，指針再往右一點',
-        error: true,
-      );
-      return;
-    }
+    final r = start
+        ? trimSetStart(t, _start, _end, _dur)
+        : trimSetEnd(t, _start, _end, _dur);
     setState(() {
-      if (start) {
-        _start = v;
-      } else {
-        _end = v;
-      }
+      _start = r.start;
+      _end = r.end;
     });
     _schedulePreview();
   }
