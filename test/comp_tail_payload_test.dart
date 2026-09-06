@@ -259,7 +259,7 @@ void main() {
   // 「播放頭底下有影片才露」把整層藏掉＝黑畫面，只剩 Flutter 那份壓到
   // 1% 透明度的浮水印隱約可見。這裡釘住新的露／藏規則
   group('paintsAt', () {
-    test('尾巴裡烘進去的圖片：露；合成結尾以後：藏', () {
+    test('尾巴裡烘進去的圖片：露；合成結尾那一格：露；結尾容差以後：藏', () {
       final tl = baseHdr(); // 影片 0~1
       final img = addImage(tl, at: 0, len: 4, track: 1);
       bool at(double t) => CompPlayer.paintsAt(
@@ -271,8 +271,11 @@ void main() {
       expect(at(0.5), isTrue, reason: '影片底下');
       expect(at(1.5), isTrue, reason: '實機 1 的那一格：圖片是原生畫的');
       expect(at(3.9), isTrue);
-      expect(at(4.0), isFalse, reason: '合成結尾，材質停在最後一幀');
-      expect(at(4.5), isFalse);
+      // 播到時間軸終點停下來的那一格：播放器停在合成結尾、顯示的就是
+      // 最後一幀。以前這裡是藏＝「影片播到最後會黑掉」（實機回報）
+      expect(at(4.0), isTrue, reason: '合成結尾那一格＝最後一幀，要露');
+      expect(at(4.0 + CompPlayer.endSlack), isTrue, reason: '捨入容差內');
+      expect(at(4.5), isFalse, reason: '真的超過合成結尾才藏');
     });
 
     test('畫面上那份合成還是舊的（長度只到影片結尾）：尾巴先藏', () {
@@ -282,14 +285,59 @@ void main() {
         CompPlayer.paintsAt(tl, 1.5, bakedIds: {img}, compDuration: 1.0),
         isFalse,
       );
+      // 舊合成的結尾那一格本身還是露：那就是影片的最後一幀，t=1.0
+      // 該看的正是它
+      expect(
+        CompPlayer.paintsAt(tl, 1.0, bakedIds: {img}, compDuration: 1.0),
+        isTrue,
+      );
     });
 
-    test('尾巴只有文字（沒烘圖片）：補長那段是定義好的黑底，露', () {
+    test('尾巴只有文字（沒烘圖片）：補長那段是定義好的黑底，露到終點', () {
       final tl = baseHdr(); // 影片 0~1
       addText(tl, at: 0, len: 4);
       expect(CompPlayer.padTo(tl), 4.0);
       expect(CompPlayer.paintsAt(tl, 2.0, compDuration: 4.0), isTrue);
-      expect(CompPlayer.paintsAt(tl, 4.0, compDuration: 4.0), isFalse);
+      expect(
+        CompPlayer.paintsAt(tl, 4.0, compDuration: 4.0),
+        isTrue,
+        reason: '終點那一格是播放器停住的最後一幀',
+      );
+      expect(CompPlayer.paintsAt(tl, 4.2, compDuration: 4.0), isFalse);
+    });
+
+    // ── 實機回報 2：「影片播到最後會黑掉，應該停在最後一幀」──
+    //
+    // 一般專案（沒有尾巴、沒烘圖片）的終點。合成長度跟時間軸終點
+    // 常常對不齊：合成用 1/600 秒計時、聲音軌比畫面軌多幾毫秒、
+    // 片段重疊被原生端往後推（實機診斷：合成 5.54s、時間軸 4.92s）。
+    // 終點附近不管合成比較長或比較短，露的都得是最後一幀
+    group('時間軸終點', () {
+      test('影片剛好在終點結束、合成因捨入短了一格：終點那格照樣露', () {
+        final tl = base(); // 影片 0~5，時間軸 5.0
+        // 合成回報 4.998（timescale 捨入）：t=5.0 已經「超過合成結尾」
+        expect(CompPlayer.paintsAt(tl, 5.0, compDuration: 4.998), isTrue);
+        expect(CompPlayer.paintsAt(tl, 4.999, compDuration: 4.998), isTrue);
+      });
+
+      test('合成比時間軸長（聲音軌多幾毫秒／片段重疊）：終點那格露', () {
+        final tl = base(); // 影片 0~5
+        expect(CompPlayer.paintsAt(tl, 5.0, compDuration: 5.54), isTrue);
+        // 終點之後的位置時間軸上什麼都沒有：藏（跟片段之間的空縫同一
+        // 條規則）。所以播完停下時指針絕不能被播放器的位置推到終點
+        // 之後——那正是編輯器 _pause(atEnd) 釘住終點的理由，
+        // 見 play_to_end_last_frame_test
+        expect(CompPlayer.paintsAt(tl, 5.02, compDuration: 5.54), isFalse);
+        expect(CompPlayer.paintsAt(tl, 5.3, compDuration: 5.54), isFalse);
+      });
+
+      test('影片後面接了一小段（< 0.05s）圖片、沒補長：終點露最後一幀', () {
+        final tl = base(); // 影片 0~5
+        addImage(tl, at: 4, len: 1.03, track: 1); // 圖片 4~5.03，壓在影片上
+        expect(CompPlayer.padTo(tl), 0.0, reason: '差 0.03s 是捨入，不補');
+        // 合成只到 5.0；時間軸終點 5.03 落在容差內＝播放器的最後一幀
+        expect(CompPlayer.paintsAt(tl, 5.03, compDuration: 5.0), isTrue);
+      });
     });
 
     test('兩段影片之間的空縫、沒補長也沒烘圖：藏（原本的行為）', () {

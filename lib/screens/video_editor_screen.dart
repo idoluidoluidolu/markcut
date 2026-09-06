@@ -7447,7 +7447,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     if (_position >= _tl.duration) {
       _position = _tl.duration;
-      _pause();
+      _pause(atEnd: true);
     }
     // 播放接管中：引擎有自己的時鐘，每半秒對一次時（引擎端只在
     // 偏差 >0.25s 時重定，音訊時鐘是主）
@@ -8029,7 +8029,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _syncMedia();
   }
 
-  void _pause() {
+  /// [atEnd]＝播放時鐘走到時間軸終點而停（見 _onTick）。這種停法
+  /// 指針釘在終點、不拿播放器的位置回填：
+  /// 合成常比時間軸長——聲音軌比畫面軌多幾毫秒、片段重疊被原生端
+  /// 往後推、timescale 捨入——這時播放器停的位置落在時間軸終點
+  /// 「之後」。回填進來播放頭底下就沒有任何片段了，預覽層把合成畫面
+  /// 整層藏掉（見 CompPlayer.paintsAt 那個 Opacity 閘門）＝「影片播到
+  /// 最後會黑掉」（實機回報：合成 5.54s、時間軸 4.92s）。
+  /// 釘在終點還有第二個用途：「再按播放從頭來」是拿 _position 對
+  /// 時間軸終點判的，回填一個差 20ms 的位置就變成只補播那 20ms。
+  /// 畫面不另外 seek：播放器停在 item 尾端顯示的就是最後一幀，多送
+  /// 一發精準 seek 反而會退回前一格（原生端把目標夾在總長前 34ms）
+  void _pause({bool atEnd = false}) {
     _clockBias = 0;
     _playProbe?.cancel();
     _playProbe = null;
@@ -8038,14 +8049,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 3.0：系統暫停→精確 seek 到停點→常駐引擎回台顯示停格
       unawaited(
         c.pause().then((_) async {
+          if (atEnd) {
+            // 時間軸捲到終點對齊（_followPlayhead 有 33ms 節流，最後
+            // 一格可能沒跟上）；指針本身不動
+            if (mounted && !_scrubbing) _syncScrollToPosition();
+            return;
+          }
           // 兩邊對同一格，暫停才不會閃：
           // 1) 用播放器「真正停在哪」當基準（差太多＝重建中回報 0，
           //    那就不信它，見 145 指針歸零）
           // 2) 不再送精準 seek——播放器已經停在該格，再 seek 會把
           //    畫面往前挪半格，交接瞬間就是使用者看到的閃動
+          // 3) 夾在時間軸內：位置超過終點就沒有片段蓋著播放頭，
+          //    預覽層會把合成畫面藏掉（見 atEnd 的說明）
           final p = await c.position();
           if (mounted && p > 0.001 && (p - _position).abs() < 1.0) {
-            _position = p;
+            _position = p.clamp(0.0, _tl.duration);
             _syncScrollToPosition();
           }
           // 暫停不換手：停格留在系統播放器上（它的停格就是精確幀）

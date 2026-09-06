@@ -296,10 +296,16 @@ class CompPlayer {
   /// - 播放頭落在補長出來的尾巴（最後一段影片結尾～[padTo]）：補長必掛
   ///   合成器（原生 needsVC 的最後一條），那段是定義好的黑底
   ///
-  /// 三者都要在合成長度 [compDuration] 之內：超過合成結尾播放器 seek
-  /// 不過去、材質停在最後一幀，該藏。畫面上那份合成若還是舊的（剛加
-  /// 圖片、重組還沒落地）長度就比較短，這裡會先藏、重組上檔才露——
-  /// 黑一下，不會露出凍住的最後一幀
+  /// 三者都要在合成長度 [compDuration] 之內（多 [endSlack] 的容差）：
+  /// 超過合成結尾播放器 seek 不過去、材質停在最後一幀，該藏。畫面上
+  /// 那份合成若還是舊的（剛加圖片、重組還沒落地）長度就比較短，這裡
+  /// 會先藏、重組上檔才露——黑一下，不會露出凍住的最後一幀。
+  ///
+  /// 合成結尾「那一格」本身（[compDuration]±[endSlack]）一律露：播放器
+  /// 停在那裡顯示的就是最後一幀，正是該看的畫面。以前這一格是藏的
+  ///（t ≥ compDuration → 藏）——播到時間軸終點＝合成終點時，播放頭底下
+  /// 若已經沒有影片片段（尾巴是圖片/文字，或影片剛好在終點結束而合成
+  /// 因捨入短了一格），整層被蓋掉＝「影片播到最後會黑掉」（實機回報）
   static bool paintsAt(
     TimelineModel tl,
     double t, {
@@ -307,7 +313,8 @@ class CompPlayer {
     Set<int> bakedIds = const {},
     double compDuration = double.infinity,
   }) {
-    if (t >= compDuration - 0.001) return false;
+    if (t > compDuration + endSlack) return false;
+    if (t >= compDuration - 0.001) return true;
     if (tl.videoAt(t, skipTracks: hiddenTracks) != null) return true;
     for (final c in tl.clips) {
       if (hiddenTracks.contains(c.track)) continue;
@@ -320,8 +327,14 @@ class CompPlayer {
       if (hiddenTracks.contains(c.track)) continue;
       if (tl.sourceOf(c).isVideo && c.end > vidEnd) vidEnd = c.end;
     }
-    return t >= vidEnd - 0.001 && t < tail;
+    return t >= vidEnd - 0.001 && t <= tail + endSlack;
   }
+
+  /// 合成結尾的容差（秒）：播放頭落在合成結尾～結尾＋這個量之間，畫面
+  /// 上就是播放器停住的最後一幀，[paintsAt] 要露不要藏。跟 [padTo] 的
+  /// 門檻同一個數——差這麼一點是 trim／timescale 的捨入（合成用 1/600
+  /// 秒計時、聲音軌常比畫面軌多幾毫秒），不是真的有尾巴
+  static const double endSlack = 0.05;
 
   /// 要烘進合成的圖片素材（片段 id）：墊在「最高的影片軌」之下的
   /// 那些。壓在所有影片之上的不烘——Flutter 畫在上面，拖曳即時。

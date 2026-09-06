@@ -5639,7 +5639,16 @@ final class CompPlayer: NSObject, FlutterTexture {
     Self.stNudgeFired += 1
     nudging = true
     nudgeFlip.toggle()
-    if !nudgeAnchor.isValid { nudgeAnchor = player.currentTime() }
+    if !nudgeAnchor.isValid {
+      nudgeAnchor = player.currentTime()
+      // 播完停在「剛好等於總長」的停點：往前擺就出界——指令只鋪到
+      // 總長之前，seek 到總長畫面可能刷成黑的（seek 也是這樣夾的）。
+      // 錨點退到最後一格之前，兩個擺幅都留在指令裡
+      if duration > 0.1 {
+        let cap = CMTime(seconds: duration - 0.04, preferredTimescale: 600)
+        if nudgeAnchor > cap { nudgeAnchor = cap }
+      }
+    }
     // 只往前擺（+1/600 與 +2/600 交替）：± 擺在不巧的停點會跨到
     // 上一格，整片影像每版前後跳一格（獨立審查 #3）
     let eps = CMTime(value: nudgeFlip ? 1 : 2, timescale: 600)
