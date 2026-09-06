@@ -15,6 +15,7 @@ import '../models/color_grade.dart';
 import '../models/mosaic.dart';
 import '../models/watermark_settings.dart';
 import '../services/photo_export.dart';
+import '../services/rotation_snap.dart';
 import '../theme.dart';
 import '../services/mosaic_patch_painter.dart';
 import '../services/watermark_renderer.dart';
@@ -1963,6 +1964,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   bool _phGuideV = false, _phGuideH = false;
   bool _phSnapped = false;
 
+  /// 這一手已經看過第一格了：第一格只記「起手時黏不黏」、不震——
+  /// 本來就坐在中線上的東西，起手那一下不算「吸上去」
+  bool _phSnapKnown = false;
+
   double _snapC(double v) => (v - 0.5).abs() < 0.015 ? 0.5 : v;
 
   void _phSetGuides(double x, double y) {
@@ -1974,7 +1979,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       });
     }
     final on = v || hh;
-    if (on != _phSnapped) {
+    if (!_phSnapKnown) {
+      _phSnapKnown = true;
+      _phSnapped = on;
+    } else if (on != _phSnapped) {
       _phSnapped = on;
       if (on) HapticFeedback.selectionClick();
     }
@@ -1984,6 +1992,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     _phRawX = null;
     _phRawY = null;
     _phSnapped = false;
+    _phSnapKnown = false;
     if (_phGuideV || _phGuideH) {
       setState(() {
         _phGuideV = false;
@@ -2469,20 +2478,26 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   double _pvBaseRotLogo = 0;
   double _pvBaseRotExtraText = 0;
   double _pvBaseRotExtraLogo = 0;
-  double? _rotSnapAt;
+  /// 兩指旋轉的 15 度吸附（門檻／遲滯／只在換刻度時震，見 RotationSnap）。
+  /// 以領頭（文字，沒文字就圖片）算一次，同一個修正量套給會轉的部件
+  final _rotSnap = RotationSnap();
 
-  /// 每 15 度吸一次，附近 4 度內就黏上去（黏住的瞬間震一下）
-  double _snapAngle(double deg) {
-    final near = (deg / 15.0).roundToDouble() * 15.0;
-    if ((deg - near).abs() <= 4) {
-      if (_rotSnapAt != near) {
-        _rotSnapAt = near;
-        HapticFeedback.selectionClick();
-      }
-      return near;
+  /// 這次捏合旋轉的領頭底角（跟 _pinchMove 挑目標的規則一致）
+  double _pinchRotBase() {
+    if (_selExtra >= 0 && _selExtra < _extraWms.length) {
+      final e = _extraWms[_selExtra];
+      final part = _extraPartAlive(_selExtra);
+      final hasText = e.text.enabled && e.text.text.trim().isNotEmpty;
+      final hasLogo = e.logo.enabled;
+      final doText = hasText && (part != WmPart.logo || !hasLogo);
+      return doText ? _pvBaseRotExtraText : _pvBaseRotExtraLogo;
     }
-    if (_rotSnapAt != null) _rotSnapAt = null;
-    return deg;
+    final t = _settings.text;
+    final hasText = t.enabled && t.text.trim().isNotEmpty;
+    final hasLogo = _settings.logo.enabled;
+    final part = _wmPartAlive;
+    final doText = hasText && (part != WmPart.logo || !hasLogo);
+    return doText ? _pvBaseRotText : _pvBaseRotLogo;
   }
 
   static double _wrapDeg(double v) {
@@ -2531,6 +2546,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       _pvBaseRotExtraText = _extraWms[_selExtra].text.rotation;
       _pvBaseRotExtraLogo = _extraWms[_selExtra].logo.rotation;
     }
+    _rotSnap.arm(_pinchRotBase());
     _phUndoPending = true;
   }
 
@@ -2545,7 +2561,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     // 不動它——單純想縮放的人不該被順手轉歪
     final ang = math.atan2(p[1].dy - p[0].dy, p[1].dx - p[0].dx);
     final dDeg = _wrapDeg((ang - _pvBaseAngle) * 180 / math.pi);
-    final doRot = dDeg.abs() > 3;
+    // 門檻／遲滯／震動的規則全在 RotationSnap；吸附以領頭算一次，同一個
+    // 修正量套給每個目標。馬賽克不轉，所以延到真的要轉才算
+    double? dRot;
+    double rot(double base) =>
+        _wrapDeg(base + (dRot ??= _rotSnap.delta(dDeg)));
     _phPushUndoIfNeeded(); // 真的縮到東西了才拍
     setState(() {
       // 有選中馬賽克：雙指縮它，不動浮水印（打碼區域不支援旋轉）
@@ -2563,15 +2583,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         final hasLogo = e.logo.enabled;
         if (hasText && (part != WmPart.logo || !hasLogo)) {
           e.text.sizeFrac = (_pvBaseExtraText * f).clamp(0.015, 2.0);
-          if (doRot) {
-            e.text.rotation = _snapAngle(_wrapDeg(_pvBaseRotExtraText + dDeg));
-          }
+          e.text.rotation = rot(_pvBaseRotExtraText);
         }
         if (hasLogo && (part != WmPart.text || !hasText)) {
           e.logo.sizeFrac = (_pvBaseExtraLogo * f).clamp(0.03, 2.0);
-          if (doRot) {
-            e.logo.rotation = _snapAngle(_wrapDeg(_pvBaseRotExtraLogo + dDeg));
-          }
+          e.logo.rotation = rot(_pvBaseRotExtraLogo);
         }
         return;
       }
@@ -2585,15 +2601,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       final doLogo = hasLogo && (part != WmPart.text || !hasText);
       if (doText) {
         t.sizeFrac = (_pvBaseText * f).clamp(0.015, 2.0);
-        if (doRot) {
-          t.rotation = _snapAngle(_wrapDeg(_pvBaseRotText + dDeg));
-        }
+        t.rotation = rot(_pvBaseRotText);
       }
       if (doLogo) {
         _settings.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
-        if (doRot) {
-          _settings.logo.rotation = _snapAngle(_wrapDeg(_pvBaseRotLogo + dDeg));
-        }
+        _settings.logo.rotation = rot(_pvBaseRotLogo);
       }
     });
   }
@@ -2601,7 +2613,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   void _pinchUp(int pointer) {
     _pvPts.remove(pointer);
     _pvSeen.remove(pointer);
-    if (_pvBaseDist != null && _pvPts.length < 2) _pvBaseDist = null;
+    if (_pvBaseDist != null && _pvPts.length < 2) {
+      _pvBaseDist = null;
+      _rotSnap.end();
+    }
   }
 
   @override

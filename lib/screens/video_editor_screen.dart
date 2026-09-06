@@ -28,6 +28,7 @@ import '../services/native_export.dart';
 import '../services/native_frames.dart';
 import '../services/overlay_sync.dart';
 import '../services/playback_trace.dart';
+import '../services/rotation_snap.dart';
 import '../services/comp_player.dart';
 import '../services/video_picker.dart';
 import '../services/crop_math.dart';
@@ -12184,7 +12185,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     Positioned.fill(
                                       child: IgnorePointer(
                                         child: CustomPaint(
-                                          painter: RotGuidePainter(_rotSnapAt),
+                                          painter: RotGuidePainter(
+                                            _rotSnap.guide,
+                                          ),
                                         ),
                                       ),
                                     ),
@@ -12859,6 +12862,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _rtGuideV = false, _rtGuideH = false;
   bool _rtSnapped = false;
 
+  /// 這一手已經看過第一格了。第一格只記「起手時黏不黏」、不震：
+  /// 本來就坐在中線上的東西（預設文字就在正中央）起手或捏合那一下
+  /// 不算「吸上去」，震了只是莫名其妙
+  bool _rtSnapKnown = false;
+
   double _snapC(double v) => (v - 0.5).abs() < 0.015 ? 0.5 : v;
 
   void _rtSetGuides(double x, double y) {
@@ -12870,7 +12878,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _pokeFrame();
     }
     final on = v || hh;
-    if (on != _rtSnapped) {
+    if (!_rtSnapKnown) {
+      _rtSnapKnown = true;
+      _rtSnapped = on;
+    } else if (on != _rtSnapped) {
       _rtSnapped = on;
       if (on) HapticFeedback.selectionClick();
     }
@@ -12880,6 +12891,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _rtRawX = null;
     _rtRawY = null;
     _rtSnapped = false;
+    _rtSnapKnown = false;
     if (_rtGuideV || _rtGuideH) {
       _rtGuideV = false;
       _rtGuideH = false;
@@ -13058,8 +13070,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     });
   }
 
-  /// 目前吸在哪個整數角度（畫輔助線用；null＝沒吸住）
-  double? _rotSnapAt;
+  /// 兩指旋轉的 15 度吸附（門檻／遲滯／只在換刻度時震，見 RotationSnap）。
+  /// 以領頭元素算一次，同一個修正量套給這次捏合會轉的每個目標
+  final _rotSnap = RotationSnap();
 
   double _pvBaseAngle = 0;
   double _pvBaseRotText = 0;
@@ -13068,18 +13081,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 影片/圖片片段的旋轉底值（兩指旋轉用）
   double _pvBaseRotClip = 0;
 
-  /// 每 15 度吸一次，附近 4 度內就黏上去（黏住的瞬間震一下）
-  double _snapAngle(double deg) {
-    final near = (deg / 15.0).roundToDouble() * 15.0;
-    if ((deg - near).abs() <= 4) {
-      if (_rotSnapAt != near) {
-        _rotSnapAt = near;
-        HapticFeedback.selectionClick();
-      }
-      return near;
+  /// 這次捏合旋轉的領頭底角：跟 _previewPinchMove 挑目標的順序一致
+  ///（全域浮水印＝被選的部件；浮水印素材＝文字，沒文字就圖片；
+  /// 文字素材＝它的樣式；影片／圖片＝片段本身）
+  double _pinchRotBase() {
+    if (_wmSel) return _pvHitText ? _pvBaseRotText : _pvBaseRotLogo;
+    final c = _selClipById(_sel);
+    if (c == null) return 0;
+    final src = _tl.sourceOf(c);
+    final st = src.wmStyle;
+    if (st != null) {
+      final tAlive = st.text.enabled && st.text.text.trim().isNotEmpty;
+      return tAlive ? _pvBaseRotText : _pvBaseRotLogo;
     }
-    if (_rotSnapAt != null) _rotSnapAt = null;
-    return deg;
+    if (src.textStyle != null) return _pvBaseRotText;
+    return _pvBaseRotClip;
   }
 
   static double _wrapDeg(double v) {
@@ -13125,6 +13141,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
     }
     if (_wmSel) _pickPinchTarget((p[0] + p[1]) / 2);
+    _rotSnap.arm(_pinchRotBase());
     // 沒選任何東西的捏合什麼都不會動——別拍快照、別清 redo。
     // 有選取時用節流版，跟選取路由的快照 0.7 秒內合併成一步
     if (_wmSel || _sel != -1) _pushWmUndo();
@@ -13174,44 +13191,43 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           }
         }
       }
-      // 兩指轉多少就轉多少（每 15 度吸一次）。手指幾乎沒轉時不動它——
-      // 單純想縮放的人不該被順手轉歪
+      // 兩指轉多少就轉多少（每 15 度吸一次）。門檻／遲滯／震動的規則
+      // 全在 RotationSnap：手指幾乎沒轉時回 0（角度留在底值），單純想
+      // 縮放的人不該被順手轉歪；吸附以領頭算一次，同一個修正量套給
+      // 每個目標——各自吸會把相對角度吸歪，還會吸住／脫離翻來翻去
       final ang = math.atan2(p[1].dy - p[0].dy, p[1].dx - p[0].dx);
       final dDeg = _wrapDeg((ang - _pvBaseAngle) * 180 / math.pi);
-      if (dDeg.abs() > 3) {
-        if (_wmSel) {
-          final t = _settings.text;
-          if (_pvHitText && t.enabled && t.text.trim().isNotEmpty) {
-            t.rotation = _snapAngle(_wrapDeg(_pvBaseRotText + dDeg));
+      double? dRot;
+      double rot(double base) =>
+          _wrapDeg(base + (dRot ??= _rotSnap.delta(dDeg)));
+      if (_wmSel) {
+        final t = _settings.text;
+        if (_pvHitText && t.enabled && t.text.trim().isNotEmpty) {
+          t.rotation = rot(_pvBaseRotText);
+        }
+        if (_pvHitLogo && _settings.logo.enabled) {
+          _settings.logo.rotation = rot(_pvBaseRotLogo);
+        }
+      } else {
+        final c = _selClipById(_sel);
+        final st = c == null ? null : _tl.sourceOf(c).wmStyle;
+        if (st != null) {
+          // 浮水印素材：轉它樣式裡的文字與圖片
+          if (st.text.enabled && st.text.text.trim().isNotEmpty) {
+            st.text.rotation = rot(_pvBaseRotText);
           }
-          if (_pvHitLogo && _settings.logo.enabled) {
-            _settings.logo.rotation = _snapAngle(
-              _wrapDeg(_pvBaseRotLogo + dDeg),
-            );
-          }
-        } else {
-          final c = _selClipById(_sel);
-          final st = c == null ? null : _tl.sourceOf(c).wmStyle;
-          if (st != null) {
-            // 浮水印素材：轉它樣式裡的文字與圖片
-            if (st.text.enabled && st.text.text.trim().isNotEmpty) {
-              st.text.rotation = _snapAngle(_wrapDeg(_pvBaseRotText + dDeg));
-            }
-            if (st.logo.enabled) {
-              st.logo.rotation = _snapAngle(_wrapDeg(_pvBaseRotLogo + dDeg));
-            }
-          } else if (c != null) {
-            final src = _tl.sourceOf(c);
-            final ts = src.textStyle;
-            if (ts != null) {
-              ts.rotation = _snapAngle(_wrapDeg(_pvBaseRotText + dDeg));
-            } else if (src.kind == ClipKind.video ||
-                src.kind == ClipKind.image) {
-              // 影片／圖片片段：轉 clip.rotation（跟調整視窗的滑桿
-              // 同一個欄位，預覽與匯出都吃它）。馬賽克不轉——
-              // 打碼區域的旋轉匯出端不支援，轉了預覽≠成品
-              c.rotation = _snapAngle(_wrapDeg(_pvBaseRotClip + dDeg));
-            }
+          if (st.logo.enabled) st.logo.rotation = rot(_pvBaseRotLogo);
+        } else if (c != null) {
+          final src = _tl.sourceOf(c);
+          final ts = src.textStyle;
+          if (ts != null) {
+            ts.rotation = rot(_pvBaseRotText);
+          } else if (src.kind == ClipKind.video ||
+              src.kind == ClipKind.image) {
+            // 影片／圖片片段：轉 clip.rotation（跟調整視窗的滑桿
+            // 同一個欄位，預覽與匯出都吃它）。馬賽克不轉——
+            // 打碼區域的旋轉匯出端不支援，轉了預覽≠成品
+            c.rotation = rot(_pvBaseRotClip);
           }
         }
       }
@@ -13222,7 +13238,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _pvPts.remove(pointer);
     if (_pvBaseDist != null && _pvPts.length < 2) {
       _pvBaseDist = null;
-      _rotSnapAt = null;
+      _rotSnap.end();
       _gestureLiveEnd();
       _saveDraft();
     }
