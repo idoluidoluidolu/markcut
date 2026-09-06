@@ -19,6 +19,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:markcut/models/watermark_settings.dart';
+import 'package:markcut/screens/about_screen.dart';
 import 'package:markcut/screens/presets_screen.dart';
 import 'package:markcut/screens/profile_screen.dart';
 import 'package:markcut/theme.dart';
@@ -157,6 +158,10 @@ void main() {
       ).writeAsBytesSync(bytes!.buffer.asUint8List());
     });
   }
+
+  testWidgets('關於 → about.png', (t) async {
+    await shoot(t, 'about', const AboutScreen());
+  });
 
   testWidgets('範本總覽 → presets.png', (t) async {
     _seed(presets: 4);

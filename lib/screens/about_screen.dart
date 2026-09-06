@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../theme.dart';
 import '../widgets/swipe_back.dart';
+import 'donate_screen.dart';
 import 'probe_screen.dart';
 
 /// 原始碼位置（MPL 要求提供取得方式）
@@ -71,12 +72,19 @@ class AboutScreen extends StatelessWidget {
     );
   }
 
-  /// 頁尾：授權相關全部收在這三個小連結裡
+  /// 頁尾：斗內那顆鈕壓在授權連結上面，授權相關全部收在小連結裡
   Widget _footer(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(0, 8, 0, 16),
       child: Column(
         children: [
+          // 「太好用啦」：以前在個人中心是一顆滿版黑鈕，使用者把它從那裡
+          // 拿掉、改放到這一頁的頁尾（六種擺法裡挑了「貼在頁尾連結上面」），
+          // 字照舊叫「太好用啦」，按下去一樣進斗內頁
+          Padding(
+            padding: const EdgeInsets.only(bottom: 16),
+            child: _loveButton(context),
+          ),
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -109,6 +117,43 @@ class AboutScreen extends StatelessWidget {
       ),
     );
   }
+
+  /// 斗內鈕：黑色膠囊、愛心＋「太好用啦」，寬度隨字
+  Widget _loveButton(BuildContext context) => Material(
+    color: kLAccent,
+    shape: const StadiumBorder(),
+    clipBehavior: Clip.antiAlias,
+    child: InkWell(
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => const LightPage(child: DonateScreen()),
+        ),
+      ),
+      child: const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 26),
+        child: SizedBox(
+          height: 50,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.favorite_border, size: 18, color: kLBg),
+              SizedBox(width: 8),
+              Text(
+                '太好用啦',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.8,
+                  color: kLBg,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
 
   Widget _dot() => const Padding(
     padding: EdgeInsets.symmetric(horizontal: 8),

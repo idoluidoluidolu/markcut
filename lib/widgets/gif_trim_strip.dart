@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show ValueListenable;
@@ -30,9 +29,11 @@ class GifTrimStrip extends StatelessWidget {
     required this.onScrubEnd,
   });
 
-  /// 琥珀直條的寬度。起點直條貼在範圍內緣 [xs, xs+13]、終點在
-  /// [xe-13, xe]，跟編輯器片段的內側雙把手同一個位置關係
-  static const double barWidth = 13;
+  /// 起訖標記的寬度：各一條 2px 琥珀細線，正好壓在起點／終點那一秒上
+  ///（使用者指定：「框框不要這麼粗，細細一個判斷這裡是起點跟終點就好，
+  /// 不然時間太緊密整個擠在一起」——以前是 13px 的把手加上下框線，
+  /// 範圍一短兩個把手就黏成一塊）
+  static const double barWidth = 2;
 
   /// 整條的高度（縮圖也抽這個高度）
   static const double stripHeight = 56;
@@ -95,22 +96,9 @@ class GifTrimStrip extends StatelessWidget {
                 right: 0,
                 child: ColoredBox(color: Colors.black.withValues(alpha: 0.62)),
               ),
-              // 選取範圍的上下框線
-              Positioned(
-                left: xs,
-                width: math.max(0, xe - xs),
-                top: 0,
-                bottom: 0,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    border: Border.symmetric(
-                      horizontal: BorderSide(color: kSelect, width: 2),
-                    ),
-                  ),
-                ),
-              ),
-              _handleBar(x: xs, left: true),
-              _handleBar(x: xe, left: false),
+              // 起訖各一條細線；範圍本身靠外側壓暗來看
+              _mark(xs),
+              _mark(xe),
               // 播放頭：純白 2px 細線，長相跟影片編輯區時間軸的一致。
               // 畫在把手「之後」＝壓在最上面：停在段落起點時它剛好
               // 疊在左把手上，畫在底下就整根被蓋住（使用者回報：
@@ -166,22 +154,12 @@ class GifTrimStrip extends StatelessWidget {
     );
   }
 
-  /// 把手的長相：13px 琥珀色直條，貼在選取範圍的內緣（跟編輯器選取
-  /// 片段的內側雙把手同一個位置關係；使用者回報：修剪條要跟編輯器的
-  /// 軌道素材同一套長相）。只畫，不吃觸控
-  Widget _handleBar({required double x, required bool left}) => Positioned(
-    left: left ? x : x - barWidth,
+  /// 起訖標記：2px 琥珀細線，中心壓在那一秒的 x 上。只畫，不吃觸控
+  Widget _mark(double x) => Positioned(
+    left: x - barWidth / 2,
     top: 0,
     bottom: 0,
     width: barWidth,
-    child: DecoratedBox(
-      decoration: BoxDecoration(
-        color: kSelect,
-        borderRadius: BorderRadius.horizontal(
-          left: left ? const Radius.circular(4) : Radius.zero,
-          right: left ? Radius.zero : const Radius.circular(4),
-        ),
-      ),
-    ),
+    child: const ColoredBox(color: kSelect),
   );
 }

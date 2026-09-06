@@ -120,27 +120,29 @@ void main() {
     await tester.pump();
   }
 
-  testWidgets('在起點把手上拖曳：起訖點動都不動，動的是播放頭', (tester) async {
+  testWidgets('在起點標記上拖曳：起訖點動都不動，動的是播放頭', (tester) async {
     final host = await pumpHost(tester);
-    // 起點直條佔 [100, 113]：正中間（106.5px＝10.65 秒）下手，
+    // 起點細線壓在 100px 上（寬 barWidth）：從線的右緣下手，
     // 往左拉 50px＝5 秒
-    await dragStrip(tester, 100 + GifTrimStrip.barWidth / 2, -50);
+    final fromX = 100 + GifTrimStrip.barWidth / 2;
+    await dragStrip(tester, fromX, -50);
 
-    expect(host.start, kStart, reason: '把手不吃觸控，起點不該被拉走');
+    expect(host.start, kStart, reason: '標記不吃觸控，起點不該被拉走');
     expect(host.end, kEnd);
     expect(host.events, contains('scrubStart'));
     expect(host.events, contains('scrubBy'));
-    expect(host.pos.value, closeTo(5.65, 0.01));
+    expect(host.pos.value, closeTo((fromX - 50) / 10, 0.01));
   });
 
-  testWidgets('在終點把手上拖曳：一樣只有播放頭會動', (tester) async {
+  testWidgets('在終點標記上拖曳：一樣只有播放頭會動', (tester) async {
     final host = await pumpHost(tester);
-    // 終點直條佔 [187, 200]
-    await dragStrip(tester, 200 - GifTrimStrip.barWidth / 2, 40);
+    // 終點細線壓在 200px 上：從線的左緣下手
+    final fromX = 200 - GifTrimStrip.barWidth / 2;
+    await dragStrip(tester, fromX, 40);
 
     expect(host.start, kStart);
-    expect(host.end, kEnd, reason: '把手不吃觸控，終點不該被拉走');
-    expect(host.pos.value, closeTo(23.35, 0.01));
+    expect(host.end, kEnd, reason: '標記不吃觸控，終點不該被拉走');
+    expect(host.pos.value, closeTo((fromX + 40) / 10, 0.01));
   });
 
   testWidgets('播放頭拖到選取範圍右邊外面，放手後停在那裡', (tester) async {
@@ -163,15 +165,16 @@ void main() {
     expect(host.pos.value, lessThan(host.start));
   });
 
-  testWidgets('點在把手上也是跳指針（不是抓把手）', (tester) async {
+  testWidgets('點在標記上也是跳指針（不是抓把手）', (tester) async {
     final host = await pumpHost(tester);
-    await tester.tapAt(at(100 + GifTrimStrip.barWidth / 2, tester));
+    final x = 100 + GifTrimStrip.barWidth / 2;
+    await tester.tapAt(at(x, tester));
     await tester.pump();
 
     expect(host.events, contains('tap'));
     expect(host.start, kStart);
     expect(host.end, kEnd);
-    expect(host.pos.value, closeTo(10.65, 0.01));
+    expect(host.pos.value, closeTo(x / 10, 0.01));
   });
 
   testWidgets('起點／終點只有按鈕改得動', (tester) async {
