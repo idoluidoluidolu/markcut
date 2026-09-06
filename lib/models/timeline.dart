@@ -15,6 +15,10 @@ export 'mosaic.dart';
 /// 編碼器也吃得下
 const double kMinClipLen = 0.025;
 
+/// 「同一軌不重疊」判定的容差（秒）：小於這個量的疊合當作剛好相接，
+/// 純粹吃掉 offset＋長度÷速度這種浮點運算的尾數，不是給人用的餘裕
+const double kOverlapEps = 1e-6;
+
 enum ClipKind { video, audio, image, text, wm, mosaic }
 
 /// 一份匯入的素材（影片或音訊），可被多個片段引用
@@ -612,6 +616,143 @@ class TimelineModel {
     return false;
   }
 
+  // ===== 同一軌永遠不重疊 =====
+  //
+  // 使用者的規則（實機 189 回報）：「時間軸素材影片蓋到後面的素材時，
+  // 應該不要覆蓋，要把後面的往後推」。原生合成是一條時間軸軌道對一條
+  // 合成軌，同一軌撞在一起的兩段只能往後排（AppDelegate 的 build：
+  // putAt = max(at, slot.end)），從撞到的那一段起合成秒數就跟時間軸對
+  // 不上——「播放指針指的地方跟螢幕顯示不一致」就是這個。以前模型端
+  // 完全不擋：右把手拉長、左把手往前長、變速、貼上都能疊出重疊；放下
+  // 則是把被壓到的裁掉（carveRange）。現在模型端保證：受規則管的片段
+  //（見 [exclusiveOnTrack]）同一軌兩兩不重疊，衝突一律「推開後面的」。
+
+  /// 同軌不重疊的規則管哪些片段：檔案素材——影片、圖片（含 GIF）、
+  /// 聲音。文字／浮水印・貼圖／馬賽克不管：它們是畫在畫面上的疊加物，
+  /// 本來就是疊著用的，各自對準底下的畫面，被推開等於對不準；筆刷
+  /// 馬賽克更是一筆一段、同一軌同一時間疊好幾段（編輯器的 _vBrushStart）。
+  /// 合成端也只有影片會因為同軌重疊而錯位——疊加物是照 offset~end
+  /// 直接烘進去的
+  bool exclusiveOnTrack(TimelineClip c) {
+    if (c.sourceIndex < 0 || c.sourceIndex >= sources.length) return false;
+    final k = sources[c.sourceIndex].kind;
+    return k == ClipKind.video || k == ClipKind.image || k == ClipKind.audio;
+  }
+
+  /// 同軌排在 [c] 前面（受規則管）的片段裡最晚的結尾；沒有就是 0。
+  /// 左把手往前長的地板：頂到之後起點釘在這裡，多拖出來的長度改往右長
+  ///（見編輯器 _trimClip）。不會超過 c 自己的起點
+  double floorOnTrack(TimelineClip c) {
+    if (!exclusiveOnTrack(c)) return 0;
+    var floor = 0.0;
+    for (final o in clips) {
+      if (o.id == c.id || o.track != c.track || !exclusiveOnTrack(o)) continue;
+      if (o.offset < c.offset && o.end > floor) floor = o.end;
+    }
+    return math.min(floor, math.max(0.0, c.offset));
+  }
+
+  /// 同軌排在 [c] 後面（受規則管）的第一段的起點；沒有就是無限大。
+  /// 右把手拉長的接觸點：碰到它之後再長就是在推它
+  double ceilOnTrack(TimelineClip c) {
+    if (!exclusiveOnTrack(c)) return double.infinity;
+    var ceil = double.infinity;
+    for (final o in clips) {
+      if (o.id == c.id || o.track != c.track || !exclusiveOnTrack(o)) continue;
+      if (o.offset > c.offset && o.offset < ceil) ceil = o.offset;
+    }
+    return ceil;
+  }
+
+  /// 同一軌永遠不重疊：每一軌依時間掃一遍，誰的頭壓進前一段的身體，
+  /// 就把它往後推到前一段的結尾——它後面的跟著連鎖讓開。只動 offset，
+  /// 素材範圍、長度、順序一律不碰（不裁、不蓋，使用者指定）。
+  ///
+  /// 推的量＝壓進去的量，不是操作的位移量：結果只由現在的幾何決定，
+  /// 跟手勢怎麼拆步無關（拖把手是一步一步來的，每一步壓進去多少就推
+  /// 多少：前面若有空隙先被吃掉，碰到了才開始推）。同一條規則也直接
+  /// 拿來正規化舊草稿（_loadDraft）。
+  ///
+  /// [pinnedId]：起點相同時誰排前面——剛放下／貼上／新加的那段要排在
+  /// 前面（落在別段的頭上就是「插在它前面」），沒指定就照清單順序。
+  /// [track] 給 null＝所有軌。回傳被推動的片段數
+  int resolveOverlaps({int? track, int? pinnedId}) {
+    final targets = track != null
+        ? [track]
+        : (clips.map((c) => c.track).toSet().toList()..sort());
+    var moved = 0;
+    for (final t in targets) {
+      final order = <TimelineClip, int>{};
+      for (var i = 0; i < clips.length; i++) {
+        final c = clips[i];
+        if (c.track == t && exclusiveOnTrack(c)) order[c] = i;
+      }
+      final lane = order.keys.toList()
+        ..sort((a, b) {
+          final k = a.offset.compareTo(b.offset);
+          if (k != 0) return k;
+          if (a.id == pinnedId) return -1;
+          if (b.id == pinnedId) return 1;
+          return order[a]!.compareTo(order[b]!);
+        });
+      var cursor = 0.0;
+      for (final c in lane) {
+        if (c.offset < cursor - kOverlapEps) {
+          c.offset = cursor;
+          moved++;
+        }
+        if (c.end > cursor) cursor = c.end;
+      }
+    }
+    return moved;
+  }
+
+  /// 放下／貼上／新加片段的落點。想放在 [want]，但那一點落在同軌別段
+  /// 的身體裡時，吸到那一段離得比較近的那一端：前半→它的頭（插在它
+  /// 前面，它被推開）、後半→它的尾（接在它後面），正中央算後面。落在
+  /// 空隙或軌道尾端就照原意圖；身體太長壓到下一段的部分交給
+  /// [resolveOverlaps]（把這段 pin 住）推開。
+  ///
+  /// 為什麼是「吸到較近的一端」而不是——
+  /// - 放哪就哪、後面全推：落在別段身上永遠只能接在它後面，想把一段
+  ///   拖到另一段「前面」得精準放到它的頭之前，做不到
+  /// - 切開那一段塞進去：使用者指定不裁
+  /// - 蓋掉底下的（以前的 carveRange）：使用者指定不蓋
+  /// 手指放開的位置落在那一段的前半還是後半，就是最自然的意圖表達
+  double placeOffsetOnTrack(TimelineClip moving, double want, int track) {
+    final at = math.max(0.0, want);
+    if (!exclusiveOnTrack(moving)) return at;
+    for (final c in clips) {
+      if (c.id == moving.id || c.track != track || !exclusiveOnTrack(c)) {
+        continue;
+      }
+      if (at > c.offset + kOverlapEps && at < c.end - kOverlapEps) {
+        return at - c.offset < c.end - at ? c.offset : c.end;
+      }
+    }
+    return at;
+  }
+
+  /// 受規則管的片段同一軌有沒有重疊（不變量檢查用）：回傳第一組撞在
+  /// 一起的片段（前、後），沒有就 null
+  (TimelineClip, TimelineClip)? firstOverlapOnTracks() {
+    final byTrack = <int, List<TimelineClip>>{};
+    for (final c in clips) {
+      if (exclusiveOnTrack(c)) (byTrack[c.track] ??= []).add(c);
+    }
+    for (final lane in byTrack.values) {
+      lane.sort((a, b) => a.offset.compareTo(b.offset));
+      TimelineClip? reach; // 目前為止伸得最遠的那段
+      for (final c in lane) {
+        if (reach != null && reach.end > c.offset + kOverlapEps) {
+          return (reach, c);
+        }
+        if (reach == null || c.end > reach.end) reach = c;
+      }
+    }
+    return null;
+  }
+
   /// 一鍵補洞：把片段依時間排好、頭尾接齊，中間的空隙全部收掉。
   /// track 給 null 就整理所有軌道。回傳實際收掉的總秒數。
   ///
@@ -646,10 +787,13 @@ class TimelineModel {
 
   /// 把 [a, b) 這段時間在 [track] 上清出來：蓋到誰就把誰裁掉。
   ///
-  /// 同一軌的素材不互相重疊——放下去壓到別人時，被壓住的部分直接消失
-  /// （跟主流剪輯 App 的覆寫行為一致）：完全被蓋住的整段刪除、蓋到頭尾
-  /// 的把那一側裁掉、蓋在中段的切成前後兩半。[exceptId] 是正在放下的
-  /// 那一段自己
+  /// 覆寫語意：完全被蓋住的整段刪除、蓋到頭尾的把那一側裁掉、蓋在
+  /// 中段的切成前後兩半。[exceptId] 是正在放下的那一段自己。
+  ///
+  /// 編輯器的「放下」已經不走這條——使用者指定壓到別人時「不要覆蓋，
+  /// 把後面的往後推」，見 [placeOffsetOnTrack]＋[resolveOverlaps]。
+  /// 留著是因為它的內容守恆語意有整組測試釘著（edge_stress_test、
+  /// stress_test），之後若要做「覆寫模式」就是它
   void carveRange(double a, double b, int track, {int? exceptId}) {
     if (b - a < 0.001) return;
     final victims = [
@@ -826,9 +970,60 @@ class TimelineModel {
     return math.max(0.0, best);
   }
 
-  /// 修剪把手的貼齊（吸到別的片段，不吸自己）
-  double snapEdge(TimelineClip moving, double want, double pxPerSec) =>
-      snapTime(want, pxPerSec, exceptId: moving.id);
+  /// 修剪把手的貼齊（半徑、上限跟 [snapTime] 同一套），錨點的挑法不同：
+  ///
+  /// 同軌會被這隻把手推動的片段不當錨點——右把手長進去時後面那些段跟著
+  /// 把手走，吸它們等於吸自己，把手會黏在原地、一個吸附半徑跳一格；左
+  /// 把手頂到前一段往右長時，後面的段一樣在動，前一段的尾巴（地板）
+  /// 則是把手已經越過的點。所以：碰到之前照樣吸（接縫才對得準），
+  /// [raw] 越過接觸點之後就放開，讓推開／往右長跟著手指平順走。0 秒是
+  /// 第一段的地板，同理。別軌與不受規則管的片段永遠是錨點。
+  ///
+  /// 回傳值不夾 0：左把手越過 0 的量要留給呼叫端算成「往右長」
+  double snapTrimEdge(
+    TimelineClip moving,
+    double raw,
+    double pxPerSec, {
+    required bool fromLeft,
+    double radiusPx = 16,
+    double maxSec = 0.5,
+  }) {
+    final threshold = math.min(radiusPx / pxPerSec, maxSec);
+    final lane = exclusiveOnTrack(moving);
+    // 左把手越過地板（含 0 秒）＝正頂著前一段往右長：把手看得到的
+    // 邊緣根本沒在動，吸任何東西都沒有意義，整個放開
+    if (fromLeft && raw < floorOnTrack(moving) + kOverlapEps) return raw;
+    // 右把手越過下一段的頭＝正在推它：同軌後面的全部放開
+    final ceil = fromLeft ? double.infinity : ceilOnTrack(moving);
+    final pushing = !fromLeft && raw > ceil - kOverlapEps;
+    final candidates = <double>[0];
+    for (final c in clips) {
+      if (c.id == moving.id) continue;
+      final same = lane && c.track == moving.track && exclusiveOnTrack(c);
+      if (!same) {
+        candidates.addAll([c.offset, c.end]);
+        continue;
+      }
+      if (c.offset > moving.offset) {
+        // 同軌排在後面的：只有「下一段的頭」在碰到之前算
+        if (!fromLeft && !pushing && c.offset <= ceil + kOverlapEps) {
+          candidates.add(c.offset);
+        }
+      } else {
+        candidates.addAll([c.offset, c.end]);
+      }
+    }
+    var best = raw;
+    var bestDist = threshold;
+    for (final cand in candidates) {
+      final d = (cand - raw).abs();
+      if (d < bestDist) {
+        bestDist = d;
+        best = cand;
+      }
+    }
+    return best;
+  }
 
   /// 拖曳時的貼齊：只吸到其他素材的頭尾（自己的頭對它們的頭尾、
   /// 自己的尾對它們的頭尾，四種組合）。理由同 [snapTime]

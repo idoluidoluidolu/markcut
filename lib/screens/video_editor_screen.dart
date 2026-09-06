@@ -2399,6 +2399,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (broken > 0) Diag.note('草稿裡有 $broken 筆壞資料，已跳過');
     final fixedIds = _tl.fixDuplicateIds();
     if (fixedIds > 0) Diag.note('草稿裡有 $fixedIds 個撞號的片段 id，已補新號');
+    // 這一版之前的把手／變速／貼上都不擋同軌重疊，舊草稿裡可能還躺著
+    // 重疊的片段——進合成會被原生端往後排、指針跟畫面對不上（實機 189）。
+    // 用跟現在編輯一樣的規則推開（不裁、不蓋），不能讓它進合成
+    final pushed = _tl.resolveOverlaps();
+    if (pushed > 0) Diag.note('草稿裡有 $pushed 段跟同軌的前一段重疊，已往後推開');
     _speed = ((j['speed'] ?? 1.0) as num).toDouble();
     _canvasRatio = CanvasRatio
         .values[((j['ratio'] ?? 0) as int) % CanvasRatio.values.length];
@@ -4881,7 +4886,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       offset: _position, // 音樂從播放頭開始
       track: track,
     );
-    _tl.clips.add(clip);
+    _placeNewClip(clip); // 同軌不重疊：壓到別段就吸邊、後面推開
     _ctrls[clip.id] = c;
     if (mounted) setState(() => _sel = clip.id);
     _saveDraft(); // 加完立刻落草稿，被系統殺掉也不會掉
@@ -5002,7 +5007,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
     _ctrls[clip.id] = c;
     setState(() {
-      _tl.clips.add(clip);
+      _placeNewClip(clip); // 同軌不重疊：壓到別段就吸邊、後面推開
       _sel = clip.id;
       _voTrack = null; // 錄完收起紅鈕
     });
@@ -5479,7 +5484,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 小張的（比例差很多）照原尺寸，見 [_mediaFillsCanvas]
       scale: _mediaFillsCanvas(imgW, imgH) ? _newClipShrink : 1.0,
     );
-    _tl.clips.add(clip);
+    _placeNewClip(clip); // 同軌不重疊：壓到別段就吸邊、後面推開
     setState(() => _sel = clip.id);
     _resyncPlayback();
     _saveDraft();
@@ -5747,8 +5752,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         track: track,
       );
       if (firstId == -1) firstId = clip.id;
-      _tl.clips.add(clip);
-      at += len;
+      // 同軌不重疊：壓到別段就吸邊、後面推開；下一張接在實際落點後面
+      _placeNewClip(clip);
+      at = clip.end;
     }
     setState(() => _sel = firstId);
     _resyncPlayback();
@@ -5812,8 +5818,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         track: 0,
       );
       if (firstId == -1) firstId = clip.id;
-      _tl.clips.add(clip);
-      at += sec;
+      _placeNewClip(clip); // 同軌不重疊（新專案這裡本來就是空的）
+      at = clip.end;
     }
     if (!mounted) return;
     setState(() => _sel = firstId);
@@ -5863,6 +5869,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           c.offset = at;
           at += sec;
         }
+      }
+      // 圖片變長可能壓到同軌的別種素材（影片／聲音）：推開，不重疊
+      for (final t in byTrack.keys) {
+        _tl.resolveOverlaps(track: t);
       }
     });
     _resyncPlayback();
@@ -8749,9 +8759,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   // ===== 片段操作 =====
 
+  /// 新片段上軌（貼上、加素材）：同軌不重疊——落在別段身上就吸到它
+  /// 較近的那一端，再把後面的推開；規則與理由見
+  /// TimelineModel.placeOffsetOnTrack／resolveOverlaps，放下也是同一套
+  void _placeNewClip(TimelineClip clip) {
+    clip.offset = _tl.placeOffsetOnTrack(clip, clip.offset, clip.track);
+    _tl.clips.add(clip);
+    _tl.resolveOverlaps(track: clip.track, pinnedId: clip.id);
+  }
+
   /// 放開片段：一次寫回位置與軌道。
   /// insert=true：插成新的一層，原本這層以下往下擠。
-  /// insert=false：放到這一層；同軌重疊時後放的蓋在上面。
+  /// insert=false：放到這一層；同軌壓到別人時把後面的推開。
   void _dropClip(int id, double newOffset, int target, bool insert) {
     final clip = _selClipById(id);
     if (clip == null) return;
@@ -8759,22 +8778,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final t = target.clamp(0, 9);
     final oldUsed = _tl.usedTracks;
     setState(() {
-      // 同一軌的素材不互相重疊：放下去壓到別人時，被壓住的部分直接
-      // 裁掉（覆寫，跟主流剪輯 App 一致）。插入新軌不用清，那條軌是空的
       final want = newOffset.clamp(0.0, 1e6);
-      clip.offset = want;
-      if (!insert) {
-        _tl.carveRange(want, want + clip.length, t, exceptId: clip.id);
-      }
       if (insert) {
+        // 插入新軌不用讓：那條軌是空的
+        clip.offset = want;
         for (final c in _tl.clips) {
           if (c.id != id && c.track >= t) c.track++;
         }
+      } else {
+        // 同一軌不重疊：以前是覆寫（carveRange 把被壓到的裁掉），使用者
+        // 指定「不要覆蓋，把後面的往後推」。落在別段身上就吸到它較近的
+        // 那一端（前半＝插在它前面、後半＝接在它後面），再把後面的推開
+        //（規則與理由見 TimelineModel.placeOffsetOnTrack）
+        clip.offset = _tl.placeOffsetOnTrack(clip, want, t);
       }
       clip.track = t;
-      // 同軌重疊時，讓被拖的這個排在後面 = 蓋在上面
+      // 清單順序照放下的先後：同軌同時刻的疊加物後放的畫在上面
       _tl.clips.remove(clip);
       _tl.clips.add(clip);
+      if (!insert) _tl.resolveOverlaps(track: t, pinnedId: clip.id);
       // 搬到最底下那條空軌時不要收斂，否則會被拉回原本的層
       if (insert) {
         // 插入時 t 以下的軌整批往下移一格，靜音／隱藏要跟著搬
@@ -8942,9 +8964,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 位移改累計在這個原始值上，拖超過吸附半徑自然脫離
   double? _trimRawEdge;
 
+  /// 左把手頂到前一段（或 0 秒）之後繼續往前拖的量。同軌不重疊，起點
+  /// 不能再往前，但也不能因為前面有東西就完全拉不動：起點釘在地板、
+  /// 素材入點照樣往前走、結尾往後推（後面的片段跟著讓開）。這時「把手
+  /// 在哪」跟「片段起點在哪」分家，把手的累計位移一律算在虛擬邊緣
+  ///（起點 − 這個值）上，反向拖回來才不會多吃一段
+  double _trimRipple = 0;
+
   /// 修剪手勢開始：拍復原快照、重置原始邊緣
   void _trimGestureStart() {
     _trimRawEdge = null;
+    _trimRipple = 0;
     _pushUndo();
   }
 
@@ -8954,12 +8984,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       for (final c in _tl.clips) {
         if (c.id != id) continue;
         final src = _tl.sourceOf(c);
-        final curEdge = fromLeft ? c.offset : c.end;
-        // 磁吸：手指的「累計」位置吸附到鄰近片段邊緣／播放頭／0
-        // 之後，再換算回實際的位移量——接片段才能剛好無縫貼齊
+        // 同軌不重疊：左把手往前長的地板＝前一段的尾巴（沒有就是 0）
+        final floor = fromLeft ? _tl.floorOnTrack(c) : 0.0;
+        final curEdge = fromLeft ? c.offset - _trimRipple : c.end;
+        // 磁吸：手指的「累計」位置吸附到鄰近片段邊緣／0 之後，再換算
+        // 回實際的位移量——接片段才能剛好無縫貼齊。會被這隻把手推動
+        // 的同軌片段不當錨點（見 snapTrimEdge）
         final raw = (_trimRawEdge ?? curEdge) + dSec;
         _trimRawEdge = raw;
-        final snapped = _snapOn ? _tl.snapEdge(c, raw, _pxPerSec) : raw;
+        final snapped = _snapOn
+            ? _tl.snapTrimEdge(c, raw, _pxPerSec, fromLeft: fromLeft)
+            : raw;
         // 剛吸上去的那一下震動回饋
         final on = (snapped - raw).abs() > 0.0005;
         if (on != _trimSnapped) {
@@ -8986,21 +9021,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           // 馬賽克／文字／圖片沒有素材本體（duration 是假的），而它們
           // 的 trimStart 生下來就是 0——照「素材修剪」的邏輯左把手
           // 一開始就頂到底，於是只能往右拉長不能往左。這類片段左把手
-          // 的語意改成「往前生長」：起點前移、右緣不動、長度變長
+          // 的語意改成「往前生長」：起點前移、右緣不動、長度變長。
+          // 頂到地板就停：沒有素材可以「多露一點」，右緣也不該自己跑
           final endT = c.end;
           final minLen = minSrc / c.speed;
-          c.offset = (c.offset + dSec).clamp(0.0, math.max(0.0, endT - minLen));
+          c.offset = (c.offset + dSec).clamp(
+            floor,
+            math.max(floor, endT - minLen),
+          );
           c.trimEnd = c.trimStart + (endT - c.offset) * c.speed;
         } else if (!c.reverse) {
           if (fromLeft) {
             final hi = math.max(0.0, c.trimEnd - minSrc);
             final ns = (c.trimStart + dSrc).clamp(0.0, hi);
-            // offset 位移用時間軸秒（素材差 ÷ 速度）
-            c.offset = (c.offset + (ns - c.trimStart) / c.speed).clamp(
-              0.0,
-              1e6,
-            );
+            // 虛擬起點跟著素材入點走（時間軸秒＝素材差 ÷ 速度）；
+            // 真正的起點頂到地板就停，多出來的長度往右長（_trimRipple）
+            final virtual = curEdge + (ns - c.trimStart) / c.speed;
             c.trimStart = ns;
+            c.offset = math.max(floor, virtual);
+            _trimRipple = c.offset - virtual;
           } else {
             final lo = math.min(c.trimStart + minSrc, src.duration);
             c.trimEnd = (c.trimEnd + dSrc).clamp(lo, src.duration);
@@ -9010,16 +9049,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           if (fromLeft) {
             final lo = math.min(c.trimStart + minSrc, src.duration);
             final ne = (c.trimEnd - dSrc).clamp(lo, src.duration);
-            c.offset = (c.offset + (c.trimEnd - ne) / c.speed).clamp(0.0, 1e6);
+            final virtual = curEdge + (c.trimEnd - ne) / c.speed;
             c.trimEnd = ne;
+            c.offset = math.max(floor, virtual);
+            _trimRipple = c.offset - virtual;
           } else {
             final hi = math.max(0.0, c.trimEnd - minSrc);
             c.trimStart = (c.trimStart - dSrc).clamp(0.0, hi);
           }
         }
         // 撞到最短長度／素材端點被夾住時，原始值跟回實際邊緣：
-        // 不跟的話反向拖回來會有一段空行程
-        final newEdge = fromLeft ? c.offset : c.end;
+        // 不跟的話反向拖回來會有一段空行程。左把手看的是虛擬邊緣——
+        // 頂著地板往右長的那段行程不算被夾住
+        final newEdge = fromLeft ? c.offset - _trimRipple : c.end;
         if ((newEdge - snapped).abs() > 0.001) {
           _trimRawEdge = newEdge;
           // 是「往更短的方向拖」撞到煞車才提示；拖到素材端點
@@ -9029,6 +9071,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             _trimStopHint();
           }
         }
+        // 同軌永遠不重疊：長進後面那段就把它們（連同更後面的）推開，
+        // 推的量＝壓進去的量（見 TimelineModel.resolveOverlaps）
+        _tl.resolveOverlaps(track: c.track);
       }
     });
     _resyncPlayback();
@@ -9730,7 +9775,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 播放器交給 _ensureCtrlFor（有種類判斷＋錯誤保護）
     _ensureCtrlFor(clip);
     setState(() {
-      _tl.clips.add(clip);
+      // 同軌不重疊：貼在別段身上就吸到它較近的那一端、後面的推開
+      _placeNewClip(clip);
       _sel = clip.id;
     });
     _resyncPlayback();
@@ -14247,7 +14293,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _swapClip(TimelineClip oldClip, TimelineClip newClip) {
     final i = _tl.clips.indexOf(oldClip);
     if (i < 0) return;
-    setState(() => _tl.clips[i] = newClip);
+    setState(() {
+      _tl.clips[i] = newClip;
+      // 倒轉／還原帶著新速度＝長度可能變了：同軌不重疊
+      _tl.resolveOverlaps(track: newClip.track);
+    });
     _ctrls.remove(oldClip.id)?.dispose();
     _ensureCtrlFor(newClip);
     _resyncPlayback();
@@ -14265,6 +14315,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       setState(() {
         c.speed = sp;
         c.reverse = true;
+        _tl.resolveOverlaps(track: c.track); // 變速＝變長，同軌不重疊
       });
       // 簡易倒轉的預覽只能吃密集快取幀，這支素材照舊整條抽
       if (!kIsWeb) _makeScrubCache(c.sourceIndex, src.path, src.duration);
@@ -14367,6 +14418,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       setState(() {
         cur.speed = sp;
         cur.reverse = true;
+        _tl.resolveOverlaps(track: cur.track); // 變速＝變長，同軌不重疊
       });
       final s2 = _tl.sourceOf(cur);
       _makeScrubCache(cur.sourceIndex, s2.path, s2.duration);
@@ -14419,6 +14471,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       setState(() {
         c.reverse = false;
         c.speed = sp;
+        _tl.resolveOverlaps(track: c.track); // 變速＝變長，同軌不重疊
       });
       _resyncPlayback();
       onDone();
@@ -14432,7 +14485,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
     if (idx < 0) {
       // 原始素材已不在專案裡（理論上不會發生）：保底只調速度
-      setState(() => c.speed = sp);
+      setState(() {
+        c.speed = sp;
+        _tl.resolveOverlaps(track: c.track); // 變速＝變長，同軌不重疊
+      });
       onDone();
       return;
     }
@@ -14551,7 +14607,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                           }
                           return;
                         }
-                        setState(() => sel.speed = sp);
+                        setState(() {
+                          sel.speed = sp;
+                          // 變慢＝變長：同軌後面的片段當場推開，不能等
+                          // 關掉選單（那之前合成可能已經重組，重疊進了
+                          // 原生端就是指針跟畫面對不上）
+                          _tl.resolveOverlaps(track: sel.track);
+                        });
                         _ctrls[sel.id]?.setPlaybackSpeed(_speed * sp);
                         _resyncPlayback(); // 變速改了時間對應
                       } else {

@@ -550,6 +550,26 @@ class CompPlayer {
           return t != 0 ? t : a.track.compareTo(b.track);
         });
     if (vids.isEmpty) return null;
+    // 哨兵：同軌重疊的影片片段進了 payload，原生端只能把撞到的那段往後
+    // 排（build 的 putAt = max(at, slot.end)），從那一段起合成秒數就跟
+    // 時間軸對不上——實機 189：時間軸 0.27~1.65 被排到 0.52~1.90、合成
+    // 總長 5.54 對時間軸 4.92，指針指的跟畫面不一致。模型端現在保證不
+    // 重疊（TimelineModel.resolveOverlaps）；這裡不修、只寫進診斷——
+    // 萬一哪條編輯路徑漏了，回報裡直接看得到是哪兩段
+    final reach = <int, TimelineClip>{};
+    for (final c in vids) {
+      final prev = reach[c.track];
+      if (prev != null && prev.end > c.offset + kOverlapEps) {
+        Diag.note(
+          '合成 payload 有同軌重疊：軌${c.track} '
+          '${prev.offset.toStringAsFixed(2)}~${prev.end.toStringAsFixed(2)} '
+          '壓到 ${c.offset.toStringAsFixed(2)}~${c.end.toStringAsFixed(2)}'
+          '——原生端會把後者往後排，指針從這裡起跟畫面對不上',
+        );
+        break;
+      }
+      if (prev == null || c.end > prev.end) reach[c.track] = c;
+    }
     // 每支來源是不是 HDR（工作檔一定是 SDR，不用問）。
     // 在 Dart 端用 probeLite 算好傳過去：Swift 端自己同步讀軌道
     // 的判定在實機上有拿不到資料的情況（實測：進場的合成沒掛
