@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../nav.dart';
+import '../services/crop_math.dart';
 import '../theme.dart';
 
 /// 開裁切畫面，回傳裁好的 PNG；使用者取消回 null。
@@ -452,81 +453,118 @@ class _CropAreaState extends State<_CropArea> {
           widget.onCrop(toImage(next));
         }
 
-        /// 雙指：以起手的框為基準，跟著兩指的距離縮放、跟著中點平移。
-        /// 兩邊同時動，不用一邊一邊拖
-        void onPinch(double scale, Offset focal, Offset pan) {
+        /// 雙指：以起手的框為基準，每次都從基準算（不累乘才不會飄）。
+        ///
+        /// 自由模式各軸獨立——每條邊跟著同一側的手指走同樣的距離；鎖比例
+        /// 就等比，繞著兩指的中點（數學在 crop_math.dart）。手指位置從
+        /// 自己記的 [_fingers] 來；拿不到手指位置（觸控板的捏合）就退回
+        /// recognizer 給的單一倍率，等比
+        void onPinch(ScaleUpdateDetails d) {
           final start = _startCrop;
           if (start == null) return;
-          // 焦點在起手框裡的相對位置：縮放要繞著它，手指按著的那塊
-          // 內容才會留在指尖底下
-          final rel = Offset(
-            start.width == 0 ? 0.5 : (focal.dx - start.left) / start.width,
-            start.height == 0 ? 0.5 : (focal.dy - start.top) / start.height,
-          );
-          final ratio = widget.ratio;
-          var w = (start.width * scale).clamp(_minSide, view.width);
-          var h = ratio != null
-              ? w / ratio
-              : (start.height * scale).clamp(_minSide, view.height);
-          if (ratio != null && h > view.height) {
-            h = view.height;
-            w = h * ratio;
+          final f0 = _fingersStart;
+          final f = _fingerBounds();
+          final Rect next;
+          if (f0 == null || f == null) {
+            next = pinchCropUniform(
+              start: start,
+              view: view,
+              minSide: _minSide,
+              ratio: widget.ratio,
+              scale: d.scale,
+              focal: _pinchFocal ?? d.localFocalPoint,
+              pan: d.localFocalPoint - (_grabStart ?? d.localFocalPoint),
+            );
+          } else if (widget.ratio == null) {
+            next = pinchCropFree(
+              start: start,
+              view: view,
+              minSide: _minSide,
+              fingersStart: f0,
+              fingers: f,
+            );
+          } else {
+            // 兩指距離＝包住兩指那個方框的對角線
+            final d0 = Offset(f0.width, f0.height).distance;
+            next = pinchCropUniform(
+              start: start,
+              view: view,
+              minSide: _minSide,
+              ratio: widget.ratio,
+              scale: d0 > 0 ? Offset(f.width, f.height).distance / d0 : 1,
+              focal: f0.center,
+              pan: f.center - f0.center,
+            );
           }
-          h = h.clamp(_minSide, view.height);
-          var x = focal.dx + pan.dx - rel.dx * w;
-          var y = focal.dy + pan.dy - rel.dy * h;
-          x = x.clamp(view.left, math.max(view.left, view.right - w));
-          y = y.clamp(view.top, math.max(view.top, view.bottom - h));
-          widget.onCrop(toImage(Rect.fromLTWH(x, y, w, h)));
+          widget.onCrop(toImage(next));
         }
 
         // 用 onScale 而不是 onPan：ScaleGestureRecognizer 一根手指
         // 也收得到（scale 恆為 1），所以單指拖角／拖邊／搬整塊的行為
-        // 完全照舊，兩根手指時才多一條縮放的路
-        return GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onScaleStart: (d) {
-            _grabStart = d.localFocalPoint;
-            _pinchFocal = d.localFocalPoint;
-            _startCrop = cropView;
-            _pinching = d.pointerCount >= 2;
-            if (!_pinching) onDown(d.localFocalPoint);
+        // 完全照舊，兩根手指時才多一條縮放的路。
+        //
+        // 外面再包一層 Listener 記每根手指在哪：recognizer 只給「兩指
+        // 距離變成幾倍」這種比例，自由模式要的是「每根手指各拉了多遠」。
+        // 手指數一變（第二指放上、一指放開）就以那一刻重新起手——
+        // recognizer 自己也是在同一刻重設基準（先 onEnd 再 onStart）
+        return Listener(
+          onPointerDown: (e) {
+            _fingers[e.pointer] = e.localPosition;
+            _fingersStart = _fingerBounds();
           },
-          onScaleUpdate: (d) {
-            final startPt = _grabStart ?? d.localFocalPoint;
-            if (d.pointerCount >= 2) {
-              // 第二根手指中途才放上來：以這一刻重新起手，
-              // 不然框會從舊的基準瞬間跳一下
-              if (!_pinching) {
-                _pinching = true;
-                _grab = null;
-                _grabStart = d.localFocalPoint;
-                _pinchFocal = d.localFocalPoint;
-                _startCrop = cropView;
+          onPointerMove: (e) {
+            _fingers[e.pointer] = e.localPosition;
+          },
+          onPointerUp: (e) {
+            _fingers.remove(e.pointer);
+            _fingersStart = _fingerBounds();
+          },
+          onPointerCancel: (e) {
+            _fingers.remove(e.pointer);
+            _fingersStart = _fingerBounds();
+          },
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onScaleStart: (d) {
+              _grabStart = d.localFocalPoint;
+              _pinchFocal = d.localFocalPoint;
+              _startCrop = cropView;
+              _pinching = d.pointerCount >= 2;
+              if (!_pinching) onDown(d.localFocalPoint);
+            },
+            onScaleUpdate: (d) {
+              final startPt = _grabStart ?? d.localFocalPoint;
+              if (d.pointerCount >= 2) {
+                // 第二根手指中途才放上來：以這一刻重新起手，
+                // 不然框會從舊的基準瞬間跳一下
+                if (!_pinching) {
+                  _pinching = true;
+                  _grab = null;
+                  _grabStart = d.localFocalPoint;
+                  _pinchFocal = d.localFocalPoint;
+                  _startCrop = cropView;
+                  _fingersStart = _fingerBounds();
+                  return;
+                }
+                onPinch(d);
                 return;
               }
-              onPinch(
-                d.scale,
-                _pinchFocal ?? d.localFocalPoint,
-                d.localFocalPoint - startPt,
-              );
-              return;
-            }
-            if (_pinching) return; // 放開一指之後不要接著單指亂拖
-            onMove(d.localFocalPoint - startPt);
-          },
-          onScaleEnd: (_) {
-            _grab = null;
-            _grabStart = null;
-            _pinchFocal = null;
-            _pinching = false;
-          },
-          child: CustomPaint(
-            size: Size(box.maxWidth, box.maxHeight),
-            painter: _CropPainter(
-              image: widget.image,
-              view: view,
-              crop: cropView,
+              if (_pinching) return; // 放開一指之後不要接著單指亂拖
+              onMove(d.localFocalPoint - startPt);
+            },
+            onScaleEnd: (_) {
+              _grab = null;
+              _grabStart = null;
+              _pinchFocal = null;
+              _pinching = false;
+            },
+            child: CustomPaint(
+              size: Size(box.maxWidth, box.maxHeight),
+              painter: _CropPainter(
+                image: widget.image,
+                view: view,
+                crop: cropView,
+              ),
             ),
           ),
         );
@@ -537,9 +575,31 @@ class _CropAreaState extends State<_CropArea> {
   /// 這一次拖曳的起點（localPosition），用來算「從按下到現在」的位移
   Offset? _grabStart;
 
-  /// 雙指縮放中；起手時兩指的中點（縮放繞著它轉）
+  /// 雙指縮放中；起手時 recognizer 給的焦點——只有拿不到手指位置
+  /// （觸控板的捏合）時才用它當等比縮放的中心
   bool _pinching = false;
   Offset? _pinchFocal;
+
+  /// 現在按在畫面上的每根手指（pointer id → 畫面座標）
+  final _fingers = <int, Offset>{};
+
+  /// 雙指起手時「把所有手指包起來的方框」；少於兩根手指就是 null
+  Rect? _fingersStart;
+
+  Rect? _fingerBounds() {
+    if (_fingers.length < 2) return null;
+    var l = double.infinity;
+    var t = double.infinity;
+    var r = double.negativeInfinity;
+    var b = double.negativeInfinity;
+    for (final p in _fingers.values) {
+      l = math.min(l, p.dx);
+      t = math.min(t, p.dy);
+      r = math.max(r, p.dx);
+      b = math.max(b, p.dy);
+    }
+    return Rect.fromLTRB(l, t, r, b);
+  }
 }
 
 class _CropPainter extends CustomPainter {
