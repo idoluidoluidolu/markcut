@@ -55,6 +55,14 @@ const _tileShadow = [
 /// 不打陰影（跟「＋」磚一樣）、不畫邊線（深色塊在白底上本身就分得開）
 const _kPresetTileBg = Color(0xFF1B1B20);
 
+/// 範本磚的形狀：連續曲率圓角（超橢圓），不是普通的圓弧圓角。
+///
+/// 使用者回報普通圓角「像被切一角、不順暢」——圓弧角在跟直線邊接起來
+/// 的地方曲率是斷的（從 0 直接跳到 1/r），眼睛看得出那個折點；iOS 的
+/// 圓角是超橢圓，曲率連續。範本總覽的大卡用同一種形狀（見
+/// presets_screen 的 _kCardShape）
+const _kPresetTileRadius = BorderRadius.all(Radius.circular(12));
+
 // ── 一頁裝得下：這一頁不捲（使用者指定「那讓他不要能上下捲動」）──
 //
 // 版面本身不動、磚也不縮：三排磚永遠原尺寸、滿版寬（實機回報
@@ -512,18 +520,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
       // 圖層——頁面一捲、或旁邊哪個 GIF 換一格，這些排版就整組重跑。
       // 實測：兩塊磚吃掉捲動時 paint 的一半（0.94ms → 0.43ms）
       child: RepaintBoundary(
-        child: Container(
+        child: SizedBox(
           width: w,
           height: w,
-          // 內容照卡片的圓角切齊：範本可以是一張鋪滿磚面的圖，
+          // 內容照磚的形狀切齊：範本可以是一張鋪滿磚面的圖，
           // 不切的話四個角會被方形的內容頂出去
-          clipBehavior: Clip.antiAlias,
-          decoration: BoxDecoration(
-            color: _kPresetTileBg,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: IgnorePointer(
-            child: WatermarkLayer(settings: preset.settings, onChanged: () {}),
+          child: DecoratedBox(
+            decoration: const ShapeDecoration(
+              color: _kPresetTileBg,
+              shape: RoundedSuperellipseBorder(
+                borderRadius: _kPresetTileRadius,
+              ),
+            ),
+            child: ClipRSuperellipse(
+              borderRadius: _kPresetTileRadius,
+              child: IgnorePointer(
+                child: WatermarkLayer(
+                  settings: preset.settings,
+                  onChanged: () {},
+                ),
+              ),
+            ),
           ),
         ),
       ),
@@ -555,11 +572,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
       height: w,
       alignment: Alignment.center,
       clipBehavior: Clip.antiAlias,
-      decoration: BoxDecoration(
+      // 形狀跟同一排的範本磚一樣（連續曲率、半徑 12）
+      decoration: const ShapeDecoration(
         color: kLCard,
-        // 圓角跟同一排的範本磚、GIF 磚一樣（12）
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: kLBorder, width: 1.4),
+        shape: RoundedSuperellipseBorder(
+          borderRadius: _kPresetTileRadius,
+          side: BorderSide(color: kLBorder, width: 1.4),
+        ),
       ),
       child: const Text(
         '＋',

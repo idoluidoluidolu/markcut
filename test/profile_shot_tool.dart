@@ -1,4 +1,4 @@
-// 個人中心截圖工具（不是回歸測試）。
+// 個人中心／範本總覽截圖工具（不是回歸測試）。
 //
 // 用真的佈景（buildStudioTheme／LightPage）、真的字體（NotoSansTC＋
 // Material Icons）、真的 iPhone 14 視窗（390×844、DPR 3、安全區 47/34），
@@ -19,6 +19,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:markcut/models/watermark_settings.dart';
+import 'package:markcut/screens/presets_screen.dart';
 import 'package:markcut/screens/profile_screen.dart';
 import 'package:markcut/theme.dart';
 
@@ -120,6 +121,46 @@ void main() {
           const MethodChannel('plugins.flutter.io/path_provider'),
           (_) async => _tmp,
         );
+  });
+
+  /// 共用：拍一張整頁
+  Future<void> shoot(WidgetTester t, String name, Widget home) async {
+    t.view.devicePixelRatio = 3.0;
+    t.view.physicalSize = const Size(1170, 2532);
+    t.view.padding = const FakeViewPadding(top: 141, bottom: 102);
+    t.view.viewPadding = const FakeViewPadding(top: 141, bottom: 102);
+    addTearDown(t.view.reset);
+    await t.pumpWidget(
+      RepaintBoundary(
+        key: _shotKey,
+        child: MaterialApp(
+          theme: buildStudioTheme(),
+          debugShowCheckedModeBanner: false,
+          home: LightPage(child: home),
+        ),
+      ),
+    );
+    for (var i = 0; i < 15; i++) {
+      await t.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 40)),
+      );
+      await t.pump(const Duration(milliseconds: 40));
+    }
+    await t.runAsync(() async {
+      final b =
+          _shotKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
+      final im = await b.toImage(pixelRatio: 3);
+      final bytes = await im.toByteData(format: ui.ImageByteFormat.png);
+      im.dispose();
+      File(
+        '$out${Platform.pathSeparator}$name.png',
+      ).writeAsBytesSync(bytes!.buffer.asUint8List());
+    });
+  }
+
+  testWidgets('範本總覽 → presets.png', (t) async {
+    _seed(presets: 4);
+    await shoot(t, 'presets', PresetsScreen(key: UniqueKey()));
   });
 
   testWidgets('個人中心 → profile.png', (t) async {

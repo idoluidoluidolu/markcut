@@ -10,6 +10,17 @@ import 'watermark_studio_screen.dart';
 
 /// 常用浮水印範本管理：黑底預覽卡（浮水印按真實位置渲染），
 /// 點卡直接進編輯模式，長按開「改名／刪除」選單
+/// 範本卡的形狀：連續曲率圓角（超橢圓），不是普通的圓弧圓角。
+///
+/// 使用者回報普通圓角「像被切一角、不順暢」——圓弧角在跟直線邊接起來
+/// 的地方曲率是斷的（從 0 直接跳到 1/r），眼睛看得出那個折點；iOS 的
+/// 圓角是超橢圓，曲率連續，接得平順。Flutter 3.44 起框架內建
+/// RoundedSuperellipseBorder／ClipRSuperellipse，直接用它
+const _kCardShape = RoundedSuperellipseBorder(
+  borderRadius: BorderRadius.all(Radius.circular(kPresetRadius)),
+  side: BorderSide(color: kLBorder),
+);
+
 class PresetsScreen extends StatefulWidget {
   const PresetsScreen({super.key});
 
@@ -163,15 +174,12 @@ class _PresetsScreenState extends State<PresetsScreen> {
 
   /// 「＋ 新增範本」卡：開浮水印工坊，做完回來清單自動刷新
   Widget _addCard() {
-    return InkWell(
-      borderRadius: BorderRadius.circular(kPresetRadius),
-      onTap: _addNew,
-      child: Container(
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(kPresetRadius),
-          border: Border.all(color: kLBorder),
-        ),
+    return Material(
+      color: Colors.transparent,
+      shape: _kCardShape,
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: _addNew,
         child: const Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
@@ -185,25 +193,20 @@ class _PresetsScreenState extends State<PresetsScreen> {
   }
 
   Widget _presetCard(WatermarkPreset p) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(kPresetRadius),
-      onTap: () => _edit(p),
-      onLongPress: () => _showActions(p),
-      child: Container(
-        // 內容（黑底＋照實渲染的浮水印，可能是一張鋪滿的圖）一律
-        // 切成跟卡片同一個圓角，四角才不會被方形的內容頂出去
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(kPresetRadius),
-          border: Border.all(color: kLBorder),
-        ),
-        // 不放名稱膠囊（使用者指定）：卡片本身就是內容，
-        // 名字在長按選單（改名/刪除）還看得到
-        child: Container(
-          color: Colors.black,
-          child: IgnorePointer(
-            child: WatermarkLayer(settings: p.settings, onChanged: () {}),
-          ),
+    // 內容（黑底＋照實渲染的浮水印，可能是一張鋪滿的圖）一律切成跟
+    // 卡片同一個形狀，四角才不會被方形的內容頂出去。
+    // 底色交給 Material 自己畫（同一條路徑上色，不會有兩層邊界對不齊）
+    return Material(
+      color: Colors.black,
+      shape: _kCardShape,
+      clipBehavior: Clip.antiAlias,
+      // 不放名稱膠囊（使用者指定）：卡片本身就是內容，
+      // 名字在長按選單（改名/刪除）還看得到
+      child: InkWell(
+        onTap: () => _edit(p),
+        onLongPress: () => _showActions(p),
+        child: IgnorePointer(
+          child: WatermarkLayer(settings: p.settings, onChanged: () {}),
         ),
       ),
     );
