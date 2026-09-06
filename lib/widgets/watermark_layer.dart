@@ -290,6 +290,8 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                         makeActive();
                         _rawX = logo.x;
                         _rawY = logo.y;
+                        // 起手時就坐在中線上的不算「吸上去」，不震
+                        _centerSnapped = logo.x == 0.5 || logo.y == 0.5;
                         setState(() => _panning = WmPart.logo);
                         onDragStart?.call();
                       },
@@ -412,6 +414,8 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                           makeActive();
                           _rawX = t.x;
                           _rawY = t.y;
+                          // 起手時就坐在中線上的不算「吸上去」，不震
+                          _centerSnapped = t.x == 0.5 || t.y == 0.5;
                           setState(() => _panning = WmPart.text);
                           onDragStart?.call();
                         },

@@ -6,6 +6,7 @@ import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../models/watermark_settings.dart';
+import '../services/rotation_snap.dart';
 import '../theme.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
@@ -251,23 +252,20 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
   double _pvBaseRotText = 0;
   double _pvBaseRotLogo = 0;
 
-  /// 目前吸在哪個整數角度（畫輔助線用；null＝沒吸住）
-  double? _rotSnapAt;
+  /// 兩指旋轉的 15 度吸附（門檻／遲滯／只在換刻度時震，見 RotationSnap）。
+  /// 以領頭（文字，沒文字就圖片）算一次，同一個修正量套給會轉的部件
+  final _rotSnap = RotationSnap();
 
-  /// 每 15 度吸一次，附近 4 度內就黏上去（黏住的瞬間震一下）
-  static const _rotStep = 15.0;
-
-  double _snapAngle(double deg) {
-    final near = (deg / _rotStep).roundToDouble() * _rotStep;
-    if ((deg - near).abs() <= 4) {
-      if (_rotSnapAt != near) {
-        _rotSnapAt = near;
-        HapticFeedback.selectionClick();
-      }
-      return near;
-    }
-    if (_rotSnapAt != null) _rotSnapAt = null;
-    return deg;
+  /// 這次捏合會動哪些部件：有選取只動被選的；都沒選而兩個都在才一起動
+  ({bool text, bool logo}) _pinchTargets() {
+    final t = _settings.text;
+    final hasText = t.enabled && t.text.trim().isNotEmpty;
+    final hasLogo = _settings.logo.enabled;
+    final part = _wmPartAlive;
+    return (
+      text: hasText && (part != WmPart.logo || !hasLogo),
+      logo: hasLogo && (part != WmPart.text || !hasText),
+    );
   }
 
   void _pinchDown(PointerDownEvent e) {
@@ -291,6 +289,7 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
     _pvBaseRotLogo = _settings.logo.rotation;
     _pvBaseText = _settings.text.sizeFrac;
     _pvBaseLogo = _settings.logo.sizeFrac;
+    _rotSnap.arm(_pinchTargets().text ? _pvBaseRotText : _pvBaseRotLogo);
     // 快照延到真的縮到東西才拍：光按一下就拍會把重做堆疊清空，
     // 剛撤銷的東西再也回不來
     _stUndoPending = true;
@@ -313,42 +312,23 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
     final p = _pvPts.values.toList();
     final f = (p[0] - p[1]).distance / _pvBaseDist!;
     final t = _settings.text;
-    final hasText = t.enabled && t.text.trim().isNotEmpty;
-    final hasLogo = _settings.logo.enabled;
-    // 有選取只動被選的；都沒選而兩個都在才一起動
-    final part = _wmPartAlive;
-    final doText = hasText && (part != WmPart.logo || !hasLogo);
-    final doLogo = hasLogo && (part != WmPart.text || !hasText);
+    final (text: doText, logo: doLogo) = _pinchTargets();
     if (doText || doLogo) _stPushUndoIfNeeded();
     if (doText) t.sizeFrac = (_pvBaseText * f).clamp(0.015, 2.0);
     if (doLogo) {
       _settings.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
     }
-    // 兩指轉多少，元素就轉多少（每 15 度吸附一次，會震一下）。
-    // 手指幾乎沒轉時不動它——單純想縮放的人不該被順手轉歪
+    // 兩指轉多少，元素就轉多少（每 15 度吸附一次）。門檻／遲滯／震動
+    // 的規則全在 RotationSnap：手指幾乎沒轉時回 0（角度留在底值），
+    // 單純想縮放的人不該被順手轉歪；以領頭算一次、同一個修正量套給
+    // 兩個部件——各自吸會把相對角度吸歪，還會吸住／脫離翻來翻去
     final ang = math.atan2(p[1].dy - p[0].dy, p[1].dx - p[0].dx);
-    var dDeg = (ang - _pvBaseAngle) * 180 / math.pi;
-    while (dDeg > 180) {
-      dDeg -= 360;
-    }
-    while (dDeg < -180) {
-      dDeg += 360;
-    }
-    if (dDeg.abs() > 3) {
-      double wrap(double v) {
-        var x = v;
-        while (x > 180) {
-          x -= 360;
-        }
-        while (x < -180) {
-          x += 360;
-        }
-        return x;
-      }
-
-      if (doText) t.rotation = _snapAngle(wrap(_pvBaseRotText + dDeg));
+    final dDeg = RotationSnap.wrapDeg((ang - _pvBaseAngle) * 180 / math.pi);
+    if (doText || doLogo) {
+      final dRot = _rotSnap.delta(dDeg);
+      if (doText) t.rotation = RotationSnap.wrapDeg(_pvBaseRotText + dRot);
       if (doLogo) {
-        _settings.logo.rotation = _snapAngle(wrap(_pvBaseRotLogo + dDeg));
+        _settings.logo.rotation = RotationSnap.wrapDeg(_pvBaseRotLogo + dRot);
       }
     }
     _wmTick.value++;
@@ -358,7 +338,7 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
     _pvPts.remove(pointer);
     if (_pvBaseDist != null && _pvPts.length < 2) {
       _pvBaseDist = null;
-      _rotSnapAt = null;
+      _rotSnap.end();
       setState(() {}); // 面板的大小滑桿要跟上捏完的值
     }
   }
@@ -371,6 +351,10 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
   final _wmPanelCtrl = WatermarkPanelController();
   bool _stSnapped = false;
 
+  /// 這一手已經看過第一格了：第一格只記「起手時黏不黏」、不震——
+  /// 本來就坐在中線上的東西，起手那一下不算「吸上去」
+  bool _stSnapKnown = false;
+
   double _snapC(double v) => (v - 0.5).abs() < 0.015 ? 0.5 : v;
 
   void _stSetGuides(double x, double y) {
@@ -380,7 +364,10 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
       _stGuideH = hh;
     }
     final on = v || hh;
-    if (on != _stSnapped) {
+    if (!_stSnapKnown) {
+      _stSnapKnown = true;
+      _stSnapped = on;
+    } else if (on != _stSnapped) {
       _stSnapped = on;
       if (on) HapticFeedback.selectionClick();
     }
@@ -391,6 +378,7 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
     _stRawX = null;
     _stRawY = null;
     _stSnapped = false;
+    _stSnapKnown = false;
     if (_stGuideV || _stGuideH) {
       _stGuideV = false;
       _stGuideH = false;
@@ -585,7 +573,9 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
                                   Positioned.fill(
                                     child: IgnorePointer(
                                       child: CustomPaint(
-                                        painter: RotGuidePainter(_rotSnapAt),
+                                        painter: RotGuidePainter(
+                                          _rotSnap.guide,
+                                        ),
                                       ),
                                     ),
                                   ),
