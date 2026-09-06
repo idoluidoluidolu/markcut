@@ -22,8 +22,6 @@ import '../widgets/gif_image.dart';
 import '../widgets/swipe_back.dart';
 import '../widgets/watermark_layer.dart';
 import 'about_screen.dart';
-import 'donate_screen.dart';
-import 'feedback_screen.dart';
 import 'batch_watermark_screen.dart';
 import 'collage_screen.dart';
 import 'gif_screen.dart';
@@ -32,7 +30,7 @@ import 'presets_screen.dart';
 import 'watermark_studio_screen.dart';
 import 'video_editor_screen.dart';
 
-/// 個人中心：範本夾＋草稿夾＋意見回饋
+/// 個人中心：範本夾＋草稿夾
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
 
@@ -74,18 +72,27 @@ const _kNavButton = 48.0;
 //
 // 三個 14（標題到自己那排磚）完全不動——那是「這個標題在講下面這排」
 // 的唯一線索，一鬆掉整頁就變成一疊沒有分組的東西。
-// 區塊之間的 26 只讓兩成：它必須明顯大於 14，不然區塊就黏成一片。
-// 返回鍵下面的 16 跟行動鈕前的 30 讓一半——它們不負責分組，
-// 純粹是喘口氣的空間。三個加起來的額度是 33.4pt
+// 區塊之間的 [_kSectionGap] 只讓兩成：它必須明顯大於 14，不然區塊就
+// 黏成一片。返回鍵下面的 16 跟頁尾前的 [_kFootGap] 讓一半——它們不
+// 負責分組，純粹是喘口氣的空間
 
-/// 區塊之間（26）最多壓掉兩成
+/// 區塊之間的留白。使用者看過「拿掉行動鈕之後空間怎麼用」的三個版本
+/// （底部留白／磚放大／區距拉開），選了區距拉開：26 → 46。
+/// 原本的行動鈕（54＋前後 44）拿掉之後有 98 點可以分，這裡吃掉 40
+const _kSectionGap = 46.0;
+
+/// 頁尾連結前面那一段（原本是行動鈕前的 30）
+const _kFootGap = 22.0;
+
+/// 區塊之間最多壓掉兩成
 const _kGiveSection = 0.2;
 
-/// 返回鍵下面（16）跟行動鈕前面（30）最多壓掉一半
+/// 返回鍵下面（16）跟頁尾前面（[_kFootGap]）最多壓掉一半
 const _kGiveLoose = 0.5;
 
 /// 留白總共讓得出這麼多（用滿 [_Fit.gap]＝1 的時候）
-const _kFlexGaps = 26.0 * 2 * _kGiveSection + (16.0 + 30.0) * _kGiveLoose;
+const _kFlexGaps =
+    _kSectionGap * 2 * _kGiveSection + (16.0 + _kFootGap) * _kGiveLoose;
 
 /// 算高度時留的餘裕：文字量測與版面之間的次像素誤差，
 /// 不留一點的話「剛好塞滿」會變成「差 0.01 被截掉」
@@ -110,18 +117,8 @@ const _kHintStyle = TextStyle(fontSize: 13, color: Color(0xFFA8A8B4));
 /// 草稿卡下面那行名字
 const _kCardTitleStyle = TextStyle(fontSize: 13.5, fontWeight: FontWeight.w800);
 
-/// 行動鈕上的字
-const _kCtaStyle = TextStyle(
-  fontSize: 15,
-  fontWeight: FontWeight.w800,
-  color: Colors.white,
-);
-
-/// 頁尾連結
+/// 頁尾連結（現在只剩「關於這個 App」一個，使用者指定）
 const _kFootStyle = TextStyle(fontSize: 12.5, color: kLTextDim);
-
-/// 頁尾兩個連結中間那一點
-const _kDotStyle = TextStyle(fontSize: 12, color: Color(0xFFB0B0BA));
 
 /// 草稿區的一張卡：[title] 給量高度用（有名字的卡多一行字、高一截），
 /// [build] 才真的把卡做出來——沒排到的卡就不用做
@@ -426,16 +423,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return math.max(h, trailH);
   }
 
-  /// 頁尾那一列：三段字裡最高的那一段
-  double _footerH(BuildContext ctx) {
-    var h = _textSize(ctx, '意見回饋', _kFootStyle).height;
-    h = math.max(h, _textSize(ctx, '·', _kDotStyle).height);
-    return math.max(h, _textSize(ctx, '關於這個 App', _kFootStyle).height);
-  }
+  /// 頁尾那一行（只剩一個連結）
+  double _footerH(BuildContext ctx) =>
+      _textSize(ctx, '關於這個 App', _kFootStyle).height;
 
   /// 這一頁要壓多少留白才不用捲。
   ///
-  /// 除了三排磚，其他每一段都是固定高度（留白、標題、行動鈕、頁尾），
+  /// 除了三排磚，其他每一段都是固定高度（留白、標題、頁尾），
   /// 把它們加起來就知道磚還剩多少可以用。不夠的話只壓留白（額度
   /// [_kFlexGaps]）；壓到底還是不夠就回 [_Fit.scroll]——磚一律原尺寸、
   /// 滿版寬，不縮也不截：截掉東西是 bug，捲不是
@@ -478,21 +472,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
       }
       fixed += label;
     }
-    fixed += 26;
+    fixed += _kSectionGap;
     fixed += _titleRowH(ctx, '我的 GIF', _gifs.isEmpty ? '還沒有' : '全部', inner);
     fixed += _gifs.isEmpty
         ? 16 +
               _textSize(ctx, '還沒有 GIF', _kHintStyle, maxWidth: inner).height +
               4
         : 14;
-    fixed += 26;
+    fixed += _kSectionGap;
     fixed += _titleRowH(ctx, '範本', _presets.isEmpty ? '還沒有' : '全部', inner) + 14;
-    fixed += 30; // 行動鈕前
-    fixed += math.max(54, _textSize(ctx, '太好用啦', _kCtaStyle).height);
-    fixed += 14 + _footerH(ctx);
+    fixed += _kFootGap + _footerH(ctx);
 
     final short = tiles - (h - fixed);
-    // 有剩：多出來的高度交給行動鈕前面那一段撐開
+    // 有剩：多出來的高度交給頁尾前面那一段撐開
     if (short <= 0) return _Fit(gap: 0, fits: true, slack: -short);
     // 只跟留白拿；拿不夠就捲，不動磚
     if (short > _kFlexGaps) return _Fit.scroll;
@@ -781,13 +773,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     ]);
   }
 
-  void _openLove() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const LightPage(child: DonateScreen())),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final p = _photoDraft;
@@ -842,8 +827,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       padding: EdgeInsets.only(
                         top: 4 + MediaQuery.paddingOf(context).top,
                         // 底下只留系統的安全區（Home 條 34pt），不再多墊 12：
-                        // 使用者指定「太好用啦跟意見回饋貼底一點」——那 12pt
-                        // 加上頁尾行高，實機看起來像下面還空一截
+                        // 使用者指定「貼底一點」——那 12pt 加上頁尾行高，
+                        // 實機看起來像下面還空一截
                         bottom: MediaQuery.paddingOf(context).bottom,
                       ),
                       child: Column(
@@ -903,8 +888,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               // 多一步
                               child: _draftGrid(cards, inner),
                             ),
-                          // 區塊間距統一 26
-                          SizedBox(height: 26 * (1 - _kGiveSection * fit.gap)),
+                          // 區塊間距統一 _kSectionGap
+                          SizedBox(
+                            height:
+                                _kSectionGap * (1 - _kGiveSection * fit.gap),
+                          ),
                           // GIF 做好會存一份在 App 裡（相簿那份跟幾千張
                           // 照片混在一起，要拿它當素材根本找不到）。
                           // 空的時候區塊留著（使用者指定）：標題＋一行
@@ -971,7 +959,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           ],
                           // 跟下面那一區隔開，不然「範本」會黏在
                           // GIF 那排的下緣上
-                          SizedBox(height: 26 * (1 - _kGiveSection * fit.gap)),
+                          SizedBox(
+                            height:
+                                _kSectionGap * (1 - _kGiveSection * fit.gap),
+                          ),
                           Padding(
                             padding: _side,
                             child: _sectionTitle(
@@ -999,55 +990,29 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ],
                             ]),
                           ),
-                          // 行動鈕跟頁尾連結跟著內容捲（不釘底）：
-                          // 釘底會一直吃掉一截可視高度，草稿多的時候很擠
+                          // 頁尾連結跟著內容捲（不釘底）：釘底會一直吃掉
+                          // 一截可視高度，草稿多的時候很擠。
                           // 剩下的高度全給這一段（見 _Fit.slack）：
-                          // 行動鈕與頁尾貼著底部，中間不留一塊空白
+                          // 頁尾貼著底部，中間不留一塊空白。
+                          //
+                          // 「太好用啦」那顆黑色大鈕與「意見回饋」都是使用者
+                          // 指定拿掉的（見 _kSectionGap）
                           SizedBox(
                             height:
-                                30 * (1 - _kGiveLoose * fit.gap) + fit.slack,
+                                _kFootGap * (1 - _kGiveLoose * fit.gap) +
+                                fit.slack,
                           ),
-                          Padding(
-                            padding: _side,
+                          Center(
                             child: GestureDetector(
-                              onTap: _openLove,
-                              child: Container(
-                                height: 54,
-                                alignment: Alignment.center,
-                                decoration: BoxDecoration(
-                                  color: kLAccent,
-                                  borderRadius: BorderRadius.circular(999),
+                              onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) =>
+                                      const LightPage(child: AboutScreen()),
                                 ),
-                                child: const Text('太好用啦', style: _kCtaStyle),
                               ),
+                              child: const Text('關於這個 App', style: _kFootStyle),
                             ),
-                          ),
-                          const SizedBox(height: 14),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              GestureDetector(
-                                onTap: () => showFeedbackDialog(context),
-                                child: const Text('意見回饋', style: _kFootStyle),
-                              ),
-                              const Padding(
-                                padding: EdgeInsets.symmetric(horizontal: 10),
-                                child: Text('·', style: _kDotStyle),
-                              ),
-                              GestureDetector(
-                                onTap: () => Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) =>
-                                        const LightPage(child: AboutScreen()),
-                                  ),
-                                ),
-                                child: const Text(
-                                  '關於這個 App',
-                                  style: _kFootStyle,
-                                ),
-                              ),
-                            ],
                           ),
                         ],
                       ),
