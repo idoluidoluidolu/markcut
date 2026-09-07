@@ -7,16 +7,26 @@ class PresetStore {
   static const _key = 'wm_presets_v1';
   static const _seededKey = 'wm_presets_seeded_v1';
 
+  /// 後面幾批搬遷的旗標（見 ensureSeededV2／V3／V4）
+  static const _seededV2Key = 'wm_presets_seeded_v2';
+  static const _seededV3Key = 'wm_presets_seeded_v3';
+  static const _seededV4Key = 'wm_presets_seeded_v4';
+
   /// 第一次使用時放幾個示範範本（使用者存過東西就不動）
   static Future<void> ensureSeeded() async {
     final prefs = await SharedPreferences.getInstance();
     if (prefs.getBool(_seededKey) ?? false) return;
     if ((prefs.getStringList(_key) ?? []).isNotEmpty) {
+      // 沒旗標卻有範本＝很舊的版本升上來的：只立 v1 的旗標，
+      // 讓 V2～V4 照舊替他搬遷
       await prefs.setBool(_seededKey, true);
       return;
     }
 
-    // 只種一筆基本款，其餘樣式範本由 ensureSeededV2/V3 補
+    // 只種一筆基本款：這就是 V4 之後的最終狀態。V2～V4 那三批是給
+    // 「已經有舊範本」的人做搬遷用的（加樣式範本、再拿掉），新裝置跑
+    // 它們是 V1 種一筆 → V2 加三筆 → V3 刪三加四 → V4 刪七，四次整包
+    // 回寫才回到這一筆——所以下面連它們的旗標一起立掉
     final demos = [
       WatermarkPreset(
         name: '頻道標準',
@@ -36,12 +46,15 @@ class PresetStore {
     await prefs.setStringList(_key, demos.map((p) => p.encode()).toList());
     // 旗標最後才立：寫到一半被殺掉的話下次還會重種
     await prefs.setBool(_seededKey, true);
+    for (final k in const [_seededV2Key, _seededV3Key, _seededV4Key]) {
+      await prefs.setBool(k, true);
+    }
   }
 
   /// v2 追加的基本樣式（舊使用者也補種，不覆蓋同名）
   static Future<void> ensureSeededV2() async {
     final prefs = await SharedPreferences.getInstance();
-    const k2 = 'wm_presets_seeded_v2';
+    const k2 = _seededV2Key;
     if (prefs.getBool(k2) ?? false) return;
 
     final extra = [
@@ -98,6 +111,7 @@ class PresetStore {
       ),
     ];
 
+    if (!await _allParseable()) return; // 有壞筆就別回寫，下次再試
     final cur = await load();
     final names = cur.map((p) => p.name).toSet();
     var changed = false;
@@ -115,7 +129,7 @@ class PresetStore {
   /// （粉圓手感/宋體雅致）與重複的滿版防盜，補上樣式範本
   static Future<void> ensureSeededV3() async {
     final prefs = await SharedPreferences.getInstance();
-    const k3 = 'wm_presets_seeded_v3';
+    const k3 = _seededV3Key;
     if (prefs.getBool(k3) ?? false) return;
 
     const removals = {'粉圓手感', '宋體雅致', '滿版防盜'};
@@ -206,7 +220,7 @@ class PresetStore {
   /// 把 v2/v3 種進來的內建樣式範本移除，只留「頻道標準」示範。
   static Future<void> ensureSeededV4() async {
     final prefs = await SharedPreferences.getInstance();
-    const k4 = 'wm_presets_seeded_v4';
+    const k4 = _seededV4Key;
     if (prefs.getBool(k4) ?? false) return;
 
     const removals = {'大字滿版', '棋盤格', '底部橫幅', '描邊標題', '膠囊標籤', '手寫簽名', '角落細字'};
