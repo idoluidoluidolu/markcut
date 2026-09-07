@@ -49,7 +49,6 @@ void main() {
       'Noto Sans TC / Noto Serif TC (Google, Adobe)\n'
       'jf open 粉圓 (justfont)\n'
       'LXGW WenKai TC (落霞孤鶩)\n'
-      'Chocolate Classical Sans\n'
       '悠哉字體 (落霞孤鶩)\n'
       '縫合像素字體 Fusion Pixel (TakWolf)\n'
       'Montserrat / Playfair Display / Pacifico / Bebas Neue /\n'

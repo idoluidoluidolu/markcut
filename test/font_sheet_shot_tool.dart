@@ -23,7 +23,6 @@ const _files = <String, List<String>>{
   'NotoSerifTC': ['NotoSerifTC.ttf'],
   'OpenHuninn': ['jf-openhuninn.ttf'],
   'LXGWWenKaiTC': ['LXGWWenKaiTC.ttf'],
-  'ChocolateClassicalSans': ['ChocolateClassicalSans.ttf'],
   'Yozai': ['Yozai.ttf'],
   'FusionPixel': ['FusionPixel.ttf'],
   'Montserrat': ['Montserrat.ttf'],

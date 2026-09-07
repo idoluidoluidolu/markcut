@@ -11,7 +11,6 @@ const kFontOptions = <({String label, String family})>[
   (label: '思源宋體', family: 'NotoSerifTC'),
   (label: 'jf open 粉圓', family: 'OpenHuninn'),
   (label: '文楷', family: 'LXGWWenKaiTC'),
-  (label: '朱古力黑體', family: 'ChocolateClassicalSans'),
   (label: '悠哉', family: 'Yozai'),
   (label: '縫合像素', family: 'FusionPixel'),
   (label: 'Montserrat', family: 'Montserrat'),
@@ -29,6 +28,16 @@ const kFontOptions = <({String label, String family})>[
   (label: 'Caveat', family: 'Caveat'),
   (label: 'Press Start 2P', family: 'PressStart2P'),
 ];
+
+/// 認得的字型家族名，認不得就退回思源黑體。
+///
+/// 存進範本／草稿的是家族名字串，而字型清單會增減（朱古力黑體就是被
+/// 拿掉的那一個）。字型下拉是 DropdownButton，value 不在 items 裡會直接
+/// 斷言炸掉——所以讀進來的當下就要擋，不能等畫面去踩
+String sanitizeFontFamily(String? family) =>
+    kFontOptions.any((o) => o.family == family)
+    ? family!
+    : kFontOptions.first.family;
 
 /// 文字浮水印設定。位置與大小皆為相對值，套用到任何解析度都一致。
 class TextMark {
@@ -139,7 +148,7 @@ class TextMark {
   factory TextMark.fromJson(Map<String, dynamic> j) => TextMark(
     enabled: j['enabled'] ?? true,
     text: j['text'] ?? '',
-    fontFamily: j['fontFamily'] ?? 'NotoSansTC',
+    fontFamily: sanitizeFontFamily(j['fontFamily'] as String?),
     colorValue: j['colorValue'] ?? 0xFFFFFFFF,
     opacity: (j['opacity'] ?? 0.8).toDouble(),
     sizeFrac: (j['sizeFrac'] ?? 0.05).toDouble(),

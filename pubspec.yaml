@@ -185,9 +185,6 @@ flutter:
     - family: LXGWWenKaiTC
       fonts:
         - asset: assets/fonts/LXGWWenKaiTC.ttf
-    - family: ChocolateClassicalSans
-      fonts:
-        - asset: assets/fonts/ChocolateClassicalSans.ttf
     - family: Oswald
       fonts:
         - asset: assets/fonts/Oswald.ttf
