@@ -12,6 +12,8 @@ const kFontOptions = <({String label, String family})>[
   (label: 'jf open 粉圓', family: 'OpenHuninn'),
   (label: '文楷', family: 'LXGWWenKaiTC'),
   (label: '朱古力黑體', family: 'ChocolateClassicalSans'),
+  (label: '悠哉', family: 'Yozai'),
+  (label: '縫合像素', family: 'FusionPixel'),
   (label: 'Montserrat', family: 'Montserrat'),
   (label: 'Playfair', family: 'PlayfairDisplay'),
   (label: 'Pacifico', family: 'Pacifico'),

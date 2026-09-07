@@ -200,6 +200,8 @@ class AboutScreen extends StatelessWidget {
                   'jf open 粉圓 — justfont\n'
                   'LXGW 文楷 TC — 落霞孤鶩\n'
                   '朱古力黑體 — Chocolate Classical Sans\n'
+                  '悠哉字體 — 落霞孤鶩\n'
+                  '縫合像素字體 — TakWolf\n'
                   'Montserrat、Playfair Display、Pacifico、'
                   'Bebas Neue、Oswald、Lobster、Anton、Courier Prime、'
                   'Quicksand、Space Grotesk、Abril Fatface、'

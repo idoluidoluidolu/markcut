@@ -222,6 +222,16 @@ flutter:
     - family: PressStart2P
       fonts:
         - asset: assets/fonts/PressStart2P.ttf
+    # 第二批中文（使用者從十個候選裡挑的兩個）。原檔 15 MB／7 MB，
+    # 子集化到整個 Big5 字集（1.3 萬字＋ASCII＋標點）才放進來——只留
+    # 常用字的話，人名地名裡的次常用字會退回思源黑體，一句話兩種字型。
+    # 不在 Big5 裡的字（簡體、日文假名）一樣會退回思源黑體
+    - family: Yozai
+      fonts:
+        - asset: assets/fonts/Yozai.ttf
+    - family: FusionPixel
+      fonts:
+        - asset: assets/fonts/FusionPixel.ttf
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
