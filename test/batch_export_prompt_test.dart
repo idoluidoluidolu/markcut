@@ -51,7 +51,7 @@ void main() {
     photo = await _png(const Color(0xFF204060), 64);
   });
 
-  testWidgets('批次（純照片）：按匯出只跳「輸出到相簿」這一個視窗', (t) async {
+  testWidgets('批次（純照片）：按匯出只跳「匯出到相簿」這一個視窗', (t) async {
     await _pumpBatch(t, [
       XFile.fromData(photo, name: 'a.png', mimeType: 'image/png'),
       XFile.fromData(photo, name: 'b.png', mimeType: 'image/png'),
@@ -61,7 +61,7 @@ void main() {
     await t.pumpAndSettle();
 
     expect(find.byType(Dialog), findsOneWidget, reason: '一次只能跳一個視窗');
-    expect(find.text('輸出到相簿'), findsOneWidget, reason: '跳的要是照片格式那個');
+    expect(find.text('匯出到相簿'), findsOneWidget, reason: '跳的要是照片格式那個');
     expect(find.text('JPEG'), findsOneWidget);
     expect(find.text('PNG 無損'), findsOneWidget);
     expect(find.text('畫質'), findsNothing, reason: '影片編輯器那個畫質視窗不該出現');
@@ -85,7 +85,7 @@ void main() {
     await t.pumpAndSettle();
 
     expect(find.byType(Dialog), findsOneWidget, reason: '一次只能跳一個視窗');
-    expect(find.text('輸出到相簿'), findsOneWidget);
+    expect(find.text('匯出到相簿'), findsOneWidget);
     expect(find.text('畫質'), findsNothing, reason: '影片編輯器那個畫質視窗不該出現');
     expect(find.text('省空間'), findsNothing);
     expect(find.text('最高畫質'), findsNothing);

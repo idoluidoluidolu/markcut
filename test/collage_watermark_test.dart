@@ -503,7 +503,7 @@ void main() {
     await t.tap(_tab('匯出'));
     await t.pumpAndSettle();
     expect(find.byType(Dialog), findsOneWidget, reason: '一次只能跳一個視窗');
-    expect(find.text('輸出到相簿'), findsOneWidget, reason: '跳的要是照片格式那個');
+    expect(find.text('匯出到相簿'), findsOneWidget, reason: '跳的要是照片格式那個');
     expect(find.text('JPEG'), findsOneWidget);
     expect(find.text('PNG 無損'), findsOneWidget);
     expect(find.text('畫質'), findsNothing);
