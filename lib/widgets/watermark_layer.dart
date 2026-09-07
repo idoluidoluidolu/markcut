@@ -159,52 +159,27 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
     }
   }
 
-  /// 文字尺寸量測快取：拖曳中每一次指尖移動都會重建這一層，
-  /// 文字沒變就不要每幀重新排版一次（長文字一次要 1~3ms，會吃掉幀）
-  Size _probeSize = Size.zero;
-  List<Object?>? _probeKey;
+  /// 文字尺寸量測：走共用畫家的排版快取（measureMark），拖曳中每一格
+  /// 重建這一層也不會重新排版（長文字一次要 1~3ms，會吃掉幀）
+  Size _measureText(TextMark t, double fontSize) => measureMark(t, fontSize);
 
-  Size _measureText(TextMark t, double fontSize) {
-    final key = [t.text, t.fontFamily, fontSize, t.spacing];
-    if (_probeKey != null && listEquals(_probeKey!, key)) return _probeSize;
-    final tp = TextPainter(
-      text: TextSpan(
-        text: t.text,
-        style: TextStyle(
-          fontFamily: t.fontFamily,
-          fontSize: fontSize,
-          letterSpacing: fontSize * t.spacing,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    _probeKey = key;
-    _probeSize = Size(tp.width, tp.height);
-    return _probeSize;
-  }
-
-  /// 圖片的長寬比（寬/高），一張一格。匯出是用實際高度來置中與算圓角，
+  /// 圖片的長寬比（寬/高）。匯出是用實際高度來置中與算圓角，
   /// 預覽若拿寬度當高度用，非正方形的圖位置就會跟成品差一截。
-  /// 以 bytes 為 key：同一張圖被幾個地方共用時只量一次
-  final Map<Uint8List, double> _aspects = {};
+  /// 從共用池拿解好的圖（跟畫它的 _LogoUnit、匯出同一份，不另外解一次
+  /// 只為了量長寬）；還沒解好先當正方形，解好了再重畫一次
+  final Set<Uint8List> _awaitingLogo = {};
 
   double _logoAspectOf(Uint8List bytes) {
-    final known = _aspects[bytes];
-    if (known != null) return known;
-    // 還沒量到先當正方形，量好了再重畫
-    _aspects[bytes] = 1;
-    ui
-        .instantiateImageCodec(bytes)
-        .then((c) => c.getNextFrame())
-        .then((f) {
-          final a = f.image.width / f.image.height;
-          f.image.dispose();
-          if (!mounted) return;
-          if ((a - (_aspects[bytes] ?? 1)).abs() > 0.001) {
-            setState(() => _aspects[bytes] = a);
-          }
-        })
-        .catchError((_) {});
+    final img = logoImageCached(bytes);
+    if (img != null) return img.width / img.height;
+    if (_awaitingLogo.add(bytes)) {
+      logoImageFor(bytes)
+          .then((_) {
+            if (mounted) setState(() {});
+          })
+          .catchError((_) {})
+          .whenComplete(() => _awaitingLogo.remove(bytes));
+    }
     return 1;
   }
 
@@ -271,16 +246,10 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                   widget.onSelectPart?.call(WmPart.logo);
                   onTap?.call();
                 },
-                // 雙擊＝回正中央、恢復預設大小。
-                // 允許拖到畫面外，拖丟了本來只能去面板拉滑桿救
-                onDoubleTap: () {
-                  makeActive();
-                  onDragStart?.call(); // 先拍快照
-                  logo.x = 0.5;
-                  logo.y = 0.5;
-                  logo.sizeFrac = 0.18;
-                  onChanged();
-                },
+                // 不掛 onDoubleTap（以前雙擊＝回正中央）：雙擊辨識器會讓每一次
+                // 單點都等 300ms 才成立，而且「再點一次選下面那層」照提示
+                // 快速連點就被它吃掉——部件被搬回中央、往下鑽沒發生。
+                // 回正中央搬去面板（圖片卡的「回正中央」鈕）
                 // 單指拖＝移動（雙指縮放由預覽層的 Listener 處理：
                 // 元素本身範圍太小，兩指張開時第二指會落在範圍外）
                 onPanStart: !_canDrag(WmPart.logo)
@@ -323,14 +292,18 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                 // 選取框放在旋轉「裡面」：框才會跟著 Logo 轉
                 //（文字那邊本來就是這樣，兩邊要一致）。
                 // 透明度由共用畫家自己乘，這裡不能再包 Opacity
-                //（會乘兩次）；選取框因此保持全濃度，更清楚
-                child: Transform.rotate(
-                  angle: logo.rotation * math.pi / 180,
-                  child: Container(
-                    foregroundDecoration: _deco(WmPart.logo, logoIndex: li),
-                    // 內容＝共用畫家 paintLogoUnit：跟匯出執行
-                    // 同一段程式碼（圓角/透明度/取樣都在裡面）
-                    child: _LogoUnit(logo: logo, width: logoW, height: logoH),
+                //（會乘兩次）；選取框因此保持全濃度，更清楚。
+                // 每個部件自己一層 RepaintBoundary：拖曳只是 Positioned
+                // 在動，圖片不必每一格重新取樣一次
+                child: RepaintBoundary(
+                  child: Transform.rotate(
+                    angle: logo.rotation * math.pi / 180,
+                    child: Container(
+                      foregroundDecoration: _deco(WmPart.logo, logoIndex: li),
+                      // 內容＝共用畫家 paintLogoUnit：跟匯出執行
+                      // 同一段程式碼（圓角/透明度/取樣都在裡面）
+                      child: _LogoUnit(logo: logo, width: logoW, height: logoH),
+                    ),
                   ),
                 ),
               ),
@@ -397,15 +370,7 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                     widget.onSelectPart?.call(WmPart.text);
                     (onTapText ?? onTap)?.call();
                   },
-                  // 雙擊＝回正中央、恢復預設大小（同 Logo）
-                  onDoubleTap: () {
-                    makeActive();
-                    onDragStart?.call();
-                    t.x = 0.5;
-                    t.y = 0.5;
-                    t.sizeFrac = 0.12;
-                    onChanged();
-                  },
+                  // 不掛 onDoubleTap（理由同 Logo；回正中央在面板的文字卡）
                   // 單指拖＝移動（雙指縮放由預覽層的 Listener 處理）
                   onPanStart: !_canDrag(WmPart.text)
                       ? null
@@ -444,29 +409,35 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
                           setState(() => _panning = WmPart.none);
                           widget.onDragEnd?.call();
                         },
-                  child: Transform.rotate(
-                    angle: t.rotation * math.pi / 180,
-                    child: Container(
-                      foregroundDecoration: _deco(WmPart.text, textIndex: ti),
+                  // 自己一層 RepaintBoundary（理由同 Logo）：陰影模糊是
+                  // saveLayer＋高斯，拖曳的每一格都重畫太貴
+                  child: RepaintBoundary(
+                    child: Transform.rotate(
+                      angle: t.rotation * math.pi / 180,
                       child: Container(
-                        padding: EdgeInsets.symmetric(
-                          horizontal: padH,
-                          vertical: padV,
-                        ),
-                        decoration: t.bg
-                            ? BoxDecoration(
-                                color: t.bgColor.withValues(alpha: t.bgOpacity),
-                                borderRadius: BorderRadius.circular(
-                                  fontSize * t.bgCorner,
-                                ),
-                              )
-                            : null,
-                        // 內容＝共用畫家 paintMarkGlyphs：跟匯出執行
-                        // 同一段程式碼，預覽即成品；同步繪製，
-                        // 滑桿/拖曳即時零延遲
-                        child: CustomPaint(
-                          size: Size(probe.width, probe.height),
-                          painter: MarkGlyphPainter(t, fontSize),
+                        foregroundDecoration: _deco(WmPart.text, textIndex: ti),
+                        child: Container(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: padH,
+                            vertical: padV,
+                          ),
+                          decoration: t.bg
+                              ? BoxDecoration(
+                                  color: t.bgColor.withValues(
+                                    alpha: t.bgOpacity,
+                                  ),
+                                  borderRadius: BorderRadius.circular(
+                                    fontSize * t.bgCorner,
+                                  ),
+                                )
+                              : null,
+                          // 內容＝共用畫家 paintMarkGlyphs：跟匯出執行
+                          // 同一段程式碼，預覽即成品；同步繪製，
+                          // 滑桿/拖曳即時零延遲
+                          child: CustomPaint(
+                            size: Size(probe.width, probe.height),
+                            painter: MarkGlyphPainter(t, fontSize),
+                          ),
                         ),
                       ),
                     ),
@@ -564,9 +535,10 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
   }
 }
 
-/// 單顆 Logo：解碼一次，內容交給共用畫家 LogoUnitPainter
-///（跟匯出同一段程式碼）。bytes 換了（重新裁切）就重解，
-/// 解好前先留著舊圖，行為跟 Image.memory 的 gaplessPlayback 一樣
+/// 單顆 Logo：圖從共用池拿（logoImageFor：同一份 bytes 全 App 只解一次，
+/// 匯出也是同一張），內容交給共用畫家 LogoUnitPainter（跟匯出同一段
+/// 程式碼）。bytes 換了（重新裁切）就換圖，解好前先留著舊圖，行為跟
+/// Image.memory 的 gaplessPlayback 一樣。圖是池子的，這裡不 dispose
 class _LogoUnit extends StatefulWidget {
   final LogoMark logo;
   final double width;
@@ -602,22 +574,19 @@ class _LogoUnitState extends State<_LogoUnit> {
     final b = widget.logo.bytes;
     if (b == null) return;
     _decodedFrom = b;
-    ui.decodeImageFromList(b, (img) {
-      if (mounted) {
-        setState(() {
-          _img?.dispose();
-          _img = img;
-        });
-      } else {
-        img.dispose();
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    _img?.dispose();
-    super.dispose();
+    final hit = logoImageCached(b);
+    if (hit != null) {
+      _img = hit;
+      return;
+    }
+    logoImageFor(b)
+        .then((img) {
+          // 等的期間可能又換了一張：只收自己那一張
+          if (mounted && identical(_decodedFrom, b)) {
+            setState(() => _img = img);
+          }
+        })
+        .catchError((_) {});
   }
 
   @override
@@ -630,7 +599,7 @@ class _LogoUnitState extends State<_LogoUnit> {
   }
 }
 
-/// Logo 滿版平鋪：解碼一次，之後用 CustomPaint 重複畫
+/// Logo 滿版平鋪：圖從共用池拿（同 _LogoUnit），用 CustomPaint 重複畫
 class _TiledLogo extends StatefulWidget {
   final LogoMark logo;
 
@@ -660,15 +629,18 @@ class _TiledLogoState extends State<_TiledLogo> {
     final b = widget.logo.bytes;
     if (b == null) return;
     _decodedFrom = b;
-    ui.decodeImageFromList(b, (img) {
-      if (mounted) setState(() => _img = img);
-    });
-  }
-
-  @override
-  void dispose() {
-    _img?.dispose();
-    super.dispose();
+    final hit = logoImageCached(b);
+    if (hit != null) {
+      _img = hit;
+      return;
+    }
+    logoImageFor(b)
+        .then((img) {
+          if (mounted && identical(_decodedFrom, b)) {
+            setState(() => _img = img);
+          }
+        })
+        .catchError((_) {});
   }
 
   @override
@@ -736,45 +708,8 @@ class _TiledTextPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final fontSize = t.sizeFrac * canvasW;
-    // 字形交給共用畫家 paintMarkGlyphs（跟匯出同一段程式碼）；
-    // 這裡只管平鋪的步進、底色與旋轉
-    final m = measureMark(t, fontSize);
-    final w = size.width;
-    final h = size.height;
-    final stepX = m.width + fontSize * 2.2;
-    final stepY = m.height + fontSize * 2.6;
-    final padH = fontSize * 0.35 * t.bgPad;
-    final padV = fontSize * 0.18 * t.bgPad;
-    canvas.save();
-    canvas.clipRect(Offset.zero & size);
-    if (t.rotation.abs() > 0.01) {
-      canvas.translate(w / 2, h / 2);
-      canvas.rotate(t.rotation * math.pi / 180);
-      canvas.translate(-w / 2, -h / 2);
-    }
-    var row = 0;
-    for (var y = -h; y < h * 2; y += stepY, row++) {
-      final shift = row.isOdd ? stepX / 2 : 0.0;
-      for (var x = -w - shift; x < w * 2; x += stepX) {
-        if (t.bg) {
-          canvas.drawRRect(
-            RRect.fromRectAndRadius(
-              Rect.fromLTWH(
-                x - padH,
-                y - padV,
-                m.width + padH * 2,
-                m.height + padV * 2,
-              ),
-              Radius.circular(fontSize * t.bgCorner),
-            ),
-            Paint()..color = t.bgColor.withValues(alpha: t.bgOpacity),
-          );
-        }
-        paintMarkGlyphs(canvas, t, fontSize, Offset(x, y));
-      }
-    }
-    canvas.restore();
+    // 排列、底色、旋轉、字形全交給共用畫家（跟匯出同一段程式碼）
+    paintTextTiled(canvas, t, t.sizeFrac * canvasW, size.width, size.height);
   }
 
   @override

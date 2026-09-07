@@ -29,6 +29,12 @@ const kFontOptions = <({String label, String family})>[
   (label: 'Press Start 2P', family: 'PressStart2P'),
 ];
 
+/// 文字浮水印的後備字型：拉丁字型（Montserrat、Pacifico…）配中文時，
+/// 中文字從這裡拿。預覽、匯出、量測、面板輸入框建 TextStyle 時一律帶著——
+/// 不帶的話中文落到「平台的後備字」，同一台預覽＝成品沒錯，但 Android
+///／web 可能是別的字或豆腐，跟 iOS 上做的範本長得不一樣
+const kMarkFontFallback = ['NotoSansTC'];
+
 /// 認得的字型家族名，認不得就退回思源黑體。
 ///
 /// 存進範本／草稿的是家族名字串，而字型清單會增減（朱古力黑體就是被
@@ -150,9 +156,12 @@ class TextMark {
     text: j['text'] ?? '',
     fontFamily: sanitizeFontFamily(j['fontFamily'] as String?),
     colorValue: j['colorValue'] ?? 0xFFFFFFFF,
-    opacity: (j['opacity'] ?? 0.8).toDouble(),
-    sizeFrac: (j['sizeFrac'] ?? 0.05).toDouble(),
-    spacing: (j['spacing'] ?? 0).toDouble(),
+    // 夾在滑桿範圍內（壞掉／手改的範本或草稿）：sizeFrac=0 配平鋪，
+    // 步進就是 0，畫平鋪的迴圈永遠走不完；上限比滑桿（2.0）寬一點，
+    // 捏合也到不了 3.0
+    opacity: ((j['opacity'] ?? 0.8).toDouble() as double).clamp(0.0, 1.0),
+    sizeFrac: ((j['sizeFrac'] ?? 0.05).toDouble() as double).clamp(0.01, 3.0),
+    spacing: ((j['spacing'] ?? 0).toDouble() as double).clamp(-0.2, 0.6),
     x: (j['x'] ?? 0.82).toDouble(),
     y: (j['y'] ?? 0.92).toDouble(),
     rotation: (j['rotation'] ?? 0).toDouble(),
@@ -278,18 +287,21 @@ class LogoMark {
   factory LogoMark.fromJson(Map<String, dynamic> j) => LogoMark(
     enabled: j['enabled'] ?? false,
     b64: j['b64'],
-    opacity: (j['opacity'] ?? 0.8).toDouble(),
-    sizeFrac: (j['sizeFrac'] ?? 0.32).toDouble(),
+    // 夾範圍的理由同 TextMark.fromJson（sizeFrac=0＋平鋪＝迴圈走不完）
+    opacity: ((j['opacity'] ?? 0.8).toDouble() as double).clamp(0.0, 1.0),
+    sizeFrac: ((j['sizeFrac'] ?? 0.32).toDouble() as double).clamp(0.01, 3.0),
     x: (j['x'] ?? 0.5).toDouble(),
     y: (j['y'] ?? 0.5).toDouble(),
     rotation: (j['rotation'] ?? 0).toDouble(),
-    corner: (j['corner'] ?? 0).toDouble(),
+    corner: ((j['corner'] ?? 0).toDouble() as double).clamp(0.0, 1.0),
     tiled: j['tiled'] ?? false,
     drawn: j['drawn'] ?? false,
     drawData: j['drawData'],
   );
 
-  LogoMark copy() => LogoMark.fromJson(toJson());
+  /// 原圖（[origBytes]）不進 JSON，複製時在記憶體內直接帶過去——
+  /// 不然複製出來的那份（「更多浮水印」那一組）不能從原圖重裁
+  LogoMark copy() => LogoMark.fromJson(toJson())..origBytes = origBytes;
 }
 
 /// 浮水印動畫（只對影片有效，照片輸出忽略）
@@ -564,7 +576,15 @@ class WatermarkSettings {
     ),
   );
 
-  WatermarkSettings copy() => WatermarkSettings.fromJson(toJson());
+  /// 深拷貝。裁切前的原圖（LogoMark.origBytes）不進 JSON，這裡在記憶體內
+  /// 逐張帶過去，複製出來的那組才能從原圖重裁（理由見 LogoMark.copy）
+  WatermarkSettings copy() {
+    final c = WatermarkSettings.fromJson(toJson());
+    for (var i = 0; i < logos.length && i < c.logos.length; i++) {
+      c.logos[i].origBytes = logos[i].origBytes;
+    }
+    return c;
+  }
 }
 
 /// 已命名的浮水印範本（可儲存、一鍵套用）

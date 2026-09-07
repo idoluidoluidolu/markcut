@@ -1,10 +1,48 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/rendering.dart';
 
 import '../models/watermark_settings.dart';
+
+// ===== 解碼好的 Logo 共用池 =====
+//
+// 鍵是 bytes 物件本身：同一顆 Logo 的 base64 有池子（LogoMark.bytes），
+// 所有副本拿到同一個 bytes 物件，Expando 跟著物件活、物件回收快取自然消。
+// 以前預覽圖層量長寬比整張解一次、_LogoUnit 畫再解一次、平鋪層再一次、
+// 匯出再一次——4MB 的大圖每個地方各來一輪（主層、每組額外層、全螢幕層、
+// 範本卡）。這裡只解一次，大家共用；解好的圖不 dispose（跟著 bytes
+// 活，bytes 被回收時由引擎的終結器收）
+final Expando<ui.Image> _logoImages = Expando('logoImages');
+final Expando<Future<ui.Image>> _logoDecoding = Expando('logoDecoding');
+
+/// 已經解好的 Logo（還沒解好回 null，用 [logoImageFor] 去等）
+ui.Image? logoImageCached(Uint8List bytes) => _logoImages[bytes];
+
+/// 解碼一顆 Logo（同一份 bytes 只解一次；正在解的一起等同一個 Future）
+Future<ui.Image> logoImageFor(Uint8List bytes) {
+  final hit = _logoImages[bytes];
+  if (hit != null) return Future.value(hit);
+  final inflight = _logoDecoding[bytes];
+  if (inflight != null) return inflight;
+  final f = _decodeLogo(bytes);
+  _logoDecoding[bytes] = f;
+  return f;
+}
+
+Future<ui.Image> _decodeLogo(Uint8List bytes) async {
+  final codec = await ui.instantiateImageCodec(bytes);
+  try {
+    final img = (await codec.getNextFrame()).image;
+    _logoImages[bytes] = img;
+    return img;
+  } finally {
+    codec.dispose();
+    _logoDecoding[bytes] = null;
+  }
+}
 
 /// 圖片 Logo 浮水印的「唯一畫法」（跟文字的 text_mark_painter 同一個
 /// 思路）：預覽（WatermarkLayer）與匯出（WatermarkRenderer）都直接
