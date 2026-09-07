@@ -4,7 +4,10 @@ import CoreImage
 import VideoToolbox
 import Flutter
 import ImageIO
+import Photos
+import PhotosUI
 import UIKit
+import UniformTypeIdentifiers
 
 extension Double {
   /// 夾在 0~1（淡入淡出的係數算出來可能超出範圍）
@@ -2492,6 +2495,18 @@ final class AtomicFlag {
   /// 正在跑的轉檔工作（取消用）。同時可能有兩支在轉，用 job 編號分開
   private var prepSessions: [Int: AVAssetExportSession] = [:]
 
+  /// 相簿挑 GIF：等使用者選完的那次呼叫（一次只會有一個選取器在畫面上）。
+  /// 這個要放在 class 本體——Swift 的 extension 放不了儲存屬性
+  fileprivate var gifPickReply: FlutterResult?
+
+  /// 正在等的那個選取器。看門狗靠它確認「這一個從來沒被推上去」——
+  /// delegate 一被叫到就清掉，看門狗就不會再插手（見 presentGifPicker）
+  fileprivate weak var gifPicker: PHPickerViewController?
+
+  /// 第幾次挑。看門狗是延後執行的，這一次結束之後它還會醒來一次；
+  /// 沒有這個編號的話，它會去回覆「下一次」那個還開著的呼叫
+  fileprivate var gifPickSeq = 0
+
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     registerPrepChannel(engineBridge)
@@ -2500,6 +2515,7 @@ final class AtomicFlag {
     registerExportChannel(engineBridge)
     registerPhotoChannel(engineBridge)
     registerPhotoSaveChannel(engineBridge)
+    registerPickChannel(engineBridge)
 
     // 拖曳預覽的「按需抽幀」通道：滑到哪、跟硬體解碼器要那一格。
     // HDR 的色調映射由系統做，顏色跟 AVPlayer 播放畫面天生一致
@@ -10176,9 +10192,10 @@ enum HDRPhotoExport {
 //
 // 不用加 import：只用到 Flutter / CoreGraphics / ImageIO / Foundation，
 // 檔頭已經 import Flutter、ImageIO、UIKit（UIKit 再匯出 CoreGraphics 與
-// Foundation）。刻意不用 UniformTypeIdentifiers 的 UTType（iOS 14+，要多
-// 一個 import）：CGImageDestination 吃的是 UTI 字串，"public.jpeg" /
-// "public.png" 從 iOS 2 起就是這兩個字串，跟 UTType.jpeg.identifier 同值。
+// Foundation）。這一段用的是 UTI 字串而不是 UTType：CGImageDestination
+// 吃的就是字串，"public.jpeg" / "public.png" 從 iOS 2 起就是這兩個值，
+// 跟 UTType.jpeg.identifier 同值。（檔頭後來為了相簿挑 GIF 加了
+// UniformTypeIdentifiers，這裡沒有跟著改的必要）
 //
 // 通道 "markcut/photo_save"：
 //   probe() -> true
@@ -10244,6 +10261,172 @@ enum HDRPhotoExport {
 // ===========================================================================
 
 extension AppDelegate {
+  // ===== 相簿只列 GIF =====
+  //
+  // 「從相簿匯入 GIF」本來開的是 file_picker 的「所有照片」，使用者得在
+  // 一整片靜態照片裡自己認哪張會動，選錯了才被擋下來（測試回報）。
+  // PHPicker 篩得出來：playbackStyle == .imageAnimated 就是 GIF 那一類。
+  //
+  // 安卓那邊同一個通道名、同一個約定（見 MainActivity.kt）：
+  // 回 [路徑]＝選好了、回 []＝使用者取消、回 nil＝叫不出這個選取器
+  //（Dart 端看到 nil 會退回 file_picker 的「所有照片」，見 importGif）
+
+  private func registerPickChannel(_ engineBridge: FlutterImplicitEngineBridge) {
+    guard let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "markcut.pick")
+    else { return }
+    let channel = FlutterMethodChannel(
+      name: "markcut/pick", binaryMessenger: registrar.messenger())
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self = self else {
+        result(nil)
+        return
+      }
+      // videos 那條在 iOS 走 file_picker（相簿原檔、順序照點選），
+      // 沒有理由在這裡再實作一次——回 notImplemented，Dart 端會退回去
+      guard call.method == "gifs" else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      if self.gifPickReply != nil {
+        // 已經有一個選取器開著（連點兩下）：這一次當沒選
+        result([String]())
+        return
+      }
+      self.gifPickReply = result
+      self.gifPickSeq &+= 1
+      self.presentGifPicker()
+    }
+  }
+
+  /// 推選取器要有一個「現在在畫面上」的 view controller。
+  ///
+  /// 不能用 FlutterAppDelegate 的 window：這個 App 是 UIScene 架構
+  /// （見 SceneDelegate.swift 與 Info.plist 的 UIApplicationSceneManifest），
+  /// window 掛在 scene delegate 上，AppDelegate 自己那個從頭到尾是 nil
+  private func topViewController() -> UIViewController? {
+    let scenes = UIApplication.shared.connectedScenes
+    let scene =
+      scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+    guard let ws = scene as? UIWindowScene else { return nil }
+    let win = ws.keyWindow ?? ws.windows.first
+    guard var top = win?.rootViewController else { return nil }
+    // 已經有東西被 present（例如叫出這一支的那張底部面板）時要從最上面
+    // 那一個推，不然 iOS 會拒絕而且什麼都不發生
+    while let next = top.presentedViewController, !next.isBeingDismissed {
+      top = next
+    }
+    return top
+  }
+
+  private func presentGifPicker() {
+    var config = PHPickerConfiguration()
+    // Swift 這邊的 PHPickerFilter 是 struct，工廠名字沒有 ObjC 的
+    // Filter 尾巴（imagesFilter → .images、playbackStyleFilter →
+    // .playbackStyle）。這支跟部署目標一樣是 iOS 15，不用 #available
+    // ——包了反而讓 15 的機子永遠拿到「所有照片」，就是這個功能要修的
+    // 那件事
+    config.filter = .playbackStyle(.imageAnimated)
+    config.selectionLimit = 1
+    // 要相簿裡原本那個 GIF，不要系統轉一份給我們
+    config.preferredAssetRepresentationMode = .current
+    let picker = PHPickerViewController(configuration: config)
+    picker.delegate = self
+    // 順手掃掉上幾次留下來的中繼複本（見 sweepPickedTemp）
+    DispatchQueue.global(qos: .utility).async { sweepPickedTemp() }
+    guard let top = topViewController() else {
+      failGifPick(seq: gifPickSeq)
+      return
+    }
+    gifPicker = picker
+    top.present(picker, animated: true)
+    // present 有可能被 UIKit 默默丟掉（上一個轉場還沒結束就推），那樣
+    // 不會有任何 delegate 回呼。presentingViewController 是 present 當下
+    // 就設好的（非同步的是動畫），所以直接問一次就知道有沒有推上去——
+    // 不必用計時器去猜，也就不會跟「使用者一秒內滑掉」混在一起
+    guard picker.presentingViewController != nil else {
+      gifPicker = nil
+      failGifPick(seq: gifPickSeq)
+      return
+    }
+    armGifWatchdog(picker, seq: gifPickSeq, rounds: 0)
+  }
+
+  /// 挑選那一段的底線：推上去了，但 delegate 從來沒被叫（畫面被拆掉）。
+  /// 少了它，那次呼叫的 Future 永遠掛著、鎖也永遠不放，之後每一次匯入
+  /// 都被當成「已經有一個開著」。
+  ///
+  /// 三件事要認：
+  ///   [seq]——這隻是延後才醒的，醒來時使用者可能已經完成這一次又開了
+  ///   下一次；不認編號的話它會去把下一次那個還開著的選取器判死
+  ///   選取器還在不在——單純在相簿裡挑久了不算失敗，那種情況再等一輪
+  ///   [rounds]——續期要有盡頭。萬一選取器推上去了卻永遠回不來（推在
+  ///   一個已經脫離畫面的 controller 上），無限續期等於把鎖卡死到重開
+  ///   App，正是這隻要防的事
+  private func armGifWatchdog(
+    _ picker: PHPickerViewController, seq: Int, rounds: Int
+  ) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+      guard let self = self, self.gifPickSeq == seq, self.gifPickReply != nil
+      else { return }
+      // delegate 進來過了（gifPicker 被清掉）：換讀檔那一段的底線在管
+      guard self.gifPicker === picker else { return }
+      if picker.presentingViewController != nil {
+        if rounds < 10 {
+          self.armGifWatchdog(picker, seq: seq, rounds: rounds + 1)
+          return
+        }
+        // 續期到頂還開著＝這個選取器回不來了。先把它收掉再收尾，
+        // 不然 Dart 端會照著 nil 退回 file_picker，在它上面再疊一個
+        picker.dismiss(animated: false)
+      }
+      self.gifPicker = nil
+      self.failGifPick(seq: seq)
+    }
+  }
+
+  /// 讀檔那一段的底線。要跟挑選那一段分開算——共用一個的話，使用者
+  /// 挑了 55 秒才選下去，讀檔就只剩 5 秒，iCloud 上的原檔根本抓不完，
+  /// 他選的那一下會被默默丟掉、畫面上還會冒出另一個選取器
+  private func armGifLoadWatchdog(seq: Int) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+      guard let self = self, self.gifPickSeq == seq, self.gifPickReply != nil
+      else { return }
+      self.failGifPick(seq: seq)
+    }
+  }
+
+  /// 回覆那次 invokeMethod：[路徑]＝選好了、[]＝使用者按了取消。
+  ///
+  /// [seq] 是「這是第幾次挑」。一定要認：讀檔那一段有可能在底線之後
+  /// 才回來，那時候使用者往往已經又開了下一次——不認的話，它會拿上一次
+  /// 的檔案去回覆這一次的呼叫，使用者明明選了 B 卻拿到 A
+  fileprivate func finishGifPick(_ path: String?, seq: Int) {
+    DispatchQueue.main.async {
+      guard self.gifPickSeq == seq, let reply = self.gifPickReply else {
+        return
+      }
+      self.gifPickReply = nil
+      reply(path.map { [$0] } ?? [String]())
+    }
+  }
+
+  /// 叫不出這個選取器（找不到能推的畫面、推了沒推上去、東西讀不出來）：
+  /// 回 nil，Dart 端會退回 file_picker。這裡不能回空清單——那是「使用者
+  /// 按了取消」的意思，退路會被跳過，使用者只會看到按了完全沒反應。
+  ///
+  /// 已經選好了才失敗（檔案讀不出來）的話，使用者會看到再跳一個
+  /// 「所有照片」的選取器。這是刻意的：兩害相權，讓他知道剛才那一下
+  /// 沒成功、還有另一條路可以走，比按了之後畫面毫無反應好
+  fileprivate func failGifPick(seq: Int) {
+    DispatchQueue.main.async {
+      guard self.gifPickSeq == seq, let reply = self.gifPickReply else {
+        return
+      }
+      self.gifPickReply = nil
+      reply(nil)
+    }
+  }
+
   private func registerPhotoSaveChannel(_ engineBridge: FlutterImplicitEngineBridge) {
     guard let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "markcut.photo_save")
     else { return }
@@ -10339,5 +10522,90 @@ enum PhotoRgbaEncode {
       return (nil, "編碼結果是空的")
     }
     return (out as Data, nil)
+  }
+}
+
+/// 掃掉相簿挑 GIF 留下來的中繼複本。
+///
+/// 收進「我的 GIF」的那一份是 Dart 端另外複製的（見 GifStore.add），
+/// 這裡的只是把系統暫存檔接出來的中繼；不掃的話每匯入一次就在 tmp 裡
+/// 多留一份原檔。一小時內的先留著——這一次的可能還在被 Dart 端複製。
+/// 不碰任何共用狀態，所以可以在背景緒跑
+private func sweepPickedTemp() {
+  let root = URL(fileURLWithPath: NSTemporaryDirectory())
+    .appendingPathComponent("picked", isDirectory: true)
+  let fm = FileManager.default
+  guard
+    let items = try? fm.contentsOfDirectory(
+      at: root, includingPropertiesForKeys: [.contentModificationDateKey])
+  else { return }
+  let cutoff = Date().addingTimeInterval(-3600)
+  for item in items {
+    let at = (try? item.resourceValues(forKeys: [.contentModificationDateKey]))?
+      .contentModificationDate
+    // 讀不到日期就留著：判不出新舊時，寧可留下垃圾也不要刪掉還在用的
+    guard let at = at, at <= cutoff else { continue }
+    try? fm.removeItem(at: item)
+  }
+}
+
+extension AppDelegate: PHPickerViewControllerDelegate {
+  func picker(
+    _ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]
+  ) {
+    picker.dismiss(animated: true)
+    // 只認現在這一次的選取器。逾時之後才回來的那個不能動到這一次——
+    // 它會在「使用者還在挑」的這一次上面壓一個讀檔期限，甚至把它判死
+    guard gifPicker === picker else { return }
+    // delegate 進來了＝挑選那一段結束，換讀檔那一段的底線接手計時
+    let seq = gifPickSeq
+    gifPicker = nil
+    armGifLoadWatchdog(seq: seq)
+    guard let provider = results.first?.itemProvider else {
+      finishGifPick(nil, seq: seq)  // 空的＝使用者按了取消
+      return
+    }
+    let gif = UTType.gif.identifier
+    // 篩的是「會動的圖」，正常就是 GIF。真的拿到別的（動態 HEIC 之類）
+    // 就照原樣帶回去，讓 Dart 端那句「這不是 GIF，請選會動的那種」講給
+    // 使用者聽——在這裡默默不動作的話，他只會看到點了沒反應
+    let want =
+      provider.hasItemConformingToTypeIdentifier(gif)
+      ? gif : provider.registeredTypeIdentifiers.first
+    guard let type = want else {
+      failGifPick(seq: seq)  // 什麼 representation 都沒有：退回 file_picker
+      return
+    }
+    provider.loadFileRepresentation(forTypeIdentifier: type) { [weak self] url, _ in
+      // url 指的是系統的暫存檔，這個 closure 一回去就會被刪掉——
+      // 要在這裡面複製走，不能只把路徑帶回 Dart
+      var copied: String?
+      if let url = url {
+        var name = url.lastPathComponent.isEmpty ? "picked" : url.lastPathComponent
+        // 下游是照副檔名認 GIF 的（見 importGif）：確定是 GIF 卻沒帶
+        // 副檔名時自己補，不然收得進來也會被自己的檢查擋掉
+        if type == gif, !name.lowercased().hasSuffix(".gif") { name += ".gif" }
+        // 每一次挑各自一個資料夾：同名不會撞，也就不用一個一個試名字
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+          .appendingPathComponent("picked", isDirectory: true)
+          .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(
+          at: dir, withIntermediateDirectories: true)
+        let dst = dir.appendingPathComponent(name)
+        do {
+          try FileManager.default.copyItem(at: url, to: dst)
+          copied = dst.path
+        } catch {
+          copied = nil
+        }
+      }
+      // 讀不出來（url 是 nil、或複製失敗）＝這條路走不通，回 nil 讓
+      // Dart 端退回 file_picker，不要靜悄悄地什麼都不做
+      if let copied = copied {
+        self?.finishGifPick(copied, seq: seq)
+      } else {
+        self?.failGifPick(seq: seq)
+      }
+    }
   }
 }

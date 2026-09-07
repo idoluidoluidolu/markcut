@@ -5,6 +5,9 @@
 // UIDocumentPickerViewController 也列不出相簿），所以 ＋ 會先問一次。
 // 這支盯的是五件事：
 //   1. 三列都在，順序是「製作 GIF／從相簿匯入 GIF／從檔案匯入 GIF」
+//   1b.「從相簿匯入」先問系統相片選取器（markcut/pick 的 gifs，相簿裡
+//      只列得出會動的圖）：拿到路徑就用它、按取消就收工、這台沒有那個
+//      選取器才退回 file_picker 的「所有照片」
 //   2. 「製作 GIF」開的是影片選取器（不是挑 GIF 的那一個），挑完走
 //      editRoute 進 GIF 製作頁——跟首頁的「GIF」那顆同一條
 //   3. 兩條匯入路各自開的是對的選取器（型別／副檔名過濾）
@@ -128,6 +131,20 @@ Future<void> _pump(WidgetTester t, [NavigatorObserver? spy]) async {
   await _settle(t);
 }
 
+/// 掛一個假的系統相片選取器（原生端）。沒掛的時候通道回 null，
+/// 等於「這台沒有」，Dart 端會退回 file_picker
+void _mockPick(Object? Function(MethodCall call) handler) {
+  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+      .setMockMethodCallHandler(
+        const MethodChannel('markcut/pick'),
+        (call) async => handler(call),
+      );
+  addTearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(const MethodChannel('markcut/pick'), null);
+  });
+}
+
 /// 按 ＋，等來源選單出現
 Future<void> _tapAdd(WidgetTester t) async {
   await t.tap(find.byType(FloatingActionButton));
@@ -217,7 +234,8 @@ void main() {
     expect(find.text('從相簿匯入 GIF'), findsOneWidget);
     expect(find.text('從檔案匯入 GIF'), findsOneWidget);
 
-    // 相簿：FileType.image（iOS 的 PHPicker／Android 的 ACTION_PICK）。
+    // 相簿：這裡沒有掛 markcut/pick 的假原生端，等於「這台沒有系統
+    // 相片選取器」，所以走的是退路 file_picker 的 FileType.image。
     // 這條路不能帶副檔名清單，帶了 file_picker 會丟 ArgumentError
     await t.tap(find.text('從相簿匯入 GIF'));
     await _settle(t, 10);
@@ -235,6 +253,45 @@ void main() {
     expect(_picker.lastType, FileType.custom);
     expect(_picker.lastExtensions, ['gif']);
 
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('相簿匯入：系統選取器挑到的 GIF 直接收，不再開 file_picker', (t) async {
+    // 相簿那條先問原生端（只列得出會動的圖）。拿得到路徑就用它——
+    // 再開一次 file_picker 等於使用者要挑兩輪
+    final gif = _writeGif('from_gallery.gif');
+    var calls = 0;
+    String? method;
+    _mockPick((call) {
+      calls++;
+      method = call.method;
+      return [gif];
+    });
+
+    await _pump(t);
+    await _tapAdd(t);
+    await t.tap(find.text('從相簿匯入 GIF'));
+    await _settle(t, 20);
+
+    expect(calls, 1, reason: '沒問系統相片選取器');
+    expect(method, 'gifs', reason: '問錯方法（videos 是挑影片那條）');
+    expect(_picker.calls, 0, reason: '已經挑到了還開 file_picker');
+    expect(await GifStore.list(), hasLength(1), reason: '沒收進「我的 GIF」');
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('相簿匯入：在系統選取器按取消，不會再跳一個 file_picker', (t) async {
+    // 空清單＝取消。回 null 才是「這台沒有這個選取器」——兩個混在一起
+    // 的話，使用者按了取消還會再被跳一個視窗
+    _mockPick((_) => const <String>[]);
+
+    await _pump(t);
+    await _tapAdd(t);
+    await t.tap(find.text('從相簿匯入 GIF'));
+    await _settle(t, 20);
+
+    expect(_picker.calls, 0, reason: '取消之後又開了 file_picker');
+    expect(await GifStore.list(), isEmpty);
     expect(t.takeException(), isNull);
   });
 

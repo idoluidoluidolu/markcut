@@ -111,15 +111,23 @@ class MainActivity : FlutterActivity() {
             }
     }
 
-    // ===== 挑影片：系統相片選取器 =====
+    // ===== 挑素材：系統相片選取器 =====
     //
     // file_picker 的 FileType.video 在安卓走 SAF 文件選取器——開出來是
     // 檔案管理器的「最近」，不是相簿。Android 13 起有系統相片選取器
     // （ACTION_PICK_IMAGES），可以限定只列影片、直接開在相簿的長相。
-    // 更舊的機型回 null，Dart 端退回原本的 SAF 那條路
+    // 更舊的機型回 null，Dart 端退回原本的 SAF 那條路。
+    //
+    // 兩個方法共用這一支：videos＝多選影片、gifs＝單選 GIF
+    // （同一個選取器換 type 而已，見 registerPickChannel）
 
     /// 等使用者選完的那次呼叫（一次只會有一個選取器在畫面上）
     private var pickReply: MethodChannel.Result? = null
+
+    /// 這一次挑的是 GIF 還是影片。補副檔名要用——問 contentResolver 的
+    /// MIME 不可靠（可能回 null、image/*、或大小寫不同），而這裡本來
+    /// 就知道答案：選取器是我們自己按方法名開的
+    private var pickWantsGif = false
     private val pickReq = 9137
 
     /// 把 content:// 複製進快取的工作緒（大檔要幾秒，不能佔主緒）
@@ -128,7 +136,8 @@ class MainActivity : FlutterActivity() {
     private fun registerPickChannel(flutterEngine: FlutterEngine) {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "markcut/pick")
             .setMethodCallHandler { call, result ->
-                if (call.method != "videos") {
+                val gifs = call.method == "gifs"
+                if (call.method != "videos" && !gifs) {
                     result.notImplemented()
                     return@setMethodCallHandler
                 }
@@ -142,14 +151,36 @@ class MainActivity : FlutterActivity() {
                     result.success(ArrayList<String>())
                     return@setMethodCallHandler
                 }
-                val max = (call.argument<Number>("max") ?: 30).toInt()
-                    .coerceIn(2, MediaStore.getPickImagesMaxLimit())
-                pickReply = result
-                val intent = Intent(MediaStore.ACTION_PICK_IMAGES).apply {
-                    type = "video/*"
-                    putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, max)
+                // 組 intent 也可能丟（coerceIn 在上限 < 2 時就會），所以
+                // 鎖要等到真的要開選取器前一刻才拿——先拿了卻在這裡丟出去，
+                // 那把鎖就再也放不掉，之後每一次挑都被當成「已經有一個開著」
+                val intent = try {
+                    Intent(MediaStore.ACTION_PICK_IMAGES).apply {
+                        if (gifs) {
+                            // 只列會動的那種；不放 EXTRA_PICK_IMAGES_MAX
+                            // ＝單選（匯入一次收一個 GIF）
+                            type = "image/gif"
+                        } else {
+                            type = "video/*"
+                            val max = (call.argument<Number>("max") ?: 30).toInt()
+                                .coerceIn(2, MediaStore.getPickImagesMaxLimit())
+                            putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, max)
+                        }
+                    }
+                } catch (_: Exception) {
+                    result.success(null)
+                    return@setMethodCallHandler
                 }
-                startActivityForResult(intent, pickReq)
+                pickReply = result
+                pickWantsGif = gifs
+                try {
+                    startActivityForResult(intent, pickReq)
+                } catch (_: Exception) {
+                    // 叫不出選取器：鎖要放掉再回 null（Dart 端退回
+                    // file_picker）
+                    pickReply = null
+                    result.success(null)
+                }
             }
     }
 
@@ -178,29 +209,55 @@ class MainActivity : FlutterActivity() {
         copyExec.execute {
             val out = ArrayList<String>()
             for (u in uris) copyToCache(u)?.let { out.add(it) }
-            main.post { reply.success(out) }
+            main.post {
+                // 明明選了東西卻一個都複製不出來（I/O 壞了、沒權限）：
+                // 回 null 讓 Dart 端退回 file_picker。回空清單的話會被當成
+                // 「使用者按了取消」，他就只看到點了完全沒反應
+                if (uris.isNotEmpty() && out.isEmpty()) {
+                    reply.success(null)
+                } else {
+                    reply.success(out)
+                }
+            }
         }
     }
 
-    /// content:// → 快取檔。保留原檔名（介面上顯示素材名稱用）
-    private fun copyToCache(u: Uri): String? = try {
-        var name: String? = null
-        contentResolver.query(u, null, null, null, null)?.use { c ->
-            val i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            if (i >= 0 && c.moveToFirst()) name = c.getString(i)
+    /// content:// → 快取檔。保留原檔名（介面上顯示素材名稱用）。
+    ///
+    /// 這裡是 block body 而不是 `= try {…}`：下面那句 `?: return null`
+    /// 在 expression body 裡是編譯錯誤（returns are prohibited for
+    /// functions with an expression body）
+    private fun copyToCache(u: Uri): String? {
+        return try {
+            var name: String? = null
+            contentResolver.query(u, null, null, null, null)?.use { c ->
+                val i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (i >= 0 && c.moveToFirst()) name = c.getString(i)
+            }
+            // 選取器照理都給得出 DISPLAY_NAME；真的沒有才自己編一個。
+            // 下游整條管線是照副檔名認素材的，所以副檔名一定要有：GIF
+            // 那條尤其重要——在只列 GIF 的清單裡挑到的東西，要是名字沒
+            // 帶 .gif，會被 App 自己的檢查擋下來說「這不是 GIF」
+            // （iOS 同樣有這一手）
+            val gif = pickWantsGif
+            var safe = (name ?: "picked_${System.currentTimeMillis()}")
+                .replace('/', '_')
+            if (gif && !safe.lowercase().endsWith(".gif")) safe += ".gif"
+            if (!gif && !safe.contains('.')) safe += ".mp4"
+
+            val dir = File(cacheDir, "picked").apply { mkdirs() }
+            var f = File(dir, safe)
+            var n = 1
+            while (f.exists()) f = File(dir, "${n++}_$safe") // 同名不覆蓋
+            contentResolver.openInputStream(u)?.use { input ->
+                FileOutputStream(f).use { output ->
+                    input.copyTo(output, 1 shl 16)
+                }
+            } ?: return null
+            f.absolutePath
+        } catch (_: Exception) {
+            null
         }
-        val safe = (name ?: "video_${System.currentTimeMillis()}.mp4")
-            .replace('/', '_')
-        val dir = File(cacheDir, "picked").apply { mkdirs() }
-        var f = File(dir, safe)
-        var n = 1
-        while (f.exists()) f = File(dir, "${n++}_$safe") // 同名不覆蓋
-        contentResolver.openInputStream(u)?.use { input ->
-            FileOutputStream(f).use { output -> input.copyTo(output, 1 shl 16) }
-        } ?: return null
-        f.absolutePath
-    } catch (_: Exception) {
-        null
     }
 
     private fun grabFrame(

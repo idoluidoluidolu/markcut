@@ -15,7 +15,8 @@ import '../services/draft_store.dart';
 import '../services/file_reader.dart';
 import '../services/gif_store.dart';
 import '../services/preset_store.dart';
-import '../services/video_picker.dart' show isVideoFile, pickVideoFiles;
+import '../services/video_picker.dart'
+    show isVideoFile, pickGalleryGifs, pickVideoFiles;
 import '../nav.dart';
 import '../theme.dart';
 import '../widgets/gif_image.dart';
@@ -170,8 +171,9 @@ enum _GifSource { make, gallery, files }
 ///
 /// [fromFiles] 決定開哪一個選取器——這兩個是不同的地方，不是同一個
 /// 選取器的兩種寫法：
-/// - false（預設）＝相簿。iOS 是 PHPicker、Android 是 ACTION_PICK，
-///   兩邊都只列得到相簿裡的東西
+/// - false（預設）＝相簿，而且只列 GIF（見 pickGalleryGifs）。iOS 是
+///   PHPicker 篩 imageAnimated、Android 是系統相片選取器篩 image/gif；
+///   舊機沒有那個選取器才退回 file_picker 的「所有照片」
 /// - true＝檔案。iOS 是 UIDocumentPickerViewController（檔案 App、
 ///   iCloud 雲碟、下載項目…），Android 是 ACTION_OPEN_DOCUMENT
 ///
@@ -186,12 +188,25 @@ Future<String?> importGif(
   BuildContext context, {
   bool fromFiles = false,
 }) async {
-  final r = await FilePicker.platform.pickFiles(
-    type: fromFiles ? FileType.custom : FileType.image,
-    // 只有 FileType.custom 收得了副檔名清單，別的型別給了會丟 ArgumentError
-    allowedExtensions: fromFiles ? const ['gif'] : null,
-  );
-  final path = (r == null || r.files.isEmpty) ? null : r.files.first.path;
+  String? path;
+  if (!fromFiles) {
+    // 相簿：先問系統相片選取器（篩得出「會動的圖」）。回 null 才是
+    // 「這台沒有」，空清單是使用者按了取消——那就不要再開第二個給他
+    final picked = await pickGalleryGifs();
+    if (picked != null) {
+      if (picked.isEmpty) return null;
+      path = picked.first;
+    }
+  }
+  if (path == null) {
+    final r = await FilePicker.platform.pickFiles(
+      type: fromFiles ? FileType.custom : FileType.image,
+      // 只有 FileType.custom 收得了副檔名清單，別的型別給了會丟
+      // ArgumentError
+      allowedExtensions: fromFiles ? const ['gif'] : null,
+    );
+    path = (r == null || r.files.isEmpty) ? null : r.files.first.path;
+  }
   if (path == null) return null;
   if (!path.toLowerCase().endsWith('.gif')) {
     if (context.mounted) {

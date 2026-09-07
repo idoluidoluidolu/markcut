@@ -5,9 +5,30 @@ import 'package:flutter/services.dart' show MethodChannel;
 import 'package:image_picker/image_picker.dart';
 // XFile 由 image_picker 轉出來，不另外相依 cross_file
 
-/// 安卓的系統相片選取器（原生端實作在 MainActivity.kt）。
-/// Android 12 以下沒有這個東西，原生端會回 null
+/// 系統相片選取器（安卓實作在 MainActivity.kt、iOS 在 AppDelegate.swift）。
+/// 這台沒有的時候原生端回 null，呼叫端自己退回 file_picker
 const _pickCh = MethodChannel('markcut/pick');
+
+/// 相簿裡只列 GIF（會動的那種）。
+///
+/// 「從相簿匯入 GIF」本來開的是「所有照片」，使用者得在一整片靜態照片
+/// 裡自己認哪張會動，選錯了才被擋下來（測試回報）。兩邊的系統選取器
+/// 其實都篩得出來：
+///   iOS  PHPicker 的 playbackStyle == imageAnimated 就是 GIF 那一類
+///   安卓 系統相片選取器（ACTION_PICK_IMAGES）吃 type = image/gif
+///
+/// 回傳 null＝這台沒有那個選取器（Android 12 以下、Web），呼叫端要退回
+/// file_picker；空清單＝使用者按了取消（不要再開第二個選取器給他）
+Future<List<String>?> pickGalleryGifs() async {
+  if (kIsWeb) return null;
+  try {
+    final r = await _pickCh.invokeMethod<List<dynamic>>('gifs');
+    return r?.cast<String>();
+  } catch (_) {
+    // 通道出狀況就當這台沒有，退回 file_picker——匯入這件事不能因此壞掉
+    return null;
+  }
+}
 
 /// 只挑影片：相簿裡就只列得出影片，不會混著照片一起給。
 ///
