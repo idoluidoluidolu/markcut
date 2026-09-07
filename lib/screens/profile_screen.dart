@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
-import 'dart:ui' as ui;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -57,13 +56,9 @@ const _tileShadow = [
 /// 不打陰影（跟「＋」磚一樣）、不畫邊線（深色塊在白底上本身就分得開）
 const _kPresetTileBg = Color(0xFF1B1B20);
 
-/// 範本磚的形狀：連續曲率圓角（超橢圓），不是普通的圓弧圓角。
-///
-/// 使用者回報普通圓角「像被切一角、不順暢」——圓弧角在跟直線邊接起來
-/// 的地方曲率是斷的（從 0 直接跳到 1/r），眼睛看得出那個折點；iOS 的
-/// 圓角是超橢圓，曲率連續。範本總覽的大卡用同一種形狀（見
-/// presets_screen 的 _kCardShape）
-const _kPresetTileRadius = BorderRadius.all(Radius.circular(12));
+// 磚的形狀（超橢圓）與圓角級距全走 theme.dart 的 tileShape／tileClip：
+// 這一頁的範本磚、GIF 磚、草稿卡以前各畫各的（超橢圓 12、圓弧 12、
+// 圓弧 18），三種角擺在同一頁看得出來
 
 // ── 一頁裝得下：這一頁不捲（使用者指定「那讓他不要能上下捲動」）──
 //
@@ -121,8 +116,9 @@ const _kTitleStyle = TextStyle(
 /// 標題右邊的「全部」／「還沒有」
 const _kTrailStyle = TextStyle(fontSize: 13, color: kLTextDim);
 
-/// 空狀態那一行灰字
-const _kHintStyle = TextStyle(fontSize: 13, color: Color(0xFFA8A8B4));
+/// 空狀態那一行灰字。跟「全部」那種次要字同一個灰（kLTextDim）：
+/// 以前更淡的 #A8A8B4 在白底上對比只有 2.3:1，連大字的 3:1 都不到
+const _kHintStyle = TextStyle(fontSize: 13, color: kLTextDim);
 
 /// 草稿卡下面那行名字
 const _kCardTitleStyle = TextStyle(fontSize: 13.5, fontWeight: FontWeight.w800);
@@ -134,12 +130,37 @@ const _kFootStyle = TextStyle(fontSize: 12.5, color: kLTextDim);
 const _kDotStyle = TextStyle(fontSize: 12, color: Color(0xFFB0B0BA));
 
 /// 草稿區的一張卡：[title] 給量高度用（有名字的卡多一行字、高一截），
-/// [build] 才真的把卡做出來——沒排到的卡就不用做
+/// [build] 才真的把卡做出來——沒排到的卡就不用做。[build] 吃卡的寬度：
+/// 封面要照卡的尺寸解碼（見 _draftCards）
 class _DraftCard {
   const _DraftCard(this.title, this.build);
 
   final String? title;
-  final Widget Function() build;
+  final Widget Function(double w) build;
+}
+
+/// 單鍵草稿的四種：照片／批次／GIF／拼圖各只有一份，各存一個鍵
+/// （影片草稿另有自己的清單，見 DraftStore）
+enum DraftKind { photo, batch, gif, collage }
+
+/// 讀一份單鍵草稿：解得開、而且 [contentKey] 那一欄（照片路徑、檔案
+/// 清單…）有東西才算有草稿。個人中心與草稿夾以前各寫一份、草稿夾還是
+/// 四段複製貼上——「有沒有」的規則一走岔就是一邊列得出、一邊列不出
+Map<String, dynamic>? _readDraftJson(
+  SharedPreferences prefs,
+  String key,
+  String contentKey,
+) {
+  final s = prefs.getString(key);
+  if (s == null) return null;
+  try {
+    final j = jsonDecode(s) as Map<String, dynamic>;
+    final v = j[contentKey];
+    final has = v is List ? v.isNotEmpty : (v is String && v.isNotEmpty);
+    return has ? j : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 /// 這一頁要壓多少留白才裝得下（見 [_ProfileScreenState._fit]）。
@@ -245,40 +266,50 @@ Future<bool> addGifFromDevice(BuildContext context) async {
   final source = await showModalBottomSheet<_GifSource>(
     context: context,
     showDragHandle: true,
+    // 面板自己管高度：預設的 9/16 上限在橫向（375 高）只剩 211，三列
+    // （48 抓把＋3×56＋6＝222）裝不下，最後一列被切在畫面外按不到。
+    // 內容多高面板就多高，裝不下的那一截捲（跟首頁的面板同一套）
+    isScrollControlled: true,
+    useSafeArea: true,
     builder: (context) => SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ListTile(
-            leading: const Icon(
-              Icons.gif_box_outlined,
-              size: 20,
-              color: kLIcon,
-            ),
-            title: const Text('製作 GIF', style: TextStyle(fontSize: 13.5)),
-            onTap: () => Navigator.pop(context, _GifSource.make),
-          ),
-          if (!kIsWeb)
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
             ListTile(
               leading: const Icon(
-                Icons.photo_library_outlined,
+                Icons.gif_box_outlined,
                 size: 20,
                 color: kLIcon,
               ),
-              title: const Text('從相簿匯入 GIF', style: TextStyle(fontSize: 13.5)),
-              onTap: () => Navigator.pop(context, _GifSource.gallery),
+              title: const Text('製作 GIF', style: TextStyle(fontSize: 13.5)),
+              onTap: () => Navigator.pop(context, _GifSource.make),
             ),
-          ListTile(
-            leading: const Icon(
-              Icons.folder_open_outlined,
-              size: 20,
-              color: kLIcon,
+            if (!kIsWeb)
+              ListTile(
+                leading: const Icon(
+                  Icons.photo_library_outlined,
+                  size: 20,
+                  color: kLIcon,
+                ),
+                title: const Text(
+                  '從相簿匯入 GIF',
+                  style: TextStyle(fontSize: 13.5),
+                ),
+                onTap: () => Navigator.pop(context, _GifSource.gallery),
+              ),
+            ListTile(
+              leading: const Icon(
+                Icons.folder_open_outlined,
+                size: 20,
+                color: kLIcon,
+              ),
+              title: const Text('從檔案匯入 GIF', style: TextStyle(fontSize: 13.5)),
+              onTap: () => Navigator.pop(context, _GifSource.files),
             ),
-            title: const Text('從檔案匯入 GIF', style: TextStyle(fontSize: 13.5)),
-            onTap: () => Navigator.pop(context, _GifSource.files),
-          ),
-          const SizedBox(height: 6),
-        ],
+            const SizedBox(height: 6),
+          ],
+        ),
       ),
     ),
   );
@@ -333,30 +364,56 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final gifs = await GifStore.list();
     final prefs = await SharedPreferences.getInstance();
 
-    Map<String, dynamic>? readDraft(String key, String contentKey) {
-      final s = prefs.getString(key);
-      if (s == null) return null;
-      try {
-        final j = jsonDecode(s) as Map<String, dynamic>;
-        final v = j[contentKey];
-        final has = v is List ? v.isNotEmpty : (v is String && v.isNotEmpty);
-        return has ? j : null;
-      } catch (_) {
-        return null;
-      }
-    }
-
     if (!mounted) return;
     setState(() {
       _presets = presets;
       _videoDrafts = videoDrafts;
       _gifs = gifs;
-      _photoDraft = readDraft(kPhotoDraftKey, 'photo');
-      _batchDraft = readDraft(kBatchDraftKey, 'files');
-      _gifDraft = readDraft(kGifDraftKey, 'path');
-      _collageDraft = readDraft(kCollageDraftKey, 'photos');
+      _photoDraft = _readDraftJson(prefs, kPhotoDraftKey, 'photo');
+      _batchDraft = _readDraftJson(prefs, kBatchDraftKey, 'files');
+      _gifDraft = _readDraftJson(prefs, kGifDraftKey, 'path');
+      _collageDraft = _readDraftJson(prefs, kCollageDraftKey, 'photos');
     });
-    unawaited(_loadCovers(videoDrafts));
+    // 主頁最多畫兩張草稿卡（見 _draftCards）：封面也只讀那兩張。
+    // 一張封面是 base64 的 720p PNG、上百 KB，以前三十份全讀進來
+    // 只為了畫兩張
+    unawaited(_loadCovers(videoDrafts.take(2).toList()));
+    unawaited(_loadGifAspects(gifs.take(3)));
+  }
+
+  /// 主頁那三塊 GIF 磚的寬高比（路徑 → 寬/高），只讀檔頭（見 gifAspect）。
+  /// 不讓整頁的第一次畫面等它：磚先照直片的尺寸解（格寬），量到是橫的
+  /// 再換成貼高的寬度重畫一次——動圖的 codec 是邊播邊解，換掉頂多多解
+  /// 一格；反過來把三個檔頭讀完才畫，開個人中心就得等磁碟
+  final Map<String, double> _gifAspect = {};
+
+  Future<void> _loadGifAspects(Iterable<String> refs) async {
+    var changed = false;
+    for (final ref in refs) {
+      if (_gifAspect.containsKey(ref)) continue;
+      // 讀不到就當正方形，下次不用再讀
+      _gifAspect[ref] = await gifAspect(ref) ?? 1.0;
+      changed = true;
+    }
+    if (changed && mounted) setState(() {});
+  }
+
+  /// GIF cover 進 [cell] 見方的磚時要解碼多寬（實體像素）：直的貼寬、
+  /// 橫的貼高（寬＝格寬×比例）。匯入的 GIF 尺寸不限（可 1080 寬），
+  /// 不給的話每一格都以原尺寸解碼再縮到一百多點
+  int _gifDecodeWidth(double cell, String ref) =>
+      (cell *
+              math.max(1.0, _gifAspect[ref] ?? 1.0) *
+              MediaQuery.devicePixelRatioOf(context))
+          .round();
+
+  /// 封面 cover 進 [w] 寬的 3:4 卡時要解碼多寬（實體像素）。封面是長邊
+  /// 720 的 PNG，解開一張 1.2MB，卡片只畫 180 點寬——照卡的尺寸解碼：
+  /// 直片貼寬（＝卡寬）、橫片貼高（寬＝卡高×比例）
+  int _coverDecodeWidth(double w, double aspect) {
+    final h = w * 4 / 3;
+    return (math.max(w, h * aspect) * MediaQuery.devicePixelRatioOf(context))
+        .round();
   }
 
   /// 草稿封面：內容另外存（見 DraftStore.thumb），讀進來後放這個
@@ -463,28 +520,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
   /// 把它們加起來就知道磚還剩多少可以用。不夠的話只壓留白（額度
   /// [_kFlexGaps]）；壓到底還是不夠就回 [_Fit.scroll]——磚一律原尺寸、
   /// 滿版寬，不縮也不截：截掉東西是 bug，捲不是
-  _Fit _fit(
-    BuildContext ctx,
-    BoxConstraints cons,
-    int draftCount,
-    List<_DraftCard> cards,
-  ) {
+  _Fit _fit(BuildContext ctx, BoxConstraints cons, List<_DraftCard> cards) {
     final h = cons.maxHeight;
     final inner = cons.maxWidth - _side.horizontal;
     if (!h.isFinite || inner <= 0) return _Fit.scroll;
     final pad = MediaQuery.paddingOf(ctx);
+    final hasDrafts = cards.isNotEmpty;
 
     // 三排磚的自然高度（草稿 3:4、GIF 正方、範本正方），寬度公式跟
     // 畫的時候同一份。範本那排永遠在：沒有範本也有「＋」磚
-    final draft = draftCount == 0 ? 0.0 : (inner - 12) / 2 * 4 / 3;
+    final draft = hasDrafts ? (inner - 12) / 2 * 4 / 3 : 0.0;
     final gif = _gifs.isEmpty ? 0.0 : (inner - 20) / 3;
     final preset = (inner - 20) / 3;
     final tiles = draft + gif + preset;
 
     var fixed = _kSlack + 4 + pad.top + pad.bottom; // 捲動區上下留白
     fixed += 6 + _kNavButton + 16; // 返回鍵那一列
-    fixed += _titleRowH(ctx, '草稿', draftCount == 0 ? null : '全部', inner) + 14;
-    if (draftCount == 0) {
+    fixed += _titleRowH(ctx, '草稿', hasDrafts ? '全部' : null, inner) + 14;
+    if (!hasDrafts) {
       fixed +=
           10 + _textSize(ctx, '還沒有草稿', _kHintStyle, maxWidth: inner).height + 4;
     } else {
@@ -548,14 +601,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
           // 內容照磚的形狀切齊：範本可以是一張鋪滿磚面的圖，
           // 不切的話四個角會被方形的內容頂出去
           child: DecoratedBox(
-            decoration: const ShapeDecoration(
+            decoration: ShapeDecoration(
               color: _kPresetTileBg,
-              shape: RoundedSuperellipseBorder(
-                borderRadius: _kPresetTileRadius,
-              ),
+              shape: tileShape(),
             ),
             child: ClipRSuperellipse(
-              borderRadius: _kPresetTileRadius,
+              borderRadius: tileClip(),
               child: IgnorePointer(
                 child: WatermarkLayer(
                   settings: preset.settings,
@@ -594,13 +645,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
       height: w,
       alignment: Alignment.center,
       clipBehavior: Clip.antiAlias,
-      // 形狀跟同一排的範本磚一樣（連續曲率、半徑 12）
-      decoration: const ShapeDecoration(
+      // 形狀跟同一排的範本磚一樣（連續曲率、半徑 12，見 tileShape）
+      decoration: ShapeDecoration(
         color: kLCard,
-        shape: RoundedSuperellipseBorder(
-          borderRadius: _kPresetTileRadius,
-          side: BorderSide(color: kLBorder, width: 1.4),
-        ),
+        shape: tileShape(side: const BorderSide(color: kLBorder, width: 1.4)),
       ),
       child: const Text(
         '＋',
@@ -633,18 +681,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
       children: [
         AspectRatio(
           aspectRatio: 3 / 4,
-          // 一張卡自己一層：圓角裁切＋柔和陰影＋一張 720p 封面，
+          // 一張卡自己一層：圓角裁切＋柔和陰影＋一張封面，
           // 全部快取在自己的圖層裡，捲動時只是把圖層搬位置
           child: RepaintBoundary(
-            child: Container(
-              decoration: BoxDecoration(
+            // 形狀跟範本磚同一家（超橢圓，見 tileShape），大卡用 18
+            child: DecoratedBox(
+              decoration: ShapeDecoration(
                 color: const Color(0xFFF1F1F5),
-                borderRadius: BorderRadius.circular(18),
-                boxShadow: _tileShadow,
+                shape: tileShape(radius: kPresetRadius),
+                shadows: _tileShadow,
               ),
-              clipBehavior: Clip.antiAlias,
-              alignment: Alignment.center,
-              child: cover,
+              child: ClipRSuperellipse(
+                borderRadius: tileClip(kPresetRadius),
+                child: Center(child: cover),
+              ),
             ),
           ),
         ),
@@ -686,12 +736,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _reload();
   }
 
-  Future<void> _openDrafts() async {
+  /// 進草稿夾；給 [resume] 就順便接續那一種草稿（草稿卡點下去走這條）。
+  ///
+  /// 續作的判斷（檔案還在不在、帶哪些參數、不見的怎麼講）全在草稿夾
+  /// 那幾支 _resumeX 裡，主頁不另外抄一份：卡片只是替使用者按下草稿夾
+  /// 裡的那一張。所以是先進草稿夾、再由它推編輯頁——回來時人在草稿夾
+  Future<void> _openDrafts({DraftKind? resume}) async {
     await Navigator.push(
       context,
       // LightPage 一定要包：這是亮色頁，漏包就掉進暗色主題
       //（背景變黑、白卡片浮在上面，超跳）
-      MaterialPageRoute(builder: (_) => const LightPage(child: DraftsScreen())),
+      MaterialPageRoute(
+        builder: (_) => LightPage(child: DraftsScreen(resume: resume)),
+      ),
     );
     _reload();
   }
@@ -708,23 +765,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
     // 「先全部做出來再 take(2)」是白做工——三十份草稿就是二十八個
     // 用不到的 Image.memory，每次 setState 重來一次。滿了就不做了
     final shown = <_DraftCard>[];
-    void add(String? title, Widget Function() build) {
+    void add(String? title, Widget Function(double w) build) {
       if (shown.length < 2) shown.add(_DraftCard(title, build));
     }
 
     for (final m in _videoDrafts) {
       if (shown.length >= 2) break;
+      final cover = _covers[m.id];
       add(
         null,
-        () => _draftTile(
-          cover: _covers[m.id] != null
+        (w) => _draftTile(
+          cover: cover != null
               ? Image.memory(
-                  _covers[m.id]!,
+                  cover,
                   // 鋪滿：這是縮圖不是預覽，留邊只會讓一排卡看起來破碎
                   fit: BoxFit.cover,
                   width: double.infinity,
                   height: double.infinity,
                   gaplessPlayback: true,
+                  // 照卡的尺寸解碼，不是封面原尺寸（見 _coverDecodeWidth）
+                  cacheWidth: _coverDecodeWidth(w, m.thumbAspect ?? 9 / 16),
                 )
               : const Icon(
                   Icons.movie_outlined,
@@ -735,10 +795,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ),
       );
     }
+    // 其餘四種點下去也是直接接續（跟影片卡一樣），不是只進資料夾：
+    // 兩張相鄰的卡一張續作、一張換頁，說不過去。接續的流程在草稿夾裡
+    // （見 _openDrafts 的 resume）
     if (p != null) {
       add(
         '未完成的照片',
-        () => _draftTile(
+        (_) => _draftTile(
           // 照片草稿沒有存縮圖（那張照片還在裝置上，
           // 再存一份只是浪費空間）
           cover: const Icon(
@@ -747,49 +810,49 @@ class _ProfileScreenState extends State<ProfileScreen> {
             color: Color(0xFFAFAFBB),
           ),
           title: '未完成的照片',
-          onTap: _openDrafts,
+          onTap: () => _openDrafts(resume: DraftKind.photo),
         ),
       );
     }
     if (_batchDraft != null) {
       add(
         '未完成的批次浮水印',
-        () => _draftTile(
+        (_) => _draftTile(
           cover: const Icon(
             Icons.collections_outlined,
             size: 26,
             color: Color(0xFFAFAFBB),
           ),
           title: '未完成的批次浮水印',
-          onTap: _openDrafts,
+          onTap: () => _openDrafts(resume: DraftKind.batch),
         ),
       );
     }
     if (_gifDraft != null) {
       add(
         '未完成的 GIF',
-        () => _draftTile(
+        (_) => _draftTile(
           cover: const Icon(
             Icons.gif_box_outlined,
             size: 26,
             color: Color(0xFFAFAFBB),
           ),
           title: '未完成的 GIF',
-          onTap: _openDrafts,
+          onTap: () => _openDrafts(resume: DraftKind.gif),
         ),
       );
     }
     if (_collageDraft != null) {
       add(
         '未完成的拼圖',
-        () => _draftTile(
+        (_) => _draftTile(
           cover: const Icon(
             Icons.grid_view,
             size: 26,
             color: Color(0xFFAFAFBB),
           ),
           title: '未完成的拼圖',
-          onTap: _openDrafts,
+          onTap: () => _openDrafts(resume: DraftKind.collage),
         ),
       );
     }
@@ -809,17 +872,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return _row([
       for (var i = 0; i < 2; i++) ...[
         if (i > 0) const SizedBox(width: 12),
-        SizedBox(width: w, child: i < cards.length ? cards[i].build() : null),
+        SizedBox(width: w, child: i < cards.length ? cards[i].build(w) : null),
       ],
     ]);
   }
 
   @override
   Widget build(BuildContext context) {
-    final p = _photoDraft;
-    final draftCount = _videoDrafts.length + (p == null ? 0 : 1);
-    // 草稿卡先列一次：量高度跟真的畫都讀這一份（見 _draftCards）
-    final cards = draftCount == 0 ? const <_DraftCard>[] : _draftCards(p);
+    // 草稿卡先列一次：量高度跟真的畫都讀這一份（見 _draftCards）。
+    // 「有沒有草稿」就看列不列得出卡：以前只數影片＋照片草稿，只有
+    // 批次／GIF／拼圖草稿的人會看到「還沒有草稿」——而這一頁是全 App
+    // 進草稿夾的唯一入口，那份草稿就再也找不到了
+    final cards = _draftCards(_photoDraft);
+    final hasDrafts = cards.isNotEmpty;
     // 非編輯頁面全頁都能右滑返回（編輯畫面橫向手勢太多，刻意不放）
     return SwipeBack(
       child: Scaffold(
@@ -842,7 +907,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           // 磚不縮：三排永遠原尺寸、滿版到 _side 的留白線
           child: LayoutBuilder(
             builder: (context, cons) {
-              final fit = _fit(context, cons, draftCount, cards);
+              final fit = _fit(context, cons, cards);
               final inner = cons.maxWidth - _side.horizontal;
               // 「我的 GIF」跟「範本」同一種格子：三格一排、固定寬、
               // 不出血（使用者指定：以前橫向清單一直延伸出畫面）
@@ -905,12 +970,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               '草稿',
                               // 空的時候不放「沒有」：下面那行字已經說了，
                               // 標題右邊再寫一次只是重複
-                              trailing: draftCount == 0 ? null : '全部',
-                              onTap: draftCount == 0 ? null : _openDrafts,
+                              trailing: hasDrafts ? '全部' : null,
+                              onTap: hasDrafts ? _openDrafts : null,
                             ),
                           ),
                           const SizedBox(height: 14),
-                          if (draftCount == 0)
+                          if (!hasDrafts)
                             // 空的時候不畫框：一個又扁又寬的空盒子跟旁邊
                             // 的長條卡不是同一種東西，看起來像沒做完。
                             // 也不解釋草稿怎麼來——真的存了一份之後這行
@@ -979,18 +1044,29 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                     // （含範本磚的文字排版）
                                     // 一秒觸發幾十次，手指根本沒碰螢幕
                                     child: RepaintBoundary(
-                                      child: Container(
+                                      child: SizedBox(
                                         width: cell,
                                         height: cell,
-                                        decoration: BoxDecoration(
-                                          color: kLTile,
-                                          borderRadius: BorderRadius.circular(
-                                            12,
+                                        // 形狀跟旁邊的範本磚同一家（超橢圓，
+                                        // 見 tileShape）；以前是普通圓弧，
+                                        // 兩種角擺在同一排看得出來
+                                        child: DecoratedBox(
+                                          decoration: ShapeDecoration(
+                                            color: kLTile,
+                                            shape: tileShape(),
+                                            shadows: _tileShadow,
                                           ),
-                                          boxShadow: _tileShadow,
+                                          child: ClipRSuperellipse(
+                                            borderRadius: tileClip(),
+                                            child: GifImage(
+                                              g,
+                                              cacheWidth: _gifDecodeWidth(
+                                                cell,
+                                                g,
+                                              ),
+                                            ),
+                                          ),
                                         ),
-                                        clipBehavior: Clip.antiAlias,
-                                        child: GifImage(g),
                                       ),
                                     ),
                                   ),
@@ -1086,7 +1162,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
 /// 草稿夾：列出所有未完成的影片專案（可以有很多份），
 /// 點一下繼續、長按改名或刪除
 class DraftsScreen extends StatefulWidget {
-  const DraftsScreen({super.key});
+  /// 進來就接續這一種草稿（個人中心的草稿卡點下去走這條，見
+  /// _ProfileScreenState._openDrafts）。null＝只是打開資料夾
+  final DraftKind? resume;
+
+  const DraftsScreen({super.key, this.resume});
 
   @override
   State<DraftsScreen> createState() => _DraftsScreenState();
@@ -1161,54 +1241,40 @@ class _DraftsScreenState extends State<DraftsScreen> {
   @override
   void initState() {
     super.initState();
-    _reload();
+    _reload().then((_) => _autoResume());
   }
 
   Future<void> _reload() async {
     final found = await DraftStore.list();
     final prefs = await SharedPreferences.getInstance();
-    Map<String, dynamic>? photo;
-    final ps = prefs.getString(kPhotoDraftKey);
-    if (ps != null) {
-      try {
-        final j = jsonDecode(ps) as Map<String, dynamic>;
-        if ((j['photo'] as String?)?.isNotEmpty ?? false) photo = j;
-      } catch (_) {}
-    }
-    Map<String, dynamic>? batch;
-    final bs = prefs.getString(kBatchDraftKey);
-    if (bs != null) {
-      try {
-        final j = jsonDecode(bs) as Map<String, dynamic>;
-        if ((j['files'] as List?)?.isNotEmpty ?? false) batch = j;
-      } catch (_) {}
-    }
-    Map<String, dynamic>? gif;
-    final gs = prefs.getString(kGifDraftKey);
-    if (gs != null) {
-      try {
-        final j = jsonDecode(gs) as Map<String, dynamic>;
-        if ((j['path'] as String?)?.isNotEmpty ?? false) gif = j;
-      } catch (_) {}
-    }
-    Map<String, dynamic>? collage;
-    final cs = prefs.getString(kCollageDraftKey);
-    if (cs != null) {
-      try {
-        final j = jsonDecode(cs) as Map<String, dynamic>;
-        if ((j['photos'] as List?)?.isNotEmpty ?? false) collage = j;
-      } catch (_) {}
-    }
-    if (mounted) {
-      setState(() {
-        _drafts = found;
-        _photoDraft = photo;
-        _batchDraft = batch;
-        _gifDraft = gif;
-        _collageDraft = collage;
-        _loading = false;
-      });
-      unawaited(_loadCovers(found));
+    if (!mounted) return;
+    setState(() {
+      _drafts = found;
+      // 「有沒有」的規則跟個人中心同一份（見 _readDraftJson）
+      _photoDraft = _readDraftJson(prefs, kPhotoDraftKey, 'photo');
+      _batchDraft = _readDraftJson(prefs, kBatchDraftKey, 'files');
+      _gifDraft = _readDraftJson(prefs, kGifDraftKey, 'path');
+      _collageDraft = _readDraftJson(prefs, kCollageDraftKey, 'photos');
+      _loading = false;
+    });
+    unawaited(_loadCovers(found));
+  }
+
+  /// 被要求接續的那一份（見 [DraftsScreen.resume]）：清單讀好之後替
+  /// 使用者按下那一張。只做一次（進場時）——從編輯頁回來就留在資料夾裡
+  Future<void> _autoResume() async {
+    if (!mounted) return;
+    switch (widget.resume) {
+      case null:
+        return;
+      case DraftKind.photo:
+        await _resumePhoto();
+      case DraftKind.batch:
+        await _resumeBatch();
+      case DraftKind.gif:
+        await _resumeGif();
+      case DraftKind.collage:
+        await _resumeCollage();
     }
   }
 
@@ -1341,7 +1407,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
     final ok = await showConfirm(
       context,
       title: '刪除草稿？',
-      message: '這張沒輸出的照片會被移除，無法復原',
+      message: '這張沒匯出的照片會被移除，無法復原',
       action: '刪除',
     );
     if (ok) {
@@ -1366,10 +1432,17 @@ class _DraftsScreenState extends State<DraftsScreen> {
     /// 縮圖的寬高比。null＝沒有縮圖（放圖示佔位，維持方框）
     double? coverAspect,
   }) {
-    return Container(
-      decoration: lightCard(radius: 12),
+    // 底色、髮絲邊線、形狀都交給同一個 Material：InkWell 的水波是畫在
+    // 最近的 Material 上的，以前 InkWell 直接放在有底色的 Container 裡，
+    // 水波畫在 Scaffold 那一層、被卡片的底色蓋住，按了沒回饋。
+    // 形狀跟瀑布流的磚同一家（超橢圓，見 tileShape），邊線同 lightCard
+    return Material(
+      color: kLCard,
+      shape: tileShape(
+        side: const BorderSide(color: Color(0xFFEDEDF2), width: 1.4),
+      ),
+      clipBehavior: Clip.antiAlias,
       child: InkWell(
-        borderRadius: BorderRadius.circular(12),
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -1380,8 +1453,8 @@ class _DraftsScreenState extends State<DraftsScreen> {
               // 本來是固定 52×52 的方框，而 alignment 會把緊的約束
               // 放鬆——圖片於是照原比例縮進方框裡，兩側露出一塊灰邊。
               // 直片橫片的寬度不一樣是正常的，那才是它本來的樣子
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
+              ClipRSuperellipse(
+                borderRadius: tileClip(8),
                 child: SizedBox(
                   height: 52,
                   width: 52 * (coverAspect ?? 1.0).clamp(0.4, 2.5),
@@ -1464,14 +1537,11 @@ class _DraftsScreenState extends State<DraftsScreen> {
     if (mounted) setState(() {});
   }
 
+  /// 單鍵草稿的存檔時間（沒有或壞掉就空字串），格式走 [dateLabel]
   String _savedAtLabel(Map<String, dynamic> j) {
     final raw = j['savedAt'];
-    if (raw is! String) return '';
-    final t = DateTime.tryParse(raw);
-    if (t == null) return '';
-    return '${t.month}/${t.day} '
-        '${t.hour.toString().padLeft(2, '0')}:'
-        '${t.minute.toString().padLeft(2, '0')}';
+    final t = raw is String ? DateTime.tryParse(raw) : null;
+    return t == null ? '' : dateLabel(t);
   }
 
   Future<void> _resume(DraftMeta m) async {
@@ -1510,6 +1580,10 @@ class _DraftsScreenState extends State<DraftsScreen> {
   double _tileAspect(DraftMeta m) =>
       _covers[m.id] != null ? (m.thumbAspect ?? 9 / 16) : 1.0;
 
+  /// 一格佔的高度（含跟下一格之間的 10）。排欄、算總長、排版三邊用
+  /// 同一個式子，不然版面會自己對不齊（跟「我的 GIF」同一套）
+  double _tileExtent(DraftMeta m, double colW) => colW / _tileAspect(m) + 10;
+
   /// 兩欄瀑布流：每一份丟進目前比較短的那一欄（跟「我的 GIF」同一套）
   List<List<DraftMeta>> _draftColumns(double colW) {
     final cols = <List<DraftMeta>>[[], []];
@@ -1517,83 +1591,71 @@ class _DraftsScreenState extends State<DraftsScreen> {
     for (final m in _drafts) {
       final i = h[0] <= h[1] ? 0 : 1;
       cols[i].add(m);
-      h[i] += colW / _tileAspect(m) + 10;
+      h[i] += _tileExtent(m, colW);
     }
     return cols;
   }
 
-  Widget _draftTile(DraftMeta m) {
+  /// 一格：封面照原比例。[colW] 是它畫出來的寬，封面就照這個寬解碼
+  Widget _draftTile(DraftMeta m, double colW) {
     final cover = _covers[m.id];
     final picked = _picked.contains(m.id);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: GestureDetector(
-        onTap: _selecting
-            ? () => setState(() {
-                picked ? _picked.remove(m.id) : _picked.add(m.id);
-              })
-            : () => _resume(m),
-        onLongPress: _selecting ? null : () => _delete(m),
-        // 一格自己一層：ListView 只給「整片瀑布流」一個 repaint
-        // boundary，裡面三十張封面共用同一張圖層——任何一張解碼完成、
-        // 或勾選狀態一改，三十張就整組重錄
-        child: RepaintBoundary(
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: AspectRatio(
-              aspectRatio: _tileAspect(m),
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  if (cover != null)
-                    Image.memory(
-                      cover,
-                      fit: BoxFit.cover,
-                      gaplessPlayback: true,
-                    )
-                  else
-                    const ColoredBox(
-                      color: kLTile,
-                      child: Icon(
-                        Icons.movie_outlined,
-                        size: 26,
-                        color: kLAccent,
-                      ),
+    return GestureDetector(
+      onTap: _selecting
+          ? () => setState(() {
+              picked ? _picked.remove(m.id) : _picked.add(m.id);
+            })
+          : () => _resume(m),
+      onLongPress: _selecting ? null : () => _delete(m),
+      // 形狀跟個人中心的磚同一家（超橢圓，見 tileShape）。
+      // 不自己包 RepaintBoundary：SliverList 已經給每一格一層
+      child: ClipRSuperellipse(
+        borderRadius: tileClip(),
+        child: AspectRatio(
+          aspectRatio: _tileAspect(m),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (cover != null)
+                Image.memory(
+                  cover,
+                  fit: BoxFit.cover,
+                  gaplessPlayback: true,
+                  // 磚就是封面的比例，欄寬 × dpr 就是它畫出來的實體寬——
+                  // 照這個解碼，不是封面原尺寸（長邊 720 的 PNG 解開一張
+                  // 1.2MB，實機曾有 113 份）
+                  cacheWidth: (colW * MediaQuery.devicePixelRatioOf(context))
+                      .round(),
+                )
+              else
+                const ColoredBox(
+                  color: kLTile,
+                  child: Icon(Icons.movie_outlined, size: 26, color: kLAccent),
+                ),
+              // 不放日期/時長角標（使用者指定）：封面本身就是內容
+              // 選取模式：整張壓暗＋右上角勾勾
+              if (_selecting) ...[
+                ColoredBox(
+                  color: Colors.black.withValues(alpha: picked ? 0.35 : 0.12),
+                ),
+                Positioned(
+                  right: 6,
+                  top: 6,
+                  child: Container(
+                    width: 20,
+                    height: 20,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: picked ? const Color(0xFFE53935) : Colors.black38,
+                      border: Border.all(color: Colors.white, width: 1.5),
                     ),
-                  // 不放日期/時長角標（使用者指定）：封面本身就是內容
-                  // 選取模式：整張壓暗＋右上角勾勾
-                  if (_selecting) ...[
-                    ColoredBox(
-                      color: Colors.black.withValues(
-                        alpha: picked ? 0.35 : 0.12,
-                      ),
-                    ),
-                    Positioned(
-                      right: 6,
-                      top: 6,
-                      child: Container(
-                        width: 20,
-                        height: 20,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: picked
-                              ? const Color(0xFFE53935)
-                              : Colors.black38,
-                          border: Border.all(color: Colors.white, width: 1.5),
-                        ),
-                        child: picked
-                            ? const Icon(
-                                Icons.check,
-                                size: 13,
-                                color: Colors.white,
-                              )
-                            : null,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
+                    child: picked
+                        ? const Icon(Icons.check, size: 13, color: Colors.white)
+                        : null,
+                  ),
+                ),
+              ],
+            ],
           ),
         ),
       ),
@@ -1660,112 +1722,151 @@ class _DraftsScreenState extends State<DraftsScreen> {
                       ),
                     ),
                   )
-                : ListView(
-                    padding: const EdgeInsets.all(16),
-                    children: [
-                      // 影片草稿走瀑布流（C 案）：封面原比例、日期 chip
-                      // 在左上、時長在右下。照片/批次草稿維持一列一卡
-                      if (ds.isNotEmpty)
-                        LayoutBuilder(
-                          builder: (context, cons) {
-                            final colW = (cons.maxWidth - 10) / 2;
-                            final cols = _draftColumns(colW);
-                            return Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                : LayoutBuilder(
+                    builder: (context, box) {
+                      // 兩欄瀑布流：左右各 16、中間 10
+                      final colW = (box.maxWidth - 16 * 2 - 10) / 2;
+                      final cols = _draftColumns(colW);
+                      return CustomScrollView(
+                        slivers: [
+                          // 影片草稿走瀑布流（C 案）：封面原比例。每一欄
+                          // 一條 SliverVariedExtentList，只做看得到的那幾格
+                          // （跟「我的 GIF」同一套）。以前是 ListView 裡唯一
+                          // 一個子項包兩欄 Column，三十份草稿就是三十張封面
+                          // 同時活著、一起解碼（實機曾有 113 份）。每一格的
+                          // 高度本來就算得出來（欄寬 ÷ 比例），總長也直接給
+                          // （見 _ExactExtentDelegate），沒做出來的格子也定得
+                          // 出位置
+                          if (ds.isNotEmpty)
+                            SliverPadding(
+                              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                              sliver: SliverCrossAxisGroup(
+                                slivers: [
+                                  for (var c = 0; c < cols.length; c++)
+                                    SliverVariedExtentList(
+                                      itemExtentBuilder: (i, _) =>
+                                          _tileExtent(cols[c][i], colW),
+                                      delegate: _ExactExtentDelegate(
+                                        (_, i) => i < 0 || i >= cols[c].length
+                                            ? null
+                                            : Padding(
+                                                // 欄距 10：左欄右邊 5、右欄
+                                                // 左邊 5；格距 10 在下面
+                                                padding: EdgeInsets.only(
+                                                  left: c == 0 ? 0 : 5,
+                                                  right: c == 0 ? 5 : 0,
+                                                  bottom: 10,
+                                                ),
+                                                child: _draftTile(
+                                                  cols[c][i],
+                                                  colW,
+                                                ),
+                                              ),
+                                        childCount: cols[c].length,
+                                        total: [
+                                          for (final m in cols[c])
+                                            _tileExtent(m, colW),
+                                        ].fold(0.0, (a, b) => a + b),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          // 照片／批次／GIF／拼圖草稿維持一列一卡
+                          SliverPadding(
+                            padding: EdgeInsets.fromLTRB(
+                              16,
+                              ds.isEmpty ? 16 : 0,
+                              16,
+                              16,
+                            ),
+                            sliver: SliverList.list(
                               children: [
-                                Expanded(
-                                  child: Column(
-                                    children: [
-                                      for (final m in cols[0]) _draftTile(m),
-                                    ],
+                                if (p != null)
+                                  _draftCard(
+                                    // 照片草稿沒有存縮圖（那張照片還在裝置
+                                    // 上，再存一份只是浪費空間），用圖示就好
+                                    cover: const Icon(
+                                      Icons.image_outlined,
+                                      size: 20,
+                                      color: kLAccent,
+                                    ),
+                                    title: '未完成的照片',
+                                    subtitle: _savedAtLabel(p),
+                                    onTap: _resumePhoto,
+                                    onDelete: _deletePhoto,
                                   ),
-                                ),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Column(
-                                    children: [
-                                      for (final m in cols[1]) _draftTile(m),
-                                    ],
+                                if (_batchDraft != null) ...[
+                                  const SizedBox(height: 12),
+                                  _draftCard(
+                                    cover: const Icon(
+                                      Icons.collections_outlined,
+                                      size: 20,
+                                      color: kLAccent,
+                                    ),
+                                    title: '未完成的批次浮水印',
+                                    subtitle: _savedAtLabel(_batchDraft!),
+                                    onTap: _resumeBatch,
+                                    onDelete: _deleteBatch,
                                   ),
-                                ),
+                                ],
+                                if (_gifDraft != null) ...[
+                                  const SizedBox(height: 12),
+                                  _draftCard(
+                                    cover: const Icon(
+                                      Icons.gif_box_outlined,
+                                      size: 20,
+                                      color: kLAccent,
+                                    ),
+                                    title: '未完成的 GIF',
+                                    subtitle: _savedAtLabel(_gifDraft!),
+                                    onTap: _resumeGif,
+                                    onDelete: _deleteGif,
+                                  ),
+                                ],
+                                if (_collageDraft != null) ...[
+                                  const SizedBox(height: 12),
+                                  _draftCard(
+                                    cover: const Icon(
+                                      Icons.grid_view,
+                                      size: 20,
+                                      color: kLAccent,
+                                    ),
+                                    title: '未完成的拼圖',
+                                    subtitle: _savedAtLabel(_collageDraft!),
+                                    onTap: _resumeCollage,
+                                    onDelete: _deleteCollage,
+                                  ),
+                                ],
+                                // 說明放在清單尾巴：草稿不會自己消失，
+                                // 要清得自己按
+                                if (ds.isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.fromLTRB(
+                                      8,
+                                      18,
+                                      8,
+                                      8,
+                                    ),
+                                    child: Text(
+                                      '影片專案會自動存成草稿，不會自己刪掉；'
+                                      '保留 $_cap 份，超過時按右上角的掃把清掉最舊的',
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        color: kLTextDim,
+                                        height: 1.5,
+                                      ),
+                                    ),
+                                  ),
+                                // 底部刪除列滑上來時，最後一張卡不被蓋住
+                                if (_selecting) const SizedBox(height: 88),
                               ],
-                            );
-                          },
-                        ),
-                      if (p != null)
-                        _draftCard(
-                          // 照片草稿沒有存縮圖（那張照片還在裝置上，
-                          // 再存一份只是浪費空間），用圖示就好
-                          cover: const Icon(
-                            Icons.image_outlined,
-                            size: 20,
-                            color: kLAccent,
-                          ),
-                          title: '未完成的照片',
-                          subtitle: _savedAtLabel(p),
-                          onTap: _resumePhoto,
-                          onDelete: _deletePhoto,
-                        ),
-                      if (_batchDraft != null) ...[
-                        const SizedBox(height: 12),
-                        _draftCard(
-                          cover: const Icon(
-                            Icons.collections_outlined,
-                            size: 20,
-                            color: kLAccent,
-                          ),
-                          title: '未完成的批次浮水印',
-                          subtitle: _savedAtLabel(_batchDraft!),
-                          onTap: _resumeBatch,
-                          onDelete: _deleteBatch,
-                        ),
-                      ],
-                      if (_gifDraft != null) ...[
-                        const SizedBox(height: 12),
-                        _draftCard(
-                          cover: const Icon(
-                            Icons.gif_box_outlined,
-                            size: 20,
-                            color: kLAccent,
-                          ),
-                          title: '未完成的 GIF',
-                          subtitle: _savedAtLabel(_gifDraft!),
-                          onTap: _resumeGif,
-                          onDelete: _deleteGif,
-                        ),
-                      ],
-                      if (_collageDraft != null) ...[
-                        const SizedBox(height: 12),
-                        _draftCard(
-                          cover: const Icon(
-                            Icons.grid_view,
-                            size: 20,
-                            color: kLAccent,
-                          ),
-                          title: '未完成的拼圖',
-                          subtitle: _savedAtLabel(_collageDraft!),
-                          onTap: _resumeCollage,
-                          onDelete: _deleteCollage,
-                        ),
-                      ],
-                      // 說明放在清單尾巴：草稿不會自己消失，要清得自己按
-                      if (ds.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(8, 18, 8, 8),
-                          child: Text(
-                            '影片專案會自動存成草稿，不會自己刪掉；'
-                            '保留 $_cap 份，超過時按右上角的掃把清掉最舊的',
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: kLTextDim,
-                              height: 1.5,
                             ),
                           ),
-                        ),
-                      // 底部刪除列滑上來時，最後一張卡不被蓋住
-                      if (_selecting) const SizedBox(height: 88),
-                    ],
+                        ],
+                      );
+                    },
                   ),
             // 選取模式勾了至少一張，刪除列才從最下方浮上來
             Positioned(
@@ -1850,23 +1951,19 @@ class _GifsScreenState extends State<GifsScreen> {
       _gifs = gifs;
       _loading = false;
     });
-    // 比例邊讀邊補：只解第一格拿尺寸，不用等全部讀完才畫得出東西
+    // 比例只讀檔頭（見 gifAspect），不解任何一格像素；以前是把每個 GIF
+    // 的第一格整張解開只為了拿寬高，codec 還沒 dispose。
+    // 全部量完才 setState 一次：以前每量到一個就重排一次瀑布流，
+    // 四十個 GIF 就是四十次整頁重排
+    var changed = false;
     for (final ref in gifs) {
       if (_aspect.containsKey(ref)) continue;
-      double a;
-      try {
-        final bytes = await GifStore.bytes(ref);
-        final codec = await ui.instantiateImageCodec(bytes!);
-        final frame = await codec.getNextFrame();
-        a = frame.image.width / frame.image.height;
-        frame.image.dispose();
-        if (a <= 0) a = 1.0;
-      } catch (_) {
-        a = 1.0; // 讀不到就當正方形，至少排得出來
-      }
+      // 讀不到就當正方形，至少排得出來
+      _aspect[ref] = await gifAspect(ref) ?? 1.0;
+      changed = true;
       if (!mounted) return;
-      setState(() => _aspect[ref] = a);
     }
+    if (changed) setState(() {});
   }
 
   /// 一格佔的高度（含跟下一格之間的 10）。比例還沒量到就先當正方形，
@@ -1888,15 +1985,24 @@ class _GifsScreenState extends State<GifsScreen> {
     return cols;
   }
 
-  /// 一格：照原始比例畫。GIF 自己會動——Image.file 讀到多格就會播
-  Widget _gifTile(String ref) => GestureDetector(
+  /// 一格：照原始比例畫。GIF 自己會動——Image.file 讀到多格就會播。
+  /// [colW] 是它畫出來的寬：磚就是 GIF 的比例，欄寬 × dpr 就是實體寬，
+  /// 照這個解碼（匯入的 GIF 可能 1080 寬，不縮的話每格都全解析度解）。
+  /// 形狀跟個人中心的磚同一家（超橢圓，見 tileShape）
+  Widget _gifTile(String ref, double colW) => GestureDetector(
     onTap: () => _preview(ref),
     onLongPress: () => _delete(ref),
-    child: ClipRRect(
-      borderRadius: BorderRadius.circular(12),
+    child: ClipRSuperellipse(
+      borderRadius: tileClip(),
       child: AspectRatio(
         aspectRatio: _aspect[ref] ?? 1.0,
-        child: ColoredBox(color: kLTile, child: GifImage(ref)),
+        child: ColoredBox(
+          color: kLTile,
+          child: GifImage(
+            ref,
+            cacheWidth: (colW * MediaQuery.devicePixelRatioOf(context)).round(),
+          ),
+        ),
       ),
     ),
   );
@@ -2012,7 +2118,7 @@ class _GifsScreenState extends State<GifsScreen> {
                                             right: c == 0 ? 5 : 0,
                                             bottom: 10,
                                           ),
-                                          child: _gifTile(cols[c][i]),
+                                          child: _gifTile(cols[c][i], colW),
                                         ),
                                   childCount: cols[c].length,
                                   total: [
@@ -2160,10 +2266,11 @@ class _GifLightboxState extends State<_GifLightbox> {
         itemBuilder: (context, i) => Padding(
           padding: const EdgeInsets.all(20),
           child: Center(
-            child: ClipRRect(
+            child: ClipRSuperellipse(
               // 圓角切在 GIF 本人上（不是外面包一層框），
-              // 就沒有對不齊的白邊
-              borderRadius: BorderRadius.circular(16),
+              // 就沒有對不齊的白邊。它是一個對話框，圓角跟對話框同級；
+              // 形狀跟磚同一家（超橢圓，見 tileShape）
+              borderRadius: tileClip(kDialogRadius),
               child: GifImage(widget.gifs[i], fit: BoxFit.contain),
             ),
           ),
