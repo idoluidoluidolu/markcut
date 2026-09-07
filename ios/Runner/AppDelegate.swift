@@ -3849,7 +3849,7 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
     // HDR 輸出：使用者要「跟原片一樣」而且來源真的是 HDR 才開。
     // SDR 轉出來在 HDR 螢幕上永遠跟原片有落差（亮度被壓縮了），
     // 唯一的真解是輸出檔本身就是 HDR（HEVC 10-bit HLG）
-    var wantHDR = (a["hdr"] as? Bool ?? false) && hasHDR
+    let wantHDR = (a["hdr"] as? Bool ?? false) && hasHDR
     if wantHDR {
       // 疊加物要在 HLG 管線裡合成，一律走 CI
       useCI = true
@@ -4755,7 +4755,15 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
     hdrPass: Bool = false,
     done: @escaping (String?) -> Void
   ) {
-    try? FileManager.default.removeItem(atPath: dest)
+    // 這一趟寫自己的暫存檔，成功才換到 dest。
+    //
+    // 取消／逾時是「立刻回覆、writer 稍後才在 group.notify 收掉」——
+    // 呼叫端拿到回覆的當下就可能用同一個 dest 開下一次轉檔（兩段式退路
+    // 的 exportOnce 就是這樣），而舊的 writer 還活著、還指著那個路徑，
+    // cancelWriting 收尾時會不會順手刪掉那個檔沒有保證。各寫各的就沒有
+    // 這個問題，順便讓「轉到一半的檔」永遠不會被誤認成成品
+    let stage = "\(dest).\(UUID().uuidString).mp4"
+    try? FileManager.default.removeItem(atPath: stage)
     if hdrPass {
       DispatchQueue.main.async {
         channel.invokeMethod(
@@ -4769,7 +4777,7 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
     guard let vTrack = asset.tracks(withMediaType: .video).first,
       let reader = try? AVAssetReader(asset: asset),
       let writer = try? AVAssetWriter(
-        outputURL: URL(fileURLWithPath: dest), fileType: .mp4)
+        outputURL: URL(fileURLWithPath: stage), fileType: .mp4)
     else {
       done("開不了這個檔")
       return
@@ -5071,7 +5079,9 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
         timeoutItem = nil
         self?.prepCancels.removeValue(forKey: cancelKey)
         bg.end()
-        if err != nil { try? FileManager.default.removeItem(atPath: dest) }
+        // 失敗／取消：只清自己的暫存檔，不要碰 dest——那裡可能已經是
+        // 下一次嘗試的成品了
+        if err != nil { try? FileManager.default.removeItem(atPath: stage) }
         done(err)
       }
     }
@@ -5127,6 +5137,14 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
           } else {
             finish("writer=\(writer.status.rawValue) reader=\(reader.status.rawValue)")
           }
+          return
+        }
+        // 成功了才換到 dest（同一顆磁碟上的 move，不是複製）
+        do {
+          try? FileManager.default.removeItem(atPath: dest)
+          try FileManager.default.moveItem(atPath: stage, toPath: dest)
+        } catch {
+          finish("換檔失敗：\(error.localizedDescription)")
           return
         }
         let ms = Int((CACurrentMediaTime() - t0) * 1000)
@@ -10729,7 +10747,8 @@ extension AppDelegate {
         }
         let jpeg = (a["jpeg"] as? NSNumber)?.boolValue ?? true
         let quality = (a["quality"] as? NSNumber)?.intValue ?? 92
-        // 來源照片路徑（選填）：帶了就把 EXIF/GPS/TIFF/IPTC 搬進成品，
+        // 來源照片路徑（選填）：帶了就把 EXIF／TIFF 搬進成品（不含 GPS
+        // 與 IPTC，見 sourceMetadata），
         // 跟 HDR 路一致。沒帶＝跟以前一樣不寫中繼資料
         let src = a["src"] as? String
         DispatchQueue.global(qos: .userInitiated).async {
@@ -10753,7 +10772,8 @@ extension AppDelegate {
 }
 
 enum PhotoRgbaEncode {
-  /// 來源照片的 EXIF/GPS/TIFF/IPTC（跟 HDR 路 HDRPhotoExport 同一份清單；
+  /// 來源照片的 EXIF 與 TIFF（跟 HDR 路 HDRPhotoExport 同一份清單；
+  /// GPS 與 IPTC 兩邊都不帶——成品是拿去公開分享的；
   /// MakerApple 一樣整包不帶）。方向改 1：Dart 交來的 RGBA 是解碼時已
   /// 轉正的顯示方向，像素尺寸改成成品的。讀不到就回空——中繼資料只是
   /// 附加，不能因為它讓存檔失敗

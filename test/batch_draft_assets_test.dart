@@ -257,7 +257,7 @@ void main() {
     expect(await DraftAssets.retain(DraftAssets.batch, {}), 0);
   });
 
-  test('path_provider 有 mock 時，選取器目錄就是暫存目錄與 Documents/picked_images', () async {
+  test('選取器目錄＝暫存目錄＋Documents/picked_images（後者是舊版殘檔）', () async {
     DraftAssets.pickerRootsOverride = null;
     final docs = Directory('${_root.path}${_sep}docs')..createSync();
     final tmp = Directory('${_root.path}${_sep}tmp')..createSync();
@@ -292,7 +292,9 @@ void main() {
     expect(
       inPicked.existsSync(),
       isFalse,
-      reason: 'iOS file_picker 的複本在 Documents/picked_images',
+      reason:
+          '舊版 file_picker 的複本留在 Documents/picked_images，'
+          '清理時還是要掃得到（現在的 fork 已改寫進 tmp）',
     );
     expect(inDocs.existsSync(), isTrue, reason: 'Documents 其他地方的檔案不碰');
   });

@@ -5,11 +5,13 @@ import 'package:path_provider/path_provider.dart';
 
 /// 批次浮水印／拼圖草稿引用的素材，自己留一份在 Application Support。
 ///
-/// 相簿選取器交出來的都是複本：iOS 的 file_picker（PHPicker 那條）放在
-/// Documents/picked_images、文件選取器放在 tmp/；image_picker 跟安卓的
-/// 系統相片選取器放在 cache/。tmp／cache 系統隨時可清（iOS 幾天就清），
-/// 草稿記那些路徑，過幾天續作就是「有 N 個檔案已不在」；Documents 那邊
-/// 反過來永遠不會被清、每挑一次就多一份原檔，幾百 MB 就這樣堆著。
+/// 相簿選取器交出來的都是複本，而且都放在系統隨時可以清掉的地方：
+/// iOS 的 file_picker（自帶的修改版）跟文件選取器放 tmp/，image_picker
+/// 與安卓的系統相片選取器放 cache/。iOS 的 tmp 幾天就會被清，草稿記那些
+/// 路徑，過幾天續作就是「有 N 個檔案已不在」。
+///（更早的版本 file_picker 是複製到 Documents/picked_images——那裡反過來
+/// 永遠不會被清、每挑一次就多一份原檔。fork 已經改掉，那個位置現在只剩
+/// 舊版留下來的殘檔，清理時照樣會掃到）
 /// GIF 那頁早就自己留一份（GifStore.addBytes），照片草稿以前沒有。
 ///
 /// 做法：存草稿時把引用的檔案複製進 `support/draft_assets/<kind>/`，草稿改記
