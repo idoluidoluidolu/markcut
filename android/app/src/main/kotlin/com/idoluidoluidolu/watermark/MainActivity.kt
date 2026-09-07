@@ -83,6 +83,10 @@ class MainActivity : FlutterActivity() {
         registerPrepChannel(flutterEngine)
         registerDiagChannel(flutterEngine)
         registerPickChannel(flutterEngine)
+        // cacheDir/picked 每挑一次就多一份複本（同名不覆蓋、從沒人清）：
+        // 啟動時在背景掃掉一天以前的。草稿要留的素材 Dart 端會複製進
+        // 自己的目錄，這裡的只是匯入時的中繼複本
+        copyExec.execute { sweepPicked() }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "markcut/frames")
             .setMethodCallHandler { call, result ->
                 if (call.method != "frameAt") {
@@ -128,10 +132,31 @@ class MainActivity : FlutterActivity() {
     /// MIME 不可靠（可能回 null、image/*、或大小寫不同），而這裡本來
     /// 就知道答案：選取器是我們自己按方法名開的
     private var pickWantsGif = false
-    private val pickReq = 9137
+
+    /// 刻意超過 16 位元。file_picker 的 REQUEST_CODE 是
+    /// `(FilePickerPlugin::class.java.hashCode() + 43) and 0xffff`——執行期
+    /// 雜湊，0~65535 任何值都可能；跟舊的 9137 撞上時 onActivityResult 會
+    /// 把它的結果吃掉、它的 Future 永遠不回。`and 0xffff` 永遠算不出
+    /// 0x10000 以上的號碼。FlutterActivity 直接繼承 android.app.Activity，
+    /// 沒有 FragmentActivity「只能用低 16 位元」的那道檢查
+    private val pickReq = 0x1ACE7
 
     /// 把 content:// 複製進快取的工作緒（大檔要幾秒，不能佔主緒）
     private val copyExec = Executors.newSingleThreadExecutor()
+
+    /// 掃掉 cacheDir/picked 底下一天以前的複本。一天內的先留著：可能還在
+    /// 被這一次的匯入用。讀不到日期（0）的也留著——判不出新舊時寧可留
+    /// 下垃圾也不要刪掉還在用的（iOS 的 sweepPickedTemp 同一條規矩）
+    private fun sweepPicked() {
+        val files = File(cacheDir, "picked").listFiles() ?: return
+        val cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000
+        for (f in files) {
+            try {
+                val at = f.lastModified()
+                if (at > 0 && at < cutoff) f.delete()
+            } catch (_: Exception) {}
+        }
+    }
 
     private fun registerPickChannel(flutterEngine: FlutterEngine) {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "markcut/pick")
@@ -185,11 +210,13 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        if (requestCode != pickReq) {
+        // 沒有在等的挑選（pickReply 空）也交給 super：就算號碼真的撞上，
+        // 別人（外掛）的結果也不會被這裡吃掉
+        val reply = pickReply
+        if (requestCode != pickReq || reply == null) {
             super.onActivityResult(requestCode, resultCode, data)
             return
         }
-        val reply = pickReply ?: return
         pickReply = null
         if (resultCode != Activity.RESULT_OK || data == null) {
             reply.success(ArrayList<String>()) // 使用者按了返回
@@ -268,7 +295,20 @@ class MainActivity : FlutterActivity() {
     ): ByteArray? {
         if (cachedPath != path) {
             retriever?.release()
-            retriever = MediaMetadataRetriever().also { it.setDataSource(path) }
+            // 先清掉再建：setDataSource 丟例外（壞路徑）時以前 retriever 還
+            // 指著已 release 的舊物件、cachedPath 也還是舊路徑——下一次要舊
+            // 路徑就對死物件 getFrameAtTime，一路回 null 直到換路徑。
+            // 新物件 setDataSource 失敗也要 release，不然就漏一顆
+            retriever = null
+            cachedPath = null
+            val r = MediaMetadataRetriever()
+            try {
+                r.setDataSource(path)
+            } catch (e: Exception) {
+                r.release()
+                throw e
+            }
+            retriever = r
             cachedPath = path
         }
         val r = retriever ?: return null
@@ -1000,9 +1040,19 @@ class MainActivity : FlutterActivity() {
     private fun even(v: Int): Int = maxOf(2, v / 2 * 2)
 
     override fun onDestroy() {
-        retriever?.release()
-        retriever = null
+        // retriever 只能在 frameExec 上碰（MediaMetadataRetriever 不是執行緒
+        // 安全的）：以前主緒直接 release，跟正在抽幀的 grabFrame 撞上就是
+        // 原生 crash。排進同一條工作緒、排在所有已排的抽幀之後。三條工作
+        // 緒也一併收掉：shutdown 讓已排的跑完、不再接新的（以前從沒收過）
+        frameExec.execute {
+            retriever?.release()
+            retriever = null
+            cachedPath = null
+        }
+        frameExec.shutdown()
+        copyExec.shutdown()
         cancelAllPrep()
+        prepExec.shutdown()
         super.onDestroy()
     }
 }

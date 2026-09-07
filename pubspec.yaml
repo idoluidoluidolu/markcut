@@ -77,19 +77,30 @@ dependencies:
   flutter_image_compress: ^2.5.1
   image_picker_platform_interface: ^2.11.1
 
-# 自帶修改版的 iOS 播放外掛（改動都掛 MarkCut 標記：FVPVideoPlayer.m
-# 八處、FVPAVFactory.m 一處，不是只差一行）。起點是關掉
-# automaticallyWaitsToMinimizeStalling。那是給串流用的「先等緩衝夠再
-# 播」，對本機檔案純粹是白等——實測按下播放到第一格要 267ms+。
-# 上游沒開放這個設定，只能覆蓋。升級 video_player 時記得同步這份
+# 自帶修改版的 iOS 播放外掛 video_player_avfoundation 2.11.0。不只一行
+#（對 pub 快取 diff，每段都有「MarkCut patch」標記）：
+#   FVPAVFactory.m  1 段：關掉 automaticallyWaitsToMinimizeStalling——那是
+#     給串流用的「先等緩衝夠再播」，本機檔案純粹白等（首格 267ms+）
+#   FVPVideoPlayer.m 5 段／+88 行：seek 世代號（丟掉過期的精修 seek）、
+#     play 改 playImmediatelyAtRate（不等緩衝規則）、暫停中預捲解碼器、
+#     拖曳時先寬容 seek 再排 250ms 後的精修、落點已在半格內就不精修。
+#     其中 prerollAtRate 在 status != readyToPlay 會丟例外，補丁有 guard
+# 上游正把 ObjC 改寫成 Swift（2.9.5 起），這些補丁沒辦法 rebase——升級
+# video_player 時要逐段重做，不是只搬一行
 dependency_overrides:
   video_player_avfoundation:
     path: packages/video_player_avfoundation
-  # 自帶修改版的 file_picker 10.3.10（只動 iOS 的 PHPicker 回傳）：
-  # 上游把每個檔案「複製完成」的順序當回傳順序——多選十支影片，
-  # 大的、在 iCloud 的後到，時間軸就不是使用者點選的順序。改成
-  # 照 PHPicker 給的（＝點選）順序填格子。11.0.x 上游一樣沒修；
-  # 升級 file_picker 時記得把 FilePickerPlugin.m 裡 MarkCut patch 三段搬過去
+  # 自帶修改版的 file_picker 10.3.10（只動 iOS 的 FilePickerPlugin.m，
+  # 每段都有「MarkCut patch」標記）：
+  #   (1) PHPicker 回傳順序：上游把每個檔案「複製完成」的順序當回傳順序
+  #       ——多選十支影片，大的、在 iCloud 的後到，時間軸就不是使用者
+  #       點選的順序。改成照 PHPicker 給的（＝點選）順序填格子（依 index
+  #       填槽、失敗槽剔除，三段）。11.0.x 上游一樣沒修
+  #   (2) 複本位置：上游把每支挑到的影片/照片永久複製到
+  #       Documents/picked_images（進 iCloud 備份、從沒人清）。改到
+  #       tmp/picked_images 並標 NSURLIsExcludedFromBackupKey——草稿要留
+  #       的素材 Dart 端自己複製，這份只是匯入中繼
+  # 升級 file_picker 時記得把這四段搬過去
   file_picker:
     path: packages/file_picker
 

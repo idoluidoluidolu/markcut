@@ -185,7 +185,20 @@ final class CIOverlaySpec {
   /// 解好的點陣（引擎上傳紋理、CI 合成共用同一份）
   let cgImg: CGImage
 
+  /// 流水號：Metal 引擎的紋理快取用它當鍵。以前拿 cgImg 的位址
+  ///（ObjectIdentifier）當鍵、又不持有那張圖——舊清單釋放後，新解
+  /// 出來的同尺寸 PNG 常常落在同一個位址（ABA），命中的是舊樣式的
+  /// 紋理（反覆改字/改色偶發停在上一版）。流水號永不重用，也不用
+  /// 為了防位址重用而把整張圖抓在快取裡
+  let uid: Int
+  private static let uidLock = NSLock()
+  private static var nextUid = 0
+
   init?(_ ov: [String: Any], canvas: CGSize) {
+    CIOverlaySpec.uidLock.lock()
+    CIOverlaySpec.nextUid += 1
+    uid = CIOverlaySpec.nextUid
+    CIOverlaySpec.uidLock.unlock()
     id = ov["id"] as? String
     pad = ov["pad"] as? Double ?? 0
     bx = ov["bx"] as? Double ?? 0.5
@@ -652,8 +665,7 @@ enum MCStillLoader {
     _ transform: (CIImage) -> CIImage, srgbValue: CGFloat = 0.4614
   ) -> (linear: Double, code: Double)? {
     let g = srgbValue
-    guard #available(iOS 14.0, *),
-      let lin = CGColorSpace(name: CGColorSpace.extendedLinearSRGB),
+    guard let lin = CGColorSpace(name: CGColorSpace.extendedLinearSRGB),
       let hlg = CGColorSpace(name: CGColorSpace.itur_2100_HLG),
       let srgb = CGColorSpace(name: CGColorSpace.sRGB),
       let grey = CIColor(red: g, green: g, blue: g, alpha: 1, colorSpace: srgb)
@@ -1262,9 +1274,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   /// 回螢幕＝拖滑桿時新→舊→新閃爍）
   private var lastComposedBase: CIImage?
   private lazy var outCS: CGColorSpace = {
-    if hdrOut, #available(iOS 14.0, *),
-      let hlg = CGColorSpace(name: CGColorSpace.itur_2100_HLG)
-    {
+    if hdrOut, let hlg = CGColorSpace(name: CGColorSpace.itur_2100_HLG) {
       return hlg
     }
     return CGColorSpace(name: CGColorSpace.itur_709)
@@ -1730,6 +1740,15 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             Self.skip("馬賽克")
             return nil
           }
+          // 指令裡帶疊加物（匯出把浮水印/文字 PNG 綁在指令裡、由下面
+          // 的 CI 路畫）就不能直拷：快路只搬 YUV，命中＝成品整段沒有
+          // 浮水印（單一滿版 SDR 片段匯出實測就是這樣掉的）。預覽的
+          // 指令一律 overlays: []（SDR 由 Flutter 畫、HDR 讀即時清單而
+          // hdrOut 已在上面擋掉），所以只看指令這份就夠
+          guard ins.overlays.isEmpty else {
+            Self.skip("疊加物")
+            return nil
+          }
           guard ins.layers.count == 1, let L = ins.layers.first else {
             Self.skip("多層")
             return nil
@@ -1843,16 +1862,11 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             if probeSrc == nil { probeSrc = buf }
             // HDR（HLG/PQ）來源：開系統的色調映射轉成 SDR，跟相簿、
             // 跟內建合成器同一套曲線。SDR 來源開著沒有影響
-            let base: CIImage
-            if #available(iOS 14.1, *) {
-              // SDR 輸出＝系統色調映射（跟相簿同一條曲線）；
-              // HDR 輸出＝不映射，HDR 像素原封進 HLG 管線
-              base = CIImage(
-                cvPixelBuffer: buf,
-                options: [.toneMapHDRtoSDR: !self.hdrOut])
-            } else {
-              base = CIImage(cvPixelBuffer: buf)
-            }
+            // SDR 輸出＝系統色調映射（跟相簿同一條曲線）；
+            // HDR 輸出＝不映射，HDR 像素原封進 HLG 管線
+            let base = CIImage(
+              cvPixelBuffer: buf,
+              options: [.toneMapHDRtoSDR: !self.hdrOut])
             // 變形是「左上原點、y 往下」的 AVFoundation 座標，Core Image
             // 是「左下原點、y 往上」：先把來源翻成 y 往下、套變形、再翻回
             let flipSrc = CGAffineTransform(
@@ -2116,10 +2130,10 @@ final class MetalYUVBlit {
   private var pipeC8: MTLRenderPipelineState?
   private var pipeYUVBGRA: MTLRenderPipelineState?
   private var pipeOv: MTLRenderPipelineState?
-  /// 浮水印 PNG 紋理快取（以 Data 物件位址為鍵；預覽清單換了
-  /// 就自然換新）
-  private var ovTexCache: [ObjectIdentifier: MTLTexture] = [:]
-  private var ovTexOrder: [ObjectIdentifier] = []
+  /// 浮水印 PNG 紋理快取。鍵＝CIOverlaySpec.uid（流水號）：以前用
+  /// CGImage 位址當鍵，位址會重用（ABA）→ 拿到舊樣式的紋理
+  private var ovTexCache: [Int: MTLTexture] = [:]
+  private var ovTexOrder: [Int] = []
   private var sampler: MTLSamplerState?
   private var ready = false
   private var failed = false
@@ -2353,11 +2367,11 @@ final class MetalYUVBlit {
     return cmd.status == .completed
   }
 
-  private func ovTexture(_ cg: CGImage, dev: MTLDevice) -> MTLTexture? {
-    let key = ObjectIdentifier(cg)
+  private func ovTexture(_ ov: CIOverlaySpec, dev: MTLDevice) -> MTLTexture? {
+    let key = ov.uid
     if let t = ovTexCache[key] { return t }
     guard let t = try? MTKTextureLoader(device: dev).newTexture(
-        cgImage: cg, options: [MTKTextureLoader.Option.SRGB: false as NSNumber])
+        cgImage: ov.cgImg, options: [MTKTextureLoader.Option.SRGB: false as NSNumber])
     else { return nil }
     ovTexCache[key] = t
     ovTexOrder.append(key)
@@ -2371,7 +2385,7 @@ final class MetalYUVBlit {
   /// 疊上。回 false＝呼叫端走 CI 原路
   func sdrCompose(
     from srcBuf: CVPixelBuffer, to dstBuf: CVPixelBuffer,
-    overlays: [CGImage],
+    overlays: [CIOverlaySpec],
     uvA: SIMD4<Float> = SIMD4<Float>(0, 0, 1, 0),
     uvB: SIMD2<Float> = SIMD2<Float>(0, 1)
   ) -> Bool {
@@ -2434,8 +2448,8 @@ final class MetalYUVBlit {
     e.setFragmentBytes(&fr, length: 4, index: 0)
     e.setFragmentSamplerState(sampler, index: 0)
     e.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
-    for cg in overlays {
-      guard let t = ovTexture(cg, dev: dev) else { continue }
+    for ov in overlays {
+      guard let t = ovTexture(ov, dev: dev) else { continue }
       e.setRenderPipelineState(pOv)
       e.setVertexBytes(&idA, length: 16, index: 0)
       e.setVertexBytes(&idB, length: 8, index: 1)
@@ -2479,6 +2493,56 @@ final class AtomicFlag {
   }
 }
 
+/// 背景保護：匯出／轉檔／倒轉期間向系統登記「有工作在跑」。
+///
+/// 沒有這道的話切到背景（來電、通知下拉、按 Home）process 立刻被
+/// suspend：進度停在原地、回前景才續，偶發 AVAssetExportSession 直接
+/// 回 -11800/-11847。登記後系統至少多給幾十秒把手上的編碼跑完。
+/// end() 任何執行緒都能呼叫、呼叫幾次都只結束一次；到期回呼與 deinit
+/// 也會結束，不會留下沒關的登記。只在主執行緒建（UIApplication.shared
+/// 在背景緒會被 Main Thread Checker 記一筆）
+final class BgTask {
+  private let lock = NSLock()
+  private var id: UIBackgroundTaskIdentifier = .invalid
+
+  init(_ name: String) {
+    id = UIApplication.shared.beginBackgroundTask(withName: name) {
+      [weak self] in self?.end()
+    }
+  }
+
+  func end() {
+    lock.lock()
+    let i = id
+    id = .invalid
+    lock.unlock()
+    guard i != .invalid else { return }
+    if Thread.isMainThread {
+      UIApplication.shared.endBackgroundTask(i)
+    } else {
+      DispatchQueue.main.async { UIApplication.shared.endBackgroundTask(i) }
+    }
+  }
+
+  deinit { end() }
+}
+
+/// 半精度（IEEE 754 binary16）→ Float。arm64 有 Float16 型別；x86_64
+/// 模擬器（Intel Mac）沒有，Float16(bitPattern:) 直接編不過——只有
+/// 診斷抽樣在用，手動展開就夠
+func mcHalfToFloat(_ bits: UInt16) -> Float {
+  #if arch(arm64)
+    return Float(Float16(bitPattern: bits))
+  #else
+    let sign: Float = (bits & 0x8000) != 0 ? -1 : 1
+    let e = Int((bits >> 10) & 0x1F)
+    let m = Int(bits & 0x3FF)
+    if e == 0 { return sign * Float(m) * Float(pow(2.0, -24.0)) }
+    if e == 31 { return m == 0 ? sign * Float.infinity : Float.nan }
+    return sign * (1 + Float(m) / 1024) * Float(pow(2.0, Double(e - 15)))
+  #endif
+}
+
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   /// 抽幀用的 asset 快取：同一支影片反覆要幀，不用每次重新解析容器
@@ -2494,6 +2558,15 @@ final class AtomicFlag {
 
   /// 正在跑的轉檔工作（取消用）。同時可能有兩支在轉，用 job 編號分開
   private var prepSessions: [Int: AVAssetExportSession] = [:]
+
+  /// 一趟轉檔（reader/writer：工作檔、HDR 代理、密關鍵幀都走它）的
+  /// 取消把手。prepSessions 只管兩段式退路的 ExportSession，主路徑
+  /// 以前根本不在名單上：按「先不要等」之後硬體編碼照跑到完，Dart 那
+  /// 把「一次一支」的鎖也跟著等到底。鍵是流水號不是 job——同一個 job
+  /// 會依序走一趟轉檔→兩段式→密關鍵幀，job 當鍵會互相覆蓋。
+  /// 只在主執行緒讀寫（登記在主執行緒、finish 也回主執行緒才註銷）
+  private var prepCancels: [Int: () -> Void] = [:]
+  private var prepCancelSeq = 0
 
   /// 相簿挑 GIF：等使用者選完的那次呼叫（一次只會有一個選取器在畫面上）。
   /// 這個要放在 class 本體——Swift 的 extension 放不了儲存屬性
@@ -2538,13 +2611,21 @@ final class AtomicFlag {
       // 壓縮痕跡就很明顯，呼叫端自己決定
       let jpegQ = CGFloat(args["q"] as? Double ?? 0.7)
       self.frameQueue.async {
+        // 鍵＝路徑＋大小＋mtime（跟 Dart 的 probeLite 同一套）：工作檔會
+        // 被原地換掉（denseKeyframes 的 replaceItemAt），只看路徑的話已開
+        // 的 asset 還指著舊 inode，縮圖帶抽到的是換檔前的內容
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+        let mtime =
+          (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let key = "\(path)#\(size)#\(mtime)"
         let asset: AVURLAsset
-        if let cached = self.frameAssets[path] {
+        if let cached = self.frameAssets[key] {
           asset = cached
         } else {
           if self.frameAssets.count > 4 { self.frameAssets.removeAll() }
           asset = AVURLAsset(url: URL(fileURLWithPath: path))
-          self.frameAssets[path] = asset
+          self.frameAssets[key] = asset
         }
         let gen = AVAssetImageGenerator(asset: asset)
         gen.appliesPreferredTrackTransform = true  // 直式影片轉正
@@ -2635,6 +2716,9 @@ final class AtomicFlag {
         let hdrOut = args["hdrOut"] as? Bool ?? false
         CIExportCompositor.setHiddenImageTracks(Set(args["hiddenImageTracks"] as? [Int] ?? []))
         let overlays = args["overlays"] as? [[String: Any]] ?? []
+        // 純聲音素材（配樂／旁白／從影片提取的聲音）：跟匯出 run 的
+        // audios 同一份 schema（見 CompPlayer.build）。舊 Dart 沒送＝空
+        let audios = args["audios"] as? [[String: Any]] ?? []
         // 馬賽克/圖片/疊加層要走 CI 合成器：先把濾鏡管線暖起來，
         // 接縫不吃首編譯
         if !mosaics.isEmpty || !stills.isEmpty || !overlays.isEmpty {
@@ -2644,6 +2728,7 @@ final class AtomicFlag {
           p.build(
             clips: clips, texture: (args["texture"] as? Bool) ?? true,
             mosaics: mosaics, stills: stills, hdrOut: hdrOut,
+            audios: audios,
             overlays: overlays,
             // 收即時清單的合成器要掛著，就算 overlays 現在是空的
             //（全域浮水印隱藏中；見 CompPlayer.build 的 liveOverlays）
@@ -2962,8 +3047,12 @@ final class AtomicFlag {
   // 硬體對軟體的差距。
   //
   // 做不到的（子母畫面、馬賽克、照片素材）由呼叫端判斷後退回 FFmpeg
-  private var exportSession: AVAssetExportSession?
-  private var exportTimer: Timer?
+
+  /// 進行中的匯出（取消用）。可能不只一場：播放偵測報告會另起一場
+  /// 2 秒的原生匯出，撞上真匯出時以前共用單一 session/timer 欄位，
+  /// 先完成的把後者的計時器跟 session 清掉——真匯出進度停、取消失效。
+  /// 每場自己抓自己的計時器，這裡只留清單；完成時只移掉自己
+  private var activeExports: [AVAssetExportSession] = []
 
   private func registerExportChannel(_ engineBridge: FlutterImplicitEngineBridge) {
     guard let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "markcut.export")
@@ -3011,7 +3100,7 @@ final class AtomicFlag {
         }
         result(found)
       case "cancel":
-        self.exportSession?.cancelExport()
+        for s in self.activeExports { s.cancelExport() }
         result(nil)
       case "reverse":
         guard let a = call.arguments as? [String: Any] else {
@@ -3020,7 +3109,7 @@ final class AtomicFlag {
         }
         self.runReverse(a, channel: channel) { err in result(err) }
       case "reverseCancel":
-        self.reverseCancelled = true
+        self.reverseCancel?.set()
         result(nil)
       case "run":
         guard let a = call.arguments as? [String: Any] else {
@@ -3042,7 +3131,11 @@ final class AtomicFlag {
   // 得分段跑）。這裡改系統硬體管線：從片尾往片頭一窗一窗處理——
   // 窗內影格倒序寫出、窗與窗又倒序銜接，整支就是連續倒轉，
   // 全程只佔一窗的記憶體；聲音同一招（窗內 PCM 樣本反轉）
-  private var reverseCancelled = false
+
+  /// 進行中那場倒轉的取消旗標：一場一個（reverseWork 抓住自己那個）。
+  /// 以前是一個普通 Bool 給所有場次共用：主執行緒寫、背景緒讀沒有
+  /// 任何保證，第二場進來還會把第一場的取消洗掉
+  private var reverseCancel: AtomicFlag?
 
   private func runReverse(
     _ a: [String: Any], channel: FlutterMethodChannel,
@@ -3056,24 +3149,31 @@ final class AtomicFlag {
     let start = a["start"] as? Double ?? 0
     let end = a["end"] as? Double ?? 0
     let maxLong = a["maxLong"] as? Int ?? 1920
-    reverseCancelled = false
+    let cancel = AtomicFlag()
+    reverseCancel = cancel
+    let bg = BgTask("倒轉")
     DispatchQueue.global(qos: .userInitiated).async { [weak self] in
       var err: String? = "內部錯誤"
       if let self = self {
         err = self.reverseWork(
-          path: path, start: start, end: end, out: out, maxLong: maxLong
+          path: path, start: start, end: end, out: out, maxLong: maxLong,
+          cancel: cancel
         ) { v in
           DispatchQueue.main.async {
             channel.invokeMethod("progress", arguments: v)
           }
         }
       }
-      DispatchQueue.main.async { done(err) }
+      DispatchQueue.main.async {
+        bg.end()
+        done(err)
+      }
     }
   }
 
   private func reverseWork(
     path: String, start: Double, end: Double, out: String, maxLong: Int,
+    cancel: AtomicFlag,
     progress: @escaping (Double) -> Void
   ) -> String? {
     let asset = AVURLAsset(url: URL(fileURLWithPath: path))
@@ -3183,7 +3283,7 @@ final class AtomicFlag {
     let steps = max(1, Int(ceil((b - a) / win)))
     var outAudioFrames: Int64 = 0
     for i in 0..<steps {
-      if reverseCancelled {
+      if cancel.isSet {
         writer.cancelWriting()
         try? FileManager.default.removeItem(atPath: out)
         return "已取消"
@@ -3271,10 +3371,10 @@ final class AtomicFlag {
           // writer 中途失敗（磁碟滿等）時 isReadyForMoreMediaData
           // 可能永遠不變 true——沒有這個出口就是背景執行緒無限
           // 自旋、channel 永遠等不到回覆
-          if reverseCancelled || writer.status != .writing { break }
+          if cancel.isSet || writer.status != .writing { break }
           usleep(5000)
         }
-        if reverseCancelled || writer.status != .writing { continue }
+        if cancel.isSet || writer.status != .writing { continue }
         if !adaptor.append(
           f.0,
           withPresentationTime: CMTime(
@@ -3319,10 +3419,10 @@ final class AtomicFlag {
             packetDescriptions: nil, sampleBufferOut: &sb)
           if let s2 = sb {
             while !input.isReadyForMoreMediaData {
-              if reverseCancelled || writer.status != .writing { break }
+              if cancel.isSet || writer.status != .writing { break }
               usleep(5000)
             }
-            if !reverseCancelled && writer.status == .writing {
+            if !cancel.isSet && writer.status == .writing {
               input.append(s2)
             }
             outAudioFrames += Int64(nFrames)
@@ -3331,7 +3431,7 @@ final class AtomicFlag {
       }
       progress(Double(i + 1) / Double(steps))
     }
-    if reverseCancelled {
+    if cancel.isSet {
       writer.cancelWriting()
       try? FileManager.default.removeItem(atPath: out)
       return "已取消"
@@ -3739,7 +3839,6 @@ final class AtomicFlag {
     // SDR 轉出來在 HDR 螢幕上永遠跟原片有落差（亮度被壓縮了），
     // 唯一的真解是輸出檔本身就是 HDR（HEVC 10-bit HLG）
     var wantHDR = (a["hdr"] as? Bool ?? false) && hasHDR
-    if wantHDR, #unavailable(iOS 15.0) { wantHDR = false }
     if wantHDR {
       // 疊加物要在 HLG 管線裡合成，一律走 CI
       useCI = true
@@ -3755,20 +3854,8 @@ final class AtomicFlag {
       vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
     }
     var instructions: [AVMutableVideoCompositionInstruction] = []
-    // HDR 在 GPU 路裡用 toneMapHDRtoSDR 處理（見 startRequest）；
-    // 只有拿不到那個選項的舊系統才退回內建合成器
-    if hasHDR {
-      if #available(iOS 14.1, *) {
-        // GPU 路自己會做色調映射，照走
-      } else if layered {
-        // 圖層模式沒有備援路（多軌合成只有 CI 做得到），
-        // 這種老系統直接退回 FFmpeg
-        done("HDR 圖層匯出需要 iOS 14.1")
-        return
-      } else {
-        useCI = false
-      }
-    }
+    // HDR 來源在 GPU 路裡用 toneMapHDRtoSDR 處理（見 startRequest）；
+    // 部署目標 15 起一定拿得到那個選項，不必再為舊系統分流
     // 走哪條合成路寫進診斷：浮水印「預覽有浮雕、匯出扁平」查了
     // 兩輪都在猜這格——CI（gamma 混色，跟預覽一致）還是 CA 圖層
     channel.invokeMethod(
@@ -4150,18 +4237,20 @@ final class AtomicFlag {
     CIExportCompositor.slowLock.unlock()
     let presetName = preset
 
-    exportSession = session
-    exportTimer?.invalidate()
-    exportTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) {
+    activeExports.append(session)
+    // 背景保護（見 BgTask）：切到背景硬體編碼才不會被 suspend 卡住
+    let bg = BgTask("匯出")
+    // 計時器是這一場自己的（不是共用欄位）：兩場併發時才不會互相清掉
+    let timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) {
       [weak session] _ in
       guard let session = session else { return }
       channel.invokeMethod("progress", arguments: Double(session.progress))
     }
     session.exportAsynchronously { [weak self] in
       DispatchQueue.main.async {
-        self?.exportTimer?.invalidate()
-        self?.exportTimer = nil
-        self?.exportSession = nil
+        timer.invalidate()
+        self?.activeExports.removeAll { $0 === session }
+        bg.end()
         if session.status == .completed || session.status == .failed {
           let encS = CACurrentMediaTime() - tEnc
           CIExportCompositor.slowLock.lock()
@@ -4354,11 +4443,17 @@ final class AtomicFlag {
       // 解碼那條路上（所以改 preroll、改 playImmediately 都沒用）。
       // 進編輯器時先啟用起來並保持著，播放鍵就不用付這筆錢
       if call.method == "activateAudio" {
-        let t0 = CACurrentMediaTime()
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, options: [.mixWithOthers])
-        try? session.setActive(true)
-        result(Int((CACurrentMediaTime() - t0) * 1000))
+        // 那 100~300ms 以前是在主執行緒同步付的：進編輯器那一下 UI 就
+        // 凍這麼久。AVAudioSession 允許從任何執行緒呼叫，搬到背景；
+        // Dart 端照樣 await 到啟用真的完成才拿到回覆，語意不變
+        DispatchQueue.global(qos: .userInitiated).async {
+          let t0 = CACurrentMediaTime()
+          let session = AVAudioSession.sharedInstance()
+          try? session.setCategory(.playback, options: [.mixWithOthers])
+          try? session.setActive(true)
+          let ms = Int((CACurrentMediaTime() - t0) * 1000)
+          DispatchQueue.main.async { result(ms) }
+        }
         return
       }
       if call.method == "deactivateAudio" {
@@ -4398,10 +4493,7 @@ final class AtomicFlag {
       }
       let mb = 1024.0 * 1024.0
       let used = kerr == KERN_SUCCESS ? Double(info.phys_footprint) / mb : 0
-      var free = 0.0
-      if #available(iOS 13.0, *) {
-        free = Double(os_proc_available_memory()) / mb
-      }
+      let free = Double(os_proc_available_memory()) / mb
       result(["usedMb": used, "freeMb": free])
     }
   }
@@ -4430,6 +4522,9 @@ final class AtomicFlag {
         result(true)
       case "cancel":
         for s in self.prepSessions.values { s.cancelExport() }
+        // 一趟轉檔／HDR 代理／密關鍵幀（reader/writer）：見 prepCancels。
+        // 每個把手會自己（回主執行緒）從名單註銷，這裡照名單走完就好
+        for c in self.prepCancels.values { c() }
         result(nil)
       case "toWorkFile":
         guard let args = call.arguments as? [String: Any],
@@ -4441,6 +4536,10 @@ final class AtomicFlag {
         }
         let maxShortSide = args["maxShortSide"] as? Int ?? 1080
         let job = args["job"] as? Int ?? 0
+        // safe＝Dart 端說上一次轉出來的不能用（轉好卻全黑那種），這一次
+        // 要跳過第一段、直接走保守參數（Android 的 rungsFor 同一個意思）。
+        // 以前 iOS 完全不讀它：重試就是同參數再轉一次
+        let safe = args["safe"] as? Bool ?? false
         // HDR 直通代理：HLG 10-bit、不映射、密關鍵幀。
         // 失敗就回 nil（呼叫端照播原檔），不走兩段式退路——
         // 退路轉出來是 SDR，對 HDR 預覽是錯的畫面
@@ -4461,7 +4560,8 @@ final class AtomicFlag {
         // 它說不合這裡一定也不合）：別再把關鍵幀數第二遍
         let prechecked = args["prechecked"] as? Bool ?? false
         DispatchQueue.global(qos: .userInitiated).async {
-          if !prechecked,
+          // safe 時也不能再判「原檔本來就合用」：上一次交出去的可能正是原檔
+          if !prechecked, !safe,
             let why = self.alreadyGoodEnough(src, maxShortSide: maxShortSide)
           {
             DispatchQueue.main.async {
@@ -4473,7 +4573,7 @@ final class AtomicFlag {
           DispatchQueue.main.async {
             self.makeWorkFile(
               src: src, dest: dest, maxShortSide: maxShortSide,
-              channel: channel, job: job
+              channel: channel, job: job, safe: safe
             ) { path in result(path) }
           }
         }
@@ -4539,11 +4639,41 @@ final class AtomicFlag {
     return "\(Int(short))p H.264 SDR、關鍵幀每 \(frames / keys) 格"
   }
 
+  /// 取消（prepCancels／prepSessions）時各段回的錯誤字串：makeWorkFile
+  /// 看到它就直接收工（回 nil，呼叫端照播原檔），不再往下一段退路走——
+  /// 退路照跑的話「先不要等」等於沒按
+  private static let prepCancelledErr = "已取消"
+
   private func makeWorkFile(
     src: String, dest: String, maxShortSide: Int,
-    channel: FlutterMethodChannel, job: Int,
+    channel: FlutterMethodChannel, job: Int, safe: Bool = false,
     done: @escaping (String?) -> Void
   ) {
+    let cancelled = AppDelegate.prepCancelledErr
+    /// 最後一段退路：系統預設尺寸轉一次，再重排關鍵幀
+    let lastResort: () -> Void = { [weak self] in
+      self?.exportOnce(
+        src: src, dest: dest, maxShortSide: maxShortSide,
+        useComposition: false, channel: channel, job: job
+      ) { e2 in
+        if e2 == nil {
+          self?.denseKeyframes(dest, channel: channel, job: job) { _ in done(dest) }
+        } else {
+          if e2 != cancelled {
+            channel.invokeMethod("note", arguments: "工作檔還是失敗：\(e2!)")
+          }
+          done(nil)
+        }
+      }
+    }
+    // safe＝上一次轉出來的不能用：一趟轉檔跟兩段式第一段都跳過，
+    // 直接從保守參數起（見 toWorkFile 的 safe）
+    if safe {
+      channel.invokeMethod(
+        "note", arguments: "工作檔保守重試：跳過第一段，直接走系統預設尺寸")
+      lastResort()
+      return
+    }
     // 一趟做完：解碼 → 轉正、縮到 1080、映射回 709 → 密關鍵幀編碼。
     // 兩段式（ExportSession 再重編一次）是舊路徑，留著當保底：慢動作、
     // 時間重映射過的軌有可能讓合成器讀不動，那種素材更需要工作檔
@@ -4555,6 +4685,10 @@ final class AtomicFlag {
         done(dest)
         return
       }
+      if err == cancelled {
+        done(nil)
+        return
+      }
       channel.invokeMethod(
         "note", arguments: "一趟轉檔沒成功（\(err!)），改用兩段式")
       self?.exportOnce(
@@ -4562,22 +4696,16 @@ final class AtomicFlag {
         useComposition: true, channel: channel, job: job
       ) { e1 in
         if e1 == nil {
-          self?.denseKeyframes(dest, channel: channel) { _ in done(dest) }
+          self?.denseKeyframes(dest, channel: channel, job: job) { _ in done(dest) }
+          return
+        }
+        if e1 == cancelled {
+          done(nil)
           return
         }
         channel.invokeMethod(
           "note", arguments: "工作檔第一次失敗（\(e1!)），改用系統預設尺寸重試")
-        self?.exportOnce(
-          src: src, dest: dest, maxShortSide: maxShortSide,
-          useComposition: false, channel: channel, job: job
-        ) { e2 in
-          if e2 == nil {
-            self?.denseKeyframes(dest, channel: channel) { _ in done(dest) }
-          } else {
-            channel.invokeMethod("note", arguments: "工作檔還是失敗：\(e2!)")
-            done(nil)
-          }
-        }
+        lastResort()
       }
     }
   }
@@ -4894,27 +5022,47 @@ final class AtomicFlag {
       }
     }
 
-    // 只回一次（逾時與正常完成可能撞在一起）
+    // 只回一次（逾時、取消與正常完成可能撞在一起）
     let replied = AtomicFlag()
-    let finish: (String?) -> Void = { err in
+    // 背景保護（見 BgTask）：切到背景硬體編碼才不會被 suspend 卡住
+    let bg = BgTask("工作檔轉檔")
+    // 取消把手（見 prepCancels）：這裡（主執行緒）登記，finish 回主
+    // 執行緒註銷。timeoutItem 也在 finish 裡收掉
+    prepCancelSeq += 1
+    let cancelKey = prepCancelSeq
+    var timeoutItem: DispatchWorkItem?
+    let finish: (String?) -> Void = { [weak self] err in
       guard replied.setIfClear() else { return }
       DispatchQueue.main.async {
+        timeoutItem?.cancel()
+        timeoutItem = nil
+        self?.prepCancels.removeValue(forKey: cancelKey)
+        bg.end()
         if err != nil { try? FileManager.default.removeItem(atPath: dest) }
         done(err)
       }
+    }
+    prepCancels[cancelKey] = {
+      reader.cancelReading()
+      writer.cancelWriting()
+      finish(AppDelegate.prepCancelledErr)
     }
     // 逾時保險：硬體編碼器被別的工作佔住時 requestMediaDataWhenReady
     // 可能一直不回來，沒有這道就卡在「工作檔轉不完」，畫面永遠是原檔。
     // 額度隨片長：寫死 120 秒的話長片一趟正常轉檔就會超過、被誤判
     // 逾時砍掉，最後整段編輯拿 4K HDR 原檔播——正是要避免的卡頓。
     // 給「片長的 3 倍」（硬體轉檔實測遠快於實時），下限 120 秒
+    // 用 DispatchWorkItem、而且只弱抓 reader/writer：以前的 closure 強抓
+    // 著它們排在主佇列上，轉完之後還要等到期（30 分鐘片＝90 分鐘）才放
     let timeoutSec = max(120.0, asset.duration.seconds * 3.0)
-    DispatchQueue.main.asyncAfter(deadline: .now() + timeoutSec) {
+    let item = DispatchWorkItem { [weak reader, weak writer] in
       guard !replied.isSet else { return }
-      reader.cancelReading()
-      writer.cancelWriting()
+      reader?.cancelReading()
+      writer?.cancelWriting()
       finish("逾時")
     }
+    timeoutItem = item
+    DispatchQueue.main.asyncAfter(deadline: .now() + timeoutSec, execute: item)
 
     group.notify(queue: vq) {
       if failed.isSet {
@@ -4943,12 +5091,17 @@ final class AtomicFlag {
         // 1~2 倍就是有東西在排隊（散熱降頻、別的解碼器在搶）
         let openMs = Int((t0 - tOpen) * 1000)
         let ratio = ms > 0 ? dur * 1000 / Double(ms) : 0
-        channel.invokeMethod(
-          "note",
-          arguments: String(
-            format: "%@ %dms（開檔 %dms、素材 %.1fs %dx%d@%.0f → %.1f 倍速）",
-            label, ms, openMs, dur, Int(size.width), Int(size.height),
-            Double(fps), ratio))
+        // finishWriting 的 completion 在 AVFoundation 的背景佇列：platform
+        // channel 只能在主執行緒送（跟上面的進度回報同一條規矩）。
+        // finish(nil) 自己也回主執行緒，排在這句後面，順序不變
+        DispatchQueue.main.async {
+          channel.invokeMethod(
+            "note",
+            arguments: String(
+              format: "%@ %dms（開檔 %dms、素材 %.1fs %dx%d@%.0f → %.1f 倍速）",
+              label, ms, openMs, dur, Int(size.width), Int(size.height),
+              Double(fps), ratio))
+        }
         finish(nil)
       }
     }
@@ -4956,13 +5109,15 @@ final class AtomicFlag {
 
   /// 已經是工作檔了，只重排關鍵幀（原地換掉）。兩段式那條路才會用到
   private func denseKeyframes(
-    _ path: String, channel: FlutterMethodChannel,
+    _ path: String, channel: FlutterMethodChannel, job: Int,
     done: @escaping (Bool) -> Void
   ) {
     let tmp = path + ".dense.mp4"
+    // 進度帶真的 job：以前送 -1，Dart 沒有對應的 callback，兩段式退路
+    // 的進度條就卡在上一段的 100% 直到重編完
     transcodeWorkFile(
       src: path, dest: tmp, maxShortSide: 0, channel: channel,
-      label: "密關鍵幀重編完成", job: -1
+      label: "密關鍵幀重編完成", job: job
     ) { err in
       guard err == nil else {
         channel.invokeMethod(
@@ -5156,6 +5311,8 @@ final class AtomicFlag {
     }
 
     prepSessions[job] = session
+    // 背景保護（見 BgTask）：切到背景硬體編碼才不會被 suspend 卡住
+    let bg = BgTask("工作檔轉檔（兩段式）")
     // 進度用輪詢的：AVAssetExportSession 沒有回呼式的進度。
     // 計時器是這一趟自己的，不是共用的——同時轉兩支時共用那個會互相蓋掉
     let timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) {
@@ -5168,6 +5325,7 @@ final class AtomicFlag {
     session.exportAsynchronously { [weak self] in
       DispatchQueue.main.async {
         timer.invalidate()
+        bg.end()
         self?.prepSessions.removeValue(forKey: job)
         if session.status == .completed,
           FileManager.default.fileExists(atPath: dest)
@@ -5181,7 +5339,10 @@ final class AtomicFlag {
           // 「未知原因」查不動。把系統給的東西全帶回來：error 的
           // domain/code、底層 error，還有 status 本身
           var reason: String
-          if let e = session.error as NSError? {
+          if session.status == .cancelled {
+            // 取消（prepSessions）：呼叫端看到它就不再往下一段退路走
+            reason = AppDelegate.prepCancelledErr
+          } else if let e = session.error as NSError? {
             reason = "\(e.localizedDescription)[\(e.domain) \(e.code)]"
             if let u = e.userInfo[NSUnderlyingErrorKey] as? NSError {
               reason += "←\(u.domain) \(u.code)"
@@ -5776,6 +5937,11 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// video output 拿的是實際送畫面的那一格，CI 路線也抽得到
   private var videoOut: AVPlayerItemVideoOutput?
 
+  /// grabFrame 的 CIContext：以前每抓一格就建一顆（管線重編譯、GPU
+  /// 資源），加馬賽克／重烘連續觸發時又慢又吃記憶體。共用一顆；
+  /// CIContext 本身執行緒安全，grabFrame 在背景緒用它沒問題
+  private static let grabCtx = CIContext(options: [.workingColorSpace: NSNull()])
+
   /// 組建內視鏡：Swift 實際收到什麼、組出什麼（診斷用）。
   /// 「程式碼看起來對、裝置行為不對」的僵局只有它拆得開
   private(set) var buildInfo: [String: Any] = [:]
@@ -5818,6 +5984,7 @@ final class CompPlayer: NSObject, FlutterTexture {
   func build(
     clips: [[String: Any]], texture: Bool, mosaics: [[String: Any]] = [],
     stills: [[String: Any]] = [], hdrOut: Bool = false,
+    audios: [[String: Any]] = [],
     overlays: [[String: Any]] = [], ovLive: Bool = false,
     timelineDuration: Double = 0,
     stillInverseOotf: Bool? = nil
@@ -5843,6 +6010,64 @@ final class CompPlayer: NSObject, FlutterTexture {
     // 時間範圍——需要幾條就開幾條
     var aTracks: [(track: AVMutableCompositionTrack, end: CMTime)] = []
     var aParams: [AVMutableAudioMixInputParameters] = []
+
+    /// 一段聲音：找一條這個時間點空著的軌（沒有就開新的）、補空白、
+    /// 插進去、套音量與淡入淡出。影片自己的聲音跟純聲音素材（下面的
+    /// audios）共用這一套——跟匯出 runExport.addAudio 同一份邏輯
+    func addAudio(
+      _ sa: AVAssetTrack, range: CMTimeRange, at putAt: CMTime,
+      outDur: CMTime, volume: Float, fadeIn: Double, fadeOut: Double
+    ) {
+      var chosen: Int? = nil
+      for i in aTracks.indices where aTracks[i].end <= putAt {
+        chosen = i
+        break
+      }
+      if chosen == nil,
+        let t = comp.addMutableTrack(
+          withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+      {
+        aTracks.append((t, .zero))
+        aParams.append(AVMutableAudioMixInputParameters(track: t))
+        chosen = aTracks.count - 1
+      }
+      guard let i = chosen else { return }
+      do {
+        // 先補空白再插：插在超過軌道長度的時間點時，「會不會自動
+        // 補空白」文件講得含糊，不補的話配樂可能整段往前擠、
+        // 聲音跟畫面對不上
+        if aTracks[i].end < putAt {
+          aTracks[i].track.insertEmptyTimeRange(
+            CMTimeRange(
+              start: aTracks[i].end, duration: putAt - aTracks[i].end))
+        }
+        try aTracks[i].track.insertTimeRange(range, of: sa, at: putAt)
+        if outDur != range.duration {
+          aTracks[i].track.scaleTimeRange(
+            CMTimeRange(start: putAt, duration: range.duration),
+            toDuration: outDur)
+        }
+        aTracks[i].end = putAt + outDur
+        // 每一段的音量；淡入淡出是斜坡，不是階梯
+        let pr = aParams[i]
+        if fadeIn > 0.01 {
+          pr.setVolumeRamp(
+            fromStartVolume: 0, toEndVolume: volume,
+            timeRange: CMTimeRange(
+              start: putAt,
+              duration: CMTime(seconds: fadeIn, preferredTimescale: scale)))
+        } else {
+          pr.setVolume(volume, at: putAt)
+        }
+        if fadeOut > 0.01 {
+          let fo = CMTime(seconds: fadeOut, preferredTimescale: scale)
+          pr.setVolumeRamp(
+            fromStartVolume: volume, toEndVolume: 0,
+            timeRange: CMTimeRange(
+              start: putAt + outDur - fo, duration: fo))
+        }
+      } catch {}
+    }
 
     // 依時間排好再放：同一條合成軌只能往後接，中間的空白要自己補
     let ordered = clips.sorted {
@@ -6020,58 +6245,11 @@ final class CompPlayer: NSObject, FlutterTexture {
       vTracks[layer] = slot
       lastMedia[layer] = (src, range)
 
-      // 聲音：找一條這個時間點空著的軌，沒有就開新的
+      // 聲音：找一條這個時間點空著的軌，沒有就開新的（見 addAudio）
       if let sa = asset.tracks(withMediaType: .audio).first {
-        var chosen: Int? = nil
-        for i in aTracks.indices where aTracks[i].end <= putAt {
-          chosen = i
-          break
-        }
-        if chosen == nil,
-          let t = comp.addMutableTrack(
-            withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
-        {
-          aTracks.append((t, .zero))
-          aParams.append(AVMutableAudioMixInputParameters(track: t))
-          chosen = aTracks.count - 1
-        }
-        if let i = chosen {
-          do {
-            // 先補空白再插：插在超過軌道長度的時間點時，「會不會自動
-            // 補空白」文件講得含糊，不補的話配樂可能整段往前擠、
-            // 聲音跟畫面對不上
-            if aTracks[i].end < putAt {
-              aTracks[i].track.insertEmptyTimeRange(
-                CMTimeRange(
-                  start: aTracks[i].end, duration: putAt - aTracks[i].end))
-            }
-            try aTracks[i].track.insertTimeRange(range, of: sa, at: putAt)
-            if outDur != range.duration {
-              aTracks[i].track.scaleTimeRange(
-                CMTimeRange(start: putAt, duration: range.duration),
-                toDuration: outDur)
-            }
-            aTracks[i].end = putAt + outDur
-            // 每一段的音量；淡入淡出是斜坡，不是階梯
-            let pr = aParams[i]
-            if fadeIn > 0.01 {
-              pr.setVolumeRamp(
-                fromStartVolume: 0, toEndVolume: volume,
-                timeRange: CMTimeRange(
-                  start: putAt,
-                  duration: CMTime(seconds: fadeIn, preferredTimescale: scale)))
-            } else {
-              pr.setVolume(volume, at: putAt)
-            }
-            if fadeOut > 0.01 {
-              let fo = CMTime(seconds: fadeOut, preferredTimescale: scale)
-              pr.setVolumeRamp(
-                fromStartVolume: volume, toEndVolume: 0,
-                timeRange: CMTimeRange(
-                  start: putAt + outDur - fo, duration: fo))
-            }
-          } catch {}
-        }
+        addAudio(
+          sa, range: range, at: putAt, outDur: outDur, volume: volume,
+          fadeIn: fadeIn, fadeOut: fadeOut)
       }
 
       segments.append(
@@ -6147,6 +6325,50 @@ final class CompPlayer: NSObject, FlutterTexture {
     if needsCI {
       let fillTo = comp.duration
       for layer in vTracks.keys.sorted() { fillTail(layer, to: fillTo) }
+    }
+
+    // ── 純聲音素材（配樂／旁白／提取的聲音）：可以跟影片重疊 ────
+    //
+    // 合成模式接手後逐片段播放器全收掉（含聲音片段），這些聲音不鋪進
+    // 合成就是「預覽無聲、匯出有聲」。欄位跟匯出 runExport 的 audios
+    // 一模一樣：path／start／end（來源秒）／offset（時間軸秒）／volume／
+    // speed／fadeIn／fadeOut；沒送＝空陣列，什麼都不動。
+    // 放在補尾巴之後（跟匯出同一個順序）：上面的 naturalEnd／needsPad／
+    // fillTail 看的是 comp.duration，聲音先進去會把它撐長、畫面軌就不補
+    // ——CI 路線的軌道提早結束＝供格失敗
+    for m in audios {
+      guard let path = m["path"] as? String else { continue }
+      let start = m["start"] as? Double ?? 0
+      let end = m["end"] as? Double ?? 0
+      if end - start <= 0.01 { continue }
+      let at = CMTime(
+        seconds: max(0, m["offset"] as? Double ?? 0), preferredTimescale: scale)
+      let speed = max(0.05, m["speed"] as? Double ?? 1)
+      let range = CMTimeRange(
+        start: CMTime(seconds: start, preferredTimescale: scale),
+        duration: CMTime(seconds: end - start, preferredTimescale: scale))
+      let outDur =
+        abs(speed - 1) > 0.001
+        ? CMTime(seconds: (end - start) / speed, preferredTimescale: scale)
+        : range.duration
+      let asset: AVURLAsset
+      if let hit = assetCache[path] {
+        asset = hit
+      } else {
+        asset = AVURLAsset(url: URL(fileURLWithPath: path))
+        assetCache[path] = asset
+      }
+      guard let sa = asset.tracks(withMediaType: .audio).first else { continue }
+      addAudio(
+        sa, range: range, at: at, outDur: outDur,
+        volume: Float(m["volume"] as? Double ?? 1),
+        fadeIn: m["fadeIn"] as? Double ?? 0,
+        fadeOut: m["fadeOut"] as? Double ?? 0)
+    }
+    // 組建內視鏡：收到幾段純聲音、合成裡總共幾條聲音軌（實機定罪
+    // 「預覽無聲」時第一眼看這格）
+    if !audios.isEmpty {
+      buildInfo["純聲音"] = "\(audios.count) 段，聲音軌共 \(aTracks.count) 條"
     }
 
     // 畫面大小以「最底層、最早出現」的那一段轉正之後的尺寸為準。
@@ -7305,7 +7527,7 @@ final class CompPlayer: NSObject, FlutterTexture {
         let k = CGFloat(maxH) / h
         img = img.transformed(by: CGAffineTransform(scaleX: k, y: k))
       }
-      let ctx = CIContext(options: [.workingColorSpace: NSNull()])
+      let ctx = CompPlayer.grabCtx
       guard let cg = ctx.createCGImage(img, from: img.extent) else {
         done(nil)
         return
@@ -8259,8 +8481,9 @@ final class MetalPreviewEngine: NSObject {
   private var canvasH: Double = 1920
   private var hdr = false
 
-  /// 疊加物 PNG → 紋理（鍵＝資料長度雜湊，同一張不重上傳）
-  private var ovTextures: [ObjectIdentifier: MTLTexture] = [:]
+  /// 疊加物 PNG → 紋理（鍵＝CIOverlaySpec.uid 流水號，同一張不重上傳；
+  /// 以前用 CGImage 位址當鍵，位址重用時會命中舊樣式的紋理）
+  private var ovTextures: [Int: MTLTexture] = [:]
 
   weak var layerHost: MetalPreviewView?
   private var link: CADisplayLink?
@@ -8917,7 +9140,7 @@ final class MetalPreviewEngine: NSObject {
     for fx in [0.1, 0.3, 0.5, 0.7, 0.9] {
       let x = Int(Double(w) * fx)
       for c in 0..<3 {
-        out.append(Double(Float(Float16(bitPattern: p[x * 4 + c]))))
+        out.append(Double(mcHalfToFloat(p[x * 4 + c])))
       }
     }
     // 尾巴掛層診斷：這一刻畫了哪些層、各自的標籤（id, HLG, 2020,
@@ -9273,14 +9496,14 @@ final class MetalPreviewEngine: NSObject {
   }
 
   /// 疊加物紋理（premultiplied sRGB PNG → 線性取樣）
-  private func ovTexture(_ cg: CGImage) -> MTLTexture? {
-    let key = ObjectIdentifier(cg)
+  private func ovTexture(_ ov: CIOverlaySpec) -> MTLTexture? {
+    let key = ov.uid
     if let t = ovTextures[key] { return t }
     guard let dev = device else { return nil }
     let loader = MTKTextureLoader(device: dev)
     let up0 = CACurrentMediaTime()
     let tex = try? loader.newTexture(
-      cgImage: cg,
+      cgImage: ov.cgImg,
       options: [MTKTextureLoader.Option.SRGB: true as NSNumber])
     if let tex = tex {
       stOvUploads += 1
@@ -9717,7 +9940,7 @@ final class MetalPreviewEngine: NSObject {
     let ovs = CIExportCompositor.currentPreviewOverlays()
     let lovs = CIExportCompositor.currentLiveOvs()
     for ov in ovs {
-      guard ov.start <= t, t < ov.end, let tex = ovTexture(ov.cgImg)
+      guard ov.start <= t, t < ov.end, let tex = ovTexture(ov)
       else { continue }
       stOvDraws += 1
       var x = ov.bx
@@ -10447,9 +10670,13 @@ extension AppDelegate {
         }
         let jpeg = (a["jpeg"] as? NSNumber)?.boolValue ?? true
         let quality = (a["quality"] as? NSNumber)?.intValue ?? 92
+        // 來源照片路徑（選填）：帶了就把 EXIF/GPS/TIFF/IPTC 搬進成品，
+        // 跟 HDR 路一致。沒帶＝跟以前一樣不寫中繼資料
+        let src = a["src"] as? String
         DispatchQueue.global(qos: .userInitiated).async {
           let (data, err) = autoreleasepool {
-            PhotoRgbaEncode.encode(td.data, width: w, height: h, jpeg: jpeg, quality: quality)
+            PhotoRgbaEncode.encode(
+              td.data, width: w, height: h, jpeg: jpeg, quality: quality, src: src)
           }
           DispatchQueue.main.async {
             if let data = data {
@@ -10467,9 +10694,41 @@ extension AppDelegate {
 }
 
 enum PhotoRgbaEncode {
-  /// raw RGBA（預乘、每列 width*4）→ JPEG 或 PNG。回 (位元組, nil) 或 (nil, 失敗原因)
+  /// 來源照片的 EXIF/GPS/TIFF/IPTC（跟 HDR 路 HDRPhotoExport 同一份清單；
+  /// MakerApple 一樣整包不帶）。方向改 1：Dart 交來的 RGBA 是解碼時已
+  /// 轉正的顯示方向，像素尺寸改成成品的。讀不到就回空——中繼資料只是
+  /// 附加，不能因為它讓存檔失敗
+  static func sourceMetadata(_ path: String, outW: Int, outH: Int) -> [String: Any] {
+    guard
+      let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+      let all = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any]
+    else { return [:] }
+    var props: [String: Any] = [:]
+    let keep: [CFString] = [
+      kCGImagePropertyExifDictionary, kCGImagePropertyGPSDictionary,
+      kCGImagePropertyTIFFDictionary, kCGImagePropertyIPTCDictionary,
+    ]
+    for k in keep {
+      if let v = all[k as String] { props[k as String] = v }
+    }
+    props[kCGImagePropertyOrientation as String] = 1
+    if var tiff = props[kCGImagePropertyTIFFDictionary as String] as? [String: Any] {
+      tiff[kCGImagePropertyTIFFOrientation as String] = 1
+      props[kCGImagePropertyTIFFDictionary as String] = tiff
+    }
+    if var exif = props[kCGImagePropertyExifDictionary as String] as? [String: Any] {
+      exif[kCGImagePropertyExifPixelXDimension as String] = outW
+      exif[kCGImagePropertyExifPixelYDimension as String] = outH
+      props[kCGImagePropertyExifDictionary as String] = exif
+    }
+    return props
+  }
+
+  /// raw RGBA（預乘、每列 width*4）→ JPEG 或 PNG。回 (位元組, nil) 或 (nil, 失敗原因)。
+  /// [src]＝來源照片路徑（選填）：帶了就把它的中繼資料寫進成品（見 sourceMetadata）
   static func encode(
-    _ rgba: Data, width: Int, height: Int, jpeg: Bool, quality: Int
+    _ rgba: Data, width: Int, height: Int, jpeg: Bool, quality: Int,
+    src: String? = nil
   ) -> (Data?, String?) {
     // 32768 一邊是 ImageIO JPEG 的上限附近；合成出來的照片不會到那裡
     guard width > 0, height > 0, width <= 32768, height <= 32768 else {
@@ -10513,6 +10772,14 @@ enum PhotoRgbaEncode {
     if jpeg {
       let q = Double(min(max(quality, 1), 100)) / 100.0
       props[kCGImageDestinationLossyCompressionQuality] = q
+    }
+    // 以前 SDR 路把來源的 EXIF 全丟（拍攝日期、相機、GPS），HDR 路卻
+    // 留著：成品在相簿裡的日期變成匯出時間，兩條路對隱私的態度也不
+    // 一致。同一份清單、同一個方向處理
+    if let src = src {
+      for (k, v) in sourceMetadata(src, outW: width, outH: height) {
+        props[k as CFString] = v
+      }
     }
     CGImageDestinationAddImage(dest, image, props as CFDictionary)
     guard CGImageDestinationFinalize(dest) else {

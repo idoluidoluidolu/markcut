@@ -1,5 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- 儲存到相簿：Android 9 (API 28) 以下需要寫入權限，之後走 MediaStore 不需要 -->
+    <!-- 儲存到相簿：Android 10 (API 29) 以下需要寫入權限，之後走 MediaStore 不需要。
+         requestLegacyExternalStorage 已拿掉：targetSdk ≥ 30 起系統完全不理它 -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="29" />
@@ -7,7 +8,6 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <application
         android:label="浮水印"
-        android:requestLegacyExternalStorage="true"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
