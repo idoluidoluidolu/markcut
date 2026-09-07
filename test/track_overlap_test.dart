@@ -262,9 +262,12 @@ void main() {
       expect(b.offset, closeTo(8, 1e-9));
     });
 
-    test('左把手往前長的地板：前一段的尾巴（沒有就是 0；疊加物不算）', () {
+    test('左把手往前長進前一段：前一段讓位（尾巴縮到新起點），不是頂住往右長', () {
+      // 實機測試回報「在後方的影片往前延伸，應該是前面那部要往前縮起來
+      // 讓位給他」——這裡以前釘的是「頂到前一段的尾巴就停、多出來的往
+      // 右長、C 被推」，現在反過來。規則本身在 trim_into_prev_test
       final tl = _base();
-      _add(tl, 0, 4);
+      final a = _add(tl, 0, 4);
       // B 在 5~8，素材用的是 5~8 那段（前面還有 5 秒可以露出來）
       final bb = TimelineClip(
         id: tl.nextId(),
@@ -277,21 +280,22 @@ void main() {
       tl.clips.add(bb);
       final c = _add(tl, 8, 2);
       final text = _addSource(tl, ClipKind.text);
-      _add(tl, 0, 4.8, src: text); // 同軌的文字伸到 4.8：不是地板
-      expect(tl.floorOnTrack(bb), 4.0);
-      expect(tl.floorOnTrack(tl.clips.first), 0.0, reason: '第一段的地板是 0');
-      // 編輯器 _trimClip 左把手往前拖 2 秒：素材入點 5→3、虛擬起點 5→3，
-      // 真正的起點頂到地板 4 就停，多出來的 1 秒往右長，後面的 C 被推
-      final floor = tl.floorOnTrack(bb);
+      _add(tl, 0, 4.8, src: text); // 同軌的文字伸到 4.8：不是前一段
+      expect(tl.prevOnTrack(bb), same(a));
+      expect(tl.prevOnTrack(tl.clips.first), isNull, reason: '第一段沒有前一段');
+      // 編輯器 _trimClip 左把手往前拖 2 秒：素材入點 5→3、起點 5→3。
+      // 4~5 的空隙先吃掉，再往前的那 1 秒是 A 的尾巴讓出來的
       const ns = 3.0;
       final virtual = bb.offset + (ns - bb.trimStart) / bb.speed;
+      final floor = tl.yieldTailBefore(bb, virtual, minLen: 0.3);
       bb.trimStart = ns;
       bb.offset = math.max(floor, virtual);
-      expect(bb.offset, 4.0);
+      expect(bb.offset, closeTo(3, 1e-9));
+      expect(a.end, closeTo(3, 1e-9), reason: 'A 的尾巴縮到 B 的新起點');
       expect(bb.length, closeTo(5, 1e-9), reason: '露出來的素材確實多了 2 秒');
-      expect(bb.end, closeTo(9, 1e-9), reason: '起點釘住，結尾往右長');
-      _settle(tl, '左把手頂地板', track: 0);
-      expect(c.offset, closeTo(9, 1e-9), reason: '往右長的那一秒把 C 推開');
+      expect(bb.end, closeTo(8, 1e-9), reason: '起點往前、結尾不動');
+      expect(_settle(tl, '左把手讓位', track: 0), 0, reason: '沒有人需要被推');
+      expect(c.offset, 8.0, reason: 'C 不動');
     });
 
     test('切割：兩半相接，不需要推', () {
@@ -483,14 +487,17 @@ void main() {
       expect(tl.snapTrimEdge(a, 4.3, px, fromLeft: false), closeTo(4.3, 1e-9));
     });
 
-    test('左把手：越過地板（頂著前一段往右長）時整個放開，沒越過照吸地板', () {
+    test('左把手：越過前一段的尾巴（它正在讓位）就不吸它，沒越過照吸它的尾巴', () {
       final tl = _base();
       _add(tl, 0, 4);
       final b = _add(tl, 4, 4);
-      expect(tl.snapTrimEdge(b, 3.9, px, fromLeft: true), closeTo(3.9, 1e-9), reason: '越過地板：放開');
-      expect(tl.snapTrimEdge(b, 4.1, px, fromLeft: true), closeTo(4.0, 1e-9), reason: '沒越過：吸地板');
+      expect(tl.snapTrimEdge(b, 3.9, px, fromLeft: true), closeTo(3.9, 1e-9), reason: '越過：不吸前一段');
+      expect(tl.snapTrimEdge(b, 4.1, px, fromLeft: true), closeTo(4.0, 1e-9), reason: '沒越過：吸它的尾巴');
       b.offset = 4.5; // 前面留空隙
       expect(tl.snapTrimEdge(b, 4.2, px, fromLeft: true), closeTo(4.0, 1e-9), reason: '靠近前一段的尾巴：吸');
+      // 越過之後別軌照吸（規則細節在 trim_into_prev_test）
+      _add(tl, 0, 3.9, track: 1);
+      expect(tl.snapTrimEdge(b, 3.95, px, fromLeft: true), closeTo(3.9, 1e-9), reason: '不吸前一段的 4.0，吸別軌的 3.9');
     });
 
     test('左把手：第一段的地板是 0，越過 0 不夾（留給呼叫端算往右長）', () {
@@ -543,15 +550,21 @@ void main() {
                 math.max(c.trimStart + 0.1, dur),
               );
               _settle(tl, where, track: c.track);
-            case 2: // 左把手（地板：頂到就往右長）
+            case 2: // 左把手（前一段讓位：尾巴修到新起點，讓到最短就擋住）
               final c = pick();
-              final floor = tl.floorOnTrack(c);
-              final ns = (c.trimStart + (r.nextDouble() - 0.5) * 6)
+              var ns = (c.trimStart + (r.nextDouble() - 0.5) * 6)
                   .clamp(0.0, math.max(0.0, c.trimEnd - 0.1))
                   .toDouble();
-              final virtual = c.offset + (ns - c.trimStart) / c.speed;
+              var virtual = c.offset + (ns - c.trimStart) / c.speed;
+              if (tl.prevOnTrack(c) != null) {
+                final floor = tl.yieldTailBefore(c, virtual, minLen: 0.1);
+                if (virtual < floor) {
+                  ns = c.trimStart + (floor - c.offset) * c.speed;
+                  virtual = floor;
+                }
+              }
               c.trimStart = ns;
-              c.offset = math.max(floor, virtual);
+              c.offset = math.max(0.0, virtual);
               _settle(tl, where, track: c.track);
             case 3: // 變速
               final c = pick();

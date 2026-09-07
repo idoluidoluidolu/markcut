@@ -30,9 +30,14 @@ void main() {
     expect(src.contains('_tl.carveRange('), isFalse, reason: '整頁都不該再覆寫');
   });
 
-  test('修剪把手：地板、貼齊用 snapTrimEdge、拖完推開', () {
+  test('修剪把手：左把手讓前一段讓位、貼齊用 snapTrimEdge、拖完推開', () {
     final body = _body(src, 'void _trimClip(int id, double dSec, bool fromLeft)');
-    expect(body.contains('floorOnTrack('), isTrue, reason: '左把手要有地板');
+    // 實機測試回報「在後方的影片往前延伸，應該是前面那部要往前縮起來
+    // 讓位給他」：左把手往前長進前一段是前一段的尾巴縮（yieldTailBefore），
+    // 不是以前那個「頂到前一段的尾巴就釘住、多出來的往右長」的地板
+    expect(body.contains('prevOnTrack('), isTrue, reason: '左把手要先找要讓位的前一段');
+    expect(body.contains('yieldTailBefore('), isTrue, reason: '左把手往前長要讓前一段讓位');
+    expect(body.contains('floorOnTrack('), isFalse, reason: '不再有「頂到前一段就釘住」的地板');
     expect(body.contains('snapTrimEdge('), isTrue, reason: '貼齊不能吸會被推動的段');
     expect(body.contains('snapEdge('), isFalse);
     expect(body.contains('resolveOverlaps(track: c.track)'), isTrue);
