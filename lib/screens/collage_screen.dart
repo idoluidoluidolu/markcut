@@ -1,22 +1,24 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
-import 'package:image_picker/image_picker.dart';
+// XFile 由 image_picker 轉出來，不另外相依 cross_file
+import 'package:image_picker/image_picker.dart' show XFile;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'crop_screen.dart';
 import '../models/watermark_settings.dart';
 import '../services/collage_compose.dart';
 import '../services/collage_pack.dart';
-import '../services/file_reader.dart';
+import '../services/draft_assets.dart';
 import '../services/photo_export.dart';
+import '../services/video_picker.dart' show pickCountHint, pickPhotoFiles;
 import '../theme.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
@@ -86,6 +88,18 @@ class _CollageScreenState extends State<CollageScreen>
   /// 每張照片的來源路徑（跟 _images 同索引；存草稿用）。
   /// 換單張時換上的是裁切版，路徑仍記原圖——續作時裁切會回到原圖
   final List<String?> _srcPaths = [];
+
+  /// 這一頁收過的每一條檔案路徑（進場那批＋中途挑的）：離開時把其中
+  /// 「選取器的複本、草稿又沒在用」的刪掉（見 DraftAssets）
+  final Set<String> _received = {};
+
+  /// 現在存在裝置上的草稿引用了哪些照片；[_draftTouched]＝這一頁存過
+  /// 或清過草稿（沒動過的話，離開時草稿引用的照片照舊留著）
+  Set<String> _draftPaths = {};
+  bool _draftTouched = false;
+
+  /// 匯出成功那一刻的狀態指紋：之後沒再動就靜靜走人（草稿已清）
+  String? _exportSnapshot;
 
   /// 一開始選進來的那批數量：換版型時還會用到，不能釋放
   int _poolSize = 0;
@@ -175,6 +189,12 @@ class _CollageScreenState extends State<CollageScreen>
   /// 照片時用來判斷「使用者有沒有自己動過」：沒動過就照新狀況重排一次
   /// 塞滿；動過的排法是使用者的心血，只等比縮放、不重排
   Map<int, ui.Rect>? _autoRects;
+
+  /// 手排方塊的「原稿」：使用者最後一次手排時的畫布比例與方塊，加上
+  /// 上一次換比例排出來的樣子（判斷中間有沒有再動過）。換比例永遠從
+  /// 原稿等比放進新畫布，不從上一個畫布再縮一次——contain 只縮不放大，
+  /// 1:1→16:9→1:1 這樣來回每一趟都再縮一截（三趟後只剩 9/16 大）
+  ({double aspect, Map<int, ui.Rect> rects, Map<int, ui.Rect> shown})? _fitBase;
 
   /// 畫布比例（寬/高），宮格與自由共用。方塊座標是畫布的 0~1 比例，
   /// 換比例時不能只換這個值——方塊會跟著畫布一起變形（見 _setCanvasAspect）
@@ -275,11 +295,6 @@ class _CollageScreenState extends State<CollageScreen>
 
   bool _exporting = false;
 
-  /// 成功匯出過。跟影片、批次同一條規矩（batch_watermark_screen 的
-  /// _exportedOk）：匯出成功過就不再問「要不要保留草稿」，
-  /// 靜靜留一份走人；沒匯出過才問
-  bool _exportedOk = false;
-
   @override
   void initState() {
     super.initState();
@@ -289,6 +304,7 @@ class _CollageScreenState extends State<CollageScreen>
 
   @override
   void dispose() {
+    unawaited(_cleanupOnLeave());
     _cancelHold();
     _tabs.dispose();
     _wmFrameInfo.dispose();
@@ -301,11 +317,18 @@ class _CollageScreenState extends State<CollageScreen>
 
   /// 解碼並把長邊縮到 [_kDecodeLongSide]。
   /// 先用 ImageDescriptor 讀出原圖尺寸（不解碼像素），才知道該縮哪一邊——
-  /// 只指定 targetWidth 的話，直式照片反而會被放大
-  Future<ui.Image> _decode(Uint8List bytes) async {
+  /// 只指定 targetWidth 的話，直式照片反而會被放大。
+  /// 有路徑就讓引擎自己讀檔（[ui.ImmutableBuffer.fromFilePath]）：原檔
+  /// 不進 Dart 堆、不多一份複本；buffer 與 descriptor 用完一定釋放——
+  /// 以前從不 dispose，30 張原檔的原生記憶體要等 GC finalizer 才放
+  Future<ui.Image> _decode(XFile f) async {
+    ui.ImmutableBuffer? buffer;
+    ui.ImageDescriptor? desc;
     try {
-      final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
-      final desc = await ui.ImageDescriptor.encoded(buffer);
+      buffer = (!kIsWeb && f.path.isNotEmpty)
+          ? await ui.ImmutableBuffer.fromFilePath(f.path)
+          : await ui.ImmutableBuffer.fromUint8List(await f.readAsBytes());
+      desc = await ui.ImageDescriptor.encoded(buffer);
       final long = math.max(desc.width, desc.height);
       ui.Codec codec;
       if (long > _kDecodeLongSide) {
@@ -319,17 +342,54 @@ class _CollageScreenState extends State<CollageScreen>
       }
       final frame = await codec.getNextFrame();
       codec.dispose();
-      desc.dispose();
       return frame.image;
     } catch (_) {
       // ImageDescriptor 這條快路不是每個平台都在（web 的部分算圖
       // 引擎沒有它），走不通就退回一般解碼——少了「先縮再解」的
       // 省記憶體，但至少解得開
-      final codec = await ui.instantiateImageCodec(bytes);
+      final codec = await ui.instantiateImageCodec(await f.readAsBytes());
       final frame = await codec.getNextFrame();
       codec.dispose();
       return frame.image;
+    } finally {
+      desc?.dispose();
+      buffer?.dispose();
     }
+  }
+
+  /// 這一批照片進來：記路徑（離開時清選取器複本用）
+  void _noteReceived(Iterable<XFile> files) {
+    for (final f in files) {
+      if (f.path.isNotEmpty) _received.add(f.path);
+    }
+  }
+
+  /// 離開頁面的清理（dispose 裡射後不理）：草稿沒在用的複本、這一頁
+  /// 收到的選取器複本都刪掉。這一頁沒動過草稿的話，草稿引用的照片
+  /// 一律留著；草稿根本不存在（個人頁刪掉了）才把複本清光
+  Future<void> _cleanupOnLeave() async {
+    var keep = _draftPaths;
+    if (!_draftTouched) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final raw = prefs.getString(kCollageDraftKey);
+        keep = raw == null
+            ? <String>{}
+            : {
+                for (final p
+                    in ((jsonDecode(raw) as Map)['photos'] as List? ??
+                        const []))
+                  if (p is String && p.isNotEmpty) p,
+              };
+      } catch (_) {
+        return; // 讀不到就什麼都別刪，寧可多留
+      }
+    }
+    await DraftAssets.afterLeave(
+      DraftAssets.collage,
+      keep: keep,
+      received: _received,
+    );
   }
 
   /// 讀不出來時給個有用的說法：iPhone 的 HEIC 瀏覽器解不動是最常見的
@@ -346,44 +406,77 @@ class _CollageScreenState extends State<CollageScreen>
 
   bool get _hasContent => _images.any((i) => i != null);
 
-  String _draftJson() => jsonEncode({
-    'photos': [for (final p in _srcPaths) p ?? ''],
-    'order': _order,
-    'cols': _cols,
-    'rows': _rows,
-    'free': _free,
-    'aspect': _canvasAspect,
-    'lines': _lines,
-    'gapN': _gapN,
-    'lineColor': _lineColor,
-    'fits': [
-      for (final f in _fits) {'z': f.zoom, 'x': f.panX, 'y': f.panY},
-    ],
-    'freeItems': [
-      for (final t in _items)
-        {
-          'img': t.img,
-          'l': t.rect.left,
-          't': t.rect.top,
-          'w': t.rect.width,
-          'h': t.rect.height,
-        },
-    ],
-    // 存草稿時還是自動排的就記下來：續作後換畫布比例照樣會重排塞滿
-    'freeAuto': _freeUntouched,
-    // 整張拼圖那一組浮水印一起存：續作時浮水印要跟著回來
-    'wm': _wm.toJson(),
-    'savedAt': DateTime.now().toIso8601String(),
-  });
+  /// 草稿內容。[photos]＝每張照片要記的路徑（跟 _srcPaths 同索引；
+  /// 存草稿時是留好的複本）；[stamp] 關掉就不帶時間，拿來比「有沒有動過」
+  String _draftJson({required List<String?> photos, bool stamp = true}) =>
+      jsonEncode({
+        'photos': [for (final p in photos) p ?? ''],
+        'order': _order,
+        'cols': _cols,
+        'rows': _rows,
+        'free': _free,
+        'aspect': _canvasAspect,
+        'lines': _lines,
+        'gapN': _gapN,
+        'lineColor': _lineColor,
+        'fits': [
+          for (final f in _fits) {'z': f.zoom, 'x': f.panX, 'y': f.panY},
+        ],
+        'freeItems': [
+          for (final t in _items)
+            {
+              'img': t.img,
+              'l': t.rect.left,
+              't': t.rect.top,
+              'w': t.rect.width,
+              'h': t.rect.height,
+            },
+        ],
+        // 存草稿時還是自動排的就記下來：續作後換畫布比例照樣會重排塞滿
+        'freeAuto': _freeUntouched,
+        // 整張拼圖那一組浮水印一起存：續作時浮水印要跟著回來
+        'wm': _wm.toJson(),
+        if (stamp) 'savedAt': DateTime.now().toIso8601String(),
+      });
 
+  /// 現在的狀態指紋（沒有時間戳）：匯出後有沒有再動看這個
+  String _stateKey() => _draftJson(photos: _srcPaths, stamp: false);
+
+  /// 存草稿。照片先各留一份在 App 自己的目錄（DraftAssets）、草稿改記
+  /// 那一份：相簿選取器給的複本在 tmp／cache，系統幾天就清，以前續作
+  /// 動不動就「有 N 張照片已不在」
   Future<void> _saveDraft() async {
     try {
-      // 先在同步這一段把內容組好：匯出成功後關頁那條路是 unawaited
-      // 呼叫的，await 之後才讀 state 欄位太晚（跟批次同一個寫法）
-      final text = _draftJson();
+      // 先在同步這一段把路徑抄下來，await 之後才讀 state 欄位太晚
+      final src = List<String?>.of(_srcPaths);
+      final photos = <String?>[];
+      for (final p in src) {
+        photos.add(
+          p == null || p.isEmpty
+              ? p
+              : (await DraftAssets.secure(DraftAssets.collage, p) ?? p),
+        );
+      }
+      if (!mounted) return;
+      final text = _draftJson(photos: photos);
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(kCollageDraftKey, text);
+      _draftPaths = {
+        for (final p in photos)
+          if (p != null && p.isNotEmpty) p,
+      };
+      _draftTouched = true;
     } catch (_) {}
+  }
+
+  /// 草稿不要了（捨棄、或匯出成功）
+  Future<void> _clearDraft() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(kCollageDraftKey);
+    } catch (_) {}
+    _draftPaths = {};
+    _draftTouched = true;
   }
 
   /// 從草稿把照片與排法還原。照片不在了就略過並講清楚；
@@ -401,24 +494,31 @@ class _CollageScreenState extends State<CollageScreen>
     }
     try {
       final paths = (r['photos'] as List? ?? []);
+      _draftPaths = {
+        for (final p in paths)
+          if (p is String && p.isNotEmpty) p,
+      };
       final map = <int, int>{}; // 草稿裡的索引 → 現在的索引
       var gone = 0;
       for (var i = 0; i < paths.length; i++) {
         final p0 = paths[i];
         if (p0 is! String || p0.isEmpty) continue;
-        if (!await fileExists(p0)) {
+        // 草稿記的路徑不在了、但留過複本就用複本（見 DraftAssets）
+        final p = await DraftAssets.resolve(DraftAssets.collage, p0);
+        if (p == null) {
           gone++;
           continue;
         }
         try {
-          final img = await _decode(await XFile(p0).readAsBytes());
+          final img = await _decode(XFile(p));
           if (!mounted) {
             img.dispose();
             return true;
           }
           map[i] = _images.length;
           _images.add(img);
-          _srcPaths.add(p0);
+          _srcPaths.add(p);
+          _received.add(p);
         } catch (_) {
           gone++;
         }
@@ -441,6 +541,8 @@ class _CollageScreenState extends State<CollageScreen>
       if (lc != null) _lineColor = lc;
       _cols = ((r['cols'] as num?)?.toInt() ?? 2).clamp(1, _kMaxSide);
       _rows = ((r['rows'] as num?)?.toInt() ?? 2).clamp(1, _kMaxSide);
+      // 單邊各夾 6 還是可能 36 格（壞掉的草稿）：總格數同樣要守上限
+      if (_cols * _rows > _kMaxCells) _rows = math.max(1, _kMaxCells ~/ _cols);
       final ord = (r['order'] as List? ?? []).cast<num>();
       _order = List.generate(
         _cellCount,
@@ -487,12 +589,11 @@ class _CollageScreenState extends State<CollageScreen>
     }
   }
 
-  /// 返回鍵／返回手勢：匯出成功過就靜靜留草稿走人（跟影片、批次的
-  /// _handleBack 同一條規矩）；其餘走離開保護
+  /// 返回鍵／返回手勢：匯出成功過、之後沒再動就靜靜走人（草稿已經
+  /// 清掉，跟 GIF、批次同一條規矩）；動過了、或沒匯出過就走離開保護
   void _handleBack() {
-    if (_exportedOk) {
-      // 匯出成功過的不再問：草稿留著，之後想改再從個人頁續作
-      unawaited(_saveDraft());
+    final snap = _exportSnapshot;
+    if (snap != null && snap == _stateKey()) {
       Navigator.of(context).pop();
       return;
     }
@@ -517,19 +618,23 @@ class _CollageScreenState extends State<CollageScreen>
       await _saveDraft();
       if (mounted) Navigator.of(context).pop();
     } else if (act == 'discard') {
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.remove(kCollageDraftKey);
-      } catch (_) {}
+      await _clearDraft();
       if (mounted) Navigator.of(context).pop();
     }
   }
 
   Future<void> _load() async {
     if (widget.restore != null && await _restoreDraft(widget.restore!)) return;
+    _noteReceived(widget.photos);
+    var dropped = 0;
     for (final f in widget.photos) {
+      // 超過上限的略過（以前默默截斷）——結尾一起講
+      if (_images.length >= _kMaxCells) {
+        dropped++;
+        continue;
+      }
       try {
-        final img = await _decode(await f.readAsBytes());
+        final img = await _decode(f);
         // 讀取途中使用者可能已經離開，這時 dispose 過了，
         // 再往清單裡塞就沒人會釋放它
         if (!mounted) {
@@ -539,9 +644,15 @@ class _CollageScreenState extends State<CollageScreen>
         _images.add(img);
         _srcPaths.add(f.path);
       } catch (_) {}
-      if (_images.length >= _kMaxCells) break;
     }
     if (!mounted) return;
+    if (dropped > 0) {
+      showHint(
+        context,
+        pickCountHint(dropped: dropped, cap: _kMaxCells)!,
+        error: true,
+      );
+    }
     _poolSize = _images.length;
     // 空手進場（從首頁直接點拼圖）：給一個 2×2 的空盤，
     // 使用者先挑宮格數再匯入照片。以前這裡會直接把人踢回上一頁
@@ -553,7 +664,7 @@ class _CollageScreenState extends State<CollageScreen>
       });
       return;
     }
-    if (_images.length < 2) {
+    if (_images.length < 2 && dropped == 0) {
       showHint(context, '再加一張才拼得起來');
     }
     // 預設挑一個「剛好放得下」而且接近正方形的排法
@@ -611,15 +722,18 @@ class _CollageScreenState extends State<CollageScreen>
     });
   }
 
-  /// 點空格子的「＋」：挑照片補進來（多選會依序補其他空格）
+  /// 點空格子的「＋」：挑照片補進來（多選會依序補其他空格）。
+  /// iOS 拿相簿原檔（不經 image_picker 那一輪全解析度重壓、HEIC 不會
+  /// 變 8-bit），見 pickPhotoFiles
   Future<void> _fillCell(int cell) async {
-    final files = await ImagePicker().pickMultiImage();
+    final files = await pickPhotoFiles();
     if (files.isEmpty || !mounted) return;
+    _noteReceived(files);
     var filled = 0;
     final failedNames = <String>[];
     for (final f in files) {
       try {
-        final img = await _decode(await f.readAsBytes());
+        final img = await _decode(f);
         // 解碼要好幾秒，這中間使用者可能換了排法／離開，
         // 用當初算好的索引會直接越界
         if (!mounted) {
@@ -671,10 +785,13 @@ class _CollageScreenState extends State<CollageScreen>
     setState(() => _selCell = _selCell == cell ? -1 : cell);
   }
 
-  /// 換一張照片（重新從相簿挑）：鎖定格子後點右上角按鈕
+  /// 換一張照片（重新從相簿挑）：鎖定格子後點右上角按鈕。
+  /// 同一支選取器（多選拿第一張）：iOS 才不會走 image_picker 那條重壓路
   Future<void> _replaceCell(int cell) async {
-    final f = await ImagePicker().pickImage(source: ImageSource.gallery);
-    if (f == null || !mounted) return;
+    final picked = await pickPhotoFiles();
+    if (picked.isEmpty || !mounted) return;
+    final f = picked.first;
+    _noteReceived(picked);
     try {
       // 換單張時給裁切：宮格是「貼齊格子」的排版，想強調照片裡的
       // 哪一塊只能先裁
@@ -682,7 +799,7 @@ class _CollageScreenState extends State<CollageScreen>
       if (!mounted) return;
       final cut = await cropImage(context, raw);
       if (cut == null || !mounted) return;
-      final img = await _decode(cut);
+      final img = await _decode(XFile.fromData(cut, name: f.name));
       // 選照片＋解碼期間排法可能被換掉，格子編號會失效
       if (!mounted || cell >= _order.length) {
         img.dispose();
@@ -763,16 +880,24 @@ class _CollageScreenState extends State<CollageScreen>
   ///（測試回報：「加入一堆照片要自動排列塞滿、縮放大小」）。以前是一張張
   /// 疊在畫布中間錯開一點，使用者得自己一張張拉開、縮放
   Future<void> _addFreePhotos() async {
-    final files = await ImagePicker().pickMultiImage();
+    final files = await pickPhotoFiles();
     if (files.isEmpty || !mounted) return;
+    _noteReceived(files);
     final failedNames = <String>[];
+    // 上限跟宮格同一個（30 張）：以前自由模式沒擋，50 張每張解到長邊
+    // 1600 就是幾百 MB，草稿跟合成也跟著長
+    final room = math.max<int>(
+      0,
+      _kMaxCells - _images.where((i) => i != null).length,
+    );
+    final dropped = math.max<int>(0, files.length - room);
     // 解好的先收著，全部解完再一起放上畫布、一起排：一張排一次的話每張
     // 進來整個版面都跳一下；而且解碼中畫面隨時可能重畫，半路上的方塊
     // 還沒有位置（零大小＝寬/高是 NaN）畫下去會炸
     final fresh = <int>[];
-    for (final f in files) {
+    for (final f in files.take(room)) {
       try {
-        final img = await _decode(await f.readAsBytes());
+        final img = await _decode(f);
         if (!mounted) {
           img.dispose();
           return;
@@ -787,6 +912,12 @@ class _CollageScreenState extends State<CollageScreen>
     if (!mounted) return;
     if (failedNames.isNotEmpty) {
       showHint(context, _decodeFailMsg(failedNames), error: true);
+    } else if (dropped > 0) {
+      showHint(
+        context,
+        pickCountHint(dropped: dropped, cap: _kMaxCells)!,
+        error: true,
+      );
     }
     if (fresh.isNotEmpty) {
       setState(() {
@@ -834,6 +965,7 @@ class _CollageScreenState extends State<CollageScreen>
       _items[i].rect = rects[i];
     }
     _autoRects = {for (final t in _items) t.img: t.rect};
+    _fitBase = null; // 自動排的沒有「原稿」：換比例會重排
   }
 
   /// 現在的方塊還是上一次自動排出來的樣子（一塊都沒被拖過、拉過）。
@@ -848,9 +980,10 @@ class _CollageScreenState extends State<CollageScreen>
   }
 
   /// 「隨機排列」：換個種子重排一次。排出來跟現在一模一樣就再換
-  ///（照片少的時候排法有限，不多試幾次會像按了沒反應）
+  ///（照片少的時候排法有限，不多試幾次會像按了沒反應）。
+  /// 一張照片只有一種排法（鈕也不顯示，見 _settingsCard）
   void _shuffleFree() {
-    if (_items.isEmpty) return;
+    if (_items.length < 2) return;
     setState(() {
       final before = [for (final t in _items) t.rect];
       for (var tries = 0; tries < 8; tries++) {
@@ -886,21 +1019,43 @@ class _CollageScreenState extends State<CollageScreen>
       if (_items.isEmpty) return;
       if (_freeUntouched) {
         _autoArrange();
-      } else {
-        _refitFree(old, a);
+        return;
       }
+      // 手排過的：從「原稿」（最後一次手排時的畫布與方塊）等比放進
+      // 新畫布。上一次換比例之後沒再動過就沿用原稿；動過了現在這份
+      // 就是新原稿。回到原稿的比例＝一模一樣還原，來回切不會愈縮愈小
+      final cur = {for (final t in _items) t.img: t.rect};
+      var base = _fitBase;
+      if (base == null || !_sameRects(base.shown, cur)) {
+        base = (aspect: old, rects: cur, shown: cur);
+      }
+      _refitFree(base.aspect, base.rects, a);
+      _fitBase = (
+        aspect: base.aspect,
+        rects: base.rects,
+        shown: {for (final t in _items) t.img: t.rect},
+      );
     });
   }
 
-  /// 把整組方塊從舊畫布等比搬進新畫布（contain、置中）。像素空間把畫布
-  /// 當成「寬＝比例、高＝1」來算：舊畫布整個縮到放得進新畫布，方塊的
-  /// 像素形狀（寬×舊比例／高）在縮放前後一模一樣
-  void _refitFree(double oldAspect, double newAspect) {
+  static bool _sameRects(Map<int, ui.Rect> a, Map<int, ui.Rect> b) {
+    if (a.length != b.length) return false;
+    for (final e in a.entries) {
+      if (b[e.key] != e.value) return false;
+    }
+    return true;
+  }
+
+  /// 把整組方塊從 [oldAspect] 的畫布等比搬進新畫布（contain、置中）。
+  /// 像素空間把畫布當成「寬＝比例、高＝1」來算：舊畫布整個縮到放得進
+  /// 新畫布，方塊的像素形狀（寬×舊比例／高）在縮放前後一模一樣。
+  /// [from]：每張照片在舊畫布上的方塊（原稿）；沒有的照現在的算
+  void _refitFree(double oldAspect, Map<int, ui.Rect> from, double newAspect) {
     final s = math.min(newAspect / oldAspect, 1.0);
     final ox = (newAspect - oldAspect * s) / 2;
     final oy = (1 - s) / 2;
     for (final t in _items) {
-      final r = t.rect;
+      final r = from[t.img] ?? t.rect;
       t.rect = ui.Rect.fromLTWH(
         (r.left * oldAspect * s + ox) / newAspect,
         r.top * s + oy,
@@ -936,8 +1091,12 @@ class _CollageScreenState extends State<CollageScreen>
   }
 
   /// 點擊用的命中：重疊處「再點一下」輪到下一層。
-  /// 已選中的正好是最上層的命中時，回傳它下面那一張——疊在一起的
-  /// 照片才選得到（使用者指定：加入後再點一下，選底下一層的照片）
+  /// 已選中的正好是最上層的命中時，回傳疊在「最底下」那一張——疊在
+  /// 一起的照片才選得到（使用者指定：加入後再點一下，選底下一層的照片）。
+  /// 以前固定回第二張：選到誰誰就被帶到最上層，第二張正是上一次被帶
+  /// 上來之前的最上層，三張以上就永遠在前兩張之間來回（探針：序列
+  /// [2,2,1,2,1]，第三張輪不到）。從最底下輪起，每帶一張上來，其餘的
+  /// 相對順序不變，整疊一張接一張輪過去
   int _freeHitCycle(Offset p, Size s) {
     final hits = <int>[];
     for (var i = _items.length - 1; i >= 0; i--) {
@@ -952,7 +1111,7 @@ class _CollageScreenState extends State<CollageScreen>
       }
     }
     if (hits.isEmpty) return -1;
-    if (hits.length > 1 && hits.first == _selItem) return hits[1];
+    if (hits.length > 1 && hits.first == _selItem) return hits.last;
     return hits.first;
   }
 
@@ -1090,10 +1249,12 @@ class _CollageScreenState extends State<CollageScreen>
       ok = false;
     }
     if (ok) {
-      // 匯出成功＝靜靜留一份草稿、之後離開不再問（跟批次同一條規矩）。
-      // 這裡就存：回主畫面那條路（popUntil）不會經過 _handleBack
-      _exportedOk = true;
-      unawaited(_saveDraft());
+      // 匯出成功＝草稿清掉、之後沒再動離開不問（跟 GIF、批次同一條
+      // 規矩）。以前反而寫一份，個人頁就多一張「未完成的拼圖」，明明
+      // 已經匯出了。這裡就清：回主畫面那條路（popUntil）不會經過
+      // _handleBack
+      await _clearDraft();
+      _exportSnapshot = _stateKey();
     }
 
     if (!mounted) return;
@@ -1206,7 +1367,8 @@ class _CollageScreenState extends State<CollageScreen>
                           ),
                           const SizedBox(width: 8),
                         ],
-                        if (_items.isNotEmpty) ...[
+                        // 一張照片只有一種排法：鈕按了沒反應，乾脆不顯示
+                        if (_items.length >= 2) ...[
                           _freeAction(Icons.shuffle, '隨機排列', _shuffleFree),
                           const SizedBox(width: 8),
                         ],

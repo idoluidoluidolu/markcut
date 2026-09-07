@@ -5,7 +5,7 @@
 // - 合成：空格子透明、浮水印畫得進去、存 PNG 一路保留透明
 //   （朋友回報過透明組圖被強制上白底，不能再發生）
 // - 草稿：浮水印設定跟拼圖一起存、一起回來
-// - 離開保護：匯出成功過就靜靜留草稿走人；沒匯出過才問保留／捨棄
+// - 離開保護：匯出成功＝草稿清掉、沒再動就靜靜走人；沒匯出過才問保留／捨棄
 // - 「完成，上浮水印」那顆鈕與交給照片編輯器的那條路都不在了
 import 'dart:async' show unawaited;
 import 'dart:convert';
@@ -436,6 +436,13 @@ void main() {
     expect(find.text('這份拼圖還沒完成'), findsOneWidget);
     expect(find.text('保留草稿'), findsOneWidget);
     await t.tap(find.text('保留草稿'));
+    // 存草稿會先把照片留一份（DraftAssets，真 I/O）才 pop
+    for (var i = 0; i < 10; i++) {
+      await t.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 40)),
+      );
+      await t.pump(const Duration(milliseconds: 40));
+    }
     await t.pumpAndSettle();
     expect(find.text('首頁'), findsOneWidget);
 
@@ -554,12 +561,13 @@ void main() {
     await t.pumpAndSettle();
     expect(find.byType(Dialog), findsNothing);
 
-    // 匯出成功過：返回不再問，草稿靜靜留著，直接回首頁
+    // 匯出成功過、沒再動：返回不再問，直接回首頁；草稿清掉（跟 GIF、
+    // 批次同一條規矩）——以前反而寫一份，個人頁多一張「未完成的拼圖」
     await _back(t);
     expect(find.text('保留草稿'), findsNothing);
     expect(find.text('首頁'), findsOneWidget);
     final prefs = await SharedPreferences.getInstance();
-    expect(prefs.getString(kCollageDraftKey), isNotNull, reason: '匯出過的草稿留著');
+    expect(prefs.getString(kCollageDraftKey), isNull, reason: '匯出過的草稿要清掉');
     expect(t.takeException(), isNull);
   });
 

@@ -5,11 +5,13 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/export_speed.dart' show fmtDuration;
+import '../services/gif_frames.dart';
 import '../services/gif_strip.dart';
 import '../services/gif_trim_range.dart';
 import '../services/native_frames.dart';
@@ -20,6 +22,22 @@ import '../services/video_engine.dart' as engine;
 import 'crop_screen.dart';
 import '../theme.dart';
 import '../widgets/gif_trim_strip.dart';
+
+/// 做一份 GIF（跟 engine.makeGifFile 同一個簽名；測試換成假的）
+typedef GifMaker =
+    Future<String?> Function({
+      required String inputPath,
+      required double start,
+      required double end,
+      required int fps,
+      required int maxSide,
+      Rect? crop,
+      double speed,
+    });
+
+/// 存進相簿（跟 engine.saveGifToGallery 同一個簽名）
+typedef GifSaver =
+    Future<({bool ok, String message, bool cancelled})> Function(String path);
 
 /// 專屬的 GIF 製作頁：選一支影片進來，拉兩個把手決定要剪哪一段，
 /// 挑尺寸跟順暢度，直接出 GIF。
@@ -43,6 +61,17 @@ class GifScreen extends StatefulWidget {
     required this.name,
     this.restore,
   });
+
+  /// 測試用的替身：這台沒有 FFmpeg、沒有原生播放器，匯出那條路
+  ///（等預覽做完才存、取消不存、取消後不補做）只能用假的引擎驗
+  @visibleForTesting
+  static GifMaker? debugMakeGif;
+  @visibleForTesting
+  static GifSaver? debugSaveGif;
+  @visibleForTesting
+  static Future<void> Function()? debugCancel;
+  @visibleForTesting
+  static PlayerX Function(String path)? debugPlayer;
 
   @override
   State<GifScreen> createState() => _GifScreenState();
@@ -154,7 +183,9 @@ class _GifScreenState extends State<GifScreen> {
   // 大預覽就是 GIF 本人（顏色/格數照實），但不交給元件自由輪播：
   // 時鐘在我們手上，才能（1）播放/暫停（2）把「現在放到段落哪裡」
   // 映射回修剪條上的指針（使用者：預覽一樣是 GIF，但要顯示指針
-  // 位置，才知道自己放到哪）
+  // 位置，才知道自己放到哪）。
+  // 幀縮到預覽用得到的大小、總量受上限管（見 gif_frames.dart）：
+  // 以前整支原尺寸留著，15 秒 640p 就是幾百 MB 常駐
   final List<ui.Image> _gifFrames = [];
   final List<int> _gifEndMs = [];
   int _gifLoopMs = 0;
@@ -164,6 +195,19 @@ class _GifScreenState extends State<GifScreen> {
   Timer? _gifTick;
 
   bool get _gifMode => _gifFrames.isNotEmpty && _gifLoopMs > 0;
+
+  /// 測試鉤子：現在常駐的預覽幀佔多少位元組
+  @visibleForTesting
+  int get gifFrameBytes =>
+      _gifFrames.fold(0, (s, im) => s + im.width * im.height * 4);
+
+  /// 測試鉤子：目前這份預覽是照哪組設定做的（空字串＝還沒有）
+  @visibleForTesting
+  String get previewKey => _previewKey;
+
+  /// 測試鉤子：預覽的時鐘有沒有在跑
+  @visibleForTesting
+  bool get gifTickRunning => _gifTick != null;
 
   /// 指針落在「已做好的 GIF 那一段」外面時，暫時改看影片本人——
   /// 那裡沒有 GIF 幀可看，凍在端點幀等於什麼都看不到（實測回報）。
@@ -180,58 +224,51 @@ class _GifScreenState extends State<GifScreen> {
 
   Future<void> _decodeGifFrames(String path) async {
     final seq = ++_gifDecodeSeq;
-    try {
-      final bytes = await File(path).readAsBytes();
-      final codec = await ui.instantiateImageCodec(bytes);
-      final frames = <ui.Image>[];
-      final ends = <int>[];
-      var acc = 0;
-      final n = math.min(codec.frameCount, 400);
-      for (var i = 0; i < n; i++) {
-        final f = await codec.getNextFrame();
-        if (!mounted || seq != _gifDecodeSeq) {
-          f.image.dispose();
-          codec.dispose();
-          for (final im in frames) {
-            im.dispose();
-          }
-          return;
-        }
-        frames.add(f.image);
-        final d = f.duration.inMilliseconds;
-        acc += d < 10 ? 100 : d;
-        ends.add(acc);
-      }
-      codec.dispose();
-      if (!mounted || seq != _gifDecodeSeq) {
-        for (final im in frames) {
-          im.dispose();
-        }
-        return;
-      }
-      for (final im in _gifFrames) {
-        im.dispose();
-      }
-      setState(() {
-        _gifFrames
-          ..clear()
-          ..addAll(frames);
-        _gifEndMs
-          ..clear()
-          ..addAll(ends);
-        _gifLoopMs = acc;
-        _gifMs = 0;
-        _gifFrameVN.value = 0;
-        _gifPeek = false; // 新成果上檔，回到看 GIF 本人
-      });
-      _pos.value = _start;
-      _ensureGifTick();
-    } catch (_) {}
+    if (!mounted) return;
+    // 幀的上限尺寸＝整個螢幕的像素（預覽區只會更小、不會更大）；
+    // 成品比這小就照原樣，不放大
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    final size = MediaQuery.sizeOf(context);
+    final decoded = await decodeGifFrames(
+      path,
+      maxWidth: math.max(1, (size.width * dpr).round()),
+      maxHeight: math.max(1, (size.height * dpr).round()),
+      cancelled: () => !mounted || seq != _gifDecodeSeq,
+    );
+    if (decoded == null) return;
+    if (!mounted || seq != _gifDecodeSeq) {
+      decoded.dispose();
+      return;
+    }
+    for (final im in _gifFrames) {
+      im.dispose();
+    }
+    setState(() {
+      _gifFrames
+        ..clear()
+        ..addAll(decoded.images);
+      _gifEndMs
+        ..clear()
+        ..addAll(decoded.endMs);
+      _gifLoopMs = decoded.loopMs;
+      _gifMs = 0;
+      _gifFrameVN.value = 0;
+      _gifPeek = false; // 新成果上檔，回到看 GIF 本人
+    });
+    _pos.value = _start;
+    _ensureGifTick();
   }
 
+  /// 預覽的時鐘：只在「有成品而且在播」的時候跑。以前開了就整頁跑到
+  /// 離開為止，暫停、拖曳、看影片本人時都在每 33ms 空轉一次
   void _ensureGifTick() {
+    if (!_gifMode || !_playing) return;
     _gifTick ??= Timer.periodic(const Duration(milliseconds: 33), (_) {
-      if (!mounted || !_gifMode || !_playing) return;
+      if (!mounted || !_gifMode || !_playing) {
+        _gifTick?.cancel();
+        _gifTick = null;
+        return;
+      }
       _gifMs = (_gifMs + 33) % _gifLoopMs;
       _syncGifFrame();
     });
@@ -316,10 +353,23 @@ class _GifScreenState extends State<GifScreen> {
     _previewTimer = Timer(const Duration(milliseconds: 250), _buildPreview);
   }
 
-  Future<void> _buildPreview() async {
-    if (_building || !mounted) return;
+  /// 進行中的預覽生成。匯出要等的就是它：以前 _buildPreview 一看到
+  /// 「有人在做」就立刻回，匯出接著拿 _gifPreview 存的是上一份
+  Future<String?>? _buildRun;
+
+  /// 匯出視窗按了「取消」：正在做的那份作廢，做完也不接著補做
+  /// （以前砍掉 FFmpeg 之後 _buildPreview 的尾巴又把同一份排回去跑）
+  bool _buildCancelled = false;
+
+  /// 做（或拿）「現在這組設定」的預覽；回傳做好的檔案路徑，做不出來
+  /// （失敗、取消）回 null。已經有一份在做就一起等它——等完設定可能
+  /// 又變了，呼叫端自己看 [_previewKey] 對不對得上再決定要不要再做
+  Future<String?> _buildPreview() async {
+    if (!mounted) return null;
+    final running = _buildRun;
+    if (running != null) return running;
     final key = _keyFor();
-    if (key == _previewKey) return;
+    if (key == _previewKey) return _gifPreview;
     final hit = _previewCache[key];
     if (hit != null) {
       setState(() {
@@ -329,22 +379,35 @@ class _GifScreenState extends State<GifScreen> {
       _gifBuiltStart = _start;
       _gifBuiltEnd = _end;
       unawaited(_decodeGifFrames(hit));
-      return;
+      return hit;
     }
+    final run = _buildOnce(key);
+    _buildRun = run;
+    try {
+      return await run;
+    } finally {
+      _buildRun = null;
+    }
+  }
+
+  Future<String?> _buildOnce(String key) async {
+    _buildCancelled = false;
     setState(() => _building = true);
+    // 背景正在預做隔壁選項：砍掉它、等它收工，再開使用者這一支。
+    // 兩支 palettegen 同時跑會互搶 CPU，使用者要看的那份反而更慢
+    final pf = _prefetchRun;
+    if (pf != null) {
+      _prefetchAbort = true;
+      await (GifScreen.debugCancel ?? engine.cancelExport)();
+      await pf;
+    }
+    if (!mounted) return null;
     // 做的當下的剪點（做完手可能又在拉了，不能拿最新值當這份的範圍）
     final builtStart = _start;
     final builtEnd = _end;
-    final path = await engine.makeGifFile(
-      inputPath: widget.path,
-      start: _start,
-      end: _end,
-      fps: _fps,
-      maxSide: _size,
-      crop: _crop,
-      speed: _speed,
-    );
-    if (!mounted) return;
+    final path = await _runGifJob(fps: _fps, size: _size);
+    if (!mounted) return null;
+    final cancelled = _buildCancelled;
     setState(() {
       _building = false;
       if (path != null) {
@@ -358,17 +421,40 @@ class _GifScreenState extends State<GifScreen> {
       _gifBuiltEnd = builtEnd;
       unawaited(_decodeGifFrames(path));
     }
+    _trimCache();
+    // 使用者按了取消：到此為止，不補做、不預做。下一次改設定
+    //（或再按做成 GIF）才會再做
+    if (cancelled) return path;
     // 跑完的時候設定可能又被改過了（使用者連按了好幾個），
     // 那就接著做最新的那一組
     if (mounted && _keyFor() != _previewKey) _schedulePreview();
-    _trimCache();
     // 目前這組做好了＝進入閒置：把隔壁選項在背景先做起來
     if (mounted && _keyFor() == _previewKey) _schedulePrefetch();
+    return path;
+  }
+
+  /// 跑一支 FFmpeg（測試換成假的引擎）
+  Future<String?> _runGifJob({required int fps, required int size}) {
+    final make = GifScreen.debugMakeGif ?? engine.makeGifFile;
+    return make(
+      inputPath: widget.path,
+      start: _start,
+      end: _end,
+      fps: fps,
+      maxSide: size,
+      crop: _crop,
+      speed: _speed,
+    );
   }
 
   /// 背景有沒有正在預先做的東西（一次只跑一個，不跟使用者搶）
   bool _prefetching = false;
   Timer? _prefetchTimer;
+
+  /// 背景預做那一整輪（進行中才有）與「讓路」旗標：使用者要做預覽時
+  /// 先砍掉它、等它收工（見 _buildOnce）
+  Future<void>? _prefetchRun;
+  bool _prefetchAbort = false;
 
   /// 隔壁選項的預做要等真的閒下來：剛做完預覽的當下使用者多半還在
   /// 調，這時在背景一口氣跑四支 FFmpeg 只會搶走拖曳要用的 CPU
@@ -388,10 +474,18 @@ class _GifScreenState extends State<GifScreen> {
   /// 一次只跑一支；使用者改了任何設定就立刻讓路
   Future<void> _prefetchSiblings() async {
     // 縮圖帶還在抽、手還在拉、使用者自己的預覽在做：都不算閒置
-    if (_prefetching || kIsWeb || _stripLoading || _gesturing || _building) {
+    if (_prefetching ||
+        kIsWeb ||
+        _stripLoading ||
+        _gesturing ||
+        _building ||
+        _buildRun != null) {
       return;
     }
     _prefetching = true;
+    _prefetchAbort = false;
+    final done = Completer<void>();
+    _prefetchRun = done.future;
     try {
       final baseKey = _previewKey;
       final jobs = <(int fps, int size)>[
@@ -403,19 +497,18 @@ class _GifScreenState extends State<GifScreen> {
       for (final (fps, size) in jobs) {
         if (!mounted) return;
         // 設定變了、手又在拉、或使用者的 build 正在跑：讓路，等下一次閒置
-        if (_building || _gesturing || _keyFor() != baseKey) return;
+        if (_prefetchAbort ||
+            _building ||
+            _buildRun != null ||
+            _gesturing ||
+            _keyFor() != baseKey) {
+          return;
+        }
         final key = _keyFor(fps: fps, size: size);
         if (_previewCache.containsKey(key)) continue;
-        final path = await engine.makeGifFile(
-          inputPath: widget.path,
-          start: _start,
-          end: _end,
-          fps: fps,
-          maxSide: size,
-          crop: _crop,
-          speed: _speed,
-        );
+        final path = await _runGifJob(fps: fps, size: size);
         if (!mounted) return;
+        // 被砍掉的那支回 null（半成品引擎已刪）；沒被砍的收進快取
         if (path != null && !_previewCache.containsKey(key)) {
           _previewCache[key] = path;
           _trimCache();
@@ -423,7 +516,27 @@ class _GifScreenState extends State<GifScreen> {
       }
     } finally {
       _prefetching = false;
+      _prefetchRun = null;
+      done.complete();
     }
+  }
+
+  /// 上一次被系統殺掉（OOM、切到背景太久）留在暫存目錄的預覽半成品。
+  /// 這一頁自己做的都記在 _previewCache、離開時刪；開頁時還在的一律是
+  /// 孤兒，直接清（一份幾百 KB，放著只會愈積愈多）
+  Future<void> _sweepStalePreviews() async {
+    if (kIsWeb) return;
+    try {
+      final dir = await getTemporaryDirectory();
+      await for (final f in dir.list()) {
+        if (f is! File) continue;
+        final name = f.uri.pathSegments.last;
+        if (!name.startsWith('preview_') || !name.endsWith('.gif')) continue;
+        try {
+          await f.delete();
+        } catch (_) {}
+      }
+    } catch (_) {}
   }
 
   /// 快取只留最近 12 份，多的連檔案一起刪——一份 480p 的 GIF
@@ -446,7 +559,12 @@ class _GifScreenState extends State<GifScreen> {
   }
 
   Future<void> _init() async {
-    final p = makeVideoController(widget.path, system: true);
+    // 先掃孤兒再開始做新的，兩件事才不會撞到同一個檔名
+    await _sweepStalePreviews();
+    if (!mounted) return;
+    final p =
+        GifScreen.debugPlayer?.call(widget.path) ??
+        makeVideoController(widget.path, system: true);
     _player = p;
     try {
       await p.initialize();
@@ -752,7 +870,11 @@ class _GifScreenState extends State<GifScreen> {
                     ? null
                     : () {
                         setDialog(() => cancelRequested = true);
-                        engine.cancelExport();
+                        // 正在做的那份作廢，做完也不補做（見 _buildOnce）
+                        _buildCancelled = true;
+                        unawaited(
+                          (GifScreen.debugCancel ?? engine.cancelExport)(),
+                        );
                       },
                 child: Text(cancelRequested ? '取消中…' : '取消'),
               ),
@@ -765,25 +887,48 @@ class _GifScreenState extends State<GifScreen> {
 
     String message;
     var ok = false;
+    var cancelled = false;
     try {
       if (kIsWeb) {
         // Web 沒有 FFmpeg：整套流程點得完，但不會真的產出檔案
         await Future<void>.delayed(const Duration(milliseconds: 600));
         if (mounted) Navigator.pop(context);
+        progress.dispose();
         _exporting = false;
         await keepScreenAwake(false);
         if (mounted) showHint(context, '這是網頁展示模式，實機才會真的做出 GIF');
         return;
       }
-      // 直接用預覽那一份：預覽看到什麼，存下去就是什麼。
-      // 設定沒動過就不用再做一次（_buildPreview 有指紋擋著）
-      await _buildPreview();
-      progress.value = 0.8;
-      final gif = _gifPreview;
-      if (gif == null) {
+      // 直接用預覽那一份：預覽看到什麼，存下去就是什麼——但要等到
+      // 「現在這組設定」的那一份。改設定 250ms 後預覽就在做（要幾秒），
+      // 這時按下來以前的 _buildPreview 看到有人在做就立刻回，存進相簿
+      // 的是舊設定那份。現在：正在做的先等它做完；做完發現設定已經不是
+      // 這組（做到一半使用者又改了）就再做一次，指紋對上才存
+      String? gif;
+      for (var tries = 0; tries < 4 && !cancelRequested; tries++) {
+        final joined = _buildRun != null; // 等的是改設定觸發的那一份
+        final built = await _buildPreview();
+        if (!mounted) return;
+        if (cancelRequested) break;
+        if (built != null && _previewKey == _keyFor()) {
+          gif = built;
+          break;
+        }
+        // 自己開的那支做不出來：不硬試
+        if (built == null && !joined) break;
+      }
+      if (cancelRequested) {
+        // 取消：FFmpeg 被砍了，_gifPreview 還是舊檔——以前這裡照樣把它
+        // 存進相簿、訊息還說成功
+        cancelled = true;
+        message = '已取消';
+      } else if (gif == null) {
         message = 'GIF 做不出來，換個範圍或尺寸試試';
       } else {
-        final r = await engine.saveGifToGallery(gif);
+        progress.value = 0.8;
+        final r = await (GifScreen.debugSaveGif ?? engine.saveGifToGallery)(
+          gif,
+        );
         ok = r.ok;
         message = r.message;
       }
@@ -792,11 +937,16 @@ class _GifScreenState extends State<GifScreen> {
     } finally {
       await keepScreenAwake(false);
       _exporting = false;
+      _buildCancelled = false;
     }
-    if (!mounted) return;
+    if (!mounted) {
+      progress.dispose();
+      return;
+    }
     Navigator.pop(context); // 關進度視窗
+    progress.dispose();
     if (!ok) {
-      showHint(context, message, error: true);
+      showHint(context, message, error: !cancelled);
       return;
     }
     // 匯出成功＝基準重拍、草稿清掉：之後離開不再問保留

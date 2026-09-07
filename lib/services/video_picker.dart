@@ -113,6 +113,29 @@ Future<List<XFile>> _pickOriginals(FileType type) async {
       : picker.pickMultipleMedia();
 }
 
+/// 選完才講的提醒（略過的檔案、被上限截掉的、數量偏多）。
+///
+/// 首頁進批次、批次中途的「＋」、拼圖進場截斷共用這一句——以前只有
+/// 首頁那一次會講，中途再加兩百張、拼圖帶四十張進來都靜靜的。
+/// 上限不寫在選單上：使用者還沒開始挑就先看到限制沒什麼用，
+/// 挑完才講才是他真的需要知道的時候
+String? pickCountHint({
+  int skipped = 0,
+  int count = 0,
+  String unit = '個',
+  int? soft,
+  int dropped = 0,
+  int? cap,
+  String capUnit = '張',
+}) {
+  final parts = [
+    if (skipped > 0) '已略過 $skipped 個非影片檔案',
+    if (dropped > 0 && cap != null) '最多 $cap $capUnit，已略過 $dropped $capUnit',
+    if (soft != null && count > soft) '選了 $count $unit，處理會比較久',
+  ];
+  return parts.isEmpty ? null : parts.join('；');
+}
+
 /// 這個檔是影片嗎。優先看 mimeType，拿不到就退回看副檔名
 ///（相簿匯出的檔案不一定帶 mime）
 bool isVideoFile(XFile f) {

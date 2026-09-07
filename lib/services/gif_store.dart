@@ -44,17 +44,40 @@ class GifStore {
     if (kIsWeb) return demoRefs;
     try {
       final d = await _dir();
-      final files = d
-          .listSync()
-          .whereType<File>()
-          .where((f) => f.path.toLowerCase().endsWith('.gif'))
-          .toList();
-      files.sort(
-        (a, b) => b.statSync().modified.compareTo(a.statSync().modified),
-      );
-      return [for (final f in files) f.path];
+      // 修改時間先各問一次再排：以前 statSync 寫在比較函式裡，N 個檔
+      // 就要問 2N·logN 次。列目錄與 stat 維持同步版——這個函式的呼叫端
+      // （含測試）都當它是一次就回的便宜呼叫，改成非同步 I/O 的話
+      // 假時鐘底下的 await 會等不到它
+      final files = <(String, DateTime)>[];
+      for (final f in d.listSync()) {
+        if (f is! File || !f.path.toLowerCase().endsWith('.gif')) continue;
+        try {
+          files.add((f.path, f.statSync().modified));
+        } catch (_) {}
+      }
+      files.sort((a, b) => b.$2.compareTo(a.$2));
+      return [for (final f in files) f.$1];
     } catch (_) {
       return [];
+    }
+  }
+
+  /// 檔案真的是 GIF 嗎（看檔頭的 GIF87a／GIF89a，不只看副檔名）。
+  /// 匯入時副檔名對、內容卻是別的東西（改過名的 PNG、下載到一半的
+  /// 殘檔）以前照收，收進來只有一格、或根本畫不出來
+  static Future<bool> looksLikeGif(String path) async {
+    try {
+      final raf = await File(path).open();
+      try {
+        final head = await raf.read(6);
+        if (head.length < 6) return false;
+        final tag = String.fromCharCodes(head);
+        return tag == 'GIF87a' || tag == 'GIF89a';
+      } finally {
+        await raf.close();
+      }
+    } catch (_) {
+      return false;
     }
   }
 
@@ -82,14 +105,42 @@ class GifStore {
     }
   }
 
+  static int _stampMs = 0;
+  static int _stampSeq = 0;
+
+  /// 新的一筆的編號。以前只有毫秒：同一毫秒收兩份，第二份直接蓋掉
+  /// 第一份（copy／writeAsBytes 都是覆寫），使用者少一個 GIF。
+  /// 同一毫秒內接著加序號——這一段是同步的，兩個併發的呼叫在第一個
+  /// await 之前就各自拿到不同的編號了（跨啟動不必管：毫秒不會重來）
+  static String _stamp() {
+    final ms = DateTime.now().millisecondsSinceEpoch;
+    if (ms == _stampMs) {
+      _stampSeq++;
+    } else {
+      _stampMs = ms;
+      _stampSeq = 0;
+    }
+    return _stampSeq == 0 ? '$ms' : '${ms}_$_stampSeq';
+  }
+
+  /// 新的一筆該存在哪。檔名撞到既有的（時鐘被調回去）就再往後找。
+  /// 存在與否用同步版問：add／addBytes 不該為了取名多一個非同步等待
+  static String _freeName(Directory d) {
+    final sep = Platform.pathSeparator;
+    var path = '${d.path}${sep}gif_${_stamp()}.gif';
+    for (var i = 0; i < 1000 && File(path).existsSync(); i++) {
+      path = '${d.path}${sep}gif_${_stamp()}.gif';
+    }
+    return path;
+  }
+
   /// 直接用位元組收一份進來。相簿挑出來的檔案放在暫存目錄，
   /// 系統隨時會清掉——存成草稿之後就找不到了，所以一律留一份自己的
   static Future<String?> addBytes(Uint8List bytes) async {
     if (kIsWeb) return null;
     try {
       final d = await _dir();
-      final name = 'gif_${DateTime.now().millisecondsSinceEpoch}.gif';
-      final dest = '${d.path}${Platform.pathSeparator}$name';
+      final dest = _freeName(d);
       await File(dest).writeAsBytes(bytes);
       return dest;
     } catch (_) {
@@ -102,8 +153,7 @@ class GifStore {
     if (kIsWeb) return null;
     try {
       final d = await _dir();
-      final name = 'gif_${DateTime.now().millisecondsSinceEpoch}.gif';
-      final dest = '${d.path}${Platform.pathSeparator}$name';
+      final dest = _freeName(d);
       await File(srcPath).copy(dest);
       return dest;
     } catch (_) {
