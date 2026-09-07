@@ -84,7 +84,7 @@ class MainActivity : FlutterActivity() {
         registerDiagChannel(flutterEngine)
         registerPickChannel(flutterEngine)
         // cacheDir/picked 每挑一次就多一份複本（同名不覆蓋、從沒人清）：
-        // 啟動時在背景掃掉一天以前的。草稿要留的素材 Dart 端會複製進
+        // 啟動時在背景掃掉七天以前的。草稿要留的素材 Dart 端會複製進
         // 自己的目錄，這裡的只是匯入時的中繼複本
         copyExec.execute { sweepPicked() }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "markcut/frames")
@@ -144,9 +144,10 @@ class MainActivity : FlutterActivity() {
     /// 把 content:// 複製進快取的工作緒（大檔要幾秒，不能佔主緒）
     private val copyExec = Executors.newSingleThreadExecutor()
 
-    /// 掃掉 cacheDir/picked 底下一天以前的複本。一天內的先留著：可能還在
-    /// 被這一次的匯入用。讀不到日期（0）的也留著——判不出新舊時寧可留
-    /// 下垃圾也不要刪掉還在用的（iOS 的 sweepPickedTemp 同一條規矩）
+    /// 掃掉 cacheDir/picked 底下七天以前的複本。七天內的先留著：可能還在
+    /// 被這一次的匯入用，也可能被某份草稿記著原路徑（見下面 cutoff）。
+    /// 讀不到日期（0）的也留著——判不出新舊時寧可留下垃圾也不要刪掉
+    /// 還在用的（iOS 的 sweepPickedTemp 同一條規矩）
     private fun sweepPicked() {
         val files = File(cacheDir, "picked").listFiles() ?: return
         // 七天不是一天：草稿引用的素材有一部分是「太大所以沒留複本、
