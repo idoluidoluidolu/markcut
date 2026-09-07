@@ -29,8 +29,14 @@ void main() {
     final picker = ImagePickerPlatform.instance;
     if (picker is ImagePickerAndroid) picker.useAndroidPhotoPicker = true;
   }
-  // media_kit 播放引擎（Web 用不到也沒帶函式庫）
-  if (!kIsWeb) MediaKit.ensureInitialized();
+  // media_kit（libmpv）播放引擎只有 Android 用：iOS 的預覽一律走
+  // AVPlayer（PlayerX，見 video_controller_io.dart），pubspec 也不再帶
+  // iOS 的 media_kit 原生函式庫，在 iOS 呼叫這個會找不到 libmpv 而丟例外。
+  // Web 用不到也沒帶。用 defaultTargetPlatform 而不是 dart:io 的
+  // Platform.isAndroid，因為 main.dart 也要編給 Web
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+    MediaKit.ensureInitialized();
+  }
   // 上次執行有沒有做到一半就被系統收掉（匯出閃退不會留當機報告，
   // 只有這個黑盒子留得下現場）。讀完就刪，診斷畫面看得到
   unawaited(Diag.loadLastRun());
@@ -60,6 +66,8 @@ void main() {
     yield const LicenseEntryWithLineBreaks(
       ['FFmpeg'],
       '本程式使用 FFmpeg（LGPL v2.1 或後續版本授權）進行影音處理，'
+      '採用 ffmpeg_kit_flutter_new_full 的 LGPL 建置：'
+      '不含 x264／x265／xvid／vid.stab 等 GPL 元件，'
       'H.264 編碼使用裝置的硬體編碼器。\n'
       '浮水印 本身的程式碼以 Mozilla Public License 2.0 散布。\n\n'
       'FFmpeg 為其各自作者所有，詳見 https://ffmpeg.org',
@@ -91,8 +99,9 @@ class MarkCutApp extends StatelessWidget {
         // 返回鍵的提示……不掛這幾個 delegate 一律是英文。
         // 語系直接釘在 zh-Hant-TW，不看系統設定——介面本來就沒有別的語言，
         // 選單跟著系統變英文反而不搭。
-        // iOS 16+ 的文字選單是系統畫的，字串跟著 App 宣告的語系走，
+        // iOS 16+ 的文字選單是系統畫的，字串跟著 App「宣告」的語系走，
         // 那一半在 ios/Runner/Info.plist 的 CFBundleLocalizations
+        //（只宣告 zh-Hant；沒宣告時只剩 CFBundleDevelopmentRegion＝en）
         locale: const Locale.fromSubtags(
           languageCode: 'zh',
           scriptCode: 'Hant',
