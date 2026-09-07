@@ -29,10 +29,14 @@ class PhotoEncoded {
 }
 
 /// 編碼（不 dispose [image]，呼叫端自己收）
+/// [sourcePath] 是原始照片的路徑（沒有就給 null）：原生那條路會把它的
+/// EXIF／TIFF 搬進成品，HDR 路本來就這樣做，SDR 路以前整包丟掉——
+/// 同一張照片走單張跟走批次，中繼資料不該不一樣
 Future<PhotoEncoded> encodePhotoImage(
   ui.Image image, {
   required bool jpeg,
   int quality = 92,
+  String? sourcePath,
 }) async {
   final w = image.width, h = image.height;
   // raw 只拿一次：原生路跟 BMP 路都吃它
@@ -54,6 +58,7 @@ Future<PhotoEncoded> encodePhotoImage(
       h: h,
       jpeg: jpeg,
       quality: quality,
+      src: sourcePath,
     );
     if (out != null) return PhotoEncoded(out, jpeg ? 'jpg' : 'png', 'native');
   }
@@ -105,8 +110,14 @@ Future<(String, String)> savePhotoImage(
   required bool jpeg,
   required String name,
   int quality = 92,
+  String? sourcePath,
 }) async {
-  final enc = await encodePhotoImage(image, jpeg: jpeg, quality: quality);
+  final enc = await encodePhotoImage(
+    image,
+    jpeg: jpeg,
+    quality: quality,
+    sourcePath: sourcePath,
+  );
   final msg = await savePhotoPng(enc.bytes, name, ext: enc.ext);
   return (msg, enc.ext);
 }

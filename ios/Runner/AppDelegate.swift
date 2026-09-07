@@ -2568,6 +2568,10 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
   private var prepCancels: [Int: () -> Void] = [:]
   private var prepCancelSeq = 0
 
+  /// 音訊 session 的啟用／停用共用這一條序列佇列，順序才不會倒過來
+  /// （見 activateAudio）
+  fileprivate static let audioQueue = DispatchQueue(label: "markcut.audio")
+
   /// 相簿挑 GIF：等使用者選完的那次呼叫（一次只會有一個選取器在畫面上）。
   /// 這個要放在 class 本體——Swift 的 extension 放不了儲存屬性
   fileprivate var gifPickReply: FlutterResult?
@@ -4451,9 +4455,12 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
       // 進編輯器時先啟用起來並保持著，播放鍵就不用付這筆錢
       if call.method == "activateAudio" {
         // 那 100~300ms 以前是在主執行緒同步付的：進編輯器那一下 UI 就
-        // 凍這麼久。AVAudioSession 允許從任何執行緒呼叫，搬到背景；
-        // Dart 端照樣 await 到啟用真的完成才拿到回覆，語意不變
-        DispatchQueue.global(qos: .userInitiated).async {
+        // 凍這麼久。AVAudioSession 允許從任何執行緒呼叫，搬到背景。
+        //
+        // 一定要跟 deactivateAudio 共用同一條「序列」佇列：Dart 兩邊都是
+        // unawaited，進編輯器隨即離開時，啟用還在背景跑、停用卻已經在
+        // 別的執行緒做完了，session 最後停在 active
+        AppDelegate.audioQueue.async {
           let t0 = CACurrentMediaTime()
           let session = AVAudioSession.sharedInstance()
           try? session.setCategory(.playback, options: [.mixWithOthers])
@@ -4464,9 +4471,11 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
         return
       }
       if call.method == "deactivateAudio" {
-        try? AVAudioSession.sharedInstance().setActive(
-          false, options: [.notifyOthersOnDeactivation])
-        result(nil)
+        AppDelegate.audioQueue.async {
+          try? AVAudioSession.sharedInstance().setActive(
+            false, options: [.notifyOthersOnDeactivation])
+          DispatchQueue.main.async { result(nil) }
+        }
         return
       }
       // 裝置狀態：連續匯出幾支 4K 之後手機會燙，系統一降頻什麼都會頓。
@@ -4545,10 +4554,9 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
         let job = args["job"] as? Int ?? 0
         // safe＝Dart 端說上一次轉出來的不能用（轉好卻全黑那種），這一次
         // 要跳過第一段、直接走保守參數（Android 的 rungsFor 同一個意思）。
-        // 以前 iOS 完全不讀它：重試就是同參數再轉一次
-        // safe＝上一次交出去的工作檔不能用，這次要跳過同樣的參數。
-        // HDR 代理那條沒有「更保守的參數」可退（下面 hdr 分支直接
-        // return），所以 safe 對它沒有意義——重試等於原封不動再跑一次
+        // 以前 iOS 完全不讀它：重試就是同參數再轉一次。
+        // 注意 HDR 代理那條沒有「更保守的參數」可退（下面 hdr 分支直接
+        // return），safe 對它沒有意義——那條的重試就是原封不動再跑一次
         let safe = args["safe"] as? Bool ?? false
         // HDR 直通代理：HLG 10-bit、不映射、密關鍵幀。
         // 失敗就回 nil（呼叫端照播原檔），不走兩段式退路——
@@ -4673,7 +4681,9 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
         useComposition: false, channel: channel, job: job
       ) { e2 in
         if e2 == nil {
-          self?.denseKeyframes(dest, channel: channel, job: job) { _ in done(dest) }
+          self.denseKeyframes(dest, channel: channel, job: job) { _ in
+            done(dest)
+          }
         } else {
           if e2 != cancelled {
             channel.invokeMethod("note", arguments: "工作檔還是失敗：\(e2!)")
@@ -5040,6 +5050,13 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
 
     // 只回一次（逾時、取消與正常完成可能撞在一起）
     let replied = AtomicFlag()
+    // 取消／逾時只設這個旗標並停掉 reader，writer 一律留給 group.notify
+    // 收——cancelWriting 不能跟 appendSampleBuffer 併行（AVAssetWriter
+    // 明文規定），而 append 正在 vq／aq 上跑；notify 是兩個迴圈都結束
+    // 之後才到的那一點，是唯一安全的地方。
+    // reader.cancelReading() 任何執行緒都能叫，叫完 copyNextSampleBuffer
+    // 就回 nil，兩個迴圈自己 markAsFinished + leave，notify 隨即到
+    let cancelled = AtomicFlag()
     // 背景保護（見 BgTask）：切到背景硬體編碼才不會被 suspend 卡住
     let bg = BgTask("工作檔轉檔")
     // 取消把手（見 prepCancels）：這裡（主執行緒）登記，finish 回主
@@ -5059,8 +5076,8 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
       }
     }
     prepCancels[cancelKey] = {
+      cancelled.set()
       reader.cancelReading()
-      writer.cancelWriting()
       finish(AppDelegate.prepCancelledErr)
     }
     // 逾時保險：硬體編碼器被別的工作佔住時 requestMediaDataWhenReady
@@ -5071,30 +5088,33 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
     // 用 DispatchWorkItem、而且只弱抓 reader/writer：以前的 closure 強抓
     // 著它們排在主佇列上，轉完之後還要等到期（30 分鐘片＝90 分鐘）才放
     let timeoutSec = max(120.0, asset.duration.seconds * 3.0)
-    let item = DispatchWorkItem { [weak reader, weak writer] in
+    let item = DispatchWorkItem { [weak reader] in
       guard !replied.isSet else { return }
+      cancelled.set()
       reader?.cancelReading()
-      writer?.cancelWriting()
       finish("逾時")
     }
     timeoutItem = item
     DispatchQueue.main.asyncAfter(deadline: .now() + timeoutSec, execute: item)
 
     group.notify(queue: vq) {
-      if failed.isSet {
+      // 兩個 append 迴圈都收工了：writer 的去留在這裡一次決定，
+      // 不會跟 append 併行（見上面 cancelled 的說明）
+      if cancelled.isSet || failed.isSet {
         reader.cancelReading()
-        writer.cancelWriting()
-        finish("中途失敗")
+        if writer.status == .writing { writer.cancelWriting() }
+        // 取消那條 finish 早就回覆過了（replied 擋著），這一句是給
+        // 「中途失敗」用的
+        finish(failed.isSet ? "中途失敗" : AppDelegate.prepCancelledErr)
         return
       }
-      // 取消／逾時那兩條已經 cancelWriting 過了，status 是 .cancelled。
-      // 對這種 writer 再叫 finishWriting 是未定義行為（AVFoundation 會
-      // 丟不可攔截的 ObjC 例外＝直接閃退），而且那時候 finish 也早就
-      // 回覆過了，這裡沒事可做。倒轉那條（reverseWork）本來就是先
-      // return 再 finishWriting，這裡對齊它。
-      // 以前只有逾時會走到，很罕見；取消掛上「先不要等」之後變成
-      // 使用者按一下就會走的路，不能賭
-      guard !replied.isSet, writer.status == .writing else { return }
+      // writer 自己壞掉（磁碟滿、編碼器出錯）時 status 已經是 .failed：
+      // 這種 writer 不能再 finishWriting，但一定要回覆——不回的話要等到
+      // 逾時（最長片長×3，30 分鐘的片＝90 分鐘）鎖才放開
+      guard writer.status == .writing else {
+        finish(writer.error?.localizedDescription ?? "寫入端中止")
+        return
+      }
       writer.finishWriting {
         let ok =
           writer.status == .completed && reader.status == .completed
@@ -10352,13 +10372,18 @@ enum HDRPhotoExport {
       }
     }
 
-    // ── 中繼資料：EXIF/GPS/TIFF/IPTC 留著，方向已烘進像素所以改 1，
-    //    MakerApple 整包丟掉（裡面是舊增益圖的 headroom 標記，成品沒有
+    // ── 中繼資料：只留 EXIF 與 TIFF（拍攝日期、相機、鏡頭），方向已經
+    //    烘進像素所以改 1。
+    //    GPS 不留：浮水印照片是拿去公開分享的，夾帶定位不是使用者預期
+    //    的事。IPTC 一起丟——它的 City／Sub-location／LocationCreated
+    //    同樣可能寫著地點，留著等於 GPS 換個欄位再跑出來一次。
+    //    MakerApple 也整包丟（裡面是舊增益圖的 headroom 標記，成品沒有
     //    增益圖，留著會讓相簿誤判）
     var props: [String: Any] = [:]
+    // 只留 EXIF／TIFF：GPS 與 IPTC（City／LocationCreated…）都可能寫著
+    // 地點，成品是拿去公開分享的，兩個都不帶
     let keep: [CFString] = [
-      kCGImagePropertyExifDictionary,
-      kCGImagePropertyTIFFDictionary, kCGImagePropertyIPTCDictionary,
+      kCGImagePropertyExifDictionary, kCGImagePropertyTIFFDictionary,
     ]
     for k in keep {
       if let v = loaded.properties[k as String] { props[k as String] = v }
@@ -10738,9 +10763,10 @@ enum PhotoRgbaEncode {
       let all = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any]
     else { return [:] }
     var props: [String: Any] = [:]
+    // 只留 EXIF／TIFF：GPS 與 IPTC（City／LocationCreated…）都可能寫著
+    // 地點，成品是拿去公開分享的，兩個都不帶
     let keep: [CFString] = [
-      kCGImagePropertyExifDictionary,
-      kCGImagePropertyTIFFDictionary, kCGImagePropertyIPTCDictionary,
+      kCGImagePropertyExifDictionary, kCGImagePropertyTIFFDictionary,
     ]
     for k in keep {
       if let v = all[k as String] { props[k as String] = v }

@@ -54,18 +54,23 @@ class NativePhotoSave {
 
   /// encodeRgba 的參數（純函式，測試釘住欄位）。
   /// [quality] 1~100，只有 JPEG 用
+  /// [src] 是來源照片的路徑（選填）：帶了原生端就把它的 EXIF／TIFF
+  /// 搬進成品（拍攝日期、相機、鏡頭）。沒帶就跟以前一樣什麼都不帶——
+  /// 鍵也不送，舊的原生端收到不認得的鍵不會出事，但少一個是一個
   static Map<String, Object?> encodeArgs({
     required Uint8List rgba,
     required int w,
     required int h,
     required bool jpeg,
     required int quality,
+    String? src,
   }) => {
     'bytes': rgba,
     'w': w,
     'h': h,
     'jpeg': jpeg,
     'quality': quality.clamp(1, 100),
+    if (src != null && src.isNotEmpty) 'src': src,
   };
 
   /// raw RGBA（預乘、w*h*4 位元組）→ JPEG 或 PNG 位元組。
@@ -76,13 +81,21 @@ class NativePhotoSave {
     required int h,
     required bool jpeg,
     int quality = 92,
+    String? src,
   }) async {
     if (w <= 0 || h <= 0 || rgba.length < w * h * 4) return null;
     if (!await available()) return null;
     try {
       final out = await channel.invokeMethod<Uint8List>(
         'encodeRgba',
-        encodeArgs(rgba: rgba, w: w, h: h, jpeg: jpeg, quality: quality),
+        encodeArgs(
+          rgba: rgba,
+          w: w,
+          h: h,
+          jpeg: jpeg,
+          quality: quality,
+          src: src,
+        ),
       );
       if (out == null || out.isEmpty) return null;
       return out;

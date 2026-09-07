@@ -2011,6 +2011,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             jpeg: jpeg,
             quality: 92,
             name: name,
+            // 來源的 EXIF／TIFF 搬進成品（HDR 路本來就這樣做）
+            sourcePath: hasPath ? path : null,
           );
         } finally {
           image.dispose();

@@ -47,6 +47,41 @@ void main() {
   });
 
   group('NativePhotoSave', () {
+    test('encodeArgs：src 有給才送，沒給連鍵都不出現', () {
+      // 原生端拿 src 去搬來源的 EXIF／TIFF（見 PhotoRgbaEncode）。
+      // 沒有來源路徑時不送這個鍵——成品就跟以前一樣不帶中繼資料
+      final rgba = Uint8List(4);
+      final without = NativePhotoSave.encodeArgs(
+        rgba: rgba,
+        w: 1,
+        h: 1,
+        jpeg: true,
+        quality: 90,
+      );
+      expect(without.containsKey('src'), isFalse);
+
+      final with_ = NativePhotoSave.encodeArgs(
+        rgba: rgba,
+        w: 1,
+        h: 1,
+        jpeg: true,
+        quality: 90,
+        src: '/a/b.heic',
+      );
+      expect(with_['src'], '/a/b.heic');
+
+      // 空字串等於沒給
+      final empty = NativePhotoSave.encodeArgs(
+        rgba: rgba,
+        w: 1,
+        h: 1,
+        jpeg: true,
+        quality: 90,
+        src: '',
+      );
+      expect(empty.containsKey('src'), isFalse);
+    });
+
     test('encodeArgs：欄位名稱、型別、畫質夾在 1~100', () {
       final rgba = Uint8List(4 * 3 * 4);
       final a = NativePhotoSave.encodeArgs(

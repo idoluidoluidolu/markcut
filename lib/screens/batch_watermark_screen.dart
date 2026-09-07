@@ -901,13 +901,19 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   ///（raw RGBA 零複製建 CGImage，JPEG/PNG 都走這裡）→ 沒原生端時
   /// JPEG 走 BMP 快路 → 最後才是 Skia 的 PNG。哪條路能走、輸出長什麼
   /// 樣，見 photo_export.dart
-  Future<bool> _encodeAndSavePhoto(ui.Image image, int i, bool jpeg) async {
+  Future<bool> _encodeAndSavePhoto(
+    ui.Image image,
+    int i,
+    bool jpeg, {
+    String? sourcePath,
+  }) async {
     try {
       await savePhotoImage(
         image,
         jpeg: jpeg,
         quality: _jpegQuality,
         name: 'watermarker_${DateTime.now().millisecondsSinceEpoch}_$i',
+        sourcePath: sourcePath,
       );
       return true;
     } catch (_) {
@@ -1082,9 +1088,15 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
           }
           // 上一張存完才把這張排進後段（後段永遠只有一張）
           await tail;
-          tail = _encodeAndSavePhoto(image, i, jpeg).then((ok) {
-            finished(i, ok);
-          });
+          tail =
+              _encodeAndSavePhoto(
+                image,
+                i,
+                jpeg,
+                sourcePath: kIsWeb ? null : f.path,
+              ).then((ok) {
+                finished(i, ok);
+              });
         }
       } catch (_) {
         finished(i, false);
