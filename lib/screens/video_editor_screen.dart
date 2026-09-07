@@ -108,9 +108,6 @@ const kSpeedStops = <double>[
   4,
 ];
 
-/// 草稿存放鍵（舊版單一草稿；現在由 DraftStore 管多份，見那邊的搬移）
-const kDraftKey = 'project_draft_v1';
-
 class VideoEditorScreen extends StatefulWidget {
   final String? videoPath;
 
@@ -254,7 +251,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   final GlobalKey _compViewKey = GlobalKey();
   Duration _lastTick = Duration.zero;
 
-  double _speed = 1.0;
+  /// 整案播放速度：永遠 1。全域變速的 UI 已經拿掉（速度只針對單一片段，
+  /// 見 _openSpeedSheet），草稿裡的舊值也不再讀——讀了就是一個看不見、
+  /// 改不掉的隱藏變速。播放／匯出那幾處 `_speed * clip.speed` 留著等
+  /// 下一輪整批清，常數讓它們維持恆等
+  static const double _speed = 1.0;
   ExportResolution _resolution = ExportResolution.original;
   ExportQuality _quality = ExportQuality.standard;
 
@@ -310,7 +311,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tl,
       _resolution,
       _canvasRatio,
-      _customAspect,
     );
     return recommendQuality(
       srcKbps: _srcKbps,
@@ -361,18 +361,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   CanvasRatio _canvasRatio = CanvasRatio.original;
 
-  /// 裁切算出來的自訂畫布比例（寬/高）。null＝照 [_canvasRatio]。
-  ///
-  /// 影片裁切改成「裁什麼比例，成品就是什麼比例」之後才有這個：
-  /// 以前裁切只改片段的縮放位移，畫布形狀不變，裁成正方形也還是塞回
-  /// 原比例、上下留黑
-  double? _customAspect;
-
   /// 目前的畫布比例（寬/高）。null＝跟著素材
-  double? get _ratioAspect => _customAspect ?? _canvasRatio.value;
+  double? get _ratioAspect => _canvasRatio.value;
 
-  /// 比例的顯示字樣（自訂時不硬湊成 x:y，那種數字多半很醜）
-  String get _ratioLabel => _customAspect == null ? _canvasRatio.label : '裁切';
+  /// 比例的顯示字樣
+  String get _ratioLabel => _canvasRatio.label;
 
   /// 預覽畫布的比例（寬/高）：選了固定比例就用它，否則跟著素材。
   /// 跟 [_buildPreview] 是同一套判定（新素材要算「會不會佔滿畫面」）
@@ -432,13 +425,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (v) _selValue = -1;
   }
 
+  /// 播得到、匯得出的總長：跳過關閉顯示的軌（TimelineModel.durationSkipping）。
+  ///
+  /// 播放時鐘的終點、「再按播放從頭」的判定、匯出的 timelineDuration、
+  /// 浮水印「跟到結尾」都要看這一個——合成本來就只鋪到可見片段的結尾
+  ///（CompPlayer.padTo 跳過隱藏軌），這幾處以前看 _tl.duration，隱藏
+  /// 一條比影片長的配樂軌就多出一截黑尾巴。時間軸的捲動、吸附、縮放
+  /// 照舊用 _tl.duration：隱藏軌的片段還在軸上、還要能編輯
+  double get _visDur => _tl.durationSkipping(_hiddenTracks);
+
   double get _wmEndEff {
-    final e = (_wmEnd ?? _tl.duration).clamp(0.0, _tl.duration);
+    final e = (_wmEnd ?? _visDur).clamp(0.0, _visDur);
     // 空白專案剛進來時時間軸長度是 0。那時候碰過浮水印，會把
     // 「跟到結尾」(null) 寫死成 0 長度，之後匯入素材也拉不開。
     // 修剪本身有 0.3 秒的最短限制，所以「終點不大於起點」只可能是
     // 這樣來的壞狀態，一律當成跟到結尾
-    return e <= _wmStart ? _tl.duration : e;
+    return e <= _wmStart ? _visDur : e;
   }
 
   /// 浮水印選到哪個部件（文字或圖片）。縮放只動被選的那個
@@ -951,17 +953,29 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 軌號被重編之後，把靜音／隱藏狀態一起搬過去。
   /// 不搬的話會落在別軌，而且匯出是照這兩個集合處理的，
-  /// 成品會跟預覽不一樣
+  /// 成品會跟預覽不一樣。
+  ///
+  /// 對照表裡沒有的舊軌號一律丟掉，不留在原號碼上：removeTrack／
+  /// compactTracks／_reorderTrack 給的表都只含「還有片段的軌」，缺席
+  /// ＝那條軌已經空了、被收掉了。以前寫 `map[k] ?? k`，靜音（隱藏）軌
+  /// 上唯一的片段被拖走後，那條軌收掉、號碼卻留著——遞補上來的軌
+  /// 平白繼承靜音／隱藏，匯出就少一軌聲音或整條畫面消失
   void _remapMuted(Map<int, int> map) {
     if (map.isEmpty) return;
     if (_mutedTracks.isNotEmpty) {
-      final moved = _mutedTracks.map((k) => map[k] ?? k).toSet();
+      final moved = {
+        for (final k in _mutedTracks)
+          if (map.containsKey(k)) map[k]!,
+      };
       _mutedTracks
         ..clear()
         ..addAll(moved);
     }
     if (_hiddenTracks.isNotEmpty) {
-      final moved = _hiddenTracks.map((k) => map[k] ?? k).toSet();
+      final moved = {
+        for (final k in _hiddenTracks)
+          if (map.containsKey(k)) map[k]!,
+      };
       _hiddenTracks
         ..clear()
         ..addAll(moved);
@@ -1008,6 +1022,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       'wmStart': _wmStart,
       'wmEnd': _wmEnd,
       'wm': wm,
+      // 隱藏跟軌道的隱藏同一個地位：它決定成品有沒有浮水印，
+      // 復原回到某一步時要一起回去
+      'wmHidden': _wmHidden,
     });
   }
 
@@ -1051,6 +1068,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         }
       }
     }
+    // 換清單前記下每個索引現在指到哪個檔：換完拿來對照，決定哪些
+    // 以素材索引為鍵的快取要作廢（見 _dropStaleSourceCaches）
+    final before = List.of(_tl.sources);
+    final pathsBefore = [for (final s in before) s.previewPath];
     setState(() {
       // 舊快照可能沒有 sources（升級前拍的），那就沿用現況
       if (j['sources'] != null) {
@@ -1060,6 +1081,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             for (final s in (j['sources'] as List))
               MediaSource.fromJson(Map<String, dynamic>.from(s as Map)),
           ]);
+        // 工作檔／HDR 代理是背景轉出來的衍生物，不是編輯：快照可能拍在
+        // 轉好之前（還是 null），照抄回去等於把轉好的檔忘掉——素材退回
+        // 4K 原檔播、也沒人再排轉檔。同一個檔就把現況接回來
+        for (var i = 0; i < _tl.sources.length && i < before.length; i++) {
+          final s = _tl.sources[i];
+          final was = before[i];
+          if (!s.isVideo || s.path != was.path) continue;
+          s.workPath ??= was.workPath;
+          s.workHdrPath ??= was.workHdrPath;
+        }
       }
       _tl.clips
         ..clear()
@@ -1092,13 +1123,91 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         _settings.copyMarksFrom(wm);
         _wmSync++;
       }
+      if (j['wmHidden'] != null) _wmHidden = j['wmHidden'] == true;
       _sel = -1;
       _position = _position.clamp(0.0, _tl.duration);
     });
+    _dropStaleSourceCaches(pathsBefore);
+    _refillSourceCaches();
     _resyncPlayback(); // 復原改了時間對應，播放要重新對位
     for (final c in _tl.clips) {
       _ensureCtrlFor(c);
     }
+  }
+
+  /// 復原／重做把 sources 整份換掉之後，把「以素材索引為鍵」的快取對
+  /// 齊新清單：索引已經不存在、或同一個索引現在指到別的檔，那一格的
+  /// 縮圖帶、拖曳格子、最新一格、解碼器、裁切原圖、轉檔重試名單全部
+  /// 作廢。
+  ///
+  /// 復原是唯一會讓 sources 變短的路（刪片段不刪來源），而下一支匯入
+  /// 的素材拿的就是同一個索引：不清的話它會沿用上一支的縮圖帶
+  ///（_thumbsAfterPrep 看到已有十張就跳過）與拖曳格子（_ensureScrubSlots
+  /// 有鍵就回）——加影片 A、上一步、加影片 B，B 的縮圖帶和拖曳畫面全
+  /// 是 A。SDR 模式換上工作檔時會順手重抽，HDR 代理那條路不換檔，整場
+  /// 都不會修正。[pathsBefore]＝換清單前每個索引的 previewPath
+  void _dropStaleSourceCaches(List<String> pathsBefore) {
+    bool stale(int i) =>
+        i >= _tl.sources.length ||
+        i >= pathsBefore.length ||
+        _tl.sources[i].previewPath != pathsBefore[i];
+    final keys = <int>{
+      ..._thumbs.keys,
+      ..._scrubFrames.keys,
+      ..._scrubDecoders.keys,
+      ..._nfLatest.keys,
+      ..._nfLatestT.keys,
+      ..._scrubTouch.keys,
+      ..._cropOrigBytes.keys,
+      ..._decoderLru,
+      ..._prepRetried,
+      ..._hdrPrepRetried,
+      ..._hdrPrepFailed,
+    };
+    var dropped = 0;
+    for (final i in keys) {
+      if (!stale(i)) continue;
+      dropped++;
+      _thumbs.remove(i);
+      _scrubBytes -= _scrubBytesOf(i);
+      _scrubFrames.remove(i);
+      _scrubDecoders.remove(i)?.dispose();
+      _decoderLru.remove(i);
+      _nfLatest.remove(i);
+      _nfLatestT.remove(i);
+      _scrubTouch.remove(i);
+      _cropOrigBytes.remove(i);
+      _prepRetried.remove(i);
+      _hdrPrepRetried.remove(i);
+      _hdrPrepFailed.remove(i);
+    }
+    // 排隊中的抽幀請求帶的是舊索引，抽回來會塞進新素材的格子
+    if (dropped > 0) _scrubQueue.clear();
+  }
+
+  /// 對齊之後補回缺的：影片配拖曳格子（不抽幀，滑到再抽）、縮圖帶交給
+  /// _thumbsAfterPrep（有的會跳過）；圖片的縮圖就是畫面上那張圖本身
+  ///（圖片圖層的位元組從 _thumbs 來），沒有就從檔案讀回來——重做一次
+  /// 「加圖片」時，上一步作廢掉的那格要能長回來
+  void _refillSourceCaches() {
+    var needStrip = false;
+    for (var i = 0; i < _tl.sources.length; i++) {
+      final s = _tl.sources[i];
+      if (s.isVideo) {
+        _ensureScrubSlots(i, s.duration);
+        if ((_thumbs[i]?.length ?? 0) < 10) needStrip = true;
+      } else if (s.kind == ClipKind.image && !_thumbs.containsKey(i)) {
+        readFileBytes(s.path).then((b) {
+          if (!mounted || b == null) return;
+          // 讀檔期間清單可能又換過（連按上一步）：位置上還是這一份才寫
+          if (i >= _tl.sources.length || !identical(_tl.sources[i], s)) {
+            return;
+          }
+          setState(() => _thumbs[i] = [b]);
+        });
+      }
+    }
+    if (needStrip) unawaited(_thumbsAfterPrep());
   }
 
   void _undoAction() {
@@ -1272,7 +1381,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         _tl,
         _resolution,
         _canvasRatio,
-        _customAspect,
       );
       if (rawW < 2 || rawH < 2) return null;
       final shrink = math.min(1.0, 720 / math.max(rawW, rawH));
@@ -1475,9 +1583,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (thumb != null) 'thumbAspect': thumb.$2,
       'sources': [for (final s in _tl.sources) s.toJson()],
       'clips': [for (final c in _tl.clips) c.toJson()],
-      'speed': _speed,
       'ratio': _canvasRatio.index,
-      'customAspect': _customAspect,
       'res': _resolution.index,
       'resV': 2, // 解析度選項的語意版本（見 _loadDraft 的換算）
       'quality': _quality.index,
@@ -1493,6 +1599,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       'wm': _settings.toJson(),
       'wmStart': _wmStart,
       'wmEnd': _wmEnd,
+      // 浮水印「隱藏」也要落地：使用者被告知隱藏＝預覽和匯出一起關，
+      // 不存的話重開草稿浮水印又回來、也跟著匯出
+      'wmHidden': _wmHidden,
       'extraTracks': _extraBlankTracks,
     };
   }
@@ -2428,11 +2537,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 用跟現在編輯一樣的規則推開（不裁、不蓋），不能讓它進合成
     final pushed = _tl.resolveOverlaps();
     if (pushed > 0) Diag.note('草稿裡有 $pushed 段跟同軌的前一段重疊，已往後推開');
-    _speed = ((j['speed'] ?? 1.0) as num).toDouble();
+    // 舊草稿的 speed（整案變速）與 customAspect（裁切算出來的畫布比例）
+    // 不再讀：兩個功能的 UI 都已經拿掉——讀進來就是一個看不見、也改不
+    // 掉的隱藏設定（整案 2x、畫布釘在某個怪比例）。裁切本身（片段的
+    // 裁切框）照舊保留，只有畫布比例回到 ratio
     _canvasRatio = CanvasRatio
         .values[((j['ratio'] ?? 0) as int) % CanvasRatio.values.length];
-    final ca = (j['customAspect'] as num?)?.toDouble();
-    _customAspect = (ca != null && ca.isFinite && ca > 0) ? ca : null;
     // 解析度選項從「原始／4K／1080P」改成畫質等級後索引語意變了。
     // 舊草稿沒有 resV 標記，照舊語意換算過來（4K 當年算出來就等於原始），
     // 不換的話使用者的草稿會被悄悄降成更低的畫質
@@ -2458,6 +2568,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _wmStart = ((j['wmStart'] ?? 0) as num).toDouble();
     _wmEnd = j['wmEnd'] == null ? null : (j['wmEnd'] as num).toDouble();
+    _wmHidden = j['wmHidden'] == true;
     _fsMuted = j['muted'] == true;
     if (j['mutedTracks'] is List) {
       _mutedTracks
@@ -5209,6 +5320,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final src = _tl.sourceOf(clip);
     _pause();
     _liveXformSync();
+    // 這個視窗的所有調整算一步復原：滑桿每一格都拍快照的話，拉一趟
+    // 就是幾十步、六十份上限也被灌爆（馬賽克表同一套做法）
+    var pushed = false;
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -5230,7 +5344,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           }
 
           void change(VoidCallback f) {
-            _pushUndo();
+            if (!pushed) {
+              _pushUndo();
+              pushed = true;
+            }
             setSheet(f);
             setState(() {});
             _compRefreshIfChanged();
@@ -5599,6 +5716,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final src = _tl.sourceOf(clip);
     final logo = (src.wmStyle ??= WatermarkSettings()).logo;
     _pause();
+    // 整個視窗算一步復原（理由同 _editImageClip）
+    var pushed = false;
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -5609,7 +5728,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       builder: (context) => StatefulBuilder(
         builder: (context, setSheet) {
           void change(VoidCallback f) {
-            _pushUndo();
+            if (!pushed) {
+              _pushUndo();
+              pushed = true;
+            }
             setSheet(f);
             setState(() {});
             _saveDraft();
@@ -6238,6 +6360,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     src.textStyle ??= TextMark(text: src.name, sizeFrac: 0.06, opacity: 1);
     final st = src.textStyle!;
     final ctrl = TextEditingController(text: src.name);
+    // 內容與樣式的每一筆改動都走 both：第一筆拍一份快照，整個視窗算一步
+    // 復原——以前一份都不拍，改完字型顏色按上一步退的是更早的別的動作
+    var pushed = false;
     await showModalBottomSheet(
       context: context,
       showDragHandle: true,
@@ -6249,6 +6374,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       builder: (context) => StatefulBuilder(
         builder: (context, setSheet) {
           void both(VoidCallback fn) {
+            if (!pushed) {
+              _pushUndo();
+              pushed = true;
+            }
             setSheet(fn);
             setState(() {});
           }
@@ -7478,8 +7607,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _position += eat;
       _clockBias -= eat;
     }
-    if (_position >= _tl.duration) {
-      _position = _tl.duration;
+    // 終點是「可見總長」：隱藏軌的尾巴既不在合成裡也不會匯出，時鐘
+    // 走過去只是對著黑畫面空轉（見 _visDur）
+    if (_position >= _visDur) {
+      _position = _visDur;
       _pause(atEnd: true);
     }
     // 播放接管中：引擎有自己的時鐘，每半秒對一次時（引擎端只在
@@ -7888,9 +8019,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 所以每次按播放開頭都頓一下。播放途中的段落交界不會有這個問題，
   /// 因為那些是提早 1.2 秒預先對位過的（見 _syncMedia 的 pre-roll）
   Future<void> _play() async {
-    if (_tl.duration <= 0) return;
+    if (_visDur <= 0) return;
     _scrubQueue.clear();
-    if (_position >= _tl.duration - 0.01) _position = 0;
+    if (_position >= _visDur - 0.01) _position = 0;
     _clockBias = 0; // 上一輪沒吃完的校正不能帶進新的一輪
     final tr = PlaybackTrace.instance..start();
 
@@ -8099,8 +8230,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           // 3) 夾在時間軸內：位置超過終點就沒有片段蓋著播放頭，
           //    預覽層會把合成畫面藏掉（見 atEnd 的說明）
           final p = await c.position();
-          if (mounted && p > 0.001 && (p - _position).abs() < 1.0) {
-            _position = p.clamp(0.0, _tl.duration);
+          // 合成只鋪到可見片段的結尾，時間軸可能更長（馬賽克拖出去的
+          // 尾巴不補長，見 CompPlayer.padTo）。播放頭在尾巴裡時播放器
+          // 早就停在合成結尾，差不到 1 秒也不能拿它回填——那會把指針
+          // 從尾巴拉回影片結尾（_syncFromComp 播放中就是這樣豁免的，
+          // 手動暫停這裡以前漏了）
+          final compEnd = c.duration;
+          final inTail =
+              compEnd > 0 && compEnd < _visDur - 0.05 && p >= compEnd - 0.1;
+          if (mounted &&
+              !inTail &&
+              p > 0.001 &&
+              (p - _position).abs() < 1.0) {
+            _position = p.clamp(0.0, _visDur);
             _syncScrollToPosition();
           }
           // 暫停不換手：停格留在系統播放器上（它的停格就是精確幀）
@@ -9064,9 +9206,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 所以上限先確保不小於下限。
         // 倒轉片段的時間軸左緣對應素材尾端，兩端要對調著修，
         // 不然畫面上縮短的是左邊、實際被切掉的卻是尾巴
+        // 浮水印／貼圖（wm）跟文字一樣沒有素材本體（duration 是假的
+        // 3600、trimStart 生下來就是 0），漏在這張名單外就只能縮不能長
         final freeKind =
             src.kind == ClipKind.mosaic ||
             src.kind == ClipKind.text ||
+            src.kind == ClipKind.wm ||
             src.kind == ClipKind.image;
         // 左把手往前長：前一段先讓位（尾巴修到新起點），讓完之後的尾巴
         // 就是地板。前一段讓到最短就停——起點釘在那裡、露出來的頭也只
@@ -9075,8 +9220,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         //（_trimRipple）。prevStop＝這一步被前一段的煞車擋住了
         var prevStop = false;
         if (freeKind && fromLeft) {
-          // 馬賽克／文字／圖片沒有素材本體（duration 是假的），而它們
-          // 的 trimStart 生下來就是 0——照「素材修剪」的邏輯左把手
+          // 馬賽克／文字／浮水印／圖片沒有素材本體（duration 是假的），而
+          // 它們的 trimStart 生下來就是 0——照「素材修剪」的邏輯左把手
           // 一開始就頂到底，於是只能往右拉長不能往左。這類片段左把手
           // 的語意改成「往前生長」：起點前移、右緣不動、長度變長。
           // 頂到地板就停：沒有素材可以「多露一點」，右緣也不該自己跑
@@ -9175,14 +9320,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (fromLeft) {
         _wmStart = snapped.clamp(0.0, math.max(0.0, _wmEndEff - minLen));
       } else {
-        _wmEnd = snapped.clamp(
-          math.min(_wmStart + minLen, _tl.duration),
-          _tl.duration,
-        );
+        // 上限是可見總長：隱藏軌的尾巴不會匯出，浮水印也蓋不到那裡
+        _wmEnd = snapped.clamp(math.min(_wmStart + minLen, _visDur), _visDur);
         // 拖到貼著影片結尾＝「跟到結尾」：記 null 而不是一個死數字。
         // 記死數字的話，之後影片修剪變短、加素材變長，浮水印都停在
         // 舊的位置不動——浮水印要跟著影片縮放
-        if (_wmEnd != null && _wmEnd! >= _tl.duration - 0.05) _wmEnd = null;
+        if (_wmEnd != null && _wmEnd! >= _visDur - 0.05) _wmEnd = null;
       }
       // 被夾住時原始值跟回實際邊緣，不然反向拖回來會有一段空行程
       final newEdge = fromLeft ? _wmStart : _wmEndEff;
@@ -9608,13 +9751,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       showHint(context, '先選一個片段，把播放頭移到片段中間再切割');
       return;
     }
-    _pushUndo();
-    final second = _tl.splitAt(c, _position);
-    if (second == null) {
-      _undoStack.removeLast(); // 沒切成，快照收回
+    // 先問切不切得成、再拍快照：_pushUndo 會順手清掉重做堆疊，切不成
+    // 再把快照收回也救不回重做歷史——以前靠邊切一下「重做」就沒了
+    if (!_tl.canSplitAt(c, _position)) {
       showHint(context, '太靠近邊緣了，每段至少 0.2 秒');
       return;
     }
+    _pushUndo();
+    final second = _tl.splitAt(c, _position);
+    if (second == null) return; // canSplitAt 已經問過，到不了這裡
     // 舊播放器正好停在切點附近，直接過戶給後半段——
     // 切完當下畫面顯示的就是後半，重開播放器會黑一下（跳一下）。
     // 前半再補一個新的（浮水印／文字／圖片沒有播放器，
@@ -9903,6 +10048,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _tlPinchCoolTimer?.cancel();
     _tlScroll.dispose();
+    _wmPanelCtrl.dispose();
     _tabs.dispose();
     super.dispose();
   }
@@ -10053,7 +10199,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         _tl,
         _resolution,
         _canvasRatio,
-        _customAspect,
       );
       final hdrMode = _exportHdr && _hdrAvail == true;
       if (rawW != outW || rawH != outH) {
@@ -10135,7 +10280,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       ? 0
                       : c.volume,
           ],
-          timelineDuration: _tl.duration,
+          // 可見總長（隱藏軌不算）：原生端照它 fillTail 補到終點，
+          // 算進隱藏軌會多出一截黑尾巴（見 _visDur）
+          timelineDuration: _visDur,
           speed: _speed,
           watermarkPng: wmPng,
           outW: outW,
@@ -10170,12 +10317,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         _tl,
         _resolution,
         _canvasRatio,
-        _customAspect,
       );
       await ExportSpeed.record(
         outW: ow,
         outH: oh,
-        outSeconds: _tl.duration / _speed,
+        outSeconds: _visDur / _speed,
         elapsed: DateTime.now().difference(startedAt),
       );
     }
@@ -10878,7 +11024,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       ),
                     ),
                     TextSpan(
-                      text: ' / ${_fmt(_tl.duration)}',
+                      text: ' / ${_fmt(_visDur)}',
                       style: const TextStyle(color: kTextDim),
                     ),
                   ],
@@ -13810,8 +13956,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 // 本身不重組——結構指紋（_compSig）
                                 // 不看 _wmHidden（見 _ovLiveNeeded、
                                 // _wmBakeRange）
-                                onToggleWmVisible: () =>
-                                    setState(() => _wmHidden = !_wmHidden),
+                                onToggleWmVisible: () {
+                                  setState(() => _wmHidden = !_wmHidden);
+                                  // 跟軌道的眼睛一樣要落草稿：這是成品有沒
+                                  // 有浮水印的開關，不是純顯示狀態
+                                  _saveDraft();
+                                },
                                 // 點浮水印軌＝選取＋自動切到浮水印分頁。
                                 // 一律跳：按下時 onSelectWmDrag 已先把
                                 // 選取設起來，這裡再看 wasSel 永遠不會跳
@@ -13831,9 +13981,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 }),
                                 onMoveWm: (ns) => setState(() {
                                   final len = _wmEndEff - _wmStart;
+                                  // 上限是可見總長（不是 _tl.duration）：整條
+                                  // 拖到隱藏軌的尾巴裡，_wmEndEff 會被夾回
+                                  // 可見結尾而起點留在後面，匯出就收到一組
+                                  // 起點大於終點的浮水印範圍。把手那條路
+                                  //（_trimWatermark）已經用 _visDur 夾了
                                   final s = ns.clamp(
                                     0.0,
-                                    (_tl.duration - len).clamp(0.0, 1e6),
+                                    (_visDur - len).clamp(0.0, 1e6),
                                   );
                                   _wmStart = s;
                                   // 時間軸還沒有素材時長度是 0，這時把終點
@@ -14070,11 +14225,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       selected: _canvasRatio == r,
                       first: i == 0,
                       onTap: () {
-                        setState(() {
-                          _canvasRatio = r;
-                          // 手動挑了比例＝不要裁切算出來的那個了
-                          _customAspect = null;
-                        });
+                        setState(() => _canvasRatio = r);
                         _saveDraft();
                         Navigator.pop(context);
                       },
@@ -14711,11 +14862,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         });
                         _ctrls[sel.id]?.setPlaybackSpeed(_speed * sp);
                         _resyncPlayback(); // 變速改了時間對應
-                      } else {
-                        setState(() => _speed = sp);
-                        for (final e in _tl.clips) {
-                          _ctrls[e.id]?.setPlaybackSpeed(sp * e.speed);
-                        }
                       }
                       setSheet(() {});
                     }
@@ -15009,7 +15155,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tl,
       _resolution,
       _canvasRatio,
-      _customAspect,
     );
     final fastQ =
         _qualityEff == ExportQuality.standard ||
@@ -15038,7 +15183,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 「高畫質」估 15MB 實際會出 26MB。音訊 AAC 256k ≈ 32KB/s
   double _estMb(ExportQuality q) {
     final (w, h) = _exportDims();
-    final dur = _tl.duration / _speed;
+    final dur = _visDur / _speed;
     final kbps = q.kbpsFor(w, h, fps: outputFps(_srcFps, w, h, want: _fps));
     return (kbps * 125.0 + 32000) * dur / (1024 * 1024);
   }
@@ -15049,7 +15194,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Widget _buildExportTab() {
     _checkHdrSources();
     final (outW, outH) = _exportDims();
-    final dur = _tl.duration / _speed;
+    final dur = _visDur / _speed;
     final mb = _estMb(_qualityEff);
 
     Widget row(
@@ -15277,7 +15422,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       _tl,
                       r,
                       _canvasRatio,
-                      _customAspect,
                     );
                     final (ow, oh) = computeCanvasSize(
                       _tl,
