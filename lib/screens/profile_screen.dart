@@ -11,6 +11,7 @@ import 'package:image_picker/image_picker.dart' show XFile;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/watermark_settings.dart';
+import '../services/draft_assets.dart';
 import '../services/draft_store.dart';
 import '../services/file_reader.dart';
 import '../services/gif_store.dart';
@@ -208,7 +209,10 @@ Future<String?> importGif(
     path = (r == null || r.files.isEmpty) ? null : r.files.first.path;
   }
   if (path == null) return null;
-  if (!path.toLowerCase().endsWith('.gif')) {
+  // 副檔名對還要看檔頭：改過名的 PNG、下載到一半的殘檔以前照收，
+  // 收進來只有一格、或根本畫不出來
+  if (!path.toLowerCase().endsWith('.gif') ||
+      !await GifStore.looksLikeGif(path)) {
     if (context.mounted) {
       showHint(context, '這不是 GIF，請選會動的那種', error: true);
     }
@@ -1274,21 +1278,23 @@ class _DraftsScreenState extends State<DraftsScreen> {
     }
   }
 
-  /// 續作批次浮水印：檔案還在的帶回去，不見的略過並講清楚
+  /// 續作批次浮水印：檔案還在的帶回去（草稿記的路徑不見了但留過複本
+  /// 就用複本，見 DraftAssets），不見的略過並講清楚。單張覆寫改以
+  /// 路徑對應（batchRestoreFor）：以前用索引，濾掉不見的檔案之後整批
+  /// 位移到別張
   Future<void> _resumeBatch() async {
     final d = _batchDraft;
     if (d == null) return;
     final paths = (d['files'] as List? ?? []).cast<String>();
-    final alive = <XFile>[];
+    final alive = <String?>[];
     var gone = 0;
     for (final path in paths) {
-      if (await fileExists(path)) {
-        alive.add(XFile(path));
-      } else {
-        gone++;
-      }
+      final now = await DraftAssets.resolve(DraftAssets.batch, path);
+      if (now == null) gone++;
+      alive.add(now);
     }
-    if (alive.isEmpty) {
+    final files = [for (final p in alive) ?p].map(XFile.new).toList();
+    if (files.isEmpty) {
       if (mounted) {
         showHint(context, '這批檔案都已經不在了，草稿無法續作', error: true);
       }
@@ -1299,8 +1305,8 @@ class _DraftsScreenState extends State<DraftsScreen> {
       context,
       editRoute(
         builder: (_) => BatchWatermarkScreen(
-          files: alive,
-          restore: d,
+          files: files,
+          restore: batchRestoreFor(d, alive),
           initialHint: gone > 0 ? '有 $gone 個檔案已不在，已略過' : null,
         ),
       ),

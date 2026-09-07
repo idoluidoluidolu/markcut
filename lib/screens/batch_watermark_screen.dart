@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 // XFile 由 image_picker 轉出來，不另外相依 cross_file
@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
+import '../services/draft_assets.dart';
 import '../services/export_eta.dart';
 import '../services/batch_overlay_cache.dart';
 import '../services/native_frames.dart';
@@ -20,7 +21,8 @@ import '../services/photo_thumbs.dart';
 import '../services/screen_awake.dart';
 import '../services/video_controller.dart';
 import '../services/video_engine.dart' as engine;
-import '../services/video_picker.dart' show pickMediaFiles;
+import '../services/video_picker.dart'
+    show isVideoFile, pickCountHint, pickMediaFiles;
 import '../services/hdr_photo_export.dart';
 import '../services/video_processor.dart';
 import '../services/watermark_renderer.dart';
@@ -31,6 +33,65 @@ import '../widgets/watermark_panel.dart';
 /// 批次浮水印：一次選多個檔案（照片/影片混合），
 /// 批次浮水印的草稿鍵（個人頁「未完成的批次」讀這裡）
 const kBatchDraftKey = 'batch_draft_v1';
+
+/// 這批的軟性上限（超過只是提醒「處理會比較久」，不擋）：
+/// 首頁進場那次用同一組數字（home_screen 的 _countHint）
+const kBatchSoftVideos = 30;
+const kBatchSoftPhotos = 200;
+
+/// 個人頁續作用：把草稿整理成這一頁吃的樣子。
+///
+/// [alive]：草稿裡每個檔案「現在的路徑」，不見了就是 null（見
+/// [DraftAssets.resolve]，草稿記的路徑不在了但留過複本就用複本）。
+/// 舊草稿的單張覆寫是用「第幾個檔案」當鍵：續作時少了一個檔案，
+/// 後面每一張的覆寫整批位移到別張，再存一次草稿就永久化了（探針證實：
+/// [a,b,c] 少了 a，b 的覆寫落到 c）。這裡一律換成路徑當鍵——路徑跟著
+/// 檔案走，少幾個都對得上；新草稿本來就以路徑存（見 _saveBatchDraft）
+Map<String, dynamic> batchRestoreFor(
+  Map<String, dynamic> draft,
+  List<String?> alive,
+) {
+  final files = (draft['files'] as List? ?? const []).cast<String>();
+  final ov = draft['overrides'];
+  final byPath = <String, dynamic>{};
+  if (ov is Map) {
+    ov.forEach((k, v) {
+      if (v is! Map) return;
+      final key = '$k';
+      final i = int.tryParse(key);
+      // 舊草稿：鍵是索引，先換回原本的路徑
+      final src = i != null
+          ? (i >= 0 && i < files.length ? files[i] : null)
+          : key;
+      if (src == null) return;
+      // 原路徑 → 現在的路徑（複本）
+      final at = files.indexOf(src);
+      final now = at >= 0 && at < alive.length ? alive[at] : null;
+      if (now != null) byPath[now] = v;
+    });
+  }
+  return {
+    ...draft,
+    'files': [for (final p in alive) ?p],
+    'overrides': byPath,
+  };
+}
+
+/// 影片的長寬：像素數以 probe 為準、「方向」以真的畫出來的畫面為準
+///（縮圖或播放器回報的尺寸）。probe 的旋轉旗標讀歪時畫布會轉 90 度、
+/// 影片看起來超出畫布（實測回報）；縮圖兩條抽取路都套過旋轉，一定是
+/// 顯示方向。方向對不上就把 probe 的長寬對調。預覽跟匯出共用這一段——
+/// 以前只有預覽修正，匯出直接拿 probe 的長寬算補黑，方向可能跟預覽相反
+@visibleForTesting
+(int, int) reconcileVideoDims((int, int) probe, (int, int)? seen) {
+  if (probe.$1 <= 0 || probe.$2 <= 0) return seen ?? probe;
+  if (seen == null || seen.$1 <= 0 || seen.$2 <= 0) return probe;
+  final probeSquare = (probe.$1 / probe.$2 - 1).abs() < 0.02;
+  if (!probeSquare && (probe.$1 < probe.$2) != (seen.$1 < seen.$2)) {
+    return (probe.$2, probe.$1);
+  }
+  return probe;
+}
 
 /// 統一調一組浮水印，整批匯出到相簿
 class BatchWatermarkScreen extends StatefulWidget {
@@ -58,13 +119,14 @@ class BatchWatermarkScreen extends StatefulWidget {
 ///
 /// 這裡只留「小縮圖」——原檔 bytes 一律不留，要用的時候（大預覽、匯出）
 /// 才回頭讀。一張 12MP 照片解出來是 48MB 的點陣圖，全部留著幾十張就爆了
-/// 上一步的一筆：itemIndex >= 0 代表這一步改的是那一張的單張設定，
-/// -1 代表改的是整批共用設定
+/// 上一步的一筆：[item] 是這一步改的那一張（單張設定），
+/// null 代表改的是整批共用設定。記「那一張本人」而不是索引：
+/// 長按移除前面的一張之後索引整個位移，用索引會把設定套到隔壁張
 class _UndoStep {
-  final int itemIndex;
+  final _BatchItem? item;
   final String json;
 
-  const _UndoStep(this.itemIndex, this.json);
+  const _UndoStep(this.item, this.json);
 }
 
 class _BatchItem {
@@ -95,31 +157,31 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   /// 照片存 JPEG 的品質：跟單張照片編輯器同一個值，不另外問
   static const _jpegQuality = 92;
 
-  bool _isVideo(XFile f) {
-    final mime = f.mimeType;
-    if (mime != null && mime.isNotEmpty) return mime.startsWith('video/');
-    final ext = f.name.toLowerCase().split('.').last;
-    return const {
-      'mp4',
-      'mov',
-      'm4v',
-      'avi',
-      'mkv',
-      'webm',
-      '3gp',
-      'ts',
-      'mts',
-    }.contains(ext);
-  }
+  /// 這一頁收過的每一條檔案路徑（進場那批＋中途加的，移除的也算）：
+  /// 離開時把其中「選取器的複本、草稿又沒在用」的刪掉（見 DraftAssets）
+  final Set<String> _received = {};
 
-  /// 「有沒有改過」的基準快照：進來時拍一次，匯出成功後重設
+  /// 現在存在裝置上的草稿引用了哪些檔案；[_draftTouched]＝這一頁存過
+  /// 或清過草稿（沒動過的話，離開時草稿引用的檔案照舊留著）
+  Set<String> _draftPaths = {};
+  bool _draftTouched = false;
+
+  /// 「有沒有改過」的基準快照：進來時拍一次，匯出成功後重設。
+  /// 拍的是整份（共用設定＋畫布比例＋每張的單獨調整）：以前只拍共用
+  /// 設定、再把「有單張覆寫」直接當成改過，續作含覆寫的草稿什麼都沒動
+  /// 也問「這批還沒匯出」，這時按「捨棄」整份草稿就沒了
   late String _initialJson;
+
+  String _snapshotJson() => jsonEncode({
+    'settings': _settings.toJson(),
+    'ratio': _canvasRatio.index,
+    'overrides': [for (final it in _items) it.override?.toJson()],
+  });
 
   /// 匯出畫布比例（原始＝跟素材一樣）。照片：黑底補到比例、像素
   /// 不縮水；影片：contain 進畫布（跟單支編輯器同一套數學）。
   /// 右上角那顆跟影片編輯器同一個位置（使用者指定）
   CanvasRatio _canvasRatio = CanvasRatio.original;
-  CanvasRatio _initialRatio = CanvasRatio.original;
 
   /// 預覽放大：只留預覽、其他全收（跟影片編輯器右上角那顆一樣）
   bool _fsPreview = false;
@@ -127,9 +189,16 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   @override
   void initState() {
     super.initState();
+    for (final f in widget.files) {
+      if (f.path.isNotEmpty) _received.add(f.path);
+    }
     // 草稿續作：先還原設定，再拍基準（沒再改動就不會被問保留）
     final r = widget.restore;
     if (r != null) {
+      _draftPaths = {
+        for (final p in (r['files'] as List? ?? const []))
+          if (p is String && p.isNotEmpty) p,
+      };
       try {
         _settings.copyMarksFrom(
           WatermarkSettings.fromJson(
@@ -138,11 +207,22 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         );
         final ov = r['overrides'];
         if (ov is Map) {
+          // 鍵是檔案路徑（見 batchRestoreFor）。舊草稿直接餵進來的話鍵
+          // 是索引：照草稿自己的檔案清單換回路徑再對——絕不能拿它當
+          // _items 的索引，個人頁濾掉不見的檔案之後兩邊已經對不上
+          final files = (r['files'] as List? ?? const []).cast<String>();
           ov.forEach((k, v) {
-            final i = int.tryParse('$k') ?? -1;
-            if (i >= 0 && i < _items.length && v is Map) {
+            if (v is! Map) return;
+            final key = '$k';
+            final i = int.tryParse(key);
+            final path = i == null
+                ? key
+                : (i >= 0 && i < files.length ? files[i] : null);
+            if (path == null || path.isEmpty) return;
+            for (final it in _items) {
+              if (it.file.path != path) continue;
               try {
-                _items[i].override = WatermarkSettings.fromJson(
+                it.override = WatermarkSettings.fromJson(
                   Map<String, dynamic>.from(v),
                 );
               } catch (_) {}
@@ -155,8 +235,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         }
       } catch (_) {}
     }
-    _initialJson = jsonEncode(_settings.toJson());
-    _initialRatio = _canvasRatio;
+    _initialJson = _snapshotJson();
     // web：大預覽跟縮圖列同時各開一個 <video> 解同一支影片，
     // 其中一邊常常等不到（timeout 回空）而且永遠不重試——縮圖列
     // 就整排空白。錯開：先把大預覽讀完，再慢慢補縮圖。
@@ -177,30 +256,17 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     }
   }
 
-  /// 這一批成功匯出過。跟影片編輯同一條規矩（video_editor_screen
-  /// 的 _exportedOk）：匯出成功過就不再問「要不要保留草稿」，
-  /// 靜靜留一份走人；沒匯出過才問
-  bool _exportedOk = false;
-
   // 匯出成功會把基準點重設（見 _exportAll），不能一匯出就永遠關掉保護
-  /// 單張調整也算「改過」：只在預覽上拖過浮水印就離開，
-  /// 原本會一聲不吭直接丟掉
-  bool get _dirty =>
-      jsonEncode(_settings.toJson()) != _initialJson ||
-      _canvasRatio != _initialRatio ||
-      _items.any((it) => it.override != null);
+  /// 單張調整也算「改過」（整份快照裡有它）：只在預覽上拖過浮水印就
+  /// 離開，原本會一聲不吭直接丟掉
+  bool get _dirty => _snapshotJson() != _initialJson;
 
-  /// 返回鍵／返回手勢：放大中先退出放大；匯出成功過就靜靜留草稿走人
-  ///（跟影片編輯 _handleBack 同一條規矩）；其餘走離開保護
+  /// 返回鍵／返回手勢：放大中先退出放大；其餘走離開保護。
+  /// 匯出成功過的草稿已經清掉（跟 GIF 那頁同一條規矩，見 _exportAll）：
+  /// 匯出後沒再動就靜靜走人，動過了照樣問
   void _handleBack() {
     if (_fsPreview) {
       setState(() => _fsPreview = false);
-      return;
-    }
-    if (_exportedOk) {
-      // 匯出成功過的不再問：草稿留著，之後想改再從個人頁續作
-      unawaited(_saveBatchDraft());
-      Navigator.of(context).pop();
       return;
     }
     _confirmLeave();
@@ -227,29 +293,92 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       await _saveBatchDraft();
       if (mounted) Navigator.of(context).pop();
     } else if (act == 'discard') {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(kBatchDraftKey);
+      await _clearBatchDraft();
       if (mounted) Navigator.of(context).pop();
     }
   }
 
+  /// 存草稿。引用的檔案先各留一份在 App 自己的目錄（DraftAssets）、
+  /// 草稿改記那一份：相簿選取器給的複本在 tmp／cache，系統幾天就清，
+  /// 以前續作動不動就「有 N 個檔案已不在」。單張覆寫以路徑當鍵（不是
+  /// 第幾個），少了哪個檔案都不會位移到別張
   Future<void> _saveBatchDraft() async {
     try {
-      // 先在同步這一段把內容組好：這個方法會在關頁的同一幀被
-      // unawaited 呼叫，await 之後才讀 state 欄位太晚
+      // 先在同步這一段把內容組好：await 之後才讀 state 欄位太晚
+      final items = [
+        for (final it in _items)
+          (path: it.file.path, override: it.override?.toJson()),
+      ];
+      final settings = _settings.toJson();
+      final ratio = _canvasRatio.index;
+      final files = <String>[];
+      final overrides = <String, dynamic>{};
+      for (final it in items) {
+        final p =
+            await DraftAssets.secure(DraftAssets.batch, it.path) ?? it.path;
+        files.add(p);
+        if (it.override != null) overrides[p] = it.override;
+      }
       final text = jsonEncode({
-        'files': [for (final it in _items) it.file.path],
-        'settings': _settings.toJson(),
-        'ratio': _canvasRatio.index,
-        'overrides': {
-          for (var i = 0; i < _items.length; i++)
-            if (_items[i].override != null) '$i': _items[i].override!.toJson(),
-        },
+        'files': files,
+        'settings': settings,
+        'ratio': ratio,
+        'overrides': overrides,
         'savedAt': DateTime.now().toIso8601String(),
       });
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(kBatchDraftKey, text);
+      _draftPaths = {
+        for (final p in files)
+          if (p.isNotEmpty) p,
+      };
+      _draftTouched = true;
     } catch (_) {}
+  }
+
+  /// 草稿不要了（捨棄、或匯出成功）
+  Future<void> _clearBatchDraft() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(kBatchDraftKey);
+    } catch (_) {}
+    _draftPaths = {};
+    _draftTouched = true;
+  }
+
+  /// 離開頁面的清理（dispose 裡射後不理）：草稿沒在用的複本、這一頁
+  /// 收到的選取器複本都刪掉。這一頁沒動過草稿的話，草稿引用的檔案
+  /// 一律留著；草稿根本不存在（個人頁刪掉了）才把複本清光
+  Future<void> _cleanupOnLeave() async {
+    var keep = _draftPaths;
+    if (!_draftTouched) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final raw = prefs.getString(kBatchDraftKey);
+        keep = raw == null
+            ? <String>{}
+            : {
+                for (final p
+                    in ((jsonDecode(raw) as Map)['files'] as List? ?? const []))
+                  if (p is String && p.isNotEmpty) p,
+              };
+      } catch (_) {
+        return; // 讀不到就什麼都別刪，寧可多留
+      }
+    }
+    await DraftAssets.afterLeave(
+      DraftAssets.batch,
+      keep: keep,
+      received: _received,
+    );
+  }
+
+  @override
+  void dispose() {
+    unawaited(_cleanupOnLeave());
+    _wmFrameInfo.dispose();
+    _wmPanelCtrl.dispose();
+    super.dispose();
   }
 
   // ===== 選取（選了圖片就鎖定圖片：拖曳/縮放都只動它）=====
@@ -292,7 +421,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     _lastPush = now;
     // 連同「這一步是改哪一份設定」一起記：單張模式的上一步要還原到
     // 那一張的 override，還原到共用設定的話畫面完全沒反應
-    final target = _singleNow ? _previewIndex : -1;
+    final target = _singleNow ? _items[_previewIndex] : null;
     _undoStack.add(_UndoStep(target, jsonEncode(_editTarget.toJson())));
     if (_undoStack.length > 60) _undoStack.removeAt(0);
     _redoStack.clear(); // 改了新的東西，原本的重做路線就斷了
@@ -301,7 +430,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
 
   /// 目前這一刻的快照（撤銷前先存起來，才回得去）
   _UndoStep get _snapshot => _UndoStep(
-    _singleNow ? _previewIndex : -1,
+    _singleNow ? _items[_previewIndex] : null,
     jsonEncode(_editTarget.toJson()),
   );
 
@@ -310,16 +439,23 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     final wm = WatermarkSettings.fromJson(
       jsonDecode(step.json) as Map<String, dynamic>,
     );
+    final item = step.item;
     // 那張後來被移除的話就跳過這一步
-    if (step.itemIndex >= _items.length) return;
-    final dst = step.itemIndex < 0
-        ? _settings
-        : (_items[step.itemIndex].override ??= _settings.copy());
+    final at = item == null ? -1 : _items.indexOf(item);
+    if (item != null && at < 0) return;
+    final dst = item == null ? _settings : (item.override ??= _settings.copy());
     setState(() {
-      if (step.itemIndex >= 0) _previewIndex = step.itemIndex;
+      if (at >= 0 && at != _previewIndex) {
+        // 跳去那一張：大預覽也要跟著換，不然畫的是別張的圖
+        _previewIndex = at;
+        _previewBytes = null;
+        _previewLoadedFor = -1;
+        _wmPart = WmPart.none;
+      }
       dst.copyMarksFrom(wm);
       _sync++;
     });
+    if (at >= 0) _loadPreviewFull();
   }
 
   void _undoLast() {
@@ -388,8 +524,26 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     final picked = await pickMediaFiles();
     if (picked.isEmpty || !mounted) return;
     final added = picked.map(_BatchItem.new).toList();
+    for (final f in picked) {
+      if (f.path.isNotEmpty) _received.add(f.path);
+    }
     setState(() => _items.addAll(added));
-    showHint(context, '已加入 ${added.length} 個檔案');
+    // 數量偏多的提醒跟首頁進場那次同一句：以前只有進場會講，
+    // 中途再加兩百張這裡靜靜的
+    final videos = _items.where((it) => isVideoFile(it.file)).length;
+    final more =
+        pickCountHint(count: videos, unit: '部影片', soft: kBatchSoftVideos) ??
+        pickCountHint(
+          count: _items.length - videos,
+          unit: '張照片',
+          soft: kBatchSoftPhotos,
+        );
+    showHint(
+      context,
+      more == null
+          ? '已加入 ${added.length} 個檔案'
+          : '已加入 ${added.length} 個檔案；$more',
+    );
     // 縮圖與尺寸背景補上，跟進場時同一條路
     unawaited(_loadPreviews(only: added));
   }
@@ -435,7 +589,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   Future<void> _loadOnePreview(_BatchItem item) async {
     final f = item.file;
     try {
-      if (_isVideo(f)) {
+      if (isVideoFile(f)) {
         // 條列用的小格，抽小的就好（大預覽另外抽 720p）
         var t = kIsWeb
             ? const <Uint8List>[]
@@ -450,10 +604,8 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
           t = await engine.makeThumbnails(f.path, 1, 1, height: 240);
         }
         if (t.isNotEmpty) item.thumb = t.first;
-        // 尺寸問影片本身（像素數精確），但「方向」以縮圖為準：
-        // 縮圖兩條抽取路都套過旋轉、一定是顯示方向；probe 的
-        // 旋轉旗標讀歪時畫布會轉 90 度，影片看起來超出畫布
-        //（實測回報）。方向對不上就把 probe 的長寬對調。
+        // 尺寸問影片本身（像素數精確），但「方向」以縮圖為準
+        //（見 reconcileVideoDims；匯出也用同一段修正）。
         // 每一步各自 try：任何一步炸掉都不能讓「尺寸賦值」
         // 被跳過——以前整段一個 catch，炸在中途畫布就永遠 16:9
         (int, int)? d;
@@ -465,14 +617,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         try {
           if (t.isNotEmpty) td = await _dimsOf(t.first);
         } catch (_) {}
-        if (d != null && td != null && td.$1 > 0 && td.$2 > 0) {
-          final probePortrait = d.$1 < d.$2;
-          final thumbPortrait = td.$1 < td.$2;
-          final probeSquare = (d.$1 / d.$2 - 1).abs() < 0.02;
-          if (!probeSquare && probePortrait != thumbPortrait) {
-            d = (d.$2, d.$1);
-          }
-        }
+        if (d != null) d = reconcileVideoDims(d, td);
         var dims = d ?? td;
         if (dims == null) {
           // 最後保底：跟單支編輯器同一招——開一顆播放器問尺寸
@@ -525,7 +670,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     final f = _items[i].file;
     Uint8List? bytes;
     try {
-      if (_isVideo(f)) {
+      if (isVideoFile(f)) {
         var t = kIsWeb
             ? const <Uint8List>[]
             : await nativeStrip(f.path, 1, 1, maxH: 720);
@@ -735,7 +880,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   Future<void> _confirmExportAll() async {
     if (_exporting) return;
     // 整批都是影片就不用問（影片不吃這個格式）
-    final hasPhoto = _items.any((it) => !_isVideo(it.file));
+    final hasPhoto = _items.any((it) => !isVideoFile(it.file));
     var jpeg = false;
     if (hasPhoto) {
       final fmt = await askPhotoFormat(context);
@@ -778,6 +923,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     final total = _items.length;
     final overall = ValueNotifier<double>(0);
     final label = ValueNotifier<String>('準備中…');
+    // 按了取消要有回饋：鈕改「取消中…」並停用（跟 GIF 那頁一樣）。
+    // 以前按了像沒反應，使用者會再按好幾下
+    final stopping = ValueNotifier<bool>(false);
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -803,12 +951,18 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
             ],
           ),
           actions: [
-            TextButton(
-              onPressed: () {
-                _stopRequested = true;
-                engine.cancelExport();
-              },
-              child: const Text('取消'),
+            ValueListenableBuilder<bool>(
+              valueListenable: stopping,
+              builder: (context, s, _) => TextButton(
+                onPressed: s
+                    ? null
+                    : () {
+                        stopping.value = true;
+                        _stopRequested = true;
+                        engine.cancelExport();
+                      },
+                child: Text(s ? '取消中…' : '取消'),
+              ),
             ),
           ],
         ),
@@ -822,7 +976,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     // 會被略過、不花時間，不列入估算（null）
     final kinds = <ExportKind?>[
       for (final it in _items)
-        _isVideo(it.file)
+        isVideoFile(it.file)
             ? (engine.videoExportSupported ? ExportKind.video : null)
             : ExportKind.photo,
     ];
@@ -865,10 +1019,11 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       refreshLabel();
       final f = _items[i].file;
       try {
-        if (_isVideo(f)) {
+        if (isVideoFile(f)) {
           // 影片匯出很吃記憶體，先把上一張照片存完再開
           await tail;
           tail = null;
+          if (_stopRequested) break;
           if (!engine.videoExportSupported) {
             // 要計數＋推進度，不然進度條卡住、
             // 結尾還顯示「完成！已輸出 0 個」的成功樣式
@@ -876,19 +1031,23 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
             overall.value = (i + 1) / total;
             continue;
           }
-          final ok = await _exportVideo(f, _effectiveOf(i), (p) {
+          final ok = await _exportVideo(_items[i], _effectiveOf(i), (p) {
             overall.value = (i + p) / total;
             eta.noteProgress(p);
           }, overlays);
+          // 取消時引擎會把半成品刪掉、回失敗：那不算失敗的一個
+          if (_stopRequested && !ok) break;
           finished(i, ok);
         } else {
           // 來源是 HDR 照片（iOS 17+）：走原生 HDR 路，輸出 10-bit HEIC。
           // 不是 HDR／原生路失敗 → 下面原本的 SDR 路一個位元都不改。
           // 原生路自己存檔，跟後段管線一樣一次只跑一張，先等上一張存完
           final hp = await HdrPhotoExport.probe(f.path);
+          if (_stopRequested) break;
           if (hp != null && hp.hdr) {
             await tail;
             tail = null;
+            if (_stopRequested) break;
             final err = await HdrPhotoExport.exportToGallery(
               srcPath: f.path,
               probe: hp,
@@ -911,6 +1070,12 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
             // 畫布比例：照片置中、黑底補齊（跟預覽一致）
             canvasAspect: _canvasRatio.value,
           );
+          // 畫好才看到取消：這張不存了（以前只在每個檔案開頭看旗標，
+          // 按下去之後正在畫的那張照樣進相簿）
+          if (_stopRequested) {
+            image.dispose();
+            break;
+          }
           // 上一張存完才把這張排進後段（後段永遠只有一張）
           await tail;
           tail = _encodeAndSavePhoto(image, i, jpeg).then((ok) {
@@ -925,17 +1090,18 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     ticker.cancel();
 
     await keepScreenAwake(false);
-    if (done > 0) {
-      // 基準點重設到現在：之後又改了設定，離開一樣會問
-      _initialJson = jsonEncode(_settings.toJson());
-      // 匯出成功＝靜靜留一份草稿（跟影片編輯同一條規矩：匯出過的
-      // 專案草稿留著、不再問）。這裡就存，回主畫面那條路
-      //（popUntil）不會經過 _handleBack，等到那時就來不及了
-      _exportedOk = true;
-      unawaited(_saveBatchDraft());
+    final clean = done > 0 && failed == 0 && skipped == 0 && !_stopRequested;
+    if (clean) {
+      // 基準點重設到現在：之後又改了設定，離開一樣會問。
+      // 草稿清掉（跟 GIF 那頁同一條規矩）：以前反而寫一份，個人頁就多
+      // 一張「未完成的批次浮水印」，明明已經匯出了。這裡就清，回主畫面
+      // 那條路（popUntil）不會經過 _handleBack，等到那時就來不及了
+      _initialJson = _snapshotJson();
+      await _clearBatchDraft();
     }
     overall.dispose();
     label.dispose();
+    stopping.dispose();
     if (!mounted) return;
     Navigator.of(context, rootNavigator: true).pop();
     var msg = _stopRequested
@@ -962,15 +1128,17 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
 
   /// 單支影片：原樣 + 浮水印，整段匯出
   Future<bool> _exportVideo(
-    XFile f,
+    _BatchItem item,
     WatermarkSettings wm,
     void Function(double) onProgress,
     BatchOverlayCache overlays,
   ) async {
+    final f = item.file;
     final probe = await engine.probeVideoInfo(f.path);
     var dur = await engine.probeVideoDuration(f.path);
-    var w = probe.w;
-    var h = probe.h;
+    // 方向照預覽那一套修正（縮圖看到的才是顯示方向）：不修的話固定
+    // 比例補黑的方向可能跟預覽相反
+    var (w, h) = reconcileVideoDims((probe.w, probe.h), item.dims);
     if (dur <= 0 || w <= 0 || h <= 0) {
       final c = makeVideoController(f.path, system: true);
       try {
@@ -1519,7 +1687,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                                       ),
                                     ),
                                   ),
-                                if (_isVideo(_items[i].file))
+                                if (isVideoFile(_items[i].file))
                                   const Align(
                                     alignment: Alignment.bottomRight,
                                     child: Padding(
@@ -1568,8 +1736,11 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                       onChanged: () => setState(() {}),
                       onBeforeChange: _pushUndo,
                       syncVersion: _sync,
+                      // 九宮格「貼邊」要知道畫布比例才夾得準（拼圖、照片
+                      // 編輯都有傳；這裡漏了，直式素材點右下格文字被切）
+                      canvasAspect: aspect,
                       // 有影片才顯示動畫選項
-                      showAnimation: _items.any((it) => _isVideo(it.file)),
+                      showAnimation: _items.any((it) => isVideoFile(it.file)),
                     ),
                     Positioned(
                       left: 0,
