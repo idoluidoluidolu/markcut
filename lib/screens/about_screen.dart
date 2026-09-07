@@ -201,7 +201,9 @@ class AboutScreen extends StatelessWidget {
                   'LXGW 文楷 TC — 落霞孤鶩\n'
                   '朱古力黑體 — Chocolate Classical Sans\n'
                   'Montserrat、Playfair Display、Pacifico、'
-                  'Bebas Neue、Oswald、Lobster、Anton、Courier Prime',
+                  'Bebas Neue、Oswald、Lobster、Anton、Courier Prime、'
+                  'Quicksand、Space Grotesk、Abril Fatface、'
+                  'Dancing Script、Caveat、Press Start 2P',
             ),
           ],
           showSourceRow: true,

@@ -51,7 +51,9 @@ void main() {
       'LXGW WenKai TC (落霞孤鶩)\n'
       'Chocolate Classical Sans\n'
       'Montserrat / Playfair Display / Pacifico / Bebas Neue /\n'
-      'Oswald / Lobster / Anton / Courier Prime\n\n'
+      'Oswald / Lobster / Anton / Courier Prime /\n'
+      'Quicksand / Space Grotesk / Abril Fatface /\n'
+      'Dancing Script / Caveat / Press Start 2P\n\n'
       '完整授權條款見 https://scripts.sil.org/OFL',
     );
     yield const LicenseEntryWithLineBreaks(

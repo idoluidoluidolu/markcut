@@ -20,6 +20,12 @@ const kFontOptions = <({String label, String family})>[
   (label: 'Lobster', family: 'Lobster'),
   (label: 'Anton', family: 'Anton'),
   (label: 'Courier Prime', family: 'CourierPrime'),
+  (label: 'Quicksand', family: 'Quicksand'),
+  (label: 'Space Grotesk', family: 'SpaceGrotesk'),
+  (label: 'Abril Fatface', family: 'AbrilFatface'),
+  (label: 'Dancing Script', family: 'DancingScript'),
+  (label: 'Caveat', family: 'Caveat'),
+  (label: 'Press Start 2P', family: 'PressStart2P'),
 ];
 
 /// 文字浮水印設定。位置與大小皆為相對值，套用到任何解析度都一致。

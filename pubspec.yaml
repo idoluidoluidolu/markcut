@@ -200,6 +200,28 @@ flutter:
     - family: CourierPrime
       fonts:
         - asset: assets/fonts/CourierPrime.ttf
+    # 第二批英文（使用者指定）：挑現有九種沒有的類型——圓潤無襯線、
+    # 現代無襯線、展示襯線、花體、手寫麥克筆、像素。Google Fonts 給的是
+    # 可變字體，跟上面 NotoSansTC 同一個理由（Flutter 不會把 fontWeight
+    # 套到 wght 軸）用 fontTools 烘成固定字重的靜態檔
+    - family: Quicksand
+      fonts:
+        - asset: assets/fonts/Quicksand.ttf
+    - family: SpaceGrotesk
+      fonts:
+        - asset: assets/fonts/SpaceGrotesk.ttf
+    - family: AbrilFatface
+      fonts:
+        - asset: assets/fonts/AbrilFatface.ttf
+    - family: DancingScript
+      fonts:
+        - asset: assets/fonts/DancingScript.ttf
+    - family: Caveat
+      fonts:
+        - asset: assets/fonts/Caveat.ttf
+    - family: PressStart2P
+      fonts:
+        - asset: assets/fonts/PressStart2P.ttf
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
