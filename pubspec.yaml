@@ -36,12 +36,15 @@ dependencies:
   flutter_localizations:
     sdk: flutter
 
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
-  cupertino_icons: ^1.0.8
-  # LGPL 版 FFmpeg（無 x264）：App Store 上架相容，
-  # H.264 編碼改用硬體（Android MediaCodec / iOS VideoToolbox）
-  ffmpeg_kit_flutter_new: ^4.6.2
+  # LGPL 版 FFmpeg：`_full` 是這一家八個套件裡「除了 GPL 元件
+  # （x264／x265／xvid／vid.stab）以外全部都有」的建置，App Store 上架
+  # 相容。沒有後綴的 ffmpeg_kit_flutter_new 是 Full-GPL 版——曾誤用到
+  # 4.6.x，出貨的 libavcodec 裡帶著 x264/x265，跟這裡與 README 寫的
+  # LGPL 不符，不要換回去。八個套件的 Dart API 一模一樣，只有 import
+  # 路徑跟著套件名走（package:ffmpeg_kit_flutter_new_full/...）。
+  # H.264 編碼用硬體（Android MediaCodec / iOS VideoToolbox）；
+  # HDR→SDR 靠 zscale（libzimg，_full 有）＋tonemap（FFmpeg 原生）
+  ffmpeg_kit_flutter_new_full: ^2.5.2
   video_player: ^2.13.0
   image_picker: ^1.2.3
   # 直接相依是為了打開 Android 的系統相簿選取器（見 main.dart）：
@@ -57,11 +60,15 @@ dependencies:
   record: ^6.1.2
   # 匯出期間螢幕不關（不然系統會凍結／回收 App，整批就斷在中間）
   wakelock_plus: ^1.5.2
-  # 測試中的替代播放引擎（video_player 在 Pixel 上影格傳遞卡頓）
+  # Android 的預覽播放引擎（video_player 的 ExoPlayer 在 Pixel 上影格
+  # 傳遞卡頓）。原生函式庫只帶 Android 的：iOS 沒有任何路徑會建 mpv
+  # 播放器（PlayerX 在 iOS 一律走 AVPlayer），main.dart 的
+  # MediaKit.ensureInitialized() 與偵測畫面的 mpv 步驟也都閘在
+  # Android。少了 iOS 的 libs，media_kit_video 的 podspec 會自動改編
+  # 它自帶的 stub 外掛（if mku.libs_found … else stub），不必動 ios/
   media_kit: ^1.1.11
   media_kit_video: ^1.2.5
   media_kit_libs_android_video: ^1.3.6
-  media_kit_libs_ios_video: ^1.1.4
   http: ^1.6.0
   # 診斷報告的版本標（對版用）
   package_info_plus: ^9.0.0
@@ -70,7 +77,8 @@ dependencies:
   flutter_image_compress: ^2.5.1
   image_picker_platform_interface: ^2.11.1
 
-# 自帶修改版的 iOS 播放外掛（只差一行）：關掉
+# 自帶修改版的 iOS 播放外掛（改動都掛 MarkCut 標記：FVPVideoPlayer.m
+# 八處、FVPAVFactory.m 一處，不是只差一行）。起點是關掉
 # automaticallyWaitsToMinimizeStalling。那是給串流用的「先等緩衝夠再
 # 播」，對本機檔案純粹是白等——實測按下播放到第一格要 267ms+。
 # 上游沒開放這個設定，只能覆蓋。升級 video_player 時記得同步這份
@@ -143,7 +151,6 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/icon/icon_foreground.png
     - assets/icon/home_logo.png
     # Web 展示模式用的內建 GIF 範例（見 GifStore.demoRefs）
     - assets/demo/

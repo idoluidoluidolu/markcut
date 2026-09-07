@@ -5,12 +5,12 @@ import 'dart:ui' show Rect;
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
-import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit_config.dart';
-import 'package:ffmpeg_kit_flutter_new/ffmpeg_session.dart';
-import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
-import 'package:ffmpeg_kit_flutter_new/return_code.dart';
-import 'package:ffmpeg_kit_flutter_new/stream_information.dart';
+import 'package:ffmpeg_kit_flutter_new_full/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new_full/ffmpeg_kit_config.dart';
+import 'package:ffmpeg_kit_flutter_new_full/ffmpeg_session.dart';
+import 'package:ffmpeg_kit_flutter_new_full/ffprobe_kit.dart';
+import 'package:ffmpeg_kit_flutter_new_full/return_code.dart';
+import 'package:ffmpeg_kit_flutter_new_full/stream_information.dart';
 import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
 

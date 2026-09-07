@@ -13,6 +13,41 @@
 # 4. Codemagic 的 App settings → Environment variables：
 #    群組 appstore，變數 CERTIFICATE_PRIVATE_KEY（勾 Secure），
 #    值＝專案根目錄 ios_cert_key.pem 的完整內容
+#
+# 版號（build number）只有一個來源：Codemagic 的 $PROJECT_BUILD_NUMBER
+#（整個 App 共用的遞增計數器，每次建置 +1，三條 workflow 都看得到）。
+# pubspec.yaml 的 `version: 1.1.0+18` 那個 +18 只給本機 flutter build 用；
+# 雲端的 iOS 與 Android 都用 --build-number 蓋掉它，兩平台的
+# CFBundleVersion／versionCode 才是同一條數線（之前 iOS 走 Codemagic
+# 計數、Android 走 pubspec，兩邊各說各話）。版本名 1.1.0 仍以 pubspec 為準。
+#
+# Flutter 版本釘死在 3.44.8（本機同版）：stable/latest 浮動，
+# 升版會無聲改變行為，出了事對不回本機
+
+# 共用步驟（YAML 錨點）：兩條 iOS workflow 在編譯前都先跑
+definitions:
+  scripts:
+    - &analyze
+      name: 靜態檢查
+      script: dart analyze lib test
+    - &test
+      name: 測試（全套）
+      script: |
+        # 管線裡不能信 flutter test 的失敗碼（本機踩過多次：吞失敗碼、
+        # 半路崩潰卻回 0）。改看輸出：一個 [E] 都不能有，而且
+        # 一定要看到 "All tests passed"，兩個條件缺一就擋下
+        flutter test --no-pub > test_ci.log 2>&1 || true
+        tail -n 40 test_ci.log
+        if grep -q "\[E\]" test_ci.log; then
+          echo "❌ 死因：有測試失敗（[E]）"
+          grep -n "\[E\]" test_ci.log | head -n 30
+          exit 1
+        fi
+        if ! grep -q "All tests passed" test_ci.log; then
+          echo "❌ 死因：沒看到 All tests passed（測試沒跑完或半路崩潰）"
+          exit 1
+        fi
+
 workflows:
   ios-testflight:
     name: iOS → TestFlight
@@ -25,7 +60,7 @@ workflows:
         - appstore # 內含 CERTIFICATE_PRIVATE_KEY
       vars:
         BUNDLE_ID: "com.idoluidoluidolu.watermark"
-      flutter: stable
+      flutter: 3.44.8
       xcode: latest
       cocoapods: default
     scripts:
@@ -62,6 +97,8 @@ workflows:
           fi
       - name: 3 Flutter 依賴
         script: flutter pub get
+      - *analyze
+      - *test
       - name: 4 CocoaPods
         script: |
           cd ios
@@ -90,6 +127,7 @@ workflows:
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
+      - test_ci.log
     publishing:
       app_store_connect:
         auth: integration
@@ -98,24 +136,32 @@ workflows:
   # 快速編譯檢查：不簽章、不上傳，只驗 Swift/Dart 編得過。
   # 給 AI 助手的迴圈用：push 之後用 Codemagic API 觸發這條，
   # ~10 分鐘拿到編譯錯誤自己修，不用等 TestFlight 整條跑完、
-  # 也不用真機測試員當編譯器
+  # 也不用真機測試員當編譯器。
+  # analyze＋全套測試也掛在這裡（本機實測全套約 3 分鐘）：
+  # 編得過但測試紅的 push 一樣要在這條被擋下
   ios-compile:
     name: iOS 編譯檢查（不簽章）
     instance_type: mac_mini_m2
     max_build_duration: 30
     environment:
-      flutter: stable
+      flutter: 3.44.8
       xcode: latest
       cocoapods: default
     scripts:
       - name: Flutter 依賴
         script: flutter pub get
+      - *analyze
+      - *test
       - name: CocoaPods
         script: |
           cd ios
           pod install
       - name: 編譯（不簽章）
-        script: flutter build ios --release --no-codesign
+        script: |
+          flutter build ios --release --no-codesign \
+            --build-number=$PROJECT_BUILD_NUMBER
+    artifacts:
+      - test_ci.log
 
   # Android：產出 release APK 當備份（可選）
   android-apk:
@@ -123,12 +169,15 @@ workflows:
     instance_type: linux_x2
     max_build_duration: 45
     environment:
-      flutter: stable
+      flutter: 3.44.8
       java: 17
     scripts:
       - name: Flutter 依賴
         script: flutter pub get
+      # versionCode 跟 iOS 同一個計數器（見檔頭），不用 pubspec 的 +18
       - name: 建置 APK
-        script: flutter build apk --release --split-per-abi
+        script: |
+          flutter build apk --release --split-per-abi \
+            --build-number=$PROJECT_BUILD_NUMBER
     artifacts:
       - build/app/outputs/flutter-apk/*.apk

@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
+import 'package:ffmpeg_kit_flutter_new_full/ffprobe_kit.dart';
 import 'package:flutter/services.dart' show MethodChannel;
 import 'package:media_kit/media_kit.dart' as mk;
 import 'package:media_kit_video/media_kit_video.dart' as mkv;
@@ -122,44 +122,53 @@ Future<void> runVideoProbe(String path, void Function(String) log) async {
   }
   log('');
 
-  // ---- 5. mpv 實測：開檔、第一格、播起來之後的畫面亮度
+  // ---- 5. mpv 實測：開檔、第一格、播起來之後的畫面亮度。
+  // 只有 Android 用 mpv：PlayerX 在 iOS 一律走 AVPlayer（見
+  // video_controller_io.dart），iOS 也不再帶 media_kit 的原生函式庫，
+  // 在 iOS 上連 Player() 都建不起來，所以整步只在 Android 跑
   log('— mpv（media_kit）—');
-  final p = mk.Player();
-  final vc = mkv.VideoController(p);
-  try {
-    await p.open(mk.Media(path), play: false);
-    await p.stream.duration
-        .firstWhere((d) => d > Duration.zero)
-        .timeout(const Duration(seconds: 8));
-    log(
-      '開檔 OK：mpv 時長 '
-      '${(p.state.duration.inMilliseconds / 1000).toStringAsFixed(1)}s',
-    );
+  if (!Platform.isAndroid) {
+    log('略過：iOS 的預覽走 AVPlayer，不用 mpv');
+  } else {
+    final p = mk.Player();
+    final vc = mkv.VideoController(p);
     try {
-      await vc.waitUntilFirstFrameRendered.timeout(const Duration(seconds: 5));
-      log('第一格：有渲染');
-    } catch (_) {
-      log('第一格：逾時（沒渲染出來）');
-    }
-    await p.setVolume(0);
-    await p.play();
-    await Future<void>.delayed(const Duration(milliseconds: 800));
-    final s1 = await p.screenshot();
-    await Future<void>.delayed(const Duration(milliseconds: 1500));
-    final s2 = await p.screenshot();
-    await p.pause();
-    for (final (i, s) in [(1, s1), (2, s2)]) {
-      if (s == null) {
-        log('截圖$i：拿不到（硬解影格可能不給讀，這本身也是線索）');
-        continue;
+      await p.open(mk.Media(path), play: false);
+      await p.stream.duration
+          .firstWhere((d) => d > Duration.zero)
+          .timeout(const Duration(seconds: 8));
+      log(
+        '開檔 OK：mpv 時長 '
+        '${(p.state.duration.inMilliseconds / 1000).toStringAsFixed(1)}s',
+      );
+      try {
+        await vc.waitUntilFirstFrameRendered.timeout(
+          const Duration(seconds: 5),
+        );
+        log('第一格：有渲染');
+      } catch (_) {
+        log('第一格：逾時（沒渲染出來）');
       }
-      final lum = await meanLuminance(s);
-      log('截圖$i 亮度：${lum?.toStringAsFixed(1) ?? '解不開'}');
+      await p.setVolume(0);
+      await p.play();
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+      final s1 = await p.screenshot();
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      final s2 = await p.screenshot();
+      await p.pause();
+      for (final (i, s) in [(1, s1), (2, s2)]) {
+        if (s == null) {
+          log('截圖$i：拿不到（硬解影格可能不給讀，這本身也是線索）');
+          continue;
+        }
+        final lum = await meanLuminance(s);
+        log('截圖$i 亮度：${lum?.toStringAsFixed(1) ?? '解不開'}');
+      }
+    } catch (e) {
+      log('失敗：$e');
+    } finally {
+      p.dispose();
     }
-  } catch (e) {
-    log('失敗：$e');
-  } finally {
-    p.dispose();
   }
   log('');
 
@@ -175,29 +184,34 @@ Future<void> runVideoProbe(String path, void Function(String) log) async {
       final lum = b == null ? null : await meanLuminance(b);
       log('工作檔 OK：系統抽幀亮度 ${lum?.toStringAsFixed(1) ?? '解不開'}');
       // 關鍵組合：mpv「播放中」畫工作檔——編輯器按下播放後跑的
-      // 就是這一條。第一輪偵測漏了它，黑畫面就是黑在這裡
-      final wp = mk.Player();
-      mkv.VideoController(wp);
-      try {
-        await wp.open(mk.Media(work), play: false);
-        await wp.stream.duration
-            .firstWhere((d) => d > Duration.zero)
-            .timeout(const Duration(seconds: 8));
-        await wp.setVolume(0);
-        await wp.play();
-        await Future<void>.delayed(const Duration(milliseconds: 1200));
-        final shot = await wp.screenshot();
-        await wp.pause();
-        final sl = shot == null ? null : await meanLuminance(shot);
-        log(
-          'mpv 播工作檔：截圖亮度 '
-          '${sl?.toStringAsFixed(1) ?? '拿不到'}'
-          '${sl != null && sl < 2 ? '（全黑！就是這裡）' : ''}',
-        );
-      } catch (e) {
-        log('mpv 播工作檔失敗：$e');
-      } finally {
-        wp.dispose();
+      // 就是這一條。第一輪偵測漏了它，黑畫面就是黑在這裡。
+      // 同第 5 步：只有 Android 用 mpv
+      if (!Platform.isAndroid) {
+        log('mpv 播工作檔：略過（iOS 不用 mpv）');
+      } else {
+        final wp = mk.Player();
+        mkv.VideoController(wp);
+        try {
+          await wp.open(mk.Media(work), play: false);
+          await wp.stream.duration
+              .firstWhere((d) => d > Duration.zero)
+              .timeout(const Duration(seconds: 8));
+          await wp.setVolume(0);
+          await wp.play();
+          await Future<void>.delayed(const Duration(milliseconds: 1200));
+          final shot = await wp.screenshot();
+          await wp.pause();
+          final sl = shot == null ? null : await meanLuminance(shot);
+          log(
+            'mpv 播工作檔：截圖亮度 '
+            '${sl?.toStringAsFixed(1) ?? '拿不到'}'
+            '${sl != null && sl < 2 ? '（全黑！就是這裡）' : ''}',
+          );
+        } catch (e) {
+          log('mpv 播工作檔失敗：$e');
+        } finally {
+          wp.dispose();
+        }
       }
     }
   } catch (e) {

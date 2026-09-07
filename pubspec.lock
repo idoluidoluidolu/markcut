@@ -105,14 +105,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.0.2"
-  cupertino_icons:
-    dependency: "direct main"
-    description:
-      name: cupertino_icons
-      sha256: "41e005c33bd814be4d3096aff55b1908d419fde52ca656c8c47719ec745873cd"
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.0.9"
   dbus:
     dependency: transitive
     description:
@@ -137,14 +129,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.2.0"
-  ffmpeg_kit_flutter_new:
+  ffmpeg_kit_flutter_new_full:
     dependency: "direct main"
     description:
-      name: ffmpeg_kit_flutter_new
-      sha256: "112ca70a36babc2951cddc879990aad98956b75acb69cdc3fbd2d16bfc941753"
+      name: ffmpeg_kit_flutter_new_full
+      sha256: "0f610062616b70b963a9f3b47675243969a044c570db1620f1fd9f4f0b85eb7b"
       url: "https://pub.dev"
     source: hosted
-    version: "4.6.2"
+    version: "2.5.2"
   ffmpeg_kit_flutter_platform_interface:
     dependency: transitive
     description:
@@ -571,14 +563,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.3.8"
-  media_kit_libs_ios_video:
-    dependency: "direct main"
-    description:
-      name: media_kit_libs_ios_video
-      sha256: b5382994eb37a4564c368386c154ad70ba0cc78dacdd3fb0cd9f30db6d837991
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.1.4"
   media_kit_video:
     dependency: "direct main"
     description:

@@ -32,6 +32,16 @@ import 'package:markcut/widgets/watermark_layer.dart';
 /// 一台裝置：邏輯尺寸＋安全區
 typedef Device = ({String name, Size size, double top, double bottom});
 
+/// 最後那條「掃各種尺寸」的開關（跟 test/perf/ 同一個環境變數）。
+/// 預設抽樣：高度每 60pt 一格、再加 SE 的 667（3 寬×7 高×4 種內容＝
+/// 84 次 pump，約半分鐘）；MARKCUT_BENCH=1 才掃 640～940 每 20pt 的
+/// 完整矩陣（192 次，約一分鐘）。SE／最矮（640）／橫向各有自己的
+/// 專門測試，抽樣不會漏掉它們
+final _bench = Platform.environment['MARKCUT_BENCH'] == '1';
+final _matrixHeights = _bench
+    ? [for (var h = 640.0; h <= 940.0; h += 20) h]
+    : const [640.0, 667.0, 700.0, 760.0, 820.0, 880.0, 940.0];
+
 const _iphone14 = (
   name: 'iPhone 14',
   size: Size(390, 844),
@@ -375,7 +385,7 @@ void main() {
   // 順便釘住「磚永遠原尺寸」——不管鎖住還是捲
   testWidgets('掃各種尺寸：只要鎖住不給捲，就一定是 0 可捲距離', (t) async {
     for (final w in [360.0, 390.0, 430.0]) {
-      for (var h = 640.0; h <= 940.0; h += 20) {
+      for (final h in _matrixHeights) {
         for (final content in [(2, 3, 2), (1, 0, 1), (0, 0, 0), (2, 2, 2)]) {
           _seed(presets: content.$1, gifs: content.$2, drafts: content.$3);
           final d = (

@@ -190,7 +190,8 @@ class AboutScreen extends StatelessWidget {
             ),
             (
               '影音處理',
-              '影音處理由 FFmpeg（LGPL v2.1+）與 media_kit 提供，'
+              '影音處理由 FFmpeg（LGPL v2.1+ 建置，不含 x264／x265 等 GPL '
+                  '元件）提供，Android 的預覽播放另用 media_kit，'
                   'H.264 編碼使用裝置的硬體編碼器。\n'
                   'FFmpeg 為其各自作者所有，詳見 ffmpeg.org。',
             ),

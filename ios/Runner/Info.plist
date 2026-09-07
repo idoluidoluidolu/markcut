@@ -10,6 +10,14 @@
 	<false/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<!-- iOS 16+ 的文字選單（貼上／全選／掃描文字……）是系統畫的，字串
+	     跟著 App「宣告」的語系走；沒宣告就只剩 CFBundleDevelopmentRegion
+	     （en），中文裝置上也會是英文選單。App 介面固定繁體中文
+	     （lib/main.dart 的 locale），所以只宣告 zh-Hant -->
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>zh-Hant</string>
+	</array>
 	<key>CFBundleDisplayName</key>
 	<string>浮水印</string>
 	<key>NSPhotoLibraryUsageDescription</key>

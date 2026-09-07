@@ -4,7 +4,12 @@
 // 所以跑得很快，可以一次跑幾萬回合。失敗訊息會印出亂數種子，能重現。
 //
 // 執行：flutter test test/stress_test.dart
+//
+// 回合數有開關：預設 20 個種子×1000 步＝2 萬次（十幾秒）；
+// MARKCUT_BENCH=1 跑 200 個種子＝20 萬次（約 100 秒，一條就吃掉全套
+// 一半以上的牆鐘時間，所以不放在日常）。跟 test/perf/ 同一個環境變數
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
@@ -90,10 +95,14 @@ MediaSource randomSource(math.Random r) {
   );
 }
 
+/// 暴力回合數的開關（見檔頭）：每個種子 1000 步
+final _bench = Platform.environment['MARKCUT_BENCH'] == '1';
+final _seeds = _bench ? 200 : 20;
+
 void main() {
   group('時間軸暴力測試', () {
-    test('20 萬次隨機操作後不變條件都成立', () {
-      for (var seed = 0; seed < 200; seed++) {
+    test('${_seeds ~/ 10} 萬次隨機操作後不變條件都成立', () {
+      for (var seed = 0; seed < _seeds; seed++) {
         final r = math.Random(seed);
         final tl = TimelineModel();
         // 起手先給幾個素材
