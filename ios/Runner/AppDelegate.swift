@@ -3151,6 +3151,12 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
     let maxLong = a["maxLong"] as? Int ?? 1920
     let cancel = AtomicFlag()
     reverseCancel = cancel
+    // 結束時只清掉「還是自己那一份」的情況：中間又開了新的一場，
+    // 屬性已經換成它的，清掉會讓那一場取消不了
+    let releaseCancel: () -> Void = { [weak self] in
+      guard let self = self, self.reverseCancel === cancel else { return }
+      self.reverseCancel = nil
+    }
     let bg = BgTask("倒轉")
     DispatchQueue.global(qos: .userInitiated).async { [weak self] in
       var err: String? = "內部錯誤"
@@ -3166,6 +3172,7 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
       }
       DispatchQueue.main.async {
         bg.end()
+        releaseCancel()
         done(err)
       }
     }
@@ -4539,6 +4546,9 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
         // safe＝Dart 端說上一次轉出來的不能用（轉好卻全黑那種），這一次
         // 要跳過第一段、直接走保守參數（Android 的 rungsFor 同一個意思）。
         // 以前 iOS 完全不讀它：重試就是同參數再轉一次
+        // safe＝上一次交出去的工作檔不能用，這次要跳過同樣的參數。
+        // HDR 代理那條沒有「更保守的參數」可退（下面 hdr 分支直接
+        // return），所以 safe 對它沒有意義——重試等於原封不動再跑一次
         let safe = args["safe"] as? Bool ?? false
         // HDR 直通代理：HLG 10-bit、不映射、密關鍵幀。
         // 失敗就回 nil（呼叫端照播原檔），不走兩段式退路——
@@ -4652,7 +4662,13 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
     let cancelled = AppDelegate.prepCancelledErr
     /// 最後一段退路：系統預設尺寸轉一次，再重排關鍵幀
     let lastResort: () -> Void = { [weak self] in
-      self?.exportOnce(
+      // self 沒了就要自己回覆：漏掉的話 Dart 那邊的 Future 永遠掛著，
+      // 「一次只轉一支」的鎖也跟著卡死（finish 那條就是這樣寫的）
+      guard let self = self else {
+        done(nil)
+        return
+      }
+      self.exportOnce(
         src: src, dest: dest, maxShortSide: maxShortSide,
         useComposition: false, channel: channel, job: job
       ) { e2 in
@@ -5071,6 +5087,14 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
         finish("中途失敗")
         return
       }
+      // 取消／逾時那兩條已經 cancelWriting 過了，status 是 .cancelled。
+      // 對這種 writer 再叫 finishWriting 是未定義行為（AVFoundation 會
+      // 丟不可攔截的 ObjC 例外＝直接閃退），而且那時候 finish 也早就
+      // 回覆過了，這裡沒事可做。倒轉那條（reverseWork）本來就是先
+      // return 再 finishWriting，這裡對齊它。
+      // 以前只有逾時會走到，很罕見；取消掛上「先不要等」之後變成
+      // 使用者按一下就會走的路，不能賭
+      guard !replied.isSet, writer.status == .writing else { return }
       writer.finishWriting {
         let ok =
           writer.status == .completed && reader.status == .completed
@@ -5120,6 +5144,16 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
       label: "密關鍵幀重編完成", job: job
     ) { err in
       guard err == nil else {
+        // 取消不是「重編失敗」：把 prepCancelledErr 塞進提示會變成
+        // 「密關鍵幀重編沒成功（已取消，滑動會比較鈍）」，使用者自己
+        // 按的取消被講成錯誤。
+        // 注意呼叫端照樣拿得到工作檔：這一步是「已經轉好的工作檔再
+        // 重排關鍵幀」，取消它只是少了密關鍵幀（滑動鈍一點），檔案
+        // 本身是好的，所以 done(dest) 仍然正確
+        if err == AppDelegate.prepCancelledErr {
+          done(false)
+          return
+        }
         channel.invokeMethod(
           "note", arguments: "密關鍵幀重編沒成功（\(err!)，滑動會比較鈍）")
         done(false)
@@ -10323,7 +10357,7 @@ enum HDRPhotoExport {
     //    增益圖，留著會讓相簿誤判）
     var props: [String: Any] = [:]
     let keep: [CFString] = [
-      kCGImagePropertyExifDictionary, kCGImagePropertyGPSDictionary,
+      kCGImagePropertyExifDictionary,
       kCGImagePropertyTIFFDictionary, kCGImagePropertyIPTCDictionary,
     ]
     for k in keep {
@@ -10705,7 +10739,7 @@ enum PhotoRgbaEncode {
     else { return [:] }
     var props: [String: Any] = [:]
     let keep: [CFString] = [
-      kCGImagePropertyExifDictionary, kCGImagePropertyGPSDictionary,
+      kCGImagePropertyExifDictionary,
       kCGImagePropertyTIFFDictionary, kCGImagePropertyIPTCDictionary,
     ]
     for k in keep {
