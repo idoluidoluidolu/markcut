@@ -53,7 +53,12 @@ void main() {
       await settle(t, 5);
       VideoEditorScreen.debugTimeline!((m) {
         m.sources.add(
-          MediaSource(path: '', name: 'hi', kind: ClipKind.text, duration: 3600),
+          MediaSource(
+            path: '',
+            name: 'hi',
+            kind: ClipKind.text,
+            duration: 3600,
+          ),
         );
         m.clips.add(
           TimelineClip(
@@ -73,6 +78,9 @@ void main() {
       // 畫面，補一步 0 秒的修剪讓「上一步」鈕亮起來
       editorOf(t).onTrimStart!();
       editorOf(t).onTrim(1, 0.0, false);
+      // 修剪把手放手才整頁 setState（_trimGestureEnd）：不放手的話
+      // 「上一步」鈕還是上一幀的樣子
+      editorOf(t).onTrimEnd!();
       await settle(t, 3);
       expect(undoEnabled(t), isTrue);
       await t.tap(undoButton());

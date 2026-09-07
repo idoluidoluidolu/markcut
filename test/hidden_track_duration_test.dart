@@ -133,11 +133,7 @@ void main() {
       editorOf(t).onToggleHidden!(1);
       await tick(t, 15);
       expect(editorOf(t).hiddenTracks, {1});
-      expect(
-        modelOf(t).duration,
-        7.0,
-        reason: '時間軸本身還是 7 秒（片段還在軸上、還能編輯）',
-      );
+      expect(modelOf(t).duration, 7.0, reason: '時間軸本身還是 7 秒（片段還在軸上、還能編輯）');
       expect(
         editorOf(t).watermark?.end,
         closeTo(5.0, 1e-6),
@@ -158,11 +154,7 @@ void main() {
       }
       expect(stopped, isTrue, reason: '走到終點要自己停下');
       await tick(t, 5);
-      expect(
-        playheadOf(t),
-        closeTo(5.0, 1e-6),
-        reason: '停在可見結尾，不是對著黑畫面走到 7.0',
-      );
+      expect(playheadOf(t), closeTo(5.0, 1e-6), reason: '停在可見結尾，不是對著黑畫面走到 7.0');
 
       // 打開回來：總長回到 7
       editorOf(t).onToggleHidden!(1);
@@ -180,10 +172,14 @@ void main() {
       await tick(t, 10);
       editorOf(t).onTrimWmStart!();
       editorOf(t).onTrimWm(-4.0, false); // 右把手往左：範圍剩 0~1
+      // 拖曳中只有時間軸與預覽層重畫（_setTimelineLive），頁面其他部分
+      // 要放手才補上；這裡是透過 widget 讀值的，不放手會讀到上一幀那份
+      editorOf(t).onWmGestureEnd!();
       await tick(t, 6);
       expect(editorOf(t).watermark!.end, closeTo(1.0, 0.05), reason: '先縮短範圍');
 
       editorOf(t).onMoveWm(6.5);
+      editorOf(t).onWmGestureEnd!();
       await tick(t, 6);
       final wm = editorOf(t).watermark!;
       expect(wm.start, lessThanOrEqualTo(5.0 + 1e-6), reason: '起點不進隱藏的尾巴');
