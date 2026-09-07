@@ -1885,11 +1885,24 @@ Future<String?> makeGifFile({
       '[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle[g]" '
       '-map "[g]" -an "$out"',
     );
-    if (!ReturnCode.isSuccess(await session.getReturnCode())) return null;
+    if (!ReturnCode.isSuccess(await session.getReturnCode())) {
+      _dropPartialGif(out);
+      return null;
+    }
     return out;
   } catch (_) {
+    _dropPartialGif(out);
     return null;
   }
+}
+
+/// 失敗／被取消的預覽半成品當場刪掉。以前回 null 就走人，檔案留在
+/// tmp 裡，只有 GifScreen.dispose 會清它自己記得的那幾份
+void _dropPartialGif(String out) {
+  try {
+    final f = File(out);
+    if (f.existsSync()) f.deleteSync();
+  } catch (_) {}
 }
 
 /// 把一個做好的 GIF 存到相簿，並在 App 裡留一份（我的 GIF）。
