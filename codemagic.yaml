@@ -36,7 +36,14 @@ definitions:
         # 管線裡不能信 flutter test 的失敗碼（本機踩過多次：吞失敗碼、
         # 半路崩潰卻回 0）。改看輸出：一個 [E] 都不能有，而且
         # 一定要看到 "All tests passed"，兩個條件缺一就擋下
-        flutter test --no-pub > test_ci.log 2>&1 || true
+        #
+        # --exclude-tags golden：畫面快照這裡不跑。那些 PNG 是在本機
+        # （Windows）產生的，這台是 macOS，Flutter 引擎各平台各自編、
+        # 反鋸齒對不起來，跨平台比對必紅——這道關卡第一次真的跑就是
+        # 栽在這裡：11 支 golden 全紅、其餘 735 條全過。
+        # 本機 `flutter test` 照跑不變，版面回歸要在改版當下就被擋住，
+        # 那才是快照真正在用的地方，不是等到 CI
+        flutter test --no-pub --exclude-tags golden > test_ci.log 2>&1 || true
         tail -n 40 test_ci.log
         if grep -q "\[E\]" test_ci.log; then
           echo "❌ 死因：有測試失敗（[E]）"

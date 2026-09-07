@@ -13,6 +13,13 @@
 // pump 也要等：SharedPreferences 是真的非同步，只 pump 一次的話
 // _reload 的 setState 還沒回來，「有範本、有草稿」那張拍到的其實是
 // 空狀態（這支測試以前就是這樣，兩張 golden 一模一樣）
+//
+// CI 不跑這支（golden 標籤）：PNG 是本機 Windows 產生的，CI 是 macOS，
+// Flutter 引擎各平台各自編、反鋸齒對不起來，跑了必紅。本機照跑——
+// 版面回歸要在改版當下就擋住（理由見 codemagic.yaml 的 &test）
+@Tags(['golden'])
+library;
+
 import 'dart:convert';
 import 'dart:io';
 

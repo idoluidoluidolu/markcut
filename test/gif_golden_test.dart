@@ -9,6 +9,13 @@
 //
 // 這支測試同時是回歸保護：匯出頁的版面或文案被改動時，
 // golden 對不上就會失敗，改動一定是有意識的。
+//
+// CI 不跑這支（golden 標籤）：PNG 是本機 Windows 產生的，CI 是 macOS，
+// Flutter 引擎各平台各自編、反鋸齒對不起來，跑了必紅。本機照跑——
+// 版面回歸要在改版當下就擋住（理由見 codemagic.yaml 的 &test）
+@Tags(['golden'])
+library;
+
 import 'dart:io';
 
 import 'package:flutter/material.dart';

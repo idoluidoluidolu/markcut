@@ -1,0 +1,12 @@
+# 測試標籤宣告：宣告過的標籤才不會被執行器當成打錯字警告。
+#
+# golden＝畫面快照（matchesGoldenFile）。CI 用 --exclude-tags golden
+# 跳過它們：PNG 是在本機（Windows）產生的，CI 跑 macOS，Flutter 引擎
+# 各平台各自編、反鋸齒對不起來，跨平台比對一定紅（Flutter 自己的 repo
+# 也只在單一平台跑 golden）。
+#
+# 本機 `flutter test` 照跑不變——那裡才是它們在用的地方：版面回歸要在
+# 改版當下就被擋住，不是等到 CI。改了版面就重產圖：
+#   flutter test --update-goldens test/<那一支>_golden_test.dart
+tags:
+  golden:

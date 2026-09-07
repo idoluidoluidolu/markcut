@@ -5,6 +5,13 @@
 //
 // 這張表是橫排縮圖，版面比直排清單脆弱（卡片寬度、序號、長度、
 // 底部漸層都靠絕對位置疊），改壞了 golden 會立刻對不上。
+//
+// CI 不跑這支（golden 標籤）：PNG 是本機 Windows 產生的，CI 是 macOS，
+// Flutter 引擎各平台各自編、反鋸齒對不起來，跑了必紅。本機照跑——
+// 版面回歸要在改版當下就擋住（理由見 codemagic.yaml 的 &test）
+@Tags(['golden'])
+library;
+
 import 'dart:io';
 
 import 'package:flutter/material.dart';

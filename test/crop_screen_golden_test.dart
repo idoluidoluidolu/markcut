@@ -6,6 +6,13 @@
 //
 // 產生／更新圖片：
 //   flutter test --update-goldens test/crop_screen_golden_test.dart
+//
+// CI 不跑這支（golden 標籤）：PNG 是本機 Windows 產生的，CI 是 macOS，
+// Flutter 引擎各平台各自編、反鋸齒對不起來，跑了必紅。本機照跑——
+// 版面回歸要在改版當下就擋住（理由見 codemagic.yaml 的 &test）
+@Tags(['golden'])
+library;
+
 import 'dart:io';
 import 'dart:ui' as ui;
 
