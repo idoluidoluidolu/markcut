@@ -26,6 +26,52 @@ class CollageFreeItem {
   CollageFreeItem({required this.img, required this.rect});
 }
 
+/// 自由模式方塊的最小邊（畫布比例）：0.08 ≈ 手指的大小，再小就抓不到。
+/// 拉角與雙指縮放共用同一個下限
+const kCollageFreeMinSide = 0.08;
+
+/// 自由模式方塊的雙指縮放：兩指距離變成 [scale] 倍，方塊就變 [scale] 倍
+/// （寬高同乘，照片比例不變），繞著起手時的兩指中點 [focal]——焦點在
+/// 方塊裡的相對位置不變，手指按著的那塊內容留在指尖底下；兩指中點移了
+/// [pan] 方塊就跟著搬。座標全是 0~1 的畫布比例（跟 [CollageFreeItem.rect]
+/// 同一套），每次都從起手的方塊 [start] 算，不累乘（累乘會飄）。
+///
+/// 極限跟單指的拉角、搬移同一套：每邊不小於 [minSide]、不大於 [maxSide]
+/// （拉角最多也只能拉到畫布外各半個畫布，所以是兩倍）、中心不出畫布
+/// （方塊才不會被丟到找不回來）。比例鎖著，所以先撞到極限的那一軸決定
+/// 倍率，另一軸跟著
+ui.Rect collagePinchFreeRect({
+  required ui.Rect start,
+  required double scale,
+  required ui.Offset focal,
+  required ui.Offset pan,
+  double minSide = kCollageFreeMinSide,
+  double maxSide = 2.0,
+}) {
+  if (start.width <= 0 || start.height <= 0) return start;
+  final lo = math.max(minSide / start.width, minSide / start.height);
+  final hi = math.min(maxSide / start.width, maxSide / start.height);
+  // 兩軸的極限互相打架（只有壞掉的草稿會這樣：一邊比最小邊還窄、
+  // 另一邊比上限還長）就維持原大小，總比炸掉好
+  final k = lo <= hi ? scale.clamp(lo, hi) : 1.0;
+  final w = start.width * k;
+  final h = start.height * k;
+  // 焦點在起手方塊裡的相對位置，縮完還在焦點底下
+  final rx = (focal.dx - start.left) / start.width;
+  final ry = (focal.dy - start.top) / start.height;
+  final r = ui.Rect.fromLTWH(
+    focal.dx + pan.dx - rx * w,
+    focal.dy + pan.dy - ry * h,
+    w,
+    h,
+  );
+  return ui.Rect.fromCenter(
+    center: ui.Offset(r.center.dx.clamp(0.0, 1.0), r.center.dy.clamp(0.0, 1.0)),
+    width: w,
+    height: h,
+  );
+}
+
 /// 這一格目前的取景窗（來源圖片座標）。cover 基準：
 /// zoom=1 剛好蓋滿格子，只能再放大；平移夾在圖片範圍內。
 /// 預覽跟合成都用這個算，所見即所得
