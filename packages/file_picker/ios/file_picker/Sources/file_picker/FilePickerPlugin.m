@@ -519,11 +519,16 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls{
 
     self.group = dispatch_group_create();
     
-    // Create image directory if it doesn't exist
-    NSString *documentsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-    NSString *imagesDir = [documentsPath stringByAppendingPathComponent:@"picked_images"];
+    // MarkCut patch: copies live in tmp, not Documents.
+    // Upstream copied every picked photo/video into Documents/picked_images:
+    // that directory is backed up to iCloud and nothing ever deletes it, so a
+    // 1 GB video imported three times cost 3 GB of "Documents & Data" forever.
+    // MarkCut treats picker copies as import intermediates (the Dart side
+    // copies anything a draft keeps into its own directory), so put them where
+    // the system cleans up on its own and keep them out of backups.
+    NSString *imagesDir = [NSTemporaryDirectory() stringByAppendingPathComponent:@"picked_images"];
     NSFileManager *fileManager = [NSFileManager defaultManager];
-    
+
     if (![fileManager fileExistsAtPath:imagesDir]) {
         NSError *dirError;
         [fileManager createDirectoryAtPath:imagesDir withIntermediateDirectories:YES attributes:nil error:&dirError];
@@ -531,6 +536,9 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls{
             Log(@"Failed to create image directory: %@", dirError);
         }
     }
+    [[NSURL fileURLWithPath:imagesDir isDirectory:YES] setResourceValue:@YES
+                                                               forKey:NSURLIsExcludedFromBackupKey
+                                                                error:nil];
 
     if(self->_eventSink != nil) {
         self->_eventSink([NSNumber numberWithBool:YES]);
