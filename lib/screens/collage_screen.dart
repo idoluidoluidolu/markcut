@@ -14,6 +14,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'crop_screen.dart';
 import '../models/watermark_settings.dart';
 import '../services/collage_compose.dart';
+import '../services/collage_pack.dart';
 import '../services/file_reader.dart';
 import '../services/photo_export.dart';
 import '../theme.dart';
@@ -29,8 +30,19 @@ import '../widgets/watermark_panel.dart';
 /// 畫布比例可選（1:1/4:5/3:4/16:9/9:16）、格子等分、照片置中裁滿（cover）；
 /// 拖曳格子互換位置、點一下鎖定後可調構圖（右上角鈕換照片），
 /// 也能開純格線（調線寬、選顏色）。空格子隨時允許，合成時留透明。
+/// 自由模式加照片會照各張的長寬比自動排滿畫布（collage_pack），
+/// 「隨機排列」換一種排法；換畫布比例時方塊重新放進新畫布、形狀不變。
 /// 拼圖的草稿鍵（個人頁「未完成的拼圖」讀這裡）
 const kCollageDraftKey = 'collage_draft_v1';
+
+/// 測試鉤子：拿目前的排法（跟合成用的同一份快照）跟解碼後的照片。
+/// 自由模式的方塊座標是私有狀態，「換畫布比例照片不變形」、「加照片自動
+/// 排滿畫布」這些只能從這裡驗，畫面上看不出數字
+@visibleForTesting
+abstract class CollageLayoutPeek {
+  CollageLayout get layout;
+  List<ui.Image?> get images;
+}
 
 class CollageScreen extends StatefulWidget {
   /// 進場時就帶進來的照片。可以是空的——空手進來先排宮格、
@@ -59,7 +71,14 @@ const _kMaxCells = 30;
 const _kDecodeLongSide = 1600;
 
 class _CollageScreenState extends State<CollageScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin
+    implements CollageLayoutPeek {
+  @override
+  CollageLayout get layout => _layout();
+
+  @override
+  List<ui.Image?> get images => List.unmodifiable(_images);
+
   /// 已解碼的照片。換掉之後不再被任何格子用到的會被釋放並留 null，
   /// 索引保持穩定（_order 存的是這裡的索引）
   final List<ui.Image?> _images = [];
@@ -141,8 +160,17 @@ class _CollageScreenState extends State<CollageScreen>
   /// 進行中的手勢（移動或拉某一角），null = 沒有
   _FreeDrag? _fDrag;
 
-  /// 畫布比例（寬/高），宮格與自由共用。方塊座標是 0~1 的比例，
-  /// 換比例時排版跟著畫布伸縮，不會弄丟
+  /// 自動排版（collage_pack）的種子：同一批照片同一個種子永遠排同一種，
+  /// 「隨機排列」就是換一個種子
+  int _packSeed = 0;
+
+  /// 上一次自動排版排出來的方塊（照片索引 → 方塊）。換畫布比例、移除
+  /// 照片時用來判斷「使用者有沒有自己動過」：沒動過就照新狀況重排一次
+  /// 塞滿；動過的排法是使用者的心血，只等比縮放、不重排
+  Map<int, ui.Rect>? _autoRects;
+
+  /// 畫布比例（寬/高），宮格與自由共用。方塊座標是畫布的 0~1 比例，
+  /// 換比例時不能只換這個值——方塊會跟著畫布一起變形（見 _setCanvasAspect）
   double _canvasAspect = 1;
 
   /// 畫布比例的選項（標籤＋寬/高）
@@ -202,7 +230,11 @@ class _CollageScreenState extends State<CollageScreen>
 
   // ===== 浮水印：整張拼圖一組（預覽與面板的接法照批次浮水印那一頁）=====
 
-  final _wm = WatermarkSettings();
+  /// 拼圖的浮水印預設關（測試回報「照片拼圖浮水印預設關閉」）：其他畫面
+  /// 進來就是為了上浮水印，拼圖多半只是想拼；要的話到浮水印分頁再開。
+  /// 只關文字這一個部件（圖片本來就預設關），文字內容照共用的預設留著，
+  /// 開關一開就有字。共用的 WatermarkSettings() 預設不動，別的畫面不受影響
+  final _wm = WatermarkSettings(text: TextMark(enabled: false));
 
   /// 被選浮水印部件的框（畫在裁切外，拖出畫面也看得到位置）
   final _wmFrameInfo = ValueNotifier<WmFrameInfo?>(null);
@@ -327,6 +359,8 @@ class _CollageScreenState extends State<CollageScreen>
           'h': t.rect.height,
         },
     ],
+    // 存草稿時還是自動排的就記下來：續作後換畫布比例照樣會重排塞滿
+    'freeAuto': _freeUntouched,
     // 整張拼圖那一組浮水印一起存：續作時浮水印要跟著回來
     'wm': _wm.toJson(),
     'savedAt': DateTime.now().toIso8601String(),
@@ -430,6 +464,11 @@ class _CollageScreenState extends State<CollageScreen>
           ),
         );
       }
+      // 草稿裡記的是自動排的就照樣當自動排（換畫布比例會重排塞滿）；
+      // 舊草稿沒這個欄位＝當使用者排的，只等比縮放不重排
+      _autoRects = r['freeAuto'] == true
+          ? {for (final t in _items) t.img: t.rect}
+          : null;
       if (gone > 0 && mounted) showHint(context, '有 $gone 張照片已不在，已略過');
       if (mounted) setState(() {});
       return true;
@@ -699,17 +738,24 @@ class _CollageScreenState extends State<CollageScreen>
             ),
           );
         }
+        // 從宮格抄來的也算「沒動過」：之後換畫布比例會照新畫布重排塞滿，
+        // 而不是把格子形狀的方塊等比縮小、兩邊留一大片空
+        _autoRects = {for (final t in _items) t.img: t.rect};
       }
     });
   }
 
-  /// 自由模式加照片：新的方塊疊在畫布中間，一張比一張錯開一點，
-  /// 看得出來是好幾張（完全重疊的話會以為只進來一張）
+  /// 自由模式加照片：進來的連同已經在畫布上的一起自動排滿整張畫布
+  ///（測試回報：「加入一堆照片要自動排列塞滿、縮放大小」）。以前是一張張
+  /// 疊在畫布中間錯開一點，使用者得自己一張張拉開、縮放
   Future<void> _addFreePhotos() async {
     final files = await ImagePicker().pickMultiImage();
     if (files.isEmpty || !mounted) return;
     final failedNames = <String>[];
-    var added = 0;
+    // 解好的先收著，全部解完再一起放上畫布、一起排：一張排一次的話每張
+    // 進來整個版面都跳一下；而且解碼中畫面隨時可能重畫，半路上的方塊
+    // 還沒有位置（零大小＝寬/高是 NaN）畫下去會炸
+    final fresh = <int>[];
     for (final f in files) {
       try {
         final img = await _decode(await f.readAsBytes());
@@ -719,24 +765,7 @@ class _CollageScreenState extends State<CollageScreen>
         }
         _images.add(img);
         _srcPaths.add(f.path);
-        // 方塊照照片比例開（寬 45% 畫布），太長太扁的夾一下。
-        // 高度的比例座標要把畫布比例算進去，方塊才真的是照片的形狀
-        final a = img.width / img.height;
-        const w = 0.45;
-        final h = (w * _canvasAspect / a).clamp(0.15, 0.8);
-        final off = 0.04 * (_items.length % 5);
-        _items.add(
-          CollageFreeItem(
-            img: _images.length - 1,
-            rect: ui.Rect.fromLTWH(
-              (0.5 - w / 2 + off).clamp(0.0, 1.0 - w),
-              (0.5 - h / 2 + off).clamp(0.0, 1.0 - h),
-              w,
-              h,
-            ),
-          ),
-        );
-        added++;
+        fresh.add(_images.length - 1);
       } catch (_) {
         failedNames.add(f.name);
       }
@@ -745,17 +774,126 @@ class _CollageScreenState extends State<CollageScreen>
     if (failedNames.isNotEmpty) {
       showHint(context, _decodeFailMsg(failedNames), error: true);
     }
-    if (added > 0) setState(() => _selItem = _items.length - 1);
+    if (fresh.isNotEmpty) {
+      setState(() {
+        for (final k in fresh) {
+          _items.add(CollageFreeItem(img: k, rect: ui.Rect.zero));
+        }
+        _autoArrange();
+        _selItem = _items.length - 1;
+      });
+    }
   }
 
-  /// 移除選取中的方塊（照片沒別人用就釋放）
+  /// 移除選取中的方塊（照片沒別人用就釋放）。排法還是自動排的就把剩下
+  /// 的重排塞滿（不然畫布上留一個洞）；使用者自己排過的不動
   void _removeFreeItem() {
     if (_selItem < 0 || _selItem >= _items.length) return;
     setState(() {
+      final auto = _freeUntouched;
       final idx = _items.removeAt(_selItem).img;
       _selItem = -1;
       _releaseIfUnused(idx);
+      if (auto) _autoArrange();
     });
+  }
+
+  /// 這張照片的長寬比（已釋放的當正方形）
+  double _aspectOf(int img) {
+    final im = (img >= 0 && img < _images.length) ? _images[img] : null;
+    return im == null ? 1.0 : im.width / im.height;
+  }
+
+  /// 自動排版：把目前所有方塊照各自照片的長寬比重新塞滿整張畫布
+  ///（演算法見 collage_pack.dart）。排完記一份快照，之後判斷「有沒有動過」
+  void _autoArrange() {
+    if (_items.isEmpty) {
+      _autoRects = null;
+      return;
+    }
+    final rects = packCollage(
+      [for (final t in _items) _aspectOf(t.img)],
+      _canvasAspect,
+      seed: _packSeed,
+    );
+    for (var i = 0; i < _items.length; i++) {
+      _items[i].rect = rects[i];
+    }
+    _autoRects = {for (final t in _items) t.img: t.rect};
+  }
+
+  /// 現在的方塊還是上一次自動排出來的樣子（一塊都沒被拖過、拉過）。
+  /// 點選會改疊放順序但不改方塊，所以照「哪張照片」比對、不看順序
+  bool get _freeUntouched {
+    final snap = _autoRects;
+    if (snap == null || snap.length != _items.length) return false;
+    for (final t in _items) {
+      if (snap[t.img] != t.rect) return false;
+    }
+    return true;
+  }
+
+  /// 「隨機排列」：換個種子重排一次。排出來跟現在一模一樣就再換
+  ///（照片少的時候排法有限，不多試幾次會像按了沒反應）
+  void _shuffleFree() {
+    if (_items.isEmpty) return;
+    setState(() {
+      final before = [for (final t in _items) t.rect];
+      for (var tries = 0; tries < 8; tries++) {
+        _packSeed++;
+        _autoArrange();
+        var same = true;
+        for (var i = 0; i < _items.length && same; i++) {
+          final a = before[i], b = _items[i].rect;
+          same =
+              (a.left - b.left).abs() < 1e-6 &&
+              (a.top - b.top).abs() < 1e-6 &&
+              (a.width - b.width).abs() < 1e-6 &&
+              (a.height - b.height).abs() < 1e-6;
+        }
+        if (!same) break;
+      }
+      _selItem = -1;
+    });
+  }
+
+  /// 換畫布比例。方塊座標是畫布的比例，原本只換 _canvasAspect、方塊跟著
+  /// 畫布一起伸縮——1:1 上的正方形到了 16:9 就變成 16:9 的長條，照片被
+  /// 裁成另一個形狀（測試回報「換畫布比例，照片會跟著被改變比例」）。
+  /// 現在換比例是把方塊重新放進新畫布：自動排的（沒動過）就照新畫布重排
+  /// 一次塞滿；使用者自己排過的整組等比縮放、置中放進去——每一塊的形狀
+  /// 跟彼此的相對位置都不變，兩邊可能留空，想塞滿再按「隨機排列」。
+  /// 宮格模式也一樣處理（方塊留著等切回自由模式用）
+  void _setCanvasAspect(double a) {
+    if ((a - _canvasAspect).abs() < 1e-9) return;
+    final old = _canvasAspect;
+    setState(() {
+      _canvasAspect = a;
+      if (_items.isEmpty) return;
+      if (_freeUntouched) {
+        _autoArrange();
+      } else {
+        _refitFree(old, a);
+      }
+    });
+  }
+
+  /// 把整組方塊從舊畫布等比搬進新畫布（contain、置中）。像素空間把畫布
+  /// 當成「寬＝比例、高＝1」來算：舊畫布整個縮到放得進新畫布，方塊的
+  /// 像素形狀（寬×舊比例／高）在縮放前後一模一樣
+  void _refitFree(double oldAspect, double newAspect) {
+    final s = math.min(newAspect / oldAspect, 1.0);
+    final ox = (newAspect - oldAspect * s) / 2;
+    final oy = (1 - s) / 2;
+    for (final t in _items) {
+      final r = t.rect;
+      t.rect = ui.Rect.fromLTWH(
+        (r.left * oldAspect * s + ox) / newAspect,
+        r.top * s + oy,
+        r.width * oldAspect * s / newAspect,
+        r.height * s,
+      );
+    }
   }
 
   /// 拿到最上面（畫的順序＝疊的順序）。回傳搬完之後的索引
@@ -983,17 +1121,6 @@ class _CollageScreenState extends State<CollageScreen>
               _modeChip('宮格', !_free, () => _setFree(false)),
               const SizedBox(width: 8),
               _modeChip('自由', _free, () => _setFree(true)),
-              const Spacer(),
-              if (_free) ...[
-                if (_selItem >= 0 && _selItem < _items.length)
-                  _freeAction(Icons.delete_outline, '移除', _removeFreeItem),
-                const SizedBox(width: 8),
-                _freeAction(
-                  Icons.add_photo_alternate_outlined,
-                  '加照片',
-                  _addFreePhotos,
-                ),
-              ],
             ],
           ),
           // 畫布比例兩種模式都能選：宮格就是把選的比例等分
@@ -1021,7 +1148,7 @@ class _CollageScreenState extends State<CollageScreen>
                         _modeChip(
                           label,
                           (_canvasAspect - a).abs() < 0.01,
-                          () => setState(() => _canvasAspect = a),
+                          () => _setCanvasAspect(a),
                         ),
                         const SizedBox(width: 6),
                       ],
@@ -1031,6 +1158,56 @@ class _CollageScreenState extends State<CollageScreen>
               ),
             ],
           ),
+          // 自由模式的動作鈕自己一列（宮格那一列的位置）：加了「隨機排列」
+          // 之後三顆跟模式膠囊擠同一列，375 寬的手機（SE／mini）「移除」
+          // 會被擠出去。最窄的 320 還是差幾 px，讓它自己捲（跟畫布那列
+          // 同一招）；捲的起點在右邊，最常按的「加照片」永遠貼著右側
+          if (_free) ...[
+            Container(
+              height: 1,
+              margin: const EdgeInsets.symmetric(vertical: 8),
+              color: kBorder,
+            ),
+            Row(
+              children: [
+                const SizedBox(
+                  width: kSliderLabelW,
+                  child: Text(
+                    '照片',
+                    style: TextStyle(fontSize: 12, color: kTextDim),
+                  ),
+                ),
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    reverse: true,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_selItem >= 0 && _selItem < _items.length) ...[
+                          _freeAction(
+                            Icons.delete_outline,
+                            '移除',
+                            _removeFreeItem,
+                          ),
+                          const SizedBox(width: 8),
+                        ],
+                        if (_items.isNotEmpty) ...[
+                          _freeAction(Icons.shuffle, '隨機排列', _shuffleFree),
+                          const SizedBox(width: 8),
+                        ],
+                        _freeAction(
+                          Icons.add_photo_alternate_outlined,
+                          '加照片',
+                          _addFreePhotos,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
           if (!_free) ...[
             Container(
               height: 1,
@@ -1507,7 +1684,7 @@ class _CollageScreenState extends State<CollageScreen>
     Padding(
       padding: const EdgeInsets.fromLTRB(16, 6, 16, 12),
       child: Text(
-        _free ? '最後選取的照片會在最上層' : '按住可拖曳交換照片位置；點一下鎖定 可調照片顯示位置',
+        _free ? '加照片會自動排滿畫布；最後選取的照片會在最上層' : '按住可拖曳交換照片位置；點一下鎖定 可調照片顯示位置',
         textAlign: TextAlign.center,
         style: const TextStyle(fontSize: 11, color: kTextDim),
       ),
