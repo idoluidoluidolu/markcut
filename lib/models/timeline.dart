@@ -625,7 +625,9 @@ class TimelineModel {
   // 不上——「播放指針指的地方跟螢幕顯示不一致」就是這個。以前模型端
   // 完全不擋：右把手拉長、左把手往前長、變速、貼上都能疊出重疊；放下
   // 則是把被壓到的裁掉（carveRange）。現在模型端保證：受規則管的片段
-  //（見 [exclusiveOnTrack]）同一軌兩兩不重疊，衝突一律「推開後面的」。
+  //（見 [exclusiveOnTrack]）同一軌兩兩不重疊，衝突一律「推開後面的」；
+  // 唯一的例外是左把手往前長進前一段——那是前一段讓位、尾巴縮短
+  //（[yieldTailBefore]），不是把前一段推走。
 
   /// 同軌不重疊的規則管哪些片段：檔案素材——影片、圖片（含 GIF）、
   /// 聲音。文字／浮水印・貼圖／馬賽克不管：它們是畫在畫面上的疊加物，
@@ -639,17 +641,57 @@ class TimelineModel {
     return k == ClipKind.video || k == ClipKind.image || k == ClipKind.audio;
   }
 
-  /// 同軌排在 [c] 前面（受規則管）的片段裡最晚的結尾；沒有就是 0。
-  /// 左把手往前長的地板：頂到之後起點釘在這裡，多拖出來的長度改往右長
-  ///（見編輯器 _trimClip）。不會超過 c 自己的起點
-  double floorOnTrack(TimelineClip c) {
-    if (!exclusiveOnTrack(c)) return 0;
-    var floor = 0.0;
+  /// 同軌排在 [c] 前面（受規則管）的片段裡尾巴伸得最遠的那段；沒有、
+  /// 或 [c] 本身不受規則管就 null。左把手往前長時要讓位的就是它
+  ///（見 [yieldTailBefore]）
+  TimelineClip? prevOnTrack(TimelineClip c) {
+    if (!exclusiveOnTrack(c)) return null;
+    TimelineClip? prev;
     for (final o in clips) {
       if (o.id == c.id || o.track != c.track || !exclusiveOnTrack(o)) continue;
-      if (o.offset < c.offset && o.end > floor) floor = o.end;
+      if (o.offset < c.offset && (prev == null || o.end > prev.end)) prev = o;
     }
-    return math.min(floor, math.max(0.0, c.offset));
+    return prev;
+  }
+
+  /// 左把手往前長時，前一段讓位。
+  ///
+  /// 實機測試回報：「在後方的影片往前延伸，應該是前面那部要往前縮起來
+  /// 讓位給他」。以前左把手頂到前一段的尾巴就把起點釘在那裡，多拖出來
+  /// 的長度改往右長、推開後面的——使用者按著的是左把手，動的卻是右緣，
+  /// 前一段一格都沒縮。現在：[c] 的起點想往前到 [start]（時間軸秒），
+  /// 越過前一段（[prevOnTrack]）的尾巴時，把前一段的尾巴修到 [start]——
+  /// 後面那段贏、前面那段縮，不推、不疊；沒碰到（中間還有空隙）就什麼
+  /// 都不動。前一段最短只能剩 [minLen]（時間軸秒，呼叫端給把手自己的
+  /// 煞車，跟它自己的右把手能修到的一樣短），修不到那麼短就修到它的
+  /// 最短處；本來就比這更短的不動（絕不把它拉長）。
+  ///
+  /// 只動前一段的素材出點（trimEnd；倒轉片段的時間軸右緣是素材頭，改
+  /// trimStart），起點、淡出、其他欄位都不碰——跟它自己的右把手修短
+  /// 一模一樣。[c] 自己不動：呼叫端拿回傳值當地板夾自己的起點。
+  ///
+  /// 回傳 [c] 的起點實際能到的最前面：前一段讓完之後的尾巴（不一定到
+  /// 得了 [start]），沒有前一段就是 0
+  double yieldTailBefore(
+    TimelineClip c,
+    double start, {
+    double minLen = kMinClipLen,
+  }) {
+    final p = prevOnTrack(c);
+    if (p == null) return 0;
+    if (start >= p.end - kOverlapEps) return p.end; // 沒碰到
+    final to = math.max(start, p.offset + minLen);
+    if (to < p.end) {
+      final srcT = p.sourceTimeAt(to);
+      if (p.reverse) {
+        p.trimStart = srcT;
+      } else {
+        p.trimEnd = srcT;
+      }
+    }
+    // 回傳修完重新算出來的尾巴而不是 to：呼叫端拿它當起點，頭尾才會
+    // 剛好相接（浮點尾數不會變成幾 ns 的重疊或縫）
+    return p.end;
   }
 
   /// 同軌排在 [c] 後面（受規則管）的第一段的起點；沒有就是無限大。
@@ -972,14 +1014,16 @@ class TimelineModel {
 
   /// 修剪把手的貼齊（半徑、上限跟 [snapTime] 同一套），錨點的挑法不同：
   ///
-  /// 同軌會被這隻把手推動的片段不當錨點——右把手長進去時後面那些段跟著
-  /// 把手走，吸它們等於吸自己，把手會黏在原地、一個吸附半徑跳一格；左
-  /// 把手頂到前一段往右長時，後面的段一樣在動，前一段的尾巴（地板）
-  /// 則是把手已經越過的點。所以：碰到之前照樣吸（接縫才對得準），
-  /// [raw] 越過接觸點之後就放開，讓推開／往右長跟著手指平順走。0 秒是
-  /// 第一段的地板，同理。別軌與不受規則管的片段永遠是錨點。
+  /// 同軌會跟著這隻把手動的片段不當錨點——右把手長進去時後面那些段跟著
+  /// 把手走（被推），吸它們等於吸自己，把手會黏在原地、一個吸附半徑跳
+  /// 一格；左把手越過前一段的尾巴時，前一段的尾巴跟著把手走（讓位，見
+  /// [yieldTailBefore]），它的頭則到不了（最短長度），一樣都不吸。所以：
+  /// 碰到之前照樣吸（接縫才對得準），[raw] 越過接觸點之後就放開那些段，
+  /// 讓推開／讓位跟著手指平順走。0 秒、別軌與不受規則管的片段永遠是錨點。
   ///
-  /// 回傳值不夾 0：左把手越過 0 的量要留給呼叫端算成「往右長」
+  /// 第一段的左把手越過 0＝頂著片頭往右長（編輯器 _trimClip 的
+  /// _trimRipple）：把手看得到的邊緣根本沒在動，吸任何東西都沒有意義，
+  /// 整個放開。回傳值不夾 0：越過 0 的量要留給呼叫端算成「往右長」
   double snapTrimEdge(
     TimelineClip moving,
     double raw,
@@ -990,9 +1034,8 @@ class TimelineModel {
   }) {
     final threshold = math.min(radiusPx / pxPerSec, maxSec);
     final lane = exclusiveOnTrack(moving);
-    // 左把手越過地板（含 0 秒）＝正頂著前一段往右長：把手看得到的
-    // 邊緣根本沒在動，吸任何東西都沒有意義，整個放開
-    if (fromLeft && raw < floorOnTrack(moving) + kOverlapEps) return raw;
+    final prev = fromLeft ? prevOnTrack(moving) : null;
+    if (fromLeft && prev == null && raw < kOverlapEps) return raw;
     // 右把手越過下一段的頭＝正在推它：同軌後面的全部放開
     final ceil = fromLeft ? double.infinity : ceilOnTrack(moving);
     final pushing = !fromLeft && raw > ceil - kOverlapEps;
@@ -1010,6 +1053,8 @@ class TimelineModel {
           candidates.add(c.offset);
         }
       } else {
+        // 同軌排在前面的：左把手越過前一段的尾巴之後，它整段都不算
+        if (identical(c, prev) && raw < c.end + kOverlapEps) continue;
         candidates.addAll([c.offset, c.end]);
       }
     }

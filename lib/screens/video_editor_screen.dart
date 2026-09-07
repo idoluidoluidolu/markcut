@@ -9030,8 +9030,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       for (final c in _tl.clips) {
         if (c.id != id) continue;
         final src = _tl.sourceOf(c);
-        // 同軌不重疊：左把手往前長的地板＝前一段的尾巴（沒有就是 0）
-        final floor = fromLeft ? _tl.floorOnTrack(c) : 0.0;
+        // 同軌不重疊：左把手往前長進前一段時，是前一段讓位（尾巴縮到
+        // 新起點），不是把它推走、也不是頂住不動——實機測試回報「在後方
+        // 的影片往前延伸，應該是前面那部要往前縮起來讓位給他」。這裡先
+        // 找出要讓位的那段（同軌、受規則管、排在前面）；null＝第一段，
+        // 地板是 0。右把手長進後面那段照舊是推開（resolveOverlaps）
+        final prev = fromLeft ? _tl.prevOnTrack(c) : null;
         final curEdge = fromLeft ? c.offset - _trimRipple : c.end;
         // 磁吸：手指的「累計」位置吸附到鄰近片段邊緣／0 之後，再換算
         // 回實際的位移量——接片段才能剛好無縫貼齊。會被這隻把手推動
@@ -9052,9 +9056,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         final dSrc = dSec * c.speed;
         // 修剪的煞車：在目前縮放下剩 kTrimStopWidth 寬就停。
         // 想剪更短就放大——同樣的寬度對應更短的秒數，煞車跟著鬆。
-        // 換算成素材秒（clamp 作用在 trimStart/End 上）
-        final minSrc =
-            math.max(kMinClipLen, kTrimStopWidth / _pxPerSec) * c.speed;
+        // 時間軸秒（前一段讓位時最短也只能剩這麼多，跟它自己的右把手
+        // 一樣）；換算成素材秒（clamp 作用在 trimStart/End 上）
+        final minLen = math.max(kMinClipLen, kTrimStopWidth / _pxPerSec);
+        final minSrc = minLen * c.speed;
         // clamp 的上下限一旦反轉（極短片段），Dart 會直接丟例外，
         // 所以上限先確保不小於下限。
         // 倒轉片段的時間軸左緣對應素材尾端，兩端要對調著修，
@@ -9063,6 +9068,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             src.kind == ClipKind.mosaic ||
             src.kind == ClipKind.text ||
             src.kind == ClipKind.image;
+        // 左把手往前長：前一段先讓位（尾巴修到新起點），讓完之後的尾巴
+        // 就是地板。前一段讓到最短就停——起點釘在那裡、露出來的頭也只
+        // 到那裡，不接著往右長：使用者按著的是左把手，右緣自己跑就是
+        // 這次回報的困惑。第一段沒有前一段可讓，頂到 0 之後照舊往右長
+        //（_trimRipple）。prevStop＝這一步被前一段的煞車擋住了
+        var prevStop = false;
         if (freeKind && fromLeft) {
           // 馬賽克／文字／圖片沒有素材本體（duration 是假的），而它們
           // 的 trimStart 生下來就是 0——照「素材修剪」的邏輯左把手
@@ -9070,21 +9081,30 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           // 的語意改成「往前生長」：起點前移、右緣不動、長度變長。
           // 頂到地板就停：沒有素材可以「多露一點」，右緣也不該自己跑
           final endT = c.end;
-          final minLen = minSrc / c.speed;
-          c.offset = (c.offset + dSec).clamp(
-            floor,
-            math.max(floor, endT - minLen),
-          );
+          final want = c.offset + dSec;
+          final floor = prev == null
+              ? 0.0
+              : _tl.yieldTailBefore(c, want, minLen: minLen);
+          prevStop = prev != null && want < floor;
+          c.offset = want.clamp(floor, math.max(floor, endT - minLen));
           c.trimEnd = c.trimStart + (endT - c.offset) * c.speed;
         } else if (!c.reverse) {
           if (fromLeft) {
             final hi = math.max(0.0, c.trimEnd - minSrc);
-            final ns = (c.trimStart + dSrc).clamp(0.0, hi);
-            // 虛擬起點跟著素材入點走（時間軸秒＝素材差 ÷ 速度）；
-            // 真正的起點頂到地板就停，多出來的長度往右長（_trimRipple）
-            final virtual = curEdge + (ns - c.trimStart) / c.speed;
+            var ns = (c.trimStart + dSrc).clamp(0.0, hi);
+            // 虛擬起點跟著素材入點走（時間軸秒＝素材差 ÷ 速度）
+            var virtual = curEdge + (ns - c.trimStart) / c.speed;
+            if (prev != null) {
+              final floor = _tl.yieldTailBefore(c, virtual, minLen: minLen);
+              if (virtual < floor) {
+                // 頭只露到地板為止
+                ns = c.trimStart + (floor - curEdge) * c.speed;
+                virtual = floor;
+                prevStop = true;
+              }
+            }
             c.trimStart = ns;
-            c.offset = math.max(floor, virtual);
+            c.offset = math.max(0.0, virtual);
             _trimRipple = c.offset - virtual;
           } else {
             final lo = math.min(c.trimStart + minSrc, src.duration);
@@ -9094,10 +9114,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           // 倒轉：時間軸左緣對應素材尾端，兩端對調著修
           if (fromLeft) {
             final lo = math.min(c.trimStart + minSrc, src.duration);
-            final ne = (c.trimEnd - dSrc).clamp(lo, src.duration);
-            final virtual = curEdge + (c.trimEnd - ne) / c.speed;
+            var ne = (c.trimEnd - dSrc).clamp(lo, src.duration);
+            var virtual = curEdge + (c.trimEnd - ne) / c.speed;
+            if (prev != null) {
+              final floor = _tl.yieldTailBefore(c, virtual, minLen: minLen);
+              if (virtual < floor) {
+                ne = c.trimEnd - (floor - curEdge) * c.speed;
+                virtual = floor;
+                prevStop = true;
+              }
+            }
             c.trimEnd = ne;
-            c.offset = math.max(floor, virtual);
+            c.offset = math.max(0.0, virtual);
             _trimRipple = c.offset - virtual;
           } else {
             final hi = math.max(0.0, c.trimEnd - minSrc);
@@ -9106,14 +9134,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         }
         // 撞到最短長度／素材端點被夾住時，原始值跟回實際邊緣：
         // 不跟的話反向拖回來會有一段空行程。左把手看的是虛擬邊緣——
-        // 頂著地板往右長的那段行程不算被夾住
+        // 頂著 0 往右長的那段行程不算被夾住
         final newEdge = fromLeft ? c.offset - _trimRipple : c.end;
         if ((newEdge - snapped).abs() > 0.001) {
           _trimRawEdge = newEdge;
           // 是「往更短的方向拖」撞到煞車才提示；拖到素材端點
-          //（拉長方向）不算
+          //（拉長方向）不算。前一段讓到最短被擋住的也提示：那道煞車
+          // 跟自己的是同一個，放大就鬆
           final wantShorter = fromLeft ? dSec > 0 : dSec < 0;
-          if (wantShorter && c.length <= minSrc / c.speed + 0.001) {
+          if ((wantShorter && c.length <= minLen + 0.001) || prevStop) {
             _trimStopHint();
           }
         }
