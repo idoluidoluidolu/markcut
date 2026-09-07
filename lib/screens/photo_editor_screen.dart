@@ -1097,41 +1097,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                 });
               }
             },
-            onPanStart: (_) {
-              if (_pvPts.length >= 2) return;
-              _phClearGuides();
-              _phUndoPending = true; // 真的拖到才拍（見 _phPushUndoIfNeeded）
-              setState(() {
-                _selMosaic = i;
-                _wmPart = WmPart.none;
-                _selExtra = -1;
-              });
-            },
-            onPanUpdate: (d) {
-              if (_pvPts.length >= 2) return;
-              _phPushUndoIfNeeded();
-              if (m.isStroke) {
-                // 筆畫＝所有點一起平移（不吸中線，形狀是自由的）
-                setState(() {
-                  final s = m.stroke!;
-                  for (var k = 0; k + 1 < s.length; k += 2) {
-                    s[k] += d.delta.dx / w;
-                    s[k + 1] += d.delta.dy / h;
-                  }
-                });
-                return;
-              }
-              setState(() {
-                // 原始座標累積、顯示值吸中線（同浮水印手感）
-                _phRawX ??= m.x;
-                _phRawY ??= m.y;
-                _phRawX = (_phRawX! + d.delta.dx / w).clamp(0.0, 1.0);
-                _phRawY = (_phRawY! + d.delta.dy / h).clamp(0.0, 1.0);
-                m.x = _snapC(_phRawX!);
-                m.y = _snapC(_phRawY!);
-              });
-              _phSetGuides(m.x, m.y);
-            },
+            // 手勢本體在 _mosaicDragStart／_mosaicDragUpdate：這一塊被
+            // 選取時，整面的「選取路由」也走同一套（見預覽 Stack 最上層）
+            onPanStart: (_) => _mosaicDragStart(i),
+            onPanUpdate: (d) => _mosaicDragUpdate(m, d, w, h),
             onPanEnd: (_) => _phClearGuides(),
             onPanCancel: _phClearGuides,
             child: Stack(
@@ -1166,6 +1135,51 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       _wmPart = WmPart.none;
       _selExtra = -1;
     });
+  }
+
+  // ===== 馬賽克拖曳（方塊自己的手勢與整面的選取路由共用）=====
+  /// 起手：選起這一塊、只記「要拍快照」——真的拖到才拍
+  ///（理由見 _phPushUndoIfNeeded）
+  void _mosaicDragStart(int i) {
+    if (_pvPts.length >= 2) return;
+    _phClearGuides();
+    _phUndoPending = true;
+    setState(() {
+      _selMosaic = i;
+      _wmPart = WmPart.none;
+      _selExtra = -1;
+    });
+  }
+
+  /// 每一格：方塊＝原始座標累積、顯示值吸中線（同浮水印手感）；
+  /// 筆畫＝所有點一起平移（不吸中線，形狀是自由的）
+  void _mosaicDragUpdate(
+    PhotoMosaic m,
+    DragUpdateDetails d,
+    double w,
+    double h,
+  ) {
+    if (_pvPts.length >= 2) return;
+    _phPushUndoIfNeeded();
+    if (m.isStroke) {
+      setState(() {
+        final s = m.stroke!;
+        for (var k = 0; k + 1 < s.length; k += 2) {
+          s[k] += d.delta.dx / w;
+          s[k + 1] += d.delta.dy / h;
+        }
+      });
+      return;
+    }
+    setState(() {
+      _phRawX ??= m.x;
+      _phRawY ??= m.y;
+      _phRawX = (_phRawX! + d.delta.dx / w).clamp(0.0, 1.0);
+      _phRawY = (_phRawY! + d.delta.dy / h).clamp(0.0, 1.0);
+      m.x = _snapC(_phRawX!);
+      m.y = _snapC(_phRawY!);
+    });
+    _phSetGuides(m.x, m.y);
   }
 
   // ===== 筆刷馬賽克：塗到哪、碼到哪 =====
@@ -2910,6 +2924,57 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                                         }
                                                       });
                                                     },
+                                                    onPanEnd: (_) =>
+                                                        _phClearGuides(),
+                                                    onPanCancel: _phClearGuides,
+                                                    child:
+                                                        const SizedBox.expand(),
+                                                  );
+                                                },
+                                              ),
+                                            ),
+                                          // 選取路由（馬賽克版）：馬賽克被選取時，
+                                          // 整個預覽的拖曳都只動它——跟上面浮水印
+                                          // 部件那條路由同一套規則。
+                                          //
+                                          // 沒有這一層馬賽克就拖不動（測試者回報）：
+                                          // 方塊自己的手勢在文字／圖片圖層「底下」，
+                                          // 那些圖層是 opaque，馬賽克選取中它們
+                                          // 雖然不註冊拖曳（panAllowed），命中測試
+                                          // 照樣停在它們身上，指標到不了方塊；
+                                          // 而新加的一塊跟預設文字都在正中央，
+                                          // 手指一落下就是這種情況。
+                                          // 筆刷模式不掛：塗抹層在最上面整面接管，
+                                          // 而且每畫一筆 _selMosaic 就換一次，這層
+                                          // 跟著增減會把塗抹層的索引往後推、手勢
+                                          // 被重建（同上面輔助線那個坑）
+                                          if (_selMosaic >= 0 &&
+                                              _selMosaic < _mosaics.length &&
+                                              !_brushMode)
+                                            Positioned.fill(
+                                              key: const ValueKey(
+                                                'mosaic-route',
+                                              ),
+                                              child: LayoutBuilder(
+                                                builder: (context, box) {
+                                                  final w = box.maxWidth;
+                                                  final h = box.maxHeight;
+                                                  final m =
+                                                      _mosaics[_selMosaic];
+                                                  return GestureDetector(
+                                                    behavior: HitTestBehavior
+                                                        .translucent,
+                                                    onPanStart: (_) =>
+                                                        _mosaicDragStart(
+                                                          _selMosaic,
+                                                        ),
+                                                    onPanUpdate: (d) =>
+                                                        _mosaicDragUpdate(
+                                                          m,
+                                                          d,
+                                                          w,
+                                                          h,
+                                                        ),
                                                     onPanEnd: (_) =>
                                                         _phClearGuides(),
                                                     onPanCancel: _phClearGuides,
