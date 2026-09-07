@@ -149,7 +149,11 @@ class MainActivity : FlutterActivity() {
     /// 下垃圾也不要刪掉還在用的（iOS 的 sweepPickedTemp 同一條規矩）
     private fun sweepPicked() {
         val files = File(cacheDir, "picked").listFiles() ?: return
-        val cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000
+        // 七天不是一天：草稿引用的素材有一部分是「太大所以沒留複本、
+        // 記的是這裡的原路徑」（見 Dart 端 DraftAssets 的額度上限）。
+        // 一天就掃掉的話，那種草稿隔天就續作不了；七天仍然擋得住無限
+        // 長大（每挑一次就多一份原檔），又給草稿一週的餘裕
+        val cutoff = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000
         for (f in files) {
             try {
                 val at = f.lastModified()

@@ -4989,6 +4989,9 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
     }
 
     guard reader.startReading(), writer.startWriting() else {
+      // startWriting 可能已經把檔案建出來了：這條早退不經過 finish，
+      // 自己收掉，不然要等 WorkFiles.sweep 有跑到才清得掉
+      try? FileManager.default.removeItem(atPath: stage)
       done("開不了工")
       return
     }

@@ -1,6 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- 儲存到相簿：Android 10 (API 29) 以下需要寫入權限，之後走 MediaStore 不需要。
-         requestLegacyExternalStorage 已拿掉：targetSdk ≥ 30 起系統完全不理它 -->
+    <!-- 儲存到相簿：Android 10 (API 29) 以下需要寫入權限，之後走 MediaStore 不需要 -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="29" />
@@ -9,7 +8,14 @@
     <application
         android:label="浮水印"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:requestLegacyExternalStorage="true">
+        <!-- requestLegacyExternalStorage 是 API 29 存進「相簿」必需的
+             （gal 的 README 與範例 manifest 都這麼要求）：Android 10 的
+             系統不看 targetSdk，只看有沒有宣告這個旗標，沒有的話 gal 走
+             的 getExternalStoragePublicDirectory + MediaColumns.DATA 那條
+             路寫不進去，相簿分類會不見甚至存檔失敗。
+             Android 11 以上系統直接忽略它，留著沒有代價 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
