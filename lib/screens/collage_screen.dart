@@ -141,6 +141,13 @@ class _CollageScreenState extends State<CollageScreen>
   /// 進行中的手勢（移動或拉某一角），null = 沒有
   _FreeDrag? _fDrag;
 
+  /// 自由模式畫布上現在按著的手指（局部座標）。雙指縮放看的是它，
+  /// 不是 GestureDetector 的 pan（pan 只給「最新那根手指」的位置）
+  final Map<int, Offset> _fPts = {};
+
+  /// 進行中的雙指縮放（起手時的方塊、兩指距離與中點），null = 沒有
+  _FreePinch? _fPinch;
+
   /// 畫布比例（寬/高），宮格與自由共用。方塊座標是 0~1 的比例，
   /// 換比例時排版跟著畫布伸縮，不會弄丟
   double _canvasAspect = 1;
@@ -180,6 +187,8 @@ class _CollageScreenState extends State<CollageScreen>
       _selCell = -1;
       _selItem = -1;
       _fDrag = null;
+      _fPts.clear();
+      _fPinch = null;
       _dragFrom = -1;
       _dragPos = null;
       _dragOver = -1;
@@ -680,6 +689,10 @@ class _CollageScreenState extends State<CollageScreen>
       _selCell = -1;
       _selItem = -1;
       _fDrag = null;
+      // 畫布換掉之後手指放開的事件不會再送到自由模式的 Listener，
+      // 不清的話殘留的「兩指」會把之後的單指拖曳全鎖住
+      _fPts.clear();
+      _fPinch = null;
       _cancelHold();
       _dragFrom = -1;
       _dragPos = null;
@@ -1881,7 +1894,7 @@ class _CollageScreenState extends State<CollageScreen>
     } else {
       // 拉某一角：對角不動。可以拉出畫布一些（出血構圖），
       // 但不能小到抓不到（0.08 ≈ 手指的大小）
-      const mn = 0.08;
+      const mn = kCollageFreeMinSide;
       var l = r.left, t = r.top, rr = r.right, b = r.bottom;
       if (d.corner == 0 || d.corner == 2) {
         l = (r.left + dx).clamp(-0.5, rr - mn);
@@ -1929,6 +1942,95 @@ class _CollageScreenState extends State<CollageScreen>
     }
   }
 
+  // ===== 自由模式：雙指縮放 =====
+  //
+  // 用 Listener 自己記每根手指在哪，算「兩指距離變成幾倍」跟「兩指中點
+  // 移了多少」（跟宮格的格子、浮水印的捏合同一套）。畫布的 GestureDetector
+  // 只有 onPan，而 pan 只跟「最新那根手指」（latestPointer）：第二指放上來
+  // 之後 onPanUpdate 給的是第二指的絕對位置，拿去跟第一指的起點相減，
+  // 方塊會瞬間跳走，而且怎麼樣都算不出倍率——這就是測試回報的「自由組圖
+  // 不能雙指縮放」。所以兩指在畫布上時 pan 那條路整個讓開（見 _buildFree
+  // 的 onPanStart／onPanUpdate），縮放全在這裡做
+
+  /// 手指數一變（第二指放上、一指放開）就以那一刻重新起手：方塊、兩指
+  /// 距離、中點全部重記，之後每一幀都從這裡算、不累乘——從舊的基準算
+  /// 會瞬間跳一下，累乘會飄（跟裁切畫面同一個教訓）
+  void _freePinchRebase(Size s) {
+    _fPinch = null;
+    if (_fPts.length < 2) return;
+    if (_selItem < 0 || _selItem >= _items.length) {
+      // 沒有選取：拿手指底下那張（跟單指拖曳一樣，碰到誰就選誰）；
+      // 兩指都沒按在照片上就沒東西可縮
+      var hit = -1;
+      for (final p in _fPts.values) {
+        hit = _freeHit(p, s);
+        if (hit != -1) break;
+      }
+      if (hit == -1) return;
+      setState(() => _selItem = _bringToFront(hit));
+    }
+    final p = _fPts.values.toList();
+    final d = (p[0] - p[1]).distance;
+    // 兩指疊在一起算不出倍率（跟浮水印的捏合同一條規矩）
+    if (d <= 20) return;
+    _fPinch = _FreePinch(
+      start: _items[_selItem].rect,
+      dist: d,
+      mid: (p[0] + p[1]) / 2,
+    );
+  }
+
+  void _freePinchDown(PointerDownEvent e, Size s) {
+    _fPts[e.pointer] = e.localPosition;
+    if (_fPts.length < 2) return;
+    // 第一指原本在搬或拉角：收掉，接下來的位移屬於雙指。留著的話放開
+    // 一指之後 pan 會拿舊的起點與方塊算，方塊瞬間跳回縮放前的樣子
+    _fDrag = null;
+    if (_guideX != null || _guideY != null) {
+      setState(() {
+        _guideX = null;
+        _guideY = null;
+      });
+    }
+    _freePinchRebase(s);
+  }
+
+  void _freePinchMove(PointerMoveEvent e, Size s) {
+    if (!_fPts.containsKey(e.pointer)) return;
+    _fPts[e.pointer] = e.localPosition;
+    final b = _fPinch;
+    if (b == null || _fPts.length < 2) return;
+    if (_selItem < 0 || _selItem >= _items.length) return;
+    final p = _fPts.values.toList();
+    final mid = (p[0] + p[1]) / 2;
+    // 倍率在螢幕上量、兩軸同乘，照片形狀不變；位置換成畫布比例座標，
+    // 寬高各用各的邊（畫布不一定是正方形）
+    final next = collagePinchFreeRect(
+      start: b.start,
+      scale: (p[0] - p[1]).distance / b.dist,
+      focal: Offset(b.mid.dx / s.width, b.mid.dy / s.height),
+      pan: Offset(
+        (mid.dx - b.mid.dx) / s.width,
+        (mid.dy - b.mid.dy) / s.height,
+      ),
+    );
+    setState(() => _items[_selItem].rect = next);
+  }
+
+  void _freePinchUp(int pointer, Size s) {
+    if (_fPts.remove(pointer) == null) return;
+    _freePinchRebase(s);
+    // 剩一指：讓它接著搬，從這一刻的位置與方塊起算。pan 還是同一個
+    // 手勢（沒有 onPanEnd），沒有這一段的話得全部放開再重按才拖得動
+    if (_fPts.length == 1 && _selItem >= 0 && _selItem < _items.length) {
+      _fDrag = _FreeDrag(
+        corner: -1,
+        start: _items[_selItem].rect,
+        from: _fPts.values.first,
+      );
+    }
+  }
+
   Widget _buildFree() {
     return LayoutBuilder(
       builder: (context, box) {
@@ -1936,7 +2038,7 @@ class _CollageScreenState extends State<CollageScreen>
         final sel = (_selItem >= 0 && _selItem < _items.length)
             ? _items[_selItem]
             : null;
-        return GestureDetector(
+        final canvas = GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTapUp: (e) => setState(() {
             // 重疊處再點一下＝輪到下一層（選到誰誰就被帶到最上層，
@@ -1944,8 +2046,16 @@ class _CollageScreenState extends State<CollageScreen>
             final hit = _freeHitCycle(e.localPosition, s);
             _selItem = hit == -1 ? -1 : _bringToFront(hit);
           }),
-          onPanStart: (e) => _freePanStart(e.localPosition, s),
-          onPanUpdate: (e) => _freePanUpdate(e.localPosition, s),
+          // 兩指在畫布上＝在縮放，pan 讓開：pan 只跟最新那根手指，給的
+          // 位置拿去跟第一指的起點相減方塊會亂跳（見 _freePinchDown）
+          onPanStart: (e) {
+            if (_fPts.length >= 2) return;
+            _freePanStart(e.localPosition, s);
+          },
+          onPanUpdate: (e) {
+            if (_fPts.length >= 2) return;
+            _freePanUpdate(e.localPosition, s);
+          },
           onPanEnd: (_) => _endFreeDrag(),
           onPanCancel: _endFreeDrag,
           child: Container(
@@ -1996,6 +2106,15 @@ class _CollageScreenState extends State<CollageScreen>
               ),
             ),
           ),
+        );
+        // 雙指縮放走這裡（自己記每根手指，見 _freePinchDown）；
+        // 單指的點選、搬、拉角照舊走上面的 GestureDetector
+        return Listener(
+          onPointerDown: (e) => _freePinchDown(e, s),
+          onPointerMove: (e) => _freePinchMove(e, s),
+          onPointerUp: (e) => _freePinchUp(e.pointer, s),
+          onPointerCancel: (e) => _freePinchUp(e.pointer, s),
+          child: canvas,
         );
       },
     );
@@ -2272,6 +2391,16 @@ class _FreeDrag {
   final Offset from;
 
   _FreeDrag({required this.corner, required this.start, required this.from});
+}
+
+/// 自由模式進行中的雙指縮放：起手時的方塊（畫布比例座標）、兩指的距離
+/// 與中點（畫面座標）。之後每一幀都從這裡算，不累乘（累乘會飄）
+class _FreePinch {
+  final ui.Rect start;
+  final double dist;
+  final Offset mid;
+
+  _FreePinch({required this.start, required this.dist, required this.mid});
 }
 
 /// 自由模式的畫布：照清單順序畫（後面的疊上面）。
