@@ -85,11 +85,14 @@ class HdrPhotoExport {
   /// 匯一張 HDR 照片到相簿。成功回 null，失敗回原因（呼叫端退 SDR 路）。
   ///
   /// [probe] 要是 [HdrPhotoExport.probe] 的結果而且 hdr 為 true；
-  /// [canvasAspect] 跟 renderPhotoComposite 的同名參數同義（null＝跟照片一樣）
+  /// [canvasAspect] 跟 renderPhotoComposite 的同名參數同義（null＝跟照片一樣）；
+  /// [extraMarks]＝單張編輯器的「更多浮水印」，跟主浮水印烘進同一張
+  /// 整版 PNG（順序同 compositePhoto：主浮水印先、額外組一組一組疊上）
   static Future<String?> exportToGallery({
     required String srcPath,
     required HdrPhotoProbe probe,
     required WatermarkSettings settings,
+    List<WatermarkSettings>? extraMarks,
     double? canvasAspect,
     int quality = 92,
     double overlayGain = 1.0,
@@ -100,17 +103,20 @@ class HdrPhotoExport {
     if (!probe.hdr) return '來源不是 HDR';
     if (probe.w < 2 || probe.h < 2) return '照片尺寸探不到';
     final geo = photoCanvasGeometry(probe.w, probe.h, canvasAspect);
+    final extras = extraMarks ?? const <WatermarkSettings>[];
     Uint8List? overlay;
-    if (settings.hasAnyMark) {
+    if (settings.hasAnyMark || extras.any((e) => e.hasAnyMark)) {
       Future<Uint8List> render() => WatermarkRenderer.renderOverlayPng(
         settings,
         geo.canvasW,
         geo.canvasH,
+        extraMarks: extras,
       );
       overlay = overlayCache == null
           ? await render()
           : await overlayCache.get(
-              '${geo.canvasW}|${geo.canvasH}|${jsonEncode(settings.toJson())}',
+              '${geo.canvasW}|${geo.canvasH}|${jsonEncode(settings.toJson())}'
+              '|${jsonEncode([for (final e in extras) e.toJson()])}',
               render,
             );
     }

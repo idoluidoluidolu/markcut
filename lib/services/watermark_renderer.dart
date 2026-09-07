@@ -15,13 +15,22 @@ import 'text_mark_painter.dart';
 /// 全部以 bytes 操作，手機與 Web 通用。
 class WatermarkRenderer {
   /// 產生一張透明背景、大小等於輸出解析度的浮水印圖層 PNG，
-  /// 之後交給 FFmpeg overlay 疊到影片上。
+  /// 之後交給 FFmpeg overlay 疊到影片上（HDR 照片路也吃它）。
+  /// [extraMarks]：照片模式的「更多浮水印」，一組一組疊在主浮水印之上
+  ///（跟 [compositePhoto] 同一個順序）
   static Future<Uint8List> renderOverlayPng(
     WatermarkSettings s,
     int outW,
-    int outH,
-  ) async {
-    return _renderOverlay(s, outW, outH, ui.ImageByteFormat.png);
+    int outH, {
+    List<WatermarkSettings>? extraMarks,
+  }) async {
+    return _renderOverlay(
+      s,
+      outW,
+      outH,
+      ui.ImageByteFormat.png,
+      extraMarks: extraMarks,
+    );
   }
 
   static Future<Uint8List> _renderOverlay(
@@ -30,12 +39,16 @@ class WatermarkRenderer {
     int outH,
     ui.ImageByteFormat fmt, {
     bool pad = false,
+    List<WatermarkSettings>? extraMarks,
   }) async {
     final t0 = DateTime.now();
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(recorder);
     if (pad) canvas.translate(outW * 0.5, outH * 0.5);
     await drawMarks(canvas, s, outW.toDouble(), outH.toDouble());
+    for (final e in extraMarks ?? const <WatermarkSettings>[]) {
+      await drawMarks(canvas, e, outW.toDouble(), outH.toDouble());
+    }
     final picture = recorder.endRecording();
     final t1 = DateTime.now();
     final image = await picture.toImage(
@@ -176,16 +189,7 @@ class WatermarkRenderer {
     final m = measureMark(t, fontSize);
     final c = ui.Offset(t.x * w, t.y * h);
     final ink = ui.Rect.fromCenter(center: c, width: m.width, height: m.height);
-    final boldPx = t.weight > 0.005 ? fontSize * 0.06 * t.weight : 0.0;
-    final outlinePx = t.outline ? fontSize * t.outlineWidth + boldPx : 0.0;
-    final hasShadow = t.shadow && t.shadowOpacity > 0.01;
-    final sigma = hasShadow ? fontSize * t.shadowBlur : 0.0;
-    final spread = math.max(outlinePx, boldPx) / 2;
-    final reach =
-        fontSize * 0.3 +
-        spread +
-        (hasShadow ? fontSize * 0.03 + sigma * 3 : 0.0);
-    var box = ink.inflate(reach);
+    var box = ink.inflate(markReach(t, fontSize));
     if (t.bg) {
       final padH = fontSize * 0.35 * t.bgPad;
       final padV = fontSize * 0.18 * t.bgPad;
@@ -219,25 +223,10 @@ class WatermarkRenderer {
     );
   }
 
-  /// [r] 以 [c] 為軸轉 [deg] 度之後的軸對齊包圍盒。角度小到畫的時候
-  /// 不會轉的（門檻跟 [drawMarks] 一樣 0.01°），這裡也不轉
-  static ui.Rect rotatedBounds(ui.Rect r, ui.Offset c, double deg) {
-    if (deg.abs() <= 0.01) return r;
-    final a = deg * math.pi / 180;
-    final ca = math.cos(a), sa = math.sin(a);
-    var minX = double.infinity, minY = double.infinity;
-    var maxX = double.negativeInfinity, maxY = double.negativeInfinity;
-    for (final p in [r.topLeft, r.topRight, r.bottomLeft, r.bottomRight]) {
-      final dx = p.dx - c.dx, dy = p.dy - c.dy;
-      final x = c.dx + dx * ca - dy * sa;
-      final y = c.dy + dx * sa + dy * ca;
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-    }
-    return ui.Rect.fromLTRB(minX, minY, maxX, maxY);
-  }
+  /// [r] 以 [c] 為軸轉 [deg] 度之後的軸對齊包圍盒（共用畫家那份的別名，
+  /// 平鋪的可見範圍也用同一個算式）
+  static ui.Rect rotatedBounds(ui.Rect r, ui.Offset c, double deg) =>
+      rotatedRectBounds(r, c, deg);
 
   /// 照片浮水印：以原始解析度合成照片 + 馬賽克 + 浮水印，輸出 PNG（無損）。
   static Future<Uint8List> renderPhotoComposite(
@@ -310,8 +299,6 @@ class WatermarkRenderer {
   }
 
   /// [renderPhotoImage] 的後半：照片已經解好了，只做合成。
-  /// 單張編輯器手上本來就有解好的全尺寸照片（預覽跟馬賽克取樣用的
-  /// 那張），匯出時直接拿來合成，不必把 12MP 再解一次。
   /// 像素跟 [renderPhotoImage] 一字不差（同一份解碼結果、同一段合成）。
   /// 不 dispose 傳進來的 [photo]——呼叫端的東西呼叫端收；回傳的圖要自己 dispose
   static Future<ui.Image> compositePhoto(
@@ -322,10 +309,27 @@ class WatermarkRenderer {
     List<WatermarkSettings>? extraMarks,
     double? canvasAspect,
   }) async {
-    // 中途產生的（貼黑底、調完色）才是我們的，換掉時要收；傳進來的不碰
+    // 中途產生的（調完色、貼黑底）才是我們的，換掉時要收；傳進來的不碰
     var owned = false;
     var w = photo.width;
     var h = photo.height;
+
+    // 有調色時先把「調完色的照片」烙成一張圖——馬賽克要取樣的是調色後
+    // 的畫面（跟預覽/影片匯出一致）。
+    // 一定要在貼黑底之前：黑邊不是照片，不能被調色。以前先貼黑底再整張
+    // 套矩陣，亮度 +30% 就把黑邊抬成 (76,76,76)，預覽的黑邊卻永遠純黑
+    if (grade?.hasColor ?? false) {
+      final rec = ui.PictureRecorder();
+      ui.Canvas(rec).drawImage(
+        photo,
+        ui.Offset.zero,
+        ui.Paint()..colorFilter = grade!.filter,
+      );
+      final graded = await rec.endRecording().toImage(w, h);
+      // 這時 photo 還是傳進來的那張，不收
+      photo = graded;
+      owned = true;
+    }
 
     if (canvasAspect != null && (canvasAspect - w / h).abs() > 0.001) {
       // 畫布尺寸：照片一邊貼滿、另一邊補黑，像素不縮水
@@ -355,26 +359,11 @@ class WatermarkRenderer {
         ui.Paint()..filterQuality = ui.FilterQuality.high,
       );
       final canvased = await rec.endRecording().toImage(cw, ch);
-      // 這時 photo 還是傳進來的那張，不收
+      if (owned) photo.dispose();
       photo = canvased;
       owned = true;
       w = cw;
       h = ch;
-    }
-
-    // 有調色時先把「調完色的照片」烙成一張圖——
-    // 馬賽克要取樣的是調色後的畫面（跟預覽/影片匯出一致）
-    if (grade?.hasColor ?? false) {
-      final rec = ui.PictureRecorder();
-      ui.Canvas(rec).drawImage(
-        photo,
-        ui.Offset.zero,
-        ui.Paint()..colorFilter = grade!.filter,
-      );
-      final graded = await rec.endRecording().toImage(w, h);
-      if (owned) photo.dispose();
-      photo = graded;
-      owned = true;
     }
 
     final recorder = ui.PictureRecorder();
@@ -451,20 +440,10 @@ class WatermarkRenderer {
   }
 
   /// 在指定大小的畫布上畫出文字與 Logo 浮水印
-  /// logo 解碼快取：每次烘圖都重新解碼的話，大圖一次幾百 ms——
-  /// 實機 158「烘圖平均 292ms／最久 1299ms」的大頭。鍵是 bytes
-  /// 物件本身（b64 解碼結果有池，同一顆 logo 拿到同一個物件），
-  /// Expando 跟著物件活、物件回收快取自然消
-  static final Expando<ui.Image> _logoDecoded = Expando();
-
-  static Future<ui.Image> _logoImage(Uint8List bytes) async {
-    final hit = _logoDecoded[bytes];
-    if (hit != null) return hit;
-    final codec = await ui.instantiateImageCodec(bytes);
-    final frame = await codec.getNextFrame();
-    _logoDecoded[bytes] = frame.image;
-    return frame.image;
-  }
+  /// logo 解碼：走共用池（logo_mark_painter 的 logoImageFor），跟預覽
+  /// 圖層拿的是同一張。每次烘圖都重新解碼的話，大圖一次幾百 ms——
+  /// 實機 158「烘圖平均 292ms／最久 1299ms」的大頭
+  static Future<ui.Image> _logoImage(Uint8List bytes) => logoImageFor(bytes);
 
   static Future<void> drawMarks(
     ui.Canvas canvas,
@@ -544,25 +523,10 @@ class WatermarkRenderer {
         );
       }
 
-      // 滿版平鋪（棋盤格）：整個畫面交錯重複，忽略 x/y
+      // 滿版平鋪（棋盤格）：整個畫面交錯重複，忽略 x/y——
+      // 排列交給共用畫家（跟預覽同一段程式碼）
       if (t.tiled) {
-        final stepX = m.width + fontSize * 2.2;
-        final stepY = m.height + fontSize * 2.6;
-        canvas.save();
-        if (t.rotation.abs() > 0.01) {
-          canvas.translate(w / 2, h / 2);
-          canvas.rotate(t.rotation * math.pi / 180);
-          canvas.translate(-w / 2, -h / 2);
-        }
-        var row = 0;
-        for (var y = -h; y < h * 2; y += stepY, row++) {
-          final shift = row.isOdd ? stepX / 2 : 0.0;
-          for (var x = -w - shift; x < w * 2; x += stepX) {
-            bgRect(x, y);
-            paintMarkGlyphs(canvas, t, fontSize, ui.Offset(x, y));
-          }
-        }
-        canvas.restore();
+        paintTextTiled(canvas, t, fontSize, w, h);
         continue;
       }
 

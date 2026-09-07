@@ -499,24 +499,51 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     });
   }
 
+  /// 長邊縮到 [maxSide] 以內再存成 PNG（只看寬的話 500×8000 的長圖會
+  /// 整張存進範本，web 的 localStorage 5MB 配額直接爆）。
+  ///
+  /// 尺寸從檔頭讀（ImageDescriptor），直接以目標尺寸解一次——以前先整張
+  /// 解開只為了量長寬、超標再解第二次，挑一張 4MB 的大圖要解兩輪。
+  /// ImageDescriptor 在 web 會炸：退回舊的兩段式
   static Future<Uint8List?> _shrinkToPng(Uint8List raw, int maxSide) async {
-    var codec = await ui.instantiateImageCodec(raw);
-    var frame = await codec.getNextFrame();
-    // 長邊超標就縮（只看寬的話 500×8000 的長圖會整張存進範本，
-    // web 的 localStorage 5MB 配額直接爆）
-    final w = frame.image.width;
-    final h = frame.image.height;
-    if (math.max(w, h) > maxSide) {
-      frame.image.dispose();
-      codec = await ui.instantiateImageCodec(
-        raw,
-        targetWidth: w >= h ? maxSide : null,
-        targetHeight: h > w ? maxSide : null,
-      );
-      frame = await codec.getNextFrame();
+    ui.Image img;
+    ui.ImmutableBuffer? buf;
+    ui.ImageDescriptor? desc;
+    ui.Codec? codec;
+    try {
+      buf = await ui.ImmutableBuffer.fromUint8List(raw);
+      desc = await ui.ImageDescriptor.encoded(buf);
+      final w = desc.width, h = desc.height;
+      codec = math.max(w, h) > maxSide
+          ? await desc.instantiateCodec(
+              targetWidth: w >= h ? maxSide : null,
+              targetHeight: h > w ? maxSide : null,
+            )
+          : await desc.instantiateCodec();
+      img = (await codec.getNextFrame()).image;
+    } on Object {
+      codec?.dispose();
+      codec = await ui.instantiateImageCodec(raw);
+      var frame = await codec.getNextFrame();
+      final w = frame.image.width, h = frame.image.height;
+      if (math.max(w, h) > maxSide) {
+        frame.image.dispose();
+        codec.dispose();
+        codec = await ui.instantiateImageCodec(
+          raw,
+          targetWidth: w >= h ? maxSide : null,
+          targetHeight: h > w ? maxSide : null,
+        );
+        frame = await codec.getNextFrame();
+      }
+      img = frame.image;
+    } finally {
+      codec?.dispose();
+      desc?.dispose();
+      buf?.dispose();
     }
-    final data = await frame.image.toByteData(format: ui.ImageByteFormat.png);
-    frame.image.dispose();
+    final data = await img.toByteData(format: ui.ImageByteFormat.png);
+    img.dispose();
     return data?.buffer.asUint8List(); // 特殊格式編不出 PNG 就回 null
   }
 
@@ -1066,6 +1093,9 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                       // 字型照選的渲染，字型是要在這裡挑的
                                       style: TextStyle(
                                         fontFamily: s.text.fontFamily,
+                                        // 拉丁字型配中文：跟預覽／成品同一個
+                                        // 後備字，打字看到的才是印出來的
+                                        fontFamilyFallback: kMarkFontFallback,
                                         fontSize: 26,
                                         color: kText,
                                       ),
@@ -1251,6 +1281,25 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                       ),
                                     ),
                                   ),
+                                  const Spacer(),
+                                  // 回正中央、恢復預設大小：拖出畫面外撿回來
+                                  // 用的（以前是預覽上雙擊，見 WatermarkLayer
+                                  // 為什麼拿掉）。平鋪中位置無意義，不給
+                                  if (!s.text.tiled)
+                                    IconButton(
+                                      tooltip: '回正中央、恢復預設大小',
+                                      visualDensity: VisualDensity.compact,
+                                      onPressed: () => _update(() {
+                                        s.text.x = 0.5;
+                                        s.text.y = 0.5;
+                                        s.text.sizeFrac = TextMark().sizeFrac;
+                                      }),
+                                      icon: const Icon(
+                                        Icons.filter_center_focus,
+                                        size: 19,
+                                        color: kTextDim,
+                                      ),
+                                    ),
                                 ],
                               ),
                               const SizedBox(height: 2),
@@ -1536,9 +1585,12 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                                 opacity: s.logos[i].enabled
                                                     ? 1
                                                     : 0.35,
+                                                // 46px 的縮圖：解小張的進圖片快取，
+                                                // 不要為了它再解一份 1024px 的
                                                 child: Image.memory(
                                                   bytes,
                                                   fit: BoxFit.cover,
+                                                  cacheWidth: 138,
                                                 ),
                                               ),
                                       ),
@@ -1562,6 +1614,22 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                   ],
                                   _miniBtn(Icons.crop, '裁切', _cropLogo),
                                   const Spacer(),
+                                  // 回正中央、恢復預設大小（理由同文字卡）
+                                  if (!s.logo.tiled)
+                                    IconButton(
+                                      tooltip: '回正中央、恢復預設大小',
+                                      visualDensity: VisualDensity.compact,
+                                      onPressed: () => _update(() {
+                                        s.logo.x = 0.5;
+                                        s.logo.y = 0.5;
+                                        s.logo.sizeFrac = LogoMark().sizeFrac;
+                                      }),
+                                      icon: const Icon(
+                                        Icons.filter_center_focus,
+                                        size: 19,
+                                        color: kTextDim,
+                                      ),
+                                    ),
                                   IconButton(
                                     tooltip: s.logos.length > 1
                                         ? '移除這一張'
@@ -1842,13 +1910,16 @@ class WatermarkPanelState extends State<WatermarkPanel> {
         if (target == 'text') {
           final t = s.text;
           const base = 100.0;
+          // 量的字型參數要跟畫家（paintMarkGlyphs）一模一樣：以前這裡
+          // 用 w600，思源黑體有 700 字重，量到的是粗體的寬，貼邊會差
+          // 幾個百分點；加粗是用同色描邊撐的，不是換字重
           final tp = TextPainter(
             text: TextSpan(
               text: t.text.isEmpty ? ' ' : t.text,
               style: TextStyle(
                 fontSize: base,
                 fontFamily: t.fontFamily,
-                fontWeight: FontWeight.w600,
+                fontFamilyFallback: kMarkFontFallback,
                 letterSpacing: base * t.spacing,
               ),
             ),
