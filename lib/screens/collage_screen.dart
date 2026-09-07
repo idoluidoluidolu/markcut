@@ -449,14 +449,8 @@ class _CollageScreenState extends State<CollageScreen>
     try {
       // 先在同步這一段把路徑抄下來，await 之後才讀 state 欄位太晚
       final src = List<String?>.of(_srcPaths);
-      final photos = <String?>[];
-      for (final p in src) {
-        photos.add(
-          p == null || p.isEmpty
-              ? p
-              : (await DraftAssets.secure(DraftAssets.collage, p) ?? p),
-        );
-      }
+      // 整份草稿一起算額度（見 DraftAssets.secureAll）
+      final photos = await DraftAssets.secureAll(DraftAssets.collage, src);
       if (!mounted) return;
       final text = _draftJson(photos: photos);
       final prefs = await SharedPreferences.getInstance();

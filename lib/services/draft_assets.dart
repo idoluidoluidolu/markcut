@@ -20,6 +20,27 @@ import 'package:path_provider/path_provider.dart';
 class DraftAssets {
   static const _root = 'draft_assets';
 
+  /// 單檔上限：超過就不留複本，草稿記原路徑。
+  ///
+  /// 40MB 是刻意挑的——照片（48MP HEIC 也才十幾 MB）一定進得來，影片
+  /// 幾乎一定進不來。影片本來就有自己的一套（工作檔，見 WorkFiles），
+  /// 在這裡再抄一份等於同一支存兩份，而 Application Support 不會被系統
+  /// 回收、預設還進 iCloud 備份：30 部 4K 的批次草稿就是好幾 GB
+  static const maxFileBytes = 40 << 20;
+
+  /// 一份草稿全部複本的總額：200 張照片的批次上限，逐張都留會到 GB 級。
+  /// 先到先得，額度用完的記原路徑
+  static const maxDraftBytes = 300 << 20;
+
+  /// 測試用：把兩道閘調小，不用真的做出 40MB 的檔案
+  @visibleForTesting
+  static int? maxFileBytesOverride;
+  @visibleForTesting
+  static int? maxDraftBytesOverride;
+
+  static int get _maxFile => maxFileBytesOverride ?? maxFileBytes;
+  static int get _maxDraft => maxDraftBytesOverride ?? maxDraftBytes;
+
   /// 批次浮水印／拼圖各自一格，清理時互不干擾
   static const batch = 'batch';
   static const collage = 'collage';
@@ -81,19 +102,59 @@ class DraftAssets {
 
   /// 把 [src] 留一份進來，回傳複本路徑。已經是複本就直接回它；
   /// 複製不成（空間不足、來源不見了）回 null，呼叫端照記原路徑
-  static Future<String?> secure(String kind, String src) async {
-    if (kIsWeb || src.isEmpty) return null;
+  /// 一份草稿引用的全部素材，照順序留複本；回傳「草稿該記的路徑」，
+  /// 留不成（太大、額度用完、複製失敗）的就是原路徑。
+  ///
+  /// 額度是整份草稿一起算的，所以要走這一支、不要自己迴圈叫 [secure]
+  static Future<List<String?>> secureAll(
+    String kind,
+    List<String?> srcs,
+  ) async {
+    var budget = _maxDraft;
+    final out = <String?>[];
+    for (final src in srcs) {
+      if (src == null || src.isEmpty) {
+        out.add(src);
+        continue;
+      }
+      // 大小由 _secure 一併回報：這裡再 stat 一次的話，存一份草稿就多
+      // 一趟真 I/O ×N，保留草稿要等的時間會肉眼可見地變長
+      final r = await _secure(kind, src, budget: budget);
+      if (r.copied) budget -= r.bytes;
+      out.add(r.path ?? src);
+    }
+    return out;
+  }
+
+  /// [budget] 是這一份草稿還剩多少額度（null＝單獨叫，只看單檔上限）
+  static Future<String?> secure(String kind, String src, {int? budget}) async =>
+      (await _secure(kind, src, budget: budget)).path;
+
+  /// [copied] ＝這一次真的複製了（原本就在複本區、或沒留成的都是 false），
+  /// [bytes] 是它佔掉的位元組——[secureAll] 拿它扣額度，不用再 stat 一次
+  static Future<({String? path, int bytes, bool copied})> _secure(
+    String kind,
+    String src, {
+    int? budget,
+  }) async {
+    const none = (path: null, bytes: 0, copied: false);
+    if (kIsWeb || src.isEmpty) return none;
     try {
       final dir = await _dir(kind);
-      if (_inside(src, dir)) return src;
+      if (_inside(src, dir)) return (path: src, bytes: 0, copied: false);
       final source = File(src);
-      if (!await source.exists()) return null;
+      if (!await source.exists()) return none;
+      // 太大就不留：呼叫端會退回記原路徑（＝這一版之前的行為）
+      final size = await source.length();
+      if (size > _maxFile) return none;
+      if (budget != null && size > budget) return none;
       final dest = await _dest(kind, src);
       final out = File(dest);
       // 同一個來源已經留過一份：不再複製。大小對不上＝上次複製到一半
       // 被殺掉了，重來
-      if (await out.exists() && await out.length() == await source.length()) {
-        return dest;
+      if (await out.exists() && await out.length() == size) {
+        // 已經留過：不佔新的額度（同一份草稿不會重複複製）
+        return (path: dest, bytes: 0, copied: false);
       }
       await out.parent.create(recursive: true);
       try {
@@ -102,11 +163,11 @@ class DraftAssets {
         try {
           await out.delete();
         } catch (_) {}
-        return null;
+        return none;
       }
-      return dest;
+      return (path: dest, bytes: size, copied: true);
     } catch (_) {
-      return null;
+      return none;
     }
   }
 

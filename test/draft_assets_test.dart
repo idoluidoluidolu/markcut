@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:markcut/services/draft_assets.dart';
 
 void main() {
+  _budgetTests();
   final sep = Platform.pathSeparator;
   late Directory root;
   late Directory support;
@@ -156,5 +157,72 @@ void main() {
     expect(File(c2).existsSync(), isFalse);
     expect(File(p1).existsSync(), isFalse);
     expect(File(p2).existsSync(), isFalse);
+  });
+}
+
+void _budgetTests() {
+  group('複本的兩道額度閘（單檔上限、整份草稿總額）', () {
+    late Directory tmp;
+
+    setUp(() async {
+      tmp = await Directory.systemTemp.createTemp('draft_budget_');
+      DraftAssets.supportDirOverride = Directory('${tmp.path}/support');
+      DraftAssets.pickerRootsOverride = [Directory('${tmp.path}/picked')];
+      await Directory('${tmp.path}/picked').create(recursive: true);
+    });
+
+    tearDown(() async {
+      DraftAssets.supportDirOverride = null;
+      DraftAssets.pickerRootsOverride = null;
+      DraftAssets.maxFileBytesOverride = null;
+      DraftAssets.maxDraftBytesOverride = null;
+      try {
+        await tmp.delete(recursive: true);
+      } catch (_) {}
+    });
+
+    Future<String> put(String name, int bytes) async {
+      final f = File('${tmp.path}/picked/$name');
+      await f.writeAsBytes(List<int>.filled(bytes, 7));
+      return f.path;
+    }
+
+    test('太大的單檔不留複本，回原路徑（＝這一版之前的行為）', () async {
+      DraftAssets.maxFileBytesOverride = 100;
+      final small = await put('small.jpg', 50);
+      final big = await put('big.mp4', 500);
+      expect(await DraftAssets.secure(DraftAssets.batch, small), isNot(small));
+      expect(
+        await DraftAssets.secure(DraftAssets.batch, big),
+        isNull,
+        reason: '超過單檔上限就不該留複本',
+      );
+    });
+
+    test('整份草稿共用總額：額度用完的記原路徑，前面的照留', () async {
+      DraftAssets.maxFileBytesOverride = 1000;
+      DraftAssets.maxDraftBytesOverride = 250;
+      final a = await put('a.jpg', 100);
+      final b = await put('b.jpg', 100);
+      final c = await put('c.jpg', 100); // 這一張超出總額
+      final kept = await DraftAssets.secureAll(DraftAssets.batch, [a, b, c]);
+      expect(kept[0], isNot(a));
+      expect(kept[1], isNot(b));
+      expect(kept[2], c, reason: '額度用完就要退回原路徑');
+      expect(kept.length, 3);
+    });
+
+    test('null 與空字串原樣穿過，不佔額度', () async {
+      DraftAssets.maxDraftBytesOverride = 1000;
+      final a = await put('a.jpg', 100);
+      final kept = await DraftAssets.secureAll(DraftAssets.collage, [
+        null,
+        '',
+        a,
+      ]);
+      expect(kept[0], isNull);
+      expect(kept[1], '');
+      expect(kept[2], isNot(a));
+    });
   });
 }

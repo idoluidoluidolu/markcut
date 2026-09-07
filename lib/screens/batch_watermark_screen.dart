@@ -311,11 +311,15 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       ];
       final settings = _settings.toJson();
       final ratio = _canvasRatio.index;
+      // 整份草稿一起算額度（見 DraftAssets.secureAll）：逐個叫 secure
+      // 的話，30 部 4K 就是好幾 GB 全抄進 Application Support
+      final kept = await DraftAssets.secureAll(DraftAssets.batch, [
+        for (final it in items) it.path,
+      ]);
       final files = <String>[];
       final overrides = <String, dynamic>{};
-      for (final it in items) {
-        final p =
-            await DraftAssets.secure(DraftAssets.batch, it.path) ?? it.path;
+      for (final (i, it) in items.indexed) {
+        final p = kept[i] ?? it.path;
         files.add(p);
         if (it.override != null) overrides[p] = it.override;
       }
