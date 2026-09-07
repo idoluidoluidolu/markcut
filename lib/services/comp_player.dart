@@ -733,10 +733,38 @@ class CompPlayer {
         'opacity': c.opacity,
       });
     }
+    // 純聲音素材（配樂／旁白／從影片提取的聲音）：欄位跟原生匯出的
+    // audios 一模一樣（見 native_export），Swift 端共用同一個解析器鋪
+    // 純聲音軌。以前 payload 根本沒有這一項——合成接手後逐片段播放器
+    // 全被放掉（_trimPlayers），聲音片段在預覽就整個無聲、匯出卻有聲
+    //（iOS 預設就是合成模式，等於配樂在預覽永遠聽不到）。
+    // 隱藏軌整條不進（畫面與聲音都不進，跟匯出一致）；整軌靜音跟影片
+    // 片段同一套：音量烘成 0（呼叫端的指紋有記 mutedTracks，切了會重組）。
+    // 還掛著 reverse 旗標的（倒轉檔沒做成、退回簡易模式）播放器倒不了，
+    // 不進 payload：正著播比無聲更誤導，匯出那邊會用 areverse 倒好
+    final audios = [
+      for (final c in tl.clips)
+        if (tl.sourceOf(c).kind == ClipKind.audio &&
+            !hiddenTracks.contains(c.track) &&
+            !c.reverse)
+          {
+            'path': tl.sourceOf(c).path,
+            'start': c.trimStart,
+            'end': c.trimEnd,
+            'offset': c.offset,
+            'volume': mutedTracks.contains(c.track)
+                ? 0.0
+                : c.volume.clamp(0.0, 1.0),
+            'speed': c.speed,
+            'fadeIn': c.fadeIn,
+            'fadeOut': c.fadeOut,
+          },
+    ];
     lastPaths = [for (final c in clips) (c['path'] as String?) ?? ''];
     try {
       final m = await _ch.invokeMapMethod<String, dynamic>('build', {
         'clips': clips,
+        'audios': audios,
         'texture': texture,
         'mosaics': mosaics,
         'stills': stills,
