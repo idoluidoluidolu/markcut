@@ -24,8 +24,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:markcut/models/watermark_settings.dart';
 import 'package:markcut/screens/profile_screen.dart';
 import 'package:markcut/theme.dart';
-import 'package:markcut/screens/video_editor_screen.dart' show kDraftKey;
 import 'package:markcut/screens/photo_editor_screen.dart' show kPhotoDraftKey;
+
+/// 舊版「單一草稿」的 prefs 鍵（DraftStore._legacyKey）：這裡故意用
+/// 舊格式塞一份，讓個人中心走的是「搬進草稿夾」那條路
+const kDraftKey = 'project_draft_v1';
 
 /// 真的 iPhone 14：邏輯 390×844、dpr 3，安全區用實體像素給
 void _iphone14(WidgetTester t) {

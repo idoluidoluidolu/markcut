@@ -6,8 +6,6 @@ import 'watermark_settings.dart';
 
 export 'mosaic.dart';
 
-/// 素材種類。軌道本身不分種類，是「素材」有種類之分。
-// wm 一定要加在最尾端：kind 是用 index 序列化的，插中間會毀掉舊草稿
 /// 片段（與浮水印範圍）修剪得到的最短長度，單位秒。
 ///
 /// 本來寫死 0.3 秒：放大到看得見毫秒了，把手還是拖不動——想切出
@@ -19,6 +17,8 @@ const double kMinClipLen = 0.025;
 /// 純粹吃掉 offset＋長度÷速度這種浮點運算的尾數，不是給人用的餘裕
 const double kOverlapEps = 1e-6;
 
+/// 素材種類。軌道本身不分種類，是「素材」有種類之分。
+/// 新種類一定要加在最尾端：kind 是用 index 序列化的，插中間會毀掉舊草稿
 enum ClipKind { video, audio, image, text, wm, mosaic }
 
 /// 一份匯入的素材（影片或音訊），可被多個片段引用
@@ -458,9 +458,20 @@ class TimelineModel {
     return n;
   }
 
-  double get duration {
+  double get duration => durationSkipping(const {});
+
+  /// 時間軸總長，跳過 [skipTracks] 上的片段。
+  ///
+  /// 關閉顯示的軌整條不進預覽也不進匯出（畫面與聲音都不進），它的片段
+  /// 再長也不該把總長撐出去：以前只有合成的補長（CompPlayer.padTo）
+  /// 跳過隱藏軌，播放時鐘、匯出的 timelineDuration 與浮水印「跟到
+  /// 結尾」都照 [duration] 掃全部片段——隱藏一條比影片長的配樂軌，
+  /// 播到影片結尾後畫面還黑著走完那截，成品也多一段黑尾巴。
+  /// 時間軸畫面本身照舊用 [duration]：隱藏軌的片段還在軸上、還能編輯
+  double durationSkipping(Set<int> skipTracks) {
     var d = 0.0;
     for (final c in clips) {
+      if (skipTracks.contains(c.track)) continue;
       if (c.end > d) d = c.end;
     }
     return d;
@@ -555,47 +566,7 @@ class TimelineModel {
     return list;
   }
 
-  /// 同軌上第一個影片片段之後的空位（用來把新影片接在後面）
-  /// 把 [moving] 放到 [track] 的 [want] 位置時，避開既有素材的落點。
-  ///
-  /// 同一軌上的素材不該互相覆蓋——蓋住的那段等於憑空消失，時間軸上
-  /// 還看不出來。想放的位置有人佔著時，滑到最近的空位：往前貼到那段
-  /// 的頭、或往後貼到那段的尾，取離原本意圖比較近的一邊。
-  /// 兩邊都塞不下就接到整軌的最後面
-  double freeOffsetOnTrack(TimelineClip moving, double want, int track) {
-    final len = moving.length;
-    if (len <= 0) return math.max(0, want);
-    final others = [
-      for (final c in clips)
-        if (c.id != moving.id && c.track == track) c,
-    ]..sort((a, b) => a.offset.compareTo(b.offset));
-    if (others.isEmpty) return math.max(0, want);
-
-    // 0.001 的容差：頭尾剛好相接不算重疊
-    bool fits(double at) {
-      if (at < -0.001) return false;
-      for (final c in others) {
-        if (at < c.end - 0.001 && at + len > c.offset + 0.001) return false;
-      }
-      return true;
-    }
-
-    final start = math.max(0.0, want);
-    if (fits(start)) return start;
-
-    // 候選：貼在每一段的前面或後面，挑離原意圖最近而且真的塞得下的
-    final cands = <double>[];
-    for (final c in others) {
-      cands
-        ..add(c.offset - len)
-        ..add(c.end);
-    }
-    cands.removeWhere((v) => v < 0 || !fits(v));
-    if (cands.isEmpty) return appendPointOnTrack(track);
-    cands.sort((a, b) => (a - start).abs().compareTo((b - start).abs()));
-    return cands.first;
-  }
-
+  /// 同軌最後一段的結尾（用來把新影片接在後面）
   double appendPointOnTrack(int track) {
     var end = 0.0;
     for (final c in clips) {
@@ -933,9 +904,14 @@ class TimelineModel {
     return map;
   }
 
+  /// [t] 這一點切得開 [c] 嗎：兩半各至少 0.2 秒。
+  /// 呼叫端要「先問再拍快照」——切不成的那次不是一個編輯步驟
+  bool canSplitAt(TimelineClip c, double t) =>
+      t - c.offset >= 0.2 && c.end - t >= 0.2;
+
   /// 在指定時間切開片段，回傳新產生的後半段（切不成回 null）
   TimelineClip? splitAt(TimelineClip c, double t) {
-    if (t - c.offset < 0.2 || c.end - t < 0.2) return null;
+    if (!canSplitAt(c, t)) return null;
     final srcT = c.sourceTimeAt(t);
     // 浮水印／文字素材的樣式存在來源上；切開後兩半要各自
     // 一份來源，不然改其中一半的樣式另一半會跟著變
