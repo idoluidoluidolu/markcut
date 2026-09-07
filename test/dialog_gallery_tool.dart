@@ -807,7 +807,6 @@ void main() {
         title: '還沒存成範本',
         message: '離開後這個設計就會消失',
         keepLabel: '存成範本',
-        discardLabel: '放棄離開',
       ),
     );
     await _settle(t, 10);
@@ -831,7 +830,7 @@ void main() {
     unawaited(
       showLeaveChoice(
         ctx,
-        title: '還沒輸出',
+        title: '還沒匯出',
         message: '可以在個人頁面的「草稿」繼續未完成的編輯',
         keepLabel: '保留草稿',
         discardLabel: '捨棄',
@@ -903,7 +902,7 @@ void main() {
     await _pumpBatch(t);
     await t.tap(find.text('匯出'));
     await _settle(t, 10);
-    expect(find.text('輸出到相簿'), findsOneWidget);
+    expect(find.text('匯出到相簿'), findsOneWidget);
     await _shot(t, '06-photo-format-dark');
     await _close(t);
 

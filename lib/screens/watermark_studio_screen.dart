@@ -100,13 +100,14 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
       return;
     }
     // 跟影片、照片同一顆統一的離開對話框（以前這裡手刻了一份
-    // 幾乎逐行相同的，寬度與按鈕高度都是拷貝出來的）
+    // 幾乎逐行相同的，寬度與按鈕高度都是拷貝出來的）。
+    // 捨棄鈕用預設的「捨棄」：全 App 同一件事同一個字，以前這裡
+    // 一個人寫「放棄離開」
     final act = await showLeaveChoice(
       context,
       title: '還沒存成範本',
       message: '離開後這個設計就會消失',
       keepLabel: '存成範本',
-      discardLabel: '放棄離開',
     );
     if (!mounted) return;
     if (act == 'discard') {

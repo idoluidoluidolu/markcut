@@ -358,7 +358,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     // 調了半天的馬賽克跟好幾組浮水印會整個蒸發
     final act = await showLeaveChoice(
       context,
-      title: '還沒輸出',
+      title: '還沒匯出',
       // 全 App 統一的說法（使用者指定）
       message: '可以在個人頁面的「草稿」繼續未完成的編輯',
       keepLabel: '保留草稿',

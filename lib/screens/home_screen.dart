@@ -48,13 +48,7 @@ class _HomeScreenState extends State<HomeScreen> {
         .then((_) => PresetStore.ensureSeededV3())
         .then((_) => PresetStore.ensureSeededV4())
         .catchError((_) {});
-    _checkDraft();
   }
-
-  /// 草稿現在可以有很多份（見 DraftStore），開新專案不會蓋掉任何一份，
-  /// 所以首頁不用再記「有沒有草稿」，也不用再問「要覆蓋嗎」。
-  /// 留這個空殼是因為好幾個入口回來時都會呼叫它
-  Future<void> _checkDraft() async {}
 
   bool _isVideoFile(XFile f) {
     final mime = f.mimeType;
@@ -220,7 +214,6 @@ class _HomeScreenState extends State<HomeScreen> {
       context,
       editRoute(builder: (_) => VideoEditorScreen(videoPath: picked.path)),
     );
-    _checkDraft();
   }
 
   @override
@@ -235,15 +228,14 @@ class _HomeScreenState extends State<HomeScreen> {
             iconSize: 28,
             padding: const EdgeInsets.symmetric(horizontal: 14),
             icon: const Icon(Icons.person_outline),
-            onPressed: () async {
-              await Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => const LightPage(child: ProfileScreen()),
-                ),
-              );
-              _checkDraft(); // 草稿可能在裡面被刪掉或接續了
-            },
+            // 草稿可以有很多份（見 DraftStore），開新專案不會蓋掉任何
+            // 一份，所以首頁回來不用重讀「有沒有草稿」
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const LightPage(child: ProfileScreen()),
+              ),
+            ),
           ),
         ],
       ),
@@ -293,6 +285,13 @@ class _HomeScreenState extends State<HomeScreen> {
             'assets/icon/home_logo.png',
             fit: BoxFit.cover, // 裁掉原圖四周的留白
             filterQuality: FilterQuality.medium,
+            // 檔案是 868×361，畫出來只有 190×76：不給解碼寬度的話整張
+            // 以原尺寸進圖快取（868×361×4 ≈ 1.25MB），而首頁一直開著，
+            // 那 1.25MB 就一直佔著。cover 在這個框是貼寬
+            //（190/868 > 76/361），照「畫出來的寬 × dpr」解就夠
+            cacheWidth:
+                (kHomeLogoSize.width * MediaQuery.devicePixelRatioOf(context))
+                    .round(),
           ),
         ),
       ),
@@ -335,7 +334,6 @@ class _HomeScreenState extends State<HomeScreen> {
             context,
             editRoute(builder: (_) => const VideoEditorScreen(blank: true)),
           );
-          _checkDraft();
       }
     }
   });
@@ -383,97 +381,116 @@ class _HomeScreenState extends State<HomeScreen> {
       context: context,
       backgroundColor: kLBg,
       showDragHandle: true,
+      // 面板自己管高度：showModalBottomSheet 預設把面板壓在畫面高度的
+      // 9/16 以下，橫向時（375／390 高）四列（48 抓把＋4×68＋16＝336）
+      // 根本裝不下——GIF、剪輯兩列被切在畫面外按不到，320×568 直向也
+      // 差 17。iOS 允許橫向、Android 沒鎖方向，這是真的會遇到的情境。
+      // 放開上限之後內容多高面板就多高，裝不下的那一截交給底下的
+      // SingleChildScrollView 捲；useSafeArea 讓它躲開狀態列
+      isScrollControlled: true,
+      useSafeArea: true,
       shape: const RoundedSuperellipseBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
       ),
       builder: (context) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // 它長得就是一顆返回鍵，那就要真的能按：本來只是畫上去的
-              // 一行字，使用者按了沒反應。整條（含文字右邊的空白）都是
-              // 熱區——箭頭才 22，只有那一小塊按得到等於按不到
-              if (back != null)
-                InkWell(
-                  onTap: () => Navigator.pop(context, backValue),
-                  child: SizedBox(
-                    height: kHomeSheetBackH,
-                    child: Row(
-                      children: [
-                        const Icon(Icons.chevron_left, size: 22, color: kLText),
-                        const SizedBox(width: 6),
-                        Text(
-                          back,
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: 1,
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // 它長得就是一顆返回鍵，那就要真的能按：本來只是畫上去的
+                // 一行字，使用者按了沒反應。整條（含文字右邊的空白）都是
+                // 熱區——箭頭才 22，只有那一小塊按得到等於按不到
+                if (back != null)
+                  InkWell(
+                    onTap: () => Navigator.pop(context, backValue),
+                    child: SizedBox(
+                      height: kHomeSheetBackH,
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.chevron_left,
+                            size: 22,
                             color: kLText,
                           ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              for (final r in rows)
-                InkWell(
-                  onTap: () => Navigator.pop(context, r.value),
-                  child: SizedBox(
-                    height: kHomeSheetRowH,
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 40,
-                          height: 40,
-                          alignment: Alignment.center,
-                          decoration: const ShapeDecoration(
-                            color: kLTile,
-                            shape: RoundedSuperellipseBorder(
-                              borderRadius: BorderRadius.all(
-                                Radius.circular(12),
-                              ),
+                          const SizedBox(width: 6),
+                          Text(
+                            back,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 1,
+                              color: kLText,
                             ),
                           ),
-                          child: Icon(r.icon, size: 22, color: kLText),
-                        ),
-                        const SizedBox(width: 14),
-                        Expanded(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                r.label,
-                                maxLines: 1,
-                                overflow: TextOverflow.fade,
-                                softWrap: false,
-                                style: const TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w800,
-                                  letterSpacing: 0.5,
-                                  color: kLText,
-                                ),
-                              ),
-                              const SizedBox(height: 3),
-                              Text(
-                                r.sub,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: kLTextDim,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
-                ),
-            ],
+                for (final r in rows)
+                  InkWell(
+                    onTap: () => Navigator.pop(context, r.value),
+                    // 高度是下限不是定值：320 寬時第一列的說明會折成兩行
+                    // （見下面的 maxLines），列要跟著長，不然字級 1.2 時
+                    // 兩行說明＋名稱就超過 68、從底下溢出
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(
+                        minHeight: kHomeSheetRowH,
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 40,
+                            height: 40,
+                            alignment: Alignment.center,
+                            decoration: ShapeDecoration(
+                              color: kLTile,
+                              shape: tileShape(),
+                            ),
+                            child: Icon(r.icon, size: 22, color: kLText),
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  r.label,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.fade,
+                                  softWrap: false,
+                                  style: const TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w800,
+                                    letterSpacing: 0.5,
+                                    color: kLText,
+                                  ),
+                                ),
+                                const SizedBox(height: 3),
+                                // 說明是使用者給的整句（「照片、影片，單支或
+                                // 整批快速加入浮水印」18 個字），320 寬扣掉
+                                // 圖示與留白只剩 218，連 1.0 字級都放不下一行
+                                // ——與其截成「…」不如折成兩行
+                                Text(
+                                  r.sub,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: kLTextDim,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       ),

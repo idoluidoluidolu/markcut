@@ -50,10 +50,39 @@ const kCardRadius = 12.0; // 卡片
 const kDialogRadius = 16.0; // 對話框
 const kTagRadius = 6.0; // 小標籤、狀態標
 
-/// 範本預覽卡（個人中心的範本磚、範本夾、「選擇範本」彈窗）。
-/// 三處畫的是同一件東西、同一個尺寸，圓角就不能三種——範本夾原本
-/// 寫死 8，跟個人中心的 18 擺在一起看起來就是「範本夾的沒有圓角」
+/// 磚與卡的圓角有兩級，照尺寸分：
+///
+/// 小磚（[kTileRadius]）：個人中心的範本磚與 GIF 磚（三格一排，一百多點
+/// 寬）、草稿夾與 GIF 夾的瀑布流磚、草稿夾的列表卡。
+/// 大卡（[kPresetRadius]）：範本夾與「選擇範本」彈窗的範本預覽大卡、
+/// 個人中心的草稿卡（兩欄、一百七十多點寬）。範本夾原本寫死 8，跟
+/// 大卡的 18 擺在一起看起來就是「範本夾的沒有圓角」——同一級的卡
+/// 圓角就不能兩種；不同級的磚才照尺寸分。
+///
+/// 形狀（圓弧還是超橢圓）不在這裡決定：磚一律走 [tileShape]／[tileClip]
+const kTileRadius = 12.0;
 const kPresetRadius = 18.0;
+
+/// 磚／卡的形狀：連續曲率圓角（超橢圓），不是普通的圓弧圓角。
+///
+/// 使用者回報普通圓角「像被切一角、不順暢」——圓弧角在跟直線邊接起來
+/// 的地方曲率是斷的（從 0 直接跳到 1/r），眼睛看得出那個折點；iOS 的
+/// 圓角是超橢圓，曲率連續，接得平順。Flutter 3.44 起框架內建
+/// RoundedSuperellipseBorder／ClipRSuperellipse，直接用它。
+///
+/// 半徑照磚的大小走（見 [kTileRadius]／[kPresetRadius]），但形狀一律從
+/// 這裡拿：同一頁上一塊超橢圓、一塊圓弧擺在一起，眼睛看得出是兩種角
+/// （個人中心的範本磚跟旁邊的 GIF 磚、草稿卡就曾經是這樣）。
+/// 畫底色／邊線／陰影用這個（ShapeDecoration 或 Material 的 shape），
+/// 裁內容用 [tileClip]（ClipRSuperellipse 吃的是 BorderRadius）
+RoundedSuperellipseBorder tileShape({
+  double radius = kTileRadius,
+  BorderSide side = BorderSide.none,
+}) => RoundedSuperellipseBorder(borderRadius: tileClip(radius), side: side);
+
+/// 跟 [tileShape] 同一個角，給 ClipRSuperellipse 用
+BorderRadius tileClip([double radius = kTileRadius]) =>
+    BorderRadius.all(Radius.circular(radius));
 
 /// 對話框最大寬度（窄的那些讀起來會太擠）
 const kDialogWidth = 280.0;
@@ -67,12 +96,22 @@ const kRecord = Color(0xFFFF3B30); // 錄音中：紅鈕與即時波形
 /// 共用元件（對話框、選項列）在深色與淺色頁都會出現，顏色得看當下的佈景。
 ///
 /// 不直接用 ColorScheme 推是刻意的：深色那組值一個都不能變，而
-/// kTextDim、kClipBorder 在 ColorScheme 裡沒有對應的位置，硬推會飄色
+/// kTextDim、kClipBorder 在 ColorScheme 裡沒有對應的位置，硬推會飄色。
+///
+/// 共用元件裡任何一個顏色都要從這裡拿，不能直接寫深色的 k 常數：
+/// 那些 helper 現在只從深色頁呼叫所以看不出來，哪天淺色頁一用就是
+/// 白底上的深色 token（對比不夠、或整塊黑）。
+/// [icon]：圖示與次要內文（深色 kIcon、淺色 kLIcon）；[select]：疊在內容
+/// 上的選取框（深色琥珀、淺色近黑，見 kSelect）；[card]：浮在對話框上
+/// 的小卡底（深色是純黑＝範本卡那個黑、淺色是白卡）
 typedef PageColors = ({
   Color text,
   Color dim,
+  Color icon,
   Color line,
   Color accent,
+  Color select,
+  Color card,
   Color panelHi,
   Color bg,
 });
@@ -82,16 +121,22 @@ PageColors pageColors(BuildContext context) =>
     ? (
         text: kText,
         dim: kTextDim,
+        icon: kIcon,
         line: kBorder,
         accent: kAmber,
+        select: kSelect,
+        card: Colors.black,
         panelHi: kPanelHi,
         bg: kBg,
       )
     : (
         text: kLText,
         dim: kLTextDim,
+        icon: kLIcon,
         line: kLBorder,
         accent: kLAccent,
+        select: kLAccent,
+        card: kLCard,
         panelHi: kLPanelHi,
         bg: kLBg,
       );
@@ -434,7 +479,7 @@ Future<bool> showConfirm(
     context: context,
     builder: (context) => Dialog(
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(kDialogRadius),
         side: BorderSide(color: c.line),
       ),
       child: ConstrainedBox(
@@ -512,7 +557,7 @@ Future<void> showNotice(
     context: context,
     builder: (context) => Dialog(
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(kDialogRadius),
         side: BorderSide(color: c.line),
       ),
       child: ConstrainedBox(
@@ -583,7 +628,7 @@ Future<String> askAfterExport(
     barrierDismissible: false,
     builder: (context) => Dialog(
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(kDialogRadius),
         side: BorderSide(color: c.line),
       ),
       child: ConstrainedBox(
@@ -610,7 +655,7 @@ Future<String> askAfterExport(
               Text(
                 message,
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 13, color: kIcon, height: 1.55),
+                style: TextStyle(fontSize: 13, color: c.icon, height: 1.55),
               ),
               if (note != null) ...[
                 SizedBox(height: 6),
@@ -654,13 +699,13 @@ Future<String> askAfterExport(
   return act ?? 'stay';
 }
 
-/// 輸出照片前選格式。回傳 'jpg' / 'png'，取消回 null。
+/// 匯出照片前選格式。回傳 'jpg' / 'png'，取消回 null。
 /// 照片編輯與批次共用——同一個選擇不該長成兩個樣子
 Future<String?> askPhotoFormat(BuildContext context) {
   final c = pageColors(context);
   Widget tile(BuildContext context, String fmt, String title, String sub) =>
       Material(
-        color: Colors.black,
+        color: c.card,
         borderRadius: BorderRadius.circular(12),
         child: InkWell(
           borderRadius: BorderRadius.circular(12),
@@ -721,8 +766,10 @@ Future<String?> askPhotoFormat(BuildContext context) {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // 全 App 這件事一律叫「匯出」（按鈕、離開對話框都是），
+              // 這裡以前寫「輸出」，同一條路上兩種字
               Text(
-                '輸出到相簿',
+                '匯出到相簿',
                 style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
               ),
               SizedBox(height: 14),
@@ -780,6 +827,7 @@ Future<int?> pickColor(
       ?int.tryParse(s),
   ];
   if (!context.mounted) return null;
+  final c = pageColors(context);
 
   var color = initial;
   // 滑桿的狀態跟顏色分開記：純黑純白反推不出色相，
@@ -834,7 +882,7 @@ Future<int?> pickColor(
               color: Color(v),
               shape: BoxShape.circle,
               border: Border.all(
-                color: color.toARGB32() == v ? kSelect : kClipBorder,
+                color: color.toARGB32() == v ? c.select : c.line,
                 width: color.toARGB32() == v ? 2 : 1,
               ),
             ),
@@ -852,10 +900,7 @@ Future<int?> pickColor(
 
         Widget label(String s) => Padding(
           padding: const EdgeInsets.only(bottom: 4),
-          child: Text(
-            s,
-            style: const TextStyle(fontSize: 11.5, color: kTextDim),
-          ),
+          child: Text(s, style: TextStyle(fontSize: 11.5, color: c.dim)),
         );
 
         // 漸層滑桿：點哪滑到哪。Slider 畫不出漸層軌道，自己排一條
@@ -965,7 +1010,7 @@ Future<int?> pickColor(
                         decoration: BoxDecoration(
                           color: color,
                           borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: kClipBorder),
+                          border: Border.all(color: c.line),
                         ),
                       ),
                       const SizedBox(width: 10),
@@ -1049,7 +1094,7 @@ Future<String> showLeaveChoice(
     context: context,
     builder: (context) => Dialog(
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(kDialogRadius),
         side: BorderSide(color: c.line),
       ),
       child: ConstrainedBox(
@@ -1650,6 +1695,11 @@ class LightPage extends StatelessWidget {
 
   const LightPage({super.key, required this.child});
 
+  /// 淺色佈景只建一次：buildLightTheme() 會生出整份 ThemeData（幾十個
+  /// 子佈景），每一頁每次 build 都重建一份是白做工，而且每次都是新的
+  /// 物件，底下的 Theme 依賴者會被當成「佈景變了」整棵重建
+  static final ThemeData _theme = buildLightTheme();
+
   @override
   Widget build(BuildContext context) => AnnotatedRegion<SystemUiOverlayStyle>(
     // 白底要配深色的狀態列圖示，不然電量、時間全看不見
@@ -1658,6 +1708,6 @@ class LightPage extends StatelessWidget {
       systemNavigationBarColor: kLBg,
       systemNavigationBarIconBrightness: Brightness.dark,
     ),
-    child: Theme(data: buildLightTheme(), child: child),
+    child: Theme(data: _theme, child: child),
   );
 }

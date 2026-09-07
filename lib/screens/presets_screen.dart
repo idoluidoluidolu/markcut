@@ -10,15 +10,10 @@ import 'watermark_studio_screen.dart';
 
 /// 常用浮水印範本管理：黑底預覽卡（浮水印按真實位置渲染），
 /// 點卡直接進編輯模式，長按開「改名／刪除」選單
-/// 範本卡的形狀：連續曲率圓角（超橢圓），不是普通的圓弧圓角。
-///
-/// 使用者回報普通圓角「像被切一角、不順暢」——圓弧角在跟直線邊接起來
-/// 的地方曲率是斷的（從 0 直接跳到 1/r），眼睛看得出那個折點；iOS 的
-/// 圓角是超橢圓，曲率連續，接得平順。Flutter 3.44 起框架內建
-/// RoundedSuperellipseBorder／ClipRSuperellipse，直接用它
-const _kCardShape = RoundedSuperellipseBorder(
-  borderRadius: BorderRadius.all(Radius.circular(kPresetRadius)),
-  side: BorderSide(color: kLBorder),
+/// 範本大卡的形狀：超橢圓（形狀與半徑的來由見 theme.dart 的 tileShape）
+final _kCardShape = tileShape(
+  radius: kPresetRadius,
+  side: const BorderSide(color: kLBorder),
 );
 
 class PresetsScreen extends StatefulWidget {
@@ -69,34 +64,10 @@ class _PresetsScreenState extends State<PresetsScreen> {
   }
 
   Future<void> _rename(WatermarkPreset p) async {
-    final ctrl = TextEditingController(text: p.name);
     final newName = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text(
-          '範本改名',
-          style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w700),
-        ),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          maxLength: 20,
-          decoration: const InputDecoration(counterText: ''),
-          onSubmitted: (v) => Navigator.pop(context, v.trim()),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, ctrl.text.trim()),
-            child: const Text('確定'),
-          ),
-        ],
-      ),
+      builder: (_) => _RenameDialog(initial: p.name),
     );
-    ctrl.dispose();
     if (newName == null || newName.isEmpty || newName == p.name) return;
     final ok = await PresetStore.rename(p.name, newName);
     if (!mounted) return;
@@ -113,54 +84,61 @@ class _PresetsScreenState extends State<PresetsScreen> {
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-              child: Text(
-                p.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 13.5,
-                  fontWeight: FontWeight.w700,
-                  color: kLText,
+      // 面板自己管高度、裝不下就捲（跟首頁、GIF 夾的面板同一套）：
+      // 預設的 9/16 上限在橫向只剩 211，這三列剛好貼著上限
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (context) {
+        // 刪除用淺色佈景的 error（#D1373A）：以前寫死深色頁的 #FF6B6B，
+        // 白底上對比只有 2.8:1
+        final error = Theme.of(context).colorScheme.error;
+        return SafeArea(
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+                  child: Text(
+                    p.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w700,
+                      color: kLText,
+                    ),
+                  ),
                 ),
-              ),
+                ListTile(
+                  leading: const Icon(
+                    Icons.drive_file_rename_outline,
+                    size: 20,
+                    color: kLIcon,
+                  ),
+                  title: const Text('改名', style: TextStyle(fontSize: 13.5)),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _rename(p);
+                  },
+                ),
+                ListTile(
+                  leading: Icon(Icons.delete_outline, size: 20, color: error),
+                  title: Text(
+                    '刪除',
+                    style: TextStyle(fontSize: 13.5, color: error),
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _confirmDelete(p);
+                  },
+                ),
+                const SizedBox(height: 6),
+              ],
             ),
-            ListTile(
-              leading: const Icon(
-                Icons.drive_file_rename_outline,
-                size: 20,
-                color: kLIcon,
-              ),
-              title: const Text('改名', style: TextStyle(fontSize: 13.5)),
-              onTap: () {
-                Navigator.pop(context);
-                _rename(p);
-              },
-            ),
-            ListTile(
-              leading: const Icon(
-                Icons.delete_outline,
-                size: 20,
-                color: Color(0xFFFF6B6B),
-              ),
-              title: const Text(
-                '刪除',
-                style: TextStyle(fontSize: 13.5, color: Color(0xFFFF6B6B)),
-              ),
-              onTap: () {
-                Navigator.pop(context);
-                _confirmDelete(p);
-              },
-            ),
-            const SizedBox(height: 6),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 
@@ -283,4 +261,57 @@ class _PresetsScreenState extends State<PresetsScreen> {
       ),
     );
   }
+}
+
+/// 改名對話框。pop 出修剪過的新名字；取消是 null。
+///
+/// 輸入框的 controller 由這個 widget 自己持有、自己 dispose：以前是
+/// `await showDialog` 一回來就 dispose，可是 pop 的 future 在收起動畫
+/// 一開始就完成了，接下來的幾格 TextField 還活著、失焦時會寫回
+/// controller.value，就炸「used after being disposed」（debug／profile
+/// 每改一次名噴一次紅字）。State 跟著對話框的樹一起走，動畫跑完才 dispose
+class _RenameDialog extends StatefulWidget {
+  final String initial;
+
+  const _RenameDialog({required this.initial});
+
+  @override
+  State<_RenameDialog> createState() => _RenameDialogState();
+}
+
+class _RenameDialogState extends State<_RenameDialog> {
+  late final TextEditingController _ctrl = TextEditingController(
+    text: widget.initial,
+  );
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text(
+      '範本改名',
+      style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w700),
+    ),
+    content: TextField(
+      controller: _ctrl,
+      autofocus: true,
+      maxLength: 20,
+      decoration: const InputDecoration(counterText: ''),
+      onSubmitted: (v) => Navigator.pop(context, v.trim()),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('取消'),
+      ),
+      FilledButton(
+        onPressed: () => Navigator.pop(context, _ctrl.text.trim()),
+        child: const Text('確定'),
+      ),
+    ],
+  );
 }

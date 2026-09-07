@@ -634,4 +634,75 @@ void main() {
       expect(t.takeException(), isNull);
     });
   });
+
+  // 面板是固定高的四列（48 抓把＋4×68＋16＝336）。橫向時畫面只剩
+  // 375／390 高，showModalBottomSheet 預設的 9/16 上限（211／219）
+  // 根本裝不下：GIF、剪輯兩列跑到畫面外按不到；320×568 直向也差 17。
+  // 面板要自己會捲（isScrollControlled），最後一列一定要按得到
+  group('窄機與橫向：面板裝不下就要能捲，說明折行不截斷', () {
+    // 320 寬：第一列的說明 18 個字，一行放不下（連 1.0 字級都放不下）
+    // 就折成兩行，不截成「…」；列高跟著長，不能溢出
+    for (final scale in [1.0, 1.2]) {
+      testWidgets('320 寬、字級 $scale：四列說明都不截，也不溢出', (t) async {
+        _phone(t, 320, 568);
+        t.platformDispatcher.textScaleFactorTestValue = scale;
+        addTearDown(t.platformDispatcher.clearTextScaleFactorTestValue);
+        await _pump(t);
+        await _tapFab(t);
+        for (final x in [..._labels, ..._subs]) {
+          final rp = t.renderObject<RenderParagraph>(find.text(x));
+          expect(
+            rp.didExceedMaxLines,
+            isFalse,
+            reason: '「$x」在 320 寬（字級 $scale）被截掉了',
+          );
+        }
+        expect(t.takeException(), isNull, reason: '320 寬（字級 $scale）溢出了');
+      });
+    }
+
+    for (final (w, h) in [(667.0, 375.0), (844.0, 390.0)]) {
+      testWidgets('橫向 ${w.toInt()}×${h.toInt()}：不溢出，捲到底「剪輯」按得到', (t) async {
+        _phone(t, w, h);
+        final spy = _RouteSpy();
+        await _pump(t, spy: spy);
+        await _tapFab(t);
+        expect(t.takeException(), isNull, reason: '橫向的面板溢出了');
+
+        // 最後一列可能在畫面外：捲到它露出來為止
+        await t.ensureVisible(find.text('剪輯'));
+        await _settle(t, 3);
+        final r = t.getRect(find.text('剪輯'));
+        expect(r.bottom, lessThanOrEqualTo(h), reason: '「剪輯」還在畫面外');
+        expect(r.top, greaterThanOrEqualTo(0));
+
+        await t.tap(find.text('剪輯'));
+        await _settle(t, 20);
+        expect(
+          spy.lastEdit(t),
+          isA<VideoEditorScreen>(),
+          reason: '按了「剪輯」沒有開時間軸',
+        );
+        await _drain(t);
+        expect(t.takeException(), isNull);
+      });
+    }
+
+    testWidgets('橫向 667×375 的第二層：返回列＋兩列也裝得下、按得到', (t) async {
+      _phone(t, 667, 375);
+      await _pump(t);
+      await _tapFab(t);
+      await t.ensureVisible(find.text('浮水印'));
+      await _settle(t, 3);
+      await t.tap(find.text('浮水印'));
+      await _settle(t);
+      expect(t.takeException(), isNull, reason: '第二層溢出了');
+      await t.ensureVisible(find.text('影片'));
+      await _settle(t, 3);
+      final r = t.getRect(find.text('影片'));
+      expect(r.bottom, lessThanOrEqualTo(375), reason: '「影片」還在畫面外');
+      expect(find.byIcon(Icons.chevron_left), findsOneWidget);
+      expect(t.takeException(), isNull);
+    });
+  });
 }
