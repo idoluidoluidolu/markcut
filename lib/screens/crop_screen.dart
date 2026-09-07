@@ -40,14 +40,16 @@ Future<Rect?> pickCropRect(
   return out is Rect ? out : null;
 }
 
-/// 裁切比例的選項。null＝自由
+/// 裁切比例的選項。null＝自由。
+/// 自由最前，其餘照首位數字由小到大——跟影片／批次／照片編輯的比例
+/// 視窗同一個順序（使用者指定全 App 統一，見 video_processor 的 ratioOrder）
 const _kRatios = <(String, double?)>[
   ('自由', null),
   ('1:1', 1),
-  ('4:3', 4 / 3),
   ('3:4', 3 / 4),
-  ('16:9', 16 / 9),
+  ('4:3', 4 / 3),
   ('9:16', 9 / 16),
+  ('16:9', 16 / 9),
 ];
 
 class CropScreen extends StatefulWidget {
@@ -229,22 +231,29 @@ class _CropScreenState extends State<CropScreen> {
                     onCrop: (r) => setState(() => _crop = r),
                   ),
                 ),
+                // 六格等分一排，什麼寬度都不用捲。原本是可捲的 ListView，
+                // 排在最後那一格在 390 寬的機子上會被切掉一半、也沒有任何
+                // 「還可以捲」的暗示；順序改成首位數字由小到大之後，最後
+                // 一格正好是最常用的 16:9，不能讓它藏在畫面外
                 SizedBox(
                   height: 58,
-                  child: ListView(
-                    scrollDirection: Axis.horizontal,
+                  child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 14),
-                    children: [
-                      for (final (label, r) in _kRatios)
-                        Padding(
-                          padding: const EdgeInsets.only(right: 8),
-                          child: _RatioChip(
-                            label: label,
-                            on: _ratio == r,
-                            onTap: () => _applyRatio(r),
+                    child: Row(
+                      children: [
+                        for (final (i, (label, r)) in _kRatios.indexed)
+                          Expanded(
+                            child: Padding(
+                              padding: EdgeInsets.only(left: i == 0 ? 0 : 6),
+                              child: _RatioChip(
+                                label: label,
+                                on: _ratio == r,
+                                onTap: () => _applyRatio(r),
+                              ),
+                            ),
                           ),
-                        ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -272,13 +281,18 @@ class _RatioChip extends StatelessWidget {
         borderRadius: BorderRadius.circular(999),
         onTap: onTap,
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+          // 左右 10：六格等分時一格約 55 寬，「16:9」要放得進去
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
           decoration: BoxDecoration(
             color: on ? kAmber : kPanelHi,
             borderRadius: BorderRadius.circular(999),
           ),
           child: Text(
             label,
+            maxLines: 1,
+            softWrap: false,
+            overflow: TextOverflow.clip,
+            textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: 12.5,
               fontWeight: FontWeight.w700,

@@ -35,8 +35,10 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
   /// 純黑或純白底會把同色的邊緣整個吃掉
   int _bgMode = 0;
 
-  /// 示意畫面比例：直式影片的浮水印要在對的比例下設計才準
-  static const _ratios = [('16:9', 16 / 9), ('9:16', 9 / 16), ('1:1', 1.0)];
+  /// 示意畫面比例：直式影片的浮水印要在對的比例下設計才準。
+  /// 順序照首位數字由小到大（使用者指定全 App 統一）；預設哪一格不看
+  /// 順序，看 designAspect 的預設值（見 initState）
+  static const _ratios = [('1:1', 1.0), ('9:16', 9 / 16), ('16:9', 16 / 9)];
   int _ratioIdx = 0;
 
   /// 進來時的設定快照，離開時比對有沒有改過
@@ -70,16 +72,18 @@ class _WatermarkStudioScreenState extends State<WatermarkStudioScreen>
       // copy() 是深拷貝：改這裡不會動到範本清單裡的那一份。
       // 動畫設定也一起帶過來，不然存回去時會把範本的動畫洗掉
       _settings.copyMarksFrom(e.settings.copy());
-      // 示意畫面回到設計時的比例（找最接近的那一格）
-      var best = 0;
-      for (var i = 1; i < _ratios.length; i++) {
-        if ((_ratios[i].$2 - _settings.designAspect).abs() <
-            (_ratios[best].$2 - _settings.designAspect).abs()) {
-          best = i;
-        }
-      }
-      _ratioIdx = best;
     }
+    // 示意畫面用設計時的比例（找最接近的那一格）。新範本也走這一段：
+    // designAspect 的預設值是 16:9，所以新範本一樣從 16:9 開始——
+    // 不能寫死第 0 格，選項的順序改了預設就跟著跑掉
+    var best = 0;
+    for (var i = 1; i < _ratios.length; i++) {
+      if ((_ratios[i].$2 - _settings.designAspect).abs() <
+          (_ratios[best].$2 - _settings.designAspect).abs()) {
+        best = i;
+      }
+    }
+    _ratioIdx = best;
     _settings.designAspect = _ratios[_ratioIdx].$2;
     _initialJson = jsonEncode(_settings.toJson());
     _syncAnimTicker();
