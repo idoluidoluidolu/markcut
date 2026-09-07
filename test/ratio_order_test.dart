@@ -2,8 +2,8 @@
 // 數字從小到大排列，比較整齊」）。
 //
 // 影片／批次的比例視窗與照片編輯都照 video_processor 的 ratioOrder；
-// 裁切頁、浮水印工作室各自有一份清單，這裡把三處的順序都釘住——
-// 改了其中一處而忘了另一處，就是「同一個 App 兩種順序」。
+// 裁切頁、浮水印工作室、拼圖頁各自有一份清單，這裡把四處的順序都
+// 釘住——改了其中一處而忘了另一處，就是「同一個 App 兩種順序」。
 //
 // 工作室多守一件事：順序改了，新範本的預設比例還是 16:9。預設是照
 // designAspect 的預設值找最接近的一格，不是寫死第 0 格
@@ -14,6 +14,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:markcut/screens/collage_screen.dart';
 import 'package:markcut/screens/crop_screen.dart';
 import 'package:markcut/screens/watermark_studio_screen.dart';
 import 'package:markcut/services/video_processor.dart';
@@ -71,6 +72,24 @@ void main() {
     );
     await t.pump();
     expectLeftToRight(t, const ['自由', '1:1', '3:4', '4:3', '9:16', '16:9']);
+  });
+
+  testWidgets('拼圖頁的畫布比例：首位數字由小到大', (t) async {
+    await t.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => t.binding.setSurfaceSize(null));
+    // 空手進來（沒有照片）也畫得出底下的畫布列
+    await t.pumpWidget(
+      MaterialApp(theme: buildStudioTheme(), home: const CollageScreen()),
+    );
+    // 進場會先轉圈圈讀照片；沒照片很快就停，多 pump 幾格等它
+    for (var i = 0; i < 5; i++) {
+      await t.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 80)),
+      );
+      await t.pump(const Duration(milliseconds: 80));
+    }
+    expectLeftToRight(t, const ['1:1', '3:4', '4:5', '9:16', '16:9']);
+    expect(t.takeException(), isNull);
   });
 
   testWidgets('浮水印工作室：首位數字由小到大；新範本預設仍是 16:9', (t) async {

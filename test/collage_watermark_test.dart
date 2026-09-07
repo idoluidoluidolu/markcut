@@ -173,6 +173,8 @@ void main() {
       MaterialApp(home: CollageScreen(photos: await _twoPhotos(t))),
     );
     await _waitLoaded(t);
+    // 拼圖的浮水印預設關（測試回報）；這裡要驗的是圖層拖得動，先開
+    _liveWm(t).text.enabled = true;
     await _goTab(t, '浮水印');
 
     expect(find.byType(WatermarkPanel), findsOneWidget);
@@ -488,6 +490,7 @@ void main() {
     // 浮水印縮小、擺到左邊那格上（預設文字置中很寬，會壓到空格）
     await _goTab(t, '浮水印');
     _liveWm(t).text
+      ..enabled = true // 預設關（測試回報），這裡要驗浮水印真的畫進成品
       ..x = 0.15
       ..y = 0.5
       ..sizeFrac = 0.06;
@@ -616,6 +619,8 @@ void main() {
       MaterialApp(home: CollageScreen(photos: await _twoPhotos(t))),
     );
     await _waitLoaded(t);
+    // 拼圖的浮水印預設關（測試回報）：自動選取只選開著的部件，先開
+    _liveWm(t).text.enabled = true;
     await _goTab(t, '浮水印');
     // 一進來就是選取狀態：圖層知道選的是文字、外層有框
     expect(
@@ -661,7 +666,21 @@ void main() {
     await _waitLoaded(t);
     expect(find.text('版型'), findsOneWidget, reason: '起手在拼圖分頁');
 
-    // 預設文字浮水印在畫布正中央：點那裡
+    // 拼圖的浮水印預設關（測試回報）：走使用者的路，到浮水印分頁、面板
+    // 導覽點「文字」、用那一區最上面那顆開關打開，再回拼圖分頁
+    await _goTab(t, '浮水印');
+    await t.tap(
+      find.descendant(of: find.byType(WatermarkPanel), matching: find.text('文字')).first,
+    );
+    await t.pumpAndSettle();
+    await t.ensureVisible(find.byType(Switch).first);
+    await t.tap(find.byType(Switch).first);
+    await t.pumpAndSettle();
+    expect(_liveWm(t).text.enabled, isTrue, reason: '文字區第一顆開關是文字的');
+    await _goTab(t, '拼圖');
+    expect(find.text('版型'), findsOneWidget);
+
+    // 文字浮水印預設在畫布正中央：點那裡
     final canvas = t.getRect(find.byType(AspectRatio).first);
     await t.tapAt(canvas.center);
     // 圖層上有雙擊判定，單擊要等雙擊的等待時間過了才成立
