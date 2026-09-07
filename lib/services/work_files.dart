@@ -704,4 +704,80 @@ class WorkFiles {
     }
     await _save();
   }
+
+  // ===== 倒轉檔 =====
+  //
+  // 編輯器把片段「倒好」做成一支新素材（見編輯器的 _reverseClip）。以前
+  // 寫在暫存目錄：系統一清（空間壓力、久沒開 App）草稿重開就是「有 1 段
+  // 素材已找不到」——整段片段被剔除，而倒轉來源沒有工作檔可救。改放
+  // 工作檔目錄、進同一份索引：清理照工作檔的規矩（不在索引的孤兒才刪、
+  // 總量超標從最舊的丟），而且同一段再倒一次直接拿現成的。真被總量清理
+  // 丟掉時草稿載入會照 revOf 重做（見編輯器的 _rederiveReverse）。
+  // 索引 key 用「原檔路徑#rev:起~迄」，跟工作檔／HDR 代理各記各的
+
+  static String _revKey(String src, double start, double end) =>
+      '$src#rev:${start.toStringAsFixed(3)}~${end.toStringAsFixed(3)}';
+
+  /// 這一段已經倒好的檔（沒有、或檔案不在了回 null，不會去做）
+  static Future<String?> lookupReverse(
+    String src,
+    double start,
+    double end,
+  ) async {
+    if (kIsWeb) return null;
+    final idx = await _load();
+    final e = idx[_revKey(src, start, end)];
+    if (e is! Map) return null;
+    final work = e['work'] as String?;
+    if (work == null || !File(work).existsSync()) return null;
+    // 原檔換過內容（相簿暫存路徑重複使用）就不能拿舊的倒轉檔；原檔
+    // 已經不在（stamp 算不出來）就信索引——那正是要救的情況
+    final stamp = _stamp(src);
+    if (stamp != null && e['stamp'] != null && e['stamp'] != stamp) return null;
+    return work;
+  }
+
+  /// 要開始倒轉了：給一個工作檔目錄底下的目的地，並掛進 in-flight
+  /// 名單——寫到一半的檔還沒進索引，清掃會把它當孤兒刪掉。做完一定要
+  /// 叫 [commitReverse]（成功）或 [abortReverse]（失敗／取消）
+  static Future<String> beginReverse({required String ext}) async {
+    final dir = await _dir();
+    final name = 'rev${DateTime.now().microsecondsSinceEpoch}_${_seq++}.$ext';
+    final dest = '${dir.path}${Platform.pathSeparator}$name';
+    _inFlight.add(dest);
+    return dest;
+  }
+
+  /// 倒轉檔做好了：登記進索引、解除 in-flight
+  static Future<void> commitReverse(
+    String src,
+    double start,
+    double end,
+    String dest,
+  ) async {
+    final idx = await _load();
+    idx[_revKey(src, start, end)] = {
+      'work': dest,
+      'stamp': _stamp(src),
+      'cv': 2,
+      'at': DateTime.now().millisecondsSinceEpoch,
+    };
+    if (await _save()) {
+      _inFlight.remove(dest);
+    } else {
+      // 索引沒寫成功：留在 in-flight 讓它整個行程都不被清（跟工作檔
+      // 那條同一套）
+      Diag.note('倒轉檔索引寫入失敗（本次照用，先不給清掃碰）');
+    }
+    unawaited(sweep());
+  }
+
+  /// 倒轉沒做成（失敗／取消）：解除 in-flight、殘檔刪掉
+  static void abortReverse(String dest) {
+    _inFlight.remove(dest);
+    try {
+      final f = File(dest);
+      if (f.existsSync()) f.deleteSync();
+    } catch (_) {}
+  }
 }

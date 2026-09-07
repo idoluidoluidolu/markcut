@@ -37,6 +37,9 @@ String? lastExportPath;
 /// 記憶體只用到一小段的量。
 ///
 /// [targetW]/[targetH] 是輸出尺寸（呼叫端先把長邊 cap 在 1920 以內）。
+/// [out] 有給就把成品搬到那裡（編輯器給的是工作檔目錄——倒轉檔是
+/// 草稿要一直用的素材，不能留在系統隨時會清的暫存目錄；分段的中間檔
+/// 照舊在暫存目錄做完就刪）。
 /// 回傳檔案路徑；失敗或被取消回 null
 Future<String?> renderReversedClip(
   String srcPath,
@@ -44,11 +47,12 @@ Future<String?> renderReversedClip(
   double trimEnd,
   int targetW,
   int targetH, {
+  String? out,
   void Function(double progress)? onProgress,
 }) async {
   final probe = await _probe(srcPath);
   final temps = <String>[];
-  final out = await _prerenderReverse(
+  final made = await _prerenderReverse(
     srcPath,
     trimStart,
     trimEnd,
@@ -59,7 +63,8 @@ Future<String?> renderReversedClip(
     temps,
     onProgress: onProgress,
   );
-  if (out == null) {
+  final result = made == null ? null : await _moveTo(made, out);
+  if (result == null) {
     for (final p in temps) {
       try {
         File(p).deleteSync();
@@ -69,12 +74,52 @@ Future<String?> renderReversedClip(
   }
   // 中間分段檔可以清了，只留最後接合出來的那個
   for (final p in temps) {
-    if (p == out) continue;
+    if (p == result) continue;
     try {
       File(p).deleteSync();
     } catch (_) {}
   }
-  return out;
+  return result;
+}
+
+/// 把一段聲音素材做成「已經倒好」的聲音檔（按下倒轉時呼叫，跟
+/// [renderReversedClip] 是同一件事的聲音版）。
+///
+/// 以前聲音片段的倒轉只有「簡易模式」（掛旗標、匯出時才 areverse）：
+/// 旗標一掛，原生匯出就整份退回 FFmpeg——HDR 專案靜默匯成 SDR、4K
+/// 軟解色調映射吃記憶體，只為了一段配樂。跟影片一樣先倒成檔，之後
+/// 它就是普通素材：預覽（合成的 audios）有聲、匯出不用特殊處理。
+/// 聲音很便宜（一分鐘十來 MB），整段一次倒、不分段。
+/// 回傳 [out]；失敗或被取消回 null
+Future<String?> renderReversedAudio(
+  String srcPath,
+  double trimStart,
+  double trimEnd, {
+  required String out,
+  void Function(double progress)? onProgress,
+}) async {
+  final made = await _prerenderReverseAudio(srcPath, trimStart, trimEnd, out);
+  if (made != null) onProgress?.call(1.0);
+  return made;
+}
+
+/// 成品搬到 [out]（null＝留在原地）。rename 跨目錄失敗（不同磁碟區）
+/// 就複製，複製也不成回 null（呼叫端當失敗處理）
+Future<String?> _moveTo(String made, String? out) async {
+  if (out == null || out == made) return made;
+  try {
+    await File(made).rename(out);
+    return out;
+  } catch (_) {}
+  try {
+    await File(made).copy(out);
+    try {
+      File(made).deleteSync();
+    } catch (_) {}
+    return out;
+  } catch (_) {
+    return null;
+  }
 }
 
 /// 把倍速拆成 FFmpeg atempo 允許的範圍（單段 0.5~2.0）
@@ -1165,6 +1210,39 @@ Future<String?> _prerenderReverse(
   return joined;
 }
 
+/// 把一段聲音「先做成倒轉好的檔」（[_prerenderReverse] 的聲音版）。
+///
+/// 整段一次倒：areverse 要把整段讀進記憶體，但聲音便宜（一分鐘十來 MB），
+/// 不用像畫面那樣分段。-vn 把畫面丟掉——「從影片提取聲音」的素材路徑
+/// 指的就是那支影片本人，不丟的話會連畫面一起倒一遍。
+/// [out] 有給就寫到那裡（編輯器的工作檔目錄），沒給寫暫存目錄並登記到
+/// [temps] 等清理（匯出前置）。失敗或被取消回 null
+Future<String?> _prerenderReverseAudio(
+  String srcPath,
+  double trimStart,
+  double trimEnd,
+  String? out, [
+  List<String>? temps,
+]) async {
+  if (trimEnd - trimStart <= 0.02) return null;
+  final dest =
+      out ??
+      '${(await getTemporaryDirectory()).path}${Platform.pathSeparator}'
+          'reva_${DateTime.now().microsecondsSinceEpoch}.m4a';
+  final ses = await FFmpegKit.execute(
+    '-y -ss ${_f(trimStart)} -to ${_f(trimEnd)} -i "$srcPath" '
+    '-vn -af areverse -c:a aac -b:a 256k "$dest"',
+  );
+  if (!ReturnCode.isSuccess(await ses.getReturnCode())) {
+    try {
+      File(dest).deleteSync();
+    } catch (_) {}
+    return null;
+  }
+  if (out == null) temps?.add(dest);
+  return dest;
+}
+
 /// 分段的切點（輸出秒）。切在每個圖層的頭尾——這樣「一段裡有哪些圖層」
 /// 是固定的，每一段只組它自己要的濾鏡，一次只有一條轉換鏈在跑。
 ///
@@ -1414,21 +1492,36 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     final clips = <TimelineClip>[];
     for (final c in spec.clips) {
       final src = sources[c.sourceIndex];
-      if (!c.reverse || src.kind != ClipKind.video) {
+      final isAudio = src.kind == ClipKind.audio;
+      if (!c.reverse || (src.kind != ClipKind.video && !isAudio)) {
         clips.add(c);
         continue;
       }
-      final probe = await _probe(src.path);
-      final made = await _prerenderReverse(
-        src.path,
-        c.trimStart,
-        c.trimEnd,
-        spec.outW,
-        spec.outH,
-        probe.hasAudio,
-        probe.hdr ? (probe.trc.isEmpty ? 'unknown' : probe.trc) : '',
-        revTemps,
-      );
+      final String? made;
+      if (isAudio) {
+        // 聲音片段也預先倒好（areverse 整段一次）。以前聲音只靠主濾鏡
+        // 裡的 areverse，旗標一直掛著——原生匯出的門（whyNot）一看到
+        // reverse 就整份退 FFmpeg，一段配樂就讓 HDR 專案匯成 SDR
+        made = await _prerenderReverseAudio(
+          src.path,
+          c.trimStart,
+          c.trimEnd,
+          null,
+          revTemps,
+        );
+      } else {
+        final probe = await _probe(src.path);
+        made = await _prerenderReverse(
+          src.path,
+          c.trimStart,
+          c.trimEnd,
+          spec.outW,
+          spec.outH,
+          probe.hasAudio,
+          probe.hdr ? (probe.trc.isEmpty ? 'unknown' : probe.trc) : '',
+          revTemps,
+        );
+      }
       if (made == null) {
         for (final p in revTemps) {
           try {
@@ -1441,10 +1534,10 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
         MediaSource(
           path: made,
           name: src.name,
-          kind: ClipKind.video,
+          kind: src.kind,
           duration: c.trimEnd - c.trimStart,
-          w: spec.outW,
-          h: spec.outH,
+          w: isAudio ? 0 : spec.outW,
+          h: isAudio ? 0 : spec.outH,
         ),
       );
       // 改指到倒好的暫存檔，並把 reverse 關掉（主濾鏡不用再倒一次）。

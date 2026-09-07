@@ -75,7 +75,14 @@ class NativeExport {
     for (final c in spec.clips) {
       final src = spec.sources[c.sourceIndex];
       if (src.kind == ClipKind.video) vids.add(c);
-      if (c.reverse) return '有倒轉的片段（前置處理漏了）';
+      // 倒轉只看影片：聲音片段的倒轉在進到這裡之前一樣被預渲染成
+      // 「已倒好」的檔（exportVideoToGallery 的 areverse 前置），做不成
+      // 那邊就直接回失敗、不會走到這裡。以前不分種類一律退 FFmpeg——
+      // 一段配樂拉成倒轉，整份 HDR 專案就靜默匯成 SDR、4K 軟解色調映射
+      // 吃記憶體，只為了聲音
+      if (c.reverse && src.kind == ClipKind.video) {
+        return '有倒轉的片段（前置處理漏了）';
+      }
       // GIF 素材現在原生也會動：stills 帶 gif 旗標，Swift 端用
       // ImageIO 逐幀解、CI 合成器照輸出時間循環播（見 CIGifSpec）。
       // 之前這裡整條退 FFmpeg（原生只畫第一格），含 GIF 的專案

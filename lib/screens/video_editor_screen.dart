@@ -526,6 +526,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 面板滑桿拖動中的每一格不走 setState（見 [_wmLiveTick]）
   @override
   void setState(VoidCallback fn) {
+    // 每次整頁重建都算「時間軸內容可能變了」：預覽每格讀的三個指紋
+    // 快取下一格重算（見 _tlVersion）
+    _tlVersion++;
     super.setState(fn);
     _ovStateChanged();
   }
@@ -984,19 +987,45 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return '@@b64:${_wmB64Pool.length - 1}';
   }
 
-  String _snapshot() {
-    final wm = _settings.toJson();
-    // 一組浮水印可以有很多張圖片，每一張都要換成池子編號
+  /// 一組浮水印可以有很多張圖片，每一張的 b64 都換成池子編號
+  ///（[wm] 是 toJson 出來的新 Map，改它不會動到設定本體）
+  void _poolLogos(Map wm) {
     for (final lg in ((wm['logos'] as List?) ?? const [])) {
       if (lg is Map && lg['b64'] is String) {
         lg['b64'] = _wmB64Token(lg['b64'] as String);
       }
     }
+  }
+
+  /// [_poolLogos] 的反向：池子編號換回真正的 base64
+  void _unpoolLogos(Map wm) {
+    for (final lg in ((wm['logos'] as List?) ?? const [])) {
+      if (lg is! Map || lg['b64'] is! String) continue;
+      final v = lg['b64'] as String;
+      if (v.startsWith('@@b64:')) {
+        final i = int.tryParse(v.substring(6)) ?? -1;
+        lg['b64'] = (i >= 0 && i < _wmB64Pool.length) ? _wmB64Pool[i] : null;
+      }
+    }
+  }
+
+  String _snapshot() {
+    final wm = _settings.toJson();
+    _poolLogos(wm);
+    // 貼圖／浮水印素材的 Logo 一樣走池子：以前只有全域浮水印換編號，
+    // 素材的 wmStyle.logos[].b64（1024px PNG，一張幾百 KB）每次
+    // _pushUndo 都整包 jsonEncode 在主執行緒、60 份快照各存全量——
+    // 放五張貼圖再拉一趟滑桿就是幾十次 MB 級編碼（拖曳起手卡一下）
+    final sources = [for (final s in _tl.sources) s.toJson()];
+    for (final sj in sources) {
+      final ws = sj['wmStyle'];
+      if (ws is Map) _poolLogos(ws);
+    }
     return jsonEncode({
       'clips': [for (final c in _tl.clips) c.toJson()],
       // 來源也要進快照：浮水印／文字素材的樣式（wmStyle/textStyle/name）
       // 存在來源上，漏掉的話那些編輯按復原根本退不回去
-      'sources': [for (final s in _tl.sources) s.toJson()],
+      'sources': sources,
       'muted': _fsMuted,
       // 匯出設定也要進快照：_restoreSnapshot 會讀這兩鍵，
       // 不寫的話按一次上一步 fps 被重設成自動、HDR 變回開——
@@ -1039,16 +1068,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _restoreSnapshot(String snap) {
     final j = jsonDecode(snap) as Map<String, dynamic>;
-    // 快照裡的 Logo 是池子編號，先換回真正的 base64
+    // 快照裡的 Logo 是池子編號，先換回真正的 base64（全域浮水印與
+    // 貼圖／浮水印素材的 wmStyle 都是）
     final wmJ = j['wm'];
-    if (wmJ is Map) {
-      for (final lg in ((wmJ['logos'] as List?) ?? const [])) {
-        if (lg is! Map || lg['b64'] is! String) continue;
-        final v = lg['b64'] as String;
-        if (v.startsWith('@@b64:')) {
-          final i = int.tryParse(v.substring(6)) ?? -1;
-          lg['b64'] = (i >= 0 && i < _wmB64Pool.length) ? _wmB64Pool[i] : null;
-        }
+    if (wmJ is Map) _unpoolLogos(wmJ);
+    if (j['sources'] is List) {
+      for (final sj in (j['sources'] as List)) {
+        final ws = sj is Map ? sj['wmStyle'] : null;
+        if (ws is Map) _unpoolLogos(ws);
       }
     }
     setState(() {
@@ -1117,6 +1144,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 復原/貼上/草稿還原後，補建缺少的播放器
   void _ensureCtrlFor(TimelineClip c) {
+    // 合成播放器在台上時整條時間軸就是它一顆在播，逐片段播放器一顆都
+    // 不該開。復原、貼上、切割、換件、匯出收尾都會走到這裡——以前每個
+    // 影片／聲音片段各開一顆 AVPlayer（十段 4K＝十顆解碼器同時活著＝
+    // jetsam），要等下一次重組 _trimPlayers 才放掉；匯出收尾那批更是
+    // 根本不會放（_compDirty 已經是 false，_ensureComp 早退）。
+    // 合成組不起來時 _restoreClipPlayers 會再回來開
+    if (_compOn) return;
     final src = _tl.sources[c.sourceIndex];
     if (src.kind != ClipKind.video && src.kind != ClipKind.audio) return;
     if (_ctrls.containsKey(c.id)) return;
@@ -1564,6 +1598,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             '|${c.color.hasColor}|${c.cropped}'
             '|${c.cropL}|${c.cropT}|${c.cropW}|${c.cropH}'
             '|${c.opacity}|${c.rotation}',
+    // 聲音片段（配樂／旁白／提取的聲音）也是烘進合成的（build 的
+    // audios 鋪純聲音軌）：加音樂、搬位置、改音量、變速、淡入淡出都要
+    // 重組。以前指紋只記影片——加了音樂合成不重組，預覽就一直無聲
+    for (final c in _tl.clips)
+      if (_tl.sourceOf(c).kind == ClipKind.audio)
+        'au${withPaths ? _tl.sourceOf(c).path : c.sourceIndex}|'
+            '${c.trimStart}|${c.trimEnd}|${c.offset}|${c.volume}|${c.speed}'
+            '|${c.fadeIn}|${c.fadeOut}|${c.reverse}|tk${c.track}',
     // 馬賽克的幾何與樣式都要記：它是烘進合成畫面裡的（CI 合成器），
     // 拖了位置、調了濃度都得重組。重組有併批（900ms 停手後才做），
     // 空窗期間 Flutter 版馬賽克先頂上（見 _compMosaicStale）
@@ -1606,9 +1648,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   ].join(';');
 
   /// 圖片素材那部分的指紋。烘進合成的（影片下層）記完整幾何；
-  /// Flutter 畫的（影片之上）只記軌道——拖它不觸發重組
-  String _stillSig() {
-    final baked = _bakedStillIds();
+  /// Flutter 畫的（影片之上）只記軌道——拖它不觸發重組。
+  /// [baked] 給了就用它（快取更新時已經算過一次，不用再掃）
+  String _stillSig({Set<int>? baked}) {
+    baked ??= _bakedStillIds();
     return [
       for (final c in _tl.clips)
         if (_tl.sourceOf(c).kind == ClipKind.image)
@@ -1626,11 +1669,50 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     ].join(';');
   }
 
+  // ===== 預覽每一格要讀的指紋：照時間軸版本號快取 =====
+  //
+  // _mosaicSig／_stillSig／烘進合成的集合只在編輯時會變，卻放在最熱的
+  // 路徑重算：預覽 frame builder 每格（播放 30fps／拖曳 60fps）透過
+  // _compMosaicStale／_compStillsStale／_kickStaleRebuild 各算三次以上，
+  // 筆刷馬賽克還把整條點列 join 成字串、圖片指紋含調色矩陣、baked 集合
+  // 是 clips×mosaics 的掃描——畫幾筆長筆刷再左右滑，掉格計數就上升。
+  // 改成照版本號快取：每次 setState、手勢中的即時改值（_setLive／
+  // _setTimelineLive）、冷路徑的重組檢查都把版本加一；版本沒變就直接讀
+  // 上一次的。漏掉版本號的路徑最晚在存草稿那條（900ms 停手）會被
+  // _compRefreshIfChanged 補齊——它一定重算，不走快取
+
+  /// 時間軸內容的版本號（見上）
+  int _tlVersion = 0;
+  int _sigVersion = -1;
+  String _mosaicSigCache = '';
+  String _stillSigCache = '';
+  Set<int> _bakedCache = const {};
+
+  void _refreshSigCache() {
+    if (_sigVersion == _tlVersion) return;
+    _sigVersion = _tlVersion;
+    _mosaicSigCache = _mosaicSig();
+    _bakedCache = _bakedStillIds();
+    _stillSigCache = _stillSig(baked: _bakedCache);
+  }
+
+  /// [_mosaicSig] 的快取版（熱路徑用）
+  String get _mosaicSigNow {
+    _refreshSigCache();
+    return _mosaicSigCache;
+  }
+
+  /// [_stillSig] 的快取版（熱路徑用）
+  String get _stillSigNow {
+    _refreshSigCache();
+    return _stillSigCache;
+  }
+
   /// 這份合成烘的圖片層是不是已經過期（剛拖了/調了一張墊底圖片、
   /// 重烘還沒完成的空窗）。過期期間 Flutter 版先頂上，
   /// 跟馬賽克的 [_compMosaicStale] 同一套
   String? _lastCompStillSig;
-  bool get _compStillsStale => _compOn && _lastCompStillSig != _stillSig();
+  bool get _compStillsStale => _compOn && _lastCompStillSig != _stillSigNow;
 
   /// 這份合成烘進去的圖片片段 id（合成新鮮時預覽不再重畫它們）
   Set<int> _compBakedStills = const {};
@@ -1678,7 +1760,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Timer? _staleKickTimer;
 
   void _kickStaleRebuild() {
-    final sig = '${_mosaicSig()}#${_stillSig()}';
+    final sig = '$_mosaicSigNow#$_stillSigNow';
     if (_staleKickSig == sig) return; // 這一版已排程過
     _staleKickSig = sig;
     _staleKickTimer?.cancel();
@@ -1695,10 +1777,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 剛加馬賽克到重烘完成之間畫面上什麼都沒有，看起來就是
   /// 「加了沒反應、過一下才亂跳出來」（實測回報：讀取時間錯亂）
   String? _lastCompMosaicSig;
-  bool get _compMosaicStale => _compOn && _lastCompMosaicSig != _mosaicSig();
+  bool get _compMosaicStale =>
+      _compOn && _lastCompMosaicSig != _mosaicSigNow;
 
   void _compRefreshIfChanged() {
     if (!Diag.compPlayer.value || !mounted) return;
+    // 冷路徑：一定重算（_compSig 走的是不快取的 _mosaicSig／_stillSig），
+    // 順便讓熱路徑的快取下一格跟上——沒經過 setState 的改值也在這裡收攏
+    _tlVersion++;
     final sig = _compSig();
     if (sig == _lastCompSig) return;
     // 使用者真的改了東西＝立刻重烘；只有素材路徑變（某一支工作檔轉好了）
@@ -2476,6 +2562,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 重建播放器與縮圖；素材檔案不見了（例如系統清掉 app 快取）就剔除該片段，
     // 免得留下永遠黑畫面的片段、到匯出才爆錯
     final deadSources = <int>{};
+    // 倒轉檔不見了的素材（照 revOf 重做，見下）
+    final lostReversed = <int>[];
     // 每個素材各查各的（讀圖檔、查檔案在不在、工作檔救援互不相干），
     // 全部並行。以前一支一支 await：素材多的專案光是逐一碰磁碟
     // 就能拖上好幾秒（實測回報：開專案太慢）
@@ -2505,6 +2593,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           deadSources.add(i);
         }
       } else if (!kIsWeb && !await fileExists(s.path)) {
+        if (s.revOf != null) {
+          // 倒轉檔：沒有工作檔可救，留給下面照 revOf 重做——要一支一支
+          // 做（原生倒轉一次只跑一支），而且排在工作檔救援之後：原檔被
+          // 清掉的話要拿救回來的那份當來源
+          lostReversed.add(i);
+          return;
+        }
         // 原檔被系統清掉（相簿快取一週左右就會被回收）：
         // 先用工作檔救回，救不回才剔除
         if (await _rescueFromWorkFile(s)) {
@@ -2569,6 +2664,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     await Future.wait([
       for (var i = 0; i < _tl.sources.length; i++) checkSource(i),
     ]);
+    // 倒轉檔不見了的素材：一支一支重做（見 _rederiveReverse）。做不成
+    // 才跟原檔救不回的一樣剔除——以前一律剔除，「有 1 段素材已找不到」
+    for (final i in lostReversed) {
+      final s = _tl.sources[i];
+      if (!await _rederiveReverse(s)) {
+        deadSources.add(i);
+        continue;
+      }
+      if (s.kind == ClipKind.video) {
+        _thumbStrip(s.previewPath, s.duration).then((t) {
+          if (mounted && t.isNotEmpty) setState(() => _thumbs[i] = t);
+        });
+        _ensureScrubSlots(i, s.duration);
+      }
+    }
     _droppedOnLoad = _tl.clips
         .where((c) => deadSources.contains(c.sourceIndex))
         .length;
@@ -2576,8 +2686,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 有素材是用工作檔救回來的：新路徑現在只存在記憶體，
     // 立刻落地一次，中間被殺掉才不會又指回已經不存在的舊路徑
     if (_rescued) unawaited(_saveDraftNow());
-    for (final c in _tl.clips) {
-      _ensureCtrlFor(c);
+    // 逐片段播放器：合成模式（iOS 預設）交給 _ensureComp——組起來一顆
+    // 都不用開，組不起來它會叫 _restoreClipPlayers 開回來。以前這裡先為
+    // 每個片段各開一顆、再等合成接手放掉：十段 4K 的草稿一開就是十顆
+    // 解碼器同時活著（匯入那條路自己就寫明這樣會被 jetsam）
+    if (!_compExpected) {
+      for (final c in _tl.clips) {
+        _ensureCtrlFor(c);
+      }
     }
     // 簡易倒轉的片段（沒轉成倒轉檔的那種）預覽只能吃密集快取幀，
     // 那幾支素材照舊整條抽；其他素材都改成滑到哪抽到哪
@@ -2627,12 +2743,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     } catch (_) {}
   }
 
+  /// initState 掛上去的那份測試鉤子（dispose 要認得是自己的才清）
+  void Function(void Function(TimelineModel))? _debugTimelineHook;
+
   @override
   void initState() {
     super.initState();
     _tabs = TabController(length: 3, vsync: this);
     // 測試鉤子：整合測試用它組多軌疊放（見 VideoEditorScreen 上的說明）
-    VideoEditorScreen.debugTimeline = (fn) {
+    _debugTimelineHook = VideoEditorScreen.debugTimeline = (fn) {
       fn(_tl);
       if (!mounted) return;
       setState(() {});
@@ -7754,6 +7873,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 現在這一刻是不是真的走合成播放器
   bool get _compOn => Diag.compPlayer.value && _comp != null;
 
+  /// 這台機器接下來會不會嘗試合成播放器（還沒組、或正在組）。載草稿
+  /// 那條路用它決定要不要先開逐片段播放器：會嘗試的話交給 _ensureComp
+  ///（組起來一顆都不用開；組不起來它會叫 _restoreClipPlayers）。
+  /// 跟 _ensureCompInner 的前兩道門同一個判定（Android／關掉開關＝不會）
+  bool get _compExpected =>
+      Diag.compPlayer.value && (kIsWeb || !Platform.isAndroid);
+
   // Track the files actually loaded by the player, not paths published by a
   // background encode that has not yet been swapped into the composition.
   Set<int> _compRawSources = {};
@@ -7805,8 +7931,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       int? pos;
       Object? who;
       if (_compOn) {
-        pos = ((await _comp!.position()) * 1000).round();
-        who = _comp;
+        final comp = _comp!;
+        final p = await comp.position();
+        // 合成比時間軸短（尾巴是文字／貼圖／馬賽克）：播放器到底停住是
+        // 正常的，時鐘自己走完尾巴（同 _syncFromComp 的豁免）——位置
+        // 不前進不是殭屍，不能拿去重建
+        final compEnd = comp.duration;
+        if (compEnd > 0 && p >= compEnd - 0.1) {
+          _playStuck = 0;
+          return;
+        }
+        pos = (p * 1000).round();
+        who = comp;
       } else {
         final c =
             _ctrls[_tl.videoAt(_position, skipTracks: _hiddenTracks)?.id ?? -1];
@@ -7968,9 +8104,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       unawaited(MetalPreview.park());
       unawaited(MetalPreview.show(false));
       Diag.notePlayLatency(sw.elapsedMilliseconds);
-      if (!mounted) return;
+      // 等影格的這 400ms 裡使用者可能已經按了暫停（_pause 把 _playing
+      // 翻回 false、播放器也停了）：這時再開時鐘與取樣器，就是播放器
+      // 停著、指針自己往前走，取樣器還一直掛著
+      if (!mounted || !_playing) return;
       _lastTick = Duration.zero;
       _ticker.start();
+      // 播放取樣器也要在合成模式開：殭屍播放器自救（_reviveDeadComp）
+      // 就是為「媒體服務重置後 AVPlayer 變殭屍」設計的，而那正是合成
+      // 模式（iOS 預設）才會踩到的情況——以前只有逐片段那條路會開它，
+      // 合成模式永遠不會重建、播放取樣診斷也是空的
+      _startPlayProbe();
       tr.log('◀ 時間軸開始走');
       return;
     }
@@ -9026,7 +9170,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _trimClip(int id, double dSec, bool fromLeft) {
     if (_tlPinching) return; // 雙指縮放中不修剪
-    setState(() {
+    // 每一格只重畫時間軸與預覽層，放手才整頁 setState（見 _setTimelineLive）
+    _setTimelineLive(() {
       for (final c in _tl.clips) {
         if (c.id != id) continue;
         final src = _tl.sourceOf(c);
@@ -9159,7 +9304,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 每一小步都從已吸附的位置起算的話會被吸回去，等於一開磁吸就拉不動
   void _trimWatermark(double d, bool fromLeft) {
     if (_tlPinching) return; // 雙指縮放中不修剪
-    setState(() {
+    _setTimelineLive(() {
       final cur = fromLeft ? _wmStart : _wmEndEff;
       final raw = (_trimRawEdge ?? cur) + d;
       _trimRawEdge = raw;
@@ -9881,7 +10026,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     unawaited(MetalPreview.disposeEngine());
     _xfTrail?.cancel();
     CompPlayer.onCompVisible = null;
+    // 測試鉤子是靜態的、閉包抓著 this：不清的話整個 State（拖曳快取
+    // 96MB、疊加物快取 32MB、縮圖帶、60 份復原快照）離開編輯器後還被
+    // 留到下次再開。只清自己掛的那份——別的實例可能已經換上去了
+    if (identical(VideoEditorScreen.debugTimeline, _debugTimelineHook)) {
+      VideoEditorScreen.debugTimeline = null;
+    }
+    _debugTimelineHook = null;
     _posVN.dispose();
+    _tlLiveVN.dispose();
     _frameVN.dispose();
     _dressVN.dispose();
     _wmFrameInfo.dispose();
@@ -10206,6 +10359,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     for (final c in _tl.clips) {
       _ensureCtrlFor(c);
     }
+    // 合成播放器還在台上的話上面一顆都不會開（_ensureCtrlFor 的守門）；
+    // 這裡再收一次是保險——匯出結束 _compDirty 還是 false，_ensureComp
+    // 早退，沒有別人會來放
+    _trimPlayers();
     _resyncPlayback();
     WorkFiles.holdSweep = false;
     // 匯出後畫面可能已經 unmount（匯出中離開）：旗標照清，
@@ -13037,7 +13194,33 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 手勢中的 setState 替身：改完值只重畫預覽層
   void _setLive(VoidCallback fn) {
     fn();
+    _tlVersion++; // 改了值：預覽每格讀的指紋快取要重算（見 _tlVersion）
     _gestureLiveTick();
+  }
+
+  /// 修剪把手／浮水印範圍拖曳中的 setState 替身：改完值只叫時間軸自己
+  /// 重畫（TimelineEditor 聽 [_tlLiveVN]）＋撥預覽層，放手才整頁
+  /// setState（[_trimGestureEnd]／[_gestureLiveEnd]）。以前每一格整頁
+  /// setState：120Hz 裝置拖把手＝每秒 120 次全頁 build（時間軸 ~400 個
+  /// element 之外還有控制列、預覽整疊），拖起來就是頓
+  void _setTimelineLive(VoidCallback fn) {
+    fn();
+    _tlVersion++;
+    _tlLiveVN.value++;
+    _pokeFrame();
+    // 疊加物同步／圖片軌可見性照 setState 那條路排（很便宜，只排計時器）：
+    // 修剪文字或浮水印片段的範圍會改變播放頭底下有沒有它
+    _ovStateChanged();
+  }
+
+  /// 修剪把手／浮水印範圍拖曳中的「時間軸重畫」通知（見 [_setTimelineLive]）
+  final ValueNotifier<int> _tlLiveVN = ValueNotifier(0);
+
+  /// 把手放開：手勢中只畫在時間軸／預覽層的值補到頁面其他部分
+  ///（時間碼、工具列），再做自動整理
+  void _trimGestureEnd() {
+    if (mounted) setState(() {});
+    _autoTidyIfOn();
   }
 
   DateTime _gestureCommitAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -13718,7 +13901,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 onSeek: _seekScrub,
                                 onTrim: _trimClip,
                                 onTrimStart: _trimGestureStart,
-                                onTrimEnd: _autoTidyIfOn,
+                                onTrimEnd: _trimGestureEnd,
                                 onDrop: _dropClip,
                                 onAddMedia: _addMedia,
                                 onReorderTrack: _reorderTrack,
@@ -13829,7 +14012,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   _wmSel = true;
                                   _sel = -1;
                                 }),
-                                onMoveWm: (ns) => setState(() {
+                                onMoveWm: (ns) => _setTimelineLive(() {
                                   final len = _wmEndEff - _wmStart;
                                   final s = ns.clamp(
                                     0.0,
@@ -13842,6 +14025,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 }),
                                 onTrimWmStart: _trimGestureStart,
                                 onTrimWm: _trimWatermark,
+                                // 範圍拖曳／修剪中只重畫時間軸（見
+                                // _setTimelineLive），放手補整頁
+                                onWmGestureEnd: _gestureLiveEnd,
+                                repaint: _tlLiveVN,
                               ),
                             ),
                           ),
@@ -14399,14 +14586,136 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _saveDraft();
   }
 
-  /// 按下倒轉：把這段現場做成「已經倒好的影片檔」再換上去。
-  /// 之後它就是普通素材——預覽有聲音、播放流暢、匯出不用特殊處理。
-  /// Web 或處理失敗時退回簡易模式（抽幀預覽，匯出時才倒轉）
+  /// 倒轉檔的輸出尺寸：跟著來源走，但長邊 cap 在 1920（記憶體與速度
+  /// 的平衡）
+  static (int, int) _reverseDims(int w, int h) {
+    var tw = w > 0 ? w : 1080;
+    var th = h > 0 ? h : 1920;
+    final long = math.max(tw, th);
+    if (long > 1920) {
+      final k = 1920 / long;
+      tw = (tw * k).round();
+      th = (th * k).round();
+    }
+    tw -= tw % 2;
+    th -= th % 2;
+    return (tw, th);
+  }
+
+  /// 倒轉檔的實際製作（按下倒轉、以及草稿載入時倒轉檔不見了的重做都
+  /// 走這裡）。成品寫在工作檔目錄、進 WorkFiles 的索引（見
+  /// WorkFiles.beginReverse）——以前寫在暫存目錄，系統一清（空間壓力、
+  /// 久沒開）草稿重開就是「有 1 段素材已找不到」，整段片段被剔除。
+  ///
+  /// 影片：原生（iOS）優先——硬體解編碼、逐窗處理，速度與畫質都贏
+  /// FFmpeg 的 reverse 濾鏡。HDR（HLG/PQ）素材不走原生：原生管線讀出來
+  /// 是 8-bit、沒做色調映射，倒完整支變色；FFmpeg 那條有 zscale+tonemap
+  /// 的完整鏈，HDR 跟 Android／舊機／原生失敗一樣退回去。
+  /// 聲音：FFmpeg 的 areverse 整段一次倒（聲音便宜，不用分段）。
+  /// 回 path＝做好的檔；null＝失敗，cancelled＝使用者按了取消
+  Future<({String? path, bool cancelled})> _renderReverseFile({
+    required ClipKind kind,
+    required String srcPath,
+    required String revOf,
+    required double start,
+    required double end,
+    required int outW,
+    required int outH,
+    required void Function(double) onProgress,
+  }) async {
+    final isAudio = kind == ClipKind.audio;
+    final dest = await WorkFiles.beginReverse(ext: isAudio ? 'm4a' : 'mp4');
+    String? made;
+    var cancelled = false;
+    if (isAudio) {
+      made = await engine.renderReversedAudio(
+        srcPath,
+        start,
+        end,
+        out: dest,
+        onProgress: onProgress,
+      );
+    } else {
+      if (await NativeExport.available &&
+          !(await NativeExport.anyHDR([srcPath]))) {
+        final err = await NativeExport.reverseClip(
+          path: srcPath,
+          start: start,
+          end: end,
+          out: dest,
+          onProgress: onProgress,
+        );
+        if (err == null) {
+          made = dest;
+        } else if (err == '已取消') {
+          cancelled = true;
+        } else {
+          Diag.note('原生倒轉失敗，退 FFmpeg：$err');
+        }
+      }
+      if (made == null && !cancelled) {
+        made = await engine.renderReversedClip(
+          srcPath,
+          start,
+          end,
+          outW,
+          outH,
+          out: dest,
+          onProgress: onProgress,
+        );
+      }
+    }
+    if (made == null) {
+      WorkFiles.abortReverse(dest);
+      return (path: null, cancelled: cancelled);
+    }
+    await WorkFiles.commitReverse(revOf, start, end, made);
+    return (path: made, cancelled: false);
+  }
+
+  /// 草稿裡的倒轉檔不見了（舊版寫在暫存目錄被系統清掉、或工作檔總量
+  /// 清理排到它）：照 revOf/revStart/revEnd 重做一份。同一段已經有現成
+  /// 的（索引裡）直接用；原檔還在就用原檔，原檔也被清了就用它的工作檔
+  ///（1080p SDR——比整段片段消失好）。回 false＝真的救不回
+  Future<bool> _rederiveReverse(MediaSource s) async {
+    final orig = s.revOf;
+    if (orig == null) return false;
+    var made = await WorkFiles.lookupReverse(orig, s.revStart, s.revEnd);
+    if (made == null) {
+      final from = await fileExists(orig) ? orig : await WorkFiles.lookup(orig);
+      if (from == null) return false;
+      Diag.note('倒轉檔被清掉了，照原始素材重做：${s.name}');
+      final (tw, th) = _reverseDims(s.w, s.h);
+      final r = await _renderReverseFile(
+        kind: s.kind,
+        srcPath: from,
+        revOf: orig,
+        start: s.revStart,
+        end: s.revEnd,
+        outW: tw,
+        outH: th,
+        onProgress: (_) {},
+      );
+      made = r.path;
+      if (made == null) return false;
+    } else {
+      Diag.note('倒轉檔被清掉了，改用索引裡現成的那份：${s.name}');
+    }
+    s.path = made;
+    _rescued = true; // 新路徑只在記憶體，立刻落地（同工作檔救援）
+    return true;
+  }
+
+  /// 按下倒轉：把這段現場做成「已經倒好的檔」再換上去（影片、聲音
+  /// 都是）。之後它就是普通素材——預覽有聲音、播放流暢、匯出不用特殊
+  /// 處理（原生匯出也吃得下，不會因為一段配樂整份退 FFmpeg）。
+  /// Web 或處理失敗時退回簡易模式（影片抽幀預覽，匯出時才倒轉）
   Future<void> _reverseClip(int clipId, double sp, VoidCallback onDone) async {
     final c = _selClipById(clipId);
     if (c == null) return;
     final src = _tl.sourceOf(c);
-    if (src.kind != ClipKind.video || kIsWeb) {
+    final isAudio = src.kind == ClipKind.audio;
+    if ((src.kind != ClipKind.video && !isAudio) || kIsWeb) {
       setState(() {
         c.speed = sp;
         c.reverse = true;
@@ -14454,55 +14763,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ),
     ).whenComplete(() => dialogOpen = false);
 
-    // 輸出尺寸：跟著來源走，但長邊 cap 在 1920（記憶體與速度的平衡）
-    var tw = src.w > 0 ? src.w : 1080;
-    var th = src.h > 0 ? src.h : 1920;
-    final long = math.max(tw, th);
-    if (long > 1920) {
-      final k = 1920 / long;
-      tw = (tw * k).round();
-      th = (th * k).round();
-    }
-    tw -= tw % 2;
-    th -= th % 2;
-
-    // 原生（iOS）優先：硬體解編碼、逐窗處理，速度與畫質都贏 FFmpeg
-    // 的 reverse 濾鏡；不行（Android、舊機、失敗）原樣退回 FFmpeg
-    String? made;
-    var cancelled = false;
-    // HDR（HLG/PQ）素材不走原生倒轉：原生管線讀出來是 8-bit、沒做
-    // 色調映射，倒完整支變色。FFmpeg 那條有 zscale+tonemap 的完整
-    // 鏈，HDR 一律退回去；SDR 才吃原生的速度紅利
-    if (await NativeExport.available &&
-        !(await NativeExport.anyHDR([src.path]))) {
-      final dir = await getTemporaryDirectory();
-      final dest =
-          '${dir.path}/rev${DateTime.now().microsecondsSinceEpoch}.mp4';
-      final err = await NativeExport.reverseClip(
-        path: src.path,
-        start: c.trimStart,
-        end: c.trimEnd,
-        out: dest,
-        onProgress: (v) => progress.value = v,
-      );
-      if (err == null) {
-        made = dest;
-      } else if (err == '已取消') {
-        cancelled = true;
-      } else {
-        Diag.note('原生倒轉失敗，退 FFmpeg：$err');
-      }
-    }
-    made ??= cancelled
-        ? null
-        : await engine.renderReversedClip(
-            src.path,
-            c.trimStart,
-            c.trimEnd,
-            tw,
-            th,
-            onProgress: (v) => progress.value = v,
-          );
+    final (tw, th) = _reverseDims(src.w, src.h);
+    final r = await _renderReverseFile(
+      kind: src.kind,
+      srcPath: src.path,
+      revOf: src.path,
+      start: c.trimStart,
+      end: c.trimEnd,
+      outW: tw,
+      outH: th,
+      onProgress: (v) => progress.value = v,
+    );
+    final made = r.path;
     if (mounted && dialogOpen) Navigator.of(context).pop();
     if (!mounted) return;
 
@@ -14516,9 +14788,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         _tl.resolveOverlaps(track: cur.track); // 變速＝變長，同軌不重疊
       });
       final s2 = _tl.sourceOf(cur);
-      _makeScrubCache(cur.sourceIndex, s2.path, s2.duration);
+      if (!isAudio) _makeScrubCache(cur.sourceIndex, s2.path, s2.duration);
       _resyncPlayback();
-      showHint(context, '倒轉檔沒做成，改用簡易預覽（匯出仍會正確倒轉）');
+      showHint(context, '倒轉檔沒做成，改用簡易模式（匯出仍會正確倒轉）');
       onDone();
       return;
     }
@@ -14528,21 +14800,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       MediaSource(
         path: made,
         name: src.name,
-        kind: ClipKind.video,
+        kind: src.kind,
         duration: segLen,
-        w: tw,
-        h: th,
-        // 還原用：記下是從哪個原始檔的哪一段倒出來的
+        w: isAudio ? 0 : tw,
+        h: isAudio ? 0 : th,
+        // 還原用：記下是從哪個原始檔的哪一段倒出來的（草稿載入時倒轉
+        // 檔不見了也靠這三個欄位重做，見 _rederiveReverse）
         revOf: src.path,
         revStart: cur.trimStart,
         revEnd: cur.trimEnd,
       ),
     );
-    // 倒轉檔的縮圖與拖曳快取
-    _thumbStrip(made, segLen).then((t) {
-      if (mounted && t.isNotEmpty) setState(() => _thumbs[newIdx] = t);
-    });
-    _ensureScrubSlots(newIdx, segLen);
+    // 倒轉檔的縮圖與拖曳快取（聲音沒有畫面）
+    if (!isAudio) {
+      _thumbStrip(made, segLen).then((t) {
+        if (mounted && t.isNotEmpty) setState(() => _thumbs[newIdx] = t);
+      });
+      _ensureScrubSlots(newIdx, segLen);
+    }
     _swapClip(
       cur,
       TimelineClip.fromJson({

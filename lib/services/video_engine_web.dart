@@ -21,6 +21,16 @@ Future<String?> renderReversedClip(
   double trimEnd,
   int targetW,
   int targetH, {
+  String? out,
+  void Function(double progress)? onProgress,
+}) async => null;
+
+/// 聲音版同上：Web 沒有 FFmpeg，倒不了，介面退回簡易模式
+Future<String?> renderReversedAudio(
+  String srcPath,
+  double trimStart,
+  double trimEnd, {
+  required String out,
   void Function(double progress)? onProgress,
 }) async => null;
 

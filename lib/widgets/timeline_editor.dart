@@ -121,6 +121,15 @@ class TimelineEditor extends StatefulWidget {
   /// 浮水印修剪手勢開始（重置吸附用的原始邊緣、拍復原快照）
   final VoidCallback? onTrimWmStart;
 
+  /// 浮水印範圍的拖曳／修剪放手（一手結束，含被取消）。拖曳中每一格
+  /// 編輯器只重畫時間軸（見 [repaint]），放手才整頁重建
+  final VoidCallback? onWmGestureEnd;
+
+  /// 外面說「時間軸內容變了，自己重畫」的通知（修剪把手／浮水印範圍
+  /// 拖曳中每一格撥一次）。以前那些手勢每一格整頁 setState，時間軸只是
+  /// 跟著被重建；現在整頁不動，這裡自己 setState 就好
+  final Listenable? repaint;
+
   /// 點軌道空白處＝選取整條軌道（貼上的目標）
   final ValueChanged<int>? onTapTrack;
 
@@ -178,6 +187,8 @@ class TimelineEditor extends StatefulWidget {
     required this.onMoveWm,
     required this.onTrimWm,
     this.onTrimWmStart,
+    this.onWmGestureEnd,
+    this.repaint,
     this.onTapTrack,
     this.onDeleteTrack,
     this.selectedTrack = -1,
@@ -346,11 +357,22 @@ class _TimelineEditorState extends State<TimelineEditor> {
   void initState() {
     super.initState();
     GestureBinding.instance.pointerRouter.addGlobalRoute(_globalPointer);
+    widget.repaint?.addListener(_onRepaint);
+  }
+
+  /// 外面撥了 [TimelineEditor.repaint]：內容（片段修剪、浮水印範圍）變了，
+  /// 只重建時間軸這棵子樹
+  void _onRepaint() {
+    if (mounted) setState(() {});
   }
 
   @override
   void didUpdateWidget(TimelineEditor old) {
     super.didUpdateWidget(old);
+    if (!identical(widget.repaint, old.repaint)) {
+      old.repaint?.removeListener(_onRepaint);
+      widget.repaint?.addListener(_onRepaint);
+    }
     if (widget.pinching == old.pinching) return;
     // 父層在整個分頁層級數手指（空白處也能捏），它說在捏合就一律讓路；
     // 它說結束時還要等自己數到的手指全部離開，這一輪才算完
@@ -363,6 +385,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
 
   @override
   void dispose() {
+    widget.repaint?.removeListener(_onRepaint);
     GestureBinding.instance.pointerRouter.removeGlobalRoute(_globalPointer);
     _autoScrollTimer?.cancel();
     _pressTimer?.cancel();
@@ -1117,9 +1140,13 @@ class _TimelineEditorState extends State<TimelineEditor> {
                               widget.onMoveWm(wm.start + d.delta.dx / pxPerSec);
                             })
                             ..onEnd = ((_) {
+                              // 一手結束：拖曳中只重畫時間軸的值要補到
+                              // 頁面其他部分（見 onWmGestureEnd）
+                              widget.onWmGestureEnd?.call();
                               if (_locked || _wmDragDist >= 6) return;
                               widget.onSelectWm(); // 點擊＝進浮水印分頁
-                            }),
+                            })
+                            ..onCancel = (() => widget.onWmGestureEnd?.call()),
                         ),
                   },
             child: GestureDetector(
@@ -1197,6 +1224,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
                             widget.onTrimWm(dxSec, true);
                           },
                           onStart: widget.onTrimWmStart,
+                          onEnd: widget.onWmGestureEnd,
                           pxPerSec: pxPerSec,
                         ),
                       ),
@@ -1210,6 +1238,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
                             widget.onTrimWm(dxSec, false);
                           },
                           onStart: widget.onTrimWmStart,
+                          onEnd: widget.onWmGestureEnd,
                           pxPerSec: pxPerSec,
                         ),
                       ),
