@@ -132,54 +132,63 @@ class _DonateScreenState extends State<DonateScreen> {
     final cut = price.indexOf(RegExp(r'\d'));
     final unit = cut <= 0 ? '' : price.substring(0, cut).trim();
     final digits = cut < 0 ? price : price.substring(cut).trim();
+    // 底色畫在外層、InkWell 上面自己放一層透明 Material：水波是畫在最近
+    // 的 Material 上的，以前 InkWell 直接包著有底色的 Container，水波畫在
+    // Scaffold 那一層、被卡片的底色蓋住，按了沒回饋
     return Expanded(
-      child: InkWell(
-        borderRadius: BorderRadius.circular(20),
-        onTap: _buying ? null : () => _buy(id),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 20),
-          decoration: BoxDecoration(
-            color: strong ? kLAccent : kLCard,
-            borderRadius: BorderRadius.circular(20),
-            border: strong ? null : Border.all(color: kLBorder, width: 1.4),
-          ),
-          child: Column(
-            children: [
-              // 換個幣別可能是「30,000」這種長數字，卡片只有三分之一
-              // 螢幕寬——縮著顯示，不要爆版
-              FittedBox(
-                child: Text(
-                  digits,
-                  style: TextStyle(
-                    fontSize: 26,
-                    fontWeight: FontWeight.w900,
-                    height: 1,
-                    color: strong ? Colors.white : kLText,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: strong ? kLAccent : kLCard,
+          borderRadius: BorderRadius.circular(20),
+          border: strong ? null : Border.all(color: kLBorder, width: 1.4),
+        ),
+        child: Material(
+          type: MaterialType.transparency,
+          borderRadius: BorderRadius.circular(20),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: _buying ? null : () => _buy(id),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 20),
+              child: Column(
+                children: [
+                  // 換個幣別可能是「30,000」這種長數字，卡片只有三分之一
+                  // 螢幕寬——縮著顯示，不要爆版
+                  FittedBox(
+                    child: Text(
+                      digits,
+                      style: TextStyle(
+                        fontSize: 26,
+                        fontWeight: FontWeight.w900,
+                        height: 1,
+                        color: strong ? Colors.white : kLText,
+                      ),
+                    ),
                   ),
-                ),
-              ),
-              if (unit.isNotEmpty) ...[
-                const SizedBox(height: 3),
-                Text(
-                  unit,
-                  style: TextStyle(
-                    fontSize: 10.5,
-                    color: strong
-                        ? Colors.white.withValues(alpha: 0.7)
-                        : kLTextDim,
+                  if (unit.isNotEmpty) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      unit,
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        color: strong
+                            ? Colors.white.withValues(alpha: 0.7)
+                            : kLTextDim,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                      color: strong ? Colors.white : kLText,
+                    ),
                   ),
-                ),
-              ],
-              const SizedBox(height: 12),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w700,
-                  color: strong ? Colors.white : kLText,
-                ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
       ),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../services/playback_trace.dart' show appVersionTag;
 import '../theme.dart';
 import '../widgets/swipe_back.dart';
 import 'donate_screen.dart';
@@ -8,7 +9,10 @@ import 'probe_screen.dart';
 
 /// 原始碼位置（MPL 要求提供取得方式）
 const kSourceUrl = 'https://github.com/idoluidoluidolu/markcut';
-const kAppVersion = '1.0.0';
+
+// 版本號不寫死：以前這裡有個 kAppVersion = '1.0.0'，意見回饋與授權清單
+// 都送它，實際早就是 1.1.0+18——後台收到的每一則回饋都對不到是哪個
+// build 的問題。一律用 main.dart 從 PackageInfo 填進來的 appVersionTag
 
 /// 作者原文，分行照他寫的，不要自作主張重排
 const kDeveloperIntro =
@@ -85,8 +89,12 @@ class AboutScreen extends StatelessWidget {
             padding: const EdgeInsets.only(bottom: 16),
             child: _loveButton(context),
           ),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+          // Wrap 不是 Row：四個連結加三個點在 1.2 字級約 290pt，320 寬
+          // 的機子剛好塞得下，再多一個字就從兩側溢出。放不下就折到
+          // 第二排
+          Wrap(
+            alignment: WrapAlignment.center,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               _link(context, '開源授權', () => _openLicense(context)),
               _dot(),
@@ -97,7 +105,8 @@ class AboutScreen extends StatelessWidget {
               _dot(),
               _link(context, '隱私', () => _openPrivacy(context)),
               _dot(),
-              // 遠端使用者回報「影片沒畫面」時的一次定位工具
+              // 遠端使用者回報「影片沒畫面」時的一次定位工具。
+              // 它是深色的除錯頁，不包 LightPage
               _link(
                 context,
                 '播放偵測',
@@ -174,41 +183,50 @@ class AboutScreen extends StatelessWidget {
     );
   }
 
+  // 內容頁一定要包 LightPage：路由是掛在 Navigator 底下建的，拿到的是
+  // App 層的深色佈景——頁面自己寫死的白底看起來是白的，但返回鍵會是
+  // 深色頁的灰、從那頁開出來的套件授權清單整頁黑（見 light_page_route_test）
   void _openLicense(BuildContext context) {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => _InfoPage(
-          sections: const [
-            (
-              '本程式',
-              '浮水印 是自由軟體，依 Mozilla Public License 2.0 散布。\n\n'
-                  '你可以自由使用、修改與再散布本程式；'
-                  '改動到的原始檔必須以相同授權公開，'
-                  '但可以跟其他授權的程式碼整合在同一個專案裡。'
-                  '本程式不提供任何擔保。',
-            ),
-            (
-              '影音處理',
-              '影音處理由 FFmpeg（LGPL v2.1+）與 media_kit 提供，'
-                  'H.264 編碼使用裝置的硬體編碼器。\n'
-                  'FFmpeg 為其各自作者所有，詳見 ffmpeg.org。',
-            ),
-            (
-              '內建字型（SIL Open Font License 1.1）',
-              '思源黑體、思源宋體 — Google / Adobe\n'
-                  'jf open 粉圓 — justfont\n'
-                  'LXGW 文楷 TC — 落霞孤鶩\n'
-                  '悠哉字體 — 落霞孤鶩\n'
-                  '縫合像素字體 — TakWolf\n'
-                  'Montserrat、Playfair Display、Pacifico、'
-                  'Bebas Neue、Oswald、Lobster、Anton、Courier Prime、'
-                  'Quicksand、Space Grotesk、Abril Fatface、'
-                  'Dancing Script、Caveat、Press Start 2P',
-            ),
-          ],
-          showSourceRow: true,
-          showPackageList: true,
+        builder: (_) => const LightPage(
+          child: _InfoPage(
+            sections: [
+              (
+                '本程式',
+                '浮水印 是自由軟體，依 Mozilla Public License 2.0 散布。\n\n'
+                    '你可以自由使用、修改與再散布本程式；'
+                    '改動到的原始檔必須以相同授權公開，'
+                    '但可以跟其他授權的程式碼整合在同一個專案裡。'
+                    '本程式不提供任何擔保。',
+              ),
+              (
+                '影音處理',
+                // 授權說法照 main 上 fix/health 訂的版本（FFmpeg 換成
+                // 不含 GPL 元件的 LGPL 建置）：這一段是法律文字，
+                // 只有那條分支能改，這裡只是原樣搬過來不要改回舊的
+                '影音處理由 FFmpeg（LGPL v2.1+ 建置，不含 x264／x265 等 GPL '
+                    '元件）提供，Android 的預覽播放另用 media_kit，'
+                    'H.264 編碼使用裝置的硬體編碼器。\n'
+                    'FFmpeg 為其各自作者所有，詳見 ffmpeg.org。',
+              ),
+              (
+                '內建字型（SIL Open Font License 1.1）',
+                '思源黑體、思源宋體 — Google / Adobe\n'
+                    'jf open 粉圓 — justfont\n'
+                    'LXGW 文楷 TC — 落霞孤鶩\n'
+                    '悠哉字體 — 落霞孤鶩\n'
+                    '縫合像素字體 — TakWolf\n'
+                    'Montserrat、Playfair Display、Pacifico、'
+                    'Bebas Neue、Oswald、Lobster、Anton、Courier Prime、'
+                    'Quicksand、Space Grotesk、Abril Fatface、'
+                    'Dancing Script、Caveat、Press Start 2P',
+              ),
+            ],
+            showSourceRow: true,
+            showPackageList: true,
+          ),
         ),
       ),
     );
@@ -218,20 +236,22 @@ class AboutScreen extends StatelessWidget {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => const _InfoPage(
-          sections: [
-            (
-              '媒體全部在你的裝置上',
-              '所有影片與照片都在你的裝置上處理，'
-                  '不會上傳到任何伺服器，也沒有帳號系統。',
-            ),
-            (
-              '意見回饋',
-              '只有你主動送出「意見回饋」時，你填寫的訊息內容與'
-                  '聯絡方式（選填）會傳送到開發者的伺服器，'
-                  '僅用於回覆與改善 App，不會用於其他用途。',
-            ),
-          ],
+        builder: (_) => const LightPage(
+          child: _InfoPage(
+            sections: [
+              (
+                '媒體全部在你的裝置上',
+                '所有影片與照片都在你的裝置上處理，'
+                    '不會上傳到任何伺服器，也沒有帳號系統。',
+              ),
+              (
+                '意見回饋',
+                '只有你主動送出「意見回饋」時，你填寫的訊息內容與'
+                    '聯絡方式（選填）會傳送到開發者的伺服器，'
+                    '僅用於回覆與改善 App，不會用於其他用途。',
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -338,10 +358,12 @@ class _InfoPage extends StatelessWidget {
             ],
             if (showPackageList)
               OutlinedButton(
+                // 清單頁會抓當下的佈景（InheritedTheme.capture）：
+                // 這一頁包在 LightPage 裡，它就跟著是淺色的
                 onPressed: () => showLicensePage(
                   context: context,
                   applicationName: '浮水印',
-                  applicationVersion: kAppVersion,
+                  applicationVersion: appVersionTag,
                   applicationLegalese: '依 MPL 2.0 散布',
                 ),
                 style: OutlinedButton.styleFrom(

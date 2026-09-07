@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../services/feedback_api.dart';
+import '../services/playback_trace.dart' show appVersionTag;
 import '../services/store_links.dart';
 import '../theme.dart';
-import 'about_screen.dart' show kAppVersion;
 
 /// 意見回饋：置中談窗，寫完直接送到 TWCONCERTVIEW 後台
 Future<void> showFeedbackDialog(BuildContext context) {
@@ -55,7 +55,9 @@ class _FeedbackFormState extends State<_FeedbackForm> {
     final err = await sendFeedback(
       message: _msg.text,
       contact: _contact.text,
-      appVersion: kAppVersion,
+      // 真的 build 版本（main.dart 從 PackageInfo 填的）：後台要靠它對版。
+      // 以前送的是寫死的 1.0.0，每一則回饋都對不到是哪個 build 的問題
+      appVersion: appVersionTag,
     );
     if (!mounted) return;
     setState(() => _sending = false);

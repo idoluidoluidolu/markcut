@@ -37,7 +37,6 @@ const _browsers = <String>{
   'donate_screen.dart',
   'feedback_screen.dart',
   'probe_screen.dart',
-  'playback_test_screen.dart',
 };
 
 /// `MaterialPageRoute(builder: (_) => Foo(` / `editRoute(... builder: (_) => Foo(`
