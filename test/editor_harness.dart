@@ -206,7 +206,7 @@ class FakeComp {
           final a = Map<Object?, Object?>.from(call.arguments as Map);
           seeks.add(a);
           nativeMs = ((a['sec'] as num) * 1000).round();
-          return null;
+          return a['awaitCompletion'] == true ? true : null;
         case 'setHiddenImageTracks':
           return true;
       }

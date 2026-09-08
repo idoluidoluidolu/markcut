@@ -153,7 +153,13 @@ class CompPlayer {
     this.ciOn,
     this.hdrIn,
     this.wmLive,
+    this.knownOpaquePaths,
   );
+
+  /// Opaque source files confirmed by this successful native build. Unknown or
+  /// older native implementations leave this empty; never infer alpha from an
+  /// extension or from a different player's asset list.
+  final Set<String> knownOpaquePaths;
 
   static const _ch = MethodChannel('markcut/comp');
 
@@ -806,6 +812,10 @@ class CompPlayer {
         m['ci'] == true,
         m['hdr'] == true,
         m['wmLive'] == true,
+        Set<String>.unmodifiable(
+          (m['opaqueSourcePaths'] as List?)?.whereType<String>() ??
+              const <String>[],
+        ),
       );
     } catch (_) {
       return null;
@@ -932,10 +942,35 @@ class CompPlayer {
   /// 主播放器原地凍結——管線永不拆裝、暫停畫面隨叫隨到
   Future<void> setTakeover(bool on) => _quiet('takeover', on);
 
-  /// [exact] 只有「停手要對準那一格」時才給 true。拖曳中與按下播放前
-  /// 一律寬容——精準 seek 跑完之前播放器的 rate 會被壓在 0
-  Future<void> seek(double seconds, {bool exact = false}) =>
-      _quiet('seek', {'sec': seconds, 'exact': exact});
+  /// 送出定位命令；這個 Future 只表示原生端已收件。
+  /// 原檔拖曳可給有限 [toleranceMs]，代理與精準定位維持零容差。
+  /// 需要等到畫面定位完成的收尾使用 [seekSettled]。
+  Future<void> seek(
+    double seconds, {
+    bool exact = false,
+    int toleranceMs = 0,
+  }) => _quiet('seek', {
+    'sec': seconds,
+    'exact': exact,
+    'toleranceMs': exact ? 0 : toleranceMs.clamp(0, 250),
+  });
+
+  /// true 只在該精準定位成功完成時回傳；被新定位／播放／銷毀取代
+  /// 或通道失敗都回 false，不能把「已收件」當成可撤掉快取畫面。
+  Future<bool> seekSettled(double seconds) async {
+    try {
+      return await _ch.invokeMethod<bool>('seek', {
+            'sec': seconds,
+            'exact': true,
+            'toleranceMs': 0,
+            'awaitCompletion': true,
+          }) ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> dispose() => _quiet('dispose');
 
   /// 目前位置（秒）。合成播放器是唯一的時鐘來源——App 不再自己算時間，
@@ -1112,6 +1147,9 @@ class CompPlayer {
         // CI 路線出現「空」＝鋪滿失敗，病灶直接定罪
         if (bi['軌道段'] != null) {
           b.write('\n  軌道段：${bi['軌道段']}');
+        }
+        if (bi['遮蔽剔除'] != null) {
+          b.write('\n  遮蔽剔除：${bi['遮蔽剔除']}');
         }
         // 中灰探針（HDR 合成且有圖片層時才有）：線性 0.18 的中灰經過
         // 圖片素材那條路之後，CI 寫成的 HLG 碼多少，以及原生端據此

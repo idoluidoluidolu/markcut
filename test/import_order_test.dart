@@ -178,9 +178,12 @@ void main() {
     );
   });
 
-  /// 收尾：讓提示條、合成器延遲刷新之類的計時器走完，
-  /// 不然測試框架會抱怨「widget 樹拆了還有 Timer 掛著」
+  /// 先真的離開編輯頁，再讓已在等待中的背景工作讀到 mounted=false。
+  /// 編輯頁仍掛著時推進時間會合法開始下一條縮圖帶，不能把兩次大幅
+  /// pump 當作所有素材背景排程必定完成的條件。
   Future<void> drain(WidgetTester t) async {
+    await t.pumpWidget(const SizedBox.shrink());
+    expect(VideoEditorScreen.debugTimeline, isNull);
     await t.pump(const Duration(seconds: 3));
     await t.pump(const Duration(seconds: 3));
   }

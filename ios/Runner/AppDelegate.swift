@@ -783,6 +783,10 @@ final class CILayerSpec {
   let gif: CIGifSpec?
   let transform: CGAffineTransform
   let srcHeight: CGFloat
+  /// 原始寬度與已查證的不透明來源，只供預覽剔除全遮蔽層。
+  /// 其他建構路徑預設未知，不能拿來遮蔽下層。
+  let srcWidth: CGFloat
+  let sourceOpaque: Bool
   let start: Double
   let end: Double
   let fadeIn: Double
@@ -820,13 +824,16 @@ final class CILayerSpec {
     colorMatrix: [Double]?,
     crop: CGRect? = nil, rotation: Double = 0, opacity: Double = 1,
     z: Int = 0, gif: CIGifSpec? = nil,
-    uScale: Double = 1, uPx: Double = 0.5, uPy: Double = 0.5
+    uScale: Double = 1, uPx: Double = 0.5, uPy: Double = 0.5,
+    srcWidth: CGFloat = 0, sourceOpaque: Bool = false
   ) {
     self.trackID = trackID
     self.still = still
     self.gif = gif
     self.transform = transform
     self.srcHeight = srcHeight
+    self.srcWidth = srcWidth
+    self.sourceOpaque = sourceOpaque
     self.start = start
     self.end = end
     self.fadeIn = fadeIn
@@ -847,6 +854,133 @@ final class CILayerSpec {
     if fadeIn > 0.01 { a = min(a, ((t - start) / fadeIn).clamped01()) }
     if fadeOut > 0.01 { a = min(a, ((end - t) / fadeOut).clamped01()) }
     return a
+  }
+}
+
+/// 預覽指令的保守可見性規劃。只減少完全不可能露出的來源；不改音軌。
+/// 圖片／GIF／馬賽克不當遮蔽物，fade、裁切與自由旋轉也保留所有下層。
+enum MCPreviewVisibility {
+  static let prerollSeconds = 1.5
+
+  static func sourceIsOpaque(_ track: AVAssetTrack) -> Bool {
+    // Apple 明定此 characteristic 表示來源含 alpha；不可只看 hvc1，
+    // HEVC 也可以帶 alpha。格式資訊不完整時保守保留所有層。
+    // https://developer.apple.com/documentation/avfoundation/avmediacharacteristic/containsalphachannel
+    guard !track.hasMediaCharacteristic(.containsAlphaChannel),
+      !track.formatDescriptions.isEmpty else { return false }
+    return track.formatDescriptions.allSatisfy { raw in
+      let fd = raw as! CMFormatDescription
+      let alpha = CMFormatDescriptionGetExtension(
+        fd, extensionKey: kCMFormatDescriptionExtension_ContainsAlphaChannel)
+      let mode = CMFormatDescriptionGetExtension(
+        fd, extensionKey: kCMFormatDescriptionExtension_AlphaChannelMode)
+      return (alpha as? NSNumber)?.boolValue != true && mode == nil
+    }
+  }
+
+  static func coversCanvas(_ layer: CILayerSpec, canvas: CGSize) -> Bool {
+    guard layer.trackID != kCMPersistentTrackID_Invalid,
+      layer.still == nil, layer.gif == nil, layer.sourceOpaque,
+      layer.opacity == 1, layer.fadeIn == 0, layer.fadeOut == 0,
+      layer.crop == nil, layer.rotation == 0, layer.colorMatrix == nil,
+      layer.srcWidth > 1, layer.srcHeight > 1,
+      canvas.width > 1, canvas.height > 1 else { return false }
+    let xf = layer.transform
+    let values = [xf.a, xf.b, xf.c, xf.d, xf.tx, xf.ty,
+                  layer.srcWidth, layer.srcHeight, canvas.width, canvas.height]
+    guard values.allSatisfy({ $0.isFinite }),
+      abs(xf.a * xf.d - xf.b * xf.c) > 0.000001 else { return false }
+    // 旋轉方框的包圍盒蓋滿，不代表畫布四角被蓋住。
+    // 反算每個畫布角到來源；凸四邊形包含四角才真的全覆蓋。
+    let inverse = xf.inverted()
+    let epsilon: CGFloat = 0.000001 // 只容許浮點誤差，不吞掉邊緣像素。
+    return [CGPoint.zero, CGPoint(x: canvas.width, y: 0),
+            CGPoint(x: 0, y: canvas.height),
+            CGPoint(x: canvas.width, y: canvas.height)].allSatisfy { point in
+      let p = point.applying(inverse)
+      return p.x >= -epsilon && p.y >= -epsilon
+        && p.x <= layer.srcWidth + epsilon && p.y <= layer.srcHeight + epsilon
+    }
+  }
+
+  static func visibleLayers(
+    _ layers: [CILayerSpec], canvas: CGSize, enabled: Bool
+  ) -> [CILayerSpec] {
+    guard enabled,
+      let index = layers.lastIndex(where: { coversCanvas($0, canvas: canvas) })
+    else { return layers }
+    return Array(layers[index...])
+  }
+
+  /// 必須在可見性邊界之前切一段預熱窗，不能把末尾預熱攤到整條長指令。
+  static func prerollStarts(before boundaries: [CMTime]) -> [CMTime] {
+    let lead = CMTime(seconds: prerollSeconds, preferredTimescale: 600)
+    return boundaries.compactMap { boundary in
+      let start = boundary - lead
+      guard start.isValid, start > .zero else { return nil }
+      // 後面的標記合併容差是 5ms；預熱標記不能搶先留下而把真正的
+      // 片段頭尾擠掉，否則只是加預熱就會提早顯示下一段。
+      guard !boundaries.contains(where: { abs(($0 - start).seconds) < 0.005 })
+      else { return nil }
+      return start
+    }
+  }
+
+  static func requiredTracks<S: Sequence>(
+    at start: CMTime, own: Set<CMPersistentTrackID>,
+    upcoming: S
+  ) -> Set<CMPersistentTrackID>
+  where S.Element == (start: CMTime, tracks: Set<CMPersistentTrackID>) {
+    var ids = own
+    let horizon = start.seconds + prerollSeconds
+    for next in upcoming {
+      if next.start.seconds > horizon + 0.000001 { break }
+      ids.formUnion(next.tracks)
+    }
+    return ids
+  }
+}
+
+/// 每次正式 build 各自一份。第一次編輯片段後維持完整圖層，直到下次 build；
+/// 不能 clear 手勢就重新剔除，因為正式烘定可能仍在等待背景重建。
+final class MCPreviewVisibilityState {
+  private(set) var enabled = true
+  private(set) var hasCulledLayers = false
+  func noteCulling() { hasCulledLayers = true }
+  func beginEditing() -> Bool {
+    guard enabled else { return false }
+    enabled = false
+    return true
+  }
+}
+
+/// Method-channel 的精準定位收據。新請求取代舊請求時，舊等待一定結束；
+/// 舊 AVPlayer 回呼不得把新的收據誤判成功。僅在主執行緒存取。
+final class MCSeekCompletionState {
+  private(set) var generation: UInt64 = 0
+  private var completion: ((Bool) -> Void)?
+
+  @discardableResult
+  func replace(with next: ((Bool) -> Void)?) -> UInt64 {
+    let previous = completion
+    generation &+= 1
+    completion = next
+    previous?(false)
+    return generation
+  }
+
+  func finish(_ request: UInt64, succeeded: Bool) {
+    guard request == generation else { return }
+    let done = completion
+    completion = nil
+    done?(succeeded)
+  }
+
+  static func tolerance(exact: Bool, milliseconds: Int?) -> CMTime {
+    // 舊呼叫預設 0；原始長 GOP 影片才由 Dart 明確要求寬容拖曳。
+    // 放手的精準發無條件為 0，即使呼叫方誤傳了寬容值。
+    let ms = exact ? 0 : min(500, max(0, milliseconds ?? 0))
+    return CMTime(value: Int64(ms), timescale: 1000)
   }
 }
 
@@ -1015,11 +1149,15 @@ final class CIExportInstruction: NSObject, AVVideoCompositionInstructionProtocol
   /// 只給「極短的空窗」開：片段之間手滑留下的一條小縫（幾格），
   /// 忠實畫黑就是使用者看到的「接縫閃一下」；刻意留的長空窗照樣黑
   let holdIfEmpty: Bool
+  /// 已省略下層來源的預覽指令不可吃到新手勢：換 VC 時可能還有舊格在飛，
+  /// 它維持舊幾何直到完整來源指令接手，避免移走上層時短暫露出黑底。
+  let previewCulled: Bool
 
   init(
     timeRange: CMTimeRange, layers: [CILayerSpec],
     mosaics: [CIMosaicSpec], overlays: [CIOverlaySpec],
-    prerollTrackIDs: [NSNumber] = [], holdIfEmpty: Bool = false
+    prerollTrackIDs: [NSNumber] = [], holdIfEmpty: Bool = false,
+    previewCulled: Bool = false
   ) {
     self.timeRange = timeRange
     self.layers = layers
@@ -1027,6 +1165,7 @@ final class CIExportInstruction: NSObject, AVVideoCompositionInstructionProtocol
     self.overlays = overlays
     self.prerollTrackIDs = prerollTrackIDs
     self.holdIfEmpty = holdIfEmpty
+    self.previewCulled = previewCulled
     super.init()
   }
 }
@@ -1857,7 +1996,8 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           .filter { t >= $0.start && t < $0.end }
           .sorted { $0.z < $1.z }
         // 捏合/拖曳中的即時變形：每一格讀一次（只有預覽合成器讀）
-        let lx = self.liveComp ? CIExportCompositor.currentLiveXform() : nil
+        let lx = self.liveComp && !ins.previewCulled
+          ? CIExportCompositor.currentLiveXform() : nil
         let hiddenImages: Set<Int> = self.liveComp
           ? CIExportCompositor.currentHiddenImageTracks() : []
         var mzIdx = 0
@@ -2562,16 +2702,95 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
   #endif
 }
 
+/// 最多兩顆互動抽幀器，所有存取都由 AppDelegate.frameQueue 串行化。
+/// 重用 generator 可保留 AVFoundation 自己的狀態，但不保證硬體 decoder 常駐。
+final class MCFrameGeneratorPool {
+  private struct Key: Equatable {
+    let path: String
+    let fileBytes: Int64
+    let modified: TimeInterval
+    let maxH: Int
+
+    func sameFileVersion(as other: Key) -> Bool {
+      path == other.path && fileBytes == other.fileBytes && modified == other.modified
+    }
+  }
+  private struct Entry {
+    let key: Key
+    let generator: AVAssetImageGenerator
+  }
+  private var entries: [Entry] = [] // oldest first
+  private(set) var createdCount = 0
+  private(set) var hitCount = 0
+  var count: Int { entries.count }
+
+  func generator(path: String, maxH: Int) -> AVAssetImageGenerator? {
+    let url = URL(fileURLWithPath: path).standardizedFileURL
+    guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+      let bytes = attrs[.size] as? NSNumber,
+      let modified = attrs[.modificationDate] as? Date else {
+      remove { $0.path == url.path }
+      return nil
+    }
+    let key = Key(path: url.path, fileBytes: bytes.int64Value,
+      modified: modified.timeIntervalSince1970, maxH: maxH)
+    // 同一路徑可能被工作檔原地替換；舊 generator 仍握著舊資產，立即淘汰。
+    remove { $0.path == key.path && !$0.sameFileVersion(as: key) }
+    if let index = entries.firstIndex(where: { $0.key == key }) {
+      let entry = entries.remove(at: index)
+      entries.append(entry)
+      hitCount += 1
+      return entry.generator
+    }
+    while entries.count >= 2 {
+      entries.removeFirst().generator.cancelAllCGImageGeneration()
+    }
+    let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+    generator.appliesPreferredTrackTransform = true
+    generator.maximumSize = CGSize(width: maxH, height: maxH)
+    if #available(iOS 18.0, *) { generator.dynamicRangePolicy = .matchSource }
+    entries.append(Entry(key: key, generator: generator))
+    createdCount += 1
+    return generator
+  }
+
+  private func remove(where predicate: (Key) -> Bool) {
+    for entry in entries where predicate(entry.key) {
+      entry.generator.cancelAllCGImageGeneration()
+    }
+    entries.removeAll { predicate($0.key) }
+  }
+
+  func removeAll() {
+    for entry in entries { entry.generator.cancelAllCGImageGeneration() }
+    entries.removeAll()
+  }
+}
+
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
-  /// 抽幀用的 asset 快取：同一支影片反覆要幀，不用每次重新解析容器
-  private var frameAssets = [String: AVURLAsset]()
+  private let frameGenerators = MCFrameGeneratorPool()
   private let frameQueue = DispatchQueue(label: "markcut.frames")
+
+  private func releaseFrameGenerators() {
+    // copyCGImage 是同步工作，不能在別條執行緒同時拆 generator。
+    // 警告／退背景只排清理，不阻塞主執行緒，當前那格完成後就釋放。
+    frameQueue.async { [weak self] in self?.frameGenerators.removeAll() }
+  }
+  @objc private func frameResourcesNeedRelease(_ notification: Notification) {
+    releaseFrameGenerators()
+  }
 
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    NotificationCenter.default.addObserver(self,
+      selector: #selector(frameResourcesNeedRelease(_:)),
+      name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
+    NotificationCenter.default.addObserver(self,
+      selector: #selector(frameResourcesNeedRelease(_:)),
+      name: UIApplication.didEnterBackgroundNotification, object: nil)
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
@@ -2613,15 +2832,31 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
     registerPhotoSaveChannel(engineBridge)
     registerPickChannel(engineBridge)
 
-    // 拖曳預覽的「按需抽幀」通道：滑到哪、跟硬體解碼器要那一格。
-    // HDR 的色調映射由系統做，顏色跟 AVPlayer 播放畫面天生一致
+    // 拖曳預覽的按需抽幀通道。重用 AVAssetImageGenerator，實際取樣時間
+    // 由 actualTime 回報；JPEG 粗覽是 tone-map 後的 SDR，不是完整 HDR 顯示。
     guard let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "markcut.frames")
     else { return }
     let channel = FlutterMethodChannel(
       name: "markcut/frames", binaryMessenger: registrar.messenger())
     channel.setMethodCallHandler { [weak self] call, result in
-      guard let self = self,
-        call.method == "frameAt",
+      guard let self = self else { result(nil); return }
+      if call.method == "release" {
+        self.frameQueue.async {
+          self.frameGenerators.removeAll()
+          DispatchQueue.main.async { result(nil) }
+        }
+        return
+      }
+      if call.method == "stats" {
+        self.frameQueue.async {
+          let stats = ["active": self.frameGenerators.count,
+                       "created": self.frameGenerators.createdCount,
+                       "reused": self.frameGenerators.hitCount, "capacity": 2]
+          DispatchQueue.main.async { result(stats) }
+        }
+        return
+      }
+      guard call.method == "frameAt",
         let args = call.arguments as? [String: Any],
         let path = args["path"] as? String,
         let ms = args["ms"] as? Int
@@ -2629,52 +2864,37 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
         result(nil)
         return
       }
-      let maxH = args["maxH"] as? Int ?? 540
+      let maxH = min(8192, max(1, args["maxH"] as? Int ?? 540))
+      let detailed = args["detailed"] as? Bool ?? false
       // 拖曳預覽壓得兇一點沒人看得出來；當裁切底圖時會被放大到滿版，
       // 壓縮痕跡就很明顯，呼叫端自己決定
       let jpegQ = CGFloat(args["q"] as? Double ?? 0.7)
       self.frameQueue.async {
-        // 鍵＝路徑＋大小＋mtime（跟 Dart 的 probeLite 同一套）：工作檔會
-        // 被原地換掉（denseKeyframes 的 replaceItemAt），只看路徑的話已開
-        // 的 asset 還指著舊 inode，縮圖帶抽到的是換檔前的內容
-        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
-        let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
-        let mtime =
-          (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-        let key = "\(path)#\(size)#\(mtime)"
-        let asset: AVURLAsset
-        if let cached = self.frameAssets[key] {
-          asset = cached
-        } else {
-          if self.frameAssets.count > 4 { self.frameAssets.removeAll() }
-          asset = AVURLAsset(url: URL(fileURLWithPath: path))
-          self.frameAssets[key] = asset
+        autoreleasepool {
+        guard let gen = self.frameGenerators.generator(path: path, maxH: maxH) else {
+          DispatchQueue.main.async { result(nil) }
+          return
         }
-        let gen = AVAssetImageGenerator(asset: asset)
-        gen.appliesPreferredTrackTransform = true  // 直式影片轉正
-        gen.maximumSize = CGSize(width: maxH, height: maxH)
         // HDR（HLG）素材一定要壓回 SDR：copyCGImage 不會自己轉，
         // HLG 像素直接進 JPEG 就是「拖曳預覽顏色超飽和」（實測回報）。
         // 之前用 .forceSDR：它的轉換又平又淡，草稿封面「偏淡比起
         // 原圖」就是它（實測回報）。改成 .matchSource 拿回 HDR 影格，
         // 下面用跟合成播放器/工作檔同一條系統 toneMap 曲線壓 SDR
-        // ——全 App 的顏色只有一套。
+        // JPEG 僅用於 SDR 粗覽，停手後回到播放器的完整 HDR 顯示。
         // dynamicRangePolicy 是 iOS 18 的 API（16 會編譯失敗，CI 踩過）；
         // 17 以下維持舊行為（拖曳幀偏飽和，放開就正常）
-        if #available(iOS 18.0, *) {
-          gen.dynamicRangePolicy = .matchSource
-        }
-        // 容忍 0.15 秒：允許解碼器就近取材，不必逐格精準解到底，
-        // 這是「快」的關鍵；拖曳預覽差半格人眼看不出來。
-        // 呼叫端可以給更寬的 tolMs（GIF 頁縮圖帶：粗抽給整支長度＝
-        // 直接拿最近的關鍵幀、一格只解一張；細抽再收到半格）
+        // .matchSource 已在 pool 建立 generator 時設定。
+        // tolMs 只指定可接受的取樣時間窗，不保證回最近關鍵幀或只解一格。
+        // 0.15 秒在 30fps 也有數格差距；detailed 回傳真正的 actualTime，
+        // 讓快取與 UI 區分「附近的粗覽」和精準定位，不能冒充指針那一格。
         let tolMs = max(0, args["tolMs"] as? Int ?? 150)
         let tol = CMTime(value: Int64(tolMs), timescale: 1000)
         gen.requestedTimeToleranceBefore = tol
         gen.requestedTimeToleranceAfter = tol
         var payload: FlutterStandardTypedData?
+        var actualTime = CMTime.invalid
         if let cg = try? gen.copyCGImage(
-          at: CMTime(value: Int64(ms), timescale: 1000), actualTime: nil)
+          at: CMTime(value: Int64(ms), timescale: 1000), actualTime: &actualTime)
         {
           var flat = UIImage(cgImage: cg)
           // HDR 影格（HLG/PQ 色彩空間）：用跟合成播放器/工作檔同一條
@@ -2693,7 +2913,16 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
             payload = FlutterStandardTypedData(bytes: data)
           }
         }
-        DispatchQueue.main.async { result(payload) }
+        var reply: Any? = payload
+        if detailed, let payload = payload {
+          var map: [String: Any] = ["bytes": payload]
+          if actualTime.isValid, actualTime.seconds.isFinite {
+            map["actualSeconds"] = actualTime.seconds
+          }
+          reply = map
+        }
+        DispatchQueue.main.async { result(reply) }
+        }
       }
     }
   }
@@ -2792,6 +3021,7 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
           // 疊加物有沒有走「即時清單」（HDR 預覽）：有的話 Dart 端
           // 把 Flutter 版藏起來、之後用 setOverlays 更新
           "wmLive": p.wmLive,
+          "opaqueSourcePaths": p.opaqueSourcePaths.sorted(),
         ])
       case "mbuild":
         // Metal 預覽引擎（滑動/暫停接管）：換佈局。組不了回 false，
@@ -2936,6 +3166,7 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
           result(true)
           return
         }
+        _ = p.beginLiveLayerEditing()
         let ov = CompLiveXform(
           z: a["z"] as? Int ?? 0,
           start: a["start"] as? Double ?? 0,
@@ -3034,8 +3265,17 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
         result(nil)
       case "seek":
         if let a = call.arguments as? [String: Any] {
-          self.comp?.seek(
-            (a["sec"] as? Double) ?? 0, exact: (a["exact"] as? Bool) ?? false)
+          let wait = a["awaitCompletion"] as? Bool ?? false
+          guard let p = self.comp else {
+            if wait { result(false) } else { result(nil) }
+            return
+          }
+          let completion: ((Bool) -> Void)? = wait ? { landed in result(landed) } : nil
+          p.seek(
+            (a["sec"] as? Double) ?? 0, exact: (a["exact"] as? Bool) ?? false,
+            toleranceMs: a["toleranceMs"] as? Int,
+            completion: completion)
+          if wait { return }
         } else {
           self.comp?.seek((call.arguments as? Double) ?? 0, exact: false)
         }
@@ -3058,6 +3298,7 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
       case "health":
         result(self.comp?.healthStats() ?? [:])
       case "dispose":
+        self.releaseFrameGenerators()
         PlayerHosts.shared.use(nil)
         self.comp?.dispose()
         self.comp = nil
@@ -5764,6 +6005,7 @@ private struct CompSeg {
   var crop: [Double]?
   var rotation: Double
   var opacity: Double
+  var sourceOpaque: Bool
 }
 
 /// 浮水印部件的即時幾何覆寫（拖曳/縮放/旋轉），絕對值：
@@ -5790,6 +6032,9 @@ struct CompLiveXform {
 }
 
 final class CompPlayer: NSObject, FlutterTexture {
+  /// 只來自這次成功組建真正讀過的來源軌。Dart 冷拖曳只能憑這份證據
+  /// 剔除全遮蔽下層，不可把「影片副檔名」當作沒有 alpha 的證明。
+  private(set) var opaqueSourcePaths: Set<String> = []
   /// 這個檔的視訊軌是不是 HDR（有色彩轉換標記且不是 709）。
   /// 判定跟 probeFile/alreadyGoodEnough 同一套；只讀容器中繼資料
   static func isHDRSource(_ path: String) -> Bool {
@@ -5820,6 +6065,19 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 只換 vc（同一個 item、不閃），放手才真正重組烘定。
   /// 數學跟烘定走同一段程式碼，放手不會跳位
   private var vcRegen: ((CompLiveXform?) -> AVMutableVideoComposition)?
+  private var visibilityState: MCPreviewVisibilityState?
+
+  /// 第一次變形前先恢復所有來源需求。往後縮小／移走／降低透明度時，
+  /// 下層解碼器已回到指令裡，不能只更新 CI 靜態參數卻沒有來源可畫。
+  func beginLiveLayerEditing() -> Bool {
+    guard vcRegen != nil, player.currentItem != nil,
+      let state = visibilityState, state.beginEditing() else { return false }
+    // 單層或原本就沒有完全遮蔽，不必為了「恢復」重產同一份完整 VC。
+    guard state.hasCulledLayers else { return false }
+    guard applyXform(lastXformOv, nudge: false) else { return false }
+    buildInfo["遮蔽剔除"] = "編輯中停用，保留完整來源"
+    return true
+  }
 
   /// 現役的 videoComposition 是不是走「預覽 CI 合成器」——是的話
   /// 即時變形/疊加物只要改靜態參數＋催一格重畫（暫停中：疊加物
@@ -6097,6 +6355,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     canvasAspect: Double? = nil,
     stillInverseOotf: Bool? = nil
   ) -> Bool {
+    cancelSeekRequests()
     let comp = AVMutableComposition()
     let scale: CMTimeScale = 600
 
@@ -6108,6 +6367,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     // 每一刻誰在上面、怎麼擺（CompSeg 移到檔案層級：即時變形的
     // 重產閉包要存在屬性上，區域型別存不了）
     var segments: [CompSeg] = []
+    var opaqueByPath: [String: Bool] = [:]
     var vTracks: [Int: (track: AVMutableCompositionTrack, end: CMTime)] = [:]
     // 每層最後插入的媒體（來源軌＋來源區間），片尾鋪滿（見 needsCI）用
     var lastMedia: [Int: (src: AVAssetTrack, rng: CMTimeRange)] = [:]
@@ -6360,13 +6620,16 @@ final class CompPlayer: NSObject, FlutterTexture {
           fadeIn: fadeIn, fadeOut: fadeOut)
       }
 
+      let sourceOpaque = MCPreviewVisibility.sourceIsOpaque(src)
+      opaqueByPath[path] = (opaqueByPath[path] ?? true) && sourceOpaque
       segments.append(
         CompSeg(
           range: CMTimeRange(start: putAt, duration: outDur),
           transform: src.preferredTransform, size: src.naturalSize,
           fadeIn: fadeIn, fadeOut: fadeOut, userScale: userScale, px: px,
           py: py, mirror: mirror, track: slot.track, layer: layer,
-          crop: cropArr, rotation: rotation, opacity: opacity))
+          crop: cropArr, rotation: rotation, opacity: opacity,
+          sourceOpaque: sourceOpaque))
     }
     if segments.isEmpty {
       buildError = "沒有一段畫面接得進去"
@@ -6807,6 +7070,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       if needsPad {
         rawT.append(CMTime(seconds: naturalEnd, preferredTimescale: 600))
       }
+      rawT.append(contentsOf: MCPreviewVisibility.prerollStarts(before: rawT))
       // 去重要帶容差，而且是在這裡去掉，不是排完之後跳過太短的區間——
       // 跳過會在時間軸上留一條沒有指令的縫，而指令必須首尾相接把整條
       // 蓋滿，缺一段系統就當這份合成有問題
@@ -6837,6 +7101,8 @@ final class CompPlayer: NSObject, FlutterTexture {
       CIExportCompositor.setLiveMosaics(nil)
       // 最後一個可見片段結束的時間：之後的區間就是「片尾」
       let lastShow = segments.map { $0.range.end.seconds }.max() ?? 0
+      let visibility = MCPreviewVisibilityState()
+      visibilityState = visibility
       // 產一份 videoComposition（可帶捏合中的即時變形覆寫 ov）。
       // 組建與即時變形共用同一段數學：放手烘定不會跳位。
       // 閉包刻意不碰 self（buildInfo/wmLive 都在外面做）——
@@ -6877,7 +7143,8 @@ final class CompPlayer: NSObject, FlutterTexture {
         // 用上一格頂一下；放手重組就正確）
         let useCI = needsCI || ov != nil
         if useCI {
-        var proto: [(a: CMTime, b: CMTime, layers: [CILayerSpec], hold: Bool)] =
+        var proto: [(a: CMTime, b: CMTime, layers: [CILayerSpec], hold: Bool,
+                     culled: Bool)] =
           []
         for i in 0..<(marks.count - 1) {
           let a = marks[i]
@@ -6914,7 +7181,8 @@ final class CompPlayer: NSObject, FlutterTexture {
                 crop: cropRect, rotation: seg.rotation,
                 opacity: seg.opacity, z: seg.layer,
                 // 即時變形的差量基準（見 CILayerSpec.uScale）
-                uScale: seg.userScale, uPx: seg.px, uPy: seg.py)
+                uScale: seg.userScale, uPx: seg.px, uPy: seg.py,
+                srcWidth: seg.size.width, sourceOpaque: seg.sourceOpaque)
             ))
           }
           for sp in stillSpecs
@@ -6924,7 +7192,9 @@ final class CompPlayer: NSObject, FlutterTexture {
             entries.append((z: sp.z, order: 1000 + sp.order, spec: sp.layer))
           }
           entries.sort { $0.z != $1.z ? $0.z < $1.z : $0.order < $1.order }
-          let layers = entries.map { $0.spec }
+          let layers = MCPreviewVisibility.visibleLayers(
+            entries.map { $0.spec }, canvas: canvas, enabled: visibility.enabled)
+          if layers.count < entries.count { visibility.noteCulling() }
           // 片尾（最後一個可見片段之後，例如音樂比畫面長）不留黑：
           // 無條件重播最後一格，畫面停在最後一幀直到播完。
           // 「為了時間軸尾巴補出來的那段」（naturalEnd 之後）不在此列：
@@ -6939,7 +7209,8 @@ final class CompPlayer: NSObject, FlutterTexture {
             a.seconds >= lastShow - 0.001 && a.seconds < naturalEnd - 0.001
           proto.append((
             a: a, b: b, layers: layers,
-            hold: layers.isEmpty && ((b - a).seconds < 0.12 || tail)
+            hold: layers.isEmpty && ((b - a).seconds < 0.12 || tail),
+            culled: layers.count < entries.count
           ))
         }
         // 預捲窗：這一段「用到的軌」＋往後 1.5 秒內會進場的軌。
@@ -6983,21 +7254,20 @@ final class CompPlayer: NSObject, FlutterTexture {
         }
         var built: [CIExportInstruction] = []
         for (i, pi) in proto.enumerated() {
-          var ids = own[i]
+          let ids = MCPreviewVisibility.requiredTracks(
+            at: pi.a, own: own[i],
+            upcoming: ((i + 1)..<proto.count).lazy.map {
+              (start: proto[$0].a, tracks: own[$0])
+            })
           // 往後 1.5 秒的聯集拿的是 own：只有圖片層的段列的是最底層軌，
           // 所以有影片層的段若 1.5 秒內接著一段純圖片段，也會把最底層
           // 軌列進來——那條軌本來就在跑，只是無害的預熱，維持原樣
-          let horizon = pi.b.seconds + 1.5
-          for j in (i + 1)..<proto.count {
-            if proto[j].a.seconds >= horizon { break }
-            ids.formUnion(own[j])
-          }
           built.append(
             CIExportInstruction(
               timeRange: CMTimeRange(start: pi.a, end: pi.b),
               layers: pi.layers, mosaics: ciMosaics, overlays: [],
               prerollTrackIDs: ids.sorted().map { NSNumber(value: $0) },
-              holdIfEmpty: pi.hold))
+              holdIfEmpty: pi.hold, previewCulled: pi.culled))
         }
         // HDR 輸出模式掛「HDR 預覽」合成器：同一套疊圖、不做色調
         // 映射、輸出走 HLG 管線（跟 HDR 匯出同一顆），另外讀即時
@@ -7075,13 +7345,21 @@ final class CompPlayer: NSObject, FlutterTexture {
             "\(String(format: "%.2f", raw.timeRange.start.seconds))~"
             + "\(String(format: "%.2f", raw.timeRange.end.seconds))"
           if let ci = raw as? CIExportInstruction {
-            return head + " 層z=\(ci.layers.map { $0.z })"
+            let requested = ci.requiredSourceTrackIDs?.count ?? vTracks.count
+            return head + " 層z=\(ci.layers.map { $0.z }) 需解碼\(requested)軌"
           }
           let n =
             (raw as? AVMutableVideoCompositionInstruction)?
             .layerInstructions.count ?? 0
           return head + " 層數\(n)"
         }.joined(separator: "；")
+        let sourceCounts = vc.instructions.compactMap {
+          ($0 as? CIExportInstruction)?.requiredSourceTrackIDs?.count
+        }
+        if let fewest = sourceCounts.min(), let most = sourceCounts.max() {
+          buildInfo["遮蔽剔除"] =
+            "來源\(vTracks.count)軌；每段需解碼\(fewest)~\(most)軌；提前\(MCPreviewVisibility.prerollSeconds)秒預熱"
+        }
         // 交出去之前先讓 AVFoundation 自己驗一遍。壞掉的合成不會丟例外，
         // 只會安靜地變成一片黑——那正是「拉到新軌道預覽就消失」
         let v = VCValidator()
@@ -7171,6 +7449,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       }
       startLink()
     }
+    opaqueSourcePaths = Set(opaqueByPath.compactMap { $0.value ? $0.key : nil })
     return true
   }
 
@@ -7327,6 +7606,9 @@ final class CompPlayer: NSObject, FlutterTexture {
 
   /// playImmediately 而不是 play：後者會先跑一輪緩衝條件才讓畫面真的動
   func play() {
+    // 結束舊的「等待放手定位」收據，但保留已排好的物理定位：舊呼叫方
+    // 仍可能 seek()（立即回應）後立刻 play()，取消它會從錯誤時間開播。
+    seekCompletion.replace(with: nil)
     if takeover {
       audioPlayer.playImmediately(atRate: targetRate)
       return
@@ -7469,14 +7751,25 @@ final class CompPlayer: NSObject, FlutterTexture {
 
   private var seekTarget: CMTime = .invalid
   private var seekTargetExact = false
+  private var seekTargetTolerance = CMTime.zero
   private var seeking = false
+  private let seekCompletion = MCSeekCompletionState()
+  private var seekLifecycle: UInt64 = 0
+
+  private func cancelSeekRequests() {
+    seekCompletion.replace(with: nil)
+    seekLifecycle &+= 1
+    seekTarget = .invalid
+    seeking = false
+    chaseWaits = 0
+    player.currentItem?.cancelPendingSeeks()
+  }
 
   /// 每一發真正做掉的 seek 花多久（毫秒），以及被合併掉幾發。
   /// 這是「左右滑動順不順」的直接證據：平均 30ms 以下＝跟得上手指，
   /// 200ms 以上＝每滑一下都要等，關鍵幀太疏
   private(set) var seekMs: [Int] = []
   private(set) var seekCoalesced = 0
-  private var seekStart: CFTimeInterval = 0
   /// 落地的 seek 總數（seekMs 只留前 400 發；拖曳偵探要的是不封頂的計數）
   private(set) var seekDone = 0
 
@@ -7486,13 +7779,21 @@ final class CompPlayer: NSObject, FlutterTexture {
 
   /// [exact] 只有「使用者停手了、要對準那一格」時才給 true。
   ///
-  /// 拖曳發與停手發都鎖幀（容差 0）：預覽播的是密關鍵幀代理（每 4 格
+  /// 密關鍵幀代理的拖曳發與停手發都鎖幀（容差 0，每 4 格
   /// 一個），鎖幀最多多解 3 格，換來拖曳中每一發都是「指針那一格」——
   /// 慢拖每格都換、手指停住那格就是準的、放手不再從吸附格跳到準格
   ///（原本拖曳寬容 0.1s＝永遠吸最近的關鍵幀，慢拖四格一跳）。
   /// exact 只差在停手那發落地後預捲把管線熱著（拖曳中絕不預捲，見 chase）
-  func seek(_ seconds: Double, exact: Bool) {
-    var t = seconds
+  func seek(
+    _ seconds: Double, exact: Bool, toleranceMs: Int? = nil,
+    completion: ((Bool) -> Void)? = nil
+  ) {
+    let request = seekCompletion.replace(with: completion)
+    guard seconds.isFinite else {
+      seekCompletion.finish(request, succeeded: false)
+      return
+    }
+    var t = max(0, seconds)
     // 偏移半格（拖曳與停手同一套——兩邊落在同一格，放手畫面不動）：
     // 指針吸在片段邊界（例如馬賽克起點 4.5s）時，來源取樣格的 PTS
     // 常常是 4.4711 之類（29.97fps 對不齊），畫面顯示的是「邊界前一格」
@@ -7504,6 +7805,8 @@ final class CompPlayer: NSObject, FlutterTexture {
     if duration > 0.1, t > duration - 0.034 { t = duration - 0.034 }
     seekTarget = CMTime(seconds: t, preferredTimescale: 600)
     seekTargetExact = exact
+    seekTargetTolerance = MCSeekCompletionState.tolerance(
+      exact: exact, milliseconds: toleranceMs)
     nudgeAnchor = .invalid
     // 合成器的拖曳模式跟著 seek 節奏走：暫停中的寬容發＝手指在動，
     // 精準發＝停手（播放／暫停也會關，見 play/pause）
@@ -7534,15 +7837,19 @@ final class CompPlayer: NSObject, FlutterTexture {
     // 這裡直接放棄，結果是「切割之後預覽跳回前段」：時間軸停在 2.8 秒，
     // 畫面卻是第 0 秒。改成等它 ready 再送
     guard player.currentItem?.status == .readyToPlay else {
-      if chaseWaits >= 40 {
+      if player.currentItem == nil || player.currentItem?.status == .failed
+        || chaseWaits >= 40 {
         seeking = false
         chaseWaits = 0
+        seekTarget = .invalid
+        seekCompletion.finish(seekCompletion.generation, succeeded: false)
         return
       }
       chaseWaits += 1
       seeking = true
+      let lifecycle = seekLifecycle
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-        guard let self = self else { return }
+        guard let self = self, lifecycle == self.seekLifecycle else { return }
         self.seeking = false
         self.chase()
       }
@@ -7551,6 +7858,10 @@ final class CompPlayer: NSObject, FlutterTexture {
     chaseWaits = 0
     let t = seekTarget
     let exact = seekTargetExact
+    let tolerance = seekTargetTolerance
+    let request = seekCompletion.generation
+    let lifecycle = seekLifecycle
+    let item = player.currentItem
     seekTarget = .invalid
     seeking = true
     // 上一次停手排的預捲還在跑：先取消，別讓它跟這發 seek 搶解碼器
@@ -7558,27 +7869,32 @@ final class CompPlayer: NSObject, FlutterTexture {
       prerollArmed = false
       player.cancelPendingPrerolls()
     }
-    seekStart = CACurrentMediaTime()
-    // 鎖幀（拖曳與停手同一個容差，見 seek）：密關鍵幀代理最多多解 3 格
-    player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) {
+    let seekStart = CACurrentMediaTime()
+    player.seek(to: t, toleranceBefore: tolerance, toleranceAfter: tolerance) {
       [weak self] ok in
       // 完成回呼在 AVFoundation 的背景佇列跑，seeking/seekTarget
       // 卻是主執行緒（method channel）在寫——無鎖交錯下最後那發
       // 「停手精準 seek」可能被安靜吞掉、seeking 卡在 true 之後
       // 全部 seek 都被合併。整段跳回主執行緒，狀態單線化
       DispatchQueue.main.async {
-        guard let self = self else { return }
+        guard let self = self, lifecycle == self.seekLifecycle else { return }
+        guard self.player.currentItem === item else {
+          self.cancelSeekRequests()
+          return
+        }
         if self.seekMs.count < 400 {
           self.seekMs.append(
-            Int((CACurrentMediaTime() - self.seekStart) * 1000))
+            Int((CACurrentMediaTime() - seekStart) * 1000))
         }
         self.seekDone += 1
         self.seeking = false
+        self.seekCompletion.finish(request, succeeded: ok)
         // 定位落地（沒被下一發打斷）：換手中的新畫面可以翻上來了
         if ok { PlayerHosts.shared.release(self.player) }
         if self.seekTarget.isValid {
           self.chase()  // 手指又動了，追過去
-        } else if exact, self.player.rate == 0,
+        } else if ok, exact, request == self.seekCompletion.generation,
+          self.player.rate == 0,
           self.player.currentItem?.status == .readyToPlay,
           CACurrentMediaTime() - self.lastNudgeAt > 0.5
         {
@@ -7861,10 +8177,12 @@ final class CompPlayer: NSObject, FlutterTexture {
   }
 
   func dispose() {
+    cancelSeekRequests()
     disposeWatch()
     PlayerHosts.shared.release(player)
     // 重產閉包抓著整組合成軌，不放掉的話合成跟著這顆殭屍活著
     vcRegen = nil
+    visibilityState = nil
     if let o = stallObs {
       NotificationCenter.default.removeObserver(o)
       stallObs = nil

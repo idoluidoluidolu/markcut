@@ -47,6 +47,8 @@ import '../services/video_processor.dart';
 import '../services/watermark_renderer.dart';
 import '../services/text_mark_painter.dart';
 import '../services/work_files.dart';
+import '../services/thumbnail_preparation.dart';
+import '../services/scrub_visibility.dart';
 import '../theme.dart';
 import '../widgets/color_grade_panel.dart';
 import '../widgets/kaomoji_sheet.dart';
@@ -758,6 +760,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _dressUp() async {
     if (!_tl.sources.any((s) => s.isVideo)) return;
     if (!_waitForPreparation) {
+      final entryWatch = Stopwatch()..start();
       // Metadata is enough to construct the timeline. Do not wait for the
       // entire movie, thumbnail strip, or background proxy before editing.
       for (var i = 0; i < _tl.sources.length && mounted; i++) {
@@ -765,8 +768,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       await _resolveHdrAvail();
       if (!mounted) return;
+      final classificationMs = entryWatch.elapsedMilliseconds;
       await _ensureComp();
       if (!mounted) return;
+      Diag.note(
+        '進場分段：HDR 分類 ${classificationMs}ms／首合成 '
+        '${entryWatch.elapsedMilliseconds - classificationMs}ms'
+        '（不含選取器與相簿取檔；不等整支代理）',
+      );
       _requestScrubFrames();
       unawaited(_thumbsAfterPrep());
       _dressVN.value = 1;
@@ -892,6 +901,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   DateTime _tlFingersAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   void _pinchDown(PointerDownEvent e) {
+    _scrubRevision++;
+    _cancelScrubAlignment();
+    if (_scrubbing) {
+      _scrubEndTimer?.cancel();
+      _scrubEndTimer = Timer(const Duration(milliseconds: 220), _tryEndScrub);
+    }
     if (_tlFingers > 0 &&
         DateTime.now().difference(_tlFingersAt).inSeconds > 3) {
       _tlFingers = 0;
@@ -1242,6 +1257,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _thumbs.remove(i);
       _scrubBytes -= _scrubBytesOf(i);
       _scrubFrames.remove(i);
+      _scrubFrameTimes.remove(i);
       _scrubDecoders.remove(i)?.dispose();
       _decoderLru.remove(i);
       _nfLatest.remove(i);
@@ -3028,8 +3044,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           // 後面幾支在遮罩下陸續接上
           if (ok && first) {
             first = false;
+            Diag.ev('首支影片中繼資料已接入，開始準備預覽');
             await _dressUp();
             if (!mounted) return;
+            Diag.ev('首支預覽準備返回，開放編輯器');
           }
           setState(() => _ready = true);
         }
@@ -3071,6 +3089,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final t = (edge ?? raw).clamp(0.0, _tl.duration);
     if ((t - _position).abs() < 0.001) return;
     _position = t; // 位置 UI 由 _posVN 小範圍重繪，不整頁 setState
+    _scrubRevision++;
     _scrubProbeBegin(); // 要在 _scrubbing 翻 true 之前（它靠這個認起手）
     _scrubbing = true;
     if (_compOn) {
@@ -3200,7 +3219,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     } else {
       _compExactAt = null;
     }
-    unawaited(_comp!.seek(_position, exact: exact));
+    // 原檔快取尚未到位時仍會走這裡，不能套用密代理的零容差。
+    final raw = _tl
+        .videosAt(_position)
+        .any(
+          (c) =>
+              !_hiddenTracks.contains(c.track) &&
+              _compRawSources.contains(c.sourceIndex),
+        );
+    unawaited(
+      _comp!.seek(
+        _position,
+        exact: exact,
+        toleranceMs: !exact && raw ? 150 : 0,
+      ),
+    );
   }
 
   void _scrubSeek({bool force = false}) {
@@ -3249,6 +3282,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _tlScroll.jumpTo(
       (_position * _pxPerSec).clamp(0.0, _tlScroll.position.maxScrollExtent),
     );
+    _suppressScroll = false;
+  }
+
+  /// 新動作取消前一手的對齊動畫，也釋放它持有的捲動抑制。
+  /// 先在抑制期間 jumpTo 停掉動畫，避免舊動畫通知被誤當成新拖曳。
+  void _cancelScrubAlignment() {
+    if (!_suppressScroll) return;
+    if (_tlScroll.hasClients) _tlScroll.jumpTo(_tlScroll.offset);
     _suppressScroll = false;
   }
 
@@ -3777,6 +3818,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (i < 0 || i >= _tl.sources.length) continue;
         _scrubBytes -= _scrubBytesOf(i);
         _scrubFrames.remove(i);
+        _scrubFrameTimes.remove(i);
         _scrubDecoders.remove(i)?.dispose();
         _decoderLru.remove(i);
         _ensureScrubSlots(i, _tl.sources[i].duration);
@@ -4208,6 +4250,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 抽幀快取是從原檔抽的，換素材之後要重抽（工作檔解得快得多）
     _scrubBytes -= _scrubBytesOf(srcIndex);
     _scrubFrames.remove(srcIndex);
+    _scrubFrameTimes.remove(srcIndex);
     _scrubDecoders.remove(srcIndex)?.dispose();
     _ensureScrubSlots(srcIndex, _tl.sources[srcIndex].duration);
     _thumbs.remove(srcIndex);
@@ -4243,6 +4286,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 抽好第一段（幾秒內）就能順順拖那一段
   final Map<int, List<Uint8List?>> _scrubFrames = {};
 
+  /// 格子仍以請求 slot 去重，另外保存實際來源時間；null 是平台未回報，
+  /// 不能當成「正好等於請求時間」。已知偏遠幀不拿來遮住對時中的影片。
+  final Map<int, List<double?>> _scrubFrameTimes = {};
+
   /// 拖曳快取的記帳與預算：每格 JPEG 累計 bytes，超過預算就把最久
   /// 沒碰的素材整組清空（格子留著，之後滑到再抽）。以前完全不清——
   /// 多素材的專案滑過一輪，幾百 MB 就一直掛著不走，峰值 400MB
@@ -4277,7 +4324,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 換一個全新的空陣列：背景抽幀用 identical() 認舊陣列，
       // 看到被換掉就會自己停，不會往清空的格子繼續塞
       _scrubFrames[idx] = List<Uint8List?>.filled(slots.length, null);
+      _scrubFrameTimes.remove(idx);
       _nfLatest.remove(idx);
+      _nfLatestT.remove(idx);
       _scrubDecoders.remove(idx)?.dispose();
       _decoderLru.remove(idx);
       Diag.count('拖曳快取回收');
@@ -4337,50 +4386,50 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   bool _scrubbing = false;
+  int _scrubRevision = 0;
+  int? _settlingScrubRevision;
+  int? _retriedScrubRevision;
 
-  /// 滑動偵探：手勢起點時間與合成播放器的計數（seek 落地幾發／合併
-  /// 幾發／合成器交了幾格）——結束時相減，算出「這一手每秒滑出幾張
-  /// 不同的畫面」。「滑動卡」直接分辨是 seek 慢（發數少）還是被合併
-  ///（手指快過 seek）。畫面只有合成播放器一個（引擎永遠不上台），
-  /// 量引擎的渲染數是空的。一個手勢只量一次：原本每個捲動事件都重起，
-  /// 等於每個事件多一次原生呼叫，而且量到的永遠只有最後 220ms
+  /// 一次手勢只讀起訖兩次計數。CI 完成量包含背景代理，不能當成
+  /// 螢幕幀率；起訖必須屬於同一顆播放器，且舊讀值不可污染新手勢。
   DateTime? _scrubT0;
-  ({int seeks, int coalesced, int frames}) _scrubC0 = (
-    seeks: 0,
-    coalesced: 0,
-    frames: 0,
-  );
+  CompPlayer? _scrubProbeComp;
+  Future<({int seeks, int coalesced, int frames})>? _scrubCountersStart;
 
   void _scrubProbeBegin() {
     if (_scrubbing) return; // 手勢進行中（呼叫端在翻 _scrubbing 之前叫）
     _scrubT0 = DateTime.now();
-    _scrubC0 = (seeks: 0, coalesced: 0, frames: 0);
     final comp = _comp;
-    if (comp == null) return;
-    unawaited(comp.scrubCounters().then((c) => _scrubC0 = c));
+    _scrubProbeComp = comp;
+    _scrubCountersStart = comp?.scrubCounters();
   }
 
   void _scrubProbeEnd() {
     final t0 = _scrubT0;
     if (t0 == null) return;
+    final comp = _scrubProbeComp;
+    final start = _scrubCountersStart;
     _scrubT0 = null;
+    _scrubProbeComp = null;
+    _scrubCountersStart = null;
     final ms = DateTime.now().difference(t0).inMilliseconds;
     if (ms < 120) return; // 點一下不算滑
-    final comp = _comp;
-    if (comp == null) return;
-    final c0 = _scrubC0;
+    if (comp == null || start == null) return;
+    if (_comp != comp) {
+      Diag.note('🖐 滑動 ${ms}ms：播放器已更換，本次不比較');
+      return;
+    }
     unawaited(
-      comp.scrubCounters().then((c) {
-        final seeks = c.seeks - c0.seeks;
-        final merged = c.coalesced - c0.coalesced;
-        // 掛了合成器時「交格數」才是真的換了幾張畫面；沒掛（硬體直送）
-        // 交格數不動，就拿 seek 數當畫面數（密關鍵幀鎖幀＝每發一格）
-        final frames = c.frames - c0.frames;
-        final shown = frames > 0 ? frames : seeks;
-        final fps = (shown * 1000 / ms).toStringAsFixed(0);
+      Future.wait([start, comp.scrubCounters()]).then((counts) {
+        final c0 = counts[0];
+        final c = counts[1];
         Diag.note(
-          '🖐 滑動 ${ms}ms：seek $seeks 發（合併 $merged）'
-          '／畫面 $shown 張（$fps 張/秒）',
+          Diag.scrubSummary(
+            milliseconds: ms,
+            seeks: c.seeks - c0.seeks,
+            coalesced: c.coalesced - c0.coalesced,
+            compositorFrames: c.frames - c0.frames,
+          ),
         );
       }),
     );
@@ -4649,8 +4698,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     Diag.peak('同時抽縮圖帶', _thumbActive);
     try {
       if (!kIsWeb) {
-        final t = await nativeStrip(path, dur, 10, maxH: 200);
+        final t = <Uint8List>[];
+        for (var frame = 0; frame < 10 && mounted; frame++) {
+          if (_previewInteracting || _prepBusy || _hdrPrepBusy) {
+            await _waitForThumbnailStrip();
+            if (!mounted) return t;
+          }
+          final bytes = await nativeFrameAt(
+            path,
+            dur * (frame + 0.5) / 10,
+            maxH: 200,
+          );
+          if (bytes != null) t.add(bytes);
+        }
         if (t.isNotEmpty) return t;
+      }
+      if (!mounted) return [];
+      if (_previewInteracting || _prepBusy || _hdrPrepBusy) {
+        await _waitForThumbnailStrip();
+        if (!mounted) return [];
       }
       return await engine.makeThumbnails(path, dur, 10, fastDecode: true);
     } finally {
@@ -4659,41 +4725,109 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
   }
 
-  /// 遮罩收掉之後補縮圖帶：一支一支、從代理／工作檔抽。
-  /// 匯入當下不抽（見 _importVideoMeta）
+  /// 先讓每支片段有一張封面，再於預覽閒置時補完整縮圖帶。
   bool _thumbsPreparing = false;
+
+  String _thumbnailPath(MediaSource source) =>
+      source.workHdrPath ?? source.previewPath;
+
+  List<MediaSource> _thumbnailSourcesByPriority() {
+    final priority = <int, ({int group, int track})>{};
+    for (final clip in _tl.clips) {
+      final index = clip.sourceIndex;
+      if (index < 0 ||
+          index >= _tl.sources.length ||
+          !_tl.sources[index].isVideo) {
+        continue;
+      }
+      final hidden = _hiddenTracks.contains(clip.track);
+      final active = clip.offset <= _position && _position < clip.end;
+      final group = hidden ? 2 : (active ? 0 : 1);
+      final prior = priority[index];
+      if (prior == null ||
+          group < prior.group ||
+          (group == prior.group && clip.track > prior.track)) {
+        priority[index] = (group: group, track: clip.track);
+      }
+    }
+    final indices = priority.keys.toList()
+      ..sort((a, b) {
+        final left = priority[a]!;
+        final right = priority[b]!;
+        final group = left.group.compareTo(right.group);
+        if (group != 0) return group;
+        final track = right.track.compareTo(left.track);
+        return track != 0 ? track : a.compareTo(b);
+      });
+    return [for (final index in indices) _tl.sources[index]];
+  }
+
+  int _thumbnailCount(MediaSource source) {
+    final index = _tl.sources.indexOf(source);
+    return index < 0 ? 0 : (_thumbs[index]?.length ?? 0);
+  }
+
+  Future<void> _waitForThumbnailStrip() async {
+    while (mounted) {
+      await _waitForPreviewIdle();
+      if (!mounted || (!_prepBusy && !_hdrPrepBusy)) return;
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+  }
 
   Future<void> _thumbsAfterPrep() async {
     if (_thumbsPreparing) return;
     _thumbsPreparing = true;
     try {
       final sw = Stopwatch()..start();
-      var n = 0;
-      for (var i = 0; i < _tl.sources.length && mounted; i++) {
-        final s = _tl.sources[i];
-        if (!s.isVideo || (_thumbs[i]?.length ?? 0) >= 10) continue;
-        if (_prepBusy && (_thumbs[i]?.isNotEmpty ?? false)) continue;
-        if (!_tl.clips.any((c) => c.sourceIndex == i)) continue;
-        if (!_waitForPreparation) {
-          await _waitForPreviewIdle();
+      var coverCount = 0;
+      var stripCount = 0;
+      await prepareTimelineThumbnails<MediaSource>(
+        items: _thumbnailSourcesByPriority,
+        alive: () => mounted,
+        canLoadCover: () => !_playing && !_exporting,
+        needsCover: (source) => _thumbnailCount(source) == 0,
+        needsStrip: (source) => _thumbnailCount(source) < 10,
+        waitForStrip: _waitForThumbnailStrip,
+        load: (source, coverOnly) async {
+          final path = _thumbnailPath(source);
+          List<Uint8List> frames;
+          if (coverOnly && !kIsWeb) {
+            // The opening keyframe identifies a clip without seeking through
+            // a long 4K GOP. Only one cover request is in flight at a time.
+            final cover = await nativeFrameAt(path, 0, maxH: 200, tolMs: 1000);
+            frames = [?cover];
+          } else if (coverOnly) {
+            frames = await engine.makeThumbnails(
+              path,
+              math.min(source.duration, 0.2),
+              1,
+              fastDecode: true,
+            );
+          } else {
+            frames = await _thumbStrip(path, source.duration);
+          }
           if (!mounted) return;
-        }
-        // While proxies are being prepared, one cover is enough to identify a
-        // clip. Do not scan ten distant 4K frames alongside a hardware encode.
-        final t = _prepBusy && !kIsWeb
-            ? await nativeStrip(s.previewPath, math.min(s.duration, 0.2), 1)
-            : await _thumbStrip(s.previewPath, s.duration);
-        if (!mounted) return;
-        n++;
-        if (t.isNotEmpty &&
-            i < _tl.sources.length &&
-            identical(_tl.sources[i], s)) {
-          setState(() => _thumbs[i] = t);
-        }
-      }
+          final index = _tl.sources.indexOf(source);
+          // A removed source, or an original replaced by a proxy while decoding,
+          // must not write a stale cover into another clip's slot.
+          if (index < 0 || path != _thumbnailPath(source)) return;
+          if (frames.isNotEmpty && frames.length >= _thumbnailCount(source)) {
+            if (coverOnly) {
+              coverCount++;
+            } else {
+              stripCount++;
+            }
+            setState(() => _thumbs[index] = frames);
+          }
+        },
+      );
       // 匯入分段的尾巴：縮圖帶不擋進場，但它跟播放搶解碼器，量多久
-      if (n > 0) {
-        Diag.note('匯入分段：縮圖帶（進場後）$n 支 ${sw.elapsedMilliseconds}ms');
+      if (coverCount + stripCount > 0) {
+        Diag.note(
+          '匯入分段：封面 $coverCount 支／縮圖帶 $stripCount 支 '
+          '${sw.elapsedMilliseconds}ms（含閒置等待）',
+        );
       }
     } finally {
       _thumbsPreparing = false;
@@ -4712,15 +4846,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 按需抽幀：滑到哪、跟系統的硬體解碼器要哪一格。
   /// 一次只飛一個請求，永遠抽「最新想要的」那格——手指比解碼快時，
   /// 中間滑過的格子直接跳過，不排隊（排了也只是顯示過期的畫面）
-  late final _scrubQueue = ScrubFrameQueue<Uint8List>(
+  late final _scrubQueue = ScrubFrameQueue<NativeFrameSample>(
     canRun: () => mounted && !_playing && !_exporting,
-    load: (w) => nativeFrameAt(
+    load: (w) => nativeFrameAtDetailed(
       w.path,
       w.seconds,
       maxH: _scrubLongSide,
-      // 原檔期（工作檔還在背景轉）關鍵幀貼齊、工作檔才逐格精準——
-      // 原檔的 GOP 一兩秒，精準抽一格要解幾十張 4K，跟背景轉檔搶解碼器
-      // 就是「匯入多支進去馬上滑超頓」（見 scrubFrameTolMs）
+      // 原檔允許有限時間偏差；回傳的 actualTime 決定能否拿來粗覽。
       tolMs: scrubFrameTolMs(
         rawSource: _scrubsRawSource(w),
         duration: w.source < _tl.sources.length
@@ -4784,6 +4916,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return true;
   }
 
+  List<TimelineClip> get _scrubVideoCandidates => scrubVideoCandidates(
+    _tl,
+    time: _position,
+    canvasAspect: _canvasAspectNow,
+    hiddenTracks: _hiddenTracks,
+    knownOpaquePaths: _compOn ? _comp!.knownOpaquePaths : const {},
+  );
+
   void _requestScrubFrames() {
     if (kIsWeb || !Diag.scrubPrefetch.value) return;
     // 舊閘門「引擎瞬滑取代按需抽幀」已拆：引擎在合成模式永不上台，
@@ -4797,8 +4937,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     final wanted = <ScrubFrameRequest>[];
     final neighbours = <ScrubFrameRequest>[];
-    for (final c in _tl.videosAt(_position)) {
-      if (_hiddenTracks.contains(c.track)) continue;
+    for (final c in _scrubVideoCandidates) {
       if (c.reverse) continue; // 簡易倒轉走密集快取
       final src = _tl.sourceOf(c);
       if (src.duration <= 0) continue;
@@ -4828,15 +4967,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _scrubQueue.request([...wanted, ...neighbours]);
   }
 
-  void _acceptScrubFrame(ScrubFrameRequest w, Uint8List bytes) {
+  void _acceptScrubFrame(ScrubFrameRequest w, NativeFrameSample frame) {
     if (w.source >= _tl.sources.length) return;
     final src = _tl.sources[w.source];
     if (src.previewPath != w.path) return; // Replaced/deleted while decoding.
     final slots = _scrubFrames[w.source];
     if (slots == null || w.slot >= slots.length) return;
+    final bytes = frame.bytes;
     _noteScrubTouch(w.source);
     if (slots[w.slot] == null) {
       slots[w.slot] = bytes;
+      final times = _scrubFrameTimes.putIfAbsent(
+        w.source,
+        () => List<double?>.filled(slots.length, null),
+      );
+      times[w.slot] = frame.actualSeconds;
       _scrubBytes += bytes.length;
       _trimScrubBudget();
     }
@@ -4848,12 +4993,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (active.any(
       (c) =>
           (c.sourceTimeAt(_position) / src.duration * slots.length)
-              .floor()
-              .clamp(0, slots.length - 1) ==
-          w.slot,
+                  .floor()
+                  .clamp(0, slots.length - 1) ==
+              w.slot &&
+          frame.usableForPreviewAt(c.sourceTimeAt(_position)),
     )) {
       _nfLatest[w.source] = bytes;
-      _nfLatestT[w.source] = w.seconds;
+      if (frame.actualSeconds case final actual?) {
+        _nfLatestT[w.source] = actual;
+      } else {
+        _nfLatestT.remove(w.source);
+      }
     }
     if (_scrubbing) _pokeFrame();
   }
@@ -4873,6 +5023,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final step = dur / n;
     final slots = List<Uint8List?>.filled(n, null);
     _scrubFrames[srcIndex] = slots;
+    _scrubFrameTimes.remove(srcIndex);
     // 每段約 6 秒，抽完立刻可用、逐段補滿。
     // 播放或拖曳中先暫停：抽幀跟播放搶 CPU 會讓畫面跳針
     final segFrames = (_scrubFps * 6).round();
@@ -4932,12 +5083,33 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return null;
   }
 
+  bool _usableScrubSlot(int source, int slot, double seconds) {
+    final frames = _scrubFrames[source];
+    if (frames == null ||
+        slot < 0 ||
+        slot >= frames.length ||
+        frames[slot] == null) {
+      return false;
+    }
+    final times = _scrubFrameTimes[source];
+    final actual = times != null && slot < times.length ? times[slot] : null;
+    // 舊平台沒有 PTS 的結果只作粗覽；已知時間不得越過容許偏差。
+    return actual == null || (actual - seconds).abs() <= 0.25;
+  }
+
+  int? _previewScrubSlot(int source, int wanted, double seconds) {
+    for (var d = 0; d <= 3; d++) {
+      final a = wanted - d;
+      if (_usableScrubSlot(source, a, seconds)) return a;
+      final b = wanted + d;
+      if (d > 0 && _usableScrubSlot(source, b, seconds)) return b;
+    }
+    return null;
+  }
+
   /// 這個時間點附近有快取幀嗎（有 → 拖曳零 seek）
   bool get _activeScrubCached {
-    final vids = _tl
-        .videosAt(_position)
-        .where((c) => !_hiddenTracks.contains(c.track))
-        .toList();
+    final vids = _scrubVideoCandidates;
     if (vids.isEmpty) return false;
     for (final c in vids) {
       final slots = _scrubFrames[c.sourceIndex];
@@ -4953,7 +5125,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       var found = false;
       for (var d = -3; d <= 3; d++) {
         final i = fi + d;
-        if (i >= 0 && i < slots.length && slots[i] != null) {
+        if (_usableScrubSlot(c.sourceIndex, i, c.sourceTimeAt(_position))) {
           found = true;
           break;
         }
@@ -4974,6 +5146,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 放手（220ms 沒新事件）→ 收掉快取幀、換回真影片畫面。
   /// seek 還在跑就再等一下，避免閃回舊畫面。
   void _tryEndScrub() {
+    if (!mounted || !_scrubbing || _playing) return;
     // 手指還壓在時間軸上就不收尾。
     //
     // 「暫停後往右滑不動」就是這裡來的：手指停頓超過 220ms（正在
@@ -4990,6 +5163,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _scrubEndTimer = Timer(const Duration(milliseconds: 80), _tryEndScrub);
       return;
     }
+    final revision = _scrubRevision;
+    if (_settlingScrubRevision == revision) return;
+    _settlingScrubRevision = revision;
     // 放手：拖曳中播放頭黏在剪接點上時，捲動位置會跟播放頭差一點點
     //（最多十來個像素），這裡把時間軸補回來對齊，畫面才不會歪著。
     // 播放頭本身不動，所以不會有「被吸回來」的感覺
@@ -5008,17 +5184,42 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               curve: Curves.easeOut,
             )
             .whenComplete(() {
+              if (!mounted || revision != _scrubRevision) return;
               _suppressScroll = false;
-              _scrubSeek(force: true);
             });
       }
     }
-    // 放手了：這時才對準那一格（拖曳中一律寬容，見 _compSeek）。
-    // 同一格只送一次（_compExactAt），上面對齊回彈那條也會再要一次
+    // 快取保持到精準定位真的落地；收件回覆不代表底下影片已換格。
     _scrubSettleTimer?.cancel();
-    _compSeek(exact: true);
     _scrubProbeEnd();
-    if (_scrubbing && mounted) setState(() => _scrubbing = false);
+    unawaited(_finishScrub(revision));
+  }
+
+  Future<void> _finishScrub(int revision) async {
+    final player = _compOn ? _comp : null;
+    final at = _position;
+    final landed = player == null || await player.seekSettled(at);
+    if (!mounted || revision != _scrubRevision || _playing || !_scrubbing) {
+      return;
+    }
+    _settlingScrubRevision = null;
+    if (player != (_compOn ? _comp : null)) {
+      // 等待期間換了播放器，交給新播放器重新確認落點。
+      _scrubEndTimer = Timer(const Duration(milliseconds: 80), _tryEndScrub);
+      return;
+    }
+    if (!landed) {
+      if (_retriedScrubRevision != revision) {
+        _retriedScrubRevision = revision;
+        _scrubEndTimer = Timer(const Duration(milliseconds: 80), _tryEndScrub);
+        return;
+      }
+      // 只重試一次；保留最後快取，不無限排 seek。新手勢或播放可接手。
+      Diag.count('拖曳精準定位未完成');
+      return;
+    }
+    if (player != null) _compExactAt = at;
+    setState(() => _scrubbing = false);
   }
 
   /// 這個檔是影片嗎。優先看 mimeType，拿不到就退回看副檔名
@@ -8240,6 +8441,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 因為那些是提早 1.2 秒預先對位過的（見 _syncMedia 的 pre-roll）
   Future<void> _play() async {
     if (_visDur <= 0) return;
+    _scrubRevision++;
+    _cancelScrubAlignment();
     final epoch = ++_playbackEpoch;
     bool cancelled() => !mounted || epoch != _playbackEpoch;
     _scrubQueue.clear();
@@ -8285,8 +8488,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 遠距（例如片尾歸零重播）：先 seek 完成才 play——順序反了
         // 的話 play 在片尾立即自停、seek 完成後沒人再叫 play，
         // 播放器停在新位置永遠不動（實測：播完再按播放沒反應）
-        await player.seek(_position);
+        final landed = await player.seekSettled(_position);
         if (compCancelled()) return;
+        if (!landed) {
+          Diag.count('播放前定位未完成');
+          setState(() => _playing = false);
+          return;
+        }
       }
       await player.setRate(_speed);
       if (compCancelled()) return;
@@ -8306,6 +8514,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       await MetalPreview.reattach();
       if (compCancelled()) return;
       final msYield = swPlay.elapsedMilliseconds - msOvSync;
+      // 必須取定位之後的位置；否則片尾歸零的 seek 會被誤算成播放前進。
+      final p0 = await player.position();
+      if (compCancelled()) return;
       final st = await player.play();
       if (compCancelled()) return;
       tr.log(
@@ -8315,22 +8526,29 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       );
       tr.log('系統播放器起播（狀態：${st ?? '？'}）');
       final sw = Stopwatch()..start();
-      final p0 = now;
+      var positionAdvanced = false;
       while (!compCancelled() && sw.elapsedMilliseconds < 400) {
         await Future<void>.delayed(const Duration(milliseconds: 16));
         if (compCancelled()) return;
         final p = await player.position();
         if (compCancelled()) return;
-        if ((p - p0).abs() > 0.001) {
-          tr.log('影格開始滾動（系統播放器）');
+        if (p - p0 > 0.001) {
+          positionAdvanced = true;
+          tr.log('播放位置開始前進（系統播放器，非首幀呈現確認）');
           break;
         }
+      }
+      if (!positionAdvanced) {
+        tr.log('⚠ 起播後 400ms 內未確認位置前進，等待逾時（不計成功延遲）');
       }
       // 影格滾起來了（或等超過 400ms 保底）：引擎的 pump 泊車，
       // 別跟播放搶解碼器；再壓一次隱藏（防原生端殘留在最上層）
       unawaited(MetalPreview.park());
       unawaited(MetalPreview.show(false));
-      Diag.notePlayLatency(sw.elapsedMilliseconds);
+      Diag.notePlayLatency(
+        swPlay.elapsedMilliseconds,
+        confirmed: positionAdvanced,
+      );
       // 等影格的這 400ms 裡使用者可能已經按了暫停（_pause 把 _playing
       // 翻回 false、播放器也停了）：這時再開時鐘與取樣器，就是播放器
       // 停著、指針自己往前走，取樣器還一直掛著
@@ -8405,10 +8623,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       lead ??= c;
     }
     if (lead != null && !kIsWeb) {
-      final p0 = await lead.positionNow();
+      var p0 = await lead.positionNow();
       if (cancelled() || !_playing) return;
       final sw = Stopwatch()..start();
       var sawBuffering = false;
+      var positionAdvanced = false;
       // 一格問一次就夠。20ms 一次的平台往返是在播放器最忙的時候一直
       // 插隊，等於自己拖慢自己
       while (!cancelled() && _playing && sw.elapsedMilliseconds < 250) {
@@ -8417,19 +8636,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (lead.value.isBuffering) sawBuffering = true;
         final p = await lead.positionNow();
         if (cancelled() || !_playing) return;
-        if (p != null && p != p0) {
+        if (p != null && p0 != null && p > p0) {
+          positionAdvanced = true;
           tr.log(
-            '影格開始滾動（位置從 ${p0?.inMilliseconds} 變成 '
+            '播放位置開始前進（位置從 ${p0.inMilliseconds} 變成 '
             '${p.inMilliseconds}ms）',
           );
           break;
         }
+        p0 ??= p;
       }
-      // 「按下播放到畫面真的動」——使用者說的「撥放延遲」就是這個數字。
-      // 記成第一級的統計，才比得出改動有沒有效
-      Diag.notePlayLatency(sw.elapsedMilliseconds, buffering: sawBuffering);
-      if (sw.elapsedMilliseconds >= 250) {
-        tr.log('⚠ 等了 250ms 影格還沒動，直接開錶');
+      Diag.notePlayLatency(
+        swPlay.elapsedMilliseconds,
+        buffering: sawBuffering,
+        confirmed: positionAdvanced,
+      );
+      if (!positionAdvanced) {
+        tr.log('⚠ 起播後 250ms 內未確認位置前進，等待逾時（不計成功延遲）');
       }
       if (cancelled() || !_playing) return;
     }
@@ -8672,10 +8895,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 還在原檔上跑
     final vids = _tl.sources.where((s) => s.isVideo).toList();
     final ready = vids.where((s) => s.workPath != null).length;
+    final hdrReady = vids.where((s) => s.workHdrPath != null).length;
     tr.env(
-      '工作檔',
-      '${vids.length} 支素材，$ready 支已轉好'
+      '預覽工作檔',
+      '${vids.length} 支素材，SDR $ready 支／HDR 代理 $hdrReady 支已備妥'
           '${_prepping.isEmpty ? '' : '（${_prepping.length} 支轉檔中）'}',
+    );
+    unawaited(
+      readNativeFrameStats().then((stats) {
+        if (stats == null) return;
+        tr.env(
+          '原生抽幀器',
+          '${stats.active}/${stats.capacity} 顆；'
+              '建立 ${stats.created} 次／重用 ${stats.reused} 次（非顯示幀數）',
+        );
+      }),
     );
     unawaited(
       MediaPrep.available.then((v) => tr.env('轉檔通道', v ? '可用' : '沒接上（一律用原檔）')),
@@ -9148,6 +9382,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 刻度尺點按／拖曳：走拖曳管線（快取幀＋節流 seek），
   /// 不能每個手指事件都直接 seek（那也是一種 seek 風暴）
   void _seekScrub(double t) {
+    _scrubRevision++;
+    _cancelScrubAlignment();
     if (_playing) _pause();
     _position = t.clamp(0.0, _tl.duration);
     // 跟捲動時間軸同一套：靠近素材頭尾就當場吸住，換卡榫震一下
@@ -10261,6 +10497,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   @override
   void dispose() {
+    _scrubRevision++;
     // 草稿還有沒落地的併批寫入：離開前補存，不能讓最後幾秒的編輯蒸發。
     // force：unmount 之後 mounted 必為 false，不帶的話這筆補存永遠
     // 走不到寫入那一行
@@ -10269,6 +10506,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _saveDraftNow(force: true);
     }
     _scrubQueue.dispose();
+    unawaited(releaseNativeFrames());
     if (_prepBusy && !_exporting) Diag.stopSampling();
     _frameSettle?.cancel();
     _playProbe?.cancel();
@@ -10350,6 +10588,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _scrubDecoders.clear();
     _decoderLru.clear();
     _scrubFrames.clear();
+    _scrubFrameTimes.clear();
     _scrubBytes = 0;
     _nfLatest.clear();
     _nfLatestT.clear();
@@ -11846,7 +12085,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                         Uint8List? fb;
                                         final lt = _nfLatestT[cur.sourceIndex];
                                         if (lt != null &&
-                                            (lt - t0).abs() <= 0.35) {
+                                            (lt - t0).abs() <= 0.25) {
                                           fb = _nfLatest[cur.sourceIndex];
                                         }
                                         final fs =
@@ -11859,12 +12098,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               (t0 / src0.duration * fs.length)
                                                   .floor()
                                                   .clamp(0, fs.length - 1);
-                                          fb =
-                                              fs[fi] ??
-                                              _nfLatest[cur.sourceIndex] ??
-                                              _nearestFrame(fs, fi);
+                                          final slot = _previewScrubSlot(
+                                            cur.sourceIndex,
+                                            fi,
+                                            t0,
+                                          );
+                                          if (slot != null) fb = fs[slot];
                                         }
-                                        fb ??= _nfLatest[cur.sourceIndex];
                                         if (fb != null) {
                                           addLayer(
                                             vidTrack,
@@ -11872,6 +12112,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               rect: layerBox(cur, src0.aspect),
                                               child: Image.memory(
                                                 fb,
+                                                key: ValueKey(
+                                                  'scrub-cache-${cur.id}',
+                                                ),
                                                 fit: BoxFit.fill,
                                                 gaplessPlayback: true,
                                               ),
@@ -12028,13 +12271,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                                   frames.length -
                                                                       1,
                                                                 );
+                                                        final slot =
+                                                            _previewScrubSlot(
+                                                              c.sourceIndex,
+                                                              fi,
+                                                              c.sourceTimeAt(
+                                                                pos,
+                                                              ),
+                                                            );
+                                                        if (slot == null) {
+                                                          return const SizedBox.shrink();
+                                                        }
                                                         final dec = _decoderFor(
                                                           c.sourceIndex,
                                                           frames,
                                                         );
-                                                        dec.focus(fi);
+                                                        dec.focus(slot);
                                                         // 已經解好的：直接貼材質，UI 執行緒零解碼
-                                                        final img = dec[fi];
+                                                        final img = dec[slot];
                                                         if (img != null) {
                                                           return RawImage(
                                                             image: img,
@@ -12045,13 +12299,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                           );
                                                         }
                                                         // 還沒解好（剛拖到很遠的位置）先用位元組頂著
-                                                        final f =
-                                                            _nearestFrame(
-                                                              frames,
-                                                              fi,
-                                                            ) ??
-                                                            _nfLatest[c
-                                                                .sourceIndex];
+                                                        final f = frames[slot];
                                                         if (f == null) {
                                                           return const SizedBox.shrink();
                                                         }

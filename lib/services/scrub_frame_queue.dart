@@ -3,20 +3,15 @@ import 'dart:math' as math;
 
 /// 抽一格拖曳幀允許差幾毫秒（給原生 AVAssetImageGenerator 的容忍值）。
 ///
-/// 工作檔（密關鍵幀）：0.15 秒——就近取材、幾乎逐格精準，這是原本的值。
-/// 原檔（秒進期間工作檔還在背景轉）：整支長度＝直接拿最近的關鍵幀。
-///
-/// 手機錄的 HEVC 一個 GOP 一到兩秒，150ms 的容忍逼得解碼器從前一個
-/// 關鍵幀一路解到目標——4K 一格就是幾十張、幾百毫秒，還跟背景轉檔搶
-/// 同一顆硬體解碼器；一次匯入好幾支就是「進去馬上滑超頓、要等一陣子
-///（其實是等工作檔轉好）才回覆」（實測回報）。關鍵幀貼齊一格只解一張，
-/// 滑動中畫面粗一點（在關鍵幀之間跳）沒關係——手一停，收尾那一發精準
-/// seek（_tryEndScrub）會把正確的那格帶出來。
-/// Android 的抽幀器本來就只拿關鍵幀，這個值對它沒作用
+/// 工作檔維持 150ms；原檔最多 250ms，放寬少量解碼彈性，同時限制
+/// 畫面與播放頭的偏差。容差不保證回傳最近的關鍵幀；原生尚未回報
+/// actualTime，不能放寬到整支長度後把任意時間的影格當成指定格。
+/// Android 的抽幀器只拿關鍵幀，這個值對它沒作用。
 int scrubFrameTolMs({required bool rawSource, required double duration}) {
   const fine = 150;
   if (!rawSource) return fine;
-  return math.max(fine, (duration * 1000).ceil());
+  if (!duration.isFinite || duration <= 0) return fine;
+  return math.min(250, math.max(fine, (duration * 1000).ceil()));
 }
 
 /// A single decoder follows the latest viewport. Requests replaced while a

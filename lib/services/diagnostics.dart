@@ -48,6 +48,7 @@ class Diag {
     _evs.add('${(t / 1000).toStringAsFixed(2)}s  $msg');
     if (_evs.length > 90) _evs.removeAt(0);
   }
+
   static Timer? _sampler;
 
   /// 上次執行沒有正常結束時留下的現場（開 App 時讀一次）
@@ -326,26 +327,50 @@ class Diag {
     if (now > (_peaks[key] ?? 0)) _peaks[key] = now;
   }
 
-  /// 按下播放到畫面真的動（毫秒）。使用者說的「撥放延遲」就是它——
-  /// 一直被我讀成「卡頓」而查錯方向，其實數字從第一份報告就在 trace 裡
+  /// 起播到讀到播放器位置前進（毫秒），不是螢幕首幀呈現時間。
+  /// 超過等待上限仍沒確認前進的樣本，不得當成成功延遲納入平均。
   static final List<int> playLatencies = [];
+  static int playConfirmationTimeouts = 0;
 
   /// 等待期間播放器有沒有回報「正在緩衝」。這是分辨「等的是資料」
   /// 還是「等的是別的東西」的關鍵——播放器自己說了算
   static int playBuffering = 0;
 
-  static void notePlayLatency(int ms, {bool buffering = false}) {
-    playLatencies.add(ms);
+  static void notePlayLatency(
+    int ms, {
+    bool buffering = false,
+    bool confirmed = true,
+  }) {
     if (buffering) playBuffering++;
+    if (!confirmed) {
+      playConfirmationTimeouts++;
+      return;
+    }
+    playLatencies.add(ms);
     if (playLatencies.length > 30) playLatencies.removeAt(0);
   }
 
   static String get playLatencyText {
-    if (playLatencies.isEmpty) return '還沒量到';
+    if (playLatencies.isEmpty) return '尚未確認位置前進';
     final sum = playLatencies.reduce((a, b) => a + b);
     return '按 ${playLatencies.length} 次：平均 ${sum ~/ playLatencies.length}ms'
         '／最久 ${playLatencies.reduce((a, b) => a > b ? a : b)}ms'
         '／最快 ${playLatencies.reduce((a, b) => a < b ? a : b)}ms';
+  }
+
+  /// CI 計數涵蓋背景代理轉檔，seek 完成也不代表螢幕已呈現。
+  /// 只報各自的工作量，不能由任何一項推算顯示 FPS。
+  static String scrubSummary({
+    required int milliseconds,
+    required int seeks,
+    required int coalesced,
+    required int compositorFrames,
+  }) {
+    if (seeks < 0 || coalesced < 0 || compositorFrames < 0) {
+      return '🖐 滑動 ${milliseconds}ms：計數器已重設，本次不比較';
+    }
+    return '🖐 滑動 ${milliseconds}ms：seek 完成 $seeks 發（合併 $coalesced）'
+        '／CI 完成 $compositorFrames 格（含背景工作，非螢幕幀率）';
   }
 
   /// 先把音訊 session 啟用起來（進編輯器時做一次）。
@@ -455,6 +480,9 @@ class Diag {
     playSamples = playStalls = worstStallMs = 0;
     syncCalls = syncTotalUs = syncWorstUs = 0;
     worstPlayingPlayers = 0;
+    playLatencies.clear();
+    playBuffering = 0;
+    playConfirmationTimeouts = 0;
   }
 
   static String report() {
@@ -469,7 +497,10 @@ class Diag {
       b.writeln('--- 上次執行 ---');
       b.writeln(crumbFromLastRun);
     }
-    b.writeln('按下播放到畫面動：$playLatencyText');
+    b.writeln('起播到位置前進（非首幀呈現）：$playLatencyText');
+    if (playConfirmationTimeouts > 0) {
+      b.writeln('起播確認逾時：$playConfirmationTimeouts 次（未納入延遲平均）');
+    }
     if (audioActivateMs >= 0) {
       b.writeln('音訊 session 啟用：${audioActivateMs}ms（進場時先付掉）');
     }
