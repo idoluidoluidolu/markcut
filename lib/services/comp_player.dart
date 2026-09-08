@@ -1316,7 +1316,7 @@ class CompPlayer {
       if (n != null) {
         b.write(
           '\n  催重畫：${m['nudgeInfo'] ?? '—'}'
-          '\n  定位 seek 回覆：$n 發／平均 ${m['seekAvgMs']}ms'
+          '\n  定位 seek 回覆取樣：$n 發／平均 ${m['seekAvgMs']}ms'
           '／一半在 ${m['seekP50Ms']}ms 內／九成在 ${m['seekP90Ms']}ms 內'
           '／最久 ${m['seekMaxMs']}ms／被合併掉 ${m['seekCoalesced']} 發',
         );
@@ -1325,8 +1325,8 @@ class CompPlayer {
         if (succeeded != null || unfinished != null) {
           b.write(
             [
-              if (succeeded != null) '／回報成功 ${succeeded.toInt()} 發',
-              if (unfinished != null) '／回報未完成 ${unfinished.toInt()} 發',
+            if (succeeded != null) '／累計回報成功 ${succeeded.toInt()} 發',
+            if (unfinished != null) '／累計回報未完成 ${unfinished.toInt()} 發',
             ].join(),
           );
         }

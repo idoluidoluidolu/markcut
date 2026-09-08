@@ -6131,10 +6131,17 @@ final class MCNativeScrubPlane {
   private var displayedFrame: MCNativeScrubCache.Frame?
   private var displayedValidity: (() -> Bool)?
   private(set) var visible = false
-  static var supported: Bool {
-    if #available(iOS 16.0, *) { return MTLCreateSystemDefaultDevice() != nil }
-    return false
+  static var presentationUnavailableReason: String? {
+    #if targetEnvironment(simulator)
+    // The Simulator Metal SDK omits MTLDrawable.addPresentedHandler. It cannot
+    // supply this feature's onscreen receipt, even when offscreen Metal works.
+    return "Drawable presentation callbacks are unavailable in the iOS Simulator SDK; run this display test on an iOS device."
+    #else
+    if #available(iOS 16.0, *), MTLCreateSystemDefaultDevice() != nil { return nil }
+    return "Native drawable presentation requires iOS 16 and a Metal device."
+    #endif
   }
+  static var supported: Bool { presentationUnavailableReason == nil }
   static func canPresent(in view: UIView) -> Bool {
     guard let window = view.window, !view.bounds.isEmpty,
       view.convert(view.bounds, to: window).intersects(window.bounds) else { return false }
@@ -6237,6 +6244,7 @@ final class MCNativeScrubPlane {
       guard self.current(id), valid() else {
         DispatchQueue.main.async { finish(false, "encoded-superseded") }; return
       }
+      #if !targetEnvironment(simulator)
       drawable.addPresentedHandler { [weak self] drawable in
         DispatchQueue.main.async {
           guard let self = self, self.current(id), valid()
@@ -6246,6 +6254,7 @@ final class MCNativeScrubPlane {
           finish(true, nil)
         }
       }
+      #endif
       command.addCompletedHandler { buffer in
         if buffer.status == .error {
           DispatchQueue.main.async { finish(false, "gpu: \(buffer.error?.localizedDescription ?? "unknown")") }

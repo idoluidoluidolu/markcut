@@ -104,8 +104,8 @@ void main() {
         contains('拖曳最近未完成：GPU 執行失敗 [gpu]: commandBuffer status=error'),
       );
       expect(report, contains('等待實際呈現逾時 [presentation-timeout] 20 次'));
-      expect(report, contains('定位 seek 回覆：360 發／平均 1ms'));
-      expect(report, contains('回報成功 330 發／回報未完成 30 發'));
+      expect(report, contains('定位 seek 回覆取樣：360 發／平均 1ms'));
+      expect(report, contains('累計回報成功 330 發／累計回報未完成 30 發'));
       expect(report, contains('seek 回覆不代表影格已呈現'));
       expect(report, isNot(contains('拖曳請求到實際呈現：平均')));
     },
@@ -143,6 +143,20 @@ void main() {
       expect(report, contains('拖曳最近未完成：future-native-stage'));
       expect(report, isNot(contains('[gpu] 0 次')));
       expect(report, isNot(contains('[encode]')));
+    },
+  );
+
+  test(
+    'capped seek timing samples stay distinct from cumulative outcomes',
+    () async {
+      health.addAll({
+        'seekCount': 400,
+        'seekSucceeded': 700,
+        'seekUnfinished': 10,
+      });
+      final report = await player.health();
+      expect(report, contains('定位 seek 回覆取樣：400 發'));
+      expect(report, contains('累計回報成功 700 發／累計回報未完成 10 發'));
     },
   );
 }

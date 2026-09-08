@@ -271,6 +271,12 @@ class RunnerTests: XCTestCase {
   }
 
   func testNativeScrubPresentationIgnoresHiddenAndOffscreenHosts() {
+    #if targetEnvironment(simulator)
+    XCTAssertFalse(MCNativeScrubPlane.supported)
+    XCTAssertTrue(MCNativeScrubPlane.presentationUnavailableReason?.contains("Simulator") == true)
+    // Offscreen encoding remains testable below, but GPU completion cannot be
+    // advertised as an onscreen receipt on this destination.
+    #endif
     let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
     let parent = UIView(frame: window.bounds)
     let visible = UIView(frame: CGRect(x: 0, y: 0, width: 50, height: 50))
@@ -381,7 +387,7 @@ class RunnerTests: XCTestCase {
   }
 
   private func verifyNativeDrawablePresentation(hdr: Bool) throws {
-    guard MCNativeScrubPlane.supported else { throw XCTSkip("Metal unavailable") }
+    if let reason = MCNativeScrubPlane.presentationUnavailableReason { throw XCTSkip(reason) }
     let previousKeyWindow = UIApplication.shared.windows.first(where: \.isKeyWindow)
     let window: UIWindow
     if let scene = previousKeyWindow?.windowScene {
@@ -473,7 +479,7 @@ class RunnerTests: XCTestCase {
   }
 
   func testNativeExactScrubActuallyPresentsAfterClearingCacheAtTheSamePlayerTime() throws {
-    guard MCNativeScrubPlane.supported else { throw XCTSkip("Metal unavailable") }
+    if let reason = MCNativeScrubPlane.presentationUnavailableReason { throw XCTSkip(reason) }
     let url = try makeScrubVideo()
     defer { try? FileManager.default.removeItem(at: url) }
     let registry = ScrubTestTextureRegistry()
