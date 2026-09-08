@@ -10,6 +10,13 @@ import 'logo_mark_painter.dart';
 import 'mosaic_patch_painter.dart';
 import 'text_mark_painter.dart';
 
+/// 照片成品長邊的下限（像素）：來源比這小就先放大到這麼大再合成，
+/// 浮水印的字、線條才不會比預覽糊（見 [WatermarkRenderer.compositePhoto]）。
+/// 跟照片編輯器預覽解碼的下限同一個數（_decodeForPreview 的 cap 至少
+/// 1440）——「成品至少跟預覽一樣清楚」就是這條線。
+/// 單張與批次都吃這個值：同一張照片走哪條路出來都一樣大
+const kPhotoExportMinLong = 1440;
+
 /// 把浮水印設定畫成點陣圖。
 /// 預覽和輸出走同一套繪製邏輯，所以「看到的就是輸出的」。
 /// 全部以 bytes 操作，手機與 Web 通用。
@@ -263,6 +270,7 @@ class WatermarkRenderer {
     // 畫布上，之後所有座標與馬賽克取樣都以畫布為準（跟預覽同一套）
     double? canvasAspect,
     String? sourcePath,
+    int minLongSide = kPhotoExportMinLong,
   }) async {
     // On mobile the engine reads the source directly; no full-file copy over
     // the Dart heap. Byte input remains available for web and existing callers.
@@ -292,6 +300,7 @@ class WatermarkRenderer {
         mosaics: mosaics,
         extraMarks: extraMarks,
         canvasAspect: canvasAspect,
+        minLongSide: minLongSide,
       );
     } finally {
       decoded.dispose();
@@ -300,7 +309,10 @@ class WatermarkRenderer {
 
   /// [renderPhotoImage] 的後半：照片已經解好了，只做合成。
   /// 像素跟 [renderPhotoImage] 一字不差（同一份解碼結果、同一段合成）。
-  /// 不 dispose 傳進來的 [photo]——呼叫端的東西呼叫端收；回傳的圖要自己 dispose
+  /// 不 dispose 傳進來的 [photo]——呼叫端的東西呼叫端收；回傳的圖要自己 dispose。
+  ///
+  /// [minLongSide]：成品長邊的下限（見 [kPhotoExportMinLong]）；來源比這
+  /// 小就先放大再合成。0＝不放大（照來源尺寸出）
   static Future<ui.Image> compositePhoto(
     ui.Image photo,
     WatermarkSettings s, {
@@ -308,6 +320,7 @@ class WatermarkRenderer {
     List<PhotoMosaic>? mosaics,
     List<WatermarkSettings>? extraMarks,
     double? canvasAspect,
+    int minLongSide = kPhotoExportMinLong,
   }) async {
     // 中途產生的（調完色、貼黑底）才是我們的，換掉時要收；傳進來的不碰
     var owned = false;
@@ -329,6 +342,36 @@ class WatermarkRenderer {
       // 這時 photo 還是傳進來的那張，不收
       photo = graded;
       owned = true;
+    }
+
+    // 成品不能比預覽糊：來源太小（App 自己做的 GIF 長邊只有 480、老照片、
+    // 截圖）就先把照片放大到長邊 [minLongSide]，浮水印文字、馬賽克、黑邊
+    // 全照放大後的畫布畫。預覽是「小圖拉到滿版＋向量畫字」，看起來銳利；
+    // 以前成品照來源尺寸出，同一行字在 400 寬的畫布上只剩幾十個像素，
+    // 相簿一放大就是一團糊（實測回報「匯出的照片畫質跟預覽差很多」）。
+    // 放大本身補不出照片的細節，但字、線條、色塊邊緣會跟預覽一樣清楚。
+    // 要在調色之後、貼黑底之前：調色矩陣不在乎尺寸，黑邊卻要照放大後
+    // 的照片算。來源夠大的照片這一段不會動到（長邊 ≥ minLongSide 照原
+    // 尺寸出，像素一顆都不縮）
+    if (minLongSide > 0 && math.max(w, h) < minLongSide) {
+      final sc = minLongSide / math.max(w, h);
+      final tw = math.max(1, (w * sc).round());
+      final th = math.max(1, (h * sc).round());
+      final rec = ui.PictureRecorder();
+      ui.Canvas(rec).drawImageRect(
+        photo,
+        ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+        ui.Rect.fromLTWH(0, 0, tw.toDouble(), th.toDouble()),
+        ui.Paint()..filterQuality = ui.FilterQuality.high,
+      );
+      final pic = rec.endRecording();
+      final up = await pic.toImage(tw, th);
+      pic.dispose();
+      if (owned) photo.dispose();
+      photo = up;
+      owned = true;
+      w = tw;
+      h = th;
     }
 
     if (canvasAspect != null && (canvasAspect - w / h).abs() > 0.001) {
