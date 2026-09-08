@@ -27,6 +27,10 @@
 @property (nonatomic) dispatch_group_t group;
 @property (nonatomic) MediaType type;
 @property (nonatomic) BOOL isSaveFile;
+// MarkCut patch: the picker view controller we last presented (weak: UIKit
+// owns it). Lets handleMethodCall tell "a picker really is on screen" apart
+// from "a request that never completed" (see pickerOnScreen).
+@property (nonatomic, weak) UIViewController *activePicker;
 @end
 
 @implementation FilePickerPlugin
@@ -70,6 +74,52 @@
     return topController;
 }
 
+// MarkCut patch: is a picker we presented still on screen?
+- (BOOL)pickerOnScreen {
+    UIViewController *active = self.activePicker;
+    if (active != nil && active.presentingViewController != nil) {
+        return YES;
+    }
+#ifdef PICKER_DOCUMENT
+    UIViewController *doc = self.documentPickerController;
+    if (doc != nil && doc.presentingViewController != nil) {
+        return YES;
+    }
+#endif
+    UIViewController *audio = self.audioPickerController;
+    if (audio != nil && audio.presentingViewController != nil) {
+        return YES;
+    }
+    return NO;
+}
+
+// MarkCut patch: UIKit silently drops a presentation that lands while another
+// transition is still running — nothing is presented and no delegate ever
+// fires. Two seconds on, if this very request is still pending, no picker is
+// on screen and nothing is being copied, the presentation never happened:
+// fail the request so the caller can try again instead of waiting forever.
+- (void)armPresentWatchdog {
+    FlutterResult pending = _result;
+    if (pending == nil) {
+        return;
+    }
+    __weak FilePickerPlugin *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        FilePickerPlugin *strongSelf = weakSelf;
+        if (strongSelf == nil || strongSelf->_result != pending) {
+            return;
+        }
+        if ([strongSelf pickerOnScreen] || strongSelf->_group != nil) {
+            return;
+        }
+        Log(@"FilePicker: the picker was never presented; failing the request");
+        strongSelf->_result = nil;
+        pending([FlutterError errorWithCode:@"present_failed"
+                                    message:@"The picker could not be presented"
+                                    details:nil]);
+    });
+}
+
 - (FlutterError *)onListenWithArguments:(id)arguments eventSink:(FlutterEventSink)events {
     _eventSink = events;
     return nil;
@@ -82,10 +132,24 @@
 
 - (void)handleMethodCall:(FlutterMethodCall*)call result:(FlutterResult)result {
     if (_result) {
-        result([FlutterError errorWithCode:@"multiple_request"
-                                   message:@"Cancelled by a second request"
-                                   details:nil]);
-        return;
+        // MarkCut patch: a pending request must not block every later pick.
+        // Upstream refused the new call and kept the old result around, so
+        // one pick that never completed (presentation silently dropped by
+        // UIKit, an item provider that never called back) meant every pick
+        // after it failed with multiple_request until the app was killed
+        // (tester report: "suddenly nothing can be imported").
+        // Refuse only while a picker really is on screen (double tap). Any
+        // other pending request is stale: finish it as cancelled and go on.
+        if ([self pickerOnScreen]) {
+            result([FlutterError errorWithCode:@"multiple_request"
+                                       message:@"Cancelled by a second request"
+                                       details:nil]);
+            return;
+        }
+        Log(@"FilePicker: dropping a stale request that never completed");
+        FlutterResult stale = _result;
+        _result = nil;
+        stale(nil);
     }
     
     _result = result;
@@ -248,7 +312,10 @@
         PHPickerViewController *pickerViewController = [[PHPickerViewController alloc] initWithConfiguration:config];
         pickerViewController.delegate = self;
         pickerViewController.presentationController.delegate = self;
+        // MarkCut patch: remember it, and notice if UIKit drops the presentation
+        self.activePicker = pickerViewController;
         [[self viewControllerWithWindow:nil] presentViewController:pickerViewController animated:YES completion:nil];
+        [self armPresentWatchdog];
         return;
     }
 #endif
@@ -282,7 +349,9 @@
             break;
     }
     
+    self.activePicker = self.galleryPickerController;
     [[self viewControllerWithWindow:nil] presentViewController:self.galleryPickerController animated:YES completion:nil];
+    [self armPresentWatchdog];
     
     
 }
@@ -359,7 +428,9 @@
         [self handleResult: paths];
     }];
     
+    self.activePicker = dkImagePickerController;
     [[self viewControllerWithWindow:nil] presentViewController:dkImagePickerController animated:YES completion:nil];
+    [self armPresentWatchdog];
 }
 #endif // PICKER_MEDIA
 
@@ -517,7 +588,13 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls{
     }
     NSMutableArray<NSString *> * errors = [[NSMutableArray alloc] init];
 
-    self.group = dispatch_group_create();
+    // MarkCut patch: this request's own reply and group. A later request may
+    // supersede this one while the copies are still running (see
+    // handleMethodCall): the copies must then finish against *their* group,
+    // and their result must be dropped, not delivered to the newer caller.
+    FlutterResult reply = _result;
+    dispatch_group_t group = dispatch_group_create();
+    self.group = group;
     
     // MarkCut patch: copies live in tmp, not Documents.
     // Upstream copied every picked photo/video into Documents/picked_images:
@@ -552,7 +629,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls{
     bool isImageSelection = self.type == IMAGE;
     bool isMediaSelection = self.type == MEDIA;
     for (NSInteger index = 0; index < results.count; ++index) {
-        dispatch_group_enter(_group);
+        dispatch_group_enter(group);
         PHPickerResult * result = [results objectAtIndex:index];
         
         dispatch_async(processQueue, ^{
@@ -561,13 +638,13 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls{
                 if (![result.itemProvider hasItemConformingToTypeIdentifier:@"public.image"] &&
                     ![result.itemProvider hasItemConformingToTypeIdentifier:@"public.movie"]) {
                     [errors addObject:[NSString stringWithFormat:@"Item at index %ld is not an image or video", (long)index]];
-                    dispatch_group_leave(self->_group);
+                    dispatch_group_leave(group);
                     return;
                 }
             } else if (isImageSelection) {
                 if (![result.itemProvider hasItemConformingToTypeIdentifier:@"public.image"]) {
                     [errors addObject:[NSString stringWithFormat:@"Item at index %ld is not an image", (long)index]];
-                    dispatch_group_leave(self->_group);
+                    dispatch_group_leave(group);
                     return;
                 }
             }
@@ -584,7 +661,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls{
                         if (error != nil || url == nil) {
                             [errors addObject:[NSString stringWithFormat:@"Failed to load image/video at index %ld: %@",
                                 (long)index, error ? error.localizedDescription : @"Unknown error"]];
-                            dispatch_group_leave(self->_group);
+                            dispatch_group_leave(group);
                             return;
                         }
 
@@ -629,18 +706,27 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls{
                             });
                         }
                         
-                        dispatch_group_leave(self->_group);
+                        dispatch_group_leave(group);
                     }
                 }];
             }
         });
     }
 
-    dispatch_group_notify(_group, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),^{
-        self->_group = nil;
+    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+        // MarkCut patch: deliver on the platform thread, and only if this is
+        // still the request the caller is waiting for (see handleMethodCall)
+        if (self->_group == group) {
+            self->_group = nil;
+        }
         
         if(self->_eventSink != nil) {
             self->_eventSink([NSNumber numberWithBool:NO]);
+        }
+
+        if (self->_result != reply) {
+            Log(@"FilePicker: a superseded request finished copying; dropping its result");
+            return;
         }
 
         // MarkCut patch: drop the slots that failed, keep selection order
