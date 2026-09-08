@@ -4714,10 +4714,27 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 中間滑過的格子直接跳過，不排隊（排了也只是顯示過期的畫面）
   late final _scrubQueue = ScrubFrameQueue<Uint8List>(
     canRun: () => mounted && !_playing && !_exporting,
-    load: (w) =>
-        nativeFrameAt(w.path, w.seconds, maxH: _scrubLongSide, tolMs: 150),
+    load: (w) => nativeFrameAt(
+      w.path,
+      w.seconds,
+      maxH: _scrubLongSide,
+      // 原檔期（工作檔還在背景轉）關鍵幀貼齊、工作檔才逐格精準——
+      // 原檔的 GOP 一兩秒，精準抽一格要解幾十張 4K，跟背景轉檔搶解碼器
+      // 就是「匯入多支進去馬上滑超頓」（見 scrubFrameTolMs）
+      tolMs: scrubFrameTolMs(
+        rawSource: _scrubsRawSource(w),
+        duration: w.source < _tl.sources.length
+            ? _tl.sources[w.source].duration
+            : 0,
+      ),
+    ),
     onFrame: _acceptScrubFrame,
   );
+
+  /// 這個拖曳幀請求抽的是原檔（工作檔還沒轉好）嗎。
+  /// 請求的路徑是 previewPath（workPath ?? path）：沒有工作檔就是原檔
+  bool _scrubsRawSource(ScrubFrameRequest w) =>
+      w.source < _tl.sources.length && _tl.sources[w.source].workPath == null;
 
   /// 每個素材「最近抽到的一格」。滑動顯示以它為底：格子快取是
   /// 慢慢累積的，手指快的時候沿路都是空格，等格子＝畫面卡住不動；
