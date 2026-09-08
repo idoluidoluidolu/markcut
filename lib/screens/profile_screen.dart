@@ -32,6 +32,98 @@ import 'presets_screen.dart';
 import 'watermark_studio_screen.dart';
 import 'video_editor_screen.dart';
 
+// ── 「問一下再刪」：總覽、草稿夾、GIF 夾三處共用同一份文案與動作 ──
+//
+// 使用者指定「在總覽這邊也要可以長按刪除」：總覽的卡跟資料夾裡的磚刪的
+// 是同一樣東西，問法就該一模一樣，改文案也只改一處。
+// 每一支回「有沒有真的刪掉」（確認視窗按取消就是 false）；呼叫端自己
+// _reload——三個畫面各有各的清單狀態
+
+/// 影片草稿（草稿夾裡一份一份存的那種）
+Future<bool> _confirmDeleteVideoDraft(BuildContext context, DraftMeta m) async {
+  final ok = await showConfirm(
+    context,
+    title: '刪除這份草稿？',
+    message: '未完成的專案會被移除，無法復原',
+    action: '刪除',
+  );
+  if (!ok) return false;
+  await DraftStore.remove(m.id);
+  return true;
+}
+
+/// 未完成的照片（單張編輯器的草稿，連留下的素材複本一起收）
+Future<bool> _confirmDeletePhotoDraft(BuildContext context) async {
+  final ok = await showConfirm(
+    context,
+    title: '刪除草稿？',
+    message: '這張沒匯出的照片會被移除，無法復原',
+    action: '刪除',
+  );
+  if (!ok) return false;
+  await PhotoEditorScreen.clearPhotoDraft(deleteAssets: true);
+  return true;
+}
+
+/// 未完成的批次浮水印。草稿留的素材複本一起收（見 DraftAssets）：
+/// 只刪 prefs 那一筆的話，Application Support 裡那份最多 300MB 的複本
+/// 會留到天荒地老
+Future<bool> _confirmDeleteBatchDraft(BuildContext context) async {
+  final ok = await showConfirm(
+    context,
+    title: '刪除批次草稿？',
+    message: '這批的浮水印設定會被移除，無法復原',
+    action: '刪除',
+  );
+  if (!ok) return false;
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.remove(kBatchDraftKey);
+  await DraftAssets.retain(DraftAssets.batch, const {});
+  return true;
+}
+
+/// 未完成的 GIF
+Future<bool> _confirmDeleteGifDraft(BuildContext context) async {
+  final ok = await showConfirm(
+    context,
+    title: '刪除 GIF 草稿？',
+    message: '剪選範圍與設定會被移除，無法復原',
+    action: '刪除',
+  );
+  if (!ok) return false;
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.remove(kGifDraftKey);
+  return true;
+}
+
+/// 未完成的拼圖（素材複本一起收，理由同批次）
+Future<bool> _confirmDeleteCollageDraft(BuildContext context) async {
+  final ok = await showConfirm(
+    context,
+    title: '刪除拼圖草稿？',
+    message: '排法與設定會被移除，無法復原',
+    action: '刪除',
+  );
+  if (!ok) return false;
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.remove(kCollageDraftKey);
+  await DraftAssets.retain(DraftAssets.collage, const {});
+  return true;
+}
+
+/// 「我的 GIF」裡的一個 GIF（App 裡那一份；相簿的不動）
+Future<bool> _confirmDeleteGifFile(BuildContext context, String ref) async {
+  final ok = await showConfirm(
+    context,
+    title: '刪除這個 GIF？',
+    message: '只會刪掉 App 裡這一份，相簿裡的不受影響',
+    action: '刪除',
+  );
+  if (!ok) return false;
+  await GifStore.remove(ref);
+  return true;
+}
+
 /// 個人中心：範本夾＋草稿夾＋意見回饋
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -708,8 +800,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
     required Widget cover,
     String? title,
     required VoidCallback onTap,
+    // 長按＝刪除（使用者指定「在總覽這邊也要可以長按刪除」），
+    // 問法跟草稿夾同一份（見檔頭的 _confirmDelete…）
+    VoidCallback? onLongPress,
   }) => GestureDetector(
     onTap: onTap,
+    onLongPress: onLongPress,
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -744,6 +840,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
       ],
     ),
   );
+
+  /// 總覽的卡與磚長按刪除：問一下、真的刪了就重讀
+  ///（使用者指定「在總覽這邊也要可以長按刪除」；問法見檔頭的
+  /// _confirmDelete…，跟草稿夾、GIF 夾同一份）
+  Future<void> _homeDelete(Future<bool> Function() confirm) async {
+    if (await confirm() && mounted) _reload();
+  }
 
   Future<void> _openGifs() async {
     await Navigator.push(
@@ -826,6 +929,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   color: Color(0xFFAFAFBB),
                 ),
           onTap: () => _openDraft(m),
+          onLongPress: () =>
+              _homeDelete(() => _confirmDeleteVideoDraft(context, m)),
         ),
       );
     }
@@ -845,6 +950,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
           title: '未完成的照片',
           onTap: () => _openDrafts(resume: DraftKind.photo),
+          onLongPress: () =>
+              _homeDelete(() => _confirmDeletePhotoDraft(context)),
         ),
       );
     }
@@ -859,6 +966,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
           title: '未完成的批次浮水印',
           onTap: () => _openDrafts(resume: DraftKind.batch),
+          onLongPress: () =>
+              _homeDelete(() => _confirmDeleteBatchDraft(context)),
         ),
       );
     }
@@ -873,6 +982,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
           title: '未完成的 GIF',
           onTap: () => _openDrafts(resume: DraftKind.gif),
+          onLongPress: () => _homeDelete(() => _confirmDeleteGifDraft(context)),
         ),
       );
     }
@@ -887,6 +997,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
           title: '未完成的拼圖',
           onTap: () => _openDrafts(resume: DraftKind.collage),
+          onLongPress: () =>
+              _homeDelete(() => _confirmDeleteCollageDraft(context)),
         ),
       );
     }
@@ -1070,6 +1182,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   if (i > 0) const SizedBox(width: 10),
                                   GestureDetector(
                                     onTap: _openGifs,
+                                    // 長按＝刪這一個（跟 GIF 夾同一份問法）
+                                    onLongPress: () => _homeDelete(
+                                      () => _confirmDeleteGifFile(context, g),
+                                    ),
                                     // 動圖每換一格就對自己
                                     // markNeedsPaint，往上找到最近的
                                     // repaint boundary 才停。沒有這一層
@@ -1336,17 +1452,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
   }
 
   Future<void> _deleteGif() async {
-    final ok = await showConfirm(
-      context,
-      title: '刪除 GIF 草稿？',
-      message: '剪選範圍與設定會被移除，無法復原',
-      action: '刪除',
-    );
-    if (ok) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(kGifDraftKey);
-      _reload();
-    }
+    if (await _confirmDeleteGifDraft(context) && mounted) _reload();
   }
 
   /// 續作拼圖：照片還在的帶回去（拼圖頁自己會略過不見的）
@@ -1361,17 +1467,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
   }
 
   Future<void> _deleteCollage() async {
-    final ok = await showConfirm(
-      context,
-      title: '刪除拼圖草稿？',
-      message: '排法與設定會被移除，無法復原',
-      action: '刪除',
-    );
-    if (ok) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(kCollageDraftKey);
-      _reload();
-    }
+    if (await _confirmDeleteCollageDraft(context) && mounted) _reload();
   }
 
   /// 續作批次浮水印：檔案還在的帶回去（草稿記的路徑不見了但留過複本
@@ -1411,17 +1507,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
   }
 
   Future<void> _deleteBatch() async {
-    final ok = await showConfirm(
-      context,
-      title: '刪除批次草稿？',
-      message: '這批的浮水印設定會被移除，無法復原',
-      action: '刪除',
-    );
-    if (ok) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(kBatchDraftKey);
-      _reload();
-    }
+    if (await _confirmDeleteBatchDraft(context) && mounted) _reload();
   }
 
   Future<void> _resumePhoto() async {
@@ -1440,16 +1526,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
   }
 
   Future<void> _deletePhoto() async {
-    final ok = await showConfirm(
-      context,
-      title: '刪除草稿？',
-      message: '這張沒匯出的照片會被移除，無法復原',
-      action: '刪除',
-    );
-    if (ok) {
-      await PhotoEditorScreen.clearPhotoDraft(deleteAssets: true);
-      _reload();
-    }
+    if (await _confirmDeletePhotoDraft(context) && mounted) _reload();
   }
 
   /// 草稿卡（影片與照片共用同一種長相）。
@@ -1595,16 +1672,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
   }
 
   Future<void> _delete(DraftMeta m) async {
-    final ok = await showConfirm(
-      context,
-      title: '刪除這份草稿？',
-      message: '未完成的專案會被移除，無法復原',
-      action: '刪除',
-    );
-    if (ok) {
-      await DraftStore.remove(m.id);
-      _reload();
-    }
+    if (await _confirmDeleteVideoDraft(context, m) && mounted) _reload();
   }
 
   // ── 瀑布流（C 案）：封面照專案畫布原比例排，日期小 chip 浮在
@@ -2044,16 +2112,9 @@ class _GifsScreenState extends State<GifsScreen> {
 
   /// 回傳有沒有真的刪掉（確認視窗按取消就是 false）
   Future<bool> _delete(String ref) async {
-    final ok = await showConfirm(
-      context,
-      title: '刪除這個 GIF？',
-      message: '只會刪掉 App 裡這一份，相簿裡的不受影響',
-      action: '刪除',
-    );
-    if (!ok) return false;
-    await GifStore.remove(ref);
-    _reload();
-    return true;
+    final ok = await _confirmDeleteGifFile(context, ref);
+    if (ok && mounted) _reload();
+    return ok;
   }
 
   /// 點一下放大看：GIF 在小格子裡看不出動了什麼。
