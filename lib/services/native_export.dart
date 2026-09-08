@@ -170,6 +170,9 @@ class NativeExport {
           // GIF 素材：Swift 端逐幀解、照輸出時間循環（同 FFmpeg 的
           // -ignore_loop 0 語意）
           if (src.isGif) 'gif': true,
+          if (src.isGif) 'sourceStart': c.sourceTimeAt(c.offset),
+          if (src.isGif)
+            'sourceRate': c.speed.clamp(0.1, 16.0) * sp * (c.reverse ? -1 : 1),
           'start': c.offset / sp,
           'end': c.end / sp,
           'track': c.track,

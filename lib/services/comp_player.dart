@@ -555,6 +555,7 @@ class CompPlayer {
     bool liveOverlays = false,
     double wmStart = 0,
     double wmEnd = 0,
+    double? canvasAspect,
   }) async {
     if (!await available) return null;
     _ensureHandler();
@@ -712,6 +713,9 @@ class CompPlayer {
       stills.add({
         'path': src.path,
         if (src.isGif) 'gif': true,
+        if (src.isGif) 'sourceStart': c.sourceTimeAt(c.offset),
+        if (src.isGif)
+          'sourceRate': c.speed.clamp(0.1, 16.0) * (c.reverse ? -1 : 1),
         // 探測過的照片一律把結果送過去（true＝原生端在 HDR 合成裡
         // expandToHDR；false＝照舊 8-bit 基底、原生端不用再讀檔頭——
         // 不送的話每次 build 每張 SDR 圖都被原生重探一次）。
@@ -764,6 +768,7 @@ class CompPlayer {
     try {
       final m = await _ch.invokeMapMethod<String, dynamic>('build', {
         'clips': clips,
+        'canvasAspect': ?canvasAspect,
         'audios': audios,
         'texture': texture,
         'mosaics': mosaics,
@@ -804,6 +809,16 @@ class CompPlayer {
       );
     } catch (_) {
       return null;
+    }
+  }
+
+  /// 更新目前合成的馬賽克參數；不支援即時更新時回傳 false。
+  static Future<bool> setMosaics(List<Map<String, dynamic>> mosaics) async {
+    try {
+      return await _ch.invokeMethod<bool>('setMosaics', {'mosaics': mosaics}) ??
+          false;
+    } catch (_) {
+      return false;
     }
   }
 

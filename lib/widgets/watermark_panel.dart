@@ -3,10 +3,10 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
 
 import '../models/watermark_settings.dart';
 import '../services/preset_store.dart';
+import '../services/video_picker.dart';
 import '../screens/crop_screen.dart';
 import '../screens/draw_screen.dart';
 import '../theme.dart';
@@ -191,7 +191,8 @@ class WatermarkPanel extends StatefulWidget {
   State<WatermarkPanel> createState() => WatermarkPanelState();
 }
 
-class WatermarkPanelState extends State<WatermarkPanel> {
+class WatermarkPanelState extends State<WatermarkPanel>
+    with WidgetsBindingObserver {
   /// 父層（例如照片編輯器把儲存鈕放在底部）可以呼叫這個開儲存流程
   Future<void> savePreset() => _savePreset();
 
@@ -199,6 +200,18 @@ class WatermarkPanelState extends State<WatermarkPanel> {
 
   /// 文字輸入框的焦點（收起鍵盤鈕看它決定要不要出現）
   final FocusNode _textFocus = FocusNode();
+  final _inputKey = GlobalKey();
+
+  @override
+  void didChangeMetrics() {
+    if (!_textFocus.hasFocus) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final c = _inputKey.currentContext;
+      if (mounted && _textFocus.hasFocus && c != null) {
+        Scrollable.ensureVisible(c, alignment: 0, duration: Duration.zero);
+      }
+    });
+  }
 
   WatermarkSettings get s => widget.settings;
 
@@ -247,6 +260,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _textCtrl = TextEditingController(text: s.text.text);
     _presetSel = widget.initialPresetName;
     _loadPresets();
@@ -283,6 +297,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     widget.controller?.removeListener(_onScrollRequest);
     _textCtrl.dispose();
     _textFocus.dispose();
@@ -450,7 +465,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
   }
 
   Future<void> _pickLogo() async {
-    final picked = await ImagePicker().pickImage(source: ImageSource.gallery);
+    final picked = await pickPhotoFile();
     if (picked == null) return;
     try {
       final raw = await picked.readAsBytes();
@@ -460,10 +475,10 @@ class WatermarkPanelState extends State<WatermarkPanel> {
       if (!mounted) return;
       final cut = await cropImage(context, raw);
       if (cut == null) return;
-      // 縮到 1024px 內再存進設定，範本自帶圖檔不佔太多空間
-      final shrunk = await _shrinkToPng(cut, 1024);
+      // 保留到 4K，避免大圖素材在匯出前就只剩 1024px
+      final shrunk = await _shrinkToPng(cut, 4096);
       // 原圖也留一份（同樣縮過）：之後要還原、重新裁都靠它
-      final orig = await _shrinkToPng(raw, 1024);
+      final orig = await _shrinkToPng(raw, 4096);
       // 選圖期間畫面可能已經被收掉（挑很久、系統回收）
       if (!mounted || shrunk == null) {
         if (mounted) showHint(context, '這張圖讀不進來，換一張試試', error: true);
@@ -489,7 +504,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
     if (src == null) return;
     final cut = await cropImage(context, src);
     if (cut == null || !mounted) return;
-    final shrunk = await _shrinkToPng(cut, 1024);
+    final shrunk = await _shrinkToPng(cut, 4096);
     if (!mounted || shrunk == null) return;
     _update(() {
       // 第一次裁的人可能是從舊草稿讀回來的（沒有原圖），
@@ -1082,6 +1097,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                       ),
                                     ),
                                     child: TextField(
+                                      key: _inputKey,
                                       controller: _textCtrl,
                                       focusNode: _textFocus,
                                       textAlign: TextAlign.center,
@@ -1176,6 +1192,7 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                             12,
                                           ),
                                           menuMaxHeight: 320,
+                                          menuWidth: 280,
                                           itemHeight: 48,
                                           items: [
                                             for (final f in kFontOptions)
@@ -1281,25 +1298,6 @@ class WatermarkPanelState extends State<WatermarkPanel> {
                                       ),
                                     ),
                                   ),
-                                  const Spacer(),
-                                  // 回正中央、恢復預設大小：拖出畫面外撿回來
-                                  // 用的（以前是預覽上雙擊，見 WatermarkLayer
-                                  // 為什麼拿掉）。平鋪中位置無意義，不給
-                                  if (!s.text.tiled)
-                                    IconButton(
-                                      tooltip: '回正中央、恢復預設大小',
-                                      visualDensity: VisualDensity.compact,
-                                      onPressed: () => _update(() {
-                                        s.text.x = 0.5;
-                                        s.text.y = 0.5;
-                                        s.text.sizeFrac = TextMark().sizeFrac;
-                                      }),
-                                      icon: const Icon(
-                                        Icons.filter_center_focus,
-                                        size: 19,
-                                        color: kTextDim,
-                                      ),
-                                    ),
                                 ],
                               ),
                               const SizedBox(height: 2),

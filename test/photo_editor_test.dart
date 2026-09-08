@@ -35,11 +35,42 @@ void main() {
 
   // 面板是 lazy build 的，畫面太矮下面的卡片根本不會被建出來
   setUpAll(() {
-    final v = TestWidgetsFlutterBinding.ensureInitialized().platformDispatcher
+    final v = TestWidgetsFlutterBinding.ensureInitialized()
+        .platformDispatcher
         .views
         .first;
     v.physicalSize = const Size(1200, 2400);
     v.devicePixelRatio = 1.0;
+  });
+
+  testWidgets('照片文字輸入在手機鍵盤上方保持可見', (t) async {
+    t.view.physicalSize = const Size(390, 844);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    late Uint8List bytes;
+    await t.runAsync(() async {
+      bytes = await _png(Colors.white, 900, 600);
+    });
+    await t.pumpWidget(
+      MaterialApp(
+        home: PhotoEditorScreen(
+          photo: XFile.fromData(bytes, name: 'p.png', mimeType: 'image/png'),
+        ),
+      ),
+    );
+    await _settle(t, 12);
+    await t.tap(find.text('文字').first);
+    await _settle(t);
+    final input = find.byType(TextField).first;
+    await t.tap(input);
+    t.view.viewInsets = const FakeViewPadding(bottom: 330);
+    await _settle(t);
+    final rect = t.getRect(input);
+    expect(rect.top, greaterThanOrEqualTo(0));
+    expect(rect.bottom, lessThanOrEqualTo(844 - 330));
+    await t.enterText(input, '鍵盤測試');
+    expect(t.widget<TextField>(input).controller!.text, '鍵盤測試');
+    expect(t.takeException(), isNull);
   });
 
   testWidgets('照片編輯器：加浮水印組、開編輯面板、刪除、undo 都不炸', (t) async {
@@ -72,10 +103,7 @@ void main() {
     await _settle(t);
 
     // 加第一組
-    final addRow = find.ancestor(
-      of: addLabel,
-      matching: find.byType(InkWell),
-    );
+    final addRow = find.ancestor(of: addLabel, matching: find.byType(InkWell));
     await t.tap(addRow.first, warnIfMissed: false);
     await _settle(t);
 

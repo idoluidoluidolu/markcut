@@ -307,11 +307,14 @@ final class CIGifSpec {
   private let loopMs: Int
   private let placement: CGAffineTransform
   private let clipStart: Double  // 圖層進場的輸出秒（迴圈從這裡起算）
+  private let sourceStart: Double
+  private let sourceRate: Double
   private var lastIdx = -1
   private var lastImg: CIImage?
   private let lock = NSLock()
 
-  init?(path: String, placement: CGAffineTransform, clipStart: Double) {
+  init?(path: String, placement: CGAffineTransform, clipStart: Double,
+    sourceStart: Double = 0, sourceRate: Double = 1) {
     guard
       let s = CGImageSourceCreateWithURL(
         URL(fileURLWithPath: path) as CFURL, nil),
@@ -340,12 +343,14 @@ final class CIGifSpec {
     self.loopMs = acc
     self.placement = placement
     self.clipStart = clipStart
+    self.sourceStart = sourceStart
+    self.sourceRate = sourceRate
   }
 
   /// 輸出時間 t（秒）該畫哪一格（照 GIF 自己的節奏循環）
   func image(at t: Double) -> CIImage? {
     let ms = Int(
-      max(0, t - clipStart)
+      max(0, sourceStart + max(0, t - clipStart) * sourceRate)
         .truncatingRemainder(dividingBy: Double(loopMs) / 1000) * 1000)
     var lo = 0
     var hi = endsMs.count - 1
@@ -1064,6 +1069,18 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   /// 即時內容的世代號：疊加物/變形每次更新 +1。Metal 引擎靜止
   /// 降頻用它判斷「畫面有沒有東西變了」——沒變就不重繪（省電）
   static var liveEpoch = 0
+  private static var liveMosaics: [CIMosaicSpec]?
+  static func setLiveMosaics(_ specs: [CIMosaicSpec]?) {
+    ovLock.lock()
+    liveMosaics = specs
+    liveEpoch &+= 1
+    ovLock.unlock()
+  }
+  static func currentLiveMosaics() -> [CIMosaicSpec]? {
+    ovLock.lock()
+    defer { ovLock.unlock() }
+    return liveMosaics
+  }
 
   /// 換清單。[live] 給了就連部件的即時幾何一起換（同一把鎖、同一
   /// 瞬間）——分兩發送的話合成器可能在中間畫出「新圖×舊差量」的
@@ -1716,6 +1733,8 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         }
         let size = req.renderContext.size
         let t0 = req.compositionTime.seconds
+        let frameMosaics = self.liveComp
+          ? (Self.currentLiveMosaics() ?? ins.mosaics) : ins.mosaics
         if Self.stCIFrames + Self.stFastFrames < 3 {
           NSLog(
             "[FastPath] 格況 hdrOut=%@ layers=%d live=%@ ovs=%d 台上=%@",
@@ -1735,7 +1754,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             Self.skip("HDR直拷暫停用")
             return nil
           }
-          guard ins.mosaics.allSatisfy({ t0 < $0.start || t0 >= $0.end })
+          guard frameMosaics.allSatisfy({ t0 < $0.start || t0 >= $0.end })
           else {
             Self.skip("馬賽克")
             return nil
@@ -1834,7 +1853,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
 
         // 馬賽克照 z 交錯：只糊排在它下面的層。疊完 z 比它低的層就
         // 先打碼，再把更高的層（例如子母畫面）疊上去——跟預覽一致
-        let activeMz = ins.mosaics
+        let activeMz = frameMosaics
           .filter { t >= $0.start && t < $0.end }
           .sorted { $0.z < $1.z }
         // 捏合/拖曳中的即時變形：每一格讀一次（只有預覽合成器讀）
@@ -2739,6 +2758,7 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
             ovLive: args["ovLive"] as? Bool ?? false,
             // 合成要補到多長（0＝不用補；見 CompPlayer.build）
             timelineDuration: args["timelineDuration"] as? Double ?? 0,
+            canvasAspect: args["canvasAspect"] as? Double,
             // HLG 合成裡的圖片素材反 OOTF：沒送＝自動（中灰探針判定），
             // 送了 true/false＝診斷強制值（見 MCStillLoader.load）
             stillInverseOotf: args["stillInverseOotf"] as? Bool)
@@ -2882,6 +2902,16 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
       case "mdispose":
         MetalPreviewEngine.shared.disposeAll()
         result(nil)
+      case "setMosaics":
+        guard let a = call.arguments as? [String: Any], let p = self.comp,
+          p.liveCIOn, let maps = a["mosaics"] as? [[String: Any]] else {
+          result(false)
+          return
+        }
+        CIExportCompositor.setLiveMosaics(
+          maps.compactMap { CIMosaicSpec($0, canvas: p.size) })
+        p.nudgeRedrawIfPaused()
+        result(true)
       case "setHiddenImageTracks":
         guard let a = call.arguments as? [String: Any], let p = self.comp else {
           result(false)
@@ -4039,7 +4069,9 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
         if st["gif"] as? Bool ?? false {
           gifSpec = CIGifSpec(
             path: path, placement: placement,
-            clipStart: st["start"] as? Double ?? 0)
+            clipStart: st["start"] as? Double ?? 0,
+            sourceStart: st["sourceStart"] as? Double ?? 0,
+            sourceRate: st["sourceRate"] as? Double ?? 1)
         }
         if gifSpec == nil {
           img = img.transformed(by: placement)
@@ -6062,6 +6094,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     audios: [[String: Any]] = [],
     overlays: [[String: Any]] = [], ovLive: Bool = false,
     timelineDuration: Double = 0,
+    canvasAspect: Double? = nil,
     stillInverseOotf: Bool? = nil
   ) -> Bool {
     let comp = AVMutableComposition()
@@ -6458,6 +6491,16 @@ final class CompPlayer: NSObject, FlutterTexture {
       let d = base.size.applying(base.transform)
       size = CGSize(width: abs(d.width), height: abs(d.height))
     }
+    // 合成包含所有圖層，必須以編輯畫布為界，不能以底層影片裁切 GIF、
+    // 浮水印與馬賽克。保持原本長邊預算，後續既有縮放仍會限制預覽成本。
+    if let aspect = canvasAspect, aspect.isFinite, aspect > 0,
+      size.width >= 2, size.height >= 2 {
+      let edge = max(size.width, size.height)
+      let ratio = CGFloat(aspect)
+      size = CGSize(
+        width: max(2, (ratio >= 1 ? edge : edge * ratio).rounded()),
+        height: max(2, (ratio >= 1 ? edge / ratio : edge).rounded()))
+    }
     if size.width < 2 || size.height < 2 {
       buildError = "讀不到畫面尺寸"
       return false
@@ -6636,7 +6679,9 @@ final class CompPlayer: NSObject, FlutterTexture {
         if st["gif"] as? Bool ?? false {
           gifSpec = CIGifSpec(
             path: path, placement: placement,
-            clipStart: st["start"] as? Double ?? 0)
+            clipStart: st["start"] as? Double ?? 0,
+            sourceStart: st["sourceStart"] as? Double ?? 0,
+            sourceRate: st["sourceRate"] as? Double ?? 1)
         }
         if gifSpec == nil {
           img = img.transformed(by: placement)
@@ -6789,6 +6834,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       // 一字不差（CIExportCompositor），HDR 來源 toneMapHDRtoSDR
       // 跟相簿同一條曲線
       let ciMosaics = mosaics.compactMap { CIMosaicSpec($0, canvas: canvas) }
+      CIExportCompositor.setLiveMosaics(nil)
       // 最後一個可見片段結束的時間：之後的區間就是「片尾」
       let lastShow = segments.map { $0.range.end.seconds }.max() ?? 0
       // 產一份 videoComposition（可帶捏合中的即時變形覆寫 ov）。

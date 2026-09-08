@@ -244,6 +244,36 @@ Future<String?> importGif(
     // web 存不了檔（展示模式只有內建範例）
     showHint(context, '這裡收不進來，請在手機 App 上用', error: true);
   }
+  if (saved != null && !fromFiles && context.mounted) {
+    unawaited(
+      showModalBottomSheet<void>(
+        context: context,
+        showDragHandle: true,
+        builder: (context) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('已匯入 GIF', style: TextStyle(fontSize: 18)),
+                const SizedBox(height: 12),
+                SizedBox(
+                  height: MediaQuery.sizeOf(context).height * 0.35,
+                  width: double.infinity,
+                  child: GifImage(saved, fit: BoxFit.contain),
+                ),
+                const SizedBox(height: 12),
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('完成'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
   return saved;
 }
 

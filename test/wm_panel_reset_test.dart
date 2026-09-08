@@ -1,5 +1,4 @@
-// 面板的「回正中央、恢復預設大小」：拿掉預覽上的雙擊之後，拖出畫面外的
-// 部件靠這顆撿回來（文字卡、圖片卡各一顆；平鋪中不出現）
+// 文字卡移除回正按鈕、保留字體空間；圖片卡仍保留回正功能。
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -36,38 +35,25 @@ const _tip = '回正中央、恢復預設大小';
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
-  testWidgets('文字卡：按了回到 (0.5,0.5)、預設字級，並拍一次快照', (t) async {
-    t.view.physicalSize = const Size(1200, 2400);
-    t.view.devicePixelRatio = 1.0;
+  testWidgets('文字卡移除顏文字旁的重設按鈕，字型選單保有寬度', (t) async {
+    t.view.physicalSize = const Size(390, 844);
+    t.view.devicePixelRatio = 1;
     addTearDown(t.view.reset);
-    final s = WatermarkSettings();
-    s.text
-      ..x = 1.3
-      ..y = -0.2
-      ..sizeFrac = 0.5;
-    var before = 0, changed = 0;
     await t.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: WatermarkPanel(
-            settings: s,
-            onChanged: () => changed++,
-            onBeforeChange: () => before++,
-          ),
+          body: WatermarkPanel(settings: WatermarkSettings(), onChanged: () {}),
         ),
       ),
     );
     await _settle(t);
     await t.tap(find.text('文字').first);
     await _settle(t);
-    final btn = find.byTooltip(_tip);
-    expect(btn, findsOneWidget);
-    await t.tap(btn);
-    await _settle(t);
-    expect((s.text.x, s.text.y), (0.5, 0.5));
-    expect(s.text.sizeFrac, TextMark().sizeFrac);
-    expect(before, 1, reason: '一次離散改動＝一張快照');
-    expect(changed, 1);
+    expect(find.byTooltip(_tip), findsNothing);
+    final dropdown = find.byType(DropdownButton<String>);
+    expect(t.getSize(dropdown).width, greaterThan(90));
+    expect(t.widget<DropdownButton<String>>(dropdown).menuWidth, 280);
+    expect(t.takeException(), isNull);
   });
 
   testWidgets('圖片卡：同一顆；平鋪中不出現', (t) async {

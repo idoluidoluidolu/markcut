@@ -98,6 +98,7 @@ class _CropScreenState extends State<CropScreen> {
     try {
       final codec = await ui.instantiateImageCodec(bytes);
       final frame = await codec.getNextFrame();
+      codec.dispose();
       if (!mounted) {
         frame.image.dispose();
         return;

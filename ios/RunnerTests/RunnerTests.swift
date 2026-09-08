@@ -2,9 +2,39 @@ import Flutter
 import UIKit
 import XCTest
 import CoreImage
+import ImageIO
 @testable import Runner
 
 class RunnerTests: XCTestCase {
+
+  func testTrimmedGifSamplesSourceTimeInsteadOfRestarting() throws {
+    let context = CIContext()
+    let bounds = CGRect(x: 0, y: 0, width: 2, height: 2)
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString).appendingPathExtension("gif")
+    defer { try? FileManager.default.removeItem(at: url) }
+    let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(
+      url as CFURL, "com.compuserve.gif" as CFString, 2, nil))
+    for color in [CIColor(red: 1, green: 0, blue: 0), CIColor(red: 0, green: 0, blue: 1)] {
+      let image = try XCTUnwrap(context.createCGImage(
+        CIImage(color: color).cropped(to: bounds), from: bounds))
+      CGImageDestinationAddImage(destination, image,
+        [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 0.5]] as CFDictionary)
+    }
+    XCTAssertTrue(CGImageDestinationFinalize(destination))
+    let gif = try XCTUnwrap(CIGifSpec(path: url.path, placement: .identity,
+      clipStart: 2, sourceStart: 0.6, sourceRate: 2))
+    func rgb(at time: Double) throws -> [UInt8] {
+      let frame = try XCTUnwrap(gif.image(at: time))
+      var pixel = [UInt8](repeating: 0, count: 4)
+      context.render(frame, toBitmap: &pixel, rowBytes: 4,
+        bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBA8,
+        colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+      return pixel
+    }
+    XCTAssertGreaterThan(try rgb(at: 2)[2], 240, "trim begins on the blue frame")
+    XCTAssertGreaterThan(try rgb(at: 2.3)[0], 240, "2x speed wraps to the red frame")
+  }
 
   private func hlgCode(_ scene: Double) -> Double {
     if scene <= 1.0 / 12 { return sqrt(3 * scene) }

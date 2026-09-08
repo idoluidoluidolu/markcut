@@ -82,8 +82,7 @@ void main() {
   /// (end-start)/speed）
   (double, double) rangeOf(Map<Object?, Object?> m) {
     final off = (m['offset'] as num).toDouble();
-    final len =
-        ((m['end'] as num) - (m['start'] as num)) / (m['speed'] as num);
+    final len = ((m['end'] as num) - (m['start'] as num)) / (m['speed'] as num);
     return (off, off + len);
   }
 
@@ -137,7 +136,9 @@ void main() {
     tl.resolveOverlaps();
     expect(await CompPlayer.build(tl), isNotNull);
     expectPayloadMatches(tl, sent.single);
-    final last = rangeOf((sent.single['clips'] as List).last as Map<Object?, Object?>);
+    final last = rangeOf(
+      (sent.single['clips'] as List).last as Map<Object?, Object?>,
+    );
     expect(last.$2, closeTo(5.54, 1e-9));
     expect(tl.duration, closeTo(5.54, 1e-9), reason: '時間軸終點＝合成總長');
     expect(Diag.report(), isNot(contains('同軌重疊')), reason: '哨兵不該叫');
@@ -199,4 +200,38 @@ void main() {
       expectPayloadMatches(tl, sent.single);
     }
   });
+  test(
+    'square canvas and trimmed GIF timing survive native composition',
+    () async {
+      final tl = base();
+      add(tl, 0, 8, track: 1);
+      tl.sources.add(
+        MediaSource(
+          path: '/clip.gif',
+          isGif: true,
+          name: 'gif',
+          kind: ClipKind.image,
+          duration: 5,
+        ),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 1,
+          trimStart: 1.2,
+          trimEnd: 3.2,
+          offset: 2,
+          track: 0,
+          speed: 2,
+        ),
+      );
+      expect(await CompPlayer.build(tl, canvasAspect: 1), isNotNull);
+      expect(sent.single['canvasAspect'], 1);
+      final gif = (sent.single['stills'] as List).single as Map;
+      expect(gif['sourceStart'], 1.2);
+      expect(gif['sourceRate'], 2);
+      expect(gif['start'], 2);
+      expect(gif['end'], 3);
+    },
+  );
 }

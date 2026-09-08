@@ -307,11 +307,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 同一支影片縮到 720p，需要的位元率就少了一半
   ExportQuality get _qualityEff {
     if (!_qualityAuto || _srcKbps <= 0) return _quality;
-    final (w, h) = computeCanvasSize(
-      _tl,
-      _resolution,
-      _canvasRatio,
-    );
+    final (w, h) = computeCanvasSize(_tl, _resolution, _canvasRatio);
     return recommendQuality(
       srcKbps: _srcKbps,
       outW: w,
@@ -541,6 +537,54 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 選取中片段的即時變形（捏合/拖曳跟手）：節流在裡面
     _liveXformSync();
     _syncImageVisibility();
+    unawaited(_syncMosaics());
+  }
+
+  bool _mosaicSyncBusy = false;
+  String? _mosaicSent;
+  Future<void> _syncMosaics() async {
+    if (!_compOn || _mosaicSyncBusy || _compBuilding != null) return;
+    final player = _comp;
+    final sig = '$_mosaicSigNow|${(_hiddenTracks.toList()..sort()).join(",")}';
+    if (_mosaicSent == sig) return;
+    _mosaicSyncBusy = true;
+    _mosaicSent = sig;
+    final maps = <Map<String, dynamic>>[];
+    for (final c in _tl.clips) {
+      final src = _tl.sourceOf(c);
+      if (src.kind != ClipKind.mosaic || _hiddenTracks.contains(c.track)) {
+        continue;
+      }
+      final st = src.mosaicStyle ?? MosaicStyle();
+      maps.add({
+        'start': c.offset,
+        'end': c.end,
+        'track': c.track,
+        'px': c.px,
+        'py': c.py,
+        'scale': c.scale,
+        'type': st.type,
+        'strength': st.strength,
+        'color': st.color,
+        'feather': st.feather,
+        if (src.mosaicStroke != null) 'stroke': List.of(src.mosaicStroke!),
+        if (src.mosaicStroke != null) 'brush': src.mosaicBrush,
+      });
+    }
+    final appliedSig = _mosaicSigNow;
+    final ok = await CompPlayer.setMosaics(maps);
+    _mosaicSyncBusy = false;
+    if (!mounted) return;
+    if (_comp != player) {
+      unawaited(_syncMosaics());
+      return;
+    }
+    if (ok) {
+      _lastCompMosaicSig = appliedSig;
+    } else if (maps.isNotEmpty) {
+      _compRefreshIfChanged();
+    }
+    unawaited(_syncMosaics());
   }
 
   bool _liveImageVisibility = true;
@@ -1411,11 +1455,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 文字與馬賽克不畫（成本高、對認出專案幫助小）
   Future<(Uint8List, double)?> _composeCoverPng() async {
     try {
-      final (rawW, rawH) = computeCanvasSize(
-        _tl,
-        _resolution,
-        _canvasRatio,
-      );
+      final (rawW, rawH) = computeCanvasSize(_tl, _resolution, _canvasRatio);
       if (rawW < 2 || rawH < 2) return null;
       final shrink = math.min(1.0, 720 / math.max(rawW, rawH));
       final cw = math.max(2, (rawW * shrink).round());
@@ -1690,6 +1730,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 變好幾次——那種變化得等全部轉完再一次換，每變一次就重烘的話
   /// 畫面會重載好幾次
   String _compSig({bool withPaths = true}) => [
+    'canvas$_canvasAspectNow',
     for (final c in _tl.clips)
       if (_tl.sourceOf(c).isVideo)
         '${withPaths ? '${_tl.sourceOf(c).previewPath}'
@@ -1769,6 +1810,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               // color），指紋沒記的話「換一個」換了圖、只調了調色
               // 都不會觸發重烘，預覽持續顯示舊圖
               ? 'im${c.id}|${c.track}|${c.offset}|${c.end}|${c.px}|${c.py}'
+                    '|${c.trimStart}|${c.trimEnd}|${c.speed}|${c.reverse}'
                     '|${c.scale}|${c.mirror}|${c.fadeIn}|${c.fadeOut}'
                     '|${c.rotation}|${c.opacity}|${c.cropped}|${c.cropL}'
                     '|${c.cropT}|${c.cropW}|${c.cropH}'
@@ -1886,8 +1928,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 剛加馬賽克到重烘完成之間畫面上什麼都沒有，看起來就是
   /// 「加了沒反應、過一下才亂跳出來」（實測回報：讀取時間錯亂）
   String? _lastCompMosaicSig;
-  bool get _compMosaicStale =>
-      _compOn && _lastCompMosaicSig != _mosaicSigNow;
+  bool get _compMosaicStale => _compOn && _lastCompMosaicSig != _mosaicSigNow;
 
   void _compRefreshIfChanged() {
     if (!Diag.compPlayer.value || !mounted) return;
@@ -7798,6 +7839,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       await task;
     } finally {
       _compBuilding = null;
+      unawaited(_syncMosaics());
     }
   }
 
@@ -7898,8 +7940,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           i,
     };
     _xfBakedRevision = _xfRevision;
+    final builtSig = _compSig();
+    final builtEditSig = _compSig(withPaths: false);
+    final builtMosaicSig = _mosaicSig();
+    final builtStillSig = _stillSig();
     final made = await CompPlayer.build(
       _tl,
+      canvasAspect: _canvasAspectNow,
       texture: !Diag.playerLayer.value,
       mutedTracks: _mutedTracks,
       hiddenTracks: _compHiddenTracks,
@@ -7919,7 +7966,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (_exportHdr && _hdrAvail == true && !_prepBusy) {
       unawaited(_prepHdrWorkFiles());
     }
-    _compDirty = false;
+    _compDirty = builtSig != _compSig();
     if (!mounted) {
       await made?.dispose();
       return;
@@ -7947,10 +7994,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
     // 這一版烘的就是現在的值，指紋一起同步（馬賽克那份給
     // _compMosaicStale 判空窗用）
-    _lastCompSig = _compSig();
-    _lastCompEditSig = _compSig(withPaths: false);
-    _lastCompMosaicSig = _mosaicSig();
-    _lastCompStillSig = _stillSig();
+    _lastCompSig = builtSig;
+    _lastCompEditSig = builtEditSig;
+    _lastCompMosaicSig = builtMosaicSig;
+    _lastCompStillSig = builtStillSig;
+    _mosaicSent = null;
     _compBakedStills = CompPlayer.bakedImageIds(
       _tl,
       wmStart: wmBake.$1,
@@ -7996,6 +8044,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     //（實測回報：「加素材第一幀就要有，現在要按播放才有」）。
     // 播放中照舊寬容，精準 seek 會把 rate 壓到 0 造成頓一下
     await made.seek(_position, exact: !_playing);
+    if (_compDirty) _compRefreshIfChanged();
     // 合成就緒＝佈局定案：Metal 引擎的佈局趁閒先建好，
     // 滑動起手就不用等（無延遲）
     unawaited(_metalPrebuild());
@@ -8115,14 +8164,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 跟合成播放器對時：每 200ms 問一次真正的位置，中間用 ticker 補間
   DateTime _lastCompSync = DateTime.fromMillisecondsSinceEpoch(0);
+  int _playbackEpoch = 0;
 
   void _syncFromComp() {
     final now = DateTime.now();
     if (now.difference(_lastCompSync).inMilliseconds < 200) return;
     _lastCompSync = now;
+    final player = _comp!;
+    final epoch = _playbackEpoch;
     unawaited(
-      _comp!.position().then((p) {
-        if (!mounted || !_playing) return;
+      player.position().then((p) {
+        if (!mounted || !_playing || _comp != player || epoch != _playbackEpoch) {
+          return;
+        }
         // 合成只鋪到最後一段影片的結尾；時間軸可能更長（馬賽克或
         // 文字拖出去的尾巴）。播放器到底停住之後它就不再是時鐘——
         // 再拿它校正會把指針一路拉回合成結尾，跟還在前進的時鐘打
@@ -8156,6 +8210,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 因為那些是提早 1.2 秒預先對位過的（見 _syncMedia 的 pre-roll）
   Future<void> _play() async {
     if (_visDur <= 0) return;
+    _playbackEpoch++;
     _scrubQueue.clear();
     if (_position >= _visDur - 0.01) _position = 0;
     _clockBias = 0; // 上一輪沒吃完的校正不能帶進新的一輪
@@ -8352,6 +8407,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 畫面不另外 seek：播放器停在 item 尾端顯示的就是最後一幀，多送
   /// 一發精準 seek 反而會退回前一格（原生端把目標夾在總長前 34ms）
   void _pause({bool atEnd = false}) {
+    final epoch = ++_playbackEpoch;
+    final pausedAt = _position;
     _clockBias = 0;
     _playProbe?.cancel();
     _playProbe = null;
@@ -8360,6 +8417,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 3.0：系統暫停→精確 seek 到停點→常駐引擎回台顯示停格
       unawaited(
         c.pause().then((_) async {
+          if (!mounted || _playing || _comp != c || epoch != _playbackEpoch) {
+            return;
+          }
           if (atEnd) {
             // 時間軸捲到終點對齊（_followPlayhead 有 33ms 節流，最後
             // 一格可能沒跟上）；指針本身不動
@@ -8374,6 +8434,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           // 3) 夾在時間軸內：位置超過終點就沒有片段蓋著播放頭，
           //    預覽層會把合成畫面藏掉（見 atEnd 的說明）
           final p = await c.position();
+          if (!mounted ||
+              _playing ||
+              _scrubbing ||
+              _comp != c ||
+              epoch != _playbackEpoch ||
+              _position != pausedAt) {
+            return;
+          }
           // 合成只鋪到可見片段的結尾，時間軸可能更長（馬賽克拖出去的
           // 尾巴不補長，見 CompPlayer.padTo）。播放頭在尾巴裡時播放器
           // 早就停在合成結尾，差不到 1 秒也不能拿它回填——那會把指針
@@ -8382,10 +8450,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           final compEnd = c.duration;
           final inTail =
               compEnd > 0 && compEnd < _visDur - 0.05 && p >= compEnd - 0.1;
-          if (mounted &&
-              !inTail &&
-              p > 0.001 &&
-              (p - _position).abs() < 1.0) {
+          if (mounted && !inTail && p > 0.001 && (p - _position).abs() < 1.0) {
             _position = p.clamp(0.0, _visDur);
             _syncScrollToPosition();
           }
@@ -10348,11 +10413,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     var cancelled = false;
     try {
       final (outW, outH) = _exportDims();
-      final (rawW, rawH) = computeCanvasSize(
-        _tl,
-        _resolution,
-        _canvasRatio,
-      );
+      final (rawW, rawH) = computeCanvasSize(_tl, _resolution, _canvasRatio);
       final hdrMode = _exportHdr && _hdrAvail == true;
       if (rawW != outW || rawH != outH) {
         Diag.note(
@@ -10466,11 +10527,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     // 這次實際跑多久 → 更新這台機器的速度係數，下次預估才準
     if (ok) {
-      final (ow, oh) = computeCanvasSize(
-        _tl,
-        _resolution,
-        _canvasRatio,
-      );
+      final (ow, oh) = computeCanvasSize(_tl, _resolution, _canvasRatio);
       await ExportSpeed.record(
         outW: ow,
         outH: oh,
@@ -13671,8 +13728,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           final ts = src.textStyle;
           if (ts != null) {
             ts.rotation = rot(_pvBaseRotText);
-          } else if (src.kind == ClipKind.video ||
-              src.kind == ClipKind.image) {
+          } else if (src.kind == ClipKind.video || src.kind == ClipKind.image) {
             // 影片／圖片片段：轉 clip.rotation（跟調整視窗的滑桿
             // 同一個欄位，預覽與匯出都吃它）。馬賽克不轉——
             // 打碼區域的旋轉匯出端不支援，轉了預覽≠成品
@@ -15426,11 +15482,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 1080p 工作檔時輸出比它大也只是白白放大。
   /// 選高畫質以上＝使用者自己要畫質，照舊用原檔原尺寸
   (int, int) _exportDims() {
-    var (w, h) = computeCanvasSize(
-      _tl,
-      _resolution,
-      _canvasRatio,
-    );
+    var (w, h) = computeCanvasSize(_tl, _resolution, _canvasRatio);
     final fastQ =
         _qualityEff == ExportQuality.standard ||
         _qualityEff == ExportQuality.low;
@@ -15693,11 +15745,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               for (final (i, r) in ExportResolution.values.indexed)
                 Builder(
                   builder: (context) {
-                    final (w, h) = computeCanvasSize(
-                      _tl,
-                      r,
-                      _canvasRatio,
-                    );
+                    final (w, h) = computeCanvasSize(_tl, r, _canvasRatio);
                     final (ow, oh) = computeCanvasSize(
                       _tl,
                       ExportResolution.original,

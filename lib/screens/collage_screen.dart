@@ -720,6 +720,19 @@ class _CollageScreenState extends State<CollageScreen>
   /// iOS 拿相簿原檔（不經 image_picker 那一輪全解析度重壓、HEIC 不會
   /// 變 8-bit），見 pickPhotoFiles
   Future<void> _fillCell(int cell) async {
+    if (_pickingPhotos) return;
+    setState(() => _pickingPhotos = true);
+    try {
+      await _fillCellPicked(cell);
+    } catch (_) {
+      if (mounted) showHint(context, '照片匯入失敗，請再試一次', error: true);
+    } finally {
+      if (mounted) setState(() => _pickingPhotos = false);
+    }
+  }
+
+  bool _pickingPhotos = false;
+  Future<void> _fillCellPicked(int cell) async {
     final files = await pickPhotoFiles();
     if (files.isEmpty || !mounted) return;
     _noteReceived(files);
@@ -739,10 +752,12 @@ class _CollageScreenState extends State<CollageScreen>
           img.dispose();
           break; // 沒有空格了
         }
-        _images.add(img);
-        _srcPaths.add(f.path);
-        _order[slot] = _images.length - 1;
-        _fits[slot] = CollageCellFit();
+        setState(() {
+          _images.add(img);
+          _srcPaths.add(f.path);
+          _order[slot] = _images.length - 1;
+          _fits[slot] = CollageCellFit();
+        });
         filled++;
       } catch (_) {
         failedNames.add(f.name);
@@ -1847,6 +1862,17 @@ class _CollageScreenState extends State<CollageScreen>
   /// 大鈕拿掉了——上浮水印是隔壁分頁、匯出再隔壁，
   /// 補照片點格子的「＋」（自由模式用卡上的「加照片」）
   List<Widget> _collageTabBody() => [
+    if (!_free)
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: TextButton.icon(
+          onPressed: _pickingPhotos || _emptySlot() < 0
+              ? null
+              : () => _fillCell(_emptySlot()),
+          icon: const Icon(Icons.add_photo_alternate_outlined, size: 18),
+          label: Text(_pickingPhotos ? '照片載入中…' : '加入照片'),
+        ),
+      ),
     Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
       child: _settingsCard(),
@@ -2505,7 +2531,8 @@ class _CollageScreenState extends State<CollageScreen>
     if (img == null) {
       final over = _dragFrom != -1 && _dragOver == i;
       return GestureDetector(
-        onTap: () => _fillCell(i),
+        behavior: HitTestBehavior.opaque,
+        onTap: _pickingPhotos ? null : () => _fillCell(i),
         child: Container(
           decoration: BoxDecoration(
             color: kPanel,

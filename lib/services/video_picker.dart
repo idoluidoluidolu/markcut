@@ -94,6 +94,17 @@ Future<List<XFile>> pickMediaFiles() => _pickOriginals(FileType.media);
 /// 目前還是直接叫 ImagePicker().pickMultiImage()，換成這個就好
 Future<List<XFile>> pickPhotoFiles() => _pickOriginals(FileType.image);
 
+/// 單張素材也保留相簿原檔，避免 iOS 選圖時先重壓一次 JPEG。
+Future<XFile?> pickPhotoFile() async {
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+    final result = await FilePicker.platform.pickFiles(type: FileType.image);
+    if (result == null || result.files.isEmpty) return null;
+    final file = result.files.first;
+    return file.path == null ? null : XFile(file.path!, name: file.name);
+  }
+  return ImagePicker().pickImage(source: ImageSource.gallery);
+}
+
 Future<List<XFile>> _pickOriginals(FileType type) async {
   if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
     // compressionQuality 預設 0 ＝ 不壓：PHPicker 用 .current 表示法，

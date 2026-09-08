@@ -33,6 +33,7 @@ void main() {
   late List<Map<Object?, Object?>> xformCalls;
   late List<List<Object?>> visibilityCalls;
   var builds = 0;
+  var mosaicCalls = <List<dynamic>>[];
 
   setUpAll(() {
     final b = TestWidgetsFlutterBinding.ensureInitialized();
@@ -58,6 +59,7 @@ void main() {
     Diag.playerLayer.value = false;
     xformCalls = [];
     visibilityCalls = [];
+    mosaicCalls = [];
     builds = 0;
     final b = TestWidgetsFlutterBinding.ensureInitialized();
     b.defaultBinaryMessenger.setMockMethodCallHandler(compCh, (call) async {
@@ -73,6 +75,9 @@ void main() {
             'height': 1920.0,
             'ci': true,
           };
+        case 'setMosaics':
+          mosaicCalls.add(List<dynamic>.from((call.arguments as Map)['mosaics'] as List));
+          return true;
         case 'setXform':
           xformCalls.add(Map<Object?, Object?>.from(call.arguments as Map));
           return true;
@@ -319,4 +324,32 @@ void main() {
 
     await _tick(t, 100);
   });
+  testWidgets('馬賽克樣式立即送給現有合成，不等停手重建', (t) async {
+    await t.pumpWidget(const MaterialApp(home: VideoEditorScreen(blank: true)));
+    await _tick(t, 5);
+    VideoEditorScreen.debugTimeline!((tl) {
+      tl.sources.add(MediaSource(path: '/v.mp4', name: 'v', kind: ClipKind.video,
+        duration: 10, workPath: '/v.work.mp4'));
+      tl.clips.add(TimelineClip(id: tl.nextId(), sourceIndex: 0,
+        trimStart: 0, trimEnd: 10, offset: 0, track: 0));
+      tl.sources.add(MediaSource(path: '', name: '馬賽克', kind: ClipKind.mosaic,
+        duration: 10, mosaicStyle: MosaicStyle()));
+      tl.clips.add(TimelineClip(id: tl.nextId(), sourceIndex: 1,
+        trimStart: 0, trimEnd: 5, offset: 0, track: 1));
+    });
+    await _tick(t, 20);
+    final before = builds;
+    mosaicCalls.clear();
+    VideoEditorScreen.debugTimeline!((tl) {
+      tl.sources[1].mosaicStyle!.strength = 0.85;
+    });
+    await _tick(t, 2, 16);
+    expect(builds, before);
+    expect(mosaicCalls, isNotEmpty);
+    expect((mosaicCalls.last.single as Map)['strength'], 0.85);
+    expect((mosaicCalls.last.single as Map)['track'], 1);
+    await _tick(t, 100);
+    expect(t.takeException(), isNull);
+  });
+
 }
