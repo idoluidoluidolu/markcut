@@ -1730,7 +1730,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 變好幾次——那種變化得等全部轉完再一次換，每變一次就重烘的話
   /// 畫面會重載好幾次
   String _compSig({bool withPaths = true}) => [
-    'canvas$_canvasAspectNow',
+    // 原始比例由原生素材決定；計算指紋不能為了讀比例啟動逐片段解碼器。
+    'canvas$_ratioAspect',
     for (final c in _tl.clips)
       if (_tl.sourceOf(c).isVideo)
         '${withPaths ? '${_tl.sourceOf(c).previewPath}'
@@ -7946,7 +7947,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final builtStillSig = _stillSig();
     final made = await CompPlayer.build(
       _tl,
-      canvasAspect: _canvasAspectNow,
+      canvasAspect: _ratioAspect,
       texture: !Diag.playerLayer.value,
       mutedTracks: _mutedTracks,
       hiddenTracks: _compHiddenTracks,
@@ -8087,13 +8088,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final at = _position;
       final wasPlaying = _playing;
       if (wasPlaying) _pause();
+      final epoch = _playbackEpoch;
       final old = _comp;
       if (mounted) setState(() => _comp = null);
       await old?.dispose();
+      if (!mounted) return;
       _compDirty = true;
       await _ensureComp();
-      if (!mounted) return;
+      if (!mounted || epoch != _playbackEpoch || _position != at) return;
       await _comp?.seek(at, exact: true);
+      if (!mounted || epoch != _playbackEpoch || _position != at) return;
       if (wasPlaying) unawaited(_play());
     } finally {
       _reviving = false;
@@ -8102,6 +8106,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _startPlayProbe() {
     _playProbe?.cancel();
+    _playStuck = 0;
+    final epoch = _playbackEpoch;
     final wall = Stopwatch()..start();
     var basePlayer = -1;
     Object? baseCtrl;
@@ -8113,6 +8119,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (_compOn) {
         final comp = _comp!;
         final p = await comp.position();
+        if (!mounted || !_playing || epoch != _playbackEpoch || _comp != comp) {
+          return;
+        }
         // 合成比時間軸短（尾巴是文字／貼圖／馬賽克）：播放器到底停住是
         // 正常的，時鐘自己走完尾巴（同 _syncFromComp 的豁免）——位置
         // 不前進不是殭屍，不能拿去重建
@@ -8128,6 +8137,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             _ctrls[_tl.videoAt(_position, skipTracks: _hiddenTracks)?.id ?? -1];
         if (c == null || !c.value.isInitialized) return;
         pos = (await c.positionNow())?.inMilliseconds;
+        if (!mounted || !_playing || epoch != _playbackEpoch) return;
         who = c;
       }
       callSw.stop();
@@ -8174,7 +8184,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final epoch = _playbackEpoch;
     unawaited(
       player.position().then((p) {
-        if (!mounted || !_playing || _comp != player || epoch != _playbackEpoch) {
+        if (!mounted ||
+            !_playing ||
+            _comp != player ||
+            epoch != _playbackEpoch) {
           return;
         }
         // 合成只鋪到最後一段影片的結尾；時間軸可能更長（馬賽克或
@@ -8210,7 +8223,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 因為那些是提早 1.2 秒預先對位過的（見 _syncMedia 的 pre-roll）
   Future<void> _play() async {
     if (_visDur <= 0) return;
-    _playbackEpoch++;
+    final epoch = ++_playbackEpoch;
+    bool cancelled() => !mounted || epoch != _playbackEpoch;
     _scrubQueue.clear();
     if (_position >= _visDur - 0.01) _position = 0;
     _clockBias = 0; // 上一輪沒吃完的校正不能帶進新的一輪
@@ -8231,12 +8245,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 合成播放器接手時，整條時間軸就是它一顆在播：舊的逐片段播放器
     // 一個都不要碰。上一版兩邊同時在播——兩倍解碼、兩份聲音，
     // 而且「快不快」也就比不出來了
+    setState(() => _playing = true);
+    _compRebuildTimer?.cancel();
+    final swPlay = Stopwatch()..start();
+    // 包含第一次建置：等完成後再決定由合成或逐片段播放器接手。
+    if (_compBuilding != null || (_compOn && _compDirty)) await _ensureComp();
+    if (cancelled() || !_playing) return;
+    final msRebuild = swPlay.elapsedMilliseconds;
     if (_compOn) {
-      setState(() => _playing = true);
+      final player = _comp!;
+      bool compCancelled() => cancelled() || !_playing || _comp != player;
       // 已經停在該在的位置就不要 seek——這正是我在舊路徑上剛修掉的
       // 同一個坑：seek 沒跑完之前播放器的 rate 壓在 0，畫面不會動。
       // 真的要移動時也用寬容 seek，反正接下來就要滾過去了
-      final now = await _comp!.position();
+      final now = await player.position();
+      if (compCancelled()) return;
       if ((now - _position).abs() <= 0.15) {
         // 播放器已經在附近（chase 的寬容度是 0.1，別跟它打架）：
         // 一發 seek 都不送，時間軸直接對齊播放器——它本來就是唯一的時鐘
@@ -8245,20 +8268,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 遠距（例如片尾歸零重播）：先 seek 完成才 play——順序反了
         // 的話 play 在片尾立即自停、seek 完成後沒人再叫 play，
         // 播放器停在新位置永遠不動（實測：播完再按播放沒反應）
-        await _comp!.seek(_position);
+        await player.seek(_position);
+        if (compCancelled()) return;
       }
-      await _comp!.setRate(_speed);
+      await player.setRate(_speed);
+      if (compCancelled()) return;
       // 畫面/聲音/同步全由系統播放器負責。起播前：待辦的合成重組
       // 在 _playing 已為 true 時只會被記成 _pendingCompRebuild（暫停
       // 後補做）——這裡的 await 只是等「正在進行中」的那次組完，
       // 不在起播途中換 AVPlayerItem；再把最新浮水印以全解析度上屏
-      _compRebuildTimer?.cancel();
-      final swPlay = Stopwatch()..start();
-      if (_compDirty) await _ensureComp();
-      if (!mounted) return;
-      final msRebuild = swPlay.elapsedMilliseconds;
       await _ovSync.flush();
-      if (!mounted) return;
+      if (compCancelled()) return;
       final msOvSync = swPlay.elapsedMilliseconds;
       // ══ 換手空窗修法：引擎留在台上蓋著（顯示的就是這一格暫停
       // 幀），等系統播放器的影格真的滾起來才下台。原本按下播放就
@@ -8267,8 +8287,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 起播前確認影片圖層綁在現役播放器：翻面被打斷過的話，
       // 前層還指著已收掉的舊播放器＝播放全黑（實機 145）
       await MetalPreview.reattach();
+      if (compCancelled()) return;
       final msYield = swPlay.elapsedMilliseconds - msOvSync;
-      final st = await _comp!.play();
+      final st = await player.play();
+      if (compCancelled()) return;
       tr.log(
         '起播分段：重組 ${msRebuild}ms／浮水印烘回 ${msOvSync - msRebuild}ms'
         '／引擎讓位 ${msYield}ms'
@@ -8277,9 +8299,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       tr.log('系統播放器起播（狀態：${st ?? '？'}）');
       final sw = Stopwatch()..start();
       final p0 = now;
-      while (mounted && sw.elapsedMilliseconds < 400) {
+      while (!compCancelled() && sw.elapsedMilliseconds < 400) {
         await Future<void>.delayed(const Duration(milliseconds: 16));
-        final p = await _comp!.position();
+        if (compCancelled()) return;
+        final p = await player.position();
+        if (compCancelled()) return;
         if ((p - p0).abs() > 0.001) {
           tr.log('影格開始滾動（系統播放器）');
           break;
@@ -8293,7 +8317,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 等影格的這 400ms 裡使用者可能已經按了暫停（_pause 把 _playing
       // 翻回 false、播放器也停了）：這時再開時鐘與取樣器，就是播放器
       // 停著、指針自己往前走，取樣器還一直掛著
-      if (!mounted || !_playing) return;
+      if (compCancelled()) return;
       _lastTick = Duration.zero;
       _ticker.start();
       // 播放取樣器也要在合成模式開：殭屍播放器自救（_reviveDeadComp）
@@ -8320,6 +8344,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 80ms 的容差：位置回報本來就有誤差，比對太嚴等於白加。
       // web 的 position 是 async 往返，問了反而多一次等待
       final now = kIsWeb ? null : await c.positionNow();
+      if (cancelled()) return;
       tr.log(
         '查位置完成（片段 ${clip.id}）現在=${now?.inMilliseconds}ms '
         '目標=${(want * 1000).round()}ms',
@@ -8338,9 +8363,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         Future<void>.delayed(const Duration(milliseconds: 400)),
       ]);
       tr.log('seek 等待結束（${waits.length} 個）');
-      if (!mounted) return;
+      if (cancelled()) return;
     }
-    setState(() => _playing = true);
+    if (cancelled()) return;
     // 先叫「現在該播的」影片動起來，盯著它的位置真的前進了才開
     // 時間軸的錶。位置一定要用 positionNow()（直接問引擎）——
     // 上一版盯的是 value.position，那是 video_player 每 500ms 才
@@ -8364,14 +8389,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     if (lead != null && !kIsWeb) {
       final p0 = await lead.positionNow();
+      if (cancelled() || !_playing) return;
       final sw = Stopwatch()..start();
       var sawBuffering = false;
       // 一格問一次就夠。20ms 一次的平台往返是在播放器最忙的時候一直
       // 插隊，等於自己拖慢自己
-      while (mounted && sw.elapsedMilliseconds < 250) {
+      while (!cancelled() && _playing && sw.elapsedMilliseconds < 250) {
         await Future<void>.delayed(const Duration(milliseconds: 33));
+        if (cancelled() || !_playing) return;
         if (lead.value.isBuffering) sawBuffering = true;
         final p = await lead.positionNow();
+        if (cancelled() || !_playing) return;
         if (p != null && p != p0) {
           tr.log(
             '影格開始滾動（位置從 ${p0?.inMilliseconds} 變成 '
@@ -8386,8 +8414,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (sw.elapsedMilliseconds >= 250) {
         tr.log('⚠ 等了 250ms 影格還沒動，直接開錶');
       }
-      if (!mounted) return;
+      if (cancelled() || !_playing) return;
     }
+    if (cancelled() || !_playing) return;
     _lastTick = Duration.zero;
     _ticker.start();
     _startPlayProbe();

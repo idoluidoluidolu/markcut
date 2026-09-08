@@ -1447,8 +1447,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
       action: '刪除',
     );
     if (ok) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(kPhotoDraftKey);
+      await PhotoEditorScreen.clearPhotoDraft(deleteAssets: true);
       _reload();
     }
   }

@@ -300,6 +300,52 @@ void main() {
     expect(panelAspect(), closeTo(16 / 9, 1e-6));
   });
 
+  testWidgets('拒絕相簿權限：提示失敗、保留草稿，不顯示匯出完成', (t) async {
+    var saved = 0;
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    const gal = MethodChannel('gal');
+    messenger.setMockMethodCallHandler(gal, (call) async {
+      if (call.method == 'hasAccess' || call.method == 'requestAccess') {
+        return false;
+      }
+      if (call.method == 'putImageBytes') saved++;
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(gal, null));
+
+    final paths = await _files(t, n: 1);
+    final draft = jsonEncode({
+      'files': paths,
+      'settings': WatermarkSettings().toJson(),
+    });
+    SharedPreferences.setMockInitialValues({kBatchDraftKey: draft});
+    await _pumpFromHome(
+      t,
+      BatchWatermarkScreen(files: [for (final p in paths) XFile(p)]),
+    );
+    await t.tap(find.text('匯出'));
+    await t.pumpAndSettle();
+    await t.tap(find.text('PNG 無損'));
+    await t.pump();
+    for (var i = 0; i < 150; i++) {
+      await t.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 100)),
+      );
+      await t.pump(const Duration(milliseconds: 100));
+      if (find.textContaining('沒有相簿存取權限').evaluate().isNotEmpty) break;
+    }
+    expect(find.textContaining('完成 0 個，1 個失敗'), findsOneWidget);
+    expect(find.textContaining('請到系統設定開啟'), findsOneWidget);
+    expect(find.text('匯出完成'), findsNothing);
+    expect(saved, 0);
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getString(kBatchDraftKey), draft);
+    expect(t.takeException(), isNull);
+    await t.pump(const Duration(seconds: 3));
+    await t.pumpAndSettle();
+  });
+
   testWidgets('匯出成功：草稿清掉、之後沒再動返回不問', (t) async {
     // 相簿由 gal 套件寫入，接住它的通道
     var saved = 0;

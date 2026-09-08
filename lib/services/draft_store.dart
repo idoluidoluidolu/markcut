@@ -155,7 +155,7 @@ class DraftStore {
   /// 見 _saveDraftNow——那是每個編輯動作都會走到的路）
   /// 回傳有沒有真的寫進去。SharedPreferences 寫入失敗（空間滿、
   /// prefs 損毀）以前被吞掉，使用者整場都以為有自動存。
-  /// 存完順手把超過上限的最舊草稿清掉（這一份跟正在編輯的不碰）
+  /// 內容、封面及索引都成功寫入才回 true；存檔不順手清理其他草稿。
   static Future<bool> save(
     String id,
     String json, {
@@ -166,14 +166,25 @@ class DraftStore {
   }) async {
     try {
       return await _serial(() async {
-        final ok = await _saveInner(
-          id,
-          json,
-          thumb: thumb,
-          thumbAspect: thumbAspect,
-          clipCount: clipCount,
-          duration: duration,
-        );
+        var ok = false;
+        try {
+          ok = await _saveInner(
+            id,
+            json,
+            thumb: thumb,
+            thumbAspect: thumbAspect,
+            clipCount: clipCount,
+            duration: duration,
+          );
+        } finally {
+          if (!ok) {
+            // prefs 先更新記憶體才寫平台。失敗後在這次排程內重讀，
+            // 避免下個儲存或清理讀到未落地的內容／索引。
+            try {
+              await (await SharedPreferences.getInstance()).reload();
+            } catch (_) {}
+          }
+        }
         // 存檔「不」順手清理：清理要把每一份草稿的完整 JSON（含縮圖與
         // 圖片）讀進來比對引用，草稿多時是幾十 MB 的掃描。匯入一次會存
         // 好幾次草稿，等於每存一次就掃一遍——實機回報「匯入卡住然後閃退」。
@@ -195,11 +206,11 @@ class DraftStore {
   }) async {
     final prefs = await SharedPreferences.getInstance();
     await _migrate(prefs);
-    await prefs.setString(_dataKey(id), json);
+    if (!await prefs.setString(_dataKey(id), json)) return false;
     if (thumb != null) {
-      await prefs.setString(_thumbKey(id), thumb);
+      if (!await prefs.setString(_thumbKey(id), thumb)) return false;
     } else {
-      await prefs.remove(_thumbKey(id));
+      if (!await prefs.remove(_thumbKey(id))) return false;
     }
     final metas = await list();
     // 建立時間：第一次存下來的那一刻，之後每次存都留著同一個。
@@ -222,8 +233,7 @@ class DraftStore {
         duration: duration,
       ),
     );
-    await _writeIndex(prefs, metas);
-    return true;
+    return _writeIndex(prefs, metas);
   }
 
   static Future<void> remove(String id) => _serial(() => _removeInner(id));
@@ -301,12 +311,12 @@ class DraftStore {
     return 'p$t${(_seq++).toRadixString(36)}';
   }
 
-  static Future<void> _writeIndex(
+  static Future<bool> _writeIndex(
     SharedPreferences prefs,
     List<DraftMeta> metas,
   ) async {
     metas.sort((a, b) => b.savedAt.compareTo(a.savedAt));
-    await prefs.setString(
+    return prefs.setString(
       _indexKey,
       jsonEncode([for (final m in metas) m.toJson()]),
     );

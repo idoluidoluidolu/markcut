@@ -104,7 +104,7 @@ Future<PhotoEncoded> encodePhotoImage(
 }
 
 /// 編碼＋存相簿（手機）／下載（Web）。回 (給使用者看的訊息, 實際副檔名)。
-/// 不 dispose [image]；會丟例外（權限以外的失敗），呼叫端自己接
+/// 不 dispose [image]；失敗會丟例外（包含權限被拒絕），呼叫端自己接
 Future<(String, String)> savePhotoImage(
   ui.Image image, {
   required bool jpeg,

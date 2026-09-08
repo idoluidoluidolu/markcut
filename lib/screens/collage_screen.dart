@@ -86,7 +86,7 @@ class _CollageScreenState extends State<CollageScreen>
   final List<ui.Image?> _images = [];
 
   /// 每張照片的來源路徑（跟 _images 同索引；存草稿用）。
-  /// 換單張時換上的是裁切版，路徑仍記原圖——續作時裁切會回到原圖
+  /// 換單張時保留裁切後的素材路徑，續作才能還原相同的像素。
   final List<String?> _srcPaths = [];
 
   /// 這一頁收過的每一條檔案路徑（進場那批＋中途挑的）：離開時把其中
@@ -445,22 +445,33 @@ class _CollageScreenState extends State<CollageScreen>
   /// 存草稿。照片先各留一份在 App 自己的目錄（DraftAssets）、草稿改記
   /// 那一份：相簿選取器給的複本在 tmp／cache，系統幾天就清，以前續作
   /// 動不動就「有 N 張照片已不在」
-  Future<void> _saveDraft() async {
+  Future<bool> _saveDraft() async {
+    SharedPreferences? prefs;
     try {
       // 先在同步這一段把路徑抄下來，await 之後才讀 state 欄位太晚
       final src = List<String?>.of(_srcPaths);
       // 整份草稿一起算額度（見 DraftAssets.secureAll）
       final photos = await DraftAssets.secureAll(DraftAssets.collage, src);
-      if (!mounted) return;
+      if (!mounted) return false;
       final text = _draftJson(photos: photos);
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(kCollageDraftKey, text);
+      prefs = await SharedPreferences.getInstance();
+      if (!await prefs.setString(kCollageDraftKey, text)) {
+        await prefs.reload();
+        throw StateError('草稿無法保存');
+      }
       _draftPaths = {
         for (final p in photos)
           if (p != null && p.isNotEmpty) p,
       };
       _draftTouched = true;
-    } catch (_) {}
+      return true;
+    } catch (_) {
+      try {
+        await prefs?.reload();
+      } catch (_) {}
+      if (mounted) showHint(context, '草稿保存失敗，請確認儲存空間後再試一次', error: true);
+      return false;
+    }
   }
 
   /// 草稿不要了（捨棄、或匯出成功）
@@ -609,8 +620,8 @@ class _CollageScreenState extends State<CollageScreen>
     );
     if (!mounted) return;
     if (act == 'keep') {
-      await _saveDraft();
-      if (mounted) Navigator.of(context).pop();
+      final saved = await _saveDraft();
+      if (saved && mounted) Navigator.of(context).pop();
     } else if (act == 'discard') {
       await _clearDraft();
       if (mounted) Navigator.of(context).pop();
@@ -808,6 +819,12 @@ class _CollageScreenState extends State<CollageScreen>
       if (!mounted) return;
       final cut = await cropImage(context, raw);
       if (cut == null || !mounted) return;
+      final croppedPath = kIsWeb
+          ? null
+          : await DraftAssets.addPng(DraftAssets.collage, cut);
+      if (!kIsWeb && croppedPath == null) {
+        throw StateError('裁切照片無法保存');
+      }
       final img = await _decode(XFile.fromData(cut, name: f.name));
       // 選照片＋解碼期間排法可能被換掉，格子編號會失效
       if (!mounted || cell >= _order.length) {
@@ -817,7 +834,7 @@ class _CollageScreenState extends State<CollageScreen>
       setState(() {
         final old = _order[cell];
         _images.add(img);
-        _srcPaths.add(f.path);
+        _srcPaths.add(croppedPath ?? f.path);
         _order[cell] = _images.length - 1;
         _fits[cell] = CollageCellFit();
         _selCell = cell;

@@ -472,11 +472,16 @@ Future<String> _buildCommand(
     }
   }
 
-  // 圖片素材用 -loop 輸入，長度取該素材所有片段的最大需求
+  // 靜態圖只要供到片段結尾；GIF 則要供到「素材時間」的最遠取樣點。
+  // 修剪／加速後輸出可能只有一秒，卻要讀 GIF 的第十秒（含循環）。
   final stillNeed = <int, double>{};
   for (final c in segClips) {
-    if (spec.sources[c.sourceIndex].kind == ClipKind.image) {
-      final need = c.length / sp + 0.5;
+    final src = spec.sources[c.sourceIndex];
+    if (src.kind == ClipKind.image) {
+      final (a, b) = visible(c.offset / sp, c.end / sp)!;
+      final need = src.isGif
+          ? math.max(c.sourceTimeAt(a * sp), c.sourceTimeAt(b * sp)) + 0.5
+          : c.length / sp + 0.5;
       if (need > (stillNeed[c.sourceIndex] ?? 0)) {
         stillNeed[c.sourceIndex] = need;
       }
@@ -713,6 +718,26 @@ Future<String> _buildCommand(
     final toSeg = '$shift+${_f(a - w0)}/TB';
     if (src.kind == ClipKind.image) {
       final label = vPool[c.sourceIndex]!.removeLast();
+      var sourceCut = '';
+      var imageTime = cut;
+      if (src.isGif) {
+        final rate = sp * c.speed.clamp(0.1, 16.0);
+        final sourceA = c.sourceTimeAt(a * sp);
+        final sourceB = c.sourceTimeAt(b * sp);
+        final lo = math.min(sourceA, sourceB);
+        final hi = math.max(sourceA, sourceB);
+        // GIF 是可變幀長。先平移素材時間，再以輸出所需的取樣率補幀：
+        // 修剪點落在某幀中間時，保留當時那幀，不能 trim 掉後跳到下一幀。
+        // 反向只緩存這一段、而且等縮圖後才 reverse，避免存整支原尺寸 GIF。
+        sourceCut =
+            'settb=AVTB,setpts=PTS-${_f6(lo)}/TB,'
+            'fps=fps=${_f6(fps / rate)}:start_time=0:round=up,'
+            'trim=duration=${_f6(hi - lo)},';
+        imageTime =
+            '${c.reverse ? 'reverse,' : ''}'
+            'settb=AVTB,setpts=(PTS-STARTPTS)/${_f6(rate)}'
+            '+${_f(a - start)}/TB';
+      }
       final (w2, h2, x, y) = layerBox(c, src.aspect);
       final (cropF, cdx, cdy) = cropOf(c, w2, h2);
       final cw = c.cropped ? (c.cropW * w2).round() : w2;
@@ -720,13 +745,14 @@ Future<String> _buildCommand(
       final (spinF, sdx, sdy) = spinFadeOf(c, cw, ch);
       fc.write(
         '[$label]'
+        '$sourceCut'
         'scale=$w2:$h2:flags=lanczos'
         '${cropF.isEmpty ? '' : ',${cropF.substring(0, cropF.length - 1)}'}'
         '${c.mirror ? ',hflip' : ''}'
         '${_eq(c)}'
         ',format=rgba,'
         '$spinF'
-        '$cut'
+        '$imageTime'
         '${vFades(c)}'
         '$toSeg'
         '[lv$k];',

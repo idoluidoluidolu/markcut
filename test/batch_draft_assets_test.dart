@@ -12,10 +12,28 @@ import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+// 模擬既有 shared_preferences 平台寫入失敗，不增加產品依賴。
+// ignore: depend_on_referenced_packages
+import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
 
 import 'package:markcut/nav.dart';
 import 'package:markcut/screens/batch_watermark_screen.dart';
 import 'package:markcut/services/draft_assets.dart';
+
+class _FailingBatchPreferences extends InMemorySharedPreferencesStore {
+  _FailingBatchPreferences(super.data, this.throwOnFailure) : super.withData();
+
+  final bool throwOnFailure;
+
+  @override
+  Future<bool> setValue(String valueType, String key, Object value) async {
+    if (key == 'flutter.$kBatchDraftKey') {
+      if (throwOnFailure) throw StateError('disk full');
+      return false;
+    }
+    return super.setValue(valueType, key, value);
+  }
+}
 
 Future<Uint8List> _png(Color c, int w, int h) async {
   final rec = ui.PictureRecorder();
@@ -134,6 +152,45 @@ void main() {
       kBatchDraftKey,
     );
     return raw == null ? null : jsonDecode(raw) as Map<String, dynamic>;
+  }
+
+  for (final throwsError in [false, true]) {
+    testWidgets('草稿寫入${throwsError ? '拋例外' : '回 false'}：留在編輯頁、舊草稿及素材不被清掉', (
+      t,
+    ) async {
+      final paths = await _picked(t, 1);
+      final oldPhoto = File('${_own()}previous.png');
+      oldPhoto.parent.createSync(recursive: true);
+      oldPhoto.writeAsBytesSync(File(paths.first).readAsBytesSync());
+      final oldDraft = jsonEncode({
+        'files': [oldPhoto.path],
+      });
+      final previousStore = SharedPreferencesStorePlatform.instance;
+      SharedPreferencesStorePlatform.instance = _FailingBatchPreferences({
+        'flutter.$kBatchDraftKey': oldDraft,
+      }, throwsError);
+      addTearDown(() {
+        SharedPreferencesStorePlatform.instance = previousStore;
+        SharedPreferences.resetStatic();
+      });
+
+      await _pumpFromHome(t, BatchWatermarkScreen(files: [XFile(paths.first)]));
+      await _touch(t);
+      await _back(t);
+      await t.tap(find.text('保留草稿'));
+      await _settle(t, rounds: 12);
+      expect(find.byType(BatchWatermarkScreen), findsOneWidget);
+      expect(find.text('草稿保存失敗，請確認儲存空間後再試一次'), findsOneWidget);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString(kBatchDraftKey), oldDraft, reason: '不能留下假成功的快取');
+
+      await t.pump(const Duration(seconds: 3));
+      await t.pumpWidget(const SizedBox());
+      await _settle(t, rounds: 12);
+      expect(oldPhoto.existsSync(), isTrue, reason: '失敗不能更新清理引用並刪到舊素材');
+      expect((await draft())!['files'], [oldPhoto.path]);
+      expect(t.takeException(), isNull);
+    });
   }
 
   testWidgets('保留草稿：檔案複製進 App 自己的目錄、草稿記複本、覆寫以複本路徑當鍵；離開後選取器的複本清掉', (t) async {

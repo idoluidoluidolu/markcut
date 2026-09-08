@@ -290,8 +290,13 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     );
     if (!mounted) return;
     if (act == 'keep') {
-      await _saveBatchDraft();
-      if (mounted) Navigator.of(context).pop();
+      final saved = await _saveBatchDraft();
+      if (!mounted) return;
+      if (saved) {
+        Navigator.of(context).pop();
+      } else {
+        showHint(context, '草稿保存失敗，請確認儲存空間後再試一次', error: true);
+      }
     } else if (act == 'discard') {
       await _clearBatchDraft();
       if (mounted) Navigator.of(context).pop();
@@ -302,7 +307,8 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   /// 草稿改記那一份：相簿選取器給的複本在 tmp／cache，系統幾天就清，
   /// 以前續作動不動就「有 N 個檔案已不在」。單張覆寫以路徑當鍵（不是
   /// 第幾個），少了哪個檔案都不會位移到別張
-  Future<void> _saveBatchDraft() async {
+  Future<bool> _saveBatchDraft() async {
+    SharedPreferences? prefs;
     try {
       // 先在同步這一段把內容組好：await 之後才讀 state 欄位太晚
       final items = [
@@ -330,14 +336,24 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         'overrides': overrides,
         'savedAt': DateTime.now().toIso8601String(),
       });
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(kBatchDraftKey, text);
+      prefs = await SharedPreferences.getInstance();
+      if (!await prefs.setString(kBatchDraftKey, text)) {
+        throw StateError('草稿無法保存');
+      }
       _draftPaths = {
         for (final p in files)
           if (p.isNotEmpty) p,
       };
       _draftTouched = true;
-    } catch (_) {}
+      return true;
+    } catch (_) {
+      // setString 在平台寫入前已更新本地快取；失敗時恢復磁碟上的引用，
+      // 避免離頁清理把未落地的新草稿當真，反而刪到舊草稿的素材。
+      try {
+        await prefs?.reload();
+      } catch (_) {}
+      return false;
+    }
   }
 
   /// 草稿不要了（捨棄、或匯出成功）
@@ -906,6 +922,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     int i,
     bool jpeg, {
     String? sourcePath,
+    void Function(String message)? onError,
   }) async {
     try {
       await savePhotoImage(
@@ -916,7 +933,8 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         sourcePath: sourcePath,
       );
       return true;
-    } catch (_) {
+    } catch (e) {
+      onError?.call(e.toString());
       return false;
     } finally {
       image.dispose();
@@ -1011,6 +1029,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     var done = 0;
     var failed = 0;
     var skipped = 0;
+    String? firstPhotoError;
     void finished(int i, bool ok) {
       ok ? done++ : failed++;
       final k = kinds[i];
@@ -1094,6 +1113,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                 i,
                 jpeg,
                 sourcePath: kIsWeb ? null : f.path,
+                onError: (message) => firstPhotoError ??= message,
               ).then((ok) {
                 finished(i, ok);
               });
@@ -1124,6 +1144,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         ? '已取消，完成 $done 個'
         : (failed == 0 ? '完成！已匯出 $done 個檔案' : '完成 $done 個，$failed 個失敗');
     if (skipped > 0) msg += '（$skipped 部影片略過：此平台不支援）';
+    if (!_stopRequested && failed > 0 && firstPhotoError != null) {
+      msg += '\n$firstPhotoError';
+    }
     setState(() => _exporting = false);
     // 全部成功才問下一步；有失敗或略過就用提示講清楚，
     // 這種時候把人送回主畫面等於把問題蓋掉

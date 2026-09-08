@@ -60,6 +60,8 @@ void main() {
   Timer? nativeClock;
   int? stopAtMs;
   var compDuration = 5.0;
+  Completer<int>? heldPosition;
+  Completer<Map<String, dynamic>>? heldBuild;
 
   setUpAll(() {
     final b = TestWidgetsFlutterBinding.ensureInitialized();
@@ -87,6 +89,8 @@ void main() {
     nativeMs = 0;
     stopAtMs = null;
     compDuration = 5.0;
+    heldPosition = null;
+    heldBuild = null;
     final b = TestWidgetsFlutterBinding.ensureInitialized();
     b.defaultBinaryMessenger.setMockMethodCallHandler(compCh, (call) async {
       switch (call.method) {
@@ -94,6 +98,11 @@ void main() {
           return true;
         case 'build':
           builds++;
+          if (heldBuild != null) {
+            final pending = heldBuild!;
+            heldBuild = null;
+            return pending.future;
+          }
           return <String, dynamic>{
             'textureId': 1,
             'duration': compDuration,
@@ -114,6 +123,11 @@ void main() {
           if (stopAtMs != null) nativeMs = stopAtMs!;
           return null;
         case 'position':
+          if (heldPosition != null) {
+            final pending = heldPosition!;
+            heldPosition = null;
+            return pending.future;
+          }
           return nativeMs;
         case 'seek':
           final a = Map<Object?, Object?>.from(call.arguments as Map);
@@ -197,9 +211,56 @@ void main() {
     expect(_isPlaying(), isTrue, reason: '按了播放要在播');
   }
 
-  testWidgets('一般專案、合成比時間軸長：播到終點停下、畫面不藏、指針釘在終點、再按播放從頭', (
-    t,
-  ) async {
+  testWidgets('播放起步等待位置時按暫停：舊請求不能再次啟動播放器', (t) async {
+    await openWith(t, (tl) => addVideo(tl));
+    final pending = Completer<int>();
+    heldPosition = pending;
+    await t.tap(find.byIcon(Icons.play_arrow_rounded).first);
+    await t.pump();
+    expect(_isPlaying(), isTrue);
+    await t.tap(find.byIcon(Icons.pause_rounded).first);
+    await t.pump();
+    expect(_isPlaying(), isFalse);
+    pending.complete(0);
+    await _tick(t, 20);
+    expect(nativeClock, isNull, reason: '已取消的起播不得在 pause 後再送 play');
+    expect(nativeMs, 0);
+    expect(_playhead(t), 0);
+    expect(t.takeException(), isNull);
+    await t.pumpWidget(const MaterialApp(home: SizedBox()));
+    await t.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('重建中按播放：等新播放器就緒後照常起播', (t) async {
+    await openWith(t, (tl) => addVideo(tl));
+    final pending = Completer<Map<String, dynamic>>();
+    heldBuild = pending;
+    VideoEditorScreen.debugTimeline!((tl) => tl.clips.first.volume = 0.5);
+    await _tick(t, 12);
+    expect(builds, 2);
+    await t.tap(find.byIcon(Icons.play_arrow_rounded).first);
+    await t.pump();
+    expect(_isPlaying(), isTrue);
+    expect(nativeClock, isNull);
+    pending.complete({
+      'textureId': 2,
+      'duration': compDuration,
+      'width': 1080.0,
+      'height': 1920.0,
+      'ci': true,
+    });
+    await _tick(t, 15);
+    expect(nativeClock, isNotNull);
+    expect(nativeMs, greaterThan(0));
+    expect(_playhead(t), greaterThan(0));
+    expect(t.takeException(), isNull);
+    await t.tap(find.byIcon(Icons.pause_rounded).first);
+    await t.pump();
+    await t.pumpWidget(const MaterialApp(home: SizedBox()));
+    await t.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('一般專案、合成比時間軸長：播到終點停下、畫面不藏、指針釘在終點、再按播放從頭', (t) async {
     // 時間軸 5.0s；合成 5.54s（實機診斷的形狀：聲音軌／重疊讓合成更長）
     compDuration = 5.54;
     // 播完那一刻播放器落在時間軸終點之後 30ms
@@ -226,11 +287,7 @@ void main() {
       closeTo(5.0, 1e-6),
       reason: '指針釘在時間軸終點，不被播放器的 5.03 推過去',
     );
-    expect(
-      _compOpacity(t),
-      1.0,
-      reason: '播完停在最後一幀：合成畫面那層不能藏（黑）',
-    );
+    expect(_compOpacity(t), 1.0, reason: '播完停在最後一幀：合成畫面那層不能藏（黑）');
     expect(seeks, isEmpty, reason: '播完不另外 seek（會退回前一格）');
 
     // 再按播放：從頭開始（先 seek 到 0 再起播）

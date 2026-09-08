@@ -15,6 +15,7 @@ import '../models/color_grade.dart';
 import '../models/mosaic.dart';
 import '../models/watermark_settings.dart';
 import '../services/hdr_photo_export.dart';
+import '../services/draft_assets.dart';
 import '../services/photo_export.dart';
 import '../services/rotation_snap.dart';
 import '../theme.dart';
@@ -34,6 +35,8 @@ typedef _PhLayer = ({int kind, int index, WmPart part, int logo});
 const kPhotoDraftKey = 'photo_draft_v1';
 
 class PhotoEditorScreen extends StatefulWidget {
+  static Future<void> clearPhotoDraft({bool deleteAssets = false}) =>
+      _PhotoEditorScreenState.clearPhotoDraft(deleteAssets: deleteAssets);
   final XFile photo;
   final WatermarkSettings? initialWatermark;
 
@@ -230,22 +233,62 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   }
 
   /// 把目前的編輯狀態存成草稿（離開時選「保留」才呼叫）
-  Future<void> _saveDraft() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      kPhotoDraftKey,
-      jsonEncode({
-        'photo': widget.photo.path,
-        // 一定要完整版：池子代號存到磁碟等於把 Logo 圖片丟掉
-        'state': _stateJsonFull,
-        'savedAt': DateTime.now().toIso8601String(),
-      }),
-    );
+  Future<bool> _saveDraft() async {
+    SharedPreferences? prefs;
+    try {
+      final state = _stateJsonFull;
+      final path = kIsWeb
+          ? widget.photo.path
+          : await DraftAssets.secure(DraftAssets.photo, widget.photo.path);
+      if (path == null || path.isEmpty) {
+        throw StateError('照片複本無法保存');
+      }
+      prefs = await SharedPreferences.getInstance();
+      final saved = await prefs.setString(
+        kPhotoDraftKey,
+        jsonEncode({
+          'photo': path,
+          // 一定要完整版：池子代號存到磁碟等於把 Logo 圖片丟掉
+          'state': state,
+          'savedAt': DateTime.now().toIso8601String(),
+        }),
+      );
+      if (!saved) {
+        await prefs.reload();
+        throw StateError('草稿無法保存');
+      }
+      return true;
+    } catch (_) {
+      try {
+        await prefs?.reload();
+      } catch (_) {}
+      if (mounted) showHint(context, '草稿保存失敗，請確認儲存空間後再試一次', error: true);
+      return false;
+    }
   }
 
-  static Future<void> clearPhotoDraft() async {
+  static Future<void> clearPhotoDraft({bool deleteAssets = false}) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(kPhotoDraftKey);
+    if (!await prefs.remove(kPhotoDraftKey)) {
+      await prefs.reload();
+      return;
+    }
+    if (deleteAssets) await DraftAssets.retain(DraftAssets.photo, {});
+  }
+
+  Future<void> _cleanupOnLeave() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(kPhotoDraftKey);
+      final path = raw == null ? null : (jsonDecode(raw) as Map)['photo'];
+      await DraftAssets.afterLeave(
+        DraftAssets.photo,
+        keep: {if (path is String && path.isNotEmpty) path},
+        received: {widget.photo.path},
+      );
+    } catch (_) {
+      // 無法讀取保存狀態時保留素材，避免清掉仍有用的照片。
+    }
   }
 
   // ===== 馬賽克（照片模式：任意數量的方形區域）=====
@@ -380,8 +423,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     );
     if (!mounted) return;
     if (act == 'keep') {
-      await _saveDraft();
-      if (mounted) Navigator.of(context).pop();
+      final saved = await _saveDraft();
+      if (saved && mounted) Navigator.of(context).pop();
     } else if (act == 'discard') {
       Navigator.of(context).pop();
     }
@@ -484,6 +527,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   @override
   void dispose() {
+    unawaited(_cleanupOnLeave());
     _photoImg?.dispose();
     _canvasImg?.dispose();
     _liveTick.dispose();

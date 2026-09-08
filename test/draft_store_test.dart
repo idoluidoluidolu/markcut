@@ -3,11 +3,95 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:markcut/services/draft_store.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+// 使用既有 shared_preferences 的平台測試介面模擬磁碟寫入失敗。
+// ignore: depend_on_referenced_packages
+import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
+
+class _FailingDraftPreferences extends InMemorySharedPreferencesStore {
+  _FailingDraftPreferences() : super.empty();
+
+  String? failKey;
+  bool throwOnFailure = false;
+
+  @override
+  Future<bool> setValue(String valueType, String key, Object value) async {
+    if (key == failKey) {
+      if (throwOnFailure) throw StateError('disk full');
+      return false;
+    }
+    return super.setValue(valueType, key, value);
+  }
+
+  @override
+  Future<bool> remove(String key) async {
+    if (key == failKey) {
+      if (throwOnFailure) throw StateError('disk full');
+      return false;
+    }
+    return super.remove(key);
+  }
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
+
+  group('儲存失敗回報', () {
+    for (final (label, key, thumb, throwsError) in [
+      ('內容寫入', 'project_data_a', 'new-cover', false),
+      ('封面寫入', 'project_thumb_a', 'new-cover', false),
+      ('封面移除', 'project_thumb_a', null, false),
+      ('索引寫入', 'projects_index_v1', 'new-cover', false),
+      ('內容寫入', 'project_data_a', 'new-cover', true),
+      ('封面寫入', 'project_thumb_a', 'new-cover', true),
+      ('封面移除', 'project_thumb_a', null, true),
+      ('索引寫入', 'projects_index_v1', 'new-cover', true),
+    ]) {
+      test(
+        '$label${throwsError ? '拋例外' : '回 false'}：整份儲存不能成功，下次仍可重試',
+        () async {
+          final previous = SharedPreferencesStorePlatform.instance;
+          final store = _FailingDraftPreferences();
+          SharedPreferencesStorePlatform.instance = store;
+          addTearDown(() {
+            SharedPreferencesStorePlatform.instance = previous;
+            SharedPreferences.resetStatic();
+          });
+          expect(
+            await DraftStore.save('a', '{"clips":[1]}', thumb: 'old-cover'),
+            isTrue,
+          );
+          final before = await store.getAll();
+          store.failKey = 'flutter.$key';
+          store.throwOnFailure = throwsError;
+
+          expect(
+            await DraftStore.save('a', '{"clips":[1,2]}', thumb: thumb),
+            isFalse,
+            reason: '平台拒絕持久化時，不能讓編輯器以為已經存好',
+          );
+          expect((await store.getAll())[store.failKey], before[store.failKey]);
+          expect(
+            (await SharedPreferences.getInstance()).getString(key),
+            before[store.failKey],
+            reason: '拒絕寫入的欄位必須從磁碟恢復，不留假成功的快取',
+          );
+
+          store.failKey = null;
+          expect(
+            await DraftStore.save('a', '{"clips":[1,2]}', thumb: thumb),
+            isTrue,
+            reason: '失敗不應卡死後續排隊儲存',
+          );
+          expect(
+            (await store.getAll())['flutter.project_data_a'],
+            '{"clips":[1,2]}',
+          );
+        },
+      );
+    }
+  });
 
   group('多草稿', () {
     test('存兩份互不覆蓋，清單新到舊', () async {

@@ -46,6 +46,26 @@ class DraftAssets {
   /// 批次浮水印／拼圖各自一格，清理時互不干擾
   static const batch = 'batch';
   static const collage = 'collage';
+  static const photo = 'photo';
+
+  static int _generatedId = 0;
+
+  /// 裁切後的新素材沒有來源檔，先保存在草稿素材目錄。
+  /// 頁面離開時由 afterLeave 保留有被草稿引用的版本、清掉其餘版本。
+  static Future<String?> addPng(String kind, List<int> bytes) async {
+    if (kIsWeb || bytes.isEmpty) return null;
+    try {
+      final dir = await _dir(kind);
+      await dir.create(recursive: true);
+      final name =
+          'edited_${DateTime.now().microsecondsSinceEpoch}_${_generatedId++}.png';
+      final file = File('${dir.path}${Platform.pathSeparator}$name');
+      await file.writeAsBytes(bytes, flush: true);
+      return file.path;
+    } catch (_) {
+      return null;
+    }
+  }
 
   /// 測試用：把 Application Support 換成一個暫存目錄（真機不會設）
   @visibleForTesting
