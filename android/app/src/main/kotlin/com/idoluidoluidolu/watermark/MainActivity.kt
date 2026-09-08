@@ -122,16 +122,17 @@ class MainActivity : FlutterActivity() {
     // （ACTION_PICK_IMAGES），可以限定只列影片、直接開在相簿的長相。
     // 更舊的機型回 null，Dart 端退回原本的 SAF 那條路。
     //
-    // 兩個方法共用這一支：videos＝多選影片、gifs＝單選 GIF
-    // （同一個選取器換 type 而已，見 registerPickChannel）
+    // 三個方法共用這一支：videos＝多選影片、photos＝挑照片（單多選看
+    // max）、gifs＝單選 GIF（同一個選取器換 type 而已，見 registerPickChannel）
 
     /// 等使用者選完的那次呼叫（一次只會有一個選取器在畫面上）
     private var pickReply: MethodChannel.Result? = null
 
-    /// 這一次挑的是 GIF 還是影片。補副檔名要用——問 contentResolver 的
-    /// MIME 不可靠（可能回 null、image/*、或大小寫不同），而這裡本來
+    /// 這一次挑的是 GIF、照片還是影片。補副檔名要用——問 contentResolver
+    /// 的 MIME 不可靠（可能回 null、image/*、或大小寫不同），而這裡本來
     /// 就知道答案：選取器是我們自己按方法名開的
     private var pickWantsGif = false
+    private var pickWantsPhoto = false
 
     /// 刻意超過 16 位元。file_picker 的 REQUEST_CODE 是
     /// `(FilePickerPlugin::class.java.hashCode() + 43) and 0xffff`——執行期
@@ -167,7 +168,8 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "markcut/pick")
             .setMethodCallHandler { call, result ->
                 val gifs = call.method == "gifs"
-                if (call.method != "videos" && !gifs) {
+                val photos = call.method == "photos"
+                if (call.method != "videos" && !gifs && !photos) {
                     result.notImplemented()
                     return@setMethodCallHandler
                 }
@@ -191,10 +193,20 @@ class MainActivity : FlutterActivity() {
                             // ＝單選（匯入一次收一個 GIF）
                             type = "image/gif"
                         } else {
-                            type = "video/*"
+                            // 點照片只列照片、點影片只列影片（使用者指定）。
+                            // 照片以前走 image_picker 的 ACTION_GET_CONTENT：
+                            // 系統先問「用哪個 App 開」，OEM 相簿又不一定理會
+                            // image/* 這個過濾，照片影片混著列
+                            type = if (photos) "image/*" else "video/*"
+                            // max ≤ 1＝單選：不放 EXTRA_PICK_IMAGES_MAX 就是單選
+                            //（照片編輯器、裁切這種一次一張的）；2 以上才多選
                             val max = (call.argument<Number>("max") ?: 30).toInt()
-                                .coerceIn(2, MediaStore.getPickImagesMaxLimit())
-                            putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, max)
+                            if (max >= 2) {
+                                putExtra(
+                                    MediaStore.EXTRA_PICK_IMAGES_MAX,
+                                    max.coerceIn(2, MediaStore.getPickImagesMaxLimit()),
+                                )
+                            }
                         }
                     }
                 } catch (_: Exception) {
@@ -203,6 +215,7 @@ class MainActivity : FlutterActivity() {
                 }
                 pickReply = result
                 pickWantsGif = gifs
+                pickWantsPhoto = photos
                 try {
                     startActivityForResult(intent, pickReq)
                 } catch (_: Exception) {
@@ -275,7 +288,11 @@ class MainActivity : FlutterActivity() {
             var safe = (name ?: "picked_${System.currentTimeMillis()}")
                 .replace('/', '_')
             if (gif && !safe.lowercase().endsWith(".gif")) safe += ".gif"
-            if (!gif && !safe.contains('.')) safe += ".mp4"
+            // 沒副檔名才補：照片補 .jpg、影片補 .mp4（實際格式看檔頭，
+            // 下游只是拿副檔名分「照片還是影片」）
+            if (!gif && !safe.contains('.')) {
+                safe += if (pickWantsPhoto) ".jpg" else ".mp4"
+            }
 
             val dir = File(cacheDir, "picked").apply { mkdirs() }
             var f = File(dir, safe)

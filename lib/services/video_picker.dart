@@ -90,8 +90,8 @@ Future<List<XFile>> pickVideoFiles() async {
 /// iOS/Android 端都是照 index 填回，本來就對）
 Future<List<XFile>> pickMediaFiles() => _pickOriginals(FileType.media);
 
-/// 只挑照片（可多選）。理由同 [pickMediaFiles]；首頁的「照片批次」
-/// 目前還是直接叫 ImagePicker().pickMultiImage()，換成這個就好
+/// 只挑照片（可多選）。理由同 [pickMediaFiles]。
+/// Android 13+ 走系統相片選取器（只列照片，跟 [pickVideoFiles] 對稱）
 Future<List<XFile>> pickPhotoFiles() => _pickOriginals(FileType.image);
 
 /// 單張素材也保留相簿原檔，避免 iOS 選圖時先重壓一次 JPEG。
@@ -101,6 +101,12 @@ Future<XFile?> pickPhotoFile() async {
     if (result == null || result.files.isEmpty) return null;
     final file = result.files.first;
     return file.path == null ? null : XFile(file.path!, name: file.name);
+  }
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+    // 單張也走系統相片選取器，只列照片（理由見 _pickOriginals）。
+    // max 1＝原生端不放 EXTRA_PICK_IMAGES_MAX＝單選
+    final r = await _pickNativePhotos(max: 1);
+    if (r != null) return r.isEmpty ? null : r.first;
   }
   return ImagePicker().pickImage(source: ImageSource.gallery);
 }
@@ -118,10 +124,39 @@ Future<List<XFile>> _pickOriginals(FileType type) async {
         if (f.path != null) XFile(f.path!, name: f.name),
     ];
   }
+  if (!kIsWeb &&
+      defaultTargetPlatform == TargetPlatform.android &&
+      type == FileType.image) {
+    // 只挑照片：走系統相片選取器（Android 13+），開出來是相簿、只列照片。
+    // image_picker 的 pickMultiImage 在安卓是 ACTION_GET_CONTENT——系統先
+    // 問「用哪個 App 開」，OEM 的相簿 App 又不一定理會 image/* 這個過濾，
+    // 照片影片混著列（實測回報「點照片要只出照片」）。影片那條
+    //（pickVideoFiles）本來就是這樣走的，照片對齊它。
+    // 混選（FileType.media，批次中途的「＋」）是刻意兩種都列，不走這裡
+    final r = await _pickNativePhotos(max: 100);
+    if (r != null) return r;
+    // null＝這台沒有系統相片選取器（Android 12 以下），往下走 image_picker
+  }
   final picker = ImagePicker();
   return type == FileType.image
       ? picker.pickMultiImage()
       : picker.pickMultipleMedia();
+}
+
+/// Android 系統相片選取器，只列照片（MainActivity.kt 的 photos）。
+/// 回 null＝這台沒有那個選取器（Android 12 以下）或通道出狀況，呼叫端
+/// 退回 image_picker；空清單＝使用者按了取消（不要再開第二個選取器給他）
+Future<List<XFile>?> _pickNativePhotos({required int max}) async {
+  try {
+    final r = await _pickCh.invokeMethod<List<dynamic>>('photos', {'max': max});
+    if (r == null) return null;
+    return [
+      for (final p in r.cast<String>()) XFile(p, name: p.split('/').last),
+    ];
+  } catch (_) {
+    // 通道出狀況就當這台沒有，退回 image_picker——挑照片這件事不能因此壞掉
+    return null;
+  }
 }
 
 /// 選完才講的提醒（略過的檔案、被上限截掉的、數量偏多）。
