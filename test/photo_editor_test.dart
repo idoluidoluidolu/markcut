@@ -7,6 +7,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:markcut/screens/photo_editor_screen.dart';
+import 'package:markcut/widgets/watermark_panel.dart';
 
 Future<Uint8List> _png(Color c, int w, int h) async {
   final rec = ui.PictureRecorder();
@@ -68,6 +69,13 @@ void main() {
     final rect = t.getRect(input);
     expect(rect.top, greaterThanOrEqualTo(0));
     expect(rect.bottom, lessThanOrEqualTo(844 - 330));
+    // 「在鍵盤上方」還不夠，得真的看得到：以前面板那個 Stack 在鍵盤開著
+    // 時被一個沒定位的 SizedBox.shrink() 縮成 0 寬，輸入框的 rect 上下都
+    // 合格、寬度卻是 0——整個面板從畫面上消失（實測回報）。這一條在
+    // 修好之前是紅的
+    expect(rect.width, greaterThan(200), reason: '鍵盤開著時文字輸入框要有寬度（面板不能縮成 0 寬）');
+    final panel = t.getRect(find.byType(WatermarkPanel));
+    expect(panel.width, 390, reason: '面板要撐滿整個螢幕寬');
     await t.enterText(input, '鍵盤測試');
     expect(t.widget<TextField>(input).controller!.text, '鍵盤測試');
     expect(t.takeException(), isNull);

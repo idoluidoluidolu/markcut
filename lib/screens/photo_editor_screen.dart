@@ -1075,9 +1075,21 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 兩顆都寫字：存成範本縮成圖示就沒人知道那是什麼
   Widget _floatingExport() {
     // 鍵盤開著就收起來：浮鍵會壓在文字輸入框上（實測回報：
-    // 照片浮水印這裡鍵盤會擋道）
+    // 照片浮水印這裡鍵盤會擋道）。
+    //
+    // 收起來的替身一定要是 Positioned 的。這一層是面板那個 Stack 裡唯一
+    // 「沒定位」的子件，而 Stack 是照沒定位的子件量自己的尺寸——以前
+    // 這裡回一個 SizedBox.shrink()，整個 Stack 就縮成 0 寬，底下
+    // Positioned.fill 的面板跟著 0 寬：鍵盤一彈出來，文字輸入框連同整個
+    // 面板消失、只剩一片底色（實測回報）。定位過的子件不參與量尺寸，
+    // Stack 才會撐滿（Stack 本身也改成 StackFit.expand，兩道保險）
     if (MediaQuery.of(context).viewInsets.bottom > 60) {
-      return const SizedBox.shrink();
+      return const Positioned(
+        left: 0,
+        right: 0,
+        bottom: 0,
+        child: SizedBox.shrink(),
+      );
     }
     return Positioned(
       left: 0,
@@ -3378,6 +3390,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   Expanded(
                     flex: 6,
                     child: Stack(
+                      // 撐滿，不照子件量尺寸：這裡的子件全是定位過的
+                      //（面板 Positioned.fill、浮鍵 Positioned），要是哪天
+                      // 混進一個沒定位的小東西，loose 的 Stack 會縮成它的
+                      // 尺寸——鍵盤開著時面板消失那個 bug 就是這樣來的
+                      //（見 _floatingExport）
+                      fit: StackFit.expand,
                       children: [
                         Positioned.fill(
                           // 筆刷塗抹中：下面的面板整個換成筆刷調整
