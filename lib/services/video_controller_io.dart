@@ -6,8 +6,6 @@ import 'package:media_kit/media_kit.dart' as mk;
 import 'package:media_kit_video/media_kit_video.dart' as mkv;
 import 'package:video_player/video_player.dart';
 
-import 'frame_check.dart';
-import 'native_frames.dart';
 import 'player_value.dart';
 
 /// 裝置端播放控制器：平台分流。
@@ -20,13 +18,20 @@ abstract class PlayerX {
   /// [system]（只影響 Android）：直接用系統解碼器（ExoPlayer），
   /// 不試 mpv。原檔（尤其螢幕錄影）給它——mpv 的硬解在部分機型上
   /// 會把這類檔解成破圖然後全黑，而且有畫面出來，事後根本驗不出來；
-  /// 系統自己錄的檔，系統解碼器保證播得對。
+  /// 系統播放器作為原檔預設；實際支援與 HDR 呈現仍需依裝置驗證。
   /// 工作檔（轉檔出來的乾淨 H.264）維持 mpv，Pixel 的順暢度不受影響
   factory PlayerX(String path, {bool system = false}) => Platform.isIOS
       ? _AvPlayerX(path)
       : system
       ? _AvPlayerX(path)
       : _FallbackPlayerX(path);
+
+  @visibleForTesting
+  factory PlayerX.fallbackForTesting(
+    String path, {
+    required PlayerX Function(String) primary,
+    required PlayerX Function(String) fallback,
+  }) => _FallbackPlayerX(path, primary: primary, fallback: fallback);
 
   String get path;
   Future<void> initialize();
@@ -65,140 +70,188 @@ class MpvBlackScreen implements Exception {
 /// 自家錄的檔案幾乎都吃得下，但它在 Pixel 上的影格傳遞會卡——
 /// 所以順序是 mpv 優先，只有撞牆的那一支換引擎
 class _FallbackPlayerX implements PlayerX {
-  _FallbackPlayerX(this.path);
+  _FallbackPlayerX(
+    this.path, {
+    PlayerX Function(String)? primary,
+    PlayerX Function(String)? fallback,
+  }) : _primaryFactory = primary ?? _MpvPlayerX.new,
+       _fallbackFactory = fallback ?? _AvPlayerX.new;
 
   @override
   final String path;
-
-  late PlayerX _inner = _MpvPlayerX(path);
+  final PlayerX Function(String) _primaryFactory;
+  final PlayerX Function(String) _fallbackFactory;
+  late PlayerX _inner = _primaryFactory(path);
+  final _pendingFallbacks = <PlayerX>{};
   bool _disposed = false;
-
-  // 呼叫端設過的狀態：播放中換引擎時要原封帶過去
+  bool _canFallback = true;
+  bool _wantsPlayback = false;
+  int _operation = 0;
+  int _settingsRevision = 0;
   double _vol = 1.0;
   double _rate = 1.0;
   bool _loop = false;
 
-  /// 播放中的像素檢查做過了沒（一顆播放器只驗一次，過了就不再花這成本）
-  bool _pixelChecked = false;
+  void _advanceOperation() {
+    _operation++;
+    for (final pending in _pendingFallbacks) {
+      if (!identical(pending, _inner)) pending.dispose();
+    }
+    _pendingFallbacks.clear();
+  }
+
+  bool _current(int operation, PlayerX player) =>
+      !_disposed && operation == _operation && identical(_inner, player);
 
   @override
   Future<void> initialize() async {
+    final operation = _operation;
+    final player = _inner;
     try {
-      await _inner.initialize();
+      await player.initialize();
     } catch (_) {
-      // 黑畫面、逾時、開檔失敗都走這裡。ExoPlayer 再失敗才往外丟
-      //（呼叫端本來就有「影片打不開」的處理）
-      _inner.dispose();
-      _inner = _AvPlayerX(path);
-      await _inner.initialize();
+      if (!_current(operation, player)) return;
+      // Initialization errors include a confirmed first-frame rendering timeout.
+      await _replaceFailedPlayer(player, operation, resume: false);
     }
   }
 
-  /// 播放中驗一次「實際畫出來的像素」。
-  ///
-  /// 有一種失敗是初始化驗不到的：mpv 回報第一格渲染了、尺寸時長都對，
-  /// 播起來卻是全黑（Pixel 10 的實例：暫停有畫面、一按播放就黑）。
-  /// 只有在真的播放中截 mpv 自己的畫面才看得到。黑的話跟系統解碼器
-  /// 抽同一時間點比：系統亮、mpv 黑＝mpv 畫不出這支檔，
-  /// 當場換 ExoPlayer 接著同一個進度繼續播
-  void _schedulePixelCheck() {
-    if (_pixelChecked) return;
-    _pixelChecked = true;
-    Future<void>.delayed(const Duration(milliseconds: 1100), () async {
-      final mpv = _inner;
-      if (_disposed || mpv is! _MpvPlayerX) return;
-      if (!mpv.value.isPlaying) {
-        _pixelChecked = false; // 已經暫停：這次沒驗到，下次播放再驗
-        return;
-      }
-      // 純音訊沒有畫面可驗
-      if (mpv.value.size == Size.zero) return;
+  /// Only a player error or initialization/rendering timeout triggers replacement.
+  /// A black screenshot compared with an Android sync frame of unknown PTS cannot
+  /// prove a broken renderer (a normal fade/cut may be at a different source time).
+  Future<void> _replaceFailedPlayer(
+    PlayerX failed,
+    int operation, {
+    required bool resume,
+  }) async {
+    if (!_canFallback || !_current(operation, failed)) return;
+    Duration? position;
+    if (resume) {
       try {
-        final shot = await mpv._p.screenshot();
-        if (_disposed) return;
-        if (shot == null) return; // 截不到就不亂判
-        final lum = await meanLuminance(shot);
-        if (lum == null || lum > 1.5) return; // 有畫面，過關
-        // mpv 是黑的。抽系統解碼器同一時間點的畫面當基準——
-        // 素材本來就黑的不能誤殺
-        final pos = mpv._p.state.position;
-        final ref = await nativeFrameAt(
-          path,
-          pos.inMilliseconds / 1000.0,
-          maxH: 120,
-        );
-        if (_disposed) return;
-        final refLum = ref == null ? null : await meanLuminance(ref);
-        if (refLum == null || refLum <= 8) return;
-        // 系統亮、mpv 黑：換引擎，帶著進度與設定繼續
-        final wasPlaying = mpv.value.isPlaying;
-        mpv.dispose();
-        final av = _AvPlayerX(path);
-        _inner = av;
-        await av.initialize();
-        if (_disposed) {
-          av.dispose();
-          return;
-        }
-        await av.setVolume(_vol);
-        await av.setPlaybackSpeed(_rate);
-        await av.setLooping(_loop);
-        await av.seekTo(pos);
-        if (wasPlaying) await av.play();
+        position = await failed.positionNow();
       } catch (_) {
-        // 驗不動就算了，維持原引擎
+        position = failed.value.position;
       }
-    });
+    }
+    if (!_current(operation, failed)) return;
+    final replacement = _fallbackFactory(path);
+    _pendingFallbacks.add(replacement);
+    var committed = false;
+    var appliedSettings = -1;
+    Future<bool> syncSettings() async {
+      while (appliedSettings != _settingsRevision) {
+        final revision = _settingsRevision;
+        await replacement.setVolume(_vol);
+        if (!_current(operation, failed)) return false;
+        await replacement.setPlaybackSpeed(_rate);
+        if (!_current(operation, failed)) return false;
+        await replacement.setLooping(_loop);
+        if (!_current(operation, failed)) return false;
+        appliedSettings = revision;
+      }
+      return _current(operation, failed);
+    }
+
+    try {
+      await replacement.initialize();
+      if (!_current(operation, failed)) return;
+      if (!await syncSettings()) return;
+      if (position != null) {
+        await replacement.seekTo(position);
+        if (!_current(operation, failed)) return;
+      }
+      if (!await syncSettings()) return;
+      _inner = replacement;
+      _canFallback = false;
+      committed = true;
+      failed.dispose();
+      if (resume) {
+        await replacement.play();
+        // A queued native play may complete after a newer pause. Repair the
+        // actual player state; an epoch check alone only suppresses Dart work.
+        if (!_disposed && identical(_inner, replacement) && !_wantsPlayback) {
+          await replacement.pause();
+        }
+      }
+    } catch (_) {
+      if (!_disposed && operation == _operation) rethrow;
+    } finally {
+      if (_pendingFallbacks.remove(replacement) && !committed) {
+        replacement.dispose();
+      }
+    }
   }
 
   @override
   PlayerValueX get value => _inner.value;
-
   @override
   Future<Duration?> positionNow() => _inner.positionNow();
-
   @override
-  Future<void> seekTo(Duration d) => _inner.seekTo(d);
-
-  @override
-  Future<void> play() async {
-    await _inner.play();
-    _schedulePixelCheck();
+  Future<void> seekTo(Duration d) {
+    _advanceOperation();
+    return _inner.seekTo(d);
   }
 
   @override
-  Future<void> pause() => _inner.pause();
+  Future<void> play() async {
+    _wantsPlayback = true;
+    _advanceOperation();
+    final operation = _operation;
+    final player = _inner;
+    try {
+      await player.play();
+      if (!_disposed && identical(_inner, player) && !_wantsPlayback) {
+        await player.pause();
+      }
+    } catch (_) {
+      if (!_current(operation, player)) return;
+      if (!_canFallback) rethrow;
+      await _replaceFailedPlayer(player, operation, resume: true);
+    }
+  }
+
+  @override
+  Future<void> pause() {
+    _wantsPlayback = false;
+    _advanceOperation();
+    return _inner.pause();
+  }
 
   @override
   Future<void> setVolume(double v) {
+    _settingsRevision++;
     _vol = v;
     return _inner.setVolume(v);
   }
 
   @override
   Future<void> setPlaybackSpeed(double s) {
+    _settingsRevision++;
     _rate = s;
     return _inner.setPlaybackSpeed(s);
   }
 
   @override
   Future<void> setLooping(bool loop) {
+    _settingsRevision++;
     _loop = loop;
     return _inner.setLooping(loop);
   }
 
   @override
   void dispose() {
+    if (_disposed) return;
     _disposed = true;
+    _wantsPlayback = false;
+    _advanceOperation();
     _inner.dispose();
   }
 
   @override
   Widget view({Key? key}) => _inner.view(key: key);
-
   @override
   String get debugInfo =>
-      '${_inner.debugInfo}\n(engine: ${_inner is _MpvPlayerX ? 'mpv' : 'exo'})';
+      '${_inner.debugInfo}\n(engine: ${_canFallback ? 'mpv' : 'exo'})';
 }
 
 /// iOS：AVPlayer（經 video_player）。

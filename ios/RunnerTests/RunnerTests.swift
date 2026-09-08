@@ -4,9 +4,343 @@ import XCTest
 import CoreImage
 import ImageIO
 import AVFoundation
+import Metal
 @testable import Runner
 
 class RunnerTests: XCTestCase {
+  private func scrubBuffer(width: Int = 16, height: Int = 16) throws -> CVPixelBuffer {
+    var buffer: CVPixelBuffer?
+    XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, width, height,
+      kCVPixelFormatType_32BGRA, [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary,
+      &buffer), kCVReturnSuccess)
+    return try XCTUnwrap(buffer)
+  }
+  private var scrubRange: CMTimeRange {
+    CMTimeRange(start: .zero, duration: CMTime(seconds: 10, preferredTimescale: 600))
+  }
+
+  func testNativeScrubRetainsPixelBufferAndColorAttachmentsWithoutJPEG() throws {
+    let cache = MCNativeScrubCache()
+    let layout = cache.nextLayout()
+    let buffer = try scrubBuffer()
+    CVBufferSetAttachment(buffer, kCVImageBufferColorPrimariesKey,
+      kCVImageBufferColorPrimaries_ITU_R_2020, .shouldPropagate)
+    CVBufferSetAttachment(buffer, kCVImageBufferTransferFunctionKey,
+      kCVImageBufferTransferFunction_ITU_R_2100_HLG, .shouldPropagate)
+    cache.insert(buffer, time: 0, epoch: CIExportCompositor.liveEpoch,
+                 layout: layout, range: scrubRange, hdr: true)
+    let frame = try XCTUnwrap(cache.nearest(0, tolerance: 0.001))
+    XCTAssertTrue(frame.buffer === buffer)
+    XCTAssertEqual(frame.time, 0)
+    XCTAssertTrue(frame.hdr)
+    XCTAssertEqual(CVPixelBufferGetPixelFormatType(frame.buffer), kCVPixelFormatType_32BGRA)
+    let transfer = try XCTUnwrap(CVBufferGetAttachment(frame.buffer,
+      kCVImageBufferTransferFunctionKey, nil)?.takeUnretainedValue())
+    XCTAssertTrue(CFEqual(transfer, kCVImageBufferTransferFunction_ITU_R_2100_HLG))
+  }
+
+  func testNativeScrubCacheHonorsByteCountAndTimeWindowBounds() throws {
+    let buffer = try scrubBuffer()
+    let bytes = CVPixelBufferGetBytesPerRow(buffer) * CVPixelBufferGetHeight(buffer)
+    let cache = MCNativeScrubCache(budget: bytes * 2, capacity: 3)
+    let layout = cache.nextLayout()
+    for t in [0.0, 0.1, 0.2] {
+      cache.insert(buffer, time: t, epoch: CIExportCompositor.liveEpoch,
+                   layout: layout, range: scrubRange, hdr: false)
+    }
+    XCTAssertEqual(cache.stats()["frames"] as? Int, 2)
+    XCTAssertLessThanOrEqual(cache.stats()["bytes"] as? Int ?? Int.max, bytes * 2)
+    XCTAssertNil(cache.nearest(0, tolerance: 0.001))
+    cache.beginPresentation(wantsFrames: false) // release the scrub center for playback
+    cache.insert(buffer, time: 5, epoch: CIExportCompositor.liveEpoch,
+                 layout: layout, range: scrubRange, hdr: false)
+    cache.insert(buffer, time: 5.1, epoch: CIExportCompositor.liveEpoch,
+                 layout: layout, range: scrubRange, hdr: false)
+    XCTAssertNotNil(cache.nearest(5, tolerance: 0.001))
+    XCTAssertNil(cache.nearest(0.2, tolerance: 0.001))
+  }
+
+  func testNativeScrubRejectsStaleLayoutStyleAndPresentationGenerations() throws {
+    let cache = MCNativeScrubCache()
+    let layout = cache.nextLayout()
+    let epoch = CIExportCompositor.liveEpoch
+    let buffer = try scrubBuffer()
+    cache.insert(buffer, time: 1, epoch: epoch, layout: layout, range: scrubRange, hdr: false)
+    let frame = try XCTUnwrap(cache.nearest(1, tolerance: 0.001))
+    let first = cache.beginPresentation(target: 1)
+    XCTAssertTrue(cache.isCurrent(frame, presentation: first))
+    cache.beginPresentation(target: 2)
+    XCTAssertFalse(cache.isCurrent(frame, presentation: first))
+    cache.nextLayout()
+    cache.insert(buffer, time: 1, epoch: epoch, layout: layout, range: scrubRange, hdr: false)
+    XCTAssertEqual(cache.stats()["frames"] as? Int, 0)
+    XCTAssertFalse(cache.isCurrent(frame))
+    let currentLayout = cache.nextLayout()
+    cache.insert(buffer, time: 1, epoch: epoch - 1, layout: currentLayout,
+                 range: scrubRange, hdr: false)
+    XCTAssertEqual(cache.stats()["frames"] as? Int, 0)
+    cache.removeAll(dispose: true)
+    cache.insert(buffer, time: 1, epoch: epoch, layout: currentLayout,
+                 range: scrubRange, hdr: false)
+    XCTAssertEqual(cache.stats()["frames"] as? Int, 0)
+  }
+
+  func testNativeScrubToleranceDoesNotCrossAClipBoundaryOrAcceptUnknownTime() {
+    let range = CMTimeRange(start: .zero, duration: CMTime(seconds: 1, preferredTimescale: 600))
+    XCTAssertTrue(MCNativeScrubCache.accepts(time: 0, target: 0, tolerance: 0, range: range))
+    XCTAssertFalse(MCNativeScrubCache.accepts(time: 0.99, target: 1,
+      tolerance: 0.15, range: range))
+    XCTAssertFalse(MCNativeScrubCache.accepts(time: .nan, target: 0,
+      tolerance: 0.15, range: range))
+    XCTAssertFalse(MCNativeScrubCache.accepts(time: 0, target: .infinity,
+      tolerance: 0.15, range: range))
+  }
+
+  func testNativeScrubNoticesCoalesceAndPreserveTheMatchingFrame() throws {
+    let cache = MCNativeScrubCache()
+    let layout = cache.nextLayout()
+    let buffer = try scrubBuffer()
+    let delivered = expectation(description: "one matching notice")
+    delivered.assertForOverFulfill = true
+    cache.onFrame = { frame in XCTAssertEqual(frame.time, 1); delivered.fulfill() }
+    cache.beginPresentation(target: 1, tolerance: 0.001)
+    // A preroll frame arriving after the target must not replace the target's
+    // pending notice, or exact scrub would wait forever despite having its frame.
+    for t in [0.9, 1.0, 1.03, 1.06, 1.1] {
+      cache.insert(buffer, time: t, epoch: CIExportCompositor.liveEpoch,
+                   layout: layout, range: scrubRange, hdr: false)
+    }
+    wait(for: [delivered], timeout: 1)
+    cache.finishPresentation()
+  }
+
+  func testNativeScrubExactReceiptRequiresSeekAndPresentationInEitherOrder() {
+    for presentationFirst in [false, true] {
+      let receipt = MCNativeScrubReceipt()
+      var replies: [[String: Any]] = []
+      let id = receipt.begin(exact: true) { replies.append($0) }
+      if presentationFirst { receipt.didPresent(id, time: 0, cacheHit: true) }
+      else { receipt.didSeek(id, ok: true) }
+      XCTAssertTrue(replies.isEmpty)
+      if presentationFirst { receipt.didSeek(id, ok: true) }
+      else { receipt.didPresent(id, time: 0, cacheHit: true) }
+      XCTAssertEqual(replies.count, 1)
+      XCTAssertEqual(replies[0]["displayed"] as? Bool, true)
+      XCTAssertEqual(replies[0]["actualSeconds"] as? Double, 0)
+      receipt.didPresent(id, time: 1, cacheHit: false)
+      XCTAssertEqual(replies.count, 1)
+    }
+  }
+
+  func testNativeScrubNewGestureCancelAndFailureCannotCompleteAnOldReceipt() {
+    let receipt = MCNativeScrubReceipt()
+    var oldResults: [[String: Any]] = []
+    var newResults: [[String: Any]] = []
+    let old = receipt.begin(exact: true) { oldResults.append($0) }
+    let newest = receipt.begin(exact: true) { newResults.append($0) }
+    XCTAssertEqual(oldResults.first?["displayed"] as? Bool, false)
+    receipt.didSeek(old, ok: true)
+    receipt.didPresent(old, time: 1, cacheHit: true)
+    XCTAssertTrue(newResults.isEmpty)
+    receipt.didSeek(newest, ok: false)
+    receipt.didPresent(newest, time: 2, cacheHit: true)
+    XCTAssertEqual(newResults.count, 1)
+    XCTAssertEqual(newResults.first?["displayed"] as? Bool, false)
+    receipt.cancel()
+    XCTAssertEqual(newResults.count, 1)
+  }
+
+  func testNativeScrubStyleChangeKeepsSeekReceiptButRequiresNewPresentation() {
+    let receipt = MCNativeScrubReceipt()
+    var replies: [[String: Any]] = []
+    let request = receipt.begin(exact: true) { replies.append($0) }
+    receipt.didPresent(request, time: 4, cacheHit: true)
+    receipt.invalidatePresentation()
+    receipt.didSeek(request, ok: true)
+    XCTAssertTrue(replies.isEmpty, "old-style presentation cannot finish the exact request")
+    XCTAssertEqual(receipt.generation, request, "the user's latest seek stays pending")
+    receipt.didPresent(request, time: 4, cacheHit: false)
+    XCTAssertEqual(replies.first?["actualSeconds"] as? Double, 4)
+  }
+
+  func testNativeScrubOldRenderFailureCannotCancelNewStylePresentation() {
+    let receipt = MCNativeScrubReceipt()
+    var replies: [[String: Any]] = []
+    let request = receipt.begin(exact: true) { replies.append($0) }
+    let oldPresentation: UInt64 = 10
+    let newPresentation: UInt64 = 11
+    receipt.didSeek(request, ok: true)
+    receipt.invalidatePresentation() // style keeps the user's exact seek alive
+    // The old drawable's invalidation reports false after a new style render
+    // has begun. This is the same ownership gate as the production callback.
+    if receipt.acceptsPresentation(request, presentation: oldPresentation,
+                                   currentPresentation: newPresentation) {
+      receipt.cancel()
+    }
+    XCTAssertTrue(replies.isEmpty)
+    XCTAssertTrue(receipt.isPending)
+    XCTAssertFalse(receipt.acceptsPresentation(request, presentation: oldPresentation,
+                                              currentPresentation: nil))
+    XCTAssertTrue(receipt.acceptsPresentation(request, presentation: newPresentation,
+                                             currentPresentation: newPresentation))
+    receipt.didPresent(request, time: 4, cacheHit: false)
+    XCTAssertEqual(replies.count, 1)
+    XCTAssertEqual(replies.first?["displayed"] as? Bool, true)
+    XCTAssertEqual(replies.first?["actualSeconds"] as? Double, 4)
+  }
+
+  func testNativePauseInvalidatesPlayAfterAlignmentWithoutCancellingScrub() {
+    let intent = MCNativePlaybackIntent()
+    let playWaitingForSeek = intent.replace()
+    intent.replace() // pause/new gesture/dispose
+    XCTAssertFalse(intent.isCurrent(playWaitingForSeek))
+    let nextPlay = intent.replace()
+    XCTAssertTrue(intent.isCurrent(nextPlay))
+    XCTAssertFalse(intent.isCurrent(playWaitingForSeek))
+  }
+
+  func testNativeScrubPresentationIgnoresHiddenAndOffscreenHosts() {
+    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+    let parent = UIView(frame: window.bounds)
+    let visible = UIView(frame: CGRect(x: 0, y: 0, width: 50, height: 50))
+    let hidden = UIView(frame: visible.frame)
+    window.addSubview(parent); parent.addSubview(visible); parent.addSubview(hidden)
+    window.isHidden = false
+    defer { window.isHidden = true }
+    hidden.isHidden = true
+    XCTAssertTrue(MCNativeScrubPlane.canPresent(in: visible))
+    XCTAssertFalse(MCNativeScrubPlane.canPresent(in: hidden))
+    visible.frame.origin.x = 101
+    XCTAssertFalse(MCNativeScrubPlane.canPresent(in: visible))
+    visible.frame.origin.x = 0
+    parent.alpha = 0
+    XCTAssertFalse(MCNativeScrubPlane.canPresent(in: visible))
+  }
+
+  func testNativeScrubFrameGridPreservesStartAndEndAndDoesNotGoBeforeBoundary() {
+    XCTAssertEqual(CompPlayer.nativeFrameTarget(0, duration: 10), 0)
+    XCTAssertEqual(CompPlayer.nativeFrameTarget(1.001, duration: 10), 31.0 / 30)
+    XCTAssertEqual(CompPlayer.nativeFrameTarget(10, duration: 10), 299.0 / 30)
+    XCTAssertEqual(CompPlayer.nativeFrameTarget(-1, duration: 10), 0)
+    XCTAssertEqual(CompPlayer.nativeFrameTarget(.nan, duration: 10), 0)
+  }
+
+  private func scrubMetalResources(format: MTLPixelFormat) throws
+    -> (CIContext, MTLTexture, MTLCommandBuffer) {
+    guard let device = MTLCreateSystemDefaultDevice(),
+      let command = device.makeCommandQueue()?.makeCommandBuffer() else {
+      throw XCTSkip("Metal unavailable on this test destination")
+    }
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+      pixelFormat: format, width: 16, height: 16, mipmapped: false)
+    descriptor.usage = [.renderTarget, .shaderRead, .shaderWrite]
+    descriptor.storageMode = .shared
+    let texture = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+    let context = CIContext(mtlDevice: device, options: [
+      .workingFormat: CIFormat.RGBAh,
+      .workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!,
+    ])
+    return (context, texture, command)
+  }
+
+  func testNativeScrubMetalDisplayPreservesTopAndBottomOrientation() throws {
+    let (context, texture, command) = try scrubMetalResources(format: .bgra8Unorm)
+    let buffer = try scrubBuffer()
+    CVPixelBufferLockBaseAddress(buffer, [])
+    let stride = CVPixelBufferGetBytesPerRow(buffer)
+    let pixels = try XCTUnwrap(CVPixelBufferGetBaseAddress(buffer)).assumingMemoryBound(to: UInt8.self)
+    for y in 0..<16 { for x in 0..<16 {
+      let p = pixels.advanced(by: y * stride + x * 4)
+      p[0] = y < 8 ? 0 : 255; p[1] = 0
+      p[2] = y < 8 ? 255 : 0; p[3] = 255
+    } }
+    CVPixelBufferUnlockBaseAddress(buffer, [])
+    let frame = MCNativeScrubCache.Frame(buffer: buffer, time: 0, epoch: 0, layout: 0,
+      range: scrubRange, hdr: false, bytes: stride * 16)
+    try MCNativeScrubPlane.encode(frame, to: texture, command: command, context: context)
+    command.commit(); command.waitUntilCompleted()
+    XCTAssertEqual(command.status, .completed)
+    var bytes = [UInt8](repeating: 0, count: 16 * 16 * 4)
+    bytes.withUnsafeMutableBytes { texture.getBytes($0.baseAddress!, bytesPerRow: 64,
+      from: MTLRegionMake2D(0, 0, 16, 16), mipmapLevel: 0) }
+    XCTAssertGreaterThan(bytes[2], 240, "top red row must stay at top")
+    XCTAssertLessThan(bytes[0], 10)
+    XCTAssertGreaterThan(bytes[15 * 64], 240, "bottom blue row must stay at bottom")
+    XCTAssertLessThan(bytes[15 * 64 + 2], 10)
+  }
+
+  func testNativeScrubHLGDisplayDoesNotRenormalizeReferenceWhiteOrHighlights() throws {
+    guard #available(iOS 16.0, *) else { throw XCTSkip("Native HDR scrub requires iOS 16") }
+    for level: Float in [0.5, 0.75, 1.0] {
+      let (context, texture, command) = try scrubMetalResources(format: .bgr10a2Unorm)
+      let colorSpace = try XCTUnwrap(CGColorSpace(name: CGColorSpace.itur_2100_HLG))
+      let values: [Float] = [level, level, level, 1]
+      let data = values.withUnsafeBytes { Data($0) }
+      let image = CIImage(bitmapData: data, bytesPerRow: 16,
+        size: CGSize(width: 1, height: 1), format: .RGBAf, colorSpace: colorSpace)
+        .clampedToExtent().cropped(to: CGRect(x: 0, y: 0, width: 16, height: 16))
+      var optionalBuffer: CVPixelBuffer?
+      let status = CVPixelBufferCreate(kCFAllocatorDefault, 16, 16,
+        kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+        [kCVPixelBufferIOSurfacePropertiesKey: [:],
+         kCVPixelBufferMetalCompatibilityKey: true] as CFDictionary, &optionalBuffer)
+      XCTAssertEqual(status, kCVReturnSuccess)
+      let buffer = try XCTUnwrap(optionalBuffer)
+      context.render(image, to: buffer, bounds: image.extent, colorSpace: colorSpace)
+      CVBufferSetAttachment(buffer, kCVImageBufferColorPrimariesKey,
+        kCVImageBufferColorPrimaries_ITU_R_2020, .shouldPropagate)
+      CVBufferSetAttachment(buffer, kCVImageBufferTransferFunctionKey,
+        kCVImageBufferTransferFunction_ITU_R_2100_HLG, .shouldPropagate)
+      CVBufferSetAttachment(buffer, kCVImageBufferYCbCrMatrixKey,
+        kCVImageBufferYCbCrMatrix_ITU_R_2020, .shouldPropagate)
+      let frame = MCNativeScrubCache.Frame(buffer: buffer, time: 0, epoch: 0, layout: 0,
+        range: scrubRange, hdr: true, bytes: 1)
+      try MCNativeScrubPlane.encode(frame, to: texture, command: command, context: context)
+      command.commit(); command.waitUntilCompleted()
+      XCTAssertEqual(command.status, .completed)
+      var words = [UInt32](repeating: 0, count: 256)
+      words.withUnsafeMutableBytes { texture.getBytes($0.baseAddress!, bytesPerRow: 64,
+        from: MTLRegionMake2D(0, 0, 16, 16), mipmapLevel: 0) }
+      let pixel = words[8 * 16 + 8]
+      for component in [pixel & 1023, (pixel >> 10) & 1023, (pixel >> 20) & 1023] {
+        XCTAssertEqual(Double(component) / 1023, Double(level), accuracy: 0.015,
+          "HLG encoded values must survive the display conversion without another white-point gain")
+      }
+    }
+  }
+
+  func testInteractivePrepGateResumesTheSameWaitingJob() {
+    let gate = MCInteractivePrepGate()
+    let cancel = AtomicFlag()
+    gate.setInteractive(true)
+    let entered = expectation(description: "worker entered")
+    let completed = expectation(description: "worker resumed")
+    let returned = AtomicFlag()
+    DispatchQueue.global().async {
+      entered.fulfill()
+      XCTAssertTrue(gate.wait(cancelled: cancel))
+      returned.set(); completed.fulfill()
+    }
+    wait(for: [entered], timeout: 1)
+    XCTAssertFalse(returned.isSet)
+    XCTAssertTrue(gate.isInteractive)
+    gate.setInteractive(false)
+    wait(for: [completed], timeout: 1)
+    XCTAssertGreaterThanOrEqual(gate.pausedDuration, 0)
+  }
+
+  func testInteractivePrepGateCancellationDoesNotRequireResumingPlayback() {
+    let gate = MCInteractivePrepGate()
+    let cancel = AtomicFlag()
+    gate.setInteractive(true)
+    let completed = expectation(description: "cancelled while paused")
+    DispatchQueue.global().async {
+      XCTAssertFalse(gate.wait(cancelled: cancel)); completed.fulfill()
+    }
+    cancel.set()
+    wait(for: [completed], timeout: 1)
+    XCTAssertTrue(gate.isInteractive)
+  }
 
   func testFrameGeneratorPoolReusesAndEvictsTheLeastRecentlyUsedEntry() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -151,6 +485,11 @@ class RunnerTests: XCTestCase {
       before: [time(0), time(3.842), time(5.338)])
     XCTAssertFalse(nearBoundary.contains { abs($0.seconds - 3.838) < 0.005 },
       "a preroll point cannot displace a nearby true clip boundary")
+    let exactlyThreeTicks = MCPreviewVisibility.prerollStarts(before: [
+      .zero, CMTime(value: 2305, timescale: 600), CMTime(value: 3202, timescale: 600)])
+    XCTAssertFalse(exactlyThreeTicks.contains { $0 == CMTime(value: 2302, timescale: 600) })
+    XCTAssertFalse(MCPreviewVisibility.prerollStarts(before: [time(0), time(9.998), time(11.5)])
+      .contains { abs($0.seconds - 10) < 0.001 })
     let upcoming: [(start: CMTime, tracks: Set<CMPersistentTrackID>)] = [
       (time(8.5), [5]), (time(10), [4]), (time(20), [3]),
     ]

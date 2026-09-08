@@ -112,6 +112,18 @@ class MetalPreview {
   }
 }
 
+class ScrubPresentation {
+  const ScrubPresentation({
+    required this.displayed,
+    this.actualSeconds,
+    this.cacheHit = false,
+  });
+
+  final bool displayed;
+  final double? actualSeconds;
+  final bool cacheHit;
+}
+
 /// 合成播放器：整條時間軸交給系統的一顆播放器。
 ///
 /// 原本是「一個片段一顆播放器」，由 App 自己的時鐘驅動、交界前預先開播
@@ -154,12 +166,17 @@ class CompPlayer {
     this.hdrIn,
     this.wmLive,
     this.knownOpaquePaths,
+    this.nativeScrub,
   );
 
   /// Opaque source files confirmed by this successful native build. Unknown or
   /// older native implementations leave this empty; never infer alpha from an
   /// extension or from a different player's asset list.
   final Set<String> knownOpaquePaths;
+
+  /// The successful native build owns a color-managed scrub surface. Frames
+  /// remain in the composition pipeline; Dart must not cover it with SDR JPEGs.
+  final bool nativeScrub;
 
   static const _ch = MethodChannel('markcut/comp');
 
@@ -816,6 +833,7 @@ class CompPlayer {
           (m['opaqueSourcePaths'] as List?)?.whereType<String>() ??
               const <String>[],
         ),
+        m['nativeScrub'] == true,
       );
     } catch (_) {
       return null;
@@ -971,6 +989,33 @@ class CompPlayer {
     }
   }
 
+  /// A presentation receipt, not merely a seek acknowledgement. Exact requests
+  /// also wait for the underlying player's matching seek before succeeding.
+  Future<ScrubPresentation> scrub(
+    double seconds, {
+    bool exact = false,
+    int toleranceMs = 150,
+  }) async {
+    if (!nativeScrub) return const ScrubPresentation(displayed: false);
+    try {
+      final m = await _ch.invokeMapMethod<String, dynamic>('scrub', {
+        'sec': seconds,
+        'exact': exact,
+        'toleranceMs': exact ? 0 : toleranceMs.clamp(0, 250),
+      });
+      final actual = (m?['actualSeconds'] as num?)?.toDouble();
+      return ScrubPresentation(
+        displayed: m?['displayed'] == true && actual != null && actual.isFinite,
+        actualSeconds: actual != null && actual.isFinite ? actual : null,
+        cacheHit: m?['cacheHit'] == true,
+      );
+    } catch (_) {
+      return const ScrubPresentation(displayed: false);
+    }
+  }
+
+  Future<void> endScrub() => _quiet('endScrub');
+
   Future<void> dispose() => _quiet('dispose');
 
   /// 目前位置（秒）。合成播放器是唯一的時鐘來源——App 不再自己算時間，
@@ -1054,6 +1099,35 @@ class CompPlayer {
       }
       if (m['layerBound'] == false) {
         b.write('\n  ⚠ 影片圖層綁在舊播放器（畫面會全黑）');
+      }
+      final nativeCache = m['nativeScrub'];
+      if (nativeScrub && nativeCache is Map) {
+        final bytes = (nativeCache['bytes'] as num?)?.toDouble() ?? 0;
+        final budget = (nativeCache['budgetBytes'] as num?)?.toDouble() ?? 0;
+        b.write(
+          '\n  原生拖曳：${nativeCache['frames'] ?? 0} 格'
+          '／${(bytes / 1048576).toStringAsFixed(1)}'
+          '/${(budget / 1048576).toStringAsFixed(0)} MB'
+          '／快取命中 ${nativeCache['hits'] ?? 0}'
+          '、未命中 ${nativeCache['misses'] ?? 0}'
+          '／實際呈現 ${m['nativeScrubPresented'] ?? 0} 次'
+          '／呈現失敗 ${m['nativeScrubFailures'] ?? 0} 次'
+          '（共用合成影格，自然播放預存）',
+        );
+        final average = m['nativeScrubPresentAvgMs'] as num?;
+        final worst = m['nativeScrubPresentMaxMs'] as num?;
+        if (average != null &&
+            worst != null &&
+            ((m['nativeScrubPresented'] as num?) ?? 0) > 0) {
+          b.write(
+            '\n  拖曳請求到實際呈現：平均 ${average.toStringAsFixed(1)}ms'
+            '／最久 ${worst.toStringAsFixed(1)}ms',
+          );
+        }
+        final actual = m['nativeScrubLastPresentedTime'] as num?;
+        if (actual != null && actual.isFinite) {
+          b.write('／最後呈現時間 ${actual.toStringAsFixed(3)}s');
+        }
       }
       if (m['frameProbe'] != null) {
         b.write('\n  抽格檢查：${m['frameProbe']}');

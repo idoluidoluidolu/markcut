@@ -6,6 +6,12 @@ import 'package:flutter/services.dart';
 
 import 'diagnostics.dart';
 
+/// A preview encode yielded its decoder to interaction. This is neither a
+/// codec failure nor a reason to lower quality or use a software fallback.
+class PreviewPreparationDeferred implements Exception {
+  const PreviewPreparationDeferred();
+}
+
 /// 把素材交給「平台自己的硬體管線」轉成工作檔：SDR、H.264、長邊有上限。
 ///
 /// 為什麼要有這一層：iPhone 預設錄 4K HLG（HDR）。這種素材直接拿來用，
@@ -26,6 +32,22 @@ import 'diagnostics.dart';
 /// 呼叫端一律退回原檔——工作檔是加速，不是必要條件
 class MediaPrep {
   static const _ch = MethodChannel('markcut/prep');
+  static bool _interactive = false;
+
+  @visibleForTesting
+  static ({bool interactive, int running, int waiting}) get debugScheduling =>
+      (interactive: _interactive, running: _running, waiting: _waiting.length);
+
+  static Future<void> setInteractive(bool interactive) async {
+    _interactive = interactive;
+    try {
+      await _ch.invokeMethod<void>('setInteractive', {
+        'interactive': interactive,
+      });
+    } catch (_) {
+      // Older native builds do not support cooperative yielding.
+    }
+  }
 
   static bool _wired = false;
 
@@ -47,7 +69,7 @@ class MediaPrep {
   static Future<void> _acquire() {
     if (_running < _maxConcurrent) {
       _running++;
-      Diag.peak('同時轉檔（原生硬體）', _running);
+      Diag.peak('同時轉檔（原生通道）', _running);
       return Future.value();
     }
     final c = Completer<void>();
@@ -205,6 +227,7 @@ class MediaPrep {
     //（Android：media3 預設編碼參數→720p；見 MainActivity.rungsFor）。
     // 同樣的參數再轉一次，多半只是再壞一次
     bool safe = false,
+    bool interactiveYield = false,
     void Function(double progress)? onProgress,
   }) async {
     if (!await available) return null;
@@ -213,7 +236,10 @@ class MediaPrep {
     if (onProgress != null) _progressOf[job] = onProgress;
     await _acquire();
     try {
-      return await _ch.invokeMethod<String>('toWorkFile', {
+      if (interactiveYield && _interactive) {
+        throw const PreviewPreparationDeferred();
+      }
+      final result = await _ch.invokeMethod<Object?>('toWorkFile', {
         'src': src,
         'dest': dest,
         'maxShortSide': maxShortSide,
@@ -221,7 +247,14 @@ class MediaPrep {
         if (hdr) 'hdr': true,
         if (prechecked) 'prechecked': true,
         if (safe) 'safe': true,
+        if (interactiveYield) 'interactiveYield': true,
       });
+      if (result is Map && result['status'] == 'deferred') {
+        throw const PreviewPreparationDeferred();
+      }
+      return result is String ? result : null;
+    } on PreviewPreparationDeferred {
+      rethrow;
     } catch (e) {
       // 原生呼叫本身炸掉（不是轉檔失敗回 null）：以前無聲吞掉，報告裡
       // 只剩「工作檔失敗」

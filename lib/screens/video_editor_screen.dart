@@ -48,6 +48,7 @@ import '../services/watermark_renderer.dart';
 import '../services/text_mark_painter.dart';
 import '../services/work_files.dart';
 import '../services/thumbnail_preparation.dart';
+import '../services/preview_preparation.dart';
 import '../services/scrub_visibility.dart';
 import '../theme.dart';
 import '../widgets/color_grade_panel.dart';
@@ -247,6 +248,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   bool _playing = false;
+  bool _startingPlayback = false;
+  bool get _playRequested => _playing || _startingPlayback;
 
   /// 合成影片原生圖層的身分證：就算在子元件清單裡換了位置，Flutter
   /// 也要「搬移」而不是「拆掉重建」——重建的那一瞬間就是黑閃
@@ -531,6 +534,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _tlVersion++;
     super.setState(fn);
     _ovStateChanged();
+    _syncPrepInteraction();
   }
 
   void _ovStateChanged() {
@@ -626,6 +630,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _wmSliding = true;
     _wmLiveAt = now;
+    _wmPrepTimer?.cancel();
+    _wmPrepTimer = Timer(const Duration(milliseconds: _wmHoldMs), () {
+      _wmSliding = false;
+      _syncPrepInteraction();
+    });
+    _syncPrepInteraction(forceBusy: true);
     _pokeFrame();
     if (_ovWired) _ovSync.request();
   }
@@ -649,6 +659,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   DateTime? _wmLastApplyAt;
   int _wmGestureN = 0;
   Timer? _wmGestureTimer;
+  Timer? _wmPrepTimer;
 
   /// 診斷：這一手的第一格何時按下、第一版還沒上屏（上屏那一下記
   /// 「樣式起手→上屏」；之後的版才算斷流偵測）
@@ -747,6 +758,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   bool _ready = false;
   bool _exporting = false;
+  Future<void>? _initialPreviewReady;
+  int _videoMetadataImports = 0;
+  Completer<void>? _videoMetadataBatch;
+  bool get _videoMetadataImporting => _videoMetadataImports > 0;
+
+  void _beginVideoMetadataImport() {
+    if (_videoMetadataImports++ == 0) _videoMetadataBatch = Completer<void>();
+  }
+
+  void _endVideoMetadataImport() {
+    if (--_videoMetadataImports != 0) return;
+    final done = _videoMetadataBatch;
+    _videoMetadataBatch = null;
+    done?.complete();
+  }
 
   /// 進場前的「打扮」：使用者授權最多等 3 秒，把「看起來已經全好」
   /// 的三件事湊齊——合成器起來（畫面有第一幀）、縮圖帶鋪滿、
@@ -865,6 +891,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _pinchPts.clear();
     _pinchSeen.clear();
     _setTlPinching(false);
+    _tlFingers = 0;
+    _endPrepGesture();
   }
 
   /// 捏合剛結束的冷卻：抬手那一下的點擊是餘波，分頁層級的「點空白＝
@@ -913,6 +941,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _tlFingersAt = DateTime.now();
     _tlFingers++;
+    _touchPrepGesture();
     // 對齊動畫進行到一半被新的一指打斷時，_suppressScroll 可能
     // 還卡在 true——那會把接下來整段拖曳的 seek 全部吃掉
     _suppressScroll = false;
@@ -947,6 +976,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _pinchMove(PointerMoveEvent e) {
     _tlFingersAt = DateTime.now(); // 有動靜＝不是殘指（不分種類）
+    _touchPrepGesture();
     if (e.kind != ui.PointerDeviceKind.touch) return;
     if (!_pinchPts.containsKey(e.pointer)) return;
     _pinchSeen[e.pointer] = DateTime.now();
@@ -976,6 +1006,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _pinchUp(int pointer) {
     if (_tlFingers > 0) _tlFingers--;
+    _endPrepGesture();
     _pinchPts.remove(pointer);
     _pinchSeen.remove(pointer);
     if (!_tlPinching) return;
@@ -1952,6 +1983,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 冷路徑：一定重算（_compSig 走的是不快取的 _mosaicSig／_stillSig），
     // 順便讓熱路徑的快取下一格跟上——沒經過 setState 的改值也在這裡收攏
     _tlVersion++;
+    if (_videoMetadataImporting) {
+      _compDirty = true;
+      return;
+    }
     final sig = _compSig();
     if (sig == _lastCompSig) return;
     // 使用者真的改了東西＝立刻重烘；只有素材路徑變（某一支工作檔轉好了）
@@ -1984,7 +2019,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (!mounted || _playing) return;
     // 面板滑桿按著也算手勢：重組會整套重烘全解析疊加物＋換
     // AVPlayerItem，落在拖動中就是畫面硬停
-    if (_scrubbing || _lifting || _tlPinching || _wmGestureOn) {
+    if (_scrubBusy || _lifting || _tlPinching || _wmGestureOn) {
       _compRebuildTimer?.cancel();
       _compRebuildTimer = Timer(
         const Duration(milliseconds: 350),
@@ -2990,7 +3025,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (widget.draft != null) {
       // 保底：就算 _loadDraft 有沒料到的例外，也要離開讀取畫面並
       // 講清楚，不能永遠卡在轉圈圈（而且半載入狀態不該被自動存檔蓋）
-      _loadDraft(widget.draft!)
+      _beginVideoMetadataImport();
+      _initialPreviewReady = _loadDraft(widget.draft!)
           .catchError((Object e) {
             Diag.note('草稿載入炸了：$e');
             if (mounted) {
@@ -2998,6 +3034,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             }
           })
           .then((_) async {
+            _endVideoMetadataImport();
+            if (!mounted) return;
+            setState(() => _ready = true);
             await _dressUp();
             if (!mounted) return;
             setState(() => _ready = true);
@@ -3027,43 +3066,37 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final list = widget.videoPaths ?? [widget.videoPath!];
       // 遮罩的 N 先寫上總數（見 _importExpected）：第一支接上就開始轉，
       // 只數已接進來的會讓 N 一路往上跳
-      _importExpected = list.length;
-      () async {
-        // 一支一支問中繼資料、接進時間軸（順序是使用者選的）。不再
-        // 先開播放器：十支並行 initialize＝十顆 4K HDR 解碼器同時活著，
-        // 還沒轉檔 App 就被收掉（實機回報）；畫面由合成播放器出，
-        // 一顆都不用養（見 _importVideoPath）
-        var first = true;
-        for (var i = 0; i < list.length; i++) {
-          var ok = false;
-          try {
-            ok = await _importVideoPath(list[i], track: 0);
-          } catch (_) {}
-          if (!mounted) return;
-          // 第一支接上就「打扮好」再亮相（3 秒預算，見 _dressUp）；
-          // 後面幾支在遮罩下陸續接上
-          if (ok && first) {
-            first = false;
-            Diag.ev('首支影片中繼資料已接入，開始準備預覽');
-            await _dressUp();
-            if (!mounted) return;
-            Diag.ev('首支預覽準備返回，開放編輯器');
-          }
-          setState(() => _ready = true);
-        }
-        // 整批都接進來了：N 改回照實數（有的可能讀不進來被略過）
-        _importExpected = 0;
-        // 匯入會順手選中剛加的片段（加素材時的正確行為），
-        // 但「進場」的預設選取是浮水印——匯完整批把選取還回去
-        if (mounted) {
-          setState(() {
-            _sel = -1;
-            _wmSelValue = true;
-          });
-        }
-        _saveDraft();
-      }();
+      _initialPreviewReady = _importInitialVideos(list);
     }
+  }
+
+  Future<void> _importInitialVideos(List<String> list) async {
+    _beginVideoMetadataImport();
+    _importExpected = list.length;
+    try {
+      // Probe/attach in the selected order without opening clip decoders.
+      for (var i = 0; i < list.length; i++) {
+        try {
+          await _importVideoPath(list[i], track: 0);
+        } catch (_) {}
+        if (!mounted) return;
+        // Play waits on _initialPreviewReady; editing can begin immediately.
+        setState(() => _ready = true);
+      }
+    } finally {
+      _endVideoMetadataImport();
+      _importExpected = 0;
+    }
+    if (!mounted) return;
+    Diag.ev('整批影片中繼資料已接入，建立首個完整預覽');
+    await _dressUp();
+    if (!mounted) return;
+    setState(() {
+      _ready = true;
+      _sel = -1;
+      _wmSelValue = true;
+    });
+    _saveDraft();
   }
 
   /// 使用者捲動時間軸 → 播放頭跟著走（scrub）。
@@ -3075,7 +3108,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _onTimelineScroll() {
     if (_suppressScroll || _lifting || _pxPerSec <= 0) return;
     if (!_tlScroll.hasClients) return;
-    if (_playing) _pause();
+    if (_playRequested) _pause();
     final raw = (_tlScroll.offset / _pxPerSec).clamp(0.0, _tl.duration);
     // 即時吸附：靠近素材頭尾時，播放頭當場黏在那條邊上（底下的
     // 時間軸繼續跟著手指滑），滑遠了自動脫離。
@@ -3092,6 +3125,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _scrubRevision++;
     _scrubProbeBegin(); // 要在 _scrubbing 翻 true 之前（它靠這個認起手）
     _scrubbing = true;
+    _syncPrepInteraction(forceBusy: true);
     if (_compOn) {
       // 素材還在用原檔（秒進、工作檔還在背景轉）：拖曳走快取幀
       if (_compScrubViaCache()) return;
@@ -3227,8 +3261,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               !_hiddenTracks.contains(c.track) &&
               _compRawSources.contains(c.sourceIndex),
         );
+    final player = _comp!;
+    if (player.nativeScrub && _scrubbing) {
+      unawaited(
+        player.scrub(
+          _position,
+          exact: exact,
+          toleranceMs: !exact && raw ? 150 : 0,
+        ),
+      );
+      return;
+    }
     unawaited(
-      _comp!.seek(
+      player.seek(
         _position,
         exact: exact,
         toleranceMs: !exact && raw ? 150 : 0,
@@ -3500,16 +3545,58 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   bool get _previewInteracting =>
       _playing ||
-      _scrubbing ||
+      _startingPlayback ||
+      _scrubBusy ||
       _lifting ||
       _tlPinching ||
       _wmGestureOn ||
+      _clipSliderActive ||
+      (_prepGestureLease?.isActive ?? false) ||
       _exporting;
+
+  Timer? _prepGestureLease;
+
+  // A single pointer still owns the preview while held motionless. Keep a
+  // bounded lease so a lost pointer-up cannot suspend native work forever.
+  void _touchPrepGesture() {
+    _prepGestureLease?.cancel();
+    _prepGestureLease = Timer(const Duration(seconds: 3), () {
+      _prepGestureLease = null;
+      _syncPrepInteraction();
+    });
+    _syncPrepInteraction(forceBusy: true);
+  }
+
+  void _endPrepGesture() {
+    if (_tlFingers == 0 && _pvPts.isEmpty && !_lifting) {
+      _prepGestureLease?.cancel();
+      _prepGestureLease = null;
+    }
+    _syncPrepInteraction();
+  }
+
+  final _prepActivity = PreviewPreparationActivity(
+    onChanged: (interactive) =>
+        unawaited(MediaPrep.setInteractive(interactive)),
+  );
+
+  void _syncPrepInteraction({bool forceBusy = false}) {
+    _prepActivity.update(forceBusy || _previewInteracting);
+  }
+
+  List<int> _prioritizedPreparation(Iterable<int> pending) =>
+      prioritizePreviewPreparation(
+        timeline: _tl,
+        pending: pending,
+        position: _position,
+        hiddenTracks: _hiddenTracks,
+      );
 
   Future<void> _waitForPreviewIdle() async {
     // Give the editor time to settle, then check again before starting work.
     do {
-      while (mounted && (!_ready || _previewInteracting)) {
+      while (mounted &&
+          (!_ready || _videoMetadataImporting || _previewInteracting)) {
         await Future<void>.delayed(const Duration(milliseconds: 200));
       }
       if (!mounted) return;
@@ -3729,6 +3816,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
     Diag.startSampling();
     try {
+      // Select the first preparation job from the complete metadata batch,
+      // not whichever file happened to finish probing first.
+      await _videoMetadataBatch?.future;
+      if (!mounted) return;
+      if (!_waitForPreparation) await _initialPreviewReady;
+      if (!mounted) return;
       if (!await MediaPrep.available) {
         _prepQueue.clear();
         return;
@@ -3749,14 +3842,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 一支一支加的），只撈一次的話那些會留在佇列裡沒人理——上一版
       // 就是這樣，五支素材只轉好一支，其他全程用 4K 原檔播
       while (_prepQueue.isNotEmpty && mounted) {
-        // Only start another full encode after the editor has settled.
-        // An already running hardware encode is allowed to finish.
-        if (!_waitForPreparation) {
+        // Re-evaluate the playhead after every idle wait and completed job.
+        // Native preview jobs also yield if interaction starts mid-encode.
+        if (!_waitForPreparation || _prepActivity.interactive) {
           await _waitForPreviewIdle();
           if (!mounted) return;
         }
-        final i = _prepQueue.removeAt(0);
-        if (i >= _tl.sources.length) continue;
+        final ordered = _prioritizedPreparation(_prepQueue);
+        if (ordered.isEmpty) {
+          _prepQueue.clear();
+          break;
+        }
+        final i = ordered.first;
+        _prepQueue.remove(i);
         await lap(_classifySource(i), (ms) => msProbe += ms);
         if (!mounted) return;
         // 來源裡有沒有 HDR：這個答案決定備哪種檔、合成走哪條管線，要在
@@ -3776,15 +3874,28 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 這一支開始轉了：素材長度就是「還要轉多少影片」的單位
         _eta?.itemStart(src.duration);
         _etaTick();
-        if (need == _PrepNeed.hdrProxy) {
-          if (await lap(_prepHdrProxy(i), (ms) => msXcode += ms)) madeHdr++;
-        } else {
-          await lap(_prepWorkFile(i), (ms) => msXcode += ms);
+        try {
+          if (need == _PrepNeed.hdrProxy) {
+            if (await lap(_prepHdrProxy(i), (ms) => msXcode += ms)) madeHdr++;
+          } else {
+            await lap(_prepWorkFile(i), (ms) => msXcode += ms);
+            if (mounted &&
+                i < _tl.sources.length &&
+                _tl.sources[i].workPath != null) {
+              madeSdr++;
+            }
+          }
+        } on PreviewPreparationDeferred {
+          // Android releases its decoder and retries after stable idle. A
+          // yield must not consume the codec-failure retry or safe fallback.
           if (mounted &&
               i < _tl.sources.length &&
-              _tl.sources[i].workPath != null) {
-            madeSdr++;
+              identical(_tl.sources[i], src) &&
+              !_prepQueue.contains(i)) {
+            _prepQueue.add(i);
           }
+          Diag.count('背景轉檔讓路');
+          continue;
         }
         // 成功失敗都要記：時間都花掉了，倍速要照實算
         _eta?.itemDone();
@@ -4023,25 +4134,36 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   Future<void> _prepHdrWorkFilesInner() async {
     var madeAny = false;
-    for (var i = 0; i < _tl.sources.length; i++) {
+    final attempted = <int>{};
+    while (mounted) {
       // 匯入轉檔中讓道：遮罩那條路自己會備代理，這裡插一腳就是兩支
       // 硬體編碼同時跑——多影片匯入實測就是這樣把 mediaserverd 打到
       // 重置（-11819）甚至整個 App 被殺
       if (!(_exportHdr && _hdrAvail == true) || !mounted || _prepBusy) break;
-      final s = _tl.sources[i];
-      if (!s.isVideo || s.workHdrPath != null) continue;
-      if (_hdrPrepping.contains(i) || _hdrPrepFailed.contains(i)) continue;
-      // 只補「確定是 HDR」的：SDR 素材 ensureHdr 探一次就回 null，
-      // 但每次合成重組都探一遍也是白工
-      if (_srcHdr[s.path] == false) continue;
-      if (!_waitForPreparation) {
+      if (!_waitForPreparation || _prepActivity.interactive) {
         await _waitForPreviewIdle();
         if (!mounted || _prepBusy) break;
       }
-      if (await _prepHdrProxy(i)) {
-        madeAny = true;
-      } else if (mounted) {
-        _hdrPrepFailed.add(i);
+      final ordered = _prioritizedPreparation([
+        for (var i = 0; i < _tl.sources.length; i++)
+          if (!attempted.contains(i) &&
+              _tl.sources[i].workHdrPath == null &&
+              !_hdrPrepping.contains(i) &&
+              !_hdrPrepFailed.contains(i) &&
+              _srcHdr[_tl.sources[i].path] != false)
+            i,
+      ]);
+      if (ordered.isEmpty) break;
+      final i = ordered.first;
+      try {
+        if (await _prepHdrProxy(i)) {
+          madeAny = true;
+        } else if (mounted) {
+          _hdrPrepFailed.add(i);
+        }
+        attempted.add(i);
+      } on PreviewPreparationDeferred {
+        Diag.count('背景轉檔讓路');
       }
       if (!mounted) return;
     }
@@ -4070,6 +4192,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     try {
       made = await WorkFiles.ensureHdr(
         src.path,
+        interactiveYield: true,
         onProgress: (v) {
           // 剩餘時間先收（不重建畫面）：第一支的倍速就是從「轉到第幾秒
           // ÷ 花了幾秒」量出來的，這是「估算中…」能在兩秒內變成真數字
@@ -4114,6 +4237,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     try {
       made = await WorkFiles.ensure(
         src.path,
+        interactiveYield: true,
         onProgress: (v) {
           // 剩餘時間先收（見 _prepHdrProxy 的同一段）
           _eta?.noteProgress(v);
@@ -4190,7 +4314,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (!mounted) return;
     if (_playing ||
         _exporting ||
-        _scrubbing ||
+        _scrubBusy ||
         _lifting ||
         _tlPinching ||
         _wmGestureOn) {
@@ -4386,6 +4510,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   bool _scrubbing = false;
+  int? _failedScrubRevision;
+  bool get _scrubBusy => _scrubbing && _failedScrubRevision != _scrubRevision;
   int _scrubRevision = 0;
   int? _settlingScrubRevision;
   int? _retriedScrubRevision;
@@ -4847,7 +4973,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 一次只飛一個請求，永遠抽「最新想要的」那格——手指比解碼快時，
   /// 中間滑過的格子直接跳過，不排隊（排了也只是顯示過期的畫面）
   late final _scrubQueue = ScrubFrameQueue<NativeFrameSample>(
-    canRun: () => mounted && !_playing && !_exporting,
+    canRun: () =>
+        mounted &&
+        !_playRequested &&
+        !_exporting &&
+        !(_compOn && _comp!.nativeScrub),
     load: (w) => nativeFrameAtDetailed(
       w.path,
       w.seconds,
@@ -4885,6 +5015,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 最上層片段；HLG 代理算密關鍵幀）：蓋層沒畫卻壓住即時 seek＝
   /// 拖曳中畫面凍住（HDR 模式代理轉好後，舊判定只看 workPath 就是這樣）
   bool get _scrubRawUnderHead {
+    if (_compOn && _comp!.nativeScrub) return false;
     final cur = _tl.videoAt(_position, skipTracks: _hiddenTracks);
     if (cur == null) return false;
     final s = _tl.sourceOf(cur);
@@ -4925,6 +5056,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   );
 
   void _requestScrubFrames() {
+    if (_compOn && _comp!.nativeScrub) {
+      _scrubQueue.clear();
+      return;
+    }
     if (kIsWeb || !Diag.scrubPrefetch.value) return;
     // 舊閘門「引擎瞬滑取代按需抽幀」已拆：引擎在合成模式永不上台，
     // 留著＝原檔期拖曳既不 seek 也沒快取幀可蓋＝畫面凍住到放手
@@ -5038,7 +5173,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     for (var s = 0; s < n; s += s == 0 ? firstFrames : segFrames) {
       // 匯出中一定要停：抽幀的 FFmpeg 跟匯出的 FFmpeg 同時跑，
       // 記憶體疊加會把整個 App 弄死（OOM 直接閃退）
-      while (mounted && (_playing || _scrubbing || _exporting)) {
+      while (mounted && (_playing || _scrubBusy || _exporting)) {
         await Future<void>.delayed(const Duration(milliseconds: 400));
       }
       if (!mounted || !identical(_scrubFrames[srcIndex], slots)) return;
@@ -5147,6 +5282,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// seek 還在跑就再等一下，避免閃回舊畫面。
   void _tryEndScrub() {
     if (!mounted || !_scrubbing || _playing) return;
+    if (_failedScrubRevision == _scrubRevision) return;
     // 手指還壓在時間軸上就不收尾。
     //
     // 「暫停後往右滑不動」就是這裡來的：手指停頓超過 220ms（正在
@@ -5198,7 +5334,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _finishScrub(int revision) async {
     final player = _compOn ? _comp : null;
     final at = _position;
-    final landed = player == null || await player.seekSettled(at);
+    final landed =
+        player == null ||
+        (player.nativeScrub
+            ? (await player.scrub(at, exact: true)).displayed
+            : await player.seekSettled(at));
     if (!mounted || revision != _scrubRevision || _playing || !_scrubbing) {
       return;
     }
@@ -5215,9 +5355,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         return;
       }
       // 只重試一次；保留最後快取，不無限排 seek。新手勢或播放可接手。
+      _failedScrubRevision = revision;
+      _syncPrepInteraction();
       Diag.count('拖曳精準定位未完成');
       return;
     }
+    _failedScrubRevision = null;
     if (player != null) _compExactAt = at;
     setState(() => _scrubbing = false);
   }
@@ -5293,18 +5436,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _pushUndo();
     // 遮罩的 N 先寫上「加完會有幾支」（見 _importExpected）
     _importExpected = _tl.sources.where((s) => s.isVideo).length + vids.length;
-    // 一支一支問中繼資料、接軌（同 initState 的匯入迴圈；不開播放器，
-    // 見 _importVideoPath）
-    for (var i = 0; i < vids.length; i++) {
-      // 各自一軌時，第二部以後每部都開一條新的空軌；
-      // usedTracks 每加一部就長一格，所以這裡每輪重新算
-      final t = (sameTrack || i == 0) ? track : _tl.usedTracks;
+    _initialPreviewReady = () async {
+      _beginVideoMetadataImport();
       try {
-        await _importVideoPath(vids[i].path, track: t, name: vids[i].name);
-      } catch (_) {}
-      if (!mounted) return;
-    }
-    _importExpected = 0;
+        for (var i = 0; i < vids.length; i++) {
+          final t = (sameTrack || i == 0) ? track : _tl.usedTracks;
+          try {
+            await _importVideoPath(vids[i].path, track: t, name: vids[i].name);
+          } catch (_) {}
+          if (!mounted) return;
+        }
+      } finally {
+        _endVideoMetadataImport();
+        _importExpected = 0;
+      }
+      if (mounted) await _dressUp();
+    }();
+    await _initialPreviewReady;
+    if (!mounted) return;
     setState(() {});
     // 極少數情況相簿還是會塞進非影片（web 那條路是混合選取），
     // 略過就好，但要講一聲，不然會以為漏加了
@@ -5713,11 +5862,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         builder: (context, setSheet) {
           void begin(double _) {
             _clipSliderActive = true;
+            _syncPrepInteraction(forceBusy: true);
             _liveXformSync();
           }
 
           void end(double _) {
             _clipSliderActive = false;
+            _syncPrepInteraction();
             _liveXformSync();
             _compRefreshIfChanged();
           }
@@ -5845,6 +5996,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ),
     ).whenComplete(() {
       _clipSliderActive = false;
+      _syncPrepInteraction();
       if (mounted) _compRefreshIfChanged();
     });
   }
@@ -8070,7 +8222,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 停手 350ms 後 [_compRebuildTick] 再來（圖已進快取，幾乎不用等）
   bool _compYieldToGesture() {
     if (!_wmGestureOn &&
-        !_scrubbing &&
+        !_scrubBusy &&
         !_lifting &&
         !_tlPinching &&
         !_clipSliderActive) {
@@ -8086,6 +8238,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   Future<void> _ensureCompInner({bool yieldToGesture = false}) async {
+    if (_videoMetadataImporting) {
+      _compDirty = true;
+      return;
+    }
     if (!kIsWeb && Platform.isAndroid) {
       _compWhyNot = 'Android 使用逐片段播放器';
       return;
@@ -8251,6 +8407,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     });
     _compRawSources = rawSourcesAtBuild;
     setState(() => _comp = made);
+    if (made.nativeScrub) _scrubQueue.clear();
     _syncImageVisibility(force: true);
     // 新合成上檔了：它帶著建置快照那一版（或沒帶）。重建期間使用者
     // 若又改了樣式，這裡補送最新版（指紋沒變＝快取整包重用）
@@ -8263,6 +8420,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     //（實測回報：「加素材第一幀就要有，現在要按播放才有」）。
     // 播放中照舊寬容，精準 seek 會把 rate 壓到 0 造成頓一下
     await made.seek(_position, exact: !_playing);
+    if (mounted &&
+        _comp == made &&
+        !_playing &&
+        _scrubbing &&
+        _failedScrubRevision == _scrubRevision) {
+      // A fresh composition (often the completed working file) can recover
+      // the failed landing. Prime it first so its initial seek cannot cancel
+      // this new receipt. Keep the cached picture until the receipt succeeds.
+      _scrubRevision++;
+      _failedScrubRevision = null;
+      _settlingScrubRevision = null;
+      _retriedScrubRevision = null;
+      _syncPrepInteraction();
+      _scrubEndTimer?.cancel();
+      _scrubEndTimer = Timer(const Duration(milliseconds: 80), _tryEndScrub);
+    }
     if (_compDirty) _compRefreshIfChanged();
     // 合成就緒＝佈局定案：Metal 引擎的佈局趁閒先建好，
     // 滑動起手就不用等（無延遲）
@@ -8440,7 +8613,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 所以每次按播放開頭都頓一下。播放途中的段落交界不會有這個問題，
   /// 因為那些是提早 1.2 秒預先對位過的（見 _syncMedia 的 pre-roll）
   Future<void> _play() async {
-    if (_visDur <= 0) return;
+    if (_visDur <= 0 || _playRequested) return;
     _scrubRevision++;
     _cancelScrubAlignment();
     final epoch = ++_playbackEpoch;
@@ -8465,12 +8638,43 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 合成播放器接手時，整條時間軸就是它一顆在播：舊的逐片段播放器
     // 一個都不要碰。上一版兩邊同時在播——兩倍解碼、兩份聲音，
     // 而且「快不快」也就比不出來了
-    setState(() => _playing = true);
+    // Metadata and the first complete composition share one startup future.
+    // Keep this cancellable without starting the timeline clock or telling
+    // _ensureComp that playback is already running (which defers the build).
+    setState(() => _startingPlayback = true);
+    _syncPrepInteraction(forceBusy: true);
     _compRebuildTimer?.cancel();
     final swPlay = Stopwatch()..start();
-    // 包含第一次建置：等完成後再決定由合成或逐片段播放器接手。
-    if (_compBuilding != null || (_compOn && _compDirty)) await _ensureComp();
-    if (cancelled() || !_playing) return;
+    try {
+      // Adding another batch while Start is pending replaces this future.
+      // Wait for that batch too, without starting a partial composition.
+      while (true) {
+        final ready = _initialPreviewReady;
+        await ready;
+        if (cancelled()) return;
+        await _videoMetadataBatch?.future;
+        if (cancelled()) return;
+        if (identical(ready, _initialPreviewReady)) break;
+      }
+      if (_compBuilding != null || (_compOn && _compDirty)) {
+        await _ensureComp();
+      }
+      if (cancelled()) return;
+    } catch (e) {
+      if (cancelled()) return;
+      Diag.note('初次預覽準備未完成：$e');
+      setState(() => _startingPlayback = false);
+      return;
+    }
+    if (_visDur <= 0) {
+      setState(() => _startingPlayback = false);
+      return;
+    }
+    _position = _position.clamp(0.0, _visDur);
+    setState(() {
+      _startingPlayback = false;
+      _playing = true;
+    });
     final msRebuild = swPlay.elapsedMilliseconds;
     if (_compOn) {
       final player = _comp!;
@@ -8677,6 +8881,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 一發精準 seek 反而會退回前一格（原生端把目標夾在總長前 34ms）
   void _pause({bool atEnd = false}) {
     final epoch = ++_playbackEpoch;
+    if (_startingPlayback) {
+      setState(() => _startingPlayback = false);
+      _syncPrepInteraction();
+      return;
+    }
     final pausedAt = _position;
     _clockBias = 0;
     _playProbe?.cancel();
@@ -9384,7 +9593,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _seekScrub(double t) {
     _scrubRevision++;
     _cancelScrubAlignment();
-    if (_playing) _pause();
+    if (_playRequested) _pause();
     _position = t.clamp(0.0, _tl.duration);
     // 跟捲動時間軸同一套：靠近素材頭尾就當場吸住，換卡榫震一下
     final edge = _nearestEdge(_position);
@@ -9395,6 +9604,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (edge != null) _position = edge.clamp(0.0, _tl.duration);
     _scrubProbeBegin(); // 要在 _scrubbing 翻 true 之前（它靠這個認起手）
     _scrubbing = true;
+    _syncPrepInteraction(forceBusy: true);
     if (_compOn) {
       // 素材還在用原檔（秒進、工作檔還在背景轉）：拖曳走快取幀
       if (_compScrubViaCache()) return;
@@ -10497,6 +10707,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   @override
   void dispose() {
+    _prepGestureLease?.cancel();
+    _wmPrepTimer?.cancel();
+    _prepActivity.dispose();
     _scrubRevision++;
     // 草稿還有沒落地的併批寫入：離開前補存，不能讓最後幾秒的編輯蒸發。
     // force：unmount 之後 mounted 必為 false，不帶的話這筆補存永遠
@@ -11118,6 +11331,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                               onChanged: () => setState(() {
                                 // 滑桿放手（或非滑桿的改動）：手勢結束
                                 _wmSliding = false;
+                                _wmPrepTimer?.cancel();
                                 if (isClipWm) {
                                   // 名字跟著文字走，時間軸上才認得出來
                                   final st = src.wmStyle!;
@@ -11371,7 +11585,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       InkWell(
                         borderRadius: BorderRadius.circular(999),
                         onTap: () {
-                          if (_playing) {
+                          if (_playRequested) {
                             _pause();
                           } else {
                             unawaited(_play());
@@ -11380,7 +11594,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         child: Padding(
                           padding: const EdgeInsets.all(5),
                           child: Icon(
-                            _playing
+                            _playRequested
                                 ? Icons.pause_rounded
                                 : Icons.play_arrow_rounded,
                             size: 24,
@@ -11431,12 +11645,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     child: Slider(
                                       value: pos.clamp(0.0, dur),
                                       max: dur,
-                                      onChanged: (v) {
-                                        _pause();
-                                        setState(() => _position = v);
-                                        _scrubSeek(force: true);
-                                        _compSeek(exact: true);
-                                      },
+                                      onChanged: _seekScrub,
                                     ),
                                   ),
                                 ),
@@ -11497,10 +11706,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               iconSize: 28,
               color: kText,
               icon: Icon(
-                _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                _playRequested ? Icons.pause_rounded : Icons.play_arrow_rounded,
               ),
               onPressed: () {
-                if (_playing) {
+                if (_playRequested) {
                   _pause();
                 } else {
                   unawaited(_play());
@@ -13702,6 +13911,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// element 之外還有控制列、預覽整疊），拖起來就是頓
   void _setTimelineLive(VoidCallback fn) {
     fn();
+    _touchPrepGesture();
     _tlVersion++;
     _tlLiveVN.value++;
     _pokeFrame();
@@ -13716,6 +13926,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 把手放開：手勢中只畫在時間軸／預覽層的值補到頁面其他部分
   ///（時間碼、工具列），再做自動整理
   void _trimGestureEnd() {
+    _endPrepGesture();
     if (mounted) setState(() {});
     _autoTidyIfOn();
   }
@@ -13724,6 +13935,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _gestureLiveTick() {
     if (!mounted) return;
+    _touchPrepGesture();
     _pokeFrame();
     _ovStateChanged();
     if (_tabs.index == 1) {
@@ -13739,6 +13951,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 頁面其他部分
   void _gestureLiveEnd() {
     if (!mounted) return;
+    _endPrepGesture();
     setState(() {});
   }
 
@@ -13823,6 +14036,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // panLocked 一鎖，浮水印與片段就再也拖不動）
     if (e.kind != ui.PointerDeviceKind.touch) return;
     _pvPts[e.pointer] = e.position;
+    _touchPrepGesture();
     _armPreviewPinch();
   }
 
@@ -14035,6 +14249,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _previewPinchUp(int pointer) {
     _pvPts.remove(pointer);
+    _endPrepGesture();
     if (_pvBaseDist != null && _pvPts.length < 2) {
       _pvBaseDist = null;
       _rotSnap.end();
@@ -14455,7 +14670,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     _openVolumeSheet(c);
                                   }
                                 },
-                                onLiftChanged: (v) => _lifting = v,
+                                onLiftChanged: (v) {
+                                  _lifting = v;
+                                  if (v) {
+                                    _touchPrepGesture();
+                                  } else {
+                                    _endPrepGesture();
+                                  }
+                                },
                                 // 旁白軌：標籤變紅色錄音鈕，按了邊播邊錄
                                 voiceTrack: _voTrack,
                                 voiceRecording: _voRecording,

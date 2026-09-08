@@ -27,6 +27,8 @@ import 'package:markcut/widgets/prep_gate_view.dart';
 late Directory _dir;
 Completer<void>? _holdWork;
 int _workStarted = 0;
+bool _deferNextWork = false;
+final _workArguments = <Map<Object?, Object?>>[];
 
 /// 每支素材：多長、假的原生端要轉多久
 const _videos = <String, ({double dur, int workMs})>{
@@ -121,8 +123,14 @@ void main() {
             };
           case 'toWorkFile':
             _workStarted++;
-            await _holdWork?.future;
             final a = call.arguments as Map<Object?, Object?>;
+            _workArguments.add(a);
+            await _holdWork?.future;
+            if (_deferNextWork) {
+              _deferNextWork = false;
+              _holdWork = Completer<void>();
+              return {'status': 'deferred', 'reason': 'interaction'};
+            }
             final src = a['src'] as String;
             final dest = a['dest'] as String;
             final v = _videos[src.split(Platform.pathSeparator).last];
@@ -144,6 +152,8 @@ void main() {
     ImportEta.resetLearnedTail();
     _holdWork = null;
     _workStarted = 0;
+    _deferNextWork = false;
+    _workArguments.clear();
   });
 
   tearDownAll(() {
@@ -152,6 +162,228 @@ void main() {
     try {
       _dir.deleteSync(recursive: true);
     } catch (_) {}
+  });
+
+  testWidgets('首合成仍未返回：整批 metadata 已接軌且沒有搶先轉檔', (t) async {
+    t.view.physicalSize = const Size(1100, 2200);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    final buildReady = Completer<void>();
+    final builds = <Map<dynamic, dynamic>>[];
+    final oldLayer = Diag.playerLayer.value;
+    Diag.playerLayer.value = false;
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(const MethodChannel('markcut/comp'), (
+      call,
+    ) async {
+      if (call.method == 'available') return true;
+      if (call.method == 'build') {
+        builds.add(Map<dynamic, dynamic>.from(call.arguments as Map));
+        await buildReady.future;
+        return <String, dynamic>{
+          'textureId': 1,
+          'duration': 60.0,
+          'width': 1920.0,
+          'height': 1080.0,
+        };
+      }
+      return null;
+    });
+    addTearDown(() {
+      Diag.playerLayer.value = oldLayer;
+      messenger.setMockMethodCallHandler(
+        const MethodChannel('markcut/comp'),
+        null,
+      );
+      if (!buildReady.isCompleted) buildReady.complete();
+    });
+    await t.pumpWidget(
+      MaterialApp(
+        home: VideoEditorScreen(
+          videoPaths: [_p('first.mov'), _p('second.mov')],
+        ),
+      ),
+    );
+    await _settle(t, 40);
+    _swallowMediaKit(t);
+    expect(find.byType(TimelineEditor), findsOneWidget);
+    expect(builds, hasLength(1));
+    final clips = builds.single['clips'] as List;
+    expect(clips.map((c) => (c as Map)['path']).toList(), [
+      _p('first.mov'),
+      _p('second.mov'),
+    ]);
+    expect(clips.map((c) => (c as Map)['offset']).toList(), [0.0, 20.0]);
+    expect(buildReady.isCompleted, false);
+    expect(_workStarted, 0, reason: '首個完整預覽拿到資源後才讓背景 encoder 開工');
+    await t.pumpWidget(const SizedBox.shrink());
+    buildReady.complete();
+    await _settle(t, 10);
+    await t.pump(const Duration(seconds: 5));
+    _swallowMediaKit(t);
+    expect(_workStarted, 0, reason: '離開編輯器後不再啟動排隊中的轉檔');
+  });
+
+  for (final cancel in [true, false]) {
+    testWidgets('首預覽等待中按播放：${cancel ? '可取消且完成後不偷播' : '完成後只起播一次'}', (t) async {
+      t.view.physicalSize = const Size(1100, 2200);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      final buildReady = Completer<void>();
+      _holdWork = Completer<void>();
+      var playCalls = 0;
+      var nativePosition = 0;
+      final oldLayer = Diag.playerLayer.value;
+      Diag.playerLayer.value = false;
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(const MethodChannel('markcut/comp'), (
+        call,
+      ) async {
+        if (call.method == 'available') return true;
+        if (call.method == 'build') {
+          await buildReady.future;
+          return <String, dynamic>{
+            'textureId': 1,
+            'duration': 60.0,
+            'width': 1920.0,
+            'height': 1080.0,
+          };
+        }
+        if (call.method == 'play') {
+          playCalls++;
+          return 'playing';
+        }
+        if (call.method == 'position') {
+          if (playCalls > 0) nativePosition += 16;
+          return nativePosition;
+        }
+        if (call.method == 'seek') return true;
+        return null;
+      });
+      addTearDown(() {
+        Diag.playerLayer.value = oldLayer;
+        messenger.setMockMethodCallHandler(
+          const MethodChannel('markcut/comp'),
+          null,
+        );
+        if (!buildReady.isCompleted) buildReady.complete();
+        if (!_holdWork!.isCompleted) _holdWork!.complete();
+      });
+      await t.pumpWidget(
+        MaterialApp(
+          home: VideoEditorScreen(
+            videoPaths: [_p('first.mov'), _p('second.mov')],
+          ),
+        ),
+      );
+      await _settle(t, 30);
+      _swallowMediaKit(t);
+      final timeline = t.widget<TimelineEditor>(find.byType(TimelineEditor));
+      expect(timeline.playhead.value, 0);
+      await t.tap(find.byIcon(Icons.play_arrow_rounded).first);
+      await t.pump();
+      await _settle(t, 5);
+      expect(playCalls, 0);
+      expect(timeline.playhead.value, 0, reason: '首預覽尚未就緒時不能偷開時鐘');
+      expect(find.byIcon(Icons.pause_rounded), findsWidgets);
+      if (cancel) {
+        await t.tap(find.byIcon(Icons.pause_rounded).first);
+        await t.pump();
+        expect(find.byIcon(Icons.play_arrow_rounded), findsWidgets);
+      }
+      buildReady.complete();
+      await _settle(t, 15);
+      _swallowMediaKit(t);
+      expect(playCalls, cancel ? 0 : 1);
+      if (cancel) expect(timeline.playhead.value, 0);
+      await t.pumpWidget(const SizedBox.shrink());
+      _holdWork!.complete();
+      // The native mock may have started the 1.6 s second source. Wait for
+      // its actual result before destroying this test's async zone; pumping
+      // the widget clock alone cannot finish its real File.write future.
+      for (var n = 0; n < 75 && MediaPrep.debugScheduling.running > 0; n++) {
+        await _settle(t, 1);
+      }
+      await t.pump(const Duration(seconds: 5));
+      _swallowMediaKit(t);
+      expect(MediaPrep.debugScheduling, (
+        interactive: false,
+        running: 0,
+        waiting: 0,
+      ), reason: '離開等待播放的編輯器後不留下 busy flag 或原生工作');
+    });
+  }
+
+  testWidgets('互動讓路的工作等閒置再重排，不走失敗或降低品質退路', (t) async {
+    t.view.physicalSize = const Size(1100, 2200);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    _holdWork = Completer<void>();
+    _deferNextWork = true;
+    final oldLayer = Diag.playerLayer.value;
+    Diag.playerLayer.value = false;
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(const MethodChannel('markcut/comp'), (
+      call,
+    ) async {
+      if (call.method == 'available') return true;
+      if (call.method == 'build') {
+        return <String, dynamic>{
+          'textureId': 1,
+          'duration': 60.0,
+          'width': 1920.0,
+          'height': 1080.0,
+        };
+      }
+      if (call.method == 'seek') return true;
+      return null;
+    });
+    addTearDown(() {
+      Diag.playerLayer.value = oldLayer;
+      messenger.setMockMethodCallHandler(
+        const MethodChannel('markcut/comp'),
+        null,
+      );
+      if (!_holdWork!.isCompleted) _holdWork!.complete();
+    });
+    await t.pumpWidget(
+      MaterialApp(
+        home: VideoEditorScreen(
+          videoPaths: [_p('first.mov'), _p('second.mov')],
+        ),
+      ),
+    );
+    await _settle(t, 40);
+    _swallowMediaKit(t);
+    expect(_workStarted, 1);
+    expect(_workArguments.single['interactiveYield'], true);
+    final timeline = t.widget<TimelineEditor>(find.byType(TimelineEditor));
+    timeline.onSeek(1);
+    await t.pump();
+    expect(MediaPrep.debugScheduling.interactive, true);
+    _holdWork!.complete(); // Native cancellation has returned deferred.
+    await _settle(t, 3);
+    expect(_workStarted, 1, reason: '正在滑動或尚未穩定閒置時不能重開 encoder');
+    await _settle(t, 30);
+    expect(_workStarted, 2);
+    expect(_workArguments.last['src'], _workArguments.first['src']);
+    expect(_workArguments.last['safe'], isNull);
+    expect(WorkFiles.needsSafeRetry(_p('first.mov')), false);
+    await t.pumpWidget(const SizedBox.shrink());
+    _holdWork!.complete();
+    for (var n = 0; n < 75 && MediaPrep.debugScheduling.running > 0; n++) {
+      await _settle(t, 1);
+    }
+    await t.pump(const Duration(seconds: 5));
+    _swallowMediaKit(t);
+    expect(MediaPrep.debugScheduling, (
+      interactive: false,
+      running: 0,
+      waiting: 0,
+    ));
   });
 
   testWidgets('預設匯入：轉檔仍未完成時已可拖曳時間軸', (t) async {

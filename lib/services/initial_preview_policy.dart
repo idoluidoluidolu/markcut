@@ -1,5 +1,4 @@
-/// Android uses individual players rather than the iOS composition player.
-/// Prepare its working media before the first playback so 4K decoding does
-/// not compete with the initial background transcode.
+/// Interactive preview preparation yields the decoder on both platforms.
+/// Only an explicit request should put the entire import behind a prep gate.
 bool waitForInitialPreview({required bool requested, required bool android}) =>
-    requested || android;
+    requested;

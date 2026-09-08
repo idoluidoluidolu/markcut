@@ -917,10 +917,16 @@ enum MCPreviewVisibility {
     let lead = CMTime(seconds: prerollSeconds, preferredTimescale: 600)
     return boundaries.compactMap { boundary in
       let start = boundary - lead
-      guard start.isValid, start > .zero else { return nil }
+      guard start.isNumeric, start > .zero else { return nil }
       // 後面的標記合併容差是 5ms；預熱標記不能搶先留下而把真正的
       // 片段頭尾擠掉，否則只是加預熱就會提早顯示下一段。
-      guard !boundaries.contains(where: { abs(($0 - start).seconds) < 0.005 })
+      // CMTime(seconds:) can quantize neighboring 3.842/5.338 boundaries to
+      // exactly three 1/600 ticks apart. Compare rational times, inclusively:
+      // converting back to Double can put that 5ms distance on either side.
+      let boundaryGuard = CMTime(value: 3, timescale: 600)
+      guard !boundaries.contains(where: {
+        $0.isNumeric && CMTimeCompare(CMTimeAbsoluteValue($0 - start), boundaryGuard) <= 0
+      })
       else { return nil }
       return start
     }
@@ -1113,6 +1119,10 @@ final class CIMosaicSpec {
 /// 圖層照 z 序（時間軸軌道由下而上）排好，馬賽克疊在圖層之上、
 /// 文字／浮水印 PNG 疊在最上——跟 FFmpeg 那條路同一個疊法
 final class CIExportInstruction: NSObject, AVVideoCompositionInstructionProtocol {
+  // Only preview instructions capture frames. Export/proxy compositors never
+  // enter the interactive cache, even when they run concurrently.
+  var scrubCapture: MCNativeScrubCache?
+  var scrubLayout: UInt64 = 0
   let timeRange: CMTimeRange
   let enablePostProcessing = false
   let containsTweening = true
@@ -1207,12 +1217,27 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
 
   /// 即時內容的世代號：疊加物/變形每次更新 +1。Metal 引擎靜止
   /// 降頻用它判斷「畫面有沒有東西變了」——沒變就不重繪（省電）
-  static var liveEpoch = 0
+  private static let epochLock = NSLock()
+  private static var _liveEpoch = 0
+  static var liveEpoch: Int {
+    epochLock.lock(); defer { epochLock.unlock() }
+    return _liveEpoch
+  }
+  private static func changeLiveEpoch() {
+    epochLock.lock()
+    _liveEpoch &+= 1
+    epochLock.unlock()
+    // Setter calls originate on the main channel. Do not retain a frame with
+    // yesterday's style above the freshly redrawn AVPlayer layer.
+    DispatchQueue.main.async {
+      PlayerHosts.shared.nativeScrubStyleChanged()
+    }
+  }
   private static var liveMosaics: [CIMosaicSpec]?
   static func setLiveMosaics(_ specs: [CIMosaicSpec]?) {
     ovLock.lock()
     liveMosaics = specs
-    liveEpoch &+= 1
+    changeLiveEpoch()
     ovLock.unlock()
   }
   static func currentLiveMosaics() -> [CIMosaicSpec]? {
@@ -1231,7 +1256,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
       liveOvs = Dictionary(
         xs.map { ($0.id, $0) }, uniquingKeysWith: { _, b in b })
     }
-    liveEpoch &+= 1
+    changeLiveEpoch()
     ovLock.unlock()
   }
   static func currentPreviewOverlays() -> [CIOverlaySpec] {
@@ -1259,7 +1284,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   static func setHiddenImageTracks(_ tracks: Set<Int>) {
     xfLock.lock()
     hiddenImageTracks = tracks
-    liveEpoch &+= 1
+    changeLiveEpoch()
     xfLock.unlock()
   }
   static func currentHiddenImageTracks() -> Set<Int> {
@@ -1271,7 +1296,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   static func setLiveXform(_ x: CompLiveXform?) {
     xfLock.lock()
     liveXf = x
-    liveEpoch &+= 1
+    changeLiveEpoch()
     xfLock.unlock()
   }
   static func currentLiveXform() -> CompLiveXform? {
@@ -1289,7 +1314,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
     ovLock.lock()
     liveOvs = Dictionary(
       xs.map { ($0.id, $0) }, uniquingKeysWith: { _, b in b })
-    liveEpoch &+= 1
+    changeLiveEpoch()
     ovLock.unlock()
   }
   static func currentLiveOvs() -> [String: CompLiveOv] {
@@ -1872,6 +1897,12 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         }
         let size = req.renderContext.size
         let t0 = req.compositionTime.seconds
+        let captureEpoch = Self.liveEpoch
+        func capturePreview(_ missing: Bool) {
+          guard self.liveComp, !missing, captureEpoch == Self.liveEpoch else { return }
+          ins.scrubCapture?.insert(dst, time: t0, epoch: captureEpoch,
+            layout: ins.scrubLayout, range: ins.timeRange, hdr: self.hdrOut)
+        }
         let frameMosaics = self.liveComp
           ? (Self.currentLiveMosaics() ?? ins.mosaics) : ins.mosaics
         if Self.stCIFrames + Self.stFastFrames < 3 {
@@ -1974,6 +2005,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             NSLog("[FastPath] 快路命中 %d 格", nFast)
           }
           self.tagColors(dst)
+          capturePreview(false)
           if !scrub {
             Self.noteLuma(
               dst, t: t0, drawn: 1, missing: false,
@@ -2220,6 +2252,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         // （上：疊加物區塊——缺格重播也會走到，樣式永遠是當下版）
         self.ctx.render(out, to: dst, bounds: canvasRect, colorSpace: self.outCS)
         self.tagColors(dst)
+        capturePreview(missing)
         // HDR 管線探針：整個 App 生命週期只記第一格（見 hdrProbe）
         if self.hdrOut, let ps = probeSrc {
           Self.slowLock.lock()
@@ -2767,10 +2800,43 @@ final class MCFrameGeneratorPool {
   }
 }
 
+/// Cooperative pause for editor background proxies only. Waiting releases this
+/// lock; AV reader/writer state and already encoded samples remain intact.
+final class MCInteractivePrepGate {
+  private let condition = NSCondition()
+  private var interactive = false
+  private var pausedAt: CFTimeInterval?
+  private var accumulatedPause: CFTimeInterval = 0
+  var isInteractive: Bool {
+    condition.lock(); defer { condition.unlock() }; return interactive
+  }
+  func setInteractive(_ value: Bool) {
+    condition.lock(); defer { condition.unlock() }
+    guard interactive != value else { return }
+    let now = CACurrentMediaTime()
+    if value { pausedAt = now }
+    else if let start = pausedAt { accumulatedPause += now - start; pausedAt = nil }
+    interactive = value
+    condition.broadcast()
+  }
+  var pausedDuration: CFTimeInterval {
+    condition.lock(); defer { condition.unlock() }
+    return accumulatedPause + (pausedAt.map { CACurrentMediaTime() - $0 } ?? 0)
+  }
+  func wait(cancelled: AtomicFlag) -> Bool {
+    condition.lock(); defer { condition.unlock() }
+    while interactive && !cancelled.isSet {
+      _ = condition.wait(until: Date(timeIntervalSinceNow: 0.1))
+    }
+    return !cancelled.isSet
+  }
+}
+
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private let frameGenerators = MCFrameGeneratorPool()
   private let frameQueue = DispatchQueue(label: "markcut.frames")
+  private let prepInteractiveGate = MCInteractivePrepGate()
 
   private func releaseFrameGenerators() {
     // copyCGImage 是同步工作，不能在別條執行緒同時拆 generator。
@@ -2779,6 +2845,7 @@ final class MCFrameGeneratorPool {
   }
   @objc private func frameResourcesNeedRelease(_ notification: Notification) {
     releaseFrameGenerators()
+    PlayerHosts.shared.invalidateNativeScrub()
   }
 
   override func application(
@@ -2791,11 +2858,16 @@ final class MCFrameGeneratorPool {
     NotificationCenter.default.addObserver(self,
       selector: #selector(frameResourcesNeedRelease(_:)),
       name: UIApplication.didEnterBackgroundNotification, object: nil)
+    NotificationCenter.default.addObserver(self,
+      selector: #selector(frameResourcesNeedRelease(_:)),
+      name: UIApplication.willEnterForegroundNotification, object: nil)
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
   /// 正在跑的轉檔工作（取消用）。同時可能有兩支在轉，用 job 編號分開
   private var prepSessions: [Int: AVAssetExportSession] = [:]
+  private var prepYieldSessions: Set<Int> = []
+  private var prepDeferredSessions: Set<Int> = []
 
   /// 一趟轉檔（reader/writer：工作檔、HDR 代理、密關鍵幀都走它）的
   /// 取消把手。prepSessions 只管兩段式退路的 ExportSession，主路徑
@@ -3009,6 +3081,12 @@ final class MCFrameGeneratorPool {
             channel.invokeMethod("compVisible", arguments: nil)
           }
         }
+        PlayerHosts.shared.onNativeScrubInvalidated = { [weak p] in
+          p?.invalidateNativeScrub()
+        }
+        PlayerHosts.shared.onNativeScrubStyleChanged = { [weak p] in
+          p?.nativeStyleChanged()
+        }
         result([
           "textureId": p.textureId,
           "duration": p.duration,
@@ -3022,6 +3100,7 @@ final class MCFrameGeneratorPool {
           // 把 Flutter 版藏起來、之後用 setOverlays 更新
           "wmLive": p.wmLive,
           "opaqueSourcePaths": p.opaqueSourcePaths.sorted(),
+          "nativeScrub": p.nativeScrubSupported,
         ])
       case "mbuild":
         // Metal 預覽引擎（滑動/暫停接管）：換佈局。組不了回 false，
@@ -3263,6 +3342,17 @@ final class MCFrameGeneratorPool {
       case "takeover":
         self.comp?.setTakeover((call.arguments as? Bool) ?? false)
         result(nil)
+      case "scrub":
+        guard let a = call.arguments as? [String: Any], let p = self.comp else {
+          result(["displayed": false, "cacheHit": false]); return
+        }
+        p.scrub((a["sec"] as? Double) ?? 0,
+          exact: (a["exact"] as? Bool) ?? false,
+          toleranceMs: a["toleranceMs"] as? Int ?? 150, reply: result)
+      case "endScrub":
+        guard let p = self.comp else { result(false); return }
+        let seconds = (call.arguments as? [String: Any])?["sec"] as? Double
+        p.endScrub(at: seconds) { result($0) }
       case "seek":
         if let a = call.arguments as? [String: Any] {
           let wait = a["awaitCompletion"] as? Bool ?? false
@@ -4809,6 +4899,19 @@ final class MCFrameGeneratorPool {
       switch call.method {
       case "available":
         result(true)
+      case "setInteractive":
+        let args = call.arguments as? [String: Any]
+        let busy = args?["interactive"] as? Bool ?? false
+        self.prepInteractiveGate.setInteractive(busy)
+        if busy {
+          // AVAssetExportSession has no sample-boundary pause API. Only its
+          // editor-proxy fallback is deferred; real exports are not in this set.
+          for job in self.prepYieldSessions {
+            self.prepDeferredSessions.insert(job)
+            self.prepSessions[job]?.cancelExport()
+          }
+        }
+        result(nil)
       case "cancel":
         for s in self.prepSessions.values { s.cancelExport() }
         // 一趟轉檔／HDR 代理／密關鍵幀（reader/writer）：見 prepCancels。
@@ -4831,6 +4934,7 @@ final class MCFrameGeneratorPool {
         // 注意 HDR 代理那條沒有「更保守的參數」可退（下面 hdr 分支直接
         // return），safe 對它沒有意義——那條的重試就是原封不動再跑一次
         let safe = args["safe"] as? Bool ?? false
+        let interactiveYield = args["interactiveYield"] as? Bool ?? false
         // HDR 直通代理：HLG 10-bit、不映射、密關鍵幀。
         // 失敗就回 nil（呼叫端照播原檔），不走兩段式退路——
         // 退路轉出來是 SDR，對 HDR 預覽是錯的畫面
@@ -4838,7 +4942,7 @@ final class MCFrameGeneratorPool {
           self.transcodeWorkFile(
             src: src, dest: dest, maxShortSide: maxShortSide,
             channel: channel, label: "HDR 代理一趟轉好", job: job,
-            hdrPass: true
+            hdrPass: true, interactiveYield: interactiveYield
           ) { err in result(err == nil ? dest : nil) }
           return
         }
@@ -4864,8 +4968,12 @@ final class MCFrameGeneratorPool {
           DispatchQueue.main.async {
             self.makeWorkFile(
               src: src, dest: dest, maxShortSide: maxShortSide,
-              channel: channel, job: job, safe: safe
-            ) { path in result(path) }
+              channel: channel, job: job, safe: safe,
+              interactiveYield: interactiveYield
+            ) { path in
+              if path == AppDelegate.prepDeferredErr { result(["status": "deferred"]) }
+              else { result(path) }
+            }
           }
         }
       case "probe":
@@ -4934,11 +5042,12 @@ final class MCFrameGeneratorPool {
   /// 看到它就直接收工（回 nil，呼叫端照播原檔），不再往下一段退路走——
   /// 退路照跑的話「先不要等」等於沒按
   private static let prepCancelledErr = "已取消"
+  private static let prepDeferredErr = "__markcut_preview_deferred__"
 
   private func makeWorkFile(
     src: String, dest: String, maxShortSide: Int,
     channel: FlutterMethodChannel, job: Int, safe: Bool = false,
-    done: @escaping (String?) -> Void
+    interactiveYield: Bool = false, done: @escaping (String?) -> Void
   ) {
     let cancelled = AppDelegate.prepCancelledErr
     /// 最後一段退路：系統預設尺寸轉一次，再重排關鍵幀
@@ -4951,10 +5060,12 @@ final class MCFrameGeneratorPool {
       }
       self.exportOnce(
         src: src, dest: dest, maxShortSide: maxShortSide,
-        useComposition: false, channel: channel, job: job
+        useComposition: false, channel: channel, job: job, interactiveYield: interactiveYield
       ) { e2 in
+        if e2 == AppDelegate.prepDeferredErr { done(AppDelegate.prepDeferredErr); return }
         if e2 == nil {
-          self.denseKeyframes(dest, channel: channel, job: job) { _ in
+          self.denseKeyframes(dest, channel: channel, job: job,
+                              interactiveYield: interactiveYield) { _ in
             done(dest)
           }
         } else {
@@ -4978,7 +5089,7 @@ final class MCFrameGeneratorPool {
     // 時間重映射過的軌有可能讓合成器讀不動，那種素材更需要工作檔
     transcodeWorkFile(
       src: src, dest: dest, maxShortSide: maxShortSide, channel: channel,
-      label: "工作檔一趟轉好", job: job
+      label: "工作檔一趟轉好", job: job, interactiveYield: interactiveYield
     ) { [weak self] err in
       if err == nil {
         done(dest)
@@ -4992,10 +5103,12 @@ final class MCFrameGeneratorPool {
         "note", arguments: "一趟轉檔沒成功（\(err!)），改用兩段式")
       self?.exportOnce(
         src: src, dest: dest, maxShortSide: maxShortSide,
-        useComposition: true, channel: channel, job: job
+        useComposition: true, channel: channel, job: job, interactiveYield: interactiveYield
       ) { e1 in
+        if e1 == AppDelegate.prepDeferredErr { done(AppDelegate.prepDeferredErr); return }
         if e1 == nil {
-          self?.denseKeyframes(dest, channel: channel, job: job) { _ in done(dest) }
+          self?.denseKeyframes(dest, channel: channel, job: job,
+                               interactiveYield: interactiveYield) { _ in done(dest) }
           return
         }
         if e1 == cancelled {
@@ -5026,6 +5139,7 @@ final class MCFrameGeneratorPool {
     src: String, dest: String, maxShortSide: Int,
     channel: FlutterMethodChannel, label: String, job: Int = 0,
     hdrPass: Bool = false,
+    interactiveYield: Bool = false,
     done: @escaping (String?) -> Void
   ) {
     // 這一趟寫自己的暫存檔，成功才換到 dest。
@@ -5278,12 +5392,18 @@ final class MCFrameGeneratorPool {
     // append 失敗要記下來：不記的話 writer 仍可能收在 completed，
     // 於是一份「只有前半段」的檔會被當成功交出去，素材默默變短
     let failed = AtomicFlag()
+    let cancelled = AtomicFlag()
+    let gate = prepInteractiveGate
+    let pauseBaseline = gate.pausedDuration
     let t0 = CACurrentMediaTime()
     var lastReport: CFTimeInterval = 0
 
     group.enter()
     vIn.requestMediaDataWhenReady(on: vq) {
       while vIn.isReadyForMoreMediaData {
+        if interactiveYield, !gate.wait(cancelled: cancelled) {
+          vIn.markAsFinished(); group.leave(); return
+        }
         if let sb = vOut.copyNextSampleBuffer() {
           if !vIn.append(sb) {
             failed.set()
@@ -5316,6 +5436,9 @@ final class MCFrameGeneratorPool {
       group.enter()
       aIn.requestMediaDataWhenReady(on: aq) {
         while aIn.isReadyForMoreMediaData {
+          if interactiveYield, !gate.wait(cancelled: cancelled) {
+            aIn.markAsFinished(); group.leave(); return
+          }
           if let sb = aOut.copyNextSampleBuffer() {
             if !aIn.append(sb) {
               failed.set()
@@ -5340,19 +5463,19 @@ final class MCFrameGeneratorPool {
     // 之後才到的那一點，是唯一安全的地方。
     // reader.cancelReading() 任何執行緒都能叫，叫完 copyNextSampleBuffer
     // 就回 nil，兩個迴圈自己 markAsFinished + leave，notify 隨即到
-    let cancelled = AtomicFlag()
     // 背景保護（見 BgTask）：切到背景硬體編碼才不會被 suspend 卡住
     let bg = BgTask("工作檔轉檔")
     // 取消把手（見 prepCancels）：這裡（主執行緒）登記，finish 回主
-    // 執行緒註銷。timeoutItem 也在 finish 裡收掉
+    // 執行緒註銷。watchdog 也在 finish 裡收掉
     prepCancelSeq += 1
     let cancelKey = prepCancelSeq
-    var timeoutItem: DispatchWorkItem?
+    var timeoutTimer: DispatchSourceTimer?
     let finish: (String?) -> Void = { [weak self] err in
       guard replied.setIfClear() else { return }
       DispatchQueue.main.async {
-        timeoutItem?.cancel()
-        timeoutItem = nil
+        timeoutTimer?.setEventHandler {}
+        timeoutTimer?.cancel()
+        timeoutTimer = nil
         self?.prepCancels.removeValue(forKey: cancelKey)
         bg.end()
         // 失敗／取消：只清自己的暫存檔，不要碰 dest——那裡可能已經是
@@ -5374,14 +5497,18 @@ final class MCFrameGeneratorPool {
     // 用 DispatchWorkItem、而且只弱抓 reader/writer：以前的 closure 強抓
     // 著它們排在主佇列上，轉完之後還要等到期（30 分鐘片＝90 分鐘）才放
     let timeoutSec = max(120.0, asset.duration.seconds * 3.0)
-    let item = DispatchWorkItem { [weak reader] in
+    let timer = DispatchSource.makeTimerSource(queue: .main)
+    timer.schedule(deadline: .now() + 1, repeating: 1)
+    timer.setEventHandler { [weak reader] in
       guard !replied.isSet else { return }
+      let paused = interactiveYield ? max(0, gate.pausedDuration - pauseBaseline) : 0
+      guard CACurrentMediaTime() - t0 - paused >= timeoutSec else { return }
       cancelled.set()
       reader?.cancelReading()
       finish("逾時")
     }
-    timeoutItem = item
-    DispatchQueue.main.asyncAfter(deadline: .now() + timeoutSec, execute: item)
+    timeoutTimer = timer
+    timer.resume()
 
     group.notify(queue: vq) {
       // 兩個 append 迴圈都收工了：writer 的去留在這裡一次決定，
@@ -5448,6 +5575,7 @@ final class MCFrameGeneratorPool {
   /// 已經是工作檔了，只重排關鍵幀（原地換掉）。兩段式那條路才會用到
   private func denseKeyframes(
     _ path: String, channel: FlutterMethodChannel, job: Int,
+    interactiveYield: Bool = false,
     done: @escaping (Bool) -> Void
   ) {
     let tmp = path + ".dense.mp4"
@@ -5455,7 +5583,7 @@ final class MCFrameGeneratorPool {
     // 的進度條就卡在上一段的 100% 直到重編完
     transcodeWorkFile(
       src: path, dest: tmp, maxShortSide: 0, channel: channel,
-      label: "密關鍵幀重編完成", job: job
+      label: "密關鍵幀重編完成", job: job, interactiveYield: interactiveYield
     ) { err in
       guard err == nil else {
         // 取消不是「重編失敗」：把 prepCancelledErr 塞進提示會變成
@@ -5571,8 +5699,12 @@ final class MCFrameGeneratorPool {
   private func exportOnce(
     src: String, dest: String, maxShortSide: Int, useComposition: Bool,
     channel: FlutterMethodChannel, job: Int,
+    interactiveYield: Bool = false,
     done: @escaping (String?) -> Void
   ) {
+    if interactiveYield && prepInteractiveGate.isInteractive {
+      done(AppDelegate.prepDeferredErr); return
+    }
     let asset = AVURLAsset(url: URL(fileURLWithPath: src))
     guard let track = asset.tracks(withMediaType: .video).first else {
       done("沒有視訊軌")  // 純音訊不需要工作檔
@@ -5659,6 +5791,7 @@ final class MCFrameGeneratorPool {
     }
 
     prepSessions[job] = session
+    if interactiveYield { prepYieldSessions.insert(job) }
     // 背景保護（見 BgTask）：切到背景硬體編碼才不會被 suspend 卡住
     let bg = BgTask("工作檔轉檔（兩段式）")
     // 進度用輪詢的：AVAssetExportSession 沒有回呼式的進度。
@@ -5675,6 +5808,12 @@ final class MCFrameGeneratorPool {
         timer.invalidate()
         bg.end()
         self?.prepSessions.removeValue(forKey: job)
+        self?.prepYieldSessions.remove(job)
+        let deferred = self?.prepDeferredSessions.remove(job) != nil
+        if deferred {
+          try? FileManager.default.removeItem(atPath: dest)
+          done(AppDelegate.prepDeferredErr); return
+        }
         if session.status == .completed,
           FileManager.default.fileExists(atPath: dest)
         {
@@ -5714,7 +5853,347 @@ final class MCFrameGeneratorPool {
 ///
 /// AVPlayerLayer 是系統自己的影片圖層，跟相簿播放走同一條路：零複製、
 /// 影格節奏由系統排程
+/// One composition's final, color-tagged frames. Retaining CVPixelBuffers keeps
+/// their IOSurface and color attachments; no JPEG, CPU readback or extra decoder.
+/// The lock protects capture on AVFoundation's queue versus main-thread seeks.
+final class MCNativeScrubCache {
+  struct Frame {
+    let buffer: CVPixelBuffer
+    let time: Double
+    let epoch: Int
+    let layout: UInt64
+    let range: CMTimeRange
+    let hdr: Bool
+    let bytes: Int
+  }
+  private let lock = NSLock()
+  private var frames: [Frame] = []
+  private var active = true
+  private var capturing = true
+  private var layout: UInt64 = 0
+  private var presentation: UInt64 = 0
+  private var center: Double?
+  private var lastEpoch = -1
+  private var storedBytes = 0
+  private var wantsFrames = false
+  private var noticeTolerance = 0.15
+  private var pendingNotice: Frame?
+  private var noticeScheduled = false
+  let budget: Int
+  let capacity: Int
+  var onFrame: ((Frame) -> Void)? // set once, on the main thread, before build
+  private var hits = 0
+  private var misses = 0
+  private var evictions = 0
+
+  init(budget: Int = 48 * 1024 * 1024, capacity: Int = 32) {
+    self.budget = max(1, budget)
+    self.capacity = max(1, capacity)
+  }
+  @discardableResult func nextLayout() -> UInt64 {
+    lock.lock(); defer { lock.unlock() }
+    layout &+= 1
+    presentation &+= 1
+    frames.removeAll(); storedBytes = 0
+    return layout
+  }
+  func removeAll(dispose: Bool = false, suspend: Bool = false) {
+    lock.lock(); defer { lock.unlock() }
+    frames.removeAll(); storedBytes = 0; center = nil
+    presentation &+= 1
+    wantsFrames = false; pendingNotice = nil
+    if suspend { capturing = false }
+    if dispose { active = false; onFrame = nil }
+  }
+  func resumeCapturing() {
+    lock.lock(); defer { lock.unlock() }; if active { capturing = true }
+  }
+  @discardableResult func beginPresentation(wantsFrames: Bool = true,
+    target: Double? = nil, tolerance: Double = 0.15) -> UInt64 {
+    lock.lock(); defer { lock.unlock() }
+    self.wantsFrames = wantsFrames; pendingNotice = nil
+    if let target = target { center = target }
+    noticeTolerance = tolerance
+    if !wantsFrames { center = nil }
+    presentation &+= 1; return presentation
+  }
+  func finishPresentation() {
+    lock.lock(); defer { lock.unlock() }
+    wantsFrames = false; pendingNotice = nil
+  }
+  private func deliverLatestNotice() {
+    lock.lock()
+    let frame = wantsFrames ? pendingNotice : nil
+    pendingNotice = nil; noticeScheduled = false
+    let notify = onFrame
+    lock.unlock()
+    if let frame = frame { notify?(frame) }
+  }
+  func isCurrent(_ frame: Frame, presentation expected: UInt64? = nil) -> Bool {
+    lock.lock(); defer { lock.unlock() }
+    return active && (expected == nil || expected == presentation)
+      && frame.layout == layout && frame.epoch == CIExportCompositor.liveEpoch
+  }
+  static func accepts(time: Double, target: Double, tolerance: Double,
+                      range: CMTimeRange) -> Bool {
+    guard time.isFinite, target.isFinite, tolerance.isFinite else { return false }
+    // A nearby cached frame must not cross a structural clip boundary.
+    return abs(time - target) <= max(0.001, tolerance)
+      && target >= range.start.seconds - 0.0001
+      && target < range.end.seconds - 0.0001
+  }
+  func nearest(_ target: Double, tolerance: Double) -> Frame? {
+    lock.lock(); defer { lock.unlock() }
+    guard active, target.isFinite else { return nil }
+    center = target
+    let epoch = CIExportCompositor.liveEpoch
+    if lastEpoch != epoch { frames.removeAll(); storedBytes = 0; lastEpoch = epoch }
+    guard let index = frames.indices.filter({
+      Self.accepts(time: frames[$0].time, target: target, tolerance: tolerance,
+                   range: frames[$0].range)
+    }).min(by: { abs(frames[$0].time - target) < abs(frames[$1].time - target) })
+    else { misses += 1; return nil }
+    let frame = frames.remove(at: index)
+    frames.append(frame) // recently displayed frames survive eviction
+    hits += 1
+    return frame
+  }
+  func insert(_ buffer: CVPixelBuffer, time: Double, epoch: Int, layout: UInt64,
+              range: CMTimeRange, hdr: Bool) {
+    guard time.isFinite else { return }
+    // GetDataSize is not reliable for every IOSurface-backed buffer. Sum the
+    // actual plane strides, including padding, rather than width*height guesses.
+    let planes = CVPixelBufferGetPlaneCount(buffer)
+    let bytes = planes == 0
+      ? CVPixelBufferGetBytesPerRow(buffer) * CVPixelBufferGetHeight(buffer)
+      : (0..<planes).reduce(0) { $0 + CVPixelBufferGetBytesPerRowOfPlane(buffer, $1)
+          * CVPixelBufferGetHeightOfPlane(buffer, $1) }
+    lock.lock()
+    guard active, capturing, layout == self.layout, epoch == CIExportCompositor.liveEpoch,
+      bytes > 0, bytes <= budget else { lock.unlock(); return }
+    if lastEpoch != epoch { frames.removeAll(); storedBytes = 0; lastEpoch = epoch }
+    let frame = Frame(buffer: buffer, time: time, epoch: epoch, layout: layout,
+                      range: range, hdr: hdr, bytes: bytes)
+    if let index = frames.firstIndex(where: { abs($0.time - time) < 0.001 }) {
+      storedBytes -= frames.remove(at: index).bytes
+    }
+    // Natural playback/preroll warms the neighborhood; never issue speculative
+    // seeks. Keep a four-second window and a separate hard byte/count ceiling.
+    let around = center ?? time
+    frames.removeAll { old in
+      if abs(old.time - around) > 2 { storedBytes -= old.bytes; evictions += 1; return true }
+      return false
+    }
+    frames.append(frame); storedBytes += bytes
+    while storedBytes > budget || frames.count > capacity {
+      storedBytes -= frames.removeFirst().bytes; evictions += 1
+    }
+    // One pending notice, never one main-queue closure retaining each video
+    // frame. A busy UI cannot bypass the cache budget by queuing CVPixelBuffers.
+    var schedule = false
+    if wantsFrames, let target = center,
+      Self.accepts(time: time, target: target, tolerance: noticeTolerance, range: range) {
+      if pendingNotice == nil || abs(time - target) < abs(pendingNotice!.time - target) {
+        pendingNotice = frame
+      }
+      if !noticeScheduled { noticeScheduled = true; schedule = true }
+    }
+    lock.unlock()
+    if schedule { DispatchQueue.main.async { [weak self] in self?.deliverLatestNotice() } }
+  }
+  func stats() -> [String: Any] {
+    lock.lock(); defer { lock.unlock() }
+    return ["frames": frames.count, "bytes": storedBytes, "budgetBytes": budget,
+            "capacity": capacity, "hits": hits, "misses": misses,
+            "evictions": evictions, "warming": "natural-playback-and-preroll"]
+  }
+}
+
+/// Main-thread receipt: exact settling needs both an AVPlayer seek completion
+/// and a genuinely presented drawable. New requests complete old waiters false.
+final class MCNativeScrubReceipt {
+  private(set) var generation: UInt64 = 0
+  private var reply: (([String: Any]) -> Void)?
+  private var exact = false
+  private var seekOK = false
+  private var presented: (time: Double, hit: Bool)?
+  var isPending: Bool { reply != nil }
+  func invalidatePresentation() { presented = nil }
+  func acceptsPresentation(_ id: UInt64, presentation: UInt64,
+                           currentPresentation: UInt64?) -> Bool {
+    id == generation && currentPresentation == presentation
+  }
+  @discardableResult func begin(exact: Bool, reply: @escaping ([String: Any]) -> Void) -> UInt64 {
+    cancel()
+    self.exact = exact; self.reply = reply
+    return generation
+  }
+  func cancel() {
+    generation &+= 1
+    let old = reply; reply = nil; seekOK = false; presented = nil
+    old?(["displayed": false, "cacheHit": false])
+  }
+  func didSeek(_ id: UInt64, ok: Bool) {
+    guard id == generation else { return }
+    if !ok { cancel(); return }
+    seekOK = true; finishIfReady()
+  }
+  func didPresent(_ id: UInt64, time: Double, cacheHit: Bool) {
+    guard id == generation, time.isFinite else { return }
+    presented = (time, cacheHit); finishIfReady()
+  }
+  private func finishIfReady() {
+    guard let frame = presented, !exact || seekOK, let done = reply else { return }
+    reply = nil
+    done(["displayed": true, "actualSeconds": frame.time, "cacheHit": frame.hit])
+  }
+}
+
+/// A pause/new gesture cancels an asynchronous play-after-alignment intent
+/// without destroying an unrelated in-flight scrub receipt.
+final class MCNativePlaybackIntent {
+  private var generation: UInt64 = 0
+  @discardableResult func replace() -> UInt64 { generation &+= 1; return generation }
+  func isCurrent(_ token: UInt64) -> Bool { token == generation }
+}
+
+/// Display only: effects already ran through CIExportCompositor. A tagged HLG
+/// output remains HLG into a packed ten-bit layer, avoiding an undocumented
+/// linear-HLG normalization/SDR-white multiplier. Apple's color-space display
+/// path handles transfer/OOTF/tone mapping; this class has no effect shaders.
+final class MCNativeScrubPlane {
+  let layer = CAMetalLayer()
+  private let device: MTLDevice?
+  private let commands: MTLCommandQueue?
+  private let context: CIContext?
+  private let queue = DispatchQueue(label: "markcut.scrub.present", qos: .userInteractive)
+  private let lock = NSLock()
+  private var generation: UInt64 = 0
+  private var hdr: Bool?
+  private var displayedFrame: MCNativeScrubCache.Frame?
+  private var displayedValidity: (() -> Bool)?
+  private(set) var visible = false
+  static var supported: Bool {
+    if #available(iOS 16.0, *) { return MTLCreateSystemDefaultDevice() != nil }
+    return false
+  }
+  static func canPresent(in view: UIView) -> Bool {
+    guard let window = view.window, !view.bounds.isEmpty,
+      view.convert(view.bounds, to: window).intersects(window.bounds) else { return false }
+    var ancestor: UIView? = view
+    while let current = ancestor {
+      if current.isHidden || current.alpha <= 0.01 { return false }
+      ancestor = current.superview
+    }
+    return true
+  }
+  init() {
+    let gpu = MTLCreateSystemDefaultDevice()
+    device = gpu; commands = gpu?.makeCommandQueue()
+    context = gpu.map { CIContext(mtlDevice: $0, options: [
+      .cacheIntermediates: false, .workingFormat: CIFormat.RGBAh,
+      .workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!,
+    ]) }
+    layer.device = gpu; layer.framebufferOnly = false
+    layer.isOpaque = true; layer.isHidden = true; layer.zPosition = 2
+    layer.presentsWithTransaction = true
+    layer.maximumDrawableCount = 2
+  }
+  func resize(_ bounds: CGRect, scale: CGFloat) {
+    guard layer.frame != bounds || layer.contentsScale != scale else { return }
+    let frame = displayedFrame
+    let validity = displayedValidity
+    invalidate()
+    layer.frame = bounds; layer.contentsScale = scale
+    layer.drawableSize = CGSize(width: max(1, (bounds.width * scale).rounded()),
+                                height: max(1, (bounds.height * scale).rounded()))
+    if let frame = frame, let validity = validity, validity() {
+      present(frame, valid: validity) { _ in }
+    }
+  }
+  func invalidate() {
+    lock.lock(); generation &+= 1; lock.unlock()
+    visible = false; layer.isHidden = true
+    displayedFrame = nil; displayedValidity = nil
+  }
+  private func current(_ id: UInt64) -> Bool {
+    lock.lock(); defer { lock.unlock() }; return id == generation
+  }
+  static func encode(_ frame: MCNativeScrubCache.Frame, to texture: MTLTexture,
+                     command: MTLCommandBuffer, context: CIContext) throws {
+    let rect = CGRect(x: 0, y: 0, width: texture.width, height: texture.height)
+    var image = CIImage(cvPixelBuffer: frame.buffer, options: [.toneMapHDRtoSDR: false])
+    let factor = min(rect.width / image.extent.width, rect.height / image.extent.height)
+    image = image.transformed(by: CGAffineTransform(scaleX: factor, y: factor))
+    image = image.transformed(by: CGAffineTransform(
+      translationX: (rect.width - image.extent.width) / 2,
+      y: (rect.height - image.extent.height) / 2))
+      .composited(over: CIImage(color: .black).cropped(to: rect))
+    let destination = CIRenderDestination(mtlTexture: texture, commandBuffer: command)
+    destination.colorSpace = CGColorSpace(name: frame.hdr ? CGColorSpace.itur_2100_HLG
+                                                         : CGColorSpace.itur_709)
+    destination.isFlipped = true // Metal drawable origin is top-left
+    _ = try context.startTask(toRender: image, from: rect, to: destination, at: .zero)
+  }
+  func present(_ frame: MCNativeScrubCache.Frame,
+               valid: @escaping () -> Bool, done: @escaping (Bool) -> Void) {
+    let replied = AtomicFlag()
+    let finish: (Bool) -> Void = { ok in
+      if replied.setIfClear() { done(ok) }
+    }
+    guard Self.supported, layer.bounds.width > 0, layer.bounds.height > 0,
+      let commands = commands, let context = context else { finish(false); return }
+    if hdr != frame.hdr {
+      invalidate(); hdr = frame.hdr
+      layer.pixelFormat = frame.hdr ? .bgr10a2Unorm : .bgra8Unorm
+      layer.colorspace = CGColorSpace(name: frame.hdr ? CGColorSpace.itur_2100_HLG
+                                                        : CGColorSpace.itur_709)
+      if #available(iOS 16.0, *) {
+        layer.wantsExtendedDynamicRangeContent = frame.hdr
+        layer.edrMetadata = frame.hdr && CAEDRMetadata.isAvailable ? .hlg : nil
+      }
+    }
+    lock.lock(); generation &+= 1; let id = generation; lock.unlock()
+    queue.async { [weak self] in
+      guard let self = self, self.current(id), valid(),
+        let drawable = self.layer.nextDrawable(), let command = commands.makeCommandBuffer()
+      else { DispatchQueue.main.async { finish(false) }; return }
+      do {
+        try Self.encode(frame, to: drawable.texture, command: command, context: context)
+      } catch {
+        DispatchQueue.main.async { finish(false) }; return
+      }
+      guard self.current(id), valid() else { DispatchQueue.main.async { finish(false) }; return }
+      drawable.addPresentedHandler { [weak self] drawable in
+        DispatchQueue.main.async {
+          guard let self = self, self.current(id), valid(), drawable.presentedTime > 0
+          else { finish(false); return }
+          self.displayedFrame = frame; self.displayedValidity = valid
+          finish(true)
+        }
+      }
+      command.addCompletedHandler { buffer in
+        if buffer.status == .error { DispatchQueue.main.async { finish(false) } }
+      }
+      // Commit GPU work first, then expose and present the drawable in the same
+      // CA transaction. An initially hidden layer otherwise has no visible
+      // presentation, so its callback cannot be used as a display receipt.
+      command.commit()
+      command.waitUntilScheduled()
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self, self.current(id), valid(), command.status != .error
+        else { finish(false); return }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        self.visible = true; self.layer.isHidden = false
+        drawable.present()
+        CATransaction.commit()
+      }
+    }
+  }
+}
+
 final class PlayerHostView: UIView {
+  let scrubPlane = MCNativeScrubPlane()
   // 疊兩層：換播放器時新的先掛背面，第一格解出來（isReadyForDisplay）
   // 才翻到前面——舊畫面全程在前面撐著，換手過程沒有黑幕
   private let layerA = AVPlayerLayer()
@@ -5729,6 +6208,7 @@ final class PlayerHostView: UIView {
       layer.addSublayer(l)
     }
     layerA.zPosition = 1
+    layer.addSublayer(scrubPlane.layer)
   }
 
   required init?(coder: NSCoder) { fatalError("init(coder:) 不支援") }
@@ -5740,6 +6220,7 @@ final class PlayerHostView: UIView {
     CATransaction.setDisableActions(true)
     layerA.frame = bounds
     layerB.frame = bounds
+    scrubPlane.resize(bounds, scale: window?.screen.scale ?? UIScreen.main.scale)
     CATransaction.commit()
   }
 
@@ -5767,6 +6248,38 @@ final class PlayerHosts: NSObject {
   static let shared = PlayerHosts()
   private let views = NSHashTable<PlayerHostView>.weakObjects()
   private(set) var current: AVPlayer?
+  var onNativeScrubInvalidated: (() -> Void)?
+  var onNativeScrubStyleChanged: (() -> Void)?
+
+  func nativeScrubStyleChanged() { onNativeScrubStyleChanged?() }
+
+  func invalidateNativeScrub() {
+    hideNativeScrub()
+    onNativeScrubInvalidated?()
+  }
+  func hideNativeScrub() {
+    CATransaction.begin(); CATransaction.setDisableActions(true)
+    for v in views.allObjects { v.scrubPlane.invalidate() }
+    CATransaction.commit()
+  }
+  func presentNativeScrub(_ frame: MCNativeScrubCache.Frame, player: AVPlayer,
+                          cache: MCNativeScrubCache, presentation: UInt64,
+                          done: @escaping (Bool) -> Void) {
+    guard current === player else { done(false); return }
+    let hosts = views.allObjects.filter { MCNativeScrubPlane.canPresent(in: $0) }
+    guard !hosts.isEmpty else { done(false); return }
+    var remaining = hosts.count
+    var replied = false
+    for host in hosts {
+      host.scrubPlane.present(frame,
+        valid: { cache.isCurrent(frame, presentation: presentation) }) { ok in
+        remaining -= 1
+        // A covered secondary host may never present. The first actually
+        // presented, visible surface is sufficient; it cannot be vetoed later.
+        if !replied && (ok || remaining == 0) { replied = true; done(ok) }
+      }
+    }
+  }
 
   /// 進行中的換手：世代編號＋觀察者。新一輪換手直接作廢上一輪
   ///（連按兩下重烘時，只有最後一顆播放器算數）
@@ -5830,6 +6343,7 @@ final class PlayerHosts: NSObject {
   /// [whenVisible] 新畫面上檔（或保底逾時）後呼叫——舊播放器
   /// 留到這一刻才收，收早了圖層還指著它就黑了
   func use(_ p: AVPlayer?, whenVisible: (() -> Void)? = nil) {
+    invalidateNativeScrub()
     gen += 1
     let g = gen
     pendingObs.removeAll()
@@ -6052,6 +6566,173 @@ final class CompPlayer: NSObject, FlutterTexture {
 
   /// 讓 AVPlayerLayer 的 PlatformView 拿得到（見 PlayerHostView）
   let player = AVPlayer()
+  private let nativeScrubCache = MCNativeScrubCache()
+  private let nativeScrubReceipt = MCNativeScrubReceipt()
+  private let nativePlayIntent = MCNativePlaybackIntent()
+  private struct NativeGoal {
+    let id: UInt64
+    let presentation: UInt64
+    let target: Double
+    let tolerance: Double
+    let started: CFTimeInterval
+    var rendering = false
+  }
+  private var nativeGoal: NativeGoal?
+  private var nativePresentedTime: Double?
+  private var nativeRequestedTarget: Double?
+  private(set) var nativeScrubSupported = false
+  private var nativePresentedCount = 0
+  private var nativeFailedCount = 0
+  private var nativePresentMs: [Int] = []
+  private var nativeLastPresentedTime: Double?
+  private var nativeStyleRedrawArmed = false
+  private var nativeStylePresentation: UInt64?
+
+  /// The native path samples the composition's 30 fps time grid. Ceil keeps a
+  /// target on an effect/clip boundary from returning the preceding frame.
+  static func nativeFrameTarget(_ seconds: Double, duration: Double) -> Double {
+    guard seconds.isFinite else { return 0 }
+    let last = duration > 0 ? max(0, floor((duration - 0.0001) * 30) / 30) : 0
+    return min(last, max(0, ceil(seconds * 30 - 0.000001) / 30))
+  }
+  func invalidateNativeScrub() {
+    nativePlayIntent.replace()
+    nativeGoal = nil; nativePresentedTime = nil; nativeRequestedTarget = nil
+    nativeStylePresentation = nil
+    nativeScrubReceipt.cancel()
+    nativeScrubCache.removeAll(suspend: true)
+  }
+  func nativeStyleChanged() {
+    guard nativeScrubSupported, PlayerHosts.shared.current === player else { return }
+    nativeScrubCache.removeAll()
+    nativeScrubCache.resumeCapturing()
+    let previousGoal = nativeGoal
+    guard let time = previousGoal?.target ?? nativeRequestedTarget ?? nativePresentedTime,
+      player.rate == 0, previousGoal != nil || nativePresentedTime != nil else {
+      nativeGoal = nil; nativeScrubReceipt.cancel(); return
+    }
+    // Hold the last visible frame while existing setter nudge/chase produces a
+    // replacement. Revealing the underlying player here can show an older seek.
+    // Keep the latest user target and its pending exact-seek receipt. A style
+    // update while seeking 1s -> 4s must not replace that request with 1s.
+    let id = nativeScrubReceipt.isPending ? nativeScrubReceipt.generation
+      : nativeScrubReceipt.begin(exact: false) { _ in }
+    nativeScrubReceipt.invalidatePresentation()
+    let tolerance = max(0.004, previousGoal?.tolerance ?? 1.0 / 30.0)
+    let presentation = nativeScrubCache.beginPresentation(target: time, tolerance: tolerance)
+    nativeStylePresentation = presentation
+    nativeGoal = NativeGoal(id: id, presentation: presentation, target: time,
+      tolerance: tolerance, started: previousGoal?.started ?? CACurrentMediaTime())
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+      guard let self = self, self.nativeGoal?.presentation == presentation else { return }
+      self.nativeFailedCount += 1; self.hideNativeScrub()
+    }
+    scheduleNativeStyleRedraw()
+  }
+  private func scheduleNativeStyleRedraw(retries: Int = 0) {
+    guard !nativeStyleRedrawArmed, retries < 30 else { return }
+    nativeStyleRedrawArmed = true
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
+      guard let self = self else { return }
+      self.nativeStyleRedrawArmed = false
+      guard let goal = self.nativeGoal, self.nativeStylePresentation == goal.presentation,
+        self.player.rate == 0 else { return }
+      if self.seeking || self.nudging || self.player.currentItem?.status != .readyToPlay {
+        self.scheduleNativeStyleRedraw(retries: retries + 1); return
+      }
+      if abs(self.player.currentTime().seconds - goal.target) > 0.004 {
+        self.seek(goal.target, exact: true, nativeRequest: true) { [weak self] ok in
+          guard let self = self, self.nativeGoal?.presentation == goal.presentation else { return }
+          self.nativeScrubReceipt.didSeek(goal.id, ok: ok)
+          if ok { self.scheduleNativeStyleRedraw(retries: retries + 1) }
+        }
+        return
+      }
+      self.nudgeRedrawIfPaused()
+    }
+  }
+  private func hideNativeScrub() {
+    nativeScrubCache.beginPresentation(wantsFrames: false)
+    nativeGoal = nil; nativePresentedTime = nil; nativeRequestedTarget = nil
+    nativeStylePresentation = nil
+    nativeScrubReceipt.cancel()
+    if PlayerHosts.shared.current === player { PlayerHosts.shared.hideNativeScrub() }
+  }
+  func scrub(_ seconds: Double, exact: Bool, toleranceMs: Int,
+             reply: @escaping ([String: Any]) -> Void) {
+    nativePlayIntent.replace(); nativeStylePresentation = nil
+    guard nativeScrubSupported, seconds.isFinite,
+      PlayerHosts.shared.current === player else {
+      reply(["displayed": false, "cacheHit": false]); return
+    }
+    let target = Self.nativeFrameTarget(seconds, duration: duration)
+    nativeRequestedTarget = target
+    nativeScrubCache.resumeCapturing()
+    let tolerance = exact ? 0.001 : Double(min(150, max(0, toleranceMs))) / 1000
+    let id = nativeScrubReceipt.begin(exact: exact, reply: reply)
+    nativeGoal = NativeGoal(id: id, presentation: nativeScrubCache.beginPresentation(
+      target: target, tolerance: tolerance),
+      target: target, tolerance: tolerance, started: CACurrentMediaTime())
+    if let frame = nativeScrubCache.nearest(target, tolerance: tolerance) {
+      presentNativeScrub(frame, cacheHit: true)
+    }
+    // The same chase aligns the AVPlayer under the cached plane. Hits do not
+    // create a second decoder or a parallel seek stream.
+    seek(target, exact: exact, toleranceMs: toleranceMs, nativeRequest: true) { [weak self] ok in
+      guard let self = self, id == self.nativeScrubReceipt.generation else { return }
+      self.nativeScrubReceipt.didSeek(id, ok: ok)
+      if !ok { self.nativeFailedCount += 1; self.hideNativeScrub() }
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+      guard let self = self, self.nativeScrubReceipt.generation == id,
+        self.nativeScrubReceipt.isPending else { return }
+      self.nativeFailedCount += 1; self.hideNativeScrub()
+    }
+  }
+  private func presentNativeScrub(_ frame: MCNativeScrubCache.Frame, cacheHit: Bool) {
+    guard var goal = nativeGoal, !goal.rendering, nativeScrubCache.isCurrent(frame),
+      MCNativeScrubCache.accepts(time: frame.time, target: goal.target,
+        tolerance: goal.tolerance, range: frame.range) else { return }
+    goal.rendering = true; nativeGoal = goal
+    PlayerHosts.shared.presentNativeScrub(frame, player: player, cache: nativeScrubCache,
+                                          presentation: goal.presentation) {
+      [weak self] ok in
+      guard let self = self, self.nativeGoal?.id == goal.id,
+        self.nativeScrubReceipt.acceptsPresentation(goal.id,
+          presentation: goal.presentation,
+          currentPresentation: self.nativeGoal?.presentation) else { return }
+      if ok {
+        self.nativePresentedTime = frame.time
+        self.nativeLastPresentedTime = frame.time
+        self.nativePresentMs.append(Int((CACurrentMediaTime() - goal.started) * 1000))
+        if self.nativePresentMs.count > 200 { self.nativePresentMs.removeFirst() }
+        self.nativeGoal = nil
+        self.nativeScrubCache.finishPresentation()
+        self.nativePresentedCount += 1
+        self.nativeScrubReceipt.didPresent(goal.id, time: frame.time, cacheHit: cacheHit)
+      } else {
+        self.nativeGoal?.rendering = false
+        self.nativeFailedCount += 1
+        self.hideNativeScrub()
+      }
+    }
+  }
+  func endScrub(at seconds: Double?, reply: @escaping (Bool) -> Void) {
+    nativePlayIntent.replace()
+    nativeScrubCache.beginPresentation(wantsFrames: false)
+    guard let seconds = seconds, seconds.isFinite else {
+      hideNativeScrub(); reply(true); return
+    }
+    nativeScrubReceipt.cancel(); nativeGoal = nil
+    let id = nativeScrubReceipt.generation
+    seek(seconds, exact: true, nativeRequest: true) { [weak self] ok in
+      guard let self = self, id == self.nativeScrubReceipt.generation else {
+        reply(false); return
+      }
+      if ok { self.hideNativeScrub() }
+      reply(ok)
+    }
+  }
 
   /// HDR 預覽的即時疊加物（浮水印/文字）：這一版合成有沒有掛
   /// 讀即時清單的合成器（CIPreviewCompositorHDR），以及它的畫布
@@ -6323,6 +7004,9 @@ final class CompPlayer: NSObject, FlutterTexture {
   init(registry: FlutterTextureRegistry) {
     self.registry = registry
     super.init()
+    nativeScrubCache.onFrame = { [weak self] frame in
+      self?.presentNativeScrub(frame, cacheHit: false)
+    }
     // 新合成從一般模式起算（拖曳模式只在拖曳 seek 之間活著）
     CIExportCompositor.setScrubbing(false)
     player.actionAtItemEnd = .pause
@@ -7070,6 +7754,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       if needsPad {
         rawT.append(CMTime(seconds: naturalEnd, preferredTimescale: 600))
       }
+      nativeScrubSupported = needsCI && !texture && MCNativeScrubPlane.supported
       rawT.append(contentsOf: MCPreviewVisibility.prerollStarts(before: rawT))
       // 去重要帶容差，而且是在這裡去掉，不是排完之後跳過太短的區間——
       // 跳過會在時間軸上留一條沒有指令的縫，而指令必須首尾相接把整條
@@ -7103,11 +7788,13 @@ final class CompPlayer: NSObject, FlutterTexture {
       let lastShow = segments.map { $0.range.end.seconds }.max() ?? 0
       let visibility = MCPreviewVisibilityState()
       visibilityState = visibility
+      let scrubCache = nativeScrubSupported ? nativeScrubCache : nil
       // 產一份 videoComposition（可帶捏合中的即時變形覆寫 ov）。
       // 組建與即時變形共用同一段數學：放手烘定不會跳位。
       // 閉包刻意不碰 self（buildInfo/wmLive 都在外面做）——
       // vcRegen 存在屬性上，碰了 self 就是保留循環
       let makeVC: (CompLiveXform?) -> AVMutableVideoComposition = { ov in
+        let scrubLayout = scrubCache?.nextLayout() ?? 0
         var segs = segments
         if let ov = ov {
           for i in segs.indices
@@ -7277,6 +7964,10 @@ final class CompPlayer: NSObject, FlutterTexture {
           hdrOut && anyHDR
           ? CIPreviewCompositorHDR.self : CIPreviewCompositorSDR.self
         vc.instructions = built
+        for instruction in built {
+          instruction.scrubCapture = scrubCache
+          instruction.scrubLayout = scrubLayout
+        }
       } else {
       var instructions: [AVMutableVideoCompositionInstruction] = []
       for i in 0..<(marks.count - 1) {
@@ -7606,6 +8297,23 @@ final class CompPlayer: NSObject, FlutterTexture {
 
   /// playImmediately 而不是 play：後者會先跑一輪緩衝條件才讓畫面真的動
   func play() {
+    let playIntent = nativePlayIntent.replace()
+    nativeScrubCache.beginPresentation(wantsFrames: false)
+    nativeScrubCache.resumeCapturing()
+    // A hit may have appeared before its physical chase caught up. Keep that
+    // valid frame until AVPlayer is aligned, so playback cannot jump backwards.
+    if let time = nativePresentedTime,
+      seeking || abs(player.currentTime().seconds - time) > 0.018 {
+      nativeScrubReceipt.cancel(); nativeGoal = nil
+      let id = nativeScrubReceipt.generation
+      seek(time, exact: true, nativeRequest: true) { [weak self] ok in
+        guard let self = self, ok, id == self.nativeScrubReceipt.generation,
+          self.nativePlayIntent.isCurrent(playIntent) else { return }
+        self.hideNativeScrub(); self.play()
+      }
+      return
+    }
+    hideNativeScrub()
     // 結束舊的「等待放手定位」收據，但保留已排好的物理定位：舊呼叫方
     // 仍可能 seek()（立即回應）後立刻 play()，取消它會從錯誤時間開播。
     seekCompletion.replace(with: nil)
@@ -7685,6 +8393,7 @@ final class CompPlayer: NSObject, FlutterTexture {
   }
 
   func pause() {
+    nativePlayIntent.replace()
     audioPlayer.pause()
     CIExportCompositor.slowLock.lock()
     CIExportCompositor.watchSupply = false
@@ -7786,8 +8495,10 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// exact 只差在停手那發落地後預捲把管線熱著（拖曳中絕不預捲，見 chase）
   func seek(
     _ seconds: Double, exact: Bool, toleranceMs: Int? = nil,
+    nativeRequest: Bool = false,
     completion: ((Bool) -> Void)? = nil
   ) {
+    if !nativeRequest { hideNativeScrub() }
     let request = seekCompletion.replace(with: completion)
     guard seconds.isFinite else {
       seekCompletion.finish(request, succeeded: false)
@@ -7799,10 +8510,11 @@ final class CompPlayer: NSObject, FlutterTexture {
     // 常常是 4.4711 之類（29.97fps 對不齊），畫面顯示的是「邊界前一格」
     // ——那格還不在效果的時間段裡，看起來就是「指針指到素材開頭卻沒有
     // 馬賽克」（實測回報）。往前偏半格保證顯示的是邊界上或之後的取樣格
-    t += 0.02
+    if nativeRequest { t = Self.nativeFrameTarget(seconds, duration: duration) }
+    else { t += 0.02 }
     // 目標夾在「最後一格之前」：seek 到正好等於總長的位置，指令已經
     // 出界，畫面可能刷成黑的——拖到底或播完停在結尾都要停在最後一幀
-    if duration > 0.1, t > duration - 0.034 { t = duration - 0.034 }
+    if !nativeRequest, duration > 0.1, t > duration - 0.034 { t = duration - 0.034 }
     seekTarget = CMTime(seconds: t, preferredTimescale: 600)
     seekTargetExact = exact
     seekTargetTolerance = MCSeekCompletionState.tolerance(
@@ -7983,6 +8695,7 @@ final class CompPlayer: NSObject, FlutterTexture {
   }
 
   var positionMs: Int {
+    if player.rate == 0, let time = nativePresentedTime { return Int(time * 1000) }
     // 播放接管中：有聲＝音訊分身當時鐘；無音軌素材＝分身是空的
     //（時間永遠 0），改用引擎的主機時鐘
     if takeover {
@@ -8050,6 +8763,14 @@ final class CompPlayer: NSObject, FlutterTexture {
   func healthStats() -> [String: Any] {
     var m: [String: Any] = ["usesVC": usesVC, "renderW": Int(size.width),
                             "renderH": Int(size.height)]
+    m["nativeScrub"] = nativeScrubCache.stats()
+    m["nativeScrubPresented"] = nativePresentedCount
+    m["nativeScrubFailures"] = nativeFailedCount
+    if let time = nativeLastPresentedTime { m["nativeScrubLastPresentedTime"] = time }
+    if !nativePresentMs.isEmpty {
+      m["nativeScrubPresentAvgMs"] = nativePresentMs.reduce(0, +) / nativePresentMs.count
+      m["nativeScrubPresentMaxMs"] = nativePresentMs.max()!
+    }
     if let comp = composition {
       m["vTracks"] = comp.tracks(withMediaType: .video).count
       m["aTracks"] = comp.tracks(withMediaType: .audio).count
@@ -8177,6 +8898,9 @@ final class CompPlayer: NSObject, FlutterTexture {
   }
 
   func dispose() {
+    nativePlayIntent.replace()
+    hideNativeScrub()
+    nativeScrubCache.removeAll(dispose: true)
     cancelSeekRequests()
     disposeWatch()
     PlayerHosts.shared.release(player)

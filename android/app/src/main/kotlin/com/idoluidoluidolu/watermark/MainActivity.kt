@@ -34,6 +34,25 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
+
+private class FrameSource(val retriever: MediaMetadataRetriever, val width: Int, val height: Int) {
+    companion object {
+        fun open(key: FrameSourceKey): FrameSource {
+            val r = MediaMetadataRetriever()
+            try {
+                r.setDataSource(key.path)
+                val w = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+                val h = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+                val rot = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+                return if (rot == 90 || rot == 270) FrameSource(r, h, w) else FrameSource(r, w, h)
+            } catch (e: Exception) {
+                try { r.release() } catch (_: Exception) {}
+                throw e
+            }
+        }
+    }
+}
 
 /// 工作檔轉檔退路階梯的一段（見 MainActivity.rungsFor）
 private data class PrepRung(
@@ -53,6 +72,7 @@ private class PrepJob(
     val shortSide: Int,
     /// Dart 端說上一次轉出來的不能用：跳過第一段、直接走保守參數
     val safe: Boolean,
+    val interactiveYield: Boolean,
     val result: MethodChannel.Result,
 ) {
     var transformer: Transformer? = null
@@ -69,11 +89,12 @@ private class PrepJob(
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class MainActivity : FlutterActivity() {
-    // 拖曳預覽的「按需抽幀」：滑到哪、跟硬體解碼器要那一格。
-    // MediaMetadataRetriever 不是執行緒安全的，全部排進同一條工作緒
+    // 系統抽幀 API 的解碼成本與 codec 選擇依來源及裝置而異。
+    // Retriever 與 LRU 全部只在單一工作緒使用，兩支素材交替時保留已開的來源。
     private val frameExec = Executors.newSingleThreadExecutor()
-    private var cachedPath: String? = null
-    private var retriever: MediaMetadataRetriever? = null
+    private val framePool = FrameResourcePool(2, FrameSource::open) { it.retriever.release() }
+    private val frameGeneration = AtomicLong()
+    private var frameForeground = true
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -89,28 +110,49 @@ class MainActivity : FlutterActivity() {
         copyExec.execute { sweepPicked() }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "markcut/frames")
             .setMethodCallHandler { call, result ->
+                if (call.method == "release") {
+                    releaseFrames { result.success(null) }
+                    return@setMethodCallHandler
+                }
+                if (call.method == "stats") {
+                    if (frameExec.isShutdown) {
+                        result.success(null)
+                        return@setMethodCallHandler
+                    }
+                    frameExec.execute {
+                        val stats = mapOf("active" to framePool.active, "created" to framePool.created,
+                            "reused" to framePool.reused, "capacity" to framePool.capacity)
+                        main.post { result.success(stats) }
+                    }
+                    return@setMethodCallHandler
+                }
                 if (call.method != "frameAt") {
                     result.notImplemented()
                     return@setMethodCallHandler
                 }
                 val path = call.argument<String>("path")
-                val ms = (call.argument<Number>("ms") ?: 0).toLong()
-                val maxH = (call.argument<Number>("maxH") ?: 540).toInt()
-                // 拖曳預覽壓得兇一點沒人看得出來；當裁切底圖時會被放大
-                // 到滿版，壓縮痕跡就很明顯，呼叫端自己決定
+                val ms = (call.argument<Number>("ms") ?: 0).toLong().coerceIn(0, Long.MAX_VALUE / 1000)
+                val maxH = (call.argument<Number>("maxH") ?: 540).toInt().coerceIn(2, 4096)
+                val detailed = call.argument<Boolean>("detailed") ?: false
+                // JPEG 僅供粗覽；不拿它的畫質／顏色代替最終播放器與匯出。
                 val q = ((call.argument<Number>("q") ?: 0.8).toDouble() * 100)
                     .toInt().coerceIn(30, 100)
-                if (path == null) {
+                if (path == null || !frameForeground || frameExec.isShutdown) {
                     result.success(null)
                     return@setMethodCallHandler
                 }
+                val generation = frameGeneration.get()
                 frameExec.execute {
                     val bytes = try {
-                        grabFrame(path, ms, maxH, q)
+                        if (generation == frameGeneration.get()) grabFrame(path, ms, maxH, q) else null
                     } catch (_: Exception) {
                         null
                     }
-                    main.post { result.success(bytes) }
+                    main.post {
+                        // MMR 不回傳實際 PTS；絕不把要求時間冒充成落地時間。
+                        result.success(if (generation != frameGeneration.get()) null
+                            else if (detailed && bytes != null) mapOf("bytes" to bytes) else bytes)
+                    }
                 }
             }
     }
@@ -315,45 +357,15 @@ class MainActivity : FlutterActivity() {
         maxH: Int,
         quality: Int = 80,
     ): ByteArray? {
-        if (cachedPath != path) {
-            retriever?.release()
-            // 先清掉再建：setDataSource 丟例外（壞路徑）時以前 retriever 還
-            // 指著已 release 的舊物件、cachedPath 也還是舊路徑——下一次要舊
-            // 路徑就對死物件 getFrameAtTime，一路回 null 直到換路徑。
-            // 新物件 setDataSource 失敗也要 release，不然就漏一顆
-            retriever = null
-            cachedPath = null
-            val r = MediaMetadataRetriever()
-            try {
-                r.setDataSource(path)
-            } catch (e: Exception) {
-                r.release()
-                throw e
-            }
-            retriever = r
-            cachedPath = path
-        }
-        val r = retriever ?: return null
+        val source = framePool.acquire(FrameSourceKey.fromFile(path))
+        val r = source.retriever
         val us = ms * 1000
-        // OPTION_CLOSEST_SYNC＝取最近的關鍵幀，不用從頭解到指定格。
-        // 拖曳預覽要的是「跟手」，差半秒的畫面人眼分不出來。
-        // 注意：MediaMetadataRetriever 抽幀是系統偏好「軟體解碼器」的
-        // 路（AOSP FrameDecoder 用 kPreferSoftwareCodecs 挑），4K 一格
-        // 要幾百毫秒，但不佔硬體解碼器的名額——跟轉檔／播放不搶 codec，
-        // 搶的是 CPU
+        // OPTION_CLOSEST_SYNC 只取附近關鍵幀，稀疏 GOP 可能離指標很遠。
+        // 這是拖曳中的粗覽，放手後由播放器精準 seek；MMR 沒有實際 PTS。
         val bmp: Bitmap? = if (Build.VERSION.SDK_INT >= 27) {
-            val w = r.extractMetadata(
-                MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH
-            )?.toIntOrNull() ?: 0
-            val h = r.extractMetadata(
-                MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT
-            )?.toIntOrNull() ?: 0
-            val rot = r.extractMetadata(
-                MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION
-            )?.toIntOrNull() ?: 0
             // getScaledFrameAtTime 要的是「顯示方向」的寬高
-            val dw = if (rot == 90 || rot == 270) h else w
-            val dh = if (rot == 90 || rot == 270) w else h
+            val dw = source.width
+            val dh = source.height
             if (dw > 0 && dh > 0) {
                 // 只縮不放：來源比 maxH 小就照原尺寸
                 val s = minOf(1f, maxH.toFloat() / maxOf(dw, dh))
@@ -370,10 +382,12 @@ class MainActivity : FlutterActivity() {
             r.getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
         }
         if (bmp == null) return null
-        val out = ByteArrayOutputStream()
-        bmp.compress(Bitmap.CompressFormat.JPEG, quality, out)
-        bmp.recycle()
-        return out.toByteArray()
+        return try {
+            val out = ByteArrayOutputStream()
+            if (bmp.compress(Bitmap.CompressFormat.JPEG, quality, out)) out.toByteArray() else null
+        } finally {
+            bmp.recycle()
+        }
     }
 
     // ===== 診斷（markcut/diag）=====
@@ -496,9 +510,8 @@ class MainActivity : FlutterActivity() {
 
     // ===== 素材工作檔（markcut/prep）=====
     //
-    // 把 4K（HDR）原檔轉成 1080p SDR 的 H.264 工作檔，之後預覽、拖曳、
-    // 匯出都用它。Transformer 走 MediaCodec＋OpenGL 的硬體管線，
-    // HDR→SDR 的色調映射也是系統做的，跟播放器的顏色一致。
+    // 產生 SDR H.264 工作檔；HDR 原始色彩與最終匯出仍由呼叫端選正確來源。
+    // Transformer 使用 MediaCodec＋OpenGL，硬體能力與映射結果需依裝置驗證。
     //
     // 為什麼不用 FFmpeg 轉：它的色調映射是 32 位元浮點的軟體運算，
     // 一格 4K 就要 100MB，實測一支 4K HDR 的峰值 1.7GB——那正是匯出
@@ -525,6 +538,7 @@ class MainActivity : FlutterActivity() {
     /// 要跟手
     private val prepExec = Executors.newSingleThreadExecutor()
     private val prepJobs = HashMap<Int, PrepJob>()
+    private val previewWorkGate = PreviewWorkGate<PrepJob> { deferPreviewPrep(it) }
     private var prepChannel: MethodChannel? = null
 
     /// 把一行診斷送回 Dart（進 Diag.note）。一定在主緒送
@@ -539,6 +553,10 @@ class MainActivity : FlutterActivity() {
         channel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "available" -> result.success(true)
+                "setInteractive" -> {
+                    previewWorkGate.setInteractive(call.argument<Boolean>("interactive") ?: false)
+                    result.success(null)
+                }
                 "cancel" -> {
                     mainHandler.post { cancelAllPrep() }
                     result.success(null)
@@ -565,6 +583,7 @@ class MainActivity : FlutterActivity() {
                     val jobId = (call.argument<Number>("job") ?: 0).toInt()
                     val hdr = call.argument<Boolean>("hdr") ?: false
                     val safe = call.argument<Boolean>("safe") ?: false
+                    val interactiveYield = call.argument<Boolean>("interactiveYield") ?: false
                     if (src == null || dest == null) {
                         result.success(null)
                         return@setMethodCallHandler
@@ -577,10 +596,12 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                         return@setMethodCallHandler
                     }
-                    val job = PrepJob(jobId, src, dest, shortSide, safe, result)
+                    val job = PrepJob(jobId, src, dest, shortSide, safe, interactiveYield, result)
                     prepJobs[jobId] = job
+                    if (!previewWorkGate.register(job, interactiveYield)) return@setMethodCallHandler
+                    // Main-thread ownership: an old cancelled probe must not delete a retry's file.
+                    File(dest).delete()
                     prepExec.execute {
-                        File(dest).delete()
                         val info = probeFile(src, keyframes = false)
                         job.srcW = (info["w"] as? Int) ?: 0
                         job.srcH = (info["h"] as? Int) ?: 0
@@ -619,6 +640,10 @@ class MainActivity : FlutterActivity() {
     /// 起這一段的 Transformer（主緒）。起不來就直接跳下一段
     private fun startRung(j: PrepJob) {
         if (j.replied) return // 已經回過（成功或取消）：什麼都別再動
+        if (j.interactiveYield && previewWorkGate.interactive) {
+            deferPreviewPrep(j)
+            return
+        }
         if (j.cancelled) {
             finishPrep(j, null)
             return
@@ -805,6 +830,7 @@ class MainActivity : FlutterActivity() {
         j.tick?.let { mainHandler.removeCallbacks(it) }
         j.tick = null
         j.transformer = null
+        previewWorkGate.finish(j)
         prepJobs.remove(j.id)
         if (path == null) File(j.dest).delete()
         j.replied = true
@@ -812,6 +838,28 @@ class MainActivity : FlutterActivity() {
             prepChannel?.invokeMethod("progress", mapOf("job" to j.id, "value" to 1.0))
         }
         j.result.success(path)
+    }
+
+    private fun deferPreviewPrep(j: PrepJob) {
+        if (j.replied || !j.interactiveYield) return
+        try {
+            // cancel() releases Transformer resources synchronously. It does not notify its listener.
+            j.transformer?.cancel()
+        } catch (e: Exception) {
+            // Do not claim the encoder has stopped if the platform could not release it.
+            prepNote("工作檔讓路失敗：${e.javaClass.simpleName}: ${e.message}")
+            return
+        }
+        j.cancelled = true
+        j.tick?.let { mainHandler.removeCallbacks(it) }
+        j.tick = null
+        j.transformer = null
+        previewWorkGate.finish(j)
+        prepJobs.remove(j.id)
+        File(j.dest).delete()
+        j.replied = true
+        prepNote("預覽工作檔已讓路，閒置後重排：${File(j.src).name}")
+        j.result.success(mapOf("status" to "deferred", "reason" to "interaction"))
     }
 
     private fun cancelAllPrep() {
@@ -1061,16 +1109,40 @@ class MainActivity : FlutterActivity() {
     /// 編碼器只吃偶數邊長
     private fun even(v: Int): Int = maxOf(2, v / 2 * 2)
 
+    private fun releaseFrames(completed: (() -> Unit)? = null) {
+        frameGeneration.incrementAndGet()
+        if (frameExec.isShutdown) {
+            completed?.invoke()
+            return
+        }
+        frameExec.execute {
+            framePool.clear()
+            completed?.let { mainHandler.post(it) }
+        }
+    }
+
+    override fun onStop() {
+        frameForeground = false
+        releaseFrames()
+        super.onStop()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        frameForeground = true
+    }
+
+    override fun onTrimMemory(level: Int) {
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) releaseFrames()
+        super.onTrimMemory(level)
+    }
+
     override fun onDestroy() {
         // retriever 只能在 frameExec 上碰（MediaMetadataRetriever 不是執行緒
         // 安全的）：以前主緒直接 release，跟正在抽幀的 grabFrame 撞上就是
         // 原生 crash。排進同一條工作緒、排在所有已排的抽幀之後。三條工作
         // 緒也一併收掉：shutdown 讓已排的跑完、不再接新的（以前從沒收過）
-        frameExec.execute {
-            retriever?.release()
-            retriever = null
-            cachedPath = null
-        }
+        releaseFrames()
         frameExec.shutdown()
         copyExec.shutdown()
         cancelAllPrep()

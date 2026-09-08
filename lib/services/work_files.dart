@@ -238,6 +238,7 @@ class WorkFiles {
   /// 轉不出來也回 null，呼叫端照播原檔
   static Future<String?> ensureHdr(
     String src, {
+    bool interactiveYield = false,
     void Function(double progress)? onProgress,
   }) async {
     if (kIsWeb) return null;
@@ -262,12 +263,18 @@ class WorkFiles {
         src,
         dest,
         hdr: true,
+        interactiveYield: interactiveYield,
         onProgress: onProgress,
       );
+    } on PreviewPreparationDeferred {
+      try {
+        File(dest).deleteSync();
+      } catch (_) {}
+      rethrow;
     } finally {
       _inFlight.remove(dest);
+      await Diag.clearMark();
     }
-    await Diag.clearMark();
     if (made == null || !File(made).existsSync()) {
       Diag.note('HDR 代理失敗（用原檔）：${src.split('/').last}');
       Diag.count('HDR 代理失敗');
@@ -374,6 +381,7 @@ class WorkFiles {
   static Future<String?> ensure(
     String src, {
     int maxShortSide = 1080,
+    bool interactiveYield = false,
     void Function(double progress)? onProgress,
   }) async {
     if (kIsWeb) return null;
@@ -385,6 +393,7 @@ class WorkFiles {
       return await _ensureInner(
         src,
         maxShortSide: maxShortSide,
+        interactiveYield: interactiveYield,
         onProgress: onProgress,
       );
     } finally {
@@ -395,6 +404,7 @@ class WorkFiles {
   static Future<String?> _ensureInner(
     String src, {
     required int maxShortSide,
+    required bool interactiveYield,
     void Function(double progress)? onProgress,
   }) async {
     final dir = await _dir();
@@ -463,12 +473,18 @@ class WorkFiles {
         // 失敗），原生端自己判
         prechecked: qualifies == false,
         safe: safe,
+        interactiveYield: interactiveYield,
         onProgress: onProgress,
       );
+    } on PreviewPreparationDeferred {
+      try {
+        File(dest).deleteSync();
+      } catch (_) {}
+      rethrow;
     } finally {
       _inFlight.remove(dest);
+      await Diag.clearMark();
     }
-    await Diag.clearMark();
     Diag.note(
       made == null
           ? '工作檔失敗（用原檔）：${src.split('/').last}'

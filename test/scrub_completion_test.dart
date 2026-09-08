@@ -9,6 +9,7 @@ import 'package:markcut/models/timeline.dart';
 import 'package:markcut/screens/video_editor_screen.dart';
 import 'package:markcut/services/comp_player.dart';
 import 'package:markcut/services/diagnostics.dart';
+import 'package:markcut/services/media_prep.dart';
 
 import 'editor_harness.dart';
 
@@ -20,6 +21,8 @@ void main() {
   final seeks = <Map<Object?, Object?>>[];
   var nativeMs = 0;
   var builds = 0;
+  var nativeScrub = false;
+  final presentations = <Map<Object?, Object?>>[];
   var returnFrames = true;
   var detailedFrameReply = false;
   double? actualFrameTime;
@@ -40,6 +43,8 @@ void main() {
     seeks.clear();
     nativeMs = 0;
     builds = 0;
+    nativeScrub = false;
+    presentations.clear();
     returnFrames = true;
     detailedFrameReply = false;
     actualFrameTime = null;
@@ -75,6 +80,7 @@ void main() {
             'width': 1080.0,
             'height': 1920.0,
             'ci': true,
+            'nativeScrub': nativeScrub,
           };
         case 'position':
           return nativeMs;
@@ -96,6 +102,17 @@ void main() {
             nativeMs += 33;
           });
           return 'ready';
+        case 'scrub':
+          final args = Map<Object?, Object?>.from(call.arguments as Map);
+          presentations.add(args);
+          final at = (args['sec'] as num).toDouble();
+          if (args['exact'] == true) {
+            final landing = Completer<bool>();
+            landings.add(landing);
+            if (!await landing.future) return {'displayed': false};
+          }
+          nativeMs = (at * 1000).round();
+          return {'displayed': true, 'actualSeconds': at, 'cacheHit': true};
         case 'pause':
         case 'dispose':
           clock?.cancel();
@@ -167,6 +184,69 @@ void main() {
     await t.pump(const Duration(seconds: 3));
     expect(t.takeException(), isNull);
   }
+
+  for (final raw in [true, false]) {
+    testWidgets('原生合成拖曳 ${raw ? '原檔' : '代理'}不經 JPEG，收尾等真正呈現', (t) async {
+      nativeScrub = true;
+      await open(t, raw: raw);
+      frameRequests.clear();
+      await scrub(t, 1);
+      expect(presentations, isNotEmpty);
+      expect(presentations.first['sec'], 1);
+      expect(presentations.first['exact'], false);
+      expect(presentations.first['toleranceMs'], raw ? 150 : 0);
+      expect(frameRequests, isEmpty);
+      expect(cache(), findsNothing);
+      expect(seeks, isEmpty, reason: '原生 scrub 已負責 chase，不另排第二次 seek');
+      await tick(t, 8);
+      expect(landings.length, 1);
+      expect(presentations.last['exact'], true);
+      expect(presentations.last['toleranceMs'], 0);
+      landings.single.complete(true);
+      await tick(t, 3);
+      expect(frameRequests, isEmpty);
+      expect(seeks, isEmpty);
+      await close(t);
+    });
+  }
+
+  testWidgets('原生精準呈現舊回覆不結束新拖曳或覆蓋新播放', (t) async {
+    nativeScrub = true;
+    await open(t);
+    await scrub(t, 1);
+    await tick(t, 8);
+    expect(landings.length, 1);
+    await scrub(t, 2);
+    landings.first.complete(false);
+    await tick(t, 8);
+    expect(landings.length, 2);
+    expect(presentations.last['sec'], 2);
+    await t.tap(find.byIcon(Icons.play_arrow_rounded).first);
+    await tick(t, 7, 33);
+    expect(isPlaying(), true);
+    landings.last.complete(false);
+    await tick(t, 3);
+    expect(isPlaying(), true);
+    await close(t);
+  });
+
+  testWidgets('全螢幕進度條共用拖曳路徑，不在每次變更重複精準 seek', (t) async {
+    nativeScrub = true;
+    await open(t);
+    await t.tap(find.byIcon(Icons.fullscreen));
+    await tick(t, 2);
+    final slider = t.widget<Slider>(find.byType(Slider));
+    slider.onChanged!(1);
+    await t.pump(const Duration(milliseconds: 50));
+    expect(presentations.length, 1);
+    expect(presentations.single['exact'], false);
+    expect(seeks, isEmpty);
+    await tick(t, 8);
+    expect(landings.length, 1);
+    landings.single.complete(true);
+    await tick(t, 2);
+    await close(t);
+  });
 
   testWidgets('放手後精準定位未完成，快取不撤掉；完成才露出影片', (t) async {
     await open(t);
@@ -253,11 +333,44 @@ void main() {
     landings.last.complete(false);
     await tick(t, 30);
     expect(landings.length, 2, reason: '不能在失敗後無限重送 seek');
+    expect(cache(), findsOneWidget, reason: '放手定位失敗仍保留最後畫面');
+    expect(
+      MediaPrep.debugScheduling.interactive,
+      false,
+      reason: '已放手的失敗定位不能永久暫停背景準備',
+    );
     await scrub(t, 1);
+    expect(
+      MediaPrep.debugScheduling.interactive,
+      true,
+      reason: '新手勢必須重新取得前景優先權',
+    );
     await tick(t, 8);
     expect(landings.length, 3);
     landings.last.complete(true);
     await tick(t, 2);
+    expect(cache(), findsNothing);
+    await close(t);
+  });
+
+  testWidgets('定位兩次失敗後，新合成可重新精準落地並撤掉保留畫面', (t) async {
+    await open(t);
+    await scrub(t, 1);
+    await tick(t, 8);
+    landings.single.complete(false);
+    await tick(t, 4);
+    landings.last.complete(false);
+    await tick(t, 30);
+    expect(MediaPrep.debugScheduling.interactive, false);
+    expect(cache(), findsOneWidget);
+    final previousBuilds = builds;
+    VideoEditorScreen.debugTimeline!((tl) => tl.clips.first.trimEnd = 7.5);
+    await tick(t, 20);
+    await waitUntil(t, () => builds > previousBuilds, maxMs: 3000);
+    await tick(t, 4);
+    expect(landings.length, 3);
+    landings.last.complete(true);
+    await tick(t, 3);
     expect(cache(), findsNothing);
     await close(t);
   });
