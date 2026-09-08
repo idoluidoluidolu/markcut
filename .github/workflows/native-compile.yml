@@ -1,0 +1,41 @@
+name: Native compile and tests
+
+# Manual verification without signing keys or publishing to TestFlight.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-compile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned Flutter
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.44.8 https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/flutter/bin/flutter" --version
+      - name: Resolve dependencies
+        run: flutter pub get
+      - name: Analyze
+        run: dart analyze lib test integration_test
+      - name: Compile iOS release without signing
+        run: flutter build ios --release --no-codesign
+      - name: Run native regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build ios --simulator --debug --no-codesign
+          device_id=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(v["udid"] for k,vs in d["devices"].items() if "iOS" in k for v in vs if "iPhone" in v["name"]))')
+          xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner \
+            -configuration Debug -destination "platform=iOS Simulator,id=$device_id" \
+            -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
