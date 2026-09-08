@@ -7,6 +7,12 @@ import AVFoundation
 import Metal
 @testable import Runner
 
+private final class ScrubTestTextureRegistry: NSObject, FlutterTextureRegistry {
+  func register(_ texture: FlutterTexture) -> Int64 { 1 }
+  func textureFrameAvailable(_ textureId: Int64) {}
+  func unregisterTexture(_ textureId: Int64) {}
+}
+
 class RunnerTests: XCTestCase {
   private func scrubBuffer(width: Int = 16, height: Int = 16) throws -> CVPixelBuffer {
     var buffer: CVPixelBuffer?
@@ -199,6 +205,71 @@ class RunnerTests: XCTestCase {
     XCTAssertFalse(intent.isCurrent(playWaitingForSeek))
   }
 
+  func testNativeScrubNoOpRedrawAcceptsActualTickWithoutCrossingInstruction() throws {
+    let cache = MCNativeScrubCache()
+    let layout = cache.nextLayout()
+    let target = 0.4
+    let actual = target + 2.0 / 600.0
+    let delivered = expectation(description: "actual redraw tick")
+    cache.beginPresentation(target: target, tolerance: 0.001)
+    cache.allowNoticeTolerance(2.0 / 600.0 + 0.0001)
+    cache.onFrame = { frame in
+      XCTAssertEqual(frame.time, actual)
+      delivered.fulfill()
+    }
+    let buffer = try scrubBuffer()
+    cache.insert(buffer, time: actual, epoch: CIExportCompositor.liveEpoch,
+      layout: layout, range: scrubRange, hdr: false)
+    wait(for: [delivered], timeout: 1)
+    let nextInstruction = CMTimeRange(start: CMTime(seconds: 0.402, preferredTimescale: 600),
+      duration: CMTime(seconds: 1, preferredTimescale: 600))
+    XCTAssertFalse(MCNativeScrubCache.accepts(time: actual, target: target,
+      tolerance: 2.0 / 600.0 + 0.0001, range: nextInstruction))
+  }
+
+  func testNativeScrubRequestsKeepOneFrameAliveUntilItPresentsThenTakeOnlyLatest() {
+    let requests = MCNativeScrubRequests()
+    var starts: [MCNativeScrubRequests.Request] = []
+    var results: [Int: [[String: Any]]] = [:]
+    requests.onStart = { starts.append($0) }
+    for second in 1...100 {
+      requests.submit(seconds: Double(second), exact: second == 100, toleranceMs: 150) {
+        results[second, default: []].append($0)
+      }
+    }
+    XCTAssertEqual(starts.map(\.seconds), [1])
+    XCTAssertEqual(requests.pending?.seconds, 100)
+    XCTAssertEqual(requests.coalesced, 99)
+    XCTAssertEqual(results[1]?.first?["displayed"] as? Bool, false)
+    XCTAssertNil(results[100])
+    // The first physical request can finish after its obsolete Dart reply was
+    // cancelled. Intermediate touches did not restart its decoder or drawable.
+    requests.complete(starts[0].id, result: ["displayed": true, "actualSeconds": 1.0])
+    XCTAssertEqual(starts.map(\.seconds), [1, 100])
+    XCTAssertTrue(starts[1].exact)
+    XCTAssertEqual(results[1]?.count, 1)
+    requests.complete(starts[0].id, result: ["displayed": false])
+    XCTAssertEqual(requests.active?.seconds, 100, "late old failures cannot cancel final exact")
+    requests.complete(starts[1].id, result: ["displayed": true, "actualSeconds": 100.0])
+    XCTAssertEqual(results[100]?.first?["actualSeconds"] as? Double, 100)
+    XCTAssertNil(requests.active)
+  }
+
+  func testNativeScrubRequestsCancelActiveAndPendingWithoutRestartingOnLateCompletion() {
+    let requests = MCNativeScrubRequests()
+    var starts: [MCNativeScrubRequests.Request] = []
+    var replies = 0
+    requests.onStart = { starts.append($0) }
+    requests.submit(seconds: 1, exact: false, toleranceMs: 150) { _ in replies += 1 }
+    requests.submit(seconds: 4, exact: true, toleranceMs: 0) { _ in replies += 1 }
+    requests.cancel() // play/pause/dispose/new composition
+    requests.complete(starts[0].id, result: ["displayed": true])
+    XCTAssertEqual(replies, 2)
+    XCTAssertEqual(starts.count, 1)
+    XCTAssertNil(requests.active)
+    XCTAssertNil(requests.pending)
+  }
+
   func testNativeScrubPresentationIgnoresHiddenAndOffscreenHosts() {
     let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
     let parent = UIView(frame: window.bounds)
@@ -306,6 +377,138 @@ class RunnerTests: XCTestCase {
         XCTAssertEqual(Double(component) / 1023, Double(level), accuracy: 0.015,
           "HLG encoded values must survive the display conversion without another white-point gain")
       }
+    }
+  }
+
+  private func verifyNativeDrawablePresentation(hdr: Bool) throws {
+    guard MCNativeScrubPlane.supported else { throw XCTSkip("Metal unavailable") }
+    let previousKeyWindow = UIApplication.shared.windows.first(where: \.isKeyWindow)
+    let window: UIWindow
+    if let scene = previousKeyWindow?.windowScene {
+      window = UIWindow(windowScene: scene)
+      window.frame = scene.coordinateSpace.bounds
+    } else {
+      window = UIWindow(frame: UIScreen.main.bounds)
+    }
+    let controller = UIViewController()
+    controller.view.backgroundColor = .black
+    window.rootViewController = controller
+    window.makeKeyAndVisible()
+    defer { window.isHidden = true; previousKeyWindow?.makeKeyAndVisible() }
+    let host = PlayerHostView(frame: CGRect(x: 20, y: 60, width: 128, height: 192))
+    controller.view.addSubview(host)
+    host.setNeedsLayout(); host.layoutIfNeeded()
+    XCTAssertTrue(MCNativeScrubPlane.canPresent(in: host))
+    let buffer = try scrubBuffer()
+    let frame = MCNativeScrubCache.Frame(buffer: buffer, time: 0, epoch: 0, layout: 0,
+      range: scrubRange, hdr: hdr, bytes: 1024)
+    // Unlike the offscreen encode tests, this exercises nextDrawable, a real
+    // UIView hierarchy, the CA transaction and addPresentedHandler. Repeating
+    // the same PTS here validates the display plane, independently of AVPlayer.
+    for attempt in 0..<3 {
+      let presented = expectation(description: "\(hdr ? "HLG" : "SDR") drawable \(attempt)")
+      host.scrubPlane.present(frame, valid: { true }) { ok, reason in
+        XCTAssertTrue(ok, "native drawable was not displayed: \(reason ?? "unknown")")
+        presented.fulfill()
+      }
+      wait(for: [presented], timeout: 5)
+      XCTAssertTrue(host.scrubPlane.visible)
+      XCTAssertEqual(host.scrubPlane.layer.pixelFormat, hdr ? .bgr10a2Unorm : .bgra8Unorm)
+      if #available(iOS 16.0, *) {
+        XCTAssertNil(host.scrubPlane.layer.edrMetadata,
+          "encoded HDR must not enable the linear-float EDR metadata pipeline")
+      }
+    }
+  }
+
+  func testNativeSDRDrawableActuallyPresentsRepeatedSameTimeInWindow() throws {
+    try verifyNativeDrawablePresentation(hdr: false)
+  }
+
+  func testNativeHLGDrawableActuallyPresentsRepeatedSameTimeInWindow() throws {
+    try verifyNativeDrawablePresentation(hdr: true)
+  }
+
+  private func makeScrubVideo() throws -> URL {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("native-scrub-\(UUID().uuidString).mp4")
+    let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+    let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+      AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 64,
+      AVVideoCompressionPropertiesKey: [AVVideoMaxKeyFrameIntervalKey: 10],
+    ])
+    input.expectsMediaDataInRealTime = false
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input,
+      sourcePixelBufferAttributes: [
+        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+        kCVPixelBufferWidthKey as String: 64, kCVPixelBufferHeightKey as String: 64,
+      ])
+    XCTAssertTrue(writer.canAdd(input)); writer.add(input)
+    XCTAssertTrue(writer.startWriting()); writer.startSession(atSourceTime: .zero)
+    let finished = expectation(description: "encoded scrub fixture")
+    let buffer = try scrubBuffer(width: 64, height: 64)
+    CVPixelBufferLockBaseAddress(buffer, [])
+    let address = try XCTUnwrap(CVPixelBufferGetBaseAddress(buffer))
+    address.initializeMemory(as: UInt8.self, repeating: 128,
+      count: CVPixelBufferGetBytesPerRow(buffer) * 64)
+    CVPixelBufferUnlockBaseAddress(buffer, [])
+    var next = 0
+    var ending = false
+    input.requestMediaDataWhenReady(on: DispatchQueue(label: "native-scrub.fixture")) {
+      guard !ending else { return }
+      while input.isReadyForMoreMediaData, next < 30 {
+        guard adaptor.append(buffer, withPresentationTime: CMTime(value: Int64(next), timescale: 30)) else {
+          ending = true; writer.cancelWriting(); finished.fulfill(); return
+        }
+        next += 1
+      }
+      if next == 30 {
+        ending = true; input.markAsFinished()
+        writer.finishWriting { finished.fulfill() }
+      }
+    }
+    wait(for: [finished], timeout: 10)
+    XCTAssertEqual(writer.status, .completed, writer.error?.localizedDescription ?? "fixture encode failed")
+    return url
+  }
+
+  func testNativeExactScrubActuallyPresentsAfterClearingCacheAtTheSamePlayerTime() throws {
+    guard MCNativeScrubPlane.supported else { throw XCTSkip("Metal unavailable") }
+    let url = try makeScrubVideo()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let registry = ScrubTestTextureRegistry()
+    let player = CompPlayer(registry: registry)
+    let previousKeyWindow = UIApplication.shared.windows.first(where: \.isKeyWindow)
+    let window: UIWindow
+    if let scene = previousKeyWindow?.windowScene {
+      window = UIWindow(windowScene: scene); window.frame = scene.coordinateSpace.bounds
+    } else { window = UIWindow(frame: UIScreen.main.bounds) }
+    window.rootViewController = UIViewController(); window.makeKeyAndVisible()
+    let host = PlayerHostView(frame: CGRect(x: 20, y: 60, width: 128, height: 192))
+    window.rootViewController!.view.addSubview(host)
+    host.setNeedsLayout(); host.layoutIfNeeded()
+    PlayerHosts.shared.register(host)
+    defer {
+      PlayerHosts.shared.onNativeScrubInvalidated = nil
+      PlayerHosts.shared.onNativeScrubStyleChanged = nil
+      PlayerHosts.shared.use(nil); player.dispose()
+      window.isHidden = true; previousKeyWindow?.makeKeyAndVisible()
+    }
+    XCTAssertTrue(player.build(clips: [["path": url.path, "start": 0.0, "end": 1.0,
+      "offset": 0.0, "track": 0, "opacity": 0.99]], texture: false))
+    XCTAssertTrue(player.nativeScrubSupported)
+    PlayerHosts.shared.use(player.player)
+    PlayerHosts.shared.onNativeScrubInvalidated = { [weak player] in player?.invalidateNativeScrub() }
+    PlayerHosts.shared.onNativeScrubStyleChanged = { [weak player] in player?.nativeStyleChanged() }
+    for attempt in 0..<2 {
+      if attempt > 0 { PlayerHosts.shared.invalidateNativeScrub() }
+      let landed = expectation(description: "same-time exact CI scrub \(attempt)")
+      player.scrub(0.4, exact: true, toleranceMs: 0) { result in
+        XCTAssertEqual(result["displayed"] as? Bool, true, "\(player.healthStats())")
+        XCTAssertEqual(result["actualSeconds"] as? Double ?? -1, 0.4, accuracy: 0.004)
+        landed.fulfill()
+      }
+      wait(for: [landed], timeout: 5)
     }
   }
 

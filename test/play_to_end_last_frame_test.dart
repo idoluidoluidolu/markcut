@@ -62,6 +62,10 @@ void main() {
   var compDuration = 5.0;
   Completer<int>? heldPosition;
   Completer<Map<String, dynamic>>? heldBuild;
+  var nativeStalled = false;
+  var positionUnavailable = false;
+  int? capNativeAtMs;
+  var positionQueries = 0;
 
   setUpAll(() {
     final b = TestWidgetsFlutterBinding.ensureInitialized();
@@ -82,6 +86,7 @@ void main() {
 
   setUp(() {
     SharedPreferences.setMockInitialValues({});
+    Diag.reset();
     // 測試環境沒有真的原生 UiKitView：合成畫面走 Texture，閘門才找得到
     Diag.playerLayer.value = false;
     seeks = [];
@@ -91,6 +96,10 @@ void main() {
     compDuration = 5.0;
     heldPosition = null;
     heldBuild = null;
+    nativeStalled = false;
+    positionUnavailable = false;
+    capNativeAtMs = null;
+    positionQueries = 0;
     final b = TestWidgetsFlutterBinding.ensureInitialized();
     b.defaultBinaryMessenger.setMockMethodCallHandler(compCh, (call) async {
       switch (call.method) {
@@ -112,17 +121,28 @@ void main() {
           };
         case 'play':
           nativeClock?.cancel();
-          nativeClock = Timer.periodic(
-            const Duration(milliseconds: 33),
-            (_) => nativeMs += 33,
-          );
+          nativeClock = Timer.periodic(const Duration(milliseconds: 33), (_) {
+            if (nativeStalled) return;
+            nativeMs += 33;
+            if (capNativeAtMs != null && nativeMs > capNativeAtMs!) {
+              nativeMs = capNativeAtMs!;
+            }
+          });
           return '乾淨';
         case 'pause':
           nativeClock?.cancel();
           nativeClock = null;
           if (stopAtMs != null) nativeMs = stopAtMs!;
           return null;
+        case 'dispose':
+          nativeClock?.cancel();
+          nativeClock = null;
+          return null;
         case 'position':
+          positionQueries++;
+          if (positionUnavailable) {
+            throw PlatformException(code: 'position-unavailable');
+          }
           if (heldPosition != null) {
             final pending = heldPosition!;
             heldPosition = null;
@@ -210,6 +230,139 @@ void main() {
     await _tick(t, 6, 33);
     expect(_isPlaying(), isTrue, reason: '按了播放要在播');
   }
+
+  Future<void> close(WidgetTester t) async {
+    await t.pumpWidget(const MaterialApp(home: SizedBox()));
+    await t.pump(const Duration(seconds: 3));
+    expect(t.takeException(), isNull);
+  }
+
+  testWidgets('起播400ms未前進：等待期間指標不空走，恢復後直接跟隨原生位置', (t) async {
+    nativeStalled = true;
+    await openWith(t, (tl) => addVideo(tl));
+    await t.tap(find.byIcon(Icons.play_arrow_rounded).first);
+    await t.pump();
+    expect(nativeClock, isNotNull);
+    await t.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 450)),
+    );
+    await _tick(t, 20, 33);
+    expect(_isPlaying(), isTrue);
+    expect(nativeMs, 0);
+    expect(
+      _playhead(t),
+      0,
+      reason: 'timeout starts native polling, not a fake clock',
+    );
+    nativeStalled = false;
+    await _tick(t, 10, 33);
+    expect(_playhead(t), greaterThan(0));
+    expect(_playhead(t), closeTo(nativeMs / 1000, 0.001));
+    expect(seeks, isEmpty, reason: 'recovery cannot use correction seeks');
+    await close(t);
+  });
+
+  testWidgets('播放途中停滯：時間碼固定在原生位置，恢復後無追趕或校正seek', (t) async {
+    await openWith(t, (tl) => addVideo(tl));
+    await pressPlay(t);
+    await _tick(t, 15, 33);
+    nativeStalled = true;
+    await _tick(t, 2, 33);
+    final stopped = nativeMs / 1000;
+    await _tick(t, 20, 33);
+    expect(_playhead(t), closeTo(stopped, 0.001));
+    nativeStalled = false;
+    await _tick(t, 5, 33);
+    expect(_playhead(t), closeTo(nativeMs / 1000, 0.001));
+    expect(seeks, isEmpty);
+    await close(t);
+  });
+
+  testWidgets('位置讀取失敗：保留播放頭，不能把未知位置當成零', (t) async {
+    await openWith(t, (tl) => addVideo(tl));
+    await pressPlay(t);
+    await _tick(t, 15, 33);
+    nativeStalled = true;
+    await _tick(t, 2, 33);
+    final before = _playhead(t);
+    positionUnavailable = true;
+    await _tick(t, 85, 33);
+    expect(_playhead(t), before);
+    expect(
+      builds,
+      1,
+      reason: 'missing data cannot count as a confirmed decoder stall',
+    );
+    expect(Diag.report(), isNot(contains('播放器卡死')));
+    positionUnavailable = false;
+    nativeStalled = false;
+    await _tick(t, 5, 33);
+    expect(_playhead(t), closeTo(nativeMs / 1000, 0.001));
+    expect(seeks, isEmpty);
+    await close(t);
+  });
+
+  testWidgets('位置查询未完成不重複堆積，暫停後舊回覆不移動播放頭', (t) async {
+    await openWith(t, (tl) => addVideo(tl));
+    await pressPlay(t);
+    final delayed = Completer<int>();
+    heldPosition = delayed;
+    final queriesBefore = positionQueries;
+    await _tick(t, 85, 33);
+    expect(
+      positionQueries - queriesBefore,
+      1,
+      reason: 'clock and probe share one query',
+    );
+    expect(
+      builds,
+      1,
+      reason: 'a slow channel reply is not a fresh stalled sample',
+    );
+    await t.tap(find.byIcon(Icons.pause_rounded).first);
+    await t.pump();
+    final paused = _playhead(t);
+    delayed.complete(0);
+    await _tick(t, 8, 33);
+    expect(_playhead(t), paused);
+    expect(_isPlaying(), isFalse);
+    await close(t);
+  });
+
+  testWidgets('連續兩秒真正沒有前進仍會重建卡死播放器', (t) async {
+    await openWith(t, (tl) => addVideo(tl));
+    await pressPlay(t);
+    nativeStalled = true;
+    await _tick(t, 100, 33);
+    expect(Diag.report(), contains('播放器卡死'));
+    expect(
+      builds,
+      greaterThan(1),
+      reason: 'native clock stalls retain the existing recovery',
+    );
+    await close(t);
+  });
+
+  testWidgets('最後50ms停滯不啟動文字尾段，真正到影片終點後尾段正常走完', (t) async {
+    compDuration = 1;
+    capNativeAtMs = 950;
+    await openWith(t, (tl) {
+      addVideo(tl, vidEnd: 1);
+      addText(tl, at: 0, len: 3);
+    });
+    await pressPlay(t);
+    await _tick(t, 45, 33);
+    expect(nativeMs, 950);
+    expect(_playhead(t), 0.95);
+    expect(_isPlaying(), isTrue);
+    capNativeAtMs = 1000;
+    await _tick(t, 80, 33);
+    expect(nativeMs, 1000);
+    expect(_playhead(t), 3);
+    expect(_isPlaying(), isFalse);
+    expect(seeks, isEmpty);
+    await close(t);
+  });
 
   testWidgets('播放起步等待位置時按暫停：舊請求不能再次啟動播放器', (t) async {
     await openWith(t, (tl) => addVideo(tl));

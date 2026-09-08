@@ -28,6 +28,7 @@ import '../services/native_export.dart';
 import '../services/native_frames.dart';
 import '../services/overlay_sync.dart';
 import '../services/playback_trace.dart';
+import '../services/composition_playback_clock.dart';
 import '../services/rotation_snap.dart';
 import '../services/comp_player.dart';
 import '../services/video_picker.dart';
@@ -5334,10 +5335,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _finishScrub(int revision) async {
     final player = _compOn ? _comp : null;
     final at = _position;
+    final presentation = player != null && player.nativeScrub
+        ? await player.scrub(at, exact: true)
+        : null;
     final landed =
         player == null ||
-        (player.nativeScrub
-            ? (await player.scrub(at, exact: true)).displayed
+        (presentation != null
+            ? presentation.displayed
             : await player.seekSettled(at));
     if (!mounted || revision != _scrubRevision || _playing || !_scrubbing) {
       return;
@@ -5361,7 +5365,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     _failedScrubRevision = null;
-    if (player != null) _compExactAt = at;
+    // A requested time may fall between frames. Once the finger is released,
+    // use the confirmed displayed frame for both the ruler and the time label.
+    // Keep this after the revision/player guards so an old receipt cannot move
+    // a newer gesture or a replacement composition.
+    final displayedAt = presentation?.actualSeconds;
+    if (displayedAt != null) {
+      _cancelScrubAlignment();
+      _position = displayedAt.clamp(0.0, _visDur);
+      _syncScrollToPosition();
+    }
+    if (player != null) _compExactAt = _position;
     setState(() => _scrubbing = false);
   }
 
@@ -8108,11 +8122,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   // ===== 播放 =====
 
-  /// 對時要慢慢吃掉的校正量（正＝往前追、負＝往回讓）。
-  /// 起步空窗本地時鐘會多跑 0.2~0.5 秒，第一次對時如果硬跳回去，
-  /// 指針就往回頓一下（實測回報：指針卡頓、播放本身不會）——
-  /// 改成攤進速率滑回去，肉眼看不出來
+  /// The legacy per-clip path still uses a local timeline clock. Composition
+  /// playback below follows native samples and never accumulates this bias.
   double _clockBias = 0;
+  final _compClock = CompositionPlaybackClock();
 
   void _onTick(Duration elapsed) {
     if (!_playing) return;
@@ -8123,6 +8136,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (dt <= 0 || dt > 1.0) return;
     PlaybackTrace.instance.tick(dt);
     if (dt > 0.05) Diag.count('掉格');
+    if (_compOn) {
+      _compClock.advanceTail(dt * _speed, visibleDuration: _visDur);
+      _applyCompClockPosition();
+      if (_playing) _syncFromComp(elapsed);
+      return;
+    }
     // UI 執行緒卡了一下（過熱降頻等）：別讓指針一口氣跳過去，
     // 超出的部分交給對時滑動每秒最多 60% 慢慢吃，肉眼看不出跳
     if (dt > 0.25) {
@@ -8144,21 +8163,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _position = _visDur;
       _pause(atEnd: true);
     }
-    // 播放接管中：引擎有自己的時鐘，每半秒對一次時（引擎端只在
-    // 偏差 >0.25s 時重定，音訊時鐘是主）
-
-    // 合成播放器是唯一的時鐘來源：位置以它為準，Dart 這邊只在兩次
-    // 回報之間補間。原本的做法是 App 自己算時間再回頭校正播放器，
-    // 那個校正每次都會讓畫面停一下
-    if (_compOn) {
-      _syncFromComp();
-      // 時間軸的設計是「播放頭固定、捲動內容＝位置」，合成模式一直
-      // 沒跟著捲——位置走到 1.7、捲動還停在 0。暫停之後兩者脫鉤：
-      // 往右滑（offset 要往 0 以下減）整條拖不動、往左滑指針先跳回
-      // 開頭。播放中一樣要讓內容跟著播放頭捲
-      _followPlayhead();
-      return;
-    }
+    if (!_playing) return;
     _syncMedia();
     _followPlayhead();
     // 不做 setState：位置相關 UI 由 _posVN 各自小範圍重繪
@@ -8502,6 +8507,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final wall = Stopwatch()..start();
     var basePlayer = -1;
     Object? baseCtrl;
+    var lastCompClockSample = -1;
     _playProbe = Timer.periodic(const Duration(milliseconds: 400), (_) async {
       if (!_playing || !mounted) return;
       final callSw = Stopwatch()..start();
@@ -8509,7 +8515,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       Object? who;
       if (_compOn) {
         final comp = _comp!;
-        final p = await comp.position();
+        // Reuse the single-flight clock sample; a second probe query can
+        // otherwise overtake a delayed position reply during a decoder stall.
+        final p = _compClock.nativePosition;
+        final sample = _compClock.sampleRevision;
+        if (p == null || sample == lastCompClockSample) {
+          // A missing/delayed channel reply is not a fresh observation that
+          // the decoder is stuck. Require consecutive confirmed samples.
+          _playStuck = 0;
+          basePlayer = -1;
+          return;
+        }
+        lastCompClockSample = sample;
         if (!mounted || !_playing || epoch != _playbackEpoch || _comp != comp) {
           return;
         }
@@ -8517,7 +8534,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 正常的，時鐘自己走完尾巴（同 _syncFromComp 的豁免）——位置
         // 不前進不是殭屍，不能拿去重建
         final compEnd = comp.duration;
-        if (compEnd > 0 && p >= compEnd - 0.1) {
+        if (compEnd > 0 && p >= compEnd - 0.001001) {
           _playStuck = 0;
           return;
         }
@@ -8563,45 +8580,56 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     });
   }
 
-  /// 跟合成播放器對時：每 200ms 問一次真正的位置，中間用 ticker 補間
-  DateTime _lastCompSync = DateTime.fromMillisecondsSinceEpoch(0);
+  /// At most one native sample in flight, at approximately 30 Hz. Use ticker
+  /// elapsed time so a wall-clock change cannot suspend position updates.
+  Duration _lastCompSync = const Duration(milliseconds: -33);
+  bool _compClockQueryBusy = false;
   int _playbackEpoch = 0;
 
-  void _syncFromComp() {
-    final now = DateTime.now();
-    if (now.difference(_lastCompSync).inMilliseconds < 200) return;
-    _lastCompSync = now;
+  void _applyCompClockPosition() {
+    final next = _compClock.position.clamp(0.0, _visDur);
+    // A ticker beat may arrive before the next native sample. Do not spend
+    // the scroll throttle on unchanged data and delay the actual new frame.
+    if (next == _position && next < _visDur) return;
+    _position = next;
+    if (_position >= _visDur) {
+      _pause(atEnd: true);
+    } else {
+      _followPlayhead();
+    }
+  }
+
+  void _syncFromComp(Duration elapsed) {
+    if (_compClockQueryBusy ||
+        elapsed - _lastCompSync < const Duration(milliseconds: 33)) {
+      return;
+    }
+    _lastCompSync = elapsed;
+    _compClockQueryBusy = true;
     final player = _comp!;
     final epoch = _playbackEpoch;
     unawaited(
-      player.position().then((p) {
-        if (!mounted ||
-            !_playing ||
-            _comp != player ||
-            epoch != _playbackEpoch) {
-          return;
-        }
-        // 合成只鋪到最後一段影片的結尾；時間軸可能更長（馬賽克或
-        // 文字拖出去的尾巴）。播放器到底停住之後它就不再是時鐘——
-        // 再拿它校正會把指針一路拉回合成結尾，跟還在前進的時鐘打
-        // 架，播放頭就在結尾來回抖。尾巴段讓 Dart 時鐘自己走完，
-        // 畫面維持最後一幀（播放器本來就停在那）
-        final compEnd = _comp!.duration;
-        if (compEnd > 0 &&
-            compEnd < _tl.duration - 0.05 &&
-            p >= compEnd - 0.1) {
-          return;
-        }
-        // 差一點＝攤進速率慢慢滑回去（見 _clockBias）；
-        // 真的脫節（>0.6s，卡死/跳針那種）才硬跳
-        final diff = p - _position;
-        if (diff.abs() > 0.6) {
-          _position = p;
-          _clockBias = 0;
-        } else if (diff.abs() > 0.12) {
-          _clockBias = diff;
-        }
-      }),
+      player
+          .positionSample()
+          .then((p) {
+            if (!mounted ||
+                !_playing ||
+                _comp != player ||
+                epoch != _playbackEpoch) {
+              return;
+            }
+            _compClock.sample(
+              nativePosition: p,
+              compositionDuration: player.duration,
+              visibleDuration: _visDur,
+            );
+            _applyCompClockPosition();
+          })
+          .whenComplete(() {
+            if (_comp == player && epoch == _playbackEpoch) {
+              _compClockQueryBusy = false;
+            }
+          }),
     );
   }
 
@@ -8621,6 +8649,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _scrubQueue.clear();
     if (_position >= _visDur - 0.01) _position = 0;
     _clockBias = 0; // 上一輪沒吃完的校正不能帶進新的一輪
+    _compClock.reset(_position);
+    _compClockQueryBusy = false;
+    _lastCompSync = const Duration(milliseconds: -33);
     final tr = PlaybackTrace.instance..start();
 
     // 拖曳收尾排在後面的那幾件事，按下播放的當下全部取消：
@@ -8682,17 +8713,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 已經停在該在的位置就不要 seek——這正是我在舊路徑上剛修掉的
       // 同一個坑：seek 沒跑完之前播放器的 rate 壓在 0，畫面不會動。
       // 真的要移動時也用寬容 seek，反正接下來就要滾過去了
-      final now = await player.position();
+      final now = await player.positionSample();
       if (compCancelled()) return;
-      if ((now - _position).abs() <= 0.15) {
+      final startsInTail =
+          player.duration > 0 &&
+          player.duration < _visDur - 0.001001 &&
+          _position >= player.duration;
+      final target = startsInTail ? player.duration : _position;
+      final alignmentTolerance = startsInTail ? 0.001001 : 0.15;
+      if (now != null && (now - target).abs() <= alignmentTolerance) {
         // 播放器已經在附近（chase 的寬容度是 0.1，別跟它打架）：
         // 一發 seek 都不送，時間軸直接對齊播放器——它本來就是唯一的時鐘
-        _position = now;
+        if (!startsInTail) _position = now.clamp(0.0, _visDur);
       } else {
         // 遠距（例如片尾歸零重播）：先 seek 完成才 play——順序反了
         // 的話 play 在片尾立即自停、seek 完成後沒人再叫 play，
         // 播放器停在新位置永遠不動（實測：播完再按播放沒反應）
-        final landed = await player.seekSettled(_position);
+        final landed = await player.seekSettled(target);
         if (compCancelled()) return;
         if (!landed) {
           Diag.count('播放前定位未完成');
@@ -8719,8 +8756,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (compCancelled()) return;
       final msYield = swPlay.elapsedMilliseconds - msOvSync;
       // 必須取定位之後的位置；否則片尾歸零的 seek 會被誤算成播放前進。
-      final p0 = await player.position();
+      final p0 = await player.positionSample();
       if (compCancelled()) return;
+      _compClock.reset(_position);
+      _compClock.sample(
+        nativePosition: p0,
+        compositionDuration: player.duration,
+        visibleDuration: _visDur,
+      );
       final st = await player.play();
       if (compCancelled()) return;
       tr.log(
@@ -8731,18 +8774,27 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       tr.log('系統播放器起播（狀態：${st ?? '？'}）');
       final sw = Stopwatch()..start();
       var positionAdvanced = false;
-      while (!compCancelled() && sw.elapsedMilliseconds < 400) {
+      while (!compCancelled() &&
+          !_compClock.inTail &&
+          sw.elapsedMilliseconds < 400) {
         await Future<void>.delayed(const Duration(milliseconds: 16));
         if (compCancelled()) return;
-        final p = await player.position();
+        final p = await player.positionSample();
         if (compCancelled()) return;
-        if (p - p0 > 0.001) {
+        _compClock.sample(
+          nativePosition: p,
+          compositionDuration: player.duration,
+          visibleDuration: _visDur,
+        );
+        _applyCompClockPosition();
+        if (compCancelled()) return;
+        if (p != null && p0 != null && p - p0 > 0.001) {
           positionAdvanced = true;
           tr.log('播放位置開始前進（系統播放器，非首幀呈現確認）');
           break;
         }
       }
-      if (!positionAdvanced) {
+      if (!positionAdvanced && !_compClock.inTail) {
         tr.log('⚠ 起播後 400ms 內未確認位置前進，等待逾時（不計成功延遲）');
       }
       // 影格滾起來了（或等超過 400ms 保底）：引擎的 pump 泊車，
@@ -8764,7 +8816,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 模式（iOS 預設）才會踩到的情況——以前只有逐片段那條路會開它，
       // 合成模式永遠不會重建、播放取樣診斷也是空的
       _startPlayProbe();
-      tr.log('◀ 時間軸開始走');
+      tr.log(positionAdvanced ? '◀ 時間軸跟隨播放器' : '◀ 等待播放器位置，時間軸保持停點');
       return;
     }
     final waits = <Future<void>>[];
@@ -8881,6 +8933,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 一發精準 seek 反而會退回前一格（原生端把目標夾在總長前 34ms）
   void _pause({bool atEnd = false}) {
     final epoch = ++_playbackEpoch;
+    _compClockQueryBusy = false;
     if (_startingPlayback) {
       setState(() => _startingPlayback = false);
       _syncPrepInteraction();
@@ -9602,6 +9655,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (edge != null) HapticFeedback.selectionClick();
     }
     if (edge != null) _position = edge.clamp(0.0, _tl.duration);
+    // Ruler taps and the fullscreen slider also move the same scrollable
+    // timeline. Composition/cache branches below return early; synchronizing
+    // only at the end left their ruler at the previous playback position.
+    _syncScrollToPosition();
     _scrubProbeBegin(); // 要在 _scrubbing 翻 true 之前（它靠這個認起手）
     _scrubbing = true;
     _syncPrepInteraction(forceBusy: true);
@@ -9631,7 +9688,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     } else {
       _scrubSeek();
     }
-    _syncScrollToPosition();
   }
 
   /// 播放中讓時間軸跟著播放頭捲動。

@@ -5921,6 +5921,10 @@ final class MCNativeScrubCache {
     lock.lock(); defer { lock.unlock() }
     wantsFrames = false; pendingNotice = nil
   }
+  func allowNoticeTolerance(_ tolerance: Double) {
+    lock.lock(); defer { lock.unlock() }
+    if wantsFrames { noticeTolerance = max(noticeTolerance, tolerance) }
+  }
   private func deliverLatestNotice() {
     lock.lock()
     let frame = wantsFrames ? pendingNotice : nil
@@ -6057,6 +6061,60 @@ final class MCNativePlaybackIntent {
   func isCurrent(_ token: UInt64) -> Bool { token == generation }
 }
 
+/// One physical seek/presentation at a time, plus the latest requested target.
+/// Superseding a reply does not cancel the frame already being decoded: a seek
+/// completion can arrive before CI has produced that frame. Draining here only
+/// after presentation prevents a stream of 1 ms seek callbacks starving CI.
+final class MCNativeScrubRequests {
+  final class Request {
+    let id: UInt64
+    let seconds: Double
+    let exact: Bool
+    let toleranceMs: Int
+    private var reply: (([String: Any]) -> Void)?
+    init(id: UInt64, seconds: Double, exact: Bool, toleranceMs: Int,
+         reply: @escaping ([String: Any]) -> Void) {
+      self.id = id; self.seconds = seconds; self.exact = exact
+      self.toleranceMs = toleranceMs; self.reply = reply
+    }
+    func finish(_ result: [String: Any]) {
+      let done = reply; reply = nil; done?(result)
+    }
+    func supersede() { finish(["displayed": false, "cacheHit": false, "reason": "superseded"]) }
+  }
+  var onStart: ((Request) -> Void)?
+  private(set) var active: Request?
+  private(set) var pending: Request?
+  private var nextID: UInt64 = 0
+  private(set) var coalesced = 0
+  func submit(seconds: Double, exact: Bool, toleranceMs: Int,
+              reply: @escaping ([String: Any]) -> Void) {
+    nextID &+= 1
+    let request = Request(id: nextID, seconds: seconds, exact: exact,
+                          toleranceMs: toleranceMs, reply: reply)
+    if active != nil {
+      active?.supersede(); pending?.supersede()
+      pending = request; coalesced += 1
+    } else {
+      active = request; onStart?(request)
+    }
+  }
+  func complete(_ id: UInt64, result: [String: Any]) {
+    guard let finished = active, finished.id == id else { return }
+    active = nil
+    let next = pending; pending = nil
+    // Install ownership before invoking user callbacks, which may re-enter.
+    active = next
+    finished.finish(result)
+    if let next = next, active === next { onStart?(next) }
+  }
+  func cancel() {
+    let old = active; let next = pending
+    active = nil; pending = nil
+    old?.supersede(); next?.supersede()
+  }
+}
+
 /// Display only: effects already ran through CIExportCompositor. A tagged HLG
 /// output remains HLG into a packed ten-bit layer, avoiding an undocumented
 /// linear-HLG normalization/SDR-white multiplier. Apple's color-space display
@@ -6108,7 +6166,7 @@ final class MCNativeScrubPlane {
     layer.drawableSize = CGSize(width: max(1, (bounds.width * scale).rounded()),
                                 height: max(1, (bounds.height * scale).rounded()))
     if let frame = frame, let validity = validity, validity() {
-      present(frame, valid: validity) { _ in }
+      present(frame, valid: validity) { _, _ in }
     }
   }
   func invalidate() {
@@ -6136,13 +6194,13 @@ final class MCNativeScrubPlane {
     _ = try context.startTask(toRender: image, from: rect, to: destination, at: .zero)
   }
   func present(_ frame: MCNativeScrubCache.Frame,
-               valid: @escaping () -> Bool, done: @escaping (Bool) -> Void) {
+               valid: @escaping () -> Bool, done: @escaping (Bool, String?) -> Void) {
     let replied = AtomicFlag()
-    let finish: (Bool) -> Void = { ok in
-      if replied.setIfClear() { done(ok) }
+    let finish: (Bool, String?) -> Void = { ok, reason in
+      if replied.setIfClear() { done(ok, reason) }
     }
     guard Self.supported, layer.bounds.width > 0, layer.bounds.height > 0,
-      let commands = commands, let context = context else { finish(false); return }
+      let commands = commands, let context = context else { finish(false, "surface-unavailable"); return }
     if hdr != frame.hdr {
       invalidate(); hdr = frame.hdr
       layer.pixelFormat = frame.hdr ? .bgr10a2Unorm : .bgra8Unorm
@@ -6150,30 +6208,48 @@ final class MCNativeScrubPlane {
                                                         : CGColorSpace.itur_709)
       if #available(iOS 16.0, *) {
         layer.wantsExtendedDynamicRangeContent = frame.hdr
-        layer.edrMetadata = frame.hdr && CAEDRMetadata.isAvailable ? .hlg : nil
+        // Encoded HDR uses the layer's transfer-function color space. A
+        // non-nil edrMetadata requires a linear color space and a floating-point
+        // format (>1), which bgr10a2Unorm/HLG are not. Mixing the two display
+        // contracts can make nextDrawable fail on device before any frame can
+        // present. Keep the CVPixelBuffer's HLG/2020 tags and CI conversion.
+        // https://developer.apple.com/documentation/quartzcore/cametallayer/edrmetadata
+        // https://developer.apple.com/documentation/metal/using-color-spaces-to-display-hdr-content
+        layer.edrMetadata = nil
       }
     }
     lock.lock(); generation &+= 1; let id = generation; lock.unlock()
     queue.async { [weak self] in
-      guard let self = self, self.current(id), valid(),
-        let drawable = self.layer.nextDrawable(), let command = commands.makeCommandBuffer()
-      else { DispatchQueue.main.async { finish(false) }; return }
+      autoreleasepool {
+      guard let self = self, self.current(id), valid()
+      else { DispatchQueue.main.async { finish(false, "render-superseded") }; return }
+      guard let drawable = self.layer.nextDrawable() else {
+        DispatchQueue.main.async { finish(false, "drawable-unavailable") }; return
+      }
+      guard let command = commands.makeCommandBuffer() else {
+        DispatchQueue.main.async { finish(false, "command-unavailable") }; return
+      }
       do {
         try Self.encode(frame, to: drawable.texture, command: command, context: context)
       } catch {
-        DispatchQueue.main.async { finish(false) }; return
+        DispatchQueue.main.async { finish(false, "encode: \(error.localizedDescription)") }; return
       }
-      guard self.current(id), valid() else { DispatchQueue.main.async { finish(false) }; return }
+      guard self.current(id), valid() else {
+        DispatchQueue.main.async { finish(false, "encoded-superseded") }; return
+      }
       drawable.addPresentedHandler { [weak self] drawable in
         DispatchQueue.main.async {
-          guard let self = self, self.current(id), valid(), drawable.presentedTime > 0
-          else { finish(false); return }
+          guard let self = self, self.current(id), valid()
+          else { finish(false, "presented-superseded"); return }
+          guard drawable.presentedTime > 0 else { finish(false, "drawable-dropped"); return }
           self.displayedFrame = frame; self.displayedValidity = valid
-          finish(true)
+          finish(true, nil)
         }
       }
       command.addCompletedHandler { buffer in
-        if buffer.status == .error { DispatchQueue.main.async { finish(false) } }
+        if buffer.status == .error {
+          DispatchQueue.main.async { finish(false, "gpu: \(buffer.error?.localizedDescription ?? "unknown")") }
+        }
       }
       // Commit GPU work first, then expose and present the drawable in the same
       // CA transaction. An initially hidden layer otherwise has no visible
@@ -6182,11 +6258,12 @@ final class MCNativeScrubPlane {
       command.waitUntilScheduled()
       DispatchQueue.main.async { [weak self] in
         guard let self = self, self.current(id), valid(), command.status != .error
-        else { finish(false); return }
+        else { finish(false, "scheduled-superseded"); return }
         CATransaction.begin(); CATransaction.setDisableActions(true)
         self.visible = true; self.layer.isHidden = false
         drawable.present()
         CATransaction.commit()
+      }
       }
     }
   }
@@ -6264,19 +6341,19 @@ final class PlayerHosts: NSObject {
   }
   func presentNativeScrub(_ frame: MCNativeScrubCache.Frame, player: AVPlayer,
                           cache: MCNativeScrubCache, presentation: UInt64,
-                          done: @escaping (Bool) -> Void) {
-    guard current === player else { done(false); return }
+                          done: @escaping (Bool, String?) -> Void) {
+    guard current === player else { done(false, "player-replaced"); return }
     let hosts = views.allObjects.filter { MCNativeScrubPlane.canPresent(in: $0) }
-    guard !hosts.isEmpty else { done(false); return }
+    guard !hosts.isEmpty else { done(false, "no-visible-host"); return }
     var remaining = hosts.count
     var replied = false
     for host in hosts {
       host.scrubPlane.present(frame,
-        valid: { cache.isCurrent(frame, presentation: presentation) }) { ok in
+        valid: { cache.isCurrent(frame, presentation: presentation) }) { ok, reason in
         remaining -= 1
         // A covered secondary host may never present. The first actually
         // presented, visible surface is sufficient; it cannot be vetoed later.
-        if !replied && (ok || remaining == 0) { replied = true; done(ok) }
+        if !replied && (ok || remaining == 0) { replied = true; done(ok, reason) }
       }
     }
   }
@@ -6568,12 +6645,13 @@ final class CompPlayer: NSObject, FlutterTexture {
   let player = AVPlayer()
   private let nativeScrubCache = MCNativeScrubCache()
   private let nativeScrubReceipt = MCNativeScrubReceipt()
+  private let nativeScrubRequests = MCNativeScrubRequests()
   private let nativePlayIntent = MCNativePlaybackIntent()
   private struct NativeGoal {
     let id: UInt64
     let presentation: UInt64
     let target: Double
-    let tolerance: Double
+    var tolerance: Double
     let started: CFTimeInterval
     var rendering = false
   }
@@ -6583,6 +6661,8 @@ final class CompPlayer: NSObject, FlutterTexture {
   private(set) var nativeScrubSupported = false
   private var nativePresentedCount = 0
   private var nativeFailedCount = 0
+  private var nativeFailureReasons: [String: Int] = [:]
+  private var nativeLastFailure: String?
   private var nativePresentMs: [Int] = []
   private var nativeLastPresentedTime: Double?
   private var nativeStyleRedrawArmed = false
@@ -6597,6 +6677,7 @@ final class CompPlayer: NSObject, FlutterTexture {
   }
   func invalidateNativeScrub() {
     nativePlayIntent.replace()
+    nativeScrubRequests.cancel()
     nativeGoal = nil; nativePresentedTime = nil; nativeRequestedTarget = nil
     nativeStylePresentation = nil
     nativeScrubReceipt.cancel()
@@ -6625,7 +6706,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       tolerance: tolerance, started: previousGoal?.started ?? CACurrentMediaTime())
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
       guard let self = self, self.nativeGoal?.presentation == presentation else { return }
-      self.nativeFailedCount += 1; self.hideNativeScrub()
+      self.failNativeScrub("style-frame-timeout")
     }
     scheduleNativeStyleRedraw()
   }
@@ -6651,12 +6732,20 @@ final class CompPlayer: NSObject, FlutterTexture {
       self.nudgeRedrawIfPaused()
     }
   }
-  private func hideNativeScrub() {
+  private func hideNativeScrub(cancelRequests: Bool = true) {
+    if cancelRequests { nativeScrubRequests.cancel() }
     nativeScrubCache.beginPresentation(wantsFrames: false)
     nativeGoal = nil; nativePresentedTime = nil; nativeRequestedTarget = nil
     nativeStylePresentation = nil
-    nativeScrubReceipt.cancel()
     if PlayerHosts.shared.current === player { PlayerHosts.shared.hideNativeScrub() }
+    nativeScrubReceipt.cancel()
+  }
+  private func failNativeScrub(_ reason: String) {
+    nativeFailedCount += 1
+    let stage = String(reason.prefix(80)).components(separatedBy: ":").first ?? reason
+    nativeFailureReasons[stage, default: 0] += 1
+    nativeLastFailure = String(reason.prefix(200))
+    hideNativeScrub(cancelRequests: false)
   }
   func scrub(_ seconds: Double, exact: Bool, toleranceMs: Int,
              reply: @escaping ([String: Any]) -> Void) {
@@ -6665,28 +6754,58 @@ final class CompPlayer: NSObject, FlutterTexture {
       PlayerHosts.shared.current === player else {
       reply(["displayed": false, "cacheHit": false]); return
     }
-    let target = Self.nativeFrameTarget(seconds, duration: duration)
+    nativeScrubRequests.submit(seconds: seconds, exact: exact,
+                               toleranceMs: toleranceMs, reply: reply)
+  }
+  private func performNativeScrub(_ request: MCNativeScrubRequests.Request) {
+    let exact = request.exact
+    let toleranceMs = request.toleranceMs
+    let target = Self.nativeFrameTarget(request.seconds, duration: duration)
     nativeRequestedTarget = target
     nativeScrubCache.resumeCapturing()
     let tolerance = exact ? 0.001 : Double(min(150, max(0, toleranceMs))) / 1000
-    let id = nativeScrubReceipt.begin(exact: exact, reply: reply)
+    let id = nativeScrubReceipt.begin(exact: exact) { [weak self] result in
+      self?.nativeScrubRequests.complete(request.id, result: result)
+    }
     nativeGoal = NativeGoal(id: id, presentation: nativeScrubCache.beginPresentation(
       target: target, tolerance: tolerance),
       target: target, tolerance: tolerance, started: CACurrentMediaTime())
     if let frame = nativeScrubCache.nearest(target, tolerance: tolerance) {
       presentNativeScrub(frame, cacheHit: true)
     }
+    let mayBeNoOp = exact && abs(player.currentTime().seconds - target) < 0.001
     // The same chase aligns the AVPlayer under the cached plane. Hits do not
     // create a second decoder or a parallel seek stream.
     seek(target, exact: exact, toleranceMs: toleranceMs, nativeRequest: true) { [weak self] ok in
       guard let self = self, id == self.nativeScrubReceipt.generation else { return }
-      self.nativeScrubReceipt.didSeek(id, ok: ok)
-      if !ok { self.nativeFailedCount += 1; self.hideNativeScrub() }
+      guard ok else { self.failNativeScrub("seek-failed"); return }
+      self.nativeScrubReceipt.didSeek(id, ok: true)
+      if mayBeNoOp {
+        // Repeating a seek to the current item time can complete without a new
+        // compositor request (e.g. the current frame was evicted after a style
+        // or memory reset). Give its existing request/preroll time to finish;
+        // only if no frame arrives, ask once for a tiny in-frame redraw.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+          guard let self = self, var goal = self.nativeGoal, goal.id == id,
+            !goal.rendering, !self.seeking, !self.nudging, self.player.rate == 0,
+            abs(self.player.currentTime().seconds - target) < 0.004 else { return }
+          if let frame = self.nativeScrubCache.nearest(target, tolerance: goal.tolerance) {
+            self.presentNativeScrub(frame, cacheHit: true); return
+          }
+          // Existing redraw alternates +1/+2 ticks at timescale 600. Report the
+          // actual composition PTS, still rejecting a different instruction.
+          goal.tolerance = max(goal.tolerance, 2.0 / 600.0 + 0.0001)
+          self.nativeGoal = goal
+          self.nativeScrubCache.allowNoticeTolerance(goal.tolerance)
+          self.nudgeRedrawIfPaused()
+        }
+      }
     }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+    DispatchQueue.main.asyncAfter(deadline: .now() + (exact ? 3 : 0.75)) { [weak self] in
       guard let self = self, self.nativeScrubReceipt.generation == id,
         self.nativeScrubReceipt.isPending else { return }
-      self.nativeFailedCount += 1; self.hideNativeScrub()
+      self.failNativeScrub(self.nativeGoal?.rendering == true
+        ? "presentation-timeout" : "composition-frame-timeout")
     }
   }
   private func presentNativeScrub(_ frame: MCNativeScrubCache.Frame, cacheHit: Bool) {
@@ -6696,7 +6815,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     goal.rendering = true; nativeGoal = goal
     PlayerHosts.shared.presentNativeScrub(frame, player: player, cache: nativeScrubCache,
                                           presentation: goal.presentation) {
-      [weak self] ok in
+      [weak self] ok, reason in
       guard let self = self, self.nativeGoal?.id == goal.id,
         self.nativeScrubReceipt.acceptsPresentation(goal.id,
           presentation: goal.presentation,
@@ -6712,13 +6831,13 @@ final class CompPlayer: NSObject, FlutterTexture {
         self.nativeScrubReceipt.didPresent(goal.id, time: frame.time, cacheHit: cacheHit)
       } else {
         self.nativeGoal?.rendering = false
-        self.nativeFailedCount += 1
-        self.hideNativeScrub()
+        self.failNativeScrub(reason ?? "presentation-failed")
       }
     }
   }
   func endScrub(at seconds: Double?, reply: @escaping (Bool) -> Void) {
     nativePlayIntent.replace()
+    nativeScrubRequests.cancel()
     nativeScrubCache.beginPresentation(wantsFrames: false)
     guard let seconds = seconds, seconds.isFinite else {
       hideNativeScrub(); reply(true); return
@@ -7006,6 +7125,9 @@ final class CompPlayer: NSObject, FlutterTexture {
     super.init()
     nativeScrubCache.onFrame = { [weak self] frame in
       self?.presentNativeScrub(frame, cacheHit: false)
+    }
+    nativeScrubRequests.onStart = { [weak self] request in
+      self?.performNativeScrub(request)
     }
     // 新合成從一般模式起算（拖曳模式只在拖曳 seek 之間活著）
     CIExportCompositor.setScrubbing(false)
@@ -8298,6 +8420,7 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// playImmediately 而不是 play：後者會先跑一輪緩衝條件才讓畫面真的動
   func play() {
     let playIntent = nativePlayIntent.replace()
+    nativeScrubRequests.cancel()
     nativeScrubCache.beginPresentation(wantsFrames: false)
     nativeScrubCache.resumeCapturing()
     // A hit may have appeared before its physical chase caught up. Keep that
@@ -8394,6 +8517,10 @@ final class CompPlayer: NSObject, FlutterTexture {
 
   func pause() {
     nativePlayIntent.replace()
+    nativeScrubRequests.cancel()
+    nativeScrubCache.beginPresentation(wantsFrames: false)
+    nativeGoal = nil; nativeStylePresentation = nil
+    nativeScrubReceipt.cancel()
     audioPlayer.pause()
     CIExportCompositor.slowLock.lock()
     CIExportCompositor.watchSupply = false
@@ -8481,6 +8608,8 @@ final class CompPlayer: NSObject, FlutterTexture {
   private(set) var seekCoalesced = 0
   /// 落地的 seek 總數（seekMs 只留前 400 發；拖曳偵探要的是不封頂的計數）
   private(set) var seekDone = 0
+  private(set) var seekSucceeded = 0
+  private(set) var seekUnfinished = 0
 
   /// 停手後排過預捲、還沒被取消：下一發 seek 開跑前先取消它。
   /// 預捲＝對暫停中的合成連環解碼＋合成好幾格，跟緊接著的 seek 搶解碼器
@@ -8599,6 +8728,7 @@ final class CompPlayer: NSObject, FlutterTexture {
             Int((CACurrentMediaTime() - seekStart) * 1000))
         }
         self.seekDone += 1
+        if ok { self.seekSucceeded += 1 } else { self.seekUnfinished += 1 }
         self.seeking = false
         self.seekCompletion.finish(request, succeeded: ok)
         // 定位落地（沒被下一發打斷）：換手中的新畫面可以翻上來了
@@ -8766,6 +8896,13 @@ final class CompPlayer: NSObject, FlutterTexture {
     m["nativeScrub"] = nativeScrubCache.stats()
     m["nativeScrubPresented"] = nativePresentedCount
     m["nativeScrubFailures"] = nativeFailedCount
+    m["nativeScrubFailureReasons"] = nativeFailureReasons
+    if let reason = nativeLastFailure { m["nativeScrubLastFailure"] = reason }
+    m["nativeScrubCoalesced"] = nativeScrubRequests.coalesced
+    m["nativeScrubActive"] = nativeScrubRequests.active != nil
+    m["nativeScrubPending"] = nativeScrubRequests.pending != nil
+    m["seekSucceeded"] = seekSucceeded
+    m["seekUnfinished"] = seekUnfinished
     if let time = nativeLastPresentedTime { m["nativeScrubLastPresentedTime"] = time }
     if !nativePresentMs.isEmpty {
       m["nativeScrubPresentAvgMs"] = nativePresentMs.reduce(0, +) / nativePresentMs.count

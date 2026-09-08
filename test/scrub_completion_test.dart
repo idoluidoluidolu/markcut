@@ -22,6 +22,7 @@ void main() {
   var nativeMs = 0;
   var builds = 0;
   var nativeScrub = false;
+  var quantizeNativeFrames = false;
   final presentations = <Map<Object?, Object?>>[];
   var returnFrames = true;
   var detailedFrameReply = false;
@@ -44,6 +45,7 @@ void main() {
     nativeMs = 0;
     builds = 0;
     nativeScrub = false;
+    quantizeNativeFrames = false;
     presentations.clear();
     returnFrames = true;
     detailedFrameReply = false;
@@ -111,8 +113,13 @@ void main() {
             landings.add(landing);
             if (!await landing.future) return {'displayed': false};
           }
-          nativeMs = (at * 1000).round();
-          return {'displayed': true, 'actualSeconds': at, 'cacheHit': true};
+          final displayed = quantizeNativeFrames ? (at * 30).ceil() / 30 : at;
+          nativeMs = (displayed * 1000).round();
+          return {
+            'displayed': true,
+            'actualSeconds': displayed,
+            'cacheHit': true,
+          };
         case 'pause':
         case 'dispose':
           clock?.cancel();
@@ -227,6 +234,61 @@ void main() {
     landings.last.complete(false);
     await tick(t, 3);
     expect(isPlaying(), true);
+    await close(t);
+  });
+
+  for (final native in [false, true]) {
+    testWidgets('合成${native ? '原生' : '快取'}定位立即同步時間軸刻度，不等收尾', (t) async {
+      nativeScrub = native;
+      await open(t);
+      final timeline = editorOf(t);
+      timeline.onSeek(3);
+      expect(playheadOf(t), 3);
+      expect(
+        timeline.scrollController.offset,
+        closeTo(3 * timeline.pxPerSec, 0.01),
+      );
+      expect(landings, isEmpty, reason: '時間軸不能要等220ms收尾才同步');
+      await close(t);
+    });
+  }
+
+  testWidgets('停手後時間碼與刻度對齊原生實際呈現的影格時間', (t) async {
+    nativeScrub = true;
+    quantizeNativeFrames = true;
+    await open(t);
+    await scrub(t, 2.012);
+    expect(playheadOf(t), closeTo(2.012, 0.0001), reason: '拖動時保留手指目標');
+    await tick(t, 8);
+    expect(landings.length, 1);
+    landings.single.complete(true);
+    await tick(t, 3);
+    final displayed = 61 / 30;
+    final timeline = editorOf(t);
+    expect(playheadOf(t), closeTo(displayed, 0.0001));
+    expect(
+      timeline.scrollController.offset,
+      closeTo(displayed * timeline.pxPerSec, 0.01),
+    );
+    await close(t);
+  });
+
+  testWidgets('舊原生成功呈現回覆不能把新手勢刻度拉回舊格', (t) async {
+    nativeScrub = true;
+    quantizeNativeFrames = true;
+    await open(t);
+    await scrub(t, 2.012);
+    await tick(t, 8);
+    expect(landings.length, 1);
+    await scrub(t, 4.012);
+    landings.first.complete(true);
+    await t.pump();
+    final timeline = editorOf(t);
+    expect(playheadOf(t), closeTo(4.012, 0.0001));
+    expect(
+      timeline.scrollController.offset,
+      closeTo(4.012 * timeline.pxPerSec, 0.01),
+    );
     await close(t);
   });
 

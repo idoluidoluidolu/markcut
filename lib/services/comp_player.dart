@@ -1018,16 +1018,17 @@ class CompPlayer {
 
   Future<void> dispose() => _quiet('dispose');
 
-  /// 目前位置（秒）。合成播放器是唯一的時鐘來源——App 不再自己算時間，
-  /// 也就不會有「時鐘跟畫面對不上」這回事
-  Future<double> position() async {
+  /// A failed position read is unknown, not a successful seek to zero.
+  Future<double?> positionSample() async {
     try {
       final ms = await _ch.invokeMethod<int>('position');
-      return (ms ?? 0) / 1000.0;
+      return ms == null || ms < 0 ? null : ms / 1000.0;
     } catch (_) {
-      return 0;
+      return null;
     }
   }
+
+  Future<double> position() async => await positionSample() ?? 0;
 
   /// 材質實際更新的間隔統計。30fps 的素材理想是每 33ms 換一張；
   /// 出現 60、80、100 就是 judder——每一格都準時畫，但畫的是同一張。
@@ -1127,6 +1128,44 @@ class CompPlayer {
         final actual = m['nativeScrubLastPresentedTime'] as num?;
         if (actual != null && actual.isFinite) {
           b.write('／最後呈現時間 ${actual.toStringAsFixed(3)}s');
+        }
+        final coalesced = m['nativeScrubCoalesced'] as num?;
+        final active = m['nativeScrubActive'];
+        final pending = m['nativeScrubPending'];
+        if (coalesced != null || active is bool || pending is bool) {
+          b.write('\n  原生拖曳排程：');
+          b.write(
+            [
+              if (coalesced != null) '合併 ${coalesced.toInt()} 個中途目標',
+              if (active is bool) '處理中 ${active ? '是' : '否'}',
+              if (pending is bool) '待追最新目標 ${pending ? '是' : '否'}',
+            ].join('／'),
+          );
+          b.write('（合併不算呈現失敗）');
+        }
+        final reasons = m['nativeScrubFailureReasons'];
+        if (reasons is Map) {
+          final entries =
+              reasons.entries.where((entry) {
+                  final count = entry.value;
+                  return count is num && count.isFinite && count > 0;
+                }).toList()
+                ..sort((a, b) => a.key.toString().compareTo(b.key.toString()));
+          if (entries.isNotEmpty) {
+            b.write('\n  拖曳未完成階段：');
+            b.write(
+              entries
+                  .map((entry) {
+                    return '${_scrubFailureStage(entry.key.toString())}'
+                        ' ${entry.value} 次';
+                  })
+                  .join('；'),
+            );
+          }
+        }
+        final lastFailure = m['nativeScrubLastFailure'];
+        if (lastFailure is String && lastFailure.isNotEmpty) {
+          b.write('\n  拖曳最近未完成：${_scrubFailureStage(lastFailure)}');
         }
       }
       if (m['frameProbe'] != null) {
@@ -1277,15 +1316,53 @@ class CompPlayer {
       if (n != null) {
         b.write(
           '\n  催重畫：${m['nudgeInfo'] ?? '—'}'
-          '\n  拖曳 seek：$n 發／平均 ${m['seekAvgMs']}ms'
+          '\n  定位 seek 回覆：$n 發／平均 ${m['seekAvgMs']}ms'
           '／一半在 ${m['seekP50Ms']}ms 內／九成在 ${m['seekP90Ms']}ms 內'
           '／最久 ${m['seekMaxMs']}ms／被合併掉 ${m['seekCoalesced']} 發',
         );
+        final succeeded = m['seekSucceeded'] as num?;
+        final unfinished = m['seekUnfinished'] as num?;
+        if (succeeded != null || unfinished != null) {
+          b.write(
+            [
+              if (succeeded != null) '／回報成功 ${succeeded.toInt()} 發',
+              if (unfinished != null) '／回報未完成 ${unfinished.toInt()} 發',
+            ].join(),
+          );
+        }
+        b.write('（seek 回覆不代表影格已呈現）');
       }
       return b.toString();
     } catch (_) {
       return '讀不到';
     }
+  }
+
+  static String _scrubFailureStage(String stage) {
+    const labels = {
+      'surface-unavailable': '顯示面未就緒',
+      'render-superseded': '繪製前已被取代',
+      'drawable-unavailable': '取不到可顯示紋理',
+      'command-unavailable': '建不出 GPU 指令',
+      'encode': 'GPU 繪製編排失敗',
+      'encoded-superseded': '編排後已被取代',
+      'presented-superseded': '呈現回覆已過期',
+      'drawable-dropped': '顯示系統丟棄影格',
+      'gpu': 'GPU 執行失敗',
+      'scheduled-superseded': '排程後已被取代',
+      'no-visible-host': '沒有可見的影片視圖',
+      'player-replaced': '播放器已替換',
+      'seek-failed': '定位回報未完成',
+      'presentation-timeout': '等待實際呈現逾時',
+      'composition-frame-timeout': '等待合成影格逾時',
+      'style-frame-timeout': '等待樣式影格逾時',
+    };
+    final separator = stage.indexOf(':');
+    final key = separator < 0 ? stage : stage.substring(0, separator);
+    final label = labels[key];
+    if (label == null) return stage;
+    final detail = separator < 0 ? '' : stage.substring(separator);
+    return '$label [$key]$detail';
   }
 
   Future<void> _quiet(String method, [Object? arg]) async {
