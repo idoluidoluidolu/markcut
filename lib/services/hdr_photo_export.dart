@@ -99,9 +99,20 @@ class HdrPhotoExport {
     String album = '浮水印',
     String? name,
     BatchOverlayCache? overlayCache,
+    // 成品長邊的下限（見 kPhotoExportMinLong）：來源比這小就退回 SDR 路。
+    // 0＝不守（測試用假的小來源驗原生那條路時關掉）
+    int minLongSide = kPhotoExportMinLong,
   }) async {
     if (!probe.hdr) return '來源不是 HDR';
     if (probe.w < 2 || probe.h < 2) return '照片尺寸探不到';
+    // 太小的來源退回 SDR 路：那條會先把照片放大到長邊 kPhotoExportMinLong
+    // 再合成（成品的字才不會比預覽糊，見 compositePhoto），這條的原生
+    // 合約是照片 1:1 貼進畫布、沒有放大這一步。真正的 HDR 照片（手機拍
+    // 的，12MP 起跳）永遠不會走到這裡；守著是為了「同一張照片走哪條路
+    // 出來都一樣大」這句話對任何來源都成立
+    if (minLongSide > 0 && probe.w < minLongSide && probe.h < minLongSide) {
+      return '來源太小，改走 SDR 放大';
+    }
     final geo = photoCanvasGeometry(probe.w, probe.h, canvasAspect);
     final extras = extraMarks ?? const <WatermarkSettings>[];
     Uint8List? overlay;

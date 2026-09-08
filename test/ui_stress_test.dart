@@ -8,6 +8,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 import 'package:markcut/main.dart';
@@ -62,6 +63,20 @@ void main() {
       final prev = ImagePickerPlatform.instance;
       ImagePickerPlatform.instance = picker;
       addTearDown(() => ImagePickerPlatform.instance = prev);
+      // 安卓的系統相片選取器（markcut/pick）：回 null＝這台沒有，退到
+      // image_picker 的假選取器（跟 home_screen_test 同一套）。不掛的話
+      // fake-async 裡 MissingPluginException 的回覆永遠送不到，calls 就是 0
+      final b = TestDefaultBinaryMessengerBinding.instance;
+      b.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('markcut/pick'),
+        (_) async => null,
+      );
+      addTearDown(
+        () => b.defaultBinaryMessenger.setMockMethodCallHandler(
+          const MethodChannel('markcut/pick'),
+          null,
+        ),
+      );
 
       await tester.pumpWidget(const MarkCutApp());
       await tester.pumpAndSettle();

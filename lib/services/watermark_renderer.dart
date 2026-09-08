@@ -236,6 +236,7 @@ class WatermarkRenderer {
       rotatedRectBounds(r, c, deg);
 
   /// 照片浮水印：以原始解析度合成照片 + 馬賽克 + 浮水印，輸出 PNG（無損）。
+  /// [minLongSide] 見 [compositePhoto]
   static Future<Uint8List> renderPhotoComposite(
     Uint8List photoBytes,
     WatermarkSettings s, {
@@ -243,6 +244,7 @@ class WatermarkRenderer {
     List<PhotoMosaic>? mosaics,
     List<WatermarkSettings>? extraMarks,
     double? canvasAspect,
+    int minLongSide = kPhotoExportMinLong,
   }) async {
     final image = await renderPhotoImage(
       photoBytes,
@@ -251,6 +253,7 @@ class WatermarkRenderer {
       mosaics: mosaics,
       extraMarks: extraMarks,
       canvasAspect: canvasAspect,
+      minLongSide: minLongSide,
     );
     final data = await image.toByteData(format: ui.ImageByteFormat.png);
     image.dispose();

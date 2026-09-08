@@ -50,12 +50,13 @@ void main() {
           style: MosaicStyle(type: 2, color: 0xFF000000),
         ),
       ],
+      // 以來源尺寸取樣像素：關掉「長邊不到 1440 先放大」（那條有自己的
+      // 測試 photo_export_min_size_test）
+      minLongSide: 0,
     );
     final codec = await ui.instantiateImageCodec(out);
     final f = await codec.getNextFrame();
-    final px = (await f.image.toByteData(
-      format: ui.ImageByteFormat.rawRgba,
-    ))!;
+    final px = (await f.image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
     int r(int x, int y) => px.getUint8((y * 200 + x) * 4);
     // 筆畫中心（100,100）被遮成黑
     expect(r(100, 100), lessThan(30), reason: '筆畫上要打到碼');

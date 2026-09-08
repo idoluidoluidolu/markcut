@@ -144,6 +144,9 @@ void main() {
       _noMarks(),
       grade: ColorGrade(brightness: 0.3),
       canvasAspect: 16 / 9,
+      // 這裡驗的是黑邊／調色的幾何，以來源尺寸取樣：關掉「長邊不到
+      // 1440 先放大」（那條有自己的測試 photo_export_min_size_test）
+      minLongSide: 0,
     );
     expect((out.width, out.height), (711, 400));
     final raw = await _raw(out);
@@ -172,6 +175,7 @@ void main() {
       src,
       _noMarks(),
       grade: ColorGrade(brightness: 0.3),
+      minLongSide: 0, // 理由同上
     );
     expect((out.width, out.height), (200, 400));
     final raw = await _raw(out);

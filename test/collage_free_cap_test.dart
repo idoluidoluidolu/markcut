@@ -8,10 +8,10 @@
 // - 壞掉的草稿（6×6）也守 30 格
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -108,6 +108,20 @@ Future<_Picker> _openFree(WidgetTester t) async {
   final prev = ImagePickerPlatform.instance;
   ImagePickerPlatform.instance = picker;
   addTearDown(() => ImagePickerPlatform.instance = prev);
+  // 安卓的系統相片選取器（markcut/pick）：回 null＝這台沒有，退到
+  // image_picker（跟 home_screen_test 同一套）。不掛的話 fake-async 裡
+  // MissingPluginException 的回覆永遠送不到，假選取器就開不起來
+  final b = TestDefaultBinaryMessengerBinding.instance;
+  b.defaultBinaryMessenger.setMockMethodCallHandler(
+    const MethodChannel('markcut/pick'),
+    (_) async => null,
+  );
+  addTearDown(
+    () => b.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('markcut/pick'),
+      null,
+    ),
+  );
   await t.pumpWidget(const MaterialApp(home: CollageScreen()));
   await _waitLoaded(t);
   await t.tap(find.text('自由'));

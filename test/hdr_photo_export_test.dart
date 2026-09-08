@@ -81,6 +81,10 @@ void main() {
           png,
           noMarks(),
           canvasAspect: aspect,
+          // 幾何比對在「不放大」的條件下做：HDR 路的原生合約是照片 1:1
+          // 貼進畫布，沒有 SDR 路那道「長邊不到 1440 先放大」（太小的
+          // 來源 exportToGallery 會直接退 SDR，見那裡的守門）
+          minLongSide: 0,
         );
         final img = await decode(out);
         expect(
@@ -221,6 +225,8 @@ void main() {
       final err = await HdrPhotoExport.exportToGallery(
         srcPath: '/x.heic',
         probe: const HdrPhotoProbe(hdr: true, w: 300, h: 200),
+        // 假的 300×200 來源：關掉「太小退 SDR」的守門，這裡驗的是原生那條路
+        minLongSide: 0,
         settings: WatermarkSettings(text: TextMark(text: 'hi')),
         canvasAspect: 1.0,
         quality: 78,
@@ -248,6 +254,8 @@ void main() {
       final err = await HdrPhotoExport.exportToGallery(
         srcPath: '/x.heic',
         probe: const HdrPhotoProbe(hdr: true, w: 300, h: 200),
+        // 假的 300×200 來源：關掉「太小退 SDR」的守門，這裡驗的是原生那條路
+        minLongSide: 0,
         settings: noMarks(),
       );
       expect(err, '需要 iOS 17');
@@ -261,6 +269,8 @@ void main() {
       final err = await HdrPhotoExport.exportToGallery(
         srcPath: '/x.heic',
         probe: const HdrPhotoProbe(hdr: true, w: 300, h: 200),
+        // 假的 300×200 來源：關掉「太小退 SDR」的守門，這裡驗的是原生那條路
+        minLongSide: 0,
         settings: noMarks(),
       );
       expect(err, isNotNull);
@@ -276,6 +286,8 @@ void main() {
       final err = await HdrPhotoExport.exportToGallery(
         srcPath: '/x.heic',
         probe: const HdrPhotoProbe(hdr: true, w: 300, h: 200),
+        // 假的 300×200 來源：關掉「太小退 SDR」的守門，這裡驗的是原生那條路
+        minLongSide: 0,
         settings: noMarks(),
         name: 'out2',
       );
