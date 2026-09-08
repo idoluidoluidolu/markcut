@@ -6684,6 +6684,27 @@ final class CompPlayer: NSObject, FlutterTexture {
     let last = duration > 0 ? max(0, floor((duration - 0.0001) * 30) / 30) : 0
     return min(last, max(0, ceil(seconds * 30 - 0.000001) / 30))
   }
+  /// Tiny redraw inside this frame AND its instruction. In particular, never
+  /// apply the legacy nudge's duration-40ms cap to an exact final-frame target.
+  static func nativeRedrawTarget(_ target: Double, duration: Double,
+                                 instruction: CMTimeRange, avoiding current: Double? = nil) -> Double? {
+    let start = instruction.start.seconds
+    let end = instruction.end.seconds
+    guard target.isFinite, duration.isFinite, start.isFinite, end.isFinite,
+      target >= max(0, start), target < min(duration, end) else { return nil }
+    let frameEnd = (floor(target * 30 + 0.000001) + 1) / 30
+    let upper = min(duration, min(end, frameEnd))
+    // Alternate two valid positions when a later style edit is already sitting
+    // on the first nudge, so that edit does not become another no-op seek.
+    for delta in [min(1.0 / 600.0, (upper - target) / 2),
+                  min(2.0 / 600.0, (upper - target) * 0.75)] {
+      let actual = CMTime(seconds: target + delta, preferredTimescale: 60_000).seconds
+      guard actual > target, actual < upper, actual - target < 0.004 else { continue }
+      if let current = current, abs(actual - current) < 1.0 / 120_000 { continue }
+      return actual
+    }
+    return nil
+  }
   func invalidateNativeScrub() {
     nativePlayIntent.replace()
     nativeScrubRequests.cancel()
@@ -6738,7 +6759,41 @@ final class CompPlayer: NSObject, FlutterTexture {
         }
         return
       }
-      self.nudgeRedrawIfPaused()
+      self.nudgeNativeGoal(goal)
+    }
+  }
+  private func nudgeNativeGoal(_ original: NativeGoal) {
+    guard var goal = nativeGoal, goal.presentation == original.presentation,
+      !seeking, !nudging, player.rate == 0,
+      let instructions = player.currentItem?.videoComposition?.instructions,
+      let instruction = instructions.first(where: {
+        CMTimeRangeContainsTime($0.timeRange,
+          time: CMTime(seconds: goal.target, preferredTimescale: 60_000))
+      }),
+      let target = Self.nativeRedrawTarget(goal.target, duration: duration,
+        instruction: instruction.timeRange, avoiding: player.currentTime().seconds) else { return }
+    goal.tolerance = max(goal.tolerance, target - goal.target + 0.0001)
+    nativeGoal = goal
+    nativeScrubCache.allowNoticeTolerance(goal.tolerance)
+    let lifecycle = seekLifecycle
+    let presentation = goal.presentation
+    nudging = true
+    if prerollArmed {
+      prerollArmed = false; player.cancelPendingPrerolls()
+    }
+    player.seek(to: CMTime(seconds: target, preferredTimescale: 60_000),
+      toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] ok in
+      DispatchQueue.main.async {
+        guard let self = self, lifecycle == self.seekLifecycle else { return }
+        self.nudging = false
+        if !ok, self.nativeGoal?.presentation == presentation {
+          self.failNativeScrub("redraw-seek-failed"); return
+        }
+        // A style update during the in-flight nudge still owns a final redraw.
+        if let latest = self.nativeStylePresentation, latest != presentation {
+          self.scheduleNativeStyleRedraw()
+        }
+      }
     }
   }
   private func hideNativeScrub(cancelRequests: Bool = true) {
@@ -6758,7 +6813,7 @@ final class CompPlayer: NSObject, FlutterTexture {
   }
   func scrub(_ seconds: Double, exact: Bool, toleranceMs: Int,
              reply: @escaping ([String: Any]) -> Void) {
-    nativePlayIntent.replace(); nativeStylePresentation = nil
+    nativePlayIntent.replace()
     guard nativeScrubSupported, seconds.isFinite,
       PlayerHosts.shared.current === player else {
       reply(["displayed": false, "cacheHit": false]); return
@@ -6767,6 +6822,7 @@ final class CompPlayer: NSObject, FlutterTexture {
                                toleranceMs: toleranceMs, reply: reply)
   }
   private func performNativeScrub(_ request: MCNativeScrubRequests.Request) {
+    nativeStylePresentation = nil
     let exact = request.exact
     let toleranceMs = request.toleranceMs
     let target = Self.nativeFrameTarget(request.seconds, duration: duration)
@@ -6795,18 +6851,13 @@ final class CompPlayer: NSObject, FlutterTexture {
         // or memory reset). Give its existing request/preroll time to finish;
         // only if no frame arrives, ask once for a tiny in-frame redraw.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-          guard let self = self, var goal = self.nativeGoal, goal.id == id,
+          guard let self = self, let goal = self.nativeGoal, goal.id == id,
             !goal.rendering, !self.seeking, !self.nudging, self.player.rate == 0,
             abs(self.player.currentTime().seconds - target) < 0.004 else { return }
           if let frame = self.nativeScrubCache.nearest(target, tolerance: goal.tolerance) {
             self.presentNativeScrub(frame, cacheHit: true); return
           }
-          // Existing redraw alternates +1/+2 ticks at timescale 600. Report the
-          // actual composition PTS, still rejecting a different instruction.
-          goal.tolerance = max(goal.tolerance, 2.0 / 600.0 + 0.0001)
-          self.nativeGoal = goal
-          self.nativeScrubCache.allowNoticeTolerance(goal.tolerance)
-          self.nudgeRedrawIfPaused()
+          self.nudgeNativeGoal(goal)
         }
       }
     }

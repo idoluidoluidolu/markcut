@@ -1,7 +1,7 @@
 // 批次草稿的素材複本（稽核 #5、#20）：保留草稿時照片複製進 App 自己的
 // 目錄、草稿記複本；離開時把選取器的複本清掉（草稿還在用的除外）；
 // 草稿記的路徑不見了但留過複本，續作照樣找得回
-import 'dart:async' show unawaited;
+import 'dart:async' show Completer, unawaited;
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -35,6 +35,22 @@ class _FailingBatchPreferences extends InMemorySharedPreferencesStore {
   }
 }
 
+class _DelayedBatchPreferences extends InMemorySharedPreferencesStore {
+  _DelayedBatchPreferences() : super.withData({});
+
+  final release = Completer<void>();
+  bool writeStarted = false;
+
+  @override
+  Future<bool> setValue(String valueType, String key, Object value) async {
+    if (key == 'flutter.$kBatchDraftKey') {
+      writeStarted = true;
+      await release.future;
+    }
+    return super.setValue(valueType, key, value);
+  }
+}
+
 Future<Uint8List> _png(Color c, int w, int h) async {
   final rec = ui.PictureRecorder();
   ui.Canvas(rec).drawRect(
@@ -58,11 +74,25 @@ Future<void> _settle(WidgetTester t, {int rounds = 10}) async {
 
 /// 等到 [ready]。dispose 裡的清理是射後不理的真 I/O，一輪只推得動一步
 ///（複製、列目錄、刪檔各算一步），固定圈數等於在賭機器快不快
-Future<void> _waitFor(WidgetTester t, bool Function() ready) async {
-  for (var i = 0; i < 80 && !ready(); i++) {
+Future<void> _waitFor(
+  WidgetTester t,
+  bool Function() ready, {
+  String reason = '非同步檔案作業未在限時內完成',
+}) async {
+  final elapsed = Stopwatch()..start();
+  while (!ready() && elapsed.elapsed < const Duration(seconds: 8)) {
     await _settle(t, rounds: 1);
   }
+  expect(ready(), isTrue, reason: reason);
 }
+
+Future<void> _waitForHome(WidgetTester t) => _waitFor(
+  t,
+  () =>
+      find.byType(BatchWatermarkScreen).evaluate().isEmpty &&
+      find.text('首頁').evaluate().length == 1,
+  reason: '素材複製與草稿寫入完成後，編輯頁應返回首頁',
+);
 
 bool _allGone(Iterable<String> paths) =>
     paths.every((p) => !File(p).existsSync());
@@ -193,6 +223,44 @@ void main() {
     });
   }
 
+  testWidgets('保留草稿等待真正寫入：尚未完成不能離頁，完成後才返回首頁並清理選取器複本', (t) async {
+    final paths = await _picked(t, 2);
+    final previousStore = SharedPreferencesStorePlatform.instance;
+    final delayed = _DelayedBatchPreferences();
+    SharedPreferencesStorePlatform.instance = delayed;
+    addTearDown(() {
+      if (!delayed.release.isCompleted) delayed.release.complete();
+      SharedPreferencesStorePlatform.instance = previousStore;
+      SharedPreferences.resetStatic();
+    });
+
+    await _pumpFromHome(
+      t,
+      BatchWatermarkScreen(files: [for (final path in paths) XFile(path)]),
+    );
+    await _touch(t);
+    await _back(t);
+    await t.tap(find.text('保留草稿'));
+    await _waitFor(t, () => delayed.writeStarted, reason: '素材應先留好複本，才送草稿寫入');
+    // Deliberately hold completion beyond the old fixed wait. The UI must
+    // remain here until the actual commit, regardless of animation settling.
+    await _settle(t, rounds: 20);
+    await t.pumpAndSettle();
+    expect(find.byType(BatchWatermarkScreen), findsOneWidget);
+    expect(find.text('首頁'), findsNothing);
+    expect(paths.every((path) => File(path).existsSync()), isTrue);
+
+    delayed.release.complete();
+    await _waitForHome(t);
+    final saved = (await draft())!;
+    final files = (saved['files'] as List).cast<String>();
+    expect(files.length, 2);
+    expect(files.every((path) => path.startsWith(_own())), isTrue);
+    expect(files.every((path) => File(path).existsSync()), isTrue);
+    await _waitFor(t, () => _allGone(paths));
+    expect(t.takeException(), isNull);
+  });
+
   testWidgets('保留草稿：檔案複製進 App 自己的目錄、草稿記複本、覆寫以複本路徑當鍵；離開後選取器的複本清掉', (t) async {
     final paths = await _picked(t, 2);
     await _pumpFromHome(
@@ -203,10 +271,9 @@ void main() {
     await _back(t);
     expect(find.text('這批還沒匯出'), findsOneWidget);
     await t.tap(find.text('保留草稿'));
-    // 存草稿要複製檔案（真 I/O）才會 pop；dispose 裡的清理也是射後不理的真 I/O
-    await _settle(t, rounds: 12);
-    await t.pumpAndSettle();
-    await _settle(t, rounds: 6);
+    // pumpAndSettle only drains scheduled frames, not file copy futures. Wait
+    // for the actual route transition; full-suite I/O may take over 720 ms.
+    await _waitForHome(t);
     expect(find.text('首頁'), findsOneWidget);
 
     final d = (await draft())!;
@@ -235,9 +302,7 @@ void main() {
     await _touch(t);
     await _back(t);
     await t.tap(find.text('保留草稿'));
-    await _settle(t, rounds: 12);
-    await t.pumpAndSettle();
-    await _settle(t, rounds: 6);
+    await _waitForHome(t);
     expect(find.text('首頁'), findsOneWidget);
     final d = (await draft())!;
     final copies = (d['files'] as List).cast<String>();

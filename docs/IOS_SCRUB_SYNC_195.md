@@ -20,10 +20,13 @@
 
 模擬器 SDK 不提供 `addPresentedHandler`／`presentedTime`。因此模擬器關閉原生拖曳呈現能力，略過需要這兩個 API 的三項顯示整合測試；純 GPU、色彩數值、快取與排程測試仍可執行。真機保留真正的呈現回呼，沒有把 GPU 執行完成當成已上屏。
 
-測試結果將於本次驗證結束後記錄。模擬器測試無法取代同一部 iPhone 使用原始 4K HDR 素材的冷拖曳與 HDR 螢幕實測。
+完整 Flutter 回歸 **876 項通過、7 項需額外啟用的效能測試跳過**，包含 FFmpeg 實際圖像輸出。`dart analyze --format machine lib test integration_test` 無問題。完整回歸也找出既有草稿測試以固定時間等待真實 I/O 的不穩定性，已改為等待保存完成，另驗證未完成保存時不會離頁或清掉素材；產品保存流程未更動。
+
+iOS 原生驗證結果待本次 CI 完成後記錄。模擬器測試無法取代同一部 iPhone 使用原始 4K HDR 素材的冷拖曳與 HDR 螢幕實測。
 
 ## API 依據
 
 - [Apple：平順執行 AVPlayer seek](https://developer.apple.com/library/archive/qa/qa1820/_index.html)
 - [Apple：以 Core Animation transaction 呈現 Metal drawable](https://developer.apple.com/documentation/quartzcore/cametallayer/presentswithtransaction)
 - [Apple：以色彩空間顯示 HDR 內容](https://developer.apple.com/documentation/metal/using-color-spaces-to-display-hdr-content)
+- [Apple：EDR metadata 的格式與線性色彩空間要求](https://developer.apple.com/documentation/quartzcore/cametallayer/edrmetadata)

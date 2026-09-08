@@ -302,6 +302,51 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(CompPlayer.nativeFrameTarget(.nan, duration: 10), 0)
   }
 
+  func testNativeNoOpRedrawKeepsFractionalDurationLastFrameAndInstructionBounds() throws {
+    let duration = 48.38
+    let last = CompPlayer.nativeFrameTarget(duration, duration: duration)
+    let full = CMTimeRange(start: .zero,
+      duration: CMTime(seconds: duration, preferredTimescale: 60_000))
+    let redrawn = try XCTUnwrap(CompPlayer.nativeRedrawTarget(last,
+      duration: duration, instruction: full))
+    XCTAssertEqual(last, 48.3666666667, accuracy: 0.000001)
+    XCTAssertGreaterThan(redrawn, last, "must never jump back to duration-40ms")
+    XCTAssertLessThan(redrawn - last, 0.004)
+    XCTAssertLessThan(redrawn, duration)
+    XCTAssertEqual(floor(redrawn * 30), floor(last * 30))
+    let editedAgain = try XCTUnwrap(CompPlayer.nativeRedrawTarget(last,
+      duration: duration, instruction: full, avoiding: redrawn))
+    XCTAssertNotEqual(editedAgain, redrawn, "a repeated style change still requests a fresh frame")
+    XCTAssertGreaterThan(editedAgain, last)
+    XCTAssertLessThan(editedAgain - last, 0.004)
+    XCTAssertLessThan(editedAgain, duration)
+
+    let shortInstruction = CMTimeRange(start: CMTime(seconds: 48, preferredTimescale: 60_000),
+      end: CMTime(seconds: 48.367, preferredTimescale: 60_000))
+    let nearBoundary = try XCTUnwrap(CompPlayer.nativeRedrawTarget(last,
+      duration: duration, instruction: shortInstruction))
+    XCTAssertGreaterThan(nearBoundary, last)
+    XCTAssertLessThan(nearBoundary, shortInstruction.end.seconds)
+    XCTAssertNil(CompPlayer.nativeRedrawTarget(duration, duration: duration, instruction: full))
+    XCTAssertNil(CompPlayer.nativeRedrawTarget(47, duration: duration, instruction: shortInstruction))
+    XCTAssertNil(CompPlayer.nativeRedrawTarget(.nan, duration: duration, instruction: full))
+  }
+
+  func testPendingScrubDoesNotStartOrInvalidateTheActiveStyleProducer() {
+    let requests = MCNativeScrubRequests()
+    var activeStyleProducer: UInt64?
+    requests.onStart = { _ in activeStyleProducer = nil }
+    requests.submit(seconds: 1, exact: false, toleranceMs: 0) { _ in }
+    let active = requests.active!.id
+    activeStyleProducer = 42 // style changes while this frame is decoding
+    requests.submit(seconds: 4, exact: true, toleranceMs: 0) { _ in }
+    XCTAssertEqual(activeStyleProducer, 42,
+      "pending touches must leave the active frame's final style redraw alive")
+    requests.complete(active, result: ["displayed": true, "actualSeconds": 1.0])
+    XCTAssertNil(activeStyleProducer, "only actually starting the new target transfers ownership")
+    XCTAssertEqual(requests.active?.seconds, 4)
+  }
+
   private func scrubMetalResources(format: MTLPixelFormat) throws
     -> (CIContext, MTLTexture, MTLCommandBuffer) {
     guard let device = MTLCreateSystemDefaultDevice(),
