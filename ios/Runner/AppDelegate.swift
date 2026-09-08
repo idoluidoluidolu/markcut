@@ -6116,10 +6116,14 @@ final class MCNativeScrubRequests {
 }
 
 /// Display only: effects already ran through CIExportCompositor. A tagged HLG
-/// output remains HLG into a packed ten-bit layer, avoiding an undocumented
+/// output remains encoded HLG into a half-float layer, avoiding an undocumented
 /// linear-HLG normalization/SDR-white multiplier. Apple's color-space display
 /// path handles transfer/OOTF/tone mapping; this class has no effect shaders.
 final class MCNativeScrubPlane {
+  // CAMetalLayer can display BGR10A2, but Core Image cannot render into that
+  // destination on all MTLDevices (CIContextRenderDestination error 5). Half
+  // float is supported by both; colorspace still describes ENCODED HLG values.
+  static let hdrPixelFormat: MTLPixelFormat = .rgba16Float
   let layer = CAMetalLayer()
   private let device: MTLDevice?
   private let commands: MTLCommandQueue?
@@ -6210,16 +6214,16 @@ final class MCNativeScrubPlane {
       let commands = commands, let context = context else { finish(false, "surface-unavailable"); return }
     if hdr != frame.hdr {
       invalidate(); hdr = frame.hdr
-      layer.pixelFormat = frame.hdr ? .bgr10a2Unorm : .bgra8Unorm
+      layer.pixelFormat = frame.hdr ? Self.hdrPixelFormat : .bgra8Unorm
       layer.colorspace = CGColorSpace(name: frame.hdr ? CGColorSpace.itur_2100_HLG
                                                         : CGColorSpace.itur_709)
       if #available(iOS 16.0, *) {
         layer.wantsExtendedDynamicRangeContent = frame.hdr
         // Encoded HDR uses the layer's transfer-function color space. A
-        // non-nil edrMetadata requires a linear color space and a floating-point
-        // format (>1), which bgr10a2Unorm/HLG are not. Mixing the two display
-        // contracts can make nextDrawable fail on device before any frame can
-        // present. Keep the CVPixelBuffer's HLG/2020 tags and CI conversion.
+        // non-nil edrMetadata requires a LINEAR color space as well as a float
+        // format. These half-float pixels still contain encoded HLG, so metadata
+        // stays nil. Keep the CVPixelBuffer's HLG/2020 tags and CI conversion;
+        // do not apply an additional HLG normalization or SDR-white multiplier.
         // https://developer.apple.com/documentation/quartzcore/cametallayer/edrmetadata
         // https://developer.apple.com/documentation/metal/using-color-spaces-to-display-hdr-content
         layer.edrMetadata = nil

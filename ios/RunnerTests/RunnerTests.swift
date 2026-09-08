@@ -394,7 +394,8 @@ class RunnerTests: XCTestCase {
   func testNativeScrubHLGDisplayDoesNotRenormalizeReferenceWhiteOrHighlights() throws {
     guard #available(iOS 16.0, *) else { throw XCTSkip("Native HDR scrub requires iOS 16") }
     for level: Float in [0.5, 0.75, 1.0] {
-      let (context, texture, command) = try scrubMetalResources(format: .bgr10a2Unorm)
+      XCTAssertEqual(MCNativeScrubPlane.hdrPixelFormat, .rgba16Float)
+      let (context, texture, command) = try scrubMetalResources(format: MCNativeScrubPlane.hdrPixelFormat)
       let colorSpace = try XCTUnwrap(CGColorSpace(name: CGColorSpace.itur_2100_HLG))
       let values: [Float] = [level, level, level, 1]
       let data = values.withUnsafeBytes { Data($0) }
@@ -420,14 +421,16 @@ class RunnerTests: XCTestCase {
       try MCNativeScrubPlane.encode(frame, to: texture, command: command, context: context)
       command.commit(); command.waitUntilCompleted()
       XCTAssertEqual(command.status, .completed)
-      var words = [UInt32](repeating: 0, count: 256)
-      words.withUnsafeMutableBytes { texture.getBytes($0.baseAddress!, bytesPerRow: 64,
+      var words = [UInt16](repeating: 0, count: 16 * 16 * 4)
+      words.withUnsafeMutableBytes { texture.getBytes($0.baseAddress!, bytesPerRow: 16 * 4 * 2,
         from: MTLRegionMake2D(0, 0, 16, 16), mipmapLevel: 0) }
-      let pixel = words[8 * 16 + 8]
-      for component in [pixel & 1023, (pixel >> 10) & 1023, (pixel >> 20) & 1023] {
-        XCTAssertEqual(Double(component) / 1023, Double(level), accuracy: 0.015,
+      let pixel = (8 * 16 + 8) * 4
+      for channel in 0..<3 {
+        let component = mcHalfToFloat(words[pixel + channel])
+        XCTAssertEqual(Double(component), Double(level), accuracy: 0.015,
           "HLG encoded values must survive the display conversion without another white-point gain")
       }
+      XCTAssertEqual(Double(mcHalfToFloat(words[pixel + 3])), 1, accuracy: 0.001)
     }
   }
 
@@ -464,7 +467,7 @@ class RunnerTests: XCTestCase {
       }
       wait(for: [presented], timeout: 5)
       XCTAssertTrue(host.scrubPlane.visible)
-      XCTAssertEqual(host.scrubPlane.layer.pixelFormat, hdr ? .bgr10a2Unorm : .bgra8Unorm)
+      XCTAssertEqual(host.scrubPlane.layer.pixelFormat, hdr ? .rgba16Float : .bgra8Unorm)
       if #available(iOS 16.0, *) {
         XCTAssertNil(host.scrubPlane.layer.edrMetadata,
           "encoded HDR must not enable the linear-float EDR metadata pipeline")
