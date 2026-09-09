@@ -972,4 +972,93 @@ class RunnerTests: XCTestCase {
     }
   }
 
+  /// x420（10-bit bi-planar）測試緩衝：Y 平面照 [luma] 給值、CbCr 給常數。
+  /// 逐位元組小端寫入，跟 comparePlanes10 的讀法對齊
+  private func makeTenBitBuffer(
+    width: Int, height: Int, luma: (Int) -> Int, chroma: Int
+  ) throws -> CVPixelBuffer {
+    var optional: CVPixelBuffer?
+    let status = CVPixelBufferCreate(
+      kCFAllocatorDefault, width, height,
+      kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+      [kCVPixelBufferIOSurfacePropertiesKey: [:],
+       kCVPixelBufferMetalCompatibilityKey: true] as CFDictionary, &optional)
+    XCTAssertEqual(status, kCVReturnSuccess)
+    let buffer = try XCTUnwrap(optional)
+    XCTAssertEqual(CVPixelBufferLockBaseAddress(buffer, []), kCVReturnSuccess)
+    defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+    for plane in 0..<2 {
+      let base = try XCTUnwrap(CVPixelBufferGetBaseAddressOfPlane(buffer, plane))
+        .assumingMemoryBound(to: UInt8.self)
+      let planeWidth = CVPixelBufferGetWidthOfPlane(buffer, plane)
+      let planeHeight = CVPixelBufferGetHeightOfPlane(buffer, plane)
+      let rowBytes = CVPixelBufferGetBytesPerRowOfPlane(buffer, plane)
+      let comps = plane == 0 ? 1 : 2
+      for y in 0..<planeHeight {
+        for x in 0..<planeWidth {
+          for c in 0..<comps {
+            let value = plane == 0 ? luma(x) : chroma
+            let i = y * rowBytes + (x * comps + c) * 2
+            base[i] = UInt8(value & 0xFF)
+            base[i + 1] = UInt8((value >> 8) & 0xFF)
+          }
+        }
+      }
+    }
+    return buffer
+  }
+
+  /// HDR 直拷的判準（見 CIExportCompositor.probeHDRFast）：同一張畫面的
+  /// 兩種算法差幾個碼值要判通過，黑畫面要判不過，而「基準本身是平的」
+  /// 那一格不能拿來當證據
+  func testComparePlanes10SeparatesRoundTripNoiseFromABlackFrame() throws {
+    let ramp: (Int) -> Int = { ($0 * 16) << 6 }
+    let neutral = 512 << 6
+    let reference = try makeTenBitBuffer(
+      width: 64, height: 64, luma: ramp, chroma: neutral)
+    let copy = try makeTenBitBuffer(
+      width: 64, height: 64, luma: ramp, chroma: neutral)
+    let identical = try XCTUnwrap(
+      CIExportCompositor.comparePlanes10(copy, reference))
+    XCTAssertEqual(identical.meanY, 0, accuracy: 0.001)
+    XCTAssertEqual(identical.meanC, 0, accuracy: 0.001)
+    // 取樣是每 4 行一點，所以最大值落在 x=60（不是 x=63）
+    XCTAssertEqual(identical.peak, 61440)
+    // 樣本靠左裝：刻度 65535，動態要有滿刻度的 1/8 才算得了數
+    XCTAssertGreaterThan(identical.spread, 65535 / 8)
+    XCTAssertLessThanOrEqual(identical.meanY, Double(identical.spread) / 16)
+
+    // 幾個碼值的來回誤差（CI 那趟 YUV→RGB→YUV）：照樣要通過
+    let noisy = try makeTenBitBuffer(
+      width: 64, height: 64, luma: { ramp($0) + 192 }, chroma: neutral + 192)
+    let jitter = try XCTUnwrap(
+      CIExportCompositor.comparePlanes10(noisy, reference))
+    XCTAssertLessThanOrEqual(jitter.meanY, Double(jitter.spread) / 16)
+    XCTAssertLessThanOrEqual(jitter.meanC, Double(jitter.spread) / 16)
+
+    // 直拷吐黑畫面（實機 144 的形狀）：平均差遠大於門檻，判不過
+    let black = try makeTenBitBuffer(
+      width: 64, height: 64, luma: { _ in 0 }, chroma: 0)
+    let caught = try XCTUnwrap(
+      CIExportCompositor.comparePlanes10(black, reference))
+    XCTAssertGreaterThan(caught.spread, 65535 / 8)
+    XCTAssertGreaterThan(caught.meanY, Double(caught.spread) / 16)
+
+    // 基準自己是平的（全黑）：動態範圍不夠，這一格不算數，換下一格再驗。
+    // 全黑的 peak 是 0，刻度推成 1023，門檻是 127
+    let flat = try XCTUnwrap(CIExportCompositor.comparePlanes10(reference, black))
+    XCTAssertEqual(flat.peak, 0)
+    XCTAssertLessThan(flat.spread, 1023 / 8)
+
+    // 格式不同不比
+    var bgra: CVPixelBuffer?
+    XCTAssertEqual(
+      CVPixelBufferCreate(
+        kCFAllocatorDefault, 64, 64, kCVPixelFormatType_32BGRA,
+        [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &bgra),
+      kCVReturnSuccess)
+    XCTAssertNil(
+      CIExportCompositor.comparePlanes10(try XCTUnwrap(bgra), reference))
+  }
+
 }

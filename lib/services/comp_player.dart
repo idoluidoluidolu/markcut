@@ -1103,6 +1103,12 @@ class CompPlayer {
       if (hdrP?.isNotEmpty == true) {
         b.write('\n  HDR 管線：$hdrP（源要 10-bit＋HLG，出要 HLG）');
       }
+      // HDR 直拷（Metal 兩平面搬運）的數值驗證：通過之後這條路才會上螢幕，
+      // 之前每一格都走 CI。實機 144 曾經吐黑畫面，所以改成先證明再開
+      final hdrFast = m['hdrFast'] as String?;
+      if (hdrFast?.isNotEmpty == true) {
+        b.write('\n  HDR 直拷驗證：$hdrFast');
+      }
       if (m['layerBound'] == false) {
         b.write('\n  ⚠ 影片圖層綁在舊播放器（畫面會全黑）');
       }

@@ -1796,6 +1796,239 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
     return "\(fourCC)/\(trc)"
   }
 
+  // ── HDR 直拷的逐格數值驗證（每個行程一次）──
+  //
+  // 實機 144 命中 19 格卻回報黑畫面，之後整條 HDR 快路就被一句 guard 停用。
+  // 停用的代價是每一格 HDR 預覽都得走 CI：實機 199 在 900x1600 的畫布上
+  // 量到最慢 73ms 一格，而直拷是搬兩個平面、不到 1ms，色彩還是位元級一致。
+  //
+  // 這裡不直接把 guard 拿掉——沒有真機的情況下重開一條曾經吐黑畫面的路，
+  // 就是重演 144。改成「先證明再開」：驗證通過之前每一格照走 CI，螢幕上
+  // 永遠是 CI 那份；CI 畫完之後另外把同一格用直拷寫進一顆暫存緩衝，跟 CI
+  // 的結果逐點比。兩者是同一張畫面的兩種算法（CI 多繞一趟 YUV→RGB→YUV），
+  // 差幾個碼值正常；黑畫面、錯位、range 搞錯都會讓平均差爆掉，當場判不過、
+  // 記下數字，之後整個行程不再嘗試。
+  enum HDRFastVerdict {
+    case pending
+    case pass
+    case fail(String)
+  }
+
+  private static var hdrFastPassed = false
+  private static var hdrFastFailure: String?
+  private static var hdrFastTries = 0
+  private static var hdrFastDetail = ""
+
+  /// 畫面太平（純色、全黑、淡入淡出的頭尾）那幾格驗不出東西：直拷跟 CI
+  /// 都會給出同一片平坦，差值當然是 0——那種「通過」證明不了任何事。
+  /// 換下一格再驗，但不能無限驗下去（整支都是純色的素材）
+  private static let hdrFastMaxTries = 24
+
+  static func hdrFastVerdict() -> HDRFastVerdict {
+    slowLock.lock()
+    defer { slowLock.unlock() }
+    if hdrFastPassed { return .pass }
+    if let why = hdrFastFailure { return .fail(why) }
+    return .pending
+  }
+
+  /// 診斷那一行：驗證到哪一步了。空字串＝這次沒驗過（純 SDR 場次）。
+  ///
+  /// **呼叫端必須已經持有 slowLock**。healthStats 整段都在鎖裡，而 slowLock
+  /// 是 NSLock、不可重入：在那裡呼叫一個自己再鎖一次的 getter，主執行緒會
+  /// 鎖死在自己手上，而且是握著 slowLock 死的——每一格合成都會跟著卡在
+  /// skip／noteFrame 上，整個 App 只剩強制結束（獨立複查擋下來的）
+  static var hdrFastNoteHoldingLock: String {
+    if hdrFastPassed { return "通過（\(hdrFastDetail)）" }
+    if let why = hdrFastFailure { return "未過（\(why)）" }
+    if hdrFastTries == 0 { return "" }
+    return "驗證中（已試 \(hdrFastTries) 格）"
+  }
+
+  /// 來源這一格是不是標成 2020/HLG（＝跟 tagColors 要蓋上去的一致）。
+  ///
+  /// 直拷是原樣搬碼值、然後把輸出標成 2020/HLG。來源要是 PQ（HDR10）或是
+  /// 被放進 HDR 專案的 709 素材，搬完再貼上 HLG 的標籤就是整片顏色錯——
+  /// 那正是 144 的形狀。SDR 那條有對稱的檢查（sdrCompose 看到 HLG/PQ 來源
+  /// 就退 CI），HDR 這條以前沒有，是因為整條被擋著沒人走得到
+  static func taggedHLG2020(_ b: CVPixelBuffer) -> Bool {
+    func tag(_ key: CFString) -> String? {
+      CVBufferGetAttachment(b, key, nil)?.takeUnretainedValue() as? String
+    }
+    return tag(kCVImageBufferTransferFunctionKey)
+      == (kCVImageBufferTransferFunction_ITU_R_2100_HLG as String)
+      && tag(kCVImageBufferColorPrimariesKey)
+        == (kCVImageBufferColorPrimaries_ITU_R_2020 as String)
+  }
+
+  /// 兩顆同格式 bi-planar 10-bit 緩衝的逐點差；每 4 列 4 行取一點。
+  ///
+  /// 回傳的單位是「容器碼值」：10-bit 樣本裝在 16-bit 字裡，靠左靠右各家
+  /// 不同，所以門檻一律拿 [spread]（這張畫面自己的動態範圍）當比例尺，
+  /// 不寫死絕對值。逐位元組讀再自己併成 16-bit：平面的起始位址與列距
+  /// 不保證 2 位元組對齊，直接 assumingMemoryBound(to: UInt16.self) 是
+  /// 未定義行為
+  static func comparePlanes10(_ a: CVPixelBuffer, _ b: CVPixelBuffer)
+    -> (meanY: Double, meanC: Double, spread: Int, peak: Int)?
+  {
+    guard CVPixelBufferGetPixelFormatType(a)
+      == CVPixelBufferGetPixelFormatType(b),
+      CVPixelBufferGetPlaneCount(a) == 2, CVPixelBufferGetPlaneCount(b) == 2
+    else { return nil }
+    guard CVPixelBufferLockBaseAddress(a, .readOnly) == kCVReturnSuccess
+    else { return nil }
+    guard CVPixelBufferLockBaseAddress(b, .readOnly) == kCVReturnSuccess
+    else {
+      CVPixelBufferUnlockBaseAddress(a, .readOnly)
+      return nil
+    }
+    defer {
+      CVPixelBufferUnlockBaseAddress(a, .readOnly)
+      CVPixelBufferUnlockBaseAddress(b, .readOnly)
+    }
+    var mean = [0.0, 0.0]
+    var lo = Int.max
+    var hi = Int.min
+    for plane in 0..<2 {
+      guard let pa = CVPixelBufferGetBaseAddressOfPlane(a, plane),
+        let pb = CVPixelBufferGetBaseAddressOfPlane(b, plane)
+      else { return nil }
+      let w = min(
+        CVPixelBufferGetWidthOfPlane(a, plane),
+        CVPixelBufferGetWidthOfPlane(b, plane))
+      let h = min(
+        CVPixelBufferGetHeightOfPlane(a, plane),
+        CVPixelBufferGetHeightOfPlane(b, plane))
+      let ra = CVPixelBufferGetBytesPerRowOfPlane(a, plane)
+      let rb = CVPixelBufferGetBytesPerRowOfPlane(b, plane)
+      // Y 一個分量、CbCr 兩個（交錯）
+      let comps = plane == 0 ? 1 : 2
+      guard w > 0, h > 0, ra >= w * comps * 2, rb >= w * comps * 2
+      else { return nil }
+      var sum = 0.0
+      var n = 0
+      var y = 0
+      while y < h {
+        let rowA = pa.advanced(by: y * ra).assumingMemoryBound(to: UInt8.self)
+        let rowB = pb.advanced(by: y * rb).assumingMemoryBound(to: UInt8.self)
+        var x = 0
+        while x < w {
+          for c in 0..<comps {
+            let i = (x * comps + c) * 2
+            let va = Int(rowA[i]) | (Int(rowA[i + 1]) << 8)
+            let vb = Int(rowB[i]) | (Int(rowB[i + 1]) << 8)
+            sum += Double(abs(va - vb))
+            n += 1
+            if plane == 0 {
+              lo = min(lo, vb)
+              hi = max(hi, vb)
+            }
+          }
+          x += 4
+        }
+        y += 4
+      }
+      guard n > 0 else { return nil }
+      mean[plane] = sum / Double(n)
+    }
+    guard hi >= lo else { return nil }
+    return (mean[0], mean[1], hi - lo, hi)
+  }
+
+  /// 拿 CI 剛畫好的 [reference] 當基準，把同一格改用直拷寫進暫存緩衝比對。
+  /// 只在 [hdrFastVerdict] 還是 pending 時呼叫；[reference] 一個位元組都不動
+  static func probeHDRFast(
+    source: CVPixelBuffer, reference: CVPixelBuffer,
+    uvA: SIMD4<Float>, uvB: SIMD2<Float>
+  ) {
+    slowLock.lock()
+    let settled = hdrFastPassed || hdrFastFailure != nil
+    if !settled { hdrFastTries += 1 }
+    let tries = hdrFastTries
+    slowLock.unlock()
+    if settled { return }
+
+    /// 第一個寫進去的算數。三顆 HDR 合成器（預覽、匯出、代理轉檔）各有自己
+    /// 的佇列，可能同時在驗：兩邊都先看到「還沒定案」再各寫各的，就會出現
+    /// 「通過」與「未過」同時成立，而 hdrFastVerdict 先看通過＝失敗被吃掉
+    func settle(_ pass: Bool, _ detail: String) {
+      slowLock.lock()
+      let already = hdrFastPassed || hdrFastFailure != nil
+      if !already {
+        if pass {
+          hdrFastPassed = true
+          hdrFastDetail = detail
+        } else {
+          hdrFastFailure = detail
+        }
+      }
+      slowLock.unlock()
+      if !already {
+        NSLog("[FastPath] HDR 直拷驗證 %@：%@", pass ? "通過" : "未過", detail)
+      }
+    }
+
+    /// 這一格驗不出結果（畫面太平、讀不回像素、直拷這一格不吃）：不判死刑，
+    /// 換下一格再驗。單一一格的失敗不能代表整條路——現場那條遇到同樣的情形
+    /// 也只是退 CI。連 [hdrFastMaxTries] 格都這樣才收工
+    func postpone(_ why: String) {
+      guard tries >= hdrFastMaxTries else { return }
+      settle(false, "連 \(tries) 格都驗不成（\(why)）")
+    }
+
+    let fmt = CVPixelBufferGetPixelFormatType(reference)
+    guard fmt == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+      || fmt == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+    else {
+      settle(false, "輸出不是 10-bit bi-planar")
+      return
+    }
+    var scratch: CVPixelBuffer?
+    let attrs: [String: Any] = [
+      kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+      kCVPixelBufferMetalCompatibilityKey as String: true,
+    ]
+    guard
+      CVPixelBufferCreate(
+        kCFAllocatorDefault, CVPixelBufferGetWidth(reference),
+        CVPixelBufferGetHeight(reference), fmt, attrs as CFDictionary,
+        &scratch) == kCVReturnSuccess, let probe = scratch
+    else {
+      postpone("配不出暫存緩衝")
+      return
+    }
+    guard MetalYUVBlit.shared.blit(
+      from: source, to: probe, uvA: uvA, uvB: uvB)
+    else {
+      // 例如來源是 full range、輸出是 video range：直拷本來就該讓開，
+      // 那是這一格的事，不是整條路的死刑（現場那條也只是退 CI）
+      postpone("直拷回報這一格不吃")
+      return
+    }
+    guard let m = comparePlanes10(probe, reference) else {
+      postpone("讀不回像素")
+      return
+    }
+    // 10-bit 樣本裝在 16-bit 字裡，靠左（0~65472）靠右（0~1023）各家不同：
+    // 用觀察到的最大值推容器刻度，門檻換一種裝法也還是同一個意思
+    let scale = m.peak > 1023 ? 65535 : 1023
+    // 平坦的格證明不了任何事（黑畫面也會「通過」），而且門檻是動態範圍的
+    // 1/16——動態太小，門檻會縮到比 CI 的來回誤差還小，好格子反而被判死。
+    // 要求動態至少有滿刻度的 1/8，換算下來門檻是 8 個碼值
+    if m.spread < scale / 8 {
+      postpone("畫面太平（動態 \(m.spread)／刻度 \(scale)）")
+      return
+    }
+    // 門檻＝這張畫面自己動態範圍的 1/16。CI 那趟 YUV→RGB→YUV 的來回誤差
+    // 遠在這之下；黑畫面或錯位會是好幾成
+    let limit = Double(m.spread) / 16
+    let detail =
+      "亮度差 \(String(format: "%.1f", m.meanY))"
+      + "／色差 \(String(format: "%.1f", m.meanC))"
+      + "／動態 \(m.spread)／門檻 \(String(format: "%.1f", limit))"
+    settle(m.meanY <= limit && m.meanC <= limit, detail)
+  }
+
   /// 交格前補上色彩標記：CoreImage 渲染「不會」寫緩衝的色彩附件，
   /// 播放器圖層拿到沒有標記的 HLG/709 緩衝就顯示不出來（黑）。
   /// 匯出寫檔不受影響（走 videoComposition 的宣告），播放才需要
@@ -1952,14 +2185,9 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         // ── Engine 3.0 快路：單層滿版無效果 → YUV 平面直拷 ──
         // 色彩零轉換（位元級一致）、<1ms。任何條件不合就走 CI 原路
         // 逐項判定並記錄未命中原因（實機診斷直接指認）
+        // 這裡只判「這一格夠不夠格走快路」。HDR 還要再過一關數值驗證
+        //（見 probeHDRFast）：那是下面 fastSource 的事，不在這裡擋
         func fastEligible() -> CVPixelBuffer? {
-          // HDR 直拷暫停用：實機 144 命中 19 格且回報黑畫面，
-          // x420 平面搬運的正確性未經數值驗證——先退 CI，
-          // 等 SDR 快路穩定、且有逐格數值比對後再開
-          guard !self.hdrOut else {
-            Self.skip("HDR直拷暫停用")
-            return nil
-          }
           guard frameMosaics.allSatisfy({ t0 < $0.start || t0 >= $0.end })
           else {
             Self.skip("馬賽克")
@@ -1967,11 +2195,20 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           }
           // 指令裡帶疊加物（匯出把浮水印/文字 PNG 綁在指令裡、由下面
           // 的 CI 路畫）就不能直拷：快路只搬 YUV，命中＝成品整段沒有
-          // 浮水印（單一滿版 SDR 片段匯出實測就是這樣掉的）。預覽的
-          // 指令一律 overlays: []（SDR 由 Flutter 畫、HDR 讀即時清單而
-          // hdrOut 已在上面擋掉），所以只看指令這份就夠
+          // 浮水印（單一滿版 SDR 片段匯出實測就是這樣掉的）
           guard ins.overlays.isEmpty else {
             Self.skip("疊加物")
+            return nil
+          }
+          // HDR 預覽的浮水印不在指令裡，在「即時清單」（見 previewSnapshot）：
+          // SDR 預覽由 Flutter 畫在上面，所以指令那份是空的就夠；HDR 一定要
+          // 由合成器烘進去。以前這裡只看 ins.overlays 沒事，是因為 HDR 整條
+          // 在最前面就被擋掉了——現在 HDR 進得來，漏掉這道就是「一走快路
+          // 浮水印整個不見」
+          guard !self.livePreview
+            || CIExportCompositor.currentPreviewOverlays().isEmpty
+          else {
+            Self.skip("即時疊加物")
             return nil
           }
           guard ins.layers.count == 1, let L = ins.layers.first else {
@@ -2006,6 +2243,13 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             Self.skip("缺來源格")
             return nil
           }
+          // 來源的色彩標記要跟我們待會蓋上去的一致（見 taggedHLG2020）：
+          // PQ 來源或被放進 HDR 專案的 709 素材，原樣搬完再貼 HLG 標籤
+          // 就是整片顏色錯
+          guard !self.hdrOut || Self.taggedHLG2020(sbuf) else {
+            Self.skip("來源不是2020/HLG")
+            return nil
+          }
           guard
             let uvp = self.fastUV(
               L, srcW: CGFloat(CVPixelBufferGetWidth(sbuf)),
@@ -2020,10 +2264,29 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         }
         var fastUVA = SIMD4<Float>(0, 0, 1, 0)
         var fastUVB = SIMD2<Float>(0, 1)
+        // 這一格真的要走快路的來源；nil＝走 CI
+        var fastSource: CVPixelBuffer?
+        // HDR 還在驗證中：這一格照走 CI，但把來源留著，CI 畫完拿去比對
+        var hdrProbeSource: CVPixelBuffer?
+        if let sbuf = fastEligible() {
+          if !self.hdrOut {
+            fastSource = sbuf
+          } else {
+            switch Self.hdrFastVerdict() {
+            case .pass:
+              fastSource = sbuf
+            case .pending:
+              hdrProbeSource = sbuf
+              Self.skip("HDR直拷驗證中")
+            case .fail(let why):
+              Self.skip("HDR直拷未過:\(why)")
+            }
+          }
+        }
         // SDR 預覽的疊加物由 Flutter 畫（wmLive 只在 HDR 開），
         // 即時清單只有 livePreview（HDR）合成器讀——快路不疊任何
         // PNG，跟同一顆合成器的 CI 路一致（否則兩條路交替＝閃）
-        if let sbuf = fastEligible(),
+        if let sbuf = fastSource,
           self.hdrOut
             ? MetalYUVBlit.shared.blit(
               from: sbuf, to: dst, uvA: fastUVA, uvB: fastUVB)
@@ -2289,6 +2552,13 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         self.ctx.render(out, to: dst, bounds: canvasRect, colorSpace: self.outCS)
         self.tagColors(dst)
         capturePreview(missing)
+        // HDR 直拷驗證：拿剛畫好的這一格 CI 結果當基準比對（見 probeHDRFast）。
+        // 只有「這一格本來就夠格走快路、而且還沒驗出結果」時 hdrProbeSource
+        // 才不是 nil；dst 一個位元組都不會被動到
+        if let ps = hdrProbeSource, !missing {
+          Self.probeHDRFast(
+            source: ps, reference: dst, uvA: fastUVA, uvB: fastUVB)
+        }
         // HDR 管線探針：整個 App 生命週期只記第一格（見 hdrProbe）
         if self.hdrOut, let ps = probeSrc {
           Self.slowLock.lock()
@@ -2541,8 +2811,12 @@ final class MetalYUVBlit {
       kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
       kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
     ]
-    let is10 = tenBit.contains(sf) && tenBit.contains(df)
-    let is8 = eightBit.contains(sf) && eightBit.contains(df)
+    // 來源與目的要是「同一個」格式，不只是同 bit 深：video range 與 full
+    // range 的碼值範圍不同（10-bit video 的亮度是 64~940、full 是 0~1023），
+    // 原樣搬過去等於黑階被抬高、高光被壓掉。以前只比 bit 深，HLG full
+    // range 的相機檔就會被錯搬進 video range 的輸出緩衝
+    let is10 = sf == df && tenBit.contains(sf)
+    let is8 = sf == df && eightBit.contains(sf)
     guard is10 || is8,
       CVPixelBufferGetPlaneCount(srcBuf) == 2,
       CVPixelBufferGetPlaneCount(dstBuf) == 2
@@ -9115,6 +9389,9 @@ final class CompPlayer: NSObject, FlutterTexture {
     // HDR 管線探針（見 CIExportCompositor.hdrProbe）：空字串＝這次
     // 沒有任何 HDR 合成器跑過（＝預覽根本沒掛 CI，走系統直通）
     m["hdrProbe"] = CIExportCompositor.hdrProbe
+    // HDR 直拷的數值驗證走到哪（見 CIExportCompositor.probeHDRFast）。
+    // 這一整段都在 slowLock 裡，只能用不再上鎖的那個版本
+    m["hdrFast"] = CIExportCompositor.hdrFastNoteHoldingLock
     CIExportCompositor.slowLock.unlock()
     m["stallNotify"] = stallCount
     m["stallNotifyAt"] = stallNotes
