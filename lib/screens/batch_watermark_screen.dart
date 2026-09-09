@@ -1,5 +1,6 @@
 import 'dart:async' show Timer, unawaited;
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -18,6 +19,7 @@ import '../services/batch_overlay_cache.dart';
 import '../services/native_frames.dart';
 import '../services/photo_export.dart';
 import '../services/photo_thumbs.dart';
+import '../services/rotation_snap.dart';
 import '../services/screen_awake.dart';
 import '../services/video_controller.dart';
 import '../services/video_engine.dart' as engine;
@@ -521,14 +523,16 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     }
   }
 
-  /// 縮圖列最後那格「＋」：中途再加檔案進這一批。
-  /// 相簿混選（影片照片都收），加進來直接套整批的浮水印設定
+  /// 縮圖列最前面那格「＋」：中途再加檔案進這一批。
+  /// 相簿混選（影片照片都收），加進來直接套整批的浮水印設定。
+  /// 跟檔案縮圖同一個尺寸（56×56 正方形；使用者指定「用正方形」，
+  /// 以前是 40 寬的直長條）
   Widget _addTile() {
     return InkWell(
       borderRadius: BorderRadius.circular(6),
       onTap: _exporting ? null : _addMoreFiles,
       child: Container(
-        width: 40,
+        width: 56,
         decoration: BoxDecoration(
           color: kPanelHi,
           borderRadius: BorderRadius.circular(6),
@@ -787,11 +791,32 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     showHint(context, '回到整批調整（這張的單獨調整保留）');
   }
 
-  // ===== 預覽區雙指縮放浮水印（跟照片編輯同一套）=====
+  // ===== 預覽區雙指縮放／旋轉浮水印（跟照片編輯同一套）=====
   final Map<int, Offset> _pvPts = {};
   double? _pvBaseDist;
   double _pvBaseText = 0;
   double _pvBaseLogo = 0;
+
+  // 雙指旋轉：兩指的起手角、各部件的底角；門檻／吸附／震動交給
+  // RotationSnap（實測回報「圖片無法在畫面上用手指旋轉」——以前這裡
+  // 只做縮放，旋轉只能拉面板的滑桿）
+  double _pvBaseAngle = 0;
+  double _pvBaseRotText = 0;
+  double _pvBaseRotLogo = 0;
+  final _rotSnap = RotationSnap();
+
+  /// 這次捏合會動哪些部件：有選取只動被選的；都沒選而兩個都在才一起動
+  ///（_pinchDown 挑領頭、_pinchMove 套用，同一份規則）
+  ({bool text, bool logo}) _pinchTargets(WatermarkSettings eff) {
+    final t = eff.text;
+    final hasText = t.enabled && t.text.trim().isNotEmpty;
+    final hasLogo = eff.logo.enabled;
+    final part = _wmPartAlive;
+    return (
+      text: hasText && (part != WmPart.logo || !hasLogo),
+      logo: hasLogo && (part != WmPart.text || !hasText),
+    );
+  }
 
   void _pinchDown(PointerDownEvent e) {
     _pvPts[e.pointer] = e.position;
@@ -808,6 +833,12 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     final eff = _editTarget;
     _pvBaseText = eff.text.sizeFrac;
     _pvBaseLogo = eff.logo.sizeFrac;
+    // 旋轉的起手：兩指的角度、各部件的底角；領頭＝這次會動的那個部件
+    _pvBaseAngle = math.atan2(p[1].dy - p[0].dy, p[1].dx - p[0].dx);
+    _pvBaseRotText = eff.text.rotation;
+    _pvBaseRotLogo = eff.logo.rotation;
+    final targets = _pinchTargets(eff);
+    _rotSnap.arm(targets.text ? _pvBaseRotText : _pvBaseRotLogo);
   }
 
   /// 這次手勢還沒拍過快照（一按下就拍會把重做/選取狀態白白吃掉一步）
@@ -862,28 +893,36 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     if (_pvBaseDist == null || _pvPts.length < 2) return;
     final p = _pvPts.values.toList();
     final f = (p[0] - p[1]).distance / _pvBaseDist!;
+    // 兩指轉多少就轉多少（跟照片編輯器同一套）。門檻／遲滯／震動的規則
+    // 全在 RotationSnap；沒轉過門檻回 0，單純想縮放的人不會被順手轉歪
+    final ang = math.atan2(p[1].dy - p[0].dy, p[1].dx - p[0].dx);
+    final dRot = _rotSnap.delta(
+      RotationSnap.wrapDeg((ang - _pvBaseAngle) * 180 / math.pi),
+    );
     _btPushUndoIfNeeded(); // 真的縮到東西了才拍快照
     setState(() {
       final eff = _editTarget;
-      final t = eff.text;
-      final hasText = t.enabled && t.text.trim().isNotEmpty;
-      final hasLogo = eff.logo.enabled;
-      // 有選取就只縮被選的那個（跟其他三個畫面一致）；
-      // 都沒選而且兩個都在才一起縮。以前永遠一起縮，
+      // 有選取就只動被選的那個（跟其他三個畫面一致）；
+      // 都沒選而且兩個都在才一起動。以前永遠一起縮，
       // 調好的文字/Logo 搭配一捏就毀了
-      final part = _wmPartAlive;
-      final doText = hasText && (part != WmPart.logo || !hasLogo);
-      final doLogo = hasLogo && (part != WmPart.text || !hasText);
-      if (doText) t.sizeFrac = (_pvBaseText * f).clamp(0.015, 2.0);
-      if (doLogo) {
+      final targets = _pinchTargets(eff);
+      if (targets.text) {
+        eff.text.sizeFrac = (_pvBaseText * f).clamp(0.015, 2.0);
+        eff.text.rotation = RotationSnap.wrapDeg(_pvBaseRotText + dRot);
+      }
+      if (targets.logo) {
         eff.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
+        eff.logo.rotation = RotationSnap.wrapDeg(_pvBaseRotLogo + dRot);
       }
     });
   }
 
   void _pinchUp(int pointer) {
     _pvPts.remove(pointer);
-    if (_pvBaseDist != null && _pvPts.length < 2) _pvBaseDist = null;
+    if (_pvBaseDist != null && _pvPts.length < 2) {
+      _pvBaseDist = null;
+      _rotSnap.end();
+    }
   }
 
   // ===== 批次匯出 =====
@@ -1620,128 +1659,128 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                   ),
                   itemCount: _items.length + 1,
                   separatorBuilder: (_, i) => const SizedBox(width: 6),
-                  itemBuilder: (context, i) => i == _items.length
-                      ? _addTile()
-                      : InkWell(
-                          borderRadius: BorderRadius.circular(6),
-                          onTap: () => _selectPreview(i),
-                          onLongPress: () async {
-                            HapticFeedback.mediumImpact(); // 長按成立的觸覺回饋
-                            final hasOverride = _items[i].override != null;
-                            final action = await showModalBottomSheet<String>(
-                              context: context,
-                              showDragHandle: true,
-                              builder: (context) => SafeArea(
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const SizedBox(height: 8),
-                                    if (hasOverride)
-                                      ListTile(
-                                        leading: const Icon(
-                                          Icons.sync,
-                                          color: kAmber,
-                                        ),
-                                        title: const Text('還原成整批設定'),
-                                        subtitle: const Text(
-                                          '丟掉這張的單獨調整',
-                                          style: TextStyle(
-                                            fontSize: 11.5,
-                                            color: kTextDim,
-                                          ),
-                                        ),
-                                        onTap: () =>
-                                            Navigator.pop(context, 'reset'),
-                                      ),
-                                    ListTile(
-                                      leading: const Icon(
-                                        Icons.delete_outline,
-                                        color: kAmber,
-                                      ),
-                                      title: const Text('從批次移除'),
-                                      enabled: _items.length > 1,
-                                      onTap: () =>
-                                          Navigator.pop(context, 'remove'),
-                                    ),
-                                    const SizedBox(height: 8),
-                                  ],
-                                ),
-                              ),
-                            );
-                            if (!mounted) return;
-                            if (action == 'reset') {
-                              setState(() => _items[i].override = null);
-                              showHint(this.context, '已還原成整批設定');
-                              return;
-                            }
-                            if (action != 'remove') return;
-                            if (_items.length <= 1) {
-                              showHint(this.context, '批次至少要留一個檔案', error: true);
-                              return;
-                            }
-                            // 選單上那一項就是明確的動作，不再多一層
-                            // 「確定移除？」：移錯了按「＋」再加回來就好
-                            _removeItem(i);
-                            showHint(this.context, '已從批次移除');
-                          },
-                          child: Container(
-                            width: 56,
-                            clipBehavior: Clip.antiAlias,
-                            decoration: BoxDecoration(
-                              color: kPanelHi,
-                              borderRadius: BorderRadius.circular(6),
-                              border: Border.all(color: kBorder, width: 1),
-                            ),
-                            // 選取框畫在前景，縮圖不位移
-                            foregroundDecoration: i == _previewIndex
-                                ? BoxDecoration(
-                                    borderRadius: BorderRadius.circular(6),
-                                    border: Border.all(
-                                      color: kSelect,
-                                      width: 1.5,
-                                    ),
-                                  )
-                                : null,
-                            child: Stack(
-                              fit: StackFit.expand,
+                  // 「＋」放最前面（使用者指定「加號改到最前面」）：第 0 格
+                  // 是它，檔案從第 1 格開始；下面的 i 一律是檔案的索引
+                  itemBuilder: (context, slot) {
+                    if (slot == 0) return _addTile();
+                    final i = slot - 1;
+                    return InkWell(
+                      borderRadius: BorderRadius.circular(6),
+                      onTap: () => _selectPreview(i),
+                      onLongPress: () async {
+                        HapticFeedback.mediumImpact(); // 長按成立的觸覺回饋
+                        final hasOverride = _items[i].override != null;
+                        final action = await showModalBottomSheet<String>(
+                          context: context,
+                          showDragHandle: true,
+                          builder: (context) => SafeArea(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
                               children: [
-                                if (_items[i].thumb != null)
-                                  Image.memory(
-                                    _items[i].thumb!,
-                                    fit: BoxFit.cover,
-                                    cacheWidth: _thumbLongSide,
-                                    gaplessPlayback: true,
-                                  ),
-                                // 單張模式標記：左上角一顆琥珀小點
-                                if (_items[i].override != null)
-                                  Align(
-                                    alignment: Alignment.topLeft,
-                                    child: Container(
-                                      margin: const EdgeInsets.all(3),
-                                      width: 8,
-                                      height: 8,
-                                      decoration: const BoxDecoration(
-                                        color: kSelect,
-                                        shape: BoxShape.circle,
+                                const SizedBox(height: 8),
+                                if (hasOverride)
+                                  ListTile(
+                                    leading: const Icon(
+                                      Icons.sync,
+                                      color: kAmber,
+                                    ),
+                                    title: const Text('還原成整批設定'),
+                                    subtitle: const Text(
+                                      '丟掉這張的單獨調整',
+                                      style: TextStyle(
+                                        fontSize: 11.5,
+                                        color: kTextDim,
                                       ),
                                     ),
+                                    onTap: () =>
+                                        Navigator.pop(context, 'reset'),
                                   ),
-                                if (isVideoFile(_items[i].file))
-                                  const Align(
-                                    alignment: Alignment.bottomRight,
-                                    child: Padding(
-                                      padding: EdgeInsets.all(2),
-                                      child: Icon(
-                                        Icons.videocam,
-                                        size: 11,
-                                        color: Colors.white70,
-                                      ),
-                                    ),
+                                ListTile(
+                                  leading: const Icon(
+                                    Icons.delete_outline,
+                                    color: kAmber,
                                   ),
+                                  title: const Text('從批次移除'),
+                                  enabled: _items.length > 1,
+                                  onTap: () => Navigator.pop(context, 'remove'),
+                                ),
+                                const SizedBox(height: 8),
                               ],
                             ),
                           ),
+                        );
+                        if (!mounted) return;
+                        if (action == 'reset') {
+                          setState(() => _items[i].override = null);
+                          showHint(this.context, '已還原成整批設定');
+                          return;
+                        }
+                        if (action != 'remove') return;
+                        if (_items.length <= 1) {
+                          showHint(this.context, '批次至少要留一個檔案', error: true);
+                          return;
+                        }
+                        // 選單上那一項就是明確的動作，不再多一層
+                        // 「確定移除？」：移錯了按「＋」再加回來就好
+                        _removeItem(i);
+                        showHint(this.context, '已從批次移除');
+                      },
+                      child: Container(
+                        width: 56,
+                        clipBehavior: Clip.antiAlias,
+                        decoration: BoxDecoration(
+                          color: kPanelHi,
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: kBorder, width: 1),
                         ),
+                        // 選取框畫在前景，縮圖不位移
+                        foregroundDecoration: i == _previewIndex
+                            ? BoxDecoration(
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: kSelect, width: 1.5),
+                              )
+                            : null,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            if (_items[i].thumb != null)
+                              Image.memory(
+                                _items[i].thumb!,
+                                fit: BoxFit.cover,
+                                cacheWidth: _thumbLongSide,
+                                gaplessPlayback: true,
+                              ),
+                            // 單張模式標記：左上角一顆琥珀小點
+                            if (_items[i].override != null)
+                              Align(
+                                alignment: Alignment.topLeft,
+                                child: Container(
+                                  margin: const EdgeInsets.all(3),
+                                  width: 8,
+                                  height: 8,
+                                  decoration: const BoxDecoration(
+                                    color: kSelect,
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                              ),
+                            if (isVideoFile(_items[i].file))
+                              const Align(
+                                alignment: Alignment.bottomRight,
+                                child: Padding(
+                                  padding: EdgeInsets.all(2),
+                                  child: Icon(
+                                    Icons.videocam,
+                                    size: 11,
+                                    color: Colors.white70,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
                 ),
               ),
             if (!_fsPreview) Container(height: 1, color: kBorder),

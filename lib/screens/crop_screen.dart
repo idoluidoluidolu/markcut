@@ -12,9 +12,19 @@ import '../theme.dart';
 ///
 /// 每個「加圖片」的入口都走這裡：浮水印 Logo、時間軸的圖片素材，
 /// 拿到的都是一份 bytes，裁完還是一份 bytes，呼叫端不用改自己的流程。
-Future<Uint8List?> cropImage(BuildContext context, Uint8List bytes) async {
+/// [maxSide]：裁好的圖長邊夾到這麼大（null＝不夾、照裁切框原尺寸出）。
+/// 浮水印 Logo 給 4096：呼叫端本來就會再縮到 4096，讓 CropScreen 出檔時
+/// 一次做完，省掉「編 PNG→解 PNG→再編 PNG」那一輪（12MP 要一兩秒）
+Future<Uint8List?> cropImage(
+  BuildContext context,
+  Uint8List bytes, {
+  int? maxSide,
+}) async {
   final out = await Navigator.of(context).push<Object>(
-    editRoute(fullscreenDialog: true, builder: (_) => CropScreen(bytes: bytes)),
+    editRoute(
+      fullscreenDialog: true,
+      builder: (_) => CropScreen(bytes: bytes, maxSide: maxSide),
+    ),
   );
   return out is Uint8List ? out : null;
 }
@@ -58,12 +68,16 @@ class CropScreen extends StatefulWidget {
     required this.bytes,
     this.rectOnly = false,
     this.initial,
+    this.maxSide,
   });
 
   final Uint8List bytes;
 
   /// true＝按完成回傳 0~1 的框，不真的把圖裁下來
   final bool rectOnly;
+
+  /// 裁好的圖長邊夾到這麼大（null＝不夾），見 [cropImage]
+  final int? maxSide;
 
   /// 進來時框要停在哪（0~1）。null＝整張
   final Rect? initial;
@@ -175,8 +189,16 @@ class _CropScreenState extends State<CropScreen> {
       return;
     }
     setState(() => _busy = true);
-    final w = math.max(1, r.width.round());
-    final h = math.max(1, r.height.round());
+    var w = math.max(1, r.width.round());
+    var h = math.max(1, r.height.round());
+    // 出檔就夾長邊（呼叫端要的尺寸），drawImageRect 順便縮——不用先編一張
+    // 全尺寸 PNG 再讓呼叫端解開重縮
+    final cap = widget.maxSide;
+    if (cap != null && math.max(w, h) > cap) {
+      final sc = cap / math.max(w, h);
+      w = math.max(1, (w * sc).round());
+      h = math.max(1, (h * sc).round());
+    }
     final rec = ui.PictureRecorder();
     final canvas = Canvas(rec);
     canvas.drawImageRect(
@@ -222,42 +244,61 @@ class _CropScreenState extends State<CropScreen> {
       ),
       body: img == null
           ? const Center(child: CircularProgressIndicator())
-          : Column(
+          : Stack(
               children: [
-                Expanded(
-                  child: _CropArea(
-                    image: img,
-                    crop: _crop,
-                    ratio: _ratio,
-                    onCrop: (r) => setState(() => _crop = r),
+                AbsorbPointer(
+                  absorbing: _busy,
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: _CropArea(
+                          image: img,
+                          crop: _crop,
+                          ratio: _ratio,
+                          onCrop: (r) => setState(() => _crop = r),
+                        ),
+                      ),
+                      // 六格等分一排，什麼寬度都不用捲。原本是可捲的 ListView，
+                      // 排在最後那一格在 390 寬的機子上會被切掉一半、也沒有任何
+                      // 「還可以捲」的暗示；順序改成首位數字由小到大之後，最後
+                      // 一格正好是最常用的 16:9，不能讓它藏在畫面外
+                      SizedBox(
+                        height: 58,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                          child: Row(
+                            children: [
+                              for (final (i, (label, r)) in _kRatios.indexed)
+                                Expanded(
+                                  child: Padding(
+                                    padding: EdgeInsets.only(
+                                      left: i == 0 ? 0 : 6,
+                                    ),
+                                    child: _RatioChip(
+                                      label: label,
+                                      on: _ratio == r,
+                                      onTap: () => _applyRatio(r),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
                   ),
                 ),
-                // 六格等分一排，什麼寬度都不用捲。原本是可捲的 ListView，
-                // 排在最後那一格在 390 寬的機子上會被切掉一半、也沒有任何
-                // 「還可以捲」的暗示；順序改成首位數字由小到大之後，最後
-                // 一格正好是最常用的 16:9，不能讓它藏在畫面外
-                SizedBox(
-                  height: 58,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 14),
-                    child: Row(
-                      children: [
-                        for (final (i, (label, r)) in _kRatios.indexed)
-                          Expanded(
-                            child: Padding(
-                              padding: EdgeInsets.only(left: i == 0 ? 0 : 6),
-                              child: _RatioChip(
-                                label: label,
-                                on: _ratio == r,
-                                onTap: () => _applyRatio(r),
-                              ),
-                            ),
-                          ),
-                      ],
+                // 出檔中（大圖要一兩秒）：轉圈圈、擋住框，人才知道「完成」
+                // 已經按到了。以前只把按鈕變灰，實測回報「按確認後感覺
+                // 什麼都沒發生，然後圖片才跳出來」
+                if (_busy)
+                  const Positioned.fill(
+                    child: ColoredBox(
+                      color: Colors.black45,
+                      child: Center(child: CircularProgressIndicator()),
                     ),
                   ),
-                ),
-                const SizedBox(height: 8),
               ],
             ),
     );

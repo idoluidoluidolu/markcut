@@ -1,3 +1,4 @@
+import 'dart:async' show unawaited;
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -473,25 +474,32 @@ class WatermarkPanelState extends State<WatermarkPanel>
       // 挑完直接進裁切畫面比「加進去再想辦法縮」直覺得多。
       // 按取消就整個不加（跟以前挑完取消一樣）
       if (!mounted) return;
-      final cut = await cropImage(context, raw);
-      if (cut == null) return;
-      // 保留到 4K，避免大圖素材在匯出前就只剩 1024px
-      final shrunk = await _shrinkToPng(cut, 4096);
-      // 原圖也留一份（同樣縮過）：之後要還原、重新裁都靠它
-      final orig = await _shrinkToPng(raw, 4096);
+      // CropScreen 出檔就夾到 4096（浮水印留到 4K，避免大圖素材在匯出前
+      // 只剩 1024px），裁好的直接上。以前這裡把裁好的再解一次、再編一次
+      // PNG，接著把原圖整張解開再編一次 PNG——12MP 的 HEIC 要一兩秒，而且
+      // 整段沒有任何畫面回饋（實測回報「按確認後什麼都沒發生，然後圖片
+      // 才跳出來」）
+      final cut = await cropImage(context, raw, maxSide: 4096);
       // 選圖期間畫面可能已經被收掉（挑很久、系統回收）
-      if (!mounted || shrunk == null) {
-        if (mounted) showHint(context, '這張圖讀不進來，換一張試試', error: true);
-        return;
-      }
+      if (cut == null || !mounted) return;
       _update(() {
-        s.logo.bytesValue = shrunk;
-        s.logo.origBytes = orig;
+        s.logo.bytesValue = cut;
+        s.logo.origBytes = null;
         s.logo.enabled = true;
       });
       // 剛加進來的圖片直接設成選取：使用者接著一定是要移動／縮放它，
       // 不用再回畫面上找它點一下
       widget.onLogoAdded?.call();
+      // 原圖（重新裁切用）在背景縮：使用者這時已經在拖圖了，這一份晚一兩
+      // 秒到沒關係；期間換了圖就丟掉
+      unawaited(
+        _shrinkToPng(raw, 4096).then((orig) {
+          if (!mounted || orig == null || !identical(s.logo.bytes, cut)) {
+            return;
+          }
+          s.logo.origBytes = orig;
+        }),
+      );
     } catch (_) {
       if (mounted) showHint(context, '這張圖讀不進來，換一張試試', error: true);
     }
@@ -502,15 +510,13 @@ class WatermarkPanelState extends State<WatermarkPanel>
   Future<void> _cropLogo() async {
     final src = s.logo.origBytes ?? s.logo.bytes;
     if (src == null) return;
-    final cut = await cropImage(context, src);
+    final cut = await cropImage(context, src, maxSide: 4096);
     if (cut == null || !mounted) return;
-    final shrunk = await _shrinkToPng(cut, 4096);
-    if (!mounted || shrunk == null) return;
     _update(() {
       // 第一次裁的人可能是從舊草稿讀回來的（沒有原圖），
       // 這時把「裁之前的樣子」記起來當原圖
       s.logo.origBytes ??= src;
-      s.logo.bytesValue = shrunk;
+      s.logo.bytesValue = cut; // 出檔已夾到 4096，不再解一次重編
     });
   }
 

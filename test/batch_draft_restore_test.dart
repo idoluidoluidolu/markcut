@@ -221,8 +221,10 @@ void main() {
     await _settle(t);
     final xs = _dotXs(t);
     expect(xs.length, 1, reason: '只有 b 有覆寫');
-    // 縮圖列：左邊留白 10、每格 56 寬、間距 6——第一格在 10~66、第二格從 72 起
-    expect(xs.single, lessThan(66), reason: '琥珀點要在第一格（b），不是第二格（c）');
+    // 縮圖列：左邊留白 10、每格 56 寬、間距 6；第 0 格是「＋」（10~66），
+    // 第一個檔案在 72~128、第二個從 134 起
+    expect(xs.single, greaterThan(66), reason: '琥珀點不會落在「＋」那格');
+    expect(xs.single, lessThan(128), reason: '琥珀點要在第一格（b），不是第二格（c）');
   });
 
   testWidgets('舊草稿直接餵給頁面（索引鍵）：照草稿自己的檔案清單對回路徑，一樣不位移', (t) async {
@@ -242,7 +244,9 @@ void main() {
     await _settle(t);
     final xs = _dotXs(t);
     expect(xs.length, 1);
-    expect(xs.single, lessThan(66));
+    // 第 0 格是「＋」，第一個檔案在 72~128（見上一個測試）
+    expect(xs.single, greaterThan(66));
+    expect(xs.single, lessThan(128));
   });
 
   testWidgets('續作含覆寫的草稿、沒動就返回：不問、草稿留著；動了才問', (t) async {
