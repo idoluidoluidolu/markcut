@@ -96,6 +96,9 @@ void main() {
   group('多草稿', () {
     test('存兩份互不覆蓋，清單新到舊', () async {
       await DraftStore.save('a', '{"clips":[1]}');
+      // 兩份存在同一毫秒 savedAt 會相等，新到舊的排序就沒有次序（本機三次跑
+      // 兩次紅）；隔 5ms 再存第二份
+      await Future<void>.delayed(const Duration(milliseconds: 5));
       await DraftStore.save('b', '{"clips":[1,2]}');
       final list = await DraftStore.list();
       expect(list.length, 2);
