@@ -202,10 +202,11 @@ void main() {
       expect(presentations, isNotEmpty);
       expect(presentations.first['sec'], 1);
       expect(presentations.first['exact'], false);
-      // 原檔拖動＝關鍵幀貼齊的容忍值（見 compScrubToleranceMs），代理 0
+      // 拖動中的容忍窗（見 compScrubToleranceMs）：原檔 500、代理 250，
+      // 兩者都不是 0——這個數也是原生拖曳快取的收件窗
       expect(
         presentations.first['toleranceMs'],
-        raw ? compScrubToleranceMs(exact: false, raw: true) : 0,
+        compScrubToleranceMs(exact: false, raw: raw),
       );
       expect(frameRequests, isEmpty);
       expect(cache(), findsNothing);
@@ -464,10 +465,10 @@ void main() {
       await open(t, raw: raw);
       await scrub(t, 1);
       expect(seeks.first['exact'], false);
-      // 原檔拖動＝關鍵幀貼齊的容忍值（見 compScrubToleranceMs），代理 0
+      // 拖動中的容忍窗（見 compScrubToleranceMs）：原檔 500、代理 250
       expect(
         seeks.first['toleranceMs'],
-        raw ? compScrubToleranceMs(exact: false, raw: true) : 0,
+        compScrubToleranceMs(exact: false, raw: raw),
       );
       await tick(t, 8);
       expect(seeks.last['awaitCompletion'], true);

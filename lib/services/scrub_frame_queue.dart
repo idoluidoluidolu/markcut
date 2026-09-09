@@ -26,12 +26,30 @@ int scrubFrameTolMs({required bool rawSource, required double duration}) {
 /// 關鍵幀，播放器只好從前一個關鍵幀一路解到目標，往回滑每一格都吃滿
 /// 這個成本（實測回報「往右滑後往回滑很不順」；程式碼自己也寫著「向後
 /// seek 要回到前一個關鍵幀重解」）。拖動中畫面在關鍵幀之間跳、手一停
-/// 那發精準 seek 對準——跟 Edits 一樣。代理（密關鍵幀）維持 0：seek 本
-/// 來就 2~9ms，不需要
+/// 那發精準 seek 對準——跟 Edits 一樣。
+///
+/// 代理（密關鍵幀）本來給 0，理由是「seek 本來就 2~9ms」。那只算了 seek，
+/// 漏了容忍值的第二個作用：它同時是原生拖曳快取的收件窗
+/// （MCNativeScrubCache.accepts）。給 0＝窗只剩 1ms＝快取形同關閉，每一格
+/// 都要重新解碼＋重跑一次 CI 合成。實測 199 兩份診斷對照得很清楚：
+/// 原檔（窗 500）快取命中 210、未命中 11、呈現 218/221、平均 30ms；
+/// 代理落地後（窗 0）26 秒滑動 312 發 seek 產生 310 格 CI 重畫，命中掛零。
+/// 往右滑感覺不到是因為解碼器本來就往前串流；一轉向 AVPlayer 要清管線、
+/// 回關鍵幀重灌，那一格就是使用者說的「往左滑會卡一下、往左再往右一定
+/// 卡一下」（CI 逐格的 58ms／73ms 慢格正落在兩個轉向點上）。
+///
+/// 代理不必給到 500：它的 GOP 只有 5 格（167ms），
+/// [kCompScrubDenseToleranceMs] 250ms 就保證窗裡有關鍵幀，同時給快取一個
+/// ±250ms 的收件窗——轉向時上一格多半就在裡面，直接貼出來，不必等重灌。
+/// 拖動中畫面最多差 250ms（螢幕截圖那個縮放下約 19px），手一停照樣精準
 int compScrubToleranceMs({required bool exact, required bool raw}) {
-  if (exact || !raw) return 0;
-  return kCompScrubToleranceCapMs;
+  if (exact) return 0;
+  return raw ? kCompScrubToleranceCapMs : kCompScrubDenseToleranceMs;
 }
+
+/// 代理／工作檔（關鍵幀每 5 格＝167ms）拖動的容忍窗：≥1 個 GOP，窗裡
+/// 一定有關鍵幀；同時是原生拖曳快取的收件窗（見 [compScrubToleranceMs]）
+const kCompScrubDenseToleranceMs = 250;
 
 /// 合成播放器拖動容忍值的上限（毫秒）——跟原生端
 /// MCSeekCompletionState.scrubToleranceCapMs 同一個數。CompPlayer 送去原生
