@@ -1859,6 +1859,12 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
       == (kCVImageBufferTransferFunction_ITU_R_2100_HLG as String)
       && tag(kCVImageBufferColorPrimariesKey)
         == (kCVImageBufferColorPrimaries_ITU_R_2020 as String)
+      // 矩陣也要對。tagColors 蓋的是三個標記，這裡只驗兩個的話，一支標成
+      // 2020/HLG 卻帶 709 矩陣的來源會原樣搬過去再被貼上 2020 矩陣＝色度
+      // 用錯係數解，又是一次「整片顏色錯」。BT.2100 規定 HLG 配 2020 NCL、
+      // VideoToolbox 也是三個一起寫，實務上碰不到——但這裡是防線，不是統計
+      && tag(kCVImageBufferYCbCrMatrixKey)
+        == (kCVImageBufferYCbCrMatrix_ITU_R_2020 as String)
   }
 
   /// 兩顆同格式 bi-planar 10-bit 緩衝的逐點差；每 4 列 4 行取一點。
@@ -2555,7 +2561,13 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         // HDR 直拷驗證：拿剛畫好的這一格 CI 結果當基準比對（見 probeHDRFast）。
         // 只有「這一格本來就夠格走快路、而且還沒驗出結果」時 hdrProbeSource
         // 才不是 nil；dst 一個位元組都不會被動到
-        if let ps = hdrProbeSource, !missing {
+        // captureEpoch 要還是當下那一版：fastEligible 判「沒有即時疊加物、
+        // 沒有即時變形」是在 CI 開畫之前讀的，而 CI 這一格要畫幾十毫秒。
+        // 期間使用者加了浮水印或起手捏合，CI 就把它們烘進 dst 了——拿那份
+        // 去比一份純搬運的直拷，平均差當然爆掉，於是把整條路永久判死，
+        // 而診斷上看起來像是直拷真的壞掉。這是在冤枉自己要驗的東西
+        //（capturePreview 用的是同一道閘）
+        if let ps = hdrProbeSource, !missing, captureEpoch == Self.liveEpoch {
           Self.probeHDRFast(
             source: ps, reference: dst, uvA: fastUVA, uvB: fastUVB)
         }
