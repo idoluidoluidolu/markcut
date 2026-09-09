@@ -3899,6 +3899,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 這一支開始轉了：素材長度就是「還要轉多少影片」的單位
         _eta?.itemStart(src.duration);
         _etaTick();
+        final madeBefore = madeHdr + madeSdr;
         try {
           if (need == _PrepNeed.hdrProxy) {
             if (await lap(_prepHdrProxy(i), (ms) => msXcode += ms)) madeHdr++;
@@ -3925,6 +3926,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 成功失敗都要記：時間都花掉了，倍速要照實算
         _eta?.itemDone();
         if (!mounted) return;
+        // 秒進：每支代理／工作檔一落地就排一次「閒置時換檔」，不等整批。
+        // 以前整批轉完才換——六支 4K 一起進來，五支短的幾秒就好、48 秒那支
+        // 要十幾秒，期間六支全用原檔播、滑動全走疏關鍵幀（實測 198「在播的
+        // 檔 6（原檔！）」而四支代理早就備妥）。排的是同一個閒置換檔
+        //（_flushSwapsWhenIdle：手指在時間軸上就再等），幾支接連落地會併成
+        // 一次重組（計時器每次重排）
+        if (!_waitForPreparation && madeHdr + madeSdr > madeBefore) {
+          _pendingCompRebuild = true;
+          _scheduleSwapFlush(const Duration(milliseconds: 1200));
+        }
         // 佇列空了：沒轉成功的補試一次（每支一次），試過還是不行的
         // 記進失敗名單，之後不再背景重跑
         if (_prepQueue.isEmpty) _requeueFailedPrep();
@@ -3935,11 +3946,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // playing movie or an active gesture. Keep the old cache until idle.
         _hdrPrepBusy = false;
         _pendingCompRebuild = true;
-        _swapFlushTimer?.cancel();
-        _swapFlushTimer = Timer(
-          const Duration(milliseconds: 400),
-          _flushSwapsWhenIdle,
-        );
+        _scheduleSwapFlush(const Duration(milliseconds: 400));
         Diag.note(
           '素材背景準備 ${sw.elapsed.inSeconds}秒：'
           'HDR 代理 $madeHdr 支、工作檔 $madeSdr 支（等待閒置換檔）',
@@ -4333,6 +4340,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 暫停後補做媒體抽換的延遲（見 _pause）
   Timer? _swapFlushTimer;
 
+  /// 排一次「閒置時換檔」；重排會取消上一次——幾支接連落地併成一次重組
+  void _scheduleSwapFlush(Duration delay) {
+    _swapFlushTimer?.cancel();
+    _swapFlushTimer = Timer(delay, _flushSwapsWhenIdle);
+  }
+
   /// 手指還在時間軸上（滑動/拖片段/捏合）就再等一拍——換 item 的
   /// 那一下不能落在手勢中間
   void _flushSwapsWhenIdle() {
@@ -4402,8 +4415,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _scrubFrameTimes.remove(srcIndex);
     _scrubDecoders.remove(srcIndex)?.dispose();
     _ensureScrubSlots(srcIndex, _tl.sources[srcIndex].duration);
-    _thumbs.remove(srcIndex);
-    _thumbsCoarse.remove(srcIndex);
+    // 縮圖不清：原檔抽的粗帶／封面在時間上是對的。每支一落地就換檔之後，
+    // 這裡在整批中途就會跑到——清掉的話這支在整批轉完前只剩一張封面拉滿
+    // 整條（完整縮圖帶要等 _waitForThumbnailStrip 全部閒置）。粗帶仍留在
+    // _thumbsCoarse，閒置精抽會用工作檔把它升級
     unawaited(_thumbsAfterPrep());
     if (mounted) setState(() {});
     _resyncPlayback();
@@ -4919,11 +4934,28 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   ///
   /// 代價：代理轉檔等的是 _initialPreviewReady（含這一段），最多晚 5 秒
   /// 起跑——使用者要的是縮圖優先，照這個
-  Future<void> _entryThumbnailGate() async {
-    if (kIsWeb) return;
+  Future<void> _entryThumbnailGate() => _coarseThumbnailPass(
     // 截止時間從讀取畫面出現那一刻算（_beginEntryGate），不是從這裡：
     // 中繼資料探測、分類那幾十毫秒也算在使用者等的 5 秒裡
-    final deadline = _entryDeadline ?? DateTime.now().add(kEntryThumbBudget);
+    deadline: _entryDeadline ?? DateTime.now().add(kEntryThumbBudget),
+    gate: true,
+  );
+
+  /// 中途加素材（時間軸上已經有影片、編輯器開著）：同一套粗帶在背景抽，
+  /// 不蓋讀取畫面、同一個 5 秒預算。完整縮圖帶等的是「全部代理轉完」
+  ///（_waitForThumbnailStrip），多支 4K 一起加要十幾秒，這段時間不能只有封面
+  Future<void> _coarseThumbnailsInBackground() => _coarseThumbnailPass(
+    deadline: DateTime.now().add(kEntryThumbBudget),
+    gate: false,
+  );
+
+  /// 每支還沒有縮圖帶的素材抽 10 格粗帶（只解關鍵幀，見 timeline_strip.dart），
+  /// 到 [deadline] 就停；[gate]＝進場閘（讀取畫面的 % 跟著走）
+  Future<void> _coarseThumbnailPass({
+    required DateTime deadline,
+    required bool gate,
+  }) async {
+    if (kIsWeb) return;
     final sw = Stopwatch()..start();
     final todo = [
       for (final s in _thumbnailSourcesByPriority())
@@ -4933,7 +4965,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     var done = 0;
     // 讀取畫面的 %：做完幾支＋時間爬升保底（卡著也要看得到在動）
     void progress() {
-      if (!mounted) return;
+      if (!gate || !mounted) return;
       final left = deadline.difference(DateTime.now()).inMilliseconds;
       final byWork = 0.1 + 0.85 * done / todo.length;
       final byTime = (1 - left / kEntryThumbBudget.inMilliseconds) * 0.9;
@@ -4965,8 +4997,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       progress();
     }
     Diag.note(
-      '進場縮圖：$done/${todo.length} 支粗帶 ${sw.elapsedMilliseconds}ms'
-      '（上限 ${kEntryThumbBudget.inSeconds} 秒）',
+      '${gate ? '進場' : '中途'}縮圖：$done/${todo.length} 支粗帶 '
+      '${sw.elapsedMilliseconds}ms（上限 ${kEntryThumbBudget.inSeconds} 秒）',
     );
   }
 
@@ -5061,7 +5093,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           // A removed source, or an original replaced by a proxy while decoding,
           // must not write a stale cover into another clip's slot.
           if (index < 0 || path != _thumbnailPath(source)) return;
-          if (frames.isNotEmpty && frames.length >= _thumbnailCount(source)) {
+          // 精抽的縮圖帶一律蓋掉粗帶：粗帶抽不到的格子是借隔壁的
+          //（fillStripGaps），精抽只放真的抽到的格，可能比 10 格少
+          final upgrade = !coverOnly && _thumbsCoarse.contains(index);
+          if (frames.isNotEmpty &&
+              (upgrade || frames.length >= _thumbnailCount(source))) {
             if (coverOnly) {
               coverCount++;
             } else {
@@ -5574,6 +5610,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _pushUndo();
     // 遮罩的 N 先寫上「加完會有幾支」（見 _importExpected）
     _importExpected = _tl.sources.where((s) => s.isVideo).length + vids.length;
+    // 空白專案第一次加影片＝這個專案真正的進場（實測路徑：剪輯→空白→＋→
+    // 整批各自一軌）：跟首頁帶影片進來那條一樣蓋讀取畫面、先把每支的粗縮圖
+    // 帶抽出來再放行（最高 5 秒，見 _entryThumbnailGate）。實測 198 就是這條
+    // 路：沒有讀取畫面，縮圖全是第一格。時間軸上已經有影片的，編輯器開著
+    // 不擋人，粗帶在背景抽
+    final firstVideos = !_tl.sources.any((s) => s.isVideo);
+    if (firstVideos) _beginEntryGate();
     _initialPreviewReady = () async {
       _beginVideoMetadataImport();
       try {
@@ -5588,7 +5631,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         _endVideoMetadataImport();
         _importExpected = 0;
       }
-      if (mounted) await _dressUp();
+      if (!mounted) return;
+      await _dressUp(gateThumbs: firstVideos);
+      if (firstVideos) {
+        // 閘門正常做完會自己掀；_dressUp 直接 return 的情況也要掀，
+        // 不能等 5 秒計時器（跟 _importInitialVideos 同一套）
+        _endEntryGate();
+      } else {
+        unawaited(_coarseThumbnailsInBackground());
+      }
     }();
     await _initialPreviewReady;
     if (!mounted) return;
@@ -11451,8 +11502,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 ),
               ),
         // 素材還在備就整頁擋著等它做完。使用者的原話是「既然一定要跑
-        // 讀取，那請改成先跑一下讀取再進入，比進入後閃東閃西讀取還好」
-        body: !_ready || _prepGate
+        // 讀取，那請改成先跑一下讀取再進入，比進入後閃東閃西讀取還好」。
+        // _entryGating：進場縮圖閘（見 _beginEntryGate）——它跟 _ready 是分開
+        // 的，這裡漏了它就是實測 198「沒讀取畫面直接進了」：空白專案加影片
+        // 那條路 _ready 本來就是 true，_buildPrepGate 裡面再判也輪不到
+        body: !_ready || _prepGate || _entryGating
             ? _buildPrepGate()
             : _fullscreen
             ? _buildFullscreen()

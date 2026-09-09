@@ -1353,6 +1353,10 @@ class CompPlayer {
       'encoded-superseded': '編排後已被取代',
       'presented-superseded': '呈現回覆已過期',
       'drawable-dropped': '顯示系統丟棄影格',
+      // 丟格分兩類（見原生 MCNativeScrubPlane.reveal）：圖層剛從隱藏露出那一格
+      // 被丟，跟已經在台上還被丟，是兩個不同的根因
+      'drawable-dropped-fresh': '顯示系統丟棄影格（圖層剛露出）',
+      'drawable-dropped-shown': '顯示系統丟棄影格（圖層已在台上）',
       'gpu': 'GPU 執行失敗',
       'scheduled-superseded': '排程後已被取代',
       'no-visible-host': '沒有可見的影片視圖',

@@ -6221,6 +6221,25 @@ final class MCNativeScrubPlane {
     visible = false; layer.isHidden = true
     displayedFrame = nil; displayedValidity = nil
   }
+  /// 圖層從隱藏露出：先以 1% 不透明度上台（肉眼看不到）並 flush，讓 render
+  /// server 先把「這一層可見」收下，drawable 之後才交；呈現成功才拉到 100%
+  ///（呈現回呼裡）。回傳 true＝這一次真的是從隱藏露出。
+  ///
+  /// 以前 isHidden=false 跟 drawable.present() 放同一個巢狀交易：實機 196～198
+  /// 三個版本都是九成的 drawable 被系統丟掉（presentedTime 0）。巢狀交易的屬性
+  /// 變更要等 run loop 收尾才到 render server，drawable 卻在 present 那一刻就
+  /// 交出去、交到一個 render server 眼裡還是隱藏的圖層上；同時圖層已經露出
+  ///（露的是黑或上一張），下一格 failNativeScrub 又把它藏回去＝每次失敗閃一下
+  ///（實測回報「播放螢幕一直閃動」）。1% 露出＋成功才拉滿：就算還是被丟，
+  /// 使用者也看不到閃
+  @discardableResult private func reveal() -> Bool {
+    guard layer.isHidden else { return false }
+    CATransaction.begin(); CATransaction.setDisableActions(true)
+    layer.opacity = 0.01; layer.isHidden = false
+    CATransaction.commit()
+    CATransaction.flush()
+    return true
+  }
   private func current(_ id: UInt64) -> Bool {
     lock.lock(); defer { lock.unlock() }; return id == generation
   }
@@ -6284,12 +6303,24 @@ final class MCNativeScrubPlane {
       guard self.current(id), valid() else {
         DispatchQueue.main.async { finish(false, "encoded-superseded") }; return
       }
+      // 這一張交上去時圖層是不是「剛從隱藏露出」（診斷用：丟格分成兩類）。
+      // 主執行緒寫、主執行緒讀：下面 present 的區塊先跑，呈現回呼在它之後
+      var revealed = false
       #if !targetEnvironment(simulator)
       drawable.addPresentedHandler { [weak self] drawable in
         DispatchQueue.main.async {
           guard let self = self, self.current(id), valid()
           else { finish(false, "presented-superseded"); return }
-          guard drawable.presentedTime > 0 else { finish(false, "drawable-dropped"); return }
+          guard drawable.presentedTime > 0 else {
+            finish(false, revealed ? "drawable-dropped-fresh" : "drawable-dropped-shown")
+            return
+          }
+          // 真的上了螢幕才把不透明度拉滿（露出那一格是 1% 交上去的，見 reveal）
+          if self.layer.opacity < 1 {
+            CATransaction.begin(); CATransaction.setDisableActions(true)
+            self.layer.opacity = 1
+            CATransaction.commit()
+          }
           self.displayedFrame = frame; self.displayedValidity = valid
           finish(true, nil)
         }
@@ -6300,16 +6331,18 @@ final class MCNativeScrubPlane {
           DispatchQueue.main.async { finish(false, "gpu: \(buffer.error?.localizedDescription ?? "unknown")") }
         }
       }
-      // Commit GPU work first, then expose and present the drawable in the same
-      // CA transaction. An initially hidden layer otherwise has no visible
-      // presentation, so its callback cannot be used as a display receipt.
+      // Commit GPU work first, then present on the main thread. A hidden layer
+      // is revealed (at 1% opacity, flushed to the render server) BEFORE the
+      // drawable is presented, so the presentation always targets a layer the
+      // render server already treats as visible; see reveal().
       command.commit()
       command.waitUntilScheduled()
       DispatchQueue.main.async { [weak self] in
         guard let self = self, self.current(id), valid(), command.status != .error
         else { finish(false, "scheduled-superseded"); return }
+        revealed = self.reveal()
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        self.visible = true; self.layer.isHidden = false
+        self.visible = true
         drawable.present()
         CATransaction.commit()
       }
