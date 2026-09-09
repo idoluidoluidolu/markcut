@@ -777,6 +777,38 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(cancelled, [false])
   }
 
+  func testScrubToleranceStaysInsideTheInstructionContainingTheTarget() {
+    func instruction(_ start: Double, _ end: Double) -> AVMutableVideoCompositionInstruction {
+      let i = AVMutableVideoCompositionInstruction()
+      i.timeRange = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 600),
+                                end: CMTime(seconds: end, preferredTimescale: 600))
+      return i
+    }
+    let instructions: [AVVideoCompositionInstructionProtocol] = [
+      instruction(0, 1.2), instruction(1.2, 2.47), instruction(2.47, 48.38),
+    ]
+    // 段落中間：吃滿上限（原檔拖動關鍵幀貼齊）
+    XCTAssertEqual(MCSeekCompletionState.clampedScrubToleranceMs(
+      500, target: 20, instructions: instructions), 500)
+    // 離接縫 0.3 秒：窗縮到 300，不會落到隔壁片段的起點
+    XCTAssertEqual(MCSeekCompletionState.clampedScrubToleranceMs(
+      500, target: 0.9, instructions: instructions), 300)
+    XCTAssertEqual(MCSeekCompletionState.clampedScrubToleranceMs(
+      500, target: 1.5, instructions: instructions), 300)
+    // 段落起點：0（起點本來就是同步點，精準 seek 一樣便宜）
+    XCTAssertEqual(MCSeekCompletionState.clampedScrubToleranceMs(
+      500, target: 1.2, instructions: instructions), 0)
+    // 上限、負值、沒有 videoComposition、壞 target：只套上限
+    XCTAssertEqual(MCSeekCompletionState.clampedScrubToleranceMs(
+      5000, target: 20, instructions: instructions), MCSeekCompletionState.scrubToleranceCapMs)
+    XCTAssertEqual(MCSeekCompletionState.clampedScrubToleranceMs(
+      -1, target: 20, instructions: instructions), 0)
+    XCTAssertEqual(MCSeekCompletionState.clampedScrubToleranceMs(
+      500, target: 20, instructions: nil), 500)
+    XCTAssertEqual(MCSeekCompletionState.clampedScrubToleranceMs(
+      500, target: .nan, instructions: instructions), 500)
+  }
+
   func testExactSeekAlwaysUsesZeroTolerance() {
     XCTAssertEqual(MCSeekCompletionState.tolerance(exact: true, milliseconds: 150), .zero)
     XCTAssertEqual(MCSeekCompletionState.tolerance(exact: false, milliseconds: nil), .zero)

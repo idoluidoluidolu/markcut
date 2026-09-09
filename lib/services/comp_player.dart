@@ -8,6 +8,7 @@ import '../models/timeline.dart';
 import 'diagnostics.dart';
 import 'hdr_photo_export.dart';
 import 'media_prep.dart';
+import 'scrub_frame_queue.dart' show kCompScrubToleranceCapMs;
 
 /// Metal 預覽引擎（滑動/暫停接管；見 AppDelegate 的
 /// MetalPreviewEngine）。組不了或平台不支援一律回 false，
@@ -961,7 +962,9 @@ class CompPlayer {
   Future<void> setTakeover(bool on) => _quiet('takeover', on);
 
   /// 送出定位命令；這個 Future 只表示原生端已收件。
-  /// 原檔拖曳可給有限 [toleranceMs]，代理與精準定位維持零容差。
+  /// 原檔拖曳可給有限 [toleranceMs]（上限跟原生端同一個數，見
+  /// kCompScrubToleranceCapMs；以前這裡夾 250、原生 500，Dart 想放寬到
+  /// 關鍵幀貼齊也送不到），代理與精準定位維持零容差。
   /// 需要等到畫面定位完成的收尾使用 [seekSettled]。
   Future<void> seek(
     double seconds, {
@@ -970,7 +973,7 @@ class CompPlayer {
   }) => _quiet('seek', {
     'sec': seconds,
     'exact': exact,
-    'toleranceMs': exact ? 0 : toleranceMs.clamp(0, 250),
+    'toleranceMs': exact ? 0 : toleranceMs.clamp(0, kCompScrubToleranceCapMs),
   });
 
   /// true 只在該精準定位成功完成時回傳；被新定位／播放／銷毀取代
@@ -1001,7 +1004,9 @@ class CompPlayer {
       final m = await _ch.invokeMapMethod<String, dynamic>('scrub', {
         'sec': seconds,
         'exact': exact,
-        'toleranceMs': exact ? 0 : toleranceMs.clamp(0, 250),
+        'toleranceMs': exact
+            ? 0
+            : toleranceMs.clamp(0, kCompScrubToleranceCapMs),
       });
       final actual = (m?['actualSeconds'] as num?)?.toDouble();
       return ScrubPresentation(
@@ -1325,8 +1330,8 @@ class CompPlayer {
         if (succeeded != null || unfinished != null) {
           b.write(
             [
-            if (succeeded != null) '／累計回報成功 ${succeeded.toInt()} 發',
-            if (unfinished != null) '／累計回報未完成 ${unfinished.toInt()} 發',
+              if (succeeded != null) '／累計回報成功 ${succeeded.toInt()} 發',
+              if (unfinished != null) '／累計回報未完成 ${unfinished.toInt()} 發',
             ].join(),
           );
         }

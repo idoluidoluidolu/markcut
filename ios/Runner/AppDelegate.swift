@@ -982,11 +982,42 @@ final class MCSeekCompletionState {
     done?(succeeded)
   }
 
+  /// 拖動時 seek 容忍值的上限（毫秒）。seek 窗跟原生拖曳的呈現窗
+  /// （performNativeScrub）都用這一個數——兩邊不一致的話，seek 落到的關鍵
+  /// 幀會被呈現窗（快取的 accepts()）拒收，逾時、畫面不動
+  static let scrubToleranceCapMs = 500
+
   static func tolerance(exact: Bool, milliseconds: Int?) -> CMTime {
     // 舊呼叫預設 0；原始長 GOP 影片才由 Dart 明確要求寬容拖曳。
     // 放手的精準發無條件為 0，即使呼叫方誤傳了寬容值。
-    let ms = exact ? 0 : min(500, max(0, milliseconds ?? 0))
+    let ms = exact ? 0 : min(scrubToleranceCapMs, max(0, milliseconds ?? 0))
     return CMTime(value: Int64(ms), timescale: 1000)
+  }
+
+  /// 拖動的容忍窗不跨指令段。
+  ///
+  /// 窗一跨到隔壁片段，AVPlayer 會落在那一段的起點（段落起點必是同步點，
+  /// 離得近就被吸過去），而合成出來的那格不在 target 的 range 裡，快取的
+  /// accepts() 永遠不收——逾時、畫面不動。所以把窗夾成「離最近接縫多遠
+  /// 就多寬」（對稱）：接縫附近自然退回近乎精準的 seek，段落中間才吃滿
+  /// 上限。找不到 target 所在的段（沒有 videoComposition）就只套上限
+  static func clampedScrubToleranceMs(
+    _ milliseconds: Int, target: Double,
+    instructions: [AVVideoCompositionInstructionProtocol]?
+  ) -> Int {
+    let capped = min(scrubToleranceCapMs, max(0, milliseconds))
+    guard capped > 0, target.isFinite, let instructions = instructions else {
+      return capped
+    }
+    let at = CMTime(seconds: target, preferredTimescale: 60_000)
+    guard let instruction = instructions.first(where: {
+      CMTimeRangeContainsTime($0.timeRange, time: at)
+    }) else { return capped }
+    let start = instruction.timeRange.start.seconds
+    let end = instruction.timeRange.end.seconds
+    guard start.isFinite, end.isFinite else { return capped }
+    let room = max(0, min(target - start, end - target))
+    return min(capped, Int(floor(room * 1000)))
   }
 }
 
@@ -6828,11 +6859,17 @@ final class CompPlayer: NSObject, FlutterTexture {
   private func performNativeScrub(_ request: MCNativeScrubRequests.Request) {
     nativeStylePresentation = nil
     let exact = request.exact
-    let toleranceMs = request.toleranceMs
     let target = Self.nativeFrameTarget(request.seconds, duration: duration)
+    // 容忍窗夾在 target 所在的指令段內（見 clampedScrubToleranceMs）。
+    // 呈現窗跟 seek 窗用同一個數：以前呈現窗另外 cap 在 150ms，Dart 把原檔
+    // 拖動放寬到 500（關鍵幀貼齊、往回滑不重解）之後，seek 落到 400ms 外
+    // 的關鍵幀會被快取的 accepts() 拒收、逾時、畫面不動——比不放寬還糟
+    let toleranceMs = MCSeekCompletionState.clampedScrubToleranceMs(
+      request.toleranceMs, target: target,
+      instructions: player.currentItem?.videoComposition?.instructions)
     nativeRequestedTarget = target
     nativeScrubCache.resumeCapturing()
-    let tolerance = exact ? 0.001 : Double(min(150, max(0, toleranceMs))) / 1000
+    let tolerance = exact ? 0.001 : Double(toleranceMs) / 1000
     let id = nativeScrubReceipt.begin(exact: exact) { [weak self] result in
       self?.nativeScrubRequests.complete(request.id, result: result)
     }
@@ -8710,8 +8747,15 @@ final class CompPlayer: NSObject, FlutterTexture {
     if !nativeRequest, duration > 0.1, t > duration - 0.034 { t = duration - 0.034 }
     seekTarget = CMTime(seconds: t, preferredTimescale: 600)
     seekTargetExact = exact
+    // 容忍窗不跨指令段（見 clampedScrubToleranceMs）：原生拖曳那條進來的
+    // 已經夾過（再夾只會相同或更小），退路 seek 這裡才第一次夾
     seekTargetTolerance = MCSeekCompletionState.tolerance(
-      exact: exact, milliseconds: toleranceMs)
+      exact: exact,
+      milliseconds: exact
+        ? 0
+        : MCSeekCompletionState.clampedScrubToleranceMs(
+          toleranceMs ?? 0, target: t,
+          instructions: player.currentItem?.videoComposition?.instructions))
     nudgeAnchor = .invalid
     // 合成器的拖曳模式跟著 seek 節奏走：暫停中的寬容發＝手指在動，
     // 精準發＝停手（播放／暫停也會關，見 play/pause）

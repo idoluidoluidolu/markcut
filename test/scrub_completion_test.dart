@@ -10,6 +10,7 @@ import 'package:markcut/screens/video_editor_screen.dart';
 import 'package:markcut/services/comp_player.dart';
 import 'package:markcut/services/diagnostics.dart';
 import 'package:markcut/services/media_prep.dart';
+import 'package:markcut/services/scrub_frame_queue.dart';
 
 import 'editor_harness.dart';
 
@@ -201,7 +202,11 @@ void main() {
       expect(presentations, isNotEmpty);
       expect(presentations.first['sec'], 1);
       expect(presentations.first['exact'], false);
-      expect(presentations.first['toleranceMs'], raw ? 150 : 0);
+      // 原檔拖動＝關鍵幀貼齊的容忍值（見 compScrubToleranceMs），代理 0
+      expect(
+        presentations.first['toleranceMs'],
+        raw ? compScrubToleranceMs(exact: false, raw: true) : 0,
+      );
       expect(frameRequests, isEmpty);
       expect(cache(), findsNothing);
       expect(seeks, isEmpty, reason: '原生 scrub 已負責 chase，不另排第二次 seek');
@@ -459,7 +464,11 @@ void main() {
       await open(t, raw: raw);
       await scrub(t, 1);
       expect(seeks.first['exact'], false);
-      expect(seeks.first['toleranceMs'], raw ? 150 : 0);
+      // 原檔拖動＝關鍵幀貼齊的容忍值（見 compScrubToleranceMs），代理 0
+      expect(
+        seeks.first['toleranceMs'],
+        raw ? compScrubToleranceMs(exact: false, raw: true) : 0,
+      );
       await tick(t, 8);
       expect(seeks.last['awaitCompletion'], true);
       expect(seeks.last['toleranceMs'], 0);

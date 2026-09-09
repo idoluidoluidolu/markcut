@@ -3286,6 +3286,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _compExactAt = null;
     }
     // 原檔快取尚未到位時仍會走這裡，不能套用密代理的零容差。
+    // 原檔拖動時容忍值給到關鍵幀貼齊（見 compScrubToleranceMs）：往回滑
+    // 每一格才不用從前一個關鍵幀重解
     final raw = _tl
         .videosAt(_position)
         .any(
@@ -3293,24 +3295,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               !_hiddenTracks.contains(c.track) &&
               _compRawSources.contains(c.sourceIndex),
         );
+    final toleranceMs = compScrubToleranceMs(exact: exact, raw: raw);
     final player = _comp!;
     if (player.nativeScrub && _scrubbing) {
       unawaited(
-        player.scrub(
-          _position,
-          exact: exact,
-          toleranceMs: !exact && raw ? 150 : 0,
-        ),
+        player.scrub(_position, exact: exact, toleranceMs: toleranceMs),
       );
       return;
     }
-    unawaited(
-      player.seek(
-        _position,
-        exact: exact,
-        toleranceMs: !exact && raw ? 150 : 0,
-      ),
-    );
+    unawaited(player.seek(_position, exact: exact, toleranceMs: toleranceMs));
   }
 
   void _scrubSeek({bool force = false}) {
