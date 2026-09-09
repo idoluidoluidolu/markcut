@@ -790,11 +790,18 @@ class RunnerTests: XCTestCase {
     // 段落中間：吃滿上限（原檔拖動關鍵幀貼齊）
     XCTAssertEqual(MCSeekCompletionState.clampedScrubToleranceMs(
       500, target: 20, instructions: instructions), 500)
-    // 離接縫 0.3 秒：窗縮到 300，不會落到隔壁片段的起點
+    // 離下一個接縫 0.3 秒：尾端留一個合成刻度（1/600），窗縮到 298，
+    // 窗的邊絕不壓在隔壁片段的起點上
     XCTAssertEqual(MCSeekCompletionState.clampedScrubToleranceMs(
-      500, target: 0.9, instructions: instructions), 300)
+      500, target: 0.9, instructions: instructions), 298)
+    // 離上一個接縫 0.3 秒：起點側不留邊（落在 start 就是這一段的第一格）
     XCTAssertEqual(MCSeekCompletionState.clampedScrubToleranceMs(
       500, target: 1.5, instructions: instructions), 300)
+    // 窗的上緣嚴格在段內：閉區間的邊碰到 end 就會被吸到隔壁段的起點
+    let nearEnd = MCSeekCompletionState.clampedScrubToleranceMs(
+      500, target: 2.0, instructions: instructions)
+    XCTAssertEqual(nearEnd, 468)
+    XCTAssertLessThan(2.0 + Double(nearEnd) / 1000, 2.47)
     // 段落起點：0（起點本來就是同步點，精準 seek 一樣便宜）
     XCTAssertEqual(MCSeekCompletionState.clampedScrubToleranceMs(
       500, target: 1.2, instructions: instructions), 0)

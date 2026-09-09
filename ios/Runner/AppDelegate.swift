@@ -1016,8 +1016,13 @@ final class MCSeekCompletionState {
     let start = instruction.timeRange.start.seconds
     let end = instruction.timeRange.end.seconds
     guard start.isFinite, end.isFinite else { return capped }
-    let room = max(0, min(target - start, end - target))
-    return min(capped, Int(floor(room * 1000)))
+    // 尾端留一個合成刻度（1/600 秒）：AVPlayer 的容忍窗是閉區間
+    // [t-before, t+after]，窗的邊剛好壓在 end（＝隔壁段的起點，同步點）
+    // 就會被吸過去，那格不在 target 的段裡、accepts() 不收。起點側不用
+    // 留：落在 start 就是這一段的第一格，收得進來
+    let room = max(0, min(target - start, end - target - 1.0 / 600))
+    // 十進位的 0.3 在二進位是 0.29999…，直接 floor 會掉成 299：先加一點點
+    return min(capped, Int(floor(room * 1000 + 1e-6)))
   }
 }
 
@@ -6869,7 +6874,10 @@ final class CompPlayer: NSObject, FlutterTexture {
       instructions: player.currentItem?.videoComposition?.instructions)
     nativeRequestedTarget = target
     nativeScrubCache.resumeCapturing()
-    let tolerance = exact ? 0.001 : Double(toleranceMs) / 1000
+    // 呈現窗比 seek 窗多 1ms：關鍵幀剛好落在窗的邊上時，accepts() 的浮點
+    // 比較差一個 ulp 就會拒收。多的這 1ms 跨不到隔壁段——accepts() 另外
+    // 要求 target 在那格自己的指令段裡
+    let tolerance = exact ? 0.001 : Double(toleranceMs) / 1000 + 0.001
     let id = nativeScrubReceipt.begin(exact: exact) { [weak self] result in
       self?.nativeScrubRequests.complete(request.id, result: result)
     }
