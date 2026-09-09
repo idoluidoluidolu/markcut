@@ -4315,8 +4315,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 排到暫停後再一次做完
     _pendingSwaps.add(srcIndex);
     // 全部轉完才動合成：每好一支就重烘的話畫面會重載好幾次。
-    // 遮罩那條路在跑時交給它收尾（它組合成之前不開任何播放器）
-    if (!_playing && !_prepBusy && _allWorkFilesReady) _flushPendingSwaps();
+    // 遮罩那條路在跑時交給它收尾（它組合成之前不開任何播放器）。
+    // 走閒置換檔（_flushSwapsWhenIdle）不直接沖：轉檔現在在互動中也會前進
+    //（原生只放慢不停），工作檔常常正好落在手指還按著的時候，直接沖＝
+    // 手勢中間換播放器、清拖曳快取、整頁重建
+    if (!_playing && !_prepBusy && _allWorkFilesReady) _flushSwapsWhenIdle();
     _saveDraft();
     // 工作檔就緒＝previewPath 換人：Metal 引擎佈局跟著刷
     unawaited(_metalPrebuild());

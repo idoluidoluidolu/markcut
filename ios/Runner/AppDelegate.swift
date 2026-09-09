@@ -2859,10 +2859,20 @@ final class MCInteractivePrepGate {
     condition.lock(); defer { condition.unlock() }
     return accumulatedPause + (pausedAt.map { CACurrentMediaTime() - $0 } ?? 0)
   }
-  func wait(cancelled: AtomicFlag) -> Bool {
+  /// 互動中畫面那條每一格讓多久（30ms ≈ 30fps 素材的 1 倍速）。
+  ///
+  /// 以前互動中整個停住，直到手指離開。實機 199：使用者進去就一直滑，3.1 秒的
+  /// 代理轉了 11.4 秒（0.3 倍速），48 秒那支在滑了十幾秒後還是原檔——而原檔
+  /// 拖曳現在九成九走快取呈現（218/221、30ms），轉檔跟它搶的只剩快取沒命中
+  /// 那一成的關鍵幀解碼。放慢比停住划算：一直滑也會在一倍速內轉完
+  static let interactiveThrottle: TimeInterval = 0.03
+  /// 這一格可不可以做：互動中讓 [throttle] 秒再放行（[throttle] 0＝不讓，只看
+  /// 取消；聲音那條用它，聲音解碼跟畫面搶不到什麼）。互動結束會提早叫醒。
+  /// 回 false＝被取消
+  func wait(cancelled: AtomicFlag, throttle: TimeInterval = interactiveThrottle) -> Bool {
     condition.lock(); defer { condition.unlock() }
-    while interactive && !cancelled.isSet {
-      _ = condition.wait(until: Date(timeIntervalSinceNow: 0.1))
+    if interactive && !cancelled.isSet && throttle > 0 {
+      _ = condition.wait(until: Date(timeIntervalSinceNow: throttle))
     }
     return !cancelled.isSet
   }
@@ -5472,7 +5482,9 @@ final class MCInteractivePrepGate {
       group.enter()
       aIn.requestMediaDataWhenReady(on: aq) {
         while aIn.isReadyForMoreMediaData {
-          if interactiveYield, !gate.wait(cancelled: cancelled) {
+          // 聲音不讓路（throttle 0）：只看取消。畫面那條讓，聲音跟著讓的話
+          // 每個 21ms 的音訊格都要等 30ms，反而變成整趟的瓶頸
+          if interactiveYield, !gate.wait(cancelled: cancelled, throttle: 0) {
             aIn.markAsFinished(); group.leave(); return
           }
           if let sb = aOut.copyNextSampleBuffer() {

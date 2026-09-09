@@ -566,21 +566,44 @@ class RunnerTests: XCTestCase {
     }
   }
 
-  func testInteractivePrepGateResumesTheSameWaitingJob() {
+  func testInteractivePrepGateThrottlesInsteadOfBlockingWhileInteractive() {
+    // 互動中不再整個停住：每一格讓一小段（≈ 1 倍速）就放行，代理才轉得完
+    //（實機 199：使用者一直滑，3.1 秒的代理轉了 11.4 秒、48 秒那支永遠是原檔）
     let gate = MCInteractivePrepGate()
     let cancel = AtomicFlag()
     gate.setInteractive(true)
-    let entered = expectation(description: "worker entered")
-    let completed = expectation(description: "worker resumed")
-    let returned = AtomicFlag()
-    DispatchQueue.global().async {
-      entered.fulfill()
-      XCTAssertTrue(gate.wait(cancelled: cancel))
-      returned.set(); completed.fulfill()
-    }
-    wait(for: [entered], timeout: 1)
-    XCTAssertFalse(returned.isSet)
+    let t0 = CACurrentMediaTime()
+    XCTAssertTrue(gate.wait(cancelled: cancel))
+    let throttled = CACurrentMediaTime() - t0
+    XCTAssertGreaterThanOrEqual(throttled, MCInteractivePrepGate.interactiveThrottle * 0.5)
+    XCTAssertLessThan(throttled, 1)
     XCTAssertTrue(gate.isInteractive)
+    // 聲音那條不讓：throttle 0 只看取消
+    // 「沒讓」的上界放寬到 0.5 秒：這兩發本來就不等，量到的是排程延誤，
+    // 卡的 CI 主機偶爾會超過 30ms
+    let t1 = CACurrentMediaTime()
+    XCTAssertTrue(gate.wait(cancelled: cancel, throttle: 0))
+    XCTAssertLessThan(CACurrentMediaTime() - t1, 0.5)
+    gate.setInteractive(false)
+    XCTAssertGreaterThanOrEqual(gate.pausedDuration, throttled * 0.5)
+    // 不在互動中：立刻放行
+    let t2 = CACurrentMediaTime()
+    XCTAssertTrue(gate.wait(cancelled: cancel))
+    XCTAssertLessThan(CACurrentMediaTime() - t2, 0.5)
+  }
+
+  func testInteractivePrepGateResumesTheSameWaitingJobWhenInteractionEnds() {
+    // 互動結束會叫醒正在讓路的那一格（不用等 throttle 走完）；同一個工作繼續，
+    // 不是失敗也不是重排
+    let gate = MCInteractivePrepGate()
+    let cancel = AtomicFlag()
+    gate.setInteractive(true)
+    let completed = expectation(description: "worker resumed")
+    DispatchQueue.global().async {
+      XCTAssertTrue(gate.wait(cancelled: cancel, throttle: 5))
+      completed.fulfill()
+    }
+    Thread.sleep(forTimeInterval: 0.05)
     gate.setInteractive(false)
     wait(for: [completed], timeout: 1)
     XCTAssertGreaterThanOrEqual(gate.pausedDuration, 0)
@@ -591,10 +614,12 @@ class RunnerTests: XCTestCase {
     let cancel = AtomicFlag()
     gate.setInteractive(true)
     let completed = expectation(description: "cancelled while paused")
+    // 先取消再進 wait：取消不會叫醒讓路中的那一格（它讓完 30ms 才看旗標），
+    // 先派工再取消的話，主執行緒被排程延誤超過 30ms 就會看到 true
+    cancel.set()
     DispatchQueue.global().async {
       XCTAssertFalse(gate.wait(cancelled: cancel)); completed.fulfill()
     }
-    cancel.set()
     wait(for: [completed], timeout: 1)
     XCTAssertTrue(gate.isInteractive)
   }
