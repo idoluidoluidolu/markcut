@@ -19,10 +19,19 @@ import 'package:markcut/screens/video_editor_screen.dart';
 import 'package:markcut/services/diagnostics.dart';
 import 'package:markcut/services/export_eta.dart';
 import 'package:markcut/services/media_prep.dart';
+import 'package:markcut/services/timeline_strip.dart';
 import 'package:markcut/services/work_files.dart';
+
+import 'editor_harness.dart' show editorOf, solidPng;
 
 late Directory _dir;
 final _workArguments = <Map<Object?, Object?>>[];
+
+/// 假轉檔端做完幾支（寫完 dest 才算）
+var _workDone = 0;
+
+/// 假抽幀端收到的路徑（依序）：縮圖帶從哪個檔抽的，看這裡
+final _framePaths = <String>[];
 
 /// 每支素材：多長、假的原生端要轉多久
 const _videos = <String, ({double dur, int workMs})>{
@@ -124,9 +133,24 @@ void main() {
               Duration(milliseconds: v?.workMs ?? 100),
             );
             await File(dest).writeAsString('work');
+            _workDone++;
             return dest;
         }
         return null;
+      },
+    );
+    // 縮圖帶：每格都給，回報實際時間＝要的時間
+    final frame = solidPng(0, 255, 0);
+    b.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('markcut/frames'),
+      (call) async {
+        if (call.method != 'frameAt') return null;
+        final a = Map<Object?, Object?>.from(call.arguments as Map);
+        _framePaths.add(a['path'] as String);
+        return <String, Object?>{
+          'bytes': frame,
+          'actualSeconds': (a['ms'] as num) / 1000,
+        };
       },
     );
   });
@@ -137,6 +161,8 @@ void main() {
     WorkFiles.resetForTest();
     ImportEta.resetLearnedTail();
     _workArguments.clear();
+    _workDone = 0;
+    _framePaths.clear();
   });
 
   tearDownAll(() {
@@ -192,6 +218,16 @@ void main() {
     _swallowMediaKit(t);
     expect(builds.first, [_p('first.mov'), _p('second.mov')]);
 
+    // 縮圖帶：進場粗帶 10 格之後馬上精抽成一秒一格（20 秒＝20 格），
+    // 不等整批轉完——這時第二支還沒轉好
+    await _until(
+      t,
+      () => (editorOf(t).thumbs[0]?.length ?? 0) == thumbStripCount(20.0),
+      60,
+      '第一支的縮圖帶要在轉檔期間就精抽成 20 格',
+    );
+    expect(_workDone, lessThan(2), reason: '縮圖帶精抽不等整批轉完');
+
     // 第一支 0.4 秒轉好、第二支要 1.6 秒（序列的）：第二支開轉＝第一支已落地
     await _until(t, () => _workArguments.length >= 2, 80, '第二支要開始轉');
     final work1 = _workArguments[0]['dest'] as String;
@@ -204,6 +240,8 @@ void main() {
       '第一支落地就該換進合成，不等第二支：$builds',
     );
     _swallowMediaKit(t);
+    // 工作檔換上（密關鍵幀）：縮圖帶從工作檔再精抽一次
+    await _until(t, () => _framePaths.contains(work1), 60, '換上工作檔後要從工作檔重抽縮圖帶');
     // 整批做完：第二支也換上
     await _until(
       t,

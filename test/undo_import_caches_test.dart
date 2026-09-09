@@ -57,6 +57,9 @@ void main() {
   /// 「加素材 → 影片」時假的系統選取器回哪幾支
   var pickVideos = <String>[];
 
+  /// 假抽幀端收到的路徑（依序）
+  final framePaths = <String>[];
+
   setUpAll(() {
     _dir = Directory.systemTemp.createTempSync('markcut_undo_import_');
     File(_p('a.png')).writeAsBytesSync(red);
@@ -115,7 +118,9 @@ void main() {
         _ => null,
       },
     );
-    // 縮圖帶：a.mp4 十格都給；b.mp4 只給前 1.8 秒（3 秒十格＝六格）
+    // 縮圖帶：a.mp4 十格都給；b.mp4 只給前 1.8 秒（後面的格借鄰居，見
+    // timeline_strip.dart 的 fillStripGaps）。抽了哪些路徑記下來：B 的縮圖帶
+    // 是不是 B 自己抽的，看這裡
     b.defaultBinaryMessenger.setMockMethodCallHandler(
       const MethodChannel('markcut/frames'),
       (call) async {
@@ -123,6 +128,7 @@ void main() {
         final a = Map<Object?, Object?>.from(call.arguments as Map);
         final path = a['path'] as String;
         final ms = (a['ms'] as num).toInt();
+        framePaths.add(path);
         if (path.endsWith('b.mp4') && ms > 1800) return null;
         return frame;
       },
@@ -237,13 +243,23 @@ void main() {
     expect(modelOf(t).sources, isEmpty);
     expect(editorOf(t).thumbs, isEmpty, reason: '來源沒了，縮圖帶一起作廢');
 
+    framePaths.clear();
     await addVideo(t, _p('b.mp4'));
     expect(modelOf(t).clips.single.length, closeTo(3.0, 1e-6));
+    // B 只給前 1.8 秒的格，其餘借鄰居：整條 10 格都是從 b.mp4 抽的，
+    // 不是 A 留下的那條（以前這裡是「六格」：舊精抽把抽不到的格直接丟掉）
     await waitUntil(
       t,
-      () => (editorOf(t).thumbs[0]?.length ?? 0) == 6,
+      () =>
+          (editorOf(t).thumbs[0]?.length ?? 0) == 10 &&
+          framePaths.where((p) => p.endsWith('b.mp4')).length >= 6,
       maxMs: 30000,
-      reason: 'B 的縮圖帶是自己的六格，不是 A 留下的十格',
+      reason: 'B 的縮圖帶要是 B 自己抽的，不是 A 留下的',
+    );
+    expect(
+      framePaths.any((p) => p.endsWith('a.mp4')),
+      isFalse,
+      reason: '上一步之後不該再抽 A',
     );
     await settle(t, 80);
   });

@@ -4865,19 +4865,31 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     Diag.peak('同時抽縮圖帶', _thumbActive);
     try {
       if (!kIsWeb) {
-        final t = <Uint8List>[];
-        for (var frame = 0; frame < 10 && mounted; frame++) {
-          if (_previewInteracting || _prepBusy || _hdrPrepBusy) {
-            await _waitForThumbnailStrip();
-            if (!mounted) return t;
-          }
-          final bytes = await nativeFrameAt(
-            path,
-            dur * (frame + 0.5) / 10,
-            maxH: 200,
-          );
-          if (bytes != null) t.add(bytes);
-        }
+        // 格數跟著長度走（thumbStripCount：一秒一格）。以前固定 10 格：48 秒
+        // 的片一格 4.8 秒，縮放到一磚 1.5 秒時同一張圖連鋪六磚，指針下那磚
+        // 跟畫面差好幾秒（實測 199「指針位置的縮圖跟上方畫面不同」）。
+        // 密關鍵幀的檔（代理／工作檔）精準抽（tolMs 0，最多解 5 格）；原檔
+        // 貼關鍵幀、照原生回報的實際時間放格、空格借鄰居（見
+        // timeline_strip.dart）——精準抽 4K 原檔每格要從關鍵幀解 20 幾張，
+        // 那正是以前要等「全部閒置」的原因；代理落地後會再精抽一次
+        final dense = _denseKeyframes(path);
+        // 不給 deadline：原生不回就跟以前的 nativeFrameAt 一樣掛著（測試
+        // 環境沒掛假通道時，timeout 的計時器會在頁面收掉後還活著）
+        final t = await loadCoarseStrip(
+          duration: dur,
+          count: thumbStripCount(dur),
+          alive: () => mounted,
+          fetch: (sec, tolMs) async {
+            await _waitForFingerIdle();
+            if (!mounted) return null;
+            return nativeFrameAtDetailed(
+              path,
+              sec,
+              maxH: 200,
+              tolMs: dense ? 0 : tolMs,
+            );
+          },
+        );
         if (t.isNotEmpty) return t;
       }
       if (!mounted) return [];
@@ -4920,8 +4932,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (mounted) setState(() {});
   }
 
-  /// 進場閘抽出來的粗縮圖帶（來源索引）：閒置時精抽把它升級後清掉
-  final Set<int> _thumbsCoarse = {};
+  /// 近似的縮圖帶（來源索引 → 抽它的路徑）：進場閘的粗帶記 null（一定要精
+  /// 抽）；原檔貼關鍵幀精抽的記當時的路徑（代理落地、路徑換了才再抽）。
+  /// 密關鍵幀的檔精抽落地就從這裡拿掉
+  final Map<int, String?> _thumbsCoarse = {};
 
   /// 進場縮圖閘：讀取畫面後面先把每支的粗縮圖帶抽出來再放行。
   ///
@@ -4991,7 +5005,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (index < 0 || path != _thumbnailPath(s)) continue;
       if (frames.isNotEmpty && frames.length >= _thumbnailCount(s)) {
         _thumbs[index] = frames;
-        _thumbsCoarse.add(index);
+        _thumbsCoarse[index] = null; // 粗帶：之後一定要精抽
         done++;
       }
       progress();
@@ -5052,6 +5066,34 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
   }
 
+  /// 手指離開時間軸（進場、中繼資料接軌也算）就算閒。跟
+  /// _waitForThumbnailStrip 的差別：不等轉檔
+  Future<void> _waitForFingerIdle() async {
+    while (mounted &&
+        (!_ready || _videoMetadataImporting || _previewInteracting)) {
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+  }
+
+  /// 精抽一條縮圖帶前的等待：只等手指離開，不等轉檔。以前等「全部閒置」
+  ///（_waitForThumbnailStrip），而六支 4K 的閒置要等 48 秒那支轉完、手指
+  /// 一按轉檔還會暫停——實測 199 一支 1.2 秒的代理等了 29 秒，這段時間
+  /// 縮圖帶只有進場的粗帶。原檔一格只解一張關鍵幀，跟轉檔搶不了多少。
+  /// 放手後再緩 300ms，收尾的精準 seek 先走
+  Future<void> _waitForStripSlot() async {
+    do {
+      await _waitForFingerIdle();
+      if (!mounted) return;
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    } while (mounted && _previewInteracting);
+  }
+
+  /// 這條路徑是密關鍵幀的檔（HDR 代理／工作檔：每 5 格一個關鍵幀），
+  /// 縮圖帶可以精準抽；原檔（相機檔關鍵幀 1～2 秒一個）只能貼關鍵幀
+  bool _denseKeyframes(String path) => _tl.sources.any(
+    (s) => s.isVideo && (s.workHdrPath == path || s.workPath == path),
+  );
+
   Future<void> _thumbsAfterPrep() async {
     if (_thumbsPreparing) return;
     _thumbsPreparing = true;
@@ -5064,12 +5106,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         alive: () => mounted,
         canLoadCover: () => !_playing && !_exporting,
         needsCover: (source) => _thumbnailCount(source) == 0,
-        // 進場閘抽的粗帶（_thumbsCoarse）也算「還沒有完整縮圖帶」：閒置時
-        // 精抽把它升級
-        needsStrip: (source) =>
-            _thumbnailCount(source) < 10 ||
-            _thumbsCoarse.contains(_tl.sources.indexOf(source)),
-        waitForStrip: _waitForThumbnailStrip,
+        // 近似帶（_thumbsCoarse）也算「還沒有完整縮圖帶」：進場閘的粗帶
+        //（值 null）一定要精抽；原檔貼關鍵幀抽的（值＝當時的路徑）等縮圖
+        // 來源換了（代理落地）再精抽一次，不然每一輪都重抽同一條
+        needsStrip: (source) {
+          if (_thumbnailCount(source) < 10) return true;
+          final i = _tl.sources.indexOf(source);
+          return _thumbsCoarse.containsKey(i) &&
+              _thumbsCoarse[i] != _thumbnailPath(source);
+        },
+        waitForStrip: _waitForStripSlot,
         load: (source, coverOnly) async {
           final path = _thumbnailPath(source);
           List<Uint8List> frames;
@@ -5095,15 +5141,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           if (index < 0 || path != _thumbnailPath(source)) return;
           // 精抽的縮圖帶一律蓋掉粗帶：粗帶抽不到的格子是借隔壁的
           //（fillStripGaps），精抽只放真的抽到的格，可能比 10 格少
-          final upgrade = !coverOnly && _thumbsCoarse.contains(index);
+          final upgrade = !coverOnly && _thumbsCoarse.containsKey(index);
           if (frames.isNotEmpty &&
               (upgrade || frames.length >= _thumbnailCount(source))) {
             if (coverOnly) {
               coverCount++;
             } else {
               stripCount++;
-              // 精抽落地：進場閘的粗帶功成身退
-              _thumbsCoarse.remove(index);
+              // 精抽落地：密關鍵幀的檔抽的是精準格，近似帶功成身退；原檔
+              // 抽的是關鍵幀貼齊的近似帶，記住來源路徑，代理落地再精抽一次
+              if (_denseKeyframes(path)) {
+                _thumbsCoarse.remove(index);
+              } else {
+                _thumbsCoarse[index] = path;
+              }
             }
             setState(() => _thumbs[index] = frames);
           }

@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../models/timeline.dart';
+import '../services/timeline_strip.dart' show stripIndexForTile;
 import '../services/waveform_cache.dart';
 import '../theme.dart';
 
@@ -1466,15 +1467,15 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
   if (src.duration <= 0) {
     return Image.memory(strip[0], fit: BoxFit.cover, gaplessPlayback: true);
   }
-  // 縮圖磚固定尺寸（不隨縮放拉伸變形），縮放只改變「放幾塊磚」
+  // 縮圖磚固定尺寸（不隨縮放拉伸變形），縮放只改變「放幾塊磚」。每塊磚畫
+  // 它中央那一刻落在縮圖帶的哪一格（stripIndexForTile）；最後一磚可能只露
+  // 一截，中央以露出的那截算，不然畫的是被裁掉那半邊的時間
   final n = strip.length;
-  final i0 = (clip.trimStart / src.duration * n).floor().clamp(0, n - 1);
-  final i1 = (clip.trimEnd / src.duration * n).ceil().clamp(i0 + 1, n);
-  final span = i1 - i0;
   return LayoutBuilder(
     builder: (context, cons) {
       final tileW = cons.maxHeight; // 磚寬＝軌高（近方形）
       final count = (cons.maxWidth / tileW).ceil().clamp(1, 400);
+      final width = cons.maxWidth;
       return Stack(
         clipBehavior: Clip.hardEdge,
         children: [
@@ -1485,7 +1486,18 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
               bottom: 0,
               width: tileW,
               child: Image.memory(
-                strip[(i0 + (k * span ~/ count)).clamp(0, n - 1)],
+                strip[stripIndexForTile(
+                  trimStart: clip.trimStart,
+                  trimEnd: clip.trimEnd,
+                  duration: src.duration,
+                  frames: n,
+                  centerFrac: width <= 0
+                      ? 0
+                      : (k * tileW + math.min((k + 1) * tileW, width)) /
+                            2 /
+                            width,
+                  reverse: clip.reverse,
+                )],
                 fit: BoxFit.cover,
                 gaplessPlayback: true,
               ),

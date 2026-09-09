@@ -4,6 +4,42 @@ import 'dart:math' as math;
 import 'gif_strip.dart' show nearestLoaded, stripFillOrder;
 import 'native_frames.dart' show NativeFrameSample;
 
+/// 精抽的縮圖帶一秒一格（[thumbStripCount]）、最多幾格
+const kThumbCellSeconds = 1.0;
+const kThumbStripMax = 120;
+
+/// 一條縮圖帶要幾格：一秒一格、最少 10、最多 [kThumbStripMax]。
+///
+/// 以前固定 10 格：48 秒的片一格 4.8 秒，時間軸縮放到一磚 1.5 秒時同一張
+/// 圖連鋪六磚，指針下那磚跟上方畫面差好幾秒（實測 199「指針位置的縮圖跟
+/// 播放畫面不同」）。壞輸入（長度讀不到）回 10
+int thumbStripCount(double duration) {
+  if (!duration.isFinite || duration <= 0) return 10;
+  return (duration / kThumbCellSeconds).ceil().clamp(10, kThumbStripMax);
+}
+
+/// 時間軸上一塊磚該畫縮圖帶的哪一格：磚中央那一刻的來源時間落在哪一格。
+/// [centerFrac]＝磚中央在片段方塊裡的位置（0～1），[reverse]＝倒轉片段
+///（來源時間從右往左走）。
+///
+/// 以前用 `i0 + k * span ~/ count`：磚「左緣」那格的整數近似——指針落在
+/// 磚裡任何位置，畫的都可能是一磚寬以前的畫面
+int stripIndexForTile({
+  required double trimStart,
+  required double trimEnd,
+  required double duration,
+  required int frames,
+  required double centerFrac,
+  bool reverse = false,
+}) {
+  if (frames <= 0 || !duration.isFinite || duration <= 0) return 0;
+  final f = centerFrac.isFinite ? centerFrac.clamp(0.0, 1.0) : 0.0;
+  final span = trimEnd - trimStart;
+  final at = reverse ? trimEnd - span * f : trimStart + span * f;
+  if (!at.isFinite) return 0;
+  return (at / duration * frames).floor().clamp(0, frames - 1);
+}
+
 /// 時間軸縮圖帶的「粗抽」：進場閘門用（使用者指定：先把縮圖跑完再放行，
 /// 最高 5 秒）。
 ///
