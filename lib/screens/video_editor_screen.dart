@@ -788,10 +788,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 另配時間爬升——就算某件事卡著，數字也一直在動
   final ValueNotifier<double> _dressVN = ValueNotifier(0);
 
-  Future<void> _dressUp() async {
+  /// [gateThumbs]＝首次匯入那條路：先把粗縮圖帶抽出來再放行（見
+  /// _entryThumbnailGate）。草稿、中途加素材不傳——編輯器已經開著，不卡它。
+  /// 以前用 `!_ready` 判斷，但匯入迴圈早就把 _ready 翻成 true，閘門從沒跑過
+  Future<void> _dressUp({bool gateThumbs = false}) async {
     if (!_tl.sources.any((s) => s.isVideo)) return;
     if (!_waitForPreparation) {
       final entryWatch = Stopwatch()..start();
+      // 讀取畫面的 % 先動一下：分類＋首合成那幾十毫秒不要停在 0
+      if (gateThumbs && _dressVN.value < 0.05) _dressVN.value = 0.05;
       // Metadata is enough to construct the timeline. Do not wait for the
       // entire movie, thumbnail strip, or background proxy before editing.
       for (var i = 0; i < _tl.sources.length && mounted; i++) {
@@ -800,18 +805,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       await _resolveHdrAvail();
       if (!mounted) return;
       final classificationMs = entryWatch.elapsedMilliseconds;
-      await _ensureComp();
+      // 首合成跟縮圖閘並行：縮圖帶跟合成器無關，而首合成要是掛住（原生
+      // 沒回）也不能讓讀取畫面卡死——閘門有自己的 5 秒硬上限。
+      // _ensureComp 是「組好或確定組不起來才回來」，這裡只記一筆不往外丟
+      final comp = _ensureComp().catchError((Object e) {
+        Diag.note('首合成失敗：$e');
+      });
+      // 首次匯入先把粗縮圖帶抽出來再放行（使用者指定：先把縮圖跑完再放，
+      // 最高 5 秒）。只有 _importInitialVideos 傳 gateThumbs；草稿與中途
+      // 加素材那兩條路編輯器已經開著，一樣走背景補
+      if (gateThumbs) {
+        await _entryThumbnailGate();
+        _endEntryGate();
+      }
+      await comp;
       if (!mounted) return;
       Diag.note(
         '進場分段：HDR 分類 ${classificationMs}ms／首合成 '
         '${entryWatch.elapsedMilliseconds - classificationMs}ms'
-        '（不含選取器與相簿取檔；不等整支代理）',
+        '（不含選取器與相簿取檔；不等整支代理${gateThumbs ? '；含縮圖閘' : ''}）',
       );
-      // 首次進場先把粗縮圖帶抽出來再放行（使用者指定：先把縮圖跑完再放，
-      // 最高 5 秒）。加素材那條路編輯器已經開著（_ready 為 true），不卡它；
-      // 草稿那條進場前 _ready 也已經是 true，一樣走背景補
-      if (!_ready) await _entryThumbnailGate();
-      if (!mounted) return;
       _requestScrubFrames();
       unawaited(_thumbsAfterPrep());
       _dressVN.value = 1;
@@ -3084,6 +3097,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _importInitialVideos(List<String> list) async {
     _beginVideoMetadataImport();
     _importExpected = list.length;
+    // 首次匯入的讀取覆蓋層從這一刻開始算 5 秒（見 _beginEntryGate）：
+    // 使用者指定「先把縮圖跑完再放行、最高五秒」
+    _beginEntryGate();
     try {
       // Probe/attach in the selected order without opening clip decoders.
       for (var i = 0; i < list.length; i++) {
@@ -3092,6 +3108,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         } catch (_) {}
         if (!mounted) return;
         // Play waits on _initialPreviewReady; editing can begin immediately.
+        // _ready 是「編輯器狀態可用」，照舊每支接上就翻；讀取畫面另外由
+        // _entryGating 蓋著（兩者分開：首合成掛住也不能讓讀取畫面卡死）
         setState(() => _ready = true);
       }
     } finally {
@@ -3100,7 +3118,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     if (!mounted) return;
     Diag.ev('整批影片中繼資料已接入，建立首個完整預覽');
-    await _dressUp();
+    await _dressUp(gateThumbs: true);
+    // 閘門正常做完會自己掀；沒有影片素材那種 _dressUp 直接 return 的
+    // 情況也要掀，不能等 5 秒計時器
+    _endEntryGate();
     if (!mounted) return;
     setState(() {
       _ready = true;
@@ -4866,6 +4887,31 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 進場縮圖閘的預算（使用者指定：先把縮圖跑完再放行，最高 5 秒）
   static const kEntryThumbBudget = Duration(seconds: 5);
 
+  /// 首次匯入的讀取覆蓋層。跟 _ready 分開：_ready 是「編輯器狀態可用」
+  ///（秒進那套，每支接上就翻 true，播放才等首合成），這個只是蓋在上面的
+  /// 讀取畫面——縮圖閘做完、或 5 秒計時器到，哪個先到就掀開。分開的理由：
+  /// 首合成的原生回覆要是掛住，_dressUp 會停在 _ensureComp，讀取畫面不能
+  /// 跟著卡死（import_eta_gate_test 就是拿掛住的首合成當前提）
+  bool _entryGating = false;
+  DateTime? _entryDeadline;
+  Timer? _entryGateTimer;
+
+  void _beginEntryGate() {
+    _entryDeadline = DateTime.now().add(kEntryThumbBudget);
+    _entryGating = true;
+    _entryGateTimer?.cancel();
+    _entryGateTimer = Timer(kEntryThumbBudget, _endEntryGate);
+  }
+
+  /// 掀開讀取覆蓋層（可重入：閘門做完跟計時器都會叫）
+  void _endEntryGate() {
+    _entryGateTimer?.cancel();
+    _entryGateTimer = null;
+    if (!_entryGating) return;
+    _entryGating = false;
+    if (mounted) setState(() {});
+  }
+
   /// 進場閘抽出來的粗縮圖帶（來源索引）：閒置時精抽把它升級後清掉
   final Set<int> _thumbsCoarse = {};
 
@@ -4882,7 +4928,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 起跑——使用者要的是縮圖優先，照這個
   Future<void> _entryThumbnailGate() async {
     if (kIsWeb) return;
-    final deadline = DateTime.now().add(kEntryThumbBudget);
+    // 截止時間從讀取畫面出現那一刻算（_beginEntryGate），不是從這裡：
+    // 中繼資料探測、分類那幾十毫秒也算在使用者等的 5 秒裡
+    final deadline = _entryDeadline ?? DateTime.now().add(kEntryThumbBudget);
     final sw = Stopwatch()..start();
     final todo = [
       for (final s in _thumbnailSourcesByPriority())
@@ -10882,6 +10930,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _posVN.dispose();
     _tlLiveVN.dispose();
     _frameVN.dispose();
+    _entryGateTimer?.cancel();
     _dressVN.dispose();
     _wmFrameInfo.dispose();
     _stkFrameInfo.dispose();
@@ -14458,7 +14507,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Widget _buildPrepGate() {
     // 進場打扮（3 秒預算，見 _dressUp）：用同一張讀取畫面顯示 %
     //（使用者指定：開頭讀取要有 % 數、跟匯入的 UI 同一套）
-    if (!_ready) {
+    // _entryGating：首次匯入的縮圖閘還沒放行（見 _beginEntryGate）
+    if (!_ready || _entryGating) {
       return ValueListenableBuilder<double>(
         valueListenable: _dressVN,
         builder: (context, v, _) =>
