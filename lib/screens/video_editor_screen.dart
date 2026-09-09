@@ -27,6 +27,7 @@ import '../services/audio_picker.dart';
 import '../services/native_export.dart';
 import '../services/native_frames.dart';
 import '../services/overlay_sync.dart';
+import '../services/timeline_strip.dart';
 import '../services/playback_trace.dart';
 import '../services/composition_playback_clock.dart';
 import '../services/rotation_snap.dart';
@@ -779,7 +780,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 的三件事湊齊——合成器起來（畫面有第一幀）、縮圖帶鋪滿、
   /// 拖曳快取第一段抽好。湊齊哪一刻就放行，3 秒到了沒湊齊也放行
   ///（缺的在背景補完）。轉檔（30 秒起跳）不在預算內，照舊背景跑。
-  /// 空白專案、照片批次不經過這裡
+  /// 空白專案、照片批次不經過這裡。
+  ///
+  /// 秒進那條（iOS 預設）不等這三件，只等分類＋首合成；但首次進場會先把
+  /// 每支的粗縮圖帶抽出來再放行（最高 5 秒，見 _entryThumbnailGate）
   /// 打扮進度（0~1），讀取畫面的 % 數看它。三件事各佔一段，
   /// 另配時間爬升——就算某件事卡著，數字也一直在動
   final ValueNotifier<double> _dressVN = ValueNotifier(0);
@@ -803,6 +807,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         '${entryWatch.elapsedMilliseconds - classificationMs}ms'
         '（不含選取器與相簿取檔；不等整支代理）',
       );
+      // 首次進場先把粗縮圖帶抽出來再放行（使用者指定：先把縮圖跑完再放，
+      // 最高 5 秒）。加素材那條路編輯器已經開著（_ready 為 true），不卡它；
+      // 草稿那條進場前 _ready 也已經是 true，一樣走背景補
+      if (!_ready) await _entryThumbnailGate();
+      if (!mounted) return;
       _requestScrubFrames();
       unawaited(_thumbsAfterPrep());
       _dressVN.value = 1;
@@ -1287,6 +1296,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (!stale(i)) continue;
       dropped++;
       _thumbs.remove(i);
+      _thumbsCoarse.remove(i);
       _scrubBytes -= _scrubBytesOf(i);
       _scrubFrames.remove(i);
       _scrubFrameTimes.remove(i);
@@ -4379,6 +4389,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _scrubDecoders.remove(srcIndex)?.dispose();
     _ensureScrubSlots(srcIndex, _tl.sources[srcIndex].duration);
     _thumbs.remove(srcIndex);
+    _thumbsCoarse.remove(srcIndex);
     unawaited(_thumbsAfterPrep());
     if (mounted) setState(() {});
     _resyncPlayback();
@@ -4852,6 +4863,72 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
   }
 
+  /// 進場縮圖閘的預算（使用者指定：先把縮圖跑完再放行，最高 5 秒）
+  static const kEntryThumbBudget = Duration(seconds: 5);
+
+  /// 進場閘抽出來的粗縮圖帶（來源索引）：閒置時精抽把它升級後清掉
+  final Set<int> _thumbsCoarse = {};
+
+  /// 進場縮圖閘：讀取畫面後面先把每支的粗縮圖帶抽出來再放行。
+  ///
+  /// 秒進之後縮圖帶是「全部閒置才補」（_waitForThumbnailStrip），而 4K HDR
+  /// 那個閒置根本不會來——代理轉 66 秒、使用者全程在滑，實測就是每支只剩
+  /// 一張封面拉滿整條、跟畫面對不上。粗抽一格只解一張關鍵幀（見
+  /// timeline_strip.dart），五支 1~2 秒整條就對得上；素材太多 5 秒抽不完
+  /// 就放行，剩下的進去後背景補。順序照 _thumbnailSourcesByPriority（播放
+  /// 頭上的→可見→隱藏），每支內部二分（頭、尾、中……），被截斷也均勻。
+  ///
+  /// 代價：代理轉檔等的是 _initialPreviewReady（含這一段），最多晚 5 秒
+  /// 起跑——使用者要的是縮圖優先，照這個
+  Future<void> _entryThumbnailGate() async {
+    if (kIsWeb) return;
+    final deadline = DateTime.now().add(kEntryThumbBudget);
+    final sw = Stopwatch()..start();
+    final todo = [
+      for (final s in _thumbnailSourcesByPriority())
+        if (_thumbnailCount(s) < 10) s,
+    ];
+    if (todo.isEmpty) return;
+    var done = 0;
+    // 讀取畫面的 %：做完幾支＋時間爬升保底（卡著也要看得到在動）
+    void progress() {
+      if (!mounted) return;
+      final left = deadline.difference(DateTime.now()).inMilliseconds;
+      final byWork = 0.1 + 0.85 * done / todo.length;
+      final byTime = (1 - left / kEntryThumbBudget.inMilliseconds) * 0.9;
+      final v = math.max(byWork, byTime).clamp(0.0, 0.97);
+      if (v > _dressVN.value) _dressVN.value = v;
+    }
+
+    progress();
+    for (final s in todo) {
+      if (!mounted || !DateTime.now().isBefore(deadline)) break;
+      final path = _thumbnailPath(s);
+      final frames = await loadCoarseStrip(
+        duration: s.duration,
+        count: 10,
+        deadline: deadline,
+        alive: () => mounted,
+        fetch: (t, tolMs) =>
+            nativeFrameAtDetailed(path, t, maxH: 200, tolMs: tolMs),
+      );
+      if (!mounted) return;
+      final index = _tl.sources.indexOf(s);
+      // 抽的途中素材被換掉／代理落地：這一條是舊路徑抽的，不寫進去
+      if (index < 0 || path != _thumbnailPath(s)) continue;
+      if (frames.isNotEmpty && frames.length >= _thumbnailCount(s)) {
+        _thumbs[index] = frames;
+        _thumbsCoarse.add(index);
+        done++;
+      }
+      progress();
+    }
+    Diag.note(
+      '進場縮圖：$done/${todo.length} 支粗帶 ${sw.elapsedMilliseconds}ms'
+      '（上限 ${kEntryThumbBudget.inSeconds} 秒）',
+    );
+  }
+
   /// 先讓每支片段有一張封面，再於預覽閒置時補完整縮圖帶。
   bool _thumbsPreparing = false;
 
@@ -4914,7 +4991,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         alive: () => mounted,
         canLoadCover: () => !_playing && !_exporting,
         needsCover: (source) => _thumbnailCount(source) == 0,
-        needsStrip: (source) => _thumbnailCount(source) < 10,
+        // 進場閘抽的粗帶（_thumbsCoarse）也算「還沒有完整縮圖帶」：閒置時
+        // 精抽把它升級
+        needsStrip: (source) =>
+            _thumbnailCount(source) < 10 ||
+            _thumbsCoarse.contains(_tl.sources.indexOf(source)),
         waitForStrip: _waitForThumbnailStrip,
         load: (source, coverOnly) async {
           final path = _thumbnailPath(source);
@@ -4944,6 +5025,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               coverCount++;
             } else {
               stripCount++;
+              // 精抽落地：進場閘的粗帶功成身退
+              _thumbsCoarse.remove(index);
             }
             setState(() => _thumbs[index] = frames);
           }
