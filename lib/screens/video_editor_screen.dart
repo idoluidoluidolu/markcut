@@ -11064,6 +11064,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _kbpsTimer?.cancel();
     _staleKickTimer?.cancel();
     _swapFlushTimer?.cancel();
+    // 併批中的合成重組：離開編輯器就不用做了。以前沒收，計時器會活過整個
+    // 畫面（_compRebuildTick 靠 !mounted 擋住，功能上無害但就是漏一個），
+    // 而且測試的「還有計時器沒燒完」斷言會抓到它
+    _compRebuildTimer?.cancel();
     _ovSync.dispose();
     _wmGestureTimer?.cancel();
     unawaited(MetalPreview.disposeEngine());
