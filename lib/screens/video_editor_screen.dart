@@ -1491,7 +1491,32 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         );
         prevEnd = c.end;
       }
-      b.writeln('  軌 $t：${parts.join(' ')}');
+      // 隱藏軌整條不進合成（CompPlayer.build 的 vids 直接濾掉），靜音軌
+      // 只是音量烘 0。以前這一行不印，於是「合成只剩一軌、播到一半就停」
+      // 的回報看起來像合成壞了，其實分不出是不是有人把軌藏起來了
+      final state = <String>[
+        if (_hiddenTracks.contains(t)) '隱藏',
+        if (_mutedTracks.contains(t)) '靜音',
+      ];
+      b.writeln(
+        '  軌 $t${state.isEmpty ? '' : '（${state.join('、')}）'}'
+        '：${parts.join(' ')}',
+      );
+    }
+    // 合成到底收到幾段：跟上面對不起來就是「畫面少了東西」的現行犯。
+    // 隱藏軌不算（它本來就不該進合成）
+    final eligible = _tl.clips
+        .where(
+          (c) =>
+              _tl.sourceOf(c).isVideo && !_compHiddenTracks.contains(c.track),
+        )
+        .length;
+    final built = CompPlayer.lastPaths.length;
+    if (_comp != null && built != eligible) {
+      b.writeln(
+        '  ⚠ 合成只收到 $built 段，時間軸有 $eligible 段該進去'
+        '（隱藏軌 ${(_compHiddenTracks.toList()..sort()).join(',')}）',
+      );
     }
     return b.toString().trimRight();
   }
@@ -2023,8 +2048,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 重建六次，每次換 item 就閃一下）。路徑類變化等整批做完
     //（_prepHdrWorkFiles 收尾會親自來叫）
     if (editSig == _lastCompEditSig && _hdrPrepBusy) return;
-    _lastCompSig = sig;
-    _lastCompEditSig = editSig;
+    // 這裡「不能」把 _lastCompSig／_lastCompEditSig 蓋成最新。那兩個欄位的
+    // 意思是「畫面上這份合成是照哪個指紋烘出來的」，只有真的烘出來才有資格
+    // 蓋（見 _ensureCompInner 收尾的那兩行）。以前在這裡先蓋等於還沒做就先
+    // 簽收：只要那一次重組沒做成——播放中 _compRebuildTick 直接 return、
+    // 或計時器被 _play 取消——之後每一次檢查都在上面 sig == _lastCompSig
+    // 那一關就回頭，永遠不再重組。實機 201 就是這樣壞的：分割後把片段搬到
+    // 別軌，合成停在只剩一軌 6.8 秒的舊版，播到 6.8 秒就停住、再過去整片黑
     _compDirty = true;
     // 合併重建：調樣式/拉滑桿時每一格變化都會走到這裡，每次都重建
     // 播放器＝每動一下卡一下（實機 152：調浮水印時診斷刷滿
@@ -2040,7 +2070,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 併批到期：手指還在時間軸上（滑動/拖片段/捏合）就再等——
   /// 換 AVPlayerItem 會把畫面重設，手勢中換＝閃一下
   void _compRebuildTick() {
-    if (!mounted || _playing) return;
+    if (!mounted) return;
+    // 播放中不換 AVPlayerItem（畫面會被重設回 seek 的位置），但也不能就這樣
+    // 把這次重組丟掉——丟掉就沒有第二個人會補做。記成待辦，暫停之後由
+    // _flushSwapsWhenIdle 收（它本來就在等閒置換檔，_flushPendingSwaps 看到
+    // _pendingCompRebuild 會重組）
+    if (_playing) {
+      _pendingCompRebuild = true;
+      _scheduleSwapFlush(const Duration(milliseconds: 400));
+      return;
+    }
     // 面板滑桿按著也算手勢：重組會整套重烘全解析疊加物＋換
     // AVPlayerItem，落在拖動中就是畫面硬停
     if (_scrubBusy || _lifting || _tlPinching || _wmGestureOn) {
@@ -9989,6 +10028,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (insert) _selTrack = -1;
     });
     _resyncPlayback();
+    // 搬片段（換軌、換位置、插軌重編號）同樣是合成的結構變化：當場排重組，
+    // 理由跟切割那邊一樣
+    _compRefreshIfChanged();
     // 自動整理開著時，這裡就把空隙收掉。
     //
     // 本來是等到下一次編輯（關掉某個面板、刪東西）才整理，而那時
@@ -10720,6 +10762,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 靜音也是綁軌號的，同樣要跟著搬
       _remapMuted(map);
     });
+    // 軌號換了＝疊層順序換了，合成要重組（指紋裡的 tk 就是為它記的）。
+    // 以前這裡只有 setState，重組要等下一次不相干的編輯順便帶到；草稿
+    // 也沒存，關掉再開就變回舊順序
+    _compRefreshIfChanged();
+    _saveDraft();
   }
 
   /// 片段換軌。
@@ -10760,6 +10807,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _lastVol[second.id] = _lastVol.remove(c.id) ?? -1;
     _ensureCtrlFor(c);
     setState(() => _sel = second.id);
+    // 切割改的是合成的結構（多一段、前半的 trimEnd 也變了）：當場排重組。
+    // 以前這裡什麼都不叫，全靠 _pushUndo 順手排的那個 900ms 存草稿計時器
+    // 繞一圈才輪到 _compRefreshIfChanged——中間按下播放就整串斷掉
+    _compRefreshIfChanged();
   }
 
   /// 刪除浮水印（整組文字＋圖片清空；按復原可以救回）
