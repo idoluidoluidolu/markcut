@@ -29,6 +29,7 @@ class OverlaySync {
     required this.apply,
     this.gestureActive,
     this.geometryIsLive,
+    this.pixelsAreCurrent,
     this.onNoReceiver,
     this.debounceMs = 40,
     this.minGapMs = 80,
@@ -66,6 +67,11 @@ class OverlaySync {
   /// A separate lightweight channel has already applied geometry/visibility.
   /// Leave pixels alone during the gesture, then refine once after release.
   final bool Function()? geometryIsLive;
+
+  /// Current full-quality pixels also have the required sampling resolution.
+  /// Geometry has been acknowledged separately: don't bake again on release
+  /// or flush. Scaling/content changes must return false until refined.
+  final bool Function()? pixelsAreCurrent;
 
   /// 診斷：一次檢查因為沒有收件方而略過（呼叫端自己決定記不記）
   final void Function()? onNoReceiver;
@@ -205,6 +211,11 @@ class OverlaySync {
     }
     _lastRun = now();
     final sig = _observe();
+    if (sig != empty && !appliedFast && (pixelsAreCurrent?.call() ?? false)) {
+      appliedSig = sig;
+      _appliedSeq = _seq;
+      return;
+    }
     if (_inflight != null) {
       if (!full &&
           _inflightFull &&

@@ -10,6 +10,7 @@ bool overlayCanTransform(bool tiled, WmAnimation animation) =>
 String watermarkVisualSignature(
   WatermarkSettings settings, {
   bool rasterOnly = false,
+  bool includeScale = false,
 }) {
   final json = settings.toJson();
   json.remove('activeText');
@@ -25,7 +26,7 @@ String watermarkVisualSignature(
         for (final key in [
           'x',
           'y',
-          'sizeFrac',
+          if (!includeScale) 'sizeFrac',
           'rotation',
           if (field == 'logos') 'opacity',
         ]) {

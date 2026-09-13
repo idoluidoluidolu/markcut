@@ -5,6 +5,29 @@ import 'package:markcut/models/watermark_settings.dart';
 import 'package:markcut/services/overlay_geometry.dart';
 
 void main() {
+  test('全品質重用忽略位移旋轉與圖片透明度，但大小和樣式必須補圖', () {
+    final s = WatermarkSettings();
+    String signature() =>
+        watermarkVisualSignature(s, rasterOnly: true, includeScale: true);
+    final initial = signature();
+    s.logo
+      ..x = 0.1
+      ..y = 0.9
+      ..rotation = 75
+      ..opacity = 0.2;
+    s.text
+      ..x = 0.3
+      ..rotation = 30;
+    expect(signature(), initial);
+    s.logo.sizeFrac *= 2;
+    expect(signature(), isNot(initial));
+    final scaled = signature();
+    s.logo.corner = 0.5;
+    expect(signature(), isNot(scaled));
+    final cornered = signature();
+    s.text.sizeFrac *= 2;
+    expect(signature(), isNot(cornered));
+  });
   test('圖片位置、大小、旋轉、透明度不改點陣指紋', () {
     final s = WatermarkSettings();
     s.logo

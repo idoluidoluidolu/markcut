@@ -9536,6 +9536,16 @@ final class CompPlayer: NSObject, FlutterTexture {
       "nativePresentFailuresCumulative": nativeFailedCount,
       "seekSucceededCumulative": seekSucceeded,
       "seekUnfinishedCumulative": seekUnfinished,
+      // These redraw/swap counters predate this player. Keep their lifetime
+      // explicit; a method acknowledgement is still not frame presentation.
+      "pausedRedrawRequestsProcessLifetime": Self.stNudgeFired,
+      "pausedRedrawCoalescedProcessLifetime": Self.stNudgeDropped,
+      "pausedRedrawColdMsProcessLifetime": Self.stNudgeColdMs,
+      "pausedRedrawWarmMsProcessLifetime": Self.stNudgeWarmMs,
+      "itemSwapsProcessLifetime": Self.stItemSwaps,
+      "vcRedrawSwapsProcessLifetime": Self.stVcSwaps,
+      "pausedRedrawViaVC": Self.pausedRedrawViaVC,
+      "sourceVideoTracks": composition?.tracks(withMediaType: .video).count ?? 0,
       "scope": "current player counters; reset on rebuild; configuration is not pixel validation",
     ]
     if let vc = player.currentItem?.videoComposition {

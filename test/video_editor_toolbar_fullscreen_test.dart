@@ -19,6 +19,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:markcut/models/timeline.dart';
 import 'package:markcut/screens/video_editor_screen.dart';
+import 'package:markcut/screens/crop_screen.dart';
 import 'package:markcut/widgets/timeline_editor.dart';
 
 /// 8×8 PNG（測試自己寫出來，不依賴任何外部檔案）
@@ -161,6 +162,65 @@ void main() {
     timeline.onTapTrack!(1);
     await _settle(t, 6);
     expect(find.text('圖片秒數'), findsNothing);
+  });
+
+  testWidgets('C 預覽工具：窄螢幕圖文垂直、觸控至少 48px，比例與裁切可操作', (t) async {
+    t.view.physicalSize = const Size(320, 850);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    await t.pumpWidget(MaterialApp(home: VideoEditorScreen(draft: _draft())));
+    await _settle(t);
+    t.widget<TimelineEditor>(find.byType(TimelineEditor)).onSelect(1);
+    await _settle(t, 6);
+    Finder button(String name) => find.byKey(ValueKey('video-preview-$name'));
+    for (final (name, icon, label) in [
+      ('fullscreen', Icons.fullscreen, '預覽'),
+      ('ratio', Icons.aspect_ratio, '原始'),
+      ('crop', Icons.crop, '裁切'),
+    ]) {
+      final tool = button(name);
+      final rect = t.getRect(tool);
+      expect(rect.width, greaterThanOrEqualTo(48));
+      expect(rect.height, greaterThanOrEqualTo(48));
+      expect(rect.right, lessThanOrEqualTo(320));
+      final glyph = find.descendant(of: tool, matching: find.byIcon(icon));
+      final text = find.descendant(of: tool, matching: find.text(label));
+      expect(t.getRect(glyph).bottom, lessThan(t.getRect(text).top));
+      expect(
+        t.getRect(glyph).center.dx,
+        closeTo(t.getRect(text).center.dx, .1),
+      );
+      expect(t.widget<Icon>(glyph).size, 20);
+      final material = find
+          .ancestor(of: tool, matching: find.byType(Material))
+          .first;
+      expect(t.widget<Material>(material).color, Colors.transparent);
+    }
+    expect(
+      t.getRect(button('ratio')).right,
+      closeTo(t.getRect(button('crop')).right, .1),
+    );
+    expect(
+      t.getRect(button('ratio')).bottom,
+      lessThan(t.getRect(button('crop')).top),
+    );
+
+    await t.tap(button('ratio'));
+    await _settle(t, 4);
+    expect(find.text('畫面比例'), findsOneWidget);
+    await t.tap(find.text('9:16'));
+    await _settle(t, 5);
+    expect(
+      find.descendant(of: button('ratio'), matching: find.text('9:16')),
+      findsOneWidget,
+    );
+    await t.tap(button('crop'));
+    await _settle(t, 8);
+    expect(find.byType(CropScreen), findsOneWidget);
+    Navigator.of(t.element(find.byType(CropScreen))).pop();
+    await _settle(t, 5);
+    expect(button('crop'), findsOneWidget);
+    expect(t.takeException(), isNull);
   });
 
   testWidgets('全螢幕：右上角離開鈕在安全區內，非全螢幕的位置不變', (t) async {

@@ -2094,7 +2094,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     // 面板滑桿按著也算手勢：重組會整套重烘全解析疊加物＋換
     // AVPlayerItem，落在拖動中就是畫面硬停
-    if (_scrubBusy || _lifting || _tlPinching || _wmGestureOn) {
+    if (_scrubBusy ||
+        _lifting ||
+        _tlPinching ||
+        _wmGestureOn ||
+        _pvPts.isNotEmpty ||
+        _clipSliderActive) {
       _compRebuildTimer?.cancel();
       _compRebuildTimer = Timer(
         const Duration(milliseconds: 350),
@@ -2109,7 +2114,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 疊加物內容的指紋（不含「這份合成收不收」的判定，重建合成
   /// 過程中也要算得出來）。'empty'＝沒有內容
-  String _ovContentSig({bool rasterOnly = false}) {
+  String _ovContentSig({bool rasterOnly = false, bool includeScale = false}) {
     if (!_ovAnyContent) return 'empty';
     final b = StringBuffer();
     // 畫布/畫框比例進指紋：比例變了 rect 換算跟著變，要重送
@@ -2122,7 +2127,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
     if (!_wmHidden && _settings.hasAnyMark) {
       b.write(
-        'wm${watermarkVisualSignature(_settings, rasterOnly: rasterOnly)}|$_wmStart|$_wmEndEff;',
+        'wm${watermarkVisualSignature(_settings, rasterOnly: rasterOnly, includeScale: includeScale)}|$_wmStart|$_wmEndEff;',
       );
     }
     for (final c in _tl.clips) {
@@ -2134,19 +2139,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             !(rasterOnly && overlayCanTransform(style.tiled, style.animation));
         final sj = style.toJson();
         if (!geometry) {
-          for (final key in ['x', 'y', 'sizeFrac', 'rotation']) {
+          for (final key in [
+            'x',
+            'y',
+            if (!includeScale) 'sizeFrac',
+            'rotation',
+          ]) {
             sj.remove(key);
           }
         }
         b.write(
           'tx${c.id}|${src.name}|${geometry ? '${c.px}|${c.py}|${c.scale}' : ''}'
+          '${!geometry && includeScale ? '|scale${c.scale}' : ''}'
           '|${c.offset}|${c.end}'
           '|${jsonEncode(sj)};',
         );
       } else if (src.kind == ClipKind.wm) {
         b.write(
           'wc${c.id}|${c.offset}|${c.end}'
-          '|${watermarkVisualSignature(src.wmStyle ?? WatermarkSettings(), rasterOnly: rasterOnly)};',
+          '|${watermarkVisualSignature(src.wmStyle ?? WatermarkSettings(), rasterOnly: rasterOnly, includeScale: includeScale)};',
         );
       }
     }
@@ -2161,6 +2172,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   String? _ovAppliedRasterSig;
+  String? _ovAppliedResolutionSig;
   String? _ovGeometrySent;
   bool _ovGeometryBusy = false;
   bool _ovGeometryAvailable = true;
@@ -2239,7 +2251,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   int _ovPartCacheBytes = 0;
 
   /// 快取總量上限：包圍盒烘圖一張幾十～幾百 KB，整版（平鋪／飄移／
-  /// 跑馬燈）540p raw 一張 2MB。滿了整包清掉（下一版重畫）
+  /// 跑馬燈）540p raw 一張 2MB。滿了只淘汰最久未用的部件，保留熱圖。
   static const int _ovPartCacheCap = 32 << 20;
 
   /// 同一張正在畫的（鍵相同）等同一份：停手後的全解析跟緊接著的
@@ -2251,8 +2263,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     String key,
     Future<OverlayPartImage?> Function() draw,
   ) async {
-    final hit = _ovPartCache[key];
-    if (hit != null) return hit;
+    final hit = _ovPartCache.remove(key);
+    if (hit != null) {
+      _ovPartCache[key] = hit; // recently used parts survive unrelated edits
+      return hit;
+    }
     final going = _ovPartInflight[key];
     if (going != null) return going;
     final task = draw();
@@ -2264,9 +2279,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (identical(_ovPartInflight[key], task)) _ovPartInflight.remove(key);
     }
     if (part == null) return null; // 整個在畫布外：沒東西可畫，不進快取
-    if (_ovPartCacheBytes + part.bytes.length > _ovPartCacheCap) {
-      _ovPartCache.clear();
-      _ovPartCacheBytes = 0;
+    if (!mounted || part.bytes.length > _ovPartCacheCap) return part;
+    while (_ovPartCacheBytes + part.bytes.length > _ovPartCacheCap &&
+        _ovPartCache.isNotEmpty) {
+      final oldest = _ovPartCache.remove(_ovPartCache.keys.first)!;
+      _ovPartCacheBytes -= oldest.bytes.length;
     }
     _ovPartCache[key] = part;
     _ovPartCacheBytes += part.bytes.length;
@@ -2334,6 +2351,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<List<Map<String, dynamic>>> _ovMapsBuild({bool fast = false}) async {
     final out = <Map<String, dynamic>>[];
     final rasterSig = _ovContentSig(rasterOnly: true);
+    final resolutionSig = _ovContentSig(rasterOnly: true, includeScale: true);
     // 版面是照比例算的（sizeFrac × 短邊），渲染解析度不影響位置大小。
     // 全解析短邊 1080（跟預覽合成一樣）；快路（調樣式拖動中）文字 720、
     // Logo 540——文字便宜、540→1080 放大會軟；停穩後自動補全解析
@@ -2425,6 +2443,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               'png': part.bytes,
             ...shared,
             '_rasterSig': rasterSig,
+            '_resolutionSig': resolutionSig,
             'id': id,
             'opacity': opacity,
             'rect': part.fullCanvas
@@ -2657,6 +2676,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _ovAppliedRasterSig = maps.isEmpty
         ? null
         : maps.first['_rasterSig'] as String?;
+    _ovAppliedResolutionSig = maps.isEmpty || fast
+        ? null
+        : maps.first['_resolutionSig'] as String?;
     _ovGeometrySent = jsonEncode(live);
     _syncOverlayGeometry();
     if (!mounted) return true;
@@ -3178,6 +3200,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           _ovGeometryAvailable &&
           _ovGeometrySent != null &&
           _ovAppliedRasterSig == _ovContentSig(rasterOnly: true),
+      pixelsAreCurrent: () =>
+          _ovGeometryAvailable &&
+          _ovGeometrySent == jsonEncode(_overlayGeometryItems()) &&
+          _ovAppliedResolutionSig ==
+              _ovContentSig(rasterOnly: true, includeScale: true),
       onNoReceiver: _ovNoteNoReceiver,
     );
     _ovWired = true;
@@ -8662,6 +8689,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         !_scrubBusy &&
         !_lifting &&
         !_tlPinching &&
+        _pvPts.isEmpty &&
         !_clipSliderActive) {
       return false;
     }
@@ -8851,6 +8879,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _ovAppliedRasterSig = ovMaps.isEmpty
         ? null
         : ovMaps.first['_rasterSig'] as String?;
+    _ovAppliedResolutionSig = ovMaps.isEmpty
+        ? null
+        : ovMaps.first['_resolutionSig'] as String?;
     _ovGeometrySent = null;
     _ovGeometryAvailable = true;
     _syncOverlayGeometry();
@@ -9533,6 +9564,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         'imageSources': _tl.sources
             .where((s) => s.kind == ClipKind.image)
             .length,
+        // Watermark photos are not timeline image sources. Report them too,
+        // otherwise an image-heavy watermark project misleadingly says zero.
+        'watermarkImageParts':
+            [
+              _settings,
+              for (final source in _tl.sources)
+                if (source.wmStyle != null) source.wmStyle!,
+            ].fold<int>(
+              0,
+              (n, s) =>
+                  n + s.logos.where((l) => l.enabled && l.b64 != null).length,
+            ),
+        'overlayPartCacheBytes': _ovPartCacheBytes,
+        'overlayPartCacheEntries': _ovPartCache.length,
+        'overlayPartsInFlight': _ovPartInflight.length,
+        'previewSourcesWithoutProxyAtBuild': _compRawSources.length,
         'clips': _tl.clips.length,
         'durationSeconds': _tl.duration,
         'hdrRequested': _exportHdr,
@@ -9540,6 +9587,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         'hdrProxyPreview': Diag.hdrProxyPreview.value,
         'hiddenTrackCount': _hiddenTracks.length,
         'backgroundPreparations': _prepping.length,
+        'backgroundHDRPreparations': _hdrPrepping.length,
         'nativeDisplayFPS':
             'unavailable; do not infer from Flutter or CI counts',
         'visualColorValidation':
@@ -12544,38 +12592,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return Positioned(
       right: 12,
       bottom: 12,
-      child: Material(
-        color: Colors.black.withValues(alpha: 0.6),
-        borderRadius: BorderRadius.circular(999),
-        child: InkWell(
-          key: const ValueKey('video-preview-crop'),
-          borderRadius: BorderRadius.circular(999),
-          onTap: () {
-            final source = _tl.sourceOf(clip);
-            if (source.isVideo) {
-              _cropVideoClip(clip);
-            } else {
-              _cropImageClip(clip);
-            }
-          },
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.crop, size: 15, color: cropped ? kSelect : kText),
-                const SizedBox(width: 5),
-                Text(
-                  cropped ? '已裁切' : '裁切',
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    color: cropped ? kSelect : kText,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
+      child: _previewTool(
+        key: const ValueKey('video-preview-crop'),
+        icon: Icons.crop,
+        label: cropped ? '已裁切' : '裁切',
+        tooltip: cropped ? '調整素材裁切' : '裁切素材',
+        active: cropped,
+        onTap: () {
+          final source = _tl.sourceOf(clip);
+          if (source.isVideo) {
+            _cropVideoClip(clip);
+          } else {
+            _cropImageClip(clip);
+          }
+        },
       ),
     );
   }
@@ -15017,53 +15047,78 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     ),
   );
 
-  Widget _canvasHint() {
-    return Align(
-      alignment: Alignment.topRight,
-      child: Padding(
-        padding: const EdgeInsets.all(6),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // 全螢幕播放：預覽鋪滿整頁，專心看成品
-            InkWell(
-              borderRadius: BorderRadius.circular(kTagRadius),
-              onTap: _toggleFullscreen,
-              child: Container(
-                padding: const EdgeInsets.all(5),
-                margin: const EdgeInsets.only(right: 6),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.10),
-                  borderRadius: BorderRadius.circular(kTagRadius),
-                ),
-                child: const Icon(Icons.fullscreen, size: 15, color: kIcon),
-              ),
-            ),
-            InkWell(
-              borderRadius: BorderRadius.circular(kTagRadius),
-              onTap: _openRatioSheet,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.10),
-                  borderRadius: BorderRadius.circular(kTagRadius),
-                ),
-                child: Row(
+  /// 預覽工具 C：透明底、圖示在上／文字在下，共用觸控範圍與狀態色。
+  Widget _previewTool({
+    required Key key,
+    required IconData icon,
+    required String label,
+    required String tooltip,
+    required VoidCallback onTap,
+    bool active = false,
+  }) {
+    final color = active ? kSelect : kIcon;
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: active ? kSelect.withValues(alpha: 0.08) : Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
+        child: Semantics(
+          selected: active,
+          child: InkWell(
+            key: key,
+            borderRadius: BorderRadius.circular(10),
+            onTap: onTap,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.aspect_ratio, size: 12, color: kTextDim),
-                    const SizedBox(width: 4),
+                    Icon(icon, size: 20, color: color),
+                    const SizedBox(height: 4),
                     Text(
-                      _ratioLabel,
-                      style: const TextStyle(
-                        fontSize: 10.5,
-                        color: kIcon,
+                      label,
+                      style: TextStyle(
+                        fontSize: 11.5,
                         height: 1.2,
+                        color: color,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
                   ],
                 ),
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _canvasHint() {
+    return Align(
+      alignment: Alignment.topRight,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(6, 6, 12, 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 全螢幕播放：預覽鋪滿整頁，專心看成品
+            _previewTool(
+              key: const ValueKey('video-preview-fullscreen'),
+              icon: Icons.fullscreen,
+              label: '預覽',
+              tooltip: '放大預覽',
+              onTap: _toggleFullscreen,
+            ),
+            const SizedBox(width: 4),
+            _previewTool(
+              key: const ValueKey('video-preview-ratio'),
+              icon: Icons.aspect_ratio,
+              label: _ratioLabel,
+              tooltip: '畫布比例：$_ratioLabel',
+              onTap: _openRatioSheet,
             ),
           ],
         ),

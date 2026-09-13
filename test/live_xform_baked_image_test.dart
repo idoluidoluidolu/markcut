@@ -76,7 +76,9 @@ void main() {
             'ci': true,
           };
         case 'setMosaics':
-          mosaicCalls.add(List<dynamic>.from((call.arguments as Map)['mosaics'] as List));
+          mosaicCalls.add(
+            List<dynamic>.from((call.arguments as Map)['mosaics'] as List),
+          );
           return true;
         case 'setXform':
           xformCalls.add(Map<Object?, Object?>.from(call.arguments as Map));
@@ -255,6 +257,55 @@ void main() {
     await _tick(t, 100);
   });
 
+  testWidgets('影片預覽捏合中停住或剩一指，都不能換播放器', (t) async {
+    await t.pumpWidget(const MaterialApp(home: VideoEditorScreen(blank: true)));
+    await _tick(t, 5);
+    int? clipId;
+    VideoEditorScreen.debugTimeline!((tl) {
+      tl.sources.add(
+        MediaSource(
+          path: '/v.mp4',
+          name: 'v',
+          kind: ClipKind.video,
+          duration: 10,
+          workPath: '/v.work.mp4',
+        ),
+      );
+      final clip = TimelineClip(
+        id: tl.nextId(),
+        sourceIndex: 0,
+        trimStart: 0,
+        trimEnd: 10,
+        offset: 0,
+        track: 0,
+      );
+      clipId = clip.id;
+      tl.clips.add(clip);
+    });
+    await _tick(t, 20);
+    t.widget<TimelineEditor>(find.byType(TimelineEditor)).onSelect(clipId!);
+    await t.pump();
+    final center = t.getRect(find.byType(AspectRatio).first).center;
+    final a = await t.startGesture(center + const Offset(-30, 0));
+    final b = await t.startGesture(center + const Offset(30, 0));
+    await t.pump();
+    await a.moveBy(const Offset(-20, 0));
+    await b.moveBy(const Offset(20, 0));
+    await _tick(t, 2);
+    expect(xformCalls, isNotEmpty);
+    final before = builds;
+    // 模擬已排隊的草稿／合成更新，跨過 350ms 併批與 3 秒手勢租約。
+    VideoEditorScreen.debugTimeline!((_) {});
+    await _tick(t, 90);
+    expect(builds, before, reason: '兩指還按著不能重建');
+    await a.up();
+    await _tick(t, 30);
+    expect(builds, before, reason: '一指仍留在預覽也不能重建');
+    await b.up();
+    await _tick(t, 100);
+    expect(builds, greaterThan(before), reason: '放手後髒合成仍必須收尾');
+  });
+
   testWidgets('沒烘進合成的圖片（壓在影片之上）：捏合不送 setXform，SDR 那條路不變', (t) async {
     await t.pumpWidget(const MaterialApp(home: VideoEditorScreen(blank: true)));
     await _tick(t, 5);
@@ -335,14 +386,44 @@ void main() {
     await t.pumpWidget(const MaterialApp(home: VideoEditorScreen(blank: true)));
     await _tick(t, 5);
     VideoEditorScreen.debugTimeline!((tl) {
-      tl.sources.add(MediaSource(path: '/v.mp4', name: 'v', kind: ClipKind.video,
-        duration: 10, workPath: '/v.work.mp4'));
-      tl.clips.add(TimelineClip(id: tl.nextId(), sourceIndex: 0,
-        trimStart: 0, trimEnd: 10, offset: 0, track: 0));
-      tl.sources.add(MediaSource(path: '', name: '馬賽克', kind: ClipKind.mosaic,
-        duration: 10, mosaicStyle: MosaicStyle()));
-      tl.clips.add(TimelineClip(id: tl.nextId(), sourceIndex: 1,
-        trimStart: 0, trimEnd: 5, offset: 0, track: 1));
+      tl.sources.add(
+        MediaSource(
+          path: '/v.mp4',
+          name: 'v',
+          kind: ClipKind.video,
+          duration: 10,
+          workPath: '/v.work.mp4',
+        ),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 0,
+          trimStart: 0,
+          trimEnd: 10,
+          offset: 0,
+          track: 0,
+        ),
+      );
+      tl.sources.add(
+        MediaSource(
+          path: '',
+          name: '馬賽克',
+          kind: ClipKind.mosaic,
+          duration: 10,
+          mosaicStyle: MosaicStyle(),
+        ),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 1,
+          trimStart: 0,
+          trimEnd: 5,
+          offset: 0,
+          track: 1,
+        ),
+      );
     });
     await _tick(t, 20);
     final before = builds;
@@ -358,5 +439,4 @@ void main() {
     await _tick(t, 100);
     expect(t.takeException(), isNull);
   });
-
 }

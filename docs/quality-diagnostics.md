@@ -25,6 +25,11 @@ P95 使用最近 300 筆，最大值保留本輪所有成功樣本；保留最�
 通道確認不是上屏；Flutter 幀時間與播放時鐘不能當作 AVPlayerLayer 的顯示 FPS。
 匯入計時不包含系統選檔、選圖前的 iCloud 下載與人工裁切時間。
 原生快照只讀現有狀態，不抽取畫面、轉檔、匯出或啟動像素測試。
+`watermarkImageParts` 另計浮水印內啟用的圖片；`imageSources` 只計時間軸圖片來源。
+`overlayPartCacheBytes` 為 Dart 部件快取，不等於解碼器或 GPU 總記憶體。
+`previewSourcesWithoutProxyAtBuild` 可區分代理開關開啟與建置當下實際仍用原檔。
+`pausedRedraw*ProcessLifetime`、`itemSwapsProcessLifetime`、`vcRedrawSwapsProcessLifetime`
+為 App 行程累積的重畫／換件量測，重開診斷不歸零；比較操作前後差值，不能當本輪顯示 FPS。
 HDR 像素鏈與快路自檢是**行程累積**資料，可能來自舊專案；不能代替本輪同幀驗色。
 HDR 色彩標記正確不證明色準、EDR 顯示或 Dolby Vision 中繼資料正確。
 目前不提供自動色差儀、實際顯示 FPS、閃屏或系統強制終止（jetsam）的自動通過判定。

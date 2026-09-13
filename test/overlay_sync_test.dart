@@ -21,6 +21,7 @@ class _Rig {
   String sig = 'a';
   bool gesture = false;
   bool geometryLive = false;
+  bool pixelsCurrent = false;
   bool on = true;
 
   /// 接下來幾次 apply 要拒收（模擬原生換件中）／沒有收件方被叫了幾次
@@ -35,6 +36,7 @@ class _Rig {
     signature: () => sig,
     gestureActive: () => gesture,
     geometryIsLive: () => geometryLive,
+    pixelsAreCurrent: () => pixelsCurrent,
     onNoReceiver: () => noReceiver++,
     now: () => t,
     bake: (s, fast) async {
@@ -72,6 +74,39 @@ class _Rig {
 }
 
 void main() {
+  testWidgets('全品質像素可重用：位移放手與起播 flush 都不重烘', (t) async {
+    final r = _Rig();
+    r.sync.reset(appliedSig: 'a');
+    r.pixelsCurrent = true;
+    r.geometryLive = true;
+    r.sig = 'moved';
+    r.sync.request();
+    await r.elapse(t, 1000);
+    await r.sync.flush();
+    expect(r.baked, isEmpty);
+    expect(r.applied, isEmpty);
+    expect(r.sync.appliedSig, 'moved');
+    // 放大／文字樣式變動：不能把通道確認誤當作全解析像素。
+    r.pixelsCurrent = false;
+    r.geometryLive = false;
+    r.sig = 'scaled';
+    r.sync.request();
+    await r.elapse(t, 1000);
+    expect(r.baked.last, ('scaled', false));
+    r.sync.dispose();
+  });
+
+  testWidgets('只上過快路時仍須補全品質，不能因幾何通道確認跳過', (t) async {
+    final r = _Rig();
+    r.sync.request();
+    await r.elapse(t, 20);
+    expect(r.sync.appliedFast, isTrue);
+    r.pixelsCurrent = true;
+    r.sync.request();
+    await r.elapse(t, 1000);
+    expect(r.baked.last, ('a', false));
+    r.sync.dispose();
+  });
   testWidgets('即時幾何期間不烘圖，放手只補一版；樣式變更仍烘圖', (t) async {
     final r = _Rig();
     r.sync.reset(appliedSig: 'a');
