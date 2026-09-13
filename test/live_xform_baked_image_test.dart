@@ -81,7 +81,9 @@ void main() {
         case 'setXform':
           xformCalls.add(Map<Object?, Object?>.from(call.arguments as Map));
           return true;
-        case 'setHiddenImageTracks':
+        // 圖片也走新版整軌即時可見性通道；不能只模擬舊圖片專用介面，
+        // 否則會誤觸舊原生版本的重建 fallback，測不到現行的跟手路徑。
+        case 'setHiddenTracks':
           visibilityCalls.add(
             List<Object?>.from((call.arguments as Map)['tracks'] as List),
           );
@@ -154,6 +156,11 @@ void main() {
     );
     timelineWidget.onToggleHidden!(0);
     await _tick(t, 20);
+    expect(
+      visibilityCalls,
+      isNotEmpty,
+      reason: '圖片軌隱藏必須透過 setHiddenTracks 即時送到原生端',
+    );
     expect(visibilityCalls.last, [0]);
     expect(
       builds,
