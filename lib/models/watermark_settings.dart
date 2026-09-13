@@ -212,6 +212,7 @@ class LogoMark {
   String? drawData;
 
   Uint8List? _cache;
+  String? _cacheB64;
 
   /// 裁切前的原圖。有它才能「還原」再重新裁一次——不然裁小了之後
   /// 再進裁切畫面，只會在已經裁過的那一小塊裡面繼續裁，回不去。
@@ -249,7 +250,8 @@ class LogoMark {
   Uint8List? get bytes {
     final s = b64;
     if (s == null) return null;
-    if (_cache != null) return _cache;
+    if (_cache != null && identical(s, _cacheB64)) return _cache;
+    _cacheB64 = s;
     if (identical(s, _poolKeyA)) return _cache = _poolValA;
     if (identical(s, _poolKeyB)) return _cache = _poolValB;
     final v = base64Decode(s);
@@ -263,6 +265,7 @@ class LogoMark {
   set bytesValue(Uint8List v) {
     _cache = v;
     b64 = base64Encode(v);
+    _cacheB64 = b64;
     // 順手登記進池子：之後的 copy 直接共用這份，不再各自解碼
     _poolKeyB = _poolKeyA;
     _poolValB = _poolValA;
@@ -301,7 +304,10 @@ class LogoMark {
 
   /// 原圖（[origBytes]）不進 JSON，複製時在記憶體內直接帶過去——
   /// 不然複製出來的那份（「更多浮水印」那一組）不能從原圖重裁
-  LogoMark copy() => LogoMark.fromJson(toJson())..origBytes = origBytes;
+  LogoMark copy() => LogoMark.fromJson(toJson())
+    .._cache = bytes
+    .._cacheB64 = b64
+    ..origBytes = origBytes;
 }
 
 /// 浮水印動畫（只對影片有效，照片輸出忽略）
@@ -582,6 +588,8 @@ class WatermarkSettings {
     final c = WatermarkSettings.fromJson(toJson());
     for (var i = 0; i < logos.length && i < c.logos.length; i++) {
       c.logos[i].origBytes = logos[i].origBytes;
+      c.logos[i]._cache = logos[i].bytes;
+      c.logos[i]._cacheB64 = logos[i].b64;
     }
     return c;
   }

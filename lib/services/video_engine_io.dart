@@ -22,6 +22,7 @@ import 'gif_store.dart';
 import 'native_export.dart';
 import 'video_processor.dart';
 import 'work_files.dart';
+import 'reverse_video_settings.dart';
 
 /// 這個平台是否支援影片匯出
 const bool videoExportSupported = true;
@@ -159,6 +160,9 @@ class _SourceProbe {
   /// 影片的旋轉角度（0/90/180/270）
   final int rotation;
   final double duration;
+  final String primaries;
+  final String matrix;
+  final String range;
 
   const _SourceProbe(
     this.hasAudio,
@@ -170,6 +174,9 @@ class _SourceProbe {
     this.dispH = 0,
     this.rotation = 0,
     this.duration = 0,
+    this.primaries = '',
+    this.matrix = '',
+    this.range = '',
   ]);
 }
 
@@ -303,6 +310,7 @@ Future<_SourceProbe> _probe(String path) async {
     var hdr = false;
     var codec = '';
     var trcOut = '';
+    var primaries = '', matrix = '', range = '';
     var vw = 0, vh = 0, rot = 0;
     for (final s in streams) {
       if (s.getType() == 'video') {
@@ -326,6 +334,9 @@ Future<_SourceProbe> _probe(String path) async {
             trc == 'arib-std-b67' ||
             prim.startsWith('bt2020');
         trcOut = trc;
+        primaries = prim;
+        matrix = '${s.getProperty('color_space') ?? ''}';
+        range = '${s.getProperty('color_range') ?? ''}';
         break;
       }
     }
@@ -341,6 +352,9 @@ Future<_SourceProbe> _probe(String path) async {
       swap ? vw : vh,
       rot,
       double.tryParse(info?.getDuration() ?? '') ?? 0,
+      primaries,
+      matrix,
+      range,
     );
     _probeCache[path] = r;
     return r;
@@ -1164,6 +1178,15 @@ Future<String?> _prerenderReverse(
   final n = (total / chunkSec).ceil();
 
   final parts = <String>[];
+  final source = await _probe(srcPath);
+  final encoding = reverseVideoSettings(
+    apple: Platform.isIOS || Platform.isMacOS,
+    hdr: hdrTrc.isNotEmpty,
+    transfer: source.trc,
+    primaries: source.primaries,
+    matrix: source.matrix,
+    range: source.range,
+  );
   // 由最後一段往前做：接起來就是整段倒著播。
   // 分段只切「畫面」（-an）——聲音在下面整段一次倒，
   // 分段倒聲音會在每個接點留下 AAC 編碼縫隙，聽起來忽大忽小
@@ -1172,31 +1195,32 @@ Future<String?> _prerenderReverse(
     final e = math.min(trimEnd, s + chunkSec);
     if (e - s < 0.02) continue;
     final part = '${dir.path}${Platform.pathSeparator}rev_${ts}_$i.mp4';
+    temps.add(part); // 取消或編碼失敗也要清掉未完成的檔案。
     // 先縮到輸出尺寸再倒轉：用原始解析度倒轉一樣會吃爆記憶體。
-    // 轉色排在縮放之前（理由同主匯出：swscale 縮完會把來源的
-    // 色彩標記換掉，colorspace 再轉就沒作用了）
+    // 保留來源色彩與 HDR 色深；倒轉不做 tone mapping。
     final cmd =
         '-y -ss ${_f(s)} -to ${_f(e)} -i "$srcPath" '
-        '-vf "${hdrTrc.isEmpty ? '' : '${await _hdrChainFor(hdrTrc)},'}'
-        'scale=$outW:$outH:flags=bicubic,reverse" -an '
-        '-c:v ${_hwEncoder()} -b:v 16000k -pix_fmt nv12 "$part"';
+        '-vf "scale=$outW:$outH:flags=bicubic,format=${encoding.pixelFormat},reverse" -an '
+        '-c:v ${encoding.encoder} -b:v 16000k -pix_fmt ${encoding.pixelFormat} '
+        '${encoding.options}"$part"';
     var ses = await FFmpegKit.execute(cmd);
     var rc = await ses.getReturnCode();
     // 使用者按取消也是「非成功」，但不能當成硬體編碼器壞掉而重跑一次，
     // 不然按了取消還會把整段倒轉跑到底
     if (ReturnCode.isCancel(rc)) return null;
     if (!ReturnCode.isSuccess(rc)) {
+      // MPEG-4 的 8-bit 退路不能代替 HDR 成品。
+      if (hdrTrc.isNotEmpty) return null;
       // 硬體編碼器不能用就退軟體編碼（跟主匯出同一套保底）
       ses = await FFmpegKit.execute(
         cmd
-            .replaceFirst('-c:v ${_hwEncoder()}', '-c:v mpeg4 -q:v 3')
+            .replaceFirst('-c:v ${encoding.encoder}', '-c:v mpeg4 -q:v 3')
             .replaceFirst('-pix_fmt nv12', '-pix_fmt yuv420p'),
       );
       rc = await ses.getReturnCode();
       if (!ReturnCode.isSuccess(rc)) return null;
     }
     parts.add(part);
-    temps.add(part);
     onProgress?.call(parts.length / n * 0.9);
   }
   if (parts.isEmpty) return null;

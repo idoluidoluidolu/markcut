@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/rendering.dart';
 
 import '../models/watermark_settings.dart';
+import 'quality_diagnostics.dart';
 
 // ===== 解碼好的 Logo 共用池 =====
 //
@@ -13,34 +14,82 @@ import '../models/watermark_settings.dart';
 // 所有副本拿到同一個 bytes 物件，Expando 跟著物件活、物件回收快取自然消。
 // 以前預覽圖層量長寬比整張解一次、_LogoUnit 畫再解一次、平鋪層再一次、
 // 匯出再一次——4MB 的大圖每個地方各來一輪（主層、每組額外層、全螢幕層、
-// 範本卡）。這裡只解一次，大家共用；解好的圖不 dispose（跟著 bytes
+// 範本卡）。同一尺寸只解一次；預覽限長邊、匯出保留原圖。解好的圖
+// 不 dispose（跟著 bytes
 // 活，bytes 被回收時由引擎的終結器收）
-final Expando<ui.Image> _logoImages = Expando('logoImages');
-final Expando<Future<ui.Image>> _logoDecoding = Expando('logoDecoding');
+const kLogoPreviewMaxSide = 1080;
+final Expando<Map<int, ui.Image>> _logoImages = Expando('logoImages');
+final Expando<Map<int, Future<ui.Image>>> _logoDecoding = Expando(
+  'logoDecoding',
+);
 
 /// 已經解好的 Logo（還沒解好回 null，用 [logoImageFor] 去等）
-ui.Image? logoImageCached(Uint8List bytes) => _logoImages[bytes];
+ui.Image? logoImageCached(Uint8List bytes, {int? maxSide}) =>
+    _logoImages[bytes]?[maxSide ?? 0];
 
 /// 解碼一顆 Logo（同一份 bytes 只解一次；正在解的一起等同一個 Future）
-Future<ui.Image> logoImageFor(Uint8List bytes) {
-  final hit = _logoImages[bytes];
+Future<ui.Image> logoImageFor(Uint8List bytes, {int? maxSide}) {
+  final key = maxSide ?? 0;
+  final hit = _logoImages[bytes]?[key];
   if (hit != null) return Future.value(hit);
-  final inflight = _logoDecoding[bytes];
+  final pending = _logoDecoding[bytes] ??= {};
+  final inflight = pending[key];
   if (inflight != null) return inflight;
-  final f = _decodeLogo(bytes);
-  _logoDecoding[bytes] = f;
+  final f = _decodeLogo(bytes, maxSide);
+  pending[key] = f;
   return f;
 }
 
-Future<ui.Image> _decodeLogo(Uint8List bytes) async {
-  final codec = await ui.instantiateImageCodec(bytes);
+Future<ui.Image> _decodeLogo(Uint8List bytes, int? maxSide) async {
+  final diagnostic = QualityDiagnostics.instance;
+  final span = maxSide == null
+      ? null
+      : diagnostic.begin(QualityMetric.logoDecode);
+  var succeeded = false;
+  ui.ImmutableBuffer? buffer;
+  ui.ImageDescriptor? descriptor;
+  ui.Codec? codec;
   try {
-    final img = (await codec.getNextFrame()).image;
-    _logoImages[bytes] = img;
+    ui.Image img;
+    try {
+      buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+      descriptor = await ui.ImageDescriptor.encoded(buffer);
+      final w = descriptor.width, h = descriptor.height;
+      final downsample = maxSide != null && math.max(w, h) > maxSide;
+      codec = await descriptor.instantiateCodec(
+        targetWidth: downsample && w >= h ? maxSide : null,
+        targetHeight: downsample && h > w ? maxSide : null,
+      );
+      img = (await codec.getNextFrame()).image;
+    } on UnsupportedError {
+      // Older web renderers do not expose ImageDescriptor. Keep the established
+      // codec path there, limiting the second decode to preview size if needed.
+      codec?.dispose();
+      codec = null;
+      codec = await ui.instantiateImageCodec(bytes);
+      img = (await codec.getNextFrame()).image;
+      final w = img.width, h = img.height;
+      if (maxSide != null && math.max(w, h) > maxSide) {
+        img.dispose();
+        codec.dispose();
+        codec = null;
+        codec = await ui.instantiateImageCodec(
+          bytes,
+          targetWidth: w >= h ? maxSide : null,
+          targetHeight: h > w ? maxSide : null,
+        );
+        img = (await codec.getNextFrame()).image;
+      }
+    }
+    (_logoImages[bytes] ??= {})[maxSide ?? 0] = img;
+    succeeded = true;
     return img;
   } finally {
-    codec.dispose();
-    _logoDecoding[bytes] = null;
+    diagnostic.finish(span, success: succeeded);
+    codec?.dispose();
+    descriptor?.dispose();
+    buffer?.dispose();
+    _logoDecoding[bytes]?.remove(maxSide ?? 0);
   }
 }
 

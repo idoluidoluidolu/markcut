@@ -464,7 +464,7 @@ void main() {
     final r2 = t.getRect(_clip(2));
     await t.longPressAt(Offset((r1.right + r2.left) / 2, r1.center.dy));
     await _settle(t, 10);
-    expect(find.text('銜接這一軌'), findsOneWidget, reason: '空白處長按選單沒開');
+    expect(find.text('緊接這一軌'), findsOneWidget, reason: '空白處長按選單沒開');
     await _shot(t, '17-ve-empty-context-menu');
     await t.tap(find.text('刪除整軌'));
     await _settle(t, 10);
@@ -474,18 +474,10 @@ void main() {
     await _drain(t);
   });
 
-  testWidgets('ve: 縮放 / 效果（_optSheet）/ 排序 / 圖片片段表', (t) async {
+  testWidgets('ve: 效果（_optSheet）/ 排序 / 圖片片段表', (t) async {
     await _pumpVideo(t);
     await _selectClip(t, _clip(1));
     // 工具列是橫向捲的，右邊那幾顆在 390 寬的畫面外
-    await t.ensureVisible(find.text('縮放'));
-    await _settle(t, 4);
-    await t.tap(find.text('縮放'));
-    await _settle(t, 12);
-    expect(find.byType(BottomSheet), findsOneWidget);
-    await _shot(t, '19-ve-scale-sheet');
-    await _close(t);
-
     await t.ensureVisible(find.text('效果'));
     await _settle(t, 4);
     await t.tap(find.text('效果'));

@@ -526,6 +526,91 @@ class RunnerTests: XCTestCase {
     return url
   }
 
+  func testPreviewTailUsesTheActualLastSampleAndDoesNotFillRealGaps() throws {
+    let url = try makeScrubVideo()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let asset = AVURLAsset(url: url)
+    let track = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
+    let last = try XCTUnwrap(MCPreviewTail.lastSample(of: track,
+      before: CMTime(seconds: 1.02, preferredTimescale: 600), after: .zero))
+    XCTAssertEqual(last.start.seconds, 29.0 / 30, accuracy: 0.002)
+    XCTAssertEqual(last.end.seconds, track.timeRange.end.seconds, accuracy: 0.002)
+    let trimmed = try XCTUnwrap(MCPreviewTail.lastSample(of: track,
+      before: CMTime(seconds: 0.5, preferredTimescale: 600), after: .zero))
+    XCTAssertEqual(trimmed.start.seconds, 14.0 / 30, accuracy: 0.002)
+    XCTAssertEqual(MCPreviewTail.displayEnd(0.98, projectEnd: 1), 1)
+    XCTAssertEqual(MCPreviewTail.displayEnd(0.8, projectEnd: 1), 0.8)
+
+    let player = CompPlayer(registry: ScrubTestTextureRegistry())
+    defer { player.dispose() }
+    XCTAssertTrue(player.build(clips: [
+      ["path": url.path, "start": 0.0, "end": 1.02, "offset": 0.0, "track": 0],
+      ["path": url.path, "start": 0.0, "end": 1.0, "offset": 0.0, "track": 1],
+    ], texture: false))
+    let composition = try XCTUnwrap(player.player.currentItem?.asset)
+    let tracks = composition.tracks(withMediaType: .video)
+    XCTAssertEqual(tracks.count, 2)
+    for video in tracks {
+      XCTAssertEqual(video.timeRange.end.seconds, 1.02, accuracy: 0.002)
+      let tail = try XCTUnwrap(video.segments.last)
+      XCTAssertFalse(tail.isEmpty)
+      XCTAssertEqual(tail.timeMapping.source.start.seconds, 29.0 / 30, accuracy: 0.002)
+    }
+  }
+
+  func testLiveClipVolumesUpdateTheCurrentItemAndPreserveOtherClipsAndFades() throws {
+    let videoURL = try makeScrubVideo()
+    let audioURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent("volume-\(UUID().uuidString).caf")
+    defer {
+      try? FileManager.default.removeItem(at: videoURL)
+      try? FileManager.default.removeItem(at: audioURL)
+    }
+    let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+    do {
+      let file = try AVAudioFile(forWriting: audioURL, settings: format.settings)
+      let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 48_000))
+      buffer.frameLength = 48_000
+      let samples = try XCTUnwrap(buffer.floatChannelData)[0]
+      for i in 0..<48_000 { samples[i] = 0.1 }
+      try file.write(from: buffer)
+    }
+    let player = CompPlayer(registry: ScrubTestTextureRegistry())
+    defer { player.dispose() }
+    XCTAssertTrue(player.build(clips: [["id": 4, "path": videoURL.path,
+      "start": 0.0, "end": 1.0, "offset": 0.0, "track": 0]], texture: false,
+      audios: [
+        ["id": 1, "path": audioURL.path, "start": 0.0, "end": 0.5,
+         "offset": 0.0, "volume": 0.3, "fadeIn": 0.1],
+        ["id": 2, "path": audioURL.path, "start": 0.0, "end": 0.5,
+         "offset": 0.5, "volume": 0.8],
+        ["id": 3, "path": audioURL.path, "start": 0.0, "end": 1.0,
+         "offset": 0.0, "volume": 0.6],
+      ]))
+    let item = try XCTUnwrap(player.player.currentItem)
+    let trackIDs = try XCTUnwrap(item.audioMix).inputParameters.map(\.trackID)
+    XCTAssertEqual(trackIDs.count, 2)
+    func ramp(_ trackID: CMPersistentTrackID, at seconds: Double) throws -> (Float, Float) {
+      let param = try XCTUnwrap(item.audioMix?.inputParameters.first { $0.trackID == trackID })
+      var from: Float = -1, to: Float = -1
+      var range = CMTimeRange.zero
+      XCTAssertTrue(param.getVolumeRamp(for: CMTime(seconds: seconds, preferredTimescale: 600),
+        startVolume: &from, endVolume: &to, timeRange: &range))
+      return (from, to)
+    }
+    player.setClipVolumes([["id": 1, "volume": 0.0], ["id": 2, "volume": 0.0]])
+    XCTAssertTrue(player.player.currentItem === item)
+    XCTAssertEqual(try ramp(trackIDs[0], at: 0.25).0, 0, accuracy: 0.001)
+    XCTAssertEqual(try ramp(trackIDs[0], at: 0.75).0, 0, accuracy: 0.001)
+    XCTAssertEqual(try ramp(trackIDs[1], at: 0.25).0, 0.6, accuracy: 0.001)
+    player.setClipVolumes([["id": 1, "volume": 0.3], ["id": 2, "volume": 0.8]])
+    XCTAssertTrue(player.player.currentItem === item)
+    XCTAssertEqual(try ramp(trackIDs[0], at: 0.05).0, 0, accuracy: 0.001)
+    XCTAssertEqual(try ramp(trackIDs[0], at: 0.05).1, 0.3, accuracy: 0.001)
+    XCTAssertEqual(try ramp(trackIDs[0], at: 0.75).0, 0.8, accuracy: 0.001)
+    XCTAssertEqual(try ramp(trackIDs[1], at: 0.25).0, 0.6, accuracy: 0.001)
+  }
+
   func testNativeExactScrubActuallyPresentsAfterClearingCacheAtTheSamePlayerTime() throws {
     if let reason = MCNativeScrubPlane.presentationUnavailableReason { throw XCTSkip(reason) }
     let url = try makeScrubVideo()

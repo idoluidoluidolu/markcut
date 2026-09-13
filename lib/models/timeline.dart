@@ -86,6 +86,7 @@ class MediaSource {
   final String? revOf;
   final double revStart;
   final double revEnd;
+  int revColorVersion;
 
   MediaSource({
     required this.path,
@@ -104,6 +105,7 @@ class MediaSource {
     this.revOf,
     this.revStart = 0,
     this.revEnd = 0,
+    this.revColorVersion = 0,
     this.isSticker = false,
     this.isGif = false,
   });
@@ -129,6 +131,7 @@ class MediaSource {
     revOf: revOf,
     revStart: revStart,
     revEnd: revEnd,
+    revColorVersion: revColorVersion,
   );
 
   /// 樣式素材（浮水印/文字/馬賽克）切割時要複製一份來源，
@@ -176,6 +179,7 @@ class MediaSource {
     if (revOf != null) 'revOf': revOf,
     if (revOf != null) 'revStart': revStart,
     if (revOf != null) 'revEnd': revEnd,
+    if (revOf != null) 'revColorVersion': revColorVersion,
   };
 
   factory MediaSource.fromJson(Map<String, dynamic> j) {
@@ -224,6 +228,7 @@ class MediaSource {
       revOf: j['revOf'] as String?,
       revStart: (j['revStart'] ?? 0).toDouble(),
       revEnd: (j['revEnd'] ?? 0).toDouble(),
+      revColorVersion: (j['revColorVersion'] as num?)?.toInt() ?? 0,
     );
   }
 }
@@ -368,6 +373,19 @@ class TimelineClip {
   double sourceTimeAt(double t) {
     final d = (t - offset) * speed.clamp(0.1, 16.0);
     return reverse ? trimEnd - d : trimStart + d;
+  }
+
+  /// 預覽播放器要 seek 的素材時間。
+  ///
+  /// [sourceTimeAt] 是編輯數學，片段右緣必須精確映到 [trimEnd]；但影片
+  /// 的有效取樣區間右側是開的，播放器 seek 到正好等於 [trimEnd] 時，部分
+  /// 素材會回一張黑格。顯示時把上界收進極小量，拖到時間軸最尾端仍會看到
+  /// 每一層各自的最後一幀。下界保持原值，正播第一幀不會被吃掉。
+  double sourceTimeForDisplayAt(double t, {double endInsetSeconds = 0.001}) {
+    final span = srcLength;
+    if (span <= 0) return trimStart;
+    final inset = math.min(endInsetSeconds, span / 2);
+    return sourceTimeAt(t).clamp(trimStart, trimEnd - inset);
   }
 
   /// 淡入淡出在 t 時刻的係數（0~1）

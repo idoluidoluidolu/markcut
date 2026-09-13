@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import '../models/color_grade.dart';
 import 'diagnostics.dart';
+import 'quality_diagnostics.dart';
 import '../models/mosaic.dart';
 import '../models/watermark_settings.dart';
 import 'logo_mark_painter.dart';
@@ -104,6 +105,7 @@ class WatermarkRenderer {
     int outH,
     ui.ImageByteFormat fmt, {
     bool fullCanvas = false,
+    bool clipToCanvas = true,
     double margin = 2,
   }) async {
     if (outW < 2 || outH < 2) return null;
@@ -111,13 +113,37 @@ class WatermarkRenderer {
     final canvasRect = ui.Rect.fromLTWH(0, 0, w, h);
     final bounds = fullCanvas ? null : await partBounds(s, w, h);
     var box = bounds == null ? canvasRect : bounds.inflate(margin);
-    box = box.intersect(canvasRect);
+    if (clipToCanvas) box = box.intersect(canvasRect);
     if (box.isEmpty) return null;
+    // Live transforms must retain off-canvas pixels, but never allocate an
+    // unbounded raster for a huge logo / long text. Scale its coordinate system
+    // together with the image, keeping the returned fractional rect unchanged.
+    final edge = math.max(box.width, box.height);
+    if (!clipToCanvas && edge > 2048 && math.min(outW, outH) > 2) {
+      final factor = 2048 / edge;
+      return renderPart(
+        s,
+        math.max(2, (outW * factor).floor()),
+        math.max(2, (outH * factor).floor()),
+        fmt,
+        fullCanvas: fullCanvas,
+        clipToCanvas: false,
+        margin: 0,
+      );
+    }
     // 整數對齊；原生端（CIOverlaySpec）要求兩邊都大於 1px
-    final l = box.left.floor().clamp(0, outW - 2);
-    final t = box.top.floor().clamp(0, outH - 2);
-    final r = box.right.ceil().clamp(l + 2, outW);
-    final b = box.bottom.ceil().clamp(t + 2, outH);
+    final l = clipToCanvas
+        ? box.left.floor().clamp(0, outW - 2)
+        : box.left.floor();
+    final t = clipToCanvas
+        ? box.top.floor().clamp(0, outH - 2)
+        : box.top.floor();
+    final r = clipToCanvas
+        ? box.right.ceil().clamp(l + 2, outW)
+        : math.max(l + 2, box.right.ceil());
+    final b = clipToCanvas
+        ? box.bottom.ceil().clamp(t + 2, outH)
+        : math.max(t + 2, box.bottom.ceil());
     final bw = r - l, bh = b - t;
     final t0 = DateTime.now();
     final recorder = ui.PictureRecorder();
@@ -127,13 +153,22 @@ class WatermarkRenderer {
     );
     // 原點搬到包圍盒左上：畫的還是整版那套座標，只是只留這一塊
     canvas.translate(-l.toDouble(), -t.toDouble());
-    await drawMarks(canvas, s, w, h);
+    await QualityDiagnostics.instance.measure(
+      QualityMetric.overlayDraw,
+      () => drawMarks(canvas, s, w, h, logoMaxSide: kLogoPreviewMaxSide),
+    );
     final picture = recorder.endRecording();
     final t1 = DateTime.now();
-    final image = await picture.toImage(bw, bh);
+    final image = await QualityDiagnostics.instance.measure(
+      QualityMetric.overlayRaster,
+      () => picture.toImage(bw, bh),
+    );
     picture.dispose();
     final t2 = DateTime.now();
-    final data = await image.toByteData(format: fmt);
+    final data = await QualityDiagnostics.instance.measure(
+      QualityMetric.overlayReadback,
+      () => image.toByteData(format: fmt),
+    );
     final t3 = DateTime.now();
     image.dispose();
     WmDiag.noteBakeDetail(
@@ -170,7 +205,7 @@ class WatermarkRenderer {
       final bytes = logo.bytes;
       if (!logo.enabled || bytes == null) continue;
       if (logo.tiled) return null;
-      final img = await _logoImage(bytes);
+      final img = await logoImageFor(bytes, maxSide: kLogoPreviewMaxSide);
       final r = logoBounds(logo, img.width / img.height, w, h);
       acc = acc == null ? r : acc.expandToInclude(r);
     }
@@ -489,20 +524,20 @@ class WatermarkRenderer {
   /// logo 解碼：走共用池（logo_mark_painter 的 logoImageFor），跟預覽
   /// 圖層拿的是同一張。每次烘圖都重新解碼的話，大圖一次幾百 ms——
   /// 實機 158「烘圖平均 292ms／最久 1299ms」的大頭
-  static Future<ui.Image> _logoImage(Uint8List bytes) => logoImageFor(bytes);
 
   static Future<void> drawMarks(
     ui.Canvas canvas,
     WatermarkSettings s,
     double w,
-    double h,
-  ) async {
+    double h, {
+    int? logoMaxSide,
+  }) async {
     // 圖片先畫（讓文字可以壓在圖片上面）。多張時照清單順序，
     // 後加的那張蓋在前面的上面——跟預覽的疊法一致
     for (final logo in s.logos) {
       final logoBytes = logo.bytes;
       if (!logo.enabled || logoBytes == null) continue;
-      final img = await _logoImage(logoBytes);
+      final img = await logoImageFor(logoBytes, maxSide: logoMaxSide);
 
       // 縮放/圓角/透明度/平鋪全交給共用畫家（跟預覽同一段程式碼）
       if (logo.tiled) {

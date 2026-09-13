@@ -159,6 +159,7 @@ func mcSampleFile(_ path: String) -> String {
 
 final class CIOverlaySpec {
   let image: CIImage  // 已縮放/定位到畫布座標
+  let opacity: Double
   let start: Double
   let end: Double
   let anim: String
@@ -249,6 +250,7 @@ final class CIOverlaySpec {
         translationX: canvas.width * CGFloat(r[0]),
         y: canvas.height * CGFloat(1 - r[1] - r[3])))
     image = img
+    opacity = max(0, min(1, ov["opacity"] as? Double ?? 1))
     effW = Double(w)
     effH = Double(h)
     start = max(0, ov["start"] as? Double ?? 0)
@@ -1490,6 +1492,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   /// 這份底、疊加物照當下清單重畫（重播整格會把舊樣式的浮水印帶
   /// 回螢幕＝拖滑桿時新→舊→新閃爍）
   private var lastComposedBase: CIImage?
+  private var lastBaseHiddenTracks: Set<Int> = []
   private lazy var outCS: CGColorSpace = {
     if hdrOut, let hlg = CGColorSpace(name: CGColorSpace.itur_2100_HLG) {
       return hlg
@@ -2221,6 +2224,11 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             Self.skip("多層")
             return nil
           }
+          guard !self.liveComp
+            || !CIExportCompositor.currentHiddenImageTracks().contains(L.z) else {
+            Self.skip("隱藏軌")
+            return nil
+          }
           guard L.trackID != kCMPersistentTrackID_Invalid, L.gif == nil,
             L.still == nil
           else {
@@ -2329,14 +2337,19 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
 
         // 馬賽克照 z 交錯：只糊排在它下面的層。疊完 z 比它低的層就
         // 先打碼，再把更高的層（例如子母畫面）疊上去——跟預覽一致
+        let hiddenImages: Set<Int> = self.liveComp
+          ? CIExportCompositor.currentHiddenImageTracks() : []
+        if hiddenImages != self.lastBaseHiddenTracks {
+          // Missing lower decoder frames must not replay a newly hidden layer.
+          self.lastComposedBase = nil
+          self.lastBaseHiddenTracks = hiddenImages
+        }
         let activeMz = frameMosaics
-          .filter { t >= $0.start && t < $0.end }
+          .filter { t >= $0.start && t < $0.end && !hiddenImages.contains($0.z) }
           .sorted { $0.z < $1.z }
         // 捏合/拖曳中的即時變形：每一格讀一次（只有預覽合成器讀）
         let lx = self.liveComp && !ins.previewCulled
           ? CIExportCompositor.currentLiveXform() : nil
-        let hiddenImages: Set<Int> = self.liveComp
-          ? CIExportCompositor.currentHiddenImageTracks() : []
         var mzIdx = 0
         var missing = false
         var drawnCount = 0
@@ -2347,8 +2360,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             mzIdx += 1
           }
           var img: CIImage
-          if layer.trackID == kCMPersistentTrackID_Invalid,
-            hiddenImages.contains(layer.z) { continue }
+          if hiddenImages.contains(layer.z) { continue }
           if layer.trackID != kCMPersistentTrackID_Invalid {
             guard let buf = req.sourceFrame(byTrackID: layer.trackID) else {
               missing = true
@@ -2494,7 +2506,10 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             if var o = ov.frame(at: t, canvas: size) {
               // 浮水印部件的即時幾何：拖/縮/轉只是差量，PNG 不重畫。
               // 差量繞「部件中心」算（跟預覽的拖曳手感同一個原點）
-              if let oid = ov.id, let lov = lovs[oid] {
+              let live = ov.id.flatMap { lovs[$0] }
+              let opacity = live?.opacity ?? ov.opacity
+              if opacity <= 0 { continue }
+              if let lov = live {
                 let cx = CGFloat(ov.bx) * size.width
                 let cy = (1 - CGFloat(ov.by)) * size.height
                 let sc = CGFloat(lov.scale / max(0.0001, ov.bs))
@@ -2512,6 +2527,9 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
                     translationX: cx + CGFloat(lov.x - ov.bx) * size.width,
                     y: cy - CGFloat(lov.y - ov.by) * size.height))
                 o = o.transformed(by: d)
+              }
+              if opacity < 1 {
+                o = Self.applyingOpacity(o, opacity: opacity)
               }
               if self.hdrOut, let capped = cappedBase {
                 // 治本（半透明變灰的根）：疊加物蓋到的地方，先把
@@ -3553,12 +3571,21 @@ final class MCInteractivePrepGate {
           maps.compactMap { CIMosaicSpec($0, canvas: p.size) })
         p.nudgeRedrawIfPaused()
         result(true)
-      case "setHiddenImageTracks":
+      case "setHiddenTracks", "setHiddenImageTracks":
         guard let a = call.arguments as? [String: Any], let p = self.comp else {
           result(false)
           return
         }
-        CIExportCompositor.setHiddenImageTracks(Set(a["tracks"] as? [Int] ?? []))
+        let tracks = Set(a["tracks"] as? [Int] ?? [])
+        CIExportCompositor.setHiddenImageTracks(tracks)
+        if !tracks.isEmpty {
+          // Restore culled lower sources before hiding an opaque upper layer.
+          _ = p.beginLiveLayerEditing()
+          if !p.liveCIOn && !p.applyXform(nil, nudge: false) {
+            result(false)
+            return
+          }
+        }
         p.nudgeRedrawIfPaused()
         result(true)
       case "setXform":
@@ -3611,7 +3638,8 @@ final class MCInteractivePrepGate {
               x: m["x"] as? Double ?? 0.5,
               y: m["y"] as? Double ?? 0.5,
               scale: m["scale"] as? Double ?? 1,
-              rot: m["rot"] as? Double ?? 0)
+              rot: m["rot"] as? Double ?? 0,
+              opacity: max(0, min(1, m["opacity"] as? Double ?? 1)))
           })
         // 暫停中的重畫走「換 vc」不 seek（見 rerenderPaused）
         if a["noNudge"] as? Bool != true {
@@ -3642,7 +3670,8 @@ final class MCInteractivePrepGate {
               x: m["x"] as? Double ?? 0.5,
               y: m["y"] as? Double ?? 0.5,
               scale: m["scale"] as? Double ?? 1,
-              rot: m["rot"] as? Double ?? 0)
+              rot: m["rot"] as? Double ?? 0,
+              opacity: max(0, min(1, m["opacity"] as? Double ?? 1)))
           })
         // 暫停中換清單要逼合成器重畫這一格。改樣式不准碰解碼器：
         // 不 seek（擺動一刻＝對暫停中的解碼器做精準 seek、還可能跨格），
@@ -3667,6 +3696,12 @@ final class MCInteractivePrepGate {
       case "muted":
         self.comp?.setMuted((call.arguments as? Bool) ?? false)
         result(nil)
+      case "setClipVolumes":
+        guard let values = call.arguments as? [[String: Any]], let p = self.comp else {
+          result(false); return
+        }
+        p.setClipVolumes(values)
+        result(true)
       case "vtracks":
         self.comp?.setVideoTracksEnabled(
           (call.arguments as? Bool) ?? true)
@@ -3719,6 +3754,8 @@ final class MCInteractivePrepGate {
         result(self.comp?.gapStats() ?? ["count": 0])
       case "health":
         result(self.comp?.healthStats() ?? [:])
+      case "qualitySnapshot":
+        result(self.comp?.qualitySnapshot())
       case "dispose":
         self.releaseFrameGenerators()
         PlayerHosts.shared.use(nil)
@@ -3908,17 +3945,40 @@ final class MCInteractivePrepGate {
       return "開不了輸出檔：\(error.localizedDescription)"
     }
     let fps = vTrack.nominalFrameRate > 1 ? Double(vTrack.nominalFrameRate) : 30
+    // Keep the source transfer function and gamut through both reader and writer.
+    // In particular, reversing HLG/PQ must not tone-map it to an 8-bit SDR file.
+    let desc = vTrack.formatDescriptions.first.map { $0 as! CMFormatDescription }
+    func colorTag(_ key: CFString, fallback: String) -> String {
+      guard let desc = desc else { return fallback }
+      return CMFormatDescriptionGetExtension(desc, extensionKey: key) as? String ?? fallback
+    }
+    let transfer = colorTag(kCMFormatDescriptionExtension_TransferFunction,
+      fallback: AVVideoTransferFunction_ITU_R_709_2)
+    let hdr = transfer == AVVideoTransferFunction_ITU_R_2100_HLG
+      || transfer == AVVideoTransferFunction_SMPTE_ST_2084_PQ
+    let primaries = colorTag(kCMFormatDescriptionExtension_ColorPrimaries,
+      fallback: hdr ? AVVideoColorPrimaries_ITU_R_2020 : AVVideoColorPrimaries_ITU_R_709_2)
+    let matrix = colorTag(kCMFormatDescriptionExtension_YCbCrMatrix,
+      fallback: hdr ? AVVideoYCbCrMatrix_ITU_R_2020 : AVVideoYCbCrMatrix_ITU_R_709_2)
+    let pixelFormat = hdr ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+      : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+    var compression: [String: Any] = [
+      AVVideoAverageBitRateKey: max(4_000_000, outW * outH * 6),
+      AVVideoExpectedSourceFrameRateKey: Int(fps.rounded()),
+    ]
+    if hdr { compression[AVVideoProfileLevelKey] = kVTProfileLevel_HEVC_Main10_AutoLevel }
     let vIn = AVAssetWriterInput(
       mediaType: .video,
       outputSettings: [
-        AVVideoCodecKey: AVVideoCodecType.h264,
+        AVVideoCodecKey: hdr ? AVVideoCodecType.hevc : AVVideoCodecType.h264,
         AVVideoWidthKey: outW,
         AVVideoHeightKey: outH,
-        AVVideoCompressionPropertiesKey: [
-          // 位元率跟工作檔同級，畫質不因倒轉降階
-          AVVideoAverageBitRateKey: max(4_000_000, outW * outH * 6),
-          AVVideoExpectedSourceFrameRateKey: Int(fps.rounded()),
+        AVVideoColorPropertiesKey: [
+          AVVideoColorPrimariesKey: primaries,
+          AVVideoTransferFunctionKey: transfer,
+          AVVideoYCbCrMatrixKey: matrix,
         ],
+        AVVideoCompressionPropertiesKey: compression,
       ])
     vIn.expectsMediaDataInRealTime = false
     guard writer.canAdd(vIn) else { return "加不進影像軌" }
@@ -3927,7 +3987,7 @@ final class MCInteractivePrepGate {
       assetWriterInput: vIn,
       sourcePixelBufferAttributes: [
         kCVPixelBufferPixelFormatTypeKey as String:
-          kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+          pixelFormat
       ])
 
     // 聲音：讀成 PCM、窗內樣本反轉，寫回 AAC
@@ -3972,6 +4032,9 @@ final class MCInteractivePrepGate {
     // 一窗的記憶體占用固定（0.5 秒約 15 格 NV12，1080p 一格 3MB）
     let comp = AVMutableVideoComposition()
     comp.renderSize = CGSize(width: outW, height: outH)
+    comp.colorPrimaries = primaries
+    comp.colorTransferFunction = transfer
+    comp.colorYCbCrMatrix = matrix
     comp.frameDuration = CMTime(
       value: 1, timescale: CMTimeScale(max(1, Int(fps.rounded()))))
     let ins = AVMutableVideoCompositionInstruction()
@@ -4009,7 +4072,7 @@ final class MCInteractivePrepGate {
           videoTracks: [vTrack],
           videoSettings: [
             kCVPixelBufferPixelFormatTypeKey as String:
-              kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+              pixelFormat
           ])
         vOut.videoComposition = comp
         vOut.alwaysCopiesSampleData = false
@@ -6988,6 +7051,7 @@ struct CompLiveOv {
   let y: Double
   let scale: Double
   let rot: Double
+  var opacity: Double = 1
 }
 
 /// 捏合/拖曳中的即時變形覆寫：z＝軌道編號、start＝片段在時間軸的開頭
@@ -7002,7 +7066,84 @@ struct CompLiveXform {
   let opacity: Double
 }
 
+enum MCPreviewTail {
+  /// Only close sub-frame rounding gaps at the project end, never real gaps.
+  static func displayEnd(_ end: Double, projectEnd: Double) -> Double {
+    let gap = projectEnd - end
+    return gap >= 0 && gap <= 1.0 / 30.0 + 1.0 / 600.0 ? projectEnd : end
+  }
+
+  /// Read compressed sample timestamps only. Selecting the actual final sample
+  /// handles VFR and video tracks shorter than their container's audio duration.
+  static func lastSample(of track: AVAssetTrack, before end: CMTime,
+                         after start: CMTime) -> CMTimeRange? {
+    guard let asset = track.asset, let reader = try? AVAssetReader(asset: asset) else { return nil }
+    let upper = min(end, track.timeRange.end)
+    let lower = max(start, max(track.timeRange.start,
+      upper - CMTime(seconds: 1, preferredTimescale: 60_000)))
+    guard upper > lower else { return nil }
+    reader.timeRange = CMTimeRange(start: lower, end: upper)
+    let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+    output.alwaysCopiesSampleData = false
+    guard reader.canAdd(output) else { return nil }
+    reader.add(output)
+    guard reader.startReading() else { return nil }
+    var latest: CMTime?
+    while let sample = output.copyNextSampleBuffer() {
+      let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+      if pts >= start && pts < upper && (latest == nil || pts > latest!) { latest = pts }
+    }
+    guard reader.status == .completed, let pts = latest else { return nil }
+    return CMTimeRange(start: pts, end: upper)
+  }
+}
+
 final class CompPlayer: NSObject, FlutterTexture {
+  private struct AudioSegment {
+    let clipID: Int
+    let trackID: CMPersistentTrackID
+    let start: CMTime
+    let duration: CMTime
+    let fadeIn: Double
+    let fadeOut: Double
+    var volume: Float
+  }
+  private var audioSegments: [AudioSegment] = []
+
+  func setClipVolumes(_ values: [[String: Any]]) {
+    var volumes: [Int: Float] = [:]
+    for value in values {
+      if let id = value["id"] as? Int, let v = value["volume"] as? Double, v.isFinite {
+        volumes[id] = Float(max(0, min(1, v)))
+      }
+    }
+    var params: [CMPersistentTrackID: AVMutableAudioMixInputParameters] = [:]
+    for i in audioSegments.indices {
+      if let v = volumes[audioSegments[i].clipID] { audioSegments[i].volume = v }
+      let s = audioSegments[i]
+      let p = params[s.trackID] ?? AVMutableAudioMixInputParameters()
+      p.trackID = s.trackID
+      params[s.trackID] = p
+      p.setVolume(s.volume, at: s.start)
+      let fi = min(s.fadeIn, s.duration.seconds)
+      let fo = min(s.fadeOut, s.duration.seconds)
+      if fi > 0.01 {
+        p.setVolumeRamp(fromStartVolume: 0, toEndVolume: s.volume,
+          timeRange: CMTimeRange(start: s.start,
+            duration: CMTime(seconds: fi, preferredTimescale: 600)))
+      }
+      if fo > 0.01 {
+        let fade = CMTime(seconds: fo, preferredTimescale: 600)
+        p.setVolumeRamp(fromStartVolume: s.volume, toEndVolume: 0,
+          timeRange: CMTimeRange(start: s.start + s.duration - fade, duration: fade))
+      }
+    }
+    let mix = AVMutableAudioMix()
+    mix.inputParameters = params.keys.sorted().compactMap { params[$0] }
+    audioMix = mix
+    player.currentItem?.audioMix = mix
+    audioPlayer.currentItem?.audioMix = mix
+  }
   /// 只來自這次成功組建真正讀過的來源軌。Dart 冷拖曳只能憑這份證據
   /// 剔除全遮蔽下層，不可把「影片副檔名」當作沒有 alpha 的證明。
   private(set) var opaqueSourcePaths: Set<String> = []
@@ -7464,7 +7605,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     }
     item.videoComposition = regen(ov)
     lastXformOv = ov
-    liveCIOn = ov != nil || builtNeedsCI
+    liveCIOn = ov != nil || builtNeedsCI || visibilityState?.enabled == false
     if nudge && player.rate == 0 {
       nudgeRedrawIfPaused()
     }
@@ -7602,6 +7743,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     stillInverseOotf: Bool? = nil
   ) -> Bool {
     cancelSeekRequests()
+    audioSegments.removeAll()
     let comp = AVMutableComposition()
     let scale: CMTimeScale = 600
 
@@ -7630,7 +7772,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     /// audios）共用這一套——跟匯出 runExport.addAudio 同一份邏輯
     func addAudio(
       _ sa: AVAssetTrack, range: CMTimeRange, at putAt: CMTime,
-      outDur: CMTime, volume: Float, fadeIn: Double, fadeOut: Double
+      outDur: CMTime, volume: Float, fadeIn: Double, fadeOut: Double, clipID: Int
     ) {
       var chosen: Int? = nil
       for i in aTracks.indices where aTracks[i].end <= putAt {
@@ -7662,6 +7804,9 @@ final class CompPlayer: NSObject, FlutterTexture {
             toDuration: outDur)
         }
         aTracks[i].end = putAt + outDur
+        audioSegments.append(AudioSegment(clipID: clipID,
+          trackID: aTracks[i].track.trackID, start: putAt, duration: outDur,
+          fadeIn: fadeIn, fadeOut: fadeOut, volume: volume))
         // 每一段的音量；淡入淡出是斜坡，不是階梯
         let pr = aParams[i]
         if fadeIn > 0.01 {
@@ -7722,6 +7867,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     }
     let needsCI =
       !mosaics.isEmpty
+      || !CIExportCompositor.currentHiddenImageTracks().isEmpty
       // 墊在影片下層的圖片/GIF：烘進合成（標準 layer instruction
       // 畫不了外來影像，得走 CI 合成器）
       || !stills.isEmpty
@@ -7840,11 +7986,25 @@ final class CompPlayer: NSObject, FlutterTexture {
       // 同一層若真的重疊（理論上不會，時間軸不允許），往後推一格避免蓋掉
       let putAt = max(at, slot.end)
       do {
-        try slot.track.insertTimeRange(range, of: src, at: putAt)
-        if outDur != range.duration {
+        let videoEnd = min(range.end, src.timeRange.end)
+        let missingTail = max(0, (range.end - videoEnd).seconds)
+        let sourceFrame = src.nominalFrameRate > 0 ? 1 / Double(src.nominalFrameRate) : 1.0 / 30
+        let lastSample = missingTail > 0 && missingTail <= sourceFrame + 1.0 / 600
+          ? MCPreviewTail.lastSample(of: src, before: videoEnd, after: range.start) : nil
+        let visibleRange = lastSample == nil ? range : CMTimeRange(start: range.start, end: videoEnd)
+        let visibleDuration = lastSample == nil ? outDur : CMTime(
+          seconds: visibleRange.duration.seconds / speed, preferredTimescale: scale)
+        try slot.track.insertTimeRange(visibleRange, of: src, at: putAt)
+        if visibleDuration != visibleRange.duration {
           slot.track.scaleTimeRange(
-            CMTimeRange(start: putAt, duration: range.duration),
-            toDuration: outDur)
+            CMTimeRange(start: putAt, duration: visibleRange.duration),
+            toDuration: visibleDuration)
+        }
+        if let lastSample = lastSample, outDur > visibleDuration {
+          let tailAt = putAt + visibleDuration
+          try slot.track.insertTimeRange(lastSample, of: src, at: tailAt)
+          slot.track.scaleTimeRange(CMTimeRange(start: tailAt, duration: lastSample.duration),
+            toDuration: outDur - visibleDuration)
         }
       } catch {
         // 最常見的是「要的區間超出素材長度」——修剪或切割之後
@@ -7863,7 +8023,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       if let sa = asset.tracks(withMediaType: .audio).first {
         addAudio(
           sa, range: range, at: putAt, outDur: outDur, volume: volume,
-          fadeIn: fadeIn, fadeOut: fadeOut)
+          fadeIn: fadeIn, fadeOut: fadeOut, clipID: clip["id"] as? Int ?? -1)
       }
 
       let sourceOpaque = MCPreviewVisibility.sourceIsOpaque(src)
@@ -7919,9 +8079,8 @@ final class CompPlayer: NSObject, FlutterTexture {
     func fillTail(_ layer: Int, to: CMTime) {
       guard let slot = vTracks[layer], slot.end < to, let m = lastMedia[layer]
       else { return }
-      let snipDur = CMTime(
-        seconds: min(0.2, m.rng.duration.seconds), preferredTimescale: scale)
-      let snip = CMTimeRange(start: m.rng.end - snipDur, duration: snipDur)
+      guard let snip = MCPreviewTail.lastSample(of: m.src,
+        before: m.rng.end, after: m.rng.start) else { return }
       guard (try? slot.track.insertTimeRange(snip, of: m.src, at: slot.end))
         != nil
       else { return }
@@ -7929,6 +8088,23 @@ final class CompPlayer: NSObject, FlutterTexture {
         CMTimeRange(start: slot.end, duration: snip.duration),
         toDuration: to - slot.end)
       vTracks[layer]?.end = to
+    }
+
+    // Endpoints that fall within one output frame represent the same displayed
+    // final frame. Extend each terminal layer with its own last sample, not a
+    // cached composite that could contain another layer or a previous edit.
+    for layer in vTracks.keys.sorted() {
+      guard let index = segments.indices.filter({ segments[$0].layer == layer })
+        .max(by: { segments[$0].range.end < segments[$1].range.end }) else { continue }
+      let end = segments[index].range.end
+      let displayEnd = MCPreviewTail.displayEnd(end.seconds, projectEnd: naturalEnd)
+      if displayEnd > end.seconds {
+        let target = CMTime(seconds: displayEnd, preferredTimescale: scale)
+        fillTail(layer, to: target)
+        if vTracks[layer]?.end == target {
+          segments[index].range = CMTimeRange(start: segments[index].range.start, end: target)
+        }
+      }
     }
 
     // 補長：最底層那條軌先撐到總長（合成的長度＝最長的那條軌）
@@ -7980,7 +8156,7 @@ final class CompPlayer: NSObject, FlutterTexture {
         sa, range: range, at: at, outDur: outDur,
         volume: Float(m["volume"] as? Double ?? 1),
         fadeIn: m["fadeIn"] as? Double ?? 0,
-        fadeOut: m["fadeOut"] as? Double ?? 0)
+        fadeOut: m["fadeOut"] as? Double ?? 0, clipID: m["id"] as? Int ?? -1)
     }
     // 組建內視鏡：收到幾段純聲音、合成裡總共幾條聲音軌（實機定罪
     // 「預覽無聲」時第一眼看這格）
@@ -8076,6 +8252,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     let sameTransform = segments.allSatisfy { $0.transform == uniformTransform }
     let needsVC =
       vTracks.count > 1
+      || needsCI
       || segments.contains { seg in
         seg.fadeIn > 0.01 || seg.fadeOut > 0.01 || seg.mirror
           || abs(seg.userScale - 1) > 0.001 || abs(seg.px - 0.5) > 0.001
@@ -8316,7 +8493,11 @@ final class CompPlayer: NSObject, FlutterTexture {
       if needsPad {
         rawT.append(CMTime(seconds: naturalEnd, preferredTimescale: 600))
       }
-      nativeScrubSupported = needsCI && !texture && MCNativeScrubPlane.supported
+      // HLG must use the same AVPlayerLayer while paused and playing. A separate
+      // CAMetalLayer has a different EDR presentation contract and can flash
+      // brighter at the first frame; retain the fast drawable route for SDR.
+      nativeScrubSupported = needsCI && !texture && !(hdrOut && anyHDR)
+        && MCNativeScrubPlane.supported
       rawT.append(contentsOf: MCPreviewVisibility.prerollStarts(before: rawT))
       // 去重要帶容差，而且是在這裡去掉，不是排完之後跳過太短的區間——
       // 跳過會在時間軸上留一條沒有指令的縫，而指令必須首尾相接把整條
@@ -8349,6 +8530,9 @@ final class CompPlayer: NSObject, FlutterTexture {
       // 最後一個可見片段結束的時間：之後的區間就是「片尾」
       let lastShow = segments.map { $0.range.end.seconds }.max() ?? 0
       let visibility = MCPreviewVisibilityState()
+      if !CIExportCompositor.currentHiddenImageTracks().isEmpty {
+        _ = visibility.beginEditing()
+      }
       visibilityState = visibility
       let scrubCache = nativeScrubSupported ? nativeScrubCache : nil
       // 產一份 videoComposition（可帶捏合中的即時變形覆寫 ov）。
@@ -8390,7 +8574,7 @@ final class CompPlayer: NSObject, FlutterTexture {
         // 即時變形要 CI 才吃得到（標準 layer instruction 不會逐格
         // 問我們）：有覆寫一律走 CI 路（軌道沒為 CI 鋪滿，接縫可能
         // 用上一格頂一下；放手重組就正確）
-        let useCI = needsCI || ov != nil
+        let useCI = needsCI || ov != nil || !visibility.enabled
         if useCI {
         var proto: [(a: CMTime, b: CMTime, layers: [CILayerSpec], hold: Bool,
                      culled: Bool)] =
@@ -9335,6 +9519,36 @@ final class CompPlayer: NSObject, FlutterTexture {
     return lit == 0
       ? "抽得到但整格是黑的（合成內容是空的）"
       : "抽得到，有畫面（合成沒問題，是圖層沒畫出來）"
+  }
+
+  /// Diagnostic snapshot: no image readback, probe export or pixel processing.
+  /// Configuration is evidence about the route, NOT proof of display color.
+  func qualitySnapshot() -> [String: Any] {
+    var m: [String: Any] = [
+      "schemaVersion": 1, "nativeScrubEnabled": nativeScrubSupported,
+      "layerBound": PlayerHosts.shared.bound,
+      "liveCI": liveCIOn, "watermarkNative": wmLive,
+      "renderWidth": Int(size.width), "renderHeight": Int(size.height),
+      "sourceHDRDetected": buildInfo["HDR"] as? Bool ?? false,
+      "itemFailed": player.currentItem?.status == .failed,
+      "bufferEmpty": player.currentItem?.isPlaybackBufferEmpty ?? false,
+      "nativePresentedCumulative": nativePresentedCount,
+      "nativePresentFailuresCumulative": nativeFailedCount,
+      "seekSucceededCumulative": seekSucceeded,
+      "seekUnfinishedCumulative": seekUnfinished,
+      "scope": "current player counters; reset on rebuild; configuration is not pixel validation",
+    ]
+    if let vc = player.currentItem?.videoComposition {
+      m["outputPrimaries"] = vc.colorPrimaries
+      m["outputTransfer"] = vc.colorTransferFunction
+      m["outputMatrix"] = vc.colorYCbCrMatrix
+    }
+    // Cached validation only; no new render/export from this screen.
+    CIExportCompositor.slowLock.lock()
+    m["hdrPixelTraceProcessLifetime"] = CIExportCompositor.hdrProbe
+    m["hdrFastCheckProcessLifetime"] = CIExportCompositor.hdrFastNoteHoldingLock
+    CIExportCompositor.slowLock.unlock()
+    return m
   }
 
   func healthStats() -> [String: Any] {

@@ -19,6 +19,8 @@
 //
 // 整段跑在 runAsync 裡：烘浮水印 PNG（ui.Image.toByteData）要引擎那頭
 // 回話，假時鐘的測試區裡永遠等不到；所以計時器全是真時間，等待用真等
+import 'dart:async';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -72,6 +74,9 @@ void main() {
   late int nativeOverlayCount;
   late int rejects;
   late bool sourceIsHdr;
+  late List<List<dynamic>> geometrySets;
+  late List<List<dynamic>> visibilitySets;
+  Completer<void>? overlayGate;
 
   setUpAll(() {
     final b = TestWidgetsFlutterBinding.ensureInitialized();
@@ -101,6 +106,9 @@ void main() {
     nativeOverlayCount = 0;
     rejects = 0;
     sourceIsHdr = true;
+    geometrySets = [];
+    visibilitySets = [];
+    overlayGate = null;
     final b = TestWidgetsFlutterBinding.ensureInitialized();
     b.defaultBinaryMessenger.setMockMethodCallHandler(exportCh, (call) async {
       switch (call.method) {
@@ -144,6 +152,7 @@ void main() {
             'wmLive': nativeWmLive,
           };
         case 'setOverlays':
+          await overlayGate?.future;
           // guard let p = self.comp, p.wmLive ... else { result(false) }
           if (!nativeWmLive) {
             rejects++;
@@ -155,8 +164,16 @@ void main() {
           overlaySets.add(list);
           nativeOverlayCount = list.length;
           return true;
-        case 'setXform':
         case 'setOvXform':
+          geometrySets.add(List.from((call.arguments as Map)['items'] as List));
+          return true;
+        case 'setHiddenTracks':
+          visibilitySets.add(
+            List.from((call.arguments as Map)['tracks'] as List),
+          );
+          return true;
+        case 'setClipVolumes':
+        case 'setXform':
         case 'setHiddenImageTracks':
           return true;
         case 'mbuild':
@@ -270,6 +287,84 @@ void main() {
     await t.pumpWidget(const SizedBox());
     await _wait(t, 50);
   }
+
+  testWidgets('HDR 幾何連續更新不重烘，慢清單不阻擋隱藏', (t) async {
+    await t.runAsync(() async {
+      await enter(t, hdr: true);
+      final layer = t.widget<WatermarkLayer>(find.byType(WatermarkLayer));
+      final recorder = ui.PictureRecorder();
+      ui.Canvas(recorder).drawRect(
+        const Rect.fromLTWH(0, 0, 300, 200),
+        Paint()..color = Colors.red,
+      );
+      final picture = recorder.endRecording();
+      final image = await picture.toImage(300, 200);
+      picture.dispose();
+      final png = await image.toByteData(format: ui.ImageByteFormat.png);
+      image.dispose();
+      layer.settings.logo
+        ..enabled = true
+        ..bytesValue = png!.buffer.asUint8List();
+      layer.onChanged();
+      await _waitUntil(
+        t,
+        () => overlaySets.last.any(
+          (m) => (m as Map)['id'] == 'g:l0' && m.containsKey('png'),
+        ),
+      );
+      await _wait(t, 600);
+      final count = overlaySets.length;
+      for (var i = 0; i < 10; i++) {
+        layer.settings.text.sizeFrac = 0.12 + i * 0.01;
+        layer.settings.logo
+          ..sizeFrac = 0.12 + i * 0.01
+          ..x = 0.4 + i * 0.01
+          ..rotation = i * 5
+          ..opacity = 1 - i * 0.05;
+        layer.onChanged();
+        await _wait(t, 30);
+      }
+      expect(overlaySets.length, count, reason: '手勢期間只送幾何，不送圖片');
+      expect(geometrySets.last.first['scale'], closeTo(0.21, 0.001));
+      expect(geometrySets.last.first['id'], 'g:l0');
+      expect(geometrySets.last.first['opacity'], closeTo(0.55, 0.001));
+      expect(geometrySets.last.first['rot'], 45);
+      overlayGate = Completer<void>();
+      addTearDown(() {
+        if (overlayGate != null && !overlayGate!.isCompleted) {
+          overlayGate!.complete();
+        }
+      });
+      toggleWm(t);
+      await _wait(t, 80);
+      expect(
+        geometrySets.last.every((m) => m['opacity'] == 0),
+        isTrue,
+        reason: '清單還在等待時先隱藏既有部件',
+      );
+      overlayGate!.complete();
+      overlayGate = null;
+      await _wait(t, 100);
+      await leave(t);
+    });
+  });
+
+  testWidgets('整個影片軌隱藏與恢復不用重建或移除來源', (t) async {
+    await t.runAsync(() async {
+      await enter(t, hdr: true);
+      final count = builds.length;
+      t.widget<TimelineEditor>(find.byType(TimelineEditor)).onToggleHidden!(0);
+      await _wait(t, 100);
+      expect(visibilitySets.last, [0]);
+      await _wait(t, 1300);
+      expect(builds.length, count);
+      t.widget<TimelineEditor>(find.byType(TimelineEditor)).onToggleHidden!(0);
+      await _wait(t, 100);
+      expect(visibilitySets.last, isEmpty);
+      expect(builds.length, count);
+      await leave(t);
+    });
+  });
 
   testWidgets('HDR：隱藏→合成重建→打開，浮水印回到原生那條路（不是 Flutter 的灰白）', (t) async {
     await t.runAsync(() async {

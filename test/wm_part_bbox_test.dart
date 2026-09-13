@@ -88,6 +88,34 @@ void main() {
     await _check('預設文字 540', s, 960, 540);
   });
 
+  test('即時部件保留畫布外像素，拖回來不缺圖', () async {
+    final s = WatermarkSettings(text: TextMark(enabled: false));
+    s.logo
+      ..enabled = true
+      ..bytesValue = await _solidPng(const ui.Color(0xFFFFFFFF), 100, 100)
+      ..sizeFrac = 0.5
+      ..x = -0.5;
+    expect(
+      await WatermarkRenderer.renderPart(
+        s,
+        400,
+        400,
+        ui.ImageByteFormat.rawRgba,
+      ),
+      isNull,
+    );
+    final p = (await WatermarkRenderer.renderPart(
+      s,
+      400,
+      400,
+      ui.ImageByteFormat.rawRgba,
+      clipToCanvas: false,
+    ))!;
+    expect(p.box.right, lessThan(0));
+    expect(p.bytes.where((v) => v > 0).length, greaterThan(10000));
+    expect(p.width, 204);
+  });
+
   test('角落文字＋描邊＋底色＋旋轉，部分在畫布外', () async {
     final s = WatermarkSettings(
       text: TextMark(
@@ -179,12 +207,13 @@ void main() {
 
   test('一版的位元組數（S1 驗收：典型文字 < 300KB）', () async {
     final s = WatermarkSettings(text: TextMark());
-    Future<int> rawAt(int w, int h) async => (await WatermarkRenderer.renderPart(
-      s,
-      w,
-      h,
-      ui.ImageByteFormat.rawRgba,
-    ))!.bytes.length;
+    Future<int> rawAt(int w, int h) async =>
+        (await WatermarkRenderer.renderPart(
+          s,
+          w,
+          h,
+          ui.ImageByteFormat.rawRgba,
+        ))!.bytes.length;
     final raw720 = await rawAt(1280, 720);
     final raw540 = await rawAt(960, 540);
     final png = (await WatermarkRenderer.renderPart(

@@ -6,7 +6,8 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart' show compute, kIsWeb;
+import 'package:flutter/foundation.dart'
+    show compute, kIsWeb, kReleaseMode, kProfileMode;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
@@ -27,6 +28,7 @@ import '../services/audio_picker.dart';
 import '../services/native_export.dart';
 import '../services/native_frames.dart';
 import '../services/overlay_sync.dart';
+import '../services/overlay_geometry.dart';
 import '../services/timeline_strip.dart';
 import '../services/playback_trace.dart';
 import '../services/composition_playback_clock.dart';
@@ -35,6 +37,8 @@ import '../services/comp_player.dart';
 import '../services/video_picker.dart';
 import '../services/crop_math.dart';
 import '../services/diagnostics.dart';
+import '../services/quality_diagnostics.dart';
+import '../widgets/quality_diagnostics_sheet.dart';
 import '../services/draft_store.dart';
 import '../services/gif_store.dart';
 import '../services/export_eta.dart';
@@ -542,6 +546,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _ovStateChanged() {
     if (!_ovWired || !mounted) return;
     _ovSync.request();
+    _syncOverlayGeometry();
     // 選取中片段的即時變形（捏合/拖曳跟手）：節流在裡面
     _liveXformSync();
     _syncImageVisibility();
@@ -595,22 +600,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     unawaited(_syncMosaics());
   }
 
-  bool _liveImageVisibility = true;
-  String? _lastImageVisibility;
-  Set<int> get _compHiddenTracks => _liveImageVisibility
-      ? CompPlayer.structuralHiddenTracks(_tl, _hiddenTracks)
-      : _hiddenTracks;
+  bool _liveTrackVisibility = true;
+  String? _lastTrackVisibility;
+  Set<int> get _compHiddenTracks =>
+      _liveTrackVisibility ? const <int>{} : _hiddenTracks;
 
   void _syncImageVisibility({bool force = false}) {
-    if (!_compOn || !_liveImageVisibility) return;
+    if (!_compOn || !_liveTrackVisibility) return;
     final tracks = _hiddenTracks.difference(_compHiddenTracks);
     final key = (tracks.toList()..sort()).join(',');
-    if (!force && _lastImageVisibility == key) return;
-    _lastImageVisibility = key;
+    if (!force && _lastTrackVisibility == key) return;
+    _lastTrackVisibility = key;
+    final span = QualityDiagnostics.instance.begin(QualityMetric.visibilityAck);
     unawaited(
-      CompPlayer.setHiddenImageTracks(tracks).then((ok) {
+      CompPlayer.setHiddenTracks(tracks).then((ok) {
+        QualityDiagnostics.instance.finish(span, success: ok);
         if (!ok && mounted) {
-          _liveImageVisibility = false;
+          _liveTrackVisibility = false;
           _compRefreshIfChanged();
         }
       }),
@@ -640,6 +646,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _syncPrepInteraction(forceBusy: true);
     _pokeFrame();
     if (_ovWired) _ovSync.request();
+    _syncOverlayGeometry();
   }
 
   /// 面板滑桿按著沒放（onLiveChange 進來＝拖動中；放手那一下的
@@ -726,7 +733,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 被那份合成拒收、又沒有人排重建——浮水印只好由 Flutter 以 SDR
   /// 基準白畫在 HDR 畫面上，看起來就是灰的（實測回報：隱藏再打開，
   /// 原本白色變成灰色）
-  bool get _ovLiveNeeded => _settings.hasAnyMark || _ovClipContent;
+  bool get _ovLiveNeeded =>
+      _settings.hasAnyMark ||
+      _tl.clips.any((c) {
+        final kind = _tl.sourceOf(c).kind;
+        return kind == ClipKind.text || kind == ClipKind.wm;
+      });
 
   /// 隱藏軌以外有沒有文字／浮水印素材片段
   bool get _ovClipContent {
@@ -2097,7 +2109,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 疊加物內容的指紋（不含「這份合成收不收」的判定，重建合成
   /// 過程中也要算得出來）。'empty'＝沒有內容
-  String _ovContentSig() {
+  String _ovContentSig({bool rasterOnly = false}) {
     if (!_ovAnyContent) return 'empty';
     final b = StringBuffer();
     // 畫布/畫框比例進指紋：比例變了 rect 換算跟著變，要重送
@@ -2109,21 +2121,32 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       '~${compA.toStringAsFixed(3)};',
     );
     if (!_wmHidden && _settings.hasAnyMark) {
-      b.write('wm${_wmSigJson(_settings)}|$_wmStart|$_wmEndEff;');
+      b.write(
+        'wm${watermarkVisualSignature(_settings, rasterOnly: rasterOnly)}|$_wmStart|$_wmEndEff;',
+      );
     }
     for (final c in _tl.clips) {
       if (_hiddenTracks.contains(c.track)) continue;
       final src = _tl.sourceOf(c);
       if (src.kind == ClipKind.text) {
+        final style = src.textStyle ?? TextMark(text: src.name);
+        final geometry =
+            !(rasterOnly && overlayCanTransform(style.tiled, style.animation));
+        final sj = style.toJson();
+        if (!geometry) {
+          for (final key in ['x', 'y', 'sizeFrac', 'rotation']) {
+            sj.remove(key);
+          }
+        }
         b.write(
-          'tx${c.id}|${src.name}|${c.px}|${c.py}|${c.scale}'
+          'tx${c.id}|${src.name}|${geometry ? '${c.px}|${c.py}|${c.scale}' : ''}'
           '|${c.offset}|${c.end}'
-          '|${jsonEncode((src.textStyle ?? TextMark(text: src.name)).toJson())};',
+          '|${jsonEncode(sj)};',
         );
       } else if (src.kind == ClipKind.wm) {
         b.write(
           'wc${c.id}|${c.offset}|${c.end}'
-          '|${_wmSigJson(src.wmStyle ?? WatermarkSettings())};',
+          '|${watermarkVisualSignature(src.wmStyle ?? WatermarkSettings(), rasterOnly: rasterOnly)};',
         );
       }
     }
@@ -2134,17 +2157,78 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 「長度＋雜湊」：指紋每版要算兩三次，整包 b64 走 jsonEncode 一次
   /// 就是幾毫秒，全落在拖滑桿那條線上
   static String _wmSigJson(WatermarkSettings s) {
-    final j = s.toJson();
-    final logos = j['logos'];
-    if (logos is List) {
-      for (final l in logos) {
-        if (l is Map<String, dynamic>) {
-          final b = l['b64'];
-          if (b is String) l['b64'] = '${b.length}#${b.hashCode}';
-        }
-      }
+    return watermarkVisualSignature(s);
+  }
+
+  String? _ovAppliedRasterSig;
+  String? _ovGeometrySent;
+  bool _ovGeometryBusy = false;
+  bool _ovGeometryAvailable = true;
+  Timer? _ovGeometryTimer;
+
+  List<Map<String, dynamic>> _overlayGeometryItems() {
+    final items = <Map<String, dynamic>>[
+      ...watermarkGeometryItems(_settings, 'g', visible: !_wmHidden),
+      for (final c in _tl.clips)
+        if (_tl.sourceOf(c).kind == ClipKind.wm)
+          ...watermarkGeometryItems(
+            _tl.sourceOf(c).wmStyle ?? WatermarkSettings(),
+            'c${c.id}',
+            visible: !_hiddenTracks.contains(c.track),
+          )
+        else if (_tl.sourceOf(c).kind == ClipKind.text)
+          _textGeometryItem(c),
+    ];
+    final rect = _ovRect();
+    for (final item in items) {
+      item['x'] = rect[0] + (item['x'] as double) * rect[2];
+      item['y'] = rect[1] + (item['y'] as double) * rect[3];
     }
-    return jsonEncode(j);
+    return items;
+  }
+
+  Map<String, dynamic> _textGeometryItem(TimelineClip c) {
+    final st = _tl.sourceOf(c).textStyle ?? TextMark();
+    final move = overlayCanTransform(st.tiled, st.animation);
+    return {
+      'id': 'c${c.id}:t',
+      'x': move ? c.px : 0.5,
+      'y': move ? c.py : 0.5,
+      'scale': move ? st.sizeFrac * c.scale : 1.0,
+      'rot': move ? st.rotation : 0.0,
+      'opacity': _hiddenTracks.contains(c.track) ? 0.0 : 1.0,
+    };
+  }
+
+  /// Coalesce to one small, latest-only message per frame. No image encoding,
+  /// byte transfer, seek, or AVPlayerItem replacement on the gesture path.
+  void _syncOverlayGeometry() {
+    if (!mounted ||
+        !_ovLiveOn ||
+        !_ovGeometryAvailable ||
+        _ovGeometryBusy ||
+        (_ovGeometryTimer?.isActive ?? false)) {
+      return;
+    }
+    _ovGeometryTimer = Timer(const Duration(milliseconds: 16), () async {
+      if (!mounted || !_ovLiveOn) return;
+      final items = _overlayGeometryItems();
+      final sig = jsonEncode(items);
+      if (_ovGeometrySent == sig) return;
+      final player = _comp;
+      _ovGeometryBusy = true;
+      final span = QualityDiagnostics.instance.begin(QualityMetric.geometryAck);
+      final ok = await CompPlayer.setOvXforms(items);
+      QualityDiagnostics.instance.finish(span, success: ok);
+      _ovGeometryBusy = false;
+      if (!mounted) return;
+      if (player == _comp) {
+        _ovGeometryAvailable = ok;
+        if (ok) _ovGeometrySent = sig;
+        if (!ok) _ovSync.request(); // old native build: retain raster fallback
+      }
+      _syncOverlayGeometry();
+    });
   }
 
   /// 部件圖快取（鍵＝部件內容＋尺寸＋快/全＋包圍盒/整版）。拖文字大小
@@ -2249,6 +2333,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   Future<List<Map<String, dynamic>>> _ovMapsBuild({bool fast = false}) async {
     final out = <Map<String, dynamic>>[];
+    final rasterSig = _ovContentSig(rasterOnly: true);
     // 版面是照比例算的（sizeFrac × 短邊），渲染解析度不影響位置大小。
     // 全解析短邊 1080（跟預覽合成一樣）；快路（調樣式拖動中）文字 720、
     // Logo 540——文字便宜、540→1080 放大會軟；停穩後自動補全解析
@@ -2292,6 +2377,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       required bool full,
       bool pngOnly = false,
       List<double>? geom,
+      double opacity = 1,
     }) {
       jobs.add(() async {
         try {
@@ -2326,6 +2412,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               oh,
               raw ? ui.ImageByteFormat.rawRgba : ui.ImageByteFormat.png,
               fullCanvas: full,
+              clipToCanvas: full,
             ),
           );
           if (part == null) return null; // 整個在畫布外：沒東西可畫
@@ -2337,13 +2424,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             } else
               'png': part.bytes,
             ...shared,
+            '_rasterSig': rasterSig,
+            'id': id,
+            'opacity': opacity,
             'rect': part.fullCanvas
                 ? rect
                 : _ovComposeRect(rect, part.fraction),
             if (geom != null) ...{
-              'id': id,
-              'bx': geom[0],
-              'by': geom[1],
+              'bx': rect[0] + geom[0] * rect[2],
+              'by': rect[1] + geom[1] * rect[3],
               'bs': geom[2],
               'br': geom[3],
             },
@@ -2361,38 +2450,41 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       Map<String, dynamic> shared,
       WmAnimation anim,
     ) {
-      // 文字部件＝這組設定裡所有的文字（多文字一張圖；基準是操作中
-      // 的那一個）；Logo 一張一個部件
-      final t = st.text;
-      if (t.enabled && t.text.trim().isNotEmpty) {
-        final ps = st.copy();
-        for (final l in ps.logos) {
-          l.enabled = false;
-        }
-        addPart(
-          id: '$prefix:t',
-          ps: ps,
-          shared: shared,
-          text: true,
-          full: t.tiled || needFull(anim),
-          geom: t.tiled ? null : [t.x, t.y, t.sizeFrac, t.rotation],
-        );
-      }
+      // Each text/logo has its own bitmap and transform; moving one must not
+      // move its siblings or decode every other image in the watermark group.
       for (var i = 0; i < st.logos.length; i++) {
         final lg = st.logos[i];
         if (!lg.enabled || lg.b64 == null) continue;
-        final ps = st.copy();
-        ps.text.enabled = false;
-        for (var j = 0; j < ps.logos.length; j++) {
-          ps.logos[j].enabled = j == i;
-        }
+        final movable = overlayCanTransform(lg.tiled, anim);
+        final ps = WatermarkSettings(
+          text: TextMark(enabled: false),
+          logo: lg.copy()..opacity = movable ? 1 : lg.opacity,
+        );
         addPart(
           id: '$prefix:l$i',
           ps: ps,
           shared: shared,
           text: false,
-          full: lg.tiled || needFull(anim),
-          geom: lg.tiled ? null : [lg.x, lg.y, lg.sizeFrac, lg.rotation],
+          full: !movable,
+          opacity: movable ? lg.opacity : 1,
+          geom: movable ? [lg.x, lg.y, lg.sizeFrac, lg.rotation] : null,
+        );
+      }
+      for (var i = 0; i < st.texts.length; i++) {
+        final t = st.texts[i];
+        if (!t.enabled || t.text.trim().isEmpty) continue;
+        final movable = overlayCanTransform(t.tiled, anim);
+        final ps = WatermarkSettings(
+          text: t.copy(),
+          logo: LogoMark(enabled: false),
+        );
+        addPart(
+          id: '$prefix:t$i',
+          ps: ps,
+          shared: shared,
+          text: true,
+          full: !movable,
+          geom: movable ? [t.x, t.y, t.sizeFrac, t.rotation] : null,
         );
       }
     }
@@ -2439,8 +2531,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           shared: shared,
           text: true,
           full: st.tiled || needFull(anim),
-          pngOnly: true,
-          geom: [c.px, c.py, c.scale, st.rotation],
+          geom: overlayCanTransform(st.tiled, anim)
+              ? [c.px, c.py, st.sizeFrac * c.scale, st.rotation]
+              : null,
         );
       } else {
         addSettingsParts(
@@ -2480,7 +2573,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// [OverlaySync.bake]：畫這一版的圖（快路＝半解析度 raw）
   Future<List<Map<String, dynamic>>?> _ovBake(String sig, bool fast) async {
     final t0 = DateTime.now();
-    final maps = await _ovMaps(sig, fast: fast);
+    final maps = await QualityDiagnostics.instance.measure(
+      QualityMetric.overlayBake,
+      () => _ovMaps(sig, fast: fast),
+    );
     // 被丟掉的版本不會走到送出、不會被取走：滿了整包清（幾個整數）
     if (_ovBakeMsBy.length > 64) _ovBakeMsBy.clear();
     _ovBakeMsBy['$sig|$fast'] = DateTime.now().difference(t0).inMilliseconds;
@@ -2503,6 +2599,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   Future<void> _ovWarmUpNow() async {
     if (!mounted || !_ovWired || !_ovLiveOn) return;
+    // Existing parts already support live transforms; warming them again on
+    // slider-down would put image readback back onto the first gesture.
+    if (_ovGeometryAvailable &&
+        _ovAppliedRasterSig == _ovContentSig(rasterOnly: true)) {
+      return;
+    }
     final now = DateTime.now();
     final last = _wmLastApplyAt;
     if (last != null && now.difference(last).inMilliseconds < 1000) return;
@@ -2518,8 +2620,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (mounted) _ovWarmMs = DateTime.now().difference(now).inMilliseconds;
   }
 
-  /// [OverlaySync.apply]：送原生（同包附空差量清單，原子清掉任何
-  /// 殘留；幾何已烘在圖裡）。原生的催重畫涵蓋暫停重繪且有節流，
+  /// [OverlaySync.apply]：新部件與目前幾何同包原子更新，舊烘圖不會
+  /// 把操作中的位置或隱藏狀態改回去。原生暫停重繪有節流，
   /// 這裡不再補 seek
   Future<bool> _ovApply(
     List<Map<String, dynamic>> maps,
@@ -2527,7 +2629,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     bool fast,
   ) async {
     final t1 = DateTime.now();
-    if (!await CompPlayer.setOverlays(maps, live: const [])) {
+    final live = _overlayGeometryItems();
+    final qualityAck = QualityDiagnostics.instance.begin(
+      QualityMetric.overlayAck,
+    );
+    final accepted = await CompPlayer.setOverlays(maps, live: live);
+    QualityDiagnostics.instance.finish(qualityAck, success: accepted);
+    if (!accepted) {
       WmDiag.rejects++;
       // 原生拒收＝這份合成的 wmLive 跟 Dart 認知走鐘了。連三次
       // 就整組重組自救，不能讓浮水印卡在舊位置（實測回報：
@@ -2546,6 +2654,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return false;
     }
     _ovSetFails = 0;
+    _ovAppliedRasterSig = maps.isEmpty
+        ? null
+        : maps.first['_rasterSig'] as String?;
+    _ovGeometrySent = jsonEncode(live);
+    _syncOverlayGeometry();
     if (!mounted) return true;
     final sendMs = DateTime.now().difference(t1).inMilliseconds;
     // 狀態機的計數搬進診斷報告（便宜：四個整數）
@@ -2829,13 +2942,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 重建播放器與縮圖；素材檔案不見了（例如系統清掉 app 快取）就剔除該片段，
     // 免得留下永遠黑畫面的片段、到匯出才爆錯
     final deadSources = <int>{};
-    // 倒轉檔不見了的素材（照 revOf 重做，見下）
+    // 倒轉檔遺失或色彩版本過舊的素材（照 revOf 重做，見下）
     final lostReversed = <int>[];
     // 每個素材各查各的（讀圖檔、查檔案在不在、工作檔救援互不相干），
     // 全部並行。以前一支一支 await：素材多的專案光是逐一碰磁碟
     // 就能拖上好幾秒（實測回報：開專案太慢）
     Future<void> checkSource(int i) async {
       final s = _tl.sources[i];
+      if (!kIsWeb &&
+          s.isVideo &&
+          s.revOf != null &&
+          s.revColorVersion < WorkFiles.reverseColorVersion) {
+        // Existing files also need migration; don't start caches for the old path.
+        lostReversed.add(i);
+        return;
+      }
       if (s.kind == ClipKind.text ||
           s.kind == ClipKind.wm ||
           s.kind == ClipKind.mosaic) {
@@ -2931,13 +3052,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     await Future.wait([
       for (var i = 0; i < _tl.sources.length; i++) checkSource(i),
     ]);
-    // 倒轉檔不見了的素材：一支一支重做（見 _rederiveReverse）。做不成
-    // 才跟原檔救不回的一樣剔除——以前一律剔除，「有 1 段素材已找不到」
+    // 一支一支修復倒轉檔（見 _rederiveReverse）。更新失敗但舊檔還在時
+    // 保留素材；只有完全找不到檔案才剔除。
     for (final i in lostReversed) {
       final s = _tl.sources[i];
       if (!await _rederiveReverse(s)) {
-        deadSources.add(i);
-        continue;
+        if (!await fileExists(s.path)) {
+          deadSources.add(i);
+          continue;
+        }
+        // Keep a usable draft if the original was removed or conversion failed.
+        // Leave the version old so a later successful load can retry migration.
+        s.workPath = null;
+        s.workHdrPath = null;
+        Diag.note('倒轉色彩更新未完成，保留原有素材：${s.name}');
+        if (mounted) showHint(context, '部分倒轉素材無法更新色彩，已保留原有檔案');
       }
       if (s.kind == ClipKind.video) {
         _thumbStrip(s.previewPath, s.duration).then((t) {
@@ -3016,6 +3145,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   @override
   void initState() {
     super.initState();
+    QualityDiagnostics.instance.start(buildTag: appVersionTag);
     _tabs = TabController(length: 3, vsync: this);
     // 測試鉤子：整合測試用它組多軌疊放（見 VideoEditorScreen 上的說明）
     _debugTimelineHook = VideoEditorScreen.debugTimeline = (fn) {
@@ -3043,7 +3173,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       bake: _ovBake,
       apply: _ovApply,
       // 滑桿按著＝手勢中（不靠指紋停 500ms 推測），全解析等放手
-      gestureActive: () => _wmGestureOn,
+      gestureActive: () => _wmGestureOn || _pvPts.isNotEmpty,
+      geometryIsLive: () =>
+          _ovGeometryAvailable &&
+          _ovGeometrySent != null &&
+          _ovAppliedRasterSig == _ovContentSig(rasterOnly: true),
       onNoReceiver: _ovNoteNoReceiver,
     );
     _ovWired = true;
@@ -3264,7 +3398,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 讓他還要再做一次編輯才看到效果很怪
       _closeGaps();
     } else {
-      showHint(context, '自動銜接已關閉');
+      showHint(context, '自動緊接已關閉');
     }
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kTidyPrefKey, _autoTidy);
@@ -3372,7 +3506,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         seeks.add(
           c.seekTo(
             Duration(
-              milliseconds: (clip.sourceTimeAt(_position) * 1000).round(),
+              milliseconds: (clip.sourceTimeForDisplayAt(_position) * 1000)
+                  .round(),
             ),
           ),
         );
@@ -3414,6 +3549,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 一顆播放器都不用養。probeLite 沒實作的平台（Android）才退回
   /// 開播放器，而且一次一顆。回 true＝接進去了
   Future<bool> _importVideoPath(
+    String path, {
+    required int track,
+    String? name,
+  }) async {
+    final span = QualityDiagnostics.instance.begin(
+      QualityMetric.importMetadata,
+    );
+    var ok = false;
+    try {
+      return ok = await _importVideoPathMeasured(
+        path,
+        track: track,
+        name: name,
+      );
+    } finally {
+      QualityDiagnostics.instance.finish(span, success: ok);
+    }
+  }
+
+  Future<bool> _importVideoPathMeasured(
     String path, {
     required int track,
     String? name,
@@ -4957,8 +5112,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _entryGating = false;
   DateTime? _entryDeadline;
   Timer? _entryGateTimer;
+  QualitySpan? _qualityImportGate;
 
   void _beginEntryGate() {
+    QualityDiagnostics.instance.finish(_qualityImportGate);
+    _qualityImportGate = QualityDiagnostics.instance.begin(
+      QualityMetric.importGate,
+    );
     _entryDeadline = DateTime.now().add(kEntryThumbBudget);
     _entryGating = true;
     _entryGateTimer?.cancel();
@@ -4967,6 +5127,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 掀開讀取覆蓋層（可重入：閘門做完跟計時器都會叫）
   void _endEntryGate() {
+    QualityDiagnostics.instance.finish(_qualityImportGate);
+    _qualityImportGate = null;
     _entryGateTimer?.cancel();
     _entryGateTimer = null;
     if (!_entryGating) return;
@@ -5269,6 +5431,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 最上層片段；HLG 代理算密關鍵幀）：蓋層沒畫卻壓住即時 seek＝
   /// 拖曳中畫面凍住（HDR 模式代理轉好後，舊判定只看 workPath 就是這樣）
   bool get _scrubRawUnderHead {
+    // SDR 縮圖不能蓋在 HDR 系統播放平面上，否則暫停/播放亮度不同。
+    if (_compOn && _exportHdr && _comp!.hdrIn) return false;
     if (_compOn && _comp!.nativeScrub) return false;
     final cur = _tl.videoAt(_position, skipTracks: _hiddenTracks);
     if (cur == null) return false;
@@ -5333,7 +5497,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _ensureScrubSlots(c.sourceIndex, src.duration);
       _noteScrubTouch(c.sourceIndex);
       final slots = _scrubFrames[c.sourceIndex]!;
-      final t = c.sourceTimeAt(_position);
+      final t = c.sourceTimeForDisplayAt(_position);
       final fi = (t / src.duration * slots.length).floor().clamp(
         0,
         slots.length - 1,
@@ -5381,11 +5545,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         .where((c) => c.sourceIndex == w.source);
     if (active.any(
       (c) =>
-          (c.sourceTimeAt(_position) / src.duration * slots.length)
+          (c.sourceTimeForDisplayAt(_position) / src.duration * slots.length)
                   .floor()
                   .clamp(0, slots.length - 1) ==
               w.slot &&
-          frame.usableForPreviewAt(c.sourceTimeAt(_position)),
+          frame.usableForPreviewAt(c.sourceTimeForDisplayAt(_position)),
     )) {
       _nfLatest[w.source] = bytes;
       if (frame.actualSeconds case final actual?) {
@@ -5505,7 +5669,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (slots == null || slots.isEmpty) return false;
       final src = _tl.sourceOf(c);
       final fi =
-          (c.sourceTimeAt(_position) /
+          (c.sourceTimeForDisplayAt(_position) /
                   math.max(0.01, src.duration) *
                   slots.length)
               .floor()
@@ -5514,7 +5678,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       var found = false;
       for (var d = -3; d <= 3; d++) {
         final i = fi + d;
-        if (_usableScrubSlot(c.sourceIndex, i, c.sourceTimeAt(_position))) {
+        if (_usableScrubSlot(
+          c.sourceIndex,
+          i,
+          c.sourceTimeForDisplayAt(_position),
+        )) {
           found = true;
           break;
         }
@@ -5525,7 +5693,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final latestTime = _nfLatestT[c.sourceIndex];
       if (!found &&
           (latestTime == null ||
-              (latestTime - c.sourceTimeAt(_position)).abs() > 0.25)) {
+              (latestTime - c.sourceTimeForDisplayAt(_position)).abs() >
+                  0.25)) {
         return false;
       }
     }
@@ -6787,24 +6956,27 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     showHint(context, '已串成 ${fmtDuration(at)} 的影片，可以再調整每一段');
   }
 
-  /// 時間軸上有幾段圖片素材（貼圖那種浮水印素材不算）
-  int get _imageClipCount => _tl.clips.where((c) {
-    final src = _tl.sourceOf(c);
-    // GIF 不算：它本來就有自己的長度，跟照片一起重設成同一個秒數
-    // 只會弄壞它（實測回報：只放一張照片，卻因為旁邊有個 GIF
-    // 就跳出「圖片秒數」）
-    return src.kind == ClipKind.image && !src.isGif;
-  }).length;
+  /// 選取中的圖片所在軌道內，所有可一起調秒數的靜態圖片。
+  ///
+  /// 「圖片秒數」是軌道工具：選取軌道含至少兩張靜態圖片才顯示。
+  /// GIF 不算，它有自己的長度，不能跟照片一起重設。
+  List<TimelineClip> get _selectedTrackImages {
+    final selected = _selClipById(_sel);
+    final track = _selTrack >= 0 ? _selTrack : selected?.track;
+    if (track == null) return const [];
+    return _tl.clips.where((c) {
+      if (c.track != track) return false;
+      final src = _tl.sourceOf(c);
+      return src.kind == ClipKind.image && !src.isGif;
+    }).toList();
+  }
 
   /// 把所有圖片素材改成同一個長度，並照原本的先後順序重新接起來。
   ///
   /// 幻燈片是「一整排等長的圖」，改秒數就該整批改；一張一張拉把手
   /// 不但慢，長度還會差個幾格對不齊
   Future<void> _resetSlideSeconds() async {
-    final imgs = _tl.clips.where((c) {
-      final src = _tl.sourceOf(c);
-      return src.kind == ClipKind.image && !src.isGif;
-    }).toList();
+    final imgs = _selectedTrackImages;
     if (imgs.length < 2) return;
     final cur = imgs.first.length;
     final sec = await _askSlideSeconds(
@@ -6814,25 +6986,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (sec == null || !mounted) return;
     _pushUndo();
     setState(() {
-      // 每一軌各自重新接：不同軌的圖片本來就不該互相推擠
-      final byTrack = <int, List<TimelineClip>>{};
+      // 只調目前這一軌；別軌的幻燈片是另一組內容，不跟著變。
+      imgs.sort((a, b) => a.offset.compareTo(b.offset));
+      var at = imgs.first.offset;
       for (final c in imgs) {
-        (byTrack[c.track] ??= []).add(c);
-      }
-      for (final list in byTrack.values) {
-        list.sort((a, b) => a.offset.compareTo(b.offset));
-        var at = list.first.offset;
-        for (final c in list) {
-          c.trimStart = 0;
-          c.trimEnd = sec;
-          c.offset = at;
-          at += sec;
-        }
+        c.trimStart = 0;
+        c.trimEnd = sec;
+        c.offset = at;
+        at += sec;
       }
       // 圖片變長可能壓到同軌的別種素材（影片／聲音）：推開，不重疊
-      for (final t in byTrack.keys) {
-        _tl.resolveOverlaps(track: t);
-      }
+      _tl.resolveOverlaps(track: imgs.first.track);
     });
     _resyncPlayback();
     _saveDraft();
@@ -7062,7 +7226,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // ——那一格常常是黑的或還沒進正題，根本看不出要裁哪裡。
     // 播放頭不在這一段上（從時間軸選了別段就按）才退回開頭
     final at = clip.coversForDisplay(_position)
-        ? clip.sourceTimeAt(_position).clamp(clip.trimStart, clip.trimEnd)
+        ? clip.sourceTimeForDisplayAt(_position)
         : clip.trimStart;
     // 底圖用這一段的一格畫面（拿不到就用縮圖）
     // 底圖抓大一點：這張要鋪滿整個裁切畫面，720 高的圖在 3 倍螢幕上
@@ -8544,7 +8708,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 手指還在往滑桿移動的那段時間把它做完
     final why = _colorMode
         ? '調色模式'
-        : CompPlayer.whyNot(_tl, hiddenTracks: _hiddenTracks);
+        : CompPlayer.whyNot(_tl, hiddenTracks: _compHiddenTracks);
     _compWhyNot = why;
     if (why != null) {
       Diag.note('合成播放器用不了：$why');
@@ -8592,11 +8756,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final builtEditSig = _compSig(withPaths: false);
     final builtMosaicSig = _mosaicSig();
     final builtStillSig = _stillSig();
+    final qualityBuild = QualityDiagnostics.instance.begin(
+      QualityMetric.composition,
+    );
     final made = await CompPlayer.build(
       _tl,
       canvasAspect: _ratioAspect,
       texture: !Diag.playerLayer.value,
-      mutedTracks: _mutedTracks,
+      mutedTracks: {..._mutedTracks, ..._hiddenTracks},
       hiddenTracks: _compHiddenTracks,
       hiddenImageTracks: _hiddenTracks.difference(_compHiddenTracks),
       hdrOut: hdrOut,
@@ -8608,6 +8775,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       wmStart: wmBake.$1,
       wmEnd: wmBake.$2,
     );
+    QualityDiagnostics.instance.finish(qualityBuild, success: made != null);
     // HDR 模式：背景把 HDR 代理補齊（HLG 直通、密關鍵幀），
     // 轉好換上就恢復跟 SDR 工作檔同級的順度。
     // 匯入轉檔中不搶（見 _prepHdrWorkFiles 的說明）
@@ -8680,6 +8848,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     });
     _compRawSources = rawSourcesAtBuild;
     setState(() => _comp = made);
+    _ovAppliedRasterSig = ovMaps.isEmpty
+        ? null
+        : ovMaps.first['_rasterSig'] as String?;
+    _ovGeometrySent = null;
+    _ovGeometryAvailable = true;
+    _syncOverlayGeometry();
     if (made.nativeScrub) _scrubQueue.clear();
     _syncImageVisibility(force: true);
     // 新合成上檔了：它帶著建置快照那一版（或沒帶）。重建期間使用者
@@ -8692,6 +8866,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 出來——不精準的話剛烘進去的馬賽克/圖片要按播放才看得到
     //（實測回報：「加素材第一幀就要有，現在要按播放才有」）。
     // 播放中照舊寬容，精準 seek 會把 rate 壓到 0 造成頓一下
+    await made.setClipVolumes(_tl, {..._mutedTracks, ..._hiddenTracks});
     await made.seek(_position, exact: !_playing);
     if (mounted &&
         _comp == made &&
@@ -9096,7 +9271,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final c = _ctrls[clip.id];
       if (c == null || !c.value.isInitialized) continue;
       _wasActive.add(clip.id); // 標記已進場，_syncMedia 不再 seek 一次
-      final want = clip.sourceTimeAt(_position);
+      final want = clip.sourceTimeForDisplayAt(_position);
       // 已經停在該在的位置就不要 seek。暫停後再按播放、或播完一段
       // 再按，播放器本來就在正確的地方——多送一次 seek 只是讓
       // 「按下去」到「畫面開始動」中間多一次來回。
@@ -9343,6 +9518,70 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 播放診斷：長按標題打開。記錄按下播放之後每一段花了多久、
   /// 交界有沒有命中預熱、背景抽幀跟卡頓的時間點對不對得上
+  Future<void> _openQualityDiagnostics() async {
+    final diagnostic = QualityDiagnostics.instance;
+    diagnostic.panelVisible = true;
+    Future<void> refresh() async {
+      final session = diagnostic.session;
+      diagnostic.environment.addAll({
+        'displayHz': View.of(context).display.refreshRate,
+        'buildMode': kReleaseMode
+            ? 'release'
+            : (kProfileMode ? 'profile' : 'debug'),
+        'platform': Theme.of(context).platform.name,
+        'videoSources': _tl.sources.where((s) => s.isVideo).length,
+        'imageSources': _tl.sources
+            .where((s) => s.kind == ClipKind.image)
+            .length,
+        'clips': _tl.clips.length,
+        'durationSeconds': _tl.duration,
+        'hdrRequested': _exportHdr,
+        'systemPlayerLayer': Diag.playerLayer.value,
+        'hdrProxyPreview': Diag.hdrProxyPreview.value,
+        'hiddenTrackCount': _hiddenTracks.length,
+        'backgroundPreparations': _prepping.length,
+        'nativeDisplayFPS':
+            'unavailable; do not infer from Flutter or CI counts',
+        'visualColorValidation':
+            'requires same-frame source/export/device comparison',
+      });
+      final native = await CompPlayer.qualitySnapshot();
+      if (diagnostic.session != session) return;
+      diagnostic.nativeSnapshot = native == null
+          ? null
+          : Map<String, Object?>.from(native);
+      final deviceResults = await Future.wait<Object?>([
+        Diag.readDeviceState().then<Object?>((_) => null),
+        Diag.memoryMb(),
+      ]).timeout(const Duration(seconds: 2));
+      if (diagnostic.session != session) return;
+      diagnostic.environment.addAll({
+        'thermalLastKnown': Diag.thermal,
+        'lowPowerLastKnown': Diag.deviceStateReadAt == null
+            ? null
+            : Diag.lowPower,
+        'deviceStateReadAt': Diag.deviceStateReadAt?.toIso8601String(),
+        'memoryMB': deviceResults[1],
+        'snapshotAt': DateTime.now().toUtc().toIso8601String(),
+      });
+    }
+
+    try {
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        builder: (_) => QualityDiagnosticsSheet(
+          diagnostics: diagnostic,
+          buildTag: appVersionTag,
+          refresh: refresh,
+          position: () => _position,
+        ),
+      );
+    } finally {
+      diagnostic.panelVisible = false;
+    }
+  }
+
   void _openTrace() {
     final tr = PlaybackTrace.instance;
     // 素材規格填進環境區，看報告時不用再回頭問
@@ -9750,7 +9989,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (lead < 1.2 && _preRolled.add(clip.id)) {
           c.seekTo(
             Duration(
-              milliseconds: (clip.sourceTimeAt(clip.offset) * 1000).round(),
+              milliseconds: (clip.sourceTimeForDisplayAt(clip.offset) * 1000)
+                  .round(),
             ),
           );
         }
@@ -9816,7 +10056,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           if (c.value.isPlaying) c.pause();
           continue;
         }
-        final want = clip.sourceTimeAt(_position);
+        final want = clip.sourceTimeForDisplayAt(_position);
         final justEntered = !_wasActive.contains(clip.id);
         if (justEntered) {
           // 進場：對準起點，之後不再打擾。
@@ -9853,7 +10093,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     return;
                   }
                   final fresh = position.inMicroseconds / 1e6;
-                  final target = clip.sourceTimeAt(_position);
+                  final target = clip.sourceTimeForDisplayAt(_position);
                   if ((fresh - target).abs() <= driftThr) return;
                   final lead = _tl.videoAt(
                     _position,
@@ -10045,7 +10285,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final now = DateTime.now();
       if (now.difference(_lastTidyHintAt).inSeconds >= 8) {
         _lastTidyHintAt = now;
-        showHint(context, '位置被自動接齊了，點「銜接」關閉後可自由拖移');
+        showHint(context, '位置被自動接齊了，點「緊接」關閉後可自由拖移');
       }
     }
   }
@@ -10682,7 +10922,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       showHint(context, t == null ? '沒有空隙可以補' : '第 ${t + 1} 軌沒有空隙');
       return;
     }
-    showHint(context, t == null ? '已補起空隙' : '已銜接第 ${t + 1} 軌');
+    showHint(context, t == null ? '已補起空隙' : '已緊接第 ${t + 1} 軌');
   }
 
   /// 刪掉整條軌道（軌上所有片段一起消失）。
@@ -10956,7 +11196,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           '貼上',
           enabled: _clipboard != null,
         ),
-        _menuItem('tidy', Icons.compress, '銜接這一軌'),
+        _menuItem('tidy', Icons.compress, '緊接這一軌'),
         // 空軌也能刪（收起空白軌／讓上面的軌遞補），所以不再依內容停用
         _menuItem('delTrack', Icons.delete_sweep_outlined, '刪除整軌'),
       ],
@@ -11043,6 +11283,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   @override
   void dispose() {
+    QualityDiagnostics.instance.stop();
     _prepGestureLease?.cancel();
     _wmPrepTimer?.cancel();
     _prepActivity.dispose();
@@ -11069,6 +11310,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 而且測試的「還有計時器沒燒完」斷言會抓到它
     _compRebuildTimer?.cancel();
     _ovSync.dispose();
+    _ovGeometryTimer?.cancel();
     _wmGestureTimer?.cancel();
     unawaited(MetalPreview.disposeEngine());
     _xfTrail?.cancel();
@@ -11609,6 +11851,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   behavior: HitTestBehavior.opaque,
                   child: const SizedBox(width: 200, height: kToolbarHeight),
                 ),
+                actions: [
+                  IconButton(
+                    tooltip: '品質診斷器',
+                    onPressed: _openQualityDiagnostics,
+                    icon: const Icon(Icons.monitor_heart_outlined),
+                  ),
+                ],
               ),
         // 素材還在備就整頁擋著等它做完。使用者的原話是「既然一定要跑
         // 讀取，那請改成先跑一下讀取再進入，比進入後閃東閃西讀取還好」。
@@ -12175,7 +12424,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         final s = _tl.sourceOf(top);
         lb = await nativeFrameAt(
           s.workHdrPath ?? s.path,
-          top.sourceTimeAt(_position),
+          top.sourceTimeForDisplayAt(_position),
           maxH: 1440,
           quality: 0.92,
         );
@@ -12288,11 +12537,61 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
   }
 
+  /// 選中的影片／圖片直接在預覽右下角裁切，位置跟 GIF 編輯一致。
+  /// 縮放本來就能在預覽上雙指完成，不再另外佔底部工具列。
+  Widget _previewCropButton(TimelineClip clip) {
+    final cropped = clip.cropped;
+    return Positioned(
+      right: 12,
+      bottom: 12,
+      child: Material(
+        color: Colors.black.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(999),
+        child: InkWell(
+          key: const ValueKey('video-preview-crop'),
+          borderRadius: BorderRadius.circular(999),
+          onTap: () {
+            final source = _tl.sourceOf(clip);
+            if (source.isVideo) {
+              _cropVideoClip(clip);
+            } else {
+              _cropImageClip(clip);
+            }
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.crop, size: 15, color: cropped ? kSelect : kText),
+                const SizedBox(width: 5),
+                Text(
+                  cropped ? '已裁切' : '裁切',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: cropped ? kSelect : kText,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildPreview() {
     // 疊加物同步與即時變形不在這裡排：build 沒有副作用，狀態變更點
     // 是 setState（見 _ovStateChanged）與面板滑桿的 _wmLiveTick
     // 畫布比例：選了固定比例就用它（跟匯出一致）
     final canvasAspect = _canvasAspectNow;
+    final selected = _selClipById(_sel);
+    final cropTarget =
+        selected != null &&
+            (_tl.sourceOf(selected).kind == ClipKind.image ||
+                _tl.sourceOf(selected).isVideo)
+        ? selected
+        : null;
 
     return Listener(
       // 雙指縮放選取中的元素（浮水印／片段）。
@@ -12634,7 +12933,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           _scrubRawUnderHead &&
                                           _activeScrubCached;
                                       if (sparse) {
-                                        final t0 = cur.sourceTimeAt(_position);
+                                        final t0 = cur.sourceTimeForDisplayAt(
+                                          _position,
+                                        );
                                         Uint8List? fb;
                                         final lt = _nfLatestT[cur.sourceIndex];
                                         if (lt != null &&
@@ -12691,7 +12992,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       Uint8List? fb;
                                       if (fs != null && fs.isNotEmpty) {
                                         final fi =
-                                            (c.sourceTimeAt(_position) /
+                                            (c.sourceTimeForDisplayAt(
+                                                      _position,
+                                                    ) /
                                                     math.max(
                                                       0.01,
                                                       src0.duration,
@@ -12809,7 +13112,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                         final src = _tl
                                                             .sourceOf(c);
                                                         final fi =
-                                                            (c.sourceTimeAt(
+                                                            (c.sourceTimeForDisplayAt(
                                                                       pos,
                                                                     ) /
                                                                     math.max(
@@ -12828,7 +13131,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                             _previewScrubSlot(
                                                               c.sourceIndex,
                                                               fi,
-                                                              c.sourceTimeAt(
+                                                              c.sourceTimeForDisplayAt(
                                                                 pos,
                                                               ),
                                                             );
@@ -14154,6 +14457,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   bottom: 0,
                   child: SafeArea(top: false, child: _vBrushBar()),
                 ),
+              if (!_fullscreen &&
+                  !_vBrushMode &&
+                  !_cmpMode &&
+                  cropTarget != null)
+                _previewCropButton(cropTarget),
               if (!_fullscreen) _canvasHint(),
               // 工作檔在背景備，不出現在畫面上：進場就能剪，
               // 好了自己換過去。別家剪輯 App 也沒有那個讀取條
@@ -14971,7 +15279,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   });
                                   // 合成播放器的音量是組合成時烘進去的，
                                   // 切靜音要重組一次才聽得到差別
-                                  _compRefreshIfChanged();
+                                  _applyPreviewVolumes();
                                 },
                                 hiddenTracks: _hiddenTracks,
                                 onToggleHidden: (t) {
@@ -14981,8 +15289,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     }
                                     _syncMedia();
                                   });
-                                  // 圖片專用軌的可見性由 setState 同步到原生；
-                                  // 結構指紋不變便不重建。混合軌仍照舊重組。
+                                  _applyPreviewVolumes();
+                                  // 影片、圖片、混合軌都即時切換；舊原生版本才重建。
                                   _compRefreshIfChanged();
                                   _saveDraft();
                                 },
@@ -15166,15 +15474,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       _toolDivider(),
                       // 直向的 compress 轉 90°＝把左右的空隙擠掉。
                       // 跟磁吸一樣是開關：開著就自動接齊。
-                      // 標籤本來叫「整理」，使用者指定改成「銜接」
-                      //（行為不變：仍是自動補空隙的開關）
+                      // 「緊接」是自動補空隙的開關。
                       _toolBtn(
                         Icons.compress,
-                        '銜接',
+                        '緊接',
                         _toggleAutoTidy,
-                        tip: _autoTidy
-                            ? '自動銜接：開（剪短後自動接齊，點一下關掉）'
-                            : '自動銜接：關（點一下打開，並立刻接齊一次）',
+                        tip: '移除片段間的空隙',
                         quarterTurns: 1,
                         color: _autoTidy ? kSelect : null,
                       ),
@@ -15187,48 +15492,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       _snapToolBtn(),
                       // 幻燈片做完之後想整批改快一點／慢一點：一張一張
                       // 拉把手要拉到天荒地老
-                      _toolBtn(
-                        Icons.timer_outlined,
-                        '圖片秒數',
-                        _imageClipCount >= 2 ? _resetSlideSeconds : null,
-                        tip: '把所有圖片素材改成同一個長度',
-                        disabledHint: '時間軸上要有兩張以上的圖片素材',
-                      ),
+                      if (_selectedTrackImages.length >= 2)
+                        _toolBtn(
+                          Icons.timer_outlined,
+                          '圖片秒數',
+                          _resetSlideSeconds,
+                          tip: '把這一軌的圖片素材改成同一個長度',
+                        ),
                       _toolBtn(Icons.add, '加素材', _addMediaChoice),
                       _toolDivider(),
-                      // 排列順序：縮放、裁切、鏡像、音量、調色、速度、效果
-                      _toolBtn(
-                        Icons.open_in_full,
-                        '縮放',
-                        (sel == null ||
-                                _tl.sourceOf(sel).kind == ClipKind.audio ||
-                                // 浮水印素材整版渲染不吃 clip.scale，
-                                // 開這張表調了也沒反應
-                                _tl.sourceOf(sel).kind == ClipKind.wm)
-                            ? null
-                            : () => _openScaleSheet(sel),
-                        tip: '縮放這個物件',
-                        disabledHint: sel == null
-                            ? '先在時間軸點選一個片段'
-                            : (_tl.sourceOf(sel).kind == ClipKind.wm
-                                  ? '浮水印的縮放請在浮水印分頁調，或在預覽雙指縮放'
-                                  : '聲音片段沒有畫面可以縮放'),
-                      ),
-                      _toolBtn(
-                        Icons.crop,
-                        '裁切',
-                        (sel == null ||
-                                !(_tl.sourceOf(sel).kind == ClipKind.image ||
-                                    _tl.sourceOf(sel).isVideo))
-                            ? null
-                            : () => _tl.sourceOf(sel).isVideo
-                                  ? _cropVideoClip(sel)
-                                  : _cropImageClip(sel),
-                        tip: '裁切畫面',
-                        disabledHint: sel == null
-                            ? '先在時間軸點選影片或圖片'
-                            : '這種素材沒有畫面可以裁',
-                      ),
+                      // 縮放直接在預覽上雙指操作；裁切鈕固定在預覽右下角。
                       _toolBtn(
                         Icons.flip,
                         '鏡像',
@@ -15343,76 +15616,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
   }
 
-  /// 縮放物件大小（影片/圖片/文字在畫面上的尺寸；跟預覽雙指縮放同一個值）
-  void _openScaleSheet(TimelineClip clip) {
-    _pushUndo();
-    // 文字的底字級小，3 倍看起來還是小；放寬到 12 倍，允許超出畫面
-    final maxScale = _tl.sourceOf(clip).kind == ClipKind.text ? 12.0 : 3.0;
-    showModalBottomSheet(
-      context: context,
-      showDragHandle: true,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setSheet) => Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.open_in_full, size: 18, color: kAmber),
-                  const SizedBox(width: 8),
-                  const Text(
-                    '縮放',
-                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
-                  ),
-                  const Spacer(),
-                  Text(
-                    '${(clip.scale * 100).round()}%',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: kTextDim,
-                      fontFeatures: [FontFeature.tabularFigures()],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              Slider(
-                value: clip.scale.clamp(0.02, maxScale),
-                min: 0.02,
-                max: maxScale,
-                onChanged: (v) {
-                  setSheet(() {});
-                  setState(() => clip.scale = v);
-                  // 合成播放器出畫面時，改了變形要叫它重畫，
-                  // 不然滑桿拉完畫面沒反應、關掉面板才看到（實測回報）
-                  _compRefreshIfChanged();
-                },
-              ),
-              // 回復預設：置中、原始大小
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(
-                  onPressed: () {
-                    setSheet(() {});
-                    setState(() {
-                      clip.scale = 1.0;
-                      clip.px = 0.5;
-                      clip.py = 0.5;
-                    });
-                  },
-                  style: TextButton.styleFrom(foregroundColor: kTextDim),
-                  child: const Text('重設', style: TextStyle(fontSize: 12.5)),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    ).whenComplete(_saveDraft);
-  }
-
   /// 這個素材有沒有聲音可以調
   bool _clipHasAudio(TimelineClip c) {
     final k = _tl.sourceOf(c).kind;
@@ -15494,6 +15697,29 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     ).whenComplete(_saveDraft);
   }
 
+  void _applyPreviewVolumes() {
+    for (final c in _tl.clips) {
+      _ctrls[c.id]?.setVolume(
+        _mutedTracks.contains(c.track) || _hiddenTracks.contains(c.track)
+            ? 0
+            : c.volume.clamp(0.0, 1.0),
+      );
+    }
+    final player = _comp;
+    if (player != null) {
+      unawaited(
+        player.setClipVolumes(_tl, {..._mutedTracks, ..._hiddenTracks}).then((
+          ok,
+        ) {
+          if (!ok && mounted && identical(_comp, player)) {
+            _compRefreshIfChanged();
+          }
+        }),
+      );
+    }
+    _saveDraft();
+  }
+
   /// 音量：滑桿＋點喇叭一鍵靜音
   void _openVolumeSheet(TimelineClip clip) {
     // 按靜音之前的音量，再按一次原音量回來
@@ -15507,8 +15733,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         setSheet(() {});
         setState(() {
           clip.volume = v;
-          _ctrls[clip.id]?.setVolume(v.clamp(0.0, 1.0));
         });
+        _applyPreviewVolumes();
+      }
+
+      void setTrackVol(double v) {
+        trackVol = v;
+        setSheet(() {});
+        setState(() {
+          _mutedTracks.remove(clip.track);
+          for (final c in _tl.clips) {
+            if (c.track != clip.track) continue;
+            c.volume = v;
+          }
+        });
+        _applyPreviewVolumes();
       }
 
       return Column(
@@ -15561,42 +15800,46 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           // 整軌：這一軌所有片段一起調（使用者指定要多這一個）
           _optRow(
             label: '整軌',
-            value: trackVol,
+            value: _mutedTracks.contains(clip.track) ? 0 : trackVol,
             max: 1,
-            suffix: '${(trackVol * 100).round()}%',
-            onChanged: (v) {
-              trackVol = v;
-              setSheet(() {});
-              setState(() {
-                for (final c in _tl.clips) {
-                  if (c.track != clip.track) continue;
-                  c.volume = v;
-                  _ctrls[c.id]?.setVolume(v.clamp(0.0, 1.0));
-                }
-              });
-            },
-            // 跟上面那條一樣有圖示才對得起來（使用者指定補上）
-            leading: Row(
-              children: [
-                Icon(
-                  trackVol > 0
-                      ? Icons.speaker_group_outlined
-                      : Icons.volume_off,
-                  size: 16,
-                  color: trackVol > 0 ? kTextDim : kSelect,
-                ),
-                const SizedBox(width: 4),
-                const Text(
-                  '整軌',
-                  style: TextStyle(fontSize: 12, color: kTextDim),
-                ),
-              ],
+            suffix:
+                '${(_mutedTracks.contains(clip.track) ? 0 : trackVol * 100).round()}%',
+            onChanged: setTrackVol,
+            // 跟單段音量一樣，點圖示或文字就整軌靜音／還原。
+            leading: InkWell(
+              onTap: () {
+                setState(() {
+                  if (!_mutedTracks.remove(clip.track)) {
+                    _mutedTracks.add(clip.track);
+                  }
+                });
+                setSheet(() {});
+                _applyPreviewVolumes();
+              },
+              child: Row(
+                children: [
+                  Icon(
+                    !_mutedTracks.contains(clip.track)
+                        ? Icons.speaker_group_outlined
+                        : Icons.volume_off,
+                    size: 16,
+                    color: !_mutedTracks.contains(clip.track)
+                        ? kTextDim
+                        : kSelect,
+                  ),
+                  const SizedBox(width: 4),
+                  const Text(
+                    '整軌',
+                    style: TextStyle(fontSize: 12, color: kTextDim),
+                  ),
+                ],
+              ),
             ),
           ),
           const Padding(
             padding: EdgeInsets.only(left: 2, top: 2),
             child: Text(
-              '「整軌」把這一軌的所有片段一起調',
+              '點選「整軌」可直接靜音，滑桿會一起調整這一軌的所有片段',
               style: TextStyle(fontSize: 10.5, color: kTextDim),
             ),
           ),
@@ -15676,9 +15919,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 久沒開）草稿重開就是「有 1 段素材已找不到」，整段片段被剔除。
   ///
   /// 影片：原生（iOS）優先——硬體解編碼、逐窗處理，速度與畫質都贏
-  /// FFmpeg 的 reverse 濾鏡。HDR（HLG/PQ）素材不走原生：原生管線讀出來
-  /// 是 8-bit、沒做色調映射，倒完整支變色；FFmpeg 那條有 zscale+tonemap
-  /// 的完整鏈，HDR 跟 Android／舊機／原生失敗一樣退回去。
+  /// FFmpeg 的 reverse 濾鏡。HDR（HLG/PQ）由原生以 HEVC Main10 保留
+  /// 來源曲線；FFmpeg 退路同樣保留色深，不在倒轉階段轉 SDR。
   /// 聲音：FFmpeg 的 areverse 整段一次倒（聲音便宜，不用分段）。
   /// 回 path＝做好的檔；null＝失敗，cancelled＝使用者按了取消
   Future<({String? path, bool cancelled})> _renderReverseFile({
@@ -15704,8 +15946,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         onProgress: onProgress,
       );
     } else {
-      if (await NativeExport.available &&
-          !(await NativeExport.anyHDR([srcPath]))) {
+      if (await NativeExport.available) {
         final err = await NativeExport.reverseClip(
           path: srcPath,
           start: start,
@@ -15741,8 +15982,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return (path: made, cancelled: false);
   }
 
-  /// 草稿裡的倒轉檔不見了（舊版寫在暫存目錄被系統清掉、或工作檔總量
-  /// 清理排到它）：照 revOf/revStart/revEnd 重做一份。同一段已經有現成
+  /// 草稿裡的倒轉檔遺失或色彩版本過舊：照 revOf/revStart/revEnd 重做。
+  /// 同一段已經有目前版本的現成檔
   /// 的（索引裡）直接用；原檔還在就用原檔，原檔也被清了就用它的工作檔
   ///（1080p SDR——比整段片段消失好）。回 false＝真的救不回
   Future<bool> _rederiveReverse(MediaSource s) async {
@@ -15750,9 +15991,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (orig == null) return false;
     var made = await WorkFiles.lookupReverse(orig, s.revStart, s.revEnd);
     if (made == null) {
-      final from = await fileExists(orig) ? orig : await WorkFiles.lookup(orig);
+      // An existing legacy reverse must only be upgraded from the original;
+      // an SDR proxy cannot recover its lost HDR data.
+      final legacyExists = await fileExists(s.path);
+      final from = await fileExists(orig)
+          ? orig
+          : legacyExists
+          ? null
+          : await WorkFiles.lookup(orig);
       if (from == null) return false;
-      Diag.note('倒轉檔被清掉了，照原始素材重做：${s.name}');
+      Diag.note('修復倒轉檔，照來源素材重做：${s.name}');
       final (tw, th) = _reverseDims(s.w, s.h);
       final r = await _renderReverseFile(
         kind: s.kind,
@@ -15767,9 +16015,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       made = r.path;
       if (made == null) return false;
     } else {
-      Diag.note('倒轉檔被清掉了，改用索引裡現成的那份：${s.name}');
+      Diag.note('修復倒轉檔，改用索引裡目前版本的那份：${s.name}');
     }
     s.path = made;
+    s.workPath = null;
+    s.workHdrPath = null;
+    s.revColorVersion = WorkFiles.reverseColorVersion;
     _rescued = true; // 新路徑只在記憶體，立刻落地（同工作檔救援）
     return true;
   }
@@ -15877,6 +16128,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         revOf: src.path,
         revStart: cur.trimStart,
         revEnd: cur.trimEnd,
+        revColorVersion: WorkFiles.reverseColorVersion,
       ),
     );
     // 倒轉檔的縮圖與拖曳快取（聲音沒有畫面）

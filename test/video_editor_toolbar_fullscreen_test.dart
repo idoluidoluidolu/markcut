@@ -19,6 +19,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:markcut/models/timeline.dart';
 import 'package:markcut/screens/video_editor_screen.dart';
+import 'package:markcut/widgets/timeline_editor.dart';
 
 /// 8×8 PNG（測試自己寫出來，不依賴任何外部檔案）
 const _pngB64 =
@@ -26,7 +27,7 @@ const _pngB64 =
     'LQkAXrdVAdmuFfUAAAAASUVORK5CYII=';
 late final String _png;
 
-Map<String, dynamic> _draft() => {
+Map<String, dynamic> _draft({int imageCount = 1}) => {
   'savedAt': '2026-08-12T00:00:00.000',
   'sources': [
     MediaSource(
@@ -39,14 +40,15 @@ Map<String, dynamic> _draft() => {
     ).toJson(),
   ],
   'clips': [
-    TimelineClip(
-      id: 1,
-      sourceIndex: 0,
-      trimStart: 0,
-      trimEnd: 4,
-      offset: 0,
-      track: 0,
-    ).toJson(),
+    for (var i = 0; i < imageCount; i++)
+      TimelineClip(
+        id: i + 1,
+        sourceIndex: 0,
+        trimStart: 0,
+        trimEnd: 4,
+        offset: i * 4,
+        track: 0,
+      ).toJson(),
   ],
   'speed': 1.0,
   'ratio': 0,
@@ -115,6 +117,9 @@ void main() {
     // （只調換兩個字串的話，這兩條會抓到對方的圖示）
     Finder entry(String label) =>
         find.ancestor(of: find.text(label), matching: find.byType(Tooltip));
+    expect(find.text('緊接'), findsOneWidget);
+    expect(find.text('對齊'), findsNothing);
+    expect(t.widget<Tooltip>(entry('緊接')).message, '移除片段間的空隙');
     expect(
       find.descendant(of: entry('複製'), matching: find.byIcon(Icons.copy)),
       findsOneWidget,
@@ -126,6 +131,36 @@ void main() {
       ),
       findsOneWidget,
     );
+
+    // 縮放改用預覽手勢；裁切固定在預覽右下，不再塞進底部工具列。
+    expect(find.text('縮放'), findsNothing);
+    await t.tapAt(t.getCenter(find.byKey(const ValueKey('clip1'))));
+    await _settle(t, 6);
+    expect(find.text('圖片秒數'), findsNothing, reason: '單張圖片的軌道不顯示圖片秒數');
+    final crop = find.byKey(const ValueKey('video-preview-crop'));
+    expect(crop, findsOneWidget);
+    expect(t.getRect(crop).center.dx, greaterThan(1100 / 2));
+  });
+
+  testWidgets('圖片秒數只在選取含多張圖片的軌道時出現', (t) async {
+    t.view.physicalSize = const Size(1100, 2200);
+    t.view.devicePixelRatio = 1.0;
+    addTearDown(t.view.reset);
+
+    await t.pumpWidget(
+      MaterialApp(home: VideoEditorScreen(draft: _draft(imageCount: 2))),
+    );
+    await _settle(t);
+    expect(find.text('圖片秒數'), findsNothing, reason: '尚未選取圖片軌時不顯示');
+    // Selecting the track itself must work without selecting an image clip.
+    final timeline = t.widget<TimelineEditor>(find.byType(TimelineEditor));
+    timeline.onSelect(-1);
+    timeline.onTapTrack!(0);
+    await _settle(t, 6);
+    expect(find.text('圖片秒數'), findsOneWidget);
+    timeline.onTapTrack!(1);
+    await _settle(t, 6);
+    expect(find.text('圖片秒數'), findsNothing);
   });
 
   testWidgets('全螢幕：右上角離開鈕在安全區內，非全螢幕的位置不變', (t) async {

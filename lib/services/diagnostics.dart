@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
+import 'quality_diagnostics.dart';
 
 /// 診斷工具箱。
 ///
@@ -59,6 +60,7 @@ class Diag {
   /// 目前的記憶體用量（MB）。拿不到回 null（web、原生沒接上）
   static Future<int?> memoryMb() async {
     if (kIsWeb) return null;
+    final qualitySession = QualityDiagnostics.instance.session;
     try {
       final m = await _ch.invokeMapMethod<String, dynamic>('memory');
       if (m == null) return null;
@@ -67,6 +69,14 @@ class Diag {
       lastMb = used;
       lastFreeMb = free;
       if (used > peakMb) peakMb = used;
+      final quality = QualityDiagnostics.instance;
+      if (quality.recording && quality.session == qualitySession && used > 0) {
+        final previous =
+            quality.environment['sampledPeakMemoryMB'] as int? ?? 0;
+        if (used > previous) quality.environment['sampledPeakMemoryMB'] = used;
+        quality.environment['memorySamples'] =
+            (quality.environment['memorySamples'] as int? ?? 0) + 1;
+      }
       return used;
     } catch (_) {
       return null;
@@ -182,6 +192,17 @@ class Diag {
         frames++;
         final b = t.buildDuration.inMilliseconds;
         final r = t.rasterDuration.inMilliseconds;
+        final quality = QualityDiagnostics.instance;
+        if (!quality.panelVisible) {
+          quality.record(
+            QualityMetric.uiBuild,
+            t.buildDuration.inMicroseconds / 1000,
+          );
+          quality.record(
+            QualityMetric.uiRaster,
+            t.rasterDuration.inMicroseconds / 1000,
+          );
+        }
         if (b > _budgetMs) jankBuild++;
         if (r > _budgetMs) jankRaster++;
         if (b > 120) ev('UI卡 ${b}ms');
@@ -206,6 +227,10 @@ class Diag {
     if (wallMs < 50) return;
     playSamples++;
     final behind = wallMs - playerMs - callMs;
+    QualityDiagnostics.instance.record(
+      QualityMetric.playbackLag,
+      behind < 0 ? 0 : behind.toDouble(),
+    );
     if (behind > 80) {
       playStalls++;
       if (behind > worstStallMs) worstStallMs = behind;
@@ -341,6 +366,11 @@ class Diag {
     bool buffering = false,
     bool confirmed = true,
   }) {
+    QualityDiagnostics.instance.record(
+      QualityMetric.playStart,
+      ms.toDouble(),
+      success: confirmed,
+    );
     if (buffering) playBuffering++;
     if (!confirmed) {
       playConfirmationTimeouts++;
@@ -409,6 +439,7 @@ class Diag {
   /// 什麼都會頓——這種「全部一起變慢」的卡頓查程式碼永遠查不到
   static String thermal = '?';
   static bool lowPower = false;
+  static DateTime? deviceStateReadAt;
 
   static Future<void> readDeviceState() async {
     if (kIsWeb) return;
@@ -417,6 +448,7 @@ class Diag {
       if (m == null) return;
       thermal = (m['thermal'] as String?) ?? '?';
       lowPower = (m['lowPower'] as bool?) ?? false;
+      deviceStateReadAt = DateTime.now().toUtc();
     } catch (_) {}
   }
 
@@ -623,7 +655,7 @@ class WmDiag {
       '  樣式更新：$syncs 次（即時快路 $fastSyncs／全解析 ${syncs - fastSyncs}）'
       '／烘完追最新：$stale 次／被拒收：$rejects 次／丟過期：$dropped 次',
     );
-    b.writeln('  改變到上屏：${_stat(_lag)}（>150ms 就會有「跟」的感覺）');
+    b.writeln('  烘圖＋通道確認：${_stat(_lag)}（不含排隊等待，非實際上屏延遲）');
     b.writeln('  烘圖：${_stat(_bake)}／傳輸：${_stat(_send)}');
     b.writeln(
       '  烘圖細目：畫 ${_stat(_draw)}／點陣 ${_stat(_raster)}'

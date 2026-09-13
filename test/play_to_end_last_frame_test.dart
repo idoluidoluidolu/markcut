@@ -51,6 +51,7 @@ bool _isPlaying() => find.byIcon(Icons.pause_rounded).evaluate().isNotEmpty;
 void main() {
   const compCh = MethodChannel('markcut/comp');
   late List<Map<Object?, Object?>> seeks;
+  late List<List<dynamic>> volumeUpdates;
   var builds = 0;
 
   // 假播放器：play 之後時鐘跟著測試的假時間走（每 33ms 前進 33ms，跟
@@ -90,6 +91,7 @@ void main() {
     // 測試環境沒有真的原生 UiKitView：合成畫面走 Texture，閘門才找得到
     Diag.playerLayer.value = false;
     seeks = [];
+    volumeUpdates = [];
     builds = 0;
     nativeMs = 0;
     stopAtMs = null;
@@ -155,6 +157,9 @@ void main() {
           nativeMs = ((a['sec'] as num) * 1000).round();
           return a['awaitCompletion'] == true ? true : null;
         case 'setHiddenImageTracks':
+          return true;
+        case 'setClipVolumes':
+          volumeUpdates.add(List<dynamic>.from(call.arguments as List));
           return true;
       }
       return null;
@@ -236,6 +241,67 @@ void main() {
     await t.pump(const Duration(seconds: 3));
     expect(t.takeException(), isNull);
   }
+
+  testWidgets('播放中整軌立即靜音與還原，保留各片段音量及其他軌', (t) async {
+    compDuration = 20;
+    late TimelineModel timeline;
+    await openWith(t, (tl) {
+      timeline = tl;
+      addVideo(tl, vidEnd: 10);
+      tl.clips.first.volume = 0.3;
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 0,
+          trimStart: 0,
+          trimEnd: 10,
+          offset: 10,
+          track: 0,
+          volume: 0.8,
+        ),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 0,
+          trimStart: 0,
+          trimEnd: 20,
+          offset: 0,
+          track: 1,
+          volume: 0.6,
+        ),
+      );
+    });
+    t
+        .widget<TimelineEditor>(find.byType(TimelineEditor))
+        .onSelect(timeline.clips.first.id);
+    await _tick(t, 2);
+    await pressPlay(t);
+    await t.ensureVisible(find.text('音量'));
+    await t.tap(find.text('音量'));
+    await _tick(t, 30); // the initial undo/save timer has already elapsed
+    volumeUpdates.clear();
+    final beforeBuilds = builds;
+    await t.tap(find.text('整軌'));
+    await t.pump();
+    expect(volumeUpdates, isNotEmpty, reason: '立即送至原生混音表，不等關閉面板');
+    expect(volumeUpdates.last.map((e) => (e as Map)['volume']), [
+      0.0,
+      0.0,
+      0.6,
+    ]);
+    expect(timeline.clips.map((c) => c.volume), [0.3, 0.8, 0.6]);
+    expect(builds, beforeBuilds, reason: '音量切換不重建正在播放的影片');
+    await t.tap(find.text('整軌'));
+    await t.pump();
+    expect(volumeUpdates.last.map((e) => (e as Map)['volume']), [
+      0.3,
+      0.8,
+      0.6,
+    ]);
+    expect(_isPlaying(), isTrue);
+    await close(t);
+  });
 
   testWidgets('起播400ms未前進：等待期間指標不空走，恢復後直接跟隨原生位置', (t) async {
     nativeStalled = true;

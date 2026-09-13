@@ -1,9 +1,8 @@
-import 'dart:async' show unawaited;
 import 'dart:math' as math;
 import 'dart:typed_data';
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import '../services/quality_diagnostics.dart';
 
 import '../models/watermark_settings.dart';
 import '../services/preset_store.dart';
@@ -468,8 +467,12 @@ class WatermarkPanelState extends State<WatermarkPanel>
   Future<void> _pickLogo() async {
     final picked = await pickPhotoFile();
     if (picked == null) return;
+    final qualityRead = QualityDiagnostics.instance.begin(
+      QualityMetric.imageRead,
+    );
     try {
       final raw = await picked.readAsBytes();
+      QualityDiagnostics.instance.finish(qualityRead);
       // 先給裁切：浮水印的圖常常是從截圖或大圖裡挖一塊出來用，
       // 挑完直接進裁切畫面比「加進去再想辦法縮」直覺得多。
       // 按取消就整個不加（跟以前挑完取消一樣）
@@ -490,17 +493,12 @@ class WatermarkPanelState extends State<WatermarkPanel>
       // 剛加進來的圖片直接設成選取：使用者接著一定是要移動／縮放它，
       // 不用再回畫面上找它點一下
       widget.onLogoAdded?.call();
-      // 原圖（重新裁切用）在背景縮：使用者這時已經在拖圖了，這一份晚一兩
-      // 秒到沒關係；期間換了圖就丟掉
-      unawaited(
-        _shrinkToPng(raw, 4096).then((orig) {
-          if (!mounted || orig == null || !identical(s.logo.bytes, cut)) {
-            return;
-          }
-          s.logo.origBytes = orig;
-        }),
-      );
+      // CropScreen accepts the original encoded bytes (including HEIC).
+      // Keep those for recropping: re-decoding/re-encoding a second 4K PNG
+      // competes with the very first drag and consumes far more memory.
+      s.logo.origBytes = raw;
     } catch (_) {
+      QualityDiagnostics.instance.finish(qualityRead, success: false);
       if (mounted) showHint(context, '這張圖讀不進來，換一張試試', error: true);
     }
   }
@@ -518,54 +516,6 @@ class WatermarkPanelState extends State<WatermarkPanel>
       s.logo.origBytes ??= src;
       s.logo.bytesValue = cut; // 出檔已夾到 4096，不再解一次重編
     });
-  }
-
-  /// 長邊縮到 [maxSide] 以內再存成 PNG（只看寬的話 500×8000 的長圖會
-  /// 整張存進範本，web 的 localStorage 5MB 配額直接爆）。
-  ///
-  /// 尺寸從檔頭讀（ImageDescriptor），直接以目標尺寸解一次——以前先整張
-  /// 解開只為了量長寬、超標再解第二次，挑一張 4MB 的大圖要解兩輪。
-  /// ImageDescriptor 在 web 會炸：退回舊的兩段式
-  static Future<Uint8List?> _shrinkToPng(Uint8List raw, int maxSide) async {
-    ui.Image img;
-    ui.ImmutableBuffer? buf;
-    ui.ImageDescriptor? desc;
-    ui.Codec? codec;
-    try {
-      buf = await ui.ImmutableBuffer.fromUint8List(raw);
-      desc = await ui.ImageDescriptor.encoded(buf);
-      final w = desc.width, h = desc.height;
-      codec = math.max(w, h) > maxSide
-          ? await desc.instantiateCodec(
-              targetWidth: w >= h ? maxSide : null,
-              targetHeight: h > w ? maxSide : null,
-            )
-          : await desc.instantiateCodec();
-      img = (await codec.getNextFrame()).image;
-    } on Object {
-      codec?.dispose();
-      codec = await ui.instantiateImageCodec(raw);
-      var frame = await codec.getNextFrame();
-      final w = frame.image.width, h = frame.image.height;
-      if (math.max(w, h) > maxSide) {
-        frame.image.dispose();
-        codec.dispose();
-        codec = await ui.instantiateImageCodec(
-          raw,
-          targetWidth: w >= h ? maxSide : null,
-          targetHeight: h > w ? maxSide : null,
-        );
-        frame = await codec.getNextFrame();
-      }
-      img = frame.image;
-    } finally {
-      codec?.dispose();
-      desc?.dispose();
-      buf?.dispose();
-    }
-    final data = await img.toByteData(format: ui.ImageByteFormat.png);
-    img.dispose();
-    return data?.buffer.asUint8List(); // 特殊格式編不出 PNG 就回 null
   }
 
   /// 通用顏色挑選：文字、描邊、底色共用

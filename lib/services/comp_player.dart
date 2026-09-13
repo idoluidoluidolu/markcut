@@ -137,8 +137,19 @@ class ScrubPresentation {
 ///
 /// 目前只有 iOS 有原生實作；拿不到就回 null，呼叫端退回原本的多播放器路徑
 class CompPlayer {
-  /// Image-only tracks stay in the preview composition. Visibility is changed
-  /// in place; mixed/video/mosaic tracks still use the structural rebuild path.
+  /// Cheap scalar snapshot only: no frame extraction, export or decoder work.
+  static Future<Map<String, dynamic>?> qualitySnapshot() async {
+    try {
+      return await _ch
+          .invokeMapMethod<String, dynamic>('qualitySnapshot')
+          .timeout(const Duration(seconds: 2));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Legacy image-only visibility partition. New editors use [setHiddenTracks]
+  /// and keep every source in the composition, including mixed/video tracks.
   static Set<int> structuralHiddenTracks(TimelineModel tl, Set<int> hidden) => {
     for (final track in hidden)
       if (tl.clips.any(
@@ -150,6 +161,19 @@ class CompPlayer {
   static Future<bool> setHiddenImageTracks(Set<int> tracks) async {
     try {
       return await _ch.invokeMethod<bool>('setHiddenImageTracks', {
+            'tracks': tracks.toList()..sort(),
+          }) ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// All preview sources stay loaded; visibility and audio update in place.
+  /// A missing method returns false so older native builds can rebuild safely.
+  static Future<bool> setHiddenTracks(Set<int> tracks) async {
+    try {
+      return await _ch.invokeMethod<bool>('setHiddenTracks', {
             'tracks': tracks.toList()..sort(),
           }) ??
           false;
@@ -534,8 +558,8 @@ class CompPlayer {
     return _hdrCache[key] = m['sdr709'] != true;
   }
 
-  /// [mutedTracks] 整軌靜音的軌號：音量在組合成時就烘進去，
-  /// 所以切靜音要重組（呼叫端的指紋有把它算進去）
+  /// [mutedTracks] 整軌靜音的軌號：組建時套用初值，後續由
+  /// [setClipVolumes] 即時更新混音，不必重建正在播放的影片。
   /// [hdrOut]：匯出選「保留 HDR」時預覽也走 HDR——HDR 素材播原檔
   ///（工作檔是 SDR，播它永遠比成品淡）、合成不做 toneMap。
   /// SDR 輸出時照舊（工作檔＋toneMap，已與成品同曲線）
@@ -639,6 +663,7 @@ class CompPlayer {
     final clips = [
       for (final c in vids)
         {
+          'id': c.id,
           // 一律用工作檔（轉正過、SDR、H.264）；HDR 輸出模式的
           // HDR 素材播「HLG 代理」（密關鍵幀、HLG 直通不動色彩）
           // ——原檔關鍵幀疏是 seek 慢的地板，播放 LAG 家族的根之一。
@@ -767,7 +792,7 @@ class CompPlayer {
     // 全被放掉（_trimPlayers），聲音片段在預覽就整個無聲、匯出卻有聲
     //（iOS 預設就是合成模式，等於配樂在預覽永遠聽不到）。
     // 隱藏軌整條不進（畫面與聲音都不進，跟匯出一致）；整軌靜音跟影片
-    // 片段同一套：音量烘成 0（呼叫端的指紋有記 mutedTracks，切了會重組）。
+    // 片段同一套：初始音量設為 0，後续可透過 setClipVolumes 即時切換。
     // 還掛著 reverse 旗標的（倒轉檔沒做成、退回簡易模式）播放器倒不了，
     // 不進 payload：正著播比無聲更誤導，匯出那邊會用 areverse 倒好
     final audios = [
@@ -776,6 +801,7 @@ class CompPlayer {
             !hiddenTracks.contains(c.track) &&
             !c.reverse)
           {
+            'id': c.id,
             'path': tl.sourceOf(c).path,
             'start': c.trimStart,
             'end': c.trimEnd,
@@ -952,6 +978,26 @@ class CompPlayer {
 
   /// 預覽靜音（原生端走播放器的 isMuted，不重組合成）
   Future<void> setMuted(bool m) => _quiet('muted', m);
+
+  /// Update the current audio mix without replacing the playing AVPlayerItem.
+  Future<bool> setClipVolumes(TimelineModel tl, Set<int> mutedTracks) async {
+    try {
+      return await _ch.invokeMethod<bool>('setClipVolumes', [
+            for (final c in tl.clips)
+              if (tl.sourceOf(c).isVideo ||
+                  tl.sourceOf(c).kind == ClipKind.audio)
+                {
+                  'id': c.id,
+                  'volume': mutedTracks.contains(c.track)
+                      ? 0.0
+                      : c.volume.clamp(0.0, 1.0),
+                },
+          ]) ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
 
   /// 專業 AV 分離：引擎接管播放時視訊軌硬體級停用（解碼器全讓
   /// 給引擎），這顆只出聲音＋當時鐘。即時切換、不重建

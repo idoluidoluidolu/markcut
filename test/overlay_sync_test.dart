@@ -20,6 +20,7 @@ class _Rig {
   final int fullMs;
   String sig = 'a';
   bool gesture = false;
+  bool geometryLive = false;
   bool on = true;
 
   /// 接下來幾次 apply 要拒收（模擬原生換件中）／沒有收件方被叫了幾次
@@ -33,6 +34,7 @@ class _Rig {
     enabled: () => on,
     signature: () => sig,
     gestureActive: () => gesture,
+    geometryIsLive: () => geometryLive,
     onNoReceiver: () => noReceiver++,
     now: () => t,
     bake: (s, fast) async {
@@ -70,9 +72,30 @@ class _Rig {
 }
 
 void main() {
-  testWidgets('閒置後第一次變更不等併批：下一輪就起烘、烘完就上屏', (
-    tester,
-  ) async {
+  testWidgets('即時幾何期間不烘圖，放手只補一版；樣式變更仍烘圖', (t) async {
+    final r = _Rig();
+    r.sync.reset(appliedSig: 'a');
+    r.geometryLive = true;
+    r.gesture = true;
+    for (var i = 0; i < 20; i++) {
+      r.sig = 'move$i';
+      r.sync.request();
+      await r.elapse(t, 40);
+    }
+    expect(r.baked, isEmpty);
+    r.gesture = false;
+    r.sync.request();
+    await r.elapse(t, 1000);
+    expect(r.baked, [('move19', false)]);
+    r.geometryLive = false;
+    r.gesture = true;
+    r.sig = 'new-style';
+    r.sync.request();
+    await r.elapse(t, 25);
+    expect(r.baked.last, ('new-style', true));
+    r.sync.dispose();
+  });
+  testWidgets('閒置後第一次變更不等併批：下一輪就起烘、烘完就上屏', (tester) async {
     final r = _Rig();
     r.sync.request();
     expect(r.baked, isEmpty); // request 本身只排計時器
@@ -89,9 +112,7 @@ void main() {
     r.sync.dispose();
   });
 
-  testWidgets('全解析在途時點了別格：退到背景，新格的快路立刻起烘', (
-    tester,
-  ) async {
+  testWidgets('全解析在途時點了別格：退到背景，新格的快路立刻起烘', (tester) async {
     final r = _Rig();
     r.sync.request();
     await r.turn(tester);
@@ -147,9 +168,7 @@ void main() {
     r.sync.dispose();
   });
 
-  testWidgets('連續變更：快路兩版之間至少 minGapMs、烘完立刻追最新', (
-    tester,
-  ) async {
+  testWidgets('連續變更：快路兩版之間至少 minGapMs、烘完立刻追最新', (tester) async {
     final r = _Rig(fastMs: 30);
     r.gesture = true;
     for (var i = 0; i < 20; i++) {
@@ -168,9 +187,7 @@ void main() {
     r.sync.dispose();
   });
 
-  testWidgets('合成重建帶著最新版：在途的快路版本不會倒退上屏', (
-    tester,
-  ) async {
+  testWidgets('合成重建帶著最新版：在途的快路版本不會倒退上屏', (tester) async {
     final r = _Rig(fastMs: 50);
     r.sync.request();
     await r.turn(tester);
@@ -189,9 +206,7 @@ void main() {
     r.sync.dispose();
   });
 
-  testWidgets('flush 等背景全解析也烘完，最後以全解析上屏最新版', (
-    tester,
-  ) async {
+  testWidgets('flush 等背景全解析也烘完，最後以全解析上屏最新版', (tester) async {
     final r = _Rig(fullMs: 200);
     r.sync.request();
     await r.turn(tester);
@@ -207,9 +222,7 @@ void main() {
     r.sync.dispose();
   });
 
-  testWidgets('原生拒收：retryMs 後自己補送一次，成功才記為已上屏', (
-    tester,
-  ) async {
+  testWidgets('原生拒收：retryMs 後自己補送一次，成功才記為已上屏', (tester) async {
     final r = _Rig();
     r.rejectN = 1;
     r.sync.request();
@@ -228,9 +241,7 @@ void main() {
     r.sync.dispose();
   });
 
-  testWidgets('一直拒收：同一版最多補 maxRetries 次，指紋一變重新計', (
-    tester,
-  ) async {
+  testWidgets('一直拒收：同一版最多補 maxRetries 次，指紋一變重新計', (tester) async {
     final r = _Rig();
     r.rejectN = 99;
     r.sync.request();
@@ -246,9 +257,7 @@ void main() {
     r.sync.dispose();
   });
 
-  testWidgets('沒有收件方時的 request 不丟：reset 之後自己補跑', (
-    tester,
-  ) async {
+  testWidgets('沒有收件方時的 request 不丟：reset 之後自己補跑', (tester) async {
     final r = _Rig();
     r.on = false;
     r.sync.request();

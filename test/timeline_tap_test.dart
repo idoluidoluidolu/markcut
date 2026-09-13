@@ -111,6 +111,33 @@ void main() {
     final blocks = find.byKey(ValueKey('clip$imageClipId'));
     expect(blocks, findsOneWidget, reason: '圖片素材要畫得出來');
 
+    // Every thumbnail block must paint its outline above the image, including
+    // unselected blocks. A background border is covered at rounded corners.
+    for (final clip in tl.clips) {
+      final frames = t
+          .widgetList<Container>(
+            find.descendant(
+              of: find.byKey(ValueKey('clip${clip.id}')),
+              matching: find.byType(Container),
+            ),
+          )
+          .where(
+            (c) =>
+                c.clipBehavior == Clip.antiAlias &&
+                c.foregroundDecoration is BoxDecoration,
+          );
+      expect(frames, hasLength(1));
+      final frame = frames.single;
+      final foreground = frame.foregroundDecoration! as BoxDecoration;
+      expect(foreground.borderRadius, BorderRadius.circular(5));
+      expect((foreground.border! as Border).top.width, 1);
+      expect(
+        (frame.decoration! as BoxDecoration).padding,
+        const EdgeInsets.all(1),
+        reason: '選取切換不能讓縮圖位移',
+      );
+    }
+
     final r = t.getRect(blocks);
     // 純粹「點一下」：按下、不移動、放開
     await t.tapAt(r.center);

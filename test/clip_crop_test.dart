@@ -5,7 +5,12 @@ void main() {
   group('片段裁切', () {
     test('沒裁過的片段 cropped 是 false，整張框也算沒裁', () {
       final c = TimelineClip(
-        id: 1, sourceIndex: 0, trimStart: 0, trimEnd: 5, offset: 0, track: 0,
+        id: 1,
+        sourceIndex: 0,
+        trimStart: 0,
+        trimEnd: 5,
+        offset: 0,
+        track: 0,
       );
       expect(c.cropped, isFalse);
       expect(c.cropL, 0);
@@ -14,16 +19,32 @@ void main() {
 
     test('裁過之後 cropped 是 true', () {
       final c = TimelineClip(
-        id: 1, sourceIndex: 0, trimStart: 0, trimEnd: 5, offset: 0, track: 0,
-        cropL: 0.2, cropT: 0.1, cropW: 0.5, cropH: 0.6,
+        id: 1,
+        sourceIndex: 0,
+        trimStart: 0,
+        trimEnd: 5,
+        offset: 0,
+        track: 0,
+        cropL: 0.2,
+        cropT: 0.1,
+        cropW: 0.5,
+        cropH: 0.6,
       );
       expect(c.cropped, isTrue);
     });
 
     test('裁切框存得進 JSON 也讀得回來', () {
       final c = TimelineClip(
-        id: 7, sourceIndex: 2, trimStart: 1, trimEnd: 4, offset: 2, track: 1,
-        cropL: 0.25, cropT: 0.125, cropW: 0.5, cropH: 0.75,
+        id: 7,
+        sourceIndex: 2,
+        trimStart: 1,
+        trimEnd: 4,
+        offset: 2,
+        track: 1,
+        cropL: 0.25,
+        cropT: 0.125,
+        cropW: 0.5,
+        cropH: 0.75,
       );
       final back = TimelineClip.fromJson(c.toJson());
       expect(back.cropL, closeTo(0.25, 1e-9));
@@ -35,8 +56,12 @@ void main() {
 
     test('舊草稿沒有 crop 欄位，讀回來是整張', () {
       final j = {
-        'id': 1, 'sourceIndex': 0, 'trimStart': 0, 'trimEnd': 3,
-        'offset': 0, 'track': 0,
+        'id': 1,
+        'sourceIndex': 0,
+        'trimStart': 0,
+        'trimEnd': 3,
+        'offset': 0,
+        'track': 0,
       };
       final c = TimelineClip.fromJson(j);
       expect(c.cropped, isFalse);
@@ -46,15 +71,28 @@ void main() {
 
     test('沒裁的片段不會把 crop 欄位寫進 JSON（草稿不變胖）', () {
       final c = TimelineClip(
-        id: 1, sourceIndex: 0, trimStart: 0, trimEnd: 5, offset: 0, track: 0,
+        id: 1,
+        sourceIndex: 0,
+        trimStart: 0,
+        trimEnd: 5,
+        offset: 0,
+        track: 0,
       );
       expect(c.toJson().containsKey('crop'), isFalse);
     });
 
     test('複製片段會連裁切框一起帶走', () {
       final c = TimelineClip(
-        id: 3, sourceIndex: 0, trimStart: 0, trimEnd: 5, offset: 0, track: 0,
-        cropL: 0.1, cropT: 0.2, cropW: 0.3, cropH: 0.4,
+        id: 3,
+        sourceIndex: 0,
+        trimStart: 0,
+        trimEnd: 5,
+        offset: 0,
+        track: 0,
+        cropL: 0.1,
+        cropT: 0.2,
+        cropW: 0.3,
+        cropH: 0.4,
       );
       final d = c.copy();
       expect(d.cropL, closeTo(0.1, 1e-9));
@@ -63,12 +101,44 @@ void main() {
 
     test('裁切不動 scale／px／py：單純的裁切不放大填滿', () {
       final c = TimelineClip(
-        id: 1, sourceIndex: 0, trimStart: 0, trimEnd: 5, offset: 0, track: 0,
-        cropL: 0.3, cropT: 0.3, cropW: 0.2, cropH: 0.2,
+        id: 1,
+        sourceIndex: 0,
+        trimStart: 0,
+        trimEnd: 5,
+        offset: 0,
+        track: 0,
+        cropL: 0.3,
+        cropT: 0.3,
+        cropW: 0.2,
+        cropH: 0.2,
       );
       expect(c.scale, 1.0);
       expect(c.px, 0.5);
       expect(c.py, 0.5);
+    });
+  });
+
+  group('片段最後一幀預覽', () {
+    TimelineClip clip({bool reverse = false}) => TimelineClip(
+      id: 1,
+      sourceIndex: 0,
+      trimStart: 2,
+      trimEnd: 5,
+      offset: 10,
+      track: 0,
+      reverse: reverse,
+    );
+
+    test('正播右緣不 seek 到素材開區間終點', () {
+      final c = clip();
+      expect(c.sourceTimeAt(c.end), 5);
+      expect(c.sourceTimeForDisplayAt(c.end), closeTo(4.999, 1e-9));
+    });
+
+    test('倒播起點也取實際存在的最後一幀，尾端仍回到素材開頭', () {
+      final c = clip(reverse: true);
+      expect(c.sourceTimeForDisplayAt(c.offset), closeTo(4.999, 1e-9));
+      expect(c.sourceTimeForDisplayAt(c.end), 2);
     });
   });
 }

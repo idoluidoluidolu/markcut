@@ -753,6 +753,9 @@ class WorkFiles {
   static String _revKey(String src, double start, double end) =>
       '$src#rev:${start.toStringAsFixed(3)}~${end.toStringAsFixed(3)}';
 
+  // v4 preserves the source gamut/transfer function and HDR bit depth.
+  static const int reverseColorVersion = 4;
+
   /// 這一段已經倒好的檔（沒有、或檔案不在了回 null，不會去做）
   static Future<String?> lookupReverse(
     String src,
@@ -763,6 +766,7 @@ class WorkFiles {
     final idx = await _load();
     final e = idx[_revKey(src, start, end)];
     if (e is! Map) return null;
+    if (e['cv'] != reverseColorVersion) return null;
     final work = e['work'] as String?;
     if (work == null || !File(work).existsSync()) return null;
     // 原檔換過內容（相簿暫存路徑重複使用）就不能拿舊的倒轉檔；原檔
@@ -794,7 +798,7 @@ class WorkFiles {
     idx[_revKey(src, start, end)] = {
       'work': dest,
       'stamp': _stamp(src),
-      'cv': 2,
+      'cv': reverseColorVersion,
       'at': DateTime.now().millisecondsSinceEpoch,
     };
     if (await _save()) {

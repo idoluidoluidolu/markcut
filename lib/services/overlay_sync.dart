@@ -28,6 +28,7 @@ class OverlaySync {
     required this.bake,
     required this.apply,
     this.gestureActive,
+    this.geometryIsLive,
     this.onNoReceiver,
     this.debounceMs = 40,
     this.minGapMs = 80,
@@ -61,6 +62,10 @@ class OverlaySync {
   /// 全解析（1080 PNG 幾百毫秒），接著再動就被它擋住（實機回饋：
   /// 拉到一半硬停、過一會兒才跟上）。沒給＝只靠指紋推測
   final bool Function()? gestureActive;
+
+  /// A separate lightweight channel has already applied geometry/visibility.
+  /// Leave pixels alone during the gesture, then refine once after release.
+  final bool Function()? geometryIsLive;
 
   /// 診斷：一次檢查因為沒有收件方而略過（呼叫端自己決定記不記）
   final void Function()? onNoReceiver;
@@ -178,9 +183,7 @@ class OverlaySync {
     if (ms < 0) ms = 0;
     final when = now().add(Duration(milliseconds: ms));
     // 已經排了更早（或同時）的就不動它
-    if ((_timer?.isActive ?? false) &&
-        _due != null &&
-        !_due!.isAfter(when)) {
+    if ((_timer?.isActive ?? false) && _due != null && !_due!.isAfter(when)) {
       return;
     }
     _timer?.cancel();
@@ -225,6 +228,10 @@ class OverlaySync {
     final sinceChange = t.difference(_changedAt).inMilliseconds;
     final held = gestureActive?.call() ?? false;
     final gesture = held || sinceChange < quietMs;
+    if (!full && gesture && sig != empty && (geometryIsLive?.call() ?? false)) {
+      _armIn(held ? quietMs : quietMs - sinceChange);
+      return;
+    }
     if (sig == appliedSig) {
       if (!appliedFast) return; // 上屏的就是最新全解析：沒事
       if (gesture && !full) {

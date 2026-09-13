@@ -170,10 +170,10 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
   final Set<Uint8List> _awaitingLogo = {};
 
   double _logoAspectOf(Uint8List bytes) {
-    final img = logoImageCached(bytes);
+    final img = logoImageCached(bytes, maxSide: kLogoPreviewMaxSide);
     if (img != null) return img.width / img.height;
     if (_awaitingLogo.add(bytes)) {
-      logoImageFor(bytes)
+      logoImageFor(bytes, maxSide: kLogoPreviewMaxSide)
           .then((_) {
             if (mounted) setState(() {});
           })
@@ -574,12 +574,12 @@ class _LogoUnitState extends State<_LogoUnit> {
     final b = widget.logo.bytes;
     if (b == null) return;
     _decodedFrom = b;
-    final hit = logoImageCached(b);
+    final hit = logoImageCached(b, maxSide: kLogoPreviewMaxSide);
     if (hit != null) {
       _img = hit;
       return;
     }
-    logoImageFor(b)
+    logoImageFor(b, maxSide: kLogoPreviewMaxSide)
         .then((img) {
           // 等的期間可能又換了一張：只收自己那一張
           if (mounted && identical(_decodedFrom, b)) {
@@ -629,12 +629,12 @@ class _TiledLogoState extends State<_TiledLogo> {
     final b = widget.logo.bytes;
     if (b == null) return;
     _decodedFrom = b;
-    final hit = logoImageCached(b);
+    final hit = logoImageCached(b, maxSide: kLogoPreviewMaxSide);
     if (hit != null) {
       _img = hit;
       return;
     }
-    logoImageFor(b)
+    logoImageFor(b, maxSide: kLogoPreviewMaxSide)
         .then((img) {
           if (mounted && identical(_decodedFrom, b)) {
             setState(() => _img = img);

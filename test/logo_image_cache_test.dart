@@ -24,6 +24,35 @@ Future<Uint8List> _png(int w, int h) async {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('大圖預覽限制解碼尺寸，匯出保留原始解析度', () async {
+    final bytes = await _png(2400, 1200);
+    final preview = await logoImageFor(bytes, maxSide: kLogoPreviewMaxSide);
+    expect((preview.width, preview.height), (1080, 540));
+    expect(logoImageCached(bytes), isNull);
+    final original = await logoImageFor(bytes);
+    expect((original.width, original.height), (2400, 1200));
+    expect(
+      identical(preview, await logoImageFor(bytes, maxSide: 1080)),
+      isTrue,
+    );
+  });
+
+  test('多張圖片副本共用 bytes，替換 b64 不沿用舊快取', () async {
+    final settings = WatermarkSettings();
+    settings.logos.clear();
+    for (var i = 0; i < 5; i++) {
+      settings.logos.add(LogoMark()..bytesValue = await _png(40 + i, 10));
+    }
+    final copy = settings.copy();
+    for (var i = 0; i < 5; i++) {
+      expect(identical(settings.logos[i].bytes, copy.logos[i].bytes), isTrue);
+    }
+    final old = copy.logos[0].bytes;
+    copy.logos[0].b64 = copy.logos[4].b64;
+    expect(copy.logos[0].bytes, isNot(equals(old)));
+    expect(copy.logos[0].bytes, equals(copy.logos[4].bytes));
+  });
+
   test('同一份 bytes 同時要三次，只解一次、拿到同一個物件', () async {
     final bytes = await _png(40, 10);
     expect(logoImageCached(bytes), isNull);
@@ -79,7 +108,7 @@ void main() {
       );
       await t.pump(const Duration(milliseconds: 30));
     }
-    final img = logoImageCached(s.logo.bytes!);
+    final img = logoImageCached(s.logo.bytes!, maxSide: kLogoPreviewMaxSide);
     expect(img, isNotNull);
     // 兩層各畫一顆，畫家拿的都是快取那一個
     final painters = t

@@ -76,6 +76,15 @@ void main() {
     expect(rect.width, greaterThan(200), reason: '鍵盤開著時文字輸入框要有寬度（面板不能縮成 0 寬）');
     final panel = t.getRect(find.byType(WatermarkPanel));
     expect(panel.width, 390, reason: '面板要撐滿整個螢幕寬');
+    final previewRects = [
+      for (final e in find.byType(RawImage).evaluate())
+        t.getRect(find.byElementPredicate((x) => identical(x, e))),
+    ];
+    expect(
+      previewRects.any((r) => r.width > 100 && r.height > 70),
+      isTrue,
+      reason: '鍵盤打開時上方照片預覽仍要保留，不能整塊收掉',
+    );
     await t.enterText(input, '鍵盤測試');
     expect(t.widget<TextField>(input).controller!.text, '鍵盤測試');
     expect(t.takeException(), isNull);

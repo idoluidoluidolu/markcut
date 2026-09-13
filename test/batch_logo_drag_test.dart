@@ -35,6 +35,40 @@ Future<void> _settle(WidgetTester t, {int rounds = 10}) async {
 }
 
 void main() {
+  testWidgets('批次照片文字輸入：鍵盤打開後仍保留上方預覽', (t) async {
+    SharedPreferences.setMockInitialValues({});
+    t.view.physicalSize = const Size(390, 844);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    late Uint8List photo;
+    await t.runAsync(() async {
+      photo = await _png(const Color(0xFF204060), 400);
+    });
+
+    await t.pumpWidget(
+      MaterialApp(
+        home: BatchWatermarkScreen(
+          files: [XFile.fromData(photo, name: 'a.png', mimeType: 'image/png')],
+        ),
+      ),
+    );
+    await _settle(t, rounds: 12);
+    await t.tap(find.text('文字').first);
+    await _settle(t);
+    final input = find.byType(TextField).first;
+    await t.tap(input);
+    t.view.viewInsets = const FakeViewPadding(bottom: 330);
+    await _settle(t);
+
+    final preview = t.getRect(find.byType(WatermarkLayer));
+    expect(preview.width, greaterThan(100));
+    expect(preview.height, greaterThan(70), reason: '鍵盤不能把整個照片預覽收掉');
+    final inputRect = t.getRect(input);
+    expect(inputRect.width, greaterThan(200));
+    expect(inputRect.bottom, lessThanOrEqualTo(844 - 330));
+    expect(t.takeException(), isNull);
+  });
+
   // 迴歸守門：批次浮水印畫面「點了面板的圖片縮圖（琥珀亮框）之後，
   // 圖片在預覽上拖不動」。
   //

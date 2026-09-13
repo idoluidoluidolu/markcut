@@ -1664,15 +1664,16 @@ class _ClipBlock extends StatelessWidget {
                     // 底層永遠是同一條 1px 邊：邊框寬度會被算進內距，
                     // 選取時從 1 換成 2 的話裡面的縮圖就整個位移 1px，
                     // 取消選取又移回去——那正是「選取時素材會抖一下」
-                    border: Border.all(color: borderColor, width: 1),
+                    border: Border.all(color: Colors.transparent, width: 1),
                   ),
-                  // 選取的琥珀框畫在「前景」：疊在內容上面，不參與版面
-                  foregroundDecoration: isSelected
-                      ? BoxDecoration(
-                          borderRadius: BorderRadius.circular(5),
-                          border: Border.all(color: kSelect, width: 2),
-                        )
-                      : null,
+                  // 縮圖不能蓋住圓角邊線；一般框與選取框都最後畫。
+                  foregroundDecoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(5),
+                    border: Border.all(
+                      color: isSelected ? kSelect : borderColor,
+                      width: isSelected ? 2 : 1,
+                    ),
+                  ),
                   clipBehavior: Clip.antiAlias,
                   child: Stack(
                     fit: StackFit.expand,

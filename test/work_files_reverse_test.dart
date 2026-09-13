@@ -81,6 +81,10 @@ void main() {
     final idx = await index();
     expect(idx['/src/a.mov#rev:1.250~3.500'], isA<Map>());
     expect((idx['/src/a.mov#rev:1.250~3.500'] as Map)['work'], dest);
+    expect(
+      (idx['/src/a.mov#rev:1.250~3.500'] as Map)['cv'],
+      WorkFiles.reverseColorVersion,
+    );
 
     // 一支沒登記的殘檔（上次做到一半被殺）：清掃當孤兒刪掉；登記過的留著
     final orphan = await File('$wfDir${sep}rev_orphan.mp4').writeAsString('x');
@@ -110,6 +114,18 @@ void main() {
     expect(await WorkFiles.lookupReverse('/src/a.mov', 0, 2), dest);
     await File(dest).delete();
     expect(await WorkFiles.lookupReverse('/src/a.mov', 0, 2), isNull);
+  });
+
+  test('舊版色彩標記的倒轉檔不沿用', () async {
+    final old = await File('$wfDir${sep}old_reverse.mp4').writeAsString('old');
+    SharedPreferences.setMockInitialValues({
+      'workFiles.v4': jsonEncode({
+        '/src/old.mov#rev:0.000~2.000': {'work': old.path, 'at': 1, 'cv': 2},
+      }),
+    });
+    WorkFiles.resetForTest();
+
+    expect(await WorkFiles.lookupReverse('/src/old.mov', 0, 2), isNull);
   });
 
   test('原檔已經不在（相簿暫存被回收）：索引裡的倒轉檔照樣認——那正是要救的情況', () async {

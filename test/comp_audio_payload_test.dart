@@ -20,6 +20,7 @@ import 'package:markcut/services/diagnostics.dart';
 
 /// 跟 native_export 的 audios 一模一樣的鍵（Swift 端一個解析器吃兩邊）
 const _exportAudioKeys = {
+  'id', // stable clip identity for live volume updates
   'path',
   'start',
   'end',
@@ -224,9 +225,7 @@ void main() {
   // ── 編輯器的指紋：加了音樂要重組，不然 payload 有 audios 也沒用 ──
   testWidgets('加入配樂之後合成要重組，而且新的 payload 帶著它', (t) async {
     late TimelineModel tl;
-    await t.pumpWidget(
-      const MaterialApp(home: VideoEditorScreen(blank: true)),
-    );
+    await t.pumpWidget(const MaterialApp(home: VideoEditorScreen(blank: true)));
     await _tick(t, 5);
     VideoEditorScreen.debugTimeline!((m) {
       tl = m;
