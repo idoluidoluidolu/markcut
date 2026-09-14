@@ -57,6 +57,9 @@ import '../services/text_mark_painter.dart';
 import '../services/work_files.dart';
 import '../services/thumbnail_preparation.dart';
 import '../services/preview_preparation.dart';
+import '../services/preview_seek_dispatcher.dart';
+import '../services/preview_cache_pressure.dart';
+import '../services/preview_raster_queue.dart';
 import '../services/scrub_visibility.dart';
 import '../theme.dart';
 import '../widgets/color_grade_panel.dart';
@@ -2257,8 +2260,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   @override
   void didHaveMemoryPressure() {
     QualityDiagnostics.instance.mark('memoryPressureBeforeCacheTrim');
-    _releaseOverlayCache();
-    trimLogoImageCache();
+    _ovCacheEpoch++; // pre-warning work must not refill the history cache
+    _ovPartCacheLimit = 8 << 20;
+    final kept = trimPreviewPartCache(
+      _ovPartCache,
+      _ovMapsCache,
+      bytesOf: (part) => part.bytes,
+      maxBytes: _ovPartCacheLimit,
+    );
+    _ovPartCacheBytes = _ovPartCache.values.fold(
+      0,
+      (n, part) => n + part.bytes.lengthInBytes,
+    );
+    if (!kept) {
+      _ovMapsCache = const [];
+      _ovMapsCacheSig = '';
+    }
+    handleLogoMemoryPressure();
   }
 
   void _releaseOverlayCache() {
@@ -2272,16 +2290,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 快取總量上限：包圍盒烘圖一張幾十～幾百 KB，整版（平鋪／飄移／
   /// 跑馬燈）540p raw 一張 2MB。滿了只淘汰最久未用的部件，保留熱圖。
   static const int _ovPartCacheCap = 32 << 20;
+  int _ovPartCacheLimit = _ovPartCacheCap;
 
   /// 同一張正在畫的（鍵相同）等同一份：停手後的全解析跟緊接著的
   /// 合成重建要的是同一批 1080 圖，各畫一份＝主執行緒與點陣化
   /// 排兩倍的工，下一手的快路就排在它們後面（實機：斷流 250~435ms）
   final Map<String, Future<OverlayPartImage?>> _ovPartInflight = {};
+  final _ovRasterQueue = PreviewRasterQueue<OverlayPartImage>();
 
   Future<OverlayPartImage?> _ovPartBaked(
     String key,
-    Future<OverlayPartImage?> Function() draw,
-  ) async {
+    Future<OverlayPartImage?> Function() draw, {
+    required bool fast,
+  }) async {
     final hit = _ovPartCache.remove(key);
     if (hit != null) {
       QualityDiagnostics.instance.increment('overlayPartCacheHit');
@@ -2294,7 +2315,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return going;
     }
     QualityDiagnostics.instance.increment('overlayPartCacheMiss');
-    final task = draw();
+    final task = _ovRasterQueue.run(draw, interactive: fast);
     final epoch = _ovCacheEpoch;
     _ovPartInflight[key] = task;
     OverlayPartImage? part;
@@ -2306,10 +2327,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (part == null) return null; // 整個在畫布外：沒東西可畫，不進快取
     if (!mounted ||
         epoch != _ovCacheEpoch ||
-        part.bytes.length > _ovPartCacheCap) {
+        part.bytes.length > _ovPartCacheLimit) {
       return part;
     }
-    while (_ovPartCacheBytes + part.bytes.length > _ovPartCacheCap &&
+    while (_ovPartCacheBytes + part.bytes.length > _ovPartCacheLimit &&
         _ovPartCache.isNotEmpty) {
       final oldest = _ovPartCache.remove(_ovPartCache.keys.first)!;
       QualityDiagnostics.instance.increment('overlayPartCacheEviction');
@@ -2369,10 +2390,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (key == _ovMapsCacheSig && _ovMapsCache.isNotEmpty) {
       return _ovMapsCache;
     }
-    final epoch = _ovCacheEpoch;
     final maps = await _ovMapsBuild(fast: fast);
-    // 過程中內容又變了就不進快取（下一輪重做）
-    if (mounted && epoch == _ovCacheEpoch && _ovContentSig() == sig) {
+    // A warning during this bake must not discard its still-current bounded
+    // working set. Only historical part entries use the pressure epoch guard.
+    if (mounted &&
+        _ovContentSig() == sig &&
+        previewBitmapBytes(maps) <= _ovPartCacheLimit) {
       _ovMapsCacheSig = key;
       _ovMapsCache = maps;
     }
@@ -2463,6 +2486,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               rawByteLimit: 1 << 20,
               maxRasterPixels: fast ? 512 * 1024 : 2 * 1024 * 1024,
             ),
+            fast: fast,
           );
           if (part == null) return null; // 整個在畫布外：沒東西可畫
           return {
@@ -3517,9 +3541,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 上一發精準 seek 的位置：放手後的收尾（120ms 補送、220ms 收尾
   /// 的 animateTo 完成）都會再要一次精準 seek，同一格只送一次
   double? _compExactAt;
+  final _compSeekDispatcher = PreviewSeekDispatcher();
 
-  /// 單一畫面：滑動的每一發都餵合成播放器（畫面就是它；代理密
-  /// 關鍵幀 seek 實測 2~9ms，原生端只追最新目標）。[exact] 放手用
+  /// 合併高刷新率手勢的過密請求；放手精準定位不等待節流。
   void _compSeek({bool exact = false}) {
     if (!_compOn || _playing) return;
     if (exact) {
@@ -3540,13 +3564,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         );
     final toleranceMs = compScrubToleranceMs(exact: exact, raw: raw);
     final player = _comp!;
-    if (player.nativeScrub && _scrubbing) {
-      unawaited(
-        player.scrub(_position, exact: exact, toleranceMs: toleranceMs),
-      );
-      return;
-    }
-    unawaited(player.seek(_position, exact: exact, toleranceMs: toleranceMs));
+    final position = _position;
+    final epoch = _playbackEpoch;
+    _compSeekDispatcher.submit(() {
+      if (!mounted || _playing || _comp != player || epoch != _playbackEpoch) {
+        return;
+      }
+      if (player.nativeScrub && _scrubbing) {
+        unawaited(
+          player.scrub(position, exact: exact, toleranceMs: toleranceMs),
+        );
+      } else {
+        unawaited(
+          player.seek(position, exact: exact, toleranceMs: toleranceMs),
+        );
+      }
+    }, exact: exact);
   }
 
   void _scrubSeek({bool force = false}) {
@@ -3833,6 +3866,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   final List<int> _prepQueue = [];
 
   bool get _previewInteracting =>
+      _wmImageImporting ||
       _playing ||
       _startingPlayback ||
       _scrubBusy ||
@@ -3844,6 +3878,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _exporting;
 
   Timer? _prepGestureLease;
+  bool _wmImageImporting = false;
+
+  Future<void> _setWatermarkImageWork(bool active) async {
+    if (!mounted) return;
+    _wmImageImporting = active;
+    if (active) _pause();
+    _syncPrepInteraction();
+    // Unlike touch updates, opening a route must wait until native has received
+    // the pause flag. This also covers a system picker that stays open for minutes.
+    await MediaPrep.setInteractive(
+      _prepActivity.interactive || _prepGestureActivity.interactive,
+      pauseDecoding: _prepGestureActivity.interactive,
+    );
+  }
 
   // A single pointer still owns the preview while held motionless. Keep a
   // bounded lease so a lost pointer-up cannot suspend native work forever.
@@ -3864,13 +3912,34 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _syncPrepInteraction();
   }
 
-  final _prepActivity = PreviewPreparationActivity(
-    onChanged: (interactive) =>
-        unawaited(MediaPrep.setInteractive(interactive)),
+  late final _prepActivity = PreviewPreparationActivity(
+    onChanged: (_) => _sendPrepInteraction(),
+  );
+  late final _prepGestureActivity = PreviewPreparationActivity(
+    onChanged: (_) => _sendPrepInteraction(),
+  );
+
+  void _sendPrepInteraction() => unawaited(
+    MediaPrep.setInteractive(
+      _prepActivity.interactive || _prepGestureActivity.interactive,
+      pauseDecoding: _prepGestureActivity.interactive,
+    ),
   );
 
   void _syncPrepInteraction({bool forceBusy = false}) {
     _prepActivity.update(forceBusy || _previewInteracting);
+    // Playback may advance background proxies slowly. A direct manipulation
+    // owns the decoder until the gesture and its idle cooldown finish.
+    _prepGestureActivity.update(
+      forceBusy ||
+          _wmImageImporting ||
+          _scrubBusy ||
+          _lifting ||
+          _tlPinching ||
+          _wmGestureOn ||
+          _clipSliderActive ||
+          (_prepGestureLease?.isActive ?? false),
+    );
   }
 
   List<int> _prioritizedPreparation(Iterable<int> pending) =>
@@ -8736,7 +8805,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 起手常常落在那裡面——烘完再看一次。讓一手：髒旗標留著，
   /// 停手 350ms 後 [_compRebuildTick] 再來（圖已進快取，幾乎不用等）
   bool _compYieldToGesture() {
-    if (!_wmGestureOn &&
+    if (!_wmImageImporting &&
+        !_wmGestureOn &&
         !_scrubBusy &&
         !_lifting &&
         !_tlPinching &&
@@ -9607,6 +9677,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     'timelineSeconds': _position,
     'playing': _playing,
     'watermarkGesture': _wmGestureOn,
+    'watermarkImageImporting': _wmImageImporting,
     'clipSlider': _clipSliderActive,
     'previewPointers': _pvPts.length,
     'scrubbing': _scrubBusy,
@@ -9620,7 +9691,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     'thumbnailJobs': _thumbActive,
     'thumbnailQueuedJobs': _thumbWaiters.length,
     'preparationInteractionCooldown': _prepActivity.interactive,
+    'preparationGesturePause': _prepGestureActivity.interactive,
+    'previewSeekCoalesced': _compSeekDispatcher.coalesced,
     'overlayPartCacheBytes': _ovPartCacheBytes,
+    'overlayPartCacheLimitBytes': _ovPartCacheLimit,
+    'overlayRasterQueued': _ovRasterQueue.pending,
     'overlayPartsInFlight': _ovPartInflight.length,
     'logoDecodedCacheBytes': logoDecodedCacheBytes,
   };
@@ -9641,6 +9716,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final sampleStartedAt = DateTime.now().toUtc();
     final sampledComp = _comp;
     diagnostic.environment.addAll({
+      'previewRevision': 'image-import-guard-1',
       'displayHz': View.of(context).display.refreshRate,
       'buildMode': kReleaseMode
           ? 'release'
@@ -11515,6 +11591,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _prepGestureLease?.cancel();
     _wmPrepTimer?.cancel();
     _prepActivity.dispose();
+    _prepGestureActivity.dispose();
+    _compSeekDispatcher.dispose();
+    _ovRasterQueue.dispose();
     _scrubRevision++;
     // 草稿還有沒落地的併批寫入：離開前補存，不能讓最後幾秒的編輯蒸發。
     // force：unmount 之後 mounted 必為 false，不帶的話這筆補存永遠
@@ -12171,6 +12250,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 //（見 _ovWarmUp）
                                 _ovWarmUp();
                               },
+                              onImageWork: _setWatermarkImageWork,
                               // 滑桿拖動中每一格只重繪預覽層（放手時
                               // 面板補一次 onChanged 走上面整頁那條）
                               onLiveChange: _wmLiveTick,

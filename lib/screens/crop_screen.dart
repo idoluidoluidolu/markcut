@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../nav.dart';
 import '../services/crop_math.dart';
+import '../services/crop_image_decoder.dart';
 import '../theme.dart';
 
 /// 開裁切畫面，回傳裁好的 PNG；使用者取消回 null。
@@ -90,6 +91,7 @@ class _CropScreenState extends State<CropScreen> {
   /// 目前要裁的那張圖。轉向是「先把圖轉好」再裁——裁切的數學只要
   /// 處理一個朝向，少一整組座標換算就少一整組會錯的地方
   ui.Image? _img;
+  int _sourceWidth = 0, _sourceHeight = 0;
   bool _busy = false;
   double? _ratio;
 
@@ -110,9 +112,7 @@ class _CropScreenState extends State<CropScreen> {
 
   Future<void> _decode(Uint8List bytes) async {
     try {
-      final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-      codec.dispose();
+      final frame = await decodeCropImage(bytes, maxSide: cropPreviewMaxSide);
       if (!mounted) {
         frame.image.dispose();
         return;
@@ -120,6 +120,8 @@ class _CropScreenState extends State<CropScreen> {
       setState(() {
         _img?.dispose();
         _img = frame.image;
+        _sourceWidth = frame.sourceWidth;
+        _sourceHeight = frame.sourceHeight;
         final iw = frame.image.width.toDouble();
         final ih = frame.image.height.toDouble();
         final f = widget.initial;
@@ -189,35 +191,64 @@ class _CropScreenState extends State<CropScreen> {
       return;
     }
     setState(() => _busy = true);
-    var w = math.max(1, r.width.round());
-    var h = math.max(1, r.height.round());
-    // 出檔就夾長邊（呼叫端要的尺寸），drawImageRect 順便縮——不用先編一張
-    // 全尺寸 PNG 再讓呼叫端解開重縮
-    final cap = widget.maxSide;
-    if (cap != null && math.max(w, h) > cap) {
-      final sc = cap / math.max(w, h);
-      w = math.max(1, (w * sc).round());
-      h = math.max(1, (h * sc).round());
-    }
-    final rec = ui.PictureRecorder();
-    final canvas = Canvas(rec);
-    canvas.drawImageRect(
-      img,
-      r,
-      Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
-      Paint()..filterQuality = FilterQuality.high,
+    final fraction = Rect.fromLTWH(
+      r.left / img.width,
+      r.top / img.height,
+      r.width / img.width,
+      r.height / img.height,
     );
-    final pic = rec.endRecording();
-    final out = await pic.toImage(w, h);
-    pic.dispose();
-    final data = await out.toByteData(format: ui.ImageByteFormat.png);
-    out.dispose();
-    if (!mounted) return;
-    if (data == null) {
-      setState(() => _busy = false);
-      return;
+    final plan = cropOutputPlan(
+      _sourceWidth,
+      _sourceHeight,
+      fraction,
+      maxSide: widget.maxSide,
+    );
+    ui.Image? decoded, out;
+    ui.Picture? picture;
+    var completed = false;
+    try {
+      var source = img;
+      if (math.max(img.width, img.height) < plan.decodeSide) {
+        decoded = (await decodeCropImage(
+          widget.bytes,
+          maxSide: plan.decodeSide,
+        )).image;
+        source = decoded;
+      }
+      if (!mounted) return;
+      final rec = ui.PictureRecorder();
+      Canvas(rec).drawImageRect(
+        source,
+        Rect.fromLTWH(
+          fraction.left * source.width,
+          fraction.top * source.height,
+          fraction.width * source.width,
+          fraction.height * source.height,
+        ),
+        Rect.fromLTWH(0, 0, plan.width.toDouble(), plan.height.toDouble()),
+        Paint()..filterQuality = FilterQuality.high,
+      );
+      picture = rec.endRecording();
+      out = await picture.toImage(plan.width, plan.height);
+      picture.dispose();
+      picture = null;
+      // Rasterization is done: don't retain the export-size source through PNG
+      // encoding as well. The UI keeps only its bounded preview image.
+      decoded?.dispose();
+      decoded = null;
+      final data = await out.toByteData(format: ui.ImageByteFormat.png);
+      if (mounted && data != null) {
+        completed = true;
+        Navigator.pop(context, data.buffer.asUint8List());
+      }
+    } catch (_) {
+      if (mounted) showHint(context, '這張圖裁切失敗，請再試一次', error: true);
+    } finally {
+      picture?.dispose();
+      out?.dispose();
+      decoded?.dispose();
+      if (mounted && !completed) setState(() => _busy = false);
     }
-    Navigator.pop(context, data.buffer.asUint8List());
   }
 
   @override

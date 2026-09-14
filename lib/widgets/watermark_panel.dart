@@ -105,6 +105,10 @@ class WatermarkPanel extends StatefulWidget {
   /// 使用者回到畫面就能直接拖曳／縮放它
   final VoidCallback? onLogoAdded;
 
+  /// Suspend competing editor work before opening the picker, until crop and
+  /// image import finish. Await the parent/native gate before allocating pixels.
+  final Future<void> Function(bool active)? onImageWork;
+
   /// 面板裡切換「現在調哪一個」（圖片縮圖列、文字選取列）時回報。
   ///
   /// 面板的亮框只代表「滑桿調的是這一個」，跟預覽上的選取是兩件事；
@@ -167,6 +171,7 @@ class WatermarkPanel extends StatefulWidget {
     required this.settings,
     required this.onChanged,
     this.onBeforeChange,
+    this.onImageWork,
     this.onLiveChange,
     this.showAnimation = false,
     this.syncVersion = 0,
@@ -379,7 +384,8 @@ class WatermarkPanelState extends State<WatermarkPanel>
   /// 加一張圖片。清單裡還有空位（剛開的那張、或圖片被移除留下的）
   /// 就先填它，不然新增一張再挑；挑到一半取消就把空的那張收回去，
   /// 縮圖列才不會留一格永遠空白的
-  Future<void> _addLogo() => _addInto(_pickLogo);
+  Future<void> _addLogo() =>
+      _imageWorkActive ? Future.value() : _addInto(_pickLogo);
 
   /// 手繪：畫一張進來。跟 _addLogo 同一套「填空位／取消收回」的流程，
   /// 只是圖的來源從相簿換成畫板
@@ -464,7 +470,26 @@ class WatermarkPanelState extends State<WatermarkPanel>
     });
   }
 
-  Future<void> _pickLogo() async {
+  bool _imageWorkActive = false;
+
+  Future<void> _withImageWork(Future<void> Function() work) async {
+    if (_imageWorkActive) return;
+    _imageWorkActive = true;
+    final notify = widget.onImageWork;
+    try {
+      await notify?.call(true);
+      if (mounted) await work();
+    } catch (_) {
+      if (mounted) showHint(context, '這張圖讀不進來，換一張試試', error: true);
+    } finally {
+      _imageWorkActive = false;
+      await notify?.call(false);
+    }
+  }
+
+  Future<void> _pickLogo() => _withImageWork(_pickLogoInner);
+
+  Future<void> _pickLogoInner() async {
     final picked = await pickPhotoFile();
     if (picked == null) return;
     final qualityRead = QualityDiagnostics.instance.begin(
@@ -487,16 +512,14 @@ class WatermarkPanelState extends State<WatermarkPanel>
       if (cut == null || !mounted) return;
       _update(() {
         s.logo.bytesValue = cut;
-        s.logo.origBytes = null;
+        // Keep encoded originals for recropping; do not decode/encode a second
+        // full-size PNG, and include the original in this atomic saved edit.
+        s.logo.origBytes = raw;
         s.logo.enabled = true;
       });
       // 剛加進來的圖片直接設成選取：使用者接著一定是要移動／縮放它，
       // 不用再回畫面上找它點一下
       widget.onLogoAdded?.call();
-      // CropScreen accepts the original encoded bytes (including HEIC).
-      // Keep those for recropping: re-decoding/re-encoding a second 4K PNG
-      // competes with the very first drag and consumes far more memory.
-      s.logo.origBytes = raw;
     } catch (_) {
       QualityDiagnostics.instance.finish(qualityRead, success: false);
       if (mounted) showHint(context, '這張圖讀不進來，換一張試試', error: true);
@@ -505,7 +528,9 @@ class WatermarkPanelState extends State<WatermarkPanel>
 
   /// 重新裁切現在這張圖。有原圖就從原圖裁——不然裁小了之後只能在
   /// 那一小塊裡面繼續裁，越裁越小回不去
-  Future<void> _cropLogo() async {
+  Future<void> _cropLogo() => _withImageWork(_cropLogoInner);
+
+  Future<void> _cropLogoInner() async {
     final src = s.logo.origBytes ?? s.logo.bytes;
     if (src == null) return;
     final cut = await cropImage(context, src, maxSide: 4096);

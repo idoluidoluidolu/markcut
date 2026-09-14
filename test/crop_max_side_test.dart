@@ -107,4 +107,13 @@ void main() {
     expect(w, 120);
     expect(h, 80);
   });
+
+  testWidgets('small preview does not reduce the confirmed output resolution', (
+    t,
+  ) async {
+    final src = (await t.runAsync(() => _png(3000, 1500)))!;
+    final out = await _cropWhole(t, src, maxSide: 4096);
+    expect(out, isNotNull);
+    expect((await t.runAsync(() => _size(out!)))!, (3000, 1500));
+  });
 }

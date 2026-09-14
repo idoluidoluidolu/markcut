@@ -709,6 +709,42 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(gate.isInteractive)
   }
 
+  func testInteractivePrepGatePausesBothTracksDuringDirectManipulation() {
+    let gate = MCInteractivePrepGate()
+    let cancel = AtomicFlag()
+    gate.setInteractive(true, pauseDecoding: true)
+    let released = AtomicFlag()
+    let complete = expectation(description: "both sample workers resumed")
+    complete.expectedFulfillmentCount = 2
+    for throttle in [0.0, MCInteractivePrepGate.interactiveThrottle] {
+      DispatchQueue.global().async {
+        XCTAssertTrue(gate.wait(cancelled: cancel, throttle: throttle))
+        XCTAssertTrue(released.isSet, "no samples allowed before gesture release")
+        complete.fulfill()
+      }
+    }
+    Thread.sleep(forTimeInterval: 0.12)
+    released.set()
+    // Still playing: resume without an intervening interactive=false.
+    gate.setInteractive(true, pauseDecoding: false)
+    wait(for: [complete], timeout: 2)
+    XCTAssertTrue(gate.isInteractive)
+  }
+
+  func testInteractivePrepGateCancelsAnAlreadyPausedWorker() {
+    let gate = MCInteractivePrepGate()
+    let cancel = AtomicFlag()
+    gate.setInteractive(true, pauseDecoding: true)
+    let complete = expectation(description: "paused worker cancelled")
+    DispatchQueue.global().async {
+      XCTAssertFalse(gate.wait(cancelled: cancel))
+      complete.fulfill()
+    }
+    Thread.sleep(forTimeInterval: 0.12)
+    cancel.set() // no resume broadcast: poll must observe cancellation
+    wait(for: [complete], timeout: 2)
+  }
+
   func testFrameGeneratorPoolReusesAndEvictsTheLeastRecentlyUsedEntry() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

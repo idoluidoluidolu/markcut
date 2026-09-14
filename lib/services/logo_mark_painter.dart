@@ -22,6 +22,7 @@ final Expando<Map<int, WeakReference<ui.Image>>> _logoImages = Expando(
 final Map<ui.Image, int> _logoHotImages = {};
 int _logoHotBytes = 0;
 int _logoCacheEpoch = 0;
+int _logoHotLimit = kLogoDecodedCacheMaxBytes;
 int get logoDecodedCacheBytes => _logoHotBytes;
 int get logoDecodedCacheEntries => _logoHotImages.length;
 
@@ -29,6 +30,17 @@ void trimLogoImageCache() {
   _logoCacheEpoch++;
   _logoHotImages.clear();
   _logoHotBytes = 0;
+  _logoHotLimit = kLogoDecodedCacheMaxBytes;
+}
+
+/// Retain a small working set across repeated pressure notifications. Clearing
+/// the currently manipulated image forces another decode/GPU upload immediately.
+/// Only drop ownership here: a painter may still be using an evicted image.
+void handleLogoMemoryPressure() {
+  _logoHotLimit = 8 << 20;
+  while (_logoHotBytes > _logoHotLimit && _logoHotImages.isNotEmpty) {
+    _logoHotBytes -= _logoHotImages.remove(_logoHotImages.keys.first)!;
+  }
 }
 
 void _touchLogoPreview(ui.Image image, int? maxSide) {
@@ -39,9 +51,8 @@ void _touchLogoPreview(ui.Image image, int? maxSide) {
   final previous = _logoHotImages.remove(image);
   if (previous != null) _logoHotBytes -= previous;
   final size = image.width * image.height * 4;
-  if (size > kLogoDecodedCacheMaxBytes) return;
-  while (_logoHotBytes + size > kLogoDecodedCacheMaxBytes &&
-      _logoHotImages.isNotEmpty) {
+  if (size > _logoHotLimit) return;
+  while (_logoHotBytes + size > _logoHotLimit && _logoHotImages.isNotEmpty) {
     _logoHotBytes -= _logoHotImages.remove(_logoHotImages.keys.first)!;
   }
   _logoHotImages[image] = size;

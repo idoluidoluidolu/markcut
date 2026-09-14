@@ -38,11 +38,15 @@ class MediaPrep {
   static ({bool interactive, int running, int waiting}) get debugScheduling =>
       (interactive: _interactive, running: _running, waiting: _waiting.length);
 
-  static Future<void> setInteractive(bool interactive) async {
+  static Future<void> setInteractive(
+    bool interactive, {
+    bool pauseDecoding = false,
+  }) async {
     _interactive = interactive;
     try {
       await _ch.invokeMethod<void>('setInteractive', {
         'interactive': interactive,
+        'pauseDecoding': interactive && pauseDecoding,
       });
     } catch (_) {
       // Older native builds do not support cooperative yielding.

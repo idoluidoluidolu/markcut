@@ -28,6 +28,27 @@ void main() {
   tearDown(trimLogoImageCache);
 
   test(
+    'pressure retains a bounded warm image across repeated warnings',
+    () async {
+      final source = await _png(1024, 1024);
+      for (var i = 0; i < 8; i++) {
+        await logoImageFor(Uint8List.fromList(source), maxSide: 1080);
+      }
+      final active = await logoImageFor(source, maxSide: 1080);
+      for (var i = 0; i < 20; i++) {
+        handleLogoMemoryPressure();
+        expect(logoDecodedCacheBytes, lessThanOrEqualTo(8 << 20));
+        expect(logoDecodedCacheEntries, 2);
+        expect(await logoImageFor(source, maxSide: 1080), same(active));
+      }
+      for (var i = 0; i < 4; i++) {
+        await logoImageFor(Uint8List.fromList(source), maxSide: 1080);
+        expect(logoDecodedCacheBytes, lessThanOrEqualTo(8 << 20));
+      }
+    },
+  );
+
+  test(
     'preview cache is bounded; trimming never disposes a displayed image',
     () async {
       final source = await _png(1024, 1024);
