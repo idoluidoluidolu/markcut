@@ -87,7 +87,7 @@ void main() {
         );
       }
       final j = jsonDecode(d.jsonReport()) as Map;
-      expect(j['schemaVersion'], 1);
+      expect(j['schemaVersion'], 2);
       expect(j['build'], '1.1+203');
       expect(j['events'], hasLength(100));
       expect(j['manualChecks']['color'], 'untested');
@@ -138,11 +138,82 @@ void main() {
       expect(d.events.single['timelineSeconds'], 3.5);
       await t.tap(find.text('複製 JSON'));
       await t.pumpAndSettle();
-      expect(jsonDecode(copied!)['schemaVersion'], 1);
+      expect(jsonDecode(copied!)['schemaVersion'], 2);
+      expect(refreshes, 2); // copy refreshes, not a stale panel snapshot
       expect(find.text('已複製 JSON，可貼回來分析。'), findsOneWidget);
       await t.tap(find.text('停止記錄'));
       await t.pump();
       expect(d.recording, isFalse);
     },
   );
+
+  test('slow spans preserve operation-start context, not completion state', () {
+    final d = QualityDiagnostics()..start(buildTag: 'test');
+    final context = <String, Object?>{'playing': false, 'selectedClip': 7};
+    d.contextProvider = () => context;
+    final span = d.begin(QualityMetric.overlayBake)!;
+    context['playing'] = true;
+    context['selectedClip'] = 9;
+    d.finish(span, success: false);
+    expect(d.events.single['context'], {'playing': false, 'selectedClip': 7});
+    expect(d.events.single['startedAtMs'], isA<num>());
+    expect(() => span.context['playing'] = true, throwsUnsupportedError);
+    d.contextProvider = () => throw StateError('unavailable');
+    d.mark('memoryPressure');
+    expect(d.events.last['context'], {'contextUnavailable': true});
+  });
+
+  test(
+    'native waits are actionable but never presented as visual failures',
+    () {
+      final d = QualityDiagnostics()..start(buildTag: 'test');
+      expect(d.priorities, isEmpty);
+      d.nativeSnapshot = {
+        'playerInstance': 'test',
+        'redrawSeekMaxMs': 700,
+        'redrawMainQueueMaxMs': 30,
+        'redrawCallbackFailures': 1,
+      };
+      expect(d.priorities, hasLength(3));
+      expect(d.priorities.join(), contains('非上屏延遲'));
+      for (var i = 0; i < 50; i++) {
+        d.increment('counter$i');
+      }
+      expect(d.counters, hasLength(32));
+      d.increment('counter0');
+      expect(d.counters['counter0'], 2);
+      d.start(buildTag: 'next');
+      expect(d.counters, isEmpty);
+      expect(d.priorities, isEmpty);
+    },
+  );
+
+  test('resource ring preserves round peak, rejects stale/stopped samples', () {
+    final d = QualityDiagnostics()..start(buildTag: 'test');
+    final session = d.session;
+    final initial = <String, Object?>{'memoryMB': 1500, 'playing': false};
+    d.recordResources(initial, session: session);
+    initial['memoryMB'] = 1;
+    for (var i = 0; i < 100; i++) {
+      d.recordResources({'memoryMB': 1000 + i}, session: session);
+    }
+    expect(d.resourceHistory, hasLength(90));
+    expect(d.peakMemorySample!['memoryMB'], 1500);
+    d.recordResources({'memoryMB': null}, session: session);
+    expect(d.resourceHistory.last['memoryMB'], isNull);
+    expect(d.peakMemorySample!['memoryMB'], 1500);
+    final report = d.report();
+    final json = jsonDecode(
+      report.split('\n').where((s) => s.startsWith('{')).last,
+    );
+    expect(json['resourceHistory'], hasLength(90));
+    expect(json['coverageLimits'], isNotEmpty);
+    d.stop();
+    d.recordResources({'memoryMB': 2000}, session: session);
+    expect(d.peakMemorySample!['memoryMB'], 1500);
+    d.start(buildTag: 'next');
+    d.recordResources({'memoryMB': 2000}, session: session);
+    expect(d.resourceHistory, isEmpty);
+    expect(d.peakMemorySample, isNull);
+  });
 }

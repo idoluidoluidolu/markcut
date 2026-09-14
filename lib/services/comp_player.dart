@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import '../models/timeline.dart';
 import 'diagnostics.dart';
 import 'hdr_photo_export.dart';
+import 'overlay_bitmap_transport.dart';
 import 'media_prep.dart';
 import 'scrub_frame_queue.dart' show kCompScrubToleranceCapMs;
 
@@ -935,24 +936,34 @@ class CompPlayer {
   }
 
   /// 換 HDR 預覽的即時疊加物清單（不重建合成）。
-  /// 只有 [wmLive] 的合成收得下；成功回 true。暫停中呼叫端要補一個
-  /// 精準 seek，逼合成器用新清單重畫當下這一格
+  /// 只有 [wmLive] 的合成收得下；成功回 true。原生統一排程暫停重畫。
+  /// [liveProvider] 讓補送時重新取得目前的位置與可見性，避免舊值回蓋。
   static Future<bool> setOverlays(
     List<Map<String, dynamic>> overlays, {
     List<Map<String, dynamic>>? live,
+    List<Map<String, dynamic>> Function()? liveProvider,
     bool noNudge = false,
   }) async {
     try {
-      return await _ch.invokeMethod<bool>('setOverlays', {
-            'overlays': overlays,
-            'live': ?live,
-            'noNudge': noNudge,
-          }) ??
-          false;
+      return await overlayTransport.send(
+        overlays,
+        live: live,
+        liveProvider: liveProvider,
+        noNudge: noNudge,
+        invoke: (method, args) async {
+          try {
+            return await _ch.invokeMethod<bool>(method, args);
+          } on MissingPluginException {
+            return null;
+          }
+        },
+      );
     } catch (_) {
       return false;
     }
   }
+
+  static final overlayTransport = OverlayBitmapTransport();
 
   /// 回「按下那一刻播放器在忙什麼」（診斷用；原生端拿不到就 null）
   Future<String?> play() async {

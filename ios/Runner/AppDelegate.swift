@@ -185,6 +185,7 @@ final class CIOverlaySpec {
 
   /// 解好的點陣（引擎上傳紋理、CI 合成共用同一份）
   let cgImg: CGImage
+  let bitmapId: String?
 
   /// 流水號：Metal 引擎的紋理快取用它當鍵。以前拿 cgImg 的位址
   ///（ObjectIdentifier）當鍵、又不持有那張圖——舊清單釋放後，新解
@@ -195,11 +196,17 @@ final class CIOverlaySpec {
   private static let uidLock = NSLock()
   private static var nextUid = 0
 
-  init?(_ ov: [String: Any], canvas: CGSize) {
-    CIOverlaySpec.uidLock.lock()
-    CIOverlaySpec.nextUid += 1
-    uid = CIOverlaySpec.nextUid
-    CIOverlaySpec.uidLock.unlock()
+  init?(_ ov: [String: Any], canvas: CGSize, reusing previous: CIOverlaySpec? = nil) {
+    bitmapId = ov["bitmapId"] as? String
+    let reusable = bitmapId != nil && bitmapId == previous?.bitmapId ? previous : nil
+    if let cached = reusable {
+      uid = cached.uid
+    } else {
+      CIOverlaySpec.uidLock.lock()
+      CIOverlaySpec.nextUid += 1
+      uid = CIOverlaySpec.nextUid
+      CIOverlaySpec.uidLock.unlock()
+    }
     id = ov["id"] as? String
     pad = ov["pad"] as? Double ?? 0
     bx = ov["bx"] as? Double ?? 0.5
@@ -209,7 +216,9 @@ final class CIOverlaySpec {
     // 兩種載體：png（匯出/停手全解析）或 raw RGBA（調樣式即時路——
     // PNG 編碼+解碼一來回 100~300ms，就是實機 157「樣式硬跟」的大頭）
     var decoded: CGImage?
-    if let data = (ov["png"] as? FlutterStandardTypedData)?.data,
+    if let cached = reusable {
+      decoded = cached.cgImg
+    } else if let data = (ov["png"] as? FlutterStandardTypedData)?.data,
       let ui = UIImage(data: data)
     {
       decoded = ui.cgImage
@@ -1218,7 +1227,58 @@ final class CIExportInstruction: NSObject, AVVideoCompositionInstructionProtocol
   }
 }
 
+/// Scalar-only, bounded telemetry. A completed CI buffer is NOT proof that
+/// AVPlayerLayer displayed it. Shared across preview compositors, never export.
+private final class PreviewPipelineProbe {
+  private let lock = NSLock()
+  private var count = 0, cancelled = 0, failed = 0, missing = 0
+  private var queueMax = 0.0, renderMax = 0.0
+  private var latest: [String: Any] = [:]
+  private var slow: [[String: Any]] = []
+
+  func rejected(cancelled: Bool) {
+    lock.lock(); defer { lock.unlock() }
+    if cancelled { self.cancelled += 1 } else { failed += 1 }
+  }
+
+  func completed(id: String, enqueued: Double, started: Double,
+                 time: Double, epoch: Int, currentEpoch: Int, missing: Bool) {
+    let now = CACurrentMediaTime()
+    let queueMs = (started - enqueued) * 1000
+    let renderMs = (now - started) * 1000
+    lock.lock(); defer { lock.unlock() }
+    count += 1
+    if missing { self.missing += 1 }
+    queueMax = max(queueMax, queueMs)
+    renderMax = max(renderMax, renderMs)
+    latest = ["compositorInstance": id, "uptimeMs": now * 1000,
+      "timelineSeconds": time.isFinite ? time : -1,
+      "queueMs": queueMs, "renderMs": renderMs,
+      "capturedEpoch": epoch, "currentEpochAtCompletion": currentEpoch,
+      "epochUnchanged": epoch == currentEpoch, "missingSourceFrame": missing]
+    if queueMs > 17 || renderMs > 17 || missing {
+      slow.append(latest)
+      if slow.count > 30 { slow.removeFirst() }
+    }
+  }
+
+  func snapshot() -> [String: Any] {
+    lock.lock(); defer { lock.unlock() }
+    return ["scope": "process preview only; CI buffer completion, NOT screen presentation",
+      "completed": count, "cancelled": cancelled, "failed": failed,
+      "missingSourceFrames": missing, "queueMaxMs": queueMax,
+      "renderMaxMs": renderMax, "latest": latest, "recentSlow": slow]
+  }
+}
+
 class CIExportCompositor: NSObject, AVVideoCompositing {
+  private static let qualityPipeline = PreviewPipelineProbe()
+  private let qualityInstance = UUID().uuidString
+  static func qualityPipelineSnapshot() -> [String: Any] {
+    var result = qualityPipeline.snapshot()
+    result["requestedLiveEpoch"] = liveEpoch
+    return result
+  }
   /// 不透明度 a：正確結果是預乘的 (r,g,b,α) 全部乘 a。
   ///
   /// 不用 CIColorMatrix 做這件事——它到底是在預乘值還是非預乘值上運算，
@@ -2146,6 +2206,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   }
 
   func startRequest(_ req: AVAsynchronousVideoCompositionRequest) {
+    let qualityEnqueued = CACurrentMediaTime()
     // 世代號在呼叫端（AVFoundation 的執行緒）就取：之後被取消的話，
     // block 開工時對不上就直接回報取消（見 cancelAllPending…）
     Self.slowLock.lock()
@@ -2156,10 +2217,12 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
     //（合成佇列沒指定 QoS，會排在 UI 之後；播放／匯出照舊）
     queue.async(qos: scrub ? .userInteractive : .unspecified) {
       autoreleasepool {
+        let qualityStarted = CACurrentMediaTime()
         Self.slowLock.lock()
         let stale = self.reqGen != gen
         Self.slowLock.unlock()
         if stale {
+          if self.liveComp { Self.qualityPipeline.rejected(cancelled: true) }
           req.finishCancelledRequest()
           return
         }
@@ -2169,6 +2232,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           let ins = req.videoCompositionInstruction as? CIExportInstruction,
           let dst = req.renderContext.newPixelBuffer()
         else {
+          if self.liveComp { Self.qualityPipeline.rejected(cancelled: false) }
           req.finish(
             with: NSError(domain: "markcut.ciexport", code: -1, userInfo: nil))
           return
@@ -2177,6 +2241,11 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         let t0 = req.compositionTime.seconds
         let captureEpoch = Self.liveEpoch
         func capturePreview(_ missing: Bool) {
+          if self.liveComp {
+            Self.qualityPipeline.completed(id: self.qualityInstance,
+              enqueued: qualityEnqueued, started: qualityStarted, time: t0,
+              epoch: captureEpoch, currentEpoch: Self.liveEpoch, missing: missing)
+          }
           guard self.liveComp, !missing, captureEpoch == Self.liveEpoch else { return }
           ins.scrubCapture?.insert(dst, time: t0, epoch: captureEpoch,
             layout: ins.scrubLayout, range: ins.timeRange, hdr: self.hdrOut)
@@ -3646,7 +3715,7 @@ final class MCInteractivePrepGate {
           p.rerenderPaused()
         }
         result(true)
-      case "setOverlays":
+      case "setOverlays", "setOverlayParts":
         // HDR 預覽的即時疊加物：換清單不重建合成（拖曳/改樣式用）。
         // 暫停中換完由原生換 vc 重畫當下這一格（不 seek，見下）
         let list =
@@ -3656,13 +3725,29 @@ final class MCInteractivePrepGate {
           result(false)
           return
         }
+        // Reuse only images already held by the current display list. No
+        // historical bitmap cache, and no partial list on a missing reference.
+        let oldParts = CIExportCompositor.currentPreviewOverlays()
+        var byBitmap: [String: CIOverlaySpec] = [:]
+        for part in oldParts {
+          if let key = part.bitmapId { byBitmap[key] = part }
+        }
+        var nextParts: [CIOverlaySpec] = []
+        for item in list {
+          let previous = (item["bitmapId"] as? String).flatMap { byBitmap[$0] }
+          guard let part = CIOverlaySpec(item, canvas: p.ciCanvas, reusing: previous) else {
+            result(false)
+            return
+          }
+          nextParts.append(part)
+        }
         // 差量跟新基準同一把鎖、同一瞬間換上——分兩發的話合成器
         // 可能在中間畫出「新圖×舊差量」的錯位格（實機 161 抖動）。
         // live 沒帶＝差量不動
         let lv = (call.arguments as? [String: Any])?["live"]
           as? [[String: Any]]
         CIExportCompositor.setPreviewOverlays(
-          list.compactMap { CIOverlaySpec($0, canvas: p.ciCanvas) },
+          nextParts,
           live: lv?.compactMap { (m: [String: Any]) -> CompLiveOv? in
             guard let oid = m["id"] as? String else { return nil }
             return CompLiveOv(
@@ -3761,6 +3846,7 @@ final class MCInteractivePrepGate {
         PlayerHosts.shared.use(nil)
         self.comp?.dispose()
         self.comp = nil
+        CIExportCompositor.setPreviewOverlays([], live: [])
         result(nil)
       default:
         result(FlutterMethodNotImplemented)
@@ -7483,6 +7569,14 @@ final class CompPlayer: NSObject, FlutterTexture {
   ///（換 vc、不 seek、不碰時間軸）；這裡留給真的要動時間的路
   ///（片段捏合 applyXform 預設仍催、grabFrame 自己挪格）
   private var nudgeFlip = false
+  private let qualityPlayerInstance = UUID().uuidString
+  private var qualityRedrawCount = 0
+  private var qualityRedrawBusy = 0
+  private var qualityRedrawUserSeek = 0
+  private var qualityRedrawFailed = 0
+  private var qualityRedrawSeekMaxMs = 0.0
+  private var qualityRedrawMainMaxMs = 0.0
+  private var qualityRedrawRecent: [[String: Any]] = []
   private var nudging = false
   private var nudgePending = false
   private var nudgeTimerArmed = false
@@ -7536,8 +7630,12 @@ final class CompPlayer: NSObject, FlutterTexture {
 
   func nudgeRedrawIfPaused() {
     guard player.rate == 0 else { return }
-    if seeking || seekTarget.isValid { return }
+    if seeking || seekTarget.isValid {
+      qualityRedrawUserSeek += 1
+      return
+    }
     if nudging {
+      qualityRedrawBusy += 1
       nudgePending = true
       return
     }
@@ -7563,6 +7661,8 @@ final class CompPlayer: NSObject, FlutterTexture {
     let cold = nowN - lastNudgeAt > 1.0
     lastNudgeAt = nowN
     Self.stNudgeFired += 1
+    qualityRedrawCount += 1
+    let redrawEpoch = CIExportCompositor.liveEpoch
     nudging = true
     nudgeFlip.toggle()
     if !nudgeAnchor.isValid {
@@ -7581,9 +7681,23 @@ final class CompPlayer: NSObject, FlutterTexture {
     var t = nudgeAnchor + eps
     if t < .zero { t = CMTime(value: 1, timescale: 600) }
     player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) {
-      [weak self] _ in
+      [weak self] finished in
+      let callbackAt = CACurrentMediaTime()
       DispatchQueue.main.async {
         guard let self = self else { return }
+        let mainAt = CACurrentMediaTime()
+        let seekMs = (callbackAt - nowN) * 1000
+        let mainMs = (mainAt - callbackAt) * 1000
+        self.qualityRedrawSeekMaxMs = max(self.qualityRedrawSeekMaxMs, seekMs)
+        self.qualityRedrawMainMaxMs = max(self.qualityRedrawMainMaxMs, mainMs)
+        if !finished { self.qualityRedrawFailed += 1 }
+        self.qualityRedrawRecent.append([
+          "uptimeMs": mainAt * 1000, "seekCallbackMs": seekMs,
+          "mainQueueMs": mainMs, "finished": finished, "cold": cold,
+          "requestedEpoch": redrawEpoch,
+          "currentEpoch": CIExportCompositor.liveEpoch,
+        ])
+        if self.qualityRedrawRecent.count > 30 { self.qualityRedrawRecent.removeFirst() }
         CompPlayer.noteNudgeLanded(
           ms: Int((CACurrentMediaTime() - nowN) * 1000), cold: cold)
         self.nudging = false
@@ -9229,6 +9343,8 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 這是「左右滑動順不順」的直接證據：平均 30ms 以下＝跟得上手指，
   /// 200ms 以上＝每滑一下都要等，關鍵幀太疏
   private(set) var seekMs: [Int] = []
+  private var qualitySeekRecent: [[String: Any]] = []
+  private var qualitySeekMaxMs = 0.0
   private(set) var seekCoalesced = 0
   /// 落地的 seek 總數（seekMs 只留前 400 發；拖曳偵探要的是不封頂的計數）
   private(set) var seekDone = 0
@@ -9344,6 +9460,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     let seekStart = CACurrentMediaTime()
     player.seek(to: t, toleranceBefore: tolerance, toleranceAfter: tolerance) {
       [weak self] ok in
+      let callbackAt = CACurrentMediaTime()
       // 完成回呼在 AVFoundation 的背景佇列跑，seeking/seekTarget
       // 卻是主執行緒（method channel）在寫——無鎖交錯下最後那發
       // 「停手精準 seek」可能被安靜吞掉、seeking 卡在 true 之後
@@ -9354,6 +9471,17 @@ final class CompPlayer: NSObject, FlutterTexture {
           self.cancelSeekRequests()
           return
         }
+        let mainAt = CACurrentMediaTime()
+        let elapsedMs = (mainAt - seekStart) * 1000
+        self.qualitySeekMaxMs = max(self.qualitySeekMaxMs, elapsedMs)
+        self.qualitySeekRecent.append([
+          "uptimeMs": mainAt * 1000, "targetSeconds": t.seconds,
+          "exact": exact, "toleranceMs": tolerance.seconds * 1000,
+          "seekCallbackMs": (callbackAt - seekStart) * 1000,
+          "mainQueueMs": (mainAt - callbackAt) * 1000,
+          "finished": ok, "newerTargetPending": self.seekTarget.isValid,
+        ])
+        if self.qualitySeekRecent.count > 30 { self.qualitySeekRecent.removeFirst() }
         if self.seekMs.count < 400 {
           self.seekMs.append(
             Int((CACurrentMediaTime() - seekStart) * 1000))
@@ -9524,7 +9652,37 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// Diagnostic snapshot: no image readback, probe export or pixel processing.
   /// Configuration is evidence about the route, NOT proof of display color.
   func qualitySnapshot() -> [String: Any] {
+    let overlays = CIExportCompositor.currentPreviewOverlays()
+    var imageIds = Set<Int>()
+    let bitmapBytes = overlays.reduce(0) { total, part in
+      guard imageIds.insert(part.uid).inserted else { return total }
+      return total + part.cgImg.bytesPerRow * part.cgImg.height
+    }
     var m: [String: Any] = [
+      "overlayDecodedBitmapBytes": bitmapBytes,
+      "playerInstance": qualityPlayerInstance,
+      "seekRecent": qualitySeekRecent,
+      "seekCallbackMaxMs": qualitySeekMaxMs,
+      "seekInFlight": seeking,
+      "seekTargetPending": seekTarget.isValid,
+      "seekMeasurement": "AV seek callback including main queue, NOT displayed frame",
+      "uptimeMs": CACurrentMediaTime() * 1000,
+      "systemVersion": UIDevice.current.systemVersion,
+      "deviceFamily": UIDevice.current.model,
+      "physicalMemoryMB": ProcessInfo.processInfo.physicalMemory / 1048576,
+      "redrawCount": qualityRedrawCount,
+      "redrawCoalescedWhileBusy": qualityRedrawBusy,
+      "redrawSkippedDuringUserSeek": qualityRedrawUserSeek,
+      "redrawCallbackFailures": qualityRedrawFailed,
+      "redrawSeekMaxMs": qualityRedrawSeekMaxMs,
+      "redrawMainQueueMaxMs": qualityRedrawMainMaxMs,
+      "redrawRecent": qualityRedrawRecent,
+      "redrawInFlight": nudging,
+      "redrawPending": nudgePending,
+      "redrawThrottleArmed": nudgeTimerArmed,
+      "redrawMeasurement": "seek callback and main queue, NOT screen presentation",
+      "previewPipelineProcessLifetime": CIExportCompositor.qualityPipelineSnapshot(),
+      "overlayDecodedBitmapCount": imageIds.count,
       "schemaVersion": 1, "nativeScrubEnabled": nativeScrubSupported,
       "layerBound": PlayerHosts.shared.bound,
       "liveCI": liveCIOn, "watermarkNative": wmLive,
@@ -9548,6 +9706,20 @@ final class CompPlayer: NSObject, FlutterTexture {
       "sourceVideoTracks": composition?.tracks(withMediaType: .video).count ?? 0,
       "scope": "current player counters; reset on rebuild; configuration is not pixel validation",
     ]
+    let position = player.currentTime().seconds
+    if position.isFinite { m["positionSeconds"] = position }
+    switch player.timeControlStatus {
+    case .paused: m["timeControlStatus"] = "paused"
+    case .waitingToPlayAtSpecifiedRate: m["timeControlStatus"] = "waiting"
+    case .playing: m["timeControlStatus"] = "playing"
+    @unknown default: m["timeControlStatus"] = "unknown"
+    }
+    m["waitingReason"] = player.reasonForWaitingToPlay?.rawValue
+    m["likelyToKeepUp"] = player.currentItem?.isPlaybackLikelyToKeepUp
+    if let log = player.currentItem?.accessLog()?.events.last {
+      m["accessLogDroppedVideoFrames"] = log.numberOfDroppedVideoFrames
+      m["accessLogStalls"] = log.numberOfStalls
+    }
     if let vc = player.currentItem?.videoComposition {
       m["outputPrimaries"] = vc.colorPrimaries
       m["outputTransfer"] = vc.colorTransferFunction

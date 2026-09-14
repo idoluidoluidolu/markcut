@@ -33,6 +33,7 @@ class _QualityDiagnosticsSheetState extends State<QualityDiagnosticsSheet> {
   Future<void> refresh() async {
     if (busy) return;
     setState(() => busy = true);
+    notice = null;
     try {
       await widget.refresh().timeout(const Duration(seconds: 3));
     } catch (_) {
@@ -42,6 +43,10 @@ class _QualityDiagnosticsSheetState extends State<QualityDiagnosticsSheet> {
   }
 
   Future<void> copy(bool json) async {
+    if (busy) return;
+    await refresh();
+    if (!mounted) return;
+    final incomplete = notice != null;
     try {
       await Clipboard.setData(
         ClipboardData(
@@ -51,7 +56,11 @@ class _QualityDiagnosticsSheetState extends State<QualityDiagnosticsSheet> {
         ),
       );
       if (mounted) {
-        setState(() => notice = '已複製${json ? ' JSON' : '報告'}，可貼回來分析。');
+        setState(
+          () => notice = incomplete
+              ? '已複製；部分環境資料未更新，報告不代表全部通過。'
+              : '已複製${json ? ' JSON' : '報告'}，可貼回來分析。',
+        );
       }
     } catch (_) {
       if (mounted) setState(() => notice = '複製失敗，請重試。');

@@ -24,13 +24,54 @@ Future<Uint8List> _png(int w, int h) async {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  setUp(trimLogoImageCache);
+  tearDown(trimLogoImageCache);
+
+  test(
+    'preview cache is bounded; trimming never disposes a displayed image',
+    () async {
+      final source = await _png(1024, 1024);
+      final retained = await logoImageFor(source, maxSide: kLogoPreviewMaxSide);
+      for (var i = 0; i < 10; i++) {
+        await logoImageFor(
+          Uint8List.fromList(source),
+          maxSide: kLogoPreviewMaxSide,
+        );
+        expect(
+          logoDecodedCacheBytes,
+          lessThanOrEqualTo(kLogoDecodedCacheMaxBytes),
+        );
+      }
+      expect(logoDecodedCacheEntries, 8);
+      trimLogoImageCache();
+      expect(logoDecodedCacheBytes, 0);
+      expect(logoDecodedCacheEntries, 0);
+      final rec = ui.PictureRecorder();
+      ui.Canvas(rec).drawImage(retained, ui.Offset.zero, ui.Paint());
+      final picture = rec.endRecording();
+      final rendered = await picture.toImage(8, 8);
+      picture.dispose();
+      rendered.dispose();
+      expect(
+        await logoImageFor(source, maxSide: kLogoPreviewMaxSide),
+        same(retained),
+      );
+    },
+  );
+
   test('大圖預覽限制解碼尺寸，匯出保留原始解析度', () async {
     final bytes = await _png(2400, 1200);
     final preview = await logoImageFor(bytes, maxSide: kLogoPreviewMaxSide);
     expect((preview.width, preview.height), (1080, 540));
+    final previewCacheBytes = logoDecodedCacheBytes;
     expect(logoImageCached(bytes), isNull);
     final original = await logoImageFor(bytes);
     expect((original.width, original.height), (2400, 1200));
+    expect(
+      logoDecodedCacheBytes,
+      previewCacheBytes,
+      reason: 'export originals must not accumulate in the hot preview cache',
+    );
     expect(
       identical(preview, await logoImageFor(bytes, maxSide: 1080)),
       isTrue,

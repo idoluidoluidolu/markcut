@@ -10,27 +10,59 @@ import 'quality_diagnostics.dart';
 
 // ===== 解碼好的 Logo 共用池 =====
 //
-// 鍵是 bytes 物件本身：同一顆 Logo 的 base64 有池子（LogoMark.bytes），
-// 所有副本拿到同一個 bytes 物件，Expando 跟著物件活、物件回收快取自然消。
-// 以前預覽圖層量長寬比整張解一次、_LogoUnit 畫再解一次、平鋪層再一次、
-// 匯出再一次——4MB 的大圖每個地方各來一輪（主層、每組額外層、全螢幕層、
-// 範本卡）。同一尺寸只解一次；預覽限長邊、匯出保留原圖。解好的圖
-// 不 dispose（跟著 bytes
-// 活，bytes 被回收時由引擎的終結器收）
+// Weak lookup preserves sharing while an image is in use. Undo history can
+// retain encoded bytes without pinning every decoded preview/export image.
+// A bounded hot pool keeps recent previews warm. Eviction drops only the pool
+// reference; never dispose a shared image still borrowed by an active painter.
 const kLogoPreviewMaxSide = 1080;
-final Expando<Map<int, ui.Image>> _logoImages = Expando('logoImages');
+const kLogoDecodedCacheMaxBytes = 32 << 20;
+final Expando<Map<int, WeakReference<ui.Image>>> _logoImages = Expando(
+  'logoImages',
+);
+final Map<ui.Image, int> _logoHotImages = {};
+int _logoHotBytes = 0;
+int _logoCacheEpoch = 0;
+int get logoDecodedCacheBytes => _logoHotBytes;
+int get logoDecodedCacheEntries => _logoHotImages.length;
+
+void trimLogoImageCache() {
+  _logoCacheEpoch++;
+  _logoHotImages.clear();
+  _logoHotBytes = 0;
+}
+
+void _touchLogoPreview(ui.Image image, int? maxSide) {
+  // Original-resolution export is not a hot preview.
+  if (maxSide == null) {
+    return;
+  }
+  final previous = _logoHotImages.remove(image);
+  if (previous != null) _logoHotBytes -= previous;
+  final size = image.width * image.height * 4;
+  if (size > kLogoDecodedCacheMaxBytes) return;
+  while (_logoHotBytes + size > kLogoDecodedCacheMaxBytes &&
+      _logoHotImages.isNotEmpty) {
+    _logoHotBytes -= _logoHotImages.remove(_logoHotImages.keys.first)!;
+  }
+  _logoHotImages[image] = size;
+  _logoHotBytes += size;
+}
+
 final Expando<Map<int, Future<ui.Image>>> _logoDecoding = Expando(
   'logoDecoding',
 );
 
 /// 已經解好的 Logo（還沒解好回 null，用 [logoImageFor] 去等）
-ui.Image? logoImageCached(Uint8List bytes, {int? maxSide}) =>
-    _logoImages[bytes]?[maxSide ?? 0];
+ui.Image? logoImageCached(Uint8List bytes, {int? maxSide}) {
+  final image = _logoImages[bytes]?[maxSide ?? 0]?.target;
+  if (image != null) _touchLogoPreview(image, maxSide);
+  return image;
+}
 
 /// 解碼一顆 Logo（同一份 bytes 只解一次；正在解的一起等同一個 Future）
 Future<ui.Image> logoImageFor(Uint8List bytes, {int? maxSide}) {
   final key = maxSide ?? 0;
-  final hit = _logoImages[bytes]?[key];
+  final hit = logoImageCached(bytes, maxSide: maxSide);
   if (hit != null) return Future.value(hit);
   final pending = _logoDecoding[bytes] ??= {};
   final inflight = pending[key];
@@ -41,6 +73,7 @@ Future<ui.Image> logoImageFor(Uint8List bytes, {int? maxSide}) {
 }
 
 Future<ui.Image> _decodeLogo(Uint8List bytes, int? maxSide) async {
+  final cacheEpoch = _logoCacheEpoch;
   final diagnostic = QualityDiagnostics.instance;
   final span = maxSide == null
       ? null
@@ -81,7 +114,8 @@ Future<ui.Image> _decodeLogo(Uint8List bytes, int? maxSide) async {
         img = (await codec.getNextFrame()).image;
       }
     }
-    (_logoImages[bytes] ??= {})[maxSide ?? 0] = img;
+    (_logoImages[bytes] ??= {})[maxSide ?? 0] = WeakReference(img);
+    if (cacheEpoch == _logoCacheEpoch) _touchLogoPreview(img, maxSide);
     succeeded = true;
     return img;
   } finally {

@@ -22,6 +22,26 @@ const kPhotoExportMinLong = 1440;
 /// 預覽和輸出走同一套繪製邏輯，所以「看到的就是輸出的」。
 /// 全部以 bytes 操作，手機與 Web 通用。
 class WatermarkRenderer {
+  /// A picture retains its source images until explicitly released.
+  static Future<ui.Image> _rasterize(ui.Picture picture, int w, int h) async {
+    try {
+      return await picture.toImage(w, h);
+    } finally {
+      picture.dispose();
+    }
+  }
+
+  static Future<ByteData?> _readImage(
+    ui.Image image,
+    ui.ImageByteFormat format,
+  ) async {
+    try {
+      return await image.toByteData(format: format);
+    } finally {
+      image.dispose();
+    }
+  }
+
   /// 產生一張透明背景、大小等於輸出解析度的浮水印圖層 PNG，
   /// 之後交給 FFmpeg overlay 疊到影片上（HDR 照片路也吃它）。
   /// [extraMarks]：照片模式的「更多浮水印」，一組一組疊在主浮水印之上
@@ -59,19 +79,19 @@ class WatermarkRenderer {
     }
     final picture = recorder.endRecording();
     final t1 = DateTime.now();
-    final image = await picture.toImage(
+    final image = await _rasterize(
+      picture,
       pad ? outW * 2 : outW,
       pad ? outH * 2 : outH,
     );
     final t2 = DateTime.now();
-    final data = await image.toByteData(format: fmt);
+    final data = await _readImage(image, fmt);
     final t3 = DateTime.now();
     WmDiag.noteBakeDetail(
       t1.difference(t0).inMilliseconds,
       t2.difference(t1).inMilliseconds,
       t3.difference(t2).inMilliseconds,
     );
-    image.dispose();
     return data!.buffer.asUint8List();
   }
 
@@ -107,6 +127,8 @@ class WatermarkRenderer {
     bool fullCanvas = false,
     bool clipToCanvas = true,
     double margin = 2,
+    int? rawByteLimit,
+    int? maxRasterPixels,
   }) async {
     if (outW < 2 || outH < 2) return null;
     final w = outW.toDouble(), h = outH.toDouble();
@@ -119,16 +141,26 @@ class WatermarkRenderer {
     // unbounded raster for a huge logo / long text. Scale its coordinate system
     // together with the image, keeping the returned fractional rect unchanged.
     final edge = math.max(box.width, box.height);
-    if (!clipToCanvas && edge > 2048 && math.min(outW, outH) > 2) {
-      final factor = 2048 / edge;
+    var factor = !clipToCanvas && edge > 2048 ? 2048 / edge : 1.0;
+    if (maxRasterPixels != null && maxRasterPixels >= 16) {
+      // Include the rounding margin in the allocation estimate, and budget
+      // the entire retained bitmap (including pixels outside the canvas).
+      final area = (box.width.ceil() + 2) * (box.height.ceil() + 2);
+      if (area > maxRasterPixels) {
+        factor = math.min(factor, math.sqrt(maxRasterPixels / area) * .98);
+      }
+    }
+    if (factor < 1 && math.min(outW, outH) > 2) {
       return renderPart(
         s,
         math.max(2, (outW * factor).floor()),
         math.max(2, (outH * factor).floor()),
         fmt,
         fullCanvas: fullCanvas,
-        clipToCanvas: false,
+        clipToCanvas: clipToCanvas,
         margin: 0,
+        rawByteLimit: rawByteLimit,
+        maxRasterPixels: maxRasterPixels,
       );
     }
     // 整數對齊；原生端（CIOverlaySpec）要求兩邊都大於 1px
@@ -145,6 +177,13 @@ class WatermarkRenderer {
         ? box.bottom.ceil().clamp(t + 2, outH)
         : math.max(t + 2, box.bottom.ceil());
     final bw = r - l, bh = b - t;
+    // Small settled parts avoid PNG too; large parts retain compression so
+    // eliminating encoding cannot balloon channel copies and native storage.
+    final format = rawByteLimit != null
+        ? (bw * bh * 4 <= rawByteLimit
+              ? ui.ImageByteFormat.rawRgba
+              : ui.ImageByteFormat.png)
+        : fmt;
     final t0 = DateTime.now();
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(
@@ -161,16 +200,19 @@ class WatermarkRenderer {
     final t1 = DateTime.now();
     final image = await QualityDiagnostics.instance.measure(
       QualityMetric.overlayRaster,
-      () => picture.toImage(bw, bh),
+      () => _rasterize(picture, bw, bh),
     );
-    picture.dispose();
     final t2 = DateTime.now();
     final data = await QualityDiagnostics.instance.measure(
       QualityMetric.overlayReadback,
-      () => image.toByteData(format: fmt),
+      () => QualityDiagnostics.instance.measure(
+        format == ui.ImageByteFormat.png
+            ? QualityMetric.overlayPngReadback
+            : QualityMetric.overlayRawReadback,
+        () => _readImage(image, format),
+      ),
     );
     final t3 = DateTime.now();
-    image.dispose();
     WmDiag.noteBakeDetail(
       t1.difference(t0).inMilliseconds,
       t2.difference(t1).inMilliseconds,
@@ -179,6 +221,7 @@ class WatermarkRenderer {
     if (data == null) return null;
     return OverlayPartImage(
       bytes: data.buffer.asUint8List(),
+      format: format,
       width: bw,
       height: bh,
       box: ui.Rect.fromLTWH(
@@ -290,8 +333,7 @@ class WatermarkRenderer {
       canvasAspect: canvasAspect,
       minLongSide: minLongSide,
     );
-    final data = await image.toByteData(format: ui.ImageByteFormat.png);
-    image.dispose();
+    final data = await _readImage(image, ui.ImageByteFormat.png);
     return data!.buffer.asUint8List();
   }
 
@@ -365,105 +407,106 @@ class WatermarkRenderer {
     var w = photo.width;
     var h = photo.height;
 
-    // 有調色時先把「調完色的照片」烙成一張圖——馬賽克要取樣的是調色後
-    // 的畫面（跟預覽/影片匯出一致）。
-    // 一定要在貼黑底之前：黑邊不是照片，不能被調色。以前先貼黑底再整張
-    // 套矩陣，亮度 +30% 就把黑邊抬成 (76,76,76)，預覽的黑邊卻永遠純黑
-    if (grade?.hasColor ?? false) {
-      final rec = ui.PictureRecorder();
-      ui.Canvas(rec).drawImage(
-        photo,
-        ui.Offset.zero,
-        ui.Paint()..colorFilter = grade!.filter,
-      );
-      final graded = await rec.endRecording().toImage(w, h);
-      // 這時 photo 還是傳進來的那張，不收
-      photo = graded;
-      owned = true;
-    }
-
-    // 成品不能比預覽糊：來源太小（App 自己做的 GIF 長邊只有 480、老照片、
-    // 截圖）就先把照片放大到長邊 [minLongSide]，浮水印文字、馬賽克、黑邊
-    // 全照放大後的畫布畫。預覽是「小圖拉到滿版＋向量畫字」，看起來銳利；
-    // 以前成品照來源尺寸出，同一行字在 400 寬的畫布上只剩幾十個像素，
-    // 相簿一放大就是一團糊（實測回報「匯出的照片畫質跟預覽差很多」）。
-    // 放大本身補不出照片的細節，但字、線條、色塊邊緣會跟預覽一樣清楚。
-    // 要在調色之後、貼黑底之前：調色矩陣不在乎尺寸，黑邊卻要照放大後
-    // 的照片算。來源夠大的照片這一段不會動到（長邊 ≥ minLongSide 照原
-    // 尺寸出，像素一顆都不縮）
-    if (minLongSide > 0 && math.max(w, h) < minLongSide) {
-      final sc = minLongSide / math.max(w, h);
-      final tw = math.max(1, (w * sc).round());
-      final th = math.max(1, (h * sc).round());
-      final rec = ui.PictureRecorder();
-      ui.Canvas(rec).drawImageRect(
-        photo,
-        ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
-        ui.Rect.fromLTWH(0, 0, tw.toDouble(), th.toDouble()),
-        ui.Paint()..filterQuality = ui.FilterQuality.high,
-      );
-      final pic = rec.endRecording();
-      final up = await pic.toImage(tw, th);
-      pic.dispose();
-      if (owned) photo.dispose();
-      photo = up;
-      owned = true;
-      w = tw;
-      h = th;
-    }
-
-    if (canvasAspect != null && (canvasAspect - w / h).abs() > 0.001) {
-      // 畫布尺寸：照片一邊貼滿、另一邊補黑，像素不縮水
-      final int cw, ch;
-      if (canvasAspect >= w / h) {
-        ch = h;
-        cw = (h * canvasAspect).round();
-      } else {
-        cw = w;
-        ch = (w / canvasAspect).round();
+    try {
+      // 有調色時先把「調完色的照片」烙成一張圖——馬賽克要取樣的是調色後
+      // 的畫面（跟預覽/影片匯出一致）。
+      // 一定要在貼黑底之前：黑邊不是照片，不能被調色。以前先貼黑底再整張
+      // 套矩陣，亮度 +30% 就把黑邊抬成 (76,76,76)，預覽的黑邊卻永遠純黑
+      if (grade?.hasColor ?? false) {
+        final rec = ui.PictureRecorder();
+        ui.Canvas(rec).drawImage(
+          photo,
+          ui.Offset.zero,
+          ui.Paint()..colorFilter = grade!.filter,
+        );
+        final graded = await _rasterize(rec.endRecording(), w, h);
+        // 這時 photo 還是傳進來的那張，不收
+        photo = graded;
+        owned = true;
       }
-      final rec = ui.PictureRecorder();
-      final c = ui.Canvas(rec);
-      c.drawRect(
-        ui.Rect.fromLTWH(0, 0, cw.toDouble(), ch.toDouble()),
-        ui.Paint()..color = const ui.Color(0xFF000000),
-      );
-      c.drawImageRect(
-        photo,
-        ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
-        ui.Rect.fromLTWH(
-          (cw - w) / 2,
-          (ch - h) / 2,
-          w.toDouble(),
-          h.toDouble(),
-        ),
-        ui.Paint()..filterQuality = ui.FilterQuality.high,
-      );
-      final canvased = await rec.endRecording().toImage(cw, ch);
-      if (owned) photo.dispose();
-      photo = canvased;
-      owned = true;
-      w = cw;
-      h = ch;
-    }
 
-    final recorder = ui.PictureRecorder();
-    final canvas = ui.Canvas(recorder);
-    canvas.drawImage(photo, ui.Offset.zero, ui.Paint());
-    // 馬賽克畫在浮水印下面（打碼的是照片，不是浮水印）
-    for (final m in mosaics ?? const <PhotoMosaic>[]) {
-      _drawMosaic(canvas, photo, m, w, h);
+      // 成品不能比預覽糊：來源太小（App 自己做的 GIF 長邊只有 480、老照片、
+      // 截圖）就先把照片放大到長邊 [minLongSide]，浮水印文字、馬賽克、黑邊
+      // 全照放大後的畫布畫。預覽是「小圖拉到滿版＋向量畫字」，看起來銳利；
+      // 以前成品照來源尺寸出，同一行字在 400 寬的畫布上只剩幾十個像素，
+      // 相簿一放大就是一團糊（實測回報「匯出的照片畫質跟預覽差很多」）。
+      // 放大本身補不出照片的細節，但字、線條、色塊邊緣會跟預覽一樣清楚。
+      // 要在調色之後、貼黑底之前：調色矩陣不在乎尺寸，黑邊卻要照放大後
+      // 的照片算。來源夠大的照片這一段不會動到（長邊 ≥ minLongSide 照原
+      // 尺寸出，像素一顆都不縮）
+      if (minLongSide > 0 && math.max(w, h) < minLongSide) {
+        final sc = minLongSide / math.max(w, h);
+        final tw = math.max(1, (w * sc).round());
+        final th = math.max(1, (h * sc).round());
+        final rec = ui.PictureRecorder();
+        ui.Canvas(rec).drawImageRect(
+          photo,
+          ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+          ui.Rect.fromLTWH(0, 0, tw.toDouble(), th.toDouble()),
+          ui.Paint()..filterQuality = ui.FilterQuality.high,
+        );
+        final pic = rec.endRecording();
+        final up = await _rasterize(pic, tw, th);
+        if (owned) photo.dispose();
+        photo = up;
+        owned = true;
+        w = tw;
+        h = th;
+      }
+
+      if (canvasAspect != null && (canvasAspect - w / h).abs() > 0.001) {
+        // 畫布尺寸：照片一邊貼滿、另一邊補黑，像素不縮水
+        final int cw, ch;
+        if (canvasAspect >= w / h) {
+          ch = h;
+          cw = (h * canvasAspect).round();
+        } else {
+          cw = w;
+          ch = (w / canvasAspect).round();
+        }
+        final rec = ui.PictureRecorder();
+        final c = ui.Canvas(rec);
+        c.drawRect(
+          ui.Rect.fromLTWH(0, 0, cw.toDouble(), ch.toDouble()),
+          ui.Paint()..color = const ui.Color(0xFF000000),
+        );
+        c.drawImageRect(
+          photo,
+          ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+          ui.Rect.fromLTWH(
+            (cw - w) / 2,
+            (ch - h) / 2,
+            w.toDouble(),
+            h.toDouble(),
+          ),
+          ui.Paint()..filterQuality = ui.FilterQuality.high,
+        );
+        final canvased = await _rasterize(rec.endRecording(), cw, ch);
+        if (owned) photo.dispose();
+        photo = canvased;
+        owned = true;
+        w = cw;
+        h = ch;
+      }
+
+      final recorder = ui.PictureRecorder();
+      final canvas = ui.Canvas(recorder);
+      canvas.drawImage(photo, ui.Offset.zero, ui.Paint());
+      // 馬賽克畫在浮水印下面（打碼的是照片，不是浮水印）
+      for (final m in mosaics ?? const <PhotoMosaic>[]) {
+        _drawMosaic(canvas, photo, m, w, h);
+      }
+      await drawMarks(canvas, s, w.toDouble(), h.toDouble());
+      // 更多浮水印：一組一組疊上去（照片模式可加好幾組）
+      for (final e in extraMarks ?? const <WatermarkSettings>[]) {
+        await drawMarks(canvas, e, w.toDouble(), h.toDouble());
+      }
+      final picture = recorder.endRecording();
+      final image = await _rasterize(picture, w, h);
+      return image;
+    } finally {
+      if (owned) photo.dispose();
     }
-    await drawMarks(canvas, s, w.toDouble(), h.toDouble());
-    // 更多浮水印：一組一組疊上去（照片模式可加好幾組）
-    for (final e in extraMarks ?? const <WatermarkSettings>[]) {
-      await drawMarks(canvas, e, w.toDouble(), h.toDouble());
-    }
-    final picture = recorder.endRecording();
-    final image = await picture.toImage(w, h);
-    picture.dispose();
-    if (owned) photo.dispose();
-    return image;
   }
 
   /// 在照片上畫一塊馬賽克。這裡只算「畫在哪」，
@@ -638,10 +681,12 @@ class OverlayPartImage {
     required this.box,
     required this.canvasW,
     required this.canvasH,
+    this.format = ui.ImageByteFormat.png,
   });
 
   /// 點陣（raw RGBA 預乘或 PNG，看烘的時候要的格式）
   final Uint8List bytes;
+  final ui.ImageByteFormat format;
   final int width;
   final int height;
 

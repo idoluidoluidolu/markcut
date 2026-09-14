@@ -1,5 +1,14 @@
 import 'dart:async';
 
+/// A small output image can still require a full-resolution HDR decode. Both
+/// covers and subsequent strip frames must yield through the gesture cooldown.
+bool canPrepareTimelineThumbnail({
+  required bool ready,
+  required bool importing,
+  required bool interacting,
+  required bool settling,
+}) => ready && !importing && !interacting && !settling;
+
 /// Give every clip a cover before spending time on a complete thumbnail strip.
 /// [items] is read again between requests so new clips and priority changes are
 /// picked up without launching a second decoder. Failed requests are attempted
@@ -30,8 +39,8 @@ Future<void> prepareTimelineThumbnails<T extends Object>({
   while (alive()) {
     final cover = nextCover();
     if (cover != null) {
-      // Scrubbing does not need to stop just to get a 200 px identification
-      // cover. Playback/export still own the decoder while they are running.
+      // Covers are small, but decoding them can compete with a cold HDR seek.
+      // The editor owns the interaction and cooldown policy for all frames.
       if (!canLoadCover()) {
         await pause();
         continue;

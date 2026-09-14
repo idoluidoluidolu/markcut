@@ -14,6 +14,8 @@ enum QualityMetric {
   overlayDraw('預覽部件繪圖', 30, 5, 'ms；含圖片解碼等待'),
   overlayRaster('預覽部件點陣化', 100, 5, 'ms；toImage'),
   overlayReadback('預覽部件回讀', 50, 5, 'ms；含 PNG 編碼或 RGBA 回讀'),
+  overlayPngReadback('預覽 PNG 回讀', 50, 5, 'ms；GPU 回讀及 PNG 編碼'),
+  overlayRawReadback('預覽 RGBA 回讀', 50, 5, 'ms；GPU 回讀，不含 PNG 編碼'),
   logoDecode('圖片預覽解碼', 300, 3, 'ms；快取未命中'),
   imageRead('圖片檔案讀取', 1000, 3, 'ms；選定後讀取，不含選圖與裁切操作'),
   importMetadata('影片資料接入', 1000, 3, 'ms／支；不含系統選檔與雲端下載'),
@@ -30,7 +32,9 @@ enum QualityMetric {
     uiRaster || overlayRaster => '檢查離屏圖尺寸、平鋪、模糊及 GPU 競爭。',
     geometryAck || visibilityAck || overlayAck => '檢查平台佇列、原生拒收及重畫調度；另驗實際上屏。',
     overlayBake || overlayDraw || logoDecode => '檢查快取命中、重複解碼、樣式變更是否誤重製圖片。',
-    overlayReadback => '檢查回讀範圍、PNG 編碼及位元組傳輸量。',
+    overlayReadback ||
+    overlayPngReadback ||
+    overlayRawReadback => '檢查回讀範圍、PNG 編碼及位元組傳輸量。',
     imageRead ||
     importMetadata ||
     importGate => '區分本機讀取、中繼資料、縮圖與背景代理；系統選檔不在此計時。',
@@ -105,10 +109,11 @@ class QualitySamples {
 }
 
 class QualitySpan {
-  QualitySpan(this.session, this.metric, this.startUs);
+  QualitySpan(this.session, this.metric, this.startUs, this.context);
   final int session;
   final QualityMetric metric;
   final int startUs;
+  final Map<String, Object?> context;
   bool finished = false;
 }
 
@@ -126,7 +131,54 @@ class QualityDiagnostics {
   final Map<QualityScenario, QualityObservation> observations = {};
   final List<Map<String, Object?>> events = [];
   final Map<String, Object?> environment = {};
+  final Map<String, int> counters = {};
+  void increment(String name) {
+    if (!recording || (counters.length >= 32 && !counters.containsKey(name))) {
+      return;
+    }
+    counters.update(name, (n) => n + 1, ifAbsent: () => 1);
+  }
+
   Map<String, Object?>? nativeSnapshot;
+  // Provider returns scalar operational state, never paths, text or pixels.
+  Map<String, Object?> Function()? contextProvider;
+  Map<String, Object?> _context() {
+    try {
+      return Map<String, Object?>.unmodifiable(contextProvider?.call() ?? {});
+    } catch (_) {
+      return const {'contextUnavailable': true};
+    }
+  }
+
+  final List<Map<String, Object?>> resourceHistory = [];
+  Map<String, Object?>? peakMemorySample;
+
+  /// Keep roughly 4.5 minutes at the editor's 3-second cadence, plus the
+  /// round's peak. These pools overlap and are NOT a process memory breakdown.
+  void recordResources(Map<String, Object?> values, {required int session}) {
+    if (!recording || session != _session) return;
+    final sample = Map<String, Object?>.unmodifiable({
+      ...values,
+      'atMs': _clock.elapsedMilliseconds,
+    });
+    resourceHistory.add(sample);
+    if (resourceHistory.length > 90) resourceHistory.removeAt(0);
+    final mb = sample['memoryMB'];
+    final peak = peakMemorySample?['memoryMB'];
+    if (mb is num && mb.isFinite && mb >= 0 && (peak is! num || mb > peak)) {
+      peakMemorySample = sample;
+    }
+  }
+
+  void mark(String operation) {
+    if (!recording) return;
+    events.add({
+      'atMs': _clock.elapsedMilliseconds,
+      'operation': operation,
+      'context': _context(),
+    });
+    if (events.length > 100) events.removeAt(0);
+  }
 
   void start({required String buildTag}) {
     _session++;
@@ -138,7 +190,10 @@ class QualityDiagnostics {
     samples.clear();
     observations.clear();
     events.clear();
+    resourceHistory.clear();
+    peakMemorySample = null;
     environment.clear();
+    counters.clear();
     nativeSnapshot = null;
     _pending.clear();
     recording = true;
@@ -151,7 +206,12 @@ class QualityDiagnostics {
 
   QualitySpan? begin(QualityMetric metric) {
     if (!recording) return null;
-    final span = QualitySpan(_session, metric, _clock.elapsedMicroseconds);
+    final span = QualitySpan(
+      _session,
+      metric,
+      _clock.elapsedMicroseconds,
+      _context(),
+    );
     if (_pending.length < 100) _pending.add(span);
     return span;
   }
@@ -165,10 +225,18 @@ class QualityDiagnostics {
       span.metric,
       (_clock.elapsedMicroseconds - span.startUs) / 1000,
       success: success,
+      context: span.context,
+      startUs: span.startUs,
     );
   }
 
-  void record(QualityMetric metric, double ms, {bool success = true}) {
+  void record(
+    QualityMetric metric,
+    double ms, {
+    bool success = true,
+    Map<String, Object?>? context,
+    int? startUs,
+  }) {
     if (!recording) return;
     if (!ms.isFinite || ms < 0) return;
     final s = samples[metric] ??= QualitySamples();
@@ -181,6 +249,8 @@ class QualityDiagnostics {
         'metric': metric.name,
         'durationMs': ms,
         'result': success ? 'slowPeak' : 'failed',
+        if (startUs != null) 'startedAtMs': startUs / 1000,
+        'context': context ?? _context(),
       });
       if (events.length > 100) events.removeAt(0);
     }
@@ -213,12 +283,20 @@ class QualityDiagnostics {
       'scenario': scenario.name,
       'result': result.name,
       if (position?.isFinite == true) 'timelineSeconds': position,
+      'context': _context(),
+      'timing': 'manual report time, not necessarily issue onset',
     });
     if (events.length > 100) events.removeAt(0);
   }
 
   List<String> get priorities => [
     if (nativeSnapshot?['itemFailed'] == true) '原生播放器回報失敗：優先檢查來源、解碼及組建。',
+    if ((nativeSnapshot?['redrawCallbackFailures'] as num? ?? 0) > 0)
+      '目前播放器曾有重畫 seek 未完成：對照 redrawRecent 的版本與取消時點；不直接判定閃屏。',
+    if ((nativeSnapshot?['redrawSeekMaxMs'] as num? ?? 0) > 150)
+      '目前播放器曾有重畫 seek 回呼等待超過 150ms：對照 CI 排隊、合成與播放器狀態；非上屏延遲。',
+    if ((nativeSnapshot?['redrawMainQueueMaxMs'] as num? ?? 0) > 17)
+      '目前播放器曾有重畫主佇列等待超過 17ms：對照同時的解碼、樣式傳輸與 UI 工作。',
     for (final scenario in QualityScenario.values)
       if (observations[scenario] == QualityObservation.problem)
         '${scenario.label}：使用者已標記問題，對照事件時間重現。',
@@ -227,7 +305,7 @@ class QualityDiagnostics {
         '${metric.label}：${metric.hint}',
   ];
   Map<String, Object?> toJson() => {
-    'schemaVersion': 1,
+    'schemaVersion': 2,
     'session': _session,
     'build': build,
     'startedAt': startedAt?.toIso8601String(),
@@ -235,7 +313,16 @@ class QualityDiagnostics {
     'elapsedMs': _clock.elapsedMilliseconds,
     'scope': '本機本輪取樣；無素材內容與路徑；非全裝置品質認證',
     'environment': environment,
+    'counters': counters,
     'nativeSnapshot': nativeSnapshot,
+    'resourceHistory': resourceHistory,
+    'peakMemorySample': peakMemorySample,
+    'coverageLimits': [
+      'Seek 回呼、合成完成與平台確認都不等於 AVPlayerLayer 實際上屏。',
+      '記憶體是離散取樣；已知快取可能重疊，不可加總當作完整占用。',
+      'HDR 色準、閃屏、匯出一致須同幀原片／成品／實機比較。',
+      '原生計數以 playerInstance／compositorInstance 區分；程序累計不等於本輪。',
+    ],
     'metrics': {
       for (final m in QualityMetric.values)
         m.name: (samples[m] ?? QualitySamples()).toJson(m),
@@ -250,6 +337,7 @@ class QualityDiagnostics {
       for (final p in _pending)
         {
           'metric': p.metric.name,
+          'context': p.context,
           'elapsedMs': (_clock.elapsedMicroseconds - p.startUs) / 1000,
           'status': '尚未完成，不納入成功延遲；停止記錄不等於操作失敗',
         },
@@ -257,7 +345,7 @@ class QualityDiagnostics {
   };
   String jsonReport() => const JsonEncoder.withIndent('  ').convert(toJson());
   String report() {
-    final b = StringBuffer('=== 品質驗收診斷 v1 ===\nBUILD：$build\n');
+    final b = StringBuffer('=== 品質驗收診斷 v2 ===\nBUILD：$build\n');
     b.writeln(
       '本輪：${startedAt?.toIso8601String() ?? '未開始'}／${recording ? '記錄中' : '已停止'}',
     );
@@ -292,13 +380,7 @@ class QualityDiagnostics {
     b.writeln('--- 優先處理 ---');
     b.writeln(priorities.isEmpty ? '尚無已記錄異常；不代表全部通過。' : priorities.join('\n'));
     b.writeln('--- 環境與問題時間點 ---');
-    b.writeln(
-      jsonEncode({
-        'environment': environment,
-        'native': nativeSnapshot,
-        'events': events,
-      }),
-    );
+    b.writeln(jsonEncode(toJson()));
     return b.toString();
   }
 }

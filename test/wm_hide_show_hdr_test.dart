@@ -424,15 +424,22 @@ void main() {
         0.01,
         reason: '打開後：原生在畫、Flutter 版 1%（不是 SDR 基準白蓋在 HDR 上）',
       );
-      // 停穩後補一版全解析（PNG），畫面上那份跟從沒隱藏過的同一種載體
-      await _waitUntil(
-        t,
-        () => overlaySets.last.every((m) => (m as Map).containsKey('png')),
-      );
+      // Small settled parts now avoid PNG encoding. Verify sampling resolution
+      // rather than treating PNG as proof of full quality (native canvas 1080).
+      bool fullResolution(Object? value) {
+        final m = value as Map;
+        final r = m['rect'] as List;
+        final w = m['rw'] as num?;
+        return m['raw'] is Uint8List &&
+            w != null &&
+            (w / (r[2] as num) - 1080).abs() < 1;
+      }
+
+      await _waitUntil(t, () => overlaySets.last.every(fullResolution));
       expect(
-        overlaySets.last.every((m) => (m as Map).containsKey('png')),
+        overlaySets.last.every(fullResolution),
         isTrue,
-        reason: '最後上屏的是全解析 PNG，跟組建當下烘進去的那份同一種',
+        reason: '停穩後必須補足原生畫布解析度，不能留在快路 540/720',
       );
       await _wait(t, 600);
       expect(builds.length, buildsBeforeShow, reason: '打開也不重組合成（不閃）');

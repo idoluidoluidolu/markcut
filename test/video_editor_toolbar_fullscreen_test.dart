@@ -21,6 +21,7 @@ import 'package:markcut/models/timeline.dart';
 import 'package:markcut/screens/video_editor_screen.dart';
 import 'package:markcut/screens/crop_screen.dart';
 import 'package:markcut/widgets/timeline_editor.dart';
+import 'package:markcut/services/quality_diagnostics.dart';
 
 /// 8×8 PNG（測試自己寫出來，不依賴任何外部檔案）
 const _pngB64 =
@@ -143,6 +144,61 @@ void main() {
     expect(t.getRect(crop).center.dx, greaterThan(1100 / 2));
   });
 
+  testWidgets('品質取樣不必開面板，離開編輯器停止且不保留頁面', (t) async {
+    t.view.physicalSize = const Size(1100, 2200);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    final messenger = t.binding.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('markcut/comp'),
+      (call) async => null,
+    );
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(
+        const MethodChannel('markcut/comp'),
+        null,
+      ),
+    );
+    var reads = 0;
+    messenger.setMockMethodCallHandler(const MethodChannel('markcut/diag'), (
+      call,
+    ) async {
+      if (call.method == 'memory') {
+        reads++;
+        return {'usedMb': 1200, 'freeMb': 2000};
+      }
+      if (call.method == 'deviceState') {
+        return {'thermal': '正常', 'lowPower': false};
+      }
+      return null;
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(
+        const MethodChannel('markcut/diag'),
+        null,
+      ),
+    );
+    t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await t.pumpWidget(MaterialApp(home: VideoEditorScreen(draft: _draft())));
+    await _settle(t);
+    await t.pump(const Duration(seconds: 3));
+    await _settle(t, 4);
+    final d = QualityDiagnostics.instance;
+    expect(reads, greaterThan(0));
+    expect(d.resourceHistory, isNotEmpty);
+    expect(d.resourceHistory.last['memoryMB'], 1200);
+    expect(d.peakMemorySample!['memoryMB'], 1200);
+    expect(d.environment['sourceSpecs'], isNotEmpty);
+    expect(d.jsonReport(), isNot(contains(_png)));
+    expect(d.contextProvider, isNotNull);
+    await t.pumpWidget(const SizedBox());
+    final before = d.resourceHistory.length;
+    await t.pump(const Duration(seconds: 6));
+    expect(d.recording, isFalse);
+    expect(d.contextProvider, isNull);
+    expect(d.resourceHistory, hasLength(before));
+  });
+
   testWidgets('圖片秒數只在選取含多張圖片的軌道時出現', (t) async {
     t.view.physicalSize = const Size(1100, 2200);
     t.view.devicePixelRatio = 1.0;
@@ -164,7 +220,7 @@ void main() {
     expect(find.text('圖片秒數'), findsNothing);
   });
 
-  testWidgets('C 預覽工具：窄螢幕圖文垂直、觸控至少 48px，比例與裁切可操作', (t) async {
+  testWidgets('還原小型預覽工具：圖文橫排，窄螢幕比例與裁切可操作', (t) async {
     t.view.physicalSize = const Size(320, 850);
     t.view.devicePixelRatio = 1;
     addTearDown(t.view.reset);
@@ -173,32 +229,46 @@ void main() {
     t.widget<TimelineEditor>(find.byType(TimelineEditor)).onSelect(1);
     await _settle(t, 6);
     Finder button(String name) => find.byKey(ValueKey('video-preview-$name'));
-    for (final (name, icon, label) in [
-      ('fullscreen', Icons.fullscreen, '預覽'),
-      ('ratio', Icons.aspect_ratio, '原始'),
-      ('crop', Icons.crop, '裁切'),
+    expect(
+      find.descendant(of: button('fullscreen'), matching: find.byType(Text)),
+      findsNothing,
+      reason: '放大恢復成小圖示，不再顯示下方文字',
+    );
+    expect(t.widget<Icon>(find.byIcon(Icons.fullscreen)).size, 15);
+    for (final (name, icon, label, size) in [
+      ('ratio', Icons.aspect_ratio, '原始', 12.0),
+      ('crop', Icons.crop, '裁切', 12.0),
     ]) {
       final tool = button(name);
       final rect = t.getRect(tool);
-      expect(rect.width, greaterThanOrEqualTo(48));
-      expect(rect.height, greaterThanOrEqualTo(48));
+      expect(rect.height, lessThan(40));
       expect(rect.right, lessThanOrEqualTo(320));
       final glyph = find.descendant(of: tool, matching: find.byIcon(icon));
       final text = find.descendant(of: tool, matching: find.text(label));
-      expect(t.getRect(glyph).bottom, lessThan(t.getRect(text).top));
+      expect(t.getRect(glyph).right, lessThan(t.getRect(text).left));
       expect(
-        t.getRect(glyph).center.dx,
-        closeTo(t.getRect(text).center.dx, .1),
+        t.getRect(glyph).center.dy,
+        closeTo(t.getRect(text).center.dy, .1),
       );
-      expect(t.widget<Icon>(glyph).size, 20);
-      final material = find
-          .ancestor(of: tool, matching: find.byType(Material))
-          .first;
-      expect(t.widget<Material>(material).color, Colors.transparent);
+      expect(t.widget<Icon>(glyph).size, size);
     }
     expect(
-      t.getRect(button('ratio')).right,
-      closeTo(t.getRect(button('crop')).right, .1),
+      t.getSize(button('crop')),
+      t.getSize(button('ratio')),
+      reason: '裁切與原始使用相同的緊湊尺寸',
+    );
+    final ratioBox = t.widget<Container>(
+      find.descendant(of: button('ratio'), matching: find.byType(Container)),
+    );
+    final ratioDecoration = ratioBox.decoration! as BoxDecoration;
+    final cropMaterial = t.widget<Material>(
+      find.ancestor(of: button('crop'), matching: find.byType(Material)).first,
+    );
+    expect(cropMaterial.color, ratioDecoration.color);
+    expect(cropMaterial.borderRadius, ratioDecoration.borderRadius);
+    expect(
+      t.widget<InkWell>(button('crop')).borderRadius,
+      t.widget<InkWell>(button('ratio')).borderRadius,
     );
     expect(
       t.getRect(button('ratio')).bottom,

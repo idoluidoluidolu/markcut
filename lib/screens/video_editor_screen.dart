@@ -29,6 +29,7 @@ import '../services/native_export.dart';
 import '../services/native_frames.dart';
 import '../services/overlay_sync.dart';
 import '../services/overlay_geometry.dart';
+import '../services/overlay_preview_policy.dart';
 import '../services/timeline_strip.dart';
 import '../services/playback_trace.dart';
 import '../services/composition_playback_clock.dart';
@@ -51,6 +52,7 @@ import '../services/video_controller.dart';
 import '../services/video_engine.dart' as engine;
 import '../services/video_processor.dart';
 import '../services/watermark_renderer.dart';
+import '../services/logo_mark_painter.dart';
 import '../services/text_mark_painter.dart';
 import '../services/work_files.dart';
 import '../services/thumbnail_preparation.dart';
@@ -191,7 +193,7 @@ class _HoldToDragListener extends ReorderableDragStartListener {
 }
 
 class _VideoEditorScreenState extends State<VideoEditorScreen>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   late final TabController _tabs;
   late final Ticker _ticker;
   late final WatermarkSettings _settings =
@@ -2123,7 +2125,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         : 0.0;
     b.write(
       'a${(_ratioAspect ?? compA).toStringAsFixed(3)}'
-      '~${compA.toStringAsFixed(3)};',
+      '~${compA.toStringAsFixed(3)}'
+      '|pixels:${_comp?.width ?? 0}x${_comp?.height ?? 0};',
     );
     if (!_wmHidden && _settings.hasAnyMark) {
       b.write(
@@ -2249,6 +2252,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 值是包圍盒烘圖（點陣＋它佔畫布的比例；整版＝[0,0,1,1]）
   final Map<String, OverlayPartImage> _ovPartCache = {};
   int _ovPartCacheBytes = 0;
+  int _ovCacheEpoch = 0;
+
+  @override
+  void didHaveMemoryPressure() {
+    QualityDiagnostics.instance.mark('memoryPressureBeforeCacheTrim');
+    _releaseOverlayCache();
+    trimLogoImageCache();
+  }
+
+  void _releaseOverlayCache() {
+    _ovCacheEpoch++;
+    _ovPartCache.clear();
+    _ovPartCacheBytes = 0;
+    _ovMapsCache = const [];
+    _ovMapsCacheSig = '';
+  }
 
   /// 快取總量上限：包圍盒烘圖一張幾十～幾百 KB，整版（平鋪／飄移／
   /// 跑馬燈）540p raw 一張 2MB。滿了只淘汰最久未用的部件，保留熱圖。
@@ -2265,12 +2284,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   ) async {
     final hit = _ovPartCache.remove(key);
     if (hit != null) {
+      QualityDiagnostics.instance.increment('overlayPartCacheHit');
       _ovPartCache[key] = hit; // recently used parts survive unrelated edits
       return hit;
     }
     final going = _ovPartInflight[key];
-    if (going != null) return going;
+    if (going != null) {
+      QualityDiagnostics.instance.increment('overlayPartInflightReuse');
+      return going;
+    }
+    QualityDiagnostics.instance.increment('overlayPartCacheMiss');
     final task = draw();
+    final epoch = _ovCacheEpoch;
     _ovPartInflight[key] = task;
     OverlayPartImage? part;
     try {
@@ -2279,10 +2304,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (identical(_ovPartInflight[key], task)) _ovPartInflight.remove(key);
     }
     if (part == null) return null; // 整個在畫布外：沒東西可畫，不進快取
-    if (!mounted || part.bytes.length > _ovPartCacheCap) return part;
+    if (!mounted ||
+        epoch != _ovCacheEpoch ||
+        part.bytes.length > _ovPartCacheCap) {
+      return part;
+    }
     while (_ovPartCacheBytes + part.bytes.length > _ovPartCacheCap &&
         _ovPartCache.isNotEmpty) {
       final oldest = _ovPartCache.remove(_ovPartCache.keys.first)!;
+      QualityDiagnostics.instance.increment('overlayPartCacheEviction');
       _ovPartCacheBytes -= oldest.bytes.length;
     }
     _ovPartCache[key] = part;
@@ -2339,9 +2369,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (key == _ovMapsCacheSig && _ovMapsCache.isNotEmpty) {
       return _ovMapsCache;
     }
+    final epoch = _ovCacheEpoch;
     final maps = await _ovMapsBuild(fast: fast);
     // 過程中內容又變了就不進快取（下一輪重做）
-    if (_ovContentSig() == sig) {
+    if (mounted && epoch == _ovCacheEpoch && _ovContentSig() == sig) {
       _ovMapsCacheSig = key;
       _ovMapsCache = maps;
     }
@@ -2353,8 +2384,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final rasterSig = _ovContentSig(rasterOnly: true);
     final resolutionSig = _ovContentSig(rasterOnly: true, includeScale: true);
     // 版面是照比例算的（sizeFrac × 短邊），渲染解析度不影響位置大小。
-    // 全解析短邊 1080（跟預覽合成一樣）；快路（調樣式拖動中）文字 720、
-    // Logo 540——文字便宜、540→1080 放大會軟；停穩後自動補全解析
+    // 停穩後依原生畫布取樣，避免 720 合成仍回讀 1080 的 2.25 倍像素。
+    // 拖动中的文字至多 720、Logo 至多 540，匯出解析度另由匯出路決定。
     final ca =
         _ratioAspect ??
         ((_comp != null && _comp!.height > 0)
@@ -2384,8 +2415,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
     /// 一個部件：只烘包圍盒（見 WatermarkRenderer.renderPart），點陣連同
     /// 它在合成畫框的 rect 一起送。[text]＝純文字部件（快路 720）；
-    /// [full]＝整版烘（平鋪、飄移、跑馬燈）；[pngOnly]＝一律 PNG（文字
-    /// 素材不走快路 raw，跟以前一樣一版只烘一次）；[geom]＝
+    /// [full]＝整版烘（平鋪、飄移、跑馬燈）；[geom]＝
     /// [x, y, size, rotation] 基準（平鋪的部件沒有「位置」可言＝null）
     void addPart({
       required String id,
@@ -2393,15 +2423,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       required Map<String, dynamic> shared,
       required bool text,
       required bool full,
-      bool pngOnly = false,
       List<double>? geom,
       double opacity = 1,
     }) {
       jobs.add(() async {
         try {
-          final raw = fast && !pngOnly;
-          var short = raw ? (text ? 720 : 540) : 1080;
-          if (raw && text && !full) {
+          var short = overlayPreviewShortSide(
+            (_comp?.width ?? 0) * rect[2],
+            (_comp?.height ?? 0) * rect[3],
+            fast: fast,
+            text: text,
+          );
+          if (fast && text && !full) {
             // 快路預算：包圍盒在 720 超過預算就退回 540
             final (w7, h7) = dims(720);
             final b = await WatermarkRenderer.partBounds(
@@ -2409,18 +2442,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               w7.toDouble(),
               h7.toDouble(),
             );
-            final vis = b?.intersect(
-              ui.Rect.fromLTWH(0, 0, w7.toDouble(), h7.toDouble()),
-            );
             if (b == null ||
-                (!vis!.isEmpty &&
-                    vis.width * vis.height * 4 > _ovFastRawBudget)) {
-              short = 540;
+                (!b.isEmpty && b.width * b.height * 4 > _ovFastRawBudget)) {
+              short = math.min(short, 540);
             }
           }
           final (ow, oh) = dims(short);
           final key =
-              '$id|$ow|$oh|${raw ? 'r' : 'p'}|${full ? 'F' : 'B'}'
+              '$id|$ow|$oh|${fast ? 'fast' : 'settled'}|${full ? 'F' : 'B'}'
               '|${_wmSigJson(ps)}';
           final part = await _ovPartBaked(
             key,
@@ -2428,14 +2457,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               ps,
               ow,
               oh,
-              raw ? ui.ImageByteFormat.rawRgba : ui.ImageByteFormat.png,
+              ui.ImageByteFormat.png,
               fullCanvas: full,
               clipToCanvas: full,
+              rawByteLimit: 1 << 20,
+              maxRasterPixels: fast ? 512 * 1024 : 2 * 1024 * 1024,
             ),
           );
           if (part == null) return null; // 整個在畫布外：沒東西可畫
           return {
-            if (raw) ...{
+            if (part.format == ui.ImageByteFormat.rawRgba) ...{
               'raw': part.bytes,
               'rw': part.width,
               'rh': part.height,
@@ -2648,11 +2679,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     bool fast,
   ) async {
     final t1 = DateTime.now();
-    final live = _overlayGeometryItems();
+    var live = _overlayGeometryItems();
     final qualityAck = QualityDiagnostics.instance.begin(
       QualityMetric.overlayAck,
     );
-    final accepted = await CompPlayer.setOverlays(maps, live: live);
+    final accepted = await CompPlayer.setOverlays(
+      maps,
+      liveProvider: () => live = _overlayGeometryItems(),
+    );
     QualityDiagnostics.instance.finish(qualityAck, success: accepted);
     if (!accepted) {
       WmDiag.rejects++;
@@ -3167,8 +3201,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     QualityDiagnostics.instance.start(buildTag: appVersionTag);
     _tabs = TabController(length: 3, vsync: this);
+    QualityDiagnostics.instance.contextProvider = _qualityContext;
+    _qualityTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      if (mounted &&
+          QualityDiagnostics.instance.recording &&
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+        unawaited(_refreshQualityDiagnostics());
+      }
+    });
     // 測試鉤子：整合測試用它組多軌疊放（見 VideoEditorScreen 上的說明）
     _debugTimelineHook = VideoEditorScreen.debugTimeline = (fn) {
       fn(_tl);
@@ -4789,6 +4832,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _scrubProbeBegin() {
     if (_scrubbing) return; // 手勢進行中（呼叫端在翻 _scrubbing 之前叫）
+    QualityDiagnostics.instance.mark('timelineScrubBegin');
     _scrubT0 = DateTime.now();
     final comp = _comp;
     _scrubProbeComp = comp;
@@ -5051,12 +5095,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 拿不到才退 FFmpeg。拖曳預覽早就走原生了，縮圖帶不跟上的話
   /// 就會出現「預覽顏色對、時間軸顏色錯」的分裂。
   ///
-  /// 同一個檔在抽就共用那一趟；同時最多兩支在抽（原生那條工作緒本來
+  /// 同一個檔在抽就共用那一趟；同時最多一支在抽（原生那條工作緒本來
   /// 就是序列的，這裡擋的是 Dart 端一口氣排進去的十支、每支十格）
   final Map<String, Future<List<Uint8List>>> _thumbJobs = {};
   int _thumbActive = 0;
   final List<Completer<void>> _thumbWaiters = [];
-  static const _thumbMaxActive = 2;
+  static const _thumbMaxActive = 1;
 
   Future<List<Uint8List>> _thumbStrip(String path, double dur) {
     // 有 HLG 代理的素材從代理抽（1080p、密關鍵幀，一格幾十毫秒）：
@@ -5080,11 +5124,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   Future<List<Uint8List>> _thumbStripRun(String path, double dur) async {
-    while (_thumbActive >= _thumbMaxActive) {
+    while (mounted && _thumbActive >= _thumbMaxActive) {
       final c = Completer<void>();
       _thumbWaiters.add(c);
       await c.future;
     }
+    if (!mounted) return [];
     _thumbActive++;
     Diag.peak('同時抽縮圖帶', _thumbActive);
     try {
@@ -5226,7 +5271,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         duration: s.duration,
         count: 10,
         deadline: deadline,
-        alive: () => mounted,
+        alive: () => mounted && (gate || _canPrepareTimelineThumbnail),
         fetch: (t, tolMs) =>
             nativeFrameAtDetailed(path, t, maxH: 200, tolMs: tolMs),
       );
@@ -5300,11 +5345,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 手指離開時間軸（進場、中繼資料接軌也算）就算閒。跟
   /// _waitForThumbnailStrip 的差別：不等轉檔
   Future<void> _waitForFingerIdle() async {
-    while (mounted &&
-        (!_ready || _videoMetadataImporting || _previewInteracting)) {
+    while (mounted && !_canPrepareTimelineThumbnail) {
       await Future<void>.delayed(const Duration(milliseconds: 200));
     }
   }
+
+  bool get _canPrepareTimelineThumbnail => canPrepareTimelineThumbnail(
+    ready: _ready,
+    importing: _videoMetadataImporting,
+    interacting: _previewInteracting,
+    settling: _prepActivity.interactive,
+  );
 
   /// 精抽一條縮圖帶前的等待：只等手指離開，不等轉檔。以前等「全部閒置」
   ///（_waitForThumbnailStrip），而六支 4K 的閒置要等 48 秒那支轉完、手指
@@ -5335,7 +5386,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       await prepareTimelineThumbnails<MediaSource>(
         items: _thumbnailSourcesByPriority,
         alive: () => mounted,
-        canLoadCover: () => !_playing && !_exporting,
+        canLoadCover: () => _canPrepareTimelineThumbnail,
         needsCover: (source) => _thumbnailCount(source) == 0,
         // 近似帶（_thumbsCoarse）也算「還沒有完整縮圖帶」：進場閘的粗帶
         //（值 null）一定要精抽；原檔貼關鍵幀抽的（值＝當時的路徑）等縮圖
@@ -9549,70 +9600,187 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 播放診斷：長按標題打開。記錄按下播放之後每一段花了多久、
   /// 交界有沒有命中預熱、背景抽幀跟卡頓的時間點對不對得上
+  Timer? _qualityTimer;
+  Future<void>? _qualityRefreshPending;
+
+  Map<String, Object?> _qualityContext() => {
+    'timelineSeconds': _position,
+    'playing': _playing,
+    'watermarkGesture': _wmGestureOn,
+    'clipSlider': _clipSliderActive,
+    'previewPointers': _pvPts.length,
+    'scrubbing': _scrubBusy,
+    'exporting': _exporting,
+    'selectedClip': _sel,
+    'tab': _tabs.index,
+    'hiddenTracks': _hiddenTracks.length,
+    'watermarkHidden': _wmHidden,
+    'backgroundPreparations': _prepping.length,
+    'backgroundHDRPreparations': _hdrPrepping.length,
+    'thumbnailJobs': _thumbActive,
+    'thumbnailQueuedJobs': _thumbWaiters.length,
+    'preparationInteractionCooldown': _prepActivity.interactive,
+    'overlayPartCacheBytes': _ovPartCacheBytes,
+    'overlayPartsInFlight': _ovPartInflight.length,
+    'logoDecodedCacheBytes': logoDecodedCacheBytes,
+  };
+
+  Future<void> _refreshQualityDiagnostics() {
+    return _qualityRefreshPending ??= _readQualityDiagnostics().whenComplete(
+      () {
+        _qualityRefreshPending = null;
+      },
+    );
+  }
+
+  Future<void> _readQualityDiagnostics() async {
+    if (!mounted) return;
+    final diagnostic = QualityDiagnostics.instance;
+    final session = diagnostic.session;
+    final sampleContext = _qualityContext();
+    final sampleStartedAt = DateTime.now().toUtc();
+    final sampledComp = _comp;
+    diagnostic.environment.addAll({
+      'displayHz': View.of(context).display.refreshRate,
+      'buildMode': kReleaseMode
+          ? 'release'
+          : (kProfileMode ? 'profile' : 'debug'),
+      'platform': Theme.of(context).platform.name,
+      'videoSources': _tl.sources.where((s) => s.isVideo).length,
+      'imageSources': _tl.sources.where((s) => s.kind == ClipKind.image).length,
+      // Watermark photos are not timeline image sources. Report them too,
+      // otherwise an image-heavy watermark project misleadingly says zero.
+      'watermarkImageParts':
+          [
+            _settings,
+            for (final source in _tl.sources)
+              if (source.wmStyle != null) source.wmStyle!,
+          ].fold<int>(
+            0,
+            (n, s) =>
+                n + s.logos.where((l) => l.enabled && l.b64 != null).length,
+          ),
+      'overlayPartCacheBytes': _ovPartCacheBytes,
+      'overlayPartCacheEntries': _ovPartCache.length,
+      'overlayPartsInFlight': _ovPartInflight.length,
+      'logoDecodedCacheBytes': logoDecodedCacheBytes,
+      'logoDecodedCacheEntries': logoDecodedCacheEntries,
+      'overlayLastTransmittedBytes': CompPlayer.overlayTransport.lastSentBytes,
+      'overlayLastReusedParts': CompPlayer.overlayTransport.lastReusedParts,
+      'overlayFullRetryCount': CompPlayer.overlayTransport.fullRetries,
+      'previewSourcesWithoutProxyAtBuild': _compRawSources.length,
+      'clips': _tl.clips.length,
+      'sourceSpecs': [
+        for (final source in _tl.sources.take(100))
+          {
+            'kind': source.kind.name,
+            'width': source.w,
+            'height': source.h,
+            'isGif': source.isGif,
+            'isSticker': source.isSticker,
+            'sdrProxyAvailable': source.workPath != null,
+            'hdrProxyAvailable': source.workHdrPath != null,
+          },
+      ],
+      'clipLayout': [
+        for (final clip in _tl.clips.take(200))
+          {
+            'id': clip.id,
+            'sourceIndex': clip.sourceIndex,
+            'track': clip.track,
+            'offset': clip.offset,
+            'trimStart': clip.trimStart,
+            'trimEnd': clip.trimEnd,
+            'speed': clip.speed,
+            'reverse': clip.reverse,
+            'scale': clip.scale,
+            'opacity': clip.opacity,
+            'cropped': clip.cropped,
+          },
+      ],
+      'projectSummaryTruncated':
+          _tl.sources.length > 100 || _tl.clips.length > 200,
+      'durationSeconds': _tl.duration,
+      'hdrRequested': _exportHdr,
+      'systemPlayerLayer': Diag.playerLayer.value,
+      'hdrProxyPreview': Diag.hdrProxyPreview.value,
+      'hiddenTrackCount': _hiddenTracks.length,
+      'backgroundPreparations': _prepping.length,
+      'backgroundHDRPreparations': _hdrPrepping.length,
+      'nativeDisplayFPS': 'unavailable; do not infer from Flutter or CI counts',
+      'visualColorValidation':
+          'requires same-frame source/export/device comparison',
+    });
+    // Parallel, bounded and single-flight. Never extract frames or trigger
+    // HDR probes while sampling: the diagnostics must not create the stall.
+    final results = await Future.wait<Object?>([
+      CompPlayer.qualitySnapshot(),
+      Diag.memoryMb().timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => null,
+      ),
+      Diag.readDeviceState()
+          .then<Object?>((_) => null)
+          .timeout(const Duration(seconds: 2), onTimeout: () => null),
+    ]);
+    if (!mounted || diagnostic.session != session) return;
+    final native = results[0];
+    diagnostic.nativeSnapshot = identical(sampledComp, _comp) && native is Map
+        ? Map<String, Object?>.from(native)
+        : null;
+    diagnostic.environment.addAll({
+      'thermalLastKnown': Diag.thermal,
+      'lowPowerLastKnown': Diag.deviceStateReadAt == null
+          ? null
+          : Diag.lowPower,
+      'deviceStateReadAt': Diag.deviceStateReadAt?.toIso8601String(),
+      'memoryMB': results[1],
+      'snapshotAt': DateTime.now().toUtc().toIso8601String(),
+      'snapshotRequestedAt': sampleStartedAt.toIso8601String(),
+      'memoryAccounting':
+          'Known pools overlap; not an exhaustive memory breakdown',
+    });
+    diagnostic.recordResources({
+      ...sampleContext,
+      'sampleRequestedAt': sampleStartedAt.toIso8601String(),
+      'memoryMB': results[1],
+      'availableMemoryMB': results[1] == null ? null : Diag.lastFreeMb,
+      'thermalLastKnown': Diag.thermal,
+      'lowPowerLastKnown': Diag.deviceStateReadAt == null
+          ? null
+          : Diag.lowPower,
+      'scrubEncodedBytes': _scrubBytes,
+      'thumbnailEncodedBytes': _thumbs.values.fold<int>(
+        0,
+        (total, frames) => total + frames.fold<int>(0, (n, b) => n + b.length),
+      ),
+      'fallbackPlayers': _ctrls.length,
+      'previewPipelineLatest':
+          (diagnostic.nativeSnapshot?['previewPipelineProcessLifetime']
+              as Map?)?['latest'],
+      'overlayLastTransmittedBytes': CompPlayer.overlayTransport.lastSentBytes,
+      'overlayLastReusedParts': CompPlayer.overlayTransport.lastReusedParts,
+      for (final key in const [
+        'playerInstance',
+        'positionSeconds',
+        'timeControlStatus',
+        'waitingReason',
+        'bufferEmpty',
+        'likelyToKeepUp',
+        'overlayDecodedBitmapBytes',
+        'redrawInFlight',
+        'redrawPending',
+        'redrawCount',
+        'redrawSeekMaxMs',
+        'redrawMainQueueMaxMs',
+      ])
+        key: diagnostic.nativeSnapshot?[key],
+    }, session: session);
+  }
+
   Future<void> _openQualityDiagnostics() async {
     final diagnostic = QualityDiagnostics.instance;
     diagnostic.panelVisible = true;
-    Future<void> refresh() async {
-      final session = diagnostic.session;
-      diagnostic.environment.addAll({
-        'displayHz': View.of(context).display.refreshRate,
-        'buildMode': kReleaseMode
-            ? 'release'
-            : (kProfileMode ? 'profile' : 'debug'),
-        'platform': Theme.of(context).platform.name,
-        'videoSources': _tl.sources.where((s) => s.isVideo).length,
-        'imageSources': _tl.sources
-            .where((s) => s.kind == ClipKind.image)
-            .length,
-        // Watermark photos are not timeline image sources. Report them too,
-        // otherwise an image-heavy watermark project misleadingly says zero.
-        'watermarkImageParts':
-            [
-              _settings,
-              for (final source in _tl.sources)
-                if (source.wmStyle != null) source.wmStyle!,
-            ].fold<int>(
-              0,
-              (n, s) =>
-                  n + s.logos.where((l) => l.enabled && l.b64 != null).length,
-            ),
-        'overlayPartCacheBytes': _ovPartCacheBytes,
-        'overlayPartCacheEntries': _ovPartCache.length,
-        'overlayPartsInFlight': _ovPartInflight.length,
-        'previewSourcesWithoutProxyAtBuild': _compRawSources.length,
-        'clips': _tl.clips.length,
-        'durationSeconds': _tl.duration,
-        'hdrRequested': _exportHdr,
-        'systemPlayerLayer': Diag.playerLayer.value,
-        'hdrProxyPreview': Diag.hdrProxyPreview.value,
-        'hiddenTrackCount': _hiddenTracks.length,
-        'backgroundPreparations': _prepping.length,
-        'backgroundHDRPreparations': _hdrPrepping.length,
-        'nativeDisplayFPS':
-            'unavailable; do not infer from Flutter or CI counts',
-        'visualColorValidation':
-            'requires same-frame source/export/device comparison',
-      });
-      final native = await CompPlayer.qualitySnapshot();
-      if (diagnostic.session != session) return;
-      diagnostic.nativeSnapshot = native == null
-          ? null
-          : Map<String, Object?>.from(native);
-      final deviceResults = await Future.wait<Object?>([
-        Diag.readDeviceState().then<Object?>((_) => null),
-        Diag.memoryMb(),
-      ]).timeout(const Duration(seconds: 2));
-      if (diagnostic.session != session) return;
-      diagnostic.environment.addAll({
-        'thermalLastKnown': Diag.thermal,
-        'lowPowerLastKnown': Diag.deviceStateReadAt == null
-            ? null
-            : Diag.lowPower,
-        'deviceStateReadAt': Diag.deviceStateReadAt?.toIso8601String(),
-        'memoryMB': deviceResults[1],
-        'snapshotAt': DateTime.now().toUtc().toIso8601String(),
-      });
-    }
 
     try {
       await showModalBottomSheet<void>(
@@ -9621,7 +9789,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         builder: (_) => QualityDiagnosticsSheet(
           diagnostics: diagnostic,
           buildTag: appVersionTag,
-          refresh: refresh,
+          refresh: _refreshQualityDiagnostics,
           position: () => _position,
         ),
       );
@@ -9835,13 +10003,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     Expanded(
                       child: primaryAction(
                         label: '出報告',
-                        onPressed: () {
-                          Clipboard.setData(
+                        onPressed: () async {
+                          await _refreshQualityDiagnostics();
+                          if (!mounted) return;
+                          await Clipboard.setData(
                             ClipboardData(
-                              text: '${tr.report()}\n${Diag.report()}',
+                              text:
+                                  '${tr.report()}\n${Diag.report()}\n'
+                                  '${QualityDiagnostics.instance.report()}',
                             ),
                           );
-                          showHint(context, '已複製，貼給開發者就好');
+                          if (context.mounted) showHint(context, '已複製，貼給開發者就好');
                         },
                       ),
                     ),
@@ -11331,6 +11503,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    for (final waiter in _thumbWaiters) {
+      waiter.complete();
+    }
+    _thumbWaiters.clear();
+    _thumbJobs.clear();
+    _qualityTimer?.cancel();
+    QualityDiagnostics.instance.contextProvider = null;
     QualityDiagnostics.instance.stop();
     _prepGestureLease?.cancel();
     _wmPrepTimer?.cancel();
@@ -11358,6 +11538,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 而且測試的「還有計時器沒燒完」斷言會抓到它
     _compRebuildTimer?.cancel();
     _ovSync.dispose();
+    _releaseOverlayCache();
+    trimLogoImageCache();
     _ovGeometryTimer?.cancel();
     _wmGestureTimer?.cancel();
     unawaited(MetalPreview.disposeEngine());
@@ -12592,20 +12774,39 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return Positioned(
       right: 12,
       bottom: 12,
-      child: _previewTool(
-        key: const ValueKey('video-preview-crop'),
-        icon: Icons.crop,
-        label: cropped ? '已裁切' : '裁切',
-        tooltip: cropped ? '調整素材裁切' : '裁切素材',
-        active: cropped,
-        onTap: () {
-          final source = _tl.sourceOf(clip);
-          if (source.isVideo) {
-            _cropVideoClip(clip);
-          } else {
-            _cropImageClip(clip);
-          }
-        },
+      child: Material(
+        color: Colors.white.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(kTagRadius),
+        child: InkWell(
+          key: const ValueKey('video-preview-crop'),
+          borderRadius: BorderRadius.circular(kTagRadius),
+          onTap: () {
+            final source = _tl.sourceOf(clip);
+            if (source.isVideo) {
+              _cropVideoClip(clip);
+            } else {
+              _cropImageClip(clip);
+            }
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.crop, size: 12, color: cropped ? kSelect : kTextDim),
+                const SizedBox(width: 4),
+                Text(
+                  cropped ? '已裁切' : '裁切',
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    color: cropped ? kSelect : kIcon,
+                    height: 1.2,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -15047,78 +15248,55 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     ),
   );
 
-  /// 預覽工具 C：透明底、圖示在上／文字在下，共用觸控範圍與狀態色。
-  Widget _previewTool({
-    required Key key,
-    required IconData icon,
-    required String label,
-    required String tooltip,
-    required VoidCallback onTap,
-    bool active = false,
-  }) {
-    final color = active ? kSelect : kIcon;
-    return Tooltip(
-      message: tooltip,
-      child: Material(
-        color: active ? kSelect.withValues(alpha: 0.08) : Colors.transparent,
-        borderRadius: BorderRadius.circular(10),
-        child: Semantics(
-          selected: active,
-          child: InkWell(
-            key: key,
-            borderRadius: BorderRadius.circular(10),
-            onTap: onTap,
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                child: Column(
+  Widget _canvasHint() {
+    return Align(
+      alignment: Alignment.topRight,
+      child: Padding(
+        padding: const EdgeInsets.all(6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 全螢幕播放：預覽鋪滿整頁，專心看成品
+            InkWell(
+              key: const ValueKey('video-preview-fullscreen'),
+              borderRadius: BorderRadius.circular(kTagRadius),
+              onTap: _toggleFullscreen,
+              child: Container(
+                padding: const EdgeInsets.all(5),
+                margin: const EdgeInsets.only(right: 6),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(kTagRadius),
+                ),
+                child: const Icon(Icons.fullscreen, size: 15, color: kIcon),
+              ),
+            ),
+            InkWell(
+              borderRadius: BorderRadius.circular(kTagRadius),
+              key: const ValueKey('video-preview-ratio'),
+              onTap: _openRatioSheet,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(kTagRadius),
+                ),
+                child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(icon, size: 20, color: color),
-                    const SizedBox(height: 4),
+                    const Icon(Icons.aspect_ratio, size: 12, color: kTextDim),
+                    const SizedBox(width: 4),
                     Text(
-                      label,
-                      style: TextStyle(
-                        fontSize: 11.5,
+                      _ratioLabel,
+                      style: const TextStyle(
+                        fontSize: 10.5,
+                        color: kIcon,
                         height: 1.2,
-                        color: color,
-                        fontWeight: FontWeight.w500,
                       ),
                     ),
                   ],
                 ),
               ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _canvasHint() {
-    return Align(
-      alignment: Alignment.topRight,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(6, 6, 12, 6),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // 全螢幕播放：預覽鋪滿整頁，專心看成品
-            _previewTool(
-              key: const ValueKey('video-preview-fullscreen'),
-              icon: Icons.fullscreen,
-              label: '預覽',
-              tooltip: '放大預覽',
-              onTap: _toggleFullscreen,
-            ),
-            const SizedBox(width: 4),
-            _previewTool(
-              key: const ValueKey('video-preview-ratio'),
-              icon: Icons.aspect_ratio,
-              label: _ratioLabel,
-              tooltip: '畫布比例：$_ratioLabel',
-              onTap: _openRatioSheet,
             ),
           ],
         ),

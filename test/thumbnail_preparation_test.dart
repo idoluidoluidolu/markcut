@@ -5,6 +5,31 @@ import 'package:markcut/services/thumbnail_preparation.dart';
 
 void main() {
   test(
+    'cold covers and strip frames yield to every interaction and cooldown',
+    () {
+      bool allowed({
+        bool ready = true,
+        bool importing = false,
+        bool interacting = false,
+        bool settling = false,
+      }) => canPrepareTimelineThumbnail(
+        ready: ready,
+        importing: importing,
+        interacting: interacting,
+        settling: settling,
+      );
+      expect(allowed(), isTrue);
+      expect(allowed(ready: false), isFalse);
+      expect(allowed(importing: true), isFalse);
+      expect(allowed(interacting: true), isFalse);
+      expect(
+        allowed(settling: true),
+        isFalse,
+        reason: 'A direction reversal must not start background HDR decoding.',
+      );
+    },
+  );
+  test(
     'every clip gets a cover in priority order before a complete strip',
     () async {
       final events = <String>[];
@@ -48,7 +73,7 @@ void main() {
       final run = prepareTimelineThumbnails<String>(
         items: () => items,
         alive: () => true,
-        // A drag is intentionally not a blocker for a single small cover.
+        // This ordering test runs with an idle preview.
         canLoadCover: () => true,
         needsCover: (item) => (counts[item] ?? 0) == 0,
         needsStrip: (item) => (counts[item] ?? 0) < 10,
