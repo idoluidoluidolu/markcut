@@ -865,33 +865,192 @@ class RunnerTests: XCTestCase {
       playing: true, age: 1))
   }
 
-  func testPreviewMemoryBudgetDefersBeforeExhaustionAndRequiresRecovery() {
-    let budget = MCPreviewMemoryBudget()
-    XCTAssertFalse(budget.shouldDefer(usedMB: 800, availableMB: 2000,
-      physicalMB: 8000, now: 0))
-    XCTAssertTrue(budget.shouldDefer(usedMB: 2111, availableMB: 1265,
-      physicalMB: 8000, now: 1), "the reported crash-time footprint must defer a proxy")
-    XCTAssertTrue(budget.shouldDefer(usedMB: 1200, availableMB: 1800,
-      physicalMB: 8000, now: 3), "cooldown prevents immediate restart")
-    XCTAssertTrue(budget.shouldDefer(usedMB: 1400, availableMB: 1800,
-      physicalMB: 8000, now: 7), "recovery needs the lower watermark")
-    XCTAssertFalse(budget.shouldDefer(usedMB: 1200, availableMB: 1800,
-      physicalMB: 8000, now: 8))
-    budget.notePressure(now: 9)
-    XCTAssertTrue(budget.shouldDefer(usedMB: nil, availableMB: 1800,
-      physicalMB: 8000, now: 20), "unknown footprint is not confirmed recovery")
-    XCTAssertFalse(budget.shouldDefer(usedMB: 1000, availableMB: 1800,
-      physicalMB: 8000, now: 21))
+  func testPausedCopyRendersTheLatestStyleWithoutSeekingOrReplacingThePlayer() throws {
+    let url = try makeScrubVideo()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let player = CompPlayer(registry: ScrubTestTextureRegistry())
+    let layer = AVPlayerLayer(player: player.player)
+    layer.frame = CGRect(x: 0, y: 0, width: 128, height: 192)
+    let window = UIApplication.shared.windows.first(where: \.isKeyWindow)
+    window?.layer.addSublayer(layer)
+    defer {
+      layer.removeFromSuperlayer(); layer.player = nil; player.dispose()
+      CIExportCompositor.setLiveXform(nil)
+    }
+    XCTAssertTrue(player.build(clips: [["path": url.path, "start": 0.0, "end": 1.0,
+      "offset": 0.0, "track": 0, "opacity": 0.99]], texture: false))
+    XCTAssertTrue(player.liveCIOn)
+    let item = try XCTUnwrap(player.player.currentItem)
+    let positioned = expectation(description: "initial paused frame")
+    player.seek(0.4, exact: true) { ok in
+      XCTAssertTrue(ok); positioned.fulfill()
+    }
+    wait(for: [positioned], timeout: 5)
+    let position = player.player.currentTime().seconds
+    for _ in 0..<100 {
+      CIExportCompositor.setLiveXform(nil)
+      player.nudgeRedrawIfPaused()
+    }
+    let finalEpoch = CIExportCompositor.liveEpoch
+    let rendered = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+      let q = player.qualitySnapshot()
+      return (q["pausedRedrawRenderCompleted"] as? Int ?? 0) > 0
+        && (q["pausedRedrawRenderedEpoch"] as? Int) == finalEpoch
+    }, object: nil)
+    wait(for: [rendered], timeout: 5)
+    XCTAssertTrue(player.player.currentItem === item)
+    XCTAssertEqual(player.player.currentTime().seconds, position, accuracy: 0.001)
+    let quality = player.qualitySnapshot()
+    XCTAssertEqual(quality["redrawCount"] as? Int, 0, "no legacy exact seek")
+    XCTAssertEqual(quality["pausedRedrawCopyTimeouts"] as? Int, 0)
+    XCTAssertEqual(quality["pausedRedrawCopyInFlight"] as? Bool, false)
+    XCTAssertEqual(quality["pausedRedrawCopyPending"] as? Bool, false)
   }
 
-  func testPreviewMemoryBudgetHonorsAppHeadroomAndSmallerDevices() {
+  func testFailedOverlappingFrameGrabsDetachTheirOriginalVideoOutput() {
+    let player = CompPlayer(registry: ScrubTestTextureRegistry())
+    defer { player.dispose() }
+    // No video samples: both requests must take the timeout exit.
+    let original = AVPlayerItem(asset: AVMutableComposition())
+    player.player.replaceCurrentItem(with: original)
+    let failed = expectation(description: "both grabs finish")
+    failed.expectedFulfillmentCount = 2
+    for _ in 0..<2 {
+      player.grabFrame(maxH: 64) { data in
+        XCTAssertNil(data); failed.fulfill()
+      }
+    }
+    XCTAssertEqual(original.outputs.count, 1, "overlapping readers share one tap")
+    let replacement = AVPlayerItem(asset: AVMutableComposition())
+    let replacementOutput = AVPlayerItemVideoOutput(pixelBufferAttributes: nil)
+    replacement.add(replacementOutput)
+    player.player.replaceCurrentItem(with: replacement)
+    wait(for: [failed], timeout: 3)
+    let detached = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+      original.outputs.isEmpty
+    }, object: nil)
+    wait(for: [detached], timeout: 2)
+    XCTAssertTrue(replacement.outputs.contains { $0 === replacementOutput },
+      "cleanup must not remove outputs belonging to the replacement item")
+  }
+
+  func testPreviewMemoryBudgetAllowsRecoveryProxyWithoutFootprintDeadlock() {
     let budget = MCPreviewMemoryBudget()
-    XCTAssertTrue(budget.shouldDefer(usedMB: 400, availableMB: 500,
+    XCTAssertFalse(budget.shouldDefer(usedMB: 2405, availableMB: 1500,
+      physicalMB: 8000, now: 0), "the original player must not permanently starve its replacement proxy")
+    XCTAssertTrue(budget.shouldDefer(usedMB: 2800, availableMB: 700,
+      physicalMB: 8000, now: 1, active: true), "running work still yields before allowance exhaustion")
+    XCTAssertTrue(budget.shouldDefer(usedMB: 2405, availableMB: 1600,
+      physicalMB: 8000, now: 3), "headroom recovery cannot bypass cooldown")
+    XCTAssertFalse(budget.shouldDefer(usedMB: 2405, availableMB: 1600,
+      physicalMB: 8000, now: 7), "no impossible 1280MB footprint requirement on recovery")
+    budget.notePressure(now: 9)
+    XCTAssertTrue(budget.shouldDefer(usedMB: nil, availableMB: 1800,
+      physicalMB: 8000, now: 20), "unknown measurement must defer")
+    XCTAssertFalse(budget.shouldDefer(usedMB: 2405, availableMB: 1800,
+      physicalMB: 8000, now: 26))
+  }
+
+  func testPreviewMemoryBudgetReservesMoreBeforeStartingThanWhileRunning() {
+    let starting = MCPreviewMemoryBudget()
+    let running = MCPreviewMemoryBudget()
+    XCTAssertTrue(starting.shouldDefer(usedMB: 400, availableMB: 900,
       physicalMB: 3000, now: 0))
-    XCTAssertTrue(budget.shouldDefer(usedMB: 800, availableMB: 1800,
-      physicalMB: 3000, now: 6))
-    XCTAssertFalse(budget.shouldDefer(usedMB: 400, availableMB: 1800,
-      physicalMB: 3000, now: 12))
+    XCTAssertFalse(running.shouldDefer(usedMB: 800, availableMB: 900,
+      physicalMB: 3000, now: 0, active: true))
+    XCTAssertTrue(running.shouldDefer(usedMB: 800, availableMB: 700,
+      physicalMB: 3000, now: 1, active: true))
+    XCTAssertFalse(running.shouldDefer(usedMB: 800, availableMB: 1300,
+      physicalMB: 3000, now: 7))
+  }
+
+  func testPausedRedrawKeepsOneActiveFrameAndOnlyTheLatestPendingEdit() throws {
+    let gate = MCPausedRedrawGate()
+    gate.request(epoch: 1, time: 3)
+    let first = try XCTUnwrap(gate.take())
+    for epoch in 2...500 {
+      gate.request(epoch: epoch, time: 3)
+      XCTAssertNil(gate.take(), "no context storm while first frame is outstanding")
+    }
+    XCTAssertFalse(gate.complete(epoch: 0, time: 3))
+    XCTAssertFalse(gate.complete(epoch: 500, time: 4), "a forward preroll is not the paused frame")
+    XCTAssertEqual(gate.active?.id, first.id)
+    XCTAssertTrue(gate.complete(epoch: 1, time: 3))
+    let latest = try XCTUnwrap(gate.take())
+    XCTAssertEqual(latest.epoch, 500)
+    XCTAssertTrue(gate.complete(epoch: 500, time: 3.001))
+    XCTAssertNil(gate.take())
+  }
+
+  func testPausedRedrawNewerRenderedEpochSatisfiesPendingEditWithoutExtraCopy() throws {
+    let gate = MCPausedRedrawGate()
+    gate.request(epoch: 1, time: 2)
+    XCTAssertNotNil(gate.take())
+    gate.request(epoch: 2, time: 2)
+    XCTAssertTrue(gate.complete(epoch: 2, time: 2))
+    XCTAssertFalse(gate.pending)
+    XCTAssertNil(gate.take())
+  }
+
+  func testPausedRedrawCancellationAndOldTimeoutCannotAffectNewGesture() throws {
+    let gate = MCPausedRedrawGate()
+    gate.request(epoch: 1, time: 2)
+    let first = try XCTUnwrap(gate.take())
+    gate.cancel()
+    gate.request(epoch: 3, time: 5)
+    let latest = try XCTUnwrap(gate.take())
+    XCTAssertFalse(gate.timeout(first.id))
+    XCTAssertFalse(gate.complete(epoch: 1, time: 2))
+    XCTAssertEqual(gate.active?.id, latest.id)
+    XCTAssertTrue(gate.timeout(latest.id))
+    XCTAssertNil(gate.active)
+    XCTAssertFalse(gate.pending)
+    gate.request(epoch: 4, time: .nan)
+    XCTAssertNil(gate.take())
+  }
+
+  func testPausedCompositionCopyPreservesHDRPlanAndReceipt() throws {
+    let original = AVMutableVideoComposition()
+    original.renderSize = CGSize(width: 900, height: 1600)
+    original.frameDuration = CMTime(value: 1, timescale: 30)
+    original.colorPrimaries = AVVideoColorPrimaries_ITU_R_2020
+    original.colorTransferFunction = AVVideoTransferFunction_ITU_R_2100_HLG
+    original.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_2020
+    original.customVideoCompositorClass = CIPreviewCompositorHDR.self
+    let instruction = CIExportInstruction(timeRange: scrubRange,
+      layers: [], mosaics: [], overlays: [])
+    let receipt = MCPreviewRenderReceipt { _, _ in }
+    instruction.renderReceipt = receipt
+    original.instructions = [instruction]
+    let copy = try XCTUnwrap(original.mutableCopy() as? AVMutableVideoComposition)
+    XCTAssertFalse(copy === original)
+    XCTAssertEqual(copy.renderSize, original.renderSize)
+    XCTAssertEqual(copy.frameDuration, original.frameDuration)
+    XCTAssertEqual(copy.colorPrimaries, original.colorPrimaries)
+    XCTAssertEqual(copy.colorTransferFunction, original.colorTransferFunction)
+    XCTAssertEqual(copy.colorYCbCrMatrix, original.colorYCbCrMatrix)
+    let compositorClass = try XCTUnwrap(copy.customVideoCompositorClass)
+    XCTAssertEqual(ObjectIdentifier(compositorClass), ObjectIdentifier(CIPreviewCompositorHDR.self))
+    let copiedInstruction = try XCTUnwrap(copy.instructions.first as? CIExportInstruction)
+    XCTAssertTrue(copiedInstruction.renderReceipt === receipt)
+  }
+
+  func testIdleFrameGeneratorReleaseDoesNotEvictAResumedGesture() throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString).appendingPathExtension("mov")
+    try Data([1, 2, 3]).write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+    let pool = MCFrameGeneratorPool()
+    XCTAssertNotNil(pool.generator(path: url.path, maxH: 200))
+    let idleToken = pool.activity
+    XCTAssertNotNil(pool.generator(path: url.path, maxH: 200))
+    XCTAssertFalse(pool.removeIfIdle(since: idleToken))
+    XCTAssertEqual(pool.count, 1)
+    XCTAssertTrue(pool.removeIfIdle(since: pool.activity))
+    XCTAssertEqual(pool.count, 0)
+    XCTAssertEqual(pool.idleReleases, 1)
+    XCTAssertNotNil(pool.generator(path: url.path, maxH: 200))
+    XCTAssertEqual(pool.createdCount, 2)
   }
 
   func testPrepCancellationReasonIsStableAcrossDuplicateStops() {

@@ -1180,6 +1180,7 @@ final class CIMosaicSpec {
 final class CIExportInstruction: NSObject, AVVideoCompositionInstructionProtocol {
   // Only preview instructions capture frames. Export/proxy compositors never
   // enter the interactive cache, even when they run concurrently.
+  var renderReceipt: MCPreviewRenderReceipt?
   var scrubCapture: MCNativeScrubCache?
   var scrubLayout: UInt64 = 0
   let timeRange: CMTimeRange
@@ -1625,6 +1626,13 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
     // 尺寸可能對不上了，別再重播它
     queue.async {
       self.lastComposedBase = nil
+    }
+  }
+  func releasePreviewCaches() {
+    guard liveComp else { return }
+    queue.async {
+      self.lastComposedBase = nil
+      self.ctx.clearCaches()
     }
   }
   func cancelAllPendingVideoCompositionRequests() {
@@ -2258,7 +2266,11 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
               enqueued: qualityEnqueued, started: qualityStarted, time: t0,
               epoch: captureEpoch, currentEpoch: Self.liveEpoch, missing: missing)
           }
-          guard self.liveComp, !missing, captureEpoch == Self.liveEpoch else { return }
+          guard self.liveComp, !missing else { return }
+          // An older style still completed its render. Release that in-flight
+          // slot so the latest edit can follow; only current styles enter cache.
+          ins.renderReceipt?.rendered(epoch: captureEpoch, time: t0)
+          guard captureEpoch == Self.liveEpoch else { return }
           ins.scrubCapture?.insert(dst, time: t0, epoch: captureEpoch,
             layout: ins.scrubLayout, range: ins.timeRange, hdr: self.hdrOut)
         }
@@ -3176,9 +3188,12 @@ final class MCFrameGeneratorPool {
   private var entries: [Entry] = [] // oldest first
   private(set) var createdCount = 0
   private(set) var hitCount = 0
+  private(set) var activity: UInt64 = 0
+  private(set) var idleReleases = 0
   var count: Int { entries.count }
 
   func generator(path: String, maxH: Int) -> AVAssetImageGenerator? {
+    activity &+= 1
     let url = URL(fileURLWithPath: path).standardizedFileURL
     guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
       let bytes = attrs[.size] as? NSNumber,
@@ -3215,35 +3230,90 @@ final class MCFrameGeneratorPool {
     entries.removeAll { predicate($0.key) }
   }
 
+  @discardableResult func removeIfIdle(since token: UInt64) -> Bool {
+    guard token == activity, !entries.isEmpty else { return false }
+    idleReleases += 1
+    removeAll()
+    return true
+  }
   func removeAll() {
+    activity &+= 1
     for entry in entries { entry.generator.cancelAllCGImageGeneration() }
     entries.removeAll()
   }
 }
 
-/// Main-thread admission and hysteresis for editor proxy work only.
+/// One proxy job at a time (Dart owns the slot). Reserve OS-reported remaining
+/// process allowance, not a fixed footprint the original player cannot shed
+/// until a proxy exists. Pressure still cancels running work and adds cooldown.
 final class MCPreviewMemoryBudget {
-  private var blocked = false
   private var retryAt: TimeInterval = 0
-  func notePressure(now: TimeInterval) {
-    blocked = true
-    retryAt = now + 5
-  }
-  // Engineering admission budget, NOT an estimate of the device's jetsam limit.
-  // Reserve room for a seek/player handoff; resume below a lower watermark.
+  func notePressure(now: TimeInterval) { retryAt = max(retryAt, now + 5) }
   func shouldDefer(usedMB: Double?, availableMB: Double, physicalMB: Double,
-                   now: TimeInterval) -> Bool {
-    let limit = min(1536.0, max(768.0, physicalMB * 0.20))
-    if (usedMB.map { $0 >= limit } ?? false) || availableMB < 512 {
+                   now: TimeInterval, active: Bool = false) -> Bool {
+    let admission = min(1536.0, max(1024.0, physicalMB * 0.15))
+    let reserve = active ? max(768.0, admission * 2 / 3) : admission
+    guard availableMB.isFinite, availableMB >= reserve,
+      let used = usedMB, used.isFinite, used >= 0 else {
       notePressure(now: now)
       return true
     }
-    if blocked {
-      guard now >= retryAt, availableMB >= 768,
-        let usedMB = usedMB, usedMB <= limit - 256 else { return true }
-      blocked = false
-    }
-    return false
+    return now < retryAt
+  }
+}
+
+/// Main-thread latest-only redraw state. A composition copy may be in flight
+/// until CI returns its matching frame; timer ticks alone never admit another.
+final class MCPausedRedrawGate {
+  struct Ticket {
+    let id: UInt64
+    let epoch: Int
+    let time: Double
+  }
+  private var serial: UInt64 = 0
+  private(set) var active: Ticket?
+  private var latest: (epoch: Int, time: Double)?
+  var pending: Bool { latest != nil }
+  func request(epoch: Int, time: Double) {
+    guard time.isFinite else { return }
+    latest = (epoch, time)
+  }
+  func take() -> Ticket? {
+    guard active == nil, let wanted = latest else { return nil }
+    latest = nil; serial &+= 1
+    let ticket = Ticket(id: serial, epoch: wanted.epoch, time: wanted.time)
+    active = ticket
+    return ticket
+  }
+  @discardableResult func complete(epoch: Int, time: Double) -> Bool {
+    guard time.isFinite, let ticket = active, epoch >= ticket.epoch,
+      abs(time - ticket.time) < 1.0 / 30.0 else { return false }
+    active = nil
+    if let wanted = latest, epoch >= wanted.epoch,
+      abs(time - wanted.time) < 1.0 / 30.0 { latest = nil }
+    return true
+  }
+  @discardableResult func timeout(_ id: UInt64) -> Bool {
+    guard active?.id == id else { return false }
+    cancel(); return true
+  }
+  func cancel() { active = nil; latest = nil; serial &+= 1 }
+}
+
+/// Scalar completion only; no image, request or decoder crosses to the main
+/// queue. Each player's instructions own a receipt with a weak player callback.
+final class MCPreviewRenderReceipt {
+  private let receive: (Int, Double) -> Void
+  private let lock = NSLock()
+  private var waiting = false
+  init(_ receive: @escaping (Int, Double) -> Void) { self.receive = receive }
+  func setWaiting(_ value: Bool) {
+    lock.lock(); waiting = value; lock.unlock()
+  }
+  func rendered(epoch: Int, time: Double) {
+    lock.lock(); let needed = waiting; lock.unlock()
+    guard needed else { return } // no extra main-queue traffic during playback
+    DispatchQueue.main.async { self.receive(epoch, time) }
   }
 }
 
@@ -3318,12 +3388,15 @@ final class MCInteractivePrepGate {
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private let frameGenerators = MCFrameGeneratorPool()
   private let frameQueue = DispatchQueue(label: "markcut.frames")
+  // frameQueue owns this timer and the pool; never cancel a generator while
+  // copyCGImage is running on another queue.
+  private var frameReleaseWork: DispatchWorkItem?
   private let prepInteractiveGate = MCInteractivePrepGate()
   private let prepMemoryBudget = MCPreviewMemoryBudget()
   // Main-queue only; includes editor proxies, never user exports.
   private var prepMemoryDefers: [Int: () -> Void] = [:]
 
-  private func previewMemoryNeedsYield() -> Bool {
+  private func previewMemoryNeedsYield(active: Bool = false) -> Bool {
     var info = task_vm_info_data_t()
     var count = mach_msg_type_number_t(
       MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
@@ -3337,13 +3410,26 @@ final class MCInteractivePrepGate {
       usedMB: status == KERN_SUCCESS ? Double(info.phys_footprint) / mb : nil,
       availableMB: Double(os_proc_available_memory()) / mb,
       physicalMB: Double(ProcessInfo.processInfo.physicalMemory) / mb,
-      now: CACurrentMediaTime())
+      now: CACurrentMediaTime(), active: active)
   }
 
   private func releaseFrameGenerators() {
     // copyCGImage 是同步工作，不能在別條執行緒同時拆 generator。
     // 警告／退背景只排清理，不阻塞主執行緒，當前那格完成後就釋放。
-    frameQueue.async { [weak self] in self?.frameGenerators.removeAll() }
+    frameQueue.async { [weak self] in
+      self?.frameReleaseWork?.cancel(); self?.frameReleaseWork = nil
+      self?.frameGenerators.removeAll()
+    }
+  }
+  private func releaseFrameGeneratorsWhenIdle() {
+    frameReleaseWork?.cancel()
+    let token = frameGenerators.activity
+    let work = DispatchWorkItem { [weak self] in
+      self?.frameReleaseWork = nil
+      self?.frameGenerators.removeIfIdle(since: token)
+    }
+    frameReleaseWork = work
+    frameQueue.asyncAfter(deadline: .now() + 1, execute: work)
   }
   @objc private func frameResourcesNeedRelease(_ notification: Notification) {
     releaseFrameGenerators()
@@ -3352,6 +3438,7 @@ final class MCInteractivePrepGate {
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { return }
         self.prepMemoryBudget.notePressure(now: CACurrentMediaTime())
+        self.comp?.trimPreviewMemory()
         for stop in Array(self.prepMemoryDefers.values) { stop() }
         for job in self.prepYieldSessions {
           self.prepDeferredSessions.insert(job)
@@ -3436,7 +3523,8 @@ final class MCInteractivePrepGate {
         self.frameQueue.async {
           let stats = ["active": self.frameGenerators.count,
                        "created": self.frameGenerators.createdCount,
-                       "reused": self.frameGenerators.hitCount, "capacity": 2]
+                       "reused": self.frameGenerators.hitCount, "capacity": 2,
+                       "idleReleases": self.frameGenerators.idleReleases]
           DispatchQueue.main.async { result(stats) }
         }
         return
@@ -3456,6 +3544,7 @@ final class MCInteractivePrepGate {
       let jpegQ = CGFloat(args["q"] as? Double ?? 0.7)
       self.frameQueue.async {
         autoreleasepool {
+        defer { self.releaseFrameGeneratorsWhenIdle() }
         guard let gen = self.frameGenerators.generator(path: path, maxH: maxH) else {
           DispatchQueue.main.async { result(nil) }
           return
@@ -5507,6 +5596,7 @@ final class MCInteractivePrepGate {
         // return），safe 對它沒有意義——那條的重試就是原封不動再跑一次
         let safe = args["safe"] as? Bool ?? false
         let interactiveYield = args["interactiveYield"] as? Bool ?? false
+        if interactiveYield { self.releaseFrameGenerators() }
         if interactiveYield && self.previewMemoryNeedsYield() {
           result(["status": "deferred", "retryAfterMs": 5000])
           return
@@ -6117,7 +6207,7 @@ final class MCInteractivePrepGate {
     timer.schedule(deadline: .now() + 0.25, repeating: 0.25)
     timer.setEventHandler { [weak self] in
       guard !replied.isSet else { return }
-      if interactiveYield, self?.previewMemoryNeedsYield() == true {
+      if interactiveYield, self?.previewMemoryNeedsYield(active: true) == true {
         stop(AppDelegate.prepDeferredErr)
         return
       }
@@ -7699,19 +7789,9 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 換回無覆寫版之後 CI 還在不在）
   var builtNeedsCI = false
 
-  /// 暫停中催播放器重畫這一格：往同一個時間 seek 會被當 no-op，
-  /// 改成在 ±1 個時間刻（1.7ms）之間來回擺——位置看不出差別、
-  /// 不累積漂移，每次都真的重組。
-  ///
-  /// 兩條規矩（實測回報「滑動中畫面不動、放開才跳」的根）：
-  /// 1. 使用者的拖曳 seek 進行中「不催」——那發 seek 完成時本來
-  ///    就會用最新的靜態參數重組這一格；催下去反而把使用者的
-  ///    seek 蓋回原地，預覽就凍住了
-  /// 2. 自己也排隊：一發催在跑就記 pending，跑完再補一發，
-  ///    不對播放器灌併發 seek
-  /// 疊加物（setOverlays/setOvXform）暫停中的重畫已改走 rerenderPaused
-  ///（換 vc、不 seek、不碰時間軸）；這裡留給真的要動時間的路
-  ///（片段捏合 applyXform 預設仍催、grabFrame 自己挪格）
+  /// Legacy fallback for items without live CI or a composition-copy timeout.
+  /// One exact seek at a time, anchored to the paused position. Live CI normally
+  /// redraws by copying the composition and waiting for its render receipt.
   private var nudgeFlip = false
   private let qualityPlayerInstance = UUID().uuidString
   private var qualityRedrawCount = 0
@@ -7759,23 +7839,86 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 真的換了幾次／被延到窗尾合併掉幾發
   static var stVcSwaps = 0
   static var stVcDeferred = 0
-  private var vcSwapTimerArmed = false
-  private var vcSwapRetries = 0
-  private var lastVcSwapAt = 0.0
-  /// 上一次 applyXform 帶上的覆寫：暫停重畫用同一份重產 vc，
-  /// 幾何一個位元都不變，只有物件換新（組建時 nil，跟 makeVC(nil) 對齊）
   private var lastXformOv: CompLiveXform?
-  /// 暫停重畫的路：true＝換 vc（不碰時間軸）；false＝退回催 seek。
-  /// 實機若發現換 vc 不觸發重繪，改這一個字就退回舊路
-  /// 實機 174 定案：換 vc 重畫在拖動中每 40ms 重建一次渲染上下文
-  /// ＝「第一次拉要讀取、拉一半硬停」；173 的節流催重畫手感較好，
-  /// 預設退回。留開關供日後驗證
-  static var pausedRedrawViaVC = false
+  private let pausedRedraw = MCPausedRedrawGate()
+  private var redrawAfterSeek = false
+  private var redrawCopyTimer: DispatchWorkItem?
+  private var redrawCopyStarted = 0.0
+  private var redrawCopyLastAt = 0.0
+  private var redrawCopyDisabled = false
+  private var redrawCopyCompleted = 0
+  private var redrawCopyLastEpoch = 0
+  private var redrawCopyTimeouts = 0
+  private var redrawCopyMaxMs = 0.0
+  private lazy var previewRenderReceipt = MCPreviewRenderReceipt { [weak self] epoch, time in
+    guard let self = self, self.pausedRedraw.complete(epoch: epoch, time: time) else { return }
+    self.previewRenderReceipt.setWaiting(false)
+    self.redrawCopyCompleted += 1
+    self.redrawCopyLastEpoch = epoch
+    self.redrawCopyMaxMs = max(self.redrawCopyMaxMs,
+      (CACurrentMediaTime() - self.redrawCopyStarted) * 1000)
+    self.schedulePausedCopy()
+  }
+
+  private func cancelPausedCopy() {
+    redrawCopyTimer?.cancel(); redrawCopyTimer = nil
+    previewRenderReceipt.setWaiting(false)
+    pausedRedraw.cancel()
+  }
+
+  private func schedulePausedCopy() {
+    guard pausedRedraw.pending, pausedRedraw.active == nil,
+      redrawCopyTimer == nil else { return }
+    let delay = max(0, 1.0 / 30.0 - (CACurrentMediaTime() - redrawCopyLastAt))
+    let work = DispatchWorkItem { [weak self] in
+      guard let self = self else { return }
+      self.redrawCopyTimer = nil
+      guard self.player.rate == 0, !self.seeking, !self.seekTarget.isValid,
+        !self.takeover, !self.redrawCopyDisabled,
+        let item = self.player.currentItem, item.status == .readyToPlay,
+        let original = item.videoComposition,
+        let copied = original.mutableCopy() as? AVMutableVideoComposition,
+        let ticket = self.pausedRedraw.take() else {
+        self.pausedRedraw.cancel(); return
+      }
+      self.player.cancelPendingPrerolls(); self.prerollArmed = false
+      self.redrawCopyStarted = CACurrentMediaTime()
+      self.redrawCopyLastAt = self.redrawCopyStarted
+      // Apple QA1966: a new composition instance redraws the paused frame.
+      // Same instructions, same compositor class, same HDR AVPlayerLayer.
+      // Unlike the old 40ms makeVC loop, this never rebuilds the plan or queues
+      // more contexts while a previous frame is still being rendered.
+      self.previewRenderReceipt.setWaiting(true)
+      item.videoComposition = copied
+      Self.stVcSwaps += 1
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self, weak item] in
+        guard let self = self, let item = item, self.player.currentItem === item,
+          self.pausedRedraw.timeout(ticket.id) else { return }
+        self.previewRenderReceipt.setWaiting(false)
+        self.redrawCopyTimeouts += 1
+        self.redrawCopyDisabled = true
+        // Keep a bounded compatibility fallback if this OS/item does not
+        // deliver a composition frame; don't leave the final edit unseen.
+        self.nudgeRedrawIfPaused()
+      }
+    }
+    redrawCopyTimer = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+  }
 
   func nudgeRedrawIfPaused() {
     guard player.rate == 0 else { return }
     if seeking || seekTarget.isValid {
       qualityRedrawUserSeek += 1
+      redrawAfterSeek = true
+      return
+    }
+    redrawAfterSeek = false
+    if !redrawCopyDisabled, liveCIOn, !takeover,
+      player.currentItem?.status == .readyToPlay, nativeGoal == nil {
+      if pausedRedraw.active != nil { Self.stVcDeferred += 1 }
+      pausedRedraw.request(epoch: CIExportCompositor.liveEpoch, time: player.currentTime().seconds)
+      schedulePausedCopy()
       return
     }
     if nudging {
@@ -7808,6 +7951,8 @@ final class CompPlayer: NSObject, FlutterTexture {
     qualityRedrawCount += 1
     let redrawEpoch = CIExportCompositor.liveEpoch
     nudging = true
+    player.cancelPendingPrerolls(); prerollArmed = false
+    let lifecycle = seekLifecycle
     nudgeFlip.toggle()
     if !nudgeAnchor.isValid {
       nudgeAnchor = player.currentTime()
@@ -7828,7 +7973,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       [weak self] finished in
       let callbackAt = CACurrentMediaTime()
       DispatchQueue.main.async {
-        guard let self = self else { return }
+        guard let self = self, self.seekLifecycle == lifecycle else { return }
         let mainAt = CACurrentMediaTime()
         let seekMs = (callbackAt - nowN) * 1000
         let mainMs = (mainAt - callbackAt) * 1000
@@ -7855,7 +8000,7 @@ final class CompPlayer: NSObject, FlutterTexture {
 
   /// 重產 vc 換上（不重建合成）。即時變形第一次在「CI 沒掛」的
   /// 合成上發動時走這裡把 CI 路掛起來；之後的更新走靜態參數。
-  /// [nudge] false＝只換 vc、不催 seek（rerenderPaused 用）
+  /// [nudge] false＝只更新結構指令，不另排暫停重畫。
   /// 回 false＝這份合成產不出 vc（呼叫端當沒這回事，照舊等重組）
   func applyXform(_ ov: CompLiveXform?, nudge: Bool = true) -> Bool {
     guard let regen = vcRegen, let item = player.currentItem else {
@@ -7871,53 +8016,8 @@ final class CompPlayer: NSObject, FlutterTexture {
     return true
   }
 
-  /// 暫停中催合成器重畫「現在這一格」而不碰時間軸（疊加物換清單／
-  /// 改樣式／部件差量用）：把同一份 vc 重產一個新物件換上。
-  /// AVFoundation 對 videoComposition 只認「物件換了」——內容相同也會
-  /// 為現在這個時間重跑一次合成器；同一個 item、同一個 currentTime、
-  /// 沒有 seek、不跨格、不回第 0 格、不換件。合成器每格直讀
-  /// previewOvs／liveOvs 快照，所以清單本身不用進指令。
-  /// 規矩：
-  /// 1. 播放中不催（下一格自然用新快照）
-  /// 2. 使用者 seek／催 seek 在飛時不換：排到窗尾再看（最多 1 秒）
-  ///    ——那發落地本來就用最新快照重組；換 vc 也不去干擾在飛的 seek
-  /// 3. 沒掛 vc 的 item（讓位中 parkedVC／接管中）絕不「掛上」：只換不裝
-  /// 4. 40ms 一發、窗內合併成尾發：滑桿風暴不排隊，最後一發一定畫到
-  func rerenderPaused() {
-    guard Self.pausedRedrawViaVC else {
-      nudgeRedrawIfPaused()
-      return
-    }
-    guard player.rate == 0, !takeover, let item = player.currentItem,
-      item.videoComposition != nil, item.status == .readyToPlay
-    else { return }
-    let busy = seeking || seekTarget.isValid || nudging
-    let nowN = CACurrentMediaTime()
-    let wait = busy ? 0.04 : 0.04 - (nowN - lastVcSwapAt)
-    if wait > 0.001 {
-      if busy && vcSwapRetries >= 25 {
-        vcSwapRetries = 0
-        return
-      }
-      if !vcSwapTimerArmed {
-        vcSwapTimerArmed = true
-        Self.stVcDeferred += 1
-        if busy { vcSwapRetries += 1 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
-          [weak self] in
-          guard let self = self else { return }
-          self.vcSwapTimerArmed = false
-          self.rerenderPaused()
-        }
-      }
-      return
-    }
-    vcSwapRetries = 0
-    lastVcSwapAt = nowN
-    if applyXform(lastXformOv, nudge: false) {
-      Self.stVcSwaps += 1
-    }
-  }
+  /// All style/geometry callers share the same bounded redraw path.
+  func rerenderPaused() { nudgeRedrawIfPaused() }
 
   private var output: AVPlayerItemVideoOutput?
   private var link: CADisplayLink?
@@ -7941,6 +8041,7 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 抽「目前渲染輸出」用（見 grabFrame）。產生器不支援自訂合成器，
   /// video output 拿的是實際送畫面的那一格，CI 路線也抽得到
   private var videoOut: AVPlayerItemVideoOutput?
+  private var videoOutUsers = 0
 
   /// grabFrame 的 CIContext：以前每抓一格就建一顆（管線重編譯、GPU
   /// 資源），加馬賽克／重烘連續觸發時又慢又吃記憶體。共用一顆；
@@ -8474,6 +8575,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     mix.inputParameters = aParams
     audioMix = mix
     let item = AVPlayerItem(asset: comp)
+    item.preferredForwardBufferDuration = 0.1
     item.audioMix = mix
     // 抽幀口改「用到才掛」（見 grabFrame）：常駐掛一個 BGRA 輸出
     // 會讓顯示管線退化——HDR 原檔在圖層上過飽和爆掉（+109 實驗：
@@ -8792,6 +8894,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       visibility.setHiddenTracks(CIExportCompositor.currentHiddenImageTracks())
       visibilityState = visibility
       let scrubCache = nativeScrubSupported ? nativeScrubCache : nil
+      let renderReceipt = previewRenderReceipt
       // 產一份 videoComposition（可帶捏合中的即時變形覆寫 ov）。
       // 組建與即時變形共用同一段數學：放手烘定不會跳位。
       // 閉包刻意不碰 self（buildInfo/wmLive 都在外面做）——
@@ -8979,6 +9082,7 @@ final class CompPlayer: NSObject, FlutterTexture {
           ? CIPreviewCompositorHDR.self : CIPreviewCompositorSDR.self
         vc.instructions = built
         for instruction in built {
+          instruction.renderReceipt = renderReceipt
           instruction.scrubCapture = scrubCache
           instruction.scrubLayout = scrubLayout
         }
@@ -9336,6 +9440,8 @@ final class CompPlayer: NSObject, FlutterTexture {
       audioPlayer.playImmediately(atRate: targetRate)
       return
     }
+    cancelPausedCopy(); redrawAfterSeek = false
+    player.currentItem?.preferredForwardBufferDuration = 0.5
     // 還沒跑完的 preroll 會把播放壓住，先取消
     player.cancelPendingPrerolls()
     prerollArmed = false
@@ -9420,12 +9526,10 @@ final class CompPlayer: NSObject, FlutterTexture {
     player.pause()
     nudgeAnchor = .invalid
     CIExportCompositor.setScrubbing(false)
-    // 暫停時把管線熱著，下次按播放就不用等（緊接著拖曳的話，
-    // 第一發 seek 會先把它取消，見 chase）
-    if player.currentItem?.status == .readyToPlay {
-      prerollArmed = true
-      player.preroll(atRate: targetRate, completionHandler: nil)
-    }
+    // Paused editing must not retain a forward preroll of 4K HDR frames or
+    // compete with a proxy encode. The buffer preference is advisory, not a cap.
+    player.cancelPendingPrerolls(); prerollArmed = false
+    player.currentItem?.preferredForwardBufferDuration = 0.1
   }
 
   func setRate(_ r: Double) {
@@ -9485,6 +9589,8 @@ final class CompPlayer: NSObject, FlutterTexture {
   private var seekLifecycle: UInt64 = 0
 
   private func cancelSeekRequests() {
+    cancelPausedCopy(); redrawAfterSeek = false
+    nudging = false; nudgePending = false
     seekCompletion.replace(with: nil)
     seekLifecycle &+= 1
     seekTarget = .invalid
@@ -9515,12 +9621,14 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 一個），鎖幀最多多解 3 格，換來拖曳中每一發都是「指針那一格」——
   /// 慢拖每格都換、手指停住那格就是準的、放手不再從吸附格跳到準格
   ///（原本拖曳寬容 0.1s＝永遠吸最近的關鍵幀，慢拖四格一跳）。
-  /// exact 只差在停手那發落地後預捲把管線熱著（拖曳中絕不預捲，見 chase）
+  /// exact 強制零容差；暫停定位完成後不再預捲未來影格。
   func seek(
     _ seconds: Double, exact: Bool, toleranceMs: Int? = nil,
     nativeRequest: Bool = false,
     completion: ((Bool) -> Void)? = nil
   ) {
+    cancelPausedCopy()
+    player.currentItem?.preferredForwardBufferDuration = 0.1
     if !nativeRequest { hideNativeScrub() }
     let request = seekCompletion.replace(with: completion)
     guard seconds.isFinite else {
@@ -9648,21 +9756,12 @@ final class CompPlayer: NSObject, FlutterTexture {
         if ok { PlayerHosts.shared.release(self.player) }
         if self.seekTarget.isValid {
           self.chase()  // 手指又動了，追過去
-        } else if ok, exact, request == self.seekCompletion.generation,
-          self.player.rate == 0,
-          self.player.currentItem?.status == .readyToPlay,
-          CACurrentMediaTime() - self.lastNudgeAt > 0.5
-        {
-          // 停手那發落地、後面沒新目標：把管線熱著，下次按播放就不用等。
-          // 只有停手發（exact）才預捲——原本拖曳中每發落地都預捲，
-          // 手指一動下一發就得先等預捲取消／跟它搶解碼器，正是拖曳
-          // p90 拉長、手指停一下再動就頓一下的根。
-          // 疊加物驅動的重畫（拖滑桿中）後也「不」預捲——每版一次
-          // 預捲＝對暫停中的 10-bit 檔連環開工又取消，解碼器被
-          // 餓死（獨立審查 #1）
-          self.prerollArmed = true
-          self.player.preroll(atRate: self.targetRate, completionHandler: nil)
+        } else if self.redrawAfterSeek {
+          self.redrawAfterSeek = false
+          self.nudgeRedrawIfPaused()
         }
+        // No automatic preroll after an exact stop. The next gesture needs
+        // the current frame, not a queue of future decoded HDR frames.
       }
     }
   }
@@ -9671,6 +9770,9 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 「重烘空窗即時鋪面」用：剛加的馬賽克先用這格＋Flutter 畫出來，
   /// 重烘好再換真的
   func grabFrame(maxH: Int, done: @escaping (Data?) -> Void) {
+    guard let owner = player.currentItem else { done(nil); return }
+    cancelPausedCopy()
+    player.cancelPendingPrerolls(); prerollArmed = false
     // 用到才掛：常駐的 BGRA 輸出會讓顯示管線退化（HDR 爆色）。
     // 掛上去的當下畫面上那格還沒送進 tap，原地精準 seek 一發
     // 逼它重繪，再輪詢把那格抄出來
@@ -9694,7 +9796,21 @@ final class CompPlayer: NSObject, FlutterTexture {
       done(nil)
       return
     }
-    DispatchQueue.global(qos: .userInitiated).async {
+    videoOutUsers += 1
+    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+      // Every exit (timeout, conversion failure, success) releases its lease.
+      // Detach from the original item, never whichever item is current later.
+      defer {
+        DispatchQueue.main.async { [weak self] in
+          if let self = self, self.videoOut === vo {
+            self.videoOutUsers = max(0, self.videoOutUsers - 1)
+            guard self.videoOutUsers == 0 else { return }
+            self.videoOut = nil
+          }
+          if owner.outputs.contains(where: { $0 === vo }) { owner.remove(vo) }
+        }
+      }
+      autoreleasepool {
       // 抄「現在顯示中的那格」：時間用 tap 的 host 時間對映——
       // 上面可能剛做過挪格 seek，抓固定時間點會抓不到
       func tryCopy() -> CVPixelBuffer? {
@@ -9725,15 +9841,8 @@ final class CompPlayer: NSObject, FlutterTexture {
         return
       }
       let data = UIImage(cgImage: cg).jpegData(compressionQuality: 0.85)
-      // 抄完就拆：tap 留著顯示管線就一直退化
-      DispatchQueue.main.async { [weak self] in
-        guard let self = self else { return }
-        if let vo2 = self.videoOut, let item = self.player.currentItem {
-          item.remove(vo2)
-        }
-        self.videoOut = nil
-      }
       done(data)
+      }
     }
   }
 
@@ -9824,6 +9933,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       "systemVersion": UIDevice.current.systemVersion,
       "deviceFamily": UIDevice.current.model,
       "physicalMemoryMB": ProcessInfo.processInfo.physicalMemory / 1048576,
+      "availableProcessMemoryMB": Double(os_proc_available_memory()) / 1048576,
       "redrawCount": qualityRedrawCount,
       "redrawCoalescedWhileBusy": qualityRedrawBusy,
       "redrawSkippedDuringUserSeek": qualityRedrawUserSeek,
@@ -9856,7 +9966,16 @@ final class CompPlayer: NSObject, FlutterTexture {
       "pausedRedrawWarmMsProcessLifetime": Self.stNudgeWarmMs,
       "itemSwapsProcessLifetime": Self.stItemSwaps,
       "vcRedrawSwapsProcessLifetime": Self.stVcSwaps,
-      "pausedRedrawViaVC": Self.pausedRedrawViaVC,
+      "pausedRedrawViaVC": liveCIOn && !redrawCopyDisabled,
+      "pausedRedrawRenderCompleted": redrawCopyCompleted,
+      "pausedRedrawRenderedEpoch": redrawCopyLastEpoch,
+      "pausedRedrawRenderMaxMs": redrawCopyMaxMs,
+      "pausedRedrawCopyTimeouts": redrawCopyTimeouts,
+      "pausedRedrawCopyInFlight": pausedRedraw.active != nil,
+      "pausedRedrawCopyPending": pausedRedraw.pending,
+      "pausedRedrawCopyMeasurement": "composition copy to matching CI render, NOT screen presentation",
+      "preferredForwardBufferSeconds": player.currentItem?.preferredForwardBufferDuration ?? 0,
+      "prerollArmed": prerollArmed,
       "sourceVideoTracks": composition?.tracks(withMediaType: .video).count ?? 0,
       "scope": "current player counters; reset on rebuild; configuration is not pixel validation",
     ]
@@ -10037,6 +10156,16 @@ final class CompPlayer: NSObject, FlutterTexture {
     return m
   }
 
+  private var lastMemoryTrimAt = -Double.infinity
+  func trimPreviewMemory() {
+    player.cancelPendingPrerolls(); prerollArmed = false
+    player.currentItem?.preferredForwardBufferDuration = 0.1
+    let now = CACurrentMediaTime()
+    guard now - lastMemoryTrimAt >= 1 else { return }
+    lastMemoryTrimAt = now
+    (player.currentItem?.customVideoCompositor as? CIExportCompositor)?.releasePreviewCaches()
+  }
+
   func disposeWatch() {
     watchLink?.invalidate()
     watchLink = nil
@@ -10061,6 +10190,13 @@ final class CompPlayer: NSObject, FlutterTexture {
     clockTimer?.invalidate()
     clockTimer = nil
     player.pause()
+    player.cancelPendingPrerolls(); prerollArmed = false
+    if let item = player.currentItem {
+      for tap in item.outputs { item.remove(tap) }
+    }
+    videoOut = nil; videoOutUsers = 0; output = nil
+    parkedVC = nil; composition = nil; audioMix = nil
+    audioSegments.removeAll()
     player.replaceCurrentItem(with: nil)
     audioPlayer.pause()
     audioPlayer.replaceCurrentItem(with: nil)

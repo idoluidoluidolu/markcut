@@ -235,3 +235,48 @@ v2 的慢事件／資源歷史都有容量上限，無逐幀圖像回讀；仍�
 為 993 通過／8 跳過，輸出沒有 `[E]` 且正常結束。最後補上 sRGB 保守限制與
 手機窄螢幕測試後，圖片快取／裁切／插入互動的 22 項針對性測試再次全過，
 靜態分析與 `git diff --check` 通過。本輪沒有改動 Swift、套件版本或 CI 規則。
+
+
+## BUILD 210 回報後：原生暫停重畫與解碼資源
+
+修正標記 `bounded-native-redraw-1` 延續圖片重用與左右插入提示，處理報告中
+749ms seek 回呼、代理未就緒與高記憶體的原生路徑。這是程式行為修正，尚無
+同批素材的新 iPhone 效能數據，不能宣稱 2857MB 峰值已降至特定數值。
+
+- 暫停樣式更新改為複製目前 `AVVideoComposition`，保留指令、HDR 色彩設定及
+  `AVPlayerLayer`；最多一張等待中的重画，只保留最新操作。收到相符時間與
+  樣式世代的 CI 完成回報後才能排下一張，頻率上限 30 次／秒。這與舊版每
+  40ms 重產整份合成計畫不同。樣式已再次更新也必須釋放已完成的舊工作，
+  但舊樣式影格不得存進目前快取。使用者 seek 中收到的樣式改動留到定位後。
+- 某個播放器若 250ms 內沒有相符合成回報，取消等待，該播放器退回既有單一
+  seek 路徑；診斷會留下 timeout。播放、定位、換件與釋放會取消舊的等待。
+- 移除暫停及精準定位完成後的自動 preroll。設定短的 forward buffer 偏好；
+  這是 AVFoundation 提示，並非硬性記憶體或解碼影格上限。
+- 縮圖的兩個 `AVAssetImageGenerator` 閒置一秒後釋放；新的取格會使舊的
+  閒置計時失效。所有建立、取格與回收共用同一串行佇列，避免在取格中拆除。
+- 合成抽幀輸出口以使用數量管理；成功、逾時、轉換失敗都會釋放，且從最初
+  的 player item 拆除。播放器 dispose 同時清理輸出口、保留合成與音訊材料。
+- 預覽代理的 admission 改看 OS 回報的剩餘行程記憶體額度。原先已超過固定
+  footprint 門檻的原片播放器，可能永遠無法開始建立較省資源的替代代理。
+  新工作保留至少 1GiB、最多 1.5GiB（依實體記憶體比例），執行中保留至少
+  768MiB；不足或收到壓力會取消工作並冷卻五秒，未能取得量測也延後。
+  這些是工程預留值，並非對 jetsam 限制或轉檔峰值的保證。
+- 系統記憶體警告另外釋放預覽合成器的上一格 CI graph 與 CI 暫存；此工作
+  與合成共用序列，並限制清理頻率，避免警告風暴造成反覆重編譯。
+
+新增診斷：`availableProcessMemoryMB`、`pausedRedrawRenderCompleted`、
+`pausedRedrawRenderedEpoch`、`pausedRedrawRenderMaxMs`、
+`pausedRedrawCopyTimeouts`、`pausedRedrawCopyInFlight/Pending`、
+`preferredForwardBufferSeconds`、`prerollArmed`、縮圖池 `idleReleases`。
+新重畫耗時量到 CI 合成完成；舊 `redrawSeekMaxMs` 仍只計後備 seek。
+兩者皆不冒充 AVPlayerLayer 實際上屏時間。
+
+重畫方式依據 Apple [QA1966](https://developer.apple.com/library/archive/qa/qa1966/_index.html)；
+相同 custom compositor class 的實例沿用行為見
+[customVideoCompositor](https://developer.apple.com/documentation/avfoundation/avplayeritem/customvideocompositor)。
+
+本機檢查：`dart analyze lib test` 為 0 error／0 warning，保留原有一則 info；
+Codemagic 同等完整 Flutter 測試 994 通過／8 跳過，日誌無 `[E]` 且正常完成。
+新增 XCTest 涵蓋連續樣式合併、取消、舊 timeout、HDR 合成設定保留、
+代理記憶體預留、縮圖閒置回收、真正播放器的無 seek 重畫，以及並行抽幀
+失敗後拆除原 item 輸出口。iOS 編譯及 XCTest 以原生 CI 結果為準。
