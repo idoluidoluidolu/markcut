@@ -3253,18 +3253,88 @@ final class MCFrameGeneratorPool {
 /// process allowance, not a fixed footprint the original player cannot shed
 /// until a proxy exists. Pressure still cancels running work and adds cooldown.
 final class MCPreviewMemoryBudget {
+  static func reserveMB(physicalMB: Double, active: Bool) -> Double {
+    let admission = min(1536.0, max(1024.0, physicalMB * 0.15))
+    return active ? max(768.0, admission * 2 / 3) : admission
+  }
   private var retryAt: TimeInterval = 0
   func notePressure(now: TimeInterval) { retryAt = max(retryAt, now + 5) }
   func shouldDefer(usedMB: Double?, availableMB: Double, physicalMB: Double,
                    now: TimeInterval, active: Bool = false) -> Bool {
-    let admission = min(1536.0, max(1024.0, physicalMB * 0.15))
-    let reserve = active ? max(768.0, admission * 2 / 3) : admission
+    let reserve = Self.reserveMB(physicalMB: physicalMB, active: active)
     guard availableMB.isFinite, availableMB >= reserve,
       let used = usedMB, used.isFinite, used >= 0 else {
       notePressure(now: now)
       return true
     }
     return now < retryAt
+  }
+}
+
+/// The HDR proxy owns one decoded frame and at most eight output surfaces.
+/// A pool minimum is NOT a limit: every allocation must carry the threshold.
+/// Use a private CI context so completing a proxy can release its intermediates
+/// without purging the preview renderer while the user is editing.
+final class MCBoundedHDRRenderer {
+  static let bufferLimit = 8
+  let size: CGSize
+  let pool: CVPixelBufferPool
+  private lazy var context = CIContext(options: [
+    .cacheIntermediates: false,
+    .workingFormat: CIFormat.RGBAh,
+    .workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!,
+  ])
+  static func attributes(size: CGSize) -> [String: Any] {
+    [kCVPixelBufferPixelFormatTypeKey as String:
+      Int(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange),
+     kCVPixelBufferWidthKey as String: Int(size.width),
+     kCVPixelBufferHeightKey as String: Int(size.height),
+     kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
+     kCVPixelBufferMetalCompatibilityKey as String: true]
+  }
+  init?(size: CGSize) {
+    var created: CVPixelBufferPool?
+    guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil,
+      Self.attributes(size: size) as CFDictionary, &created) == kCVReturnSuccess,
+      let created = created else { return nil }
+    self.size = size
+    pool = created
+  }
+  func takeBuffer(_ buffer: inout CVPixelBuffer?) -> CVReturn {
+    CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(kCFAllocatorDefault, pool,
+      [kCVPixelBufferPoolAllocationThresholdKey as String: Self.bufferLimit] as CFDictionary,
+      &buffer)
+  }
+  func render(_ source: CVPixelBuffer, to output: CVPixelBuffer,
+              transform: CGAffineTransform, sourceHeight: CGFloat) {
+    let rect = CGRect(origin: .zero, size: size)
+    let placement = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: sourceHeight)
+      .concatenating(transform)
+      .concatenating(CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: size.height))
+    let image = CIImage(cvPixelBuffer: source, options: [.toneMapHDRtoSDR: false])
+      .transformed(by: placement)
+      .composited(over: CIImage(color: .black).cropped(to: rect)).cropped(to: rect)
+    context.render(image, to: output, bounds: rect,
+      colorSpace: CGColorSpace(name: CGColorSpace.itur_2100_HLG))
+    CVBufferSetAttachment(output, kCVImageBufferColorPrimariesKey,
+      kCVImageBufferColorPrimaries_ITU_R_2020, .shouldPropagate)
+    CVBufferSetAttachment(output, kCVImageBufferTransferFunctionKey,
+      kCVImageBufferTransferFunction_ITU_R_2100_HLG, .shouldPropagate)
+    CVBufferSetAttachment(output, kCVImageBufferYCbCrMatrixKey,
+      kCVImageBufferYCbCrMatrix_ITU_R_2020, .shouldPropagate)
+  }
+}
+
+/// Keep original timestamps, including variable frame rates. Only sources above
+/// 60 fps are decimated; never retime them (which would change speed/audio sync).
+struct MCProxyFrameCadence {
+  private var lastSlot: Int64?
+  mutating func accepts(_ time: CMTime, sourceFPS: Float) -> Bool {
+    guard sourceFPS > 60, time.isNumeric else { return true }
+    let slot = CMTimeConvertScale(time, timescale: 60, method: .roundTowardZero).value
+    guard lastSlot != slot else { return false }
+    lastSlot = slot
+    return true
   }
 }
 
@@ -5817,14 +5887,13 @@ final class MCInteractivePrepGate {
   /// 編碼，而它們做的其實是同一件事的不同部分——合成一趟就好，時間
   /// 大約省一半。
   ///
-  /// 顏色不會因此改變：舊的第一趟本來就是掛 videoComposition 交給
-  /// 系統的合成器算，這裡是同一個合成器、同一組色彩屬性，只是換成
-  /// 由 writer 收影格。
+  /// SDR 工作檔沿用合成器；HDR 代理逐格解碼與 CI 渲染，使用相同的
+  /// 延伸線性工作空間及 HLG 輸出色彩，並限制輸出緩衝數量。
   ///
   /// [maxShortSide] 給 0 代表不縮，維持原尺寸（只重排關鍵幀時用）
-  private func transcodeWorkFile(
+  func transcodeWorkFile(
     src: String, dest: String, maxShortSide: Int,
-    channel: FlutterMethodChannel, label: String, job: Int = 0,
+    channel: FlutterMethodChannel?, label: String, job: Int = 0,
     hdrPass: Bool = false,
     interactiveYield: Bool = false,
     done: @escaping (String?) -> Void
@@ -5841,8 +5910,8 @@ final class MCInteractivePrepGate {
     try? FileManager.default.removeItem(atPath: stage)
     if hdrPass {
       DispatchQueue.main.async {
-        channel.invokeMethod(
-          "note", arguments: "HDR 代理：HLG 直通（HDR 合成器轉正，不動色調）")
+        channel?.invokeMethod(
+          "note", arguments: "HDR 代理：逐格 HLG，最多 8 個輸出緩衝")
       }
     }
     // 匯入分段：開檔（同步解析 moov、載軌道、建 reader/writer）跟
@@ -5859,17 +5928,9 @@ final class MCInteractivePrepGate {
     }
     let dur = asset.duration.seconds
     let fps = vTrack.nominalFrameRate > 1 ? vTrack.nominalFrameRate : 30
-    // HDR 來源：掛跟匯出/合成播放器同一顆 CI 合成器做色調映射。
-    // 內建合成器的 HDR→SDR 是另一條曲線——「預覽（播工作檔）跟
-    // 成品（CI toneMap）顏色不一樣」的根因就是工作檔在這裡分家。
-    // HDR 直通模式（hdrPass）＝零處理：純解碼→縮放→重編碼，
-    // 不掛任何合成器（內建的、CI 的都不掛）、色彩標記照抄來源、
-    // 方向保留旗標。像素不經過任何色彩管線，物理上不可能變色
-    // hdrPass＝HLG 直通「但走 HDR 合成器」：方向烘死、HLG 標記寫進
-    // 檔（跟 HDR 匯出同一顆合成器、同一組標記；像素不做色調映射）。
-    // 舊的「零處理不掛合成器」把旋轉旗標與未轉正畫框帶進代理，
-    // 預覽合成器吃它時轉正數學對不上＝來源亮、輸出黑
-    //（實機 166 探針：交格亮度 0.063、源亮 0.449）
+    // HDR proxies use a single-frame reader/render/writer loop. Reusing the
+    // preview's AVVideoComposition creates another decoder/compositor queue
+    // with no application-controlled cap on its retained render surfaces.
     let isHDR = hdrPass ? true : CompPlayer.isHDRSource(src)
     let pixels: [String: Any] = [
       kCVPixelBufferPixelFormatTypeKey as String: Int(
@@ -5898,81 +5959,52 @@ final class MCInteractivePrepGate {
     outH -= outH.truncatingRemainder(dividingBy: 2)
     let size = CGSize(width: max(2, outW), height: max(2, outH))
 
-    // 一律走合成器：方向燒進畫面（不留旋轉旗標，不然合成播放器會為了
-    // 方向不一致而掛上逐格重畫）、尺寸精確、而且明確標成 709——不標的
-    // 話 HDR 的色彩標記會原封帶進 H.264 檔，播放器再套一次曲線，顏色
-    // 就整個歪掉
-    let vc = AVMutableVideoComposition()
-    vc.renderSize = size
-    vc.frameDuration = CMTime(
-      value: 1, timescale: CMTimeScale(max(1, min(60, fps.rounded()))))
+    let fit = vTrack.preferredTransform
+      .concatenating(CGAffineTransform(scaleX: shrink, y: shrink))
+      .concatenating(CGAffineTransform(
+        translationX: (size.width - dw * shrink) / 2,
+        y: (size.height - dh * shrink) / 2))
+    let hdrRenderer: MCBoundedHDRRenderer?
+    let vOut: AVAssetReaderOutput
     if hdrPass {
-      // HLG 直通：跟 HDR 匯出同一組標記
-      vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_2020
-      vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_2100_HLG
-      vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_2020
+      guard let renderer = MCBoundedHDRRenderer(size: size) else {
+        done("HDR 緩衝建立失敗"); return
+      }
+      hdrRenderer = renderer
+      vOut = AVAssetReaderTrackOutput(track: vTrack, outputSettings: pixels)
     } else {
+      hdrRenderer = nil
+      let vc = AVMutableVideoComposition()
+      vc.renderSize = size
+      vc.frameDuration = CMTime(
+        value: 1, timescale: CMTimeScale(max(1, min(60, fps.rounded()))))
       vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
       vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
       vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
-    }
-    if isHDR {
-      // 跟合成播放器的 fitTransform 同一套數學：轉正 → 等比縮放 →
-      // 置中（滿版貼齊，這裡沒有使用者縮放位移）。座標翻轉由
-      // CIExportCompositor 用 srcHeight 自己處理
-      let fit = vTrack.preferredTransform
-        .concatenating(CGAffineTransform(scaleX: shrink, y: shrink))
-        .concatenating(
-          CGAffineTransform(
-            translationX: (size.width - dw * shrink) / 2,
-            y: (size.height - dh * shrink) / 2))
-      // 直通用 HDR 版（不映射、HLG 輸出）；SDR 工作檔用一般版
-      //（toneMap，跟成品同一條曲線）——都是匯出驗證過的那兩顆
-      vc.customVideoCompositorClass =
-        hdrPass ? CIExportCompositorHDR.self : CIExportCompositor.self
-      vc.instructions = [
-        CIExportInstruction(
+      if isHDR {
+        vc.customVideoCompositorClass = CIExportCompositor.self
+        vc.instructions = [CIExportInstruction(
           timeRange: CMTimeRange(start: .zero, duration: asset.duration),
-          layers: [
-            CILayerSpec(
-              trackID: vTrack.trackID, still: nil,
-              transform: fit, srcHeight: vTrack.naturalSize.height,
-              start: 0, end: dur,
-              fadeIn: 0, fadeOut: 0, colorMatrix: nil,
-              crop: nil, rotation: 0, opacity: 1, z: 0)
-          ],
+          layers: [CILayerSpec(trackID: vTrack.trackID, still: nil,
+            transform: fit, srcHeight: vTrack.naturalSize.height,
+            start: 0, end: dur, fadeIn: 0, fadeOut: 0, colorMatrix: nil,
+            crop: nil, rotation: 0, opacity: 1, z: 0)],
           mosaics: [], overlays: [],
-          prerollTrackIDs: [NSNumber(value: vTrack.trackID)],
-          holdIfEmpty: true)
-      ]
-      DispatchQueue.main.async {
-        channel.invokeMethod(
-          "note",
-          arguments: "工作檔（HDR）：CI 色調映射，跟成品同一條曲線")
+          prerollTrackIDs: [NSNumber(value: vTrack.trackID)], holdIfEmpty: true)]
+      } else {
+        let ins = AVMutableVideoCompositionInstruction()
+        ins.timeRange = CMTimeRange(start: .zero, duration: asset.duration)
+        let li = AVMutableVideoCompositionLayerInstruction(assetTrack: vTrack)
+        li.setTransform(fit, at: .zero)
+        ins.layerInstructions = [li]
+        vc.instructions = [ins]
       }
-    } else {
-      let ins = AVMutableVideoCompositionInstruction()
-      ins.timeRange = CMTimeRange(start: .zero, duration: asset.duration)
-      let li = AVMutableVideoCompositionLayerInstruction(assetTrack: vTrack)
-      li.setTransform(
-        vTrack.preferredTransform.concatenating(
-          CGAffineTransform(scaleX: shrink, y: shrink)),
-        at: .zero)
-      ins.layerInstructions = [li]
-      vc.instructions = [ins]
-    }
-    // 獨立審查定罪（fresh-eyes）：hdrPass 原本走純軌道輸出，
-    // 上面蓋好的旋轉合成器整段是死碼——原始橫向畫格被 Resize
-    // 硬壓進直式尺寸＝中繼資料完美、像素橫躺變形（「方向反了」
-    // 的真根）。兩條路統一走合成器輸出
-    let vOut: AVAssetReaderOutput
-    do {
-      let o = AVAssetReaderVideoCompositionOutput(
+      let output = AVAssetReaderVideoCompositionOutput(
         videoTracks: [vTrack], videoSettings: pixels)
-      o.videoComposition = vc
-      o.alwaysCopiesSampleData = false
-      vOut = o
+      output.videoComposition = vc
+      vOut = output
     }
+    vOut.alwaysCopiesSampleData = false
     guard reader.canAdd(vOut) else {
       done("讀取端建不起來")
       return
@@ -5987,13 +6019,13 @@ final class MCInteractivePrepGate {
       AVVideoAllowFrameReorderingKey: false,
       AVVideoAverageBitRateKey: Int(
         size.width * size.height * CGFloat(min(fps, 60)) * 0.2),
-      AVVideoExpectedSourceFrameRateKey: Int(fps.rounded()),
+      AVVideoExpectedSourceFrameRateKey: Int(min(60, fps.rounded())),
     ]
     if hdrPass {
       vCompression[AVVideoProfileLevelKey] =
         kVTProfileLevel_HEVC_Main10_AutoLevel as String
     }
-    // HDR 代理的色彩標記固定 2020/HLG：像素是 CI HDR 合成器渲染進
+    // HDR 代理的色彩標記固定 2020/HLG：像素是 CI 渲染進
     // HLG 色彩空間的（outCS＋tagColors 都是 HLG），不能照抄來源——
     // PQ（HDR10）來源抄成 PQ 標記＝像素 HLG、檔頭 PQ，整片顏色錯
     let hdrColor: [String: Any] = [
@@ -6001,7 +6033,7 @@ final class MCInteractivePrepGate {
       AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_2100_HLG,
       AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020,
     ]
-    var vSettings: [String: Any] = [
+    let vSettings: [String: Any] = [
       AVVideoCodecKey: hdrPass ? AVVideoCodecType.hevc : .h264,
       AVVideoWidthKey: Int(size.width),
       AVVideoHeightKey: Int(size.height),
@@ -6026,6 +6058,9 @@ final class MCInteractivePrepGate {
       return
     }
     writer.add(vIn)
+    let adaptor = hdrPass ? AVAssetWriterInputPixelBufferAdaptor(
+      assetWriterInput: vIn,
+      sourcePixelBufferAttributes: MCBoundedHDRRenderer.attributes(size: size)) : nil
 
     // 聲音照抄成 AAC（取樣率與聲道數跟著來源，寫死會編不動單聲道）
     var aOut: AVAssetReaderTrackOutput?
@@ -6105,63 +6140,6 @@ final class MCInteractivePrepGate {
     let endAudio: () -> Void = {
       if let input = aIn, audioEnded.setIfClear() { input.markAsFinished(); group.leave() }
     }
-    group.enter()
-    vIn.requestMediaDataWhenReady(on: vq) {
-      if videoEnded.isSet { return }
-      while vIn.isReadyForMoreMediaData {
-        if cancelled.isSet { endVideo(); return }
-        if interactiveYield, !gate.wait(cancelled: cancelled) {
-          endVideo(); return
-        }
-        // Drain framework temporaries per sample, not after the writer's whole
-        // ready loop (which can span a large portion of a 4K source).
-        let more = autoreleasepool { () -> Bool in
-          guard let sb = vOut.copyNextSampleBuffer() else { return false }
-          guard vIn.append(sb) else { failed.set(); return false }
-          let now = CACurrentMediaTime()
-          if dur > 0.05, now - lastReport > 0.2 {
-            lastReport = now
-            let t = CMSampleBufferGetPresentationTimeStamp(sb).seconds
-            if t.isFinite {
-              DispatchQueue.main.async {
-                channel.invokeMethod(
-                  "progress",
-                  arguments: ["job": job, "value": min(1, max(0, t / dur))])
-              }
-            }
-          }
-          return true
-        }
-        if !more {
-          endVideo()
-          return
-        }
-      }
-    }
-    if let aOut = aOut, let aIn = aIn {
-      group.enter()
-      aIn.requestMediaDataWhenReady(on: aq) {
-        if audioEnded.isSet { return }
-        while aIn.isReadyForMoreMediaData {
-          if cancelled.isSet { endAudio(); return }
-          // Playback: no per-audio-sample throttle. Direct gestures pause both
-          // tracks, avoiding audio read-ahead while video is suspended.
-          if interactiveYield, !gate.wait(cancelled: cancelled, throttle: 0) {
-            endAudio(); return
-          }
-          let more = autoreleasepool { () -> Bool in
-            guard let sb = aOut.copyNextSampleBuffer() else { return false }
-            guard aIn.append(sb) else { failed.set(); return false }
-            return true
-          }
-          if !more {
-            endAudio()
-            return
-          }
-        }
-      }
-    }
-
     // 只回一次（逾時、取消與正常完成可能撞在一起）
     let replied = AtomicFlag()
     // 取消／逾時只設這個旗標並停掉 reader，writer 一律留給 group.notify
@@ -6232,6 +6210,109 @@ final class MCInteractivePrepGate {
     timeoutTimer = timer
     timer.resume()
 
+    // Enter both tracks before either callback can finish or cancellation can
+    // notify. Otherwise a short video can transiently empty the group.
+    group.enter()
+    if aIn != nil { group.enter() }
+    var cadence = MCProxyFrameCadence()
+    let frameReserve = MCPreviewMemoryBudget.reserveMB(
+      physicalMB: Double(ProcessInfo.processInfo.physicalMemory) / 1048576, active: true)
+    vIn.requestMediaDataWhenReady(on: vq) {
+      if videoEnded.isSet { return }
+      while vIn.isReadyForMoreMediaData {
+        if cancelled.isSet { endVideo(); return }
+        if interactiveYield, !gate.wait(cancelled: cancelled) {
+          endVideo(); return
+        }
+        // Drain framework temporaries per sample, not after the writer's whole
+        // ready loop (which can span a large portion of a 4K source).
+        let more = autoreleasepool { () -> Bool in
+          // Acquire an output slot BEFORE decoding. Encoder backpressure must
+          // never grow a queue of full-resolution source frames or new pools.
+          var output: CVPixelBuffer?
+          if let renderer = hdrRenderer {
+            let waitingSince = CACurrentMediaTime()
+            while output == nil {
+              if cancelled.isSet { return false }
+              if interactiveYield {
+                guard gate.wait(cancelled: cancelled, throttle: 0) else { return false }
+                if Double(os_proc_available_memory()) / 1048576 < frameReserve {
+                  stop(AppDelegate.prepDeferredErr); return false
+                }
+              }
+              let status = renderer.takeBuffer(&output)
+              if status == kCVReturnSuccess { break }
+              guard status == kCVReturnWouldExceedAllocationThreshold else {
+                failed.set(); stop("HDR 緩衝配置失敗：\(status)"); return false
+              }
+              guard CACurrentMediaTime() - waitingSince < 5 else {
+                stop(interactiveYield ? AppDelegate.prepDeferredErr : "HDR 編碼器未釋放影格")
+                return false
+              }
+              Thread.sleep(forTimeInterval: 0.005)
+            }
+          }
+          guard let sb = vOut.copyNextSampleBuffer() else { return false }
+          let pts = CMSampleBufferGetPresentationTimeStamp(sb)
+          if let renderer = hdrRenderer, let adaptor = adaptor, let output = output {
+            guard cadence.accepts(pts, sourceFPS: fps) else { return true }
+            guard let source = CMSampleBufferGetImageBuffer(sb) else {
+              failed.set(); stop("HDR 影格讀取失敗"); return false
+            }
+            // Check again after decoding, before CI allocates render scratch.
+            if interactiveYield && Double(os_proc_available_memory()) / 1048576 < frameReserve {
+              stop(AppDelegate.prepDeferredErr); return false
+            }
+            renderer.render(source, to: output, transform: fit,
+              sourceHeight: vTrack.naturalSize.height)
+            guard !cancelled.isSet else { return false }
+            guard adaptor.append(output, withPresentationTime: pts) else {
+              failed.set(); stop("HDR 影格寫入失敗"); return false
+            }
+          } else if !vIn.append(sb) { failed.set(); return false }
+          let now = CACurrentMediaTime()
+          if dur > 0.05, now - lastReport > 0.2 {
+            lastReport = now
+            let t = CMSampleBufferGetPresentationTimeStamp(sb).seconds
+            if t.isFinite {
+              DispatchQueue.main.async {
+                channel?.invokeMethod(
+                  "progress",
+                  arguments: ["job": job, "value": min(1, max(0, t / dur))])
+              }
+            }
+          }
+          return true
+        }
+        if !more {
+          endVideo()
+          return
+        }
+      }
+    }
+    if let aOut = aOut, let aIn = aIn {
+      aIn.requestMediaDataWhenReady(on: aq) {
+        if audioEnded.isSet { return }
+        while aIn.isReadyForMoreMediaData {
+          if cancelled.isSet { endAudio(); return }
+          // Playback: no per-audio-sample throttle. Direct gestures pause both
+          // tracks, avoiding audio read-ahead while video is suspended.
+          if interactiveYield, !gate.wait(cancelled: cancelled, throttle: 0) {
+            endAudio(); return
+          }
+          let more = autoreleasepool { () -> Bool in
+            guard let sb = aOut.copyNextSampleBuffer() else { return false }
+            guard aIn.append(sb) else { failed.set(); return false }
+            return true
+          }
+          if !more {
+            endAudio()
+            return
+          }
+        }
+      }
+    }
+
     group.notify(queue: vq) {
       // 兩個 append 迴圈都收工了：writer 的去留在這裡一次決定，
       // 不會跟 append 併行（見上面 cancelled 的說明）
@@ -6247,6 +6328,9 @@ final class MCInteractivePrepGate {
       guard writer.status == .writing else {
         finish(writer.error?.localizedDescription ?? "寫入端中止")
         return
+      }
+      if hdrPass, asset.duration.isNumeric, asset.duration > .zero {
+        writer.endSession(atSourceTime: asset.duration)
       }
       writer.finishWriting {
         if let reason = stopState.reason { finish(reason); return }
@@ -6281,7 +6365,7 @@ final class MCInteractivePrepGate {
         // channel 只能在主執行緒送（跟上面的進度回報同一條規矩）。
         // finish(nil) 自己也回主執行緒，排在這句後面，順序不變
         DispatchQueue.main.async {
-          channel.invokeMethod(
+          channel?.invokeMethod(
             "note",
             arguments: String(
               format: "%@ %dms（開檔 %dms、素材 %.1fs %dx%d@%.0f → %.1f 倍速）",

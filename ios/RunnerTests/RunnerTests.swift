@@ -50,6 +50,149 @@ private final class HeldImportProvider: NSItemProvider {
 }
 
 class RunnerTests: XCTestCase {
+
+  private func hdrFixture() throws -> URL {
+    try XCTUnwrap(Bundle(for: RunnerTests.self)
+      .url(forResource: "native-hdr-rotated", withExtension: "mp4"))
+  }
+
+  private func hdrLuma(_ buffer: CVPixelBuffer, at point: CGPoint) -> Double {
+    CVPixelBufferLockBaseAddress(buffer, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+    let x = max(0, min(CVPixelBufferGetWidth(buffer) - 1, Int(point.x)))
+    let y = max(0, min(CVPixelBufferGetHeight(buffer) - 1, Int(point.y)))
+    let row = CVPixelBufferGetBaseAddressOfPlane(buffer, 0)!
+      .advanced(by: y * CVPixelBufferGetBytesPerRowOfPlane(buffer, 0))
+      .assumingMemoryBound(to: UInt16.self)
+    return Double(row[x] >> 6) / 1023
+  }
+
+  func testHDRProxyPoolHardLimitAndReuseAfterEncoderReleasesBuffer() throws {
+    let renderer = try XCTUnwrap(MCBoundedHDRRenderer(size: CGSize(width: 64, height: 128)))
+    var held: [CVPixelBuffer] = []
+    for _ in 0..<MCBoundedHDRRenderer.bufferLimit {
+      try autoreleasepool {
+        var buffer: CVPixelBuffer?
+        XCTAssertEqual(renderer.takeBuffer(&buffer), kCVReturnSuccess)
+        held.append(try XCTUnwrap(buffer))
+      }
+    }
+    for _ in 0..<20 {
+      var denied: CVPixelBuffer?
+      XCTAssertEqual(renderer.takeBuffer(&denied), kCVReturnWouldExceedAllocationThreshold)
+      XCTAssertNil(denied, "backpressure must not allocate a ninth surface")
+    }
+    held.removeLast()
+    var recycled: CVPixelBuffer?
+    XCTAssertEqual(renderer.takeBuffer(&recycled), kCVReturnSuccess)
+    XCTAssertNotNil(recycled, "a released encoder surface must be reusable")
+    withExtendedLifetime(held) {}
+  }
+
+  func testHDRProxyCadencePreservesVariableTimestampsAndCaps120FPS() {
+    var cadence = MCProxyFrameCadence()
+    let times = (0..<120).map { CMTime(value: Int64($0), timescale: 120) }
+    let kept = times.filter { cadence.accepts($0, sourceFPS: 120) }
+    XCTAssertEqual(kept.count, 60)
+    XCTAssertEqual(kept.first, .zero)
+    XCTAssertEqual(kept.last, CMTime(value: 118, timescale: 120))
+    for value in [0, 33, 69, 103, 138, 171] {
+      XCTAssertTrue(cadence.accepts(CMTime(value: Int64(value), timescale: 1000), sourceFPS: 29.97))
+    }
+  }
+
+  func testHDRProxyRendererBakesAllOrientationsWithoutClippingHighlights() throws {
+    let asset = AVURLAsset(url: try hdrFixture())
+    let track = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
+    let reader = try AVAssetReader(asset: asset)
+    let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+      kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)])
+    output.alwaysCopiesSampleData = false
+    reader.add(output)
+    XCTAssertTrue(reader.startReading())
+    defer { reader.cancelReading() }
+    let sample = try XCTUnwrap(output.copyNextSampleBuffer())
+    let source = try XCTUnwrap(CMSampleBufferGetImageBuffer(sample))
+    let transforms: [CGAffineTransform] = [
+      .identity,
+      CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 64, ty: 0),
+      CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: 128, ty: 64),
+      CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: 128),
+    ]
+    for (index, transform) in transforms.enumerated() {
+      try autoreleasepool {
+        let size = index % 2 == 0 ? CGSize(width: 128, height: 64) : CGSize(width: 64, height: 128)
+        let renderer = try XCTUnwrap(MCBoundedHDRRenderer(size: size))
+        var buffer: CVPixelBuffer?
+        XCTAssertEqual(renderer.takeBuffer(&buffer), kCVReturnSuccess)
+        let rendered = try XCTUnwrap(buffer)
+        renderer.render(source, to: rendered, transform: transform, sourceHeight: 64)
+        let bright = hdrLuma(rendered, at: CGPoint(x: 32, y: 32).applying(transform))
+        let gray = hdrLuma(rendered, at: CGPoint(x: 96, y: 32).applying(transform))
+        XCTAssertEqual(bright, 940.0 / 1023, accuracy: 0.05, "rotation \(index): HDR highlight clipped")
+        XCTAssertEqual(gray, 512.0 / 1023, accuracy: 0.05, "rotation \(index): wrong geometry or transfer")
+        let transfer = CVBufferGetAttachment(rendered, kCVImageBufferTransferFunctionKey, nil)?
+          .takeUnretainedValue() as? String
+        XCTAssertEqual(transfer, kCVImageBufferTransferFunction_ITU_R_2100_HLG as String)
+      }
+    }
+  }
+
+  func testHDRProxyTranscodesReal10BitRotatedVideoWithAudio() throws {
+    let input = try hdrFixture()
+    XCTAssertTrue(CompPlayer.isHDRSource(input.path), "the fixture must really be HDR")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let destination = directory.appendingPathComponent("proxy.mp4")
+    let complete = expectation(description: "bounded HDR proxy completed")
+    complete.assertForOverFulfill = true
+    var error: String?
+    let delegate = AppDelegate()
+    delegate.transcodeWorkFile(src: input.path, dest: destination.path, maxShortSide: 64,
+      channel: nil, label: "HDR regression", hdrPass: true) { result in
+        XCTAssertTrue(Thread.isMainThread)
+        error = result
+        complete.fulfill()
+      }
+    wait(for: [complete], timeout: 90)
+    withExtendedLifetime(delegate) {}
+    XCTAssertNil(error)
+    guard error == nil else { return }
+    XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), ["proxy.mp4"])
+    let asset = AVURLAsset(url: destination)
+    let track = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
+    XCTAssertEqual(track.naturalSize, CGSize(width: 64, height: 128))
+    XCTAssertTrue(track.preferredTransform.isIdentity, "orientation must be baked, not applied twice")
+    XCTAssertEqual(asset.duration.seconds, 3, accuracy: 0.05)
+    XCTAssertEqual(asset.tracks(withMediaType: .audio).count, 1)
+    XCTAssertTrue(CompPlayer.isHDRSource(destination.path))
+    let reader = try AVAssetReader(asset: asset)
+    let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+      kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)])
+    output.alwaysCopiesSampleData = false
+    reader.add(output)
+    XCTAssertTrue(reader.startReading())
+    var count = 0
+    var previous = -1.0
+    while autoreleasepool(invoking: { () -> Bool in
+      guard let sample = output.copyNextSampleBuffer() else { return false }
+      let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds
+      XCTAssertGreaterThan(time, previous)
+      previous = time
+      if count == 0 {
+        let buffer = CMSampleBufferGetImageBuffer(sample)!
+        let top = hdrLuma(buffer, at: CGPoint(x: 32, y: 32))
+        let bottom = hdrLuma(buffer, at: CGPoint(x: 32, y: 96))
+        XCTAssertGreaterThan(max(top, bottom), 0.85)
+        XCTAssertGreaterThan(abs(top - bottom), 0.3, "portrait pixels must not be stretched sideways")
+      }
+      count += 1
+      return true
+    }) {}
+    XCTAssertEqual(reader.status, .completed)
+    XCTAssertEqual(count, 90, "all frames must survive repeated buffer-pool recycling")
+  }
   func testPickerBatchLoadsOneProviderAtATimeAndPreservesPartialSuccessOrder() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
