@@ -3229,6 +3229,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     QualityDiagnostics.instance.start(buildTag: appVersionTag);
     _tabs = TabController(length: 3, vsync: this);
     QualityDiagnostics.instance.contextProvider = _qualityContext;
+    // 黑盒子的現場快照（見 Diag.sceneProvider）：閃退報告要知道當時
+    // 載了幾支、疊了幾軌、誰在跑。閉包存在欄位上，dispose 時才認得出
+    // 是自己掛的（路由替換時新編輯器可能已經先掛了它自己的）
+    Diag.sceneProvider = _sceneSnapshot;
     _qualityTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       if (mounted &&
           QualityDiagnostics.instance.recording &&
@@ -3866,16 +3870,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   final List<int> _prepQueue = [];
 
   bool get _previewInteracting =>
+      _previewDirectInteraction || _playing || _startingPlayback || _exporting;
+
+  // One definition for native preparation AND player replacement. Previously
+  // swap-flush missed preview fingers, image picking/cropping and clip sliders.
+  bool get _previewDirectInteraction =>
       _wmImageImporting ||
-      _playing ||
-      _startingPlayback ||
       _scrubBusy ||
       _lifting ||
       _tlPinching ||
       _wmGestureOn ||
       _clipSliderActive ||
-      (_prepGestureLease?.isActive ?? false) ||
-      _exporting;
+      _pvPts.isNotEmpty ||
+      _tlFingers > 0 ||
+      (_prepGestureLease?.isActive ?? false);
+
+  bool get _previewSwapBlocked =>
+      _previewDirectInteraction ||
+      // An explicit Play needs pending structural edits before starting its
+      // clock. Its own preparation pause must not defer that required build.
+      (_prepGestureActivity.interactive && !_startingPlayback);
 
   Timer? _prepGestureLease;
   bool _wmImageImporting = false;
@@ -3930,16 +3944,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _prepActivity.update(forceBusy || _previewInteracting);
     // Playback may advance background proxies slowly. A direct manipulation
     // owns the decoder until the gesture and its idle cooldown finish.
-    _prepGestureActivity.update(
-      forceBusy ||
-          _wmImageImporting ||
-          _scrubBusy ||
-          _lifting ||
-          _tlPinching ||
-          _wmGestureOn ||
-          _clipSliderActive ||
-          (_prepGestureLease?.isActive ?? false),
-    );
+    _prepGestureActivity.update(forceBusy || _previewDirectInteraction);
   }
 
   List<int> _prioritizedPreparation(Iterable<int> pending) =>
@@ -4244,7 +4249,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               madeSdr++;
             }
           }
-        } on PreviewPreparationDeferred {
+        } on PreviewPreparationDeferred catch (deferred) {
           // Android releases its decoder and retries after stable idle. A
           // yield must not consume the codec-failure retry or safe fallback.
           if (mounted &&
@@ -4254,6 +4259,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             _prepQueue.add(i);
           }
           Diag.count('背景轉檔讓路');
+          await Future<void>.delayed(deferred.retryAfter);
           continue;
         }
         // 成功失敗都要記：時間都花掉了，倍速要照實算
@@ -4527,8 +4533,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           _hdrPrepFailed.add(i);
         }
         attempted.add(i);
-      } on PreviewPreparationDeferred {
+      } on PreviewPreparationDeferred catch (deferred) {
         Diag.count('背景轉檔讓路');
+        await Future<void>.delayed(deferred.retryAfter);
       }
       if (!mounted) return;
     }
@@ -4686,12 +4693,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 那一下不能落在手勢中間
   void _flushSwapsWhenIdle() {
     if (!mounted) return;
-    if (_playing ||
-        _exporting ||
-        _scrubBusy ||
-        _lifting ||
-        _tlPinching ||
-        _wmGestureOn) {
+    if (_playing || _exporting || _previewSwapBlocked) {
       _swapFlushTimer = Timer(
         const Duration(milliseconds: 400),
         _flushSwapsWhenIdle,
@@ -4708,6 +4710,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 暫停之後把排隊的媒體抽換一次做完
   void _flushPendingSwaps() {
     if (_playing || _flushing) return;
+    if (_previewSwapBlocked) {
+      _scheduleSwapFlush(const Duration(milliseconds: 400));
+      return;
+    }
     _flushing = true;
     final todo = _pendingSwaps.toList();
     _pendingSwaps.clear();
@@ -8781,8 +8787,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 該重組自然會再組、已新鮮就直接返回
   Future<void>? _compBuilding;
 
-  /// [yieldToGesture]：面板滑桿按著就先不換（編輯類的併批重建走這條；
-  /// 進場／匯入／調色那些不等）。見 [_compYieldToGesture]
+  /// 已有播放器時，所有入口都等手勢與短暫閒置窗結束才換件。
+  /// [yieldToGesture] 也讓尚無播放器的編輯類重建等待；首次進場不等。
   Future<void> _ensureComp({bool yieldToGesture = false}) async {
     Diag.ev('合成重建開始');
     while (_compBuilding != null) {
@@ -8805,15 +8811,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 起手常常落在那裡面——烘完再看一次。讓一手：髒旗標留著，
   /// 停手 350ms 後 [_compRebuildTick] 再來（圖已進快取，幾乎不用等）
   bool _compYieldToGesture() {
-    if (!_wmImageImporting &&
-        !_wmGestureOn &&
-        !_scrubBusy &&
-        !_lifting &&
-        !_tlPinching &&
-        _pvPts.isEmpty &&
-        !_clipSliderActive) {
-      return false;
-    }
+    if (!_previewSwapBlocked) return false;
     Diag.ev('合成重建讓給滑桿');
     _compRebuildTimer?.cancel();
     _compRebuildTimer = Timer(
@@ -8849,7 +8847,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _pendingCompRebuild = true;
       return;
     }
-    if (yieldToGesture && _compYieldToGesture()) return;
+    if ((yieldToGesture || _comp != null) && _compYieldToGesture()) return;
     // 調色模式一開就退回材質路徑：畫面走系統影片圖層時 Flutter 的濾鏡
     // 疊不上去，本來是「拉到有顏色的那一刻」才換路徑——換路徑要拆掉
     // 合成播放器、重建每個片段的播放器，那一下就是使用者說的
@@ -8879,7 +8877,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         ovMaps = await _ovMaps(ovSigAtBuild);
         // 烘圖這幾百毫秒裡使用者可能按上了滑桿：現在換 item 就是
         // 把換手空窗放在手指底下
-        if (yieldToGesture && _compYieldToGesture()) return;
+        if ((yieldToGesture || _comp != null) && _compYieldToGesture()) return;
       }
     }
     // 用系統影片圖層顯示時不要另外出一份材質：那份沒有人看，
@@ -9673,6 +9671,30 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Timer? _qualityTimer;
   Future<void>? _qualityRefreshPending;
 
+  /// 黑盒子用的現場快照（掛在 Diag.sceneProvider）。存成欄位而不是每次
+  /// tear-off：Dart 的方法 tear-off 兩次不是同一個物件，dispose 用
+  /// identical 認不出來
+  late final Map<String, Object?> Function() _sceneSnapshot = () {
+    var videos = 0;
+    var hdrProxies = 0;
+    for (final s in _tl.sources) {
+      if (!s.isVideo) continue;
+      videos++;
+      if (s.workHdrPath != null) hdrProxies++;
+    }
+    return {
+      '素材': videos,
+      '代理已備': hdrProxies,
+      '片段': _tl.clips.length,
+      '軌': _tl.usedTracks,
+      '合成': _comp != null ? '有' : '無',
+      '縮圖抽取中': _thumbActive,
+      '轉檔中': _prepping.length + _hdrPrepping.length,
+      '拖曳快取MB': _scrubBytes >> 20,
+      '片段播放器': _ctrls.length,
+    };
+  };
+
   Map<String, Object?> _qualityContext() => {
     'timelineSeconds': _position,
     'playing': _playing,
@@ -9716,7 +9738,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final sampleStartedAt = DateTime.now().toUtc();
     final sampledComp = _comp;
     diagnostic.environment.addAll({
-      'previewRevision': 'image-import-guard-1',
+      'previewRevision': 'proxy-memory-admission-1',
       'displayHz': View.of(context).display.refreshRate,
       'buildMode': kReleaseMode
           ? 'release'
@@ -11580,6 +11602,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    // 只拆自己掛的那份；別的編輯器實例已經掛上去的不動
+    if (identical(Diag.sceneProvider, _sceneSnapshot)) {
+      Diag.sceneProvider = null;
+    }
     for (final waiter in _thumbWaiters) {
       waiter.complete();
     }

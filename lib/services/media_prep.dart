@@ -9,7 +9,9 @@ import 'diagnostics.dart';
 /// A preview encode yielded its decoder to interaction. This is neither a
 /// codec failure nor a reason to lower quality or use a software fallback.
 class PreviewPreparationDeferred implements Exception {
-  const PreviewPreparationDeferred();
+  const PreviewPreparationDeferred({this.retryAfter = Duration.zero});
+
+  final Duration retryAfter;
 }
 
 /// 把素材交給「平台自己的硬體管線」轉成工作檔：SDR、H.264、長邊有上限。
@@ -233,6 +235,10 @@ class MediaPrep {
     bool safe = false,
     bool interactiveYield = false,
     void Function(double progress)? onProgress,
+    // 真的拿到轉檔槽、要開始叫原生的那一刻（排隊等槽的時間不算）。
+    // 黑盒子靠它分「排隊中」跟「轉檔中」：以前 mark 寫在排隊前，多支
+    // 素材時檔上的名字跟記憶體數字是「最後一支排進來的」，不是正在轉的
+    void Function()? onStart,
   }) async {
     if (!await available) return null;
     _wire();
@@ -243,6 +249,7 @@ class MediaPrep {
       if (interactiveYield && _interactive) {
         throw const PreviewPreparationDeferred();
       }
+      onStart?.call();
       final result = await _ch.invokeMethod<Object?>('toWorkFile', {
         'src': src,
         'dest': dest,
@@ -254,7 +261,14 @@ class MediaPrep {
         if (interactiveYield) 'interactiveYield': true,
       });
       if (result is Map && result['status'] == 'deferred') {
-        throw const PreviewPreparationDeferred();
+        final delay = result['retryAfterMs'];
+        throw PreviewPreparationDeferred(
+          retryAfter: Duration(
+            milliseconds: delay is num && delay.isFinite
+                ? delay.toInt().clamp(0, 30000)
+                : 0,
+          ),
+        );
       }
       return result is String ? result : null;
     } on PreviewPreparationDeferred {

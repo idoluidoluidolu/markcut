@@ -272,9 +272,16 @@ class WorkFiles {
     final dest = '${dir.path}${Platform.pathSeparator}$name';
     final sw = Stopwatch()..start();
     // 黑盒子跟工作檔那條一樣留：多素材匯入被系統收掉時，下次開 App
-    // 才知道是死在哪一支代理
-    await Diag.mark('HDR 代理：轉檔中', data: {'檔案': src.split('/').last});
+    // 才知道是死在哪一支代理。
+    //
+    // 三個時間點各寫一次，記憶體數字才對得上事實（209 那份的教訓：
+    // 只在排隊前寫一次，多支素材時看到的「2111 MB」是最後一支排進
+    // 佇列時的數字，跟死掉那一刻差了整段轉檔）：
+    //   排隊中 → 拿到轉檔槽（onStart）→ 轉檔中每 2 秒隨進度重寫一次
+    final fileName = src.split('/').last;
+    await Diag.mark('HDR 代理：排隊中', data: {'檔案': fileName});
     _inFlight.add(dest);
+    var lastBeat = DateTime.now();
     String? made;
     try {
       made = await MediaPrep.toWorkFile(
@@ -283,7 +290,23 @@ class WorkFiles {
         hdr: true,
         maxShortSide: kHdrProxyShortSide,
         interactiveYield: interactiveYield,
-        onProgress: onProgress,
+        onStart: () {
+          lastBeat = DateTime.now();
+          unawaited(Diag.mark('HDR 代理：轉檔中', data: {'檔案': fileName}));
+        },
+        onProgress: (v) {
+          onProgress?.call(v);
+          final now = DateTime.now();
+          if (now.difference(lastBeat).inMilliseconds >= 2000) {
+            lastBeat = now;
+            unawaited(
+              Diag.mark(
+                'HDR 代理：轉檔中',
+                data: {'檔案': fileName, '進度': '${(v * 100).round()}%'},
+              ),
+            );
+          }
+        },
       );
     } on PreviewPreparationDeferred {
       try {
@@ -480,8 +503,11 @@ class WorkFiles {
       Diag.note('工作檔改用保守參數重轉（上一次轉出來的不能用）：${src.split('/').last}');
       Diag.count('工作檔保守重轉');
     }
-    await Diag.mark('工作檔：轉檔中', data: {'檔案': src.split('/').last});
+    // 排隊中／轉檔中／每 2 秒心跳：跟 ensureHdr 同一套（理由見那邊）
+    final fileName = src.split('/').last;
+    await Diag.mark('工作檔：排隊中', data: {'檔案': fileName});
     _inFlight.add(dest);
+    var lastBeat = DateTime.now();
     String? made;
     try {
       made = await MediaPrep.toWorkFile(
@@ -493,7 +519,23 @@ class WorkFiles {
         prechecked: qualifies == false,
         safe: safe,
         interactiveYield: interactiveYield,
-        onProgress: onProgress,
+        onStart: () {
+          lastBeat = DateTime.now();
+          unawaited(Diag.mark('工作檔：轉檔中', data: {'檔案': fileName}));
+        },
+        onProgress: (v) {
+          onProgress?.call(v);
+          final now = DateTime.now();
+          if (now.difference(lastBeat).inMilliseconds >= 2000) {
+            lastBeat = now;
+            unawaited(
+              Diag.mark(
+                '工作檔：轉檔中',
+                data: {'檔案': fileName, '進度': '${(v * 100).round()}%'},
+              ),
+            );
+          }
+        },
       );
     } on PreviewPreparationDeferred {
       try {

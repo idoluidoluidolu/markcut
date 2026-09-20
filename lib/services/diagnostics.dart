@@ -97,20 +97,45 @@ class Diag {
 
   // ===== 黑盒子 =====
 
+  /// 測試用：黑盒子檔改寫到這個目錄（真機不會設）
+  @visibleForTesting
+  static Directory? crumbDirOverride;
+
   static Future<File?> _crumbFile() async {
     if (kIsWeb) return null;
     try {
-      final dir = await getApplicationSupportDirectory();
+      final dir = crumbDirOverride ?? await getApplicationSupportDirectory();
       return File('${dir.path}${Platform.pathSeparator}last_run.json');
     } catch (_) {
       return null;
     }
   }
 
+  /// 死掉那一刻「畫面上載了什麼」：編輯器進場時掛上、離開時拆掉。
+  /// 黑盒子只記「停在哪一步」跟記憶體數字，209 那份（多支影片閃退）
+  /// 光看「HDR 代理：轉檔中 2111 MB」判不出是誰吃的——素材幾支、
+  /// 疊了幾軌、縮圖／代理各幾個在跑、合成有沒有組起來，通通不知道。
+  /// 每次寫 mark 都把這份快照一起寫進去，下次閃退報告就能直接定罪
+  static Map<String, Object?> Function()? sceneProvider;
+
+  /// 世代號：[clearMark] 加一。[mark] 會先問記憶體（跨一趟 method channel）
+  /// 再寫檔，unawaited 的心跳 mark 若在 clearMark 之前起跑、之後才寫完，
+  /// 會留下一份假現場，下次開 App 就冤枉「上次沒正常結束」。
+  /// mark 進來先記世代，await 回來世代變了就丟掉不寫
+  static int _markGen = 0;
+
   /// 記下「我正在做什麼」。危險步驟開始前呼叫，正常做完呼叫 [clearMark]
   static Future<void> mark(String stage, {Map<String, Object?>? data}) async {
     if (kIsWeb) return;
+    final gen = _markGen;
     final mb = await memoryMb();
+    if (gen != _markGen) return; // 中間被 clearMark 過：這份現場已經過期
+    Map<String, Object?>? scene;
+    try {
+      scene = sceneProvider?.call();
+    } catch (_) {
+      // 快照壞掉不能拖垮黑盒子本身
+    }
     try {
       final f = await _crumbFile();
       await f?.writeAsString(
@@ -121,6 +146,7 @@ class Diag {
           'freeMb': lastFreeMb,
           'peakMb': peakMb,
           ...?data,
+          ...?scene,
         }),
       );
     } catch (_) {}
@@ -129,6 +155,7 @@ class Diag {
   /// 做完了，把現場擦掉——留著的話下次開 App 會被當成上次死在這裡
   static Future<void> clearMark() async {
     if (kIsWeb) return;
+    _markGen++; // 還在半路的 mark 全部作廢（見 _markGen）
     try {
       final f = await _crumbFile();
       if (f != null && f.existsSync()) await f.delete();
