@@ -280,3 +280,7 @@ Codemagic 同等完整 Flutter 測試 994 通過／8 跳過，日誌無 `[E]` �
 新增 XCTest 涵蓋連續樣式合併、取消、舊 timeout、HDR 合成設定保留、
 代理記憶體預留、縮圖閒置回收、真正播放器的無 seek 重畫，以及並行抽幀
 失敗後拆除原 item 輸出口。iOS 編譯及 XCTest 以原生 CI 結果為準。
+
+原生測試使用固定 64×64／30fps／30 格 H.264 素材，只打包於 XCTest。
+素材建立不再依賴模擬器即時 AVAssetWriter 編碼，避免建立測試檔逾時後
+以未完成影片繼續測試；來源、生成方式與用途列於 RunnerTests/Fixtures。

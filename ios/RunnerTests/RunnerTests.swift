@@ -484,45 +484,13 @@ class RunnerTests: XCTestCase {
   }
 
   private func makeScrubVideo() throws -> URL {
+    // A fixed 30-frame H.264 fixture keeps decoder/timing tests independent of
+    // simulator encoder startup. Each test owns a disposable file copy.
+    let source = try XCTUnwrap(Bundle(for: RunnerTests.self)
+      .url(forResource: "native-scrub", withExtension: "mp4"))
     let url = FileManager.default.temporaryDirectory
       .appendingPathComponent("native-scrub-\(UUID().uuidString).mp4")
-    let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
-    let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
-      AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 64,
-      AVVideoCompressionPropertiesKey: [AVVideoMaxKeyFrameIntervalKey: 10],
-    ])
-    input.expectsMediaDataInRealTime = false
-    let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input,
-      sourcePixelBufferAttributes: [
-        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-        kCVPixelBufferWidthKey as String: 64, kCVPixelBufferHeightKey as String: 64,
-      ])
-    XCTAssertTrue(writer.canAdd(input)); writer.add(input)
-    XCTAssertTrue(writer.startWriting()); writer.startSession(atSourceTime: .zero)
-    let finished = expectation(description: "encoded scrub fixture")
-    let buffer = try scrubBuffer(width: 64, height: 64)
-    CVPixelBufferLockBaseAddress(buffer, [])
-    let address = try XCTUnwrap(CVPixelBufferGetBaseAddress(buffer))
-    address.initializeMemory(as: UInt8.self, repeating: 128,
-      count: CVPixelBufferGetBytesPerRow(buffer) * 64)
-    CVPixelBufferUnlockBaseAddress(buffer, [])
-    var next = 0
-    var ending = false
-    input.requestMediaDataWhenReady(on: DispatchQueue(label: "native-scrub.fixture")) {
-      guard !ending else { return }
-      while input.isReadyForMoreMediaData, next < 30 {
-        guard adaptor.append(buffer, withPresentationTime: CMTime(value: Int64(next), timescale: 30)) else {
-          ending = true; writer.cancelWriting(); finished.fulfill(); return
-        }
-        next += 1
-      }
-      if next == 30 {
-        ending = true; input.markAsFinished()
-        writer.finishWriting { finished.fulfill() }
-      }
-    }
-    wait(for: [finished], timeout: 10)
-    XCTAssertEqual(writer.status, .completed, writer.error?.localizedDescription ?? "fixture encode failed")
+    try FileManager.default.copyItem(at: source, to: url)
     return url
   }
 
