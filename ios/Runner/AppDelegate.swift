@@ -7850,7 +7850,7 @@ final class CompPlayer: NSObject, FlutterTexture {
   private var redrawCopyLastEpoch = 0
   private var redrawCopyTimeouts = 0
   private var redrawCopyMaxMs = 0.0
-  private lazy var previewRenderReceipt = MCPreviewRenderReceipt { [weak self] epoch, time in
+  private lazy var previewRenderReceipt: MCPreviewRenderReceipt = MCPreviewRenderReceipt { [weak self] epoch, time in
     guard let self = self, self.pausedRedraw.complete(epoch: epoch, time: time) else { return }
     self.previewRenderReceipt.setWaiting(false)
     self.redrawCopyCompleted += 1
