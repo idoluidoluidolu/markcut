@@ -229,7 +229,7 @@ void main() {
     await scrub(t, 5);
     await tick(t, 8);
     expect(
-      frameRequests.where((args) => args['maxH'] == 1080),
+      frameRequests.where((args) => (args['maxH'] as int) > 200),
       isEmpty,
       reason: 'HDR AVPlayerLayer 顯示不使用 JPEG；不可額外啟動原檔 decoder',
     );

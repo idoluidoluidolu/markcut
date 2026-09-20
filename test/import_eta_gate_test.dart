@@ -419,6 +419,85 @@ void main() {
     ));
   });
 
+  testWidgets('HDR 首預覽就緒後只補時間軸縮圖，不加開 SDR 拖曳 decoder', (t) async {
+    t.view.physicalSize = const Size(1100, 2200);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    _holdWork = Completer<void>();
+    final frameSizes = <int>[];
+    final oldLayer = Diag.playerLayer.value;
+    Diag.playerLayer.value = false;
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(const MethodChannel('markcut/frames'), (
+      call,
+    ) async {
+      if (call.method == 'frameAt') {
+        final args = call.arguments as Map;
+        // Draft covers use a separate, non-detailed 720px extraction.
+        if (args['detailed'] == true) frameSizes.add(args['maxH'] as int);
+      }
+      return null;
+    });
+    messenger.setMockMethodCallHandler(const MethodChannel('markcut/comp'), (
+      call,
+    ) async {
+      if (call.method == 'available') return true;
+      if (call.method == 'build') {
+        // The native result is authoritative for the selected HDR display plane.
+        return <String, dynamic>{
+          'textureId': 1,
+          'duration': 60.0,
+          'width': 1920.0,
+          'height': 1080.0,
+          'hdr': true,
+          'nativeScrub': false,
+        };
+      }
+      if (call.method == 'seek') return true;
+      return null;
+    });
+    addTearDown(() {
+      Diag.playerLayer.value = oldLayer;
+      messenger.setMockMethodCallHandler(
+        const MethodChannel('markcut/comp'),
+        null,
+      );
+      messenger.setMockMethodCallHandler(
+        const MethodChannel('markcut/frames'),
+        null,
+      );
+      if (!_holdWork!.isCompleted) _holdWork!.complete();
+    });
+    await t.pumpWidget(
+      MaterialApp(
+        home: VideoEditorScreen(
+          videoPaths: [_p('first.mov'), _p('second.mov')],
+        ),
+      ),
+    );
+    await _settle(t, 40);
+    _swallowMediaKit(t);
+    expect(_workStarted, 1, reason: '完整初始預覽已返回，背景準備才有資格起跑');
+    expect(
+      frameSizes.where((size) => size <= 200),
+      isNotEmpty,
+      reason: '時間軸縮圖仍要正常載入，不能把所有抽幀一律關掉',
+    );
+    expect(
+      frameSizes.where((size) => size > 200),
+      isEmpty,
+      reason: '_dressUp 的首輪預取不得啟動無法顯示的 SDR JPEG decoder',
+    );
+    await t.pumpWidget(const SizedBox.shrink());
+    _holdWork!.complete();
+    for (var n = 0; n < 75 && MediaPrep.debugScheduling.running > 0; n++) {
+      await _settle(t, 1);
+    }
+    await t.pump(const Duration(seconds: 5));
+    _swallowMediaKit(t);
+  });
+
   testWidgets('預設匯入：轉檔仍未完成時已可拖曳時間軸', (t) async {
     t.view.physicalSize = const Size(1100, 2200);
     t.view.devicePixelRatio = 1;
