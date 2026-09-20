@@ -294,7 +294,8 @@ jetsam 報告，因此以下是已確認的程式缺陷與防護，不能冒充�
 - PHPicker 舊實作用 serial queue 呼叫非同步 `loadFileRepresentation`，實際
   仍同時啟動整批 provider；各回呼也同時修改 errors／進度。改為
   `FPFileImportBatch`：前一支檔案複製完成才啟動下一支，所有集合及計數由
-  同一佇列管理。保持點選順序、部分成功、原檔 HDR 位元資料及 tmp 儲存。
+  同一佇列管理。每支完成即釋放 provider，暫存物件清完才接下一支；保持
+  點選順序、部分成功、原檔 HDR 位元資料及 tmp 儲存。
 - 暫存來源仍在 provider 回呼內複製，沒有把 URL 延後使用：Apple 明確說明
   [來源檔案於回呼返回時刪除](https://developer.apple.com/documentation/foundation/nsitemprovider/loadfilerepresentation%28fortypeidentifier%3Acompletionhandler%3A%29)。
 - 新選取取代未完成的批次時取消舊 NSProgress、丟棄排隊素材、清理尚未交付

@@ -4,7 +4,7 @@
 @property (atomic) BOOL cancelled;
 @property (atomic) BOOL delivered;
 @property (nonatomic, strong) dispatch_queue_t queue;
-@property (nonatomic, copy) NSArray<NSItemProvider *> *providers;
+@property (nonatomic, strong) NSMutableArray *providers;
 @property (nonatomic, copy) NSArray<NSString *> *typeIdentifiers;
 @property (nonatomic, strong) NSURL *directory;
 @property (nonatomic, strong) NSMutableArray<NSURL *> *urls;
@@ -21,7 +21,7 @@
          acceptedTypeIdentifiers:(NSArray<NSString *> *)typeIdentifiers
             destinationDirectory:(NSURL *)directory {
     if ((self = [super init])) {
-        _providers = [providers copy];
+        _providers = [providers mutableCopy];
         _typeIdentifiers = [typeIdentifiers copy];
         _directory = directory;
         _urls = [NSMutableArray array];
@@ -56,7 +56,7 @@
     dispatch_async(self.queue, ^{
         [self.activeProgress cancel];
         self.activeProgress = nil;
-        self.providers = @[];
+        [self.providers removeAllObjects];
         self.progress = nil;
         self.completion = nil;
         for (NSURL *url in self.urls) {
@@ -90,10 +90,11 @@
         NSString *extension = [type isEqualToString:@"public.movie"] ? @"mov" : @"jpg";
         self.activeProgress = [provider loadFileRepresentationForTypeIdentifier:type
             completionHandler:^(NSURL *url, NSError *error) {
+                NSURL *copied = nil;
+                NSString *failure = nil;
                 @autoreleasepool {
                     if (self.cancelled) return;
-                    NSURL *copied = nil;
-                    NSString *failure = error.localizedDescription;
+                    failure = error.localizedDescription;
                     if (url != nil && error == nil) {
                         NSString *name = [[NSUUID UUID].UUIDString stringByAppendingPathExtension:
                             url.pathExtension.length > 0 ? url.pathExtension : extension];
@@ -114,10 +115,12 @@
                             [[NSFileManager defaultManager] removeItemAtURL:destination error:nil];
                         }
                     }
-                    dispatch_async(self.queue, ^{
-                        [self completeURL:copied error:failure ?: (copied ? nil : @"No file returned")];
-                    });
                 }
+                // Drain each provider's temporary objects before admitting the
+                // next one. Only these small owned results survive the pool.
+                dispatch_async(self.queue, ^{
+                    [self completeURL:copied error:failure ?: (copied ? nil : @"No file returned")];
+                });
             }];
     }
 }
@@ -128,6 +131,9 @@
         if (url) [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
         return;
     }
+    // A completed NSItemProvider may retain its export/asset resources. Keep
+    // only the app-owned URL, not all previously loaded providers in the batch.
+    self.providers[self.index] = [NSNull null];
     if (url) [self.urls addObject:url];
     if (error) [self.errors addObject:[NSString stringWithFormat:@"Item %lu: %@",
         (unsigned long)self.index, error]];
@@ -147,7 +153,7 @@
     void (^completion)(NSArray<NSURL *> *, NSArray<NSString *> *) = self.completion;
     self.completion = nil;
     self.progress = nil;
-    self.providers = @[];
+    [self.providers removeAllObjects];
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!self.cancelled && completion) {
             self.delivered = YES;
