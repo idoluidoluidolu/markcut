@@ -19,6 +19,7 @@
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
 		C59A7B88EA5A4C1BAABB0002 /* native-scrub.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = C59A7B88EA5A4C1BAABB0001 /* native-scrub.mp4 */; };
 		C59A7B88EA5A4C1BAABB0004 /* native-hdr-rotated.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = C59A7B88EA5A4C1BAABB0003 /* native-hdr-rotated.mp4 */; };
+		C59A7B88EA5A4C1BAABB0006 /* native-hdr-surround.mov in Resources */ = {isa = PBXBuildFile; fileRef = C59A7B88EA5A4C1BAABB0005 /* native-hdr-surround.mov */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -65,6 +66,7 @@
 		A1B2C3D01A2B3C4D5E6F7001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		C59A7B88EA5A4C1BAABB0001 /* native-scrub.mp4 */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Fixtures/native-scrub.mp4"; sourceTree = "<group>"; };
 		C59A7B88EA5A4C1BAABB0003 /* native-hdr-rotated.mp4 */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Fixtures/native-hdr-rotated.mp4"; sourceTree = "<group>"; };
+		C59A7B88EA5A4C1BAABB0005 /* native-hdr-surround.mov */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Fixtures/native-hdr-surround.mov"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -85,6 +87,7 @@
 				331C807B294A618700263BE5 /* RunnerTests.swift */,
 				C59A7B88EA5A4C1BAABB0001 /* native-scrub.mp4 */,
 				C59A7B88EA5A4C1BAABB0003 /* native-hdr-rotated.mp4 */,
+				C59A7B88EA5A4C1BAABB0005 /* native-hdr-surround.mov */,
 			);
 			path = RunnerTests;
 			sourceTree = "<group>";
@@ -229,6 +232,7 @@
 			files = (
 				C59A7B88EA5A4C1BAABB0002 /* native-scrub.mp4 in Resources */,
 				C59A7B88EA5A4C1BAABB0004 /* native-hdr-rotated.mp4 in Resources */,
+				C59A7B88EA5A4C1BAABB0006 /* native-hdr-surround.mov in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

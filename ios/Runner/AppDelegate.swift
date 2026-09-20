@@ -3271,6 +3271,55 @@ final class MCPreviewMemoryBudget {
   }
 }
 
+/// Proxy AAC can be remuxed without decoding, preserving multichannel layout.
+/// Other codecs are explicitly decoded to mono/stereo PCM before AAC encoding.
+/// Passing a source channel count > 2 without AVChannelLayoutKey to the writer
+/// throws an Objective-C exception during initialization (before canAdd runs).
+struct MCProxyAudioPlan {
+  let readerSettings: [String: Any]?
+  let writerSettings: [String: Any]?
+  let sourceFormatHint: CMFormatDescription?
+  init(format: CMFormatDescription?) {
+    if let format = format,
+      CMFormatDescriptionGetMediaSubType(format) == kAudioFormatMPEG4AAC {
+      readerSettings = nil
+      writerSettings = nil
+      sourceFormatHint = format
+      return
+    }
+    var channels = 2
+    var sampleRate = 48000.0
+    if let format = format, let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(format) {
+      channels = asbd.pointee.mChannelsPerFrame == 1 ? 1 : 2
+      let rate = asbd.pointee.mSampleRate
+      if rate.isFinite, rate >= 8000, rate <= 96000 { sampleRate = rate }
+    }
+    var layout = AudioChannelLayout()
+    layout.mChannelLayoutTag = channels == 1 ? kAudioChannelLayoutTag_Mono : kAudioChannelLayoutTag_Stereo
+    let layoutData = Data(bytes: &layout, count: MemoryLayout<AudioChannelLayout>.size)
+    var decodeLayout = layout
+    // 'apac': request the decoder's binaural rendering of the spatial sound
+    // field, rather than treating its Ambisonics channels as speaker channels.
+    if let format = format, CMFormatDescriptionGetMediaSubType(format) == 0x61706163 {
+      decodeLayout.mChannelLayoutTag = kAudioChannelLayoutTag_Binaural
+    }
+    let decodeLayoutData = Data(bytes: &decodeLayout, count: MemoryLayout<AudioChannelLayout>.size)
+    readerSettings = [
+      AVFormatIDKey: Int(kAudioFormatLinearPCM),
+      AVNumberOfChannelsKey: channels, AVSampleRateKey: sampleRate,
+      AVChannelLayoutKey: decodeLayoutData,
+      AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false,
+      AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false,
+    ]
+    writerSettings = [
+      AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+      AVNumberOfChannelsKey: channels, AVSampleRateKey: sampleRate,
+      AVChannelLayoutKey: layoutData, AVEncoderBitRateKey: 128_000,
+    ]
+    sourceFormatHint = nil
+  }
+}
+
 /// Track matrices may rotate around (0, 0), or include arbitrary translations.
 /// Normalize the transformed rectangle before scaling; applying a transform to
 /// CGSize loses its origin and can place an otherwise valid movie off-canvas.
@@ -6074,40 +6123,30 @@ final class MCInteractivePrepGate {
       assetWriterInput: vIn,
       sourcePixelBufferAttributes: MCBoundedHDRRenderer.attributes(size: size)) : nil
 
-    // 聲音照抄成 AAC（取樣率與聲道數跟著來源，寫死會編不動單聲道）
+    // Preserve AAC packets/layout when possible. Explicitly convert other
+    // formats before encoding; never initialize AAC with a bare >2-channel
+    // count (iPhone Spatial Audio can otherwise terminate the whole process).
     var aOut: AVAssetReaderTrackOutput?
     var aIn: AVAssetWriterInput?
     if let aTrack = asset.tracks(withMediaType: .audio).first {
-      var ch = 2
-      var sr = 44100.0
-      if let fdAny = aTrack.formatDescriptions.first {
-        let fd = fdAny as! CMFormatDescription
-        if let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fd) {
-          ch = max(1, Int(asbd.pointee.mChannelsPerFrame))
-          if asbd.pointee.mSampleRate > 0 { sr = asbd.pointee.mSampleRate }
-        }
+      let format = aTrack.formatDescriptions.first.map { $0 as! CMFormatDescription }
+      let audio = MCProxyAudioPlan(format: format)
+      if let settings = audio.writerSettings,
+        !writer.canApply(outputSettings: settings, forMediaType: .audio) {
+        done("音訊格式無法轉成工作檔"); return
       }
-      let out = AVAssetReaderTrackOutput(
-        track: aTrack,
-        outputSettings: [AVFormatIDKey: Int(kAudioFormatLinearPCM)])
-      let input = AVAssetWriterInput(
-        mediaType: .audio,
-        outputSettings: [
-          AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-          AVNumberOfChannelsKey: ch,
-          AVSampleRateKey: sr,
-          AVEncoderBitRateKey: 128_000,
-        ])
+      let out = AVAssetReaderTrackOutput(track: aTrack, outputSettings: audio.readerSettings)
+      out.alwaysCopiesSampleData = false
+      let input = AVAssetWriterInput(mediaType: .audio,
+        outputSettings: audio.writerSettings, sourceFormatHint: audio.sourceFormatHint)
       input.expectsMediaDataInRealTime = false
-      // 兩邊都要收得下才動手：只把 reader output 加進去而 writer input
-      // 沒加的話，那條軌永遠不會被讀完，reader 就到不了 completed，
-      // 整份轉檔會被判成失敗
-      if reader.canAdd(out), writer.canAdd(input) {
-        reader.add(out)
-        writer.add(input)
-        aOut = out
-        aIn = input
+      guard reader.canAdd(out), writer.canAdd(input) else {
+        done("音訊讀寫端建不起來"); return
       }
+      reader.add(out)
+      writer.add(input)
+      aOut = out
+      aIn = input
     }
 
     if interactiveYield && previewMemoryNeedsYield() {

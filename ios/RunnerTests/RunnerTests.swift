@@ -167,8 +167,31 @@ class RunnerTests: XCTestCase {
     }
   }
 
-  func testHDRProxyTranscodesReal10BitRotatedVideoWithAudio() throws {
+  func testHDRProxyTranscodesReal10BitRotatedVideoWithMultichannelAAC() throws {
     let input = try hdrFixture()
+    let source = AVURLAsset(url: input)
+    let track = try XCTUnwrap(source.tracks(withMediaType: .audio).first)
+    let format = try XCTUnwrap(track.formatDescriptions.first) as! CMFormatDescription
+    let plan = MCProxyAudioPlan(format: format)
+    XCTAssertNil(plan.readerSettings, "AAC should not start another decoder")
+    XCTAssertNil(plan.writerSettings, "preserve the original AAC channel layout and packets")
+    XCTAssertNotNil(plan.sourceFormatHint, "MP4 passthrough requires a format hint")
+    try assertHDRProxy(input: input, sourceChannels: 4, outputChannels: 4, duration: 3, frames: 90)
+  }
+
+  func testHDRProxyConvertsSurroundPCMBeforeInitializingAACWriter() throws {
+    let input = try XCTUnwrap(Bundle(for: RunnerTests.self)
+      .url(forResource: "native-hdr-surround", withExtension: "mov"))
+    try assertHDRProxy(input: input, sourceChannels: 6, outputChannels: 2, duration: 1, frames: 30)
+  }
+
+  private func assertHDRProxy(input: URL, sourceChannels: UInt32, outputChannels: UInt32,
+                             duration: Double, frames: Int) throws {
+    let source = AVURLAsset(url: input)
+    let sourceTrack = try XCTUnwrap(source.tracks(withMediaType: .audio).first)
+    let sourceFormat = try XCTUnwrap(sourceTrack.formatDescriptions.first) as! CMFormatDescription
+    XCTAssertEqual(CMAudioFormatDescriptionGetStreamBasicDescription(sourceFormat)?.pointee.mChannelsPerFrame,
+      sourceChannels, "fixture must cover the >2-channel crash path")
     XCTAssertTrue(CompPlayer.isHDRSource(input.path), "the fixture must really be HDR")
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -193,8 +216,35 @@ class RunnerTests: XCTestCase {
     let track = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
     XCTAssertEqual(track.naturalSize, CGSize(width: 64, height: 128))
     XCTAssertTrue(track.preferredTransform.isIdentity, "orientation must be baked, not applied twice")
-    XCTAssertEqual(asset.duration.seconds, 3, accuracy: 0.05)
+    XCTAssertEqual(asset.duration.seconds, duration, accuracy: 0.05)
     XCTAssertEqual(asset.tracks(withMediaType: .audio).count, 1)
+    let audioTrack = try XCTUnwrap(asset.tracks(withMediaType: .audio).first)
+    let audioFormat = try XCTUnwrap(audioTrack.formatDescriptions.first) as! CMFormatDescription
+    XCTAssertEqual(CMAudioFormatDescriptionGetStreamBasicDescription(audioFormat)?.pointee.mChannelsPerFrame,
+      outputChannels)
+    XCTAssertEqual(audioTrack.timeRange.duration.seconds, duration, accuracy: 0.05)
+    let audioReader = try AVAssetReader(asset: asset)
+    let audioOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: [
+      AVFormatIDKey: Int(kAudioFormatLinearPCM), AVLinearPCMBitDepthKey: 16,
+      AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false,
+      AVLinearPCMIsNonInterleaved: false])
+    audioReader.add(audioOutput)
+    XCTAssertTrue(audioReader.startReading())
+    var audible = false
+    while try autoreleasepool(invoking: { () throws -> Bool in
+      guard let sample = audioOutput.copyNextSampleBuffer() else { return false }
+      let block = try XCTUnwrap(CMSampleBufferGetDataBuffer(sample))
+      let length = CMBlockBufferGetDataLength(block)
+      var samples = [Int16](repeating: 0, count: length / 2)
+      let status = samples.withUnsafeMutableBytes {
+        CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: $0.baseAddress!)
+      }
+      XCTAssertEqual(status, kCMBlockBufferNoErr)
+      audible = audible || samples.contains { abs(Int($0)) > 32 }
+      return true
+    }) {}
+    XCTAssertEqual(audioReader.status, .completed)
+    XCTAssertTrue(audible, "conversion must not silently lose the sound")
     XCTAssertTrue(CompPlayer.isHDRSource(destination.path))
     let reader = try AVAssetReader(asset: asset)
     let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
@@ -220,7 +270,7 @@ class RunnerTests: XCTestCase {
       return true
     }) {}
     XCTAssertEqual(reader.status, .completed)
-    XCTAssertEqual(count, 90, "all frames must survive repeated buffer-pool recycling")
+    XCTAssertEqual(count, frames, "all frames must survive repeated buffer-pool recycling")
   }
   func testPickerBatchLoadsOneProviderAtATimeAndPreservesPartialSuccessOrder() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
