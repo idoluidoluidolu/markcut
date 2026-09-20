@@ -3271,6 +3271,32 @@ final class MCPreviewMemoryBudget {
   }
 }
 
+/// Track matrices may rotate around (0, 0), or include arbitrary translations.
+/// Normalize the transformed rectangle before scaling; applying a transform to
+/// CGSize loses its origin and can place an otherwise valid movie off-canvas.
+struct MCProxyGeometry {
+  let size: CGSize
+  let transform: CGAffineTransform
+  init?(naturalSize: CGSize, preferredTransform: CGAffineTransform, maxShortSide: Int) {
+    let bounds = CGRect(origin: .zero, size: naturalSize).applying(preferredTransform)
+    guard bounds.width.isFinite, bounds.height.isFinite,
+      bounds.minX.isFinite, bounds.minY.isFinite,
+      bounds.width > 1, bounds.height > 1 else { return nil }
+    let scale = maxShortSide > 0
+      ? min(1, CGFloat(maxShortSide) / min(bounds.width, bounds.height)) : 1
+    let width = (bounds.width * scale).rounded()
+    let height = (bounds.height * scale).rounded()
+    size = CGSize(width: max(2, width - width.truncatingRemainder(dividingBy: 2)),
+      height: max(2, height - height.truncatingRemainder(dividingBy: 2)))
+    transform = preferredTransform
+      .concatenating(CGAffineTransform(translationX: -bounds.minX, y: -bounds.minY))
+      .concatenating(CGAffineTransform(scaleX: scale, y: scale))
+      .concatenating(CGAffineTransform(
+        translationX: (size.width - bounds.width * scale) / 2,
+        y: (size.height - bounds.height * scale) / 2))
+  }
+}
+
 /// The HDR proxy owns one decoded frame and at most eight output surfaces.
 /// A pool minimum is NOT a limit: every allocation must carry the threshold.
 /// Use a private CI context so completing a proxy can release its intermediates
@@ -5944,26 +5970,12 @@ final class MCInteractivePrepGate {
     // 輸出尺寸縮的是短邊：直式拿到 1080x1920、橫式拿到 1920x1080，
     // 兩種方向的清晰度與解碼成本都一樣。系統預設的「塞進 1920x1080」
     // 會把直式 4K 縮成 607x1080，長邊只剩六成，預覽就糊了
-    let disp = vTrack.naturalSize.applying(vTrack.preferredTransform)
-    let dw = abs(disp.width)
-    let dh = abs(disp.height)
-    guard dw > 1, dh > 1 else {
-      done("讀不到畫面尺寸")
-      return
+    guard let geometry = MCProxyGeometry(naturalSize: vTrack.naturalSize,
+      preferredTransform: vTrack.preferredTransform, maxShortSide: maxShortSide) else {
+      done("讀不到畫面尺寸"); return
     }
-    let shrink =
-      maxShortSide > 0 ? min(1, CGFloat(maxShortSide) / min(dw, dh)) : 1
-    var outW = (dw * shrink).rounded()
-    var outH = (dh * shrink).rounded()
-    outW -= outW.truncatingRemainder(dividingBy: 2)  // H.264 要偶數
-    outH -= outH.truncatingRemainder(dividingBy: 2)
-    let size = CGSize(width: max(2, outW), height: max(2, outH))
-
-    let fit = vTrack.preferredTransform
-      .concatenating(CGAffineTransform(scaleX: shrink, y: shrink))
-      .concatenating(CGAffineTransform(
-        translationX: (size.width - dw * shrink) / 2,
-        y: (size.height - dh * shrink) / 2))
+    let size = geometry.size
+    let fit = geometry.transform
     let hdrRenderer: MCBoundedHDRRenderer?
     let vOut: AVAssetReaderOutput
     if hdrPass {

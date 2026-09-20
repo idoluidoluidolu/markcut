@@ -67,6 +67,33 @@ class RunnerTests: XCTestCase {
     return Double(row[x] >> 6) / 1023
   }
 
+  func testProxyGeometryNormalizesTranslatedRotationsAndMirrors() throws {
+    for angle in [0.0, Double.pi / 2, Double.pi, -Double.pi / 2] {
+      for mirror in [CGFloat(1), CGFloat(-1)] {
+        let raw = CGAffineTransform(scaleX: mirror, y: 1)
+          .concatenating(CGAffineTransform(rotationAngle: angle))
+          .concatenating(CGAffineTransform(translationX: -173, y: 97))
+        let geometry = try XCTUnwrap(MCProxyGeometry(naturalSize: CGSize(width: 128, height: 64),
+          preferredTransform: raw, maxShortSide: 32))
+        let bounds = CGRect(x: 0, y: 0, width: 128, height: 64).applying(geometry.transform)
+        XCTAssertEqual(bounds.minX, 0, accuracy: 0.001)
+        XCTAssertEqual(bounds.minY, 0, accuracy: 0.001)
+        XCTAssertEqual(bounds.width, geometry.size.width, accuracy: 0.001)
+        XCTAssertEqual(bounds.height, geometry.size.height, accuracy: 0.001)
+        XCTAssertEqual(min(geometry.size.width, geometry.size.height), 32)
+      }
+    }
+  }
+
+  func testProxyGeometryKeepsCanonicalPortraitAndNeverUpscales() throws {
+    let portrait = CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 64, ty: 0)
+    let geometry = try XCTUnwrap(MCProxyGeometry(naturalSize: CGSize(width: 128, height: 64),
+      preferredTransform: portrait, maxShortSide: 900))
+    XCTAssertEqual(geometry.size, CGSize(width: 64, height: 128))
+    XCTAssertEqual(geometry.transform, portrait)
+    XCTAssertNil(MCProxyGeometry(naturalSize: .zero, preferredTransform: .identity, maxShortSide: 900))
+  }
+
   func testHDRProxyPoolHardLimitAndReuseAfterEncoderReleasesBuffer() throws {
     let renderer = try XCTUnwrap(MCBoundedHDRRenderer(size: CGSize(width: 64, height: 128)))
     var held: [CVPixelBuffer] = []
@@ -119,10 +146,12 @@ class RunnerTests: XCTestCase {
       CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: 128, ty: 64),
       CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: 128),
     ]
-    for (index, transform) in transforms.enumerated() {
+    for (index, rawTransform) in (transforms + [track.preferredTransform]).enumerated() {
       try autoreleasepool {
-        let size = index % 2 == 0 ? CGSize(width: 128, height: 64) : CGSize(width: 64, height: 128)
-        let renderer = try XCTUnwrap(MCBoundedHDRRenderer(size: size))
+        let geometry = try XCTUnwrap(MCProxyGeometry(naturalSize: track.naturalSize,
+          preferredTransform: rawTransform, maxShortSide: 64))
+        let transform = geometry.transform
+        let renderer = try XCTUnwrap(MCBoundedHDRRenderer(size: geometry.size))
         var buffer: CVPixelBuffer?
         XCTAssertEqual(renderer.takeBuffer(&buffer), kCVReturnSuccess)
         let rendered = try XCTUnwrap(buffer)
