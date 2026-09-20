@@ -167,6 +167,34 @@ class RunnerTests: XCTestCase {
     }
   }
 
+  func testSpatialAudioProxyRequestsBinauralDecodeAndValidStereoAACSettings() throws {
+    for channels: UInt32 in [1, 4, 16] {
+      var asbd = AudioStreamBasicDescription(mSampleRate: 48000, mFormatID: 0x61706163,
+        mFormatFlags: 0, mBytesPerPacket: 0, mFramesPerPacket: 1024, mBytesPerFrame: 0,
+        mChannelsPerFrame: channels, mBitsPerChannel: 0, mReserved: 0)
+      var format: CMAudioFormatDescription?
+      XCTAssertEqual(CMAudioFormatDescriptionCreate(allocator: kCFAllocatorDefault,
+        asbd: &asbd, layoutSize: 0, layout: nil, magicCookieSize: 0, magicCookie: nil,
+        extensions: nil, formatDescriptionOut: &format), noErr)
+      let plan = MCProxyAudioPlan(format: try XCTUnwrap(format))
+      let read = try XCTUnwrap(plan.readerSettings)
+      let write = try XCTUnwrap(plan.writerSettings)
+      XCTAssertEqual(read[AVNumberOfChannelsKey] as? Int, 2)
+      XCTAssertEqual(write[AVNumberOfChannelsKey] as? Int, 2)
+      for (settings, expectedTag) in [(read, kAudioChannelLayoutTag_Binaural),
+                                      (write, kAudioChannelLayoutTag_Stereo)] {
+        let data = try XCTUnwrap(settings[AVChannelLayoutKey] as? Data)
+        var layout = AudioChannelLayout()
+        _ = withUnsafeMutableBytes(of: &layout) { data.copyBytes(to: $0) }
+        XCTAssertEqual(layout.mChannelLayoutTag, expectedTag)
+      }
+      // This is the constructor that used to raise an uncaught exception.
+      // It must receive two channels plus a matching, explicit layout.
+      let input = AVAssetWriterInput(mediaType: .audio, outputSettings: write)
+      XCTAssertEqual(input.mediaType, .audio)
+    }
+  }
+
   func testHDRProxyTranscodesReal10BitRotatedVideoWithMultichannelAAC() throws {
     let input = try hdrFixture()
     let source = AVURLAsset(url: input)

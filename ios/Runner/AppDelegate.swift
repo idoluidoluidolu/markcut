@@ -3294,13 +3294,15 @@ struct MCProxyAudioPlan {
       let rate = asbd.pointee.mSampleRate
       if rate.isFinite, rate >= 8000, rate <= 96000 { sampleRate = rate }
     }
+    let positional = format.map { CMFormatDescriptionGetMediaSubType($0) == 0x61706163 } ?? false
+    if positional { channels = 2 } // binaural output always has two channels
     var layout = AudioChannelLayout()
     layout.mChannelLayoutTag = channels == 1 ? kAudioChannelLayoutTag_Mono : kAudioChannelLayoutTag_Stereo
     let layoutData = Data(bytes: &layout, count: MemoryLayout<AudioChannelLayout>.size)
     var decodeLayout = layout
     // 'apac': request the decoder's binaural rendering of the spatial sound
     // field, rather than treating its Ambisonics channels as speaker channels.
-    if let format = format, CMFormatDescriptionGetMediaSubType(format) == 0x61706163 {
+    if positional {
       decodeLayout.mChannelLayoutTag = kAudioChannelLayoutTag_Binaural
     }
     let decodeLayoutData = Data(bytes: &decodeLayout, count: MemoryLayout<AudioChannelLayout>.size)
