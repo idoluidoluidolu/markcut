@@ -3168,7 +3168,8 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
   #endif
 }
 
-/// 最多兩顆互動抽幀器，所有存取都由 AppDelegate.frameQueue 串行化。
+/// 最多兩顆互動抽幀器；200px 縮圖只留一顆，避免批次匯入留住前一支 HDR decoder。
+/// 所有存取都由 AppDelegate.frameQueue 串行化。
 /// 重用 generator 可保留 AVFoundation 自己的狀態，但不保證硬體 decoder 常駐。
 final class MCFrameGeneratorPool {
   private struct Key: Equatable {
@@ -3190,10 +3191,12 @@ final class MCFrameGeneratorPool {
   private(set) var hitCount = 0
   private(set) var activity: UInt64 = 0
   private(set) var idleReleases = 0
+  private(set) var capacity = 2
   var count: Int { entries.count }
 
   func generator(path: String, maxH: Int) -> AVAssetImageGenerator? {
     activity &+= 1
+    capacity = maxH <= 200 ? 1 : 2
     let url = URL(fileURLWithPath: path).standardizedFileURL
     guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
       let bytes = attrs[.size] as? NSNumber,
@@ -3208,10 +3211,13 @@ final class MCFrameGeneratorPool {
     if let index = entries.firstIndex(where: { $0.key == key }) {
       let entry = entries.remove(at: index)
       entries.append(entry)
+      while entries.count > capacity {
+        entries.removeFirst().generator.cancelAllCGImageGeneration()
+      }
       hitCount += 1
       return entry.generator
     }
-    while entries.count >= 2 {
+    while entries.count >= capacity {
       entries.removeFirst().generator.cancelAllCGImageGeneration()
     }
     let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
@@ -3523,7 +3529,7 @@ final class MCInteractivePrepGate {
         self.frameQueue.async {
           let stats = ["active": self.frameGenerators.count,
                        "created": self.frameGenerators.createdCount,
-                       "reused": self.frameGenerators.hitCount, "capacity": 2,
+                       "reused": self.frameGenerators.hitCount, "capacity": self.frameGenerators.capacity,
                        "idleReleases": self.frameGenerators.idleReleases]
           DispatchQueue.main.async { result(stats) }
         }

@@ -154,6 +154,14 @@ void main() {
   });
 
   setUp(() {
+    // Sequential bootstrap now awaits thumbnail replies after build. Complete
+    // the platform call explicitly; an unhandled call can stay pending in the
+    // widget test's fake async zone (there is no native decoder on this host).
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('markcut/frames'),
+          (_) async => null,
+        );
     SharedPreferences.setMockInitialValues({});
     MediaPrep.resetProbeCacheForTest();
     WorkFiles.resetForTest();
@@ -178,10 +186,23 @@ void main() {
     addTearDown(t.view.reset);
     final buildReady = Completer<void>();
     final builds = <Map<dynamic, dynamic>>[];
+    var frameCalls = 0;
     final oldLayer = Diag.playerLayer.value;
     Diag.playerLayer.value = false;
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(const MethodChannel('markcut/frames'), (
+      call,
+    ) async {
+      if (call.method == 'frameAt') frameCalls++;
+      return null;
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(
+        const MethodChannel('markcut/frames'),
+        null,
+      ),
+    );
     messenger.setMockMethodCallHandler(const MethodChannel('markcut/comp'), (
       call,
     ) async {
@@ -214,6 +235,8 @@ void main() {
       ),
     );
     await _settle(t, 40);
+    // A hung native build must still release the entry UI at its hard limit.
+    await t.pump(const Duration(seconds: 5));
     _swallowMediaKit(t);
     expect(find.byType(TimelineEditor), findsOneWidget);
     expect(builds, hasLength(1));
@@ -224,6 +247,7 @@ void main() {
     ]);
     expect(clips.map((c) => (c as Map)['offset']).toList(), [0.0, 20.0]);
     expect(buildReady.isCompleted, false);
+    expect(frameCalls, 0, reason: '首幀解碼尚未完成時不啟動縮圖或 JPEG 拖曳 decoder');
     expect(_workStarted, 0, reason: '首個完整預覽拿到資源後才讓背景 encoder 開工');
     await t.pumpWidget(const SizedBox.shrink());
     buildReady.complete();
@@ -287,6 +311,7 @@ void main() {
         ),
       );
       await _settle(t, 30);
+      await t.pump(const Duration(seconds: 5));
       _swallowMediaKit(t);
       final timeline = t.widget<TimelineEditor>(find.byType(TimelineEditor));
       expect(timeline.playhead.value, 0);

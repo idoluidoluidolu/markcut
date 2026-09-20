@@ -822,20 +822,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       await _resolveHdrAvail();
       if (!mounted) return;
       final classificationMs = entryWatch.elapsedMilliseconds;
-      // 首合成跟縮圖閘並行：縮圖帶跟合成器無關，而首合成要是掛住（原生
-      // 沒回）也不能讓讀取畫面卡死——閘門有自己的 5 秒硬上限。
-      // _ensureComp 是「組好或確定組不起來才回來」，這裡只記一筆不往外丟
-      final comp = _ensureComp().catchError((Object e) {
+      // The first HDR player can allocate several decoder surfaces. Finish its
+      // initial seek before opening thumbnail decoders. The entry gate's own
+      // timer still releases the UI after five seconds if native build hangs.
+      await _ensureComp().catchError((Object e) {
         Diag.note('首合成失敗：$e');
       });
-      // 首次匯入先把粗縮圖帶抽出來再放行（使用者指定：先把縮圖跑完再放，
-      // 最高 5 秒）。只有 _importInitialVideos 傳 gateThumbs；草稿與中途
-      // 加素材那兩條路編輯器已經開著，一樣走背景補
+      if (!mounted) return;
       if (gateThumbs) {
         await _entryThumbnailGate();
         _endEntryGate();
       }
-      await comp;
       if (!mounted) return;
       Diag.note(
         '進場分段：HDR 分類 ${classificationMs}ms／首合成 '
@@ -5324,12 +5321,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   ///
   /// 代價：代理轉檔等的是 _initialPreviewReady（含這一段），最多晚 5 秒
   /// 起跑——使用者要的是縮圖優先，照這個
-  Future<void> _entryThumbnailGate() => _coarseThumbnailPass(
-    // 截止時間從讀取畫面出現那一刻算（_beginEntryGate），不是從這裡：
-    // 中繼資料探測、分類那幾十毫秒也算在使用者等的 5 秒裡
-    deadline: _entryDeadline ?? DateTime.now().add(kEntryThumbBudget),
-    gate: true,
-  );
+  Future<void> _entryThumbnailGate() async {
+    // A slow first preview may finish after the independent UI gate timer.
+    // Do not start another blocking thumbnail pass once that gate has ended.
+    if (!_entryGating) return;
+    await _coarseThumbnailPass(
+      deadline: _entryDeadline ?? DateTime.now().add(kEntryThumbBudget),
+      gate: true,
+    );
+  }
 
   /// 中途加素材（時間軸上已經有影片、編輯器開著）：同一套粗帶在背景抽，
   /// 不蓋讀取畫面、同一個 5 秒預算。完整縮圖帶等的是「全部代理轉完」
@@ -5365,13 +5365,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
     progress();
     for (final s in todo) {
-      if (!mounted || !DateTime.now().isBefore(deadline)) break;
+      if (!mounted ||
+          (gate && !_entryGating) ||
+          !DateTime.now().isBefore(deadline)) {
+        break;
+      }
       final path = _thumbnailPath(s);
       final frames = await loadCoarseStrip(
         duration: s.duration,
         count: 10,
         deadline: deadline,
-        alive: () => mounted && (gate || _canPrepareTimelineThumbnail),
+        alive: () =>
+            mounted && (gate ? _entryGating : _canPrepareTimelineThumbnail),
         fetch: (t, tolMs) =>
             nativeFrameAtDetailed(path, t, maxH: 200, tolMs: tolMs),
       );
@@ -5451,7 +5456,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   bool get _canPrepareTimelineThumbnail => canPrepareTimelineThumbnail(
-    ready: _ready,
+    ready: _ready && _compBuilding == null,
     importing: _videoMetadataImporting,
     interacting: _previewInteracting,
     settling: _prepActivity.interactive,
@@ -5563,6 +5568,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _scrubFrames[srcIndex] = List<Uint8List?>.filled(n, null);
   }
 
+  // HDR uses AVPlayerLayer; SDR JPEG frames cannot be displayed there. Do not
+  // decode them just to throw them away, including requests queued before build.
+  bool get _nativeOwnsScrubDisplay =>
+      _compOn && (_comp!.nativeScrub || (_exportHdr && _comp!.hdrIn));
+
   /// 按需抽幀：滑到哪、跟系統的硬體解碼器要哪一格。
   /// 一次只飛一個請求，永遠抽「最新想要的」那格——手指比解碼快時，
   /// 中間滑過的格子直接跳過，不排隊（排了也只是顯示過期的畫面）
@@ -5571,7 +5581,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         mounted &&
         !_playRequested &&
         !_exporting &&
-        !(_compOn && _comp!.nativeScrub),
+        !_videoMetadataImporting &&
+        _compBuilding == null &&
+        !_nativeOwnsScrubDisplay,
     load: (w) => nativeFrameAtDetailed(
       w.path,
       w.seconds,
@@ -5610,8 +5622,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 拖曳中畫面凍住（HDR 模式代理轉好後，舊判定只看 workPath 就是這樣）
   bool get _scrubRawUnderHead {
     // SDR 縮圖不能蓋在 HDR 系統播放平面上，否則暫停/播放亮度不同。
-    if (_compOn && _exportHdr && _comp!.hdrIn) return false;
-    if (_compOn && _comp!.nativeScrub) return false;
+    if (_nativeOwnsScrubDisplay) return false;
     final cur = _tl.videoAt(_position, skipTracks: _hiddenTracks);
     if (cur == null) return false;
     final s = _tl.sourceOf(cur);
@@ -5652,7 +5663,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   );
 
   void _requestScrubFrames() {
-    if (_compOn && _comp!.nativeScrub) {
+    if (_nativeOwnsScrubDisplay ||
+        _videoMetadataImporting ||
+        _compBuilding != null) {
       _scrubQueue.clear();
       return;
     }
@@ -9029,7 +9042,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _ovGeometrySent = null;
     _ovGeometryAvailable = true;
     _syncOverlayGeometry();
-    if (made.nativeScrub) _scrubQueue.clear();
+    if (_nativeOwnsScrubDisplay) _scrubQueue.clear();
     _syncImageVisibility(force: true);
     // 新合成上檔了：它帶著建置快照那一版（或沒帶）。重建期間使用者
     // 若又改了樣式，這裡補送最新版（指紋沒變＝快取整包重用）
@@ -9763,7 +9776,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final sampleStartedAt = DateTime.now().toUtc();
     final sampledComp = _comp;
     diagnostic.environment.addAll({
-      'previewRevision': 'bounded-native-redraw-1',
+      'previewRevision': 'serial-media-import-1',
       'displayHz': View.of(context).display.refreshRate,
       'buildMode': kReleaseMode
           ? 'release'

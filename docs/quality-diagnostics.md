@@ -284,3 +284,31 @@ Codemagic 同等完整 Flutter 測試 994 通過／8 跳過，日誌無 `[E]` �
 原生測試使用固定 64×64／30fps／30 格 H.264 素材，只打包於 XCTest。
 素材建立不再依賴模擬器即時 AVAssetWriter 編碼，避免建立測試檔逾時後
 以未完成影片繼續測試；來源、生成方式與用途列於 RunnerTests/Fixtures。
+
+
+## 最新版批次匯入閃退：serial-media-import-1
+
+這輪針對「影片編輯模式一次匯入多支，在讀取時閃退」。尚無該次 crash／
+jetsam 報告，因此以下是已確認的程式缺陷與防護，不能冒充實機根因驗證。
+
+- PHPicker 舊實作用 serial queue 呼叫非同步 `loadFileRepresentation`，實際
+  仍同時啟動整批 provider；各回呼也同時修改 errors／進度。改為
+  `FPFileImportBatch`：前一支檔案複製完成才啟動下一支，所有集合及計數由
+  同一佇列管理。保持點選順序、部分成功、原檔 HDR 位元資料及 tmp 儲存。
+- 暫存來源仍在 provider 回呼內複製，沒有把 URL 延後使用：Apple 明確說明
+  [來源檔案於回呼返回時刪除](https://developer.apple.com/documentation/foundation/nsitemprovider/loadfilerepresentation%28fortypeidentifier%3Acompletionhandler%3A%29)。
+- 新選取取代未完成的批次時取消舊 NSProgress、丟棄排隊素材、清理尚未交付
+  的複本。進度與最終結果在 main 檢查請求身分；事件取消訂閱後不呼叫 nil
+  sink，舊批次也不會把新批次的載入狀態關掉。
+- 首合成完成初始定位後才開始進場縮圖；中繼資料匯入／合成重建期間不加開
+  拖曳幀 decoder，背景縮圖也等待重建完成。原有五秒 UI 閘門獨立運作；
+  已逾時或離頁時不補開另一輪阻塞縮圖。
+- 200px 時間軸縮圖只保留當前一個 generator，同支連續取樣仍重用；不同素材
+  不留下前一支的 decoder。互動大圖原有容量二與一秒閒置回收維持。
+- HDR AVPlayerLayer 及 native scrub 接手後，統一禁止額外的 SDR JPEG 拖曳
+  抽幀，包含換件前已排隊的工作。時間軸縮圖仍照常；顯示與輸出色彩路徑不變。
+
+回歸覆蓋：五個延遲 provider 逐支開工、來源 URL 回呼後消失、單支失敗與
+順序、取消後無後續載入與暫存殘留、全不支援類型正常回錯、縮圖池容量、
+HDR 拖曳仍 seek 但不抽 JPEG、首合成延遲與離頁的完整生命週期。
+請以同批 iPhone 17 HDR 素材驗證冷匯入、立即往返拖曳及播放／暫停。

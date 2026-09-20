@@ -5,6 +5,7 @@ import CoreImage
 import ImageIO
 import AVFoundation
 import Metal
+import file_picker
 @testable import Runner
 
 private final class ScrubTestTextureRegistry: NSObject, FlutterTextureRegistry {
@@ -13,7 +14,143 @@ private final class ScrubTestTextureRegistry: NSObject, FlutterTextureRegistry {
   func unregisterTexture(_ textureId: Int64) {}
 }
 
+/// Holds each asynchronous provider open until the test releases its callback.
+private final class HeldImportProvider: NSItemProvider {
+  let started: XCTestExpectation
+  let requestProgress = Progress(totalUnitCount: 1)
+  private let lock = NSLock()
+  private var callback: ((URL?, Error?) -> Void)?
+  private var starts = 0
+  let supported: Bool
+  init(_ started: XCTestExpectation, supported: Bool = true) {
+    self.started = started
+    self.supported = supported
+    super.init()
+  }
+  var startCount: Int { lock.lock(); defer { lock.unlock() }; return starts }
+  override func hasItemConformingToTypeIdentifier(_ typeIdentifier: String) -> Bool {
+    supported && typeIdentifier == "public.movie"
+  }
+  override func loadFileRepresentation(forTypeIdentifier typeIdentifier: String,
+    completionHandler: @escaping (URL?, Error?) -> Void) -> Progress {
+    lock.lock()
+    starts += 1
+    callback = completionHandler
+    lock.unlock()
+    started.fulfill()
+    return requestProgress
+  }
+  func finish(_ url: URL?, error: Error? = nil) {
+    lock.lock()
+    let reply = callback
+    callback = nil
+    lock.unlock()
+    reply?(url, error)
+  }
+}
+
 class RunnerTests: XCTestCase {
+  func testPickerBatchLoadsOneProviderAtATimeAndPreservesPartialSuccessOrder() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let providers = (0..<5).map { HeldImportProvider(expectation(description: "provider \($0)")) }
+    let output = directory.appendingPathComponent("copies")
+    let batch = FPFileImportBatch(providers: providers,
+      acceptedTypeIdentifiers: ["public.movie"], destinationDirectory: output)
+    let done = expectation(description: "batch complete")
+    var progress: [Int] = []
+    batch.start(progress: { count, total in
+      XCTAssertTrue(Thread.isMainThread)
+      XCTAssertEqual(total, 5)
+      progress.append(Int(count))
+    }, completion: { urls, errors in
+      XCTAssertTrue(Thread.isMainThread)
+      XCTAssertEqual(errors.count, 1)
+      XCTAssertEqual(urls.compactMap { try? String(contentsOf: $0, encoding: .utf8) },
+        ["video 0", "video 2", "video 3", "video 4"])
+      XCTAssertEqual(progress, [1, 2, 3, 4, 5])
+      done.fulfill()
+    })
+    for index in providers.indices {
+      wait(for: [providers[index].started], timeout: 3)
+      XCTAssertTrue(providers.dropFirst(index + 1).allSatisfy { $0.startCount == 0 },
+        "a serial dispatch queue must not start all async providers at once")
+      if index == 1 {
+        providers[index].finish(nil, error: NSError(domain: "test", code: 1))
+      } else {
+        let source = directory.appendingPathComponent("source\(index).mov")
+        try "video \(index)".write(to: source, atomically: true, encoding: .utf8)
+        providers[index].finish(source)
+        // Emulate NSItemProvider removing its temporary URL on callback return.
+        try FileManager.default.removeItem(at: source)
+      }
+    }
+    wait(for: [done], timeout: 3)
+  }
+
+  func testPickerCancellationDropsQueuedProvidersAndDeletesUndeliveredCopies() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let first = HeldImportProvider(expectation(description: "first"))
+    let second = HeldImportProvider(expectation(description: "second"))
+    let never = expectation(description: "third must not start")
+    never.isInverted = true
+    let third = HeldImportProvider(never)
+    let output = directory.appendingPathComponent("copies")
+    let batch = FPFileImportBatch(providers: [first, second, third],
+      acceptedTypeIdentifiers: ["public.movie"], destinationDirectory: output)
+    let completion = expectation(description: "cancelled batch must not reply")
+    completion.isInverted = true
+    batch.start(progress: nil, completion: { _, _ in completion.fulfill() })
+    wait(for: [first.started], timeout: 3)
+    let source = directory.appendingPathComponent("source.mov")
+    try Data([1, 2, 3]).write(to: source)
+    first.finish(source)
+    wait(for: [second.started], timeout: 3)
+    XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: output.path).count, 1)
+    batch.cancel()
+    second.finish(source) // a late callback must not copy or advance the batch
+    wait(for: [never, completion], timeout: 0.3)
+    XCTAssertTrue(second.requestProgress.isCancelled)
+    XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: output.path), [])
+  }
+
+  func testPickerInvalidBatchCompletesWithErrorsInsteadOfHanging() throws {
+    let never = expectation(description: "unsupported providers never load")
+    never.isInverted = true
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let batch = FPFileImportBatch(providers: [HeldImportProvider(never, supported: false)],
+      acceptedTypeIdentifiers: ["public.movie"], destinationDirectory: directory)
+    let done = expectation(description: "unsupported type completes")
+    batch.start(progress: nil, completion: { urls, errors in
+      XCTAssertTrue(urls.isEmpty)
+      XCTAssertEqual(errors.count, 1)
+      done.fulfill()
+    })
+    wait(for: [done], timeout: 3)
+    wait(for: [never], timeout: 0.1)
+  }
+
+  func testImportThumbnailsRetainOnlyTheCurrentDecoder() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let pool = MCFrameGeneratorPool()
+    for index in 0..<5 {
+      let file = directory.appendingPathComponent("\(index).mov")
+      try Data([1, 2, 3]).write(to: file)
+      let current = try XCTUnwrap(pool.generator(path: file.path, maxH: 200))
+      XCTAssertEqual(pool.count, 1)
+      XCTAssertEqual(pool.capacity, 1)
+      XCTAssertTrue(current === pool.generator(path: file.path, maxH: 200))
+    }
+    XCTAssertEqual(pool.createdCount, 5)
+    XCTAssertEqual(pool.hitCount, 5)
+  }
+
   private func scrubBuffer(width: Int = 16, height: Int = 16) throws -> CVPixelBuffer {
     var buffer: CVPixelBuffer?
     XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, width, height,

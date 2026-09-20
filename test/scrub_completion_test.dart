@@ -23,6 +23,7 @@ void main() {
   var nativeMs = 0;
   var builds = 0;
   var nativeScrub = false;
+  var hdrInput = false;
   var quantizeNativeFrames = false;
   final presentations = <Map<Object?, Object?>>[];
   var returnFrames = true;
@@ -46,6 +47,7 @@ void main() {
     nativeMs = 0;
     builds = 0;
     nativeScrub = false;
+    hdrInput = false;
     quantizeNativeFrames = false;
     presentations.clear();
     returnFrames = true;
@@ -84,6 +86,7 @@ void main() {
             'height': 1920.0,
             'ci': true,
             'nativeScrub': nativeScrub,
+            'hdr': hdrInput,
           };
         case 'position':
           return nativeMs;
@@ -217,6 +220,23 @@ void main() {
     await t.pump(const Duration(seconds: 3));
     expect(t.takeException(), isNull);
   }
+
+  testWidgets('HDR 系統平面不抽取無法顯示的 SDR 拖曳幀', (t) async {
+    hdrInput = true;
+    await open(t, multiple: true);
+    frameRequests.clear();
+    await scrub(t, 1);
+    await scrub(t, 5);
+    await tick(t, 8);
+    expect(
+      frameRequests.where((args) => args['maxH'] == 1080),
+      isEmpty,
+      reason: 'HDR AVPlayerLayer 顯示不使用 JPEG；不可額外啟動原檔 decoder',
+    );
+    expect(cache(), findsNothing);
+    expect(seeks, isNotEmpty, reason: '仍然交給 HDR 播放器跟隨時間軸');
+    await close(t);
+  });
 
   for (final raw in [true, false]) {
     testWidgets('原生合成拖曳 ${raw ? '原檔' : '代理'}不經 JPEG，收尾等真正呈現', (t) async {

@@ -1,6 +1,7 @@
 #import "FilePickerPlugin.h"
 #import "FilePickerUtils.h"
 #import "ImageUtils.h"
+#import "FPFileImportBatch.h"
 #import <Flutter/Flutter.h>
 
 #ifdef PICKER_MEDIA
@@ -24,7 +25,7 @@
 @property (nonatomic) BOOL loadDataToMemory;
 @property (nonatomic) int compressionQuality;
 @property (nonatomic) BOOL allowCompression;
-@property (nonatomic) dispatch_group_t group;
+@property (nonatomic, strong) FPFileImportBatch *importBatch;
 @property (nonatomic) MediaType type;
 @property (nonatomic) BOOL isSaveFile;
 // MarkCut patch: the picker view controller we last presented (weak: UIKit
@@ -109,7 +110,7 @@
         if (strongSelf == nil || strongSelf->_result != pending) {
             return;
         }
-        if ([strongSelf pickerOnScreen] || strongSelf->_group != nil) {
+        if ([strongSelf pickerOnScreen] || strongSelf->_importBatch != nil) {
             return;
         }
         Log(@"FilePicker: the picker was never presented; failing the request");
@@ -148,6 +149,8 @@
         }
         Log(@"FilePicker: dropping a stale request that never completed");
         FlutterResult stale = _result;
+        [self.importBatch cancel];
+        self.importBatch = nil;
         _result = nil;
         stale(nil);
     }
@@ -576,184 +579,40 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls{
         return;
     }
 
-    // MarkCut patch: keep the user's selection order.
-    // `results` is already in tap order (PHPickerViewController), but the
-    // file copies below finish asynchronously (iCloud download / size
-    // dependent), and upstream appended each URL on completion — so a
-    // 10-video pick came back in "whoever finished first" order. One slot
-    // per result, filled by index, compacted once everything is done.
-    NSMutableArray * urls = [[NSMutableArray alloc] initWithCapacity:results.count];
-    for (NSUInteger i = 0; i < results.count; ++i) {
-        [urls addObject:[NSNull null]];
-    }
-    NSMutableArray<NSString *> * errors = [[NSMutableArray alloc] init];
-
-    // MarkCut patch: this request's own reply and group. A later request may
-    // supersede this one while the copies are still running (see
-    // handleMethodCall): the copies must then finish against *their* group,
-    // and their result must be dropped, not delivered to the newer caller.
+    // A serial dispatch queue around loadFileRepresentation is NOT sufficient:
+    // that API returns immediately, so the whole batch used to load in parallel.
+    // The import batch advances only after the provider callback finishes copying.
     FlutterResult reply = _result;
-    dispatch_group_t group = dispatch_group_create();
-    self.group = group;
-    
-    // MarkCut patch: copies live in tmp, not Documents.
-    // Upstream copied every picked photo/video into Documents/picked_images:
-    // that directory is backed up to iCloud and nothing ever deletes it, so a
-    // 1 GB video imported three times cost 3 GB of "Documents & Data" forever.
-    // MarkCut treats picker copies as import intermediates (the Dart side
-    // copies anything a draft keeps into its own directory), so put them where
-    // the system cleans up on its own and keep them out of backups.
-    NSString *imagesDir = [NSTemporaryDirectory() stringByAppendingPathComponent:@"picked_images"];
-    NSFileManager *fileManager = [NSFileManager defaultManager];
+    NSArray<NSString *> *types = self.type == IMAGE ? @[@"public.image"] :
+        (self.type == MEDIA ? @[@"public.image", @"public.movie"] : @[@"public.movie"]);
+    NSMutableArray<NSItemProvider *> *providers = [NSMutableArray arrayWithCapacity:results.count];
+    for (PHPickerResult *item in results) [providers addObject:item.itemProvider];
+    NSURL *directory = [NSURL fileURLWithPath:
+        [NSTemporaryDirectory() stringByAppendingPathComponent:@"picked_images"] isDirectory:YES];
+    self.importBatch = [[FPFileImportBatch alloc] initWithProviders:providers
+        acceptedTypeIdentifiers:types destinationDirectory:directory];
+    if (_eventSink) _eventSink(@YES);
 
-    if (![fileManager fileExistsAtPath:imagesDir]) {
-        NSError *dirError;
-        [fileManager createDirectoryAtPath:imagesDir withIntermediateDirectories:YES attributes:nil error:&dirError];
-        if (dirError) {
-            Log(@"Failed to create image directory: %@", dirError);
+    [self.importBatch startWithProgress:^(NSUInteger completed, NSUInteger total) {
+        // Both identity and sink are checked on main at delivery, not before
+        // enqueueing. Unsubscribing/superseding cannot invoke a nil or stale sink.
+        if (self->_result == reply && self->_eventSink) {
+            self->_eventSink(@{@"type": @"progress", @"count": @(completed), @"total": @(total)});
         }
-    }
-    [[NSURL fileURLWithPath:imagesDir isDirectory:YES] setResourceValue:@YES
-                                                               forKey:NSURLIsExcludedFromBackupKey
-                                                                error:nil];
-
-    if(self->_eventSink != nil) {
-        self->_eventSink([NSNumber numberWithBool:YES]);
-    }
-
-    // Process images sequentially to avoid memory spikes
-    dispatch_queue_t processQueue = dispatch_queue_create("com.filepicker.imageprocessing", DISPATCH_QUEUE_SERIAL);
-    __block NSInteger completedCount = 0;
-    NSInteger totalCount = results.count;
-
-    bool isImageSelection = self.type == IMAGE;
-    bool isMediaSelection = self.type == MEDIA;
-    for (NSInteger index = 0; index < results.count; ++index) {
-        dispatch_group_enter(group);
-        PHPickerResult * result = [results objectAtIndex:index];
-        
-        dispatch_async(processQueue, ^{
-            @autoreleasepool {
-            if (isMediaSelection) {
-                if (![result.itemProvider hasItemConformingToTypeIdentifier:@"public.image"] &&
-                    ![result.itemProvider hasItemConformingToTypeIdentifier:@"public.movie"]) {
-                    [errors addObject:[NSString stringWithFormat:@"Item at index %ld is not an image or video", (long)index]];
-                    dispatch_group_leave(group);
-                    return;
-                }
-            } else if (isImageSelection) {
-                if (![result.itemProvider hasItemConformingToTypeIdentifier:@"public.image"]) {
-                    [errors addObject:[NSString stringWithFormat:@"Item at index %ld is not an image", (long)index]];
-                    dispatch_group_leave(group);
-                    return;
-                }
-            }
-
-            NSString *typeIdentifier;
-            if ([result.itemProvider hasItemConformingToTypeIdentifier:@"public.image"]) {
-                typeIdentifier = @"public.image";
-            } else {
-                typeIdentifier = @"public.movie";
-            }
-               
-               [result.itemProvider loadFileRepresentationForTypeIdentifier:typeIdentifier completionHandler:^(NSURL * _Nullable url, NSError * _Nullable error) {
-                    @autoreleasepool {
-                        if (error != nil || url == nil) {
-                            [errors addObject:[NSString stringWithFormat:@"Failed to load image/video at index %ld: %@",
-                                (long)index, error ? error.localizedDescription : @"Unknown error"]];
-                            dispatch_group_leave(group);
-                            return;
-                        }
-
-                        @try {
-                            // Create unique filename in app_images directory
-                            NSString *filename = [NSString stringWithFormat:@"image_%@_%ld.%@",
-                                [[NSUUID UUID] UUIDString],
-                                (long)[[NSDate date] timeIntervalSince1970],
-                                url.pathExtension.length > 0 ? url.pathExtension : @"jpg"];
-                            
-                            NSString *destinationPath = [imagesDir stringByAppendingPathComponent:filename];
-                            NSURL *destinationUrl = [NSURL fileURLWithPath:destinationPath];
-                            
-                            // Load image data with options to reduce memory usage
-                            NSError *loadError = nil;
-                            
-                            // Write to destination
-                            if ([[NSFileManager defaultManager] copyItemAtURL:url toURL:destinationUrl error:&loadError]) {
-                                // MarkCut patch: slot by index, not by completion order
-                                @synchronized (urls) {
-                                    [urls replaceObjectAtIndex:index withObject:destinationUrl];
-                                }
-                            } else {
-                                [errors addObject:[NSString stringWithFormat:@"Failed to save image/video at index %ld: %@",
-                                    (long)index, loadError.localizedDescription]];
-                            }
-                            
-                        } @catch (NSException *exception) {
-                            [errors addObject:[NSString stringWithFormat:@"Exception processing image/video at index %ld: %@",
-                                (long)index, exception.description]];
-                        }
-                        
-                        // Update progress
-                        completedCount++;
-                        if(self->_eventSink != nil) {
-                            dispatch_async(dispatch_get_main_queue(), ^{
-                                self->_eventSink(@{
-                                    @"type": @"progress",
-                                    @"count": @(completedCount),
-                                    @"total": @(totalCount)
-                                });
-                            });
-                        }
-                        
-                        dispatch_group_leave(group);
-                    }
-                }];
-            }
-        });
-    }
-
-    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
-        // MarkCut patch: deliver on the platform thread, and only if this is
-        // still the request the caller is waiting for (see handleMethodCall)
-        if (self->_group == group) {
-            self->_group = nil;
-        }
-        
-        if(self->_eventSink != nil) {
-            self->_eventSink([NSNumber numberWithBool:NO]);
-        }
-
-        if (self->_result != reply) {
-            Log(@"FilePicker: a superseded request finished copying; dropping its result");
-            return;
-        }
-
-        // MarkCut patch: drop the slots that failed, keep selection order
-        NSMutableArray<NSURL *> * orderedUrls = [[NSMutableArray alloc] initWithCapacity:urls.count];
-        @synchronized (urls) {
-            for (id u in urls) {
-                if (u != [NSNull null]) {
-                    [orderedUrls addObject:u];
-                }
-            }
-        }
-
-        if (orderedUrls.count > 0) {
-            // If we have at least one successful image, return the results
-            if (errors.count > 0) {
-                // Log errors but don't fail the operation
-                Log(@"Some images failed to process: %@", [errors componentsJoinedByString:@", "]);
-            }
-            [self handleResult:orderedUrls];
+    } completion:^(NSArray<NSURL *> *urls, NSArray<NSString *> *errors) {
+        if (self->_result != reply) return;
+        self.importBatch = nil;
+        if (self->_eventSink) self->_eventSink(@NO);
+        if (urls.count > 0) {
+            if (errors.count > 0) Log(@"Some images/videos failed to process: %@", errors);
+            [self handleResult:urls];
         } else {
-            // Only if all images failed, return an error
-            self->_result([FlutterError errorWithCode:@"file_picker_error"
-                                            message:@"Failed to process any images/video"
-                                            details:[errors componentsJoinedByString:@"\n"]]);
+            self->_result = nil;
+            reply([FlutterError errorWithCode:@"file_picker_error"
+                message:@"Failed to process any images/video"
+                details:[errors componentsJoinedByString:@"\n"]]);
         }
-        self->_result = nil;
-    });
+    }];
 }
 
 #endif // PHPicker
