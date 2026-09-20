@@ -102,6 +102,14 @@ void main() {
       const MethodChannel('flutter.arthenica.com/ffmpeg_kit'),
       (_) async => null,
     );
+    // Start recording now awaits the memory channel before native work. Mock
+    // it explicitly: an unhandled platform request can remain pending in the
+    // widget test's fake async zone.
+    b.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('markcut/diag'),
+      (call) async =>
+          call.method == 'memory' ? {'usedMb': 700.0, 'freeMb': 2500.0} : null,
+    );
     // 假的轉檔端：素材是 HEVC SDR（規格不合＝一定要轉），
     // toWorkFile 花掉這支素材該花的時間才回
     b.defaultBinaryMessenger.setMockMethodCallHandler(

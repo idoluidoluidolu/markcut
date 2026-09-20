@@ -238,7 +238,7 @@ class MediaPrep {
     // 真的拿到轉檔槽、要開始叫原生的那一刻（排隊等槽的時間不算）。
     // 黑盒子靠它分「排隊中」跟「轉檔中」：以前 mark 寫在排隊前，多支
     // 素材時檔上的名字跟記憶體數字是「最後一支排進來的」，不是正在轉的
-    void Function()? onStart,
+    FutureOr<void> Function()? onStart,
   }) async {
     if (!await available) return null;
     _wire();
@@ -249,7 +249,12 @@ class MediaPrep {
       if (interactiveYield && _interactive) {
         throw const PreviewPreparationDeferred();
       }
-      onStart?.call();
+      await onStart?.call();
+      // Persisting the crash breadcrumb may await I/O. A gesture that starts
+      // during that wait must still win before allocating a native decoder.
+      if (interactiveYield && _interactive) {
+        throw const PreviewPreparationDeferred();
+      }
       final result = await _ch.invokeMethod<Object?>('toWorkFile', {
         'src': src,
         'dest': dest,

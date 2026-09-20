@@ -820,6 +820,128 @@ class RunnerTests: XCTestCase {
     XCTAssertFalse(MCPreviewVisibility.sourceIsOpaque(track))
   }
 
+  func testReaderCancellationRejectsLateSetupAndFailure() {
+    var state = MCReaderLifetime()
+    let old = state.start()
+    XCTAssertTrue(state.accepts(old))
+    state.stop()
+    XCTAssertFalse(state.accepts(old), "cancel before setup publishes must invalidate it")
+    let current = state.start()
+    XCTAssertFalse(state.accepts(old))
+    XCTAssertFalse(state.finish(old), "late failure must not kill the new decoder")
+    XCTAssertTrue(state.accepts(current))
+    XCTAssertTrue(state.finish(current))
+    XCTAssertFalse(state.accepts(current))
+    XCTAssertFalse(state.finish(current))
+  }
+
+  func testRapidReaderRestartsOnlyAcceptNewestGeneration() {
+    var state = MCReaderLifetime()
+    var tokens: [Int] = []
+    for _ in 0..<100 {
+      state.stop()
+      tokens.append(state.start())
+    }
+    for token in tokens.dropLast() {
+      XCTAssertFalse(state.accepts(token))
+      XCTAssertFalse(state.finish(token))
+    }
+    XCTAssertTrue(state.accepts(tokens.last!))
+  }
+
+  func testScrubbingManyClipsRetainsOnlyCurrentReadersAfterSetupGrace() {
+    for time in [0.0, 4.5, 9.0, 19.0, 2.0] {
+      let kept = (0..<20).filter { index in
+        MCPreviewReaderWindow.keep(start: Double(index), end: Double(index + 1),
+          time: time, playing: false, age: 1)
+      }
+      XCTAssertEqual(kept, [Int(time)])
+    }
+    XCTAssertTrue(MCPreviewReaderWindow.keep(start: 8, end: 9, time: 1,
+      playing: false, age: 0.1), "allow setup to settle before disposal")
+    XCTAssertTrue(MCPreviewReaderWindow.keep(start: 2, end: 3, time: 1,
+      playing: true, age: 1), "playback keeps its existing pre-roll")
+    XCTAssertFalse(MCPreviewReaderWindow.keep(start: 4, end: 5, time: 1,
+      playing: true, age: 1))
+  }
+
+  func testPreviewMemoryBudgetDefersBeforeExhaustionAndRequiresRecovery() {
+    let budget = MCPreviewMemoryBudget()
+    XCTAssertFalse(budget.shouldDefer(usedMB: 800, availableMB: 2000,
+      physicalMB: 8000, now: 0))
+    XCTAssertTrue(budget.shouldDefer(usedMB: 2111, availableMB: 1265,
+      physicalMB: 8000, now: 1), "the reported crash-time footprint must defer a proxy")
+    XCTAssertTrue(budget.shouldDefer(usedMB: 1200, availableMB: 1800,
+      physicalMB: 8000, now: 3), "cooldown prevents immediate restart")
+    XCTAssertTrue(budget.shouldDefer(usedMB: 1400, availableMB: 1800,
+      physicalMB: 8000, now: 7), "recovery needs the lower watermark")
+    XCTAssertFalse(budget.shouldDefer(usedMB: 1200, availableMB: 1800,
+      physicalMB: 8000, now: 8))
+    budget.notePressure(now: 9)
+    XCTAssertTrue(budget.shouldDefer(usedMB: nil, availableMB: 1800,
+      physicalMB: 8000, now: 20), "unknown footprint is not confirmed recovery")
+    XCTAssertFalse(budget.shouldDefer(usedMB: 1000, availableMB: 1800,
+      physicalMB: 8000, now: 21))
+  }
+
+  func testPreviewMemoryBudgetHonorsAppHeadroomAndSmallerDevices() {
+    let budget = MCPreviewMemoryBudget()
+    XCTAssertTrue(budget.shouldDefer(usedMB: 400, availableMB: 500,
+      physicalMB: 3000, now: 0))
+    XCTAssertTrue(budget.shouldDefer(usedMB: 800, availableMB: 1800,
+      physicalMB: 3000, now: 6))
+    XCTAssertFalse(budget.shouldDefer(usedMB: 400, availableMB: 1800,
+      physicalMB: 3000, now: 12))
+  }
+
+  func testPrepCancellationReasonIsStableAcrossDuplicateStops() {
+    let state = MCPrepStopState()
+    XCTAssertNil(state.reason)
+    XCTAssertFalse(state.cancelled.isSet)
+    XCTAssertTrue(state.request("memory deferred"))
+    XCTAssertTrue(state.cancelled.isSet)
+    XCTAssertFalse(state.request("timeout"))
+    XCTAssertEqual(state.reason, "memory deferred")
+  }
+
+  func testHiddenPreviewSourcesAreRemovedBeforeOcclusionAndDecoderDemand() {
+    let canvas = CGSize(width: 100, height: 100)
+    let layers = (1...4).map { visibilityLayer(id: Int32($0)) }
+    let state = MCPreviewVisibilityState()
+    XCTAssertTrue(state.setHiddenTracks([3, 4]))
+    XCTAssertFalse(state.setHiddenTracks([4, 3]), "same set must not replace VC again")
+    XCTAssertTrue(state.enabled, "hiding must not permanently disable occlusion")
+    let visible = MCPreviewVisibility.visibleLayers(layers, canvas: canvas,
+      enabled: state.enabled, hiddenTracks: state.hiddenTracks)
+    XCTAssertEqual(visible.map { $0.trackID }, [2], "hidden upper cover cannot hide lower source")
+    let instruction = CIExportInstruction(
+      timeRange: CMTimeRange(start: .zero, duration: CMTime(seconds: 10,
+        preferredTimescale: 600)), layers: visible, mosaics: [], overlays: [])
+    XCTAssertEqual(instruction.requiredSourceTrackIDs?.count, 1)
+    XCTAssertEqual((instruction.requiredSourceTrackIDs?.first as? NSNumber)?.int32Value, 2)
+
+    XCTAssertTrue(state.beginEditing())
+    XCTAssertEqual(MCPreviewVisibility.visibleLayers(layers, canvas: canvas,
+      enabled: state.enabled, hiddenTracks: state.hiddenTracks).map { $0.trackID }, [1, 2],
+      "live transforms restore covered sources, never explicitly hidden ones")
+    XCTAssertTrue(state.setHiddenTracks([]))
+    XCTAssertEqual(MCPreviewVisibility.visibleLayers(layers, canvas: canvas,
+      enabled: state.enabled, hiddenTracks: state.hiddenTracks).map { $0.trackID }, [1, 2, 3, 4])
+  }
+
+  func testHiddenPreviewStillsAndAllHiddenLayersDoNotBecomeOpaqueCovers() {
+    let canvas = CGSize(width: 100, height: 100)
+    let still = CILayerSpec(trackID: kCMPersistentTrackID_Invalid,
+      still: CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1)),
+      transform: .identity, srcHeight: 100, start: 0, end: 10,
+      fadeIn: 0, fadeOut: 0, colorMatrix: nil, z: 8)
+    let layers = [visibilityLayer(id: 1), still]
+    XCTAssertEqual(MCPreviewVisibility.visibleLayers(layers, canvas: canvas,
+      enabled: true, hiddenTracks: [8]).map { $0.z }, [1])
+    XCTAssertTrue(MCPreviewVisibility.visibleLayers(layers, canvas: canvas,
+      enabled: false, hiddenTracks: [1, 8]).isEmpty)
+  }
+
   func testPreviewOcclusionPreservesTransparencyAndPartialCoverage() {
     let canvas = CGSize(width: 100, height: 100)
     let base = visibilityLayer(id: 1)

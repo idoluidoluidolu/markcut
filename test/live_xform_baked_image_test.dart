@@ -21,6 +21,7 @@ import 'package:markcut/screens/video_editor_screen.dart';
 import 'package:markcut/services/diagnostics.dart';
 import 'package:markcut/services/comp_player.dart';
 import 'package:markcut/widgets/timeline_editor.dart';
+import 'package:markcut/widgets/watermark_panel.dart';
 
 Future<void> _tick(WidgetTester t, [int frames = 10, int ms = 40]) async {
   for (var i = 0; i < frames; i++) {
@@ -44,6 +45,7 @@ void main() {
       'com.llfbandit.record/messages',
       'plugins.flutter.io/path_provider',
       'dev.fluttercommunity.plus/wakelock',
+      'markcut/prep',
     ]) {
       b.defaultBinaryMessenger.setMockMethodCallHandler(
         MethodChannel(ch),
@@ -304,6 +306,51 @@ void main() {
     await b.up();
     await _tick(t, 100);
     expect(builds, greaterThan(before), reason: '放手後髒合成仍必須收尾');
+  });
+
+  testWidgets('選圖裁切期間不換播放器，取消後等待閒置再補做', (t) async {
+    await t.pumpWidget(const MaterialApp(home: VideoEditorScreen(blank: true)));
+    await _tick(t, 5);
+    VideoEditorScreen.debugTimeline!((tl) {
+      tl.sources.add(
+        MediaSource(
+          path: '/v.mp4',
+          name: 'v',
+          kind: ClipKind.video,
+          duration: 10,
+          workPath: '/v.work.mp4',
+        ),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 0,
+          trimStart: 0,
+          trimEnd: 10,
+          offset: 0,
+          track: 0,
+        ),
+      );
+    });
+    await _tick(t, 30);
+    expect(builds, greaterThan(0));
+    await t.tap(find.text('浮水印').last);
+    await _tick(t, 15);
+    final panel = t.widget<WatermarkPanel>(find.byType(WatermarkPanel).first);
+    expect(panel.onImageWork, isNotNull);
+    await panel.onImageWork!(true);
+    final before = builds;
+    VideoEditorScreen.debugTimeline!((tl) => tl.clips.first.trimEnd = 9);
+    await _tick(t, 100);
+    expect(builds, before, reason: '圖片流程仍持有解碼預算，不能換播放器');
+    await panel.onImageWork!(false);
+    await _tick(t, 10);
+    expect(builds, before, reason: '取消後仍留 600ms 閒置窗');
+    await _tick(t, 50);
+    expect(builds, greaterThan(before), reason: '延後的髒合成不能遺失');
+    await t.pumpWidget(const SizedBox.shrink());
+    await _tick(t, 100);
+    expect(t.takeException(), isNull);
   });
 
   testWidgets('沒烘進合成的圖片（壓在影片之上）：捏合不送 setXform，SDR 那條路不變', (t) async {

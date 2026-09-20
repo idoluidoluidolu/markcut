@@ -1,5 +1,76 @@
 # 下一版品質驗收
 
+## 2026-09-20：iPhone 17／約五支非 4K HDR 素材
+
+使用者補充裝置為 iPhone 17、約五支影片，非 4K、HDR。目標是匯入後立即
+拖曳、多素材往返、素材與樣式更新跟手，並保持 HDR 顏色。209 報告的上一輪
+中斷時 footprint 為 2111MB；目前空專案的 1.3GB 取樣屬於另一輪，不能據此
+定位是哪個池持有，也不能判定這次必然是 jetsam。
+
+本輪 `preview-resource-release-1` 在既有未提交的代理記憶體退讓修正上追加：
+
+- `ClipReader` 的三處 `gen == self.gen` 實際比較同一個成員，沒有檢查參數
+  `g`。改由鎖內 `MCReaderLifetime` 管理世代；stop 同樣使舊世代失效。舊 setup
+  不得發布 reader/output，舊失敗不得把新 reader 標死，舊 sample 不得入列。
+- Metal 拖曳原本只新增當前素材的 reader，離屏回收僅在播放同步路徑做。
+  現在拖曳、佈局更新與閒置 tick 都回收離屏／移除的 reader，保留 0.5 秒
+  setup 緩衝及播放前方 1.5 秒預捲；多軌目前所需的 reader 仍保留。
+- reader 長駐執行緒補上入口與逐 sample autorelease pool，避免框架暫存物件
+  必須等整條解碼執行緒退出才釋放。依據
+  [Apple autorelease pool 指引](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/MemoryMgmt/Articles/mmAutoreleasePools.html)。
+- Flutter 收到記憶體警告時清掉離屏拖曳幀、最近幀與解碼器，取消排隊與
+  晚到抽幀結果；本次編輯器的歷史快取預算由 96MB 降到 24MB。當前可見
+  素材保留，故這是歷史淘汰門檻，不是程序或全部影格的硬上限。
+- SDR／HDR 的 `onStart` 改為等黑盒子紀錄落地後才叫原生轉檔。之前
+  `unawaited(Diag.mark(...))` 讓原生已開工、檔上仍是排隊中；等待期間若
+  開始手勢，會再次檢查互動狀態並讓路，不配置新解碼器。
+- 診斷新增 Metal `readerCount`／`pumpCount` 與 `scrubEncodedLimitBytes`。
+  計數不等於 OS 實際 decoder 數或記憶體，不能當作完整占用。
+
+本輪不更動 HDR 轉換、色彩標記、預覽或匯出解析度。Metal 的世代錯誤是
+程式可確認的缺陷，但 209 附件沒有崩潰時的 Metal 活動或系統 crash report，
+不能宣稱這就是本次五支 HDR 閃退的唯一原因。單靠程式／單元測試也不能
+證明代理尚未就緒的第一次 seek 已流暢。
+
+本機驗證：`flutter test --no-pub --exclude-tags golden --reporter expanded`
+最終 **980 通過／8 跳過**。新增記憶體警告晚到結果、跨素材回收、保留目前
+畫面及等待開始紀錄時手勢優先的回歸測試。匯入測試補齊原生記憶體通道
+mock，沒有放寬原有斷言。修改的服務與測試 `dart analyze` 無問題；編輯器
+保留既有 `_sceneSnapshot` 的 `prefer_function_declarations_over_variables`
+提示（該閉包為維持 dispose 時 identity，與本輪無關）。Swift 新增取消／
+重啟世代與多素材 reader 窗口測試，Windows 尚不能編譯或執行。
+
+待 iOS 驗證：Xcode 編譯及 RunnerTests；iPhone 17 冷啟動匯入同五支 HDR，
+立即來回拖曳並重複跨素材，播放／暫停、更新素材及樣式，再離開回空專案。
+追蹤記憶體是否隨重複輪次持續上升、reader 是否在離屏後下降，以及真正
+上屏的延遲／閃動；同幀比較原片、預覽與匯出高光和膚色。系統終止原因需
+對應 [JetsamEvent／crash report](https://developer.apple.com/documentation/xcode/identifying-high-memory-use-with-jetsam-event-reports)。
+
+## 2026-09-15 多影片匯入後滑動閃退回報
+
+上次中斷記號為 HDR 代理轉檔中，程序 footprint 2111MB、App 可用額度
+1265MB（`os_proc_available_memory`，不是全系統空閒 RAM）。貼出的 71 格與
+UI 154ms 是重新進場後的樣本，不能当作上次閃退時的執行緒量測；未提供
+對應 crash／JetsamEvent，不能判定必然是 OOM、watchdog 或 Swift 例外。
+
+`proxy-memory-admission-1` 包含上一輪尚未推送的解碼需求／換件修正，另補：
+
+- iOS 預覽代理在接單、配置後開工前及執行中檢查記憶體。工程高水位為
+  實體記憶體 20%，限制在 768–1536MB；App 可用額度小於 512MB 也退讓。
+  收到 OS 記憶體警告同樣停止預覽代理。恢復需至少 5 秒、footprint 低於
+  高水位 256MB 且可用額度至少 768MB。這不是 jetsam 的安全保證或系統門檻。
+- 原本手勢暫停只停 sample 讀取，仍持有 reader／writer／緩衝；現在記憶體
+  不足時會取消該代理。影片／聲音 append 佇列各自結束一次，取消 writer
+  後才回覆，避免提早釋放 Dart 單工作名額讓新舊 codec 重疊。
+- HDR 及 SDR 的 deferred 回傳一致，不當成 codec 失敗，也不進保守轉檔
+  fallback。Dart 尊重 5 秒 retryAfter，未恢复時不忙迴圈重試；原片不刪除、
+  半成品不寫入代理索引，不降低 HDR 或匯出解析度。
+
+預算只限制可退讓的編輯器代理，不取消使用者匯出。原生 250ms 取樣不能捕捉
+所有瞬間尖峰；如果預覽本身一直超過恢復門檻，代理會繼續延後，原片預覽仍
+可能卡頓。這是避免資源繼續疊加的防護，不是所有記憶體來源已釋放或閃退已
+修復的證明；需 Xcode 編譯和同專案實機匯入／拖曳驗證。
+
 ## BUILD 208 加圖片閃退回報（尚待實機驗證）
 
 208 附件的上次未正常結束記號停在 HDR 代理轉檔，當時 2542 MB；本輪則為空白編輯器，不能用其零樣本否定使用者的閃退或推定確切 crash 類型。附件尾端截斷；需要對應的 iOS crash／JetsamEvent 才能確認系統終止原因。208 的操作快照不含上一節修改新增的欄位，本機修正當時尚未推送。
@@ -56,6 +127,38 @@
 - 暫停、播放、加圖片前後用**相同時間點**比較；匯出 SDR／HDR 後比對原片及相簿。
 - 回診斷器標記「可接受／有問題」，更新資料並複製報告或 JSON。
   問題時間是回報時的時間軸位置，並非自動偵測閃屏發生時間。
+
+## BUILD 209 回報後：解碼需求與換件競爭
+
+209 的 `image-import-guard-1` 已確認包含前次修正。本輪圖片解碼 24.8ms、
+樣式重製最大 31.1ms、幾何 ACK 最大 21.9ms；原生重畫行程歷史仍有
+537ms 長尾，程序記憶體取樣峰值 2633MB。不能把 ACK 快解讀成畫面跟手，
+也不能把 31 筆記憶體警告事件（部分同時重複）當成 31 次獨立 OS 警告。
+
+`hidden-decoder-idle-swap-1` 修正兩個可從程式確認的競爭來源：
+
+- 隱藏軌道在產生 CI 指令的來源需求之前剔除，未隱藏的層仍做保守遮蔽判定。
+  以前隱藏會永久停用遮蔽剔除，且被隱藏影片仍在 requiredSourceTrackIDs 中。
+  顯示／隱藏集合改變時只更新同一播放器的 videoComposition，不換 player/item；
+  幾何變更仍保留既有即時參數與 seek 重畫路徑。全部隱藏時不保留舊合成影像；
+  沒有可見影片的指令仍可能要求一條有媒體的載體軌，不能宣稱零解碼。
+- 背景換檔、合成重建與原生準備共用直接互動判定，涵蓋選圖／裁切、滑桿、
+  時間軸手指和預覽手指。已有播放器時，非編輯入口也不能繞過互動檢查；
+  非同步烘圖完成後再檢查，停手後保留 600ms 閒置窗。明確起播可完成必要的
+  待辦結構重建，不會被起播自己設下的準備暫停旗標擋住。
+
+`requiredDecoderTracksMin/Max` 是目前 CI 指令要求的軌數範圍，不是解碼器實例
+或實際記憶體。`hiddenTimelineTracks` 和 `occlusionEnabled` 顯示同份計畫的狀態。
+這些修改不改匯出、HLG／BT.2020、顯示平面或預覽解析度；不能保證 AVFoundation
+立即歸還既有緩衝。已進入原生建置的工作也不能由 Dart 檢查倒追回取消。
+必須用 iOS 實機驗證隱藏／全部隱藏／恢復、連續縮放及快速往返拖曳；
+Windows 無法執行新增的 Swift 測試或驗證實際上屏、色準與記憶體降幅。
+
+本機驗證：`flutter analyze --no-pub` 通過；依既有 Codemagic 條件
+`flutter test --no-pub --exclude-tags golden`，971 通過／8 跳過。
+新增的選圖／裁切延後重建測試驗證持有期間不換件、閒置後待辦不遺失；
+Swift 測試補上隱藏來源先於遮蔽判定、解碼需求縮減、全部隱藏及恢復的案例，
+尚未在 Xcode 執行。未更新 golden 基準或更動 CI 排除規則。
 
 ## 判讀界線
 

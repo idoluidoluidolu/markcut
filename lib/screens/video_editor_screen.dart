@@ -2260,6 +2260,30 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   @override
   void didHaveMemoryPressure() {
     QualityDiagnostics.instance.mark('memoryPressureBeforeCacheTrim');
+    // Invalidate late native results before reclaiming offscreen history.
+    // Keep visible fallbacks so a warning cannot blank an active gesture.
+    _scrubQueue.clear();
+    _scrubCacheLimitBytes = 24 << 20;
+    final visibleSources = _scrubVideoCandidates
+        .map((c) => c.sourceIndex)
+        .toSet();
+    for (final i in _scrubFrames.keys.toList()) {
+      if (visibleSources.contains(i)) continue;
+      final slots = _scrubFrames[i]!;
+      _scrubBytes -= _scrubBytesOf(i);
+      // Reverse scans compare list identity after awaiting native work.
+      _scrubFrames[i] = List<Uint8List?>.filled(slots.length, null);
+      _scrubFrameTimes.remove(i);
+      _scrubTouch.remove(i);
+    }
+    _nfLatest.removeWhere((i, _) => !visibleSources.contains(i));
+    _nfLatestT.removeWhere((i, _) => !visibleSources.contains(i));
+    for (final i in _scrubDecoders.keys.toList()) {
+      if (visibleSources.contains(i)) continue;
+      _scrubDecoders.remove(i)?.dispose();
+      _decoderLru.remove(i);
+    }
+    QualityDiagnostics.instance.increment('scrubMemoryPressureTrim');
     _ovCacheEpoch++; // pre-warning work must not refill the history cache
     _ovPartCacheLimit = 8 << 20;
     final kept = trimPreviewPartCache(
@@ -4802,6 +4826,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 多素材的專案滑過一輪，幾百 MB 就一直掛著不走，峰值 400MB
   /// 有一大半是它
   static const _scrubBudgetBytes = 96 << 20;
+  int _scrubCacheLimitBytes = _scrubBudgetBytes;
   int _scrubBytes = 0;
   int _scrubTick = 0;
   final Map<int, int> _scrubTouch = {};
@@ -4818,12 +4843,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 超過預算就清最久沒碰的素材；正在畫面上的不清
   void _trimScrubBudget() {
-    if (_scrubBytes <= _scrubBudgetBytes) return;
+    if (_scrubBytes <= _scrubCacheLimitBytes) return;
     final keep = _tl.videosAt(_position).map((c) => c.sourceIndex).toSet();
     final order = _scrubFrames.keys.toList()
       ..sort((a, b) => (_scrubTouch[a] ?? 0).compareTo(_scrubTouch[b] ?? 0));
     for (final idx in order) {
-      if (_scrubBytes <= _scrubBudgetBytes) break;
+      if (_scrubBytes <= _scrubCacheLimitBytes) break;
       if (keep.contains(idx)) continue;
       final slots = _scrubFrames[idx];
       if (slots == null) continue;
@@ -9738,7 +9763,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final sampleStartedAt = DateTime.now().toUtc();
     final sampledComp = _comp;
     diagnostic.environment.addAll({
-      'previewRevision': 'proxy-memory-admission-1',
+      'previewRevision': 'preview-resource-release-1',
       'displayHz': View.of(context).display.refreshRate,
       'buildMode': kReleaseMode
           ? 'release'
@@ -9848,6 +9873,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           ? null
           : Diag.lowPower,
       'scrubEncodedBytes': _scrubBytes,
+      'scrubEncodedLimitBytes': _scrubCacheLimitBytes,
       'thumbnailEncodedBytes': _thumbs.values.fold<int>(
         0,
         (total, frames) => total + frames.fold<int>(0, (n, b) => n + b.length),
@@ -9925,7 +9951,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     tr.env(
       '快取記帳',
       '拖曳幀 ${(_scrubBytes / 1048576).toStringAsFixed(1)}MB'
-          '（${_scrubFrames.length} 個素材，預算 ${_scrubBudgetBytes >> 20}MB）'
+          '（${_scrubFrames.length} 個素材，預算 ${_scrubCacheLimitBytes >> 20}MB）'
           '／縮圖帶 ${(thumbB / 1048576).toStringAsFixed(1)}MB'
           '／拖曳解碼器 ${_scrubDecoders.length} 顆',
     );
@@ -9961,6 +9987,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               '／可接管=${m['playSafe'] == true ? '是' : '否'}'
               '${reject.isEmpty ? '' : '／上次拒絕：$reject'}\n'
               '  佈局：${m['layers']}\n'
+              '  解碼資源：reader ${m['readerCount'] ?? '?'}'
+              '／pump ${m['pumpCount'] ?? '?'}\n'
               '  佇列：${m['queues']}',
         );
       }),

@@ -142,7 +142,11 @@ void main() {
     }
   });
 
-  Future<void> open(WidgetTester t, {bool raw = true}) async {
+  Future<void> open(
+    WidgetTester t, {
+    bool raw = true,
+    bool multiple = false,
+  }) async {
     await t.pumpWidget(editorApp(const VideoEditorScreen(blank: true)));
     await tick(t, 5);
     VideoEditorScreen.debugTimeline!((tl) {
@@ -165,6 +169,27 @@ void main() {
           track: 0,
         ),
       );
+      if (multiple) {
+        tl.clips.first.trimEnd = 4;
+        tl.sources.add(
+          MediaSource(
+            path: '/second.mp4',
+            name: 'second',
+            kind: ClipKind.video,
+            duration: 4,
+          ),
+        );
+        tl.clips.add(
+          TimelineClip(
+            id: tl.nextId(),
+            sourceIndex: 1,
+            trimStart: 0,
+            trimEnd: 4,
+            offset: 4,
+            track: 0,
+          ),
+        );
+      }
     });
     await tick(t, 20);
     await waitUntil(t, () => builds > 0, maxMs: 3000);
@@ -503,6 +528,60 @@ void main() {
     expect(cache(), findsOneWidget);
     await scrub(t, 5);
     expect(cache(), findsNothing, reason: '零秒不能回填成後續請求時間');
+    await close(t);
+  });
+
+  testWidgets('記憶體警告丟棄晚到抽幀，下一次拖曳仍可補新畫面', (t) async {
+    await open(t);
+    frameRequests.clear();
+    final old = Completer<Object?>();
+    heldFrame = old;
+    editorOf(t).onSeek(1);
+    await t.pump();
+    expect(frameRequests.length, 1);
+    binding.handleMemoryPressure();
+    old.complete({'bytes': frameBytes, 'actualSeconds': 1.0});
+    await tick(t, 2, 20);
+    expect(cache(), findsNothing, reason: '回收前的結果不能重新填回');
+    await scrub(t, 5);
+    expect(frameRequests.length, greaterThan(1));
+    expect(cache(), findsOneWidget);
+    expect(playheadOf(t), closeTo(5, 0.001));
+    await close(t);
+  });
+
+  testWidgets('切到另一支素材後，記憶體警告回收前一支拖曳快取', (t) async {
+    await open(t, multiple: true);
+    await scrub(t, 1);
+    expect(cache(), findsOneWidget);
+    await scrub(t, 5);
+    expect(cache(), findsOneWidget);
+    final before = frameRequests.where((r) => r['path'] == '/raw.mp4').length;
+    expect(before, greaterThan(0));
+    binding.handleMemoryPressure();
+    await t.pump();
+    expect(cache(), findsOneWidget, reason: '第二支目前的畫面仍在');
+    await scrub(t, 1);
+    expect(
+      frameRequests.where((r) => r['path'] == '/raw.mp4').length,
+      greaterThan(before),
+      reason: '離屏素材已釋放，回來時按需重新抽幀',
+    );
+    expect(cache(), findsOneWidget);
+    await close(t);
+  });
+
+  testWidgets('重複記憶體警告保留目前拖曳畫面，不額外建播放器', (t) async {
+    await open(t);
+    await scrub(t, 1);
+    expect(cache(), findsOneWidget);
+    final before = builds;
+    for (var i = 0; i < 3; i++) {
+      binding.handleMemoryPressure();
+      await t.pump(const Duration(milliseconds: 16));
+      expect(cache(), findsOneWidget);
+    }
+    expect(builds, before);
     await close(t);
   });
 

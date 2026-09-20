@@ -290,9 +290,9 @@ class WorkFiles {
         hdr: true,
         maxShortSide: kHdrProxyShortSide,
         interactiveYield: interactiveYield,
-        onStart: () {
+        onStart: () async {
           lastBeat = DateTime.now();
-          unawaited(Diag.mark('HDR 代理：轉檔中', data: {'檔案': fileName}));
+          await Diag.mark('HDR 代理：轉檔中', data: {'檔案': fileName});
         },
         onProgress: (v) {
           onProgress?.call(v);
@@ -519,9 +519,9 @@ class WorkFiles {
         prechecked: qualifies == false,
         safe: safe,
         interactiveYield: interactiveYield,
-        onStart: () {
+        onStart: () async {
           lastBeat = DateTime.now();
-          unawaited(Diag.mark('工作檔：轉檔中', data: {'檔案': fileName}));
+          await Diag.mark('工作檔：轉檔中', data: {'檔案': fileName});
         },
         onProgress: (v) {
           onProgress?.call(v);

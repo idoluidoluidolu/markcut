@@ -915,8 +915,13 @@ enum MCPreviewVisibility {
   }
 
   static func visibleLayers(
-    _ layers: [CILayerSpec], canvas: CGSize, enabled: Bool
+    _ sourceLayers: [CILayerSpec], canvas: CGSize, enabled: Bool,
+    hiddenTracks: Set<Int> = []
   ) -> [CILayerSpec] {
+    // Hidden sources must be removed BEFORE choosing the opaque cover and
+    // building requiredSourceTrackIDs. Skipping them only in CI still makes
+    // every seek wait for their decoders. Editing disables occlusion, not hide.
+    let layers = sourceLayers.filter { !hiddenTracks.contains($0.z) }
     guard enabled,
       let index = layers.lastIndex(where: { coversCanvas($0, canvas: canvas) })
     else { return layers }
@@ -963,6 +968,13 @@ enum MCPreviewVisibility {
 final class MCPreviewVisibilityState {
   private(set) var enabled = true
   private(set) var hasCulledLayers = false
+  private(set) var hiddenTracks: Set<Int> = []
+  @discardableResult
+  func setHiddenTracks(_ tracks: Set<Int>) -> Bool {
+    guard tracks != hiddenTracks else { return false }
+    hiddenTracks = tracks
+    return true
+  }
   func noteCulling() { hasCulledLayers = true }
   func beginEditing() -> Bool {
     guard enabled else { return false }
@@ -3209,8 +3221,49 @@ final class MCFrameGeneratorPool {
   }
 }
 
-/// Cooperative pause for editor background proxies only. Waiting releases this
-/// lock; AV reader/writer state and already encoded samples remain intact.
+/// Main-thread admission and hysteresis for editor proxy work only.
+final class MCPreviewMemoryBudget {
+  private var blocked = false
+  private var retryAt: TimeInterval = 0
+  func notePressure(now: TimeInterval) {
+    blocked = true
+    retryAt = now + 5
+  }
+  // Engineering admission budget, NOT an estimate of the device's jetsam limit.
+  // Reserve room for a seek/player handoff; resume below a lower watermark.
+  func shouldDefer(usedMB: Double?, availableMB: Double, physicalMB: Double,
+                   now: TimeInterval) -> Bool {
+    let limit = min(1536.0, max(768.0, physicalMB * 0.20))
+    if (usedMB.map { $0 >= limit } ?? false) || availableMB < 512 {
+      notePressure(now: now)
+      return true
+    }
+    if blocked {
+      guard now >= retryAt, availableMB >= 768,
+        let usedMB = usedMB, usedMB <= limit - 256 else { return true }
+      blocked = false
+    }
+    return false
+  }
+}
+
+/// First stop reason wins. Writer completion reads this on a different queue.
+final class MCPrepStopState {
+  let cancelled = AtomicFlag()
+  private let lock = NSLock()
+  private var value: String?
+  var reason: String? { lock.lock(); defer { lock.unlock() }; return value }
+  func request(_ reason: String) -> Bool {
+    lock.lock(); defer { lock.unlock() }
+    guard value == nil else { return false }
+    value = reason
+    cancelled.set()
+    return true
+  }
+}
+
+/// Cooperative pause keeps partially encoded work during short gestures.
+/// Memory pressure additionally cancels the job to release its codec buffers.
 final class MCInteractivePrepGate {
   private let condition = NSCondition()
   private var interactive = false
@@ -3266,6 +3319,26 @@ final class MCInteractivePrepGate {
   private let frameGenerators = MCFrameGeneratorPool()
   private let frameQueue = DispatchQueue(label: "markcut.frames")
   private let prepInteractiveGate = MCInteractivePrepGate()
+  private let prepMemoryBudget = MCPreviewMemoryBudget()
+  // Main-queue only; includes editor proxies, never user exports.
+  private var prepMemoryDefers: [Int: () -> Void] = [:]
+
+  private func previewMemoryNeedsYield() -> Bool {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(
+      MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let status = withUnsafeMutablePointer(to: &info) { ptr in
+      ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+        task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+      }
+    }
+    let mb = 1024.0 * 1024.0
+    return prepMemoryBudget.shouldDefer(
+      usedMB: status == KERN_SUCCESS ? Double(info.phys_footprint) / mb : nil,
+      availableMB: Double(os_proc_available_memory()) / mb,
+      physicalMB: Double(ProcessInfo.processInfo.physicalMemory) / mb,
+      now: CACurrentMediaTime())
+  }
 
   private func releaseFrameGenerators() {
     // copyCGImage 是同步工作，不能在別條執行緒同時拆 generator。
@@ -3275,6 +3348,17 @@ final class MCInteractivePrepGate {
   @objc private func frameResourcesNeedRelease(_ notification: Notification) {
     releaseFrameGenerators()
     PlayerHosts.shared.invalidateNativeScrub()
+    if notification.name == UIApplication.didReceiveMemoryWarningNotification {
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { return }
+        self.prepMemoryBudget.notePressure(now: CACurrentMediaTime())
+        for stop in Array(self.prepMemoryDefers.values) { stop() }
+        for job in self.prepYieldSessions {
+          self.prepDeferredSessions.insert(job)
+          self.prepSessions[job]?.cancelExport()
+        }
+      }
+    }
   }
 
   override func application(
@@ -3657,13 +3741,9 @@ final class MCInteractivePrepGate {
         }
         let tracks = Set(a["tracks"] as? [Int] ?? [])
         CIExportCompositor.setHiddenImageTracks(tracks)
-        if !tracks.isEmpty {
-          // Restore culled lower sources before hiding an opaque upper layer.
-          _ = p.beginLiveLayerEditing()
-          if !p.liveCIOn && !p.applyXform(nil, nudge: false) {
-            result(false)
-            return
-          }
+        if !p.refreshHiddenTracks(tracks) {
+          result(false)
+          return
         }
         p.nudgeRedrawIfPaused()
         result(true)
@@ -5427,6 +5507,10 @@ final class MCInteractivePrepGate {
         // return），safe 對它沒有意義——那條的重試就是原封不動再跑一次
         let safe = args["safe"] as? Bool ?? false
         let interactiveYield = args["interactiveYield"] as? Bool ?? false
+        if interactiveYield && self.previewMemoryNeedsYield() {
+          result(["status": "deferred", "retryAfterMs": 5000])
+          return
+        }
         // HDR 直通代理：HLG 10-bit、不映射、密關鍵幀。
         // 失敗就回 nil（呼叫端照播原檔），不走兩段式退路——
         // 退路轉出來是 SDR，對 HDR 預覽是錯的畫面
@@ -5435,7 +5519,11 @@ final class MCInteractivePrepGate {
             src: src, dest: dest, maxShortSide: maxShortSide,
             channel: channel, label: "HDR 代理一趟轉好", job: job,
             hdrPass: true, interactiveYield: interactiveYield
-          ) { err in result(err == nil ? dest : nil) }
+          ) { err in
+            if err == AppDelegate.prepDeferredErr {
+              result(["status": "deferred", "retryAfterMs": 5000])
+            } else { result(err == nil ? dest : nil) }
+          }
           return
         }
         // 已經符合規格的素材直接用原檔，一格都不用重編。
@@ -5463,7 +5551,9 @@ final class MCInteractivePrepGate {
               channel: channel, job: job, safe: safe,
               interactiveYield: interactiveYield
             ) { path in
-              if path == AppDelegate.prepDeferredErr { result(["status": "deferred"]) }
+              if path == AppDelegate.prepDeferredErr {
+                result(["status": "deferred", "retryAfterMs": 5000])
+              }
               else { result(path) }
             }
           }
@@ -5583,6 +5673,7 @@ final class MCInteractivePrepGate {
       src: src, dest: dest, maxShortSide: maxShortSide, channel: channel,
       label: "工作檔一趟轉好", job: job, interactiveYield: interactiveYield
     ) { [weak self] err in
+      if err == AppDelegate.prepDeferredErr { done(AppDelegate.prepDeferredErr); return }
       if err == nil {
         done(dest)
         return
@@ -5634,13 +5725,14 @@ final class MCInteractivePrepGate {
     interactiveYield: Bool = false,
     done: @escaping (String?) -> Void
   ) {
+    if interactiveYield && previewMemoryNeedsYield() {
+      done(AppDelegate.prepDeferredErr)
+      return
+    }
     // 這一趟寫自己的暫存檔，成功才換到 dest。
     //
-    // 取消／逾時是「立刻回覆、writer 稍後才在 group.notify 收掉」——
-    // 呼叫端拿到回覆的當下就可能用同一個 dest 開下一次轉檔（兩段式退路
-    // 的 exportOnce 就是這樣），而舊的 writer 還活著、還指著那個路徑，
-    // cancelWriting 收尾時會不會順手刪掉那個檔沒有保證。各寫各的就沒有
-    // 這個問題，順便讓「轉到一半的檔」永遠不會被誤認成成品
+    // 取消回覆必須等 append 與 writer 收工，才釋放 Dart 的單工作名額。
+    // 每趟仍寫獨立檔，避免半成品被誤認為成品，也不碰其他工作的 dest。
     let stage = "\(dest).\(UUID().uuidString).mp4"
     try? FileManager.default.removeItem(atPath: stage)
     if hdrPass {
@@ -5867,7 +5959,14 @@ final class MCInteractivePrepGate {
       }
     }
 
+    if interactiveYield && previewMemoryNeedsYield() {
+      try? FileManager.default.removeItem(atPath: stage)
+      done(AppDelegate.prepDeferredErr)
+      return
+    }
     guard reader.startReading(), writer.startWriting() else {
+      reader.cancelReading()
+      if writer.status == .writing { writer.cancelWriting() }
       // startWriting 可能已經把檔案建出來了：這條早退不經過 finish，
       // 自己收掉，不然要等 WorkFiles.sweep 有跑到才清得掉
       try? FileManager.default.removeItem(atPath: stage)
@@ -5884,17 +5983,31 @@ final class MCInteractivePrepGate {
     // append 失敗要記下來：不記的話 writer 仍可能收在 completed，
     // 於是一份「只有前半段」的檔會被當成功交出去，素材默默變短
     let failed = AtomicFlag()
-    let cancelled = AtomicFlag()
+    let stopState = MCPrepStopState()
+    let cancelled = stopState.cancelled
     let gate = prepInteractiveGate
     let pauseBaseline = gate.pausedDuration
     let t0 = CACurrentMediaTime()
     var lastReport: CFTimeInterval = 0
 
+    // Each input is finished on its own append queue, exactly once. A cancelled
+    // writer may never become ready again, so cancellation also schedules these
+    // closures rather than relying on another readiness callback.
+    let videoEnded = AtomicFlag()
+    let audioEnded = AtomicFlag()
+    let endVideo: () -> Void = {
+      if videoEnded.setIfClear() { vIn.markAsFinished(); group.leave() }
+    }
+    let endAudio: () -> Void = {
+      if let input = aIn, audioEnded.setIfClear() { input.markAsFinished(); group.leave() }
+    }
     group.enter()
     vIn.requestMediaDataWhenReady(on: vq) {
+      if videoEnded.isSet { return }
       while vIn.isReadyForMoreMediaData {
+        if cancelled.isSet { endVideo(); return }
         if interactiveYield, !gate.wait(cancelled: cancelled) {
-          vIn.markAsFinished(); group.leave(); return
+          endVideo(); return
         }
         // Drain framework temporaries per sample, not after the writer's whole
         // ready loop (which can span a large portion of a 4K source).
@@ -5916,8 +6029,7 @@ final class MCInteractivePrepGate {
           return true
         }
         if !more {
-          vIn.markAsFinished()
-          group.leave()
+          endVideo()
           return
         }
       }
@@ -5925,11 +6037,13 @@ final class MCInteractivePrepGate {
     if let aOut = aOut, let aIn = aIn {
       group.enter()
       aIn.requestMediaDataWhenReady(on: aq) {
+        if audioEnded.isSet { return }
         while aIn.isReadyForMoreMediaData {
+          if cancelled.isSet { endAudio(); return }
           // Playback: no per-audio-sample throttle. Direct gestures pause both
           // tracks, avoiding audio read-ahead while video is suspended.
           if interactiveYield, !gate.wait(cancelled: cancelled, throttle: 0) {
-            aIn.markAsFinished(); group.leave(); return
+            endAudio(); return
           }
           let more = autoreleasepool { () -> Bool in
             guard let sb = aOut.copyNextSampleBuffer() else { return false }
@@ -5937,8 +6051,7 @@ final class MCInteractivePrepGate {
             return true
           }
           if !more {
-            aIn.markAsFinished()
-            group.leave()
+            endAudio()
             return
           }
         }
@@ -5967,6 +6080,7 @@ final class MCInteractivePrepGate {
         timeoutTimer?.cancel()
         timeoutTimer = nil
         self?.prepCancels.removeValue(forKey: cancelKey)
+        self?.prepMemoryDefers.removeValue(forKey: cancelKey)
         bg.end()
         // 失敗／取消：只清自己的暫存檔，不要碰 dest——那裡可能已經是
         // 下一次嘗試的成品了
@@ -5974,28 +6088,42 @@ final class MCInteractivePrepGate {
         done(err)
       }
     }
-    prepCancels[cancelKey] = {
-      cancelled.set()
+    let stop: (String) -> Void = { reason in
+      guard stopState.request(reason) else { return }
       reader.cancelReading()
-      finish(AppDelegate.prepCancelledErr)
+      vq.async { endVideo() }
+      if aIn != nil { aq.async { endAudio() } }
+      group.notify(queue: vq) {
+        // Also covers pressure arriving while finishWriting is already pending.
+        if writer.status == .writing { writer.cancelWriting() }
+        finish(reason)
+      }
+      // Reply only after both append queues and cancelWriting have finished.
+      // An early reply releases Dart's single-job slot while this codec lives.
+    }
+    prepCancels[cancelKey] = { stop(AppDelegate.prepCancelledErr) }
+    if interactiveYield {
+      prepMemoryDefers[cancelKey] = { stop(AppDelegate.prepDeferredErr) }
     }
     // 逾時保險：硬體編碼器被別的工作佔住時 requestMediaDataWhenReady
     // 可能一直不回來，沒有這道就卡在「工作檔轉不完」，畫面永遠是原檔。
     // 額度隨片長：寫死 120 秒的話長片一趟正常轉檔就會超過、被誤判
     // 逾時砍掉，最後整段編輯拿 4K HDR 原檔播——正是要避免的卡頓。
     // 給「片長的 3 倍」（硬體轉檔實測遠快於實時），下限 120 秒
-    // 用 DispatchWorkItem、而且只弱抓 reader/writer：以前的 closure 強抓
-    // 著它們排在主佇列上，轉完之後還要等到期（30 分鐘片＝90 分鐘）才放
+    // 可取消的 timer 在 finish 立即解除 handler，不讓已完成的 reader /
+    // writer 被逾時 closure 留到整段時間用完；代理另每 250ms 檢查預算。
     let timeoutSec = max(120.0, asset.duration.seconds * 3.0)
     let timer = DispatchSource.makeTimerSource(queue: .main)
-    timer.schedule(deadline: .now() + 1, repeating: 1)
-    timer.setEventHandler { [weak reader] in
+    timer.schedule(deadline: .now() + 0.25, repeating: 0.25)
+    timer.setEventHandler { [weak self] in
       guard !replied.isSet else { return }
+      if interactiveYield, self?.previewMemoryNeedsYield() == true {
+        stop(AppDelegate.prepDeferredErr)
+        return
+      }
       let paused = interactiveYield ? max(0, gate.pausedDuration - pauseBaseline) : 0
       guard CACurrentMediaTime() - t0 - paused >= timeoutSec else { return }
-      cancelled.set()
-      reader?.cancelReading()
-      finish("逾時")
+      stop("逾時")
     }
     timeoutTimer = timer
     timer.resume()
@@ -6006,9 +6134,7 @@ final class MCInteractivePrepGate {
       if cancelled.isSet || failed.isSet {
         reader.cancelReading()
         if writer.status == .writing { writer.cancelWriting() }
-        // 取消那條 finish 早就回覆過了（replied 擋著），這一句是給
-        // 「中途失敗」用的
-        finish(failed.isSet ? "中途失敗" : AppDelegate.prepCancelledErr)
+        finish(stopState.reason ?? (failed.isSet ? "中途失敗" : AppDelegate.prepCancelledErr))
         return
       }
       // writer 自己壞掉（磁碟滿、編碼器出錯）時 status 已經是 .failed：
@@ -6019,6 +6145,7 @@ final class MCInteractivePrepGate {
         return
       }
       writer.finishWriting {
+        if let reason = stopState.reason { finish(reason); return }
         let ok =
           writer.status == .completed && reader.status == .completed
           && !failed.isSet
@@ -6082,7 +6209,7 @@ final class MCInteractivePrepGate {
         // 注意呼叫端照樣拿得到工作檔：這一步是「已經轉好的工作檔再
         // 重排關鍵幀」，取消它只是少了密關鍵幀（滑動鈍一點），檔案
         // 本身是好的，所以 done(dest) 仍然正確
-        if err == AppDelegate.prepCancelledErr {
+        if err == AppDelegate.prepCancelledErr || err == AppDelegate.prepDeferredErr {
           done(false)
           return
         }
@@ -6192,7 +6319,7 @@ final class MCInteractivePrepGate {
     interactiveYield: Bool = false,
     done: @escaping (String?) -> Void
   ) {
-    if interactiveYield && prepInteractiveGate.isInteractive {
+    if interactiveYield && (prepInteractiveGate.isInteractive || previewMemoryNeedsYield()) {
       done(AppDelegate.prepDeferredErr); return
     }
     let asset = AVURLAsset(url: URL(fileURLWithPath: src))
@@ -7541,6 +7668,16 @@ final class CompPlayer: NSObject, FlutterTexture {
   private var vcRegen: ((CompLiveXform?) -> AVMutableVideoComposition)?
   private var visibilityState: MCPreviewVisibilityState?
 
+  /// Visibility is structural decoder demand, not a geometry gesture. Re-plan
+  /// the same item's instructions once per changed set (also on unhide), while
+  /// keeping safe occlusion of the remaining layers. Never swap the player.
+  func refreshHiddenTracks(_ tracks: Set<Int>) -> Bool {
+    guard let state = visibilityState, vcRegen != nil,
+      player.currentItem != nil else { return false }
+    guard state.setHiddenTracks(tracks) else { return true }
+    return applyXform(lastXformOv, nudge: false)
+  }
+
   /// 第一次變形前先恢復所有來源需求。往後縮小／移走／降低透明度時，
   /// 下層解碼器已回到指令裡，不能只更新 CI 靜態參數卻沒有來源可畫。
   func beginLiveLayerEditing() -> Bool {
@@ -7724,9 +7861,10 @@ final class CompPlayer: NSObject, FlutterTexture {
     guard let regen = vcRegen, let item = player.currentItem else {
       return false
     }
-    item.videoComposition = regen(ov)
+    let vc = regen(ov)
+    item.videoComposition = vc
     lastXformOv = ov
-    liveCIOn = ov != nil || builtNeedsCI || visibilityState?.enabled == false
+    liveCIOn = vc.customVideoCompositorClass != nil
     if nudge && player.rate == 0 {
       nudgeRedrawIfPaused()
     }
@@ -8651,9 +8789,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       // 最後一個可見片段結束的時間：之後的區間就是「片尾」
       let lastShow = segments.map { $0.range.end.seconds }.max() ?? 0
       let visibility = MCPreviewVisibilityState()
-      if !CIExportCompositor.currentHiddenImageTracks().isEmpty {
-        _ = visibility.beginEditing()
-      }
+      visibility.setHiddenTracks(CIExportCompositor.currentHiddenImageTracks())
       visibilityState = visibility
       let scrubCache = nativeScrubSupported ? nativeScrubCache : nil
       // 產一份 videoComposition（可帶捏合中的即時變形覆寫 ov）。
@@ -8661,6 +8797,9 @@ final class CompPlayer: NSObject, FlutterTexture {
       // 閉包刻意不碰 self（buildInfo/wmLive 都在外面做）——
       // vcRegen 存在屬性上，碰了 self 就是保留循環
       let makeVC: (CompLiveXform?) -> AVMutableVideoComposition = { ov in
+        let hiddenTracks = visibility.hiddenTracks
+        let hasVisibleMedia = segments.contains { !hiddenTracks.contains($0.layer) }
+          || stillSpecs.contains { !hiddenTracks.contains($0.z) }
         let scrubLayout = scrubCache?.nextLayout() ?? 0
         var segs = segments
         if let ov = ov {
@@ -8695,7 +8834,7 @@ final class CompPlayer: NSObject, FlutterTexture {
         // 即時變形要 CI 才吃得到（標準 layer instruction 不會逐格
         // 問我們）：有覆寫一律走 CI 路（軌道沒為 CI 鋪滿，接縫可能
         // 用上一格頂一下；放手重組就正確）
-        let useCI = needsCI || ov != nil || !visibility.enabled
+        let useCI = needsCI || ov != nil || !visibility.enabled || !hiddenTracks.isEmpty
         if useCI {
         var proto: [(a: CMTime, b: CMTime, layers: [CILayerSpec], hold: Bool,
                      culled: Bool)] =
@@ -8747,8 +8886,13 @@ final class CompPlayer: NSObject, FlutterTexture {
           }
           entries.sort { $0.z != $1.z ? $0.z < $1.z : $0.order < $1.order }
           let layers = MCPreviewVisibility.visibleLayers(
-            entries.map { $0.spec }, canvas: canvas, enabled: visibility.enabled)
-          if layers.count < entries.count { visibility.noteCulling() }
+            entries.map { $0.spec }, canvas: canvas, enabled: visibility.enabled,
+            hiddenTracks: hiddenTracks)
+          // A hidden layer is intentionally absent. Only occlusion culling
+          // requires restoration before a transform can reveal lower sources.
+          let visibleCount = entries.filter { !hiddenTracks.contains($0.z) }.count
+          let culled = layers.count < visibleCount
+          if culled { visibility.noteCulling() }
           // 片尾（最後一個可見片段之後，例如音樂比畫面長）不留黑：
           // 無條件重播最後一格，畫面停在最後一幀直到播完。
           // 「為了時間軸尾巴補出來的那段」（naturalEnd 之後）不在此列：
@@ -8763,8 +8907,9 @@ final class CompPlayer: NSObject, FlutterTexture {
             a.seconds >= lastShow - 0.001 && a.seconds < naturalEnd - 0.001
           proto.append((
             a: a, b: b, layers: layers,
-            hold: layers.isEmpty && ((b - a).seconds < 0.12 || tail),
-            culled: layers.count < entries.count
+            hold: layers.isEmpty && entries.isEmpty && hasVisibleMedia
+              && ((b - a).seconds < 0.12 || tail),
+            culled: culled
           ))
         }
         // 預捲窗：這一段「用到的軌」＋往後 1.5 秒內會進場的軌。
@@ -8782,16 +8927,18 @@ final class CompPlayer: NSObject, FlutterTexture {
         // 對著軌道分段表驗一次）就落回標頭寫明的一般情況：有必要來源格
         // 的段，合成器一定跑；startRequest 照樣只畫圖片層、不讀那格。
         // 代價是最底層那顆解碼器在尾段繼續熱著——它前一段本來就在跑，
-        // 不是 6d7da5c 擋掉的「三顆 4K 解碼器同時冷啟」。只在 needsCI
-        // 時做：沒鋪滿的軌列進去反而供格失敗
-        let baseTrack: AVMutableCompositionTrack? =
-          needsCI ? vTracks.keys.min().flatMap { vTracks[$0]?.track } : nil
-        func baseCovers(_ a: CMTime, _ b: CMTime) -> Bool {
-          guard let tr = baseTrack else { return false }
+        // 不是 6d7da5c 擋掉的「三顆 4K 解碼器同時冷啟」。臨時隱藏才
+        // 掛 CI 的合成也可借用，但必須驗證載體軌在該段真的有媒體。
+        let carrierTracks = vTracks.keys.sorted().compactMap { vTracks[$0]?.track }
+        func carrierTrack(_ a: CMTime, _ b: CMTime) -> AVMutableCompositionTrack? {
           let mid = CMTime(
             seconds: (a.seconds + b.seconds) / 2, preferredTimescale: 600)
-          return tr.segments.contains { sg in
-            !sg.isEmpty && sg.timeMapping.target.containsTime(mid)
+          // A composition that only switches to CI on hide may have gaps in
+          // its bottom track. Borrow one that actually covers this interval.
+          return carrierTracks.first { tr in
+            tr.segments.contains { sg in
+              !sg.isEmpty && sg.timeMapping.target.containsTime(mid)
+            }
           }
         }
         // 每段自己需要的軌：層用到的；一條都沒有就是最底層軌（見上）
@@ -8801,7 +8948,7 @@ final class CompPlayer: NSObject, FlutterTexture {
             pi.layers.compactMap { l -> CMPersistentTrackID? in
               l.trackID == kCMPersistentTrackID_Invalid ? nil : l.trackID
             })
-          if s.isEmpty, let tr = baseTrack, baseCovers(pi.a, pi.b) {
+          if s.isEmpty, let tr = carrierTrack(pi.a, pi.b) {
             s.insert(tr.trackID)
           }
           return s
@@ -8896,8 +9043,8 @@ final class CompPlayer: NSObject, FlutterTexture {
       builtNeedsCI = needsCI
       if needsVC {
         let vc = makeVC(nil)
-        liveCIOn = needsCI
-        buildInfo["CI"] = needsCI
+        liveCIOn = vc.customVideoCompositorClass != nil
+        buildInfo["CI"] = liveCIOn
         buildInfo["指令"] = vc.instructions.map { raw -> String in
           let head =
             "\(String(format: "%.2f", raw.timeRange.start.seconds))~"
@@ -9715,6 +9862,14 @@ final class CompPlayer: NSObject, FlutterTexture {
     ]
     let position = player.currentTime().seconds
     if position.isFinite { m["positionSeconds"] = position }
+    // Actual instruction demand, not total tracks in the asset. Hidden tracks
+    // may still own AVFoundation buffers; these counts do not measure memory.
+    let instructions = player.currentItem?.videoComposition?.instructions ?? []
+    let demand = instructions.compactMap { ($0 as? CIExportInstruction)?.requiredSourceTrackIDs?.count }
+    m["requiredDecoderTracksMin"] = demand.min()
+    m["requiredDecoderTracksMax"] = demand.max()
+    m["hiddenTimelineTracks"] = visibilityState?.hiddenTracks.sorted()
+    m["occlusionEnabled"] = visibilityState?.enabled
     switch player.timeControlStatus {
     case .paused: m["timeControlStatus"] = "paused"
     case .waitingToPlayAtSpecifiedRate: m["timeControlStatus"] = "waiting"
@@ -10151,6 +10306,38 @@ final class MetalPump {
   }
 }
 
+/// Accessed under ClipReader.lock. Every stop invalidates setup work too,
+/// including work that has not published an AVAssetReader yet.
+struct MCReaderLifetime {
+  private(set) var generation = 0
+  private(set) var isRunning = false
+  mutating func start() -> Int {
+    generation &+= 1
+    isRunning = true
+    return generation
+  }
+  mutating func stop() {
+    generation &+= 1
+    isRunning = false
+  }
+  func accepts(_ token: Int) -> Bool { isRunning && token == generation }
+  mutating func finish(_ token: Int) -> Bool {
+    guard accepts(token) else { return false }
+    isRunning = false
+    return true
+  }
+}
+
+/// Retain current layers and playback pre-roll, never all previously scrubbed
+/// clips. A brief grace period avoids tearing down a decoder during setup.
+enum MCPreviewReaderWindow {
+  static func keep(start: Double, end: Double, time: Double,
+                   playing: Bool, age: Double) -> Bool {
+    if age < 0.5 { return true }
+    return start - (playing ? 1.5 : 0) <= time && time < end
+  }
+}
+
 /// 確定性播放供格器：AVAssetReader 在背景執行緒順序硬解進
 /// 幀佇列（帶來源時間戳、預解 4 格），渲染時鐘從佇列取「該顯示
 /// 的那格」——晚了丟、早了等。沒有 AVPlayer 黑盒的緩衝／節奏／
@@ -10163,7 +10350,7 @@ final class ClipReader {
   private let lock = NSLock()
   /// (來源秒, 影格)。佇列滿 4 就等，消費後解碼執行緒自動補
   private var queue: [(Double, CVPixelBuffer)] = []
-  private var running = false
+  private var lifetime = MCReaderLifetime()
   private var finished = false
   /// 紋理與它的像素緩衝「成對持有」：AVAssetReader 的緩衝池只有
   /// 4 格、取出後立刻被下一格覆寫——只留 MTLTexture 不留 buffer，
@@ -10184,7 +10371,6 @@ final class ClipReader {
   /// true，「舊執行緒以為自己還活著」→ 兩條執行緒同時對同一個
   /// AVAssetReaderTrackOutput 取樣（非執行緒安全）→ 閃退。
   /// 多軌 3 層 reader 頻繁開關時命中（實測 136：多軌會閃退）
-  private var gen = 0
   /// 這一代 reader 起跑的主機時刻——重啟判定要先讓它暖身滿一秒
   private var startHost = 0.0
   /// SDR 來源（8-bit）解 32BGRA：記憶體砍半、色彩零損失。
@@ -10209,14 +10395,12 @@ final class ClipReader {
   func start(at srcT: Double) {
     stop()
     lock.lock()
-    gen += 1
-    let g = gen
-    running = true
+    let g = lifetime.start()
     finished = false
     startHost = CACurrentMediaTime()
     lock.unlock()
     Thread.detachNewThread { [weak self] in
-      self?.setupAndPump(at: srcT, gen: g)
+      autoreleasepool { self?.setupAndPump(at: srcT, gen: g) }
     }
   }
 
@@ -10284,14 +10468,14 @@ final class ClipReader {
       start: CMTime(seconds: max(0, srcT - 0.5), preferredTimescale: 600),
       duration: .positiveInfinity)
     lock.lock()
-    let go = running && gen == self.gen
+    let go = lifetime.accepts(g)
     lock.unlock()
     guard go, r.startReading() else {
       markDead(gen: g)
       return
     }
     lock.lock()
-    if gen == self.gen {
+    if lifetime.accepts(g) {
       reader = r
       out = o
       texFormat = hdr ? .rgba16Float : .bgra8Unorm
@@ -10314,8 +10498,7 @@ final class ClipReader {
   /// 只有「自己還是現任世代」才准把共享旗標標成死掉
   private func markDead(gen g: Int) {
     lock.lock()
-    if gen == self.gen {
-      running = false
+    if lifetime.finish(g) {
       finished = true
     }
     lock.unlock()
@@ -10324,7 +10507,7 @@ final class ClipReader {
   private func pumpLoop(gen g: Int) {
     while true {
       lock.lock()
-      let go = running && gen == g
+      let go = lifetime.accepts(g)
       let full = queue.count >= 3
       lock.unlock()
       if !go { return }
@@ -10333,11 +10516,14 @@ final class ClipReader {
         continue
       }
       lock.lock()
-      let oo = gen == g ? out : nil
+      let oo = lifetime.accepts(g) ? out : nil
       lock.unlock()
-      guard let o = oo, let sb = o.copyNextSampleBuffer(),
-        let buf = CMSampleBufferGetImageBuffer(sb)
-      else {
+      let sample: (Double, CVPixelBuffer)? = autoreleasepool {
+        guard let o = oo, let sb = o.copyNextSampleBuffer(),
+          let buf = CMSampleBufferGetImageBuffer(sb) else { return nil }
+        return (CMSampleBufferGetPresentationTimeStamp(sb).seconds, buf)
+      }
+      guard let (pts, buf) = sample else {
         lock.lock()
         let r = reader
         lock.unlock()
@@ -10349,9 +10535,8 @@ final class ClipReader {
         markDead(gen: g)
         return
       }
-      let pts = CMSampleBufferGetPresentationTimeStamp(sb).seconds
       lock.lock()
-      if gen == g { queue.append((pts, buf)) }
+      if lifetime.accepts(g) { queue.append((pts, buf)) }
       lock.unlock()
     }
   }
@@ -10424,7 +10609,7 @@ final class ClipReader {
   var isRunning: Bool {
     lock.lock()
     defer { lock.unlock() }
-    return running || !queue.isEmpty
+    return lifetime.isRunning || !queue.isEmpty
   }
 
   /// 這一代跑了多久（秒）
@@ -10442,7 +10627,7 @@ final class ClipReader {
 
   func stop() {
     lock.lock()
-    running = false
+    lifetime.stop()
     queue.removeAll()
     held = nil
     heldRing.removeAll()
@@ -10741,6 +10926,23 @@ final class MetalPreviewEngine: NSObject {
   /// 換一條已填滿的佇列，零延遲零 seek。解碼器永遠順序全速跑，
   /// 時鐘只管消費（晚了丟、早了等）
   private var readers: [Int: ClipReader] = [:]
+
+  private func trimReaders(_ t: Double) {
+    guard !readers.isEmpty else { return }
+    let specs = Dictionary(layers.map { ($0.id, $0) },
+                           uniquingKeysWith: { _, last in last })
+    for id in Array(readers.keys) {
+      guard let reader = readers[id] else { continue }
+      if let sp = specs[id],
+         (playing || (sp.proxy && sp.path == reader.path)),
+         MCPreviewReaderWindow.keep(start: sp.offset, end: sp.end,
+           time: t, playing: playing, age: reader.age) { continue }
+      reader.stop()
+      readers.removeValue(forKey: id)
+      restartAt.removeValue(forKey: id)
+      scrubRestartAt.removeValue(forKey: id)
+    }
+  }
 
   /// 每個 reader 上次被重啟的時刻（重啟風暴防線，見下）
   private var restartAt: [Int: Double] = [:]
@@ -11138,6 +11340,7 @@ final class MetalPreviewEngine: NSObject {
         featherMarginPx: margin, rect: spec.rect, maskTex: maskTex)
     }
     layers = specs.sorted { $0.z < $1.z }
+    trimReaders(curT)
     stills = stillSpecs
     // 2.0：引擎全時段當家，播放不再有任何佈局閘門。
     // 還在吃原檔的層走「系統播放器過渡供格」（play/syncReaders），
@@ -11391,6 +11594,7 @@ final class MetalPreviewEngine: NSObject {
       }
     } else {
       curT = t
+      trimReaders(t)
       // 滑動供格＝連續解碼，不是逐格 seek：AVPlayer.seek 一發
       // 100~200ms，一秒只供得出 5 張新畫面（實機 156：渲染1237/
       // 新格96）。順向滑動解碼佇列順著解就是滿速；倒退/跳遠才
@@ -11545,6 +11749,8 @@ final class MetalPreviewEngine: NSObject {
       "missAt": stMissAt.map { ($0 * 10).rounded() / 10 },
       "layers": layerInfo.joined(separator: "、"),
       "queues": queueInfo.joined(separator: "、"),
+      "readerCount": readers.count,
+      "pumpCount": pumps.count,
       "playSafe": playSafe,
       "supply": "佇列\(stSupplyReader)/過渡\(stSupplyPump)/保底\(stSupplyHold)",
       "maxGapMs": stMaxGapMs,
@@ -11625,6 +11831,10 @@ final class MetalPreviewEngine: NSObject {
         pumpFor(sp).want(sp.trimStart + (curT - sp.offset) * sp.speed)
       }
     }
+    // Also collect readers whose setup grace expired after the last gesture.
+    // Do this before the idle-render early return.
+    trimReaders(curT)
+    trimPumps(curT)
     let ep = CIExportCompositor.liveEpoch &+ layoutEpoch
     // GIF 動畫是時變內容：有它在台上就不能靜止降頻（會凍住）
     let liveGif = stills.contains {
