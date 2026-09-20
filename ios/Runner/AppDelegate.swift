@@ -3312,12 +3312,20 @@ final class MCPreviewRenderReceipt {
   private let receive: (Int, Double) -> Void
   private let lock = NSLock()
   private var waiting = false
+  private var lastRender: (epoch: Int, time: Double)?
+  var completedFrame: (epoch: Int, time: Double)? {
+    lock.lock(); defer { lock.unlock() }; return lastRender
+  }
   init(_ receive: @escaping (Int, Double) -> Void) { self.receive = receive }
   func setWaiting(_ value: Bool) {
     lock.lock(); waiting = value; lock.unlock()
   }
   func rendered(epoch: Int, time: Double) {
-    lock.lock(); let needed = waiting; lock.unlock()
+    guard time.isFinite else { return }
+    lock.lock()
+    lastRender = (epoch, time)
+    let needed = waiting
+    lock.unlock()
     guard needed else { return } // no extra main-queue traffic during playback
     DispatchQueue.main.async { self.receive(epoch, time) }
   }
@@ -9985,6 +9993,10 @@ final class CompPlayer: NSObject, FlutterTexture {
       "sourceVideoTracks": composition?.tracks(withMediaType: .video).count ?? 0,
       "scope": "current player counters; reset on rebuild; configuration is not pixel validation",
     ]
+    if let frame = previewRenderReceipt.completedFrame {
+      m["previewRenderedEpoch"] = frame.epoch
+      m["previewRenderedSeconds"] = frame.time
+    }
     let position = player.currentTime().seconds
     if position.isFinite { m["positionSeconds"] = position }
     // Actual instruction demand, not total tracks in the asset. Hidden tracks

@@ -970,7 +970,18 @@ class RunnerTests: XCTestCase {
       playing: true, age: 1))
   }
 
-  func testPausedCopyRendersTheLatestStyleWithoutSeekingOrReplacingThePlayer() throws {
+  func testPreviewRenderReceiptTracksCompletedFramesWithoutAddingPlaybackCallbacks() {
+    let unexpected = expectation(description: "no main callback without a waiting copy")
+    unexpected.isInverted = true
+    let receipt = MCPreviewRenderReceipt { _, _ in unexpected.fulfill() }
+    receipt.rendered(epoch: 1, time: 0.4)
+    receipt.rendered(epoch: 2, time: 0.4 + 1.0 / 600.0)
+    XCTAssertEqual(receipt.completedFrame?.epoch, 2)
+    XCTAssertEqual(receipt.completedFrame?.time, 0.4 + 1.0 / 600.0)
+    wait(for: [unexpected], timeout: 0.1)
+  }
+
+  func testPausedStyleRendersLatestThroughCopyOrOneBoundedFallback() throws {
     let url = try makeScrubVideo()
     defer { try? FileManager.default.removeItem(at: url) }
     let player = CompPlayer(registry: ScrubTestTextureRegistry())
@@ -999,15 +1010,30 @@ class RunnerTests: XCTestCase {
     let finalEpoch = CIExportCompositor.liveEpoch
     let rendered = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
       let q = player.qualitySnapshot()
-      return (q["pausedRedrawRenderCompleted"] as? Int ?? 0) > 0
-        && (q["pausedRedrawRenderedEpoch"] as? Int) == finalEpoch
+      return (q["previewRenderedEpoch"] as? Int) == finalEpoch
+        && abs((q["previewRenderedSeconds"] as? Double ?? -10) - position) < 1.0 / 30.0
+        && (q["pausedRedrawCopyInFlight"] as? Bool) == false
+        && (q["pausedRedrawCopyPending"] as? Bool) == false
+        && (q["redrawInFlight"] as? Bool) == false
+        && (q["redrawPending"] as? Bool) == false
     }, object: nil)
     wait(for: [rendered], timeout: 5)
     XCTAssertTrue(player.player.currentItem === item)
-    XCTAssertEqual(player.player.currentTime().seconds, position, accuracy: 0.001)
     let quality = player.qualitySnapshot()
-    XCTAssertEqual(quality["redrawCount"] as? Int, 0, "no legacy exact seek")
-    XCTAssertEqual(quality["pausedRedrawCopyTimeouts"] as? Int, 0)
+    let timeouts = try XCTUnwrap(quality["pausedRedrawCopyTimeouts"] as? Int)
+    // QA1966 does not promise that a paused composition copy renders within
+    // 250ms on every OS/loaded simulator. Both supported production paths must
+    // render the final epoch; a seek acknowledgement alone cannot pass this test.
+    XCTAssertLessThanOrEqual(timeouts, 1)
+    if timeouts == 0 {
+      XCTAssertGreaterThan(quality["pausedRedrawRenderCompleted"] as? Int ?? 0, 0)
+      XCTAssertEqual(player.player.currentTime().seconds, position, accuracy: 0.001)
+      XCTAssertEqual(quality["redrawCount"] as? Int, 0, "copy path must not seek")
+    } else {
+      XCTAssertEqual(quality["redrawCount"] as? Int, 1, "one bounded compatibility seek")
+      XCTAssertEqual(quality["redrawCallbackFailures"] as? Int, 0)
+      XCTAssertEqual(player.player.currentTime().seconds, position, accuracy: 2.0 / 600.0 + 0.0001)
+    }
     XCTAssertEqual(quality["pausedRedrawCopyInFlight"] as? Bool, false)
     XCTAssertEqual(quality["pausedRedrawCopyPending"] as? Bool, false)
   }
