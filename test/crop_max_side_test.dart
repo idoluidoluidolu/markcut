@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:markcut/screens/crop_screen.dart';
+import 'package:markcut/services/logo_mark_painter.dart';
 
 Future<Uint8List> _png(int w, int h) async {
   final rec = ui.PictureRecorder();
@@ -48,6 +49,7 @@ Future<Uint8List?> _cropWhole(
   WidgetTester t,
   Uint8List src, {
   int? maxSide,
+  Future<void> Function(Uint8List, ui.Image)? onRasterized,
 }) async {
   Uint8List? out;
   var done = false;
@@ -56,7 +58,12 @@ Future<Uint8List?> _cropWhole(
       home: Builder(
         builder: (ctx) => TextButton(
           onPressed: () async {
-            out = await cropImage(ctx, src, maxSide: maxSide);
+            out = await cropImage(
+              ctx,
+              src,
+              maxSide: maxSide,
+              onRasterized: onRasterized,
+            );
             done = true;
           },
           child: const Text('go'),
@@ -80,6 +87,47 @@ void main() {
     v.physicalSize = const Size(800, 1200);
     v.devicePixelRatio = 1.0;
   });
+
+  testWidgets(
+    'crop result is already warm without decoding the output PNG again',
+    (t) async {
+      final src = (await t.runAsync(() => _png(2400, 1200)))!;
+      Uint8List? seeded;
+      final out = await _cropWhole(
+        t,
+        src,
+        maxSide: 1600,
+        onRasterized: (bytes, raster) async {
+          expect((raster.width, raster.height), (1600, 800));
+          seeded = bytes;
+          await seedLogoPreview(bytes, raster);
+        },
+      );
+      expect(out, same(seeded));
+      final cached = logoImageCached(out!, maxSide: kLogoPreviewMaxSide);
+      expect(cached, isNotNull);
+      expect((cached!.width, cached.height), (1080, 540));
+      expect((await t.runAsync(() => _size(out)))!, (1600, 800));
+      final pixel = (await t.runAsync(
+        () => cached.toByteData(format: ui.ImageByteFormat.rawRgba),
+      ))!;
+      expect(pixel.buffer.asUint8List().take(4), [48, 96, 160, 255]);
+    },
+  );
+
+  testWidgets(
+    'optional preview warm-up failure does not discard a valid crop',
+    (t) async {
+      final src = (await t.runAsync(() => _png(120, 80)))!;
+      final out = await _cropWhole(
+        t,
+        src,
+        onRasterized: (_, _) async => throw StateError('cache unavailable'),
+      );
+      expect(out, isNotNull);
+      expect((await t.runAsync(() => _size(out!)))!, (120, 80));
+    },
+  );
 
   testWidgets('maxSide：裁出來的長邊夾到上限、比例不變', (t) async {
     final src = (await t.runAsync(() => _png(600, 300)))!;

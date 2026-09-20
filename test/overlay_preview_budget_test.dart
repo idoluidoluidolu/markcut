@@ -8,6 +8,42 @@ import 'package:markcut/services/watermark_renderer.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  for (final fast in [true, false]) {
+    test(
+      'large ${fast ? "interactive" : "settled"} preview stays bounded RGBA',
+      () async {
+        final pixels = overlayPreviewMaxPixels(fast: fast);
+        for (final full in [true, false]) {
+          final part = await WatermarkRenderer.renderPart(
+            WatermarkSettings(
+              text: TextMark(text: 'markcut', sizeFrac: 4, x: -.5),
+            ),
+            1080,
+            1920,
+            ui.ImageByteFormat.png,
+            fullCanvas: full,
+            clipToCanvas: full,
+            rawByteLimit: pixels * 4,
+            maxRasterPixels: pixels,
+          );
+          expect(part, isNotNull);
+          expect(part!.format, ui.ImageByteFormat.rawRgba);
+          expect(part.bytes.length, part.width * part.height * 4);
+          expect(
+            part.bytes.length,
+            lessThanOrEqualTo(fast ? 2 << 20 : 8 << 20),
+          );
+          if (full) {
+            expect(part.fraction, [0, 0, 1, 1]);
+          } else {
+            expect(part.box.left, lessThan(0));
+            expect(part.fraction[2], greaterThan(1));
+          }
+        }
+      },
+    );
+  }
+
   test(
     'settled resolution follows native pixels in portrait and landscape',
     () {

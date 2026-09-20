@@ -28,6 +28,14 @@ typedef _Lift = ({
   double dy,
 });
 
+typedef _LiftSpec = ({
+  double offset,
+  int track,
+  bool insert,
+  int? insertLine,
+  TrackPlacement? placement,
+});
+
 /// 通用圖層時間軸：軌道不分影片或音訊，任何素材都能放在任何一軌。
 /// track 0 是最上層——畫面以最上層的影片為準，聲音則是全部混音。
 /// 時間軸上「沒有縮圖可看」的片段共用的底色。
@@ -545,7 +553,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
 
   /// 幽靈目前的落點：位置（含吸附）、軌道、是否插新層。
   /// 判定原則：壓到別的片段才疊，貼近交界且會撞才變成插入。
-  ({double offset, int track, bool insert, int? insertLine})? _liftSpec() {
+  _LiftSpec? _liftSpec() {
     final l = _lift;
     if (l == null) return null;
     final clip = _clipById(l.clipId);
@@ -573,6 +581,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
         track: l.startTrack,
         insert: false,
         insertLine: null,
+        placement: timeline.placementOnTrack(clip, offset, l.startTrack),
       );
     }
     // 往下拖 dy 是正的，但那是往編號小的方向
@@ -581,10 +590,22 @@ class _TimelineEditorState extends State<TimelineEditor> {
     final frac = raw - raw.round();
     // 大部分範圍都是「放進這一層」；貼近交界且會撞到才是插入
     if (frac.abs() <= 0.42 || !collide(nearest)) {
-      return (offset: offset, track: nearest, insert: false, insertLine: null);
+      return (
+        offset: offset,
+        track: nearest,
+        insert: false,
+        insertLine: null,
+        placement: timeline.placementOnTrack(clip, offset, nearest),
+      );
     }
     final at = (frac < 0 ? raw.round() : raw.round() + 1).clamp(0, maxTrack);
-    return (offset: offset, track: at, insert: true, insertLine: at);
+    return (
+      offset: offset,
+      track: at,
+      insert: true,
+      insertLine: at,
+      placement: null,
+    );
   }
 
   // ===== 邊緣自動捲動 =====
@@ -856,6 +877,9 @@ class _TimelineEditorState extends State<TimelineEditor> {
                               //（武裝後才顯示，避免捏合誤觸時閃一下）
                               if (_lift != null && _liftArmed && spec != null)
                                 _ghost(spec),
+                              if (_liftArmed &&
+                                  spec?.placement?.targetId != null)
+                                _insertionHint(spec!),
                               // 拖曳浮水印範圍時的即時外框由 _wmRow 自己畫
                               // 播放頭：一條直線（只有它隨播放位置重繪）
                               Positioned.fill(
@@ -897,10 +921,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
   double _leadPad = 0;
   double _viewWidth = 0;
 
-  Widget _trackRow(
-    int track,
-    ({double offset, int track, bool insert, int? insertLine})? spec,
-  ) {
+  Widget _trackRow(int track, _LiftSpec? spec) {
     final isEmptyRow = track >= timeline.usedTracks;
     final clips = timeline.onTrack(track);
     final isDropTarget = spec != null && !spec.insert && spec.track == track;
@@ -1254,10 +1275,71 @@ class _TimelineEditorState extends State<TimelineEditor> {
     );
   }
 
+  /// Draw above the ghost; no model edits or thumbnail work while hovering.
+  Widget _insertionHint(_LiftSpec spec) {
+    final placement = spec.placement!;
+    final edge = placement.offset * pxPerSec;
+    final scroll = widget.scrollController.hasClients
+        ? widget.scrollController.offset
+        : 0.0;
+    final rightVisible = scroll + _viewWidth - _leadPad;
+    final labelOnLeft = edge + 120 > rightVisible;
+    return Positioned(
+      key: const ValueKey('clip-insertion-hint'),
+      left: edge - 2,
+      top:
+          TimelineEditor.rulerH +
+          _rulerGap +
+          _wmExtra +
+          _rowOf(spec.track) * rowStride,
+      child: IgnorePointer(
+        child: SizedBox(
+          width: 4,
+          height: trackH,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Positioned.fill(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: kSelect,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              Positioned(
+                top: 3,
+                left: labelOnLeft ? null : 8,
+                right: labelOnLeft ? 8 : null,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xF21A1A20),
+                    border: Border.all(color: kSelect),
+                    borderRadius: BorderRadius.circular(5),
+                  ),
+                  child: Text(
+                    placement.before ? '即將插入左側' : '即將插入右側',
+                    style: const TextStyle(
+                      color: kSelect,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   /// 拖曳中的幽靈片段
-  Widget _ghost(
-    ({double offset, int track, bool insert, int? insertLine}) spec,
-  ) {
+  Widget _ghost(_LiftSpec spec) {
     final l = _lift!;
     final clip = _clipById(l.clipId);
     if (clip == null) return const SizedBox.shrink();

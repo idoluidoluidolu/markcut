@@ -1,5 +1,10 @@
 import 'dart:math' as math;
 
+/// Bound rasterization and transport together. Large previews must not fall
+/// back to PNG encoding between gestures. Export uses its own renderer.
+int overlayPreviewMaxPixels({required bool fast}) =>
+    fast ? 512 * 1024 : 2 * 1024 * 1024;
+
 /// Sample at the actual composition canvas size. Export has its own renderer.
 /// Retain the existing 1080 fallback until the native canvas is known.
 int overlayPreviewShortSide(

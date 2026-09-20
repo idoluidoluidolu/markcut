@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../nav.dart';
 import '../services/crop_math.dart';
 import '../services/crop_image_decoder.dart';
+import '../services/quality_diagnostics.dart';
 import '../theme.dart';
 
 /// 開裁切畫面，回傳裁好的 PNG；使用者取消回 null。
@@ -20,11 +21,16 @@ Future<Uint8List?> cropImage(
   BuildContext context,
   Uint8List bytes, {
   int? maxSide,
+  Future<void> Function(Uint8List bytes, ui.Image raster)? onRasterized,
 }) async {
   final out = await Navigator.of(context).push<Object>(
     editRoute(
       fullscreenDialog: true,
-      builder: (_) => CropScreen(bytes: bytes, maxSide: maxSide),
+      builder: (_) => CropScreen(
+        bytes: bytes,
+        maxSide: maxSide,
+        onRasterized: onRasterized,
+      ),
     ),
   );
   return out is Uint8List ? out : null;
@@ -70,9 +76,14 @@ class CropScreen extends StatefulWidget {
     this.rectOnly = false,
     this.initial,
     this.maxSide,
+    this.onRasterized,
   });
 
   final Uint8List bytes;
+
+  /// Optional preview cache warm-up, before the result reaches its consumer.
+  /// The raster is borrowed only for this callback; clone it to retain it.
+  final Future<void> Function(Uint8List bytes, ui.Image raster)? onRasterized;
 
   /// true＝按完成回傳 0~1 的框，不真的把圖裁下來
   final bool rectOnly;
@@ -112,7 +123,10 @@ class _CropScreenState extends State<CropScreen> {
 
   Future<void> _decode(Uint8List bytes) async {
     try {
-      final frame = await decodeCropImage(bytes, maxSide: cropPreviewMaxSide);
+      final frame = await QualityDiagnostics.instance.measure(
+        QualityMetric.cropPreviewDecode,
+        () => decodeCropImage(bytes, maxSide: cropPreviewMaxSide),
+      );
       if (!mounted) {
         frame.image.dispose();
         return;
@@ -191,6 +205,7 @@ class _CropScreenState extends State<CropScreen> {
       return;
     }
     setState(() => _busy = true);
+    final span = QualityDiagnostics.instance.begin(QualityMetric.cropOutput);
     final fraction = Rect.fromLTWH(
       r.left / img.width,
       r.top / img.height,
@@ -238,12 +253,20 @@ class _CropScreenState extends State<CropScreen> {
       decoded = null;
       final data = await out.toByteData(format: ui.ImageByteFormat.png);
       if (mounted && data != null) {
+        final bytes = data.buffer.asUint8List();
+        try {
+          await widget.onRasterized?.call(bytes, out);
+        } catch (_) {
+          // Cache warm-up is optional; a successful crop must still be usable.
+        }
+        if (!mounted) return;
         completed = true;
-        Navigator.pop(context, data.buffer.asUint8List());
+        Navigator.pop(context, bytes);
       }
     } catch (_) {
       if (mounted) showHint(context, '這張圖裁切失敗，請再試一次', error: true);
     } finally {
+      QualityDiagnostics.instance.finish(span, success: completed);
       picture?.dispose();
       out?.dispose();
       decoded?.dispose();

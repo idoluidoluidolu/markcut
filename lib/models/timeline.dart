@@ -21,6 +21,10 @@ const double kOverlapEps = 1e-6;
 /// 新種類一定要加在最尾端：kind 是用 index 序列化的，插中間會毀掉舊草稿
 enum ClipKind { video, audio, image, text, wm, mosaic }
 
+/// Read-only placement shared by the drag hint and the committed edit.
+/// A null target means free placement, including overlapping style layers.
+typedef TrackPlacement = ({double offset, int? targetId, bool before});
+
 /// 一份匯入的素材（影片或音訊），可被多個片段引用
 class MediaSource {
   /// 手機：檔案路徑；Web：blob URL。
@@ -750,18 +754,28 @@ class TimelineModel {
   /// - 切開那一段塞進去：使用者指定不裁
   /// - 蓋掉底下的（以前的 carveRange）：使用者指定不蓋
   /// 手指放開的位置落在那一段的前半還是後半，就是最自然的意圖表達
-  double placeOffsetOnTrack(TimelineClip moving, double want, int track) {
+  double placeOffsetOnTrack(TimelineClip moving, double want, int track) =>
+      placementOnTrack(moving, want, track).offset;
+
+  TrackPlacement placementOnTrack(TimelineClip moving, double want, int track) {
     final at = math.max(0.0, want);
-    if (!exclusiveOnTrack(moving)) return at;
+    final free = (offset: at, targetId: null, before: false);
+    if (!exclusiveOnTrack(moving)) return free;
     for (final c in clips) {
       if (c.id == moving.id || c.track != track || !exclusiveOnTrack(c)) {
         continue;
       }
-      if (at > c.offset + kOverlapEps && at < c.end - kOverlapEps) {
-        return at - c.offset < c.end - at ? c.offset : c.end;
+      if (at >= c.offset - kOverlapEps && at <= c.end + kOverlapEps) {
+        final before = at - c.offset < c.end - at;
+        final inside = at > c.offset + kOverlapEps && at < c.end - kOverlapEps;
+        return (
+          offset: inside ? (before ? c.offset : c.end) : at,
+          targetId: c.id,
+          before: before,
+        );
       }
     }
-    return at;
+    return free;
   }
 
   /// 受規則管的片段同一軌有沒有重疊（不變量檢查用）：回傳第一組撞在

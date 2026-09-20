@@ -2507,8 +2507,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               ui.ImageByteFormat.png,
               fullCanvas: full,
               clipToCanvas: full,
-              rawByteLimit: 1 << 20,
-              maxRasterPixels: fast ? 512 * 1024 : 2 * 1024 * 1024,
+              rawByteLimit: overlayPreviewMaxPixels(fast: fast) * 4,
+              maxRasterPixels: overlayPreviewMaxPixels(fast: fast),
             ),
             fast: fast,
           );
@@ -9763,7 +9763,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final sampleStartedAt = DateTime.now().toUtc();
     final sampledComp = _comp;
     diagnostic.environment.addAll({
-      'previewRevision': 'preview-resource-release-1',
+      'previewRevision': 'crop-reuse-raw-preview-1',
       'displayHz': View.of(context).display.refreshRate,
       'buildMode': kReleaseMode
           ? 'release'

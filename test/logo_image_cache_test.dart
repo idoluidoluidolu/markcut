@@ -27,6 +27,44 @@ void main() {
   setUp(trimLogoImageCache);
   tearDown(trimLogoImageCache);
 
+  for (final width in [200, 2400]) {
+    test(
+      'seeded crop preview survives source disposal and stays bounded ($width)',
+      () async {
+        final bytes = await _png(width, width ~/ 2);
+        final codec = await ui.instantiateImageCodec(bytes);
+        final source = (await codec.getNextFrame()).image;
+        codec.dispose();
+        await seedLogoPreview(bytes, source);
+        source.dispose();
+        final cached = logoImageCached(bytes, maxSide: kLogoPreviewMaxSide);
+        expect(cached, isNotNull);
+        expect(cached!.width, width > 1080 ? 1080 : width);
+        expect(cached.height, cached.width ~/ 2);
+        expect(logoDecodedCacheBytes, cached.width * cached.height * 4);
+        final settings = WatermarkSettings()..logo.bytesValue = bytes;
+        expect(
+          await logoImageFor(
+            settings.logo.bytes!,
+            maxSide: kLogoPreviewMaxSide,
+          ),
+          same(cached),
+        );
+        final data = (await cached.toByteData(
+          format: ui.ImageByteFormat.rawRgba,
+        ))!;
+        expect(data.buffer.asUint8List().take(4), [0, 255, 0, 255]);
+        final original = await logoImageFor(bytes);
+        expect(
+          original.width,
+          width,
+          reason: 'preview seed must not replace export pixels',
+        );
+        original.dispose();
+      },
+    );
+  }
+
   test(
     'pressure retains a bounded warm image across repeated warnings',
     () async {

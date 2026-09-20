@@ -18,6 +18,8 @@ enum QualityMetric {
   overlayRawReadback('預覽 RGBA 回讀', 50, 5, 'ms；GPU 回讀，不含 PNG 編碼'),
   logoDecode('圖片預覽解碼', 300, 3, 'ms；快取未命中'),
   imageRead('圖片檔案讀取', 1000, 3, 'ms；選定後讀取，不含選圖與裁切操作'),
+  cropPreviewDecode('裁切預覽解碼', 300, 3, 'ms；不含系統選圖與使用者操作'),
+  cropOutput('裁切確認出圖', 1000, 3, 'ms；解碼、裁切、PNG 編碼及預覽快取，不含使用者操作'),
   importMetadata('影片資料接入', 1000, 3, 'ms／支；不含系統選檔與雲端下載'),
   importGate('匯入遮罩等待', 5000, 1, 'ms；遮罩收起不等於首幀已呈現'),
   composition('播放器建置', 1000, 3, 'ms；包含準備與通道，非上屏');
@@ -36,6 +38,8 @@ enum QualityMetric {
     overlayPngReadback ||
     overlayRawReadback => '檢查回讀範圍、PNG 編碼及位元組傳輸量。',
     imageRead ||
+    cropPreviewDecode ||
+    cropOutput ||
     importMetadata ||
     importGate => '區分本機讀取、中繼資料、縮圖與背景代理；系統選檔不在此計時。',
     composition => '檢查是否在拖曳或隱藏時重建播放器。',

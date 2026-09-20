@@ -83,6 +83,52 @@ Future<ui.Image> logoImageFor(Uint8List bytes, {int? maxSide}) {
   return f;
 }
 
+/// Seed the preview from a crop raster that is already decoded. The caller
+/// retains ownership of [source]; cache only an independent, bounded image.
+Future<void> seedLogoPreview(Uint8List bytes, ui.Image source) async {
+  // PNG decoding remains authoritative for wide-gamut rasters. Retaining an
+  // extended-range raster instead could differ from its encoded export pixels.
+  if (source.colorSpace != ui.ColorSpace.sRGB) return;
+  if (logoImageCached(bytes, maxSide: kLogoPreviewMaxSide) != null) return;
+  final inflight = _logoDecoding[bytes]?[kLogoPreviewMaxSide];
+  if (inflight != null) {
+    await inflight;
+    return;
+  }
+  final epoch = _logoCacheEpoch;
+  final scale = math.min(
+    1.0,
+    kLogoPreviewMaxSide / math.max(source.width, source.height),
+  );
+  final w = math.max(1, (source.width * scale).round());
+  final h = math.max(1, (source.height * scale).round());
+  ui.Image image;
+  if (scale == 1) {
+    image = source.clone();
+  } else {
+    final recorder = ui.PictureRecorder();
+    ui.Canvas(recorder).drawImageRect(
+      source,
+      ui.Rect.fromLTWH(0, 0, source.width.toDouble(), source.height.toDouble()),
+      ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+      ui.Paint()..filterQuality = ui.FilterQuality.high,
+    );
+    final picture = recorder.endRecording();
+    try {
+      image = await picture.toImage(w, h);
+    } finally {
+      picture.dispose();
+    }
+  }
+  if (epoch != _logoCacheEpoch) {
+    image.dispose();
+    return;
+  }
+  (_logoImages[bytes] ??= {})[kLogoPreviewMaxSide] = WeakReference(image);
+  _touchLogoPreview(image, kLogoPreviewMaxSide);
+  QualityDiagnostics.instance.increment('logoPreviewSeeded');
+}
+
 Future<ui.Image> _decodeLogo(Uint8List bytes, int? maxSide) async {
   final cacheEpoch = _logoCacheEpoch;
   final diagnostic = QualityDiagnostics.instance;

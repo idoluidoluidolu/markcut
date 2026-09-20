@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import '../services/quality_diagnostics.dart';
+import '../services/logo_mark_painter.dart' show seedLogoPreview;
 
 import '../models/watermark_settings.dart';
 import '../services/preset_store.dart';
@@ -507,7 +508,12 @@ class WatermarkPanelState extends State<WatermarkPanel>
       // PNG，接著把原圖整張解開再編一次 PNG——12MP 的 HEIC 要一兩秒，而且
       // 整段沒有任何畫面回饋（實測回報「按確認後什麼都沒發生，然後圖片
       // 才跳出來」）
-      final cut = await cropImage(context, raw, maxSide: 4096);
+      final cut = await cropImage(
+        context,
+        raw,
+        maxSide: 4096,
+        onRasterized: seedLogoPreview,
+      );
       // 選圖期間畫面可能已經被收掉（挑很久、系統回收）
       if (cut == null || !mounted) return;
       _update(() {
@@ -533,7 +539,12 @@ class WatermarkPanelState extends State<WatermarkPanel>
   Future<void> _cropLogoInner() async {
     final src = s.logo.origBytes ?? s.logo.bytes;
     if (src == null) return;
-    final cut = await cropImage(context, src, maxSide: 4096);
+    final cut = await cropImage(
+      context,
+      src,
+      maxSide: 4096,
+      onRasterized: seedLogoPreview,
+    );
     if (cut == null || !mounted) return;
     _update(() {
       // 第一次裁的人可能是從舊草稿讀回來的（沒有原圖），
