@@ -37,6 +37,7 @@ import '../services/rotation_snap.dart';
 import '../services/comp_player.dart';
 import '../services/video_picker.dart';
 import '../services/crop_math.dart';
+import '../services/editor_photo.dart';
 import '../services/diagnostics.dart';
 import '../services/quality_diagnostics.dart';
 import '../widgets/quality_diagnostics_sheet.dart';
@@ -1312,7 +1313,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ..._nfLatest.keys,
       ..._nfLatestT.keys,
       ..._scrubTouch.keys,
-      ..._cropOrigBytes.keys,
+      ..._cropOrigPaths.keys,
+      ..._cropOrigin.keys,
       ..._decoderLru,
       ..._prepRetried,
       ..._hdrPrepRetried,
@@ -1332,7 +1334,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _nfLatest.remove(i);
       _nfLatestT.remove(i);
       _scrubTouch.remove(i);
-      _cropOrigBytes.remove(i);
+      _cropOrigPaths.remove(i);
+      _cropOrigin.remove(i);
       _prepRetried.remove(i);
       _hdrPrepRetried.remove(i);
       _hdrPrepFailed.remove(i);
@@ -1738,7 +1741,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
     }
     // 抽不到（照片素材、原生失敗、web 讀不到）就退回時間軸縮圖。
-    // 圖片素材那份存的是原檔位元組，本來就是清楚的
+    // 圖片素材保留長邊 2048 的預覽，足夠做專案封面
     bytes ??= _thumbs[c.sourceIndex]?.firstOrNull;
     if (bytes == null) {
       // 抽不到就把舊的清掉。留著的話草稿會顯示上一個封面片段的畫面
@@ -3072,9 +3075,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         return;
       }
       if (s.kind == ClipKind.image) {
-        final bytes = await readFileBytes(s.path);
-        if (bytes != null) {
-          _thumbs[i] = [bytes];
+        EditorPhoto? photo;
+        try {
+          if (s.isGif) {
+            final bytes = await readFileBytes(s.path);
+            if (bytes != null) photo = EditorPhoto(s.w, s.h, bytes);
+          } else {
+            photo = await EditorPhoto.load(s.path);
+          }
+        } catch (_) {}
+        if (photo != null) {
+          _thumbs[i] = [photo.bytes];
         } else {
           // Web 也要剔除：那邊讀不回位元組（blob 連結活不過重新整理），
           // 留著會變成「時間軸看得到、畫面上卻不存在」的幽靈素材——
@@ -3916,7 +3927,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _wmImageImporting = false;
 
   Future<void> _setWatermarkImageWork(bool active) async {
-    if (!mounted) return;
+    if (!mounted) {
+      if (!active) await EditorPhoto.checkpoint('finish');
+      return;
+    }
     _wmImageImporting = active;
     if (active) _pause();
     _syncPrepInteraction();
@@ -3926,6 +3940,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _prepActivity.interactive || _prepGestureActivity.interactive,
       pauseDecoding: _prepGestureActivity.interactive,
     );
+    if (active) unawaited(releaseNativeFrames());
+    await EditorPhoto.checkpoint(active ? 'begin' : 'finish');
   }
 
   // A single pointer still owns the preview while held motionless. Keep a
@@ -5252,6 +5268,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               path,
               sec,
               maxH: 200,
+              background: true,
               tolMs: dense ? 0 : tolMs,
             );
           },
@@ -5377,8 +5394,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         deadline: deadline,
         alive: () =>
             mounted && (gate ? _entryGating : _canPrepareTimelineThumbnail),
-        fetch: (t, tolMs) =>
-            nativeFrameAtDetailed(path, t, maxH: 200, tolMs: tolMs),
+        fetch: (t, tolMs) => nativeFrameAtDetailed(
+          path,
+          t,
+          maxH: 200,
+          tolMs: tolMs,
+          background: true,
+        ),
       );
       if (!mounted) return;
       final index = _tl.sources.indexOf(s);
@@ -5509,7 +5531,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           if (coverOnly && !kIsWeb) {
             // The opening keyframe identifies a clip without seeking through
             // a long 4K GOP. Only one cover request is in flight at a time.
-            final cover = await nativeFrameAt(path, 0, maxH: 200, tolMs: 1000);
+            final cover = await nativeFrameAt(
+              path,
+              0,
+              maxH: 200,
+              tolMs: 1000,
+              background: true,
+            );
             frames = [?cover];
           } else if (coverOnly) {
             frames = await engine.makeThumbnails(
@@ -6993,158 +7021,155 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 圖片素材：從播放頭開始、預設 4 秒，可用把手拉長
-  Future<void> _pickImage(int track) async {
-    // 可一次多選：選多張就自動排成連續的幻燈片（每張 3 秒、頭尾相接），
-    // 想做「多張圖片串成影片」不用一張一張加
-    // 走 file_picker 拿原檔（見 pickPhotoFiles）：image_picker 的 iOS 端
-    // 會把 HEIC 重壓成 8 位元 JPEG，HDR 照片的增益圖就在那一步丟掉
-    final picked = await pickPhotoFiles();
-    if (picked.isEmpty) return;
-    // 先把每張都讀進來，才有東西可以裁、也才量得到尺寸
-    final items = <({String path, String name, Uint8List bytes})>[];
-    for (final img in picked) {
-      items.add((
-        path: img.path,
-        name: img.name,
-        bytes: await img.readAsBytes(),
-      ));
-    }
-    // 匯入時就裁過的話，這裡留著那張的原圖
-    Uint8List? importedOrig;
-    // 只選一張才進裁切畫面：一次選十張還一張一張裁太煩
-    if (items.length == 1 && mounted) {
-      final out = await cropImage(context, items.first.bytes);
-      if (out != null) {
-        // 手機寫暫存檔、web 做 blob URL；存不下來就用原圖，
-        // 至少東西還加得進去
-        final path = await writeTempBytes(out, 'png');
-        if (path != null) {
-          // 原圖留著：之後在時間軸上再按裁切要從這份開始
-          importedOrig = items.first.bytes;
-          items[0] = (path: path, name: items.first.name, bytes: out);
-        }
-      }
-    }
-    if (!mounted) return;
-    // 多張＝要串成一段影片：先問每張幾秒（一張就照舊 4 秒）
-    var perImage = 3.0;
-    if (items.length > 1) {
-      final picked = await _askSlideSeconds(items.length);
-      if (picked == null || !mounted) return; // 取消＝整批不加
-      perImage = picked;
-    }
-    _pause();
-    _pushUndo();
-    var at = _position;
-    var firstId = -1;
-    for (final img in items) {
-      final bytes = img.bytes;
-      // 解出圖片尺寸，之後縮放定位要用
-      var imgW = 0, imgH = 0;
-      try {
-        final codec = await ui.instantiateImageCodec(bytes);
-        final frame = await codec.getNextFrame();
-        imgW = frame.image.width;
-        imgH = frame.image.height;
-        frame.image.dispose();
-      } catch (_) {}
-      final srcIndex = _tl.sources.length;
-      _tl.sources.add(
-        MediaSource(
-          path: img.path,
-          name: img.name,
-          kind: ClipKind.image,
-          duration: 3600, // 靜態素材，長度隨便拉
-          w: imgW,
-          h: imgH,
-        ),
-      );
-      _thumbs[srcIndex] = [bytes];
-      if (importedOrig != null) _cropOrigBytes[srcIndex] = importedOrig;
-      final len = items.length == 1 ? 4.0 : perImage;
-      final clip = TimelineClip(
-        id: _tl.nextId(),
-        sourceIndex: srcIndex,
-        trimStart: 0,
-        trimEnd: len,
-        offset: at,
-        track: track,
-      );
-      if (firstId == -1) firstId = clip.id;
-      // 同軌不重疊：壓到別段就吸邊、後面推開；下一張接在實際落點後面
-      _placeNewClip(clip);
-      at = clip.end;
-    }
-    setState(() => _sel = firstId);
-    _resyncPlayback();
-    _saveDraft(); // 加完立刻落草稿
-    if (picked.length > 1 && mounted) {
-      showHint(
-        context,
-        '已加入 ${picked.length} 張圖片，每張 '
-        '${perImage.toStringAsFixed(perImage % 1 == 0 ? 0 : 1)} 秒頭尾相接',
-      );
+  bool _timelineImageImporting = false;
+  final Map<int, String> _cropOrigPaths = {};
+
+  Future<T?> _withImageWork<T>(Future<T> Function() work) async {
+    if (_timelineImageImporting) return null;
+    _timelineImageImporting = true;
+    try {
+      await _setWatermarkImageWork(true);
+      if (!mounted) return null;
+      return await work();
+    } catch (error) {
+      Diag.note('圖片匯入失敗：$error');
+      if (mounted) showHint(context, '圖片讀取失敗，請再試一次', error: true);
+      return null;
+    } finally {
+      _timelineImageImporting = false;
+      await _setWatermarkImageWork(false);
     }
   }
 
-  /// 一批照片串成一段影片（首頁那條路）：問完秒數就照順序接在主軌上
+  Future<String?> _cropPhotoPath(String path, EditorPhoto preview) async {
+    await EditorPhoto.checkpoint('crop-visible');
+    if (!mounted) return null;
+    if (EditorPhoto.native) {
+      final rect = await pickCropRect(context, preview.bytes);
+      if (rect == null || !mounted) return null;
+      return EditorPhoto.crop(path, rect);
+    }
+    final original = await readFileBytes(path);
+    if (original == null || !mounted) return null;
+    final cut = await cropImage(context, original);
+    return cut == null ? null : writeTempBytes(cut, 'png');
+  }
+
+  Future<void> _pickImage(int track) async {
+    await _withImageWork(() async {
+      // Pause before presenting PHPicker, not after reading/cropping the photo.
+      final picked = await pickPhotoFiles();
+      if (picked.isEmpty || !mounted) return;
+      await EditorPhoto.checkpoint('selected');
+      var perImage = 3.0;
+      if (picked.length > 1) {
+        final seconds = await _askSlideSeconds(picked.length);
+        if (seconds == null || !mounted) return;
+        perImage = seconds;
+      }
+      _pushUndo();
+      var at = _position;
+      var firstId = -1;
+      for (final image in picked) {
+        if (!mounted) return;
+        var path = image.path;
+        var preview = await EditorPhoto.load(path);
+        if (picked.length == 1 && mounted) {
+          final cut = await _cropPhotoPath(path, preview);
+          if (cut != null && cut != path) {
+            path = cut;
+            preview = await EditorPhoto.load(path);
+          }
+        }
+        if (!mounted) return;
+        final srcIndex = _tl.sources.length;
+        _tl.sources.add(
+          MediaSource(
+            path: path,
+            name: image.name,
+            kind: ClipKind.image,
+            duration: 3600,
+            w: preview.width,
+            h: preview.height,
+          ),
+        );
+        _thumbs[srcIndex] = [preview.bytes];
+        if (path != image.path) _cropOrigPaths[srcIndex] = image.path;
+        final clip = TimelineClip(
+          id: _tl.nextId(),
+          sourceIndex: srcIndex,
+          trimStart: 0,
+          trimEnd: picked.length == 1 ? 4.0 : perImage,
+          offset: at,
+          track: track,
+        );
+        if (firstId == -1) firstId = clip.id;
+        _placeNewClip(clip);
+        at = clip.end;
+        // Commit each file before reading the next one, including partial failure.
+        setState(() => _sel = firstId);
+        _resyncPlayback();
+        _saveDraft();
+      }
+      if (picked.length > 1 && mounted) {
+        showHint(
+          context,
+          '已加入 ${picked.length} 張圖片，每張 '
+          '${perImage.toStringAsFixed(perImage % 1 == 0 ? 0 : 1)} 秒頭尾相接',
+        );
+      }
+    });
+  }
+
+  /// Load one bounded preview at a time; original photo bytes stay on disk.
   Future<void> _importPhotoBatch(List<String> paths) async {
     if (paths.isEmpty) return;
-    final sec = await _askSlideSeconds(paths.length);
-    if (sec == null || !mounted) {
-      // 取消＝這個專案沒有東西，直接退回上一頁比留一個空專案好
-      if (mounted) Navigator.of(context).pop();
-      return;
-    }
-    _pushUndo();
-    var at = 0.0;
-    var firstId = -1;
-    for (final path in paths) {
-      final Uint8List? read = await readFileBytes(path);
-      // 某一張讀不到不該讓整批進不去
-      if (read == null) continue;
-      final bytes = read;
-      var imgW = 0, imgH = 0;
-      try {
-        final codec = await ui.instantiateImageCodec(bytes);
-        final frame = await codec.getNextFrame();
-        imgW = frame.image.width;
-        imgH = frame.image.height;
-        frame.image.dispose();
-      } catch (_) {}
-      final srcIndex = _tl.sources.length;
-      _tl.sources.add(
-        MediaSource(
-          path: path,
-          // web 沒有 Platform（會丟 Unsupported operation）；
-          // blob 連結用 '/' 切就好
-          name: kIsWeb
-              ? path.split('/').last
-              : path.split(Platform.pathSeparator).last,
-          kind: ClipKind.image,
-          duration: 3600,
-          w: imgW,
-          h: imgH,
-        ),
-      );
-      _thumbs[srcIndex] = [bytes];
-      final clip = TimelineClip(
-        id: _tl.nextId(),
-        sourceIndex: srcIndex,
-        trimStart: 0,
-        trimEnd: sec,
-        offset: at,
-        track: 0,
-      );
-      if (firstId == -1) firstId = clip.id;
-      _placeNewClip(clip); // 同軌不重疊（新專案這裡本來就是空的）
-      at = clip.end;
-    }
-    if (!mounted) return;
-    setState(() => _sel = firstId);
-    _resyncPlayback();
-    _saveDraft();
-    showHint(context, '已串成 ${fmtDuration(at)} 的影片，可以再調整每一段');
+    await _withImageWork(() async {
+      final sec = await _askSlideSeconds(paths.length);
+      if (sec == null || !mounted) {
+        if (mounted) Navigator.of(context).pop();
+        return;
+      }
+      _pushUndo();
+      var at = 0.0;
+      var firstId = -1;
+      for (final path in paths) {
+        EditorPhoto photo;
+        try {
+          photo = await EditorPhoto.load(path);
+        } catch (_) {
+          continue;
+        }
+        if (!mounted) return;
+        final index = _tl.sources.length;
+        _tl.sources.add(
+          MediaSource(
+            path: path,
+            name: path.split('/').last.split('\\').last,
+            kind: ClipKind.image,
+            duration: 3600,
+            w: photo.width,
+            h: photo.height,
+          ),
+        );
+        _thumbs[index] = [photo.bytes];
+        final clip = TimelineClip(
+          id: _tl.nextId(),
+          sourceIndex: index,
+          trimStart: 0,
+          trimEnd: sec,
+          offset: at,
+          track: 0,
+        );
+        if (firstId == -1) firstId = clip.id;
+        _placeNewClip(clip);
+        at = clip.end;
+        setState(() => _sel = firstId);
+        _resyncPlayback();
+        _saveDraft();
+      }
+      if (mounted) showHint(context, '已串成 ${fmtDuration(at)} 的影片，可以再調整每一段');
+    });
   }
 
   /// 選取中的圖片所在軌道內，所有可一起調秒數的靜態圖片。
@@ -7326,13 +7351,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 越裁越小回不去。按上一步就會回到裁切前的樣子
   final Map<int, int> _cropOrigin = {};
 
-  /// 素材索引 → 它裁切之前的原始位元組。
-  ///
-  /// 匯入時就先裁過那一刀（_pickImage）是不可逆的：素材存的是裁好的
-  /// 檔案，時間軸上再按裁切時，「原圖」就只剩那份裁過的。留一份原始
-  /// bytes 才真的回得去
-  final Map<int, Uint8List> _cropOrigBytes = {};
-
   /// 左右鏡像這一段（自拍、有字的招牌常常要翻回來）
   void _toggleMirror(TimelineClip clip) {
     _pushUndo();
@@ -7343,62 +7361,41 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 裁切時間軸上的一張圖片素材
   Future<void> _cropImageClip(TimelineClip clip) async {
-    final srcIndex = _cropOrigin[clip.sourceIndex] ?? clip.sourceIndex;
-    final src = _tl.sources[srcIndex];
-    // 圖片素材的位元組本來就留了一份當縮圖（web 的 blob URL 讀不回來，
-    // 只能靠它）；沒有才去讀檔
-    final raw =
-        _cropOrigBytes[srcIndex] ??
-        _thumbs[srcIndex]?.firstOrNull ??
-        await readFileBytes(src.path);
-    if (raw == null) {
-      if (mounted) showHint(context, '這張圖讀不到了', error: true);
-      return;
-    }
-    if (!mounted) return;
-    final cut = await cropImage(context, raw);
-    if (cut == null || !mounted) return;
-    // 裁完是一份 bytes，素材要的是路徑（手機＝暫存檔，web＝blob URL）
-    final path = await writeTempBytes(cut, 'png');
-    if (path == null) {
-      if (mounted) showHint(context, '裁切結果存不下來', error: true);
-      return;
-    }
-    var w = 0, h = 0;
-    try {
-      final codec = await ui.instantiateImageCodec(cut);
-      final frame = await codec.getNextFrame();
-      w = frame.image.width;
-      h = frame.image.height;
-      frame.image.dispose();
-    } catch (_) {}
-    if (!mounted) return;
-    _pushUndo();
-    final newIndex = _tl.sources.length;
-    _tl.sources.add(
-      MediaSource(
-        path: path,
-        name: src.name,
-        kind: ClipKind.image,
-        duration: src.duration,
-        w: w,
-        h: h,
-      ),
-    );
-    _thumbs[newIndex] = [cut];
-    _cropOrigin[newIndex] = srcIndex;
-    // 原圖一路傳下去：裁第三次、第四次也還是從同一份原圖開始
-    _cropOrigBytes[newIndex] = raw;
-    // sourceIndex 是 final：換素材＝原地換一顆同 id 的片段，
-    // 時間軸上的位置、長度、變形全部照抄
-    final i = _tl.clips.indexOf(clip);
-    if (i >= 0) {
-      final j = clip.toJson();
-      j['sourceIndex'] = newIndex;
-      setState(() => _tl.clips[i] = TimelineClip.fromJson(j));
-    }
-    _resyncPlayback();
-    _saveDraft();
+    await _withImageWork(() async {
+      final srcIndex = _cropOrigin[clip.sourceIndex] ?? clip.sourceIndex;
+      final src = _tl.sources[srcIndex];
+      final originalPath = _cropOrigPaths[srcIndex] ?? src.path;
+      final preview = await EditorPhoto.load(originalPath);
+      if (!mounted) return;
+      final path = await _cropPhotoPath(originalPath, preview);
+      if (path == null || !mounted) return;
+      final photo = path == originalPath
+          ? preview
+          : await EditorPhoto.load(path);
+      if (!mounted) return;
+      _pushUndo();
+      final newIndex = _tl.sources.length;
+      _tl.sources.add(
+        MediaSource(
+          path: path,
+          name: src.name,
+          kind: ClipKind.image,
+          duration: src.duration,
+          w: photo.width,
+          h: photo.height,
+        ),
+      );
+      _thumbs[newIndex] = [photo.bytes];
+      _cropOrigin[newIndex] = srcIndex;
+      _cropOrigPaths[newIndex] = originalPath;
+      final i = _tl.clips.indexOf(clip);
+      if (i >= 0) {
+        final json = clip.toJson()..['sourceIndex'] = newIndex;
+        setState(() => _tl.clips[i] = TimelineClip.fromJson(json));
+      }
+      _resyncPlayback();
+      _saveDraft();
+    });
   }
 
   /// 裁切影片片段。
@@ -9776,7 +9773,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final sampleStartedAt = DateTime.now().toUtc();
     final sampledComp = _comp;
     diagnostic.environment.addAll({
-      'previewRevision': 'bounded-multitrack-recovery-3',
+      'previewRevision': 'bounded-photo-import-4',
       'displayHz': View.of(context).display.refreshRate,
       'buildMode': kReleaseMode
           ? 'release'

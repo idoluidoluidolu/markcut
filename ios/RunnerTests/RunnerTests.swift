@@ -67,6 +67,89 @@ class RunnerTests: XCTestCase {
     return Double(row[x] >> 6) / 1023
   }
 
+  func testPhotoPreviewBoundsPixelsAndKeepsOrientedSourceDimensions() throws {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
+    defer { try? FileManager.default.removeItem(at: file) }
+    let source = CIImage(color: CIColor(red: 0.25, green: 0.5, blue: 0.75, alpha: 1))
+      .cropped(to: CGRect(x: 0, y: 0, width: 4032, height: 3024))
+    let cg = try XCTUnwrap(CIContext().createCGImage(source, from: source.extent))
+    let dest = try XCTUnwrap(CGImageDestinationCreateWithURL(file as CFURL, "public.jpeg" as CFString, 1, nil))
+    CGImageDestinationAddImage(dest, cg, [kCGImagePropertyOrientation: 6] as CFDictionary)
+    XCTAssertTrue(CGImageDestinationFinalize(dest))
+    let preview = try XCTUnwrap(MCEditorPhoto.preview(path: file.path, maxSide: 2048))
+    XCTAssertEqual(preview["w"] as? Int, 3024)
+    XCTAssertEqual(preview["h"] as? Int, 4032)
+    let bytes = try XCTUnwrap(preview["bytes"] as? FlutterStandardTypedData)
+    let image = try XCTUnwrap(UIImage(data: bytes.data)?.cgImage)
+    XCTAssertEqual(image.width, 1536)
+    XCTAssertEqual(image.height, 2048)
+    XCTAssertEqual(MCEditorPhoto.crop(path: file.path, rect: [0, 0, 1, 1]), file.path)
+    let path = try XCTUnwrap(MCEditorPhoto.crop(path: file.path, rect: [0, 0, 0.5, 0.5]))
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let cropped = HDRPhotoExport.probe(path)
+    XCTAssertEqual(cropped["w"] as? Int, 1512)
+    XCTAssertEqual(cropped["h"] as? Int, 2016)
+    let bounded = try XCTUnwrap(MCStillLoader.load(path: file.path, hdr: false, previewMaxSide: 1024))
+    XCTAssertEqual(bounded.extent.size, CGSize(width: 768, height: 1024))
+    let full = try XCTUnwrap(MCStillLoader.load(path: file.path, hdr: false))
+    XCTAssertEqual(full.extent.size, CGSize(width: 3024, height: 4032), "export retains original dimensions")
+    XCTAssertNil(MCEditorPhoto.preview(path: file.path + "-missing", maxSide: 2048))
+    XCTAssertNil(MCEditorPhoto.crop(path: file.path, rect: [0, 0, .nan, 1]))
+  }
+
+  func testBoundedPhotoPreviewAndCropPreserveHDRHighlights() throws {
+    guard #available(iOS 17.0, *) else { throw XCTSkip("HDR decode requires iOS 17") }
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".heic")
+    defer { try? FileManager.default.removeItem(at: file) }
+    let context = CIContext(options: [.cacheIntermediates: false,
+      .workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!])
+    let hdr = CIImage(color: CIColor(red: 2, green: 2, blue: 2, alpha: 1))
+      .cropped(to: CGRect(x: 0, y: 0, width: 512, height: 256))
+    try context.writeHEIF10Representation(of: hdr, to: file,
+      colorSpace: CGColorSpace(name: CGColorSpace.itur_2100_HLG)!, options: [:])
+    XCTAssertEqual(HDRPhotoExport.probe(file.path)["hdr"] as? Bool, true)
+    let thumbnail = try XCTUnwrap(MCEditorPhoto.thumbnail(path: file.path, maxSide: 128, hdr: true))
+    XCTAssertEqual(thumbnail.width, 128)
+    XCTAssertEqual(thumbnail.height, 64)
+    var pixel = [Float](repeating: 0, count: 4)
+    context.render(CIImage(cgImage: thumbnail), toBitmap: &pixel, rowBytes: 16,
+      bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBAf,
+      colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB))
+    XCTAssertGreaterThan(pixel[0], 1.2, "bounded preview must keep HDR headroom")
+    let path = try XCTUnwrap(MCEditorPhoto.crop(path: file.path, rect: [0.25, 0.25, 0.5, 0.5]))
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let cropped = HDRPhotoExport.probe(path)
+    XCTAssertEqual(cropped["hdr"] as? Bool, true)
+    XCTAssertEqual(cropped["w"] as? Int, 256)
+    XCTAssertEqual(cropped["h"] as? Int, 128)
+  }
+
+  func testFrameWorkYieldsActiveAndQueuedThumbnailsBeforeForegroundSeek() {
+    let queue = MCFrameWorkQueue()
+    var events: [String] = []
+    var finishBackground: (() -> Void)?
+    var finishForeground: (() -> Void)?
+    queue.enqueue(.init(background: true, start: { finishBackground = $0 },
+      cancel: { events.append("cancel-active") }, finish: { events.append("active-\($0)") }))
+    queue.enqueue(.init(background: true, start: { _ in XCTFail("queued thumbnail started") },
+      cancel: {}, finish: { events.append("queued-\($0)") }))
+    queue.setSuspended(true)
+    queue.enqueue(.init(background: true, start: { _ in XCTFail("suspended thumbnail started") },
+      cancel: {}, finish: { events.append("new-\($0)") }))
+    queue.enqueue(.init(background: false, start: { finishForeground = $0; events.append("seek") },
+      cancel: { XCTFail("gesture cancelled foreground seek") }, finish: { events.append("seek-\($0)") }))
+    XCTAssertNil(finishForeground, "wait for cancelled decoder completion before allocating another")
+    finishBackground?()
+    finishBackground?() // duplicate/late callbacks cannot complete the next job
+    queue.setSuspended(true)
+    finishForeground?()
+    XCTAssertEqual(events, ["queued-false", "cancel-active", "new-false", "active-false", "seek", "seek-true"])
+    queue.setSuspended(false)
+    queue.enqueue(.init(background: true, start: { $0() }, cancel: {},
+      finish: { XCTAssertTrue($0); events.append("resumed") }))
+    XCTAssertEqual(events.last, "resumed")
+  }
+
   func testNativePrepJournalSurvivesRestartAndKeepsBothLanes() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }

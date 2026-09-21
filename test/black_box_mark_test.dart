@@ -148,6 +148,20 @@ void main() {
     expect(Diag.recoveredReport.value, contains('visible'));
   });
 
+  test('照片在裁切頁前中斷也保留獨立原生報告', () async {
+    messenger.setMockMethodCallHandler(
+      diagCh,
+      (call) async => {
+        'launch': {'process': 'new'},
+        'previous': {'status': 'completed'},
+        'previewPrevious': {'status': 'completed'},
+        'imagePrevious': {'status': 'running', 'phase': 'file-preview'},
+      },
+    );
+    await Diag.loadLastRun();
+    expect(Diag.recoveredReport.value, contains('file-preview'));
+  });
+
   test('正常結束的原生工作不顯示中斷提示', () async {
     messenger.setMockMethodCallHandler(
       diagCh,

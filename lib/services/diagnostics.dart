@@ -219,9 +219,11 @@ class Diag {
             '${jsonEncode(native)}';
         final previous = native['previous'];
         final preview = native['previewPrevious'];
+        final image = native['imagePrevious'];
         nativeInterrupted =
             (previous is Map && previous['status'] == 'running') ||
-            (preview is Map && preview['status'] == 'running');
+            (preview is Map && preview['status'] == 'running') ||
+            (image is Map && image['status'] == 'running');
       }
     } catch (_) {}
     File? consumedMarker;

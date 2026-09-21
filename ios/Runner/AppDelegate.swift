@@ -403,6 +403,75 @@ final class CIGifSpec {
 ///（線性、1.0＝SDR 白），高光才跟相簿裡看到的一樣亮。SDR 輸出一律
 /// 不展開——SDR 合成器的工作格式是 RGBA8，超過 1.0 的值只會被截掉。
 /// 展開失敗（CI 打不開）退回舊路：未轉正、不展開，至少有圖
+
+/// File-backed ImageIO downsampling keeps camera photo rasters out of Dart.
+enum MCEditorPhoto {
+  static func thumbnail(path: String, maxSide: Int, hdr: Bool = false) -> CGImage? {
+    let options = [kCGImageSourceShouldCache: false] as CFDictionary
+    guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, options)
+    else { return nil }
+    var decode: [CFString: Any] = [
+      kCGImageSourceCreateThumbnailFromImageAlways: true,
+      kCGImageSourceCreateThumbnailWithTransform: true,
+      kCGImageSourceThumbnailMaxPixelSize: max(1, min(4096, maxSide)),
+      kCGImageSourceShouldCacheImmediately: true,
+      kCGImageSourceShouldAllowFloat: hdr,
+    ]
+    if #available(iOS 17.0, *) {
+      decode[kCGImageSourceDecodeRequest] = hdr ? kCGImageSourceDecodeToHDR : kCGImageSourceDecodeToSDR
+    }
+    return CGImageSourceCreateThumbnailAtIndex(source, 0, decode as CFDictionary)
+  }
+
+  static func preview(path: String, maxSide: Int) -> [String: Any]? {
+    var result = HDRPhotoExport.probe(path)
+    guard let image = thumbnail(path: path, maxSide: maxSide),
+      let png = UIImage(cgImage: image).pngData() else { return nil }
+    result["bytes"] = FlutterStandardTypedData(bytes: png)
+    return result
+  }
+
+  /// Confirmation crops from the original file, at source resolution. HDR
+  /// remains 10-bit HLG; neither a full-size raster nor PNG crosses into Dart.
+  static func crop(path: String, rect: [Double]) -> String? {
+    guard rect.count == 4, rect.allSatisfy({ $0.isFinite }),
+      rect[2] > 0, rect[3] > 0 else { return nil }
+    let fraction = CGRect(x: rect[0], y: rect[1], width: rect[2], height: rect[3])
+      .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+    guard !fraction.isNull, !fraction.isEmpty else { return nil }
+    if fraction == CGRect(x: 0, y: 0, width: 1, height: 1) { return path }
+    let hdr = HDRPhotoExport.probe(path)["hdr"] as? Bool ?? false
+    var options: [CIImageOption: Any] = [.applyOrientationProperty: true]
+    if hdr, #available(iOS 17.0, *) { options[.expandToHDR] = true }
+    guard let original = CIImage(contentsOf: URL(fileURLWithPath: path), options: options)
+    else { return nil }
+    let extent = original.extent
+    let box = CGRect(x: extent.minX + fraction.minX * extent.width,
+      y: extent.minY + (1 - fraction.maxY) * extent.height,
+      width: fraction.width * extent.width, height: fraction.height * extent.height)
+      .integral.intersection(extent)
+    let cropped = original.cropped(to: box).transformed(by:
+      CGAffineTransform(translationX: -box.minX, y: -box.minY))
+      .settingProperties([kCGImagePropertyOrientation as String: 1])
+    let output = FileManager.default.temporaryDirectory
+      .appendingPathComponent("photo-crop-\(UUID().uuidString).\(hdr ? "heic" : "png")")
+    do {
+      if hdr, #available(iOS 17.0, *), let space = CGColorSpace(name: CGColorSpace.itur_2100_HLG) {
+        try CIExportCompositor.ctxHDR.writeHEIF10Representation(of: cropped,
+          to: output, colorSpace: space, options: [
+            CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): 1.0])
+      } else {
+        try CIExportCompositor.ctxSDR.writePNGRepresentation(of: cropped,
+          to: output, format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+      }
+      return output.path
+    } catch {
+      try? FileManager.default.removeItem(at: output)
+      return nil
+    }
+  }
+}
+
 enum MCStillLoader {
   /// [inverseOotf]：HLG 合成（[hdr]）時要不要對載入的圖片套 [inverseHlgOotf]。
   /// nil＝自動——照 [hlgProbe]（一個行程量一次的中灰探針）判定：CI 把
@@ -412,7 +481,8 @@ enum MCStillLoader {
   /// 健康報告只寫決定了什麼、為什麼）。SDR 合成連判斷都不進，像素一個
   /// 位元都不變
   static func load(
-    path: String, hdr: Bool, hint: Bool? = nil, inverseOotf: Bool? = nil
+    path: String, hdr: Bool, hint: Bool? = nil, inverseOotf: Bool? = nil,
+    previewMaxSide: Int? = nil
   ) -> CIImage? {
     var opts: [CIImageOption: Any] = [.applyOrientationProperty: true]
     var expanded = false
@@ -423,7 +493,15 @@ enum MCStillLoader {
         expanded = true
       }
     }
-    var loaded = CIImage(contentsOf: URL(fileURLWithPath: path), options: opts)
+    var loaded: CIImage?
+    if let limit = previewMaxSide {
+      // Preview is bounded, including HDR highlights. Export omits this limit.
+      guard let cg = MCEditorPhoto.thumbnail(path: path, maxSide: limit, hdr: expanded)
+      else { return nil }
+      loaded = CIImage(cgImage: cg)
+    } else {
+      loaded = CIImage(contentsOf: URL(fileURLWithPath: path), options: opts)
+    }
     if loaded == nil, let ui = UIImage(contentsOfFile: path), let cg = ui.cgImage {
       loaded = CIImage(cgImage: cg)
       expanded = false
@@ -3171,6 +3249,59 @@ func mcHalfToFloat(_ bits: UInt16) -> Float {
 /// 最多兩顆互動抽幀器；200px 縮圖只留一顆，避免批次匯入留住前一支 HDR decoder。
 /// 所有存取都由 AppDelegate.frameQueue 串行化。
 /// 重用 generator 可保留 AVFoundation 自己的狀態，但不保證硬體 decoder 常駐。
+/// Queue-confined scheduling, with cancellable asynchronous AVFoundation work.
+/// A gesture drops background thumbnails, while foreground scrub/crop requests
+/// still run. Completion of cancellation precedes starting another decoder.
+final class MCFrameWorkQueue {
+  final class Work {
+    let background: Bool
+    let start: (@escaping () -> Void) -> Void
+    let cancel: () -> Void
+    let finish: (Bool) -> Void
+    var cancelled = false
+    init(background: Bool, start: @escaping (@escaping () -> Void) -> Void,
+      cancel: @escaping () -> Void, finish: @escaping (Bool) -> Void) {
+      self.background = background; self.start = start
+      self.cancel = cancel; self.finish = finish
+    }
+  }
+  private var pending: [Work] = []
+  private var active: Work?
+  private var suspended = false
+
+  func enqueue(_ work: Work) {
+    if suspended && work.background { work.finish(false); return }
+    pending.append(work)
+    drain()
+  }
+  func setSuspended(_ value: Bool) {
+    suspended = value
+    if value { cancel(where: { $0.background }) }
+    drain()
+  }
+  func cancelAll() { cancel(where: { _ in true }) }
+  private func cancel(where matches: (Work) -> Bool) {
+    let dropped = pending.filter(matches)
+    pending.removeAll(where: matches)
+    for work in dropped { work.finish(false) }
+    if let current = active, matches(current), !current.cancelled {
+      current.cancelled = true
+      current.cancel()
+    }
+  }
+  private func drain() {
+    guard active == nil, !pending.isEmpty else { return }
+    let work = pending.removeFirst()
+    active = work
+    work.start { [weak self, weak work] in
+      guard let self = self, let work = work, self.active === work else { return }
+      self.active = nil
+      work.finish(!work.cancelled)
+      self.drain()
+    }
+  }
+}
+
 final class MCFrameGeneratorPool {
   private struct Key: Equatable {
     let path: String
@@ -3531,6 +3662,11 @@ final class MCNativePrepJournal {
       in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
     return MCNativePrepJournal(url: root.appendingPathComponent("native_preview_last.json"))
   }()
+  static let image: MCNativePrepJournal = {
+    let root = FileManager.default.urls(for: .applicationSupportDirectory,
+      in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+    return MCNativePrepJournal(url: root.appendingPathComponent("native_image_last.json"))
+  }()
   static func memory() -> [String: Double] {
     var info = task_vm_info_data_t()
     var count = mach_msg_type_number_t(
@@ -3656,9 +3792,12 @@ final class MCInteractivePrepGate {
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private let frameGenerators = MCFrameGeneratorPool()
+  private let frameWork = MCFrameWorkQueue()
+  private let photoQueue = DispatchQueue(label: "markcut.photos", qos: .userInitiated)
+  private var imageWorkTrace: UUID? // photoQueue only
   private let frameQueue = DispatchQueue(label: "markcut.frames")
-  // frameQueue owns this timer and the pool; never cancel a generator while
-  // copyCGImage is running on another queue.
+  // The queue owns scheduling, generator configuration and idle release.
+  // Image generation itself is asynchronous and can yield immediately to touch.
   private var frameReleaseWork: DispatchWorkItem?
   private let prepInteractiveGate = MCInteractivePrepGate()
   private let prepMemoryBudget = MCPreviewMemoryBudget()
@@ -3683,10 +3822,10 @@ final class MCInteractivePrepGate {
   }
 
   private func releaseFrameGenerators() {
-    // copyCGImage 是同步工作，不能在別條執行緒同時拆 generator。
-    // 警告／退背景只排清理，不阻塞主執行緒，當前那格完成後就釋放。
+    // Cancel asynchronous work before releasing decoder caches.
     frameQueue.async { [weak self] in
       self?.frameReleaseWork?.cancel(); self?.frameReleaseWork = nil
+      self?.frameWork.cancelAll()
       self?.frameGenerators.removeAll()
     }
   }
@@ -3723,6 +3862,7 @@ final class MCInteractivePrepGate {
   ) -> Bool {
     _ = MCNativePrepJournal.shared // Capture the previous run before new work starts.
     _ = MCNativePrepJournal.preview
+    _ = MCNativePrepJournal.image
     NotificationCenter.default.addObserver(self,
       selector: #selector(frameResourcesNeedRelease(_:)),
       name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
@@ -3792,6 +3932,7 @@ final class MCInteractivePrepGate {
       guard let self = self else { result(nil); return }
       if call.method == "release" {
         self.frameQueue.async {
+          self.frameWork.cancelAll()
           self.frameGenerators.removeAll()
           DispatchQueue.main.async { result(nil) }
         }
@@ -3820,61 +3961,58 @@ final class MCInteractivePrepGate {
       // 拖曳預覽壓得兇一點沒人看得出來；當裁切底圖時會被放大到滿版，
       // 壓縮痕跡就很明顯，呼叫端自己決定
       let jpegQ = CGFloat(args["q"] as? Double ?? 0.7)
+      let background = args["background"] as? Bool ?? false
       self.frameQueue.async {
-        autoreleasepool {
-        defer { self.releaseFrameGeneratorsWhenIdle() }
-        guard let gen = self.frameGenerators.generator(path: path, maxH: maxH) else {
-          DispatchQueue.main.async { result(nil) }
-          return
-        }
-        // HDR（HLG）素材一定要壓回 SDR：copyCGImage 不會自己轉，
-        // HLG 像素直接進 JPEG 就是「拖曳預覽顏色超飽和」（實測回報）。
-        // 之前用 .forceSDR：它的轉換又平又淡，草稿封面「偏淡比起
-        // 原圖」就是它（實測回報）。改成 .matchSource 拿回 HDR 影格，
-        // 下面用跟合成播放器/工作檔同一條系統 toneMap 曲線壓 SDR
-        // JPEG 僅用於 SDR 粗覽，停手後回到播放器的完整 HDR 顯示。
-        // dynamicRangePolicy 是 iOS 18 的 API（16 會編譯失敗，CI 踩過）；
-        // 17 以下維持舊行為（拖曳幀偏飽和，放開就正常）
-        // .matchSource 已在 pool 建立 generator 時設定。
-        // tolMs 只指定可接受的取樣時間窗，不保證回最近關鍵幀或只解一格。
-        // 0.15 秒在 30fps 也有數格差距；detailed 回傳真正的 actualTime，
-        // 讓快取與 UI 區分「附近的粗覽」和精準定位，不能冒充指針那一格。
-        let tolMs = max(0, args["tolMs"] as? Int ?? 150)
-        let tol = CMTime(value: Int64(tolMs), timescale: 1000)
-        gen.requestedTimeToleranceBefore = tol
-        gen.requestedTimeToleranceAfter = tol
-        var payload: FlutterStandardTypedData?
-        var actualTime = CMTime.invalid
-        if let cg = try? gen.copyCGImage(
-          at: CMTime(value: Int64(ms), timescale: 1000), actualTime: &actualTime)
-        {
-          var flat = UIImage(cgImage: cg)
-          // HDR 影格（HLG/PQ 色彩空間）：用跟合成播放器/工作檔同一條
-          // 系統 toneMap 曲線壓回 SDR。壓不成再退回原樣（頂多偏色，
-          // 不能沒圖）
-          if let cs = cg.colorSpace, CGColorSpaceUsesITUR_2100TF(cs) {
-            let ci = CIImage(cgImage: cg, options: [.toneMapHDRtoSDR: true])
-            if let sdr = CIExportCompositor.ctxSDR.createCGImage(
-              ci, from: ci.extent, format: .RGBA8,
-              colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
-            {
-              flat = UIImage(cgImage: sdr)
+        var generator: AVAssetImageGenerator?
+        var image: CGImage?
+        var actual = CMTime.invalid
+        self.frameWork.enqueue(MCFrameWorkQueue.Work(background: background,
+          start: { done in
+            self.frameReleaseWork?.cancel(); self.frameReleaseWork = nil
+            guard let gen = self.frameGenerators.generator(path: path, maxH: maxH)
+            else { done(); return }
+            generator = gen
+            let tolerance = CMTime(value: Int64(max(0, args["tolMs"] as? Int ?? 150)), timescale: 1000)
+            gen.requestedTimeToleranceBefore = tolerance
+            gen.requestedTimeToleranceAfter = tolerance
+            let time = CMTime(value: Int64(ms), timescale: 1000)
+            gen.generateCGImagesAsynchronously(forTimes: [NSValue(time: time)]) {
+              _, cg, actualTime, status, _ in
+              self.frameQueue.async {
+                if status == .succeeded { image = cg; actual = actualTime }
+                done()
+              }
             }
-          }
-          if let data = flat.jpegData(compressionQuality: jpegQ) {
-            payload = FlutterStandardTypedData(bytes: data)
-          }
-        }
-        var reply: Any? = payload
-        if detailed, let payload = payload {
-          var map: [String: Any] = ["bytes": payload]
-          if actualTime.isValid, actualTime.seconds.isFinite {
-            map["actualSeconds"] = actualTime.seconds
-          }
-          reply = map
-        }
-        DispatchQueue.main.async { result(reply) }
-        }
+          }, cancel: { generator?.cancelAllCGImageGeneration() }, finish: { valid in
+            autoreleasepool {
+              let started = generator != nil
+              defer { if started { self.releaseFrameGeneratorsWhenIdle() } }
+              var reply: Any?
+              if valid, let cg = image {
+                var flat = UIImage(cgImage: cg)
+                if let cs = cg.colorSpace, CGColorSpaceUsesITUR_2100TF(cs) {
+                  let ci = CIImage(cgImage: cg, options: [.toneMapHDRtoSDR: true])
+                  if let sdr = CIExportCompositor.ctxSDR.createCGImage(
+                    ci, from: ci.extent, format: .RGBA8,
+                    colorSpace: CGColorSpace(name: CGColorSpace.sRGB)) {
+                    flat = UIImage(cgImage: sdr)
+                  }
+                }
+                if let data = flat.jpegData(compressionQuality: jpegQ) {
+                  let payload = FlutterStandardTypedData(bytes: data)
+                  if detailed {
+                    var map: [String: Any] = ["bytes": payload]
+                    if actual.isValid, actual.seconds.isFinite { map["actualSeconds"] = actual.seconds }
+                    reply = map
+                  } else { reply = payload }
+                }
+              }
+              // Cancelled generation must not leave its reader cached until idle.
+              if !valid && generator != nil { self.frameGenerators.removeAll() }
+              image = nil; generator = nil
+              DispatchQueue.main.async { result(reply) }
+            }
+          }))
       }
     }
   }
@@ -3925,7 +4063,7 @@ final class MCInteractivePrepGate {
         journal.mark(trace, "preview", "build-start", details: [
           "clips": clips.count, "tracks": Set(clips.compactMap { $0["track"] as? Int }).count,
           "stills": stills.count, "replacing": self.comp != nil,
-          "revision": "bounded-multitrack-recovery-3"])
+          "revision": "bounded-photo-import-4"])
         CIExportCompositor.setHiddenImageTracks(Set(args["hiddenImageTracks"] as? [Int] ?? []))
         let overlays = args["overlays"] as? [[String: Any]] ?? []
         // 純聲音素材（配樂／旁白／從影片提取的聲音）：跟匯出 run 的
@@ -5819,6 +5957,9 @@ final class MCInteractivePrepGate {
         if let previous = MCNativePrepJournal.preview.previous {
           value["previewPrevious"] = previous
         }
+        if let previous = MCNativePrepJournal.image.previous {
+          value["imagePrevious"] = previous
+        }
         result(value)
         return
       }
@@ -5868,6 +6009,9 @@ final class MCInteractivePrepGate {
         let busy = args?["interactive"] as? Bool ?? false
         self.prepInteractiveGate.setInteractive(
           busy, pauseDecoding: args?["pauseDecoding"] as? Bool ?? false)
+        self.frameQueue.async {
+          self.frameWork.setSuspended(busy)
+        }
         if busy {
           // AVAssetExportSession has no sample-boundary pause API. Only its
           // editor-proxy fallback is deferred; real exports are not in this set.
@@ -9077,7 +9221,7 @@ final class CompPlayer: NSObject, FlutterTexture {
         guard let path = st["path"] as? String,
           let loaded = MCStillLoader.load(
             path: path, hdr: hdrOut && anyHDR, hint: st["hdr"] as? Bool,
-            inverseOotf: stillInverseOotf)
+            inverseOotf: stillInverseOotf, previewMaxSide: 2048)
         else { continue }
         var img = loaded
         let dw = img.extent.width
@@ -13056,8 +13200,48 @@ extension AppDelegate {
     else { return }
     let channel = FlutterMethodChannel(
       name: "markcut/photo", binaryMessenger: registrar.messenger())
-    channel.setMethodCallHandler { call, result in
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self = self else { result(nil); return }
       switch call.method {
+      case "imageWork":
+        let phase = call.arguments as? String ?? "unknown"
+        self.photoQueue.async {
+          let journal = MCNativePrepJournal.image
+          if phase == "begin" {
+            self.imageWorkTrace = journal.begin(file: "photo-import", hdr: false)
+          }
+          if let trace = self.imageWorkTrace {
+            journal.mark(trace, "image", phase)
+            if phase == "finish" {
+              journal.finish(trace, error: nil)
+              self.imageWorkTrace = nil
+            }
+          }
+          DispatchQueue.main.async { result(nil) }
+        }
+      case "preview", "crop":
+        guard let args = call.arguments as? [String: Any], let path = args["path"] as? String
+        else { result(nil); return }
+        self.photoQueue.async {
+          autoreleasepool {
+            let phase = call.method == "preview" ? "file-preview" : "file-crop"
+            if let trace = self.imageWorkTrace {
+              MCNativePrepJournal.image.mark(trace, "image", phase,
+                details: ["file": URL(fileURLWithPath: path).lastPathComponent])
+            }
+            let value: Any?
+            if call.method == "preview" {
+              value = MCEditorPhoto.preview(path: path, maxSide: args["maxSide"] as? Int ?? 2048)
+            } else {
+              value = MCEditorPhoto.crop(path: path, rect: args["rect"] as? [Double] ?? [])
+            }
+            if let trace = self.imageWorkTrace {
+              MCNativePrepJournal.image.mark(trace, "image", phase + "-done")
+            }
+            DispatchQueue.main.async { result(value) }
+          }
+        }
+
       case "probe":
         guard let path = call.arguments as? String else {
           result(nil)

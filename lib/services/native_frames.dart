@@ -38,6 +38,7 @@ Future<Uint8List?> nativeFrameAt(
   int maxH = 540,
   double quality = 0.7,
   int? tolMs,
+  bool background = false,
 }) async {
   try {
     return await _ch.invokeMethod<Uint8List>('frameAt', {
@@ -46,6 +47,7 @@ Future<Uint8List?> nativeFrameAt(
       'maxH': maxH,
       'q': quality,
       'tolMs': ?tolMs,
+      if (background) 'background': true,
     });
   } catch (_) {
     return null;
@@ -83,6 +85,7 @@ Future<NativeFrameSample?> nativeFrameAtDetailed(
   int maxH = 540,
   double quality = 0.7,
   int? tolMs,
+  bool background = false,
 }) async {
   try {
     return NativeFrameSample.fromPlatform(
@@ -92,6 +95,7 @@ Future<NativeFrameSample?> nativeFrameAtDetailed(
         'maxH': maxH,
         'q': quality,
         'tolMs': ?tolMs,
+        if (background) 'background': true,
         'detailed': true,
       }),
     );

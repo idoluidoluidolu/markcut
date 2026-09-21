@@ -3,7 +3,18 @@ import 'dart:typed_data';
 
 import 'package:web/web.dart' as web;
 
-Future<Uint8List?> readFileBytes(String path) async => null;
+Future<Uint8List?> readFileBytes(String path) async {
+  // Editor previews are bounded; re-cropping still needs the original blob.
+  if (!path.startsWith('blob:')) return null;
+  try {
+    final response = await web.window.fetch(path.toJS).toDart;
+    if (!response.ok) return null;
+    final buffer = await response.arrayBuffer().toDart;
+    return buffer.toDart.asUint8List();
+  } catch (_) {
+    return null; // Blob from a previous page/session has already expired.
+  }
+}
 
 /// Web 的素材是 blob URL，量不到大小；回 0 表示「無從判斷」
 Future<int> fileSizeBytes(String path) async => 0;
