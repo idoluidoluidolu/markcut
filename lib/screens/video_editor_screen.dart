@@ -3317,8 +3317,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       showHint(
         context,
         Diag.lastRunDiedExporting
-            ? '上次匯出被系統中斷了（記憶體不足）。長按標題可以看診斷'
-            : '上次沒有正常結束。長按標題可以看診斷',
+            ? '上次匯出未完成。首頁可查看保留的報告'
+            : '上次素材處理未完成。首頁可查看保留的報告',
         duration: const Duration(seconds: 6),
       );
     });
@@ -9776,7 +9776,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final sampleStartedAt = DateTime.now().toUtc();
     final sampledComp = _comp;
     diagnostic.environment.addAll({
-      'previewRevision': 'background-hdr-lifecycle-2',
+      'previewRevision': 'bounded-multitrack-recovery-3',
       'displayHz': View.of(context).display.refreshRate,
       'buildMode': kReleaseMode
           ? 'release'

@@ -969,6 +969,101 @@ class RunnerTests: XCTestCase {
     return url
   }
 
+  func testRapidPreviewReplacementDisposesSupersededPlayersBeforeTheNextFrame() {
+    let hosts = PlayerHosts()
+    let front = AVPlayer()
+    hosts.use(front)
+    let view = PlayerHostView(frame: CGRect(x: 0, y: 0, width: 64, height: 64))
+    hosts.register(view)
+    var disposed: [Int] = []
+    var visible: [Int] = []
+    var previous = front
+    // No item is ready, so the first player remains visible throughout import.
+    for index in 1...20 {
+      let next = AVPlayer()
+      let retiredIndex = index - 1
+      hosts.use(next, retiring: previous,
+        disposeRetired: { disposed.append(retiredIndex) },
+        whenVisible: { visible.append(index) })
+      XCTAssertTrue(view.front.player === front)
+      XCTAssertTrue(view.back.player === next)
+      XCTAssertEqual(disposed, Array(1..<index))
+      XCTAssertTrue(visible.isEmpty, "retirement must not announce a visible frame")
+      previous = next
+    }
+    hosts.use(nil, retiring: previous, disposeRetired: { disposed.append(20) })
+    XCTAssertEqual(disposed.sorted(), Array(0...20))
+    XCTAssertTrue(visible.isEmpty, "superseded visibility callbacks must not fire")
+    hosts.use(nil)
+    XCTAssertEqual(disposed.count, 21, "each player is disposed exactly once")
+  }
+
+  func testFiveHDRTracksCullOnlyFullCoversAndRestoreSourcesBeforeEditing() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = try hdrFixture()
+    let paths = try (0..<5).map { index -> String in
+      let url = root.appendingPathComponent("hdr-\(index).mp4")
+      try FileManager.default.copyItem(at: source, to: url)
+      return url.path
+    }
+    func clips(overlap: Bool, upper: [String: Any] = [:]) -> [[String: Any]] {
+      paths.enumerated().map { index, path in
+        var clip: [String: Any] = ["path": path, "start": 0.0, "end": 1.0,
+          "offset": overlap ? 0.0 : Double(index), "track": overlap ? index : 0]
+        if index > 0 { clip.merge(upper) { _, value in value } }
+        return clip
+      }
+    }
+    let player = CompPlayer(registry: ScrubTestTextureRegistry())
+    defer { player.dispose() }
+    XCTAssertTrue(player.build(clips: clips(overlap: true), texture: false, hdrOut: true),
+      player.buildError ?? "build failed")
+    let item = try XCTUnwrap(player.player.currentItem)
+    let vc = try XCTUnwrap(item.videoComposition)
+    XCTAssertNil(vc.customVideoCompositorClass, "plain HDR stays on the system compositor")
+    XCTAssertEqual(item.asset.tracks(withMediaType: .video).count, 5)
+    XCTAssertEqual(item.asset.tracks(withMediaType: .audio).count, 5,
+      "hidden video must retain its audio")
+    for raw in vc.instructions {
+      let instruction = try XCTUnwrap(raw as? AVVideoCompositionInstruction)
+      XCTAssertEqual(instruction.layerInstructions.count, 1)
+      let layer = try XCTUnwrap(instruction.layerInstructions.first)
+      var transform = CGAffineTransform.identity
+      XCTAssertTrue(layer.getTransformRamp(for: raw.timeRange.start,
+        start: &transform, end: nil, timeRange: nil))
+      let bounds = CGRect(x: 0, y: 0, width: 128, height: 64).applying(transform)
+      XCTAssertEqual(bounds.minX, 0, accuracy: 0.01)
+      XCTAssertEqual(bounds.minY, 0, accuracy: 0.01)
+      XCTAssertEqual(bounds.width, vc.renderSize.width, accuracy: 0.01)
+      XCTAssertEqual(bounds.height, vc.renderSize.height, accuracy: 0.01)
+    }
+    XCTAssertTrue(player.beginLiveLayerEditing())
+    let editing = try XCTUnwrap(player.player.currentItem?.videoComposition)
+    for raw in editing.instructions {
+      let instruction = try XCTUnwrap(raw as? CIExportInstruction)
+      XCTAssertEqual(instruction.requiredSourceTrackIDs?.count, 5)
+    }
+    player.dispose()
+
+    // Same five sources on one track, then genuinely visible PiP and fades.
+    for (overlap, upper, count) in [
+      (false, [String: Any](), 1),
+      (true, ["scale": 0.5] as [String: Any], 5),
+      (true, ["fadeIn": 0.5] as [String: Any], 5),
+    ] {
+      XCTAssertTrue(player.build(clips: clips(overlap: overlap, upper: upper),
+        texture: false, hdrOut: true), player.buildError ?? "build failed")
+      let composition = try XCTUnwrap(player.player.currentItem?.videoComposition)
+      for raw in composition.instructions {
+        let instruction = try XCTUnwrap(raw as? AVVideoCompositionInstruction)
+        XCTAssertEqual(instruction.layerInstructions.count, count)
+      }
+      player.dispose()
+    }
+  }
+
   func testPreviewTailUsesTheActualLastSampleAndDoesNotFillRealGaps() throws {
     let url = try makeScrubVideo()
     defer { try? FileManager.default.removeItem(at: url) }

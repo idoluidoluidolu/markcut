@@ -1020,6 +1020,13 @@ class _TimelineEditorState extends State<TimelineEditor> {
             onLiftStart: (pos) => _liftStart(c, pos),
             onLiftUpdate: _liftUpdate,
             onLiftEnd: _liftEnd,
+            onLiftCancel: _abortLift,
+            onLongPress: (position) {
+              if (_locked) return;
+              widget.onSelect(c.id);
+              HapticFeedback.mediumImpact();
+              widget.onLongPressClip(c.id, position);
+            },
             scrollController: widget.scrollController,
             leadPad: _leadPad,
             viewWidth: _viewWidth,
@@ -1653,6 +1660,8 @@ class _ClipBlock extends StatelessWidget {
   final ValueChanged<Offset> onLiftStart;
   final void Function(double ddx, double ddy, Offset globalPos) onLiftUpdate;
   final VoidCallback onLiftEnd;
+  final VoidCallback onLiftCancel;
+  final ValueChanged<Offset> onLongPress;
 
   /// 可視範圍：把手要貼在可視邊緣，不然片段比畫面長時它會跑到畫面外碰不到。
   /// 傳控制器而不是算好的數字——只有把手需要跟著捲動重畫，
@@ -1678,6 +1687,8 @@ class _ClipBlock extends StatelessWidget {
     required this.onLiftStart,
     required this.onLiftUpdate,
     required this.onLiftEnd,
+    required this.onLiftCancel,
+    required this.onLongPress,
     required this.scrollController,
     required this.leadPad,
     required this.viewWidth,
@@ -1715,21 +1726,31 @@ class _ClipBlock extends StatelessWidget {
       child: Opacity(
         opacity: lifted ? 0.25 : 1.0,
         child: RawGestureDetector(
-          gestures: {
-            _EagerPanRecognizer:
-                GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
-                  () => _EagerPanRecognizer(),
-                  (r) => r
-                    ..canStart = canStart
-                    ..onStart = ((d) => onLiftStart(d.globalPosition))
-                    ..onUpdate = ((d) =>
-                        onLiftUpdate(d.delta.dx, d.delta.dy, d.globalPosition))
-                    ..onEnd = ((_) => onLiftEnd())
-                    ..onCancel = onLiftEnd,
-                ),
-          },
+          // Unselected clips participate only in tap/long-press recognition.
+          // Horizontal/vertical drags belong to the surrounding scroll views.
+          gestures: !isSelected
+              ? const <Type, GestureRecognizerFactory>{}
+              : {
+                  _EagerPanRecognizer:
+                      GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
+                        () => _EagerPanRecognizer(),
+                        (r) => r
+                          ..canStart = canStart
+                          ..onStart = ((d) => onLiftStart(d.globalPosition))
+                          ..onUpdate = ((d) => onLiftUpdate(
+                            d.delta.dx,
+                            d.delta.dy,
+                            d.globalPosition,
+                          ))
+                          ..onEnd = ((_) => onLiftEnd())
+                          ..onCancel = onLiftCancel,
+                      ),
+                },
           child: GestureDetector(
             onTap: () => onSelect(clip.id),
+            onLongPressStart: isSelected
+                ? null
+                : (details) => onLongPress(details.globalPosition),
             // 外層不裁切：修剪把手的熱區要能伸出片段邊界一點
             child: Stack(
               clipBehavior: Clip.none,

@@ -5,6 +5,7 @@ import '../services/video_picker.dart';
 
 import '../services/preset_store.dart';
 import '../nav.dart';
+import '../widgets/interrupted_run_notice.dart';
 import '../theme.dart';
 import 'batch_watermark_screen.dart';
 import 'collage_screen.dart';
@@ -273,27 +274,44 @@ class _HomeScreenState extends State<HomeScreen> {
       // 開始畫，AppBar 浮在上面——它是不透明的白底，蓋住的也是白的。
       // 這裡不包 SafeArea：包了等於又把上下的安全區扣掉一次，中線又歪
       extendBodyBehindAppBar: true,
-      body: Center(
-        // logo 置中在整片留白裡。直接用圖檔原本的樣子，不套任何顏色：
-        // 三隻的淡出是烘在 PNG 的 alpha 裡的（左 75／中 42／右 16，
-        // 各佔 x 132-378、382-628、632-878），程式這邊調不動。
-        // icon_foreground.png 是啟動圖示前景，別共用
-        child: SizedBox(
-          width: kHomeLogoSize.width,
-          height: kHomeLogoSize.height,
-          child: Image.asset(
-            'assets/icon/home_logo.png',
-            fit: BoxFit.cover, // 裁掉原圖四周的留白
-            filterQuality: FilterQuality.medium,
-            // 檔案是 868×361，畫出來只有 190×76：不給解碼寬度的話整張
-            // 以原尺寸進圖快取（868×361×4 ≈ 1.25MB），而首頁一直開著，
-            // 那 1.25MB 就一直佔著。cover 在這個框是貼寬
-            //（190/868 > 76/361），照「畫出來的寬 × dpr」解就夠
-            cacheWidth:
-                (kHomeLogoSize.width * MediaQuery.devicePixelRatioOf(context))
-                    .round(),
+      body: Stack(
+        children: [
+          Center(
+            // logo 置中在整片留白裡。直接用圖檔原本的樣子，不套任何顏色：
+            // 三隻的淡出是烘在 PNG 的 alpha 裡的（左 75／中 42／右 16，
+            // 各佔 x 132-378、382-628、632-878），程式這邊調不動。
+            // icon_foreground.png 是啟動圖示前景，別共用
+            child: SizedBox(
+              width: kHomeLogoSize.width,
+              height: kHomeLogoSize.height,
+              child: Image.asset(
+                'assets/icon/home_logo.png',
+                fit: BoxFit.cover, // 裁掉原圖四周的留白
+                filterQuality: FilterQuality.medium,
+                // 檔案是 868×361，畫出來只有 190×76：不給解碼寬度的話整張
+                // 以原尺寸進圖快取（868×361×4 ≈ 1.25MB），而首頁一直開著，
+                // 那 1.25MB 就一直佔著。cover 在這個框是貼寬
+                //（190/868 > 76/361），照「畫出來的寬 × dpr」解就夠
+                cacheWidth:
+                    (kHomeLogoSize.width *
+                            MediaQuery.devicePixelRatioOf(context))
+                        .round(),
+              ),
+            ),
           ),
-        ),
+          const Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: SafeArea(
+              bottom: false,
+              child: Padding(
+                padding: EdgeInsets.only(top: kToolbarHeight),
+                child: InterruptedRunNotice(),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

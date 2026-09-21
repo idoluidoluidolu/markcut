@@ -315,8 +315,11 @@ void main() {
     expect(spy.drops, [tl.clips[0].id], reason: '單指拖曳要恢復');
   });
 
-  testWidgets('未選取的片段拖不動：只會被選起來，不會被搬走', (t) async {
+  testWidgets('未選取素材上右滑會捲時間軸，不選取也不搬動素材', (t) async {
     await pumpEditor(t);
+    scroll.jumpTo(120);
+    await t.pump();
+    final before = scroll.offset;
     final g = await t.startGesture(_onVideo(t, tl));
     for (var i = 0; i < 4; i++) {
       await g.moveBy(const Offset(15, 0));
@@ -330,8 +333,25 @@ void main() {
       isNot(contains(true)),
       reason: '父層不該以為使用者在搬素材（收尾的 false 無所謂）',
     );
-    expect(spy.selected, tl.clips[0].id, reason: '這一下當成選取');
+    expect(spy.selected, -1, reason: '滑動不是點選');
+    expect(scroll.offset, lessThan(before), reason: '右滑必須實際移動時間軸');
+    expect(spy.longPresses, isEmpty);
     expect(tl.clips[0].offset, 0);
+  });
+
+  testWidgets('未選取素材仍可長按開選單，取消觸控不能誤選', (t) async {
+    await pumpEditor(t);
+    final cancelled = await t.startGesture(_onVideo(t, tl));
+    await cancelled.cancel();
+    await t.pumpAndSettle();
+    expect(spy.selected, -1);
+    final hold = await t.startGesture(_onVideo(t, tl));
+    await t.pump(const Duration(milliseconds: 550));
+    expect(spy.longPresses, [tl.clips[0].id]);
+    expect(spy.selected, tl.clips[0].id);
+    await hold.up();
+    await t.pumpAndSettle();
+    expect(spy.drops, isEmpty);
   });
 
   testWidgets('回歸：選起來之後單指拖曳搬得動、按住 450ms 照樣開長按選單', (t) async {

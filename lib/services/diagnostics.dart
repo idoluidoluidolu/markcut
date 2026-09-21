@@ -55,6 +55,27 @@ class Diag {
   static String? crumbFromLastRun;
   static String? nativePrepDiagnostic;
 
+  /// Restored asynchronously at startup; retained on disk until dismissed.
+  static final recoveredReport = ValueNotifier<String?>(null);
+
+  static Future<File?> _recoveryFile() async {
+    final marker = await _crumbFile();
+    return marker == null
+        ? null
+        : File(
+            '${marker.parent.path}${Platform.pathSeparator}recovery_report.txt',
+          );
+  }
+
+  static Future<void> dismissRecoveredReport() async {
+    final report = recoveredReport.value;
+    try {
+      final file = await _recoveryFile();
+      if (file != null && file.existsSync()) await file.delete();
+    } catch (_) {}
+    if (recoveredReport.value == report) recoveredReport.value = null;
+  }
+
   // ===== 記憶體 =====
 
   /// 目前的記憶體用量（MB）。拿不到回 null（web、原生沒接上）
@@ -177,38 +198,79 @@ class Diag {
   /// 開 App 時讀一次：上次有沒有做到一半就消失
   static Future<void> loadLastRun() async {
     if (kIsWeb) return;
-    // Native checkpoints are independent: a missing/corrupt Dart marker must
-    // not hide the native operation that was actually in flight.
+    String? savedReport;
+    final recovery = await _recoveryFile();
+    try {
+      if (recovery != null && recovery.existsSync()) {
+        savedReport = await recovery.readAsString();
+      }
+    } catch (_) {}
+    var nativeInterrupted = false;
+    crumbFromLastRun = null;
+    nativePrepDiagnostic = null;
+    // A missing/corrupt Dart marker must not hide the independent native trace.
     try {
       final native = await _ch.invokeMapMethod<String, dynamic>(
         'nativePrepDiagnostic',
       );
       if (native != null && native.containsKey('launch')) {
         nativePrepDiagnostic =
-            '原生轉檔檢查點（running 只代表未收尾，不能直接判定終止原因）\n'
+            '原生檢查點（running 代表未收尾，不能直接判定終止原因）\n'
             '${jsonEncode(native)}';
+        final previous = native['previous'];
+        final preview = native['previewPrevious'];
+        nativeInterrupted =
+            (previous is Map && previous['status'] == 'running') ||
+            (preview is Map && preview['status'] == 'running');
       }
     } catch (_) {}
+    File? consumedMarker;
     try {
       final f = await _crumbFile();
-      if (f == null || !f.existsSync()) return;
-      final j = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
-      final stage = j['stage'] ?? '?';
-      final used = j['usedMb'] ?? 0;
-      final free = j['freeMb'] ?? 0;
-      final extra = <String>[];
-      j.forEach((k, v) {
-        if (!const {'stage', 'at', 'usedMb', 'freeMb', 'peakMb'}.contains(k)) {
-          extra.add('$k=$v');
-        }
-      });
-      crumbFromLastRun =
-          '上次執行沒有正常結束\n'
-          '  停在：$stage${extra.isEmpty ? '' : '（${extra.join('、')}）'}\n'
-          '  當下記憶體：$used MB（系統還剩 $free MB）\n'
-          '  時間：${j['at']}';
-      await f.delete();
+      if (f != null && f.existsSync()) {
+        final j = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
+        final stage = j['stage'] ?? '?';
+        final used = j['usedMb'] ?? 0;
+        final free = j['freeMb'] ?? 0;
+        final extra = <String>[];
+        j.forEach((k, v) {
+          if (!const {
+            'stage',
+            'at',
+            'usedMb',
+            'freeMb',
+            'peakMb',
+          }.contains(k)) {
+            extra.add('$k=$v');
+          }
+        });
+        crumbFromLastRun =
+            '上次素材處理未收尾\n'
+            '  停在：$stage${extra.isEmpty ? '' : '（${extra.join('、')}）'}\n'
+            '  當下記憶體：$used MB（系統還剩 $free MB）\n'
+            '  時間：${j['at']}';
+        consumedMarker = f;
+      }
     } catch (_) {}
+    if (nativeInterrupted || crumbFromLastRun != null) {
+      savedReport = [
+        '=== 上次未完成的素材處理 ===',
+        ?crumbFromLastRun,
+        ?nativePrepDiagnostic,
+        '以上是最後保存的檢查點；強制關閉也可能留下紀錄，並非系統終止原因。',
+      ].join('\n\n');
+      try {
+        if (recovery != null) {
+          final pending = File('${recovery.path}.pending');
+          await pending.writeAsString(savedReport, flush: true);
+          pending.renameSync(recovery.path);
+          if (consumedMarker?.existsSync() ?? false) {
+            consumedMarker!.deleteSync();
+          }
+        }
+      } catch (_) {}
+    }
+    recoveredReport.value = savedReport;
   }
 
   /// 上次是不是死在匯出（給編輯器進場時提醒用）

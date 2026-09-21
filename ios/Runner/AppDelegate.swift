@@ -3526,6 +3526,11 @@ final class MCNativePrepJournal {
       in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
     return MCNativePrepJournal(url: root.appendingPathComponent("native_prep_last.json"))
   }()
+  static let preview: MCNativePrepJournal = {
+    let root = FileManager.default.urls(for: .applicationSupportDirectory,
+      in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+    return MCNativePrepJournal(url: root.appendingPathComponent("native_preview_last.json"))
+  }()
   static func memory() -> [String: Double] {
     var info = task_vm_info_data_t()
     var count = mach_msg_type_number_t(
@@ -3717,6 +3722,7 @@ final class MCInteractivePrepGate {
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     _ = MCNativePrepJournal.shared // Capture the previous run before new work starts.
+    _ = MCNativePrepJournal.preview
     NotificationCenter.default.addObserver(self,
       selector: #selector(frameResourcesNeedRelease(_:)),
       name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
@@ -3878,6 +3884,7 @@ final class MCInteractivePrepGate {
   // 整條時間軸組成一份 AVComposition、一顆 AVPlayer 播。
   // 為什麼要換掉「一片段一顆播放器」見 CompPlayer.swift 的說明
   private var comp: CompPlayer?
+  private var compPreviewTrace: UUID?
 
   private func registerCompChannel(_ engineBridge: FlutterImplicitEngineBridge) {
     guard let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "markcut.comp")
@@ -3912,6 +3919,13 @@ final class MCInteractivePrepGate {
         let mosaics = args["mosaics"] as? [[String: Any]] ?? []
         let stills = args["stills"] as? [[String: Any]] ?? []
         let hdrOut = args["hdrOut"] as? Bool ?? false
+        let journal = MCNativePrepJournal.preview
+        let trace = journal.begin(file: "timeline", hdr: hdrOut)
+        self.compPreviewTrace = trace
+        journal.mark(trace, "preview", "build-start", details: [
+          "clips": clips.count, "tracks": Set(clips.compactMap { $0["track"] as? Int }).count,
+          "stills": stills.count, "replacing": self.comp != nil,
+          "revision": "bounded-multitrack-recovery-3"])
         CIExportCompositor.setHiddenImageTracks(Set(args["hiddenImageTracks"] as? [Int] ?? []))
         let overlays = args["overlays"] as? [[String: Any]] ?? []
         // 純聲音素材（配樂／旁白／從影片提取的聲音）：跟匯出 run 的
@@ -3939,6 +3953,8 @@ final class MCInteractivePrepGate {
             stillInverseOotf: args["stillInverseOotf"] as? Bool)
         else {
           let why = p.buildError ?? "未知原因"
+          journal.finish(trace, error: why)
+          self.compPreviewTrace = nil
           p.dispose()
           result(["error": why])  // 舊的還活著，畫面照舊
           return
@@ -3949,8 +3965,9 @@ final class MCInteractivePrepGate {
         // 收早了前面那層還指著它，就是使用者看到的閃黑。
         // 順便告訴 Dart「新合成真的顯示了」——HDR 預覽的 Flutter 版
         // 浮水印要等這一刻才藏（早藏＝舊畫面還在、浮水印憑空消失）
-        PlayerHosts.shared.use(p.player) {
-          old?.dispose()
+        PlayerHosts.shared.use(p.player, retiring: old?.player,
+          disposeRetired: { old?.dispose() }) {
+          journal.mark(trace, "preview", "visible")
           DispatchQueue.main.async {
             channel.invokeMethod("compVisible", arguments: nil)
           }
@@ -4297,6 +4314,10 @@ final class MCInteractivePrepGate {
         PlayerHosts.shared.use(nil)
         self.comp?.dispose()
         self.comp = nil
+        if let trace = self.compPreviewTrace {
+          MCNativePrepJournal.preview.finish(trace, error: nil)
+          self.compPreviewTrace = nil
+        }
         CIExportCompositor.setPreviewOverlays([], live: [])
         result(nil)
       default:
@@ -5795,6 +5816,9 @@ final class MCInteractivePrepGate {
         var value: [String: Any] = ["launch": journal.launch,
           "currentMemory": MCNativePrepJournal.memory()]
         if let previous = journal.previous { value["previous"] = previous }
+        if let previous = MCNativePrepJournal.preview.previous {
+          value["previewPrevious"] = previous
+        }
         result(value)
         return
       }
@@ -7480,12 +7504,20 @@ final class PlayerHosts: NSObject {
   private var gen = 0
   private var pendingObs: [NSKeyValueObservation] = []
 
-  /// 還沒執行的收尾（舊播放器 dispose）。上一輪換手被新一輪作廢
-  /// 時不能直接丟：那輪的舊播放器可能還掛在前面圖層顯示中，
-  /// 立刻收會黑；不收則 CADisplayLink 抓著它永不釋放，快速重烘
-  /// 一次就漏一顆。做法＝接力：作廢輪的收尾轉交給新一輪，
-  /// 等新畫面真的上檔一起執行
-  private var pendingVisible: (() -> Void)?
+  // Retire only players still attached to a front or pending back layer.
+  // Superseded back players must be disposed immediately, rather than carried
+  // through an unbounded callback chain while imports rebuild the preview.
+  private var retired: [ObjectIdentifier: (player: AVPlayer, dispose: () -> Void)] = [:]
+
+  private func collectRetired() {
+    let attached = views.allObjects.flatMap { [$0.front.player, $0.back.player] }
+      .compactMap { $0 } + [current].compactMap { $0 }
+    let keep = Set(attached.map { ObjectIdentifier($0) })
+    let ready = retired.keys.filter { !keep.contains($0) }
+    let callbacks = ready.compactMap { retired.removeValue(forKey: $0)?.dispose }
+    // Remove entries before calling out; dispose may release a held player.
+    for dispose in callbacks { dispose() }
+  }
 
   /// 換手中的新播放器「還沒對到位」：剛組好的 item 停在 0 秒，
   /// 第一格就緒就翻面會先露一下開頭的畫面，等 Dart 的定位 seek 落地
@@ -7534,25 +7566,22 @@ final class PlayerHosts: NSObject {
   /// 換成新的播放器——但畫面不立刻換：新播放器先掛每個視圖的
   /// 背面圖層，等它第一格真的解出來（isReadyForDisplay）才翻面。
   /// 舊畫面全程在前面撐著，重烘換手不再閃黑。
-  /// [whenVisible] 新畫面上檔（或保底逾時）後呼叫——舊播放器
-  /// 留到這一刻才收，收早了圖層還指著它就黑了
-  func use(_ p: AVPlayer?, whenVisible: (() -> Void)? = nil) {
+  /// Only the latest [whenVisible] callback announces the new frame. Retirement
+  /// runs separately as soon as a player is detached from every host layer.
+  func use(_ p: AVPlayer?, retiring old: AVPlayer? = nil,
+           disposeRetired: (() -> Void)? = nil, whenVisible: (() -> Void)? = nil) {
     invalidateNativeScrub()
     gen += 1
     let g = gen
     pendingObs.removeAll()
-    current = p
-    // 上一輪沒跑完的收尾接力進來，跟這一輪的一起等新畫面上檔
-    let carried = pendingVisible
-    let done: () -> Void = {
-      carried?()
-      whenVisible?()
+    if let old = old, let dispose = disposeRetired {
+      retired[ObjectIdentifier(old)] = (old, dispose)
     }
-    pendingVisible = done
+    current = p
     let finishNow: () -> Void = { [weak self] in
-      guard let self = self else { return }
-      self.pendingVisible = nil
-      done()
+      guard let self = self, self.gen == g else { return }
+      self.collectRetired()
+      whenVisible?()
     }
     flipWhenReleased.removeAll()
     guard let p = p else {
@@ -7616,6 +7645,7 @@ final class PlayerHosts: NSObject {
       }
       pendingObs.append(obs)
     }
+    collectRetired()
     // 保底：素材壞掉 readyForDisplay 永遠不來（或定位 seek 一直沒
     // 落地）——1.5 秒硬翻，寧可閃一下也不能卡在舊畫面（聲音已經是
     // 新的了）
@@ -9141,13 +9171,14 @@ final class CompPlayer: NSObject, FlutterTexture {
 
       /// 一段畫面貼進畫布：轉正 → 等比縮放貼齊 → 置中 → 使用者的縮放位移
       func fitTransform(_ seg: CompSeg) -> CGAffineTransform? {
-        let disp = seg.size.applying(seg.transform)
-        let dw = abs(disp.width)
-        let dh = abs(disp.height)
+        let bounds = CGRect(origin: .zero, size: seg.size).applying(seg.transform)
+        let dw = bounds.width
+        let dh = bounds.height
         guard dw > 1, dh > 1 else { return nil }
         let k = min(canvas.width / dw, canvas.height / dh)
         // 鏡像在「轉正之後的顯示座標」上做：先左右翻，再推回原位
-        var t = seg.transform
+        var t = seg.transform.concatenating(
+          CGAffineTransform(translationX: -bounds.minX, y: -bounds.minY))
         if seg.mirror {
           t = t.concatenating(CGAffineTransform(scaleX: -1, y: 1))
             .concatenating(CGAffineTransform(translationX: dw, y: 0))
@@ -9465,8 +9496,23 @@ final class CompPlayer: NSObject, FlutterTexture {
         ins.timeRange = CMTimeRange(start: a, end: b)
         var lis: [AVMutableVideoCompositionLayerInstruction] = []
         // 疊圖層時後面的畫在上面，所以由上往下加
-        for seg in here.reversed() {
-          guard let t = fitTransform(seg) else { continue }
+        // The system HDR compositor also needs occlusion culling. Otherwise
+        // five fully overlapping tracks still allocate five HDR decoders.
+        let candidates = here.compactMap { seg -> (CompSeg, CILayerSpec)? in
+          guard let t = fitTransform(seg) else { return nil }
+          return (seg, CILayerSpec(trackID: seg.track.trackID, still: nil,
+            transform: t, srcHeight: seg.size.height,
+            start: seg.range.start.seconds, end: seg.range.end.seconds,
+            fadeIn: seg.fadeIn, fadeOut: seg.fadeOut, colorMatrix: nil,
+            crop: nil, rotation: seg.rotation, opacity: seg.opacity,
+            z: seg.layer, srcWidth: seg.size.width, sourceOpaque: seg.sourceOpaque))
+        }
+        let visible = MCPreviewVisibility.visibleLayers(candidates.map { $0.1 },
+          canvas: canvas, enabled: visibility.enabled)
+        let ids = Set(visible.map { $0.trackID })
+        if visible.count < candidates.count { visibility.noteCulling() }
+        for (seg, spec) in candidates.reversed() where ids.contains(seg.track.trackID) {
+          let t = spec.transform
           let li = AVMutableVideoCompositionLayerInstruction(
             assetTrack: seg.track)
           li.setTransform(t, at: ins.timeRange.start)
@@ -9526,8 +9572,11 @@ final class CompPlayer: NSObject, FlutterTexture {
             .layerInstructions.count ?? 0
           return head + " 層數\(n)"
         }.joined(separator: "；")
-        let sourceCounts = vc.instructions.compactMap {
-          ($0 as? CIExportInstruction)?.requiredSourceTrackIDs?.count
+        let sourceCounts = vc.instructions.compactMap { instruction -> Int? in
+          if let ci = instruction as? CIExportInstruction {
+            return ci.requiredSourceTrackIDs?.count
+          }
+          return (instruction as? AVVideoCompositionInstruction)?.layerInstructions.count
         }
         if let fewest = sourceCounts.min(), let most = sourceCounts.max() {
           buildInfo["遮蔽剔除"] =

@@ -33,9 +33,11 @@ void main() {
     Diag.sceneProvider = null;
     Diag.crumbFromLastRun = null;
     Diag.nativePrepDiagnostic = null;
+    Diag.recoveredReport.value = null;
   });
 
   tearDown(() {
+    Diag.recoveredReport.value = null;
     messenger.setMockMethodCallHandler(diagCh, null);
     messenger.setMockMethodCallHandler(prepCh, null);
     Diag.crumbDirOverride = null;
@@ -108,6 +110,55 @@ void main() {
       expect(Diag.nativePrepDiagnostic, contains('first-decode'));
       expect(Diag.crumbFromLastRun, isNull);
     }
+  });
+
+  test('中斷報告跨重開保留，使用者關閉後才移除', () async {
+    messenger.setMockMethodCallHandler(diagCh, (call) async => null);
+    crumb().writeAsStringSync(
+      jsonEncode({'stage': '建立多軌道預覽', 'usedMb': 1800, '軌': 5}),
+    );
+    await Diag.loadLastRun();
+    final report = Diag.recoveredReport.value;
+    expect(report, contains('軌=5'));
+    expect(crumb().existsSync(), isFalse);
+    Diag.recoveredReport.value = null;
+    await Diag.loadLastRun();
+    expect(Diag.recoveredReport.value, report);
+    await Diag.dismissRecoveredReport();
+    await Diag.loadLastRun();
+    expect(Diag.recoveredReport.value, isNull);
+  });
+
+  test('轉檔完成後預覽未收尾，沒有 Dart 標記也顯示報告', () async {
+    messenger.setMockMethodCallHandler(
+      diagCh,
+      (call) async => {
+        'launch': {'process': 'new'},
+        'previous': {'status': 'completed'},
+        'previewPrevious': {
+          'status': 'running',
+          'lanes': {
+            'preview': {'phase': 'visible'},
+          },
+        },
+      },
+    );
+    await Diag.loadLastRun();
+    expect(Diag.crumbFromLastRun, isNull);
+    expect(Diag.recoveredReport.value, contains('visible'));
+  });
+
+  test('正常結束的原生工作不顯示中斷提示', () async {
+    messenger.setMockMethodCallHandler(
+      diagCh,
+      (call) async => {
+        'launch': {'process': 'new'},
+        'previous': {'status': 'completed'},
+        'previewPrevious': {'status': 'completed'},
+      },
+    );
+    await Diag.loadLastRun();
+    expect(Diag.recoveredReport.value, isNull);
   });
 
   test('clearMark 之後才寫完的 mark 要作廢：正常結束不能被冤枉成閃退', () async {
