@@ -118,23 +118,14 @@ class Diag {
   /// 每次寫 mark 都保存快照，供下次報告縮小問題範圍；它不是終止原因。
   static Map<String, Object?> Function()? sceneProvider;
 
-  /// 世代號：[clearMark] 加一。[mark] 會先問記憶體（跨一趟 method channel）
-  /// 再寫檔，unawaited 的心跳 mark 若在 clearMark 之前起跑、之後才寫完，
-  /// 會留下一份假現場，下次開 App 就冤枉「上次沒正常結束」。
-  /// mark 進來先記世代，await 回來世代變了就丟掉不寫
+  /// 每次 mark／clear 都取新世代。耗時寫入先寫私有暫存檔，回來若已
+  /// 過期就丟棄；最後換檔／清除沒有 await，避免舊寫入留下假中斷記錄。
   static int _markGen = 0;
-  static Future<void> _markWrites = Future<void>.value();
-
-  static Future<void> _writeCrumb(Future<void> Function() action) {
-    final next = _markWrites.then((_) => action());
-    _markWrites = next.catchError((Object _) {});
-    return _markWrites;
-  }
 
   /// 記下「我正在做什麼」。危險步驟開始前呼叫，正常做完呼叫 [clearMark]
   static Future<void> mark(String stage, {Map<String, Object?>? data}) async {
     if (kIsWeb) return;
-    final gen = _markGen;
+    final gen = ++_markGen;
     final mb = await memoryMb();
     if (gen != _markGen) return; // 中間被 clearMark 過：這份現場已經過期
     Map<String, Object?>? scene;
@@ -143,35 +134,43 @@ class Diag {
     } catch (_) {
       // 快照壞掉不能拖垮黑盒子本身
     }
+    File? pending;
     try {
       final f = await _crumbFile();
-      await _writeCrumb(() async {
-        if (gen != _markGen) return;
-        await f?.writeAsString(
-          jsonEncode({
-            'stage': stage,
-            'at': DateTime.now().toIso8601String(),
-            'usedMb': mb ?? lastMb,
-            'freeMb': lastFreeMb,
-            'peakMb': peakMb,
-            ...?data,
-            ...?scene,
-          }),
-          flush: true,
-        );
-      });
-    } catch (_) {}
+      if (f == null || gen != _markGen) return;
+      pending = File('${f.path}.$gen.pending');
+      await pending.writeAsString(
+        jsonEncode({
+          'stage': stage,
+          'at': DateTime.now().toIso8601String(),
+          'usedMb': mb ?? lastMb,
+          'freeMb': lastFreeMb,
+          'peakMb': peakMb,
+          ...?data,
+          ...?scene,
+        }),
+        flush: true,
+      );
+      if (gen == _markGen) {
+        // Only the tiny directory-entry replacement is synchronous. A clear
+        // cannot interleave between the generation check and this commit.
+        pending.renameSync(f.path);
+      }
+    } catch (_) {
+    } finally {
+      try {
+        if (pending != null && pending.existsSync()) pending.deleteSync();
+      } catch (_) {}
+    }
   }
 
-  /// 做完了，把現場擦掉——留著的話下次開 App 會被當成上次死在這裡
+  /// 清除只屬於本次世代的檔案，不能刪掉後來開始的新工作。
   static Future<void> clearMark() async {
     if (kIsWeb) return;
-    _markGen++; // 還在半路的 mark 全部作廢（見 _markGen）
+    final gen = ++_markGen;
     try {
       final f = await _crumbFile();
-      await _writeCrumb(() async {
-        if (f != null && f.existsSync()) await f.delete();
-      });
+      if (gen == _markGen && f != null && f.existsSync()) f.deleteSync();
     } catch (_) {}
   }
 

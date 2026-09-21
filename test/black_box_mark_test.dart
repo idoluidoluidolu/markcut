@@ -63,6 +63,25 @@ void main() {
     expect(crumb().existsSync(), false, reason: '讀過一次就要擦掉');
   });
 
+  test('新檢查點可原子取代舊檔，較慢的舊 mark 不能覆寫', () async {
+    final oldMemory = Completer<Map<String, double>>();
+    var calls = 0;
+    messenger.setMockMethodCallHandler(diagCh, (call) async {
+      if (++calls == 2) return oldMemory.future;
+      return {'usedMb': 800.0, 'freeMb': 2200.0};
+    });
+    await Diag.mark('first');
+    final old = Diag.mark('stale');
+    await Future<void>.delayed(Duration.zero);
+    await Diag.mark('latest');
+    oldMemory.complete({'usedMb': 900.0, 'freeMb': 2100.0});
+    await old;
+    expect(jsonDecode(crumb().readAsStringSync())['stage'], 'latest');
+    expect(dir.listSync().whereType<File>().map((f) => f.path), [crumb().path]);
+    await Diag.clearMark();
+    expect(dir.listSync(), isEmpty);
+  });
+
   test('原生階段在 Dart 現場缺失或損毀時仍出現在報告', () async {
     messenger.setMockMethodCallHandler(diagCh, (call) async {
       if (call.method == 'nativePrepDiagnostic') {
