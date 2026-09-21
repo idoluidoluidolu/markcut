@@ -1356,7 +1356,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         _ensureScrubSlots(i, s.duration);
         if ((_thumbs[i]?.length ?? 0) < 10) needStrip = true;
       } else if (s.kind == ClipKind.image && !_thumbs.containsKey(i)) {
-        readFileBytes(s.path).then((b) {
+        final preview = s.isGif
+            ? readFileBytes(s.path)
+            : EditorPhoto.load(s.path)
+                  .then<Uint8List?>((photo) => photo.bytes)
+                  .catchError((Object _) => null);
+        preview.then((b) {
           if (!mounted || b == null) return;
           // 讀檔期間清單可能又換過（連按上一步）：位置上還是這一份才寫
           if (i >= _tl.sources.length || !identical(_tl.sources[i], s)) {
@@ -7365,7 +7370,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       final srcIndex = _cropOrigin[clip.sourceIndex] ?? clip.sourceIndex;
       final src = _tl.sources[srcIndex];
       final originalPath = _cropOrigPaths[srcIndex] ?? src.path;
-      final preview = await EditorPhoto.load(originalPath);
+      final cached = originalPath == src.path
+          ? _thumbs[srcIndex]?.firstOrNull
+          : null;
+      final preview = cached == null
+          ? await EditorPhoto.load(originalPath)
+          : EditorPhoto(src.w, src.h, cached);
       if (!mounted) return;
       final path = await _cropPhotoPath(originalPath, preview);
       if (path == null || !mounted) return;

@@ -42,6 +42,9 @@ class EditorPhoto {
     if (bytes == null) throw StateError('讀不到照片');
     final decoded = await decodeCropImage(bytes, maxSide: maxSide);
     try {
+      if (decoded.sourceWidth <= maxSide && decoded.sourceHeight <= maxSide) {
+        return EditorPhoto(decoded.sourceWidth, decoded.sourceHeight, bytes);
+      }
       final png = await decoded.image.toByteData(
         format: ui.ImageByteFormat.png,
       );

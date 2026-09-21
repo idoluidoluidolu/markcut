@@ -203,6 +203,26 @@ void main() {
               .every((c) => (c.arguments as Map)['maxSide'] == 2048),
           isTrue,
         );
+        if (outcome == 'original') {
+          final beforeRedo = photoCalls
+              .where((c) => c.method == 'preview')
+              .length;
+          await t.tap(find.byTooltip('上一步'));
+          await tick(t);
+          VideoEditorScreen.debugTimeline!((tl) => expect(tl.sources, isEmpty));
+          await t.tap(find.byTooltip('重做'));
+          await tick(t);
+          final restored = t.widget<TimelineEditor>(
+            find.byType(TimelineEditor),
+          );
+          expect(restored.thumbs[0]?.single, orderedEquals(png));
+          expect(
+            photoCalls.where((c) => c.method == 'preview').length,
+            greaterThan(beforeRedo),
+            reason:
+                'redo must rebuild a bounded preview, never cache the original HEIC',
+          );
+        }
       } else {
         expect(find.byType(CropScreen), findsNothing);
         VideoEditorScreen.debugTimeline!((tl) => expect(tl.sources, isEmpty));
