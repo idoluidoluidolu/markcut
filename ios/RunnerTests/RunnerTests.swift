@@ -101,27 +101,44 @@ class RunnerTests: XCTestCase {
     guard #available(iOS 17.0, *) else { throw XCTSkip("HDR decode requires iOS 17") }
     let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".heic")
     defer { try? FileManager.default.removeItem(at: file) }
+    let linear = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
     let context = CIContext(options: [.cacheIntermediates: false,
-      .workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!])
-    let hdr = CIImage(color: CIColor(red: 2, green: 2, blue: 2, alpha: 1))
-      .cropped(to: CGRect(x: 0, y: 0, width: 512, height: 256))
+      .workingFormat: CIFormat.RGBAh, .workingColorSpace: linear])
+    // CIColor's default SDR space can clamp components above 1. Build actual
+    // extended-linear float pixels, and verify the fixture before testing decode.
+    var values = [Float](repeating: 2, count: 512 * 256 * 4)
+    for i in stride(from: 3, to: values.count, by: 4) { values[i] = 1 }
+    let pixels = values.withUnsafeBufferPointer { Data(buffer: $0) }
+    let hdr = CIImage(bitmapData: pixels, bytesPerRow: 512 * 16,
+      size: CGSize(width: 512, height: 256), format: .RGBAf, colorSpace: linear)
+    func red(_ image: CIImage) -> Float {
+      var value = [Float](repeating: 0, count: 4)
+      context.render(image, toBitmap: &value, rowBytes: 16,
+        bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBAf,
+        colorSpace: linear)
+      return value[0]
+    }
+    XCTAssertEqual(red(hdr), 2, accuracy: 0.01, "fixture must contain HDR before encoding")
     try context.writeHEIF10Representation(of: hdr, to: file,
       colorSpace: CGColorSpace(name: CGColorSpace.itur_2100_HLG)!, options: [:])
     XCTAssertEqual(HDRPhotoExport.probe(file.path)["hdr"] as? Bool, true)
+    let decoded = try XCTUnwrap(CIImage(contentsOf: file, options: [.expandToHDR: true]))
+    let reference = red(decoded)
+    XCTAssertGreaterThan(reference, 1.2, "encoded fixture must contain HDR before downsampling")
     let thumbnail = try XCTUnwrap(MCEditorPhoto.thumbnail(path: file.path, maxSide: 128, hdr: true))
     XCTAssertEqual(thumbnail.width, 128)
     XCTAssertEqual(thumbnail.height, 64)
-    var pixel = [Float](repeating: 0, count: 4)
-    context.render(CIImage(cgImage: thumbnail), toBitmap: &pixel, rowBytes: 16,
-      bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBAf,
-      colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB))
-    XCTAssertGreaterThan(pixel[0], 1.2, "bounded preview must keep HDR headroom")
+    let previewRed = red(CIImage(cgImage: thumbnail))
+    XCTAssertGreaterThan(previewRed, 1.2, "bounded preview must keep HDR headroom (source: \(reference))")
+    XCTAssertEqual(previewRed, reference, accuracy: 0.08, "downsampling must not alter uniform HDR luminance")
     let path = try XCTUnwrap(MCEditorPhoto.crop(path: file.path, rect: [0.25, 0.25, 0.5, 0.5]))
     defer { try? FileManager.default.removeItem(atPath: path) }
     let cropped = HDRPhotoExport.probe(path)
     XCTAssertEqual(cropped["hdr"] as? Bool, true)
     XCTAssertEqual(cropped["w"] as? Int, 256)
     XCTAssertEqual(cropped["h"] as? Int, 128)
+    let croppedImage = try XCTUnwrap(CIImage(contentsOf: URL(fileURLWithPath: path), options: [.expandToHDR: true]))
+    XCTAssertEqual(red(croppedImage), reference, accuracy: 0.08, "cropping must retain HDR luminance")
   }
 
   func testFrameWorkYieldsActiveAndQueuedThumbnailsBeforeForegroundSeek() {
