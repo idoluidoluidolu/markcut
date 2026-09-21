@@ -32,6 +32,7 @@ void main() {
     Diag.crumbDirOverride = dir;
     Diag.sceneProvider = null;
     Diag.crumbFromLastRun = null;
+    Diag.nativePrepDiagnostic = null;
   });
 
   tearDown(() {
@@ -60,6 +61,34 @@ void main() {
     expect(Diag.crumbFromLastRun, contains('軌=7'));
     expect(Diag.crumbFromLastRun, contains('2111 MB'));
     expect(crumb().existsSync(), false, reason: '讀過一次就要擦掉');
+  });
+
+  test('原生階段在 Dart 現場缺失或損毀時仍出現在報告', () async {
+    messenger.setMockMethodCallHandler(diagCh, (call) async {
+      if (call.method == 'nativePrepDiagnostic') {
+        return {
+          'launch': {
+            'process': 'new-run',
+            'memory': {'usedMB': 1400},
+          },
+          'previous': {
+            'status': 'running',
+            'lanes': {
+              'video': {'phase': 'first-hdr-render'},
+              'audio': {'phase': 'first-decode'},
+            },
+          },
+        };
+      }
+      return null;
+    });
+    for (final corrupt in [false, true]) {
+      if (corrupt) crumb().writeAsStringSync('{broken');
+      await Diag.loadLastRun();
+      expect(Diag.nativePrepDiagnostic, contains('first-hdr-render'));
+      expect(Diag.nativePrepDiagnostic, contains('first-decode'));
+      expect(Diag.crumbFromLastRun, isNull);
+    }
   });
 
   test('clearMark 之後才寫完的 mark 要作廢：正常結束不能被冤枉成閃退', () async {
@@ -101,10 +130,17 @@ void main() {
         case 'available':
           return true;
         case 'probeLite':
-          return {'w': 2160, 'h': 3840, 'codec': 'hvc1', 'durSec': 10.0, 'sdr709': false};
+          return {
+            'w': 2160,
+            'h': 3840,
+            'codec': 'hvc1',
+            'durSec': 10.0,
+            'sdr709': false,
+          };
         case 'toWorkFile':
           // 原生被叫到的這一刻，黑盒子上必須已經是「轉檔中」（onStart 先跑）
-          final j = jsonDecode(crumb().readAsStringSync()) as Map<String, dynamic>;
+          final j =
+              jsonDecode(crumb().readAsStringSync()) as Map<String, dynamic>;
           stageSeenByNative = j['stage'] as String?;
           final args = Map<dynamic, dynamic>.from(call.arguments as Map);
           File(args['dest'] as String).writeAsStringSync('encoded');

@@ -67,6 +67,80 @@ class RunnerTests: XCTestCase {
     return Double(row[x] >> 6) / 1023
   }
 
+  func testNativePrepJournalSurvivesRestartAndKeepsBothLanes() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("trace.json")
+    let first = MCNativePrepJournal(url: url)
+    let old = first.begin(file: "/private/source.mov", hdr: true)
+    first.mark(old, "video", "first-hdr-render")
+    first.mark(old, "audio", "first-decode", details: ["codec": "apac"])
+    let restarted = MCNativePrepJournal(url: url)
+    let prior = try XCTUnwrap(restarted.previous)
+    XCTAssertEqual(prior["file"] as? String, "source.mov", "do not record private full paths")
+    XCTAssertEqual(prior["status"] as? String, "running")
+    let lanes = try XCTUnwrap(prior["lanes"] as? [String: [String: Any]])
+    XCTAssertEqual(lanes["video"]?["phase"] as? String, "first-hdr-render")
+    XCTAssertEqual(lanes["audio"]?["phase"] as? String, "first-decode")
+    XCTAssertNil(MCNativePrepJournal(url: url).previous, "old runs are consumed once")
+    let current = restarted.begin(file: "/new.mov", hdr: true)
+    restarted.mark(current, "setup", "open-asset")
+    restarted.finish(old, error: "stale cancellation")
+    restarted.finish(current, error: nil)
+    restarted.mark(current, "audio", "late callback")
+    let final = try XCTUnwrap(MCNativePrepJournal(url: url).previous)
+    XCTAssertEqual(final["status"] as? String, "completed")
+    XCTAssertEqual(final["file"] as? String, "new.mov")
+    XCTAssertNil(final["error"])
+    XCTAssertEqual((final["events"] as? [Any])?.count, 1)
+  }
+
+  func testPrepCancellationBeforeHandlerInstallationAndAfterClose() {
+    let state = MCPrepStopState()
+    XCTAssertTrue(state.request("cancelled while opening"))
+    var received: [String] = []
+    state.install { received.append($0) }
+    XCTAssertEqual(received, ["cancelled while opening"])
+    XCTAssertFalse(state.request("later timeout"))
+    state.close()
+    state.install { _ in XCTFail("closed jobs must not restart teardown") }
+    let finished = MCPrepStopState()
+    finished.install { _ in XCTFail("completed job must release cancellation handler") }
+    finished.close()
+    XCTAssertFalse(finished.request("late pressure"))
+  }
+
+  func testPrepStartupReturnsToMainAndCancelsBeforeOpeningAsset() throws {
+    XCTAssertTrue(Thread.isMainThread)
+    let blocked = expectation(description: "background startup queue held")
+    let release = DispatchSemaphore(value: 0)
+    AppDelegate.prepSetupQueue.async {
+      blocked.fulfill()
+      _ = release.wait(timeout: .now() + 5)
+    }
+    wait(for: [blocked], timeout: 2)
+    defer { release.signal() }
+    let delegate = AppDelegate()
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let destination = root.appendingPathComponent("out.mp4")
+    let completed = expectation(description: "cancelled before probing nonexistent source")
+    var callbackCount = 0
+    delegate.transcodeWorkFile(src: root.appendingPathComponent("missing.mov").path,
+      dest: destination.path, maxShortSide: 64, channel: nil, label: "cancel-start", hdrPass: true
+    ) { error in
+      XCTAssertTrue(Thread.isMainThread)
+      XCTAssertEqual(error, "已取消")
+      callbackCount += 1
+      completed.fulfill()
+    }
+    delegate.cancelWorkFiles()
+    release.signal()
+    wait(for: [completed], timeout: 5)
+    XCTAssertEqual(callbackCount, 1)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+  }
+
   func testProxyGeometryNormalizesTranslatedRotationsAndMirrors() throws {
     for angle in [0.0, Double.pi / 2, Double.pi, -Double.pi / 2] {
       for mirror in [CGFloat(1), CGFloat(-1)] {
@@ -204,7 +278,22 @@ class RunnerTests: XCTestCase {
     XCTAssertNil(plan.readerSettings, "AAC should not start another decoder")
     XCTAssertNil(plan.writerSettings, "preserve the original AAC channel layout and packets")
     XCTAssertNotNil(plan.sourceFormatHint, "MP4 passthrough requires a format hint")
-    try assertHDRProxy(input: input, sourceChannels: 4, outputChannels: 4, duration: 3, frames: 90)
+    // Reuse the same lifecycle owner after successful and immediately cancelled
+    // jobs; importing another file must not inherit stale cancellation handles.
+    let delegate = AppDelegate()
+    for attempt in 0..<3 {
+      let cancelled = expectation(description: "cancel before retry \(attempt)")
+      let missing = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+      delegate.transcodeWorkFile(src: missing.path, dest: missing.appendingPathExtension("mp4").path,
+        maxShortSide: 64, channel: nil, label: "cancel retry", hdrPass: true) { error in
+          XCTAssertNotNil(error)
+          cancelled.fulfill()
+        }
+      delegate.cancelWorkFiles()
+      wait(for: [cancelled], timeout: 5)
+      try assertHDRProxy(input: input, sourceChannels: 4, outputChannels: 4,
+        duration: 3, frames: 90, delegate: delegate)
+    }
   }
 
   func testHDRProxyConvertsSurroundPCMBeforeInitializingAACWriter() throws {
@@ -214,7 +303,7 @@ class RunnerTests: XCTestCase {
   }
 
   private func assertHDRProxy(input: URL, sourceChannels: UInt32, outputChannels: UInt32,
-                             duration: Double, frames: Int) throws {
+                             duration: Double, frames: Int, delegate: AppDelegate = AppDelegate()) throws {
     let source = AVURLAsset(url: input)
     let sourceTrack = try XCTUnwrap(source.tracks(withMediaType: .audio).first)
     let sourceFormat = try XCTUnwrap(sourceTrack.formatDescriptions.first) as! CMFormatDescription
@@ -228,7 +317,6 @@ class RunnerTests: XCTestCase {
     let complete = expectation(description: "bounded HDR proxy completed")
     complete.assertForOverFulfill = true
     var error: String?
-    let delegate = AppDelegate()
     delegate.transcodeWorkFile(src: input.path, dest: destination.path, maxShortSide: 64,
       channel: nil, label: "HDR regression", hdrPass: true) { result in
         XCTAssertTrue(Thread.isMainThread)

@@ -3483,13 +3483,116 @@ final class MCPrepStopState {
   let cancelled = AtomicFlag()
   private let lock = NSLock()
   private var value: String?
+  private var handler: ((String) -> Void)?
+  private var closed = false
   var reason: String? { lock.lock(); defer { lock.unlock() }; return value }
   func request(_ reason: String) -> Bool {
-    lock.lock(); defer { lock.unlock() }
-    guard value == nil else { return false }
+    lock.lock()
+    guard value == nil, !closed else { lock.unlock(); return false }
     value = reason
     cancelled.set()
+    let action = handler
+    handler = nil
+    lock.unlock()
+    action?(reason)
     return true
+  }
+  // Cancellation can arrive while asset/codec initialization is still running.
+  // Install only after both pumps and group completion have been registered.
+  func install(_ action: @escaping (String) -> Void) {
+    lock.lock()
+    guard !closed else { lock.unlock(); return }
+    if let reason = value {
+      lock.unlock()
+      action(reason)
+    } else {
+      handler = action
+      lock.unlock()
+    }
+  }
+  func close() {
+    lock.lock(); defer { lock.unlock() }
+    closed = true
+    handler = nil
+  }
+}
+
+/// Small, synchronous checkpoints written BEFORE native operations. They survive
+/// process termination even when Flutter cannot service a method-channel reply.
+/// Each lane keeps its own last checkpoint, so audio cannot hide a video failure.
+final class MCNativePrepJournal {
+  static let shared: MCNativePrepJournal = {
+    let root = FileManager.default.urls(for: .applicationSupportDirectory,
+      in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+    return MCNativePrepJournal(url: root.appendingPathComponent("native_prep_last.json"))
+  }()
+  static func memory() -> [String: Double] {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(
+      MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let status = withUnsafeMutablePointer(to: &info) { ptr in
+      ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+        task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+      }
+    }
+    return ["usedMB": status == KERN_SUCCESS ? Double(info.phys_footprint) / 1048576 : 0,
+            "availableMB": Double(os_proc_available_memory()) / 1048576]
+  }
+  let previous: [String: Any]?
+  let launch: [String: Any]
+  private let url: URL
+  private let lock = NSLock()
+  private var token: UUID?
+  private var record: [String: Any] = [:]
+  init(url: URL) {
+    self.url = url
+    launch = ["process": UUID().uuidString, "at": Date().description,
+              "memory": Self.memory()]
+    if let data = try? Data(contentsOf: url), data.count < 65536 {
+      previous = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    } else { previous = nil }
+    // A second clean launch must not attribute an older operation to this run.
+    try? FileManager.default.removeItem(at: url)
+  }
+  func begin(file: String, hdr: Bool) -> UUID {
+    lock.lock(); defer { lock.unlock() }
+    let id = UUID()
+    token = id
+    record = ["operation": id.uuidString, "file": URL(fileURLWithPath: file).lastPathComponent,
+      "hdr": hdr, "status": "running", "started": Date().description,
+      "build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?",
+      "launch": launch, "lanes": [String: Any](), "events": [[String: Any]]()]
+    save()
+    return id
+  }
+  func mark(_ id: UUID, _ lane: String, _ phase: String, details: [String: Any] = [:]) {
+    lock.lock(); defer { lock.unlock() }
+    guard token == id, record["status"] as? String == "running" else { return }
+    let event: [String: Any] = ["lane": lane, "phase": phase, "at": Date().description,
+      "memory": Self.memory(), "mainThread": Thread.isMainThread, "details": details]
+    var lanes = record["lanes"] as? [String: Any] ?? [:]
+    lanes[lane] = event
+    record["lanes"] = lanes
+    var events = record["events"] as? [[String: Any]] ?? []
+    events.append(event)
+    record["events"] = Array(events.suffix(16))
+    save()
+  }
+  func finish(_ id: UUID, error: String?) {
+    lock.lock(); defer { lock.unlock() }
+    guard token == id, record["status"] as? String == "running" else { return }
+    record["status"] = error == nil ? "completed" : "stopped"
+    record["error"] = error
+    record["ended"] = Date().description
+    record["endMemory"] = Self.memory()
+    save()
+  }
+  private func save() {
+    guard let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+    else { return }
+    try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+      withIntermediateDirectories: true)
+    try? data.write(to: url, options: .atomic)
   }
 }
 
@@ -3613,6 +3716,7 @@ final class MCInteractivePrepGate {
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    _ = MCNativePrepJournal.shared // Capture the previous run before new work starts.
     NotificationCenter.default.addObserver(self,
       selector: #selector(frameResourcesNeedRelease(_:)),
       name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
@@ -3638,6 +3742,13 @@ final class MCInteractivePrepGate {
   /// 只在主執行緒讀寫（登記在主執行緒、finish 也回主執行緒才註銷）
   private var prepCancels: [Int: () -> Void] = [:]
   private var prepCancelSeq = 0
+  static let prepSetupQueue = DispatchQueue(label: "markcut.work.setup", qos: .utility)
+  private static let prepStopQueue = DispatchQueue(label: "markcut.work.stop", qos: .utility)
+
+  func cancelWorkFiles() {
+    for s in prepSessions.values { s.cancelExport() }
+    for c in Array(prepCancels.values) { c() }
+  }
 
   /// 音訊 session 的啟用／停用共用這一條序列佇列，順序才不會倒過來
   /// （見 activateAudio）
@@ -5679,6 +5790,14 @@ final class MCInteractivePrepGate {
         ])
         return
       }
+      if call.method == "nativePrepDiagnostic" {
+        let journal = MCNativePrepJournal.shared
+        var value: [String: Any] = ["launch": journal.launch,
+          "currentMemory": MCNativePrepJournal.memory()]
+        if let previous = journal.previous { value["previous"] = previous }
+        result(value)
+        return
+      }
       guard call.method == "memory" else {
         result(FlutterMethodNotImplemented)
         return
@@ -5735,10 +5854,7 @@ final class MCInteractivePrepGate {
         }
         result(nil)
       case "cancel":
-        for s in self.prepSessions.values { s.cancelExport() }
-        // 一趟轉檔／HDR 代理／密關鍵幀（reader/writer）：見 prepCancels。
-        // 每個把手會自己（回主執行緒）從名單註銷，這裡照名單走完就好
-        for c in self.prepCancels.values { c() }
+        self.cancelWorkFiles()
         result(nil)
       case "toWorkFile":
         guard let args = call.arguments as? [String: Any],
@@ -5975,10 +6091,61 @@ final class MCInteractivePrepGate {
     interactiveYield: Bool = false,
     done: @escaping (String?) -> Void
   ) {
+    dispatchPrecondition(condition: .onQueue(.main))
     if interactiveYield && previewMemoryNeedsYield() {
       done(AppDelegate.prepDeferredErr)
       return
     }
+    let state = MCPrepStopState()
+    let replied = AtomicFlag()
+    let bg = BgTask("工作檔轉檔")
+    prepCancelSeq += 1
+    let key = prepCancelSeq
+    prepCancels[key] = { _ = state.request(AppDelegate.prepCancelledErr) }
+    if interactiveYield {
+      prepMemoryDefers[key] = { _ = state.request(AppDelegate.prepDeferredErr) }
+    }
+    Self.prepSetupQueue.async {
+      autoreleasepool {
+        let journal = MCNativePrepJournal.shared
+        let trace = journal.begin(file: src, hdr: hdrPass)
+        let finish: (String?) -> Void = { [weak self] error in
+          guard replied.setIfClear() else { return }
+          state.close()
+          journal.finish(trace, error: error)
+          DispatchQueue.main.async {
+            self?.prepCancels.removeValue(forKey: key)
+            self?.prepMemoryDefers.removeValue(forKey: key)
+            bg.end()
+            done(error)
+          }
+        }
+        self.runWorkFile(src: src, dest: dest, maxShortSide: maxShortSide,
+          channel: channel, label: label, job: job, hdrPass: hdrPass,
+          interactiveYield: interactiveYield, stopState: state,
+          journal: journal, trace: trace, done: finish)
+      }
+    }
+  }
+
+  private func runWorkFile(
+    src: String, dest: String, maxShortSide: Int,
+    channel: FlutterMethodChannel?, label: String, job: Int,
+    hdrPass: Bool, interactiveYield: Bool, stopState: MCPrepStopState,
+    journal: MCNativePrepJournal, trace: UUID,
+    done: @escaping (String?) -> Void
+  ) {
+    dispatchPrecondition(condition: .notOnQueue(.main))
+    func stopBeforeStarting() -> Bool {
+      if let reason = stopState.reason { done(reason); return true }
+      let reserve = MCPreviewMemoryBudget.reserveMB(
+        physicalMB: Double(ProcessInfo.processInfo.physicalMemory) / 1048576, active: false)
+      if interactiveYield, Double(os_proc_available_memory()) / 1048576 < reserve {
+        done(AppDelegate.prepDeferredErr); return true
+      }
+      return false
+    }
+    if stopBeforeStarting() { return }
     // 這一趟寫自己的暫存檔，成功才換到 dest。
     //
     // 取消回覆必須等 append 與 writer 收工，才釋放 Dart 的單工作名額。
@@ -5994,6 +6161,7 @@ final class MCInteractivePrepGate {
     // 匯入分段：開檔（同步解析 moov、載軌道、建 reader/writer）跟
     // 真正的解碼→合成→編碼分開計，完成那行一起印
     let tOpen = CACurrentMediaTime()
+    journal.mark(trace, "setup", "open-asset")
     let asset = AVURLAsset(url: URL(fileURLWithPath: src))
     guard let vTrack = asset.tracks(withMediaType: .video).first,
       let reader = try? AVAssetReader(asset: asset),
@@ -6003,8 +6171,12 @@ final class MCInteractivePrepGate {
       done("開不了這個檔")
       return
     }
+    if stopBeforeStarting() { return }
     let dur = asset.duration.seconds
     let fps = vTrack.nominalFrameRate > 1 ? vTrack.nominalFrameRate : 30
+    journal.mark(trace, "setup", "video-reader", details: [
+      "width": vTrack.naturalSize.width, "height": vTrack.naturalSize.height,
+      "fps": fps, "duration": dur.isFinite ? dur : -1])
     // HDR proxies use a single-frame reader/render/writer loop. Reusing the
     // preview's AVVideoComposition creates another decoder/compositor queue
     // with no application-controlled cap on its retained render surfaces.
@@ -6111,6 +6283,12 @@ final class MCInteractivePrepGate {
         ] as [String: Any],
     ]
 
+    if stopBeforeStarting() { return }
+    journal.mark(trace, "setup", "video-writer", details: [
+      "width": size.width, "height": size.height, "codec": hdrPass ? "hevc-main10" : "h264"])
+    guard writer.canApply(outputSettings: vSettings, forMediaType: .video) else {
+      done("影片格式無法轉成工作檔"); return
+    }
     let vIn = AVAssetWriterInput(mediaType: .video, outputSettings: vSettings)
     // 不再抄旋轉旗標：畫面已由合成器烘正（167 起），再留旗標＝
     // 雙重旋轉——直式素材被當橫式、畫布翻成 1600x900
@@ -6133,6 +6311,12 @@ final class MCInteractivePrepGate {
     if let aTrack = asset.tracks(withMediaType: .audio).first {
       let format = aTrack.formatDescriptions.first.map { $0 as! CMFormatDescription }
       let audio = MCProxyAudioPlan(format: format)
+      let asbd = format.flatMap { CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee }
+      journal.mark(trace, "setup", "audio-reader-writer", details: [
+        "codec": asbd.map { Int($0.mFormatID) } ?? 0,
+        "channels": asbd.map { Int($0.mChannelsPerFrame) } ?? 0,
+        "sampleRate": asbd?.mSampleRate ?? 0,
+        "passthrough": audio.writerSettings == nil])
       if let settings = audio.writerSettings,
         !writer.canApply(outputSettings: settings, forMediaType: .audio) {
         done("音訊格式無法轉成工作檔"); return
@@ -6151,20 +6335,21 @@ final class MCInteractivePrepGate {
       aIn = input
     }
 
-    if interactiveYield && previewMemoryNeedsYield() {
-      try? FileManager.default.removeItem(atPath: stage)
-      done(AppDelegate.prepDeferredErr)
-      return
-    }
-    guard reader.startReading(), writer.startWriting() else {
+    if stopBeforeStarting() { return }
+    journal.mark(trace, "setup", "start-reader")
+    let reading = reader.startReading()
+    journal.mark(trace, "setup", "start-writer", details: ["readerStarted": reading])
+    guard reading, !stopState.cancelled.isSet, writer.startWriting() else {
       reader.cancelReading()
       if writer.status == .writing { writer.cancelWriting() }
       // startWriting 可能已經把檔案建出來了：這條早退不經過 finish，
       // 自己收掉，不然要等 WorkFiles.sweep 有跑到才清得掉
       try? FileManager.default.removeItem(atPath: stage)
-      done("開不了工")
+      done(stopState.reason ?? reader.error?.localizedDescription
+        ?? writer.error?.localizedDescription ?? "開不了工")
       return
     }
+    journal.mark(trace, "setup", "start-session")
     writer.startSession(atSourceTime: .zero)
 
     let group = DispatchGroup()
@@ -6175,7 +6360,6 @@ final class MCInteractivePrepGate {
     // append 失敗要記下來：不記的話 writer 仍可能收在 completed，
     // 於是一份「只有前半段」的檔會被當成功交出去，素材默默變短
     let failed = AtomicFlag()
-    let stopState = MCPrepStopState()
     let cancelled = stopState.cancelled
     let gate = prepInteractiveGate
     let pauseBaseline = gate.pausedDuration
@@ -6188,10 +6372,16 @@ final class MCInteractivePrepGate {
     let videoEnded = AtomicFlag()
     let audioEnded = AtomicFlag()
     let endVideo: () -> Void = {
-      if videoEnded.setIfClear() { vIn.markAsFinished(); group.leave() }
+      if videoEnded.setIfClear() {
+        if writer.status == .writing { vIn.markAsFinished() }
+        group.leave()
+      }
     }
     let endAudio: () -> Void = {
-      if let input = aIn, audioEnded.setIfClear() { input.markAsFinished(); group.leave() }
+      if let input = aIn, audioEnded.setIfClear() {
+        if writer.status == .writing { input.markAsFinished() }
+        group.leave()
+      }
     }
     // 只回一次（逾時、取消與正常完成可能撞在一起）
     let replied = AtomicFlag()
@@ -6201,45 +6391,18 @@ final class MCInteractivePrepGate {
     // 之後才到的那一點，是唯一安全的地方。
     // reader.cancelReading() 任何執行緒都能叫，叫完 copyNextSampleBuffer
     // 就回 nil，兩個迴圈自己 markAsFinished + leave，notify 隨即到
-    // 背景保護（見 BgTask）：切到背景硬體編碼才不會被 suspend 卡住
-    let bg = BgTask("工作檔轉檔")
-    // 取消把手（見 prepCancels）：這裡（主執行緒）登記，finish 回主
-    // 執行緒註銷。watchdog 也在 finish 裡收掉
-    prepCancelSeq += 1
-    let cancelKey = prepCancelSeq
     var timeoutTimer: DispatchSourceTimer?
-    let finish: (String?) -> Void = { [weak self] err in
+    let finish: (String?) -> Void = { err in
       guard replied.setIfClear() else { return }
-      DispatchQueue.main.async {
-        timeoutTimer?.setEventHandler {}
-        timeoutTimer?.cancel()
-        timeoutTimer = nil
-        self?.prepCancels.removeValue(forKey: cancelKey)
-        self?.prepMemoryDefers.removeValue(forKey: cancelKey)
-        bg.end()
-        // 失敗／取消：只清自己的暫存檔，不要碰 dest——那裡可能已經是
-        // 下一次嘗試的成品了
-        if err != nil { try? FileManager.default.removeItem(atPath: stage) }
-        done(err)
-      }
+      stopState.close()
+      // finish always follows the append queues. Cleanup happens off main;
+      // the outer lifecycle wrapper alone replies and removes cancellation.
+      timeoutTimer?.setEventHandler {}
+      timeoutTimer?.cancel()
+      if err != nil { try? FileManager.default.removeItem(atPath: stage) }
+      done(err)
     }
-    let stop: (String) -> Void = { reason in
-      guard stopState.request(reason) else { return }
-      reader.cancelReading()
-      vq.async { endVideo() }
-      if aIn != nil { aq.async { endAudio() } }
-      group.notify(queue: vq) {
-        // Also covers pressure arriving while finishWriting is already pending.
-        if writer.status == .writing { writer.cancelWriting() }
-        finish(reason)
-      }
-      // Reply only after both append queues and cancelWriting have finished.
-      // An early reply releases Dart's single-job slot while this codec lives.
-    }
-    prepCancels[cancelKey] = { stop(AppDelegate.prepCancelledErr) }
-    if interactiveYield {
-      prepMemoryDefers[cancelKey] = { stop(AppDelegate.prepDeferredErr) }
-    }
+    let stop: (String) -> Void = { reason in _ = stopState.request(reason) }
     // 逾時保險：硬體編碼器被別的工作佔住時 requestMediaDataWhenReady
     // 可能一直不回來，沒有這道就卡在「工作檔轉不完」，畫面永遠是原檔。
     // 額度隨片長：寫死 120 秒的話長片一趟正常轉檔就會超過、被誤判
@@ -6252,6 +6415,10 @@ final class MCInteractivePrepGate {
     timer.schedule(deadline: .now() + 0.25, repeating: 0.25)
     timer.setEventHandler { [weak self] in
       guard !replied.isSet else { return }
+      if writer.status == .failed || reader.status == .failed {
+        stop(writer.error?.localizedDescription ?? reader.error?.localizedDescription ?? "轉檔讀寫中止")
+        return
+      }
       if interactiveYield, self?.previewMemoryNeedsYield(active: true) == true {
         stop(AppDelegate.prepDeferredErr)
         return
@@ -6267,7 +6434,11 @@ final class MCInteractivePrepGate {
     // notify. Otherwise a short video can transiently empty the group.
     group.enter()
     if aIn != nil { group.enter() }
+    journal.mark(trace, "setup", "pumps-ready")
     var cadence = MCProxyFrameCadence()
+    var videoFrames = 0
+    var audioSamples = 0
+    var lastCheckpoint: CFTimeInterval = 0
     let frameReserve = MCPreviewMemoryBudget.reserveMB(
       physicalMB: Double(ProcessInfo.processInfo.physicalMemory) / 1048576, active: true)
     vIn.requestMediaDataWhenReady(on: vq) {
@@ -6305,7 +6476,13 @@ final class MCInteractivePrepGate {
               Thread.sleep(forTimeInterval: 0.005)
             }
           }
-          guard let sb = vOut.copyNextSampleBuffer() else { return false }
+          if videoFrames == 0 { journal.mark(trace, "video", "first-decode") }
+          guard let sb = vOut.copyNextSampleBuffer() else {
+            if reader.status == .failed {
+              stop(reader.error?.localizedDescription ?? "影片讀取失敗")
+            }
+            return false
+          }
           let pts = CMSampleBufferGetPresentationTimeStamp(sb)
           if let renderer = hdrRenderer, let adaptor = adaptor, let output = output {
             guard cadence.accepts(pts, sourceFPS: fps) else { return true }
@@ -6316,14 +6493,24 @@ final class MCInteractivePrepGate {
             if interactiveYield && Double(os_proc_available_memory()) / 1048576 < frameReserve {
               stop(AppDelegate.prepDeferredErr); return false
             }
+            if videoFrames == 0 { journal.mark(trace, "video", "first-hdr-render") }
             renderer.render(source, to: output, transform: fit,
               sourceHeight: vTrack.naturalSize.height)
             guard !cancelled.isSet else { return false }
+            if videoFrames == 0 { journal.mark(trace, "video", "first-append") }
             guard adaptor.append(output, withPresentationTime: pts) else {
               failed.set(); stop("HDR 影格寫入失敗"); return false
             }
-          } else if !vIn.append(sb) { failed.set(); return false }
+          } else if !vIn.append(sb) {
+            failed.set(); stop(writer.error?.localizedDescription ?? "影片寫入失敗"); return false
+          }
+          videoFrames += 1
           let now = CACurrentMediaTime()
+          if now - lastCheckpoint >= 2 {
+            lastCheckpoint = now
+            journal.mark(trace, "video", "encoding", details: [
+              "frames": videoFrames, "seconds": pts.seconds.isFinite ? pts.seconds : -1])
+          }
           if dur > 0.05, now - lastReport > 0.2 {
             lastReport = now
             let t = CMSampleBufferGetPresentationTimeStamp(sb).seconds
@@ -6354,8 +6541,19 @@ final class MCInteractivePrepGate {
             endAudio(); return
           }
           let more = autoreleasepool { () -> Bool in
-            guard let sb = aOut.copyNextSampleBuffer() else { return false }
-            guard aIn.append(sb) else { failed.set(); return false }
+            if audioSamples == 0 { journal.mark(trace, "audio", "first-decode") }
+            guard let sb = aOut.copyNextSampleBuffer() else {
+              if reader.status == .failed {
+                stop(reader.error?.localizedDescription ?? "音訊讀取失敗")
+              }
+              return false
+            }
+            if audioSamples == 0 { journal.mark(trace, "audio", "first-append") }
+            guard aIn.append(sb) else {
+              failed.set(); stop(writer.error?.localizedDescription ?? "音訊寫入失敗"); return false
+            }
+            audioSamples += 1
+            if audioSamples == 1 { journal.mark(trace, "audio", "encoding") }
             return true
           }
           if !more {
@@ -6382,6 +6580,7 @@ final class MCInteractivePrepGate {
         finish(writer.error?.localizedDescription ?? "寫入端中止")
         return
       }
+      journal.mark(trace, "finish", "finish-writing", details: ["frames": videoFrames])
       if hdrPass, asset.duration.isNumeric, asset.duration > .zero {
         writer.endSession(atSourceTime: asset.duration)
       }
@@ -6426,6 +6625,20 @@ final class MCInteractivePrepGate {
               Double(fps), ratio))
         }
         finish(nil)
+      }
+    }
+    // A stop sets the shared flag immediately, but blocking reader teardown
+    // must never hold the UI thread. Writer cancellation follows both pumps.
+    stopState.install { reason in
+      Self.prepStopQueue.async {
+        journal.mark(trace, "finish", "cancel-reader", details: ["reason": reason])
+        reader.cancelReading()
+        vq.async { endVideo() }
+        if aIn != nil { aq.async { endAudio() } }
+        group.notify(queue: vq) {
+          if writer.status == .writing { writer.cancelWriting() }
+          finish(reason)
+        }
       }
     }
   }

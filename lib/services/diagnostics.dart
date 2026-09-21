@@ -12,10 +12,9 @@ import 'quality_diagnostics.dart';
 ///
 /// 這支 App 最難查的三種問題，共同點都是「現場什麼都沒留下」：
 ///
-/// 一、匯出閃退。被 iOS 的 jetsam 收掉不會有當機報告、不會有 log，
-///     使用者只看到 App 消失。所以要有黑盒子：每個危險步驟開始前先把
-///     「我正在做什麼、當下吃多少記憶體」寫進檔案，正常結束就擦掉。
-///     下次開 App 如果檔案還在，就知道上次死在哪一步、死的時候多大。
+/// 一、匯出／匯入中斷。使用者不一定取得得到系統終止紀錄，所以在
+///     危險步驟前保存階段與記憶體。它代表最後完成的檢查點，不能單憑
+///     殘留檔案判定是閃退、強制關閉，或確定系統終止原因。
 ///
 /// 二、記憶體。手機上完全看不到，只能靠猜。這裡跟系統要真正的數字：
 ///     iOS 用 phys_footprint（jetsam 判定用的就是它）＋ 還剩多少額度，
@@ -54,6 +53,7 @@ class Diag {
 
   /// 上次執行沒有正常結束時留下的現場（開 App 時讀一次）
   static String? crumbFromLastRun;
+  static String? nativePrepDiagnostic;
 
   // ===== 記憶體 =====
 
@@ -115,7 +115,7 @@ class Diag {
   /// 黑盒子只記「停在哪一步」跟記憶體數字，209 那份（多支影片閃退）
   /// 光看「HDR 代理：轉檔中 2111 MB」判不出是誰吃的——素材幾支、
   /// 疊了幾軌、縮圖／代理各幾個在跑、合成有沒有組起來，通通不知道。
-  /// 每次寫 mark 都把這份快照一起寫進去，下次閃退報告就能直接定罪
+  /// 每次寫 mark 都保存快照，供下次報告縮小問題範圍；它不是終止原因。
   static Map<String, Object?> Function()? sceneProvider;
 
   /// 世代號：[clearMark] 加一。[mark] 會先問記憶體（跨一趟 method channel）
@@ -123,6 +123,13 @@ class Diag {
   /// 會留下一份假現場，下次開 App 就冤枉「上次沒正常結束」。
   /// mark 進來先記世代，await 回來世代變了就丟掉不寫
   static int _markGen = 0;
+  static Future<void> _markWrites = Future<void>.value();
+
+  static Future<void> _writeCrumb(Future<void> Function() action) {
+    final next = _markWrites.then((_) => action());
+    _markWrites = next.catchError((Object _) {});
+    return _markWrites;
+  }
 
   /// 記下「我正在做什麼」。危險步驟開始前呼叫，正常做完呼叫 [clearMark]
   static Future<void> mark(String stage, {Map<String, Object?>? data}) async {
@@ -138,17 +145,21 @@ class Diag {
     }
     try {
       final f = await _crumbFile();
-      await f?.writeAsString(
-        jsonEncode({
-          'stage': stage,
-          'at': DateTime.now().toIso8601String(),
-          'usedMb': mb ?? lastMb,
-          'freeMb': lastFreeMb,
-          'peakMb': peakMb,
-          ...?data,
-          ...?scene,
-        }),
-      );
+      await _writeCrumb(() async {
+        if (gen != _markGen) return;
+        await f?.writeAsString(
+          jsonEncode({
+            'stage': stage,
+            'at': DateTime.now().toIso8601String(),
+            'usedMb': mb ?? lastMb,
+            'freeMb': lastFreeMb,
+            'peakMb': peakMb,
+            ...?data,
+            ...?scene,
+          }),
+          flush: true,
+        );
+      });
     } catch (_) {}
   }
 
@@ -158,13 +169,27 @@ class Diag {
     _markGen++; // 還在半路的 mark 全部作廢（見 _markGen）
     try {
       final f = await _crumbFile();
-      if (f != null && f.existsSync()) await f.delete();
+      await _writeCrumb(() async {
+        if (f != null && f.existsSync()) await f.delete();
+      });
     } catch (_) {}
   }
 
   /// 開 App 時讀一次：上次有沒有做到一半就消失
   static Future<void> loadLastRun() async {
     if (kIsWeb) return;
+    // Native checkpoints are independent: a missing/corrupt Dart marker must
+    // not hide the native operation that was actually in flight.
+    try {
+      final native = await _ch.invokeMapMethod<String, dynamic>(
+        'nativePrepDiagnostic',
+      );
+      if (native != null && native.containsKey('launch')) {
+        nativePrepDiagnostic =
+            '原生轉檔檢查點（running 只代表未收尾，不能直接判定終止原因）\n'
+            '${jsonEncode(native)}';
+      }
+    } catch (_) {}
     try {
       final f = await _crumbFile();
       if (f == null || !f.existsSync()) return;
@@ -555,6 +580,10 @@ class Diag {
     if (crumbFromLastRun != null) {
       b.writeln('--- 上次執行 ---');
       b.writeln(crumbFromLastRun);
+    }
+    if (nativePrepDiagnostic != null) {
+      b.writeln('--- 原生執行紀錄 ---');
+      b.writeln(nativePrepDiagnostic);
     }
     b.writeln('起播到位置前進（非首幀呈現）：$playLatencyText');
     if (playConfirmationTimeouts > 0) {

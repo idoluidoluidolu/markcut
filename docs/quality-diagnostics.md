@@ -1,3 +1,30 @@
+## 2026-09-21 BUILD 213 仍在 HDR 匯入期間中斷
+
+BUILD 213 確認使用 `bounded-hdr-spatial-audio-1`，不同空間音訊 HDR 仍可能
+中斷。最後 Dart 記錄為 HDR 轉檔中、footprint 1611MB／可用額度 1765MB；
+重新進場的空白編輯器峰值 2344MB 屬於另一個量測時段，不能當成當機峰值。
+使用者找不到系統終止紀錄，目前不能確定 OOM、watchdog、原生例外或其他原因。
+上一轮 AAC 設定修正及模擬器通過，均不能證明已解決此實機問題。
+
+`background-hdr-lifecycle-2` 修正可確認的生命週期缺口：
+
+- 原生開檔、建立 reader/writer 及 startReading/startWriting 移至序列背景佇列；
+  取消與記憶體退讓把手在開工前於主執行緒登記，初始化途中也能收到停止訊號。
+- reader 的同步取消移出主執行緒，writer 仍等兩條 append 佇列收工後才取消。
+  讀寫失敗停止兩條軌，不等待另一條已不會再 ready 的軌道直到總逾時。
+- 對影片 writer 加上 canApply 檢查；只對 writing 狀態的 writer 標記輸入完成。
+- 原生獨立保存 setup、video、audio、finish 檢查點，包含來源音訊格式／聲道、
+  尺寸、記憶體、執行緒與啟動識別碼。首次解碼／HDR render／append 前寫入；
+  後續影片進度每兩秒更新，最多 16 筆事件。檔案只存在本機、不上傳、不記完整路徑。
+  重啟可讀取，正常完成／已停止有明確狀態；沒有 Dart marker 仍可顯示原生紀錄。
+- Dart marker 寫入與清除序列化，避免延遲寫入形成假中斷紀錄。
+
+驗證項目：主執行緒在初始化排隊期間可取消、關閉後的晚到取消不再動作、
+原生紀錄跨啟動且音／影兩條軌不互相覆寫、舊工作不能覆寫新工作、損毀 Dart
+marker 不遮蔽原生紀錄。同一 AppDelegate 反覆取消與重轉真實 10-bit HLG／
+4 聲道 AAC 測試片三輪，並檢查聲音、影格數、旋轉與 HDR 亮度。
+仍需 iPhone 17 原始 APAC／Dolby Vision 素材確認；不可把這輪當作實機根因已證實。
+
 # 下一版品質驗收
 
 ## 2026-09-20：iPhone 17／約五支非 4K HDR 素材
