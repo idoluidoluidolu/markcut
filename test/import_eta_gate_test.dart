@@ -49,6 +49,15 @@ Future<void> _settle(WidgetTester t, int steps) async {
   }
 }
 
+// Native/file I/O uses real time while widget timers use the fake clock.
+// Wait for the observed transition with a bound, instead of assuming a busy CI
+// host completes flushed diagnostic writes within a fixed 1.2-second window.
+Future<void> _settleUntil(WidgetTester t, bool Function() ready) async {
+  for (var step = 0; step < 250 && !ready(); step++) {
+    await _settle(t, 1);
+  }
+}
+
 /// 測試主機沒有 libmpv：遮罩收掉之後編輯器要建預覽播放器就會丟這個。
 /// 跟這一頁要守的東西無關，吞掉——但只吞這一種
 void _swallowMediaKit(WidgetTester t) {
@@ -400,7 +409,7 @@ void main() {
     _holdWork!.complete(); // Native cancellation has returned deferred.
     await _settle(t, 3);
     expect(_workStarted, 1, reason: '正在滑動或尚未穩定閒置時不能重開 encoder');
-    await _settle(t, 30);
+    await _settleUntil(t, () => _workStarted >= 2);
     expect(_workStarted, 2);
     expect(_workArguments.last['src'], _workArguments.first['src']);
     expect(_workArguments.last['safe'], isNull);
