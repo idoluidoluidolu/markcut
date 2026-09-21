@@ -1055,10 +1055,17 @@ class RunnerTests: XCTestCase {
     ] {
       XCTAssertTrue(player.build(clips: clips(overlap: overlap, upper: upper),
         texture: false, hdrOut: true), player.buildError ?? "build failed")
-      let composition = try XCTUnwrap(player.player.currentItem?.videoComposition)
-      for raw in composition.instructions {
-        let instruction = try XCTUnwrap(raw as? AVVideoCompositionInstruction)
-        XCTAssertEqual(instruction.layerInstructions.count, count)
+      let current = try XCTUnwrap(player.player.currentItem)
+      if overlap {
+        let composition = try XCTUnwrap(current.videoComposition)
+        for raw in composition.instructions {
+          let instruction = try XCTUnwrap(raw as? AVVideoCompositionInstruction)
+          XCTAssertEqual(instruction.layerInstructions.count, count)
+        }
+      } else {
+        XCTAssertEqual(current.asset.tracks(withMediaType: .video).count, 1)
+        XCTAssertNil(current.videoComposition, "one unmodified HDR track uses direct playback")
+        XCTAssertEqual(current.asset.duration.seconds, 5, accuracy: 0.01)
       }
       player.dispose()
     }
