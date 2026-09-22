@@ -1206,7 +1206,7 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(cold.asset.tracks(withMediaType: .video).count, 1)
     XCTAssertEqual(cold.asset.tracks(withMediaType: .audio).count, 6)
     let track = try XCTUnwrap(cold.asset.tracks(withMediaType: .video).first)
-    XCTAssertEqual(Set(track.segments.compactMap { $0.sourceURL?.lastPathComponent }), ["source-5.mp4"])
+    XCTAssertEqual(Set(track.segments.compactMap { ($0 as? AVCompositionTrackSegment)?.sourceURL?.lastPathComponent }), ["source-5.mp4"])
     let mixIDs = Set(cold.audioMix?.inputParameters.map { $0.trackID } ?? [])
     XCTAssertEqual(mixIDs, Set(cold.asset.tracks(withMediaType: .audio).map { $0.trackID }))
     XCTAssertEqual(cold.videoComposition?.colorTransferFunction, AVVideoTransferFunction_ITU_R_2100_HLG)
