@@ -1355,7 +1355,10 @@ class RunnerTests: XCTestCase {
     ], texture: false))
     let composition = try XCTUnwrap(player.player.currentItem?.asset)
     let tracks = composition.tracks(withMediaType: .video)
-    XCTAssertEqual(tracks.count, 2)
+    // Both edit sources remain available, but only the covering source is
+    // attached to the player. Its held tail must still use the last sample.
+    XCTAssertEqual(player.qualitySnapshot()["sourceVideoTracks"] as? Int, 2)
+    XCTAssertEqual(tracks.count, 1)
     for video in tracks {
       XCTAssertEqual(video.timeRange.end.seconds, 1.02, accuracy: 0.002)
       let tail = try XCTUnwrap(video.segments.last)
