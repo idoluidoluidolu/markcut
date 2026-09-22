@@ -2781,8 +2781,9 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             mzIdx += 1
           }
           // 底（馬賽克後、疊加物前）留給缺格重播
-          self.lastComposedBase = Self.detachedPreviewBase(out, canvas: canvasRect,
-            hdr: self.hdrOut, context: self.ctx)
+          self.lastComposedBase = self.liveComp
+            ? Self.detachedPreviewBase(out, canvas: canvasRect, hdr: self.hdrOut, context: self.ctx)
+            : out
         }
         do {
           // 清單與部件差量一次讀（同一把鎖）：不會拿到新圖配舊差量

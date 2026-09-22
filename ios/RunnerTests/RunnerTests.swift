@@ -1183,7 +1183,23 @@ class RunnerTests: XCTestCase {
               "offset": 0.0, "track": i, "id": i, "hdr": true]
     }
     let player = CompPlayer(registry: ScrubTestTextureRegistry())
-    defer { player.dispose(); CIExportCompositor.setLiveXform(nil) }
+    let display = AVPlayerLayer(player: player.player)
+    display.frame = CGRect(x: 0, y: 0, width: 128, height: 192)
+    UIApplication.shared.windows.first(where: \.isKeyWindow)?.layer.addSublayer(display)
+    defer {
+      display.removeFromSuperlayer(); display.player = nil
+      player.dispose(); CIExportCompositor.setLiveXform(nil)
+    }
+    func verifyFrame(at time: Double) {
+      let seek = expectation(description: "HDR seek \(time)")
+      player.seek(time, exact: true) { ok in XCTAssertTrue(ok); seek.fulfill() }
+      wait(for: [seek], timeout: 5)
+      let rendered = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+        let q = player.qualitySnapshot()
+        return abs((q["previewRenderedSeconds"] as? Double ?? -10) - (time + 0.02)) < 1.0 / 30.0
+      }, object: nil)
+      wait(for: [rendered], timeout: 5)
+    }
     XCTAssertTrue(player.build(clips: clips, texture: false, hdrOut: true, ovLive: true),
       player.buildError ?? "cold build failed")
     let cold = try XCTUnwrap(player.player.currentItem)
@@ -1194,6 +1210,8 @@ class RunnerTests: XCTestCase {
     let mixIDs = Set(cold.audioMix?.inputParameters.map { $0.trackID } ?? [])
     XCTAssertEqual(mixIDs, Set(cold.asset.tracks(withMediaType: .audio).map { $0.trackID }))
     XCTAssertEqual(cold.videoComposition?.colorTransferFunction, AVVideoTransferFunction_ITU_R_2100_HLG)
+
+    for time in [0.1, 1.2, 0.4] { verifyFrame(at: time) }
 
     // Editing a photo above the videos must not wake all six video decoders.
     XCTAssertTrue(player.beginLiveLayerEditing(track: 8))
@@ -1211,6 +1229,7 @@ class RunnerTests: XCTestCase {
     }
     XCTAssertFalse(player.beginLiveLayerEditing(track: 5))
     XCTAssertTrue(player.player.currentItem === editing, "same gesture must not reload the item")
+    verifyFrame(at: 0.7)
   }
 
   func testCompactedPreviewPreservesSourceTimesAcrossLanesAndAudio() throws {
