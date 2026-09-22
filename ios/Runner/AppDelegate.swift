@@ -8687,7 +8687,8 @@ final class CompPlayer: NSObject, FlutterTexture {
       // A hide or newly exposed layer changes actual media, not just pixels.
       // Replace once at this structural boundary; subsequent gesture updates
       // use the same lanes, item, and bounded paused-frame redraw path.
-      let position = player.currentTime()
+      let position = seekTarget.isValid ? seekTarget
+        : (seeking && seekIssuedTarget.isValid ? seekIssuedTarget : player.currentTime())
       let rate = player.rate
       cancelPausedCopy()
       cancelSeekRequests()
@@ -8700,6 +8701,8 @@ final class CompPlayer: NSObject, FlutterTexture {
         ])
         next.add(replacement); output = replacement
       }
+      for tap in item.outputs { item.remove(tap) }
+      videoOut = nil; videoOutUsers = 0
       observeStalls(next)
       player.replaceCurrentItem(with: next)
       Self.stItemSwaps += 1
@@ -10341,6 +10344,7 @@ final class CompPlayer: NSObject, FlutterTexture {
   }
 
   private var seekTarget: CMTime = .invalid
+  private var seekIssuedTarget: CMTime = .invalid
   private var seekTargetExact = false
   private var seekTargetTolerance = CMTime.zero
   private var seeking = false
@@ -10466,6 +10470,7 @@ final class CompPlayer: NSObject, FlutterTexture {
     }
     chaseWaits = 0
     let t = seekTarget
+    seekIssuedTarget = t
     let exact = seekTargetExact
     let tolerance = seekTargetTolerance
     let request = seekCompletion.generation
@@ -10630,7 +10635,7 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// 合成本身是空的／壞的，還是合成好好的但圖層沒把它畫出來。
   /// 直接從這份合成抽一格出來看，就分得開——抽得到就是圖層的問題
   private func frameProbe() -> String {
-    guard let comp = composition else { return "沒有合成" }
+    guard let comp = player.currentItem?.asset else { return "沒有合成" }
     let gen = AVAssetImageGenerator(asset: comp)
     // 掛了 videoComposition 就不能再要求它套軌道方向：兩個一起給，
     // 產生器會直接失敗——那樣這個檢查本身就在說謊
