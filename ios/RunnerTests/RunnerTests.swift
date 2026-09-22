@@ -1123,7 +1123,7 @@ class RunnerTests: XCTestCase {
     let item = try XCTUnwrap(player.player.currentItem)
     let vc = try XCTUnwrap(item.videoComposition)
     XCTAssertNil(vc.customVideoCompositorClass, "plain HDR stays on the system compositor")
-    XCTAssertEqual(item.asset.tracks(withMediaType: .video).count, 5)
+    XCTAssertEqual(item.asset.tracks(withMediaType: .video).count, 1)
     XCTAssertEqual(item.asset.tracks(withMediaType: .audio).count, 5,
       "hidden video must retain its audio")
     for raw in vc.instructions {
@@ -1169,6 +1169,132 @@ class RunnerTests: XCTestCase {
       }
       player.dispose()
     }
+  }
+
+  func testColdSixHDRTracksAttachOneDecoderAndEditingOnlyRestoresExposedLayer() throws {
+    let source = try hdrFixture()
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let clips: [[String: Any]] = try (0..<6).map { i in
+      let file = root.appendingPathComponent("source-\(i).mp4")
+      try FileManager.default.copyItem(at: source, to: file)
+      return ["path": file.path, "start": 0.0, "end": 2.0,
+              "offset": 0.0, "track": i, "id": i, "hdr": true]
+    }
+    let player = CompPlayer(registry: ScrubTestTextureRegistry())
+    defer { player.dispose(); CIExportCompositor.setLiveXform(nil) }
+    XCTAssertTrue(player.build(clips: clips, texture: false, hdrOut: true, ovLive: true),
+      player.buildError ?? "cold build failed")
+    let cold = try XCTUnwrap(player.player.currentItem)
+    XCTAssertEqual(cold.asset.tracks(withMediaType: .video).count, 1)
+    XCTAssertEqual(cold.asset.tracks(withMediaType: .audio).count, 6)
+    let track = try XCTUnwrap(cold.asset.tracks(withMediaType: .video).first)
+    XCTAssertEqual(Set(track.segments.compactMap { $0.sourceURL?.lastPathComponent }), ["source-5.mp4"])
+    let mixIDs = Set(cold.audioMix?.inputParameters.map { $0.trackID } ?? [])
+    XCTAssertEqual(mixIDs, Set(cold.asset.tracks(withMediaType: .audio).map { $0.trackID }))
+    XCTAssertEqual(cold.videoComposition?.colorTransferFunction, AVVideoTransferFunction_ITU_R_2100_HLG)
+
+    // Editing a photo above the videos must not wake all six video decoders.
+    XCTAssertTrue(player.beginLiveLayerEditing(track: 8))
+    XCTAssertTrue(player.player.currentItem === cold)
+    XCTAssertEqual(cold.asset.tracks(withMediaType: .video).count, 1)
+    XCTAssertTrue(player.beginLiveLayerEditing(track: 5))
+    let editing = try XCTUnwrap(player.player.currentItem)
+    XCTAssertEqual(editing.asset.tracks(withMediaType: .video).count, 2)
+    XCTAssertEqual(editing.asset.tracks(withMediaType: .audio).count, 6)
+    for raw in try XCTUnwrap(editing.videoComposition).instructions {
+      let instruction = try XCTUnwrap(raw as? CIExportInstruction)
+      XCTAssertEqual(instruction.layers.map { $0.z }, [4, 5])
+      XCTAssertTrue(instruction.previewEditableTracks.contains(5))
+      XCTAssertEqual(instruction.requiredSourceTrackIDs?.count, 2)
+    }
+    XCTAssertFalse(player.beginLiveLayerEditing(track: 5))
+    XCTAssertTrue(player.player.currentItem === editing, "same gesture must not reload the item")
+  }
+
+  func testCompactedPreviewPreservesSourceTimesAcrossLanesAndAudio() throws {
+    let url = try makeScrubVideo()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let source = AVURLAsset(url: url)
+    let input = try XCTUnwrap(source.tracks(withMediaType: .video).first)
+    let full = AVMutableComposition()
+    let first = try XCTUnwrap(full.addMutableTrack(withMediaType: .video, preferredTrackID: 10))
+    let second = try XCTUnwrap(full.addMutableTrack(withMediaType: .video, preferredTrackID: 20))
+    let range = CMTimeRange(start: .zero, duration: CMTime(seconds: 1, preferredTimescale: 600))
+    try first.insertTimeRange(range, of: input, at: .zero)
+    try second.insertTimeRange(range, of: input, at: .zero)
+    let vc = AVMutableVideoComposition()
+    vc.renderSize = CGSize(width: 100, height: 100)
+    vc.frameDuration = CMTime(value: 1, timescale: 30)
+    vc.customVideoCompositorClass = CIPreviewCompositorSDR.self
+    vc.instructions = (0..<10).map { i in
+      CIExportInstruction(timeRange: CMTimeRange(
+        start: CMTime(value: Int64(i * 60), timescale: 600),
+        duration: CMTime(value: 60, timescale: 600)),
+        layers: [visibilityLayer(id: i < 5 ? 10 : 20)], mosaics: [], overlays: [])
+    }
+    let plan = try MCPreviewSourcePlan.build(full, videoComposition: vc)
+    let packed = try XCTUnwrap(plan.asset.tracks(withMediaType: .video).first)
+    XCTAssertEqual(plan.asset.tracks(withMediaType: .video).count, 1)
+    let media = packed.segments.filter { !$0.isEmpty }
+    XCTAssertLessThanOrEqual(media.count, 2, "adjacent instruction cuts must not create decoder seams")
+    XCTAssertEqual(plan.asset.duration.seconds, 1, accuracy: 0.001)
+    for time in [0.2, 0.7] {
+      let segment = try XCTUnwrap(media.first { $0.timeMapping.target.containsTime(
+        CMTime(seconds: time, preferredTimescale: 600)) })
+      let mapped = CMTimeMapTimeFromRangeToRange(CMTime(seconds: time, preferredTimescale: 600),
+        fromRange: segment.timeMapping.target, toRange: segment.timeMapping.source)
+      XCTAssertEqual(mapped.seconds, time, accuracy: 0.001)
+    }
+    for instruction in plan.videoComposition.instructions {
+      let ci = try XCTUnwrap(instruction as? CIExportInstruction)
+      XCTAssertEqual(ci.layers.first?.trackID, packed.trackID)
+      XCTAssertEqual((ci.requiredSourceTrackIDs?.first as? NSNumber)?.int32Value, packed.trackID)
+    }
+    XCTAssertEqual(full.tracks(withMediaType: .video).count, 2, "original edit/export metadata stays intact")
+  }
+
+  func testDetachedPreviewBaseKeepsHDRPixelsWithoutRetainingSourceBuffer() throws {
+    let linear = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
+    let context = CIContext(options: [.cacheIntermediates: false,
+      .workingFormat: CIFormat.RGBAh, .workingColorSpace: linear])
+    let attributes: [String: Any] = [
+      kCVPixelBufferWidthKey as String: 64, kCVPixelBufferHeightKey as String: 32,
+      kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_128RGBAFloat),
+    ]
+    var pool: CVPixelBufferPool?
+    XCTAssertEqual(CVPixelBufferPoolCreate(nil, nil, attributes as CFDictionary, &pool), kCVReturnSuccess)
+    let sourcePool = try XCTUnwrap(pool)
+    let limit = [kCVPixelBufferPoolAllocationThresholdKey as String: 1] as CFDictionary
+    let bounds = CGRect(x: 0, y: 0, width: 16, height: 8)
+    var snapshot: CIImage?
+    autoreleasepool {
+      var buffer: CVPixelBuffer?
+      XCTAssertEqual(CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(nil, sourcePool, limit, &buffer), kCVReturnSuccess)
+      guard let pixel = buffer else { return }
+      CVPixelBufferLockBaseAddress(pixel, [])
+      if let address = CVPixelBufferGetBaseAddress(pixel) {
+        for y in 0..<32 {
+          let row = address.advanced(by: y * CVPixelBufferGetBytesPerRow(pixel)).assumingMemoryBound(to: Float.self)
+          for x in 0..<64 { row[x*4] = 2; row[x*4+1] = 2; row[x*4+2] = 2; row[x*4+3] = 1 }
+        }
+      }
+      CVPixelBufferUnlockBaseAddress(pixel, [])
+      let image = CIImage(cvPixelBuffer: pixel, options: [.colorSpace: linear])
+        .transformed(by: CGAffineTransform(scaleX: 0.25, y: 0.25))
+      snapshot = CIExportCompositor.detachedPreviewBase(image, canvas: bounds, hdr: true, context: context)
+    }
+    let held = try XCTUnwrap(snapshot)
+    XCTAssertEqual(held.extent, bounds)
+    context.clearCaches()
+    var reusable: CVPixelBuffer?
+    XCTAssertEqual(CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(nil, sourcePool, limit, &reusable),
+      kCVReturnSuccess, "the cached base must not retain the original decoder pool buffer")
+    var pixel = [Float](repeating: 0, count: 4)
+    context.render(held, toBitmap: &pixel, rowBytes: 16,
+      bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBAf, colorSpace: linear)
+    XCTAssertEqual(pixel[0], 2, accuracy: 0.01)
   }
 
   func testPreviewTailUsesTheActualLastSampleAndDoesNotFillRealGaps() throws {

@@ -9783,7 +9783,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final sampleStartedAt = DateTime.now().toUtc();
     final sampledComp = _comp;
     diagnostic.environment.addAll({
-      'previewRevision': 'bounded-photo-import-4',
+      'previewRevision': 'compact-preview-sources-1',
       'displayHz': View.of(context).display.refreshRate,
       'buildMode': kReleaseMode
           ? 'release'
