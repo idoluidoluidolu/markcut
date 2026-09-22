@@ -1,3 +1,40 @@
+## 2026-09-23 多支匯入閃退：重組與轉檔分開、死因紀錄（claude/multi-import-crash）
+
+四路獨立審查（原生記憶體、原生崩潰點、Dart 匯入時序、HDR 轉檔）的共同結論：
+**「HDR 代理：轉檔中」這個檢查點不能指認轉檔器**。它在每支轉檔開始時寫、
+結束時清，而整批匯入期間幾乎一直有一支在轉；它的記憶體數字又是在原生
+配置之前取的。轉檔器本身有上限（約 0.3–0.45GB），也沒有找到例外點。
+
+已確認、已修的機制：
+
+- 代理／工作檔落地 1.2 秒後排整顆重組，下一支轉檔閒置 600ms 就開；原生
+  `build` 先建新播放器，舊的等新畫面上屏（最慢 1.5 秒）才收。新舊兩顆＋
+  轉檔器＋縮圖解碼器疊在一起，只有轉檔器有記憶體閘門。改為
+  `_settleCompBeforeNextPrep`：重組在兩支轉檔之間做完、等 `compVisible`
+  才開下一支（背景補代理的迴圈也一樣）。5 支會發生 4 次的重疊不再存在。
+- 原生重組失敗時舊播放器仍在畫面上，Dart 卻丟掉它並 `_restoreClipPlayers`。
+  HDR 的 `previewPath` 是 4K 原檔，N 支疊在 0 秒＝N 顆 4K 解碼器。改為保留
+  舊合成、2／4／8 秒重試（`CompPlayer.lastBuildKeptPrevious`）。
+- 整批轉檔期間縮圖帶不從 4K 原檔精抽（代理落地會重抽）；每支落地就從
+  代理抽。
+- TN3177：空間音訊影片是「立體聲 AAC（啟用）＋APAC（停用）」替代群組；
+  轉檔、預覽、匯出、倒轉五處改用 `MCAudioTrackChoice`（啟用中的非 APAC）。
+  BUILD 212（單支就中斷、轉檔開工兩秒內）對應的是 da50806 前把 4 聲道塞進
+  AAC 編碼器的例外。
+- 暫停重畫在 item 未 readyToPlay 時不送帶回呼的 seek；`positionMs` 防 NaN。
+
+新增定位能力（下次回報就能分辨死因，不必再猜）：
+
+- 報告「原生執行紀錄」最上面一行寫出上次怎麼死的：程式例外（當場寫檔）、
+  MetricKit 當機報告、MetricKit 前景離開統計（其中「記憶體上限」＝jetsam）。
+  MetricKit 由系統彙整後才送，可能晚一天。
+- 每個原生檢查點的記憶體多了 `peakMB`（核心 ledger 的生命週期峰值，抓得到
+  取樣之間的尖峰）、`graphicsMB`、`mediaMB`、`compressedMB`。BUILD 212 空白
+  編輯器 1.4–1.7GB 的來源待這幾欄判定。
+
+未做：Increased Memory Limit 權限（需先在 Apple Developer 替 App ID 開能力）；
+首次組建就失敗、沒有舊合成可保留時仍走逐片段播放器。
+
 ## 2026-09-21 BUILD 213 仍在 HDR 匯入期間中斷
 
 BUILD 213 確認使用 `bounded-hdr-spatial-audio-1`，不同空間音訊 HDR 仍可能

@@ -9875,7 +9875,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final sampleStartedAt = DateTime.now().toUtc();
     final sampledComp = _comp;
     diagnostic.environment.addAll({
-      'previewRevision': 'compact-preview-sources-1',
+      'previewRevision': 'rebuild-gap-exit-recorder-1',
       'displayHz': View.of(context).display.refreshRate,
       'buildMode': kReleaseMode
           ? 'release'

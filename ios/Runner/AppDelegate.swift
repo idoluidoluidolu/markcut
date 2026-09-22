@@ -4369,7 +4369,7 @@ final class MCInteractivePrepGate {
         journal.mark(trace, "preview", "build-start", details: [
           "clips": clips.count, "tracks": Set(clips.compactMap { $0["track"] as? Int }).count,
           "stills": stills.count, "replacing": self.comp != nil,
-          "revision": "compact-preview-sources-1"])
+          "revision": "rebuild-gap-exit-recorder-1"])
         CIExportCompositor.setHiddenImageTracks(Set(args["hiddenImageTracks"] as? [Int] ?? []))
         let overlays = args["overlays"] as? [[String: Any]] ?? []
         // 純聲音素材（配樂／旁白／從影片提取的聲音）：跟匯出 run 的
