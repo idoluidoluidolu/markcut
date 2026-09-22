@@ -1190,6 +1190,7 @@ class RunnerTests: XCTestCase {
       display.removeFromSuperlayer(); display.player = nil
       player.dispose(); CIExportCompositor.setLiveXform(nil)
     }
+    var firstHDRFrame = true
     func verifyFrame(at time: Double) {
       let seek = expectation(description: "HDR seek \(time)")
       player.seek(time, exact: true) { ok in XCTAssertTrue(ok); seek.fulfill() }
@@ -1198,7 +1199,13 @@ class RunnerTests: XCTestCase {
         let q = player.qualitySnapshot()
         return abs((q["previewRenderedSeconds"] as? Double ?? -10) - (time + 0.02)) < 1.0 / 30.0
       }, object: nil)
-      wait(for: [rendered], timeout: 5)
+      // The shared simulator may spend several seconds compiling its first
+      // HDR Core Image kernels. Keep later seeks bounded to five seconds;
+      // this is a frame-correctness test, not a device latency benchmark.
+      let result = XCTWaiter.wait(for: [rendered], timeout: firstHDRFrame ? 20 : 5)
+      firstHDRFrame = false
+      XCTAssertEqual(result, .completed,
+        "HDR composed frame at \(time + 0.02) did not arrive: \(player.qualitySnapshot())")
     }
     XCTAssertTrue(player.build(clips: clips, texture: false, hdrOut: true, ovLive: true),
       player.buildError ?? "cold build failed")
