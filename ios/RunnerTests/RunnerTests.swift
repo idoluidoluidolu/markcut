@@ -2021,7 +2021,7 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(MCPreviewVisibility.requiredTracks(
       at: .zero, own: [5], upcoming: clustered), [4, 5])
     XCTAssertEqual(MCPreviewVisibility.requiredTracks(at: .zero, own: [5],
-      upcoming: [(time(0.4), [1, 2, 3])]), [1, 2, 3, 5],
+      upcoming: [(time(0.4), Set<CMPersistentTrackID>([1, 2, 3]))]), [1, 2, 3, 5],
       "all genuinely visible layers at the next change still need frames")
   }
 
