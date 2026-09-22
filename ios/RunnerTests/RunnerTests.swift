@@ -1230,6 +1230,16 @@ class RunnerTests: XCTestCase {
     XCTAssertFalse(player.beginLiveLayerEditing(track: 5))
     XCTAssertTrue(player.player.currentItem === editing, "same gesture must not reload the item")
     verifyFrame(at: 0.7)
+
+    // Different durations expose five successive lower sources, all inside a
+    // 1.5-second lookahead. Only the current and next source may own lanes.
+    let staggered = clips.enumerated().map { index, clip -> [String: Any] in
+      var c = clip; c["end"] = 3.0 - Double(index) * 0.2; return c
+    }
+    XCTAssertTrue(player.build(clips: staggered, texture: false, hdrOut: true, ovLive: true),
+      player.buildError ?? "staggered build failed")
+    XCTAssertEqual(player.player.currentItem?.asset.tracks(withMediaType: .video).count, 2)
+    for time in [0.1, 2.1, 2.5, 2.85, 0.4] { verifyFrame(at: time) }
   }
 
   func testCompactedPreviewPreservesSourceTimesAcrossLanesAndAudio() throws {
@@ -1999,6 +2009,14 @@ class RunnerTests: XCTestCase {
       at: time(8.5), own: [5], upcoming: Array(upcoming.dropFirst())), [4, 5])
     XCTAssertEqual(MCPreviewVisibility.requiredTracks(
       at: time(10), own: [4], upcoming: Array(upcoming.dropFirst(2))), [4])
+    let clustered: [(start: CMTime, tracks: Set<CMPersistentTrackID>)] = [
+      (time(0.2), [5]), (time(0.4), [4]), (time(0.6), [3]), (time(0.8), [2]),
+    ]
+    XCTAssertEqual(MCPreviewVisibility.requiredTracks(
+      at: .zero, own: [5], upcoming: clustered), [4, 5])
+    XCTAssertEqual(MCPreviewVisibility.requiredTracks(at: .zero, own: [5],
+      upcoming: [(time(0.4), [1, 2, 3])]), [1, 2, 3, 5],
+      "all genuinely visible layers at the next change still need frames")
   }
 
   func testSeekReceiptsResolveExactlyOnceAndIgnoreSupersededNativeCallbacks() {

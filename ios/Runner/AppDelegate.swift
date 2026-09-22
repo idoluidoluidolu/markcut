@@ -1044,7 +1044,12 @@ enum MCPreviewVisibility {
     let horizon = start.seconds + prerollSeconds
     for next in upcoming {
       if next.start.seconds > horizon + 0.000001 { break }
+      // Warm the next change only. Unioning every change within 1.5 seconds
+      // can reopen all six decoders when stacked short clips end close together.
+      // A genuinely visible multi-layer next interval retains its full demand.
+      guard !next.tracks.isSubset(of: own) else { continue }
       ids.formUnion(next.tracks)
+      break
     }
     return ids
   }
