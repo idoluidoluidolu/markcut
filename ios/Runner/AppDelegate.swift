@@ -1352,6 +1352,9 @@ enum MCPreviewSourcePlan {
     let videos = source.tracks(withMediaType: .video)
     for track in asset.tracks(withMediaType: .video) { asset.removeTrack(track) }
     let byID = Dictionary(uniqueKeysWithValues: videos.map { ($0.trackID, $0) })
+    // Stable IDs are required when a style update reuses the current item.
+    // Never rely on AVFoundation's allocator returning the same IDs in a copy.
+    let videoIDs = videos.map { $0.trackID }.sorted()
     var lanes: [AVMutableCompositionTrack] = []
     var runs: [[(id: CMPersistentTrackID, range: CMTimeRange)]] = []
     var owners: [CMPersistentTrackID: Int] = [:]
@@ -1373,8 +1376,9 @@ enum MCPreviewSourcePlan {
         let occupied = Set(owners.values)
         let lane = lanes.indices.first { !occupied.contains($0) } ?? lanes.count
         if lane == lanes.count {
-          guard let track = asset.addMutableTrack(withMediaType: .video,
-            preferredTrackID: kCMPersistentTrackID_Invalid) else {
+          guard lane < videoIDs.count,
+            let track = asset.addMutableTrack(withMediaType: .video,
+              preferredTrackID: videoIDs[lane]) else {
             throw NSError(domain: "markcut.previewPlan", code: 2)
           }
           lanes.append(track)

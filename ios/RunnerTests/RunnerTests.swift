@@ -1217,6 +1217,7 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(player.beginLiveLayerEditing(track: 8))
     XCTAssertTrue(player.player.currentItem === cold)
     XCTAssertEqual(cold.asset.tracks(withMediaType: .video).count, 1)
+    verifyFrame(at: 1.1)
     XCTAssertTrue(player.beginLiveLayerEditing(track: 5))
     let editing = try XCTUnwrap(player.player.currentItem)
     XCTAssertEqual(editing.asset.tracks(withMediaType: .video).count, 2)
@@ -1265,6 +1266,11 @@ class RunnerTests: XCTestCase {
     }
     let plan = try MCPreviewSourcePlan.build(full, videoComposition: vc)
     let packed = try XCTUnwrap(plan.asset.tracks(withMediaType: .video).first)
+    let repeated = try MCPreviewSourcePlan.build(full, videoComposition: vc)
+    XCTAssertEqual(plan.routing, repeated.routing)
+    XCTAssertEqual(plan.asset.tracks(withMediaType: .video).map { $0.trackID },
+      repeated.asset.tracks(withMediaType: .video).map { $0.trackID })
+    XCTAssertEqual(packed.trackID, 10, "reuse a known free video ID; audio IDs are reserved")
     XCTAssertEqual(plan.asset.tracks(withMediaType: .video).count, 1)
     let media = packed.segments.filter { !$0.isEmpty }
     XCTAssertLessThanOrEqual(media.count, 2, "adjacent instruction cuts must not create decoder seams")
