@@ -537,6 +537,11 @@ class CompPlayer {
   /// 上一次組不起來的原因（原生端回報的）。呼叫端拿去寫進診斷
   static String? lastError;
 
+  /// 上一次 [build] 回 null 是不是「原生端自己組失敗」。原生端組新的
+  /// 失敗時，舊那顆播放器照樣在畫面上（先組好新的、成功才換）；
+  /// 平台不支援、沒有影片、通道例外這幾種回 null 則不算
+  static bool lastBuildKeptPrevious = false;
+
   /// 這個檔是不是 HDR（probeLite 的 sdr709 判定）。
   /// 快取鍵含檔案大小與修改時間：相簿的暫存路徑會重複使用
   ///（work_files 自己就寫明了），只記路徑的話同一路徑換了
@@ -606,6 +611,7 @@ class CompPlayer {
     double wmEnd = 0,
     double? canvasAspect,
   }) async {
+    lastBuildKeptPrevious = false;
     if (!await available) return null;
     _ensureHandler();
     // 裁切/旋轉/透明度不再是阻擋條件：原生端會為它們掛 CI 合成器，
@@ -846,6 +852,7 @@ class CompPlayer {
       final err = m['error'];
       if (err is String) {
         lastError = err;
+        lastBuildKeptPrevious = true;
         return null;
       }
       lastError = null;

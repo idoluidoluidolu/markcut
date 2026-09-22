@@ -55,6 +55,48 @@ class Diag {
   static String? crumbFromLastRun;
   static String? nativePrepDiagnostic;
 
+  /// 原生端 MCExitRecorder 的快照（nativePrepDiagnostic 的 `exit`）寫成
+  /// 人看得懂的幾行。程式例外是上一趟當場寫下的（確定是它）；系統當機
+  /// 報告與前景離開次數來自 MetricKit，系統整理後才送，可能晚一天、而且
+  /// 次數是一段期間的累計——被系統因記憶體砍掉只有這裡看得到
+  static String? exitReasonSummary(Object? exit) {
+    if (exit is! Map) return null;
+    final lines = <String>[];
+    final exception = exit['previousException'];
+    if (exception is Map) {
+      lines.add(
+        '上次閃退：程式例外 ${exception['name'] ?? '?'}：'
+        '${exception['reason'] ?? ''}',
+      );
+    }
+    final crashes = exit['crashes'];
+    if (crashes is List && crashes.isNotEmpty && crashes.last is Map) {
+      final c = crashes.last as Map;
+      final parts = [
+        if (c['objcException'] != null) '${c['objcException']}',
+        if (c['terminationReason'] != null) '${c['terminationReason']}',
+        if (c['signal'] != null) 'signal ${c['signal']}',
+        if (c['exceptionType'] != null) 'exception type ${c['exceptionType']}',
+      ];
+      lines.add(
+        '系統當機報告（build ${c['build'] ?? '?'}）：'
+        '${parts.isEmpty ? '沒有細節' : parts.join('／')}',
+      );
+    }
+    final exits = exit['foregroundExits'];
+    if (exits is List && exits.isNotEmpty && exits.last is Map) {
+      final x = exits.last as Map;
+      lines.add(
+        '系統統計的前景離開（build ${x['build'] ?? '?'}）：'
+        '記憶體上限 ${x['memoryLimit'] ?? 0}／看門狗 ${x['watchdog'] ?? 0}／'
+        '記憶體存取錯誤 ${x['badAccess'] ?? 0}／非法指令 '
+        '${x['illegalInstruction'] ?? 0}／其他異常 ${x['abnormal'] ?? 0}／'
+        '正常 ${x['normal'] ?? 0}',
+      );
+    }
+    return lines.isEmpty ? null : lines.join('\n');
+  }
+
   /// Restored asynchronously at startup; retained on disk until dismissed.
   static final recoveredReport = ValueNotifier<String?>(null);
 
@@ -214,16 +256,21 @@ class Diag {
         'nativePrepDiagnostic',
       );
       if (native != null && native.containsKey('launch')) {
-        nativePrepDiagnostic =
-            '原生檢查點（running 代表未收尾，不能直接判定終止原因）\n'
-            '${jsonEncode(native)}';
+        final exit = native['exit'];
+        final exitSummary = exitReasonSummary(exit);
+        nativePrepDiagnostic = [
+          ?exitSummary,
+          '原生檢查點（running 代表未收尾，不能直接判定終止原因）\n'
+              '${jsonEncode(native)}',
+        ].join('\n');
         final previous = native['previous'];
         final preview = native['previewPrevious'];
         final image = native['imagePrevious'];
         nativeInterrupted =
             (previous is Map && previous['status'] == 'running') ||
             (preview is Map && preview['status'] == 'running') ||
-            (image is Map && image['status'] == 'running');
+            (image is Map && image['status'] == 'running') ||
+            (exit is Map && exit['previousException'] is Map);
       }
     } catch (_) {}
     File? consumedMarker;

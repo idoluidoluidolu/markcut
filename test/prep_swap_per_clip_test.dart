@@ -3,8 +3,9 @@
 // 實測 198：空白專案一次加六支 4K，五支短的代理幾秒就好、48 秒那支要
 // 十幾秒；以前合成要等整批轉完才換，期間「在播的檔 6（原檔！）」——滑動
 // 全走原檔的疏關鍵幀。這裡用真的編輯頁跑兩支素材：第一支假轉 0.4 秒、
-// 第二支 1.6 秒，守「第一支落地、第二支還在轉」那段時間裡合成已經重組成
-// [第一支工作檔, 第二支原檔]；整批做完再換成兩支都是工作檔。
+// 第二支 1.6 秒，守「第一支落地、第二支還沒轉完」那段時間裡合成已經重組成
+// [第一支工作檔, 第二支原檔]；整批做完再換成兩支都是工作檔。重組落在兩支
+// 轉檔之間（新舊兩顆播放器不跟下一支轉檔疊在一起，見 prep_rebuild_gap_test）。
 //
 // 假的原生端跟 import_eta_gate_test 同一套：素材是 HEVC SDR（規格不合＝
 // 一定要轉），toWorkFile 花掉這支該花的時間才回
@@ -22,6 +23,7 @@ import 'package:markcut/services/media_prep.dart';
 import 'package:markcut/services/timeline_strip.dart';
 import 'package:markcut/services/work_files.dart';
 
+import 'comp_visible.dart';
 import 'editor_harness.dart' show editorOf, solidPng;
 
 late Directory _dir;
@@ -189,6 +191,7 @@ void main() {
       if (call.method == 'build') {
         final clips = (call.arguments as Map)['clips'] as List;
         builds.add([for (final c in clips) (c as Map)['path'] as String]);
+        scheduleCompVisible();
         return <String, dynamic>{
           'textureId': 1,
           'duration': 60.0,
@@ -218,13 +221,15 @@ void main() {
     _swallowMediaKit(t);
     expect(builds.first, [_p('first.mov'), _p('second.mov')]);
 
-    // 縮圖帶：進場粗帶 10 格之後馬上精抽成一秒一格（20 秒＝20 格），
-    // 不等整批轉完——這時第二支還沒轉好
+    // 縮圖帶：進場粗帶 10 格；精抽一秒一格（20 秒＝20 格）等這支自己的
+    // 工作檔落地就從工作檔抽（整批轉檔期間不從 4K 原檔精抽，見
+    // prep_rebuild_gap_test），不等整批轉完——這時第二支還沒轉好
+    await _until(t, () => _workDone >= 1, 80, '第一支要先轉好');
     await _until(
       t,
       () => (editorOf(t).thumbs[0]?.length ?? 0) == thumbStripCount(20.0),
-      60,
-      '第一支的縮圖帶要在轉檔期間就精抽成 20 格',
+      80,
+      '第一支落地就要從工作檔精抽成 20 格',
     );
     expect(_workDone, lessThan(2), reason: '縮圖帶精抽不等整批轉完');
 
@@ -232,7 +237,7 @@ void main() {
     await _until(t, () => _workArguments.length >= 2, 80, '第二支要開始轉');
     final work1 = _workArguments[0]['dest'] as String;
     final work2 = _workArguments[1]['dest'] as String;
-    // 第一支落地後閒置 1.2 秒就換進合成，這時第二支還在轉（還是原檔）
+    // 第一支落地就換進合成（落在兩支轉檔之間），第二支還是原檔
     await _until(
       t,
       () => builds.any((b) => b[0] == work1 && b[1] == _p('second.mov')),

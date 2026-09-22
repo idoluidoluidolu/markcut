@@ -24,6 +24,8 @@ import 'package:markcut/services/diagnostics.dart';
 import 'package:markcut/widgets/timeline_editor.dart';
 import 'package:markcut/widgets/prep_gate_view.dart';
 
+import 'comp_visible.dart';
+
 late Directory _dir;
 Completer<void>? _holdWork;
 int _workStarted = 0;
@@ -219,6 +221,7 @@ void main() {
       if (call.method == 'build') {
         builds.add(Map<dynamic, dynamic>.from(call.arguments as Map));
         await buildReady.future;
+        scheduleCompVisible();
         return <String, dynamic>{
           'textureId': 1,
           'duration': 60.0,
@@ -285,6 +288,7 @@ void main() {
         if (call.method == 'available') return true;
         if (call.method == 'build') {
           await buildReady.future;
+          scheduleCompVisible();
           return <String, dynamic>{
             'textureId': 1,
             'duration': 60.0,
@@ -373,6 +377,7 @@ void main() {
     ) async {
       if (call.method == 'available') return true;
       if (call.method == 'build') {
+        scheduleCompVisible();
         return <String, dynamic>{
           'textureId': 1,
           'duration': 60.0,
@@ -453,6 +458,7 @@ void main() {
     ) async {
       if (call.method == 'available') return true;
       if (call.method == 'build') {
+        scheduleCompVisible();
         // The native result is authoritative for the selected HDR display plane.
         return <String, dynamic>{
           'textureId': 1,
@@ -521,6 +527,7 @@ void main() {
     ) async {
       if (call.method == 'available') return true;
       if (call.method == 'build') {
+        scheduleCompVisible();
         return <String, dynamic>{
           'textureId': 1,
           'duration': 60.0,

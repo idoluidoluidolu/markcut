@@ -3289,6 +3289,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // Flutter 版顯示與否（見 _ovNativePending 的說明）
     CompPlayer.onCompVisible = () {
       if (!mounted) return;
+      _compHandoffSince = null; // 舊播放器在翻面這一刻收掉
       // 新合成烘的就是最終值：即時變形的覆寫功成身退
       if (_xfRevision == _xfBakedRevision) {
         unawaited(CompPlayer.clearXform());
@@ -3997,6 +3998,41 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         hiddenTracks: _hiddenTracks,
       );
 
+  /// 代理落地排的整顆重組，要在「兩支轉檔之間」做完才開下一支。
+  /// 原生端新舊兩顆播放器會同時活到新畫面上屏，這時再疊上下一支 4K
+  /// 轉檔的解碼器與編碼器（外加縮圖解碼器）＝多選匯入的記憶體尖峰；
+  /// 而全 App 只有轉檔器有記憶體閘門。手勢中照舊不換件（換件自己會等），
+  /// 最多等 12 秒
+  Future<void> _settleCompBeforeNextPrep() async {
+    final deadline = DateTime.now().add(const Duration(seconds: 12));
+    while (mounted && DateTime.now().isBefore(deadline)) {
+      final building = _compBuilding;
+      if (building != null) {
+        await building;
+        continue;
+      }
+      if (_pendingCompRebuild &&
+          !_flushing &&
+          !_playing &&
+          !_exporting &&
+          !_previewSwapBlocked) {
+        // 不等 1.2 秒的換檔計時器：現在就在空檔裡換
+        _swapFlushTimer?.cancel();
+        _flushPendingSwaps();
+        await Future<void>.delayed(Duration.zero);
+        continue;
+      }
+      if (!_pendingCompRebuild &&
+          !_compHandoffPending &&
+          !(_compRebuildTimer?.isActive ?? false) &&
+          // 重組失敗排的重試也在空檔裡做完（見 _scheduleCompRetry）
+          !(_compRetryTimer?.isActive ?? false)) {
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+  }
+
   Future<void> _waitForPreviewIdle() async {
     // Give the editor time to settle, then check again before starting work.
     do {
@@ -4253,6 +4289,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           await _waitForPreviewIdle();
           if (!mounted) return;
         }
+        // 上一支落地排的重組（或進場那顆的換手）先在空檔裡收乾淨，
+        // 不讓下一支 4K 轉檔疊在新舊兩顆播放器上（見上面的說明）
+        await _settleCompBeforeNextPrep();
+        if (!mounted) return;
         final ordered = _prioritizedPreparation(_prepQueue);
         if (ordered.isEmpty) {
           _prepQueue.clear();
@@ -4316,6 +4356,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (!_waitForPreparation && madeHdr + madeSdr > madeBefore) {
           _pendingCompRebuild = true;
           _scheduleSwapFlush(const Duration(milliseconds: 1200));
+          // 這支的縮圖帶改從剛落地的代理抽（900p、密關鍵幀，便宜又準）；
+          // 還是 4K 原檔的那幾支等整批做完（見 needsStrip）
+          unawaited(_thumbsAfterPrep());
         }
         // 佇列空了：沒轉成功的補試一次（每支一次），試過還是不行的
         // 記進失敗名單，之後不再背景重跑
@@ -4557,6 +4600,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         await _waitForPreviewIdle();
         if (!mounted || _prepBusy) break;
       }
+      // 這一輪是組建收尾叫起來的：那顆新合成的換手收乾淨了才開轉
+      await _settleCompBeforeNextPrep();
+      if (!mounted || _prepBusy) break;
       final ordered = _prioritizedPreparation([
         for (var i = 0; i < _tl.sources.length; i++)
           if (!attempted.contains(i) &&
@@ -5524,6 +5570,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         //（值 null）一定要精抽；原檔貼關鍵幀抽的（值＝當時的路徑）等縮圖
         // 來源換了（代理落地）再精抽一次，不然每一輪都重抽同一條
         needsStrip: (source) {
+          // 整批轉檔進行中不從 4K 原檔抽整條：每一格都要冷啟一顆 4K HDR
+          // 解碼器，跟轉檔搶記憶體（全 App 只有轉檔器有記憶體閘門），而且
+          // 這支的代理一落地就會從代理重抽（原檔抽的只是關鍵幀近似帶）。
+          // 進場閘的粗帶照舊有；代理落地會叫醒這裡（見 _drainPrep）
+          if (_prepBusy && !_denseKeyframes(_thumbnailPath(source))) {
+            return false;
+          }
           if (_thumbnailCount(source) < 10) return true;
           final i = _tl.sources.indexOf(source);
           return _thumbsCoarse.containsKey(i) &&
@@ -8832,6 +8885,29 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 該重組自然會再組、已新鮮就直接返回
   Future<void>? _compBuilding;
 
+  /// 新合成已組好、原生還在等它第一格上屏（舊播放器那時才收）。原生
+  /// 保底 1.5 秒硬翻，這裡多給一點；漏掉事件也不會永遠當成還在換手
+  DateTime? _compHandoffSince;
+  bool get _compHandoffPending {
+    final since = _compHandoffSince;
+    return since != null &&
+        DateTime.now().difference(since) < const Duration(milliseconds: 2500);
+  }
+
+  /// 重組失敗（保留舊畫面那條路）後的重試：2、4、8 秒，三次都失敗就
+  /// 停，等下一次編輯再組
+  int _compRetryCount = 0;
+  Timer? _compRetryTimer;
+  void _scheduleCompRetry() {
+    if (_compRetryCount >= 3) return;
+    _compRetryCount++;
+    _compRetryTimer?.cancel();
+    _compRetryTimer = Timer(Duration(seconds: 1 << _compRetryCount), () {
+      if (!mounted || !_compDirty || _comp == null) return;
+      unawaited(_ensureComp(yieldToGesture: true));
+    });
+  }
+
   /// 已有播放器時，所有入口都等手勢與短暫閒置窗結束才換件。
   /// [yieldToGesture] 也讓尚無播放器的編輯類重建等待；首次進場不等。
   Future<void> _ensureComp({bool yieldToGesture = false}) async {
@@ -8980,6 +9056,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     if (made == null) {
+      // 原生端組新的失敗時，舊那顆照樣在畫面上（成功才換）。以前這裡照樣
+      // 放掉它、退回逐片段播放器：HDR 素材的 previewPath 是 4K 原檔（代理
+      // 不算 previewPath），多選各自一軌全疊在 0 秒＝一次開 N 顆 4K 解碼器，
+      // 而且正好落在匯入中途的重組（代理落地）上。保留目前畫面、稍後重試
+      if (_comp != null && CompPlayer.lastBuildKeptPrevious) {
+        Diag.note(
+          '合成重組失敗，保留目前畫面稍後重試：'
+          '${CompPlayer.lastError ?? '沒有回報原因'}',
+        );
+        _compDirty = true;
+        _scheduleCompRetry();
+        return;
+      }
       Diag.note('合成播放器組不起來：${CompPlayer.lastError ?? '沒有回報原因'}（退回原本的路徑）');
       // 舊的那顆不能留著：畫面上的影片圖層已經指到別處，繼續當它還在
       // 就是一片黑。放掉它，讓預覽退回逐片段播放器那條路
@@ -9039,6 +9128,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
     });
     _compRawSources = rawSourcesAtBuild;
+    _compRetryCount = 0;
+    // 原生端新舊兩顆同時活到新畫面上屏（compVisible）才收舊的
+    _compHandoffSince = DateTime.now();
     setState(() => _comp = made);
     _ovAppliedRasterSig = ovMaps.isEmpty
         ? null
@@ -11690,6 +11782,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 畫面（_compRebuildTick 靠 !mounted 擋住，功能上無害但就是漏一個），
     // 而且測試的「還有計時器沒燒完」斷言會抓到它
     _compRebuildTimer?.cancel();
+    _compRetryTimer?.cancel();
     _ovSync.dispose();
     _releaseOverlayCache();
     trimLogoImageCache();

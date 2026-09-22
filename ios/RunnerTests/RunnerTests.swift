@@ -2313,4 +2313,80 @@ class RunnerTests: XCTestCase {
       CIExportCompositor.comparePlanes10(try XCTUnwrap(bgra), reference))
   }
 
+  // TN3177: iPhone Spatial Audio keeps a stereo AAC track (enabled) and an APAC
+  // track (disabled) in one alternate group. Proxy, preview and export must
+  // take the enabled track, not whichever audio track happens to come first.
+  func testPreferredAudioTrackSkipsADisabledAlternate() throws {
+    let source = AVURLAsset(url: try hdrFixture())
+    let audio = try XCTUnwrap(source.tracks(withMediaType: .audio).first)
+    let range = CMTimeRange(start: .zero, duration: audio.timeRange.duration)
+    let composition = AVMutableComposition()
+    let disabled = try XCTUnwrap(composition.addMutableTrack(
+      withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid))
+    try disabled.insertTimeRange(range, of: audio, at: .zero)
+    disabled.isEnabled = false
+    let enabled = try XCTUnwrap(composition.addMutableTrack(
+      withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid))
+    try enabled.insertTimeRange(range, of: audio, at: .zero)
+    let tracks: [AVAssetTrack] = composition.tracks(withMediaType: .audio)
+    XCTAssertEqual(tracks.first?.trackID, disabled.trackID, "the disabled alternate comes first")
+    XCTAssertEqual(MCAudioTrackChoice.preferred(tracks)?.trackID, enabled.trackID)
+    XCTAssertEqual(MCAudioTrackChoice.preferred(in: composition)?.trackID, enabled.trackID)
+    XCTAssertFalse(MCAudioTrackChoice.isPositional(audio))
+    // Nothing enabled: keep the previous behavior (the first track).
+    enabled.isEnabled = false
+    XCTAssertEqual(MCAudioTrackChoice.preferred(in: composition)?.trackID, disabled.trackID)
+    XCTAssertNil(MCAudioTrackChoice.preferred([]))
+  }
+
+  // The black box sampled phys_footprint before a job allocated, every few
+  // seconds. The kernel's lifetime peak and the graphics/media ledgers show a
+  // spike that happened between samples, and which kind of memory it was.
+  func testNativeMemoryReportsKernelPeakAndFootprintLedgers() throws {
+    let memory = MCNativePrepJournal.memory()
+    let used = try XCTUnwrap(memory["usedMB"])
+    XCTAssertGreaterThan(used, 0)
+    let peak = try XCTUnwrap(memory["peakMB"], "ledger fields must be read")
+    XCTAssertGreaterThanOrEqual(peak + 1, used)
+    XCTAssertGreaterThanOrEqual(try XCTUnwrap(memory["graphicsMB"]), 0)
+    XCTAssertGreaterThanOrEqual(try XCTUnwrap(memory["mediaMB"]), 0)
+    XCTAssertTrue(JSONSerialization.isValidJSONObject(memory))
+  }
+
+  func testExitRecorderStartsOnceAndKeepsAnExceptionHandler() {
+    MCExitRecorder.shared.start()
+    MCExitRecorder.shared.start()
+    XCTAssertNotNil(NSGetUncaughtExceptionHandler())
+    XCTAssertTrue(JSONSerialization.isValidJSONObject(MCExitRecorder.shared.snapshot()))
+  }
+
+  // Every build replaces the item; Dart then sends visibility/overlay updates
+  // before its positioning seek. A completion-handler seek on an item that is
+  // not readyToPlay raises NSInvalidArgumentException on some iOS versions, so
+  // those nudges wait instead; the redraw still lands after the seek.
+  func testNudgeBeforeReadyWaitsInsteadOfSeeking() throws {
+    let url = try makeScrubVideo()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let player = CompPlayer(registry: ScrubTestTextureRegistry())
+    defer { player.dispose() }
+    XCTAssertTrue(player.build(clips: [["path": url.path, "start": 0.0, "end": 1.0,
+      "offset": 0.0, "track": 0]], texture: false))
+    let item = try XCTUnwrap(player.player.currentItem)
+    XCTAssertNotEqual(item.status, .readyToPlay, "nudged right after the build, as Dart does")
+    for _ in 0..<5 { player.nudgeRedrawIfPaused() }
+    XCTAssertEqual(player.qualitySnapshot()["redrawCount"] as? Int, 0,
+      "no seek on an item that is not ready")
+    let positioned = expectation(description: "positioning seek")
+    player.seek(0.4, exact: true) { ok in
+      XCTAssertTrue(ok); positioned.fulfill()
+    }
+    wait(for: [positioned], timeout: 5)
+    let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+      let q = player.qualitySnapshot()
+      return (q["redrawInFlight"] as? Bool) == false && (q["redrawPending"] as? Bool) == false
+    }, object: nil)
+    wait(for: [settled], timeout: 5)
+    XCTAssertTrue(player.player.currentItem === item)
+  }
+
 }

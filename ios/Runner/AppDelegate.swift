@@ -1,5 +1,6 @@
 import AVFoundation
 import MetalKit
+import MetricKit
 import CoreImage
 import VideoToolbox
 import Flutter
@@ -3543,6 +3544,28 @@ final class MCPreviewMemoryBudget {
   }
 }
 
+/// iPhone Spatial Audio movies keep a stereo AAC track (enabled) and an APAC
+/// Spatial Audio track (disabled) in one alternate group (Apple TN3177). Use at
+/// most one track per group: taking `.first` can select the APAC track, which
+/// this app never decodes on real recordings, or mix both into one timeline.
+enum MCAudioTrackChoice {
+  static let positionalSubType: FourCharCode = 0x61706163 // 'apac'
+  static func isPositional(_ track: AVAssetTrack) -> Bool {
+    track.formatDescriptions.contains {
+      CMFormatDescriptionGetMediaSubType($0 as! CMFormatDescription) == positionalSubType
+    }
+  }
+  static func preferred(in asset: AVAsset) -> AVAssetTrack? {
+    preferred(asset.tracks(withMediaType: .audio))
+  }
+  static func preferred(_ tracks: [AVAssetTrack]) -> AVAssetTrack? {
+    tracks.first { $0.isEnabled && !isPositional($0) }
+      ?? tracks.first { !isPositional($0) }
+      ?? tracks.first { $0.isEnabled }
+      ?? tracks.first
+  }
+}
+
 /// Proxy AAC can be remuxed without decoding, preserving multichannel layout.
 /// Other codecs are explicitly decoded to mono/stereo PCM before AAC encoding.
 /// Passing a source channel count > 2 without AVChannelLayoutKey to the writer
@@ -3789,6 +3812,130 @@ final class MCPrepStopState {
   }
 }
 
+/// Why did the previous process end? A jetsam kill runs no code, so only
+/// MetricKit's exit counters report it; an uncaught Objective-C exception is
+/// written here before abort; Swift traps and signals arrive as MetricKit crash
+/// diagnostics on a later launch. Files stay on the device; nothing is uploaded.
+final class MCExitRecorder: NSObject, MXMetricManagerSubscriber {
+  static let shared = MCExitRecorder()
+  private static let root = FileManager.default.urls(for: .applicationSupportDirectory,
+    in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+  private static let exceptionURL = root.appendingPathComponent("last_exception.json")
+  private static let metricURL = root.appendingPathComponent("metrickit_last.json")
+  private static var previousHandler: (@convention(c) (NSException) -> Void)?
+  private let lock = NSLock()
+  private var started = false
+  /// Written by the previous process; read before this run can replace it.
+  private var previousException: [String: Any]?
+  private var stored: [String: Any] = [:]
+
+  func start() {
+    lock.lock()
+    if started { lock.unlock(); return }
+    started = true
+    previousException = Self.read(Self.exceptionURL)
+    stored = Self.read(Self.metricURL) ?? [:]
+    lock.unlock()
+    try? FileManager.default.removeItem(at: Self.exceptionURL)
+    try? FileManager.default.createDirectory(at: Self.root, withIntermediateDirectories: true)
+    Self.previousHandler = NSGetUncaughtExceptionHandler()
+    NSSetUncaughtExceptionHandler { exception in
+      MCExitRecorder.write(exception)
+      MCExitRecorder.previousHandler?(exception)
+    }
+    let manager = MXMetricManager.shared
+    manager.add(self)
+    // Payloads delivered while an earlier process was running.
+    ingest(diagnostics: manager.pastDiagnosticPayloads)
+    ingest(metrics: manager.pastPayloads)
+  }
+
+  func snapshot() -> [String: Any] {
+    lock.lock(); defer { lock.unlock() }
+    var value = stored
+    if let exception = previousException { value["previousException"] = exception }
+    return value
+  }
+
+  func didReceive(_ payloads: [MXMetricPayload]) { ingest(metrics: payloads) }
+  func didReceive(_ payloads: [MXDiagnosticPayload]) { ingest(diagnostics: payloads) }
+
+  private static func write(_ exception: NSException) {
+    let value: [String: Any] = [
+      "name": exception.name.rawValue,
+      "reason": exception.reason ?? "",
+      "stack": Array(exception.callStackSymbols.prefix(40)),
+      "at": Date().description,
+      "build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?",
+      "memory": MCNativePrepJournal.memory()]
+    guard let data = try? JSONSerialization.data(withJSONObject: value) else { return }
+    try? data.write(to: exceptionURL, options: .atomic)
+  }
+
+  private static func read(_ url: URL) -> [String: Any]? {
+    guard let data = try? Data(contentsOf: url), data.count < 262_144 else { return nil }
+    return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+  }
+
+  private func ingest(metrics payloads: [MXMetricPayload]) {
+    let exits = payloads.compactMap { payload -> [String: Any]? in
+      guard let fg = payload.applicationExitMetrics?.foregroundExitData else { return nil }
+      return [
+        "window": "\(payload.timeStampBegin.description)~\(payload.timeStampEnd.description)",
+        "build": payload.latestApplicationVersion,
+        "normal": fg.cumulativeNormalAppExitCount,
+        "memoryLimit": fg.cumulativeMemoryResourceLimitExitCount,
+        "watchdog": fg.cumulativeAppWatchdogExitCount,
+        "badAccess": fg.cumulativeBadAccessExitCount,
+        "illegalInstruction": fg.cumulativeIllegalInstructionExitCount,
+        "abnormal": fg.cumulativeAbnormalExitCount]
+    }
+    if !exits.isEmpty { merge("foregroundExits", exits, keep: 7) }
+  }
+
+  private func ingest(diagnostics payloads: [MXDiagnosticPayload]) {
+    var crashes: [[String: Any]] = []
+    for payload in payloads {
+      for crash in payload.crashDiagnostics ?? [] {
+        var item: [String: Any] = [
+          "window": "\(payload.timeStampBegin.description)~\(payload.timeStampEnd.description)",
+          "build": crash.metaData.applicationBuildVersion,
+          "os": crash.metaData.osVersion,
+          "device": crash.metaData.deviceType]
+        if let v = crash.exceptionType { item["exceptionType"] = v.intValue }
+        if let v = crash.exceptionCode { item["exceptionCode"] = v.intValue }
+        if let v = crash.signal { item["signal"] = v.intValue }
+        if let v = crash.terminationReason { item["terminationReason"] = v }
+        if let v = crash.virtualMemoryRegionInfo { item["vmRegion"] = String(v.prefix(400)) }
+        if #available(iOS 17.0, *), let reason = crash.exceptionReason {
+          item["objcException"] = "\(reason.exceptionName): \(reason.composedMessage)"
+        }
+        // Unsymbolicated frames: binary UUID + offset, enough to name the module.
+        let tree = String(data: crash.callStackTree.jsonRepresentation(), encoding: .utf8) ?? ""
+        item["callStackTree"] = String(tree.prefix(3000))
+        crashes.append(item)
+      }
+    }
+    if !crashes.isEmpty { merge("crashes", crashes, keep: 3) }
+  }
+
+  private func merge(_ key: String, _ items: [[String: Any]], keep: Int) {
+    lock.lock(); defer { lock.unlock() }
+    var all = stored[key] as? [[String: Any]] ?? []
+    // pastPayloads repeats what an earlier launch already stored.
+    for item in items where !all.contains(where: {
+      ($0["window"] as? String) == (item["window"] as? String)
+        && ($0["callStackTree"] as? String) == (item["callStackTree"] as? String)
+    }) {
+      all.append(item)
+    }
+    stored[key] = Array(all.suffix(keep))
+    stored["updated"] = Date().description
+    guard let data = try? JSONSerialization.data(withJSONObject: stored) else { return }
+    try? data.write(to: Self.metricURL, options: .atomic)
+  }
+}
+
 /// Small, synchronous checkpoints written BEFORE native operations. They survive
 /// process termination even when Flutter cannot service a method-channel reply.
 /// Each lane keeps its own last checkpoint, so audio cannot hide a video failure.
@@ -3808,6 +3955,10 @@ final class MCNativePrepJournal {
       in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
     return MCNativePrepJournal(url: root.appendingPathComponent("native_image_last.json"))
   }()
+  /// `usedMB` is the jetsam footprint now. `peakMB` is the kernel ledger's
+  /// lifetime peak, so a spike between two samples still shows. `graphicsMB`
+  /// (GPU/IOSurface) and `mediaMB` (codec buffers) are footprint ledgers; the
+  /// remainder is mostly heap.
   static func memory() -> [String: Double] {
     var info = task_vm_info_data_t()
     var count = mach_msg_type_number_t(
@@ -3817,8 +3968,21 @@ final class MCNativePrepJournal {
         task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
       }
     }
-    return ["usedMB": status == KERN_SUCCESS ? Double(info.phys_footprint) / 1048576 : 0,
-            "availableMB": Double(os_proc_available_memory()) / 1048576]
+    let mb = 1048576.0
+    var value: [String: Double] = [
+      "usedMB": status == KERN_SUCCESS ? Double(info.phys_footprint) / mb : 0,
+      "availableMB": Double(os_proc_available_memory()) / mb]
+    // Older kernels fill a shorter struct; read the ledgers only if returned.
+    if status == KERN_SUCCESS,
+      let ledgerEnd = MemoryLayout<task_vm_info_data_t>.offset(
+        of: \task_vm_info_data_t.ledger_tag_graphics_nofootprint),
+      Int(count) * MemoryLayout<integer_t>.size >= ledgerEnd {
+      value["peakMB"] = Double(info.ledger_phys_footprint_peak) / mb
+      value["graphicsMB"] = Double(info.ledger_tag_graphics_footprint) / mb
+      value["mediaMB"] = Double(info.ledger_tag_media_footprint) / mb
+      value["compressedMB"] = Double(info.compressed) / mb
+    }
+    return value
   }
   let previous: [String: Any]?
   let launch: [String: Any]
@@ -4001,6 +4165,7 @@ final class MCInteractivePrepGate {
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    MCExitRecorder.shared.start() // Read the last exit reason before anything can crash.
     _ = MCNativePrepJournal.shared // Capture the previous run before new work starts.
     _ = MCNativePrepJournal.preview
     _ = MCNativePrepJournal.image
@@ -4828,7 +4993,7 @@ final class MCInteractivePrepGate {
       ])
 
     // 聲音：讀成 PCM、窗內樣本反轉，寫回 AAC
-    let aTrack = asset.tracks(withMediaType: .audio).first
+    let aTrack = MCAudioTrackChoice.preferred(in: asset)
     var aIn: AVAssetWriterInput? = nil
     var pcmDesc: CMAudioFormatDescription? = nil
     let sampleRate = 44_100.0
@@ -5157,7 +5322,7 @@ final class MCInteractivePrepGate {
       asset: AVAsset, range: CMTimeRange, at: CMTime, outDur: CMTime,
       volume: Float, fadeIn: Double, fadeOut: Double
     ) {
-      guard let src = asset.tracks(withMediaType: .audio).first,
+      guard let src = MCAudioTrackChoice.preferred(in: asset),
         let track = audioTrack(from: at)
       else { return }
       do {
@@ -6101,6 +6266,8 @@ final class MCInteractivePrepGate {
         if let previous = MCNativePrepJournal.image.previous {
           value["imagePrevious"] = previous
         }
+        let exit = MCExitRecorder.shared.snapshot()
+        if !exit.isEmpty { value["exit"] = exit }
         result(value)
         return
       }
@@ -6617,7 +6784,8 @@ final class MCInteractivePrepGate {
     // count (iPhone Spatial Audio can otherwise terminate the whole process).
     var aOut: AVAssetReaderTrackOutput?
     var aIn: AVAssetWriterInput?
-    if let aTrack = asset.tracks(withMediaType: .audio).first {
+    let audioTracks = asset.tracks(withMediaType: .audio)
+    if let aTrack = MCAudioTrackChoice.preferred(audioTracks) {
       let format = aTrack.formatDescriptions.first.map { $0 as! CMFormatDescription }
       let audio = MCProxyAudioPlan(format: format)
       let asbd = format.flatMap { CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee }
@@ -6625,7 +6793,10 @@ final class MCInteractivePrepGate {
         "codec": asbd.map { Int($0.mFormatID) } ?? 0,
         "channels": asbd.map { Int($0.mChannelsPerFrame) } ?? 0,
         "sampleRate": asbd?.mSampleRate ?? 0,
-        "passthrough": audio.writerSettings == nil])
+        "passthrough": audio.writerSettings == nil,
+        "audioTracks": audioTracks.count,
+        "enabled": aTrack.isEnabled,
+        "positional": MCAudioTrackChoice.isPositional(aTrack)])
       if let settings = audio.writerSettings,
         !writer.canApply(outputSettings: settings, forMediaType: .audio) {
         done("音訊格式無法轉成工作檔"); return
@@ -8266,6 +8437,7 @@ final class CompPlayer: NSObject, FlutterTexture {
   private func nudgeNativeGoal(_ original: NativeGoal) {
     guard var goal = nativeGoal, goal.presentation == original.presentation,
       !seeking, !nudging, player.rate == 0,
+      player.currentItem?.status == .readyToPlay, // see nudgeRedrawIfPaused
       let instructions = player.currentItem?.videoComposition?.instructions,
       let instruction = instructions.first(where: {
         CMTimeRangeContainsTime($0.timeRange,
@@ -8483,6 +8655,8 @@ final class CompPlayer: NSObject, FlutterTexture {
   private var nudging = false
   private var nudgePending = false
   private var nudgeTimerArmed = false
+  private var nudgeReadyWaitArmed = false
+  private var nudgeReadyWaits = 0
   private var lastNudgeAt = 0.0
   /// 催重畫的錨點＝使用者最後停下的位置。每發都以它為基準擺
   /// +1/600、+2/600，不以「現在位置」為基準——那樣每發都往前推
@@ -8600,6 +8774,28 @@ final class CompPlayer: NSObject, FlutterTexture {
       schedulePausedCopy()
       return
     }
+    // A completion-handler seek on an item that is not readyToPlay raises
+    // NSInvalidArgumentException on some iOS versions. Every build replaces
+    // the item, and Dart sends visibility/overlay updates before its first
+    // positioning seek. Wait for readiness (bounded) instead of seeking.
+    guard player.currentItem?.status == .readyToPlay else {
+      redrawAfterSeek = true
+      guard !nudgeReadyWaitArmed, player.currentItem?.status == .unknown,
+        nudgeReadyWaits < 40 else { return }
+      nudgeReadyWaitArmed = true
+      nudgeReadyWaits += 1
+      let lifecycle = seekLifecycle
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        guard let self = self else { return }
+        self.nudgeReadyWaitArmed = false
+        guard lifecycle == self.seekLifecycle, self.redrawAfterSeek,
+          !self.seeking, !self.seekTarget.isValid else { return }
+        self.redrawAfterSeek = false
+        self.nudgeRedrawIfPaused()
+      }
+      return
+    }
+    nudgeReadyWaits = 0
     if nudging {
       qualityRedrawBusy += 1
       nudgePending = true
@@ -9125,7 +9321,7 @@ final class CompPlayer: NSObject, FlutterTexture {
       lastMedia[layer] = (src, range)
 
       // 聲音：找一條這個時間點空著的軌，沒有就開新的（見 addAudio）
-      if let sa = asset.tracks(withMediaType: .audio).first {
+      if let sa = MCAudioTrackChoice.preferred(in: asset) {
         addAudio(
           sa, range: range, at: putAt, outDur: outDur, volume: volume,
           fadeIn: fadeIn, fadeOut: fadeOut, clipID: clip["id"] as? Int ?? -1)
@@ -9256,7 +9452,7 @@ final class CompPlayer: NSObject, FlutterTexture {
         asset = AVURLAsset(url: URL(fileURLWithPath: path))
         assetCache[path] = asset
       }
-      guard let sa = asset.tracks(withMediaType: .audio).first else { continue }
+      guard let sa = MCAudioTrackChoice.preferred(in: asset) else { continue }
       addAudio(
         sa, range: range, at: at, outDur: outDur,
         volume: Float(m["volume"] as? Double ?? 1),
@@ -10620,7 +10816,9 @@ final class CompPlayer: NSObject, FlutterTexture {
   }
 
   var positionMs: Int {
-    if player.rate == 0, let time = nativePresentedTime { return Int(time * 1000) }
+    // A failed item reports an invalid time (NaN); Int(NaN) is a Swift trap.
+    func ms(_ seconds: Double) -> Int { seconds.isFinite ? Int(seconds * 1000) : 0 }
+    if player.rate == 0, let time = nativePresentedTime { return ms(time) }
     // 播放接管中：有聲＝音訊分身當時鐘；無音軌素材＝分身是空的
     //（時間永遠 0），改用引擎的主機時鐘
     if takeover {
@@ -10629,10 +10827,10 @@ final class CompPlayer: NSObject, FlutterTexture {
       // 就是實機「暫停再播放有跳動感」（140 回報）。轉起來再交棒
       // ——兩個時鐘此時已對齊（分身從引擎位置起播），無縫
       return audioValid && audioPlayer.rate > 0.01
-        ? Int(audioPlayer.currentTime().seconds * 1000)
-        : Int(MetalPreviewEngine.shared.clockT * 1000)
+        ? ms(audioPlayer.currentTime().seconds)
+        : ms(MetalPreviewEngine.shared.clockT)
     }
-    return Int(player.currentTime().seconds * 1000)
+    return ms(player.currentTime().seconds)
   }
 
   /// 系統自己記的播放品質。這幾個數字是 AVPlayer 內部統計，
