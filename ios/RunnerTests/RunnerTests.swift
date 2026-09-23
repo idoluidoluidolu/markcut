@@ -2353,6 +2353,35 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(JSONSerialization.isValidJSONObject(memory))
   }
 
+  // Ledgers only count owner-tagged memory; video IOSurfaces, malloc and
+  // untagged Dart pages all land in "other". The region walk separates them.
+  func testRegionBreakdownNamesTheLargestKindsOfMemory() throws {
+    let regions = MCNativePrepJournal.regions(top: 12)
+    XCTAssertFalse(regions.isEmpty)
+    XCTAssertGreaterThan(regions["malloc"] ?? 0, 0, "\(regions)")
+    XCTAssertTrue(regions.values.allSatisfy { $0 >= 0 })
+    XCTAssertEqual(MCNativePrepJournal.regionName(88), "IOSurface")
+    XCTAssertEqual(MCNativePrepJournal.regionName(3), "malloc")
+    XCTAssertTrue(JSONSerialization.isValidJSONObject(regions))
+  }
+
+  // The flight recorder starts at launch and keeps the last seconds on disk,
+  // so a jetsam kill (which runs no code) still leaves its last samples.
+  func testMemoryFlightRecorderPersistsRecentSamplesWithBreakdown() throws {
+    let url = (FileManager.default.urls(for: .applicationSupportDirectory,
+      in: .userDomainMask).first ?? FileManager.default.temporaryDirectory)
+      .appendingPathComponent("memory_flight.json")
+    MCExitRecorder.shared.start()
+    let written = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+      guard let data = try? Data(contentsOf: url),
+        let samples = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]]
+      else { return false }
+      return samples.contains { $0["regions"] is [String: Any] }
+        && samples.allSatisfy { ($0["usedMB"] as? Double ?? 0) > 0 }
+    }, object: nil)
+    wait(for: [written], timeout: 8)
+  }
+
   func testExitRecorderStartsOnceAndKeepsAnExceptionHandler() {
     MCExitRecorder.shared.start()
     MCExitRecorder.shared.start()

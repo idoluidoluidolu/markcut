@@ -97,9 +97,53 @@ class Diag {
     return lines.isEmpty ? null : lines.join('\n');
   }
 
-  /// 最近一次跟原生要到的死因摘要（[exitReasonSummary]），品質診斷器
-  /// 顯示與複製都用它；沒有任何紀錄＝null
+  /// 最近一次跟原生要到的死因摘要（[exitReasonSummary]＋[memoryFlightSummary]），
+  /// 品質診斷器顯示與複製都用它；沒有任何紀錄＝null
   static String? exitSummary;
+
+  static String? _combinedExitSummary(Object? exit) {
+    final lines = [
+      ?exitReasonSummary(exit),
+      if (exit is Map) ?memoryFlightSummary(exit['memoryFlightPrevious']),
+    ];
+    return lines.isEmpty ? null : lines.join('\n');
+  }
+
+  /// 上一趟行程最後幾十秒的記憶體（原生飛行紀錄：每秒一筆、每兩秒帶一次
+  /// 依類型拆的明細）。閃退的那一趟，最後一筆就是死前一兩秒的現場：
+  /// 總量看得出是不是撞上限，明細看得出是誰——malloc、IOSurface（影片
+  /// 緩衝）、CoreImage、ImageIO、untagged（多半是 Dart）……
+  static String? memoryFlightSummary(Object? flight) {
+    if (flight is! List) return null;
+    final samples = flight.whereType<Map>().toList();
+    if (samples.isEmpty) return null;
+    int mb(Map m, String k) => ((m[k] as num?) ?? 0).round();
+    final last = samples.last;
+    var high = 0;
+    for (final s in samples) {
+      final v = mb(s, 'usedMB');
+      if (v > high) high = v;
+    }
+    Map? regions;
+    for (final s in samples.reversed) {
+      if (s['regions'] is Map) {
+        regions = s['regions'] as Map;
+        break;
+      }
+    }
+    num size(Object? v) => v is num ? v : 0;
+    final top = regions == null
+        ? ''
+        : (regions.entries.toList()
+                ..sort((a, b) => size(b.value).compareTo(size(a.value))))
+              .take(4)
+              .map((e) => '${e.key} ${size(e.value).round()}MB')
+              .join('、');
+    return '上一趟最後的記憶體：${mb(last, 'usedMB')}MB'
+        '（還剩 ${mb(last, 'availableMB')}MB、峰值 ${mb(last, 'peakMB')}MB），'
+        '最後 ${samples.length} 秒最高 ${high}MB'
+        '${top.isEmpty ? '' : '；最大的是 $top'}';
+  }
 
   /// 系統（MetricKit）回報的異常結束，自己成一份報告時的標題
   static const systemExitReportTitle = '=== 系統回報的異常結束 ===';
@@ -178,7 +222,7 @@ class Diag {
     }
     if (native == null || !native.containsKey('launch')) return;
     final exit = native['exit'];
-    final summary = exitReasonSummary(exit);
+    final summary = _combinedExitSummary(exit);
     exitSummary = summary;
     final signature = abnormalExitSignature(exit);
     if (signature == null || summary == null) return;
@@ -389,7 +433,7 @@ class Diag {
       if (native != null && native.containsKey('launch')) {
         final exit = native['exit'];
         startupExit = exit;
-        exitSummary = exitReasonSummary(exit);
+        exitSummary = _combinedExitSummary(exit);
         nativePrepDiagnostic = [
           ?exitSummary,
           '原生檢查點（running 代表未收尾，不能直接判定終止原因）\n'

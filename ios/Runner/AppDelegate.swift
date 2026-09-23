@@ -3822,12 +3822,21 @@ final class MCExitRecorder: NSObject, MXMetricManagerSubscriber {
     in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
   private static let exceptionURL = root.appendingPathComponent("last_exception.json")
   private static let metricURL = root.appendingPathComponent("metrickit_last.json")
+  private static let flightURL = root.appendingPathComponent("memory_flight.json")
   private static var previousHandler: (@convention(c) (NSException) -> Void)?
   private let lock = NSLock()
   private var started = false
   /// Written by the previous process; read before this run can replace it.
   private var previousException: [String: Any]?
+  private var previousFlight: [[String: Any]]?
   private var stored: [String: Any] = [:]
+  /// 記憶體飛行紀錄：每秒一筆、每兩秒帶一次依類型拆的明細，留最後 40 秒、
+  /// 每兩秒寫檔。被系統因記憶體砍掉時什麼程式都跑不了，下次開 App 讀到的
+  /// 最後一筆就是死前一兩秒的現場（誰在長、長到多少）
+  private let flightQueue = DispatchQueue(label: "markcut.memoryFlight", qos: .utility)
+  private var flightTimer: DispatchSourceTimer?
+  private var flight: [[String: Any]] = [] // flightQueue only
+  private var flightTick = 0 // flightQueue only
 
   func start() {
     lock.lock()
@@ -3835,7 +3844,11 @@ final class MCExitRecorder: NSObject, MXMetricManagerSubscriber {
     started = true
     previousException = Self.read(Self.exceptionURL)
     stored = Self.read(Self.metricURL) ?? [:]
+    if let data = try? Data(contentsOf: Self.flightURL), data.count < 262_144 {
+      previousFlight = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]]
+    }
     lock.unlock()
+    startFlightRecorder()
     try? FileManager.default.removeItem(at: Self.exceptionURL)
     try? FileManager.default.createDirectory(at: Self.root, withIntermediateDirectories: true)
     Self.previousHandler = NSGetUncaughtExceptionHandler()
@@ -3854,7 +3867,34 @@ final class MCExitRecorder: NSObject, MXMetricManagerSubscriber {
     lock.lock(); defer { lock.unlock() }
     var value = stored
     if let exception = previousException { value["previousException"] = exception }
+    if let flight = previousFlight, !flight.isEmpty {
+      value["memoryFlightPrevious"] = Array(flight.suffix(20))
+    }
     return value
+  }
+
+  private func startFlightRecorder() {
+    let timer = DispatchSource.makeTimerSource(queue: flightQueue)
+    timer.schedule(deadline: .now() + 1, repeating: 1, leeway: .milliseconds(250))
+    timer.setEventHandler { [weak self] in self?.recordFlight() }
+    flightTimer = timer
+    timer.resume()
+  }
+
+  private func recordFlight() {
+    flightTick &+= 1
+    var sample: [String: Any] = [
+      "at": Date().description,
+      "uptime": (ProcessInfo.processInfo.systemUptime * 10).rounded() / 10]
+    for (key, value) in MCNativePrepJournal.memory() {
+      sample[key] = (value * 10).rounded() / 10
+    }
+    let detailed = flightTick % 2 == 0
+    if detailed { sample["regions"] = MCNativePrepJournal.regions() }
+    flight.append(sample)
+    if flight.count > 40 { flight.removeFirst(flight.count - 40) }
+    guard detailed, let data = try? JSONSerialization.data(withJSONObject: flight) else { return }
+    try? data.write(to: Self.flightURL, options: .atomic)
   }
 
   func didReceive(_ payloads: [MXMetricPayload]) { ingest(metrics: payloads) }
@@ -3867,7 +3907,8 @@ final class MCExitRecorder: NSObject, MXMetricManagerSubscriber {
       "stack": Array(exception.callStackSymbols.prefix(40)),
       "at": Date().description,
       "build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?",
-      "memory": MCNativePrepJournal.memory()]
+      "memory": MCNativePrepJournal.memory(),
+      "regions": MCNativePrepJournal.regions()]
     guard let data = try? JSONSerialization.data(withJSONObject: value) else { return }
     try? data.write(to: exceptionURL, options: .atomic)
   }
@@ -3984,16 +4025,79 @@ final class MCNativePrepJournal {
     }
     return value
   }
+
+  /// vmmap 的簡化版：依 VM 區域標籤加總「弄髒＋壓縮掉」的頁（MB），只留最大的
+  /// [top] 類。ledger 只算有歸屬標記的記憶體，影片緩衝（IOSurface）、malloc、
+  /// CoreImage、ImageIO、Dart（未標記的匿名配置）都混在「其他」裡——這裡分得開。
+  /// 走一遍所有區域要幾毫秒到幾十毫秒：只給飛行紀錄器與閃退現場用
+  static func regions(top: Int = 6) -> [String: Double] {
+    var totals: [String: UInt64] = [:]
+    var address: mach_vm_address_t = 0
+    var depth: natural_t = 0
+    let page = UInt64(vm_page_size)
+    for _ in 0..<100_000 {
+      var size: mach_vm_size_t = 0
+      var info = vm_region_submap_info_data_64_t()
+      var count = mach_msg_type_number_t(
+        MemoryLayout<vm_region_submap_info_data_64_t>.size / MemoryLayout<integer_t>.size)
+      let kr = withUnsafeMutablePointer(to: &info) { ptr in
+        ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+          mach_vm_region_recurse(mach_task_self_, &address, &size, &depth, $0, &count)
+        }
+      }
+      guard kr == KERN_SUCCESS else { break }
+      if info.is_submap != 0 { depth += 1; continue }
+      if info.external_pager == 0 {
+        let pages = UInt64(info.pages_dirtied) + UInt64(info.pages_swapped_out)
+        if pages > 0 { totals[regionName(info.user_tag), default: 0] += pages * page }
+      }
+      let next = address &+ size
+      if next <= address { break }
+      address = next
+    }
+    let mb = 1048576.0
+    return Dictionary(uniqueKeysWithValues: totals.sorted { $0.value > $1.value }
+      .prefix(top).map { ($0.key, (Double($0.value) / mb * 10).rounded() / 10) })
+  }
+
+  /// mach/vm_statistics.h 的 VM_MEMORY_* 標籤
+  static func regionName(_ tag: UInt32) -> String {
+    switch tag {
+    case 0: return "untagged" // anonymous mmap: Dart heap and other engines
+    case 1...4, 6...9, 11...13: return "malloc"
+    case 20: return "mach_msg"
+    case 21: return "IOKit"
+    case 30: return "stack"
+    case 42, 54...58: return "CoreGraphics"
+    case 51: return "CoreAnimation"
+    case 52: return "CGImage"
+    case 60, 61: return "dyld"
+    case 68: return "CoreImage"
+    case 70: return "ImageIO"
+    case 74: return "libdispatch"
+    case 82, 83: return "Swift"
+    case 88: return "IOSurface"
+    case 90: return "Audio"
+    case 91: return "VideoBitstream"
+    case 92...96, 101, 106: return "CoreMedia"
+    case 100: return "IOAccelerator"
+    case 104: return "ColorSync"
+    case 240...255: return "app\(tag - 239)"
+    default: return "tag\(tag)"
+    }
+  }
   let previous: [String: Any]?
   let launch: [String: Any]
   private let url: URL
   private let lock = NSLock()
   private var token: UUID?
   private var record: [String: Any] = [:]
+  /// 開 App 那一刻的拆帳只算一次，三份紀錄共用（空白畫面就佔好幾百 MB 的來源）
+  private static let launchRegions = regions()
   init(url: URL) {
     self.url = url
     launch = ["process": UUID().uuidString, "at": Date().description,
-              "memory": Self.memory()]
+              "memory": Self.memory(), "regions": Self.launchRegions]
     if let data = try? Data(contentsOf: url), data.count < 65536 {
       previous = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     } else { previous = nil }
@@ -4369,7 +4473,7 @@ final class MCInteractivePrepGate {
         journal.mark(trace, "preview", "build-start", details: [
           "clips": clips.count, "tracks": Set(clips.compactMap { $0["track"] as? Int }).count,
           "stills": stills.count, "replacing": self.comp != nil,
-          "revision": "rebuild-gap-exit-recorder-1"])
+          "revision": "memory-flight-1", "regions": MCNativePrepJournal.regions()])
         CIExportCompositor.setHiddenImageTracks(Set(args["hiddenImageTracks"] as? [Int] ?? []))
         let overlays = args["overlays"] as? [[String: Any]] ?? []
         // 純聲音素材（配樂／旁白／從影片提取的聲音）：跟匯出 run 的
@@ -4411,7 +4515,8 @@ final class MCInteractivePrepGate {
         // 浮水印要等這一刻才藏（早藏＝舊畫面還在、浮水印憑空消失）
         PlayerHosts.shared.use(p.player, retiring: old?.player,
           disposeRetired: { old?.dispose() }) {
-          journal.mark(trace, "preview", "visible")
+          journal.mark(trace, "preview", "visible",
+            details: ["regions": MCNativePrepJournal.regions()])
           DispatchQueue.main.async {
             channel.invokeMethod("compVisible", arguments: nil)
           }
@@ -6258,7 +6363,8 @@ final class MCInteractivePrepGate {
       if call.method == "nativePrepDiagnostic" {
         let journal = MCNativePrepJournal.shared
         var value: [String: Any] = ["launch": journal.launch,
-          "currentMemory": MCNativePrepJournal.memory()]
+          "currentMemory": MCNativePrepJournal.memory(),
+          "currentRegions": MCNativePrepJournal.regions()]
         if let previous = journal.previous { value["previous"] = previous }
         if let previous = MCNativePrepJournal.preview.previous {
           value["previewPrevious"] = previous

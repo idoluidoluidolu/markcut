@@ -63,6 +63,39 @@ void main() {
     );
   });
 
+  test('飛行紀錄：最後一筆、最後幾秒最高、最後一次拆帳的前四大', () {
+    final text = Diag.memoryFlightSummary([
+      {'usedMB': 1600.2, 'availableMB': 1776, 'peakMB': 1700},
+      {
+        'usedMB': 3300.6,
+        'availableMB': 75.4,
+        'peakMB': 3376,
+        'regions': {
+          'malloc': 2100.4,
+          'IOSurface': 610,
+          'untagged': 300,
+          'CoreImage': 120,
+          'dyld': 20,
+        },
+      },
+      {'usedMB': 3290, 'availableMB': 86, 'peakMB': 3376},
+    ]);
+    expect(
+      text,
+      '上一趟最後的記憶體：3290MB（還剩 86MB、峰值 3376MB），最後 3 秒最高 3301MB；'
+      '最大的是 malloc 2100MB、IOSurface 610MB、untagged 300MB、CoreImage 120MB',
+    );
+    expect(Diag.memoryFlightSummary(null), isNull);
+    expect(Diag.memoryFlightSummary(const []), isNull);
+    expect(
+      Diag.memoryFlightSummary([
+        {'usedMB': 700},
+      ]),
+      '上一趟最後的記憶體：700MB（還剩 0MB、峰值 0MB），最後 1 秒最高 700MB',
+      reason: '沒有拆帳的樣本也要有總量',
+    );
+  });
+
   test('欄位缺漏不丟例外', () {
     final text = Diag.exitReasonSummary({
       'crashes': [<String, Object?>{}],
