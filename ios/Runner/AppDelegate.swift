@@ -3837,6 +3837,8 @@ final class MCExitRecorder: NSObject, MXMetricManagerSubscriber {
   private var flightTimer: DispatchSourceTimer?
   private var flight: [[String: Any]] = [] // flightQueue only
   private var flightTick = 0 // flightQueue only
+  /// didFinishLaunching 第一行量的（main thread，start() 之前寫一次）
+  var launchEarliest: [String: Double]?
 
   func start() {
     lock.lock()
@@ -3870,6 +3872,7 @@ final class MCExitRecorder: NSObject, MXMetricManagerSubscriber {
     if let flight = previousFlight, !flight.isEmpty {
       value["memoryFlightPrevious"] = Array(flight.suffix(20))
     }
+    if let earliest = launchEarliest { value["launchEarliest"] = earliest }
     return value
   }
 
@@ -4032,17 +4035,19 @@ final class MCNativePrepJournal {
   /// 走一遍所有區域要幾毫秒到幾十毫秒：只給飛行紀錄器與閃退現場用
   static func regions(top: Int = 6) -> [String: Double] {
     var totals: [String: UInt64] = [:]
-    var address: mach_vm_address_t = 0
+    // iOS 的 Swift 看不到 mach_vm_region_recurse（只在 macOS 開放）；
+    // vm_region_recurse_64 是同一個呼叫的 iOS 版本
+    var address: vm_address_t = 0
     var depth: natural_t = 0
     let page = UInt64(vm_page_size)
     for _ in 0..<100_000 {
-      var size: mach_vm_size_t = 0
+      var size: vm_size_t = 0
       var info = vm_region_submap_info_data_64_t()
       var count = mach_msg_type_number_t(
         MemoryLayout<vm_region_submap_info_data_64_t>.size / MemoryLayout<integer_t>.size)
       let kr = withUnsafeMutablePointer(to: &info) { ptr in
         ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-          mach_vm_region_recurse(mach_task_self_, &address, &size, &depth, $0, &count)
+          vm_region_recurse_64(mach_task_self_, &address, &size, &depth, $0, &count)
         }
       }
       guard kr == KERN_SUCCESS else { break }
@@ -4269,6 +4274,9 @@ final class MCInteractivePrepGate {
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    // 最早的一筆：在 App 自己的任何初始化之前量。剛開 App 就佔 694MB（BUILD 217），
+    // 分得出是系統／框架在 didFinishLaunching 之前就配好的，還是後面這幾行
+    MCExitRecorder.shared.launchEarliest = MCNativePrepJournal.memory()
     MCExitRecorder.shared.start() // Read the last exit reason before anything can crash.
     _ = MCNativePrepJournal.shared // Capture the previous run before new work starts.
     _ = MCNativePrepJournal.preview

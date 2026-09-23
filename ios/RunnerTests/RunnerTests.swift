@@ -2357,6 +2357,12 @@ class RunnerTests: XCTestCase {
   // untagged Dart pages all land in "other". The region walk separates them.
   func testRegionBreakdownNamesTheLargestKindsOfMemory() throws {
     let regions = MCNativePrepJournal.regions(top: 12)
+    // CI 的參考數字（模擬器，不是實機上限）：開 App 最早一筆、didFinishLaunching
+    // 當下、現在，各自的拆帳
+    print("MARKCUT_MEMORY earliest=\(MCExitRecorder.shared.snapshot()["launchEarliest"] ?? "-")"
+      + " launch=\(MCNativePrepJournal.shared.launch["memory"] ?? "-")"
+      + " launchRegions=\(MCNativePrepJournal.shared.launch["regions"] ?? "-")"
+      + " now=\(MCNativePrepJournal.memory()) regions=\(regions)")
     XCTAssertFalse(regions.isEmpty)
     XCTAssertGreaterThan(regions["malloc"] ?? 0, 0, "\(regions)")
     XCTAssertTrue(regions.values.allSatisfy { $0 >= 0 })
