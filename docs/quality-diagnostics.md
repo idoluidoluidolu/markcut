@@ -1,3 +1,26 @@
+## 2026-09-23 BUILD 217 仍閃退：峰值在第一次組合成之前就撞上限（memory-flight-1）
+
+217 的原生預覽檢查點：5 支 5 軌的第一次組合成 build-start 時，核心峰值
+`peakMB` 已經是 3376MB＝上限（1582 已用＋1794 可用），上屏後不到 5 秒行程
+結束，沒有程式例外紀錄。所以撞上限發生在**組合成之前**（選檔／匯入那 15 秒），
+上一節修的重組／轉檔重疊與失敗退路都在組合成之後，不是這次的死因。
+`graphicsMB` 75、`mediaMB` 0——但 ledger 只算有歸屬標記的記憶體，影片
+IOSurface、malloc、Dart 都混在「其他」，分不出是誰。
+
+剛開 App（didFinishLaunching，Flutter 還沒起）實機就 694MB、兩次啟動都一樣；
+CI 模擬器同一個時間點 14MB。實機多出來的嫌犯：7dabf3b 的 `MCExitRecorder.start()`
+讀 `pastDiagnosticPayloads`／`pastPayloads`（幾週累積的診斷，含整棵堆疊），
+而 launch 記憶體正好在它之後量。已拿掉（76f363c），只訂閱新送到的。
+
+新的定位能力：
+- 記憶體飛行紀錄器：每秒一筆、每兩秒依 VM 區域標籤拆帳（malloc／untagged
+  （多半是 Dart）／IOSurface／CoreImage／ImageIO／CoreMedia…），留最後 40 秒、
+  每兩秒寫檔；下次開 App 放進報告（`exit.memoryFlightPrevious`），摘要一行寫
+  「上一趟最後的記憶體…最大的是…」。
+- `exit.launchEarliest`：didFinishLaunching 第一行量，跟 `launch`（之後量）比
+  就知道開 App 那幾百 MB 是不是 App 自己的啟動程式配的。
+- 開 App、build-start／visible、目前狀態、程式例外現場都帶拆帳。
+
 ## 2026-09-23 多支匯入閃退：重組與轉檔分開、死因紀錄（claude/multi-import-crash）
 
 四路獨立審查（原生記憶體、原生崩潰點、Dart 匯入時序、HDR 轉檔）的共同結論：
