@@ -1,5 +1,9 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../services/diagnostics.dart';
 import '../services/quality_diagnostics.dart';
 
 class QualityDiagnosticsSheet extends StatefulWidget {
@@ -40,6 +44,34 @@ class _QualityDiagnosticsSheetState extends State<QualityDiagnosticsSheet> {
       notice = '環境資料未完整取得；缺失項不判定通過。';
     }
     if (mounted) setState(() => busy = false);
+    // 上次怎麼結束的（MetricKit 開 App 之後才送到，每次更新都重查）：
+    // 另外查，不擋住更新與複製；查到就重畫
+    unawaited(_refreshExitReason());
+  }
+
+  Future<void> _refreshExitReason() async {
+    try {
+      await Diag.checkSystemExitReports();
+    } catch (_) {}
+    if (mounted) setState(() {});
+  }
+
+  /// 複製出去的報告最上面先講上次怎麼結束的
+  String _reportText(bool json) {
+    final exit = Diag.exitSummary;
+    if (json) {
+      final raw = widget.diagnostics.jsonReport();
+      if (exit == null) return raw;
+      try {
+        final map = jsonDecode(raw);
+        if (map is Map<String, dynamic>) {
+          return jsonEncode({'exitReason': exit, ...map});
+        }
+      } catch (_) {}
+      return raw;
+    }
+    final report = widget.diagnostics.report();
+    return exit == null ? report : '=== 上次結束原因 ===\n$exit\n\n$report';
   }
 
   Future<void> copy(bool json) async {
@@ -48,13 +80,7 @@ class _QualityDiagnosticsSheetState extends State<QualityDiagnosticsSheet> {
     if (!mounted) return;
     final incomplete = notice != null;
     try {
-      await Clipboard.setData(
-        ClipboardData(
-          text: json
-              ? widget.diagnostics.jsonReport()
-              : widget.diagnostics.report(),
-        ),
-      );
+      await Clipboard.setData(ClipboardData(text: _reportText(json)));
       if (mounted) {
         setState(
           () => notice = incomplete
@@ -115,6 +141,22 @@ class _QualityDiagnosticsSheetState extends State<QualityDiagnosticsSheet> {
               child: ListView(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 children: [
+                  if (Diag.exitSummary case final exit?)
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              '上次結束原因',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            SelectableText(exit),
+                          ],
+                        ),
+                      ),
+                    ),
                   for (final s in QualityScenario.values)
                     Card(
                       child: Padding(

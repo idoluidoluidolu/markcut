@@ -97,6 +97,136 @@ class Diag {
     return lines.isEmpty ? null : lines.join('\n');
   }
 
+  /// 最近一次跟原生要到的死因摘要（[exitReasonSummary]），品質診斷器
+  /// 顯示與複製都用它；沒有任何紀錄＝null
+  static String? exitSummary;
+
+  /// 系統（MetricKit）回報的異常結束，自己成一份報告時的標題
+  static const systemExitReportTitle = '=== 系統回報的異常結束 ===';
+
+  /// 這份快照裡「異常結束」的指紋：最新一筆當機報告、最新一筆前景離開
+  /// 統計裡的非正常次數。沒有異常（或只有正常離開）＝null。
+  /// 同一份指紋只跳一次首頁橫幅（見 [checkSystemExitReports]）
+  static String? abnormalExitSignature(Object? exit) {
+    if (exit is! Map) return null;
+    final parts = <String>[];
+    final crashes = exit['crashes'];
+    if (crashes is List && crashes.isNotEmpty && crashes.last is Map) {
+      final c = crashes.last as Map;
+      final tree = '${c['callStackTree'] ?? ''}';
+      parts.add(
+        'crash|${c['window']}|${c['build']}|${c['signal']}|'
+        '${c['exceptionType']}|${tree.length > 80 ? tree.substring(0, 80) : tree}',
+      );
+    }
+    final exits = exit['foregroundExits'];
+    if (exits is List && exits.isNotEmpty && exits.last is Map) {
+      final x = exits.last as Map;
+      int n(String k) => (x[k] as num?)?.toInt() ?? 0;
+      final counts = [
+        for (final k in const [
+          'memoryLimit',
+          'watchdog',
+          'badAccess',
+          'illegalInstruction',
+          'abnormal',
+        ])
+          n(k),
+      ];
+      if (counts.any((c) => c > 0)) {
+        parts.add('exit|${x['window']}|${counts.join(',')}');
+      }
+    }
+    return parts.isEmpty ? null : parts.join('\n');
+  }
+
+  /// 首頁橫幅那一行：照報告內容講清楚是哪一種結束
+  static String recoveredHeadline(String report) {
+    if (report.contains('上次閃退：程式例外')) {
+      return '上次 App 閃退了（程式例外），已保留報告。';
+    }
+    if (report.contains(systemExitReportTitle)) {
+      return RegExp(r'記憶體上限 [1-9]').hasMatch(report)
+          ? '系統回報：App 曾因記憶體不足被系統關閉，已保留報告。'
+          : '系統回報：App 曾被異常關閉，已保留報告。';
+    }
+    return '上次素材處理未完成，已保留中斷前的紀錄。';
+  }
+
+  static Future<File?> _exitSeenFile() async {
+    final marker = await _crumbFile();
+    return marker == null
+        ? null
+        : File('${marker.parent.path}${Platform.pathSeparator}exit_seen.txt');
+  }
+
+  /// MetricKit 的報告是開 App 之後才陸續送到的（當機報告通常下一次開
+  /// 就到、前景離開統計一天一次），開 App 那一刻讀的常常還沒有。開 App
+  /// 後補查（[scheduleSystemExitChecks]）、品質診斷器更新時也查：摘要
+  /// 換成最新的；有新的異常結束就跳首頁橫幅，同一份只跳一次。已經有
+  /// 橫幅就把這段補進那份報告，不另外蓋掉它。
+  /// 被系統因記憶體砍掉的那一刻什麼程式都跑不了——只有這裡看得到
+  static Future<void> checkSystemExitReports() async {
+    if (kIsWeb) return;
+    Map<String, dynamic>? native;
+    try {
+      native = await _ch.invokeMapMethod<String, dynamic>(
+        'nativePrepDiagnostic',
+      );
+    } catch (_) {
+      return;
+    }
+    if (native == null || !native.containsKey('launch')) return;
+    final exit = native['exit'];
+    final summary = exitReasonSummary(exit);
+    exitSummary = summary;
+    final signature = abnormalExitSignature(exit);
+    if (signature == null || summary == null) return;
+    // 兩個檔都很小（指紋一行、報告幾十 KB），同步讀寫就好
+    final seen = await _exitSeenFile();
+    try {
+      if (seen != null &&
+          seen.existsSync() &&
+          seen.readAsStringSync() == signature) {
+        return;
+      }
+      seen?.writeAsStringSync(signature, flush: true);
+    } catch (_) {}
+    final section = [
+      systemExitReportTitle,
+      summary,
+      '系統統計由 iOS 整理後才送，可能晚一天；次數是那一段期間的累計。',
+    ].join('\n');
+    final current = recoveredReport.value;
+    final report = current == null
+        ? [
+            section,
+            '原生檢查點（running 代表未收尾，不能直接判定終止原因）\n'
+                '${jsonEncode(native)}',
+          ].join('\n\n')
+        : '$current\n\n$section';
+    try {
+      final recovery = await _recoveryFile();
+      if (recovery != null) {
+        final pending = File('${recovery.path}.pending');
+        pending.writeAsStringSync(report, flush: true);
+        pending.renameSync(recovery.path);
+      }
+    } catch (_) {}
+    recoveredReport.value = report;
+  }
+
+  /// 開 App 之後補查兩次（見 [checkSystemExitReports]）
+  static void scheduleSystemExitChecks() {
+    if (kIsWeb) return;
+    for (final seconds in const [8, 60]) {
+      Timer(
+        Duration(seconds: seconds),
+        () => unawaited(checkSystemExitReports()),
+      );
+    }
+  }
+
   /// Restored asynchronously at startup; retained on disk until dismissed.
   static final recoveredReport = ValueNotifier<String?>(null);
 
@@ -250,6 +380,7 @@ class Diag {
     var nativeInterrupted = false;
     crumbFromLastRun = null;
     nativePrepDiagnostic = null;
+    Object? startupExit;
     // A missing/corrupt Dart marker must not hide the independent native trace.
     try {
       final native = await _ch.invokeMapMethod<String, dynamic>(
@@ -257,7 +388,8 @@ class Diag {
       );
       if (native != null && native.containsKey('launch')) {
         final exit = native['exit'];
-        final exitSummary = exitReasonSummary(exit);
+        startupExit = exit;
+        exitSummary = exitReasonSummary(exit);
         nativePrepDiagnostic = [
           ?exitSummary,
           '原生檢查點（running 代表未收尾，不能直接判定終止原因）\n'
@@ -318,6 +450,14 @@ class Diag {
           }
         }
       } catch (_) {}
+      // 這份報告已經帶著此刻的系統統計（nativePrepDiagnostic 開頭那幾行）：
+      // 記成看過，補查時才不會把同一段再接一次
+      final signature = abnormalExitSignature(startupExit);
+      if (signature != null) {
+        try {
+          (await _exitSeenFile())?.writeAsStringSync(signature, flush: true);
+        } catch (_) {}
+      }
     }
     recoveredReport.value = savedReport;
   }

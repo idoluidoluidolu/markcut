@@ -44,7 +44,8 @@ class InterruptedRunNotice extends StatelessWidget {
     builder: (context, report, _) {
       if (report == null) return const SizedBox.shrink();
       return MaterialBanner(
-        content: const Text('上次素材處理未完成，已保留中斷前的紀錄。'),
+        // 程式例外／系統因記憶體關閉／處理到一半中斷，各講各的
+        content: Text(Diag.recoveredHeadline(report)),
         forceActionsBelow: true,
         actions: [
           TextButton(
