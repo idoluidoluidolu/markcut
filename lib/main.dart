@@ -9,6 +9,7 @@ import 'package:image_picker_platform_interface/image_picker_platform_interface.
 import 'package:media_kit/media_kit.dart';
 
 import 'screens/home_screen.dart';
+import 'services/blob_store.dart';
 import 'services/diagnostics.dart';
 import 'services/steady_pointer.dart';
 import 'services/playback_trace.dart';
@@ -43,6 +44,10 @@ void main() {
   // 被系統因記憶體砍掉不會留任何現場，只有 MetricKit 事後回報，而且是
   // 開 App 之後才陸續送到：補查兩次，有新的異常結束就跳首頁橫幅
   Diag.scheduleSystemExitChecks();
+  // 草稿內容／封面、範本、貼圖搬出 SharedPreferences（見 BlobStore）：
+  // 開 App 就被整包讀進記憶體兩份，實機一開就 1.4GB。這一趟搬完就放掉，
+  // 下次開 App 設定檔裡已經沒有它們。要在任何畫面讀草稿／範本之前叫
+  unawaited(BlobStore.init());
   // 草稿清理不在任何自動路徑上跑：它要把每一份草稿的完整 JSON（含縮圖
   // 與圖片，一份好幾百 KB）讀進來比對引用，草稿多的機器是幾十 MB 的掃描。
   // 掛在開機路徑上＝更新後第一次開就被系統當成沒回應殺掉；掛在存檔路徑上

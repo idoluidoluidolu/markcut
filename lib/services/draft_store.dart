@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'blob_store.dart';
 import 'diagnostics.dart';
 import 'work_files.dart';
 
@@ -16,7 +17,11 @@ import 'work_files.dart';
 /// 存法：一個索引鍵記「有哪些草稿、叫什麼名字、什麼時候存的、封面」，
 /// 每個草稿的內容各自一個鍵。分開存是因為內容整包含縮圖與 Logo 的
 /// base64，動輒好幾百 KB——每次列清單都要把全部解碼一次的話，
-/// 首頁進場就會卡住
+/// 首頁進場就會卡住。
+///
+/// 內容與封面存成檔案（[BlobStore]），只有索引留在 SharedPreferences：
+/// iOS 開 App 就把整個設定檔讀進記憶體，上百份草稿各帶一份 Logo 的
+/// base64，實機剛開 App 就吃掉 1.4GB（見 BlobStore 的說明）
 ///
 /// 每個影片專案進編輯器就自動存成草稿（不用選「保留」），所以數量
 /// 只會越來越多：有一個固定的上限（[maxDrafts]），超過之後由使用者
@@ -71,10 +76,7 @@ class DraftStore {
   }
 
   /// 讀某一份草稿的封面（base64 PNG/JPEG）
-  static Future<String?> thumb(String id) async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(_thumbKey(id));
-  }
+  static Future<String?> thumb(String id) => BlobStore.read(_thumbKey(id));
 
   /// 讀清單（新到舊）。順便把舊版單一草稿搬進來。
   ///
@@ -105,14 +107,13 @@ class DraftStore {
   /// 只在索引遺失或解析失敗時走到；沒有任何內容鍵就回空
   static Future<List<DraftMeta>> _rebuildIndex(SharedPreferences prefs) async {
     final metas = <DraftMeta>[];
-    for (final k in prefs.getKeys()) {
-      if (!k.startsWith(_dataPrefix)) continue;
+    for (final k in await BlobStore.keysWithPrefix(_dataPrefix)) {
       final id = k.substring(_dataPrefix.length);
       var savedAt = DateTime.now();
       var clips = 0;
       try {
         final j = Map<String, dynamic>.from(
-          jsonDecode(prefs.getString(k) ?? '') as Map,
+          jsonDecode(await BlobStore.read(k) ?? '') as Map,
         );
         savedAt = DateTime.tryParse(j['savedAt'] as String? ?? '') ?? savedAt;
         clips = (j['clips'] as List?)?.length ?? 0;
@@ -123,7 +124,7 @@ class DraftStore {
         DraftMeta(
           id: id,
           savedAt: savedAt,
-          hasThumb: prefs.getString(_thumbKey(id)) != null,
+          hasThumb: await BlobStore.exists(_thumbKey(id)),
           clipCount: clips,
         ),
       );
@@ -141,8 +142,7 @@ class DraftStore {
 
   /// 讀某一份草稿的完整內容
   static Future<Map<String, dynamic>?> load(String id) async {
-    final prefs = await SharedPreferences.getInstance();
-    final s = prefs.getString(_dataKey(id));
+    final s = await BlobStore.read(_dataKey(id));
     if (s == null) return null;
     try {
       return Map<String, dynamic>.from(jsonDecode(s) as Map);
@@ -206,11 +206,11 @@ class DraftStore {
   }) async {
     final prefs = await SharedPreferences.getInstance();
     await _migrate(prefs);
-    if (!await prefs.setString(_dataKey(id), json)) return false;
+    if (!await BlobStore.write(_dataKey(id), json)) return false;
     if (thumb != null) {
-      if (!await prefs.setString(_thumbKey(id), thumb)) return false;
+      if (!await BlobStore.write(_thumbKey(id), thumb)) return false;
     } else {
-      if (!await prefs.remove(_thumbKey(id))) return false;
+      if (!await BlobStore.delete(_thumbKey(id))) return false;
     }
     final metas = await list();
     // 建立時間：第一次存下來的那一刻，之後每次存都留著同一個。
@@ -240,8 +240,8 @@ class DraftStore {
 
   static Future<void> _removeInner(String id) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_dataKey(id));
-    await prefs.remove(_thumbKey(id));
+    await BlobStore.delete(_dataKey(id));
+    await BlobStore.delete(_thumbKey(id));
     final metas = await list()
       ..removeWhere((m) => m.id == id);
     await _writeIndex(prefs, metas);
@@ -286,8 +286,8 @@ class DraftStore {
       // 在不在，成本跟草稿份數無關）
       var done = 0;
       for (final v in victims) {
-        await prefs.remove(_dataKey(v.id));
-        await prefs.remove(_thumbKey(v.id));
+        await BlobStore.delete(_dataKey(v.id));
+        await BlobStore.delete(_thumbKey(v.id));
         // 每 10 份讓出一次主執行緒：一次刪上百份也不會整個畫面凍住
         if (++done % 10 == 0) await Future<void>.delayed(Duration.zero);
       }
@@ -342,9 +342,9 @@ class DraftStore {
     // 空草稿不用搬
     if ((j['clips'] as List?)?.isEmpty ?? true) return;
     final id = newId();
-    await prefs.setString(_dataKey(id), old);
+    await BlobStore.write(_dataKey(id), old);
     final oldThumb = j['thumb'] as String?;
-    if (oldThumb != null) await prefs.setString(_thumbKey(id), oldThumb);
+    if (oldThumb != null) await BlobStore.write(_thumbKey(id), oldThumb);
     final meta = DraftMeta(
       id: id,
       savedAt:

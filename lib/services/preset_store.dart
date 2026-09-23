@@ -1,8 +1,13 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/watermark_settings.dart';
+import 'blob_store.dart';
 
-/// 浮水印範本的儲存與讀取（存在本機，App 重開仍在）
+/// 浮水印範本的儲存與讀取（存在本機，App 重開仍在）。
+///
+/// 範本清單存成檔案（[BlobStore]）：每個範本各帶一份 Logo 的 base64，
+/// 放在 SharedPreferences 裡會在開 App 時整包讀進記憶體兩份
+///（原生設定檔＋Dart），見 BlobStore 的說明。旗標仍在 prefs
 class PresetStore {
   static const _key = 'wm_presets_v1';
   static const _seededKey = 'wm_presets_seeded_v1';
@@ -16,7 +21,7 @@ class PresetStore {
   static Future<void> ensureSeeded() async {
     final prefs = await SharedPreferences.getInstance();
     if (prefs.getBool(_seededKey) ?? false) return;
-    if ((prefs.getStringList(_key) ?? []).isNotEmpty) {
+    if ((await BlobStore.readList(_key) ?? const []).isNotEmpty) {
       // 沒旗標卻有範本＝很舊的版本升上來的：只立 v1 的旗標，
       // 讓 V2～V4 照舊替他搬遷
       await prefs.setBool(_seededKey, true);
@@ -43,7 +48,7 @@ class PresetStore {
         ),
       ),
     ];
-    await prefs.setStringList(_key, demos.map((p) => p.encode()).toList());
+    await BlobStore.writeList(_key, demos.map((p) => p.encode()).toList());
     // 旗標最後才立：寫到一半被殺掉的話下次還會重種
     await prefs.setBool(_seededKey, true);
     for (final k in const [_seededV2Key, _seededV3Key, _seededV4Key]) {
@@ -235,8 +240,7 @@ class PresetStore {
   /// seeding 是 read-modify-write——load() 對壞資料是「略過」，
   /// 略過再整包回寫＝那筆範本被永久抹掉且無從察覺
   static Future<bool> _allParseable() async {
-    final prefs = await SharedPreferences.getInstance();
-    for (final s in prefs.getStringList(_key) ?? const <String>[]) {
+    for (final s in await BlobStore.readList(_key) ?? const <String>[]) {
       try {
         WatermarkPreset.decode(s);
       } catch (_) {
@@ -247,8 +251,7 @@ class PresetStore {
   }
 
   static Future<List<WatermarkPreset>> load() async {
-    final prefs = await SharedPreferences.getInstance();
-    final list = prefs.getStringList(_key) ?? [];
+    final list = await BlobStore.readList(_key) ?? const <String>[];
     final presets = <WatermarkPreset>[];
     for (final s in list) {
       try {
@@ -261,8 +264,7 @@ class PresetStore {
   }
 
   static Future<void> saveAll(List<WatermarkPreset> presets) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(_key, presets.map((p) => p.encode()).toList());
+    await BlobStore.writeList(_key, presets.map((p) => p.encode()).toList());
   }
 
   static Future<void> add(WatermarkPreset preset) async {

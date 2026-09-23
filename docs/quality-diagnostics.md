@@ -1,3 +1,31 @@
+## 2026-09-23 BUILD 218 定罪：SharedPreferences 裡的大資料（blob-store-1）
+
+飛行紀錄器第一份報告：
+- 開 App 最早一筆（`launchEarliest`，App 任何初始化之前）就 695MB，拆帳
+  **malloc 690MB**；CI 模擬器同一點 malloc 2.8MB。MetricKit 嫌疑推翻。
+- 常駐：malloc ~700MB＋untagged（Dart）~700MB，兩份一樣大。
+- 開 App 1～2 秒 malloc 衝到 2022MB、總量 2852MB（剩 524MB），接著 app1
+  683MB、峰值 3099MB——這時還沒開始匯入。
+- 最後一筆（組合成上屏後）1629MB、剩 1747MB，兩秒內行程結束。
+
+判定：iOS 開 App 就把 NSUserDefaults 整個設定檔讀進 CFPreferences（malloc），
+Flutter 的 SharedPreferences 又整包複製一份到 Dart（untagged），getAll 那一下
+還有傳輸暫存。設定檔裡是影片草稿（使用者曾有 113 份、只有按清理才刪）
+每份各帶一份 Logo base64＋封面，範本每個也帶 Logo，貼圖 60 張 PNG。這個
+底子吃掉上限 3376MB 的將近一半，多支 4K 匯入壓垮的是剩下那一半。新裝置／
+模擬器的設定檔是空的，所以從來重現不了。
+
+修：`BlobStore`——影片草稿內容與封面（`project_data_*`／`project_thumb_*`）、
+範本（`wm_presets_v1`）、貼圖（`stickers_v1`）改存 Application Support/blobs
+的檔案；索引與旗標留在 prefs。`main.dart` 開 App 先 `BlobStore.init()`（問一次
+目錄＋把舊資料搬出 prefs，寫成功才刪，寫不進去留在原地、讀時回頭找）。Web
+與不跑 main 的測試照舊用 prefs（widget 測試假時間裡，沒掛假通道的
+path_provider 呼叫會永遠等不到回覆）。檔案讀寫用同步版，成本跟以前 prefs 相同。
+尚未搬：批次／拼圖／GIF／照片四個畫面各一份的草稿（`*_draft_v1`）。
+
+驗收：下一份報告的 `launch.regions.malloc` 應從 690MB 掉到個位數；第一次開新版
+那一趟 Diag 事件會有「大資料搬出設定檔：N 筆、約 X MB」。
+
 ## 2026-09-23 BUILD 217 仍閃退：峰值在第一次組合成之前就撞上限（memory-flight-1）
 
 217 的原生預覽檢查點：5 支 5 軌的第一次組合成 build-start 時，核心峰值

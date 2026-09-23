@@ -3,7 +3,8 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/painting.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+
+import 'blob_store.dart';
 
 /// 貼圖庫：Emoji 與「自己常用的圖片」。
 ///
@@ -11,7 +12,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// 位置、縮放、旋轉、透明度、平鋪、匯出全部直接繼承，這裡只負責
 /// 「產出／記住那張圖」。
 ///
-/// 自訂貼圖用 base64 存在本機（跟範本同一套做法）。Emoji 不存圖，
+/// 自訂貼圖用 base64 存在本機（跟範本同一套做法，存成檔案、不放
+/// SharedPreferences，見 BlobStore）。Emoji 不存圖，
 /// 只存字元，用到時才畫成 PNG——一顆 emoji 的 PNG 大約 30KB，
 /// 全部存起來會把 web 的 localStorage（5MB）吃光
 class StickerStore {
@@ -87,8 +89,7 @@ class StickerStore {
 
   /// 使用者收藏的圖片貼圖（新的排在最前面）
   static Future<List<Uint8List>> load() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getStringList(_key) ?? const [];
+    final raw = await BlobStore.readList(_key) ?? const <String>[];
     final out = <Uint8List>[];
     for (final s in raw) {
       try {
@@ -102,8 +103,7 @@ class StickerStore {
 
   /// 收藏一張。重複的（同一份位元組）往前挪，不再存第二份
   static Future<void> add(Uint8List png) async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = List<String>.of(prefs.getStringList(_key) ?? const []);
+    final raw = List<String>.of(await BlobStore.readList(_key) ?? const []);
     final b64 = base64Encode(png);
     raw.remove(b64);
     raw.insert(0, b64);
@@ -111,15 +111,14 @@ class StickerStore {
     while (raw.length > 60) {
       raw.removeLast();
     }
-    await prefs.setStringList(_key, raw);
+    await BlobStore.writeList(_key, raw);
   }
 
   static Future<void> removeAt(int i) async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = List<String>.of(prefs.getStringList(_key) ?? const []);
+    final raw = List<String>.of(await BlobStore.readList(_key) ?? const []);
     if (i < 0 || i >= raw.length) return;
     raw.removeAt(i);
-    await prefs.setStringList(_key, raw);
+    await BlobStore.writeList(_key, raw);
   }
 
   /// 把一顆 Emoji 畫成透明背景的 PNG（邊長 [size]）。
