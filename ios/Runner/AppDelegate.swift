@@ -3858,11 +3858,11 @@ final class MCExitRecorder: NSObject, MXMetricManagerSubscriber {
       MCExitRecorder.write(exception)
       MCExitRecorder.previousHandler?(exception)
     }
-    let manager = MXMetricManager.shared
-    manager.add(self)
-    // Payloads delivered while an earlier process was running.
-    ingest(diagnostics: manager.pastDiagnosticPayloads)
-    ingest(metrics: manager.pastPayloads)
+    // 只訂閱新送到的（didReceive 收到就存進 metrickit_last.json）。
+    // 不讀 pastDiagnosticPayloads／pastPayloads：那是好幾週累積的當機／卡頓／
+    // 磁碟寫入診斷，含整棵呼叫堆疊，開 App 一次全部反序列化進記憶體——
+    // BUILD 217 實機剛開 App 就 694MB，模擬器（沒有這些報告）只有 14MB
+    MXMetricManager.shared.add(self)
   }
 
   func snapshot() -> [String: Any] {
@@ -3939,8 +3939,9 @@ final class MCExitRecorder: NSObject, MXMetricManagerSubscriber {
 
   private func ingest(diagnostics payloads: [MXDiagnosticPayload]) {
     var crashes: [[String: Any]] = []
-    for payload in payloads {
-      for crash in payload.crashDiagnostics ?? [] {
+    // 只看最新的幾份：每份都要把整棵呼叫堆疊轉成 JSON，舊的留著也沒用
+    for payload in payloads.suffix(3) {
+      for crash in (payload.crashDiagnostics ?? []).suffix(3) {
         var item: [String: Any] = [
           "window": "\(payload.timeStampBegin.description)~\(payload.timeStampEnd.description)",
           "build": crash.metaData.applicationBuildVersion,
