@@ -1374,6 +1374,90 @@ class RunnerTests: XCTestCase {
     }
   }
 
+  // 組建丟背景（實機一次 124ms、最久 255ms 卡在跟 Flutter 共用的主執行緒上）：
+  // 背景只組資料，畫面上那顆播放器在主執行緒換上之前一個欄位都不能被動到
+  func testBackgroundBuildLeavesThePlayerUntouchedUntilMainCommits() throws {
+    let url = try makeScrubVideo()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let player = CompPlayer(registry: ScrubTestTextureRegistry())
+    defer { player.dispose() }
+    final class Outcome {
+      var ok = false
+      var onMain = true
+    }
+    let outcome = Outcome()
+    let built = expectation(description: "background build")
+    DispatchQueue(label: "markcut.test.build", qos: .userInitiated).async {
+      outcome.onMain = Thread.isMainThread
+      outcome.ok = player.build(clips: [
+        ["path": url.path, "start": 0.0, "end": 1.0, "offset": 0.0, "track": 0],
+        ["path": url.path, "start": 0.0, "end": 0.6, "offset": 0.2, "track": 1,
+         "scale": 0.5],
+      ], texture: false, commit: false)
+      built.fulfill()
+    }
+    wait(for: [built], timeout: 30)
+    XCTAssertFalse(outcome.onMain)
+    XCTAssertTrue(outcome.ok, player.buildError ?? "")
+    XCTAssertNil(player.player.currentItem, "還沒換上：背景不能動播放器")
+    player.commitBuild()
+    let item = try XCTUnwrap(player.player.currentItem)
+    XCTAssertEqual(player.duration, 1.0, accuracy: 0.05)
+    player.commitBuild()
+    XCTAssertTrue(player.player.currentItem === item, "同一份只換上一次")
+  }
+
+  // 組建排隊中的指令：照原本的順序補做；補做到 build 又開始組的話，
+  // 後面的照順序再排到新的那一輪
+  func testCompCallsDuringABackgroundBuildWaitAndReplayInOrder() {
+    let delegate = AppDelegate()
+    var handled: [String] = []
+    var answered: [String] = []
+    delegate.compHandler = { call, result in
+      handled.append(call.method)
+      if call.method == "build" { delegate.compBuildInFlight = true }
+      result(call.method)
+    }
+    func send(_ method: String) {
+      delegate.dispatchComp(FlutterMethodCall(methodName: method, arguments: nil)) {
+        answered.append(($0 as? String) ?? "?")
+      }
+    }
+    delegate.compBuildInFlight = true
+    send("seek")
+    send("available")
+    send("setXform")
+    send("build")
+    send("position")
+    XCTAssertEqual(handled, ["available"], "組建中只有 available 照答")
+    delegate.finishCompBuild()
+    XCTAssertEqual(handled, ["available", "seek", "setXform", "build"])
+    XCTAssertTrue(delegate.compBuildInFlight, "補做的 build 又開始組")
+    delegate.finishCompBuild()
+    XCTAssertEqual(handled, ["available", "seek", "setXform", "build", "position"])
+    XCTAssertEqual(answered, handled, "每一發都要有回覆，順序不變")
+    XCTAssertFalse(delegate.compBuildInFlight)
+  }
+
+  func testPreviewTailCacheAnswersRepeatsAndKeysOnFileIdentity() throws {
+    let url = try makeScrubVideo()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let asset = AVURLAsset(url: url)
+    let track = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
+    let end = CMTime(seconds: 1.02, preferredTimescale: 600)
+    let first = try XCTUnwrap(MCPreviewTail.lastSample(of: track, before: end, after: .zero))
+    let again = try XCTUnwrap(MCPreviewTail.lastSample(of: track, before: end, after: .zero))
+    XCTAssertEqual(first, again)
+    XCTAssertEqual(again.start.seconds, 29.0 / 30, accuracy: 0.002)
+    let key = try XCTUnwrap(MCPreviewTail.cacheKey(track, end, .zero))
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date(timeIntervalSinceNow: -3600)], ofItemAtPath: url.path)
+    let changed = try XCTUnwrap(MCPreviewTail.cacheKey(track, end, .zero))
+    XCTAssertNotEqual(key, changed, "檔案換過（修改時間變了）不能拿舊答案")
+    XCTAssertFalse(CompPlayer.isHDRSource(url.path))
+    XCTAssertFalse(CompPlayer.isHDRSource(url.path), "第二次走快取，答案一樣")
+  }
+
   func testLiveClipVolumesUpdateTheCurrentItemAndPreserveOtherClipsAndFades() throws {
     let videoURL = try makeScrubVideo()
     let audioURL = FileManager.default.temporaryDirectory

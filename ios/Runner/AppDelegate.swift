@@ -4443,6 +4443,44 @@ final class MCInteractivePrepGate {
   private var comp: CompPlayer?
   private var compPreviewTrace: UUID?
 
+  /// 組合成的背景佇列。組建（開素材、讀軌道、鋪合成軌、驗指令、建
+  /// AVPlayerItem）以前整段在主執行緒上：實機一次 124ms、最久 255ms，
+  /// 而 Flutter 的 UI 跟平台共用這條執行緒——每次重組（代理落地、編輯
+  /// 停手）畫面就凍住那麼久。現在只有最後「換上播放器」那一下回主執行緒
+  private let compBuildQueue = DispatchQueue(label: "markcut.comp.build", qos: .userInitiated)
+
+  /// 背景組建進行中：這段期間進來的合成通道指令先排隊，換上之後照原本
+  /// 的順序補做。以前組建卡著主執行緒，這些訊息本來就排在組建後面、
+  /// 打到新的那顆——排隊之後順序跟以前一模一樣，只是畫面不再凍住
+  var compBuildInFlight = false
+  private var compDeferred: [(FlutterMethodCall, FlutterResult)] = []
+  var compHandler: ((FlutterMethodCall, @escaping FlutterResult) -> Void)?
+
+  /// 合成通道的每一發都從這裡進：背景組建中先排隊（available 不碰合成，照答）
+  func dispatchComp(_ call: FlutterMethodCall, _ result: @escaping FlutterResult) {
+    if compBuildInFlight, call.method != "available" {
+      compDeferred.append((call, result))
+      return
+    }
+    guard let handler = compHandler else {
+      result(nil)
+      return
+    }
+    handler(call, result)
+  }
+
+  /// 組建收尾（成功或失敗都走）：解除排隊，照順序補做排著的指令。
+  /// 補做到一半又遇到 build 的話，它後面的會照原順序再排到新的那一輪
+  ///（dispatchComp 看得到又在組了）
+  func finishCompBuild() {
+    compBuildInFlight = false
+    let pending = compDeferred
+    compDeferred.removeAll()
+    for (call, result) in pending {
+      dispatchComp(call, result)
+    }
+  }
+
   private func registerCompChannel(_ engineBridge: FlutterImplicitEngineBridge) {
     guard let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "markcut.comp")
     else { return }
@@ -4453,6 +4491,13 @@ final class MCInteractivePrepGate {
     registrar.register(PlayerViewFactory(), withId: "markcut/player_view")
     registrar.register(MetalViewFactory(), withId: "markcut/metal_view")
     channel.setMethodCallHandler { [weak self] call, result in
+      guard let self = self else {
+        result(nil)
+        return
+      }
+      self.dispatchComp(call, result)
+    }
+    compHandler = { [weak self] call, result in
       guard let self = self else {
         result(nil)
         return
@@ -4477,12 +4522,7 @@ final class MCInteractivePrepGate {
         let stills = args["stills"] as? [[String: Any]] ?? []
         let hdrOut = args["hdrOut"] as? Bool ?? false
         let journal = MCNativePrepJournal.preview
-        let trace = journal.begin(file: "timeline", hdr: hdrOut)
-        self.compPreviewTrace = trace
-        journal.mark(trace, "preview", "build-start", details: [
-          "clips": clips.count, "tracks": Set(clips.compactMap { $0["track"] as? Int }).count,
-          "stills": stills.count, "replacing": self.comp != nil,
-          "revision": "memory-flight-1", "regions": MCNativePrepJournal.regions()])
+        let replacing = self.comp != nil
         CIExportCompositor.setHiddenImageTracks(Set(args["hiddenImageTracks"] as? [Int] ?? []))
         let overlays = args["overlays"] as? [[String: Any]] ?? []
         // 純聲音素材（配樂／旁白／從影片提取的聲音）：跟匯出 run 的
@@ -4493,64 +4533,105 @@ final class MCInteractivePrepGate {
         if !mosaics.isEmpty || !stills.isEmpty || !overlays.isEmpty {
           CIExportCompositor.warmUp()
         }
-        guard
-          p.build(
-            clips: clips, texture: (args["texture"] as? Bool) ?? true,
+        let texture = (args["texture"] as? Bool) ?? true
+        let ovLive = args["ovLive"] as? Bool ?? false
+        let timelineDuration = args["timelineDuration"] as? Double ?? 0
+        let canvasAspect = args["canvasAspect"] as? Double
+        let stillInverseOotf = args["stillInverseOotf"] as? Bool
+        // 組建丟背景（見 compBuildQueue）；換上播放器那一下回主執行緒。
+        // 這段期間的其他指令排隊（見 compBuildInFlight）
+        self.compBuildInFlight = true
+        let requested = CACurrentMediaTime()
+        self.compBuildQueue.async { [weak self] in
+          let started = CACurrentMediaTime()
+          // 飛行紀錄器每兩秒已經在記各類記憶體，這裡不再走一遍 VM 區域
+          //（幾到幾十毫秒，以前就記在每一次組建的帳上）
+          let trace = journal.begin(file: "timeline", hdr: hdrOut)
+          journal.mark(trace, "preview", "build-start", details: [
+            "clips": clips.count, "tracks": Set(clips.compactMap { $0["track"] as? Int }).count,
+            "stills": stills.count, "replacing": replacing,
+            "revision": "comp-background-build-1"])
+          let ok = p.build(
+            clips: clips, texture: texture,
             mosaics: mosaics, stills: stills, hdrOut: hdrOut,
             audios: audios,
             overlays: overlays,
             // 收即時清單的合成器要掛著，就算 overlays 現在是空的
             //（全域浮水印隱藏中；見 CompPlayer.build 的 liveOverlays）
-            ovLive: args["ovLive"] as? Bool ?? false,
+            ovLive: ovLive,
             // 合成要補到多長（0＝不用補；見 CompPlayer.build）
-            timelineDuration: args["timelineDuration"] as? Double ?? 0,
-            canvasAspect: args["canvasAspect"] as? Double,
+            timelineDuration: timelineDuration,
+            canvasAspect: canvasAspect,
             // HLG 合成裡的圖片素材反 OOTF：沒送＝自動（中灰探針判定），
             // 送了 true/false＝診斷強制值（見 MCStillLoader.load）
-            stillInverseOotf: args["stillInverseOotf"] as? Bool)
-        else {
-          let why = p.buildError ?? "未知原因"
-          journal.finish(trace, error: why)
-          self.compPreviewTrace = nil
-          p.dispose()
-          result(["error": why])  // 舊的還活著，畫面照舊
-          return
-        }
-        let old = self.comp
-        self.comp = p
-        // 舊的等新畫面真的上檔（第一格就緒翻面）才收：
-        // 收早了前面那層還指著它，就是使用者看到的閃黑。
-        // 順便告訴 Dart「新合成真的顯示了」——HDR 預覽的 Flutter 版
-        // 浮水印要等這一刻才藏（早藏＝舊畫面還在、浮水印憑空消失）
-        PlayerHosts.shared.use(p.player, retiring: old?.player,
-          disposeRetired: { old?.dispose() }) {
-          journal.mark(trace, "preview", "visible",
-            details: ["regions": MCNativePrepJournal.regions()])
+            stillInverseOotf: stillInverseOotf,
+            // 換上播放器（PlayerHosts、換 item、材質）回主執行緒才做
+            commit: false)
+          let built = CACurrentMediaTime()
           DispatchQueue.main.async {
-            channel.invokeMethod("compVisible", arguments: nil)
+            guard let self = self else {
+              p.dispose()
+              result(nil)
+              return
+            }
+            defer { self.finishCompBuild() }
+            let queuedMs = (started - requested) * 1000
+            let prepareMs = (built - started) * 1000
+            guard ok else {
+              let why = p.buildError ?? "未知原因"
+              journal.finish(trace, error: why)
+              p.dispose()
+              result(["error": why])  // 舊的還活著，畫面照舊
+              return
+            }
+            let commitStart = CACurrentMediaTime()
+            self.compPreviewTrace = trace
+            p.commitBuild()
+            let old = self.comp
+            self.comp = p
+            // 舊的等新畫面真的上檔（第一格就緒翻面）才收：
+            // 收早了前面那層還指著它，就是使用者看到的閃黑。
+            // 順便告訴 Dart「新合成真的顯示了」——HDR 預覽的 Flutter 版
+            // 浮水印要等這一刻才藏（早藏＝舊畫面還在、浮水印憑空消失）
+            PlayerHosts.shared.use(p.player, retiring: old?.player,
+              disposeRetired: { old?.dispose() }) {
+              // 紀錄檔的寫入不佔主執行緒
+              DispatchQueue.global(qos: .utility).async {
+                journal.mark(trace, "preview", "visible")
+              }
+              DispatchQueue.main.async {
+                channel.invokeMethod("compVisible", arguments: nil)
+              }
+            }
+            PlayerHosts.shared.onNativeScrubInvalidated = { [weak p] in
+              p?.invalidateNativeScrub()
+            }
+            PlayerHosts.shared.onNativeScrubStyleChanged = { [weak p] in
+              p?.nativeStyleChanged()
+            }
+            let commitMs = (CACurrentMediaTime() - commitStart) * 1000
+            result([
+              "textureId": p.textureId,
+              "duration": p.duration,
+              "width": Double(p.size.width),
+              "height": Double(p.size.height),
+              // 這一次組建有沒有掛 CI／HDR 判定（Dart 端寫進「就緒」的
+              // 診斷歷史——組建內視鏡只留最後一次，進場那次會被蓋掉）
+              "ci": (p.buildInfo["CI"] as? Bool) ?? false,
+              "hdr": (p.buildInfo["HDR"] as? Bool) ?? false,
+              // 疊加物有沒有走「即時清單」（HDR 預覽）：有的話 Dart 端
+              // 把 Flutter 版藏起來、之後用 setOverlays 更新
+              "wmLive": p.wmLive,
+              "opaqueSourcePaths": p.opaqueSourcePaths.sorted(),
+              "nativeScrub": p.nativeScrubSupported,
+              // 組建分段（毫秒）：背景排隊、背景組、主執行緒換上。
+              // 只有最後這段會卡畫面
+              "queuedMs": queuedMs,
+              "prepareMs": prepareMs,
+              "commitMs": commitMs,
+            ])
           }
         }
-        PlayerHosts.shared.onNativeScrubInvalidated = { [weak p] in
-          p?.invalidateNativeScrub()
-        }
-        PlayerHosts.shared.onNativeScrubStyleChanged = { [weak p] in
-          p?.nativeStyleChanged()
-        }
-        result([
-          "textureId": p.textureId,
-          "duration": p.duration,
-          "width": Double(p.size.width),
-          "height": Double(p.size.height),
-          // 這一次組建有沒有掛 CI／HDR 判定（Dart 端寫進「就緒」的
-          // 診斷歷史——組建內視鏡只留最後一次，進場那次會被蓋掉）
-          "ci": (p.buildInfo["CI"] as? Bool) ?? false,
-          "hdr": (p.buildInfo["HDR"] as? Bool) ?? false,
-          // 疊加物有沒有走「即時清單」（HDR 預覽）：有的話 Dart 端
-          // 把 Flutter 版藏起來、之後用 setOverlays 更新
-          "wmLive": p.wmLive,
-          "opaqueSourcePaths": p.opaqueSourcePaths.sorted(),
-          "nativeScrub": p.nativeScrubSupported,
-        ])
       case "mbuild":
         // Metal 預覽引擎（滑動/暫停接管）：換佈局。組不了回 false，
         // Dart 端照舊走現有路徑
@@ -8348,10 +8429,44 @@ enum MCPreviewTail {
     return gap >= 0 && gap <= 1.0 / 30.0 + 1.0 / 600.0 ? projectEnd : end
   }
 
+  /// 同一支檔、同一段範圍的答案永遠一樣：重組（代理落地、每次編輯停手）
+  /// 以前每一層都重開一次 AVAssetReader 讀最後一秒的樣本。檔案換了內容
+  /// （大小或修改時間變）就對不上，自然重算
+  private static let cacheLock = NSLock()
+  private static var cache: [String: CMTimeRange] = [:]
+
+  static func cacheKey(_ track: AVAssetTrack, _ end: CMTime, _ start: CMTime) -> String? {
+    guard let url = (track.asset as? AVURLAsset)?.url, url.isFileURL,
+      let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+    else { return nil }
+    let size = (attrs[.size] as? NSNumber)?.int64Value ?? -1
+    let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
+    return "\(url.path)|\(size)|\(mtime)|\(track.trackID)|\(end.value)/\(end.timescale)|\(start.value)/\(start.timescale)"
+  }
+
   /// Read compressed sample timestamps only. Selecting the actual final sample
   /// handles VFR and video tracks shorter than their container's audio duration.
   static func lastSample(of track: AVAssetTrack, before end: CMTime,
                          after start: CMTime) -> CMTimeRange? {
+    let key = cacheKey(track, end, start)
+    if let key = key {
+      cacheLock.lock()
+      let hit = cache[key]
+      cacheLock.unlock()
+      if let hit = hit { return hit }
+    }
+    let found = readLastSample(of: track, before: end, after: start)
+    if let key = key, let found = found {
+      cacheLock.lock()
+      if cache.count > 512 { cache.removeAll() }
+      cache[key] = found
+      cacheLock.unlock()
+    }
+    return found
+  }
+
+  private static func readLastSample(of track: AVAssetTrack, before end: CMTime,
+                                     after start: CMTime) -> CMTimeRange? {
     guard let asset = track.asset, let reader = try? AVAssetReader(asset: asset) else { return nil }
     let upper = min(end, track.timeRange.end)
     let lower = max(start, max(track.timeRange.start,
@@ -8424,17 +8539,41 @@ final class CompPlayer: NSObject, FlutterTexture {
   private(set) var opaqueSourcePaths: Set<String> = []
   /// 這個檔的視訊軌是不是 HDR（有色彩轉換標記且不是 709）。
   /// 判定跟 probeFile/alreadyGoodEnough 同一套；只讀容器中繼資料
+  /// 判過的檔（路徑＋大小＋修改時間 → 是不是 HDR）。只記讀得到軌道的
+  /// 答案：進場當下讀不到資料的那次（見 build 的 anyHDR）不能被記成 SDR
+  private static let hdrLock = NSLock()
+  private static var hdrCache: [String: Bool] = [:]
+
   static func isHDRSource(_ path: String) -> Bool {
+    var key: String?
+    if let attrs = try? FileManager.default.attributesOfItem(atPath: path) {
+      let size = (attrs[.size] as? NSNumber)?.int64Value ?? -1
+      let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
+      key = "\(path)|\(size)|\(mtime)"
+    }
+    if let key = key {
+      hdrLock.lock()
+      let hit = hdrCache[key]
+      hdrLock.unlock()
+      if let hit = hit { return hit }
+    }
     let asset = AVURLAsset(url: URL(fileURLWithPath: path))
     guard let t = asset.tracks(withMediaType: .video).first,
       let fdAny = t.formatDescriptions.first
     else { return false }
     let fd = fdAny as! CMFormatDescription
-    guard
-      let trc = CMFormatDescriptionGetExtension(
-        fd, extensionKey: kCMFormatDescriptionExtension_TransferFunction)
-    else { return false }
-    return !CFEqual(trc, kCMFormatDescriptionTransferFunction_ITU_R_709_2)
+    var hdr = false
+    if let trc = CMFormatDescriptionGetExtension(
+      fd, extensionKey: kCMFormatDescriptionExtension_TransferFunction) {
+      hdr = !CFEqual(trc, kCMFormatDescriptionTransferFunction_ITU_R_709_2)
+    }
+    if let key = key {
+      hdrLock.lock()
+      if hdrCache.count > 256 { hdrCache.removeAll() }
+      hdrCache[key] = hdr
+      hdrLock.unlock()
+    }
+    return hdr
   }
 
   /// 讓 AVPlayerLayer 的 PlatformView 拿得到（見 PlayerHostView）
@@ -9149,6 +9288,8 @@ final class CompPlayer: NSObject, FlutterTexture {
   /// [ovLive] HDR 預覽要收即時疊加物清單（setOverlays）：就算 overlays
   /// 現在是空的（全域浮水印隱藏中）也要掛 CI 合成器、wmLive 打開——
   /// 不然隱藏中重建出來的合成不收清單，打開只能由 Flutter 畫（HDR 上是灰的）
+  /// [commit] false＝只組資料（背景佇列可以跑）：換上播放器那一段留給
+  /// [commitBuild]，由呼叫端回主執行緒做（見 AppDelegate 的 compBuildQueue）
   func build(
     clips: [[String: Any]], texture: Bool, mosaics: [[String: Any]] = [],
     stills: [[String: Any]] = [], hdrOut: Bool = false,
@@ -9156,7 +9297,8 @@ final class CompPlayer: NSObject, FlutterTexture {
     overlays: [[String: Any]] = [], ovLive: Bool = false,
     timelineDuration: Double = 0,
     canvasAspect: Double? = nil,
-    stillInverseOotf: Bool? = nil
+    stillInverseOotf: Bool? = nil,
+    commit: Bool = true
   ) -> Bool {
     cancelSeekRequests()
     audioSegments.removeAll()
@@ -10267,17 +10409,6 @@ final class CompPlayer: NSObject, FlutterTexture {
       item.audioTimePitchAlgorithm = .timeDomain
     }
     observeStalls(item)
-    // 影格輸出：BGRA 直接給 Flutter 材質用
-    // 屬性字典的型別要寫死：空字典字面值 Swift 推不出型別會直接編不過
-    let attrs: [String: Any] = [
-      kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
-      kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
-    ]
-    if texture {
-      let out = AVPlayerItemVideoOutput(pixelBufferAttributes: attrs)
-      item.add(out)
-      output = out
-    }
     buildInfo["合成軌"] = vTracks.count
     buildInfo["usesVC"] = usesVC
     // 長度 0＝合成是空的（多半是「沒有視訊軌」的壞工作檔混進來）。
@@ -10322,6 +10453,33 @@ final class CompPlayer: NSObject, FlutterTexture {
     CIExportCompositor.worstSeamMs = 0
     CIExportCompositor.slowLock.unlock()
     composition = comp
+    opaqueSourcePaths = Set(opaqueByPath.compactMap { $0.value ? $0.key : nil })
+    pendingItem = item
+    pendingTexture = texture
+    if commit { commitBuild() }
+    return true
+  }
+
+  /// [build] 組好、還沒換上的那一份
+  private var pendingItem: AVPlayerItem?
+  private var pendingTexture = false
+
+  /// 把組好的合成換上播放器。一定在主執行緒：PlayerHosts 沒有鎖、
+  /// 畫面圖層跟 seek 狀態都只在主執行緒動，材質登記與 display link 也是
+  func commitBuild() {
+    guard let item = pendingItem else { return }
+    pendingItem = nil
+    if pendingTexture {
+      // 影格輸出：BGRA 直接給 Flutter 材質用
+      // 屬性字典的型別要寫死：空字典字面值 Swift 推不出型別會直接編不過
+      let attrs: [String: Any] = [
+        kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
+        kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+      ]
+      let out = AVPlayerItemVideoOutput(pixelBufferAttributes: attrs)
+      item.add(out)
+      output = out
+    }
     Self.stItemSwaps += 1
     // 新 item 停在 0 秒：畫面翻面要等 Dart 的定位 seek 落地
     //（見 PlayerHosts.hold；chase 完成／play 時 release）
@@ -10334,14 +10492,12 @@ final class CompPlayer: NSObject, FlutterTexture {
     audioPlayer.replaceCurrentItem(with: nil)
     audioValid = false
 
-    if texture {
+    if pendingTexture {
       if textureId == 0, let registry = registry {
         textureId = registry.register(self)
       }
       startLink()
     }
-    opaqueSourcePaths = Set(opaqueByPath.compactMap { $0.value ? $0.key : nil })
-    return true
   }
 
   private func startLink() {
