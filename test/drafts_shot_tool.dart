@@ -123,6 +123,13 @@ void main() {
         );
   });
 
+  // 種的轉檔暫存一次就是 1GB 多（真的佔磁碟），拍完一定要清掉
+  tearDownAll(() {
+    try {
+      root.deleteSync(recursive: true);
+    } catch (_) {}
+  });
+
   Future<void> seed(WidgetTester t) async {
     final sep = Platform.pathSeparator;
     final wf = '${root.path}${sep}workfiles';
