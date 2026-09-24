@@ -22,7 +22,8 @@ enum QualityMetric {
   cropOutput('裁切確認出圖', 1000, 3, 'ms；解碼、裁切、PNG 編碼及預覽快取，不含使用者操作'),
   importMetadata('影片資料接入', 1000, 3, 'ms／支；不含系統選檔與雲端下載'),
   importGate('匯入遮罩等待', 5000, 1, 'ms；遮罩收起不等於首幀已呈現'),
-  composition('播放器建置', 1000, 3, 'ms；包含準備與通道，非上屏');
+  composition('播放器建置', 1000, 3, 'ms；背景組建＋通道，不卡畫面；非上屏'),
+  compositionCommit('播放器換上', 16, 3, 'ms；原生主執行緒換上新合成那一段，會卡畫面的只有這段');
 
   const QualityMetric(this.label, this.budgetMs, this.minimum, this.meaning);
   final String label;
@@ -43,6 +44,7 @@ enum QualityMetric {
     importMetadata ||
     importGate => '區分本機讀取、中繼資料、縮圖與背景代理；系統選檔不在此計時。',
     composition => '檢查是否在拖曳或隱藏時重建播放器。',
+    compositionCommit => '檢查換上時的 AVPlayerItem 替換、圖層交接與材質登記。',
     playbackLag || playStart => '對照播放器供格、緩衝及代理就緒狀態；時鐘落後不等於顯示掉幀。',
   };
 }

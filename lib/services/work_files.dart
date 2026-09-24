@@ -155,12 +155,15 @@ class WorkFiles {
       for (final p in paths) {
         if (!own.any(p.startsWith)) continue; // 不是 App 自己的檔
         if (_inFlight.contains(p)) continue; // 還在寫
+        // 別份草稿直接指著這個檔（救回的素材、倒轉檔都是素材本身）：
+        // 以前只問索引的原檔，imports/ 的檔不在索引裡，別人在用也照刪
+        if (referenced(p)) continue;
         final keys = [
           for (final e in idx.entries)
             if (e.value is Map && (e.value as Map)['work'] == p) e.key,
         ];
-        // 索引 key 是原檔路徑（HDR 代理多一個 #hdr 尾巴）
-        if (keys.any((k) => referenced(k.split('#hdr').first))) continue;
+        // 索引 key 是原檔路徑（HDR 代理、倒轉檔多一截尾巴，見 sourceOfKey）
+        if (keys.any((k) => referenced(sourceOfKey(k)))) continue;
         for (final k in keys) {
           idx.remove(k);
           idxDirty = true;
@@ -177,6 +180,133 @@ class WorkFiles {
     } catch (_) {}
     if (n > 0) Diag.note('清掉的草稿連帶清了 $n 個工作檔／救回的素材');
     return n;
+  }
+
+  /// 索引 key 的原檔路徑：工作檔是原檔路徑本身，HDR 代理多一截
+  /// `#hdr6`（舊版 `#hdr`），倒轉檔多一截 `#rev:起~迄`
+  static String sourceOfKey(String key) {
+    final rev = key.lastIndexOf('#rev:');
+    if (rev > 0) return key.substring(0, rev);
+    for (final tail in const ['#hdr6', '#hdr']) {
+      if (key.endsWith(tail)) return key.substring(0, key.length - tail.length);
+    }
+    return key;
+  }
+
+  /// 這幾份草稿不要了：[refs] 是它們用到的路徑（素材原檔、工作檔、HDR
+  /// 代理、倒轉的來源），[referenced] 問「剩下的草稿有沒有在用」。
+  /// 清的是只有它們在用的 App 自有檔案：直接指著的（救回的素材、倒轉檔、
+  /// 記下的工作檔路徑），以及這些原檔在索引裡的每一支工作檔／代理／
+  /// 倒轉檔。回傳真的刪掉幾個
+  static Future<int> releaseRefs(
+    Set<String> refs, {
+    required bool Function(String path) referenced,
+  }) async {
+    if (kIsWeb || refs.isEmpty || holdSweep) return 0;
+    final targets = <String>{
+      for (final r in refs)
+        if (!referenced(r)) r,
+    };
+    try {
+      final idx = await _load();
+      for (final e in idx.entries) {
+        final v = e.value;
+        if (v is! Map || v['work'] is! String) continue;
+        final src = sourceOfKey(e.key);
+        if (refs.contains(src) && !referenced(src)) targets.add(v['work'] as String);
+      }
+    } catch (_) {}
+    return releaseFiles(targets, referenced: referenced);
+  }
+
+  /// 工作檔目錄與救回素材目錄的每一個檔（路徑 → 位元組），以及索引裡
+  /// 每支原檔對到哪些工作檔。草稿夾算容量用，不動任何東西
+  static Future<({Map<String, int> sizes, Map<String, Set<String>> bySource})>
+  inventory() async {
+    final sizes = <String, int>{};
+    final bySource = <String, Set<String>>{};
+    if (kIsWeb) return (sizes: sizes, bySource: bySource);
+    try {
+      final base = (await _support()).path;
+      final sep = Platform.pathSeparator;
+      for (final name in const ['workfiles', 'imports']) {
+        final d = Directory('$base$sep$name');
+        if (!await d.exists()) continue;
+        await for (final f in d.list()) {
+          if (f is! File) continue;
+          try {
+            sizes[f.path] = await f.length();
+          } catch (_) {}
+        }
+      }
+      final idx = await _load();
+      for (final e in idx.entries) {
+        final v = e.value;
+        if (v is! Map || v['work'] is! String) continue;
+        (bySource[sourceOfKey(e.key)] ??= <String>{}).add(v['work'] as String);
+      }
+    } catch (_) {}
+    return (sizes: sizes, bySource: bySource);
+  }
+
+  /// 這個檔正在寫（轉檔、倒轉中）：容量統計不能把它算成沒人用的
+  static bool isInFlight(String path) => _inFlight.contains(path);
+
+  /// 清掉「沒有任何草稿在用」的轉檔暫存：[referenced] 是所有草稿用到的
+  /// 路徑（素材原檔與檔案本身）。原檔跟檔案都沒人用、也不是正在寫的才刪；
+  /// 救回的素材（imports/）只看檔案本身。匯出期間、還有人在轉檔時什麼都
+  /// 不動。回傳刪掉的位元組數
+  static Future<int> releaseUnreferenced({
+    required bool Function(String path) referenced,
+  }) async {
+    if (kIsWeb || holdSweep || _inFlight.isNotEmpty || _ensuring.isNotEmpty) {
+      return 0;
+    }
+    var freed = 0;
+    try {
+      final idx = await _load();
+      final keepWorks = <String>{};
+      final dropKeys = <String>[];
+      for (final e in idx.entries) {
+        final v = e.value;
+        if (v is! Map || v['work'] is! String) {
+          dropKeys.add(e.key);
+          continue;
+        }
+        final w = v['work'] as String;
+        if (referenced(sourceOfKey(e.key)) || referenced(w)) {
+          keepWorks.add(w);
+        } else {
+          dropKeys.add(e.key);
+        }
+      }
+      final base = (await _support()).path;
+      final sep = Platform.pathSeparator;
+      for (final name in const ['workfiles', 'imports']) {
+        final d = Directory('$base$sep$name');
+        if (!await d.exists()) continue;
+        await for (final f in d.list()) {
+          if (f is! File) continue;
+          if (keepWorks.contains(f.path) || referenced(f.path)) continue;
+          if (_inFlight.contains(f.path)) continue;
+          try {
+            final n = await f.length();
+            await f.delete();
+            freed += n;
+          } catch (_) {}
+        }
+      }
+      if (dropKeys.isNotEmpty) {
+        for (final k in dropKeys) {
+          idx.remove(k);
+        }
+        await _save();
+      }
+    } catch (_) {}
+    if (freed > 0) {
+      Diag.note('清掉沒有草稿在用的轉檔暫存 ${(freed / 1048576).toStringAsFixed(0)}MB');
+    }
+    return freed;
   }
 
   /// 原檔現在的「身分證」：大小＋修改時間。換了內容就對不上

@@ -2,18 +2,22 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart' show XFile;
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/watermark_settings.dart';
+import '../services/blob_store.dart';
 import '../services/draft_assets.dart';
 import '../services/draft_store.dart';
 import '../services/file_reader.dart';
+import '../services/storage_usage.dart';
 import '../services/gif_store.dart';
+import '../services/photo_export.dart'
+    show PhotoEncoded, encodePhotoImage;
 import '../services/preset_store.dart';
 import '../services/video_picker.dart'
     show isVideoFile, pickGalleryGifs, pickVideoFiles;
@@ -76,8 +80,7 @@ Future<bool> _confirmDeleteBatchDraft(BuildContext context) async {
     action: '刪除',
   );
   if (!ok) return false;
-  final prefs = await SharedPreferences.getInstance();
-  await prefs.remove(kBatchDraftKey);
+  await BlobStore.delete(kBatchDraftKey);
   await DraftAssets.retain(DraftAssets.batch, const {});
   return true;
 }
@@ -91,8 +94,7 @@ Future<bool> _confirmDeleteGifDraft(BuildContext context) async {
     action: '刪除',
   );
   if (!ok) return false;
-  final prefs = await SharedPreferences.getInstance();
-  await prefs.remove(kGifDraftKey);
+  await BlobStore.delete(kGifDraftKey);
   return true;
 }
 
@@ -105,8 +107,7 @@ Future<bool> _confirmDeleteCollageDraft(BuildContext context) async {
     action: '刪除',
   );
   if (!ok) return false;
-  final prefs = await SharedPreferences.getInstance();
-  await prefs.remove(kCollageDraftKey);
+  await BlobStore.delete(kCollageDraftKey);
   await DraftAssets.retain(DraftAssets.collage, const {});
   return true;
 }
@@ -238,13 +239,13 @@ enum DraftKind { photo, batch, gif, collage }
 
 /// 讀一份單鍵草稿：解得開、而且 [contentKey] 那一欄（照片路徑、檔案
 /// 清單…）有東西才算有草稿。個人中心與草稿夾以前各寫一份、草稿夾還是
-/// 四段複製貼上——「有沒有」的規則一走岔就是一邊列得出、一邊列不出
-Map<String, dynamic>? _readDraftJson(
-  SharedPreferences prefs,
+/// 四段複製貼上——「有沒有」的規則一走岔就是一邊列得出、一邊列不出。
+/// 內容存成檔案（見 BlobStore；帶著 Logo 的 base64，不放設定檔）
+Future<Map<String, dynamic>?> _readDraftJson(
   String key,
   String contentKey,
-) {
-  final s = prefs.getString(key);
+) async {
+  final s = await BlobStore.read(key);
   if (s == null) return null;
   try {
     final j = jsonDecode(s) as Map<String, dynamic>;
@@ -488,17 +489,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final presets = await PresetStore.load();
     final videoDrafts = await DraftStore.list();
     final gifs = await GifStore.list();
-    final prefs = await SharedPreferences.getInstance();
+    final photo = await _readDraftJson(kPhotoDraftKey, 'photo');
+    final batch = await _readDraftJson(kBatchDraftKey, 'files');
+    final gif = await _readDraftJson(kGifDraftKey, 'path');
+    final collage = await _readDraftJson(kCollageDraftKey, 'photos');
 
     if (!mounted) return;
     setState(() {
       _presets = presets;
       _videoDrafts = videoDrafts;
       _gifs = gifs;
-      _photoDraft = _readDraftJson(prefs, kPhotoDraftKey, 'photo');
-      _batchDraft = _readDraftJson(prefs, kBatchDraftKey, 'files');
-      _gifDraft = _readDraftJson(prefs, kGifDraftKey, 'path');
-      _collageDraft = _readDraftJson(prefs, kCollageDraftKey, 'photos');
+      _photoDraft = photo;
+      _batchDraft = batch;
+      _gifDraft = gif;
+      _collageDraft = collage;
     });
     // 主頁最多畫兩張草稿卡（見 _draftCards）：封面也只讀那兩張。
     // 一張封面是 base64 的 720p PNG、上百 KB，以前三十份全讀進來
@@ -1344,6 +1348,64 @@ class _DraftsScreenState extends State<DraftsScreen> {
   bool _selecting = false;
   final Set<String> _picked = {};
 
+  /// 佔用空間（見 StorageUsage）：null＝還在算。給使用者自己判斷要不要刪
+  StorageReport? _usage;
+
+  /// 舊草稿補算檔案清單的進度（第幾份／共幾份）
+  (int, int)? _usageProgress;
+  int _usageGen = 0;
+  bool _clearing = false;
+
+  /// 舊封面換成 JPEG 那一輪的代號：一打開編輯頁就作廢，別在背景跟它搶
+  int _coverGen = 0;
+
+  Future<void> _scanUsage() async {
+    final gen = ++_usageGen;
+    try {
+      final r = await StorageUsage.scan(
+        onProgress: (done, total) {
+          if (mounted && gen == _usageGen) {
+            setState(() => _usageProgress = (done, total));
+          }
+        },
+      );
+      if (!mounted || gen != _usageGen) return;
+      setState(() {
+        _usage = r;
+        _usageProgress = null;
+      });
+    } catch (_) {}
+  }
+
+  /// 清掉沒有任何草稿在用的轉檔暫存（使用者按了才做，先問）
+  Future<void> _clearUnused() async {
+    final u = _usage;
+    if (u == null || !u.canClearUnused || _clearing) return;
+    final ok = await showConfirm(
+      context,
+      title: '清掉 ${formatBytes(u.filesUnused)} 轉檔暫存？',
+      message: '這些是之前匯入影片時轉好的檔，現在沒有任何草稿在用。'
+          '之後再匯入同一支影片會重新轉一次，草稿不受影響',
+      action: '清掉',
+    );
+    if (!ok || !mounted) return;
+    setState(() => _clearing = true);
+    final freed = await StorageUsage.clearUnused();
+    if (!mounted) return;
+    setState(() => _clearing = false);
+    showHint(context, freed > 0 ? '清出 ${formatBytes(freed)}' : '沒有可以清的暫存');
+    unawaited(_scanUsage());
+  }
+
+  /// 打開編輯頁：背景換封面那一輪先停（別跟編輯器搶解碼與 GPU），
+  /// 回來再讀一次清單、再算一次容量。封面不放掉：放掉的話返回的轉場
+  /// 裡每一格都先變回圖示再跳回封面；換成 JPEG 之後留著也只佔一點點
+  Future<void> _openOver(Route<void> route) async {
+    _coverGen++;
+    await Navigator.push(context, route);
+    if (mounted) _reload();
+  }
+
   /// 手動清理：只有使用者按下去才會刪。自動清理全部拿掉了——
   /// 它要把每份草稿的完整 JSON（含縮圖與圖片）讀進來比對引用，
   /// 草稿多時是幾十 MB 的掃描，掛在開機/存檔路徑上會讓 App 被系統
@@ -1359,7 +1421,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
       title: '清掉最舊的 $over 份？',
       message:
           '現在有 ${_drafts.length} 份影片草稿，保留最新的 $_cap 份，'
-          '其餘連同它們自己的工作檔一起刪掉，無法復原',
+          '其餘連同只有它們在用的轉檔暫存一起刪掉，無法復原',
       action: '清掉 $over 份',
     );
     if (!ok || !mounted) return;
@@ -1378,14 +1440,106 @@ class _DraftsScreenState extends State<DraftsScreen> {
       action: '刪除',
     );
     if (!ok || !mounted) return;
-    for (final id in _picked) {
-      await DraftStore.remove(id);
-    }
+    // 一次刪完、連帶清理只算一次（見 DraftStore.removeMany）
+    await DraftStore.removeMany({..._picked});
+    if (!mounted) return;
     setState(() {
       _picked.clear();
       _selecting = false;
     });
     _reload();
+  }
+
+  /// 容量卡：這個資料夾一共佔多少空間，給使用者自己判斷要不要刪。
+  /// 算的過程不轉圈（不然 pumpAndSettle 等不完）：先寫「計算中」
+  Widget _usageCard() {
+    final u = _usage;
+    const dim = TextStyle(fontSize: 12, color: kLTextDim, height: 1.45);
+    final lines = <Widget>[];
+    if (u == null) {
+      final p = _usageProgress;
+      lines.add(
+        Text(
+          p == null || p.$2 == 0
+              ? '正在計算佔用空間…'
+              : '正在計算佔用空間…（舊草稿 ${p.$1}/${p.$2}）',
+          style: dim,
+        ),
+      );
+    } else {
+      lines.add(
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            const Text(
+              '佔用空間',
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+            ),
+            const Spacer(),
+            Text(
+              formatBytes(u.total),
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+            ),
+          ],
+        ),
+      );
+      lines.add(const SizedBox(height: 4));
+      lines.add(
+        Text(
+          '影片草稿 ${_drafts.length} 份 ${formatBytes(u.draftBytes)}'
+          ' · 轉檔暫存 ${formatBytes(u.filesInUse + u.filesUnused)}'
+          '${u.otherDrafts > 0 ? ' · 其他草稿 ${formatBytes(u.otherDrafts)}' : ''}',
+          style: dim,
+        ),
+      );
+      if (u.filesUnused > 0) {
+        lines.add(
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  u.pending > 0
+                      ? '其中 ${formatBytes(u.filesUnused)} 可能沒有草稿在用'
+                      : '其中 ${formatBytes(u.filesUnused)} 沒有草稿在用',
+                  style: dim,
+                ),
+              ),
+              TextButton(
+                onPressed: u.canClearUnused && !_clearing ? _clearUnused : null,
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                ),
+                child: Text(_clearing ? '清理中…' : '清掉'),
+              ),
+            ],
+          ),
+        );
+      }
+      if (u.pending > 0) {
+        lines.add(
+          Text('有 ${u.pending} 份草稿讀不到內容，它們用的暫存沒有算進來', style: dim),
+        );
+      }
+      if (u.filesUnused <= 0 && _drafts.isNotEmpty) {
+        lines.add(const Text('選取草稿可以看每份刪掉能省多少', style: dim));
+      }
+    }
+    // 跟其他草稿卡同一家（底色、髮絲邊線、超橢圓）
+    return Material(
+      color: kLCard,
+      shape: tileShape(
+        side: const BorderSide(color: Color(0xFFEDEDF2), width: 1.4),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 10, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: lines,
+        ),
+      ),
+    );
   }
 
   @override
@@ -1396,18 +1550,22 @@ class _DraftsScreenState extends State<DraftsScreen> {
 
   Future<void> _reload() async {
     final found = await DraftStore.list();
-    final prefs = await SharedPreferences.getInstance();
+    // 「有沒有」的規則跟個人中心同一份（見 _readDraftJson）
+    final photo = await _readDraftJson(kPhotoDraftKey, 'photo');
+    final batch = await _readDraftJson(kBatchDraftKey, 'files');
+    final gif = await _readDraftJson(kGifDraftKey, 'path');
+    final collage = await _readDraftJson(kCollageDraftKey, 'photos');
     if (!mounted) return;
     setState(() {
       _drafts = found;
-      // 「有沒有」的規則跟個人中心同一份（見 _readDraftJson）
-      _photoDraft = _readDraftJson(prefs, kPhotoDraftKey, 'photo');
-      _batchDraft = _readDraftJson(prefs, kBatchDraftKey, 'files');
-      _gifDraft = _readDraftJson(prefs, kGifDraftKey, 'path');
-      _collageDraft = _readDraftJson(prefs, kCollageDraftKey, 'photos');
+      _photoDraft = photo;
+      _batchDraft = batch;
+      _gifDraft = gif;
+      _collageDraft = collage;
       _loading = false;
     });
     unawaited(_loadCovers(found));
+    unawaited(_scanUsage());
   }
 
   /// 被要求接續的那一份（見 [DraftsScreen.resume]）：清單讀好之後替
@@ -1438,8 +1596,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
       return;
     }
     if (!mounted) return;
-    await Navigator.push(
-      context,
+    await _openOver(
       editRoute(
         builder: (_) => GifScreen(
           path: path,
@@ -1448,7 +1605,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
         ),
       ),
     );
-    _reload();
   }
 
   Future<void> _deleteGif() async {
@@ -1459,11 +1615,9 @@ class _DraftsScreenState extends State<DraftsScreen> {
   Future<void> _resumeCollage() async {
     final d = _collageDraft;
     if (d == null) return;
-    await Navigator.push(
-      context,
+    await _openOver(
       editRoute(builder: (_) => CollageScreen(restore: d)),
     );
-    _reload();
   }
 
   Future<void> _deleteCollage() async {
@@ -1493,8 +1647,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
       return;
     }
     if (!mounted) return;
-    await Navigator.push(
-      context,
+    await _openOver(
       editRoute(
         builder: (_) => BatchWatermarkScreen(
           files: files,
@@ -1503,7 +1656,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
         ),
       ),
     );
-    _reload();
   }
 
   Future<void> _deleteBatch() async {
@@ -1513,8 +1665,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
   Future<void> _resumePhoto() async {
     final d = _photoDraft;
     if (d == null) return;
-    await Navigator.push(
-      context,
+    await _openOver(
       editRoute(
         builder: (_) => PhotoEditorScreen(
           photo: XFile(d['photo'] as String),
@@ -1522,7 +1673,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
         ),
       ),
     );
-    _reload();
   }
 
   Future<void> _deletePhoto() async {
@@ -1636,6 +1786,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
   final Map<String, Uint8List> _covers = {};
 
   Future<void> _loadCovers(List<DraftMeta> metas) async {
+    var loaded = 0;
     for (final m in metas) {
       if (!m.hasThumb || _covers.containsKey(m.id)) continue;
       final t = await DraftStore.thumb(m.id);
@@ -1645,8 +1796,59 @@ class _DraftsScreenState extends State<DraftsScreen> {
       } catch (_) {
         // 壞掉的那筆就沒有封面，不能讓整頁紅屏
       }
+      // 第一屏那幾張先上：磚的比例不看封面到了沒（見 _tileAspect），
+      // 先畫出來不會讓版面跳。以前上百張全讀完才一起出現
+      if (++loaded == 6 && mounted) setState(() {});
     }
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    setState(() {});
+    unawaited(_shrinkOldCovers(_coverGen));
+  }
+
+  static bool _isPng(Uint8List b) =>
+      b.length > 8 &&
+      b[0] == 0x89 &&
+      b[1] == 0x50 &&
+      b[2] == 0x4E &&
+      b[3] == 0x47;
+
+  /// 舊版的封面是 720p PNG（一張 1.2MB，實機上百份）：趁草稿夾開著，一張
+  /// 一張換成同一張的 JPEG（一百多 KB），之後讀得快、記憶體也佔得少。
+  /// 只換「檔案裡還是同一張」的（見 DraftStore.replaceThumbIfSame）；
+  /// 打開編輯頁就停
+  Future<void> _shrinkOldCovers(int gen) async {
+    if (kIsWeb) return;
+    var changed = 0;
+    for (final id in _covers.keys.toList()) {
+      if (!mounted || gen != _coverGen) break;
+      final b = _covers[id];
+      if (b == null || !_isPng(b)) continue;
+      try {
+        final codec = await ui.instantiateImageCodec(b);
+        final frame = await codec.getNextFrame();
+        codec.dispose();
+        final PhotoEncoded enc;
+        try {
+          enc = await encodePhotoImage(frame.image, jpeg: true, quality: 85);
+        } finally {
+          frame.image.dispose();
+        }
+        if (enc.ext != 'jpg') return; // 這台轉不了 JPEG：不用再試
+        if (!mounted || gen != _coverGen) break;
+        final done = await DraftStore.replaceThumbIfSame(
+          id,
+          base64Encode(b),
+          base64Encode(enc.bytes),
+        );
+        if (done) {
+          _covers[id] = enc.bytes;
+          changed++;
+        }
+      } catch (_) {}
+      // 一張一張來，中間讓出去：捲動中的畫面不能被它卡住
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+    }
+    if (changed > 0 && mounted) setState(() {});
   }
 
   /// 單鍵草稿的存檔時間（沒有或壞掉就空字串），格式走 [dateLabel]
@@ -1662,13 +1864,11 @@ class _DraftsScreenState extends State<DraftsScreen> {
       if (mounted) showHint(context, '這份草稿讀不到了', error: true);
       return;
     }
-    await Navigator.push(
-      context,
+    await _openOver(
       editRoute(
         builder: (_) => VideoEditorScreen(draft: data, draftId: m.id),
       ),
     );
-    _reload();
   }
 
   Future<void> _delete(DraftMeta m) async {
@@ -1680,8 +1880,10 @@ class _DraftsScreenState extends State<DraftsScreen> {
   // 片段數不顯示（要看的話點進去就知道）；刪除走長按或選取模式
 
   /// 這份草稿在瀑布流裡的高寬比（沒封面的用 1:1 的圖示磚佔位）
+  /// 看「有沒有封面」而不是「封面讀到了沒」：封面一張張讀進來時磚的
+  /// 大小不變，版面不跳
   double _tileAspect(DraftMeta m) =>
-      _covers[m.id] != null ? (m.thumbAspect ?? 9 / 16) : 1.0;
+      m.hasThumb ? (m.thumbAspect ?? 9 / 16) : 1.0;
 
   /// 一格佔的高度（含跟下一格之間的 10）。排欄、算總長、排版三邊用
   /// 同一個式子，不然版面會自己對不齊（跟「我的 GIF」同一套）
@@ -1736,7 +1938,8 @@ class _DraftsScreenState extends State<DraftsScreen> {
                   child: Icon(Icons.movie_outlined, size: 26, color: kLAccent),
                 ),
               // 不放日期/時長角標（使用者指定）：封面本身就是內容
-              // 選取模式：整張壓暗＋右上角勾勾
+              // 選取模式：整張壓暗＋右上角勾勾＋左下角「刪掉能省多少」
+              //（挑要刪哪幾份時才看得到，平常封面照舊乾乾淨淨）
               if (_selecting) ...[
                 ColoredBox(
                   color: Colors.black.withValues(alpha: picked ? 0.35 : 0.12),
@@ -1757,6 +1960,29 @@ class _DraftsScreenState extends State<DraftsScreen> {
                         : null,
                   ),
                 ),
+                if (_usage != null)
+                  Positioned(
+                    left: 6,
+                    bottom: 6,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 7,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black54,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        formatBytes(_usage!.freeableFor({m.id})),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ],
           ),
@@ -1832,6 +2058,11 @@ class _DraftsScreenState extends State<DraftsScreen> {
                       final cols = _draftColumns(colW);
                       return CustomScrollView(
                         slivers: [
+                          // 佔用空間：放最上面，讓使用者自己判斷要不要刪
+                          SliverPadding(
+                            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                            sliver: SliverToBoxAdapter(child: _usageCard()),
+                          ),
                           // 影片草稿走瀑布流（C 案）：封面原比例。每一欄
                           // 一條 SliverVariedExtentList，只做看得到的那幾格
                           // （跟「我的 GIF」同一套）。以前是 ListView 裡唯一
@@ -2007,7 +2238,14 @@ class _DraftsScreenState extends State<DraftsScreen> {
                             ),
                           ),
                           onPressed: _deletePicked,
-                          child: Text('刪除 ${_picked.length} 份草稿'),
+                          // 刪掉實際能省多少（共用的轉檔暫存不算，見
+                          // StorageReport.freeableFor）：給使用者判斷值不值得
+                          child: Text(
+                            _usage == null
+                                ? '刪除 ${_picked.length} 份草稿'
+                                : '刪除 ${_picked.length} 份草稿 · 省下 '
+                                      '${formatBytes(_usage!.freeableFor(_picked))}',
+                          ),
                         ),
                       ),
                     ),

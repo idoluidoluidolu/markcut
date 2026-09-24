@@ -13,6 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
+import '../services/blob_store.dart';
 import '../services/draft_assets.dart';
 import '../services/export_eta.dart';
 import '../services/batch_overlay_cache.dart';
@@ -339,7 +340,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         'savedAt': DateTime.now().toIso8601String(),
       });
       prefs = await SharedPreferences.getInstance();
-      if (!await prefs.setString(kBatchDraftKey, text)) {
+      // 存成檔案（見 BlobStore）：每張覆寫各帶一份 Logo 的 base64，
+      // 放在設定檔裡的話 iOS 每次開 App 都把它整包讀進記憶體
+      if (!await BlobStore.write(kBatchDraftKey, text)) {
         throw StateError('草稿無法保存');
       }
       _draftPaths = {
@@ -361,8 +364,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   /// 草稿不要了（捨棄、或匯出成功）
   Future<void> _clearBatchDraft() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(kBatchDraftKey);
+      await BlobStore.delete(kBatchDraftKey);
     } catch (_) {}
     _draftPaths = {};
     _draftTouched = true;
@@ -375,8 +377,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     var keep = _draftPaths;
     if (!_draftTouched) {
       try {
-        final prefs = await SharedPreferences.getInstance();
-        final raw = prefs.getString(kBatchDraftKey);
+        final raw = await BlobStore.read(kBatchDraftKey);
         keep = raw == null
             ? <String>{}
             : {

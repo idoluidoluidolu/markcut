@@ -84,6 +84,24 @@ class DraftAssets {
     return Directory('${base.path}$sep$_root$sep$kind');
   }
 
+  /// 照片／批次／拼圖草稿留下的複本一共佔多少（草稿夾的容量卡用）
+  static Future<int> usageBytes() async {
+    if (kIsWeb) return 0;
+    var total = 0;
+    try {
+      final base = await _support();
+      final root = Directory('${base.path}${Platform.pathSeparator}$_root');
+      if (!await root.exists()) return 0;
+      await for (final e in root.list(recursive: true)) {
+        if (e is! File) continue;
+        try {
+          total += await e.length();
+        } catch (_) {}
+      }
+    } catch (_) {}
+    return total;
+  }
+
   /// 這條路徑是不是 [kind] 這一格裡的複本
   static bool _inside(String path, Directory dir) {
     final sep = Platform.pathSeparator;

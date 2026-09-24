@@ -1,14 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'blob_store.dart';
 import 'diagnostics.dart';
 import 'work_files.dart';
 
-/// 清掉草稿時連帶清 App 自有檔案的那一手（見 [WorkFiles.releaseFiles]）。
-/// [referenced]：這條路徑（或工作檔的原始來源）還有沒有活著的草稿在用
 /// 影片專案草稿：可以同時存好幾個，每個有自己的名字。
 ///
 /// 以前只有一個固定的鍵（`project_draft_v1`），第二次開新專案就把上一個
@@ -53,8 +52,50 @@ class DraftStore {
   /// 超過也不會自己刪，要使用者在草稿夾按「清理」（見 [prune]）
   static const int maxDrafts = 30;
 
+  /// 這份草稿用到的檔案清單的鍵前綴（素材原檔、工作檔、HDR 代理、倒轉
+  /// 的來源）。很小：草稿夾算容量、刪草稿時判斷哪些轉檔暫存沒人用了，
+  /// 都只讀這個——不用為了這件事把整份內容（含 Logo）讀進來
+  static const _refsPrefix = 'project_refs_';
+
   static String _dataKey(String id) => '$_dataPrefix$id';
   static String _thumbKey(String id) => '$_thumbPrefix$id';
+  static String _refsKey(String id) => '$_refsPrefix$id';
+
+  /// 內容、封面、檔案清單三筆的鍵（容量統計用）
+  static List<String> blobKeys(String id) => [
+    _dataKey(id),
+    _thumbKey(id),
+    _refsKey(id),
+  ];
+
+  /// 這份草稿的內容檔在哪（沒有檔案系統＝null）：舊草稿沒有檔案清單時，
+  /// 容量統計交給背景 isolate 直接讀這個檔，不經過畫面那條執行緒
+  static Future<String?> dataFilePath(String id) async =>
+      (await BlobStore.fileOf(_dataKey(id)))?.path;
+
+  /// 這份草稿用到的檔案（見 [_refsPrefix]）。這一版之前存的草稿沒有，回 null
+  static Future<Set<String>?> refs(String id) async {
+    final s = await BlobStore.read(_refsKey(id));
+    if (s == null) return null;
+    try {
+      return {for (final e in jsonDecode(s) as List) '$e'};
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 舊草稿的檔案清單由草稿夾算出來補寫。跟存檔排同一列，而且編輯器
+  /// 已經寫過（比較新）就不蓋
+  static Future<void> fillRefs(String id, Set<String> refs) => _serial(() async {
+    if (await BlobStore.exists(_refsKey(id))) return;
+    if (!await BlobStore.exists(_dataKey(id))) return; // 草稿已經被刪了
+    await BlobStore.write(_refsKey(id), _encodeRefs(refs));
+  });
+
+  static String _encodeRefs(Set<String> refs) => jsonEncode(refs.toList()..sort());
+
+  /// 上一次寫進去的檔案清單（草稿 id, 編碼後的字串）：沒變就不重寫
+  static (String, String)? _refsWritten;
 
   /// 正在編輯中的草稿：上限清理絕不能碰。
   /// 編輯器一存草稿／一載入草稿就登記，離開專案時解除
@@ -151,19 +192,35 @@ class DraftStore {
     }
   }
 
-  /// 存一份草稿。[json] 已經是編碼好的字串（編碼在背景執行緒做，
-  /// 見 _saveDraftNow——那是每個編輯動作都會走到的路）
+  /// 上一次真的寫進去的封面（草稿 id, 字串本身）。編輯器沒換封面時每次
+  /// 存檔傳進來的是同一個字串物件，不用再把一張封面重寫一次——以前每個
+  /// 編輯動作的自動存檔都連封面一起重寫
+  static (String, String)? _thumbWritten;
+
+  /// 存一份草稿。[content] 是編碼好的 JSON 字串，或還沒編碼的 Map——
+  /// Map 的話編碼跟寫檔一起在背景 isolate 做（[BlobStore.writeJson]；
+  /// 這是每個編輯動作都會走到的路，整包含 Logo 的 base64）。
   /// 回傳有沒有真的寫進去。SharedPreferences 寫入失敗（空間滿、
   /// prefs 損毀）以前被吞掉，使用者整場都以為有自動存。
   /// 內容、封面及索引都成功寫入才回 true；存檔不順手清理其他草稿。
   static Future<bool> save(
     String id,
-    String json, {
+    Object content, {
     String? thumb,
     double? thumbAspect,
     int clipCount = 0,
     double duration = 0,
+    Set<String>? refs,
   }) async {
+    var json = content;
+    if (json is! String && !BlobStore.usesFiles) {
+      // 走 prefs（web、widget 測試）：跟以前一樣在排隊之前先編碼好
+      try {
+        json = kIsWeb ? jsonEncode(json) : await compute(jsonEncode, json);
+      } catch (_) {
+        json = jsonEncode(json);
+      }
+    }
     try {
       return await _serial(() async {
         var ok = false;
@@ -175,6 +232,7 @@ class DraftStore {
             thumbAspect: thumbAspect,
             clipCount: clipCount,
             duration: duration,
+            refs: refs,
           );
         } finally {
           if (!ok) {
@@ -198,19 +256,40 @@ class DraftStore {
 
   static Future<bool> _saveInner(
     String id,
-    String json, {
+    Object json, {
     String? thumb,
     double? thumbAspect,
     int clipCount = 0,
     double duration = 0,
+    Set<String>? refs,
   }) async {
     final prefs = await SharedPreferences.getInstance();
     await _migrate(prefs);
-    if (!await BlobStore.write(_dataKey(id), json)) return false;
+    final wrote = json is String
+        ? await BlobStore.write(_dataKey(id), json)
+        : await BlobStore.writeJson(_dataKey(id), json);
+    if (!wrote) return false;
     if (thumb != null) {
-      if (!await BlobStore.write(_thumbKey(id), thumb)) return false;
+      final last = _thumbWritten;
+      final same = last != null && last.$1 == id && identical(last.$2, thumb);
+      // 還是要確認檔案在：被別的路徑刪掉的話照樣補寫
+      if (!same || !await BlobStore.exists(_thumbKey(id))) {
+        if (!await BlobStore.write(_thumbKey(id), thumb)) return false;
+        _thumbWritten = (id, thumb);
+      }
     } else {
       if (!await BlobStore.delete(_thumbKey(id))) return false;
+      if (_thumbWritten?.$1 == id) _thumbWritten = null;
+    }
+    if (refs != null) {
+      final text = _encodeRefs(refs);
+      final last = _refsWritten;
+      final same = last != null && last.$1 == id && last.$2 == text;
+      // 寫不進去不算存檔失敗：只影響容量統計與刪除時的連帶清理（清不到
+      // 就留著），下一次存檔再補
+      if (!same || !await BlobStore.exists(_refsKey(id))) {
+        if (await BlobStore.write(_refsKey(id), text)) _refsWritten = (id, text);
+      }
     }
     final metas = await list();
     // 建立時間：第一次存下來的那一刻，之後每次存都留著同一個。
@@ -238,21 +317,90 @@ class DraftStore {
 
   static Future<void> remove(String id) => _serial(() => _removeInner(id));
 
+  /// 一次刪好幾份（草稿夾的多選刪除）：索引只重寫一次、連帶清理只算
+  /// 一次——一份一份刪的話，每刪一份都要把剩下每份的檔案清單讀一遍
+  static Future<void> removeMany(Set<String> ids) => _serial(() async {
+    if (ids.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (ids.contains(_thumbWritten?.$1)) _thumbWritten = null;
+    if (ids.contains(_refsWritten?.$1)) _refsWritten = null;
+    final gone = <Set<String>>[];
+    var done = 0;
+    for (final id in ids) {
+      final r = await refs(id);
+      if (r != null) gone.add(r);
+      await BlobStore.delete(_dataKey(id));
+      await BlobStore.delete(_thumbKey(id));
+      await BlobStore.delete(_refsKey(id));
+      if (++done % 10 == 0) await Future<void>.delayed(Duration.zero);
+    }
+    final rest = await list()
+      ..removeWhere((m) => ids.contains(m.id));
+    await _writeIndex(prefs, rest);
+    await _releaseFilesOf(gone, rest);
+  });
+
+  /// 把舊版的封面（720p PNG，一張 1.2MB）換成同一張的 JPEG。只有檔案裡
+  /// 還是 [oldB64] 那一張才換：這中間編輯器存了新封面的話就不動它
+  static Future<bool> replaceThumbIfSame(
+    String id,
+    String oldB64,
+    String newB64,
+  ) => _serial(() async {
+    final now = await BlobStore.read(_thumbKey(id));
+    if (now == null || now != oldB64) return false;
+    if (!await BlobStore.write(_thumbKey(id), newB64)) return false;
+    if (_thumbWritten?.$1 == id) _thumbWritten = null;
+    return true;
+  });
+
   static Future<void> _removeInner(String id) async {
     final prefs = await SharedPreferences.getInstance();
+    if (_thumbWritten?.$1 == id) _thumbWritten = null;
+    if (_refsWritten?.$1 == id) _refsWritten = null;
+    final gone = await refs(id);
     await BlobStore.delete(_dataKey(id));
     await BlobStore.delete(_thumbKey(id));
+    await BlobStore.delete(_refsKey(id));
     final metas = await list()
       ..removeWhere((m) => m.id == id);
     await _writeIndex(prefs, metas);
+    await _releaseFilesOf([?gone], metas);
+  }
+
+  /// 刪掉的草稿用到、而且剩下的草稿都沒在用的轉檔暫存（工作檔、HDR
+  /// 代理、倒轉檔、救回的素材）一起清——以前刪草稿只刪它自己那兩個檔，
+  /// 幾百 MB 的代理留著，刪了也不會多出空間。
+  /// 剩下的草稿有任何一份還沒有檔案清單（這一版之前存的、還沒被草稿夾
+  /// 算過）就整個不清：寧可多留。草稿夾算完會把它們列成「沒有草稿在
+  /// 用」，讓使用者自己按清掉
+  static Future<void> _releaseFilesOf(
+    List<Set<String>> gone,
+    List<DraftMeta> rest,
+  ) async {
+    // 沒有檔案系統（web、沒跑 main 的 widget 測試）就沒有轉檔暫存；也不能
+    // 去問 path_provider——假時間裡沒掛假通道的平台呼叫永遠等不到回覆，
+    // 整條存檔佇列會跟著卡住
+    if (kIsWeb || gone.isEmpty || !BlobStore.usesFiles) return;
+    try {
+      final remaining = <String>{};
+      for (final m in rest) {
+        final r = await refs(m.id);
+        if (r == null) return;
+        remaining.addAll(r);
+      }
+      await WorkFiles.releaseRefs({
+        for (final g in gone) ...g,
+      }, referenced: remaining.contains);
+    } catch (_) {}
   }
 
   /// 超過上限就把最舊的草稿刪掉，回傳刪掉的 id（新到舊排序無關，
   /// 就是被刪的那幾個）。
   ///
-  /// 連帶清「只有它們在用」的 App 自有檔案：工作檔、HDR 代理、
-  /// 救回來的素材（見 [WorkFiles.releaseFiles]）。別份草稿還在用的
-  /// 一律不碰；使用者相簿裡的原檔本來就不在清理範圍。
+  /// 連帶清「只有它們在用」的 App 自有檔案：工作檔、HDR 代理、倒轉檔、
+  /// 救回來的素材（見 [_releaseFilesOf]；只讀每份草稿的檔案清單）。別份
+  /// 草稿還在用的一律不碰；使用者相簿裡的原檔本來就不在清理範圍。
   ///
   /// [keep]：這一輪絕不碰的 id（剛存完的那一份）。正在編輯中的
   /// （[holdOpen]）也一律不碰。**只有使用者在草稿夾按「清理」才會跑**——
@@ -279,15 +427,20 @@ class DraftStore {
       if (victims.isEmpty) return const [];
       final victimIds = {for (final v in victims) v.id};
 
-      // 只刪草稿紀錄本身。不再讀每一份草稿的內容去算「哪些檔案沒人用了」：
-      // 一份草稿好幾百 KB（內嵌封面與圖片），實機 113 份要刪 83 份時，那一輪
-      // 比對等於把上百 MB 讀進記憶體，App 直接被系統殺掉（回報：點清理就當機）。
-      // 工作檔／HDR 代理交給 WorkFiles.sweep 用自己的規則清（只看索引與檔案
-      // 在不在，成本跟草稿份數無關）
+      // 不讀每一份草稿的內容去算「哪些檔案沒人用了」：一份草稿好幾百 KB
+      // （內嵌封面與圖片），實機 113 份要刪 83 份時，那一輪比對等於把上百 MB
+      // 讀進記憶體，App 直接被系統殺掉（回報：點清理就當機）。改讀每份草稿
+      // 存檔時另外寫的檔案清單（project_refs_，幾百位元組）
       var done = 0;
+      if (victimIds.contains(_thumbWritten?.$1)) _thumbWritten = null;
+      if (victimIds.contains(_refsWritten?.$1)) _refsWritten = null;
+      final gone = <Set<String>>[];
       for (final v in victims) {
+        final r = await refs(v.id);
+        if (r != null) gone.add(r);
         await BlobStore.delete(_dataKey(v.id));
         await BlobStore.delete(_thumbKey(v.id));
+        await BlobStore.delete(_refsKey(v.id));
         // 每 10 份讓出一次主執行緒：一次刪上百份也不會整個畫面凍住
         if (++done % 10 == 0) await Future<void>.delayed(Duration.zero);
       }
@@ -296,6 +449,9 @@ class DraftStore {
           if (!victimIds.contains(m.id)) m,
       ];
       await _writeIndex(prefs, rest);
+      // 連帶清只有它們在用的轉檔暫存：只讀每份草稿那個很小的檔案清單，
+      // 不讀內容（見 _releaseFilesOf）
+      await _releaseFilesOf(gone, rest);
       Diag.note('草稿清理：刪掉最舊的 ${victims.length} 份（保留 $cap 份）');
       return [for (final v in victims) v.id];
     } catch (_) {

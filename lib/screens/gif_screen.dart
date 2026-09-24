@@ -8,8 +8,8 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
+import '../services/blob_store.dart';
 import '../services/export_speed.dart' show fmtDuration;
 import '../services/gif_frames.dart';
 import '../services/gif_strip.dart';
@@ -139,8 +139,7 @@ class _GifScreenState extends State<GifScreen> {
 
   Future<void> _saveGifDraft() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(kGifDraftKey, _stateJson());
+      await BlobStore.write(kGifDraftKey, _stateJson());
     } catch (_) {}
   }
 
@@ -952,8 +951,7 @@ class _GifScreenState extends State<GifScreen> {
     // 匯出成功＝基準重拍、草稿清掉：之後離開不再問保留
     _baseline = _dirtyKey();
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(kGifDraftKey);
+      await BlobStore.delete(kGifDraftKey);
     } catch (_) {}
     if (!mounted) return;
     // 成功統一走「匯出完成」對話框（跟影片/照片/批次同一顆），
@@ -1021,8 +1019,7 @@ class _GifScreenState extends State<GifScreen> {
       if (mounted) Navigator.of(context).pop();
     } else if (act == 'discard') {
       try {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.remove(kGifDraftKey);
+        await BlobStore.delete(kGifDraftKey);
       } catch (_) {}
       if (mounted) Navigator.of(context).pop();
     }

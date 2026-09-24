@@ -542,6 +542,10 @@ class CompPlayer {
   /// 平台不支援、沒有影片、通道例外這幾種回 null 則不算
   static bool lastBuildKeptPrevious = false;
 
+  /// 上一次成功組建的原生分段（毫秒）：背景排隊、背景組、主執行緒換上。
+  /// 組建丟背景之後只有 commit 那段會卡畫面；舊原生沒有這幾個數＝null
+  static ({double? queued, double? prepare, double? commit})? lastBuildTimings;
+
   /// 這個檔是不是 HDR（probeLite 的 sdr709 判定）。
   /// 快取鍵含檔案大小與修改時間：相簿的暫存路徑會重複使用
   ///（work_files 自己就寫明了），只記路徑的話同一路徑換了
@@ -612,6 +616,7 @@ class CompPlayer {
     double? canvasAspect,
   }) async {
     lastBuildKeptPrevious = false;
+    lastBuildTimings = null;
     if (!await available) return null;
     _ensureHandler();
     // 裁切/旋轉/透明度不再是阻擋條件：原生端會為它們掛 CI 合成器，
@@ -856,6 +861,14 @@ class CompPlayer {
         return null;
       }
       lastError = null;
+      // 原生組建分段（毫秒）：背景排隊、背景組、主執行緒換上。舊原生沒回
+      // 這幾個鍵＝整段都在主執行緒上
+      double? ms(String k) => (m[k] as num?)?.toDouble();
+      lastBuildTimings = (
+        queued: ms('queuedMs'),
+        prepare: ms('prepareMs'),
+        commit: ms('commitMs'),
+      );
       return CompPlayer._(
         (m['textureId'] as num).toInt(),
         (m['duration'] as num).toDouble(),

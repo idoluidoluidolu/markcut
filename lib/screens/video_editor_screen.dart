@@ -7,7 +7,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart'
-    show compute, kIsWeb, kReleaseMode, kProfileMode;
+    show kIsWeb, kReleaseMode, kProfileMode;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
@@ -42,6 +42,7 @@ import '../services/diagnostics.dart';
 import '../services/quality_diagnostics.dart';
 import '../widgets/quality_diagnostics_sheet.dart';
 import '../services/draft_store.dart';
+import '../services/photo_export.dart' show encodePhotoImage;
 import '../services/gif_store.dart';
 import '../services/export_eta.dart';
 import '../services/export_speed.dart';
@@ -1564,21 +1565,36 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return best;
   }
 
-  /// 需要的話抽一張夠大的封面（存草稿前呼叫）
+  /// 封面抽過的影格（素材路徑＠時間 → JPEG）。改樣式只要重畫浮水印，
+  /// 不用再叫原生端把每一層重新解一次——4K HDR 原檔一格就要幾十毫秒，
+  /// 還跟背景轉檔搶解碼器。只留這一版封面用到的那幾格
+  final Map<String, Uint8List> _coverFrames = {};
+
+  /// 一層貼進封面畫布的框：跟預覽同一套（貼齊畫布、再照使用者的縮放
+  /// 與位置），寬高比用解出來的那一格
+  static ui.Rect _coverBox(TimelineClip c, ui.Image img, int cw, int ch) {
+    final srcAspect = img.width / img.height;
+    final fitW = srcAspect >= cw / ch ? cw.toDouble() : ch * srcAspect;
+    final fitH = srcAspect >= cw / ch ? cw / srcAspect : ch.toDouble();
+    final w2 = fitW * c.scale;
+    final h2 = fitH * c.scale;
+    return ui.Rect.fromLTWH(c.px * cw - w2 / 2, c.py * ch - h2 / 2, w2, h2);
+  }
 
   /// 封面照「編輯畫面 t≈0 看到的樣子」合成一張：這一刻可見的
   /// 影片/圖片圖層由下往上貼進畫布（跟預覽同一套 layerBox 數學），
   /// 最上面壓浮水印。以前只抽第一段影片的一格——多軌、子母畫面、
   /// 圖片素材的專案封面跟編輯畫面對不上（使用者：縮圖顯示錯誤）。
-  /// 文字與馬賽克不畫（成本高、對認出專案幫助小）
-  Future<(Uint8List, double)?> _composeCoverPng() async {
+  /// 文字與馬賽克不畫（成本高、對認出專案幫助小）。
+  /// 出 JPEG：封面是不透明的影像，PNG 一張 1.2MB、JPEG 一百多 KB——
+  /// 草稿夾一次讀上百張，每次存檔也少寫一大截
+  Future<(Uint8List, double)?> _composeCover() async {
     try {
       final (rawW, rawH) = computeCanvasSize(_tl, _resolution, _canvasRatio);
       if (rawW < 2 || rawH < 2) return null;
       final shrink = math.min(1.0, 720 / math.max(rawW, rawH));
       final cw = math.max(2, (rawW * shrink).round());
       final ch = math.max(2, (rawH * shrink).round());
-      final canvasAspect = cw / ch;
       const t0 = 0.02;
       final visible = _tl.clips.where((c) {
         final kind = _tl.sourceOf(c).kind;
@@ -1588,14 +1604,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         return c.offset <= t0 && c.end > t0;
       }).toList()..sort((a, b) => a.track.compareTo(b.track));
       if (visible.isEmpty) return null;
-      final rec = ui.PictureRecorder();
-      final canvas = ui.Canvas(rec);
-      canvas.drawRect(
-        ui.Rect.fromLTWH(0, 0, cw.toDouble(), ch.toDouble()),
-        ui.Paint()..color = const ui.Color(0xFF000000),
-      );
-      var drew = false;
-      for (final c in visible) {
+      // 由上往下抽：碰到一層蓋滿畫布的影片就停，底下的看不到、不用抽
+      //（多選匯入各自一軌全疊在 0 秒：以前五層各解一格，只看得到最上面那層）。
+      // 影片影格不透明，封面照位置與縮放貼（不畫透明度、旋轉、裁切），
+      // 框蓋滿畫布就是全擋。蓋滿的那層抽不到的話照舊往下，底下的層頂上
+      final layers = <(TimelineClip, ui.Image)>[];
+      final usedFrames = <String>{};
+      final full = ui.Rect.fromLTWH(0, 0, cw.toDouble(), ch.toDouble());
+      for (final c in visible.reversed) {
         final src = _tl.sourceOf(c);
         Uint8List? bytes;
         if (src.kind == ClipKind.video) {
@@ -1607,7 +1623,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             bytes = _thumbs[c.sourceIndex]?.firstOrNull;
           } else {
             final st = c.sourceTimeAt(t0);
-            bytes = await nativeFrameAt(src.previewPath, st, maxH: 720);
+            final key = '${src.previewPath}@${st.toStringAsFixed(3)}';
+            usedFrames.add(key);
+            bytes = _coverFrames[key];
+            if (bytes == null) {
+              // 背景優先序：排在拖曳預覽的抽格後面
+              bytes = await nativeFrameAt(
+                src.previewPath,
+                st,
+                maxH: 720,
+                background: true,
+              );
+              if (bytes != null) _coverFrames[key] = bytes;
+            }
           }
         } else {
           // readFileBytes 跨平台（web 的 blob 路徑 dart:io 讀不到）
@@ -1622,49 +1650,54 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         } catch (_) {
           continue;
         }
-        final srcAspect = img.width / img.height;
-        double fitW, fitH;
-        if (srcAspect >= canvasAspect) {
-          fitW = cw.toDouble();
-          fitH = fitW / srcAspect;
-        } else {
-          fitH = ch.toDouble();
-          fitW = fitH * srcAspect;
+        layers.add((c, img));
+        final box = _coverBox(c, img, cw, ch);
+        if (src.kind == ClipKind.video &&
+            box.left <= 0.5 &&
+            box.top <= 0.5 &&
+            box.right >= full.right - 0.5 &&
+            box.bottom >= full.bottom - 0.5) {
+          break;
         }
-        final w2 = fitW * c.scale;
-        final h2 = fitH * c.scale;
+      }
+      _coverFrames.removeWhere((k, _) => !usedFrames.contains(k));
+      if (layers.isEmpty) return null;
+      final rec = ui.PictureRecorder();
+      final canvas = ui.Canvas(rec);
+      canvas.drawRect(full, ui.Paint()..color = const ui.Color(0xFF000000));
+      for (final (c, img) in layers.reversed) {
         canvas.drawImageRect(
           img,
           ui.Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
-          ui.Rect.fromLTWH(c.px * cw - w2 / 2, c.py * ch - h2 / 2, w2, h2),
+          _coverBox(c, img, cw, ch),
           ui.Paint()..filterQuality = ui.FilterQuality.medium,
         );
         img.dispose();
-        drew = true;
       }
-      if (!drew) return null;
       if (!_wmHidden && _settings.hasAnyMark) {
-        final png = await WatermarkRenderer.renderOverlayPng(_settings, cw, ch);
-        {
-          try {
-            final codec = await ui.instantiateImageCodec(png);
-            final wm = (await codec.getNextFrame()).image;
-            codec.dispose();
-            canvas.drawImageRect(
-              wm,
-              ui.Rect.fromLTWH(0, 0, wm.width.toDouble(), wm.height.toDouble()),
-              ui.Rect.fromLTWH(0, 0, cw.toDouble(), ch.toDouble()),
-              ui.Paint()..filterQuality = ui.FilterQuality.medium,
-            );
-            wm.dispose();
-          } catch (_) {}
-        }
+        // 浮水印直接畫上來（跟 renderOverlayPng 同一段繪製）。包一層
+        // saveLayer＝先畫在透明底上再整張貼上來，跟以前「畫成 PNG、解開、
+        // 再貼」的疊法一模一樣，省掉一次 PNG 編碼＋解碼
+        canvas.saveLayer(full, ui.Paint());
+        try {
+          await WatermarkRenderer.drawMarks(
+            canvas,
+            _settings,
+            cw.toDouble(),
+            ch.toDouble(),
+          );
+        } catch (_) {}
+        canvas.restore();
       }
       final out = await rec.endRecording().toImage(cw, ch);
-      final data = await out.toByteData(format: ui.ImageByteFormat.png);
-      out.dispose();
-      if (data == null) return null;
-      return (data.buffer.asUint8List(), cw / ch);
+      try {
+        // iOS 走原生 ImageIO 出 JPEG（跟照片匯出同一條），轉不了的平台
+        // 照樣給 PNG——草稿夾兩種都解得開
+        final enc = await encodePhotoImage(out, jpeg: true, quality: 85);
+        return (enc.bytes, cw / ch);
+      } finally {
+        out.dispose();
+      }
     } catch (_) {
       return null;
     }
@@ -1702,7 +1735,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               '|${l.y}|${l.rotation}|${l.corner}|${l.tiled}|${l.drawn}',
     ].join(';');
     if (ck == _coverKey && _coverB64 != null) return;
-    final composed = await _composeCoverPng();
+    final composed = await _composeCover();
     if (composed != null) {
       _coverKey = ck;
       _coverB64 = base64Encode(composed.$1);
@@ -1724,7 +1757,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 720：個人中心那張卡最寬也才 ~350pt，720 在三倍螢幕上還有餘裕。
       // 抽一張大約 40~80KB，比時間軸那張 200px 高的糊圖值得
       if (!kIsWeb) {
-        bytes = await nativeFrameAt(src.previewPath, c.trimStart, maxH: 720);
+        bytes = await nativeFrameAt(
+          src.previewPath,
+          c.trimStart,
+          maxH: 720,
+          background: true,
+        );
       } else {
         // Web 沒有原生抽幀，走隱形 <video> ＋ canvas 這條（跟裁切
         // 底圖同一套）。以前直接退回時間軸縮圖，那是 200px 高的圖
@@ -1767,12 +1805,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return (b, _coverAspect ?? 9 / 16);
   }
 
+  /// 這份草稿用到的檔案路徑（素材原檔、工作檔、HDR 代理、倒轉的來源），
+  /// 存成一個很小的檔跟著草稿走：草稿夾算「佔多少空間」、刪草稿時判斷
+  /// 哪些轉檔暫存沒人用了，都只讀它（欄位跟 storage_usage 的 draftRefsOf
+  /// 同一套）
+  Set<String> _draftFileRefs() => {
+    for (final s in _tl.sources) ...[
+      if (s.path.isNotEmpty) s.path,
+      if (s.workPath?.isNotEmpty ?? false) s.workPath!,
+      if (s.workHdrPath?.isNotEmpty ?? false) s.workHdrPath!,
+      if (s.revOf?.isNotEmpty ?? false) s.revOf!,
+    ],
+  };
+
   Map<String, dynamic> _projectJson() {
-    final thumb = _draftThumb();
+    // 封面不進內容：它另外存成一個檔（DraftStore.thumb），以前這裡再塞
+    // 一份，每次自動存檔都把一張封面多寫一遍，草稿夾也沒有人讀這一份
     return {
       'savedAt': DateTime.now().toIso8601String(),
-      'thumb': ?thumb?.$1,
-      if (thumb != null) 'thumbAspect': thumb.$2,
       'sources': [for (final s in _tl.sources) s.toJson()],
       'clips': [for (final c in _tl.clips) c.toJson()],
       'ratio': _canvasRatio.index,
@@ -2919,24 +2969,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (!mounted && !force) return;
     // Web 也存：同一次瀏覽內可以繼續剪；重新整理後素材連結會失效，
     // 還原時由 _loadDraft 剔除並提示
-    final map = _projectJson();
-    // 編碼丟到背景執行緒：整包 JSON 含 Logo 的 base64，在主執行緒要好
-    // 幾毫秒——而存草稿是每個編輯動作都會走到的，那幾毫秒正好落在使用者
-    // 手指還在動的時候。Web 沒有背景執行緒，照原本的做
-    String text;
-    try {
-      text = kIsWeb ? jsonEncode(map) : await compute(jsonEncode, map);
-    } catch (_) {
-      text = jsonEncode(map);
-    }
+    // 整包 JSON 含 Logo 的 base64：編碼跟寫檔都交給 DraftStore 丟背景
+    // isolate（見 BlobStore.writeJson）——存草稿是每個編輯動作都會走到
+    // 的，那幾毫秒以前正好落在使用者手指還在動的時候
     final thumb = _draftThumb();
     final ok = await DraftStore.save(
       _draftId,
-      text,
+      _projectJson(),
       thumb: thumb?.$1,
       thumbAspect: thumb?.$2,
       clipCount: _tl.clips.length,
       duration: _tl.duration,
+      refs: _draftFileRefs(),
     );
     // 存不進去（空間滿、prefs 損毀）要講，不能讓使用者整場都
     // 以為有自動存。只提示一次，不然每個動作都跳
@@ -9044,6 +9088,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       wmEnd: wmBake.$2,
     );
     QualityDiagnostics.instance.finish(qualityBuild, success: made != null);
+    // 組建丟背景之後，會卡畫面的只剩原生在主執行緒換上的那一段
+    final timings = made == null ? null : CompPlayer.lastBuildTimings;
+    final commitMs = timings?.commit;
+    if (commitMs != null) {
+      QualityDiagnostics.instance.record(
+        QualityMetric.compositionCommit,
+        commitMs,
+      );
+      Diag.ev(
+        '合成組建：背景 ${timings!.prepare?.round() ?? '?'}ms'
+        '／排隊 ${timings.queued?.round() ?? '?'}ms'
+        '／換上 ${commitMs.toStringAsFixed(1)}ms',
+      );
+    }
     // HDR 模式：背景把 HDR 代理補齊（HLG 直通、密關鍵幀），
     // 轉好換上就恢復跟 SDR 工作檔同級的順度。
     // 匯入轉檔中不搶（見 _prepHdrWorkFiles 的說明）
@@ -9417,7 +9475,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (cancelled()) return;
         if (identical(ready, _initialPreviewReady)) break;
       }
-      if (_compBuilding != null || (_compOn && _compDirty)) {
+      // 只差在素材路徑（背景代理剛落地、還沒換上）：畫面上這顆播的內容
+      // 一格都沒錯，起播不先重組——實機代理落地後按播放，起播 377ms，一大半
+      // 在等這一次重組（別的都是 190ms 上下）。暫停後由 _pendingCompRebuild
+      // 補做（_pause 會排）。使用者真的改了東西的照舊先重組
+      final pathOnlyDirty =
+          _compOn &&
+          _compDirty &&
+          _compBuilding == null &&
+          _lastCompEditSig != null &&
+          _compSig(withPaths: false) == _lastCompEditSig;
+      if (pathOnlyDirty) {
+        _pendingCompRebuild = true;
+        Diag.count('起播不等換代理');
+      } else if (_compBuilding != null || (_compOn && _compDirty)) {
         await _ensureComp();
       }
       if (cancelled()) return;
@@ -9875,7 +9946,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final sampleStartedAt = DateTime.now().toUtc();
     final sampledComp = _comp;
     diagnostic.environment.addAll({
-      'previewRevision': 'blob-store-1',
+      'previewRevision': 'perf-storage-1',
       'displayHz': View.of(context).display.refreshRate,
       'buildMode': kReleaseMode
           ? 'release'

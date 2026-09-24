@@ -15,6 +15,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'crop_screen.dart';
 import '../models/watermark_settings.dart';
 import '../services/collage_compose.dart';
+import '../services/blob_store.dart';
 import '../services/collage_pack.dart';
 import '../services/draft_assets.dart';
 import '../services/photo_export.dart';
@@ -371,8 +372,7 @@ class _CollageScreenState extends State<CollageScreen>
     var keep = _draftPaths;
     if (!_draftTouched) {
       try {
-        final prefs = await SharedPreferences.getInstance();
-        final raw = prefs.getString(kCollageDraftKey);
+        final raw = await BlobStore.read(kCollageDraftKey);
         keep = raw == null
             ? <String>{}
             : {
@@ -455,7 +455,9 @@ class _CollageScreenState extends State<CollageScreen>
       if (!mounted) return false;
       final text = _draftJson(photos: photos);
       prefs = await SharedPreferences.getInstance();
-      if (!await prefs.setString(kCollageDraftKey, text)) {
+      // 存成檔案（見 BlobStore）：浮水印帶著 Logo 的 base64，放在設定檔
+      // 裡的話 iOS 每次開 App 都把它整包讀進記憶體
+      if (!await BlobStore.write(kCollageDraftKey, text)) {
         await prefs.reload();
         throw StateError('草稿無法保存');
       }
@@ -477,8 +479,7 @@ class _CollageScreenState extends State<CollageScreen>
   /// 草稿不要了（捨棄、或匯出成功）
   Future<void> _clearDraft() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(kCollageDraftKey);
+      await BlobStore.delete(kCollageDraftKey);
     } catch (_) {}
     _draftPaths = {};
     _draftTouched = true;

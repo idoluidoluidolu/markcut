@@ -15,6 +15,7 @@ import '../models/color_grade.dart';
 import '../models/mosaic.dart';
 import '../models/watermark_settings.dart';
 import '../services/hdr_photo_export.dart';
+import '../services/blob_store.dart';
 import '../services/draft_assets.dart';
 import '../services/photo_export.dart';
 import '../services/rotation_snap.dart';
@@ -244,7 +245,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         throw StateError('照片複本無法保存');
       }
       prefs = await SharedPreferences.getInstance();
-      final saved = await prefs.setString(
+      // 存成檔案（見 BlobStore）：內容帶著 Logo 的 base64，放在設定檔裡
+      // 的話 iOS 每次開 App 都把它整包讀進記憶體
+      final saved = await BlobStore.write(
         kPhotoDraftKey,
         jsonEncode({
           'photo': path,
@@ -268,9 +271,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   }
 
   static Future<void> clearPhotoDraft({bool deleteAssets = false}) async {
-    final prefs = await SharedPreferences.getInstance();
-    if (!await prefs.remove(kPhotoDraftKey)) {
-      await prefs.reload();
+    if (!await BlobStore.delete(kPhotoDraftKey)) {
+      await (await SharedPreferences.getInstance()).reload();
       return;
     }
     if (deleteAssets) await DraftAssets.retain(DraftAssets.photo, {});
@@ -278,8 +280,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   Future<void> _cleanupOnLeave() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(kPhotoDraftKey);
+      final raw = await BlobStore.read(kPhotoDraftKey);
       final path = raw == null ? null : (jsonDecode(raw) as Map)['photo'];
       await DraftAssets.afterLeave(
         DraftAssets.photo,

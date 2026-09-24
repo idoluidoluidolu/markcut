@@ -24,16 +24,34 @@ import 'diagnostics.dart';
 /// 舊資料：每次存取前把 prefs 裡歸這裡管的鍵搬成檔案（寫成功才從 prefs
 /// 刪；寫不進去的留在原地、讀的時候也會回頭找）。搬完之後只剩掃一次鍵名。
 ///
-/// 檔案讀寫用同步版：成本跟以前 prefs 一樣（那也是在這條執行緒上把整串
-/// 字串編碼送出去），而 widget 測試的假時間裡，非同步 I/O 永遠等不到回來
+/// 檔案讀寫是非同步的：真正的磁碟寫入與 fsync 在 I/O 執行緒，大草稿的
+/// JSON 編碼整段丟背景 isolate（[writeJson]）——自動存檔每個編輯動作都會
+/// 走到，同步寫好幾 MB＋fsync 會直接卡在畫面那條執行緒上。
+/// 同一個鍵的讀、寫、刪排成一列（[_serialKey]），先寫後讀一定讀到新的，
+/// 刪掉的也不會被還在路上的寫入救回來。
+/// widget 測試不跑 main、沒叫 [init]，一律走 prefs，碰不到檔案 I/O
+///（假時間裡非同步 I/O 永遠等不到回來）
 class BlobStore {
   BlobStore._();
 
-  /// 這些前綴的鍵歸這裡管（影片草稿內容與封面）
-  static const ownedPrefixes = ['project_data_', 'project_thumb_'];
+  /// 這些前綴的鍵歸這裡管（影片草稿內容、封面、用到的檔案清單）
+  static const ownedPrefixes = [
+    'project_data_',
+    'project_thumb_',
+    'project_refs_',
+  ];
 
-  /// 這些鍵歸這裡管（範本與貼圖；prefs 裡是字串清單，檔案裡是 JSON 陣列）
-  static const ownedKeys = {'wm_presets_v1', 'stickers_v1'};
+  /// 這些鍵歸這裡管：範本與貼圖（prefs 裡是字串清單，檔案裡是 JSON 陣列）、
+  /// 照片／批次／拼圖／GIF 各一份的草稿（照片、批次、拼圖都帶著 Logo 的
+  /// base64，批次的每張覆寫還各帶一份）
+  static const ownedKeys = {
+    'wm_presets_v1',
+    'stickers_v1',
+    'photo_draft_v1',
+    'batch_draft_v1',
+    'collage_draft_v1',
+    'gif_draft_v1',
+  };
 
   static bool owns(String key) =>
       ownedKeys.contains(key) || ownedPrefixes.any(key.startsWith);
@@ -92,8 +110,30 @@ class BlobStore {
     '${key.replaceAll(RegExp(r'[^A-Za-z0-9_.-]'), '_')}.txt',
   );
 
-  /// 先寫暫存檔再換名：寫到一半被系統殺掉，原本那份還在
-  static bool _writeFile(File file, String value) {
+  /// 這個鍵的檔案在哪（沒有檔案系統＝null）。草稿夾算容量用
+  static Future<File?> fileOf(String key) async {
+    final dir = await _root();
+    return dir == null ? null : _file(dir, key);
+  }
+
+  /// 同一個鍵的存取排成一列。暫存檔名固定（鍵名＋.tmp）也是靠這個：
+  /// 同一個鍵不會有兩筆寫入同時在寫同一個暫存檔
+  static final Map<String, Future<void>> _keyQueue = {};
+
+  static Future<T> _serialKey<T>(String key, Future<T> Function() body) {
+    final prev = _keyQueue[key] ?? Future<void>.value();
+    final done = Completer<void>();
+    final tail = done.future;
+    _keyQueue[key] = tail;
+    return prev.then((_) => body()).whenComplete(() {
+      done.complete();
+      if (identical(_keyQueue[key], tail)) _keyQueue.remove(key);
+    });
+  }
+
+  /// 先寫暫存檔再換名：寫到一半被系統殺掉，原本那份還在。
+  /// 同步版只給搬舊資料與背景 isolate 用（都不在畫面那條執行緒上等）
+  static bool _writeFileSync(File file, String value) {
     final tmp = File('${file.path}.tmp');
     try {
       tmp.writeAsStringSync(value, flush: true);
@@ -105,6 +145,32 @@ class BlobStore {
       } catch (_) {}
       return false;
     }
+  }
+
+  static Future<bool> _writeFile(File file, String value) async {
+    final tmp = File('${file.path}.tmp');
+    try {
+      await tmp.writeAsString(value, flush: true);
+      await tmp.rename(file.path);
+      return true;
+    } catch (_) {
+      try {
+        if (await tmp.exists()) await tmp.delete(recursive: true);
+      } catch (_) {}
+      return false;
+    }
+  }
+
+  /// 背景 isolate 裡跑：整包編碼＋寫檔，畫面那條執行緒只付複製訊息的錢
+  static bool _encodeAndWrite((String, Object?) job) =>
+      _writeFileSync(File(job.$1), jsonEncode(job.$2));
+
+  /// 新值落地後，prefs 裡搬不動而留下的舊值要清掉，不能再佔記憶體
+  static Future<void> _dropPrefsCopy(String key) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.containsKey(key)) await prefs.remove(key);
+    } catch (_) {}
   }
 
   static Future<void>? _migrating;
@@ -141,7 +207,7 @@ class BlobStore {
       if (text == null) continue;
       final file = _file(dir, k);
       // 檔案已經在（上一次搬到一半）：那就是同一份，只差 prefs 還沒刪
-      if (!file.existsSync() && !_writeFile(file, text)) continue;
+      if (!file.existsSync() && !await _writeFile(file, text)) continue;
       try {
         await prefs.remove(k);
       } catch (_) {
@@ -166,9 +232,13 @@ class BlobStore {
     final dir = await _root();
     if (dir != null) {
       final file = _file(dir, key);
-      try {
-        if (file.existsSync()) return file.readAsStringSync();
-      } catch (_) {}
+      final text = await _serialKey(key, () async {
+        try {
+          if (file.existsSync()) return await file.readAsString();
+        } catch (_) {}
+        return null;
+      });
+      if (text != null) return text;
     }
     // 沒有檔案系統，或這一筆搬不動（例如空間滿）還留在 prefs
     try {
@@ -194,13 +264,49 @@ class BlobStore {
   static Future<bool> write(String key, String value) async {
     await migrate();
     final dir = await _root();
-    final prefs = await SharedPreferences.getInstance();
-    if (dir == null) return prefs.setString(key, value);
-    if (!_writeFile(_file(dir, key), value)) return false;
-    // 搬不動而留在 prefs 的舊值：新值已經落地，舊的不能再佔記憶體
-    if (prefs.containsKey(key)) await prefs.remove(key);
-    return true;
+    if (dir == null) {
+      return (await SharedPreferences.getInstance()).setString(key, value);
+    }
+    return _serialKey(key, () async {
+      if (!await _writeFile(_file(dir, key), value)) return false;
+      await _dropPrefsCopy(key);
+      return true;
+    });
   }
+
+  /// 寫一筆「還沒編碼」的 JSON（影片草稿：整包含 Logo 的 base64，
+  /// 好幾 MB）。有檔案系統時編碼跟寫檔一起丟背景 isolate，畫面那條
+  /// 執行緒只付複製訊息的錢；背景起不來就退回這裡自己做
+  static Future<bool> writeJson(String key, Object? value) async {
+    await migrate();
+    final dir = await _root();
+    if (dir == null) {
+      // prefs 路（web）：編碼好再寫
+      return write(key, jsonEncode(value));
+    }
+    final file = _file(dir, key);
+    return _serialKey(key, () async {
+      var ok = false;
+      try {
+        ok = await compute(_encodeAndWrite, (file.path, value));
+      } catch (_) {
+        ok = false;
+      }
+      if (!ok) {
+        try {
+          ok = await _writeFile(file, jsonEncode(value));
+        } catch (_) {
+          ok = false; // 編碼失敗＝資料本身有問題
+        }
+      }
+      if (ok) await _dropPrefsCopy(key);
+      return ok;
+    });
+  }
+
+  /// 目前會不會走檔案（同步判斷，給「要不要先在外面編碼」用）。
+  /// 沒叫過 [init] 的 widget 測試一律 false
+  static bool get usesFiles => !kIsWeb && (dirOverride != null || _init != null);
 
   static Future<bool> writeList(String key, List<String> value) async {
     if (await _root() == null) {
@@ -216,11 +322,14 @@ class BlobStore {
     final dir = await _root();
     if (dir != null) {
       final file = _file(dir, key);
-      try {
-        if (file.existsSync()) file.deleteSync();
-      } catch (_) {
-        ok = false;
-      }
+      ok = await _serialKey(key, () async {
+        try {
+          if (file.existsSync()) await file.delete();
+          return true;
+        } catch (_) {
+          return false;
+        }
+      });
     }
     final prefs = await SharedPreferences.getInstance();
     if (prefs.containsKey(key)) ok = await prefs.remove(key) && ok;
@@ -230,8 +339,35 @@ class BlobStore {
   static Future<bool> exists(String key) async {
     await migrate();
     final dir = await _root();
-    if (dir != null && _file(dir, key).existsSync()) return true;
+    if (dir != null) {
+      final file = _file(dir, key);
+      if (await _serialKey(key, () async => file.existsSync())) return true;
+    }
     return (await SharedPreferences.getInstance()).containsKey(key);
+  }
+
+  /// 這一筆佔多少位元組（檔案大小；還留在 prefs 的舊值用字數估）。
+  /// 沒有就 0
+  static Future<int> sizeOf(String key) async {
+    await migrate();
+    final dir = await _root();
+    if (dir != null) {
+      final file = _file(dir, key);
+      final n = await _serialKey(key, () async {
+        try {
+          return file.existsSync() ? await file.length() : 0;
+        } catch (_) {
+          return 0;
+        }
+      });
+      if (n > 0) return n;
+    }
+    try {
+      final v = (await SharedPreferences.getInstance()).get(key);
+      if (v is String) return v.length;
+      if (v is List) return v.fold<int>(0, (a, e) => a + '$e'.length);
+    } catch (_) {}
+    return 0;
   }
 
   /// 以 [prefix] 開頭的鍵（檔案與 prefs 殘留合起來）
