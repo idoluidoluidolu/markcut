@@ -88,9 +88,12 @@ dependencies:
 # 上游正把 ObjC 改寫成 Swift（2.9.5 起），這些補丁沒辦法 rebase——升級
 # video_player 時要逐段重做，不是只搬一行
 dependency_overrides:
+  # Security patch: verify the independently pinned native iOS archive and cache.
+  ffmpeg_kit_flutter_new_full:
+    path: packages/ffmpeg_kit_flutter_new_full
   video_player_avfoundation:
     path: packages/video_player_avfoundation
-  # 自帶修改版的 file_picker 10.3.10（只動 iOS 的 FilePickerPlugin.m，
+  # 自帶修改版的 file_picker 10.3.10（iOS FilePickerPlugin.m 與 Android 安全修正，
   # 每段都有「MarkCut patch」標記）：
   #   (1) PHPicker 回傳順序：上游把每個檔案「複製完成」的順序當回傳順序
   #       ——多選十支影片，大的、在 iCloud 的後到，時間軸就不是使用者
@@ -100,7 +103,8 @@ dependency_overrides:
   #       Documents/picked_images（進 iCloud 備份、從沒人清）。改到
   #       tmp/picked_images 並標 NSURLIsExcludedFromBackupKey——草稿要留
   #       的素材 Dart 端自己複製，這份只是匯入中繼
-  # 升級 file_picker 時記得把這四段搬過去
+  # Android：SafeCachePath 不再把提供者的 DISPLAY_NAME 當成檔案路徑。
+  # 升級 file_picker 時保留排序、暫存與檔名安全修正。
   file_picker:
     path: packages/file_picker
 

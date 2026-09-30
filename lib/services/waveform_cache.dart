@@ -1,50 +1,158 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'waveform_job.dart';
 
 import 'waveform_decode_io.dart'
     if (dart.library.js_interop) 'waveform_decode_web.dart';
 
-/// 音訊波形快取：第一次要求時背景解碼，
-/// 好了通知監聽者（時間軸重繪成真實波形）。
+typedef WaveformDecoder =
+    Future<List<double>?> Function(String path, {WaveformJob? job});
+
+/// Visible clips lease their results. Completion only updates that file's UI.
+/// A single decoder and bounded admission also cover pending/failed work.
 class WaveformCache extends ChangeNotifier {
-  WaveformCache._();
+  WaveformCache._() : _decode = decodeWaveformPeaks, _maxEntries = 128;
+  @visibleForTesting
+  WaveformCache.forTest(this._decode, {int maxEntries = 128})
+    // Public test budget keeps admission regressions reproducible.
+    // ignore: prefer_initializing_formals
+    : _maxEntries = maxEntries;
 
   static final WaveformCache instance = WaveformCache._();
-
+  final WaveformDecoder _decode;
+  final int _maxEntries;
   final _peaks = <String, List<double>>{};
-  final _loading = <String>{};
+  final _jobs = <String, WaveformJob>{};
   final _failed = <String>{};
+  final _deferred = <String>{};
+  final _owners = <Object, Set<String>>{};
+  final _signals = <String, ValueNotifier<List<double>?>>{};
+  bool _draining = false;
+  bool _disposed = false;
+  static const _warmEntries = 12;
 
-  /// 峰值快取上限（支）。單例活過整個 App 生命週期，以前完全不清：
-  /// 每載入過一支音檔就永久多一條峰值陣列，跨專案一路疊上去。
-  /// 超過就丟最久沒被要過的（Map 的插入順序＝LRU，讀到就搬到尾巴）
-  static const _maxEntries = 12;
+  Set<String> get _wanted => {for (final paths in _owners.values) ...paths};
 
-  /// 拿某個檔案的波形峰值；還沒好（或解不出來）回 null
+  void retain(Object owner, Set<String> paths) {
+    if (_disposed || setEquals(_owners[owner], paths)) return;
+    _owners[owner] = Set.of(paths);
+    _cancelUnused();
+  }
+
+  void release(Object owner) {
+    _owners.remove(owner);
+    _cancelUnused();
+  }
+
+  /// Acquire after retain; remove listeners before release.
+  ValueListenable<List<double>?> listenTo(String path) =>
+      _signals.putIfAbsent(path, () => ValueNotifier(of(path)));
+
+  void _cancelUnused() {
+    final keep = _wanted;
+    for (final path in _jobs.keys.toList()) {
+      if (!keep.contains(path)) _jobs.remove(path)?.cancel();
+    }
+    _failed.removeWhere((path) => !keep.contains(path));
+    _deferred.removeWhere((path) => !keep.contains(path));
+    for (final path in _signals.keys.toList()) {
+      if (!keep.contains(path)) _signals.remove(path)?.dispose();
+    }
+    final cold = _peaks.keys.where((p) => !keep.contains(p)).toList();
+    for (final path in cold.take(
+      (cold.length - _warmEntries).clamp(0, cold.length),
+    )) {
+      _peaks.remove(path);
+    }
+    _admitDeferred();
+  }
+
+  bool _makeRoom() {
+    if (_jobs.length + _peaks.length < _maxEntries) return true;
+    final keep = _wanted;
+    for (final path in _peaks.keys.toList()) {
+      if (!keep.contains(path)) {
+        _peaks.remove(path);
+        return true;
+      }
+    }
+    return false;
+  }
+
   List<double>? of(String path) {
+    if (_disposed) return null;
     final p = _peaks.remove(path);
     if (p != null) {
-      _peaks[path] = p; // 搬到尾巴＝最近用過
+      _peaks[path] = p;
       return p;
     }
-    if (_failed.contains(path) || _loading.contains(path)) return null;
-    _loading.add(path);
-    decodeWaveformPeaks(path)
-        .then((v) {
-          _loading.remove(path);
-          if (v != null && v.isNotEmpty) {
-            _peaks[path] = v;
-            while (_peaks.length > _maxEntries) {
-              _peaks.remove(_peaks.keys.first);
-            }
-            notifyListeners();
-          } else {
-            _failed.add(path);
-          }
-        })
-        .catchError((_) {
-          _loading.remove(path);
-          _failed.add(path);
-        });
+    if (_failed.contains(path) || _jobs.containsKey(path)) return null;
+    if (!_makeRoom()) {
+      if (_wanted.contains(path)) _deferred.add(path);
+      return null;
+    }
+    _jobs[path] = WaveformJob();
+    if (!_draining) unawaited(_drain());
     return null;
+  }
+
+  void _admitDeferred() {
+    if (_disposed) return;
+    for (final path in _deferred.toList()) {
+      if (!_makeRoom()) break;
+      _deferred.remove(path);
+      of(path);
+    }
+  }
+
+  Future<void> _drain() async {
+    _draining = true;
+    try {
+      while (_jobs.isNotEmpty && !_disposed) {
+        final entry = _jobs.entries.first;
+        List<double>? peaks;
+        try {
+          peaks = await _decode(entry.key, job: entry.value);
+        } catch (_) {}
+        if (_disposed ||
+            entry.value.cancelled ||
+            !identical(_jobs[entry.key], entry.value)) {
+          continue;
+        }
+        _jobs.remove(entry.key);
+        if (peaks != null && peaks.isNotEmpty) {
+          // 128 * 6000 * 4 = 3,072,000 bytes of sample storage at most.
+          final compact = Float32List.fromList(peaks.take(6000).toList());
+          _peaks[entry.key] = compact;
+          _signals[entry.key]?.value = compact;
+          notifyListeners();
+        } else {
+          _failed.add(entry.key);
+          while (_failed.length > _maxEntries) {
+            _failed.remove(_failed.first);
+          }
+        }
+        _admitDeferred();
+      }
+    } finally {
+      _draining = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    for (final job in _jobs.values) {
+      job.cancel();
+    }
+    for (final signal in _signals.values) {
+      signal.dispose();
+    }
+    _signals.clear();
+    _jobs.clear();
+    _peaks.clear();
+    _owners.clear();
+    _deferred.clear();
+    super.dispose();
   }
 }

@@ -238,9 +238,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     SharedPreferences? prefs;
     try {
       final state = _stateJsonFull;
-      final path = kIsWeb
-          ? widget.photo.path
-          : await DraftAssets.secure(DraftAssets.photo, widget.photo.path);
+      final path = (await DraftAssets.secureAll(DraftAssets.photo, [
+        widget.photo.path,
+      ])).single;
       if (path == null || path.isEmpty) {
         throw StateError('照片複本無法保存');
       }
@@ -261,6 +261,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         throw StateError('草稿無法保存');
       }
       return true;
+    } on DraftAssetException catch (e) {
+      if (mounted) showHint(context, e.message, error: true);
+      return false;
     } catch (_) {
       try {
         await prefs?.reload();

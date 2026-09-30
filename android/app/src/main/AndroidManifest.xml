@@ -8,6 +8,9 @@
     <application
         android:label="浮水印"
         android:name="${applicationName}"
+        android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:requestLegacyExternalStorage="true">
         <!-- requestLegacyExternalStorage 是 API 29 存進「相簿」必需的

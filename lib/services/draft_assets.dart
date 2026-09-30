@@ -3,6 +3,13 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:path_provider/path_provider.dart';
 
+class DraftAssetException implements Exception {
+  const DraftAssetException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
 /// 批次浮水印／拼圖草稿引用的素材，自己留一份在 Application Support。
 ///
 /// 相簿選取器交出來的都是複本，而且都放在系統隨時可以清掉的地方：
@@ -22,19 +29,14 @@ import 'package:path_provider/path_provider.dart';
 class DraftAssets {
   static const _root = 'draft_assets';
 
-  /// 單檔上限：超過就不留複本，草稿記原路徑。
-  ///
-  /// 40MB 是刻意挑的——照片（48MP HEIC 也才十幾 MB）一定進得來，影片
-  /// 幾乎一定進不來。影片本來就有自己的一套（工作檔，見 WorkFiles），
-  /// 在這裡再抄一份等於同一支存兩份，而 Application Support 不會被系統
-  /// 回收、預設還進 iCloud 備份：30 部 4K 的批次草稿就是好幾 GB
-  static const maxFileBytes = 40 << 20;
+  /// 批次影片也必須保留素材；超過限制時保存失敗，不退回暫存路徑。
+  static const maxFileBytes = 300 << 20;
 
   /// 一份草稿全部複本的總額：200 張照片的批次上限，逐張都留會到 GB 級。
-  /// 先到先得，額度用完的記原路徑
+  /// 計算最後引用的唯一素材，包含以前已保存的複本。
   static const maxDraftBytes = 300 << 20;
 
-  /// 測試用：把兩道閘調小，不用真的做出 40MB 的檔案
+  /// 測試用：把兩道閘調小，不用真的做出 300MB 的檔案
   @visibleForTesting
   static int? maxFileBytesOverride;
   @visibleForTesting
@@ -105,8 +107,6 @@ class DraftAssets {
   /// 這條路徑是不是 [kind] 這一格裡的複本
   static bool _inside(String path, Directory dir) {
     final sep = Platform.pathSeparator;
-    final prefix = dir.path.endsWith(sep) ? dir.path : '${dir.path}$sep';
-    if (path.startsWith(prefix)) return true;
     // 符號連結（iOS 的 /var 與 /private/var）兩邊各自解一次再比
     try {
       final rp = File(path).resolveSymbolicLinksSync();
@@ -140,28 +140,50 @@ class DraftAssets {
     return '${d.path}$sep${_slot(src)}$sep${_name(src)}';
   }
 
-  /// 把 [src] 留一份進來，回傳複本路徑。已經是複本就直接回它；
-  /// 複製不成（空間不足、來源不見了）回 null，呼叫端照記原路徑
-  /// 一份草稿引用的全部素材，照順序留複本；回傳「草稿該記的路徑」，
-  /// 留不成（太大、額度用完、複製失敗）的就是原路徑。
-  ///
-  /// 額度是整份草稿一起算的，所以要走這一支、不要自己迴圈叫 [secure]
+  /// 先檢查全部素材及總額，再留下持久複本。任何失敗都不能提交新草稿。
   static Future<List<String?>> secureAll(
     String kind,
     List<String?> srcs,
   ) async {
-    var budget = _maxDraft;
+    if (kIsWeb) return List.of(srcs);
+    final dir = await _dir(kind);
+    final sizes = <String, int>{};
+    final destinations = <String, String>{};
+    var total = 0;
+    for (final src in srcs) {
+      if (src == null || src.isEmpty) continue;
+      final dest = _inside(src, dir) ? src : await _dest(kind, src);
+      destinations[src] = dest;
+      if (sizes.containsKey(dest)) continue;
+      final source = File(src);
+      if (!await source.exists()) {
+        throw const DraftAssetException('草稿保存失敗：素材已無法讀取，請重新選取');
+      }
+      final size = await source.length();
+      if (size > _maxFile) {
+        throw DraftAssetException(
+          '草稿保存失敗：單個素材超過 ${_maxFile ~/ (1 << 20)} MB，請先匯出或減少素材大小',
+        );
+      }
+      sizes[dest] = size;
+      total += size;
+      if (total > _maxDraft) {
+        throw DraftAssetException(
+          '草稿保存失敗：素材超過 ${_maxDraft ~/ (1 << 20)} MB，請減少素材後再保存',
+        );
+      }
+    }
     final out = <String?>[];
     for (final src in srcs) {
       if (src == null || src.isEmpty) {
         out.add(src);
         continue;
       }
-      // 大小由 _secure 一併回報：這裡再 stat 一次的話，存一份草稿就多
-      // 一趟真 I/O ×N，保留草稿要等的時間會肉眼可見地變長
-      final r = await _secure(kind, src, budget: budget);
-      if (r.copied) budget -= r.bytes;
-      out.add(r.path ?? src);
+      final r = await _secure(kind, src, budget: sizes[destinations[src]]);
+      if (r.path == null) {
+        throw const DraftAssetException('草稿保存失敗：無法保留素材複本，請確認儲存空間後再試一次');
+      }
+      out.add(r.path);
     }
     return out;
   }
@@ -171,7 +193,7 @@ class DraftAssets {
       (await _secure(kind, src, budget: budget)).path;
 
   /// [copied] ＝這一次真的複製了（原本就在複本區、或沒留成的都是 false），
-  /// [bytes] 是它佔掉的位元組——[secureAll] 拿它扣額度，不用再 stat 一次
+  /// [bytes] 是它佔掉的位元組，包含本來已經存在的複本。
   static Future<({String? path, int bytes, bool copied})> _secure(
     String kind,
     String src, {
@@ -181,27 +203,31 @@ class DraftAssets {
     if (kIsWeb || src.isEmpty) return none;
     try {
       final dir = await _dir(kind);
-      if (_inside(src, dir)) return (path: src, bytes: 0, copied: false);
       final source = File(src);
       if (!await source.exists()) return none;
-      // 太大就不留：呼叫端會退回記原路徑（＝這一版之前的行為）
       final size = await source.length();
       if (size > _maxFile) return none;
       if (budget != null && size > budget) return none;
+      if (_inside(src, dir)) return (path: src, bytes: size, copied: false);
       final dest = await _dest(kind, src);
       final out = File(dest);
       // 同一個來源已經留過一份：不再複製。大小對不上＝上次複製到一半
       // 被殺掉了，重來
       if (await out.exists() && await out.length() == size) {
-        // 已經留過：不佔新的額度（同一份草稿不會重複複製）
-        return (path: dest, bytes: 0, copied: false);
+        return (path: dest, bytes: size, copied: false);
       }
       await out.parent.create(recursive: true);
+      final temporary =
+          '$dest.${DateTime.now().microsecondsSinceEpoch}_${_generatedId++}.tmp';
       try {
-        await source.copy(dest);
+        final copied = await source.copy(temporary);
+        if (await copied.length() != size) {
+          throw const FileSystemException('Source changed during copy');
+        }
+        await copied.rename(dest);
       } catch (_) {
         try {
-          await out.delete();
+          await File(temporary).delete();
         } catch (_) {}
         return none;
       }

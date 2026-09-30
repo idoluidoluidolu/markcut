@@ -3,7 +3,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' show Rect;
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show visibleForTesting, listEquals;
 
 import 'package:ffmpeg_kit_flutter_new_full/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_full/ffmpeg_kit_config.dart';
@@ -23,6 +23,7 @@ import 'native_export.dart';
 import 'video_processor.dart';
 import 'work_files.dart';
 import 'reverse_video_settings.dart';
+import 'large_media_transform.dart';
 
 /// 這個平台是否支援影片匯出
 const bool videoExportSupported = true;
@@ -241,10 +242,21 @@ Future<bool> _zscaleAvailable() async {
     // 標記，zscale=t=linear 不知道來源曲線，報 no path between
     // colorspaces——於是明明有 zscale 卻被判定成沒有，默默走了會退色
     // 的退路。測試題目要能單獨成立，不能連帶考到別的條件
-    final ses = await FFmpegKit.execute(
-      '-v error -f lavfi -i color=c=red:s=64x64:d=0.1 '
-      '-vf "zscale=w=32:h=32" -frames:v 1 -f null -',
-    );
+    final ses = await FFmpegKit.executeWithArguments([
+      '-v',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      'color=c=red:s=64x64:d=0.1',
+      '-vf',
+      'zscale=w=32:h=32',
+      '-frames:v',
+      '1',
+      '-f',
+      'null',
+      '-',
+    ]);
     _hasZscale = ReturnCode.isSuccess(await ses.getReturnCode());
   } catch (_) {
     _hasZscale = false;
@@ -386,7 +398,7 @@ String _eq(TimelineClip c) => c.color.ffmpeg;
 /// → 疊浮水印；所有帶聲音的片段 delay 對位後 amix 混成一軌。
 /// 縮放用 lanczos；編碼交給平台的硬體編碼器（見 _hwEncoder／_kbpsFor），
 /// 失敗才退軟體。
-Future<String> _buildCommand(
+Future<List<String>> _buildCommand(
   ExportSpec spec,
   String? wmPath,
   Map<int, String> overlayFiles,
@@ -605,15 +617,22 @@ Future<String> _buildCommand(
   ///
   /// 接在 scale 之後、hflip 之前，跟預覽的順序一致：框定義在未鏡像
   /// 的原始畫面上
-  (String, int, int) cropOf(TimelineClip c, int w2, int h2) {
-    if (!c.cropped) return ('', 0, 0);
+  (String, int, int, int, int) cropOf(TimelineClip c, int w2, int h2) {
+    if (!c.cropped) return ('', 0, 0, w2, h2);
     var cw = (c.cropW * w2).round();
     var ch = (c.cropH * h2).round();
     cw = math.max(2, cw - cw % 2);
     ch = math.max(2, ch - ch % 2);
     final cx = (c.cropL * w2).round().clamp(0, math.max(0, w2 - cw)).toInt();
     final cy = (c.cropT * h2).round().clamp(0, math.max(0, h2 - ch)).toInt();
-    return ('crop=$cw:$ch:$cx:$cy,', cx, cy);
+    // rotate rotates the cropped buffer around its own center. Position that
+    // center where rotation around the original full image would have put it.
+    final dx = (c.mirror ? w2 - cx - cw : cx) + cw / 2 - w2 / 2;
+    final dy = cy + ch / 2 - h2 / 2;
+    final angle = c.rotation * math.pi / 180;
+    final ox = (w2 - cw) / 2 + dx * math.cos(angle) - dy * math.sin(angle);
+    final oy = (h2 - ch) / 2 + dx * math.sin(angle) + dy * math.cos(angle);
+    return ('crop=$cw:$ch:$cx:$cy,', ox.round(), oy.round(), cw, ch);
   }
 
   /// 片段的旋轉與透明度。回傳濾鏡片段，以及 overlay 要補的位移。
@@ -671,10 +690,11 @@ Future<String> _buildCommand(
     final srcA = c.trimStart + (a - start) * rate;
     final srcB = c.trimStart + (b - start) * rate;
     final (w2, h2, x, y) = layerBox(c, src.aspect);
-    final (cropF, cdx, cdy) = cropOf(c, w2, h2);
-    final cw = c.cropped ? (c.cropW * w2).round() : w2;
-    final ch = c.cropped ? (c.cropH * h2).round() : h2;
+    final (cropF, cdx, cdy, cw, ch) = cropOf(c, w2, h2);
     final (spinF, sdx, sdy) = spinFadeOf(c, cw, ch);
+    final large = c.scale > 3
+        ? LargeMediaTransform(src, c, spec.outW, spec.outH)
+        : null;
     fc.write(
       '[$label]'
       'trim=start=${_f(srcA)}:end=${_f(srcB)},'
@@ -686,12 +706,10 @@ Future<String> _buildCommand(
       // 一格 4K 的 gbrpf32le 就要上百 MB，手機直接被記憶體壓死（匯出
       // 閃退）。縮小必須由 zscale 自己做，不能用 scale：swscale 會把
       // 畫格的色彩標記換掉，換掉之後就不知道來源是 HLG/PQ 了
-      '${hdrTrcOf(c.sourceIndex, h2)}'
-      'scale=$w2:$h2:flags=lanczos,'
-      '$cropF'
-      '${c.mirror ? 'hflip,' : ''}'
+      '${hdrTrcOf(c.sourceIndex, large?.rasterH ?? h2)}'
+      '${large?.filter ?? 'scale=$w2:$h2:flags=lanczos,$cropF${c.mirror ? 'hflip,' : ''}'}'
       // 旋轉需要 alpha 才留得住空白角，先轉成 rgba
-      '${spinF.isEmpty ? '' : 'format=rgba,$spinF'}'
+      '${large != null || spinF.isEmpty ? '' : 'format=rgba,$spinF'}'
       '${c.reverse ? 'reverse,' : ''}'
       // 全域速度 × 每片段速度一起壓進 PTS
       //（速度 clamp 到跟 TimelineClip.length 同一個範圍，
@@ -708,7 +726,7 @@ Future<String> _buildCommand(
       '[lv$k];',
     );
     fc.write(
-      '[$cur][lv$k]overlay=${x + cdx + sdx}:${y + cdy + sdy}:'
+      '[$cur][lv$k]overlay=${large != null ? 0 : x + cdx + sdx}:${large != null ? 0 : y + cdy + sdy}:'
       'enable=${_window(a - w0, b - w0)}:'
       // 素材串流比片段短時要凍住最後一幀，不能讓底下的黑畫布露出來。
       // 手機拍的檔案很常「容器長度 > 視訊串流長度」（音軌比較長、
@@ -753,26 +771,25 @@ Future<String> _buildCommand(
             '+${_f(a - start)}/TB';
       }
       final (w2, h2, x, y) = layerBox(c, src.aspect);
-      final (cropF, cdx, cdy) = cropOf(c, w2, h2);
-      final cw = c.cropped ? (c.cropW * w2).round() : w2;
-      final ch = c.cropped ? (c.cropH * h2).round() : h2;
+      final (cropF, cdx, cdy, cw, ch) = cropOf(c, w2, h2);
       final (spinF, sdx, sdy) = spinFadeOf(c, cw, ch);
+      final large = c.scale > 3
+          ? LargeMediaTransform(src, c, spec.outW, spec.outH)
+          : null;
       fc.write(
         '[$label]'
         '$sourceCut'
-        'scale=$w2:$h2:flags=lanczos'
-        '${cropF.isEmpty ? '' : ',${cropF.substring(0, cropF.length - 1)}'}'
-        '${c.mirror ? ',hflip' : ''}'
+        '${large != null ? large.filter.substring(0, large.filter.length - 1) : 'scale=$w2:$h2:flags=lanczos${cropF.isEmpty ? '' : ',${cropF.substring(0, cropF.length - 1)}'}${c.mirror ? ',hflip' : ''}'}'
         '${_eq(c)}'
         ',format=rgba,'
-        '$spinF'
+        '${large != null ? '' : spinF}'
         '$imageTime'
         '${vFades(c)}'
         '$toSeg'
         '[lv$k];',
       );
       fc.write(
-        '[$cur][lv$k]overlay=${x + cdx + sdx}:${y + cdy + sdy}:'
+        '[$cur][lv$k]overlay=${large != null ? 0 : x + cdx + sdx}:${large != null ? 0 : y + cdy + sdy}:'
         'enable=${_window(a - w0, b - w0)}:'
         'eof_action=repeat[ov$k];',
       );
@@ -1045,16 +1062,16 @@ Future<String> _buildCommand(
   var filter = fc.toString();
   if (filter.endsWith(';')) filter = filter.substring(0, filter.length - 1);
 
-  final cmd = StringBuffer()..write('-y ');
+  final cmd = <String>['-y'];
   for (var i = 0; i < spec.sources.length; i++) {
     final s = spec.sources[i];
     // 跟上面 srcIn 的條件一致，不然輸入編號會整組錯位
     if (!usedSources.contains(i)) continue;
     switch (s.kind) {
       case ClipKind.video:
-        cmd.write('${_hwDecode()}-i "${s.path}" ');
+        cmd.addAll([..._hwDecodeArguments(), '-i', s.path]);
       case ClipKind.audio:
-        cmd.write('-i "${s.path}" ');
+        cmd.addAll(['-i', s.path]);
       case ClipKind.image:
         // GIF 是會動的：-ignore_loop 0 讓它循環播到片段結束。
         // 而且 gif demuxer 根本沒有 loop 這個選項——沿用 -loop 1
@@ -1063,11 +1080,21 @@ Future<String> _buildCommand(
         // 靜態圖則要先 -f image2 指定 demuxer：單張 .png 會被自動
         // 判成 png_pipe，那個一樣沒有 loop（裁切過、貼圖那種落成
         // .png 的素材就會踩到）
-        cmd.write(
+        cmd.addAll(
           s.isGif
-              ? '-ignore_loop 0 -t ${_f(stillNeed[i] ?? 1)} -i "${s.path}" '
-              : '-f image2 -loop 1 -framerate ${fps.toStringAsFixed(3)} '
-                    '-t ${_f(stillNeed[i] ?? 1)} -i "${s.path}" ',
+              ? ['-ignore_loop', '0', '-t', _f(stillNeed[i] ?? 1), '-i', s.path]
+              : [
+                  '-f',
+                  'image2',
+                  '-loop',
+                  '1',
+                  '-framerate',
+                  fps.toStringAsFixed(3),
+                  '-t',
+                  _f(stillNeed[i] ?? 1),
+                  '-i',
+                  s.path,
+                ],
         );
       case ClipKind.text || ClipKind.wm:
         break; // 每個片段一張 PNG，在下面接續
@@ -1078,36 +1105,47 @@ Future<String> _buildCommand(
   for (final c in segClips) {
     if (isPngClip(spec.sources[c.sourceIndex].kind)) {
       // 整版透明 PNG 同理，也要指定 image2
-      cmd.write(
-        '-f image2 -loop 1 -framerate ${fps.toStringAsFixed(3)} '
-        '-t ${_f(c.length / sp + 0.5)} -i "${overlayFiles[c.id]}" ',
-      );
+      cmd.addAll([
+        '-f',
+        'image2',
+        '-loop',
+        '1',
+        '-framerate',
+        fps.toStringAsFixed(3),
+        '-t',
+        _f(c.length / sp + 0.5),
+        '-i',
+        overlayFiles[c.id]!,
+      ]);
     }
   }
-  if (hasWm) cmd.write('-i "$wmPath" ');
-  cmd
-    ..write('-filter_complex "$filter" ')
-    ..write('-map "[$cur]" ');
+  if (hasWm) cmd.addAll(['-i', wmPath]);
+  cmd.addAll(['-filter_complex', filter, '-map', '[$cur]']);
   if (aLabel != null) {
-    cmd.write('-map "[$aLabel]" -c:a aac -b:a 256k ');
+    cmd.addAll(['-map', '[$aLabel]', '-c:a', 'aac', '-b:a', '256k']);
   } else {
-    cmd.write('-an ');
+    cmd.add('-an');
   }
-  cmd
-    ..write('-t ${_f(segDur)} ')
-    // 影格率寫死成畫布的：分段之後每一段都要「規格一模一樣」，
-    // 串接才敢用 -c copy（不重編碼）
-    ..write('-r ${fps.toStringAsFixed(3)} ')
-    // LGPL 版沒有 x264：H.264 用手機的硬體編碼器（更快、更省電），
-    // 畫質用位元率控制（硬體編碼器不吃 CRF）
-    ..write(
-      '-c:v ${_hwEncoder()} -b:v ${_kbpsFor(spec, fps)}k '
-      '-maxrate ${(_kbpsFor(spec, fps) * 1.4).round()}k '
-      '-bufsize ${_kbpsFor(spec, fps) * 2}k -pix_fmt nv12 ',
-    )
-    ..write('-movflags +faststart ')
-    ..write('"$outPath"');
-  return cmd.toString();
+  cmd.addAll([
+    '-t',
+    _f(segDur),
+    '-r',
+    fps.toStringAsFixed(3),
+    '-c:v',
+    _hwEncoder(),
+    '-b:v',
+    '${_kbpsFor(spec, fps)}k',
+    '-maxrate',
+    '${(_kbpsFor(spec, fps) * 1.4).round()}k',
+    '-bufsize',
+    '${_kbpsFor(spec, fps) * 2}k',
+    '-pix_fmt',
+    'nv12',
+    '-movflags',
+    '+faststart',
+    outPath,
+  ]);
+  return cmd;
 }
 
 /// 平台對應的 H.264 硬體編碼器
@@ -1123,7 +1161,8 @@ String _hwEncoder() => (Platform.isIOS || Platform.isMacOS)
 /// Android 的 mediacodec hwaccel 要接 surface，風險高，先不上。
 /// 跑不動時 runFF 會把這面旗子剝掉重跑（見下面的保底）
 const kHwDecodeFlag = '-hwaccel videotoolbox ';
-String _hwDecode() => (Platform.isIOS || Platform.isMacOS) ? kHwDecodeFlag : '';
+List<String> _hwDecodeArguments() =>
+    (Platform.isIOS || Platform.isMacOS) ? ['-hwaccel', 'videotoolbox'] : [];
 
 /// 畫質檔位 → 位元率。表在 ExportQuality 上（video_processor.dart），
 /// 兩邊共用一張——各自維護一份的話，加檔位時漏改一邊就會有兩檔
@@ -1198,12 +1237,27 @@ Future<String?> _prerenderReverse(
     temps.add(part); // 取消或編碼失敗也要清掉未完成的檔案。
     // 先縮到輸出尺寸再倒轉：用原始解析度倒轉一樣會吃爆記憶體。
     // 保留來源色彩與 HDR 色深；倒轉不做 tone mapping。
-    final cmd =
-        '-y -ss ${_f(s)} -to ${_f(e)} -i "$srcPath" '
-        '-vf "scale=$outW:$outH:flags=bicubic,format=${encoding.pixelFormat},reverse" -an '
-        '-c:v ${encoding.encoder} -b:v 16000k -pix_fmt ${encoding.pixelFormat} '
-        '${encoding.options}"$part"';
-    var ses = await FFmpegKit.execute(cmd);
+    final cmd = [
+      '-y',
+      '-ss',
+      _f(s),
+      '-to',
+      _f(e),
+      '-i',
+      srcPath,
+      '-vf',
+      'scale=$outW:$outH:flags=bicubic,format=${encoding.pixelFormat},reverse',
+      '-an',
+      '-c:v',
+      encoding.encoder,
+      '-b:v',
+      '16000k',
+      '-pix_fmt',
+      encoding.pixelFormat,
+      ...FFmpegKitConfig.parseArguments(encoding.options),
+      part,
+    ];
+    var ses = await FFmpegKit.executeWithArguments(cmd);
     var rc = await ses.getReturnCode();
     // 使用者按取消也是「非成功」，但不能當成硬體編碼器壞掉而重跑一次，
     // 不然按了取消還會把整段倒轉跑到底
@@ -1212,10 +1266,8 @@ Future<String?> _prerenderReverse(
       // MPEG-4 的 8-bit 退路不能代替 HDR 成品。
       if (hdrTrc.isNotEmpty) return null;
       // 硬體編碼器不能用就退軟體編碼（跟主匯出同一套保底）
-      ses = await FFmpegKit.execute(
-        cmd
-            .replaceFirst('-c:v ${encoding.encoder}', '-c:v mpeg4 -q:v 3')
-            .replaceFirst('-pix_fmt nv12', '-pix_fmt yuv420p'),
+      ses = await FFmpegKit.executeWithArguments(
+        _softwareEncoder(cmd, encoding.encoder),
       );
       rc = await ses.getReturnCode();
       if (!ReturnCode.isSuccess(rc)) return null;
@@ -1236,9 +1288,18 @@ Future<String?> _prerenderReverse(
     );
     temps.add(listPath);
     video = '${dir.path}${Platform.pathSeparator}rev_${ts}_v.mp4';
-    final ses = await FFmpegKit.execute(
-      '-y -f concat -safe 0 -i "$listPath" -c copy "$video"',
-    );
+    final ses = await FFmpegKit.executeWithArguments([
+      '-y',
+      '-f',
+      'concat',
+      '-safe',
+      '0',
+      '-i',
+      listPath,
+      '-c',
+      'copy',
+      video,
+    ]);
     if (!ReturnCode.isSuccess(await ses.getReturnCode())) return null;
     temps.add(video);
   }
@@ -1247,13 +1308,31 @@ Future<String?> _prerenderReverse(
   // 聲音整段一次倒（音訊很便宜：一分鐘也才十來 MB，不用分段），
   // 再跟畫面合起來
   final joined = '${dir.path}${Platform.pathSeparator}rev_${ts}_all.mp4';
-  final mux = await FFmpegKit.execute(
-    '-y -i "$video" '
-    '-ss ${_f(trimStart)} -to ${_f(trimEnd)} -i "$srcPath" '
-    '-filter_complex "[1:a]areverse[a]" '
-    '-map 0:v -map "[a]" -c:v copy -c:a aac -b:a 256k '
-    '-shortest "$joined"',
-  );
+  final mux = await FFmpegKit.executeWithArguments([
+    '-y',
+    '-i',
+    video,
+    '-ss',
+    _f(trimStart),
+    '-to',
+    _f(trimEnd),
+    '-i',
+    srcPath,
+    '-filter_complex',
+    '[1:a]areverse[a]',
+    '-map',
+    '0:v',
+    '-map',
+    '[a]',
+    '-c:v',
+    'copy',
+    '-c:a',
+    'aac',
+    '-b:a',
+    '256k',
+    '-shortest',
+    joined,
+  ]);
   if (!ReturnCode.isSuccess(await mux.getReturnCode())) return video;
   temps.add(joined);
   onProgress?.call(1.0);
@@ -1279,10 +1358,23 @@ Future<String?> _prerenderReverseAudio(
       out ??
       '${(await getTemporaryDirectory()).path}${Platform.pathSeparator}'
           'reva_${DateTime.now().microsecondsSinceEpoch}.m4a';
-  final ses = await FFmpegKit.execute(
-    '-y -ss ${_f(trimStart)} -to ${_f(trimEnd)} -i "$srcPath" '
-    '-vn -af areverse -c:a aac -b:a 256k "$dest"',
-  );
+  final ses = await FFmpegKit.executeWithArguments([
+    '-y',
+    '-ss',
+    _f(trimStart),
+    '-to',
+    _f(trimEnd),
+    '-i',
+    srcPath,
+    '-vn',
+    '-af',
+    'areverse',
+    '-c:a',
+    'aac',
+    '-b:a',
+    '256k',
+    dest,
+  ]);
   if (!ReturnCode.isSuccess(await ses.getReturnCode())) {
     try {
       File(dest).deleteSync();
@@ -1334,7 +1426,7 @@ List<double> _segmentBounds(ExportSpec spec) {
 /// 聲音不跟著畫面分段做：跨段的音樂會在每個接點留下 AAC 編碼縫隙
 /// （倒轉那邊已經踩過一次，見 _prerenderReverse）。
 /// 沒有任何聲音時回 null，呼叫端直接把畫面當成成品
-Future<String?> _buildAudioMux(
+Future<List<String>?> _buildAudioMux(
   ExportSpec spec,
   String videoPath,
   String outPath,
@@ -1417,20 +1509,32 @@ Future<String?> _buildAudioMux(
   var filter = fc.toString();
   if (filter.endsWith(';')) filter = filter.substring(0, filter.length - 1);
 
-  final cmd = StringBuffer()..write('-y -i "$videoPath" ');
+  final cmd = <String>['-y', '-i', videoPath];
   final ordered = srcIn.entries.toList()
     ..sort((a, b) => a.value.compareTo(b.value));
   for (final e in ordered) {
-    cmd.write('-i "${spec.sources[e.key].path}" ');
+    cmd.addAll(['-i', spec.sources[e.key].path]);
   }
-  cmd
-    ..write('-filter_complex "$filter" ')
-    ..write('-map 0:v -c:v copy ')
-    ..write('-map "[$aLabel]" -c:a aac -b:a 256k ')
-    ..write('-t ${_f(spec.outputDuration)} ')
-    ..write('-movflags +faststart ')
-    ..write('"$outPath"');
-  return cmd.toString();
+  cmd.addAll([
+    '-filter_complex',
+    filter,
+    '-map',
+    '0:v',
+    '-c:v',
+    'copy',
+    '-map',
+    '[$aLabel]',
+    '-c:a',
+    'aac',
+    '-b:a',
+    '256k',
+    '-t',
+    _f(spec.outputDuration),
+    '-movflags',
+    '+faststart',
+    outPath,
+  ]);
+  return cmd;
 }
 
 // ===== 測試掛勾 =====
@@ -1481,14 +1585,16 @@ Future<String> debugBuildCommand(
   double winStart = 0,
   double? winEnd,
   bool videoOnly = false,
-}) => _buildCommand(
-  spec,
-  wmPath,
-  overlayFiles,
-  outPath,
-  winStart: winStart,
-  winEnd: winEnd,
-  videoOnly: videoOnly,
+}) async => _displayCommand(
+  await _buildCommand(
+    spec,
+    wmPath,
+    overlayFiles,
+    outPath,
+    winStart: winStart,
+    winEnd: winEnd,
+    videoOnly: videoOnly,
+  ),
 );
 
 @visibleForTesting
@@ -1496,7 +1602,45 @@ Future<String?> debugBuildAudioMux(
   ExportSpec spec,
   String videoPath,
   String outPath,
-) => _buildAudioMux(spec, videoPath, outPath);
+) async {
+  final args = await _buildAudioMux(spec, videoPath, outPath);
+  return args == null ? null : _displayCommand(args);
+}
+
+/// 字串僅供既有測試／診斷顯示；正式執行始終使用原始參數陣列。
+String _displayCommand(List<String> args) => [
+  for (var i = 0; i < args.length; i++)
+    if (i == args.length - 1 ||
+        (i > 0 &&
+            (args[i - 1] == '-i' ||
+                args[i - 1] == '-filter_complex' ||
+                (args[i - 1] == '-map' && args[i].startsWith('[')))))
+      '"${args[i].replaceAll('"', r'\"')}"'
+    else
+      args[i],
+].join(' ');
+
+@visibleForTesting
+Future<List<String>> debugBuildArguments(ExportSpec spec, String outPath) =>
+    _buildCommand(spec, null, const {}, outPath);
+
+List<String> _softwareEncoder(List<String> args, String encoder) {
+  final out = <String>[];
+  for (var i = 0; i < args.length; i++) {
+    if (args[i] == '-c:v' && i + 1 < args.length && args[i + 1] == encoder) {
+      out.addAll(['-c:v', 'mpeg4', '-q:v', '3']);
+      i++;
+    } else if (args[i] == '-pix_fmt' &&
+        i + 1 < args.length &&
+        args[i + 1] == 'nv12') {
+      out.addAll(['-pix_fmt', 'yuv420p']);
+      i++;
+    } else {
+      out.add(args[i]);
+    }
+  }
+  return out;
+}
 
 /// 執行匯出並存到相簿。onProgress 回傳 0~1。
 Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
@@ -1651,14 +1795,20 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   Future<({bool ok, String message, bool cancelled})> saveAsGif() async {
     final gifPath = '${dir.path}${Platform.pathSeparator}out_$ts.gif';
     final side = spec.gifMaxSide;
-    final session = await FFmpegKit.execute(
-      '-y -i "$outPath" -filter_complex '
-      '"[0:v]fps=${spec.gifFps},'
-      'scale=w=$side:h=$side:force_original_aspect_ratio=decrease'
-      ':flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];'
-      '[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle[g]" '
-      '-map "[g]" -an "$gifPath"',
-    );
+    final session = await FFmpegKit.executeWithArguments([
+      '-y',
+      '-i',
+      outPath,
+      '-filter_complex',
+      '[0:v]fps=${spec.gifFps},'
+          'scale=w=$side:h=$side:force_original_aspect_ratio=decrease'
+          ':flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];'
+          '[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle[g]',
+      '-map',
+      '[g]',
+      '-an',
+      gifPath,
+    ]);
     final ok = ReturnCode.isSuccess(await session.getReturnCode());
     if (!ok) {
       return (ok: false, message: 'GIF 轉檔失敗', cancelled: false);
@@ -1785,37 +1935,47 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   /// 跑一次 FFmpeg，帶兩層保底：HDR 轉換鏈在這台機器跑不動就剝掉重跑
   /// （寧可顏色不對也不能匯不出來）、硬體編碼器不能用就退軟體編碼器
   Future<({bool ok, FFmpegSession session, dynamic rc})> runFF(
-    String cmd,
+    List<String> cmd,
   ) async {
-    var session = await FFmpegKit.execute(cmd);
+    var session = await FFmpegKit.executeWithArguments(cmd);
     var rc = await session.getReturnCode();
     var ok = ReturnCode.isSuccess(rc);
     // 硬體解碼跑不動（機型差異、編碼太怪）就剝掉重跑——軟解慢但一定行
-    if (!ok && !ReturnCode.isCancel(rc) && cmd.contains(kHwDecodeFlag)) {
+    if (!ok && !ReturnCode.isCancel(rc) && cmd.contains('-hwaccel')) {
       Diag.note('硬體解碼不能用，退軟體解碼重跑');
-      cmd = cmd.replaceAll(kHwDecodeFlag, '');
-      session = await FFmpegKit.execute(cmd);
+      final withoutHardware = <String>[];
+      for (var i = 0; i < cmd.length; i++) {
+        if (cmd[i] == '-hwaccel') {
+          i++;
+        } else {
+          withoutHardware.add(cmd[i]);
+        }
+      }
+      cmd = withoutHardware;
+      session = await FFmpegKit.executeWithArguments(cmd);
       rc = await session.getReturnCode();
       ok = ReturnCode.isSuccess(rc);
     }
     if (!ok && !ReturnCode.isCancel(rc)) {
-      var stripped = cmd.replaceAll('$_kHdrFallback,', '');
-      for (final c in _usedHdrChains) {
-        stripped = stripped.replaceAll('$c,', '');
+      final stripped = List<String>.of(cmd);
+      for (var i = 1; i < stripped.length; i++) {
+        if (stripped[i - 1] != '-filter_complex') continue;
+        stripped[i] = stripped[i].replaceAll('$_kHdrFallback,', '');
+        for (final c in _usedHdrChains) {
+          stripped[i] = stripped[i].replaceAll('$c,', '');
+        }
       }
-      if (stripped != cmd) {
+      if (!listEquals(stripped, cmd)) {
         Diag.note('HDR 轉換鏈跑不動，剝掉重跑（顏色會偏）');
-        session = await FFmpegKit.execute(stripped);
+        session = await FFmpegKit.executeWithArguments(stripped);
         rc = await session.getReturnCode();
         ok = ReturnCode.isSuccess(rc);
       }
     }
     if (!ok && !ReturnCode.isCancel(rc) && cmd.contains(_hwEncoder())) {
       Diag.note('硬體編碼器不能用，退軟體編碼（很慢、檔案大）');
-      final soft = cmd
-          .replaceFirst('-c:v ${_hwEncoder()}', '-c:v mpeg4 -q:v 3')
-          .replaceFirst('-pix_fmt nv12', '-pix_fmt yuv420p');
-      session = await FFmpegKit.execute(soft);
+      final soft = _softwareEncoder(cmd, _hwEncoder());
+      session = await FFmpegKit.executeWithArguments(soft);
       rc = await session.getReturnCode();
       ok = ReturnCode.isSuccess(rc);
     }
@@ -1894,9 +2054,18 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
       final joined = '${dir.path}${Platform.pathSeparator}joined_$ts.mp4';
       trackProgress(0, total, 0.92, 0.94);
       await Diag.mark('匯出：串接');
-      final r = await runFF(
-        '-y -f concat -safe 0 -i "$listPath" -c copy "$joined"',
-      );
+      final r = await runFF([
+        '-y',
+        '-f',
+        'concat',
+        '-safe',
+        '0',
+        '-i',
+        listPath,
+        '-c',
+        'copy',
+        joined,
+      ]);
       ok = r.ok;
       rc = r.rc;
       session = r.session;
@@ -2019,15 +2188,25 @@ Future<String?> makeGifFile({
       final p = await _probe(inputPath);
       if (p.hdr) hdrF = '${await _hdrChainFor(p.trc, scaleH: maxSide)},';
     }
-    final session = await FFmpegKit.execute(
-      '-y -ss ${_f(start)} -t ${_f(dur)} -i "$input" -filter_complex '
-      '"[0:v]$cropF$hdrF$speedF'
-      'fps=$fps,'
-      'scale=w=$maxSide:h=$maxSide:force_original_aspect_ratio=decrease'
-      ':flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];'
-      '[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle[g]" '
-      '-map "[g]" -an "$out"',
-    );
+    final session = await FFmpegKit.executeWithArguments([
+      '-y',
+      '-ss',
+      _f(start),
+      '-t',
+      _f(dur),
+      '-i',
+      input,
+      '-filter_complex',
+      '[0:v]$cropF$hdrF$speedF'
+          'fps=$fps,'
+          'scale=w=$maxSide:h=$maxSide:force_original_aspect_ratio=decrease'
+          ':flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];'
+          '[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle[g]',
+      '-map',
+      '[g]',
+      '-an',
+      out,
+    ]);
     if (!ReturnCode.isSuccess(await session.getReturnCode())) {
       _dropPartialGif(out);
       return null;
@@ -2155,12 +2334,17 @@ Future<List<Uint8List>> _makeThumbnails(
       : 'scale=-2:$height$jpegColor';
   // startAt：-ss 放在 -i 前面＝關鍵幀快轉，只解碼需要的段落
   final seek = startAt > 0.001
-      ? '-ss ${startAt.toStringAsFixed(3)} -t ${durationSec.toStringAsFixed(3)} '
-      : '';
+      ? [
+          '-ss',
+          startAt.toStringAsFixed(3),
+          '-t',
+          durationSec.toStringAsFixed(3),
+        ]
+      : <String>[];
   // fastDecode＝只解關鍵幀（fps 濾鏡會把稀疏的關鍵幀鋪滿格子）。
   // 手機 FFmpeg 是軟體解碼，4K HEVC 全幀解會把 CPU 吃滿好幾分鐘、
   // 整個 App 卡死；關鍵幀解快 50~100 倍，拖曳預覽夠用
-  final skip = fastDecode ? '-skip_frame nokey ' : '';
+  final skip = fastDecode ? ['-skip_frame', 'nokey'] : <String>[];
   // HDR 素材先轉 SDR 再縮圖：不轉的話快取幀／時間軸縮圖整片
   // 灰白，拖曳預覽跟播放畫面顏色對不上（也就是「拖曳會退色」）
   final p0 = await _probe(input);
@@ -2177,15 +2361,28 @@ Future<List<Uint8List>> _makeThumbnails(
   // 旋轉不用自己處理：FFmpeg 預設就會依 display matrix 自動轉正
   //（本機用 ffmpeg 8.1 實測：3840x2160＋rotation=-90 的素材，
   // 不加任何 transpose 抽出來就是直的）。自己再加一次是轉兩次
-  final cmd =
-      '-y $skip$seek-i "$input" '
-      '-vf "fps=${fps.toStringAsFixed(6)},$hdrFix$scale" '
-      '-frames:v $count -q:v 4 "$pattern"';
-  var session = await FFmpegKit.execute(cmd);
+  final cmd = [
+    '-y',
+    ...skip,
+    ...seek,
+    '-i',
+    input,
+    '-vf',
+    'fps=${fps.toStringAsFixed(6)},$hdrFix$scale',
+    '-frames:v',
+    '$count',
+    '-q:v',
+    '4',
+    pattern,
+  ];
+  var session = await FFmpegKit.executeWithArguments(cmd);
   var rc = await session.getReturnCode();
   // 保底：colorspace 濾鏡不能用就退回不轉色重抽
   if (!ReturnCode.isSuccess(rc) && hdrFix.isNotEmpty) {
-    session = await FFmpegKit.execute(cmd.replaceFirst(hdrFix, ''));
+    final fallback = List<String>.of(cmd);
+    final filterIndex = fallback.indexOf('-vf') + 1;
+    fallback[filterIndex] = fallback[filterIndex].replaceFirst(hdrFix, '');
+    session = await FFmpegKit.executeWithArguments(fallback);
     rc = await session.getReturnCode();
   }
   if (!ReturnCode.isSuccess(rc)) return [];

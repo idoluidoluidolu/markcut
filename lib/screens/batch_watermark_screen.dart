@@ -297,8 +297,6 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       if (!mounted) return;
       if (saved) {
         Navigator.of(context).pop();
-      } else {
-        showHint(context, '草稿保存失敗，請確認儲存空間後再試一次', error: true);
       }
     } else if (act == 'discard') {
       await _clearBatchDraft();
@@ -351,12 +349,16 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       };
       _draftTouched = true;
       return true;
+    } on DraftAssetException catch (e) {
+      if (mounted) showHint(context, e.message, error: true);
+      return false;
     } catch (_) {
       // setString 在平台寫入前已更新本地快取；失敗時恢復磁碟上的引用，
       // 避免離頁清理把未落地的新草稿當真，反而刪到舊草稿的素材。
       try {
         await prefs?.reload();
       } catch (_) {}
+      if (mounted) showHint(context, '草稿保存失敗，請確認儲存空間後再試一次', error: true);
       return false;
     }
   }

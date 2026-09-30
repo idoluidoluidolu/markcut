@@ -41,9 +41,14 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
     final picker = Picker();
+    FilePicker? previousPicker;
+    try {
+      previousPicker = FilePicker.platform;
+    } catch (_) {}
     FilePicker.platform = picker;
     addTearDown(() {
       debugDefaultTargetPlatformOverride = null;
+      if (previousPicker != null) FilePicker.platform = previousPicker;
     });
     late Directory dir;
     await t.runAsync(() async {
@@ -61,9 +66,16 @@ void main() {
     await t.pumpAndSettle();
     await t.runAsync(() async {
       await t.tap(find.byIcon(Icons.add).first);
-      await Future<void>.delayed(const Duration(milliseconds: 300));
     });
-    await t.pumpAndSettle();
+    // Wait for actual decode completion rather than assuming disk I/O takes 300ms.
+    for (var i = 0; i < 100; i++) {
+      await t.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
+      await t.pump(const Duration(milliseconds: 50));
+      final state = t.state(find.byType(CollageScreen)) as CollageLayoutPeek;
+      if (state.images.whereType<ui.Image>().isNotEmpty) break;
+    }
     expect(picker.calls, 1);
     final state = t.state(find.byType(CollageScreen)) as CollageLayoutPeek;
     expect(state.images.whereType<ui.Image>().length, 1);

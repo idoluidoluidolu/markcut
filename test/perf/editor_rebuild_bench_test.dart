@@ -283,6 +283,34 @@ void main() {
     rows.add('  elements rebuilt per bare setState frame: $rebuiltTotal');
     rows.add('  by widget type: ${top(rebuilt)}');
 
+    // Real selection changes: no content edits, shell rebuild or tab relayout.
+    final selectionUs = <int>[];
+    final timeline = t.widget<TimelineEditor>(find.byType(TimelineEditor));
+    final ids = timeline.timeline.clips.map((c) => c.id).toList();
+    final contentVersion = timeline.contentVersion;
+    for (var i = 0; i < n; i++) {
+      final sw = Stopwatch()..start();
+      t.widget<TimelineEditor>(find.byType(TimelineEditor)).onSelect(ids[i % ids.length]);
+      await t.pump();
+      selectionUs.add(sw.elapsedMicroseconds);
+    }
+    rows.add(_stats('selection + pump', selectionUs));
+    expect(t.widget<TimelineEditor>(find.byType(TimelineEditor)).contentVersion, contentVersion);
+    var selectionRebuilt = 0;
+    final shellRebuilt = <String, int>{};
+    debugOnRebuildDirtyWidget = (e, _) {
+      selectionRebuilt++;
+      final name = e.widget.runtimeType.toString();
+      if (['AppBar', 'TabBar', 'VideoEditorScreen'].contains(name)) {
+        shellRebuilt.update(name, (n) => n + 1, ifAbsent: () => 1);
+      }
+    };
+    t.widget<TimelineEditor>(find.byType(TimelineEditor)).onSelect(-1);
+    await t.pump();
+    debugOnRebuildDirtyWidget = null;
+    rows.add('  selection rebuilt elements: $selectionRebuilt, shell: $shellRebuilt');
+    expect(shellRebuilt, isEmpty);
+
     // 各子樹的 element 數（重建量的來源）
     int countEl(Element e) {
       var k = 1;

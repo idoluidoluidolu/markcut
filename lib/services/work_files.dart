@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'diagnostics.dart';
+import 'draft_store.dart';
 import 'frame_check.dart';
 import 'media_prep.dart';
 import 'native_frames.dart';
@@ -29,6 +30,8 @@ class WorkFiles {
   /// 總量上限：超過就從最舊的開始清。1080p H.264 大約 5MB/分鐘，
   /// 1.5GB 夠放五個小時的素材
   static const _maxTotalBytes = 1500 * 1024 * 1024;
+  @visibleForTesting
+  static int? maxTotalBytesOverride;
 
   static Map<String, dynamic>? _index;
 
@@ -213,7 +216,9 @@ class WorkFiles {
         final v = e.value;
         if (v is! Map || v['work'] is! String) continue;
         final src = sourceOfKey(e.key);
-        if (refs.contains(src) && !referenced(src)) targets.add(v['work'] as String);
+        if (refs.contains(src) && !referenced(src)) {
+          targets.add(v['work'] as String);
+        }
       }
     } catch (_) {}
     return releaseFiles(targets, referenced: referenced);
@@ -231,8 +236,12 @@ class WorkFiles {
       final sep = Platform.pathSeparator;
       for (final name in const ['workfiles', 'imports']) {
         final d = Directory('$base$sep$name');
+        if (await FileSystemEntity.type(d.path, followLinks: false) !=
+            FileSystemEntityType.directory) {
+          continue;
+        }
         if (!await d.exists()) continue;
-        await for (final f in d.list()) {
+        await for (final f in d.list(followLinks: false)) {
           if (f is! File) continue;
           try {
             sizes[f.path] = await f.length();
@@ -284,8 +293,12 @@ class WorkFiles {
       final sep = Platform.pathSeparator;
       for (final name in const ['workfiles', 'imports']) {
         final d = Directory('$base$sep$name');
+        if (await FileSystemEntity.type(d.path, followLinks: false) !=
+            FileSystemEntityType.directory) {
+          continue;
+        }
         if (!await d.exists()) continue;
-        await for (final f in d.list()) {
+        await for (final f in d.list(followLinks: false)) {
           if (f is! File) continue;
           if (keepWorks.contains(f.path) || referenced(f.path)) continue;
           if (_inFlight.contains(f.path)) continue;
@@ -821,11 +834,31 @@ class WorkFiles {
   /// 全程用 async 檔案操作——以前 listSync/deleteSync 對一目錄的
   /// 1080p 檔做同步 stat 與刪除，正好卡在匯入進度畫面在動的時候
   static Future<void> sweep() async {
+    try {
+      await DraftStore.withSweepReferences(_sweepUnreferenced);
+    } catch (_) {
+      // Unknown reference inventory is not permission to delete anything.
+    }
+  }
+
+  static Future<void> _sweepUnreferenced(Set<String> referenced) async {
     if (kIsWeb || holdSweep) return;
     // 還有人在轉就先不清。跳過 in-flight 已經夠安全，但轉檔期間本來就
     // 不缺這一次清理，等全部做完再一次清最單純
     if (_inFlight.isNotEmpty) return;
     try {
+      Future<String> canonical(String path) async {
+        try {
+          return await File(path).resolveSymbolicLinks();
+        } catch (_) {
+          return File(path).absolute.path;
+        }
+      }
+
+      final protected = <String>{};
+      for (final path in referenced) {
+        protected.add(await canonical(path));
+      }
       final idx = await _load();
       // 保險絲：索引是空的（版本跳號、解析失敗）時什麼都不清。
       // 空索引＋照常清＝目錄裡所有工作檔被當孤兒整批刪光，
@@ -847,8 +880,8 @@ class WorkFiles {
         }
         // 原檔不見了（系統清掉相簿快取）：工作檔是唯一活著的備份，
         // 千萬不能連坐刪掉——草稿救回（_loadDraft 的升格）全靠它。
-        // 索引留著，總量清理時它照樣排隊，但不會因為原檔死了就陪葬
-        alive.add(work);
+        // 索引與檔案都留著，總量清理也不能刪掉唯一備份。
+        alive.add(await canonical(work));
       }
       for (final k in dead) {
         idx.remove(k);
@@ -859,7 +892,11 @@ class WorkFiles {
       await for (final f in dir.list()) {
         if (f is! File) continue;
         if (_inFlight.contains(f.path)) continue;
-        if (!alive.contains(f.path)) {
+        if (holdSweep || _inFlight.isNotEmpty || DraftStore.hasOpenDrafts) {
+          return;
+        }
+        final fileKey = await canonical(f.path);
+        if (!alive.contains(fileKey) && !protected.contains(fileKey)) {
           try {
             await f.delete();
           } catch (_) {}
@@ -884,11 +921,22 @@ class WorkFiles {
           size: size,
         ));
       }
-      if (total > _maxTotalBytes) {
+      final limit = maxTotalBytesOverride ?? _maxTotalBytes;
+      if (total > limit) {
         entries.sort((a, b) => a.at.compareTo(b.at));
         for (final e in entries) {
-          if (total <= _maxTotalBytes) break;
+          if (total <= limit) break;
+          if (holdSweep || _inFlight.isNotEmpty || DraftStore.hasOpenDrafts) {
+            return;
+          }
           if (_inFlight.contains(e.work)) continue;
+          final source = sourceOfKey(e.src);
+          if (protected.contains(await canonical(e.work)) ||
+              protected.contains(await canonical(source))) {
+            continue;
+          }
+          // 原檔不見時，工作檔可能是唯一備份，不能為了快取配額刪除。
+          if (!await File(source).exists()) continue;
           try {
             await File(e.work).delete();
           } catch (_) {}

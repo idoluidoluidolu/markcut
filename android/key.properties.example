@@ -1,0 +1,6 @@
+# Copy to key.properties (gitignored), or configure the CM_* CI variables.
+# Keep the existing production signing identity when upgrading an installed app.
+storeFile=/absolute/path/to/release-keystore.jks
+storePassword=REPLACE_WITH_SECRET
+keyAlias=release
+keyPassword=REPLACE_WITH_SECRET

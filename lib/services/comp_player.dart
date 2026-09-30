@@ -910,6 +910,8 @@ class CompPlayer {
     required double py,
     required double rotation,
     double opacity = 1,
+    List<double>? crop,
+    bool mirror = false,
   }) async {
     try {
       return await _ch.invokeMethod<bool>('setXform', {
@@ -920,6 +922,8 @@ class CompPlayer {
             'py': py,
             'rotation': rotation,
             'opacity': opacity,
+            'crop': ?crop,
+            'mirror': mirror,
           }) ??
           false;
     } catch (_) {

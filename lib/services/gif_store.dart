@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:path_provider/path_provider.dart';
 
@@ -17,6 +17,23 @@ import 'package:path_provider/path_provider.dart';
 /// 每一筆用「參照字串」表示：手機上是檔案路徑，Web 的展示模式是
 /// `asset:` 開頭的內建範例（見 [demoRefs]）
 class GifStore {
+  @visibleForTesting
+  static Directory? documentsDirOverride;
+
+  /// Saved GIFs are user work, not disposable cache. Only stat them here.
+  static Future<int> usageBytes() async {
+    if (kIsWeb) return 0;
+    final base =
+        documentsDirOverride ?? await getApplicationDocumentsDirectory();
+    final dir = Directory('${base.path}${Platform.pathSeparator}gifs');
+    if (!await dir.exists()) return 0;
+    var total = 0;
+    await for (final file in dir.list(followLinks: false)) {
+      if (file is File) total += await file.length();
+    }
+    return total;
+  }
+
   /// Web 沒有 FFmpeg，做不出 GIF。但整套流程還是要看得到長什麼樣，
   /// 所以 Web 一律回這三個內建範例——直式、方形、橫式各一個，
   /// 剛好看得出瀑布流照原始比例排
@@ -33,7 +50,8 @@ class GifStore {
   static String assetKey(String ref) => ref.substring(6);
 
   static Future<Directory> _dir() async {
-    final base = await getApplicationDocumentsDirectory();
+    final base =
+        documentsDirOverride ?? await getApplicationDocumentsDirectory();
     final d = Directory('${base.path}${Platform.pathSeparator}gifs');
     if (!d.existsSync()) d.createSync(recursive: true);
     return d;

@@ -9,10 +9,8 @@ import '../theme.dart';
 Future<void> showFeedbackDialog(BuildContext context) {
   return showDialog<void>(
     context: context,
-    // 不給點背景關閉：送出中點到背景會讓結果無聲消失，
-    // 使用者以為沒送成又送一次，後台就重複了。
-    // 返回鍵同理，交給表單自己在沒在送的時候才放行
-    barrierDismissible: false,
+    // 點外側即可關閉；送出中的保護由表單的 PopScope 統一處理。
+    barrierDismissible: true,
     builder: (context) => Dialog(
       backgroundColor: kLBg,
       insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),

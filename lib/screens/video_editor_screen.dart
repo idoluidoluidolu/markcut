@@ -31,6 +31,8 @@ import '../services/overlay_sync.dart';
 import '../services/overlay_geometry.dart';
 import '../services/overlay_preview_policy.dart';
 import '../services/timeline_strip.dart';
+import '../services/timeline_thumbnail_cache.dart';
+import '../services/media_geometry.dart';
 import '../services/playback_trace.dart';
 import '../services/composition_playback_clock.dart';
 import '../services/rotation_snap.dart';
@@ -67,6 +69,7 @@ import '../theme.dart';
 import '../widgets/color_grade_panel.dart';
 import '../widgets/kaomoji_sheet.dart';
 import '../widgets/timeline_editor.dart';
+import '../widgets/editor_region.dart';
 import '../widgets/prep_gate_view.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/sticker_picker.dart';
@@ -103,26 +106,11 @@ enum _AddKind {
   paste,
 }
 
-/// 速度滑桿的檔位（帶號）：負的＝倒著放。
-/// 左端最快的倒轉 → 往中間變慢 → 過中線轉正 → 右端最快正播
-const kSpeedStops = <double>[
-  -4,
-  -3,
-  -2,
-  -1.5,
-  -1,
-  -0.75,
-  -0.5,
-  -0.25,
-  0.25,
-  0.5,
-  0.75,
-  1,
-  1.5,
-  2,
-  3,
-  4,
-];
+/// 每格 0.01x，負值＝倒轉；跳過會讓片段長度無限大的零倍速。
+final kSpeedStops = List<double>.unmodifiable([
+  for (var i = 400; i >= 25; i--) -i / 100,
+  for (var i = 25; i <= 400; i++) i / 100,
+]);
 
 class VideoEditorScreen extends StatefulWidget {
   final String? videoPath;
@@ -148,6 +136,10 @@ class VideoEditorScreen extends StatefulWidget {
   /// 進場後會先問每張停留幾秒
   final List<String>? photoPaths;
 
+  /// Align thumbnail deadlines with the widget test's timer clock.
+  @visibleForTesting
+  final DateTime Function()? thumbnailNow;
+
   const VideoEditorScreen({
     super.key,
     this.videoPath,
@@ -158,6 +150,7 @@ class VideoEditorScreen extends StatefulWidget {
     this.draftId,
     this.blank = false,
     this.waitForPreparation = false,
+    this.thumbnailNow,
   }) : assert(
          videoPath != null ||
              videoPaths != null ||
@@ -309,7 +302,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (key == _hdrCheckKey) return;
     _hdrCheckKey = key;
     NativeExport.anyHDR(paths).then((v) {
-      if (mounted && v != _hdrAvail) {
+      if (mounted && key == _hdrCheckKey && v != _hdrAvail) {
         setState(() => _hdrAvail = v);
         // HDR 判定出爐可能改變預覽管線（保留 HDR 是預設值）
         _compRefreshIfChanged();
@@ -427,6 +420,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   double _pxPerSec = 0;
   final _tlScroll = ScrollController();
+  final _tlVerticalScroll = ScrollController();
 
   // 浮水印顯示範圍（時間軸秒）；_wmEnd null = 跟到結尾
   double _wmStart = 0;
@@ -540,12 +534,65 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 父層重建／MediaQuery 變化也會跑 build，那些跟疊加物毫無關係。
   /// request 本身很便宜（只排計時器）；即時變形有自己的節流。
   /// 面板滑桿拖動中的每一格不走 setState（見 [_wmLiveTick]）
+  final _regions = EditorRegions();
+  late final PreferredSizeWidget _editorAppBar = _buildEditorAppBar();
+  late final Widget _editorNavigation = _buildEditorNavigation();
+  late final Widget _previewRegion = EditorRegionView(
+    revision: _regions.signal(EditorRegion.preview),
+    builder: (_) => _buildPreview(),
+  );
+  late final Widget _controlsRegion = EditorRegionView(
+    revision: _regions.signal(EditorRegion.controls),
+    builder: (_) => _buildControlBar(),
+  );
+  late final Widget _timelineRegion = EditorRegionView(
+    revision: _regions.signal(EditorRegion.timeline),
+    builder: (_) => _colorMode ? _buildColorPanel() : _buildTimelineTab(),
+  );
+  late final Widget _watermarkRegion = EditorRegionView(
+    revision: _regions.signal(EditorRegion.watermark),
+    builder: (_) => _buildWatermarkPanel(),
+  );
+  late final Widget _exportRegion = EditorRegionView(
+    revision: _regions.signal(EditorRegion.export),
+    builder: (_) => _buildExportTab(),
+  );
+
+  void _setUiState(VoidCallback fn) {
+    if (_fullscreen) {
+      super.setState(fn);
+    } else {
+      fn();
+    }
+    _regions.invalidate(const [
+      EditorRegion.preview,
+      EditorRegion.timeline,
+      EditorRegion.controls,
+      EditorRegion.watermark,
+    ]);
+    _ovStateChanged();
+    _syncPrepInteraction();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Section builders read this State's context. A screen-size, text-scale or
+    // theme change must refresh them even though their widget identities stay
+    // stable, without invalidating project/native content caches.
+    _regions.invalidate(EditorRegion.values);
+  }
+
   @override
   void setState(VoidCallback fn) {
     // 每次整頁重建都算「時間軸內容可能變了」：預覽每格讀的三個指紋
     // 快取下一格重算（見 _tlVersion）
     _tlVersion++;
     super.setState(fn);
+    // Source capability affects preview as well as export. Lazy tabs must not
+    // control whether the HDR pipeline is initialized.
+    _checkHdrSources();
+    _regions.invalidate(EditorRegion.values);
     _ovStateChanged();
     _syncPrepInteraction();
   }
@@ -1315,7 +1362,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ..._nfLatestT.keys,
       ..._scrubTouch.keys,
       ..._cropOrigPaths.keys,
-      ..._cropOrigin.keys,
       ..._decoderLru,
       ..._prepRetried,
       ..._hdrPrepRetried,
@@ -1336,7 +1382,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _nfLatestT.remove(i);
       _scrubTouch.remove(i);
       _cropOrigPaths.remove(i);
-      _cropOrigin.remove(i);
       _prepRetried.remove(i);
       _hdrPrepRetried.remove(i);
       _hdrPrepFailed.remove(i);
@@ -1723,7 +1768,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       for (final t in _settings.texts)
         if (t.enabled)
           't${t.text}|${t.fontFamily}|${t.colorValue}|${t.opacity}'
-              '|${t.sizeFrac}|${t.spacing}|${t.x}|${t.y}|${t.rotation}'
+              '|${t.sizeFrac}|${t.spacing}|${t.alignment}|${t.x}|${t.y}|${t.rotation}'
               '|${t.tiled}|${t.shadow}|${t.outline}|${t.outlineColorValue}'
               // 字重、底色、陰影參數也會改畫面，漏了封面不重畫
               '|${t.weight}|${t.bg}|${t.bgColorValue}|${t.bgOpacity}'
@@ -2048,8 +2093,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   String _stillStructSig(TimelineClip c) {
     final src = _tl.sourceOf(c);
     return 'im${c.id}|${c.track}|${c.offset}|${c.end}|${c.mirror}'
-        '|${c.fadeIn}|${c.fadeOut}|${c.cropped}|${c.cropL}'
-        '|${c.cropT}|${c.cropW}|${c.cropH}|${src.path}|${src.isGif}'
+        '|${c.fadeIn}|${c.fadeOut}|${src.path}|${src.isGif}'
         '|${c.color.hasColor ? c.color.matrix.join(',') : '-'}';
   }
 
@@ -2911,26 +2955,27 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   DateTime _xfLastAt = DateTime.fromMillisecondsSinceEpoch(0);
   Timer? _xfTrail;
 
-  void _liveXformSync() {
+  void _liveXformSync({TimelineClip? clip, bool force = false}) {
     if (!_compOn) return;
-    final c = _selClipById(_sel);
+    final c = clip ?? _selClipById(_sel);
     if (c == null || !_xfEligible(c)) {
       _xfSelId = -1;
       _xfLastSent = null;
       return;
     }
     final key =
-        '${c.track}|${c.offset}|${c.scale}|${c.px}|${c.py}|${c.rotation}|${c.opacity}';
-    if (c.id != _xfSelId || _xfLastSent == null) {
+        '${c.track}|${c.offset}|${c.scale}|${c.px}|${c.py}|${c.rotation}|${c.opacity}'
+        '|${c.cropL}|${c.cropT}|${c.cropW}|${c.cropH}|${c.mirror}';
+    if (!force && (c.id != _xfSelId || _xfLastSent == null)) {
       // 剛選取（或剛重組完）：記基準就好。值沒變就不重產 vc，
       // 免得光是點選取就換一次合成指令
       _xfSelId = c.id;
       _xfLastSent = key;
       return;
     }
-    if (key == _xfLastSent) return;
+    if (!force && key == _xfLastSent) return;
     final now = DateTime.now();
-    if (now.difference(_xfLastAt).inMilliseconds < 33) {
+    if (!force && now.difference(_xfLastAt).inMilliseconds < 33) {
       // 節流中：尾巴補一發，手指停下的最後位置一定落地
       _xfTrail?.cancel();
       _xfTrail = Timer(const Duration(milliseconds: 40), () {
@@ -2939,6 +2984,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     _xfLastAt = now;
+    _xfSelId = c.id;
     _xfLastSent = key;
     _xfRevision++;
     unawaited(
@@ -2950,28 +2996,33 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         py: c.py,
         rotation: c.rotation,
         opacity: c.opacity,
+        crop: [c.cropL, c.cropT, c.cropW, c.cropH],
+        mirror: c.mirror,
       ),
     );
   }
 
   /// 草稿存檔失敗提示過了沒（整場只煩一次）
   bool _draftSaveWarned = false;
+  Timer? _xformHandoffTimer;
 
   /// [force]：dispose 的最後補存用。那時 unmount 已經發生，
   /// `mounted` 必為 false——以前這裡一檢查就 return，
   /// 「離開前補存」其實從來沒有存成功過
   Future<void> _saveDraftNow({bool force = false}) async {
+    if (_draftDeleted || (!mounted && !force)) return;
     // 這份專案正在編輯：手動清理（DraftStore.prune）不能把它
     // 當成最舊的刪掉——登記起來，離開專案（_handleBack）時才解除
     DraftStore.holdOpen(_draftId);
-    // 封面要夠大：個人中心拿它當大圖顯示。抽過就快取，換了片段才重抽
-    await _refreshCover();
     if (!mounted && !force) return;
     // Web 也存：同一次瀏覽內可以繼續剪；重新整理後素材連結會失效，
     // 還原時由 _loadDraft 剔除並提示
     // 整包 JSON 含 Logo 的 base64：編碼跟寫檔都交給 DraftStore 丟背景
     // isolate（見 BlobStore.writeJson）——存草稿是每個編輯動作都會走到
     // 的，那幾毫秒以前正好落在使用者手指還在動的時候
+    final generation = ++_draftSaveGeneration;
+    final version = _tlVersion;
+    final revision = '${DateTime.now().microsecondsSinceEpoch}:$generation';
     final thumb = _draftThumb();
     final ok = await DraftStore.save(
       _draftId,
@@ -2981,7 +3032,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       clipCount: _tl.clips.length,
       duration: _tl.duration,
       refs: _draftFileRefs(),
+      coverRevision: revision,
     );
+    if (ok && !_draftDeleted && generation == _draftSaveGeneration) {
+      _pendingCover = (revision: revision, version: version, force: force);
+      _scheduleDraftCover();
+      if (force) await _coverTask;
+    }
     // 存不進去（空間滿、prefs 損毀）要講，不能讓使用者整場都
     // 以為有自動存。只提示一次，不然每個動作都跳
     if (!ok && mounted && !_draftSaveWarned) {
@@ -2990,8 +3047,55 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
   }
 
+  int _draftSaveGeneration = 0;
+  bool _draftDeleted = false;
+  ({String revision, int version, bool force})? _pendingCover;
+  Future<void>? _coverTask;
+
+  void _scheduleDraftCover() {
+    _coverTask ??= _drainDraftCovers().whenComplete(() {
+      _coverTask = null;
+      // A save may finish between the final loop check and this completion.
+      if (_pendingCover != null && !_draftDeleted) _scheduleDraftCover();
+    });
+  }
+
+  Future<void> _drainDraftCovers() async {
+    while (_pendingCover != null && !_draftDeleted) {
+      final request = _pendingCover!;
+      _pendingCover = null;
+      if (!mounted && !request.force) continue;
+      final previousCover = (_coverB64, _coverAspect);
+      try {
+        await _refreshCover();
+        if (_draftDeleted || request.version != _tlVersion) {
+          _coverB64 = previousCover.$1;
+          _coverAspect = previousCover.$2;
+          _coverKey = null;
+          continue;
+        }
+        final thumb = _draftThumb();
+        if (thumb != null) {
+          await DraftStore.updateCover(
+            _draftId,
+            revision: request.revision,
+            thumb: thumb.$1,
+            aspect: thumb.$2,
+          );
+        }
+      } catch (_) {
+        // Cover rendering is optional: the project has already been saved.
+        _coverB64 = previousCover.$1;
+        _coverAspect = previousCover.$2;
+        _coverKey = null;
+      }
+    }
+  }
+
   /// 丟掉這一份草稿（離開時選「不保留」）
   Future<void> clearThisDraft() {
+    _draftDeleted = true;
+    _pendingCover = null;
     DraftStore.releaseOpen(_draftId);
     return DraftStore.remove(_draftId);
   }
@@ -3153,9 +3257,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 先用工作檔救回，救不回才剔除
         if (await _rescueFromWorkFile(s)) {
           if (s.kind == ClipKind.video) {
-            _thumbStrip(s.previewPath, s.duration).then((t) {
-              if (mounted && t.isNotEmpty) setState(() => _thumbs[i] = t);
-            });
             _ensureScrubSlots(i, s.duration);
           }
         } else {
@@ -3197,16 +3298,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // _importVideoMeta／_thumbsAfterPrep）：這時候手上只有 4K 原檔，
         // 一支就是十格硬體解碼，六支草稿＝六十格跟轉檔搶同一顆解碼器，
         // 而且抽出來的還是要丟掉的那一版（代理換上時會重抽）
-        if (kIsWeb || _prepNeedOf(s) == _PrepNeed.none) {
-          _thumbStrip(s.previewPath, s.duration).then((t) {
-            if (mounted && t.isNotEmpty) setState(() => _thumbs[i] = t);
-          });
+        // Restore small cached strips without opening a decoder. Cold sources
+        // go through the shared cover-first queue once the preview is ready.
+        final cached = await TimelineThumbnailCache.read(s.path, s.duration);
+        if (mounted && cached.isNotEmpty) {
+          _thumbs[i] = cached;
+          if (cached.length < thumbStripCount(s.duration)) {
+            _thumbsCoarse[i] = null;
+          }
         }
         _ensureScrubSlots(i, s.duration);
-        // 原檔期間先把拖曳快取整條抽起來（同 _importVideoFromPath）
-        if (s.workPath == null && !kIsWeb) {
-          unawaited(_makeScrubCache(i, s.previewPath, s.duration));
-        }
+        // Scrub frames are requested at the playhead, after the first preview.
       }
     }
 
@@ -3230,9 +3332,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (mounted) showHint(context, '部分倒轉素材無法更新色彩，已保留原有檔案');
       }
       if (s.kind == ClipKind.video) {
-        _thumbStrip(s.previewPath, s.duration).then((t) {
-          if (mounted && t.isNotEmpty) setState(() => _thumbs[i] = t);
-        });
         _ensureScrubSlots(i, s.duration);
       }
     }
@@ -5350,12 +5449,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // timeline_strip.dart）——精準抽 4K 原檔每格要從關鍵幀解 20 幾張，
         // 那正是以前要等「全部閒置」的原因；代理落地後會再精抽一次
         final dense = _denseKeyframes(path);
+        var delivered = 0;
         // 不給 deadline：原生不回就跟以前的 nativeFrameAt 一樣掛著（測試
         // 環境沒掛假通道時，timeout 的計時器會在頁面收掉後還活著）
         final t = await loadCoarseStrip(
           duration: dur,
-          count: thumbStripCount(dur),
+          count: _prepBusy && !dense ? 10 : thumbStripCount(dur),
           alive: () => mounted,
+          onProgress: (frames) {
+            delivered++;
+            if (!mounted || (delivered != 1 && delivered % 5 != 0)) return;
+            for (var i = 0; i < _tl.sources.length; i++) {
+              final source = _tl.sources[i];
+              if (!source.isVideo || _thumbnailPath(source) != path) continue;
+              // The first returned frame is visible immediately; filling the
+              // remaining cells must not keep the entire strip blank.
+              _thumbsCoarse[i] = null;
+              _setUiState(() => _thumbs[i] = frames);
+            }
+          },
           fetch: (sec, tolMs) async {
             await _waitForFingerIdle();
             if (!mounted) return null;
@@ -5395,12 +5507,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Timer? _entryGateTimer;
   QualitySpan? _qualityImportGate;
 
+  DateTime _thumbnailNow() => widget.thumbnailNow?.call() ?? DateTime.now();
+
   void _beginEntryGate() {
     QualityDiagnostics.instance.finish(_qualityImportGate);
     _qualityImportGate = QualityDiagnostics.instance.begin(
       QualityMetric.importGate,
     );
-    _entryDeadline = DateTime.now().add(kEntryThumbBudget);
+    _entryDeadline = _thumbnailNow().add(kEntryThumbBudget);
     _entryGating = true;
     _entryGateTimer?.cancel();
     _entryGateTimer = Timer(kEntryThumbBudget, _endEntryGate);
@@ -5438,7 +5552,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // Do not start another blocking thumbnail pass once that gate has ended.
     if (!_entryGating) return;
     await _coarseThumbnailPass(
-      deadline: _entryDeadline ?? DateTime.now().add(kEntryThumbBudget),
+      deadline: _entryDeadline ?? _thumbnailNow().add(kEntryThumbBudget),
       gate: true,
     );
   }
@@ -5447,7 +5561,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 不蓋讀取畫面、同一個 5 秒預算。完整縮圖帶等的是「全部代理轉完」
   ///（_waitForThumbnailStrip），多支 4K 一起加要十幾秒，這段時間不能只有封面
   Future<void> _coarseThumbnailsInBackground() => _coarseThumbnailPass(
-    deadline: DateTime.now().add(kEntryThumbBudget),
+    deadline: _thumbnailNow().add(kEntryThumbBudget),
     gate: false,
   );
 
@@ -5468,7 +5582,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 讀取畫面的 %：做完幾支＋時間爬升保底（卡著也要看得到在動）
     void progress() {
       if (!gate || !mounted) return;
-      final left = deadline.difference(DateTime.now()).inMilliseconds;
+      final left = deadline.difference(_thumbnailNow()).inMilliseconds;
       final byWork = 0.1 + 0.85 * done / todo.length;
       final byTime = (1 - left / kEntryThumbBudget.inMilliseconds) * 0.9;
       final v = math.max(byWork, byTime).clamp(0.0, 0.97);
@@ -5479,11 +5593,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     for (final s in todo) {
       if (!mounted ||
           (gate && !_entryGating) ||
-          !DateTime.now().isBefore(deadline)) {
+          !_thumbnailNow().isBefore(deadline)) {
         break;
       }
       final path = _thumbnailPath(s);
       final frames = await loadCoarseStrip(
+        now: _thumbnailNow,
         duration: s.duration,
         count: 10,
         deadline: deadline,
@@ -5502,8 +5617,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 抽的途中素材被換掉／代理落地：這一條是舊路徑抽的，不寫進去
       if (index < 0 || path != _thumbnailPath(s)) continue;
       if (frames.isNotEmpty && frames.length >= _thumbnailCount(s)) {
-        _thumbs[index] = frames;
+        _setUiState(() => _thumbs[index] = frames);
         _thumbsCoarse[index] = null; // 粗帶：之後一定要精抽
+        unawaited(TimelineThumbnailCache.write(s.path, s.duration, frames));
         done++;
       }
       progress();
@@ -5618,7 +5734,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           // 解碼器，跟轉檔搶記憶體（全 App 只有轉檔器有記憶體閘門），而且
           // 這支的代理一落地就會從代理重抽（原檔抽的只是關鍵幀近似帶）。
           // 進場閘的粗帶照舊有；代理落地會叫醒這裡（見 _drainPrep）
-          if (_prepBusy && !_denseKeyframes(_thumbnailPath(source))) {
+          if (_prepBusy &&
+              !_denseKeyframes(_thumbnailPath(source)) &&
+              _thumbnailCount(source) >= 10) {
             return false;
           }
           if (_thumbnailCount(source) < 10) return true;
@@ -5673,7 +5791,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 _thumbsCoarse[index] = path;
               }
             }
-            setState(() => _thumbs[index] = frames);
+            _setUiState(() => _thumbs[index] = frames);
+            unawaited(
+              TimelineThumbnailCache.write(
+                source.path,
+                source.duration,
+                frames,
+              ),
+            );
           }
         },
       );
@@ -6720,16 +6845,33 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     onChangeStart: begin,
                     onChangeEnd: end,
                     min: 0.02,
-                    max: 3.0,
-                    curve: 1.8,
-                    onChanged: (v) => change(() => clip.scale = v),
+                    max: kMaxMediaScale,
+                    curve: 3.5,
+                    onChanged: (v) => change(() {
+                      final center = mediaVisibleCenter(
+                        clip,
+                        src.aspect,
+                        _canvasAspectNow,
+                      );
+                      clip.scale = v;
+                      placeMediaVisibleCenter(
+                        clip,
+                        src.aspect,
+                        _canvasAspectNow,
+                        center,
+                      );
+                    }),
                     readout: '${(clip.scale * 100).round()}',
                     unit: '%',
                     // 點數字＝回到剛好貼合畫布、置中
                     onReset: () => change(() {
                       clip.scale = 1.0;
-                      clip.px = 0.5;
-                      clip.py = 0.5;
+                      placeMediaVisibleCenter(
+                        clip,
+                        src.aspect,
+                        _canvasAspectNow,
+                        const Offset(.5, .5),
+                      );
                     }),
                   ),
                   sliderRow(
@@ -7447,12 +7589,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
   }
 
-  /// 被裁過的素材 → 它是從哪一份原圖裁出來的。
-  ///
-  /// 重新裁切一律從原圖開始：不然裁小了之後只能在那一小塊裡面繼續裁，
-  /// 越裁越小回不去。按上一步就會回到裁切前的樣子
-  final Map<int, int> _cropOrigin = {};
-
   /// 左右鏡像這一段（自拍、有字的招牌常常要翻回來）
   void _toggleMirror(TimelineClip clip) {
     _pushUndo();
@@ -7464,57 +7600,51 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 裁切時間軸上的一張圖片素材
   Future<void> _cropImageClip(TimelineClip clip) async {
     await _withImageWork(() async {
-      final srcIndex = _cropOrigin[clip.sourceIndex] ?? clip.sourceIndex;
-      final src = _tl.sources[srcIndex];
-      final originalPath = _cropOrigPaths[srcIndex] ?? src.path;
-      final cached = originalPath == src.path
-          ? _thumbs[srcIndex]?.firstOrNull
-          : null;
+      _pause();
+      _liveXformSync(clip: clip);
+      final src = _tl.sourceOf(clip);
+      final cached = _thumbs[clip.sourceIndex]?.firstOrNull;
       final preview = cached == null
-          ? await EditorPhoto.load(originalPath)
+          ? await EditorPhoto.load(src.path)
           : EditorPhoto(src.w, src.h, cached);
       if (!mounted) return;
-      final path = await _cropPhotoPath(originalPath, preview);
-      if (path == null || !mounted) return;
-      final photo = path == originalPath
-          ? preview
-          : await EditorPhoto.load(path);
-      if (!mounted) return;
-      _pushUndo();
-      final newIndex = _tl.sources.length;
-      _tl.sources.add(
-        MediaSource(
-          path: path,
-          name: src.name,
-          kind: ClipKind.image,
-          duration: src.duration,
-          w: photo.width,
-          h: photo.height,
-        ),
+      final saved = Rect.fromLTWH(
+        clip.cropL,
+        clip.cropT,
+        clip.cropW,
+        clip.cropH,
       );
-      _thumbs[newIndex] = [photo.bytes];
-      _cropOrigin[newIndex] = srcIndex;
-      _cropOrigPaths[newIndex] = originalPath;
-      final i = _tl.clips.indexOf(clip);
-      if (i >= 0) {
-        final json = clip.toJson()..['sourceIndex'] = newIndex;
-        setState(() => _tl.clips[i] = TimelineClip.fromJson(json));
-      }
-      _resyncPlayback();
+      final initial = clip.mirror ? flipRectX(saved) : saved;
+      final picked = await pickCropRect(
+        context,
+        preview.bytes,
+        initial: initial,
+      );
+      if (!mounted || picked == null || !_tl.clips.contains(clip)) return;
+      final r = clip.mirror ? flipRectX(picked) : picked;
+      if (r == saved || r.width < 0.01 || r.height < 0.01) return;
+      _pushUndo();
+      // Cropping is metadata for every renderer. Returning from Apply requires
+      // neither a full-resolution encode nor a new source/player/thumbnail.
+      setState(() {
+        clip.cropL = r.left.clamp(0.0, 1.0);
+        clip.cropT = r.top.clamp(0.0, 1.0);
+        clip.cropW = r.width.clamp(0.01, 1.0);
+        clip.cropH = r.height.clamp(0.01, 1.0);
+      });
+      _liveXformSync(clip: clip, force: true);
+      _compRefreshIfChanged();
       _saveDraft();
     });
   }
 
   /// 裁切影片片段。
   ///
-  /// 影片不是真的裁成一張新圖——那要重新編碼整段。改成把裁切框換算成
-  /// 這個片段的縮放與位移（scale / px / py）：預覽、合成播放器、原生
-  /// 匯出、FFmpeg 匯出本來就都吃這三個值，所以裁切是零成本的，
-  /// 而且隨時可以再調回來。
-  ///
-  /// 代價是「裁出來的那塊會填滿畫布」——框的比例跟畫布不一樣時，
-  /// 短邊的那一側會再被畫布切掉一點。固定畫布的剪輯 App 都是這樣
+  /// 保留原始檔，只記錄裁切框；預覽立即套用相同範圍，匯出再處理像素。
+  /// 裁切不改變留下區域的大小或位置，也可以重新開啟調整。
   Future<void> _cropVideoClip(TimelineClip clip) async {
+    _pause();
+    _liveXformSync(clip: clip);
     final src = _tl.sourceOf(clip);
     // 底圖抓「播放頭正指著的那一格」，不是片段開頭那一格：
     // 使用者會先把播放頭移到想裁的畫面再按裁切，結果卻拿到片頭
@@ -7594,6 +7724,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       clip.cropW = r.width.clamp(0.01, 1.0);
       clip.cropH = r.height.clamp(0.01, 1.0);
     });
+    // Send the crop through the same immediate native path as scale/position.
+    // The old composition displays the new rectangle during the rebuild.
+    _liveXformSync(clip: clip, force: true);
     _compRefreshIfChanged();
     _saveDraft();
   }
@@ -7608,7 +7741,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         content: TextField(
           controller: ctrl,
           autofocus: true,
-          maxLines: 2,
+          minLines: 3,
+          maxLines: 6,
+          keyboardType: TextInputType.multiline,
+          textInputAction: TextInputAction.newline,
           decoration: const InputDecoration(hintText: '輸入文字'),
         ),
         actions: [
@@ -7641,7 +7777,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       isScrollControlled: true,
       // 視窗最多佔半個螢幕：上半留給預覽，邊調邊看即時效果
       constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.5,
+        maxHeight:
+            MediaQuery.sizeOf(context).height -
+            MediaQuery.paddingOf(context).top -
+            40,
       ),
       builder: (context) => StatefulBuilder(
         builder: (context, setSheet) {
@@ -7726,61 +7865,164 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 ),
               );
 
-          return Padding(
-            padding: EdgeInsets.only(
-              bottom: MediaQuery.of(context).viewInsets.bottom,
+          return SizedBox(
+            height: math.min(
+              MediaQuery.sizeOf(context).height * .5 +
+                  MediaQuery.viewInsetsOf(context).bottom,
+              MediaQuery.sizeOf(context).height - 100,
             ),
-            child: SafeArea(
-              child: SingleChildScrollView(
-                // 往下滑清單就收鍵盤（打完字回不去的解法）
-                keyboardDismissBehavior:
-                    ScrollViewKeyboardDismissBehavior.onDrag,
-                padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    TextField(
-                      controller: ctrl,
-                      autofocus: false,
-                      textAlign: TextAlign.center,
-                      textInputAction: TextInputAction.done,
-                      style: TextStyle(
-                        fontFamily: st.fontFamily,
-                        fontSize: 20,
-                        color: st.color,
-                      ),
-                      decoration: const InputDecoration(hintText: '文字'),
-                      onChanged: (v) => both(() {
-                        src.name = v;
-                        st.text = v;
-                      }),
-                    ),
-                    // 顏文字：點一個複製、回來貼上（跟浮水印面板同一顆）
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: TextButton.icon(
-                        onPressed: () => showKaomojiSheet(context),
-                        style: TextButton.styleFrom(
-                          visualDensity: VisualDensity.compact,
-                          padding: const EdgeInsets.symmetric(horizontal: 6),
-                          foregroundColor: kTextDim,
-                        ),
-                        icon: const Icon(
-                          Icons.emoji_emotions_outlined,
-                          size: 16,
-                        ),
-                        label: const Text(
-                          '顏文字',
-                          style: TextStyle(fontSize: 11.5),
+            child: Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom,
+              ),
+              child: SafeArea(
+                child: SingleChildScrollView(
+                  // 往下滑清單就收鍵盤（打完字回不去的解法）
+                  keyboardDismissBehavior:
+                      ScrollViewKeyboardDismissBehavior.onDrag,
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton.icon(
+                          key: const ValueKey('clip-text-done'),
+                          onPressed: () {
+                            FocusScope.of(context).unfocus();
+                            Navigator.pop(context);
+                          },
+                          icon: const Icon(Icons.check, size: 18),
+                          label: const Text('完成'),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: DropdownButtonHideUnderline(
+                      TextField(
+                        controller: ctrl,
+                        autofocus: false,
+                        key: const ValueKey('clip-text-content'),
+                        minLines: 3,
+                        maxLines: 6,
+                        keyboardType: TextInputType.multiline,
+                        textAlign: st.alignment,
+                        textInputAction: TextInputAction.newline,
+                        style: TextStyle(
+                          fontFamily: st.fontFamily,
+                          fontSize: 20,
+                          color: st.color,
+                        ),
+                        decoration: const InputDecoration(hintText: '文字'),
+                        onChanged: (v) => both(() {
+                          src.name = v;
+                          st.text = v;
+                        }),
+                      ),
+                      const SizedBox(height: 12),
+                      SegmentedButton<TextAlign>(
+                        key: const ValueKey('clip-text-alignment'),
+                        showSelectedIcon: false,
+                        segments: const [
+                          ButtonSegment(
+                            value: TextAlign.left,
+                            icon: Icon(Icons.format_align_left, size: 18),
+                            label: Text('靠左'),
+                          ),
+                          ButtonSegment(
+                            value: TextAlign.center,
+                            icon: Icon(Icons.format_align_center, size: 18),
+                            label: Text('置中'),
+                          ),
+                          ButtonSegment(
+                            value: TextAlign.right,
+                            icon: Icon(Icons.format_align_right, size: 18),
+                            label: Text('靠右'),
+                          ),
+                        ],
+                        selected: {st.alignment},
+                        onSelectionChanged: (v) =>
+                            both(() => st.alignment = v.single),
+                      ),
+                      // 顏文字：點一個複製、回來貼上（跟浮水印面板同一顆）
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: () => showKaomojiSheet(context),
+                          style: TextButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(horizontal: 6),
+                            foregroundColor: kTextDim,
+                          ),
+                          icon: const Icon(
+                            Icons.emoji_emotions_outlined,
+                            size: 16,
+                          ),
+                          label: const Text(
+                            '顏文字',
+                            style: TextStyle(fontSize: 11.5),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: DropdownButtonHideUnderline(
+                              child: Container(
+                                height: 38,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                ),
+                                decoration: BoxDecoration(
+                                  border: Border.all(color: kBorder),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: DropdownButton<String>(
+                                  isExpanded: true,
+                                  value: st.fontFamily,
+                                  icon: const Icon(
+                                    Icons.expand_more,
+                                    size: 16,
+                                    color: kTextDim,
+                                  ),
+                                  // 選單跟 App 同風格：面板色、圓角、
+                                  // 限高（蓋滿全螢幕太生硬）
+                                  dropdownColor: kPanelHi,
+                                  borderRadius: BorderRadius.circular(12),
+                                  menuMaxHeight: 320,
+                                  itemHeight: 48,
+                                  items: [
+                                    for (final f in kFontOptions)
+                                      DropdownMenuItem(
+                                        value: f.family,
+                                        child: Text(
+                                          f.label,
+                                          style: TextStyle(
+                                            fontFamily: f.family,
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                  onChanged: (v) => both(
+                                    () => st.fontFamily = v ?? 'NotoSansTC',
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          InkWell(
+                            onTap: () async {
+                              final picked = await pickColor(context, st.color);
+                              final ok = picked != null;
+                              final color = Color(picked ?? 0);
+                              if (ok == true) {
+                                both(() => st.colorValue = color.toARGB32());
+                              }
+                            },
+                            borderRadius: BorderRadius.circular(6),
+                            // 跟浮水印面板同款：框＋「顏色」字樣，
+                            // 裸圓點看起來不像可以點
                             child: Container(
                               height: 38,
                               padding: const EdgeInsets.symmetric(
@@ -7790,238 +8032,192 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 border: Border.all(color: kBorder),
                                 borderRadius: BorderRadius.circular(6),
                               ),
-                              child: DropdownButton<String>(
-                                isExpanded: true,
-                                value: st.fontFamily,
-                                icon: const Icon(
-                                  Icons.expand_more,
-                                  size: 16,
-                                  color: kTextDim,
-                                ),
-                                // 選單跟 App 同風格：面板色、圓角、
-                                // 限高（蓋滿全螢幕太生硬）
-                                dropdownColor: kPanelHi,
-                                borderRadius: BorderRadius.circular(12),
-                                menuMaxHeight: 320,
-                                itemHeight: 48,
-                                items: [
-                                  for (final f in kFontOptions)
-                                    DropdownMenuItem(
-                                      value: f.family,
-                                      child: Text(
-                                        f.label,
-                                        style: TextStyle(
-                                          fontFamily: f.family,
-                                          fontSize: 13,
-                                        ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Container(
+                                    width: 22,
+                                    height: 22,
+                                    decoration: BoxDecoration(
+                                      color: st.color,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: kBorder,
+                                        width: 1.5,
                                       ),
                                     ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  const Text(
+                                    '顏色',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: kTextDim,
+                                    ),
+                                  ),
                                 ],
-                                onChanged: (v) => both(
-                                  () => st.fontFamily = v ?? 'NotoSansTC',
-                                ),
                               ),
                             ),
                           ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      slider(
+                        '大小',
+                        st.sizeFrac,
+                        0.02,
+                        2.0,
+                        (v) => st.sizeFrac = v,
+                      ),
+                      slider('透明', st.opacity, 0.05, 1, (v) => st.opacity = v),
+                      // 間距可以負值：字疊近一點（跟面板同範圍）
+                      slider(
+                        '間距',
+                        st.spacing,
+                        -0.2,
+                        0.6,
+                        (v) => st.spacing = v,
+                      ),
+                      // 旋轉：±4° 內吸附回正，點角度數字一鍵歸零
+                      sliderRow(
+                        label: '旋轉',
+                        value: st.rotation,
+                        min: -180,
+                        max: 180,
+                        onChanged: (v) => both(
+                          () =>
+                              st.rotation = snapAngle(v, current: st.rotation),
                         ),
-                        const SizedBox(width: 10),
-                        InkWell(
-                          onTap: () async {
-                            final picked = await pickColor(context, st.color);
-                            final ok = picked != null;
-                            final color = Color(picked ?? 0);
-                            if (ok == true) {
-                              both(() => st.colorValue = color.toARGB32());
-                            }
-                          },
-                          borderRadius: BorderRadius.circular(6),
-                          // 跟浮水印面板同款：框＋「顏色」字樣，
-                          // 裸圓點看起來不像可以點
-                          child: Container(
-                            height: 38,
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
-                            decoration: BoxDecoration(
-                              border: Border.all(color: kBorder),
-                              borderRadius: BorderRadius.circular(6),
+                        readout: '${st.rotation.round()}',
+                        unit: '\u00B0',
+                        valueColor: st.rotation.round() == 0 ? kTextDim : kText,
+                        onReset: () => both(() => st.rotation = 0),
+                      ),
+                      // 動畫：跟浮水印同一組（固定/閃爍/飄移/跑馬燈），
+                      // 速度與幅度用預設值，不另外開滑桿
+                      SizedBox(
+                        height: 40,
+                        child: Row(
+                          children: [
+                            const Text(
+                              '動畫',
+                              style: TextStyle(fontSize: 12, color: kTextDim),
                             ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Container(
-                                  width: 22,
-                                  height: 22,
-                                  decoration: BoxDecoration(
-                                    color: st.color,
-                                    shape: BoxShape.circle,
-                                    border: Border.all(
-                                      color: kBorder,
-                                      width: 1.5,
+                            const Spacer(),
+                            for (final a in WmAnimation.values)
+                              Padding(
+                                padding: const EdgeInsets.only(left: 6),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(999),
+                                  onTap: () => both(() => st.animation = a),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 5,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: st.animation == a
+                                          ? kPanelHi
+                                          : Colors.transparent,
+                                      borderRadius: BorderRadius.circular(999),
+                                      border: Border.all(
+                                        color: st.animation == a
+                                            ? kSelect
+                                            : kBorder,
+                                      ),
+                                    ),
+                                    child: Text(
+                                      a.label,
+                                      style: TextStyle(
+                                        fontSize: 11.5,
+                                        color: st.animation == a
+                                            ? kText
+                                            : kTextDim,
+                                      ),
                                     ),
                                   ),
                                 ),
-                                const SizedBox(width: 8),
-                                const Text(
-                                  '顏色',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: kTextDim,
-                                  ),
-                                ),
-                              ],
-                            ),
+                              ),
+                          ],
+                        ),
+                      ),
+                      toggle('陰影', st.shadow, (v) => st.shadow = v),
+                      if (st.shadow) ...[
+                        Padding(
+                          padding: const EdgeInsets.only(left: 16),
+                          child: slider(
+                            '濃度',
+                            st.shadowOpacity,
+                            0.05,
+                            1.0,
+                            (v) => st.shadowOpacity = v,
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.only(left: 16),
+                          child: slider(
+                            '模糊',
+                            st.shadowBlur,
+                            0.0,
+                            0.2,
+                            (v) => st.shadowBlur = v,
                           ),
                         ),
                       ],
-                    ),
-                    const SizedBox(height: 6),
-                    slider(
-                      '大小',
-                      st.sizeFrac,
-                      0.02,
-                      2.0,
-                      (v) => st.sizeFrac = v,
-                    ),
-                    slider('透明', st.opacity, 0.05, 1, (v) => st.opacity = v),
-                    // 間距可以負值：字疊近一點（跟面板同範圍）
-                    slider('間距', st.spacing, -0.2, 0.6, (v) => st.spacing = v),
-                    // 旋轉：±4° 內吸附回正，點角度數字一鍵歸零
-                    sliderRow(
-                      label: '旋轉',
-                      value: st.rotation,
-                      min: -180,
-                      max: 180,
-                      onChanged: (v) => both(
-                        () => st.rotation = snapAngle(v, current: st.rotation),
-                      ),
-                      readout: '${st.rotation.round()}',
-                      unit: '\u00B0',
-                      valueColor: st.rotation.round() == 0 ? kTextDim : kText,
-                      onReset: () => both(() => st.rotation = 0),
-                    ),
-                    // 動畫：跟浮水印同一組（固定/閃爍/飄移/跑馬燈），
-                    // 速度與幅度用預設值，不另外開滑桿
-                    SizedBox(
-                      height: 40,
-                      child: Row(
-                        children: [
-                          const Text(
-                            '動畫',
-                            style: TextStyle(fontSize: 12, color: kTextDim),
+                      toggle('描邊', st.outline, (v) => st.outline = v),
+                      if (st.outline) ...[
+                        colorRow(
+                          '顏色',
+                          st.outlineColor,
+                          (v) => st.outlineColorValue = v,
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.only(left: 16),
+                          child: slider(
+                            '粗細',
+                            st.outlineWidth,
+                            0.02,
+                            0.2,
+                            (v) => st.outlineWidth = v,
                           ),
-                          const Spacer(),
-                          for (final a in WmAnimation.values)
-                            Padding(
-                              padding: const EdgeInsets.only(left: 6),
-                              child: InkWell(
-                                borderRadius: BorderRadius.circular(999),
-                                onTap: () => both(() => st.animation = a),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                    vertical: 5,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: st.animation == a
-                                        ? kPanelHi
-                                        : Colors.transparent,
-                                    borderRadius: BorderRadius.circular(999),
-                                    border: Border.all(
-                                      color: st.animation == a
-                                          ? kSelect
-                                          : kBorder,
-                                    ),
-                                  ),
-                                  child: Text(
-                                    a.label,
-                                    style: TextStyle(
-                                      fontSize: 11.5,
-                                      color: st.animation == a
-                                          ? kText
-                                          : kTextDim,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                    toggle('陰影', st.shadow, (v) => st.shadow = v),
-                    if (st.shadow) ...[
-                      Padding(
-                        padding: const EdgeInsets.only(left: 16),
-                        child: slider(
-                          '濃度',
-                          st.shadowOpacity,
-                          0.05,
-                          1.0,
-                          (v) => st.shadowOpacity = v,
                         ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.only(left: 16),
-                        child: slider(
-                          '模糊',
-                          st.shadowBlur,
-                          0.0,
-                          0.2,
-                          (v) => st.shadowBlur = v,
+                      ],
+                      toggle('底色', st.bg, (v) => st.bg = v),
+                      if (st.bg) ...[
+                        colorRow('顏色', st.bgColor, (v) => st.bgColorValue = v),
+                        Padding(
+                          padding: const EdgeInsets.only(left: 16),
+                          child: slider(
+                            '透明度',
+                            st.bgOpacity,
+                            0.05,
+                            1,
+                            (v) => st.bgOpacity = v,
+                          ),
                         ),
-                      ),
+                        Padding(
+                          padding: const EdgeInsets.only(left: 16),
+                          child: slider(
+                            '大小',
+                            st.bgPad,
+                            0.3,
+                            2.5,
+                            (v) => st.bgPad = v,
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.only(left: 16),
+                          child: slider(
+                            '圓角',
+                            st.bgCorner,
+                            0,
+                            1,
+                            (v) => st.bgCorner = v,
+                          ),
+                        ),
+                      ],
                     ],
-                    toggle('描邊', st.outline, (v) => st.outline = v),
-                    if (st.outline) ...[
-                      colorRow(
-                        '顏色',
-                        st.outlineColor,
-                        (v) => st.outlineColorValue = v,
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.only(left: 16),
-                        child: slider(
-                          '粗細',
-                          st.outlineWidth,
-                          0.02,
-                          0.2,
-                          (v) => st.outlineWidth = v,
-                        ),
-                      ),
-                    ],
-                    toggle('底色', st.bg, (v) => st.bg = v),
-                    if (st.bg) ...[
-                      colorRow('顏色', st.bgColor, (v) => st.bgColorValue = v),
-                      Padding(
-                        padding: const EdgeInsets.only(left: 16),
-                        child: slider(
-                          '透明度',
-                          st.bgOpacity,
-                          0.05,
-                          1,
-                          (v) => st.bgOpacity = v,
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.only(left: 16),
-                        child: slider(
-                          '大小',
-                          st.bgPad,
-                          0.3,
-                          2.5,
-                          (v) => st.bgPad = v,
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.only(left: 16),
-                        child: slider(
-                          '圓角',
-                          st.bgCorner,
-                          0,
-                          1,
-                          (v) => st.bgCorner = v,
-                        ),
-                      ),
-                    ],
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -8029,6 +8225,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         },
       ),
     );
+    // Modal contents stay mounted until the reverse transition completes.
     _saveDraft();
   }
 
@@ -9178,7 +9375,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 新合成烘的就是現在的變形值：即時變形的基準重取
     if (_xfRevision == _xfBakedRevision) _xfLastSent = null;
     final xformRevision = _xfBakedRevision;
-    Timer(const Duration(milliseconds: 1700), () {
+    _xformHandoffTimer?.cancel();
+    _xformHandoffTimer = Timer(const Duration(milliseconds: 1700), () {
       if (!mounted || _comp != made || _xfRevision != xformRevision) return;
       unawaited(CompPlayer.clearXform());
       if (_ovNativeShown != _ovNativePending) {
@@ -10860,11 +11058,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final hits = <int>[];
     for (var i = _hitBoxes.length - 1; i >= 0; i--) {
       final b = _hitBoxes[i];
-      if (b.rect.contains(p) && !hits.contains(b.id)) hits.add(b.id);
+      var point = p;
+      final clip = _selClipById(b.id);
+      if (clip != null && clip.rotated) {
+        final kind = _tl.sourceOf(clip).kind;
+        if (kind == ClipKind.video || kind == ClipKind.image) {
+          final d = p - b.rect.center;
+          final a = -clip.rotation * math.pi / 180;
+          point =
+              b.rect.center +
+              Offset(
+                d.dx * math.cos(a) - d.dy * math.sin(a),
+                d.dx * math.sin(a) + d.dy * math.cos(a),
+              );
+        }
+      }
+      if (b.rect.contains(point) && !hits.contains(b.id)) hits.add(b.id);
     }
     if (hits.isEmpty) {
       _cycleAt = null;
-      setState(() {
+      _setUiState(() {
         _sel = -1;
         _wmSel = false;
       });
@@ -10879,7 +11092,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (at >= 0) next = hits[(at + 1) % hits.length];
     }
     _cycleAt = p;
-    setState(() {
+    _setUiState(() {
       _wmSel = next == _kWmId;
       _sel = next == _kWmId ? -1 : next;
     });
@@ -11629,7 +11842,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _showClipMenu(int id, Offset pos) async {
     final clip = _selClipById(id);
     if (clip == null) return;
-    setState(() {
+    _setUiState(() {
       _sel = id;
       _wmSel = false;
     });
@@ -11735,7 +11948,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       case 'paste':
         await _pasteClipboard(at: t, track: track);
       case 'tidy':
-        setState(() => _selTrack = track);
+        _setUiState(() => _selTrack = track);
         _closeGaps();
       case 'delTrack':
         await _deleteTrack(track);
@@ -11893,6 +12106,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     _tlPinchCoolTimer?.cancel();
     _tlScroll.dispose();
+    _tlVerticalScroll.dispose();
+    _regions.dispose();
+    _xformHandoffTimer?.cancel();
     _wmPanelCtrl.dispose();
     _tabs.dispose();
     super.dispose();
@@ -12388,24 +12604,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (!didPop) _handleBack();
       },
       child: Scaffold(
-        appBar: _fullscreen
-            ? null
-            : AppBar(
-                // 標題文字拿掉了，但「長按開播放診斷」這個隱藏入口要留著：
-                // 改成一塊透明的感應區佔著原本標題的位置，看不到但按得到
-                title: GestureDetector(
-                  onLongPress: _openTrace,
-                  behavior: HitTestBehavior.opaque,
-                  child: const SizedBox(width: 200, height: kToolbarHeight),
-                ),
-                actions: [
-                  IconButton(
-                    tooltip: '品質診斷器',
-                    onPressed: _openQualityDiagnostics,
-                    icon: const Icon(Icons.monitor_heart_outlined),
-                  ),
-                ],
-              ),
+        appBar: _fullscreen ? null : _editorAppBar,
         // 素材還在備就整頁擋著等它做完。使用者的原話是「既然一定要跑
         // 讀取，那請改成先跑一下讀取再進入，比進入後閃東閃西讀取還好」。
         // _entryGating：進場縮圖閘（見 _beginEntryGate）——它跟 _ready 是分開
@@ -12423,9 +12622,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   // 不然四軌以上只剩一條縫可以捲
                   Expanded(
                     flex: _tl.usedTracks >= 3 ? 4 : 5,
-                    child: _buildPreview(),
+                    child: _previewRegion,
                   ),
-                  _buildControlBar(),
+                  _controlsRegion,
                   Expanded(
                     flex: _tl.usedTracks >= 3 ? 6 : 5,
                     child: TabBarView(
@@ -12434,176 +12633,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       physics: const NeverScrollableScrollPhysics(),
                       children: [
                         // 調色模式接管下半部，預覽照常在上面看得到
-                        _colorMode ? _buildColorPanel() : _buildTimelineTab(),
+                        _timelineRegion,
                         // 浮水印分頁認選取目標：選中的是浮水印素材
                         // 就編它，否則編全域浮水印。key 綁目標，
                         // 切換目標時面板內部狀態才會重置
-                        Builder(
-                          builder: (context) {
-                            final c = _selClipById(_sel);
-                            final src = c == null ? null : _tl.sourceOf(c);
-                            // 貼圖不算：它有自己的調整視窗，選著一張貼圖
-                            // 切到浮水印分頁時，該編的是全域浮水印
-                            final isClipWm =
-                                src != null &&
-                                src.kind == ClipKind.wm &&
-                                !src.isSticker;
-                            if (isClipWm) src.wmStyle ??= WatermarkSettings();
-                            return WatermarkPanel(
-                              key: ValueKey(isClipWm ? _sel : -1),
-                              // 九宮格「貼邊」要知道畫布比例才夾得準
-                              canvasAspect:
-                                  _comp != null &&
-                                      _comp!.width > 1 &&
-                                      _comp!.height > 1
-                                  ? _comp!.width / _comp!.height
-                                  : null,
-                              // 手繪直接畫在「播放頭這一格」上（畫在哪、
-                              // 印在哪）。合成播放器抽得到就給；退回
-                              // 逐片段路徑（web/調色中）就維持透明畫板
-                              grabFrame: () async {
-                                final c = _comp;
-                                if (!_compOn || c == null) return null;
-                                return c.grab(maxH: 1080);
-                              },
-                              controller: _wmPanelCtrl,
-                              settings: isClipWm ? src.wmStyle! : _settings,
-                              onChanged: () => setState(() {
-                                // 滑桿放手（或非滑桿的改動）：手勢結束
-                                _wmSliding = false;
-                                _wmPrepTimer?.cancel();
-                                if (isClipWm) {
-                                  // 名字跟著文字走，時間軸上才認得出來
-                                  final st = src.wmStyle!;
-                                  src.name =
-                                      st.text.enabled &&
-                                          st.text.text.trim().isNotEmpty
-                                      ? st.text.text
-                                      : '浮水印';
-                                }
-                              }),
-                              onBeforeChange: () {
-                                _pushWmUndo();
-                                // 手指剛按上、值還沒變：快路先熱起來
-                                //（見 _ovWarmUp）
-                                _ovWarmUp();
-                              },
-                              onImageWork: _setWatermarkImageWork,
-                              // 滑桿拖動中每一格只重繪預覽層（放手時
-                              // 面板補一次 onChanged 走上面整頁那條）
-                              onLiveChange: _wmLiveTick,
-                              syncVersion: _wmSync,
-                              showAnimation: true,
-                              // 剛加的圖片直接選起來，可以馬上拖／縮放
-                              onLogoAdded: () => setState(() {
-                                _wmPart = WmPart.logo;
-                                if (!isClipWm) _wmSel = true;
-                              }),
-                              // 面板裡點縮圖／文字＝畫面上也選它（同
-                              // onLogoAdded 的規矩）。沒有這一段，面板
-                              // 亮框的圖片在預覽上動不了：預覽的拖曳
-                              // 由「選取路由」統一收，而路由只認 _wmSel
-                              // ＋_wmPart——點縮圖以前只改 activeLogo，
-                              // 進場預選的又是文字，於是拖曳跑去搬文字；
-                              // 若先點過片段（_wmSel 被清掉）路由根本
-                              // 不掛，手指就被文字那層 opaque 的判定
-                              //（畫在圖片之上、預設又比圖片寬）整個吃掉。
-                              // _wmSel 的 setter 會順手把片段選取清成 -1，
-                              // 選著貼圖時拖曳也不會再跑去搬那張貼圖。
-                              // 浮水印素材（isClipWm）不設 _wmSel：那會
-                              // 清掉 _sel，面板下一幀就跳回全域浮水印
-                              onSelectPart: (p) => setState(() {
-                                _wmPart = p;
-                                if (!isClipWm) _wmSel = true;
-                              }),
-                              // GIF 得當時間軸素材才會動（浮水印是烘成
-                              // 一張靜態 PNG 的），所以從這裡加也是加到
-                              // 時間軸上，加完把人帶回剪輯分頁看
-                              onAddGif: () async {
-                                await _pickGif(_tl.usedTracks);
-                                if (mounted) _tabs.animateTo(0);
-                              },
-                            );
-                          },
-                        ),
-                        _buildExportTab(),
+                        _watermarkRegion,
+                        _exportRegion,
                       ],
                     ),
                   ),
                 ],
               ),
-        bottomNavigationBar: !_ready || _fullscreen
-            ? null
-            : Container(
-                color: kBg,
-                child: SafeArea(
-                  top: false,
-                  child: TabBar(
-                    controller: _tabs,
-                    // 調色模式沒有「完成」鈕：點任何分頁＝離開調色
-                    onTap: (i) {
-                      if (_colorMode) _exitColorMode();
-                      // 已經在匯出分頁再按一次「匯出」＝直接開始匯出
-                      //（鎮宇：按兩下就出，不用再找頁裡的大鈕）。
-                      // indexIsChanging＝從別的分頁切過來的那一下，
-                      // 那不算第二次
-                      if (i == 2 && !_tabs.indexIsChanging && !_exporting) {
-                        _export();
-                      }
-                    },
-                    indicatorColor: Colors.transparent,
-                    dividerHeight: 0,
-                    // 選中分頁跟浮水印面板同一套語言：字＋圖示直接轉琥珀
-                    labelColor: kSelect,
-                    unselectedLabelColor: kTextDim,
-                    labelStyle: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 0.3,
-                      fontFamily: 'NotoSansTC',
-                    ),
-                    unselectedLabelStyle: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w500,
-                      letterSpacing: 0.3,
-                      fontFamily: 'NotoSansTC',
-                    ),
-                    // 不能整包 const：匯出分頁掛了長按回呼（對照模式）
-                    tabs: [
-                      const Tab(
-                        icon: Icon(Icons.content_cut, size: 20),
-                        text: '剪輯',
-                        height: 54,
-                        iconMargin: EdgeInsets.only(bottom: 2),
-                      ),
-                      const Tab(
-                        icon: Icon(Icons.branding_watermark, size: 20),
-                        text: '浮水印',
-                        height: 54,
-                        iconMargin: EdgeInsets.only(bottom: 2),
-                      ),
-                      // 長按＝預覽 vs 成品對照模式（診斷 WYSIWYG 用，
-                      // 見 _toggleCompare）。只掛長按不掛點擊，
-                      // 分頁本身的切換不受影響
-                      Tab(
-                        height: 54,
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.translucent,
-                          onLongPress: _toggleCompare,
-                          child: const Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.ios_share, size: 20),
-                              SizedBox(height: 2),
-                              Text('匯出'),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+        bottomNavigationBar: !_ready || _fullscreen ? null : _editorNavigation,
       ),
     );
   }
@@ -12611,6 +12652,171 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 全螢幕播放：預覽鋪滿整頁、黑底、點畫面切換控制列。
   /// 用的是同一份預覽（合成播放器或疊圖層），不另外開播放器——
   /// 全螢幕看到的必須跟編輯畫面完全一樣
+  PreferredSizeWidget _buildEditorAppBar() => AppBar(
+    // 標題文字拿掉了，但「長按開播放診斷」這個隱藏入口要留著：
+    // 改成一塊透明的感應區佔著原本標題的位置，看不到但按得到
+    title: GestureDetector(
+      onLongPress: _openTrace,
+      behavior: HitTestBehavior.opaque,
+      child: const SizedBox(width: 200, height: kToolbarHeight),
+    ),
+    actions: [
+      IconButton(
+        tooltip: '品質診斷器',
+        onPressed: _openQualityDiagnostics,
+        icon: const Icon(Icons.monitor_heart_outlined),
+      ),
+    ],
+  );
+  Widget _buildEditorNavigation() => Container(
+    color: kBg,
+    child: SafeArea(
+      top: false,
+      child: TabBar(
+        controller: _tabs,
+        // 調色模式沒有「完成」鈕：點任何分頁＝離開調色
+        onTap: (i) {
+          if (_colorMode) _exitColorMode();
+          // 已經在匯出分頁再按一次「匯出」＝直接開始匯出
+          //（鎮宇：按兩下就出，不用再找頁裡的大鈕）。
+          // indexIsChanging＝從別的分頁切過來的那一下，
+          // 那不算第二次
+          if (i == 2 && !_tabs.indexIsChanging && !_exporting) {
+            _export();
+          }
+        },
+        indicatorColor: Colors.transparent,
+        dividerHeight: 0,
+        // 選中分頁跟浮水印面板同一套語言：字＋圖示直接轉琥珀
+        labelColor: kSelect,
+        unselectedLabelColor: kTextDim,
+        labelStyle: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.3,
+          fontFamily: 'NotoSansTC',
+        ),
+        unselectedLabelStyle: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w500,
+          letterSpacing: 0.3,
+          fontFamily: 'NotoSansTC',
+        ),
+        // 不能整包 const：匯出分頁掛了長按回呼（對照模式）
+        tabs: [
+          const Tab(
+            icon: Icon(Icons.content_cut, size: 20),
+            text: '剪輯',
+            height: 54,
+            iconMargin: EdgeInsets.only(bottom: 2),
+          ),
+          const Tab(
+            icon: Icon(Icons.branding_watermark, size: 20),
+            text: '浮水印',
+            height: 54,
+            iconMargin: EdgeInsets.only(bottom: 2),
+          ),
+          // 長按＝預覽 vs 成品對照模式（診斷 WYSIWYG 用，
+          // 見 _toggleCompare）。只掛長按不掛點擊，
+          // 分頁本身的切換不受影響
+          Tab(
+            height: 54,
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onLongPress: _toggleCompare,
+              child: const Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.ios_share, size: 20),
+                  SizedBox(height: 2),
+                  Text('匯出'),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+  Widget _buildWatermarkPanel() {
+    final c = _selClipById(_sel);
+    final src = c == null ? null : _tl.sourceOf(c);
+    // 貼圖不算：它有自己的調整視窗，選著一張貼圖
+    // 切到浮水印分頁時，該編的是全域浮水印
+    final isClipWm = src != null && src.kind == ClipKind.wm && !src.isSticker;
+    if (isClipWm) src.wmStyle ??= WatermarkSettings();
+    return WatermarkPanel(
+      key: ValueKey(isClipWm ? _sel : -1),
+      // 九宮格「貼邊」要知道畫布比例才夾得準
+      canvasAspect: _comp != null && _comp!.width > 1 && _comp!.height > 1
+          ? _comp!.width / _comp!.height
+          : null,
+      // 手繪直接畫在「播放頭這一格」上（畫在哪、
+      // 印在哪）。合成播放器抽得到就給；退回
+      // 逐片段路徑（web/調色中）就維持透明畫板
+      grabFrame: () async {
+        final c = _comp;
+        if (!_compOn || c == null) return null;
+        return c.grab(maxH: 1080);
+      },
+      controller: _wmPanelCtrl,
+      settings: isClipWm ? src.wmStyle! : _settings,
+      onChanged: () => setState(() {
+        // 滑桿放手（或非滑桿的改動）：手勢結束
+        _wmSliding = false;
+        _wmPrepTimer?.cancel();
+        if (isClipWm) {
+          // 名字跟著文字走，時間軸上才認得出來
+          final st = src.wmStyle!;
+          src.name = st.text.enabled && st.text.text.trim().isNotEmpty
+              ? st.text.text
+              : '浮水印';
+        }
+      }),
+      onBeforeChange: () {
+        _pushWmUndo();
+        // 手指剛按上、值還沒變：快路先熱起來
+        //（見 _ovWarmUp）
+        _ovWarmUp();
+      },
+      onImageWork: _setWatermarkImageWork,
+      // 滑桿拖動中每一格只重繪預覽層（放手時
+      // 面板補一次 onChanged 走上面整頁那條）
+      onLiveChange: _wmLiveTick,
+      syncVersion: _wmSync,
+      showAnimation: true,
+      // 剛加的圖片直接選起來，可以馬上拖／縮放
+      onLogoAdded: () => setState(() {
+        _wmPart = WmPart.logo;
+        if (!isClipWm) _wmSel = true;
+      }),
+      // 面板裡點縮圖／文字＝畫面上也選它（同
+      // onLogoAdded 的規矩）。沒有這一段，面板
+      // 亮框的圖片在預覽上動不了：預覽的拖曳
+      // 由「選取路由」統一收，而路由只認 _wmSel
+      // ＋_wmPart——點縮圖以前只改 activeLogo，
+      // 進場預選的又是文字，於是拖曳跑去搬文字；
+      // 若先點過片段（_wmSel 被清掉）路由根本
+      // 不掛，手指就被文字那層 opaque 的判定
+      //（畫在圖片之上、預設又比圖片寬）整個吃掉。
+      // _wmSel 的 setter 會順手把片段選取清成 -1，
+      // 選著貼圖時拖曳也不會再跑去搬那張貼圖。
+      // 浮水印素材（isClipWm）不設 _wmSel：那會
+      // 清掉 _sel，面板下一幀就跳回全域浮水印
+      onSelectPart: (p) => _setUiState(() {
+        _wmPart = p;
+        if (!isClipWm) _wmSel = true;
+      }),
+      // GIF 得當時間軸素材才會動（浮水印是烘成
+      // 一張靜態 PNG 的），所以從這裡加也是加到
+      // 時間軸上，加完把人帶回剪輯分頁看
+      onAddGif: () async {
+        await _pickGif(_tl.usedTracks);
+        if (mounted) _tabs.animateTo(0);
+      },
+    );
+  }
+
   Widget _buildFullscreen() {
     return ColoredBox(
       color: Colors.black,
@@ -13156,7 +13362,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 點預覽區任何空白（含畫布外的灰邊）＝取消所有選取＋收鍵盤
         onTap: () {
           FocusManager.instance.primaryFocus?.unfocus();
-          setState(() {
+          _setUiState(() {
             _sel = -1;
             _wmSel = false;
           });
@@ -13180,7 +13386,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       GestureDetector(
                         onTap: () {
                           FocusManager.instance.primaryFocus?.unfocus();
-                          setState(() {
+                          _setUiState(() {
                             _sel = -1;
                             _wmSel = false;
                           });
@@ -13226,16 +13432,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   // 與選取框都該用它——不然裁掉的空白處
                                   // 還是點得到、框也框在看不見的邊上
                                   Rect cropBox(Rect r, TimelineClip c) {
-                                    if (!c.cropped) return r;
-                                    final l = c.mirror
-                                        ? 1 - c.cropL - c.cropW
-                                        : c.cropL;
-                                    return Rect.fromLTWH(
-                                      r.left + l * r.width,
-                                      r.top + c.cropT * r.height,
-                                      c.cropW * r.width,
-                                      c.cropH * r.height,
-                                    );
+                                    return mediaCropRect(r, c);
                                   }
 
                                   final children = <Widget>[];
@@ -13729,10 +13926,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                     behavior:
                                                         HitTestBehavior.opaque,
                                                     // 點畫面上的影片＝選取它（等同在時間軸點該片段）
-                                                    onTap: () => setState(() {
-                                                      _sel = c.id;
-                                                      _wmSel = false;
-                                                    }),
+                                                    onTap: () =>
+                                                        _setUiState(() {
+                                                          _sel = c.id;
+                                                          _wmSel = false;
+                                                        }),
                                                     child:
                                                         const SizedBox.expand(),
                                                   ),
@@ -13794,7 +13992,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           rect: r,
                                           child: GestureDetector(
                                             behavior: HitTestBehavior.opaque,
-                                            onTap: () => setState(() {
+                                            onTap: () => _setUiState(() {
                                               _sel = c.id;
                                               _wmSel = false;
                                             }),
@@ -14123,7 +14321,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               GestureDetector(
                                                 behavior:
                                                     HitTestBehavior.opaque,
-                                                onTap: () => setState(() {
+                                                onTap: () => _setUiState(() {
                                                   _sel = c.id;
                                                   _wmSel = false;
                                                 }),
@@ -14195,7 +14393,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                 // 不接續上一輪的連點循環
                                                 _cycleAt = null;
                                                 final was = _sel == c.id;
-                                                setState(() {
+                                                _setUiState(() {
                                                   _sel = c.id;
                                                   _wmSel = false;
                                                 });
@@ -14221,7 +14419,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               // 點文字＝面板直接捲到
                                               // 文字設定，不用自己找
                                               onTapText: () {
-                                                setState(() {
+                                                _setUiState(() {
                                                   _sel = c.id;
                                                   _wmSel = false;
                                                 });
@@ -14274,7 +14472,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           child: GestureDetector(
                                             // 點文字＝選取＋直接進入編輯
                                             onTap: () {
-                                              setState(() {
+                                              _setUiState(() {
                                                 _sel = c.id;
                                                 _wmSel = false;
                                               });
@@ -14442,10 +14640,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           onDoubleTap: () {
                                             _pushUndo();
                                             setState(() {
-                                              sc.px = 0.5;
-                                              sc.py = 0.5;
                                               sc.scale = 1.0;
                                               sc.rotation = 0;
+                                              placeMediaVisibleCenter(
+                                                sc,
+                                                _tl.sourceOf(sc).aspect,
+                                                canvasAspect,
+                                                const Offset(.5, .5),
+                                              );
                                             });
                                             _saveDraft();
                                           },
@@ -14503,7 +14705,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               ? _wmPart
                                               : WmPart.none,
                                           onSelectPart: (p) =>
-                                              setState(() => _wmPart = p),
+                                              _setUiState(() => _wmPart = p),
                                           // 捏合期間鎖拖曳，手指滑過別的
                                           // 元素才不會把它拖走
                                           panLocked: () => _pvPts.length >= 2,
@@ -14515,7 +14717,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           // 分頁，面板捲到圖片設定
                                           onTap: () {
                                             _cycleAt = null;
-                                            setState(() {
+                                            _setUiState(() {
                                               _wmSel = true;
                                               _sel = -1;
                                             });
@@ -14527,7 +14729,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           // 要改字在面板裡改
                                           onTapText: () {
                                             _cycleAt = null;
-                                            setState(() {
+                                            _setUiState(() {
                                               _wmSel = true;
                                               _sel = -1;
                                             });
@@ -14576,6 +14778,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             if (selVis != null) {
                                               _gestureStartPx = selVis.px;
                                               _gestureStartPy = selVis.py;
+                                              final center = mediaVisibleCenter(
+                                                selVis,
+                                                _tl.sourceOf(selVis).aspect,
+                                                canvasAspect,
+                                              );
+                                              _gestureStartVisible = center;
                                               _gestureStartScale = selVis.scale;
                                               _gestureStartFocal = d.focalPoint;
                                               final s0 = _tl.sourceOf(selVis);
@@ -14650,14 +14858,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                 });
                                                 return;
                                               }
-                                              // 文字素材可以放大到 12 倍
-                                              //（跟捏合 Listener 同一套），
-                                              // 其他 3 倍
+                                              // 跟雙指 Listener 與大小滑桿共用上限。
                                               final maxS =
                                                   _tl.sourceOf(selVis).kind ==
                                                       ClipKind.text
                                                   ? 12.0
-                                                  : 3.0;
+                                                  : kMaxMediaScale;
                                               _setLive(() {
                                                 // 起點+總位移=未吸附原始值，
                                                 // 顯示值才吸中線
@@ -14681,10 +14887,41 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                     (_gestureStartScale *
                                                             d.scale)
                                                         .clamp(0.05, maxS);
+                                                final kind = selSrc0.kind;
+                                                if (kind == ClipKind.video ||
+                                                    kind == ClipKind.image) {
+                                                  final center =
+                                                      _gestureStartVisible +
+                                                      Offset(
+                                                        (d.focalPoint.dx -
+                                                                _gestureStartFocal
+                                                                    .dx) /
+                                                            w,
+                                                        (d.focalPoint.dy -
+                                                                _gestureStartFocal
+                                                                    .dy) /
+                                                            h,
+                                                      );
+                                                  placeMediaVisibleCenter(
+                                                    selVis,
+                                                    selSrc0.aspect,
+                                                    canvasAspect,
+                                                    Offset(
+                                                      _snapC(center.dx),
+                                                      _snapC(center.dy),
+                                                    ),
+                                                  );
+                                                }
                                               });
+                                              final visible =
+                                                  mediaVisibleCenter(
+                                                    selVis,
+                                                    selSrc0.aspect,
+                                                    canvasAspect,
+                                                  );
                                               _rtSetGuides(
-                                                selVis.px,
-                                                selVis.py,
+                                                visible.dx,
+                                                visible.dy,
                                               );
                                               return;
                                             }
@@ -15170,6 +15407,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   double _pvBaseText = 0;
   double _pvBaseLogo = 0;
   double _pvBaseClip = 1;
+  Offset? _pvVisibleCenter;
 
   /// 兩指中點落在畫布的哪個位置（0~1）。算不出來就回 null
   Offset? _canvasPoint(Offset globalPos) {
@@ -15339,6 +15577,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _pvBaseRotClip = _selClipById(_sel)?.rotation ?? 0;
     // 選中的是浮水印素材：記它樣式裡的底值（clip.scale 對它沒作用）
     final selC = _selClipById(_sel);
+    _pvVisibleCenter =
+        selC != null &&
+            (_tl.sourceOf(selC).isVideo ||
+                _tl.sourceOf(selC).kind == ClipKind.image)
+        ? mediaVisibleCenter(selC, _tl.sourceOf(selC).aspect, _canvasAspectNow)
+        : null;
     final selWm = selC == null ? null : _tl.sourceOf(selC).wmStyle;
     if (selC != null && _tl.sourceOf(selC).kind == ClipKind.wm) {
       _pvBaseClipWmText = selWm?.text.sizeFrac ?? 0.08;
@@ -15401,7 +15645,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               }
             }
           } else {
-            final maxS = src.kind == ClipKind.text ? 12.0 : 3.0;
+            final maxS = src.kind == ClipKind.text ? 12.0 : kMaxMediaScale;
             c.scale = (_pvBaseClip * f).clamp(0.02, maxS);
           }
         }
@@ -15442,6 +15686,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             // 同一個欄位，預覽與匯出都吃它）。馬賽克不轉——
             // 打碼區域的旋轉匯出端不支援，轉了預覽≠成品
             c.rotation = rot(_pvBaseRotClip);
+            if (_pvVisibleCenter != null) {
+              placeMediaVisibleCenter(
+                c,
+                src.aspect,
+                _canvasAspectNow,
+                _pvVisibleCenter!,
+              );
+            }
           }
         }
       }
@@ -15503,8 +15755,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           }
           changed = true;
         } else {
-          final maxS = src.kind == ClipKind.text ? 12.0 : 3.0;
+          final maxS = src.kind == ClipKind.text ? 12.0 : kMaxMediaScale;
+          final center = mediaVisibleCenter(c, src.aspect, _canvasAspectNow);
           c.scale = (c.scale * f).clamp(0.05, maxS);
+          if (src.isVideo || src.kind == ClipKind.image) {
+            placeMediaVisibleCenter(c, src.aspect, _canvasAspectNow, center);
+          }
           changed = true;
         }
       }
@@ -15624,6 +15880,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   // 預覽手勢的起始狀態
   double _gestureStartPx = 0.5;
+  Offset _gestureStartVisible = const Offset(.5, .5);
   double _gestureStartPy = 0.5;
   double _gestureStartScale = 1.0;
   Offset _gestureStartFocal = Offset.zero;
@@ -15752,7 +16009,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     // 捏合的手指抬起那一下不算點擊，選取不能被它清掉
                     if (_tlPinchSettling) return;
                     FocusManager.instance.primaryFocus?.unfocus();
-                    setState(() {
+                    _setUiState(() {
                       _sel = -1;
                       _wmSel = false;
                     });
@@ -15769,6 +16026,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     }
                   },
                   child: SingleChildScrollView(
+                    controller: _tlVerticalScroll,
                     // 雙指縮放時間軸時暫停垂直捲動，縮放手勢才吃得到
                     physics: _tlPinching
                         ? const NeverScrollableScrollPhysics()
@@ -15795,19 +16053,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             child: RepaintBoundary(
                               child: TimelineEditor(
                                 timeline: _tl,
+                                contentVersion: _tlVersion,
+                                verticalScrollController: _tlVerticalScroll,
+                                viewportHeight: box.maxHeight,
                                 thumbs: _thumbs,
                                 selectedId: _sel,
                                 playhead: _posVN,
                                 pxPerSec: _pxPerSec,
                                 scrollController: _tlScroll,
-                                onSelect: (id) => setState(() {
+                                onSelect: (id) => _setUiState(() {
                                   _sel = id;
                                   _wmSel = false;
                                   if (id != -1) _selTrack = -1;
                                 }),
                                 // 點軌道空白處＝選取該軌（貼上目標）
                                 onTapTrack: (t) =>
-                                    setState(() => _selTrack = t),
+                                    _setUiState(() => _selTrack = t),
                                 // 長按左邊的圖示＝刪掉整條軌道
                                 onDeleteTrack: _deleteTrack,
                                 selectedTrack: _selTrack,
@@ -15925,7 +16186,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 // 一律跳：按下時 onSelectWmDrag 已先把
                                 // 選取設起來，這裡再看 wasSel 永遠不會跳
                                 onSelectWm: () {
-                                  setState(() {
+                                  _setUiState(() {
                                     _wmSel = true;
                                     _sel = -1;
                                   });
@@ -15934,7 +16195,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 // 按下只安靜選取；點擊（放開時幾乎沒動）
                                 // 才由 timeline_editor 呼叫 onSelectWm 跳分頁。
                                 // 拖曳調範圍不會被打斷、捏合誤觸也不會跳
-                                onSelectWmDrag: () => setState(() {
+                                onSelectWmDrag: () => _setUiState(() {
                                   _wmSel = true;
                                   _sel = -1;
                                 }),
@@ -16769,9 +17030,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * .8,
+      ),
       builder: (context) => StatefulBuilder(
         builder: (context, setSheet) => SafeArea(
-          child: Padding(
+          child: SingleChildScrollView(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -16803,8 +17068,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   ],
                 ),
                 const SizedBox(height: 4),
-                // 速度檔位：滑桿左半邊是負的＝倒著放。
-                // 用固定檔位不用連續值，免得停在 1.03x 這種數字
+                // 負值＝倒轉；每格 0.01x，按鈕可精確增減一格。
                 Builder(
                   builder: (context) {
                     // 倒轉/還原會把片段換成新實例（指向倒轉檔），每次重查
@@ -16875,6 +17139,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             Expanded(
                               child: Slider(
                                 value: idx.toDouble(),
+                                key: const ValueKey('clip-speed-slider'),
                                 min: 0,
                                 max: (stops.length - 1).toDouble(),
                                 divisions: stops.length - 1,
@@ -16908,6 +17173,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
+                            IconButton(
+                              key: const ValueKey('clip-speed-decrease'),
+                              tooltip: '減慢 0.01 倍',
+                              onPressed: signed.abs() <= .25
+                                  ? null
+                                  : () {
+                                      pendingSigned = null;
+                                      apply(
+                                        (showRev ? -1 : 1) *
+                                            ((signed.abs() * 100).round() - 1)
+                                                .clamp(25, 400) /
+                                            100,
+                                      );
+                                    },
+                              icon: const Icon(Icons.remove),
+                            ),
                             Text(
                               '${signed.abs().toStringAsFixed(signed.abs() == signed.abs().roundToDouble() ? 0 : 2)}x',
                               style: const TextStyle(
@@ -16915,6 +17196,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 fontWeight: FontWeight.w700,
                                 fontFeatures: [FontFeature.tabularFigures()],
                               ),
+                            ),
+                            IconButton(
+                              key: const ValueKey('clip-speed-increase'),
+                              tooltip: '加快 0.01 倍',
+                              onPressed: signed.abs() >= 4
+                                  ? null
+                                  : () {
+                                      pendingSigned = null;
+                                      apply(
+                                        (showRev ? -1 : 1) *
+                                            ((signed.abs() * 100).round() + 1)
+                                                .clamp(25, 400) /
+                                            100,
+                                      );
+                                    },
+                              icon: const Icon(Icons.add),
                             ),
                             if (showRev) ...[
                               const SizedBox(width: 8),
@@ -16937,6 +17234,37 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 ),
                               ),
                             ],
+                          ],
+                        ),
+                        const Text(
+                          '每次微調 0.01 倍',
+                          style: TextStyle(fontSize: 11, color: kTextDim),
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 4,
+                          alignment: WrapAlignment.center,
+                          children: [
+                            for (final rate in [
+                              .5,
+                              1.0,
+                              1.1,
+                              1.2,
+                              1.25,
+                              1.5,
+                              2.0,
+                              4.0,
+                            ])
+                              ChoiceChip(
+                                key: ValueKey('clip-speed-preset-$rate'),
+                                label: Text('${rate}x'),
+                                selected: (signed.abs() - rate).abs() < .0001,
+                                onSelected: (_) {
+                                  pendingSigned = null;
+                                  apply(showRev ? -rate : rate);
+                                },
+                              ),
                           ],
                         ),
                         if (rev && sel.reverse)
@@ -17183,7 +17511,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 資訊列（比例／解析度／畫質）＋預估一行＋匯出鈕
   Widget _buildExportTab() {
-    _checkHdrSources();
     final (outW, outH) = _exportDims();
     final dur = _visDur / _speed;
     final mb = _estMb(_qualityEff);

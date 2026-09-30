@@ -78,7 +78,9 @@ class DraftStore {
     final s = await BlobStore.read(_refsKey(id));
     if (s == null) return null;
     try {
-      return {for (final e in jsonDecode(s) as List) '$e'};
+      final paths = jsonDecode(s) as List;
+      if (paths.any((e) => e is! String || e.isEmpty)) return null;
+      return paths.cast<String>().toSet();
     } catch (_) {
       return null;
     }
@@ -86,13 +88,15 @@ class DraftStore {
 
   /// 舊草稿的檔案清單由草稿夾算出來補寫。跟存檔排同一列，而且編輯器
   /// 已經寫過（比較新）就不蓋
-  static Future<void> fillRefs(String id, Set<String> refs) => _serial(() async {
-    if (await BlobStore.exists(_refsKey(id))) return;
-    if (!await BlobStore.exists(_dataKey(id))) return; // 草稿已經被刪了
-    await BlobStore.write(_refsKey(id), _encodeRefs(refs));
-  });
+  static Future<void> fillRefs(String id, Set<String> refs) =>
+      _serial(() async {
+        if (await BlobStore.exists(_refsKey(id))) return;
+        if (!await BlobStore.exists(_dataKey(id))) return; // 草稿已經被刪了
+        await BlobStore.write(_refsKey(id), _encodeRefs(refs));
+      });
 
-  static String _encodeRefs(Set<String> refs) => jsonEncode(refs.toList()..sort());
+  static String _encodeRefs(Set<String> refs) =>
+      jsonEncode(refs.toList()..sort());
 
   /// 上一次寫進去的檔案清單（草稿 id, 編碼後的字串）：沒變就不重寫
   static (String, String)? _refsWritten;
@@ -103,6 +107,25 @@ class DraftStore {
 
   static void holdOpen(String id) => _open.add(id);
   static void releaseOpen(String id) => _open.remove(id);
+
+  static bool get hasOpenDrafts => _open.isNotEmpty;
+
+  /// 清理只讀小型引用清單，並與存檔串行。舊草稿缺清單時保守地不清。
+  static Future<void> withSweepReferences(
+    Future<void> Function(Set<String>) sweep,
+  ) => _serial(() async {
+    if (hasOpenDrafts || await BlobStore.exists(_legacyKey)) return;
+    final keep = <String>{};
+    for (final key in await BlobStore.keysWithPrefix(
+      _dataPrefix,
+      strict: true,
+    )) {
+      final paths = await refs(key.substring(_dataPrefix.length));
+      if (paths == null) return;
+      keep.addAll(paths);
+    }
+    await sweep(keep);
+  });
 
   /// 所有會改動草稿的操作（存、刪、清理）排成一列輪流做。
   /// 清理跟存檔交錯的話，正在寫的那份可能被當成最舊的刪到一半：
@@ -211,18 +234,20 @@ class DraftStore {
     int clipCount = 0,
     double duration = 0,
     Set<String>? refs,
+    String? coverRevision,
   }) async {
-    var json = content;
-    if (json is! String && !BlobStore.usesFiles) {
-      // 走 prefs（web、widget 測試）：跟以前一樣在排隊之前先編碼好
-      try {
-        json = kIsWeb ? jsonEncode(json) : await compute(jsonEncode, json);
-      } catch (_) {
-        json = jsonEncode(json);
-      }
-    }
     try {
+      // Reserve ordering before asynchronous encoding. A slow old snapshot must
+      // never overtake a later save or a delete while its worker is starting.
       return await _serial(() async {
+        var json = content;
+        if (json is! String && !BlobStore.usesFiles) {
+          try {
+            json = kIsWeb ? jsonEncode(json) : await compute(jsonEncode, json);
+          } catch (_) {
+            json = jsonEncode(json);
+          }
+        }
         var ok = false;
         try {
           ok = await _saveInner(
@@ -233,6 +258,7 @@ class DraftStore {
             clipCount: clipCount,
             duration: duration,
             refs: refs,
+            coverRevision: coverRevision,
           );
         } finally {
           if (!ok) {
@@ -262,9 +288,18 @@ class DraftStore {
     int clipCount = 0,
     double duration = 0,
     Set<String>? refs,
+    String? coverRevision,
   }) async {
     final prefs = await SharedPreferences.getInstance();
     await _migrate(prefs);
+    final nextRefs = refs == null ? null : _encodeRefs(refs);
+    final currentRefs = await BlobStore.read(_refsKey(id));
+    // Never leave an old, apparently complete reference list beside new content.
+    // A crash or failed write leaves refs missing, which makes automatic cleanup stop.
+    if (currentRefs != nextRefs) {
+      if (!await BlobStore.delete(_refsKey(id))) return false;
+      if (_refsWritten?.$1 == id) _refsWritten = null;
+    }
     final wrote = json is String
         ? await BlobStore.write(_dataKey(id), json)
         : await BlobStore.writeJson(_dataKey(id), json);
@@ -285,10 +320,10 @@ class DraftStore {
       final text = _encodeRefs(refs);
       final last = _refsWritten;
       final same = last != null && last.$1 == id && last.$2 == text;
-      // 寫不進去不算存檔失敗：只影響容量統計與刪除時的連帶清理（清不到
-      // 就留著），下一次存檔再補
+      // 引用清單參與安全清理；寫失敗不回報保存成功，缺清單時不清理。
       if (!same || !await BlobStore.exists(_refsKey(id))) {
-        if (await BlobStore.write(_refsKey(id), text)) _refsWritten = (id, text);
+        if (!await BlobStore.write(_refsKey(id), text)) return false;
+        _refsWritten = (id, text);
       }
     }
     final metas = await list();
@@ -306,6 +341,7 @@ class DraftStore {
         id: id,
         createdAt: createdAt,
         savedAt: DateTime.now(),
+        coverRevision: coverRevision,
         hasThumb: thumb != null,
         thumbAspect: thumbAspect,
         clipCount: clipCount,
@@ -314,6 +350,48 @@ class DraftStore {
     );
     return _writeIndex(prefs, metas);
   }
+
+  /// Install an asynchronously rendered cover only for the saved revision.
+  /// The serial queue prevents a late render from overwriting a new save or
+  /// resurrecting a deleted draft. Never reserializes the project body.
+  static Future<bool> updateCover(
+    String id, {
+    required String revision,
+    required String thumb,
+    required double aspect,
+  }) => _serial(() async {
+    try {
+      final metas = await list();
+      final index = metas.indexWhere((m) => m.id == id);
+      if (index < 0 ||
+          metas[index].coverRevision != revision ||
+          !await BlobStore.exists(_dataKey(id))) {
+        return false;
+      }
+      final old = metas[index];
+      if (!await BlobStore.write(_thumbKey(id), thumb)) return false;
+      _thumbWritten = (id, thumb);
+      metas[index] = DraftMeta(
+        id: id,
+        createdAt: old.createdAt,
+        savedAt: old.savedAt,
+        clipCount: old.clipCount,
+        duration: old.duration,
+        coverRevision: revision,
+        hasThumb: true,
+        thumbAspect: aspect,
+      );
+      final prefs = await SharedPreferences.getInstance();
+      final ok = await _writeIndex(prefs, metas);
+      if (!ok) await prefs.reload();
+      return ok;
+    } catch (_) {
+      try {
+        await (await SharedPreferences.getInstance()).reload();
+      } catch (_) {}
+      return false;
+    }
+  });
 
   static Future<void> remove(String id) => _serial(() => _removeInner(id));
 
@@ -526,6 +604,7 @@ class DraftMeta {
   /// 有沒有封面（內容另外存，見 DraftStore.thumb）
   final bool hasThumb;
   final double? thumbAspect;
+  final String? coverRevision;
   final int clipCount;
   final double duration;
 
@@ -535,6 +614,7 @@ class DraftMeta {
     DateTime? createdAt,
     this.hasThumb = false,
     this.thumbAspect,
+    this.coverRevision,
     this.clipCount = 0,
     this.duration = 0,
   }) : createdAt = createdAt ?? savedAt;
@@ -544,6 +624,7 @@ class DraftMeta {
     'createdAt': createdAt.toIso8601String(),
     'savedAt': savedAt.toIso8601String(),
     if (hasThumb) 'hasThumb': true,
+    if (coverRevision != null) 'coverRevision': coverRevision,
     if (thumbAspect != null) 'thumbAspect': thumbAspect,
     'clips': clipCount,
     'dur': duration,
@@ -555,6 +636,7 @@ class DraftMeta {
     // 舊資料沒有這個欄位，退回存檔時間
     createdAt: DateTime.tryParse(j['createdAt'] as String? ?? ''),
     hasThumb: j['hasThumb'] == true,
+    coverRevision: j['coverRevision'] as String?,
     thumbAspect: (j['thumbAspect'] as num?)?.toDouble(),
     clipCount: ((j['clips'] ?? 0) as num).toInt(),
     duration: ((j['dur'] ?? 0) as num).toDouble(),

@@ -20,6 +20,7 @@ import 'package:markcut/models/timeline.dart';
 import 'package:markcut/models/watermark_settings.dart';
 import 'package:markcut/screens/video_editor_screen.dart';
 import 'package:markcut/services/diagnostics.dart';
+import 'package:markcut/services/media_geometry.dart';
 import 'package:markcut/widgets/timeline_editor.dart';
 import 'package:markcut/widgets/watermark_layer.dart';
 
@@ -106,7 +107,12 @@ void main() {
       ),
     );
     m.sources.add(
-      MediaSource(path: '/p.png', name: 'p', kind: ClipKind.image, duration: 3600),
+      MediaSource(
+        path: '/p.png',
+        name: 'p',
+        kind: ClipKind.image,
+        duration: 3600,
+      ),
     );
     m.clips.add(
       TimelineClip(
@@ -154,10 +160,240 @@ void main() {
 
   int of(String k) => rebuilt[k] ?? 0;
 
-  testWidgets('拖曳／捏合選中的圖片：每格只重畫預覽層，放手才整頁重建', (t) async {
-    await t.pumpWidget(
-      const MaterialApp(home: VideoEditorScreen(blank: true)),
+  testWidgets(
+    'speed supports precise increments, presets and draft restoration',
+    (t) async {
+      await t.pumpWidget(
+        const MaterialApp(home: VideoEditorScreen(blank: true)),
+      );
+      await _tick(t, 5);
+      VideoEditorScreen.debugTimeline!(seed);
+      await _tick(t, 15);
+      t
+          .widget<TimelineEditor>(find.byType(TimelineEditor))
+          .onSelect(tl.clips[0].id);
+      await t.pump();
+      await t.tap(find.byTooltip('片段速度'));
+      await _tick(t, 10);
+      for (final rate in [1.1, 1.2, 1.25]) {
+        await t.tap(find.byKey(ValueKey('clip-speed-preset-$rate')));
+        await t.pump();
+        expect(tl.clips[0].speed, rate);
+        expect(tl.clips[0].length, closeTo(5 / rate, 1e-9));
+      }
+      await t.tap(find.byKey(const ValueKey('clip-speed-increase')));
+      await t.pump();
+      expect(tl.clips[0].speed, 1.26);
+      await t.tap(find.byKey(const ValueKey('clip-speed-decrease')));
+      await t.pump();
+      expect(tl.clips[0].speed, 1.25);
+      final slider = t.widget<Slider>(
+        find.byKey(const ValueKey('clip-speed-slider')),
+      );
+      slider.onChanged!(kSpeedStops.indexOf(1.01).toDouble());
+      await t.pump();
+      expect(tl.clips[0].speed, 1.01);
+      expect(TimelineClip.fromJson(tl.clips[0].toJson()).speed, 1.01);
+      expect(t.takeException(), isNull);
+      Navigator.of(
+        t.element(find.byKey(const ValueKey('clip-speed-slider'))),
+      ).pop();
+      await _tick(t, 100);
+    },
+  );
+
+  testWidgets(
+    'text material editor shows multiline content and alignment with keyboard open',
+    (t) async {
+      t.view.physicalSize = const Size(390, 844);
+      addTearDown(() => t.view.physicalSize = const Size(1100, 2200));
+      await t.pumpWidget(
+        const MaterialApp(home: VideoEditorScreen(blank: true)),
+      );
+      await _tick(t, 5);
+      VideoEditorScreen.debugTimeline!((m) {
+        seed(m);
+        m.sources[2].name = 'First line\nSecond line';
+        m.sources[2].textStyle!.text = m.sources[2].name;
+      });
+      await _tick(t, 15);
+      final timeline = t.widget<TimelineEditor>(find.byType(TimelineEditor));
+      timeline.onTapSelectedClip!(tl.clips[2].id);
+      await _tick(t, 15);
+      final field = find.byKey(const ValueKey('clip-text-content'));
+      expect(t.widget<TextField>(field).minLines, 3);
+      expect(
+        t.widget<TextField>(field).controller!.text,
+        'First line\nSecond line',
+      );
+      await t.tap(find.text('靠右'));
+      await t.pump();
+      expect(tl.sources[2].textStyle!.alignment, TextAlign.right);
+      expect(t.widget<TextField>(field).textAlign, TextAlign.right);
+      await t.enterText(field, 'First line\nSecond line\nThird line');
+      t.view.viewInsets = const FakeViewPadding(bottom: 300);
+      await _tick(t, 10);
+      expect(t.getRect(field).bottom, lessThanOrEqualTo(844 - 300));
+      expect(t.getRect(field).height, greaterThan(80));
+      expect(t.takeException(), isNull);
+      t.view.resetViewInsets();
+      Navigator.of(t.element(field)).pop();
+      await _tick(t, 100);
+    },
+  );
+
+  testWidgets('dragging a cropped image does not clamp its original center', (
+    t,
+  ) async {
+    await t.pumpWidget(const MaterialApp(home: VideoEditorScreen(blank: true)));
+    await _tick(t, 5);
+    VideoEditorScreen.debugTimeline!((m) {
+      seed(m);
+      final c = m.clips[1];
+      c.scale = 10;
+      c.cropL = .8;
+      c.cropT = .8;
+      c.cropW = .1;
+      c.cropH = .1;
+      placeMediaVisibleCenter(
+        c,
+        m.sources[1].aspect,
+        m.sources[0].aspect,
+        const Offset(.2, .2),
+      );
+    });
+    await _tick(t, 15);
+    final timeline = t.widget<TimelineEditor>(find.byType(TimelineEditor));
+    timeline.onSelect(tl.clips[1].id);
+    await t.pump();
+    final r = t.getRect(find.byType(AspectRatio).first);
+    final g = await t.startGesture(
+      r.topLeft + Offset(r.width * .2, r.height * .2),
     );
+    await g.moveBy(const Offset(10, 10));
+    await t.pump();
+    for (var i = 0; i < 30; i++) {
+      await g.moveBy(Offset(r.width * .01, r.height * .01));
+      await t.pump(const Duration(milliseconds: 16));
+    }
+    final visible = mediaVisibleCenter(
+      tl.clips[1],
+      tl.sources[1].aspect,
+      tl.sources[0].aspect,
+    );
+    expect(visible.dx, closeTo(.5, .04));
+    expect(visible.dy, closeTo(.5, .04));
+    expect(tl.clips[1].px, lessThan(0));
+    await g.up();
+    await _tick(t, 100);
+  });
+
+  testWidgets('size slider keeps the cropped visible center at high zoom', (
+    t,
+  ) async {
+    await t.pumpWidget(const MaterialApp(home: VideoEditorScreen(blank: true)));
+    await _tick(t, 5);
+    VideoEditorScreen.debugTimeline!((m) {
+      seed(m);
+      final c = m.clips[1];
+      c.cropL = .8;
+      c.cropT = .7;
+      c.cropW = .1;
+      c.cropH = .2;
+      c.rotation = 37;
+      c.mirror = true;
+      placeMediaVisibleCenter(
+        c,
+        m.sources[1].aspect,
+        m.sources[0].aspect,
+        const Offset(.5, .5),
+      );
+    });
+    await _tick(t, 15);
+    t.widget<TimelineEditor>(find.byType(TimelineEditor)).onTapSelectedClip!(
+      tl.clips[1].id,
+    );
+    await _tick(t, 15);
+    final sliderFinder = find
+        .descendant(of: find.byType(BottomSheet), matching: find.byType(Slider))
+        .first;
+    t.widget<Slider>(sliderFinder).onChanged!(1);
+    await t.pump();
+    expect(tl.clips[1].scale, kMaxMediaScale);
+    final center = mediaVisibleCenter(
+      tl.clips[1],
+      tl.sources[1].aspect,
+      tl.sources[0].aspect,
+    );
+    expect(center.dx, closeTo(.5, 1e-9));
+    expect(center.dy, closeTo(.5, 1e-9));
+    Navigator.of(t.element(sliderFinder)).pop();
+    await _tick(t, 100);
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets(
+    'media pinch passes the old 3x ceiling and round-trips in a draft',
+    (t) async {
+      await t.pumpWidget(
+        const MaterialApp(home: VideoEditorScreen(blank: true)),
+      );
+      await _tick(t, 5);
+      VideoEditorScreen.debugTimeline!((m) {
+        seed(m);
+        m.clips[1].scale = 2.9;
+      });
+      await _tick(t, 15);
+      t
+          .widget<TimelineEditor>(find.byType(TimelineEditor))
+          .onSelect(tl.clips[1].id);
+      await t.pump();
+      final c = t.getRect(find.byType(AspectRatio).first).center;
+      final a = await t.startGesture(c + const Offset(-15, 0));
+      final b = await t.startGesture(c + const Offset(15, 0));
+      await a.moveBy(const Offset(-105, 0));
+      await b.moveBy(const Offset(105, 0));
+      await t.pump(const Duration(milliseconds: 40));
+      expect(tl.clips[1].scale, greaterThan(20));
+      expect(tl.clips[1].scale, lessThanOrEqualTo(kMaxMediaScale));
+      expect(
+        TimelineClip.fromJson(tl.clips[1].toJson()).scale,
+        tl.clips[1].scale,
+      );
+      await a.up();
+      await b.up();
+      await _tick(t, 100);
+    },
+  );
+
+  testWidgets(
+    'selection updates locally without invalidating project content',
+    (t) async {
+      await t.pumpWidget(
+        const MaterialApp(home: VideoEditorScreen(blank: true)),
+      );
+      await _tick(t, 5);
+      VideoEditorScreen.debugTimeline!(seed);
+      await _tick(t, 15);
+      final before = t.widget<TimelineEditor>(find.byType(TimelineEditor));
+      startCounting();
+      before.onSelect(tl.clips[1].id);
+      await t.pump();
+      stopCounting();
+      final after = t.widget<TimelineEditor>(find.byType(TimelineEditor));
+      expect(after.selectedId, tl.clips[1].id);
+      expect(after.contentVersion, before.contentVersion);
+      expect(of('VideoEditorScreen'), 0);
+      expect(of('AppBar'), 0);
+      expect(of('TabBar'), 0);
+      expect(of('TimelineEditor'), greaterThan(0));
+      await t.pumpWidget(const SizedBox());
+      await _tick(t, 5);
+    },
+  );
+
+  testWidgets('拖曳／捏合選中的圖片：每格只重畫預覽層，放手才整頁重建', (t) async {
+    await t.pumpWidget(const MaterialApp(home: VideoEditorScreen(blank: true)));
     await _tick(t, 5);
     VideoEditorScreen.debugTimeline!(seed);
     await _tick(t, 15);
@@ -245,9 +481,7 @@ void main() {
   });
 
   testWidgets('全域浮水印：WatermarkLayer 自己的拖曳也只重畫預覽層', (t) async {
-    await t.pumpWidget(
-      const MaterialApp(home: VideoEditorScreen(blank: true)),
-    );
+    await t.pumpWidget(const MaterialApp(home: VideoEditorScreen(blank: true)));
     await _tick(t, 5);
     VideoEditorScreen.debugTimeline!(seed);
     await _tick(t, 15);

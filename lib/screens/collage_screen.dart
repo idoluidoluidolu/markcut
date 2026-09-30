@@ -467,6 +467,9 @@ class _CollageScreenState extends State<CollageScreen>
       };
       _draftTouched = true;
       return true;
+    } on DraftAssetException catch (e) {
+      if (mounted) showHint(context, e.message, error: true);
+      return false;
     } catch (_) {
       try {
         await prefs?.reload();

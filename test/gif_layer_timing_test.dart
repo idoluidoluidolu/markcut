@@ -52,6 +52,15 @@ ExportSpec _spec({
 }
 
 void main() {
+  test('外部檔名永遠只有一個 FFmpeg argument，不能注入額外輸入', () async {
+    const path = '/cache/clip.mp4" -f lavfi -i "color=red:s=16x16';
+    const output = '/cache/out with "quotes".mp4';
+    final args = await debugBuildArguments(_spec(path: path), output);
+    expect(args.where((arg) => arg == '-i').length, 1);
+    expect(args[args.indexOf('-i') + 1], path);
+    expect(args.last, output);
+    expect(args, isNot(contains('lavfi')));
+  });
   test('GIF 修剪與片段速度按素材時間取樣，輸入足夠循環到 trimEnd', () async {
     final command = await debugBuildCommand(_spec(), 'out.mp4');
     expect(command, contains('-ignore_loop 0 -t 4.300 -i "loop.gif"'));

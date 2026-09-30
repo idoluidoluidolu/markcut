@@ -11,6 +11,7 @@
 // render 迴圈那句排除 trackID＝Invalid 的判斷——見 AppDelegate.swift）。
 // 這裡只測 Dart 這一側的契約：捏合中的確送出 setXform，而且 z/start
 // 對得上那個圖片片段。
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -18,6 +19,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:markcut/models/timeline.dart';
 import 'package:markcut/screens/video_editor_screen.dart';
+import 'package:markcut/screens/crop_screen.dart';
 import 'package:markcut/services/diagnostics.dart';
 import 'package:markcut/services/comp_player.dart';
 import 'package:markcut/widgets/timeline_editor.dart';
@@ -100,6 +102,73 @@ void main() {
   tearDown(() {
     final b = TestWidgetsFlutterBinding.ensureInitialized();
     b.defaultBinaryMessenger.setMockMethodCallHandler(compCh, null);
+    b.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('markcut/frames'),
+      null,
+    );
+  });
+
+  testWidgets('crop Apply sends the new rectangle before composition rebuild', (
+    t,
+  ) async {
+    t.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('markcut/frames'),
+      (_) async => base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGO4Y2ODFTEM'
+        'LQkAXrdVAdmuFfUAAAAASUVORK5CYII=',
+      ),
+    );
+    await t.pumpWidget(const MaterialApp(home: VideoEditorScreen(blank: true)));
+    await _tick(t, 5);
+    late TimelineClip clip;
+    VideoEditorScreen.debugTimeline!((tl) {
+      tl.sources.add(
+        MediaSource(
+          path: '/crop.mov',
+          workPath: '/crop.work.mp4',
+          name: 'v',
+          kind: ClipKind.video,
+          duration: 10,
+          w: 1080,
+          h: 1920,
+        ),
+      );
+      clip = TimelineClip(
+        id: tl.nextId(),
+        sourceIndex: 0,
+        track: 0,
+        offset: 0,
+        trimStart: 0,
+        trimEnd: 10,
+      );
+      tl.clips.add(clip);
+    });
+    await _tick(t, 20);
+    t.widget<TimelineEditor>(find.byType(TimelineEditor)).onSelect(clip.id);
+    await t.pump();
+    await t.tap(find.byKey(const ValueKey('video-preview-crop')));
+    await _tick(t, 20);
+    expect(find.byType(CropScreen), findsOneWidget);
+    xformCalls.clear();
+    final before = builds;
+    Navigator.of(
+      t.element(find.byType(CropScreen)),
+    ).pop(const Rect.fromLTWH(.2, .1, .6, .7));
+    await t.pump();
+    await t.pump();
+    expect(clip.cropW, closeTo(.6, 1e-9));
+    expect(
+      builds,
+      before,
+      reason: 'No 350ms rebuild wait for the visible crop',
+    );
+    expect(xformCalls.where((x) => x['crop'] != null).last['crop'], [
+      closeTo(.2, 1e-9),
+      closeTo(.1, 1e-9),
+      closeTo(.6, 1e-9),
+      closeTo(.7, 1e-9),
+    ]);
+    await _tick(t, 100);
   });
 
   testWidgets('烘進合成的圖片：捏合中送 setXform（跟手），不用等重組', (t) async {

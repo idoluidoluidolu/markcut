@@ -689,6 +689,7 @@ class _TiledTextPainter extends CustomPainter {
         t.fontFamily,
         t.sizeFrac,
         t.spacing,
+        t.alignment,
         t.colorValue,
         t.opacity,
         t.rotation,

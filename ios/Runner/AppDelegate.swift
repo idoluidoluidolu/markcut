@@ -2713,6 +2713,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           // 不夠跟手」的根）
           var rot = layer.rotation
           var opacity = layer.opacity
+          var crop = layer.crop
           if let lx = lx, lx.z == layer.z,
             abs(lx.start - layer.start) < 0.02
           {
@@ -2738,15 +2739,19 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
               by: flipCanvas.concatenating(extra).concatenating(flipCanvas))
             rot = lx.rotation
             opacity = min(1, max(0, lx.opacity))
+            if let ca = lx.crop, ca.count == 4 {
+              crop = CGRect(x: lx.mirror ? 1 - ca[0] - ca[2] : ca[0],
+                            y: ca[1], width: ca[2], height: ca[3])
+            }
           }
           // 裁切：transform 沒有旋轉成分，貼上畫布是軸對齊的方框，
           // 直接照 extent 的比例切窗。比例是左上原點，CI 是左下——
           // y 要反過來。旋轉繞「整個片段框」的中心（跟預覽一致），
           // 所以中心用裁切前的 extent 算
-          if layer.crop != nil || abs(rot) > 0.05 {
+          if crop != nil || abs(rot) > 0.05 {
             let full = img.extent
             if full.width > 1, full.height > 1 {
-              if let cr = layer.crop {
+              if let cr = crop {
                 img = img.cropped(
                   to: CGRect(
                     x: full.minX + cr.minX * full.width,
@@ -4262,6 +4267,7 @@ final class MCInteractivePrepGate {
         guard let self = self else { return }
         self.prepMemoryBudget.notePressure(now: CACurrentMediaTime())
         self.comp?.trimPreviewMemory()
+        MetalPreviewEngine.shared.trimStillMemory()
         for stop in Array(self.prepMemoryDefers.values) { stop() }
         for job in self.prepYieldSessions {
           self.prepDeferredSessions.insert(job)
@@ -4788,7 +4794,9 @@ final class MCInteractivePrepGate {
           px: a["px"] as? Double ?? 0.5,
           py: a["py"] as? Double ?? 0.5,
           rotation: a["rotation"] as? Double ?? 0,
-          opacity: a["opacity"] as? Double ?? 1)
+          opacity: a["opacity"] as? Double ?? 1,
+          crop: a["crop"] as? [Double],
+          mirror: a["mirror"] as? Bool ?? false)
         CIExportCompositor.setLiveXform(ov)
         if p.liveCIOn {
           p.nudgeRedrawIfPaused()
@@ -8420,6 +8428,8 @@ struct CompLiveXform {
   let py: Double
   let rotation: Double
   let opacity: Double
+  var crop: [Double]? = nil
+  var mirror: Bool = false
 }
 
 enum MCPreviewTail {
@@ -10094,6 +10104,7 @@ final class CompPlayer: NSObject, FlutterTexture {
             segs[i].px = ov.px
             segs[i].py = ov.py
             segs[i].rotation = ov.rotation
+            if let crop = ov.crop { segs[i].crop = crop }
           }
         }
         let vc = AVMutableVideoComposition()
@@ -12041,7 +12052,7 @@ struct MetalLayerSpec {
   let opacity: Double
   let fadeIn: Double
   let fadeOut: Double
-  let crop: [Double]?
+  var crop: [Double]?
   let srcW: Double
   let srcH: Double
   /// 色彩濾鏡（5x4 矩陣 20 元素，跟 CI applyColor 同格式）
@@ -12075,6 +12086,22 @@ struct MetalStillSpec {
 
 /// GIF 動畫（引擎播放用）：幀紋理＋各幀「累計」時間表。
 /// 建佈局時解一次（縮到長邊 ≤512、最多 96 幀），render 按時刻取幀
+/// Cancellation crosses the UI/decoder queues; all engine maps remain on main.
+private final class StillTextureRequest {
+  let path: String
+  let gif: Bool
+  let maxBytes: Int
+  private let lock = NSLock()
+  private var stopped = false
+  init(path: String, gif: Bool, maxBytes: Int) {
+    self.path = path; self.gif = gif; self.maxBytes = maxBytes
+  }
+  func cancel() { lock.lock(); stopped = true; lock.unlock() }
+  var cancelled: Bool {
+    lock.lock(); defer { lock.unlock() }; return stopped
+  }
+}
+
 struct GifAnim {
   let frames: [MTLTexture]
   let cum: [Double]  // cum[i] = 第 i 幀結束時刻（秒）
@@ -12089,59 +12116,54 @@ struct GifAnim {
   }
 
   /// CGImageSource 解 GIF（含 APNG 也吃得下）：取各幀延遲、縮圖上傳
-  static func load(path: String, device: MTLDevice) -> GifAnim? {
+  static func load(path: String, device: MTLDevice, maxBytes: Int,
+                   cancelled: () -> Bool = { false }) -> GifAnim? {
     guard
       let src = CGImageSourceCreateWithURL(
-        URL(fileURLWithPath: path) as CFURL, nil)
+        URL(fileURLWithPath: path) as CFURL,
+        [kCGImageSourceShouldCache: false] as CFDictionary)
     else { return nil }
     let n = CGImageSourceGetCount(src)
-    guard n > 1 else { return nil }
+    guard n > 1, n <= 10000, maxBytes >= 65536 else { return nil }
     let take = min(n, 96)
+    let side = min(512, Int(sqrt(Double(maxBytes) * 0.75 / Double(take * 4))))
+    guard side >= 16 else { return nil }
     let loader = MTKTextureLoader(device: device)
     var frames: [MTLTexture] = []
     var cum: [Double] = []
     var acc = 0.0
+    var usedBytes = 0
     for i in 0..<take {
+      if cancelled() { return nil }
       // 幀取樣：超過上限就等距抽
       let idx = n == take ? i : Int(Double(i) * Double(n) / Double(take))
-      guard var cg = CGImageSourceCreateImageAtIndex(src, idx, nil) else {
+      guard let cg = CGImageSourceCreateThumbnailAtIndex(src, idx, [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceThumbnailMaxPixelSize: side,
+        kCGImageSourceShouldCacheImmediately: true,
+      ] as CFDictionary) else {
         continue
       }
-      // 長邊縮到 512：GIF 貼圖上屏就這麼大，全解析度只是燒記憶體
-      let w = cg.width
-      let h = cg.height
-      let long = max(w, h)
-      if long > 512 {
-        let sc = 512.0 / Double(long)
-        let nw = Int(Double(w) * sc)
-        let nh = Int(Double(h) * sc)
-        if let ctx = CGContext(
-          data: nil, width: nw, height: nh, bitsPerComponent: 8,
-          bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
-          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        {
-          ctx.interpolationQuality = .medium
-          ctx.draw(cg, in: CGRect(x: 0, y: 0, width: nw, height: nh))
-          if let scaled = ctx.makeImage() { cg = scaled }
-        }
-      }
       // 幀延遲（沒標就 0.1s，跟瀏覽器同一套慣例）
-      var delay = 0.1
-      if let props = CGImageSourceCopyPropertiesAtIndex(src, idx, nil)
-        as? [String: Any],
-        let g = props[kCGImagePropertyGIFDictionary as String]
-          as? [String: Any]
-      {
-        let d =
-          (g[kCGImagePropertyGIFUnclampedDelayTime as String] as? Double)
-          ?? (g[kCGImagePropertyGIFDelayTime as String] as? Double) ?? 0.1
-        delay = d < 0.011 ? 0.1 : d
+      var delay = 0.0
+      let next = i + 1 == take ? n : Int(Double(i + 1) * Double(n) / Double(take))
+      // Sampling frames must preserve the duration of all skipped frames.
+      for frameIndex in idx..<next {
+        if cancelled() { return nil }
+        let props = CGImageSourceCopyPropertiesAtIndex(src, frameIndex, nil) as? [String: Any]
+        let g = props?[kCGImagePropertyGIFDictionary as String] as? [String: Any]
+        let d = (g?[kCGImagePropertyGIFUnclampedDelayTime as String] as? Double)
+          ?? (g?[kCGImagePropertyGIFDelayTime as String] as? Double) ?? 0.1
+        delay += d.isFinite && d >= 0.011 ? d : 0.1
       }
       guard
         let tex = try? loader.newTexture(
-          cgImage: cg, options: [MTKTextureLoader.Option.SRGB: true as NSNumber]
+          cgImage: cg, options: [.SRGB: true as NSNumber, .generateMipmaps: false as NSNumber]
         )
       else { continue }
+      usedBytes += tex.allocatedSize
+      guard usedBytes <= maxBytes else { return nil }
       frames.append(tex)
       acc += delay
       cum.append(acc)
@@ -12196,8 +12218,14 @@ final class MetalPreviewEngine: NSObject {
   /// 靜態圖層紋理（鍵＝檔案路徑；GIF 只取首幀——滑動瞬間有畫面
   /// 比消失好，動起來交給合成播放器）
   private var stillTextures: [String: MTLTexture] = [:]
-  /// GIF 動畫快取（路徑→幀序列）；value 為 nil＝解過但失敗，不重試
-  private var gifAnims: [String: GifAnim?] = [:]
+  /// GIF 動畫快取（路徑→幀序列）；失敗由 stillWindow 記住，窗口不變就不重試
+  private var gifAnims: [String: GifAnim] = [:]
+  private var stillWindow = Set<String>()
+  private var stillBudget = 128 * 1024 * 1024
+  private let stillDecodeQueue = DispatchQueue(label: "markcut.still.decode", qos: .userInitiated)
+  private var stillRequests: [String: StillTextureRequest] = [:]
+  private var stillRequestOrder: [String] = []
+  private var stillInFlight: StillTextureRequest?
   private var pumps: [Int: MetalPump] = [:]
   private var canvasW: Double = 1080
   private var canvasH: Double = 1920
@@ -12733,29 +12761,9 @@ final class MetalPreviewEngine: NSObject {
     layoutEpoch &+= 1  // 佈局變了＝畫面該重繪（靜止降頻歸零）
     // pump 走「靠近才建、遠離回收」（見 pumpFor/trimPumps）：
     // 二十支片的時間軸也只養播放頭附近那幾顆解碼器
-    // 靜態圖層紋理趁建佈局先載好（滑動中零載入）；不在佈局裡的放掉
-    let wantStills = Set(stillSpecs.map { $0.path })
-    for k in stillTextures.keys where !wantStills.contains(k) {
-      stillTextures.removeValue(forKey: k)
-    }
-    if let dev = device {
-      let loader = MTKTextureLoader(device: dev)
-      for sp in stillSpecs where stillTextures[sp.path] == nil {
-        guard let ui = UIImage(contentsOfFile: sp.path),
-          let cg = ui.cgImage
-        else { continue }
-        stillTextures[sp.path] = try? loader.newTexture(
-          cgImage: cg,
-          options: [MTKTextureLoader.Option.SRGB: true as NSNumber])
-      }
-      // GIF 動畫幀（首幀已在 stillTextures 當保底）
-      for k in gifAnims.keys where !wantStills.contains(k) {
-        gifAnims.removeValue(forKey: k)
-      }
-      for sp in stillSpecs where sp.gif && gifAnims[sp.path] == nil {
-        gifAnims[sp.path] = GifAnim.load(path: sp.path, device: dev)
-      }
-    }
+    // Geometry-only layout changes must keep decoded textures; the time window
+    // below invalidates them only when its set of source paths actually changes.
+    prepareStillTextures(at: curT)
     // 幫浦照片段開；不在新佈局裡的收掉
     let want = Set(specs.map { $0.id })
     for (id, p) in pumps where !want.contains(id) {
@@ -13219,11 +13227,12 @@ final class MetalPreviewEngine: NSObject {
     // Do this before the idle-render early return.
     trimReaders(curT)
     trimPumps(curT)
+    prepareStillTextures(at: curT)
     let ep = CIExportCompositor.liveEpoch &+ layoutEpoch
     // GIF 動畫是時變內容：有它在台上就不能靜止降頻（會凍住）
     let liveGif = stills.contains {
       $0.gif && $0.start <= curT && curT < $0.end
-        && (gifAnims[$0.path] ?? nil) != nil
+        && gifAnims[$0.path] != nil
     }
     if !playing && !liveGif && curT == drawnT && ep == drawnEpoch {
       idleTicks += 1
@@ -13594,6 +13603,7 @@ final class MetalPreviewEngine: NSObject {
           spEff.py = lx.py
           spEff.scale = lx.scale
           spEff.rotation = lx.rotation
+          if let crop = lx.crop { spEff.crop = crop }
         }
         guard let tex = tex,
           let verts = quad(
@@ -13616,16 +13626,24 @@ final class MetalPreviewEngine: NSObject {
       case .still(let st):
         // GIF：取這一刻該顯示的動畫幀；解不出＝停首幀（原行為）
         let animTex = st.gif
-          ? gifAnims[st.path]?.flatMap { $0.frame(at: t - st.start) } : nil
+          ? gifAnims[st.path]?.frame(at: t - st.start) : nil
         guard let tex = animTex ?? stillTextures[st.path] else { return }
         // 幾何跟影片層同一套（contain-fit／縮放位移／鏡像旋轉裁切），
         // 原始尺寸取紋理本人
-        let asLayer = MetalLayerSpec(
+        var asLayer = MetalLayerSpec(
           id: 0, path: st.path, offset: st.start, end: st.end,
           trimStart: 0, speed: 1, z: st.z, px: st.px, py: st.py,
           scale: st.scale, mirror: st.mirror, rotation: st.rotation,
           opacity: st.opacity, fadeIn: st.fadeIn, fadeOut: st.fadeOut,
           crop: st.crop, srcW: Double(tex.width), srcH: Double(tex.height))
+        if let lx = CIExportCompositor.currentLiveXform(),
+          lx.z == st.z, abs(lx.start - st.start) < 0.02 {
+          asLayer.px = lx.px
+          asLayer.py = lx.py
+          asLayer.scale = lx.scale
+          asLayer.rotation = lx.rotation
+          if let crop = lx.crop { asLayer.crop = crop }
+        }
         guard let verts = quad(for: asLayer) else { return }
         let a = fade(st.opacity, st.start, st.end, st.fadeIn, st.fadeOut)
         // 匯出對 still 是一般 sourceOver：不加亮（boost=1）、不夾白，
@@ -13758,6 +13776,129 @@ final class MetalPreviewEngine: NSObject {
     cmd.commit()
   }
 
+  private var residentStillBytes: Int {
+    stillTextures.values.reduce(0) { $0 + $1.allocatedSize }
+      + gifAnims.values.reduce(0) { sum, anim in
+        sum + anim.frames.reduce(0) { $0 + $1.allocatedSize }
+      }
+  }
+
+  /// Diff the nearby window; unchanged textures survive scrubbing boundaries.
+  /// ImageIO and texture upload never run on the display-link/main thread.
+  private func prepareStillTextures(at time: Double) {
+    guard device != nil else { return }
+    let nearby = stills.filter { $0.start <= time + 0.25 && $0.end > time - 0.25 }
+    let wanted = Set(nearby.map { $0.path })
+    guard wanted != stillWindow else { return }
+    stillWindow = wanted
+    let perAsset = stillBudget / max(1, wanted.count)
+    for path in Array(stillTextures.keys) {
+      let bytes = (stillTextures[path]?.allocatedSize ?? 0)
+        + (gifAnims[path]?.frames.reduce(0) { $0 + $1.allocatedSize } ?? 0)
+      if !wanted.contains(path) || bytes > perAsset {
+        stillTextures.removeValue(forKey: path)
+        gifAnims.removeValue(forKey: path)
+      }
+    }
+    for (path, request) in Array(stillRequests) {
+      if !wanted.contains(path) || request.maxBytes > perAsset {
+        request.cancel()
+        stillRequests.removeValue(forKey: path)
+      }
+    }
+    for spec in nearby where stillTextures[spec.path] == nil && stillRequests[spec.path] == nil {
+      stillRequests[spec.path] = StillTextureRequest(
+        path: spec.path, gif: spec.gif, maxBytes: perAsset)
+    }
+    // Active layers first, then the small prefetch window. Bound pending work to
+    // the current window; obsolete windows never pile up in DispatchQueue.
+    var seen = Set<String>()
+    let ordered = nearby.filter { $0.start <= time && $0.end > time }
+      + nearby.filter { $0.start > time || $0.end <= time }
+    stillRequestOrder = ordered.compactMap {
+      seen.insert($0.path).inserted && stillRequests[$0.path] != nil ? $0.path : nil
+    }
+    pumpStillRequests()
+  }
+
+  private func pumpStillRequests() {
+    guard stillInFlight == nil, let dev = device else { return }
+    while !stillRequestOrder.isEmpty {
+      let path = stillRequestOrder.removeFirst()
+      guard let request = stillRequests[path], !request.cancelled else { continue }
+      // Reserve space for the sole in-flight decoder as well as installed data.
+      guard residentStillBytes + request.maxBytes <= stillBudget else {
+        stillRequestOrder.insert(path, at: 0)
+        return
+      }
+      stillInFlight = request
+      stillDecodeQueue.async { [weak self] in
+        let result: (MTLTexture, GifAnim?)? = autoreleasepool {
+          if request.cancelled { return nil }
+          let posterBudget = request.gif ? request.maxBytes / 4 : request.maxBytes
+          let side = min(1536, Int(sqrt(Double(posterBudget) * 0.75 / 4.0)))
+          guard side >= 16,
+            let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL,
+              [kCGImageSourceShouldCache: false] as CFDictionary),
+            let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+              kCGImageSourceCreateThumbnailFromImageAlways: true,
+              kCGImageSourceCreateThumbnailWithTransform: true,
+              kCGImageSourceThumbnailMaxPixelSize: side,
+              kCGImageSourceShouldCacheImmediately: true,
+            ] as CFDictionary), !request.cancelled,
+            let texture = try? MTKTextureLoader(device: dev).newTexture(cgImage: cg,
+              options: [.SRGB: true as NSNumber, .generateMipmaps: false as NSNumber]),
+            texture.allocatedSize <= posterBudget else { return nil }
+          let anim = request.gif ? GifAnim.load(path: path, device: dev,
+            maxBytes: min(24 * 1024 * 1024, request.maxBytes - texture.allocatedSize),
+            cancelled: { request.cancelled }) : nil
+          return request.cancelled ? nil : (texture, anim)
+        }
+        DispatchQueue.main.async { [weak self] in
+          guard let self = self else { return }
+          self.stillInFlight = nil
+          if self.stillRequests[path] === request {
+            self.stillRequests.removeValue(forKey: path)
+            if !request.cancelled, self.stillWindow.contains(path), let result = result {
+              let bytes = result.0.allocatedSize
+                + (result.1?.frames.reduce(0) { $0 + $1.allocatedSize } ?? 0)
+              if self.residentStillBytes + bytes <= self.stillBudget {
+                self.stillTextures[path] = result.0
+                self.gifAnims[path] = result.1
+                self.layoutEpoch &+= 1
+                self.idleTicks = 0
+              }
+            }
+          }
+          self.pumpStillRequests()
+        }
+      }
+      return
+    }
+  }
+
+  private func cancelStillRequests() {
+    stillInFlight?.cancel()
+    for request in stillRequests.values { request.cancel() }
+    stillRequests.removeAll()
+    stillRequestOrder.removeAll()
+    // Keep the in-flight slot occupied until its completion releases buffers.
+  }
+
+  func trimStillMemory() {
+    cancelStillRequests()
+    stillBudget = 64 * 1024 * 1024
+    stillTextures.removeAll()
+    gifAnims.removeAll()
+    stillWindow.removeAll()
+    ovTextures.removeAll()
+    sceneTex = nil
+    sceneTex2 = nil
+    ciCtx?.clearCaches()
+    layoutEpoch &+= 1
+    idleTicks = 0
+  }
+
   func disposeAll() {
     show(false)
     for (_, r) in readers { r.stop() }
@@ -13767,9 +13908,15 @@ final class MetalPreviewEngine: NSObject {
     layers = []
     stills = []
     mosaics = []
+    cancelStillRequests()
     stillTextures.removeAll()
+    gifAnims.removeAll()
+    stillWindow.removeAll()
+    stillBudget = 128 * 1024 * 1024
     ovTextures.removeAll()
     sceneTex = nil
+    sceneTex2 = nil
+    ciCtx?.clearCaches()
   }
 }
 

@@ -30,6 +30,7 @@ import 'package:markcut/theme.dart';
 const _light = <String>{
   'HomeScreen',
   'ProfileScreen',
+  'StorageScreen',
   'DraftsScreen',
   'GifsScreen',
   'PresetsScreen',

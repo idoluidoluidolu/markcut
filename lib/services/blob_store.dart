@@ -306,7 +306,8 @@ class BlobStore {
 
   /// 目前會不會走檔案（同步判斷，給「要不要先在外面編碼」用）。
   /// 沒叫過 [init] 的 widget 測試一律 false
-  static bool get usesFiles => !kIsWeb && (dirOverride != null || _init != null);
+  static bool get usesFiles =>
+      !kIsWeb && (dirOverride != null || _init != null);
 
   static Future<bool> writeList(String key, List<String> value) async {
     if (await _root() == null) {
@@ -371,10 +372,19 @@ class BlobStore {
   }
 
   /// 以 [prefix] 開頭的鍵（檔案與 prefs 殘留合起來）
-  static Future<List<String>> keysWithPrefix(String prefix) async {
+  static Future<List<String>> keysWithPrefix(
+    String prefix, {
+    bool strict = false,
+  }) async {
     await migrate();
     final out = <String>{};
     final dir = await _root();
+    if (strict &&
+        !kIsWeb &&
+        dir == null &&
+        (_init != null || dirOverride != null)) {
+      throw const FileSystemException('Draft directory is unavailable');
+    }
     if (dir != null) {
       try {
         for (final e in dir.listSync()) {
@@ -383,7 +393,9 @@ class BlobStore {
             out.add(name.substring(0, name.length - 4));
           }
         }
-      } catch (_) {}
+      } catch (_) {
+        if (strict) rethrow;
+      }
     }
     for (final k in (await SharedPreferences.getInstance()).getKeys()) {
       if (k.startsWith(prefix)) out.add(k);

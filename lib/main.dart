@@ -13,6 +13,7 @@ import 'services/blob_store.dart';
 import 'services/diagnostics.dart';
 import 'services/steady_pointer.dart';
 import 'services/playback_trace.dart';
+import 'services/purchase_service.dart';
 import 'theme.dart';
 
 void main() {
@@ -20,6 +21,7 @@ void main() {
   // 是為了在事件進到手勢辨識之前濾掉「抬手那一下的位移」——
   // 全 App 的拖曳與滑桿都會經過這裡，見 SteadyPointerBinding
   SteadyPointerBinding.ensureInitialized();
+  PurchaseService.instance.start();
   // Android：改用系統的相簿選取器。
   // 預設是關的，會走舊的 ACTION_GET_CONTENT——能不能一次選多個
   // 要看手機上是哪個相簿 App 接手，很多機型只選得到一個

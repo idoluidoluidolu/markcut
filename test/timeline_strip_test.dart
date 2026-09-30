@@ -14,6 +14,31 @@ import 'package:markcut/services/timeline_strip.dart';
 Uint8List _frame(int seconds) => Uint8List.fromList([seconds]);
 
 void main() {
+  test(
+    'publishes the first thumbnail before the remaining decoder requests',
+    () async {
+      final waiting = Completer<NativeFrameSample?>();
+      final progress = <List<Uint8List>>[];
+      var requests = 0;
+      final job = loadCoarseStrip(
+        duration: 2,
+        count: 2,
+        fetch: (at, _) async {
+          if (++requests == 1) {
+            return NativeFrameSample(bytes: _frame(1), actualSeconds: at);
+          }
+          return waiting.future;
+        },
+        onProgress: progress.add,
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(requests, 2);
+      expect(progress.single, hasLength(2));
+      expect(progress.single.map((f) => f.first), [1, 1]);
+      waiting.complete(null);
+      expect(await job, progress.single);
+    },
+  );
   group('coarseStripTolMs', () {
     test('長片：半格寬（48 秒十格＝2.4 秒）', () {
       expect(coarseStripTolMs(48, 10), 2400);

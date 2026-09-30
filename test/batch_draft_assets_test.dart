@@ -172,6 +172,7 @@ void main() {
   tearDown(() {
     DraftAssets.supportDirOverride = null;
     DraftAssets.pickerRootsOverride = null;
+    DraftAssets.maxFileBytesOverride = null;
     try {
       _root.deleteSync(recursive: true);
     } catch (_) {}
@@ -183,6 +184,27 @@ void main() {
     );
     return raw == null ? null : jsonDecode(raw) as Map<String, dynamic>;
   }
+
+  testWidgets('素材超額不能假裝保存成功或離開編輯頁', (t) async {
+    final paths = await _picked(t, 1);
+    DraftAssets.maxFileBytesOverride = 1;
+    await _pumpFromHome(t, BatchWatermarkScreen(files: [XFile(paths.first)]));
+    await _touch(t);
+    await _back(t);
+    await t.tap(find.text('保留草稿'));
+    await _waitFor(
+      t,
+      () => find.textContaining('單個素材超過').evaluate().isNotEmpty,
+      reason: '超額必須明確回報保存失敗',
+    );
+    expect(find.byType(BatchWatermarkScreen), findsOneWidget);
+    expect(find.text('首頁'), findsNothing);
+    expect(await draft(), isNull);
+    expect(File(paths.first).existsSync(), isTrue);
+    await t.pump(const Duration(seconds: 3));
+    await t.pumpWidget(const SizedBox());
+    await _settle(t);
+  });
 
   for (final throwsError in [false, true]) {
     testWidgets('草稿寫入${throwsError ? '拋例外' : '回 false'}：留在編輯頁、舊草稿及素材不被清掉', (

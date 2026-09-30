@@ -13,6 +13,9 @@ export 'mosaic.dart';
 /// 編碼器也吃得下
 const double kMinClipLen = 0.025;
 
+/// Shared by media sliders, touch pinch and desktop wheel controls.
+const double kMaxMediaScale = 100;
+
 /// 「同一軌不重疊」判定的容差（秒）：小於這個量的疊合當作剛好相接，
 /// 純粹吃掉 offset＋長度÷速度這種浮點運算的尾數，不是給人用的餘裕
 const double kOverlapEps = 1e-6;

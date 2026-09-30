@@ -143,15 +143,23 @@ void main() {
     await _settle(tester, 8);
     expect(find.text('刪除這個 GIF？'), findsOneWidget, reason: '長按沒有問要不要刪');
     await tester.tap(find.widgetWithText(FilledButton, '刪除'));
-    await _settle(tester, 12);
+    // Wait for real I/O and the route to finish, rather than a fixed 480 ms.
+    for (
+      var i = 0;
+      i < 100 && find.byType(PageView).evaluate().isNotEmpty;
+      i++
+    ) {
+      await _settle(tester, 1);
+    }
 
     // 清單是新到舊（a、b、c），第二張＝b
-    final left = _gifDir
-        .listSync()
-        .whereType<File>()
-        .map((f) => f.uri.pathSegments.last)
-        .toList()
-      ..sort();
+    final left =
+        _gifDir
+            .listSync()
+            .whereType<File>()
+            .map((f) => f.uri.pathSegments.last)
+            .toList()
+          ..sort();
     expect(left, ['a.gif', 'c.gif'], reason: '刪掉的不是眼前那一張');
     expect(find.byType(PageView), findsNothing, reason: '刪完沒有把燈箱關掉');
     expect(tester.takeException(), isNull);

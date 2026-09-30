@@ -270,6 +270,7 @@ typedef _GlyphKey = ({
   String family,
   double fontSize,
   double spacing,
+  TextAlign alignment,
   int color,
   double strokeW,
   int strokeColor,
@@ -312,6 +313,7 @@ TextPainter _laidOut(
     family: t.fontFamily,
     fontSize: fontSize,
     spacing: t.spacing,
+    alignment: t.alignment,
     color: strokeW > 0 ? 0 : color,
     strokeW: strokeW,
     strokeColor: strokeW > 0 ? strokeColor : 0,
@@ -340,6 +342,7 @@ TextPainter _laidOut(
   final p = TextPainter(
     text: TextSpan(text: t.text, style: style),
     textDirection: TextDirection.ltr,
+    textAlign: t.alignment,
   )..layout();
   _glyphCache[key] = p;
   if (_glyphCache.length > _glyphCacheCap) {
@@ -363,6 +366,7 @@ class MarkGlyphPainter extends CustomPainter {
         t.fontFamily,
         fontSize,
         t.spacing,
+        t.alignment,
         t.colorValue,
         t.opacity,
         t.shadow,

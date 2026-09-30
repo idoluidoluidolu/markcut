@@ -90,6 +90,9 @@ void main() {
 
   setUpAll(() async {
     final b = TestWidgetsFlutterBinding.ensureInitialized();
+    await (FontLoader(
+      'MaterialIcons',
+    )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
 
     // 真的把 App 的字體載進來，不然中文全是空白框，快照看了也沒用
     for (final (family, path) in const [
@@ -153,7 +156,7 @@ void main() {
     );
     await _settle(tester);
     // 收起來的首頁只有 logo、右上角個人中心、底部那顆「＋ 開始」
-    //（圖示在這裡是空方框：測試環境沒載 Material Icons，跟其他快照一樣）
+    // 載入真正的 Material Icons，避免用空方框當圖示基準。
     expect(find.byType(FloatingActionButton), findsOneWidget);
     expect(find.text('GIF'), findsNothing);
     await expectLater(

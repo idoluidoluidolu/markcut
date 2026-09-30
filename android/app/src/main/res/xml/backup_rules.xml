@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Preserve drafts and their assets together. Only disposable cache is excluded. -->
+<full-backup-content>
+    <exclude domain="root" path="cache/" />
+    <exclude domain="root" path="code_cache/" />
+</full-backup-content>

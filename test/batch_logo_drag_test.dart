@@ -66,6 +66,11 @@ void main() {
     final inputRect = t.getRect(input);
     expect(inputRect.width, greaterThan(200));
     expect(inputRect.bottom, lessThanOrEqualTo(844 - 330));
+    final done = find.byKey(const ValueKey('watermark-text-done'));
+    expect(t.getRect(done).bottom, lessThanOrEqualTo(844 - 330));
+    await t.tap(done);
+    await _settle(t);
+    expect(t.widget<TextField>(input).focusNode!.hasFocus, isFalse);
     expect(t.takeException(), isNull);
   });
 

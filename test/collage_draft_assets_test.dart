@@ -148,7 +148,7 @@ void main() {
     expect(find.text('這份拼圖還沒完成'), findsOneWidget);
     await t.tap(find.text('保留草稿'));
     // 存草稿要複製檔案（真 I/O）才會 pop；dispose 裡的清理也是射後不理的真 I/O
-    await _settle(t, rounds: 12);
+    await _waitFor(t, () => find.text('首頁').evaluate().isNotEmpty);
     await t.pumpAndSettle();
     await _settle(t);
     expect(find.text('首頁'), findsOneWidget);

@@ -8,6 +8,8 @@ import 'blob_store.dart';
 import 'draft_assets.dart';
 import 'draft_store.dart';
 import 'work_files.dart';
+import 'gif_store.dart';
+import 'timeline_thumbnail_cache.dart';
 
 /// 照片／批次／拼圖／GIF 各一份的草稿存在這幾個鍵（見 BlobStore.ownedKeys）
 const _singleDraftKeys = [
@@ -28,6 +30,10 @@ class StorageReport {
     required this.filesInUse,
     required this.filesUnused,
     required this.pending,
+    this.gifBytes = 0,
+    this.presetBytes = 0,
+    this.stickerBytes = 0,
+    this.thumbnailBytes = 0,
   });
 
   static final empty = StorageReport(
@@ -65,8 +71,21 @@ class StorageReport {
   /// 還算不出用了哪些檔案的草稿份數。大於 0 時 [filesUnused] 不可信，
   /// 也不給清（說不定就是那幾份在用）
   final int pending;
+  final int gifBytes;
+  final int presetBytes;
+  final int stickerBytes;
+  final int thumbnailBytes;
 
-  int get total => draftBytes + otherDrafts + filesInUse + filesUnused;
+  int get projectBytes => draftBytes + otherDrafts + filesInUse;
+  int get clearableBytes => thumbnailBytes + (pending == 0 ? filesUnused : 0);
+
+  int get total =>
+      projectBytes +
+      filesUnused +
+      gifBytes +
+      presetBytes +
+      stickerBytes +
+      thumbnailBytes;
 
   /// 能不能按「清掉沒在用的暫存」
   bool get canClearUnused => pending == 0 && filesUnused > 0;
@@ -196,6 +215,10 @@ class StorageUsage {
       filesInUse: inUse,
       filesUnused: unused,
       pending: pending,
+      gifBytes: files ? await GifStore.usageBytes() : 0,
+      presetBytes: await BlobStore.sizeOf('wm_presets_v1'),
+      stickerBytes: await BlobStore.sizeOf('stickers_v1'),
+      thumbnailBytes: await TimelineThumbnailCache.usageBytes(),
     );
   }
 
@@ -203,14 +226,18 @@ class StorageUsage {
   /// 每一份草稿的檔案清單都要拿得到才清，任何一份拿不到就什麼都不動
   static Future<int> clearUnused() async {
     if (!BlobStore.usesFiles) return 0;
-    final metas = await DraftStore.list();
-    final used = <String>{};
-    for (final m in metas) {
-      final r = await DraftStore.refs(m.id);
-      if (r == null) return 0;
-      used.addAll(r);
-    }
-    return WorkFiles.releaseUnreferenced(referenced: used.contains);
+    var freed = 0;
+    // Serialize with saves; include bodies absent from a damaged index and
+    // refuse cleanup while an editor is open or any references are unknown.
+    await DraftStore.withSweepReferences((used) async {
+      freed = await WorkFiles.releaseUnreferenced(referenced: used.contains);
+    });
+    return freed;
+  }
+
+  static Future<int> clearCaches() async {
+    final thumbnails = await TimelineThumbnailCache.clear();
+    return thumbnails + await clearUnused();
   }
 
   /// 舊草稿的檔案清單：背景 isolate 讀內容檔、只帶路徑回來。

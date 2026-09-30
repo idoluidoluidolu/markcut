@@ -16,8 +16,7 @@ import '../services/draft_store.dart';
 import '../services/file_reader.dart';
 import '../services/storage_usage.dart';
 import '../services/gif_store.dart';
-import '../services/photo_export.dart'
-    show PhotoEncoded, encodePhotoImage;
+import '../services/photo_export.dart' show PhotoEncoded, encodePhotoImage;
 import '../services/preset_store.dart';
 import '../services/video_picker.dart'
     show isVideoFile, pickGalleryGifs, pickVideoFiles;
@@ -28,6 +27,7 @@ import '../widgets/swipe_back.dart';
 import '../widgets/watermark_layer.dart';
 import 'about_screen.dart';
 import 'feedback_screen.dart';
+import 'storage_screen.dart';
 import 'batch_watermark_screen.dart';
 import 'collage_screen.dart';
 import 'gif_screen.dart';
@@ -1099,17 +1099,54 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               22,
                               16 * (1 - _kGiveLoose * fit.gap),
                             ),
-                            child: Align(
-                              alignment: Alignment.centerLeft,
-                              child: IconButton(
-                                onPressed: () =>
-                                    Navigator.of(context).maybePop(),
-                                icon: const Icon(
-                                  Icons.arrow_back_ios_new,
-                                  size: 22,
-                                  color: kLText,
+                            child: Row(
+                              children: [
+                                IconButton(
+                                  onPressed: () =>
+                                      Navigator.of(context).maybePop(),
+                                  icon: const Icon(
+                                    Icons.arrow_back_ios_new,
+                                    size: 22,
+                                    color: kLText,
+                                  ),
                                 ),
-                              ),
+                                const Spacer(),
+                                TextButton.icon(
+                                  key: const ValueKey('profile-storage'),
+                                  onPressed: () =>
+                                      Navigator.push<void>(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) => LightPage(
+                                            child: StorageScreen(
+                                              openDrafts: _openDrafts,
+                                              openGifs: _openGifs,
+                                              openPresets: () async {
+                                                await Navigator.push<void>(
+                                                  context,
+                                                  MaterialPageRoute(
+                                                    builder: (_) =>
+                                                        const LightPage(
+                                                          child:
+                                                              PresetsScreen(),
+                                                        ),
+                                                  ),
+                                                );
+                                                if (mounted) await _reload();
+                                              },
+                                            ),
+                                          ),
+                                        ),
+                                      ).then((_) {
+                                        if (mounted) _reload();
+                                      }),
+                                  icon: const Icon(
+                                    Icons.storage_outlined,
+                                    size: 18,
+                                  ),
+                                  label: const Text('容量與清理'),
+                                ),
+                              ],
                             ),
                           ),
                           // 區塊順序是草稿→我的 GIF→範本（D 案，使用者
@@ -1384,7 +1421,8 @@ class _DraftsScreenState extends State<DraftsScreen> {
     final ok = await showConfirm(
       context,
       title: '清掉 ${formatBytes(u.filesUnused)} 轉檔暫存？',
-      message: '這些是之前匯入影片時轉好的檔，現在沒有任何草稿在用。'
+      message:
+          '這些是之前匯入影片時轉好的檔，現在沒有任何草稿在用。'
           '之後再匯入同一支影片會重新轉一次，草稿不受影響',
       action: '清掉',
     );
@@ -1518,9 +1556,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
         );
       }
       if (u.pending > 0) {
-        lines.add(
-          Text('有 ${u.pending} 份草稿讀不到內容，它們用的暫存沒有算進來', style: dim),
-        );
+        lines.add(Text('有 ${u.pending} 份草稿讀不到內容，它們用的暫存沒有算進來', style: dim));
       }
       if (u.filesUnused <= 0 && _drafts.isNotEmpty) {
         lines.add(const Text('選取草稿可以看每份刪掉能省多少', style: dim));
@@ -1615,9 +1651,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
   Future<void> _resumeCollage() async {
     final d = _collageDraft;
     if (d == null) return;
-    await _openOver(
-      editRoute(builder: (_) => CollageScreen(restore: d)),
-    );
+    await _openOver(editRoute(builder: (_) => CollageScreen(restore: d)));
   }
 
   Future<void> _deleteCollage() async {

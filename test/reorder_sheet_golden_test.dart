@@ -106,6 +106,9 @@ void main() {
 
   setUpAll(() async {
     final b = TestWidgetsFlutterBinding.ensureInitialized();
+    await (FontLoader(
+      'MaterialIcons',
+    )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
 
     for (final path in const [
       'assets/fonts/NotoSansTC.ttf',
@@ -118,8 +121,7 @@ void main() {
 
     final dir = Directory.systemTemp.createTempSync('markcut_reorder');
     _imgs = [
-      for (var i = 0; i < 3; i++)
-        '${dir.path}${Platform.pathSeparator}c$i.png',
+      for (var i = 0; i < 3; i++) '${dir.path}${Platform.pathSeparator}c$i.png',
     ];
     for (var i = 0; i < 3; i++) {
       File(_imgs[i]).writeAsBytesSync(_pngs[i]);

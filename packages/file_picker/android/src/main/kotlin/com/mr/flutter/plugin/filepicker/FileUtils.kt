@@ -512,11 +512,9 @@ object FileUtils {
         var fileOutputStream: FileOutputStream? = null
         val fileInfo = FileInfo.Builder()
         val fileName = getFileName(uri, context)
-        val path =
-            context.cacheDir.absolutePath + "/file_picker/" + System.currentTimeMillis() + "/" + (fileName
-                ?: "unamed")
-
-        val file = File(path)
+        // MarkCut security patch: never trust ContentProvider DISPLAY_NAME as a path.
+        val file = SafeCachePath.create(File(context.cacheDir, "file_picker"), fileName)
+        val path = file.path
 
         if (!file.exists()) {
             try {

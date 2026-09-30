@@ -191,7 +191,7 @@ Future<_Job> _open(WidgetTester t) async {
       home: GifScreen(path: 'v.mp4', name: 'v.mp4'),
     ),
   );
-  await _settle(t);
+  await _waitFor(t, () => find.text('做成 GIF').evaluate().isNotEmpty);
   expect(find.text('做成 GIF'), findsOneWidget, reason: '頁面要開得起來');
   // 250ms 的防抖之後第一份預覽開跑
   await t.pump(const Duration(milliseconds: 300));

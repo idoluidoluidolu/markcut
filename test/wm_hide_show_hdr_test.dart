@@ -239,8 +239,8 @@ void main() {
     );
   }
 
-  /// 進場：空白專案 → 塞時間軸 → 到匯出頁一趟（HDR 判定在那裡出爐，
-  /// 預設「保留 HDR」＝預覽走 HDR）→ 回剪輯頁，等合成組好
+  /// HDR capability must initialize in the editing tab, including when export
+  /// is lazy and has never been mounted.
   Future<void> enter(
     WidgetTester t, {
     required bool hdr,
@@ -253,9 +253,6 @@ void main() {
       (tl) => seed(tl, hdr: hdr, withImage: withImage),
     );
     await _wait(t, 50);
-    await t.tap(find.text('匯出'));
-    await _wait(t, 50);
-    await t.tap(find.text('剪輯'));
     await _waitUntil(
       t,
       () => builds.isNotEmpty && (builds.last['hdrOut'] == true) == hdr,

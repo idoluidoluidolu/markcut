@@ -84,6 +84,9 @@ void main() {
 
   setUpAll(() async {
     final b = TestWidgetsFlutterBinding.ensureInitialized();
+    await (FontLoader(
+      'MaterialIcons',
+    )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
 
     // 真的把 App 的字體載進來，不然中文全是空白框，快照看了也沒用
     for (final (family, path) in const [
@@ -91,9 +94,7 @@ void main() {
       ('NotoSansTC', 'assets/fonts/NotoSansTC-Bold.ttf'),
     ]) {
       final loader = FontLoader(family)
-        ..addFont(
-          File(path).readAsBytes().then((b) => b.buffer.asByteData()),
-        );
+        ..addFont(File(path).readAsBytes().then((b) => b.buffer.asByteData()));
       await loader.load();
     }
 

@@ -221,13 +221,24 @@ void main() {
   });
 
   testWidgets('還原小型預覽工具：圖文橫排，窄螢幕比例與裁切可操作', (t) async {
-    t.view.physicalSize = const Size(320, 850);
+    t.view.physicalSize = const Size(1100, 2200);
     t.view.devicePixelRatio = 1;
     addTearDown(t.view.reset);
     await t.pumpWidget(MaterialApp(home: VideoEditorScreen(draft: _draft())));
     await _settle(t);
     t.widget<TimelineEditor>(find.byType(TimelineEditor)).onSelect(1);
     await _settle(t, 6);
+    // Resize the existing editor after selection; stable sections must still
+    // respond to inherited MediaQuery changes without a content edit.
+    final revision = t
+        .widget<TimelineEditor>(find.byType(TimelineEditor))
+        .contentVersion;
+    t.view.physicalSize = const Size(320, 850);
+    await t.pump();
+    expect(
+      t.widget<TimelineEditor>(find.byType(TimelineEditor)).contentVersion,
+      revision,
+    );
     Finder button(String name) => find.byKey(ValueKey('video-preview-$name'));
     expect(
       find.descendant(of: button('fullscreen'), matching: find.byType(Text)),
@@ -285,7 +296,13 @@ void main() {
       findsOneWidget,
     );
     await t.tap(button('crop'));
-    await _settle(t, 8);
+    // Cropping waits for a preparation checkpoint and file I/O. Observe route
+    // readiness instead of assuming eight frames finish that asynchronous work.
+    final cropWait = Stopwatch()..start();
+    while (find.byType(CropScreen).evaluate().isEmpty &&
+        cropWait.elapsed < const Duration(seconds: 5)) {
+      await _settle(t, 1);
+    }
     expect(find.byType(CropScreen), findsOneWidget);
     Navigator.of(t.element(find.byType(CropScreen))).pop();
     await _settle(t, 5);

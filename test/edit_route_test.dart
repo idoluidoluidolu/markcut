@@ -32,6 +32,7 @@ const _editors = <String, List<String>>{
 const _browsers = <String>{
   'home_screen.dart',
   'profile_screen.dart',
+  'storage_screen.dart',
   'presets_screen.dart',
   'about_screen.dart',
   'donate_screen.dart',

@@ -7,6 +7,7 @@
 //
 // 假的原生端：兩支 HDR 素材、代理一律失敗（整場播原檔，不換檔）；抽幀每格
 // 慢 60ms，讀取畫面才看得到（真機一支 4K 粗帶大約也是這個量級）
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -28,6 +29,7 @@ void main() {
   final frame = solidPng(0, 255, 0);
   var pickVideos = <String>[];
   var framesServed = 0;
+  var stallFrames = false;
 
   setUpAll(() {
     _dir = Directory.systemTemp.createTempSync('markcut_blank_gate_');
@@ -86,6 +88,7 @@ void main() {
       (call) async {
         if (call.method != 'frameAt') return null;
         framesServed++;
+        if (stallFrames) return Completer<Uint8List?>().future;
         await Future<void>.delayed(const Duration(milliseconds: 60));
         return frame;
       },
@@ -106,13 +109,43 @@ void main() {
     WorkFiles.resetForTest();
     Diag.reset();
     framesServed = 0;
+    stallFrames = false;
   });
 
   bool gateShown() => find.byType(PrepGateView).evaluate().isNotEmpty;
 
+  testWidgets(
+    'native frame stall still releases the entry gate within five seconds',
+    (t) async {
+      stallFrames = true;
+      pickVideos = [_p('a.mp4'), _p('b.mp4')];
+      await t.pumpWidget(
+        editorApp(
+          VideoEditorScreen(blank: true, thumbnailNow: t.binding.clock.now),
+        ),
+      );
+      await settle(t, 10);
+      await t.tap(find.text('加素材'));
+      await settle(t, 10);
+      await t.tap(find.text('影片'));
+      await settle(t, 10);
+      await t.tap(find.text('各自一軌'));
+      await waitUntil(t, gateShown, maxMs: 4000);
+      await t.pump(const Duration(seconds: 5));
+      await t.pump();
+      expect(gateShown(), isFalse);
+      await settle(t, 80);
+      await t.pump(const Duration(seconds: 5));
+    },
+  );
+
   testWidgets('空白專案「＋ → 影片 → 各自一軌」：讀取畫面蓋上，粗帶抽完就掀、縮圖不是只有第一格', (t) async {
     pickVideos = [_p('a.mp4'), _p('b.mp4')];
-    await t.pumpWidget(editorApp(const VideoEditorScreen(blank: true)));
+    await t.pumpWidget(
+      editorApp(
+        VideoEditorScreen(blank: true, thumbnailNow: t.binding.clock.now),
+      ),
+    );
     await settle(t, 10);
     expect(gateShown(), isFalse, reason: '空白專案本身沒有讀取畫面');
 

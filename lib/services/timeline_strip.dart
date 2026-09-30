@@ -8,6 +8,47 @@ import 'native_frames.dart' show NativeFrameSample;
 const kThumbCellSeconds = 1.0;
 const kThumbStripMax = 120;
 
+/// Anchor thumbnail cells to source time, not the moving trim handle. Trimming
+/// reveals/covers the existing strip without moving or resampling its tiles.
+Iterable<({int tile, double left, int frame})> sourceAnchoredStripTiles({
+  required double trimStart,
+  required double trimEnd,
+  required double duration,
+  required double speed,
+  required bool reverse,
+  required double pxPerSec,
+  required double tileWidth,
+  required double width,
+  required (double, double) viewport,
+  required int frames,
+}) sync* {
+  if (duration <= 0 ||
+      frames <= 0 ||
+      tileWidth <= 0 ||
+      width <= 0 ||
+      pxPerSec <= 0 ||
+      speed <= 0) {
+    return;
+  }
+  final pixelsPerSourceSecond = pxPerSec / speed;
+  final start =
+      (reverse ? duration - trimEnd : trimStart) * pixelsPerSourceSecond;
+  final left = math.max(0.0, viewport.$1);
+  final right = math.min(width, viewport.$2);
+  if (right <= left) return;
+  final first = ((start + left) / tileWidth).floor();
+  final last = ((start + right) / tileWidth).ceil();
+  for (var k = first; k < last; k++) {
+    final at = (k + .5) * tileWidth / pixelsPerSourceSecond;
+    final seconds = reverse ? duration - at : at;
+    yield (
+      tile: k,
+      left: k * tileWidth - start,
+      frame: (seconds / duration * frames).floor().clamp(0, frames - 1),
+    );
+  }
+}
+
 /// 一條縮圖帶要幾格：一秒一格、最少 10、最多 [kThumbStripMax]。
 ///
 /// 以前固定 10 格：48 秒的片一格 4.8 秒，時間軸縮放到一磚 1.5 秒時同一張
@@ -90,6 +131,7 @@ Future<List<Uint8List>> loadCoarseStrip({
   required CoarseStripFetch fetch,
   DateTime? deadline,
   bool Function()? alive,
+  void Function(List<Uint8List> frames)? onProgress,
   // 測試用：假時鐘才能把「截止時間到了」驗得確定，不靠真時鐘的毫秒競賽
   DateTime Function() now = DateTime.now,
 }) async {
@@ -121,6 +163,7 @@ Future<List<Uint8List>> loadCoarseStrip({
     final cell = at == null ? i : coarseCellIndex(at, duration, count);
     // 同一個關鍵幀被相鄰兩格要到：先到的留著，後到的不覆蓋
     cells[cell] ??= sample.bytes;
+    onProgress?.call(fillStripGaps(cells));
   }
   return fillStripGaps(cells);
 }

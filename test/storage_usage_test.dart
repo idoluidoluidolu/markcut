@@ -18,6 +18,7 @@ import 'package:markcut/services/draft_assets.dart';
 import 'package:markcut/services/draft_store.dart';
 import 'package:markcut/services/storage_usage.dart';
 import 'package:markcut/services/work_files.dart';
+import 'package:markcut/services/gif_store.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -38,6 +39,7 @@ void main() {
     await Directory(wf).create();
     await Directory(imp).create();
     BlobStore.dirOverride = root;
+    GifStore.documentsDirOverride = root;
     WorkFiles.supportDirOverride = root;
     DraftAssets.supportDirOverride = root;
     WorkFiles.holdSweep = false;
@@ -47,6 +49,7 @@ void main() {
 
   tearDown(() async {
     BlobStore.dirOverride = null;
+    GifStore.documentsDirOverride = null;
     BlobStore.resetForTest();
     WorkFiles.supportDirOverride = null;
     DraftAssets.supportDirOverride = null;

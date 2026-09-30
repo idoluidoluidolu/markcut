@@ -1071,10 +1071,30 @@ class WatermarkPanelState extends State<WatermarkPanel>
                             if (s.text.enabled) ...[
                               const SizedBox(height: 6),
                               // ===== 大輸入框：用目前字型與顏色顯示，打字即預覽 =====
-                              // 疊一顆「收起鍵盤」鈕在右上角：多行輸入的換行鍵不能當完成鍵，
-                              // 打完字原本沒有地方可以把鍵盤收掉（使用者實測回報）
-                              Stack(
+                              // 明確的「完成」放在輸入框上方，不遮住文字。
+                              // ensureVisible 包含按鈕，鍵盤升起後仍有明確出口。
+                              Column(
+                                key: _inputKey,
                                 children: [
+                                  AnimatedBuilder(
+                                    animation: _textFocus,
+                                    builder: (context, _) => _textFocus.hasFocus
+                                        ? Align(
+                                            alignment: Alignment.centerRight,
+                                            child: TextButton.icon(
+                                              key: const ValueKey(
+                                                'watermark-text-done',
+                                              ),
+                                              onPressed: _textFocus.unfocus,
+                                              icon: const Icon(
+                                                Icons.check,
+                                                size: 18,
+                                              ),
+                                              label: const Text('完成'),
+                                            ),
+                                          )
+                                        : const SizedBox.shrink(),
+                                  ),
                                   Container(
                                     constraints: const BoxConstraints(
                                       minHeight: 110,
@@ -1089,11 +1109,16 @@ class WatermarkPanelState extends State<WatermarkPanel>
                                       ),
                                     ),
                                     child: TextField(
-                                      key: _inputKey,
+                                      key: const ValueKey(
+                                        'watermark-text-input',
+                                      ),
                                       controller: _textCtrl,
                                       focusNode: _textFocus,
                                       textAlign: TextAlign.center,
-                                      maxLines: null,
+                                      minLines: 1,
+                                      maxLines: 6,
+                                      keyboardType: TextInputType.multiline,
+                                      textInputAction: TextInputAction.newline,
                                       // 打字永遠白字（B 案）：這一格只管
                                       // 打字，顏色與透明看上面的預覽跟
                                       // 旁邊的色塊——照所選顏色渲染的話
@@ -1124,28 +1149,6 @@ class WatermarkPanelState extends State<WatermarkPanel>
                                       ),
                                       onChanged: (v) =>
                                           _update(() => s.text.text = v),
-                                    ),
-                                  ),
-                                  Positioned(
-                                    right: 2,
-                                    top: 2,
-                                    child: AnimatedBuilder(
-                                      animation: _textFocus,
-                                      builder: (context, _) =>
-                                          _textFocus.hasFocus
-                                          ? IconButton(
-                                              tooltip: '收起鍵盤',
-                                              visualDensity:
-                                                  VisualDensity.compact,
-                                              onPressed: () =>
-                                                  _textFocus.unfocus(),
-                                              icon: const Icon(
-                                                Icons.keyboard_hide_outlined,
-                                                size: 20,
-                                                color: kIcon,
-                                              ),
-                                            )
-                                          : const SizedBox.shrink(),
                                     ),
                                   ),
                                 ],

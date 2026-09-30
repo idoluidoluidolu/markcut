@@ -27,6 +27,12 @@ require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelpe
 
 flutter_ios_podfile_setup
 
+# Local pods may skip prepare_command. Verify/install native artifacts explicitly.
+ffmpeg_ios = File.expand_path('../packages/ffmpeg_kit_flutter_new_full/ios', __dir__)
+unless system('bash', '../scripts/setup_ios.sh', chdir: ffmpeg_ios)
+  raise 'FFmpeg native artifact integrity verification failed'
+end
+
 target 'Runner' do
   use_frameworks!
 

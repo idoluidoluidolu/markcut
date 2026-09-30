@@ -12,6 +12,7 @@ class _FailingDraftPreferences extends InMemorySharedPreferencesStore {
 
   String? failKey;
   bool throwOnFailure = false;
+  bool failRemove = true;
 
   @override
   Future<bool> setValue(String valueType, String key, Object value) async {
@@ -24,7 +25,7 @@ class _FailingDraftPreferences extends InMemorySharedPreferencesStore {
 
   @override
   Future<bool> remove(String key) async {
-    if (key == failKey) {
+    if (key == failKey && failRemove) {
       if (throwOnFailure) throw StateError('disk full');
       return false;
     }
@@ -37,7 +38,123 @@ void main() {
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
+  test(
+    'worker encoding reserves save order before later save and delete',
+    () async {
+      final old = DraftStore.save('ordered', {
+        'old': List.filled(10000, 'value'),
+      });
+      final newest = DraftStore.save('ordered', '{"latest":true}');
+      await Future.wait([old, newest]);
+      expect(await DraftStore.load('ordered'), {'latest': true});
+      final pending = DraftStore.save('ordered', {
+        'late': List.filled(10000, 1),
+      });
+      final remove = DraftStore.remove('ordered');
+      await Future.wait<Object?>([pending, remove]);
+      expect(await DraftStore.load('ordered'), isNull);
+    },
+  );
+
+  test(
+    'background cover updates metadata without rewriting saved content or dates',
+    () async {
+      expect(
+        await DraftStore.save(
+          'cover',
+          '{"value":1}',
+          coverRevision: 'r1',
+          clipCount: 7,
+          duration: 123,
+          refs: {'source.mp4'},
+        ),
+        isTrue,
+      );
+      final before = (await DraftStore.list()).single;
+      expect(
+        await DraftStore.updateCover(
+          'cover',
+          revision: 'r1',
+          thumb: 'new',
+          aspect: 1.5,
+        ),
+        isTrue,
+      );
+      final after = (await DraftStore.list()).single;
+      expect(await DraftStore.load('cover'), {'value': 1});
+      expect(await DraftStore.refs('cover'), {'source.mp4'});
+      expect(await DraftStore.thumb('cover'), 'new');
+      expect(after.hasThumb, isTrue);
+      expect(after.thumbAspect, 1.5);
+      expect(after.clipCount, 7);
+      expect(after.duration, 123);
+      expect(after.createdAt, before.createdAt);
+      expect(after.savedAt, before.savedAt);
+    },
+  );
+
+  test(
+    'late cover cannot overwrite newer save or resurrect removed project',
+    () async {
+      await DraftStore.save('cover', '{}', coverRevision: 'r1');
+      await DraftStore.save(
+        'cover',
+        '{"new":true}',
+        thumb: 'latest',
+        coverRevision: 'r2',
+      );
+      expect(
+        await DraftStore.updateCover(
+          'cover',
+          revision: 'r1',
+          thumb: 'stale',
+          aspect: 1,
+        ),
+        isFalse,
+      );
+      expect(await DraftStore.thumb('cover'), 'latest');
+      await DraftStore.remove('cover');
+      expect(
+        await DraftStore.updateCover(
+          'cover',
+          revision: 'r2',
+          thumb: 'late',
+          aspect: 1,
+        ),
+        isFalse,
+      );
+      expect(await DraftStore.list(), isEmpty);
+      expect(await DraftStore.thumb('cover'), isNull);
+      expect(await DraftStore.load('cover'), isNull);
+    },
+  );
+
   group('儲存失敗回報', () {
+    test('引用寫入失敗不能留下過期清單供清理使用', () async {
+      final previous = SharedPreferencesStorePlatform.instance;
+      final store = _FailingDraftPreferences();
+      SharedPreferencesStorePlatform.instance = store;
+      addTearDown(() {
+        SharedPreferencesStorePlatform.instance = previous;
+        SharedPreferences.resetStatic();
+      });
+      expect(await DraftStore.save('refs', '{}', refs: {'old.mp4'}), isTrue);
+      // Refusing invalidation must leave the old body/list pair intact.
+      store.failKey = 'flutter.project_refs_refs';
+      expect(await DraftStore.save('refs', '{}', refs: {'new.mp4'}), isFalse);
+      // The old body/list pair remains intact when invalidation itself is refused.
+      expect(await DraftStore.refs('refs'), {'old.mp4'});
+      // Invalidation succeeds but replacement fails: missing refs block sweeping.
+      store.failRemove = false;
+      expect(
+        await DraftStore.save('refs', '{"new":true}', refs: {'new.mp4'}),
+        isFalse,
+      );
+      expect(await DraftStore.refs('refs'), isNull);
+      store.failKey = null;
+      expect(await DraftStore.save('refs', '{}', refs: {'new.mp4'}), isTrue);
+      expect(await DraftStore.refs('refs'), {'new.mp4'});
+    });
     for (final (label, key, thumb, throwsError) in [
       ('內容寫入', 'project_data_a', 'new-cover', false),
       ('封面寫入', 'project_thumb_a', 'new-cover', false),

@@ -6,10 +6,12 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
+import 'package:flutter/scheduler.dart';
 
 import '../models/timeline.dart';
-import '../services/timeline_strip.dart' show stripIndexForTile;
+import '../services/timeline_strip.dart' show sourceAnchoredStripTiles;
 import '../services/waveform_cache.dart';
+import '../services/timeline_viewport.dart';
 import '../theme.dart';
 
 // 黑白暗版：片段配色全灰階（影片、音訊各一階）
@@ -58,6 +60,9 @@ class TimelineEditor extends StatefulWidget {
   final double pxPerSec;
   final double trackScale;
   final ScrollController scrollController;
+  final ScrollController? verticalScrollController;
+  final double? viewportHeight;
+  final int? contentVersion;
 
   final ValueChanged<int> onSelect;
   final ValueChanged<double> onSeek;
@@ -163,6 +168,9 @@ class TimelineEditor extends StatefulWidget {
     required this.playhead,
     required this.pxPerSec,
     required this.scrollController,
+    this.verticalScrollController,
+    this.viewportHeight,
+    this.contentVersion,
     required this.onSelect,
     required this.onSeek,
     required this.onTrim,
@@ -216,6 +224,86 @@ class TimelineEditor extends StatefulWidget {
 }
 
 class _TimelineEditorState extends State<TimelineEditor> {
+  TimelineViewportIndex? _viewportIndex;
+  TimelineViewportIndex get _index =>
+      _viewportIndex ??= TimelineViewportIndex(timeline.clips);
+  int _horizontalPage = 0;
+  int _verticalPage = 0;
+  bool _viewportScheduled = false;
+
+  void _viewportChanged() {
+    final h = widget.scrollController.hasClients
+        ? widget.scrollController.offset
+        : 0.0;
+    final v = widget.verticalScrollController;
+    final hp = (h / math.max(100, _viewWidth / 2)).floor();
+    final vp = ((v != null && v.hasClients ? v.offset : 0) / rowStride).floor();
+    if (hp == _horizontalPage && vp == _verticalPage) return;
+    _horizontalPage = hp;
+    _verticalPage = vp;
+    if (SchedulerBinding.instance.schedulerPhase ==
+        SchedulerPhase.persistentCallbacks) {
+      if (_viewportScheduled) return;
+      _viewportScheduled = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _viewportScheduled = false;
+        if (mounted) setState(() {});
+      });
+    } else if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Iterable<Widget> _visibleRows(Widget Function(int) row) sync* {
+    final height = widget.viewportHeight;
+    final controller = widget.verticalScrollController;
+    final count = _rows;
+    if (height == null || controller == null) {
+      for (var t = count - 1; t >= 0; t--) {
+        yield row(t);
+        yield const SizedBox(height: TimelineEditor.gap);
+      }
+      return;
+    }
+    final top =
+        (((controller.hasClients
+                        ? controller.offset
+                        : controller.initialScrollOffset) -
+                    TimelineEditor.rulerH -
+                    _rulerGap -
+                    _wmExtra -
+                    14) /
+                rowStride)
+            .floor();
+    final first = (top - 2).clamp(0, count);
+    final last = (top + (height / rowStride).ceil() + 3).clamp(0, count);
+    final rows = <int>{for (var i = first; i < last; i++) i};
+    for (final track in [
+      _dragTrack,
+      _lift?.startTrack,
+      _index.trackOf(widget.selectedId),
+    ]) {
+      if (track != null && track >= 0 && track < count) {
+        rows.add(count - 1 - track);
+      }
+    }
+    var previous = 0;
+    for (final index in rows.toList()..sort()) {
+      if (index > previous) {
+        yield SizedBox(height: (index - previous) * rowStride);
+      }
+      yield KeyedSubtree(
+        key: ValueKey(count - 1 - index),
+        child: row(count - 1 - index),
+      );
+      yield const SizedBox(height: TimelineEditor.gap);
+      previous = index + 1;
+    }
+    if (previous < count) {
+      yield SizedBox(height: (count - previous) * rowStride);
+    }
+  }
+
   _Lift? _lift; // 拿起來的片段
   int? _dragTrack; // 正在拖曳的軌道（標籤）
   double _dragDy = 0;
@@ -338,12 +426,12 @@ class _TimelineEditorState extends State<TimelineEditor> {
   /// 畫出來的軌數：有內容的 + 一條永遠留著的空軌 + 手動加的空白軌
   // 永遠多一列空軌可放東西；預備中的旁白軌也要有位置顯示
   int get _rows => math.max(
-    timeline.usedTracks + 1 + widget.extraTracks,
+    _index.usedTracks + 1 + widget.extraTracks,
     (widget.voiceTrack ?? -1) + 1,
   );
 
   /// 拖曳／插入允許到達的最上層軌（含手動加的空白軌）
-  int get _maxTrack => timeline.usedTracks + widget.extraTracks;
+  int get _maxTrack => _index.usedTracks + widget.extraTracks;
 
   /// 軌道編號 → 畫面上由上往下數的第幾列。
   ///
@@ -365,6 +453,8 @@ class _TimelineEditorState extends State<TimelineEditor> {
   @override
   void initState() {
     super.initState();
+    widget.scrollController.addListener(_viewportChanged);
+    widget.verticalScrollController?.addListener(_viewportChanged);
     GestureBinding.instance.pointerRouter.addGlobalRoute(_globalPointer);
     widget.repaint?.addListener(_onRepaint);
   }
@@ -372,12 +462,26 @@ class _TimelineEditorState extends State<TimelineEditor> {
   /// 外面撥了 [TimelineEditor.repaint]：內容（片段修剪、浮水印範圍）變了，
   /// 只重建時間軸這棵子樹
   void _onRepaint() {
+    _viewportIndex = null;
     if (mounted) setState(() {});
   }
 
   @override
   void didUpdateWidget(TimelineEditor old) {
     super.didUpdateWidget(old);
+    if (widget.contentVersion == null ||
+        old.contentVersion != widget.contentVersion ||
+        !identical(old.timeline, widget.timeline)) {
+      _viewportIndex = null;
+    }
+    if (old.scrollController != widget.scrollController) {
+      old.scrollController.removeListener(_viewportChanged);
+      widget.scrollController.addListener(_viewportChanged);
+    }
+    if (old.verticalScrollController != widget.verticalScrollController) {
+      old.verticalScrollController?.removeListener(_viewportChanged);
+      widget.verticalScrollController?.addListener(_viewportChanged);
+    }
     if (!identical(widget.repaint, old.repaint)) {
       old.repaint?.removeListener(_onRepaint);
       widget.repaint?.addListener(_onRepaint);
@@ -394,6 +498,8 @@ class _TimelineEditorState extends State<TimelineEditor> {
 
   @override
   void dispose() {
+    widget.scrollController.removeListener(_viewportChanged);
+    widget.verticalScrollController?.removeListener(_viewportChanged);
     widget.repaint?.removeListener(_onRepaint);
     GestureBinding.instance.pointerRouter.removeGlobalRoute(_globalPointer);
     _autoScrollTimer?.cancel();
@@ -671,7 +777,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
   int get _trackDropTarget {
     if (_dragTrack == null) return -1;
     final steps = (_dragDy / rowStride).round();
-    return (_dragTrack! - steps).clamp(0, math.max(0, timeline.usedTracks - 1));
+    return (_dragTrack! - steps).clamp(0, math.max(0, _index.usedTracks - 1));
   }
 
   double _rowShiftFor(int t) {
@@ -729,10 +835,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
                 ],
                 // 由上往下畫，編號由大到小：時間軸上面的那一列，在畫面
                 // 上也是疊在上面的那一層（跟剪映／Premiere 一致）
-                for (var t = _rows - 1; t >= 0; t--) ...[
-                  _shifted(t, _trackLabel(t)),
-                  const SizedBox(height: gap),
-                ],
+                ..._visibleRows((t) => _shifted(t, _trackLabel(t))),
               ],
             ),
           ),
@@ -742,8 +845,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
             child: LayoutBuilder(
               builder: (context, cons) {
                 final leadPad = cons.maxWidth * 0.35;
-                final totalW =
-                    timeline.duration * pxPerSec + cons.maxWidth * 0.7;
+                final totalW = _index.duration * pxPerSec + cons.maxWidth * 0.7;
                 _leadPad = leadPad;
                 _viewWidth = cons.maxWidth;
                 return SingleChildScrollView(
@@ -837,8 +939,8 @@ class _TimelineEditorState extends State<TimelineEditor> {
                                       ),
                                       const SizedBox(height: gap),
                                     ],
-                                    for (var t = _rows - 1; t >= 0; t--) ...[
-                                      _shifted(
+                                    ..._visibleRows(
+                                      (t) => _shifted(
                                         t,
                                         SizedBox(
                                           height: trackH,
@@ -846,8 +948,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
                                           child: _trackRow(t, spec),
                                         ),
                                       ),
-                                      const SizedBox(height: gap),
-                                    ],
+                                    ),
                                   ],
                                 ),
                               ),
@@ -922,15 +1023,25 @@ class _TimelineEditorState extends State<TimelineEditor> {
   double _viewWidth = 0;
 
   Widget _trackRow(int track, _LiftSpec? spec) {
-    final isEmptyRow = track >= timeline.usedTracks;
-    final clips = timeline.onTrack(track);
+    final isEmptyRow = track >= _index.usedTracks;
+    final offset = widget.scrollController.hasClients
+        ? widget.scrollController.offset
+        : 0.0;
+    final chunk = math.max(100.0, _viewWidth / 2);
+    final bucketStart = (offset / chunk).floor() * chunk - _leadPad;
+    final clips = _index.visible(
+      track,
+      (bucketStart - chunk) / pxPerSec,
+      (bucketStart + _viewWidth + 2 * chunk) / pxPerSec,
+      {widget.selectedId, if (_lift != null) _lift!.clipId},
+    );
     final isDropTarget = spec != null && !spec.insert && spec.track == track;
 
     /// 這條是不是那條「還沒用到的第一軌」——也就是會寫著
     /// 「點我加入…」的那條。它整條就是一顆加素材按鈕
     final isInviteRow =
         isEmptyRow &&
-        track == timeline.usedTracks &&
+        track == _index.usedTracks &&
         !isDropTarget &&
         clips.isEmpty;
 
@@ -1058,6 +1169,12 @@ class _TimelineEditorState extends State<TimelineEditor> {
                         peaks: levels,
                         color: kRecord,
                         live: true,
+                        viewport: _clipPaintViewport(
+                          widget.scrollController,
+                          _viewWidth,
+                          _leadPad,
+                          widget.voiceStart * pxPerSec,
+                        ),
                       ),
                     ),
                   ),
@@ -1382,7 +1499,18 @@ class _TimelineEditorState extends State<TimelineEditor> {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              _clipFill(clip, src, widget.thumbs[clip.sourceIndex] ?? const []),
+              _clipFill(
+                clip,
+                src,
+                widget.thumbs[clip.sourceIndex] ?? const [],
+                pxPerSec: pxPerSec,
+                viewport: _clipPaintViewport(
+                  widget.scrollController,
+                  _viewWidth,
+                  _leadPad,
+                  spec.offset * pxPerSec,
+                ),
+              ),
               Center(
                 child: Container(
                   padding: const EdgeInsets.symmetric(
@@ -1411,15 +1539,12 @@ class _TimelineEditorState extends State<TimelineEditor> {
   }
 
   Widget _trackLabel(int t) {
-    final isEmptyRow = t >= timeline.usedTracks;
+    final isEmptyRow = t >= _index.usedTracks;
     final isVoice = widget.voiceTrack == t;
     // 純音訊軌：眼睛（隱藏圖層）沒有意義，改成音量鈕（使用者指定）。
     // 動作照舊走「隱藏」——隱藏本來就連聲音一起關，對音訊軌來說
     // 隱藏＝靜音，語意剛好對得上
-    final rowClips = [
-      for (final c in timeline.clips)
-        if (c.track == t) c,
-    ];
+    final rowClips = _index.onTrack(t);
     final isAudio =
         !isEmptyRow &&
         !isVoice &&
@@ -1429,7 +1554,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
       index: t,
       height: trackH,
       rowStride: rowStride,
-      canDrag: !isEmptyRow && timeline.usedTracks > 1 && !isVoice,
+      canDrag: !isEmptyRow && _index.usedTracks > 1 && !isVoice,
       isEmptyRow: isEmptyRow,
       muted: widget.mutedTracks.contains(t),
       hidden: widget.hiddenTracks.contains(t),
@@ -1445,15 +1570,10 @@ class _TimelineEditorState extends State<TimelineEditor> {
       // 那個狀態讓標籤亮起來只會讓人以為自己選了整條軌。
       // 用「第一個命中的片段」的軌來比：就算資料裡有撞號的 id，
       // 也永遠只亮一條（兩軌同時亮燈是使用者實際回報過的症狀）
-      hasSelection:
-          timeline.clips
-              .where((c) => c.id == widget.selectedId)
-              .firstOrNull
-              ?.track ==
-          t,
+      hasSelection: _index.trackOf(widget.selectedId) == t,
       isDragging: _dragTrack == t,
       dragDy: _dragTrack == t ? _dragDy : 0,
-      maxTrack: timeline.usedTracks - 1,
+      maxTrack: _index.usedTracks - 1,
       // 旁白軌＝錄音鈕；空軌點了加素材；有內容的軌切換整軌靜音
       onTap: () => isVoice
           ? widget.onVoiceRecordTap?.call()
@@ -1487,23 +1607,92 @@ class _TimelineEditorState extends State<TimelineEditor> {
 /// voiceLevels 沒給時的替身，省去到處判空
 final _emptyLevels = ValueNotifier<List<double>>(const []);
 
+class _ClipWaveform extends StatefulWidget {
+  const _ClipWaveform({
+    super.key,
+    required this.path,
+    required this.start,
+    required this.end,
+    required this.viewport,
+  });
+  final (double, double) viewport;
+  final String path;
+  final double start, end;
+  @override
+  State<_ClipWaveform> createState() => _ClipWaveformState();
+}
+
+class _ClipWaveformState extends State<_ClipWaveform> {
+  late ValueListenable<List<double>?> _peaks;
+  void _acquire() {
+    WaveformCache.instance.retain(this, {widget.path});
+    _peaks = WaveformCache.instance.listenTo(widget.path);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _acquire();
+  }
+
+  @override
+  void didUpdateWidget(_ClipWaveform old) {
+    super.didUpdateWidget(old);
+    if (old.path != widget.path) _acquire();
+  }
+
+  @override
+  void dispose() {
+    WaveformCache.instance.release(this);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<List<double>?>(
+    valueListenable: _peaks,
+    builder: (context, peaks, _) => CustomPaint(
+      painter: _WavePainter(
+        peaks: peaks,
+        start: widget.start,
+        end: widget.end,
+        viewport: widget.viewport,
+      ),
+    ),
+  );
+}
+
 /// 片段內容：影片/圖片是 filmstrip、音訊是波形、文字是字卡
-Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
+(double, double) _clipPaintViewport(
+  ScrollController scroll,
+  double width,
+  double lead,
+  double clipLeft,
+) {
+  final offset = scroll.hasClients ? scroll.offset : scroll.initialScrollOffset;
+  final chunk = math.max(100.0, width / 2);
+  final left = (offset / chunk).floor() * chunk - lead - clipLeft;
+  return (left - chunk, left + width + 2 * chunk);
+}
+
+Widget _clipFill(
+  TimelineClip clip,
+  MediaSource src,
+  List<Uint8List> strip, {
+  required double pxPerSec,
+  required (double, double) viewport,
+}) {
   if (src.kind == ClipKind.audio) {
     // 真實波形：解碼完成前先畫示意波形，好了自動換
-    return AnimatedBuilder(
-      animation: WaveformCache.instance,
-      builder: (context, _) => CustomPaint(
-        painter: _WavePainter(
-          peaks: WaveformCache.instance.of(src.path),
-          start: src.duration <= 0
-              ? 0
-              : (clip.trimStart / src.duration).clamp(0.0, 1.0),
-          end: src.duration <= 0
-              ? 1
-              : (clip.trimEnd / src.duration).clamp(0.0, 1.0),
-        ),
-      ),
+    return _ClipWaveform(
+      key: ValueKey(src.path),
+      path: src.path,
+      viewport: viewport,
+      start: src.duration <= 0
+          ? 0
+          : (clip.trimStart / src.duration).clamp(0.0, 1.0),
+      end: src.duration <= 0
+          ? 1
+          : (clip.trimEnd / src.duration).clamp(0.0, 1.0),
     );
   }
   // 文字/浮水印/馬賽克：底色跟影片片段統一，前面小圖示分種類、
@@ -1556,37 +1745,36 @@ Widget _clipFill(TimelineClip clip, MediaSource src, List<Uint8List> strip) {
   if (src.duration <= 0) {
     return Image.memory(strip[0], fit: BoxFit.cover, gaplessPlayback: true);
   }
-  // 縮圖磚固定尺寸（不隨縮放拉伸變形），縮放只改變「放幾塊磚」。每塊磚畫
-  // 它中央那一刻落在縮圖帶的哪一格（stripIndexForTile）；最後一磚可能只露
-  // 一截，中央以露出的那截算，不然畫的是被裁掉那半邊的時間
+  // 磚格錨定原始素材時間。修剪只揭露／遮住格子，不重排整條縮圖；
+  // 左把手移動時，仍看得見的縮圖停在同一個時間軸位置。
   final n = strip.length;
   return LayoutBuilder(
     builder: (context, cons) {
       final tileW = cons.maxHeight; // 磚寬＝軌高（近方形）
-      final count = (cons.maxWidth / tileW).ceil().clamp(1, 400);
-      final width = cons.maxWidth;
+      final tiles = sourceAnchoredStripTiles(
+        trimStart: clip.trimStart,
+        trimEnd: clip.trimEnd,
+        duration: src.duration,
+        speed: clip.speed.clamp(.1, 16.0),
+        reverse: clip.reverse,
+        pxPerSec: pxPerSec,
+        tileWidth: tileW,
+        width: cons.maxWidth,
+        viewport: viewport,
+        frames: n,
+      );
       return Stack(
         clipBehavior: Clip.hardEdge,
         children: [
-          for (var k = 0; k < count; k++)
+          for (final tile in tiles)
             Positioned(
-              left: k * tileW,
+              key: ValueKey('tile${tile.tile}'),
+              left: tile.left,
               top: 0,
               bottom: 0,
               width: tileW,
               child: Image.memory(
-                strip[stripIndexForTile(
-                  trimStart: clip.trimStart,
-                  trimEnd: clip.trimEnd,
-                  duration: src.duration,
-                  frames: n,
-                  centerFrac: width <= 0
-                      ? 0
-                      : (k * tileW + math.min((k + 1) * tileW, width)) /
-                            2 /
-                            width,
-                  reverse: clip.reverse,
-                )],
+                strip[tile.frame],
                 fit: BoxFit.cover,
                 gaplessPlayback: true,
               ),
@@ -1781,7 +1969,18 @@ class _ClipBlock extends StatelessWidget {
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      _clipFill(clip, source, filmstrip),
+                      _clipFill(
+                        clip,
+                        source,
+                        filmstrip,
+                        pxPerSec: pxPerSec,
+                        viewport: _clipPaintViewport(
+                          scrollController,
+                          viewWidth,
+                          leadPad,
+                          clip.offset * pxPerSec,
+                        ),
+                      ),
                       // 倒轉片段掛個標，不然跟正播的長得一模一樣
                       //（旗標模式或已轉成倒轉檔都算）
                       if (clip.reverse || source.revOf != null)
@@ -1808,7 +2007,7 @@ class _ClipBlock extends StatelessWidget {
                           ),
                         ),
                       // 變速片段掛倍速小標
-                      if ((clip.speed - 1.0).abs() > 0.01)
+                      if ((clip.speed - 1.0).abs() > 0.0001)
                         Positioned(
                           right: 5,
                           top: 3,
@@ -2304,6 +2503,7 @@ class _WavePainter extends CustomPainter {
   /// 錄音中的即時波形：沒有取樣時畫平線（而不是示意波形），
   /// 不然一開錄就滿滿假波形，反而看不出有沒有收到聲音
   final bool live;
+  final (double, double)? viewport;
 
   _WavePainter({
     this.peaks,
@@ -2311,6 +2511,7 @@ class _WavePainter extends CustomPainter {
     this.end = 1,
     this.color,
     this.live = false,
+    this.viewport,
   });
 
   @override
@@ -2323,6 +2524,12 @@ class _WavePainter extends CustomPainter {
     const step = 3.0;
     final mid = size.height / 2;
     final p = peaks;
+    final columns = math.max(1, ((size.width - 4) / step).floor());
+    final first = (((viewport?.$1 ?? 0) - 2) / step).floor().clamp(0, columns);
+    final last = (((viewport?.$2 ?? size.width) - 2) / step).ceil().clamp(
+      first,
+      columns,
+    );
 
     if (live) {
       if (p == null || p.isEmpty) {
@@ -2330,8 +2537,8 @@ class _WavePainter extends CustomPainter {
         return;
       }
       // 取樣是等時間間隔累積的，寬度也隨播放頭等速長，所以平均鋪滿即可
-      final cols = ((size.width - 4) / step).floor().clamp(1, 100000);
-      for (var c = 0; c < cols; c++) {
+      final cols = columns;
+      for (var c = first; c < last; c++) {
         final a = c * p.length ~/ cols;
         final b = ((c + 1) * p.length ~/ cols).clamp(a + 1, p.length);
         var m = 0.0;
@@ -2350,7 +2557,8 @@ class _WavePainter extends CustomPainter {
 
     if (p == null || p.isEmpty || end <= start) {
       // 示意波形：用位置產生穩定的偽隨機高度（不能用 Random，保持重繪一致）
-      for (var x = 2.0; x < size.width - 2; x += step) {
+      for (var c = first; c < last; c++) {
+        final x = 2.0 + c * step;
         final h = (((x * 7919).toInt() % 17) / 17) * (size.height * 0.55) + 2;
         canvas.drawLine(Offset(x, mid - h / 2), Offset(x, mid + h / 2), paint);
       }
@@ -2361,8 +2569,8 @@ class _WavePainter extends CustomPainter {
     final i0 = (start * p.length).floor().clamp(0, p.length - 1);
     final i1 = (end * p.length).ceil().clamp(i0 + 1, p.length);
     final range = i1 - i0;
-    final cols = ((size.width - 4) / step).floor().clamp(1, 100000);
-    for (var c = 0; c < cols; c++) {
+    final cols = columns;
+    for (var c = first; c < last; c++) {
       final a = i0 + (c * range ~/ cols);
       final b = i0 + ((c + 1) * range ~/ cols).clamp(1, range);
       var m = 0.0;
@@ -2383,7 +2591,9 @@ class _WavePainter extends CustomPainter {
       old.peaks != peaks ||
       old.start != start ||
       old.end != end ||
-      old.color != color;
+      old.color != color ||
+      old.viewport != viewport ||
+      old.live != live;
 }
 
 /// 時間刻度尺。

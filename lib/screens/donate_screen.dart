@@ -5,6 +5,7 @@ import 'package:in_app_purchase/in_app_purchase.dart';
 
 import '../theme.dart';
 import '../widgets/swipe_back.dart';
+import '../services/purchase_service.dart';
 
 /// 斗內頁（App 內購小費罐）。
 ///
@@ -37,7 +38,9 @@ class _DonateScreenState extends State<DonateScreen> {
     super.initState();
     if (!kIsWeb) {
       // 先掛監聽再查商品：買完的事件才不會漏接
-      _sub = _iap.purchaseStream.listen(_onPurchases, onError: (_) {});
+      final purchases = PurchaseService.instance;
+      purchases.start();
+      _sub = purchases.events.listen(_onPurchases, onError: (_) {});
       _loadProducts();
     }
   }
@@ -71,7 +74,6 @@ class _DonateScreenState extends State<DonateScreen> {
         if (mounted) setState(() => _buying = false);
         continue;
       }
-      if (p.pendingCompletePurchase) await _iap.completePurchase(p);
       if (!mounted) return;
       setState(() => _buying = false);
       if (p.status == PurchaseStatus.purchased) {

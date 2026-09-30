@@ -9,6 +9,47 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:markcut/services/timeline_strip.dart';
 
 void main() {
+  test(
+    'trim handles reveal source-anchored tiles without sliding or changing retained frames',
+    () {
+      for (final reverse in [false, true]) {
+        for (final speed in [1.0, 1.25, 2.0]) {
+          List<({int tile, double left, int frame})> tiles(
+            double start,
+            double end,
+          ) => sourceAnchoredStripTiles(
+            trimStart: start,
+            trimEnd: end,
+            duration: 60,
+            speed: speed,
+            reverse: reverse,
+            pxPerSec: 75,
+            tileWidth: 60,
+            width: (end - start) / speed * 75,
+            viewport: (0, 10000),
+            frames: 60,
+          ).toList();
+          final before = tiles(10, 30);
+          // Moving the left edge right trims source start in forward playback,
+          // and source end in reverse playback. The timeline right edge stays put.
+          final after = reverse ? tiles(10, 29.63) : tiles(10.37, 30);
+          final deltaOnTimeline = .37 / speed * 75;
+          for (final tile in after) {
+            final old = before.singleWhere((t) => t.tile == tile.tile);
+            expect(tile.left + deltaOnTimeline, closeTo(old.left, 1e-8));
+            expect(tile.frame, old.frame);
+          }
+          // Right-edge trim never redistributes the remaining tiles either.
+          final rightTrim = reverse ? tiles(10.37, 30) : tiles(10, 29.63);
+          for (final tile in rightTrim) {
+            final old = before.singleWhere((t) => t.tile == tile.tile);
+            expect(tile.left, closeTo(old.left, 1e-8));
+            expect(tile.frame, old.frame);
+          }
+        }
+      }
+    },
+  );
   group('thumbStripCount', () {
     test('一秒一格、最少 10 格', () {
       expect(thumbStripCount(48.38), 49);

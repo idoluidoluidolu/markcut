@@ -43,8 +43,14 @@ definitions:
         # 栽在這裡：11 支 golden 全紅、其餘 735 條全過。
         # 本機 `flutter test` 照跑不變，版面回歸要在改版當下就被擋住，
         # 那才是快照真正在用的地方，不是等到 CI
-        flutter test --no-pub --exclude-tags golden > test_ci.log 2>&1 || true
+        set +e
+        flutter test --no-pub --concurrency=4 --exclude-tags golden > test_ci.log 2>&1
+        test_status=$?
+        set -e
         tail -n 40 test_ci.log
+        if [ "$test_status" -ne 0 ]; then
+          exit "$test_status"
+        fi
         if grep -q "\[E\]" test_ci.log; then
           echo "❌ 死因：有測試失敗（[E]）"
           grep -n "\[E\]" test_ci.log | head -n 30
@@ -181,6 +187,12 @@ workflows:
     scripts:
       - name: Flutter 依賴
         script: flutter pub get
+      - *analyze
+      - *test
+      - name: 原生檔案邊界測試與正式簽章檢查
+        script: |
+          cd android
+          ./gradlew :file_picker:testDebugUnitTest :app:verifyReleaseSigning
       # versionCode 跟 iOS 同一個計數器（見檔頭），不用 pubspec 的 +18
       - name: 建置 APK
         script: |
@@ -188,3 +200,4 @@ workflows:
             --build-number=$PROJECT_BUILD_NUMBER
     artifacts:
       - build/app/outputs/flutter-apk/*.apk
+      - test_ci.log

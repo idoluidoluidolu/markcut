@@ -199,17 +199,58 @@ void _budgetTests() {
       );
     });
 
-    test('整份草稿共用總額：額度用完的記原路徑，前面的照留', () async {
+    test('整份草稿超額：拒絕保存，不留下看似成功的暫存引用', () async {
       DraftAssets.maxFileBytesOverride = 1000;
       DraftAssets.maxDraftBytesOverride = 250;
       final a = await put('a.jpg', 100);
       final b = await put('b.jpg', 100);
       final c = await put('c.jpg', 100); // 這一張超出總額
-      final kept = await DraftAssets.secureAll(DraftAssets.batch, [a, b, c]);
-      expect(kept[0], isNot(a));
-      expect(kept[1], isNot(b));
-      expect(kept[2], c, reason: '額度用完就要退回原路徑');
-      expect(kept.length, 3);
+      await expectLater(
+        DraftAssets.secureAll(DraftAssets.batch, [a, b, c]),
+        throwsA(isA<DraftAssetException>()),
+      );
+      expect(await DraftAssets.usageBytes(), 0, reason: '配額在複製之前驗證');
+    });
+
+    test('重複保存與管理目錄中的素材都計入配額，重複引用只算一次', () async {
+      DraftAssets.maxDraftBytesOverride = 150;
+      final a = await put('a.jpg', 80);
+      final b = await put('b.jpg', 80);
+      final saved = await DraftAssets.secureAll(DraftAssets.batch, [a]);
+      for (final first in [a, saved.single!]) {
+        await expectLater(
+          DraftAssets.secureAll(DraftAssets.batch, [first, b]),
+          throwsA(isA<DraftAssetException>()),
+        );
+      }
+      final duplicate = await DraftAssets.secureAll(DraftAssets.batch, [
+        a,
+        saved.single,
+        a,
+      ]);
+      expect(duplicate.toSet(), {saved.single});
+      expect(await DraftAssets.usageBytes(), 80);
+    });
+
+    test('單檔超額不回傳暫存路徑；成功素材在清除來源後仍可恢復', () async {
+      DraftAssets.maxFileBytesOverride = 100;
+      final big = await put('large.mp4', 101);
+      await expectLater(
+        DraftAssets.secureAll(DraftAssets.batch, [big]),
+        throwsA(isA<DraftAssetException>()),
+      );
+      final small = await put('small.mp4', 90);
+      final saved = await DraftAssets.secureAll(DraftAssets.batch, [small]);
+      await File(small).delete();
+      expect(
+        await DraftAssets.resolve(DraftAssets.batch, saved.single!),
+        saved.single,
+      );
+      await File(saved.single!).delete();
+      await expectLater(
+        DraftAssets.secureAll(DraftAssets.batch, saved),
+        throwsA(isA<DraftAssetException>()),
+      );
     });
 
     test('null 與空字串原樣穿過，不佔額度', () async {

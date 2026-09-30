@@ -53,3 +53,8 @@ ios_cert_key.pem
 # golden 測試失敗時的比對圖（本機產物）
 test/failures/
 t.txt
+
+# Downloaded native build artifacts (source forks remain tracked).
+/packages/ffmpeg_kit_flutter_new_full/ios/Frameworks/
+/packages/ffmpeg_kit_flutter_new_full/macos/Frameworks/
+/packages/ffmpeg_kit_flutter_new_full/**/build/

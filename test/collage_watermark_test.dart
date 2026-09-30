@@ -23,6 +23,7 @@ import 'package:markcut/models/watermark_settings.dart';
 import 'package:markcut/nav.dart';
 import 'package:markcut/screens/collage_screen.dart';
 import 'package:markcut/services/collage_compose.dart';
+import 'package:markcut/services/draft_assets.dart';
 import 'package:markcut/widgets/watermark_layer.dart';
 import 'package:markcut/widgets/watermark_panel.dart';
 
@@ -411,7 +412,9 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     // 草稿續作靠檔案路徑，用真的暫存檔
     final dir = Directory.systemTemp.createTempSync('collage_wm_');
+    DraftAssets.supportDirOverride = Directory('${dir.path}/support');
     addTearDown(() {
+      DraftAssets.supportDirOverride = null;
       try {
         dir.deleteSync(recursive: true);
       } catch (_) {}
@@ -437,7 +440,7 @@ void main() {
     expect(find.text('保留草稿'), findsOneWidget);
     await t.tap(find.text('保留草稿'));
     // 存草稿會先把照片留一份（DraftAssets，真 I/O）才 pop
-    for (var i = 0; i < 10; i++) {
+    for (var i = 0; i < 100 && find.text('首頁').evaluate().isEmpty; i++) {
       await t.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 40)),
       );
@@ -497,7 +500,8 @@ void main() {
     // 浮水印縮小、擺到左邊那格上（預設文字置中很寬，會壓到空格）
     await _goTab(t, '浮水印');
     _liveWm(t).text
-      ..enabled = true // 預設關（測試回報），這裡要驗浮水印真的畫進成品
+      ..enabled =
+          true // 預設關（測試回報），這裡要驗浮水印真的畫進成品
       ..x = 0.15
       ..y = 0.5
       ..sizeFrac = 0.06;
@@ -678,7 +682,12 @@ void main() {
     // 導覽點「文字」、用那一區最上面那顆開關打開，再回拼圖分頁
     await _goTab(t, '浮水印');
     await t.tap(
-      find.descendant(of: find.byType(WatermarkPanel), matching: find.text('文字')).first,
+      find
+          .descendant(
+            of: find.byType(WatermarkPanel),
+            matching: find.text('文字'),
+          )
+          .first,
     );
     await t.pumpAndSettle();
     await t.ensureVisible(find.byType(Switch).first);

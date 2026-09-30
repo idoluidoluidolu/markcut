@@ -1,16 +1,22 @@
 import 'dart:js_interop';
 
 import 'package:web/web.dart' as web;
+import 'waveform_job.dart';
 
 /// Web：抓 blob → AudioContext 解碼 → 取每段峰值（0~1）。
 /// 回傳 null＝解不出來（時間軸會退回示意波形）。
-Future<List<double>?> decodeWaveformPeaks(String path) async {
+Future<List<double>?> decodeWaveformPeaks(
+  String path, {
+  WaveformJob? job,
+}) async {
+  if (job?.cancelled ?? false) return null;
   try {
     final resp = await web.window.fetch(path.toJS).toDart;
     final jsBuf = await resp.arrayBuffer().toDart;
     final ctx = web.AudioContext();
     try {
       final audio = await ctx.decodeAudioData(jsBuf).toDart;
+      if (job?.cancelled ?? false) return null;
       final data = audio.getChannelData(0).toDart;
       return peaksFromSamples(
         data.length,

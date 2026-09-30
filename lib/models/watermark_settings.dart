@@ -54,6 +54,7 @@ class TextMark {
   double opacity; // 0~1
   double sizeFrac; // 字體大小佔畫面寬度的比例
   double spacing; // 字距（相對字級 -0.2~0.6；負值＝字疊近一點）
+  TextAlign alignment;
   double x; // 中心點位置 0~1
   double y;
   double rotation; // 旋轉角度 -180 ~ 180
@@ -91,6 +92,7 @@ class TextMark {
     this.opacity = 0.7,
     this.sizeFrac = 0.12, // 上限見面板滑桿（可放到超出畫面）
     this.spacing = 0,
+    this.alignment = TextAlign.left,
     this.x = 0.5,
     this.y = 0.5,
     this.rotation = 0,
@@ -132,6 +134,7 @@ class TextMark {
     'opacity': opacity,
     'sizeFrac': sizeFrac,
     'spacing': spacing,
+    if (alignment != TextAlign.left) 'alignment': alignment.name,
     'x': x,
     'y': y,
     'rotation': rotation,
@@ -162,6 +165,11 @@ class TextMark {
     opacity: ((j['opacity'] ?? 0.8).toDouble() as double).clamp(0.0, 1.0),
     sizeFrac: ((j['sizeFrac'] ?? 0.05).toDouble() as double).clamp(0.01, 3.0),
     spacing: ((j['spacing'] ?? 0).toDouble() as double).clamp(-0.2, 0.6),
+    alignment: switch (j['alignment']) {
+      'center' => TextAlign.center,
+      'right' => TextAlign.right,
+      _ => TextAlign.left,
+    },
     x: (j['x'] ?? 0.82).toDouble(),
     y: (j['y'] ?? 0.92).toDouble(),
     rotation: (j['rotation'] ?? 0).toDouble(),

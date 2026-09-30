@@ -35,6 +35,35 @@ const _tip = '回正中央、恢復預設大小';
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
+  testWidgets('浮水印多行輸入可按完成收起鍵盤且保留文字', (t) async {
+    t.view.physicalSize = const Size(390, 844);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    final settings = WatermarkSettings();
+    await t.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: WatermarkPanel(settings: settings, onChanged: () {}),
+        ),
+      ),
+    );
+    await _settle(t);
+    await t.tap(find.text('文字').first);
+    await _settle(t);
+    final input = find.byKey(const ValueKey('watermark-text-input'));
+    await t.enterText(input, '@我的浮水印\n走走走');
+    t.view.viewInsets = const FakeViewPadding(bottom: 330);
+    await _settle(t);
+    final done = find.byKey(const ValueKey('watermark-text-done'));
+    expect(t.getRect(done).bottom, lessThanOrEqualTo(514));
+    expect(t.widget<TextField>(input).textInputAction, TextInputAction.newline);
+    await t.tap(done);
+    await _settle(t);
+    expect(t.widget<TextField>(input).focusNode!.hasFocus, isFalse);
+    expect(settings.text.text, '@我的浮水印\n走走走');
+    expect(t.takeException(), isNull);
+  });
+
   testWidgets('文字卡移除顏文字旁的重設按鈕，字型選單保有寬度', (t) async {
     t.view.physicalSize = const Size(390, 844);
     t.view.devicePixelRatio = 1;
