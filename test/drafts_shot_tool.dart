@@ -29,6 +29,7 @@ import 'package:markcut/services/draft_assets.dart';
 import 'package:markcut/services/draft_store.dart';
 import 'package:markcut/services/work_files.dart';
 import 'package:markcut/theme.dart';
+import 'package:markcut/widgets/gif_image.dart';
 
 final _shotKey = GlobalKey();
 
@@ -324,6 +325,16 @@ void main() {
     await t.tap(find.byKey(const ValueKey('profile-tab-1')));
     await pumpFrames(t, 12);
     await shoot(t, 'profile_gifs');
+    // GIF 分頁右上角的批次刪除：勾兩個
+    await t.tap(find.byKey(const ValueKey('profile-batch')));
+    await pumpFrames(t, 4);
+    await t.tap(find.byType(GifImage).at(0), warnIfMissed: false);
+    await pumpFrames(t, 2);
+    await t.tap(find.byType(GifImage).at(1), warnIfMissed: false);
+    await pumpFrames(t, 10);
+    await shoot(t, 'profile_gifs_batch');
+    await t.tap(find.text('取消'));
+    await pumpFrames(t, 6);
     await t.tap(find.byKey(const ValueKey('profile-tab-2')));
     await pumpFrames(t, 12);
     await shoot(t, 'profile_presets');

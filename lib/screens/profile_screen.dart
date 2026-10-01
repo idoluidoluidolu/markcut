@@ -28,6 +28,7 @@ import '../widgets/swipe_back.dart';
 import '../widgets/library_selection.dart';
 import '../widgets/library_tile_menu.dart';
 import 'about_screen.dart';
+import 'donate_screen.dart';
 import 'feedback_screen.dart';
 import 'storage_screen.dart';
 import 'batch_watermark_screen.dart';
@@ -409,6 +410,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
   /// 現在看的是哪一個分頁：0 草稿、1 GIF、2 範本
   int _tab = 0;
 
+  // ── 批次刪除（GIF 與範本分頁）：右上角「批次刪除」，這一頁就是那個
+  // 資料夾（使用者指定：點了 GIF 分頁，右上角就變成批次刪除）
+
+  bool _selecting = false;
+  bool _deleting = false;
+
+  /// 勾了哪些：GIF 分頁放路徑、範本分頁放名字
+  final Set<String> _picked = {};
+
+  /// 每個 GIF／範本存起來多大（批次刪除時標在格子上、加總寫在紅鈕上；
+  /// 範本的 Logo 圖也存在裡面，大的就是那幾張）
+  Map<String, int> _gifSizes = const {};
+  Map<String, int> _presetSizes = const {};
+
   @override
   void initState() {
     super.initState();
@@ -429,6 +444,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
       _presets = presets;
       _videoDrafts = videoDrafts;
       _gifs = gifs;
+      _gifSizes = {for (final g in gifs) g: GifStore.sizeOf(g)};
+      _presetSizes = {
+        for (final p in presets) p.name: utf8.encode(p.encode()).length,
+      };
+      _picked.retainAll(_tab == 1 ? gifs : presets.map((p) => p.name));
       _photoDraft = photo;
       _batchDraft = batch;
       _gifDraft = gif;
@@ -493,6 +513,84 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (_gifDraft != null) const _DraftEntry.single(DraftKind.gif),
     if (_collageDraft != null) const _DraftEntry.single(DraftKind.collage),
   ];
+
+  /// 這個分頁現在能不能批次刪除（有東西才給）
+  bool get _canBatch => switch (_tab) {
+    1 => _gifs.isNotEmpty && !kIsWeb,
+    2 => _presets.isNotEmpty,
+    _ => false,
+  };
+
+  /// 這個分頁全部的鍵（GIF 路徑／範本名字）
+  List<String> get _batchKeys =>
+      _tab == 1 ? _gifs : [for (final p in _presets) p.name];
+
+  Map<String, int> get _batchSizes => _tab == 1 ? _gifSizes : _presetSizes;
+
+  bool get _allPicked =>
+      _batchKeys.isNotEmpty && _picked.length == _batchKeys.length;
+
+  void _cancelBatch() {
+    if (_deleting) return;
+    setState(() {
+      _selecting = false;
+      _picked.clear();
+    });
+  }
+
+  void _togglePick(String key) {
+    if (_deleting) return;
+    setState(() {
+      if (!_picked.remove(key)) _picked.add(key);
+    });
+  }
+
+  void _toggleAll() {
+    if (_deleting) return;
+    setState(() {
+      if (_allPicked) {
+        _picked.clear();
+      } else {
+        _picked.addAll(_batchKeys);
+      }
+    });
+  }
+
+  Future<void> _deletePicked() async {
+    if (_deleting || _picked.isEmpty) return;
+    final keys = Set<String>.of(_picked);
+    final gif = _tab == 1;
+    final ok = await showConfirm(
+      context,
+      title: gif ? '刪除 ${keys.length} 個 GIF？' : '刪除 ${keys.length} 個範本？',
+      message: gif ? '只會刪掉 App 裡選取的 GIF，相簿裡的不受影響' : '只刪除選取的範本，刪除後無法復原',
+      action: '刪除',
+    );
+    if (!ok || !mounted) return;
+    setState(() => _deleting = true);
+    var failed = false;
+    try {
+      failed = gif
+          ? (await GifStore.removeMany(keys)).isNotEmpty
+          : !await PresetStore.removeMany(keys);
+    } catch (_) {
+      failed = true;
+    }
+    if (!mounted) return;
+    setState(() {
+      _deleting = false;
+      _selecting = false;
+      _picked.clear();
+    });
+    if (failed) {
+      showHint(
+        context,
+        gif ? '有 GIF 未能刪除，請再試一次' : '範本刪除失敗，請再試一次',
+        error: true,
+      );
+    }
+    _reload();
+  }
 
   // ── 開頁 ────────────────────────────────────────────────
 
@@ -697,16 +795,29 @@ class _ProfileScreenState extends State<ProfileScreen> {
     ),
   );
 
-  /// GIF 分頁的一格：照原始比例。點一下放大看，長按旁邊跳小選單問要不要刪
+  /// GIF 分頁的一格：照原始比例。點一下放大看，長按旁邊跳小選單問要不要刪；
+  /// 批次刪除時點（或長按）＝勾選，左下角標多大
   Widget _gifTile(String ref, double colW) => Builder(
     builder: (tile) => GestureDetector(
       key: ValueKey('profile-gif-$ref'),
-      onTap: () => _previewGif(ref),
-      onLongPress: () => _gifMenu(tile, ref, colW),
+      onTap: () => _selecting ? _togglePick(ref) : _previewGif(ref),
+      onLongPress: () =>
+          _selecting ? _togglePick(ref) : _gifMenu(tile, ref, colW),
       child: _clip(
         AspectRatio(
           aspectRatio: _gifAspect[ref] ?? 1.0,
-          child: _gifCover(ref, colW),
+          // 結構固定是 Stack：進出批次刪除不換父層，動圖不會重新解碼
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              _gifCover(ref, colW),
+              if (_selecting)
+                LibrarySelectionMark(
+                  selected: _picked.contains(ref),
+                  size: formatBytes(_gifSizes[ref] ?? 0),
+                ),
+            ],
+          ),
         ),
       ),
     ),
@@ -741,8 +852,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
     aspectRatio: p.settings.designAspect,
     child: PresetCard(
       preset: p,
-      onTap: () => _editPreset(p),
-      onLongPress: (card) => _presetMenu(card, p),
+      onTap: () => _selecting ? _togglePick(p.name) : _editPreset(p),
+      onLongPress: (card) =>
+          _selecting ? _togglePick(p.name) : _presetMenu(card, p),
+      selected: _selecting ? _picked.contains(p.name) : null,
+      size: _selecting ? formatBytes(_presetSizes[p.name] ?? 0) : null,
     ),
   );
 
@@ -824,7 +938,39 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   // ── 三個分頁 ────────────────────────────────────────────
 
-  Widget _draftsTab(double inner) {
+  /// 草稿分頁：格子＋底下那塊空白放「太好用啦」（使用者指定放回來、
+  /// 擺在草稿底下）
+  Widget _draftsTab(double inner) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [_drafts(inner), const SizedBox(height: 28), _loveButton()],
+  );
+
+  /// 「太好用啦」：開斗內頁
+  Widget _loveButton() => GestureDetector(
+    key: const ValueKey('profile-love'),
+    onTap: () => Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const LightPage(child: DonateScreen())),
+    ),
+    child: Container(
+      height: 54,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: kLAccent,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: const Text(
+        '太好用啦',
+        style: TextStyle(
+          fontSize: 15,
+          fontWeight: FontWeight.w800,
+          color: Colors.white,
+        ),
+      ),
+    ),
+  );
+
+  Widget _drafts(double inner) {
     final entries = _draftEntries();
     if (entries.isEmpty) {
       // 空的時候不畫框，也不解釋草稿怎麼來——真的存了一份之後
@@ -904,21 +1050,44 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   // ── 上方與頁尾 ──────────────────────────────────────────
 
-  /// 返回鍵＋右上角「容量與清理」（原本的圖示＋字，使用者指定保留）
-  Widget _topBar() => Row(
-    children: [
-      IconButton(
-        onPressed: () => Navigator.of(context).maybePop(),
-        icon: const Icon(Icons.arrow_back_ios_new, size: 22, color: kLText),
-      ),
-      const Spacer(),
-      TextButton.icon(
-        key: const ValueKey('profile-storage'),
-        onPressed: _openStorage,
-        icon: const Icon(Icons.storage_outlined, size: 18),
-        label: const Text('容量與清理'),
-      ),
-    ],
+  /// 返回鍵＋右上角：草稿分頁是「容量與清理」（原本的圖示＋字，使用者
+  /// 指定保留），GIF 與範本分頁是「批次刪除」。批次刪除中左邊換成
+  /// 「取消」、右邊換成「全選」。高度固定 48：換來換去內容不跳
+  Widget _topBar() => SizedBox(
+    height: 48,
+    child: Row(
+      children: [
+        if (_selecting)
+          TextButton(
+            onPressed: _deleting ? null : _cancelBatch,
+            child: const Text('取消'),
+          )
+        else
+          IconButton(
+            onPressed: () => Navigator.of(context).maybePop(),
+            icon: const Icon(Icons.arrow_back_ios_new, size: 22, color: kLText),
+          ),
+        const Spacer(),
+        if (_selecting)
+          TextButton(
+            onPressed: _deleting ? null : _toggleAll,
+            child: Text(_allPicked ? '取消全選' : '全選'),
+          )
+        else if (_tab == 0)
+          TextButton.icon(
+            key: const ValueKey('profile-storage'),
+            onPressed: _openStorage,
+            icon: const Icon(Icons.storage_outlined, size: 18),
+            label: const Text('容量與清理'),
+          )
+        else if (_canBatch)
+          TextButton(
+            key: const ValueKey('profile-batch'),
+            onPressed: () => setState(() => _selecting = true),
+            child: const Text('批次刪除'),
+          ),
+      ],
+    ),
   );
 
   /// 三個分頁的標題：選中的大一號、深色，其他小一號、淡色；
@@ -939,7 +1108,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
               key: ValueKey('profile-tab-$i'),
               behavior: HitTestBehavior.opaque,
               onTap: () {
-                if (_tab != i) setState(() => _tab = i);
+                if (_tab == i || _deleting) return;
+                setState(() {
+                  _tab = i;
+                  // 批次刪除只管眼前這一個分頁
+                  _selecting = false;
+                  _picked.clear();
+                });
               },
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 6),
@@ -973,7 +1148,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     child: const Icon(Icons.add, size: 28),
   );
 
-  /// 「太好用啦」那顆黑色大鈕是使用者指定拿掉的；兩個文字連結留著
+  /// 頁尾兩個文字連結（「太好用啦」那顆在草稿分頁裡，見 _draftsTab）
   Widget _footer() => Row(
     mainAxisAlignment: MainAxisAlignment.center,
     children: [
@@ -998,63 +1173,100 @@ class _ProfileScreenState extends State<ProfileScreen> {
   @override
   Widget build(BuildContext context) {
     final pad = MediaQuery.paddingOf(context);
-    // 非編輯頁面全頁都能右滑返回（編輯畫面橫向手勢太多，刻意不放）
-    return SwipeBack(
-      child: Scaffold(
-        backgroundColor: kLBg,
-        // GIF 與範本分頁右下角一顆＋（使用者指定要原本那顆）：GIF 是
-        // 製作／從相簿匯入／從檔案匯入（見 addGifFromDevice），範本是開
-        // 工作室做一組新的
-        floatingActionButton: switch (_tab) {
-          1 => _fab(const ValueKey('profile-gif-add'), () async {
-            if (await addGifFromDevice(context)) _reload();
-          }),
-          2 => _fab(const ValueKey('profile-preset-add'), _newPreset),
-          _ => null,
-        },
-        // 不掛 appBar：返回鍵是內容的第一列，上下都沒有釘死的白帶
-        //（使用者指定「上方箭頭不要 sticky」「上面不要白條」）
-        body: SafeArea(
-          top: false,
-          bottom: false,
-          child: LayoutBuilder(
-            builder: (context, cons) {
-              final inner = cons.maxWidth - _side.horizontal;
-              return CustomScrollView(
-                // 一頁裝得下就不會捲（Clamping 沒有回彈，使用者指定「不要能
-                // 上下捲動」）；小螢幕、字級調很大裝不下才捲得動——
-                // 寧可捲，也不能把東西截掉
-                physics: const ClampingScrollPhysics(),
-                slivers: [
-                  SliverPadding(
-                    padding: EdgeInsets.fromLTRB(14, pad.top + 4, 8, 0),
-                    sliver: SliverToBoxAdapter(child: _topBar()),
-                  ),
-                  SliverToBoxAdapter(child: _tabBar()),
-                  SliverPadding(
-                    // 有＋的分頁底下多留一段：捲到底時最後一格不被＋蓋住
-                    padding: EdgeInsets.fromLTRB(22, 18, 22, _tab == 0 ? 0 : 40),
-                    sliver: switch (_tab) {
-                      0 => SliverToBoxAdapter(child: _draftsTab(inner)),
-                      1 => _gifsTab(inner),
-                      _ => _presetsTab(inner),
-                    },
-                  ),
-                  // 剩下的高度全給頁尾前面：頁尾貼著底部，中間不留一塊
-                  // 看起來像沒載完的空白
-                  SliverFillRemaining(
-                    hasScrollBody: false,
-                    child: Align(
-                      alignment: Alignment.bottomCenter,
-                      child: Padding(
-                        padding: EdgeInsets.only(top: 22, bottom: pad.bottom + 10),
-                        child: _footer(),
-                      ),
-                    ),
-                  ),
-                ],
-              );
-            },
+    final picked = _picked.length;
+    return PopScope(
+      // 批次刪除中按返回／右滑＝先退出批次刪除，不是離開這一頁
+      canPop: !_selecting && !_deleting,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _cancelBatch();
+      },
+      // 非編輯頁面全頁都能右滑返回（編輯畫面橫向手勢太多，刻意不放）
+      child: SwipeBack(
+        child: Scaffold(
+          backgroundColor: kLBg,
+          // GIF 與範本分頁右下角一顆＋（使用者指定要原本那顆）：GIF 是
+          // 製作／從相簿匯入／從檔案匯入（見 addGifFromDevice），範本是開
+          // 工作室做一組新的。批次刪除時收起來，底下換成紅鈕
+          floatingActionButton: _selecting
+              ? null
+              : switch (_tab) {
+                  1 => _fab(const ValueKey('profile-gif-add'), () async {
+                    if (await addGifFromDevice(context)) _reload();
+                  }),
+                  2 => _fab(const ValueKey('profile-preset-add'), _newPreset),
+                  _ => null,
+                },
+          // 不掛 appBar：返回鍵是內容的第一列，上下都沒有釘死的白帶
+          //（使用者指定「上方箭頭不要 sticky」「上面不要白條」）
+          body: Stack(
+            fit: StackFit.expand,
+            children: [
+              SafeArea(
+                top: false,
+                bottom: false,
+                child: LayoutBuilder(
+                  builder: (context, cons) {
+                    final inner = cons.maxWidth - _side.horizontal;
+                    return CustomScrollView(
+                      // 一頁裝得下就不會捲（Clamping 沒有回彈，使用者指定
+                      // 「不要能上下捲動」）；小螢幕、字級調很大、東西多裝
+                      // 不下才捲得動——寧可捲，也不能把東西截掉
+                      physics: const ClampingScrollPhysics(),
+                      slivers: [
+                        SliverPadding(
+                          padding: EdgeInsets.fromLTRB(14, pad.top + 4, 8, 0),
+                          sliver: SliverToBoxAdapter(child: _topBar()),
+                        ),
+                        SliverToBoxAdapter(child: _tabBar()),
+                        SliverPadding(
+                          // 有＋的分頁底下多留一段：捲到底時最後一格不被
+                          // ＋（批次刪除時是紅鈕）蓋住
+                          padding: EdgeInsets.fromLTRB(
+                            22,
+                            18,
+                            22,
+                            _tab == 0 ? 0 : 40,
+                          ),
+                          sliver: switch (_tab) {
+                            0 => SliverToBoxAdapter(child: _draftsTab(inner)),
+                            1 => _gifsTab(inner),
+                            _ => _presetsTab(inner),
+                          },
+                        ),
+                        // 剩下的高度全給頁尾前面：頁尾貼著底部，中間不留
+                        // 一塊看起來像沒載完的空白
+                        SliverFillRemaining(
+                          hasScrollBody: false,
+                          child: Align(
+                            alignment: Alignment.bottomCenter,
+                            child: Padding(
+                              padding: EdgeInsets.only(
+                                top: 22,
+                                bottom: pad.bottom + 10,
+                              ),
+                              child: _footer(),
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+              // 選了至少一個，刪除鈕才從底下浮上來（跟查看全部同一顆）
+              LibraryDeleteDock(
+                visible: _selecting && picked > 0,
+                busy: _deleting,
+                label: libraryDeleteLabel(
+                  picked,
+                  '個',
+                  [
+                    for (final k in _picked) _batchSizes[k] ?? 0,
+                  ].fold<int>(0, (a, b) => a + b),
+                ),
+                onPressed: _deletePicked,
+              ),
+            ],
           ),
         ),
       ),

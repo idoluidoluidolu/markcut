@@ -21,11 +21,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:markcut/models/watermark_settings.dart';
+import 'package:markcut/screens/donate_screen.dart';
 import 'package:markcut/screens/presets_screen.dart';
 import 'package:markcut/screens/profile_screen.dart';
 import 'package:markcut/screens/storage_screen.dart';
+import 'package:markcut/services/preset_store.dart';
 import 'package:markcut/theme.dart';
 import 'package:markcut/widgets/gif_image.dart';
+import 'package:markcut/widgets/library_selection.dart';
 
 /// 一台裝置：邏輯尺寸＋安全區
 typedef Device = ({String name, Size size, double top, double bottom});
@@ -328,15 +331,117 @@ void main() {
     });
   }
 
+  testWidgets('草稿分頁底下有「太好用啦」，點了開斗內頁', (t) async {
+    _seed(drafts: 4);
+    await _pump(t, _iphone14);
+    final love = find.byKey(const ValueKey('profile-love'));
+    expect(find.descendant(of: love, matching: find.text('太好用啦')), findsOneWidget);
+    // 在草稿格子底下
+    expect(
+      t.getRect(love).top,
+      greaterThan(t.getRect(find.byType(AspectRatio).last).bottom),
+    );
+    expect(t.getRect(love).left, closeTo(_side, 0.01));
+    await t.tap(love);
+    await _settle(t, 30);
+    expect(find.byType(DonateScreen), findsOneWidget);
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('只有草稿分頁有「太好用啦」', (t) async {
+    _seed();
+    await _pump(t, _iphone14);
+    await _openTab(t, 1);
+    expect(find.byKey(const ValueKey('profile-love')), findsNothing);
+    await _openTab(t, 2);
+    expect(find.byKey(const ValueKey('profile-love')), findsNothing);
+  });
+
+  // GIF／範本分頁右上角是「批次刪除」：這一頁就是那個資料夾
+  testWidgets('GIF 分頁：右上角批次刪除 → 全選 → 紅鈕刪除', (t) async {
+    _seed(gifs: 3);
+    await _pump(t, _iphone14);
+    expect(find.byKey(const ValueKey('profile-storage')), findsOneWidget);
+    await _openTab(t, 1);
+    expect(
+      find.byKey(const ValueKey('profile-storage')),
+      findsNothing,
+      reason: 'GIF 分頁右上角應該換成批次刪除',
+    );
+    await t.tap(find.byKey(const ValueKey('profile-batch')));
+    await t.pumpAndSettle(); // ＋收起來的動畫跑完
+    expect(find.text('取消'), findsOneWidget);
+    expect(find.byType(FloatingActionButton), findsNothing);
+    expect(find.text('不到 1 MB'), findsNWidgets(3), reason: '每一格要標多大');
+    final dock = find.byType(LibraryDeleteDock);
+    expect(t.widget<LibraryDeleteDock>(dock).visible, isFalse);
+    await t.tap(find.text('全選'));
+    await t.pumpAndSettle();
+    expect(t.widget<LibraryDeleteDock>(dock).visible, isTrue);
+    expect(t.widget<LibraryDeleteDock>(dock).label, '刪除 3 個 · 省下不到 1 MB');
+    await t.tap(find.descendant(of: dock, matching: find.byType(FilledButton)));
+    await _settle(t, 6);
+    await t.tap(find.widgetWithText(FilledButton, '刪除'));
+    await _settle(t);
+    expect(find.byType(GifImage), findsNothing, reason: '選了卻沒刪');
+    expect(find.text('還沒有 GIF'), findsOneWidget);
+    expect(find.byKey(const ValueKey('profile-batch')), findsNothing);
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('範本分頁：批次刪除勾一張就刪那一張；返回先退出批次刪除', (t) async {
+    _seed(presets: 3);
+    await _pump(t, _iphone14);
+    await _openTab(t, 2);
+    await t.tap(find.byKey(const ValueKey('profile-batch')));
+    await t.pump();
+    // 返回＝退出批次刪除，不是離開個人中心
+    await t.state<NavigatorState>(find.byType(Navigator)).maybePop();
+    await t.pump();
+    expect(find.byKey(const ValueKey('profile-batch')), findsOneWidget);
+    expect(find.byType(ProfileScreen), findsOneWidget);
+
+    await t.tap(find.byKey(const ValueKey('profile-batch')));
+    await t.pump();
+    await t.tap(find.byKey(const ValueKey('preset-範本 1')));
+    await t.pumpAndSettle();
+    final dock = find.byType(LibraryDeleteDock);
+    expect(t.widget<LibraryDeleteDock>(dock).label, startsWith('刪除 1 個'));
+    await t.tap(find.descendant(of: dock, matching: find.byType(FilledButton)));
+    await _settle(t, 6);
+    await t.tap(find.widgetWithText(FilledButton, '刪除'));
+    await _settle(t);
+    expect(
+      [for (final p in await PresetStore.load()) p.name],
+      ['範本 0', '範本 2'],
+    );
+    expect(find.byType(PresetCard), findsNWidgets(2));
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('批次刪除中換分頁＝退出批次刪除', (t) async {
+    _seed(gifs: 2, presets: 2);
+    await _pump(t, _iphone14);
+    await _openTab(t, 1);
+    await t.tap(find.byKey(const ValueKey('profile-batch')));
+    await t.pump();
+    expect(find.text('全選'), findsOneWidget);
+    await _openTab(t, 2);
+    expect(find.text('全選'), findsNothing);
+    expect(find.byKey(const ValueKey('profile-batch')), findsOneWidget);
+    expect(find.byKey(const ValueKey('profile-preset-add')), findsOneWidget);
+  });
+
   testWidgets('草稿分頁沒有＋', (t) async {
     _seed();
     await _pump(t, _iphone14);
     expect(find.byType(FloatingActionButton), findsNothing);
   });
 
-  // 東西都滿：草稿分頁（四格＋查看全部）直的手機一頁裝得下，不能捲、
-  // 頁尾貼底；GIF 與範本分頁整片列出來，多了就捲，捲到底看得到頁尾
-  for (final d in [_iphone14, _proMax, _se]) {
+  // 東西都滿：草稿分頁（四格＋查看全部＋太好用啦）直的手機一頁裝得下，
+  // 不能捲、頁尾貼底；GIF 與範本分頁整片列出來，多了就捲，捲到底看得到
+  // 頁尾。SE 太矮，草稿分頁也退回可捲（見下一組）
+  for (final d in [_iphone14, _proMax]) {
     testWidgets('${d.name}：草稿滿四格也一頁裝得下、頁尾貼底', (t) async {
       _seed(drafts: 9, gifs: 7, presets: 5);
       await _pump(t, d);
@@ -360,6 +465,7 @@ void main() {
 
   // 裝不下就退回可捲，而且捲得到頁尾：橫向、字級調很大
   for (final (d, scale) in [
+    (_se, 1.0),
     (_landscape, 1.0),
     (_iphone14, 1.6),
     (_iphone14, 2.0),
@@ -405,7 +511,7 @@ void main() {
     expect(t.takeException(), isNull);
   });
 
-  testWidgets('點 GIF 放大看；右下角＋開製作／匯入；右上進容量與清理', (t) async {
+  testWidgets('點 GIF 放大看；右下角＋開製作／匯入；草稿分頁右上進容量與清理', (t) async {
     _seed(gifs: 3);
     await _pump(t, _iphone14);
     await _openTab(t, 1);
@@ -422,6 +528,8 @@ void main() {
     Navigator.of(t.element(find.text('從檔案匯入 GIF'))).pop();
     await _settle(t, 10);
 
+    // 容量與清理在草稿分頁的右上角（GIF／範本分頁那裡是批次刪除）
+    await _openTab(t, 0);
     await t.tap(find.byKey(const ValueKey('profile-storage')));
     await _settle(t, 20);
     expect(find.byType(StorageScreen), findsOneWidget);
