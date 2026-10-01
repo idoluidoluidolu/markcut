@@ -1,11 +1,13 @@
-// 個人中心草稿區的兩件事：
+// 個人中心草稿分頁的三件事：
 //
-//   1. 只有批次／GIF／拼圖草稿（沒有影片、照片草稿）的時候，草稿區照樣
-//      要列出來、標題右邊要有「全部」。以前 draftCount 只算影片＋照片，
-//      這種人看到的是「還沒有草稿」——而全 lib/ 只有個人中心會建
-//      DraftsScreen，批次／GIF／拼圖頁進場也不讀自己的草稿鍵，所以
-//      批次頁離開時選了「保留草稿」的人，那份草稿從此沒有任何入口。
-//   2. 每一種草稿卡點下去都要接續自己的編輯頁。以前只有影片卡會直接開
+//   1. 只有批次／GIF／拼圖草稿（沒有影片、照片草稿）的時候，草稿分頁照樣
+//      要列出來。以前 draftCount 只算影片＋照片，這種人看到的是「還沒有
+//      草稿」——而全 lib/ 只有個人中心會建 DraftsScreen，批次／GIF／拼圖
+//      頁進場也不讀自己的草稿鍵，所以批次頁離開時選了「保留草稿」的人，
+//      那份草稿從此沒有任何入口。
+//   2. 草稿比四格多的時候，第四格是「+N 查看全部」，點下去是全部草稿的
+//      瀑布流（單鍵草稿也在裡面）。
+//   3. 每一種草稿格點下去都要接續自己的編輯頁。以前只有影片卡會直接開
 //      專案，照片／批次／GIF／拼圖四種點下去只是進資料夾、還得再點一次
 //      ——兩張相鄰的卡，一張續作、一張換頁。
 //
@@ -73,12 +75,14 @@ Future<void> _drain(WidgetTester t) async {
   await t.pump(const Duration(seconds: 3));
 }
 
-/// 只種「單鍵」草稿：沒有影片草稿、也沒有照片草稿（除非 [photo]）
+/// 種「單鍵」草稿：沒有照片草稿（除非 [photo]）；影片草稿 [videos] 份
+///（只有內容鍵，索引會自己重建，見 DraftStore.list）
 void _seed({
   bool photo = false,
   bool batch = false,
   bool gif = false,
   bool collage = false,
+  int videos = 0,
 }) {
   const at = '2026-08-20T10:30:00.000';
   SharedPreferences.setMockInitialValues({
@@ -86,6 +90,13 @@ void _seed({
     'wm_presets_seeded_v2': true,
     'wm_presets_seeded_v3': true,
     'wm_presets_seeded_v4': true,
+    for (var i = 0; i < videos; i++)
+      'project_data_v$i': jsonEncode({
+        'savedAt': at,
+        'clips': [
+          {'id': 1},
+        ],
+      }),
     if (photo)
       kPhotoDraftKey: jsonEncode({'photo': _p('a.png'), 'savedAt': at}),
     if (batch)
@@ -181,7 +192,7 @@ void main() {
     } catch (_) {}
   });
 
-  testWidgets('只有批次與 GIF 草稿：草稿區列得出來，標題與「全部」進得了草稿夾', (t) async {
+  testWidgets('只有批次與 GIF 草稿：草稿分頁列得出來', (t) async {
     _seed(batch: true, gif: true);
     _iphone14(t);
     await _pump(t, const ProfileScreen());
@@ -189,22 +200,36 @@ void main() {
     expect(find.text('還沒有草稿'), findsNothing, reason: '明明有兩份草稿卻說沒有');
     expect(find.text('未完成的批次浮水印'), findsOneWidget);
     expect(find.text('未完成的 GIF'), findsOneWidget);
+    // 兩份而已，四格放得下：不該有「查看全部」
+    expect(find.text('查看全部'), findsNothing);
+    expect(t.takeException(), isNull);
+  });
 
-    // 標題那一列（整列都是熱區）右邊要有「全部」
-    final row = find
-        .ancestor(of: find.text('草稿'), matching: find.byType(GestureDetector))
-        .first;
+  testWidgets('草稿比四格多：第四格是「+N 查看全部」，點進去全部都在', (t) async {
+    _seed(photo: true, batch: true, gif: true, collage: true, videos: 2);
+    _iphone14(t);
+    await _pump(t, const ProfileScreen());
+
+    // 六份：影片兩份在前，接著照片、批次……第四格（批次）壓暗、寫「+2
+    // 查看全部」——N 是四格之外還有幾份（GIF、拼圖）
+    final more = find.byKey(const ValueKey('profile-drafts-more'));
+    expect(more, findsOneWidget, reason: '草稿比格子多卻沒有查看全部');
+    expect(find.descendant(of: more, matching: find.text('+2')), findsOneWidget);
     expect(
-      find.descendant(of: row, matching: find.text('全部')),
+      find.descendant(of: more, matching: find.text('查看全部')),
       findsOneWidget,
-      reason: '草稿標題右邊少了「全部」',
     );
+    expect(find.text('未完成的照片'), findsOneWidget);
+    expect(find.text('未完成的拼圖'), findsNothing, reason: '第五份不該畫在主頁');
 
-    await t.tap(find.text('草稿'));
+    await t.tap(more);
     await _settle(t, 25);
-    expect(find.byType(DraftsScreen), findsOneWidget, reason: '點標題沒有進草稿夾');
-    expect(find.text('未完成的批次浮水印'), findsOneWidget);
-    expect(find.text('未完成的 GIF'), findsOneWidget);
+    expect(find.byType(DraftsScreen), findsOneWidget, reason: '點查看全部沒有進草稿夾');
+    for (final s in const ['未完成的照片', '未完成的批次浮水印', '未完成的 GIF', '未完成的拼圖']) {
+      expect(find.text(s), findsOneWidget, reason: '查看全部少了「$s」');
+    }
+    // 上面只有返回鍵跟「批次刪除」
+    expect(find.text('批次刪除'), findsOneWidget);
     expect(t.takeException(), isNull);
   });
 

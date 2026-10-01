@@ -110,7 +110,11 @@ void main() {
       await _openActions(t);
       await t.tap(find.text('改名'));
       await _settle(t);
-      await t.tap(find.text('取消'));
+      // 長按選單最後一列也是「取消」，收起來的淡出可能還沒跑完：
+      // 指名對話框裡的那顆
+      await t.tap(
+        find.descendant(of: find.byType(AlertDialog), matching: find.text('取消')),
+      );
       for (var i = 0; i < 6; i++) {
         await t.pump(const Duration(milliseconds: 50));
         expect(t.takeException(), isNull, reason: '按取消之後第 $i 格丟了例外');

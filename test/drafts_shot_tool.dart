@@ -1,8 +1,9 @@
-// 草稿夾截圖工具（不是回歸測試）：佔用空間卡、選取模式的「刪掉能省多少」。
+// 個人中心改版截圖工具（不是回歸測試）：三個分頁、查看全部、批次刪除、
+// 長按小選單、容量與清理。
 //
 // 用真的佈景、真的字體（NotoSansTC＋Material Icons）、iPhone 14 視窗
-//（390×844、DPR 3、安全區 47/34）；草稿、封面、轉檔暫存都是暫存目錄裡
-// 真的檔案，容量是真的算出來的：
+//（390×844、DPR 3、安全區 47/34）；草稿、封面、轉檔暫存、GIF 都是暫存
+// 目錄裡真的檔案，容量是真的算出來的：
 //
 //   MARKCUT_SHOT_OUT=<資料夾> flutter test --no-pub test/drafts_shot_tool.dart
 //
@@ -16,9 +17,13 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:markcut/models/watermark_settings.dart';
+import 'package:markcut/screens/presets_screen.dart';
 import 'package:markcut/screens/profile_screen.dart';
+import 'package:markcut/screens/storage_screen.dart';
 import 'package:markcut/services/blob_store.dart';
 import 'package:markcut/services/draft_assets.dart';
 import 'package:markcut/services/draft_store.dart';
@@ -61,29 +66,57 @@ void _sized(String path, int bytes) {
   raf.closeSync();
 }
 
-/// 一張看得出是哪份的封面（漸層＋編號）
+const _palette = [
+  [Color(0xFF2B5876), Color(0xFF4E4376)],
+  [Color(0xFFDA4453), Color(0xFF89216B)],
+  [Color(0xFF136A8A), Color(0xFF267871)],
+  [Color(0xFFF7971E), Color(0xFFFFD200)],
+  [Color(0xFF3A1C71), Color(0xFFD76D77)],
+  [Color(0xFF00467F), Color(0xFFA5CC82)],
+];
+
+/// 一張看得出是哪份的封面（漸層）
 Future<String> _cover(int i, double aspect) async {
   const h = 640.0;
   final w = (h * aspect).roundToDouble();
   final rec = ui.PictureRecorder();
   final c = Canvas(rec);
-  final colors = [
-    [const Color(0xFF2B5876), const Color(0xFF4E4376)],
-    [const Color(0xFFDA4453), const Color(0xFF89216B)],
-    [const Color(0xFF136A8A), const Color(0xFF267871)],
-    [const Color(0xFFF7971E), const Color(0xFFFFD200)],
-    [const Color(0xFF3A1C71), const Color(0xFFD76D77)],
-    [const Color(0xFF00467F), const Color(0xFFA5CC82)],
-  ][i % 6];
   c.drawRect(
     Rect.fromLTWH(0, 0, w, h),
     Paint()
-      ..shader = ui.Gradient.linear(Offset.zero, Offset(w, h), colors),
+      ..shader = ui.Gradient.linear(Offset.zero, Offset(w, h), _palette[i % 6]),
   );
-  final img = await rec.endRecording().toImage(w.toInt(), h.toInt());
-  final png = await img.toByteData(format: ui.ImageByteFormat.png);
-  img.dispose();
+  final im = await rec.endRecording().toImage(w.toInt(), h.toInt());
+  final png = await im.toByteData(format: ui.ImageByteFormat.png);
+  im.dispose();
   return base64Encode(png!.buffer.asUint8List());
+}
+
+/// 一個兩格的 GIF（漸層，第二格換色），[w]×[h]
+List<int> _gif(int i, int w, int h) {
+  img.Image frame(int seed) {
+    final im = img.Image(width: w, height: h);
+    final a = _palette[seed % 6][0];
+    final b = _palette[seed % 6][1];
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        final t = (x / w + y / h) / 2;
+        im.setPixelRgb(
+          x,
+          y,
+          ((1 - t) * (a.r * 255) + t * (b.r * 255)).round(),
+          ((1 - t) * (a.g * 255) + t * (b.g * 255)).round(),
+          ((1 - t) * (a.b * 255) + t * (b.b * 255)).round(),
+        );
+      }
+    }
+    return im;
+  }
+
+  final enc = img.GifEncoder(numColors: 64, samplingFactor: 20);
+  enc.addFrame(frame(i), duration: 40);
+  enc.addFrame(frame(i + 1), duration: 40);
+  return enc.finish()!;
 }
 
 void main() {
@@ -148,11 +181,38 @@ void main() {
       'workFiles.v4': jsonEncode({
         for (final e in works.entries) e.key: {'work': e.value, 'at': 1},
       }),
+      for (var i = 1; i <= 4; i++) 'wm_presets_seeded_v$i': true,
+      'wm_presets_v1': [
+        for (final (i, text) in const [
+          '@我的頻道',
+          '© STUDIO',
+          '小日子',
+          'DRAFT',
+          '@markcut',
+        ].indexed)
+          WatermarkPreset(
+            name: '範本 $i',
+            settings: WatermarkSettings()..text.text = text,
+          ).encode(),
+      ],
     });
     WorkFiles.resetForTest();
     BlobStore.dirOverride = root;
     WorkFiles.supportDirOverride = root;
     DraftAssets.supportDirOverride = root;
+    // 我的 GIF：直、方、橫混著
+    final gifs = Directory('${root.path}${sep}gifs')..createSync();
+    for (final (i, (w, h)) in const [
+      (240, 320),
+      (280, 280),
+      (320, 200),
+      (240, 360),
+      (300, 300),
+    ].indexed) {
+      File('${gifs.path}${sep}gif_$i.gif')
+        ..writeAsBytesSync(_gif(i, w, h))
+        ..setLastModifiedSync(DateTime(2026, 9, 1 + i));
+    }
     await t.runAsync(() async {
       for (var i = 0; i < 6; i++) {
         final aspect = i == 3 ? 16 / 9 : 9 / 16;
@@ -206,13 +266,9 @@ void main() {
     });
   }
 
-  testWidgets('草稿夾 → drafts_usage.png／drafts_select.png', (t) async {
-    t.view.devicePixelRatio = 3.0;
-    t.view.physicalSize = const Size(1170, 2532);
-    t.view.padding = const FakeViewPadding(top: 141, bottom: 102);
-    t.view.viewPadding = const FakeViewPadding(top: 141, bottom: 102);
-    addTearDown(t.view.reset);
-    await seed(t);
+  /// 換一頁來拍：每次一棵新的樹（State 不沿用）
+  Future<void> show(WidgetTester t, Widget page) async {
+    await t.pumpWidget(const SizedBox());
     await t.pumpWidget(
       RepaintBoundary(
         key: _shotKey,
@@ -236,34 +292,101 @@ void main() {
               countryCode: 'TW',
             ),
           ],
-          home: const LightPage(child: DraftsScreen()),
+          home: LightPage(child: page),
         ),
       ),
     );
     // 真的檔案 I/O：假時間裡每一步都要讓真的事件迴圈跑一下、再 pump
     //（實機一次掃完是幾百毫秒的事）
-    var waited = 0;
-    for (;
-        waited < 400 &&
-            (find.textContaining('正在計算').evaluate().isNotEmpty ||
-                find.byType(CircularProgressIndicator).evaluate().isNotEmpty);
-        waited++) {
+    await pumpFrames(t, 40);
+  }
+
+  /// 批次刪除時「刪掉能省多少」要等容量算完才標得出來
+  Future<void> waitSizes(WidgetTester t) async {
+    for (var i = 0; i < 400; i++) {
+      if (find.textContaining(' MB').evaluate().length > 1) break;
       await pumpFrames(t, 1);
     }
-    // ignore: avoid_print
-    print('容量算完用了 $waited 輪');
-    await pumpFrames(t, 20);
-    await shoot(t, 'drafts_usage');
+    await pumpFrames(t, 8);
+  }
 
-    await t.tap(find.text('選取'));
-    await pumpFrames(t, 4);
+  testWidgets('個人中心改版 → 各頁截圖', (t) async {
+    t.view.devicePixelRatio = 3.0;
+    t.view.physicalSize = const Size(1170, 2532);
+    t.view.padding = const FakeViewPadding(top: 141, bottom: 102);
+    t.view.viewPadding = const FakeViewPadding(top: 141, bottom: 102);
+    addTearDown(t.view.reset);
+    await seed(t);
+
+    // 個人中心：三個分頁
+    await show(t, const ProfileScreen());
+    await shoot(t, 'profile_drafts');
+    await t.tap(find.byKey(const ValueKey('profile-tab-1')));
+    await pumpFrames(t, 12);
+    await shoot(t, 'profile_gifs');
+    await t.tap(find.byKey(const ValueKey('profile-tab-2')));
+    await pumpFrames(t, 12);
+    await shoot(t, 'profile_presets');
+    await t.tap(find.byKey(const ValueKey('profile-tab-0')));
+    await pumpFrames(t, 12);
+    await t.longPress(find.byType(Image).first);
+    await pumpFrames(t, 10);
+    await shoot(t, 'profile_menu');
+
+    // 草稿的查看全部：平常、批次刪除（選兩份）、長按小選單
+    await show(t, const DraftsScreen());
+    await shoot(t, 'drafts_all');
+    await t.tap(find.text('批次刪除'));
+    await waitSizes(t);
     final tiles = find.byType(Image);
     await t.tap(tiles.at(0), warnIfMissed: false);
     await pumpFrames(t, 2);
     await t.tap(tiles.at(1), warnIfMissed: false);
     await pumpFrames(t, 12);
-    await shoot(t, 'drafts_select');
+    await shoot(t, 'drafts_batch');
+    await t.tap(find.text('取消'));
+    await pumpFrames(t, 10);
+    await t.longPress(find.byType(Image).at(1));
+    await pumpFrames(t, 10);
+    await shoot(t, 'drafts_menu');
 
+    // 我的 GIF：從容量與清理點進來＝一進來就是批次刪除，選兩個
+    await show(t, const GifsScreen(batch: true));
+    final gifTiles = find.byType(GestureDetector).evaluate().where(
+      (e) => (e.widget.key is ValueKey<String>) &&
+          ((e.widget.key! as ValueKey<String>).value.startsWith('gif-')),
+    );
+    for (final e in gifTiles.take(2).toList()) {
+      await t.tap(find.byWidget(e.widget), warnIfMissed: false);
+      await pumpFrames(t, 2);
+    }
+    await pumpFrames(t, 10);
+    await shoot(t, 'gifs_batch');
+
+    // 範本：長按小選單（改名／刪除）
+    await show(t, const PresetsScreen());
+    await t.longPress(find.byKey(const ValueKey('preset-範本 1')));
+    await pumpFrames(t, 10);
+    await shoot(t, 'presets_menu');
+
+    // 容量與清理
+    await show(
+      t,
+      StorageScreen(
+        openDrafts: () async {},
+        openGifs: () async {},
+        openPresets: () async {},
+      ),
+    );
+    for (var i = 0;
+        i < 400 && find.byType(CircularProgressIndicator).evaluate().isNotEmpty;
+        i++) {
+      await pumpFrames(t, 1);
+    }
+    await pumpFrames(t, 8);
+    await shoot(t, 'storage');
+
+    await t.pumpWidget(const SizedBox());
     BlobStore.dirOverride = null;
     BlobStore.resetForTest();
     WorkFiles.supportDirOverride = null;

@@ -26,6 +26,7 @@ import '../theme.dart';
 import '../widgets/gif_image.dart';
 import '../widgets/swipe_back.dart';
 import '../widgets/library_selection.dart';
+import '../widgets/library_tile_menu.dart';
 import '../widgets/watermark_layer.dart';
 import 'about_screen.dart';
 import 'feedback_screen.dart';
@@ -38,83 +39,35 @@ import 'presets_screen.dart';
 import 'watermark_studio_screen.dart';
 import 'video_editor_screen.dart';
 
-// ── 「問一下再刪」：總覽、草稿夾、GIF 夾三處共用同一份文案與動作 ──
+// ── 刪除：長按選單問過了才呼叫這幾支 ──
 //
-// 使用者指定「在總覽這邊也要可以長按刪除」：總覽的卡跟資料夾裡的磚刪的
-// 是同一樣東西，問法就該一模一樣，改文案也只改一處。
-// 每一支回「有沒有真的刪掉」（確認視窗按取消就是 false）；呼叫端自己
-// _reload——三個畫面各有各的清單狀態
+// 以前每一處長按都跳整頁的確認視窗；現在改成磚旁邊的小選單（見
+// showLibraryTileMenu，使用者指定「直接在旁邊出現小選單，問是否要刪除」），
+// 選單本身就是「要不要刪」，這裡只做事。個人中心跟查看全部頁刪的是
+// 同一樣東西，動作只寫一份
 
-/// 影片草稿（草稿夾裡一份一份存的那種）
-Future<bool> _confirmDeleteVideoDraft(BuildContext context, DraftMeta m) async {
-  final ok = await showConfirm(
-    context,
-    title: '刪除這份草稿？',
-    message: '未完成的專案會被移除，無法復原',
-    action: '刪除',
-  );
-  if (!ok) return false;
-  await DraftStore.remove(m.id);
-  return true;
+/// 影片草稿（一份一份存的那種）
+Future<void> _removeVideoDraft(DraftMeta m) => DraftStore.remove(m.id);
+
+/// 單鍵草稿。照片／批次／拼圖連留下的素材複本一起收（見 DraftAssets）：
+/// 只刪那一筆的話，Application Support 裡最多 300MB 的複本會留到天荒地老
+Future<void> _removeSingleDraft(DraftKind kind) async {
+  switch (kind) {
+    case DraftKind.photo:
+      await PhotoEditorScreen.clearPhotoDraft(deleteAssets: true);
+    case DraftKind.batch:
+      await BlobStore.delete(kBatchDraftKey);
+      await DraftAssets.retain(DraftAssets.batch, const {});
+    case DraftKind.gif:
+      await BlobStore.delete(kGifDraftKey);
+    case DraftKind.collage:
+      await BlobStore.delete(kCollageDraftKey);
+      await DraftAssets.retain(DraftAssets.collage, const {});
+  }
 }
 
-/// 未完成的照片（單張編輯器的草稿，連留下的素材複本一起收）
-Future<bool> _confirmDeletePhotoDraft(BuildContext context) async {
-  final ok = await showConfirm(
-    context,
-    title: '刪除草稿？',
-    message: '這張沒匯出的照片會被移除，無法復原',
-    action: '刪除',
-  );
-  if (!ok) return false;
-  await PhotoEditorScreen.clearPhotoDraft(deleteAssets: true);
-  return true;
-}
-
-/// 未完成的批次浮水印。草稿留的素材複本一起收（見 DraftAssets）：
-/// 只刪 prefs 那一筆的話，Application Support 裡那份最多 300MB 的複本
-/// 會留到天荒地老
-Future<bool> _confirmDeleteBatchDraft(BuildContext context) async {
-  final ok = await showConfirm(
-    context,
-    title: '刪除批次草稿？',
-    message: '這批的浮水印設定會被移除，無法復原',
-    action: '刪除',
-  );
-  if (!ok) return false;
-  await BlobStore.delete(kBatchDraftKey);
-  await DraftAssets.retain(DraftAssets.batch, const {});
-  return true;
-}
-
-/// 未完成的 GIF
-Future<bool> _confirmDeleteGifDraft(BuildContext context) async {
-  final ok = await showConfirm(
-    context,
-    title: '刪除 GIF 草稿？',
-    message: '剪選範圍與設定會被移除，無法復原',
-    action: '刪除',
-  );
-  if (!ok) return false;
-  await BlobStore.delete(kGifDraftKey);
-  return true;
-}
-
-/// 未完成的拼圖（素材複本一起收，理由同批次）
-Future<bool> _confirmDeleteCollageDraft(BuildContext context) async {
-  final ok = await showConfirm(
-    context,
-    title: '刪除拼圖草稿？',
-    message: '排法與設定會被移除，無法復原',
-    action: '刪除',
-  );
-  if (!ok) return false;
-  await BlobStore.delete(kCollageDraftKey);
-  await DraftAssets.retain(DraftAssets.collage, const {});
-  return true;
-}
-
-/// 「我的 GIF」裡的一個 GIF（App 裡那一份；相簿的不動）
+/// 「我的 GIF」裡的一個 GIF（App 裡那一份；相簿的不動）。
+/// 燈箱裡長按還是走確認視窗：那裡沒有一格可以浮起來、旁邊擺選單
 Future<bool> _confirmDeleteGifFile(BuildContext context, String ref) async {
   final ok = await showConfirm(
     context,
@@ -127,7 +80,8 @@ Future<bool> _confirmDeleteGifFile(BuildContext context, String ref) async {
   return true;
 }
 
-/// 個人中心：範本夾＋草稿夾＋意見回饋
+/// 個人中心：草稿、GIF、範本三個分頁（C 案，使用者定案），
+/// 右上角「容量與清理」
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
 
@@ -135,89 +89,33 @@ class ProfileScreen extends StatefulWidget {
   State<ProfileScreen> createState() => _ProfileScreenState();
 }
 
-/// 頁面左右的留白。三排磚一律滿版到這條線（不縮、不補邊）；
-/// 留白由每一段自己給，返回鍵那列的縮排跟別段不一樣
+/// 頁面左右的留白（分頁標題、格子都貼著這條線）
 const _side = EdgeInsets.symmetric(horizontal: 22);
 
-/// 卡片的柔和陰影（C 案的層次感：白底之上讓封面微微浮起）
-const _tileShadow = [
-  BoxShadow(color: Color(0x1E000000), blurRadius: 10, offset: Offset(0, 4)),
-];
-
 /// 範本磚的底：近黑（使用者看過中灰版之後指定改回黑）。
-/// 磚裡畫的是真的浮水印，而浮水印幾乎都是白字——D 案設計稿的淺色底
-///（kLTile）實際畫出來對照過，預設樣式（白 70%＋硬影）在 #F2F2F6 上
-/// 只剩一圈灰邊，內建的「頻道標準」整個消失，所以淺色底不能用；
-/// 中灰 #8A8A94 試過一版，使用者覺得還是黑的好看。
-/// 不打陰影（跟「＋」磚一樣）、不畫邊線（深色塊在白底上本身就分得開）
+/// 磚裡畫的是真的浮水印，而浮水印幾乎都是白字——淺色底（kLTile）
+/// 實際畫出來對照過，預設樣式（白 70%＋硬影）在 #F2F2F6 上只剩一圈
+/// 灰邊，內建的「頻道標準」整個消失，所以淺色底不能用；中灰 #8A8A94
+/// 試過一版，使用者覺得還是黑的好看
 const _kPresetTileBg = Color(0xFF1B1B20);
 
-// 磚的形狀（超橢圓）與圓角級距全走 theme.dart 的 tileShape／tileClip：
-// 這一頁的範本磚、GIF 磚、草稿卡以前各畫各的（超橢圓 12、圓弧 12、
-// 圓弧 18），三種角擺在同一頁看得出來
+/// 三個分頁。順序是草稿→GIF→範本：最常回來找的東西放最前面
+const _kTabs = ['草稿', 'GIF', '範本'];
 
-// ── 一頁裝得下：這一頁不捲（使用者指定「那讓他不要能上下捲動」）──
-//
-// 版面本身不動、磚也不縮：三排磚永遠原尺寸、滿版寬（實機回報
-// 「左右 PADDING 很大」——以前磚縮小後左右補邊，一邊多出 20 幾 pt）。
-// 缺的高度只跟可讓的留白拿（額度 [_kFlexGaps]），壓到底還是塞不下
-//（小螢幕、超大字級）就回去捲——寧可捲，也不能把東西截掉。
+/// 分頁標題：選中的大一號（使用者在 22～30 五檔裡選了 30），其他 20
+const _kTabOn = 30.0;
+const _kTabOff = 20.0;
 
-/// 返回鍵那顆 IconButton 的高度。圖示只有 22，撐不到 IconButton 的
-/// 預設觸控範圍（kMinInteractiveDimension＝48），所以量到的是 48。
-/// 這個數字進了高度計算，有測試盯著它別悄悄變（見 profile_fit_test）
-const _kNavButton = 48.0;
+/// 沒選中的分頁字色：比 kLTextDim 淡一階，選中的才是主角
+const _kTabIdle = Color(0xFF8C8C95);
 
-// 可以讓出來的留白有三種，各自的可壓縮上限不一樣（[_Fit.gap] 是
-// 「這次用掉幾成的額度」，0＝一點都不壓、1＝壓到底）：
-//
-// 三個 14（標題到自己那排磚）完全不動——那是「這個標題在講下面這排」
-// 的唯一線索，一鬆掉整頁就變成一疊沒有分組的東西。
-// 區塊之間的 [_kSectionGap] 只讓兩成：它必須明顯大於 14，不然區塊就
-// 黏成一片。返回鍵下面的 16 跟頁尾前的 [_kFootGap] 讓一半——它們不
-// 負責分組，純粹是喘口氣的空間
+/// 草稿分頁先擺四格（兩排兩欄），GIF 與範本先擺三格（一排三欄）；
+/// 東西比格子多的時候最後一格換成「+N 查看全部」
+const _kDraftSlots = 4;
+const _kGridSlots = 3;
 
-/// 區塊之間的留白。使用者看過「拿掉行動鈕之後空間怎麼用」的三個版本
-/// （底部留白／磚放大／區距拉開），選了區距拉開：26 → 46。
-/// 原本的行動鈕（54＋前後 44）拿掉之後有 98 點可以分，這裡吃掉 40
-const _kSectionGap = 46.0;
-
-/// 頁尾連結前面那一段（原本是行動鈕前的 30）
-const _kFootGap = 22.0;
-
-/// 區塊之間最多壓掉兩成
-const _kGiveSection = 0.2;
-
-/// 返回鍵下面（16）跟頁尾前面（[_kFootGap]）最多壓掉一半
-const _kGiveLoose = 0.5;
-
-/// 留白總共讓得出這麼多（用滿 [_Fit.gap]＝1 的時候）
-const _kFlexGaps =
-    _kSectionGap * 2 * _kGiveSection + (16.0 + _kFootGap) * _kGiveLoose;
-
-/// 算高度時留的餘裕：文字量測與版面之間的次像素誤差，
-/// 不留一點的話「剛好塞滿」會變成「差 0.01 被截掉」
-const _kSlack = 0.5;
-
-// 這一頁每一種字的樣式都收在這裡：量高度的 TextPainter 跟畫出來的
-// Text 必須是同一份，抄兩份遲早會走岔（走岔就是「算得下、其實裝不下」）
-
-/// 區塊標題：頁面大標拿掉後升為主角，20/w800（A 案，使用者指定）
-const _kTitleStyle = TextStyle(
-  fontSize: 20,
-  fontWeight: FontWeight.w800,
-  height: 1.1,
-);
-
-/// 標題右邊的「全部」／「還沒有」
-const _kTrailStyle = TextStyle(fontSize: 13, color: kLTextDim);
-
-/// 空狀態那一行灰字。跟「全部」那種次要字同一個灰（kLTextDim）：
-/// 以前更淡的 #A8A8B4 在白底上對比只有 2.3:1，連大字的 3:1 都不到
+/// 空狀態那一行灰字（kLTextDim：更淡的灰在白底上對比不到 3:1）
 const _kHintStyle = TextStyle(fontSize: 13, color: kLTextDim);
-
-/// 草稿卡下面那行名字
-const _kCardTitleStyle = TextStyle(fontSize: 13.5, fontWeight: FontWeight.w800);
 
 /// 頁尾連結
 const _kFootStyle = TextStyle(fontSize: 12.5, color: kLTextDim);
@@ -225,15 +123,52 @@ const _kFootStyle = TextStyle(fontSize: 12.5, color: kLTextDim);
 /// 頁尾兩個連結中間那一點
 const _kDotStyle = TextStyle(fontSize: 12, color: Color(0xFFB0B0BA));
 
-/// 草稿區的一張卡：[title] 給量高度用（有名字的卡多一行字、高一截），
-/// [build] 才真的把卡做出來——沒排到的卡就不用做。[build] 吃卡的寬度：
-/// 封面要照卡的尺寸解碼（見 _draftCards）
-class _DraftCard {
-  const _DraftCard(this.title, this.build);
+/// 一份草稿：影片草稿（一份一份存，見 DraftStore）或單鍵草稿
+/// （照片／批次／GIF／拼圖各只有一份）。個人中心與查看全部頁共用
+class _DraftEntry {
+  final DraftMeta? video;
+  final DraftKind? kind;
 
-  final String? title;
-  final Widget Function(double w) build;
+  const _DraftEntry.video(DraftMeta this.video) : kind = null;
+  const _DraftEntry.single(DraftKind this.kind) : video = null;
 }
+
+/// 沒有封面的那四種草稿：灰底＋圖示＋名字（不然認不出是什麼）。
+/// 照片草稿沒有存縮圖——那張照片還在裝置上，再存一份只是浪費空間
+Widget _singleDraftCover(DraftKind kind) => ColoredBox(
+  color: kLTile,
+  child: Center(
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(switch (kind) {
+            DraftKind.photo => Icons.image_outlined,
+            DraftKind.batch => Icons.collections_outlined,
+            DraftKind.gif => Icons.gif_box_outlined,
+            DraftKind.collage => Icons.grid_view,
+          }, size: 26, color: const Color(0xFFAFAFBB)),
+          const SizedBox(height: 8),
+          Text(
+            _singleDraftTitle(kind),
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 12, height: 1.4, color: kLTextDim),
+          ),
+        ],
+      ),
+    ),
+  ),
+);
+
+String _singleDraftTitle(DraftKind kind) => switch (kind) {
+  DraftKind.photo => '未完成的照片',
+  DraftKind.batch => '未完成的批次浮水印',
+  DraftKind.gif => '未完成的 GIF',
+  DraftKind.collage => '未完成的拼圖',
+};
 
 /// 單鍵草稿的四種：照片／批次／GIF／拼圖各只有一份，各存一個鍵
 /// （影片草稿另有自己的清單，見 DraftStore）
@@ -279,27 +214,6 @@ Future<Map<String, dynamic>?> _readDraftJson(
   } catch (_) {
     return null;
   }
-}
-
-/// 這一頁要壓多少留白才裝得下（見 [_ProfileScreenState._fit]）。
-/// 磚的尺寸不在這裡：磚永遠是原尺寸
-class _Fit {
-  const _Fit({required this.gap, required this.fits, this.slack = 0});
-
-  /// 塞不下：照以前那樣捲，留白一律原樣
-  static const scroll = _Fit(gap: 0, fits: false);
-
-  /// 這次用掉幾成的留白額度（0＝間距原樣，1＝壓到各自的上限）。
-  /// 見 _kGiveSection / _kGiveLoose
-  final double gap;
-
-  /// 不用捲就裝得下
-  final bool fits;
-
-  /// 用不完的高度（東西比一頁少的時候）。全部加到行動鈕前面那一段，
-  /// 讓行動鈕與頁尾靠著底部安全區——不然畫面下半截空一塊，
-  /// 看起來像沒載完（使用者指定「一頁就裝滿」）
-  final double slack;
 }
 
 /// 「我的 GIF」右下角 ＋ 的三件事（見 [addGifFromDevice]）：
@@ -487,21 +401,22 @@ Future<bool> addGifFromDevice(BuildContext context) async {
 class _ProfileScreenState extends State<ProfileScreen> {
   List<WatermarkPreset> _presets = const [];
 
-  /// 影片草稿與照片草稿（沒有就是 null）。這一頁直接把草稿畫出來，
-  /// 不再只顯示「有幾個」——使用者要找的是「那一個專案」，不是數量
-  /// 影片草稿清單（可以有很多份，見 DraftStore）
+  /// 影片草稿清單（可以有很多份，見 DraftStore）。這一頁直接把草稿畫
+  /// 出來，不只顯示「有幾個」——使用者要找的是「那一個專案」
   List<DraftMeta> _videoDrafts = const [];
 
   /// 做好的 GIF（見 GifStore；Web 是內建範例）
   List<String> _gifs = const [];
+
+  /// 單鍵草稿：照片／批次浮水印／GIF 製作／拼圖（沒有就是 null，
+  /// 見 kPhotoDraftKey／kBatchDraftKey／kGifDraftKey／kCollageDraftKey）
   Map<String, dynamic>? _photoDraft;
-
-  /// 批次浮水印的未完成草稿（見 kBatchDraftKey）
   Map<String, dynamic>? _batchDraft;
-
-  /// GIF 製作／拼圖的未完成草稿（見 kGifDraftKey / kCollageDraftKey）
   Map<String, dynamic>? _gifDraft;
   Map<String, dynamic>? _collageDraft;
+
+  /// 現在看的是哪一個分頁：0 草稿、1 GIF、2 範本
+  int _tab = 0;
 
   @override
   void initState() {
@@ -528,11 +443,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
       _gifDraft = gif;
       _collageDraft = collage;
     });
-    // 主頁最多畫兩張草稿卡（見 _draftCards）：封面也只讀那兩張。
-    // 一張封面是 base64 的 720p PNG、上百 KB，以前三十份全讀進來
-    // 只為了畫兩張
-    unawaited(_loadCovers(videoDrafts.take(2).toList()));
-    unawaited(_loadGifAspects(gifs.take(3)));
+    // 草稿分頁最多畫四格（見 _draftsTab）：封面也只讀那四張。
+    // 一張封面是上百 KB 的圖，以前三十份全讀進來只為了畫兩張
+    unawaited(_loadCovers(videoDrafts.take(_kDraftSlots).toList()));
+    unawaited(_loadGifAspects(gifs.take(_kGridSlots)));
   }
 
   /// 主頁那三塊 GIF 磚的寬高比（路徑 → 寬/高），只讀檔頭（見 gifAspect）。
@@ -561,9 +475,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
               MediaQuery.devicePixelRatioOf(context))
           .round();
 
-  /// 封面 cover 進 [w] 寬的 3:4 卡時要解碼多寬（實體像素）。封面是長邊
-  /// 720 的 PNG，解開一張 1.2MB，卡片只畫 180 點寬——照卡的尺寸解碼：
-  /// 直片貼寬（＝卡寬）、橫片貼高（寬＝卡高×比例）
+  /// 封面 cover 進 [w] 寬的 3:4 格時要解碼多寬（實體像素）。封面原檔
+  /// 長邊 720，格子只畫一百七十多點寬——照格子的尺寸解碼：
+  /// 直片貼寬（＝格寬）、橫片貼高（寬＝格高×比例）
   int _coverDecodeWidth(double w, double aspect) {
     final h = w * 4 / 3;
     return (math.max(w, h * aspect) * MediaQuery.devicePixelRatioOf(context))
@@ -588,293 +502,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (mounted) setState(() {});
   }
 
-  // ── 區塊標題：一行大粗字，右邊放次要資訊 ────────────────────
-  // 點「標題」或右邊的「全部」都能進該區的總覽（使用者指定），
-  // 所以整列包一個 GestureDetector，不是只有右邊的小字能點
-  Widget _sectionTitle(String title, {String? trailing, VoidCallback? onTap}) =>
-      GestureDetector(
-        onTap: onTap,
-        behavior: HitTestBehavior.opaque,
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            // 頁面大標拿掉後，區塊標題升為主角：20/w800
-            //（A 案，使用者指定「標題有點小」）
-            Expanded(child: Text(title, style: _kTitleStyle)),
-            if (trailing != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 1, left: 12),
-                // 跟著標題放大一點，不然比例失衡（A 案 mockup 是 13）
-                child: Text(trailing, style: _kTrailStyle),
-              ),
-          ],
-        ),
-      );
+  /// 全部的草稿：影片草稿在前（新到舊），單鍵草稿接在後面。
+  /// 「有沒有草稿」就看這一份列不列得出東西：以前只數影片＋照片草稿，
+  /// 只有批次／GIF／拼圖草稿的人會看到「還沒有草稿」，那份就找不到了
+  List<_DraftEntry> _draftEntries() => [
+    for (final m in _videoDrafts) _DraftEntry.video(m),
+    if (_photoDraft != null) const _DraftEntry.single(DraftKind.photo),
+    if (_batchDraft != null) const _DraftEntry.single(DraftKind.batch),
+    if (_gifDraft != null) const _DraftEntry.single(DraftKind.gif),
+    if (_collageDraft != null) const _DraftEntry.single(DraftKind.collage),
+  ];
 
-  // ── 量版面：固定的部分有多高，磚才知道剩多少可以用 ──────────
-  //
-  // 用 TextPainter 實量而不是寫死數字：使用者把系統字級調大時，
-  // 三個標題跟頁尾會一起長高，寫死的話就會算成「裝得下」然後截掉東西
-
-  Size _textSize(
-    BuildContext ctx,
-    String s,
-    TextStyle style, {
-    double maxWidth = double.infinity,
-    int? maxLines,
-  }) {
-    final tp = TextPainter(
-      text: TextSpan(
-        text: s,
-        style: DefaultTextStyle.of(ctx).style.merge(style),
-      ),
-      textDirection: Directionality.of(ctx),
-      textScaler: MediaQuery.textScalerOf(ctx),
-      maxLines: maxLines,
-    )..layout(maxWidth: maxWidth);
-    final size = tp.size;
-    tp.dispose();
-    return size;
-  }
-
-  /// 一列區塊標題的高度：標題被 Expanded 擠在「全部」左邊，
-  /// 字級大的時候會折行，所以要照實際拿得到的寬度量
-  double _titleRowH(
-    BuildContext ctx,
-    String title,
-    String? trailing,
-    double inner,
-  ) {
-    var trailW = 0.0;
-    var trailH = 0.0;
-    if (trailing != null) {
-      final s = _textSize(ctx, trailing, _kTrailStyle);
-      trailW = s.width + 12; // 左邊的留白
-      trailH = s.height + 1; // 下面的留白
-    }
-    final h = _textSize(
-      ctx,
-      title,
-      _kTitleStyle,
-      maxWidth: math.max(0, inner - trailW),
-    ).height;
-    return math.max(h, trailH);
-  }
-
-  /// 頁尾那一列：三段字裡最高的那一段
-  double _footerH(BuildContext ctx) {
-    var h = _textSize(ctx, '意見回饋', _kFootStyle).height;
-    h = math.max(h, _textSize(ctx, '·', _kDotStyle).height);
-    return math.max(h, _textSize(ctx, '關於這個 App', _kFootStyle).height);
-  }
-
-  /// 這一頁要壓多少留白才不用捲。
-  ///
-  /// 除了三排磚，其他每一段都是固定高度（留白、標題、頁尾），
-  /// 把它們加起來就知道磚還剩多少可以用。不夠的話只壓留白（額度
-  /// [_kFlexGaps]）；壓到底還是不夠就回 [_Fit.scroll]——磚一律原尺寸、
-  /// 滿版寬，不縮也不截：截掉東西是 bug，捲不是
-  _Fit _fit(BuildContext ctx, BoxConstraints cons, List<_DraftCard> cards) {
-    final h = cons.maxHeight;
-    final inner = cons.maxWidth - _side.horizontal;
-    if (!h.isFinite || inner <= 0) return _Fit.scroll;
-    final pad = MediaQuery.paddingOf(ctx);
-    final hasDrafts = cards.isNotEmpty;
-
-    // 三排磚的自然高度（草稿 3:4、GIF 正方、範本正方），寬度公式跟
-    // 畫的時候同一份。範本那排永遠在：沒有範本也有「＋」磚
-    final draft = hasDrafts ? (inner - 12) / 2 * 4 / 3 : 0.0;
-    final gif = _gifs.isEmpty ? 0.0 : (inner - 20) / 3;
-    final preset = (inner - 20) / 3;
-    final tiles = draft + gif + preset;
-
-    var fixed = _kSlack + 4 + pad.top + pad.bottom; // 捲動區上下留白
-    fixed += 6 + _kNavButton + 16; // 返回鍵那一列
-    fixed += _titleRowH(ctx, '草稿', hasDrafts ? '全部' : null, inner) + 14;
-    if (!hasDrafts) {
-      fixed +=
-          10 + _textSize(ctx, '還沒有草稿', _kHintStyle, maxWidth: inner).height + 4;
-    } else {
-      // 有名字的草稿卡比沒名字的高一截，整排跟著最高的那張
-      var label = 0.0;
-      for (final c in cards) {
-        if (c.title == null) continue;
-        final t = _textSize(
-          ctx,
-          c.title!,
-          _kCardTitleStyle,
-          maxLines: 1,
-        ).height;
-        label = math.max(label, 9 + t);
-      }
-      fixed += label;
-    }
-    fixed += _kSectionGap;
-    fixed += _titleRowH(ctx, '我的 GIF', _gifs.isEmpty ? '還沒有' : '全部', inner);
-    fixed += _gifs.isEmpty
-        ? 16 +
-              _textSize(ctx, '還沒有 GIF', _kHintStyle, maxWidth: inner).height +
-              4
-        : 14;
-    fixed += _kSectionGap;
-    fixed += _titleRowH(ctx, '範本', _presets.isEmpty ? '還沒有' : '全部', inner) + 14;
-    fixed += _kFootGap + _footerH(ctx);
-
-    final short = tiles - (h - fixed);
-    // 有剩：多出來的高度交給頁尾前面那一段撐開
-    if (short <= 0) return _Fit(gap: 0, fits: true, slack: -short);
-    // 只跟留白拿；拿不夠就捲，不動磚
-    if (short > _kFlexGaps) return _Fit.scroll;
-    return _Fit(gap: short / _kFlexGaps, fits: true);
-  }
-
-  /// 範本磚：中灰方塊（見 [_kPresetTileBg]），裡面就是這組浮水印
-  /// 長什麼樣。用真的 WatermarkLayer 照實渲染（多文字、多圖、平鋪
-  /// 全都畫）——以前只挑第一張圖或第一行字當代表，跟實際內容對不上。
-  /// 跟「我的 GIF」同一種格子：三格一排、圓角 12（D 案，使用者指定）
-  Widget _presetTile(WatermarkPreset preset, {required double w}) {
-    return GestureDetector(
-      // 點磚＝直接編輯那一組（以前是跳到範本夾，還要再找一次）；
-      // 長按＝刪除。右上角「全部」才是進範本夾
-      onTap: () => Navigator.push(
-        context,
-        editRoute(builder: (_) => WatermarkStudioScreen(edit: preset)),
-      ).then((_) => _reload()),
-      onLongPress: () => _confirmDeletePreset(preset),
-      // 不放名字（使用者指定）：封面本身就是內容，名字進範本夾看
-      //
-      // 自己一層 RepaintBoundary：磚裡面是活的 WatermarkLayer，畫一次
-      // 要開兩層 saveLayer、把文字排版四遍（見 text_mark_painter 的
-      // paintMarkGlyphs）。沒有這一層的話它跟整頁共用捲動視窗那一個
-      // 圖層——頁面一捲、或旁邊哪個 GIF 換一格，這些排版就整組重跑。
-      // 實測：兩塊磚吃掉捲動時 paint 的一半（0.94ms → 0.43ms）
-      child: RepaintBoundary(
-        child: SizedBox(
-          width: w,
-          height: w,
-          // 內容照磚的形狀切齊：範本可以是一張鋪滿磚面的圖，
-          // 不切的話四個角會被方形的內容頂出去
-          child: DecoratedBox(
-            decoration: ShapeDecoration(
-              color: _kPresetTileBg,
-              shape: tileShape(),
-            ),
-            child: ClipRSuperellipse(
-              borderRadius: tileClip(),
-              child: IgnorePointer(
-                child: WatermarkLayer(
-                  settings: preset.settings,
-                  onChanged: () {},
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// 長按範本磚：問一下再刪
-  Future<void> _confirmDeletePreset(WatermarkPreset p) async {
-    final ok = await showConfirm(
-      context,
-      title: '刪除範本「${p.name}」？',
-      message: '刪除後無法復原',
-      action: '刪除',
-    );
-    if (!ok) return;
-    await PresetStore.remove(p.name);
-    _reload();
-  }
-
-  /// 範本區最後一格：新增——直接開工作室做一組新的
-  ///（使用者指定：＋就是新增，總覽走標題或「全部」）
-  Widget _presetAddTile({required double w}) => GestureDetector(
-    onTap: () => Navigator.push(
-      context,
-      editRoute(builder: (_) => const WatermarkStudioScreen()),
-    ).then((_) => _reload()),
-    child: Container(
-      width: w,
-      height: w,
-      alignment: Alignment.center,
-      clipBehavior: Clip.antiAlias,
-      // 形狀跟同一排的範本磚一樣（連續曲率、半徑 12，見 tileShape）
-      decoration: ShapeDecoration(
-        color: kLCard,
-        shape: tileShape(side: const BorderSide(color: kLBorder, width: 1.4)),
-      ),
-      child: const Text(
-        '＋',
-        style: TextStyle(
-          fontSize: 30,
-          color: Color(0xFFB0B0BA),
-          fontWeight: FontWeight.w300,
-        ),
-      ),
-    ),
-  );
-
-  /// 草稿卡：長條的。上面一塊方形縮圖區（直式影片置中留邊，橫式也放得下），
-  /// 下面名稱與時間——加起來整張是直的，直片橫片排在一起高度才一致
-  /// 草稿：縮圖本身就是卡（滿版、圓角），文字放在卡片外面。
-  ///
-  /// 本來是「白卡包著一塊灰底、灰底裡再放縮圖」——兩層框、三種底色，
-  /// 而畫面上真正有資訊的只有縮圖。拿掉外框之後縮圖可以直接鋪滿，
-  /// 也就是相簿、專案列表那種長相
-  /// 卡片不寫時間（使用者指定）：影片草稿只留封面；照片/批次草稿
-  /// 沒有縮圖，留一行說明字不然認不出是什麼
-  Widget _draftTile({
-    required Widget cover,
-    String? title,
-    required VoidCallback onTap,
-    // 長按＝刪除（使用者指定「在總覽這邊也要可以長按刪除」），
-    // 問法跟草稿夾同一份（見檔頭的 _confirmDelete…）
-    VoidCallback? onLongPress,
-  }) => GestureDetector(
-    onTap: onTap,
-    onLongPress: onLongPress,
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        AspectRatio(
-          aspectRatio: 3 / 4,
-          // 一張卡自己一層：圓角裁切＋柔和陰影＋一張封面，
-          // 全部快取在自己的圖層裡，捲動時只是把圖層搬位置
-          child: RepaintBoundary(
-            // 形狀跟範本磚同一家（超橢圓，見 tileShape），大卡用 18
-            child: DecoratedBox(
-              decoration: ShapeDecoration(
-                color: const Color(0xFFF1F1F5),
-                shape: tileShape(radius: kPresetRadius),
-                shadows: _tileShadow,
-              ),
-              child: ClipRSuperellipse(
-                borderRadius: tileClip(kPresetRadius),
-                child: Center(child: cover),
-              ),
-            ),
-          ),
-        ),
-        if (title != null) ...[
-          const SizedBox(height: 9),
-          Text(
-            title,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: _kCardTitleStyle,
-          ),
-        ],
-      ],
-    ),
-  );
-
-  /// 總覽的卡與磚長按刪除：問一下、真的刪了就重讀
-  ///（使用者指定「在總覽這邊也要可以長按刪除」；問法見檔頭的
-  /// _confirmDelete…，跟草稿夾、GIF 夾同一份）
-  Future<void> _homeDelete(Future<bool> Function() confirm) async {
-    if (await confirm() && mounted) _reload();
-  }
+  // ── 開頁 ────────────────────────────────────────────────
 
   Future<void> _openGifs() async {
     await Navigator.push(
@@ -884,7 +523,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _reload();
   }
 
-  /// 直接開某一份草稿：卡片點下去就是要繼續剪，不是進資料夾
+  Future<void> _openPresets() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const LightPage(child: PresetsScreen())),
+    );
+    _reload();
+  }
+
+  /// 直接開某一份草稿：格子點下去就是要繼續剪，不是進資料夾
   Future<void> _openDraft(DraftMeta m) async {
     final data = await DraftStore.load(m.id);
     if (!mounted) return;
@@ -901,16 +548,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _reload();
   }
 
-  /// 進草稿夾；給 [resume] 就順便接續那一種草稿（草稿卡點下去走這條）。
+  /// 進草稿的「查看全部」；給 [resume] 就順便接續那一種草稿。
   ///
   /// 續作的判斷（檔案還在不在、帶哪些參數、不見的怎麼講）全在草稿夾
-  /// 那幾支 _resumeX 裡，主頁不另外抄一份：卡片只是替使用者按下草稿夾
+  /// 那幾支 _resumeX 裡，主頁不另外抄一份：格子只是替使用者按下草稿夾
   /// 裡的那一張。所以是先進草稿夾、再由它推編輯頁——回來時人在草稿夾
   Future<void> _openDrafts({DraftKind? resume}) async {
     await Navigator.push(
       context,
       // LightPage 一定要包：這是亮色頁，漏包就掉進暗色主題
-      //（背景變黑、白卡片浮在上面，超跳）
       MaterialPageRoute(
         builder: (_) => LightPage(child: DraftsScreen(resume: resume)),
       ),
@@ -918,449 +564,537 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _reload();
   }
 
-  /// 草稿區要畫的那幾張卡（最多兩張）。
-  ///
-  /// 量高度跟真的畫都讀這一份：有名字的卡比沒名字的高一截（多一行字），
-  /// 兩邊各自判斷一次的話遲早會走岔，然後就是「算得下、其實裝不下」
-  ///
-  /// 卡片是「縮圖＋兩行字」的直式 Column（高度看內容），GridView 要
-  /// 指定長寬比反而每台機器都要重調——直接兩張一列手排
-  List<_DraftCard> _draftCards(Map<String, dynamic>? p) {
-    // 最多兩張：整片列出來會把頁面吃光，其餘按「全部」進草稿夾。
-    // 「先全部做出來再 take(2)」是白做工——三十份草稿就是二十八個
-    // 用不到的 Image.memory，每次 setState 重來一次。滿了就不做了
-    final shown = <_DraftCard>[];
-    void add(String? title, Widget Function(double w) build) {
-      if (shown.length < 2) shown.add(_DraftCard(title, build));
+  /// 點一格草稿：影片草稿直接開編輯器；其餘四種交給草稿夾接續
+  void _openEntry(_DraftEntry e) {
+    final v = e.video;
+    if (v != null) {
+      _openDraft(v);
+    } else {
+      _openDrafts(resume: e.kind);
     }
+  }
 
-    for (final m in _videoDrafts) {
-      if (shown.length >= 2) break;
-      final cover = _covers[m.id];
-      add(
-        null,
-        (w) => _draftTile(
-          cover: cover != null
-              ? Image.memory(
-                  cover,
-                  // 鋪滿：這是縮圖不是預覽，留邊只會讓一排卡看起來破碎
-                  fit: BoxFit.cover,
-                  width: double.infinity,
-                  height: double.infinity,
-                  gaplessPlayback: true,
-                  // 照卡的尺寸解碼，不是封面原尺寸（見 _coverDecodeWidth）
-                  cacheWidth: _coverDecodeWidth(w, m.thumbAspect ?? 9 / 16),
-                )
-              : const Icon(
+  /// 點範本磚＝直接編輯那一組（以前是跳到範本夾，還要再找一次）
+  Future<void> _editPreset(WatermarkPreset p) async {
+    await Navigator.push(
+      context,
+      editRoute(builder: (_) => WatermarkStudioScreen(edit: p)),
+    );
+    _reload();
+  }
+
+  /// 範本分頁最後一格＋：直接開工作室做一組新的（使用者指定）
+  Future<void> _newPreset() async {
+    await Navigator.push(
+      context,
+      editRoute(builder: (_) => const WatermarkStudioScreen()),
+    );
+    _reload();
+  }
+
+  /// 容量與清理。從那裡點分類進去的是同一個「查看全部」頁，只是一進去
+  /// 就是批次刪除（使用者看過之後定案：兩邊共用一頁，不另做管理頁）
+  Future<void> _openStorage() async {
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => LightPage(
+          child: StorageScreen(
+            openDrafts: () => Navigator.push<void>(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const LightPage(child: DraftsScreen(batch: true)),
+              ),
+            ),
+            openGifs: () => Navigator.push<void>(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const LightPage(child: GifsScreen(batch: true)),
+              ),
+            ),
+            openPresets: () => Navigator.push<void>(
+              context,
+              MaterialPageRoute(
+                builder: (_) =>
+                    const LightPage(child: PresetsScreen(batch: true)),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    if (mounted) _reload();
+  }
+
+  // ── 長按：磚旁邊跳小選單（背景壓暗、那一格浮起來，見 showLibraryTileMenu）
+  // 使用者指定「在總覽這邊也要可以長按刪除」，問法跟查看全部頁同一套
+
+  static const _deleteAction = LibraryMenuAction<bool>(
+    true,
+    '刪除',
+    icon: Icons.delete_outline,
+    destructive: true,
+  );
+
+  Future<void> _draftMenu(BuildContext tile, _DraftEntry e, double w) async {
+    final go = await showLibraryTileMenu<bool>(
+      tile,
+      preview: _draftCover(e, w),
+      title: '刪除這份草稿？',
+      actions: const [_deleteAction],
+    );
+    if (go != true) return;
+    final v = e.video;
+    if (v != null) {
+      await _removeVideoDraft(v);
+    } else {
+      await _removeSingleDraft(e.kind!);
+    }
+    if (mounted) _reload();
+  }
+
+  Future<void> _gifMenu(BuildContext tile, String ref, double cell) async {
+    final go = await showLibraryTileMenu<bool>(
+      tile,
+      preview: _gifCover(ref, cell),
+      title: '刪除這個 GIF？',
+      actions: const [_deleteAction],
+    );
+    if (go != true) return;
+    await GifStore.remove(ref);
+    if (mounted) _reload();
+  }
+
+  Future<void> _presetMenu(BuildContext tile, WatermarkPreset p) async {
+    final go = await showLibraryTileMenu<bool>(
+      tile,
+      preview: _presetCover(p),
+      title: '刪除範本「${p.name}」？',
+      actions: const [_deleteAction],
+    );
+    if (go != true) return;
+    await PresetStore.remove(p.name);
+    if (mounted) _reload();
+  }
+
+  // ── 格子 ────────────────────────────────────────────────
+  // 三個分頁同一種格子：超橢圓圓角（見 tileShape）、不打陰影；
+  // 草稿兩欄 3:4，GIF 與範本三欄正方
+
+  Widget _clip(Widget child) =>
+      ClipRSuperellipse(borderRadius: tileClip(), child: child);
+
+  /// 一份草稿的封面（格子本身與長按浮起來的那一格共用）。
+  /// [w] 是格子畫出來的寬：封面照這個尺寸解碼（見 _coverDecodeWidth）。
+  /// 不放日期／時長角標（使用者指定）：封面本身就是內容；沒有封面的
+  /// 四種單鍵草稿留圖示＋名字，不然認不出是什麼
+  Widget _draftCover(_DraftEntry e, double w) {
+    final v = e.video;
+    if (v != null) {
+      final cover = _covers[v.id];
+      return ColoredBox(
+        color: kLTile,
+        child: cover == null
+            ? const Center(
+                child: Icon(
                   Icons.movie_outlined,
                   size: 26,
                   color: Color(0xFFAFAFBB),
                 ),
-          onTap: () => _openDraft(m),
-          onLongPress: () =>
-              _homeDelete(() => _confirmDeleteVideoDraft(context, m)),
-        ),
+              )
+            : Image.memory(
+                cover,
+                // 鋪滿：這是縮圖不是預覽，留邊只會讓一排格子看起來破碎
+                fit: BoxFit.cover,
+                width: double.infinity,
+                height: double.infinity,
+                gaplessPlayback: true,
+                cacheWidth: _coverDecodeWidth(w, v.thumbAspect ?? 9 / 16),
+              ),
       );
     }
-    // 其餘四種點下去也是直接接續（跟影片卡一樣），不是只進資料夾：
-    // 兩張相鄰的卡一張續作、一張換頁，說不過去。接續的流程在草稿夾裡
-    // （見 _openDrafts 的 resume）
-    if (p != null) {
-      add(
-        '未完成的照片',
-        (_) => _draftTile(
-          // 照片草稿沒有存縮圖（那張照片還在裝置上，
-          // 再存一份只是浪費空間）
-          cover: const Icon(
-            Icons.image_outlined,
-            size: 26,
-            color: Color(0xFFAFAFBB),
-          ),
-          title: '未完成的照片',
-          onTap: () => _openDrafts(resume: DraftKind.photo),
-          onLongPress: () =>
-              _homeDelete(() => _confirmDeletePhotoDraft(context)),
-        ),
-      );
-    }
-    if (_batchDraft != null) {
-      add(
-        '未完成的批次浮水印',
-        (_) => _draftTile(
-          cover: const Icon(
-            Icons.collections_outlined,
-            size: 26,
-            color: Color(0xFFAFAFBB),
-          ),
-          title: '未完成的批次浮水印',
-          onTap: () => _openDrafts(resume: DraftKind.batch),
-          onLongPress: () =>
-              _homeDelete(() => _confirmDeleteBatchDraft(context)),
-        ),
-      );
-    }
-    if (_gifDraft != null) {
-      add(
-        '未完成的 GIF',
-        (_) => _draftTile(
-          cover: const Icon(
-            Icons.gif_box_outlined,
-            size: 26,
-            color: Color(0xFFAFAFBB),
-          ),
-          title: '未完成的 GIF',
-          onTap: () => _openDrafts(resume: DraftKind.gif),
-          onLongPress: () => _homeDelete(() => _confirmDeleteGifDraft(context)),
-        ),
-      );
-    }
-    if (_collageDraft != null) {
-      add(
-        '未完成的拼圖',
-        (_) => _draftTile(
-          cover: const Icon(
-            Icons.grid_view,
-            size: 26,
-            color: Color(0xFFAFAFBB),
-          ),
-          title: '未完成的拼圖',
-          onTap: () => _openDrafts(resume: DraftKind.collage),
-          onLongPress: () =>
-              _homeDelete(() => _confirmDeleteCollageDraft(context)),
-        ),
-      );
-    }
-    return shown;
+    return _singleDraftCover(e.kind!);
   }
 
-  /// 一排磚：靠左排、上緣對齊，滿版到 [_side] 的留白線為止。
-  /// 磚不滿一排的時候（只有一個 GIF、只有一張草稿）右邊空著，
-  /// 不置中——置中是改版面
-  Widget _row(List<Widget> children) =>
-      Row(crossAxisAlignment: CrossAxisAlignment.start, children: children);
+  Widget _draftTile(_DraftEntry e, double w) => Builder(
+    builder: (tile) => GestureDetector(
+      onTap: () => _openEntry(e),
+      onLongPress: () => _draftMenu(tile, e, w),
+      // 一格自己一層：圓角裁切＋封面全部快取在自己的圖層裡
+      child: RepaintBoundary(
+        child: AspectRatio(aspectRatio: 3 / 4, child: _clip(_draftCover(e, w))),
+      ),
+    ),
+  );
 
-  /// 草稿那一排：兩欄、原尺寸（磚不縮，見 [_fit]）。
-  /// 一格空著也照樣佔位，只有一張時卡片才不會被撐成整排寬
-  Widget _draftGrid(List<_DraftCard> cards, double inner) {
-    final w = (inner - 12) / 2;
-    return _row([
-      for (var i = 0; i < 2; i++) ...[
-        if (i > 0) const SizedBox(width: 12),
-        SizedBox(width: w, child: i < cards.length ? cards[i].build(w) : null),
+  Widget _gifCover(String ref, double cell) => ColoredBox(
+    color: kLTile,
+    child: GifImage(ref, cacheWidth: _gifDecodeWidth(cell, ref)),
+  );
+
+  /// GIF 磚：點一下進「我的 GIF」（那裡才放大看、才加新的）
+  Widget _gifTile(String ref, double cell) => Builder(
+    builder: (tile) => GestureDetector(
+      onTap: _openGifs,
+      onLongPress: () => _gifMenu(tile, ref, cell),
+      // 動圖每換一格就對自己 markNeedsPaint，往上找到最近的 repaint
+      // boundary 才停。沒有這一層的話三個 GIF 各用自己的速度把整頁
+      // （含範本磚的文字排版）一秒重畫幾十次，手指根本沒碰螢幕
+      child: RepaintBoundary(
+        child: AspectRatio(aspectRatio: 1, child: _clip(_gifCover(ref, cell))),
+      ),
+    ),
+  );
+
+  /// 範本磚的內容：近黑底（見 [_kPresetTileBg]）上用真的 WatermarkLayer
+  /// 照實渲染（多文字、多圖、平鋪全都畫）。不放名字（使用者指定）。
+  ///
+  /// 自己一層 RepaintBoundary：磚裡是活的 WatermarkLayer，畫一次要開兩層
+  /// saveLayer、把文字排版四遍（見 text_mark_painter）——跟整頁共用圖層
+  /// 的話旁邊哪一格一動，這些排版就整組重跑
+  ///
+  /// [blurred]：墊在「+N 查看全部」底下的那一格。浮水印多半是置中的白字，
+  /// 只壓暗的話還是會跟「+N」疊在一起打架——糊掉，只留一點影子。
+  /// 只糊浮水印、底色不糊：底色一起糊的話四邊會透出白邊
+  Widget _presetCover(WatermarkPreset p, {bool blurred = false}) {
+    Widget marks = IgnorePointer(
+      child: WatermarkLayer(settings: p.settings, onChanged: () {}),
+    );
+    if (blurred) {
+      marks = ImageFiltered(
+        imageFilter: ui.ImageFilter.blur(sigmaX: 6, sigmaY: 6),
+        child: marks,
+      );
+    }
+    return RepaintBoundary(
+      child: ColoredBox(color: _kPresetTileBg, child: marks),
+    );
+  }
+
+  Widget _presetTile(WatermarkPreset p) => Builder(
+    builder: (tile) => GestureDetector(
+      onTap: () => _editPreset(p),
+      onLongPress: () => _presetMenu(tile, p),
+      child: AspectRatio(aspectRatio: 1, child: _clip(_presetCover(p))),
+    ),
+  );
+
+  /// 淺灰底一個＋：範本分頁的「新增」、沒有 GIF 時的「加一個」
+  Widget _addTile({required Key key, required VoidCallback onTap}) =>
+      GestureDetector(
+        key: key,
+        onTap: onTap,
+        child: AspectRatio(
+          aspectRatio: 1,
+          child: DecoratedBox(
+            decoration: ShapeDecoration(color: kLTile, shape: tileShape()),
+            child: const Center(
+              child: Icon(Icons.add, size: 22, color: kLTextDim),
+            ),
+          ),
+        ),
+      );
+
+  /// 東西比格子多的時候，最後一格照樣畫出來、壓暗，上面寫
+  /// 「+N 查看全部」（使用者從五種看更多裡選的丙）。N＝沒排上的那幾個
+  Widget _moreTile({
+    required Key key,
+    required int count,
+    required double aspect,
+    required Widget cover,
+    required VoidCallback onTap,
+    bool big = false,
+  }) => GestureDetector(
+    key: key,
+    onTap: onTap,
+    child: AspectRatio(
+      aspectRatio: aspect,
+      child: _clip(
+        Stack(
+          fit: StackFit.expand,
+          children: [
+            cover,
+            const ColoredBox(color: Color(0x80000000)),
+            Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '+$count',
+                    style: TextStyle(
+                      fontSize: big ? 32 : 26,
+                      height: 1.2,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.white,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                  Text(
+                    '查看全部',
+                    style: TextStyle(
+                      fontSize: big ? 13 : 12,
+                      height: 1.4,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white.withValues(alpha: 0.85),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  /// 一格一格排成 [columns] 欄，欄距列距都是 [gap]。
+  /// 不滿一排的時候右邊空著，不置中——置中是改版面
+  Widget _grid(List<Widget> tiles, {required int columns, required double gap}) {
+    final rows = <Widget>[];
+    for (var start = 0; start < tiles.length; start += columns) {
+      if (rows.isNotEmpty) rows.add(SizedBox(height: gap));
+      rows.add(
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (var c = 0; c < columns; c++) ...[
+              if (c > 0) SizedBox(width: gap),
+              Expanded(
+                child: start + c < tiles.length
+                    ? tiles[start + c]
+                    : const SizedBox.shrink(),
+              ),
+            ],
+          ],
+        ),
+      );
+    }
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: rows);
+  }
+
+  // ── 三個分頁 ────────────────────────────────────────────
+
+  Widget _draftsTab(double inner) {
+    final entries = _draftEntries();
+    if (entries.isEmpty) {
+      // 空的時候不畫框，也不解釋草稿怎麼來——真的存了一份之後
+      // 這行就永遠不會再出現，講了也是白講
+      return const Padding(
+        padding: EdgeInsets.only(top: 10, bottom: 4),
+        child: Center(child: Text('還沒有草稿', style: _kHintStyle)),
+      );
+    }
+    final w = (inner - 10) / 2;
+    final more = entries.length > _kDraftSlots;
+    return _grid(
+      [
+        for (final (i, e) in entries.take(_kDraftSlots).indexed)
+          if (more && i == _kDraftSlots - 1)
+            _moreTile(
+              key: const ValueKey('profile-drafts-more'),
+              count: entries.length - _kDraftSlots,
+              aspect: 3 / 4,
+              cover: _draftCover(e, w),
+              onTap: _openDrafts,
+              big: true,
+            )
+          else
+            _draftTile(e, w),
       ],
-    ]);
+      columns: 2,
+      gap: 10,
+    );
   }
+
+  Widget _gifsTab(double inner) {
+    final cell = (inner - 16) / 3;
+    if (_gifs.isEmpty) {
+      // 一個都沒有：放一格＋（現做一個或收現成的，見 addGifFromDevice）。
+      // 有 GIF 的時候不放（使用者指定）：點任何一格進「我的 GIF」再加
+      return _grid(
+        [
+          _addTile(
+            key: const ValueKey('profile-gif-add'),
+            onTap: () async {
+              if (await addGifFromDevice(context)) _reload();
+            },
+          ),
+        ],
+        columns: 3,
+        gap: 8,
+      );
+    }
+    final more = _gifs.length > _kGridSlots;
+    return _grid(
+      [
+        for (final (i, g) in _gifs.take(_kGridSlots).indexed)
+          if (more && i == _kGridSlots - 1)
+            _moreTile(
+              key: const ValueKey('profile-gifs-more'),
+              count: _gifs.length - _kGridSlots,
+              aspect: 1,
+              cover: _gifCover(g, cell),
+              onTap: _openGifs,
+            )
+          else
+            _gifTile(g, cell),
+      ],
+      columns: 3,
+      gap: 8,
+    );
+  }
+
+  Widget _presetsTab() {
+    final more = _presets.length > _kGridSlots;
+    return _grid(
+      [
+        for (final (i, p) in _presets.take(_kGridSlots).indexed)
+          if (more && i == _kGridSlots - 1)
+            _moreTile(
+              key: const ValueKey('profile-presets-more'),
+              count: _presets.length - _kGridSlots,
+              aspect: 1,
+              cover: _presetCover(p, blurred: true),
+              onTap: _openPresets,
+            )
+          else
+            _presetTile(p),
+        // ＋永遠在最後：直接新增一組（使用者指定「＋就是新增」）
+        _addTile(key: const ValueKey('profile-preset-add'), onTap: _newPreset),
+      ],
+      columns: 3,
+      gap: 8,
+    );
+  }
+
+  // ── 上方與頁尾 ──────────────────────────────────────────
+
+  /// 返回鍵＋右上角「容量與清理」（原本的圖示＋字，使用者指定保留）
+  Widget _topBar() => Row(
+    children: [
+      IconButton(
+        onPressed: () => Navigator.of(context).maybePop(),
+        icon: const Icon(Icons.arrow_back_ios_new, size: 22, color: kLText),
+      ),
+      const Spacer(),
+      TextButton.icon(
+        key: const ValueKey('profile-storage'),
+        onPressed: _openStorage,
+        icon: const Icon(Icons.storage_outlined, size: 18),
+        label: const Text('容量與清理'),
+      ),
+    ],
+  );
+
+  /// 三個分頁的標題：選中的大一號、深色，其他小一號、淡色；
+  /// 切換時字級跟顏色一起補間。三個字底部對齊（baseline），
+  /// 大小不同也排在同一條線上
+  Widget _tabBar() => Padding(
+    padding: const EdgeInsets.fromLTRB(22, 6, 22, 0),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.baseline,
+      textBaseline: TextBaseline.alphabetic,
+      children: [
+        for (final (i, label) in _kTabs.indexed) ...[
+          if (i > 0) const SizedBox(width: 22),
+          Semantics(
+            button: true,
+            selected: _tab == i,
+            child: GestureDetector(
+              key: ValueKey('profile-tab-$i'),
+              behavior: HitTestBehavior.opaque,
+              onTap: () {
+                if (_tab != i) setState(() => _tab = i);
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: AnimatedDefaultTextStyle(
+                  duration: const Duration(milliseconds: 160),
+                  curve: Curves.easeOut,
+                  style: TextStyle(
+                    fontFamily: 'NotoSansTC',
+                    fontSize: _tab == i ? _kTabOn : _kTabOff,
+                    height: 1.2,
+                    fontWeight: FontWeight.w800,
+                    color: _tab == i ? kLText : _kTabIdle,
+                  ),
+                  child: Text(label),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ],
+    ),
+  );
+
+  /// 「太好用啦」那顆黑色大鈕是使用者指定拿掉的；兩個文字連結留著
+  Widget _footer() => Row(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      GestureDetector(
+        onTap: () => showFeedbackDialog(context),
+        child: const Text('意見回饋', style: _kFootStyle),
+      ),
+      const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 10),
+        child: Text('·', style: _kDotStyle),
+      ),
+      GestureDetector(
+        onTap: () => Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const LightPage(child: AboutScreen())),
+        ),
+        child: const Text('關於這個 App', style: _kFootStyle),
+      ),
+    ],
+  );
 
   @override
   Widget build(BuildContext context) {
-    // 草稿卡先列一次：量高度跟真的畫都讀這一份（見 _draftCards）。
-    // 「有沒有草稿」就看列不列得出卡：以前只數影片＋照片草稿，只有
-    // 批次／GIF／拼圖草稿的人會看到「還沒有草稿」——而這一頁是全 App
-    // 進草稿夾的唯一入口，那份草稿就再也找不到了
-    final cards = _draftCards(_photoDraft);
-    final hasDrafts = cards.isNotEmpty;
+    final pad = MediaQuery.paddingOf(context);
     // 非編輯頁面全頁都能右滑返回（編輯畫面橫向手勢太多，刻意不放）
     return SwipeBack(
       child: Scaffold(
         backgroundColor: kLBg,
-        // 返回鈕浮在內容上、不畫底：內容從螢幕頂捲到底，上下都沒有
-        // 釘死的白帶（實測回報「上面不要白條 sticky」）。
-        // scrolledUnderElevation 也要關：Material 3 捲動時會自己
-        // 補一層 tint，白條就回來了
-        // 返回鍵跟著內容捲（使用者指定「上方箭頭不要 sticky」）：
-        // 不掛 appBar，箭頭當捲動內容的第一列。
-        // 上下都不留 SafeArea：留了就是一條釘死的白帶，
-        // 內容捲不進去；狀態列/home 條的位置由內容自己的留白扛
+        // 不掛 appBar：返回鍵是內容的第一列，上下都沒有釘死的白帶
+        //（使用者指定「上方箭頭不要 sticky」「上面不要白條」）
         body: SafeArea(
           top: false,
           bottom: false,
-          // 左右留白由各段自己給（返回鍵那列的縮排跟別段不一樣）
-          //
-          // 這一頁不給上下捲（使用者指定「那讓他不要能上下捲動」）：
-          // 先量這台裝置剩多少高度，再決定留白壓多少（見 _fit）。
-          // 磚不縮：三排永遠原尺寸、滿版到 _side 的留白線
           child: LayoutBuilder(
             builder: (context, cons) {
-              final fit = _fit(context, cons, cards);
               final inner = cons.maxWidth - _side.horizontal;
-              // 「我的 GIF」跟「範本」同一種格子：三格一排、固定寬、
-              // 不出血（使用者指定：以前橫向清單一直延伸出畫面）
-              final cell = (inner - 20) / 3;
-              // 範本只放一排三格、優先放範本（D 案，使用者指定）：
-              // 不足三組才用「新增」磚補位，其餘按「全部」進範本夾
-              final presetTiles = <Widget>[
-                for (final pr in _presets.take(3)) _presetTile(pr, w: cell),
-              ];
-              if (presetTiles.length < 3) {
-                presetTiles.add(_presetAddTile(w: cell));
-              }
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Expanded(
-                    child: SingleChildScrollView(
-                      // 裝得下就不讓它捲；裝不下（小螢幕、字級調很大）才
-                      // 回到原本的可捲——寧可捲，也不能把東西截掉
-                      physics: fit.fits
-                          ? const NeverScrollableScrollPhysics()
-                          : null,
-                      padding: EdgeInsets.only(
-                        top: 4 + MediaQuery.paddingOf(context).top,
-                        // 底下只留系統的安全區（Home 條 34pt），不再多墊 12：
-                        // 使用者指定「貼底一點」——那 12pt 加上頁尾行高，
-                        // 實機看起來像下面還空一截
-                        bottom: MediaQuery.paddingOf(context).bottom,
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          // 「我的東西」大字拿掉，只放上一頁箭頭（A 案，
-                          // 使用者指定）；主標的重量讓給各區塊標題（20）
-                          Padding(
-                            padding: EdgeInsets.fromLTRB(
-                              14,
-                              6,
-                              22,
-                              16 * (1 - _kGiveLoose * fit.gap),
-                            ),
-                            child: Row(
-                              children: [
-                                IconButton(
-                                  onPressed: () =>
-                                      Navigator.of(context).maybePop(),
-                                  icon: const Icon(
-                                    Icons.arrow_back_ios_new,
-                                    size: 22,
-                                    color: kLText,
-                                  ),
-                                ),
-                                const Spacer(),
-                                TextButton.icon(
-                                  key: const ValueKey('profile-storage'),
-                                  onPressed: () =>
-                                      Navigator.push<void>(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (_) => LightPage(
-                                            child: StorageScreen(
-                                              openDrafts: _openDrafts,
-                                              openGifs: _openGifs,
-                                              openPresets: () async {
-                                                await Navigator.push<void>(
-                                                  context,
-                                                  MaterialPageRoute(
-                                                    builder: (_) =>
-                                                        const LightPage(
-                                                          child:
-                                                              PresetsScreen(),
-                                                        ),
-                                                  ),
-                                                );
-                                                if (mounted) await _reload();
-                                              },
-                                            ),
-                                          ),
-                                        ),
-                                      ).then((_) {
-                                        if (mounted) _reload();
-                                      }),
-                                  icon: const Icon(
-                                    Icons.storage_outlined,
-                                    size: 18,
-                                  ),
-                                  label: const Text('容量與清理'),
-                                ),
-                              ],
-                            ),
-                          ),
-                          // 區塊順序是草稿→我的 GIF→範本（D 案，使用者
-                          // 指定）：最常回來找的東西放最上面
-                          Padding(
-                            padding: _side,
-                            child: _sectionTitle(
-                              '草稿',
-                              // 空的時候不放「沒有」：下面那行字已經說了，
-                              // 標題右邊再寫一次只是重複
-                              trailing: hasDrafts ? '全部' : null,
-                              onTap: hasDrafts ? _openDrafts : null,
-                            ),
-                          ),
-                          const SizedBox(height: 14),
-                          if (!hasDrafts)
-                            // 空的時候不畫框：一個又扁又寬的空盒子跟旁邊
-                            // 的長條卡不是同一種東西，看起來像沒做完。
-                            // 也不解釋草稿怎麼來——真的存了一份之後這行
-                            // 就永遠不會再出現，講了也是白講
-                            const Padding(
-                              padding: EdgeInsets.only(top: 10, bottom: 4),
-                              child: Center(
-                                child: Text('還沒有草稿', style: _kHintStyle),
-                              ),
-                            )
-                          else
-                            Padding(
-                              padding: _side,
-                              // 全部列出來（兩欄）：本來只放最近一份、其餘
-                              // 要進草稿夾看，但清單就在這一頁，藏起來只是
-                              // 多一步
-                              child: _draftGrid(cards, inner),
-                            ),
-                          // 區塊間距統一 _kSectionGap
-                          SizedBox(
-                            height:
-                                _kSectionGap * (1 - _kGiveSection * fit.gap),
-                          ),
-                          // GIF 做好會存一份在 App 裡（相簿那份跟幾千張
-                          // 照片混在一起，要拿它當素材根本找不到）。
-                          // 空的時候區塊留著（使用者指定）：標題＋一行
-                          // 灰字，跟草稿的空狀態同一套
-                          Padding(
-                            padding: _side,
-                            child: _sectionTitle(
-                              '我的 GIF',
-                              trailing: _gifs.isEmpty ? '還沒有' : '全部',
-                              // 空的時候也要點得進去：標題與「全部」是
-                              // 進 GIF 夾的唯二入口（磚那排空了就不存在），
-                              // 兩個都關掉的話，一個 GIF 都沒有的人反而
-                              // 進不去那個「可以匯入 GIF」的頁面
-                              onTap: _openGifs,
-                            ),
-                          ),
-                          // 主頁這排不放「＋」（使用者指定）：匯入自己的
-                          // GIF 走 GIF 夾右下角的浮動 +（或編輯器挑 GIF
-                          // 的「從相簿匯入 GIF」）。空的時候一行灰字
-                          if (_gifs.isEmpty)
-                            const Padding(
-                              padding: EdgeInsets.only(top: 16, bottom: 4),
-                              child: Center(
-                                child: Text('還沒有 GIF', style: _kHintStyle),
-                              ),
-                            )
-                          else ...[
-                            const SizedBox(height: 14),
-                            // 其餘按「全部」進 GIF 夾
-                            Padding(
-                              padding: _side,
-                              child: _row([
-                                for (final (i, g)
-                                    in _gifs.take(3).toList().indexed) ...[
-                                  if (i > 0) const SizedBox(width: 10),
-                                  GestureDetector(
-                                    onTap: _openGifs,
-                                    // 長按＝刪這一個（跟 GIF 夾同一份問法）
-                                    onLongPress: () => _homeDelete(
-                                      () => _confirmDeleteGifFile(context, g),
-                                    ),
-                                    // 動圖每換一格就對自己
-                                    // markNeedsPaint，往上找到最近的
-                                    // repaint boundary 才停。沒有這一層
-                                    // 的話停在捲動視窗——三個 GIF 各自
-                                    // 用自己的速度，把「整頁重畫」
-                                    // （含範本磚的文字排版）
-                                    // 一秒觸發幾十次，手指根本沒碰螢幕
-                                    child: RepaintBoundary(
-                                      child: SizedBox(
-                                        width: cell,
-                                        height: cell,
-                                        // 形狀跟旁邊的範本磚同一家（超橢圓，
-                                        // 見 tileShape）；以前是普通圓弧，
-                                        // 兩種角擺在同一排看得出來
-                                        child: DecoratedBox(
-                                          decoration: ShapeDecoration(
-                                            color: kLTile,
-                                            shape: tileShape(),
-                                            shadows: _tileShadow,
-                                          ),
-                                          child: ClipRSuperellipse(
-                                            borderRadius: tileClip(),
-                                            child: GifImage(
-                                              g,
-                                              cacheWidth: _gifDecodeWidth(
-                                                cell,
-                                                g,
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ]),
-                            ),
-                          ],
-                          // 跟下面那一區隔開，不然「範本」會黏在
-                          // GIF 那排的下緣上
-                          SizedBox(
-                            height:
-                                _kSectionGap * (1 - _kGiveSection * fit.gap),
-                          ),
-                          Padding(
-                            padding: _side,
-                            child: _sectionTitle(
-                              '範本',
-                              // 不顯示數量，一律「全部」（跟草稿區一致）
-                              trailing: _presets.isEmpty ? '還沒有' : '全部',
-                              // 點標題或「全部」都進範本總覽；
-                              // ＋磚才是直接新增（見 _presetAddTile）
-                              onTap: () => Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) =>
-                                      const LightPage(child: PresetsScreen()),
-                                ),
-                              ).then((_) => _reload()),
-                            ),
-                          ),
-                          const SizedBox(height: 14),
-                          Padding(
-                            padding: _side,
-                            child: _row([
-                              for (var i = 0; i < presetTiles.length; i++) ...[
-                                if (i > 0) const SizedBox(width: 10),
-                                presetTiles[i],
-                              ],
-                            ]),
-                          ),
-                          // 頁尾連結跟著內容捲（不釘底）：釘底會一直吃掉
-                          // 一截可視高度，草稿多的時候很擠。
-                          // 剩下的高度全給這一段（見 _Fit.slack）：
-                          // 頁尾貼著底部，中間不留一塊空白。
-                          //
-                          // 「太好用啦」那顆黑色大鈕是使用者指定拿掉的
-                          //（見 _kSectionGap）；兩個文字連結留著
-                          SizedBox(
-                            height:
-                                _kFootGap * (1 - _kGiveLoose * fit.gap) +
-                                fit.slack,
-                          ),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              GestureDetector(
-                                onTap: () => showFeedbackDialog(context),
-                                child: const Text('意見回饋', style: _kFootStyle),
-                              ),
-                              const Padding(
-                                padding: EdgeInsets.symmetric(horizontal: 10),
-                                child: Text('·', style: _kDotStyle),
-                              ),
-                              GestureDetector(
-                                onTap: () => Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) =>
-                                        const LightPage(child: AboutScreen()),
-                                  ),
-                                ),
-                                child: const Text(
-                                  '關於這個 App',
-                                  style: _kFootStyle,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
+              return CustomScrollView(
+                // 一頁裝得下就不會捲（Clamping 沒有回彈，使用者指定「不要能
+                // 上下捲動」）；小螢幕、字級調很大裝不下才捲得動——
+                // 寧可捲，也不能把東西截掉
+                physics: const ClampingScrollPhysics(),
+                slivers: [
+                  SliverPadding(
+                    padding: EdgeInsets.fromLTRB(14, pad.top + 4, 8, 0),
+                    sliver: SliverToBoxAdapter(child: _topBar()),
+                  ),
+                  SliverToBoxAdapter(child: _tabBar()),
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(22, 18, 22, 0),
+                    sliver: SliverToBoxAdapter(
+                      child: switch (_tab) {
+                        0 => _draftsTab(inner),
+                        1 => _gifsTab(inner),
+                        _ => _presetsTab(),
+                      },
+                    ),
+                  ),
+                  // 剩下的高度全給頁尾前面：頁尾貼著底部，中間不留一塊
+                  // 看起來像沒載完的空白
+                  SliverFillRemaining(
+                    hasScrollBody: false,
+                    child: Align(
+                      alignment: Alignment.bottomCenter,
+                      child: Padding(
+                        padding: EdgeInsets.only(top: 22, bottom: pad.bottom + 10),
+                        child: _footer(),
                       ),
                     ),
                   ),
@@ -1374,14 +1108,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 }
 
-/// 草稿夾：列出所有未完成的影片專案（可以有很多份），
-/// 點一下繼續、長按改名或刪除
+/// 草稿的「查看全部」：直接是瀑布流，上面只有返回鍵跟「批次刪除」
+///（使用者指定其他東西都不要有）。點一格接著剪；長按旁邊跳小選單問
+/// 要不要刪；批次刪除＝每一格標出刪掉能省多少，選好按底下的紅鈕
 class DraftsScreen extends StatefulWidget {
-  /// 進來就接續這一種草稿（個人中心的草稿卡點下去走這條，見
-  /// _ProfileScreenState._openDrafts）。null＝只是打開資料夾
+  /// 進來就接續這一種草稿（個人中心的單鍵草稿格點下去走這條，見
+  /// _ProfileScreenState._openDrafts）。null＝只是打開
   final DraftKind? resume;
 
-  const DraftsScreen({super.key, this.resume});
+  /// 一進來就是批次刪除（從「容量與清理」點草稿進來的）
+  final bool batch;
+
+  const DraftsScreen({super.key, this.resume, this.batch = false});
 
   @override
   State<DraftsScreen> createState() => _DraftsScreenState();
@@ -1401,21 +1139,15 @@ class _DraftsScreenState extends State<DraftsScreen> {
   Map<String, dynamic>? _collageDraft;
   bool _loading = true;
 
-  /// 保留幾份：固定 30，沒有設定可以調（使用者指定）。
-  /// 只是手動清理的基準，不會自動刪，見 _cleanupOld
-  static const _cap = DraftStore.maxDrafts;
-
-  /// 選取模式：勾好幾份、右上角垃圾桶一次刪
-  bool _selecting = false;
+  /// 批次刪除：勾好幾份、底下的紅鈕一次刪
+  late bool _selecting = widget.batch;
+  bool _deleting = false;
   final Set<String> _picked = {};
 
-  /// 佔用空間（見 StorageUsage）：null＝還在算。給使用者自己判斷要不要刪
+  /// 佔用空間（見 StorageUsage）：null＝還在算。批次刪除時每一格標的
+  /// 「刪掉能省多少」從這裡來（共用的轉檔暫存不算，見 freeableFor）
   StorageReport? _usage;
-
-  /// 舊草稿補算檔案清單的進度（第幾份／共幾份）
-  (int, int)? _usageProgress;
   int _usageGen = 0;
-  bool _clearing = false;
 
   /// 舊封面換成 JPEG 那一輪的代號：一打開編輯頁就作廢，別在背景跟它搶
   int _coverGen = 0;
@@ -1423,40 +1155,10 @@ class _DraftsScreenState extends State<DraftsScreen> {
   Future<void> _scanUsage() async {
     final gen = ++_usageGen;
     try {
-      final r = await StorageUsage.scan(
-        onProgress: (done, total) {
-          if (mounted && gen == _usageGen) {
-            setState(() => _usageProgress = (done, total));
-          }
-        },
-      );
+      final r = await StorageUsage.scan();
       if (!mounted || gen != _usageGen) return;
-      setState(() {
-        _usage = r;
-        _usageProgress = null;
-      });
+      setState(() => _usage = r);
     } catch (_) {}
-  }
-
-  /// 清掉沒有任何草稿在用的轉檔暫存（使用者按了才做，先問）
-  Future<void> _clearUnused() async {
-    final u = _usage;
-    if (u == null || !u.canClearUnused || _clearing) return;
-    final ok = await showConfirm(
-      context,
-      title: '清掉 ${formatBytes(u.filesUnused)} 轉檔暫存？',
-      message:
-          '這些是之前匯入影片時轉好的檔，現在沒有任何草稿在用。'
-          '之後再匯入同一支影片會重新轉一次，草稿不受影響',
-      action: '清掉',
-    );
-    if (!ok || !mounted) return;
-    setState(() => _clearing = true);
-    final freed = await StorageUsage.clearUnused();
-    if (!mounted) return;
-    setState(() => _clearing = false);
-    showHint(context, freed > 0 ? '清出 ${formatBytes(freed)}' : '沒有可以清的暫存');
-    unawaited(_scanUsage());
   }
 
   /// 打開編輯頁：背景換封面那一輪先停（別跟編輯器搶解碼與 GPU），
@@ -1468,33 +1170,38 @@ class _DraftsScreenState extends State<DraftsScreen> {
     if (mounted) _reload();
   }
 
-  /// 手動清理：只有使用者按下去才會刪。自動清理全部拿掉了——
-  /// 它要把每份草稿的完整 JSON（含縮圖與圖片）讀進來比對引用，
-  /// 草稿多時是幾十 MB 的掃描，掛在開機/存檔路徑上會讓 App 被系統
-  /// 殺掉（實機回報：開機即當、匯入卡住後閃退）
-  Future<void> _cleanupOld() async {
-    final over = _drafts.length - _cap;
-    if (over <= 0) {
-      showHint(context, '草稿沒有超過 $_cap 份，不用清');
-      return;
-    }
-    final ok = await showConfirm(
-      context,
-      title: '清掉最舊的 $over 份？',
-      message:
-          '現在有 ${_drafts.length} 份影片草稿，保留最新的 $_cap 份，'
-          '其餘連同只有它們在用的轉檔暫存一起刪掉，無法復原',
-      action: '清掉 $over 份',
-    );
-    if (!ok || !mounted) return;
-    final removed = await DraftStore.prune();
-    if (!mounted) return;
-    showHint(context, '清掉了 ${removed.length} 份草稿');
-    _reload();
+  void _cancelSelection() {
+    if (_deleting) return;
+    setState(() {
+      _selecting = false;
+      _picked.clear();
+    });
+  }
+
+  void _togglePick(String id) {
+    if (_deleting) return;
+    setState(() {
+      if (!_picked.remove(id)) _picked.add(id);
+    });
+  }
+
+  /// 全選只算影片草稿：單鍵草稿各只有一份，長按就能刪，不進批次
+  bool get _allPicked =>
+      _drafts.isNotEmpty && _picked.length == _drafts.length;
+
+  void _toggleAll() {
+    if (_deleting) return;
+    setState(() {
+      if (_allPicked) {
+        _picked.clear();
+      } else {
+        _picked.addAll(_drafts.map((m) => m.id));
+      }
+    });
   }
 
   Future<void> _deletePicked() async {
-    if (_picked.isEmpty) return;
+    if (_picked.isEmpty || _deleting) return;
     final ok = await showConfirm(
       context,
       title: '刪除 ${_picked.length} 份草稿？',
@@ -1502,104 +1209,20 @@ class _DraftsScreenState extends State<DraftsScreen> {
       action: '刪除',
     );
     if (!ok || !mounted) return;
-    // 一次刪完、連帶清理只算一次（見 DraftStore.removeMany）
-    await DraftStore.removeMany({..._picked});
-    if (!mounted) return;
-    setState(() {
-      _picked.clear();
-      _selecting = false;
-    });
-    _reload();
-  }
-
-  /// 容量卡：這個資料夾一共佔多少空間，給使用者自己判斷要不要刪。
-  /// 算的過程不轉圈（不然 pumpAndSettle 等不完）：先寫「計算中」
-  Widget _usageCard() {
-    final u = _usage;
-    const dim = TextStyle(fontSize: 12, color: kLTextDim, height: 1.45);
-    final lines = <Widget>[];
-    if (u == null) {
-      final p = _usageProgress;
-      lines.add(
-        Text(
-          p == null || p.$2 == 0
-              ? '正在計算佔用空間…'
-              : '正在計算佔用空間…（舊草稿 ${p.$1}/${p.$2}）',
-          style: dim,
-        ),
-      );
-    } else {
-      lines.add(
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.baseline,
-          textBaseline: TextBaseline.alphabetic,
-          children: [
-            const Text(
-              '佔用空間',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
-            ),
-            const Spacer(),
-            Text(
-              formatBytes(u.total),
-              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
-            ),
-          ],
-        ),
-      );
-      lines.add(const SizedBox(height: 4));
-      lines.add(
-        Text(
-          '影片草稿 ${_drafts.length} 份 ${formatBytes(u.draftBytes)}'
-          ' · 轉檔暫存 ${formatBytes(u.filesInUse + u.filesUnused)}'
-          '${u.otherDrafts > 0 ? ' · 其他草稿 ${formatBytes(u.otherDrafts)}' : ''}',
-          style: dim,
-        ),
-      );
-      if (u.filesUnused > 0) {
-        lines.add(
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  u.pending > 0
-                      ? '其中 ${formatBytes(u.filesUnused)} 可能沒有草稿在用'
-                      : '其中 ${formatBytes(u.filesUnused)} 沒有草稿在用',
-                  style: dim,
-                ),
-              ),
-              TextButton(
-                onPressed: u.canClearUnused && !_clearing ? _clearUnused : null,
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                ),
-                child: Text(_clearing ? '清理中…' : '清掉'),
-              ),
-            ],
-          ),
-        );
-      }
-      if (u.pending > 0) {
-        lines.add(Text('有 ${u.pending} 份草稿讀不到內容，它們用的暫存沒有算進來', style: dim));
-      }
-      if (u.filesUnused <= 0 && _drafts.isNotEmpty) {
-        lines.add(const Text('選取草稿可以看每份刪掉能省多少', style: dim));
+    setState(() => _deleting = true);
+    try {
+      // 一次刪完、連帶清理只算一次（見 DraftStore.removeMany）
+      await DraftStore.removeMany({..._picked});
+    } finally {
+      if (mounted) {
+        setState(() {
+          _deleting = false;
+          _picked.clear();
+          _selecting = false;
+        });
       }
     }
-    // 跟其他草稿卡同一家（底色、髮絲邊線、超橢圓）
-    return Material(
-      color: kLCard,
-      shape: tileShape(
-        side: const BorderSide(color: Color(0xFFEDEDF2), width: 1.4),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 10, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: lines,
-        ),
-      ),
-    );
+    if (mounted) _reload();
   }
 
   @override
@@ -1622,6 +1245,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
       _batchDraft = batch;
       _gifDraft = gif;
       _collageDraft = collage;
+      _picked.retainAll(found.map((m) => m.id));
       _loading = false;
     });
     unawaited(_loadCovers(found));
@@ -1667,19 +1291,11 @@ class _DraftsScreenState extends State<DraftsScreen> {
     );
   }
 
-  Future<void> _deleteGif() async {
-    if (await _confirmDeleteGifDraft(context) && mounted) _reload();
-  }
-
   /// 續作拼圖：由拼圖頁檢查全部照片；讀不到時保留原草稿。
   Future<void> _resumeCollage() async {
     final d = _collageDraft;
     if (d == null) return;
     await _openOver(editRoute(builder: (_) => CollageScreen(restore: d)));
-  }
-
-  Future<void> _deleteCollage() async {
-    if (await _confirmDeleteCollageDraft(context) && mounted) _reload();
   }
 
   /// 續作批次浮水印：檔案還在的帶回去（草稿記的路徑不見了但留過複本
@@ -1714,10 +1330,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
     );
   }
 
-  Future<void> _deleteBatch() async {
-    if (await _confirmDeleteBatchDraft(context) && mounted) _reload();
-  }
-
   Future<void> _resumePhoto() async {
     final d = _photoDraft;
     if (d == null) return;
@@ -1726,112 +1338,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
         builder: (_) => PhotoEditorScreen(
           photo: XFile(d['photo'] as String),
           draft: d['state'] as String?,
-        ),
-      ),
-    );
-  }
-
-  Future<void> _deletePhoto() async {
-    if (await _confirmDeletePhotoDraft(context) && mounted) _reload();
-  }
-
-  /// 草稿卡（影片與照片共用同一種長相）。
-  /// 封面固定 52 方框：文字起點才會對齊，兩張卡看起來才整齊
-  Widget _draftCard({
-    required Widget cover,
-    required String title,
-    required String subtitle,
-    required VoidCallback onTap,
-    required VoidCallback onDelete,
-
-    /// 選取模式的勾選狀態；null＝不在選取模式（照常顯示刪除鈕）
-    bool? picked,
-
-    /// 縮圖的寬高比。null＝沒有縮圖（放圖示佔位，維持方框）
-    double? coverAspect,
-  }) {
-    // 底色、髮絲邊線、形狀都交給同一個 Material：InkWell 的水波是畫在
-    // 最近的 Material 上的，以前 InkWell 直接放在有底色的 Container 裡，
-    // 水波畫在 Scaffold 那一層、被卡片的底色蓋住，按了沒回饋。
-    // 形狀跟瀑布流的磚同一家（超橢圓，見 tileShape），邊線同 lightCard
-    return Material(
-      color: kLCard,
-      shape: tileShape(
-        side: const BorderSide(color: Color(0xFFEDEDF2), width: 1.4),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          child: Row(
-            children: [
-              // 縮圖照它自己的比例：高度固定 52，寬度跟著比例走。
-              //
-              // 本來是固定 52×52 的方框，而 alignment 會把緊的約束
-              // 放鬆——圖片於是照原比例縮進方框裡，兩側露出一塊灰邊。
-              // 直片橫片的寬度不一樣是正常的，那才是它本來的樣子
-              ClipRSuperellipse(
-                borderRadius: tileClip(8),
-                child: SizedBox(
-                  height: 52,
-                  width: 52 * (coverAspect ?? 1.0).clamp(0.4, 2.5),
-                  child: coverAspect == null
-                      ? ColoredBox(
-                          color: kLTile,
-                          child: Center(child: cover),
-                        )
-                      : cover,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    if (subtitle.isNotEmpty) ...[
-                      const SizedBox(height: 3),
-                      Text(
-                        subtitle,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 12, color: kLTextDim),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              // 選取模式：刪除鈕換成勾選圈；點卡片本身就是勾/取消
-              if (picked != null)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  child: Icon(
-                    picked ? Icons.check_circle : Icons.circle_outlined,
-                    size: 20,
-                    color: picked ? kLAccent : kLTextDim,
-                  ),
-                )
-              else
-                IconButton(
-                  tooltip: '刪除草稿',
-                  icon: const Icon(
-                    Icons.delete_outline,
-                    size: 19,
-                    color: kLTextDim,
-                  ),
-                  onPressed: onDelete,
-                ),
-            ],
-          ),
         ),
       ),
     );
@@ -1907,13 +1413,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
     if (changed > 0 && mounted) setState(() {});
   }
 
-  /// 單鍵草稿的存檔時間（沒有或壞掉就空字串），格式走 [dateLabel]
-  String _savedAtLabel(Map<String, dynamic> j) {
-    final raw = j['savedAt'];
-    final t = raw is String ? DateTime.tryParse(raw) : null;
-    return t == null ? '' : dateLabel(t);
-  }
-
   Future<void> _resume(DraftMeta m) async {
     final data = await DraftStore.load(m.id);
     if (data == null || !mounted) {
@@ -1927,120 +1426,141 @@ class _DraftsScreenState extends State<DraftsScreen> {
     );
   }
 
-  Future<void> _delete(DraftMeta m) async {
-    if (await _confirmDeleteVideoDraft(context, m) && mounted) _reload();
+  /// 點一格：影片草稿接著剪；單鍵草稿各自接續
+  Future<void> _open(_DraftEntry e) async {
+    final v = e.video;
+    if (v != null) return _resume(v);
+    switch (e.kind!) {
+      case DraftKind.photo:
+        return _resumePhoto();
+      case DraftKind.batch:
+        return _resumeBatch();
+      case DraftKind.gif:
+        return _resumeGif();
+      case DraftKind.collage:
+        return _resumeCollage();
+    }
   }
 
-  // ── 瀑布流（C 案）：封面照專案畫布原比例排，日期小 chip 浮在
-  // 左上角、時長在右下角，卡片本身零文字列——最像相簿、畫面最純。
-  // 片段數不顯示（要看的話點進去就知道）；刪除走長按或選取模式
+  /// 長按一格：背景壓暗、那一格浮起來，旁邊跳小選單問要不要刪
+  ///（使用者指定，不再跳整頁的確認視窗）
+  Future<void> _menu(BuildContext tile, _DraftEntry e, double colW) async {
+    final go = await showLibraryTileMenu<bool>(
+      tile,
+      preview: _cover(e, colW),
+      title: '刪除這份草稿？',
+      actions: const [
+        LibraryMenuAction(
+          true,
+          '刪除',
+          icon: Icons.delete_outline,
+          destructive: true,
+        ),
+      ],
+    );
+    if (go != true) return;
+    final v = e.video;
+    if (v != null) {
+      await _removeVideoDraft(v);
+    } else {
+      await _removeSingleDraft(e.kind!);
+    }
+    if (mounted) _reload();
+  }
 
-  /// 這份草稿在瀑布流裡的高寬比（沒封面的用 1:1 的圖示磚佔位）
-  /// 看「有沒有封面」而不是「封面讀到了沒」：封面一張張讀進來時磚的
-  /// 大小不變，版面不跳
-  double _tileAspect(DraftMeta m) =>
-      m.hasThumb ? (m.thumbAspect ?? 9 / 16) : 1.0;
+  /// 全部的草稿：影片草稿在前（新到舊），單鍵草稿接在後面——
+  /// 跟個人中心同一個順序
+  List<_DraftEntry> get _entries => [
+    for (final m in _drafts) _DraftEntry.video(m),
+    if (_photoDraft != null) const _DraftEntry.single(DraftKind.photo),
+    if (_batchDraft != null) const _DraftEntry.single(DraftKind.batch),
+    if (_gifDraft != null) const _DraftEntry.single(DraftKind.gif),
+    if (_collageDraft != null) const _DraftEntry.single(DraftKind.collage),
+  ];
+
+  // ── 瀑布流：封面照專案畫布原比例排（直的、方的、橫的混在一起），
+  // 格子本身零文字——最像相簿、畫面最純（日期、時長都不放）
+
+  /// 這一格的寬高比。影片草稿看「有沒有封面」而不是「封面讀到了沒」：
+  /// 封面一張張讀進來時磚的大小不變，版面不跳。單鍵草稿一律方形
+  double _tileAspect(_DraftEntry e) {
+    final v = e.video;
+    if (v == null) return 1.0;
+    return v.hasThumb ? (v.thumbAspect ?? 9 / 16) : 1.0;
+  }
 
   /// 一格佔的高度（含跟下一格之間的 10）。排欄、算總長、排版三邊用
   /// 同一個式子，不然版面會自己對不齊（跟「我的 GIF」同一套）
-  double _tileExtent(DraftMeta m, double colW) => colW / _tileAspect(m) + 10;
+  double _tileExtent(_DraftEntry e, double colW) =>
+      colW / _tileAspect(e) + 10;
 
   /// 兩欄瀑布流：每一份丟進目前比較短的那一欄（跟「我的 GIF」同一套）
-  List<List<DraftMeta>> _draftColumns(double colW) {
-    final cols = <List<DraftMeta>>[[], []];
+  List<List<_DraftEntry>> _columns(List<_DraftEntry> all, double colW) {
+    final cols = <List<_DraftEntry>>[[], []];
     final h = [0.0, 0.0];
-    for (final m in _drafts) {
+    for (final e in all) {
       final i = h[0] <= h[1] ? 0 : 1;
-      cols[i].add(m);
-      h[i] += _tileExtent(m, colW);
+      cols[i].add(e);
+      h[i] += _tileExtent(e, colW);
     }
     return cols;
   }
 
-  /// 一格：封面照原比例。[colW] 是它畫出來的寬，封面就照這個寬解碼
-  Widget _draftTile(DraftMeta m, double colW) {
-    final cover = _covers[m.id];
-    final picked = _picked.contains(m.id);
-    return GestureDetector(
-      onTap: _selecting
-          ? () => setState(() {
-              picked ? _picked.remove(m.id) : _picked.add(m.id);
-            })
-          : () => _resume(m),
-      onLongPress: _selecting ? null : () => _delete(m),
-      // 形狀跟個人中心的磚同一家（超橢圓，見 tileShape）。
-      // 不自己包 RepaintBoundary：SliverList 已經給每一格一層
-      child: ClipRSuperellipse(
-        borderRadius: tileClip(),
-        child: AspectRatio(
-          aspectRatio: _tileAspect(m),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              if (cover != null)
-                Image.memory(
-                  cover,
-                  fit: BoxFit.cover,
-                  gaplessPlayback: true,
-                  // 磚就是封面的比例，欄寬 × dpr 就是它畫出來的實體寬——
-                  // 照這個解碼，不是封面原尺寸（長邊 720 的 PNG 解開一張
-                  // 1.2MB，實機曾有 113 份）
-                  cacheWidth: (colW * MediaQuery.devicePixelRatioOf(context))
-                      .round(),
-                )
-              else
-                const ColoredBox(
-                  color: kLTile,
-                  child: Icon(Icons.movie_outlined, size: 26, color: kLAccent),
-                ),
-              // 不放日期/時長角標（使用者指定）：封面本身就是內容
-              // 選取模式：整張壓暗＋右上角勾勾＋左下角「刪掉能省多少」
-              //（挑要刪哪幾份時才看得到，平常封面照舊乾乾淨淨）
-              if (_selecting) ...[
-                ColoredBox(
-                  color: Colors.black.withValues(alpha: picked ? 0.35 : 0.12),
-                ),
-                Positioned(
-                  right: 6,
-                  top: 6,
-                  child: Container(
-                    width: 20,
-                    height: 20,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: picked ? const Color(0xFFE53935) : Colors.black38,
-                      border: Border.all(color: Colors.white, width: 1.5),
-                    ),
-                    child: picked
-                        ? const Icon(Icons.check, size: 13, color: Colors.white)
-                        : null,
-                  ),
-                ),
-                if (_usage != null)
-                  Positioned(
-                    left: 6,
-                    bottom: 6,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 7,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.black54,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        formatBytes(_usage!.freeableFor({m.id})),
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
-                  ),
+  /// 一格的內容（格子本身與長按浮起來的那一格共用）。[colW] 是它畫出來
+  /// 的寬：磚就是封面的比例，欄寬 × dpr 就是實體寬——照這個解碼，不是
+  /// 封面原尺寸（長邊 720 的圖解開一張 1.2MB，實機曾有 113 份）
+  Widget _cover(_DraftEntry e, double colW) {
+    final v = e.video;
+    if (v == null) return _singleDraftCover(e.kind!);
+    final cover = _covers[v.id];
+    if (cover == null) {
+      return const ColoredBox(
+        color: kLTile,
+        child: Icon(Icons.movie_outlined, size: 26, color: kLAccent),
+      );
+    }
+    return Image.memory(
+      cover,
+      fit: BoxFit.cover,
+      gaplessPlayback: true,
+      cacheWidth: (colW * MediaQuery.devicePixelRatioOf(context)).round(),
+    );
+  }
+
+  /// 一格。批次刪除時整張可勾、左下角標刪掉能省多少；單鍵草稿不進批次
+  ///（各只有一份，長按就能刪），淡掉表示選不到
+  Widget _tile(_DraftEntry e, double colW) {
+    final v = e.video;
+    return Builder(
+      builder: (tile) => GestureDetector(
+        onTap: _selecting
+            ? (v == null ? null : () => _togglePick(v.id))
+            : () => _open(e),
+        onLongPress: _selecting
+            ? (v == null ? null : () => _togglePick(v.id))
+            : () => _menu(tile, e, colW),
+        // 形狀跟個人中心的磚同一家（超橢圓，見 tileShape）。
+        // 不自己包 RepaintBoundary：SliverList 已經給每一格一層
+        child: ClipRSuperellipse(
+          borderRadius: tileClip(),
+          child: AspectRatio(
+            aspectRatio: _tileAspect(e),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                _cover(e, colW),
+                if (_selecting)
+                  if (v != null)
+                    LibrarySelectionMark(
+                      selected: _picked.contains(v.id),
+                      size: _usage == null
+                          ? null
+                          : formatBytes(_usage!.freeableFor({v.id})),
+                    )
+                  else
+                    const ColoredBox(color: Color(0x99FFFFFF)),
               ],
-            ],
+            ),
           ),
         ),
       ),
@@ -2049,279 +1569,140 @@ class _DraftsScreenState extends State<DraftsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final ds = _drafts;
-    final p = _photoDraft;
-    final empty =
-        ds.isEmpty &&
-        p == null &&
-        _batchDraft == null &&
-        _gifDraft == null &&
-        _collageDraft == null;
-    return SwipeBack(
-      child: Scaffold(
-        appBar: AppBar(
-          actions: [
-            if (_selecting) ...[
-              // 刪除鈕移到底部 sticky 列（勾了才浮上來），上面只留取消
-              TextButton(
-                onPressed: () => setState(() {
-                  _selecting = false;
-                  _picked.clear();
-                }),
-                child: const Text('取消'),
-              ),
-            ] else ...[
-              // 保留份數不再給調（使用者指定：那顆鈕刪掉，一律 30 份）。
-              // 掃把是唯一會刪掉草稿的入口
-              if (ds.isNotEmpty)
-                IconButton(
-                  tooltip: '清理舊草稿',
-                  icon: const Icon(Icons.cleaning_services_outlined, size: 20),
-                  onPressed: _cleanupOld,
-                ),
-              if (ds.isNotEmpty)
+    final all = _entries;
+    final picked = _picked.length;
+    return PopScope(
+      // 批次刪除中按返回／右滑＝先退出批次刪除，不是離開這一頁
+      canPop: !_selecting && !_deleting,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _cancelSelection();
+      },
+      child: SwipeBack(
+        child: Scaffold(
+          // 上面只有返回鍵跟「批次刪除」（使用者指定其他東西都不要有）；
+          // 批次刪除時左邊換成「取消」、右邊換成「全選」
+          appBar: AppBar(
+            automaticallyImplyLeading: !_selecting,
+            leadingWidth: _selecting ? 76 : null,
+            leading: _selecting
+                ? TextButton(
+                    onPressed: _deleting ? null : _cancelSelection,
+                    child: const Text('取消'),
+                  )
+                : null,
+            actions: [
+              if (_selecting)
+                TextButton(
+                  onPressed: _deleting || _drafts.isEmpty ? null : _toggleAll,
+                  child: Text(_allPicked ? '取消全選' : '全選'),
+                )
+              else if (_drafts.isNotEmpty)
                 TextButton(
                   onPressed: () => setState(() => _selecting = true),
-                  child: const Text('選取'),
+                  child: const Text('批次刪除'),
                 ),
+              const SizedBox(width: 8),
             ],
-          ],
-        ),
-        // 刪除列疊在 body 的 Stack 裡，不用 Scaffold.bottomSheet：
-        // bottomSheet 會把內容包一層主題的白底圓角 Material，
-        // 滑出動畫只滑走內容物、外皮留在原地——就是使用者回報的
-        // 「底下白條」
-        body: Stack(
-          children: [
-            _loading
-                ? const Center(child: CircularProgressIndicator())
-                : empty
-                ? const Center(
-                    child: Padding(
-                      padding: EdgeInsets.all(32),
-                      child: Text(
-                        '沒有草稿。\n\n影片專案會自動存成草稿放在這裡；\n'
-                        '照片、批次、GIF 與拼圖要在離開時選「保留草稿」。',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: kLTextDim, height: 1.6),
-                      ),
-                    ),
-                  )
-                : LayoutBuilder(
-                    builder: (context, box) {
-                      // 兩欄瀑布流：左右各 16、中間 10
-                      final colW = (box.maxWidth - 16 * 2 - 10) / 2;
-                      final cols = _draftColumns(colW);
-                      return CustomScrollView(
-                        slivers: [
-                          // 佔用空間：放最上面，讓使用者自己判斷要不要刪
-                          SliverPadding(
-                            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                            sliver: SliverToBoxAdapter(child: _usageCard()),
-                          ),
-                          // 影片草稿走瀑布流（C 案）：封面原比例。每一欄
-                          // 一條 SliverVariedExtentList，只做看得到的那幾格
-                          // （跟「我的 GIF」同一套）。以前是 ListView 裡唯一
-                          // 一個子項包兩欄 Column，三十份草稿就是三十張封面
-                          // 同時活著、一起解碼（實機曾有 113 份）。每一格的
-                          // 高度本來就算得出來（欄寬 ÷ 比例），總長也直接給
-                          // （見 _ExactExtentDelegate），沒做出來的格子也定得
-                          // 出位置
-                          if (ds.isNotEmpty)
-                            SliverPadding(
-                              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                              sliver: SliverCrossAxisGroup(
-                                slivers: [
-                                  for (var c = 0; c < cols.length; c++)
-                                    SliverVariedExtentList(
-                                      itemExtentBuilder: (i, _) =>
-                                          _tileExtent(cols[c][i], colW),
-                                      delegate: _ExactExtentDelegate(
-                                        (_, i) => i < 0 || i >= cols[c].length
-                                            ? null
-                                            : Padding(
-                                                // 欄距 10：左欄右邊 5、右欄
-                                                // 左邊 5；格距 10 在下面
-                                                padding: EdgeInsets.only(
-                                                  left: c == 0 ? 0 : 5,
-                                                  right: c == 0 ? 5 : 0,
-                                                  bottom: 10,
-                                                ),
-                                                child: _draftTile(
-                                                  cols[c][i],
-                                                  colW,
-                                                ),
-                                              ),
-                                        childCount: cols[c].length,
-                                        total: [
-                                          for (final m in cols[c])
-                                            _tileExtent(m, colW),
-                                        ].fold(0.0, (a, b) => a + b),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                          // 照片／批次／GIF／拼圖草稿維持一列一卡
-                          SliverPadding(
-                            padding: EdgeInsets.fromLTRB(
-                              16,
-                              ds.isEmpty ? 16 : 0,
-                              16,
-                              16,
-                            ),
-                            sliver: SliverList.list(
-                              children: [
-                                if (p != null)
-                                  _draftCard(
-                                    // 照片草稿沒有存縮圖（那張照片還在裝置
-                                    // 上，再存一份只是浪費空間），用圖示就好
-                                    cover: const Icon(
-                                      Icons.image_outlined,
-                                      size: 20,
-                                      color: kLAccent,
-                                    ),
-                                    title: '未完成的照片',
-                                    subtitle: _savedAtLabel(p),
-                                    onTap: _resumePhoto,
-                                    onDelete: _deletePhoto,
-                                  ),
-                                if (_batchDraft != null) ...[
-                                  const SizedBox(height: 12),
-                                  _draftCard(
-                                    cover: const Icon(
-                                      Icons.collections_outlined,
-                                      size: 20,
-                                      color: kLAccent,
-                                    ),
-                                    title: '未完成的批次浮水印',
-                                    subtitle: _savedAtLabel(_batchDraft!),
-                                    onTap: _resumeBatch,
-                                    onDelete: _deleteBatch,
-                                  ),
-                                ],
-                                if (_gifDraft != null) ...[
-                                  const SizedBox(height: 12),
-                                  _draftCard(
-                                    cover: const Icon(
-                                      Icons.gif_box_outlined,
-                                      size: 20,
-                                      color: kLAccent,
-                                    ),
-                                    title: '未完成的 GIF',
-                                    subtitle: _savedAtLabel(_gifDraft!),
-                                    onTap: _resumeGif,
-                                    onDelete: _deleteGif,
-                                  ),
-                                ],
-                                if (_collageDraft != null) ...[
-                                  const SizedBox(height: 12),
-                                  _draftCard(
-                                    cover: const Icon(
-                                      Icons.grid_view,
-                                      size: 20,
-                                      color: kLAccent,
-                                    ),
-                                    title: '未完成的拼圖',
-                                    subtitle: _savedAtLabel(_collageDraft!),
-                                    onTap: _resumeCollage,
-                                    onDelete: _deleteCollage,
-                                  ),
-                                ],
-                                // 說明放在清單尾巴：草稿不會自己消失，
-                                // 要清得自己按
-                                if (ds.isNotEmpty)
-                                  Padding(
-                                    padding: const EdgeInsets.fromLTRB(
-                                      8,
-                                      18,
-                                      8,
-                                      8,
-                                    ),
-                                    child: Text(
-                                      '影片專案會自動存成草稿，不會自己刪掉；'
-                                      '保留 $_cap 份，超過時按右上角的掃把清掉最舊的',
-                                      textAlign: TextAlign.center,
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        color: kLTextDim,
-                                        height: 1.5,
-                                      ),
-                                    ),
-                                  ),
-                                // 底部刪除列滑上來時，最後一張卡不被蓋住
-                                if (_selecting) const SizedBox(height: 88),
-                              ],
-                            ),
-                          ),
-                        ],
-                      );
-                    },
+          ),
+          // 撐滿整個 body：Scaffold 給 body 的是鬆的約束，不撐滿的話 Stack
+          // 只有內容那麼高，紅鈕就浮在畫面中間（範本少的時候）
+          body: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (_loading)
+                const Center(child: CircularProgressIndicator())
+              else if (all.isEmpty)
+                const Center(
+                  child: Text(
+                    '還沒有草稿',
+                    style: TextStyle(fontSize: 13, color: kLTextDim),
                   ),
-            // 選取模式勾了至少一張，刪除列才從最下方浮上來
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: AnimatedSlide(
-                offset: _selecting && _picked.isNotEmpty
-                    ? Offset.zero
-                    : const Offset(0, 1.2),
-                duration: const Duration(milliseconds: 260),
-                curve: Curves.easeOutCubic,
-                child: IgnorePointer(
-                  ignoring: !(_selecting && _picked.isNotEmpty),
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
-                    decoration: const BoxDecoration(
-                      color: Colors.white,
-                      border: Border(top: BorderSide(color: Color(0xFFECECEF))),
-                    ),
-                    child: SafeArea(
-                      top: false,
-                      child: SizedBox(
-                        width: double.infinity,
-                        child: FilledButton(
-                          style: FilledButton.styleFrom(
-                            backgroundColor: const Color(0xFFE53935),
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            shape: const StadiumBorder(),
-                            textStyle: const TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700,
-                            ),
+                )
+              else
+                LayoutBuilder(
+                  builder: (context, box) {
+                    // 兩欄瀑布流：左右各 16、中間 10
+                    final colW = (box.maxWidth - 16 * 2 - 10) / 2;
+                    final cols = _columns(all, colW);
+                    // 每一欄一條 SliverVariedExtentList，只做看得到的那幾格
+                    //（跟「我的 GIF」同一套）。以前是一個子項包兩欄 Column，
+                    // 三十份草稿就是三十張封面同時活著、一起解碼（實機曾有
+                    // 113 份）。每一格的高度本來就算得出來（欄寬 ÷ 比例），
+                    // 總長也直接給（見 _ExactExtentDelegate）
+                    return CustomScrollView(
+                      slivers: [
+                        SliverPadding(
+                          // 底下多留：批次刪除的紅鈕浮在內容上，最後一格
+                          // 才不會被它蓋住
+                          padding: EdgeInsets.fromLTRB(
+                            16,
+                            16,
+                            16,
+                            _selecting ? 96 : 16,
                           ),
-                          onPressed: _deletePicked,
-                          // 刪掉實際能省多少（共用的轉檔暫存不算，見
-                          // StorageReport.freeableFor）：給使用者判斷值不值得
-                          child: Text(
-                            _usage == null
-                                ? '刪除 ${_picked.length} 份草稿'
-                                : '刪除 ${_picked.length} 份草稿 · 省下 '
-                                      '${formatBytes(_usage!.freeableFor(_picked))}',
+                          sliver: SliverCrossAxisGroup(
+                            slivers: [
+                              for (var c = 0; c < cols.length; c++)
+                                SliverVariedExtentList(
+                                  itemExtentBuilder: (i, _) =>
+                                      _tileExtent(cols[c][i], colW),
+                                  delegate: _ExactExtentDelegate(
+                                    (_, i) => i < 0 || i >= cols[c].length
+                                        ? null
+                                        : Padding(
+                                            // 欄距 10：左欄右邊 5、右欄左邊 5；
+                                            // 格距 10 在下面
+                                            padding: EdgeInsets.only(
+                                              left: c == 0 ? 0 : 5,
+                                              right: c == 0 ? 5 : 0,
+                                              bottom: 10,
+                                            ),
+                                            child: _tile(cols[c][i], colW),
+                                          ),
+                                    childCount: cols[c].length,
+                                    total: [
+                                      for (final e in cols[c])
+                                        _tileExtent(e, colW),
+                                    ].fold(0.0, (a, b) => a + b),
+                                  ),
+                                ),
+                            ],
                           ),
                         ),
-                      ),
-                    ),
-                  ),
+                      ],
+                    );
+                  },
                 ),
+              // 選了至少一份，刪除鈕才從底下浮上來（直接浮在內容上，
+              // 後面不墊白底——使用者指定「底部不要有白邊」）
+              LibraryDeleteDock(
+                visible: _selecting && picked > 0,
+                busy: _deleting,
+                label: libraryDeleteLabel(
+                  picked,
+                  '份',
+                  _usage?.freeableFor(_picked),
+                ),
+                onPressed: _deletePicked,
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-/// 我的 GIF：做好的 GIF 都留一份在這裡。
+/// 我的 GIF（GIF 的「查看全部」）：做好的 GIF 都留一份在這裡。
 ///
 /// 相簿那份跟幾千張照片混在一起，要拿它當素材根本找不到；
-/// 這裡只有 GIF，點一下放大看，長按刪除
+/// 這裡只有 GIF。點一下放大看；長按旁邊跳小選單問要不要刪；
+/// 批次刪除＝每一格標出多大，選好按底下的紅鈕
 class GifsScreen extends StatefulWidget {
-  const GifsScreen({super.key});
+  /// 一進來就是批次刪除（從「容量與清理」點 GIF 進來的）
+  final bool batch;
+
+  const GifsScreen({super.key, this.batch = false});
 
   @override
   State<GifsScreen> createState() => _GifsScreenState();
@@ -2329,9 +1710,12 @@ class GifsScreen extends StatefulWidget {
 
 class _GifsScreenState extends State<GifsScreen> {
   List<String> _gifs = const [];
-  bool _selecting = false;
+  late bool _selecting = widget.batch;
   bool _deleting = false;
   final Set<String> _picked = {};
+
+  /// 每個 GIF 多大（批次刪除時標在格子上、加總寫在紅鈕上）
+  Map<String, int> _sizes = const {};
 
   void _cancelSelection() {
     if (_deleting) return;
@@ -2345,6 +1729,19 @@ class _GifsScreenState extends State<GifsScreen> {
     if (_deleting) return;
     setState(() {
       if (!_picked.remove(ref)) _picked.add(ref);
+    });
+  }
+
+  bool get _allPicked => _gifs.isNotEmpty && _picked.length == _gifs.length;
+
+  void _toggleAll() {
+    if (_deleting) return;
+    setState(() {
+      if (_allPicked) {
+        _picked.clear();
+      } else {
+        _picked.addAll(_gifs);
+      }
     });
   }
 
@@ -2395,6 +1792,7 @@ class _GifsScreenState extends State<GifsScreen> {
     if (!mounted) return;
     setState(() {
       _gifs = gifs;
+      _sizes = {for (final ref in gifs) ref: GifStore.sizeOf(ref)};
       _picked.retainAll(gifs);
       _loading = false;
     });
@@ -2432,41 +1830,71 @@ class _GifsScreenState extends State<GifsScreen> {
     return cols;
   }
 
-  /// 一格：照原始比例畫。GIF 自己會動——Image.file 讀到多格就會播。
-  /// [colW] 是它畫出來的寬：磚就是 GIF 的比例，欄寬 × dpr 就是實體寬，
-  /// 照這個解碼（匯入的 GIF 可能 1080 寬，不縮的話每格都全解析度解）。
-  /// 形狀跟個人中心的磚同一家（超橢圓，見 tileShape）
-  Widget _gifTile(String ref, double colW) => GestureDetector(
-    key: ValueKey('gif-$ref'),
-    onTap: () => _selecting ? _togglePick(ref) : _preview(ref),
-    onLongPress: () => _selecting ? _togglePick(ref) : _delete(ref),
-    child: ClipRSuperellipse(
-      borderRadius: tileClip(),
-      child: AspectRatio(
-        aspectRatio: _aspect[ref] ?? 1.0,
-        child: Semantics(
-          selected: _selecting ? _picked.contains(ref) : null,
-          label: 'GIF',
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              ColoredBox(
-                color: kLTile,
-                child: GifImage(
-                  ref,
-                  cacheWidth: (colW * MediaQuery.devicePixelRatioOf(context))
-                      .round(),
-                ),
-              ),
-              if (_selecting)
-                LibrarySelectionMark(selected: _picked.contains(ref)),
-            ],
+  /// 一格的畫面（格子本身與長按浮起來的那一格共用）。GIF 自己會動——
+  /// Image.file 讀到多格就會播。[colW] 是它畫出來的寬：磚就是 GIF 的
+  /// 比例，欄寬 × dpr 就是實體寬，照這個解碼（匯入的 GIF 可能 1080 寬，
+  /// 不縮的話每格都全解析度解）
+  Widget _gifCover(String ref, double colW) => ColoredBox(
+    color: kLTile,
+    child: GifImage(
+      ref,
+      cacheWidth: (colW * MediaQuery.devicePixelRatioOf(context)).round(),
+    ),
+  );
+
+  /// 一格：照原始比例畫。形狀跟個人中心的磚同一家（超橢圓，見 tileShape）
+  Widget _gifTile(String ref, double colW) => Builder(
+    builder: (tile) => GestureDetector(
+      key: ValueKey('gif-$ref'),
+      onTap: () => _selecting ? _togglePick(ref) : _preview(ref),
+      onLongPress: () =>
+          _selecting ? _togglePick(ref) : _menu(tile, ref, colW),
+      child: ClipRSuperellipse(
+        borderRadius: tileClip(),
+        child: AspectRatio(
+          aspectRatio: _aspect[ref] ?? 1.0,
+          child: Semantics(
+            selected: _selecting ? _picked.contains(ref) : null,
+            label: 'GIF',
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                _gifCover(ref, colW),
+                if (_selecting)
+                  LibrarySelectionMark(
+                    selected: _picked.contains(ref),
+                    size: formatBytes(_sizes[ref] ?? 0),
+                  ),
+              ],
+            ),
           ),
         ),
       ),
     ),
   );
 
+  /// 長按一格：背景壓暗、那一格浮起來，旁邊跳小選單問要不要刪
+  ///（使用者指定，不再跳整頁的確認視窗）
+  Future<void> _menu(BuildContext tile, String ref, double colW) async {
+    final go = await showLibraryTileMenu<bool>(
+      tile,
+      preview: _gifCover(ref, colW),
+      title: '刪除這個 GIF？',
+      actions: const [
+        LibraryMenuAction(
+          true,
+          '刪除',
+          icon: Icons.delete_outline,
+          destructive: true,
+        ),
+      ],
+    );
+    if (go != true) return;
+    await GifStore.remove(ref);
+    if (mounted) _reload();
+  }
+
+  /// 燈箱裡長按刪眼前這一張：那裡沒有一格可以浮起來，照舊走確認視窗。
   /// 回傳有沒有真的刪掉（確認視窗按取消就是 false）
   Future<bool> _delete(String ref) async {
     final ok = await _confirmDeleteGifFile(context, ref);
@@ -2494,48 +1922,44 @@ class _GifsScreenState extends State<GifsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final picked = _picked.length;
+    final freed = [for (final ref in _picked) _sizes[ref] ?? 0].fold(0, (a, b) => a + b);
     return PopScope(
+      // 批次刪除中按返回／右滑＝先退出批次刪除，不是離開這一頁
       canPop: !_selecting && !_deleting,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _cancelSelection();
       },
       child: SwipeBack(
         child: Scaffold(
+          // 上面只有返回鍵跟「批次刪除」；批次刪除時左邊換成「取消」、
+          // 右邊換成「全選」（跟草稿的查看全部同一套）
           appBar: AppBar(
+            automaticallyImplyLeading: !_selecting,
+            leadingWidth: _selecting ? 76 : null,
+            leading: _selecting
+                ? TextButton(
+                    onPressed: _deleting ? null : _cancelSelection,
+                    child: const Text('取消'),
+                  )
+                : null,
             actions: [
-              if (_selecting) ...[
+              if (_selecting)
                 TextButton(
-                  onPressed: _deleting
-                      ? null
-                      : () => setState(() {
-                          if (_picked.length == _gifs.length) {
-                            _picked.clear();
-                          } else {
-                            _picked.addAll(_gifs);
-                          }
-                        }),
-                  child: Text(_picked.length == _gifs.length ? '取消全選' : '全選'),
-                ),
-                TextButton(
-                  onPressed: _deleting ? null : _cancelSelection,
-                  child: const Text('取消'),
-                ),
-              ] else if (!_loading && _gifs.isNotEmpty && !kIsWeb)
+                  onPressed: _deleting || _gifs.isEmpty ? null : _toggleAll,
+                  child: Text(_allPicked ? '取消全選' : '全選'),
+                )
+              else if (!_loading && _gifs.isNotEmpty && !kIsWeb)
                 TextButton(
                   onPressed: () => setState(() => _selecting = true),
-                  child: const Text('選取'),
+                  child: const Text('批次刪除'),
                 ),
+              const SizedBox(width: 8),
             ],
           ),
-          bottomNavigationBar: _selecting
-              ? LibrarySelectionBar(
-                  count: _picked.length,
-                  busy: _deleting,
-                  onDelete: _deleteSelected,
-                )
-              : null,
           // 右下浮動黑圓 +（跟範本夾同款）：現做一個 GIF，或把自己的
-          // 收進來（相簿或檔案 App 都可以，見 addGifFromDevice）
+          // 收進來（相簿或檔案 App 都可以，見 addGifFromDevice）。
+          // 批次刪除時收起來，底下換成紅鈕
           floatingActionButton: _selecting
               ? null
               : FloatingActionButton(
@@ -2547,10 +1971,15 @@ class _GifsScreenState extends State<GifsScreen> {
                   shape: const CircleBorder(),
                   child: const Icon(Icons.add, size: 28),
                 ),
-          body: _loading
-              ? const Center(child: CircularProgressIndicator())
-              : _gifs.isEmpty
-              ? const Center(
+          // 撐滿整個 body：Scaffold 給 body 的是鬆的約束，不撐滿的話 Stack
+          // 只有內容那麼高，紅鈕就浮在畫面中間（範本少的時候）
+          body: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (_loading)
+                const Center(child: CircularProgressIndicator())
+              else if (_gifs.isEmpty)
+                const Center(
                   child: Padding(
                     padding: EdgeInsets.all(32),
                     child: Text(
@@ -2564,7 +1993,8 @@ class _GifsScreenState extends State<GifsScreen> {
                     ),
                   ),
                 )
-              : LayoutBuilder(
+              else
+                LayoutBuilder(
                   builder: (context, box) {
                     // 兩欄瀑布流：左右各 16、中間 10
                     final colW = (box.maxWidth - 16 * 2 - 10) / 2;
@@ -2581,7 +2011,7 @@ class _GifsScreenState extends State<GifsScreen> {
                     return CustomScrollView(
                       slivers: [
                         SliverPadding(
-                          // 底部多留：最後一張不被浮動 + 蓋住
+                          // 底部多留：最後一張不被浮動 +／紅鈕蓋住
                           padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
                           sliver: SliverCrossAxisGroup(
                             slivers: [
@@ -2626,6 +2056,16 @@ class _GifsScreenState extends State<GifsScreen> {
                     );
                   },
                 ),
+              // 選了至少一個，刪除鈕才從底下浮上來（直接浮在內容上，
+              // 後面不墊白底）
+              LibraryDeleteDock(
+                visible: _selecting && picked > 0,
+                busy: _deleting,
+                label: libraryDeleteLabel(picked, '個', freed),
+                onPressed: _deleteSelected,
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -2800,9 +2240,3 @@ class _GifLightboxState extends State<_GifLightbox> {
     );
   }
 }
-
-/// 「M/D HH:mm」：草稿卡與個人頁共用（以前三處各寫一份）
-String dateLabel(DateTime t) =>
-    '${t.month}/${t.day} '
-    '${t.hour.toString().padLeft(2, '0')}:'
-    '${t.minute.toString().padLeft(2, '0')}';

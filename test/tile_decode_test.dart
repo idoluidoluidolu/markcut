@@ -14,8 +14,8 @@
 //   4. 同一頁上的磚要同一種角：超橢圓（連續曲率）。以前範本磚是超橢圓、
 //      旁邊的 GIF 磚與草稿卡是普通圓弧，擺在一起看得出是兩種角。
 //   5. 空狀態那行灰字用 kLTextDim：以前的 #A8A8B4 在白底上對比只有 2.3:1
-//   6. 草稿夾的列表卡：InkWell 上面要有自己的 Material，水波才畫得出來
-//      （以前 InkWell 直接放在有底色的 Container 裡，水波畫在底色下面）
+//   6. 照片／批次／GIF／拼圖草稿在草稿夾裡也是瀑布流的一格（方磚、超橢圓），
+//      不再是另一種長相的列表卡
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -215,21 +215,23 @@ void main() {
       expect(t.takeException(), isNull);
     });
 
-    testWidgets('列表卡（照片草稿）：InkWell 上面有自己的 Material，水波畫得出來', (t) async {
+    testWidgets('照片草稿也是瀑布流的一格：方磚、超橢圓', (t) async {
       _seed(photo: true);
       _writeGifs(0);
       await _pump(t, const DraftsScreen());
       await _settle(t);
 
-      final ink = find.widgetWithText(InkWell, '未完成的照片');
-      expect(ink, findsOneWidget);
-      final mat = t.widget<Material>(
-        find.ancestor(of: ink, matching: find.byType(Material)).first,
+      const colW = (_w - 16 * 2 - 10) / 2;
+      final title = find.text('未完成的照片');
+      expect(title, findsOneWidget);
+      final tile = t.getRect(
+        find.ancestor(of: title, matching: find.byType(AspectRatio)).first,
       );
+      expect(tile.width, closeTo(colW, 0.01), reason: '單鍵草稿的磚不是一欄寬');
+      expect(tile.height, closeTo(colW, 0.01), reason: '單鍵草稿的磚不是方的');
       expect(
-        mat.shape,
-        isA<RoundedSuperellipseBorder>(),
-        reason: '最近的 Material 是 Scaffold 的：水波畫在卡片底色下面，按了沒回饋',
+        find.ancestor(of: title, matching: find.byType(ClipRSuperellipse)),
+        findsOneWidget,
       );
       expect(find.byType(ClipRRect), findsNothing);
       expect(t.takeException(), isNull);
@@ -285,28 +287,32 @@ void main() {
   });
 
   group('個人中心', () {
-    testWidgets('草稿封面與 GIF 磚都照磚的尺寸解碼；磚是超橢圓；只讀畫得到的兩張封面', (t) async {
-      _seed(drafts: 3);
+    testWidgets('草稿封面與 GIF 磚都照磚的尺寸解碼；磚是超橢圓；只畫得到四張封面', (t) async {
+      _seed(drafts: 6);
       final aspects = _writeGifs(3);
       await _pump(t, const ProfileScreen());
       await _settle(t, 30);
 
-      // 草稿卡：兩欄、3:4，封面 cover 進去——直片貼寬、橫片貼高
+      // 草稿分頁：兩欄、3:4、最多四格（第四格是「+N 查看全部」，底下照樣
+      // 是那一份的封面）。封面 cover 進去——直片貼寬、橫片貼高
       const inner = _w - 22 * 2;
-      const cardW = (inner - 12) / 2;
+      const cardW = (inner - 10) / 2;
       const cardH = cardW * 4 / 3;
       final covers = find.descendant(
         of: find.byType(AspectRatio),
         matching: find.byType(Image),
       );
-      expect(covers, findsNWidgets(2), reason: '主頁最多兩張卡');
+      expect(covers, findsNWidgets(4), reason: '草稿分頁最多四格');
       for (final (i, e) in covers.evaluate().indexed) {
         final want = math.max(cardW, cardH * _draftAspect(i)) * _dpr;
         expect(_decodeWidth(e), want.round(), reason: '第 $i 張封面的解碼寬度不對');
       }
+      expect(find.byType(ClipRSuperellipse), findsNWidgets(4));
 
-      // GIF 磚：正方，cover 進去——橫的要貼高（寬＝格寬×比例）
-      const cell = (inner - 20) / 3;
+      // GIF 分頁：三欄正方，cover 進去——橫的要貼高（寬＝格寬×比例）
+      await t.tap(find.byKey(const ValueKey('profile-tab-1')));
+      await _settle(t, 10);
+      const cell = (inner - 16) / 3;
       final gifs = find.byType(GifImage);
       expect(gifs, findsNWidgets(3));
       for (var i = 0; i < 3; i++) {
@@ -322,8 +328,8 @@ void main() {
         );
       }
 
-      // 兩張草稿卡＋三塊 GIF 磚＋（沒有範本，只有＋磚）：全部超橢圓
-      expect(find.byType(ClipRSuperellipse), findsNWidgets(5));
+      // 三塊 GIF 磚：全部超橢圓
+      expect(find.byType(ClipRSuperellipse), findsNWidgets(3));
       expect(find.byType(ClipRRect), findsNothing, reason: '還有普通圓弧角的磚');
       expect(t.takeException(), isNull);
     });
@@ -332,13 +338,11 @@ void main() {
       _seed();
       _writeGifs(0);
       await _pump(t, const ProfileScreen());
-      for (final s in const ['還沒有草稿', '還沒有 GIF']) {
-        expect(
-          t.widget<Text>(find.text(s)).style?.color,
-          kLTextDim,
-          reason: '「$s」的灰在白底上對比不夠',
-        );
-      }
+      expect(
+        t.widget<Text>(find.text('還沒有草稿')).style?.color,
+        kLTextDim,
+        reason: '「還沒有草稿」的灰在白底上對比不夠',
+      );
       expect(t.takeException(), isNull);
     });
   });

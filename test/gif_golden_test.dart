@@ -206,6 +206,9 @@ void main() {
       ),
     );
     await _settle(tester);
+    // GIF 在第二個分頁
+    await tester.tap(find.byKey(const ValueKey('profile-tab-1')));
+    await _settle(tester);
     await expectLater(
       find.byType(MaterialApp),
       matchesGoldenFile('goldens/gif_profile.png'),

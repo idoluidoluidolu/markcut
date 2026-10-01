@@ -43,6 +43,18 @@ class GifStore {
     'asset:assets/demo/demo_bars.gif',
   ];
 
+  /// 這一筆佔多少位元組（批次刪除時每一格標「刪掉能省多少」）。
+  /// 跟 [list] 一樣用同步 stat：呼叫端拿到清單就要，假時鐘底下的
+  /// 測試也等得到。內建範例與讀不到的算 0
+  static int sizeOf(String ref) {
+    if (kIsWeb || isAsset(ref)) return 0;
+    try {
+      return File(ref).lengthSync();
+    } catch (_) {
+      return 0;
+    }
+  }
+
   /// 這個參照是內建範例還是真的檔案
   static bool isAsset(String ref) => ref.startsWith('asset:');
 
