@@ -938,14 +938,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   // ── 三個分頁 ────────────────────────────────────────────
 
-  /// 草稿分頁：格子＋底下那塊空白放「太好用啦」（使用者指定放回來、
-  /// 擺在草稿底下）
-  Widget _draftsTab(double inner) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [_drafts(inner), const SizedBox(height: 28), _loveButton()],
-  );
-
-  /// 「太好用啦」：開斗內頁
+  /// 「太好用啦」：開斗內頁。愛心＋字跟關於頁那顆一樣（見 LoveButtonLabel）
   Widget _loveButton() => GestureDetector(
     key: const ValueKey('profile-love'),
     onTap: () => Navigator.push(
@@ -959,18 +952,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
         color: kLAccent,
         borderRadius: BorderRadius.circular(999),
       ),
-      child: const Text(
-        '太好用啦',
-        style: TextStyle(
-          fontSize: 15,
-          fontWeight: FontWeight.w800,
-          color: Colors.white,
-        ),
-      ),
+      child: const LoveButtonLabel(),
     ),
   );
 
-  Widget _drafts(double inner) {
+  Widget _draftsTab(double inner) {
     final entries = _draftEntries();
     if (entries.isEmpty) {
       // 空的時候不畫框，也不解釋草稿怎麼來——真的存了一份之後
@@ -1148,7 +1134,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     child: const Icon(Icons.add, size: 28),
   );
 
-  /// 頁尾兩個文字連結（「太好用啦」那顆在草稿分頁裡，見 _draftsTab）
+  /// 頁尾兩個文字連結（草稿分頁上面多一顆「太好用啦」，見 build）
   Widget _footer() => Row(
     mainAxisAlignment: MainAxisAlignment.center,
     children: [
@@ -1244,7 +1230,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 top: 22,
                                 bottom: pad.bottom + 10,
                               ),
-                              child: _footer(),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  // 「太好用啦」靠下、緊貼在意見回饋上面
+                                  //（使用者指定）；只有草稿分頁有
+                                  if (_tab == 0) ...[
+                                    Padding(
+                                      padding: _side,
+                                      child: _loveButton(),
+                                    ),
+                                    const SizedBox(height: 14),
+                                  ],
+                                  _footer(),
+                                ],
+                              ),
                             ),
                           ),
                         ),

@@ -141,25 +141,7 @@ class AboutScreen extends StatelessWidget {
       ),
       child: const Padding(
         padding: EdgeInsets.symmetric(horizontal: 26),
-        child: SizedBox(
-          height: 50,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.favorite_border, size: 18, color: kLBg),
-              SizedBox(width: 8),
-              Text(
-                '太好用啦',
-                style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0.8,
-                  color: kLBg,
-                ),
-              ),
-            ],
-          ),
-        ),
+        child: SizedBox(height: 50, child: LoveButtonLabel()),
       ),
     ),
   );
@@ -381,4 +363,28 @@ class _InfoPage extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 「太好用啦」鈕上的愛心＋字。關於頁與個人中心共用同一個長相（使用者
+/// 指定個人中心那顆要跟關於頁「之前擺的那個 icon 一樣」）
+class LoveButtonLabel extends StatelessWidget {
+  const LoveButtonLabel({super.key});
+
+  @override
+  Widget build(BuildContext context) => const Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Icon(Icons.favorite_border, size: 18, color: kLBg),
+      SizedBox(width: 8),
+      Text(
+        '太好用啦',
+        style: TextStyle(
+          fontSize: 15,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.8,
+          color: kLBg,
+        ),
+      ),
+    ],
+  );
 }

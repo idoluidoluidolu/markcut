@@ -331,15 +331,25 @@ void main() {
     });
   }
 
-  testWidgets('草稿分頁底下有「太好用啦」，點了開斗內頁', (t) async {
+  testWidgets('草稿分頁：「太好用啦」靠下、緊貼在意見回饋上面，點了開斗內頁', (t) async {
     _seed(drafts: 4);
     await _pump(t, _iphone14);
     final love = find.byKey(const ValueKey('profile-love'));
     expect(find.descendant(of: love, matching: find.text('太好用啦')), findsOneWidget);
-    // 在草稿格子底下
+    // 愛心跟關於頁那顆一樣（空心）
+    expect(
+      find.descendant(of: love, matching: find.byIcon(Icons.favorite_border)),
+      findsOneWidget,
+    );
+    // 在草稿格子底下，而且靠下：貼著意見回饋（中間 14）
     expect(
       t.getRect(love).top,
       greaterThan(t.getRect(find.byType(AspectRatio).last).bottom),
+    );
+    expect(
+      t.getRect(love).bottom,
+      closeTo(t.getRect(find.text('意見回饋')).top - 14, 1),
+      reason: '「太好用啦」沒有貼在意見回饋上面',
     );
     expect(t.getRect(love).left, closeTo(_side, 0.01));
     await t.tap(love);
