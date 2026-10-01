@@ -76,6 +76,7 @@ import '../widgets/prep_gate_view.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/sticker_picker.dart';
 import '../widgets/gif_image.dart';
+import '../widgets/slip_strip.dart';
 import '../widgets/watermark_panel.dart';
 
 /// 一支影片素材在目前輸出模式下還缺哪一種備好的檔（見 _prepNeedOf）
@@ -16396,8 +16397,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         tip: '在播放處切割',
                         quarterTurns: 1,
                       ),
-                      // 順序：切割 → 複製 → 刪除 → 貼上。刪除刻意不
-                      // 貼著切割放（兩顆都在改結構，手指按錯就是誤刪）
+                      // 換段緊跟著切割：兩個都是在調這段用原片的哪裡，
+                      // 而且放在前面不用捲工具列就看得到
+                      _toolBtn(
+                        Icons.swap_horiz,
+                        '換段',
+                        _canSlip(sel) ? () => _openSlipSheet(sel!) : null,
+                        tip: '長度不變，換成原片的另一段',
+                        disabledHint: sel == null
+                            ? '先在時間軸點選一段影片'
+                            : _tl.sourceOf(sel).isVideo
+                            ? '這段已經用到整支影片，沒有別段可以換'
+                            : '只有影片可以換段',
+                      ),
+                      // 順序：切割 → 換段 → 複製 → 刪除 → 貼上。刪除刻意
+                      // 不貼著切割放（兩顆都在改結構，手指按錯就是誤刪）
                       _toolBtn(
                         Icons.copy,
                         '複製',
@@ -16642,6 +16656,95 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         ),
       ),
     ).whenComplete(_saveDraft);
+  }
+
+  /// 這一段能不能換段：要是影片，而且原片比這段長（有別段可換）
+  bool _canSlip(TimelineClip? c) {
+    if (c == null) return false;
+    final src = _tl.sourceOf(c);
+    return src.isVideo && src.duration - (c.trimEnd - c.trimStart) > 0.05;
+  }
+
+  /// 換段（slip）：片段在時間軸上的長度跟位置都不動，換成原片裡的另一段
+  ///（使用者指定「時間軸影片素材要能調整片段」要的是這一種）。縮圖帶是
+  /// 整支原片，亮著的框就是這段用到的那一截；左右拖框換一段，放手就套用、
+  /// 預覽跳到這段的開頭。上面的預覽不壓暗，換到哪一段看得清楚
+  Future<void> _openSlipSheet(TimelineClip clip) async {
+    _pause();
+    final src = _tl.sourceOf(clip);
+    final len = clip.trimEnd - clip.trimStart;
+    var start = clip.trimStart;
+    var undoPushed = false;
+    void apply() {
+      if (!mounted || (start - clip.trimStart).abs() < 0.001) return;
+      // 第一次真的換了才拍復原快照：打開看看就關掉，不該清掉重做
+      if (!undoPushed) {
+        _pushUndo();
+        undoPushed = true;
+      }
+      setState(() {
+        clip.trimStart = start;
+        clip.trimEnd = start + len;
+      });
+      _resyncPlayback();
+      // 換的是合成裡這一段用原片的哪裡：當場排重組（跟切割同一套）
+      _compRefreshIfChanged();
+      _seekScrub(clip.offset + math.min(0.15, clip.length / 2));
+    }
+
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      barrierColor: Colors.transparent,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // 標題跟其他片段工具的表同一款（見 _optSheet）；右邊是
+                // 這段現在用到原片的哪裡
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Row(
+                    children: [
+                      const Text(
+                        '換段',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(
+                        '${_fmt(start)} – ${_fmt(start + len)}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: kTextDim,
+                          fontFeatures: [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                SlipStrip(
+                  key: const ValueKey('slip-strip'),
+                  frames: _thumbs[clip.sourceIndex] ?? const [],
+                  duration: src.duration,
+                  start: start,
+                  length: len,
+                  onChanged: (s) => setSheet(() => start = s),
+                  onEnd: apply,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (undoPushed) _saveDraft();
   }
 
   void _applyPreviewVolumes() {
