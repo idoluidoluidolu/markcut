@@ -30,7 +30,7 @@ import '../services/hdr_photo_export.dart';
 import '../services/video_processor.dart';
 import '../services/watermark_renderer.dart';
 import '../theme.dart';
-import '../widgets/batch_export_dialog.dart';
+import '../widgets/batch_export_sheet.dart';
 import '../widgets/watermark_animation_preview.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
@@ -958,17 +958,17 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   // ===== 批次匯出 =====
 
   /// 照片格式與影片品質集中在一次確認，純影片也不能跳過設定。
+  /// 設定的長相跟影片編輯的匯出頁同一套（使用者指定，見 showBatchExportSheet）
   Future<void> _confirmExportAll() async {
     if (_exporting || _choosingExport) return;
     _choosingExport = true;
     try {
-      final options = await showDialog<BatchExportOptions>(
-        context: context,
-        builder: (context) => BatchExportDialog(
-          hasPhoto: _items.any((it) => !isVideoFile(it.file)),
-          hasVideo: _items.any((it) => isVideoFile(it.file)),
-          initial: _exportOptions,
-        ),
+      final videos = _items.where((it) => isVideoFile(it.file)).length;
+      final options = await showBatchExportSheet(
+        context,
+        photos: _items.length - videos,
+        videos: videos,
+        initial: _exportOptions,
       );
       if (options == null || !mounted) return;
       _exportOptions = options;

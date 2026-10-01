@@ -16537,38 +16537,29 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 彈窗裡的一列選項：標題＋輸出尺寸副標＋選中勾勾
   /// 輸出畫面比例：置中彈窗，一行一個選項（附輸出尺寸），點了套用關窗
   void _openRatioSheet() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('畫面比例'),
-        contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
-        content: SizedBox(
-          width: 270,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final (i, r) in ratioOrder.indexed)
-                Builder(
-                  builder: (context) {
-                    final (w, h) = computeCanvasSize(_tl, _resolution, r);
-                    return optionRow(
-                      context: context,
-                      title: r.label,
-                      subtitle: '$w×$h',
-                      selected: _canvasRatio == r,
-                      first: i == 0,
-                      onTap: () {
-                        setState(() => _canvasRatio = r);
-                        _saveDraft();
-                        Navigator.pop(context);
-                      },
-                    );
-                  },
-                ),
-            ],
+    showOptionDialog<void>(
+      context,
+      title: '畫面比例',
+      rows: (context) => [
+        for (final (i, r) in ratioOrder.indexed)
+          Builder(
+            builder: (context) {
+              final (w, h) = computeCanvasSize(_tl, _resolution, r);
+              return optionRow(
+                context: context,
+                title: r.label,
+                subtitle: '$w×$h',
+                selected: _canvasRatio == r,
+                first: i == 0,
+                onTap: () {
+                  setState(() => _canvasRatio = r);
+                  _saveDraft();
+                  Navigator.pop(context);
+                },
+              );
+            },
           ),
-        ),
-      ),
+      ],
     );
   }
 
@@ -17659,57 +17650,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final dur = _visDur / _speed;
     final mb = _estMb(_qualityEff);
 
-    Widget row(
-      String label,
-      String value,
-      VoidCallback? onTap, {
-      bool divider = true,
-    }) {
-      return InkWell(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 15),
-          decoration: divider
-              ? const BoxDecoration(
-                  border: Border(bottom: BorderSide(color: kBorder)),
-                )
-              : null,
-          child: Row(
-            children: [
-              Text(
-                label,
-                style: const TextStyle(
-                  fontSize: 13.5,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.3,
-                  color: kText,
-                ),
-              ),
-              const SizedBox(width: 12),
-              // 值比標籤小一階也更淡：標籤是「這一列在講什麼」，
-              // 值是內容。兩者一樣大的話整頁沒有主次，掃不動
-              Expanded(
-                child: Text(
-                  value,
-                  textAlign: TextAlign.right,
-                  style: const TextStyle(
-                    fontSize: 12.5,
-                    height: 1.4,
-                    color: kTextDim,
-                    fontFeatures: [FontFeature.tabularFigures()],
-                  ),
-                ),
-              ),
-              if (onTap != null) ...[
-                const SizedBox(width: 3),
-                const Icon(Icons.chevron_right, size: 13, color: kIcon),
-              ],
-            ],
-          ),
-        ),
-      );
-    }
-
     // 內容垂直置中；空間不夠（大字級、小螢幕）才變成可以捲。
     // 這一頁只有三列加一顆鈕，靠上排會在下面留一大塊空白
     return LayoutBuilder(
@@ -17721,22 +17661,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              row('畫面比例', _ratioLabel, _openRatioSheet),
-              row(
+              exportSettingRow('畫面比例', _ratioLabel, _openRatioSheet),
+              exportSettingRow(
                 '解析度',
                 '${_resolution.label}·$outW×$outH',
                 _openResolutionSheet,
               ),
               // 自動挑的時候標出來：不講的話，同一支 App 在不同素材上
               // 預設值不一樣會像壞掉
-              row(
+              exportSettingRow(
                 '畫質',
                 _qualityAuto && _srcKbps > 0
                     ? '${_qualityEff.label}·推薦'
                     : _qualityEff.label,
                 _openQualitySheet,
               ),
-              row(
+              exportSettingRow(
                 '順暢度',
                 _fps == 0
                     ? (_srcFps > 0 ? '自動·${_srcFps.round()}' : '自動')
@@ -17747,7 +17687,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               // 來源是 HDR 才出現：SDR 匯出在 HDR 螢幕上永遠跟原片
               // 有落差（亮度被壓縮），要一樣只有輸出檔本身就是 HDR
               if (_hdrAvail == true)
-                row('HDR', _exportHdr ? '保留（跟原片一樣）' : '轉成 SDR', () {
+                exportSettingRow('HDR', _exportHdr ? '保留（跟原片一樣）' : '轉成 SDR', () {
                   setState(() => _exportHdr = !_exportHdr);
                   // 預覽跟著切換 HDR/SDR 管線
                   _compRefreshIfChanged();
@@ -17792,122 +17732,94 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 畫質：置中彈窗。副標拿掉，改成右邊直接列這個專案各檔位的檔案大小——
   /// 「極高」跟「最高」用形容詞永遠比不出來，數字一眼就分得出
   void _openQualitySheet() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('畫質'),
-        contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
-        content: SizedBox(
-          width: 270,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final (i, q) in qualityOrder.indexed)
-                optionRow(
-                  context: context,
-                  title: q.label,
-                  subtitle: q.note,
-                  // 自動挑到的那一檔＝壓到看不出跟原素材有差的點。
-                  // 不寫「視覺無損」是因為素材超過上限時會停在極高，
-                  // 那時它並不是無損，但仍然是這裡最該選的一檔
-                  badge: _qualityAuto && _srcKbps > 0 && _qualityEff == q
-                      ? '推薦'
-                      : null,
-                  trailing:
-                      '約 ${_estMb(q).clamp(1, 1e9).toStringAsFixed(0)} MB',
-                  selected: _qualityEff == q,
-                  first: i == 0,
-                  onTap: () {
-                    setState(() {
-                      _quality = q;
-                      _qualityAuto = false; // 手動選過就不再自動改
-                    });
-                    _saveDraft();
-                    Navigator.pop(context);
-                  },
-                ),
-            ],
+    showOptionDialog<void>(
+      context,
+      title: '畫質',
+      rows: (context) => [
+        for (final (i, q) in qualityOrder.indexed)
+          optionRow(
+            context: context,
+            title: q.label,
+            subtitle: q.note,
+            // 自動挑到的那一檔＝壓到看不出跟原素材有差的點。
+            // 不寫「視覺無損」是因為素材超過上限時會停在極高，
+            // 那時它並不是無損，但仍然是這裡最該選的一檔
+            badge: _qualityAuto && _srcKbps > 0 && _qualityEff == q
+                ? '推薦'
+                : null,
+            trailing: '約 ${_estMb(q).clamp(1, 1e9).toStringAsFixed(0)} MB',
+            selected: _qualityEff == q,
+            first: i == 0,
+            onTap: () {
+              setState(() {
+                _quality = q;
+                _qualityAuto = false; // 手動選過就不再自動改
+              });
+              _saveDraft();
+              Navigator.pop(context);
+            },
           ),
-        ),
-      ),
+      ],
     );
   }
 
   /// 順暢度：跟畫質／解析度同一款清單
   void _openFpsSheet() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('順暢度'),
-        contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
-        content: SizedBox(
-          width: 270,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final (i, f) in kFpsChoices.indexed)
-                optionRow(
-                  context: context,
-                  title: f == 0 ? '自動' : '$f fps',
-                  subtitle: fpsNote(f, _srcFps),
-                  selected: _fps == f,
-                  first: i == 0,
-                  onTap: () {
-                    setState(() => _fps = f);
-                    _saveDraft();
-                    Navigator.pop(context);
-                  },
-                ),
-            ],
+    showOptionDialog<void>(
+      context,
+      title: '順暢度',
+      rows: (context) => [
+        for (final (i, f) in kFpsChoices.indexed)
+          optionRow(
+            context: context,
+            title: f == 0 ? '自動' : '$f fps',
+            subtitle: fpsNote(f, _srcFps),
+            selected: _fps == f,
+            first: i == 0,
+            onTap: () {
+              setState(() => _fps = f);
+              _saveDraft();
+              Navigator.pop(context);
+            },
           ),
-        ),
-      ),
+      ],
     );
   }
 
   /// 解析度：置中彈窗（跟比例同款直列）
   void _openResolutionSheet() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('解析度'),
-        contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
-        content: SizedBox(
-          width: 270,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final (i, r) in ExportResolution.values.indexed)
-                Builder(
-                  builder: (context) {
-                    final (w, h) = computeCanvasSize(_tl, r, _canvasRatio);
-                    final (ow, oh) = computeCanvasSize(
-                      _tl,
-                      ExportResolution.original,
-                      _canvasRatio,
-                    );
-                    // 素材本身就比這一級小的時候，縮不下去＝跟原片同尺寸，
-                    // 這種情況直接講白，不要讓人以為選了沒反應
-                    final same =
-                        r != ExportResolution.original && w == ow && h == oh;
-                    return optionRow(
-                      context: context,
-                      title: r.label,
-                      subtitle: same ? '$w×$h·原片就這麼大，不會再縮' : '$w×$h·${r.hint}',
-                      selected: _resolution == r,
-                      first: i == 0,
-                      onTap: () {
-                        setState(() => _resolution = r);
-                        _saveDraft();
-                        Navigator.pop(context);
-                      },
-                    );
-                  },
-                ),
-            ],
+    showOptionDialog<void>(
+      context,
+      title: '解析度',
+      rows: (context) => [
+        for (final (i, r) in ExportResolution.values.indexed)
+          Builder(
+            builder: (context) {
+              final (w, h) = computeCanvasSize(_tl, r, _canvasRatio);
+              final (ow, oh) = computeCanvasSize(
+                _tl,
+                ExportResolution.original,
+                _canvasRatio,
+              );
+              // 素材本身就比這一級小的時候，縮不下去＝跟原片同尺寸，
+              // 這種情況直接講白，不要讓人以為選了沒反應
+              final same =
+                  r != ExportResolution.original && w == ow && h == oh;
+              return optionRow(
+                context: context,
+                title: r.label,
+                subtitle: same ? '$w×$h·原片就這麼大，不會再縮' : '$w×$h·${r.hint}',
+                selected: _resolution == r,
+                first: i == 0,
+                onTap: () {
+                  setState(() => _resolution = r);
+                  _saveDraft();
+                  Navigator.pop(context);
+                },
+              );
+            },
           ),
-        ),
-      ),
+      ],
     );
   }
 }

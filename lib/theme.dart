@@ -1462,6 +1462,76 @@ Widget optionRow({
   );
 }
 
+/// 選單彈窗（畫面比例／解析度／畫質／順暢度…）：置中，標題＋一列一列
+/// [optionRow]。[rows] 拿到的是彈窗自己的 context（選了之後拿它 pop）。
+/// 影片編輯的匯出頁與批次匯出共用（使用者指定批次的匯出設定要用影片
+/// 編輯那一套）
+Future<T?> showOptionDialog<T>(
+  BuildContext context, {
+  required String title,
+  required List<Widget> Function(BuildContext context) rows,
+}) => showDialog<T>(
+  context: context,
+  builder: (context) => AlertDialog(
+    title: Text(title),
+    contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
+    content: SizedBox(
+      width: 270,
+      child: Column(mainAxisSize: MainAxisSize.min, children: rows(context)),
+    ),
+  ),
+);
+
+/// 匯出設定的一列：左邊標籤、右邊目前的值＋›，點了開 [showOptionDialog]。
+/// 影片編輯的匯出頁（使用者選定的 B 款極簡設定列）與批次匯出共用。
+///
+/// 值比標籤小一階也更淡：標籤是「這一列在講什麼」，值是內容。兩者一樣
+/// 大的話整頁沒有主次，掃不動
+Widget exportSettingRow(
+  String label,
+  String value,
+  VoidCallback? onTap, {
+  bool divider = true,
+}) => InkWell(
+  onTap: onTap,
+  child: Container(
+    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 15),
+    decoration: divider
+        ? const BoxDecoration(border: Border(bottom: BorderSide(color: kBorder)))
+        : null,
+    child: Row(
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 13.5,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.3,
+            color: kText,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            value,
+            textAlign: TextAlign.right,
+            style: const TextStyle(
+              fontSize: 12.5,
+              height: 1.4,
+              color: kTextDim,
+              fontFeatures: [FontFeature.tabularFigures()],
+            ),
+          ),
+        ),
+        if (onTap != null) ...[
+          const SizedBox(width: 3),
+          const Icon(Icons.chevron_right, size: 13, color: kIcon),
+        ],
+      ],
+    ),
+  ),
+);
+
 /// 點到重疊處時的說明。三個編輯畫面講同一句
 String overlapHint(int layers) => '這裡疊了 $layers 層，再點一次選下面那層';
 
