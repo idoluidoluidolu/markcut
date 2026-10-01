@@ -35,6 +35,7 @@ void main() {
   const compCh = MethodChannel('markcut/comp');
   late List<Map<Object?, Object?>> xformCalls;
   late List<List<Object?>> visibilityCalls;
+  late List<List<Object?>> imagePresenceCalls;
   var builds = 0;
   var mosaicCalls = <List<dynamic>>[];
 
@@ -63,11 +64,17 @@ void main() {
     Diag.playerLayer.value = false;
     xformCalls = [];
     visibilityCalls = [];
+    imagePresenceCalls = [];
     mosaicCalls = [];
     builds = 0;
     final b = TestWidgetsFlutterBinding.ensureInitialized();
     b.defaultBinaryMessenger.setMockMethodCallHandler(compCh, (call) async {
       switch (call.method) {
+        case 'setActiveImageClips':
+          imagePresenceCalls.add(
+            List<Object?>.from((call.arguments as Map)['ids'] as List),
+          );
+          return true;
         case 'available':
           return true;
         case 'build':
@@ -106,6 +113,86 @@ void main() {
       const MethodChannel('markcut/frames'),
       null,
     );
+  });
+
+  testWidgets('刪除 GIF 即時移出原生預覽，連刪與復原不受軌道重編號影響', (t) async {
+    await t.pumpWidget(const MaterialApp(home: VideoEditorScreen(blank: true)));
+    await _tick(t, 5);
+    late int first, second;
+    VideoEditorScreen.debugTimeline!((tl) {
+      tl.sources.add(
+        MediaSource(
+          path: '/base.mp4',
+          workPath: '/base.work.mp4',
+          name: 'video',
+          kind: ClipKind.video,
+          duration: 10,
+        ),
+      );
+      tl.sources.add(
+        MediaSource(
+          path: '/shared.gif',
+          name: 'gif',
+          kind: ClipKind.image,
+          isGif: true,
+          duration: 3600,
+        ),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 0,
+          track: 2,
+          offset: 5,
+          trimStart: 0,
+          trimEnd: 5,
+        ),
+      );
+      first = tl.nextId();
+      second = tl.nextId();
+      tl.clips.addAll([
+        TimelineClip(
+          id: first,
+          sourceIndex: 1,
+          track: 0,
+          offset: 0,
+          trimStart: 0,
+          trimEnd: 3,
+        ),
+        TimelineClip(
+          id: second,
+          sourceIndex: 1,
+          track: 1,
+          offset: 0,
+          trimStart: 0,
+          trimEnd: 3,
+        ),
+      ]);
+    });
+    await _tick(t, 20);
+    final before = builds;
+    expect(imagePresenceCalls.last, [first, second]);
+    for (final id in [first, second]) {
+      t.widget<TimelineEditor>(find.byType(TimelineEditor)).onSelect(id);
+      await t.pump();
+      await t.tap(find.byTooltip('刪除片段'));
+      await t.pump();
+      expect(imagePresenceCalls.last, id == first ? [second] : isEmpty);
+      expect(
+        builds,
+        before,
+        reason: 'Removal must reach native before the 350ms rebuild',
+      );
+    }
+    await t.tap(find.byTooltip('上一步'));
+    await t.pump();
+    expect(imagePresenceCalls.last, [second]);
+    await t.tap(find.byTooltip('上一步'));
+    await t.pump();
+    expect(imagePresenceCalls.last, [first, second]);
+    expect(builds, before);
+    await _tick(t, 100);
+    expect(t.takeException(), isNull);
   });
 
   testWidgets('crop Apply sends the new rectangle before composition rebuild', (

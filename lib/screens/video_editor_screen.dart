@@ -606,6 +606,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 選取中片段的即時變形（捏合/拖曳跟手）：節流在裡面
     _liveXformSync();
     _syncImageVisibility();
+    _syncImagePresence();
     unawaited(_syncMosaics());
   }
 
@@ -654,6 +655,28 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _compRefreshIfChanged();
     }
     unawaited(_syncMosaics());
+  }
+
+  String? _lastImagePresence;
+  CompPlayer? _imagePresencePlayer;
+
+  void _syncImagePresence() {
+    if (!_compOn) return;
+    final ids = <int>{
+      for (final c in _tl.clips)
+        if (_tl.sourceOf(c).kind == ClipKind.image) c.id,
+    };
+    final key = (ids.toList()..sort()).join(',');
+    final player = _comp;
+    if (_imagePresencePlayer == player && _lastImagePresence == key) return;
+    _imagePresencePlayer = player;
+    _lastImagePresence = key;
+    unawaited(
+      CompPlayer.setActiveImageClips(ids).then((ok) {
+        // Older native builds still remove the layer through the normal rebuild.
+        if (!ok && mounted && _comp == player) _compRefreshIfChanged();
+      }),
+    );
   }
 
   bool _liveTrackVisibility = true;
@@ -11928,6 +11951,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 刪掉會留一個洞，自動整理開著就補起來。
     // 軌號要先存：這時候選取已經清掉，問不到是哪一軌了
     _autoTidyIfOn(track: track);
+    _compRefreshIfChanged();
+    _saveDraft();
   }
 
   /// 長按片段 → 複製 / 貼上 / 刪除

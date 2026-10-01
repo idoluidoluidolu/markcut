@@ -866,6 +866,8 @@ enum MCStillLoader {
 final class CILayerSpec {
   let trackID: CMPersistentTrackID  // Invalid ＝ 靜態圖層（still 有值）
   let still: CIImage?
+  /// Stable timeline identity for preview images/GIFs; export and legacy layers omit it.
+  let imageClipID: Int?
 
   /// 會動的 GIF（still 為 nil、trackID 為 Invalid 時可有）。
   /// 影格照輸出時間循環，其餘（裁切/旋轉/透明/調色/淡化）跟
@@ -915,10 +917,11 @@ final class CILayerSpec {
     crop: CGRect? = nil, rotation: Double = 0, opacity: Double = 1,
     z: Int = 0, gif: CIGifSpec? = nil,
     uScale: Double = 1, uPx: Double = 0.5, uPy: Double = 0.5,
-    srcWidth: CGFloat = 0, sourceOpaque: Bool = false
+    srcWidth: CGFloat = 0, sourceOpaque: Bool = false, imageClipID: Int? = nil
   ) {
     self.trackID = trackID
     self.still = still
+    self.imageClipID = imageClipID
     self.gif = gif
     self.transform = transform
     self.srcHeight = srcHeight
@@ -944,7 +947,12 @@ final class CILayerSpec {
       fadeOut: fadeOut, colorMatrix: colorMatrix, crop: crop,
       rotation: rotation, opacity: opacity, z: z, gif: gif,
       uScale: uScale, uPx: uPx, uPy: uPy, srcWidth: srcWidth,
-      sourceOpaque: sourceOpaque)
+      sourceOpaque: sourceOpaque, imageClipID: imageClipID)
+  }
+
+  func isImagePresent(in activeIDs: Set<Int>?) -> Bool {
+    guard let id = imageClipID, let activeIDs = activeIDs else { return true }
+    return activeIDs.contains(id)
   }
 
   /// 這一格的不透明度（線性淡入淡出）
@@ -1599,6 +1607,19 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   /// 捏合/拖曳中的即時變形（見 CompLiveXform）：每一格合成時直接
   /// 讀，零重建。只有預覽合成器（livePreview/liveCI）讀它
   static let xfLock = NSLock()
+  private static var activeImageClips: Set<Int>?
+  static func setActiveImageClips(_ ids: Set<Int>?) {
+    xfLock.lock()
+    defer { xfLock.unlock() }
+    guard activeImageClips != ids else { return }
+    activeImageClips = ids
+    changeLiveEpoch()
+  }
+  static func currentActiveImageClips() -> Set<Int>? {
+    xfLock.lock()
+    defer { xfLock.unlock() }
+    return activeImageClips
+  }
   private static var hiddenImageTracks: Set<Int> = []
   static func setHiddenImageTracks(_ tracks: Set<Int>) {
     xfLock.lock()
@@ -1782,6 +1803,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
 
   private var lastComposedBase: CIImage?
   private var lastBaseHiddenTracks: Set<Int> = []
+  private var lastBaseActiveImageClips: Set<Int>?
   private lazy var outCS: CGColorSpace = {
     if hdrOut, let hlg = CGColorSpace(name: CGColorSpace.itur_2100_HLG) {
       return hlg
@@ -2648,10 +2670,14 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         // 先打碼，再把更高的層（例如子母畫面）疊上去——跟預覽一致
         let hiddenImages: Set<Int> = self.liveComp
           ? CIExportCompositor.currentHiddenImageTracks() : []
-        if hiddenImages != self.lastBaseHiddenTracks {
+        let activeImages = self.liveComp
+          ? CIExportCompositor.currentActiveImageClips() : nil
+        if hiddenImages != self.lastBaseHiddenTracks
+          || activeImages != self.lastBaseActiveImageClips {
           // Missing lower decoder frames must not replay a newly hidden layer.
           self.lastComposedBase = nil
           self.lastBaseHiddenTracks = hiddenImages
+          self.lastBaseActiveImageClips = activeImages
         }
         let activeMz = frameMosaics
           .filter { t >= $0.start && t < $0.end && !hiddenImages.contains($0.z) }
@@ -2672,6 +2698,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           }
           var img: CIImage
           if hiddenImages.contains(layer.z) { continue }
+          if !layer.isImagePresent(in: activeImages) { continue }
           if layer.trackID != kCMPersistentTrackID_Invalid {
             guard let buf = req.sourceFrame(byTrackID: layer.trackID) else {
               missing = true
@@ -4449,6 +4476,7 @@ final class MCInteractivePrepGate {
   // 整條時間軸組成一份 AVComposition、一顆 AVPlayer 播。
   // 為什麼要換掉「一片段一顆播放器」見 CompPlayer.swift 的說明
   private var comp: CompPlayer?
+  private weak var retiringComp: CompPlayer?
   private var compPreviewTrace: UUID?
 
   /// 組合成的背景佇列。組建（開素材、讀軌道、鋪合成軌、驗指令、建
@@ -4464,9 +4492,11 @@ final class MCInteractivePrepGate {
   private var compDeferred: [(FlutterMethodCall, FlutterResult)] = []
   var compHandler: ((FlutterMethodCall, @escaping FlutterResult) -> Void)?
 
-  /// 合成通道的每一發都從這裡進：背景組建中先排隊（available 不碰合成，照答）
+  /// Background builds queue structural commands. Availability and image-presence
+  /// updates can run immediately; presence only changes the live preview filter.
   func dispatchComp(_ call: FlutterMethodCall, _ result: @escaping FlutterResult) {
-    if compBuildInFlight, call.method != "available" {
+    if compBuildInFlight, call.method != "available",
+      call.method != "setActiveImageClips" {
       compDeferred.append((call, result))
       return
     }
@@ -4531,6 +4561,9 @@ final class MCInteractivePrepGate {
         let hdrOut = args["hdrOut"] as? Bool ?? false
         let journal = MCNativePrepJournal.preview
         let replacing = self.comp != nil
+        if !replacing {
+          CIExportCompositor.setActiveImageClips(nil)
+        }
         CIExportCompositor.setHiddenImageTracks(Set(args["hiddenImageTracks"] as? [Int] ?? []))
         let overlays = args["overlays"] as? [[String: Any]] ?? []
         // 純聲音素材（配樂／旁白／從影片提取的聲音）：跟匯出 run 的
@@ -4597,12 +4630,16 @@ final class MCInteractivePrepGate {
             p.commitBuild()
             let old = self.comp
             self.comp = p
+            self.retiringComp = old
             // 舊的等新畫面真的上檔（第一格就緒翻面）才收：
             // 收早了前面那層還指著它，就是使用者看到的閃黑。
             // 順便告訴 Dart「新合成真的顯示了」——HDR 預覽的 Flutter 版
             // 浮水印要等這一刻才藏（早藏＝舊畫面還在、浮水印憑空消失）
             PlayerHosts.shared.use(p.player, retiring: old?.player,
-              disposeRetired: { old?.dispose() }) {
+              disposeRetired: { [weak self] in
+                old?.dispose()
+                if self?.retiringComp === old { self?.retiringComp = nil }
+              }) {
               // 紀錄檔的寫入不佔主執行緒
               DispatchQueue.global(qos: .utility).async {
                 journal.mark(trace, "preview", "visible")
@@ -4758,6 +4795,15 @@ final class MCInteractivePrepGate {
         CIExportCompositor.setLiveMosaics(
           maps.compactMap { CIMosaicSpec($0, canvas: p.size) })
         p.nudgeRedrawIfPaused()
+        result(true)
+      case "setActiveImageClips":
+        guard let args = call.arguments as? [String: Any],
+          let ids = args["ids"] as? [Int] else { result(false); return }
+        // This command bypasses background-build queuing. Both the current and
+        // retiring compositor read this set, so an old build cannot revive a deletion.
+        CIExportCompositor.setActiveImageClips(Set(ids))
+        self.comp?.nudgeRedrawIfPaused()
+        self.retiringComp?.nudgeRedrawIfPaused()
         result(true)
       case "setHiddenTracks", "setHiddenImageTracks":
         guard let a = call.arguments as? [String: Any], let p = self.comp else {
@@ -4963,6 +5009,8 @@ final class MCInteractivePrepGate {
         PlayerHosts.shared.use(nil)
         self.comp?.dispose()
         self.comp = nil
+        self.retiringComp = nil
+        CIExportCompositor.setActiveImageClips(nil)
         if let trace = self.compPreviewTrace {
           MCNativePrepJournal.preview.finish(trace, error: nil)
           self.compPreviewTrace = nil
@@ -9951,7 +9999,8 @@ final class CompPlayer: NSObject, FlutterTexture {
             // 讀 lx 那段）：跟影片段的 uScale/uPx/uPy 同一套，捏合中
             // 才拆得出「使用者這段變了多少」去疊差量。這裡的 u/spx/spy
             // 正是烘進 placement 的那三個值，基準跟畫面完全對齊
-            uScale: Double(u), uPx: spx, uPy: spy)
+            uScale: Double(u), uPx: spx, uPy: spy,
+            imageClipID: st["id"] as? Int)
         ))
       }
       buildInfo["圖片層"] = stillSpecs.count

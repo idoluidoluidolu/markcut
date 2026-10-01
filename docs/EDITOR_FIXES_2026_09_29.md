@@ -66,3 +66,13 @@ Windows widget 測試涵蓋預覽時鐘推進與暫停、單張還原及復原�
 定向回歸合計 **85 項不同測試通過**，包含裁切像素、來源保留、再次裁切／完成／取消、草稿續作、320／375 寬度排版、拼圖既有手勢與合成、GIF 瀑布流與燈箱、範本改名及實際多選刪檔。紀錄：`build/library-crop-regression.log`（83 通過；兩個新增測試使用錯誤按鈕文案而失敗），修正測試定位後 `build/library-crop-tests.log` 的 15 項全部通過，覆蓋上述兩項；無待修的測試失敗。
 
 `flutter analyze --no-pub --no-fatal-infos lib test` 無錯誤或警告，僅有影片編輯器既有的函式宣告風格 info（`build/library-crop-analyze.log`）；格式及 `git diff --check` 通過。此輪在 Windows 驗證，iOS 建置與真機操作仍需 Codemagic／iPhone 確認。
+
+## 2026-10-01 續修：浮水印文字對齊、影片預覽刪除 GIF 延遲
+
+- 影片「浮水印 → 文字」的共用面板新增靠左／置中／靠右，輸入框與既有預覽、匯出文字繪製使用同一設定。多組文字只修改目前選取那一組；草稿、範本及復原保留對齊方式，舊設定不強制改成置中。
+- 刪除時間軸圖片／GIF 時，立即傳送目前仍存在的片段 ID 到 iOS 預覽。原生合成器先停止繪製已刪片段，再完成既有的背景重建，不必等待草稿儲存或延後重建才移除畫面。
+- 即時通知可越過背景組建佇列，並更新目前與仍顯示中的舊播放器；同步失效暫停、拖曳及缺幀備援快取，避免重播刪除前的影格。使用穩定片段 ID，保留同檔案的其他片段，支援軌道重排、連續刪除與復原。此過濾僅作用於預覽，匯出沿用匯出時間軸。
+
+定向回歸共 **54 項通過**：`build/alignment-gif-regression.log`（49）及 `build/alignment-gif-keyboard.log`（5），皆使用 `--concurrency=1`。涵蓋文字對齊、範本與復原、圖片／GIF 合成 payload、刪除通知在重建前送出、連續刪除／復原，以及批次鍵盤收合、裁切、手勢與拖曳預覽。格式檢查與 `git diff --check` 通過；靜態分析無錯誤或警告，保留既有的一個函式宣告風格 info（`build/alignment-gif-analyze.log`）。
+
+新增 Swift XCTest 檢查即時通知越過組建佇列，以及片段 ID、復原與快取版本更新。Windows 無法執行這些原生測試或編譯 iOS；實機 GIF 消失時機仍須 Codemagic／Xcode 建置及 iPhone 驗證，Dart 測試僅確認即時通道契約與操作順序。

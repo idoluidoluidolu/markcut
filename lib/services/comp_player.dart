@@ -183,6 +183,19 @@ class CompPlayer {
     }
   }
 
+  /// Remove deleted still/GIF layers from the current native frame immediately.
+  /// Stable clip IDs keep other uses of the same source and re-numbered tracks alive.
+  static Future<bool> setActiveImageClips(Set<int> ids) async {
+    try {
+      return await _ch.invokeMethod<bool>('setActiveImageClips', {
+            'ids': ids.toList()..sort(),
+          }) ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   CompPlayer._(
     this.textureId,
     this.duration,
@@ -772,6 +785,7 @@ class CompPlayer {
       if (c.offset >= stillEnd) continue;
       final src = tl.sourceOf(c);
       stills.add({
+        'id': c.id,
         'path': src.path,
         if (src.isGif) 'gif': true,
         if (src.isGif) 'sourceStart': c.sourceTimeAt(c.offset),

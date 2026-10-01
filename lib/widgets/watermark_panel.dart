@@ -1108,7 +1108,7 @@ class WatermarkPanelState extends State<WatermarkPanel>
                                       ),
                                       controller: _textCtrl,
                                       focusNode: _textFocus,
-                                      textAlign: TextAlign.center,
+                                      textAlign: s.text.alignment,
                                       minLines: 1,
                                       maxLines: 6,
                                       keyboardType: TextInputType.multiline,
@@ -1146,6 +1146,52 @@ class WatermarkPanelState extends State<WatermarkPanel>
                                     ),
                                   ),
                                 ],
+                              ),
+                              const SizedBox(height: 12),
+                              SizedBox(
+                                width: double.infinity,
+                                child: SegmentedButton<TextAlign>(
+                                  key: const ValueKey(
+                                    'watermark-text-alignment',
+                                  ),
+                                  showSelectedIcon: false,
+                                  style: SegmentedButton.styleFrom(
+                                    textStyle: const TextStyle(fontSize: 12),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                    ),
+                                  ),
+                                  segments: const [
+                                    ButtonSegment(
+                                      value: TextAlign.left,
+                                      icon: Icon(
+                                        Icons.format_align_left,
+                                        size: 18,
+                                      ),
+                                      label: Text('靠左'),
+                                    ),
+                                    ButtonSegment(
+                                      value: TextAlign.center,
+                                      icon: Icon(
+                                        Icons.format_align_center,
+                                        size: 18,
+                                      ),
+                                      label: Text('置中'),
+                                    ),
+                                    ButtonSegment(
+                                      value: TextAlign.right,
+                                      icon: Icon(
+                                        Icons.format_align_right,
+                                        size: 18,
+                                      ),
+                                      label: Text('靠右'),
+                                    ),
+                                  ],
+                                  selected: {s.text.alignment},
+                                  onSelectionChanged: (value) => _update(
+                                    () => s.text.alignment = value.single,
+                                  ),
+                                ),
                               ),
                               const SizedBox(height: 12),
                               Row(

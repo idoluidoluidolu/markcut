@@ -228,6 +228,7 @@ void main() {
       expect(await CompPlayer.build(tl, canvasAspect: 1), isNotNull);
       expect(sent.single['canvasAspect'], 1);
       final gif = (sent.single['stills'] as List).single as Map;
+      expect(gif['id'], tl.clips.last.id);
       expect(gif['sourceStart'], 1.2);
       expect(gif['sourceRate'], 2);
       expect(gif['start'], 2);

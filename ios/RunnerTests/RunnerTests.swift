@@ -1439,6 +1439,42 @@ class RunnerTests: XCTestCase {
     XCTAssertFalse(delegate.compBuildInFlight)
   }
 
+  func testDeletedImagePresenceBypassesBackgroundBuildQueue() {
+    let delegate = AppDelegate()
+    var handled: [String] = []
+    delegate.compHandler = { call, result in handled.append(call.method); result(true) }
+    delegate.compBuildInFlight = true
+    for name in ["seek", "setActiveImageClips"] {
+      delegate.dispatchComp(FlutterMethodCall(methodName: name, arguments: ["ids": []])) { _ in }
+    }
+    XCTAssertEqual(handled, ["setActiveImageClips"], "deletion must reach the old visible player now")
+    delegate.finishCompBuild()
+    XCTAssertEqual(handled, ["setActiveImageClips", "seek"])
+  }
+
+  func testImagePresenceKeepsStableClipIdentityAcrossRoutingAndUndo() {
+    func layer(_ id: Int?) -> CILayerSpec {
+      CILayerSpec(trackID: kCMPersistentTrackID_Invalid, still: nil,
+        transform: .identity, srcHeight: 100, start: 0, end: 4,
+        fadeIn: 0, fadeOut: 0, colorMatrix: nil, z: 2, imageClipID: id)
+    }
+    let first = layer(12).remappingTrack(to: kCMPersistentTrackID_Invalid)
+    let second = layer(13)
+    XCTAssertFalse(first.isImagePresent(in: [13]))
+    XCTAssertTrue(second.isImagePresent(in: [13]), "another use of the same GIF must remain")
+    XCTAssertFalse(second.isImagePresent(in: []))
+    XCTAssertTrue(first.isImagePresent(in: [12, 13]), "undo restores the existing native layer")
+    XCTAssertTrue(first.isImagePresent(in: nil), "export does not apply the preview filter")
+    XCTAssertTrue(layer(nil).isImagePresent(in: []), "legacy and video layers remain visible")
+    defer { CIExportCompositor.setActiveImageClips(nil) }
+    CIExportCompositor.setActiveImageClips([13])
+    let deletedEpoch = CIExportCompositor.liveEpoch
+    CIExportCompositor.setActiveImageClips([13])
+    XCTAssertEqual(CIExportCompositor.liveEpoch, deletedEpoch)
+    CIExportCompositor.setActiveImageClips([12, 13])
+    XCTAssertNotEqual(CIExportCompositor.liveEpoch, deletedEpoch, "undo invalidates paused/scrub caches")
+  }
+
   func testPreviewTailCacheAnswersRepeatsAndKeysOnFileIdentity() throws {
     let url = try makeScrubVideo()
     defer { try? FileManager.default.removeItem(at: url) }

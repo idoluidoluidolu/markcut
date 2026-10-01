@@ -35,6 +35,79 @@ const _tip = '回正中央、恢復預設大小';
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
+  testWidgets('多行浮水印可對齊，設定只改選中那組並可復原與存成範本', (t) async {
+    t.view.physicalSize = const Size(320, 760);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    var settings = WatermarkSettings(
+      texts: [
+        TextMark(text: 'T16\n示範影片'),
+        TextMark(text: '第二組', alignment: TextAlign.right),
+      ],
+    );
+    WatermarkSettings? undo;
+    var revision = 0;
+    var changes = 0;
+    late StateSetter refresh;
+    await t.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.iOS),
+        home: StatefulBuilder(
+          builder: (context, set) {
+            refresh = set;
+            return Scaffold(
+              body: WatermarkPanel(
+                settings: settings,
+                syncVersion: revision,
+                showAnimation: true,
+                onBeforeChange: () => undo = settings.copy(),
+                onChanged: () => changes++,
+              ),
+            );
+          },
+        ),
+      ),
+    );
+    await _settle(t);
+    await t.tap(find.text('文字').first);
+    await _settle(t);
+    final align = find.byKey(const ValueKey('watermark-text-alignment'));
+    final input = find.byKey(const ValueKey('watermark-text-input'));
+    await t.ensureVisible(align);
+    await t.tap(find.descendant(of: align, matching: find.text('置中')));
+    await t.pump();
+    expect(settings.text.alignment, TextAlign.center);
+    expect(settings.texts[1].alignment, TextAlign.right);
+    expect(t.widget<TextField>(input).textAlign, TextAlign.center);
+    expect(changes, 1);
+    expect(undo!.text.alignment, TextAlign.left);
+    final preset = WatermarkPreset(name: 'center', settings: settings);
+    expect(
+      WatermarkPreset.decode(preset.encode()).settings.text.alignment,
+      TextAlign.center,
+    );
+    expect(
+      WatermarkSettings.fromJson(settings.toJson()).text.alignment,
+      TextAlign.center,
+    );
+    refresh(() {
+      settings = undo!;
+      revision++;
+    });
+    await t.pump();
+    expect(t.widget<TextField>(input).textAlign, TextAlign.left);
+    expect(t.widget<SegmentedButton<TextAlign>>(align).selected, {
+      TextAlign.left,
+    });
+    await t.ensureVisible(find.text('第二組'));
+    await t.tap(find.text('第二組'));
+    await t.pump();
+    expect(t.widget<SegmentedButton<TextAlign>>(align).selected, {
+      TextAlign.right,
+    });
+    expect(t.takeException(), isNull);
+  });
+
   testWidgets('浮水印多行輸入可按完成收起鍵盤且保留文字', (t) async {
     t.view.physicalSize = const Size(390, 844);
     t.view.devicePixelRatio = 1;
