@@ -309,23 +309,32 @@ void main() {
       }
       expect(find.byType(ClipRSuperellipse), findsNWidgets(4));
 
-      // GIF 分頁：三欄正方，cover 進去——橫的要貼高（寬＝格寬×比例）
+      // GIF 分頁：兩欄瀑布流、照原比例（跟我的 GIF 同一套）——磚就是
+      // GIF 的比例，欄寬 × dpr 解碼
       await t.tap(find.byKey(const ValueKey('profile-tab-1')));
       await _settle(t, 10);
-      const cell = (inner - 16) / 3;
+      const colW = (inner - 10) / 2;
       final gifs = find.byType(GifImage);
       expect(gifs, findsNWidgets(3));
+      final got = <double>[];
       for (var i = 0; i < 3; i++) {
+        final r = t.getRect(gifs.at(i));
+        got.add(r.width / r.height);
         final image = find.descendant(
           of: gifs.at(i),
           matching: find.byType(Image),
         );
-        final want = cell * math.max(1.0, aspects[i]) * _dpr;
         expect(
           _decodeWidth(image.evaluate().single),
-          want.round(),
-          reason: '第 $i 格 GIF 的解碼寬度不對',
+          (colW * _dpr).round(),
+          reason: '第 $i 格 GIF 沒有照欄寬解碼',
         );
+      }
+      // 瀑布流的順序跟清單不一樣：比的是「有哪幾種比例」
+      got.sort();
+      final want = [...aspects]..sort();
+      for (var i = 0; i < 3; i++) {
+        expect(got[i], moreOrLessEquals(want[i], epsilon: 0.01));
       }
 
       // 三塊 GIF 磚：全部超橢圓

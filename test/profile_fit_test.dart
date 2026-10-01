@@ -1,12 +1,13 @@
 // 個人中心（C 案，使用者定案）：三個分頁（草稿／GIF／範本），選中的
-// 標題 30、其他 20；草稿兩欄 3:4 最多四格，GIF 與範本三欄方格最多三格，
-// 東西比格子多的時候最後一格是「+N 查看全部」；範本最後永遠一格＋。
+// 標題 30、其他 20。草稿兩欄 3:4 最多四格，比格子多的時候第四格是
+// 「+N 查看全部」；GIF 與範本分頁是原本「我的 GIF」、範本夾那一套兩欄
+// 瀑布流（使用者指定），全部列出來，右下角一顆＋。
 //
 // 版面的合約：
 //   1. 格子永遠原尺寸、貼著 22pt 的左右留白——沒有補邊、不置中。
 //   2. 裝得下就不能捲（maxScrollExtent 是 0，使用者指定「不要能上下
-//      捲動」），頁尾貼著底部；裝不下（橫向、字級調很大）就一定捲得到
-//      頁尾——**截掉東西才是 bug，捲不是**。
+//      捲動」），頁尾貼著底部；裝不下（東西多、橫向、字級調很大）就一定
+//      捲得到頁尾——**截掉東西才是 bug，捲不是**。
 //
 // 安全區一定要給真的數字（瀏海 47＋home 條 34）：沒有安全區的測試
 // 少算了將近 100pt，量到的綠燈是假的。
@@ -20,11 +21,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:markcut/models/watermark_settings.dart';
+import 'package:markcut/screens/presets_screen.dart';
 import 'package:markcut/screens/profile_screen.dart';
 import 'package:markcut/screens/storage_screen.dart';
 import 'package:markcut/theme.dart';
 import 'package:markcut/widgets/gif_image.dart';
-import 'package:markcut/widgets/watermark_layer.dart';
 
 /// 一台裝置：邏輯尺寸＋安全區
 typedef Device = ({String name, Size size, double top, double bottom});
@@ -52,8 +53,8 @@ const _landscape = (
 /// 左右留白（跟畫面裡的 _side 同一個數字）
 const _side = 22.0;
 
-/// GIF 與範本：三欄方格、格距 8
-double _cell(double width) => (width - _side * 2 - 16) / 3;
+/// GIF 與範本：兩欄瀑布流的欄寬（欄距 10）
+double _colW(double width) => (width - _side * 2 - 10) / 2;
 
 /// 草稿：兩欄 3:4、格距 10
 double _draftW(double width) => (width - _side * 2 - 10) / 2;
@@ -166,17 +167,19 @@ void _expectMore(WidgetTester t, String key, int? n) {
   );
 }
 
-/// 三欄方格的第 [i] 格：位置、大小
-void _expectCell(WidgetTester t, Finder tile, int i, double width) {
-  final cell = _cell(width);
-  final r = t.getRect(tile);
-  expect(r.width, closeTo(cell, 0.01), reason: '第 $i 格寬不對');
-  expect(r.height, closeTo(cell, 0.01), reason: '第 $i 格不是正方');
-  expect(
-    r.left,
-    closeTo(_side + (i % 3) * (cell + 8), 0.01),
-    reason: '第 $i 格的位置不對（不足一排也要靠左排，不置中）',
-  );
+/// 兩欄瀑布流：每一格都是一欄寬，貼著左右留白排成兩欄
+void _expectMasonry(WidgetTester t, Finder tiles, double width) {
+  final colW = _colW(width);
+  final n = tiles.evaluate().length;
+  for (var i = 0; i < n; i++) {
+    final r = t.getRect(tiles.at(i));
+    expect(r.width, closeTo(colW, 0.01), reason: '第 $i 格不是一欄寬');
+    expect(
+      r.left,
+      anyOf(closeTo(_side, 0.01), closeTo(_side + colW + 10, 0.01)),
+      reason: '第 $i 格不在兩欄的位置上',
+    );
+  }
 }
 
 /// 裝得下＝0 可捲、頁尾貼底；裝不下＝捲到底看得到整個頁尾
@@ -273,56 +276,66 @@ void main() {
     expect(t.takeException(), isNull);
   });
 
-  // GIF：三欄方格，最多三格；一個都沒有的時候放一格＋
+  // GIF：原本「我的 GIF」那一套兩欄瀑布流，全部列出來；右下角一顆＋
   for (final n in [0, 1, 3, 7]) {
-    testWidgets('$n 個 GIF：三欄方格、最多三格', (t) async {
+    testWidgets('$n 個 GIF：兩欄瀑布流、全部列出來、右下角＋', (t) async {
       _seed(gifs: n);
       await _pump(t, _iphone14);
       await _openTab(t, 1);
       expect(t.takeException(), isNull);
-      final w = _iphone14.size.width;
-      final tiles = find.byType(AspectRatio);
-      final shown = n == 0 ? 1 : math.min(n, 3);
-      expect(tiles, findsNWidgets(shown));
-      for (var i = 0; i < shown; i++) {
-        _expectCell(t, tiles.at(i), i, w);
-      }
-      expect(find.byType(GifImage), findsNWidgets(math.min(n, 3)));
+      final gifs = find.byType(GifImage);
+      expect(gifs, findsNWidgets(n), reason: 'GIF 分頁沒有全部列出來');
+      _expectMasonry(t, gifs, _iphone14.size.width);
+      expect(find.text('還沒有 GIF'), n == 0 ? findsOneWidget : findsNothing);
       expect(
         find.byKey(const ValueKey('profile-gif-add')),
-        n == 0 ? findsOneWidget : findsNothing,
-        reason: '有 GIF 的時候不放＋（使用者指定），沒有的時候要有',
+        findsOneWidget,
+        reason: '右下角少了＋',
       );
-      _expectMore(t, 'profile-gifs-more', n > 3 ? n - 3 : null);
+      expect(find.text('查看全部'), findsNothing);
     });
   }
 
-  // 範本：三欄方格，最多三格，＋永遠接在最後
-  for (final n in [0, 2, 3, 5]) {
-    testWidgets('$n 組範本：三欄方格、＋接在最後', (t) async {
+  // 範本：跟範本夾一模一樣的兩欄瀑布流（卡片照各自的設計比例）；右下角＋
+  for (final n in [0, 2, 5]) {
+    testWidgets('$n 組範本：跟範本夾一樣的兩欄瀑布流、右下角＋', (t) async {
       _seed(presets: n);
       await _pump(t, _iphone14);
       await _openTab(t, 2);
       expect(t.takeException(), isNull);
-      final w = _iphone14.size.width;
-      final shown = math.min(n, 3);
-      final tiles = find.byType(AspectRatio);
-      expect(tiles, findsNWidgets(shown + 1));
-      for (var i = 0; i <= shown; i++) {
-        _expectCell(t, tiles.at(i), i, w);
+      final cards = find.byType(PresetCard);
+      expect(cards, findsNWidgets(n), reason: '範本分頁沒有全部列出來');
+      _expectMasonry(t, cards, _iphone14.size.width);
+      for (var i = 0; i < n; i++) {
+        final r = t.getRect(cards.at(i));
+        expect(
+          r.width / r.height,
+          closeTo(_preset(i).settings.designAspect, 0.01),
+          reason: '第 $i 張卡沒照設計比例',
+        );
       }
-      expect(find.byType(WatermarkLayer), findsNWidgets(shown));
-      final add = t.getRect(find.byKey(const ValueKey('profile-preset-add')));
       expect(
-        add,
-        t.getRect(tiles.at(shown)),
-        reason: '＋不在最後一格',
+        find.text('新增範本'),
+        n == 0 ? findsOneWidget : findsNothing,
+        reason: '一組都沒有的時候要有入口卡',
       );
-      _expectMore(t, 'profile-presets-more', n > 3 ? n - 3 : null);
+      expect(
+        find.byKey(const ValueKey('profile-preset-add')),
+        findsOneWidget,
+        reason: '右下角少了＋',
+      );
+      expect(find.text('查看全部'), findsNothing);
     });
   }
 
-  // 東西都滿（四格草稿＋查看全部）：直的手機一頁裝得下，不能捲、頁尾貼底
+  testWidgets('草稿分頁沒有＋', (t) async {
+    _seed();
+    await _pump(t, _iphone14);
+    expect(find.byType(FloatingActionButton), findsNothing);
+  });
+
+  // 東西都滿：草稿分頁（四格＋查看全部）直的手機一頁裝得下，不能捲、
+  // 頁尾貼底；GIF 與範本分頁整片列出來，多了就捲，捲到底看得到頁尾
   for (final d in [_iphone14, _proMax, _se]) {
     testWidgets('${d.name}：草稿滿四格也一頁裝得下、頁尾貼底', (t) async {
       _seed(drafts: 9, gifs: 7, presets: 5);
@@ -335,8 +348,10 @@ void main() {
       await t.pump();
       expect(_pos(t).pixels, 0);
       for (final tab in [1, 2]) {
+        // 捲回頂端：分頁標題捲出畫面就不會被做出來
+        _pos(t).jumpTo(0);
+        await t.pump();
         await _openTab(t, tab);
-        expect(_pos(t).maxScrollExtent, 0);
         await _expectFooterReachable(t, d);
       }
       expect(t.takeException(), isNull);
@@ -390,17 +405,22 @@ void main() {
     expect(t.takeException(), isNull);
   });
 
-  testWidgets('「+N 查看全部」進 GIF 的瀑布流；右上進容量與清理', (t) async {
-    _seed(gifs: 5);
+  testWidgets('點 GIF 放大看；右下角＋開製作／匯入；右上進容量與清理', (t) async {
+    _seed(gifs: 3);
     await _pump(t, _iphone14);
     await _openTab(t, 1);
-    await t.tap(find.byKey(const ValueKey('profile-gifs-more')));
-    // 換頁動畫跑完，底下的個人中心才算不在畫面上
-    await _settle(t, 40);
-    expect(find.byType(GifsScreen), findsOneWidget);
-    expect(find.byType(GifImage), findsNWidgets(5), reason: '查看全部沒有全部列出來');
-    await t.pageBack();
-    await _settle(t, 20);
+    await t.tap(find.byType(GifImage).first);
+    await _settle(t, 10);
+    expect(find.byType(PageView), findsOneWidget, reason: '點 GIF 沒有放大看');
+    await t.tap(find.byType(PageView)); // 點一下關掉
+    await _settle(t, 10);
+    expect(find.byType(PageView), findsNothing);
+
+    await t.tap(find.byKey(const ValueKey('profile-gif-add')));
+    await _settle(t, 10);
+    expect(find.text('從檔案匯入 GIF'), findsOneWidget, reason: '＋沒有開出製作／匯入');
+    Navigator.of(t.element(find.text('從檔案匯入 GIF'))).pop();
+    await _settle(t, 10);
 
     await t.tap(find.byKey(const ValueKey('profile-storage')));
     await _settle(t, 20);

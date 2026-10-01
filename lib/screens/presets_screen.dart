@@ -19,6 +19,141 @@ final _kCardShape = tileShape(
   side: const BorderSide(color: kLBorder),
 );
 
+/// 卡面上照實位置渲染的浮水印（卡片本身與長按浮起來的那一張共用）
+Widget _presetMarks(WatermarkPreset p) => IgnorePointer(
+  child: WatermarkLayer(settings: p.settings, onChanged: () {}),
+);
+
+/// 範本卡：黑底，浮水印按真實位置渲染。範本夾與個人中心的範本分頁
+/// 共用同一張（使用者指定個人中心「像原本點進去那樣」）。
+///
+/// 不放名稱膠囊（使用者指定）：卡片本身就是內容，名字在長按選單
+///（改名／刪除）還看得到
+class PresetCard extends StatelessWidget {
+  final WatermarkPreset preset;
+  final VoidCallback onTap;
+
+  /// 長按；給的是這張卡自己的 context（長按選單拿它量位置）
+  final void Function(BuildContext card) onLongPress;
+
+  /// 批次刪除時有沒有選到；null＝不在批次刪除
+  final bool? selected;
+
+  /// 批次刪除時標在卡上的大小
+  final String? size;
+
+  const PresetCard({
+    super.key,
+    required this.preset,
+    required this.onTap,
+    required this.onLongPress,
+    this.selected,
+    this.size,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // 內容（黑底＋照實渲染的浮水印，可能是一張鋪滿的圖）一律切成跟
+    // 卡片同一個形狀，四角才不會被方形的內容頂出去。
+    // 底色交給 Material 自己畫（同一條路徑上色，不會有兩層邊界對不齊）
+    return Material(
+      color: Colors.black,
+      shape: _kCardShape,
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        key: ValueKey('preset-${preset.name}'),
+        onTap: onTap,
+        onLongPress: () => onLongPress(context),
+        child: Semantics(
+          selected: selected,
+          label: preset.name,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              _presetMarks(preset),
+              if (selected != null)
+                LibrarySelectionMark(selected: selected!, size: size),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 「＋ 新增範本」卡：一組範本都沒有的時候給一張入口卡，不然整頁空白
+/// 只剩右下角一顆 +
+class PresetAddCard extends StatelessWidget {
+  final VoidCallback onTap;
+
+  const PresetAddCard({super.key, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Colors.transparent,
+    shape: _kCardShape,
+    clipBehavior: Clip.antiAlias,
+    child: InkWell(
+      onTap: onTap,
+      child: const Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.add, size: 24, color: kLTextDim),
+          SizedBox(height: 5),
+          Text('新增範本', style: TextStyle(fontSize: 11.5, color: kLTextDim)),
+        ],
+      ),
+    ),
+  );
+}
+
+/// 長按範本卡：背景壓暗、那一張浮起來，旁邊跳小選單（改名／刪除）。
+/// 選單本身就是「要不要刪」，選了刪除就直接刪（使用者指定，不再跳
+/// 整頁的確認視窗）。回傳範本有沒有變——呼叫端據此重讀清單
+Future<bool> showPresetActions(BuildContext card, WatermarkPreset p) async {
+  final act = await showLibraryTileMenu<String>(
+    card,
+    preview: ColoredBox(color: Colors.black, child: _presetMarks(p)),
+    title: '範本「${p.name}」',
+    radius: kPresetRadius,
+    actions: const [
+      LibraryMenuAction('rename', '改名', icon: Icons.drive_file_rename_outline),
+      LibraryMenuAction(
+        'delete',
+        '刪除',
+        icon: Icons.delete_outline,
+        destructive: true,
+      ),
+    ],
+  );
+  if (!card.mounted) return false;
+  switch (act) {
+    case 'rename':
+      return _renamePreset(card, p);
+    case 'delete':
+      await PresetStore.remove(p.name);
+      return true;
+  }
+  return false;
+}
+
+/// 改名：對話框問新名字，同名就提示換一個。回傳有沒有改成
+Future<bool> _renamePreset(BuildContext context, WatermarkPreset p) async {
+  final newName = await showDialog<String>(
+    context: context,
+    builder: (_) => _RenameDialog(initial: p.name),
+  );
+  if (newName == null || newName.isEmpty || newName == p.name) return false;
+  final ok = await PresetStore.rename(p.name, newName);
+  if (!context.mounted) return ok;
+  if (ok) {
+    showHint(context, '已改名為「$newName」');
+  } else {
+    showHint(context, '已有同名範本，換個名字', error: true);
+  }
+  return ok;
+}
+
 /// 常用浮水印範本（範本的「查看全部」）：黑底預覽卡（浮水印按真實
 /// 位置渲染），點卡直接進編輯模式；長按旁邊跳小選單（改名／刪除）；
 /// 批次刪除＝每一張標出多大，選好按底下的紅鈕
@@ -125,53 +260,8 @@ class _PresetsScreenState extends State<PresetsScreen> {
     _reload();
   }
 
-  Future<void> _rename(WatermarkPreset p) async {
-    final newName = await showDialog<String>(
-      context: context,
-      builder: (_) => _RenameDialog(initial: p.name),
-    );
-    if (newName == null || newName.isEmpty || newName == p.name) return;
-    final ok = await PresetStore.rename(p.name, newName);
-    if (!mounted) return;
-    if (ok) {
-      showHint(context, '已改名為「$newName」');
-      _reload();
-    } else {
-      showHint(context, '已有同名範本，換個名字', error: true);
-    }
-  }
-
-  /// 長按一張：背景壓暗、那一張浮起來，旁邊跳小選單（改名／刪除）。
-  /// 選單本身就是「要不要刪」，選了刪除就直接刪（使用者指定，不再跳
-  /// 整頁的確認視窗）
-  Future<void> _menu(BuildContext tile, WatermarkPreset p) async {
-    final act = await showLibraryTileMenu<String>(
-      tile,
-      preview: ColoredBox(color: Colors.black, child: _marks(p)),
-      title: '範本「${p.name}」',
-      radius: kPresetRadius,
-      actions: const [
-        LibraryMenuAction(
-          'rename',
-          '改名',
-          icon: Icons.drive_file_rename_outline,
-        ),
-        LibraryMenuAction(
-          'delete',
-          '刪除',
-          icon: Icons.delete_outline,
-          destructive: true,
-        ),
-      ],
-    );
-    if (!mounted) return;
-    switch (act) {
-      case 'rename':
-        await _rename(p);
-      case 'delete':
-        await PresetStore.remove(p.name);
-        if (mounted) _reload();
-    }
+  Future<void> _menu(BuildContext card, WatermarkPreset p) async {
+    if (await showPresetActions(card, p) && mounted) _reload();
   }
 
   Future<void> _addNew() async {
@@ -182,65 +272,13 @@ class _PresetsScreenState extends State<PresetsScreen> {
     _reload();
   }
 
-  /// 「＋ 新增範本」卡：開浮水印工坊，做完回來清單自動刷新
-  Widget _addCard() {
-    return Material(
-      color: Colors.transparent,
-      shape: _kCardShape,
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: _addNew,
-        child: const Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.add, size: 24, color: kLTextDim),
-            SizedBox(height: 5),
-            Text('新增範本', style: TextStyle(fontSize: 11.5, color: kLTextDim)),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 卡面上照實位置渲染的浮水印（卡片本身與長按浮起來的那一張共用）
-  Widget _marks(WatermarkPreset p) => IgnorePointer(
-    child: WatermarkLayer(settings: p.settings, onChanged: () {}),
+  Widget _presetCard(WatermarkPreset p) => PresetCard(
+    preset: p,
+    onTap: () => _selecting ? _togglePick(p.name) : _edit(p),
+    onLongPress: (card) => _selecting ? _togglePick(p.name) : _menu(card, p),
+    selected: _selecting ? _picked.contains(p.name) : null,
+    size: _selecting ? formatBytes(_sizes[p.name] ?? 0) : null,
   );
-
-  Widget _presetCard(WatermarkPreset p) {
-    // 內容（黑底＋照實渲染的浮水印，可能是一張鋪滿的圖）一律切成跟
-    // 卡片同一個形狀，四角才不會被方形的內容頂出去。
-    // 底色交給 Material 自己畫（同一條路徑上色，不會有兩層邊界對不齊）
-    return Builder(
-      builder: (tile) => Material(
-        color: Colors.black,
-        shape: _kCardShape,
-        clipBehavior: Clip.antiAlias,
-        // 不放名稱膠囊（使用者指定）：卡片本身就是內容，
-        // 名字在長按選單（改名/刪除）還看得到
-        child: InkWell(
-          key: ValueKey('preset-${p.name}'),
-          onTap: () => _selecting ? _togglePick(p.name) : _edit(p),
-          onLongPress: () => _selecting ? _togglePick(p.name) : _menu(tile, p),
-          child: Semantics(
-            selected: _selecting ? _picked.contains(p.name) : null,
-            label: p.name,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                _marks(p),
-                if (_selecting)
-                  LibrarySelectionMark(
-                    selected: _picked.contains(p.name),
-                    size: formatBytes(_sizes[p.name] ?? 0),
-                  ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -323,7 +361,10 @@ class _PresetsScreenState extends State<PresetsScreen> {
                       // 空的時候至少給一張入口卡，不然整頁空白
                       // 只剩右下角一顆 +
                       put(
-                        AspectRatio(aspectRatio: 16 / 10, child: _addCard()),
+                        AspectRatio(
+                          aspectRatio: 16 / 10,
+                          child: PresetAddCard(onTap: _addNew),
+                        ),
                         10 / 16,
                       );
                     }

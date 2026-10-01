@@ -1034,12 +1034,12 @@ void main() {
     await _shot(t, '47-feedback-dialog');
     await _close(t);
 
-    // 範本在第三個分頁；長按跳的是磚旁邊的小選單（問要不要刪）
+    // 範本在第三個分頁；長按跳的是卡片旁邊的小選單（改名／刪除）
     await t.tap(find.byKey(const ValueKey('profile-tab-2')));
     await _settle(t, 6);
     await t.longPress(find.byType(WatermarkLayer).first, warnIfMissed: false);
     await _settle(t, 10);
-    expect(find.textContaining('刪除範本「'), findsOneWidget, reason: '長按範本磚沒有跳選單');
+    expect(find.textContaining('範本「'), findsOneWidget, reason: '長按範本卡沒有跳選單');
     await _shot(t, '56-confirm-light-profile-delete-preset');
     await _close(t);
 

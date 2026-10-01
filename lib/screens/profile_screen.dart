@@ -27,7 +27,6 @@ import '../widgets/gif_image.dart';
 import '../widgets/swipe_back.dart';
 import '../widgets/library_selection.dart';
 import '../widgets/library_tile_menu.dart';
-import '../widgets/watermark_layer.dart';
 import 'about_screen.dart';
 import 'feedback_screen.dart';
 import 'storage_screen.dart';
@@ -92,13 +91,6 @@ class ProfileScreen extends StatefulWidget {
 /// 頁面左右的留白（分頁標題、格子都貼著這條線）
 const _side = EdgeInsets.symmetric(horizontal: 22);
 
-/// 範本磚的底：近黑（使用者看過中灰版之後指定改回黑）。
-/// 磚裡畫的是真的浮水印，而浮水印幾乎都是白字——淺色底（kLTile）
-/// 實際畫出來對照過，預設樣式（白 70%＋硬影）在 #F2F2F6 上只剩一圈
-/// 灰邊，內建的「頻道標準」整個消失，所以淺色底不能用；中灰 #8A8A94
-/// 試過一版，使用者覺得還是黑的好看
-const _kPresetTileBg = Color(0xFF1B1B20);
-
 /// 三個分頁。順序是草稿→GIF→範本：最常回來找的東西放最前面
 const _kTabs = ['草稿', 'GIF', '範本'];
 
@@ -109,10 +101,9 @@ const _kTabOff = 20.0;
 /// 沒選中的分頁字色：比 kLTextDim 淡一階，選中的才是主角
 const _kTabIdle = Color(0xFF8C8C95);
 
-/// 草稿分頁先擺四格（兩排兩欄），GIF 與範本先擺三格（一排三欄）；
-/// 東西比格子多的時候最後一格換成「+N 查看全部」
+/// 草稿分頁先擺四格（兩排兩欄），比格子多的時候第四格換成「+N 查看
+/// 全部」。GIF 與範本分頁是整片瀑布流，全部列出來（使用者指定）
 const _kDraftSlots = 4;
-const _kGridSlots = 3;
 
 /// 空狀態那一行灰字（kLTextDim：更淡的灰在白底上對比不到 3:1）
 const _kHintStyle = TextStyle(fontSize: 13, color: kLTextDim);
@@ -446,13 +437,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
     // 草稿分頁最多畫四格（見 _draftsTab）：封面也只讀那四張。
     // 一張封面是上百 KB 的圖，以前三十份全讀進來只為了畫兩張
     unawaited(_loadCovers(videoDrafts.take(_kDraftSlots).toList()));
-    unawaited(_loadGifAspects(gifs.take(_kGridSlots)));
+    unawaited(_loadGifAspects(gifs));
   }
 
-  /// 主頁那三塊 GIF 磚的寬高比（路徑 → 寬/高），只讀檔頭（見 gifAspect）。
-  /// 不讓整頁的第一次畫面等它：磚先照直片的尺寸解（格寬），量到是橫的
-  /// 再換成貼高的寬度重畫一次——動圖的 codec 是邊播邊解，換掉頂多多解
-  /// 一格；反過來把三個檔頭讀完才畫，開個人中心就得等磁碟
+  /// GIF 分頁瀑布流每一格的寬高比（路徑 → 寬/高），只讀檔頭（見
+  /// gifAspect）。不讓整頁的第一次畫面等它：還沒量到的先當正方形，全部
+  /// 量完才 setState 重排一次（跟「我的 GIF」同一套）
   final Map<String, double> _gifAspect = {};
 
   Future<void> _loadGifAspects(Iterable<String> refs) async {
@@ -465,15 +455,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
     if (changed && mounted) setState(() {});
   }
-
-  /// GIF cover 進 [cell] 見方的磚時要解碼多寬（實體像素）：直的貼寬、
-  /// 橫的貼高（寬＝格寬×比例）。匯入的 GIF 尺寸不限（可 1080 寬），
-  /// 不給的話每一格都以原尺寸解碼再縮到一百多點
-  int _gifDecodeWidth(double cell, String ref) =>
-      (cell *
-              math.max(1.0, _gifAspect[ref] ?? 1.0) *
-              MediaQuery.devicePixelRatioOf(context))
-          .round();
 
   /// 封面 cover 進 [w] 寬的 3:4 格時要解碼多寬（實體像素）。封面原檔
   /// 長邊 720，格子只畫一百七十多點寬——照格子的尺寸解碼：
@@ -514,22 +495,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   ];
 
   // ── 開頁 ────────────────────────────────────────────────
-
-  Future<void> _openGifs() async {
-    await Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const LightPage(child: GifsScreen())),
-    );
-    _reload();
-  }
-
-  Future<void> _openPresets() async {
-    await Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const LightPage(child: PresetsScreen())),
-    );
-    _reload();
-  }
 
   /// 直接開某一份草稿：格子點下去就是要繼續剪，不是進資料夾
   Future<void> _openDraft(DraftMeta m) async {
@@ -653,10 +618,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (mounted) _reload();
   }
 
-  Future<void> _gifMenu(BuildContext tile, String ref, double cell) async {
+  Future<void> _gifMenu(BuildContext tile, String ref, double colW) async {
     final go = await showLibraryTileMenu<bool>(
       tile,
-      preview: _gifCover(ref, cell),
+      preview: _gifCover(ref, colW),
       title: '刪除這個 GIF？',
       actions: const [_deleteAction],
     );
@@ -665,21 +630,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (mounted) _reload();
   }
 
-  Future<void> _presetMenu(BuildContext tile, WatermarkPreset p) async {
-    final go = await showLibraryTileMenu<bool>(
-      tile,
-      preview: _presetCover(p),
-      title: '刪除範本「${p.name}」？',
-      actions: const [_deleteAction],
-    );
-    if (go != true) return;
-    await PresetStore.remove(p.name);
-    if (mounted) _reload();
+  /// 範本分頁的長按跟範本夾同一個選單（改名／刪除，見 showPresetActions）
+  Future<void> _presetMenu(BuildContext card, WatermarkPreset p) async {
+    if (await showPresetActions(card, p) && mounted) _reload();
   }
 
   // ── 格子 ────────────────────────────────────────────────
-  // 三個分頁同一種格子：超橢圓圓角（見 tileShape）、不打陰影；
-  // 草稿兩欄 3:4，GIF 與範本三欄正方
+  // 都是超橢圓圓角（見 tileShape）、不打陰影。草稿兩欄 3:4 的格子；
+  // GIF 與範本是兩欄瀑布流、照各自的比例（使用者指定跟原本的「我的
+  // GIF」、範本夾一樣）
 
   Widget _clip(Widget child) =>
       ClipRSuperellipse(borderRadius: tileClip(), child: child);
@@ -727,73 +686,65 @@ class _ProfileScreenState extends State<ProfileScreen> {
     ),
   );
 
-  Widget _gifCover(String ref, double cell) => ColoredBox(
+  /// GIF 的畫面（格子本身與長按浮起來的那一格共用）。[colW] 是它畫出來
+  /// 的寬：磚就是 GIF 的比例，欄寬 × dpr 就是實體寬——照這個解碼（匯入
+  /// 的 GIF 可能 1080 寬，不縮的話每一格都全解析度解）
+  Widget _gifCover(String ref, double colW) => ColoredBox(
     color: kLTile,
-    child: GifImage(ref, cacheWidth: _gifDecodeWidth(cell, ref)),
+    child: GifImage(
+      ref,
+      cacheWidth: (colW * MediaQuery.devicePixelRatioOf(context)).round(),
+    ),
   );
 
-  /// GIF 磚：點一下進「我的 GIF」（那裡才放大看、才加新的）
-  Widget _gifTile(String ref, double cell) => Builder(
+  /// GIF 分頁的一格：照原始比例。點一下放大看，長按旁邊跳小選單問要不要刪
+  Widget _gifTile(String ref, double colW) => Builder(
     builder: (tile) => GestureDetector(
-      onTap: _openGifs,
-      onLongPress: () => _gifMenu(tile, ref, cell),
-      // 動圖每換一格就對自己 markNeedsPaint，往上找到最近的 repaint
-      // boundary 才停。沒有這一層的話三個 GIF 各用自己的速度把整頁
-      // （含範本磚的文字排版）一秒重畫幾十次，手指根本沒碰螢幕
-      child: RepaintBoundary(
-        child: AspectRatio(aspectRatio: 1, child: _clip(_gifCover(ref, cell))),
+      key: ValueKey('profile-gif-$ref'),
+      onTap: () => _previewGif(ref),
+      onLongPress: () => _gifMenu(tile, ref, colW),
+      child: _clip(
+        AspectRatio(
+          aspectRatio: _gifAspect[ref] ?? 1.0,
+          child: _gifCover(ref, colW),
+        ),
       ),
     ),
   );
 
-  /// 範本磚的內容：近黑底（見 [_kPresetTileBg]）上用真的 WatermarkLayer
-  /// 照實渲染（多文字、多圖、平鋪全都畫）。不放名字（使用者指定）。
-  ///
-  /// 自己一層 RepaintBoundary：磚裡是活的 WatermarkLayer，畫一次要開兩層
-  /// saveLayer、把文字排版四遍（見 text_mark_painter）——跟整頁共用圖層
-  /// 的話旁邊哪一格一動，這些排版就整組重跑
-  ///
-  /// [blurred]：墊在「+N 查看全部」底下的那一格。浮水印多半是置中的白字，
-  /// 只壓暗的話還是會跟「+N」疊在一起打架——糊掉，只留一點影子。
-  /// 只糊浮水印、底色不糊：底色一起糊的話四邊會透出白邊
-  Widget _presetCover(WatermarkPreset p, {bool blurred = false}) {
-    Widget marks = IgnorePointer(
-      child: WatermarkLayer(settings: p.settings, onChanged: () {}),
-    );
-    if (blurred) {
-      marks = ImageFiltered(
-        imageFilter: ui.ImageFilter.blur(sigmaX: 6, sigmaY: 6),
-        child: marks,
-      );
-    }
-    return RepaintBoundary(
-      child: ColoredBox(color: _kPresetTileBg, child: marks),
+  /// 點一下放大看（跟「我的 GIF」同一個燈箱）：左右滑換一張、往下滑
+  /// 關掉、長按刪掉眼前這一張
+  void _previewGif(String ref) {
+    final start = _gifs.indexOf(ref);
+    if (start < 0) return;
+    showDialog<void>(
+      context: context,
+      // 遮罩燈箱自己畫（要跟著下滑的手指變淡），而且要蓋到狀態列與底部
+      barrierColor: Colors.transparent,
+      useSafeArea: false,
+      builder: (_) =>
+          _GifLightbox(gifs: _gifs, start: start, onDelete: _deleteGif),
     );
   }
 
-  Widget _presetTile(WatermarkPreset p) => Builder(
-    builder: (tile) => GestureDetector(
+  /// 燈箱裡長按刪眼前這一張：那裡沒有一格可以浮起來，照舊走確認視窗。
+  /// 回傳有沒有真的刪掉
+  Future<bool> _deleteGif(String ref) async {
+    final ok = await _confirmDeleteGifFile(context, ref);
+    if (ok && mounted) _reload();
+    return ok;
+  }
+
+  /// 範本分頁的一張：跟範本夾同一張卡（使用者指定「像原本點進去那樣」），
+  /// 照自己的設計比例。點一下直接編輯那一組
+  Widget _presetTile(WatermarkPreset p) => AspectRatio(
+    aspectRatio: p.settings.designAspect,
+    child: PresetCard(
+      preset: p,
       onTap: () => _editPreset(p),
-      onLongPress: () => _presetMenu(tile, p),
-      child: AspectRatio(aspectRatio: 1, child: _clip(_presetCover(p))),
+      onLongPress: (card) => _presetMenu(card, p),
     ),
   );
-
-  /// 淺灰底一個＋：範本分頁的「新增」、沒有 GIF 時的「加一個」
-  Widget _addTile({required Key key, required VoidCallback onTap}) =>
-      GestureDetector(
-        key: key,
-        onTap: onTap,
-        child: AspectRatio(
-          aspectRatio: 1,
-          child: DecoratedBox(
-            decoration: ShapeDecoration(color: kLTile, shape: tileShape()),
-            child: const Center(
-              child: Icon(Icons.add, size: 22, color: kLTextDim),
-            ),
-          ),
-        ),
-      );
 
   /// 東西比格子多的時候，最後一格照樣畫出來、壓暗，上面寫
   /// 「+N 查看全部」（使用者從五種看更多裡選的丙）。N＝沒排上的那幾個
@@ -803,7 +754,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     required double aspect,
     required Widget cover,
     required VoidCallback onTap,
-    bool big = false,
   }) => GestureDetector(
     key: key,
     onTap: onTap,
@@ -821,18 +771,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 children: [
                   Text(
                     '+$count',
-                    style: TextStyle(
-                      fontSize: big ? 32 : 26,
+                    style: const TextStyle(
+                      fontSize: 32,
                       height: 1.2,
                       fontWeight: FontWeight.w800,
                       color: Colors.white,
-                      fontFeatures: const [FontFeature.tabularFigures()],
+                      fontFeatures: [FontFeature.tabularFigures()],
                     ),
                   ),
                   Text(
                     '查看全部',
                     style: TextStyle(
-                      fontSize: big ? 13 : 12,
+                      fontSize: 13,
                       height: 1.4,
                       fontWeight: FontWeight.w600,
                       color: Colors.white.withValues(alpha: 0.85),
@@ -896,7 +846,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
               aspect: 3 / 4,
               cover: _draftCover(e, w),
               onTap: _openDrafts,
-              big: true,
             )
           else
             _draftTile(e, w),
@@ -906,64 +855,50 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  /// GIF 分頁：原本「我的 GIF」那一套兩欄瀑布流，全部列出來（使用者
+  /// 指定）。新增在右下角的＋（見 build）
   Widget _gifsTab(double inner) {
-    final cell = (inner - 16) / 3;
     if (_gifs.isEmpty) {
-      // 一個都沒有：放一格＋（現做一個或收現成的，見 addGifFromDevice）。
-      // 有 GIF 的時候不放（使用者指定）：點任何一格進「我的 GIF」再加
-      return _grid(
-        [
-          _addTile(
-            key: const ValueKey('profile-gif-add'),
-            onTap: () async {
-              if (await addGifFromDevice(context)) _reload();
-            },
-          ),
-        ],
-        columns: 3,
-        gap: 8,
+      return const SliverToBoxAdapter(
+        child: Padding(
+          padding: EdgeInsets.only(top: 10, bottom: 4),
+          child: Center(child: Text('還沒有 GIF', style: _kHintStyle)),
+        ),
       );
     }
-    final more = _gifs.length > _kGridSlots;
-    return _grid(
-      [
-        for (final (i, g) in _gifs.take(_kGridSlots).indexed)
-          if (more && i == _kGridSlots - 1)
-            _moreTile(
-              key: const ValueKey('profile-gifs-more'),
-              count: _gifs.length - _kGridSlots,
-              aspect: 1,
-              cover: _gifCover(g, cell),
-              onTap: _openGifs,
-            )
-          else
-            _gifTile(g, cell),
-      ],
-      columns: 3,
-      gap: 8,
+    final colW = (inner - 10) / 2;
+    return _masonry(
+      items: _gifs,
+      colW: colW,
+      aspect: (ref) => _gifAspect[ref] ?? 1.0,
+      tile: (ref) => _gifTile(ref, colW),
     );
   }
 
-  Widget _presetsTab() {
-    final more = _presets.length > _kGridSlots;
-    return _grid(
-      [
-        for (final (i, p) in _presets.take(_kGridSlots).indexed)
-          if (more && i == _kGridSlots - 1)
-            _moreTile(
-              key: const ValueKey('profile-presets-more'),
-              count: _presets.length - _kGridSlots,
-              aspect: 1,
-              cover: _presetCover(p, blurred: true),
-              onTap: _openPresets,
-            )
-          else
-            _presetTile(p),
-        // ＋永遠在最後：直接新增一組（使用者指定「＋就是新增」）
-        _addTile(key: const ValueKey('profile-preset-add'), onTap: _newPreset),
-      ],
-      columns: 3,
-      gap: 8,
+  /// 範本分頁：跟範本夾一模一樣——兩欄瀑布流，每張照自己的設計比例
+  ///（使用者指定「像原本點進去那樣」）。一組都沒有的時候給一張入口卡
+  Widget _presetsTab(double inner) {
+    if (_presets.isEmpty) {
+      return SliverToBoxAdapter(
+        child: Row(
+          children: [
+            Expanded(
+              child: AspectRatio(
+                aspectRatio: 16 / 10,
+                child: PresetAddCard(onTap: _newPreset),
+              ),
+            ),
+            const SizedBox(width: 10),
+            const Spacer(),
+          ],
+        ),
+      );
+    }
+    return _masonry(
+      items: _presets,
+      colW: (inner - 10) / 2,
+      aspect: (p) => p.settings.designAspect,
+      tile: _presetTile,
     );
   }
 
@@ -1028,6 +963,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
     ),
   );
 
+  /// 右下角的黑圓＋（跟原本「我的 GIF」、範本夾同一款）
+  Widget _fab(Key key, VoidCallback onPressed) => FloatingActionButton(
+    key: key,
+    onPressed: onPressed,
+    backgroundColor: Colors.black,
+    foregroundColor: Colors.white,
+    shape: const CircleBorder(),
+    child: const Icon(Icons.add, size: 28),
+  );
+
   /// 「太好用啦」那顆黑色大鈕是使用者指定拿掉的；兩個文字連結留著
   Widget _footer() => Row(
     mainAxisAlignment: MainAxisAlignment.center,
@@ -1057,6 +1002,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return SwipeBack(
       child: Scaffold(
         backgroundColor: kLBg,
+        // GIF 與範本分頁右下角一顆＋（使用者指定要原本那顆）：GIF 是
+        // 製作／從相簿匯入／從檔案匯入（見 addGifFromDevice），範本是開
+        // 工作室做一組新的
+        floatingActionButton: switch (_tab) {
+          1 => _fab(const ValueKey('profile-gif-add'), () async {
+            if (await addGifFromDevice(context)) _reload();
+          }),
+          2 => _fab(const ValueKey('profile-preset-add'), _newPreset),
+          _ => null,
+        },
         // 不掛 appBar：返回鍵是內容的第一列，上下都沒有釘死的白帶
         //（使用者指定「上方箭頭不要 sticky」「上面不要白條」）
         body: SafeArea(
@@ -1077,14 +1032,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                   SliverToBoxAdapter(child: _tabBar()),
                   SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(22, 18, 22, 0),
-                    sliver: SliverToBoxAdapter(
-                      child: switch (_tab) {
-                        0 => _draftsTab(inner),
-                        1 => _gifsTab(inner),
-                        _ => _presetsTab(),
-                      },
-                    ),
+                    // 有＋的分頁底下多留一段：捲到底時最後一格不被＋蓋住
+                    padding: EdgeInsets.fromLTRB(22, 18, 22, _tab == 0 ? 0 : 40),
+                    sliver: switch (_tab) {
+                      0 => SliverToBoxAdapter(child: _draftsTab(inner)),
+                      1 => _gifsTab(inner),
+                      _ => _presetsTab(inner),
+                    },
                   ),
                   // 剩下的高度全給頁尾前面：頁尾貼著底部，中間不留一塊
                   // 看起來像沒載完的空白
@@ -1489,23 +1443,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
     return v.hasThumb ? (v.thumbAspect ?? 9 / 16) : 1.0;
   }
 
-  /// 一格佔的高度（含跟下一格之間的 10）。排欄、算總長、排版三邊用
-  /// 同一個式子，不然版面會自己對不齊（跟「我的 GIF」同一套）
-  double _tileExtent(_DraftEntry e, double colW) =>
-      colW / _tileAspect(e) + 10;
-
-  /// 兩欄瀑布流：每一份丟進目前比較短的那一欄（跟「我的 GIF」同一套）
-  List<List<_DraftEntry>> _columns(List<_DraftEntry> all, double colW) {
-    final cols = <List<_DraftEntry>>[[], []];
-    final h = [0.0, 0.0];
-    for (final e in all) {
-      final i = h[0] <= h[1] ? 0 : 1;
-      cols[i].add(e);
-      h[i] += _tileExtent(e, colW);
-    }
-    return cols;
-  }
-
   /// 一格的內容（格子本身與長按浮起來的那一格共用）。[colW] 是它畫出來
   /// 的寬：磚就是封面的比例，欄寬 × dpr 就是實體寬——照這個解碼，不是
   /// 封面原尺寸（長邊 720 的圖解開一張 1.2MB，實機曾有 113 份）
@@ -1623,12 +1560,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
                   builder: (context, box) {
                     // 兩欄瀑布流：左右各 16、中間 10
                     final colW = (box.maxWidth - 16 * 2 - 10) / 2;
-                    final cols = _columns(all, colW);
-                    // 每一欄一條 SliverVariedExtentList，只做看得到的那幾格
-                    //（跟「我的 GIF」同一套）。以前是一個子項包兩欄 Column，
-                    // 三十份草稿就是三十張封面同時活著、一起解碼（實機曾有
-                    // 113 份）。每一格的高度本來就算得出來（欄寬 ÷ 比例），
-                    // 總長也直接給（見 _ExactExtentDelegate）
                     return CustomScrollView(
                       slivers: [
                         SliverPadding(
@@ -1640,33 +1571,11 @@ class _DraftsScreenState extends State<DraftsScreen> {
                             16,
                             _selecting ? 96 : 16,
                           ),
-                          sliver: SliverCrossAxisGroup(
-                            slivers: [
-                              for (var c = 0; c < cols.length; c++)
-                                SliverVariedExtentList(
-                                  itemExtentBuilder: (i, _) =>
-                                      _tileExtent(cols[c][i], colW),
-                                  delegate: _ExactExtentDelegate(
-                                    (_, i) => i < 0 || i >= cols[c].length
-                                        ? null
-                                        : Padding(
-                                            // 欄距 10：左欄右邊 5、右欄左邊 5；
-                                            // 格距 10 在下面
-                                            padding: EdgeInsets.only(
-                                              left: c == 0 ? 0 : 5,
-                                              right: c == 0 ? 5 : 0,
-                                              bottom: 10,
-                                            ),
-                                            child: _tile(cols[c][i], colW),
-                                          ),
-                                    childCount: cols[c].length,
-                                    total: [
-                                      for (final e in cols[c])
-                                        _tileExtent(e, colW),
-                                    ].fold(0.0, (a, b) => a + b),
-                                  ),
-                                ),
-                            ],
+                          sliver: _masonry(
+                            items: all,
+                            colW: colW,
+                            aspect: _tileAspect,
+                            tile: (e) => _tile(e, colW),
                           ),
                         ),
                       ],
@@ -1809,25 +1718,6 @@ class _GifsScreenState extends State<GifsScreen> {
       if (!mounted) return;
     }
     if (changed) setState(() {});
-  }
-
-  /// 一格佔的高度（含跟下一格之間的 10）。比例還沒量到就先當正方形，
-  /// 量到了會 setState 重排——排欄、算總長、排版三邊用同一個式子，
-  /// 不然版面會自己對不齊
-  double _tileExtent(String ref, double colW) =>
-      colW / (_aspect[ref] ?? 1.0) + 10;
-
-  /// 兩欄瀑布流：每一個丟進目前比較短的那一欄。
-  /// 高度用寬高比推算（欄寬 ÷ 比例），不用等圖片真的畫出來
-  List<List<String>> _columns(double colW) {
-    final cols = <List<String>>[[], []];
-    final h = [0.0, 0.0];
-    for (final ref in _gifs) {
-      final i = h[0] <= h[1] ? 0 : 1;
-      cols[i].add(ref);
-      h[i] += _tileExtent(ref, colW);
-    }
-    return cols;
   }
 
   /// 一格的畫面（格子本身與長按浮起來的那一格共用）。GIF 自己會動——
@@ -1998,58 +1888,17 @@ class _GifsScreenState extends State<GifsScreen> {
                   builder: (context, box) {
                     // 兩欄瀑布流：左右各 16、中間 10
                     final colW = (box.maxWidth - 16 * 2 - 10) / 2;
-                    final cols = _columns(colW);
-                    // 每一欄一條 SliverList：只做「看得到的那幾格」。
-                    //
-                    // 以前是 SingleChildScrollView 包兩個 Column，四十個
-                    // GIF 全部一次做出來——四十個動圖解碼器同時在跑，捲出
-                    // 畫面外照跑不誤；而且整片只有捲動視窗一個 repaint
-                    // boundary，任何一格換一格畫面，四十格就整組重錄一次
-                    //（實測一次 0.60ms，四十個各跑各的＝一秒好幾百次）。
-                    // SliverList 會自己回收看不到的格子（動圖跟著停）並
-                    // 給每一格一層 RepaintBoundary
                     return CustomScrollView(
                       slivers: [
                         SliverPadding(
                           // 底部多留：最後一張不被浮動 +／紅鈕蓋住
                           padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
-                          sliver: SliverCrossAxisGroup(
-                            slivers: [
-                              for (var c = 0; c < cols.length; c++)
-                                // 用 VariedExtent 而不是普通 SliverList：
-                                // 每一格的高度本來就算得出來（欄寬 ÷ 比例，
-                                // 跟 _columns 排欄用的是同一個式子），
-                                // 給了它，沒做出來的格子也定得出位置
-                                SliverVariedExtentList(
-                                  itemExtentBuilder: (i, _) =>
-                                      _tileExtent(cols[c][i], colW),
-                                  // 總長度也直接給（見 _ExactExtentDelegate）：
-                                  // 預設是拿「已經做出來那幾格的平均」外插，
-                                  // 高矮不一的瀑布流會猜歪，可捲距離跟著捲動
-                                  // 一直變，甩到底就會頓一下
-                                  delegate: _ExactExtentDelegate(
-                                    (_, i) => i < 0 || i >= cols[c].length
-                                        ? null
-                                        : Padding(
-                                            // 欄距 10：左欄右邊 5、右欄左邊 5。
-                                            // 兩欄各分到一半寬度，扣掉 5 之後
-                                            // 剛好是上面算的 colW，版面跟原本
-                                            // 的 Row + SizedBox(10) 完全一樣
-                                            padding: EdgeInsets.only(
-                                              left: c == 0 ? 0 : 5,
-                                              right: c == 0 ? 5 : 0,
-                                              bottom: 10,
-                                            ),
-                                            child: _gifTile(cols[c][i], colW),
-                                          ),
-                                    childCount: cols[c].length,
-                                    total: [
-                                      for (final ref in cols[c])
-                                        _tileExtent(ref, colW),
-                                    ].fold(0.0, (a, b) => a + b),
-                                  ),
-                                ),
-                            ],
+                          sliver: _masonry(
+                            items: _gifs,
+                            colW: colW,
+                            // 比例還沒量到就先當正方形，量到了會 setState 重排
+                            aspect: (ref) => _aspect[ref] ?? 1.0,
+                            tile: (ref) => _gifTile(ref, colW),
                           ),
                         ),
                       ],
@@ -2070,6 +1919,60 @@ class _GifsScreenState extends State<GifsScreen> {
       ),
     );
   }
+}
+
+/// 兩欄瀑布流（草稿夾、我的 GIF、個人中心的 GIF 與範本分頁共用）：
+/// 每一個丟進目前比較短的那一欄，格子照各自的寬高比 [aspect]。
+///
+/// 每一欄一條 SliverVariedExtentList，只做「看得到的那幾格」。以前是
+/// 捲動視窗包兩個 Column：四十個 GIF 全部一次做出來——四十個動圖解碼器
+/// 同時在跑、捲出畫面外照跑不誤；草稿夾三十張封面同時活著、一起解碼
+///（實機曾有 113 份）；而且整片只有一個 repaint boundary，任何一格換一格
+/// 畫面就整組重錄（實測一次 0.60ms，四十個各跑各的＝一秒好幾百次）。
+/// SliverList 會自己回收看不到的格子（動圖跟著停），並給每一格一層
+/// RepaintBoundary。
+///
+/// 每一格的高度本來就算得出來（欄寬 ÷ 寬高比）：給了 VariedExtent，沒做
+/// 出來的格子也定得出位置；總長也直接給（見 _ExactExtentDelegate）。
+/// 排欄、算總長、排版三邊用同一個式子，不然版面會自己對不齊。
+/// 欄距、格距都是 10：左欄右邊 5、右欄左邊 5，格距在下面——兩欄各分到
+/// 一半寬度，扣掉 5 剛好是 [colW]
+Widget _masonry<T>({
+  required List<T> items,
+  required double colW,
+  required double Function(T item) aspect,
+  required Widget Function(T item) tile,
+}) {
+  double extent(T e) => colW / aspect(e) + 10;
+  final cols = <List<T>>[[], []];
+  final h = [0.0, 0.0];
+  for (final e in items) {
+    final c = h[0] <= h[1] ? 0 : 1;
+    cols[c].add(e);
+    h[c] += extent(e);
+  }
+  return SliverCrossAxisGroup(
+    slivers: [
+      for (var c = 0; c < 2; c++)
+        SliverVariedExtentList(
+          itemExtentBuilder: (i, _) => extent(cols[c][i]),
+          delegate: _ExactExtentDelegate(
+            (_, i) => i < 0 || i >= cols[c].length
+                ? null
+                : Padding(
+                    padding: EdgeInsets.only(
+                      left: c == 0 ? 0 : 5,
+                      right: c == 0 ? 5 : 0,
+                      bottom: 10,
+                    ),
+                    child: tile(cols[c][i]),
+                  ),
+            childCount: cols[c].length,
+            total: h[c],
+          ),
+        ),
+    ],
+  );
 }
 
 /// 「這一條總共多長」直接給答案，不要框架去外插。
