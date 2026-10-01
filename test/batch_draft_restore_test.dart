@@ -26,6 +26,7 @@ import 'package:markcut/screens/batch_watermark_screen.dart';
 import 'package:markcut/services/video_picker.dart' show pickCountHint;
 import 'package:markcut/services/video_processor.dart' show CanvasRatio;
 import 'package:markcut/theme.dart';
+import 'package:markcut/widgets/batch_export_sheet.dart';
 import 'package:markcut/widgets/watermark_panel.dart';
 
 Future<Uint8List> _png(Color c, int w, int h) async {
@@ -394,9 +395,17 @@ void main() {
     );
     await t.tap(find.text('匯出'));
     await t.pumpAndSettle();
-    await t.tap(find.text('PNG 無損'));
+    // 匯出設定（影片編輯那一套）：照片格式改 PNG，再按設定裡的匯出
+    await t.tap(find.text('照片格式'));
     await t.pumpAndSettle();
-    await t.tap(find.text('開始匯出'));
+    await t.tap(find.text('PNG 無損').last);
+    await t.pumpAndSettle();
+    await t.tap(
+      find.descendant(
+        of: find.byType(BatchExportSheet),
+        matching: find.text('匯出'),
+      ),
+    );
     await t.pump();
     for (var i = 0; i < 150; i++) {
       await t.runAsync(
@@ -448,9 +457,17 @@ void main() {
     );
     await t.tap(find.text('匯出'));
     await t.pumpAndSettle();
-    await t.tap(find.text('PNG 無損'));
+    // 匯出設定（影片編輯那一套）：照片格式改 PNG，再按設定裡的匯出
+    await t.tap(find.text('照片格式'));
     await t.pumpAndSettle();
-    await t.tap(find.text('開始匯出'));
+    await t.tap(find.text('PNG 無損').last);
+    await t.pumpAndSettle();
+    await t.tap(
+      find.descendant(
+        of: find.byType(BatchExportSheet),
+        matching: find.text('匯出'),
+      ),
+    );
     await t.pump();
     for (var i = 0; i < 150 && find.text('匯出完成').evaluate().isEmpty; i++) {
       await t.runAsync(
