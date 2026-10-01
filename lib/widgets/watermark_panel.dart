@@ -204,7 +204,7 @@ class WatermarkPanelState extends State<WatermarkPanel>
 
   late final TextEditingController _textCtrl;
 
-  /// 文字輸入框的焦點（收起鍵盤鈕看它決定要不要出現）
+  /// 文字輸入框的焦點（完成會收起鍵盤）。
   final FocusNode _textFocus = FocusNode();
   final _inputKey = GlobalKey();
 
@@ -1076,24 +1076,18 @@ class WatermarkPanelState extends State<WatermarkPanel>
                               Column(
                                 key: _inputKey,
                                 children: [
-                                  AnimatedBuilder(
-                                    animation: _textFocus,
-                                    builder: (context, _) => _textFocus.hasFocus
-                                        ? Align(
-                                            alignment: Alignment.centerRight,
-                                            child: TextButton.icon(
-                                              key: const ValueKey(
-                                                'watermark-text-done',
-                                              ),
-                                              onPressed: _textFocus.unfocus,
-                                              icon: const Icon(
-                                                Icons.check,
-                                                size: 18,
-                                              ),
-                                              label: const Text('完成'),
-                                            ),
-                                          )
-                                        : const SizedBox.shrink(),
+                                  // 完成列保持固定高度，失焦時不能立刻抽掉它，
+                                  // 否則鍵盤還沒收完就會改變捲動範圍、讓畫面跳動。
+                                  Align(
+                                    alignment: Alignment.centerRight,
+                                    child: TextButton.icon(
+                                      key: const ValueKey(
+                                        'watermark-text-done',
+                                      ),
+                                      onPressed: _textFocus.unfocus,
+                                      icon: const Icon(Icons.check, size: 18),
+                                      label: const Text('完成'),
+                                    ),
                                   ),
                                   Container(
                                     constraints: const BoxConstraints(

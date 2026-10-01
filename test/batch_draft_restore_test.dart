@@ -141,6 +141,70 @@ void main() {
     } catch (_) {}
   });
 
+  testWidgets('改回整批清除當張覆寫、同步文字；撤銷與重做不影響其他張', (t) async {
+    final paths = await _files(t, n: 2);
+    final shared = WatermarkSettings()..text.text = '整批文字';
+    final other = WatermarkSettings()..text.text = '第二張文字';
+    await t.pumpWidget(
+      MaterialApp(
+        home: BatchWatermarkScreen(
+          files: [for (final p in paths) XFile(p)],
+          restore: {
+            'files': paths,
+            'settings': shared.toJson(),
+            'overrides': {paths[1]: other.toJson()},
+          },
+        ),
+      ),
+    );
+    await _settle(t);
+    await t.tap(find.text('整批調整'));
+    await t.pumpAndSettle();
+    await t.tap(find.text('文字').first);
+    await t.pumpAndSettle();
+    final input = find.byKey(const ValueKey('watermark-text-input'));
+    await t.enterText(input, '第一張修改');
+    await t.pumpAndSettle();
+    await t.tap(find.byKey(const ValueKey('watermark-text-done')));
+    await t.pumpAndSettle();
+    expect(_dotXs(t).length, 2);
+
+    await t.tap(find.text('單張調整'));
+    await t.pumpAndSettle();
+    expect(find.byKey(const ValueKey('batch-override-0')), findsNothing);
+    expect(find.byKey(const ValueKey('batch-override-1')), findsOneWidget);
+    expect(t.widget<TextField>(input).controller!.text, '整批文字');
+    expect(
+      t.widget<WatermarkPanel>(find.byType(WatermarkPanel)).settings.text.text,
+      '整批文字',
+    );
+
+    await t.tap(find.byTooltip('上一步'));
+    await t.pumpAndSettle();
+    expect(_dotXs(t).length, 2);
+    expect(find.text('單張調整'), findsOneWidget);
+    expect(t.widget<TextField>(input).controller!.text, '第一張修改');
+    await t.tap(find.byTooltip('重做'));
+    await t.pumpAndSettle();
+    expect(find.byKey(const ValueKey('batch-override-0')), findsNothing);
+    expect(t.widget<TextField>(input).controller!.text, '整批文字');
+
+    await t.tap(find.byKey(const ValueKey('batch-item-1')));
+    await _settle(t);
+    await t.tap(find.text('整批調整'));
+    await t.pumpAndSettle();
+    expect(t.widget<TextField>(input).controller!.text, '第二張文字');
+    await t.longPress(find.byKey(const ValueKey('batch-item-1')));
+    await t.pumpAndSettle();
+    await t.tap(find.text('還原成整批設定'));
+    await t.pumpAndSettle();
+    expect(_dotXs(t), isEmpty);
+    expect(t.widget<TextField>(input).controller!.text, '整批文字');
+    expect(t.takeException(), isNull);
+    await t.pump(const Duration(seconds: 3));
+    await t.pumpAndSettle();
+  });
+
   test('batchRestoreFor：舊草稿的索引鍵換成路徑、少了檔案也對得上；新草稿的路徑鍵對到現在的路徑', () {
     final draft = {
       'files': ['/t/a.jpg', '/t/b.jpg', '/t/c.jpg'],
@@ -331,6 +395,8 @@ void main() {
     await t.tap(find.text('匯出'));
     await t.pumpAndSettle();
     await t.tap(find.text('PNG 無損'));
+    await t.pumpAndSettle();
+    await t.tap(find.text('開始匯出'));
     await t.pump();
     for (var i = 0; i < 150; i++) {
       await t.runAsync(
@@ -383,6 +449,8 @@ void main() {
     await t.tap(find.text('匯出'));
     await t.pumpAndSettle();
     await t.tap(find.text('PNG 無損'));
+    await t.pumpAndSettle();
+    await t.tap(find.text('開始匯出'));
     await t.pump();
     for (var i = 0; i < 150 && find.text('匯出完成').evaluate().isEmpty; i++) {
       await t.runAsync(

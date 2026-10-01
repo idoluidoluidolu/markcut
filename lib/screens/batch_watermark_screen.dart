@@ -30,6 +30,8 @@ import '../services/hdr_photo_export.dart';
 import '../services/video_processor.dart';
 import '../services/watermark_renderer.dart';
 import '../theme.dart';
+import '../widgets/batch_export_dialog.dart';
+import '../widgets/watermark_animation_preview.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
 
@@ -127,7 +129,8 @@ class BatchWatermarkScreen extends StatefulWidget {
 /// 長按移除前面的一張之後索引整個位移，用索引會把設定套到隔壁張
 class _UndoStep {
   final _BatchItem? item;
-  final String json;
+  // 單張的 null 快照代表跟隨整批，撤銷／重做也必須還原這個狀態。
+  final String? json;
 
   const _UndoStep(this.item, this.json);
 }
@@ -157,8 +160,8 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   bool _exporting = false;
   bool _stopRequested = false;
 
-  /// 照片存 JPEG 的品質：跟單張照片編輯器同一個值，不另外問
-  static const _jpegQuality = 92;
+  bool _choosingExport = false;
+  BatchExportOptions _exportOptions = const BatchExportOptions();
 
   /// 這一頁收過的每一條檔案路徑（進場那批＋中途加的，移除的也算）：
   /// 離開時把其中「選取器的複本、草稿又沒在用」的刪掉（見 DraftAssets）
@@ -447,28 +450,36 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     // 連同「這一步是改哪一份設定」一起記：單張模式的上一步要還原到
     // 那一張的 override，還原到共用設定的話畫面完全沒反應
     final target = _singleNow ? _items[_previewIndex] : null;
-    _undoStack.add(_UndoStep(target, jsonEncode(_editTarget.toJson())));
+    _recordUndo(target);
+  }
+
+  void _recordUndo(_BatchItem? target) {
+    _undoStack.add(_snapshotFor(target));
     if (_undoStack.length > 60) _undoStack.removeAt(0);
     _redoStack.clear(); // 改了新的東西，原本的重做路線就斷了
     setState(() {}); // 讓上一步鈕亮起來
   }
 
   /// 目前這一刻的快照（撤銷前先存起來，才回得去）
-  _UndoStep get _snapshot => _UndoStep(
-    _singleNow ? _items[_previewIndex] : null,
-    jsonEncode(_editTarget.toJson()),
-  );
+  _UndoStep _snapshotFor(_BatchItem? item) {
+    final settings = item == null ? _settings : item.override;
+    return _UndoStep(
+      item,
+      settings == null ? null : jsonEncode(settings.toJson()),
+    );
+  }
 
   /// 把一筆快照套回去
   void _applyStep(_UndoStep step) {
-    final wm = WatermarkSettings.fromJson(
-      jsonDecode(step.json) as Map<String, dynamic>,
-    );
+    final wm = step.json == null
+        ? null
+        : WatermarkSettings.fromJson(
+            jsonDecode(step.json!) as Map<String, dynamic>,
+          );
     final item = step.item;
     // 那張後來被移除的話就跳過這一步
     final at = item == null ? -1 : _items.indexOf(item);
     if (item != null && at < 0) return;
-    final dst = item == null ? _settings : (item.override ??= _settings.copy());
     setState(() {
       if (at >= 0 && at != _previewIndex) {
         // 跳去那一張：大預覽也要跟著換，不然畫的是別張的圖
@@ -477,7 +488,12 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         _previewLoadedFor = -1;
         _wmPart = WmPart.none;
       }
-      dst.copyMarksFrom(wm);
+      if (item == null) {
+        if (wm != null) _settings.copyMarksFrom(wm);
+      } else {
+        item.override = wm;
+      }
+      _editSingle = item != null && wm != null;
       _sync++;
     });
     if (at >= 0) _loadPreviewFull();
@@ -485,14 +501,16 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
 
   void _undoLast() {
     if (_undoStack.isEmpty) return;
-    _redoStack.add(_snapshot);
-    _applyStep(_undoStack.removeLast());
+    final step = _undoStack.removeLast();
+    _redoStack.add(_snapshotFor(step.item));
+    _applyStep(step);
   }
 
   void _redoLast() {
     if (_redoStack.isEmpty) return;
-    _undoStack.add(_snapshot);
-    _applyStep(_redoStack.removeLast());
+    final step = _redoStack.removeLast();
+    _undoStack.add(_snapshotFor(step.item));
+    _applyStep(step);
   }
 
   /// 條列縮圖的長邊：條列格子只有 56dp，160px 在高 DPR 螢幕也夠銳利
@@ -755,9 +773,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   WatermarkSettings _effectiveOf(int i) => _items[i].override ?? _settings;
 
   /// 編輯範圍開關：true＝現在調的是「這一張」（前提是它有 override）。
-  /// 跟「有沒有 override」拆開：切回整批不會丟掉單張的覆寫
-  ///（使用者指定「更動不會改掉、整批就調整剩下其他的」），
-  /// 只是編輯目標換回共用設定
+  /// 切回整批會讓目前這張重新跟隨共用設定，其餘張的覆寫不變。
   bool _editSingle = false;
 
   /// 這一刻是不是真的在單張模式（有覆寫且開關開著）
@@ -780,18 +796,29 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     showHint(context, '已切換為單張調整，只影響這一張');
   }
 
-  /// 範圍開關：整批 ↔ 單張。切回整批「不會」丟掉這張的單獨調整
-  ///（使用者指定），只是之後的編輯落到共用設定（影響其他張）
-  Future<void> _toggleScope() async {
+  /// 範圍開關：整批 ↔ 單張。切回整批同步清除目前這張的覆寫與標記。
+  void _toggleScope() {
     if (!_singleNow) {
       _ensureOverride();
       return;
     }
+    _resetOverride(_previewIndex);
+    showHint(context, '這張已恢復整批設定');
+  }
+
+  void _resetOverride(int index) {
+    final item = _items[index];
+    if (item.override == null) return;
+    _recordUndo(item);
+    _lastPush = DateTime.fromMillisecondsSinceEpoch(0);
     setState(() {
-      _editSingle = false;
+      item.override = null;
+      if (index == _previewIndex) {
+        _editSingle = false;
+        _wmPart = WmPart.none;
+      }
       _sync++;
     });
-    showHint(context, '回到整批調整（這張的單獨調整保留）');
   }
 
   // ===== 預覽區雙指縮放／旋轉浮水印（跟照片編輯同一套）=====
@@ -930,26 +957,25 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
 
   // ===== 批次匯出 =====
 
-  /// 匯出前先問照片格式。批次動輒幾十張，PNG 大約是 JPEG 的 8 倍，
-  /// 這裡反而是最需要選項的地方（單張編輯早就有了）。
-  ///
-  /// 按一次「匯出」最多只問這一個。以前這裡會先跳一個「畫質」視窗
-  ///（跟影片編輯器同一款，列各檔位的 MB），不管這批有沒有影片都問，
-  /// 於是純照片的批次要連按兩個視窗（實測回報「第一個是影片的」）。
-  /// 那個視窗拿掉：照片照單張編輯器的規矩固定 JPEG 92，影片的畫質
-  /// 由來源位元率自動挑（跟影片編輯器沒動過設定時同一條規則，見
-  /// [_exportVideo]）
+  /// 照片格式與影片品質集中在一次確認，純影片也不能跳過設定。
   Future<void> _confirmExportAll() async {
-    if (_exporting) return;
-    // 整批都是影片就不用問（影片不吃這個格式）
-    final hasPhoto = _items.any((it) => !isVideoFile(it.file));
-    var jpeg = false;
-    if (hasPhoto) {
-      final fmt = await askPhotoFormat(context);
-      if (fmt == null || !mounted) return;
-      jpeg = fmt == 'jpg';
+    if (_exporting || _choosingExport) return;
+    _choosingExport = true;
+    try {
+      final options = await showDialog<BatchExportOptions>(
+        context: context,
+        builder: (context) => BatchExportDialog(
+          hasPhoto: _items.any((it) => !isVideoFile(it.file)),
+          hasVideo: _items.any((it) => isVideoFile(it.file)),
+          initial: _exportOptions,
+        ),
+      );
+      if (options == null || !mounted) return;
+      _exportOptions = options;
+      await _exportAll(jpeg: options.jpeg);
+    } finally {
+      _choosingExport = false;
     }
-    await _exportAll(jpeg: jpeg);
   }
 
   /// 合成好的一張照片 → 編碼 → 存相簿。永遠不丟例外（回 false 就是失敗），
@@ -970,7 +996,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       await savePhotoImage(
         image,
         jpeg: jpeg,
-        quality: _jpegQuality,
+        quality: _exportOptions.photoQuality,
         name: 'watermarker_${DateTime.now().millisecondsSinceEpoch}_$i',
         sourcePath: sourcePath,
       );
@@ -1125,7 +1151,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
               overlayCache: overlays,
               settings: _effectiveOf(i),
               canvasAspect: _canvasRatio.value,
-              quality: _jpegQuality,
+              quality: _exportOptions.photoQuality,
               name: 'watermarker_${DateTime.now().millisecondsSinceEpoch}_$i',
             );
             if (err == null) {
@@ -1260,25 +1286,25 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     }
     // 來源是 HDR 就保留 HDR（HEVC HLG，跟單支編輯器同一條原生路）
     //——以前批次一律走 SDR 色調映射，成品比原片淡（實測回報）
-    // 畫質不問人（批次只問照片格式那一個視窗）：跟影片編輯器沒動過
-    // 設定時同一條規則——照來源位元率（檔案大小÷長度）挑一檔看不出
-    // 被重壓的；量不到就是「標準」（＝以前寫死的 crf 17）
+    // 沒有手動指定時，按各支來源位元率自動選擇；量不到用標準。
     var srcKbps = 0.0;
     try {
       final bytes = await f.length();
       if (bytes > 0) srcKbps = bytes * 8 / 1000 / dur;
     } catch (_) {}
-    final quality = recommendQuality(
-      srcKbps: srcKbps,
-      outW: ow,
-      outH: oh,
-      fps: probe.fps > 0 ? probe.fps : 30,
-      headroom: switch (probe.codec) {
-        'hevc' => 1.6,
-        'h264' => 1.1,
-        _ => 1.25,
-      },
-    );
+    final quality =
+        _exportOptions.videoQuality ??
+        recommendQuality(
+          srcKbps: srcKbps,
+          outW: ow,
+          outH: oh,
+          fps: probe.fps > 0 ? probe.fps : 30,
+          headroom: switch (probe.codec) {
+            'hevc' => 1.6,
+            'h264' => 1.1,
+            _ => 1.25,
+          },
+        );
     final src = MediaSource(
       path: f.path,
       name: f.name,
@@ -1414,6 +1440,26 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     );
   }
 
+  /// 工具列隨鍵盤最後一段（控制項高度加底部安全區）逐步回來；
+  /// 不能等 insets 歸零才一次塞回，否則預覽會先放大再突然縮小。
+  Widget _keyboardAccessory(double inset, Widget child) => ClipRect(
+    child: Align(
+      alignment: Alignment.topCenter,
+      heightFactor:
+          (1 - inset / (200 + MediaQuery.viewPaddingOf(context).bottom)).clamp(
+            0.0,
+            1.0,
+          ),
+      child: ExcludeFocus(
+        excluding: inset > 0,
+        child: ExcludeSemantics(
+          excluding: inset > 0,
+          child: IgnorePointer(ignoring: inset > 0, child: child),
+        ),
+      ),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     final dims = _items[_previewIndex].dims;
@@ -1423,7 +1469,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
         (dims == null ? 16 / 9 : dims.$1 / (dims.$2 == 0 ? 1 : dims.$2));
     // 鍵盤打開時保留預覽（跟單張照片／影片編輯一致），只收縮圖與底欄，
     // 把有限空間留給文字輸入面板。
-    final kbOpen = MediaQuery.of(context).viewInsets.bottom > 60;
+    final keyboardInset = MediaQuery.viewInsetsOf(context).bottom;
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
@@ -1474,20 +1520,30 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                                       _items[_previewIndex].thumb!,
                                       fit: BoxFit.contain,
                                     ),
-                                  WatermarkLayer(
-                                    settings: _editTarget,
-                                    // 選取框畫在裁切外（見 _wmFrameInfo）
-                                    frameNotifier: _wmFrameInfo,
-                                    onChanged: () => setState(() {}),
-                                    // 拖曳落在目前生效的設定上：
-                                    // 整批模式改整批、單張模式改這張（見開關）
-                                    onDragStart: _pushUndo,
-                                    selectedPart: _wmPartAlive,
-                                    onSelectPart: (p) {
-                                      setState(() => _wmPart = p);
-                                      _wmPanelCtrl.scrollTo(p);
-                                    },
-                                    panLocked: () => _pvPts.length >= 2,
+                                  WatermarkAnimationPreview(
+                                    enabled:
+                                        !_exporting &&
+                                        isVideoFile(
+                                          _items[_previewIndex].file,
+                                        ) &&
+                                        _editTarget.animation !=
+                                            WmAnimation.none,
+                                    builder: (context, time) => WatermarkLayer(
+                                      settings: _editTarget,
+                                      time: time,
+                                      // 選取框畫在裁切外（見 _wmFrameInfo）
+                                      frameNotifier: _wmFrameInfo,
+                                      onChanged: () => setState(() {}),
+                                      // 拖曳落在目前生效的設定上：
+                                      // 整批模式改整批、單張模式改這張（見開關）
+                                      onDragStart: _pushUndo,
+                                      selectedPart: _wmPartAlive,
+                                      onSelectPart: (p) {
+                                        setState(() => _wmPart = p);
+                                        _wmPanelCtrl.scrollTo(p);
+                                      },
+                                      panLocked: () => _pvPts.length >= 2,
+                                    ),
                                   ),
                                   // 置中輔助線。無條件插入、不要用 if 增減：
                                   // 線一出現會把後面手勢層的索引推掉，拖曳被
@@ -1601,185 +1657,197 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
             ),
             // 上一步／重做跟影片、照片同一個位置（預覽下方）。
             // 原本在標題列右上角，大螢幕手機拇指按不到
-            if (!kbOpen && !_fsPreview)
-              undoRedoBar(
-                onUndo: _undoStack.isEmpty ? null : _undoLast,
-                onRedo: _redoStack.isEmpty ? null : _redoLast,
-                leading: [
-                  const SizedBox(width: 12),
-                  // 範圍開關：預設整批；「單張」要在這裡特別切換
-                  //（以前預覽上一動手就自動變單張，使用者以為在調整批）
-                  GestureDetector(
-                    onTap: _toggleScope,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: _singleNow
-                            ? kSelect.withValues(alpha: 0.15)
-                            : kPanelHi,
-                        borderRadius: BorderRadius.circular(999),
-                        border: Border.all(
-                          color: _singleNow ? kSelect : kBorder,
+            if (!_fsPreview)
+              _keyboardAccessory(
+                keyboardInset,
+                undoRedoBar(
+                  onUndo: _undoStack.isEmpty ? null : _undoLast,
+                  onRedo: _redoStack.isEmpty ? null : _redoLast,
+                  leading: [
+                    const SizedBox(width: 12),
+                    // 範圍開關：預設整批；「單張」要在這裡特別切換
+                    //（以前預覽上一動手就自動變單張，使用者以為在調整批）
+                    GestureDetector(
+                      onTap: _toggleScope,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
                         ),
-                      ),
-                      child: Text(
-                        _singleNow ? '單張調整' : '整批調整',
-                        style: TextStyle(
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.w600,
-                          color: _singleNow ? kSelect : kTextDim,
+                        decoration: BoxDecoration(
+                          color: _singleNow
+                              ? kSelect.withValues(alpha: 0.15)
+                              : kPanelHi,
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(
+                            color: _singleNow ? kSelect : kBorder,
+                          ),
+                        ),
+                        child: Text(
+                          _singleNow ? '單張調整' : '整批調整',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w600,
+                            color: _singleNow ? kSelect : kTextDim,
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  // 提示這顆是開關（使用者指定）：點了在整批/單張
-                  // 之間切換；單張的調整永遠保留
-                  Text(
-                    _singleNow ? '只調這張，點一下改回整批' : '點一下改為只調這張',
-                    style: const TextStyle(fontSize: 10.5, color: kTextDim),
-                  ),
-                ],
+                    const SizedBox(width: 8),
+                    // 提示這顆是開關（使用者指定）：點了在整批/單張
+                    // 之間切換；改回整批時恢復共用設定
+                    Text(
+                      _singleNow ? '只調這張，點一下改回整批' : '點一下改為只調這張',
+                      style: const TextStyle(fontSize: 10.5, color: kTextDim),
+                    ),
+                  ],
+                ),
               ),
             // 檔案縮圖列：點了切換預覽、長按從批次移除。
             // 高 72：扣掉上下 8 的留白，縮圖是 56×56 正方形
             //（以前 56 高擠成 56×40 的橫式，使用者指定要正方形）
-            if (!kbOpen && !_fsPreview)
-              SizedBox(
-                height: 72,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 8,
-                  ),
-                  itemCount: _items.length + 1,
-                  separatorBuilder: (_, i) => const SizedBox(width: 6),
-                  // 「＋」放最前面（使用者指定「加號改到最前面」）：第 0 格
-                  // 是它，檔案從第 1 格開始；下面的 i 一律是檔案的索引
-                  itemBuilder: (context, slot) {
-                    if (slot == 0) return _addTile();
-                    final i = slot - 1;
-                    return InkWell(
-                      borderRadius: BorderRadius.circular(6),
-                      onTap: () => _selectPreview(i),
-                      onLongPress: () async {
-                        HapticFeedback.mediumImpact(); // 長按成立的觸覺回饋
-                        final hasOverride = _items[i].override != null;
-                        final action = await showModalBottomSheet<String>(
-                          context: context,
-                          showDragHandle: true,
-                          builder: (context) => SafeArea(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const SizedBox(height: 8),
-                                if (hasOverride)
+            if (!_fsPreview)
+              _keyboardAccessory(
+                keyboardInset,
+                SizedBox(
+                  height: 72,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 8,
+                    ),
+                    itemCount: _items.length + 1,
+                    separatorBuilder: (_, i) => const SizedBox(width: 6),
+                    // 「＋」放最前面（使用者指定「加號改到最前面」）：第 0 格
+                    // 是它，檔案從第 1 格開始；下面的 i 一律是檔案的索引
+                    itemBuilder: (context, slot) {
+                      if (slot == 0) return _addTile();
+                      final i = slot - 1;
+                      return InkWell(
+                        key: ValueKey('batch-item-$i'),
+                        borderRadius: BorderRadius.circular(6),
+                        onTap: () => _selectPreview(i),
+                        onLongPress: () async {
+                          HapticFeedback.mediumImpact(); // 長按成立的觸覺回饋
+                          final hasOverride = _items[i].override != null;
+                          final action = await showModalBottomSheet<String>(
+                            context: context,
+                            showDragHandle: true,
+                            builder: (context) => SafeArea(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const SizedBox(height: 8),
+                                  if (hasOverride)
+                                    ListTile(
+                                      leading: const Icon(
+                                        Icons.sync,
+                                        color: kAmber,
+                                      ),
+                                      title: const Text('還原成整批設定'),
+                                      subtitle: const Text(
+                                        '丟掉這張的單獨調整',
+                                        style: TextStyle(
+                                          fontSize: 11.5,
+                                          color: kTextDim,
+                                        ),
+                                      ),
+                                      onTap: () =>
+                                          Navigator.pop(context, 'reset'),
+                                    ),
                                   ListTile(
                                     leading: const Icon(
-                                      Icons.sync,
+                                      Icons.delete_outline,
                                       color: kAmber,
                                     ),
-                                    title: const Text('還原成整批設定'),
-                                    subtitle: const Text(
-                                      '丟掉這張的單獨調整',
-                                      style: TextStyle(
-                                        fontSize: 11.5,
-                                        color: kTextDim,
-                                      ),
-                                    ),
+                                    title: const Text('從批次移除'),
+                                    enabled: _items.length > 1,
                                     onTap: () =>
-                                        Navigator.pop(context, 'reset'),
+                                        Navigator.pop(context, 'remove'),
                                   ),
-                                ListTile(
-                                  leading: const Icon(
-                                    Icons.delete_outline,
-                                    color: kAmber,
-                                  ),
-                                  title: const Text('從批次移除'),
-                                  enabled: _items.length > 1,
-                                  onTap: () => Navigator.pop(context, 'remove'),
-                                ),
-                                const SizedBox(height: 8),
-                              ],
+                                  const SizedBox(height: 8),
+                                ],
+                              ),
                             ),
+                          );
+                          if (!mounted) return;
+                          if (action == 'reset') {
+                            _resetOverride(i);
+                            showHint(this.context, '已還原成整批設定');
+                            return;
+                          }
+                          if (action != 'remove') return;
+                          if (_items.length <= 1) {
+                            showHint(this.context, '批次至少要留一個檔案', error: true);
+                            return;
+                          }
+                          // 選單上那一項就是明確的動作，不再多一層
+                          // 「確定移除？」：移錯了按「＋」再加回來就好
+                          _removeItem(i);
+                          showHint(this.context, '已從批次移除');
+                        },
+                        child: Container(
+                          width: 56,
+                          clipBehavior: Clip.antiAlias,
+                          decoration: BoxDecoration(
+                            color: kPanelHi,
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: kBorder, width: 1),
                           ),
-                        );
-                        if (!mounted) return;
-                        if (action == 'reset') {
-                          setState(() => _items[i].override = null);
-                          showHint(this.context, '已還原成整批設定');
-                          return;
-                        }
-                        if (action != 'remove') return;
-                        if (_items.length <= 1) {
-                          showHint(this.context, '批次至少要留一個檔案', error: true);
-                          return;
-                        }
-                        // 選單上那一項就是明確的動作，不再多一層
-                        // 「確定移除？」：移錯了按「＋」再加回來就好
-                        _removeItem(i);
-                        showHint(this.context, '已從批次移除');
-                      },
-                      child: Container(
-                        width: 56,
-                        clipBehavior: Clip.antiAlias,
-                        decoration: BoxDecoration(
-                          color: kPanelHi,
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(color: kBorder, width: 1),
-                        ),
-                        // 選取框畫在前景，縮圖不位移
-                        foregroundDecoration: i == _previewIndex
-                            ? BoxDecoration(
-                                borderRadius: BorderRadius.circular(6),
-                                border: Border.all(color: kSelect, width: 1.5),
-                              )
-                            : null,
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            if (_items[i].thumb != null)
-                              Image.memory(
-                                _items[i].thumb!,
-                                fit: BoxFit.cover,
-                                cacheWidth: _thumbLongSide,
-                                gaplessPlayback: true,
-                              ),
-                            // 單張模式標記：左上角一顆琥珀小點
-                            if (_items[i].override != null)
-                              Align(
-                                alignment: Alignment.topLeft,
-                                child: Container(
-                                  margin: const EdgeInsets.all(3),
-                                  width: 8,
-                                  height: 8,
-                                  decoration: const BoxDecoration(
+                          // 選取框畫在前景，縮圖不位移
+                          foregroundDecoration: i == _previewIndex
+                              ? BoxDecoration(
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
                                     color: kSelect,
-                                    shape: BoxShape.circle,
+                                    width: 1.5,
+                                  ),
+                                )
+                              : null,
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              if (_items[i].thumb != null)
+                                Image.memory(
+                                  _items[i].thumb!,
+                                  fit: BoxFit.cover,
+                                  cacheWidth: _thumbLongSide,
+                                  gaplessPlayback: true,
+                                ),
+                              // 單張模式標記：左上角一顆琥珀小點
+                              if (_items[i].override != null)
+                                Align(
+                                  key: ValueKey('batch-override-$i'),
+                                  alignment: Alignment.topLeft,
+                                  child: Container(
+                                    margin: const EdgeInsets.all(3),
+                                    width: 8,
+                                    height: 8,
+                                    decoration: const BoxDecoration(
+                                      color: kSelect,
+                                      shape: BoxShape.circle,
+                                    ),
                                   ),
                                 ),
-                              ),
-                            if (isVideoFile(_items[i].file))
-                              const Align(
-                                alignment: Alignment.bottomRight,
-                                child: Padding(
-                                  padding: EdgeInsets.all(2),
-                                  child: Icon(
-                                    Icons.videocam,
-                                    size: 11,
-                                    color: Colors.white70,
+                              if (isVideoFile(_items[i].file))
+                                const Align(
+                                  alignment: Alignment.bottomRight,
+                                  child: Padding(
+                                    padding: EdgeInsets.all(2),
+                                    child: Icon(
+                                      Icons.videocam,
+                                      size: 11,
+                                      color: Colors.white70,
+                                    ),
                                   ),
                                 ),
-                              ),
-                          ],
+                            ],
+                          ),
                         ),
-                      ),
-                    );
-                  },
+                      );
+                    },
+                  ),
                 ),
               ),
             if (!_fsPreview) Container(height: 1, color: kBorder),
@@ -1843,29 +1911,38 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
             // 畫質不放這裡：那是「輸出的參數」，按下輸出時才問（見
             // _confirmExportAll），編輯畫面上擺一顆常駐的只會讓人分心。
             // 打字中收起來，空間讓給輸入框
-            if (!kbOpen && !_fsPreview)
-              SafeArea(
-                top: false,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: secondaryAction(
-                          label: '存成範本',
-                          onPressed: _exporting
-                              ? null
-                              : () => _panelKey.currentState?.savePreset(),
+            if (!_fsPreview)
+              _keyboardAccessory(
+                keyboardInset,
+                SafeArea(
+                  top: false,
+                  maintainBottomViewPadding: true,
+                  // Scaffold 的 body 會扣掉被鍵盤覆蓋的 viewPadding；
+                  // 用頁面原始安全區當下限，收鍵盤最後 34dp 才不再跳一次。
+                  minimum: EdgeInsets.only(
+                    bottom: MediaQuery.viewPaddingOf(context).bottom,
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: secondaryAction(
+                            label: '存成範本',
+                            onPressed: _exporting
+                                ? null
+                                : () => _panelKey.currentState?.savePreset(),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: primaryAction(
-                          label: '匯出',
-                          onPressed: _exporting ? null : _confirmExportAll,
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: primaryAction(
+                            label: '匯出',
+                            onPressed: _exporting ? null : _confirmExportAll,
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),

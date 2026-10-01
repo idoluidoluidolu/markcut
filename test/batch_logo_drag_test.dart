@@ -11,6 +11,8 @@ import 'package:markcut/screens/batch_watermark_screen.dart';
 import 'package:markcut/widgets/watermark_layer.dart';
 import 'package:markcut/widgets/watermark_panel.dart';
 
+import 'editor_harness.dart' show mockEditorPlugins;
+
 Future<Uint8List> _png(Color c, int side) async {
   final rec = ui.PictureRecorder();
   final canvas = ui.Canvas(rec);
@@ -35,44 +37,111 @@ Future<void> _settle(WidgetTester t, {int rounds = 10}) async {
 }
 
 void main() {
-  testWidgets('批次照片文字輸入：鍵盤打開後仍保留上方預覽', (t) async {
+  testWidgets('批次影片的浮水印動畫會推進；切到照片維持靜態', (t) async {
+    mockEditorPlugins(t.binding);
     SharedPreferences.setMockInitialValues({});
-    t.view.physicalSize = const Size(390, 844);
-    t.view.devicePixelRatio = 1;
-    addTearDown(t.view.reset);
     late Uint8List photo;
-    await t.runAsync(() async {
-      photo = await _png(const Color(0xFF204060), 400);
-    });
-
+    await t.runAsync(
+      () async => photo = await _png(const Color(0xFF204060), 64),
+    );
     await t.pumpWidget(
       MaterialApp(
         home: BatchWatermarkScreen(
-          files: [XFile.fromData(photo, name: 'a.png', mimeType: 'image/png')],
+          files: [
+            XFile.fromData(Uint8List(32), name: 'v.mp4', mimeType: 'video/mp4'),
+            XFile.fromData(photo, name: 'a.png', mimeType: 'image/png'),
+          ],
+          restore: {
+            'settings': (WatermarkSettings()..animation = WmAnimation.drift)
+                .toJson(),
+          },
         ),
       ),
     );
-    await _settle(t, rounds: 12);
-    await t.tap(find.text('文字').first);
     await _settle(t);
-    final input = find.byType(TextField).first;
-    await t.tap(input);
-    t.view.viewInsets = const FakeViewPadding(bottom: 330);
+    WatermarkLayer layer() =>
+        t.widget<WatermarkLayer>(find.byType(WatermarkLayer));
+    final before = layer().time!;
+    final offset = layer().settings.animAt(before);
+    await t.pump(const Duration(milliseconds: 500));
+    expect(layer().time!, greaterThan(before));
+    expect(layer().settings.animAt(layer().time!), isNot(offset));
+    await t.tap(find.byKey(const ValueKey('batch-item-1')));
     await _settle(t);
-
-    final preview = t.getRect(find.byType(WatermarkLayer));
-    expect(preview.width, greaterThan(100));
-    expect(preview.height, greaterThan(70), reason: '鍵盤不能把整個照片預覽收掉');
-    final inputRect = t.getRect(input);
-    expect(inputRect.width, greaterThan(200));
-    expect(inputRect.bottom, lessThanOrEqualTo(844 - 330));
-    final done = find.byKey(const ValueKey('watermark-text-done'));
-    expect(t.getRect(done).bottom, lessThanOrEqualTo(844 - 330));
-    await t.tap(done);
-    await _settle(t);
-    expect(t.widget<TextField>(input).focusNode!.hasFocus, isFalse);
+    expect(layer().time, isNull);
+    await t.pumpWidget(const SizedBox());
+    await t.pumpAndSettle();
     expect(t.takeException(), isNull);
   });
+
+  for (final safeBottom in [0.0, 34.0]) {
+    testWidgets('批次文字輸入：完成與收合不跳動（底部安全區 $safeBottom）', (t) async {
+      SharedPreferences.setMockInitialValues({});
+      t.view.physicalSize = const Size(390, 844);
+      t.view.devicePixelRatio = 1;
+      t.view.padding = FakeViewPadding(top: 47, bottom: safeBottom);
+      t.view.viewPadding = FakeViewPadding(top: 47, bottom: safeBottom);
+      addTearDown(t.view.reset);
+      late Uint8List photo;
+      await t.runAsync(() async {
+        photo = await _png(const Color(0xFF204060), 400);
+      });
+
+      await t.pumpWidget(
+        MaterialApp(
+          home: BatchWatermarkScreen(
+            files: [
+              XFile.fromData(photo, name: 'a.png', mimeType: 'image/png'),
+            ],
+          ),
+        ),
+      );
+      await _settle(t, rounds: 12);
+      await t.tap(find.text('文字').first);
+      await _settle(t);
+      final input = find.byType(TextField).first;
+      await t.tap(input);
+      t.view.viewInsets = const FakeViewPadding(bottom: 330);
+      await _settle(t);
+
+      final preview = t.getRect(find.byType(WatermarkLayer));
+      expect(preview.width, greaterThan(100));
+      expect(preview.height, greaterThan(70), reason: '鍵盤不能把整個照片預覽收掉');
+      final inputRect = t.getRect(input);
+      expect(inputRect.width, greaterThan(200));
+      expect(inputRect.bottom, lessThanOrEqualTo(844 - 330));
+      final done = find.byKey(const ValueKey('watermark-text-done'));
+      expect(t.getRect(done).bottom, lessThanOrEqualTo(844 - 330));
+      await t.tap(done);
+      await _settle(t);
+      expect(t.widget<TextField>(input).focusNode!.hasFocus, isFalse);
+      expect(t.getRect(input), inputRect, reason: '完成失焦、鍵盤尚未收合時輸入框不能跳位');
+      expect(t.getRect(find.byType(WatermarkLayer)), preview);
+      var previousHeight = preview.height;
+      for (final inset in [250.0, 60.0, 1.0]) {
+        t.view.viewInsets = FakeViewPadding(bottom: inset);
+        await t.pump();
+        final height = t.getRect(find.byType(WatermarkLayer)).height;
+        expect(
+          height,
+          greaterThanOrEqualTo(previousHeight),
+          reason: '收合時預覽不可先放大又縮小',
+        );
+        previousHeight = height;
+        expect(t.takeException(), isNull);
+      }
+      t.view.viewInsets = FakeViewPadding.zero;
+      await _settle(t);
+      expect(find.text('整批調整'), findsOneWidget);
+      expect(
+        t.getRect(find.byType(WatermarkLayer)).height,
+        closeTo(previousHeight, 1),
+        reason: '鍵盤最後一格收完，預覽不應突然縮小',
+      );
+      expect(t.getRect(find.byType(WatermarkLayer)).height, greaterThan(70));
+      expect(t.takeException(), isNull);
+    });
+  }
 
   // 迴歸守門：批次浮水印畫面「點了面板的圖片縮圖（琥珀亮框）之後，
   // 圖片在預覽上拖不動」。
