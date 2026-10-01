@@ -191,6 +191,9 @@ workflows:
       - *test
       - name: 原生檔案邊界測試與正式簽章檢查
         script: |
+          # Git 不追蹤 Gradle wrapper；先讓 Flutter 補齊原生建置設定。
+          flutter build apk --config-only --release \
+            --build-number=$PROJECT_BUILD_NUMBER
           cd android
           ./gradlew :file_picker:testDebugUnitTest :app:verifyReleaseSigning
       # versionCode 跟 iOS 同一個計數器（見檔頭），不用 pubspec 的 +18
