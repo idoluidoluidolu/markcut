@@ -284,6 +284,21 @@ class PresetStore {
     await saveAll(presets);
   }
 
+  /// 一次回寫整批刪除，保留未選取與無法解析的原始資料。
+  static Future<bool> removeMany(Set<String> names) async {
+    if (names.isEmpty) return true;
+    final raw = await BlobStore.readList(_key);
+    if (raw == null) return false;
+    final keep = raw.where((row) {
+      try {
+        return !names.contains(WatermarkPreset.decode(row).name);
+      } catch (_) {
+        return true;
+      }
+    }).toList();
+    return BlobStore.writeList(_key, keep);
+  }
+
   /// 改名；新名字撞到既有範本回 false（不覆蓋）
   static Future<bool> rename(String oldName, String newName) async {
     final presets = await load();

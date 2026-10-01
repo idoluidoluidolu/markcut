@@ -25,6 +25,7 @@ import '../nav.dart';
 import '../theme.dart';
 import '../widgets/gif_image.dart';
 import '../widgets/swipe_back.dart';
+import '../widgets/library_selection.dart';
 import '../widgets/watermark_layer.dart';
 import 'about_screen.dart';
 import 'feedback_screen.dart';
@@ -2328,6 +2329,55 @@ class GifsScreen extends StatefulWidget {
 
 class _GifsScreenState extends State<GifsScreen> {
   List<String> _gifs = const [];
+  bool _selecting = false;
+  bool _deleting = false;
+  final Set<String> _picked = {};
+
+  void _cancelSelection() {
+    if (_deleting) return;
+    setState(() {
+      _selecting = false;
+      _picked.clear();
+    });
+  }
+
+  void _togglePick(String ref) {
+    if (_deleting) return;
+    setState(() {
+      if (!_picked.remove(ref)) _picked.add(ref);
+    });
+  }
+
+  Future<void> _deleteSelected() async {
+    if (_deleting || _picked.isEmpty) return;
+    final refs = Set<String>.of(_picked);
+    setState(() => _deleting = true);
+    try {
+      final ok = await showConfirm(
+        context,
+        title: '刪除 ${refs.length} 個 GIF？',
+        message: '只會刪掉 App 裡選取的 GIF，相簿裡的不受影響',
+        action: '刪除',
+      );
+      if (!ok || !mounted) return;
+      final failed = await GifStore.removeMany(refs);
+      await _reload();
+      if (!mounted) return;
+      setState(() {
+        _picked
+          ..clear()
+          ..addAll(failed.intersection(_gifs.toSet()));
+        _selecting = _picked.isNotEmpty;
+      });
+      if (failed.isNotEmpty) {
+        showHint(context, '有 ${failed.length} 個 GIF 未能刪除，請再試一次', error: true);
+      }
+    } catch (_) {
+      if (mounted) showHint(context, 'GIF 刪除失敗，請再試一次', error: true);
+    } finally {
+      if (mounted) setState(() => _deleting = false);
+    }
+  }
 
   /// 每個 GIF 的寬高比（路徑 → 寬/高）。瀑布流照原始比例排，
   /// 一律切成正方形的話直式的會被裁掉頭尾
@@ -2345,6 +2395,7 @@ class _GifsScreenState extends State<GifsScreen> {
     if (!mounted) return;
     setState(() {
       _gifs = gifs;
+      _picked.retainAll(gifs);
       _loading = false;
     });
     // 比例只讀檔頭（見 gifAspect），不解任何一格像素；以前是把每個 GIF
@@ -2386,17 +2437,30 @@ class _GifsScreenState extends State<GifsScreen> {
   /// 照這個解碼（匯入的 GIF 可能 1080 寬，不縮的話每格都全解析度解）。
   /// 形狀跟個人中心的磚同一家（超橢圓，見 tileShape）
   Widget _gifTile(String ref, double colW) => GestureDetector(
-    onTap: () => _preview(ref),
-    onLongPress: () => _delete(ref),
+    key: ValueKey('gif-$ref'),
+    onTap: () => _selecting ? _togglePick(ref) : _preview(ref),
+    onLongPress: () => _selecting ? _togglePick(ref) : _delete(ref),
     child: ClipRSuperellipse(
       borderRadius: tileClip(),
       child: AspectRatio(
         aspectRatio: _aspect[ref] ?? 1.0,
-        child: ColoredBox(
-          color: kLTile,
-          child: GifImage(
-            ref,
-            cacheWidth: (colW * MediaQuery.devicePixelRatioOf(context)).round(),
+        child: Semantics(
+          selected: _selecting ? _picked.contains(ref) : null,
+          label: 'GIF',
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              ColoredBox(
+                color: kLTile,
+                child: GifImage(
+                  ref,
+                  cacheWidth: (colW * MediaQuery.devicePixelRatioOf(context))
+                      .round(),
+                ),
+              ),
+              if (_selecting)
+                LibrarySelectionMark(selected: _picked.contains(ref)),
+            ],
           ),
         ),
       ),
@@ -2430,99 +2494,139 @@ class _GifsScreenState extends State<GifsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return SwipeBack(
-      child: Scaffold(
-        appBar: AppBar(),
-        // 右下浮動黑圓 +（跟範本夾同款）：現做一個 GIF，或把自己的
-        // 收進來（相簿或檔案 App 都可以，見 addGifFromDevice）
-        floatingActionButton: FloatingActionButton(
-          onPressed: () async {
-            if (await addGifFromDevice(context)) _reload();
-          },
-          backgroundColor: Colors.black,
-          foregroundColor: Colors.white,
-          shape: const CircleBorder(),
-          child: const Icon(Icons.add, size: 28),
-        ),
-        body: _loading
-            ? const Center(child: CircularProgressIndicator())
-            : _gifs.isEmpty
-            ? const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(32),
-                  child: Text(
-                    '還沒有 GIF。\n\n'
-                    // 給「一個都沒有」的人看的，所以講這一頁就辦得到的事：
-                    // ＋ 現在自己能做 GIF，不必再繞回首頁
-                    '按右下角的＋做一個，'
-                    '或把相簿、檔案裡現成的 GIF 收進來。',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: kLTextDim, height: 1.6),
-                  ),
+    return PopScope(
+      canPop: !_selecting && !_deleting,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _cancelSelection();
+      },
+      child: SwipeBack(
+        child: Scaffold(
+          appBar: AppBar(
+            actions: [
+              if (_selecting) ...[
+                TextButton(
+                  onPressed: _deleting
+                      ? null
+                      : () => setState(() {
+                          if (_picked.length == _gifs.length) {
+                            _picked.clear();
+                          } else {
+                            _picked.addAll(_gifs);
+                          }
+                        }),
+                  child: Text(_picked.length == _gifs.length ? '取消全選' : '全選'),
                 ),
-              )
-            : LayoutBuilder(
-                builder: (context, box) {
-                  // 兩欄瀑布流：左右各 16、中間 10
-                  final colW = (box.maxWidth - 16 * 2 - 10) / 2;
-                  final cols = _columns(colW);
-                  // 每一欄一條 SliverList：只做「看得到的那幾格」。
-                  //
-                  // 以前是 SingleChildScrollView 包兩個 Column，四十個
-                  // GIF 全部一次做出來——四十個動圖解碼器同時在跑，捲出
-                  // 畫面外照跑不誤；而且整片只有捲動視窗一個 repaint
-                  // boundary，任何一格換一格畫面，四十格就整組重錄一次
-                  //（實測一次 0.60ms，四十個各跑各的＝一秒好幾百次）。
-                  // SliverList 會自己回收看不到的格子（動圖跟著停）並
-                  // 給每一格一層 RepaintBoundary
-                  return CustomScrollView(
-                    slivers: [
-                      SliverPadding(
-                        // 底部多留：最後一張不被浮動 + 蓋住
-                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
-                        sliver: SliverCrossAxisGroup(
-                          slivers: [
-                            for (var c = 0; c < cols.length; c++)
-                              // 用 VariedExtent 而不是普通 SliverList：
-                              // 每一格的高度本來就算得出來（欄寬 ÷ 比例，
-                              // 跟 _columns 排欄用的是同一個式子），
-                              // 給了它，沒做出來的格子也定得出位置
-                              SliverVariedExtentList(
-                                itemExtentBuilder: (i, _) =>
-                                    _tileExtent(cols[c][i], colW),
-                                // 總長度也直接給（見 _ExactExtentDelegate）：
-                                // 預設是拿「已經做出來那幾格的平均」外插，
-                                // 高矮不一的瀑布流會猜歪，可捲距離跟著捲動
-                                // 一直變，甩到底就會頓一下
-                                delegate: _ExactExtentDelegate(
-                                  (_, i) => i < 0 || i >= cols[c].length
-                                      ? null
-                                      : Padding(
-                                          // 欄距 10：左欄右邊 5、右欄左邊 5。
-                                          // 兩欄各分到一半寬度，扣掉 5 之後
-                                          // 剛好是上面算的 colW，版面跟原本
-                                          // 的 Row + SizedBox(10) 完全一樣
-                                          padding: EdgeInsets.only(
-                                            left: c == 0 ? 0 : 5,
-                                            right: c == 0 ? 5 : 0,
-                                            bottom: 10,
+                TextButton(
+                  onPressed: _deleting ? null : _cancelSelection,
+                  child: const Text('取消'),
+                ),
+              ] else if (!_loading && _gifs.isNotEmpty && !kIsWeb)
+                TextButton(
+                  onPressed: () => setState(() => _selecting = true),
+                  child: const Text('選取'),
+                ),
+            ],
+          ),
+          bottomNavigationBar: _selecting
+              ? LibrarySelectionBar(
+                  count: _picked.length,
+                  busy: _deleting,
+                  onDelete: _deleteSelected,
+                )
+              : null,
+          // 右下浮動黑圓 +（跟範本夾同款）：現做一個 GIF，或把自己的
+          // 收進來（相簿或檔案 App 都可以，見 addGifFromDevice）
+          floatingActionButton: _selecting
+              ? null
+              : FloatingActionButton(
+                  onPressed: () async {
+                    if (await addGifFromDevice(context)) _reload();
+                  },
+                  backgroundColor: Colors.black,
+                  foregroundColor: Colors.white,
+                  shape: const CircleBorder(),
+                  child: const Icon(Icons.add, size: 28),
+                ),
+          body: _loading
+              ? const Center(child: CircularProgressIndicator())
+              : _gifs.isEmpty
+              ? const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(32),
+                    child: Text(
+                      '還沒有 GIF。\n\n'
+                      // 給「一個都沒有」的人看的，所以講這一頁就辦得到的事：
+                      // ＋ 現在自己能做 GIF，不必再繞回首頁
+                      '按右下角的＋做一個，'
+                      '或把相簿、檔案裡現成的 GIF 收進來。',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: kLTextDim, height: 1.6),
+                    ),
+                  ),
+                )
+              : LayoutBuilder(
+                  builder: (context, box) {
+                    // 兩欄瀑布流：左右各 16、中間 10
+                    final colW = (box.maxWidth - 16 * 2 - 10) / 2;
+                    final cols = _columns(colW);
+                    // 每一欄一條 SliverList：只做「看得到的那幾格」。
+                    //
+                    // 以前是 SingleChildScrollView 包兩個 Column，四十個
+                    // GIF 全部一次做出來——四十個動圖解碼器同時在跑，捲出
+                    // 畫面外照跑不誤；而且整片只有捲動視窗一個 repaint
+                    // boundary，任何一格換一格畫面，四十格就整組重錄一次
+                    //（實測一次 0.60ms，四十個各跑各的＝一秒好幾百次）。
+                    // SliverList 會自己回收看不到的格子（動圖跟著停）並
+                    // 給每一格一層 RepaintBoundary
+                    return CustomScrollView(
+                      slivers: [
+                        SliverPadding(
+                          // 底部多留：最後一張不被浮動 + 蓋住
+                          padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
+                          sliver: SliverCrossAxisGroup(
+                            slivers: [
+                              for (var c = 0; c < cols.length; c++)
+                                // 用 VariedExtent 而不是普通 SliverList：
+                                // 每一格的高度本來就算得出來（欄寬 ÷ 比例，
+                                // 跟 _columns 排欄用的是同一個式子），
+                                // 給了它，沒做出來的格子也定得出位置
+                                SliverVariedExtentList(
+                                  itemExtentBuilder: (i, _) =>
+                                      _tileExtent(cols[c][i], colW),
+                                  // 總長度也直接給（見 _ExactExtentDelegate）：
+                                  // 預設是拿「已經做出來那幾格的平均」外插，
+                                  // 高矮不一的瀑布流會猜歪，可捲距離跟著捲動
+                                  // 一直變，甩到底就會頓一下
+                                  delegate: _ExactExtentDelegate(
+                                    (_, i) => i < 0 || i >= cols[c].length
+                                        ? null
+                                        : Padding(
+                                            // 欄距 10：左欄右邊 5、右欄左邊 5。
+                                            // 兩欄各分到一半寬度，扣掉 5 之後
+                                            // 剛好是上面算的 colW，版面跟原本
+                                            // 的 Row + SizedBox(10) 完全一樣
+                                            padding: EdgeInsets.only(
+                                              left: c == 0 ? 0 : 5,
+                                              right: c == 0 ? 5 : 0,
+                                              bottom: 10,
+                                            ),
+                                            child: _gifTile(cols[c][i], colW),
                                           ),
-                                          child: _gifTile(cols[c][i], colW),
-                                        ),
-                                  childCount: cols[c].length,
-                                  total: [
-                                    for (final ref in cols[c])
-                                      _tileExtent(ref, colW),
-                                  ].fold(0.0, (a, b) => a + b),
+                                    childCount: cols[c].length,
+                                    total: [
+                                      for (final ref in cols[c])
+                                        _tileExtent(ref, colW),
+                                    ].fold(0.0, (a, b) => a + b),
+                                  ),
                                 ),
-                              ),
-                          ],
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
-                  );
-                },
-              ),
+                      ],
+                    );
+                  },
+                ),
+        ),
       ),
     );
   }

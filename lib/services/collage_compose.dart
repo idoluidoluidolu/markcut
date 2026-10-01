@@ -15,6 +15,7 @@ class CollageCellFit {
   double zoom = 1;
   double panX = 0;
   double panY = 0;
+  ui.Rect crop = kCollageFullCrop;
 }
 
 /// 自由模式的一塊照片：哪張圖＋在畫布上的位置（0~1 比例座標，
@@ -22,8 +23,74 @@ class CollageCellFit {
 class CollageFreeItem {
   final int img;
   ui.Rect rect;
+  ui.Rect crop;
 
-  CollageFreeItem({required this.img, required this.rect});
+  CollageFreeItem({
+    required this.img,
+    required this.rect,
+    this.crop = kCollageFullCrop,
+  });
+}
+
+const kCollageFullCrop = ui.Rect.fromLTWH(0, 0, 1, 1);
+
+ui.Rect collageNormalizeCrop(ui.Rect crop) {
+  if (![
+    crop.left,
+    crop.top,
+    crop.right,
+    crop.bottom,
+  ].every((n) => n.isFinite)) {
+    return kCollageFullCrop;
+  }
+  final r = crop.intersect(kCollageFullCrop);
+  return r.width > 0.0001 && r.height > 0.0001 ? r : kCollageFullCrop;
+}
+
+ui.Rect collageCropFromJson(Object? value) {
+  if (value is! List || value.length != 4 || value.any((n) => n is! num)) {
+    return kCollageFullCrop;
+  }
+  return collageNormalizeCrop(
+    ui.Rect.fromLTWH(
+      (value[0] as num).toDouble(),
+      (value[1] as num).toDouble(),
+      (value[2] as num).toDouble(),
+      (value[3] as num).toDouble(),
+    ),
+  );
+}
+
+List<double> collageCropToJson(ui.Rect crop) => [
+  crop.left,
+  crop.top,
+  crop.width,
+  crop.height,
+];
+
+ui.Rect _cropPixels(ui.Image img, ui.Rect crop) {
+  final r = collageNormalizeCrop(crop);
+  return ui.Rect.fromLTWH(
+    r.left * img.width,
+    r.top * img.height,
+    r.width * img.width,
+    r.height * img.height,
+  );
+}
+
+/// 裁切後縮小到新的照片比例，維持方塊中心；其他照片的位置不動。
+ui.Rect collageFitCropRect(
+  ui.Rect box,
+  double photoAspect,
+  double canvasAspect,
+) {
+  var w = box.width, h = box.height;
+  if (w * canvasAspect / h > photoAspect) {
+    w = h * photoAspect / canvasAspect;
+  } else {
+    h = w * canvasAspect / photoAspect;
+  }
+  return ui.Rect.fromCenter(center: box.center, width: w, height: h);
 }
 
 /// 自由模式方塊的最小邊（畫布比例）：0.08 ≈ 手指的大小，再小就抓不到。
@@ -80,8 +147,9 @@ ui.Rect collagePinchFreeRect({
   CollageCellFit f,
   double cellAspect,
 ) {
-  final iw = img.width.toDouble();
-  final ih = img.height.toDouble();
+  final crop = _cropPixels(img, f.crop);
+  final iw = crop.width;
+  final ih = crop.height;
   double sw, sh;
   if (iw / ih > cellAspect) {
     sh = ih / f.zoom;
@@ -97,15 +165,17 @@ ui.Rect collagePinchFreeRect({
 /// 只在 [collageSrcRect] 裡夾的話，pan 本身會無上限累積
 void collageClampFit(ui.Image img, CollageCellFit f, double cellAspect) {
   final (sw, sh) = collageSrcSize(img, f, cellAspect);
-  final mx = (img.width - sw) / 2;
-  final my = (img.height - sh) / 2;
+  final crop = _cropPixels(img, f.crop);
+  final mx = (crop.width - sw) / 2;
+  final my = (crop.height - sh) / 2;
   f.panX = f.panX.clamp(-mx, math.max(0.0, mx));
   f.panY = f.panY.clamp(-my, math.max(0.0, my));
 }
 
 ui.Rect collageSrcRect(ui.Image img, CollageCellFit f, double cellAspect) {
-  final iw = img.width.toDouble();
-  final ih = img.height.toDouble();
+  final crop = _cropPixels(img, f.crop);
+  final iw = crop.width;
+  final ih = crop.height;
   // collageSrcSize 已經把取景窗夾在圖片內（web 的繪圖引擎對出界很嚴格）
   final (sw, sh) = collageSrcSize(img, f, cellAspect);
   // clamp 的上限不能是負的（浮點誤差會讓 iw-sw 變 -0.0001 直接炸）
@@ -115,13 +185,18 @@ ui.Rect collageSrcRect(ui.Image img, CollageCellFit f, double cellAspect) {
   var cy = (ih - sh) / 2 + f.panY;
   cx = cx.clamp(0.0, mx);
   cy = cy.clamp(0.0, my);
-  return ui.Rect.fromLTWH(cx, cy, sw, sh);
+  return ui.Rect.fromLTWH(crop.left + cx, crop.top + cy, sw, sh);
 }
 
 /// 照片塞進某個長寬比的框時的取景窗（置中 cover，不變形）
-ui.Rect collageCoverSrc(ui.Image img, double aspect) {
-  final iw = img.width.toDouble();
-  final ih = img.height.toDouble();
+ui.Rect collageCoverSrc(
+  ui.Image img,
+  double aspect, {
+  ui.Rect crop = kCollageFullCrop,
+}) {
+  final bounds = _cropPixels(img, crop);
+  final iw = bounds.width;
+  final ih = bounds.height;
   double sw, sh;
   if (iw / ih > aspect) {
     sh = ih;
@@ -130,7 +205,12 @@ ui.Rect collageCoverSrc(ui.Image img, double aspect) {
     sw = iw;
     sh = sw / aspect;
   }
-  return ui.Rect.fromLTWH((iw - sw) / 2, (ih - sh) / 2, sw, sh);
+  return ui.Rect.fromLTWH(
+    bounds.left + (iw - sw) / 2,
+    bounds.top + (ih - sh) / 2,
+    sw,
+    sh,
+  );
 }
 
 /// 拼圖的排法：合成時拍的一份快照（清單直接引用畫面上的那幾份，
@@ -217,7 +297,7 @@ void drawCollage(
       );
       canvas.drawImageRect(
         img,
-        collageCoverSrc(img, dst.width / dst.height),
+        collageCoverSrc(img, dst.width / dst.height, crop: it.crop),
         dst,
         paint,
       );

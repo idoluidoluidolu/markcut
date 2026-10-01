@@ -186,4 +186,25 @@ class GifStore {
       if (f.existsSync()) await f.delete();
     } catch (_) {}
   }
+
+  /// 只刪 GIF 夾列出的檔案，逐一處理，回傳未能刪除的項目。
+  static Future<Set<String>> removeMany(Set<String> refs) async {
+    if (refs.isEmpty) return {};
+    if (kIsWeb) return Set.of(refs);
+    final stored = (await list()).toSet();
+    final failed = <String>{};
+    for (final ref in refs) {
+      if (!stored.contains(ref)) {
+        // 已經被移除的項目視為完成；夾外檔案一律不碰。
+        if (isAsset(ref) || await File(ref).exists()) failed.add(ref);
+        continue;
+      }
+      try {
+        await File(ref).delete();
+      } catch (_) {
+        if (await File(ref).exists()) failed.add(ref);
+      }
+    }
+    return failed;
+  }
 }

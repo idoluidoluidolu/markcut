@@ -58,7 +58,11 @@ Future<List<XFile>> _photos(WidgetTester t, [int n = 6]) async {
   await t.runAsync(() async {
     bytes = [
       for (var i = 0; i < n; i++)
-        await _png(Color(0xFF400000 + i * 0x203040), _sizes[i].$1, _sizes[i].$2),
+        await _png(
+          Color(0xFF400000 + i * 0x203040),
+          _sizes[i].$1,
+          _sizes[i].$2,
+        ),
     ];
   });
   return [
@@ -148,7 +152,11 @@ void _expectFilled(WidgetTester t, Map<int, ui.Rect> rs, double canvas) {
     }
   }
   for (final e in rs.entries) {
-    expect(_visible(e.value), greaterThanOrEqualTo(1 - 1e-6), reason: '照片 ${e.key} 要在畫布內');
+    expect(
+      _visible(e.value),
+      greaterThanOrEqualTo(1 - 1e-6),
+      reason: '照片 ${e.key} 要在畫布內',
+    );
     expect(
       _px(e.value, canvas) / _imgAspect(t, e.key),
       closeTo(1, kCollagePackMaxStretch),
@@ -158,7 +166,11 @@ void _expectFilled(WidgetTester t, Map<int, ui.Rect> rs, double canvas) {
 }
 
 /// 進自由模式加這批照片，等解碼與排版完成
-Future<void> _addPhotos(WidgetTester t, _Picker picker, List<XFile> files) async {
+Future<void> _addPhotos(
+  WidgetTester t,
+  _Picker picker,
+  List<XFile> files,
+) async {
   picker.next = files;
   final before = _peek(t).layout.items.length;
   await t.tap(find.text('加照片'));
@@ -231,7 +243,9 @@ void main() {
     expect(t.takeException(), isNull);
   });
 
-  testWidgets('A 換畫布比例照片不變形：自動排的重排塞滿新畫布；自己排過的等比縮放置中、形狀一模一樣、沒有一塊被擠出去', (t) async {
+  testWidgets('A 換畫布比例照片不變形：自動排的重排塞滿新畫布；自己排過的等比縮放置中、形狀一模一樣、沒有一塊被擠出去', (
+    t,
+  ) async {
     final picker = await _openFree(t);
     await _addPhotos(t, picker, await _photos(t));
     final on11 = _rects(t);
@@ -258,7 +272,10 @@ void main() {
     final canvas = t.getRect(find.byType(AspectRatio).first);
     final c = _peek(t).layout.items.first.rect.center;
     await t.dragFrom(
-      Offset(canvas.left + c.dx * canvas.width, canvas.top + c.dy * canvas.height),
+      Offset(
+        canvas.left + c.dx * canvas.width,
+        canvas.top + c.dy * canvas.height,
+      ),
       const Offset(25, 15),
     );
     await t.pumpAndSettle();
@@ -294,7 +311,7 @@ void main() {
     expect(t.takeException(), isNull);
   });
 
-  testWidgets('窄螢幕：375（SE／mini）三顆動作鈕全都看得到、照順序；320 不溢出、「加照片」永遠貼右', (t) async {
+  testWidgets('窄螢幕：裁切、移除及加入動作可見；320 不溢出、「加照片」永遠貼右', (t) async {
     for (final width in const [375.0, 320.0]) {
       t.view.physicalSize = Size(width, 640);
       t.view.devicePixelRatio = 1;
@@ -302,17 +319,25 @@ void main() {
       addTearDown(t.view.resetDevicePixelRatio);
       final picker = await _openFree(t);
       await _addPhotos(t, picker, await _photos(t, 3));
-      // 剛加完最後一張是選取中的：移除／隨機排列／加照片三顆都在
+      // 選取照片的裁切／移除獨立一列，窄螢幕也不用橫向捲動才能找到。
+      expect(find.text('裁切'), findsOneWidget, reason: '$width 寬');
       expect(find.text('移除'), findsOneWidget, reason: '$width 寬');
       expect(find.text('隨機排列'), findsOneWidget, reason: '$width 寬');
       expect(find.text('加照片'), findsOneWidget, reason: '$width 寬');
       final add = t.getRect(find.text('加照片'));
-      expect(add.right, lessThanOrEqualTo(width - 16), reason: '$width 寬：加照片要在畫面內');
+      expect(
+        add.right,
+        lessThanOrEqualTo(width - 16),
+        reason: '$width 寬：加照片要在畫面內',
+      );
       if (width >= 375) {
         final rm = t.getRect(find.text('移除'));
         final sh = t.getRect(find.text('隨機排列'));
         expect(rm.left, greaterThanOrEqualTo(16), reason: '375 寬：移除不能被擠出去');
-        expect(rm.right, lessThan(sh.left));
+        final crop = t.getRect(find.text('裁切'));
+        expect(crop.left, greaterThanOrEqualTo(16));
+        expect(crop.right, lessThan(rm.left));
+        expect(rm.bottom, lessThan(sh.top));
         expect(sh.right, lessThan(add.left));
         // 跟模式膠囊不同列（同一列擠不下才拆的）
         expect(rm.top, greaterThan(t.getRect(find.text('自由')).bottom));
@@ -343,7 +368,12 @@ void main() {
     // 面板導覽點「文字」，那一區最上面那顆開關就是文字的開關：
     // 打開 → 有浮水印（使用者要開就是走這條路）
     await t.tap(
-      find.descendant(of: find.byType(WatermarkPanel), matching: find.text('文字')).first,
+      find
+          .descendant(
+            of: find.byType(WatermarkPanel),
+            matching: find.text('文字'),
+          )
+          .first,
     );
     await t.pumpAndSettle();
     final sw = find.byType(Switch).first;

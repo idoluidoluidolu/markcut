@@ -6,6 +6,7 @@ import '../nav.dart';
 import '../theme.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/swipe_back.dart';
+import '../widgets/library_selection.dart';
 import 'watermark_studio_screen.dart';
 
 /// 常用浮水印範本管理：黑底預覽卡（浮水印按真實位置渲染），
@@ -26,6 +27,52 @@ class PresetsScreen extends StatefulWidget {
 class _PresetsScreenState extends State<PresetsScreen> {
   List<WatermarkPreset> _presets = [];
   bool _loading = true;
+  bool _selecting = false;
+  bool _deleting = false;
+  final Set<String> _picked = {};
+
+  void _cancelSelection() {
+    if (_deleting) return;
+    setState(() {
+      _selecting = false;
+      _picked.clear();
+    });
+  }
+
+  void _togglePick(String name) {
+    if (_deleting) return;
+    setState(() {
+      if (!_picked.remove(name)) _picked.add(name);
+    });
+  }
+
+  Future<void> _deleteSelected() async {
+    if (_deleting || _picked.isEmpty) return;
+    final names = Set<String>.of(_picked);
+    setState(() => _deleting = true);
+    try {
+      final ok = await showConfirm(
+        context,
+        title: '刪除 ${names.length} 個範本？',
+        message: '只刪除選取的範本，刪除後無法復原',
+        action: '刪除',
+      );
+      if (!ok || !mounted) return;
+      if (!await PresetStore.removeMany(names)) {
+        throw StateError('delete failed');
+      }
+      await _reload();
+      if (!mounted) return;
+      setState(() {
+        _picked.clear();
+        _selecting = false;
+      });
+    } catch (_) {
+      if (mounted) showHint(context, '範本刪除失敗，請再試一次', error: true);
+    } finally {
+      if (mounted) setState(() => _deleting = false);
+    }
+  }
 
   @override
   void initState() {
@@ -38,6 +85,7 @@ class _PresetsScreenState extends State<PresetsScreen> {
     if (!mounted) return; // 載入中滑回上一頁就別再 setState
     setState(() {
       _presets = p;
+      _picked.retainAll(p.map((e) => e.name));
       _loading = false;
     });
   }
@@ -181,10 +229,22 @@ class _PresetsScreenState extends State<PresetsScreen> {
       // 不放名稱膠囊（使用者指定）：卡片本身就是內容，
       // 名字在長按選單（改名/刪除）還看得到
       child: InkWell(
-        onTap: () => _edit(p),
-        onLongPress: () => _showActions(p),
-        child: IgnorePointer(
-          child: WatermarkLayer(settings: p.settings, onChanged: () {}),
+        key: ValueKey('preset-${p.name}'),
+        onTap: () => _selecting ? _togglePick(p.name) : _edit(p),
+        onLongPress: () => _selecting ? _togglePick(p.name) : _showActions(p),
+        child: Semantics(
+          selected: _selecting ? _picked.contains(p.name) : null,
+          label: p.name,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              IgnorePointer(
+                child: WatermarkLayer(settings: p.settings, onChanged: () {}),
+              ),
+              if (_selecting)
+                LibrarySelectionMark(selected: _picked.contains(p.name)),
+            ],
+          ),
         ),
       ),
     );
@@ -192,71 +252,113 @@ class _PresetsScreenState extends State<PresetsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return SwipeBack(
-      child: Scaffold(
-        appBar: AppBar(),
-        body: _loading
-            ? const Center(child: CircularProgressIndicator())
-            // 兩欄瀑布流：卡片照各自的設計比例（16:9 扁、9:16 高、
-            // 1:1 方），比塞進同一種格子誠實——預覽就是設計時的樣子
-            : Builder(
-                builder: (context) {
-                  final left = <Widget>[];
-                  final right = <Widget>[];
-                  var hl = 0.0, hr = 0.0;
-                  void put(Widget w, double h) {
-                    if (hl <= hr) {
-                      left.add(w);
-                      hl += h;
-                    } else {
-                      right.add(w);
-                      hr += h;
+    return PopScope(
+      canPop: !_selecting && !_deleting,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _cancelSelection();
+      },
+      child: SwipeBack(
+        child: Scaffold(
+          appBar: AppBar(
+            actions: [
+              if (_selecting) ...[
+                TextButton(
+                  onPressed: _deleting
+                      ? null
+                      : () => setState(() {
+                          if (_picked.length == _presets.length) {
+                            _picked.clear();
+                          } else {
+                            _picked.addAll(_presets.map((p) => p.name));
+                          }
+                        }),
+                  child: Text(
+                    _picked.length == _presets.length ? '取消全選' : '全選',
+                  ),
+                ),
+                TextButton(
+                  onPressed: _deleting ? null : _cancelSelection,
+                  child: const Text('取消'),
+                ),
+              ] else if (!_loading && _presets.isNotEmpty)
+                TextButton(
+                  onPressed: () => setState(() => _selecting = true),
+                  child: const Text('選取'),
+                ),
+            ],
+          ),
+          bottomNavigationBar: _selecting
+              ? LibrarySelectionBar(
+                  count: _picked.length,
+                  busy: _deleting,
+                  onDelete: _deleteSelected,
+                )
+              : null,
+          body: _loading
+              ? const Center(child: CircularProgressIndicator())
+              // 兩欄瀑布流：卡片照各自的設計比例（16:9 扁、9:16 高、
+              // 1:1 方），比塞進同一種格子誠實——預覽就是設計時的樣子
+              : Builder(
+                  builder: (context) {
+                    final left = <Widget>[];
+                    final right = <Widget>[];
+                    var hl = 0.0, hr = 0.0;
+                    void put(Widget w, double h) {
+                      if (hl <= hr) {
+                        left.add(w);
+                        hl += h;
+                      } else {
+                        right.add(w);
+                        hr += h;
+                      }
                     }
-                  }
 
-                  for (final p in _presets) {
-                    final a = p.settings.designAspect;
-                    put(
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 10),
-                        child: AspectRatio(
-                          aspectRatio: a,
-                          child: _presetCard(p),
+                    for (final p in _presets) {
+                      final a = p.settings.designAspect;
+                      put(
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: AspectRatio(
+                            aspectRatio: a,
+                            child: _presetCard(p),
+                          ),
                         ),
+                        1 / a,
+                      );
+                    }
+                    if (_presets.isEmpty) {
+                      // 空的時候至少給一張入口卡，不然整頁空白
+                      // 只剩右下角一顆 +
+                      put(
+                        AspectRatio(aspectRatio: 16 / 10, child: _addCard()),
+                        10 / 16,
+                      );
+                    }
+                    return SingleChildScrollView(
+                      // 底部多留一段：最後一張卡不被浮動 + 蓋住
+                      padding: const EdgeInsets.fromLTRB(14, 14, 14, 96),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(child: Column(children: left)),
+                          const SizedBox(width: 10),
+                          Expanded(child: Column(children: right)),
+                        ],
                       ),
-                      1 / a,
                     );
-                  }
-                  if (_presets.isEmpty) {
-                    // 空的時候至少給一張入口卡，不然整頁空白
-                    // 只剩右下角一顆 +
-                    put(
-                      AspectRatio(aspectRatio: 16 / 10, child: _addCard()),
-                      10 / 16,
-                    );
-                  }
-                  return SingleChildScrollView(
-                    // 底部多留一段：最後一張卡不被浮動 + 蓋住
-                    padding: const EdgeInsets.fromLTRB(14, 14, 14, 96),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(child: Column(children: left)),
-                        const SizedBox(width: 10),
-                        Expanded(child: Column(children: right)),
-                      ],
-                    ),
-                  );
-                },
-              ),
-        // 新增改成右下角浮動黑圓 +（使用者指定）：清單裡不再
-        // 混一張「新增卡」
-        floatingActionButton: FloatingActionButton(
-          onPressed: _addNew,
-          backgroundColor: Colors.black,
-          foregroundColor: Colors.white,
-          shape: const CircleBorder(),
-          child: const Icon(Icons.add, size: 28),
+                  },
+                ),
+          // 新增改成右下角浮動黑圓 +（使用者指定）：清單裡不再
+          // 混一張「新增卡」
+          floatingActionButton: _selecting
+              ? null
+              : FloatingActionButton(
+                  onPressed: _addNew,
+                  backgroundColor: Colors.black,
+                  foregroundColor: Colors.white,
+                  shape: const CircleBorder(),
+                  child: const Icon(Icons.add, size: 28),
+                ),
         ),
       ),
     );

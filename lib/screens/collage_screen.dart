@@ -173,6 +173,7 @@ class _CollageScreenState extends State<CollageScreen>
 
   /// 自由模式選取中的方塊（-1 = 沒有）
   int _selItem = -1;
+  bool _cropping = false;
 
   /// 進行中的手勢（移動或拉某一角），null = 沒有
   _FreeDrag? _fDrag;
@@ -423,7 +424,13 @@ class _CollageScreenState extends State<CollageScreen>
         'gapN': _gapN,
         'lineColor': _lineColor,
         'fits': [
-          for (final f in _fits) {'z': f.zoom, 'x': f.panX, 'y': f.panY},
+          for (final f in _fits)
+            {
+              'z': f.zoom,
+              'x': f.panX,
+              'y': f.panY,
+              if (f.crop != kCollageFullCrop) 'crop': collageCropToJson(f.crop),
+            },
         ],
         'freeItems': [
           for (final t in _items)
@@ -433,6 +440,7 @@ class _CollageScreenState extends State<CollageScreen>
               't': t.rect.top,
               'w': t.rect.width,
               'h': t.rect.height,
+              if (t.crop != kCollageFullCrop) 'crop': collageCropToJson(t.crop),
             },
         ],
         // 存草稿時還是自動排的就記下來：續作後換畫布比例照樣會重排塞滿
@@ -566,6 +574,7 @@ class _CollageScreenState extends State<CollageScreen>
           f.zoom = ((m['z'] as num?)?.toDouble() ?? 1.0).clamp(1.0, 8.0);
           f.panX = (m['x'] as num?)?.toDouble() ?? 0;
           f.panY = (m['y'] as num?)?.toDouble() ?? 0;
+          f.crop = collageCropFromJson(m['crop']);
         }
         return f;
       });
@@ -577,11 +586,12 @@ class _CollageScreenState extends State<CollageScreen>
         _items.add(
           CollageFreeItem(
             img: ni,
+            crop: collageCropFromJson(e['crop']),
             rect: ui.Rect.fromLTWH(
               ((e['l'] as num?)?.toDouble() ?? 0.1).clamp(-0.5, 1.5),
               ((e['t'] as num?)?.toDouble() ?? 0.1).clamp(-0.5, 1.5),
-              ((e['w'] as num?)?.toDouble() ?? 0.4).clamp(0.05, 2.0),
-              ((e['h'] as num?)?.toDouble() ?? 0.4).clamp(0.05, 2.0),
+              ((e['w'] as num?)?.toDouble() ?? 0.4).clamp(0.000001, 2.0),
+              ((e['h'] as num?)?.toDouble() ?? 0.4).clamp(0.000001, 2.0),
             ),
           ),
         );
@@ -877,6 +887,58 @@ class _CollageScreenState extends State<CollageScreen>
     if (idx < _srcPaths.length) _srcPaths[idx] = null;
   }
 
+  bool get _canCropPhoto => _free
+      ? _selItem >= 0 && _selItem < _items.length
+      : _selCell >= 0 && _imgAt(_selCell) != null;
+
+  Future<void> _cropSelectedPhoto() async {
+    if (_cropping || !_canCropPhoto) return;
+    final item = _free ? _items[_selItem] : null;
+    final cell = _selCell;
+    final fit = item == null ? _fits[cell] : null;
+    final index = item?.img ?? _order[cell];
+    final image = _images[index];
+    if (image == null) return;
+    setState(() => _cropping = true);
+    try {
+      // 使用現有的限尺寸預覽；套用只保存比例框，不改寫原圖或重編碼成品。
+      final frame = await image.toByteData(format: ui.ImageByteFormat.png);
+      if (frame == null || !mounted) return;
+      final result = await pickCropRect(
+        context,
+        frame.buffer.asUint8List(),
+        initial: item?.crop ?? fit!.crop,
+      );
+      if (result == null || !mounted) return;
+      final crop = collageNormalizeCrop(result);
+      setState(() {
+        if (item != null) {
+          if (!_items.contains(item)) return;
+          item.crop = crop;
+          item.rect = collageFitCropRect(
+            item.rect,
+            image.width * crop.width / (image.height * crop.height),
+            _canvasAspect,
+          );
+          _autoRects = null;
+          _fitBase = null;
+        } else if (cell < _fits.length &&
+            identical(_fits[cell], fit) &&
+            _order[cell] == index) {
+          fit!
+            ..crop = crop
+            ..zoom = 1
+            ..panX = 0
+            ..panY = 0;
+        }
+      });
+    } catch (_) {
+      if (mounted) showHint(context, '照片裁切失敗，請再試一次', error: true);
+    } finally {
+      if (mounted) setState(() => _cropping = false);
+    }
+  }
+
   // ===== 自由模式：狀態操作 =====
 
   /// 切換宮格／自由。第一次切到自由時，用當下的宮格排列當起始位置
@@ -903,6 +965,7 @@ class _CollageScreenState extends State<CollageScreen>
           _items.add(
             CollageFreeItem(
               img: _order[i],
+              crop: _fits[i].crop,
               rect: ui.Rect.fromLTWH(
                 (i % _cols) / _cols,
                 (i ~/ _cols) / _rows,
@@ -987,9 +1050,9 @@ class _CollageScreenState extends State<CollageScreen>
   }
 
   /// 這張照片的長寬比（已釋放的當正方形）
-  double _aspectOf(int img) {
+  double _aspectOf(int img, {ui.Rect crop = kCollageFullCrop}) {
     final im = (img >= 0 && img < _images.length) ? _images[img] : null;
-    return im == null ? 1.0 : im.width / im.height;
+    return im == null ? 1.0 : im.width * crop.width / (im.height * crop.height);
   }
 
   /// 自動排版：把目前所有方塊照各自照片的長寬比重新塞滿整張畫布
@@ -1000,7 +1063,7 @@ class _CollageScreenState extends State<CollageScreen>
       return;
     }
     final rects = packCollage(
-      [for (final t in _items) _aspectOf(t.img)],
+      [for (final t in _items) _aspectOf(t.img, crop: t.crop)],
       _canvasAspect,
       seed: _packSeed,
     );
@@ -1376,10 +1439,39 @@ class _CollageScreenState extends State<CollageScreen>
               ),
             ],
           ),
-          // 自由模式的動作鈕自己一列（宮格那一列的位置）：加了「隨機排列」
-          // 之後三顆跟模式膠囊擠同一列，375 寬的手機（SE／mini）「移除」
-          // 會被擠出去。最窄的 320 還是差幾 px，讓它自己捲（跟畫布那列
-          // 同一招）；捲的起點在右邊，最常按的「加照片」永遠貼著右側
+          if (_canCropPhoto) ...[
+            Container(
+              height: 1,
+              margin: const EdgeInsets.symmetric(vertical: 8),
+              color: kBorder,
+            ),
+            Row(
+              children: [
+                const SizedBox(
+                  width: kSliderLabelW,
+                  child: Text(
+                    '已選',
+                    style: TextStyle(fontSize: 12, color: kTextDim),
+                  ),
+                ),
+                const Spacer(),
+                KeyedSubtree(
+                  key: const ValueKey('collage-crop-photo'),
+                  child: _freeAction(
+                    Icons.crop,
+                    _cropping ? '裁切中…' : '裁切',
+                    _cropSelectedPhoto,
+                  ),
+                ),
+                if (_free) ...[
+                  const SizedBox(width: 8),
+                  _freeAction(Icons.delete_outline, '移除', _removeFreeItem),
+                ],
+              ],
+            ),
+          ],
+          // 整體照片操作與已選照片的裁切／移除分列；字級放大時仍可橫捲，
+          // 最常按的「加照片」維持在右側。
           if (_free) ...[
             Container(
               height: 1,
@@ -1402,14 +1494,6 @@ class _CollageScreenState extends State<CollageScreen>
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        if (_selItem >= 0 && _selItem < _items.length) ...[
-                          _freeAction(
-                            Icons.delete_outline,
-                            '移除',
-                            _removeFreeItem,
-                          ),
-                          const SizedBox(width: 8),
-                        ],
                         // 一張照片只有一種排法：鈕按了沒反應，乾脆不顯示
                         if (_items.length >= 2) ...[
                           _freeAction(Icons.shuffle, '隨機排列', _shuffleFree),
@@ -2841,7 +2925,7 @@ class _FreePainter extends CustomPainter {
       );
       canvas.drawImageRect(
         img,
-        collageCoverSrc(img, dst.width / dst.height),
+        collageCoverSrc(img, dst.width / dst.height, crop: it.crop),
         dst,
         p,
       );
