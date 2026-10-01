@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:path_provider/path_provider.dart';
+import 'app_media_paths.dart';
+import 'blob_store.dart';
 
 class DraftAssetException implements Exception {
   const DraftAssetException(this.message);
@@ -242,6 +244,9 @@ class DraftAssets {
   static Future<String?> resolve(String kind, String path) async {
     if (path.isEmpty) return null;
     try {
+      await BlobStore.ready;
+      final current = AppMediaPaths.rebase(path);
+      if (await File(current).exists()) return current;
       if (await File(path).exists()) return path;
       if (kIsWeb) return null;
       final alt = await _dest(kind, path);
@@ -253,6 +258,13 @@ class DraftAssets {
   /// 只留 [keep] 裡的複本，其餘刪掉（草稿存了新的一版、或草稿被刪掉了）
   static Future<int> retain(String kind, Set<String> keep) async {
     if (kIsWeb) return 0;
+    await BlobStore.ready;
+    // Resolve legacy picker references too: their durable copy's slot was
+    // hashed from the old full path, before the container moved.
+    keep = {
+      for (final path in keep)
+        await resolve(kind, path) ?? AppMediaPaths.rebase(path),
+    };
     var n = 0;
     try {
       final dir = await _dir(kind);
@@ -305,6 +317,8 @@ class DraftAssets {
     required Set<String> keep,
   }) async {
     if (kIsWeb) return 0;
+    await BlobStore.ready;
+    keep = keep.map(AppMediaPaths.rebase).toSet();
     var n = 0;
     try {
       final roots = await _pickerRoots();

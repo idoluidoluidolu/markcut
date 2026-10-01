@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'diagnostics.dart';
+import 'app_media_paths.dart';
 
 /// 大字串（影片草稿內容與封面、浮水印範本、貼圖）存成檔案，不放
 /// SharedPreferences。
@@ -75,7 +76,9 @@ class BlobStore {
   static Future<Directory?> _resolve() async {
     if (kIsWeb) return null;
     try {
-      return _blobs(await getApplicationSupportDirectory());
+      final support = await getApplicationSupportDirectory();
+      AppMediaPaths.configure(support.path);
+      return _blobs(support);
     } catch (_) {
       return null;
     }
@@ -104,6 +107,12 @@ class BlobStore {
 
   @visibleForTesting
   static void resetForTest() => _init = null;
+
+  /// Wait for the directory lookup started by main, without starting platform
+  /// calls in widget tests which intentionally use the preferences fallback.
+  static Future<void> get ready async {
+    await _init;
+  }
 
   static File _file(Directory dir, String key) => File(
     '${dir.path}${Platform.pathSeparator}'

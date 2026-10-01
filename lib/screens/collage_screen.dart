@@ -98,6 +98,8 @@ class _CollageScreenState extends State<CollageScreen>
   /// 或清過草稿（沒動過的話，離開時草稿引用的照片照舊留著）
   Set<String> _draftPaths = {};
   bool _draftTouched = false;
+  String? _draftLoadError;
+  bool _restoringDraft = false;
 
   /// 匯出成功那一刻的狀態指紋：之後沒再動就靜靜走人（草稿已清）
   String? _exportSnapshot;
@@ -369,6 +371,7 @@ class _CollageScreenState extends State<CollageScreen>
   /// 收到的選取器複本都刪掉。這一頁沒動過草稿的話，草稿引用的照片
   /// 一律留著；草稿根本不存在（個人頁刪掉了）才把複本清光
   Future<void> _cleanupOnLeave() async {
+    if (_draftLoadError != null || _restoringDraft) return;
     var keep = _draftPaths;
     if (!_draftTouched) {
       try {
@@ -446,6 +449,7 @@ class _CollageScreenState extends State<CollageScreen>
   /// 那一份：相簿選取器給的複本在 tmp／cache，系統幾天就清，以前續作
   /// 動不動就「有 N 張照片已不在」
   Future<bool> _saveDraft() async {
+    if (_draftLoadError != null || _restoringDraft) return false;
     SharedPreferences? prefs;
     try {
       // 先在同步這一段把路徑抄下來，await 之後才讀 state 欄位太晚
@@ -488,8 +492,7 @@ class _CollageScreenState extends State<CollageScreen>
     _draftTouched = true;
   }
 
-  /// 從草稿把照片與排法還原。照片不在了就略過並講清楚；
-  /// 一張都讀不回來回 false，退回一般載入（空盤）
+  /// 還原照片與排法。缺檔或解碼失敗時停止編輯，不讓殘缺內容覆寫草稿。
   Future<bool> _restoreDraft(Map<String, dynamic> r) async {
     // 浮水印先還原：照片就算都不在了，調好的浮水印也不該跟著蒸發。
     // 不換掉 _wm 物件（面板與預覽綁的是同一個參照），整組搬進去
@@ -532,11 +535,9 @@ class _CollageScreenState extends State<CollageScreen>
           gone++;
         }
       }
-      if (_images.isEmpty) {
-        if (mounted && paths.isNotEmpty) {
-          showHint(context, '這份拼圖的照片都已經不在了，從空白開始', error: true);
-        }
-        return false;
+      if (gone > 0) {
+        _draftLoadError = '有 $gone 張照片暫時無法讀取，原草稿已保留。\n請確認素材後再開啟。';
+        return true;
       }
       _poolSize = _images.length;
       _free = r['free'] == true;
@@ -590,17 +591,21 @@ class _CollageScreenState extends State<CollageScreen>
       _autoRects = r['freeAuto'] == true
           ? {for (final t in _items) t.img: t.rect}
           : null;
-      if (gone > 0 && mounted) showHint(context, '有 $gone 張照片已不在，已略過');
       if (mounted) setState(() {});
       return true;
     } catch (_) {
-      return false;
+      _draftLoadError = '這份拼圖暫時無法完整讀取，原草稿已保留。';
+      return true;
     }
   }
 
   /// 返回鍵／返回手勢：匯出成功過、之後沒再動就靜靜走人（草稿已經
   /// 清掉，跟 GIF、批次同一條規矩）；動過了、或沒匯出過就走離開保護
   void _handleBack() {
+    if (_draftLoadError != null || _restoringDraft) {
+      Navigator.of(context).pop();
+      return;
+    }
     final snap = _exportSnapshot;
     if (snap != null && snap == _stateKey()) {
       Navigator.of(context).pop();
@@ -633,7 +638,15 @@ class _CollageScreenState extends State<CollageScreen>
   }
 
   Future<void> _load() async {
-    if (widget.restore != null && await _restoreDraft(widget.restore!)) return;
+    if (widget.restore != null) {
+      _restoringDraft = true;
+      try {
+        if (await _restoreDraft(widget.restore!)) return;
+      } finally {
+        _restoringDraft = false;
+        if (mounted) setState(() {});
+      }
+    }
     _noteReceived(widget.photos);
     var dropped = 0;
     for (final f in widget.photos) {
@@ -1659,7 +1672,24 @@ class _CollageScreenState extends State<CollageScreen>
       child: Scaffold(
         backgroundColor: kBg,
         appBar: AppBar(backgroundColor: kBg),
-        body: _cols == 0
+        body: _draftLoadError != null
+            ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(_draftLoadError!, textAlign: TextAlign.center),
+                      const SizedBox(height: 16),
+                      TextButton(
+                        onPressed: _handleBack,
+                        child: const Text('返回草稿'),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            : _cols == 0
             ? const Center(child: CircularProgressIndicator())
             : SafeArea(
                 child: Column(
@@ -1679,7 +1709,9 @@ class _CollageScreenState extends State<CollageScreen>
                   ],
                 ),
               ),
-        bottomNavigationBar: _cols == 0 ? null : _bottomNav(),
+        bottomNavigationBar: _cols == 0 || _draftLoadError != null
+            ? null
+            : _bottomNav(),
       ),
     );
   }

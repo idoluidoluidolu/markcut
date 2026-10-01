@@ -11,6 +11,7 @@ import 'package:image_picker/image_picker.dart' show XFile;
 
 import '../models/watermark_settings.dart';
 import '../services/blob_store.dart';
+import '../services/app_media_paths.dart';
 import '../services/draft_assets.dart';
 import '../services/draft_store.dart';
 import '../services/file_reader.dart';
@@ -248,7 +249,29 @@ Future<Map<String, dynamic>?> _readDraftJson(
   final s = await BlobStore.read(key);
   if (s == null) return null;
   try {
-    final j = jsonDecode(s) as Map<String, dynamic>;
+    var j = jsonDecode(s) as Map<String, dynamic>;
+    final kind = switch (contentKey) {
+      'photo' => DraftAssets.photo,
+      'files' => DraftAssets.batch,
+      'photos' => DraftAssets.collage,
+      _ => null,
+    };
+    if (kind == null) {
+      j = AppMediaPaths.mapDraft(j);
+    } else {
+      final value = j[contentKey];
+      final paths = value is List
+          ? value.whereType<String>()
+          : [if (value is String) value];
+      final resolved = <String, String>{};
+      for (final path in paths) {
+        resolved[path] = await DraftAssets.resolve(kind, path) ?? path;
+      }
+      j = AppMediaPaths.mapDraft(
+        j,
+        transform: (path) => resolved[path] ?? path,
+      );
+    }
     final v = j[contentKey];
     final has = v is List ? v.isNotEmpty : (v is String && v.isNotEmpty);
     return has ? j : null;
@@ -1647,7 +1670,7 @@ class _DraftsScreenState extends State<DraftsScreen> {
     if (await _confirmDeleteGifDraft(context) && mounted) _reload();
   }
 
-  /// 續作拼圖：照片還在的帶回去（拼圖頁自己會略過不見的）
+  /// 續作拼圖：由拼圖頁檢查全部照片；讀不到時保留原草稿。
   Future<void> _resumeCollage() async {
     final d = _collageDraft;
     if (d == null) return;
@@ -1659,9 +1682,8 @@ class _DraftsScreenState extends State<DraftsScreen> {
   }
 
   /// 續作批次浮水印：檔案還在的帶回去（草稿記的路徑不見了但留過複本
-  /// 就用複本，見 DraftAssets），不見的略過並講清楚。單張覆寫改以
-  /// 路徑對應（batchRestoreFor）：以前用索引，濾掉不見的檔案之後整批
-  /// 位移到別張
+  /// 就用複本，見 DraftAssets）。任何素材讀不到都保留原草稿；單張
+  /// 覆寫用 batchRestoreFor 對應到修復後的路徑。
   Future<void> _resumeBatch() async {
     final d = _batchDraft;
     if (d == null) return;
@@ -1674,9 +1696,9 @@ class _DraftsScreenState extends State<DraftsScreen> {
       alive.add(now);
     }
     final files = [for (final p in alive) ?p].map(XFile.new).toList();
-    if (files.isEmpty) {
+    if (files.isEmpty || gone > 0) {
       if (mounted) {
-        showHint(context, '這批檔案都已經不在了，草稿無法續作', error: true);
+        showHint(context, '有素材暫時無法讀取，原草稿已保留，請確認素材後再開啟', error: true);
       }
       return;
     }
@@ -1686,7 +1708,6 @@ class _DraftsScreenState extends State<DraftsScreen> {
         builder: (_) => BatchWatermarkScreen(
           files: files,
           restore: batchRestoreFor(d, alive),
-          initialHint: gone > 0 ? '有 $gone 個檔案已不在，已略過' : null,
         ),
       ),
     );

@@ -3501,7 +3501,11 @@ final class MCFrameGeneratorPool {
     let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
     generator.appliesPreferredTrackTransform = true
     generator.maximumSize = CGSize(width: maxH, height: maxH)
-    if #available(iOS 18.0, *) { generator.dynamicRangePolicy = .matchSource }
+    // This channel produces ordinary JPEG thumbnails. Ask AVFoundation to
+    // tone-map once, while it still has the asset's HDR metadata. matchSource
+    // can return extended-linear images (not only HLG/PQ), which the old
+    // transfer-function-only check missed before JPEG clamped the highlights.
+    if #available(iOS 18.0, *) { generator.dynamicRangePolicy = .forceSDR }
     entries.append(Entry(key: key, generator: generator))
     createdCount += 1
     return generator
@@ -4414,16 +4418,14 @@ final class MCInteractivePrepGate {
               defer { if started { self.releaseFrameGeneratorsWhenIdle() } }
               var reply: Any?
               if valid, let cg = image {
-                var flat = UIImage(cgImage: cg)
-                if let cs = cg.colorSpace, CGColorSpaceUsesITUR_2100TF(cs) {
-                  let ci = CIImage(cgImage: cg, options: [.toneMapHDRtoSDR: true])
-                  if let sdr = CIExportCompositor.ctxSDR.createCGImage(
-                    ci, from: ci.extent, format: .RGBA8,
-                    colorSpace: CGColorSpace(name: CGColorSpace.sRGB)) {
-                    flat = UIImage(cgImage: sdr)
-                  }
-                }
-                if let data = flat.jpegData(compressionQuality: jpegQ) {
+                // Older iOS generators also default to SDR. Normalize its
+                // color space to sRGB before Flutter composites/re-encodes the
+                // cover; do not treat Display P3/BT.2020 samples as sRGB bytes.
+                let ci = CIImage(cgImage: cg)
+                if let sdr = CIExportCompositor.ctxSDR.createCGImage(
+                  ci, from: ci.extent, format: .RGBA8,
+                  colorSpace: CGColorSpace(name: CGColorSpace.sRGB)),
+                  let data = UIImage(cgImage: sdr).jpegData(compressionQuality: jpegQ) {
                   let payload = FlutterStandardTypedData(bytes: data)
                   if detailed {
                     var map: [String: Any] = ["bytes": payload]

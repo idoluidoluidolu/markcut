@@ -44,6 +44,8 @@ import '../services/diagnostics.dart';
 import '../services/quality_diagnostics.dart';
 import '../widgets/quality_diagnostics_sheet.dart';
 import '../services/draft_store.dart';
+import '../services/blob_store.dart';
+import '../services/app_media_paths.dart';
 import '../services/photo_export.dart' show encodePhotoImage;
 import '../services/gif_store.dart';
 import '../services/export_eta.dart';
@@ -1466,7 +1468,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   // ===== 草稿 =====
 
-  int _droppedOnLoad = 0; // 還原時因為檔案不見而剔除的片段數
+  String? _draftLoadError;
+  bool _draftRestored = false;
 
   /// 新素材的預設長度：不要超過目前時間軸的結尾。
   /// 空時間軸照預設給；已經站在結尾附近至少給 0.5 秒，
@@ -1479,18 +1482,32 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return math.min(want, room);
   }
 
-  /// 原檔不見時用工作檔救回：把工作檔搬進 App 自己的 imports 夾、
-  /// 升格成來源。用搬（rename）不是複製——工作檔目錄有總量清理，
-  /// 留在那裡哪天會被排隊清掉，草稿又斷一次。
+  /// 原檔讀不到時從工作檔複製一份到 imports，升格成來源。
+  /// 原工作檔保留到新路徑存檔完成，載入中斷也不會失去最後的複本。
   /// 它本身就是 1080p H.264，順便直接當自己的工作檔用，不必重轉
   /// 這一輪載入有沒有發生過工作檔救援（有就要立刻把草稿落地）
   bool _rescued = false;
 
   Future<bool> _rescueFromWorkFile(MediaSource s) async {
     // HDR 模式現在只轉 HLG 代理、不轉 SDR 工作檔：救援也要認代理
-    final fromHdr = s.workPath == null;
-    final wp = s.workPath ?? s.workHdrPath;
-    if (wp == null || !await fileExists(wp)) return false;
+    String? wp;
+    var fromHdr = false;
+    for (final candidate in <(Future<String?> Function(), bool)>[
+      if (_exportHdr) (() async => s.workHdrPath, true),
+      if (_exportHdr) (() => WorkFiles.lookupHdr(s.path), true),
+      (() async => s.workPath, false),
+      (() => WorkFiles.lookup(s.path), false),
+      if (!_exportHdr) (() async => s.workHdrPath, true),
+      if (!_exportHdr) (() => WorkFiles.lookupHdr(s.path), true),
+    ]) {
+      final path = await candidate.$1();
+      if (path != null && await fileExists(path)) {
+        wp = path;
+        fromHdr = candidate.$2;
+        break;
+      }
+    }
+    if (wp == null) return false;
     try {
       final base = await getApplicationSupportDirectory();
       final dir = Directory('${base.path}${Platform.pathSeparator}imports');
@@ -1668,13 +1685,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             bytes = _thumbs[c.sourceIndex]?.firstOrNull;
           } else {
             final st = c.sourceTimeAt(t0);
-            final key = '${src.previewPath}@${st.toStringAsFixed(3)}';
+            final path = _thumbnailPath(src);
+            final key = '$path@${st.toStringAsFixed(3)}';
             usedFrames.add(key);
             bytes = _coverFrames[key];
             if (bytes == null) {
               // 背景優先序：排在拖曳預覽的抽格後面
               bytes = await nativeFrameAt(
-                src.previewPath,
+                path,
                 st,
                 maxH: 720,
                 background: true,
@@ -1753,13 +1771,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final ck = [
       _canvasRatio.index,
       _resolution.index,
+      _prepHdrMode,
       for (final c in _tl.clips)
-        // previewPath 也要進指紋：HDR 素材的第一版封面是從原檔抽的
-        //（色調映射前，偏淡），工作檔轉好後 previewPath 變了要重生
-        // 一次——不進指紋的話洗白的那版封面永遠卡著
+        // 跟預覽一致的來源也進指紋：代理落地或 HDR 模式改變時重做封面。
         '${c.id}|${c.track}|${c.offset.toStringAsFixed(2)}'
             '|${c.trimStart.toStringAsFixed(2)}|${c.scale}|${c.px}|${c.py}'
-            '|${_tl.sourceOf(c).previewPath}',
+            '|${_thumbnailPath(_tl.sourceOf(c))}',
       _settings.hasAnyMark,
       _wmHidden,
       // 浮水印「內容」也要進指紋：只記有沒有的話，換了樣式/文字/
@@ -1795,7 +1812,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     final src = _tl.sources[c.sourceIndex];
-    final key = '${src.previewPath}@${c.trimStart.toStringAsFixed(2)}';
+    final path = _thumbnailPath(src);
+    final key = '$path@${c.trimStart.toStringAsFixed(2)}';
     if (key == _coverKey && _coverB64 != null) return;
     Uint8List? bytes;
     if (src.kind == ClipKind.video) {
@@ -1803,7 +1821,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 抽一張大約 40~80KB，比時間軸那張 200px 高的糊圖值得
       if (!kIsWeb) {
         bytes = await nativeFrameAt(
-          src.previewPath,
+          path,
           c.trimStart,
           maxH: 720,
           background: true,
@@ -1815,7 +1833,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 這裡有 _coverKey 擋著，同一個片段只會抽一次
         try {
           final one = await engine.makeThumbnails(
-            src.previewPath,
+            path,
             0.001, // count=1 時取 startAt + dur/2，給最小＝就取 startAt
             1,
             height: 720,
@@ -3010,13 +3028,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// `mounted` 必為 false——以前這裡一檢查就 return，
   /// 「離開前補存」其實從來沒有存成功過
   Future<void> _saveDraftNow({bool force = false}) async {
-    if (_draftDeleted || (!mounted && !force)) return;
+    if (_draftDeleted ||
+        (!mounted && !force) ||
+        _draftLoadError != null ||
+        (widget.draft != null && !_draftRestored)) {
+      return;
+    }
     // 這份專案正在編輯：手動清理（DraftStore.prune）不能把它
     // 當成最舊的刪掉——登記起來，離開專案（_handleBack）時才解除
     DraftStore.holdOpen(_draftId);
     if (!mounted && !force) return;
     // Web 也存：同一次瀏覽內可以繼續剪；重新整理後素材連結會失效，
-    // 還原時由 _loadDraft 剔除並提示
+    // 還原時由 _loadDraft 提示並保留原草稿
     // 整包 JSON 含 Logo 的 base64：編碼跟寫檔都交給 DraftStore 丟背景
     // isolate（見 BlobStore.writeJson）——存草稿是每個編輯動作都會走到
     // 的，那幾毫秒以前正好落在使用者手指還在動的時候
@@ -3101,12 +3124,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   Future<void> _loadDraft(Map<String, dynamic> j) async {
+    await BlobStore.ready;
+    if (!mounted) return;
+    j = AppMediaPaths.mapDraft(j);
     // 從草稿夾開回來的專案從載入那一刻就算「編輯中」，上限清理不碰
     //（還沒存過第一次之前它可能就是清單裡最舊的那份）
     DraftStore.holdOpen(_draftId);
-    // 逐筆容錯：一筆欄位壞掉只跳過那一筆，不能讓整份草稿打不開——
-    // 以前一個型別對不上整個 _loadDraft 就丟例外，卡在讀取畫面，
-    // 而且半載入的時間軸一被自動存檔就把好的那份蓋成殘缺版。
+    // 逐筆檢查後若有資料無法還原，停止編輯並保留原始草稿。
+    // 半載入的時間軸不能被自動存成殘缺版。
     // 注意：素材清單是索引對位的，壞掉的素材用「空位」佔著，
     // 不能直接跳過——跳過會讓後面每個 sourceIndex 都對錯位
     var broken = 0;
@@ -3141,7 +3166,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       broken += outOfRange;
       _tl.clips.removeWhere((c) => c.sourceIndex < 0 || c.sourceIndex >= nSrc);
     }
-    if (broken > 0) Diag.note('草稿裡有 $broken 筆壞資料，已跳過');
+    if (broken > 0) {
+      Diag.note('草稿裡有 $broken 筆資料無法還原，保留原草稿');
+      _draftLoadError = '部分草稿資料無法讀取，原草稿已保留。';
+      return;
+    }
     final fixedIds = _tl.fixDuplicateIds();
     if (fixedIds > 0) Diag.note('草稿裡有 $fixedIds 個撞號的片段 id，已補新號');
     // 這一版之前的把手／變速／貼上都不擋同軌重疊，舊草稿裡可能還躺著
@@ -3196,8 +3225,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _exportHdr = (j['hdrOut'] ?? true) == true;
     _extraBlankTracks = ((j['extraTracks'] ?? 0) as num).toInt();
 
-    // 重建播放器與縮圖；素材檔案不見了（例如系統清掉 app 快取）就剔除該片段，
-    // 免得留下永遠黑畫面的片段、到匯出才爆錯
+    // 重建播放器前檢查所有引用素材；無法救回的素材會阻止編輯與覆寫。
     final deadSources = <int>{};
     // 倒轉檔遺失或色彩版本過舊的素材（照 revOf 重做，見下）
     final lostReversed = <int>[];
@@ -3220,7 +3248,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         return; // 這幾種素材沒有檔案
       }
       // Web：blob 連結活不過重新整理，留著只會是永遠黑畫面
-      // 又不報錯的片段——剔除並讓下面的提示講清楚
+      // 又不報錯的片段——停止載入並讓下面的提示講清楚
       if (kIsWeb &&
           (s.kind == ClipKind.video || s.kind == ClipKind.audio) &&
           s.path.startsWith('blob:')) {
@@ -3240,9 +3268,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (photo != null) {
           _thumbs[i] = [photo.bytes];
         } else {
-          // Web 也要剔除：那邊讀不回位元組（blob 連結活不過重新整理），
-          // 留著會變成「時間軸看得到、畫面上卻不存在」的幽靈素材——
-          // 預覽畫不出來，也就點不到、選不了、刪不掉
+          // Web 的失效 blob 連結也算讀取失敗，不能覆寫成少一張的草稿。
           deadSources.add(i);
         }
       } else if (!kIsWeb && !await fileExists(s.path)) {
@@ -3254,7 +3280,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           return;
         }
         // 原檔被系統清掉（相簿快取一週左右就會被回收）：
-        // 先用工作檔救回，救不回才剔除
+        // 先用工作檔救回，救不回就保留草稿並停止編輯
         if (await _rescueFromWorkFile(s)) {
           if (s.kind == ClipKind.video) {
             _ensureScrubSlots(i, s.duration);
@@ -3300,7 +3326,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 而且抽出來的還是要丟掉的那一版（代理換上時會重抽）
         // Restore small cached strips without opening a decoder. Cold sources
         // go through the shared cover-first queue once the preview is ready.
-        final cached = await TimelineThumbnailCache.read(s.path, s.duration);
+        final cached = await TimelineThumbnailCache.read(
+          s.path,
+          s.duration,
+          renderPath: _thumbnailPath(s),
+        );
         if (mounted && cached.isNotEmpty) {
           _thumbs[i] = cached;
           if (cached.length < thumbStripCount(s.duration)) {
@@ -3315,8 +3345,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     await Future.wait([
       for (var i = 0; i < _tl.sources.length; i++) checkSource(i),
     ]);
+    if (!mounted) return;
     // 一支一支修復倒轉檔（見 _rederiveReverse）。更新失敗但舊檔還在時
-    // 保留素材；只有完全找不到檔案才剔除。
+    // 保留素材；完全找不到檔案則停止編輯，原草稿不動。
     for (final i in lostReversed) {
       final s = _tl.sources[i];
       if (!await _rederiveReverse(s)) {
@@ -3335,10 +3366,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         _ensureScrubSlots(i, s.duration);
       }
     }
-    _droppedOnLoad = _tl.clips
+    final missing = _tl.clips
         .where((c) => deadSources.contains(c.sourceIndex))
         .length;
-    _tl.clips.removeWhere((c) => deadSources.contains(c.sourceIndex));
+    if (missing > 0) {
+      _draftLoadError = '有 $missing 段素材暫時無法讀取，原草稿已保留。\n請確認素材後再開啟。';
+      return;
+    }
+    if (!mounted) return;
+    _draftRestored = true;
     // 有素材是用工作檔救回來的：新路徑現在只存在記憶體，
     // 立刻落地一次，中間被殺掉才不會又指回已經不存在的舊路徑
     if (_rescued) unawaited(_saveDraftNow());
@@ -3505,25 +3541,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _initialPreviewReady = _loadDraft(widget.draft!)
           .catchError((Object e) {
             Diag.note('草稿載入炸了：$e');
-            if (mounted) {
-              showHint(context, '這份草稿有部分資料壞了，已盡量載入', error: true);
-            }
+            _draftLoadError = '這份草稿暫時無法完整讀取，原草稿已保留。';
           })
           .then((_) async {
             _endVideoMetadataImport();
             if (!mounted) return;
             setState(() => _ready = true);
+            if (_draftLoadError != null) return;
             await _dressUp();
             if (!mounted) return;
             setState(() => _ready = true);
             unawaited(_measureSrcKbps());
-            if (_droppedOnLoad > 0) {
-              showHint(
-                context,
-                '有 $_droppedOnLoad 段素材已找不到，已從專案中移除',
-                duration: const Duration(seconds: 5),
-              );
-            }
           });
     } else if (widget.photoPaths != null) {
       // 一批照片串成影片：進場先問每張幾秒，再照順序接起來
@@ -5619,7 +5647,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (frames.isNotEmpty && frames.length >= _thumbnailCount(s)) {
         _setUiState(() => _thumbs[index] = frames);
         _thumbsCoarse[index] = null; // 粗帶：之後一定要精抽
-        unawaited(TimelineThumbnailCache.write(s.path, s.duration, frames));
+        unawaited(
+          TimelineThumbnailCache.write(
+            s.path,
+            s.duration,
+            frames,
+            renderPath: path,
+          ),
+        );
         done++;
       }
       progress();
@@ -5633,8 +5668,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 先讓每支片段有一張封面，再於預覽閒置時補完整縮圖帶。
   bool _thumbsPreparing = false;
 
-  String _thumbnailPath(MediaSource source) =>
-      source.workHdrPath ?? source.previewPath;
+  String _thumbnailPath(MediaSource source) => thumbnailSourcePath(
+    source,
+    hdrMode: _prepHdrMode,
+    isHdr: _srcHdr[source.path] ?? _hdrOfPath[source.path],
+  );
 
   List<MediaSource> _thumbnailSourcesByPriority() {
     final priority = <int, ({int group, int track})>{};
@@ -5797,6 +5835,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 source.path,
                 source.duration,
                 frames,
+                renderPath: path,
               ),
             );
           }
@@ -7773,17 +7812,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     var pushed = false;
     await showModalBottomSheet(
       context: context,
-      showDragHandle: true,
+      showDragHandle: false,
       isScrollControlled: true,
-      // 視窗最多佔半個螢幕：上半留給預覽，邊調邊看即時效果
-      constraints: BoxConstraints(
-        maxHeight:
-            MediaQuery.sizeOf(context).height -
-            MediaQuery.paddingOf(context).top -
-            40,
-      ),
       builder: (context) => StatefulBuilder(
         builder: (context, setSheet) {
+          final screenHeight = MediaQuery.sizeOf(context).height;
+          final keyboardHeight = MediaQuery.viewInsetsOf(context).bottom;
+          final typing = keyboardHeight > 0;
+          // Size the visible panel from the space *above* the keyboard. Adding
+          // the keyboard to a fixed half-screen panel used to cover the canvas.
+          final panelHeight = typing
+              ? (screenHeight - keyboardHeight) * .42
+              : screenHeight * .5;
+          final typingLines = panelHeight < 180 ? 1 : 2;
           void both(VoidCallback fn) {
             if (!pushed) {
               _pushUndo();
@@ -7866,26 +7907,27 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               );
 
           return SizedBox(
-            height: math.min(
-              MediaQuery.sizeOf(context).height * .5 +
-                  MediaQuery.viewInsetsOf(context).bottom,
-              MediaQuery.sizeOf(context).height - 100,
-            ),
+            height: panelHeight + keyboardHeight,
             child: Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(context).viewInsets.bottom,
-              ),
+              padding: EdgeInsets.only(bottom: keyboardHeight),
               child: SafeArea(
-                child: SingleChildScrollView(
-                  // 往下滑清單就收鍵盤（打完字回不去的解法）
-                  keyboardDismissBehavior:
-                      ScrollViewKeyboardDismissBehavior.onDrag,
-                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Align(
+                top: false,
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8, bottom: 4),
+                      child: Container(
+                        width: 32,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: kTextDim,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      child: Align(
                         alignment: Alignment.centerRight,
                         child: TextButton.icon(
                           key: const ValueKey('clip-text-done'),
@@ -7897,327 +7939,377 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                           label: const Text('完成'),
                         ),
                       ),
-                      TextField(
-                        controller: ctrl,
-                        autofocus: false,
-                        key: const ValueKey('clip-text-content'),
-                        minLines: 3,
-                        maxLines: 6,
-                        keyboardType: TextInputType.multiline,
-                        textAlign: st.alignment,
-                        textInputAction: TextInputAction.newline,
-                        style: TextStyle(
-                          fontFamily: st.fontFamily,
-                          fontSize: 20,
-                          color: st.color,
-                        ),
-                        decoration: const InputDecoration(hintText: '文字'),
-                        onChanged: (v) => both(() {
-                          src.name = v;
-                          st.text = v;
-                        }),
-                      ),
-                      const SizedBox(height: 12),
-                      SegmentedButton<TextAlign>(
-                        key: const ValueKey('clip-text-alignment'),
-                        showSelectedIcon: false,
-                        segments: const [
-                          ButtonSegment(
-                            value: TextAlign.left,
-                            icon: Icon(Icons.format_align_left, size: 18),
-                            label: Text('靠左'),
-                          ),
-                          ButtonSegment(
-                            value: TextAlign.center,
-                            icon: Icon(Icons.format_align_center, size: 18),
-                            label: Text('置中'),
-                          ),
-                          ButtonSegment(
-                            value: TextAlign.right,
-                            icon: Icon(Icons.format_align_right, size: 18),
-                            label: Text('靠右'),
-                          ),
-                        ],
-                        selected: {st.alignment},
-                        onSelectionChanged: (v) =>
-                            both(() => st.alignment = v.single),
-                      ),
-                      // 顏文字：點一個複製、回來貼上（跟浮水印面板同一顆）
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: TextButton.icon(
-                          onPressed: () => showKaomojiSheet(context),
-                          style: TextButton.styleFrom(
-                            visualDensity: VisualDensity.compact,
-                            padding: const EdgeInsets.symmetric(horizontal: 6),
-                            foregroundColor: kTextDim,
-                          ),
-                          icon: const Icon(
-                            Icons.emoji_emotions_outlined,
-                            size: 16,
-                          ),
-                          label: const Text(
-                            '顏文字',
-                            style: TextStyle(fontSize: 11.5),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: DropdownButtonHideUnderline(
-                              child: Container(
-                                height: 38,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
+                    ),
+                    Expanded(
+                      child: SingleChildScrollView(
+                        // 往下滑清單就收鍵盤（打完字回不去的解法）
+                        keyboardDismissBehavior:
+                            ScrollViewKeyboardDismissBehavior.onDrag,
+                        padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            TextField(
+                              controller: ctrl,
+                              autofocus: false,
+                              key: const ValueKey('clip-text-content'),
+                              minLines: typing ? typingLines : 3,
+                              maxLines: typing ? typingLines : 6,
+                              keyboardType: TextInputType.multiline,
+                              textAlign: st.alignment,
+                              textInputAction: TextInputAction.newline,
+                              style: TextStyle(
+                                fontFamily: st.fontFamily,
+                                fontSize: 20,
+                                color: st.color,
+                              ),
+                              decoration: const InputDecoration(hintText: '文字'),
+                              onChanged: (v) => both(() {
+                                src.name = v;
+                                st.text = v;
+                              }),
+                            ),
+                            const SizedBox(height: 12),
+                            SegmentedButton<TextAlign>(
+                              key: const ValueKey('clip-text-alignment'),
+                              showSelectedIcon: false,
+                              segments: const [
+                                ButtonSegment(
+                                  value: TextAlign.left,
+                                  icon: Icon(Icons.format_align_left, size: 18),
+                                  label: Text('靠左'),
                                 ),
-                                decoration: BoxDecoration(
-                                  border: Border.all(color: kBorder),
-                                  borderRadius: BorderRadius.circular(6),
+                                ButtonSegment(
+                                  value: TextAlign.center,
+                                  icon: Icon(
+                                    Icons.format_align_center,
+                                    size: 18,
+                                  ),
+                                  label: Text('置中'),
                                 ),
-                                child: DropdownButton<String>(
-                                  isExpanded: true,
-                                  value: st.fontFamily,
-                                  icon: const Icon(
-                                    Icons.expand_more,
-                                    size: 16,
-                                    color: kTextDim,
+                                ButtonSegment(
+                                  value: TextAlign.right,
+                                  icon: Icon(
+                                    Icons.format_align_right,
+                                    size: 18,
                                   ),
-                                  // 選單跟 App 同風格：面板色、圓角、
-                                  // 限高（蓋滿全螢幕太生硬）
-                                  dropdownColor: kPanelHi,
-                                  borderRadius: BorderRadius.circular(12),
-                                  menuMaxHeight: 320,
-                                  itemHeight: 48,
-                                  items: [
-                                    for (final f in kFontOptions)
-                                      DropdownMenuItem(
-                                        value: f.family,
-                                        child: Text(
-                                          f.label,
-                                          style: TextStyle(
-                                            fontFamily: f.family,
-                                            fontSize: 13,
-                                          ),
-                                        ),
-                                      ),
-                                  ],
-                                  onChanged: (v) => both(
-                                    () => st.fontFamily = v ?? 'NotoSansTC',
+                                  label: Text('靠右'),
+                                ),
+                              ],
+                              selected: {st.alignment},
+                              onSelectionChanged: (v) =>
+                                  both(() => st.alignment = v.single),
+                            ),
+                            // 顏文字：點一個複製、回來貼上（跟浮水印面板同一顆）
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: TextButton.icon(
+                                onPressed: () => showKaomojiSheet(context),
+                                style: TextButton.styleFrom(
+                                  visualDensity: VisualDensity.compact,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
                                   ),
+                                  foregroundColor: kTextDim,
+                                ),
+                                icon: const Icon(
+                                  Icons.emoji_emotions_outlined,
+                                  size: 16,
+                                ),
+                                label: const Text(
+                                  '顏文字',
+                                  style: TextStyle(fontSize: 11.5),
                                 ),
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 10),
-                          InkWell(
-                            onTap: () async {
-                              final picked = await pickColor(context, st.color);
-                              final ok = picked != null;
-                              final color = Color(picked ?? 0);
-                              if (ok == true) {
-                                both(() => st.colorValue = color.toARGB32());
-                              }
-                            },
-                            borderRadius: BorderRadius.circular(6),
-                            // 跟浮水印面板同款：框＋「顏色」字樣，
-                            // 裸圓點看起來不像可以點
-                            child: Container(
-                              height: 38,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                              ),
-                              decoration: BoxDecoration(
-                                border: Border.all(color: kBorder),
-                                borderRadius: BorderRadius.circular(6),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Container(
-                                    width: 22,
-                                    height: 22,
-                                    decoration: BoxDecoration(
-                                      color: st.color,
-                                      shape: BoxShape.circle,
-                                      border: Border.all(
-                                        color: kBorder,
-                                        width: 1.5,
+                            const SizedBox(height: 12),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: DropdownButtonHideUnderline(
+                                    child: Container(
+                                      height: 38,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 12,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        border: Border.all(color: kBorder),
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: DropdownButton<String>(
+                                        isExpanded: true,
+                                        value: st.fontFamily,
+                                        icon: const Icon(
+                                          Icons.expand_more,
+                                          size: 16,
+                                          color: kTextDim,
+                                        ),
+                                        // 選單跟 App 同風格：面板色、圓角、
+                                        // 限高（蓋滿全螢幕太生硬）
+                                        dropdownColor: kPanelHi,
+                                        borderRadius: BorderRadius.circular(12),
+                                        menuMaxHeight: 320,
+                                        itemHeight: 48,
+                                        items: [
+                                          for (final f in kFontOptions)
+                                            DropdownMenuItem(
+                                              value: f.family,
+                                              child: Text(
+                                                f.label,
+                                                style: TextStyle(
+                                                  fontFamily: f.family,
+                                                  fontSize: 13,
+                                                ),
+                                              ),
+                                            ),
+                                        ],
+                                        onChanged: (v) => both(
+                                          () =>
+                                              st.fontFamily = v ?? 'NotoSansTC',
+                                        ),
                                       ),
                                     ),
                                   ),
-                                  const SizedBox(width: 8),
+                                ),
+                                const SizedBox(width: 10),
+                                InkWell(
+                                  onTap: () async {
+                                    final picked = await pickColor(
+                                      context,
+                                      st.color,
+                                    );
+                                    final ok = picked != null;
+                                    final color = Color(picked ?? 0);
+                                    if (ok == true) {
+                                      both(
+                                        () => st.colorValue = color.toARGB32(),
+                                      );
+                                    }
+                                  },
+                                  borderRadius: BorderRadius.circular(6),
+                                  // 跟浮水印面板同款：框＋「顏色」字樣，
+                                  // 裸圓點看起來不像可以點
+                                  child: Container(
+                                    height: 38,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      border: Border.all(color: kBorder),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Container(
+                                          width: 22,
+                                          height: 22,
+                                          decoration: BoxDecoration(
+                                            color: st.color,
+                                            shape: BoxShape.circle,
+                                            border: Border.all(
+                                              color: kBorder,
+                                              width: 1.5,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        const Text(
+                                          '顏色',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: kTextDim,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            slider(
+                              '大小',
+                              st.sizeFrac,
+                              0.02,
+                              2.0,
+                              (v) => st.sizeFrac = v,
+                            ),
+                            slider(
+                              '透明',
+                              st.opacity,
+                              0.05,
+                              1,
+                              (v) => st.opacity = v,
+                            ),
+                            // 間距可以負值：字疊近一點（跟面板同範圍）
+                            slider(
+                              '間距',
+                              st.spacing,
+                              -0.2,
+                              0.6,
+                              (v) => st.spacing = v,
+                            ),
+                            // 旋轉：±4° 內吸附回正，點角度數字一鍵歸零
+                            sliderRow(
+                              label: '旋轉',
+                              value: st.rotation,
+                              min: -180,
+                              max: 180,
+                              onChanged: (v) => both(
+                                () => st.rotation = snapAngle(
+                                  v,
+                                  current: st.rotation,
+                                ),
+                              ),
+                              readout: '${st.rotation.round()}',
+                              unit: '\u00B0',
+                              valueColor: st.rotation.round() == 0
+                                  ? kTextDim
+                                  : kText,
+                              onReset: () => both(() => st.rotation = 0),
+                            ),
+                            // 動畫：跟浮水印同一組（固定/閃爍/飄移/跑馬燈），
+                            // 速度與幅度用預設值，不另外開滑桿
+                            SizedBox(
+                              height: 40,
+                              child: Row(
+                                children: [
                                   const Text(
-                                    '顏色',
+                                    '動畫',
                                     style: TextStyle(
                                       fontSize: 12,
                                       color: kTextDim,
                                     ),
                                   ),
+                                  const Spacer(),
+                                  for (final a in WmAnimation.values)
+                                    Padding(
+                                      padding: const EdgeInsets.only(left: 6),
+                                      child: InkWell(
+                                        borderRadius: BorderRadius.circular(
+                                          999,
+                                        ),
+                                        onTap: () =>
+                                            both(() => st.animation = a),
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 10,
+                                            vertical: 5,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: st.animation == a
+                                                ? kPanelHi
+                                                : Colors.transparent,
+                                            borderRadius: BorderRadius.circular(
+                                              999,
+                                            ),
+                                            border: Border.all(
+                                              color: st.animation == a
+                                                  ? kSelect
+                                                  : kBorder,
+                                            ),
+                                          ),
+                                          child: Text(
+                                            a.label,
+                                            style: TextStyle(
+                                              fontSize: 11.5,
+                                              color: st.animation == a
+                                                  ? kText
+                                                  : kTextDim,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
                                 ],
                               ),
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 6),
-                      slider(
-                        '大小',
-                        st.sizeFrac,
-                        0.02,
-                        2.0,
-                        (v) => st.sizeFrac = v,
-                      ),
-                      slider('透明', st.opacity, 0.05, 1, (v) => st.opacity = v),
-                      // 間距可以負值：字疊近一點（跟面板同範圍）
-                      slider(
-                        '間距',
-                        st.spacing,
-                        -0.2,
-                        0.6,
-                        (v) => st.spacing = v,
-                      ),
-                      // 旋轉：±4° 內吸附回正，點角度數字一鍵歸零
-                      sliderRow(
-                        label: '旋轉',
-                        value: st.rotation,
-                        min: -180,
-                        max: 180,
-                        onChanged: (v) => both(
-                          () =>
-                              st.rotation = snapAngle(v, current: st.rotation),
-                        ),
-                        readout: '${st.rotation.round()}',
-                        unit: '\u00B0',
-                        valueColor: st.rotation.round() == 0 ? kTextDim : kText,
-                        onReset: () => both(() => st.rotation = 0),
-                      ),
-                      // 動畫：跟浮水印同一組（固定/閃爍/飄移/跑馬燈），
-                      // 速度與幅度用預設值，不另外開滑桿
-                      SizedBox(
-                        height: 40,
-                        child: Row(
-                          children: [
-                            const Text(
-                              '動畫',
-                              style: TextStyle(fontSize: 12, color: kTextDim),
-                            ),
-                            const Spacer(),
-                            for (final a in WmAnimation.values)
+                            toggle('陰影', st.shadow, (v) => st.shadow = v),
+                            if (st.shadow) ...[
                               Padding(
-                                padding: const EdgeInsets.only(left: 6),
-                                child: InkWell(
-                                  borderRadius: BorderRadius.circular(999),
-                                  onTap: () => both(() => st.animation = a),
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 10,
-                                      vertical: 5,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: st.animation == a
-                                          ? kPanelHi
-                                          : Colors.transparent,
-                                      borderRadius: BorderRadius.circular(999),
-                                      border: Border.all(
-                                        color: st.animation == a
-                                            ? kSelect
-                                            : kBorder,
-                                      ),
-                                    ),
-                                    child: Text(
-                                      a.label,
-                                      style: TextStyle(
-                                        fontSize: 11.5,
-                                        color: st.animation == a
-                                            ? kText
-                                            : kTextDim,
-                                      ),
-                                    ),
-                                  ),
+                                padding: const EdgeInsets.only(left: 16),
+                                child: slider(
+                                  '濃度',
+                                  st.shadowOpacity,
+                                  0.05,
+                                  1.0,
+                                  (v) => st.shadowOpacity = v,
                                 ),
                               ),
+                              Padding(
+                                padding: const EdgeInsets.only(left: 16),
+                                child: slider(
+                                  '模糊',
+                                  st.shadowBlur,
+                                  0.0,
+                                  0.2,
+                                  (v) => st.shadowBlur = v,
+                                ),
+                              ),
+                            ],
+                            toggle('描邊', st.outline, (v) => st.outline = v),
+                            if (st.outline) ...[
+                              colorRow(
+                                '顏色',
+                                st.outlineColor,
+                                (v) => st.outlineColorValue = v,
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.only(left: 16),
+                                child: slider(
+                                  '粗細',
+                                  st.outlineWidth,
+                                  0.02,
+                                  0.2,
+                                  (v) => st.outlineWidth = v,
+                                ),
+                              ),
+                            ],
+                            toggle('底色', st.bg, (v) => st.bg = v),
+                            if (st.bg) ...[
+                              colorRow(
+                                '顏色',
+                                st.bgColor,
+                                (v) => st.bgColorValue = v,
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.only(left: 16),
+                                child: slider(
+                                  '透明度',
+                                  st.bgOpacity,
+                                  0.05,
+                                  1,
+                                  (v) => st.bgOpacity = v,
+                                ),
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.only(left: 16),
+                                child: slider(
+                                  '大小',
+                                  st.bgPad,
+                                  0.3,
+                                  2.5,
+                                  (v) => st.bgPad = v,
+                                ),
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.only(left: 16),
+                                child: slider(
+                                  '圓角',
+                                  st.bgCorner,
+                                  0,
+                                  1,
+                                  (v) => st.bgCorner = v,
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ),
-                      toggle('陰影', st.shadow, (v) => st.shadow = v),
-                      if (st.shadow) ...[
-                        Padding(
-                          padding: const EdgeInsets.only(left: 16),
-                          child: slider(
-                            '濃度',
-                            st.shadowOpacity,
-                            0.05,
-                            1.0,
-                            (v) => st.shadowOpacity = v,
-                          ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.only(left: 16),
-                          child: slider(
-                            '模糊',
-                            st.shadowBlur,
-                            0.0,
-                            0.2,
-                            (v) => st.shadowBlur = v,
-                          ),
-                        ),
-                      ],
-                      toggle('描邊', st.outline, (v) => st.outline = v),
-                      if (st.outline) ...[
-                        colorRow(
-                          '顏色',
-                          st.outlineColor,
-                          (v) => st.outlineColorValue = v,
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.only(left: 16),
-                          child: slider(
-                            '粗細',
-                            st.outlineWidth,
-                            0.02,
-                            0.2,
-                            (v) => st.outlineWidth = v,
-                          ),
-                        ),
-                      ],
-                      toggle('底色', st.bg, (v) => st.bg = v),
-                      if (st.bg) ...[
-                        colorRow('顏色', st.bgColor, (v) => st.bgColorValue = v),
-                        Padding(
-                          padding: const EdgeInsets.only(left: 16),
-                          child: slider(
-                            '透明度',
-                            st.bgOpacity,
-                            0.05,
-                            1,
-                            (v) => st.bgOpacity = v,
-                          ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.only(left: 16),
-                          child: slider(
-                            '大小',
-                            st.bgPad,
-                            0.3,
-                            2.5,
-                            (v) => st.bgPad = v,
-                          ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.only(left: 16),
-                          child: slider(
-                            '圓角',
-                            st.bgCorner,
-                            0,
-                            1,
-                            (v) => st.bgCorner = v,
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -12025,6 +12117,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   @override
   void dispose() {
+    if (_draftLoadError != null || (widget.draft != null && !_draftRestored)) {
+      DraftStore.releaseOpen(_draftId);
+    }
     WidgetsBinding.instance.removeObserver(this);
     // 只拆自己掛的那份；別的編輯器實例已經掛上去的不動
     if (identical(Diag.sceneProvider, _sceneSnapshot)) {
@@ -12454,6 +12549,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _exportedOk = false;
 
   void _handleBack() {
+    if (_draftLoadError != null || (widget.draft != null && !_draftRestored)) {
+      DraftStore.releaseOpen(_draftId);
+      Navigator.of(context).pop();
+      return;
+    }
     // 全螢幕先退回編輯畫面，不要一按就離開專案
     if (_fullscreen) {
       setState(() {
@@ -12610,7 +12710,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // _entryGating：進場縮圖閘（見 _beginEntryGate）——它跟 _ready 是分開
         // 的，這裡漏了它就是實測 198「沒讀取畫面直接進了」：空白專案加影片
         // 那條路 _ready 本來就是 true，_buildPrepGate 裡面再判也輪不到
-        body: !_ready || _prepGate || _entryGating
+        body: _draftLoadError != null
+            ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(_draftLoadError!, textAlign: TextAlign.center),
+                      const SizedBox(height: 16),
+                      TextButton(
+                        onPressed: _handleBack,
+                        child: const Text('返回草稿'),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            : !_ready || _prepGate || _entryGating
             ? _buildPrepGate()
             : _fullscreen
             ? _buildFullscreen()
@@ -12644,7 +12761,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   ),
                 ],
               ),
-        bottomNavigationBar: !_ready || _fullscreen ? null : _editorNavigation,
+        bottomNavigationBar: !_ready || _fullscreen || _draftLoadError != null
+            ? null
+            : _editorNavigation,
       ),
     );
   }

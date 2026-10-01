@@ -2,8 +2,46 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:markcut/services/thumbnail_preparation.dart';
+import 'package:markcut/models/timeline.dart';
 
 void main() {
+  test(
+    'HDR covers and strips never use an old SDR proxy; SDR uses its work file',
+    () {
+      final source = MediaSource(
+        path: '/original.mov',
+        name: 'HDR',
+        kind: ClipKind.video,
+        duration: 1,
+        workPath: '/sdr.mp4',
+        workHdrPath: '/hlg.mov',
+      );
+      expect(
+        thumbnailSourcePath(source, hdrMode: true, isHdr: true),
+        '/hlg.mov',
+      );
+      expect(
+        thumbnailSourcePath(source, hdrMode: false, isHdr: true),
+        '/sdr.mp4',
+      );
+      source.workHdrPath = null;
+      expect(
+        thumbnailSourcePath(source, hdrMode: true, isHdr: true),
+        '/original.mov',
+      );
+      expect(
+        thumbnailSourcePath(source, hdrMode: true),
+        '/original.mov',
+        reason:
+            'Unknown HDR classification must not briefly show a tone-mapped SDR proxy',
+      );
+      expect(
+        thumbnailSourcePath(source, hdrMode: true, isHdr: false),
+        '/sdr.mp4',
+      );
+    },
+  );
+
   test(
     'cold covers and strip frames yield to every interaction and cooldown',
     () {

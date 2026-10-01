@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'blob_store.dart';
 import 'draft_assets.dart';
 import 'draft_store.dart';
+import 'app_media_paths.dart';
 import 'work_files.dart';
 import 'gif_store.dart';
 import 'timeline_thumbnail_cache.dart';
@@ -248,7 +249,7 @@ class StorageUsage {
     if (path == null) return null;
     try {
       final list = await compute(extractDraftRefs, path);
-      return list?.toSet();
+      return list?.map(AppMediaPaths.rebase).toSet();
     } catch (_) {
       return null;
     }

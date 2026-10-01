@@ -28,3 +28,16 @@
 Windows 無法執行 Xcode 或 iPhone 真機。iOS 的 Swift／Metal／Core Image 修改目前能審查原始碼並驗證 Dart 通道契約，仍須 macOS 編譯與真機確認 HDR、裁切套用時機、鍵盤及高倍率預覽；桌面測試不代表手機實際延遲或 FPS。
 
 先前資安、供應鏈與後端驗證的未結項目仍見 [APP_REMEDIATION_2026_09_27.md](APP_REMEDIATION_2026_09_27.md)，本輪不把那些項目視為已排除。
+
+## 2026-10-01 續修：鍵盤、更新後草稿、HDR 縮圖
+
+- 素材文字面板按鍵盤上方的可用高度縮小，輸入時保留完整預覽；多行內容可在輸入框內捲動，「完成」固定在控制項捲動區外。測試涵蓋 390×844、375×667、瀏海與底部安全區、八行文字及捲動後關閉。
+- 草稿載入會將舊 iOS Data/Application 沙盒路徑對應到目前目錄。涵蓋影片／圖片／聲音素材、HDR 與 SDR 工作檔、倒轉來源、照片／批次／拼圖／GIF 草稿，以及批次個別設定的路徑鍵。僅處理已知媒體欄位與目錄，不猜測同名檔，也不改動文字內容。
+- 清理與容量統計所用的引用清單、工作檔索引、草稿複本與選取器複本保留清單同步處理舊路徑。缺少原檔時，可從仍存在的索引工作檔救回；HDR 模式優先保留 HDR 代理，原備份不會在複製完成前被搬走。
+- 影片與拼圖若仍有檔案或資料讀不到，停在說明頁，原草稿不被殘缺版本覆寫；批次草稿也不再默默略過缺檔後開啟可存回的殘缺版本。載入中途離開同樣不保存半成品。
+- 草稿封面與時間軸縮圖按目前 HDR 模式選取原檔／代理，避免 HDR 預覽卻讀舊 SDR 工作檔。iOS 抽 JPEG 改由 AVFoundation 先做 SDR 映射，再明確轉成 sRGB；不再依賴只辨認 HLG／PQ 的條件判斷。依據 [Apple dynamicRangePolicy 文件](https://developer.apple.com/documentation/avfoundation/avassetimagegenerator/dynamicrangepolicy-swift.property)，使用 `forceSDR`；舊系統沿用預設 SDR 行為。
+- 縮圖磁碟快取升為 v3 並納入實際取圖路徑，HDR 與 SDR 版本不混用。舊時間軸快取會按需重建；草稿封面在開啟編輯並保存時更新，不在啟動時同時解碼所有草稿。
+
+本輪定向回歸共 **151 個不同測試通過**，分批單程序執行；涵蓋真實暫存檔的目錄搬移、四種草稿卡續作、缺檔保護、從搬移後的 HDR 索引救援、清理、縮圖來源與快取、既有裁切／速度／手勢及草稿持久化。原始紀錄：`build/draft-keyboard-tests2.log`（34）、`build/draft-regression-tests.log`（115）、`build/draft-final-tests.log`（重跑 9 個及新增 2 個）。靜態檢查仍僅有既有的 `prefer_function_declarations_over_variables` 提示，無錯誤或警告。
+
+Windows 未編譯 iOS 原生程式，也未驗證手機上的最終 HDR 顯示。JPEG 草稿縮圖是 SDR，不能承諾與 HDR／EDR 播放器的高光亮度完全一致；建置後應用同一份 iPhone HLG／Dolby Vision 素材比對色調、灰階與高光。路徑修復僅能找回 App 容器內仍存在的素材或備份；若 App 複本已被系統清除，只有相簿原檔仍存在，且沒有可用工作檔，就無法靠改路徑自動還原。舊版已覆寫掉的時間軸資料也不能由此修復重建。

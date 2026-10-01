@@ -233,14 +233,98 @@ void main() {
       await t.enterText(field, 'First line\nSecond line\nThird line');
       t.view.viewInsets = const FakeViewPadding(bottom: 300);
       await _tick(t, 10);
+      final canvas = t.getRect(find.byType(AspectRatio).first);
+      final sheet = t.getRect(find.byType(BottomSheet));
+      expect(canvas.height, greaterThan(80));
+      expect(
+        canvas.bottom,
+        lessThanOrEqualTo(sheet.top),
+        reason: 'typing must leave the whole live preview above the sheet',
+      );
       expect(t.getRect(field).bottom, lessThanOrEqualTo(844 - 300));
-      expect(t.getRect(field).height, greaterThan(80));
+      expect(t.getRect(field).height, greaterThanOrEqualTo(70));
       expect(t.takeException(), isNull);
       t.view.resetViewInsets();
       Navigator.of(t.element(field)).pop();
       await _tick(t, 100);
     },
   );
+
+  for (final dimensions in [(390.0, 844.0, 346.0), (375.0, 667.0, 300.0)]) {
+    testWidgets(
+      'portrait preview and Done stay visible while typing $dimensions',
+      (t) async {
+        final (width, height, keyboard) = dimensions;
+        t.view.physicalSize = Size(width, height);
+        t.view.padding = const FakeViewPadding(top: 44, bottom: 34);
+        t.view.viewPadding = const FakeViewPadding(top: 44, bottom: 34);
+        addTearDown(() {
+          t.view.physicalSize = const Size(1100, 2200);
+          t.view.resetViewInsets();
+          t.view.resetPadding();
+          t.view.resetViewPadding();
+        });
+        await t.pumpWidget(
+          const MaterialApp(home: VideoEditorScreen(blank: true)),
+        );
+        await _tick(t, 5);
+        VideoEditorScreen.debugTimeline!((m) {
+          seed(m);
+          m.sources[0] = MediaSource.fromJson({
+            ...m.sources[0].toJson(),
+            'w': 1080,
+            'h': 1920,
+          });
+        });
+        await _tick(t, 15);
+        t
+            .widget<TimelineEditor>(find.byType(TimelineEditor))
+            .onTapSelectedClip!(tl.clips[2].id);
+        await _tick(t, 15);
+        final field = find.byKey(const ValueKey('clip-text-content'));
+        await t.enterText(
+          field,
+          List.generate(8, (i) => '第 $i 行文字').join('\n'),
+        );
+        t.view.viewInsets = FakeViewPadding(bottom: keyboard);
+        t.view.padding = const FakeViewPadding(top: 44);
+        await _tick(t, 15);
+        final canvas = t.getRect(find.byType(AspectRatio).first);
+        final sheet = t.getRect(find.byType(BottomSheet));
+        expect(canvas.height, greaterThan(60));
+        expect(canvas.bottom, lessThanOrEqualTo(sheet.top));
+        expect(t.getRect(field).bottom, lessThanOrEqualTo(height - keyboard));
+        final done = find.byKey(const ValueKey('clip-text-done'));
+        expect(done.hitTestable(), findsOneWidget);
+        final scroll = find
+            .descendant(
+              of: find.byType(BottomSheet),
+              matching: find.byType(SingleChildScrollView),
+            )
+            .first;
+        t
+            .state<ScrollableState>(
+              find
+                  .descendant(of: scroll, matching: find.byType(Scrollable))
+                  .first,
+            )
+            .position
+            .jumpTo(250);
+        await t.pump();
+        expect(
+          done.hitTestable(),
+          findsOneWidget,
+          reason: 'Done must not scroll out with styling controls',
+        );
+        await t.tap(done);
+        t.view.resetViewInsets();
+        await _tick(t, 100);
+        expect(find.byType(BottomSheet), findsNothing);
+        expect(tl.sources[2].textStyle!.text.split('\n'), hasLength(8));
+        expect(t.takeException(), isNull);
+      },
+    );
+  }
 
   testWidgets('dragging a cropped image does not clamp its original center', (
     t,

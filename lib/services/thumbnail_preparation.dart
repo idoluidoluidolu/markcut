@@ -1,5 +1,20 @@
 import 'dart:async';
 
+import '../models/timeline.dart';
+
+/// Covers and strips must use the preview's source family. An old SDR work
+/// file must not replace HDR media while its HDR proxy is still being prepared.
+String thumbnailSourcePath(
+  MediaSource source, {
+  required bool hdrMode,
+  bool? isHdr,
+}) {
+  if (hdrMode && (source.workHdrPath != null || isHdr != false)) {
+    return source.workHdrPath ?? source.path;
+  }
+  return source.previewPath;
+}
+
 /// A small output image can still require a full-resolution HDR decode. Both
 /// covers and subsequent strip frames must yield through the gesture cooldown.
 bool canPrepareTimelineThumbnail({

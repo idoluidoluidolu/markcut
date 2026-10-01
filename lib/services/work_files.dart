@@ -7,6 +7,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'diagnostics.dart';
+import 'app_media_paths.dart';
+import 'blob_store.dart';
 import 'draft_store.dart';
 import 'frame_check.dart';
 import 'media_prep.dart';
@@ -82,6 +84,7 @@ class WorkFiles {
   }
 
   static Future<Map<String, dynamic>> _load() async {
+    await BlobStore.ready;
     if (_index != null) return _index!;
     try {
       final sp = await SharedPreferences.getInstance();
@@ -89,6 +92,20 @@ class WorkFiles {
       _index = raw == null
           ? <String, dynamic>{}
           : Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      final current = <String, dynamic>{};
+      for (final entry in _index!.entries) {
+        final key = AppMediaPaths.rebase(entry.key);
+        final value = entry.value;
+        if (current.containsKey(key) && key != entry.key) continue;
+        current[key] = value is Map
+            ? {
+                ...value,
+                if (value['work'] is String)
+                  'work': AppMediaPaths.rebase(value['work'] as String),
+              }
+            : value;
+      }
+      _index = current;
     } catch (_) {
       _index = <String, dynamic>{};
     }
@@ -327,6 +344,7 @@ class WorkFiles {
     try {
       final f = File(src);
       final st = f.statSync();
+      if (st.type != FileSystemEntityType.file) return null;
       return '${st.size}_${st.modified.millisecondsSinceEpoch}';
     } catch (_) {
       return null;

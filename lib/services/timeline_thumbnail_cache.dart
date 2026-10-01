@@ -33,15 +33,20 @@ class TimelineThumbnailCache {
     return dir;
   }
 
-  static Future<String?> _identity(String path, double duration) async {
+  static Future<String?> _identity(
+    String path,
+    double duration,
+    String? renderPath,
+  ) async {
     final stat = await File(path).stat();
     if (stat.type != FileSystemEntityType.file) return null;
     return jsonEncode([
-      2,
+      3, // AVFoundation SDR tone mapping + explicit sRGB JPEG output.
       path,
       stat.size,
       stat.modified.microsecondsSinceEpoch,
       duration,
+      renderPath ?? path,
     ]);
   }
 
@@ -53,54 +58,58 @@ class TimelineThumbnailCache {
     return '${hash.toRadixString(16)}.strip';
   }
 
-  static Future<List<Uint8List>> read(String path, double duration) =>
-      _serial(() async {
-        try {
-          final dir = await _directory();
-          if (dir == null) return const [];
-          final identity = await _identity(path, duration);
-          if (identity == null) return const [];
-          final file = File('${dir.path}/${_name(identity)}');
-          if (await FileSystemEntity.type(file.path, followLinks: false) !=
-              FileSystemEntityType.file) {
-            return const [];
-          }
-          if (await file.length() > maxEntryBytes) return const [];
-          final bytes = await file.readAsBytes();
-          final data = ByteData.sublistView(bytes);
-          var offset = 0;
-          int size() {
-            final n = data.getUint32(offset);
-            offset += 4;
-            return n;
-          }
+  static Future<List<Uint8List>> read(
+    String path,
+    double duration, {
+    String? renderPath,
+  }) => _serial(() async {
+    try {
+      final dir = await _directory();
+      if (dir == null) return const [];
+      final identity = await _identity(path, duration, renderPath);
+      if (identity == null) return const [];
+      final file = File('${dir.path}/${_name(identity)}');
+      if (await FileSystemEntity.type(file.path, followLinks: false) !=
+          FileSystemEntityType.file) {
+        return const [];
+      }
+      if (await file.length() > maxEntryBytes) return const [];
+      final bytes = await file.readAsBytes();
+      final data = ByteData.sublistView(bytes);
+      var offset = 0;
+      int size() {
+        final n = data.getUint32(offset);
+        offset += 4;
+        return n;
+      }
 
-          final keyLength = size();
-          final key = utf8.decode(bytes.sublist(offset, offset + keyLength));
-          if (key != identity) return const [];
-          offset += keyLength;
-          final count = size();
-          if (count < 1 || count > 120) return const [];
-          final frames = <Uint8List>[];
-          for (var i = 0; i < count; i++) {
-            final length = size();
-            if (length == 0) return const [];
-            frames.add(Uint8List.sublistView(bytes, offset, offset + length));
-            offset += length;
-          }
-          if (offset != bytes.length) return const [];
-          await file.setLastModified(DateTime.now());
-          return frames;
-        } catch (_) {
-          return const [];
-        }
-      });
+      final keyLength = size();
+      final key = utf8.decode(bytes.sublist(offset, offset + keyLength));
+      if (key != identity) return const [];
+      offset += keyLength;
+      final count = size();
+      if (count < 1 || count > 120) return const [];
+      final frames = <Uint8List>[];
+      for (var i = 0; i < count; i++) {
+        final length = size();
+        if (length == 0) return const [];
+        frames.add(Uint8List.sublistView(bytes, offset, offset + length));
+        offset += length;
+      }
+      if (offset != bytes.length) return const [];
+      await file.setLastModified(DateTime.now());
+      return frames;
+    } catch (_) {
+      return const [];
+    }
+  });
 
   static Future<void> write(
     String path,
     double duration,
-    List<Uint8List> frames,
-  ) => _serial(() async {
+    List<Uint8List> frames, {
+    String? renderPath,
+  }) => _serial(() async {
     try {
       if (frames.isEmpty ||
           frames.length > 120 ||
@@ -109,7 +118,7 @@ class TimelineThumbnailCache {
       }
       final dir = await _directory();
       if (dir == null) return;
-      final identity = await _identity(path, duration);
+      final identity = await _identity(path, duration, renderPath);
       if (identity == null) return;
       final key = utf8.encode(identity);
       final total =

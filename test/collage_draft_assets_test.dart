@@ -138,6 +138,28 @@ void main() {
     return raw == null ? null : jsonDecode(raw) as Map<String, dynamic>;
   }
 
+  testWidgets('部分照片讀不到時保留全部草稿與仍存在的素材', (t) async {
+    final paths = await _picked(t, 1);
+    final original = jsonEncode({
+      'photos': [paths.single, '${_picker.path}/missing.png'],
+      'cols': 2,
+      'rows': 1,
+      'order': [0, 1],
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(kCollageDraftKey, original);
+    await _pumpFromHome(
+      t,
+      CollageScreen(restore: jsonDecode(original) as Map<String, dynamic>),
+    );
+    expect(find.textContaining('原草稿已保留'), findsOneWidget);
+    await t.tap(find.text('返回草稿'));
+    await _settle(t);
+    expect(prefs.getString(kCollageDraftKey), original);
+    expect(File(paths.single).existsSync(), isTrue);
+    expect(t.takeException(), isNull);
+  });
+
   testWidgets('保留草稿：照片複製進 App 自己的目錄、草稿記複本；離開後選取器的複本清掉；續作兩張都在', (t) async {
     final paths = await _picked(t, 2);
     await _pumpFromHome(

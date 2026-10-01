@@ -30,6 +30,7 @@ import 'package:markcut/screens/gif_screen.dart';
 import 'package:markcut/screens/photo_editor_screen.dart';
 import 'package:markcut/screens/profile_screen.dart';
 import 'package:markcut/theme.dart';
+import 'package:markcut/services/app_media_paths.dart';
 
 /// 8×8 PNG（測試自己寫出來，不依賴任何外部檔案）
 const _pngB64 =
@@ -284,6 +285,82 @@ void main() {
       await _drain(t);
       expect(t.takeException(), isNull);
     });
+  });
+
+  for (final kind in ['photo', 'batch', 'collage', 'gif']) {
+    testWidgets('$kind 草稿在 App 目錄變動後仍能開啟現有素材', (t) async {
+      _seed(
+        photo: kind == 'photo',
+        batch: kind == 'batch',
+        collage: kind == 'collage',
+        gif: kind == 'gif',
+      );
+      AppMediaPaths.setRootForTest(_dir.path);
+      addTearDown(() => AppMediaPaths.setRootForTest(null));
+      final documents = Directory(
+        '${_dir.path}${Platform.pathSeparator}Documents',
+      )..createSync();
+      for (final name in ['a.png', 'b.png', 'a.mp4']) {
+        File(
+          _p(name),
+        ).copySync('${documents.path}${Platform.pathSeparator}$name');
+      }
+      final key = '${kind}_draft_v1';
+      final prefs = await SharedPreferences.getInstance();
+      final original = AppMediaPaths.mapDraft(
+        jsonDecode(prefs.getString(key)!) as Map<String, dynamic>,
+        transform: (p) =>
+            '/private/var/mobile/Containers/Data/Application/OLD/Documents/${p.split(Platform.pathSeparator).last}',
+      );
+      await prefs.setString(key, jsonEncode(original));
+      _iphone14(t);
+      final spy = _RouteSpy();
+      await _pump(t, const ProfileScreen(), spy: spy);
+      final label = switch (kind) {
+        'photo' => '未完成的照片',
+        'batch' => '未完成的批次浮水印',
+        'collage' => '未完成的拼圖',
+        _ => '未完成的 GIF',
+      };
+      await t.tap(find.text(label));
+      await _settle(t, 35);
+      expect(spy.edits, isNotEmpty);
+      final page = spy.lastEdit(t);
+      final String restored = switch (page) {
+        PhotoEditorScreen() => page.photo.path,
+        BatchWatermarkScreen() => page.files.first.path,
+        CollageScreen() => (page.restore!['photos'] as List).first as String,
+        GifScreen() => page.path,
+        _ => throw StateError('Unexpected page ${page.runtimeType}'),
+      };
+      expect(restored.startsWith(documents.path), isTrue);
+      expect(File(restored).existsSync(), isTrue);
+      expect(find.textContaining('原草稿已保留'), findsNothing);
+      await t.pumpWidget(const SizedBox());
+      await _settle(t);
+      await _drain(t);
+      expect(t.takeException(), isNull);
+    });
+  }
+
+  testWidgets('批次有素材讀不到時不開啟會覆蓋原草稿的殘缺版本', (t) async {
+    _seed(batch: true);
+    final prefs = await SharedPreferences.getInstance();
+    final d =
+        jsonDecode(prefs.getString(kBatchDraftKey)!) as Map<String, dynamic>;
+    d['files'] = [_p('a.png'), _p('not-here.png')];
+    final original = jsonEncode(d);
+    await prefs.setString(kBatchDraftKey, original);
+    _iphone14(t);
+    final spy = _RouteSpy();
+    await _pump(t, const ProfileScreen(), spy: spy);
+    await t.tap(find.text('未完成的批次浮水印'));
+    await _settle(t, 35);
+    expect(spy.edits, isEmpty);
+    expect(prefs.getString(kBatchDraftKey), original);
+    expect(find.textContaining('原草稿已保留'), findsOneWidget);
+    await t.pumpWidget(const SizedBox());
+    await _drain(t);
   });
 
   testWidgets('「我的 GIF」的 ＋ 面板：橫向 667×375 不溢出、最後一列按得到', (t) async {

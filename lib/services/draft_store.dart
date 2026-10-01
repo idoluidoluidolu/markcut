@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'blob_store.dart';
+import 'app_media_paths.dart';
 import 'diagnostics.dart';
 import 'work_files.dart';
 
@@ -80,7 +81,7 @@ class DraftStore {
     try {
       final paths = jsonDecode(s) as List;
       if (paths.any((e) => e is! String || e.isEmpty)) return null;
-      return paths.cast<String>().toSet();
+      return paths.cast<String>().map(AppMediaPaths.rebase).toSet();
     } catch (_) {
       return null;
     }
@@ -96,7 +97,7 @@ class DraftStore {
       });
 
   static String _encodeRefs(Set<String> refs) =>
-      jsonEncode(refs.toList()..sort());
+      jsonEncode(refs.map(AppMediaPaths.rebase).toSet().toList()..sort());
 
   /// 上一次寫進去的檔案清單（草稿 id, 編碼後的字串）：沒變就不重寫
   static (String, String)? _refsWritten;
@@ -209,7 +210,9 @@ class DraftStore {
     final s = await BlobStore.read(_dataKey(id));
     if (s == null) return null;
     try {
-      return Map<String, dynamic>.from(jsonDecode(s) as Map);
+      return AppMediaPaths.mapDraft(
+        Map<String, dynamic>.from(jsonDecode(s) as Map),
+      );
     } catch (_) {
       return null;
     }

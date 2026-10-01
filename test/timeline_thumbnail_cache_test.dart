@@ -71,6 +71,34 @@ void main() {
   );
 
   test(
+    'HDR and SDR render sources cannot reuse each other\'s cached colors',
+    () async {
+      await TimelineThumbnailCache.write(
+        movie.path,
+        2,
+        frames,
+        renderPath: '/sdr.mp4',
+      );
+      expect(
+        await TimelineThumbnailCache.read(
+          movie.path,
+          2,
+          renderPath: '/hlg.mov',
+        ),
+        isEmpty,
+      );
+      expect(
+        await TimelineThumbnailCache.read(
+          movie.path,
+          2,
+          renderPath: '/sdr.mp4',
+        ),
+        frames,
+      );
+    },
+  );
+
+  test(
     'category totals and cleanup preserve saved projects, GIFs and presets',
     () async {
       await TimelineThumbnailCache.write(movie.path, 2, frames);
