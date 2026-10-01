@@ -1259,6 +1259,12 @@ class _CollageScreenState extends State<CollageScreen>
         final f = _fits[from];
         _fits[from] = _fits[to];
         _fits[to] = f;
+        // 鎖定跟著照片走：拿起來的是鎖定中的那一張，放下後鎖定的還是它
+        if (_selCell == from) {
+          _selCell = to;
+        } else if (_selCell == to) {
+          _selCell = from;
+        }
       }
       _dragFrom = -1;
       _dragPos = null;
@@ -2735,34 +2741,47 @@ class _CollageScreenState extends State<CollageScreen>
       },
       child: GestureDetector(
         onTap: () => _tapCell(i),
-        // 沒選取的格子：按住 200ms 才拿得起來（成立時震一下＋亮框），
-        // 之後拖到哪一格就跟哪一格互換。選取中的格子單指拖曳是移動構圖，
-        // 不進這條路
-        onPanDown: selected
-            ? null
-            : (d) {
-                _holdPos = origin + d.localPosition;
-                _cancelHold();
-                _holdTimer = Timer(_kHoldDelay, () {
-                  if (!mounted) return;
-                  // 兩指在畫面上＝在縮放別格的構圖，不是要搬照片。
-                  // 第二指常常落在隔壁格，不擋的話那一格會被拿起來
-                  if (_pts.length >= 2) return;
-                  // 成立的那一刻給回饋：不震一下、不亮框的話，
-                  // 使用者不知道已經按夠久、可以開始移動了
-                  HapticFeedback.mediumImpact();
-                  setState(() {
-                    _dragFrom = i;
-                    _dragPos = _holdPos;
-                    _dragOver = i;
-                  });
-                });
-              },
+        // 按住 200ms 才拿得起來（成立時震一下＋亮框），之後拖到哪一格就
+        // 跟哪一格互換。鎖定（選取）中的格子也一樣拿得起來（使用者指定：
+        // 點了選取之後長按還是要能拖曳換照片）；鎖定中按下去馬上就滑＝
+        // 移動構圖，不是搬照片
+        onPanDown: (d) {
+          _holdPos = origin + d.localPosition;
+          final down = d.globalPosition;
+          _cancelHold();
+          _holdTimer = Timer(_kHoldDelay, () {
+            if (!mounted) return;
+            // 兩指在畫面上＝在縮放別格的構圖，不是要搬照片。
+            // 第二指常常落在隔壁格，不擋的話那一格會被拿起來
+            if (_pts.length >= 2) return;
+            // 鎖定中的格子：手指已經在動（慢慢移構圖，還沒滑過拖曳的
+            // 門檻）就不是按住，不拿起來。沒鎖定的格子沒有別的單指
+            // 手勢要讓，維持原本的判斷
+            if (selected &&
+                _pts.isNotEmpty &&
+                (_pts.values.first - down).distance > 8) {
+              return;
+            }
+            // 成立的那一刻給回饋：不震一下、不亮框的話，
+            // 使用者不知道已經按夠久、可以開始移動了
+            HapticFeedback.mediumImpact();
+            setState(() {
+              _dragFrom = i;
+              _dragPos = _holdPos;
+              _dragOver = i;
+            });
+          });
+        },
         // 還沒按滿就開始滑＝不是要搬照片，把計時器收掉
-        onPanStart: selected ? null : (_) => _cancelHold(),
+        onPanStart: (_) => _cancelHold(),
         onPanUpdate: (d) {
           if (_pts.length >= 2) return;
-          if (selected) {
+          if (_dragFrom == i) {
+            setState(() {
+              _dragPos = origin + d.localPosition;
+              _dragOver = _cellAt(_dragPos!);
+            });
+          } else if (selected) {
             final k = dispScale();
             setState(() {
               fit.panX -= d.delta.dx / k;
@@ -2771,29 +2790,21 @@ class _CollageScreenState extends State<CollageScreen>
               // 往回拖時要先抵銷那幾百 px，畫面看起來像卡住
               collageClampFit(img, fit, cellW / cellH);
             });
-          } else if (_dragFrom == i) {
-            setState(() {
-              _dragPos = origin + d.localPosition;
-              _dragOver = _cellAt(_dragPos!);
-            });
           }
         },
-        onPanEnd: selected
-            ? null
-            : (_) {
-                _cancelHold();
-                _endDrag();
-              },
-        onPanCancel: selected
-            ? null
-            : () {
-                _cancelHold();
-                setState(() {
-                  _dragFrom = -1;
-                  _dragPos = null;
-                  _dragOver = -1;
-                });
-              },
+        onPanEnd: (_) {
+          _cancelHold();
+          if (_dragFrom != -1) _endDrag();
+        },
+        onPanCancel: () {
+          _cancelHold();
+          if (_dragFrom == -1) return;
+          setState(() {
+            _dragFrom = -1;
+            _dragPos = null;
+            _dragOver = -1;
+          });
+        },
         child: Container(
           foregroundDecoration: selected
               ? BoxDecoration(border: Border.all(color: kSelect, width: 2))
