@@ -182,6 +182,8 @@ workflows:
     instance_type: linux_x2
     max_build_duration: 45
     environment:
+      android_signing:
+        - save_upload_keystore
       flutter: 3.44.8
       java: 17
     scripts:
