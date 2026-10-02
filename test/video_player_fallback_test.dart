@@ -93,6 +93,25 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test(
+    'disposing after backend construction fails never constructs it again',
+    () async {
+      var attempts = 0;
+      final controller = PlayerX.fallbackForTesting(
+        'fixture.mp4',
+        primary: (_) {
+          attempts++;
+          throw StateError('decoder unavailable');
+        },
+        fallback: (_) => _Player(),
+      );
+      await expectLater(controller.initialize(), throwsStateError);
+      controller.dispose();
+      controller.dispose();
+      expect(attempts, 1);
+    },
+  );
+
+  test(
     'late initialization failure after disposal never creates a replacement',
     () async {
       final primary = _Player()

@@ -81,7 +81,9 @@ class _FallbackPlayerX implements PlayerX {
   final String path;
   final PlayerX Function(String) _primaryFactory;
   final PlayerX Function(String) _fallbackFactory;
-  late PlayerX _inner = _primaryFactory(path);
+  PlayerX? _createdInner;
+  PlayerX get _inner => _createdInner ??= _primaryFactory(path);
+  set _inner(PlayerX player) => _createdInner = player;
   final _pendingFallbacks = <PlayerX>{};
   bool _disposed = false;
   bool _canFallback = true;
@@ -244,7 +246,8 @@ class _FallbackPlayerX implements PlayerX {
     _disposed = true;
     _wantsPlayback = false;
     _advanceOperation();
-    _inner.dispose();
+    // 建立引擎本身就失敗時，清理不能再次呼叫工廠、再開一顆解碼器。
+    _createdInner?.dispose();
   }
 
   @override

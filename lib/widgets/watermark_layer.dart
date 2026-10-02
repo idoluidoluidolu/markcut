@@ -2,7 +2,8 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart' show listEquals;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kIsWeb, listEquals, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 
@@ -321,7 +322,13 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
               Positioned.fill(
                 child: IgnorePointer(
                   child: CustomPaint(
-                    painter: _TiledTextPainter(t, math.min(w, h)),
+                    painter: _TiledTextPainter(
+                      t,
+                      math.min(w, h),
+                      !kIsWeb && defaultTargetPlatform == TargetPlatform.android
+                          ? MediaQuery.devicePixelRatioOf(context)
+                          : null,
+                    ),
                   ),
                 ),
               ),
@@ -679,11 +686,12 @@ class _TiledLogoPainter extends CustomPainter {
 class _TiledTextPainter extends CustomPainter {
   final TextMark t;
   final double canvasW; // 字級基準：呼叫端傳畫面短邊 min(w,h)，跟匯出一致
+  final double? rasterScale;
 
   /// 同 _TiledLogoPainter：物件是原地改的，要比值不能比 reference
   final List<Object?> _sig;
 
-  _TiledTextPainter(this.t, this.canvasW)
+  _TiledTextPainter(this.t, this.canvasW, this.rasterScale)
     : _sig = [
         t.text,
         t.fontFamily,
@@ -710,12 +718,21 @@ class _TiledTextPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     // 排列、底色、旋轉、字形全交給共用畫家（跟匯出同一段程式碼）
-    paintTextTiled(canvas, t, t.sizeFrac * canvasW, size.width, size.height);
+    paintTextTiled(
+      canvas,
+      t,
+      t.sizeFrac * canvasW,
+      size.width,
+      size.height,
+      rasterScale: rasterScale,
+    );
   }
 
   @override
   bool shouldRepaint(_TiledTextPainter old) =>
-      old.canvasW != canvasW || !listEquals(old._sig, _sig);
+      old.canvasW != canvasW ||
+      old.rasterScale != rasterScale ||
+      !listEquals(old._sig, _sig);
 }
 
 /// 置中輔助線（琥珀色細線）：各編輯器在拖曳吸到中線時疊在預覽上。

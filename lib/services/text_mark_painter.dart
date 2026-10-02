@@ -193,13 +193,25 @@ ui.Rect rotatedRectBounds(ui.Rect r, ui.Offset c, double deg) {
 /// 直接略過，不然每幀白白 paint 上千次。略過的判定用格子的最大外擴
 ///（底色 padding＋[markReach]）對「畫面在旋轉座標系裡的外接框」，
 /// 被略過的格子本來就一個像素都畫不進畫面，輸出一字不差
+/// [rasterScale] 非 null 時先將一顆文字（含陰影／透明度）烙成小圖再重用。
+/// Android 使用這條路，避免密集平鋪產生數百個 GPU 離屏特效層。
+/// 預覽傳裝置像素倍率，匯出傳 1（畫布已經是輸出像素）。
 void paintTextTiled(
   ui.Canvas canvas,
   TextMark t,
   double fontSize,
   double w,
-  double h,
-) {
+  double h, {
+  double? rasterScale,
+}) {
+  if (!fontSize.isFinite ||
+      fontSize <= 0 ||
+      !w.isFinite ||
+      !h.isFinite ||
+      w <= 0 ||
+      h <= 0) {
+    return;
+  }
   final m = measureMark(t, fontSize);
   final stepX = m.width + fontSize * 2.2;
   final stepY = m.height + fontSize * 2.6;
@@ -208,6 +220,10 @@ void paintTextTiled(
   final padH = fontSize * 0.35 * t.bgPad;
   final padV = fontSize * 0.18 * t.bgPad;
   final reach = markReach(t, fontSize);
+  final stamp = rasterScale == null
+      ? null
+      : _tiledGlyph(t, fontSize, m, reach, rasterScale);
+  final stampPaint = ui.Paint()..filterQuality = ui.FilterQuality.low;
   canvas.save();
   canvas.clipRect(ui.Rect.fromLTWH(0, 0, w, h));
   var visible = ui.Rect.fromLTWH(0, 0, w, h);
@@ -248,11 +264,116 @@ void paintTextTiled(
           bgPaint,
         );
       }
-      paintMarkGlyphs(canvas, t, fontSize, ui.Offset(x, y));
+      if (stamp == null) {
+        paintMarkGlyphs(canvas, t, fontSize, ui.Offset(x, y));
+      } else {
+        canvas.drawImageRect(
+          stamp.image,
+          ui.Rect.fromLTWH(
+            0,
+            0,
+            stamp.image.width.toDouble(),
+            stamp.image.height.toDouble(),
+          ),
+          stamp.bounds.shift(ui.Offset(x, y)),
+          stampPaint,
+        );
+      }
     }
   }
   canvas.restore();
 }
+
+class _TiledGlyph {
+  const _TiledGlyph(this.image, this.bounds);
+  final ui.Image image;
+  final ui.Rect bounds;
+  int get bytes => image.width * image.height * 4;
+}
+
+final _tileCache = <Record, _TiledGlyph>{};
+int _tileCacheBytes = 0;
+const _tileCacheBudget = 4 * 1024 * 1024;
+
+/// 只快取單顆文字，絕不快取整張照片大小的平鋪畫布。
+/// 尺寸、樣式或裝置倍率改變就重新畫；旋轉與位置沿用同一張小圖。
+_TiledGlyph? _tiledGlyph(
+  TextMark t,
+  double fontSize,
+  Size measured,
+  double reach,
+  double scale,
+) {
+  if (!scale.isFinite || scale <= 0) return null;
+  final key = (
+    text: t.text,
+    family: t.fontFamily,
+    fontSize: fontSize,
+    spacing: t.spacing,
+    alignment: t.alignment,
+    color: t.colorValue,
+    opacity: t.opacity,
+    weight: t.weight,
+    outline: t.outline,
+    outlineWidth: t.outlineWidth,
+    outlineColor: t.outlineColorValue,
+    shadow: t.shadow,
+    shadowOpacity: t.shadowOpacity,
+    shadowBlur: t.shadowBlur,
+    scale: scale,
+  );
+  final hit = _tileCache.remove(key);
+  if (hit != null) {
+    _tileCache[key] = hit;
+    return hit;
+  }
+  // 把邊界對齊實際像素，額外一像素留給邊緣取樣。
+  final left = (-reach * scale).floor() - 1;
+  final top = left;
+  final width = ((measured.width + reach) * scale).ceil() + 1 - left;
+  final height = ((measured.height + reach) * scale).ceil() + 1 - top;
+  final bytes = width * height * 4;
+  // 超大的文字不建立巨型紋理，沿用向量畫法；密集的小字才需要小圖。
+  if (width <= 0 ||
+      height <= 0 ||
+      width > 2048 ||
+      height > 2048 ||
+      bytes > _tileCacheBudget ~/ 4) {
+    return null;
+  }
+  while (_tileCache.isNotEmpty &&
+      (_tileCache.length >= 16 || _tileCacheBytes + bytes > _tileCacheBudget)) {
+    final old = _tileCache.remove(_tileCache.keys.first)!;
+    _tileCacheBytes -= old.bytes;
+    old.image.dispose();
+  }
+  final bounds = ui.Rect.fromLTWH(
+    left / scale,
+    top / scale,
+    width / scale,
+    height / scale,
+  );
+  final recorder = ui.PictureRecorder();
+  final canvas = ui.Canvas(recorder)
+    ..scale(scale)
+    ..translate(-bounds.left, -bounds.top);
+  paintMarkGlyphs(canvas, t, fontSize, ui.Offset.zero);
+  final picture = recorder.endRecording();
+  final ui.Image image;
+  try {
+    image = picture.toImageSync(width, height);
+  } finally {
+    picture.dispose();
+  }
+  final result = _TiledGlyph(image, bounds);
+  _tileCache[key] = result;
+  _tileCacheBytes += result.bytes;
+  return result;
+}
+
+/// 測試用：密集平鋪只能重用有界的小圖，不能一格配置一張。
+({int entries, int bytes}) get debugTiledGlyphCache =>
+    (entries: _tileCache.length, bytes: _tileCacheBytes);
 
 // ===== 排版快取 =====
 //
@@ -296,6 +417,11 @@ void clearGlyphCache() {
     p.dispose();
   }
   _glyphCache.clear();
+  for (final tile in _tileCache.values) {
+    tile.image.dispose();
+  }
+  _tileCache.clear();
+  _tileCacheBytes = 0;
 }
 
 /// 測試用：快取裡目前有幾條

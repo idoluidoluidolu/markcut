@@ -125,6 +125,52 @@ WatermarkSettings _liveWm(WidgetTester t) =>
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  testWidgets('編輯文字：鍵盤升降不重建面板，保留焦點與輸入內容', (t) async {
+    SharedPreferences.setMockInitialValues({});
+    t.view.devicePixelRatio = 1;
+    t.view.physicalSize = const Size(390, 844);
+    addTearDown(t.view.reset);
+    await t.pumpWidget(const MaterialApp(home: CollageScreen()));
+    await _waitLoaded(t);
+    _liveWm(t).text.enabled = true;
+    await _goTab(t, '浮水印');
+    await t.tap(
+      find
+          .descendant(
+            of: find.byType(WatermarkPanel),
+            matching: find.text('文字'),
+          )
+          .first,
+    );
+    await t.pumpAndSettle();
+    final input = find.byKey(const ValueKey('watermark-text-input'));
+    await t.ensureVisible(input);
+    await t.tap(input);
+    await t.pump();
+    final field = t.widget<TextField>(input);
+    final panel = t.state(find.byType(WatermarkPanel));
+    expect(field.focusNode!.hasFocus, isTrue);
+    for (final inset in [80.0, 210.0, 330.0]) {
+      t.view.viewInsets = FakeViewPadding(bottom: inset);
+      await t.pumpAndSettle();
+      expect(t.state(find.byType(WatermarkPanel)), same(panel));
+      expect(t.widget<TextField>(input).focusNode!.hasFocus, isTrue);
+    }
+    await t.enterText(input, '拼圖測試文字');
+    await t.pump();
+    expect(
+      t.widget<WatermarkPanel>(find.byType(WatermarkPanel)).settings.text.text,
+      '拼圖測試文字',
+    );
+    await t.tap(find.byKey(const ValueKey('watermark-text-done')));
+    t.view.viewInsets = FakeViewPadding.zero;
+    await t.pumpAndSettle();
+    expect(t.state(find.byType(WatermarkPanel)), same(panel));
+    expect(t.widget<TextField>(input).controller!.text, '拼圖測試文字');
+    expect(_liveWm(t).text.text, '拼圖測試文字');
+    expect(t.takeException(), isNull);
+  });
+
   testWidgets('三個分頁依序是 拼圖／浮水印／匯出；切來切去宮格狀態不會掉', (t) async {
     SharedPreferences.setMockInitialValues({});
     await t.pumpWidget(

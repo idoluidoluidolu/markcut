@@ -9,6 +9,23 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:markcut/models/watermark_settings.dart';
 import 'package:markcut/services/text_mark_painter.dart';
 
+class _CountingCanvas implements ui.Canvas {
+  int layers = 0;
+  int stamps = 0;
+
+  @override
+  void saveLayer(ui.Rect? bounds, ui.Paint paint) => layers++;
+  @override
+  void drawImageRect(
+    ui.Image image,
+    ui.Rect src,
+    ui.Rect dst,
+    ui.Paint paint,
+  ) => stamps++;
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
+}
+
 /// 舊版迴圈（不略過任何格子）
 void _reference(
   ui.Canvas canvas,
@@ -64,6 +81,83 @@ Future<ByteData> _render(void Function(ui.Canvas) draw, int w, int h) async {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  tearDown(clearGlyphCache);
+
+  test('Android 密集平鋪只烙一顆字，不為每格建立特效層', () {
+    clearGlyphCache();
+    final mark = TextMark(
+      text: 'M',
+      tiled: true,
+      sizeFrac: 0.015,
+      outline: true,
+      shadowBlur: 0.15,
+    );
+    final canvas = _CountingCanvas();
+    paintTextTiled(canvas, mark, 6, 390, 844, rasterScale: 3);
+    expect(canvas.stamps, greaterThan(300));
+    expect(canvas.layers, 0);
+    expect(debugTiledGlyphCache.entries, 1);
+    final bytes = debugTiledGlyphCache.bytes;
+    paintTextTiled(canvas, mark, 6, 390, 844, rasterScale: 3);
+    expect(debugTiledGlyphCache, (entries: 1, bytes: bytes));
+    mark.text = 'Changed';
+    paintTextTiled(canvas, mark, 6, 390, 844, rasterScale: 3);
+    expect(debugTiledGlyphCache.entries, 2, reason: '修改文字不能沿用舊的小圖');
+    for (var i = 0; i < 24; i++) {
+      mark.opacity = (i + 1) / 25;
+      paintTextTiled(canvas, mark, 6, 390, 844, rasterScale: 3);
+    }
+    expect(debugTiledGlyphCache.entries, lessThanOrEqualTo(16));
+    expect(debugTiledGlyphCache.bytes, lessThanOrEqualTo(4 * 1024 * 1024));
+    clearGlyphCache();
+    expect(debugTiledGlyphCache, (entries: 0, bytes: 0));
+  });
+
+  for (final rotation in [0.0, 37.0]) {
+    test('平鋪小圖保留字形、透明度、陰影和排列（$rotation 度）', () async {
+      final mark = TextMark(
+        text: 'Mark',
+        tiled: true,
+        rotation: rotation,
+        opacity: 0.6,
+        outline: true,
+        shadowBlur: 0.12,
+      );
+      const w = 320, h = 200;
+      final actual = await _render(
+        (c) => paintTextTiled(
+          c,
+          mark,
+          20,
+          w.toDouble(),
+          h.toDouble(),
+          rasterScale: 3,
+        ),
+        w,
+        h,
+      );
+      final expected = await _render(
+        (c) => _reference(c, mark, 20, w.toDouble(), h.toDouble()),
+        w,
+        h,
+      );
+      var actualAlpha = 0, expectedAlpha = 0, totalError = 0;
+      for (var i = 0; i < actual.lengthInBytes; i++) {
+        totalError += (actual.getUint8(i) - expected.getUint8(i)).abs();
+        if (i % 4 == 3) {
+          actualAlpha += actual.getUint8(i);
+          expectedAlpha += expected.getUint8(i);
+        }
+      }
+      expect(actualAlpha, greaterThan(10000));
+      expect(actualAlpha / expectedAlpha, closeTo(1, 0.05));
+      expect(
+        totalError / actual.lengthInBytes,
+        lessThan(3),
+        reason: '小圖取樣可有邊緣誤差，但不能漏字、位移或重複套透明度',
+      );
+    });
+  }
 
   for (final (name, t) in [
     (

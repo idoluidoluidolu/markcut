@@ -2033,6 +2033,9 @@ class _CollageScreenState extends State<CollageScreen>
   /// 浮水印分頁：共用的設定面板（跟批次同一套接法）；
   /// 底部疊一段漸層淡出，內容是淡出去、不是被底欄硬切
   Widget _buildWatermarkTab() => Expanded(
+    // 鍵盤升起會移除前面的預覽；固定 key 才不會把面板當成預覽重建，
+    // 一併丟掉 TextField 的焦點、選字和輸入法組字狀態。
+    key: const ValueKey('collage-watermark-panel'),
     flex: 5,
     child: Column(
       children: [

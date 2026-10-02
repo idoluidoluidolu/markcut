@@ -143,6 +143,9 @@ class VideoEditorScreen extends StatefulWidget {
   @visibleForTesting
   final DateTime Function()? thumbnailNow;
 
+  @visibleForTesting
+  final PlayerX Function(String path, {bool system})? playerFactory;
+
   const VideoEditorScreen({
     super.key,
     this.videoPath,
@@ -154,6 +157,7 @@ class VideoEditorScreen extends StatefulWidget {
     this.blank = false,
     this.waitForPreparation = false,
     this.thumbnailNow,
+    this.playerFactory,
   }) : assert(
          videoPath != null ||
              videoPaths != null ||
@@ -202,6 +206,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   final _tl = TimelineModel();
   final Map<int, PlayerX> _ctrls = {}; // clipId → controller
+  final Map<PlayerX, Future<void>> _ctrlInitializations = {};
   final Map<int, List<Uint8List>> _thumbs = {}; // sourceIndex → filmstrip
 
   // 片段選取與浮水印選取互斥：用 getter/setter 綁死，
@@ -1461,33 +1466,47 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 復原/貼上/草稿還原後，補建缺少的播放器
-  void _ensureCtrlFor(TimelineClip c) {
+  Future<void> _ensureCtrlFor(TimelineClip c) {
     // 合成播放器在台上時整條時間軸就是它一顆在播，逐片段播放器一顆都
     // 不該開。復原、貼上、切割、換件、匯出收尾都會走到這裡——以前每個
     // 影片／聲音片段各開一顆 AVPlayer（十段 4K＝十顆解碼器同時活著＝
     // jetsam），要等下一次重組 _trimPlayers 才放掉；匯出收尾那批更是
     // 根本不會放（_compDirty 已經是 false，_ensureComp 早退）。
     // 合成組不起來時 _restoreClipPlayers 會再回來開
-    if (_compOn) return;
+    if (_compOn) return Future<void>.value();
     final src = _tl.sources[c.sourceIndex];
-    if (src.kind != ClipKind.video && src.kind != ClipKind.audio) return;
-    if (_ctrls.containsKey(c.id)) return;
+    if (src.kind != ClipKind.video && src.kind != ClipKind.audio) {
+      return Future<void>.value();
+    }
+    final existing = _ctrls[c.id];
+    if (existing != null) {
+      return _ctrlInitializations[existing] ?? Future<void>.value();
+    }
     // 有工作檔就播工作檔：1080p SDR 一顆解碼器的成本只有 4K HDR 的
     // 幾分之一，三段同時活著也不會掉格。
     // 還在等轉檔的原檔用系統解碼器播（螢幕錄影那類檔 mpv 會解成
     // 破圖然後全黑），工作檔才交給 mpv
-    final ctrl = makeVideoController(
+    final ctrl = (widget.playerFactory ?? makeVideoController)(
       src.previewPath,
       system: src.workPath == null,
     );
     _ctrls[c.id] = ctrl;
     Diag.peak('同時活著的片段播放器', _ctrls.length);
-    ctrl
-        .initialize()
+    final initializing = Future<void>.sync(ctrl.initialize)
         .then((_) {
-          if (mounted) setState(() {});
+          if (mounted && identical(_ctrls[c.id], ctrl)) setState(() {});
         })
-        .catchError((_) {});
+        .catchError((Object error) {
+          if (!identical(_ctrls[c.id], ctrl)) return;
+          _ctrls.remove(c.id);
+          ctrl.dispose();
+          Diag.note('片段播放器初始化失敗：$error');
+        })
+        .whenComplete(() {
+          _ctrlInitializations.remove(ctrl);
+        });
+    _ctrlInitializations[ctrl] = initializing;
+    return initializing;
   }
 
   // ===== 草稿 =====
@@ -9227,11 +9246,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 合成接手時那些播放器是被主動放掉的（見 _trimPlayers），沒人開回來
   /// 的話畫面上就只剩浮水印——使用者說的「按下切割後預覽黑掉，只剩下
   /// 浮水印」正是這個：合成組不起來、舊的又早就沒了
-  void _restoreClipPlayers() {
+  void _restoreClipPlayers({bool resetPlayback = true}) {
     for (final c in _tl.clips) {
       _ensureCtrlFor(c);
     }
-    _resyncPlayback();
+    if (resetPlayback) _resyncPlayback();
     if (mounted) setState(() {});
   }
 
@@ -9304,16 +9323,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _compDirty = true;
       return;
     }
-    if (!kIsWeb && Platform.isAndroid) {
-      _compWhyNot = 'Android 使用逐片段播放器';
-      return;
-    }
-    if (!Diag.compPlayer.value) {
+    if (!_compExpected) {
+      _compWhyNot = '使用逐片段播放器';
+      final hadComposition = _comp != null;
       if (_comp != null) {
         await _comp!.dispose();
         if (mounted) setState(() => _comp = null);
-        _restoreClipPlayers();
       }
+      // Android 的 probeLite 已能直接接入中繼資料，不會再順便開播放器。
+      // 沒有合成管線時必須在這裡補建，不能只剩縮圖、讓時間軸空跑。
+      if (mounted) _restoreClipPlayers(resetPlayback: hadComposition);
       return;
     }
     if (_comp != null && !_compDirty) return;
@@ -9806,6 +9825,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         await _ensureComp();
       }
       if (cancelled()) return;
+      if (!_compOn) {
+        // 初始化較慢也不先啟動時間軸；只等播放頭下實際要播的片段。
+        for (final clip in _tl.clips.toList()) {
+          if (_hiddenTracks.contains(clip.track) ||
+              !clip.coversForDisplay(_position)) {
+            continue;
+          }
+          final kind = _tl.sourceOf(clip).kind;
+          if (kind != ClipKind.video && kind != ClipKind.audio) continue;
+          await _ensureCtrlFor(clip);
+          if (!mounted || cancelled()) return;
+          if (!(_ctrls[clip.id]?.value.isInitialized ?? false)) {
+            setState(() => _startingPlayback = false);
+            _syncPrepInteraction();
+            showHint(context, '影片播放器尚未就緒，請再試一次', error: true);
+            return;
+          }
+        }
+      }
     } catch (e) {
       if (cancelled()) return;
       Diag.note('初次預覽準備未完成：$e');

@@ -2,6 +2,9 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kIsWeb, TargetPlatform;
+
 import '../models/color_grade.dart';
 import 'diagnostics.dart';
 import 'quality_diagnostics.dart';
@@ -650,7 +653,17 @@ class WatermarkRenderer {
       // 滿版平鋪（棋盤格）：整個畫面交錯重複，忽略 x/y——
       // 排列交給共用畫家（跟預覽同一段程式碼）
       if (t.tiled) {
-        paintTextTiled(canvas, t, fontSize, w, h);
+        paintTextTiled(
+          canvas,
+          t,
+          fontSize,
+          w,
+          h,
+          rasterScale:
+              !kIsWeb && defaultTargetPlatform == TargetPlatform.android
+              ? 1
+              : null,
+        );
         continue;
       }
 
