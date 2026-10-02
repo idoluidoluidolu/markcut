@@ -309,7 +309,7 @@ class _AvPlayerX implements PlayerX {
   @override
   String get debugInfo =>
       'size=${_c.value.size.width.round()}x${_c.value.size.height.round()} '
-      '(AVPlayer)';
+      '(${Platform.isAndroid ? 'ExoPlayer' : 'AVPlayer'})';
 }
 
 /// Android：media_kit（libmpv）

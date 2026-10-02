@@ -1747,9 +1747,6 @@ class _CollageScreenState extends State<CollageScreen>
 
   @override
   Widget build(BuildContext context) {
-    // 鍵盤打開時（浮水印分頁打字）把預覽收起來：不收的話面板被擠成
-    // 一條縫，文字輸入框整個藏在鍵盤後面（批次那頁實測回報過）
-    final kbOpen = MediaQuery.of(context).viewInsets.bottom > 60;
     final tab = _tab;
     // 不包 SwipeBack：拖曳格子互換會誤觸右滑返回、被踢回首頁。
     // 離開保護：匯出成功過靜靜留草稿；否則畫布上有照片就先問
@@ -1788,11 +1785,12 @@ class _CollageScreenState extends State<CollageScreen>
                     // 在上面）。浮水印分頁上 4 下 5：面板是主要工作區
                     //（跟批次同一個比例）；另外兩頁底下只有一張卡，
                     // 預覽拿剩下的全部
-                    if (!kbOpen)
-                      Expanded(
-                        flex: tab == _kTabWatermark ? 4 : 1,
-                        child: _buildPreview(tab),
-                      ),
+                    // 跟批次一樣由 Scaffold 避開鍵盤，預覽與面板按比例
+                    // 縮小；打字時仍看得到拼圖上的即時變化。
+                    Expanded(
+                      flex: tab == _kTabWatermark ? 4 : 1,
+                      child: _buildPreview(tab),
+                    ),
                     if (tab == _kTabCollage) ..._collageTabBody(),
                     if (tab == _kTabWatermark) _buildWatermarkTab(),
                     if (tab == _kTabExport) _buildExportTab(),
@@ -2033,8 +2031,7 @@ class _CollageScreenState extends State<CollageScreen>
   /// 浮水印分頁：共用的設定面板（跟批次同一套接法）；
   /// 底部疊一段漸層淡出，內容是淡出去、不是被底欄硬切
   Widget _buildWatermarkTab() => Expanded(
-    // 鍵盤升起會移除前面的預覽；固定 key 才不會把面板當成預覽重建，
-    // 一併丟掉 TextField 的焦點、選字和輸入法組字狀態。
+    // 固定面板身分，保留 TextField 的焦點、選字和輸入法組字狀態。
     key: const ValueKey('collage-watermark-panel'),
     flex: 5,
     child: Column(

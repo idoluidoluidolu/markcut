@@ -1466,7 +1466,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 復原/貼上/草稿還原後，補建缺少的播放器
-  Future<void> _ensureCtrlFor(TimelineClip c) {
+  Future<void> _ensureCtrlFor(TimelineClip c, {bool refreshSource = false}) {
     // 合成播放器在台上時整條時間軸就是它一顆在播，逐片段播放器一顆都
     // 不該開。復原、貼上、切割、換件、匯出收尾都會走到這裡——以前每個
     // 影片／聲音片段各開一顆 AVPlayer（十段 4K＝十顆解碼器同時活著＝
@@ -1480,7 +1480,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     final existing = _ctrls[c.id];
     if (existing != null) {
-      return _ctrlInitializations[existing] ?? Future<void>.value();
+      if (!refreshSource || existing.path == src.previewPath) {
+        return _ctrlInitializations[existing] ?? Future<void>.value();
+      }
+      // 預覽檔已落地、閒置換檔計時器還沒跑時就按了播放：先換好，
+      // 避免整輪仍用 4K 原片。只在起播前要求更新，不打斷正在播的片段。
+      _ctrls.remove(c.id);
+      existing.dispose();
+      _lastVol.remove(c.id);
+      _lastSpeed.remove(c.id);
+      _wasActive.remove(c.id);
+      _preRolled.remove(c.id);
+      _warmed.remove(c.id);
+      _lastDriftFix.remove(c.id);
     }
     // 有工作檔就播工作檔：1080p SDR 一顆解碼器的成本只有 4K HDR 的
     // 幾分之一，三段同時活著也不會掉格。
@@ -5041,6 +5053,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (was) _pause();
     for (final c in _tl.clips) {
       if (c.sourceIndex != srcIndex) continue;
+      if (_ctrls[c.id]?.path == _tl.sources[srcIndex].previewPath) continue;
       _ctrls.remove(c.id)?.dispose();
       // 音量/速度快取跟著舊播放器走：新播放器是預設值，不清的話
       // _play/_syncMediaBody 看到「值沒變」就跳過設定——靜音的
@@ -9834,7 +9847,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           }
           final kind = _tl.sourceOf(clip).kind;
           if (kind != ClipKind.video && kind != ClipKind.audio) continue;
-          await _ensureCtrlFor(clip);
+          await _ensureCtrlFor(clip, refreshSource: !_previewDirectInteraction);
           if (!mounted || cancelled()) return;
           if (!(_ctrls[clip.id]?.value.isInitialized ?? false)) {
             setState(() => _startingPlayback = false);
@@ -10270,6 +10283,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     'watermarkHidden': _wmHidden,
     'backgroundPreparations': _prepping.length,
     'backgroundHDRPreparations': _hdrPrepping.length,
+    'preparationQueuedSources': _prepQueue.length,
+    'pendingSourceSwaps': _pendingSwaps.length,
+    'preparationRetrySources': _prepRetried.length,
+    'hdrPreparationFailedSources': _hdrPrepFailed.length,
+    ..._fallbackQualityContext(),
     'thumbnailJobs': _thumbActive,
     'thumbnailQueuedJobs': _thumbWaiters.length,
     'preparationInteractionCooldown': _prepActivity.interactive,
@@ -10281,6 +10299,36 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     'overlayPartsInFlight': _ovPartInflight.length,
     'logoDecodedCacheBytes': logoDecodedCacheBytes,
   };
+
+  // 只讀現有播放器的狀態，不另開解碼器或抽影格。原生合成快照在
+  // Android 為空，單看 Flutter 畫面耗時不能判定影片解碼是否順暢。
+  Map<String, Object?> _fallbackQualityContext() {
+    if (_compOn) return const {};
+    final clip = _tl.videoAt(_position, skipTracks: _hiddenTracks);
+    if (clip == null) return const {};
+    final source = _tl.sourceOf(clip);
+    final player = _ctrls[clip.id];
+    final value = player?.value;
+    return {
+      'fallbackLeadClip': clip.id,
+      'fallbackLeadReady': value?.isInitialized ?? false,
+      'fallbackLeadPlaying': value?.isPlaying ?? false,
+      'fallbackLeadBuffering': value?.isBuffering,
+      // 這是播放器快取的位置，不宣稱是實際送上螢幕的影格。
+      'fallbackLeadCachedPositionSeconds': value == null
+          ? null
+          : value.position.inMicroseconds / 1e6,
+      'fallbackLeadWidth': value?.size.width,
+      'fallbackLeadHeight': value?.size.height,
+      // 檔案存在不代表播放器已換上；比對實際開啟的路徑，但不輸出路徑。
+      'fallbackLeadUsesWorkFile':
+          player != null &&
+          source.workPath != null &&
+          player.path == source.workPath,
+      'fallbackLeadSourceChangePending':
+          player != null && player.path != source.previewPath,
+    };
+  }
 
   Future<void> _refreshQualityDiagnostics() {
     return _qualityRefreshPending ??= _readQualityDiagnostics().whenComplete(
@@ -16704,7 +16752,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 換段（slip）：片段在時間軸上的長度跟位置都不動，換成原片裡的另一段
-  /// 選段表按來源時間抽起訖畫面；拖動縮圖帶，放手才重組合成。
+  /// 大預覽按來源時間即時抽開頭畫面；拖動縮圖帶，放手才重組合成。
   Future<void> _openSlipSheet(TimelineClip clip) async {
     _pause();
     final src = _tl.sourceOf(clip);
@@ -16728,32 +16776,36 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _seekScrub(clip.offset);
     }
 
+    Future<Uint8List?> loadSourceFrame(double t, int height) async {
+      if (!kIsWeb) {
+        return nativeFrameAt(framePath, t, maxH: height, tolMs: 0);
+      }
+      // Web 的縮圖 API 取區間中點，2ms 視窗即對應要求的時間。
+      final frames = await engine.makeThumbnails(
+        framePath,
+        0.002,
+        1,
+        startAt: math.max(0, t - 0.001),
+        height: height,
+        longSide: true,
+      );
+      return frames.firstOrNull;
+    }
+
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
       barrierColor: Colors.transparent,
       isScrollControlled: true,
-      builder: (context) => ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.sizeOf(context).height * 0.65,
-        ),
+      useSafeArea: true,
+      builder: (context) => SizedBox(
+        height: MediaQuery.sizeOf(context).height * 0.88,
         child: SlipPicker(
           duration: src.duration,
           start: clip.trimStart,
           length: len,
-          loadFrame: (t) async {
-            if (!kIsWeb) {
-              return nativeFrameAt(framePath, t, maxH: 360, tolMs: 0);
-            }
-            // Web 的縮圖 API 取區間中點，2ms 視窗即對應要求的時間。
-            final frames = await engine.makeThumbnails(
-              framePath, 0.002, 1,
-              startAt: math.max(0, t - 0.001),
-              height: 360,
-              longSide: true,
-            );
-            return frames.firstOrNull;
-          },
+          loadFrame: (t) => loadSourceFrame(t, 720),
+          loadThumbnail: (t) => loadSourceFrame(t, 200),
           onCommit: apply,
         ),
       ),

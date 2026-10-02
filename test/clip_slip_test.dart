@@ -4,7 +4,7 @@
 //   1. 選一段影片 → 工具列「換段」→ 整支原片的縮圖帶，框＝用到的那一截
 //   2. 左右拖：框跟著走，放手才套用（trimStart／trimEnd 一起平移、長度
 //      不變、offset 不變）；拖過頭會停在原片的頭尾
-//   3. 點一下選起點，起訖預覽跟著選取位置更新
+//   3. 點一下選起點，大預覽即時顯示所選段落開頭
 //   4. 換完一步「上一步」就回來；打開看看就關掉不算一步
 //   5. 不是影片（文字…）或已經用到整支影片：按鈕灰掉、點了講為什麼
 import 'package:flutter/material.dart';
@@ -92,8 +92,12 @@ void main() {
     await t.tap(find.text('換段'));
     await settle(t, 6);
     expect(_strip, findsOneWidget, reason: '沒有開出換段的縮圖帶');
-    expect(find.text('起點 00:02.00'), findsOneWidget);
-    expect(find.text('結尾 00:06.00'), findsOneWidget);
+    expect(find.text('開頭 00:02.00'), findsOneWidget);
+    expect(find.textContaining('結尾'), findsNothing);
+    expect(
+      t.getSize(find.byKey(const ValueKey('slip-preview-start'))).height,
+      greaterThan(350),
+    );
     // 打開看看還沒動：不是一個編輯步驟
     expect(undoEnabled(t), isFalse);
 
@@ -111,7 +115,7 @@ void main() {
     expect(c.trimEnd - c.trimStart, closeTo(4, 1e-9), reason: '長度不能變');
     expect(c.offset, 1, reason: '在時間軸上的位置不能變');
     expect(
-      find.text('起點 ${_t(c.trimStart)}'),
+      find.text('開頭 ${_t(c.trimStart)}'),
       findsOneWidget,
       reason: '起點預覽的時間沒跟著換',
     );

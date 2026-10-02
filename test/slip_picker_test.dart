@@ -10,10 +10,9 @@ import 'package:markcut/widgets/slip_strip.dart';
 import 'editor_harness.dart' show solidPng;
 
 Finder get _strip => find.byKey(const ValueKey('slip-strip'));
-Finder _image(String label) => find.descendant(
-  of: find.byKey(ValueKey('slip-preview-$label')),
-  matching: find.byType(Image),
-);
+Finder get _preview => find.byKey(const ValueKey('slip-preview-start'));
+Finder get _image =>
+    find.descendant(of: _preview, matching: find.byType(Image));
 
 Future<void> _select(WidgetTester t, double seconds) async {
   final rect = t.getRect(_strip);
@@ -30,6 +29,7 @@ Future<void> _open(
   double duration = 20,
   double length = 4,
   Future<Uint8List?> Function(double)? load,
+  Future<Uint8List?> Function(double)? thumbnail,
   ValueChanged<double>? commit,
   double textScale = 1,
 }) async {
@@ -46,12 +46,16 @@ Future<void> _open(
           data: MediaQueryData(textScaler: TextScaler.linear(textScale)),
           child: Align(
             alignment: Alignment.bottomCenter,
-            child: SlipPicker(
-              duration: duration,
-              start: start,
-              length: length,
-              loadFrame: load ?? (_) async => null,
-              onCommit: commit ?? (_) {},
+            child: FractionallySizedBox(
+              heightFactor: 0.88,
+              child: SlipPicker(
+                duration: duration,
+                start: start,
+                length: length,
+                loadFrame: load ?? (_) async => null,
+                loadThumbnail: thumbnail ?? (_) async => null,
+                onCommit: commit ?? (_) {},
+              ),
             ),
           ),
         ),
@@ -62,9 +66,14 @@ Future<void> _open(
 }
 
 void main() {
-  testWidgets('點縮圖設定起點，起訖預覽跟著換；片段長度不變', (t) async {
+  testWidgets('直接顯示單一大預覽，點縮圖換開頭；片段長度不變', (t) async {
     final commits = <double>[];
     await _open(t, commit: commits.add);
+    final preview = t.getRect(_preview);
+    expect(preview.width, 350);
+    expect(preview.height, greaterThan(350), reason: '進入換段就要是大預覽');
+    expect(preview.bottom, lessThan(t.getRect(_strip).top));
+    expect(find.byKey(const ValueKey('slip-preview-結尾')), findsNothing);
     await _select(t, 10);
     expect(commits.last, closeTo(10, 1e-6));
 
@@ -72,8 +81,8 @@ void main() {
     await _select(t, 13);
     expect(commits.last, closeTo(13, 1e-6));
     expect(t.widget<SlipStrip>(_strip).length, 4);
-    expect(find.text('起點 00:13.00'), findsOneWidget);
-    expect(find.text('結尾 00:17.00'), findsOneWidget);
+    expect(find.text('開頭 00:13.00'), findsOneWidget);
+    expect(find.textContaining('結尾'), findsNothing);
     expect(t.takeException(), isNull);
   });
 
@@ -99,7 +108,7 @@ void main() {
     expect(t.takeException(), isNull);
   });
 
-  testWidgets('拖動中更新起訖預览，放手才提交，結尾取排除邊界以前', (t) async {
+  testWidgets('拖動中即時更新開頭，放手才提交，不再抽結尾大圖', (t) async {
     final samples = <double>[];
     final commits = <double>[];
     await _open(
@@ -111,7 +120,7 @@ void main() {
       commit: commits.add,
     );
     await t.pump();
-    expect(samples.take(2), [2, 5.999]);
+    expect(samples, [2]);
     final g = await t.startGesture(t.getCenter(_strip));
     await g.moveBy(const Offset(25, 0));
     await t.pump();
@@ -144,13 +153,13 @@ void main() {
     expect(requests, [2], reason: '同時只能有一個解碼請求');
     jobs[0].complete(solidPng(255, 0, 0));
     await t.pump();
-    expect(requests, [2, 2.2], reason: '略過中間的 2.1 和過期的結尾');
-    expect(_image('起點'), findsNothing);
+    expect(requests, [2, 2.2], reason: '略過中間的 2.1，只抽最新開頭');
+    expect(_image, findsNothing);
     jobs[1].complete(solidPng(0, 255, 0));
     await t.pump();
-    expect(_image('起點'), findsOneWidget);
-    expect(_image('結尾'), findsNothing);
-    expect(requests.last, 6.199);
+    expect(_image, findsOneWidget);
+    expect(requests, [2, 2.2], reason: '開頭載好後不抽結尾大圖');
+    await _select(t, 2.3);
     final count = requests.length;
     await t.pumpWidget(const SizedBox());
     jobs.last.complete(solidPng(0, 0, 255));
@@ -168,10 +177,39 @@ void main() {
     t.view.physicalSize = const Size(320, 640);
     await t.pump();
     await t.pump();
-    expect(find.text('無法預覽'), findsNWidgets(2));
+    expect(find.text('無法預覽'), findsOneWidget);
     expect(t.takeException(), isNull);
     await t.ensureVisible(_strip);
     await _select(t, 2.1);
     expect(t.widget<SlipStrip>(_strip).start, closeTo(2.1, 1e-9));
+  });
+
+  testWidgets('縮圖與大預覽分開載入，同秒的小圖不冒充大圖', (t) async {
+    final previews = <double>[];
+    final thumbs = <double>[];
+    await _open(
+      t,
+      load: (s) async {
+        previews.add(s);
+        return solidPng(255, 0, 0);
+      },
+      thumbnail: (s) async {
+        thumbs.add(s);
+        return solidPng(0, 255, 0);
+      },
+    );
+    await t.pump();
+    expect(previews, [2]);
+    expect(thumbs, isNotEmpty);
+    await _select(t, thumbs.first);
+    await t.pump();
+    expect(previews.last, closeTo(thumbs.first, 0.001));
+    expect(_image, findsOneWidget);
+    final memory = t.widget<Image>(_image).image as MemoryImage;
+    expect(memory.bytes, orderedEquals(solidPng(255, 0, 0)));
+    await t.tap(_preview);
+    await t.pump();
+    expect(find.byType(Dialog), findsNothing, reason: '大預覽不再另開放大視窗');
+    expect(t.takeException(), isNull);
   });
 }

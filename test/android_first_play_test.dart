@@ -10,6 +10,7 @@ import 'package:markcut/screens/video_editor_screen.dart';
 import 'package:markcut/services/diagnostics.dart';
 import 'package:markcut/services/media_prep.dart';
 import 'package:markcut/services/player_value.dart';
+import 'package:markcut/services/quality_diagnostics.dart';
 import 'package:markcut/services/video_controller.dart';
 import 'package:markcut/services/work_files.dart';
 import 'package:markcut/widgets/prep_gate_view.dart';
@@ -24,6 +25,7 @@ class _Player implements PlayerX {
   bool initialized = false;
   bool fail = false;
   bool playing = false;
+  bool disposed = false;
   int playCalls = 0;
   Duration position = Duration.zero;
 
@@ -73,6 +75,7 @@ class _Player implements PlayerX {
   @override
   void dispose() {
     playing = false;
+    disposed = true;
   }
 
   @override
@@ -85,6 +88,7 @@ void main() {
   final binding = TestWidgetsFlutterBinding.ensureInitialized();
   late Directory dir;
   late _Player player;
+  _Player? workPlayer;
   var creates = 0;
 
   setUp(() {
@@ -100,6 +104,7 @@ void main() {
     final path = '${dir.path}/video.mp4';
     File(path).writeAsBytesSync([0]);
     player = _Player(path);
+    workPlayer = null;
     creates = 0;
     bigPhoneView(binding);
     mockEditorPlugins(binding, tempDir: dir);
@@ -141,7 +146,7 @@ void main() {
           thumbnailNow: t.binding.clock.now,
           playerFactory: (path, {bool system = false}) {
             creates++;
-            return player;
+            return path == player.path ? player : (workPlayer = _Player(path));
           },
         ),
       ),
@@ -167,6 +172,33 @@ void main() {
     await tick(t, 15);
     expect(player.playCalls, greaterThan(0));
     expect(playheadOf(t), greaterThan(0));
+    await close(t);
+  });
+
+  testWidgets('已完成的預覽檔在下一次起播前換上，不繼續播 4K 原片', (t) async {
+    await open(t);
+    await t.tap(find.byIcon(Icons.play_arrow_rounded).first);
+    await tick(t, 5);
+    expect(player.playing, isTrue);
+    final source = modelOf(t).sources.first;
+    source.workPath = '${dir.path}/work.mp4';
+    await tick(t, 5);
+    expect(creates, 1, reason: '預覽檔在播放途中落地，不能中途抽換畫面');
+    final diagnostic = QualityDiagnostics.instance.contextProvider!();
+    expect(diagnostic['fallbackLeadUsesWorkFile'], isFalse);
+    expect(diagnostic['fallbackLeadSourceChangePending'], isTrue);
+    expect(diagnostic.toString(), isNot(contains(dir.path)));
+    await t.tap(find.byIcon(Icons.pause_rounded).first);
+    await t.pump();
+    await t.tap(find.byIcon(Icons.play_arrow_rounded).first);
+    await tick(t, 10);
+    expect(creates, 2);
+    expect(player.disposed, isTrue);
+    expect(workPlayer!.playing, isTrue);
+    expect(playheadOf(t), greaterThan(0));
+    final updated = QualityDiagnostics.instance.contextProvider!();
+    expect(updated['fallbackLeadUsesWorkFile'], isTrue);
+    expect(updated['fallbackLeadSourceChangePending'], isFalse);
     await close(t);
   });
 
