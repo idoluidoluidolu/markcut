@@ -6,7 +6,7 @@ import '../theme.dart';
 
 /// 換段（slip）的縮圖帶：整條＝整支原片，亮著的框＝這段片段用到的
 /// 那一截。框的寬度固定（片段長度不變，使用者選的是「長度不變、換原片
-/// 的另一段」），左右拖整條任何地方都會帶著框走；點一下＝框的中間移到
+/// 的另一段」），左右拖整條任何地方都會帶著框走；點一下＝起點移到
 /// 那裡。拖的過程只回報 [onChanged]（畫框），放手才回報 [onEnd]——套用
 /// 要重組合成，不能每一格都做
 class SlipStrip extends StatefulWidget {
@@ -22,6 +22,10 @@ class SlipStrip extends StatefulWidget {
   /// 框的長度（原片秒）
   final double length;
 
+  /// 選段工具提供按時間抽取的影格，避免把稀疏的粗縮圖當成精準畫面。
+  /// null 結果代表尚未載入，不能拿前一張影格冒充。
+  final Uint8List? Function(double seconds)? frameAt;
+
   final ValueChanged<double> onChanged;
   final VoidCallback onEnd;
 
@@ -33,6 +37,7 @@ class SlipStrip extends StatefulWidget {
     required this.length,
     required this.onChanged,
     required this.onEnd,
+    this.frameAt,
   });
 
   /// 整條的高度（縮圖也照這個高度排，近方形）
@@ -60,15 +65,18 @@ class _SlipStripState extends State<SlipStrip> {
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, box) {
       final w = box.maxWidth;
-      final dur = widget.duration <= 0 ? 1.0 : widget.duration;
-      double x(double t) => t / dur * w;
+      final dur = widget.duration;
+      final span = dur <= 0 ? 1.0 : dur;
+      double x(double t) => t / span * w;
       final left = x(widget.start);
-      final width = x(widget.length).clamp(4.0, w);
+      final right = x(widget.start + widget.length);
+      final width = (right - left).clamp(4.0, double.infinity);
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
         onHorizontalDragStart: (_) => _raw = widget.start,
         onHorizontalDragUpdate: (d) {
-          _raw = ((_raw ?? widget.start) + d.delta.dx / w * dur).clamp(
+          if (w <= 0) return;
+          _raw = ((_raw ?? widget.start) + d.delta.dx / w * span).clamp(
             0.0,
             _maxStart,
           );
@@ -78,20 +86,29 @@ class _SlipStripState extends State<SlipStrip> {
           _raw = null;
           widget.onEnd();
         },
-        onHorizontalDragCancel: () => _raw = null,
+        onHorizontalDragCancel: () {
+          if (_raw == null) return;
+          _raw = null;
+          widget.onEnd();
+        },
         onTapUp: (d) {
-          _moveTo(d.localPosition.dx / w * dur - widget.length / 2);
+          if (w <= 0) return;
+          _moveTo(d.localPosition.dx / w * span);
           widget.onEnd();
         },
         child: SizedBox(
           height: SlipStrip.height,
           child: Stack(
-            clipBehavior: Clip.none,
+            clipBehavior: Clip.hardEdge,
             children: [
               Positioned.fill(
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(6),
-                  child: _Filmstrip(frames: widget.frames),
+                  child: _Filmstrip(
+                    frames: widget.frames,
+                    duration: widget.duration,
+                    frameAt: widget.frameAt,
+                  ),
                 ),
               ),
               // 框外壓暗：用到的那一截才是亮的
@@ -99,11 +116,11 @@ class _SlipStripState extends State<SlipStrip> {
                 left: 0,
                 top: 0,
                 bottom: 0,
-                width: left,
+                width: left.clamp(0.0, w),
                 child: const _Shade(left: true),
               ),
               Positioned(
-                left: left + width,
+                left: right.clamp(0.0, w),
                 right: 0,
                 top: 0,
                 bottom: 0,
@@ -111,8 +128,8 @@ class _SlipStripState extends State<SlipStrip> {
               ),
               Positioned(
                 left: left,
-                top: -2,
-                bottom: -2,
+                top: 0,
+                bottom: 0,
                 width: width,
                 child: IgnorePointer(
                   child: DecoratedBox(
@@ -154,30 +171,44 @@ class _Shade extends StatelessWidget {
 /// 的那一張縮圖
 class _Filmstrip extends StatelessWidget {
   final List<Uint8List> frames;
+  final double duration;
+  final Uint8List? Function(double)? frameAt;
 
-  const _Filmstrip({required this.frames});
+  const _Filmstrip({
+    required this.frames,
+    required this.duration,
+    this.frameAt,
+  });
 
   @override
   Widget build(BuildContext context) {
-    if (frames.isEmpty) {
+    if (frames.isEmpty && frameAt == null) {
       return const ColoredBox(color: kPanel);
     }
     return LayoutBuilder(
       builder: (context, box) {
         final tiles = (box.maxWidth / box.maxHeight).ceil().clamp(1, 64);
+        Uint8List? tile(int k) {
+          final at = (k + 0.5) / tiles * duration;
+          if (frameAt != null) return frameAt!(at);
+          return frames[(at / duration * frames.length).floor().clamp(
+            0,
+            frames.length - 1,
+          )];
+        }
+
         return Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             for (var k = 0; k < tiles; k++)
               Expanded(
-                child: Image.memory(
-                  frames[((k + 0.5) / tiles * frames.length).floor().clamp(
-                    0,
-                    frames.length - 1,
-                  )],
-                  fit: BoxFit.cover,
-                  gaplessPlayback: true,
-                ),
+                child: tile(k) == null
+                    ? const ColoredBox(color: kPanelHi)
+                    : Image.memory(
+                        tile(k)!,
+                        fit: BoxFit.cover,
+                        gaplessPlayback: false,
+                      ),
               ),
           ],
         );

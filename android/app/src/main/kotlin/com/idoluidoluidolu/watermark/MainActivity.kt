@@ -134,6 +134,7 @@ class MainActivity : FlutterActivity() {
                 val ms = (call.argument<Number>("ms") ?: 0).toLong().coerceIn(0, Long.MAX_VALUE / 1000)
                 val maxH = (call.argument<Number>("maxH") ?: 540).toInt().coerceIn(2, 4096)
                 val detailed = call.argument<Boolean>("detailed") ?: false
+                val exact = call.argument<Number>("tolMs")?.toInt() == 0
                 // JPEG 僅供粗覽；不拿它的畫質／顏色代替最終播放器與匯出。
                 val q = ((call.argument<Number>("q") ?: 0.8).toDouble() * 100)
                     .toInt().coerceIn(30, 100)
@@ -144,7 +145,7 @@ class MainActivity : FlutterActivity() {
                 val generation = frameGeneration.get()
                 frameExec.execute {
                     val bytes = try {
-                        if (generation == frameGeneration.get()) grabFrame(path, ms, maxH, q) else null
+                        if (generation == frameGeneration.get()) grabFrame(path, ms, maxH, q, exact) else null
                     } catch (_: Exception) {
                         null
                     }
@@ -356,12 +357,16 @@ class MainActivity : FlutterActivity() {
         ms: Long,
         maxH: Int,
         quality: Int = 80,
+        exact: Boolean = false,
     ): ByteArray? {
         val source = framePool.acquire(FrameSourceKey.fromFile(path))
         val r = source.retriever
         val us = ms * 1000
         // OPTION_CLOSEST_SYNC 只取附近關鍵幀，稀疏 GOP 可能離指標很遠。
-        // 這是拖曳中的粗覽，放手後由播放器精準 seek；MMR 沒有實際 PTS。
+        // 換段的起訖與選段尺明確要求 tolMs=0 時，解到最近的實際影格。
+        // 其他拖曳粗覽保留關鍵幀路徑；MMR 沒有實際 PTS，不偽造時間。
+        val option = if (exact) MediaMetadataRetriever.OPTION_CLOSEST
+            else MediaMetadataRetriever.OPTION_CLOSEST_SYNC
         val bmp: Bitmap? = if (Build.VERSION.SDK_INT >= 27) {
             // getScaledFrameAtTime 要的是「顯示方向」的寬高
             val dw = source.width
@@ -371,15 +376,15 @@ class MainActivity : FlutterActivity() {
                 val s = minOf(1f, maxH.toFloat() / maxOf(dw, dh))
                 r.getScaledFrameAtTime(
                     us,
-                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                    option,
                     maxOf(2, (dw * s).toInt()),
                     maxOf(2, (dh * s).toInt()),
                 )
             } else {
-                r.getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                r.getFrameAtTime(us, option)
             }
         } else {
-            r.getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            r.getFrameAtTime(us, option)
         }
         if (bmp == null) return null
         return try {

@@ -88,6 +88,7 @@ Future<List<Uint8List>> makeThumbnails(
   bool fastDecode = false,
 }) async {
   // fastDecode 在 Web 不需要：<video> 是硬體解碼
+  if (durationSec <= 0 || count <= 0) return [];
   try {
     final video = web.HTMLVideoElement()
       ..src = inputPath
@@ -106,12 +107,8 @@ Future<List<Uint8List>> makeThumbnails(
     final w = video.videoWidth;
     final h = video.videoHeight;
     if (w == 0 || h == 0) return [];
-    // startAt > 0＝只抽 [startAt, startAt+durationSec) 這段
-    final dur = startAt > 0.001
-        ? durationSec
-        : (video.duration.isFinite && video.duration > 0
-              ? video.duration
-              : durationSec);
+    // 明確使用呼叫端的區間，從 0 開始的短區間也不能變成整支原片。
+    final dur = durationSec;
 
     // longSide＝把「長邊」縮到 height（直式影片才不會糊）
     final scale = longSide ? height / math.max(w, h) : height / h;

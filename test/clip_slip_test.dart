@@ -4,7 +4,7 @@
 //   1. 選一段影片 → 工具列「換段」→ 整支原片的縮圖帶，框＝用到的那一截
 //   2. 左右拖：框跟著走，放手才套用（trimStart／trimEnd 一起平移、長度
 //      不變、offset 不變）；拖過頭會停在原片的頭尾
-//   3. 點一下：框的中間移到那裡
+//   3. 點一下選起點，起訖預覽跟著選取位置更新
 //   4. 換完一步「上一步」就回來；打開看看就關掉不算一步
 //   5. 不是影片（文字…）或已經用到整支影片：按鈕灰掉、點了講為什麼
 import 'package:flutter/material.dart';
@@ -67,8 +67,6 @@ Future<void> _open(WidgetTester t, FakeComp comp) async {
 }
 
 Finder get _strip => find.byKey(const ValueKey('slip-strip'));
-
-
 void main() {
   setUpAll(() {
     final b = TestWidgetsFlutterBinding.ensureInitialized();
@@ -94,7 +92,8 @@ void main() {
     await t.tap(find.text('換段'));
     await settle(t, 6);
     expect(_strip, findsOneWidget, reason: '沒有開出換段的縮圖帶');
-    expect(find.text('00:02.0 – 00:06.0'), findsOneWidget);
+    expect(find.text('起點 00:02.00'), findsOneWidget);
+    expect(find.text('結尾 00:06.00'), findsOneWidget);
     // 打開看看還沒動：不是一個編輯步驟
     expect(undoEnabled(t), isFalse);
 
@@ -112,9 +111,9 @@ void main() {
     expect(c.trimEnd - c.trimStart, closeTo(4, 1e-9), reason: '長度不能變');
     expect(c.offset, 1, reason: '在時間軸上的位置不能變');
     expect(
-      find.text('${_t(c.trimStart)} – ${_t(c.trimEnd)}'),
+      find.text('起點 ${_t(c.trimStart)}'),
       findsOneWidget,
-      reason: '右上角的範圍沒跟著換',
+      reason: '起點預覽的時間沒跟著換',
     );
 
     // 往右拖過頭：停在原片尾巴（16～20）
@@ -123,15 +122,14 @@ void main() {
     expect(clipOf(t, 1).trimStart, closeTo(16, 1e-9));
     expect(clipOf(t, 1).trimEnd, closeTo(20, 1e-9));
 
-    // 點最左邊：框的中間移到那裡（夾在頭）＝0～4
-    final r = t.getRect(_strip);
-    await t.tapAt(Offset(r.left + 2, r.center.dy));
+    // 拖到最左邊，夾在原片起點＝0～4。
+    await t.drag(_strip, Offset(-w, 0));
     await settle(t, 6);
     expect(clipOf(t, 1).trimStart, closeTo(0, 1e-9));
     expect(clipOf(t, 1).trimEnd, closeTo(4, 1e-9));
 
     // 關掉表、上一步：回到原本那一截
-    Navigator.of(t.element(_strip)).pop();
+    await t.tap(find.text('完成'));
     await settle(t, 6);
     expect(undoEnabled(t), isTrue);
     await t.tap(undoButton());
@@ -156,10 +154,10 @@ void main() {
   });
 }
 
-/// 跟編輯頁播放頭同一個寫法（00:03.2）
+/// 選段表保留百分之一秒，細調時看得出變化。
 String _t(double sec) {
   final d = Duration(milliseconds: (sec * 1000).round());
   final m = d.inMinutes.toString().padLeft(2, '0');
   final s = (d.inSeconds % 60).toString().padLeft(2, '0');
-  return '$m:$s.${(d.inMilliseconds % 1000) ~/ 100}';
+  return '$m:$s.${((d.inMilliseconds % 1000) ~/ 10).toString().padLeft(2, '0')}';
 }

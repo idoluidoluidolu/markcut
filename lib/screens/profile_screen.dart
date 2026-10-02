@@ -1076,7 +1076,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     ),
   );
 
-  /// 三個分頁的標題：選中的大一號、深色，其他小一號、淡色；
+  /// 三個分頁的標題：選中的大一號、深色、ExtraBold，其他小一號、淡色；
   /// 切換時字級跟顏色一起補間。三個字底部對齊（baseline），
   /// 大小不同也排在同一條線上
   Widget _tabBar() => Padding(
@@ -1108,10 +1108,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   duration: const Duration(milliseconds: 160),
                   curve: Curves.easeOut,
                   style: TextStyle(
-                    fontFamily: 'NotoSansTC',
+                    fontFamily: _tab == i ? 'MarkcutTabExtraBold' : 'NotoSansTC',
                     fontSize: _tab == i ? _kTabOn : _kTabOff,
                     height: 1.2,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: _tab == i ? FontWeight.w800 : FontWeight.w700,
                     color: _tab == i ? kLText : _kTabIdle,
                   ),
                   child: Text(label),

@@ -186,6 +186,12 @@ flutter:
           weight: 400
         - asset: assets/fonts/NotoSansTC-Bold.ttf
           weight: 700
+    # 分頁選中用真正的 ExtraBold；子集只含「草稿 GIF 範本」。
+    # 獨立 family，不改其他介面目前使用的 700 字重。
+    - family: MarkcutTabExtraBold
+      fonts:
+        - asset: assets/fonts/MarkcutTabExtraBold.ttf
+          weight: 800
     - family: NotoSerifTC
       fonts:
         - asset: assets/fonts/NotoSerifTC.ttf

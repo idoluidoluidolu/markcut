@@ -207,12 +207,23 @@ class _DonateScreenState extends State<DonateScreen> {
           child: Column(
             children: [
               Expanded(
-                // 內容垂直置中；畫面太矮放不下才變成可捲
+                // 下方留出與返回列同高的空間，讓內容以整個安全區置中。
+                // 畫面太矮放不下時仍可捲動。
                 child: LayoutBuilder(
                   builder: (context, cons) => SingleChildScrollView(
-                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    padding: const EdgeInsets.fromLTRB(
+                      24,
+                      0,
+                      24,
+                      kToolbarHeight,
+                    ),
                     child: ConstrainedBox(
-                      constraints: BoxConstraints(minHeight: cons.maxHeight),
+                      constraints: BoxConstraints(
+                        minHeight: (cons.maxHeight - kToolbarHeight).clamp(
+                          0.0,
+                          double.infinity,
+                        ),
+                      ),
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -227,7 +238,7 @@ class _DonateScreenState extends State<DonateScreen> {
                           ),
                           const SizedBox(height: 8),
                           const Text(
-                            '好用到會想給我一點加菜金？\n'
+                            '好用到會想挺我一下?\n'
                             '如果你想斗內的話，\n'
                             '那我當然是不會拒絕的！',
                             textAlign: TextAlign.center,

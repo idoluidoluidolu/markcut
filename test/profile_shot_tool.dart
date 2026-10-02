@@ -102,11 +102,12 @@ void main() {
   setUpAll(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
     Directory(out).createSync(recursive: true);
-    for (final path in const [
-      'assets/fonts/NotoSansTC.ttf',
-      'assets/fonts/NotoSansTC-Bold.ttf',
+    for (final (family, path) in const [
+      ('NotoSansTC', 'assets/fonts/NotoSansTC.ttf'),
+      ('NotoSansTC', 'assets/fonts/NotoSansTC-Bold.ttf'),
+      ('MarkcutTabExtraBold', 'assets/fonts/MarkcutTabExtraBold.ttf'),
     ]) {
-      final loader = FontLoader('NotoSansTC')
+      final loader = FontLoader(family)
         ..addFont(File(path).readAsBytes().then((b) => b.buffer.asByteData()));
       await loader.load();
     }

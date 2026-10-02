@@ -76,7 +76,7 @@ import '../widgets/prep_gate_view.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/sticker_picker.dart';
 import '../widgets/gif_image.dart';
-import '../widgets/slip_strip.dart';
+import '../widgets/slip_picker.dart';
 import '../widgets/watermark_panel.dart';
 
 /// 一支影片素材在目前輸出模式下還缺哪一種備好的檔（見 _prepNeedOf）
@@ -16666,16 +16666,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 換段（slip）：片段在時間軸上的長度跟位置都不動，換成原片裡的另一段
-  ///（使用者指定「時間軸影片素材要能調整片段」要的是這一種）。縮圖帶是
-  /// 整支原片，亮著的框就是這段用到的那一截；左右拖框換一段，放手就套用、
-  /// 預覽跳到這段的開頭。上面的預覽不壓暗，換到哪一段看得清楚
+  /// 選段表按來源時間抽起訖畫面；拖動縮圖帶，放手才重組合成。
   Future<void> _openSlipSheet(TimelineClip clip) async {
     _pause();
     final src = _tl.sourceOf(clip);
     final len = clip.trimEnd - clip.trimStart;
-    var start = clip.trimStart;
+    final framePath = _thumbnailPath(src);
     var undoPushed = false;
-    void apply() {
+    void apply(double start) {
       if (!mounted || (start - clip.trimStart).abs() < 0.001) return;
       // 第一次真的換了才拍復原快照：打開看看就關掉，不該清掉重做
       if (!undoPushed) {
@@ -16689,58 +16687,36 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _resyncPlayback();
       // 換的是合成裡這一段用原片的哪裡：當場排重組（跟切割同一套）
       _compRefreshIfChanged();
-      _seekScrub(clip.offset + math.min(0.15, clip.length / 2));
+      _seekScrub(clip.offset);
     }
 
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
       barrierColor: Colors.transparent,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setSheet) => SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // 標題跟其他片段工具的表同一款（見 _optSheet）；右邊是
-                // 這段現在用到原片的哪裡
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Row(
-                    children: [
-                      const Text(
-                        '換段',
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const Spacer(),
-                      Text(
-                        '${_fmt(start)} – ${_fmt(start + len)}',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: kTextDim,
-                          fontFeatures: [FontFeature.tabularFigures()],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                SlipStrip(
-                  key: const ValueKey('slip-strip'),
-                  frames: _thumbs[clip.sourceIndex] ?? const [],
-                  duration: src.duration,
-                  start: start,
-                  length: len,
-                  onChanged: (s) => setSheet(() => start = s),
-                  onEnd: apply,
-                ),
-              ],
-            ),
-          ),
+      isScrollControlled: true,
+      builder: (context) => ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.65,
+        ),
+        child: SlipPicker(
+          duration: src.duration,
+          start: clip.trimStart,
+          length: len,
+          loadFrame: (t) async {
+            if (!kIsWeb) {
+              return nativeFrameAt(framePath, t, maxH: 360, tolMs: 0);
+            }
+            // Web 的縮圖 API 取區間中點，2ms 視窗即對應要求的時間。
+            final frames = await engine.makeThumbnails(
+              framePath, 0.002, 1,
+              startAt: math.max(0, t - 0.001),
+              height: 360,
+              longSide: true,
+            );
+            return frames.firstOrNull;
+          },
+          onCommit: apply,
         ),
       ),
     );

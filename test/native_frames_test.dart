@@ -67,6 +67,13 @@ void main() {
     expect(calls.single.arguments, isNot(contains('detailed')));
   });
 
+  test('選段精準抽圖保留零容差，不能退成預設關鍵幀粗覽', () async {
+    response = bytes;
+    expect(await nativeFrameAt('/v.mp4', 2.125, tolMs: 0), bytes);
+    expect(calls.single.arguments, containsPair('tolMs', 0));
+    expect(calls.single.arguments, containsPair('ms', 2125));
+  });
+
   test('stats是抽幀器重用計數，release不帶媒體資料', () async {
     response = {'active': 2, 'created': 3, 'reused': 9, 'capacity': 2};
     expect(await readNativeFrameStats(), (

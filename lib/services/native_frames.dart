@@ -31,7 +31,7 @@ Future<List<Uint8List>> nativeStrip(
 /// [tolMs]：允許差多少毫秒（iOS 的 AVAssetImageGenerator 容忍值；
 /// 不給＝原生端預設 0.15 秒）。放寬可增加解碼彈性，但不保證最近
 /// 關鍵幀或指定時間；需要判斷實際取樣時間時用 [nativeFrameAtDetailed]。
-/// Android 只拿關鍵幀，這個值沒作用。
+/// Android 在 tolMs=0 時取最近的實際影格，其餘情況只拿附近關鍵幀。
 Future<Uint8List?> nativeFrameAt(
   String path,
   double seconds, {

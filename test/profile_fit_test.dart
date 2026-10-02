@@ -215,6 +215,7 @@ void main() {
     for (final (family, path) in const [
       ('NotoSansTC', 'assets/fonts/NotoSansTC.ttf'),
       ('NotoSansTC', 'assets/fonts/NotoSansTC-Bold.ttf'),
+      ('MarkcutTabExtraBold', 'assets/fonts/MarkcutTabExtraBold.ttf'),
     ]) {
       final loader = FontLoader(family)
         ..addFont(File(path).readAsBytes().then((b) => b.buffer.asByteData()));
