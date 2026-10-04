@@ -15418,7 +15418,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       // 浮水印的選取框：畫在裁切外面（上面那個 ClipRect
                       // 的兄弟），部件拖出畫面時內容被裁掉、框照畫在
                       // 真實位置，才知道東西跑到哪去了
-                      Positioned.fill(child: WmFrameOverlay(_wmFrameInfo)),
+                      Positioned.fill(
+                        child: ValueListenableBuilder<double>(
+                          valueListenable: _frameVN,
+                          // 內容隱藏或離開顯示範圍後，圖層不再回報框位置。
+                          // 外層框也要跟著可見性與選取狀態，不能沿用舊框。
+                          builder: (context, _, child) =>
+                              _wmVisibleNow && _wmSel && !_hideSelUi
+                              ? child!
+                              : const SizedBox.shrink(),
+                          child: WmFrameOverlay(_wmFrameInfo),
+                        ),
+                      ),
                       // 貼圖片段的選取框：同上，而且在 HDR 預覽裡
                       // 貼圖圖層整層被壓成 0.01，框只能畫在這裡
                       Positioned.fill(child: WmFrameOverlay(_stkFrameInfo)),
