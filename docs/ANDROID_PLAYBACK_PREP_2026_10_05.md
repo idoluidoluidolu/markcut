@@ -71,3 +71,25 @@ ImageReader 貼圖不看時間戳，拿到就畫，影格間隔跟著抖（120Hz
 寫法（播放也讓路／開工等播放停／播放中的手勢也讓路）各自都會讓對應的測試變紅
 （已實測）。另有一位沒看過我推理的審查者讀過整份改動。沒有 Android 實機，
 實際順暢度要看下一份報告。
+
+## 第二步：第一次播放也要順——相機規格的原檔直接走 mpv（同日稍晚）
+
+build 2234 的報告證實上面那步生效（播放中轉檔 1%→19%→35%、沒被砍），但第一
+輪還是 ExoPlayer 播 4K60 原檔（`fallbackLeadEngine: exo`）。使用者要第一次播放
+就順：
+
+- 還沒有工作檔的原檔，尺寸是相機規格（`isCameraVideoSize`：短邊 480～4320、
+  長邊 640～7680 的常見組合，直式橫式都算）就交給 mpv（`_FallbackPlayerX`：
+  mpv 開不起來或首格 2.5 秒沒畫出來，自動換 ExoPlayer）。螢幕錄影那類怪尺寸
+  （1080x2410…）照舊系統解碼器——mpv 硬解會破圖然後全黑，而且驗不到（23602ff）
+- mpv 預覽改用省 GPU 的畫法（雙線性縮放、不做線性光縮小／抖色／去色帶、HDR
+  不逐格量峰值）：預覽只有手機螢幕大，4K 原檔每格縮小用預設畫質反而掉格
+- `Diag.androidOriginalMpv`（預設開）是退路：實機若更糟，改成 false 出一版
+- 工作檔落地後照舊在暫停時換成工作檔（mpv 播 1080p，解碼更省）
+- 報告：`previewRevision: android-original-mpv-1`；原檔播放時 `fallbackLeadEngine`
+  應為 `mpv`，`fallbackLeadFrameStats.hwdec` 看 mpv 用的是零複製的 `mediacodec`
+  還是 `mediacodec-copy`（4K 用 copy 可能吃力）；「優先處理」只在原檔真的落在
+  ExoPlayer 時點名（計數 `playbackSampleOriginalExo`）
+
+驗證：同一支測試檔新增尺寸規則、相機規格走 mpv、怪尺寸留系統解碼器、iOS 不變
+四項；拿掉 mpv 分流或讓所有尺寸都過，對應測試會紅。

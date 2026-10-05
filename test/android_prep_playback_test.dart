@@ -90,6 +90,10 @@ void main() {
   var deferFirst = false;
   // 第二次開工那一刻，原檔是不是正在播
   bool? playingAtSecondCall;
+  // 原檔的尺寸（相機規格 vs 螢幕錄影），以及每支播放器開的時候要不要
+  // 系統解碼器（false＝Android 上走 mpv）
+  var probeW = 2160, probeH = 3840;
+  final systemOf = <String, bool>{};
 
   setUp(() {
     SharedPreferences.setMockInitialValues({});
@@ -112,6 +116,9 @@ void main() {
     workDest = null;
     deferFirst = false;
     playingAtSecondCall = null;
+    probeW = 2160;
+    probeH = 3840;
+    systemOf.clear();
     bigPhoneView(binding);
     mockEditorPlugins(binding, tempDir: dir);
     binding.defaultBinaryMessenger.setMockMethodCallHandler(
@@ -123,8 +130,8 @@ void main() {
           case 'probeLite':
             return <String, dynamic>{
               'durSec': 6.0,
-              'w': 2160,
-              'h': 3840,
+              'w': probeW,
+              'h': probeH,
               'sdr709': true,
               'codec': 'hvc1',
               'fps': 60.0,
@@ -173,9 +180,10 @@ void main() {
         VideoEditorScreen(
           videoPath: original.path,
           thumbnailNow: t.binding.clock.now,
-          androidPreparation: android,
+          debugAndroid: android,
           playerFactory: (path, {bool system = false}) {
             creates++;
+            systemOf[path] = system;
             return path == original.path ? original : (work = _Player(path));
           },
         ),
@@ -217,14 +225,64 @@ void main() {
     expect(playerEngineName(fake), 'other');
   });
 
-  test('報告優先處理：播放取樣卡在原檔要點名', () {
+  test('報告優先處理：原檔卡在 ExoPlayer 才點名（原檔走 mpv 不算）', () {
     final d = QualityDiagnostics()..start(buildTag: 'test');
     d.increment('playbackSampleWorkFile');
-    expect(d.priorities.join(), isNot(contains('仍在播原檔')));
     d.increment('playbackSampleOriginalFile');
+    expect(
+      d.priorities.join(),
+      isNot(contains('ExoPlayer 播原檔')),
+      reason: '原檔走 mpv 的取樣不該被當成問題',
+    );
     d.increment('playbackSampleOriginalFile');
-    expect(d.priorities.first, contains('播放取樣 2 次仍在播原檔'));
+    d.increment('playbackSampleOriginalExo');
+    d.increment('playbackSampleOriginalExo');
+    expect(d.priorities.first, contains('播放取樣 2 次在用 ExoPlayer 播原檔'));
     expect(d.priorities.first, contains('工作檔 1 次'));
+  });
+
+  test('相機規格的尺寸才算（直式橫式都行），螢幕錄影那類怪尺寸不算', () {
+    for (final (w, h) in const [
+      (2160, 3840),
+      (3840, 2160),
+      (1080, 1920),
+      (1920, 1080),
+      (720, 1280),
+      (1440, 2560),
+      (4320, 7680),
+    ]) {
+      expect(isCameraVideoSize(w, h), isTrue, reason: '${w}x$h');
+    }
+    for (final (w, h) in const [
+      (1080, 2410),
+      (1440, 3200),
+      (1080, 2340),
+      (1080, 1080),
+      (0, 0),
+      (2160, 2160),
+    ]) {
+      expect(isCameraVideoSize(w, h), isFalse, reason: '${w}x$h');
+    }
+  });
+
+  testWidgets('Android：相機規格的原檔第一次播放就交給 mpv（不等工作檔）', (t) async {
+    await open(t, android: true);
+    expect(systemOf[original.path], isFalse, reason: '原檔要走 mpv，不是 ExoPlayer');
+    await close(t);
+  });
+
+  testWidgets('Android：螢幕錄影那類怪尺寸的原檔照舊系統解碼器', (t) async {
+    probeW = 1080;
+    probeH = 2410;
+    await open(t, android: true);
+    expect(systemOf[original.path], isTrue, reason: 'mpv 會把這類檔解成破圖');
+    await close(t);
+  });
+
+  testWidgets('iOS（預設）：原檔照舊系統播放器', (t) async {
+    await open(t, android: false);
+    expect(systemOf[original.path], isTrue);
+    await close(t);
   });
 
   testWidgets('Android：播放中轉檔不讓路，落地後暫停才換成工作檔', (t) async {

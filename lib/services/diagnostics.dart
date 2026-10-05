@@ -634,6 +634,15 @@ class Diag {
   /// 屆時再關回來
   static final hdrProxyPreview = ValueNotifier(true);
 
+  /// Android：工作檔還沒好的原檔改用 mpv 播，不走 ExoPlayer 貼圖。
+  /// ExoPlayer 把影格最多提早 50ms 交出去、靠系統照時間戳上屏，而 Flutter
+  /// 的貼圖拿到就畫——節奏忽快忽慢，第一次播放就是頓（實機 2232、2234：
+  /// Flutter 指標全綠、轉檔也沒在搶，畫面照樣卡）；mpv 自己照時間送格
+  ///（8 月 Pixel 10 Pro 同一支 1080p：ExoPlayer 頓、mpv 順）。只收相機規格
+  /// 的尺寸（isCameraVideoSize），螢幕錄影照舊系統解碼器。
+  /// 關掉＝原檔回 ExoPlayer（實機若更糟，改這裡出一版就退回）
+  static final androidOriginalMpv = ValueNotifier(true);
+
   /// Metal 預覽引擎：滑動/暫停中的畫面改由自家 Metal 管線出
   ///（每軌獨立供格、GPU 疊合、EDR 直出）。關掉＝回合成播放器路
   static final metalPreview = ValueNotifier(true);
@@ -681,6 +690,7 @@ class Diag {
       '系統影片圖層=${playerLayer.value ? '開' : '關'}／'
       'GPU匯出=${ciExport.value ? '開' : '關'}／'
       'HDR代理預覽=${hdrProxyPreview.value ? '開' : '關'}／'
+      'Android原檔mpv=${androidOriginalMpv.value ? '開' : '關'}／'
       'Metal預覽=${metalPreview.value ? '開' : '關'}／'
       'Metal播放=${metalPlayback.value ? '開' : '關'}／'
       'Metal常駐=${metalResident.value ? '開' : '關'}';

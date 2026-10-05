@@ -149,10 +149,11 @@ class VideoEditorScreen extends StatefulWidget {
   @visibleForTesting
   final PlayerX Function(String path, {bool system})? playerFactory;
 
-  /// 測試主機不是 Android：要驗 Android 的背景轉檔排程（播放不讓路，見
-  /// previewPrepYieldsToPlayback）就由測試指定。null＝照實際平台
+  /// 測試主機不是 Android：要驗 Android 專屬的行為（背景轉檔播放不讓路，
+  /// 見 previewPrepYieldsToPlayback；原檔交給 mpv 播，見 isCameraVideoSize）
+  /// 就由測試指定。null＝照實際平台
   @visibleForTesting
-  final bool? androidPreparation;
+  final bool? debugAndroid;
 
   const VideoEditorScreen({
     super.key,
@@ -166,7 +167,7 @@ class VideoEditorScreen extends StatefulWidget {
     this.waitForPreparation = false,
     this.thumbnailNow,
     this.playerFactory,
-    this.androidPreparation,
+    this.debugAndroid,
   }) : assert(
          videoPath != null ||
              videoPaths != null ||
@@ -1001,11 +1002,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     android: !kIsWeb && Platform.isAndroid,
   );
 
+  /// Android 專屬行為的開關（測試可以指定，見 VideoEditorScreen.debugAndroid）
+  bool get _android => widget.debugAndroid ?? (!kIsWeb && Platform.isAndroid);
+
   /// 播放中背景轉檔要不要讓路：iOS 要（只是放慢）、Android 不要（那邊讓路
   /// ＝整支作廢重轉，而原檔播放本來就頓，見 previewPrepYieldsToPlayback）
-  bool get _prepYieldsToPlayback => previewPrepYieldsToPlayback(
-    android: widget.androidPreparation ?? (!kIsWeb && Platform.isAndroid),
-  );
+  bool get _prepYieldsToPlayback =>
+      previewPrepYieldsToPlayback(android: _android);
+
+  /// Android：這支還沒有工作檔的原檔，直接交給 mpv 播。使用者要「第一次
+  /// 播放也要順」：ExoPlayer 經 Flutter 貼圖的節奏不均（見
+  /// Diag.androidOriginalMpv），等工作檔轉好再換已經是第二輪了。只收相機
+  /// 規格的尺寸（isCameraVideoSize）；尺寸還不知道的照舊系統解碼器
+  bool _originalOnMpv(MediaSource src) =>
+      _android &&
+      Diag.androidOriginalMpv.value &&
+      isCameraVideoSize(src.w, src.h);
 
   TimelineClip? _clipboard; // 複製的片段（貼上時以播放頭為起點）
   // 時間軸雙指縮放：在整個分頁層級偵測，空白處一樣能捏
@@ -1511,11 +1523,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     // 有工作檔就播工作檔：1080p SDR 一顆解碼器的成本只有 4K HDR 的
     // 幾分之一，三段同時活著也不會掉格。
-    // 還在等轉檔的原檔用系統解碼器播（螢幕錄影那類檔 mpv 會解成
-    // 破圖然後全黑），工作檔才交給 mpv
+    // 還在等轉檔的原檔：相機規格的交給 mpv（第一次播放就順，見
+    // _originalOnMpv）；螢幕錄影那類怪尺寸用系統解碼器（mpv 會解成
+    // 破圖然後全黑）
     final ctrl = (widget.playerFactory ?? makeVideoController)(
       src.previewPath,
-      system: src.workPath == null,
+      system: src.workPath == null && !_originalOnMpv(src),
     );
     _ctrls[c.id] = ctrl;
     Diag.peak('同時活著的片段播放器', _ctrls.length);
@@ -10454,7 +10467,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final sampleStartedAt = DateTime.now().toUtc();
     final sampledComp = _comp;
     diagnostic.environment.addAll({
-      'previewRevision': 'android-prep-play-1',
+      'previewRevision': 'android-original-mpv-1',
       'displayHz': View.of(context).display.refreshRate,
       'buildMode': kReleaseMode
           ? 'release'
@@ -10571,16 +10584,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       'memoryAccounting':
           'Known pools overlap; not an exhaustive memory breakdown',
     });
-    // 逐片段播放的每次取樣記一筆：播的是原檔還是工作檔。Android 的原檔
-    // 走 ExoPlayer 貼圖（會頓），這一輪有多少時間卡在原檔要一眼看得出來。
-    // 播放頭下還沒有播放器（換檔中、剛建）的那幾次不算
+    // 逐片段播放的每次取樣記一筆：播的是原檔還是工作檔，原檔又是哪個引擎
+    // 在播——Android 的原檔走 ExoPlayer 貼圖會頓，這一輪有多少時間卡在那條
+    // 路要一眼看得出來。播放頭下還沒有播放器（換檔中、剛建）的那幾次不算
     final leadUsesWork = sampleContext['fallbackLeadUsesWorkFile'];
+    final leadEngine = sampleContext['fallbackLeadEngine'];
     if (sampleContext['playing'] == true &&
-        sampleContext['fallbackLeadEngine'] != null &&
+        leadEngine != null &&
         leadUsesWork is bool) {
       diagnostic.increment(
         leadUsesWork ? 'playbackSampleWorkFile' : 'playbackSampleOriginalFile',
       );
+      if (!leadUsesWork && leadEngine == 'exo') {
+        diagnostic.increment('playbackSampleOriginalExo');
+      }
     }
     diagnostic.recordResources({
       ...sampleContext,

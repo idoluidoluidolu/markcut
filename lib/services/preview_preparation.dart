@@ -15,6 +15,21 @@ import '../models/timeline.dart';
 /// 手指碰畫面（拖曳、滑桿、捏合）跟匯出照舊讓路
 bool previewPrepYieldsToPlayback({required bool android}) => !android;
 
+/// 相機錄的標準尺寸（直式橫式都算）：短邊 480～4320、長邊 640～7680 的
+/// 常見規格，例如 2160x3840、1080x1920、720x1280。
+///
+/// Android 的原檔只有這種才交給 mpv 播（第一次播放就順，不用等工作檔）。
+/// 螢幕錄影那類怪尺寸（1080x2410、1440x3200…）mpv 硬解會解成破圖然後
+/// 全黑，而且有畫面出來、第一格檢查驗不到（23602ff 的實機回報），照舊
+/// 給系統解碼器
+bool isCameraVideoSize(int w, int h) {
+  final short = w < h ? w : h;
+  final long = w < h ? h : w;
+  const shorts = {480, 540, 720, 1080, 1440, 2160, 2880, 4320};
+  const longs = {640, 854, 960, 1280, 1920, 2560, 3840, 5120, 7680};
+  return shorts.contains(short) && longs.contains(long);
+}
+
 /// Reorder preparation jobs, never the user's clips or source list. The video
 /// at the playhead gets the first decoder turn; other visible short jobs then
 /// complete before a long background clip can monopolize the encoder.

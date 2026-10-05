@@ -329,8 +329,33 @@ class _MpvPlayerX implements PlayerX {
   @override
   Future<Duration?> positionNow() async => _p.state.position;
 
+  /// 預覽只有手機螢幕那麼大：縮放全用最省的雙線性、不做線性光縮小與抖色，
+  /// HDR 不逐格量峰值。mpv 預設的是大螢幕畫質（多趟 GPU），4K 原檔每格
+  /// 縮到預覽大小反而掉格。開檔前設好，第一格就照這套畫
+  static const _previewRendering = [
+    ('scale', 'bilinear'),
+    ('dscale', 'bilinear'),
+    ('cscale', 'bilinear'),
+    ('correct-downscaling', 'no'),
+    ('linear-downscaling', 'no'),
+    ('sigmoid-upscaling', 'no'),
+    ('dither-depth', 'no'),
+    ('deband', 'no'),
+    ('hdr-compute-peak', 'no'),
+  ];
+
   @override
   Future<void> initialize() async {
+    final native = _p.platform;
+    if (native is mk.NativePlayer) {
+      for (final (name, value) in _previewRendering) {
+        try {
+          await native.setProperty(name, value);
+        } catch (_) {
+          // 設不進去就用 mpv 預設畫：只是比較吃 GPU，不影響能不能播
+        }
+      }
+    }
     await _p.open(mk.Media(path), play: false);
 
     // 時長就緒才算初始化完成（音訊檔也有時長）
