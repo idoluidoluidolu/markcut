@@ -984,8 +984,19 @@ class _CollageScreenState extends State<CollageScreen>
 
   /// 自由模式加照片：進來的連同已經在畫布上的一起自動排滿整張畫布
   ///（測試回報：「加入一堆照片要自動排列塞滿、縮放大小」）。以前是一張張
-  /// 疊在畫布中間錯開一點，使用者得自己一張張拉開、縮放
+  /// 疊在畫布中間錯開一點，使用者得自己一張張拉開、縮放。
+  /// 「加照片」鈕跟點空畫布都會叫：選取器開著時再點不能再開一個
   Future<void> _addFreePhotos() async {
+    if (_pickingPhotos) return;
+    setState(() => _pickingPhotos = true);
+    try {
+      await _addFreePhotosPicked();
+    } finally {
+      if (mounted) setState(() => _pickingPhotos = false);
+    }
+  }
+
+  Future<void> _addFreePhotosPicked() async {
     final files = await pickPhotoFiles();
     if (files.isEmpty || !mounted) return;
     _noteReceived(files);
@@ -2543,12 +2554,20 @@ class _CollageScreenState extends State<CollageScreen>
             : null;
         final canvas = GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTapUp: (e) => setState(() {
-            // 重疊處再點一下＝輪到下一層（選到誰誰就被帶到最上層，
-            // 跟「最後選取的照片會在最上層」一致）
-            final hit = _freeHitCycle(e.localPosition, s);
-            _selItem = hit == -1 ? -1 : _bringToFront(hit);
-          }),
+          onTapUp: (e) {
+            // 空畫布點一下＝加照片（測試員：「這邊點畫布＝加照片」）。
+            // 有照片之後點空白處照舊是取消選取
+            if (_items.isEmpty) {
+              unawaited(_addFreePhotos());
+              return;
+            }
+            setState(() {
+              // 重疊處再點一下＝輪到下一層（選到誰誰就被帶到最上層，
+              // 跟「最後選取的照片會在最上層」一致）
+              final hit = _freeHitCycle(e.localPosition, s);
+              _selItem = hit == -1 ? -1 : _bringToFront(hit);
+            });
+          },
           // 兩指在畫布上＝在縮放，pan 讓開：pan 只跟最新那根手指，給的
           // 位置拿去跟第一指的起點相減方塊會亂跳（見 _freePinchDown）
           onPanStart: (e) {
@@ -2575,10 +2594,11 @@ class _CollageScreenState extends State<CollageScreen>
                       painter: _FreePainter(items: _items, images: _images),
                     ),
                   ),
+                  // 空畫布本身就能點（見上面的 onTapUp）
                   if (_items.isEmpty)
                     const Center(
                       child: Text(
-                        '點「加照片」開始自由組圖',
+                        '點一下加照片',
                         style: TextStyle(fontSize: 12, color: kTextDim),
                       ),
                     ),
