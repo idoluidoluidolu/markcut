@@ -149,6 +149,11 @@ class VideoEditorScreen extends StatefulWidget {
   @visibleForTesting
   final PlayerX Function(String path, {bool system})? playerFactory;
 
+  /// 測試主機不是 Android：要驗 Android 的背景轉檔排程（播放不讓路，見
+  /// previewPrepYieldsToPlayback）就由測試指定。null＝照實際平台
+  @visibleForTesting
+  final bool? androidPreparation;
+
   const VideoEditorScreen({
     super.key,
     this.videoPath,
@@ -161,6 +166,7 @@ class VideoEditorScreen extends StatefulWidget {
     this.waitForPreparation = false,
     this.thumbnailNow,
     this.playerFactory,
+    this.androidPreparation,
   }) : assert(
          videoPath != null ||
              videoPaths != null ||
@@ -993,6 +999,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool get _waitForPreparation => waitForInitialPreview(
     requested: widget.waitForPreparation,
     android: !kIsWeb && Platform.isAndroid,
+  );
+
+  /// 播放中背景轉檔要不要讓路：iOS 要（只是放慢）、Android 不要（那邊讓路
+  /// ＝整支作廢重轉，而原檔播放本來就頓，見 previewPrepYieldsToPlayback）
+  bool get _prepYieldsToPlayback => previewPrepYieldsToPlayback(
+    android: widget.androidPreparation ?? (!kIsWeb && Platform.isAndroid),
   );
 
   TimelineClip? _clipboard; // 複製的片段（貼上時以播放頭為起點）
@@ -4171,10 +4183,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _syncPrepInteraction();
     // Unlike touch updates, opening a route must wait until native has received
     // the pause flag. This also covers a system picker that stays open for minutes.
-    await MediaPrep.setInteractive(
-      _prepActivity.interactive || _prepGestureActivity.interactive,
-      pauseDecoding: _prepGestureActivity.interactive,
-    );
+    await _sendPrepInteraction(force: true);
     if (active) unawaited(releaseNativeFrames());
     await EditorPhoto.checkpoint(active ? 'begin' : 'finish');
   }
@@ -4199,24 +4208,48 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   late final _prepActivity = PreviewPreparationActivity(
-    onChanged: (_) => _sendPrepInteraction(),
+    onChanged: (_) => unawaited(_sendPrepInteraction()),
   );
   late final _prepGestureActivity = PreviewPreparationActivity(
-    onChanged: (_) => _sendPrepInteraction(),
+    onChanged: (_) => unawaited(_sendPrepInteraction()),
   );
 
-  void _sendPrepInteraction() => unawaited(
-    MediaPrep.setInteractive(
-      _prepActivity.interactive || _prepGestureActivity.interactive,
-      pauseDecoding: _prepGestureActivity.interactive,
-    ),
-  );
+  /// 上一次送給原生端的讓路旗標（值沒變就不再送）
+  bool? _prepSentBusy;
+  bool? _prepSentPause;
 
-  void _syncPrepInteraction({bool forceBusy = false}) {
+  /// 告訴原生端背景轉檔現在要不要讓路。iOS：播放也算忙（那邊只放慢、
+  /// 進度留著），手勢才暫停解碼。Android：那邊的讓路是整支作廢重轉，
+  /// 只有匯出、跟「播放沒在跑時」的手勢才算（見 _prepYieldsToPlayback）。
+  /// 播放中轉檔本來就在跑，點一下選片段不會多用解碼器，不值得把進度丟掉；
+  /// 真的拖時間軸會先停播放（_onTimelineScroll），停了這裡就算忙。
+  /// 播放／匯出旗標不一定跟活動狀態一起變，所以每次同步都重算、有變才送
+  Future<void> _sendPrepInteraction({bool force = false}) {
+    final pause = _prepGestureActivity.interactive;
+    final busy = _prepYieldsToPlayback
+        ? _prepActivity.interactive || pause
+        : _exporting || (pause && !_playRequested);
+    if (!force && busy == _prepSentBusy && pause == _prepSentPause) {
+      return Future<void>.value();
+    }
+    _prepSentBusy = busy;
+    _prepSentPause = pause;
+    return MediaPrep.setInteractive(busy, pauseDecoding: pause);
+  }
+
+  /// [pauseDecoding]：這次 [forceBusy] 要不要連背景轉檔的解碼一起停。
+  /// 手勢起手要；Android 的起播不要（那邊一停就是整支作廢）
+  void _syncPrepInteraction({
+    bool forceBusy = false,
+    bool pauseDecoding = true,
+  }) {
     _prepActivity.update(forceBusy || _previewInteracting);
     // Playback may advance background proxies slowly. A direct manipulation
     // owns the decoder until the gesture and its idle cooldown finish.
-    _prepGestureActivity.update(forceBusy || _previewDirectInteraction);
+    _prepGestureActivity.update(
+      (forceBusy && pauseDecoding) || _previewDirectInteraction,
+    );
+    unawaited(_sendPrepInteraction());
   }
 
   List<int> _prioritizedPreparation(Iterable<int> pending) =>
@@ -4235,6 +4268,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> _settleCompBeforeNextPrep() async {
     final deadline = DateTime.now().add(const Duration(seconds: 12));
     while (mounted && DateTime.now().isBefore(deadline)) {
+      // Android 沒有合成播放器：落地的工作檔只換逐片段播放器，播放中本來
+      // 就排到暫停才換（_flushSwapsWhenIdle）。播放中在這裡等它＝下一支
+      // 轉檔白等 12 秒。起播那一段也算：這時換檔會跟 _play 正在開的那顆
+      // 播放器打架
+      if (!_prepYieldsToPlayback && _comp == null && _playRequested) return;
       final building = _compBuilding;
       if (building != null) {
         await building;
@@ -4274,6 +4312,33 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     } while (mounted && _previewInteracting);
   }
 
+  /// 背景轉檔開工前的等待。iOS：等預覽整個閒下來（播放也算忙）。
+  /// Android：播放中照樣開工（見 _prepYieldsToPlayback），只等匯出結束、
+  /// 播放沒在跑時的手勢結束——跟原生端的讓路條件同一套（_sendPrepInteraction），
+  /// 不然排著的那支在整段播放期間都開不了工（實機 1.1.0+2232：播了一整輪，
+  /// 佇列一直是 1）。起播那一段不開新工：_play 可能正在開工作檔的 mpv，
+  /// 它首格只等 2.5 秒，等不到就永久退回 ExoPlayer
+  Future<void> _waitForPrepTurn() async {
+    if (_prepYieldsToPlayback) return _waitForPreviewIdle();
+    bool busy() =>
+        !_ready ||
+        _videoMetadataImporting ||
+        _startingPlayback ||
+        _exporting ||
+        (!_playing &&
+            (_previewDirectInteraction || _prepGestureActivity.interactive));
+    do {
+      while (mounted && busy()) {
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      }
+      if (!mounted) return;
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+    } while (mounted && busy());
+    // 讓路旗標是跟著 setState 同步的；最後一次變化沒經過 setState 的話
+    //（匯出收尾有幾條路是直接改旗標），開工前補對一次，免得被舊旗標擋回來
+    if (mounted) _syncPrepInteraction();
+  }
+
   /// 已經補試過一次的素材：轉檔失敗的後果是那支一路用 4K 原檔播
   /// （拖曳會鈍、記憶體也高），值得再試一次；但只再試一次，
   /// 不然壞掉的素材會無限重跑
@@ -4300,6 +4365,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 沒有它的話百分比只會跳 33、67、100，三支素材的畫面上那個大數字
   /// 大半時間是停著的
   final Map<int, double> _prepCur = {};
+
+  /// 同上，但遮罩收掉後也記（不重建畫面）：品質報告看播放卡的那一刻，
+  /// 播放頭下那支的工作檔轉到哪了
+  final Map<int, double> _prepProgressSeen = {};
 
   /// 遮罩上的「約還要多久」（純算術在 ImportEta；_drainPrep 開跑時建、
   /// 收尾清掉）。使用者要求：匯入也要有預估剩下時間
@@ -4515,7 +4584,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // Re-evaluate the playhead after every idle wait and completed job.
         // Native preview jobs also yield if interaction starts mid-encode.
         if (!_waitForPreparation || _prepActivity.interactive) {
-          await _waitForPreviewIdle();
+          await _waitForPrepTurn();
           if (!mounted) return;
         }
         // 上一支落地排的重組（或進場那顆的換手）先在空檔裡收乾淨，
@@ -4570,6 +4639,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             _prepQueue.add(i);
           }
           Diag.count('背景轉檔讓路');
+          // 品質報告也要看得到：Android 每讓一次就是那支從頭重轉
+          QualityDiagnostics.instance.increment('previewPrepDeferred');
           await Future<void>.delayed(deferred.retryAfter);
           continue;
         }
@@ -4930,6 +5001,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         onProgress: (v) {
           // 剩餘時間先收（見 _prepHdrProxy 的同一段）
           _eta?.noteProgress(v);
+          // 診斷用，不重建畫面：播放卡的時候工作檔轉到哪了
+          _prepProgressSeen[srcIndex] = v;
           // 用 _prepGate 不用 _prepBusy：遮罩收掉（先進去編輯）之後
           // 每一格進度都 setState 等於邊剪邊整頁重建
           if (!mounted || !_prepGate) return;
@@ -4939,6 +5012,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     } finally {
       _prepping.remove(srcIndex);
       _prepCur.remove(srcIndex);
+      _prepProgressSeen.remove(srcIndex);
     }
     if (!mounted) return;
     if (made == null ||
@@ -9835,7 +9909,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // Keep this cancellable without starting the timeline clock or telling
     // _ensureComp that playback is already running (which defers the build).
     setState(() => _startingPlayback = true);
-    _syncPrepInteraction(forceBusy: true);
+    // Android 起播不停背景轉檔：那邊一停就是整支作廢（見 _prepYieldsToPlayback）
+    _syncPrepInteraction(forceBusy: true, pauseDecoding: _prepYieldsToPlayback);
     _compRebuildTimer?.cancel();
     final swPlay = Stopwatch()..start();
     try {
@@ -10355,6 +10430,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           player.path == source.workPath,
       'fallbackLeadSourceChangePending':
           player != null && player.path != source.previewPath,
+      // 哪個引擎在出畫面：Android 的 exo（原檔走 Flutter 貼圖）會頓，
+      // mpv（工作檔）才順——「播放 LAG」先看這一欄
+      'fallbackLeadEngine': player == null ? null : playerEngineName(player),
+      // 這支的工作檔轉到哪了（沒在轉＝null）
+      'fallbackLeadWorkFileProgress': _prepProgressSeen[clip.sourceIndex],
     };
   }
 
@@ -10374,7 +10454,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final sampleStartedAt = DateTime.now().toUtc();
     final sampledComp = _comp;
     diagnostic.environment.addAll({
-      'previewRevision': 'perf-storage-1',
+      'previewRevision': 'android-prep-play-1',
       'displayHz': View.of(context).display.refreshRate,
       'buildMode': kReleaseMode
           ? 'release'
@@ -10414,6 +10494,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             'isSticker': source.isSticker,
             'sdrProxyAvailable': source.workPath != null,
             'hdrProxyAvailable': source.workHdrPath != null,
+            // 編碼／幀率／HDR：4K60 HEVC HDR 跟 1080p30 H.264 是兩種世界。
+            // 只拿匯入時探過的快取，不在取樣時再探
+            if (source.isVideo) ...?MediaPrep.probedSpec(source.path),
           },
       ],
       'clipLayout': [
@@ -10441,10 +10524,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       'hiddenTrackCount': _hiddenTracks.length,
       'backgroundPreparations': _prepping.length,
       'backgroundHDRPreparations': _hdrPrepping.length,
+      // false＝Android：播放中背景轉檔照跑，只讓手勢與匯出
+      'previewPrepYieldsToPlayback': _prepYieldsToPlayback,
       'nativeDisplayFPS': 'unavailable; do not infer from Flutter or CI counts',
       'visualColorValidation':
           'requires same-frame source/export/device comparison',
     });
+    // 逐片段播放：播放頭下那顆播放器自己數的掉格（只有 mpv 有；Android
+    // 原檔走的 ExoPlayer 貼圖給不出來）。只讀計數器，不抽影格
+    final leadClip = _compOn
+        ? null
+        : _tl.videoAt(_position, skipTracks: _hiddenTracks);
+    final leadPlayer = leadClip == null ? null : _ctrls[leadClip.id];
     // Parallel, bounded and single-flight. Never extract frames or trigger
     // HDR probes while sampling: the diagnostics must not create the stall.
     final results = await Future.wait<Object?>([
@@ -10456,6 +10547,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       Diag.readDeviceState()
           .then<Object?>((_) => null)
           .timeout(const Duration(seconds: 2), onTimeout: () => null),
+      if (leadPlayer != null)
+        playerFrameStats(
+          leadPlayer,
+        ).timeout(const Duration(seconds: 1), onTimeout: () => null)
+      else
+        Future<Object?>.value(),
     ]);
     if (!mounted || diagnostic.session != session) return;
     final native = results[0];
@@ -10474,6 +10571,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       'memoryAccounting':
           'Known pools overlap; not an exhaustive memory breakdown',
     });
+    // 逐片段播放的每次取樣記一筆：播的是原檔還是工作檔。Android 的原檔
+    // 走 ExoPlayer 貼圖（會頓），這一輪有多少時間卡在原檔要一眼看得出來。
+    // 播放頭下還沒有播放器（換檔中、剛建）的那幾次不算
+    final leadUsesWork = sampleContext['fallbackLeadUsesWorkFile'];
+    if (sampleContext['playing'] == true &&
+        sampleContext['fallbackLeadEngine'] != null &&
+        leadUsesWork is bool) {
+      diagnostic.increment(
+        leadUsesWork ? 'playbackSampleWorkFile' : 'playbackSampleOriginalFile',
+      );
+    }
     diagnostic.recordResources({
       ...sampleContext,
       'sampleRequestedAt': sampleStartedAt.toIso8601String(),
@@ -10490,6 +10598,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         (total, frames) => total + frames.fold<int>(0, (n, b) => n + b.length),
       ),
       'fallbackPlayers': _ctrls.length,
+      // mpv 的累計掉格（voDropped／decoderDropped／voDelayed／hwdec）；
+      // null＝不是 mpv（例如 Android 原檔走 ExoPlayer），不是「沒掉格」
+      'fallbackLeadFrameStats': results[3],
       'previewPipelineLatest':
           (diagnostic.nativeSnapshot?['previewPipelineProcessLifetime']
               as Map?)?['latest'],
@@ -12277,6 +12388,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _wmPrepTimer?.cancel();
     _prepActivity.dispose();
     _prepGestureActivity.dispose();
+    // 離開時一律收回讓路：Android 的「忙」含匯出旗標，匯出中離開的話
+    // 上面兩行算出來的還是忙，原生端會一直擋著下一個編輯頁的轉檔
+    unawaited(MediaPrep.setInteractive(false));
     _compSeekDispatcher.dispose();
     _ovRasterQueue.dispose();
     _scrubRevision++;

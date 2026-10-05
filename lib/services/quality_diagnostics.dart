@@ -303,6 +303,12 @@ class QualityDiagnostics {
       '目前播放器曾有重畫 seek 回呼等待超過 150ms：對照 CI 排隊、合成與播放器狀態；非上屏延遲。',
     if ((nativeSnapshot?['redrawMainQueueMaxMs'] as num? ?? 0) > 17)
       '目前播放器曾有重畫主佇列等待超過 17ms：對照同時的解碼、樣式傳輸與 UI 工作。',
+    if ((counters['playbackSampleOriginalFile'] ?? 0) > 0)
+      '播放取樣 ${counters['playbackSampleOriginalFile']} 次仍在播原檔'
+          '（工作檔 ${counters['playbackSampleWorkFile'] ?? 0} 次）：'
+          '逐片段播放的工作檔還沒好或還沒換上；Android 的原檔走 ExoPlayer 貼圖，'
+          '會頓。對照 fallbackLeadEngine、fallbackLeadWorkFileProgress 與 '
+          'previewPrepDeferred。',
     for (final scenario in QualityScenario.values)
       if (observations[scenario] == QualityObservation.problem)
         '${scenario.label}：使用者已標記問題，對照事件時間重現。',

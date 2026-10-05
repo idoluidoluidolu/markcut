@@ -49,3 +49,9 @@ class PlayerX {
 // [system] 只在裝置端有意義（見 io 版），Web 收下參數照舊
 PlayerX makeVideoController(String path, {bool system = false}) =>
     PlayerX(path);
+
+/// 診斷用（見 io 版）：Web 一律是瀏覽器的 <video>
+String playerEngineName(PlayerX player) => 'html';
+
+/// 診斷用（見 io 版）：瀏覽器不給掉格數字
+Future<Map<String, Object?>?> playerFrameStats(PlayerX player) async => null;

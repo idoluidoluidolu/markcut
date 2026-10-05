@@ -2,6 +2,19 @@ import 'dart:async';
 
 import '../models/timeline.dart';
 
+/// 播放中，背景轉檔（預覽工作檔／代理）要不要讓路。
+///
+/// iOS 要：那邊的讓路只是放慢（原生 MCInteractivePrepGate 每格等 30ms），
+/// 進度留著；原檔本來就由系統播放器順順地播。
+///
+/// Android 不要。那邊的轉檔器（media3 Transformer）停不下也放不慢，讓路＝
+/// 整支作廢、閒置後從頭重轉；而 Android 的原檔是 ExoPlayer 經 Flutter
+/// 貼圖播的（4K 解碼，貼圖又不照影格時間戳送格），要順只能靠 1080p
+/// 工作檔換 mpv 播。播放中把轉檔丟掉＝這一輪、下一輪都只能播原檔
+///（實機 1.1.0+2232：轉到一半按播放，整輪都在播 4K 原檔、佇列卡在 1）。
+/// 手指碰畫面（拖曳、滑桿、捏合）跟匯出照舊讓路
+bool previewPrepYieldsToPlayback({required bool android}) => !android;
+
 /// Reorder preparation jobs, never the user's clips or source list. The video
 /// at the playhead gets the first decoder turn; other visible short jobs then
 /// complete before a long background clip can monopolize the encoder.

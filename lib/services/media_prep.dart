@@ -160,12 +160,16 @@ class MediaPrep {
       final key = _liteKey(path);
       if (key != null) {
         final hit = _liteCache[key];
-        if (hit != null) return Map<String, dynamic>.of(hit);
+        if (hit != null) {
+          _rememberSpec(path, hit);
+          return Map<String, dynamic>.of(hit);
+        }
       }
       final m = await _ch.invokeMapMethod<String, dynamic>('probeLite', path);
       if (key != null && m != null && m['error'] == null) {
         if (_liteCache.length >= 64) _liteCache.remove(_liteCache.keys.first);
         _liteCache[key] = Map<String, dynamic>.of(m);
+        _rememberSpec(path, m);
       }
       return m;
     } catch (_) {
@@ -174,6 +178,24 @@ class MediaPrep {
   }
 
   static final Map<String, Map<String, dynamic>> _liteCache = {};
+
+  /// 路徑 → 探過的規格摘要（編碼／幀率／HDR，沒有路徑也沒有內容）
+  static final Map<String, Map<String, Object?>> _liteSpec = {};
+
+  /// 記下（或刷新）一支的規格摘要；最舊的先出，最多 64 支
+  static void _rememberSpec(String path, Map<String, dynamic> m) {
+    _liteSpec.remove(path);
+    if (_liteSpec.length >= 64) _liteSpec.remove(_liteSpec.keys.first);
+    _liteSpec[path] = {
+      'codec': m['codec'],
+      'fps': m['fps'],
+      'hdr': m['sdr709'] == null ? null : m['sdr709'] != true,
+    };
+  }
+
+  /// 診斷用：這支探過的話，它的編碼、幀率、是不是 HDR。只查記憶體，
+  /// 不碰原生也不讀檔——品質報告取樣時不能自己製造卡頓
+  static Map<String, Object?>? probedSpec(String path) => _liteSpec[path];
 
   static String? _liteKey(String path) {
     try {
@@ -187,7 +209,10 @@ class MediaPrep {
 
   /// 測試用：清掉 [probeLite] 的快取
   @visibleForTesting
-  static void resetProbeCacheForTest() => _liteCache.clear();
+  static void resetProbeCacheForTest() {
+    _liteCache.clear();
+    _liteSpec.clear();
+  }
 
   /// [probe] 的結果排成一行人看得懂的字
   static String describe(Map<String, dynamic> m) {

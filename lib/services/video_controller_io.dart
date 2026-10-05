@@ -462,3 +462,50 @@ class _MpvPlayerX implements PlayerX {
 
 PlayerX makeVideoController(String path, {bool system = false}) =>
     PlayerX(path, system: system);
+
+/// 診斷用：這顆播放器實際用哪個引擎出畫面（不含路徑）。
+/// exo＝ExoPlayer 經 Flutter 貼圖（Android 原檔，或 mpv 撞牆後的退路）；
+/// mpv＝media_kit（Android 工作檔）；avplayer＝iOS
+String playerEngineName(PlayerX player) {
+  if (player is _FallbackPlayerX) return player._canFallback ? 'mpv' : 'exo';
+  if (player is _MpvPlayerX) return 'mpv';
+  if (player is _AvPlayerX) return Platform.isIOS ? 'avplayer' : 'exo';
+  return 'other';
+}
+
+/// 診斷用：mpv 自己數的掉格（只有 mpv 引擎有；其他引擎回 null）。
+/// voDropped＝輸出端來不及上屏丟掉的、decoderDropped＝解碼端丟的、
+/// voDelayed＝晚到的、hwdec＝實際用上的硬解。ExoPlayer 那條路沒有這些數字
+Future<Map<String, Object?>?> playerFrameStats(PlayerX player) async {
+  final inner = player is _FallbackPlayerX ? player._createdInner : player;
+  // 只問已經開好檔的 mpv。初始化完成前 mpv 的 handle 還是 null，不等
+  // 初始化的 getProperty 會把 null 直接交給 libmpv＝原生閃退（try 接不到）
+  if (inner is! _MpvPlayerX || !inner._inited) return null;
+  final native = inner._p.platform;
+  if (native is! mk.NativePlayer ||
+      native.disposed ||
+      native.ctx.address == 0) {
+    return null;
+  }
+  try {
+    // 不等初始化時，getProperty 的 FFI 呼叫發生在它第一個 await 之前：
+    // 四個在這一刻同步問完，上面的檢查跟真的讀之間沒有空檔讓播放器被收掉
+    final values = await Future.wait([
+      for (final name in const [
+        'frame-drop-count',
+        'decoder-frame-drop-count',
+        'vo-delayed-frame-count',
+        'hwdec-current',
+      ])
+        native.getProperty(name, waitForInitialization: false),
+    ]);
+    return {
+      'voDropped': int.tryParse(values[0]),
+      'decoderDropped': int.tryParse(values[1]),
+      'voDelayed': int.tryParse(values[2]),
+      'hwdec': values[3],
+    };
+  } catch (_) {
+    return null;
+  }
+}
