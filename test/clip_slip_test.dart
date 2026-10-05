@@ -1,10 +1,11 @@
 // 換段（slip）：使用者要的「時間軸影片素材要能調整片段」——片段在時間軸
 // 上的長度跟位置都不動，換成原片裡的另一段。
 //
-//   1. 選一段影片 → 工具列「換段」→ 整支原片的縮圖帶，框＝用到的那一截
-//   2. 左右拖：框跟著走，放手才套用（trimStart／trimEnd 一起平移、長度
-//      不變、offset 不變）；拖過頭會停在原片的頭尾
-//   3. 點一下選起點，大預覽即時顯示所選段落開頭
+//   1. 選一段影片 → 工具列「換段」→ 大預覽（播這一段，用工作檔、照片段
+//      音量）＋上面一條細的整支縮圖＋下面的放大膠卷，只寫起訖
+//   2. 拖整支縮圖：框跟著走，放手才套用（trimStart／trimEnd 一起平移、
+//      長度不變、offset 不變）；拖過頭會停在原片的頭尾
+//   3. 拖放大膠卷：框固定在中間，拖一個框寬＝換一個片段長度（細調）
 //   4. 換完一步「上一步」就回來；打開看看就關掉不算一步
 //   5. 不是影片（文字…）或已經用到整支影片：按鈕灰掉、點了講為什麼
 //   6. 「從影片提取聲音」拿進來的聲音也能換段（原片是影片檔，看得到
@@ -16,6 +17,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:markcut/models/timeline.dart';
 import 'package:markcut/screens/video_editor_screen.dart';
 import 'package:markcut/services/diagnostics.dart';
+import 'package:markcut/services/player_value.dart';
+import 'package:markcut/services/video_controller.dart';
+import 'package:markcut/widgets/slip_film.dart';
+import 'package:markcut/widgets/slip_picker.dart';
 import 'package:markcut/widgets/slip_strip.dart';
 
 import 'editor_harness.dart';
@@ -97,6 +102,61 @@ Future<void> _open(WidgetTester t, FakeComp comp) async {
 }
 
 Finder get _strip => find.byKey(const ValueKey('slip-strip'));
+Finder get _film => find.byKey(const ValueKey('slip-film'));
+
+/// 換段大預覽的假播放器（測試主機沒有原生播放器）
+class _FakePlayer implements PlayerX {
+  _FakePlayer(this.path);
+
+  @override
+  final String path;
+  double? volume;
+  Duration pos = Duration.zero;
+  bool playing = false;
+
+  @override
+  Future<void> initialize() async {}
+
+  @override
+  PlayerValueX get value => PlayerValueX(
+    isInitialized: true,
+    isPlaying: playing,
+    duration: const Duration(seconds: 20),
+    position: pos,
+    size: const Size(1920, 1080),
+  );
+
+  @override
+  Future<Duration?> positionNow() async => pos;
+
+  @override
+  Future<void> seekTo(Duration d) async => pos = d;
+
+  @override
+  Future<void> play() async => playing = true;
+
+  @override
+  Future<void> pause() async => playing = false;
+
+  @override
+  Future<void> setVolume(double v) async => volume = v;
+
+  @override
+  Future<void> setPlaybackSpeed(double s) async {}
+
+  @override
+  Future<void> setLooping(bool loop) async {}
+
+  @override
+  void dispose() {}
+
+  @override
+  Widget view({Key? key}) => ColoredBox(key: key, color: Colors.blueGrey);
+
+  @override
+  String get debugInfo => 'fake';
+}
+
 void main() {
   setUpAll(() {
     final b = TestWidgetsFlutterBinding.ensureInitialized();
@@ -106,14 +166,24 @@ void main() {
   // 假的原生合成播放器：預覽走合成那條路（跟實機一樣），不開 media_kit
   // 的單支播放器（測試主機沒有 libmpv）；也拿它數「換段有沒有重組合成」
   late FakeComp comp;
+  final players = <_FakePlayer>[];
   setUp(() {
+    players.clear();
+    SlipPicker.debugPlayer = (p) {
+      final player = _FakePlayer(p);
+      players.add(player);
+      return player;
+    };
     SharedPreferences.setMockInitialValues({});
     Diag.reset();
     // 測試環境沒有真的原生 UiKitView：合成畫面走 Texture
     Diag.playerLayer.value = false;
     comp = FakeComp(TestWidgetsFlutterBinding.ensureInitialized())..install();
   });
-  tearDown(() => comp.uninstall());
+  tearDown(() {
+    comp.uninstall();
+    SlipPicker.debugPlayer = null;
+  });
 
   testWidgets('選影片 → 換段：拖框換一段，長度與位置不變；上一步回來', (t) async {
     await _open(t, comp);
@@ -122,12 +192,17 @@ void main() {
     await t.tap(find.text('換段'));
     await settle(t, 6);
     expect(_strip, findsOneWidget, reason: '沒有開出換段的縮圖帶');
-    expect(find.text('開頭 00:02.00'), findsOneWidget);
+    expect(_film, findsOneWidget, reason: '沒有開出放大膠卷');
+    expect(find.text('00:02.00 – 00:06.00'), findsOneWidget);
     expect(find.textContaining('結尾'), findsNothing);
     expect(
-      t.getSize(find.byKey(const ValueKey('slip-preview-start'))).height,
+      t.getSize(find.byKey(const ValueKey('slip-preview'))).height,
       greaterThan(350),
     );
+    // 大預覽播工作檔（跟時間軸預覽同一份），音量照片段
+    expect(players.map((p) => p.path), ['/v.work.mp4']);
+    expect(players.single.volume, 1);
+    expect(players.single.playing, isFalse, reason: '一打開就出聲會嚇人');
     // 打開看看還沒動：不是一個編輯步驟
     expect(undoEnabled(t), isFalse);
 
@@ -145,10 +220,11 @@ void main() {
     expect(c.trimEnd - c.trimStart, closeTo(4, 1e-9), reason: '長度不能變');
     expect(c.offset, 1, reason: '在時間軸上的位置不能變');
     expect(
-      find.text('開頭 ${_t(c.trimStart)}'),
+      find.text('${_t(c.trimStart)} – ${_t(c.trimEnd)}'),
       findsOneWidget,
-      reason: '起點預覽的時間沒跟著換',
+      reason: '起訖時間沒跟著換',
     );
+    expect(players.single.playing, isTrue, reason: '放手就從新的開頭播');
 
     // 往右拖過頭：停在原片尾巴（16～20）
     await t.drag(_strip, Offset(w, 0));
@@ -174,6 +250,26 @@ void main() {
     await settle(t, 40);
   });
 
+  testWidgets('放大膠卷細調：拖一個框寬＝換一個片段長度', (t) async {
+    await _open(t, comp);
+    await t.tapAt(t.getCenter(clipBlock(1)));
+    await settle(t, 6);
+    await t.tap(find.text('換段'));
+    await settle(t, 6);
+    final window = t.getSize(_film).width * SlipFilmGeometry.windowFraction;
+    // 手指往左＝換成後面那段：2～6 → 6～10
+    await t.drag(_film, Offset(-window, 0));
+    await settle(t, 6);
+    await tick(t, 40);
+    expect(clipOf(t, 1).trimStart, closeTo(6, 1e-6));
+    expect(clipOf(t, 1).trimEnd, closeTo(10, 1e-6));
+    expect(clipOf(t, 1).offset, 1);
+    expect(find.text('00:06.00 – 00:10.00'), findsOneWidget);
+    await t.tap(find.text('完成'));
+    await settle(t, 40);
+    expect(t.takeException(), isNull);
+  });
+
   testWidgets('文字片段：換段灰掉，點了說只有影片可以換段', (t) async {
     await _open(t, comp);
     await t.tapAt(t.getCenter(clipBlock(2)));
@@ -194,6 +290,7 @@ void main() {
     await t.tap(find.text('換段'));
     await settle(t, 6);
     expect(_strip, findsOneWidget, reason: '從影片拿的聲音沒有開出換段');
+    expect(players.map((p) => p.path), ['/a.mov'], reason: '看得到原片畫面、聽得到聲音');
     final w = t.getSize(_strip).width;
     await t.drag(_strip, Offset(w / 4, 0));
     await settle(t, 6);

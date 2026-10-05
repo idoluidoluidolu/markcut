@@ -16798,7 +16798,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 換段（slip）：片段在時間軸上的長度跟位置都不動，換成原片裡的另一段
-  /// 大預覽按來源時間即時抽開頭畫面；拖動縮圖帶，放手才重組合成。
+  /// 大預覽循環播這一段（照片段音量出聲）；拖放大膠卷細調、拖上面的整支
+  /// 縮圖大跳，放手才重組合成。
   Future<void> _openSlipSheet(TimelineClip clip) async {
     _pause();
     final src = _tl.sourceOf(clip);
@@ -16850,6 +16851,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           duration: src.duration,
           start: clip.trimStart,
           length: len,
+          playPath: framePath,
+          volume: clip.volume,
+          aspect: src.w > 0 && src.h > 0 ? src.w / src.h : 1,
           loadFrame: (t) => loadSourceFrame(t, 720),
           loadThumbnail: (t) => loadSourceFrame(t, 200),
           onCommit: apply,

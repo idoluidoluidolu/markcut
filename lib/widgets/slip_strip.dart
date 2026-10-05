@@ -1,14 +1,18 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/material.dart';
 
 import '../theme.dart';
 
-/// 換段（slip）的縮圖帶：整條＝整支原片，亮著的框＝這段片段用到的
-/// 那一截。框的寬度固定（片段長度不變，使用者選的是「長度不變、換原片
-/// 的另一段」），左右拖整條任何地方都會帶著框走；點一下＝起點移到
-/// 那裡。拖的過程只回報 [onChanged]（畫框），放手才回報 [onEnd]——套用
-/// 要重組合成，不能每一格都做
+/// 換段最上面那條細的整支縮圖：整條＝整支原片，亮著的框＝這段片段用到
+/// 的那一截（框寬固定：長度不變、換原片的另一段）。用來大跳——細調交給
+/// 下面的放大膠卷（[SlipFilm]）。
+///
+/// 左右拖整條任何地方都會帶著框走；點一下＝框的中間移到那裡。拖的過程
+/// 只回報 [onChanged]（畫框），放手才回報 [onEnd]——套用要重組合成，
+/// 不能每一格都做
 class SlipStrip extends StatefulWidget {
   /// 整支原片均勻抽的縮圖（第 i 張在 i/n 那個時間附近）。還沒抽好是空的
   final List<Uint8List> frames;
@@ -21,6 +25,9 @@ class SlipStrip extends StatefulWidget {
 
   /// 框的長度（原片秒）
   final double length;
+
+  /// 原片長寬比（寬÷高）：一格縮圖照這個比例排，多的裁掉
+  final double aspect;
 
   /// 選段工具提供按時間抽取的影格，避免把稀疏的粗縮圖當成精準畫面。
   /// null 結果代表尚未載入，不能拿前一張影格冒充。
@@ -37,11 +44,22 @@ class SlipStrip extends StatefulWidget {
     required this.length,
     required this.onChanged,
     required this.onEnd,
+    this.aspect = 1,
     this.frameAt,
   });
 
-  /// 整條的高度（縮圖也照這個高度排，近方形）
-  static const double height = 56;
+  /// 整條的高度
+  static const double height = 28;
+
+  /// 寬 [width] 的整條要排幾格縮圖（選段工具照同一個數字去抽圖）
+  static int tileCount(double width, {double aspect = 1}) {
+    final tile = height * (aspect > 0 ? aspect : 1.0).clamp(0.5, 2.0);
+    return (width / tile).ceil().clamp(1, 64);
+  }
+
+  /// 第 [i] 格（共 [count] 格）抽哪一秒
+  static double tileTime(int i, int count, double duration) =>
+      (i + 0.5) / count * duration;
 
   @override
   State<SlipStrip> createState() => _SlipStripState();
@@ -70,9 +88,10 @@ class _SlipStripState extends State<SlipStrip> {
       double x(double t) => t / span * w;
       final left = x(widget.start);
       final right = x(widget.start + widget.length);
-      final width = (right - left).clamp(4.0, double.infinity);
+      final width = math.max(4.0, right - left);
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
+        dragStartBehavior: DragStartBehavior.down,
         onHorizontalDragStart: (_) => _raw = widget.start,
         onHorizontalDragUpdate: (d) {
           if (w <= 0) return;
@@ -93,7 +112,7 @@ class _SlipStripState extends State<SlipStrip> {
         },
         onTapUp: (d) {
           if (w <= 0) return;
-          _moveTo(d.localPosition.dx / w * span);
+          _moveTo(d.localPosition.dx / w * span - widget.length / 2);
           widget.onEnd();
         },
         child: SizedBox(
@@ -103,10 +122,11 @@ class _SlipStripState extends State<SlipStrip> {
             children: [
               Positioned.fill(
                 child: ClipRRect(
-                  borderRadius: BorderRadius.circular(6),
+                  borderRadius: BorderRadius.circular(4),
                   child: _Filmstrip(
                     frames: widget.frames,
                     duration: widget.duration,
+                    aspect: widget.aspect,
                     frameAt: widget.frameAt,
                   ),
                 ),
@@ -134,8 +154,8 @@ class _SlipStripState extends State<SlipStrip> {
                 child: IgnorePointer(
                   child: DecoratedBox(
                     decoration: BoxDecoration(
-                      border: Border.all(color: kSelect, width: 2.5),
-                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: kSelect, width: 2),
+                      borderRadius: BorderRadius.circular(4),
                     ),
                   ),
                 ),
@@ -160,23 +180,24 @@ class _Shade extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.6),
         borderRadius: left
-            ? const BorderRadius.horizontal(left: Radius.circular(6))
-            : const BorderRadius.horizontal(right: Radius.circular(6)),
+            ? const BorderRadius.horizontal(left: Radius.circular(4))
+            : const BorderRadius.horizontal(right: Radius.circular(4)),
       ),
     ),
   );
 }
 
-/// 整支原片的縮圖帶：格子近方形（寬＝高），一格挑時間上最接近它中間
-/// 的那一張縮圖
+/// 整支原片的縮圖帶：一格照原片長寬比，挑時間上最接近它中間的那一張
 class _Filmstrip extends StatelessWidget {
   final List<Uint8List> frames;
   final double duration;
+  final double aspect;
   final Uint8List? Function(double)? frameAt;
 
   const _Filmstrip({
     required this.frames,
     required this.duration,
+    required this.aspect,
     this.frameAt,
   });
 
@@ -187,9 +208,9 @@ class _Filmstrip extends StatelessWidget {
     }
     return LayoutBuilder(
       builder: (context, box) {
-        final tiles = (box.maxWidth / box.maxHeight).ceil().clamp(1, 64);
+        final tiles = SlipStrip.tileCount(box.maxWidth, aspect: aspect);
         Uint8List? tile(int k) {
-          final at = (k + 0.5) / tiles * duration;
+          final at = SlipStrip.tileTime(k, tiles, duration);
           if (frameAt != null) return frameAt!(at);
           return frames[(at / duration * frames.length).floor().clamp(
             0,
