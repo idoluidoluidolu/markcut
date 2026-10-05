@@ -7107,21 +7107,33 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
   }
 
-  /// 從相簿挑一個 GIF。
+  /// 從相簿挑一個 GIF，收進「我的 GIF」，回傳收好的那一份。
   ///
-  /// 用 FileType.image：在 iOS／Android 上開的是相簿本人（不是檔案
-  /// App）。相簿裡什麼都選得到，所以挑完自己驗一次副檔名——選到
-  /// 一般照片時要講清楚，不能默默當成 GIF 加進去只有一格
+  /// 先問系統相片選取器，相簿裡只列得出會動的圖（見 pickGalleryGifs，
+  /// 跟個人中心「從相簿匯入 GIF」同一支）。以前這裡直接開 file_picker
+  /// 的「所有照片」，使用者得在一整片靜態照片裡自己認哪張會動。
+  /// 回 null 才是「這台沒有」，退回 file_picker；空清單是按了取消，
+  /// 不再跳第二個選取器。退路什麼都選得到，所以副檔名跟檔頭自己驗——
+  /// 選到一般照片時要講清楚，不能默默當成 GIF 加進去只有一格
+  ///
+  /// 當場收一份：挑出來的是暫存檔，iOS 那支下次開選取器就掃掉一小時前
+  /// 的（見 AppDelegate 的 sweepPickedTemp）。「換一個」是直接拿這個
+  /// 路徑用的，不收的話片段過一陣子就指到不存在的檔案
   Future<String?> _pickGifFromGallery() async {
-    final r = await FilePicker.platform.pickFiles(type: FileType.image);
-    final f = r?.files.singleOrNull;
-    final path = f?.path;
+    final picked = await pickGalleryGifs();
+    if (picked != null && picked.isEmpty) return null;
+    var path = picked?.first;
+    if (path == null) {
+      final r = await FilePicker.platform.pickFiles(type: FileType.image);
+      path = r?.files.singleOrNull?.path;
+    }
     if (path == null) return null;
-    if (!path.toLowerCase().endsWith('.gif')) {
+    if (!path.toLowerCase().endsWith('.gif') ||
+        !await GifStore.looksLikeGif(path)) {
       if (mounted) showHint(context, '這不是 GIF，請選會動的那種', error: true);
       return null;
     }
-    return path;
+    return await GifStore.add(path) ?? path;
   }
 
   /// 把一個 GIF 放上時間軸。
