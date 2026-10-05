@@ -10,12 +10,13 @@ import '../theme.dart';
 import 'slip_film.dart';
 import 'slip_strip.dart';
 
-/// 換段：片段長度不變，換成原片的另一段。
+/// 換段：換成原片的另一段；拉框邊可以直接改長度。
 ///
 /// 使用者從畫布上三個方向挑了「放大膠卷」：
 /// - 大預覽循環播「這一段」，聲音開著——看得到也聽得到選的是什麼
 /// - 下面的放大膠卷：琥珀框固定在中間，左右拖膠卷＝細調（片段越短放得
-///   越大，長片也調得準）
+///   越大，長片也調得準）；框的兩邊有把手，拉框邊＝改長度（使用者：
+///   「換段要可以直接裁剪長度」），拉的時候大預覽停在那條邊的畫面
 /// - 上面那條細的整支縮圖：點一下或拖它＝一次跳很遠
 /// - 放手才套用（要重組合成），套用後從新的開頭自動播
 ///
@@ -29,6 +30,8 @@ class SlipPicker extends StatefulWidget {
     required this.length,
     required this.loadFrame,
     required this.onCommit,
+    this.onCommitRange,
+    this.minLength = 0,
     this.loadThumbnail,
     this.playPath,
     this.volume = 1,
@@ -41,7 +44,7 @@ class SlipPicker extends StatefulWidget {
   /// 片段目前的起點（原片秒）
   final double start;
 
-  /// 片段長度（秒），換段不會改它
+  /// 片段一打開時的長度（原片秒）；拉框邊會改它
   final double length;
 
   /// 沒有播放器時的大預覽：抽 [seconds] 那一格
@@ -50,8 +53,14 @@ class SlipPicker extends StatefulWidget {
   /// 膠卷與整支縮圖用的小圖；null＝跟大預覽同一支
   final Future<Uint8List?> Function(double seconds)? loadThumbnail;
 
-  /// 放手時回報新的起點
+  /// 換段放手時回報新的起點（長度照目前的）
   final ValueChanged<double> onCommit;
+
+  /// 拉框邊放手時回報新的起點、長度（原片秒）。null＝不能改長度
+  final void Function(double start, double length)? onCommitRange;
+
+  /// 最短長度（原片秒）
+  final double minLength;
 
   /// 大預覽要播的檔案；null＝只看開頭畫面
   final String? playPath;
@@ -72,6 +81,12 @@ class SlipPicker extends StatefulWidget {
 
 class _SlipPickerState extends State<SlipPicker> {
   late double _start = widget.start;
+  late double _length = widget.length;
+
+  /// 拉框邊的過程中，膠卷的排法凍在開拉時的起點與長度（膠卷自己也凍住，
+  /// 見 SlipFilm）：不然每動一格比例就變一次，縮圖要整條重抽
+  double? _lengthAtTrim;
+  double? _startAtTrim;
   final _frames = <({int at, bool preview}), Uint8List?>{};
   List<({int at, bool preview})> _wanted = [];
   bool _loading = false;
@@ -92,7 +107,7 @@ class _SlipPickerState extends State<SlipPicker> {
   late final ValueNotifier<double> _pos = ValueNotifier(widget.start);
   Timer? _tick;
 
-  double get _end => _start + widget.length;
+  double get _end => _start + _length;
 
   static Duration _ms(double s) => Duration(milliseconds: (s * 1000).round());
 
@@ -218,6 +233,40 @@ class _SlipPickerState extends State<SlipPicker> {
     unawaited(_playFromStart());
   }
 
+  /// 拉框邊的每一下：先停播，大預覽停在拉的那條邊——拉左邊看新的開頭、
+  /// 拉右邊看新的結尾（最後一格）
+  void _trimTo(double s, double length, bool leftEdge) {
+    if (!_gesturing) {
+      _gesturing = true;
+      _lengthAtTrim = _length;
+      _startAtTrim = _start;
+      if (_playing) {
+        _playing = false;
+        unawaited(_player?.pause());
+      }
+    }
+    setState(() {
+      _start = s;
+      _length = length;
+    });
+    final edge = leftEdge ? s : math.max(s, s + length - 1 / 30);
+    _pos.value = edge;
+    _seekDuringDrag(edge);
+  }
+
+  /// 拉框邊放手：套用新的範圍，從新的開頭播。膠卷這時才換成新長度的
+  /// 排法（框放回中間四成寬）
+  void _trimRelease() {
+    _gesturing = false;
+    _seekWanted = null;
+    setState(() {
+      _lengthAtTrim = null;
+      _startAtTrim = null;
+    });
+    widget.onCommitRange?.call(_start, _length);
+    unawaited(_playFromStart());
+  }
+
   // 拖曳中的 seek：同一時間只發一個，最多每 40ms 一次；中間的位置只留
   // 最新那個（跟挑音訊那頁同一套）
   double? _seekWanted;
@@ -268,9 +317,11 @@ class _SlipPickerState extends State<SlipPicker> {
   /// 再來是膠卷上離框最近的格子，最後才是整支縮圖。快取依實際要求的
   /// 時間查找，晚到的舊畫面不會貼到新的時間標籤下
   void _requestFrames(SlipFilmGeometry film, int overview) {
-    final center = _start + widget.length / 2;
+    // 拉框邊的時候膠卷凍在開拉那一刻（原點、長度都是），抽的格子也照那時候
+    final origin = _startAtTrim ?? _start;
+    final center = origin + film.length / 2;
     final filmTimes = [
-      for (final k in film.visibleTiles(_start)) film.tileTime(k),
+      for (final k in film.visibleTiles(origin)) film.tileTime(k),
     ]..sort((a, b) => (a - center).abs().compareTo((b - center).abs()));
     final wanted = {
       if (!_ready) (at: _key(_start), preview: true),
@@ -349,7 +400,7 @@ class _SlipPickerState extends State<SlipPicker> {
             width: box.maxWidth,
             height: SlipFilm.height,
             duration: widget.duration,
-            length: widget.length,
+            length: _lengthAtTrim ?? _length,
             aspect: widget.aspect,
           );
           final overview = SlipStrip.tileCount(
@@ -382,7 +433,7 @@ class _SlipPickerState extends State<SlipPicker> {
                 frames: const [],
                 duration: widget.duration,
                 start: _start,
-                length: widget.length,
+                length: _length,
                 aspect: widget.aspect,
                 frameAt: _thumb,
                 onChanged: _moveTo,
@@ -396,6 +447,9 @@ class _SlipPickerState extends State<SlipPicker> {
                 frameAt: _thumb,
                 onChanged: _moveTo,
                 onEnd: _release,
+                onTrimChanged: widget.onCommitRange == null ? null : _trimTo,
+                onTrimEnd: _trimRelease,
+                minLength: widget.minLength,
                 playhead: _pos,
                 showPlayhead: _playing,
               ),

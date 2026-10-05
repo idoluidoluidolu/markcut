@@ -16642,11 +16642,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         Icons.swap_horiz,
                         '換段',
                         _canSlip(sel) ? () => _openSlipSheet(sel!) : null,
-                        tip: '長度不變，換成原片的另一段',
+                        tip: '換成原片的另一段，拉框邊改長度',
                         disabledHint: sel == null
                             ? '先在時間軸點選一段影片'
-                            : _hasPicture(_tl.sourceOf(sel))
-                            ? '這段已經用到整支影片，沒有別段可以換'
                             : '只有影片、從影片拿的聲音可以換段',
                       ),
                       // 順序：切割 → 換段 → 複製 → 刪除 → 貼上。刪除刻意
@@ -16904,24 +16902,30 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       (src.kind == ClipKind.audio && isVideoFile(XFile(src.path)));
 
   /// 這一段能不能換段：原片要有畫面可以對照（使用者指定：從影片拿的聲音
-  /// 也要能換段），而且原片比這段長（有別段可換）
+  /// 也要能換段）。整支用滿的片段也可以：換段表裡能直接拉框邊改長度
+  ///（剛匯入的影片就是整支用滿，以前這裡把它擋掉）
   bool _canSlip(TimelineClip? c) {
     if (c == null) return false;
     final src = _tl.sourceOf(c);
-    return _hasPicture(src) && src.duration - (c.trimEnd - c.trimStart) > 0.05;
+    return _hasPicture(src) && src.duration > kMinClipLen;
   }
 
-  /// 換段（slip）：片段在時間軸上的長度跟位置都不動，換成原片裡的另一段
-  /// 大預覽循環播這一段（照片段音量出聲）；拖放大膠卷細調、拖上面的整支
-  /// 縮圖大跳，放手才重組合成。
+  /// 換段（slip）：片段在時間軸上的位置不動，換成原片裡的另一段；拉框邊
+  /// 直接改長度（使用者：「換段要可以直接裁剪長度」）。大預覽循環播這一段
+  ///（照片段音量出聲）；拖放大膠卷細調、拖上面的整支縮圖大跳，放手才
+  /// 重組合成。
   Future<void> _openSlipSheet(TimelineClip clip) async {
     _pause();
     final src = _tl.sourceOf(clip);
-    final len = clip.trimEnd - clip.trimStart;
     final framePath = _thumbnailPath(src);
     var undoPushed = false;
-    void apply(double start) {
-      if (!mounted || (start - clip.trimStart).abs() < 0.001) return;
+    void applyRange(double start, double length) {
+      final end = start + length;
+      if (!mounted ||
+          ((start - clip.trimStart).abs() < 0.001 &&
+              (end - clip.trimEnd).abs() < 0.001)) {
+        return;
+      }
       // 第一次真的換了才拍復原快照：打開看看就關掉，不該清掉重做
       if (!undoPushed) {
         _pushUndo();
@@ -16929,13 +16933,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       }
       setState(() {
         clip.trimStart = start;
-        clip.trimEnd = start + len;
+        clip.trimEnd = end;
+        // 拉長長進後面那段：跟時間軸的右把手一樣，把同軌後面的推開（同軌
+        // 永遠不重疊）；剪短留下的空隙不自動收（時間軸右把手也不收）
+        _tl.resolveOverlaps(track: clip.track);
       });
       _resyncPlayback();
       // 換的是合成裡這一段用原片的哪裡：當場排重組（跟切割同一套）
       _compRefreshIfChanged();
       _seekScrub(clip.offset);
     }
+
+    // 換段（拖膠卷／整支縮圖）長度照目前的：拉框邊改過就是改過的長度
+    void apply(double start) =>
+        applyRange(start, clip.trimEnd - clip.trimStart);
 
     Future<Uint8List?> loadSourceFrame(double t, int height) async {
       if (!kIsWeb) {
@@ -16964,13 +16975,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         child: SlipPicker(
           duration: src.duration,
           start: clip.trimStart,
-          length: len,
+          length: clip.trimEnd - clip.trimStart,
           playPath: framePath,
           volume: clip.volume,
           aspect: src.w > 0 && src.h > 0 ? src.w / src.h : 1,
           loadFrame: (t) => loadSourceFrame(t, 720),
           loadThumbnail: (t) => loadSourceFrame(t, 200),
           onCommit: apply,
+          onCommitRange: applyRange,
+          // 最短長度跟時間軸修剪同一條（時間軸秒換算成原片秒）
+          minLength: kMinClipLen * clip.speed,
         ),
       ),
     );

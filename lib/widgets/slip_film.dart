@@ -95,7 +95,12 @@ class SlipFilmGeometry {
 
 /// 換段的放大膠卷：框不動、膠卷在框底下滑。左右拖＝換段（手指往左＝
 /// 換成後面那段，跟拖底片一樣）；拖的過程只回報 [onChanged]，放手才
-/// 回報 [onEnd]——套用要重組合成，不能每一格都做
+/// 回報 [onEnd]——套用要重組合成，不能每一格都做。
+///
+/// 給了 [onTrimChanged] 的話框的兩邊有把手（跟時間軸的黃色修剪把手同一個
+/// 樣子）：拉框邊＝改長度（使用者：「換段要可以直接裁剪長度」）。拉的時候
+/// 膠卷跟比例都凍住，只有那條邊跟著手指；放手後父層換上新長度，框才重新
+/// 放回中間四成寬（膠卷跟著重新縮放）——想剪得更短，再拉一次
 class SlipFilm extends StatefulWidget {
   const SlipFilm({
     super.key,
@@ -104,12 +109,25 @@ class SlipFilm extends StatefulWidget {
     required this.frameAt,
     required this.onChanged,
     required this.onEnd,
+    this.onTrimChanged,
+    this.onTrimEnd,
+    this.minLength = 0,
     this.playhead,
     this.showPlayhead = false,
   });
 
   /// 膠卷的高度
   static const double height = 64;
+
+  /// 框邊把手：視覺寬度（跟時間軸一樣），以及觸控熱區往框裡、往框外各
+  /// 伸多少——手指瞄的是那條邊，接觸面有一半會落在框外
+  static const double handleWidth = 13;
+  static const double handleInside = 26;
+  static const double handleOutside = 16;
+
+  /// 拉的時候框至少留這麼寬：再短就看不到也抓不到了。放手重新放大後可以
+  /// 再拉短
+  static const double minWindowPx = 24;
 
   final SlipFilmGeometry geometry;
 
@@ -122,6 +140,17 @@ class SlipFilm extends StatefulWidget {
   final ValueChanged<double> onChanged;
   final VoidCallback onEnd;
 
+  /// 拉框邊的過程：新的起點、長度（原片秒），[leftEdge]＝拉的是左邊。
+  /// null＝不能改長度（框邊沒有把手）
+  final void Function(double start, double length, bool leftEdge)?
+  onTrimChanged;
+
+  /// 拉框邊放手
+  final VoidCallback? onTrimEnd;
+
+  /// 最短長度（原片秒）
+  final double minLength;
+
   /// 播放中的位置（原片秒）：框裡畫一條白線
   final ValueListenable<double>? playhead;
   final bool showPlayhead;
@@ -130,10 +159,23 @@ class SlipFilm extends StatefulWidget {
   State<SlipFilm> createState() => _SlipFilmState();
 }
 
+enum _Grip { slide, left, right }
+
 class _SlipFilmState extends State<SlipFilm> {
   /// 拖曳中累計的起點（同一格裡來好幾個事件、父層還沒重畫時才不會吃掉
   /// 位移）；夾在頭尾之間，撞到頭再往外拖，回頭時膠卷馬上就跟著動
   double? _raw;
+
+  _Grip _grip = _Grip.slide;
+
+  /// 拉框邊時凍住的排法（null＝沒在拉）跟當時框的起點（膠卷原點）
+  SlipFilmGeometry? _frozen;
+  double _origin = 0;
+
+  /// 拉框邊的過程中的新範圍（原片秒），以及那條邊沒夾過的位置（累計
+  /// 位移：撞到頭尾或最短再往外拉、回頭時邊馬上就跟著動）
+  double _trimStart = 0, _trimEnd = 0;
+  double _rawEdge = 0;
 
   double get _maxStart => math.max(
     0.0,
@@ -141,27 +183,98 @@ class _SlipFilmState extends State<SlipFilm> {
   );
 
   void _end() {
+    if (_grip != _Grip.slide) {
+      setState(() {
+        _grip = _Grip.slide;
+        _frozen = null;
+      });
+      widget.onTrimEnd?.call();
+      return;
+    }
     if (_raw == null) return;
     _raw = null;
     widget.onEnd();
   }
 
+  /// 按下的位置在哪條框邊的把手上（都不是＝拖膠卷）
+  _Grip _gripAt(double x) {
+    if (widget.onTrimChanged == null) return _Grip.slide;
+    final g = widget.geometry;
+    final l = g.windowLeft;
+    final r = g.windowLeft + g.windowWidth;
+    final onLeft =
+        x >= l - SlipFilm.handleOutside && x <= l + SlipFilm.handleInside;
+    final onRight =
+        x >= r - SlipFilm.handleInside && x <= r + SlipFilm.handleOutside;
+    if (onLeft && onRight) {
+      return (x - l).abs() <= (x - r).abs() ? _Grip.left : _Grip.right;
+    }
+    return onLeft ? _Grip.left : (onRight ? _Grip.right : _Grip.slide);
+  }
+
+  void _dragStart(DragStartDetails d) {
+    _grip = _gripAt(d.localPosition.dx);
+    if (_grip == _Grip.slide) {
+      _raw = widget.start;
+      return;
+    }
+    final g = widget.geometry;
+    setState(() {
+      _frozen = g;
+      _origin = widget.start;
+      _trimStart = widget.start;
+      _trimEnd = widget.start + g.length;
+      _rawEdge = _grip == _Grip.left ? _trimStart : _trimEnd;
+    });
+  }
+
+  void _dragUpdate(DragUpdateDetails d) {
+    if (_grip == _Grip.slide) {
+      final g = widget.geometry;
+      final from = _raw ?? widget.start;
+      final next = (from - d.delta.dx / g.pps).clamp(0.0, _maxStart);
+      _raw = next;
+      if ((next - widget.start).abs() > 1e-9) widget.onChanged(next);
+      return;
+    }
+    final g = _frozen!;
+    _rawEdge += d.delta.dx / g.pps;
+    final minLen = math.max(widget.minLength, SlipFilm.minWindowPx / g.pps);
+    setState(() {
+      if (_grip == _Grip.left) {
+        _trimStart = _rawEdge.clamp(0.0, math.max(0.0, _trimEnd - minLen));
+      } else {
+        _trimEnd = _rawEdge.clamp(
+          math.min(g.duration, _trimStart + minLen),
+          g.duration,
+        );
+      }
+    });
+    widget.onTrimChanged!(
+      _trimStart,
+      _trimEnd - _trimStart,
+      _grip == _Grip.left,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final g = widget.geometry;
-    final start = widget.start;
+    final frozen = _frozen;
+    final g = frozen ?? widget.geometry;
+    // 膠卷原點：平常是框的起點；拉框邊時凍在開拉那一刻，膠卷不動
+    final start = frozen == null ? widget.start : _origin;
     final filmEnd = g.xOf(g.duration, start);
+    final winLeft = frozen == null ? g.windowLeft : g.xOf(_trimStart, start);
+    final winRight = frozen == null
+        ? g.windowLeft + g.windowWidth
+        : g.xOf(_trimEnd, start);
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      // 膠卷黏著手指走：過拖曳門檻前那一小段也算（不然會差半個指頭）
+      // 膠卷黏著手指走：過拖曳門檻前那一小段也算（不然會差半個指頭）；
+      // 也靠它拿到按下的位置，判斷按的是框邊把手還是膠卷
       dragStartBehavior: DragStartBehavior.down,
-      onHorizontalDragStart: (_) => _raw = start,
-      onHorizontalDragUpdate: (d) {
-        final from = _raw ?? start;
-        final next = (from - d.delta.dx / g.pps).clamp(0.0, _maxStart);
-        _raw = next;
-        if ((next - widget.start).abs() > 1e-9) widget.onChanged(next);
-      },
+      onHorizontalDragStart: _dragStart,
+      onHorizontalDragUpdate: _dragUpdate,
       onHorizontalDragEnd: (_) => _end(),
       onHorizontalDragCancel: _end,
       child: SizedBox(
@@ -183,21 +296,21 @@ class _SlipFilmState extends State<SlipFilm> {
                 left: 0,
                 top: 0,
                 bottom: 0,
-                width: g.windowLeft,
+                width: math.max(0.0, winLeft),
                 child: const _Shade(),
               ),
               Positioned(
-                left: g.windowLeft + g.windowWidth,
+                left: winRight,
                 right: 0,
                 top: 0,
                 bottom: 0,
                 child: const _Shade(),
               ),
               Positioned(
-                left: g.windowLeft,
+                left: winLeft,
                 top: 0,
                 bottom: 0,
-                width: g.windowWidth,
+                width: math.max(0.0, winRight - winLeft),
                 child: IgnorePointer(
                   child: DecoratedBox(
                     decoration: BoxDecoration(
@@ -207,6 +320,10 @@ class _SlipFilmState extends State<SlipFilm> {
                   ),
                 ),
               ),
+              if (widget.onTrimChanged != null) ...[
+                _handle(left: winLeft, isLeft: true),
+                _handle(left: winRight - SlipFilm.handleWidth, isLeft: false),
+              ],
               if (widget.showPlayhead && widget.playhead != null)
                 ValueListenableBuilder<double>(
                   valueListenable: widget.playhead!,
@@ -232,6 +349,29 @@ class _SlipFilmState extends State<SlipFilm> {
       ),
     );
   }
+
+  /// 框邊的把手：跟時間軸修剪把手同一個樣子（琥珀細條＋握把圖示，外側圓角）
+  Widget _handle({required double left, required bool isLeft}) => Positioned(
+    key: ValueKey(isLeft ? 'slip-trim-left' : 'slip-trim-right'),
+    left: left,
+    top: 0,
+    bottom: 0,
+    width: SlipFilm.handleWidth,
+    child: IgnorePointer(
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: kSelect,
+          borderRadius: BorderRadius.horizontal(
+            left: isLeft ? const Radius.circular(6) : Radius.zero,
+            right: isLeft ? Radius.zero : const Radius.circular(6),
+          ),
+        ),
+        child: const Center(
+          child: Icon(Icons.drag_indicator, size: 11, color: Colors.black87),
+        ),
+      ),
+    ),
+  );
 
   Widget _tile(SlipFilmGeometry g, int k, double start, double filmEnd) {
     final left = g.xOf(k * g.step, start);

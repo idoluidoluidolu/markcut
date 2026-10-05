@@ -7,9 +7,11 @@
 //      長度不變、offset 不變）；拖過頭會停在原片的頭尾
 //   3. 拖放大膠卷：框固定在中間，拖一個框寬＝換一個片段長度（細調）
 //   4. 換完一步「上一步」就回來；打開看看就關掉不算一步
-//   5. 不是影片（文字…）或已經用到整支影片：按鈕灰掉、點了講為什麼
+//   5. 不是影片（文字…）：按鈕灰掉、點了講為什麼
 //   6. 「從影片提取聲音」拿進來的聲音也能換段（原片是影片檔，看得到
 //      畫面）；純音訊檔沒有畫面可以對照，不給換
+//   7. 拉放大膠卷的框邊直接改長度（使用者：「換段要可以直接裁剪長度」）：
+//      位置不變、加長時同軌後面的讓開；整支用滿的影片也打得開
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -313,6 +315,80 @@ void main() {
     expect(_strip, findsNothing);
     expect(find.text('只有影片、從影片拿的聲音可以換段'), findsOneWidget);
     await settle(t, 80);
+    expect(t.takeException(), isNull);
+  });
+
+  // 使用者：「換段要可以直接裁剪長度」
+  testWidgets('換段表拉框右邊直接加長：位置不變、同軌後面那段讓開；上一步回來', (t) async {
+    await _open(t, comp);
+    // 同軌緊接著再一段（5～8 秒），看加長時有沒有被推開
+    VideoEditorScreen.debugTimeline!((m) {
+      m.clips.add(
+        TimelineClip(
+          id: 9,
+          sourceIndex: 0,
+          trimStart: 10,
+          trimEnd: 13,
+          offset: 5,
+          track: 0,
+        ),
+      );
+      m.ensureIdAbove(9);
+    });
+    await tick(t, 15);
+    await t.tapAt(t.getCenter(clipBlock(1)));
+    await settle(t, 6);
+    await t.tap(find.text('換段'));
+    await settle(t, 6);
+    final right = find.byKey(const ValueKey('slip-trim-right'));
+    expect(right, findsOneWidget, reason: '框邊要有把手');
+    final window = t.getSize(_film).width * SlipFilmGeometry.windowFraction;
+    // 半個框寬＝長度的一半：2～6 → 2～8
+    await t.drag(right, Offset(window / 2, 0));
+    await settle(t, 6);
+    await tick(t, 40);
+    final c = clipOf(t, 1);
+    expect(c.trimStart, closeTo(2, 1e-6));
+    expect(c.trimEnd, closeTo(8, 1e-6), reason: '拉右邊要加長');
+    expect(c.offset, 1, reason: '在時間軸上的位置不能變');
+    expect(clipOf(t, 9).offset, closeTo(7, 1e-6), reason: '同軌後面那段要讓開');
+    expect(clipOf(t, 9).trimStart, 10, reason: '後面那段只是讓開，內容不動');
+    expect(find.text('00:02.00 – 00:08.00'), findsOneWidget);
+    await t.tap(find.text('完成'));
+    await settle(t, 6);
+    await t.tap(undoButton());
+    await settle(t, 6);
+    expect(clipOf(t, 1).trimEnd, closeTo(6, 1e-9));
+    expect(clipOf(t, 9).offset, closeTo(5, 1e-9));
+    expect(t.takeException(), isNull);
+    await settle(t, 40);
+  });
+
+  testWidgets('整支用滿的影片（剛匯入就是）也能開換段，拉框左邊從前面剪短', (t) async {
+    await _open(t, comp);
+    VideoEditorScreen.debugTimeline!((m) {
+      final c = m.clips.firstWhere((c) => c.id == 1);
+      c.trimStart = 0;
+      c.trimEnd = 20;
+    });
+    await tick(t, 15);
+    await t.tapAt(t.getCenter(clipBlock(1)));
+    await settle(t, 6);
+    await t.tap(find.text('換段'));
+    await settle(t, 6);
+    expect(_strip, findsOneWidget, reason: '整支用滿也要打得開');
+    final left = find.byKey(const ValueKey('slip-trim-left'));
+    final window = t.getSize(_film).width * SlipFilmGeometry.windowFraction;
+    // 四分之一框寬＝5 秒：0～20 → 5～20
+    await t.drag(left, Offset(window / 4, 0));
+    await settle(t, 6);
+    await tick(t, 40);
+    final c = clipOf(t, 1);
+    expect(c.trimStart, closeTo(5, 1e-6));
+    expect(c.trimEnd, closeTo(20, 1e-6));
+    expect(c.offset, 1, reason: '在時間軸上的位置不能變');
+    Navigator.of(t.element(_strip)).pop();
+    await settle(t, 40);
     expect(t.takeException(), isNull);
   });
 }
