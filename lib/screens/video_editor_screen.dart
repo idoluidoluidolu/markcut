@@ -16519,9 +16519,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         tip: '長度不變，換成原片的另一段',
                         disabledHint: sel == null
                             ? '先在時間軸點選一段影片'
-                            : _tl.sourceOf(sel).isVideo
+                            : _hasPicture(_tl.sourceOf(sel))
                             ? '這段已經用到整支影片，沒有別段可以換'
-                            : '只有影片可以換段',
+                            : '只有影片、從影片拿的聲音可以換段',
                       ),
                       // 順序：切割 → 換段 → 複製 → 刪除 → 貼上。刪除刻意
                       // 不貼著切割放（兩顆都在改結構，手指按錯就是誤刪）
@@ -16771,11 +16771,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     ).whenComplete(_saveDraft);
   }
 
-  /// 這一段能不能換段：要是影片，而且原片比這段長（有別段可換）
+  /// 這段素材的原片有沒有畫面可以對照：影片，或「從影片提取聲音」拿進來
+  /// 的聲音（來源是影片檔，只用它的音軌）。純音訊檔沒有畫面
+  bool _hasPicture(MediaSource src) =>
+      src.isVideo ||
+      (src.kind == ClipKind.audio && isVideoFile(XFile(src.path)));
+
+  /// 這一段能不能換段：原片要有畫面可以對照（使用者指定：從影片拿的聲音
+  /// 也要能換段），而且原片比這段長（有別段可換）
   bool _canSlip(TimelineClip? c) {
     if (c == null) return false;
     final src = _tl.sourceOf(c);
-    return src.isVideo && src.duration - (c.trimEnd - c.trimStart) > 0.05;
+    return _hasPicture(src) && src.duration - (c.trimEnd - c.trimStart) > 0.05;
   }
 
   /// 換段（slip）：片段在時間軸上的長度跟位置都不動，換成原片裡的另一段

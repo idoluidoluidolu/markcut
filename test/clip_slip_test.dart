@@ -7,6 +7,8 @@
 //   3. 點一下選起點，大預覽即時顯示所選段落開頭
 //   4. 換完一步「上一步」就回來；打開看看就關掉不算一步
 //   5. 不是影片（文字…）或已經用到整支影片：按鈕灰掉、點了講為什麼
+//   6. 「從影片提取聲音」拿進來的聲音也能換段（原片是影片檔，看得到
+//      畫面）；純音訊檔沒有畫面可以對照，不給換
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -54,7 +56,35 @@ void _fill(TimelineModel m) {
       track: 3,
     ),
   );
-  m.ensureIdAbove(2);
+  // 從影片提取的聲音：來源是影片檔、種類是聲音（只用音軌）
+  m.sources.add(
+    MediaSource(path: '/a.mov', name: 'a', kind: ClipKind.audio, duration: 30),
+  );
+  m.clips.add(
+    TimelineClip(
+      id: 3,
+      sourceIndex: 2,
+      trimStart: 5,
+      trimEnd: 9,
+      offset: 0,
+      track: 5,
+    ),
+  );
+  // 純音訊檔
+  m.sources.add(
+    MediaSource(path: '/song.m4a', name: 'song', kind: ClipKind.audio, duration: 60),
+  );
+  m.clips.add(
+    TimelineClip(
+      id: 4,
+      sourceIndex: 3,
+      trimStart: 0,
+      trimEnd: 4,
+      offset: 0,
+      track: 6,
+    ),
+  );
+  m.ensureIdAbove(4);
 }
 
 /// 開空白編輯器、塞時間軸，等合成組起來（併批 350ms，走假時間）
@@ -151,8 +181,40 @@ void main() {
     await t.tap(find.text('換段'));
     await settle(t, 4);
     expect(_strip, findsNothing);
-    expect(find.text('只有影片可以換段'), findsOneWidget);
+    expect(find.text('只有影片、從影片拿的聲音可以換段'), findsOneWidget);
     expect(find.byType(SlipStrip), findsNothing);
+    await settle(t, 80);
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('從影片拿的聲音也能換段：長度與位置不變', (t) async {
+    await _open(t, comp);
+    await t.tapAt(t.getCenter(clipBlock(3)));
+    await settle(t, 6);
+    await t.tap(find.text('換段'));
+    await settle(t, 6);
+    expect(_strip, findsOneWidget, reason: '從影片拿的聲音沒有開出換段');
+    final w = t.getSize(_strip).width;
+    await t.drag(_strip, Offset(w / 4, 0));
+    await settle(t, 6);
+    await tick(t, 40);
+    final c = clipOf(t, 3);
+    expect(c.trimStart, greaterThan(5), reason: '框沒有跟著往後');
+    expect(c.trimEnd - c.trimStart, closeTo(4, 1e-9), reason: '長度不能變');
+    expect(c.offset, 0, reason: '在時間軸上的位置不能變');
+    Navigator.of(t.element(_strip)).pop();
+    await settle(t, 40);
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('純音訊檔：沒有畫面可以對照，換段灰掉', (t) async {
+    await _open(t, comp);
+    await t.tapAt(t.getCenter(clipBlock(4)));
+    await settle(t, 6);
+    await t.tap(find.text('換段'));
+    await settle(t, 4);
+    expect(_strip, findsNothing);
+    expect(find.text('只有影片、從影片拿的聲音可以換段'), findsOneWidget);
     await settle(t, 80);
     expect(t.takeException(), isNull);
   });
