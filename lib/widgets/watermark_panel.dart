@@ -1078,15 +1078,31 @@ class WatermarkPanelState extends State<WatermarkPanel>
                                 children: [
                                   // 完成列保持固定高度，失焦時不能立刻抽掉它，
                                   // 否則鍵盤還沒收完就會改變捲動範圍、讓畫面跳動。
+                                  // 按鈕本身只在打字時出現（使用者指定：從文字
+                                  // 編輯出來就收掉、進去再開）——位置留著，只是
+                                  // 看不到也按不到，版面一格都不動
                                   Align(
                                     alignment: Alignment.centerRight,
-                                    child: TextButton.icon(
-                                      key: const ValueKey(
-                                        'watermark-text-done',
+                                    child: ListenableBuilder(
+                                      listenable: _textFocus,
+                                      builder: (context, button) => Visibility(
+                                        visible: _textFocus.hasFocus,
+                                        maintainSize: true,
+                                        maintainAnimation: true,
+                                        maintainState: true,
+                                        child: button!,
                                       ),
-                                      onPressed: _textFocus.unfocus,
-                                      icon: const Icon(Icons.check, size: 18),
-                                      label: const Text('完成'),
+                                      child: TextButton.icon(
+                                        key: const ValueKey(
+                                          'watermark-text-done',
+                                        ),
+                                        onPressed: _textFocus.unfocus,
+                                        icon: const Icon(
+                                          Icons.check,
+                                          size: 18,
+                                        ),
+                                        label: const Text('完成'),
+                                      ),
                                     ),
                                   ),
                                   Container(
