@@ -35,6 +35,12 @@ class _Player implements PlayerX {
   bool disposed = false;
   Duration position = Duration.zero;
 
+  /// 播放器自己量到的尺寸（mpv 開檔時紋理還沒起來會是 0x0）
+  Size size = const Size(2160, 3840);
+
+  /// 按下播放後前幾次問位置都還不動（mpv 起步要幾百毫秒）
+  int startDelayPolls = 0;
+
   @override
   Future<void> initialize() async => initialized = true;
 
@@ -44,7 +50,7 @@ class _Player implements PlayerX {
     isPlaying: playing,
     duration: const Duration(seconds: 6),
     position: position,
-    size: const Size(2160, 3840),
+    size: size,
   );
   @override
   Future<void> play() async => playing = true;
@@ -52,6 +58,10 @@ class _Player implements PlayerX {
   Future<void> pause() async => playing = false;
   @override
   Future<Duration?> positionNow() async {
+    if (playing && startDelayPolls > 0) {
+      startDelayPolls--;
+      return position;
+    }
     if (playing) position += const Duration(milliseconds: 33);
     return position;
   }
@@ -74,6 +84,50 @@ class _Player implements PlayerX {
   String get debugInfo => 'fake';
   @override
   Widget view({Key? key}) => ColoredBox(key: key, color: Colors.blue);
+}
+
+/// 照測試時鐘走的播放器：位置＝起點＋播了多久−[lag]（跟編輯器的時鐘
+/// 同一條假時間，才量得出「落後幾秒」）
+class _ClockPlayer extends _Player {
+  _ClockPlayer(super.path, this.now);
+  final DateTime Function() now;
+  DateTime? _since;
+  Duration _base = Duration.zero;
+  Duration lag = Duration.zero;
+
+  Duration get _pos =>
+      (playing && _since != null
+          ? _base + now().difference(_since!)
+          : _base) -
+      lag;
+
+  @override
+  PlayerValueX get value => PlayerValueX(
+    isInitialized: initialized,
+    isPlaying: playing,
+    duration: const Duration(seconds: 6),
+    position: _pos,
+    size: size,
+  );
+  @override
+  Future<void> play() async {
+    if (!playing) _since = now();
+    playing = true;
+  }
+
+  @override
+  Future<void> pause() async {
+    if (playing && _since != null) _base += now().difference(_since!);
+    playing = false;
+  }
+
+  @override
+  Future<Duration?> positionNow() async => _pos;
+  @override
+  Future<void> seekTo(Duration at) async {
+    _base = at + lag;
+    if (playing) _since = now();
+  }
 }
 
 void main() {
@@ -406,6 +460,63 @@ void main() {
       'fps': 60.0,
       'hdr': false,
     });
+    await close(t);
+  });
+
+  // 實機 2235：mpv 開 4K 原檔那幾秒紋理還沒起來，播放器回報 0x0，編輯器
+  // 退回 16:9 → 直式影片被壓扁，換成工作檔才正常
+  testWidgets('播放器還沒量到尺寸（0x0）時照匯入探到的尺寸排，不壓扁', (t) async {
+    original.size = Size.zero;
+    await open(t, android: true);
+    final clip = modelOf(t).clips.first;
+    final layer = t.getSize(find.byKey(ValueKey('vidlayer${clip.id}')));
+    expect(
+      layer.width / layer.height,
+      closeTo(2160 / 3840, 0.01),
+      reason: '影片圖層要照素材的直式比例',
+    );
+    expect(
+      find.byWidgetPredicate(
+        (w) => w is AspectRatio && (w.aspectRatio - 2160 / 3840).abs() < 0.01,
+      ),
+      findsWidgets,
+      reason: '畫布「原始」比例要跟著素材是直式',
+    );
+    await close(t);
+  });
+
+  testWidgets('起播等影片真的動了才開時間軸的錶（mpv 起步要幾百毫秒）', (t) async {
+    await open(t, android: true);
+    // 按下播放後前 15 次問位置都不動（約 0.5 秒）
+    original.startDelayPolls = 15;
+    await t.tap(find.byIcon(Icons.play_arrow_rounded).first);
+    await tick(t, 40);
+    final s = QualityDiagnostics.instance.samples[QualityMetric.playStart];
+    expect(s?.failures ?? 0, 0, reason: '等得到影片起步，不能算逾時');
+    expect(s?.count, 1);
+    await t.tap(find.byIcon(Icons.pause_rounded).first);
+    await t.pump();
+    await close(t);
+  });
+
+  testWidgets('Android：帶頭的影片落後時鐘 0.25 秒以上，時鐘跟著它（不 seek）', (t) async {
+    final timed = _ClockPlayer(original.path, t.binding.clock.now);
+    original = timed;
+    await open(t, android: true);
+    await t.tap(find.byIcon(Icons.play_arrow_rounded).first);
+    await tick(t, 25);
+    final before = playheadOf(t);
+    expect(before, greaterThan(0.3));
+    // 播放器落後時鐘 0.4 秒（mpv 起步慢、或中途卡一下）
+    timed.lag = const Duration(milliseconds: 400);
+    await tick(t, 3);
+    expect(
+      playheadOf(t),
+      lessThan(before),
+      reason: '指針要退回去跟著畫面，不能一直超前',
+    );
+    await t.tap(find.byIcon(Icons.pause_rounded).first);
+    await t.pump();
     await close(t);
   });
 }

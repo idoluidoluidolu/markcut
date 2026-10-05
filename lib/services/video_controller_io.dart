@@ -438,8 +438,23 @@ class _MpvPlayerX implements PlayerX {
     // media_kit 的 position 連續更新（比 video_player 的
     // 500ms 輪詢即時得多），對時邏輯直接受惠
     position: _p.state.position,
-    size: _size,
+    size: _liveSize(),
   );
+
+  /// 開檔那幾秒紋理沒起來就先記 0x0（4K 原檔在解碼器正忙的時候，mpv 要
+  /// 好幾秒才解出畫面——上面會把它當成沒有影像軌）。之後紋理有了尺寸
+  /// 就在這裡補上，不然整段都是 0x0、編輯器只能猜比例（實機 2235：
+  /// 直式 4K 被壓扁，直到換成工作檔才正常）
+  Size _liveSize() {
+    if (_size.width > 0 && _size.height > 0) return _size;
+    if (!_inited) return _size;
+    final r = _vc.rect.value;
+    if (r != null && r.width > 0 && r.height > 0) {
+      _size = r.size;
+      _dbgSizeFrom = 'texture (late)';
+    }
+    return _size;
+  }
 
   @override
   Future<void> seekTo(Duration d) => _p.seek(d);

@@ -397,11 +397,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   double get _canvasAspectNow {
     final v = _activeVideo;
     final ct = v == null ? null : _ctrls[v.id];
-    final base = (ct != null && ct.value.isInitialized)
-        ? ct.value.aspectRatio
+    final base = v != null
+        ? _videoAspect(
+            ct != null && ct.value.isInitialized ? ct : null,
+            _tl.sourceOf(v),
+          )
         : (_tl.sources.isEmpty ? 16 / 9 : _tl.sources.first.aspect);
     final a = _ratioAspect ?? base;
     return a > 0 ? a : 16 / 9;
+  }
+
+  /// 這段影片在預覽上的長寬比：播放器量到的優先（含旋轉）；它還沒量到
+  ///（mpv 剛開、解碼器忙著，紋理還沒起來就回報 0x0）就用匯入時探到的
+  /// 素材尺寸——不能退回 16:9，直式影片會被壓扁（實機 2235）
+  double _videoAspect(PlayerX? ctrl, MediaSource src) {
+    final s = ctrl?.value.size ?? Size.zero;
+    if (s.width > 0 && s.height > 0) return s.width / s.height;
+    return src.aspect;
   }
 
   /// 新素材放上畫面時，預設大小會不會幾乎把整塊預覽畫布佔滿
@@ -10144,7 +10156,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 上一版盯的是 value.position，那是 video_player 每 500ms 才
     // 更新一次的快取，在等待窗口內根本不會動，於是每次都白白
     // 燒滿上限才開錶，播放鍵反而更延遲。
-    // 上限 250ms，起不來寧可照舊也不能讓播放鍵卡住
+    // 上限約 1 秒（見下面），起不來寧可照舊也不能讓播放鍵卡住
     PlayerX? lead;
     for (final clip in _tl.clips) {
       if (!clip.coversForDisplay(_position)) continue;
@@ -10163,12 +10175,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     if (lead != null && !kIsWeb) {
       var p0 = await lead.positionNow();
       if (cancelled() || !_playing) return;
-      final sw = Stopwatch()..start();
       var sawBuffering = false;
       var positionAdvanced = false;
       // 一格問一次就夠。20ms 一次的平台往返是在播放器最忙的時候一直
-      // 插隊，等於自己拖慢自己
-      while (!cancelled() && _playing && sw.elapsedMilliseconds < 250) {
+      // 插隊，等於自己拖慢自己。
+      // 最多等約 1 秒（30 次）：mpv 起步要幾百毫秒（音訊輸出暖機），以前
+      // 250ms 就放棄、時間軸先走，整輪指針超前畫面、片尾被提早切掉（實機
+      // 2235：起播確認 4 次全逾時、時鐘落後 P95 400ms）。位置一動就不等；
+      // 按暫停隨時中斷
+      for (var i = 0; i < 30 && !cancelled() && _playing; i++) {
         await Future<void>.delayed(const Duration(milliseconds: 33));
         if (cancelled() || !_playing) return;
         if (lead.value.isBuffering) sawBuffering = true;
@@ -10190,7 +10205,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         confirmed: positionAdvanced,
       );
       if (!positionAdvanced) {
-        tr.log('⚠ 起播後 250ms 內未確認位置前進，等待逾時（不計成功延遲）');
+        tr.log('⚠ 起播後約 1 秒內未確認位置前進，等待逾時（不計成功延遲）');
       }
       if (cancelled() || !_playing) return;
     }
@@ -10467,7 +10482,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     final sampleStartedAt = DateTime.now().toUtc();
     final sampledComp = _comp;
     diagnostic.environment.addAll({
-      'previewRevision': 'android-original-mpv-1',
+      'previewRevision': 'android-original-mpv-2',
       'displayHz': View.of(context).display.refreshRate,
       'buildMode': kReleaseMode
           ? 'release'
@@ -11001,6 +11016,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _syncMediaBody() {
     final now = DateTime.now();
+    // 帶頭的那段影片（畫面最上層、時鐘跟它走）：脫節校正要分它跟其他段
+    final leadId = _playing
+        ? _tl.videoAt(_position, skipTracks: _hiddenTracks)?.id
+        : null;
     // 預熱／進場會直接改速度，記回來讓 _play 的比對是準的
     for (final e in _warmed) {
       _lastSpeed.remove(e);
@@ -11154,7 +11173,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           final actual = c.value.position.inMilliseconds / 1000.0;
           // 門檻隨播放速度放大：Android 位置回報有 ~500ms 延遲，
           // 2 倍速以上光是延遲就會超過 1 秒，會被誤判成脫節狂 seek
-          final driftThr = math.max(1.0, _speed * clip.speed);
+          final seekThr = math.max(1.0, _speed * clip.speed);
+          // Android 帶頭的那段改用小門檻：它的校正是「時鐘跟著它」（不 seek，
+          // 畫面不會停），動手前還會先問一次即時位置，ExoPlayer 那 500ms 的
+          // 快取不會誤觸。mpv 起步比 ExoPlayer 慢幾百毫秒，門檻 1 秒的話整輪
+          // 指針都超前畫面、片尾被提早切掉（實機 2235：時鐘落後 P95 400ms）
+          final followsLead =
+              _android &&
+              leadId == clip.id &&
+              !clip.reverse &&
+              clip.speed > 0;
+          final driftThr = followsLead
+              ? 0.25 * math.max(1.0, _speed * clip.speed)
+              : seekThr;
           if (Diag.driftFix.value &&
               (actual - want).abs() > driftThr &&
               now
@@ -11165,7 +11196,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       .inMilliseconds >
                   2000) {
             _lastDriftFix[clip.id] = now;
-            if (!kIsWeb && Platform.isAndroid) {
+            if (_android) {
               // Android's cached position can lag behind the actual player.
               // Read it again before correcting; the lead video owns the clock.
               unawaited(
@@ -11179,18 +11210,21 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   }
                   final fresh = position.inMicroseconds / 1e6;
                   final target = clip.sourceTimeForDisplayAt(_position);
-                  if ((fresh - target).abs() <= driftThr) return;
+                  final drift = (fresh - target).abs();
                   final lead = _tl.videoAt(
                     _position,
                     skipTracks: _hiddenTracks,
                   );
                   if (lead?.id == clip.id && !clip.reverse && clip.speed > 0) {
+                    if (drift <= driftThr) return;
                     _position =
                         (clip.offset + (fresh - clip.trimStart) / clip.speed)
                             .clamp(clip.offset, clip.end);
                     _clockBias = 0;
                     Diag.count('Android 跟隨播放器對時');
                   } else {
+                    // 不帶頭的段落照舊 1 秒門檻：它們的校正是 seek，畫面會停
+                    if (drift <= seekThr) return;
                     c.seekTo(Duration(milliseconds: (target * 1000).round()));
                   }
                 }),
@@ -14175,7 +14209,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     }
                                     final r = layerBox(
                                       c,
-                                      ctrl.value.aspectRatio,
+                                      _videoAspect(ctrl, _tl.sourceOf(c)),
                                     );
                                     final warm = warmIds.contains(c.id);
                                     final vTrack = warm ? warmTrack : c.track;
