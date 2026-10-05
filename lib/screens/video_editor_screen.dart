@@ -17119,7 +17119,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           const Padding(
             padding: EdgeInsets.only(left: 2, top: 2),
             child: Text(
-              '點選「整軌」可直接靜音，滑桿會一起調整這一軌的所有片段',
+              '可以控制這一軌所有素材的音量',
               style: TextStyle(fontSize: 10.5, color: kTextDim),
             ),
           ),
