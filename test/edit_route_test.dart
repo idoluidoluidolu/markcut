@@ -22,6 +22,7 @@ const _editors = <String, List<String>>{
   'photo_editor_screen.dart': ['PhotoEditorScreen'],
   'batch_watermark_screen.dart': ['BatchWatermarkScreen'],
   'gif_screen.dart': ['GifScreen'],
+  'audio_pick_screen.dart': ['AudioPickScreen'],
   'watermark_studio_screen.dart': ['WatermarkStudioScreen'],
   'collage_screen.dart': ['CollageScreen'],
   'crop_screen.dart': ['CropScreen'],

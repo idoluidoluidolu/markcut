@@ -48,6 +48,7 @@ const _editors = <String>{
   'PhotoEditorScreen',
   'BatchWatermarkScreen',
   'GifScreen',
+  'AudioPickScreen',
   'WatermarkStudioScreen',
   'CollageScreen',
   'CropScreen',

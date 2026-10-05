@@ -21,7 +21,10 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../nav.dart' show editRoute;
+import 'audio_pick_screen.dart';
 import 'crop_screen.dart';
+import '../services/gif_trim_range.dart' show TrimRange;
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
 import '../services/audio_picker.dart';
@@ -6457,7 +6460,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   Future<void> _pickAudio(int track) async {
-    // 音樂來源：音樂檔，或從自己的影片提取聲音（只取音軌）
+    // 音訊來源：音訊檔，或從自己的影片提取聲音（只取音軌）
     final fromVideo = await showModalBottomSheet<bool>(
       context: context,
       showDragHandle: true,
@@ -6468,7 +6471,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             const SizedBox(height: 8),
             ListTile(
               leading: const Icon(Icons.library_music_outlined, color: kAmber),
-              title: const Text('音樂檔案'),
+              title: const Text('音訊檔案'),
               onTap: () => Navigator.pop(context, false),
             ),
             ListTile(
@@ -6489,9 +6492,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
     String url;
     String name;
+    // 從影片拿聲音時挑好的那一段；null＝整支（音訊檔）
+    TrimRange? range;
     if (fromVideo) {
       final v = await ImagePicker().pickVideo(source: ImageSource.gallery);
-      if (v == null) return;
+      if (v == null || !mounted) return;
+      // 邊看影片邊挑要哪一段聲音（使用者指定：純聲音只有波形，用眼睛
+      // 看不出要選的段落）。返回＝不加
+      _pause();
+      range = await Navigator.push<TrimRange>(
+        context,
+        editRoute(builder: (_) => AudioPickScreen(path: v.path, name: v.name)),
+      );
+      if (range == null) return;
       url = v.path;
       name = v.name;
     } else {
@@ -6533,12 +6546,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 畫面完全不進時間軸
       MediaSource(path: url, name: name, kind: ClipKind.audio, duration: dur),
     );
+    // 挑段落那一頁的長度跟這裡讀到的可能差一點點：夾在讀到的長度內
+    final from = (range?.start ?? 0).clamp(0.0, dur);
+    final to = (range?.end ?? dur).clamp(from, dur);
     final clip = TimelineClip(
       id: _tl.nextId(),
       sourceIndex: srcIndex,
-      trimStart: 0,
-      trimEnd: dur,
-      offset: _position, // 音樂從播放頭開始
+      trimStart: from,
+      trimEnd: to > from ? to : dur,
+      offset: _position, // 聲音從播放頭開始
       track: track,
     );
     _placeNewClip(clip); // 同軌不重疊：壓到別段就吸邊、後面推開
@@ -6758,7 +6774,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 '貼圖',
                 _AddKind.sticker,
               ),
-              item(context, Icons.music_note, '音樂', _AddKind.audio),
+              item(context, Icons.music_note, '音訊', _AddKind.audio),
               group('其他'),
               item(context, Icons.mic, '錄旁白', _AddKind.record),
               item(context, Icons.playlist_add, '空白軌道', _AddKind.blankTrack),
