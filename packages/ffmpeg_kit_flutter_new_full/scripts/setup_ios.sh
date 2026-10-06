@@ -22,7 +22,10 @@ set -euo pipefail
 VERSION="8.1.2"
 VARIANT="full"
 # MarkCut: pinned to the upstream GitHub release asset digest, reviewed 2026-09-27.
-EXPECTED_SHA256="bdefd779553cb5636e36aeec9ba8cb4d04ee88381fc26c2d5447c2950a29ac0b"
+# Re-pinned 2026-10-06: upstream repacked every 8.1.2 Apple zip on 2026-10-05
+# without the AppleDouble (._*) metadata files (issue #170, commit 8befff9:
+# "content byte-identical"); the old digest bdefd779… no longer downloads.
+EXPECTED_SHA256="ced6cdeba06ce0722600de2cba3620cc1af5cc83d0f04cb5d116416ec32bcd20"
 DEFAULT_URL="https://github.com/sk3llo/ffmpeg_kit_flutter/releases/download/${VERSION}-${VARIANT}/ffmpeg-kit-ios-${VARIANT}-${VERSION}.zip"
 IOS_URL="${FFMPEG_KIT_IOS_URL:-$DEFAULT_URL}"
 
