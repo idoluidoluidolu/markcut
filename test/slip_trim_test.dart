@@ -116,7 +116,7 @@ void main() {
                 aspect: 9 / 16,
                 minLength: minLength,
                 loadFrame: (_) async => null,
-                loadThumbnail: (_) async => null,
+                loadThumbnail: (_, _) async => null,
                 onCommit: slides.add,
                 onCommitRange: trimmable
                     ? (s, l) => ranges.add((s, l))
@@ -153,7 +153,8 @@ void main() {
   }
 
   testWidgets('框兩邊有把手；拉右邊＝加長：只有那條邊跟著手指，膠卷不動，放手才提交', (t) async {
-    await open(t);
+    // 起點 8 秒：前後都有足夠的原片，框放得到正中間（貼著頭尾時框會靠過去）
+    await open(t, start: 8);
     expect(_left, findsOneWidget);
     expect(_right, findsOneWidget);
     final w = window(t);
@@ -166,17 +167,17 @@ void main() {
     expect(ranges, isEmpty, reason: '拉的過程不提交（提交要重組合成）');
     expect(t.getRect(_left).left, closeTo(leftX, 0.5), reason: '左邊不能跟著動');
     expect(t.getRect(_right).right, closeTo(rightX + w / 2, 0.5));
-    expect(find.text('00:02.00 – 00:08.00'), findsOneWidget);
+    expect(find.text('00:08.00 – 00:14.00'), findsOneWidget);
     await g.up();
     await t.pump();
     expect(ranges, hasLength(1));
-    expect(ranges.single.$1, closeTo(2, 1e-6));
+    expect(ranges.single.$1, closeTo(8, 1e-6));
     expect(ranges.single.$2, closeTo(6, 1e-6));
     expect(slides, isEmpty, reason: '改長度不是換段');
     // 放手：框放回中間四成寬（膠卷照新長度重新縮放）
     expect(t.getRect(_left).left, closeTo(leftX, 0.5));
     expect(t.getRect(_right).right, closeTo(rightX, 0.5));
-    expect(find.text('00:02.00 – 00:08.00'), findsOneWidget);
+    expect(find.text('00:08.00 – 00:14.00'), findsOneWidget);
     expect(t.takeException(), isNull);
   });
 
@@ -199,9 +200,10 @@ void main() {
     await dragHandle(t, _left, -2000);
     expect(ranges.last.$1, closeTo(0, 1e-6));
     expect(ranges.last.$1 + ranges.last.$2, closeTo(20, 1e-6));
-    // 右邊往裡拉過頭：最短也留一截（框至少 24 像素寬），不會變成 0 或負的
+    // 右邊往裡拉過頭：最短也留一截（框至少 24 像素寬），不會變成 0 或負的。
+    // 這時片段整支用滿：膠卷就是整支原片排滿一條（一秒＝膠卷寬÷20 像素）
     await dragHandle(t, _right, -2000);
-    final pps = window(t) / 20;
+    final pps = t.getSize(_film).width / 20;
     expect(ranges.last.$1, closeTo(0, 1e-6));
     expect(
       ranges.last.$2,

@@ -16999,9 +16999,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     void apply(double start) =>
         applyRange(start, clip.trimEnd - clip.trimStart);
 
-    Future<Uint8List?> loadSourceFrame(double t, int height) async {
+    /// [tolerance]：前後差多少秒以內都算數（膠卷一格代表的那一截的一半）。
+    /// iOS 照這個範圍取最近、解得快的那一格，膠卷左右兩邊才不會一片空白
+    /// 等好幾秒；Android 給了容差就只取關鍵幀（稀疏 GOP 會離很遠），
+    /// 照舊解到精準那一格
+    Future<Uint8List?> loadSourceFrame(
+      double t,
+      int height, {
+      double tolerance = 0,
+    }) async {
       if (!kIsWeb) {
-        return nativeFrameAt(framePath, t, maxH: height, tolMs: 0);
+        final tolMs = Platform.isIOS ? (tolerance * 1000).floor() : 0;
+        return nativeFrameAt(framePath, t, maxH: height, tolMs: tolMs);
       }
       // Web 的縮圖 API 取區間中點，2ms 視窗即對應要求的時間。
       final frames = await engine.makeThumbnails(
@@ -17031,7 +17040,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           volume: clip.volume,
           aspect: src.w > 0 && src.h > 0 ? src.w / src.h : 1,
           loadFrame: (t) => loadSourceFrame(t, 720),
-          loadThumbnail: (t) => loadSourceFrame(t, 200),
+          loadThumbnail: (t, tolerance) =>
+              loadSourceFrame(t, 200, tolerance: tolerance),
           onCommit: apply,
           onCommitRange: applyRange,
           // 最短長度跟時間軸修剪同一條（時間軸秒換算成原片秒）

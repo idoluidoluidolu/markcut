@@ -7,8 +7,15 @@ import 'package:flutter/material.dart';
 
 import '../theme.dart';
 
-/// 換段放大膠卷的排法：琥珀框固定在正中間、寬度是整條的四成，框寬＝
-/// 片段長度，所以「一秒幾個像素」由片段長度決定（片段越短放得越大）。
+/// 換段放大膠卷的排法。
+///
+/// 比例：框（＝片段長度）佔整條的四成，片段越短放得越大；但膠卷不會比
+/// 「整支原片剛好排滿一條」還粗——片段超過原片四成時，膠卷就是整支原片、
+/// 框在它真正的位置（不然膠卷反而比上面那條整支縮圖還粗，兩邊又空一大截）。
+///
+/// 位置：膠卷左緣是原片第 [view] 秒（[xOf]）。平常框盡量放正中間，但膠卷
+/// 不露出原片頭尾以外的空白（[restView]）——片段貼著原片頭尾時框就靠過去，
+/// 左右兩邊都是畫面（使用者：「剛進去不會顯示左右，只顯示中間段」）。
 ///
 /// 膠卷切成固定的時間格：第 k 格＝原片 [k·step, (k+1)·step)。格子跟著
 /// 時間走、不跟著螢幕走，拖的時候同一格的縮圖不用重抽
@@ -19,13 +26,12 @@ class SlipFilmGeometry {
     required this.duration,
     required this.length,
     double aspect = 1,
-  }) : windowWidth = width * windowFraction,
-       tileWidth = (height * (aspect > 0 ? aspect : 1.0)).clamp(
+  }) : tileWidth = (height * (aspect > 0 ? aspect : 1.0)).clamp(
          height * 0.5,
          height * 2.0,
        );
 
-  /// 框佔整條寬度的比例
+  /// 放大時框佔整條寬度的比例
   static const double windowFraction = 0.4;
 
   final double width;
@@ -37,29 +43,46 @@ class SlipFilmGeometry {
   /// 片段長度（秒）＝框代表的長度
   final double length;
 
-  final double windowWidth;
-
   /// 一格縮圖的寬（照原片長寬比，太扁太瘦就夾住、多的裁掉）
   final double tileWidth;
 
-  double get windowLeft => (width - windowWidth) / 2;
+  /// 一秒幾個像素：框佔四成寬，但不比整支原片排滿一條還粗
+  double get pps {
+    final zoom = length > 0 ? width * windowFraction / length : 0.0;
+    final fit = duration > 0 ? width / duration : 0.0;
+    final v = math.max(zoom, fit);
+    return v > 0 ? v : 1;
+  }
 
-  /// 一秒幾個像素
-  double get pps => length > 0 ? windowWidth / length : 1;
+  /// 框寬（像素）
+  double get windowWidth => length * pps;
+
+  /// 框放正中間時的左緣
+  double get centeredLeft => (width - windowWidth) / 2;
+
+  /// 膠卷左緣最多捲到原片第幾秒；0＝整支原片剛好排滿，膠卷不能捲
+  double get maxView => math.max(0.0, duration - width / pps);
+
+  /// 膠卷捲得動（放大了）：拖膠卷是膠卷跟著手指走；捲不動時拖的是框
+  bool get scrolls => maxView > 1e-9;
+
+  /// 平常的排法：框盡量放正中間，但膠卷不露出原片頭尾以外的空白
+  double restView(double start) =>
+      (start - centeredLeft / pps).clamp(0.0, maxView);
 
   /// 一格幾秒
   double get step => tileWidth / pps;
 
   int get tileCount => duration > 0 ? (duration / step).ceil() : 0;
 
-  /// 原片第 [t] 秒在膠卷上的 x（框的左緣＝[start]）
-  double xOf(double t, double start) => windowLeft + (t - start) * pps;
+  /// 原片第 [t] 秒在膠卷上的 x（膠卷左緣是原片第 [view] 秒）
+  double xOf(double t, double view) => (t - view) * pps;
 
-  /// 起點在 [start] 時看得到的格子
-  List<int> visibleTiles(double start) {
+  /// 膠卷左緣在 [view] 時看得到的格子
+  List<int> visibleTiles(double view) {
     if (tileCount == 0) return const [];
-    final from = (start - windowLeft / pps) / step;
-    final to = (start + (width - windowLeft) / pps) / step;
+    final from = view / step;
+    final to = (view + width / pps) / step;
     return [
       for (
         var k = math.max(0, from.floor());
@@ -77,6 +100,9 @@ class SlipFilmGeometry {
     return (a + b) / 2;
   }
 
+  /// 第 [k] 格那一截有多長（秒）：抽圖時落在這一截裡就算數
+  double tileSpan(int k) => math.min(duration, (k + 1) * step) - k * step;
+
   /// 刻度間隔：相鄰兩條至少隔 10 像素；長刻度落在短刻度的整數倍上
   ({double minor, double? major}) get ticks {
     const nice = [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0];
@@ -93,19 +119,21 @@ class SlipFilmGeometry {
   }
 }
 
-/// 換段的放大膠卷：框不動、膠卷在框底下滑。左右拖＝換段（手指往左＝
-/// 換成後面那段，跟拖底片一樣）；拖的過程只回報 [onChanged]，放手才
+/// 換段的放大膠卷。膠卷捲得動（放大）時，左右拖＝膠卷跟著手指走、框留在
+/// 原地（手指往左＝換成後面那段，跟拖底片一樣）；整支原片排滿一條、捲不
+/// 動時，拖的是框（框跟著手指走）。拖的過程只回報 [onChanged]，放手才
 /// 回報 [onEnd]——套用要重組合成，不能每一格都做。
 ///
 /// 給了 [onTrimChanged] 的話框的兩邊有把手（跟時間軸的黃色修剪把手同一個
 /// 樣子）：拉框邊＝改長度（使用者：「換段要可以直接裁剪長度」）。拉的時候
-/// 膠卷跟比例都凍住，只有那條邊跟著手指；放手後父層換上新長度，框才重新
-/// 放回中間四成寬（膠卷跟著重新縮放）——想剪得更短，再拉一次
+/// 膠卷跟比例都凍住，只有那條邊跟著手指；放手後父層換上新長度，膠卷照新
+/// 長度重新縮放、框回到平常的位置——想剪得更短，再拉一次
 class SlipFilm extends StatefulWidget {
   const SlipFilm({
     super.key,
     required this.geometry,
     required this.start,
+    required this.view,
     required this.frameAt,
     required this.onChanged,
     required this.onEnd,
@@ -133,6 +161,10 @@ class SlipFilm extends StatefulWidget {
 
   /// 框的起點（原片秒）
   final double start;
+
+  /// 膠卷左緣是原片第幾秒（父層決定：平常照 [SlipFilmGeometry.restView]，
+  /// 拖膠卷時跟著手指）
+  final double view;
 
   /// 按時間取縮圖；null＝還沒載好（畫底色，不拿隔壁格冒充）
   final Uint8List? Function(double seconds) frameAt;
@@ -168,9 +200,9 @@ class _SlipFilmState extends State<SlipFilm> {
 
   _Grip _grip = _Grip.slide;
 
-  /// 拉框邊時凍住的排法（null＝沒在拉）跟當時框的起點（膠卷原點）
+  /// 拉框邊時凍住的排法與膠卷左緣（null＝沒在拉）
   SlipFilmGeometry? _frozen;
-  double _origin = 0;
+  double _frozenView = 0;
 
   /// 拉框邊的過程中的新範圍（原片秒），以及那條邊沒夾過的位置（累計
   /// 位移：撞到頭尾或最短再往外拉、回頭時邊馬上就跟著動）
@@ -200,8 +232,8 @@ class _SlipFilmState extends State<SlipFilm> {
   _Grip _gripAt(double x) {
     if (widget.onTrimChanged == null) return _Grip.slide;
     final g = widget.geometry;
-    final l = g.windowLeft;
-    final r = g.windowLeft + g.windowWidth;
+    final l = g.xOf(widget.start, widget.view);
+    final r = l + g.windowWidth;
     final onLeft =
         x >= l - SlipFilm.handleOutside && x <= l + SlipFilm.handleInside;
     final onRight =
@@ -221,7 +253,7 @@ class _SlipFilmState extends State<SlipFilm> {
     final g = widget.geometry;
     setState(() {
       _frozen = g;
-      _origin = widget.start;
+      _frozenView = widget.view;
       _trimStart = widget.start;
       _trimEnd = widget.start + g.length;
       _rawEdge = _grip == _Grip.left ? _trimStart : _trimEnd;
@@ -232,7 +264,9 @@ class _SlipFilmState extends State<SlipFilm> {
     if (_grip == _Grip.slide) {
       final g = widget.geometry;
       final from = _raw ?? widget.start;
-      final next = (from - d.delta.dx / g.pps).clamp(0.0, _maxStart);
+      // 捲得動：膠卷跟著手指（往左＝後面那段）；捲不動：框跟著手指
+      final dt = d.delta.dx / g.pps;
+      final next = (g.scrolls ? from - dt : from + dt).clamp(0.0, _maxStart);
       _raw = next;
       if ((next - widget.start).abs() > 1e-9) widget.onChanged(next);
       return;
@@ -261,13 +295,15 @@ class _SlipFilmState extends State<SlipFilm> {
   Widget build(BuildContext context) {
     final frozen = _frozen;
     final g = frozen ?? widget.geometry;
-    // 膠卷原點：平常是框的起點；拉框邊時凍在開拉那一刻，膠卷不動
-    final start = frozen == null ? widget.start : _origin;
-    final filmEnd = g.xOf(g.duration, start);
-    final winLeft = frozen == null ? g.windowLeft : g.xOf(_trimStart, start);
+    // 膠卷左緣：拉框邊時凍在開拉那一刻，膠卷不動
+    final view = frozen == null ? widget.view : _frozenView;
+    final filmEnd = g.xOf(g.duration, view);
+    final winLeft = g.xOf(frozen == null ? widget.start : _trimStart, view);
     final winRight = frozen == null
-        ? g.windowLeft + g.windowWidth
-        : g.xOf(_trimEnd, start);
+        ? winLeft + g.windowWidth
+        : g.xOf(_trimEnd, view);
+    final start = frozen == null ? widget.start : _trimStart;
+    final end = frozen == null ? widget.start + g.length : _trimEnd;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       // 膠卷黏著手指走：過拖曳門檻前那一小段也算（不然會差半個指頭）；
@@ -284,14 +320,14 @@ class _SlipFilmState extends State<SlipFilm> {
           child: Stack(
             children: [
               const Positioned.fill(child: ColoredBox(color: kPanelHi)),
-              for (final k in g.visibleTiles(start))
-                _tile(g, k, start, filmEnd),
+              for (final k in g.visibleTiles(view)) _tile(g, k, view, filmEnd),
               Positioned.fill(
                 child: IgnorePointer(
-                  child: CustomPaint(painter: _Ticks(g, start)),
+                  child: CustomPaint(painter: _Ticks(g, view)),
                 ),
               ),
-              // 框外壓暗：框裡那一截才是這段用到的
+              // 框外壓淡一點：框裡那一截是這段用到的，兩邊的畫面也要看得出
+              // 是什麼（使用者：「不會顯示左右」——壓太暗等於沒有）
               Positioned(
                 left: 0,
                 top: 0,
@@ -307,6 +343,7 @@ class _SlipFilmState extends State<SlipFilm> {
                 child: const _Shade(),
               ),
               Positioned(
+                key: const ValueKey('slip-window'),
                 left: winLeft,
                 top: 0,
                 bottom: 0,
@@ -328,10 +365,7 @@ class _SlipFilmState extends State<SlipFilm> {
                 ValueListenableBuilder<double>(
                   valueListenable: widget.playhead!,
                   builder: (context, t, _) {
-                    final x = g.xOf(
-                      t.clamp(start, start + g.length).toDouble(),
-                      start,
-                    );
+                    final x = g.xOf(t.clamp(start, end).toDouble(), view);
                     return Positioned(
                       left: x - 1,
                       top: 0,
@@ -373,8 +407,8 @@ class _SlipFilmState extends State<SlipFilm> {
     ),
   );
 
-  Widget _tile(SlipFilmGeometry g, int k, double start, double filmEnd) {
-    final left = g.xOf(k * g.step, start);
+  Widget _tile(SlipFilmGeometry g, int k, double view, double filmEnd) {
+    final left = g.xOf(k * g.step, view);
     // 多半個像素蓋住相鄰格的接縫；最後一格切在片尾
     final width = math.min(g.tileWidth + 0.5, filmEnd - left);
     final bytes = widget.frameAt(g.tileTime(k));
@@ -390,22 +424,22 @@ class _SlipFilmState extends State<SlipFilm> {
   }
 }
 
-/// 框外壓暗
+/// 框外壓淡
 class _Shade extends StatelessWidget {
   const _Shade();
 
   @override
   Widget build(BuildContext context) => IgnorePointer(
-    child: ColoredBox(color: Colors.black.withValues(alpha: 0.55)),
+    child: ColoredBox(color: Colors.black.withValues(alpha: 0.35)),
   );
 }
 
 /// 膠卷底邊的刻度：拖的時候畫面相近也看得出在動、動了多少
 class _Ticks extends CustomPainter {
-  _Ticks(this.g, this.start);
+  _Ticks(this.g, this.view);
 
   final SlipFilmGeometry g;
-  final double start;
+  final double view;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -416,8 +450,8 @@ class _Ticks extends CustomPainter {
     final major = Paint()
       ..color = Colors.white.withValues(alpha: 0.75)
       ..strokeWidth = 1;
-    final from = math.max(0.0, start - g.windowLeft / g.pps);
-    final to = math.min(g.duration, start + (g.width - g.windowLeft) / g.pps);
+    final from = math.max(0.0, view);
+    final to = math.min(g.duration, view + g.width / g.pps);
     for (
       var i = (from / ticks.minor).ceil();
       i * ticks.minor <= to + 1e-9;
@@ -425,7 +459,7 @@ class _Ticks extends CustomPainter {
     ) {
       final t = i * ticks.minor;
       final big = ticks.major != null && _onGrid(t, ticks.major!);
-      final x = g.xOf(t, start).roundToDouble() + 0.5;
+      final x = g.xOf(t, view).roundToDouble() + 0.5;
       canvas.drawLine(
         Offset(x, size.height),
         Offset(x, size.height - (big ? 10 : 5)),
@@ -441,7 +475,7 @@ class _Ticks extends CustomPainter {
 
   @override
   bool shouldRepaint(_Ticks old) =>
-      old.start != start ||
+      old.view != view ||
       old.g.width != g.width ||
       old.g.length != g.length ||
       old.g.duration != g.duration;

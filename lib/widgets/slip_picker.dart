@@ -50,8 +50,11 @@ class SlipPicker extends StatefulWidget {
   /// 沒有播放器時的大預覽：抽 [seconds] 那一格
   final Future<Uint8List?> Function(double seconds) loadFrame;
 
-  /// 膠卷與整支縮圖用的小圖；null＝跟大預覽同一支
-  final Future<Uint8List?> Function(double seconds)? loadThumbnail;
+  /// 膠卷與整支縮圖用的小圖：抽 [seconds] 附近、前後 [tolerance] 秒以內
+  /// 的一格就好（一格縮圖本來就代表那一截，不必解到精準那一格，比較快）。
+  /// null＝跟大預覽同一支
+  final Future<Uint8List?> Function(double seconds, double tolerance)?
+  loadThumbnail;
 
   /// 換段放手時回報新的起點（長度照目前的）
   final ValueChanged<double> onCommit;
@@ -79,7 +82,8 @@ class SlipPicker extends StatefulWidget {
   State<SlipPicker> createState() => _SlipPickerState();
 }
 
-class _SlipPickerState extends State<SlipPicker> {
+class _SlipPickerState extends State<SlipPicker>
+    with SingleTickerProviderStateMixin {
   late double _start = widget.start;
   late double _length = widget.length;
 
@@ -107,6 +111,24 @@ class _SlipPickerState extends State<SlipPicker> {
   late final ValueNotifier<double> _pos = ValueNotifier(widget.start);
   Timer? _tick;
 
+  /// 這一格的膠卷排法（拖膠卷時要知道膠卷捲不捲得動）
+  SlipFilmGeometry? _film;
+
+  /// 拖膠卷時膠卷左緣（原片秒）：框留在原地、膠卷跟著手指走。null＝平常
+  /// 的排法（框盡量置中、不露出原片外的空白，見 SlipFilmGeometry.restView）
+  double? _slideView;
+
+  /// 這一格畫出來的膠卷左緣：拖膠卷從這裡接手，放手從這裡滑回平常排法
+  double _shownView = 0;
+
+  /// 放手後膠卷從 [_settleFrom] 滑回平常排法（拖到原片頭尾外露出空白、
+  /// 或框不在正中間時）
+  double? _settleFrom;
+  late final AnimationController _settle;
+
+  /// 每一格縮圖抽圖時可以差多少秒（那一格代表的那一截的一半）
+  final _tileTolerance = <int, double>{};
+
   double get _end => _start + _length;
 
   static Duration _ms(double s) => Duration(milliseconds: (s * 1000).round());
@@ -114,6 +136,10 @@ class _SlipPickerState extends State<SlipPicker> {
   @override
   void initState() {
     super.initState();
+    _settle = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 220),
+    )..addListener(() => setState(() {}));
     final path = widget.playPath;
     if (path == null) {
       _noPlayer = true;
@@ -127,6 +153,7 @@ class _SlipPickerState extends State<SlipPicker> {
     _tick?.cancel();
     _player?.dispose();
     _pos.dispose();
+    _settle.dispose();
     super.dispose();
   }
 
@@ -225,6 +252,39 @@ class _SlipPickerState extends State<SlipPicker> {
     _seekDuringDrag(s);
   }
 
+  /// 拖膠卷的每一下：膠卷捲得動時框留在原地、膠卷跟著手指（膠卷左緣跟著
+  /// 起點一起移）；捲不動時拖的是框，膠卷不動
+  void _slideFilm(double s) {
+    if (_film?.scrolls ?? false) {
+      _stopSettle();
+      _slideView = (_slideView ?? _shownView) + (s - _start);
+    }
+    _moveTo(s);
+  }
+
+  /// 拖膠卷放手：套用；膠卷滑回平常排法（框盡量置中、不露出空白）
+  void _releaseFilm() {
+    final from = _slideView;
+    _slideView = null;
+    if (from != null) {
+      _settleFrom = from;
+      unawaited(_settle.forward(from: 0));
+    }
+    _release();
+  }
+
+  /// 上面整支縮圖點／拖：一次跳很遠，膠卷直接換到新位置的平常排法
+  void _jumpTo(double s) {
+    _stopSettle();
+    _slideView = null;
+    _moveTo(s);
+  }
+
+  void _stopSettle() {
+    _settle.stop();
+    _settleFrom = null;
+  }
+
   /// 放手：套用，從新的開頭播
   void _release() {
     _gesturing = false;
@@ -238,6 +298,8 @@ class _SlipPickerState extends State<SlipPicker> {
   void _trimTo(double s, double length, bool leftEdge) {
     if (!_gesturing) {
       _gesturing = true;
+      _stopSettle();
+      _slideView = null;
       _lengthAtTrim = _length;
       _startAtTrim = _start;
       if (_playing) {
@@ -316,16 +378,32 @@ class _SlipPickerState extends State<SlipPicker> {
   /// 一次只解一張。手指移動時替換待抽清單：沒有播放器時開頭大圖最先，
   /// 再來是膠卷上離框最近的格子，最後才是整支縮圖。快取依實際要求的
   /// 時間查找，晚到的舊畫面不會貼到新的時間標籤下
-  void _requestFrames(SlipFilmGeometry film, int overview) {
+  void _requestFrames(SlipFilmGeometry film, double view, int overview) {
     // 拉框邊的時候膠卷凍在開拉那一刻（原點、長度都是），抽的格子也照那時候
     final origin = _startAtTrim ?? _start;
     final center = origin + film.length / 2;
-    final filmTimes = [
-      for (final k in film.visibleTiles(origin)) film.tileTime(k),
-    ]..sort((a, b) => (a - center).abs().compareTo((b - center).abs()));
+    final tiles = [...film.visibleTiles(view)]
+      ..sort(
+        (a, b) => (film.tileTime(a) - center).abs().compareTo(
+          (film.tileTime(b) - center).abs(),
+        ),
+      );
+    final overviewSpan = widget.duration / math.max(1, overview);
+    _tileTolerance.clear();
+    void tolerance(double t, double span) {
+      final k = _key(t);
+      _tileTolerance[k] = math.min(_tileTolerance[k] ?? span / 2, span / 2);
+    }
+
+    for (final k in tiles) {
+      tolerance(film.tileTime(k), film.tileSpan(k));
+    }
+    for (var i = 0; i < overview; i++) {
+      tolerance(SlipStrip.tileTime(i, overview, widget.duration), overviewSpan);
+    }
     final wanted = {
       if (!_ready) (at: _key(_start), preview: true),
-      for (final t in filmTimes) (at: _key(t), preview: false),
+      for (final k in tiles) (at: _key(film.tileTime(k)), preview: false),
       for (var i = 0; i < overview; i++)
         (
           at: _key(SlipStrip.tileTime(i, overview, widget.duration)),
@@ -349,10 +427,11 @@ class _SlipPickerState extends State<SlipPicker> {
         final at = pending.first;
         Uint8List? frame;
         try {
-          final load = at.preview
-              ? widget.loadFrame
-              : (widget.loadThumbnail ?? widget.loadFrame);
-          frame = await load(at.at / 1000);
+          final thumb = widget.loadThumbnail;
+          final seconds = at.at / 1000;
+          frame = at.preview || thumb == null
+              ? await widget.loadFrame(seconds)
+              : await thumb(seconds, _tileTolerance[at.at] ?? 0);
         } catch (_) {
           // 壞檔／離開畫面：顯示無法預覽，不以舊圖冒充。
         }
@@ -403,11 +482,24 @@ class _SlipPickerState extends State<SlipPicker> {
             length: _lengthAtTrim ?? _length,
             aspect: widget.aspect,
           );
+          _film = film;
+          // 膠卷左緣：拖膠卷時跟著手指；放手後滑回平常排法；拉框邊時凍在
+          // 開拉那一刻的起點
+          final rest = film.restView(_startAtTrim ?? _start);
+          final from = _settleFrom;
+          final view =
+              _slideView ??
+              (from != null && _settle.isAnimating
+                  ? from +
+                        (rest - from) *
+                            Curves.easeOutCubic.transform(_settle.value)
+                  : rest);
+          _shownView = view;
           final overview = SlipStrip.tileCount(
             box.maxWidth,
             aspect: widget.aspect,
           );
-          _requestFrames(film, overview);
+          _requestFrames(film, view, overview);
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -436,7 +528,7 @@ class _SlipPickerState extends State<SlipPicker> {
                 length: _length,
                 aspect: widget.aspect,
                 frameAt: _thumb,
-                onChanged: _moveTo,
+                onChanged: _jumpTo,
                 onEnd: _release,
               ),
               const SizedBox(height: 12),
@@ -444,9 +536,10 @@ class _SlipPickerState extends State<SlipPicker> {
                 key: const ValueKey('slip-film'),
                 geometry: film,
                 start: _start,
+                view: view,
                 frameAt: _thumb,
-                onChanged: _moveTo,
-                onEnd: _release,
+                onChanged: _slideFilm,
+                onEnd: _releaseFilm,
                 onTrimChanged: widget.onCommitRange == null ? null : _trimTo,
                 onTrimEnd: _trimRelease,
                 minLength: widget.minLength,

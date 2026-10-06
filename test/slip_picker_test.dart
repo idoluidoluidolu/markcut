@@ -22,6 +22,7 @@ import 'editor_harness.dart' show solidPng;
 Finder get _strip => find.byKey(const ValueKey('slip-strip'));
 Finder get _film => find.byKey(const ValueKey('slip-film'));
 Finder get _preview => find.byKey(const ValueKey('slip-preview'));
+Finder get _window => find.byKey(const ValueKey('slip-window'));
 Finder get _image =>
     find.descendant(of: _preview, matching: find.byType(Image));
 
@@ -93,6 +94,7 @@ Future<void> _open(
   double length = 4,
   Future<Uint8List?> Function(double)? load,
   Future<Uint8List?> Function(double)? thumbnail,
+  Future<Uint8List?> Function(double seconds, double tolerance)? tiles,
   ValueChanged<double>? commit,
   double textScale = 1,
   String? playPath,
@@ -121,7 +123,8 @@ Future<void> _open(
                 volume: volume,
                 aspect: 9 / 16,
                 loadFrame: load ?? (_) async => null,
-                loadThumbnail: thumbnail ?? (_) async => null,
+                loadThumbnail:
+                    tiles ?? (s, _) => (thumbnail ?? (_) async => null)(s),
                 onCommit: commit ?? (_) {},
               ),
             ),
@@ -173,17 +176,59 @@ void main() {
         aspect: 9 / 16,
       );
       expect(g.windowWidth, 140);
-      expect(g.windowLeft, 105);
+      expect(g.centeredLeft, 105);
       expect(g.pps, 35);
+      expect(g.scrolls, isTrue);
+      expect(g.maxView, 10, reason: '膠卷一條看得到 10 秒，左緣最多到 10 秒');
       expect(g.tileWidth, 36);
       expect(g.step, closeTo(36 / 35, 1e-9));
-      // 起點 2 秒：左緣是 -1 秒、右緣是 9 秒 → 第 0～8 格
-      expect(g.visibleTiles(2), [0, 1, 2, 3, 4, 5, 6, 7, 8]);
       // 片尾那格只取片內那一截的中間
       final last = g.tileCount - 1;
       expect(g.tileTime(last), closeTo((last * g.step + 20) / 2, 1e-9));
-      expect(g.xOf(2, 2), 105, reason: '框的左緣＝起點');
-      expect(g.xOf(6, 2), 245, reason: '框的右緣＝起點＋片段長度');
+      expect(g.tileSpan(last), closeTo(20 - last * g.step, 1e-9));
+    });
+
+    test('框盡量放正中間，但膠卷不露出原片頭尾以外的空白', () {
+      final g = SlipFilmGeometry(
+        width: 350,
+        height: 64,
+        duration: 20,
+        length: 4,
+        aspect: 9 / 16,
+      );
+      // 中段：框正中間
+      expect(g.restView(8), 5);
+      expect(g.xOf(8, g.restView(8)), 105);
+      // 開頭只有 2 秒：膠卷從 0 秒排起，框靠左（不露出 0 秒以前的空白）
+      expect(g.restView(2), 0);
+      expect(g.xOf(2, 0), 70);
+      expect(g.visibleTiles(0), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+      // 貼著片尾（使用者回報的情況）：框靠右，右邊不留空白
+      expect(g.restView(16), 10);
+      expect(g.xOf(20, 10), 350, reason: '片尾剛好在膠卷右緣');
+    });
+
+    test('片段超過原片四成：膠卷就是整支原片，不比上面那條還粗', () {
+      final g = SlipFilmGeometry(
+        width: 350,
+        height: 64,
+        duration: 20,
+        length: 10,
+      );
+      expect(g.pps, 17.5, reason: '整支 20 秒剛好排滿 350 像素');
+      expect(g.windowWidth, 175);
+      expect(g.scrolls, isFalse);
+      expect(g.restView(10), 0);
+      expect(g.xOf(10, 0), 175, reason: '框在它真正的位置');
+      // 整支用滿（剛匯入）：框＝整條
+      final whole = SlipFilmGeometry(
+        width: 350,
+        height: 64,
+        duration: 20,
+        length: 20,
+      );
+      expect(whole.windowWidth, 350);
+      expect(whole.restView(0), 0);
     });
 
     test('刻度至少隔 10 像素，長刻度落在整數倍上', () {
@@ -259,8 +304,19 @@ void main() {
     expect(t.takeException(), isNull);
   });
 
-  testWidgets('很短的片段放得很大，一樣夾在頭尾', (t) async {
+  testWidgets('整支排滿一條（片段超過原片四成）：拖的是框，框跟著手指走', (t) async {
     final commits = <double>[];
+    await _open(t, start: 5, length: 10, commit: commits.add);
+    final film = t.getRect(_film);
+    // 一秒 17.5 像素：框在 5 秒的位置，兩邊都是原片的畫面
+    expect(t.getRect(_window).left - film.left, closeTo(87.5, 0.5));
+    expect(t.getRect(_window).width, closeTo(175, 0.5));
+    // 手指往右 35 像素＝框往右 2 秒
+    await _dragFilm(t, 35);
+    expect(commits.last, closeTo(7, 1e-6));
+    expect(t.getRect(_window).left - film.left, closeTo(122.5, 0.5));
+    // 很短的原片也一樣：拖的是框，夾在頭尾
+    await t.pumpWidget(const SizedBox());
     await _open(
       t,
       start: 0.05,
@@ -268,10 +324,39 @@ void main() {
       length: 0.2,
       commit: commits.add,
     );
-    await _dragFilm(t, -1000);
-    expect(commits.last, closeTo(0.15, 1e-9));
     await _dragFilm(t, 1000);
+    expect(commits.last, closeTo(0.15, 1e-9));
+    await _dragFilm(t, -1000);
     expect(commits.last, 0);
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('片段貼著原片頭尾：剛進去左右都是畫面，不留空白', (t) async {
+    // 使用者回報：18.31～35.18（貼著片尾）的片段，剛進去膠卷右邊一片空
+    await _open(t, start: 16);
+    final film = t.getRect(_film);
+    expect(t.getRect(_window).right, closeTo(film.right, 0.5), reason: '框靠右');
+    await t.pumpWidget(const SizedBox());
+    await _open(t, start: 0);
+    expect(t.getRect(_window).left, closeTo(t.getRect(_film).left, 0.5));
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('拖到原片外露出空白，放手滑回去：框靠過去、膠卷補滿', (t) async {
+    final commits = <double>[];
+    await _open(t, start: 8, commit: commits.add);
+    final film = t.getRect(_film);
+    expect(t.getRect(_window).left - film.left, closeTo(105, 0.5), reason: '置中');
+    // 往左拖過頭：拖的時候框留在原地（膠卷跟著手指，右邊露出空白）
+    final g = await _dragFilm(t, -1000, up: false);
+    expect(t.getRect(_window).left - film.left, closeTo(105, 0.5));
+    expect(find.text('00:16.00 – 00:20.00'), findsOneWidget);
+    await g.up();
+    await t.pump();
+    expect(commits.last, 16);
+    // 放手：膠卷滑回去（動畫），框靠到右邊
+    await t.pump(const Duration(milliseconds: 300));
+    expect(t.getRect(_window).right, closeTo(film.right, 0.5));
     expect(t.takeException(), isNull);
   });
 
@@ -422,10 +507,11 @@ void main() {
       length: 4,
       aspect: 9 / 16,
     );
-    final film = g.visibleTiles(2).length;
+    final view = g.restView(2);
+    final film = g.visibleTiles(view).length;
     final overview = SlipStrip.tileCount(350, aspect: 9 / 16);
     final keys = {
-      for (final k in g.visibleTiles(2)) (g.tileTime(k) * 1000).round(),
+      for (final k in g.visibleTiles(view)) (g.tileTime(k) * 1000).round(),
       for (var i = 0; i < overview; i++)
         (SlipStrip.tileTime(i, overview, 20) * 1000).round(),
     };
@@ -434,6 +520,34 @@ void main() {
     expect((thumbs.first - 4).abs(), lessThan(g.step));
     final filmImages = find.descendant(of: _film, matching: find.byType(Image));
     expect(filmImages, findsNWidgets(film));
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('縮圖只要落在那一格代表的那一截裡：容差＝那一截的一半', (t) async {
+    final asked = <double, double>{};
+    await _open(
+      t,
+      tiles: (s, tolerance) async {
+        asked[s] = tolerance;
+        return solidPng(0, 255, 0);
+      },
+    );
+    for (var i = 0; i < 40; i++) {
+      await t.pump();
+    }
+    final g = SlipFilmGeometry(
+      width: 350,
+      height: 64,
+      duration: 20,
+      length: 4,
+      aspect: 9 / 16,
+    );
+    // 膠卷第 3 格（框正中間附近）：一格 36/35 秒 → 容差一半
+    final film = (g.tileTime(3) * 1000).round() / 1000;
+    expect(asked[film], closeTo(g.step / 2, 1e-9));
+    // 整支縮圖第 0 格：一格 20/23 秒
+    final strip = (SlipStrip.tileTime(0, 23, 20) * 1000).round() / 1000;
+    expect(asked[strip], closeTo(20 / 23 / 2, 1e-9));
     expect(t.takeException(), isNull);
   });
 

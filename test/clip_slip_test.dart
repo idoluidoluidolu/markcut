@@ -378,9 +378,13 @@ void main() {
     await settle(t, 6);
     expect(_strip, findsOneWidget, reason: '整支用滿也要打得開');
     final left = find.byKey(const ValueKey('slip-trim-left'));
-    final window = t.getSize(_film).width * SlipFilmGeometry.windowFraction;
-    // 四分之一框寬＝5 秒：0～20 → 5～20
-    await t.drag(left, Offset(window / 4, 0));
+    // 整支用滿：膠卷就是整支原片排滿一條，框＝整條。四分之一條＝5 秒：
+    // 0～20 → 5～20
+    expect(
+      t.getSize(find.byKey(const ValueKey('slip-window'))).width,
+      closeTo(t.getSize(_film).width, 0.5),
+    );
+    await t.drag(left, Offset(t.getSize(_film).width / 4, 0));
     await settle(t, 6);
     await tick(t, 40);
     final c = clipOf(t, 1);
