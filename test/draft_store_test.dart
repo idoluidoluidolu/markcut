@@ -438,4 +438,144 @@ void main() {
       expect((await DraftStore.load('new'))!['clips'], [1, 2]);
     });
   });
+
+  // 實機回報「草稿沒有顯示縮圖」：編輯器還沒畫出封面的存檔把存著的封面
+  // 刪了；背景畫好的封面晚於個人中心讀清單，那頁不知道要換
+  group('封面', () {
+    /// 封面通知（非同步送）收進清單
+    List<String> listenCovers() {
+      final events = <String>[];
+      final sub = DraftStore.coverChanges.listen(events.add);
+      addTearDown(sub.cancel);
+      return events;
+    }
+
+    test('keepThumb：手上還沒有封面的存檔，存著的那張跟比例原封不動', () async {
+      await DraftStore.save('keep', '{}', thumb: 'OLD', thumbAspect: 1.5);
+      final events = listenCovers();
+      expect(
+        await DraftStore.save(
+          'keep',
+          '{"v":2}',
+          keepThumb: true,
+          coverRevision: 'r2',
+        ),
+        isTrue,
+      );
+      expect(await DraftStore.load('keep'), {'v': 2});
+      expect(await DraftStore.thumb('keep'), 'OLD');
+      final m = (await DraftStore.list()).single;
+      expect(m.hasThumb, isTrue);
+      expect(m.thumbAspect, 1.5);
+      expect(m.coverRevision, 'r2', reason: '背景畫好的封面照新的存檔版本掛');
+      await pumpEventQueue();
+      expect(events, isEmpty, reason: '封面沒換不通知');
+    });
+
+    test('keepThumb：本來就沒有封面，就照實記沒有', () async {
+      expect(await DraftStore.save('none', '{}', keepThumb: true), isTrue);
+      expect((await DraftStore.list()).single.hasThumb, isFalse);
+      expect(await DraftStore.thumb('none'), isNull);
+    });
+
+    test('沒帶 keepThumb 的 null 封面照舊是清掉（專案裡沒有畫面了），並通知', () async {
+      await DraftStore.save('clear', '{}', thumb: 'OLD', thumbAspect: 1.5);
+      final events = listenCovers();
+      expect(await DraftStore.save('clear', '{}'), isTrue);
+      expect(await DraftStore.thumb('clear'), isNull);
+      final m = (await DraftStore.list()).single;
+      expect(m.hasThumb, isFalse);
+      expect(m.thumbAspect, isNull);
+      await pumpEventQueue();
+      expect(events, ['clear']);
+    });
+
+    test('背景畫好的封面掛上去就通知；同一張再掛一次不重寫、不通知', () async {
+      final previous = SharedPreferencesStorePlatform.instance;
+      final store = _FailingDraftPreferences();
+      SharedPreferencesStorePlatform.instance = store;
+      addTearDown(() {
+        SharedPreferencesStorePlatform.instance = previous;
+        SharedPreferences.resetStatic();
+      });
+      await DraftStore.save('bg', '{}', coverRevision: 'r1');
+      final events = listenCovers();
+      const cover = 'RENDERED';
+      expect(
+        await DraftStore.updateCover(
+          'bg',
+          revision: 'r1',
+          thumb: cover,
+          aspect: 0.75,
+        ),
+        isTrue,
+      );
+      await pumpEventQueue();
+      expect(events, ['bg']);
+      // 編輯器沒換封面：下一次存檔帶著同一個字串、背景又掛同一張。
+      // 封面那一筆寫不進去也沒關係——根本不該再寫
+      expect(
+        await DraftStore.save(
+          'bg',
+          '{"v":2}',
+          thumb: cover,
+          thumbAspect: 0.75,
+          coverRevision: 'r2',
+        ),
+        isTrue,
+      );
+      store.failKey = 'flutter.project_thumb_bg';
+      expect(
+        await DraftStore.updateCover(
+          'bg',
+          revision: 'r2',
+          thumb: cover,
+          aspect: 0.75,
+        ),
+        isTrue,
+      );
+      await pumpEventQueue();
+      expect(events, ['bg'], reason: '同一張：不重寫檔案、不吵個人中心');
+      expect(await DraftStore.thumb('bg'), cover);
+    });
+
+    test('補封面：只補沒有封面的；存檔時間與封面版本不動；不救回刪掉的草稿', () async {
+      await DraftStore.save('fill', '{}', coverRevision: 'r1');
+      final before = (await DraftStore.list()).single;
+      expect(
+        await DraftStore.fillCover('fill', thumb: 'FILLED', aspect: 2),
+        isTrue,
+      );
+      final after = (await DraftStore.list()).single;
+      expect(await DraftStore.thumb('fill'), 'FILLED');
+      expect(after.hasThumb, isTrue);
+      expect(after.thumbAspect, 2);
+      expect(after.savedAt, before.savedAt, reason: '補封面不是一次存檔，不能把它排到最前面');
+      expect(after.coverRevision, 'r1');
+      expect(
+        await DraftStore.fillCover('fill', thumb: 'OTHER', aspect: 1),
+        isFalse,
+        reason: '已經有封面（多半是編輯器剛存的真封面）就不蓋',
+      );
+      expect(await DraftStore.thumb('fill'), 'FILLED');
+      expect(
+        await DraftStore.updateCover(
+          'fill',
+          revision: 'r1',
+          thumb: 'REAL',
+          aspect: 1,
+        ),
+        isTrue,
+        reason: '編輯器背景畫好的那張照樣換得掉補的',
+      );
+      expect(await DraftStore.thumb('fill'), 'REAL');
+      await DraftStore.remove('fill');
+      expect(
+        await DraftStore.fillCover('fill', thumb: 'LATE', aspect: 1),
+        isFalse,
+      );
+      expect(await DraftStore.thumb('fill'), isNull);
+      expect(await DraftStore.list(), isEmpty);
+    });
+  });
 }

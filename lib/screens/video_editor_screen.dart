@@ -1861,36 +1861,41 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
   }
 
+  /// 封面看得到的那些內容的指紋（畫布、片段位置與來源、浮水印）。
+  /// 兩個用途：沒變就不重畫（[_refreshCover]）；畫的途中變了，畫出來的
+  /// 就是新舊混在一起的一張，不掛上去（[_drainDraftCovers]）
+  String _coverSig() => [
+    _canvasRatio.index,
+    _resolution.index,
+    _prepHdrMode,
+    for (final c in _tl.clips)
+      // 跟預覽一致的來源也進指紋：代理落地或 HDR 模式改變時重做封面。
+      '${c.id}|${c.track}|${c.offset.toStringAsFixed(2)}'
+          '|${c.trimStart.toStringAsFixed(2)}|${c.scale}|${c.px}|${c.py}'
+          '|${_thumbnailPath(_tl.sourceOf(c))}',
+    _settings.hasAnyMark,
+    _wmHidden,
+    // 浮水印「內容」也要進指紋：只記有沒有的話，換了樣式/文字/
+    // Logo 封面不會重畫（實測回報：草稿封面永遠是預設字樣）。
+    // Logo 的 b64 只取長度，不把幾 MB 的字串拼進指紋
+    for (final t in _settings.texts)
+      if (t.enabled)
+        't${t.text}|${t.fontFamily}|${t.colorValue}|${t.opacity}'
+            '|${t.sizeFrac}|${t.spacing}|${t.alignment}|${t.x}|${t.y}|${t.rotation}'
+            '|${t.tiled}|${t.shadow}|${t.outline}|${t.outlineColorValue}'
+            // 字重、底色、陰影參數也會改畫面，漏了封面不重畫
+            '|${t.weight}|${t.bg}|${t.bgColorValue}|${t.bgOpacity}'
+            '|${t.bgPad}|${t.bgCorner}|${t.shadowOpacity}'
+            '|${t.shadowBlur}|${t.outlineWidth}',
+    for (final l in _settings.logos)
+      if (l.enabled)
+        'l${l.b64?.length ?? 0}|${l.opacity}|${l.sizeFrac}|${l.x}'
+            '|${l.y}|${l.rotation}|${l.corner}|${l.tiled}|${l.drawn}',
+  ].join(';');
+
   Future<void> _refreshCover() async {
     // 先試「照編輯畫面合成」的封面；不行再退回舊的抽單格
-    final ck = [
-      _canvasRatio.index,
-      _resolution.index,
-      _prepHdrMode,
-      for (final c in _tl.clips)
-        // 跟預覽一致的來源也進指紋：代理落地或 HDR 模式改變時重做封面。
-        '${c.id}|${c.track}|${c.offset.toStringAsFixed(2)}'
-            '|${c.trimStart.toStringAsFixed(2)}|${c.scale}|${c.px}|${c.py}'
-            '|${_thumbnailPath(_tl.sourceOf(c))}',
-      _settings.hasAnyMark,
-      _wmHidden,
-      // 浮水印「內容」也要進指紋：只記有沒有的話，換了樣式/文字/
-      // Logo 封面不會重畫（實測回報：草稿封面永遠是預設字樣）。
-      // Logo 的 b64 只取長度，不把幾 MB 的字串拼進指紋
-      for (final t in _settings.texts)
-        if (t.enabled)
-          't${t.text}|${t.fontFamily}|${t.colorValue}|${t.opacity}'
-              '|${t.sizeFrac}|${t.spacing}|${t.alignment}|${t.x}|${t.y}|${t.rotation}'
-              '|${t.tiled}|${t.shadow}|${t.outline}|${t.outlineColorValue}'
-              // 字重、底色、陰影參數也會改畫面，漏了封面不重畫
-              '|${t.weight}|${t.bg}|${t.bgColorValue}|${t.bgOpacity}'
-              '|${t.bgPad}|${t.bgCorner}|${t.shadowOpacity}'
-              '|${t.shadowBlur}|${t.outlineWidth}',
-      for (final l in _settings.logos)
-        if (l.enabled)
-          'l${l.b64?.length ?? 0}|${l.opacity}|${l.sizeFrac}|${l.x}'
-              '|${l.y}|${l.rotation}|${l.corner}|${l.tiled}|${l.drawn}',
-    ].join(';');
+    final ck = _coverSig();
     if (ck == _coverKey && _coverB64 != null) return;
     final composed = await _composeCover();
     if (composed != null) {
@@ -3139,7 +3144,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // isolate（見 BlobStore.writeJson）——存草稿是每個編輯動作都會走到
     // 的，那幾毫秒以前正好落在使用者手指還在動的時候
     final generation = ++_draftSaveGeneration;
-    final version = _tlVersion;
     final revision = '${DateTime.now().microsecondsSinceEpoch}:$generation';
     final thumb = _draftThumb();
     final ok = await DraftStore.save(
@@ -3147,13 +3151,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _projectJson(),
       thumb: thumb?.$1,
       thumbAspect: thumb?.$2,
+      // 手上還沒有封面（這一場還沒畫好：剛打開草稿、剛加素材）但時間軸
+      // 上有畫面：存著的那張先留著，背景畫好再換（見 _drainDraftCovers）。
+      // 時間軸上已經沒有影片／照片了才真的清掉
+      keepThumb: thumb == null && _coverClip() != null,
       clipCount: _tl.clips.length,
       duration: _tl.duration,
       refs: _draftFileRefs(),
       coverRevision: revision,
     );
     if (ok && !_draftDeleted && generation == _draftSaveGeneration) {
-      _pendingCover = (revision: revision, version: version, force: force);
+      _pendingCover = (revision: revision, force: force, retried: false);
       _scheduleDraftCover();
       if (force) await _coverTask;
     }
@@ -3167,7 +3175,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   int _draftSaveGeneration = 0;
   bool _draftDeleted = false;
-  ({String revision, int version, bool force})? _pendingCover;
+  ({String revision, bool force, bool retried})? _pendingCover;
   Future<void>? _coverTask;
 
   void _scheduleDraftCover() {
@@ -3184,12 +3192,36 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _pendingCover = null;
       if (!mounted && !request.force) continue;
       final previousCover = (_coverB64, _coverAspect);
+      void restore() {
+        _coverB64 = previousCover.$1;
+        _coverAspect = previousCover.$2;
+        _coverKey = null;
+      }
+
       try {
+        // 這張封面算不算這一版存檔的，看「畫的這段時間封面看得到的內容
+        // 有沒有變」（_coverSig）。以前比的是 _tlVersion——那是預覽熱路徑
+        // 的快取版本號，每次 setState 都加一，_saveDraft 存完緊接著叫的
+        // _compRefreshIfChanged 也一定加一：畫好的封面每一張都被當成過期
+        // 丟掉，新草稿從來存不到封面（實機回報：草稿沒有顯示縮圖）
+        final sig = _coverSig();
         await _refreshCover();
-        if (_draftDeleted || request.version != _tlVersion) {
-          _coverB64 = previousCover.$1;
-          _coverAspect = previousCover.$2;
-          _coverKey = null;
+        if (_draftDeleted) {
+          restore();
+          continue;
+        }
+        if (_coverSig() != sig) {
+          // 畫到一半內容變了（又改了一筆、代理剛落地）：這張新舊混在一起，
+          // 不掛。改動通常自己會排下一次存檔；沒排的（例如 HDR 偵測剛回來）
+          // 照同一版存檔再畫一次——只補一次，不跟著連續的改動一直追
+          restore();
+          if (!request.retried) {
+            _pendingCover ??= (
+              revision: request.revision,
+              force: request.force,
+              retried: true,
+            );
+          }
           continue;
         }
         final thumb = _draftThumb();
@@ -3203,11 +3235,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         }
       } catch (_) {
         // Cover rendering is optional: the project has already been saved.
-        _coverB64 = previousCover.$1;
-        _coverAspect = previousCover.$2;
-        _coverKey = null;
+        restore();
       }
     }
+  }
+
+  /// 原生抽格器現在歸哪一個編輯頁：每開一頁就換人（見 [_framesTicket]）
+  static int _framesOwner = 0;
+  final int _framesTicket = ++_framesOwner;
+
+  /// 離開時等 [work]（最後那次存檔與它的封面）做完才放抽格器。這中間
+  /// 使用者可能已經打開下一份草稿：抽格器換它在用了，這時候 release
+  ///（cancelAll）會把新頁進場的縮圖一起取消——不放，交給新頁離開時放
+  Future<void> _releaseFramesAfter(Future<void>? work) async {
+    try {
+      await work;
+    } catch (_) {}
+    if (_framesOwner != _framesTicket) return;
+    await releaseNativeFrames();
   }
 
   /// 丟掉這一份草稿（離開時選「不保留」）
@@ -12448,12 +12493,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 草稿還有沒落地的併批寫入：離開前補存，不能讓最後幾秒的編輯蒸發。
     // force：unmount 之後 mounted 必為 false，不帶的話這筆補存永遠
     // 走不到寫入那一行
+    Future<void>? lastSave;
     if (_draftSaveTimer?.isActive ?? false) {
       _draftSaveTimer!.cancel();
-      _saveDraftNow(force: true);
+      lastSave = _saveDraftNow(force: true);
     }
     _scrubQueue.dispose();
-    unawaited(releaseNativeFrames());
+    // 抽格器等封面畫完才放：「保留草稿」與上面那次補存的封面還在背景抽
+    // 那一格，先 release 的話原生端 cancelAll 會把它一起取消——封面落空，
+    // 草稿夾只剩灰底
+    unawaited(_releaseFramesAfter(lastSave ?? _coverTask));
     if (_prepBusy && !_exporting) Diag.stopSampling();
     _frameSettle?.cancel();
     _playProbe?.cancel();

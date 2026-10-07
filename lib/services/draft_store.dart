@@ -143,6 +143,24 @@ class DraftStore {
   /// 讀某一份草稿的封面（base64 PNG/JPEG）
   static Future<String?> thumb(String id) => BlobStore.read(_thumbKey(id));
 
+  /// 有沒有封面檔（不把那張讀進來）
+  static Future<bool> hasThumbFile(String id) =>
+      BlobStore.exists(_thumbKey(id));
+
+  /// 某份草稿存著的封面換了（或沒了）就發一次它的 id。
+  ///
+  /// 編輯器的封面是存檔之後才在背景畫的（見 [updateCover]）：使用者按
+  /// 「保留草稿」回到個人中心時，那張多半還在畫——個人中心當下讀到的是
+  /// 沒有封面（或上一版封面），畫好之後要靠這個通知才換得上去。
+  /// 補畫舊草稿（[fillCover]）不發：那是個人中心／草稿夾自己叫的
+  static final _coverEvents = StreamController<String>.broadcast();
+  static Stream<String> get coverChanges => _coverEvents.stream;
+
+  /// 草稿內容的原始 JSON 字串。只給沒有檔案系統的情況用（web、沒跑
+  /// main 的測試，內容本來就在記憶體裡）；有檔案時請用 [dataFilePath]
+  /// 交給背景 isolate 讀，別在畫面那條執行緒上讀好幾 MB 的字串
+  static Future<String?> rawJson(String id) => BlobStore.read(_dataKey(id));
+
   /// 讀清單（新到舊）。順便把舊版單一草稿搬進來。
   ///
   /// 索引壞掉「不能」回空清單：save() 會把空清單當事實重寫索引，
@@ -229,11 +247,16 @@ class DraftStore {
   /// 回傳有沒有真的寫進去。SharedPreferences 寫入失敗（空間滿、
   /// prefs 損毀）以前被吞掉，使用者整場都以為有自動存。
   /// 內容、封面及索引都成功寫入才回 true；存檔不順手清理其他草稿。
+  ///
+  /// [thumb] 是 null 時預設會把存著的封面刪掉（這份專案已經沒有畫面可以
+  /// 當封面了）。[keepThumb]＝呼叫端「手上還沒有封面」而不是「沒有封面」：
+  /// 存著的那張原封不動留著，等背景畫好再用 [updateCover] 換掉
   static Future<bool> save(
     String id,
     Object content, {
     String? thumb,
     double? thumbAspect,
+    bool keepThumb = false,
     int clipCount = 0,
     double duration = 0,
     Set<String>? refs,
@@ -258,6 +281,7 @@ class DraftStore {
             json,
             thumb: thumb,
             thumbAspect: thumbAspect,
+            keepThumb: keepThumb,
             clipCount: clipCount,
             duration: duration,
             refs: refs,
@@ -288,6 +312,7 @@ class DraftStore {
     Object json, {
     String? thumb,
     double? thumbAspect,
+    bool keepThumb = false,
     int clipCount = 0,
     double duration = 0,
     Set<String>? refs,
@@ -307,6 +332,8 @@ class DraftStore {
         ? await BlobStore.write(_dataKey(id), json)
         : await BlobStore.writeJson(_dataKey(id), json);
     if (!wrote) return false;
+    var hasThumb = thumb != null;
+    var thumbWrote = false;
     if (thumb != null) {
       final last = _thumbWritten;
       final same = last != null && last.$1 == id && identical(last.$2, thumb);
@@ -314,7 +341,13 @@ class DraftStore {
       if (!same || !await BlobStore.exists(_thumbKey(id))) {
         if (!await BlobStore.write(_thumbKey(id), thumb)) return false;
         _thumbWritten = (id, thumb);
+        thumbWrote = true;
       }
+    } else if (keepThumb) {
+      // 呼叫端這一刻手上還沒有封面（編輯器剛打開這份草稿、剛加素材，
+      // 封面還在背景畫）：存著的那張留著。以前這裡一律刪——背景那張只要
+      // 沒掛上去，草稿就從此只剩灰底，打開過的舊草稿也連帶丟了封面
+      hasThumb = await BlobStore.exists(_thumbKey(id));
     } else {
       if (!await BlobStore.delete(_thumbKey(id))) return false;
       if (_thumbWritten?.$1 == id) _thumbWritten = null;
@@ -330,14 +363,10 @@ class DraftStore {
       }
     }
     final metas = await list();
+    final old = metas.where((m) => m.id == id).firstOrNull;
     // 建立時間：第一次存下來的那一刻，之後每次存都留著同一個。
     // 草稿夾顯示的就是它——沒有名字這回事
-    final createdAt = metas
-        .firstWhere(
-          (m) => m.id == id,
-          orElse: () => DraftMeta(id: id, savedAt: DateTime.now()),
-        )
-        .createdAt;
+    final createdAt = old?.createdAt ?? DateTime.now();
     metas.removeWhere((m) => m.id == id);
     metas.add(
       DraftMeta(
@@ -345,13 +374,21 @@ class DraftStore {
         createdAt: createdAt,
         savedAt: DateTime.now(),
         coverRevision: coverRevision,
-        hasThumb: thumb != null,
-        thumbAspect: thumbAspect,
+        hasThumb: hasThumb,
+        // 留著舊封面就留著它的比例（個人中心照比例決定解碼寬度）
+        thumbAspect: thumb != null
+            ? thumbAspect
+            : (hasThumb ? old?.thumbAspect : null),
         clipCount: clipCount,
         duration: duration,
       ),
     );
-    return _writeIndex(prefs, metas);
+    final ok = await _writeIndex(prefs, metas);
+    // 封面真的換了／沒了才通知：沒換的存檔（每個編輯動作都會走到）不吵人
+    if (ok && (thumbWrote || (!hasThumb && (old?.hasThumb ?? false)))) {
+      _coverEvents.add(id);
+    }
+    return ok;
   }
 
   /// Install an asynchronously rendered cover only for the saved revision.
@@ -372,8 +409,19 @@ class DraftStore {
         return false;
       }
       final old = metas[index];
-      if (!await BlobStore.write(_thumbKey(id), thumb)) return false;
-      _thumbWritten = (id, thumb);
+      // 編輯器沒換封面時，存檔帶進來的跟這裡畫好的是同一個字串物件：
+      // 檔案已經是它、索引也已經記好了，不用每次自動存檔都重寫一張封面
+      final last = _thumbWritten;
+      final same =
+          last != null &&
+          last.$1 == id &&
+          identical(last.$2, thumb) &&
+          await BlobStore.exists(_thumbKey(id));
+      if (same && old.hasThumb && old.thumbAspect == aspect) return true;
+      if (!same) {
+        if (!await BlobStore.write(_thumbKey(id), thumb)) return false;
+        _thumbWritten = (id, thumb);
+      }
       metas[index] = DraftMeta(
         id: id,
         createdAt: old.createdAt,
@@ -387,11 +435,50 @@ class DraftStore {
       final prefs = await SharedPreferences.getInstance();
       final ok = await _writeIndex(prefs, metas);
       if (!ok) await prefs.reload();
+      // 檔案換了就通知（索引沒寫進去也一樣：讀封面看的是檔案）
+      if (!same) _coverEvents.add(id);
       return ok;
     } catch (_) {
       try {
         await (await SharedPreferences.getInstance()).reload();
       } catch (_) {}
+      return false;
+    }
+  });
+
+  /// 舊草稿補封面（見 DraftCoverRepair）：只有「這份草稿還在、而且還
+  /// 沒有封面檔」才寫——編輯器在這中間存了真的封面就不蓋它，被刪掉的
+  /// 草稿也不會被補回來。不動內容、存檔時間與封面版本
+  static Future<bool> fillCover(
+    String id, {
+    required String thumb,
+    required double aspect,
+  }) => _serial(() async {
+    try {
+      if (!await BlobStore.exists(_dataKey(id)) ||
+          await BlobStore.exists(_thumbKey(id))) {
+        return false;
+      }
+      final metas = await list();
+      final index = metas.indexWhere((m) => m.id == id);
+      if (index < 0) return false;
+      if (!await BlobStore.write(_thumbKey(id), thumb)) return false;
+      final old = metas[index];
+      metas[index] = DraftMeta(
+        id: id,
+        createdAt: old.createdAt,
+        savedAt: old.savedAt,
+        clipCount: old.clipCount,
+        duration: old.duration,
+        coverRevision: old.coverRevision,
+        hasThumb: true,
+        thumbAspect: aspect,
+      );
+      final prefs = await SharedPreferences.getInstance();
+      final ok = await _writeIndex(prefs, metas);
+      if (!ok) await prefs.reload();
+      return ok;
+    } catch (_) {
       return false;
     }
   });

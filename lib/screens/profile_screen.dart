@@ -13,6 +13,7 @@ import '../models/watermark_settings.dart';
 import '../services/blob_store.dart';
 import '../services/app_media_paths.dart';
 import '../services/draft_assets.dart';
+import '../services/draft_cover_repair.dart';
 import '../services/draft_store.dart';
 import '../services/file_reader.dart';
 import '../services/storage_usage.dart';
@@ -108,6 +109,20 @@ const _kDraftSlots = 4;
 
 /// 空狀態那一行灰字（kLTextDim：更淡的灰在白底上對比不到 3:1）
 const _kHintStyle = TextStyle(fontSize: 13, color: kLTextDim);
+
+/// 存著的封面（base64）→ 位元組。壞掉的那筆就當沒有，不能讓整頁紅屏
+Uint8List? _coverBytes(String? b64) {
+  if (b64 == null) return null;
+  try {
+    return base64Decode(b64);
+  } catch (_) {
+    return null;
+  }
+}
+
+/// 這一頁還在最上面嗎（開了編輯頁、草稿夾蓋上來就不是）
+bool _onTop(State s) =>
+    s.mounted && (ModalRoute.isCurrentOf(s.context) ?? true);
 
 /// 頁尾連結
 const _kFootStyle = TextStyle(fontSize: 12.5, color: kLTextDim);
@@ -424,10 +439,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Map<String, int> _gifSizes = const {};
   Map<String, int> _presetSizes = const {};
 
+  StreamSubscription<String>? _coverSub;
+
   @override
   void initState() {
     super.initState();
+    _coverSub = DraftStore.coverChanges.listen(_onCoverChanged);
     _reload();
+  }
+
+  @override
+  void dispose() {
+    _coverSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _reload() async {
@@ -489,18 +513,58 @@ class _ProfileScreenState extends State<ProfileScreen> {
   /// 快取；build 裡只查表，不解碼也不丟例外
   final Map<String, Uint8List> _covers = {};
 
+  /// 手上那張已經不是現在的封面（見 [_onCoverChanged]）：下次讀封面時重讀
+  final Set<String> _staleCovers = {};
+
   Future<void> _loadCovers(List<DraftMeta> metas) async {
+    final missing = <DraftMeta>[];
     for (final m in metas) {
-      if (!m.hasThumb || _covers.containsKey(m.id)) continue;
-      final t = await DraftStore.thumb(m.id);
-      if (t == null) continue;
-      try {
-        _covers[m.id] = base64Decode(t);
-      } catch (_) {
-        // 壞掉的那筆就沒有封面，不能讓整頁紅屏
+      final stale = _staleCovers.remove(m.id);
+      if (_covers.containsKey(m.id) && !stale) continue;
+      // 不看索引的 hasThumb：索引跟檔案對不上時（寫到一半被殺）以檔案為準，
+      // 沒有封面的只是查一下檔案在不在
+      final b = _coverBytes(await DraftStore.thumb(m.id));
+      if (b != null) {
+        _covers[m.id] = b;
+      } else {
+        _covers.remove(m.id); // 封面被清掉了（專案裡已經沒有畫面）
+        if (m.clipCount > 0) missing.add(m);
       }
     }
     if (mounted) setState(() {});
+    await _repairCovers(missing);
+  }
+
+  bool _repairing = false;
+
+  /// 沒有封面的影片草稿補一張（見 DraftCoverRepair）。一份一份來，
+  /// 這頁不在最上面（開了編輯頁、草稿夾）就停，回來時 _reload 再接著補
+  Future<void> _repairCovers(List<DraftMeta> metas) async {
+    if (_repairing) return;
+    _repairing = true;
+    try {
+      for (final m in metas) {
+        if (!_onTop(this)) return;
+        if (_covers.containsKey(m.id)) continue;
+        final b = _coverBytes(await DraftCoverRepair.fill(m.id));
+        if (b != null && mounted) setState(() => _covers[m.id] = b);
+      }
+    } finally {
+      _repairing = false;
+    }
+  }
+
+  /// 某份草稿存著的封面換了：多半是編輯器離開之後才在背景畫好的那張
+  ///（按「保留草稿」回到這頁時它還在畫）。這頁在最上面就馬上重讀那一格；
+  /// 被蓋著的話先記著，回來時 _reload 會讀
+  void _onCoverChanged(String id) {
+    _staleCovers.add(id);
+    if (!_onTop(this)) return;
+    final shown = [
+      for (final m in _videoDrafts.take(_kDraftSlots))
+        if (m.id == id) m,
+    ];
+    if (shown.isNotEmpty) unawaited(_loadCovers(shown));
   }
 
   /// 全部的草稿：影片草稿在前（新到舊），單鍵草稿接在後面。
@@ -1392,10 +1456,19 @@ class _DraftsScreenState extends State<DraftsScreen> {
     if (mounted) _reload();
   }
 
+  StreamSubscription<String>? _coverSub;
+
   @override
   void initState() {
     super.initState();
+    _coverSub = DraftStore.coverChanges.listen(_onCoverChanged);
     _reload().then((_) => _autoResume());
+  }
+
+  @override
+  void dispose() {
+    _coverSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _reload() async {
@@ -1514,24 +1587,67 @@ class _DraftsScreenState extends State<DraftsScreen> {
   /// 快取；build 裡只查表，不解碼也不丟例外
   final Map<String, Uint8List> _covers = {};
 
-  Future<void> _loadCovers(List<DraftMeta> metas) async {
+  /// 手上那張已經不是現在的封面（見 [_onCoverChanged]）：下次讀封面時重讀
+  final Set<String> _staleCovers = {};
+
+  /// [sweep]：讀完順便補沒有封面的、把舊版 PNG 封面換成 JPEG。
+  /// 只重讀一格（封面換了的通知）時不用
+  Future<void> _loadCovers(List<DraftMeta> metas, {bool sweep = true}) async {
+    final gen = _coverGen;
+    final missing = <DraftMeta>[];
     var loaded = 0;
     for (final m in metas) {
-      if (!m.hasThumb || _covers.containsKey(m.id)) continue;
-      final t = await DraftStore.thumb(m.id);
-      if (t == null) continue;
-      try {
-        _covers[m.id] = base64Decode(t);
-      } catch (_) {
-        // 壞掉的那筆就沒有封面，不能讓整頁紅屏
+      final stale = _staleCovers.remove(m.id);
+      if (_covers.containsKey(m.id) && !stale) continue;
+      // 不看索引的 hasThumb：索引跟檔案對不上時（寫到一半被殺）以檔案為準，
+      // 沒有封面的只是查一下檔案在不在
+      final b = _coverBytes(await DraftStore.thumb(m.id));
+      if (b == null) {
+        _covers.remove(m.id); // 封面被清掉了（專案裡已經沒有畫面）
+        if (m.clipCount > 0) missing.add(m);
+        continue;
       }
+      _covers[m.id] = b;
       // 第一屏那幾張先上：磚的比例不看封面到了沒（見 _tileAspect），
       // 先畫出來不會讓版面跳。以前上百張全讀完才一起出現
       if (++loaded == 6 && mounted) setState(() {});
     }
     if (!mounted) return;
     setState(() {});
-    unawaited(_shrinkOldCovers(_coverGen));
+    if (!sweep) return;
+    await _repairCovers(missing);
+    unawaited(_shrinkOldCovers(gen));
+  }
+
+  bool _repairing = false;
+
+  /// 沒有封面的影片草稿補一張（見 DraftCoverRepair）。照清單順序（新到
+  /// 舊）一份一份來，這頁不在最上面（開了編輯頁）就停，回來時再接著補
+  Future<void> _repairCovers(List<DraftMeta> metas) async {
+    if (_repairing) return;
+    _repairing = true;
+    try {
+      for (final m in metas) {
+        if (!_onTop(this)) return;
+        if (_covers.containsKey(m.id)) continue;
+        final b = _coverBytes(await DraftCoverRepair.fill(m.id));
+        if (b != null && mounted) setState(() => _covers[m.id] = b);
+      }
+    } finally {
+      _repairing = false;
+    }
+  }
+
+  /// 某份草稿存著的封面換了（編輯器離開之後才在背景畫好的那張）：這頁在
+  /// 最上面就馬上重讀那一格；被蓋著的話先記著，回來時 _reload 會讀
+  void _onCoverChanged(String id) {
+    _staleCovers.add(id);
+    if (!_onTop(this)) return;
+    final shown = [
+      for (final m in _drafts)
+        if (m.id == id) m,
+    ];
+    if (shown.isNotEmpty) unawaited(_loadCovers(shown, sweep: false));
   }
 
   static bool _isPng(Uint8List b) =>
