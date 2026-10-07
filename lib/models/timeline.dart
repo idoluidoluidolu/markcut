@@ -370,9 +370,15 @@ class TimelineClip {
     rotation: rotation,
   );
 
-  /// 畫面用的覆蓋判定：播到最後停在總長那一點時，[covers] 對每個片段
+  /// 頭尾都含的覆蓋判定：播到最後停在總長那一點時，[covers] 對每個片段
   /// 都不成立（結尾是開區間），畫面就整片黑。這裡讓「剛好停在結尾」
-  /// 的那一刻仍算最後一格，播完保留最後一幀
+  /// 的那一刻仍算最後一格，播完保留最後一幀。
+  ///
+  /// 注意：停在兩段的交界時，前後兩段對它都成立。只拿來決定「哪些
+  /// 播放器要先對好位置」這類兩邊都該備好的事；「畫面上畫哪些片段」
+  /// 一律走 [TimelineModel.videoAt]／[TimelineModel.videosAt]／
+  /// [TimelineModel.overlaysAt]（見 [TimelineModel.showsAt]）——直接拿
+  /// 這個畫，交界那一刻上一段會跟下一段疊在一起畫
   bool coversForDisplay(double t) => t >= offset && t <= end;
 
   /// 時間軸時間 → 這份素材內部的時間（含變速換算）。
@@ -504,33 +510,79 @@ class TimelineModel {
 
   MediaSource sourceOf(TimelineClip c) => sources[c.sourceIndex];
 
+  /// 「[t] 這一刻畫面上有哪些片段」的判定，[videoAt]／[videosAt]／
+  /// [overlaysAt]／[showsAt] 共用這一個。回傳逐片段的篩子：要不要留
+  /// 最後一格只在這裡算一次。
+  ///
+  /// 片段在畫面上佔半開區間 [offset, end)——交界那一刻歸接手的下一段，
+  /// 上一段已經播完。以前這幾個查詢直接用頭尾都含的
+  /// [TimelineClip.coversForDisplay]：停在交界時上一段跟下一段同時算在
+  /// 畫面上，兩層一起畫，下一張比畫布窄的話上一張就從兩旁的空白露出來
+  ///（實機回報：上一張照片出現在下一張照片沒覆蓋到的地方）。播放頭拖曳
+  /// 會吸附到素材頭尾（12px 內黏在邊上），0.3 秒的短片段在預設縮放下
+  /// 整段都在吸附範圍裡——停在交界不是巧合，是最常見的位置。匯出兩條路
+  ///（FFmpeg 的 enable 視窗、原生 CI 合成器的分段）一直是半開，預覽
+  /// 現在跟它們同一套。
+  ///
+  /// 例外只有一種：這一刻沒有任何畫面片段在播——停在總長（播完）或停在
+  /// 空隙的前緣——剛好在這一刻結束的片段才留著當最後一格，不讓畫面
+  /// 整片黑（coversForDisplay 原本要守的就是這件事）。只要有片段在播，
+  /// 不論同軌別軌、影片還是圖片文字，結束的那段就不畫。聲音沒有畫面；
+  /// 馬賽克只糊底下的層、自己不出畫面——兩者都不算「在播」。
+  /// 隱藏軌（[skipTracks]）整條不算，也不回傳。
+  ///
+  /// 「在播」的結尾容 [kOverlapEps]：頭尾相接的兩段，接點常差一個浮點
+  /// 尾數（變速片段切開後的 end 可能比下一段的 offset 多一個尾數），離
+  /// 結尾不到這個量就當已經播完——不然吸附停在下一段的 offset 上，上一段
+  /// 還差一個尾數沒播完，又是兩段一起畫。開頭不放寬：播放中「快進場」的
+  /// 影片另外掛成暖身圖層（編輯器 warmIds），開頭也放寬的話，開頭差一個
+  /// 尾數的那段會同時是畫面圖層又是暖身圖層＝同一個 key 掛兩次。
+  /// 留最後一格照舊是 coversForDisplay（頭尾都含、不放寬）：回傳的片段
+  /// 一定涵蓋這一刻
+  bool Function(TimelineClip) _displayTest(double t, Set<int> skipTracks) {
+    bool playing(TimelineClip c) => c.offset <= t && t < c.end - kOverlapEps;
+    final holdLast = !clips.any((c) {
+      if (skipTracks.contains(c.track)) return false;
+      final k = sourceOf(c).kind;
+      return k != ClipKind.audio && k != ClipKind.mosaic && playing(c);
+    });
+    return (c) {
+      if (skipTracks.contains(c.track)) return false;
+      return holdLast ? c.coversForDisplay(t) : playing(c);
+    };
+  }
+
+  /// 這個片段在 [t] 這一刻有沒有畫在畫面上（規則見 [_displayTest]）。
+  /// 單一片段的判斷用它，跟預覽實際畫出來的永遠是同一個答案
+  bool showsAt(TimelineClip c, double t, {Set<int> skipTracks = const {}}) =>
+      _displayTest(t, skipTracks)(c);
+
   /// 某時刻該顯示哪個影片片段。
   /// 上層優先（編號大的在上）；同一層疊在一起時，後放進來的蓋住先放的。
   /// [skipTracks]＝關閉顯示的軌：挑選時跳過，上層隱藏就露出下層
   ///（合成路徑在組建時排除；逐片段播放的舊路徑靠這裡）
   TimelineClip? videoAt(double t, {Set<int> skipTracks = const {}}) {
+    final shows = _displayTest(t, skipTracks);
     TimelineClip? best;
     for (final c in clips) {
-      if (skipTracks.contains(c.track)) continue;
-      if (!sourceOf(c).isVideo || !c.coversForDisplay(t)) continue;
+      if (!sourceOf(c).isVideo || !shows(c)) continue;
       if (best == null || c.track >= best.track) best = c;
     }
     return best;
   }
 
-  /// 某時刻所有蓋在畫面上的影片片段，由下層到上層（編號小的先）
-  List<TimelineClip> videosAt(double t) {
+  /// 某時刻所有蓋在畫面上的影片片段，由下層到上層（編號小的先）。
+  /// [skipTracks] 同 [videoAt]：給了就不回傳、也不算「在播」
+  List<TimelineClip> videosAt(double t, {Set<int> skipTracks = const {}}) {
+    final shows = _displayTest(t, skipTracks);
     // 排序鍵先查好：比較器裡呼叫 clips.indexOf 是 O(n²·log n)，
     // 這個方法在拖曳與預覽重繪的熱路徑上每秒被叫好幾十次
     final order = {for (var i = 0; i < clips.length; i++) clips[i]: i};
-    final list =
-        clips
-            .where((c) => sourceOf(c).isVideo && c.coversForDisplay(t))
-            .toList()
-          ..sort((a, b) {
-            final k = a.track.compareTo(b.track);
-            return k != 0 ? k : (order[a] ?? 0).compareTo(order[b] ?? 0);
-          });
+    final list = clips.where((c) => sourceOf(c).isVideo && shows(c)).toList()
+      ..sort((a, b) {
+        final k = a.track.compareTo(b.track);
+        return k != 0 ? k : (order[a] ?? 0).compareTo(order[b] ?? 0);
+      });
     return list;
   }
 
@@ -562,8 +614,10 @@ class TimelineModel {
     return fixed;
   }
 
-  /// 某時刻蓋在畫面上的圖片／文字片段，由下層到上層排序
-  List<TimelineClip> overlaysAt(double t) {
+  /// 某時刻蓋在畫面上的圖片／文字片段，由下層到上層排序。
+  /// [skipTracks] 同 [videoAt]
+  List<TimelineClip> overlaysAt(double t, {Set<int> skipTracks = const {}}) {
+    final shows = _displayTest(t, skipTracks);
     // 馬賽克也算畫面上的覆蓋物（預覽要畫）；
     // 但不進 isOverlay——匯出端對 overlay 的輸入映射是另一套。
     // 排序鍵先查好（理由同 videosAt）
@@ -574,7 +628,7 @@ class TimelineModel {
               (c) =>
                   (sourceOf(c).isOverlay ||
                       sourceOf(c).kind == ClipKind.mosaic) &&
-                  c.coversForDisplay(t),
+                  shows(c),
             )
             .toList()
           ..sort((a, b) {

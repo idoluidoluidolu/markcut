@@ -13911,11 +13911,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   // 影片圖層（由下層往上疊 = 真 PiP）。
                                   // 隱藏軌整條不畫：上層隱藏就露出下層
                                   //（合成路在組建排除；這裡是逐片段
-                                  // 疊圖層的舊路，web 全靠它）
+                                  // 疊圖層的舊路，web 全靠它）。
+                                  // 隱藏軌交給查詢本身：停在交界時「有沒
+                                  // 有片段接手」也不能把隱藏軌算進去
+                                  //（見 TimelineModel.showsAt）
                                   final vids = _tl
-                                      .videosAt(_position)
-                                      .where(
-                                        (c) => !_hiddenTracks.contains(c.track),
+                                      .videosAt(
+                                        _position,
+                                        skipTracks: _hiddenTracks,
                                       )
                                       .toList();
                                   // 播放中：快進場的影片先以幾乎看不見
@@ -14371,13 +14374,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   }
 
                                   // 圖片 / 文字圖層（插進上面那條 z 序，
-                                  // 位置由自己的軌道決定）
-                                  for (final c in _tl.overlaysAt(_position)) {
-                                    // 隱藏軌：整條不畫（所見即所得，
-                                    // 匯出也一樣不進）
-                                    if (_hiddenTracks.contains(c.track)) {
-                                      continue;
-                                    }
+                                  // 位置由自己的軌道決定）。
+                                  // 隱藏軌：整條不畫（所見即所得，
+                                  // 匯出也一樣不進）——交給查詢，理由
+                                  // 同上面的 videosAt
+                                  for (final c in _tl.overlaysAt(
+                                    _position,
+                                    skipTracks: _hiddenTracks,
+                                  )) {
                                     final src = _tl.sourceOf(c);
                                     if (src.kind == ClipKind.mosaic) {
                                       Rect r;
@@ -15174,10 +15178,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   {
                                     final c = _selClipById(_sel);
                                     // 只在片段真的顯示在播放頭上時才路由，
-                                    // 不然會盲拖一個看不見的浮水印
+                                    // 不然會盲拖一個看不見的浮水印。
+                                    // 「顯示」跟上面畫圖層同一個判定：
+                                    // 停在它結尾、已有別段接手時它沒畫
                                     if (c != null &&
                                         _tl.sourceOf(c).kind == ClipKind.wm &&
-                                        c.coversForDisplay(_position)) {
+                                        _tl.showsAt(
+                                          c,
+                                          _position,
+                                          skipTracks: _hiddenTracks,
+                                        )) {
                                       selWmClip = c;
                                     }
                                   }
