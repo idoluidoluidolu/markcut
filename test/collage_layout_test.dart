@@ -311,7 +311,7 @@ void main() {
     expect(t.takeException(), isNull);
   });
 
-  testWidgets('窄螢幕：裁切、移除及加入動作可見；320 不溢出、「加照片」永遠貼右', (t) async {
+  testWidgets('窄螢幕：裁切、複製、移除及加入動作可見；320 不溢出、「加照片」永遠貼右', (t) async {
     for (final width in const [375.0, 320.0]) {
       t.view.physicalSize = Size(width, 640);
       t.view.devicePixelRatio = 1;
@@ -319,9 +319,15 @@ void main() {
       addTearDown(t.view.resetDevicePixelRatio);
       final picker = await _openFree(t);
       await _addPhotos(t, picker, await _photos(t, 3));
-      // 選取照片的裁切／移除獨立一列，窄螢幕也不用橫向捲動才能找到。
+      // 選取照片的裁切／複製／移除獨立一列，窄螢幕也不用橫向捲動才能找到。
       expect(find.text('裁切'), findsOneWidget, reason: '$width 寬');
+      expect(find.text('複製'), findsOneWidget, reason: '$width 寬');
       expect(find.text('移除'), findsOneWidget, reason: '$width 寬');
+      expect(
+        t.getRect(find.text('移除')).right,
+        lessThanOrEqualTo(width - 16),
+        reason: '$width 寬：移除要在畫面內',
+      );
       expect(find.text('隨機排列'), findsOneWidget, reason: '$width 寬');
       expect(find.text('加照片'), findsOneWidget, reason: '$width 寬');
       final add = t.getRect(find.text('加照片'));
@@ -335,8 +341,11 @@ void main() {
         final sh = t.getRect(find.text('隨機排列'));
         expect(rm.left, greaterThanOrEqualTo(16), reason: '375 寬：移除不能被擠出去');
         final crop = t.getRect(find.text('裁切'));
+        final dup = t.getRect(find.text('複製'));
         expect(crop.left, greaterThanOrEqualTo(16));
-        expect(crop.right, lessThan(rm.left));
+        // 複製夾在裁切與移除中間
+        expect(crop.right, lessThan(dup.left));
+        expect(dup.right, lessThan(rm.left));
         expect(rm.bottom, lessThan(sh.top));
         expect(sh.right, lessThan(add.left));
         // 跟模式膠囊不同列（同一列擠不下才拆的）
