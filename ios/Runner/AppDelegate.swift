@@ -14329,6 +14329,7 @@ enum HDRPhotoExport {
       exif[kCGImagePropertyExifPixelYDimension as String] = outH
       props[kCGImagePropertyExifDictionary as String] = exif
     }
+    ExportPhotoDate.stampNow(&props)
     out = out.settingProperties(props)
 
     // ── 寫 10-bit HEIC（Rec.2100 HLG，跟影片路同一個色彩空間）────
@@ -14684,6 +14685,39 @@ extension AppDelegate {
   }
 }
 
+/// 成品的拍攝日期改成匯出這一刻。相簿照拍攝日期排序：沿用原片的日期，
+/// 浮水印版就插在原片旁邊、不在最新（使用者：「加入浮水印的照片匯出後請
+/// 直接放到相簿最新，現在會放在原相片之後」）。相機、鏡頭等其他 EXIF 照留。
+/// HDR 路（HDRPhotoExport）跟一般路（PhotoRgbaEncode）都經過這裡
+enum ExportPhotoDate {
+  static func stampNow(_ props: inout [String: Any], now: Date = Date()) {
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.timeZone = TimeZone.current
+    f.dateFormat = "yyyy:MM:dd HH:mm:ss"
+    let stamp = f.string(from: now)
+    let mins = TimeZone.current.secondsFromGMT(for: now) / 60
+    let offset =
+      (mins < 0 ? "-" : "+") + String(format: "%02d:%02d", abs(mins) / 60, abs(mins) % 60)
+    var exif = props[kCGImagePropertyExifDictionary as String] as? [String: Any] ?? [:]
+    exif[kCGImagePropertyExifDateTimeOriginal as String] = stamp
+    exif[kCGImagePropertyExifDateTimeDigitized as String] = stamp
+    exif[kCGImagePropertyExifOffsetTime as String] = offset
+    exif[kCGImagePropertyExifOffsetTimeOriginal as String] = offset
+    exif[kCGImagePropertyExifOffsetTimeDigitized as String] = offset
+    // 原片的小數秒跟新的時間對不上：拿掉
+    let subsec: [CFString] = [
+      kCGImagePropertyExifSubsecTime, kCGImagePropertyExifSubsecTimeOriginal,
+      kCGImagePropertyExifSubsecTimeDigitized,
+    ]
+    for k in subsec { exif.removeValue(forKey: k as String) }
+    props[kCGImagePropertyExifDictionary as String] = exif
+    var tiff = props[kCGImagePropertyTIFFDictionary as String] as? [String: Any] ?? [:]
+    tiff[kCGImagePropertyTIFFDateTime as String] = stamp
+    props[kCGImagePropertyTIFFDictionary as String] = tiff
+  }
+}
+
 enum PhotoRgbaEncode {
   /// 來源照片的 EXIF 與 TIFF（跟 HDR 路 HDRPhotoExport 同一份清單；
   /// GPS 與 IPTC 兩邊都不帶——成品是拿去公開分享的；
@@ -14714,6 +14748,7 @@ enum PhotoRgbaEncode {
       exif[kCGImagePropertyExifPixelYDimension as String] = outH
       props[kCGImagePropertyExifDictionary as String] = exif
     }
+    ExportPhotoDate.stampNow(&props)
     return props
   }
 
