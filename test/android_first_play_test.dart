@@ -87,6 +87,7 @@ class _Player implements PlayerX {
 void main() {
   final binding = TestWidgetsFlutterBinding.ensureInitialized();
   late Directory dir;
+  late Directory crumbs;
   late _Player player;
   _Player? workPlayer;
   var creates = 0;
@@ -101,6 +102,10 @@ void main() {
     WorkFiles.resetForTest();
     dir = Directory.systemTemp.createTempSync('markcut_first_play_');
     WorkFiles.supportDirOverride = dir;
+    // 黑盒子寫自己的目錄：mockEditorPlugins 讓 support 目錄也回 dir，
+    // 背景工作檔的 Diag.mark 就把 last_run.json.N.pending 寫進 dir
+    crumbs = Directory.systemTemp.createTempSync('markcut_first_play_crumbs_');
+    Diag.crumbDirOverride = crumbs;
     final path = '${dir.path}/video.mp4';
     File(path).writeAsBytesSync([0]);
     player = _Player(path);
@@ -133,9 +138,11 @@ void main() {
   });
   tearDown(() {
     Diag.compPlayer.value = true;
+    Diag.crumbDirOverride = null;
     WorkFiles.supportDirOverride = null;
     WorkFiles.resetForTest();
     dir.deleteSync(recursive: true);
+    crumbs.deleteSync(recursive: true);
   });
 
   Future<void> open(WidgetTester t) async {
@@ -161,6 +168,15 @@ void main() {
   Future<void> close(WidgetTester t) async {
     await t.pumpWidget(const SizedBox());
     await settle(t, 3);
+    // 拆掉之後背景工作檔那一趟還在跑，路上兩次 Diag.mark 是真的寫檔：
+    // 每一步（開檔／寫入／flush／關檔）要等一輪 settle 才接得下去，測試
+    // 結束時沒走完的就永遠停在半路——檔案一直開著，轉檔槽也不還
+    //（下一支測試的工作檔永遠排隊）。等整趟收尾再離開
+    await waitUntil(
+      t,
+      () => !WorkFiles.isPreparing(player.path),
+      reason: '背景工作檔要在測試結束前收尾',
+    );
     expect(t.takeException(), isNull);
   }
 
