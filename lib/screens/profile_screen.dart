@@ -8,6 +8,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart' show XFile;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/watermark_settings.dart';
 import '../services/blob_store.dart';
@@ -109,6 +110,18 @@ const _kDraftSlots = 4;
 
 /// 空狀態那一行灰字（kLTextDim：更淡的灰在白底上對比不到 3:1）
 const _kHintStyle = TextStyle(fontSize: 13, color: kLTextDim);
+
+/// GIF 分頁的排序（乙案：分頁列右邊一顆膠囊寫著現在怎麼排，點開選）。
+/// 選過的記在 prefs，下次進來照舊
+enum _GifSort { newest, oldest, random }
+
+const _kGifSortLabels = {
+  _GifSort.newest: '最新在前',
+  _GifSort.oldest: '最舊在前',
+  _GifSort.random: '隨機排序',
+};
+
+const _kGifSortPref = 'profile.gifSort';
 
 /// 存著的封面（base64）→ 位元組。壞掉的那筆就當沒有，不能讓整頁紅屏
 Uint8List? _coverBytes(String? b64) {
@@ -412,8 +425,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
   /// 出來，不只顯示「有幾個」——使用者要找的是「那一個專案」
   List<DraftMeta> _videoDrafts = const [];
 
-  /// 做好的 GIF（見 GifStore；Web 是內建範例）
+  /// 做好的 GIF，照 [_gifSort] 排好的順序（瀑布流、燈箱左右滑都照它）
   List<String> _gifs = const [];
+
+  /// GifStore 給的原始順序（新到舊）；換排序時從這份重排
+  List<String> _gifsByDate = const [];
+
+  _GifSort _gifSort = _GifSort.newest;
+
+  /// 隨機排序的種子：每次進這一頁抽一次，在頁面上的期間順序不跳
+  int _gifShuffleSeed = math.Random().nextInt(1 << 31);
+
+  /// 排序膠囊本身（選單要對齊它的右緣、掛在它下面）
+  final _gifSortChipKey = GlobalKey();
 
   /// 單鍵草稿：照片／批次浮水印／GIF 製作／拼圖（沒有就是 null，
   /// 見 kPhotoDraftKey／kBatchDraftKey／kGifDraftKey／kCollageDraftKey）
@@ -446,6 +470,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     super.initState();
     _coverSub = DraftStore.coverChanges.listen(_onCoverChanged);
     _reload();
+    unawaited(_loadGifSort());
   }
 
   @override
@@ -467,7 +492,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     setState(() {
       _presets = presets;
       _videoDrafts = videoDrafts;
-      _gifs = gifs;
+      _gifsByDate = gifs;
+      _gifs = _sortGifs(gifs);
       _gifSizes = {for (final g in gifs) g: GifStore.sizeOf(g)};
       _presetSizes = {
         for (final p in presets) p.name: utf8.encode(p.encode()).length,
@@ -1071,6 +1097,158 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  // ── GIF 排序 ──────────────────────────────────────────────
+
+  List<String> _sortGifs(List<String> byDate) => switch (_gifSort) {
+    _GifSort.newest => byDate,
+    _GifSort.oldest => byDate.reversed.toList(),
+    _GifSort.random => [
+      ...byDate,
+    ]..sort((a, b) => _shuffleRank(a).compareTo(_shuffleRank(b))),
+  };
+
+  /// 隨機排序的位置：路徑雜湊（FNV-1a）混進這一頁的種子。不用 shuffle：
+  /// 中途新增、刪掉一個 GIF，其他格的相對順序不變（shuffle 會整排重洗）
+  int _shuffleRank(String ref) {
+    var h = 0x811C9DC5 ^ _gifShuffleSeed;
+    for (final c in ref.codeUnits) {
+      h = ((h ^ c) * 0x01000193) & 0xFFFFFFFF;
+    }
+    return h;
+  }
+
+  Future<void> _loadGifSort() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString(_kGifSortPref);
+      final sort = _GifSort.values.where((s) => s.name == saved).firstOrNull;
+      if (sort == null || sort == _gifSort || !mounted) return;
+      setState(() {
+        _gifSort = sort;
+        _gifs = _sortGifs(_gifsByDate);
+      });
+    } catch (_) {}
+  }
+
+  void _setGifSort(_GifSort sort) {
+    setState(() {
+      // 再選一次「隨機排序」＝重新洗一次
+      if (sort == _GifSort.random) {
+        _gifShuffleSeed = math.Random().nextInt(1 << 31);
+      }
+      _gifSort = sort;
+      _gifs = _sortGifs(_gifsByDate);
+    });
+    unawaited(
+      SharedPreferences.getInstance()
+          .then((p) => p.setString(_kGifSortPref, sort.name))
+          .catchError((_) => false),
+    );
+  }
+
+  /// 膠囊下面掛一張小白卡選排序，右緣跟膠囊對齊；現在的那一項粗體＋勾
+  Future<void> _pickGifSort() async {
+    final chip = _gifSortChipKey.currentContext?.findRenderObject();
+    final overlay = Overlay.of(context).context.findRenderObject();
+    if (chip is! RenderBox || overlay is! RenderBox) return;
+    final r = chip.localToGlobal(Offset.zero, ancestor: overlay) & chip.size;
+    final picked = await showMenu<_GifSort>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        r.left,
+        r.bottom + 4,
+        overlay.size.width - r.right,
+        overlay.size.height - r.bottom - 4,
+      ),
+      color: Colors.white,
+      surfaceTintColor: Colors.transparent,
+      elevation: 10,
+      shadowColor: Colors.black38,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      constraints: const BoxConstraints.tightFor(width: 150),
+      menuPadding: const EdgeInsets.symmetric(vertical: 6),
+      items: [
+        for (final s in _GifSort.values)
+          PopupMenuItem<_GifSort>(
+            key: ValueKey('profile-gif-sort-${s.name}'),
+            value: s,
+            height: 42,
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            child: Row(
+              children: [
+                Text(
+                  _kGifSortLabels[s]!,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: s == _gifSort
+                        ? FontWeight.w700
+                        : FontWeight.w500,
+                    color: kLText,
+                  ),
+                ),
+                const Spacer(),
+                if (s == _gifSort)
+                  const Icon(Icons.check, size: 17, color: kLText),
+              ],
+            ),
+          ),
+      ],
+    );
+    if (picked == null || !mounted) return;
+    _setGifSort(picked);
+  }
+
+  /// 少於兩個 GIF 沒有東西好排；批次刪除時收起來，不跟紅鈕搶注意
+  bool get _showGifSort => _tab == 1 && _gifsByDate.length > 1 && !_selecting;
+
+  /// 分頁列右邊的灰膠囊：寫著現在怎麼排＋向下箭頭（乙案，使用者定案）。
+  /// 膠囊 30 高（字級調很大時跟著字長高）；點擊範圍上下各撐 7，湊到 44
+  Widget _gifSortChip() => Semantics(
+    button: true,
+    label: '排序：${_kGifSortLabels[_gifSort]}',
+    excludeSemantics: true,
+    child: GestureDetector(
+      key: const ValueKey('profile-gif-sort'),
+      behavior: HitTestBehavior.opaque,
+      onTap: _deleting ? null : _pickGifSort,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 7),
+        child: Container(
+          key: _gifSortChipKey,
+          height: math.max(
+            30,
+            MediaQuery.textScalerOf(context).scale(13) * 1.2 + 8,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            color: kLTile,
+            borderRadius: BorderRadius.circular(15),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                _kGifSortLabels[_gifSort]!,
+                style: const TextStyle(
+                  fontSize: 13,
+                  height: 1.2,
+                  fontWeight: FontWeight.w700,
+                  color: kLText,
+                ),
+              ),
+              const SizedBox(width: 2),
+              const Icon(
+                Icons.keyboard_arrow_down_rounded,
+                size: 18,
+                color: kLText,
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+
   /// 範本分頁：跟範本夾一模一樣——兩欄瀑布流，每張照自己的設計比例
   ///（使用者指定「像原本點進去那樣」）。一組都沒有的時候給一張入口卡
   Widget _presetsTab(double inner) {
@@ -1145,45 +1323,59 @@ class _ProfileScreenState extends State<ProfileScreen> {
   /// 大小不同也排在同一條線上
   Widget _tabBar() => Padding(
     padding: const EdgeInsets.fromLTRB(22, 6, 22, 0),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.baseline,
-      textBaseline: TextBaseline.alphabetic,
+    // GIF 分頁右邊多一顆排序膠囊，跟分頁標題垂直置中。字級調很大、
+    // 一行放不下時膠囊換到下一行，不把分頁標題擠爆
+    child: Wrap(
+      alignment: WrapAlignment.spaceBetween,
+      crossAxisAlignment: WrapCrossAlignment.center,
       children: [
-        for (final (i, label) in _kTabs.indexed) ...[
-          if (i > 0) const SizedBox(width: 22),
-          Semantics(
-            button: true,
-            selected: _tab == i,
-            child: GestureDetector(
-              key: ValueKey('profile-tab-$i'),
-              behavior: HitTestBehavior.opaque,
-              onTap: () {
-                if (_tab == i || _deleting) return;
-                setState(() {
-                  _tab = i;
-                  // 批次刪除只管眼前這一個分頁
-                  _selecting = false;
-                  _picked.clear();
-                });
-              },
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: AnimatedDefaultTextStyle(
-                  duration: const Duration(milliseconds: 160),
-                  curve: Curves.easeOut,
-                  style: TextStyle(
-                    fontFamily: _tab == i ? 'MarkcutTabExtraBold' : 'NotoSansTC',
-                    fontSize: _tab == i ? _kTabOn : _kTabOff,
-                    height: 1.2,
-                    fontWeight: _tab == i ? FontWeight.w800 : FontWeight.w700,
-                    color: _tab == i ? kLText : _kTabIdle,
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            for (final (i, label) in _kTabs.indexed) ...[
+              if (i > 0) const SizedBox(width: 22),
+              Semantics(
+                button: true,
+                selected: _tab == i,
+                child: GestureDetector(
+                  key: ValueKey('profile-tab-$i'),
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () {
+                    if (_tab == i || _deleting) return;
+                    setState(() {
+                      _tab = i;
+                      // 批次刪除只管眼前這一個分頁
+                      _selecting = false;
+                      _picked.clear();
+                    });
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: AnimatedDefaultTextStyle(
+                      duration: const Duration(milliseconds: 160),
+                      curve: Curves.easeOut,
+                      style: TextStyle(
+                        fontFamily: _tab == i
+                            ? 'MarkcutTabExtraBold'
+                            : 'NotoSansTC',
+                        fontSize: _tab == i ? _kTabOn : _kTabOff,
+                        height: 1.2,
+                        fontWeight: _tab == i
+                            ? FontWeight.w800
+                            : FontWeight.w700,
+                        color: _tab == i ? kLText : _kTabIdle,
+                      ),
+                      child: Text(label),
+                    ),
                   ),
-                  child: Text(label),
                 ),
               ),
-            ),
-          ),
-        ],
+            ],
+          ],
+        ),
+        if (_showGifSort) _gifSortChip(),
       ],
     ),
   );
