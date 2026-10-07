@@ -1642,11 +1642,20 @@ List<String> _softwareEncoder(List<String> args, String encoder) {
   return out;
 }
 
+/// 整趟匯出（編碼＋存相簿）換成測試給的結果：測試主機沒有 FFmpeg 也沒有
+/// 相簿，編輯頁「匯出成功之後」的那些路（不再問留不留草稿、問下一步）
+/// 只能靠它走到
+@visibleForTesting
+Future<({bool ok, String message, bool cancelled})> Function(ExportSpec spec)?
+debugExportOverride;
+
 /// 執行匯出並存到相簿。onProgress 回傳 0~1。
 Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
   ExportSpec spec, {
   void Function(double progress)? onProgress,
 }) async {
+  final override = debugExportOverride;
+  if (override != null) return override(spec);
   final dir = await getTemporaryDirectory();
   final ts = DateTime.now().millisecondsSinceEpoch;
   final outPath = '${dir.path}${Platform.pathSeparator}watermarker_$ts.mp4';

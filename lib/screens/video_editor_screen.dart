@@ -3124,6 +3124,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   bool _draftSaveWarned = false;
   Timer? _xformHandoffTimer;
 
+  /// 這一頁的「編輯中」（DraftStore.holdOpen）已經解除了。之後還會跑的
+  /// 存檔——匯出過直接返回那一次、dispose 的補存、匯出中離開才回來的
+  /// 那一次——照樣寫草稿與封面，但不再登記：再登記就沒有人解除了
+  bool _openReleased = false;
+
+  void _holdOpen() {
+    if (!_openReleased) DraftStore.holdOpen(_draftId);
+  }
+
+  /// 解除「編輯中」，只解除一次。離開編輯頁的每一條路都走得到：保留草稿、
+  /// 捨棄、草稿打不開返回、匯出過直接返回；最後一道是 dispose——匯出完
+  /// 「回主畫面」的 popUntil 不經過 _handleBack，以前那條路沒人解除，
+  /// hasOpenDrafts 整場卡在 true，工作檔清掃與「容量與清理」全被擋住
+  void _releaseOpen() {
+    if (_openReleased) return;
+    _openReleased = true;
+    DraftStore.releaseOpen(_draftId);
+  }
+
   /// [force]：dispose 的最後補存用。那時 unmount 已經發生，
   /// `mounted` 必為 false——以前這裡一檢查就 return，
   /// 「離開前補存」其實從來沒有存成功過
@@ -3135,8 +3154,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     // 這份專案正在編輯：手動清理（DraftStore.prune）不能把它
-    // 當成最舊的刪掉——登記起來，離開專案（_handleBack）時才解除
-    DraftStore.holdOpen(_draftId);
+    // 當成最舊的刪掉——登記起來，離開專案時解除（見 _releaseOpen）
+    _holdOpen();
     if (!mounted && !force) return;
     // Web 也存：同一次瀏覽內可以繼續剪；重新整理後素材連結會失效，
     // 還原時由 _loadDraft 提示並保留原草稿
@@ -3259,7 +3278,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   Future<void> clearThisDraft() {
     _draftDeleted = true;
     _pendingCover = null;
-    DraftStore.releaseOpen(_draftId);
+    _releaseOpen();
     return DraftStore.remove(_draftId);
   }
 
@@ -3269,7 +3288,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     j = AppMediaPaths.mapDraft(j);
     // 從草稿夾開回來的專案從載入那一刻就算「編輯中」，上限清理不碰
     //（還沒存過第一次之前它可能就是清單裡最舊的那份）
-    DraftStore.holdOpen(_draftId);
+    _holdOpen();
     // 逐筆檢查後若有資料無法還原，停止編輯並保留原始草稿。
     // 半載入的時間軸不能被自動存成殘缺版。
     // 注意：素材清單是索引對位的，壞掉的素材用「空位」佔著，
@@ -12464,9 +12483,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   @override
   void dispose() {
-    if (_draftLoadError != null || (widget.draft != null && !_draftRestored)) {
-      DraftStore.releaseOpen(_draftId);
-    }
     WidgetsBinding.instance.removeObserver(this);
     // 只拆自己掛的那份；別的編輯器實例已經掛上去的不動
     if (identical(Diag.sceneProvider, _sceneSnapshot)) {
@@ -12498,6 +12514,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _draftSaveTimer!.cancel();
       lastSave = _saveDraftNow(force: true);
     }
+    // 「編輯中」的最後一道解除（前面離開時解除過的不會再解一次）。上面那次
+    // 補存已經排進 DraftStore 的佇列，清理排在它後面、看得到它寫的檔案清單；
+    // 封面照樣在背景畫完落地
+    _releaseOpen();
     _scrubQueue.dispose();
     // 抽格器等封面畫完才放：「保留草稿」與上面那次補存的封面還在背景抽
     // 那一格，先 release 的話原生端 cancelAll 會把它一起取消——封面落空，
@@ -12904,7 +12924,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   void _handleBack() {
     if (_draftLoadError != null || (widget.draft != null && !_draftRestored)) {
-      DraftStore.releaseOpen(_draftId);
+      _releaseOpen();
       Navigator.of(context).pop();
       return;
     }
@@ -12926,9 +12946,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tabs.animateTo(_tabs.index - 1);
       return;
     }
-    // 匯出成功過的專案不再問：直接保留草稿走人
+    // 匯出成功過的專案不再問：直接保留草稿走人。補存一開頭就登記
+    //「編輯中」，以前這條路沒有解除。補存已經排進佇列，這就解除；
+    // 封面照樣在背景畫完
     if (_exportedOk) {
       unawaited(_saveDraftNow(force: true));
+      _releaseOpen();
       Navigator.of(context).pop();
       return;
     }
@@ -13032,7 +13055,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _draftSaveTimer?.cancel();
       await _saveDraftNow();
       // 存完才解除「編輯中」：從這一刻起它跟別的草稿一樣排隊等上限清理
-      DraftStore.releaseOpen(_draftId);
+      _releaseOpen();
       if (mounted) Navigator.of(context).pop();
     } else if (action == 'discard') {
       // 捨棄＝整個專案永久刪除，而這顆就貼在「保留草稿」旁邊——

@@ -18,6 +18,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:markcut/models/timeline.dart';
 import 'package:markcut/services/diagnostics.dart';
 import 'package:markcut/services/draft_store.dart';
+import 'package:markcut/services/video_engine.dart' as engine;
 
 import 'editor_harness.dart';
 
@@ -141,4 +142,48 @@ Future<DraftMeta?> draftMetaOf(WidgetTester t, String id) async {
     m = (await DraftStore.list()).where((e) => e.id == id).firstOrNull;
   });
   return m;
+}
+
+/// 編輯頁推在一個首頁上面（實機是從首頁／個人中心推進來的）：返回鍵與
+/// 「回主畫面」的 popUntil((r) => r.isFirst) 才有地方回去
+Future<GlobalKey<NavigatorState>> pushEditor(
+  WidgetTester t,
+  Widget editor,
+) async {
+  final nav = GlobalKey<NavigatorState>();
+  await t.pumpWidget(
+    MaterialApp(
+      navigatorKey: nav,
+      theme: ThemeData(splashFactory: InkRipple.splashFactory),
+      home: const SizedBox(),
+    ),
+  );
+  unawaited(
+    nav.currentState!.push(MaterialPageRoute<void>(builder: (_) => editor)),
+  );
+  await settle(t);
+  return nav;
+}
+
+/// 匯出一次而且成功：切到匯出分頁按「匯出」，整趟匯出（編碼＋存相簿）
+/// 由 debugExportOverride 直接回成功，等到「匯出完成」問下一步為止
+Future<void> exportSucceeds(WidgetTester t) async {
+  engine.debugExportOverride = (_) async =>
+      (ok: true, message: '已存到「浮水印」相簿', cancelled: false);
+  addTearDown(() => engine.debugExportOverride = null);
+  await t.tap(
+    find.descendant(of: find.byType(TabBar), matching: find.text('匯出')),
+  );
+  await settle(t, 10);
+  await t.tap(
+    find.ancestor(
+      of: find.text('匯出'),
+      matching: find.byWidgetPredicate((w) => w is ButtonStyleButton),
+    ),
+  );
+  await waitUntil(
+    t,
+    () => find.text('匯出完成').evaluate().isNotEmpty,
+    reason: '匯出成功要問下一步',
+  );
 }

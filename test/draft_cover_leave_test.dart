@@ -61,6 +61,7 @@ void main() {
     expect(thumb, isNotNull, reason: '離開之後背景畫完的封面照樣落地');
     await settle(t, 5);
     expect(native.calls, containsAllInOrder(['cover', 'release']));
+    expect(DraftStore.hasOpenDrafts, isFalse, reason: '離開了就不再是「編輯中」');
     await native.dispose(t);
   });
 }
