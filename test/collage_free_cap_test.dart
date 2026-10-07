@@ -188,7 +188,7 @@ void main() {
     expect(find.text('隨機排列'), findsOneWidget);
   });
 
-  testWidgets('三張疊在同一處：連點四下，三張都輪得到（最後選取的在最上層）', (t) async {
+  testWidgets('三張疊在同一處：連點四下，三張都輪得到（點選不改疊放順序）', (t) async {
     final picker = await _openFree(t);
     await _addPhotos(t, picker, await _photos(t, 3));
     // 三塊全部疊到同一個位置（測試鉤子給的是畫面上那幾份本人）
@@ -201,14 +201,16 @@ void main() {
       canvas.left + canvas.width * 0.5,
       canvas.top + canvas.height * 0.5,
     );
+    final order = [..._peek(t).layout.items];
     final seen = <int>[];
     for (var k = 0; k < 4; k++) {
       await t.tapAt(at);
       await t.pump(const Duration(milliseconds: 350));
-      // 選到誰誰就被帶到最上層＝清單最後一個
-      seen.add(_peek(t).layout.items.last.img);
+      final peek = _peek(t);
+      seen.add(peek.layout.items[peek.selItem].img);
     }
     expect(seen.toSet().length, 3, reason: '連點四下應該三張都輪到，實際序列 $seen');
+    expect(_peek(t).layout.items, order, reason: '點選不改疊放順序');
     expect(t.takeException(), isNull);
   });
 

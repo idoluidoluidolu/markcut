@@ -1,6 +1,7 @@
 // 拼圖自由模式：排好之後加照片，排好的不能被打回預設（測試回報：「已經
-// 排好後 點加入照片 排好的會變成預設的樣子」），以及「已選」那一列的
-// 「複製」（測試回報：「加入複製功能」）。
+// 排好後 點加入照片 排好的會變成預設的樣子」），以及選了照片的動作列：
+// 「複製」（測試回報：「加入複製功能」）、「層級 ↑ ↓」（使用者定案「己」：
+// 動作列在預覽跟設定卡中間、選不選畫布都不動、點選不改疊放順序）。
 //
 // 以前加照片不管有沒有排過，都把整組照片（連同使用者拖好、拉好的）重新
 // 自動排滿。現在：
@@ -245,10 +246,14 @@ Future<void> _tapCanvas(WidgetTester t, double x, double y) async {
   await t.pump(const Duration(milliseconds: 300));
 }
 
-/// 點一塊的中心把它選起來（選到的會被帶到最上層）
+/// 點一塊的中心把它選起來（點選不改疊放順序）
 Future<void> _select(WidgetTester t, CollageFreeItem it) async {
   await _tapCanvas(t, it.rect.center.dx, it.rect.center.dy);
-  expect(identical(_items(t).last, it), isTrue, reason: '點到的要被選起來');
+  expect(
+    identical(_items(t)[_peek(t).selItem], it),
+    isTrue,
+    reason: '點到的要被選起來',
+  );
 }
 
 /// 畫布比例的膠囊（窄螢幕排不下、會橫捲：先捲進畫面再點）
@@ -327,7 +332,7 @@ void main() {
         await _photos(t, [(300, 200), (200, 300), (240, 240)]),
       );
 
-      // 使用者排版：第一塊往畫布中間拖一段（拖＝選起來、帶到最上層）
+      // 使用者排版：第一塊往畫布中間拖一段（拖＝選起來）
       final a = _items(t).first;
       final auto = a.rect;
       final cv = _canvas(t);
@@ -412,9 +417,8 @@ void main() {
         }
         _expectSelected(t, it, '再加第 ${k + 1} 張');
       }
-      // 提示不再說「加照片會自動排滿畫布」（排過之後就不是真的）
-      expect(find.text('最後選取的照片會在最上層'), findsOneWidget);
-      expect(find.text('加照片會自動排滿畫布；最後選取的照片會在最上層'), findsNothing);
+      // 自由模式沒有提示那行了（使用者：這行不用了；點選也不再改疊放順序）
+      expect(find.textContaining('最後選取的照片會在最上層'), findsNothing);
       expect(t.takeException(), isNull);
     });
 
@@ -527,7 +531,7 @@ void main() {
 
       // 再選原本那張（只有它蓋到的右下角）、再複製一次：不疊在第一份上
       await _tapCanvas(t, 0.985, 0.985);
-      expect(identical(_items(t).last, src), isTrue);
+      _expectSelected(t, src, '再選原本那張');
       await _duplicate(t);
       final d2 = _items(t).last;
       expect(_inside(d2.rect), isTrue);
@@ -545,7 +549,7 @@ void main() {
       src.rect = const ui.Rect.fromLTWH(0, 0, 1, 1);
       await t.pump();
       await _tapCanvas(t, 0.1, 0.1);
-      expect(identical(_items(t).last, src), isTrue);
+      _expectSelected(t, src, '選回跟畫布一樣大的原本那張');
       await _duplicate(t);
       final d3 = _items(t).last;
       expect(d3.rect.left, closeTo(0.04, 1e-9));
@@ -820,5 +824,104 @@ void main() {
         );
       });
     }
+  });
+
+  group('動作列與層級（使用者定案「己」）', () {
+    /// 兩塊擺成右下角疊一塊（測試鉤子給的是畫面上那幾份本人）：a 在下、
+    /// b 在上。a 的中心沒被 b 蓋到、b 的中心也不在 a 裡
+    Future<(CollageFreeItem, CollageFreeItem)> overlapped(
+      WidgetTester t,
+    ) async {
+      final picker = await _openFree(t);
+      await _addPhotos(t, picker, await _photos(t, [(240, 240), (240, 240)]));
+      final [a, b] = _items(t);
+      a.rect = const ui.Rect.fromLTWH(0.1, 0.1, 0.5, 0.5);
+      b.rect = const ui.Rect.fromLTWH(0.4, 0.4, 0.5, 0.5);
+      await t.pump();
+      return (a, b);
+    }
+
+    bool enabled(WidgetTester t, String key) =>
+        t.widget<IconButton>(find.byKey(ValueKey(key))).onPressed != null;
+
+    testWidgets('選照片、換一張、取消選取：畫布一點都不動；動作列在畫布跟設定卡中間', (t) async {
+      final (a, b) = await overlapped(t);
+      final canvas = _canvas(t);
+      // b 剛加進來是選著的：四個動作都在畫布下面、設定卡上面
+      final mode = t.getRect(find.text('模式'));
+      for (final label in ['裁切', '複製', '層級', '移除']) {
+        final r = t.getRect(find.text(label));
+        expect(r.top, greaterThan(canvas.bottom), reason: '$label 要在畫布下面');
+        expect(r.bottom, lessThan(mode.top), reason: '$label 要在設定卡上面');
+      }
+      await _tapCanvas(t, 0.2, 0.2); // 只有 a 蓋到的地方
+      _expectSelected(t, a, '點 a');
+      expect(_canvas(t), canvas, reason: '換選一張，畫布不能動');
+      await _tapCanvas(t, 0.95, 0.05); // 空白處
+      expect(_peek(t).selItem, -1);
+      expect(find.text('複製'), findsNothing, reason: '沒選照片，動作列是空的');
+      expect(_canvas(t), canvas, reason: '取消選取，畫布不能動');
+      await _select(t, b);
+      expect(_canvas(t), canvas, reason: '再選回來，畫布不能動');
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('點選不改疊放順序；重疊處再點一下往下一層輪', (t) async {
+      final (a, b) = await overlapped(t);
+      await _select(t, a);
+      expect(_items(t), [a, b], reason: '點選 a 不能把它帶到最上層');
+      // 兩塊都蓋到的地方：選著 a 時點一下輪到最上面的 b，再點換 a，再點又回 b
+      for (final want in [b, a, b]) {
+        await _tapCanvas(t, 0.5, 0.5);
+        _expectSelected(t, want, '重疊處連點');
+      }
+      expect(_items(t), [a, b], reason: '輪來輪去疊放順序都不變');
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('層級 ↑ ↓：換到疊著的那張另一邊，還是選著它；到頂／到底那一邊按不下去', (t) async {
+      final (a, b) = await overlapped(t);
+      await _select(t, a);
+      expect(enabled(t, 'collage-layer-up'), isTrue);
+      expect(enabled(t, 'collage-layer-down'), isFalse, reason: 'a 已經在最下面');
+      await t.tap(find.byKey(const ValueKey('collage-layer-up')));
+      await t.pump();
+      expect(_items(t), [b, a], reason: 'a 上移一層＝跑到 b 上面');
+      expect(
+        identical(_items(t)[_peek(t).selItem], a),
+        isTrue,
+        reason: '還是選著 a',
+      );
+      _expectSelected(t, a, '上移之後');
+      expect(enabled(t, 'collage-layer-up'), isFalse, reason: 'a 已經在最上面');
+      expect(enabled(t, 'collage-layer-down'), isTrue);
+      await t.tap(find.byKey(const ValueKey('collage-layer-down')));
+      await t.pump();
+      expect(_items(t), [a, b], reason: 'a 下移一層＝回到 b 下面');
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('層級跳過沒疊到的那張：按一下就看得出變化', (t) async {
+      final picker = await _openFree(t);
+      await _addPhotos(
+        t,
+        picker,
+        await _photos(t, [(240, 240), (240, 240), (240, 240)]),
+      );
+      final [a, c, b] = _items(t);
+      a.rect = const ui.Rect.fromLTWH(0.05, 0.05, 0.4, 0.4);
+      c.rect = const ui.Rect.fromLTWH(0.55, 0.55, 0.4, 0.4); // 碰不到 a
+      b.rect = const ui.Rect.fromLTWH(0.3, 0.3, 0.4, 0.4); // 蓋到 a 的右下
+      await t.pump();
+      await _select(t, a);
+      await t.tap(find.byKey(const ValueKey('collage-layer-up')));
+      await t.pump();
+      expect(_items(t), [c, b, a], reason: '一下就跑到 b 上面（中間的 c 不算一層）');
+      expect(enabled(t, 'collage-layer-up'), isFalse, reason: '上面沒有蓋到 a 的了');
+      await t.tap(find.byKey(const ValueKey('collage-layer-down')));
+      await t.pump();
+      expect(_items(t), [c, a, b], reason: '下移一下就回到 b 下面，c 不動');
+      expect(t.takeException(), isNull);
+    });
   });
 }

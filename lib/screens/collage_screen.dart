@@ -46,6 +46,9 @@ const kCollageDraftKey = 'collage_draft_v1';
 abstract class CollageLayoutPeek {
   CollageLayout get layout;
   List<ui.Image?> get images;
+
+  /// 自由模式選中的是 layout.items 的第幾塊（-1＝沒選）
+  int get selItem;
 }
 
 class CollageScreen extends StatefulWidget {
@@ -82,6 +85,9 @@ class _CollageScreenState extends State<CollageScreen>
 
   @override
   List<ui.Image?> get images => List.unmodifiable(_images);
+
+  @override
+  int get selItem => _selItem;
 
   /// 已解碼的照片。換掉之後不再被任何格子用到的會被釋放並留 null，
   /// 索引保持穩定（_order 存的是這裡的索引）
@@ -1186,6 +1192,29 @@ class _CollageScreenState extends State<CollageScreen>
     });
   }
 
+  /// 選取中的方塊往上（[dir] 1）／往下（-1）移一層（使用者定案：動作列
+  /// 的「層級 ↑ ↓」）。疊放順序＝_items 的順序（草稿也照這個順序存）。
+  /// 跟「那個方向第一塊跟它重疊的」換到另一邊，中間不相干的跳過——
+  /// 不然按了畫面上看不出變化。回 -1＝那個方向已經沒有蓋到它的了
+  int _layerTarget(int dir) {
+    if (_selItem < 0 || _selItem >= _items.length) return -1;
+    final r = _items[_selItem].rect;
+    for (var j = _selItem + dir; j >= 0 && j < _items.length; j += dir) {
+      if (_items[j].rect.overlaps(r)) return j;
+    }
+    return -1;
+  }
+
+  void _moveFreeLayer(int dir) {
+    final j = _layerTarget(dir);
+    if (j < 0) return;
+    setState(() {
+      // 往上：拿掉之後目標往前補一格，插回 j 正好在它上面；往下：插在它前面
+      _items.insert(j, _items.removeAt(_selItem));
+      _selItem = j;
+    });
+  }
+
   /// 這張照片的長寬比（已釋放的當正方形）
   double _aspectOf(int img, {ui.Rect crop = kCollageFullCrop}) {
     final im = (img >= 0 && img < _images.length) ? _images[img] : null;
@@ -1212,7 +1241,7 @@ class _CollageScreenState extends State<CollageScreen>
   }
 
   /// 現在的方塊還是上一次自動排出來的樣子（一塊都沒被拖過、拉過）。
-  /// 點選會改疊放順序但不改方塊，所以照「哪一塊」比對、不看順序
+  /// 「層級 ↑ ↓」會改疊放順序但不改方塊，所以照「哪一塊」比對、不看順序
   bool get _freeUntouched {
     final snap = _autoRects;
     if (snap == null || snap.length != _items.length) return false;
@@ -1311,13 +1340,13 @@ class _CollageScreenState extends State<CollageScreen>
     }
   }
 
-  /// 拿到最上面（畫的順序＝疊的順序）。回傳搬完之後的索引
-  int _bringToFront(int i) {
-    if (i < 0 || i >= _items.length - 1) return i;
-    final t = _items.removeAt(i);
-    _items.add(t);
-    return _items.length - 1;
-  }
+  /// 方塊在畫面上的像素框（座標是比例值，寬高各用各的邊換算）
+  ui.Rect _freePx(ui.Rect r, Size s) => ui.Rect.fromLTWH(
+    r.left * s.width,
+    r.top * s.height,
+    r.width * s.width,
+    r.height * s.height,
+  );
 
   /// 指尖落在哪個方塊上（從最上層找起）。
   /// 座標是比例值，寬高要各用各的邊換算（畫布不一定是正方形）
@@ -1336,13 +1365,10 @@ class _CollageScreenState extends State<CollageScreen>
     return -1;
   }
 
-  /// 點擊用的命中：重疊處「再點一下」輪到下一層。
-  /// 已選中的正好是最上層的命中時，回傳疊在「最底下」那一張——疊在
-  /// 一起的照片才選得到（使用者指定：加入後再點一下，選底下一層的照片）。
-  /// 以前固定回第二張：選到誰誰就被帶到最上層，第二張正是上一次被帶
-  /// 上來之前的最上層，三張以上就永遠在前兩張之間來回（探針：序列
-  /// [2,2,1,2,1]，第三張輪不到）。從最底下輪起，每帶一張上來，其餘的
-  /// 相對順序不變，整疊一張接一張輪過去
+  /// 點擊用的命中：重疊處「再點一下」往下一層輪（使用者指定：加入後再
+  /// 點一下，選底下一層的照片）。點選不改疊放順序（層級只由「層級 ↑ ↓」
+  /// 決定），所以照這一點由上往下的命中順序輪：選中的是其中一張就換它
+  /// 下面那張，輪到最底下再回最上面——三張以上也一張接一張輪得到
   int _freeHitCycle(Offset p, Size s) {
     final hits = <int>[];
     for (var i = _items.length - 1; i >= 0; i--) {
@@ -1357,8 +1383,8 @@ class _CollageScreenState extends State<CollageScreen>
       }
     }
     if (hits.isEmpty) return -1;
-    if (hits.length > 1 && hits.first == _selItem) return hits.last;
-    return hits.first;
+    final at = hits.indexOf(_selItem);
+    return at == -1 ? hits.first : hits[(at + 1) % hits.length];
   }
 
   /// 指尖有沒有壓在選取框的某一角（回 0~3＝左上/右上/左下/右下）
@@ -1585,40 +1611,8 @@ class _CollageScreenState extends State<CollageScreen>
               ),
             ],
           ),
-          if (_canCropPhoto) ...[
-            Container(
-              height: 1,
-              margin: const EdgeInsets.symmetric(vertical: 8),
-              color: kBorder,
-            ),
-            Row(
-              children: [
-                const SizedBox(
-                  width: kSliderLabelW,
-                  child: Text(
-                    '已選',
-                    style: TextStyle(fontSize: 12, color: kTextDim),
-                  ),
-                ),
-                const Spacer(),
-                KeyedSubtree(
-                  key: const ValueKey('collage-crop-photo'),
-                  child: _freeAction(
-                    Icons.crop,
-                    _cropping ? '裁切中…' : '裁切',
-                    _cropSelectedPhoto,
-                  ),
-                ),
-                if (_free) ...[
-                  const SizedBox(width: 8),
-                  _freeAction(Icons.copy, '複製', _duplicateFreeItem),
-                  const SizedBox(width: 8),
-                  _freeAction(Icons.delete_outline, '移除', _removeFreeItem),
-                ],
-              ],
-            ),
-          ],
-          // 整體照片操作與已選照片的裁切／移除分列；字級放大時仍可橫捲，
+          // 照片整體的操作（隨機排列、加照片）。已選照片的動作不在卡裡，
+          // 在預覽底下那一列（見 _selectionBar）。字級放大時仍可橫捲，
           // 最常按的「加照片」維持在右側。
           if (_free) ...[
             Container(
@@ -1785,7 +1779,138 @@ class _CollageScreenState extends State<CollageScreen>
     ),
   );
 
-  /// 自由模式的小動作鈕（加照片、複製、移除）
+  /// 選了照片的動作列固定高度：按鈕 34，上面留 4（預覽本身底下還有 16 的
+  /// 留白）、下面留 20，上下看起來差不多（使用者：太緊密了，往下移一點）
+  static const _kSelBarH = 58.0;
+
+  /// 移除的紅（跟 App 其他「刪除」同一個紅）
+  static const _kDeleteRed = Color(0xFFFF6B6B);
+
+  /// 選了照片的動作（使用者定案「己」：預覽跟設定卡中間一列；宮格只有
+  /// 裁切）。沒選也留著這一格：以前「已選」是設定卡裡多長出來的一列，
+  /// 一選設定卡就變高、預覽被擠矮，畫布整個往上跳
+  Widget _selectionBar() => SizedBox(
+    height: _kSelBarH,
+    child: _canCropPhoto
+        ? Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
+            // 字級放大、窄螢幕放不下就整列等比縮小，不擠爆也不換行
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  KeyedSubtree(
+                    key: const ValueKey('collage-crop-photo'),
+                    child: _selPill(
+                      Icons.crop,
+                      _cropping ? '裁切中…' : '裁切',
+                      _cropSelectedPhoto,
+                    ),
+                  ),
+                  if (_free) ...[
+                    const SizedBox(width: 8),
+                    _selPill(Icons.copy, '複製', _duplicateFreeItem),
+                    const SizedBox(width: 8),
+                    _layerPill(),
+                    const SizedBox(width: 8),
+                    _selPill(
+                      Icons.delete_outline,
+                      '移除',
+                      _removeFreeItem,
+                      color: _kDeleteRed,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          )
+        : null,
+  );
+
+  /// 動作列的一顆膠囊（圖示＋字）
+  Widget _selPill(
+    IconData icon,
+    String label,
+    VoidCallback onTap, {
+    Color color = kText,
+  }) => Material(
+    color: kPanelHi,
+    shape: const StadiumBorder(side: BorderSide(color: kClipBorder)),
+    clipBehavior: Clip.antiAlias,
+    child: InkWell(
+      onTap: onTap,
+      child: SizedBox(
+        height: 34,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 16, color: color),
+              const SizedBox(width: 5),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  color: color,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+
+  /// 「層級 ↑ ↓」：選中的那塊往上／往下一層（見 _moveFreeLayer）。那個
+  /// 方向已經沒有蓋到它的照片，箭頭變淡、按不下去
+  Widget _layerPill() {
+    Widget arrow(IconData icon, String tip, int dir) {
+      final on = _layerTarget(dir) != -1;
+      return IconButton(
+        key: ValueKey(dir > 0 ? 'collage-layer-up' : 'collage-layer-down'),
+        tooltip: tip,
+        onPressed: on ? () => _moveFreeLayer(dir) : null,
+        icon: Icon(icon, size: 16),
+        color: kText,
+        disabledColor: kText.withValues(alpha: 0.3),
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+        style: const ButtonStyle(
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+      );
+    }
+
+    return Container(
+      height: 34,
+      padding: const EdgeInsets.only(left: 12, right: 2),
+      decoration: const ShapeDecoration(
+        color: kPanelHi,
+        shape: StadiumBorder(side: BorderSide(color: kClipBorder)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            '層級',
+            style: TextStyle(
+              fontSize: 12.5,
+              fontWeight: FontWeight.w600,
+              color: kText,
+            ),
+          ),
+          const SizedBox(width: 2),
+          arrow(Icons.arrow_upward, '上移一層', 1),
+          arrow(Icons.arrow_downward, '下移一層', -1),
+        ],
+      ),
+    );
+  }
+
+  /// 設定卡裡的小動作鈕（隨機排列、加照片）
   Widget _freeAction(IconData icon, String label, VoidCallback onTap) =>
       InkWell(
         borderRadius: BorderRadius.circular(8),
@@ -2141,10 +2266,11 @@ class _CollageScreenState extends State<CollageScreen>
     ),
   );
 
-  /// 拼圖分頁：設定卡＋一行提示。原本底下那顆「完成」／「匯入照片」
-  /// 大鈕拿掉了——上浮水印是隔壁分頁、匯出再隔壁，
+  /// 拼圖分頁：選了照片的動作列＋設定卡（宮格多一行提示）。原本底下那顆
+  /// 「完成」／「匯入照片」大鈕拿掉了——上浮水印是隔壁分頁、匯出再隔壁，
   /// 補照片點格子的「＋」（自由模式用卡上的「加照片」）
   List<Widget> _collageTabBody() => [
+    _selectionBar(),
     if (!_free)
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -2160,16 +2286,19 @@ class _CollageScreenState extends State<CollageScreen>
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
       child: _settingsCard(),
     ),
-    Padding(
-      padding: const EdgeInsets.fromLTRB(16, 6, 16, 12),
-      child: Text(
-        // 自由模式不再說「加照片會自動排滿畫布」：自己排過之後加照片
-        // 不重排（見 _addFreePhotos），那半句就不對了
-        _free ? '最後選取的照片會在最上層' : '按住可拖曳交換照片位置；點一下鎖定 可調照片顯示位置',
-        textAlign: TextAlign.center,
-        style: const TextStyle(fontSize: 11, color: kTextDim),
+    // 自由模式的提示「最後選取的照片會在最上層」拿掉了（使用者：這行
+    // 不用了；點選也不再改疊放順序），設定卡跟底欄留一點距離就好
+    if (_free)
+      const SizedBox(height: 16)
+    else
+      const Padding(
+        padding: EdgeInsets.fromLTRB(16, 6, 16, 12),
+        child: Text(
+          '按住可拖曳交換照片位置；點一下鎖定 可調照片顯示位置',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 11, color: kTextDim),
+        ),
       ),
-    ),
   ];
 
   /// 浮水印分頁：共用的設定面板（跟批次同一套接法）；
@@ -2448,12 +2577,17 @@ class _CollageScreenState extends State<CollageScreen>
       _fDrag = _FreeDrag(corner: corner, start: _items[_selItem].rect, from: p);
       return;
     }
-    final hit = _freeHit(p, s);
+    // 手指落在選中那塊的範圍內就拖它——就算它被別塊蓋住（層級只由
+    // 「層級 ↑ ↓」改，拖曳不再把它帶到最上層）；不然拖手指底下最上層那塊
+    final sel = _selItem >= 0 && _selItem < _items.length ? _selItem : -1;
+    final hit = sel != -1 && _freePx(_items[sel].rect, s).contains(p)
+        ? sel
+        : _freeHit(p, s);
     if (hit == -1) {
       _fDrag = null;
       return;
     }
-    setState(() => _selItem = _bringToFront(hit));
+    setState(() => _selItem = hit);
     _fDrag = _FreeDrag(corner: -1, start: _items[_selItem].rect, from: p);
   }
 
@@ -2614,7 +2748,7 @@ class _CollageScreenState extends State<CollageScreen>
         if (hit != -1) break;
       }
       if (hit == -1) return;
-      setState(() => _selItem = _bringToFront(hit));
+      setState(() => _selItem = hit);
     }
     final p = _fPts.values.toList();
     final d = (p[0] - p[1]).distance;
@@ -2695,10 +2829,9 @@ class _CollageScreenState extends State<CollageScreen>
               return;
             }
             setState(() {
-              // 重疊處再點一下＝輪到下一層（選到誰誰就被帶到最上層，
-              // 跟「最後選取的照片會在最上層」一致）
-              final hit = _freeHitCycle(e.localPosition, s);
-              _selItem = hit == -1 ? -1 : _bringToFront(hit);
+              // 重疊處再點一下＝往下一層輪。點選不改疊放順序：以前選到誰
+              // 誰就被帶到最上層，現在層級交給動作列的「層級 ↑ ↓」
+              _selItem = _freeHitCycle(e.localPosition, s);
             });
           },
           // 兩指在畫布上＝在縮放，pan 讓開：pan 只跟最新那根手指，給的

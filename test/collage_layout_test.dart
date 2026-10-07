@@ -348,8 +348,8 @@ void main() {
         expect(dup.right, lessThan(rm.left));
         expect(rm.bottom, lessThan(sh.top));
         expect(sh.right, lessThan(add.left));
-        // 跟模式膠囊不同列（同一列擠不下才拆的）
-        expect(rm.top, greaterThan(t.getRect(find.text('自由')).bottom));
+        // 動作列自己一列、在設定卡上面（使用者定案「己」），不跟模式膠囊擠
+        expect(rm.bottom, lessThan(t.getRect(find.text('自由')).top));
       }
       // 溢出會在這裡以例外冒出來
       expect(t.takeException(), isNull, reason: '$width 寬');

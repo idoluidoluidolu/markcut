@@ -159,7 +159,7 @@ Future<void> _drag(WidgetTester t, Offset from, Offset delta) async {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  /// 選取的那一張：點選會把它搬到最上層（清單最後），所以用照片索引追
+  /// 選取的那一張用照片索引追（清單順序＝疊放順序，層級鈕會改它）
   CollageFreeItem byImg(WidgetTester t, int img) =>
       _items(t).firstWhere((it) => it.img == img);
 
