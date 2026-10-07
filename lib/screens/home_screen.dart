@@ -1,11 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/video_picker.dart';
 
 import '../services/preset_store.dart';
 import '../nav.dart';
 import '../widgets/interrupted_run_notice.dart';
+import '../widgets/spotlight_hint.dart';
 import '../theme.dart';
 import 'batch_watermark_screen.dart';
 import 'collage_screen.dart';
@@ -31,6 +35,10 @@ import 'video_editor_screen.dart';
 ///
 /// 「製作浮水印」（浮水印工作室）從首頁拿掉，走 個人中心 → 範本 → ＋
 /// （見 profile_screen 的 _presetAddTile）
+///
+/// 新手教學（使用者從畫布四個方向裡挑了「甲 聚光燈」）：第一次進首頁時
+/// 整個畫面壓暗，只留右上角個人中心那一圈，下面寫「草稿、GIF、範本都存在
+/// 這裡」。按掉一次就記住（[kHomeProfileHintKey]），之後不再出現
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -49,7 +57,61 @@ class _HomeScreenState extends State<HomeScreen> {
         .then((_) => PresetStore.ensureSeededV3())
         .then((_) => PresetStore.ensureSeededV4())
         .catchError((_) {});
+    unawaited(_loadProfileHint());
   }
+
+  /// 右上角個人中心那顆鈕：新手教學要量它在哪裡
+  final _profileKey = GlobalKey();
+
+  /// 新手教學還沒看過（要出來）；[_hintTarget]＝個人中心那顆鈕在首頁上的框
+  bool _profileHint = false;
+  Rect? _hintTarget;
+
+  Future<void> _loadProfileHint() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool(kHomeProfileHintKey) ?? false) return;
+    } catch (_) {
+      return; // 讀不到設定：別拿教學擋住首頁
+    }
+    if (mounted) setState(() => _profileHint = true);
+  }
+
+  /// 量個人中心那顆鈕的位置。每次重畫後都量一次，畫面轉向、大小改變時
+  /// 亮著的那一圈才跟得上；位置沒變就不重畫
+  void _measureHintTarget() {
+    final button = _profileKey.currentContext?.findRenderObject();
+    final root = context.findRenderObject();
+    if (button is! RenderBox ||
+        root is! RenderBox ||
+        !button.hasSize ||
+        !root.hasSize) {
+      return;
+    }
+    final rect =
+        button.localToGlobal(Offset.zero, ancestor: root) & button.size;
+    if (rect != _hintTarget) setState(() => _hintTarget = rect);
+  }
+
+  /// 收起新手教學並記住看過了；[openProfile]＝點的是亮著的那顆鈕
+  Future<void> _dismissProfileHint({bool openProfile = false}) async {
+    setState(() {
+      _profileHint = false;
+      _hintTarget = null;
+    });
+    if (openProfile) _openProfile();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(kHomeProfileHintKey, true);
+    } catch (_) {}
+  }
+
+  // 草稿可以有很多份（見 DraftStore），開新專案不會蓋掉任何一份，所以
+  // 首頁回來不用重讀「有沒有草稿」
+  void _openProfile() => Navigator.push(
+    context,
+    MaterialPageRoute(builder: (_) => const LightPage(child: ProfileScreen())),
+  );
 
   bool _isVideoFile(XFile f) {
     final mime = f.mimeType;
@@ -219,24 +281,41 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_profileHint) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _profileHint) _measureHintTarget();
+      });
+    }
+    final target = _hintTarget;
+    return Stack(
+      children: [
+        _page(),
+        if (_profileHint && target != null)
+          Positioned.fill(
+            child: SpotlightHint(
+              target: target,
+              text: '草稿、GIF、範本都存在這裡',
+              onDismiss: _dismissProfileHint,
+              onTargetTap: () => _dismissProfileHint(openProfile: true),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _page() {
     return Scaffold(
       backgroundColor: kLBg,
       appBar: AppBar(
         backgroundColor: kLBg,
         actions: [
           IconButton(
+            key: _profileKey,
             tooltip: '個人中心',
             iconSize: 28,
             padding: const EdgeInsets.symmetric(horizontal: 14),
             icon: const Icon(Icons.person_outline),
-            // 草稿可以有很多份（見 DraftStore），開新專案不會蓋掉任何
-            // 一份，所以首頁回來不用重讀「有沒有草稿」
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => const LightPage(child: ProfileScreen()),
-              ),
-            ),
+            onPressed: _openProfile,
           ),
         ],
       ),
@@ -540,6 +619,9 @@ class _SheetRow<T> {
   /// 點下去 pop 出來的值
   final T value;
 }
+
+/// 新手教學（個人中心在右上角）看過了沒：SharedPreferences 的鍵
+const kHomeProfileHintKey = 'home_profile_hint_seen_v1';
 
 /// 底部「＋ 開始」的高度
 const double kHomeStartH = 56;

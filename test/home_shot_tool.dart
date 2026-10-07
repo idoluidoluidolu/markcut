@@ -30,7 +30,10 @@ String? _materialIconsPath() {
       '$root/bin/cache/artifacts/material_fonts/materialicons-regular.otf',
     );
   }
-  final exe = Platform.resolvedExecutable.replaceAll(String.fromCharCode(92), '/');
+  final exe = Platform.resolvedExecutable.replaceAll(
+    String.fromCharCode(92),
+    '/',
+  );
   final i = exe.indexOf('/bin/cache/');
   if (i >= 0) {
     candidates.add(
@@ -69,60 +72,67 @@ void main() {
     await il.load();
   });
 
-  testWidgets('首頁 → home.png', (t) async {
-    SharedPreferences.setMockInitialValues({});
-    t.view.devicePixelRatio = 3.0;
-    t.view.physicalSize = const Size(1170, 2532);
-    t.view.padding = const FakeViewPadding(top: 141, bottom: 102);
-    t.view.viewPadding = const FakeViewPadding(top: 141, bottom: 102);
-    addTearDown(t.view.reset);
+  testWidgets('首頁 → home.png；第一次進來的新手教學 → home_profile_hint.png', (t) async {
+    await _shoot(t, 'home.png', seen: true);
+    await t.pumpWidget(const SizedBox());
+    await _shoot(t, 'home_profile_hint.png', seen: false);
+  });
+}
 
-    await t.pumpWidget(
-      RepaintBoundary(
-        key: _shotKey,
-        child: MaterialApp(
-          theme: buildStudioTheme(),
-          debugShowCheckedModeBanner: false,
-          locale: const Locale.fromSubtags(
+Future<void> _shoot(WidgetTester t, String name, {required bool seen}) async {
+  final out = Platform.environment['MARKCUT_SHOT_OUT']!;
+  SharedPreferences.setMockInitialValues({kHomeProfileHintKey: seen});
+  t.view.devicePixelRatio = 3.0;
+  t.view.physicalSize = const Size(1170, 2532);
+  t.view.padding = const FakeViewPadding(top: 141, bottom: 102);
+  t.view.viewPadding = const FakeViewPadding(top: 141, bottom: 102);
+  addTearDown(t.view.reset);
+
+  await t.pumpWidget(
+    RepaintBoundary(
+      key: _shotKey,
+      child: MaterialApp(
+        theme: buildStudioTheme(),
+        debugShowCheckedModeBanner: false,
+        locale: const Locale.fromSubtags(
+          languageCode: 'zh',
+          scriptCode: 'Hant',
+          countryCode: 'TW',
+        ),
+        localizationsDelegates: const [
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        supportedLocales: const [
+          Locale.fromSubtags(
             languageCode: 'zh',
             scriptCode: 'Hant',
             countryCode: 'TW',
           ),
-          localizationsDelegates: const [
-            GlobalMaterialLocalizations.delegate,
-            GlobalWidgetsLocalizations.delegate,
-            GlobalCupertinoLocalizations.delegate,
-          ],
-          supportedLocales: const [
-            Locale.fromSubtags(
-              languageCode: 'zh',
-              scriptCode: 'Hant',
-              countryCode: 'TW',
-            ),
-            Locale('zh', 'TW'),
-            Locale('zh'),
-            Locale('en'),
-          ],
-          home: const LightPage(child: HomeScreen()),
-        ),
+          Locale('zh', 'TW'),
+          Locale('zh'),
+          Locale('en'),
+        ],
+        home: const LightPage(child: HomeScreen()),
       ),
+    ),
+  );
+  // 真的非同步（SharedPreferences、logo 圖片解碼）要 runAsync 才推得動
+  for (var i = 0; i < 15; i++) {
+    await t.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 40)),
     );
-    // 真的非同步（SharedPreferences、logo 圖片解碼）要 runAsync 才推得動
-    for (var i = 0; i < 15; i++) {
-      await t.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 40)),
-      );
-      await t.pump(const Duration(milliseconds: 40));
-    }
-    await t.runAsync(() async {
-      final b =
-          _shotKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
-      final im = await b.toImage(pixelRatio: 3);
-      final bytes = await im.toByteData(format: ui.ImageByteFormat.png);
-      im.dispose();
-      File('$out${Platform.pathSeparator}home.png').writeAsBytesSync(
-        bytes!.buffer.asUint8List(),
-      );
-    });
+    await t.pump(const Duration(milliseconds: 40));
+  }
+  await t.runAsync(() async {
+    final b =
+        _shotKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
+    final im = await b.toImage(pixelRatio: 3);
+    final bytes = await im.toByteData(format: ui.ImageByteFormat.png);
+    im.dispose();
+    File(
+      '$out${Platform.pathSeparator}$name',
+    ).writeAsBytesSync(bytes!.buffer.asUint8List());
   });
 }

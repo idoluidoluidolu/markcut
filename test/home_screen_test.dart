@@ -244,7 +244,9 @@ void main() {
   });
 
   setUp(() {
-    SharedPreferences.setMockInitialValues({});
+    // 新手教學（個人中心在右上角）算看過了：這裡測的是首頁本體跟＋選單，
+    // 教學本身見 home_profile_hint_test
+    SharedPreferences.setMockInitialValues({kHomeProfileHintKey: true});
     _files = _FakeFilePicker();
     FilePicker.platform = _files;
     _images = _FakeImagePicker();

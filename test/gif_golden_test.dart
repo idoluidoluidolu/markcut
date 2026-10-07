@@ -86,7 +86,10 @@ Future<void> _settle(WidgetTester t, [int n = 30]) async {
 }
 
 void main() {
-  setUp(() => SharedPreferences.setMockInitialValues({}));
+  // 首頁那張只拍首頁本體：新手教學算看過了（教學見 home_profile_hint_test）
+  setUp(
+    () => SharedPreferences.setMockInitialValues({kHomeProfileHintKey: true}),
+  );
 
   setUpAll(() async {
     final b = TestWidgetsFlutterBinding.ensureInitialized();

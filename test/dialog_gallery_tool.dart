@@ -344,7 +344,9 @@ void main() {
   }
   _out = out;
 
-  setUp(() => SharedPreferences.setMockInitialValues({}));
+  setUp(
+    () => SharedPreferences.setMockInitialValues({kHomeProfileHintKey: true}),
+  );
 
   setUpAll(() async {
     final b = TestWidgetsFlutterBinding.ensureInitialized();
