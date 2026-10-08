@@ -196,7 +196,8 @@ class AboutScreen extends StatelessWidget {
               (
                 '字型（SIL Open Font License 1.1）',
                 '思源黑體、思源宋體 — Google / Adobe\n'
-                    'jf open 粉圓 — justfont\n'
+                    'jf open 粉圓 — justfont（漢字源自 MOTOYA 的 '
+                    'Kosugi Maru，Apache License 2.0）\n'
                     'LXGW 文楷 TC — 落霞孤鶩\n'
                     '悠哉字體 — 落霞孤鶩\n'
                     'Montserrat、Playfair Display、Pacifico、'

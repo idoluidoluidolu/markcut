@@ -37,5 +37,7 @@ Android 的預覽播放另使用 media_kit（libmpv）；iOS 用系統的 AVPlay
 LXGW 文楷 TC、悠哉字體、Montserrat、Playfair Display、Pacifico、
 Bebas Neue、Oswald、Lobster、Anton、Courier Prime、Quicksand、Space Grotesk、
 Abril Fatface、Dancing Script、Caveat、Press Start 2P、Great Vibes、Cinzel。
+jf open 粉圓的漢字部分源自 MOTOYA 的 Kosugi Maru，另依 Apache License 2.0
+授權（[條款全文](assets/licenses/Apache-2.0.txt)，App 的授權清單也有）。
 選了才下載（檔案在 [markcut-fonts](https://github.com/idoluidoluidolu/markcut-fonts)）：
 縫合像素字體、大波浪圓體、清松手寫體、莫大毛筆字體。

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:image_picker_android/image_picker_android.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
@@ -66,7 +67,8 @@ void main() {
       ['字型'],
       '本程式使用下列字型，皆以 SIL Open Font License 1.1 授權：\n'
       'Noto Sans TC / Noto Serif TC (Google, Adobe)\n'
-      'jf open 粉圓 (justfont)\n'
+      'jf open 粉圓 (justfont；漢字部分源自 Kosugi Maru，'
+      '另依 Apache License 2.0 授權，見下一則)\n'
       'LXGW WenKai TC (落霞孤鶩)\n'
       '悠哉字體 (落霞孤鶩)\n'
       'Montserrat / Playfair Display / Pacifico / Bebas Neue /\n'
@@ -81,6 +83,7 @@ void main() {
       '莫大毛筆字體 Bakudai (Max Yao; 原作 青柳衡山)\n\n'
       '完整授權條款見 https://openfontlicense.org',
     );
+    yield await kosugiMaruLicense();
     yield const LicenseEntryWithLineBreaks(
       ['FFmpeg'],
       '本程式使用 FFmpeg（LGPL v2.1 或後續版本授權）進行影音處理，'
@@ -98,6 +101,19 @@ void main() {
       })
       .catchError((_) {});
   runApp(const MarkCutApp());
+}
+
+/// 粉圓的漢字源自 Kosugi Maru（Apache License 2.0）：保留原版權聲明並
+/// 附上條款全文（Apache 2.0 第 4 條）。全文是資產檔，Windows 上 checkout
+/// 會變成 CRLF，而授權頁的分段只認 \n，先換掉
+Future<LicenseEntry> kosugiMaruLicense() async {
+  final terms = await rootBundle.loadString('assets/licenses/Apache-2.0.txt');
+  return LicenseEntryWithLineBreaks(
+    const ['字型'],
+    'jf open 粉圓的漢字部分源自 Kosugi Maru'
+    '（Copyright (c) 2010 MOTOYA CO.,LTD.），依 Apache License 2.0 授權：\n'
+    '${terms.replaceAll('\r\n', '\n')}',
+  );
 }
 
 class MarkCutApp extends StatelessWidget {
