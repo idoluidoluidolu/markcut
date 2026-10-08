@@ -35,6 +35,8 @@ import '../services/overlay_geometry.dart';
 import '../services/overlay_preview_policy.dart';
 import '../services/timeline_strip.dart';
 import '../services/timeline_thumbnail_cache.dart';
+import '../services/timeline_gif_preview.dart';
+import '../services/preview_frame_window.dart';
 import '../services/media_geometry.dart';
 import '../services/playback_trace.dart';
 import '../services/composition_playback_clock.dart';
@@ -5337,6 +5339,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 已解碼的幀（每個素材一份）
   final Map<int, _ScrubDecoder> _scrubDecoders = {};
+  final _gifPreviews = createTimelineGifPreviewPool();
 
   /// 解碼器的使用順序（最近用的排最後），超量時淘汰最久沒用的
   final List<int> _decoderLru = [];
@@ -12566,6 +12569,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     for (final d in _scrubDecoders.values) {
       d.dispose();
     }
+    _gifPreviews.dispose();
     _voAmpSub?.cancel();
     _voLevels.dispose();
     _recorder.dispose();
@@ -14387,7 +14391,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                           c.sourceIndex,
                                                           frames,
                                                         );
-                                                        dec.focus(slot);
+                                                        dec.focus(
+                                                          slot,
+                                                          clipId: c.id,
+                                                        );
                                                         // 已經解好的：直接貼材質，UI 執行緒零解碼
                                                         final img = dec[slot];
                                                         if (img != null) {
@@ -14786,6 +14793,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                             key: ValueKey(
                                                               'gif${c.id}',
                                                             ),
+                                                            pool: _gifPreviews,
                                                             bytes: bytes[0],
                                                             clock: _frameVN,
                                                             start: c.offset,
@@ -18385,10 +18393,11 @@ class _SelectionFramePainter extends CustomPainter {
 /// GIF 圖層：跟著時間軸的時鐘挑格，而不是丟給 Image.memory 自己
 /// 無限輪播——那樣暫停也照跑、跟播放頭完全對不上（使用者回報：
 /// 「GIF 自己一直重複播放，無法播放與暫停」）。
-/// 幀在掛載時解一次（寬度夾 480 省記憶體），之後每格只是貼圖
+/// 只解目前位置與鄰近幀，同來源片段共用有總量上限的預覽快取。
 class _TimelineGif extends StatefulWidget {
   const _TimelineGif({
     super.key,
+    required this.pool,
     required this.bytes,
     required this.clock,
     required this.start,
@@ -18396,6 +18405,7 @@ class _TimelineGif extends StatefulWidget {
   });
 
   final Uint8List bytes;
+  final TimelineGifPreviewPool<ui.Image> pool;
 
   /// 節流後的播放位置（_frameVN）
   final ValueNotifier<double> clock;
@@ -18409,81 +18419,52 @@ class _TimelineGif extends StatefulWidget {
 }
 
 class _TimelineGifState extends State<_TimelineGif> {
-  final List<ui.Image> _frames = [];
-  final List<int> _endMs = []; // 每格「結束於第幾毫秒」（累計）
-  int _totalMs = 0;
+  late TimelineGifPreview<ui.Image> _preview;
 
   @override
   void initState() {
     super.initState();
-    _decode();
+    _attach();
   }
 
-  Future<void> _decode() async {
-    try {
-      final codec = await ui.instantiateImageCodec(
-        widget.bytes,
-        targetWidth: 480,
-      );
-      var acc = 0;
-      // 300 格（約 30 秒）封頂：再長的 GIF 就循環前 300 格，
-      // 不讓一支怪檔把記憶體吃光
-      final n = math.min(codec.frameCount, 300);
-      for (var i = 0; i < n; i++) {
-        final f = await codec.getNextFrame();
-        if (!mounted) {
-          f.image.dispose();
-          codec.dispose();
-          return;
-        }
-        _frames.add(f.image);
-        // 0ms 的格（壞檔慣例）當 100ms 用，跟瀏覽器一致
-        final d = f.duration.inMilliseconds;
-        acc += d < 10 ? 100 : d;
-        _endMs.add(acc);
-      }
-      codec.dispose();
-      _totalMs = acc;
+  void _attach() {
+    _preview = widget.pool.acquire(widget.bytes, () {
       if (mounted) setState(() {});
-    } catch (_) {}
+    });
+  }
+
+  @override
+  void didUpdateWidget(_TimelineGif oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.bytes, widget.bytes) ||
+        oldWidget.pool != widget.pool) {
+      _preview.dispose();
+      _attach();
+    }
   }
 
   @override
   void dispose() {
-    for (final f in _frames) {
-      f.dispose();
-    }
+    _preview.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_frames.isEmpty || _totalMs <= 0) {
-      // 還在解（幾百毫秒內）：先讓 Image.memory 頂著，避免閃空白
-      return Image.memory(
-        widget.bytes,
-        fit: BoxFit.fill,
-        gaplessPlayback: true,
-      );
-    }
     return ValueListenableBuilder<double>(
       valueListenable: widget.clock,
       builder: (context, pos, _) {
-        var t = (pos - widget.start) + widget.trimStart;
-        if (t < 0) t = 0;
-        final ms = (t * 1000).round() % _totalMs;
-        // 二分找「結束時間 > ms」的第一格
-        var lo = 0;
-        var hi = _endMs.length - 1;
-        while (lo < hi) {
-          final mid = (lo + hi) >> 1;
-          if (_endMs[mid] > ms) {
-            hi = mid;
-          } else {
-            lo = mid + 1;
-          }
+        _preview.seek((pos - widget.start) + widget.trimStart);
+        final image = _preview.image;
+        if (image == null) {
+          // 第一格還在解（幾十毫秒）：先讓 Image.memory 頂著，避免閃空白
+          return Image.memory(
+            widget.bytes,
+            fit: BoxFit.fill,
+            gaplessPlayback: true,
+          );
         }
-        return RawImage(image: _frames[lo], fit: BoxFit.fill);
+        return RawImage(image: image, fit: BoxFit.fill);
       },
     );
   }
@@ -18506,80 +18487,49 @@ class _ScrubDecoder {
     return null;
   }
 
-  /// 播放頭前後各先解好幾張
-  static const _window = 10;
-
-  /// 最多留幾張已解碼的（超過就丟離播放頭最遠的）。
-  /// 540×960 的 RGBA 一張就是 2MB——這個數字直接決定
-  /// 拖曳時會佔多少記憶體，開太大匯出就會被系統殺掉
-  static const _capacity = 24;
-
   final List<Uint8List?> frames;
   final VoidCallback onReady;
 
-  final Map<int, ui.Image> _decoded = {};
-  final Set<int> _pending = {};
-  int _center = -1;
-  bool _disposed = false;
+  /// 播放頭前後各先解 10 張；最多留 24 張。
+  /// 540×960 的 RGBA 一張就是 2MB——這個數字直接決定
+  /// 拖曳時會佔多少記憶體，開太大匯出就會被系統殺掉。
+  /// 位元組上限照 24 張 540p 給：快取幀哪天改大了，窗自動縮小，
+  /// 不會一張一張疊上去。同時只解 2 張：快速拖曳時舊位置的工作
+  /// 不會越堆越多（解好時已不在窗內的直接丟）
+  late final _window = PreviewFrameWindow<ui.Image>(
+    load: (i) async {
+      final bytes = frames[i];
+      if (bytes == null) return null;
+      ui.Codec? codec;
+      try {
+        codec = await ui.instantiateImageCodec(bytes);
+        return (await codec.getNextFrame()).image;
+      } finally {
+        codec?.dispose();
+      }
+    },
+    bytesOf: (image) => image.width * image.height * 4,
+    disposeFrame: (image) => image.dispose(),
+    onReady: onReady,
+    radius: 10,
+    capacity: 24,
+    byteBudget: 48 << 20,
+    maxConcurrent: 2,
+  );
 
   _ScrubDecoder(this.frames, {required this.onReady});
 
-  ui.Image? operator [](int i) => _decoded[i];
+  ui.Image? operator [](int i) => _window[i];
 
-  /// 把窗口中心移到 [fi]：補解窗內缺的，丟掉離太遠的
-  void focus(int fi) {
-    if (_disposed || fi == _center) return; // 沒移動就什麼都不用做
-    _center = fi;
-    _evictFar();
-    for (var d = 0; d <= _window; d++) {
-      for (final i in d == 0 ? [fi] : [fi + d, fi - d]) {
-        if (i < 0 || i >= frames.length) continue;
-        if (_decoded.containsKey(i) || _pending.contains(i)) continue;
-        final b = frames[i];
-        if (b == null) continue;
-        _pending.add(i);
-        _decode(i, b);
-      }
-    }
-  }
+  /// 把片段 [clipId] 那一層的窗口中心移到 [fi]：補解窗內缺的，丟掉離太遠的。
+  /// 同一支素材同時有兩層在畫（複製的圖層、交界的暖身層）時各算各的中心
+  void focus(int fi, {required int clipId}) => _window.focus(
+    fi,
+    available: (i) => i >= 0 && i < frames.length && frames[i] != null,
+    consumer: clipId,
+  );
 
-  Future<void> _decode(int i, Uint8List bytes) async {
-    try {
-      final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-      codec.dispose();
-      if (_disposed) {
-        frame.image.dispose();
-        return;
-      }
-      _decoded[i] = frame.image;
-      // 只有「現在正要顯示的那張」才值得觸發重畫，
-      // 不然一次解 37 張就是 37 次重畫
-      if (i == _center) onReady();
-    } catch (_) {
-      // 解不開就算了，顯示端會退回用位元組畫
-    } finally {
-      _pending.remove(i);
-    }
-  }
-
-  void _evictFar() {
-    if (_decoded.length <= _capacity) return;
-    final keys = _decoded.keys.toList()
-      ..sort((a, b) => (b - _center).abs().compareTo((a - _center).abs()));
-    for (final k in keys) {
-      if (_decoded.length <= _capacity) break;
-      _decoded.remove(k)?.dispose();
-    }
-  }
-
-  void dispose() {
-    _disposed = true;
-    for (final img in _decoded.values) {
-      img.dispose();
-    }
-    _decoded.clear();
-  }
+  void dispose() => _window.dispose();
 }
 
 /// 片段裁切框 → 這一層的剪裁矩形（框是素材座標 0~1）
