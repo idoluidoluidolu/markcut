@@ -4,7 +4,9 @@
 //   MARKCUT_SHOT_OUT=<資料夾> flutter test --no-pub --no-test-assets test/font_sheet_shot_tool.dart
 //
 // 沒設環境變數時整支略過。字型直接從 assets/fonts 的檔案載（不走資產包，
-// 所以 --no-test-assets 也能跑），家族名跟 pubspec 登記的一樣
+// 所以 --no-test-assets 也能跑），家族名跟 pubspec 登記的一樣。
+// 點了才下載的字型（kDownloadFonts）不在 assets：另外設 MARKCUT_FONTS_DIR
+// 指到 markcut-fonts 那個 repo 的 fonts 資料夾
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -39,7 +41,24 @@ const _files = <String, List<String>>{
   'DancingScript': ['DancingScript.ttf'],
   'Caveat': ['Caveat.ttf'],
   'PressStart2P': ['PressStart2P.ttf'],
+  'GreatVibes': ['GreatVibes.ttf'],
+  'Cinzel': ['Cinzel.ttf'],
+  'PopGothic': ['PopGothic.ttf'],
+  'JasonHandwriting3': ['JasonHandwriting3.ttf'],
+  'JasonHandwriting5': ['JasonHandwriting5.ttf'],
+  'Bakudai': ['Bakudai.ttf'],
 };
+
+/// assets/fonts 裡有就用；下載字型從 MARKCUT_FONTS_DIR 拿
+File _fontFile(String name) {
+  final local = File('assets/fonts/$name');
+  if (local.existsSync()) return local;
+  final dl = Platform.environment['MARKCUT_FONTS_DIR'];
+  if (dl == null || dl.isEmpty) {
+    throw StateError('$name 是下載字型：要設 MARKCUT_FONTS_DIR（markcut-fonts 的 fonts 資料夾）');
+  }
+  return File('$dl${Platform.pathSeparator}$name');
+}
 
 void main() {
   final out = Platform.environment['MARKCUT_SHOT_OUT'];
@@ -55,9 +74,7 @@ void main() {
       final loader = FontLoader(e.key);
       for (final f in e.value) {
         loader.addFont(
-          File(
-            'assets/fonts/$f',
-          ).readAsBytes().then((b) => b.buffer.asByteData()),
+          _fontFile(f).readAsBytes().then((b) => b.buffer.asByteData()),
         );
       }
       await loader.load();

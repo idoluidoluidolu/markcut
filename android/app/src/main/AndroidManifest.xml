@@ -5,6 +5,9 @@
         android:maxSdkVersion="29" />
     <!-- 錄音（旁白） -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 下載字型、意見回饋。以前只靠別的函式庫順帶宣告（transport-backend-cct），
+         那個依賴一拿掉，正式版就連不上網 -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:label="浮水印"
         android:name="${applicationName}"

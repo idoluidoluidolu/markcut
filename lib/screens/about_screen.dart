@@ -194,16 +194,21 @@ class AboutScreen extends StatelessWidget {
                     'FFmpeg 為其各自作者所有，詳見 ffmpeg.org。',
               ),
               (
-                '內建字型（SIL Open Font License 1.1）',
+                '字型（SIL Open Font License 1.1）',
                 '思源黑體、思源宋體 — Google / Adobe\n'
                     'jf open 粉圓 — justfont\n'
                     'LXGW 文楷 TC — 落霞孤鶩\n'
                     '悠哉字體 — 落霞孤鶩\n'
-                    '縫合像素字體 — TakWolf\n'
                     'Montserrat、Playfair Display、Pacifico、'
                     'Bebas Neue、Oswald、Lobster、Anton、Courier Prime、'
                     'Quicksand、Space Grotesk、Abril Fatface、'
-                    'Dancing Script、Caveat、Press Start 2P',
+                    'Dancing Script、Caveat、Press Start 2P、'
+                    'Great Vibes、Cinzel\n'
+                    '選了才下載：\n'
+                    '縫合像素字體 — TakWolf\n'
+                    '大波浪圓體 — Max Yao\n'
+                    '清松手寫體 — 游清松，Max Yao 補字\n'
+                    '莫大毛筆字體 — Max Yao，原作青柳衡山',
               ),
             ],
             showSourceRow: true,

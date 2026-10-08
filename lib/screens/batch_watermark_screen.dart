@@ -31,6 +31,7 @@ import '../services/video_processor.dart';
 import '../services/watermark_renderer.dart';
 import '../theme.dart';
 import '../widgets/batch_export_sheet.dart';
+import '../widgets/font_picker.dart';
 import '../widgets/watermark_animation_preview.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
@@ -1034,6 +1035,12 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
 
   Future<void> _exportAll({bool jpeg = false}) async {
     if (_exporting) return;
+    // 用到的下載字型要先在手機裡（下載不了就擋下來，不然成品是後備字）
+    final fonts = {
+      for (var i = 0; i < _items.length; i++) ..._effectiveOf(i).fontFamilies,
+    };
+    if (!await ensureExportFonts(context, fonts)) return;
+    if (!mounted || _exporting) return;
     // Web 略過影片的說明放在結尾的結果訊息（skipped 計數），
     // 這裡先 show 會立刻被進度彈窗蓋住、根本看不到
     setState(() => _exporting = true);

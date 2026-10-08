@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../models/watermark_settings.dart';
+import 'font_store.dart';
 
 /// Whole-canvas effects cannot be moved as a single object without changing
 /// their repeat grid / animation amplitude. They retain the raster path.
@@ -15,6 +16,8 @@ String watermarkVisualSignature(
   final json = settings.toJson();
   json.remove('activeText');
   json.remove('activeLogo');
+  // 下載的字型載好了，同一份設定畫出來不一樣：烘過的圖要重烘
+  json['fontEpoch'] = FontStore.instance.epoch;
   for (final field in ['texts', 'logos']) {
     for (final mark in (json[field] as List).cast<Map<String, dynamic>>()) {
       final image = mark['b64'];

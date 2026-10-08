@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -8,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../models/watermark_settings.dart';
+import '../services/font_store.dart';
 import '../services/logo_mark_painter.dart';
 import '../services/text_mark_painter.dart';
 import '../theme.dart';
@@ -73,6 +75,10 @@ class WatermarkLayer extends StatefulWidget {
   /// 父層在「別的素材被選取」時用這個把拖曳讓給選中的素材
   final bool Function(WmPart part)? panAllowed;
 
+  /// 用到的下載字型這支手機還沒有時，要不要自己去下載。範本縮圖給
+  /// false：光是瀏覽範本夾不該偷偷下載（只讀手機裡已經有的）
+  final bool downloadFonts;
+
   const WatermarkLayer({
     super.key,
     required this.settings,
@@ -89,6 +95,7 @@ class WatermarkLayer extends StatefulWidget {
     this.time,
     this.panLocked,
     this.panAllowed,
+    this.downloadFonts = true,
   });
 
   @override
@@ -185,8 +192,37 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    FontStore.instance.loaded.addListener(_fontsLoaded);
+  }
+
+  @override
+  void dispose() {
+    FontStore.instance.loaded.removeListener(_fontsLoaded);
+    super.dispose();
+  }
+
+  /// 下載的字型載好了：原本用後備字畫的要重畫、量出來的框也不一樣了
+  void _fontsLoaded() {
+    if (mounted) setState(() {});
+  }
+
+  /// 用到的下載字型還不在（範本／草稿用了這款，但這支手機還沒下載過）：
+  /// 去拿，到了 [_fontsLoaded] 會重畫。之前先用後備字畫
+  void _ensureFonts(WatermarkSettings settings) {
+    final store = FontStore.instance;
+    for (final t in settings.texts) {
+      if (t.enabled && !store.isReady(t.fontFamily)) {
+        unawaited(store.ensure(t.fontFamily, download: widget.downloadFonts));
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final settings = widget.settings;
+    _ensureFonts(settings);
     final onChanged = widget.onChanged;
     // 拖曳中的每一格：父層給了輕量版就用它，沒給就照舊走 onChanged
     final onLive = widget.onLiveChange ?? onChanged;
@@ -696,6 +732,7 @@ class _TiledTextPainter extends CustomPainter {
     : _sig = [
         t.text,
         t.fontFamily,
+        FontStore.instance.epoch,
         t.sizeFrac,
         t.spacing,
         t.alignment,

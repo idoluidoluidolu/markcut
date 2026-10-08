@@ -56,6 +56,7 @@ import '../services/gif_store.dart';
 import '../services/export_eta.dart';
 import '../services/export_speed.dart';
 import '../services/file_reader.dart';
+import '../services/font_store.dart';
 import '../services/media_prep.dart';
 import '../services/screen_awake.dart';
 import '../services/scrub_frame_queue.dart';
@@ -77,6 +78,7 @@ import '../widgets/color_grade_panel.dart';
 import '../widgets/kaomoji_sheet.dart';
 import '../widgets/timeline_editor.dart';
 import '../widgets/editor_region.dart';
+import '../widgets/font_picker.dart';
 import '../widgets/prep_gate_view.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/sticker_picker.dart';
@@ -627,6 +629,41 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _regions.invalidate(EditorRegion.values);
     _ovStateChanged();
     _syncPrepInteraction();
+    _ensureFonts();
+  }
+
+  void _fontsLoaded() {
+    if (mounted) setState(() {});
+  }
+
+  /// 畫面上用到的下載字型還沒載入就去拿（手機裡有就讀、沒有就下載），
+  /// 到了 [_fontsLoaded] 整頁重建。文字素材在這裡直接畫字（不經過
+  /// WatermarkLayer），iOS 合成的烘圖也只讀手機裡的，沒有這一步的話
+  /// 重開 App 後打開草稿，文字素材會一直是後備字
+  void _ensureFonts() {
+    final store = FontStore.instance;
+    for (final f in _exportFontFamilies(includeHidden: true)) {
+      if (!store.isReady(f)) unawaited(store.ensure(f));
+    }
+  }
+
+  /// 匯出會畫到的文字用了哪些字型：全域浮水印、文字素材、浮水印素材。
+  /// 隱藏的軌道與隱藏的浮水印匯出不畫，不算（[includeHidden] 給預覽用：
+  /// 打開隱藏的那一刻字型就該在了）
+  Set<String> _exportFontFamilies({bool includeHidden = false}) {
+    final out = {
+      if (includeHidden || !_wmHidden) ..._settings.fontFamilies,
+    };
+    for (final c in _tl.clips) {
+      if (!includeHidden && _hiddenTracks.contains(c.track)) continue;
+      final src = _tl.sourceOf(c);
+      if (src.kind == ClipKind.text) {
+        out.add((src.textStyle ?? TextMark(text: src.name)).fontFamily);
+      } else if (src.kind == ClipKind.wm) {
+        out.addAll((src.wmStyle ?? WatermarkSettings()).fontFamilies);
+      }
+    }
+    return out;
   }
 
   void _ovStateChanged() {
@@ -1877,6 +1914,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           '|${_thumbnailPath(_tl.sourceOf(c))}',
     _settings.hasAnyMark,
     _wmHidden,
+    // 下載的字型載好了：用後備字畫的封面要重畫
+    FontStore.instance.epoch,
     // 浮水印「內容」也要進指紋：只記有沒有的話，換了樣式/文字/
     // Logo 封面不會重畫（實測回報：草稿封面永遠是預設字樣）。
     // Logo 的 b64 只取長度，不把幾 MB 的字串拼進指紋
@@ -2349,7 +2388,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     b.write(
       'a${(_ratioAspect ?? compA).toStringAsFixed(3)}'
       '~${compA.toStringAsFixed(3)}'
-      '|pixels:${_comp?.width ?? 0}x${_comp?.height ?? 0};',
+      '|pixels:${_comp?.width ?? 0}x${_comp?.height ?? 0}'
+      // 下載的字型載好了：文字素材也要重烘（浮水印的在 watermarkVisualSignature）
+      '|fonts:${FontStore.instance.epoch};',
     );
     if (!_wmHidden && _settings.hasAnyMark) {
       b.write(
@@ -3604,6 +3645,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // 下載的字型載好了：預覽、iOS 合成的烘圖、封面的指紋都帶著字型的
+    // 版本號，整頁重建一次就會換成新字型（之前是後備字）
+    FontStore.instance.loaded.addListener(_fontsLoaded);
     QualityDiagnostics.instance.start(buildTag: appVersionTag);
     _tabs = TabController(length: 3, vsync: this);
     QualityDiagnostics.instance.contextProvider = _qualityContext;
@@ -8271,49 +8315,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             Row(
                               children: [
                                 Expanded(
-                                  child: DropdownButtonHideUnderline(
-                                    child: Container(
-                                      height: 38,
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 12,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        border: Border.all(color: kBorder),
-                                        borderRadius: BorderRadius.circular(6),
-                                      ),
-                                      child: DropdownButton<String>(
-                                        isExpanded: true,
-                                        value: st.fontFamily,
-                                        icon: const Icon(
-                                          Icons.expand_more,
-                                          size: 16,
-                                          color: kTextDim,
-                                        ),
-                                        // 選單跟 App 同風格：面板色、圓角、
-                                        // 限高（蓋滿全螢幕太生硬）
-                                        dropdownColor: kPanelHi,
-                                        borderRadius: BorderRadius.circular(12),
-                                        menuMaxHeight: 320,
-                                        itemHeight: 48,
-                                        items: [
-                                          for (final f in kFontOptions)
-                                            DropdownMenuItem(
-                                              value: f.family,
-                                              child: Text(
-                                                f.label,
-                                                style: TextStyle(
-                                                  fontFamily: f.family,
-                                                  fontSize: 13,
-                                                ),
-                                              ),
-                                            ),
-                                        ],
-                                        onChanged: (v) => both(
-                                          () =>
-                                              st.fontFamily = v ?? 'NotoSansTC',
-                                        ),
-                                      ),
-                                    ),
+                                  child: FontDropdown(
+                                    value: st.fontFamily,
+                                    onChanged: (v) =>
+                                        both(() => st.fontFamily = v),
                                   ),
                                 ),
                                 const SizedBox(width: 10),
@@ -12481,6 +12486,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    FontStore.instance.loaded.removeListener(_fontsLoaded);
     // 只拆自己掛的那份；別的編輯器實例已經掛上去的不動
     if (identical(Diag.sceneProvider, _sceneSnapshot)) {
       Diag.sceneProvider = null;
@@ -12603,6 +12609,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       showHint(context, '時間軸還是空的，先用「加素材」放點東西進來', error: true);
       return;
     }
+    // 用到的下載字型要先在手機裡：還沒下載的現在下載，下載不了就擋下來
+    //（不然成品會是後備字）。等的期間又按一次匯出：先回來的那趟已經
+    // 把 _exporting 設起來了
+    if (!await ensureExportFonts(context, _exportFontFamilies())) return;
+    if (!mounted || _exporting) return;
     _pause();
     // 匯出前把所有快取放掉：已解碼的幀（幾十 MB）、壓縮的抽幀
     // （長片可到 ~80MB）、ImageCache。匯出本身就要吃大量記憶體，

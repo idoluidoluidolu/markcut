@@ -11,6 +11,7 @@ import 'package:media_kit/media_kit.dart';
 import 'screens/home_screen.dart';
 import 'services/blob_store.dart';
 import 'services/diagnostics.dart';
+import 'services/font_store.dart';
 import 'services/steady_pointer.dart';
 import 'services/playback_trace.dart';
 import 'services/purchase_service.dart';
@@ -50,6 +51,8 @@ void main() {
   // 開 App 就被整包讀進記憶體兩份，實機一開就 1.4GB。這一趟搬完就放掉，
   // 下次開 App 設定檔裡已經沒有它們。要在任何畫面讀草稿／範本之前叫
   unawaited(BlobStore.init());
+  // 下載字型的存檔目錄（開 App 不載任何字型：用到哪款才讀哪款）
+  unawaited(FontStore.init());
   // 草稿清理不在任何自動路徑上跑：它要把每一份草稿的完整 JSON（含縮圖
   // 與圖片，一份好幾百 KB）讀進來比對引用，草稿多的機器是幾十 MB 的掃描。
   // 掛在開機路徑上＝更新後第一次開就被系統當成沒回應殺掉；掛在存檔路徑上
@@ -60,18 +63,23 @@ void main() {
   // 內建字型的 OFL 與 FFmpeg 的 LGPL 聲明，登錄到系統授權清單
   LicenseRegistry.addLicense(() async* {
     yield const LicenseEntryWithLineBreaks(
-      ['內建字型'],
-      '本程式內建下列字型，皆以 SIL Open Font License 1.1 授權：\n'
+      ['字型'],
+      '本程式使用下列字型，皆以 SIL Open Font License 1.1 授權：\n'
       'Noto Sans TC / Noto Serif TC (Google, Adobe)\n'
       'jf open 粉圓 (justfont)\n'
       'LXGW WenKai TC (落霞孤鶩)\n'
       '悠哉字體 (落霞孤鶩)\n'
-      '縫合像素字體 Fusion Pixel (TakWolf)\n'
       'Montserrat / Playfair Display / Pacifico / Bebas Neue /\n'
       'Oswald / Lobster / Anton / Courier Prime /\n'
       'Quicksand / Space Grotesk / Abril Fatface /\n'
-      'Dancing Script / Caveat / Press Start 2P\n\n'
-      '完整授權條款見 https://scripts.sil.org/OFL',
+      'Dancing Script / Caveat / Press Start 2P /\n'
+      'Great Vibes / Cinzel\n\n'
+      '選了才下載（https://github.com/idoluidoluidolu/markcut-fonts）：\n'
+      '縫合像素字體 Fusion Pixel (TakWolf)\n'
+      '大波浪圓體 Pop Gothic (Max Yao)\n'
+      '清松手寫體 JasonHandwriting (游清松, Max Yao)\n'
+      '莫大毛筆字體 Bakudai (Max Yao; 原作 青柳衡山)\n\n'
+      '完整授權條款見 https://openfontlicense.org',
     );
     yield const LicenseEntryWithLineBreaks(
       ['FFmpeg'],

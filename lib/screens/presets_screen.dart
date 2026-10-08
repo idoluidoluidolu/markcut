@@ -19,9 +19,14 @@ final _kCardShape = tileShape(
   side: const BorderSide(color: kLBorder),
 );
 
-/// 卡面上照實位置渲染的浮水印（卡片本身與長按浮起來的那一張共用）
+/// 卡面上照實位置渲染的浮水印（卡片本身與長按浮起來的那一張共用）。
+/// 用到還沒下載的字型先用後備字畫：瀏覽範本夾不偷偷下載
 Widget _presetMarks(WatermarkPreset p) => IgnorePointer(
-  child: WatermarkLayer(settings: p.settings, onChanged: () {}),
+  child: WatermarkLayer(
+    settings: p.settings,
+    onChanged: () {},
+    downloadFonts: false,
+  ),
 );
 
 /// 範本卡：黑底，浮水印按真實位置渲染。範本夾與個人中心的範本分頁

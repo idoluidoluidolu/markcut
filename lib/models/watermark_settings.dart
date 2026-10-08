@@ -5,7 +5,8 @@ import 'dart:ui';
 
 import 'mosaic.dart';
 
-/// 可選字型（全部為免費開源授權 SIL OFL）
+/// 可選字型（全部為免費開源授權 SIL OFL）。
+/// 在 [kDownloadFonts] 裡的是點了才下載的，其餘打包在 App 裡
 const kFontOptions = <({String label, String family})>[
   (label: '思源黑體', family: 'NotoSansTC'),
   (label: '思源宋體', family: 'NotoSerifTC'),
@@ -13,6 +14,10 @@ const kFontOptions = <({String label, String family})>[
   (label: '文楷', family: 'LXGWWenKaiTC'),
   (label: '悠哉', family: 'Yozai'),
   (label: '縫合像素', family: 'FusionPixel'),
+  (label: '大波浪圓體', family: 'PopGothic'),
+  (label: '清松手寫 萌', family: 'JasonHandwriting3'),
+  (label: '清松手寫 行楷', family: 'JasonHandwriting5'),
+  (label: '莫大毛筆', family: 'Bakudai'),
   (label: 'Montserrat', family: 'Montserrat'),
   (label: 'Playfair', family: 'PlayfairDisplay'),
   (label: 'Pacifico', family: 'Pacifico'),
@@ -27,7 +32,72 @@ const kFontOptions = <({String label, String family})>[
   (label: 'Dancing Script', family: 'DancingScript'),
   (label: 'Caveat', family: 'Caveat'),
   (label: 'Press Start 2P', family: 'PressStart2P'),
+  (label: 'Great Vibes', family: 'GreatVibes'),
+  (label: 'Cinzel', family: 'Cinzel'),
 ];
+
+/// 點了才下載的字型：中文字型一款就好幾 MB，全部打包 App 會太大。
+/// 檔案放在 idoluidoluidolu/markcut-fonts（網址釘在一個 commit，
+/// 見 FontStore），下載完對大小與 sha256。
+/// [previewFamily]＝App 內建、只含字名那幾個字的小字型：選單上還沒
+/// 下載的那幾個也能用原本的樣子寫出字名
+class DownloadFont {
+  const DownloadFont({
+    required this.file,
+    required this.bytes,
+    required this.sha256,
+    required this.previewFamily,
+  });
+
+  /// markcut-fonts 裡的路徑
+  final String file;
+  final int bytes;
+  final String sha256;
+  final String previewFamily;
+}
+
+const kDownloadFonts = <String, DownloadFont>{
+  // 縫合像素原本內建：檔案就是 App 以前帶的那一份，舊範本畫出來一模一樣
+  'FusionPixel': DownloadFont(
+    file: 'fonts/FusionPixel.ttf',
+    bytes: 2587796,
+    sha256: 'beaa72fc65d1b7cffda3a9c4aff3b307bb820bfc03c5e9c374d01d264b175719',
+    previewFamily: 'FusionPixelLabel',
+  ),
+  'PopGothic': DownloadFont(
+    file: 'fonts/PopGothic.ttf',
+    bytes: 5630628,
+    sha256: '7aad101136ac6fa7b8813cf25f2b62bc3d548a17bd7e3b2f7856e4b831243f21',
+    previewFamily: 'PopGothicLabel',
+  ),
+  // 清松手寫體 3、莫大毛筆宣告了保留字型名稱，放的是作者原檔（沒子集化）
+  'JasonHandwriting3': DownloadFont(
+    file: 'fonts/JasonHandwriting3.ttf',
+    bytes: 14848228,
+    sha256: '83f6c9da0662d0c8644b5bd0427cbc8b5d8afc50d8ef36fa4d991511027f2df8',
+    previewFamily: 'JasonHandwriting3Label',
+  ),
+  'JasonHandwriting5': DownloadFont(
+    file: 'fonts/JasonHandwriting5.ttf',
+    bytes: 5585292,
+    sha256: '5b94b31b3bf9db025507e1061ccbc4b8b5aee4a1fab3863ef73af3fdd7670e5d',
+    previewFamily: 'JasonHandwriting5Label',
+  ),
+  'Bakudai': DownloadFont(
+    file: 'fonts/Bakudai.ttf',
+    bytes: 14232448,
+    sha256: '19fad0c294f3d3013bdee7471cd5e79015ee7a03acb2c47d9955937fc3dc8e4e',
+    previewFamily: 'BakudaiLabel',
+  ),
+};
+
+/// 選單上的字名（認不得就回家族名）
+String fontLabelOf(String family) {
+  for (final o in kFontOptions) {
+    if (o.family == family) return o.label;
+  }
+  return family;
+}
 
 /// 文字浮水印的後備字型：拉丁字型（Montserrat、Pacifico…）配中文時，
 /// 中文字從這裡拿。預覽、匯出、量測、面板輸入框建 TextStyle 時一律帶著——
@@ -554,6 +624,12 @@ class WatermarkSettings {
   bool get hasAnyMark =>
       texts.any((t) => t.enabled && t.text.trim().isNotEmpty) ||
       logos.any((l) => l.enabled && l.b64 != null);
+
+  /// 畫得出來的文字用到哪些字型（匯出前要確認都在手機裡）
+  Set<String> get fontFamilies => {
+    for (final t in texts)
+      if (t.enabled && t.text.trim().isNotEmpty) t.fontFamily,
+  };
 
   // 只寫 logos，不再寫舊的 logo 鍵：圖片是 base64 存在設定裡的，
   // 兩份等於草稿與範本的體積翻倍（web 的 localStorage 只有 5MB）

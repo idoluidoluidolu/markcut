@@ -23,6 +23,7 @@ import '../services/draft_assets.dart';
 import '../services/photo_export.dart';
 import '../services/video_picker.dart' show pickCountHint, pickPhotoFiles;
 import '../theme.dart';
+import '../widgets/font_picker.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
 
@@ -1622,6 +1623,9 @@ class _CollageScreenState extends State<CollageScreen>
   ///（photo_export.dart），完成後跟照片／批次一樣問下一步
   Future<void> _export({required bool jpeg}) async {
     if (_exporting || !_hasPhotos) return;
+    // 用到的下載字型要先在手機裡（下載不了就擋下來，不然成品是後備字）
+    if (!await ensureExportFonts(context, _wm.fontFamilies)) return;
+    if (!mounted || _exporting) return;
     setState(() => _exporting = true);
     // PopScope：不擋的話返回鍵會把進度框關掉，
     // 匯出完成後那個 pop 就會把「拼圖頁本身」關掉，排好的全沒了

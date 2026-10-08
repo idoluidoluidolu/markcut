@@ -6,6 +6,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart' show StringCharacters;
 
 import '../models/watermark_settings.dart';
+import 'font_store.dart';
 
 /// 文字浮水印的「唯一畫法」。
 ///
@@ -395,7 +396,8 @@ _TiledGlyph? _tiledGlyph(
 // TextPainter 的「只換顏色／foreground」在框架裡一樣要重建段落再排一次，
 // 所以每個變體各存一份，不能共用一個換 text。
 // 鍵用 record（結構相等）；容量有上限、最久沒用的先丟；系統字型變動
-//（web 的字型是非同步載的，載好會通知）整個清掉，不然會抱著後備字排的版
+//（web 的字型是非同步載的，載好會通知）或下載的字型載好（FontStore）
+// 整個清掉，不然會抱著後備字排的版
 
 typedef _GlyphKey = ({
   String text,
@@ -416,6 +418,9 @@ bool _glyphCacheHooked = false;
 void _hookSystemFonts() {
   if (_glyphCacheHooked) return;
   _glyphCacheHooked = true;
+  // 執行中載入字型也會發系統字型事件，這條是保險：不靠那則訊息
+  // 跟重畫誰先誰後
+  FontStore.instance.loaded.addListener(clearGlyphCache);
   try {
     PaintingBinding.instance.systemFonts.addListener(clearGlyphCache);
   } catch (_) {
@@ -529,9 +534,14 @@ class _HorizontalLaid implements _Laid {
 ///（一行 1.45 字級＝字身 1＋空隙 0.45），橫直切換段落的疏密差不多
 const double kVerticalColumnGap = 0.45;
 
-/// 沒帶 vert 功能的中文字型（縫合像素）：直式的括號改用 Unicode 的直排
-/// 標點字元，字型裡有這些字（省略號沒有，落到思源黑體的直排省略號）
-const _kNoVertFeature = {'FusionPixel'};
+/// 沒帶 vert 功能的中文字型：直式的括號改用 Unicode 的直排標點字元。
+/// 縫合像素有這些字（省略號沒有，落到思源黑體的直排省略號）；
+/// 清松手寫 萌／行楷幾乎都沒有，落到思源黑體的直排標點
+const _kNoVertFeature = {
+  'FusionPixel',
+  'JasonHandwriting3',
+  'JasonHandwriting5',
+};
 const _kVerticalForms = {
   '「': '﹁',
   '」': '﹂',
@@ -670,6 +680,8 @@ class MarkGlyphPainter extends CustomPainter {
     : _sig = [
         t.text,
         t.fontFamily,
+        // 下載的字型載好了：同一份設定要重畫（原本是用後備字畫的）
+        FontStore.instance.epoch,
         fontSize,
         t.spacing,
         t.alignment,

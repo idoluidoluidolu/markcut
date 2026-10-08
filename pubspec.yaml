@@ -70,6 +70,8 @@ dependencies:
   media_kit_video: ^1.2.5
   media_kit_libs_android_video: ^1.3.6
   http: ^1.6.0
+  # 下載的字型對 sha256（見 FontStore）
+  crypto: ^3.0.7
   # 診斷報告的版本標（對版用）
   package_info_plus: ^9.0.0
   url_launcher: ^6.3.2
@@ -254,9 +256,34 @@ flutter:
     - family: Yozai
       fonts:
         - asset: assets/fonts/Yozai.ttf
-    - family: FusionPixel
+    # 第三批英文：Latin 子集（含越南文）。Cinzel 是可變字體，同上烘成
+    # 400 的靜態檔。兩款都沒有保留字型名稱，子集化可以沿用原名
+    - family: GreatVibes
       fonts:
-        - asset: assets/fonts/FusionPixel.ttf
+        - asset: assets/fonts/GreatVibes.ttf
+    - family: Cinzel
+      fonts:
+        - asset: assets/fonts/Cinzel.ttf
+    # 點了才下載的中文字型（縫合像素、大波浪圓體、清松手寫 萌／行楷、
+    # 莫大毛筆）不打包，見 kDownloadFonts／FontStore。這裡只放選單用的
+    # 字名小字型：只含字名那幾個字（幾 KB），還沒下載也能寫出原本的
+    # 樣子。內部名稱改成 MarkcutLabelNN，不沿用原字型的名字（有兩款
+    # 宣告了保留字型名稱，改過的版本不能用原名）
+    - family: FusionPixelLabel
+      fonts:
+        - asset: assets/fonts/labels/FusionPixelLabel.ttf
+    - family: PopGothicLabel
+      fonts:
+        - asset: assets/fonts/labels/PopGothicLabel.ttf
+    - family: JasonHandwriting3Label
+      fonts:
+        - asset: assets/fonts/labels/JasonHandwriting3Label.ttf
+    - family: JasonHandwriting5Label
+      fonts:
+        - asset: assets/fonts/labels/JasonHandwriting5Label.ttf
+    - family: BakudaiLabel
+      fonts:
+        - asset: assets/fonts/labels/BakudaiLabel.ttf
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

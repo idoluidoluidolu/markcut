@@ -386,6 +386,16 @@ void showHint(
   });
 }
 
+/// 收掉目前的提示：「下載中…」這類等事情做完的，做完就收，不等時間到
+///（提示疊在最上層，會蓋在接著跳出來的進度框上面）
+void hideHint() {
+  _hintTimer?.cancel();
+  try {
+    _hintEntry?.remove();
+  } catch (_) {}
+  _hintEntry = null;
+}
+
 class _HintToast extends StatelessWidget {
   final String message;
   final bool error;

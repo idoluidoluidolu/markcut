@@ -10,6 +10,7 @@ import 'diagnostics.dart';
 import 'quality_diagnostics.dart';
 import '../models/mosaic.dart';
 import '../models/watermark_settings.dart';
+import 'font_store.dart';
 import 'logo_mark_painter.dart';
 import 'mosaic_patch_painter.dart';
 import 'text_mark_painter.dart';
@@ -246,6 +247,7 @@ class WatermarkRenderer {
     double w,
     double h,
   ) async {
+    await _loadFonts(s); // 字型不對，量出來的框就不對
     ui.Rect? acc;
     for (final logo in s.logos) {
       final bytes = logo.bytes;
@@ -565,6 +567,19 @@ class WatermarkRenderer {
     return renderOverlayPng(s, outW, outH);
   }
 
+  /// 下載的字型：手機裡有的先讀進來再畫或量。只讀本機、不等下載——
+  /// 要不要下載是畫面那邊的事（預覽圖層自己會去拿、匯出前有
+  /// ensureExportFonts）；還沒到的先用後備字，到了指紋一變就重烘
+  static Future<void> _loadFonts(WatermarkSettings s) async {
+    final store = FontStore.instance;
+    final need = [
+      for (final t in s.texts)
+        if (t.enabled && !store.isReady(t.fontFamily)) t.fontFamily,
+    ];
+    if (need.isEmpty) return;
+    await store.ensureAll(need, download: false);
+  }
+
   /// 在指定大小的畫布上畫出文字與 Logo 浮水印
   /// logo 解碼：走共用池（logo_mark_painter 的 logoImageFor），跟預覽
   /// 圖層拿的是同一張。每次烘圖都重新解碼的話，大圖一次幾百 ms——
@@ -577,6 +592,7 @@ class WatermarkRenderer {
     double h, {
     int? logoMaxSide,
   }) async {
+    await _loadFonts(s);
     // 圖片先畫（讓文字可以壓在圖片上面）。多張時照清單順序，
     // 後加的那張蓋在前面的上面——跟預覽的疊法一致
     for (final logo in s.logos) {

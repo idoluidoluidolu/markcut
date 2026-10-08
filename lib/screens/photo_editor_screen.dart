@@ -23,6 +23,7 @@ import '../theme.dart';
 import '../services/mosaic_patch_painter.dart';
 import '../services/watermark_renderer.dart';
 import '../widgets/color_grade_panel.dart';
+import '../widgets/font_picker.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
 
@@ -1997,6 +1998,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   Future<void> _export({bool jpeg = false}) async {
     if (_exporting || _photoImg == null) return;
+    // 用到的下載字型要先在手機裡（下載不了就擋下來，不然成品是後備字）。
+    // 「更多浮水印」那幾組也一起畫進成品
+    final fonts = {
+      ..._settings.fontFamilies,
+      for (final w in _extraWms) ...w.fontFamilies,
+    };
+    if (!await ensureExportFonts(context, fonts)) return;
+    if (!mounted || _exporting) return;
     setState(() => _exporting = true);
     // PopScope：不擋的話返回鍵會把進度框關掉，
     // 輸出完成後那個 pop 就會把「編輯頁本身」關掉，改的東西全沒了

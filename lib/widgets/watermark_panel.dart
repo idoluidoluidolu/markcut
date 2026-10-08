@@ -12,6 +12,7 @@ import '../services/video_picker.dart';
 import '../screens/crop_screen.dart';
 import '../screens/draw_screen.dart';
 import '../theme.dart';
+import 'font_picker.dart';
 import 'kaomoji_sheet.dart';
 import 'watermark_layer.dart';
 
@@ -1267,62 +1268,13 @@ class WatermarkPanelState extends State<WatermarkPanel>
                               Row(
                                 children: [
                                   Expanded(
-                                    child: DropdownButtonHideUnderline(
-                                      child: Container(
-                                        height: 38,
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 12,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          border: Border.all(color: kBorder),
-                                          borderRadius: BorderRadius.circular(
-                                            6,
-                                          ),
-                                        ),
-                                        child: DropdownButton<String>(
-                                          isExpanded: true,
-                                          value: s.text.fontFamily,
-                                          icon: const Icon(
-                                            Icons.expand_more,
-                                            size: 16,
-                                            color: kTextDim,
-                                          ),
-                                          style: const TextStyle(
-                                            fontSize: 13,
-                                            color: kText,
-                                          ),
-                                          // 選單跟 App 同風格：面板色、圓角、限高
-                                          dropdownColor: kPanelHi,
-                                          borderRadius: BorderRadius.circular(
-                                            12,
-                                          ),
-                                          menuMaxHeight: 320,
-                                          menuWidth: 280,
-                                          itemHeight: 48,
-                                          items: [
-                                            for (final f in kFontOptions)
-                                              DropdownMenuItem(
-                                                value: f.family,
-                                                // 有些字型（粉圓）的行高比字級大，不夾住
-                                                // 行高就會頂出格子（實測回報）
-                                                child: Text(
-                                                  f.label,
-                                                  maxLines: 1,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                  style: TextStyle(
-                                                    fontFamily: f.family,
-                                                    fontSize: 13,
-                                                    height: 1.15,
-                                                  ),
-                                                ),
-                                              ),
-                                          ],
-                                          onChanged: (v) => _update(
-                                            () => s.text.fontFamily =
-                                                v ?? 'NotoSansTC',
-                                          ),
-                                        ),
+                                    child: FontDropdown(
+                                      // 換到別的文字＝換一個選單：下載到一半
+                                      // 的那款不能套到切過去的那個文字上
+                                      key: ObjectKey(s.text),
+                                      value: s.text.fontFamily,
+                                      onChanged: (v) => _update(
+                                        () => s.text.fontFamily = v,
                                       ),
                                     ),
                                   ),
@@ -1964,7 +1916,12 @@ class WatermarkPanelState extends State<WatermarkPanel>
           _applyPresetNow(p);
         },
         child: IgnorePointer(
-          child: WatermarkLayer(settings: p.settings, onChanged: () {}),
+          // 縮圖不偷偷下載字型：套用之後編輯畫面的預覽才會去拿
+          child: WatermarkLayer(
+            settings: p.settings,
+            onChanged: () {},
+            downloadFonts: false,
+          ),
         ),
       ),
     );

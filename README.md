@@ -33,7 +33,9 @@ MPL 是檔案層級的 copyleft：你改到的原始檔必須以相同授權公�
 H.264 編碼改用裝置的硬體編碼器（Android MediaCodec／iOS VideoToolbox）。
 Android 的預覽播放另使用 media_kit（libmpv）；iOS 用系統的 AVPlayer。
 
-內建字型皆為 SIL Open Font License 1.1：思源黑體／思源宋體、jf open 粉圓、
-LXGW 文楷 TC、悠哉字體、縫合像素字體、Montserrat、Playfair Display、Pacifico、
+字型皆為 SIL Open Font License 1.1。內建：思源黑體／思源宋體、jf open 粉圓、
+LXGW 文楷 TC、悠哉字體、Montserrat、Playfair Display、Pacifico、
 Bebas Neue、Oswald、Lobster、Anton、Courier Prime、Quicksand、Space Grotesk、
-Abril Fatface、Dancing Script、Caveat、Press Start 2P。
+Abril Fatface、Dancing Script、Caveat、Press Start 2P、Great Vibes、Cinzel。
+選了才下載（檔案在 [markcut-fonts](https://github.com/idoluidoluidolu/markcut-fonts)）：
+縫合像素字體、大波浪圓體、清松手寫體、莫大毛筆字體。

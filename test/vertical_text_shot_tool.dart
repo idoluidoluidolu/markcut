@@ -36,7 +36,13 @@ void main() {
   setUpAll(() async {
     Directory(out).createSync(recursive: true);
     for (final e in _files.entries) {
-      final data = File('assets/fonts/${e.value}').readAsBytesSync();
+      // 縫合像素改成點了才下載，不在 assets：從 markcut-fonts 的 clone 拿
+      var file = File('assets/fonts/${e.value}');
+      final dl = Platform.environment['MARKCUT_FONTS_DIR'];
+      if (!file.existsSync() && dl != null && dl.isNotEmpty) {
+        file = File('$dl${Platform.pathSeparator}${e.value}');
+      }
+      final data = file.readAsBytesSync();
       final loader = FontLoader(e.key)
         ..addFont(Future.value(ByteData.view(data.buffer)));
       await loader.load();
