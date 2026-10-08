@@ -130,9 +130,11 @@ class BatchWatermarkScreen extends StatefulWidget {
 class _UndoStep {
   final _BatchItem? item;
   // 單張的 null 快照代表跟隨整批，撤銷／重做也必須還原這個狀態。
-  final String? json;
+  // 只複製可變設定，Logo 的不可變 base64 共用同一個字串。
+  // JSON 字串會把整張圖片複製進每一步，60 步可累積數十 MB。
+  final WatermarkSettings? settings;
 
-  const _UndoStep(this.item, this.json);
+  const _UndoStep(this.item, this.settings);
 }
 
 class _BatchItem {
@@ -152,6 +154,29 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
 
   /// 被選浮水印部件的框（畫在裁切外，拖出畫面也看得到位置）
   final _wmFrameInfo = ValueNotifier<WmFrameInfo?>(null);
+  /// 拖曳／捏合中只重畫預覽這一塊：以前每一格都整頁 setState，
+  /// 連下面整張浮水印面板都跟著重建
+  final _previewRevision = ValueNotifier<int>(0);
+  bool _previewGestureChanged = false;
+
+  void _previewChanged() {
+    if (!mounted) return;
+    _previewGestureChanged = true;
+    _repaintPreview();
+  }
+
+  void _repaintPreview() {
+    if (mounted) _previewRevision.value++;
+  }
+
+  /// 放手才整頁重建一次，面板上的大小、角度跟著對上。
+  /// 只重建、不動 _sync：_sync 是「復原」用的，面板收到會把輸入框
+  /// 重設、選中的範本取消——拖一下浮水印不該有這些副作用
+  void _finishPreviewGesture() {
+    if (!mounted || !_previewGestureChanged) return;
+    _previewGestureChanged = false;
+    setState(() {});
+  }
 
   late final List<_BatchItem> _items = widget.files
       .map(_BatchItem.new)
@@ -405,6 +430,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   void dispose() {
     unawaited(_cleanupOnLeave());
     _wmFrameInfo.dispose();
+    _previewRevision.dispose();
     _wmPanelCtrl.dispose();
     super.dispose();
   }
@@ -465,17 +491,15 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     final settings = item == null ? _settings : item.override;
     return _UndoStep(
       item,
-      settings == null ? null : jsonEncode(settings.toJson()),
+      settings == null ? null : WatermarkSettings.fromJson(settings.toJson()),
     );
   }
 
   /// 把一筆快照套回去
   void _applyStep(_UndoStep step) {
-    final wm = step.json == null
+    final wm = step.settings == null
         ? null
-        : WatermarkSettings.fromJson(
-            jsonDecode(step.json!) as Map<String, dynamic>,
-          );
+        : WatermarkSettings.fromJson(step.settings!.toJson());
     final item = step.item;
     // 那張後來被移除的話就跳過這一步
     final at = item == null ? -1 : _items.indexOf(item);
@@ -887,10 +911,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
   void _btSetGuides(double x, double y) {
     final v = x == 0.5, hh = y == 0.5;
     if (v != _btGuideV || hh != _btGuideH) {
-      setState(() {
-        _btGuideV = v;
-        _btGuideH = hh;
-      });
+      _btGuideV = v;
+      _btGuideH = hh;
+      _previewChanged();
     }
     final on = v || hh;
     if (on != _btSnapped) {
@@ -904,11 +927,11 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     _btRawY = null;
     _btSnapped = false;
     if (_btGuideV || _btGuideH) {
-      setState(() {
-        _btGuideV = false;
-        _btGuideH = false;
-      });
+      _btGuideV = false;
+      _btGuideH = false;
+      _previewChanged();
     }
+    _finishPreviewGesture();
   }
 
   void _btPushUndoIfNeeded() {
@@ -930,21 +953,20 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
       RotationSnap.wrapDeg((ang - _pvBaseAngle) * 180 / math.pi),
     );
     _btPushUndoIfNeeded(); // 真的縮到東西了才拍快照
-    setState(() {
-      final eff = _editTarget;
-      // 有選取就只動被選的那個（跟其他三個畫面一致）；
-      // 都沒選而且兩個都在才一起動。以前永遠一起縮，
-      // 調好的文字/Logo 搭配一捏就毀了
-      final targets = _pinchTargets(eff);
-      if (targets.text) {
-        eff.text.sizeFrac = (_pvBaseText * f).clamp(0.015, 2.0);
-        eff.text.rotation = RotationSnap.wrapDeg(_pvBaseRotText + dRot);
-      }
-      if (targets.logo) {
-        eff.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
-        eff.logo.rotation = RotationSnap.wrapDeg(_pvBaseRotLogo + dRot);
-      }
-    });
+    final eff = _editTarget;
+    // 有選取就只動被選的那個（跟其他三個畫面一致）；
+    // 都沒選而且兩個都在才一起動。以前永遠一起縮，
+    // 調好的文字/Logo 搭配一捏就毀了
+    final targets = _pinchTargets(eff);
+    if (targets.text) {
+      eff.text.sizeFrac = (_pvBaseText * f).clamp(0.015, 2.0);
+      eff.text.rotation = RotationSnap.wrapDeg(_pvBaseRotText + dRot);
+    }
+    if (targets.logo) {
+      eff.logo.sizeFrac = (_pvBaseLogo * f).clamp(0.03, 2.0);
+      eff.logo.rotation = RotationSnap.wrapDeg(_pvBaseRotLogo + dRot);
+    }
+    _previewChanged();
   }
 
   void _pinchUp(int pointer) {
@@ -952,6 +974,7 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
     if (_pvBaseDist != null && _pvPts.length < 2) {
       _pvBaseDist = null;
       _rotSnap.end();
+      _finishPreviewGesture();
     }
   }
 
@@ -1484,173 +1507,185 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
             // 預覽：目前選中的檔案縮圖 + 浮水印圖層
             Expanded(
               flex: 4,
-              child: Listener(
-                // 雙指縮放浮水印（跟照片編輯同一套，用 Listener 不搶單指拖曳）
-                onPointerDown: _pinchDown,
-                onPointerMove: _pinchMove,
-                onPointerUp: (e) => _pinchUp(e.pointer),
-                onPointerCancel: (e) => _pinchUp(e.pointer),
-                child: Container(
-                  color: kPreviewBg,
-                  child: Stack(
-                    children: [
-                      Center(
-                        // 換檔案時整個預覽子樹重建，浮水印圖層不會殘留舊狀態
-                        child: KeyedSubtree(
-                          key: ValueKey(_previewIndex),
-                          child: AspectRatio(
-                            aspectRatio: aspect,
-                            child: Container(
-                              color: Colors.black,
-                              child: Stack(
-                                fit: StackFit.expand,
-                                // 不裁切：浮水印選取框要能畫到畫面外
-                                clipBehavior: Clip.none,
-                                children: [
-                                  // 大圖還在讀的時候先用小縮圖頂著，不要閃黑
-                                  if (_previewBytes != null)
-                                    Image.memory(
-                                      _previewBytes!,
-                                      fit: BoxFit.contain,
-                                      cacheWidth: 1280,
-                                      gaplessPlayback: true,
-                                    )
-                                  else if (_items[_previewIndex].thumb != null)
-                                    Image.memory(
-                                      _items[_previewIndex].thumb!,
-                                      fit: BoxFit.contain,
-                                    ),
-                                  WatermarkAnimationPreview(
-                                    enabled:
-                                        !_exporting &&
-                                        isVideoFile(
-                                          _items[_previewIndex].file,
-                                        ) &&
-                                        _editTarget.animation !=
-                                            WmAnimation.none,
-                                    builder: (context, time) => WatermarkLayer(
-                                      settings: _editTarget,
-                                      time: time,
-                                      // 選取框畫在裁切外（見 _wmFrameInfo）
-                                      frameNotifier: _wmFrameInfo,
-                                      onChanged: () => setState(() {}),
-                                      // 拖曳落在目前生效的設定上：
-                                      // 整批模式改整批、單張模式改這張（見開關）
-                                      onDragStart: _pushUndo,
-                                      selectedPart: _wmPartAlive,
-                                      onSelectPart: (p) {
-                                        setState(() => _wmPart = p);
-                                        _wmPanelCtrl.scrollTo(p);
-                                      },
-                                      panLocked: () => _pvPts.length >= 2,
-                                    ),
-                                  ),
-                                  // 置中輔助線。無條件插入、不要用 if 增減：
-                                  // 線一出現會把後面手勢層的索引推掉，拖曳被
-                                  // 中斷後又從已吸附的中線重新開始，就再也
-                                  // 拖不出來了（其他三個編輯畫面同一種寫法）
-                                  Positioned.fill(
-                                    child: CenterGuides(
-                                      vertical: _btGuideV,
-                                      horizontal: _btGuideH,
-                                    ),
-                                  ),
-                                  // 浮水印選取框：畫在真實位置（拖出畫面也看得到）
-                                  Positioned.fill(
-                                    child: WmFrameOverlay(_wmFrameInfo),
-                                  ),
-                                  // 選取路由：有部件被選取時，整個預覽的拖曳
-                                  // 都只動被選的那個——手指滑過另一個部件
-                                  // 才不會把它一起拖走
-                                  if (_wmPartAlive != WmPart.none)
-                                    Positioned.fill(
-                                      child: LayoutBuilder(
-                                        builder: (context, box) =>
-                                            GestureDetector(
-                                              behavior:
-                                                  HitTestBehavior.translucent,
-                                              // 點空白＝取消選取（不取消的話另一個
-                                              // 部件會永遠拖不動）
-                                              onTap: _clearWmSel,
-                                              onPanStart: (_) {
-                                                if (_pvPts.length >= 2) {
-                                                  return;
-                                                }
-                                                _btUndoPending = true;
-                                                _btRawX = null;
-                                                _btRawY = null;
+              child: RepaintBoundary(
+                child: ValueListenableBuilder<int>(
+                  valueListenable: _previewRevision,
+                  builder: (context, revision, child) => Listener(
+                    // 雙指縮放浮水印（跟照片編輯同一套，用 Listener 不搶單指拖曳）
+                    onPointerDown: _pinchDown,
+                    onPointerMove: _pinchMove,
+                    onPointerUp: (e) => _pinchUp(e.pointer),
+                    onPointerCancel: (e) => _pinchUp(e.pointer),
+                    child: Container(
+                      color: kPreviewBg,
+                      child: Stack(
+                        children: [
+                          Center(
+                            // 換檔案時整個預覽子樹重建，浮水印圖層不會殘留舊狀態
+                            child: KeyedSubtree(
+                              key: ValueKey(_previewIndex),
+                              child: AspectRatio(
+                                aspectRatio: aspect,
+                                child: Container(
+                                  color: Colors.black,
+                                  child: Stack(
+                                    fit: StackFit.expand,
+                                    // 不裁切：浮水印選取框要能畫到畫面外
+                                    clipBehavior: Clip.none,
+                                    children: [
+                                      // 大圖還在讀的時候先用小縮圖頂著，不要閃黑
+                                      if (_previewBytes != null)
+                                        Image.memory(
+                                          _previewBytes!,
+                                          fit: BoxFit.contain,
+                                          cacheWidth: 1280,
+                                          gaplessPlayback: true,
+                                        )
+                                      else if (_items[_previewIndex].thumb !=
+                                          null)
+                                        Image.memory(
+                                          _items[_previewIndex].thumb!,
+                                          fit: BoxFit.contain,
+                                        ),
+                                      WatermarkAnimationPreview(
+                                        enabled:
+                                            !_exporting &&
+                                            isVideoFile(
+                                              _items[_previewIndex].file,
+                                            ) &&
+                                            _editTarget.animation !=
+                                                WmAnimation.none,
+                                        builder: (context, time) =>
+                                            WatermarkLayer(
+                                              settings: _editTarget,
+                                              time: time,
+                                              // 選取框畫在裁切外（見 _wmFrameInfo）
+                                              frameNotifier: _wmFrameInfo,
+                                              onChanged: () => setState(() {}),
+                                              onLiveChange: _previewChanged,
+                                              onDragEnd: _finishPreviewGesture,
+                                              // 拖曳落在目前生效的設定上：
+                                              // 整批模式改整批、單張模式改這張（見開關）
+                                              onDragStart: _pushUndo,
+                                              selectedPart: _wmPartAlive,
+                                              onSelectPart: (p) {
+                                                setState(() => _wmPart = p);
+                                                _wmPanelCtrl.scrollTo(p);
                                               },
-                                              onPanUpdate: (d) {
-                                                if (_pvPts.length >= 2) {
-                                                  return;
-                                                }
-                                                _btPushUndoIfNeeded();
-                                                // 一定要用 _editTarget：
-                                                // 面板、捏合、預覽圖層綁的
-                                                // 都是它。用 _effectiveOf
-                                                // 的話，「這張有單獨調整
-                                                // 但開關切回整批」時拖曳會
-                                                // 寫進那張的 override，而
-                                                // 畫面畫的是共用設定——
-                                                // 看起來就是拖不動
-                                                final st = _editTarget;
-                                                final part = _wmPartAlive;
-                                                final mark = part == WmPart.text
-                                                    ? (
-                                                        x: st.text.x,
-                                                        y: st.text.y,
-                                                      )
-                                                    : (
-                                                        x: st.logo.x,
-                                                        y: st.logo.y,
-                                                      );
-                                                if (part != WmPart.text &&
-                                                    part != WmPart.logo) {
-                                                  return;
-                                                }
-                                                // 累加在「未吸附」的原始座標上，
-                                                // 顯示值才吸中線
-                                                _btRawX ??= mark.x;
-                                                _btRawY ??= mark.y;
-                                                _btRawX =
-                                                    (_btRawX! +
-                                                            d.delta.dx /
-                                                                box.maxWidth)
-                                                        .clamp(0.0, 1.0);
-                                                _btRawY =
-                                                    (_btRawY! +
-                                                            d.delta.dy /
-                                                                box.maxHeight)
-                                                        .clamp(0.0, 1.0);
-                                                final sx = _snapC(_btRawX!);
-                                                final sy = _snapC(_btRawY!);
-                                                setState(() {
-                                                  if (part == WmPart.text) {
-                                                    st.text.x = sx;
-                                                    st.text.y = sy;
-                                                  } else {
-                                                    st.logo.x = sx;
-                                                    st.logo.y = sy;
-                                                  }
-                                                });
-                                                _btSetGuides(sx, sy);
-                                              },
-                                              onPanEnd: (_) => _btClearGuides(),
-                                              onPanCancel: _btClearGuides,
-                                              child: const SizedBox.expand(),
+                                              panLocked: () =>
+                                                  _pvPts.length >= 2,
                                             ),
                                       ),
-                                    ),
-                                ],
+                                      // 置中輔助線。無條件插入、不要用 if 增減：
+                                      // 線一出現會把後面手勢層的索引推掉，拖曳被
+                                      // 中斷後又從已吸附的中線重新開始，就再也
+                                      // 拖不出來了（其他三個編輯畫面同一種寫法）
+                                      Positioned.fill(
+                                        child: CenterGuides(
+                                          vertical: _btGuideV,
+                                          horizontal: _btGuideH,
+                                        ),
+                                      ),
+                                      // 浮水印選取框：畫在真實位置（拖出畫面也看得到）
+                                      Positioned.fill(
+                                        child: WmFrameOverlay(_wmFrameInfo),
+                                      ),
+                                      // 選取路由：有部件被選取時，整個預覽的拖曳
+                                      // 都只動被選的那個——手指滑過另一個部件
+                                      // 才不會把它一起拖走
+                                      if (_wmPartAlive != WmPart.none)
+                                        Positioned.fill(
+                                          child: LayoutBuilder(
+                                            builder: (context, box) =>
+                                                GestureDetector(
+                                                  behavior: HitTestBehavior
+                                                      .translucent,
+                                                  // 點空白＝取消選取（不取消的話另一個
+                                                  // 部件會永遠拖不動）
+                                                  onTap: _clearWmSel,
+                                                  onPanStart: (_) {
+                                                    if (_pvPts.length >= 2) {
+                                                      return;
+                                                    }
+                                                    _btUndoPending = true;
+                                                    _btRawX = null;
+                                                    _btRawY = null;
+                                                  },
+                                                  onPanUpdate: (d) {
+                                                    if (_pvPts.length >= 2) {
+                                                      return;
+                                                    }
+                                                    _btPushUndoIfNeeded();
+                                                    // 一定要用 _editTarget：
+                                                    // 面板、捏合、預覽圖層綁的
+                                                    // 都是它。用 _effectiveOf
+                                                    // 的話，「這張有單獨調整
+                                                    // 但開關切回整批」時拖曳會
+                                                    // 寫進那張的 override，而
+                                                    // 畫面畫的是共用設定——
+                                                    // 看起來就是拖不動
+                                                    final st = _editTarget;
+                                                    final part = _wmPartAlive;
+                                                    final mark =
+                                                        part == WmPart.text
+                                                        ? (
+                                                            x: st.text.x,
+                                                            y: st.text.y,
+                                                          )
+                                                        : (
+                                                            x: st.logo.x,
+                                                            y: st.logo.y,
+                                                          );
+                                                    if (part != WmPart.text &&
+                                                        part != WmPart.logo) {
+                                                      return;
+                                                    }
+                                                    // 累加在「未吸附」的原始座標上，
+                                                    // 顯示值才吸中線
+                                                    _btRawX ??= mark.x;
+                                                    _btRawY ??= mark.y;
+                                                    _btRawX =
+                                                        (_btRawX! +
+                                                                d.delta.dx /
+                                                                    box.maxWidth)
+                                                            .clamp(0.0, 1.0);
+                                                    _btRawY =
+                                                        (_btRawY! +
+                                                                d.delta.dy /
+                                                                    box.maxHeight)
+                                                            .clamp(0.0, 1.0);
+                                                    final sx = _snapC(_btRawX!);
+                                                    final sy = _snapC(_btRawY!);
+                                                    if (part == WmPart.text) {
+                                                      st.text.x = sx;
+                                                      st.text.y = sy;
+                                                    } else {
+                                                      st.logo.x = sx;
+                                                      st.logo.y = sy;
+                                                    }
+                                                    _previewChanged();
+                                                    _btSetGuides(sx, sy);
+                                                  },
+                                                  onPanEnd: (_) =>
+                                                      _btClearGuides(),
+                                                  onPanCancel: _btClearGuides,
+                                                  child:
+                                                      const SizedBox.expand(),
+                                                ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
                               ),
                             ),
                           ),
-                        ),
+                          // 右上角：放大＋畫布比例（跟影片編輯器同款，
+                          // 使用者指定批次也要有）
+                          _previewCorner(),
+                        ],
                       ),
-                      // 右上角：放大＋畫布比例（跟影片編輯器同款，
-                      // 使用者指定批次也要有）
-                      _previewCorner(),
-                    ],
+                    ),
                   ),
                 ),
               ),
@@ -1879,6 +1914,9 @@ class _BatchWatermarkScreenState extends State<BatchWatermarkScreen> {
                       // 「選取路由」（見上面）又只在有選取時才掛上來
                       onSelectPart: (p) => setState(() => _wmPart = p),
                       onChanged: () => setState(() {}),
+                      // 滑桿拖動中只重畫預覽；放手時面板自己會叫 onChanged
+                      // 整頁重建，所以不用記「手勢改過東西」
+                      onLiveChange: _repaintPreview,
                       onBeforeChange: _pushUndo,
                       syncVersion: _sync,
                       // 九宮格「貼邊」要知道畫布比例才夾得準（拼圖、照片
