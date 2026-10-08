@@ -250,6 +250,61 @@ void main() {
     },
   );
 
+  testWidgets(
+    'text material editor switches to vertical with top/center/bottom alignment',
+    (t) async {
+      t.view.physicalSize = const Size(390, 844);
+      addTearDown(() => t.view.physicalSize = const Size(1100, 2200));
+      await t.pumpWidget(
+        const MaterialApp(home: VideoEditorScreen(blank: true)),
+      );
+      await _tick(t, 5);
+      VideoEditorScreen.debugTimeline!((m) {
+        seed(m);
+        m.sources[2].name = '直式\n文字';
+        m.sources[2].textStyle!.text = m.sources[2].name;
+      });
+      await _tick(t, 15);
+      final timeline = t.widget<TimelineEditor>(find.byType(TimelineEditor));
+      timeline.onTapSelectedClip!(tl.clips[2].id);
+      await _tick(t, 15);
+      final field = find.byKey(const ValueKey('clip-text-content'));
+      final direction = find.byKey(const ValueKey('clip-text-direction'));
+      final align = find.byKey(const ValueKey('clip-text-alignment'));
+      await t.ensureVisible(direction);
+      expect(
+        find.descendant(of: align, matching: find.text('靠左')),
+        findsOneWidget,
+      );
+      await t.tap(find.descendant(of: direction, matching: find.text('直式')));
+      await t.pump();
+      final st = tl.sources[2].textStyle!;
+      expect(st.vertical, isTrue);
+      expect(
+        find.descendant(of: align, matching: find.text('靠上')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: align, matching: find.text('靠左')),
+        findsNothing,
+      );
+      await t.ensureVisible(align);
+      await t.tap(find.descendant(of: align, matching: find.text('靠下')));
+      await t.pump();
+      expect(st.alignment, TextAlign.right);
+      // 直式的對齊是上下，打字的框照常靠左
+      expect(t.widget<TextField>(field).textAlign, TextAlign.left);
+      // 草稿／復原快照存的是 JSON：直式要跟著走
+      expect(
+        MediaSource.fromJson(tl.sources[2].toJson()).textStyle!.vertical,
+        isTrue,
+      );
+      expect(t.takeException(), isNull);
+      Navigator.of(t.element(field)).pop();
+      await _tick(t, 100);
+    },
+  );
+
   for (final dimensions in [(390.0, 844.0, 346.0), (375.0, 667.0, 300.0)]) {
     testWidgets(
       'portrait preview and Done stay visible while typing $dimensions',

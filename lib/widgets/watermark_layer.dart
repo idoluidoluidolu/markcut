@@ -343,8 +343,9 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
             // 開底色時外框會往外長一圈 padding，Positioned 的原點是
             // 「含底色的框」；不先扣掉的話文字會被推到右下，
             // 跟匯出（底色往外擴、文字不動）差一個 padding
-            final padH = t.bg ? fontSize * 0.35 * t.bgPad : 0.0;
-            final padV = t.bg ? fontSize * 0.18 * t.bgPad : 0.0;
+            final bgPad = markBgPadding(t, fontSize);
+            final padH = t.bg ? bgPad.h : 0.0;
+            final padV = t.bg ? bgPad.v : 0.0;
             // 不夾限（理由同 Logo）
             final boxW = probe.width + padH * 2;
             final boxH = probe.height + padV * 2;
@@ -698,6 +699,7 @@ class _TiledTextPainter extends CustomPainter {
         t.sizeFrac,
         t.spacing,
         t.alignment,
+        t.vertical,
         t.colorValue,
         t.opacity,
         t.rotation,

@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/rendering.dart';
+import 'package:flutter/widgets.dart' show StringCharacters;
 
 import '../models/watermark_settings.dart';
 
@@ -146,6 +147,16 @@ Size measureMark(TextMark t, double fontSize) {
   return Size(p.width, p.height);
 }
 
+/// 底色塊往版面框外留的白（左右 h、上下 v）。預覽、匯出、包圍盒、
+/// 平鋪都拿這一份，改這裡四邊一起動。
+/// 橫式的上下本來就有行高的空白（思源黑體一行 1.45 字級、字只佔 1），
+/// 所以上下留得比左右少；直式一格剛好一個字身框，四邊都貼著字，
+/// 上下也要留跟左右一樣多
+({double h, double v}) markBgPadding(TextMark t, double fontSize) {
+  final h = fontSize * 0.35 * t.bgPad;
+  return (h: h, v: t.vertical ? h : fontSize * 0.18 * t.bgPad);
+}
+
 /// 一顆文字的內容最多畫到版面框外多遠（陰影／描邊／加粗／墨水餘裕）。
 /// 是 [paintMarkGlyphs] 裡離屏層邊界的同一組算式（inkSlack 0.3、加粗
 /// 0.06、陰影位移 0.03、模糊 3σ）：那邊的內容最多畫到層邊界為止，所以
@@ -217,8 +228,7 @@ void paintTextTiled(
   final stepY = m.height + fontSize * 2.6;
   // fromJson 有夾 sizeFrac 下限，這裡再守一次：步進 0 就是永不終止
   if (!(stepX > 0) || !(stepY > 0)) return;
-  final padH = fontSize * 0.35 * t.bgPad;
-  final padV = fontSize * 0.18 * t.bgPad;
+  final (h: padH, v: padV) = markBgPadding(t, fontSize);
   final reach = markReach(t, fontSize);
   final stamp = rasterScale == null
       ? null
@@ -311,6 +321,7 @@ _TiledGlyph? _tiledGlyph(
     fontSize: fontSize,
     spacing: t.spacing,
     alignment: t.alignment,
+    vertical: t.vertical,
     color: t.colorValue,
     opacity: t.opacity,
     weight: t.weight,
@@ -392,12 +403,13 @@ typedef _GlyphKey = ({
   double fontSize,
   double spacing,
   TextAlign alignment,
+  bool vertical,
   int color,
   double strokeW,
   int strokeColor,
 });
 
-final LinkedHashMap<_GlyphKey, TextPainter> _glyphCache = LinkedHashMap();
+final LinkedHashMap<_GlyphKey, _Laid> _glyphCache = LinkedHashMap();
 const int _glyphCacheCap = 96;
 bool _glyphCacheHooked = false;
 
@@ -427,7 +439,7 @@ void clearGlyphCache() {
 /// 測試用：快取裡目前有幾條
 int get debugGlyphCacheSize => _glyphCache.length;
 
-TextPainter _laidOut(
+_Laid _laidOut(
   TextMark t,
   double fontSize, {
   int color = 0,
@@ -440,6 +452,7 @@ TextPainter _laidOut(
     fontSize: fontSize,
     spacing: t.spacing,
     alignment: t.alignment,
+    vertical: t.vertical,
     color: strokeW > 0 ? 0 : color,
     strokeW: strokeW,
     strokeColor: strokeW > 0 ? strokeColor : 0,
@@ -454,7 +467,12 @@ TextPainter _laidOut(
     fontFamily: t.fontFamily,
     fontFamilyFallback: kMarkFontFallback,
     fontSize: fontSize,
-    letterSpacing: fontSize * t.spacing,
+    // 直式的字距算在格高裡（[_VerticalLaid]），字本身不另外加
+    letterSpacing: t.vertical ? 0 : fontSize * t.spacing,
+    // 直式用字型自己的直排字形：「」（）《》…～ 轉成直的。思源黑／宋、
+    // 粉圓、文楷、悠哉都帶 vert；拉丁字型的中文落到思源黑體一樣吃得到，
+    // 沒帶的字型就照原樣畫
+    fontFeatures: t.vertical ? const [ui.FontFeature.enable('vert')] : null,
     color: strokeW > 0 ? null : Color(color),
     foreground: strokeW > 0
         ? (ui.Paint()
@@ -465,16 +483,178 @@ TextPainter _laidOut(
             ..color = Color(strokeColor))
         : null,
   );
-  final p = TextPainter(
-    text: TextSpan(text: t.text, style: style),
-    textDirection: TextDirection.ltr,
-    textAlign: t.alignment,
-  )..layout();
+  final _Laid p = t.vertical
+      ? _VerticalLaid.layout(t, fontSize, style)
+      : _HorizontalLaid(
+          TextPainter(
+            text: TextSpan(text: t.text, style: style),
+            textDirection: TextDirection.ltr,
+            textAlign: t.alignment,
+          )..layout(),
+        );
   _glyphCache[key] = p;
   if (_glyphCache.length > _glyphCacheCap) {
     _glyphCache.remove(_glyphCache.keys.first)!.dispose();
   }
   return p;
+}
+
+/// 排好版的一顆文字（本體、陰影、描邊、加粗各一份）
+abstract class _Laid {
+  double get width;
+  double get height;
+  void paint(ui.Canvas canvas, ui.Offset at);
+  void dispose();
+}
+
+/// 橫式：一個 TextPainter 排整段（換行、對齊交給文字引擎）
+class _HorizontalLaid implements _Laid {
+  _HorizontalLaid(this._p);
+  final TextPainter _p;
+
+  @override
+  double get width => _p.width;
+
+  @override
+  double get height => _p.height;
+
+  @override
+  void paint(ui.Canvas canvas, ui.Offset at) => _p.paint(canvas, at);
+
+  @override
+  void dispose() => _p.dispose();
+}
+
+/// 直式的欄距（相對字級）：欄跟欄之間的空隙。取思源黑體橫式的行距
+///（一行 1.45 字級＝字身 1＋空隙 0.45），橫直切換段落的疏密差不多
+const double kVerticalColumnGap = 0.45;
+
+/// 沒帶 vert 功能的中文字型（縫合像素）：直式的括號改用 Unicode 的直排
+/// 標點字元，字型裡有這些字（省略號沒有，落到思源黑體的直排省略號）
+const _kNoVertFeature = {'FusionPixel'};
+const _kVerticalForms = {
+  '「': '﹁',
+  '」': '﹂',
+  '『': '﹃',
+  '』': '﹄',
+  '（': '︵',
+  '）': '︶',
+  '｛': '︷',
+  '｝': '︸',
+  '〔': '︹',
+  '〕': '︺',
+  '【': '︻',
+  '】': '︼',
+  '《': '︽',
+  '》': '︾',
+  '〈': '︿',
+  '〉': '﹀',
+  '…': '︙',
+  '—': '︱',
+};
+
+/// 字身框（中日韓字那個 1 字級的方框）的中心在基線上方幾個字級。
+/// 思源黑／宋、文楷、悠哉的字身框都是基線下 0.12 到基線上 0.88；
+/// 拉丁大寫字母的中心（約 0.35）也在這附近
+const double _kEmBoxCenter = 0.38;
+
+/// 直式：Flutter 的文字引擎不會直排，這裡自己擺。
+/// - 一行＝一欄，第一行在最右邊（由右往左讀）
+/// - 一個字（字素叢集：emoji、組合字不會被拆開）一格、字直立不轉；
+///   格高＝字級×(1＋間距)，字身框中心對格子中心，左右在欄寬裡置中
+/// - 半形空白只佔半格（一整格的洞太大）；全形空白照樣一整格
+/// - 對齊：左＝靠上、置中、右＝靠下（短的欄對齊最長的那一欄）
+/// 每個字各排一次，整份錄成一張 Picture：平鋪幾百格重播，每格也只是
+/// 一次呼叫，不是每格幾十個字
+class _VerticalLaid implements _Laid {
+  _VerticalLaid._(this._glyphs, this._picture, this.width, this.height);
+
+  factory _VerticalLaid.layout(TextMark t, double fontSize, TextStyle style) {
+    final pitch = fontSize * (1 + t.spacing);
+    final forms = _kNoVertFeature.contains(t.fontFamily)
+        ? _kVerticalForms
+        : const <String, String>{};
+    final glyphs = <TextPainter>[];
+    final cols = <List<({TextPainter? glyph, double h})>>[];
+    var colW = fontSize;
+    for (final line in t.text.replaceAll('\r', '').split('\n')) {
+      final col = <({TextPainter? glyph, double h})>[];
+      for (final ch in line.characters) {
+        if (ch == '　') {
+          col.add((glyph: null, h: pitch));
+        } else if (ch.trim().isEmpty) {
+          col.add((glyph: null, h: pitch / 2));
+        } else {
+          final p = TextPainter(
+            text: TextSpan(text: forms[ch] ?? ch, style: style),
+            textDirection: TextDirection.ltr,
+          )..layout();
+          glyphs.add(p);
+          colW = math.max(colW, p.width);
+          col.add((glyph: p, h: pitch));
+        }
+      }
+      cols.add(col);
+    }
+    final colH = [for (final c in cols) c.fold(0.0, (a, g) => a + g.h)];
+    // 至少一格高：橫式的空字串也有一行高，量出來不會是扁的
+    final height = colH.fold(pitch, (a, b) => math.max(a, b));
+    final gap = fontSize * kVerticalColumnGap;
+    final width = cols.length * colW + (cols.length - 1) * gap;
+    final rec = ui.PictureRecorder();
+    final canvas = ui.Canvas(rec);
+    for (var i = 0; i < cols.length; i++) {
+      final x = width - colW - i * (colW + gap);
+      var y = switch (t.alignment) {
+        TextAlign.center => (height - colH[i]) / 2,
+        TextAlign.right => height - colH[i],
+        _ => 0.0,
+      };
+      for (final (:glyph, :h) in cols[i]) {
+        if (glyph != null) {
+          final base = glyph.computeDistanceToActualBaseline(
+            TextBaseline.alphabetic,
+          );
+          glyph.paint(
+            canvas,
+            ui.Offset(
+              x + (colW - glyph.width) / 2,
+              y + h / 2 + fontSize * _kEmBoxCenter - base,
+            ),
+          );
+        }
+        y += h;
+      }
+    }
+    return _VerticalLaid._(glyphs, rec.endRecording(), width, height);
+  }
+
+  /// 錄進 Picture 的字：Picture 已經自己留著字形，這些留著只是保險，
+  /// 跟 Picture 同生同死
+  final List<TextPainter> _glyphs;
+  final ui.Picture _picture;
+
+  @override
+  final double width;
+
+  @override
+  final double height;
+
+  @override
+  void paint(ui.Canvas canvas, ui.Offset at) {
+    canvas.save();
+    canvas.translate(at.dx, at.dy);
+    canvas.drawPicture(_picture);
+    canvas.restore();
+  }
+
+  @override
+  void dispose() {
+    _picture.dispose();
+    for (final p in _glyphs) {
+      p.dispose();
+    }
+  }
 }
 
 /// 給 widget 用的畫家：在自己的座標原點畫一顆文字浮水印。
@@ -493,6 +673,7 @@ class MarkGlyphPainter extends CustomPainter {
         fontSize,
         t.spacing,
         t.alignment,
+        t.vertical,
         t.colorValue,
         t.opacity,
         t.shadow,

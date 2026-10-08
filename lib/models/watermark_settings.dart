@@ -55,6 +55,10 @@ class TextMark {
   double sizeFrac; // 字體大小佔畫面寬度的比例
   double spacing; // 字距（相對字級 -0.2~0.6；負值＝字疊近一點）
   TextAlign alignment;
+
+  /// 直式：一字一格由上往下排，換行＝往左開新的一欄（由右往左讀）。
+  /// 對齊沿用 [alignment]：直式下 左＝靠上、置中＝置中、右＝靠下
+  bool vertical;
   double x; // 中心點位置 0~1
   double y;
   double rotation; // 旋轉角度 -180 ~ 180
@@ -93,6 +97,7 @@ class TextMark {
     this.sizeFrac = 0.12, // 上限見面板滑桿（可放到超出畫面）
     this.spacing = 0,
     this.alignment = TextAlign.left,
+    this.vertical = false,
     this.x = 0.5,
     this.y = 0.5,
     this.rotation = 0,
@@ -135,6 +140,7 @@ class TextMark {
     'sizeFrac': sizeFrac,
     'spacing': spacing,
     if (alignment != TextAlign.left) 'alignment': alignment.name,
+    if (vertical) 'vertical': true,
     'x': x,
     'y': y,
     'rotation': rotation,
@@ -170,6 +176,7 @@ class TextMark {
       'right' => TextAlign.right,
       _ => TextAlign.left,
     },
+    vertical: j['vertical'] == true,
     x: (j['x'] ?? 0.82).toDouble(),
     y: (j['y'] ?? 0.92).toDouble(),
     rotation: (j['rotation'] ?? 0).toDouble(),

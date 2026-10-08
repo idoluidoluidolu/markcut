@@ -279,8 +279,7 @@ class WatermarkRenderer {
     final ink = ui.Rect.fromCenter(center: c, width: m.width, height: m.height);
     var box = ink.inflate(markReach(t, fontSize));
     if (t.bg) {
-      final padH = fontSize * 0.35 * t.bgPad;
-      final padV = fontSize * 0.18 * t.bgPad;
+      final (h: padH, v: padV) = markBgPadding(t, fontSize);
       box = box.expandToInclude(
         ui.Rect.fromLTRB(
           ink.left - padH,
@@ -631,8 +630,7 @@ class WatermarkRenderer {
       // 超出畫面是允許的
       final fontSize = t.sizeFrac * math.min(w, h); // 短邊基準（跟預覽一致）
       final m = measureMark(t, fontSize);
-      final padH = fontSize * 0.35 * t.bgPad;
-      final padV = fontSize * 0.18 * t.bgPad;
+      final (h: padH, v: padV) = markBgPadding(t, fontSize);
 
       void bgRect(double x, double y) {
         if (!t.bg) return;

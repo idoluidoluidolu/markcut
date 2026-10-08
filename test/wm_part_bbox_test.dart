@@ -152,6 +152,35 @@ void main() {
     await _check('模糊陰影', s, 720, 1280);
   });
 
+  test('直式：直排括號＋兩欄＋底色＋旋轉；負字距＋模糊陰影＋最粗', () async {
+    final s = WatermarkSettings(
+      text: TextMark(
+        text: '「浮水印」\n（剪輯）…',
+        vertical: true,
+        alignment: ui.TextAlign.center,
+        x: 0.85,
+        y: 0.5,
+        sizeFrac: 0.09,
+        rotation: 20,
+        outline: true,
+        outlineWidth: 0.15,
+        bg: true,
+        bgPad: 2.5,
+        bgCorner: 0.8,
+      ),
+    );
+    await _check('直式底色', s, 1280, 720);
+    s.text
+      ..bg = false
+      ..outline = false
+      ..spacing = -0.2
+      ..shadowBlur = 0.2
+      ..shadowOpacity = 1
+      ..weight = 1
+      ..rotation = -75;
+    await _check('直式負字距', s, 720, 1280);
+  });
+
   test('非正方形 Logo＋圓角＋旋轉', () async {
     final s = WatermarkSettings();
     s.text.enabled = false;

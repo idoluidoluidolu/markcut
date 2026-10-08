@@ -7,12 +7,57 @@ import '../services/logo_mark_painter.dart' show seedLogoPreview;
 
 import '../models/watermark_settings.dart';
 import '../services/preset_store.dart';
+import '../services/text_mark_painter.dart';
 import '../services/video_picker.dart';
 import '../screens/crop_screen.dart';
 import '../screens/draw_screen.dart';
 import '../theme.dart';
 import 'kaomoji_sheet.dart';
 import 'watermark_layer.dart';
+
+/// 文字「橫式／直式」切換的兩段。浮水印面板的文字卡跟文字素材的
+/// 編輯視窗共用，兩邊長得一樣
+const kTextDirectionSegments = [
+  ButtonSegment(
+    value: false,
+    icon: Icon(Icons.text_rotation_none, size: 18),
+    label: Text('橫式'),
+  ),
+  ButtonSegment(
+    value: true,
+    icon: Icon(Icons.text_rotate_vertical, size: 18),
+    label: Text('直式'),
+  ),
+];
+
+/// 文字對齊的三段。直式時換成靠上／置中／靠下——存的還是同一個
+/// 欄位（左＝上、右＝下），橫直來回切，對齊跟著轉過去不會亂掉
+List<ButtonSegment<TextAlign>> textAlignSegments({required bool vertical}) => [
+  ButtonSegment(
+    value: TextAlign.left,
+    icon: Icon(
+      vertical ? Icons.align_vertical_top : Icons.format_align_left,
+      size: 18,
+    ),
+    label: Text(vertical ? '靠上' : '靠左'),
+  ),
+  ButtonSegment(
+    value: TextAlign.center,
+    icon: Icon(
+      vertical ? Icons.align_vertical_center : Icons.format_align_center,
+      size: 18,
+    ),
+    label: const Text('置中'),
+  ),
+  ButtonSegment(
+    value: TextAlign.right,
+    icon: Icon(
+      vertical ? Icons.align_vertical_bottom : Icons.format_align_right,
+      size: 18,
+    ),
+    label: Text(vertical ? '靠下' : '靠右'),
+  ),
+];
 
 /// 父層注入的額外區塊。置頂導覽列要列出它，所以不能只給 Widget——
 /// 名稱和圖示也要一起帶進來
@@ -1124,7 +1169,10 @@ class WatermarkPanelState extends State<WatermarkPanel>
                                       ),
                                       controller: _textCtrl,
                                       focusNode: _textFocus,
-                                      textAlign: s.text.alignment,
+                                      // 直式的對齊是上下，輸入框照常靠左打字
+                                      textAlign: s.text.vertical
+                                          ? TextAlign.left
+                                          : s.text.alignment,
                                       minLines: 1,
                                       maxLines: 6,
                                       keyboardType: TextInputType.multiline,
@@ -1166,43 +1214,49 @@ class WatermarkPanelState extends State<WatermarkPanel>
                               const SizedBox(height: 12),
                               SizedBox(
                                 width: double.infinity,
+                                child: SegmentedButton<bool>(
+                                  key: const ValueKey(
+                                    'watermark-text-direction',
+                                  ),
+                                  showSelectedIcon: false,
+                                  // 字型要寫明：styleFrom 的 textStyle 會整個
+                                  // 蓋掉主題的，沒寫就落到系統字
+                                  style: SegmentedButton.styleFrom(
+                                    textStyle: const TextStyle(
+                                      fontSize: 12,
+                                      fontFamily: 'NotoSansTC',
+                                    ),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                    ),
+                                  ),
+                                  segments: kTextDirectionSegments,
+                                  selected: {s.text.vertical},
+                                  onSelectionChanged: (value) => _update(
+                                    () => s.text.vertical = value.single,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              SizedBox(
+                                width: double.infinity,
                                 child: SegmentedButton<TextAlign>(
                                   key: const ValueKey(
                                     'watermark-text-alignment',
                                   ),
                                   showSelectedIcon: false,
                                   style: SegmentedButton.styleFrom(
-                                    textStyle: const TextStyle(fontSize: 12),
+                                    textStyle: const TextStyle(
+                                      fontSize: 12,
+                                      fontFamily: 'NotoSansTC',
+                                    ),
                                     padding: const EdgeInsets.symmetric(
                                       horizontal: 8,
                                     ),
                                   ),
-                                  segments: const [
-                                    ButtonSegment(
-                                      value: TextAlign.left,
-                                      icon: Icon(
-                                        Icons.format_align_left,
-                                        size: 18,
-                                      ),
-                                      label: Text('靠左'),
-                                    ),
-                                    ButtonSegment(
-                                      value: TextAlign.center,
-                                      icon: Icon(
-                                        Icons.format_align_center,
-                                        size: 18,
-                                      ),
-                                      label: Text('置中'),
-                                    ),
-                                    ButtonSegment(
-                                      value: TextAlign.right,
-                                      icon: Icon(
-                                        Icons.format_align_right,
-                                        size: 18,
-                                      ),
-                                      label: Text('靠右'),
-                                    ),
-                                  ],
+                                  segments: textAlignSegments(
+                                    vertical: s.text.vertical,
+                                  ),
                                   selected: {s.text.alignment},
                                   onSelectionChanged: (value) => _update(
                                     () => s.text.alignment = value.single,
@@ -1959,26 +2013,18 @@ class WatermarkPanelState extends State<WatermarkPanel>
         if (target == 'text') {
           final t = s.text;
           const base = 100.0;
-          // 量的字型參數要跟畫家（paintMarkGlyphs）一模一樣：以前這裡
-          // 用 w600，思源黑體有 700 字重，量到的是粗體的寬，貼邊會差
-          // 幾個百分點；加粗是用同色描邊撐的，不是換字重
-          final tp = TextPainter(
-            text: TextSpan(
-              text: t.text.isEmpty ? ' ' : t.text,
-              style: TextStyle(
-                fontSize: base,
-                fontFamily: t.fontFamily,
-                fontFamilyFallback: kMarkFontFallback,
-                letterSpacing: base * t.spacing,
-              ),
-            ),
-            textDirection: TextDirection.ltr,
-          )..layout();
+          // 直接拿畫家的量測（measureMark）：字型參數一模一樣，直式也
+          // 量得對。以前這裡自己排一份橫的，用過 w600（思源黑體有 700
+          // 字重，量到粗體的寬，貼邊差幾個百分點）
+          final m = measureMark(
+            t.text.isEmpty ? (t.copy()..text = ' ') : t,
+            base,
+          );
           // sizeFrac 是「字級相對畫布短邊」；換成相對寬/高
           final shortOverW = ar >= 1 ? 1 / ar : 1.0;
           final shortOverH = ar >= 1 ? 1.0 : ar;
-          relW = tp.width / base * t.sizeFrac * shortOverW;
-          relH = tp.height / base * t.sizeFrac * shortOverH;
+          relW = m.width / base * t.sizeFrac * shortOverW;
+          relH = m.height / base * t.sizeFrac * shortOverH;
         } else {
           // Logo 目標寬＝sizeFrac×短邊，方形近似
           final shortOverW = ar >= 1 ? 1 / ar : 1.0;

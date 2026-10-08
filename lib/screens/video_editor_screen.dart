@@ -1883,7 +1883,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     for (final t in _settings.texts)
       if (t.enabled)
         't${t.text}|${t.fontFamily}|${t.colorValue}|${t.opacity}'
-            '|${t.sizeFrac}|${t.spacing}|${t.alignment}|${t.x}|${t.y}|${t.rotation}'
+            '|${t.sizeFrac}|${t.spacing}|${t.alignment}|${t.vertical}'
+            '|${t.x}|${t.y}|${t.rotation}'
             '|${t.tiled}|${t.shadow}|${t.outline}|${t.outlineColorValue}'
             // 字重、底色、陰影參數也會改畫面，漏了封面不重畫
             '|${t.weight}|${t.bg}|${t.bgColorValue}|${t.bgOpacity}'
@@ -8207,7 +8208,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                               minLines: typing ? typingLines : 3,
                               maxLines: typing ? typingLines : 6,
                               keyboardType: TextInputType.multiline,
-                              textAlign: st.alignment,
+                              // 直式的對齊是上下，輸入框照常靠左打字
+                              textAlign: st.vertical
+                                  ? TextAlign.left
+                                  : st.alignment,
                               textInputAction: TextInputAction.newline,
                               style: TextStyle(
                                 fontFamily: st.fontFamily,
@@ -8221,32 +8225,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                               }),
                             ),
                             const SizedBox(height: 12),
+                            // 橫式／直式（跟浮水印面板的文字卡同一組）
+                            SegmentedButton<bool>(
+                              key: const ValueKey('clip-text-direction'),
+                              showSelectedIcon: false,
+                              segments: kTextDirectionSegments,
+                              selected: {st.vertical},
+                              onSelectionChanged: (v) =>
+                                  both(() => st.vertical = v.single),
+                            ),
+                            const SizedBox(height: 8),
                             SegmentedButton<TextAlign>(
                               key: const ValueKey('clip-text-alignment'),
                               showSelectedIcon: false,
-                              segments: const [
-                                ButtonSegment(
-                                  value: TextAlign.left,
-                                  icon: Icon(Icons.format_align_left, size: 18),
-                                  label: Text('靠左'),
-                                ),
-                                ButtonSegment(
-                                  value: TextAlign.center,
-                                  icon: Icon(
-                                    Icons.format_align_center,
-                                    size: 18,
-                                  ),
-                                  label: Text('置中'),
-                                ),
-                                ButtonSegment(
-                                  value: TextAlign.right,
-                                  icon: Icon(
-                                    Icons.format_align_right,
-                                    size: 18,
-                                  ),
-                                  label: Text('靠右'),
-                                ),
-                              ],
+                              segments: textAlignSegments(
+                                vertical: st.vertical,
+                              ),
                               selected: {st.alignment},
                               onSelectionChanged: (v) =>
                                   both(() => st.alignment = v.single),
@@ -14957,12 +14951,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       // 算進來的話，開底色的瞬間文字會被
                                       // padding 推離錨點（實測回報「加底色
                                       // 位置整個跑掉」）
-                                      final padH = st.bg
-                                          ? fontSize * 0.35 * st.bgPad
-                                          : 0.0;
-                                      final padV = st.bg
-                                          ? fontSize * 0.18 * st.bgPad
-                                          : 0.0;
+                                      final bgPad = markBgPadding(st, fontSize);
+                                      final padH = st.bg ? bgPad.h : 0.0;
+                                      final padV = st.bg ? bgPad.v : 0.0;
                                       final r = Rect.fromCenter(
                                         center: Offset(c.px * w, c.py * h),
                                         width: m.width + padH * 2,
@@ -15000,18 +14991,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                     3.1415926535 /
                                                     180,
                                                 child: Container(
-                                                  padding: st.bg
-                                                      ? EdgeInsets.symmetric(
-                                                          horizontal:
-                                                              fontSize *
-                                                              0.35 *
-                                                              st.bgPad,
-                                                          vertical:
-                                                              fontSize *
-                                                              0.18 *
-                                                              st.bgPad,
-                                                        )
-                                                      : EdgeInsets.zero,
+                                                  padding: EdgeInsets.symmetric(
+                                                    horizontal: padH,
+                                                    vertical: padV,
+                                                  ),
                                                   decoration: st.bg
                                                       ? BoxDecoration(
                                                           color: st.bgColor
