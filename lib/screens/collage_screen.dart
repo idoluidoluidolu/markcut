@@ -1,9 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data' show ByteData;
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, listEquals;
 import 'package:flutter/gestures.dart';
 
 import 'package:flutter/material.dart';
@@ -15,6 +16,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'crop_screen.dart';
 import '../models/watermark_settings.dart';
 import '../services/collage_compose.dart';
+import '../services/collage_image_budget.dart';
 import '../services/blob_store.dart';
 import '../services/collage_pack.dart';
 import '../services/draft_assets.dart';
@@ -72,11 +74,6 @@ const _kMaxSide = 6;
 /// 總格數上限：輸出畫布放大到 2400 時每格仍有 400px
 const _kMaxCells = 30;
 
-/// 解碼後的長邊上限。不縮的話一張 4000x3000 的照片解開就是 48MB，
-/// 放滿 30 格會直接被系統殺掉；縮到這裡每張約 7.7MB，
-/// 而輸出畫布最多 2400、單格最多幾百 px，畫質綽綽有餘
-const _kDecodeLongSide = 1600;
-
 class _CollageScreenState extends State<CollageScreen>
     with SingleTickerProviderStateMixin
     implements CollageLayoutPeek {
@@ -92,6 +89,67 @@ class _CollageScreenState extends State<CollageScreen>
   /// 已解碼的照片。換掉之後不再被任何格子用到的會被釋放並留 null，
   /// 索引保持穩定（_order 存的是這裡的索引）
   final List<ui.Image?> _images = [];
+
+  // Keep the encoded source, including in-memory/web photos, independently of
+  // the bounded preview. Export and recropping never upscale the small preview.
+  final List<XFile?> _sources = [];
+  final _sourceSizes = Expando<(int, int)>();
+  int _previewSide = kCollagePreviewMaxSide;
+  final _liveTick = ValueNotifier<int>(0);
+
+  void _liveChange(VoidCallback change) {
+    change();
+    if (mounted) _liveTick.value++;
+  }
+
+  void _liveRepaint() {
+    if (mounted) _liveTick.value++;
+  }
+
+  void _liveEnd() {
+    if (mounted) setState(() {});
+  }
+
+  /// 一批照片解碼之前先把預覽的總量讓出來：張數多到要降一級時，
+  /// 已經在畫布上的照片也重解成小一級的。格子的平移量是預覽圖的
+  /// 像素單位，換成小圖時要跟著等比例縮
+  Future<void> _reservePreviews(int count) async {
+    final side = collagePreviewSide(count);
+    if (side >= _previewSide) return;
+    _previewSide = side;
+    for (var i = 0; i < _images.length; i++) {
+      final previous = _images[i];
+      if (previous == null ||
+          math.max(previous.width, previous.height) <= side) {
+        continue;
+      }
+      final source = _sources[i];
+      if (source == null) continue;
+      final ui.Image next;
+      try {
+        next = await _decode(source);
+      } catch (_) {
+        // 原檔讀不到了（暫存被清掉之類）：留著現在這張，大一點但畫得出來
+        continue;
+      }
+      if (!mounted) {
+        next.dispose();
+        return;
+      }
+      if (!identical(_images[i], previous)) {
+        next.dispose();
+        continue;
+      }
+      for (var cell = 0; cell < _order.length; cell++) {
+        if (_order[cell] != i) continue;
+        _fits[cell].panX *= next.width / previous.width;
+        _fits[cell].panY *= next.height / previous.height;
+      }
+      _images[i] = next;
+      previous.dispose();
+    }
+    _liveRepaint();
+  }
 
   /// 每張照片的來源路徑（跟 _images 同索引；存草稿用）。
   /// 換單張時保留裁切後的素材路徑，續作才能還原相同的像素。
@@ -332,30 +390,32 @@ class _CollageScreenState extends State<CollageScreen>
     _tabs.dispose();
     _wmFrameInfo.dispose();
     _wmPanelCtrl.dispose();
+    _liveTick.dispose();
     for (final img in _images) {
       img?.dispose();
     }
     super.dispose();
   }
 
-  /// 解碼並把長邊縮到 [_kDecodeLongSide]。
+  /// Decode to the shared preview allowance, or an explicit export/crop size.
   /// 先用 ImageDescriptor 讀出原圖尺寸（不解碼像素），才知道該縮哪一邊——
   /// 只指定 targetWidth 的話，直式照片反而會被放大。
   /// 有路徑就讓引擎自己讀檔（[ui.ImmutableBuffer.fromFilePath]）：原檔
   /// 不進 Dart 堆、不多一份複本；buffer 與 descriptor 用完一定釋放——
   /// 以前從不 dispose，30 張原檔的原生記憶體要等 GC finalizer 才放
-  Future<ui.Image> _decode(XFile f) async {
+  Future<ui.Image> _decode(XFile f, {int? maxSide}) async {
+    final limit = maxSide ?? _previewSide;
     ui.ImmutableBuffer? buffer;
     ui.ImageDescriptor? desc;
+    ui.Codec? codec;
     try {
       buffer = (!kIsWeb && f.path.isNotEmpty)
           ? await ui.ImmutableBuffer.fromFilePath(f.path)
           : await ui.ImmutableBuffer.fromUint8List(await f.readAsBytes());
       desc = await ui.ImageDescriptor.encoded(buffer);
       final long = math.max(desc.width, desc.height);
-      ui.Codec codec;
-      if (long > _kDecodeLongSide) {
-        final k = _kDecodeLongSide / long;
+      if (long > limit) {
+        final k = limit / long;
         codec = await desc.instantiateCodec(
           targetWidth: math.max(1, (desc.width * k).round()),
           targetHeight: math.max(1, (desc.height * k).round()),
@@ -364,17 +424,45 @@ class _CollageScreenState extends State<CollageScreen>
         codec = await desc.instantiateCodec(); // 本來就小，不放大
       }
       final frame = await codec.getNextFrame();
-      codec.dispose();
+      _sourceSizes[frame.image] = (desc.width, desc.height);
       return frame.image;
     } catch (_) {
       // ImageDescriptor 這條快路不是每個平台都在（web 的部分算圖
       // 引擎沒有它），走不通就退回一般解碼——少了「先縮再解」的
       // 省記憶體，但至少解得開
-      final codec = await ui.instantiateImageCodec(await f.readAsBytes());
+      codec?.dispose();
+      codec = null;
+      codec = await ui.instantiateImageCodec(await f.readAsBytes());
       final frame = await codec.getNextFrame();
-      codec.dispose();
-      return frame.image;
+      final image = frame.image;
+      final dimensions = (image.width, image.height);
+      if (math.max(image.width, image.height) <= limit) {
+        _sourceSizes[image] = dimensions;
+        return image;
+      }
+      // Some web engines cannot construct descriptors. They still need to
+      // release the full-size fallback raster instead of retaining it forever.
+      final scale = limit / math.max(image.width, image.height);
+      final w = math.max(1, (image.width * scale).round());
+      final h = math.max(1, (image.height * scale).round());
+      final recorder = ui.PictureRecorder();
+      ui.Canvas(recorder).drawImageRect(
+        image,
+        ui.Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+        ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+        ui.Paint()..filterQuality = ui.FilterQuality.high,
+      );
+      final picture = recorder.endRecording();
+      try {
+        final small = await picture.toImage(w, h);
+        _sourceSizes[small] = dimensions;
+        return small;
+      } finally {
+        picture.dispose();
+        image.dispose();
+      }
     } finally {
+      codec?.dispose();
       desc?.dispose();
       buffer?.dispose();
     }
@@ -442,12 +530,13 @@ class _CollageScreenState extends State<CollageScreen>
         'lines': _lines,
         'gapN': _gapN,
         'lineColor': _lineColor,
+        'panNormalized': true,
         'fits': [
-          for (final f in _fits)
+          for (final (i, f) in _fits.indexed)
             {
               'z': f.zoom,
-              'x': f.panX,
-              'y': f.panY,
+              'x': f.panX / (_imgAt(i)?.width ?? 1),
+              'y': f.panY / (_imgAt(i)?.height ?? 1),
               if (f.crop != kCollageFullCrop) 'crop': collageCropToJson(f.crop),
             },
         ],
@@ -533,6 +622,9 @@ class _CollageScreenState extends State<CollageScreen>
     }
     try {
       final paths = (r['photos'] as List? ?? []);
+      await _reservePreviews(
+        paths.whereType<String>().where((p) => p.isNotEmpty).length,
+      );
       _draftPaths = {
         for (final p in paths)
           if (p is String && p.isNotEmpty) p,
@@ -556,6 +648,7 @@ class _CollageScreenState extends State<CollageScreen>
           }
           map[i] = _images.length;
           _images.add(img);
+          _sources.add(XFile(p));
           _srcPaths.add(p);
           _received.add(p);
         } catch (_) {
@@ -594,6 +687,24 @@ class _CollageScreenState extends State<CollageScreen>
           f.panX = (m['x'] as num?)?.toDouble() ?? 0;
           f.panY = (m['y'] as num?)?.toDouble() ?? 0;
           f.crop = collageCropFromJson(m['crop']);
+          final image = _imgAt(n);
+          if (image != null) {
+            if (r['panNormalized'] == true) {
+              f.panX *= image.width;
+              f.panY *= image.height;
+            } else {
+              // Older drafts stored pixels of the old 1600px preview.
+              final source = _sourceSizes[image] ?? (image.width, image.height);
+              final scale = math.min(
+                1.0,
+                kCollagePreviewMaxSide / math.max(source.$1, source.$2),
+              );
+              final oldW = math.max(1, (source.$1 * scale).round());
+              final oldH = math.max(1, (source.$2 * scale).round());
+              f.panX *= image.width / oldW;
+              f.panY *= image.height / oldH;
+            }
+          }
         }
         return f;
       });
@@ -675,6 +786,7 @@ class _CollageScreenState extends State<CollageScreen>
       }
     }
     _noteReceived(widget.photos);
+    await _reservePreviews(math.min(widget.photos.length, _kMaxCells));
     var dropped = 0;
     for (final f in widget.photos) {
       // 超過上限的略過（以前默默截斷）——結尾一起講
@@ -691,6 +803,7 @@ class _CollageScreenState extends State<CollageScreen>
           return;
         }
         _images.add(img);
+        _sources.add(f);
         _srcPaths.add(f.path);
       } catch (_) {}
     }
@@ -791,6 +904,11 @@ class _CollageScreenState extends State<CollageScreen>
     final files = await pickPhotoFiles();
     if (files.isEmpty || !mounted) return;
     _noteReceived(files);
+    await _reservePreviews(
+      _images.whereType<ui.Image>().length +
+          math.min(files.length, _order.where((i) => i < 0).length),
+    );
+    if (!mounted) return;
     var filled = 0;
     final failedNames = <String>[];
     for (final f in files) {
@@ -809,6 +927,7 @@ class _CollageScreenState extends State<CollageScreen>
         }
         setState(() {
           _images.add(img);
+          _sources.add(f);
           _srcPaths.add(f.path);
           _order[slot] = _images.length - 1;
           _fits[slot] = CollageCellFit();
@@ -869,7 +988,12 @@ class _CollageScreenState extends State<CollageScreen>
       if (!kIsWeb && croppedPath == null) {
         throw StateError('裁切照片無法保存');
       }
-      final img = await _decode(XFile.fromData(cut, name: f.name));
+      await _reservePreviews(_images.whereType<ui.Image>().length + 1);
+      if (!mounted) return;
+      final source = croppedPath == null
+          ? XFile.fromData(cut, name: f.name)
+          : XFile(croppedPath);
+      final img = await _decode(source);
       // 選照片＋解碼期間排法可能被換掉，格子編號會失效
       if (!mounted || cell >= _order.length) {
         img.dispose();
@@ -878,6 +1002,7 @@ class _CollageScreenState extends State<CollageScreen>
       setState(() {
         final old = _order[cell];
         _images.add(img);
+        _sources.add(source);
         _srcPaths.add(croppedPath ?? f.path);
         _order[cell] = _images.length - 1;
         _fits[cell] = CollageCellFit();
@@ -901,6 +1026,7 @@ class _CollageScreenState extends State<CollageScreen>
     if (_items.any((t) => t.img == idx)) return; // 自由模式還在用
     _images[idx]?.dispose();
     _images[idx] = null;
+    _sources[idx] = null;
     if (idx < _srcPaths.length) _srcPaths[idx] = null;
   }
 
@@ -918,8 +1044,25 @@ class _CollageScreenState extends State<CollageScreen>
     if (image == null) return;
     setState(() => _cropping = true);
     try {
-      // 使用現有的限尺寸預覽；套用只保存比例框，不改寫原圖或重編碼成品。
-      final frame = await image.toByteData(format: ui.ImageByteFormat.png);
+      // 裁切畫面要清楚：預覽可能已經降級成小圖，回原檔重解一張
+      // 1600 的來裁（裁切本身只存 0~1 的比例框，跟解析度無關）
+      final source = _sources[index];
+      ui.Image? cropImage;
+      if (source != null) {
+        try {
+          cropImage = await _decode(source, maxSide: kCollagePreviewMaxSide);
+        } catch (_) {
+          // 原檔讀不到了：退回用預覽那張裁，糊一點但照樣能裁
+        }
+      }
+      cropImage ??= _images[index]?.clone();
+      if (cropImage == null) return;
+      final ByteData? frame;
+      try {
+        frame = await cropImage.toByteData(format: ui.ImageByteFormat.png);
+      } finally {
+        cropImage.dispose();
+      }
       if (frame == null || !mounted) return;
       final result = await pickCropRect(
         context,
@@ -1027,6 +1170,10 @@ class _CollageScreenState extends State<CollageScreen>
       _kMaxCells - _images.where((i) => i != null).length,
     );
     final dropped = math.max<int>(0, files.length - room);
+    await _reservePreviews(
+      _images.whereType<ui.Image>().length + math.min(files.length, room),
+    );
+    if (!mounted) return;
     // 解好的先收著，全部解完再一起放上畫布、一起排：一張排一次的話每張
     // 進來整個版面都跳一下；而且解碼中畫面隨時可能重畫，半路上的方塊
     // 還沒有位置（零大小＝寬/高是 NaN）畫下去會炸
@@ -1039,6 +1186,7 @@ class _CollageScreenState extends State<CollageScreen>
           return;
         }
         _images.add(img);
+        _sources.add(f);
         _srcPaths.add(f.path);
         fresh.add(_images.length - 1);
       } catch (_) {
@@ -1500,9 +1648,24 @@ class _CollageScreenState extends State<CollageScreen>
     String? note;
     var ok = true;
     try {
-      final image = await composeCollage(
+      final image = await composeCollageFromSources(
         _layout(),
         _images,
+        // 一張一張回原檔重解成匯出要的大小（預覽可能已經降級成小圖）
+        decode: (index, maxSide) async {
+          final source = _sources[index];
+          if (source != null) {
+            try {
+              return await _decode(source, maxSide: maxSide);
+            } catch (_) {
+              // 原檔讀不到了（暫存被清掉之類）：退回用預覽那張，
+              // 畫質低一點但照樣匯得出來——以前匯出本來就是用它
+            }
+          }
+          final preview = _images[index];
+          if (preview == null) throw StateError('原始照片無法讀取');
+          return preview.clone();
+        },
         watermark: _wm,
         // JPEG 沒有透明，空格子鋪黑；PNG 留透明（跟預覽的棋盤格說法一致）
         background: jpeg ? const ui.Color(0xFF000000) : null,
@@ -2132,7 +2295,13 @@ class _CollageScreenState extends State<CollageScreen>
   /// 拼圖分頁：拼圖吃手勢（拖曳互換、鎖定調構圖），浮水印只是看得到；
   /// 浮水印分頁反過來——拼圖不吃手勢，浮水印圖層可拖／捏合／點選
   ///（選取框、置中輔助線、選取路由全照批次那一頁的接法）；匯出分頁純看
-  Widget _buildPreview(int tab) {
+  Widget _buildPreview(int tab) => ValueListenableBuilder<int>(
+    valueListenable: _liveTick,
+    builder: (context, _, _) =>
+        RepaintBoundary(child: _buildPreviewContent(tab)),
+  );
+
+  Widget _buildPreviewContent(int tab) {
     final wmTab = tab == _kTabWatermark;
     final canvas = AspectRatio(
       // 畫布比例兩種模式共用（宮格＝把它等分）
@@ -2144,7 +2313,7 @@ class _CollageScreenState extends State<CollageScreen>
         children: [
           IgnorePointer(
             ignoring: tab != _kTabCollage,
-            child: _free ? _buildFree() : _buildGrid(),
+            child: RepaintBoundary(child: _free ? _buildFree() : _buildGrid()),
           ),
           // 浮水印圖層：拼圖分頁「點得到、拖不動」——點到浮水印框內就
           // 選起來並切到浮水印分頁（使用者指定）；拖曳鎖住，不然會跟
@@ -2157,6 +2326,8 @@ class _CollageScreenState extends State<CollageScreen>
               // 選取框畫在裁切外（見 _wmFrameInfo）
               frameNotifier: _wmFrameInfo,
               onChanged: () => setState(() {}),
+              onLiveChange: _liveRepaint,
+              onDragEnd: _liveEnd,
               selectedPart: wmTab ? _wmPartAlive : WmPart.none,
               onSelectPart: (p) {
                 setState(() => _wmPart = p);
@@ -2249,7 +2420,7 @@ class _CollageScreenState extends State<CollageScreen>
         _btRawY = (_btRawY! + d.delta.dy / box.maxHeight).clamp(0.0, 1.0);
         final sx = _snapC(_btRawX!);
         final sy = _snapC(_btRawY!);
-        setState(() {
+        _liveChange(() {
           if (part == WmPart.text) {
             _wm.text.x = sx;
             _wm.text.y = sy;
@@ -2260,8 +2431,14 @@ class _CollageScreenState extends State<CollageScreen>
         });
         _btSetGuides(sx, sy);
       },
-      onPanEnd: (_) => _btClearGuides(),
-      onPanCancel: _btClearGuides,
+      onPanEnd: (_) {
+        _btClearGuides();
+        _liveEnd();
+      },
+      onPanCancel: () {
+        _btClearGuides();
+        _liveEnd();
+      },
       child: const SizedBox.expand(),
     ),
   );
@@ -2438,7 +2615,7 @@ class _CollageScreenState extends State<CollageScreen>
     if (_pvBaseDist == null || _pvPts.length < 2) return;
     final p = _pvPts.values.toList();
     final f = (p[0] - p[1]).distance / _pvBaseDist!;
-    setState(() {
+    _liveChange(() {
       final t = _wm.text;
       final hasText = t.enabled && t.text.trim().isNotEmpty;
       final hasLogo = _wm.logo.enabled;
@@ -2454,7 +2631,10 @@ class _CollageScreenState extends State<CollageScreen>
 
   void _pinchUp(int pointer) {
     _pvPts.remove(pointer);
-    if (_pvBaseDist != null && _pvPts.length < 2) _pvBaseDist = null;
+    if (_pvBaseDist != null && _pvPts.length < 2) {
+      _pvBaseDist = null;
+      _liveEnd();
+    }
   }
 
   // ===== 置中吸附與輔助線（跟影片／照片／批次同一套手感）=====
@@ -2470,7 +2650,7 @@ class _CollageScreenState extends State<CollageScreen>
   void _btSetGuides(double x, double y) {
     final v = x == 0.5, hh = y == 0.5;
     if (v != _btGuideV || hh != _btGuideH) {
-      setState(() {
+      _liveChange(() {
         _btGuideV = v;
         _btGuideH = hh;
       });
@@ -2487,7 +2667,7 @@ class _CollageScreenState extends State<CollageScreen>
     _btRawY = null;
     _btSnapped = false;
     if (_btGuideV || _btGuideH) {
-      setState(() {
+      _liveChange(() {
         _btGuideV = false;
         _btGuideH = false;
       });
@@ -2516,7 +2696,7 @@ class _CollageScreenState extends State<CollageScreen>
                 top: (i ~/ cols) * ch,
                 width: cw,
                 height: ch,
-                child: _cell(i, cw, ch),
+                child: RepaintBoundary(child: _cell(i, cw, ch)),
               ),
             if (_lines)
               Positioned.fill(
@@ -2705,7 +2885,7 @@ class _CollageScreenState extends State<CollageScreen>
     if ((gx != null && gx != _guideX) || (gy != null && gy != _guideY)) {
       HapticFeedback.selectionClick();
     }
-    setState(() {
+    _liveChange(() {
       _items[_selItem].rect = nr;
       _guideX = gx;
       _guideY = gy;
@@ -2716,11 +2896,12 @@ class _CollageScreenState extends State<CollageScreen>
   void _endFreeDrag() {
     _fDrag = null;
     if (_guideX != null || _guideY != null) {
-      setState(() {
+      _liveChange(() {
         _guideX = null;
         _guideY = null;
       });
     }
+    _liveEnd();
   }
 
   // ===== 自由模式：雙指縮放 =====
@@ -2795,7 +2976,7 @@ class _CollageScreenState extends State<CollageScreen>
         (mid.dy - b.mid.dy) / s.height,
       ),
     );
-    setState(() => _items[_selItem].rect = next);
+    _liveChange(() => _items[_selItem].rect = next);
   }
 
   void _freePinchUp(int pointer, Size s) {
@@ -2810,6 +2991,7 @@ class _CollageScreenState extends State<CollageScreen>
         from: _fPts.values.first,
       );
     }
+    if (_fPts.isEmpty) _liveEnd();
   }
 
   Widget _buildFree() {
@@ -3002,7 +3184,7 @@ class _CollageScreenState extends State<CollageScreen>
           final p = _pts.values.toList();
           final f = (p[0] - p[1]).distance / _baseDist!;
           final sf = _fits[_selCell];
-          setState(() {
+          _liveChange(() {
             sf.zoom = (_baseZoom * f).clamp(1.0, 4.0);
             final si = _imgAt(_selCell);
             if (si != null) collageClampFit(si, sf, cellW / cellH);
@@ -3011,11 +3193,17 @@ class _CollageScreenState extends State<CollageScreen>
       },
       onPointerUp: (e) {
         _pts.remove(e.pointer);
-        if (_pts.length < 2) _baseDist = null;
+        if (_pts.length < 2 && _baseDist != null) {
+          _baseDist = null;
+          _liveEnd();
+        }
       },
       onPointerCancel: (e) {
         _pts.remove(e.pointer);
-        if (_pts.length < 2) _baseDist = null;
+        if (_pts.length < 2 && _baseDist != null) {
+          _baseDist = null;
+          _liveEnd();
+        }
       },
       // 桌面：滾輪縮放選取中的格子
       onPointerSignal: (e) {
@@ -3063,13 +3251,13 @@ class _CollageScreenState extends State<CollageScreen>
         onPanUpdate: (d) {
           if (_pts.length >= 2) return;
           if (_dragFrom == i) {
-            setState(() {
+            _liveChange(() {
               _dragPos = origin + d.localPosition;
               _dragOver = _cellAt(_dragPos!);
             });
           } else if (selected) {
             final k = dispScale();
-            setState(() {
+            _liveChange(() {
               fit.panX -= d.delta.dx / k;
               fit.panY -= d.delta.dy / k;
               // 夾回可移動範圍：不夾的話拖到底之後還會一直累積，
@@ -3081,10 +3269,15 @@ class _CollageScreenState extends State<CollageScreen>
         onPanEnd: (_) {
           _cancelHold();
           if (_dragFrom != -1) _endDrag();
+          _liveEnd();
         },
         onPanCancel: () {
           _cancelHold();
-          if (_dragFrom == -1) return;
+          if (_dragFrom == -1) {
+            // 調構圖途中被打斷（拖動中只重畫了畫布）：跟放手一樣補整頁一次
+            _liveEnd();
+            return;
+          }
           setState(() {
             _dragFrom = -1;
             _dragPos = null;
@@ -3203,8 +3396,12 @@ class _FreePinch {
 class _FreePainter extends CustomPainter {
   final List<CollageFreeItem> items;
   final List<ui.Image?> images;
+  final List<(int, ui.Rect, ui.Rect)> _geometry;
+  final List<ui.Image?> _rasters;
 
-  const _FreePainter({required this.items, required this.images});
+  _FreePainter({required this.items, required this.images})
+    : _geometry = [for (final item in items) (item.img, item.rect, item.crop)],
+      _rasters = List.of(images);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -3229,10 +3426,10 @@ class _FreePainter extends CustomPainter {
     }
   }
 
-  // rect 是直接改在 CollageFreeItem 上的，新舊 painter 比不出差異——
-  // 這頁只有拖曳時會 setState，每次都重畫是對的
+  // Snapshot mutable geometry so watermark-only updates do not redraw photos.
   @override
-  bool shouldRepaint(_FreePainter old) => true;
+  bool shouldRepaint(_FreePainter old) =>
+      !listEquals(old._geometry, _geometry) || !listEquals(old._rasters, _rasters);
 }
 
 /// 依取景窗畫出這一格的照片
