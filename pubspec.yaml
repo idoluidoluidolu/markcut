@@ -176,6 +176,11 @@ flutter:
     - shaders/mosaic.frag
 
   fonts:
+    # 授權全部 SIL OFL 1.1。宣告了保留字型名稱（name table ID 0／13 的
+    # Reserved Font Name）的字型，改過的版本（烘字重、子集化）不能沿用
+    # 原名：這種一律放作者發布的原檔，要的字重找作者發的靜態檔，不要
+    # 自己烘。思源黑體保留的是「Source」，烘過的檔叫 Noto Sans TC 沒用到
+    #
     # UI 字體。原本這幾個檔案是「可變字體」，而它們的預設實例是
     # Thin(100)／ExtraLight(200)——Flutter 不會自己把 fontWeight 套到
     # wght 軸，所以實機上整個 App 都用最細的那一階在畫，字看起來很單薄
@@ -197,6 +202,8 @@ flutter:
     - family: NotoSerifTC
       fonts:
         - asset: assets/fonts/NotoSerifTC.ttf
+    # 粉圓保留了 huninn／open huninn／Varela 這幾個名字：放 justfont
+    # 發布的原檔（v2.1），不子集化
     - family: OpenHuninn
       fonts:
         - asset: assets/fonts/jf-openhuninn.ttf
@@ -230,7 +237,12 @@ flutter:
     # 第二批英文（使用者指定）：挑現有九種沒有的類型——圓潤無襯線、
     # 現代無襯線、展示襯線、花體、手寫麥克筆、像素。Google Fonts 給的是
     # 可變字體，跟上面 NotoSansTC 同一個理由（Flutter 不會把 fontWeight
-    # 套到 wght 軸）用 fontTools 烘成固定字重的靜態檔
+    # 套到 wght 軸）要用靜態檔：Space Grotesk、Caveat 用 fontTools 烘成
+    # 400；Quicksand、Dancing Script 有保留字型名稱，放作者發布的靜態檔
+    # ——Quicksand 是 SemiBold 600（400 當浮水印太細），取自
+    # ThomasJockin/QuicksandFamily 的 fonts/ttf（Google Fonts 那份可變
+    # 字體的來源）；Dancing Script 是 googlefonts/DancingScript 的
+    # Regular。Abril Fatface、Press Start 2P 本來就是靜態原檔
     - family: Quicksand
       fonts:
         - asset: assets/fonts/Quicksand.ttf
