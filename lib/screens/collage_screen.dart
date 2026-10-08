@@ -75,6 +75,24 @@ const _kMaxSide = 6;
 /// 總格數上限：輸出畫布放大到 2400 時每格仍有 400px
 const _kMaxCells = 30;
 
+/// 上一步的一筆：整份排法＋浮水印（JSON，浮水印圖片換成池子編號）。
+/// [used]＝這一步畫面上用到的照片、[pool]＝那時照片池有幾張、
+/// [released]＝那時「已經不在、先留著」的照片——照片池沒人用的會被
+/// 釋放，還有哪一步用得到的不能放；回到這一步時它之後才加的照片也要
+/// 當作不在
+class _CollageSnap {
+  const _CollageSnap(
+    this.json, {
+    required this.used,
+    required this.pool,
+    required this.released,
+  });
+  final String json;
+  final Set<int> used;
+  final int pool;
+  final Set<int> released;
+}
+
 class _CollageScreenState extends State<CollageScreen>
     with SingleTickerProviderStateMixin
     implements CollageLayoutPeek {
@@ -314,6 +332,10 @@ class _CollageScreenState extends State<CollageScreen>
     final entering =
         _tabs.index == _kTabWatermark && _lastTab != _kTabWatermark;
     _lastTab = _tabs.index;
+    // 滑桿拖到一半換頁：滑桿跟著被拆掉、等不到放手，「拖動中」不收掉的話
+    // 之後的改動永遠不對帳（上一步就再也不亮）
+    _gapSliding = false;
+    _wmSliding = false;
     setState(() {
       _selCell = -1;
       _selItem = -1;
@@ -381,11 +403,15 @@ class _CollageScreenState extends State<CollageScreen>
   void initState() {
     super.initState();
     _tabs.addListener(_onTabChanged);
-    _load();
+    // 照片放好（或草稿還原好）才是第一個定案：之前的都不算一步
+    _load().then((_) {
+      if (mounted && _draftLoadError == null) _undoBase = _snapshot();
+    });
   }
 
   @override
   void dispose() {
+    _commitLater?.cancel();
     unawaited(_cleanupOnLeave());
     _cancelHold();
     _tabs.dispose();
@@ -562,6 +588,278 @@ class _CollageScreenState extends State<CollageScreen>
   /// 現在的狀態指紋（沒有時間戳）：匯出後有沒有再動看這個
   String _stateKey() => _draftJson(photos: _srcPaths, stamp: false);
 
+  // ===== 上一步／重做 =====
+  //
+  // 照片、批次、製作浮水印那幾頁是「改之前拍一張」；拼圖會改到狀態的
+  // 地方太多（宮格、自由、裁切、格線、比例、浮水印分頁、預覽上的拖／捏），
+  // 一個一個插很容易漏。這裡改成「改完對帳」：記著上一個定案的狀態
+  //（_undoBase），每次因為改動重建畫面之後比一次，不一樣就把舊的推進
+  // 上一步。手指還在預覽上、滑桿拖動中、選照片／裁切途中不對帳，放手、
+  // 選完才算一步；浮水印面板連續打字 0.7 秒內併成一步
+  final List<_CollageSnap> _undoStack = [];
+  final List<_CollageSnap> _redoStack = [];
+  _CollageSnap? _undoBase;
+  bool _commitQueued = false;
+  Timer? _commitLater;
+
+  /// 現在按在預覽上的手指（拖曳、捏合、拉角都從這裡進來）
+  final Set<int> _previewPointers = {};
+  bool _gapSliding = false;
+  bool _wmSliding = false;
+
+  /// 復原後 +1：通知浮水印面板把輸入框等內部狀態對回設定
+  int _wmSync = 0;
+
+  /// 該消失、但上一步／重做還用得到而先留著的照片（換掉的、移除的、
+  /// 被上一步退掉的那幾張）。留著的不給宮格補空位、也不進草稿
+  final Set<int> _deferredRelease = {};
+
+  /// 浮水印圖片的 base64 動輒幾 MB：快照裡只記池子編號（池子存的是
+  /// 同一個字串參照，跟照片編輯同一招）
+  final List<String> _b64Pool = [];
+
+  String _b64Token(String b64) {
+    for (var i = 0; i < _b64Pool.length; i++) {
+      if (identical(_b64Pool[i], b64)) return '@@b64:$i';
+    }
+    _b64Pool.add(b64);
+    return '@@b64:${_b64Pool.length - 1}';
+  }
+
+  /// 現在這一刻的快照。平移量存成照片寬高的比例（預覽張數變多會重解成
+  /// 小一級的圖，像素值就對不上了）；方塊照清單順序記，自動排／原稿那兩份
+  /// 對照表也照順序記
+  _CollageSnap _snapshot() {
+    List<double> r4(ui.Rect r) => [r.left, r.top, r.width, r.height];
+    List<List<double>?> byItem(Map<CollageFreeItem, ui.Rect> m) => [
+      for (final t in _items) m[t] == null ? null : r4(m[t]!),
+    ];
+    final wm = _wm.toJson();
+    for (final lg in ((wm['logos'] as List?) ?? const [])) {
+      if (lg is Map && lg['b64'] is String) {
+        lg['b64'] = _b64Token(lg['b64'] as String);
+      }
+    }
+    final base = _fitBase;
+    final json = jsonEncode({
+      'order': _order,
+      'cols': _cols,
+      'rows': _rows,
+      'free': _free,
+      'aspect': _canvasAspect,
+      'lines': _lines,
+      'gapN': _gapN,
+      'lineColor': _lineColor,
+      'seed': _packSeed,
+      'fits': [
+        for (final (i, f) in _fits.indexed)
+          [
+            f.zoom,
+            f.panX / (_imgAt(i)?.width ?? 1),
+            f.panY / (_imgAt(i)?.height ?? 1),
+            ...r4(f.crop),
+          ],
+      ],
+      'items': [
+        for (final t in _items) [t.img, ...r4(t.rect), ...r4(t.crop)],
+      ],
+      'auto': _freeUntouched,
+      if (base != null)
+        'fitBase': {
+          'aspect': base.aspect,
+          'rects': byItem(base.rects),
+          'shown': byItem(base.shown),
+        },
+      'wm': wm,
+    });
+    return _CollageSnap(
+      json,
+      used: {
+        for (final k in _order)
+          if (k >= 0) k,
+        for (final t in _items) t.img,
+      },
+      pool: _images.length,
+      released: Set.of(_deferredRelease),
+    );
+  }
+
+  /// 有沒有哪一步（含現在定案的這一份）還用得到這張照片
+  bool _snapUses(int idx) =>
+      (_undoBase?.used.contains(idx) ?? false) ||
+      _undoStack.any((s) => s.used.contains(idx)) ||
+      _redoStack.any((s) => s.used.contains(idx));
+
+  /// 正在進行中的改動：不對帳，收尾的那一下會再對一次
+  bool get _editingNow =>
+      _previewPointers.isNotEmpty ||
+      _gapSliding ||
+      _wmSliding ||
+      _pickingPhotos ||
+      _cropping ||
+      _dragFrom >= 0 ||
+      (_commitLater?.isActive ?? false);
+
+  @override
+  void setState(VoidCallback fn) {
+    super.setState(fn);
+    _queueCommit();
+  }
+
+  /// 這一格畫完再對帳（同一格裡的好幾個改動併成一步）
+  void _queueCommit() {
+    if (_commitQueued || _undoBase == null) return;
+    _commitQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _commitQueued = false;
+      if (mounted && !_editingNow) _commit();
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  /// 浮水印面板的改動晚一點對帳：連續打字、連點同一排選項併成一步
+  void _commitSoon() {
+    _commitLater?.cancel();
+    _commitLater = Timer(const Duration(milliseconds: 700), () {
+      _commitLater = null;
+      if (mounted) _queueCommit();
+    });
+  }
+
+  /// 還沒對帳的改動現在就算一步（按上一步、手指剛碰預覽的時候）
+  void _flushCommit() {
+    _commitLater?.cancel();
+    _commitLater = null;
+    if (!_pickingPhotos && !_cropping) _commit();
+  }
+
+  /// 現在的狀態跟上一個定案的不一樣：舊的推進上一步、重做的路線作廢
+  void _commit() {
+    final base = _undoBase;
+    if (base == null) return;
+    final now = _snapshot();
+    if (now.json == base.json) return;
+    _undoStack.add(base);
+    if (_undoStack.length > 60) _undoStack.removeAt(0);
+    _redoStack.clear();
+    _undoBase = now;
+    _releaseDeferred();
+    super.setState(() {}); // 讓上一步鈕亮起來（不再排一次對帳）
+  }
+
+  void _undoLast() {
+    _flushCommit();
+    if (_undoStack.isEmpty || _undoBase == null) return;
+    _redoStack.add(_undoBase!);
+    _applySnap(_undoStack.removeLast());
+  }
+
+  void _redoLast() {
+    _flushCommit(); // 有新的改動的話重做的路線已經作廢，下面自然什麼都不做
+    if (_redoStack.isEmpty || _undoBase == null) return;
+    _undoStack.add(_undoBase!);
+    _applySnap(_redoStack.removeLast());
+  }
+
+  /// 把一份快照套回畫面
+  void _applySnap(_CollageSnap s) {
+    final j = jsonDecode(s.json) as Map<String, dynamic>;
+    final wm = Map<String, dynamic>.from(j['wm'] as Map);
+    for (final lg in ((wm['logos'] as List?) ?? const [])) {
+      if (lg is! Map || lg['b64'] is! String) continue;
+      final v = lg['b64'] as String;
+      if (v.startsWith('@@b64:')) {
+        final i = int.tryParse(v.substring(6)) ?? -1;
+        lg['b64'] = (i >= 0 && i < _b64Pool.length) ? _b64Pool[i] : null;
+      }
+    }
+    ui.Rect rect(List v, int at) => ui.Rect.fromLTWH(
+      (v[at] as num).toDouble(),
+      (v[at + 1] as num).toDouble(),
+      (v[at + 2] as num).toDouble(),
+      (v[at + 3] as num).toDouble(),
+    );
+    super.setState(() {
+      _cols = (j['cols'] as num).toInt();
+      _rows = (j['rows'] as num).toInt();
+      _free = j['free'] == true;
+      _canvasAspect = (j['aspect'] as num).toDouble();
+      _lines = j['lines'] == true;
+      _gapN = (j['gapN'] as num).toDouble();
+      _lineColor = (j['lineColor'] as num).toInt();
+      _packSeed = (j['seed'] as num).toInt();
+      _order = [for (final v in j['order'] as List) (v as num).toInt()];
+      final fits = j['fits'] as List;
+      _fits = [
+        for (final (i, f) in fits.indexed)
+          CollageCellFit()
+            ..zoom = ((f as List)[0] as num).toDouble()
+            ..panX = (f[1] as num).toDouble() * (_imgAt(i)?.width ?? 1)
+            ..panY = (f[2] as num).toDouble() * (_imgAt(i)?.height ?? 1)
+            ..crop = rect(f, 3),
+      ];
+      _items
+        ..clear()
+        ..addAll([
+          for (final e in j['items'] as List)
+            CollageFreeItem(
+              img: ((e as List)[0] as num).toInt(),
+              rect: rect(e, 1),
+              crop: rect(e, 5),
+            ),
+        ]);
+      _autoRects = j['auto'] == true ? _freeRects() : null;
+      final fb = j['fitBase'];
+      if (fb is Map) {
+        Map<CollageFreeItem, ui.Rect> byItem(List v) =>
+            Map<CollageFreeItem, ui.Rect>.identity()..addEntries([
+              for (final (i, r) in v.indexed)
+                if (r is List && i < _items.length)
+                  MapEntry(_items[i], rect(r, 0)),
+            ]);
+        _fitBase = (
+          aspect: (fb['aspect'] as num).toDouble(),
+          rects: byItem(fb['rects'] as List),
+          shown: byItem(fb['shown'] as List),
+        );
+      } else {
+        _fitBase = null;
+      }
+      _wm.copyMarksFrom(WatermarkSettings.fromJson(wm));
+      // 選取、拖曳到一半的狀態全部歸零：那一格／那一塊可能已經不在了
+      _selCell = -1;
+      _selItem = -1;
+      _wmPart = WmPart.none;
+      _dragFrom = -1;
+      _dragPos = null;
+      _dragOver = -1;
+      _fDrag = null;
+      _fPinch = null;
+      _wmSync++;
+      // 那一步時「已經不在」的照片、跟那一步之後才加進來的照片，回到那一步
+      // 就是不在：先留著給重做，不給宮格補空位
+      _deferredRelease
+        ..clear()
+        ..addAll(s.released)
+        ..addAll([
+          for (var i = s.pool; i < _images.length; i++)
+            if (_images[i] != null) i,
+        ])
+        ..removeAll(s.used);
+    });
+    // 從套好的畫面重算一次：比例換回像素再換回比例，最後一位可能差一點，
+    // 拿舊的那份當定案的話下一次對帳會多推一步、把重做的路線清掉
+    _undoBase = _snapshot();
+    _releaseDeferred();
+  }
+
+  /// 先留著的照片裡，已經沒有任何一步用得到的就真的放掉
+  void _releaseDeferred() {
+    for (final i in _deferredRelease.toList()) {
+      _releaseIfUnused(i);
+    }
+  }
+
   /// 存草稿。照片先各留一份在 App 自己的目錄（DraftAssets）、草稿改記
   /// 那一份：相簿選取器給的複本在 tmp／cache，系統幾天就清，以前續作
   /// 動不動就「有 N 張照片已不在」
@@ -569,8 +867,12 @@ class _CollageScreenState extends State<CollageScreen>
     if (_draftLoadError != null || _restoringDraft) return false;
     SharedPreferences? prefs;
     try {
-      // 先在同步這一段把路徑抄下來，await 之後才讀 state 欄位太晚
-      final src = List<String?>.of(_srcPaths);
+      // 先在同步這一段把路徑抄下來，await 之後才讀 state 欄位太晚。
+      // 只為了上一步先留著的照片不進草稿（續作時沒有上一步）
+      final src = [
+        for (final (i, p) in _srcPaths.indexed)
+          _deferredRelease.contains(i) ? null : p,
+      ];
       // 整份草稿一起算額度（見 DraftAssets.secureAll）
       final photos = await DraftAssets.secureAll(DraftAssets.collage, src);
       if (!mounted) return false;
@@ -847,9 +1149,10 @@ class _CollageScreenState extends State<CollageScreen>
 
   /// 依目前欄列重建格子：照片夠就填，不夠的留空（畫面上顯示「＋」）
   void _resize() {
+    // 先留著給上一步用的照片不算：被換掉、被退掉的不能自己跑回格子裡
     final alive = [
       for (var k = 0; k < _images.length; k++)
-        if (_images[k] != null) k,
+        if (_images[k] != null && !_deferredRelease.contains(k)) k,
     ];
     final keep = _order.take(_cellCount).toList();
     _order = List.generate(_cellCount, (n) {
@@ -1023,8 +1326,17 @@ class _CollageScreenState extends State<CollageScreen>
   /// 換版型時還要靠它們把格子填回去）
   void _releaseIfUnused(int idx) {
     if (idx < _poolSize || idx < 0 || idx >= _images.length) return;
-    if (_order.contains(idx)) return;
-    if (_items.any((t) => t.img == idx)) return; // 自由模式還在用
+    // 自由模式還在用的也算（又用回來了：先前「先留著」的登記取消）
+    if (_order.contains(idx) || _items.any((t) => t.img == idx)) {
+      _deferredRelease.remove(idx);
+      return;
+    }
+    // 上一步／重做還用得到：先留著，等那幾步都退出歷史再放
+    if (_snapUses(idx)) {
+      _deferredRelease.add(idx);
+      return;
+    }
+    _deferredRelease.remove(idx);
     _images[idx]?.dispose();
     _images[idx] = null;
     _sources[idx] = null;
@@ -1911,7 +2223,13 @@ class _CollageScreenState extends State<CollageScreen>
                         value: _gapN,
                         min: 0.001,
                         max: 0.05,
+                        // 一拖算一步：拖動中不對帳，放手再對
+                        onChangeStart: (_) => _gapSliding = true,
                         onChanged: (v) => setState(() => _gapN = v),
+                        onChangeEnd: (_) {
+                          _gapSliding = false;
+                          _queueCommit();
+                        },
                       ),
                     ),
                   ),
@@ -2225,6 +2543,12 @@ class _CollageScreenState extends State<CollageScreen>
                       flex: tab == _kTabWatermark ? 4 : 1,
                       child: _buildPreview(tab),
                     ),
+                    // 上一步／重做跟影片、照片、批次同一條、同一個位置
+                    //（預覽下方，三個分頁都在）
+                    undoRedoBar(
+                      onUndo: _undoStack.isEmpty ? null : _undoLast,
+                      onRedo: _redoStack.isEmpty ? null : _redoLast,
+                    ),
                     if (tab == _kTabCollage) ..._collageTabBody(),
                     if (tab == _kTabWatermark) _buildWatermarkTab(),
                     if (tab == _kTabExport) _buildExportTab(),
@@ -2299,11 +2623,27 @@ class _CollageScreenState extends State<CollageScreen>
   /// 拼圖分頁：拼圖吃手勢（拖曳互換、鎖定調構圖），浮水印只是看得到；
   /// 浮水印分頁反過來——拼圖不吃手勢，浮水印圖層可拖／捏合／點選
   ///（選取框、置中輔助線、選取路由全照批次那一頁的接法）；匯出分頁純看
-  Widget _buildPreview(int tab) => ValueListenableBuilder<int>(
-    valueListenable: _liveTick,
-    builder: (context, _, _) =>
-        RepaintBoundary(child: _buildPreviewContent(tab)),
+  Widget _buildPreview(int tab) => Listener(
+    // 手指按在預覽上＝拖曳／捏合／拉角進行中：上一步等最後一根手指離開
+    // 才對帳，一整個手勢算一步。第一根手指落下時，先把還沒對帳的改動
+    //（浮水印面板剛打的字）結成一步，不跟這個手勢混在一起
+    onPointerDown: (e) {
+      if (_previewPointers.isEmpty) _flushCommit();
+      _previewPointers.add(e.pointer);
+    },
+    onPointerUp: (e) => _previewPointerGone(e.pointer),
+    onPointerCancel: (e) => _previewPointerGone(e.pointer),
+    child: ValueListenableBuilder<int>(
+      valueListenable: _liveTick,
+      builder: (context, _, _) =>
+          RepaintBoundary(child: _buildPreviewContent(tab)),
+    ),
   );
+
+  void _previewPointerGone(int pointer) {
+    _previewPointers.remove(pointer);
+    if (_previewPointers.isEmpty) _queueCommit();
+  }
 
   Widget _buildPreviewContent(int tab) {
     final wmTab = tab == _kTabWatermark;
@@ -2506,7 +2846,18 @@ class _CollageScreenState extends State<CollageScreen>
                 // 重疊處的手指全被文字吃掉，而「選取路由」又只在有選取
                 // 時才掛上來
                 onSelectPart: (p) => setState(() => _wmPart = p),
-                onChanged: () => setState(() {}),
+                // 上一步之後面板把輸入框等狀態對回設定
+                syncVersion: _wmSync,
+                // 滑桿拖動中只重畫預覽、不對帳；放手時面板補一次 onChanged
+                onLiveChange: () {
+                  _wmSliding = true;
+                  _liveRepaint();
+                },
+                onChanged: () {
+                  _wmSliding = false;
+                  _commitSoon();
+                  setState(() {});
+                },
               ),
               Positioned(
                 left: 0,
