@@ -406,6 +406,7 @@ Future<List<String>> _buildCommand(
   double winStart = 0,
   double? winEnd,
   bool videoOnly = false,
+  bool seekInputs = true,
 }) async {
   final probes = <int, _SourceProbe>{};
   for (var i = 0; i < spec.sources.length; i++) {
@@ -460,11 +461,45 @@ Future<List<String>> _buildCommand(
   /// 濾鏡圖裡還會留下接不到輸出的分支（ffmpeg 直接報錯）
   bool inWindow(TimelineClip c) => visible(c.offset / sp, c.end / sp) != null;
 
+  /// 影片片段在這一段裡要用到的素材時間（素材秒，含變速）。輸入端的 -ss
+  /// 跟濾鏡的 trim 都照這一份算：兩邊各算各的話，哪天只改了一邊，trim 的
+  /// 起點扣掉 -ss 之後就可能變負的，開頭那幾格會黑掉
+  (double, double) videoSourceRange(TimelineClip c) {
+    final start = c.offset / sp;
+    final (a, b) = visible(start, c.end / sp)!;
+    final rate = sp * c.speed.clamp(0.1, 16.0);
+    return (c.trimStart + (a - start) * rate, c.trimStart + (b - start) * rate);
+  }
+
   /// 這一段要處理的片段（聲音那一趟不分段，見 _buildAudioMux）
   final segClips = [
     for (final c in spec.clips)
       if (inWindow(c)) c,
   ];
+
+  // Seek close to the first sample this segment needs, then trim precisely in
+  // the filter. Without an input seek every segment decodes from source zero.
+  // A shared source must use the earliest time needed by *all* its consumers,
+  // including audio. GIF/image inputs keep their existing loop/time semantics.
+  final inputStarts = <int, double>{};
+  void needFrom(int sourceIndex, double start) {
+    final previous = inputStarts[sourceIndex];
+    if (previous == null || start < previous) inputStarts[sourceIndex] = start;
+  }
+
+  for (final c in segClips) {
+    final kind = spec.sources[c.sourceIndex].kind;
+    if (kind == ClipKind.video) needFrom(c.sourceIndex, videoSourceRange(c).$1);
+    if (!videoOnly &&
+        (kind == ClipKind.video || kind == ClipKind.audio) &&
+        probes[c.sourceIndex]!.hasAudio) {
+      needFrom(c.sourceIndex, c.trimStart);
+    }
+  }
+  final inputSeeks = {
+    for (final e in inputStarts.entries)
+      e.key: seekInputs ? _inputSeekBase(e.value) : 0.0,
+  };
 
   // 畫布幀率取素材中最高者
   var fps = 0.0;
@@ -687,8 +722,7 @@ Future<List<String>> _buildCommand(
     // 這一段看得到的範圍，換算回素材自己的時間（含變速）
     final (a, b) = visible(start, end)!;
     final rate = sp * c.speed.clamp(0.1, 16.0);
-    final srcA = c.trimStart + (a - start) * rate;
-    final srcB = c.trimStart + (b - start) * rate;
+    final (srcA, srcB) = videoSourceRange(c);
     final (w2, h2, x, y) = layerBox(c, src.aspect);
     final (cropF, cdx, cdy, cw, ch) = cropOf(c, w2, h2);
     final (spinF, sdx, sdy) = spinFadeOf(c, cw, ch);
@@ -697,7 +731,8 @@ Future<List<String>> _buildCommand(
         : null;
     fc.write(
       '[$label]'
-      'trim=start=${_f(srcA)}:end=${_f(srcB)},'
+      'trim=start=${_f(srcA - (inputSeeks[c.sourceIndex] ?? 0))}'
+      ':end=${_f(srcB - (inputSeeks[c.sourceIndex] ?? 0))},'
       // 先縮到輸出尺寸再倒轉：reverse 會把整段畫面存進記憶體，
       // 用原始解析度存會直接把記憶體吃爆。
       //
@@ -1033,7 +1068,8 @@ Future<List<String>> _buildCommand(
     }
     fc.write(
       '[$label]'
-      'atrim=start=${_f(c.trimStart)}:end=${_f(c.trimEnd)},'
+      'atrim=start=${_f(c.trimStart - (inputSeeks[c.sourceIndex] ?? 0))}'
+      ':end=${_f(c.trimEnd - (inputSeeks[c.sourceIndex] ?? 0))},'
       // 畫面倒轉時聲音也要倒過來，不然對不上嘴形／節奏
       '${c.reverse ? 'areverse,' : ''}'
       'asetpts=PTS-STARTPTS,'
@@ -1069,9 +1105,14 @@ Future<List<String>> _buildCommand(
     if (!usedSources.contains(i)) continue;
     switch (s.kind) {
       case ClipKind.video:
-        cmd.addAll([..._hwDecodeArguments(), '-i', s.path]);
+        cmd.addAll([
+          ..._hwDecodeArguments(),
+          ..._inputSeekArguments(inputSeeks[i] ?? 0),
+          '-i',
+          s.path,
+        ]);
       case ClipKind.audio:
-        cmd.addAll(['-i', s.path]);
+        cmd.addAll([..._inputSeekArguments(inputSeeks[i] ?? 0), '-i', s.path]);
       case ClipKind.image:
         // GIF 是會動的：-ignore_loop 0 讓它循環播到片段結束。
         // 而且 gif demuxer 根本沒有 loop 這個選項——沿用 -loop 1
@@ -1147,6 +1188,14 @@ Future<List<String>> _buildCommand(
   ]);
   return cmd;
 }
+
+// Keep a second of preroll and use a whole-second origin. Rebasing by an exact
+// second preserves frame/sample rounding in the existing millisecond trims.
+double _inputSeekBase(double firstNeeded) =>
+    firstNeeded.isFinite ? math.max(0, firstNeeded.floor() - 1).toDouble() : 0;
+
+List<String> _inputSeekArguments(double start) =>
+    start > 0 ? ['-ss', _f(start)] : const [];
 
 /// 平台對應的 H.264 硬體編碼器
 String _hwEncoder() => (Platform.isIOS || Platform.isMacOS)
@@ -1429,8 +1478,9 @@ List<double> _segmentBounds(ExportSpec spec) {
 Future<List<String>?> _buildAudioMux(
   ExportSpec spec,
   String videoPath,
-  String outPath,
-) async {
+  String outPath, {
+  bool seekInputs = true,
+}) async {
   final sp = spec.speed;
   final hasAudio = <int, bool>{};
   for (var i = 0; i < spec.sources.length; i++) {
@@ -1449,11 +1499,20 @@ Future<List<String>?> _buildAudioMux(
   // 輸入 0 是已經串好的畫面，聲音來源從 1 開始編號
   final srcIn = <int, int>{};
   final need = <int, int>{};
+  final inputStarts = <int, double>{};
   var next = 1;
   for (final c in clips) {
     srcIn.putIfAbsent(c.sourceIndex, () => next++);
     need[c.sourceIndex] = (need[c.sourceIndex] ?? 0) + 1;
+    inputStarts[c.sourceIndex] = math.min(
+      inputStarts[c.sourceIndex] ?? c.trimStart,
+      c.trimStart,
+    );
   }
+  final inputSeeks = {
+    for (final e in inputStarts.entries)
+      e.key: seekInputs ? _inputSeekBase(e.value) : 0.0,
+  };
 
   final fc = StringBuffer();
   final pool = <int, List<String>>{};
@@ -1485,7 +1544,8 @@ Future<List<String>?> _buildAudioMux(
     }
     fc.write(
       '[$label]'
-      'atrim=start=${_f(c.trimStart)}:end=${_f(c.trimEnd)},'
+      'atrim=start=${_f(c.trimStart - inputSeeks[c.sourceIndex]!)}'
+      ':end=${_f(c.trimEnd - inputSeeks[c.sourceIndex]!)},'
       '${c.reverse ? 'areverse,' : ''}'
       'asetpts=PTS-STARTPTS,'
       '${_atempoChain(sp * c.speed.clamp(0.1, 16.0))}'
@@ -1513,7 +1573,11 @@ Future<List<String>?> _buildAudioMux(
   final ordered = srcIn.entries.toList()
     ..sort((a, b) => a.value.compareTo(b.value));
   for (final e in ordered) {
-    cmd.addAll(['-i', spec.sources[e.key].path]);
+    cmd.addAll([
+      ..._inputSeekArguments(inputSeeks[e.key]!),
+      '-i',
+      spec.sources[e.key].path,
+    ]);
   }
   cmd.addAll([
     '-filter_complex',
@@ -1621,8 +1685,31 @@ String _displayCommand(List<String> args) => [
 ].join(' ');
 
 @visibleForTesting
-Future<List<String>> debugBuildArguments(ExportSpec spec, String outPath) =>
-    _buildCommand(spec, null, const {}, outPath);
+Future<List<String>> debugBuildArguments(
+  ExportSpec spec,
+  String outPath, {
+  double winStart = 0,
+  double? winEnd,
+  bool videoOnly = false,
+  bool seekInputs = true,
+}) => _buildCommand(
+  spec,
+  null,
+  const {},
+  outPath,
+  winStart: winStart,
+  winEnd: winEnd,
+  videoOnly: videoOnly,
+  seekInputs: seekInputs,
+);
+
+@visibleForTesting
+Future<List<String>?> debugBuildAudioMuxArguments(
+  ExportSpec spec,
+  String videoPath,
+  String outPath, {
+  bool seekInputs = true,
+}) => _buildAudioMux(spec, videoPath, outPath, seekInputs: seekInputs);
 
 List<String> _softwareEncoder(List<String> args, String encoder) {
   final out = <String>[];
