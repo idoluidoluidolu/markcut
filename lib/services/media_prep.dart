@@ -142,6 +142,24 @@ class MediaPrep {
     }
   }
 
+  /// Work-file eligibility can reject a sparse GOP as soon as it exceeds 16
+  /// frames. A successful eligibility result still scans the entire file;
+  /// diagnostic [probe] always returns complete statistics. Older builds and
+  /// Android retain their existing probe behavior when this method is absent.
+  static Future<Map<String, dynamic>?> probeWorkEligibility(String path) async {
+    try {
+      if (!await available) return null;
+      final result = await _ch.invokeMapMethod<String, dynamic>(
+        'probeWorkEligibility',
+        path,
+      );
+      if (result != null) return result;
+    } catch (_) {
+      // An optional native optimization must not change eligibility decisions.
+    }
+    return probe(path);
+  }
+
   /// [probe] 的輕量版：只讀容器層的中繼資料（尺寸/編碼/旋轉/SDR），
   /// 不掃關鍵幀——完整 probe 要把整支檔的取樣讀過一遍，幾 GB 的素材
   /// 光探測就要好幾秒。給「要不要蓋讀取遮罩」這種只看規格的判斷用。

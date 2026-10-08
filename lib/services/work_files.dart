@@ -782,9 +782,10 @@ class WorkFiles {
       if (w <= 0 || h <= 0 || (w < h ? w : h) > 1088) return false;
       if (lite['rotated'] == true) return false;
       if (lite['sdr709'] != true) return false;
-      // 快篩過了才做貴的那一步：掃關鍵幀（要把整支檔讀過一遍）
-      final m = await MediaPrep.probe(src);
+      // 合格才需要掃完；只要找到 >16 格的 GOP，就已確定需要轉檔。
+      final m = await MediaPrep.probeWorkEligibility(src);
       if (m == null || m['error'] != null) return null;
+      if (m['gopRejected'] == true) return false;
       final frames = (m['frames'] as num?)?.toInt() ?? 0;
       final keys = (m['keyframes'] as num?)?.toInt() ?? 0;
       final maxGop = (m['maxGopFrames'] as num?)?.toInt();

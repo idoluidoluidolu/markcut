@@ -6655,14 +6655,15 @@ final class MCInteractivePrepGate {
             }
           }
         }
-      case "probe":
+      case "probe", "probeWorkEligibility":
         guard let path = call.arguments as? String else {
           result(nil)
           return
         }
-        // 讀完整條軌，別擋主執行緒
+        let maxGop = call.method == "probeWorkEligibility" ? 16 : nil
+        // 診斷完整讀取；合格判定只在已確定超標時提早停止。
         DispatchQueue.global(qos: .userInitiated).async {
-          let m = self.probeFile(path)
+          let m = self.probeFile(path, rejectGopAbove: maxGop)
           DispatchQueue.main.async { result(m) }
         }
       case "probeLite":
@@ -6709,7 +6710,7 @@ final class MCInteractivePrepGate {
       return nil
     }
     // 關鍵幀太疏的話拖曳會鈍，那正是工作檔要解決的事
-    let m = probeFile(path)
+    let m = probeFile(path, rejectGopAbove: 12)
     guard let frames = m["frames"] as? Int, let keys = m["keyframes"] as? Int,
       let maxGop = m["maxGopFrames"] as? Int,
       keys > 0, Double(frames) / Double(keys) <= 8, maxGop <= 12
@@ -7423,7 +7424,8 @@ final class MCInteractivePrepGate {
   /// 關鍵幀間隔是「左右滑動順不順」的決定性數字：seek 一定要從前一個
   /// 關鍵幀解過來，間隔 60 格就是每滑一下解 60 格。這裡用 passthrough
   /// 讀（不解碼）數每一格的 sync 旗標，一支十秒的檔幾十毫秒就數完
-  private func probeFile(_ path: String, keyframes: Bool = true) -> [String: Any] {
+  func probeFile(_ path: String, keyframes: Bool = true,
+    rejectGopAbove: Int? = nil) -> [String: Any] {
     var m: [String: Any] = ["path": (path as NSString).lastPathComponent]
     if let attr = try? FileManager.default.attributesOfItem(atPath: path),
       let bytes = attr[.size] as? NSNumber
@@ -7487,6 +7489,13 @@ final class MCInteractivePrepGate {
               gap = 1
             } else {
               gap += 1
+            }
+            if let limit = rejectGopAbove, max(maxGap, gap) > limit {
+              // A later keyframe cannot undo an oversized GOP. Do not expose
+              // partial counts as complete diagnostic statistics.
+              reader.cancelReading()
+              m["gopRejected"] = true
+              return m
             }
           }
           maxGap = max(maxGap, gap)

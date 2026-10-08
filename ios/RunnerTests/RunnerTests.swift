@@ -51,6 +51,28 @@ private final class HeldImportProvider: NSItemProvider {
 
 class RunnerTests: XCTestCase {
 
+  func testWorkEligibilityRejectsSparseGopWithoutReturningPartialCounts() throws {
+    let input = try XCTUnwrap(Bundle(for: RunnerTests.self)
+      .url(forResource: "native-scrub", withExtension: "mp4"))
+    let delegate = AppDelegate()
+    let full = delegate.probeFile(input.path)
+    let gap = try XCTUnwrap(full["maxGopFrames"] as? Int)
+    XCTAssertGreaterThan(gap, 1)
+    let rejected = delegate.probeFile(input.path, rejectGopAbove: gap - 1)
+    XCTAssertEqual(rejected["gopRejected"] as? Bool, true)
+    XCTAssertNil(rejected["frames"])
+    XCTAssertNil(rejected["keyframes"])
+    // The exact boundary is eligible, and diagnostics remain complete even
+    // after an earlier eligibility reader was cancelled.
+    let accepted = delegate.probeFile(input.path, rejectGopAbove: gap)
+    XCTAssertNil(accepted["gopRejected"])
+    XCTAssertEqual(accepted["frames"] as? Int, full["frames"] as? Int)
+    XCTAssertEqual(accepted["keyframes"] as? Int, full["keyframes"] as? Int)
+    XCTAssertEqual(accepted["maxGopFrames"] as? Int, gap)
+    let diagnostic = delegate.probeFile(input.path)
+    XCTAssertEqual(diagnostic["frames"] as? Int, full["frames"] as? Int)
+  }
+
   private func hdrFixture() throws -> URL {
     try XCTUnwrap(Bundle(for: RunnerTests.self)
       .url(forResource: "native-hdr-rotated", withExtension: "mp4"))
