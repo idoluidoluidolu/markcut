@@ -11406,6 +11406,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _tl.resolveOverlaps(track: clip.track, pinnedId: clip.id);
   }
 
+  /// 在第 [t] 層插一條新的空軌：原本 t 以下（編號 ≥ t）的軌整批往下移
+  /// 一格（[except] 那一段不動，呼叫端自己放）。靜音／隱藏要跟著搬——
+  /// 不搬會掉到別軌，匯出是照這兩個集合處理的
+  void _insertTrackAt(int t, {int? except}) {
+    for (final c in _tl.clips) {
+      if (c.id != except && c.track >= t) c.track++;
+    }
+    final moved = _mutedTracks.map((k) => k >= t ? k + 1 : k).toSet();
+    _mutedTracks
+      ..clear()
+      ..addAll(moved);
+    final movedHide = _hiddenTracks.map((k) => k >= t ? k + 1 : k).toSet();
+    _hiddenTracks
+      ..clear()
+      ..addAll(movedHide);
+  }
+
   /// 放開片段：一次寫回位置與軌道。
   /// insert=true：插成新的一層，原本這層以下往下擠。
   /// insert=false：放到這一層；同軌壓到別人時把後面的推開。
@@ -11420,9 +11437,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (insert) {
         // 插入新軌不用讓：那條軌是空的
         clip.offset = want;
-        for (final c in _tl.clips) {
-          if (c.id != id && c.track >= t) c.track++;
-        }
+        _insertTrackAt(t, except: id);
       } else {
         // 同一軌不重疊：以前是覆寫（carveRange 把被壓到的裁掉），使用者
         // 指定「不要覆蓋，把後面的往後推」。落在別段身上就吸到它較近的
@@ -11436,18 +11451,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tl.clips.add(clip);
       if (!insert) _tl.resolveOverlaps(track: t, pinnedId: clip.id);
       // 搬到最底下那條空軌時不要收斂，否則會被拉回原本的層
-      if (insert) {
-        // 插入時 t 以下的軌整批往下移一格，靜音／隱藏要跟著搬
-        //（不搬會掉到別軌，匯出是照這兩個集合處理的）
-        final moved = _mutedTracks.map((k) => k >= t ? k + 1 : k).toSet();
-        _mutedTracks
-          ..clear()
-          ..addAll(moved);
-        final movedHide = _hiddenTracks.map((k) => k >= t ? k + 1 : k).toSet();
-        _hiddenTracks
-          ..clear()
-          ..addAll(movedHide);
-      }
+      //（插入時靜音／隱藏已經在 _insertTrackAt 跟著搬了）
       if (insert || t < oldUsed) _remapMuted(_tl.compactTracks());
       // 插入/收斂會重編軌號，選取的軌道指不準了——直接清掉
       if (insert) _selTrack = -1;
@@ -12474,12 +12478,30 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
     // 播放器交給 _ensureCtrlFor（有種類判斷＋錯誤保護）
     _ensureCtrlFor(clip);
+    // 貼在指針（或長按指定的那一點）上，時間點不挪（使用者：「素材貼上
+    // 應該貼上在指針目前位置」）。那一點落在同軌別段的身體裡（影片／
+    // 圖片／聲音同一軌不能疊）時，以前會被吸到那一段的頭或尾，看起來
+    // 就是沒貼在指針上；現在改成在那一軌上面插一層新的放進去——不裁、
+    // 不蓋、也不挪別人。貼在空隙裡照舊：身體壓到後面的段就把它們推開
+    final newLayer =
+        (_tl.placeOffsetOnTrack(clip, clip.offset, clip.track) - clip.offset)
+            .abs() >
+        kOverlapEps;
     setState(() {
-      // 同軌不重疊：貼在別段身上就吸到它較近的那一端、後面的推開
-      _placeNewClip(clip);
+      if (newLayer) {
+        _insertTrackAt(clip.track);
+        _tl.clips.add(clip);
+        // 插層會重編軌號，選取的軌道指不準了
+        _selTrack = -1;
+        _remapMuted(_tl.compactTracks());
+      } else {
+        _placeNewClip(clip);
+      }
       _sel = clip.id;
     });
     _resyncPlayback();
+    // 插層是合成的結構變化（軌號整批重編）：當場排重組，跟放下插層同一條路
+    if (newLayer) _compRefreshIfChanged();
     _saveDraft(); // 貼上完立刻落草稿，被系統殺掉也不會掉
   }
 

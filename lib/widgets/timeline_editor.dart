@@ -321,6 +321,13 @@ class _TimelineEditorState extends State<TimelineEditor> {
   /// 拖曳片段時上一刻有沒有吸住（吸住的瞬間震一下）
   bool _dragSnapped = false;
 
+  /// 正在拉的修剪把手（哪一段、哪一邊）：拉到跟別的素材切齊時畫對齊線。
+  /// 第一次拉動時記下、手指放開時收掉
+  ({int id, bool left})? _trimEdge;
+
+  /// 正在拉浮水印範圍的哪一邊（true＝左把手；null＝沒在拉）
+  bool? _wmTrimLeft;
+
   /// 拖曳已「武裝」（移動超過門檻）。沒武裝前幽靈不顯示、放開不算拖曳
   bool _liftArmed = false;
 
@@ -654,7 +661,64 @@ class _TimelineEditorState extends State<TimelineEditor> {
   /// 檢查，但那個旗標要等重建才傳得下來
   void _trimGuarded(int id, double dSec, bool fromLeft) {
     if (_locked) return;
+    // 不用 setState：父層改完範圍本來就會重畫時間軸（見 repaint）
+    _trimEdge = (id: id, left: fromLeft);
     widget.onTrim(id, dSec, fromLeft);
+  }
+
+  /// 修剪把手放開（或手勢被取消）：對齊線收掉
+  void _trimEnded() {
+    if (_trimEdge != null) setState(() => _trimEdge = null);
+    widget.onTrimEnd?.call();
+  }
+
+  /// 浮水印範圍的把手放開：對齊線收掉
+  void _wmTrimEnded() {
+    if (_wmTrimLeft != null) setState(() => _wmTrimLeft = null);
+    widget.onWmGestureEnd?.call();
+  }
+
+  /// 對齊線：拖曳片段、拉修剪把手、拉浮水印範圍的時候，邊緣剛好切齊其他
+  /// 素材的頭尾（或片頭）就在那個時間點畫一條直線，貫穿所有軌——吸住的
+  /// 那一下手指會震，眼睛也看得到是跟誰對齊（使用者：「對齊時要有垂直的
+  /// 線暗示切齊其他素材」）。回傳要畫線的時間點（秒）
+  List<double> _snapGuides(_LiftSpec? spec) {
+    final edges = <double>[];
+    int? self;
+    final lift = _lift;
+    final trim = _trimEdge;
+    final wm = widget.watermark;
+    if (lift != null && _liftArmed && spec != null) {
+      final c = _clipById(lift.clipId);
+      if (c == null) return const [];
+      self = c.id;
+      edges.addAll([spec.offset, spec.offset + c.length]);
+    } else if (trim != null) {
+      final c = _clipById(trim.id);
+      if (c == null) return const [];
+      self = c.id;
+      edges.add(trim.left ? c.offset : c.end);
+    } else if (_wmTrimLeft != null && wm != null) {
+      edges.add(_wmTrimLeft! ? wm.start : wm.end);
+    } else {
+      return const [];
+    }
+    final anchors = <double>[
+      0,
+      for (final c in timeline.clips)
+        if (c.id != self) ...[c.offset, c.end],
+    ];
+    final out = <double>[];
+    for (final e in edges) {
+      for (final a in anchors) {
+        // 吸附算出來的位置就是錨點本身；「尾對齊」是 位置＋長度，
+        // 浮點加減可能差最後一位，給一點點容差
+        if ((a - e).abs() > 0.0005) continue;
+        if (!out.any((g) => (g - a).abs() <= 0.0005)) out.add(a);
+        break;
+      }
+    }
+    return out;
   }
 
   /// 幽靈目前的落點：位置（含吸附）、軌道、是否插新層。
@@ -981,6 +1045,22 @@ class _TimelineEditorState extends State<TimelineEditor> {
                               if (_liftArmed &&
                                   spec?.placement?.targetId != null)
                                 _insertionHint(spec!),
+                              // 對齊線：切齊其他素材的那個時間點，從軌道區
+                              // 頂端貫穿到底（琥珀細線，跟預覽的置中輔助線
+                              // 同一個語彙；播放頭是白色粗一點，分得開）
+                              for (final g in _snapGuides(spec))
+                                Positioned(
+                                  key: ValueKey('snap-guide-$g'),
+                                  left: g * pxPerSec - 0.75,
+                                  top: rulerH + _rulerGap,
+                                  bottom: 0,
+                                  child: IgnorePointer(
+                                    child: Container(
+                                      width: 1.5,
+                                      color: kSelect,
+                                    ),
+                                  ),
+                                ),
                               // 拖曳浮水印範圍時的即時外框由 _wmRow 自己畫
                               // 播放頭：一條直線（只有它隨播放位置重繪）
                               Positioned.fill(
@@ -1126,7 +1206,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
             onSelect: _tapClip,
             onTrim: _trimGuarded,
             onTrimStart: widget.onTrimStart,
-            onTrimEnd: widget.onTrimEnd,
+            onTrimEnd: _trimEnded,
             canStart: _maySingle,
             onLiftStart: (pos) => _liftStart(c, pos),
             onLiftUpdate: _liftUpdate,
@@ -1367,10 +1447,11 @@ class _TimelineEditorState extends State<TimelineEditor> {
                           canStart: _maySingle,
                           onDrag: (dxSec) {
                             if (_locked) return;
+                            _wmTrimLeft = true; // 對齊線（見 _snapGuides）
                             widget.onTrimWm(dxSec, true);
                           },
                           onStart: widget.onTrimWmStart,
-                          onEnd: widget.onWmGestureEnd,
+                          onEnd: _wmTrimEnded,
                           pxPerSec: pxPerSec,
                         ),
                       ),
@@ -1381,10 +1462,11 @@ class _TimelineEditorState extends State<TimelineEditor> {
                           canStart: _maySingle,
                           onDrag: (dxSec) {
                             if (_locked) return;
+                            _wmTrimLeft = false;
                             widget.onTrimWm(dxSec, false);
                           },
                           onStart: widget.onTrimWmStart,
-                          onEnd: widget.onWmGestureEnd,
+                          onEnd: _wmTrimEnded,
                           pxPerSec: pxPerSec,
                         ),
                       ),
