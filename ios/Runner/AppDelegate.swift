@@ -1740,20 +1740,24 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   /// 這一層的變形是否把來源滿版貼合畫布（誤差 1.5px 內）。
   /// 支援 0/90/180/270 旋轉（直式素材帶旋轉 flag 是實機常態）。
   /// 回傳旋轉角；nil＝非滿版或非直角旋轉，呼叫端走 CI
-  /// 快路取樣參數：畫布四角 → 來源 UV（用 chain 反矩陣）。
+  /// 快路取樣參數：畫布四角 → 來源 UV（用變形的反矩陣）。
   /// 回 nil＝這一層沒有滿版貼合畫布（或矩陣退化），呼叫端走 CI。
   /// 不再把幾何分類成 0/90/180/270——鏡像會被誤判成正立
-  ///（實機 144：匯入後畫面顏倒）；仿射反矩陣一式通吃
+  ///（實機 144：匯入後畫面顏倒）；仿射反矩陣一式通吃。
+  ///
+  /// 座標系：Metal 的來源貼圖（像素緩衝第 0 列在上）跟輸出（vtxBlit 的
+  /// t.y 由上往下）都是「左上原點、y 往下」，正好就是 L.transform 的
+  ///（AVFoundation）座標——直接用它反推。以前沿用 CI 那條「上下翻轉
+  /// 夾著變形」的鏈：算出來的 v 從底部量、輸出也從底部排，橫的素材兩次
+  /// 翻轉剛好抵銷看不出來；直式素材（90° 旗標）來源的上下對應的是畫面
+  /// 的左右，抵銷不掉，整張轉了 180°＝上下顛倒。預覽多半播已轉正的
+  /// 工作檔（沒有旗標）所以正常，匯出讀原檔就在走快路的那幾段倒過來
+  ///（沒有疊加物、只有這一層滿版的時段；有圖片／浮水印的時段走 CI 是正的）
   func fastUV(
     _ L: CILayerSpec, srcW: CGFloat, srcH: CGFloat, canvas: CGSize
   ) -> (SIMD4<Float>, SIMD2<Float>)? {
     guard srcW > 1, srcH > 1 else { return nil }
-    let flipSrc = CGAffineTransform(
-      a: 1, b: 0, c: 0, d: -1, tx: 0, ty: L.srcHeight)
-    let flipCanvas = CGAffineTransform(
-      a: 1, b: 0, c: 0, d: -1, tx: 0, ty: canvas.height)
-    let chain = flipSrc.concatenating(L.transform)
-      .concatenating(flipCanvas)
+    let chain = L.transform
     // 退化（行列式≈ 0）不可逆
     let det = chain.a * chain.d - chain.b * chain.c
     guard abs(det) > 0.000001 else { return nil }

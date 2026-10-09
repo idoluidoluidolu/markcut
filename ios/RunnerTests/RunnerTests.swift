@@ -2566,4 +2566,132 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(player.player.currentItem === item)
   }
 
+  // ===== 合成器快路的方向（Engine 3.0 Metal 直拷）=====
+  //
+  // 使用者回報：直拍影片匯出後播到一半整個上下顛倒，預覽正常。快路
+  //（單層滿版、沒有疊加物的格子）以前拿 CI 的翻轉鏈反推取樣座標：橫的
+  // 素材兩次翻轉剛好抵銷，直式（橫存＋90° 旗標）整張轉 180°
+
+  /// iPhone 直式：像素橫存 64×32、旗標轉 90°、輸出 32×64
+  private var portraitFlag: CGAffineTransform {
+    CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 32, ty: 0)
+  }
+
+  private func fastLayer(_ t: CGAffineTransform, srcW: CGFloat, srcH: CGFloat)
+    -> CILayerSpec
+  {
+    CILayerSpec(trackID: 1, still: nil, transform: t,
+      srcHeight: srcH, start: 0, end: 10, fadeIn: 0, fadeOut: 0,
+      colorMatrix: nil, crop: nil, rotation: 0, opacity: 1,
+      z: 0, srcWidth: srcW, sourceOpaque: true)
+  }
+
+  /// 輸出的參數座標 (s, t)（t 由上往下，跟 vtxBlit 一樣）取到的來源 UV
+  private func fastSampled(
+    _ p: (SIMD4<Float>, SIMD2<Float>), _ s: Float, _ t: Float
+  ) -> SIMD2<Float> {
+    SIMD2<Float>(p.0.x, p.0.y) + s * SIMD2<Float>(p.0.z, p.0.w) + t * p.1
+  }
+
+  private func assertUV(
+    _ a: SIMD2<Float>, _ x: Float, _ y: Float, _ why: String,
+    file: StaticString = #filePath, line: UInt = #line
+  ) {
+    XCTAssertEqual(a.x, x, accuracy: 0.001, why, file: file, line: line)
+    XCTAssertEqual(a.y, y, accuracy: 0.001, why, file: file, line: line)
+  }
+
+  func testFastPathUVTurnsPortraitFlagUprightNotUpsideDown() throws {
+    let comp = CIExportCompositor()
+    let p = try XCTUnwrap(comp.fastUV(
+      fastLayer(portraitFlag, srcW: 64, srcH: 32), srcW: 64, srcH: 32,
+      canvas: CGSize(width: 32, height: 64)))
+    // 順時針轉 90° 顯示：畫面左上取自存檔的左下、右上取自存檔的左上、
+    // 左下取自存檔的右下、右下取自存檔的右上
+    assertUV(fastSampled(p, 0, 0), 0, 1, "畫面左上")
+    assertUV(fastSampled(p, 1, 0), 0, 0, "畫面右上")
+    assertUV(fastSampled(p, 0, 1), 1, 1, "畫面左下")
+    assertUV(fastSampled(p, 1, 1), 1, 0, "畫面右下")
+  }
+
+  func testFastPathUVKeepsLandscapeAndUpsideDownLandscapeAsBefore() throws {
+    let comp = CIExportCompositor()
+    let canvas = CGSize(width: 64, height: 32)
+    let id = try XCTUnwrap(comp.fastUV(
+      fastLayer(.identity, srcW: 64, srcH: 32), srcW: 64, srcH: 32,
+      canvas: canvas))
+    assertUV(fastSampled(id, 0, 0), 0, 0, "橫拍左上")
+    assertUV(fastSampled(id, 1, 1), 1, 1, "橫拍右下")
+    // 倒著拿的橫拍：旗標轉 180°
+    let flip = CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: 64, ty: 32)
+    let up = try XCTUnwrap(comp.fastUV(
+      fastLayer(flip, srcW: 64, srcH: 32), srcW: 64, srcH: 32,
+      canvas: canvas))
+    assertUV(fastSampled(up, 0, 0), 1, 1, "倒拿左上")
+    assertUV(fastSampled(up, 1, 1), 0, 0, "倒拿右下")
+  }
+
+  /// 真的跑一次 Metal 快路：存檔左上那塊亮的，直式顯示後要在畫面右上
+  ///（以前跑到左下＝上下顛倒）
+  func testFastPathComposeDrawsPortraitSourceUpright() throws {
+    let src = try yuvQuadrantBuffer(width: 64, height: 32)
+    var dstOpt: CVPixelBuffer?
+    let attrs = [
+      kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+      kCVPixelBufferMetalCompatibilityKey as String: true,
+    ] as CFDictionary
+    XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 32, 64,
+      kCVPixelFormatType_32BGRA, attrs, &dstOpt), kCVReturnSuccess)
+    let dst = try XCTUnwrap(dstOpt)
+    let comp = CIExportCompositor()
+    let p = try XCTUnwrap(comp.fastUV(
+      fastLayer(portraitFlag, srcW: 64, srcH: 32), srcW: 64, srcH: 32,
+      canvas: CGSize(width: 32, height: 64)))
+    XCTAssertTrue(MetalYUVBlit.shared.sdrCompose(
+      from: src, to: dst, overlays: [], uvA: p.0, uvB: p.1))
+    CVPixelBufferLockBaseAddress(dst, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(dst, .readOnly) }
+    let stride = CVPixelBufferGetBytesPerRow(dst)
+    let px = try XCTUnwrap(CVPixelBufferGetBaseAddress(dst))
+      .assumingMemoryBound(to: UInt8.self)
+    // BGRA 的 G：亮塊 255、暗處 0（色度中性）
+    func green(_ x: Int, _ y: Int) -> Int { Int(px[y * stride + x * 4 + 1]) }
+    XCTAssertGreaterThan(green(24, 8), 200, "存檔左上的亮塊要在畫面右上")
+    XCTAssertLessThan(green(8, 8), 40)
+    XCTAssertLessThan(green(8, 56), 40, "不能跑到左下（上下顛倒）")
+    XCTAssertLessThan(green(24, 56), 40)
+  }
+
+  /// 420v：左上四分之一亮（Y=235），其他暗（Y=16），色度中性
+  private func yuvQuadrantBuffer(width: Int, height: Int) throws -> CVPixelBuffer {
+    var bufOpt: CVPixelBuffer?
+    let attrs = [
+      kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+      kCVPixelBufferMetalCompatibilityKey as String: true,
+    ] as CFDictionary
+    XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, width, height,
+      kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, attrs, &bufOpt),
+      kCVReturnSuccess)
+    let buf = try XCTUnwrap(bufOpt)
+    CVPixelBufferLockBaseAddress(buf, [])
+    defer { CVPixelBufferUnlockBaseAddress(buf, []) }
+    let yStride = CVPixelBufferGetBytesPerRowOfPlane(buf, 0)
+    let yPlane = try XCTUnwrap(CVPixelBufferGetBaseAddressOfPlane(buf, 0))
+      .assumingMemoryBound(to: UInt8.self)
+    for row in 0..<height {
+      for col in 0..<width {
+        yPlane[row * yStride + col] =
+          (row < height / 2 && col < width / 2) ? 235 : 16
+      }
+    }
+    // 色度平面：高度一半、每列 width 個位元組（Cb、Cr 交錯）
+    let cStride = CVPixelBufferGetBytesPerRowOfPlane(buf, 1)
+    let cPlane = try XCTUnwrap(CVPixelBufferGetBaseAddressOfPlane(buf, 1))
+      .assumingMemoryBound(to: UInt8.self)
+    for row in 0..<(height / 2) {
+      for col in 0..<width { cPlane[row * cStride + col] = 128 }
+    }
+    return buf
+  }
+
 }
