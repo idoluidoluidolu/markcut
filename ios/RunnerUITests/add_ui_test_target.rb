@@ -1,4 +1,6 @@
-# 診斷用：在 CI 上臨時加一個 UI 測試 target 與 scheme（不改 repo 裡的專案檔）
+# 診斷用：在 CI 上臨時加一個 UI 測試 target 與 scheme（不改 repo 裡的專案檔）。
+# scheme 從 Runner.xcscheme 複製：它的建置前置動作（xcode_backend.sh prepare）
+# 是 SwiftPM 外掛找得到 Flutter 模組的前提，自己新建的 scheme 沒有會編不過
 require 'xcodeproj'
 
 proj_path = File.expand_path('../Runner.xcodeproj', __dir__)
@@ -24,9 +26,8 @@ ui.add_file_references([ref])
 ui.add_dependency(app)
 project.save
 
-scheme = Xcodeproj::XCScheme.new
-scheme.add_build_target(app)
+runner_scheme = File.join(proj_path, 'xcshareddata', 'xcschemes', 'Runner.xcscheme')
+scheme = Xcodeproj::XCScheme.new(runner_scheme)
 scheme.add_test_target(ui)
-scheme.set_launch_target(app)
 scheme.save_as(proj_path, 'RunnerUITests', true)
-puts "added RunnerUITests target + scheme to #{proj_path}"
+puts "added RunnerUITests target + scheme (copied from Runner) to #{proj_path}"

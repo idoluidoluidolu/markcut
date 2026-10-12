@@ -60,11 +60,12 @@ jobs:
           xcrun simctl spawn "$SIM_UDID" log stream --style compact --level debug \
             --predicate 'eventMessage CONTAINS "gifpick"' > "$out/gifpick_stream.log" 2>&1 &
           logpid=$!
+          status=0
           xcodebuild test -workspace ios/Runner.xcworkspace -scheme RunnerUITests \
             -configuration Debug -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -only-testing:RunnerUITests -parallel-testing-enabled NO \
             -resultBundlePath "$out/ui.xcresult" \
-            CODE_SIGNING_ALLOWED=NO > "$out/xcodebuild.log" 2>&1
-          status=$?
+            CODE_SIGNING_ALLOWED=NO > "$out/xcodebuild.log" 2>&1 || status=$?
           sleep 2
           kill "$logpid" || true
           xcrun simctl spawn "$SIM_UDID" log show --last 40m --style compact \

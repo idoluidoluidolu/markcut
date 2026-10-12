@@ -89,6 +89,44 @@ final class GifPickUITests: XCTestCase {
     app.coordinate(withNormalizedOffset: CGVector(dx: 0.17, dy: 0.32)).tap()
   }
 
+  /// 剪輯 → 空白專案 → 加素材 → GIF → 相簿挑一張（使用者回報的第二條路）
+  func testEditorAddGifFromGallery() throws {
+    app.launch()
+    sleep(8)
+    shot("e01-launch")
+    if element("開始") == nil {
+      // 第一次開的聚光燈提示：點旁邊收掉
+      app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)).tap()
+      sleep(2)
+    }
+    XCTAssertTrue(tap("開始", timeout: 15), "首頁「開始」找不到")
+    sleep(2)
+    shot("e02-menu")
+    XCTAssertTrue(tap("剪輯", timeout: 10), "「剪輯」找不到")
+    sleep(6)
+    shot("e03-editor")
+    XCTAssertTrue(tap("加素材", timeout: 20), "「加素材」找不到")
+    sleep(2)
+    shot("e04-add-menu")
+    dump("e04-add-menu")
+    XCTAssertTrue(tap("GIF", timeout: 10), "選單裡的「GIF」找不到")
+    sleep(5)
+    shot("e05-after-gif")
+    if element("從相簿選") != nil {
+      // 我的 GIF 已經有東西：先出那張面板，相簿在右上角
+      tap("從相簿選")
+      sleep(5)
+    }
+    shot("e06-picker")
+    dump("e06-picker")
+    tapFirstPickerItem()
+    sleep(2)
+    shot("e07-after-pick-2s")
+    sleep(6)
+    shot("e08-after-pick-8s")
+    dump("e08-after-pick-8s")
+  }
+
   func testImportGifFromGallery() throws {
     app.launch()
     sleep(8)
