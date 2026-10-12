@@ -272,6 +272,8 @@ Future<String?> importGif(
     }
   }
   if (path == null) {
+    // ignore: avoid_print
+    print('[gifpick] dart: falling back to file_picker');
     final r = await FilePicker.platform.pickFiles(
       type: fromFiles ? FileType.custom : FileType.image,
       // 只有 FileType.custom 收得了副檔名清單，別的型別給了會丟
@@ -280,9 +282,13 @@ Future<String?> importGif(
     );
     path = (r == null || r.files.isEmpty) ? null : r.files.first.path;
   }
+  // ignore: avoid_print
+  print('[gifpick] dart: path=$path');
   if (path == null) return null;
   // 副檔名對還要看檔頭：改過名的 PNG、下載到一半的殘檔以前照收，
   // 收進來只有一格、或根本畫不出來
+  // ignore: avoid_print
+  print('[gifpick] dart: looksLikeGif=${await GifStore.looksLikeGif(path)}');
   if (!path.toLowerCase().endsWith('.gif') ||
       !await GifStore.looksLikeGif(path)) {
     if (context.mounted) {

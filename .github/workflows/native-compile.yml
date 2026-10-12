@@ -1,6 +1,7 @@
 name: Native compile and tests
 
-# Manual verification without signing keys or publishing to TestFlight.
+# 診斷分支 claude/gif-pick-diag：模擬器上照使用者路徑跑「從相簿匯入 GIF」，
+# 收截圖、元素樹與 [gifpick] 記錄。不簽章、不上 TestFlight。
 on:
   workflow_dispatch:
 
@@ -14,9 +15,20 @@ concurrency:
 jobs:
   ios:
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Pick newest stable Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -d /Applications/Xcode*.app
+          newest=$(ls -d /Applications/Xcode_*.app | grep -viE 'beta|release_candidate|_rc' \
+            | sed -E 's#.*/Xcode_([0-9.]+)\.app#\1 &#' | sort -V | tail -1 | cut -d' ' -f2)
+          echo "Using $newest"
+          sudo xcode-select -s "$newest/Contents/Developer"
+          xcodebuild -version
+          xcrun simctl list runtimes
       - name: Install pinned Flutter
         shell: bash
         run: |
@@ -26,16 +38,59 @@ jobs:
           "$RUNNER_TEMP/flutter/bin/flutter" --version
       - name: Resolve dependencies
         run: flutter pub get
-      - name: Analyze
-        run: dart analyze lib test integration_test
-      - name: Compile iOS release without signing
-        run: flutter build ios --release --no-codesign
-      - name: Run native regression tests
+      - name: Build for simulator
+        run: flutter build ios --simulator --debug --no-codesign
+      - name: Add UI test target
+        run: ruby ios/RunnerUITests/add_ui_test_target.rb
+      - name: Boot simulator and add GIFs to Photos
         shell: bash
         run: |
           set -euo pipefail
-          flutter build ios --simulator --debug --no-codesign
-          device_id=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(v["udid"] for k,vs in d["devices"].items() if "iOS" in k for v in vs if "iPhone" in v["name"]))')
-          xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner \
-            -configuration Debug -destination "platform=iOS Simulator,id=$device_id" \
-            -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
+          udid=$(python3 ios/RunnerUITests/pick_sim.py)
+          echo "SIM_UDID=$udid" >> "$GITHUB_ENV"
+          xcrun simctl boot "$udid" || true
+          xcrun simctl bootstatus "$udid" -b
+          xcrun simctl addmedia "$udid" assets/demo/demo_bounce.gif assets/demo/demo_spin.gif assets/demo/demo_bars.gif
+      - name: Run GIF pick UI test
+        shell: bash
+        run: |
+          set -uo pipefail
+          out="$RUNNER_TEMP/out"
+          mkdir -p "$out"
+          xcrun simctl spawn "$SIM_UDID" log stream --style compact --level debug \
+            --predicate 'eventMessage CONTAINS "gifpick"' > "$out/gifpick_stream.log" 2>&1 &
+          logpid=$!
+          xcodebuild test -workspace ios/Runner.xcworkspace -scheme RunnerUITests \
+            -configuration Debug -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -resultBundlePath "$out/ui.xcresult" \
+            CODE_SIGNING_ALLOWED=NO > "$out/xcodebuild.log" 2>&1
+          status=$?
+          sleep 2
+          kill "$logpid" || true
+          xcrun simctl spawn "$SIM_UDID" log show --last 40m --style compact \
+            --predicate 'eventMessage CONTAINS "gifpick"' > "$out/gifpick_show.log" 2>&1 || true
+          echo "xcodebuild exit $status"
+          echo "----- gifpick (log show) -----"
+          cat "$out/gifpick_show.log" || true
+          echo "----- xcodebuild: test lines -----"
+          grep -E "gifpick-ui|Test Case|error:|XCTAssert|\*\* TEST|failed|Failing" "$out/xcodebuild.log" \
+            | grep -v "===== tree" | head -300 || true
+          echo "----- xcodebuild tail -----"
+          tail -60 "$out/xcodebuild.log" || true
+      - name: Export screenshots
+        if: always()
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/out"
+          mkdir -p "$out/shots"
+          xcrun xcresulttool export attachments --path "$out/ui.xcresult" --output-path "$out/shots" || true
+          ls -la "$out/shots" | head -80
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: gifpick-diag
+          path: |
+            ${{ runner.temp }}/out/gifpick_stream.log
+            ${{ runner.temp }}/out/gifpick_show.log
+            ${{ runner.temp }}/out/xcodebuild.log
+            ${{ runner.temp }}/out/shots

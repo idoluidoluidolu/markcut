@@ -14516,11 +14516,13 @@ extension AppDelegate {
       }
       if self.gifPickReply != nil {
         // 已經有一個選取器開著（連點兩下）：這一次當沒選
+        NSLog("[gifpick] handler: busy (reply pending, seq=%ld) -> []", self.gifPickSeq)
         result([String]())
         return
       }
       self.gifPickReply = result
       self.gifPickSeq &+= 1
+      NSLog("[gifpick] handler: start seq=%ld", self.gifPickSeq)
       self.presentGifPicker()
     }
   }
@@ -14561,16 +14563,28 @@ extension AppDelegate {
     // 順手掃掉上幾次留下來的中繼複本（見 sweepPickedTemp）
     DispatchQueue.global(qos: .utility).async { sweepPickedTemp() }
     guard let top = topViewController() else {
+      NSLog("[gifpick] present: no top view controller")
       failGifPick(seq: gifPickSeq)
       return
     }
     gifPicker = picker
-    top.present(picker, animated: true)
+    NSLog(
+      "[gifpick] present: top=%@ presented=%@", String(describing: type(of: top)),
+      String(describing: top.presentedViewController.map { type(of: $0) }))
+    top.present(picker, animated: true) {
+      NSLog("[gifpick] present: completion (presenting=%@)",
+        String(describing: picker.presentingViewController.map { type(of: $0) }))
+    }
+    NSLog(
+      "[gifpick] present: right after present presenting=%@ isBeingPresented=%ld",
+      String(describing: picker.presentingViewController.map { type(of: $0) }),
+      picker.isBeingPresented ? 1 : 0)
     // present 有可能被 UIKit 默默丟掉（上一個轉場還沒結束就推），那樣
     // 不會有任何 delegate 回呼。presentingViewController 是 present 當下
     // 就設好的（非同步的是動畫），所以直接問一次就知道有沒有推上去——
     // 不必用計時器去猜，也就不會跟「使用者一秒內滑掉」混在一起
     guard picker.presentingViewController != nil else {
+      NSLog("[gifpick] present: presentingViewController nil -> fail")
       gifPicker = nil
       failGifPick(seq: gifPickSeq)
       return
@@ -14630,8 +14644,11 @@ extension AppDelegate {
   fileprivate func finishGifPick(_ path: String?, seq: Int) {
     DispatchQueue.main.async {
       guard self.gifPickSeq == seq, let reply = self.gifPickReply else {
+        NSLog("[gifpick] finish: dropped (seq=%ld now=%ld pending=%ld)", seq, self.gifPickSeq,
+          self.gifPickReply == nil ? 0 : 1)
         return
       }
+      NSLog("[gifpick] finish: reply %@", path ?? "[] (cancel)")
       self.gifPickReply = nil
       reply(path.map { [$0] } ?? [String]())
     }
@@ -14647,8 +14664,10 @@ extension AppDelegate {
   fileprivate func failGifPick(seq: Int) {
     DispatchQueue.main.async {
       guard self.gifPickSeq == seq, let reply = self.gifPickReply else {
+        NSLog("[gifpick] fail: dropped (seq=%ld now=%ld)", seq, self.gifPickSeq)
         return
       }
+      NSLog("[gifpick] fail: reply nil")
       self.gifPickReply = nil
       reply(nil)
     }
@@ -14861,6 +14880,10 @@ extension AppDelegate: PHPickerViewControllerDelegate {
   func picker(
     _ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]
   ) {
+    NSLog(
+      "[gifpick] delegate: results=%ld gifPicker===picker %ld gifPicker=%@ seq=%ld pending=%ld",
+      results.count, gifPicker === picker ? 1 : 0, gifPicker == nil ? "nil" : "set",
+      gifPickSeq, gifPickReply == nil ? 0 : 1)
     picker.dismiss(animated: true)
     // 只認現在這一次的選取器。逾時之後才回來的那個不能動到這一次——
     // 它會在「使用者還在挑」的這一次上面壓一個讀檔期限，甚至把它判死
@@ -14874,6 +14897,10 @@ extension AppDelegate: PHPickerViewControllerDelegate {
       return
     }
     let gif = UTType.gif.identifier
+    NSLog(
+      "[gifpick] delegate: types=%@ conformsGif=%ld",
+      String(describing: provider.registeredTypeIdentifiers),
+      provider.hasItemConformingToTypeIdentifier(gif) ? 1 : 0)
     // 篩的是「會動的圖」，正常就是 GIF。真的拿到別的（動態 HEIC 之類）
     // 就照原樣帶回去，讓 Dart 端那句「這不是 GIF，請選會動的那種」講給
     // 使用者聽——在這裡默默不動作的話，他只會看到點了沒反應
@@ -14884,7 +14911,11 @@ extension AppDelegate: PHPickerViewControllerDelegate {
       failGifPick(seq: seq)  // 什麼 representation 都沒有：退回 file_picker
       return
     }
-    provider.loadFileRepresentation(forTypeIdentifier: type) { [weak self] url, _ in
+    let t0 = Date()
+    provider.loadFileRepresentation(forTypeIdentifier: type) { [weak self] url, err in
+      NSLog(
+        "[gifpick] load: %.2fs url=%@ err=%@ selfAlive=%ld", Date().timeIntervalSince(t0),
+        url?.path ?? "nil", String(describing: err), self == nil ? 0 : 1)
       // url 指的是系統的暫存檔，這個 closure 一回去就會被刪掉——
       // 要在這裡面複製走，不能只把路徑帶回 Dart
       var copied: String?
@@ -14904,6 +14935,7 @@ extension AppDelegate: PHPickerViewControllerDelegate {
           try FileManager.default.copyItem(at: url, to: dst)
           copied = dst.path
         } catch {
+          NSLog("[gifpick] load: copy failed %@", String(describing: error))
           copied = nil
         }
       }

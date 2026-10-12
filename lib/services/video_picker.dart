@@ -22,9 +22,15 @@ const _pickCh = MethodChannel('markcut/pick');
 Future<List<String>?> pickGalleryGifs() async {
   if (kIsWeb) return null;
   try {
+    // ignore: avoid_print
+    print('[gifpick] dart: invoke gifs');
     final r = await _pickCh.invokeMethod<List<dynamic>>('gifs');
+    // ignore: avoid_print
+    print('[gifpick] dart: gifs replied $r');
     return r?.cast<String>();
-  } catch (_) {
+  } catch (e) {
+    // ignore: avoid_print
+    print('[gifpick] dart: gifs threw $e');
     // 通道出狀況就當這台沒有，退回 file_picker——匯入這件事不能因此壞掉
     return null;
   }
