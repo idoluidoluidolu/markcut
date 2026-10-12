@@ -320,8 +320,13 @@ Future<String?> importGif(
       showModalBottomSheet<void>(
         context: context,
         showDragHandle: true,
+        // 面板自己管高度（同 addGifFromDevice 那張）：預設的 9/16 上限扣掉
+        // 底部安全區，iPhone 17 Pro 上溢出 14 像素、「完成」被切掉一截。
+        // 內容多高面板就多高，橫向裝不下的那一截捲
+        isScrollControlled: true,
+        useSafeArea: true,
         builder: (context) => SafeArea(
-          child: Padding(
+          child: SingleChildScrollView(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
             child: Column(
               mainAxisSize: MainAxisSize.min,

@@ -341,6 +341,42 @@ void main() {
     expect(t.takeException(), isNull);
   });
 
+  testWidgets('「已匯入 GIF」面板：有底部安全區也不溢出，「完成」按得到', (t) async {
+    // iOS 26 模擬器實測（iPhone 17 Pro，402×874、底部安全區 34）：面板被
+    // 預設的 9/16 螢幕高卡住，GIF 預覽佔 35% 再加上安全區，底部溢出
+    // 14 像素，「完成」被切掉一截。以前 iOS 從來沒匯入成功過，沒人看過
+    final v = t.view;
+    v.physicalSize = const Size(402 * 3, 874 * 3);
+    v.padding = const FakeViewPadding(top: 62 * 3, bottom: 34 * 3);
+    v.viewPadding = const FakeViewPadding(top: 62 * 3, bottom: 34 * 3);
+    addTearDown(() {
+      v.physicalSize = const Size(390 * 3, 844 * 3);
+      v.resetPadding();
+      v.resetViewPadding();
+    });
+    final gif = _writeGif('imported.gif');
+    _mockPick((_) => [gif]);
+
+    await _pump(t);
+    await _tapAdd(t);
+    await t.tap(find.text('從相簿匯入 GIF'));
+    await _settle(t, 30);
+
+    expect(find.text('已匯入 GIF'), findsOneWidget);
+    expect(t.takeException(), isNull, reason: '面板溢出');
+    final done = find.ancestor(
+      of: find.text('完成'),
+      matching: find.byType(TextButton),
+    );
+    final r = t.getRect(done);
+    expect(r.bottom <= 874 - 34, isTrue, reason: '「完成」掉進底部安全區（$r）');
+    await t.tap(done);
+    // 面板收起的動畫要跑完（GIF 一直在動，pumpAndSettle 等不到）
+    await _settle(t, 30);
+    expect(find.text('已匯入 GIF'), findsNothing);
+    expect(t.takeException(), isNull);
+  });
+
   testWidgets('選單本身可以取消：不開選取器、也不收東西', (t) async {
     await _pump(t);
     await _tapAdd(t);
