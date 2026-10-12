@@ -607,6 +607,8 @@ class _GifScreenState extends State<GifScreen> {
         }
       } catch (_) {}
     }
+    // 還是預設範圍（新的一支、或續作時從沒動過起訖點）才蓋引導
+    _hint = _start <= 0.001 && (_end - math.min(_dur, 15)).abs() < 0.01;
     _baseline = _dirtyKey();
     _schedulePreview();
     // 一進來就用影片循環播選取段落（_tick 播到段尾會跳回起點，
@@ -625,11 +627,12 @@ class _GifScreenState extends State<GifScreen> {
     _tick = Timer.periodic(const Duration(milliseconds: 120), (_) async {
       if (_gifMode) return; // 指針由 GIF 時鐘驅動
       final pl = _player;
-      if (pl == null || !mounted || _gesturing) return;
+      // 拖曳中、或放手後 seek 還在路上：指針跟手指（竿子）走，不看
+      // 播放器——它還在追 seek，拿它的位置蓋回去指針就來回抖（放開
+      // 竿子那一下會先跳到半路的位置、再跳回竿子上）
+      if (pl == null || !mounted || _gesturing || _seekBusy) return;
       final now = await pl.positionNow();
-      // 拖曳中指針跟手指走，不看播放器：它還在追 seek，
-      // 拿它的位置蓋回去指針就來回抖
-      if (now == null || !mounted || _gesturing) return;
+      if (now == null || !mounted || _gesturing || _seekBusy) return;
       final t = now.inMilliseconds / 1000.0;
       _pos.value = t;
       if (_playing && t >= _end - 0.05) {
@@ -1420,7 +1423,7 @@ class _GifScreenState extends State<GifScreen> {
   }
 
   /// 把指針現在的位置設成起點／終點（使用者指定：滑到哪、按一下
-  /// 就從哪開始/結束——把手不吃觸控之後，這是唯一的入口）。
+  /// 就從哪開始/結束）。另一個入口是直接拖竿子（_edgeDragStart）。
   ///
   /// 永遠算數：指針跑到另一端上或另一側時，整段範圍平移過去、長度
   /// 不變（使用者指定「起點設在終點之後不要擋，自動把長度橫移過去，
@@ -1433,7 +1436,58 @@ class _GifScreenState extends State<GifScreen> {
     setState(() {
       _start = r.start;
       _end = r.end;
+      // 自己設過起訖點了，引導的事做完了
+      _hint = false;
     });
+    _schedulePreview();
+  }
+
+  /// 縮圖帶上的引導「拖兩邊的竿子選取範圍」（使用者定案戊案）：進場
+  /// 還是預設範圍才蓋，在縮圖帶上一拖動（竿子或指針）、或按了設為
+  /// 起點／終點就收掉，這一趟不再出現
+  bool _hint = false;
+
+  /// 拖竿子中：哪一根，跟手指按下去時離竿子差幾秒（手指沒剛好壓在
+  /// 線上，竿子不跟著跳到手指下面）
+  TrimEdge? _edgeDrag;
+  double _edgeGrab = 0;
+
+  /// 抓到竿子（使用者 10-12 定案：引導使用者拖左右竿子設起點終點）。
+  /// 跟拖指針同一套「拖曳中」狀態：暫停、縮圖帶抽幀讓路
+  void _edgeDragStart(TrimEdge edge, double t) {
+    _scrubBegin();
+    _edgeDrag = edge;
+    _edgeGrab = (edge == TrimEdge.start ? _start : _end) - t;
+    if (_hint) setState(() => _hint = false);
+  }
+
+  /// 拖竿子：竿子跟著手指走，夾在影片內、兩根之間至少留 kTrimMinGap
+  /// （頂到另一根就停，不推著另一根走）。指針跟著竿子，畫面看到的
+  /// 就是剪點那一格
+  void _edgeDragMove(double t) {
+    final edge = _edgeDrag;
+    if (edge == null) return;
+    final want = t + _edgeGrab;
+    setState(() {
+      if (edge == TrimEdge.start) {
+        _start = want.clamp(0.0, math.max(0.0, _end - kTrimMinGap));
+      } else {
+        _end = want.clamp(math.min(_dur, _start + kTrimMinGap), _dur);
+      }
+    });
+    final at = edge == TrimEdge.start ? _start : _end;
+    if (_gifMode) {
+      _gifSeekToSrc(at);
+    } else {
+      _seekDuringDrag(at);
+    }
+  }
+
+  /// 放開竿子：補最後一發 seek、照新範圍重做預覽
+  void _edgeDragEnd() {
+    if (_edgeDrag == null) return;
+    _edgeDrag = null;
+    _scrubEnd();
     _schedulePreview();
   }
 
@@ -1459,8 +1513,8 @@ class _GifScreenState extends State<GifScreen> {
     // 這一列只放兩顆設定鈕＋右邊的長度
     return Row(
       children: [
-        _edgeBtn('設起點', true),
-        _edgeBtn('設終點', false),
+        _edgeBtn('設為起點', true),
+        _edgeBtn('設為終點', false),
         const Spacer(),
         Text(
           over
@@ -1477,13 +1531,13 @@ class _GifScreenState extends State<GifScreen> {
     );
   }
 
-  // ── 修剪條的手勢：整條只有一件事，就是移動指針 ──────────────────
+  // ── 修剪條的手勢：竿子附近＝拖竿子，其他地方＝移動指針 ────────────
   //
-  // 把手不再吃觸控（使用者指定：拉桿改成無法靠觸控拖曳，頭尾一律靠
-  // 自己按起點終點）。之前起點把手／終點把手／播放頭三個熱區疊在
-  // Stack 裡互搶手勢，範圍縮到零點幾秒時整個重疊，就是使用者回報的
-  // 「拉近就再也拉不開」。現在沒有東西要搶：整條上的每一次觸碰都是
-  // 播放頭，而且不受起訖點限制
+  // 竿子可以拖（使用者 10-12 改口：引導使用者拖左右竿子設起點終點；
+  // 以前指定過「拉桿無法靠觸控拖曳」）。以前起點把手／終點把手／播放頭
+  // 三個熱區疊在 Stack 裡互搶手勢，範圍縮到零點幾秒時整個重疊，就是
+  // 使用者回報的「拉近就再也拉不開」；現在由 GifTrimStrip 一個手勢層
+  // 判：兩根貼在一起就看手往哪邊走。指針不受起訖點限制
 
   /// 修剪條或速覽手勢進行中（縮圖帶抽幀、指針對時都要讓路）
   bool get _gesturing => _scrubFrom != null;
@@ -1499,15 +1553,17 @@ class _GifScreenState extends State<GifScreen> {
     _player?.seekTo(Duration(milliseconds: (t * 1000).round()));
   }
 
-  /// 拖曳起手：指針先跳到手指下面，之後跟著走（跟點一下同一套）
+  /// 拖曳起手：指針先跳到手指下面，之後跟著走（跟點一下同一套）。
+  /// 在縮圖帶上拖了就算懂了，引導收掉（只點一下不算）
   void _stripDragStart(double t) {
+    if (_hint) setState(() => _hint = false);
     _scrubBegin();
     _scrubFrom = t;
     _scrubBySeconds(0);
   }
 
-  /// 縮圖帶＋兩個把手＋播放頭。把手蓋在縮圖上，看得到自己剪掉了哪些
-  /// 畫面——但只是畫的，觸控一律是指針（見 GifTrimStrip）
+  /// 縮圖帶＋兩根竿子＋播放頭。竿子蓋在縮圖上，看得到自己剪掉了哪些
+  /// 畫面，抓著左右拖就是設起點終點（見 GifTrimStrip）
   Widget _trimStrip() => GifTrimStrip(
     dur: _dur,
     start: _start,
@@ -1518,6 +1574,10 @@ class _GifScreenState extends State<GifScreen> {
     onScrubStart: _stripDragStart,
     onScrubBy: _scrubBySeconds,
     onScrubEnd: _scrubEnd,
+    onEdgeStart: _edgeDragStart,
+    onEdgeMove: _edgeDragMove,
+    onEdgeEnd: _edgeDragEnd,
+    hint: _hint,
   );
 
   /// 速度那一排。用 chips 跟尺寸／順暢度同型，不另外發明一種東西

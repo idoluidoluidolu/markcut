@@ -2,10 +2,10 @@ import 'dart:math' as math;
 
 /// GIF 頁選取範圍的規矩。
 ///
-/// 起訖點只有一個入口：指針移到想要的位置，按「設起點」／「設終點」。
-/// 把手不吃觸控（使用者指定：拉桿無法靠觸控拖曳，頭尾一律靠自己按
-/// 起點終點），所以這裡沒有「這一下要動誰」的命中判定，只有「按下去
-/// 之後範圍變成什麼」。
+/// 這裡管的是按鈕：指針移到想要的位置，按「設為起點」／「設為終點」
+/// 之後範圍變成什麼。另一個入口是直接拖竿子（10-12 使用者定案，竿子
+/// 頂到另一根就停、不平移，見 GifScreen._edgeDragMove；抓哪一根的判定
+/// 在 GifTrimStrip）。
 ///
 /// 按下去永遠算數（使用者指定：起點設在終點之後「改成不會擋，自動把
 /// 長度橫移過去，終點自動改後面就好」）：
@@ -22,7 +22,7 @@ const double kTrimMinGap = 0.2;
 /// 一段選取範圍（秒）
 typedef TrimRange = ({double start, double end});
 
-/// 指針在 [t]、目前範圍 [start]~[end]、影片總長 [dur]：按「設起點」
+/// 指針在 [t]、目前範圍 [start]~[end]、影片總長 [dur]：按「設為起點」
 /// 之後的範圍
 TrimRange trimSetStart(
   double t,
@@ -40,7 +40,7 @@ TrimRange trimSetStart(
   return (start: ns, end: math.max(ne, math.min(dur, ns + minGap)));
 }
 
-/// 指針在 [t]、目前範圍 [start]~[end]、影片總長 [dur]：按「設終點」
+/// 指針在 [t]、目前範圍 [start]~[end]、影片總長 [dur]：按「設為終點」
 /// 之後的範圍（跟 [trimSetStart] 對稱：跑到起點上或左邊就整段往前搬）
 TrimRange trimSetEnd(
   double t,
