@@ -81,13 +81,15 @@ final class GifPickUITests: XCTestCase {
   /// 只能照格子的位置點：第一次開會有「Private Access to Photos」說明框
   /// 把格子往下推（第一格在 y≈312～445），收掉之後格子從 y≈150 開始
   private func pickFirstGif(done: () -> Bool) {
-    // 等相簿從「Loading…」載完
-    sleep(10)
-    shot("picker-loaded")
-    tapPoint(66, 378, "first cell below the privacy banner")
-    sleep(4)
-    if done() { return }
-    shot("picker-after-first-tap")
+    // 等相簿從「Loading…」載完：剛開機的模擬器有時要 10 秒以上，
+    // 看不到它的元素樹，只能多等幾輪、每輪點一次
+    for round in 0..<4 {
+      sleep(round == 0 ? 12 : 8)
+      shot("picker-round\(round)")
+      tapPoint(66, 378, "first cell below the privacy banner")
+      sleep(4)
+      if done() { return }
+    }
     tapPoint(66, 216, "first cell without the banner")
     sleep(4)
   }
@@ -145,10 +147,11 @@ final class GifPickUITests: XCTestCase {
     shot("b01-launch")
     dismissFirstLaunchHint()
     XCTAssertTrue(tap("開始", contains: true, timeout: 15), "首頁「開始」找不到")
-    sleep(2)
+    // 選單滑上來的動畫跑完再點
+    sleep(4)
     shot("b02-menu")
     XCTAssertTrue(tap("剪輯", contains: true, timeout: 10), "「剪輯」找不到")
-    sleep(6)
+    sleep(8)
     shot("b03-editor")
     XCTAssertTrue(tap("加素材", contains: true, timeout: 20), "「加素材」找不到")
     sleep(2)
