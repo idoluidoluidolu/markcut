@@ -65,7 +65,7 @@ jobs:
             -configuration Debug -destination "platform=iOS Simulator,id=$SIM_UDID" \
             -only-testing:RunnerUITests -parallel-testing-enabled NO \
             -resultBundlePath "$out/ui.xcresult" \
-            CODE_SIGNING_ALLOWED=NO > "$out/xcodebuild.log" 2>&1 || status=$?
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- > "$out/xcodebuild.log" 2>&1 || status=$?
           sleep 2
           kill "$logpid" || true
           xcrun simctl spawn "$SIM_UDID" log show --last 40m --style compact \
