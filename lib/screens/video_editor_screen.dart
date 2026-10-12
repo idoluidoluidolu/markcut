@@ -75,7 +75,7 @@ import '../services/preview_raster_queue.dart';
 import '../services/scrub_visibility.dart';
 import '../theme.dart';
 import '../widgets/color_grade_panel.dart';
-import '../widgets/kaomoji_sheet.dart';
+import '../widgets/text_insert_bar.dart';
 import '../widgets/timeline_editor.dart';
 import '../widgets/editor_region.dart';
 import '../widgets/font_picker.dart';
@@ -8280,6 +8280,26 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 st.text = v;
                               }),
                             ),
+                            const SizedBox(height: 8),
+                            // 時間｜顏文字：跟浮水印面板文字卡同一排（乙案）
+                            TextInsertBar(
+                              onTime: () {
+                                final next = appendLine(
+                                  ctrl.text,
+                                  timeStampNow(),
+                                );
+                                ctrl.value = TextEditingValue(
+                                  text: next,
+                                  selection: TextSelection.collapsed(
+                                    offset: next.length,
+                                  ),
+                                );
+                                both(() {
+                                  src.name = next;
+                                  st.text = next;
+                                });
+                              },
+                            ),
                             const SizedBox(height: 12),
                             // 橫式／直式（跟浮水印面板的文字卡同一組）
                             SegmentedButton<bool>(
@@ -8300,28 +8320,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                               selected: {st.alignment},
                               onSelectionChanged: (v) =>
                                   both(() => st.alignment = v.single),
-                            ),
-                            // 顏文字：點一個複製、回來貼上（跟浮水印面板同一顆）
-                            Align(
-                              alignment: Alignment.centerLeft,
-                              child: TextButton.icon(
-                                onPressed: () => showKaomojiSheet(context),
-                                style: TextButton.styleFrom(
-                                  visualDensity: VisualDensity.compact,
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 6,
-                                  ),
-                                  foregroundColor: kTextDim,
-                                ),
-                                icon: const Icon(
-                                  Icons.emoji_emotions_outlined,
-                                  size: 16,
-                                ),
-                                label: const Text(
-                                  '顏文字',
-                                  style: TextStyle(fontSize: 11.5),
-                                ),
-                              ),
                             ),
                             const SizedBox(height: 12),
                             Row(

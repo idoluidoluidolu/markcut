@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -13,7 +14,7 @@ import '../screens/crop_screen.dart';
 import '../screens/draw_screen.dart';
 import '../theme.dart';
 import 'font_picker.dart';
-import 'kaomoji_sheet.dart';
+import 'text_insert_bar.dart';
 import 'watermark_layer.dart';
 
 /// 文字「橫式／直式」切換的兩段。浮水印面板的文字卡跟文字素材的
@@ -246,6 +247,28 @@ class WatermarkPanelState extends State<WatermarkPanel>
   final FocusNode _textFocus = FocusNode();
   final _inputKey = GlobalKey();
 
+  /// 剛按了「時間」：輸入框外框亮一下（琥珀），看得出加進去了
+  bool _inputFlash = false;
+  Timer? _inputFlashTimer;
+
+  /// 「時間」：把現在的時間加成文字的最後一行。走 _update，跟打字一樣
+  /// 會拍復原快照、通知父層；游標停在加進去的那一行後面
+  void _insertTime() {
+    final next = appendLine(_textCtrl.text, timeStampNow());
+    _textCtrl.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: next.length),
+    );
+    _update(() {
+      s.text.text = next;
+      _inputFlash = true;
+    });
+    _inputFlashTimer?.cancel();
+    _inputFlashTimer = Timer(const Duration(milliseconds: 160), () {
+      if (mounted) setState(() => _inputFlash = false);
+    });
+  }
+
   @override
   void didChangeMetrics() {
     if (!_textFocus.hasFocus) return;
@@ -343,6 +366,7 @@ class WatermarkPanelState extends State<WatermarkPanel>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     widget.controller?.removeListener(_onScrollRequest);
+    _inputFlashTimer?.cancel();
     _textCtrl.dispose();
     _textFocus.dispose();
     _scroll.dispose();
@@ -1143,63 +1167,92 @@ class WatermarkPanelState extends State<WatermarkPanel>
                                       ),
                                     ),
                                   ),
-                                  Container(
+                                  // 輸入框底部內嵌「時間｜顏文字」（乙案）。
+                                  // 按了時間外框亮一下琥珀再淡回去
+                                  AnimatedContainer(
+                                    key: const ValueKey('watermark-text-box'),
+                                    duration: _inputFlash
+                                        ? Duration.zero
+                                        : const Duration(milliseconds: 450),
                                     constraints: const BoxConstraints(
                                       minHeight: 110,
                                     ),
-                                    alignment: Alignment.center,
                                     decoration: BoxDecoration(
                                       color: const Color(0xFF0F0F11),
                                       borderRadius: BorderRadius.circular(12),
                                       border: Border.all(
-                                        color: kClipBorder,
+                                        color: _inputFlash
+                                            ? kSelect
+                                            : kClipBorder,
                                         width: 1.5,
                                       ),
                                     ),
-                                    child: TextField(
-                                      key: const ValueKey(
-                                        'watermark-text-input',
-                                      ),
-                                      controller: _textCtrl,
-                                      focusNode: _textFocus,
-                                      // 直式的對齊是上下，輸入框照常靠左打字
-                                      textAlign: s.text.vertical
-                                          ? TextAlign.left
-                                          : s.text.alignment,
-                                      minLines: 1,
-                                      maxLines: 6,
-                                      keyboardType: TextInputType.multiline,
-                                      textInputAction: TextInputAction.newline,
-                                      // 打字永遠白字（B 案）：這一格只管
-                                      // 打字，顏色與透明看上面的預覽跟
-                                      // 旁邊的色塊——照所選顏色渲染的話
-                                      // 深色字會沉進黑底裡看不見。
-                                      // 字型照選的渲染，字型是要在這裡挑的
-                                      style: TextStyle(
-                                        fontFamily: s.text.fontFamily,
-                                        // 拉丁字型配中文：跟預覽／成品同一個
-                                        // 後備字，打字看到的才是印出來的
-                                        fontFamilyFallback: kMarkFontFallback,
-                                        fontSize: 26,
-                                        color: kText,
-                                      ),
-                                      decoration: const InputDecoration(
-                                        hintText: '浮水印文字',
-                                        hintStyle: TextStyle(
-                                          color: kTextDim,
-                                          fontSize: 16,
-                                          fontFamily: 'NotoSansTC',
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.stretch,
+                                      children: [
+                                        TextField(
+                                          key: const ValueKey(
+                                            'watermark-text-input',
+                                          ),
+                                          controller: _textCtrl,
+                                          focusNode: _textFocus,
+                                          // 直式的對齊是上下，輸入框照常靠左打字
+                                          textAlign: s.text.vertical
+                                              ? TextAlign.left
+                                              : s.text.alignment,
+                                          minLines: 1,
+                                          maxLines: 6,
+                                          keyboardType: TextInputType.multiline,
+                                          textInputAction:
+                                              TextInputAction.newline,
+                                          // 打字永遠白字（B 案）：這一格只管
+                                          // 打字，顏色與透明看上面的預覽跟
+                                          // 旁邊的色塊——照所選顏色渲染的話
+                                          // 深色字會沉進黑底裡看不見。
+                                          // 字型照選的渲染，字型是要在這裡挑的
+                                          style: TextStyle(
+                                            fontFamily: s.text.fontFamily,
+                                            // 拉丁字型配中文：跟預覽／成品同一個
+                                            // 後備字，打字看到的才是印出來的
+                                            fontFamilyFallback:
+                                                kMarkFontFallback,
+                                            fontSize: 26,
+                                            color: kText,
+                                          ),
+                                          decoration: const InputDecoration(
+                                            hintText: '浮水印文字',
+                                            hintStyle: TextStyle(
+                                              color: kTextDim,
+                                              fontSize: 16,
+                                              fontFamily: 'NotoSansTC',
+                                            ),
+                                            filled: false,
+                                            enabledBorder: InputBorder.none,
+                                            focusedBorder: InputBorder.none,
+                                            contentPadding: EdgeInsets.fromLTRB(
+                                              14,
+                                              20,
+                                              14,
+                                              6,
+                                            ),
+                                          ),
+                                          onChanged: (v) =>
+                                              _update(() => s.text.text = v),
                                         ),
-                                        filled: false,
-                                        enabledBorder: InputBorder.none,
-                                        focusedBorder: InputBorder.none,
-                                        contentPadding: EdgeInsets.symmetric(
-                                          horizontal: 14,
-                                          vertical: 20,
+                                        Padding(
+                                          padding: const EdgeInsets.fromLTRB(
+                                            10,
+                                            0,
+                                            10,
+                                            10,
+                                          ),
+                                          child: TextInsertBar(
+                                            onTime: _insertTime,
+                                          ),
                                         ),
-                                      ),
-                                      onChanged: (v) =>
-                                          _update(() => s.text.text = v),
+                                      ],
                                     ),
                                   ),
                                 ],
@@ -1312,41 +1365,8 @@ class WatermarkPanelState extends State<WatermarkPanel>
                                       ),
                                     ),
                                   ),
-                                  const SizedBox(width: 10),
-                                  // 顏文字：跟字型/顏色同一排同語言（C 案，
-                                  // 使用者指定）。點一個＝複製，回來貼上
-                                  InkWell(
-                                    onTap: () => showKaomojiSheet(context),
-                                    borderRadius: BorderRadius.circular(6),
-                                    child: Container(
-                                      height: 38,
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 12,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        border: Border.all(color: kBorder),
-                                        borderRadius: BorderRadius.circular(6),
-                                      ),
-                                      child: const Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Icon(
-                                            Icons.emoji_emotions_outlined,
-                                            size: 16,
-                                            color: kIcon,
-                                          ),
-                                          SizedBox(width: 6),
-                                          Text(
-                                            '顏文字',
-                                            style: TextStyle(
-                                              fontSize: 12,
-                                              color: kTextDim,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
+                                  // 顏文字搬進輸入框底下那排（跟「時間」一起，
+                                  // 見 TextInsertBar），這一排只剩字型跟顏色
                                 ],
                               ),
                               const SizedBox(height: 2),
