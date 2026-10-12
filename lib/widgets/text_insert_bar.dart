@@ -16,6 +16,20 @@ String timeStamp(DateTime t) {
 /// 現在的時間戳記（「時間」那顆按下去加的就是這個）
 String timeStampNow() => timeStamp(insertTimeNow());
 
+/// 「時間」那顆加的寫法。前後不能再接數字，不然 12026/… 這種也會被當成時間
+final _stampPattern = RegExp(r'(?<!\d)\d{4}/\d{2}/\d{2} \d{2}:\d{2}(?!\d)');
+
+/// 這段字裡有沒有「時間」那種寫法的時間
+bool hasTimeStamp(String text) => _stampPattern.hasMatch(text);
+
+/// 把 [text] 裡每一個「時間」寫法的時間換成 [stamp]。
+///
+/// 套範本用（使用者 10-12 指定）：範本存下來的是存的那一刻，套上去要的是
+/// 套的這一刻。認的是寫法不是來源——自己打的「2026/12/24 19:00」一樣會被
+/// 換掉；不想被換的日期換一種寫法（2026-12-24、12/24）就好
+String refreshTimeStamps(String text, String stamp) =>
+    text.replaceAll(_stampPattern, stamp);
+
 /// 把 [line] 接成 [text] 的新的一行。空的就直接是它；最後已經是換行的
 /// 不再多空一行
 String appendLine(String text, String line) {

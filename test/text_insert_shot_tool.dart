@@ -21,6 +21,7 @@ import 'package:markcut/services/diagnostics.dart';
 import 'package:markcut/theme.dart';
 import 'package:markcut/widgets/text_insert_bar.dart';
 import 'package:markcut/widgets/timeline_editor.dart';
+import 'package:markcut/widgets/watermark_layer.dart';
 import 'package:markcut/widgets/watermark_panel.dart';
 
 final _shotKey = GlobalKey();
@@ -143,6 +144,51 @@ void main() {
     await snap(t, 'insert_panel_flash');
     await _settle(t, 20);
     await snap(t, 'insert_panel_after');
+  });
+
+  testWidgets('套範本 → preset_picker（卡片已是現在）/ preset_applied', (t) async {
+    phone(t);
+    // 範本存的是 10/01 09:00；現在是 10/12 15:20
+    final timed = WatermarkPreset(
+      name: '帶時間',
+      settings: WatermarkSettings(
+        texts: [TextMark(text: '@我的浮水印\n2026/10/01 09:00', sizeFrac: 0.09)],
+      ),
+    );
+    SharedPreferences.setMockInitialValues({
+      'wm_presets_v1': [timed.encode()],
+    });
+    final settings = WatermarkSettings(texts: [TextMark(text: '@我的浮水印')]);
+    await t.pumpWidget(
+      RepaintBoundary(
+        key: _shotKey,
+        child: MaterialApp(
+          theme: buildStudioTheme(),
+          debugShowCheckedModeBanner: false,
+          home: Scaffold(
+            body: SafeArea(
+              child: WatermarkPanel(settings: settings, onChanged: () {}),
+            ),
+          ),
+        ),
+      ),
+    );
+    await _settle(t);
+    await t.tap(find.text('範本').first);
+    await _settle(t, 12);
+    await snap(t, 'preset_picker');
+    await t.tap(
+      find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.byType(WatermarkLayer),
+      ),
+    );
+    await _settle(t, 12);
+    await t.tap(find.text('文字').first);
+    await _settle(t, 12);
+    await t.ensureVisible(find.byKey(const ValueKey('watermark-text-box')));
+    await _settle(t);
+    await snap(t, 'preset_applied');
   });
 
   testWidgets('文字素材編輯視窗 → insert_clip_before / _after', (t) async {

@@ -354,12 +354,28 @@ class WatermarkPanelState extends State<WatermarkPanel>
 
   void _applyPresetNow(WatermarkPreset p) {
     _update(() {
-      s.copyMarksFrom(p.settings.copy());
+      // 範本裡的時間換成套用的這一刻（見 _presetNow）；copy() 讓面板上
+      // 的改動不會動到範本清單裡那一份
+      s.copyMarksFrom(_presetNow(p).copy());
       // 馬賽克不進範本也不被範本動到：套範本只換浮水印，
       // 照片上已經畫好的碼留在原地
       _textCtrl.text = s.text.text;
       _presetSel = p.name;
     });
+  }
+
+  /// 範本「套上去會長的樣子」：文字裡「時間」寫法的時間（2026/10/12 15:20）
+  /// 換成現在（使用者 10-12 指定：套範本＝自動加入套用當下的時間，見
+  /// refreshTimeStamps）。沒有時間的範本照原樣回傳、不另外複製——挑選
+  /// 彈窗每一張卡都要問
+  WatermarkSettings _presetNow(WatermarkPreset p) {
+    if (!p.settings.texts.any((t) => hasTimeStamp(t.text))) return p.settings;
+    final now = timeStampNow();
+    final fresh = p.settings.copy();
+    for (final t in fresh.texts) {
+      t.text = refreshTimeStamps(t.text, now);
+    }
+    return fresh;
   }
 
   @override
@@ -1804,6 +1820,9 @@ class WatermarkPanelState extends State<WatermarkPanel>
 
   /// 範本挑選彈窗：黑底預覽卡（跟範本管理頁同款），點卡直接套用
   void _openPresetPicker() {
+    // 卡片畫的是「套上去會長的樣子」：時間已經換成現在（見 _presetNow）。
+    // 開彈窗時算一次就好，卡片重畫不用每次重新複製
+    final shown = {for (final p in _presets) p: _presetNow(p)};
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
@@ -1874,7 +1893,7 @@ class WatermarkPanelState extends State<WatermarkPanel>
                         padding: const EdgeInsets.only(bottom: 8),
                         child: AspectRatio(
                           aspectRatio: a,
-                          child: _pickerCard(p),
+                          child: _pickerCard(p, shown[p] ?? p.settings),
                         ),
                       ),
                       1 / a,
@@ -1900,7 +1919,7 @@ class WatermarkPanelState extends State<WatermarkPanel>
     );
   }
 
-  Widget _pickerCard(WatermarkPreset p) {
+  Widget _pickerCard(WatermarkPreset p, WatermarkSettings shown) {
     final selected = _presetSel == p.name;
     // 圓角跟個人中心的範本磚同一套：超橢圓。普通圓弧角在跟直線邊接起來
     // 的地方曲率是斷的，看起來就是「被切一角」（使用者回報，這一處漏改）。
@@ -1926,7 +1945,7 @@ class WatermarkPanelState extends State<WatermarkPanel>
         child: IgnorePointer(
           // 縮圖不偷偷下載字型：套用之後編輯畫面的預覽才會去拿
           child: WatermarkLayer(
-            settings: p.settings,
+            settings: shown,
             onChanged: () {},
             downloadFonts: false,
           ),
