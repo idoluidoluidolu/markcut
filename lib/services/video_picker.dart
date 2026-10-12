@@ -27,6 +27,8 @@ Future<List<String>?> pickGalleryGifs() async {
   if (kIsWeb) return null;
   try {
     final r = await _pickCh.invokeMethod<List<dynamic>>('gifs');
+    // ignore: avoid_print
+    print('[gifpick] dart: gifs replied $r');
     return r?.cast<String>();
   } on PlatformException catch (e) {
     if (e.code == 'load_failed') throw GalleryGifUnreadable(e.message);

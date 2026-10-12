@@ -14531,6 +14531,7 @@ extension AppDelegate {
       }
       self.gifPickReply = result
       self.gifPickSeq &+= 1
+      NSLog("[gifpick] handler: start seq=%ld", self.gifPickSeq)
       self.presentGifPicker()
     }
   }
@@ -14588,6 +14589,7 @@ extension AppDelegate {
       guard let self = self else { return }
       if self.gifPickSeq == seq, self.gifPicker === picker {
         self.gifPickerShown = true
+        NSLog("[gifpick] present: completion, picker on screen")
       } else {
         // 這一次已經收尾了才推上來的（看門狗等太久、已經退回 file_picker）：
         // 收掉，不要留一個選了也沒人收的相簿在畫面上
@@ -14664,6 +14666,7 @@ extension AppDelegate {
         return
       }
       self.gifPickReply = nil
+      NSLog("[gifpick] finish: reply %@", path ?? "[] (cancel)")
       reply(path.map { [$0] } ?? [String]())
     }
   }
@@ -14905,6 +14908,7 @@ extension AppDelegate: PHPickerViewControllerDelegate {
     picker.dismiss(animated: true)
     // 只認現在這一次的選取器。逾時之後才回來的那個不能動到這一次——
     // 它會在「使用者還在挑」的這一次上面壓一個讀檔期限，甚至把它判死
+    NSLog("[gifpick] delegate: results=%ld current=%ld", results.count, gifPicker === picker ? 1 : 0)
     guard gifPicker === picker, gifPickReply != nil else { return }
     // delegate 進來了＝挑選那一段結束，換讀檔那一段的底線接手計時
     let seq = gifPickSeq
@@ -14953,6 +14957,7 @@ extension AppDelegate: PHPickerViewControllerDelegate {
       // 讀不出來（url 是 nil、或複製失敗）：講給使用者聽，不要靜悄悄地
       // 什麼都不做（見 failGifLoad）
       if let copied = copied {
+        NSLog("[gifpick] load ok: %@", copied)
         self?.finishGifPick(copied, seq: seq)
       } else {
         self?.failGifLoad(failure, seq: seq)

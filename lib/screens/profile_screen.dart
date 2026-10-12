@@ -309,6 +309,8 @@ Future<String?> importGif(
     return null;
   }
   final saved = await GifStore.add(path);
+  // ignore: avoid_print
+  print('[gifpick] dart: importGif saved=$saved');
   if (saved == null && context.mounted) {
     // web 存不了檔（展示模式只有內建範例）
     showHint(context, '這裡收不進來，請在手機 App 上用', error: true);

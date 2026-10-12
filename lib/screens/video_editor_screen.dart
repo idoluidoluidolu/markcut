@@ -7417,6 +7417,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       scale: _mediaFillsCanvas(imgW, imgH) ? _newClipShrink : 1.0,
     );
     _placeNewClip(clip); // 同軌不重疊：壓到別段就吸邊、後面推開
+    // ignore: avoid_print
+    print('[gifpick] dart: editor GIF clip added $path');
     setState(() => _sel = clip.id);
     _resyncPlayback();
     _saveDraft();
