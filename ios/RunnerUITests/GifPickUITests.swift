@@ -52,14 +52,23 @@ final class GifPickUITests: XCTestCase {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
       if let e = element(label, contains: contains) {
+        // 照座標點：首次開啟的聚光燈提示蓋著時，元素會被判成「點不到」
         print("[gifpick-ui] tap '\(label)' at \(e.frame)")
-        e.tap()
+        tapPoint(e.frame.midX, e.frame.midY, "'\(label)'")
         return true
       }
       sleep(1)
     }
     print("[gifpick-ui] '\(label)' not found")
     return false
+  }
+
+  /// 第一次開 App 的聚光燈提示（草稿、GIF、範本都存在這裡［知道了］）
+  private func dismissFirstLaunchHint() {
+    if let ok = element("知道了") {
+      tapPoint(ok.frame.midX, ok.frame.midY, "dismiss first-launch hint")
+      sleep(2)
+    }
   }
 
   private func tapPoint(_ x: CGFloat, _ y: CGFloat, _ why: String) {
@@ -87,17 +96,13 @@ final class GifPickUITests: XCTestCase {
     app.launch()
     sleep(8)
     shot("a01-launch")
+    dismissFirstLaunchHint()
 
-    // 首頁右上角「個人中心」（第一次開會有聚光燈提示，點目標也會進個人中心）
+    // 首頁右上角「個人中心」
     if !tap("個人中心", timeout: 20) {
       app.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.08)).tap()
     }
     sleep(3)
-    if element("範本") == nil {
-      // 第一下只收掉了提示
-      tap("個人中心", timeout: 5)
-      sleep(3)
-    }
     shot("a02-profile")
 
     XCTAssertTrue(tap("GIF", timeout: 10), "GIF 分頁找不到")
@@ -111,7 +116,7 @@ final class GifPickUITests: XCTestCase {
       $0.exists && $0.frame.minX > w * 0.6 && $0.frame.minY > h * 0.7 && $0.frame.width < 100
     }
     if let fab = fabs.last {
-      fab.tap()
+      tapPoint(fab.frame.midX, fab.frame.midY, "profile + button")
     } else {
       app.coordinate(withNormalizedOffset: CGVector(dx: 0.86, dy: 0.9)).tap()
     }
@@ -133,6 +138,7 @@ final class GifPickUITests: XCTestCase {
     app.launch()
     sleep(8)
     shot("b01-launch")
+    dismissFirstLaunchHint()
     XCTAssertTrue(tap("開始", contains: true, timeout: 15), "首頁「開始」找不到")
     sleep(2)
     shot("b02-menu")
