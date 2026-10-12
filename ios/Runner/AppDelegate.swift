@@ -4364,9 +4364,16 @@ final class MCInteractivePrepGate {
   /// 這個要放在 class 本體——Swift 的 extension 放不了儲存屬性
   fileprivate var gifPickReply: FlutterResult?
 
-  /// 正在等的那個選取器。看門狗靠它確認「這一個從來沒被推上去」——
-  /// delegate 一被叫到就清掉，看門狗就不會再插手（見 presentGifPicker）
-  fileprivate weak var gifPicker: PHPickerViewController?
+  /// 正在等的那個選取器。delegate 只認它；一被叫到就清掉，看門狗就不會
+  /// 再插手（見 presentGifPicker）。
+  ///
+  /// 強參照：PHPicker 是先推一張「Loading…」的空殼、等系統的相簿程序接上
+  /// 才算推上去，中間這一段 UIKit 還沒抓著它
+  fileprivate var gifPicker: PHPickerViewController?
+
+  /// 這一次的選取器真的上了畫面（present 的 completion 叫過）。看門狗靠它
+  /// 分「從來沒出現」（退回 file_picker）跟「出現過、沒選就收掉」（＝取消）
+  fileprivate var gifPickerShown = false
 
   /// 第幾次挑。看門狗是延後執行的，這一次結束之後它還會醒來一次；
   /// 沒有這個編號的話，它會去回覆「下一次」那個還開著的呼叫
@@ -14496,7 +14503,10 @@ extension AppDelegate {
   //
   // 安卓那邊同一個通道名、同一個約定（見 MainActivity.kt）：
   // 回 [路徑]＝選好了、回 []＝使用者取消、回 nil＝叫不出這個選取器
-  //（Dart 端看到 nil 會退回 file_picker 的「所有照片」，見 importGif）
+  //（Dart 端看到 nil 會退回 file_picker 的「所有照片」，見 importGif）。
+  // iOS 多一種：選好了卻讀不出來（iCloud 抓不下來之類）回錯誤 load_failed。
+  // 相簿已經開過、使用者也選了，這時再跳「所有照片」只會更莫名其妙，
+  // Dart 端改成講一聲讓他再選一次（見 failGifLoad）
 
   private func registerPickChannel(_ engineBridge: FlutterImplicitEngineBridge) {
     guard let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "markcut.pick")
@@ -14560,65 +14570,86 @@ extension AppDelegate {
     picker.delegate = self
     // 順手掃掉上幾次留下來的中繼複本（見 sweepPickedTemp）
     DispatchQueue.global(qos: .utility).async { sweepPickedTemp() }
+    let seq = gifPickSeq
     guard let top = topViewController() else {
-      failGifPick(seq: gifPickSeq)
+      failGifPick(seq: seq)
       return
     }
     gifPicker = picker
-    top.present(picker, animated: true)
-    // present 有可能被 UIKit 默默丟掉（上一個轉場還沒結束就推），那樣
-    // 不會有任何 delegate 回呼。presentingViewController 是 present 當下
-    // 就設好的（非同步的是動畫），所以直接問一次就知道有沒有推上去——
-    // 不必用計時器去猜，也就不會跟「使用者一秒內滑掉」混在一起
-    guard picker.presentingViewController != nil else {
-      gifPicker = nil
-      failGifPick(seq: gifPickSeq)
-      return
+    gifPickerShown = false
+    // 推上去了沒有，看 completion，不能在 present 回來當下問
+    // presentingViewController：PHPicker 要等系統的相簿程序接上才真的
+    // 掛上去，iOS 26 模擬器實測 present 回來當下是 nil、completion 3.9 秒
+    // 後才叫。以前把那個 nil 當成「被 UIKit 丟掉」，回 nil 讓 Dart 退回
+    // file_picker——相簿隨後照樣出現，使用者選了，delegate 卻因為這一次
+    // 已經收尾而什麼都不做（測試回報：選了 GIF 就關掉，什麼都沒進來）。
+    // 真的被丟掉的（上一個轉場還沒結束就推）交給看門狗
+    top.present(picker, animated: true) { [weak self] in
+      guard let self = self else { return }
+      if self.gifPickSeq == seq, self.gifPicker === picker {
+        self.gifPickerShown = true
+      } else {
+        // 這一次已經收尾了才推上來的（看門狗等太久、已經退回 file_picker）：
+        // 收掉，不要留一個選了也沒人收的相簿在畫面上
+        picker.dismiss(animated: true)
+      }
     }
-    armGifWatchdog(picker, seq: gifPickSeq, rounds: 0)
+    armGifWatchdog(picker, seq: seq, rounds: 0)
   }
 
-  /// 挑選那一段的底線：推上去了，但 delegate 從來沒被叫（畫面被拆掉）。
-  /// 少了它，那次呼叫的 Future 永遠掛著、鎖也永遠不放，之後每一次匯入
-  /// 都被當成「已經有一個開著」。
+  /// 挑選那一段的底線：delegate 一直沒被叫。少了它，那次呼叫的 Future
+  /// 永遠掛著、鎖也永遠不放，之後每一次匯入都被當成「已經有一個開著」。
   ///
-  /// 三件事要認：
-  ///   [seq]——這隻是延後才醒的，醒來時使用者可能已經完成這一次又開了
-  ///   下一次；不認編號的話它會去把下一次那個還開著的選取器判死
-  ///   選取器還在不在——單純在相簿裡挑久了不算失敗，那種情況再等一輪
-  ///   [rounds]——續期要有盡頭。萬一選取器推上去了卻永遠回不來（推在
-  ///   一個已經脫離畫面的 controller 上），無限續期等於把鎖卡死到重開
-  ///   App，正是這隻要防的事
+  /// 醒來時看選取器在哪：
+  ///   還在畫面上——單純在相簿裡挑久了，再等一輪。續期要有盡頭
+  ///   （[rounds]）：推在已經脫離畫面的 controller 上的那種永遠回不來，
+  ///   無限續期等於把鎖卡死到重開 App
+  ///   出現過、現在不在了——被收掉卻沒叫 delegate：當成取消
+  ///   從來沒出現——present 被 UIKit 丟掉了：回 nil，Dart 端退回 file_picker。
+  ///   第一輪等 20 秒：比推上去要的時間（模擬器冷開 3.9 秒）寬很多，
+  ///   又不至於讓被丟掉的那種乾等一分鐘
+  /// [seq]：這隻是延後才醒的，使用者可能已經完成這一次又開了下一次；
+  /// 不認編號的話它會去把下一次那個還開著的選取器判死
   private func armGifWatchdog(
     _ picker: PHPickerViewController, seq: Int, rounds: Int
   ) {
-    DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+    DispatchQueue.main.asyncAfter(deadline: .now() + (rounds == 0 ? 20.0 : 60.0)) {
+      [weak self] in
       guard let self = self, self.gifPickSeq == seq, self.gifPickReply != nil
       else { return }
       // delegate 進來過了（gifPicker 被清掉）：換讀檔那一段的底線在管
       guard self.gifPicker === picker else { return }
-      if picker.presentingViewController != nil {
+      let onScreen =
+        picker.presentingViewController != nil || picker.viewIfLoaded?.window != nil
+      if onScreen {
         if rounds < 10 {
           self.armGifWatchdog(picker, seq: seq, rounds: rounds + 1)
           return
         }
-        // 續期到頂還開著＝這個選取器回不來了。先把它收掉再收尾，
-        // 不然 Dart 端會照著 nil 退回 file_picker，在它上面再疊一個
+        // 續期到頂還開著＝這個選取器回不來了：收掉，當成取消。
+        // 不回 nil——那會讓 Dart 端再推一個 file_picker 上來
         picker.dismiss(animated: false)
+        self.gifPicker = nil
+        self.finishGifPick(nil, seq: seq)
+        return
       }
       self.gifPicker = nil
-      self.failGifPick(seq: seq)
+      if self.gifPickerShown {
+        self.finishGifPick(nil, seq: seq)
+      } else {
+        NSLog("GIF picker never appeared; falling back to file_picker")
+        self.failGifPick(seq: seq)
+      }
     }
   }
 
   /// 讀檔那一段的底線。要跟挑選那一段分開算——共用一個的話，使用者
-  /// 挑了 55 秒才選下去，讀檔就只剩 5 秒，iCloud 上的原檔根本抓不完，
-  /// 他選的那一下會被默默丟掉、畫面上還會冒出另一個選取器
+  /// 挑了 55 秒才選下去，讀檔就只剩 5 秒，iCloud 上的原檔根本抓不完
   private func armGifLoadWatchdog(seq: Int) {
     DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
       guard let self = self, self.gifPickSeq == seq, self.gifPickReply != nil
       else { return }
-      self.failGifPick(seq: seq)
+      self.failGifLoad("讀檔超過 60 秒", seq: seq)
     }
   }
 
@@ -14637,13 +14668,9 @@ extension AppDelegate {
     }
   }
 
-  /// 叫不出這個選取器（找不到能推的畫面、推了沒推上去、東西讀不出來）：
-  /// 回 nil，Dart 端會退回 file_picker。這裡不能回空清單——那是「使用者
-  /// 按了取消」的意思，退路會被跳過，使用者只會看到按了完全沒反應。
-  ///
-  /// 已經選好了才失敗（檔案讀不出來）的話，使用者會看到再跳一個
-  /// 「所有照片」的選取器。這是刻意的：兩害相權，讓他知道剛才那一下
-  /// 沒成功、還有另一條路可以走，比按了之後畫面毫無反應好
+  /// 叫不出這個選取器（找不到能推的畫面、推了卻從來沒出現）：回 nil，
+  /// Dart 端會退回 file_picker。這裡不能回空清單——那是「使用者按了
+  /// 取消」的意思，退路會被跳過，使用者只會看到按了完全沒反應
   fileprivate func failGifPick(seq: Int) {
     DispatchQueue.main.async {
       guard self.gifPickSeq == seq, let reply = self.gifPickReply else {
@@ -14651,6 +14678,20 @@ extension AppDelegate {
       }
       self.gifPickReply = nil
       reply(nil)
+    }
+  }
+
+  /// 選好了卻讀不出來（iCloud 原檔抓不下來、複製失敗）：回錯誤 load_failed，
+  /// Dart 端講「這個 GIF 讀不出來」。不回 nil——退回 file_picker 的話，
+  /// 它會在相簿剛收起來的轉場裡推，被 UIKit 丟掉，使用者只看到什麼都沒發生
+  fileprivate func failGifLoad(_ reason: String, seq: Int) {
+    DispatchQueue.main.async {
+      guard self.gifPickSeq == seq, let reply = self.gifPickReply else {
+        return
+      }
+      self.gifPickReply = nil
+      NSLog("GIF picked but unreadable: %@", reason)
+      reply(FlutterError(code: "load_failed", message: reason, details: nil))
     }
   }
 
@@ -14864,7 +14905,7 @@ extension AppDelegate: PHPickerViewControllerDelegate {
     picker.dismiss(animated: true)
     // 只認現在這一次的選取器。逾時之後才回來的那個不能動到這一次——
     // 它會在「使用者還在挑」的這一次上面壓一個讀檔期限，甚至把它判死
-    guard gifPicker === picker else { return }
+    guard gifPicker === picker, gifPickReply != nil else { return }
     // delegate 進來了＝挑選那一段結束，換讀檔那一段的底線接手計時
     let seq = gifPickSeq
     gifPicker = nil
@@ -14881,13 +14922,14 @@ extension AppDelegate: PHPickerViewControllerDelegate {
       provider.hasItemConformingToTypeIdentifier(gif)
       ? gif : provider.registeredTypeIdentifiers.first
     guard let type = want else {
-      failGifPick(seq: seq)  // 什麼 representation 都沒有：退回 file_picker
+      failGifLoad("沒有可讀的格式", seq: seq)
       return
     }
-    provider.loadFileRepresentation(forTypeIdentifier: type) { [weak self] url, _ in
+    provider.loadFileRepresentation(forTypeIdentifier: type) { [weak self] url, loadError in
       // url 指的是系統的暫存檔，這個 closure 一回去就會被刪掉——
       // 要在這裡面複製走，不能只把路徑帶回 Dart
       var copied: String?
+      var failure = loadError.map { String(describing: $0) } ?? "系統沒給檔案"
       if let url = url {
         var name = url.lastPathComponent.isEmpty ? "picked" : url.lastPathComponent
         // 下游是照副檔名認 GIF 的（見 importGif）：確定是 GIF 卻沒帶
@@ -14905,14 +14947,15 @@ extension AppDelegate: PHPickerViewControllerDelegate {
           copied = dst.path
         } catch {
           copied = nil
+          failure = "複製失敗：\(error)"
         }
       }
-      // 讀不出來（url 是 nil、或複製失敗）＝這條路走不通，回 nil 讓
-      // Dart 端退回 file_picker，不要靜悄悄地什麼都不做
+      // 讀不出來（url 是 nil、或複製失敗）：講給使用者聽，不要靜悄悄地
+      // 什麼都不做（見 failGifLoad）
       if let copied = copied {
         self?.finishGifPick(copied, seq: seq)
       } else {
-        self?.failGifPick(seq: seq)
+        self?.failGifLoad(failure, seq: seq)
       }
     }
   }

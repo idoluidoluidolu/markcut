@@ -22,7 +22,7 @@ import '../services/gif_store.dart';
 import '../services/photo_export.dart' show PhotoEncoded, encodePhotoImage;
 import '../services/preset_store.dart';
 import '../services/video_picker.dart'
-    show isVideoFile, pickGalleryGifs, pickVideoFiles;
+    show GalleryGifUnreadable, isVideoFile, pickGalleryGifs, pickVideoFiles;
 import '../nav.dart';
 import '../theme.dart';
 import '../widgets/gif_image.dart';
@@ -265,19 +265,37 @@ Future<String?> importGif(
   if (!fromFiles) {
     // 相簿：先問系統相片選取器（篩得出「會動的圖」）。回 null 才是
     // 「這台沒有」，空清單是使用者按了取消——那就不要再開第二個給他
-    final picked = await pickGalleryGifs();
+    final List<String>? picked;
+    try {
+      picked = await pickGalleryGifs();
+    } on GalleryGifUnreadable {
+      if (context.mounted) {
+        showHint(context, '這個 GIF 讀不出來，換一個試試', error: true);
+      }
+      return null;
+    }
     if (picked != null) {
       if (picked.isEmpty) return null;
       path = picked.first;
     }
   }
   if (path == null) {
-    final r = await FilePicker.platform.pickFiles(
-      type: fromFiles ? FileType.custom : FileType.image,
-      // 只有 FileType.custom 收得了副檔名清單，別的型別給了會丟
-      // ArgumentError
-      allowedExtensions: fromFiles ? const ['gif'] : null,
-    );
+    final FilePickerResult? r;
+    try {
+      r = await FilePicker.platform.pickFiles(
+        type: fromFiles ? FileType.custom : FileType.image,
+        // 只有 FileType.custom 收得了副檔名清單，別的型別給了會丟
+        // ArgumentError
+        allowedExtensions: fromFiles ? const ['gif'] : null,
+      );
+    } catch (_) {
+      // 選取器推不上來（上一個畫面還在收、被 UIKit 丟掉）會丟錯：
+      // 以前沒接，按了就是什麼都沒發生
+      if (context.mounted) {
+        showHint(context, '選取器打不開，請再試一次', error: true);
+      }
+      return null;
+    }
     path = (r == null || r.files.isEmpty) ? null : r.files.first.path;
   }
   if (path == null) return null;

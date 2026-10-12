@@ -47,6 +47,10 @@ class _FakePicker extends FilePicker {
   int calls = 0;
   String? next;
 
+  /// 選取器推不上來（iOS 的 file_picker 推在別的轉場裡被 UIKit 丟掉，
+  /// 兩秒後回 present_failed）
+  bool fail = false;
+
   @override
   Future<FilePickerResult?> pickFiles({
     String? dialogTitle,
@@ -66,6 +70,9 @@ class _FakePicker extends FilePicker {
     lastType = type;
     lastExtensions = allowedExtensions;
     lastMultiple = allowMultiple;
+    if (fail) {
+      throw PlatformException(code: 'present_failed', message: 'dropped');
+    }
     final p = next;
     if (p == null) return null;
     return FilePickerResult([
@@ -292,6 +299,45 @@ void main() {
 
     expect(_picker.calls, 0, reason: '取消之後又開了 file_picker');
     expect(await GifStore.list(), isEmpty);
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('相簿匯入：選好了卻讀不出來，講一聲、不再開 file_picker', (t) async {
+    // iOS 的 load_failed（iCloud 原檔抓不下來之類）：相簿已經開過、也選了。
+    // 這時再跳「所有照片」只會更莫名其妙——而且它推在相簿正在收起來的
+    // 轉場裡會被 UIKit 丟掉，使用者看到的就是「選了 GIF 就關掉，什麼都
+    // 沒進來」
+    _mockPick(
+      (_) => throw PlatformException(code: 'load_failed', message: 'icloud'),
+    );
+
+    await _pump(t);
+    await _tapAdd(t);
+    await t.tap(find.text('從相簿匯入 GIF'));
+    await _settle(t, 20);
+
+    expect(find.text('這個 GIF 讀不出來，換一個試試'), findsOneWidget);
+    expect(_picker.calls, 0, reason: '讀不出來之後又開了 file_picker');
+    expect(await GifStore.list(), isEmpty);
+    await t.pump(const Duration(seconds: 3));
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('相簿匯入：退回去的選取器打不開，講一聲、不會無聲無息', (t) async {
+    // 系統相片選取器叫不出來（回 null）→ 退回 file_picker，它自己也推不
+    // 上來的時候會丟錯。以前沒接，整個 ＋ 的流程默默死掉
+    _mockPick((_) => null);
+    _picker.fail = true;
+
+    await _pump(t);
+    await _tapAdd(t);
+    await t.tap(find.text('從相簿匯入 GIF'));
+    await _settle(t, 20);
+
+    expect(_picker.calls, 1);
+    expect(find.text('選取器打不開，請再試一次'), findsOneWidget);
+    expect(await GifStore.list(), isEmpty);
+    await t.pump(const Duration(seconds: 3));
     expect(t.takeException(), isNull);
   });
 
