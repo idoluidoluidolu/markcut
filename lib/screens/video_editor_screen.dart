@@ -7331,12 +7331,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 的（見 AppDelegate 的 sweepPickedTemp）。「換一個」是直接拿這個
   /// 路徑用的，不收的話片段過一陣子就指到不存在的檔案
   Future<String?> _pickGifFromGallery() async {
-    final picked = await pickGalleryGifs();
+    final List<String>? picked;
+    try {
+      picked = await pickGalleryGifs();
+    } on GalleryGifUnreadable {
+      if (mounted) showHint(context, '這個 GIF 讀不出來，換一個試試', error: true);
+      return null;
+    }
     if (picked != null && picked.isEmpty) return null;
     var path = picked?.first;
     if (path == null) {
-      final r = await FilePicker.platform.pickFiles(type: FileType.image);
-      path = r?.files.singleOrNull?.path;
+      try {
+        final r = await FilePicker.platform.pickFiles(type: FileType.image);
+        path = r?.files.singleOrNull?.path;
+      } catch (_) {
+        // 選取器推不上來會丟錯（見 importGif）：以前沒接，按了就是什麼都沒發生
+        if (mounted) showHint(context, '選取器打不開，請再試一次', error: true);
+        return null;
+      }
     }
     if (path == null) return null;
     if (!path.toLowerCase().endsWith('.gif') ||

@@ -1,7 +1,7 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
-import 'package:flutter/services.dart' show MethodChannel;
+import 'package:flutter/services.dart' show MethodChannel, PlatformException;
 import 'package:image_picker/image_picker.dart';
 // XFile 由 image_picker 轉出來，不另外相依 cross_file
 
@@ -18,16 +18,32 @@ const _pickCh = MethodChannel('markcut/pick');
 ///   安卓 系統相片選取器（ACTION_PICK_IMAGES）吃 type = image/gif
 ///
 /// 回傳 null＝這台沒有那個選取器（Android 12 以下、Web），呼叫端要退回
-/// file_picker；空清單＝使用者按了取消（不要再開第二個選取器給他）
+/// file_picker；空清單＝使用者按了取消（不要再開第二個選取器給他）。
+///
+/// 選好了卻讀不出來（iOS 的 load_failed：iCloud 原檔抓不下來之類）丟
+/// [GalleryGifUnreadable]：相簿已經在使用者面前開過、也選了，這時再跳
+/// 「所有照片」只會更莫名其妙，呼叫端要講一聲讓他換一個
 Future<List<String>?> pickGalleryGifs() async {
   if (kIsWeb) return null;
   try {
     final r = await _pickCh.invokeMethod<List<dynamic>>('gifs');
     return r?.cast<String>();
+  } on PlatformException catch (e) {
+    if (e.code == 'load_failed') throw GalleryGifUnreadable(e.message);
+    return null;
   } catch (_) {
     // 通道出狀況就當這台沒有，退回 file_picker——匯入這件事不能因此壞掉
     return null;
   }
+}
+
+/// 相簿裡選到了，那個檔卻讀不出來（見 [pickGalleryGifs]）
+class GalleryGifUnreadable implements Exception {
+  final String? reason;
+  const GalleryGifUnreadable([this.reason]);
+
+  @override
+  String toString() => 'GalleryGifUnreadable($reason)';
 }
 
 /// 只挑影片：相簿裡就只列得出影片，不會混著照片一起給。

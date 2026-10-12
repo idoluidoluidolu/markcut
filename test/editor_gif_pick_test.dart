@@ -38,6 +38,9 @@ class _FakePicker extends FilePicker {
   FileType? lastType;
   String? next;
 
+  /// 選取器推不上來（iOS 的 file_picker 兩秒後回 present_failed）
+  bool fail = false;
+
   @override
   Future<FilePickerResult?> pickFiles({
     String? dialogTitle,
@@ -55,6 +58,9 @@ class _FakePicker extends FilePicker {
   }) async {
     calls++;
     lastType = type;
+    if (fail) {
+      throw PlatformException(code: 'present_failed', message: 'dropped');
+    }
     final p = next;
     if (p == null) return null;
     return FilePickerResult([
@@ -85,6 +91,8 @@ void main() {
   late _FakePicker picker;
   // 系統相片選取器的回覆：null＝這台沒有、空清單＝按了取消
   List<String>? pickReply;
+  // 有設就改丟這個（iOS 的 load_failed：選好了卻讀不出來）
+  PlatformException? pickError;
   final pickCalls = <String>[];
 
   setUpAll(() {
@@ -97,6 +105,8 @@ void main() {
       const MethodChannel('markcut/pick'),
       (call) async {
         pickCalls.add(call.method);
+        final err = pickError;
+        if (call.method == 'gifs' && err != null) throw err;
         return call.method == 'gifs' ? pickReply : null;
       },
     );
@@ -114,6 +124,7 @@ void main() {
     final d = Directory(_gifDir);
     if (d.existsSync()) d.deleteSync(recursive: true);
     pickReply = null;
+    pickError = null;
     pickCalls.clear();
     picker = _FakePicker();
     FilePicker.platform = picker;
@@ -200,6 +211,39 @@ void main() {
     expect(modelOf(t).clips, isEmpty);
     expect(await GifStore.list(), isEmpty, reason: '不是 GIF 也被收進「我的 GIF」');
     // showHint 的計時器要跑完
+    await t.pump(const Duration(seconds: 3));
+    await finish(t);
+  });
+
+  testWidgets('選好了卻讀不出來：講一聲，不再開 file_picker，時間軸不變', (t) async {
+    // iOS 的 load_failed：相簿已經開過、也選了。再跳「所有照片」只會更
+    // 莫名其妙，而且推在相簿收起來的轉場裡會被丟掉＝什麼都沒發生
+    pickError = PlatformException(code: 'load_failed', message: 'icloud');
+
+    await openEditor(t);
+    await addGif(t);
+    await settle(t, 20);
+
+    expect(pickCalls, ['gifs']);
+    expect(find.text('這個 GIF 讀不出來，換一個試試'), findsOneWidget);
+    expect(picker.calls, 0, reason: '讀不出來之後又開了 file_picker');
+    expect(modelOf(t).clips, isEmpty);
+    expect(await GifStore.list(), isEmpty);
+    await t.pump(const Duration(seconds: 3));
+    await finish(t);
+  });
+
+  testWidgets('退回去的選取器打不開：講一聲，不會無聲無息', (t) async {
+    pickReply = null; // 這台沒有系統相片選取器 → 退回 file_picker
+    picker.fail = true;
+
+    await openEditor(t);
+    await addGif(t);
+    await settle(t, 20);
+
+    expect(picker.calls, 1);
+    expect(find.text('選取器打不開，請再試一次'), findsOneWidget);
+    expect(modelOf(t).clips, isEmpty);
     await t.pump(const Duration(seconds: 3));
     await finish(t);
   });
