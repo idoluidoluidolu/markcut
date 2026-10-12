@@ -132,6 +132,11 @@ final class GifPickUITests: XCTestCase {
     shot("a05-final")
     dump("a05-final")
     XCTAssertTrue(ok, "選完 GIF 之後沒有出現「已匯入 GIF」")
+    // 面板底部的「完成」要整顆在畫面上、按得到（以前溢出 14 像素被切掉）
+    XCTAssertTrue(tap("完成", timeout: 5), "「完成」找不到")
+    sleep(2)
+    shot("a06-after-done")
+    XCTAssertFalse(imported.exists, "按了「完成」面板沒收起來")
   }
 
   func testB_EditorAddGif() throws {
