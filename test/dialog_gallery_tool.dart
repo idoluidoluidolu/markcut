@@ -811,7 +811,7 @@ void main() {
 
   // ---------- 照片編輯器 ----------
 
-  testWidgets('photo: 畫面比例、浮水印組表、馬賽克樣式表、共用視窗、進度重建', (t) async {
+  testWidgets('photo: 畫面比例、馬賽克樣式表、共用視窗、進度重建', (t) async {
     await _pumpPhoto(t);
     final ctx = _ctx(t);
 
@@ -870,22 +870,6 @@ void main() {
     await _settle(t, 12);
     expect(find.text('馬賽克樣式'), findsOneWidget, reason: '照片的馬賽克樣式表沒開');
     await _shot(t, '39-photo-mosaic-style-sheet');
-    await _close(t);
-
-    // 浮水印組：導覽列「文字」→ 捲到「浮水印」加號列 → 編輯面板（0.72 高）
-    await t.tap(find.text('文字').first);
-    await _settle(t, 8);
-    final addLabel = find.descendant(
-      of: find.byType(SingleChildScrollView),
-      matching: find.text('浮水印'),
-    );
-    await t.ensureVisible(addLabel.first);
-    await _settle(t, 4);
-    final addRow = find.ancestor(of: addLabel, matching: find.byType(InkWell));
-    await t.tap(addRow.first, warnIfMissed: false);
-    await _settle(t, 15);
-    expect(find.text('刪除這組'), findsOneWidget, reason: '浮水印組編輯面板沒開');
-    await _shot(t, '38-photo-extra-wm-sheet');
     await _close(t);
     await _drain(t);
   });

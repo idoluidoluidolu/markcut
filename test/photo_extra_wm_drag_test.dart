@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -6,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:markcut/models/color_grade.dart';
 import 'package:markcut/models/watermark_settings.dart';
 import 'package:markcut/screens/photo_editor_screen.dart';
 import 'package:markcut/widgets/watermark_layer.dart';
@@ -33,7 +35,12 @@ Future<void> _settle(WidgetTester t, [int n = 8]) async {
   }
 }
 
-Future<void> _open(WidgetTester t, Uint8List photo, {WatermarkSettings? wm}) {
+Future<void> _open(
+  WidgetTester t,
+  Uint8List photo, {
+  WatermarkSettings? wm,
+  String? draft,
+}) {
   t.view.physicalSize = const Size(1200, 2400);
   t.view.devicePixelRatio = 1.0;
   addTearDown(t.view.reset);
@@ -42,9 +49,30 @@ Future<void> _open(WidgetTester t, Uint8List photo, {WatermarkSettings? wm}) {
       home: PhotoEditorScreen(
         photo: XFile.fromData(photo, name: 'p.png', mimeType: 'image/png'),
         initialWatermark: wm,
+        draft: draft,
       ),
     ),
   );
+}
+
+/// 舊草稿：主浮水印＋兩組額外浮水印。文字分頁的「浮水印＋」入口拿掉
+/// 之後，額外組只會從舊草稿帶進來；位置照以前「加一組」的錯法
+///（第 n 組＝主浮水印 +0.08×n）
+String _draftWithTwoExtras() {
+  final main = WatermarkSettings();
+  WatermarkSettings extra(int n) {
+    final e = main.copy();
+    e.text
+      ..x = main.text.x + 0.08 * n
+      ..y = main.text.y + 0.08 * n;
+    return e;
+  }
+
+  return jsonEncode({
+    ...main.toJson(),
+    'color': ColorGrade().toJson(),
+    'extraWms': [extra(1).toJson(), extra(2).toJson()],
+  });
 }
 
 /// 畫面上的每一層浮水印（第 0 層＝主浮水印，之後依序是額外組）
@@ -64,21 +92,6 @@ bool _mainFramed(WidgetTester t) => find
     .evaluate()
     .isNotEmpty;
 
-/// 面板：切到「文字」分頁、按「再加一組浮水印」，把跳出來的編輯面板關掉
-Future<void> _addExtraViaPanel(WidgetTester t) async {
-  await t.tap(find.text('文字').first);
-  await _settle(t);
-  final add = find.byTooltip('再加一組浮水印');
-  await t.ensureVisible(add);
-  await _settle(t);
-  await t.tap(add);
-  await _settle(t);
-  expect(find.text('刪除這組'), findsOneWidget, reason: '加了一組會直接開它的編輯面板');
-  await t.tapAt(const Offset(600, 60)); // 點面板外關閉
-  await _settle(t);
-  expect(find.text('刪除這組'), findsNothing);
-}
-
 /// 從 [from] 起手、往右下拖 12 步（每步 8px，共 96px）
 Future<void> _dragFrom(WidgetTester t, Offset from) async {
   final g = await t.startGesture(from);
@@ -96,8 +109,8 @@ Future<void> _drainHint(WidgetTester t) => t.pump(const Duration(seconds: 3));
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
-  // 迴歸守門：「更多浮水印」加了兩組，兩組的文字重疊；在清單點第一組
-  //（選取它、面板開了再關），從重疊處拖——三組都不動。
+  // 迴歸守門：兩組額外浮水印（舊草稿帶進來的）文字重疊；選第一組
+  //（開了編輯面板再關），從重疊處拖——以前三組都不動。
   //
   // 成因跟 c471ff1 修過的「馬賽克被文字壓住拖不動」同一型：後加的那組
   // 疊在上面、HitTestBehavior.opaque，選了別組時它雖然不註冊拖曳
@@ -108,27 +121,27 @@ void main() {
     await t.runAsync(() async {
       photo = await _png(const Color(0xFF888888), 900, 600);
     });
-    await _open(t, photo);
+    await _open(t, photo, draft: _draftWithTwoExtras());
     await _settle(t, 20);
-    await _addExtraViaPanel(t);
-    await _addExtraViaPanel(t);
     final layers = _layers(t);
-    expect(layers.length, 3);
+    expect(layers.length, 3, reason: '舊草稿的兩組額外浮水印要還原出來');
     final main = layers[0], e0 = layers[1], e1 = layers[2];
     final before = [for (final l in layers) (l.text.x, l.text.y)];
 
-    // 選第一組：清單那一列（開編輯面板＝選取它），再把面板關掉
-    final row = find.text('點我編輯');
-    expect(row, findsNWidgets(2));
-    await t.tap(row.first);
+    // 選第一組：點它沒被第二組蓋到的中心（點到＝選取它並開編輯面板），
+    // 再把面板關掉
+    final r = _canvas(t);
+    await t.tapAt(
+      Offset(r.left + r.width * e0.text.x, r.top + r.height * e0.text.y),
+    );
     await _settle(t);
     expect(find.text('刪除這組'), findsOneWidget);
-    await t.tapAt(const Offset(600, 60));
+    await t.tapAt(const Offset(600, 60)); // 點面板外關閉
     await _settle(t);
+    expect(find.text('刪除這組'), findsNothing);
 
     // 從兩組文字都蓋到的地方起手（第一組的框裡、也在第二組的框裡）：
     // 兩組中心的中點一定同時落在兩個框裡（框比彼此的位移大）
-    final r = _canvas(t);
     final mid = Offset(
       r.left + r.width * (e0.text.x + e1.text.x) / 2,
       r.top + r.height * (e0.text.y + e1.text.y) / 2,
@@ -139,26 +152,6 @@ void main() {
     expect(e0.text.y, greaterThan(before[1].$2 + 0.05));
     expect((e1.text.x, e1.text.y), before[2], reason: '蓋在上面、沒被選的那組不能動');
     expect((main.text.x, main.text.y), before[0], reason: '主浮水印不能動');
-    await _drainHint(t);
-    expect(t.takeException(), isNull);
-  });
-
-  // 每一組都從「主浮水印 +0.08」算位置，連加兩組就完全疊在一起——
-  // 第二組要接在上一組後面錯開
-  testWidgets('照片：連加兩組額外浮水印，位置要錯開、不能疊在同一個點', (t) async {
-    late Uint8List photo;
-    await t.runAsync(() async {
-      photo = await _png(const Color(0xFF888888), 900, 600);
-    });
-    await _open(t, photo);
-    await _settle(t, 20);
-    await _addExtraViaPanel(t);
-    await _addExtraViaPanel(t);
-    final layers = _layers(t);
-    final e0 = layers[1].text, e1 = layers[2].text;
-    expect((e0.x, e0.y), isNot((e1.x, e1.y)), reason: '兩組不能落在同一點');
-    expect(e1.x, greaterThan(e0.x));
-    expect(e1.y, greaterThan(e0.y));
     await _drainHint(t);
     expect(t.takeException(), isNull);
   });

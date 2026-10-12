@@ -90,7 +90,9 @@ void main() {
     expect(t.takeException(), isNull);
   });
 
-  testWidgets('照片編輯器：加浮水印組、開編輯面板、刪除、undo 都不炸', (t) async {
+  // 使用者不要文字分頁最底下的「浮水印 ＋」（再加一組浮水印），
+  // 拿掉了就別再長回來
+  testWidgets('照片編輯器：文字分頁底下沒有「浮水印 ＋」', (t) async {
     late Uint8List bytes;
     await t.runAsync(() async {
       bytes = await _png(const Color(0xFF888888), 900, 600);
@@ -104,34 +106,21 @@ void main() {
     );
     await _settle(t, 20);
 
-    // 面板是分頁的：浮水印組的卡片掛在「文字」那一頁（導覽列那格
-    // 改叫「文字」了），先切過去
+    // 面板是分頁的：以前那一列掛在「文字」那一頁，先切過去、捲到底
+    //（「底色」是文字卡最後一列）
     await t.tap(find.text('文字').first);
     await _settle(t);
+    await t.ensureVisible(find.text('底色').first);
+    await _settle(t);
 
-    // 面板裡的「浮水印」加號卡。導覽列那格也叫「浮水印」，
-    // 要的是卡片裡那個——挑捲動區裡的那一個
-    final addLabel = find.descendant(
-      of: find.byType(SingleChildScrollView),
-      matching: find.text('浮水印'),
+    expect(find.byTooltip('再加一組浮水印'), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byType(SingleChildScrollView),
+        matching: find.text('浮水印'),
+      ),
+      findsNothing,
     );
-    expect(addLabel, findsWidgets);
-    await t.ensureVisible(addLabel.first);
-    await _settle(t);
-
-    // 加第一組
-    final addRow = find.ancestor(of: addLabel, matching: find.byType(InkWell));
-    await t.tap(addRow.first, warnIfMissed: false);
-    await _settle(t);
-
-    // 應該開了編輯面板；關掉它
-    if (find.text('刪除這組').evaluate().isNotEmpty) {
-      await t.tapAt(const Offset(200, 30)); // 點面板外關閉
-      await _settle(t);
-    }
-
-    // 讓 showHint 的 2.4 秒計時器跑完，不然測試框架會抱怨還有 timer
-    await t.pump(const Duration(seconds: 3));
     expect(t.takeException(), isNull);
   });
 

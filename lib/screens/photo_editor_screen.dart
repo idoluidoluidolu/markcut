@@ -303,10 +303,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   int _selMosaic = -1;
 
   /// 更多浮水印：每一組是完整的一套（文字＋Logo），
-  /// 疊在主浮水印上面，可各自拖曳、獨立刪除
+  /// 疊在主浮水印上面，可各自拖曳、獨立刪除。
+  /// 文字分頁底下的「浮水印＋」入口已拿掉（使用者不要），現在只有
+  /// 舊草稿會帶進來；照樣畫、照樣輸出，點預覽上的它能編輯／刪除
   final List<WatermarkSettings> _extraWms = [];
 
-  /// 選取中的「浮水印＋」：第幾組、哪個部件（-1 = 沒有）。
+  /// 選取中的額外浮水印：第幾組、哪個部件（-1 = 沒有）。
   /// 跟主浮水印／馬賽克互斥（單一選取）
   int _selExtra = -1;
   WmPart _selExtraPart = WmPart.none;
@@ -658,35 +660,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     onRedo: _redoStack.isEmpty ? null : _redoLast,
   );
 
-  /// 加一組浮水印：以目前主浮水印為底複製一組，位置錯開。
-  /// 錯開量隨組數累加（第 n 組＝主浮水印 +0.08×n）：以前每一組都是
-  /// 「主浮水印 +0.08」，連加兩組就完全疊在同一個點上，第二組把第一組
-  /// 整個蓋住，看起來像沒加到
-  void _addExtraWm() {
-    final t = _settings.text;
-    final hasAny =
-        (t.enabled && t.text.trim().isNotEmpty) ||
-        _settings.logos.any((l) => l.enabled);
-    if (!hasAny) {
-      showHint(context, '先把上面的浮水印設定好，再新增更多組');
-      return;
-    }
-    _pushUndo();
-    final copy = _settings.copy()..mosaics.clear();
-    final off = 0.08 * (_extraWms.length + 1);
-    for (final tm in copy.texts) {
-      tm.x = (tm.x + off).clamp(0.0, 1.0);
-      tm.y = (tm.y + off).clamp(0.0, 1.0);
-    }
-    // 每一張圖片都要錯開，不然多圖的那幾張會整個疊在原來的位置上
-    for (final l in copy.logos) {
-      l.x = (l.x + off).clamp(0.0, 1.0);
-      l.y = (l.y + off).clamp(0.0, 1.0);
-    }
-    setState(() => _extraWms.add(copy));
-    _editExtraWm(_extraWms.length - 1);
-  }
-
   /// 編輯某一組浮水印：抽屜裡放「跟主浮水印一模一樣」的完整面板，
   /// 文字、字體、顏色、大小…全都能改，改動即時反映在預覽上
   void _editExtraWm(int i) {
@@ -773,76 +746,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       w.text.enabled && w.text.text.trim().isNotEmpty
       ? w.text.text
       : '浮水印 ${_extraWms.indexOf(w) + 2}（Logo）';
-
-  String _extraWmLabel(int i) => _labelOf(_extraWms[i]);
-
-  /// 面板裡的「浮水印＋」卡（A 版）：整列可點進編輯（右邊箭頭），
-  /// 刪除收在編輯面板裡；最下面永遠有一個「浮水印＋」可以再加
-  Widget _extraWmSection() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        for (var i = 0; i < _extraWms.length; i++)
-          InkWell(
-            borderRadius: BorderRadius.circular(8),
-            onTap: () => _editExtraWm(i),
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 11),
-              decoration: const BoxDecoration(
-                border: Border(bottom: BorderSide(color: kBorder)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(
-                    Icons.branding_watermark,
-                    size: 14,
-                    color: kTextDim,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      _extraWmLabel(i),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 13, color: kText),
-                    ),
-                  ),
-                  const Text(
-                    '點我編輯',
-                    style: TextStyle(fontSize: 11, color: kTextDim),
-                  ),
-                  const Icon(Icons.chevron_right, size: 17, color: kTextDim),
-                ],
-              ),
-            ),
-          ),
-        // 永遠釘在最下面的「浮水印＋」：跟圖片/馬賽克卡同一套排法
-        InkWell(
-          onTap: _addExtraWm,
-          borderRadius: BorderRadius.circular(8),
-          child: Row(
-            children: [
-              const Text(
-                '浮水印',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w700,
-                  color: kText,
-                ),
-              ),
-              const Spacer(),
-              IconButton(
-                tooltip: '再加一組浮水印',
-                visualDensity: VisualDensity.compact,
-                onPressed: _addExtraWm,
-                icon: const Icon(Icons.add, size: 20, color: kIcon),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
 
   /// 面板裡的「馬賽克」卡（插在圖片卡下面）：＋加一塊，
   /// 每塊一列可選取／調樣式／刪除
@@ -976,8 +879,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   }
 
   /// 置頂導覽列的項目。sec＝WatermarkPanel 的區段索引（按下去是叫
-  /// 面板跳第幾區，對不上就跳錯）——「更多浮水印」那一區沒有自己的
-  /// 格子（列太擠了），要用就往下捲，所以格子跟區段不再一一對應。
+  /// 面板跳第幾區，對不上就跳錯）。
   /// 第一格「範本」不是區段，按了直接開挑選視窗；最後的「調色」是
   /// 另一個模式（點了整個換掉下半部），因為調色面板自己有捲動清單，
   /// 塞不進面板當一張卡
@@ -1002,9 +904,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   );
 
   Widget _sectionBarBody() {
-    // 調色模式時高亮最後一格，否則跟著面板捲到哪就亮哪。
-    // 捲到「更多浮水印」那一區時沒有對應的格子（見 _phNav），
-    // indexWhere 找不到回 -1＝不亮，剛好是要的行為
+    // 調色模式時高亮最後一格，否則跟著面板捲到哪就亮哪
     final sec = _wmPanelCtrl.activeSection;
     final active = _tab == 1
         ? _phColorIdx
@@ -3469,9 +3369,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                         child: _mosaicSection(),
                                       ),
                                     ],
-                                    // 「更多浮水印」跟主浮水印同一頁：導覽列不再給它
-                                    // 一格，而面板是分頁的，沒掛在別人下面就進不去了
-                                    textSectionExtra: _extraWmSection(),
                                   ),
                                 },
                         ),

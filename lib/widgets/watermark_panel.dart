@@ -174,15 +174,8 @@ class WatermarkPanel extends StatefulWidget {
   final bool hideSaveButton;
 
   /// 額外區塊：插在「圖片」卡片之後、「儲存範本」之前，
-  /// 一個區塊包成一張卡。照片編輯器拿來放「馬賽克」與「更多浮水印」
+  /// 一個區塊包成一張卡。照片編輯器拿來放「馬賽克」
   final List<WmExtraSection> extraSections;
-
-  /// 接在「文字」那一區後面的額外卡片。
-  ///
-  /// 面板是分頁的（一次只建目前那一區），所以沒有自己那一格導覽的
-  /// 東西根本進不去——照片編輯的「更多浮水印」就掛在這裡，
-  /// 跟主浮水印同一頁，不必為它多佔一格
-  final Widget? textSectionExtra;
 
   /// 顯示「手繪」入口。只有「製作浮水印」那一頁開（使用者指定：
   /// 其他畫面全拿掉——要手繪就去範本工作室做，做好套進來）
@@ -229,7 +222,6 @@ class WatermarkPanel extends StatefulWidget {
     this.onAddGif,
     this.hideSaveButton = false,
     this.extraSections = const [],
-    this.textSectionExtra,
     this.showDraw = false,
     this.grabFrame,
     this.controller,
@@ -763,7 +755,7 @@ class WatermarkPanelState extends State<WatermarkPanel>
   @override
   Widget build(BuildContext context) {
     // 每一輪重算導覽項目：不同畫面的區塊本來就不一樣
-    //（影片多動畫、照片多馬賽克與更多浮水印）
+    //（影片多動畫、照片多馬賽克）
     while (_extraKeys.length < widget.extraSections.length) {
       _extraKeys.add(GlobalKey());
     }
@@ -1542,10 +1534,6 @@ class WatermarkPanelState extends State<WatermarkPanel>
                       ),
                     ),
 
-                  // 「更多浮水印」之類的附加卡：跟文字同一頁
-                  if (_on(_textCardKey) && widget.textSectionExtra != null)
-                    _card(widget.textSectionExtra!),
-
                   // ===== 卡片 3：圖片（可以放很多張；＋加入，點縮圖換要調哪一張）=====
                   if (_on(_logoCardKey))
                     KeyedSubtree(
@@ -1750,7 +1738,7 @@ class WatermarkPanelState extends State<WatermarkPanel>
                       ),
                     ),
 
-                  // ===== 父層注入的額外區塊（照片編輯器的馬賽克/更多浮水印）=====
+                  // ===== 父層注入的額外區塊（照片編輯器的馬賽克）=====
                   for (var i = 0; i < widget.extraSections.length; i++)
                     if (_on(_extraKeys[i]))
                       KeyedSubtree(
