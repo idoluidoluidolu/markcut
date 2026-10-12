@@ -36,8 +36,9 @@ import '../widgets/watermark_panel.dart';
 /// 畫布比例可選（1:1/4:5/3:4/16:9/9:16）、格子等分、照片置中裁滿（cover）；
 /// 拖曳格子互換位置、點一下鎖定後可調構圖（右上角鈕換照片），
 /// 也能開純格線（調線寬、選顏色）。空格子隨時允許，合成時留透明。
-/// 自由模式加照片：還沒動過就照各張的長寬比自動排滿畫布（collage_pack），
-/// 自己排過的不動、新的疊在中間；「隨機排列」換一種排法；換畫布比例時
+/// 自由模式加照片：空畫布照各張的長寬比自動排滿（collage_pack）；還沒
+/// 動過就把新的插進原本的排法、照樣塞滿；自己排過的不動、新的疊在中間；
+/// 「隨機排列」換一種排法；換畫布比例時
 /// 方塊重新放進新畫布、形狀不變。
 /// 拼圖的草稿鍵（個人頁「未完成的拼圖」讀這裡）
 const kCollageDraftKey = 'collage_draft_v1';
@@ -1455,11 +1456,13 @@ class _CollageScreenState extends State<CollageScreen>
     });
   }
 
-  /// 自由模式加照片。排法還是自動排的（一塊都沒被拖過、拉過、裁過）就連同
-  /// 畫布上原本的一起自動排滿整張畫布（測試回報：「加入一堆照片要自動排列
-  /// 塞滿、縮放大小」）；使用者自己排過的一塊都不動，新的疊在上面（見
-  /// _addOnTop）。以前不管排過沒都整組重排，測試回報「已經排好後點加入
-  /// 照片，排好的會變成預設的樣子」。
+  /// 自由模式加照片。空畫布＝自動排滿（測試回報：「加入一堆照片要自動排列
+  /// 塞滿、縮放大小」）；排法還是自動排的（一塊都沒被拖過、拉過）＝新的
+  /// 插進原本的排法裡、整張照樣塞滿，原本的左右上下關係不變（見
+  /// _insertIntoArrangement）；使用者自己排過的一塊都不動，新的疊在上面
+  ///（見 _addOnTop）。以前不管排過沒都整組重排，測試回報「已經排好後點
+  /// 加入照片，排好的會變成預設的樣子」；之後自動排的還是整組換一種
+  /// 排法，使用者回報「加入照片後會整個重新排序原本的排列」。
   /// 「加照片」鈕跟點空畫布都會叫：選取器開著時再點不能再開一個
   Future<void> _addFreePhotos() async {
     if (_pickingPhotos) return;
@@ -1521,18 +1524,42 @@ class _CollageScreenState extends State<CollageScreen>
         // 「動過沒」要在新方塊放上去之前看（放上去之後快照裡少了它們，
         // 怎麼看都是動過），也要等解碼完才看：解碼的那幾秒使用者可能
         // 又拖了一塊
-        if (_items.isEmpty || _freeUntouched) {
+        if (_items.isEmpty) {
           for (final k in fresh) {
             _items.add(CollageFreeItem(img: k, rect: ui.Rect.zero));
           }
           _autoArrange();
-        } else {
+        } else if (!_freeUntouched || !_insertIntoArrangement(fresh)) {
           _addOnTop(fresh);
         }
         // 最後加的那張選起來（疊在最上層），馬上就能拖、能縮
         _selItem = _items.length - 1;
       });
     }
+  }
+
+  /// 自動排的畫布加照片：新照片插進原本的排法（collage_pack 的
+  /// extendCollage）——原本的照片彼此左右上下的關係都不變，只是讓位、
+  /// 跟著縮放，整張照樣塞滿。排完記快照：還是算自動排的（再加照片一樣
+  /// 插進去、換畫布比例照舊重排）。拆不出排法回 false，交給 _addOnTop
+  bool _insertIntoArrangement(List<int> imgs) {
+    final rects = extendCollage(
+      [for (final t in _items) t.rect],
+      [for (final t in _items) _aspectOf(t.img, crop: t.crop)],
+      [for (final k in imgs) _aspectOf(k)],
+      _canvasAspect,
+    );
+    if (rects == null) return false;
+    final m = _items.length;
+    for (var i = 0; i < m; i++) {
+      _items[i].rect = rects[i];
+    }
+    for (var j = 0; j < imgs.length; j++) {
+      _items.add(CollageFreeItem(img: imgs[j], rect: rects[m + j]));
+    }
+    _autoRects = _freeRects();
+    _fitBase = null;
+    return true;
   }
 
   /// 手排過的畫布加照片：原本的方塊一塊都不動（位置、大小、裁切都不碰），

@@ -8,9 +8,10 @@
 // - 自己拖過、拉過角之後加照片：原本每一塊的位置大小一模一樣；新的疊在
 //   最上層、整塊在畫布內、大小像樣、是照片的形狀、被選起來；一次加兩張
 //   彼此不疊；一張一張加也不會剛好疊在上一張新的上面
-// - 還沒動過（自動排的、只點選過、按過隨機排列）：照舊連同原本的一起
-//   自動重排
-// - 續作的草稿：當初是使用者排的就不重排，當初是自動排的照舊重排
+// - 還沒動過（自動排的、只點選過、按過隨機排列）：新的插進原本的排法，
+//   並排的還是並排、上下的還是上下（使用者回報：「加入照片後會整個重新
+//   排序原本的排列」——以前是整組換一種排法），整張照樣塞滿
+// - 續作的草稿：當初是使用者排的就不重排，當初是自動排的一樣插進去、不打散
 // - 複製：同一張照片、同樣的裁切與大小，錯開一點、在畫布內、疊在最上層、
 //   選起來；算「動過」（之後加照片不重排）；貼著畫布邊的往回錯；同一張
 //   連複製兩次不疊在一起；換畫布比例時兩塊各走各的、切回來一模一樣
@@ -97,6 +98,42 @@ void _expectKept(
     expect(now.any((it) => identical(it, e.key)), isTrue, reason: '$why：少了一塊');
     expect(e.key.rect, e.value, reason: '$why：照片 ${e.key.img} 被動到了');
   }
+}
+
+/// 原本的排法沒被打散：當初並排（上下有重疊）的兩塊，左邊的還在左邊；
+/// 當初上下疊（左右有重疊）的兩塊，上面的還在上面。大小可以變（要讓
+/// 位置給新照片），誰挨著誰、誰在誰哪一邊不能變（使用者回報：「加入
+/// 照片後會整個重新排序原本的排列」）
+void _expectSameArrangement(Map<CollageFreeItem, ui.Rect> was, String why) {
+  const e = 1e-6;
+  var pairs = 0;
+  for (final a in was.keys) {
+    for (final b in was.keys) {
+      if (identical(a, b)) continue;
+      final ra = was[a]!, rb = was[b]!;
+      final yOverlap =
+          math.min(ra.bottom, rb.bottom) - math.max(ra.top, rb.top) > e;
+      final xOverlap =
+          math.min(ra.right, rb.right) - math.max(ra.left, rb.left) > e;
+      if (yOverlap && ra.right <= rb.left + e) {
+        pairs++;
+        expect(
+          a.rect.right,
+          lessThanOrEqualTo(b.rect.left + e),
+          reason: '$why：照片 ${a.img} 本來在 ${b.img} 左邊',
+        );
+      }
+      if (xOverlap && ra.bottom <= rb.top + e) {
+        pairs++;
+        expect(
+          a.rect.bottom,
+          lessThanOrEqualTo(b.rect.top + e),
+          reason: '$why：照片 ${a.img} 本來在 ${b.img} 上面',
+        );
+      }
+    }
+  }
+  expect(pairs, greaterThan(0), reason: '$why：至少要有一對挨著的才驗得到');
 }
 
 /// 整塊在畫布內
@@ -452,7 +489,7 @@ void main() {
       expect(t.takeException(), isNull);
     });
 
-    testWidgets('還沒動過（只點選過、按過隨機排列）：加照片照舊連同原本的一起自動重排', (t) async {
+    testWidgets('還沒動過（只點選過、按過隨機排列）：加照片插進原本的排法——誰在誰哪一邊都不變，整張照樣塞滿', (t) async {
       final picker = await _openFree(t);
       await _addPhotos(
         t,
@@ -468,13 +505,14 @@ void main() {
       final before = _snap(t);
 
       await _addPhotos(t, picker, await _photos(t, [(320, 180), (180, 320)]));
-      _expectPacked(t, '再加兩張');
-      expect(
-        before.entries.any((e) => e.key.rect != e.value),
-        isTrue,
-        reason: '沒動過的排法要連同新的一起重排',
-      );
-      _expectSelected(t, _items(t).last, '重排後最後加的那張');
+      _expectPacked(t, '再加兩張', cover: 0.9);
+      _expectSameArrangement(before, '再加兩張');
+      _expectSelected(t, _items(t).last, '最後加的那張');
+      // 插進去之後還是算自動排的：再加一張一樣插進去、不打散
+      final before2 = _snap(t);
+      await _addPhotos(t, picker, await _photos(t, [(240, 240)]));
+      _expectPacked(t, '再加一張', cover: 0.9);
+      _expectSameArrangement(before2, '再加一張');
       expect(t.takeException(), isNull);
     });
   });
@@ -785,44 +823,41 @@ void main() {
     });
 
     for (final auto in [false, true]) {
-      testWidgets(auto ? '續作的草稿當初是自動排的：加照片照舊自動重排' : '續作的草稿當初是使用者排的：加照片不重排', (
-        t,
-      ) async {
-        SharedPreferences.setMockInitialValues({});
-        final picker = _setUp(t);
-        await writePhoto(t);
-        await open(t, {
-          'photos': [path, path],
-          'free': true,
-          'cols': 2,
-          'rows': 1,
-          'aspect': 1.0,
-          'order': [0, 1],
-          'freeItems': [
-            {'img': 0, 'l': 0.05, 't': 0.1, 'w': 0.5, 'h': 0.25},
-            {'img': 1, 'l': 0.3, 't': 0.5, 'w': 0.6, 'h': 0.3},
-          ],
-          if (auto) 'freeAuto': true,
-        });
-        final before = _snap(t);
-        await _addPhotos(t, picker, await _photos(t, [(240, 240)]));
-        if (auto) {
-          expect(
-            before.entries.any((e) => e.key.rect != e.value),
-            isTrue,
-            reason: '自動排的要連同新的一起重排',
+      testWidgets(
+        auto ? '續作的草稿當初是自動排的：加照片插進原本的排法、不打散' : '續作的草稿當初是使用者排的：加照片不重排',
+        (t) async {
+          SharedPreferences.setMockInitialValues({});
+          final picker = _setUp(t);
+          await writePhoto(t);
+          await open(t, {
+            'photos': [path, path],
+            'free': true,
+            'cols': 2,
+            'rows': 1,
+            'aspect': 1.0,
+            'order': [0, 1],
+            'freeItems': [
+              {'img': 0, 'l': 0.05, 't': 0.1, 'w': 0.5, 'h': 0.25},
+              {'img': 1, 'l': 0.3, 't': 0.5, 'w': 0.6, 'h': 0.3},
+            ],
+            if (auto) 'freeAuto': true,
+          });
+          final before = _snap(t);
+          await _addPhotos(t, picker, await _photos(t, [(240, 240)]));
+          if (auto) {
+            _expectSameArrangement(before, '續作後加照片');
+            _expectPacked(t, '續作後加照片');
+          } else {
+            _expectKept(t, before, '續作後加照片');
+            expect(_inside(_items(t).last.rect), isTrue);
+          }
+          expect(t.takeException(), isNull);
+          await t.pumpWidget(const SizedBox());
+          await t.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 200)),
           );
-          _expectPacked(t, '續作後加照片');
-        } else {
-          _expectKept(t, before, '續作後加照片');
-          expect(_inside(_items(t).last.rect), isTrue);
-        }
-        expect(t.takeException(), isNull);
-        await t.pumpWidget(const SizedBox());
-        await t.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 200)),
-        );
-      });
+        },
+      );
     }
   });
 

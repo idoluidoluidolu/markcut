@@ -235,7 +235,8 @@ void main() {
     expect(_differs(second, third), isTrue, reason: '再按一次要再換');
     _expectFilled(t, third, 1);
 
-    // 再加兩張：連同原本的一起重排，八張還是塞滿
+    // 再加兩張：插進原本的排法（不打散，見 collage_free_keep_test），
+    // 八張還是塞滿
     await _addPhotos(t, picker, (await _photos(t, 2)));
     final eight = _rects(t);
     expect(eight.length, 8);
