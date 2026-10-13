@@ -441,10 +441,12 @@ void main() {
     await _shot(t, '13-ve-add-media-sheet');
     await t.tap(find.text('文字'));
     await _settle(t, 10);
-    expect(find.text('輸入文字'), findsOneWidget);
-    await _shot(t, '14-ve-text-input-dialog');
-    await t.enterText(find.byType(TextField), '週末小旅行');
-    await t.tap(find.text('加入'));
+    // 加文字直接開樣式面板（10-13 起，不再先跳只能打字的對話框）
+    final field = find.byKey(const ValueKey('clip-text-content'));
+    expect(field, findsOneWidget);
+    await _shot(t, '14-ve-text-add-sheet');
+    await t.enterText(field, '週末小旅行');
+    await t.tap(find.byKey(const ValueKey('clip-text-done')));
     await _settle(t, 15);
     final tc = _newestClip(t);
     await t.longPressAt(t.getRect(tc).center);

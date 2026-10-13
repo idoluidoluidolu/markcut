@@ -1354,7 +1354,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 每個破壞性操作前呼叫：拍快照＋順便存草稿
-  void _pushUndo() {
+  void _pushUndo() => _pushUndoSnapshot(_snapshot());
+
+  /// [_pushUndo] 的本體，收一份已經拍好的快照。新加的文字要等真的打了
+  /// 字才收「加之前」那一份（見 _addTextClip）：什麼都沒打就收掉的話，
+  /// 上一步不該多一步什麼都沒做的
+  void _pushUndoSnapshot(String snap) {
     // 這裡不重組合成。
     //
     // _pushUndo 是「每個破壞性操作前」都會呼叫的——拖曳片段的過程中
@@ -1362,7 +1367,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 二十幾次）。每次重組都要換掉 AVPlayerItem，畫面會抖、位置會跳。
     // 交給 _saveDraft 那條併批的路：停手 900ms 之後比對指紋，
     // 值真的變了才重組一次
-    _undoStack.add(_snapshot());
+    _undoStack.add(snap);
     if (_undoStack.length > 60) _undoStack.removeAt(0);
     _redoStack.clear();
     _saveDraft();
@@ -8077,43 +8082,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _saveDraft();
   }
 
-  /// 文字輸入對話框（新增與編輯共用）
-  Future<String?> _askText({String initial = ''}) {
-    final ctrl = TextEditingController(text: initial);
-    return showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('文字'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          minLines: 3,
-          maxLines: 6,
-          keyboardType: TextInputType.multiline,
-          textInputAction: TextInputAction.newline,
-          decoration: const InputDecoration(hintText: '輸入文字'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, ctrl.text.trim()),
-            child: Text(initial.isEmpty ? '加入' : '儲存'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 點選已選取的文字片段 → 編輯內容與樣式
-  Future<void> _editTextClip(TimelineClip clip) async {
+  /// 點選已選取的文字片段 → 編輯內容與樣式。
+  ///
+  /// 加素材 → 文字也直接開這個（使用者 10-13 指定：加文字就要有面板
+  /// 調樣式，不是先跳一個只能打字的對話框）。那時片段是剛加的空白文字，
+  /// [addedFrom] 是加之前拍的快照：輸入框自己跳鍵盤；第一筆改動才把它
+  /// 收進上一步（加文字＋調樣式整個算一步）；什麼字都沒打就收掉＝沒加
+  Future<void> _editTextClip(TimelineClip clip, {String? addedFrom}) async {
     final src = _tl.sourceOf(clip);
     if (src.kind != ClipKind.text) return;
     src.textStyle ??= TextMark(text: src.name, sizeFrac: 0.06, opacity: 1);
     final st = src.textStyle!;
     final ctrl = TextEditingController(text: src.name);
+    final isNew = addedFrom != null;
     // 內容與樣式的每一筆改動都走 both：第一筆拍一份快照，整個視窗算一步
     // 復原——以前一份都不拍，改完字型顏色按上一步退的是更早的別的動作
     var pushed = false;
@@ -8134,7 +8115,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           final typingLines = panelHeight < 180 ? 1 : 2;
           void both(VoidCallback fn) {
             if (!pushed) {
-              _pushUndo();
+              // 新加的：收的是加之前那一份，上一步一次退到沒加這段文字
+              final from = addedFrom;
+              if (from != null) {
+                _pushUndoSnapshot(from);
+              } else {
+                _pushUndo();
+              }
               pushed = true;
             }
             setSheet(fn);
@@ -8259,7 +8246,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                           children: [
                             TextField(
                               controller: ctrl,
-                              autofocus: false,
+                              // 剛加的空白文字：直接跳鍵盤打字
+                              autofocus: isNew,
                               key: const ValueKey('clip-text-content'),
                               minLines: typing ? typingLines : 3,
                               maxLines: typing ? typingLines : 6,
@@ -8577,24 +8565,35 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ),
     );
     // Modal contents stay mounted until the reverse transition completes.
+    if (isNew && mounted && src.name.trim().isEmpty) {
+      // 新加的文字一個字都沒打就收掉＝沒加：片段跟來源一起收回。
+      // 打過又刪光的那次已經收進上一步，退的是同一個樣子，一起拿掉
+      setState(() {
+        _tl.clips.removeWhere((c) => c.id == clip.id);
+        if (_tl.sources.isNotEmpty && identical(_tl.sources.last, src)) {
+          _tl.sources.removeLast();
+        }
+        if (_sel == clip.id) _sel = -1;
+      });
+      if (pushed && _undoStack.isNotEmpty) _undoStack.removeLast();
+    }
     _saveDraft();
   }
 
-  /// 文字素材：輸入文字、從播放頭開始、預設 3 秒
+  /// 文字素材：從播放頭開始、預設 3 秒。先放一段空白文字、直接開樣式
+  /// 面板（見 _editTextClip 的 addedFrom），打字跟調樣式一次做完
   Future<void> _addTextClip(int track) async {
-    final text = await _askText();
-    if (text == null || text.isEmpty) return;
     _pause();
-    _pushUndo();
+    final before = _snapshot();
     final srcIndex = _tl.sources.length;
     _tl.sources.add(
       MediaSource(
         path: '',
-        name: text,
+        name: '',
         kind: ClipKind.text,
         duration: 3600,
         textStyle: TextMark(
-          text: text,
+          text: '',
           sizeFrac: 0.06,
           colorValue: 0xFFFFFFFF,
           opacity: 1,
@@ -8614,7 +8613,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _tl.clips.add(clip);
       _sel = clip.id;
     });
-    _saveDraft(); // 加完立刻落草稿
+    await _editTextClip(clip, addedFrom: before);
   }
 
   /// 馬賽克素材：畫面上一塊方形區域打碼。

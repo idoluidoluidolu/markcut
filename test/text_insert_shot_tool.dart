@@ -191,6 +191,39 @@ void main() {
     await snap(t, 'preset_applied');
   });
 
+  testWidgets('加素材 → 文字 → add_text_typing（鍵盤）/ add_text_panel', (t) async {
+    phone(t);
+    await t.pumpWidget(
+      RepaintBoundary(
+        key: _shotKey,
+        child: MaterialApp(
+          theme: buildStudioTheme(),
+          debugShowCheckedModeBanner: false,
+          home: const VideoEditorScreen(blank: true),
+        ),
+      ),
+    );
+    await _settle(t, 15);
+    await t.tap(find.text('加素材'));
+    await _settle(t, 10);
+    await t.tap(find.text('文字'));
+    // 手機上這一下鍵盤會升起來：照 iPhone 的鍵盤高度（約 336pt）墊上
+    // 鍵盤蓋住底部安全區：真機這時 padding.bottom 是 0（引擎扣掉了），
+    // 測試的假畫面要自己扣，不然面板會多讓出 34pt
+    t.view.viewInsets = const FakeViewPadding(bottom: 336 * 3);
+    t.view.padding = const FakeViewPadding(top: 141);
+    await _settle(t, 15);
+    await t.enterText(find.byKey(const ValueKey('clip-text-content')), '週末小旅行');
+    await _settle(t, 10);
+    await snap(t, 'add_text_typing');
+    t.view.resetViewInsets();
+    t.view.padding = const FakeViewPadding(top: 141, bottom: 102);
+    await _settle(t, 15);
+    await snap(t, 'add_text_panel');
+    await t.tap(find.byKey(const ValueKey('clip-text-done')));
+    await _settle(t, 20);
+  });
+
   testWidgets('文字素材編輯視窗 → insert_clip_before / _after', (t) async {
     phone(t);
     await t.pumpWidget(
