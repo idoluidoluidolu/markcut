@@ -1,5 +1,5 @@
 import 'dart:math' as math;
-import 'dart:ui' show Offset, Rect;
+import 'dart:ui' show Offset, Rect, Size;
 
 /// 影片裁切的換算。
 ///
@@ -148,6 +148,48 @@ Rect pinchCropUniform({
       h,
     ),
     view,
+  );
+}
+
+// ── 裁切畫面的「縮放」：框固定、圖在底下動 ────────────────────────────
+//
+// 框（[frame]，畫面座標）永遠是整張圖原本擺的位置與大小；動的是「框裡
+// 看到原圖的哪一塊」（圖片像素）。所以手指放大、拖曳，都是反過來改這
+// 一塊：放大＝這一塊變小、往右拖＝這一塊往左。
+
+/// 縮放最多放大幾倍
+const kCropMaxZoom = 8.0;
+
+/// 雙指距離變成 [scale] 倍、焦點從 [focalStart] 移到 [focal]（畫面座標）
+/// 之後，框裡要看到的那一塊（圖片像素）。每次都從起手的那一塊 [start]
+/// 算，不累乘。手指按著的那一點內容留在指尖底下；單指拖曳就是
+/// scale＝1。比例永遠是 [start] 的比例；不出圖、最多放大 [kCropMaxZoom]
+/// 倍、也不會比整張大（只能放大，不會留白邊）
+Rect zoomCrop({
+  required Rect start,
+  required Rect frame,
+  required Size imageSize,
+  required double scale,
+  required Offset focalStart,
+  required Offset focal,
+}) {
+  final iw = imageSize.width;
+  final ih = imageSize.height;
+  final aspect = start.width / start.height;
+  // 起手時指尖底下那一點（圖片像素）
+  final anchor =
+      start.topLeft +
+      (focalStart - frame.topLeft) * (start.width / frame.width);
+  final s = scale.isFinite && scale > 0 ? scale : 1.0;
+  final widest = math.min(iw, ih * aspect);
+  final w = _side(start.width / s, widest / kCropMaxZoom, widest);
+  final h = w / aspect;
+  final topLeft = anchor - (focal - frame.topLeft) * (w / frame.width);
+  return Rect.fromLTWH(
+    topLeft.dx.clamp(0.0, math.max(0.0, iw - w)),
+    topLeft.dy.clamp(0.0, math.max(0.0, ih - h)),
+    w,
+    h,
   );
 }
 

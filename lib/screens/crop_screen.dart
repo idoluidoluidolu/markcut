@@ -57,17 +57,37 @@ Future<Rect?> pickCropRect(
   return out is Rect ? out : null;
 }
 
-/// 裁切比例的選項。null＝自由。
-/// 自由最前，其餘照首位數字由小到大——跟影片／批次／照片編輯的比例
-/// 視窗同一個順序（使用者指定全 App 統一，見 video_processor 的 ratioOrder）
-const _kRatios = <(String, double?)>[
-  ('自由', null),
-  ('1:1', 1),
-  ('3:4', 3 / 4),
-  ('4:3', 4 / 3),
-  ('9:16', 9 / 16),
-  ('16:9', 16 / 9),
+/// 比例那一排每一顆的意思。原比例跟縮放的比例要等圖解開才知道（就是
+/// 這張圖自己的長寬比），按下去時才換算
+enum _CropKind {
+  free,
+  original,
+
+  /// 框固定在整張圖的大小、圖在底下放大移動；輸出跟原圖一樣大
+  /// （使用者指定：照片尺寸不變，只是縮放圖片）
+  zoom,
+  fixed,
+}
+
+/// 裁切比例的選項（[fixed] 的寬/高比放第三格）。
+/// 自由最前、接著原比例與縮放（都照這張圖自己的比例），其餘照首位數字
+/// 由小到大——跟影片／批次／照片編輯的比例視窗同一個順序（使用者指定
+/// 全 App 統一，見 video_processor 的 ratioOrder）
+const _kRatios = <(String, _CropKind, double?)>[
+  ('自由', _CropKind.free, null),
+  ('原比例', _CropKind.original, null),
+  ('縮放', _CropKind.zoom, null),
+  ('1:1', _CropKind.fixed, 1),
+  ('3:4', _CropKind.fixed, 3 / 4),
+  ('4:3', _CropKind.fixed, 4 / 3),
+  ('9:16', _CropKind.fixed, 9 / 16),
+  ('16:9', _CropKind.fixed, 16 / 9),
 ];
+
+/// 一排八顆、什麼寬度都不用捲：每一格的寬照字數分（中文字算兩個單位、
+/// 數字冒號算一個，外加左右留白三個單位），「原比例」才不會被切掉
+int _chipFlex(String label) =>
+    label.runes.fold(3, (n, c) => n + (c >= 0x2E80 ? 2 : 1));
 
 class CropScreen extends StatefulWidget {
   const CropScreen({
@@ -105,6 +125,13 @@ class _CropScreenState extends State<CropScreen> {
   int _sourceWidth = 0, _sourceHeight = 0;
   bool _busy = false;
   double? _ratio;
+
+  /// 比例那一排亮哪一顆（標籤）。不能拿 [_ratio] 比：原比例換算出來
+  /// 可能剛好等於 3:4，兩顆會一起亮
+  String _choice = _kRatios.first.$1;
+
+  /// 縮放模式：框固定、圖在底下動，輸出跟原圖一樣大（見 [_CropKind.zoom]）
+  bool get _zoom => _choice == '縮放';
 
   /// 裁切框，單位是「圖片像素」。顯示時再換算成畫面座標
   Rect _crop = Rect.zero;
@@ -156,13 +183,31 @@ class _CropScreenState extends State<CropScreen> {
   /// 還原：框回到整張圖。
   ///
   /// 呼叫端進來時給的是「沒裁過的原圖」，所以框拉回整張、按完成
-  /// 就等於把之前裁掉的部分要回來了
+  /// 就等於把之前裁掉的部分要回來了。原比例／縮放的整張本來就是那個
+  /// 比例，留在原本那顆；其他比例框不成整張，退回自由
   void _resetCrop() {
     final img = _img;
     if (img == null) return;
+    final kind = _kRatios.firstWhere((o) => o.$1 == _choice).$2;
+    final keep = kind == _CropKind.original || kind == _CropKind.zoom;
     setState(() {
-      _ratio = null;
+      if (!keep) {
+        _choice = _kRatios.first.$1;
+        _ratio = null;
+      }
       _crop = Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble());
+    });
+  }
+
+  /// 按了比例那一排的一顆
+  void _choose(String label, _CropKind kind, double? fixed) {
+    final img = _img;
+    if (img == null) return;
+    setState(() => _choice = label);
+    _applyRatio(switch (kind) {
+      _CropKind.free => null,
+      _CropKind.original || _CropKind.zoom => img.width / img.height,
+      _CropKind.fixed => fixed,
     });
   }
 
@@ -212,10 +257,11 @@ class _CropScreenState extends State<CropScreen> {
       r.width / img.width,
       r.height / img.height,
     );
+    // 縮放：照片尺寸不變——出檔跟整張原圖一樣大，框裡那一塊放大填滿
     final plan = cropOutputPlan(
       _sourceWidth,
       _sourceHeight,
-      fraction,
+      _zoom ? const Rect.fromLTWH(0, 0, 1, 1) : fraction,
       maxSide: widget.maxSide,
     );
     ui.Image? decoded, out;
@@ -309,30 +355,28 @@ class _CropScreenState extends State<CropScreen> {
                           image: img,
                           crop: _crop,
                           ratio: _ratio,
+                          zoom: _zoom,
                           onCrop: (r) => setState(() => _crop = r),
                         ),
                       ),
-                      // 六格等分一排，什麼寬度都不用捲。原本是可捲的 ListView，
+                      // 一排排完，什麼寬度都不用捲。原本是可捲的 ListView，
                       // 排在最後那一格在 390 寬的機子上會被切掉一半、也沒有任何
                       // 「還可以捲」的暗示；順序改成首位數字由小到大之後，最後
-                      // 一格正好是最常用的 16:9，不能讓它藏在畫面外
+                      // 一格正好是最常用的 16:9，不能讓它藏在畫面外。
+                      // 加了原比例、縮放之後八顆，每格的寬照字數分（_chipFlex）
                       SizedBox(
                         height: 58,
                         child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
                           child: Row(
                             children: [
-                              for (final (i, (label, r)) in _kRatios.indexed)
+                              for (final (label, kind, r) in _kRatios)
                                 Expanded(
-                                  child: Padding(
-                                    padding: EdgeInsets.only(
-                                      left: i == 0 ? 0 : 6,
-                                    ),
-                                    child: _RatioChip(
-                                      label: label,
-                                      on: _ratio == r,
-                                      onTap: () => _applyRatio(r),
-                                    ),
+                                  flex: _chipFlex(label),
+                                  child: _RatioChip(
+                                    label: label,
+                                    on: _choice == label,
+                                    onTap: () => _choose(label, kind, r),
                                   ),
                                 ),
                             ],
@@ -377,22 +421,26 @@ class _RatioChip extends StatelessWidget {
         borderRadius: BorderRadius.circular(999),
         onTap: onTap,
         child: Container(
-          // 左右 10：六格等分時一格約 55 寬，「16:9」要放得進去
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+          // 左右 7：八顆一排時 390 寬的機子上「原比例」那格約 60 寬，
+          // 留白太多字就放不進去；更窄的機子（或系統字放大）字會等比縮小，
+          // 不會被切掉
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 9),
           decoration: BoxDecoration(
             color: on ? kAmber : kPanelHi,
             borderRadius: BorderRadius.circular(999),
           ),
-          child: Text(
-            label,
-            maxLines: 1,
-            softWrap: false,
-            overflow: TextOverflow.clip,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 12.5,
-              fontWeight: FontWeight.w700,
-              color: on ? Colors.black : kText,
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              label,
+              maxLines: 1,
+              softWrap: false,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w700,
+                color: on ? Colors.black : kText,
+              ),
             ),
           ),
         ),
@@ -408,12 +456,18 @@ class _CropArea extends StatefulWidget {
     required this.crop,
     required this.ratio,
     required this.onCrop,
+    this.zoom = false,
   });
 
   final ui.Image image;
   final Rect crop;
   final double? ratio;
   final ValueChanged<Rect> onCrop;
+
+  /// 縮放模式：框固定在整張圖的位置與大小，[crop] 是框裡看到原圖的
+  /// 哪一塊；雙指放大、單指拖曳都是在改這一塊（數學在 crop_math 的
+  /// zoomCrop）
+  final bool zoom;
 
   @override
   State<_CropArea> createState() => _CropAreaState();
@@ -636,6 +690,13 @@ class _CropAreaState extends State<_CropArea> {
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onScaleStart: (d) {
+              if (widget.zoom) {
+                // 手指數一變 recognizer 會先 onEnd 再 onStart，每次都從
+                // 當下的那一塊重新起手，第二指放上來不會跳
+                _zoomStart = widget.crop;
+                _zoomFocal = d.localFocalPoint;
+                return;
+              }
               _grabStart = d.localFocalPoint;
               _pinchFocal = d.localFocalPoint;
               _startCrop = cropView;
@@ -643,6 +704,22 @@ class _CropAreaState extends State<_CropArea> {
               if (!_pinching) onDown(d.localFocalPoint);
             },
             onScaleUpdate: (d) {
+              if (widget.zoom) {
+                final start = _zoomStart;
+                final f0 = _zoomFocal;
+                if (start == null || f0 == null) return;
+                widget.onCrop(
+                  zoomCrop(
+                    start: start,
+                    frame: view,
+                    imageSize: Size(iw, ih),
+                    scale: d.scale,
+                    focalStart: f0,
+                    focal: d.localFocalPoint,
+                  ),
+                );
+                return;
+              }
               final startPt = _grabStart ?? d.localFocalPoint;
               if (d.pointerCount >= 2) {
                 // 第二根手指中途才放上來：以這一刻重新起手，
@@ -667,13 +744,18 @@ class _CropAreaState extends State<_CropArea> {
               _grabStart = null;
               _pinchFocal = null;
               _pinching = false;
+              _zoomStart = null;
+              _zoomFocal = null;
             },
             child: CustomPaint(
               size: Size(box.maxWidth, box.maxHeight),
+              // 縮放模式：框＝整張圖原本的位置（輸出範圍），裡面畫原圖的
+              // 那一塊
               painter: _CropPainter(
                 image: widget.image,
                 view: view,
-                crop: cropView,
+                crop: widget.zoom ? view : cropView,
+                zoomSrc: widget.zoom ? widget.crop : null,
               ),
             ),
           ),
@@ -681,6 +763,10 @@ class _CropAreaState extends State<_CropArea> {
       },
     );
   }
+
+  /// 縮放模式這一次手勢起手時框裡那一塊（圖片像素）與焦點
+  Rect? _zoomStart;
+  Offset? _zoomFocal;
 
   /// 這一次拖曳的起點（localPosition），用來算「從按下到現在」的位移
   Offset? _grabStart;
@@ -713,26 +799,38 @@ class _CropAreaState extends State<_CropArea> {
 }
 
 class _CropPainter extends CustomPainter {
-  _CropPainter({required this.image, required this.view, required this.crop});
+  _CropPainter({
+    required this.image,
+    required this.view,
+    required this.crop,
+    this.zoomSrc,
+  });
 
   final ui.Image image;
   final Rect view;
   final Rect crop;
 
+  /// 縮放模式：框裡畫原圖的哪一塊（圖片像素）。null＝一般裁切
+  final Rect? zoomSrc;
+
   @override
   void paint(Canvas canvas, Size size) {
+    final zoomed = zoomSrc;
     canvas.drawImageRect(
       image,
-      Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+      zoomed ??
+          Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
       view,
       Paint()..filterQuality = FilterQuality.high,
     );
-    // 框外壓暗
-    final dim = Paint()..color = const Color(0xB3000000);
-    canvas.save();
-    canvas.clipRect(crop, clipOp: ui.ClipOp.difference);
-    canvas.drawRect(Offset.zero & size, dim);
-    canvas.restore();
+    if (zoomed == null) {
+      // 框外壓暗
+      final dim = Paint()..color = const Color(0xB3000000);
+      canvas.save();
+      canvas.clipRect(crop, clipOp: ui.ClipOp.difference);
+      canvas.drawRect(Offset.zero & size, dim);
+      canvas.restore();
+    }
     // 三分格
     final grid = Paint()
       ..color = const Color(0x55FFFFFF)
@@ -751,6 +849,8 @@ class _CropPainter extends CustomPainter {
         ..strokeWidth = 1.6
         ..color = kSelect,
     );
+    // 縮放模式沒有把手：框不能拉，動的是底下的圖
+    if (zoomed != null) return;
     // 四個角把手
     final h = Paint()
       ..style = PaintingStyle.stroke
@@ -796,5 +896,8 @@ class _CropPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_CropPainter old) =>
-      old.image != image || old.view != view || old.crop != crop;
+      old.image != image ||
+      old.view != view ||
+      old.crop != crop ||
+      old.zoomSrc != zoomSrc;
 }
