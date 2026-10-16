@@ -24,6 +24,7 @@ import 'package:markcut/nav.dart';
 import 'package:markcut/screens/collage_screen.dart';
 import 'package:markcut/services/collage_compose.dart';
 import 'package:markcut/services/draft_assets.dart';
+import 'package:markcut/theme.dart' show kSelect;
 import 'package:markcut/widgets/watermark_layer.dart';
 import 'package:markcut/widgets/watermark_panel.dart';
 
@@ -787,6 +788,35 @@ void main() {
     await t.pump(const Duration(milliseconds: 400));
     await t.pumpAndSettle();
     expect(find.text('版型'), findsOneWidget, reason: '框外的點擊照樣是拼圖的');
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('點浮水印先進「文字」（不是位置）；自己換到位置、切走再回來停在位置', (t) async {
+    SharedPreferences.setMockInitialValues({});
+    await t.pumpWidget(
+      MaterialApp(home: CollageScreen(photos: await _twoPhotos(t))),
+    );
+    await _waitLoaded(t);
+    Finder nav(String label) => find
+        .descendant(of: find.byType(WatermarkPanel), matching: find.text(label))
+        .first;
+    Color? navColor(String label) => t.widget<Text>(nav(label)).style?.color;
+    // 文字那一區的標頭（拼圖的文字預設關著，輸入框要打開才有，標頭一定在）
+    final textCard = find.byTooltip('再加一個文字');
+
+    await _goTab(t, '浮水印');
+    expect(textCard, findsOneWidget, reason: '一進來就是文字那一區');
+    expect(navColor('文字'), kSelect, reason: '導覽亮在文字');
+    expect(navColor('位置'), isNot(kSelect));
+
+    // 使用者自己點了「位置」：之後切走再回來，停在他最後看的那一格
+    await t.tap(nav('位置'));
+    await t.pumpAndSettle();
+    expect(textCard, findsNothing);
+    await _goTab(t, '拼圖');
+    await _goTab(t, '浮水印');
+    expect(textCard, findsNothing);
+    expect(navColor('位置'), kSelect);
     expect(t.takeException(), isNull);
   });
 }

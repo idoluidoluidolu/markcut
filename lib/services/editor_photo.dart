@@ -19,11 +19,12 @@ class EditorPhoto {
   static bool get native =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
 
-  static Future<EditorPhoto> load(String path) async {
+  /// [side]：長邊縮到多大（原生端最大 4096）。拼圖照張數分級，給得更小
+  static Future<EditorPhoto> load(String path, {int side = maxSide}) async {
     if (native) {
       final value = await _channel.invokeMapMethod<String, dynamic>('preview', {
         'path': path,
-        'maxSide': maxSide,
+        'maxSide': side,
       });
       if (value != null &&
           value['bytes'] is Uint8List &&
@@ -40,9 +41,9 @@ class EditorPhoto {
     }
     final bytes = await readFileBytes(path);
     if (bytes == null) throw StateError('讀不到照片');
-    final decoded = await decodeCropImage(bytes, maxSide: maxSide);
+    final decoded = await decodeCropImage(bytes, maxSide: side);
     try {
-      if (decoded.sourceWidth <= maxSide && decoded.sourceHeight <= maxSide) {
+      if (decoded.sourceWidth <= side && decoded.sourceHeight <= side) {
         return EditorPhoto(decoded.sourceWidth, decoded.sourceHeight, bytes);
       }
       final png = await decoded.image.toByteData(

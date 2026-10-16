@@ -207,6 +207,11 @@ class WatermarkPanel extends StatefulWidget {
   ///（build 129 實機回報）。自由拖曳照舊可拖出畫面
   final double? canvasAspect;
 
+  /// 沒有前科（controller 沒記著上一輪停在哪）時，一進來停在哪個部件的
+  /// 分頁：[WmPart.text]＝「文字」、[WmPart.logo]＝「圖片」，null＝「位置」。
+  /// 照片拼圖給文字（使用者指定：點浮水印就進文字，不要先停在位置）
+  final WmPart? initialPart;
+
   const WatermarkPanel({
     super.key,
     required this.settings,
@@ -230,6 +235,7 @@ class WatermarkPanel extends StatefulWidget {
     this.bottomInset = 0,
     this.posGridCap = 210,
     this.canvasAspect,
+    this.initialPart,
   });
 
   @override
@@ -341,7 +347,11 @@ class WatermarkPanelState extends State<WatermarkPanel>
     // 才用預設的「位置」。索引失效（那一格被收掉）由 build 的守門
     // 退回位置
     final keep = widget.controller?.activeSection ?? 0;
-    if (keep > 0) _navAt = keep;
+    if (keep > 0) {
+      _navAt = keep;
+    } else {
+      _startPart = widget.initialPart;
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) widget.controller?.reportSection(_navAt);
     });
@@ -730,6 +740,10 @@ class WatermarkPanelState extends State<WatermarkPanel>
   /// 預設停在「位置」（第 0 格「範本」是動作不是區塊）
   int _navAt = 1;
 
+  /// 第一次 build 要換過去的分頁（見 [WatermarkPanel.initialPart]）。導覽
+  /// 項目到 build 才排得出來，索引只能在那裡換算；換完就清掉
+  WmPart? _startPart;
+
   /// 這一輪畫出來的導覽項目
   List<_NavItem> _nav = const [];
 
@@ -845,6 +859,13 @@ class WatermarkPanelState extends State<WatermarkPanel>
           action: null,
         ),
     ];
+    final start = _startPart;
+    if (start != null) {
+      _startPart = null;
+      final key = start == WmPart.logo ? _logoCardKey : _textCardKey;
+      final idx = _nav.indexWhere((n) => n.key == key);
+      if (idx > 0) _navAt = idx;
+    }
     // 導覽項目可能隨畫面狀態增減（照片編輯的額外區塊），
     // 停留的分頁被收掉就退回「位置」
     if (_navAt >= _nav.length || _nav[_navAt].key == null) _navAt = 1;

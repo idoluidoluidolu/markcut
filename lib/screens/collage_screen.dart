@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
-import 'dart:typed_data' show ByteData;
+import 'dart:typed_data' show ByteData, Uint8List;
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show kIsWeb, listEquals;
@@ -20,6 +20,8 @@ import '../services/collage_image_budget.dart';
 import '../services/blob_store.dart';
 import '../services/collage_pack.dart';
 import '../services/draft_assets.dart';
+import '../services/editor_photo.dart';
+import '../services/ordered_pool.dart';
 import '../services/photo_export.dart';
 import '../services/video_picker.dart' show pickCountHint, pickPhotoFiles;
 import '../theme.dart';
@@ -137,39 +139,50 @@ class _CollageScreenState extends State<CollageScreen>
     final side = collagePreviewSide(count);
     if (side >= _previewSide) return;
     _previewSide = side;
-    for (var i = 0; i < _images.length; i++) {
-      final previous = _images[i];
-      if (previous == null ||
-          math.max(previous.width, previous.height) <= side) {
-        continue;
-      }
-      final source = _sources[i];
-      if (source == null) continue;
-      final ui.Image next;
-      try {
-        next = await _decode(source);
-      } catch (_) {
+    final todo = <({int index, ui.Image previous, XFile source})>[
+      for (var i = 0; i < _images.length; i++)
+        if (_images[i] case final previous?
+            when math.max(previous.width, previous.height) > side)
+          if (_sources[i] case final source?)
+            (index: i, previous: previous, source: source),
+    ];
+    var stopped = false;
+    await orderedPool<ui.Image>(
+      todo.length,
+      window: _decodeWindow,
+      run: (k) => _decode(todo[k].source),
+      discard: (img) => img.dispose(),
+      onResult: (k, next) {
+        if (!mounted) {
+          next?.dispose();
+          stopped = true;
+          return false;
+        }
         // 原檔讀不到了（暫存被清掉之類）：留著現在這張，大一點但畫得出來
-        continue;
-      }
-      if (!mounted) {
-        next.dispose();
-        return;
-      }
-      if (!identical(_images[i], previous)) {
-        next.dispose();
-        continue;
-      }
-      for (var cell = 0; cell < _order.length; cell++) {
-        if (_order[cell] != i) continue;
-        _fits[cell].panX *= next.width / previous.width;
-        _fits[cell].panY *= next.height / previous.height;
-      }
-      _images[i] = next;
-      previous.dispose();
-    }
-    _liveRepaint();
+        if (next == null) return true;
+        final (:index, :previous, source: _) = todo[k];
+        if (!identical(_images[index], previous)) {
+          next.dispose();
+          return true;
+        }
+        for (var cell = 0; cell < _order.length; cell++) {
+          if (_order[cell] != index) continue;
+          _fits[cell].panX *= next.width / previous.width;
+          _fits[cell].panY *= next.height / previous.height;
+        }
+        _images[index] = next;
+        previous.dispose();
+        return true;
+      },
+    );
+    if (!stopped) _liveRepaint();
   }
+
+  /// 一批照片同時解幾張（[orderedPool]）。iOS 走原生縮圖（[_decode]）：
+  /// ImageIO 在背景一張張排著縮，這邊解 PNG、放格子跟下一張重疊，三張
+  /// 就夠把那條排隊塞滿。其他平台照舊一張解完再解下一張——Flutter 自己
+  /// 解原檔是整張解開再縮，同時好幾張 12～48MP 的記憶體吃不消
+  int get _decodeWindow => EditorPhoto.native ? 3 : 1;
 
   /// 每張照片的來源路徑（跟 _images 同索引；存草稿用）。
   /// 換單張時保留裁切後的素材路徑，續作才能還原相同的像素。
@@ -433,6 +446,17 @@ class _CollageScreenState extends State<CollageScreen>
   /// 以前從不 dispose，30 張原檔的原生記憶體要等 GC finalizer 才放
   Future<ui.Image> _decode(XFile f, {int? maxSide}) async {
     final limit = maxSide ?? _previewSide;
+    if (EditorPhoto.native &&
+        f.path.isNotEmpty &&
+        limit <= EditorPhoto.maxSide) {
+      // iOS：ImageIO 直接從檔案縮到要的大小（照片編輯器那條原生路）。
+      // Flutter 解 HEIC 是整張 12～48MP 先解開再縮（還是線性縮、會鋸齒），
+      // 一張就要大半秒——拼圖加照片慢就慢在這裡（使用者 10-16 回報）。
+      // 原生讀不出來才退回下面的老路；匯出要的大尺寸本來就走老路
+      try {
+        return await _decodeNative(f.path, limit);
+      } catch (_) {}
+    }
     ui.ImmutableBuffer? buffer;
     ui.ImageDescriptor? desc;
     ui.Codec? codec;
@@ -493,6 +517,20 @@ class _CollageScreenState extends State<CollageScreen>
       codec?.dispose();
       desc?.dispose();
       buffer?.dispose();
+    }
+  }
+
+  /// [_decode] 的 iOS 原生路：原生端縮好回一張不大於 [side] 的 PNG＋原圖
+  /// 轉正後的尺寸（匯出、舊草稿換算要用原圖尺寸，不是預覽的）
+  Future<ui.Image> _decodeNative(String path, int side) async {
+    final photo = await EditorPhoto.load(path, side: side);
+    final codec = await ui.instantiateImageCodec(photo.bytes);
+    try {
+      final image = (await codec.getNextFrame()).image;
+      _sourceSizes[image] = (photo.width, photo.height);
+      return image;
+    } finally {
+      codec.dispose();
     }
   }
 
@@ -935,6 +973,9 @@ class _CollageScreenState extends State<CollageScreen>
       };
       final map = <int, int>{}; // 草稿裡的索引 → 現在的索引
       var gone = 0;
+      // 先把每張的檔案找好（只是查檔案在不在），再一批解（照順序、同時
+      // 解幾張，見 _decodeWindow）
+      final found = <({int index, String path})>[];
       for (var i = 0; i < paths.length; i++) {
         final p0 = paths[i];
         if (p0 is! String || p0.isEmpty) continue;
@@ -944,21 +985,34 @@ class _CollageScreenState extends State<CollageScreen>
           gone++;
           continue;
         }
-        try {
-          final img = await _decode(XFile(p));
+        found.add((index: i, path: p));
+      }
+      var stopped = false;
+      await orderedPool<ui.Image>(
+        found.length,
+        window: _decodeWindow,
+        run: (k) => _decode(XFile(found[k].path)),
+        discard: (img) => img.dispose(),
+        onResult: (k, img) {
           if (!mounted) {
-            img.dispose();
+            img?.dispose();
+            stopped = true;
+            return false;
+          }
+          if (img == null) {
+            gone++;
             return true;
           }
-          map[i] = _images.length;
+          final (:index, :path) = found[k];
+          map[index] = _images.length;
           _images.add(img);
-          _sources.add(XFile(p));
-          _srcPaths.add(p);
-          _received.add(p);
-        } catch (_) {
-          gone++;
-        }
-      }
+          _sources.add(XFile(path));
+          _srcPaths.add(path);
+          _received.add(path);
+          return true;
+        },
+      );
+      if (stopped) return true;
       if (gone > 0) {
         _draftLoadError = '有 $gone 張照片暫時無法讀取，原草稿已保留。\n請確認素材後再開啟。';
         return true;
@@ -1092,26 +1146,39 @@ class _CollageScreenState extends State<CollageScreen>
     _noteReceived(widget.photos);
     await _reservePreviews(math.min(widget.photos.length, _kMaxCells));
     var dropped = 0;
-    for (final f in widget.photos) {
-      // 超過上限的略過（以前默默截斷）——結尾一起講
-      if (_images.length >= _kMaxCells) {
-        dropped++;
-        continue;
-      }
-      try {
-        final img = await _decode(f);
+    var stopped = false;
+    final photos = widget.photos;
+    await orderedPool<ui.Image>(
+      photos.length,
+      window: _decodeWindow,
+      // 已經滿了的不用解；真正放不放得下看 onResult（同時在解的那幾張
+      // 可能比上限多一兩張）
+      run: (i) => _images.length >= _kMaxCells
+          ? Future.error(StateError('滿了'))
+          : _decode(photos[i]),
+      discard: (img) => img.dispose(),
+      onResult: (i, img) {
         // 讀取途中使用者可能已經離開，這時 dispose 過了，
         // 再往清單裡塞就沒人會釋放它
         if (!mounted) {
-          img.dispose();
-          return;
+          img?.dispose();
+          stopped = true;
+          return false;
         }
+        // 超過上限的略過（以前默默截斷）——結尾一起講
+        if (_images.length >= _kMaxCells) {
+          img?.dispose();
+          dropped++;
+          return true;
+        }
+        if (img == null) return true; // 讀不出來的略過（照舊）
         _images.add(img);
-        _sources.add(f);
-        _srcPaths.add(f.path);
-      } catch (_) {}
-    }
-    if (!mounted) return;
+        _sources.add(photos[i]);
+        _srcPaths.add(photos[i].path);
+        return true;
+      },
+    );
+    if (stopped || !mounted) return;
     if (dropped > 0) {
       showHint(
         context,
@@ -1216,19 +1283,32 @@ class _CollageScreenState extends State<CollageScreen>
     if (!mounted) return;
     var filled = 0;
     final failedNames = <String>[];
-    for (final f in files) {
-      try {
-        final img = await _decode(f);
+    // 照挑的順序一張張放進空格（每解好一張就放上去），同時解幾張見
+    // _decodeWindow
+    await orderedPool<ui.Image>(
+      files.length,
+      window: _decodeWindow,
+      // 已經沒空格了就不用解
+      run: (i) => _emptySlot() < 0
+          ? Future.error(StateError('沒有空格'))
+          : _decode(files[i]),
+      discard: (img) => img.dispose(),
+      onResult: (i, img) {
+        final f = files[i];
         // 解碼要好幾秒，這中間使用者可能換了排法／離開，
         // 用當初算好的索引會直接越界
         if (!mounted) {
-          img.dispose();
-          return;
+          img?.dispose();
+          return false;
         }
         final slot = _emptySlot(prefer: filled == 0 ? cell : -1);
         if (slot == -1) {
-          img.dispose();
-          break; // 沒有空格了
+          img?.dispose();
+          return false; // 沒有空格了
+        }
+        if (img == null) {
+          failedNames.add(f.name);
+          return true;
         }
         setState(() {
           _images.add(img);
@@ -1238,10 +1318,9 @@ class _CollageScreenState extends State<CollageScreen>
           _fits[slot] = CollageCellFit();
         });
         filled++;
-      } catch (_) {
-        failedNames.add(f.name);
-      }
-    }
+        return true;
+      },
+    );
     if (!mounted) return;
     if (failedNames.isNotEmpty) {
       showHint(context, _decodeFailMsg(failedNames), error: true);
@@ -1361,26 +1440,40 @@ class _CollageScreenState extends State<CollageScreen>
       // 裁切畫面要清楚：預覽可能已經降級成小圖，回原檔重解一張
       // 1600 的來裁（裁切本身只存 0~1 的比例框，跟解析度無關）
       final source = _sources[index];
-      ui.Image? cropImage;
-      if (source != null) {
+      Uint8List? frame;
+      // iOS：原生縮好的那張 PNG 直接拿去裁，不用在這邊解開再編一次
+      //（Skia 編一張 1600 的 PNG 要好幾百毫秒，按了裁切要乾等）
+      if (source != null && EditorPhoto.native && source.path.isNotEmpty) {
         try {
-          cropImage = await _decode(source, maxSide: kCollagePreviewMaxSide);
-        } catch (_) {
-          // 原檔讀不到了：退回用預覽那張裁，糊一點但照樣能裁
-        }
+          frame = (await EditorPhoto.load(
+            source.path,
+            side: kCollagePreviewMaxSide,
+          )).bytes;
+        } catch (_) {}
       }
-      cropImage ??= _images[index]?.clone();
-      if (cropImage == null) return;
-      final ByteData? frame;
-      try {
-        frame = await cropImage.toByteData(format: ui.ImageByteFormat.png);
-      } finally {
-        cropImage.dispose();
+      if (frame == null) {
+        ui.Image? cropImage;
+        if (source != null) {
+          try {
+            cropImage = await _decode(source, maxSide: kCollagePreviewMaxSide);
+          } catch (_) {
+            // 原檔讀不到了：退回用預覽那張裁，糊一點但照樣能裁
+          }
+        }
+        cropImage ??= _images[index]?.clone();
+        if (cropImage == null) return;
+        final ByteData? png;
+        try {
+          png = await cropImage.toByteData(format: ui.ImageByteFormat.png);
+        } finally {
+          cropImage.dispose();
+        }
+        frame = png?.buffer.asUint8List();
       }
       if (frame == null || !mounted) return;
       final result = await pickCropRect(
         context,
-        frame.buffer.asUint8List(),
+        frame,
         initial: item?.crop ?? fit!.crop,
       );
       if (result == null || !mounted) return;
@@ -1494,22 +1587,31 @@ class _CollageScreenState extends State<CollageScreen>
     // 進來整個版面都跳一下；而且解碼中畫面隨時可能重畫，半路上的方塊
     // 還沒有位置（零大小＝寬/高是 NaN）畫下去會炸
     final fresh = <int>[];
-    for (final f in files.take(room)) {
-      try {
-        final img = await _decode(f);
+    final take = files.take(room).toList();
+    var stopped = false;
+    await orderedPool<ui.Image>(
+      take.length,
+      window: _decodeWindow,
+      run: (i) => _decode(take[i]),
+      discard: (img) => img.dispose(),
+      onResult: (i, img) {
         if (!mounted) {
-          img.dispose();
-          return;
+          img?.dispose();
+          stopped = true;
+          return false;
+        }
+        if (img == null) {
+          failedNames.add(take[i].name);
+          return true;
         }
         _images.add(img);
-        _sources.add(f);
-        _srcPaths.add(f.path);
+        _sources.add(take[i]);
+        _srcPaths.add(take[i].path);
         fresh.add(_images.length - 1);
-      } catch (_) {
-        failedNames.add(f.name);
-      }
-    }
-    if (!mounted) return;
+        return true;
+      },
+    );
+    if (stopped || !mounted) return;
     if (failedNames.isNotEmpty) {
       showHint(context, _decodeFailMsg(failedNames), error: true);
     } else if (dropped > 0) {
@@ -2864,6 +2966,9 @@ class _CollageScreenState extends State<CollageScreen>
               WatermarkPanel(
                 controller: _wmPanelCtrl,
                 settings: _wm,
+                // 點浮水印先進「文字」（使用者指定；拼圖的文字預設關著，
+                // 停在「位置」的話看不到要從哪裡開）
+                initialPart: WmPart.text,
                 // 九宮格「貼邊」要知道畫布比例才夾得準
                 canvasAspect: _canvasAspect,
                 // 剛加的圖片直接選起來，可以馬上拖／縮放
