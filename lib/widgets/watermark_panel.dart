@@ -89,6 +89,11 @@ class WatermarkPanelController extends ChangeNotifier {
   /// 面板目前捲到第幾區（父層自己畫導覽列時拿來高亮）
   int activeSection = 0;
 
+  /// 停留的那一區在調哪個部件：文字頁＝text、圖片頁＝logo，其他頁
+  ///（位置、動畫……）＝none。影片編輯器拿來讓預覽的選取框落在面板
+  /// 正在調的部件上
+  WmPart activePart = WmPart.none;
+
   /// 面板取走待處理的請求（取走就清掉，不會重複捲）
   WmPart? takePending() {
     final p = _pending;
@@ -115,10 +120,11 @@ class WatermarkPanelController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 面板回報捲到哪一區了
-  void reportSection(int i) {
-    if (i == activeSection) return;
+  /// 面板回報捲到哪一區了（[part]：那一區在調哪個部件）
+  void reportSection(int i, [WmPart part = WmPart.none]) {
+    if (i == activeSection && part == activePart) return;
     activeSection = i;
+    activePart = part;
     notifyListeners();
   }
 }
@@ -353,7 +359,7 @@ class WatermarkPanelState extends State<WatermarkPanel>
       _startPart = widget.initialPart;
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) widget.controller?.reportSection(_navAt);
+      if (mounted) widget.controller?.reportSection(_navAt, _partAt(_navAt));
     });
   }
 
@@ -751,7 +757,16 @@ class WatermarkPanelState extends State<WatermarkPanel>
     if (idx != _navAt && mounted) setState(() => _navAt = idx);
     // 一定要回報：父層自己畫導覽列時（照片編輯）高亮是看這個值，
     // 只更新面板內部的 _navAt 外面不會亮
-    widget.controller?.reportSection(idx);
+    widget.controller?.reportSection(idx, _partAt(idx));
+  }
+
+  /// 第 [i] 格在調哪個部件：文字頁＝文字、圖片頁＝圖片，其他＝none
+  WmPart _partAt(int i) {
+    if (i < 0 || i >= _nav.length) return WmPart.none;
+    final key = _nav[i].key;
+    if (key == _textCardKey) return WmPart.text;
+    if (key == _logoCardKey) return WmPart.logo;
+    return WmPart.none;
   }
 
   void _jumpToSection(int i) {

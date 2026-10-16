@@ -35,7 +35,7 @@ class WatermarkLayer extends StatefulWidget {
   /// 開始拖曳（父層拿來拍「上一步」快照）
   final VoidCallback? onDragStart;
 
-  /// 選取到哪一個部件：被選的那個外圍畫白框，縮放也只動它。
+  /// 選取到哪一個部件：被選的那個外圍畫琥珀框，縮放也只動它。
   /// 文字和圖片是兩個獨立的東西，一起縮放會把調好的搭配弄壞
   final WmPart selectedPart;
 
@@ -62,6 +62,12 @@ class WatermarkLayer extends StatefulWidget {
   /// 但琥珀框要照畫在真實位置，人才知道它跑到哪去了——框畫在圖層內
   /// 會跟內容一起被裁掉，整個看不見
   final ValueNotifier<WmFrameInfo?>? frameNotifier;
+
+  /// 只決定「框畫在哪個部件」，不像 [selectedPart] 會順帶鎖住別的部件
+  /// 的拖曳。給了就照它回報框（要配 [frameNotifier]）；指定的部件沒畫
+  /// 出來就框另一個。浮水印素材用這個：選著它要看得到框，拖曳照舊交給
+  /// 外層整組搬
+  final WmPart? framePart;
 
   /// 目前播放時間（秒）；動畫預覽用，靜態畫面給 null
   final double? time;
@@ -92,6 +98,7 @@ class WatermarkLayer extends StatefulWidget {
     this.onTapText,
     this.onHitBox,
     this.frameNotifier,
+    this.framePart,
     this.time,
     this.panLocked,
     this.panAllowed,
@@ -540,19 +547,33 @@ class _WatermarkLayerState extends State<WatermarkLayer> {
         // 被選部件的框回報給外層畫（見 frameNotifier 的說明）
         final fn = widget.frameNotifier;
         if (fn != null) {
-          WmFrameInfo? info;
-          if (widget.selectedPart == WmPart.text) {
+          WmFrameInfo? textFrame() {
             final ai = settings.activeText;
             final r = (ai >= 0 && ai < hitTexts.length) ? hitTexts[ai] : null;
-            if (r != null) {
-              info = WmFrameInfo(r.shift(shift), settings.texts[ai].rotation);
-            }
-          } else if (widget.selectedPart == WmPart.logo) {
+            return r == null
+                ? null
+                : WmFrameInfo(r.shift(shift), settings.texts[ai].rotation);
+          }
+
+          WmFrameInfo? logoFrame() {
             final ai = settings.activeLogo;
             final r = (ai >= 0 && ai < hitLogos.length) ? hitLogos[ai] : null;
-            if (r != null) {
-              info = WmFrameInfo(r.shift(shift), settings.logos[ai].rotation);
-            }
+            return r == null
+                ? null
+                : WmFrameInfo(r.shift(shift), settings.logos[ai].rotation);
+          }
+
+          final fp = widget.framePart;
+          WmFrameInfo? info;
+          if (fp != null) {
+            // 只要框：指定的部件沒畫出來（關掉／平鋪／空字）就框另一個，
+            // 選著的東西一定看得到框
+            if (fp == WmPart.text) info = textFrame() ?? logoFrame();
+            if (fp == WmPart.logo) info = logoFrame() ?? textFrame();
+          } else if (widget.selectedPart == WmPart.text) {
+            info = textFrame();
+          } else if (widget.selectedPart == WmPart.logo) {
+            info = logoFrame();
           }
           // build 中不能動 notifier（會連鎖 setState），排到這一格畫完
           if (fn.value != info) {

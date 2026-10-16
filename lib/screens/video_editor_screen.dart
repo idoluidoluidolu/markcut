@@ -3740,9 +3740,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         unawaited(_ovSync.flush());
       } else {
         _ovWarmUp(); // 進浮水印分頁：快路先熱起來（見 _ovWarmUp）
+        _selectPanelTarget();
       }
       setState(() {});
     });
+    // 面板換到文字／圖片頁（點導覽列、或被畫面上的點擊帶過去）：
+    // 預覽的框跟著換到那個部件
+    _wmPanelCtrl.addListener(_onPanelPart);
     _loadSnapPref(); // 記住上次磁吸開還關
     _loadTidyPref(); // 記住上次自動整理開還關
     if (widget.draft != null) {
@@ -11494,8 +11498,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   final _wmPanelCtrl = WatermarkPanelController();
 
   /// 預覽區每個圖層畫在哪（由下往上收集，畫的時候順手記下來）。
-  /// -2 代表全域浮水印，其餘是片段 id
-  final List<({int id, Rect rect})> _hitBoxes = [];
+  /// -2 代表全域浮水印，其餘是片段 id。[part]：浮水印的這一塊是文字
+  /// 還是圖片（點了就選那個部件），其他素材是 none
+  final List<({int id, Rect rect, WmPart part})> _hitBoxes = [];
 
   /// 全域浮水印用的假 id
   static const int _kWmId = -2;
@@ -11504,7 +11509,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 拖出畫面也看得到位置）
   final _wmFrameInfo = ValueNotifier<WmFrameInfo?>(null);
 
-  /// 被選中的「貼圖片段」的框。跟 [_wmFrameInfo] 同一套（外層畫，
+  /// 被選中的「貼圖片段」或「浮水印素材」的框。跟 [_wmFrameInfo] 同一套（外層畫，
   /// 不被預覽裁切），但一定要分兩個 notifier：全域浮水印那層在沒被
   /// 選時會回報 null，而它畫在貼圖層之後——共用一個的話貼圖的框
   /// 每一格都被它清掉。
@@ -11527,6 +11532,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void _tapSelectAt(Offset p) {
     // _hitBoxes 是由下往上收集的，倒過來就是由上往下
     final hits = <int>[];
+    // 浮水印點到的是哪個部件（同一個浮水印取最上面那塊）
+    final hitPart = <int, WmPart>{};
     for (var i = _hitBoxes.length - 1; i >= 0; i--) {
       final b = _hitBoxes[i];
       var point = p;
@@ -11544,7 +11551,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               );
         }
       }
-      if (b.rect.contains(point) && !hits.contains(b.id)) hits.add(b.id);
+      if (b.rect.contains(point) && !hits.contains(b.id)) {
+        hits.add(b.id);
+        hitPart[b.id] = b.part;
+      }
     }
     if (hits.isEmpty) {
       _cycleAt = null;
@@ -11563,9 +11573,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (at >= 0) next = hits[(at + 1) % hits.length];
     }
     _cycleAt = p;
+    final nextClip = _selClipById(next);
+    final nextSrc = nextClip == null ? null : _tl.sourceOf(nextClip);
+    final isWm =
+        next == _kWmId ||
+        (nextSrc?.kind == ClipKind.wm && !(nextSrc?.isSticker ?? false));
+    // 點到浮水印的圖片就選圖片、點到文字就選文字：框、面板、捏合縮放
+    // 都跟著它（以前一律當成文字，點圖片框卻落在文字上）
+    final part = isWm ? (hitPart[next] ?? WmPart.none) : WmPart.none;
     _setUiState(() {
       _wmSel = next == _kWmId;
       _sel = next == _kWmId ? -1 : next;
+      if (part != WmPart.none) _wmPart = part;
     });
     // 已經選著同一顆貼圖再點一下＝開它的調整視窗
     //（中央判定層蓋在素材上面，貼圖圖層自己的「第二下」收不到）
@@ -11581,15 +11600,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 「跳去浮水印」只在第一下做（循環途中每點一下就被拉走一次
     // 很煩），「跳回剪輯」則隨時做——選取都換到素材上了，分頁
     // 卡在浮水印看起來就是壞的
-    final nextClip = _selClipById(next);
-    final nextSrc = nextClip == null ? null : _tl.sourceOf(nextClip);
-    final isWm =
-        next == _kWmId ||
-        (nextSrc?.kind == ClipKind.wm && !(nextSrc?.isSticker ?? false));
     if (isWm) {
       if (!same) {
         _tabs.animateTo(1);
-        _wmPanelCtrl.scrollTo(WmPart.text);
+        _wmPanelCtrl.scrollTo(part == WmPart.logo ? WmPart.logo : WmPart.text);
       }
     } else if (_tabs.index == 1) {
       _tabs.animateTo(0);
@@ -11603,11 +11617,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 浮水印圖層回報自己畫在哪（在 build 裡呼叫，只能存不能 setState）。
   /// 文字跟圖片都可以有很多個，每一個都要能點得到
   void _addWmHit(int id, List<Rect?> texts, List<Rect?> logos) {
-    for (final r in texts) {
-      if (r != null) _hitBoxes.add((id: id, rect: r));
-    }
+    // 圖片先、文字後：跟圖層的畫法同一個順序（文字疊在圖片上面），
+    // 由後往前找才會先碰到上面那個
     for (final r in logos) {
-      if (r != null) _hitBoxes.add((id: id, rect: r));
+      if (r != null) _hitBoxes.add((id: id, rect: r, part: WmPart.logo));
+    }
+    for (final r in texts) {
+      if (r != null) _hitBoxes.add((id: id, rect: r, part: WmPart.text));
     }
   }
 
@@ -13274,6 +13290,38 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ),
     ),
   );
+
+  /// 浮水印分頁正在編的那個浮水印，預覽上要是「選取中」（亮琥珀框）。
+  /// 進分頁、在面板裡改東西都走這裡——以前只有點預覽、點時間軸那條軌
+  /// 才會選，從底下的分頁進來就沒有框（實測回報）。
+  /// 部件跟著面板停的那一頁（文字頁＝文字、圖片頁＝圖片；位置、動畫
+  /// 這些頁維持原本的）。選著浮水印素材時面板編的是它：選取留在它身上
+  ///（框見預覽的 wmClipSel），這裡只對齊部件
+  void _selectPanelTarget() {
+    final c = _selClipById(_sel);
+    final src = c == null ? null : _tl.sourceOf(c);
+    final clipWm = src != null && src.kind == ClipKind.wm && !src.isSticker;
+    final p = _wmPanelCtrl.activePart;
+    final part = p == WmPart.none ? _wmPart : p;
+    if (part == _wmPart && (clipWm || _wmSel)) return;
+    _setUiState(() {
+      _wmPart = part;
+      if (!clipWm) _wmSel = true;
+    });
+  }
+
+  /// 上一次看到面板停在哪個部件的頁（只在「換了」的時候動選取：
+  /// 點空白取消選取後，面板沒換頁就不該自己又選回來）
+  WmPart _panelPartSeen = WmPart.none;
+
+  void _onPanelPart() {
+    final p = _wmPanelCtrl.activePart;
+    if (p == _panelPartSeen) return;
+    _panelPartSeen = p;
+    if (!mounted || p == WmPart.none || _tabs.index != 1) return;
+    _selectPanelTarget();
+  }
+
   Widget _buildWatermarkPanel() {
     final c = _selClipById(_sel);
     final src = c == null ? null : _tl.sourceOf(c);
@@ -13314,6 +13362,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         // 手指剛按上、值還沒變：快路先熱起來
         //（見 _ovWarmUp）
         _ovWarmUp();
+        // 在改的東西畫面上要亮框（點過空白取消選取後再改也一樣）
+        _selectPanelTarget();
       },
       onImageWork: _setWatermarkImageWork,
       // 滑桿拖動中每一格只重繪預覽層（放手時
@@ -14010,7 +14060,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
                                   void addHit(int track, int id, Rect rect) {
                                     final i = slotIn(hitTracks, track);
-                                    _hitBoxes.insert(i, (id: id, rect: rect));
+                                    _hitBoxes.insert(i, (
+                                      id: id,
+                                      rect: rect,
+                                      part: WmPart.none,
+                                    ));
                                     hitTracks.insert(i, track);
                                   }
 
@@ -14883,12 +14937,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                       final st =
                                           src.wmStyle ?? WatermarkSettings();
                                       // 貼圖是一個素材，選取時就該看得到框
-                                      //（浮水印素材的框在浮水印面板那邊自己畫）
                                       final stkSel =
                                           src.isSticker &&
                                           _sel == c.id &&
                                           !_hideSelUi;
-                                      if (stkSel) stkFramed = true;
+                                      // 浮水印素材也是：選著它（浮水印分頁
+                                      // 在編它）預覽上要有框，以前只有面板
+                                      // 那邊亮、畫面上什麼都沒有（實測回報）。
+                                      // 框落在面板正在調的部件（_wmPart），
+                                      // 拖曳照舊由選取路由整組搬——所以用
+                                      // framePart 而不是 selectedPart
+                                      final wmClipSel =
+                                          !src.isSticker &&
+                                          _sel == c.id &&
+                                          !_hideSelUi;
+                                      if (stkSel || wmClipSel) {
+                                        stkFramed = true;
+                                      }
                                       addLayer(
                                         c.track,
                                         Positioned.fill(
@@ -14915,8 +14980,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                               // 等於看不見（見 _stkFrameInfo）。
                                               // 只有被選中的那顆拿 notifier，
                                               // 沒選的會回報 null 把它清掉
-                                              frameNotifier: stkSel
+                                              frameNotifier: stkSel || wmClipSel
                                                   ? _stkFrameInfo
+                                                  : null,
+                                              framePart: wmClipSel
+                                                  ? _wmPart
                                                   : null,
                                               onHitBox: (t, l) =>
                                                   _addWmHit(c.id, t, l),
@@ -15237,6 +15305,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           selectedPart: (_wmSel && !_hideSelUi)
                                               ? _wmPart
                                               : WmPart.none,
+                                          // 框照 _wmPart 畫，那個部件沒有
+                                          //（只放了圖片、文字還停在預選）
+                                          // 就框另一個：選了浮水印一定看得到框
+                                          framePart: (_wmSel && !_hideSelUi)
+                                              ? _wmPart
+                                              : null,
                                           onSelectPart: (p) =>
                                               _setUiState(() => _wmPart = p),
                                           // 捏合期間鎖拖曳，手指滑過別的
