@@ -193,6 +193,52 @@ void main() {
       expect(loads, ['PopGothic']);
     });
 
+    test('取消下載：ensure 回 false、不記成失敗（馬上再要照樣連網）、進度收掉', () async {
+      final b = _bytes(3000);
+      final gate = Completer<void>();
+      store.debugReset(
+        client: serve({'PopGothic.ttf': b}, gate: gate.future),
+        load: fakeLoad,
+        catalog: {'PopGothic': _spec(b, 'PopGothic')},
+      );
+      final first = store.ensure('PopGothic', force: true);
+      await Future<void>.delayed(Duration.zero);
+      expect(store.progressOf('PopGothic'), isNotNull, reason: '下載中');
+      store.cancel('PopGothic');
+      expect(await first, isFalse);
+      expect(loads, isEmpty);
+      expect(store.downloading.value, isEmpty);
+      expect(requests, hasLength(1), reason: '取消就停，不換下一個網址');
+      // 不算失敗：不是使用者點的（沒有 force）也照樣馬上再連
+      gate.complete();
+      expect(await store.ensure('PopGothic'), isTrue);
+      expect(requests, hasLength(2));
+      expect(loads, ['PopGothic']);
+    });
+
+    test('收資料收到一半取消：馬上停，不等斷線計時', () async {
+      final b = _bytes(6000);
+      final more = StreamController<List<int>>();
+      store.debugReset(
+        client: () => MockClient.streaming((req, _) async {
+          requests.add(req.url);
+          return http.StreamedResponse(more.stream, 200);
+        }),
+        load: fakeLoad,
+        catalog: {'PopGothic': _spec(b, 'PopGothic')},
+      );
+      final run = store.ensure('PopGothic', force: true);
+      await Future<void>.delayed(Duration.zero);
+      more.add(b.sublist(0, 2000));
+      await Future<void>.delayed(Duration.zero);
+      expect(store.progressOf('PopGothic'), greaterThan(0));
+      store.cancel('PopGothic');
+      expect(await run, isFalse);
+      expect(loads, isEmpty);
+      expect(store.downloading.value, isEmpty);
+      await more.close();
+    });
+
     test('只讀本機的呼叫（畫圖前）不等正在下載的那一趟', () async {
       final b = _bytes(3000);
       final gate = Completer<void>();
@@ -325,6 +371,158 @@ void main() {
         'NotoSansTC',
       );
       await t.pump(const Duration(seconds: 5)); // 提示收掉
+    });
+
+    Future<List<String>> pumpDropdown(WidgetTester t) async {
+      final picked = <String>[];
+      await t.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Padding(
+              padding: const EdgeInsets.all(20),
+              child: FontDropdown(value: 'NotoSansTC', onChanged: picked.add),
+            ),
+          ),
+        ),
+      );
+      await t.tap(find.byType(DropdownButton<String>));
+      await t.pumpAndSettle();
+      await t.tap(find.text('大波浪圓體').last);
+      // 下載卡著時進度條在跑動畫，pumpAndSettle 等不完
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 300));
+      return picked;
+    }
+
+    testWidgets('字型選單：下載中跳視窗（字型名、進度、取消）；按取消＝停掉、留在原本的字型、不跳提示', (t) async {
+      final b = _bytes(3000);
+      final gate = Completer<void>();
+      store.debugReset(
+        client: serve({'PopGothic.ttf': b}, gate: gate.future),
+        load: fakeLoad,
+        catalog: {'PopGothic': _spec(b, 'PopGothic')},
+      );
+      final picked = await pumpDropdown(t);
+      expect(find.text('下載字型「大波浪圓體」'), findsOneWidget, reason: '要跳視窗');
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
+      expect(find.textContaining('MB'), findsOneWidget);
+      await t.tap(find.text('取消'));
+      await t.pumpAndSettle();
+      expect(find.text('下載字型「大波浪圓體」'), findsNothing, reason: '視窗收掉');
+      expect(find.textContaining('下載不了'), findsNothing, reason: '取消不是失敗');
+      expect(store.downloading.value, isEmpty, reason: '下載真的停了');
+      expect(
+        t.widget<DropdownButton<String>>(find.byType(DropdownButton<String>))
+            .value,
+        'NotoSansTC',
+      );
+      // 卡著的那一趟後來回來了：不能把字型換過去
+      gate.complete();
+      await t.pumpAndSettle();
+      expect(picked, isEmpty);
+      expect(loads, isEmpty);
+    });
+
+    testWidgets('字型選單：收到一半按取消，視窗收掉、進度清掉、字型不換', (t) async {
+      final b = _bytes(6000);
+      final more = StreamController<List<int>>();
+      store.debugReset(
+        client: () => MockClient.streaming((req, _) async {
+          requests.add(req.url);
+          return http.StreamedResponse(more.stream, 200);
+        }),
+        load: fakeLoad,
+        catalog: {'PopGothic': _spec(b, 'PopGothic')},
+      );
+      final picked = await pumpDropdown(t);
+      more.add(b.sublist(0, 2500));
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 100));
+      expect(find.text('0.0 / 0.0 MB'), findsOneWidget, reason: '小檔四捨五入');
+      expect(store.progressOf('PopGothic'), greaterThan(0.3));
+      await t.tap(find.text('取消'));
+      await t.pumpAndSettle();
+      expect(find.text('下載字型「大波浪圓體」'), findsNothing);
+      expect(store.downloading.value, isEmpty);
+      expect(picked, isEmpty);
+      expect(loads, isEmpty);
+      unawaited(more.close());
+    });
+
+    testWidgets('字型選單：下載視窗開著按返回鍵＝取消', (t) async {
+      final b = _bytes(3000);
+      final gate = Completer<void>();
+      store.debugReset(
+        client: serve({'PopGothic.ttf': b}, gate: gate.future),
+        load: fakeLoad,
+        catalog: {'PopGothic': _spec(b, 'PopGothic')},
+      );
+      final picked = await pumpDropdown(t);
+      expect(find.text('下載字型「大波浪圓體」'), findsOneWidget);
+      await t.binding.handlePopRoute();
+      await t.pumpAndSettle();
+      expect(find.text('下載字型「大波浪圓體」'), findsNothing);
+      expect(find.byType(FontDropdown), findsOneWidget, reason: '只收視窗，不是退出頁面');
+      expect(store.downloading.value, isEmpty);
+      gate.complete();
+      await t.pumpAndSettle();
+      expect(picked, isEmpty);
+    });
+
+    testWidgets('字型選單：下載完視窗自己收、字型換過去', (t) async {
+      final b = _bytes(3000);
+      final gate = Completer<void>();
+      store.debugReset(
+        client: serve({'PopGothic.ttf': b}, gate: gate.future),
+        load: fakeLoad,
+        catalog: {'PopGothic': _spec(b, 'PopGothic')},
+      );
+      final picked = await pumpDropdown(t);
+      expect(find.text('下載字型「大波浪圓體」'), findsOneWidget);
+      gate.complete();
+      await t.pumpAndSettle();
+      expect(find.text('下載字型「大波浪圓體」'), findsNothing);
+      expect(picked, ['PopGothic']);
+    });
+
+    testWidgets('字型選單：手機裡已經有檔＝直接換，不跳視窗', (t) async {
+      final dir = await t.runAsync(
+        () => Directory.systemTemp.createTemp('fonts'),
+      );
+      addTearDown(() => dir!.delete(recursive: true));
+      final b = _bytes(4000);
+      final spec = _spec(b, 'PopGothic');
+      await t.runAsync(
+        () => files.writeFontFile(dir!.path, _fileName('PopGothic', spec), b),
+      );
+      store.debugReset(
+        dir: dir!.path,
+        client: serve({}),
+        load: fakeLoad,
+        catalog: {'PopGothic': spec},
+      );
+      final picked = <String>[];
+      await t.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: FontDropdown(value: 'NotoSansTC', onChanged: picked.add),
+          ),
+        ),
+      );
+      await t.tap(find.byType(DropdownButton<String>));
+      await t.pumpAndSettle();
+      await t.tap(find.text('大波浪圓體').last);
+      var sawDialog = false;
+      for (var i = 0; i < 20 && picked.isEmpty; i++) {
+        await t.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await t.pump();
+        sawDialog |= find.textContaining('下載字型').evaluate().isNotEmpty;
+      }
+      expect(picked, ['PopGothic']);
+      expect(sawDialog, isFalse);
+      expect(requests, isEmpty);
     });
 
     testWidgets('字型選單：下載中字型被別處換掉（套範本、上一步）：下載完不蓋掉', (t) async {
@@ -480,6 +678,43 @@ void main() {
       expect(find.textContaining('大波浪圓體'), findsOneWidget);
       expect(find.textContaining('連上網路再匯出'), findsOneWidget);
       await t.pump(const Duration(seconds: 5)); // 提示收掉
+    });
+
+    testWidgets('匯出前：要下載就跳視窗；按取消＝不匯出、不跳提示', (t) async {
+      final b = _bytes(3000);
+      final gate = Completer<void>();
+      store.debugReset(
+        client: serve({'PopGothic.ttf': b}, gate: gate.future),
+        load: fakeLoad,
+        catalog: {'PopGothic': _spec(b, 'PopGothic')},
+      );
+      bool? result;
+      await t.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () async => result = await ensureExportFonts(
+                  context,
+                  const {'NotoSansTC', 'PopGothic'},
+                ),
+                child: const Text('匯出'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await t.tap(find.text('匯出'));
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 300));
+      expect(find.text('下載字型「大波浪圓體」'), findsOneWidget);
+      await t.tap(find.text('取消'));
+      await t.pumpAndSettle();
+      expect(result, isFalse, reason: '取消就不匯出');
+      expect(find.textContaining('連上網路'), findsNothing);
+      gate.complete();
+      await t.pumpAndSettle();
+      expect(loads, isEmpty);
     });
 
     testWidgets('匯出前：都是內建字型就不擋、不連網', (t) async {

@@ -53,6 +53,9 @@ class FontStore {
 
   /// 上次確認「手機裡沒有這個檔」的時間
   final Map<String, DateTime> _localMissAt = {};
+
+  /// 正在下載的那幾款的取消開關（見 [cancel]）
+  final Map<String, _FetchStop> _stops = {};
   Future<String?>? _dir;
   bool _network = false;
   Map<String, DownloadFont> _catalog = kDownloadFonts;
@@ -100,6 +103,13 @@ class FontStore {
 
   /// 下載進度（0～1）；沒在下載回 null
   double? progressOf(String family) => downloading.value[family];
+
+  /// 這款要下載的檔有多大（位元組）；內建的回 0
+  int sizeOf(String family) => _catalog[family]?.bytes ?? 0;
+
+  /// 停掉 [family] 正在進行的下載（下載視窗的「取消」）。沒在下載就什麼
+  /// 都不做。那一趟 [ensure] 回 false，但不記成失敗：馬上再點可以重新下載
+  void cancel(String family) => _stops[family]?.cancel();
 
   /// 確保這款字型能畫：已載入就好；手機裡有檔就讀進來；都沒有而且
   /// [download] 就下載。[force]＝使用者點的：不管上次失敗是多久前。
@@ -227,14 +237,19 @@ class FontStore {
     return loader.load();
   }
 
+  /// 下載 [family]。使用者按取消（[cancel]）丟 [_Cancelled]——不是失敗，
+  /// [_ensure] 不會記失敗時間
   Future<Uint8List?> _fetch(String family, DownloadFont spec) async {
+    final stop = _stops[family] = _FetchStop();
     _setProgress(family, 0);
     try {
       for (final url in fontUrls(spec)) {
+        if (stop.cancelled) throw const _Cancelled();
         final client = _client();
+        stop.client = client;
         try {
-          final res = await client
-              .send(http.Request('GET', Uri.parse(url)))
+          final res = await stop
+              .race(client.send(http.Request('GET', Uri.parse(url))))
               .timeout(_connectTimeout);
           if (res.statusCode != 200) continue;
           final out = BytesBuilder(copy: false);
@@ -242,7 +257,9 @@ class FontStore {
             out.add(chunk);
             _setProgress(family, out.length / spec.bytes);
             return out.length <= spec.bytes; // 比清單上的大＝不是這個檔
-          });
+          }, abort: stop.signal);
+          // 收完那一刻才按的取消也算數：視窗已經關了，不能再把字型換過去
+          if (stop.cancelled) throw const _Cancelled();
           final bytes = out.takeBytes();
           if (bytes.length != spec.bytes) continue;
           // 十幾 MB 算雜湊要一兩百毫秒，丟背景不卡畫面（小檔不值得開執行緒）
@@ -250,26 +267,32 @@ class FontStore {
               ? await compute(_sha256Hex, bytes)
               : _sha256Hex(bytes);
           if (hash != spec.sha256) continue;
+          if (stop.cancelled) throw const _Cancelled();
           return bytes;
         } catch (_) {
+          if (stop.cancelled) throw const _Cancelled();
           continue; // 換下一個網址
         } finally {
+          stop.client = null;
           client.close();
         }
       }
       return null;
     } finally {
+      if (identical(_stops[family], stop)) _stops.remove(family);
       _clearProgress(family);
     }
   }
 
   /// 一段一段收；[_stallTimeout] 沒有新資料就算斷線（丟 TimeoutException）。
-  /// [onChunk] 回 false＝不收了。不用 Stream.timeout：widget 測試的假時間
-  /// 裡它送不出結尾，下載永遠停在 100%
+  /// [onChunk] 回 false＝不收了；[abort] 完成＝使用者取消，馬上停（丟
+  /// [_Cancelled]）。不用 Stream.timeout：widget 測試的假時間裡它送不出
+  /// 結尾，下載永遠停在 100%
   static Future<void> _drain(
     Stream<List<int>> stream,
-    bool Function(List<int> chunk) onChunk,
-  ) {
+    bool Function(List<int> chunk) onChunk, {
+    Future<void>? abort,
+  }) {
     final done = Completer<void>();
     late final StreamSubscription<List<int>> sub;
     Timer? stall;
@@ -304,6 +327,12 @@ class FontStore {
       cancelOnError: true,
     );
     arm();
+    unawaited(
+      abort?.then((_) {
+        unawaited(sub.cancel());
+        finish(const _Cancelled());
+      }),
+    );
     return done.future;
   }
 
@@ -334,6 +363,10 @@ class FontStore {
     _localPhase.clear();
     _failedAt.clear();
     _localMissAt.clear();
+    for (final stop in _stops.values) {
+      stop.cancel();
+    }
+    _stops.clear();
     _dir = dir == null ? null : Future.value(dir);
     _network = client != null;
     _client = client ?? http.Client.new;
@@ -343,3 +376,32 @@ class FontStore {
 }
 
 String _sha256Hex(Uint8List bytes) => crypto.sha256.convert(bytes).toString();
+
+/// 使用者取消了下載（不是失敗）
+class _Cancelled implements Exception {
+  const _Cancelled();
+}
+
+/// 一趟下載的取消開關：關掉連線、讓還在等的連線／收資料馬上停
+class _FetchStop {
+  bool cancelled = false;
+  http.Client? client;
+  final _signal = Completer<void>();
+
+  /// 取消時完成
+  Future<void> get signal => _signal.future;
+
+  void cancel() {
+    if (cancelled) return;
+    cancelled = true;
+    client?.close();
+    _signal.complete();
+  }
+
+  /// [f] 跟取消賽跑：先取消就丟 [_Cancelled]。關連線不一定讓等待中的
+  /// 請求馬上出錯（測試的假連線就不會），不能只靠 close
+  Future<T> race<T>(Future<T> f) => Future.any([
+    f,
+    signal.then<T>((_) => throw const _Cancelled()),
+  ]);
+}
