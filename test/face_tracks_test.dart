@@ -10,7 +10,6 @@
 //   7. at(t)：兩點之間照時間內插；軌跡外回 null
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:markcut/services/face_detect.dart';
 import 'package:markcut/services/face_tracks.dart';
 
 /// 每 0.1 秒一格，[from]～[to] 秒

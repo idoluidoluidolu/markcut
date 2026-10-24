@@ -381,6 +381,15 @@ String _f(double v) => v.toStringAsFixed(3);
 /// （0.063 vs 0.0625）會累積出可感知的影音不同步
 String _f6(double v) => v.toStringAsFixed(6);
 
+/// 檔案路徑放進濾鏡參數：反斜線換成斜線；冒號、逗號要逃脫——冒號在
+/// 濾鏡參數裡是分隔符（要寫 \:，而那個反斜線本身在濾鏡圖那一層也要逃脫）
+String _ffPathArg(String p) =>
+    p.replaceAll('\\', '/').replaceAll(':', '\\\\:').replaceAll(',', '\\,');
+
+/// 測試用：會動的馬賽克的指令檔寫到這裡（不設就是系統暫存）
+@visibleForTesting
+String? debugMosaicCmdDir;
+
 /// 圖層的顯示區間（overlay 的 enable）。半開區間 [start, end)。
 ///
 /// between() 兩端都含，交界那一格前後兩段會同時亮著，誰蓋住誰要看濾鏡鏈
@@ -714,6 +723,31 @@ Future<List<String>> _buildCommand(
   var cur = 'base';
   var layerN = 0;
 
+  // 會動的馬賽克（自動找臉）：位置用 sendcmd 指令檔逐格搬，檔案寫在暫存
+  //（見 writeMovingMosaicLayer）；濾鏡圖組完才一次寫出去
+  final hasMovingMz = segClips.any((c) {
+    final s = spec.sources[c.sourceIndex];
+    return s.kind == ClipKind.mosaic && s.mosaicPath != null;
+  });
+  final mzDir = hasMovingMz
+      ? (debugMosaicCmdDir ?? (await getTemporaryDirectory()).path)
+      : '';
+  final mzFiles = <(String, String)>[];
+  final mzStamp = DateTime.now().microsecondsSinceEpoch;
+  if (hasMovingMz && debugMosaicCmdDir == null) {
+    // 之前幾次匯出留下的指令檔（一小時以前的）順手清掉
+    try {
+      final cutoff = DateTime.now().subtract(const Duration(hours: 1));
+      for (final f in Directory(mzDir).listSync()) {
+        if (f is File &&
+            f.uri.pathSegments.last.startsWith('mzcmd_') &&
+            f.statSync().modified.isBefore(cutoff)) {
+          f.deleteSync();
+        }
+      }
+    } catch (_) {}
+  }
+
   void writeVideoLayer(TimelineClip c, int k) {
     final src = spec.sources[c.sourceIndex];
     final label = vPool[c.sourceIndex]!.removeLast();
@@ -884,6 +918,111 @@ Future<List<String>> _buildCommand(
     }
   }
 
+  // ===== 會動的馬賽克（自動找臉）=====
+  // 關鍵點的大小是一段一段固定的（見 models/mosaic.dart 的
+  // quantizeMosaicPath）：每一段一條 split → crop → 效果 → overlay，
+  // crop 跟 overlay 的 x／y 由 sendcmd 逐格搬（兩個濾鏡都吃 x、y 指令）。
+  // 橢圓＝效果做完用 geq 挖一個橢圓的 alpha。全部是 LGPL 濾鏡
+  void writeMovingMosaicLayer(TimelineClip c, int k) {
+    final src = spec.sources[c.sourceIndex];
+    final keys = src.mosaicPath!;
+    final n = keys.length ~/ 5;
+    final seen = visible(c.offset / sp, c.end / sp);
+    if (n == 0 || seen == null) return;
+    final (a, b) = seen;
+    final ms = src.mosaicStyle ?? MosaicStyle();
+    final ow = spec.outW, oh = spec.outH;
+    final spd = c.speed.clamp(0.1, 16.0);
+    // 這塊馬賽克自己的秒數 ↔ 輸出秒（馬賽克片段不會倒轉）
+    double srcAt(double tOut) => c.sourceTimeAt(tOut * sp);
+    double outAt(double s) => (c.offset + (s - c.trimStart) / spd) / sp;
+
+    var i = 0, seg = 0;
+    while (i < n) {
+      var j = i + 1;
+      while (j < n &&
+          keys[j * 5 + 3] == keys[i * 5 + 3] &&
+          keys[j * 5 + 4] == keys[i * 5 + 4]) {
+        j++;
+      }
+      // 這一段：從第 i 點到下一段的第一點（最後一段包含最後一點）
+      final t0 = outAt(keys[i * 5]);
+      final t1 = j < n ? outAt(keys[j * 5]) : outAt(keys[(n - 1) * 5]) + 1 / 60;
+      final sa = math.max(a, t0), sb = math.min(b, t1);
+      final f0 = ((sa - w0) * fps - 1e-6).ceil();
+      final f1 = ((sb - w0) * fps - 1e-6).ceil();
+      final segIdx = seg++;
+      final segFirst = i;
+      i = j;
+      // 這一段在這次輸出裡連一格都輪不到
+      if (f1 <= f0) continue;
+
+      // 大小乘上片段的 scale（捏合／縮放滑桿調的，見 mosaicPathOnTimeline）
+      var w2 = (keys[segFirst * 5 + 3] * c.scale * ow).round().clamp(2, ow);
+      var h2 = (keys[segFirst * 5 + 4] * c.scale * oh).round().clamp(2, oh);
+      w2 = math.max(2, w2 - w2 % 2);
+      h2 = math.max(2, h2 - h2 % 2);
+      // 位置夾在畫面裡（crop 超出畫布直接報錯）；取偶數，跟 crop 的
+      // 色度對齊一致，補丁才不會跟原位差一格
+      (int, int) posAt(double tOut) {
+        final p = mosaicPathAt(keys, srcAt(tOut));
+        final cx = (p?.cx ?? keys[segFirst * 5 + 1]) * ow;
+        final cy = (p?.cy ?? keys[segFirst * 5 + 2]) * oh;
+        var x = (cx - w2 / 2).round().clamp(0, ow - w2);
+        var y = (cy - h2 / 2).round().clamp(0, oh - h2);
+        return (x - x % 2, y - y % 2);
+      }
+
+      final name = 'mz${k}s$segIdx';
+      final cmds = StringBuffer();
+      var last = (-1, -1);
+      for (var f = f0; f < f1; f++) {
+        final rel = f / fps;
+        final pos = posAt(rel + w0);
+        if (pos == last) continue;
+        last = pos;
+        final (x, y) = pos;
+        cmds.writeln(
+          '${rel.toStringAsFixed(6)} '
+          'crop@${name}c x $x, crop@${name}c y $y, '
+          'overlay@${name}o x $x, overlay@${name}o y $y;',
+        );
+      }
+      final (x0, y0) = posAt(sa);
+
+      String effect;
+      if (ms.type == 2) {
+        final rgb = (ms.color & 0xFFFFFF).toRadixString(16).padLeft(6, '0');
+        effect = 'drawbox=x=0:y=0:w=iw:h=ih:color=0x$rgb:t=fill';
+      } else if (ms.type == 1) {
+        // 模糊：縮小再平滑放大（同固定位置那條，不用 boxblur）
+        final down = 2 + (ms.strength * 12).round();
+        final dw = math.max(2, (w2 / down).round());
+        final dh = math.max(2, (h2 / down).round());
+        effect = 'scale=$dw:$dh,scale=$w2:$h2:flags=bilinear';
+      } else {
+        final cells = (26 - 20 * ms.strength).round().clamp(4, 40);
+        final dw = math.max(2, math.min(cells, w2 ~/ 2));
+        final dh = math.max(2, (dw * h2 / w2).round());
+        effect = 'scale=$dw:$dh,scale=$w2:$h2:flags=neighbor';
+      }
+      if (src.mosaicOval) {
+        effect +=
+            ',format=yuva420p,geq=lum=p(X\\,Y):cb=p(X\\,Y):cr=p(X\\,Y):'
+            'a=255*lte(hypot(2*X/W-1\\,2*Y/H-1)\\,1)';
+      }
+      final file = '$mzDir${Platform.pathSeparator}mzcmd_${mzStamp}_$name.txt';
+      mzFiles.add((file, cmds.toString()));
+      fc.write(
+        '[$cur]sendcmd=f=${_ffPathArg(file)},split=2[${name}a][${name}b];'
+        '[${name}b]crop@${name}c=w=$w2:h=$h2:x=$x0:y=$y0,$effect[${name}p];'
+        '[${name}a][${name}p]overlay@${name}o=x=$x0:y=$y0:eval=frame:'
+        'enable=${_window(sa - w0, sb - w0)}:eof_action=pass[$name];',
+      );
+      cur = name;
+    }
+  }
+
   // ===== 馬賽克：把區域裁下來、縮小再放大（鄰近取樣）疊回去 =====
   // 全部是 LGPL 濾鏡（split/crop/scale/overlay）
   void writeMosaicLayer(TimelineClip c, int k) {
@@ -996,7 +1135,12 @@ Future<List<String>> _buildCommand(
     final k = layerN++;
     final kind = spec.sources[c.sourceIndex].kind;
     if (kind == ClipKind.mosaic) {
-      writeMosaicLayer(c, k); // cur 在裡面接手
+      // cur 在裡面接手
+      if (spec.sources[c.sourceIndex].mosaicPath != null) {
+        writeMovingMosaicLayer(c, k);
+      } else {
+        writeMosaicLayer(c, k);
+      }
     } else if (spec.sources[c.sourceIndex].isVideo) {
       writeVideoLayer(c, k);
       cur = 'ov$k';
@@ -1092,6 +1236,11 @@ Future<List<String>> _buildCommand(
       'amix=inputs=${audioLabels.length}:duration=longest:normalize=0[aout];',
     );
     aLabel = 'aout';
+  }
+
+  // 會動的馬賽克的指令檔（濾鏡圖裡已經寫好路徑了）
+  for (final (path, body) in mzFiles) {
+    await File(path).writeAsString(body);
   }
 
   // 去掉結尾多餘的分號

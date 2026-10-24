@@ -25,6 +25,7 @@ import '../services/mosaic_patch_painter.dart';
 import '../services/watermark_renderer.dart';
 import '../widgets/color_grade_panel.dart';
 import '../widgets/font_picker.dart';
+import '../widgets/mosaic_outline.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
 
@@ -1150,7 +1151,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               onTap: () => _toggleFace(i),
               child: IgnorePointer(
                 child: CustomPaint(
-                  painter: _MzOutlinePainter(
+                  painter: MosaicOutlinePainter(
                     oval: m.oval,
                     dashed: true,
                     color: Colors.white,
@@ -1275,7 +1276,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                 if (faceTap)
                   IgnorePointer(
                     child: CustomPaint(
-                      painter: _MzOutlinePainter(
+                      painter: MosaicOutlinePainter(
                         oval: m.oval,
                         dashed: false,
                         color: Colors.white.withValues(alpha: 0.85),
@@ -1290,7 +1291,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   IgnorePointer(
                     child: m.oval
                         ? CustomPaint(
-                            painter: _MzOutlinePainter(
+                            painter: MosaicOutlinePainter(
                               oval: true,
                               dashed: false,
                               color: kSelect,
@@ -3906,55 +3907,4 @@ class _MosaicPatchPainter extends CustomPainter {
       old.type != type ||
       old.strength != strength ||
       old.feather != feather;
-}
-
-/// 馬賽克模式的框線：找到的臉一圈細線、點掉的臉一圈虛線、
-/// 選取中的橢圓一圈琥珀線。畫在補丁框的內側（線不會被裁掉一半）
-class _MzOutlinePainter extends CustomPainter {
-  final bool oval;
-  final bool dashed;
-  final Color color;
-  final double width;
-
-  const _MzOutlinePainter({
-    required this.oval,
-    required this.dashed,
-    required this.color,
-    required this.width,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final r = (Offset.zero & size).deflate(width / 2);
-    if (r.width <= 0 || r.height <= 0) return;
-    final paint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = width
-      ..color = color;
-    final path = oval ? (Path()..addOval(r)) : (Path()..addRect(r));
-    if (!dashed) {
-      canvas.drawPath(path, paint);
-      return;
-    }
-    // 虛線：沿著框線一段畫、一段空（長度跟線寬成比例，小臉也看得出來）
-    final dash = math.max(3.0, width * 3);
-    final gap = math.max(2.5, width * 2.2);
-    for (final metric in path.computeMetrics()) {
-      var d = 0.0;
-      while (d < metric.length) {
-        canvas.drawPath(
-          metric.extractPath(d, math.min(d + dash, metric.length)),
-          paint,
-        );
-        d += dash + gap;
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(_MzOutlinePainter old) =>
-      old.oval != oval ||
-      old.dashed != dashed ||
-      old.color != color ||
-      old.width != width;
 }

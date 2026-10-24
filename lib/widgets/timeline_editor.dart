@@ -13,6 +13,7 @@ import '../services/timeline_strip.dart' show sourceAnchoredStripTiles;
 import '../services/waveform_cache.dart';
 import '../services/timeline_viewport.dart';
 import '../theme.dart';
+import 'face_avatar.dart';
 
 // 黑白暗版：片段配色全灰階（影片、音訊各一階）
 const kVideoBorder = Color(0xFF6E6E78);
@@ -80,6 +81,10 @@ class TimelineEditor extends StatefulWidget {
   final ValueChanged<int> onToggleMute; // 點標籤喇叭切換整軌靜音
   final Set<int> hiddenTracks; // 關閉顯示的軌道
   final ValueChanged<int>? onToggleHidden; // 點標籤眼睛切換整軌顯示
+
+  /// 找臉馬賽克的頭像（素材編號 → 頭像；還沒抽到回 null）。整軌都是同一
+  /// 個人時，標籤的眼睛換成他的頭像——點一下照樣是隱藏＝這個人不碼
+  final FaceThumb? Function(int sourceIndex)? faceThumbOf;
 
   /// 預備好的旁白軌：這一軌的標籤變成紅色錄音鈕
   final int? voiceTrack;
@@ -183,6 +188,7 @@ class TimelineEditor extends StatefulWidget {
     required this.onToggleMute,
     this.hiddenTracks = const {},
     this.onToggleHidden,
+    this.faceThumbOf,
     this.voiceTrack,
     this.voiceRecording = false,
     this.onVoiceRecordTap,
@@ -1632,6 +1638,12 @@ class _TimelineEditorState extends State<TimelineEditor> {
         !isVoice &&
         rowClips.isNotEmpty &&
         rowClips.every((c) => timeline.sourceOf(c).kind == ClipKind.audio);
+    // 整軌都是找臉的馬賽克：標籤換成那個人的頭像
+    final isFace =
+        !isEmptyRow &&
+        !isVoice &&
+        rowClips.isNotEmpty &&
+        rowClips.every((c) => timeline.sourceOf(c).mosaicFace);
     return _TrackLabel(
       index: t,
       height: trackH,
@@ -1640,6 +1652,10 @@ class _TimelineEditorState extends State<TimelineEditor> {
       isEmptyRow: isEmptyRow,
       muted: widget.mutedTracks.contains(t),
       hidden: widget.hiddenTracks.contains(t),
+      isFace: isFace,
+      face: isFace
+          ? widget.faceThumbOf?.call(rowClips.first.sourceIndex)
+          : null,
       // 眼睛只給有內容的一般軌（空軌沒東西可藏、旁白軌是錄音鈕）
       onToggleHidden: (isEmptyRow || isVoice || widget.onToggleHidden == null)
           ? null
@@ -1809,6 +1825,10 @@ Widget _clipFill(
     return overlayLabel(Icons.text_fields, src.name);
   }
   if (src.kind == ClipKind.mosaic) {
+    // 找臉的：一個人一條，寫「臉 N」才分得出誰是誰
+    if (src.mosaicFace) {
+      return overlayLabel(Icons.face_retouching_natural, src.name);
+    }
     return overlayLabel(Icons.blur_on, '馬賽克');
   }
   if (src.kind == ClipKind.wm) {
@@ -2223,6 +2243,10 @@ class _TrackLabel extends StatefulWidget {
   final bool isAudio; // 純音訊軌：眼睛換成音量鈕
   final bool isRecording;
 
+  /// 找臉馬賽克的一個人：眼睛換成頭像（[face] 還沒抽到時先放臉的圖示）
+  final bool isFace;
+  final FaceThumb? face;
+
   /// 選中的片段在這一軌：標籤跟著亮，指出選取落在哪一層。
   /// 注意這裡「不」包含「整條軌被選為貼上目標」——
   /// 那個狀態顯示在那一列本身（見 _trackRow），標籤跟著亮的話
@@ -2256,6 +2280,8 @@ class _TrackLabel extends StatefulWidget {
     this.isVoice = false,
     this.isAudio = false,
     this.isRecording = false,
+    this.isFace = false,
+    this.face,
     this.hasSelection = false,
     required this.isDragging,
     required this.dragDy,
@@ -2304,6 +2330,38 @@ class _TrackLabelState extends State<_TrackLabel> {
   /// 長按偵測（拖曳辨識器會吃掉手勢，長按得自己算）
   Timer? _pressTimer;
   bool _longFired = false;
+
+  /// 一個人的頭像。點掉（隱藏＝不碼）：變淡＋一道白斜線
+  Widget _faceBadge(bool amber) {
+    final f = widget.face;
+    final off = widget.hidden;
+    return SizedBox.square(
+      dimension: 26,
+      child: Stack(
+        alignment: Alignment.center,
+        clipBehavior: Clip.none,
+        children: [
+          Opacity(
+            opacity: off ? 0.45 : 1,
+            child: f != null
+                ? FaceAvatar(f)
+                : Icon(
+                    off
+                        ? Icons.face_retouching_off
+                        : Icons.face_retouching_natural,
+                    size: 18,
+                    color: amber ? kSelect : kTextDim,
+                  ),
+          ),
+          if (off && f != null)
+            Transform.rotate(
+              angle: -math.pi / 4,
+              child: Container(width: 30, height: 2, color: Colors.white),
+            ),
+        ],
+      ),
+    );
+  }
 
   @override
   void dispose() {
@@ -2360,6 +2418,8 @@ class _TrackLabelState extends State<_TrackLabel> {
                   color: Colors.white,
                 ),
               )
+            : widget.isFace
+            ? _faceBadge(amber)
             : Icon(
                 widget.isEmptyRow
                     ? Icons.add

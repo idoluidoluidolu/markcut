@@ -762,6 +762,10 @@ class CompPlayer {
         // 塗到哪碼到哪（跟匯出同一套欄位）
         if (src.mosaicStroke != null) 'stroke': src.mosaicStroke,
         if (src.mosaicStroke != null) 'brush': src.mosaicBrush,
+        // 會動的馬賽克（自動找臉）：時間換成時間軸秒（合成的時間基準）
+        if (src.mosaicPath != null)
+          'path': c.mosaicPathOnTimeline(src.mosaicPath!),
+        if (src.mosaicOval) 'oval': true,
       });
     }
     mosaics.sort((a, b) => (a['track'] as int).compareTo(b['track'] as int));

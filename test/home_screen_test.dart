@@ -15,8 +15,9 @@
 //        GIF      → 不進第二層，直接開影片選取器，挑一支進 GIF 製作頁
 //                   （匯入現成的 GIF 是 個人中心「我的 GIF」的事，
 //                   首頁這裡不問）
-//        馬賽克   → 不進第二層（影片的自動碼臉還沒好），直接開照片選取器，
-//                   挑一張進照片編輯器的馬賽克模式
+//        馬賽克   → 第二層「照片／影片」：照片挑一張進照片編輯器的馬賽克
+//                   模式；影片挑一支進剪輯（mosaicEntry，接好就跳馬賽克
+//                   選單）
 //        剪輯     → 不開選取器、不進第二層，直接開一條空的時間軸
 //   4. 第二層左上角的返回：回到第一層（不是關掉整個選單），整條列
 //      都按得到
@@ -59,7 +60,7 @@ const _subs = [
   '照片、影片，單支或整批快速加入浮水印',
   '多張照片拼成一張',
   '影片轉成 GIF',
-  '照片自動找出人臉打碼',
+  '照片、影片自動找出人臉打碼',
   '開啟一個空專案自由編輯',
 ];
 const _icons = [
@@ -575,22 +576,70 @@ void main() {
       expect(t.takeException(), isNull);
     });
 
-    testWidgets('馬賽克：不進第二層，直接開照片選取器，挑一張進馬賽克模式', (t) async {
+    testWidgets('馬賽克 → 第二層「照片／影片」；選照片 → 挑一張進馬賽克模式', (t) async {
       _images.next = [XFile(_p('a.png'), name: 'a.png')];
       final spy = _RouteSpy();
       await _pump(t, spy: spy);
       await _tapFab(t);
       await t.tap(find.text('馬賽克'));
-      await _settle(t, 20);
+      await _settle(t);
 
-      expect(_images.calls, 1, reason: '沒有直接開照片選取器（中間又問了一輪？）');
+      expect(find.text('馬賽克'), findsOneWidget, reason: '第二層要標上一層是誰');
+      expect(find.byIcon(Icons.chevron_left), findsOneWidget);
+      expect(find.text('單張'), findsOneWidget);
+      expect(find.text('一次一支，臉會自動追蹤'), findsOneWidget);
+      expect(_images.calls + _files.calls, 0, reason: '還沒選就開了選取器');
+
+      await t.tap(find.text('照片'));
+      await _settle(t, 20);
+      expect(_images.calls, 1, reason: '沒有開照片選取器');
       expect(_files.calls, 0, reason: '開錯了（只列影片那個選取器）');
-      expect(find.byIcon(Icons.chevron_left), findsNothing, reason: '不該有第二層');
       final page = spy.lastEdit(t);
       expect(page, isA<PhotoEditorScreen>());
       expect((page as PhotoEditorScreen).mosaicMode, isTrue, reason: '要進馬賽克模式');
       expect(page.photo.path, _p('a.png'));
       await _drain(t);
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('馬賽克 → 影片：影片選取器，第一支進剪輯、接好就跳馬賽克選單', (t) async {
+      _files.next = [_p('a.mp4'), _p('b.mp4')];
+      final spy = _RouteSpy();
+      await _pump(t, spy: spy);
+      await _tapFab(t);
+      await t.tap(find.text('馬賽克'));
+      await _settle(t);
+      await t.tap(find.text('影片'));
+      await _settle(t, 20);
+
+      expect(_files.calls, 1, reason: '沒有開影片選取器');
+      expect(_files.lastType, FileType.video, reason: '要挑的是影片');
+      expect(_images.calls, 0, reason: '開錯了（照片那個選取器）');
+      final page = spy.lastEdit(t);
+      expect(page, isA<VideoEditorScreen>());
+      expect(
+        (page as VideoEditorScreen).videoPath,
+        _p('a.mp4'),
+        reason: '一次一支',
+      );
+      expect(page.mosaicEntry, isTrue, reason: '接好要跳馬賽克選單');
+      await _drain(t);
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('馬賽克第二層的返回：回到第一層', (t) async {
+      final spy = _RouteSpy();
+      await _pump(t, spy: spy);
+      await _tapFab(t);
+      await t.tap(find.text('馬賽克'));
+      await _settle(t);
+      await t.tap(find.byIcon(Icons.chevron_left));
+      await _settle(t);
+      for (final x in _labels) {
+        expect(find.text(x), findsOneWidget, reason: '沒回到第一層（少了「$x」）');
+      }
+      expect(_images.calls + _files.calls, 0, reason: '返回不該開選取器');
+      expect(spy.edits, isEmpty, reason: '返回不該推頁');
       expect(t.takeException(), isNull);
     });
 

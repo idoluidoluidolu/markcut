@@ -125,6 +125,11 @@ List<double> quantizeMosaicPath(List<double> keys, {double tolerance = 0.15}) {
   return out;
 }
 
+/// 找臉馬賽克的放大縮小範圍（片段 scale 乘在軌跡的大小上）：再小就蓋
+/// 不住臉，再大就整個畫面都糊了
+const double kFaceMosaicMinScale = 0.3;
+const double kFaceMosaicMaxScale = 4.0;
+
 /// 照片上的一塊馬賽克：
 /// - 區域：中心座標（0~1）＋寬（短邊比例）＋高寬比 [aspect]；
 ///   [oval] 時是橢圓（臉用）

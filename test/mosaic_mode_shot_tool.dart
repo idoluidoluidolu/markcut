@@ -9,7 +9,6 @@
 // 照片是自己畫的（三個人），找臉的通道回這三顆頭的位置。
 // 沒設環境變數時整支略過。檔名沒有 _test 結尾，整批 flutter test 也不會撿它。
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -53,9 +52,30 @@ String? _materialIconsPath() {
 
 /// 三個人：頭的中心與半徑（照片像素）
 const _heads = [
-  (x: 300.0, y: 380.0, r: 80.0, skin: 0xFFE0B08A, hair: 0xFF2E2420, shirt: 0xFFE66F51),
-  (x: 600.0, y: 350.0, r: 90.0, skin: 0xFFC98F67, hair: 0xFF4A3426, shirt: 0xFF3E6FA8),
-  (x: 900.0, y: 390.0, r: 75.0, skin: 0xFFEDC39E, hair: 0xFF1F1A17, shirt: 0xFF4E9A7A),
+  (
+    x: 300.0,
+    y: 380.0,
+    r: 80.0,
+    skin: 0xFFE0B08A,
+    hair: 0xFF2E2420,
+    shirt: 0xFFE66F51,
+  ),
+  (
+    x: 600.0,
+    y: 350.0,
+    r: 90.0,
+    skin: 0xFFC98F67,
+    hair: 0xFF4A3426,
+    shirt: 0xFF3E6FA8,
+  ),
+  (
+    x: 900.0,
+    y: 390.0,
+    r: 75.0,
+    skin: 0xFFEDC39E,
+    hair: 0xFF1F1A17,
+    shirt: 0xFF4E9A7A,
+  ),
 ];
 const _w = 1200.0, _h = 900.0;
 

@@ -1172,6 +1172,13 @@ final class CIMosaicSpec {
   /// 建構時就畫好（CGContext 一次），逐格只做 CIBlendWithMask
   let strokeMask: CIImage?
 
+  /// 會動的馬賽克（自動找臉）：[t, cx, cy, w, h, …]，t＝合成時間（秒，
+  /// 跟 start／end 同一個基準）、位置大小＝畫布 0~1。nil＝固定在 rect
+  let path: [Double]?
+
+  /// 裁成內切橢圓（蓋臉）
+  let oval: Bool
+
   init?(_ m: [String: Any], canvas: CGSize) {
     type = m["type"] as? Int ?? 0
     strength = min(1, max(0, m["strength"] as? Double ?? 0.5))
@@ -1185,6 +1192,15 @@ final class CIMosaicSpec {
     start = m["start"] as? Double ?? 0
     end = m["end"] as? Double ?? 0
     if end <= start { return nil }
+    oval = m["oval"] as? Bool ?? false
+    if let p = m["path"] as? [Double], p.count >= 5 {
+      path = p
+      strokeMask = nil
+      // 外框先放第一點的位置（逐格用 rect(at:) 算當下那一格）
+      rect = CIMosaicSpec.pathRect(p, at: p[0], canvas: canvas) ?? .zero
+      return
+    }
+    path = nil
 
     // 筆刷筆畫：範圍＝包圍盒；遮罩＝圓頭圓角粗線畫在跟畫布同尺寸的
     // 灰階圖上（CI 是左下原點，畫的時候 y 翻過去），柔邊＝先收線寬
@@ -1275,6 +1291,47 @@ final class CIMosaicSpec {
       x: CGFloat(px) * canvas.width - side / 2,
       y: CGFloat(py) * canvas.height - side / 2,
       width: side, height: side)
+  }
+
+  /// 這一格（合成時間 [t]）要碼的範圍（左上原點、畫布像素）。
+  /// 會動的馬賽克在軌跡頭尾以外回 nil（這一格不碼）
+  func rect(at t: Double, canvas: CGSize) -> CGRect? {
+    guard let p = path else { return rect }
+    return CIMosaicSpec.pathRect(p, at: t, canvas: canvas)
+  }
+
+  /// 會動的馬賽克在 [t] 的範圍：位置兩點之間內插、大小沿用前一點那一段；
+  /// 頭尾以外（容許半格）回 nil——跟 Dart 的 mosaicPathAt、FFmpeg 的
+  /// sendcmd 同一套規則，三邊才一樣
+  static func pathRect(_ p: [Double], at t: Double, canvas: CGSize) -> CGRect? {
+    let n = p.count / 5
+    guard n > 0 else { return nil }
+    let eps = 1.0 / 60
+    if t < p[0] - eps || t > p[(n - 1) * 5] + eps { return nil }
+    var lo = 0
+    var hi = n - 1
+    if t <= p[0] {
+      hi = 0
+    } else if t >= p[(n - 1) * 5] {
+      lo = n - 1
+    } else {
+      while hi - lo > 1 {
+        let mid = (lo + hi) / 2
+        if p[mid * 5] <= t { lo = mid } else { hi = mid }
+      }
+    }
+    let a = lo * 5
+    let b = hi * 5
+    let span = p[b] - p[a]
+    let f = span <= 0 ? 0 : min(1, max(0, (t - p[a]) / span))
+    let cx = p[a + 1] + (p[b + 1] - p[a + 1]) * f
+    let cy = p[a + 2] + (p[b + 2] - p[a + 2]) * f
+    let w = CGFloat(p[a + 3]) * canvas.width
+    let h = CGFloat(p[a + 4]) * canvas.height
+    return CGRect(
+      x: CGFloat(cx) * canvas.width - w / 2,
+      y: CGFloat(cy) * canvas.height - h / 2,
+      width: w, height: h)
   }
 }
 
@@ -1912,14 +1969,51 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
   /// 馬賽克。柔邊跟 FFmpeg 同一套同心圈：由外到內 6 圈漸強，
   /// 外圈幾乎是原畫面，邊界就沒有一條硬線
   private func applyMosaic(
-    _ mz: CIMosaicSpec, to base: CIImage, canvas: CGSize
+    _ mz: CIMosaicSpec, to base: CIImage, canvas: CGSize, at t: Double
   ) -> CIImage {
-    // rect 是左上原點座標，翻成 Core Image 的左下
-    var r = CGRect(
-      x: mz.rect.minX, y: canvas.height - mz.rect.maxY,
-      width: mz.rect.width, height: mz.rect.height)
-    r = r.intersection(CGRect(origin: .zero, size: canvas))
+    // rect 是左上原點座標，翻成 Core Image 的左下。會動的馬賽克
+    //（自動找臉）照這一格的時間算位置；軌跡頭尾以外這一格不碼
+    guard let top = mz.rect(at: t, canvas: canvas) else { return base }
+    let full = CGRect(
+      x: top.minX, y: canvas.height - top.maxY,
+      width: top.width, height: top.height)
+    let r = full.intersection(CGRect(origin: .zero, size: canvas))
     guard r.width > 2, r.height > 2 else { return base }
+    // 橢圓（蓋臉）：效果照方框做完，再用整個外框的內切橢圓當遮罩
+    //（外框可能有一截在畫面外，橢圓照完整外框算才不會被壓扁）
+    if mz.oval {
+      let fx = applyMosaicRect(mz, to: base, canvas: canvas, r: r)
+      let radius = max(full.width, full.height) / 2
+      let mask = CIFilter(
+        name: "CIRadialGradient",
+        parameters: [
+          "inputCenter": CIVector(x: 0, y: 0),
+          "inputRadius0": radius * 0.98,
+          "inputRadius1": radius,
+          "inputColor0": CIColor(red: 1, green: 1, blue: 1),
+          "inputColor1": CIColor(red: 0, green: 0, blue: 0),
+        ])?.outputImage?
+        .transformed(
+          by: CGAffineTransform(
+            scaleX: full.width / (radius * 2), y: full.height / (radius * 2)
+          )
+          .concatenating(CGAffineTransform(translationX: full.midX, y: full.midY)))
+        .cropped(to: r)
+      guard let ellipse = mask else { return fx }
+      return fx.applyingFilter(
+        "CIBlendWithMask",
+        parameters: [
+          kCIInputBackgroundImageKey: base,
+          kCIInputMaskImageKey: ellipse,
+        ])
+    }
+    return applyMosaicRect(mz, to: base, canvas: canvas, r: r)
+  }
+
+  /// 馬賽克效果本身（方框範圍 [r]，CI 座標）
+  private func applyMosaicRect(
+    _ mz: CIMosaicSpec, to base: CIImage, canvas: CGSize, r: CGRect
+  ) -> CIImage {
 
     func patch(_ region: CGRect, _ k: Double) -> CIImage {
       switch mz.type {
@@ -2698,7 +2792,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
         var probeSrc: CVPixelBuffer?
         for layer in ins.layers {
           while mzIdx < activeMz.count, activeMz[mzIdx].z <= layer.z {
-            out = self.applyMosaic(activeMz[mzIdx], to: out, canvas: size)
+            out = self.applyMosaic(activeMz[mzIdx], to: out, canvas: size, at: t)
             mzIdx += 1
           }
           var img: CIImage
@@ -2824,7 +2918,7 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
           Self.slowLock.unlock()
         } else {
           while mzIdx < activeMz.count {
-            out = self.applyMosaic(activeMz[mzIdx], to: out, canvas: size)
+            out = self.applyMosaic(activeMz[mzIdx], to: out, canvas: size, at: t)
             mzIdx += 1
           }
           // 底（馬賽克後、疊加物前）留給缺格重播
@@ -6115,6 +6209,15 @@ final class MCInteractivePrepGate {
         if abs(globalSpeed - 1) > 0.001 {
           mm["start"] = (m["start"] as? Double ?? 0) / globalSpeed
           mm["end"] = (m["end"] as? Double ?? 0) / globalSpeed
+          // 會動的馬賽克：關鍵點的時間跟 start／end 同一個基準，一起除
+          if var p = m["path"] as? [Double] {
+            var i = 0
+            while i + 4 < p.count {
+              p[i] /= globalSpeed
+              i += 5
+            }
+            mm["path"] = p
+          }
         }
         return CIMosaicSpec(mm, canvas: canvas)
       }
@@ -12261,6 +12364,8 @@ struct MetalMosaicSpec {
   let featherMarginPx: Double
   let rect: CGRect  // 畫布座標（左上原點）
   let maskTex: MTLTexture?
+  /// 會動的馬賽克（見 CIMosaicSpec.path）：逐格照時間算 rect
+  var path: [Double]? = nil
 }
 
 final class MetalPreviewEngine: NSObject {
@@ -12822,7 +12927,8 @@ final class MetalPreviewEngine: NSObject {
         colorR: Double(spec.color.red),
         colorG: Double(spec.color.green),
         colorB: Double(spec.color.blue),
-        featherMarginPx: margin, rect: spec.rect, maskTex: maskTex)
+        featherMarginPx: margin, rect: spec.rect, maskTex: maskTex,
+        path: spec.path)
     }
     layers = specs.sorted { $0.z < $1.z }
     trimReaders(curT)
@@ -13495,7 +13601,17 @@ final class MetalPreviewEngine: NSObject {
       let W = canvasW
       let H = canvasH
       for mz in group {
-        let r = mz.rect.intersection(
+        // 會動的馬賽克照這一格的時間算位置，軌跡頭尾以外不碼（橢圓
+        // 這條近似路不裁，放手後合成器的精確幀就回來）
+        var box = mz.rect
+        if let p = mz.path {
+          guard
+            let b = CIMosaicSpec.pathRect(
+              p, at: t, canvas: CGSize(width: W, height: H))
+          else { continue }
+          box = b
+        }
+        let r = box.intersection(
           CGRect(x: 0, y: 0, width: W, height: H))
         guard r.width > 2, r.height > 2 else { continue }
         let u0 = Double(r.minX) / W

@@ -31,10 +31,9 @@ import 'video_editor_screen.dart';
 ///   GIF → 直接開影片選取器，挑一支進 GIF 製作頁。這裡只有「製作」
 ///          一條路：把現成的 GIF 收進來是 個人中心 →「我的 GIF」那顆＋
 ///          的事（使用者指定，見 addGifFromDevice）
-///   馬賽克 → 挑一張照片進照片編輯器的馬賽克模式（進去自動找臉、全碼上，
-///          點臉切換）。使用者在畫布選的是「甲」：第五列、排在 GIF 下面、
-///          再一層選照片／影片——影片的自動碼臉還在做，那一層等影片好了
-///          才加，現在直接開照片選取器
+///   馬賽克 → 照片／影片（使用者在畫布選的「甲」：第五列、排在 GIF 下面、
+///          再一層選照片／影片）。照片進照片編輯器的馬賽克模式（進去自動
+///          找臉、全碼上，點臉切換）；影片進剪輯，接好就跳馬賽克選單
 ///   剪輯 → 直接開一條空的時間軸
 ///
 /// 「製作浮水印」（浮水印工作室）從首頁拿掉，走 個人中心 → 範本 → ＋
@@ -232,18 +231,57 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// 馬賽克：挑一張照片進照片編輯器的馬賽克模式（進去先自動找臉、
-  /// 全部碼上）。單張：每張照片的臉都不一樣，整批要一張一張確認，
-  /// 之後另外做。不自己上重入鎖，理由同 [_makeGif]
-  Future<void> _makeMosaic() async {
-    final picked = await pickPhotoFile();
-    if (picked == null || !mounted) return;
+  /// 馬賽克：先問照片還是影片（畫布甲案的第二層）。
+  /// - 照片：挑一張進照片編輯器的馬賽克模式（進去先自動找臉、全部碼上）。
+  ///   單張：每張照片的臉都不一樣，整批要一張一張確認，之後另外做
+  /// - 影片：挑一支進剪輯，接好就跳「馬賽克」選單（自動碼人臉／方框／
+  ///   筆刷）。一次一支，多選了拿第一支
+  ///
+  /// 回傳「要不要回到第一層」，同 [_pickForWatermark]。不自己上重入鎖，
+  /// 理由同 [_makeGif]
+  Future<bool> _makeMosaic() async {
+    final kind = await _showSheet<_Media>(
+      back: '馬賽克',
+      backValue: _Media.back,
+      rows: const [
+        _SheetRow(
+          icon: Icons.photo_outlined,
+          label: '照片',
+          sub: '單張',
+          value: _Media.photo,
+        ),
+        _SheetRow(
+          icon: Icons.movie_outlined,
+          label: '影片',
+          sub: '一次一支，臉會自動追蹤',
+          value: _Media.video,
+        ),
+      ],
+    );
+    if (kind == null || !mounted) return false;
+    if (kind == _Media.back) return true;
+    if (kind == _Media.photo) {
+      final picked = await pickPhotoFile();
+      if (picked == null || !mounted) return false;
+      await Navigator.push(
+        context,
+        editRoute(
+          builder: (_) => PhotoEditorScreen(photo: picked, mosaicMode: true),
+        ),
+      );
+      return false;
+    }
+    final list = await pickVideoFiles();
+    final v = list.where(_isVideoFile).toList();
+    if (v.isEmpty || !mounted) return false;
     await Navigator.push(
       context,
       editRoute(
-        builder: (_) => PhotoEditorScreen(photo: picked, mosaicMode: true),
+        builder: (_) =>
+            VideoEditorScreen(videoPath: v.first.path, mosaicEntry: true),
       ),
     );
+    return false;
   }
 
   /// 選完才講的提醒（略過的檔案、數量偏多）。
@@ -444,7 +482,7 @@ class _HomeScreenState extends State<HomeScreen> {
         case _HomeAction.gif:
           await _makeGif();
         case _HomeAction.mosaic:
-          await _makeMosaic();
+          again = await _makeMosaic();
         case _HomeAction.cut:
           // 不挑素材，直接開一條空的時間軸，照片、影片進去再加
           await Navigator.push(
@@ -479,7 +517,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _SheetRow(
         icon: Icons.blur_on,
         label: '馬賽克',
-        sub: '照片自動找出人臉打碼',
+        sub: '照片、影片自動找出人臉打碼',
         value: _HomeAction.mosaic,
       ),
       _SheetRow(
