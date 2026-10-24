@@ -22,10 +22,106 @@ class FaceBox {
   }
 }
 
+/// 影片的某一格（素材秒數）偵測到的臉。框是轉正後的畫面座標（0~1、左上原點）
+class FaceSample {
+  final double t;
+  final List<FaceBox> faces;
+
+  const FaceSample(this.t, this.faces);
+}
+
+/// 一支影片的找臉工作：可以叫停（見 [FaceDetect.inVideo]）
+class FaceVideoJob {
+  int? _token;
+  bool _cancelled = false;
+
+  bool get cancelled => _cancelled;
+
+  /// 叫原生端停下來。之後 inVideo 回 null（叫停的人自己知道為什麼）
+  Future<void> cancel() async {
+    _cancelled = true;
+    final t = _token;
+    if (t == null) return;
+    try {
+      await FaceDetect._ch.invokeMethod('cancelVideo', {'token': t});
+    } catch (_) {}
+  }
+}
+
 /// 手機內建的人臉偵測：iOS 是系統的 Vision、Android 是 ML Kit。
-/// 全部在手機上算，照片不會離開裝置
+/// 全部在手機上算，照片、影片不會離開裝置
 class FaceDetect {
   static const _ch = MethodChannel('markcut/face');
+
+  static int _nextToken = 1;
+
+  /// 進行中的影片：token → 進度回呼（原生端送 videoProgress 過來）
+  static final _progress = <int, void Function(double)>{};
+  static bool _listening = false;
+
+  static void _listen() {
+    if (_listening) return;
+    _listening = true;
+    _ch.setMethodCallHandler((call) async {
+      if (call.method == 'videoProgress' && call.arguments is Map) {
+        final a = call.arguments as Map;
+        final token = (a['token'] as num?)?.toInt();
+        final p = (a['p'] as num?)?.toDouble();
+        if (token != null && p != null) {
+          _progress[token]?.call(p.clamp(0.0, 1.0));
+        }
+      }
+      return null;
+    });
+  }
+
+  /// 影片每 1/[fps] 秒取一格找臉（時間是素材秒數）。偵測不了（web、
+  /// 通道不在、檔案讀不到）或被 [job] 叫停回 null
+  static Future<List<FaceSample>?> inVideo(
+    String path, {
+    double fps = 10,
+    void Function(double p)? onProgress,
+    FaceVideoJob? job,
+  }) async {
+    if (kIsWeb || path.isEmpty || (job?.cancelled ?? false)) return null;
+    _listen();
+    final token = _nextToken++;
+    job?._token = token;
+    if (onProgress != null) _progress[token] = onProgress;
+    try {
+      final r = await _ch.invokeMethod<List<Object?>>('analyzeVideo', {
+        'path': path,
+        'token': token,
+        'fps': fps,
+      });
+      if (r == null || (job?.cancelled ?? false)) return null;
+      final out = <FaceSample>[];
+      for (final e in r) {
+        if (e is! Map) continue;
+        final t = (e['t'] as num?)?.toDouble();
+        if (t == null) continue;
+        final faces = <FaceBox>[];
+        for (final f in (e['f'] as List?) ?? const []) {
+          if (f is! List || f.length < 4) continue;
+          final b = FaceBox.fromMap({
+            'x': f[0],
+            'y': f[1],
+            'w': f[2],
+            'h': f[3],
+          });
+          if (b != null) faces.add(b);
+        }
+        out.add(FaceSample(t, faces));
+      }
+      return out;
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    } finally {
+      _progress.remove(token);
+    }
+  }
 
   /// 照片裡的臉。偵測不了（web、通道不在、檔案讀不到）回 null；
   /// 偵測成功但沒有臉回空清單——兩者呼叫端要分開講

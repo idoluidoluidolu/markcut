@@ -2,13 +2,7 @@ import 'dart:math' as math;
 
 import 'face_detect.dart';
 
-/// 影片的某一格（秒）偵測到的臉。框是轉正後的畫面座標（0~1、左上原點）
-class FaceSample {
-  final double t;
-  final List<FaceBox> faces;
-
-  const FaceSample(this.t, this.faces);
-}
+export 'face_detect.dart' show FaceBox, FaceSample;
 
 /// 軌跡上的一個點：那一秒，臉的中心與寬高（0~1，已經放大到蓋得住頭）
 class FaceKey {

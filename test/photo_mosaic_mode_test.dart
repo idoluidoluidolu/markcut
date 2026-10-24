@@ -10,10 +10,8 @@
 //      沒有範本、浮水印區段、存成範本
 //   5. 找不到（通道回 null）不炸、不加東西
 //   6. 草稿從馬賽克模式存的：開回馬賽克模式、不再自動找一次
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';

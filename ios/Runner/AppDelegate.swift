@@ -14969,6 +14969,11 @@ extension AppDelegate: PHPickerViewControllerDelegate {
 //   detectImage({path}) -> [{x, y, w, h}]?
 //       照片裡的臉：轉正後的座標（0~1、左上原點，跟 Dart 端解碼出來的
 //       照片同一個方向）。檔案讀不到回 nil；沒有臉回空陣列。
+//   analyzeVideo({path, token, fps}) -> [{t, f: [[x, y, w, h]]}]?
+//       影片每 1/fps 秒取一格找臉（t＝素材時間秒、框同上、已照旋轉旗標
+//       轉正）。過程中往 Dart 送 videoProgress({token, p})；讀不到回 nil，
+//       被取消回到取消那一刻為止找到的。
+//   cancelVideo({token})：叫正在跑的那一支停下來
 //
 // 用系統的 Vision（VNDetectFaceRectanglesRequest，iOS 11 起就有），
 // 不用另外帶模型，照片不離開手機。先用 ImageIO 縮圖＋套 EXIF 方向
@@ -14979,11 +14984,30 @@ extension AppDelegate {
   fileprivate static let faceQueue = DispatchQueue(
     label: "markcut.face", qos: .userInitiated)
 
+  /// 送進度用（通道在引擎起來時建一次）
+  fileprivate static var faceChannel: FlutterMethodChannel?
+
+  /// 被叫停的影片（token）。分析在 faceQueue 上跑、取消從主執行緒來
+  fileprivate static let faceCancelLock = NSLock()
+  fileprivate static var faceCancelled = Set<Int>()
+
+  fileprivate static func faceCancel(_ token: Int, set: Bool?) -> Bool {
+    faceCancelLock.lock()
+    defer { faceCancelLock.unlock() }
+    switch set {
+    case .some(true): faceCancelled.insert(token)
+    case .some(false): faceCancelled.remove(token)
+    case .none: break
+    }
+    return faceCancelled.contains(token)
+  }
+
   private func registerFaceChannel(_ engineBridge: FlutterImplicitEngineBridge) {
     guard let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "markcut.face")
     else { return }
     let channel = FlutterMethodChannel(
       name: "markcut/face", binaryMessenger: registrar.messenger())
+    AppDelegate.faceChannel = channel
     channel.setMethodCallHandler { call, result in
       switch call.method {
       case "detectImage":
@@ -14994,6 +15018,34 @@ extension AppDelegate {
           let faces = autoreleasepool { MCFaceDetect.detectImage(path: path) }
           DispatchQueue.main.async { result(faces) }
         }
+      case "analyzeVideo":
+        guard let args = call.arguments as? [String: Any],
+          let path = args["path"] as? String, !path.isEmpty,
+          let token = args["token"] as? Int
+        else { result(nil); return }
+        let fps = args["fps"] as? Double ?? 10
+        AppDelegate.faceQueue.async {
+          var last = -1.0
+          let samples = MCFaceDetect.analyzeVideo(
+            path: path, fps: fps,
+            isCancelled: { AppDelegate.faceCancel(token, set: nil) },
+            progress: { p in
+              // 每 1% 送一次就夠，送太密只是把主執行緒塞滿
+              if p - last < 0.01 && p < 1 { return }
+              last = p
+              DispatchQueue.main.async {
+                AppDelegate.faceChannel?.invokeMethod(
+                  "videoProgress", arguments: ["token": token, "p": p])
+              }
+            })
+          _ = AppDelegate.faceCancel(token, set: false)
+          DispatchQueue.main.async { result(samples) }
+        }
+      case "cancelVideo":
+        if let args = call.arguments as? [String: Any], let token = args["token"] as? Int {
+          _ = AppDelegate.faceCancel(token, set: true)
+        }
+        result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -15029,6 +15081,75 @@ enum MCFaceDetect {
         "w": Double(b.width),
         "h": Double(b.height),
       ]
+    }
+  }
+
+  /// 影片每 1/fps 秒取一格找臉：[{t, f: [[x, y, w, h]]}]（t＝素材時間秒；
+  /// 框轉正後、0~1、左上原點）。讀不到回 nil；取消就回到目前為止的。
+  ///
+  /// AVAssetReader 順著解（硬體解碼、不 seek），沒輪到的格子解了就丟；
+  /// 轉正交給 Vision 的 orientation（照影片軌的旋轉旗標），回來的框就是
+  /// 畫面上看到的方向。HDR 的來源要求 8-bit 420 輸出，系統會自己轉
+  static func analyzeVideo(
+    path: String, fps: Double,
+    isCancelled: () -> Bool, progress: (Double) -> Void
+  ) -> [[String: Any]]? {
+    let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+    guard let track = asset.tracks(withMediaType: .video).first,
+      let reader = try? AVAssetReader(asset: asset)
+    else { return nil }
+    let output = AVAssetReaderTrackOutput(
+      track: track,
+      outputSettings: [
+        kCVPixelBufferPixelFormatTypeKey as String:
+          kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+      ])
+    output.alwaysCopiesSampleData = false
+    guard reader.canAdd(output) else { return nil }
+    reader.add(output)
+    guard reader.startReading() else { return nil }
+    let orientation = videoOrientation(track.preferredTransform)
+    let duration = max(0.001, asset.duration.seconds)
+    let step = 1.0 / max(1, fps)
+    let handler = VNSequenceRequestHandler()
+    var next = -Double.infinity
+    var samples: [[String: Any]] = []
+    while true {
+      if isCancelled() {
+        reader.cancelReading()
+        return samples
+      }
+      let more: Bool = autoreleasepool {
+        guard let sb = output.copyNextSampleBuffer() else { return false }
+        let t = CMSampleBufferGetPresentationTimeStamp(sb).seconds
+        guard t.isFinite, t >= next, let pb = CMSampleBufferGetImageBuffer(sb)
+        else { return true }
+        // 容許半格（60fps）的時間抖動，不然 30fps 的片子會一格偏一格
+        next = t + step - 0.5 / 60
+        let request = VNDetectFaceRectanglesRequest()
+        try? handler.perform([request], on: pb, orientation: orientation)
+        let faces: [[Double]] = (request.results ?? []).map { face in
+          let b = face.boundingBox
+          return [Double(b.minX), Double(1 - b.maxY), Double(b.width), Double(b.height)]
+        }
+        samples.append(["t": t, "f": faces])
+        progress(min(1, max(0, t / duration)))
+        return true
+      }
+      if !more { break }
+    }
+    if reader.status == .failed { return nil }
+    progress(1)
+    return samples
+  }
+
+  /// 影片軌的旋轉旗標 → Vision 要的方向（iPhone 直拍＝90°＝.right）
+  static func videoOrientation(_ t: CGAffineTransform) -> CGImagePropertyOrientation {
+    switch (t.a.rounded(), t.b.rounded(), t.c.rounded(), t.d.rounded()) {
+    case (0, 1, -1, 0): return .right
+    case (0, -1, 1, 0): return .left
+    case (-1, 0, 0, -1): return .down
+    default: return .up
     }
   }
 }
