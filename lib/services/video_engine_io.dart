@@ -16,6 +16,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
+import 'brush_mask.dart';
 import 'comp_player.dart';
 import 'diagnostics.dart';
 import 'gif_store.dart';
@@ -407,11 +408,15 @@ String _eq(TimelineClip c) => c.color.ffmpeg;
 /// → 疊浮水印；所有帶聲音的片段 delay 對位後 amix 混成一軌。
 /// 縮放用 lanczos；編碼交給平台的硬體編碼器（見 _hwEncoder／_kbpsFor），
 /// 失敗才退軟體。
+///
+/// [maskFiles]：筆刷馬賽克的筆畫遮罩 PNG（clip id → 路徑，見
+/// renderBrushMaskPng）。缺了的筆刷片段退回碼整個包圍盒
 Future<List<String>> _buildCommand(
   ExportSpec spec,
   String? wmPath,
   Map<int, String> overlayFiles,
   String outPath, {
+  Map<int, String> maskFiles = const {},
   double winStart = 0,
   double? winEnd,
   bool videoOnly = false,
@@ -577,6 +582,28 @@ Future<List<String>> _buildCommand(
     if (isPngClip(spec.sources[c.sourceIndex].kind)) {
       textClipInput[c.id] = nextInput++;
     }
+  }
+  // 筆刷馬賽克在輸出畫面上要處理的那一塊，跟遮罩 PNG 的輸入編號。
+  // 輸入跟濾鏡圖都照這一份：兩邊各算各的話，遮罩開了沒人接、或接到
+  // 不存在的輸入，ffmpeg 直接報錯。整筆在畫面外的不組
+  final brushBoxes = <int, ({int x, int y, int w, int h})>{};
+  final maskInput = <int, int>{}; // clip id → input index
+  for (final c in segClips) {
+    final s = spec.sources[c.sourceIndex];
+    final stroke = s.mosaicStroke;
+    if (s.kind != ClipKind.mosaic || stroke == null || stroke.length < 2) {
+      continue;
+    }
+    final box = brushStrokeBox(
+      stroke,
+      s.mosaicBrush,
+      s.mosaicStyle ?? MosaicStyle(),
+      spec.outW,
+      spec.outH,
+    );
+    if (box == null) continue;
+    brushBoxes[c.id] = box;
+    if (maskFiles.containsKey(c.id)) maskInput[c.id] = nextInput++;
   }
   final wmInputIdx = nextInput;
 
@@ -1031,6 +1058,53 @@ Future<List<String>> _buildCommand(
     final seen = visible(start, end);
     if (seen == null) return; // 這一段裡看不到
     final (a, b) = seen;
+    // 筆刷筆畫：效果鋪滿筆畫的包圍盒，筆畫遮罩當補丁的 alpha。遮罩是
+    // 匯出前畫好的 PNG（renderBrushMaskPng：透明底白筆畫，柔邊已經暈在
+    // 裡面），alphaextract 取出 alpha、alphamerge 貼到效果上再疊回去——
+    // 塗到哪碼到哪，跟 iOS 合成器（CIBlendWithMask）、照片編輯器同一套。
+    // 效果跟方形同一條公式（格數、縮小倍數），只是整塊一次做足、不分圈：
+    // 柔邊在遮罩裡。alphaextract／alphamerge 一樣是 LGPL。
+    // 片段的 px/py/scale 對筆畫沒有意義，不看
+    final stroke = spec.sources[c.sourceIndex].mosaicStroke;
+    if (stroke != null && stroke.length >= 2) {
+      final box = brushBoxes[c.id];
+      if (box == null) return; // 整筆都在畫面外
+      final (x: bx, y: by, w: bw, h: bh) = box;
+      final ms = spec.sources[c.sourceIndex].mosaicStyle ?? MosaicStyle();
+      final String fx;
+      if (ms.type == 2) {
+        final rgb = (ms.color & 0xFFFFFF).toRadixString(16).padLeft(6, '0');
+        fx = 'drawbox=x=0:y=0:w=$bw:h=$bh:color=0x$rgb:t=fill';
+      } else if (ms.type == 1) {
+        final down = 2 + (ms.strength * 12).round();
+        fx =
+            'scale=${math.max(2, (bw / down).round())}:'
+            '${math.max(2, (bh / down).round())},'
+            'scale=$bw:$bh:flags=bilinear';
+      } else {
+        final cells = (26 - 20 * ms.strength).round().clamp(4, 40);
+        final dw = math.max(2, math.min(cells, bw ~/ 2));
+        final dh = math.max(2, (dw * bh / bw).round());
+        fx = 'scale=$dw:$dh,scale=$bw:$bh:flags=neighbor';
+      }
+      fc.write('[$cur]split=2[mzA$k][mzB$k];[mzB$k]crop=$bw:$bh:$bx:$by,$fx');
+      // 遮罩做不出來（maskFiles 缺這一筆）就碼整個包圍盒：寧可多碼，
+      // 不能漏碼
+      final mi = maskInput[c.id];
+      if (mi != null) {
+        fc.write(
+          ',format=yuva420p[mzE$k];'
+          '[$mi:v]alphaextract,scale=$bw:$bh[mzM$k];'
+          '[mzE$k][mzM$k]alphamerge',
+        );
+      }
+      fc.write(
+        '[mzP$k];[mzA$k][mzP$k]overlay=$bx:$by:'
+        'enable=${_window(a - w0, b - w0)}:eof_action=pass[mz$k];',
+      );
+      cur = 'mz$k';
+      return;
+    }
     var (w2, h2, x, y) = layerBox(c, 1.0);
     // crop 超出畫布會直接報錯，夾回來
     x = x.clamp(0, spec.outW - 2);
@@ -1307,6 +1381,14 @@ Future<List<String>> _buildCommand(
         '-i',
         overlayFiles[c.id]!,
       ]);
+    }
+  }
+  // 筆刷馬賽克的遮罩：一張就夠，不用像文字那樣 -loop 每格重解一次 PNG
+  // ——alphamerge 的遮罩那一路結束之後一直沿用最後一張（framesync 的
+  // repeatlast）。順序跟上面 maskInput 編號時一樣走 segClips
+  for (final c in segClips) {
+    if (maskInput.containsKey(c.id)) {
+      cmd.addAll(['-f', 'image2', '-i', maskFiles[c.id]!]);
     }
   }
   if (hasWm) cmd.addAll(['-i', wmPath]);
@@ -1795,6 +1877,7 @@ Future<String> debugBuildCommand(
   String outPath, {
   String? wmPath,
   Map<int, String> overlayFiles = const {},
+  Map<int, String> maskFiles = const {},
   double winStart = 0,
   double? winEnd,
   bool videoOnly = false,
@@ -1804,6 +1887,7 @@ Future<String> debugBuildCommand(
     wmPath,
     overlayFiles,
     outPath,
+    maskFiles: maskFiles,
     winStart: winStart,
     winEnd: winEnd,
     videoOnly: videoOnly,
@@ -1837,15 +1921,19 @@ String _displayCommand(List<String> args) => [
 Future<List<String>> debugBuildArguments(
   ExportSpec spec,
   String outPath, {
+  String? wmPath,
+  Map<int, String> overlayFiles = const {},
+  Map<int, String> maskFiles = const {},
   double winStart = 0,
   double? winEnd,
   bool videoOnly = false,
   bool seekInputs = true,
 }) => _buildCommand(
   spec,
-  null,
-  const {},
+  wmPath,
+  overlayFiles,
   outPath,
+  maskFiles: maskFiles,
   winStart: winStart,
   winEnd: winEnd,
   videoOnly: videoOnly,
@@ -2160,6 +2248,32 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     overlayFiles[e.key] = p;
   }
 
+  // 筆刷馬賽克的筆畫遮罩（只有 FFmpeg 這條要；原生合成器自己畫）。
+  // 做不出來的那一筆在濾鏡圖裡退回碼整個包圍盒，不讓整趟匯出失敗
+  final maskFiles = <int, String>{};
+  for (final c in spec.clips) {
+    final src = spec.sources[c.sourceIndex];
+    final stroke = src.mosaicStroke;
+    if (src.kind != ClipKind.mosaic || stroke == null || stroke.length < 2) {
+      continue;
+    }
+    try {
+      final png = await renderBrushMaskPng(
+        stroke,
+        src.mosaicBrush,
+        src.mosaicStyle ?? MosaicStyle(),
+        spec.outW,
+        spec.outH,
+      );
+      if (png == null) continue; // 整筆在畫面外，濾鏡圖也不會組它
+      final p = '${dir.path}${Platform.pathSeparator}mzmask_${ts}_${c.id}.png';
+      await File(p).writeAsBytes(png);
+      maskFiles[c.id] = p;
+    } catch (e) {
+      Diag.note('筆刷馬賽克遮罩做不出來（改碼整個範圍）：$e');
+    }
+  }
+
   // 分段渲染用的暫存檔（每一段的畫面、串接清單、串好的無聲影片）
   final segTemps = <String>[];
 
@@ -2253,7 +2367,13 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     trackProgress(0, total, 0, 1);
     await Diag.mark('匯出：單段', data: {'長度': total.round()});
     final r = await runFF(
-      await _buildCommand(spec, wmPath, overlayFiles, outPath),
+      await _buildCommand(
+        spec,
+        wmPath,
+        overlayFiles,
+        outPath,
+        maskFiles: maskFiles,
+      ),
     );
     ok = r.ok;
     rc = r.rc;
@@ -2269,6 +2389,7 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
         wmPath,
         overlayFiles,
         segPath,
+        maskFiles: maskFiles,
         winStart: bounds[i],
         winEnd: bounds[i + 1],
         videoOnly: true,
@@ -2356,6 +2477,9 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
     if (wmPath != null) del(wmPath);
     for (final p in overlayFiles.values) {
       del(p);
+    }
+    for (final p in maskFiles.values) {
+      del(p); // 筆刷馬賽克的筆畫遮罩
     }
     for (final p in revTemps) {
       del(p); // 倒轉用的分段暫存檔
