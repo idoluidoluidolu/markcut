@@ -3142,7 +3142,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 上一次送出的變形值（同值不重送——選取當下的基準也只記不送）
   String? _xfLastSent;
   int _xfSelId = -1;
-  DateTime _xfLastAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// 節流窗：送出後 33ms 內開著。用計時器量、不拿 DateTime.now() 比——
+  /// 補發的尾巴是計時器，窗口得跟它同一個時鐘。測試的假時間裡
+  /// DateTime.now() 幾乎不走，尾巴每次醒來都還判在窗內、一直重排，
+  /// 最後一值就送不出去；真機上牆上時鐘被校時往回撥也會整段卡住
+  Timer? _xfWindow;
   Timer? _xfTrail;
 
   void _liveXformSync({TimelineClip? clip, bool force = false}) {
@@ -3164,8 +3169,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       return;
     }
     if (!force && key == _xfLastSent) return;
-    final now = DateTime.now();
-    if (!force && now.difference(_xfLastAt).inMilliseconds < 33) {
+    if (!force && (_xfWindow?.isActive ?? false)) {
       // 節流中：尾巴補一發，手指停下的最後位置一定落地
       _xfTrail?.cancel();
       _xfTrail = Timer(const Duration(milliseconds: 40), () {
@@ -3173,7 +3177,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       });
       return;
     }
-    _xfLastAt = now;
+    _xfWindow?.cancel();
+    _xfWindow = Timer(const Duration(milliseconds: 33), () {});
     _xfSelId = c.id;
     _xfLastSent = key;
     _xfRevision++;
@@ -12948,6 +12953,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     _ovGeometryTimer?.cancel();
     _wmGestureTimer?.cancel();
     unawaited(MetalPreview.disposeEngine());
+    _xfWindow?.cancel();
     _xfTrail?.cancel();
     CompPlayer.onCompVisible = null;
     // 測試鉤子是靜態的、閉包抓著 this：不清的話整個 State（拖曳快取

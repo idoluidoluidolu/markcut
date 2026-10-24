@@ -601,7 +601,7 @@ void main() {
     expect(of('CenterGuides'), greaterThanOrEqualTo(moves ~/ 2));
     expect(of('TimelineEditor'), 0, reason: '捏合中不能整頁重建');
     expect(of('VideoEditorScreen'), 0, reason: '捏合中不能整頁重建');
-    // 每格送的契約（33ms 真時鐘節流）在 live_xform_baked_image_test；
+    // 每格送的契約（33ms 節流＋尾巴補發）在 live_xform_baked_image_test；
     // 這裡只守「不整頁重建之後 setXform 照樣有送」
     expect(
       xformCalls,
