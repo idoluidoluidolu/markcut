@@ -85,6 +85,7 @@ import '../widgets/sticker_picker.dart';
 import '../widgets/gif_image.dart';
 import '../widgets/slip_picker.dart';
 import '../widgets/watermark_panel.dart';
+import '../widgets/brush_mosaic_preview.dart';
 
 /// 一支影片素材在目前輸出模式下還缺哪一種備好的檔（見 _prepNeedOf）
 enum _PrepNeed {
@@ -14572,11 +14573,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                           r0 = math.max(r0, x0);
                                           b0 = math.max(b0, y0);
                                         }
+                                        // 外推半個筆刷＋柔邊尾巴（柔邊
+                                        // ＝feather×半個筆刷），跟 iOS 的
+                                        // rect、strokeBoundsPx 同一個量
+                                        final fz =
+                                            src.mosaicStyle?.feather ?? 0;
                                         r = Rect.fromLTRB(l0, t0, r0, b0)
                                             .inflate(
                                               src.mosaicBrush *
                                                       math.min(w, h) /
-                                                      2 +
+                                                      2 *
+                                                      (1 + fz) +
                                                   2,
                                             );
                                       } else {
@@ -14605,7 +14612,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             //（C 案，使用者選定）：半透明
                                             // 白＋細白框蓋在效果那一塊，
                                             // 跟筆刷的白遮罩同一套語言，
-                                            // 烘好換真效果
+                                            // 烘好換真效果。
+                                            // 筆刷筆畫只碼筆畫本身，不是
+                                            // 整個包圍盒（跟合成器、FFmpeg
+                                            // 匯出同一塊，見 brush_mask）
                                             child: _compOn
                                                 ? (_compMosaicStale &&
                                                           !_playing &&
@@ -14630,6 +14640,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                           ),
                                                         )
                                                       : const SizedBox.expand())
+                                                : stk0 != null &&
+                                                      stk0.length >= 2
+                                                ? BrushMosaicPreview(
+                                                    stroke: stk0,
+                                                    brush: src.mosaicBrush,
+                                                    style:
+                                                        src.mosaicStyle ??
+                                                        MosaicStyle(),
+                                                    canvas: Size(w, h),
+                                                    rect: r,
+                                                    pixelShader: _mosaicProg,
+                                                  )
                                                 : Builder(
                                                     builder: (context) {
                                                       final ms =
