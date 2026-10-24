@@ -359,6 +359,9 @@ void main() {
     slider.onChanged!(0.5);
     await _tick(t, 2);
     expect(xformCalls.last['opacity'], 0.5);
+    // 拖動中一格緊接一格（落在 33ms 節流窗內）：中間值可以併掉，
+    // 最後一值要靠尾巴補發落地
+    slider.onChanged!(0.7);
     slider.onChanged!(0.94);
     await _tick(t, 2);
     expect(xformCalls.last['opacity'], 0.94);
