@@ -57,6 +57,22 @@ class MediaSource {
   /// 筆刷直徑（畫布短邊比例）
   double mosaicBrush;
 
+  /// 會動的馬賽克（自動找臉）：關鍵點攤平成 [s, cx, cy, w, h, …]，s 是
+  /// 這個素材自己的秒數（sourceTimeAt）、位置大小是畫布 0~1（規則見
+  /// models/mosaic.dart 的 mosaicPathAt）。null＝固定位置（用 clip 的
+  /// px/py/scale）
+  List<double>? mosaicPath;
+
+  /// 馬賽克裁成橢圓（蓋臉用）
+  bool mosaicOval;
+
+  /// 這塊馬賽克是自動找到的一張臉（時間軸上一個人一條軌）
+  bool mosaicFace;
+
+  /// 這張臉最清楚的那一格：[影片素材編號, 影片秒數, x, y, w, h]（臉框是
+  /// 那支影片轉正後畫面的 0~1）。時間軸的頭像從這一格現裁，不存圖
+  List<double>? mosaicFaceAt;
+
   /// 這份浮水印素材其實是一張貼圖。
   ///
   /// 畫法與匯出跟浮水印素材完全一樣（整版透明 PNG，見 overlayPngs），
@@ -109,6 +125,10 @@ class MediaSource {
     this.mosaicStyle,
     this.mosaicStroke,
     this.mosaicBrush = 0.16,
+    this.mosaicPath,
+    this.mosaicOval = false,
+    this.mosaicFace = false,
+    this.mosaicFaceAt,
     this.revOf,
     this.revStart = 0,
     this.revEnd = 0,
@@ -133,6 +153,10 @@ class MediaSource {
     mosaicStyle: mosaicStyle,
     mosaicStroke: mosaicStroke,
     mosaicBrush: mosaicBrush,
+    mosaicPath: mosaicPath,
+    mosaicOval: mosaicOval,
+    mosaicFace: mosaicFace,
+    mosaicFaceAt: mosaicFaceAt,
     isSticker: isSticker,
     isGif: isGif,
     revOf: revOf,
@@ -158,6 +182,10 @@ class MediaSource {
     mosaicStyle: mosaicStyle?.copy(),
     mosaicStroke: mosaicStroke == null ? null : List.of(mosaicStroke!),
     mosaicBrush: mosaicBrush,
+    mosaicPath: mosaicPath == null ? null : List.of(mosaicPath!),
+    mosaicOval: mosaicOval,
+    mosaicFace: mosaicFace,
+    mosaicFaceAt: mosaicFaceAt == null ? null : List.of(mosaicFaceAt!),
     isSticker: isSticker,
     isGif: isGif,
   );
@@ -183,6 +211,10 @@ class MediaSource {
     if (mosaicStyle != null) 'mosaicStyle': mosaicStyle!.toJson(),
     if (mosaicStroke != null) 'mzStroke': mosaicStroke,
     if (mosaicStroke != null) 'mzBrush': mosaicBrush,
+    if (mosaicPath != null) 'mzPath': mosaicPath,
+    if (mosaicOval) 'mzOval': true,
+    if (mosaicFace) 'mzFace': true,
+    if (mosaicFaceAt != null) 'mzFaceAt': mosaicFaceAt,
     if (revOf != null) 'revOf': revOf,
     if (revOf != null) 'revStart': revStart,
     if (revOf != null) 'revEnd': revEnd,
@@ -232,6 +264,14 @@ class MediaSource {
           ? (j['mzStroke'] as List).map((e) => (e as num).toDouble()).toList()
           : null,
       mosaicBrush: ((j['mzBrush'] ?? 0.16) as num).toDouble().clamp(0.02, 0.6),
+      mosaicPath: j['mzPath'] is List
+          ? (j['mzPath'] as List).map((e) => (e as num).toDouble()).toList()
+          : null,
+      mosaicOval: j['mzOval'] == true,
+      mosaicFace: j['mzFace'] == true,
+      mosaicFaceAt: j['mzFaceAt'] is List && (j['mzFaceAt'] as List).length == 6
+          ? (j['mzFaceAt'] as List).map((e) => (e as num).toDouble()).toList()
+          : null,
       revOf: j['revOf'] as String?,
       revStart: (j['revStart'] ?? 0).toDouble(),
       revEnd: (j['revEnd'] ?? 0).toDouble(),
@@ -386,6 +426,22 @@ class TimelineClip {
   double sourceTimeAt(double t) {
     final d = (t - offset) * speed.clamp(0.1, 16.0);
     return reverse ? trimEnd - d : trimStart + d;
+  }
+
+  /// 會動的馬賽克的關鍵點（見 MediaSource.mosaicPath），時間從「素材
+  /// 自己的秒數」換成時間軸秒數（再 ÷[sp] 就是輸出秒）。原生合成／匯出
+  /// 照這個時間內插，不必懂片段的修剪與變速（馬賽克片段不會倒轉）。
+  /// 大小乘上 [scale]：臉框的放大縮小（捏合、滾輪、縮放滑桿）存在片段
+  /// 的 scale，軌跡本身只記偵測到的大小
+  List<double> mosaicPathOnTimeline(List<double> keys, {double sp = 1}) {
+    final out = List<double>.of(keys);
+    final spd = speed.clamp(0.1, 16.0);
+    for (var i = 0; i + 4 < out.length; i += 5) {
+      out[i] = (offset + (keys[i] - trimStart) / spd) / sp;
+      out[i + 3] = keys[i + 3] * scale;
+      out[i + 4] = keys[i + 4] * scale;
+    }
+    return out;
   }
 
   /// 預覽播放器要 seek 的素材時間。
@@ -874,6 +930,12 @@ class TimelineModel {
       if (list.isEmpty) continue;
       var cursor = fromZero ? 0.0 : list.first.offset;
       for (final c in list) {
+        // 會動的馬賽克（自動找臉）是跟著影片內容對時的：挪了就碼錯地方，
+        // 原地不動，後面的照樣接在它後面
+        if (sourceOf(c).mosaicPath != null) {
+          if (c.end > cursor) cursor = c.end;
+          continue;
+        }
         // 只補「空隙」，不動刻意重疊的片段——重疊時 c.offset < cursor，
         // 照原本的寫法會把它往後推開，還把負數算進「收掉的秒數」
         final gap = c.offset - cursor;

@@ -100,4 +100,7 @@ dependencies {
     implementation("androidx.media3:media3-transformer:1.5.1")
     implementation("androidx.media3:media3-effect:1.5.1")
     implementation("androidx.media3:media3-common:1.5.1")
+    // 馬賽克的自動找臉（markcut/face）。模型跟著 App 一起裝（約 +6.9MB），
+    // 不靠 Google Play 服務臨時下載：第一次用不用等、沒網路也能找
+    implementation("com.google.mlkit:face-detection:16.1.7")
 }

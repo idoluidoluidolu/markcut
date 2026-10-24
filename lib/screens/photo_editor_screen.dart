@@ -17,6 +17,7 @@ import '../models/watermark_settings.dart';
 import '../services/hdr_photo_export.dart';
 import '../services/blob_store.dart';
 import '../services/draft_assets.dart';
+import '../services/face_detect.dart';
 import '../services/photo_export.dart';
 import '../services/rotation_snap.dart';
 import '../theme.dart';
@@ -24,6 +25,7 @@ import '../services/mosaic_patch_painter.dart';
 import '../services/watermark_renderer.dart';
 import '../widgets/color_grade_panel.dart';
 import '../widgets/font_picker.dart';
+import '../widgets/mosaic_outline.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
 
@@ -45,11 +47,17 @@ class PhotoEditorScreen extends StatefulWidget {
   /// 從草稿還原：整份編輯狀態的 JSON（見 _stateJson）
   final String? draft;
 
+  /// 從首頁「馬賽克」進來：只做打碼——進來先自動找臉、全部碼上，
+  /// 點臉切換碼／不碼；浮水印面板、範本、調色、畫布比例都收起來。
+  /// 草稿會記住這個模式（見 _stateJson 的 mosaicMode）
+  final bool mosaicMode;
+
   const PhotoEditorScreen({
     super.key,
     required this.photo,
     this.initialWatermark,
     this.draft,
+    this.mosaicMode = false,
   });
 
   @override
@@ -57,8 +65,25 @@ class PhotoEditorScreen extends StatefulWidget {
 }
 
 class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
+  // 馬賽克模式不放浮水印：預設那行「@我的浮水印」關掉
   late final WatermarkSettings _settings =
-      widget.initialWatermark?.copy() ?? WatermarkSettings();
+      widget.initialWatermark?.copy() ??
+      (widget.mosaicMode
+          ? (WatermarkSettings()..text.enabled = false)
+          : WatermarkSettings());
+
+  /// 見 [PhotoEditorScreen.mosaicMode]。草稿還原時從狀態 JSON 讀回來
+  late bool _mosaicMode = widget.mosaicMode;
+
+  /// 馬賽克模式下面那排選的樣式與形狀：改了就套到每一塊
+  ///（臉、方框、筆畫），之後新加的也照這個。
+  /// 濃度預設 0.85（一張臉橫向約 9 格）：一般區塊用的 0.5 是 16 格，
+  /// 蓋在臉上眼睛鼻子還認得出來（截圖實測）
+  final MosaicStyle _mzStyle = MosaicStyle(strength: 0.85);
+  bool _mzOval = true;
+
+  /// 找臉中：工具鈕轉圈、不重複送
+  bool _findingFaces = false;
 
   /// 被選浮水印部件的框（畫在裁切外，拖出照片也看得到位置）
   final _wmFrameInfo = ValueNotifier<WmFrameInfo?>(null);
@@ -375,12 +400,22 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     }
   }
 
+  /// 馬賽克模式自己的狀態：模式本身（草稿還原要開回同一種畫面）＋
+  /// 下面那排選的樣式／形狀（上一步要連它一起退，不然按鈕亮的是
+  /// 新樣式、照片上卻是舊的）
+  Map<String, dynamic> get _mosaicModeJson => {
+    if (_mosaicMode) 'mosaicMode': true,
+    if (_mosaicMode) 'mzStyle': _mzStyle.toJson(),
+    if (_mosaicMode) 'mzOval': _mzOval,
+  };
+
   String get _stateJson {
     final j = <String, dynamic>{
       ..._settings.toJson(),
       'color': _grade.toJson(),
       'extraWms': _extraWms.map((e) => e.toJson()).toList(),
       if (_canvasAspect != null) 'canvasAspect': _canvasAspect,
+      ..._mosaicModeJson,
     };
     _packLogo(j);
     for (final e in (j['extraWms'] as List)) {
@@ -400,6 +435,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       'color': _grade.toJson(),
       'extraWms': _extraWms.map((e) => e.toJson()).toList(),
       if (_canvasAspect != null) 'canvasAspect': _canvasAspect,
+      ..._mosaicModeJson,
     };
     return jsonEncode(j);
   }
@@ -490,6 +526,19 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       _canvasAspect = ca;
       unawaited(_rebuildCanvasImg());
     }
+    // 草稿是從馬賽克模式存的：開回馬賽克模式（模式只會打開、不會關掉——
+    // 上一步的快照全在同一個模式裡拍的）
+    if (j['mosaicMode'] == true) _mosaicMode = true;
+    final mz = j['mzStyle'];
+    if (mz is Map) {
+      final st = MosaicStyle.fromJson(Map<String, dynamic>.from(mz));
+      _mzStyle
+        ..type = st.type
+        ..strength = st.strength
+        ..color = st.color
+        ..feather = st.feather;
+    }
+    if (j['mzOval'] is bool) _mzOval = j['mzOval'] as bool;
     setState(() {
       _settings.copyMarksFrom(wm);
       _grade.copyFrom(
@@ -554,6 +603,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         _aspect = img.width / img.height;
       });
       if (_canvasAspect != null) unawaited(_rebuildCanvasImg());
+      // 馬賽克模式一進來就找臉、全部碼上（草稿還原的已經找過了）
+      if (_mosaicMode && widget.draft == null) {
+        unawaited(_findFaces(auto: true));
+      }
     } catch (_) {
       // 壞檔或不支援的格式：不能讓畫面永遠轉圈
       if (!mounted) return;
@@ -1024,13 +1077,16 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                 top: false,
                 child: Row(
                   children: [
-                    Expanded(
-                      child: secondaryAction(
-                        label: '存成範本',
-                        onPressed: _exporting ? null : _savePresetFromBar,
+                    // 馬賽克模式沒有範本：只留匯出，整條寬
+                    if (!_mosaicMode) ...[
+                      Expanded(
+                        child: secondaryAction(
+                          label: '存成範本',
+                          onPressed: _exporting ? null : _savePresetFromBar,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 10),
+                      const SizedBox(width: 10),
+                    ],
                     Expanded(
                       child: primaryAction(
                         label: '匯出',
@@ -1075,18 +1131,41 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
           box.height * sc,
         );
       } else {
-        final side = m.scale * math.min(w, h);
-        // 出界要裁到照片邊界——匯出端有裁（renderPhotoComposite 的
-        // intersect），預覽不裁的話拖到邊緣時兩邊的 rect 不同，
-        // 像素化格數是「對 rect 均分」、羽化寬是「rect 短邊比例」，
-        // 格子大小跟柔邊就對不上成品
-        rect = Rect.fromCenter(
-          center: Offset(m.x * w, m.y * h),
-          width: side,
-          height: side,
-        ).intersect(Rect.fromLTWH(0, 0, w, h));
+        // 方形出界要裁到照片邊界、橢圓不裁——匯出端是同一個算式
+        //（photoMosaicRect）。兩邊的 rect 不同的話，像素化格數是
+        //「對 rect 均分」、羽化寬是「rect 短邊比例」，格子大小跟柔邊
+        // 就對不上成品
+        rect = photoMosaicRect(m, w, h);
         if (rect.width <= 0 || rect.height <= 0) continue;
       }
+      final hitId = (kind: 0, index: i, part: WmPart.none, logo: -1);
+      if (m.off) {
+        // 點掉的臉：只留一圈虛線，點一下就回來（點擊由上面的判定層
+        // 統一處理，見 _phTapAt）
+        _phBox[hitId] = rect;
+        children.add(
+          Positioned.fromRect(
+            rect: rect,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => _toggleFace(i),
+              child: IgnorePointer(
+                child: CustomPaint(
+                  painter: MosaicOutlinePainter(
+                    oval: m.oval,
+                    dashed: true,
+                    color: Colors.white,
+                    width: 1.5,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        continue;
+      }
+      // 馬賽克模式的臉：點一下是切換碼／不碼，不是選取，也不給拖
+      final faceTap = _mosaicMode && m.face;
       Widget effect;
       if (m.isStroke) {
         // 筆畫效果＝共用畫家（跟匯出同一段程式碼）；
@@ -1113,7 +1192,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         }
         effect = patch;
       } else if (m.style.type == 2) {
-        effect = Container(color: Color(m.style.color));
+        effect = m.oval
+            ? ClipOval(child: ColoredBox(color: Color(m.style.color)))
+            : Container(color: Color(m.style.color));
       } else if (_mosaicBase != null) {
         // 直接取樣照片畫效果：真像素塊、真羽化（跟匯出同一套畫法，
         // web 也一樣）。調色時把同一個矩陣套在補丁上，顏色才會對
@@ -1127,6 +1208,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               rect.width * _mosaicBase!.width / w,
               rect.height * _mosaicBase!.height / h,
             ),
+            oval: m.oval,
           ),
         );
         if (_grade.hasColor && !_colorCompare) {
@@ -1152,11 +1234,13 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         }
         final sigma = 4.0 + 16 * m.style.strength;
         filter ??= ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma);
-        effect = ClipRect(
-          child: BackdropFilter(filter: filter, child: const SizedBox.expand()),
+        final backdrop = BackdropFilter(
+          filter: filter,
+          child: const SizedBox.expand(),
         );
+        effect = m.oval ? ClipOval(child: backdrop) : ClipRect(child: backdrop);
       }
-      _phBox[(kind: 0, index: i, part: WmPart.none, logo: -1)] = rect;
+      _phBox[hitId] = rect;
       children.add(
         Positioned.fromRect(
           rect: rect,
@@ -1165,7 +1249,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             // 點擊統一由上面那層判定（重疊時要能往下鑽），
             // 這裡留著只是萬一那層沒攔到的退路
             onTap: () {
-              if (_selMosaic == i) {
+              if (faceTap) {
+                _toggleFace(i);
+              } else if (_selMosaic == i) {
                 _editMosaic(i);
               } else {
                 setState(() {
@@ -1177,24 +1263,46 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             },
             // 手勢本體在 _mosaicDragStart／_mosaicDragUpdate：這一塊被
             // 選取時，整面的「選取路由」也走同一套（見預覽 Stack 最上層）
-            onPanStart: (_) => _mosaicDragStart(i),
-            onPanUpdate: (d) => _mosaicDragUpdate(m, d, w, h),
-            onPanEnd: (_) => _mosaicDragEnd(),
-            onPanCancel: _mosaicDragEnd,
+            onPanStart: faceTap ? null : (_) => _mosaicDragStart(i),
+            onPanUpdate: faceTap ? null : (d) => _mosaicDragUpdate(m, d, w, h),
+            onPanEnd: faceTap ? null : (_) => _mosaicDragEnd(),
+            onPanCancel: faceTap ? null : _mosaicDragEnd,
             child: Stack(
               fit: StackFit.expand,
               children: [
                 effect,
+                // 馬賽克模式的臉：一圈淡白細線，看得出「這是找到的臉、
+                // 點得動」（點掉的是虛線，見上面）
+                if (faceTap)
+                  IgnorePointer(
+                    child: CustomPaint(
+                      painter: MosaicOutlinePainter(
+                        oval: m.oval,
+                        dashed: false,
+                        color: Colors.white.withValues(alpha: 0.85),
+                        width: 1.2,
+                      ),
+                    ),
+                  ),
                 // 選取框跟浮水印同一套：琥珀細框（白框落在亮照片
                 // 或白色馬賽克上會整個看不見，見 theme 的 kSelect）。
                 // 筆刷塗抹中不畫——正在畫的那一筆被框住很干擾
                 if (_selMosaic == i && !_brushMode)
                   IgnorePointer(
-                    child: Container(
-                      decoration: BoxDecoration(
-                        border: Border.all(color: kSelect, width: 1.4),
-                      ),
-                    ),
+                    child: m.oval
+                        ? CustomPaint(
+                            painter: MosaicOutlinePainter(
+                              oval: true,
+                              dashed: false,
+                              color: kSelect,
+                              width: 1.4,
+                            ),
+                          )
+                        : Container(
+                            decoration: BoxDecoration(
+                              border: Border.all(color: kSelect, width: 1.4),
+                            ),
+                          ),
                   ),
               ],
             ),
@@ -1208,11 +1316,299 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   void _addMosaic() {
     _pushUndo();
     setState(() {
-      _mosaics.add(PhotoMosaic());
+      // 馬賽克模式：照下面那排選的樣式與形狀
+      _mosaics.add(
+        _mosaicMode
+            ? PhotoMosaic(style: _mzStyle.copy(), oval: _mzOval)
+            : PhotoMosaic(),
+      );
       _selMosaic = _mosaics.length - 1;
       _wmPart = WmPart.none;
       _selExtra = -1;
     });
+  }
+
+  // ===== 自動找臉（馬賽克模式）=====
+  /// 找照片裡的臉，每張臉加一塊橢圓馬賽克（已經碼著的同一張臉不重複加）。
+  /// [auto]＝一進來自動跑的那一次：不算一步上一步，也不算「改過了」
+  ///（什麼都沒動就離開，不該被問要不要留草稿）
+  Future<void> _findFaces({bool auto = false}) async {
+    final img = _photoImg;
+    if (_findingFaces || img == null) return;
+    setState(() => _findingFaces = true);
+    final found = await FaceDetect.inPhoto(widget.photo.path);
+    if (!mounted) return;
+    setState(() => _findingFaces = false);
+    if (found == null) {
+      showHint(context, '這張照片沒辦法自動找臉，可以用方框或筆刷', error: !auto);
+      return;
+    }
+    // 馬賽克模式不給換畫布比例：畫布就是照片，偵測框直接當畫布座標
+    final w = img.width.toDouble(), h = img.height.toDouble();
+    final add = <PhotoMosaic>[];
+    for (final f in found) {
+      final m = faceMosaic(f, w, h, style: _mzStyle, oval: _mzOval);
+      final r = photoMosaicRect(m, w, h);
+      final dup = [
+        ..._mosaics,
+        ...add,
+      ].any((e) => e.face && _overlapRatio(photoMosaicRect(e, w, h), r) > 0.3);
+      if (!dup) add.add(m);
+    }
+    if (add.isEmpty) {
+      showHint(context, found.isEmpty ? '沒有找到臉，可以用方框或筆刷' : '找到的臉都已經碼上了');
+      return;
+    }
+    if (!auto) _pushUndo();
+    setState(() {
+      _mosaics.addAll(add);
+      _selMosaic = -1;
+    });
+    // 找的途中使用者已經動手改了就不重設（那些改動要算數）
+    if (auto && _undoStack.isEmpty) _initialJson = _stateJson;
+  }
+
+  /// 兩個框的重疊程度（交集÷聯集）
+  static double _overlapRatio(Rect a, Rect b) {
+    final i = a.intersect(b);
+    if (i.width <= 0 || i.height <= 0) return 0;
+    final inter = i.width * i.height;
+    return inter / (a.width * a.height + b.width * b.height - inter);
+  }
+
+  /// 點一下臉：碼↔不碼（點掉的留著虛線框，再點一下就回來）
+  void _toggleFace(int i) {
+    if (i < 0 || i >= _mosaics.length) return;
+    _pushUndo();
+    setState(() {
+      _mosaics[i].off = !_mosaics[i].off;
+      _selMosaic = -1;
+    });
+  }
+
+  /// 下面那排改了樣式：套到每一塊，之後新加的也照這個
+  void _mzApply(void Function(MosaicStyle s) f) {
+    f(_mzStyle);
+    for (final m in _mosaics) {
+      f(m.style);
+    }
+  }
+
+  /// 馬賽克模式的面板（取代浮水印面板）：樣式＋形狀、濃度（純色是顏色）、
+  /// 三個工具。改樣式＝每一塊一起改
+  Widget _mosaicModePanel() {
+    Widget chip(String label, int type) {
+      final on = _mzStyle.type == type;
+      return Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(999),
+          onTap: on
+              ? null
+              : () {
+                  _pushUndo();
+                  setState(() => _mzApply((s) => s.type = type));
+                },
+          child: Container(
+            height: 36,
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            alignment: Alignment.center,
+            // 設定面板裡的「選項」一律白框白字＋亮底（同樣式表的 chip）
+            decoration: BoxDecoration(
+              color: on ? kPanelHi : Colors.transparent,
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(
+                color: on ? kAmber : kClipBorder,
+                width: on ? 1.5 : 1,
+              ),
+            ),
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: on ? FontWeight.w700 : FontWeight.w400,
+                color: kText,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    Widget shapeBtn(bool oval) {
+      final on = _mzOval == oval;
+      return InkWell(
+        onTap: on
+            ? null
+            : () {
+                _pushUndo();
+                setState(() {
+                  _mzOval = oval;
+                  for (final m in _mosaics) {
+                    if (!m.isStroke) m.oval = oval;
+                  }
+                });
+              },
+        child: Container(
+          width: 42,
+          height: 36,
+          alignment: Alignment.center,
+          color: on ? kPanelHi : Colors.transparent,
+          child: Icon(
+            oval ? Icons.circle_outlined : Icons.crop_square,
+            size: 19,
+            color: on ? kText : kTextDim,
+            semanticLabel: oval ? '圓形' : '方形',
+          ),
+        ),
+      );
+    }
+
+    Widget tool(
+      IconData icon,
+      String label,
+      VoidCallback? onTap, {
+      bool busy = false,
+    }) => InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: onTap,
+      child: SizedBox(
+        width: 72,
+        height: 62,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            SizedBox(
+              width: 22,
+              height: 22,
+              child: busy
+                  ? const Padding(
+                      padding: EdgeInsets.all(2),
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Icon(icon, size: 22, color: kText),
+            ),
+            const SizedBox(height: 5),
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 10.5,
+                letterSpacing: 0.5,
+                color: kText,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              chip('像素化', 0),
+              chip('模糊', 1),
+              chip('純色', 2),
+              const Spacer(),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(999),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    border: Border.all(color: kClipBorder),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [shapeBtn(true), shapeBtn(false)],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          if (_mzStyle.type != 2)
+            sliderRow(
+              label: '濃度',
+              value: _mzStyle.strength,
+              min: 0,
+              max: 1,
+              readout: '${(_mzStyle.strength * 100).round()}',
+              unit: '%',
+              onChangeStart: (_) => _pushUndo(),
+              onChanged: (v) {
+                _mzApply((s) => s.strength = v);
+                _liveRepaint();
+              },
+              onChangeEnd: (_) => _liveEnd(),
+            )
+          else
+            SizedBox(
+              height: 40,
+              child: Row(
+                children: [
+                  const SizedBox(
+                    width: kSliderLabelW,
+                    child: Text(
+                      '顏色',
+                      style: TextStyle(fontSize: 12, color: kTextDim),
+                    ),
+                  ),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(14),
+                    onTap: () async {
+                      final picked = await pickColor(
+                        context,
+                        Color(_mzStyle.color),
+                      );
+                      if (picked == null || !mounted) return;
+                      _pushUndo();
+                      setState(() => _mzApply((s) => s.color = picked));
+                    },
+                    child: Container(
+                      width: 26,
+                      height: 26,
+                      decoration: BoxDecoration(
+                        color: Color(_mzStyle.color),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: kBorder, width: 1.5),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              tool(
+                Icons.face_retouching_natural,
+                '找臉',
+                _findingFaces ? null : () => _findFaces(),
+                busy: _findingFaces,
+              ),
+              tool(Icons.crop_square, '方框', _addMosaic),
+              tool(Icons.brush_outlined, '筆刷', () {
+                setState(() {
+                  // 筆刷照下面那排選的樣式畫
+                  _brushStyle
+                    ..type = _mzStyle.type
+                    ..strength = _mzStyle.strength
+                    ..feather = _mzStyle.feather
+                    ..color = _mzStyle.color;
+                  _brushMode = true;
+                  _selMosaic = -1;
+                  _fsView = true;
+                  _fsBrushOpen = true;
+                });
+              }),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
   // ===== 馬賽克拖曳（方塊自己的手勢與整面的選取路由共用）=====
@@ -1940,7 +2336,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       // 完成時講清楚；原生路失敗一樣退回 SDR（跟批次同一套退路）
       final hp = hasPath ? await HdrPhotoExport.probe(path) : null;
       final hdrSrc = hp != null && hp.hdr;
-      final hdrBlocked = _mosaics.isNotEmpty || _grade.hasColor;
+      // 點掉的臉不畫：只剩點掉的臉時照樣走得了 HDR 原生路
+      final hdrBlocked = _mosaics.any((m) => !m.off) || _grade.hasColor;
       var saved = false;
       if (hdrSrc && !hdrBlocked) {
         final err = await HdrPhotoExport.exportToGallery(
@@ -2143,6 +2540,17 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       for (final id in _phOrder())
         if (_phHit(id, p)) id,
     ];
+    // 馬賽克模式點到臉（最上面那一層是臉）：切換碼／不碼，不走選取
+    if (_mosaicMode && hits.isNotEmpty) {
+      final top = hits.first;
+      if (top.kind == 0 &&
+          top.index < _mosaics.length &&
+          _mosaics[top.index].face) {
+        _phCycleAt = null;
+        _toggleFace(top.index);
+        return;
+      }
+    }
     if (hits.isEmpty) {
       _phCycleAt = null;
       if (_wmPart != WmPart.none || _selMosaic != -1 || _selExtra != -1) {
@@ -2901,9 +3309,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             : Column(
                 children: [
                   // 上 4 下 6：面板是主要工作區，太窄的話每次調整都在
-                  // 捲動；照片有全螢幕預覽可以看，這裡讓一點沒關係
+                  // 捲動；照片有全螢幕預覽可以看，這裡讓一點沒關係。
+                  // 馬賽克模式反過來：面板只有三排，主角是照片上的臉
                   Expanded(
-                    flex: 4,
+                    flex: _mosaicMode ? 6 : 4,
                     // 雙指縮放浮水印（用 Listener 不搶單指拖曳手勢）
                     child: Listener(
                       onPointerDown: _pinchDown,
@@ -3240,46 +3649,48 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                       ),
                                     ),
                                   ),
-                                  // 畫布比例（跟影片編輯的膠囊同語言）
-                                  InkWell(
-                                    borderRadius: BorderRadius.circular(
-                                      kTagRadius,
-                                    ),
-                                    onTap: _openRatioSheet,
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 8,
-                                        vertical: 4,
+                                  // 畫布比例（跟影片編輯的膠囊同語言）。
+                                  // 馬賽克模式不給換：臉的位置是照照片找的
+                                  if (!_mosaicMode)
+                                    InkWell(
+                                      borderRadius: BorderRadius.circular(
+                                        kTagRadius,
                                       ),
-                                      decoration: BoxDecoration(
-                                        color: Colors.white.withValues(
-                                          alpha: 0.10,
+                                      onTap: _openRatioSheet,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 8,
+                                          vertical: 4,
                                         ),
-                                        borderRadius: BorderRadius.circular(
-                                          kTagRadius,
-                                        ),
-                                      ),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Icon(
-                                            Icons.aspect_ratio,
-                                            size: 12,
-                                            color: kTextDim,
+                                        decoration: BoxDecoration(
+                                          color: Colors.white.withValues(
+                                            alpha: 0.10,
                                           ),
-                                          const SizedBox(width: 4),
-                                          Text(
-                                            _ratioLabel,
-                                            style: const TextStyle(
-                                              fontSize: 10.5,
-                                              color: kIcon,
-                                              height: 1.2,
+                                          borderRadius: BorderRadius.circular(
+                                            kTagRadius,
+                                          ),
+                                        ),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(
+                                              Icons.aspect_ratio,
+                                              size: 12,
+                                              color: kTextDim,
                                             ),
-                                          ),
-                                        ],
+                                            const SizedBox(width: 4),
+                                            Text(
+                                              _ratioLabel,
+                                              style: const TextStyle(
+                                                fontSize: 10.5,
+                                                color: kIcon,
+                                                height: 1.2,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
                                       ),
                                     ),
-                                  ),
                                 ],
                               ),
                             ),
@@ -3292,10 +3703,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   // 固定不動也不擋畫面
                   _buildControlBar(),
                   // 塗抹中不給切區段：切走了筆刷還開著，畫面照樣
-                  //（使用者回報「筆刷還沒確認就點到調色」）
-                  IgnorePointer(ignoring: _brushMode, child: _sectionBar()),
+                  //（使用者回報「筆刷還沒確認就點到調色」）。
+                  // 馬賽克模式沒有區段（只有一張面板）
+                  if (!_mosaicMode)
+                    IgnorePointer(ignoring: _brushMode, child: _sectionBar()),
                   Expanded(
-                    flex: 6,
+                    flex: _mosaicMode ? 4 : 6,
                     child: Stack(
                       // 撐滿，不照子件量尺寸：這裡的子件全是定位過的
                       //（面板 Positioned.fill、浮鍵 Positioned），要是哪天
@@ -3309,6 +3722,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                           //（樣式/粗細/濃度/柔邊都在這裡調）
                           child: _brushMode
                               ? _brushPanel()
+                              : _mosaicMode
+                              ? _mosaicModePanel()
                               : switch (_tab) {
                                   1 => ColorGradePanel(
                                     grade: _grade,
@@ -3457,10 +3872,14 @@ class _MosaicPatchPainter extends CustomPainter {
   /// 這塊區域對應到照片上的範圍（照片像素座標）
   final Rect srcRect;
 
+  /// 裁成內切橢圓（臉）
+  final bool oval;
+
   _MosaicPatchPainter({
     required this.img,
     required MosaicStyle style,
     required this.srcRect,
+    this.oval = false,
   }) : type = style.type,
        strength = style.strength,
        feather = style.feather,
@@ -3470,13 +3889,21 @@ class _MosaicPatchPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     // 格數/取色/模糊半徑/羽化全交給共用畫家
     //（跟照片匯出執行同一段程式碼）
-    paintMosaicPatch(canvas, img, _style, srcRect, Offset.zero & size);
+    paintMosaicPatch(
+      canvas,
+      img,
+      _style,
+      srcRect,
+      Offset.zero & size,
+      oval: oval,
+    );
   }
 
   @override
   bool shouldRepaint(_MosaicPatchPainter old) =>
       old.img != img ||
       old.srcRect != srcRect ||
+      old.oval != oval ||
       old.type != type ||
       old.strength != strength ||
       old.feather != feather;

@@ -88,28 +88,53 @@ void _paintEffect(
   canvas.restore();
 }
 
-/// 方形補丁
+/// 一塊區域馬賽克（非筆畫）在 [w]×[h] 畫布上畫在哪——預覽跟匯出共用。
+/// 方形：裁到畫布邊界（像素化格數是對框均分、柔邊寬是框短邊比例，
+/// 兩邊裁得不一樣格子就對不上成品）。橢圓：不裁——裁了就不是橢圓，
+/// 超出畫布的那一截畫的時候自然被切掉
+ui.Rect photoMosaicRect(PhotoMosaic m, double w, double h) {
+  final side = m.scale * math.min(w, h);
+  final r = ui.Rect.fromCenter(
+    center: ui.Offset(m.x * w, m.y * h),
+    width: side,
+    height: side * m.aspect,
+  );
+  return m.oval ? r : r.intersect(ui.Rect.fromLTWH(0, 0, w, h));
+}
+
+/// 區域補丁。[oval]＝裁成 [dstRect] 的內切橢圓（臉用）
 void paintMosaicPatch(
   ui.Canvas canvas,
   ui.Image img,
   MosaicStyle st,
   ui.Rect srcRect,
-  ui.Rect dstRect,
-) {
+  ui.Rect dstRect, {
+  bool oval = false,
+}) {
   if (dstRect.width < 1 || dstRect.height < 1) return;
   if (st.type == 2) {
-    canvas.drawRect(dstRect, ui.Paint()..color = ui.Color(st.color));
+    final p = ui.Paint()..color = ui.Color(st.color);
+    if (oval) {
+      canvas.drawOval(dstRect, p);
+    } else {
+      canvas.drawRect(dstRect, p);
+    }
     return;
   }
   // 柔邊遮罩寬度（像素化與模糊共用同一條公式）
   final featherPx = st.feather * 0.2 * math.min(dstRect.width, dstRect.height);
   if (featherPx < 1) {
+    if (oval) {
+      canvas.save();
+      canvas.clipPath(ui.Path()..addOval(dstRect));
+    }
     _paintEffect(canvas, img, st, srcRect, dstRect);
+    if (oval) canvas.restore();
     return;
   }
-  // 真羽化：效果先畫進一層，再用「內縮＋霧化」的白色方塊當
-  // alpha 遮罩（dstIn），邊緣平滑淡出。遮罩用圖層模糊而不是
-  // MaskFilter——web 的繪圖引擎對 MaskFilter 支援不完整會硬邊
+  // 真羽化：效果先畫進一層，再用「內縮＋霧化」的白色方塊（橢圓就是
+  // 白色橢圓）當 alpha 遮罩（dstIn），邊緣平滑淡出。遮罩用圖層模糊
+  // 而不是 MaskFilter——web 的繪圖引擎對 MaskFilter 支援不完整會硬邊
   canvas.saveLayer(dstRect, ui.Paint());
   _paintEffect(canvas, img, st, srcRect, dstRect);
   canvas.saveLayer(
@@ -121,10 +146,12 @@ void paintMosaicPatch(
         sigmaY: featherPx * 0.5,
       ),
   );
-  canvas.drawRect(
-    dstRect.deflate(featherPx),
-    ui.Paint()..color = const ui.Color(0xFFFFFFFF),
-  );
+  final white = ui.Paint()..color = const ui.Color(0xFFFFFFFF);
+  if (oval) {
+    canvas.drawOval(dstRect.deflate(featherPx), white);
+  } else {
+    canvas.drawRect(dstRect.deflate(featherPx), white);
+  }
   canvas.restore();
   canvas.restore();
 }

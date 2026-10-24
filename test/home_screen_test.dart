@@ -5,8 +5,8 @@
 //   1. 首頁本體只有 logo、右上角個人中心、底部那顆「＋ 開始」——沒有
 //      任何入口文字（舊的四個方塊、更舊的「加入浮水印」「製作浮水印」
 //      都不在）
-//   2. ＋叫出來的第一層：四列 浮水印／照片拼圖／GIF／剪輯，順序、文案、
-//      一行說明、圖示；右邊不畫箭頭（使用者指定）
+//   2. ＋叫出來的第一層：五列 浮水印／照片拼圖／GIF／馬賽克／剪輯，順序、
+//      文案、一行說明、圖示；右邊不畫箭頭（使用者指定）
 //   3. 每一列走的路：
 //        浮水印   → 第二層「照片／影片」→ 對應的選取器 →
 //                   一個進單檔編輯器、多個直接進批次頁（中間不再問
@@ -15,6 +15,9 @@
 //        GIF      → 不進第二層，直接開影片選取器，挑一支進 GIF 製作頁
 //                   （匯入現成的 GIF 是 個人中心「我的 GIF」的事，
 //                   首頁這裡不問）
+//        馬賽克   → 第二層「照片／影片」：照片挑一張進照片編輯器的馬賽克
+//                   模式；影片挑一支進剪輯（mosaicEntry，接好就跳馬賽克
+//                   選單）
 //        剪輯     → 不開選取器、不進第二層，直接開一條空的時間軸
 //   4. 第二層左上角的返回：回到第一層（不是關掉整個選單），整條列
 //      都按得到
@@ -42,6 +45,7 @@ import 'package:markcut/screens/batch_watermark_screen.dart';
 import 'package:markcut/screens/collage_screen.dart';
 import 'package:markcut/screens/gif_screen.dart';
 import 'package:markcut/screens/home_screen.dart';
+import 'package:markcut/screens/photo_editor_screen.dart';
 import 'package:markcut/screens/video_editor_screen.dart';
 import 'package:markcut/theme.dart';
 
@@ -51,12 +55,19 @@ const _pngB64 =
     'LQkAXrdVAdmuFfUAAAAASUVORK5CYII=';
 
 /// ＋選單第一層，由上而下
-const _labels = ['浮水印', '照片拼圖', 'GIF', '剪輯'];
-const _subs = ['照片、影片，單支或整批快速加入浮水印', '多張照片拼成一張', '影片轉成 GIF', '開啟一個空專案自由編輯'];
+const _labels = ['浮水印', '照片拼圖', 'GIF', '馬賽克', '剪輯'];
+const _subs = [
+  '照片、影片，單支或整批快速加入浮水印',
+  '多張照片拼成一張',
+  '影片轉成 GIF',
+  '照片、影片自動找出人臉打碼',
+  '開啟一個空專案自由編輯',
+];
 const _icons = [
   Icons.branding_watermark_outlined,
   Icons.grid_view_rounded,
   Icons.gif_box_outlined,
+  Icons.blur_on,
   Icons.smart_display_outlined,
 ];
 
@@ -129,6 +140,17 @@ class _FakeImagePicker extends ImagePickerPlatform {
   Future<List<XFile>> getMedia({required MediaOptions options}) {
     calls++;
     return hold?.future ?? Future.value(next);
+  }
+
+  /// 單張（馬賽克那條路）：沒有系統相片選取器時退到這裡
+  @override
+  Future<XFile?> getImageFromSource({
+    required ImageSource source,
+    ImagePickerOptions options = const ImagePickerOptions(),
+  }) async {
+    calls++;
+    final list = await (hold?.future ?? Future.value(next));
+    return list.isEmpty ? null : list.first;
   }
 }
 
@@ -267,6 +289,7 @@ void main() {
         '浮水印',
         '照片拼圖',
         'GIF',
+        '馬賽克',
       ]) {
         expect(find.text(x), findsNothing, reason: '「$x」不該出現在收起來的首頁');
       }
@@ -363,7 +386,7 @@ void main() {
   });
 
   group('＋叫出來的第一層', () {
-    testWidgets('四列：順序、文案、說明、圖示；右邊不畫箭頭', (t) async {
+    testWidgets('五列：順序、文案、說明、圖示；右邊不畫箭頭', (t) async {
       await _pump(t);
       await _tapFab(t);
 
@@ -397,7 +420,7 @@ void main() {
       expect(t.takeException(), isNull);
     });
 
-    testWidgets('窄畫面（375）：四列的說明都放得下，不會被截成「…」', (t) async {
+    testWidgets('窄畫面（375）：五列的說明都放得下，不會被截成「…」', (t) async {
       // 說明文字是使用者自己給的句子，改了就可能變長；截斷是 ellipsis
       // 而不是溢出，眼睛不一定看得出來，所以直接問渲染器有沒有超行
       _phone(t, 375, 667);
@@ -553,6 +576,73 @@ void main() {
       expect(t.takeException(), isNull);
     });
 
+    testWidgets('馬賽克 → 第二層「照片／影片」；選照片 → 挑一張進馬賽克模式', (t) async {
+      _images.next = [XFile(_p('a.png'), name: 'a.png')];
+      final spy = _RouteSpy();
+      await _pump(t, spy: spy);
+      await _tapFab(t);
+      await t.tap(find.text('馬賽克'));
+      await _settle(t);
+
+      expect(find.text('馬賽克'), findsOneWidget, reason: '第二層要標上一層是誰');
+      expect(find.byIcon(Icons.chevron_left), findsOneWidget);
+      expect(find.text('單張'), findsOneWidget);
+      expect(find.text('一次一支，臉會自動追蹤'), findsOneWidget);
+      expect(_images.calls + _files.calls, 0, reason: '還沒選就開了選取器');
+
+      await t.tap(find.text('照片'));
+      await _settle(t, 20);
+      expect(_images.calls, 1, reason: '沒有開照片選取器');
+      expect(_files.calls, 0, reason: '開錯了（只列影片那個選取器）');
+      final page = spy.lastEdit(t);
+      expect(page, isA<PhotoEditorScreen>());
+      expect((page as PhotoEditorScreen).mosaicMode, isTrue, reason: '要進馬賽克模式');
+      expect(page.photo.path, _p('a.png'));
+      await _drain(t);
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('馬賽克 → 影片：影片選取器，第一支進剪輯、接好就跳馬賽克選單', (t) async {
+      _files.next = [_p('a.mp4'), _p('b.mp4')];
+      final spy = _RouteSpy();
+      await _pump(t, spy: spy);
+      await _tapFab(t);
+      await t.tap(find.text('馬賽克'));
+      await _settle(t);
+      await t.tap(find.text('影片'));
+      await _settle(t, 20);
+
+      expect(_files.calls, 1, reason: '沒有開影片選取器');
+      expect(_files.lastType, FileType.video, reason: '要挑的是影片');
+      expect(_images.calls, 0, reason: '開錯了（照片那個選取器）');
+      final page = spy.lastEdit(t);
+      expect(page, isA<VideoEditorScreen>());
+      expect(
+        (page as VideoEditorScreen).videoPath,
+        _p('a.mp4'),
+        reason: '一次一支',
+      );
+      expect(page.mosaicEntry, isTrue, reason: '接好要跳馬賽克選單');
+      await _drain(t);
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('馬賽克第二層的返回：回到第一層', (t) async {
+      final spy = _RouteSpy();
+      await _pump(t, spy: spy);
+      await _tapFab(t);
+      await t.tap(find.text('馬賽克'));
+      await _settle(t);
+      await t.tap(find.byIcon(Icons.chevron_left));
+      await _settle(t);
+      for (final x in _labels) {
+        expect(find.text(x), findsOneWidget, reason: '沒回到第一層（少了「$x」）');
+      }
+      expect(_images.calls + _files.calls, 0, reason: '返回不該開選取器');
+      expect(spy.edits, isEmpty, reason: '返回不該推頁');
+      expect(t.takeException(), isNull);
+    });
+
     testWidgets('剪輯：不開選取器、不進第二層，直接開一條空的時間軸', (t) async {
       final spy = _RouteSpy();
       await _pump(t, spy: spy);
@@ -637,15 +727,15 @@ void main() {
     });
   });
 
-  // 面板是固定高的四列（48 抓把＋4×68＋16＝336）。橫向時畫面只剩
+  // 面板是固定高的五列（48 抓把＋5×68＋16＝404）。橫向時畫面只剩
   // 375／390 高，showModalBottomSheet 預設的 9/16 上限（211／219）
-  // 根本裝不下：GIF、剪輯兩列跑到畫面外按不到；320×568 直向也差 17。
+  // 根本裝不下：後面幾列跑到畫面外按不到；320×568 直向也裝不下。
   // 面板要自己會捲（isScrollControlled），最後一列一定要按得到
   group('窄機與橫向：面板裝不下就要能捲，說明折行不截斷', () {
     // 320 寬：第一列的說明 18 個字，一行放不下（連 1.0 字級都放不下）
     // 就折成兩行，不截成「…」；列高跟著長，不能溢出
     for (final scale in [1.0, 1.2]) {
-      testWidgets('320 寬、字級 $scale：四列說明都不截，也不溢出', (t) async {
+      testWidgets('320 寬、字級 $scale：五列說明都不截，也不溢出', (t) async {
         _phone(t, 320, 568);
         t.platformDispatcher.textScaleFactorTestValue = scale;
         addTearDown(t.platformDispatcher.clearTextScaleFactorTestValue);

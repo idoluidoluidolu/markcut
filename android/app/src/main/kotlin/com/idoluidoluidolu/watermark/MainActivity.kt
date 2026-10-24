@@ -3,7 +3,11 @@ package com.idoluidoluidolu.watermark
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.media.MediaCodec
+import android.media.MediaCodecInfo
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
@@ -27,6 +31,10 @@ import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
 import androidx.media3.transformer.VideoEncoderSettings
+import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetectorOptions
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -98,12 +106,16 @@ class MainActivity : FlutterActivity() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    /// 人臉偵測的解碼工作緒（照片解成點陣不能卡主執行緒）
+    private val faceExec = Executors.newSingleThreadExecutor()
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         val main = mainHandler
         registerPrepChannel(flutterEngine)
         registerDiagChannel(flutterEngine)
         registerPickChannel(flutterEngine)
+        registerFaceChannel(flutterEngine)
         // cacheDir/picked 每挑一次就多一份複本（同名不覆蓋、從沒人清）：
         // 啟動時在背景掃掉七天以前的。草稿要留的素材 Dart 端會複製進
         // 自己的目錄，這裡的只是匯入時的中繼複本
@@ -205,6 +217,295 @@ class MainActivity : FlutterActivity() {
                 if (at > 0 && at < cutoff) f.delete()
             } catch (_: Exception) {}
         }
+    }
+
+    /// 被叫停的影片分析（token）。分析在 faceExec 上跑、取消從主執行緒來
+    private val faceCancelled = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<Int, Boolean>(),
+    )
+
+    /// 人臉偵測（markcut/face）：ML Kit，全部在手機上算，照片不離開手機。
+    /// detectImage({path}) -> [{x, y, w, h}]?：轉正後的座標（0~1、左上原點，
+    /// 跟 Dart 端解碼出來的照片同一個方向）。檔案讀不到回 null；沒有臉回空清單。
+    /// analyzeVideo({path, token, fps}) -> [{t, f: [[x, y, w, h]]}]?：影片每 1/fps
+    /// 秒取一格找臉（t＝素材時間秒、框同上、已照旋轉旗標轉正），過程中往 Dart
+    /// 送 videoProgress({token, p})；讀不到回 null，被取消回到那一刻為止的。
+    /// cancelVideo({token})：叫正在跑的那一支停下來
+    private fun registerFaceChannel(flutterEngine: FlutterEngine) {
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "markcut/face")
+        channel.setMethodCallHandler { call, result ->
+                if (call.method == "cancelVideo") {
+                    call.argument<Number>("token")?.toInt()?.let { faceCancelled.add(it) }
+                    result.success(null)
+                    return@setMethodCallHandler
+                }
+                if (call.method == "analyzeVideo") {
+                    val path = call.argument<String>("path")
+                    val token = call.argument<Number>("token")?.toInt()
+                    val fps = (call.argument<Number>("fps") ?: 10).toDouble().coerceIn(1.0, 30.0)
+                    if (path.isNullOrEmpty() || token == null) {
+                        result.success(null)
+                        return@setMethodCallHandler
+                    }
+                    faceExec.execute {
+                        var last = -1.0
+                        val samples = try {
+                            analyzeVideoFaces(path, fps, { faceCancelled.contains(token) }) { p ->
+                                // 每 1% 送一次就夠，送太密只是把主執行緒塞滿
+                                if (p - last >= 0.01 || p >= 1.0) {
+                                    last = p
+                                    mainHandler.post {
+                                        channel.invokeMethod(
+                                            "videoProgress",
+                                            mapOf("token" to token, "p" to p),
+                                        )
+                                    }
+                                }
+                            }
+                        } catch (_: Throwable) {
+                            null
+                        }
+                        faceCancelled.remove(token)
+                        mainHandler.post { result.success(samples) }
+                    }
+                    return@setMethodCallHandler
+                }
+                if (call.method != "detectImage") {
+                    result.notImplemented()
+                    return@setMethodCallHandler
+                }
+                val path = call.argument<String>("path")
+                if (path.isNullOrEmpty()) {
+                    result.success(null)
+                    return@setMethodCallHandler
+                }
+                faceExec.execute {
+                    val bmp = try {
+                        decodeUpright(path, 2560)
+                    } catch (_: Throwable) {
+                        null
+                    }
+                    if (bmp == null) {
+                        mainHandler.post { result.success(null) }
+                        return@execute
+                    }
+                    val detector = FaceDetection.getClient(
+                        FaceDetectorOptions.Builder()
+                            .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
+                            // 合照裡的小臉也要抓：預設 0.1＝頭寬至少要有畫面寬的一成
+                            .setMinFaceSize(0.03f)
+                            .build(),
+                    )
+                    val w = bmp.width.toDouble()
+                    val h = bmp.height.toDouble()
+                    // 聽眾都在主執行緒上跑，result 直接回
+                    detector.process(InputImage.fromBitmap(bmp, 0))
+                        .addOnSuccessListener { faces ->
+                            val out = ArrayList<Map<String, Double>>()
+                            for (f in faces) {
+                                val b = f.boundingBox
+                                out.add(
+                                    mapOf(
+                                        "x" to b.left / w,
+                                        "y" to b.top / h,
+                                        "w" to b.width() / w,
+                                        "h" to b.height() / h,
+                                    ),
+                                )
+                            }
+                            result.success(out)
+                        }
+                        .addOnFailureListener { result.success(null) }
+                        .addOnCompleteListener { detector.close() }
+                }
+            }
+    }
+
+    /// 影片每 1/[fps] 秒取一格找臉。MediaCodec 順著硬體解碼（不 seek），
+    /// 沒輪到的格子直接丟；輪到的拿 getOutputImage（YUV_420_888）交給
+    /// ML Kit，旋轉旗標一起給，回來的框就是畫面上看到的方向。
+    /// 回 [{t, f: [[x, y, w, h]]}]；讀不到回 null；被取消回到目前為止的
+    private fun analyzeVideoFaces(
+        path: String,
+        fps: Double,
+        cancelled: () -> Boolean,
+        progress: (Double) -> Unit,
+    ): List<Map<String, Any>>? {
+        val extractor = MediaExtractor()
+        var codec: MediaCodec? = null
+        val detector = FaceDetection.getClient(
+            FaceDetectorOptions.Builder()
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                .setMinFaceSize(0.05f)
+                .build(),
+        )
+        try {
+            extractor.setDataSource(path)
+            var track = -1
+            for (i in 0 until extractor.trackCount) {
+                val mime = extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME) ?: continue
+                if (mime.startsWith("video/")) {
+                    track = i
+                    break
+                }
+            }
+            if (track < 0) return null
+            extractor.selectTrack(track)
+            val format = extractor.getTrackFormat(track)
+            val mime = format.getString(MediaFormat.KEY_MIME) ?: return null
+            val durationUs = if (format.containsKey(MediaFormat.KEY_DURATION)) {
+                format.getLong(MediaFormat.KEY_DURATION)
+            } else {
+                0L
+            }
+            val rotation = if (format.containsKey(MediaFormat.KEY_ROTATION)) {
+                format.getInteger(MediaFormat.KEY_ROTATION)
+            } else {
+                videoRotation(path)
+            }
+            format.setInteger(
+                MediaFormat.KEY_COLOR_FORMAT,
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible,
+            )
+            val dec = MediaCodec.createDecoderByType(mime)
+            codec = dec
+            dec.configure(format, null, null, 0)
+            dec.start()
+
+            val step = 1.0 / fps
+            var next = Double.NEGATIVE_INFINITY
+            val samples = ArrayList<Map<String, Any>>()
+            val info = MediaCodec.BufferInfo()
+            var inputDone = false
+            var outputDone = false
+            // 餵完了卻一直等不到輸出（有些解碼器不送結束旗標）：兩秒就收
+            var idle = 0
+            while (!outputDone) {
+                if (cancelled()) return samples
+                if (!inputDone) {
+                    val inIdx = dec.dequeueInputBuffer(10_000)
+                    if (inIdx >= 0) {
+                        val buf = dec.getInputBuffer(inIdx)
+                        val size = if (buf == null) -1 else extractor.readSampleData(buf, 0)
+                        if (size < 0) {
+                            dec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            inputDone = true
+                        } else {
+                            dec.queueInputBuffer(inIdx, 0, size, extractor.sampleTime, 0)
+                            extractor.advance()
+                        }
+                    }
+                }
+                val outIdx = dec.dequeueOutputBuffer(info, 10_000)
+                if (outIdx < 0) {
+                    if (inputDone && ++idle > 200) break
+                    continue
+                }
+                idle = 0
+                if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outputDone = true
+                val t = info.presentationTimeUs / 1_000_000.0
+                if (info.size > 0 && t >= next) {
+                    // 容許半格（60fps）的時間抖動，不然 30fps 的片子會一格偏一格
+                    next = t + step - 0.5 / 60
+                    val image = try {
+                        dec.getOutputImage(outIdx)
+                    } catch (_: Exception) {
+                        null
+                    }
+                    if (image != null) {
+                        val faces = ArrayList<List<Double>>()
+                        try {
+                            val found = Tasks.await(
+                                detector.process(InputImage.fromMediaImage(image, rotation)),
+                            )
+                            // ML Kit 的框在「轉正後」的座標：90°／270° 寬高要對調
+                            val upW = (if (rotation % 180 == 0) image.width else image.height).toDouble()
+                            val upH = (if (rotation % 180 == 0) image.height else image.width).toDouble()
+                            for (f in found) {
+                                val b = f.boundingBox
+                                faces.add(listOf(b.left / upW, b.top / upH, b.width() / upW, b.height() / upH))
+                            }
+                        } catch (_: Exception) {
+                            // 這一格認不出來（格式不支援之類）：當作沒有臉，不要整支失敗
+                        } finally {
+                            image.close()
+                        }
+                        samples.add(mapOf("t" to t, "f" to faces))
+                        if (durationUs > 0) progress((t * 1_000_000.0 / durationUs).coerceIn(0.0, 1.0))
+                    }
+                }
+                dec.releaseOutputBuffer(outIdx, false)
+            }
+            progress(1.0)
+            return samples
+        } finally {
+            try {
+                codec?.stop()
+            } catch (_: Exception) {}
+            try {
+                codec?.release()
+            } catch (_: Exception) {}
+            extractor.release()
+            detector.close()
+        }
+    }
+
+    /// 讀不到軌道上的旋轉旗標時，問 MediaMetadataRetriever
+    private fun videoRotation(path: String): Int {
+        val r = MediaMetadataRetriever()
+        return try {
+            r.setDataSource(path)
+            r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+        } catch (_: Exception) {
+            0
+        } finally {
+            try {
+                r.release()
+            } catch (_: Exception) {}
+        }
+    }
+
+    /// 照片解成點陣（長邊不超過 [maxSide]）並照 EXIF 方向轉正——
+    /// Dart 端解碼也會轉正，兩邊的座標才對得上
+    private fun decodeUpright(path: String, maxSide: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        val longSide = maxOf(bounds.outWidth, bounds.outHeight)
+        if (longSide <= 0) return null
+        var sample = 1
+        while (longSide / (sample * 2) >= maxSide) sample *= 2
+        val raw = BitmapFactory.decodeFile(
+            path,
+            BitmapFactory.Options().apply { inSampleSize = sample },
+        ) ?: return null
+        val orientation = try {
+            ExifInterface(path).getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_NORMAL,
+            )
+        } catch (_: Exception) {
+            ExifInterface.ORIENTATION_NORMAL
+        }
+        val m = Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> m.setScale(-1f, 1f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> m.setRotate(180f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> m.setScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> {
+                m.setRotate(90f)
+                m.postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_ROTATE_90 -> m.setRotate(90f)
+            ExifInterface.ORIENTATION_TRANSVERSE -> {
+                m.setRotate(-90f)
+                m.postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_ROTATE_270 -> m.setRotate(-90f)
+            else -> return raw
+        }
+        val upright = Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, m, true)
+        if (upright !== raw) raw.recycle()
+        return upright
     }
 
     private fun registerPickChannel(flutterEngine: FlutterEngine) {

@@ -203,6 +203,10 @@ class NativeExport {
           // 筆刷筆畫：跟合成播放器同一套欄位（Swift 端組遮罩）
           if (src.mosaicStroke != null) 'stroke': src.mosaicStroke,
           if (src.mosaicStroke != null) 'brush': src.mosaicBrush,
+          // 會動的馬賽克（自動找臉）：時間換成輸出秒（跟 start／end 同基準）
+          if (src.mosaicPath != null)
+            'path': c.mosaicPathOnTimeline(src.mosaicPath!, sp: sp),
+          if (src.mosaicOval) 'oval': true,
         });
       }
     }

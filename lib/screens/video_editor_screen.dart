@@ -55,6 +55,9 @@ import '../services/photo_export.dart' show encodePhotoImage;
 import '../services/gif_store.dart';
 import '../services/export_eta.dart';
 import '../services/export_speed.dart';
+import '../services/face_detect.dart';
+import '../services/face_mosaic_plan.dart';
+import '../services/face_tracks.dart';
 import '../services/file_reader.dart';
 import '../services/font_store.dart';
 import '../services/media_prep.dart';
@@ -77,6 +80,8 @@ import '../theme.dart';
 import '../widgets/color_grade_panel.dart';
 import '../widgets/text_insert_bar.dart';
 import '../widgets/timeline_editor.dart';
+import '../widgets/face_avatar.dart';
+import '../widgets/mosaic_outline.dart';
 import '../widgets/editor_region.dart';
 import '../widgets/font_picker.dart';
 import '../widgets/prep_gate_view.dart';
@@ -159,6 +164,10 @@ class VideoEditorScreen extends StatefulWidget {
   @visibleForTesting
   final bool? debugAndroid;
 
+  /// 從首頁「馬賽克 → 影片」進來：影片接好就跳「馬賽克」選單
+  ///（自動碼人臉／方框／筆刷——使用者在畫布選的甲案）
+  final bool mosaicEntry;
+
   const VideoEditorScreen({
     super.key,
     this.videoPath,
@@ -172,6 +181,7 @@ class VideoEditorScreen extends StatefulWidget {
     this.thumbnailNow,
     this.playerFactory,
     this.debugAndroid,
+    this.mosaicEntry = false,
   }) : assert(
          videoPath != null ||
              videoPaths != null ||
@@ -216,7 +226,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   late final TabController _tabs;
   late final Ticker _ticker;
   late final WatermarkSettings _settings =
-      widget.initialWatermark?.copy() ?? WatermarkSettings();
+      widget.initialWatermark?.copy() ??
+      // 從馬賽克進來的不帶預設浮水印字（同照片編輯器的馬賽克模式）
+      (widget.mosaicEntry
+          ? (WatermarkSettings()..text.enabled = false)
+          : WatermarkSettings());
 
   final _tl = TimelineModel();
   final Map<int, PlayerX> _ctrls = {}; // clipId → controller
@@ -706,6 +720,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         'feather': st.feather,
         if (src.mosaicStroke != null) 'stroke': List.of(src.mosaicStroke!),
         if (src.mosaicStroke != null) 'brush': src.mosaicBrush,
+        // 會動的馬賽克（自動找臉）：時間換成時間軸秒
+        if (src.mosaicPath != null)
+          'path': c.mosaicPathOnTimeline(src.mosaicPath!),
+        if (src.mosaicOval) 'oval': true,
       });
     }
     final appliedSig = _mosaicSigNow;
@@ -2173,7 +2191,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             '|${_tl.sourceOf(c).mosaicStyle?.feather}'
             // 筆畫（點列＋粗細）也是烘進合成的一部分
             '|${_tl.sourceOf(c).mosaicStroke?.join(',') ?? ''}'
-            '|${_tl.sourceOf(c).mosaicBrush}',
+            '|${_tl.sourceOf(c).mosaicBrush}'
+            // 會動的馬賽克：軌跡（雜湊就夠，整串太長）、形狀、修剪起點
+            //（軌跡的時間是素材秒數，左邊修剪會讓它整條位移）
+            '|${_tl.sourceOf(c).mosaicPath == null ? '' : Object.hashAll(_tl.sourceOf(c).mosaicPath!)}'
+            '|${_tl.sourceOf(c).mosaicOval}|${c.trimStart}|${c.speed}',
   ].join(';');
 
   /// 圖片素材那部分的指紋。烘進合成的（影片下層）記完整幾何；
@@ -3643,6 +3665,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     } catch (_) {}
   }
 
+  /// 橢圓的馬賽克（自動找臉）：效果裁成內切橢圓（合成與匯出同一個形狀）
+  Widget _ovalIf(bool oval, Widget child) =>
+      oval ? ClipOval(child: child) : child;
+
   /// initState 掛上去的那份測試鉤子（dispose 要認得是自己的才清）
   void Function(void Function(TimelineModel))? _debugTimelineHook;
 
@@ -3767,6 +3793,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             if (!mounted) return;
             setState(() => _ready = true);
             unawaited(_measureSrcKbps());
+            unawaited(_loadFaceThumbs());
           });
     } else if (widget.photoPaths != null) {
       // 一批照片串成影片：進場先問每張幾秒，再照順序接起來
@@ -3824,6 +3851,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       _wmSelValue = true;
     });
     _saveDraft();
+    // 從首頁「馬賽克 → 影片」進來：影片接好就問要怎麼碼
+    if (widget.mosaicEntry) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_askMosaic(_tl.usedTracks));
+      });
+    }
   }
 
   /// 使用者捲動時間軸 → 播放頭跟著走（scrub）。
@@ -5631,6 +5664,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         'feather': ms.feather,
         if (src.mosaicStroke != null) 'stroke': src.mosaicStroke,
         if (src.mosaicStroke != null) 'brush': src.mosaicBrush,
+        if (src.mosaicPath != null)
+          'path': c.mosaicPathOnTimeline(src.mosaicPath!),
+        if (src.mosaicOval) 'oval': true,
       });
     }
     return {
@@ -7025,7 +7061,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       case _AddKind.record:
         await _recordVoice(track);
       case _AddKind.mosaic:
-        _addMosaicClip(track);
+        await _askMosaic(track);
       case _AddKind.paste:
         // 貼到「點下去的那一軌」的播放頭位置。空軌點進來最常做的事
         // 就是把剛複製的東西放上去，卻要先關掉選單、再長按空白處找
@@ -8620,6 +8656,274 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     await _editTextClip(clip, addedFrom: before);
   }
 
+  /// 「馬賽克」選單（使用者在畫布選的甲案）：自動碼人臉／方框／筆刷。
+  /// 加素材的「馬賽克」、首頁「馬賽克 → 影片」進來都走這張
+  Future<void> _askMosaic(int track) async {
+    Widget item(BuildContext context, IconData icon, String label, String v) =>
+        InkWell(
+          onTap: () => Navigator.pop(context, v),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
+            child: Row(
+              children: [
+                Icon(icon, size: 21, color: kAmber),
+                const SizedBox(width: 15),
+                Text(label, style: const TextStyle(fontSize: 14, color: kText)),
+              ],
+            ),
+          ),
+        );
+    final pick = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 0, 20, 4),
+              child: Text(
+                '馬賽克',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+              ),
+            ),
+            item(context, Icons.face_retouching_natural, '自動碼人臉', 'face'),
+            item(context, Icons.crop_square, '方框', 'box'),
+            item(context, Icons.brush_outlined, '筆刷', 'brush'),
+            const SizedBox(height: 10),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    switch (pick) {
+      case 'face':
+        await _autoFaceMosaic();
+      case 'box':
+        _addMosaicClip(track);
+      case 'brush':
+        _startVBrush(track);
+    }
+  }
+
+  /// 正在找臉的那一支（叫停用）與進度（預覽左上角的小膠囊）
+  FaceVideoJob? _faceJob;
+  double _faceProgress = 0;
+
+  /// 自動碼人臉：找選取中（或播放頭下）那段影片裡的臉，每個人一條軌、
+  /// 一塊跟著臉走的橢圓馬賽克。找的時候照樣可以滑、可以剪（進場即可
+  /// 滑動是硬約束）；膠囊上的 × 停
+  Future<void> _autoFaceMosaic() async {
+    if (_faceJob != null) return;
+    final sel = _selClip;
+    final video = (sel != null && _tl.sourceOf(sel).isVideo)
+        ? sel
+        : (_activeVideo ??
+              _tl.clips.where((c) => _tl.sourceOf(c).isVideo).firstOrNull);
+    if (video == null) {
+      showHint(context, '先加一段影片');
+      return;
+    }
+    final src = _tl.sourceOf(video);
+    // 工作檔（1080p SDR）比原檔小、好解，時間跟原檔一樣
+    final path = src.workPath ?? src.path;
+    final job = FaceVideoJob();
+    setState(() {
+      _faceJob = job;
+      _faceProgress = 0;
+    });
+    final samples = await FaceDetect.inVideo(
+      path,
+      job: job,
+      onProgress: (p) {
+        if (mounted && _faceJob == job) setState(() => _faceProgress = p);
+      },
+    );
+    if (!mounted) return;
+    setState(() => _faceJob = null);
+    if (job.cancelled) return;
+    if (samples == null) {
+      showHint(context, '這支影片沒辦法自動找臉，可以用方框或筆刷', error: true);
+      return;
+    }
+    // 找的期間片段被刪掉了：不加
+    if (!_tl.clips.contains(video)) return;
+    final ct = _ctrls[video.id];
+    final aspect = _videoAspect(
+      ct != null && ct.value.isInitialized ? ct : null,
+      src,
+    );
+    // 畫布比例照匯出那一份（「原始」比例時預覽會跟著播放頭下的影片變，
+    // 匯出跟合成是固定的第一支）：座標存的是畫布 0~1，比例要對成品
+    final (cw, ch) = computeCanvasSize(_tl, _resolution, _canvasRatio);
+    final plans = planFaceMosaics(
+      buildFaceTracks(samples, duration: src.duration),
+      video,
+      aspect,
+      ch > 0 ? cw / ch : _canvasAspectNow,
+    );
+    if (plans.isEmpty) {
+      showHint(context, '沒有找到臉，可以用方框或筆刷');
+      return;
+    }
+    _pause();
+    _pushUndo();
+    // 一個人一條軌，疊在最上面（馬賽克只糊它下面的層）
+    final base = _tl.usedTracks;
+    setState(() {
+      for (var i = 0; i < plans.length; i++) {
+        final p = plans[i];
+        final srcIndex = _tl.sources.length;
+        _tl.sources.add(
+          MediaSource(
+            path: '',
+            name: '臉 ${i + 1}',
+            kind: ClipKind.mosaic,
+            duration: 3600,
+            // 臉約 9 格（一般方框的 0.5 是 16 格，眼睛鼻子還認得出來）
+            mosaicStyle: MosaicStyle(strength: 0.85),
+            mosaicPath: p.path,
+            mosaicOval: true,
+            mosaicFace: true,
+            // 頭像抽這一格（臉框換成左上角＋寬高）
+            mosaicFaceAt: [
+              video.sourceIndex.toDouble(),
+              p.best.t,
+              p.best.cx - p.best.w / 2,
+              p.best.cy - p.best.h / 2,
+              p.best.w,
+              p.best.h,
+            ],
+          ),
+        );
+        _tl.clips.add(
+          TimelineClip(
+            id: _tl.nextId(),
+            sourceIndex: srcIndex,
+            trimStart: 0,
+            trimEnd: p.length,
+            offset: p.offset,
+            track: base + i,
+          ),
+        );
+      }
+      _sel = -1;
+      _wmSel = false;
+    });
+    _saveDraft();
+    _compRefreshIfChanged();
+    showHint(context, '找到 ${plans.length} 個人');
+    unawaited(_loadFaceThumbs());
+  }
+
+  /// 整軌隱藏／打開（軌道標籤的眼睛；找臉的人＝頭像，隱藏＝這個人不碼，
+  /// 預覽上點他的虛線圈也走這裡）
+  void _toggleTrackHidden(int t) {
+    setState(() {
+      if (!_hiddenTracks.remove(t)) {
+        _hiddenTracks.add(t);
+      }
+      _syncMedia();
+    });
+    _applyPreviewVolumes();
+    // 影片、圖片、混合軌都即時切換；舊原生版本才重建。
+    _compRefreshIfChanged();
+    _saveDraft();
+  }
+
+  /// 時間軸的人臉頭像。鍵＝「哪支影片的哪一秒」（切割出來的同一個人
+  /// 共用一張）；圖只在記憶體，草稿只記 mosaicFaceAt
+  final Map<String, FaceThumb> _faceThumbs = {};
+  final Set<String> _faceThumbTried = {};
+
+  static String _faceThumbKey(List<double> at) => '${at[0].round()}|${at[1]}';
+
+  FaceThumb? _faceThumbOf(int sourceIndex) {
+    if (sourceIndex < 0 || sourceIndex >= _tl.sources.length) return null;
+    final at = _tl.sources[sourceIndex].mosaicFaceAt;
+    return at == null ? null : _faceThumbs[_faceThumbKey(at)];
+  }
+
+  /// 把還沒有頭像的臉各抽一格（背景、一張一張排）。抽不到就放著，
+  /// 標籤用臉的圖示代替
+  Future<void> _loadFaceThumbs() async {
+    for (final s in List.of(_tl.sources)) {
+      final at = s.mosaicFaceAt;
+      if (at == null) continue;
+      final key = _faceThumbKey(at);
+      if (!_faceThumbTried.add(key)) continue;
+      final vi = at[0].round();
+      if (vi < 0 || vi >= _tl.sources.length) continue;
+      final bytes = await nativeFrameAt(
+        _tl.sources[vi].previewPath,
+        at[1],
+        maxH: 360,
+        background: true,
+      );
+      if (!mounted) return;
+      if (bytes == null) continue;
+      try {
+        final codec = await ui.instantiateImageCodec(bytes);
+        final fr = await codec.getNextFrame();
+        codec.dispose();
+        if (!mounted) {
+          fr.image.dispose();
+          return;
+        }
+        setState(
+          () => _faceThumbs[key] = FaceThumb(
+            fr.image,
+            Rect.fromLTWH(at[2], at[3], at[4], at[5]),
+          ),
+        );
+      } catch (_) {}
+    }
+  }
+
+  /// 找臉中的小膠囊：進度圈＋百分比＋停止
+  Widget _faceProgressChip() => Container(
+    height: 30,
+    padding: const EdgeInsets.only(left: 10),
+    decoration: BoxDecoration(
+      color: Colors.black.withValues(alpha: 0.72),
+      borderRadius: BorderRadius.circular(999),
+      border: Border.all(color: kClipBorder),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          width: 14,
+          height: 14,
+          child: CircularProgressIndicator(
+            value: _faceProgress <= 0 ? null : _faceProgress,
+            strokeWidth: 2.2,
+            color: kSelect,
+            backgroundColor: kBorder,
+          ),
+        ),
+        const SizedBox(width: 7),
+        Text(
+          '找臉 ${(_faceProgress * 100).round()}%',
+          style: const TextStyle(
+            fontSize: 12,
+            color: kText,
+            fontFeatures: [ui.FontFeature.tabularFigures()],
+          ),
+        ),
+        IconButton(
+          tooltip: '停止找臉',
+          visualDensity: VisualDensity.compact,
+          iconSize: 16,
+          onPressed: () => _faceJob?.cancel(),
+          icon: const Icon(Icons.close, color: kIcon),
+        ),
+      ],
+    ),
+  );
+
   /// 馬賽克素材：畫面上一塊方形區域打碼。
   /// 位置/大小直接在預覽上拖曳、雙指縮放；時間範圍在時間軸上拉
   void _addMosaicClip(int track) {
@@ -9054,14 +9358,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             setSheet(() {});
           }
 
-          Widget chip(String label, int type) {
-            final on = st.type == type;
+          Widget option(String label, bool on, VoidCallback onTap) {
             return Expanded(
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4),
                 child: InkWell(
                   borderRadius: BorderRadius.circular(10),
-                  onTap: () => change(() => st.type = type),
+                  onTap: () => change(onTap),
                   child: Container(
                     padding: const EdgeInsets.symmetric(vertical: 10),
                     alignment: Alignment.center,
@@ -9092,6 +9395,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               ),
             );
           }
+
+          Widget chip(String label, int type) =>
+              option(label, st.type == type, () => st.type = type);
 
           return SafeArea(
             child: Padding(
@@ -9185,12 +9491,31 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     sliderRow(
                       label: '縮放',
                       value: clip.scale,
-                      min: 0.02,
-                      max: 3.0,
+                      // 找臉的：臉框乘這個倍率（見 mosaicPathOnTimeline）
+                      min: src.mosaicPath != null ? kFaceMosaicMinScale : 0.02,
+                      max: src.mosaicPath != null ? kFaceMosaicMaxScale : 3.0,
                       onChanged: (v) => change(() => clip.scale = v),
                       readout: '${(clip.scale * 100).round()}',
                       unit: '%',
                     ),
+                  // 找臉的：圓（貼臉形）／方。固定位置那種的匯出不吃橢圓
+                  if (src.mosaicPath != null) ...[
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        option(
+                          '圓',
+                          src.mosaicOval,
+                          () => src.mosaicOval = true,
+                        ),
+                        option(
+                          '方',
+                          !src.mosaicOval,
+                          () => src.mosaicOval = false,
+                        ),
+                      ],
+                    ),
+                  ],
                   if (st.type != 2) ...[
                     const SizedBox(height: 14),
                     Row(
@@ -11502,6 +11827,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 還是圖片（點了就選那個部件），其他素材是 none
   final List<({int id, Rect rect, WmPart part})> _hitBoxes = [];
 
+  /// 點掉（隱藏＝不碼）的臉的虛線圈在哪、是哪一軌。畫在所有素材上面，
+  /// 點擊判定也排第一個：點圈＝碼回去（跟著畫面一起重建）
+  final List<({Rect rect, int track})> _offFaceHits = [];
+
   /// 全域浮水印用的假 id
   static const int _kWmId = -2;
 
@@ -11530,6 +11859,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 同一點連續點擊會往下鑽一層。完全被蓋住的素材在畫面上本來
   /// 永遠選不到（只能去時間軸點），這是唯一能選到它的方法
   void _tapSelectAt(Offset p) {
+    for (final f in _offFaceHits) {
+      if (f.rect.contains(p)) {
+        _toggleTrackHidden(f.track);
+        return;
+      }
+    }
     // _hitBoxes 是由下往上收集的，倒過來就是由上往下
     final hits = <int>[];
     // 浮水印點到的是哪個部件（同一個浮水印取最上面那塊）
@@ -11725,11 +12060,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           // 頂到地板就停：沒有素材可以「多露一點」，右緣也不該自己跑
           final endT = c.end;
           final want = c.offset + dSec;
-          final floor = prev == null
+          var floor = prev == null
               ? 0.0
               : _tl.yieldTailBefore(c, want, minLen: minLen);
           prevStop = prev != null && want < floor;
+          // 會動的馬賽克（自動找臉）：軌跡的時間是素材秒數，起點動多少、
+          // 素材起點就跟著動多少，臉才不會整條提早／延後；最多長回
+          // 軌跡的開頭（再往前就沒有臉的位置了）
+          final onPath = src.mosaicPath != null;
+          if (onPath) {
+            floor = math.max(floor, c.offset - c.trimStart / c.speed);
+          }
+          final before = c.offset;
           c.offset = want.clamp(floor, math.max(floor, endT - minLen));
+          if (onPath) {
+            c.trimStart = math.max(
+              0.0,
+              c.trimStart + (c.offset - before) * c.speed,
+            );
+          }
           c.trimEnd = c.trimStart + (endT - c.offset) * c.speed;
         } else if (!c.reverse) {
           if (fromLeft) {
@@ -12532,6 +12881,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   @override
   void dispose() {
+    // 離開編輯器時還在找臉：叫原生端停下來，不要白白解完一整支影片
+    unawaited(_faceJob?.cancel());
+    for (final f in _faceThumbs.values) {
+      f.frame.dispose();
+    }
+    _faceThumbs.clear();
     WidgetsBinding.instance.removeObserver(this);
     FontStore.instance.loaded.removeListener(_fontsLoaded);
     // 只拆自己掛的那份；別的編輯器實例已經掛上去的不動
@@ -14024,6 +14379,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   final children = <Widget>[];
                                   // 點擊判定用的位置表，跟著畫面一起重建
                                   _hitBoxes.clear();
+                                  _offFaceHits.clear();
                                   Rect? selRect;
                                   TimelineClip? selVisual;
                                   // 這一輪有沒有貼圖會回報選取框
@@ -14555,7 +14911,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     if (src.kind == ClipKind.mosaic) {
                                       Rect r;
                                       final stk0 = src.mosaicStroke;
-                                      if (stk0 != null && stk0.length >= 2) {
+                                      final path0 = src.mosaicPath;
+                                      if (path0 != null) {
+                                        // 會動的馬賽克（自動找臉）：照
+                                        // 播放頭這一刻的位置；不在軌跡
+                                        // 裡的那一瞬間就不畫
+                                        final p = mosaicPathAt(
+                                          path0,
+                                          c.sourceTimeAt(_position),
+                                        );
+                                        if (p == null) continue;
+                                        // 大小乘片段的 scale（見
+                                        // mosaicPathOnTimeline）
+                                        r = Rect.fromCenter(
+                                          center: Offset(p.cx * w, p.cy * h),
+                                          width: p.w * c.scale * w,
+                                          height: p.h * c.scale * h,
+                                        );
+                                      } else if (stk0 != null &&
+                                          stk0.length >= 2) {
                                         // 筆畫：範圍＝包圍盒（點選、
                                         // 選取框用；效果在合成裡）
                                         var l0 = stk0[0] * w, t0 = stk0[1] * h;
@@ -14630,202 +15004,214 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                           ),
                                                         )
                                                       : const SizedBox.expand())
-                                                : Builder(
-                                                    builder: (context) {
-                                                      final ms =
-                                                          src.mosaicStyle ??
-                                                          MosaicStyle();
-                                                      if (ms.type == 2) {
-                                                        return Container(
-                                                          color: Color(
-                                                            ms.color,
-                                                          ),
-                                                        );
-                                                      }
-                                                      if (ms.type == 1 &&
-                                                          ms.feather > 0) {
-                                                        // 柔邊：6 圈同心，由外到內
-                                                        // 越來越糊。每圈都用同一個
-                                                        // 強度是沒用的——最外圈就
-                                                        // 已經全糊，邊界照樣是一條
-                                                        // 硬線，拉柔邊看不出差別
-                                                        // 強度與柔邊寬對齊
-                                                        // 匯出（見下面 sigma
-                                                        // 的說明；柔邊總寬
-                                                        // 兩條匯出路都是
-                                                        // 0.35×短邊）
-                                                        final sg =
+                                                : _ovalIf(
+                                                    src.mosaicOval,
+                                                    Builder(
+                                                      builder: (context) {
+                                                        final ms =
+                                                            src.mosaicStyle ??
+                                                            MosaicStyle();
+                                                        if (ms.type == 2) {
+                                                          return Container(
+                                                            color: Color(
+                                                              ms.color,
+                                                            ),
+                                                          );
+                                                        }
+                                                        if (ms.type == 1 &&
+                                                            ms.feather > 0) {
+                                                          // 柔邊：6 圈同心，由外到內
+                                                          // 越來越糊。每圈都用同一個
+                                                          // 強度是沒用的——最外圈就
+                                                          // 已經全糊，邊界照樣是一條
+                                                          // 硬線，拉柔邊看不出差別
+                                                          // 強度與柔邊寬對齊
+                                                          // 匯出（見下面 sigma
+                                                          // 的說明；柔邊總寬
+                                                          // 兩條匯出路都是
+                                                          // 0.35×短邊）
+                                                          final sg =
+                                                              (1 +
+                                                                  6 * ms.strength) *
+                                                              math.min(w, h) /
+                                                              1080 *
+                                                              2.4;
+                                                          final step =
+                                                              ms.feather *
+                                                              0.35 /
+                                                              6 *
+                                                              math.min(
+                                                                r.width,
+                                                                r.height,
+                                                              );
+                                                          // [k] 是這一圈的強度比例
+                                                          //（外圈小、內圈滿）
+                                                          Widget ring(
+                                                            double i,
+                                                            double k,
+                                                          ) => Positioned(
+                                                            left: i,
+                                                            top: i,
+                                                            right: i,
+                                                            bottom: i,
+                                                            child: ClipRect(
+                                                              child: BackdropFilter(
+                                                                filter:
+                                                                    ui.ImageFilter.blur(
+                                                                      sigmaX:
+                                                                          sg *
+                                                                          k,
+                                                                      sigmaY:
+                                                                          sg *
+                                                                          k,
+                                                                    ),
+                                                                child:
+                                                                    const SizedBox.expand(),
+                                                              ),
+                                                            ),
+                                                          );
+                                                          return Stack(
+                                                            children: [
+                                                              for (
+                                                                var i = 0;
+                                                                i < 6;
+                                                                i++
+                                                              )
+                                                                ring(
+                                                                  step * i,
+                                                                  (i + 1) / 6,
+                                                                ),
+                                                            ],
+                                                          );
+                                                        }
+                                                        ui.ImageFilter? filter;
+                                                        if (ms.type == 0 &&
+                                                            _mosaicProg !=
+                                                                null) {
+                                                          // 格數跟匯出同一條公式，
+                                                          // 濃度越高格子越大
+                                                          final cells =
+                                                              (26 - 20 * ms.strength)
+                                                                  .round()
+                                                                  .clamp(4, 40);
+                                                          final dpr =
+                                                              MediaQuery.of(
+                                                                context,
+                                                              ).devicePixelRatio;
+                                                          final cell = math.max(
+                                                            2.0,
+                                                            r.width *
+                                                                dpr /
+                                                                cells,
+                                                          );
+                                                          ui.ImageFilter? pix(
+                                                            double c,
+                                                          ) {
+                                                            try {
+                                                              // 0,1 = u_size(引擎
+                                                              // 自動填),2 = u_cell
+                                                              final sh =
+                                                                  _mosaicProg!
+                                                                      .fragmentShader();
+                                                              sh.setFloat(
+                                                                2,
+                                                                math.max(
+                                                                  2.0,
+                                                                  c,
+                                                                ),
+                                                              );
+                                                              return ui
+                                                                  .ImageFilter.shader(
+                                                                sh,
+                                                              );
+                                                            } catch (_) {
+                                                              return null;
+                                                            }
+                                                          }
+
+                                                          // 柔邊：跟模糊同一套同心
+                                                          // 圈，只是由外到內格子越
+                                                          // 來越大——外圈幾乎是原
+                                                          // 畫面，邊界就沒有硬線
+                                                          if (ms.feather > 0) {
+                                                            final step =
+                                                                ms.feather *
+                                                                0.07 *
+                                                                math.min(
+                                                                  r.width,
+                                                                  r.height,
+                                                                );
+                                                            final rings =
+                                                                <Widget>[];
+                                                            for (
+                                                              var i = 0;
+                                                              i < 6;
+                                                              i++
+                                                            ) {
+                                                              final f = pix(
+                                                                cell *
+                                                                    (i + 1) /
+                                                                    6,
+                                                              );
+                                                              if (f == null) {
+                                                                continue;
+                                                              }
+                                                              final inset =
+                                                                  step * i;
+                                                              rings.add(
+                                                                Positioned(
+                                                                  left: inset,
+                                                                  top: inset,
+                                                                  right: inset,
+                                                                  bottom: inset,
+                                                                  child: ClipRect(
+                                                                    child: BackdropFilter(
+                                                                      filter: f,
+                                                                      child:
+                                                                          const SizedBox.expand(),
+                                                                    ),
+                                                                  ),
+                                                                ),
+                                                              );
+                                                            }
+                                                            if (rings
+                                                                .isNotEmpty) {
+                                                              return Stack(
+                                                                children: rings,
+                                                              );
+                                                            }
+                                                          }
+                                                          filter = pix(cell);
+                                                        }
+                                                        // 模糊強度對齊匯出：
+                                                        // 兩條匯出路都是「縮小
+                                                        // 2+12s 倍再放大」，等效
+                                                        // 半徑約 (1+6s) 個輸出
+                                                        // 像素（輸出短邊約
+                                                        // 1080），換算回預覽
+                                                        // 畫布。以前固定
+                                                        // σ=4+16s 邏輯px，
+                                                        // 比成品糊 5~10 倍
+                                                        final sigma =
                                                             (1 +
                                                                 6 * ms.strength) *
                                                             math.min(w, h) /
                                                             1080 *
                                                             2.4;
-                                                        final step =
-                                                            ms.feather *
-                                                            0.35 /
-                                                            6 *
-                                                            math.min(
-                                                              r.width,
-                                                              r.height,
+                                                        filter ??=
+                                                            ui.ImageFilter.blur(
+                                                              sigmaX: sigma,
+                                                              sigmaY: sigma,
                                                             );
-                                                        // [k] 是這一圈的強度比例
-                                                        //（外圈小、內圈滿）
-                                                        Widget ring(
-                                                          double i,
-                                                          double k,
-                                                        ) => Positioned(
-                                                          left: i,
-                                                          top: i,
-                                                          right: i,
-                                                          bottom: i,
-                                                          child: ClipRect(
-                                                            child: BackdropFilter(
-                                                              filter:
-                                                                  ui.ImageFilter.blur(
-                                                                    sigmaX:
-                                                                        sg * k,
-                                                                    sigmaY:
-                                                                        sg * k,
-                                                                  ),
-                                                              child:
-                                                                  const SizedBox.expand(),
-                                                            ),
+                                                        return ClipRect(
+                                                          child: BackdropFilter(
+                                                            filter: filter,
+                                                            child:
+                                                                const SizedBox.expand(),
                                                           ),
                                                         );
-                                                        return Stack(
-                                                          children: [
-                                                            for (
-                                                              var i = 0;
-                                                              i < 6;
-                                                              i++
-                                                            )
-                                                              ring(
-                                                                step * i,
-                                                                (i + 1) / 6,
-                                                              ),
-                                                          ],
-                                                        );
-                                                      }
-                                                      ui.ImageFilter? filter;
-                                                      if (ms.type == 0 &&
-                                                          _mosaicProg != null) {
-                                                        // 格數跟匯出同一條公式，
-                                                        // 濃度越高格子越大
-                                                        final cells =
-                                                            (26 - 20 * ms.strength)
-                                                                .round()
-                                                                .clamp(4, 40);
-                                                        final dpr =
-                                                            MediaQuery.of(
-                                                              context,
-                                                            ).devicePixelRatio;
-                                                        final cell = math.max(
-                                                          2.0,
-                                                          r.width * dpr / cells,
-                                                        );
-                                                        ui.ImageFilter? pix(
-                                                          double c,
-                                                        ) {
-                                                          try {
-                                                            // 0,1 = u_size(引擎
-                                                            // 自動填),2 = u_cell
-                                                            final sh = _mosaicProg!
-                                                                .fragmentShader();
-                                                            sh.setFloat(
-                                                              2,
-                                                              math.max(2.0, c),
-                                                            );
-                                                            return ui
-                                                                .ImageFilter.shader(
-                                                              sh,
-                                                            );
-                                                          } catch (_) {
-                                                            return null;
-                                                          }
-                                                        }
-
-                                                        // 柔邊：跟模糊同一套同心
-                                                        // 圈，只是由外到內格子越
-                                                        // 來越大——外圈幾乎是原
-                                                        // 畫面，邊界就沒有硬線
-                                                        if (ms.feather > 0) {
-                                                          final step =
-                                                              ms.feather *
-                                                              0.07 *
-                                                              math.min(
-                                                                r.width,
-                                                                r.height,
-                                                              );
-                                                          final rings =
-                                                              <Widget>[];
-                                                          for (
-                                                            var i = 0;
-                                                            i < 6;
-                                                            i++
-                                                          ) {
-                                                            final f = pix(
-                                                              cell *
-                                                                  (i + 1) /
-                                                                  6,
-                                                            );
-                                                            if (f == null) {
-                                                              continue;
-                                                            }
-                                                            final inset =
-                                                                step * i;
-                                                            rings.add(
-                                                              Positioned(
-                                                                left: inset,
-                                                                top: inset,
-                                                                right: inset,
-                                                                bottom: inset,
-                                                                child: ClipRect(
-                                                                  child: BackdropFilter(
-                                                                    filter: f,
-                                                                    child:
-                                                                        const SizedBox.expand(),
-                                                                  ),
-                                                                ),
-                                                              ),
-                                                            );
-                                                          }
-                                                          if (rings
-                                                              .isNotEmpty) {
-                                                            return Stack(
-                                                              children: rings,
-                                                            );
-                                                          }
-                                                        }
-                                                        filter = pix(cell);
-                                                      }
-                                                      // 模糊強度對齊匯出：
-                                                      // 兩條匯出路都是「縮小
-                                                      // 2+12s 倍再放大」，等效
-                                                      // 半徑約 (1+6s) 個輸出
-                                                      // 像素（輸出短邊約
-                                                      // 1080），換算回預覽
-                                                      // 畫布。以前固定
-                                                      // σ=4+16s 邏輯px，
-                                                      // 比成品糊 5~10 倍
-                                                      final sigma =
-                                                          (1 +
-                                                              6 * ms.strength) *
-                                                          math.min(w, h) /
-                                                          1080 *
-                                                          2.4;
-                                                      filter ??=
-                                                          ui.ImageFilter.blur(
-                                                            sigmaX: sigma,
-                                                            sigmaY: sigma,
-                                                          );
-                                                      return ClipRect(
-                                                        child: BackdropFilter(
-                                                          filter: filter,
-                                                          child:
-                                                              const SizedBox.expand(),
-                                                        ),
-                                                      );
-                                                    },
+                                                      },
+                                                    ),
                                                   ),
                                           ),
                                         ),
@@ -15144,6 +15530,57 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                     }
                                   }
 
+                                  // 點掉（整軌隱藏＝不碼）的臉：留一圈白
+                                  // 虛線，看得到它在哪，點一下碼回去
+                                  //（畫布甲案；點擊走中央判定層，見
+                                  // _offFaceHits）。只是框線，匯出沒有它
+                                  if (_hiddenTracks.isNotEmpty &&
+                                      !_vBrushMode &&
+                                      !_fullscreen) {
+                                    for (final c in _tl.clips) {
+                                      if (!_hiddenTracks.contains(c.track) ||
+                                          !c.coversForDisplay(_position)) {
+                                        continue;
+                                      }
+                                      final src = _tl.sourceOf(c);
+                                      final keys = src.mosaicPath;
+                                      if (!src.mosaicFace || keys == null) {
+                                        continue;
+                                      }
+                                      final p = mosaicPathAt(
+                                        keys,
+                                        c.sourceTimeAt(_position),
+                                      );
+                                      if (p == null) continue;
+                                      final r = Rect.fromCenter(
+                                        center: Offset(p.cx * w, p.cy * h),
+                                        width: p.w * c.scale * w,
+                                        height: p.h * c.scale * h,
+                                      );
+                                      _offFaceHits.add((
+                                        rect: r,
+                                        track: c.track,
+                                      ));
+                                      children.add(
+                                        Positioned.fromRect(
+                                          rect: r,
+                                          child: IgnorePointer(
+                                            child: CustomPaint(
+                                              painter: MosaicOutlinePainter(
+                                                oval: src.mosaicOval,
+                                                dashed: true,
+                                                color: Colors.white.withValues(
+                                                  alpha: 0.85,
+                                                ),
+                                                width: 1.5,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    }
+                                  }
+
                                   // 這一輪沒有貼圖被選（換選別的、刪掉了、
                                   // 播放頭離開它的範圍）：沒有人會來覆寫，
                                   // 框會留在畫面上不走，親自收掉。
@@ -15406,6 +15843,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                   : List.of(s0.mosaicStroke!);
                                               _gestureStartBrush =
                                                   s0.mosaicBrush;
+                                              _gestureStartPath =
+                                                  s0.mosaicPath == null
+                                                  ? null
+                                                  : List.of(s0.mosaicPath!);
                                             }
                                             _routerLast = d.focalPoint;
                                           },
@@ -15468,6 +15909,44 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                       (_gestureStartBrush *
                                                               d.scale)
                                                           .clamp(0.02, 0.6);
+                                                });
+                                                return;
+                                              }
+                                              // 找臉的馬賽克：整條軌跡一起
+                                              // 平移；捏合改片段的 scale
+                                              //（臉框大小乘它，見
+                                              // mosaicPathOnTimeline）
+                                              final pth1 = selSrc0.mosaicPath;
+                                              final pth0 = _gestureStartPath;
+                                              if (pth1 != null &&
+                                                  pth0 != null &&
+                                                  pth0.length == pth1.length) {
+                                                final ddx =
+                                                    (d.focalPoint.dx -
+                                                        _gestureStartFocal.dx) /
+                                                    w;
+                                                final ddy =
+                                                    (d.focalPoint.dy -
+                                                        _gestureStartFocal.dy) /
+                                                    h;
+                                                _setLive(() {
+                                                  for (
+                                                    var i2 = 0;
+                                                    i2 + 4 < pth1.length;
+                                                    i2 += 5
+                                                  ) {
+                                                    pth1[i2 + 1] =
+                                                        pth0[i2 + 1] + ddx;
+                                                    pth1[i2 + 2] =
+                                                        pth0[i2 + 2] + ddy;
+                                                  }
+                                                  selVis.scale =
+                                                      (_gestureStartScale *
+                                                              d.scale)
+                                                          .clamp(
+                                                            kFaceMosaicMinScale,
+                                                            kFaceMosaicMaxScale,
+                                                          );
                                                 });
                                                 return;
                                               }
@@ -15873,6 +16352,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   cropTarget != null)
                 _previewCropButton(cropTarget),
               if (!_fullscreen) _canvasHint(),
+              // 自動碼人臉：找的時候左上角一顆小膠囊（不擋操作）
+              if (_faceJob != null && !_fullscreen)
+                Positioned(left: 10, top: 8, child: _faceProgressChip()),
               // 工作檔在背景備，不出現在畫面上：進場就能剪，
               // 好了自己換過去。別家剪輯 App 也沒有那個讀取條
             ],
@@ -15896,6 +16378,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 筆畫馬賽克的起手快照（整條平移／捏合調粗細用）
   List<double>? _gestureStartStroke;
   double _gestureStartBrush = 0.16;
+
+  /// 拖曳找臉馬賽克前的整條軌跡（平移從這份算，不累加誤差）
+  List<double>? _gestureStartPath;
 
   // ===== 選取路由的置中吸附（跟 WatermarkLayer 內建拖曳同手感）=====
   /// 未吸附的原始座標（吸附只作用在顯示值上，不然吸上就拖不出來）
@@ -16268,6 +16753,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 st.logo.sizeFrac = (_pvBaseClipWmLogo * f).clamp(0.03, 2.0);
               }
             }
+          } else if (src.mosaicPath != null) {
+            c.scale = (_pvBaseClip * f).clamp(
+              kFaceMosaicMinScale,
+              kFaceMosaicMaxScale,
+            );
           } else {
             final maxS = src.kind == ClipKind.text ? 12.0 : kMaxMediaScale;
             c.scale = (_pvBaseClip * f).clamp(0.02, maxS);
@@ -16377,6 +16867,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           if (st.logo.enabled) {
             st.logo.sizeFrac = (st.logo.sizeFrac * f).clamp(0.03, 2.0);
           }
+          changed = true;
+        } else if (src.mosaicPath != null) {
+          c.scale = (c.scale * f).clamp(
+            kFaceMosaicMinScale,
+            kFaceMosaicMaxScale,
+          );
           changed = true;
         } else {
           final maxS = src.kind == ClipKind.text ? 12.0 : kMaxMediaScale;
@@ -16718,18 +17214,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                   _applyPreviewVolumes();
                                 },
                                 hiddenTracks: _hiddenTracks,
-                                onToggleHidden: (t) {
-                                  setState(() {
-                                    if (!_hiddenTracks.remove(t)) {
-                                      _hiddenTracks.add(t);
-                                    }
-                                    _syncMedia();
-                                  });
-                                  _applyPreviewVolumes();
-                                  // 影片、圖片、混合軌都即時切換；舊原生版本才重建。
-                                  _compRefreshIfChanged();
-                                  _saveDraft();
-                                },
+                                faceThumbOf: _faceThumbOf,
+                                onToggleHidden: _toggleTrackHidden,
                                 // 窄到擺不下修剪把手的片段：點一下自動
                                 // 放大。不然使用者只看到把手憑空不見，
                                 // 不會知道要先把時間軸放大
