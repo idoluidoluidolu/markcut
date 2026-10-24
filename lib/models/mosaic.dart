@@ -43,7 +43,8 @@ class MosaicStyle {
 }
 
 /// 照片上的一塊馬賽克：
-/// - 方形區域：中心座標（0~1）＋大小（短邊比例）
+/// - 區域：中心座標（0~1）＋寬（短邊比例）＋高寬比 [aspect]；
+///   [oval] 時是橢圓（臉用）
 /// - 筆刷筆畫（[stroke] 非 null）：一串 0~1 的點（x,y 交錯攤平）＋
 ///   筆刷粗細 [brush]（短邊比例）。這時 x/y/scale 不使用，
 ///   移動＝把每個點一起平移
@@ -60,6 +61,18 @@ class PhotoMosaic {
   /// 筆刷直徑（短邊比例）
   double brush;
 
+  /// 高÷寬（1＝正方形）。寬是 [scale]×畫布短邊，高照這個比例
+  double aspect;
+
+  /// 橢圓：補丁裁成內切橢圓（蓋臉比方塊自然）
+  bool oval;
+
+  /// 自動找到的臉（馬賽克模式點一下＝切換碼／不碼，不是選取）
+  bool face;
+
+  /// 這張臉使用者點掉了：留著位置（再點一下會回來），但不畫、不匯出
+  bool off;
+
   PhotoMosaic({
     this.x = 0.5,
     this.y = 0.5,
@@ -68,6 +81,10 @@ class PhotoMosaic {
     MosaicStyle? style,
     this.stroke,
     this.brush = 0.16,
+    this.aspect = 1.0,
+    this.oval = false,
+    this.face = false,
+    this.off = false,
   }) : style = style ?? MosaicStyle();
 
   bool get isStroke => stroke != null && stroke!.length >= 2;
@@ -79,6 +96,11 @@ class PhotoMosaic {
     'style': style.toJson(),
     if (stroke != null) 'stroke': stroke,
     if (stroke != null) 'brush': brush,
+    // 預設值不寫：舊版存出來的 JSON 跟現在一字不差
+    if (aspect != 1.0) 'aspect': aspect,
+    if (oval) 'oval': true,
+    if (face) 'face': true,
+    if (off) 'off': true,
   };
 
   factory PhotoMosaic.fromJson(Map<String, dynamic> j) => PhotoMosaic(
@@ -94,6 +116,10 @@ class PhotoMosaic {
         ? (j['stroke'] as List).map((e) => (e as num).toDouble()).toList()
         : null,
     brush: ((j['brush'] ?? 0.16).toDouble() as double).clamp(0.02, 0.6),
+    aspect: ((j['aspect'] ?? 1.0).toDouble() as double).clamp(0.2, 5.0),
+    oval: j['oval'] == true,
+    face: j['face'] == true,
+    off: j['off'] == true,
   );
 
   PhotoMosaic copy() => PhotoMosaic(
@@ -103,5 +129,9 @@ class PhotoMosaic {
     style: style.copy(),
     stroke: stroke == null ? null : List.of(stroke!),
     brush: brush,
+    aspect: aspect,
+    oval: oval,
+    face: face,
+    off: off,
   );
 }

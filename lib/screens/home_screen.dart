@@ -21,8 +21,8 @@ import 'video_editor_screen.dart';
 /// 首頁：整片留給 logo，功能全收在底部那顆「＋ 開始」（使用者指定
 /// 「首頁整個下方收掉，改成＋號叫出選單」，樣式從八種裡挑了滿版膠囊）。
 ///
-/// ＋叫出來的是一張底部面板，四列：浮水印／照片拼圖／GIF／剪輯，各帶
-/// 一行說明，右邊不畫箭頭（使用者指定；原本只有浮水印那列有，一列有
+/// ＋叫出來的是一張底部面板，五列：浮水印／照片拼圖／GIF／馬賽克／剪輯，
+/// 各帶一行說明，右邊不畫箭頭（使用者指定；原本只有浮水印那列有，一列有
 /// 三列沒有反而像壞掉）。第二層也是同一種面板，左上角一個返回——按下去
 /// 回第一層，不是把整個選單關掉（見 _showSheet 的 backValue 與
 /// _openMenu 的迴圈）：
@@ -31,6 +31,10 @@ import 'video_editor_screen.dart';
 ///   GIF → 直接開影片選取器，挑一支進 GIF 製作頁。這裡只有「製作」
 ///          一條路：把現成的 GIF 收進來是 個人中心 →「我的 GIF」那顆＋
 ///          的事（使用者指定，見 addGifFromDevice）
+///   馬賽克 → 挑一張照片進照片編輯器的馬賽克模式（進去自動找臉、全碼上，
+///          點臉切換）。使用者在畫布選的是「甲」：第五列、排在 GIF 下面、
+///          再一層選照片／影片——影片的自動碼臉還在做，那一層等影片好了
+///          才加，現在直接開照片選取器
 ///   剪輯 → 直接開一條空的時間軸
 ///
 /// 「製作浮水印」（浮水印工作室）從首頁拿掉，走 個人中心 → 範本 → ＋
@@ -224,6 +228,20 @@ class _HomeScreenState extends State<HomeScreen> {
       context,
       editRoute(
         builder: (_) => GifScreen(path: v.first.path, name: v.first.name),
+      ),
+    );
+  }
+
+  /// 馬賽克：挑一張照片進照片編輯器的馬賽克模式（進去先自動找臉、
+  /// 全部碼上）。單張：每張照片的臉都不一樣，整批要一張一張確認，
+  /// 之後另外做。不自己上重入鎖，理由同 [_makeGif]
+  Future<void> _makeMosaic() async {
+    final picked = await pickPhotoFile();
+    if (picked == null || !mounted) return;
+    await Navigator.push(
+      context,
+      editRoute(
+        builder: (_) => PhotoEditorScreen(photo: picked, mosaicMode: true),
       ),
     );
   }
@@ -425,6 +443,8 @@ class _HomeScreenState extends State<HomeScreen> {
           );
         case _HomeAction.gif:
           await _makeGif();
+        case _HomeAction.mosaic:
+          await _makeMosaic();
         case _HomeAction.cut:
           // 不挑素材，直接開一條空的時間軸，照片、影片進去再加
           await Navigator.push(
@@ -435,7 +455,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   });
 
-  /// 第一層：四個去處
+  /// 第一層：五個去處
   Future<_HomeAction?> _askAction() => _showSheet<_HomeAction>(
     rows: const [
       _SheetRow(
@@ -455,6 +475,12 @@ class _HomeScreenState extends State<HomeScreen> {
         label: 'GIF',
         sub: '影片轉成 GIF',
         value: _HomeAction.gif,
+      ),
+      _SheetRow(
+        icon: Icons.blur_on,
+        label: '馬賽克',
+        sub: '照片自動找出人臉打碼',
+        value: _HomeAction.mosaic,
       ),
       _SheetRow(
         icon: Icons.smart_display_outlined,
@@ -595,8 +621,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-/// ＋選單第一層的四個去處
-enum _HomeAction { watermark, collage, gif, cut }
+/// ＋選單第一層的五個去處
+enum _HomeAction { watermark, collage, gif, mosaic, cut }
 
 /// 浮水印第二層的結果：兩種素材，加上「回上一層」
 enum _Media { photo, video, back }

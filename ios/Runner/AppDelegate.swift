@@ -9,6 +9,7 @@ import Photos
 import PhotosUI
 import UIKit
 import UniformTypeIdentifiers
+import Vision
 
 extension Double {
   /// 夾在 0~1（淡入淡出的係數算出來可能超出範圍）
@@ -4388,6 +4389,7 @@ final class MCInteractivePrepGate {
     registerPhotoChannel(engineBridge)
     registerPhotoSaveChannel(engineBridge)
     registerPickChannel(engineBridge)
+    registerFaceChannel(engineBridge)
 
     // 拖曳預覽的按需抽幀通道。重用 AVAssetImageGenerator，實際取樣時間
     // 由 actualTime 回報；JPEG 粗覽是 tone-map 後的 SDR，不是完整 HDR 顯示。
@@ -14957,6 +14959,76 @@ extension AppDelegate: PHPickerViewControllerDelegate {
       } else {
         self?.failGifLoad(failure, seq: seq)
       }
+    }
+  }
+}
+
+// ===== 人臉偵測（markcut/face）==========================================
+//
+// 通道 "markcut/face"：
+//   detectImage({path}) -> [{x, y, w, h}]?
+//       照片裡的臉：轉正後的座標（0~1、左上原點，跟 Dart 端解碼出來的
+//       照片同一個方向）。檔案讀不到回 nil；沒有臉回空陣列。
+//
+// 用系統的 Vision（VNDetectFaceRectanglesRequest，iOS 11 起就有），
+// 不用另外帶模型，照片不離開手機。先用 ImageIO 縮圖＋套 EXIF 方向
+// 轉正（kCGImageSourceCreateThumbnailWithTransform），再交給 Vision 當
+// .up 處理——48MP 的照片整張解開太吃記憶體，Vision 內部也會再縮
+
+extension AppDelegate {
+  fileprivate static let faceQueue = DispatchQueue(
+    label: "markcut.face", qos: .userInitiated)
+
+  private func registerFaceChannel(_ engineBridge: FlutterImplicitEngineBridge) {
+    guard let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "markcut.face")
+    else { return }
+    let channel = FlutterMethodChannel(
+      name: "markcut/face", binaryMessenger: registrar.messenger())
+    channel.setMethodCallHandler { call, result in
+      switch call.method {
+      case "detectImage":
+        guard let args = call.arguments as? [String: Any],
+          let path = args["path"] as? String, !path.isEmpty
+        else { result(nil); return }
+        AppDelegate.faceQueue.async {
+          let faces = autoreleasepool { MCFaceDetect.detectImage(path: path) }
+          DispatchQueue.main.async { result(faces) }
+        }
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+}
+
+enum MCFaceDetect {
+  /// 照片裡的臉（0~1、左上原點、轉正後）。讀不到檔回 nil
+  static func detectImage(path: String) -> [[String: Double]]? {
+    let url = URL(fileURLWithPath: path)
+    guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+    let opts: [CFString: Any] = [
+      kCGImageSourceCreateThumbnailFromImageAlways: true,
+      kCGImageSourceCreateThumbnailWithTransform: true,
+      kCGImageSourceThumbnailMaxPixelSize: 3000,
+    ]
+    guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary)
+    else { return nil }
+    let request = VNDetectFaceRectanglesRequest()
+    let handler = VNImageRequestHandler(cgImage: cg, orientation: .up, options: [:])
+    do {
+      try handler.perform([request])
+    } catch {
+      return nil
+    }
+    return (request.results ?? []).map { face in
+      // Vision 的框是左下原點，翻成左上
+      let b = face.boundingBox
+      return [
+        "x": Double(b.minX),
+        "y": Double(1 - b.maxY),
+        "w": Double(b.width),
+        "h": Double(b.height),
+      ]
     }
   }
 }

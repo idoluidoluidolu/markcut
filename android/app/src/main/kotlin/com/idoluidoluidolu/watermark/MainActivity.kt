@@ -3,6 +3,9 @@ package com.idoluidoluidolu.watermark
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -27,6 +30,9 @@ import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
 import androidx.media3.transformer.VideoEncoderSettings
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetectorOptions
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -98,12 +104,16 @@ class MainActivity : FlutterActivity() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    /// 人臉偵測的解碼工作緒（照片解成點陣不能卡主執行緒）
+    private val faceExec = Executors.newSingleThreadExecutor()
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         val main = mainHandler
         registerPrepChannel(flutterEngine)
         registerDiagChannel(flutterEngine)
         registerPickChannel(flutterEngine)
+        registerFaceChannel(flutterEngine)
         // cacheDir/picked 每挑一次就多一份複本（同名不覆蓋、從沒人清）：
         // 啟動時在背景掃掉七天以前的。草稿要留的素材 Dart 端會複製進
         // 自己的目錄，這裡的只是匯入時的中繼複本
@@ -205,6 +215,106 @@ class MainActivity : FlutterActivity() {
                 if (at > 0 && at < cutoff) f.delete()
             } catch (_: Exception) {}
         }
+    }
+
+    /// 人臉偵測（markcut/face）：ML Kit，全部在手機上算，照片不離開手機。
+    /// detectImage({path}) -> [{x, y, w, h}]?：轉正後的座標（0~1、左上原點，
+    /// 跟 Dart 端解碼出來的照片同一個方向）。檔案讀不到回 null；沒有臉回空清單
+    private fun registerFaceChannel(flutterEngine: FlutterEngine) {
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "markcut/face")
+            .setMethodCallHandler { call, result ->
+                if (call.method != "detectImage") {
+                    result.notImplemented()
+                    return@setMethodCallHandler
+                }
+                val path = call.argument<String>("path")
+                if (path.isNullOrEmpty()) {
+                    result.success(null)
+                    return@setMethodCallHandler
+                }
+                faceExec.execute {
+                    val bmp = try {
+                        decodeUpright(path, 2560)
+                    } catch (_: Throwable) {
+                        null
+                    }
+                    if (bmp == null) {
+                        mainHandler.post { result.success(null) }
+                        return@execute
+                    }
+                    val detector = FaceDetection.getClient(
+                        FaceDetectorOptions.Builder()
+                            .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
+                            // 合照裡的小臉也要抓：預設 0.1＝頭寬至少要有畫面寬的一成
+                            .setMinFaceSize(0.03f)
+                            .build(),
+                    )
+                    val w = bmp.width.toDouble()
+                    val h = bmp.height.toDouble()
+                    // 聽眾都在主執行緒上跑，result 直接回
+                    detector.process(InputImage.fromBitmap(bmp, 0))
+                        .addOnSuccessListener { faces ->
+                            val out = ArrayList<Map<String, Double>>()
+                            for (f in faces) {
+                                val b = f.boundingBox
+                                out.add(
+                                    mapOf(
+                                        "x" to b.left / w,
+                                        "y" to b.top / h,
+                                        "w" to b.width() / w,
+                                        "h" to b.height() / h,
+                                    ),
+                                )
+                            }
+                            result.success(out)
+                        }
+                        .addOnFailureListener { result.success(null) }
+                        .addOnCompleteListener { detector.close() }
+                }
+            }
+    }
+
+    /// 照片解成點陣（長邊不超過 [maxSide]）並照 EXIF 方向轉正——
+    /// Dart 端解碼也會轉正，兩邊的座標才對得上
+    private fun decodeUpright(path: String, maxSide: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        val longSide = maxOf(bounds.outWidth, bounds.outHeight)
+        if (longSide <= 0) return null
+        var sample = 1
+        while (longSide / (sample * 2) >= maxSide) sample *= 2
+        val raw = BitmapFactory.decodeFile(
+            path,
+            BitmapFactory.Options().apply { inSampleSize = sample },
+        ) ?: return null
+        val orientation = try {
+            ExifInterface(path).getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_NORMAL,
+            )
+        } catch (_: Exception) {
+            ExifInterface.ORIENTATION_NORMAL
+        }
+        val m = Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> m.setScale(-1f, 1f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> m.setRotate(180f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> m.setScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> {
+                m.setRotate(90f)
+                m.postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_ROTATE_90 -> m.setRotate(90f)
+            ExifInterface.ORIENTATION_TRANSVERSE -> {
+                m.setRotate(-90f)
+                m.postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_ROTATE_270 -> m.setRotate(-90f)
+            else -> return raw
+        }
+        val upright = Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, m, true)
+        if (upright !== raw) raw.recycle()
+        return upright
     }
 
     private fun registerPickChannel(flutterEngine: FlutterEngine) {

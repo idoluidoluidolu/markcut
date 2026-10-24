@@ -522,6 +522,8 @@ class WatermarkRenderer {
     int w,
     int h,
   ) {
+    // 使用者點掉的臉：位置留著（再點會回來），成品不碼
+    if (m.off) return;
     // 筆刷筆畫：範圍＝筆畫包圍盒，效果交給共用畫家
     if (m.isStroke) {
       final pts = <ui.Offset>[
@@ -537,16 +539,11 @@ class WatermarkRenderer {
       paintMosaicStroke(canvas, photo, m.style, pts, brushPx, box, box);
       return;
     }
-    final side = m.scale * math.min(w, h);
-    final rect = ui.Rect.fromCenter(
-      center: ui.Offset(m.x * w, m.y * h),
-      width: side,
-      height: side,
-    ).intersect(ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()));
+    final rect = photoMosaicRect(m, w.toDouble(), h.toDouble());
     if (rect.width < 2 || rect.height < 2) return;
     // 畫布就是照片座標：src＝dst，效果全交給共用畫家
     //（跟照片編輯器的預覽補丁同一段程式碼）
-    paintMosaicPatch(canvas, photo, m.style, rect, rect);
+    paintMosaicPatch(canvas, photo, m.style, rect, rect, oval: m.oval);
   }
 
   /// 文字素材：以完整樣式＋位置＋縮放渲染成整版透明 PNG（匯出 overlay 用）
