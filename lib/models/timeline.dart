@@ -57,6 +57,18 @@ class MediaSource {
   /// 筆刷直徑（畫布短邊比例）
   double mosaicBrush;
 
+  /// 會動的馬賽克（自動找臉）：關鍵點攤平成 [s, cx, cy, w, h, …]，s 是
+  /// 這個素材自己的秒數（sourceTimeAt）、位置大小是畫布 0~1（規則見
+  /// models/mosaic.dart 的 mosaicPathAt）。null＝固定位置（用 clip 的
+  /// px/py/scale）
+  List<double>? mosaicPath;
+
+  /// 馬賽克裁成橢圓（蓋臉用）
+  bool mosaicOval;
+
+  /// 這塊馬賽克是自動找到的一張臉（時間軸上一個人一條軌）
+  bool mosaicFace;
+
   /// 這份浮水印素材其實是一張貼圖。
   ///
   /// 畫法與匯出跟浮水印素材完全一樣（整版透明 PNG，見 overlayPngs），
@@ -109,6 +121,9 @@ class MediaSource {
     this.mosaicStyle,
     this.mosaicStroke,
     this.mosaicBrush = 0.16,
+    this.mosaicPath,
+    this.mosaicOval = false,
+    this.mosaicFace = false,
     this.revOf,
     this.revStart = 0,
     this.revEnd = 0,
@@ -133,6 +148,9 @@ class MediaSource {
     mosaicStyle: mosaicStyle,
     mosaicStroke: mosaicStroke,
     mosaicBrush: mosaicBrush,
+    mosaicPath: mosaicPath,
+    mosaicOval: mosaicOval,
+    mosaicFace: mosaicFace,
     isSticker: isSticker,
     isGif: isGif,
     revOf: revOf,
@@ -158,6 +176,9 @@ class MediaSource {
     mosaicStyle: mosaicStyle?.copy(),
     mosaicStroke: mosaicStroke == null ? null : List.of(mosaicStroke!),
     mosaicBrush: mosaicBrush,
+    mosaicPath: mosaicPath == null ? null : List.of(mosaicPath!),
+    mosaicOval: mosaicOval,
+    mosaicFace: mosaicFace,
     isSticker: isSticker,
     isGif: isGif,
   );
@@ -183,6 +204,9 @@ class MediaSource {
     if (mosaicStyle != null) 'mosaicStyle': mosaicStyle!.toJson(),
     if (mosaicStroke != null) 'mzStroke': mosaicStroke,
     if (mosaicStroke != null) 'mzBrush': mosaicBrush,
+    if (mosaicPath != null) 'mzPath': mosaicPath,
+    if (mosaicOval) 'mzOval': true,
+    if (mosaicFace) 'mzFace': true,
     if (revOf != null) 'revOf': revOf,
     if (revOf != null) 'revStart': revStart,
     if (revOf != null) 'revEnd': revEnd,
@@ -232,6 +256,11 @@ class MediaSource {
           ? (j['mzStroke'] as List).map((e) => (e as num).toDouble()).toList()
           : null,
       mosaicBrush: ((j['mzBrush'] ?? 0.16) as num).toDouble().clamp(0.02, 0.6),
+      mosaicPath: j['mzPath'] is List
+          ? (j['mzPath'] as List).map((e) => (e as num).toDouble()).toList()
+          : null,
+      mosaicOval: j['mzOval'] == true,
+      mosaicFace: j['mzFace'] == true,
       revOf: j['revOf'] as String?,
       revStart: (j['revStart'] ?? 0).toDouble(),
       revEnd: (j['revEnd'] ?? 0).toDouble(),

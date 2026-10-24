@@ -42,6 +42,89 @@ class MosaicStyle {
   );
 }
 
+/// 會動的馬賽克（影片自動找臉）：一串關鍵點，攤平成
+/// `[s, cx, cy, w, h, s, cx, cy, w, h, …]`——s 是這個馬賽克素材自己的
+/// 秒數（TimelineClip.sourceTimeAt，所以拖動、左邊修剪、切割都對得上），
+/// cx／cy／w／h 是畫布的 0~1（w 對畫布寬、h 對畫布高）。
+///
+/// 位置在兩點之間照時間線性內插；**大小一段一段固定**：FFmpeg 那條匯出路
+/// 一段只能有一個大小（crop 的寬高建好就不能動），預覽、iOS 合成也照
+/// 同一套規則，三邊才長得一樣。[quantizeMosaicPath] 負責把差不多大的
+/// 連續幾點併成同一個大小（取最大的，寧可多蓋）
+class MosaicPathPoint {
+  final double cx, cy, w, h;
+
+  const MosaicPathPoint(this.cx, this.cy, this.w, this.h);
+}
+
+/// [keys]（見上）在素材秒數 [s] 時的位置與大小；超出頭尾回 null
+MosaicPathPoint? mosaicPathAt(List<double> keys, double s) {
+  final n = keys.length ~/ 5;
+  if (n == 0) return null;
+  double t(int i) => keys[i * 5];
+  // 頭尾容許一格（30fps）的誤差：時間換算的捨入不該讓第一格沒碼到
+  const eps = 1 / 60;
+  if (s < t(0) - eps || s > t(n - 1) + eps) return null;
+  if (n == 1 || s <= t(0)) {
+    return MosaicPathPoint(keys[1], keys[2], keys[3], keys[4]);
+  }
+  if (s >= t(n - 1)) {
+    final b = (n - 1) * 5;
+    return MosaicPathPoint(keys[b + 1], keys[b + 2], keys[b + 3], keys[b + 4]);
+  }
+  var lo = 0, hi = n - 1;
+  while (hi - lo > 1) {
+    final mid = (lo + hi) >> 1;
+    if (t(mid) <= s) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  final a = lo * 5, b = hi * 5;
+  final span = keys[b] - keys[a];
+  final f = span <= 0 ? 0.0 : ((s - keys[a]) / span).clamp(0.0, 1.0);
+  return MosaicPathPoint(
+    keys[a + 1] + (keys[b + 1] - keys[a + 1]) * f,
+    keys[a + 2] + (keys[b + 2] - keys[a + 2]) * f,
+    // 大小不內插：沿用前一點那一段的大小（理由見上）
+    keys[a + 3],
+    keys[a + 4],
+  );
+}
+
+/// 把差不多大（寬、高各自最大÷最小不超過 1+[tolerance]）的連續幾點併成
+/// 同一個大小，取那一段裡最大的（寧可多蓋）。回新的一串，不動傳進來的
+List<double> quantizeMosaicPath(List<double> keys, {double tolerance = 0.15}) {
+  final out = List<double>.of(keys);
+  final n = keys.length ~/ 5;
+  var start = 0;
+  while (start < n) {
+    var minW = keys[start * 5 + 3], maxW = minW;
+    var minH = keys[start * 5 + 4], maxH = minH;
+    var end = start + 1;
+    while (end < n) {
+      final w = keys[end * 5 + 3], h = keys[end * 5 + 4];
+      final nMinW = w < minW ? w : minW, nMaxW = w > maxW ? w : maxW;
+      final nMinH = h < minH ? h : minH, nMaxH = h > maxH ? h : maxH;
+      if (nMaxW > nMinW * (1 + tolerance) || nMaxH > nMinH * (1 + tolerance)) {
+        break;
+      }
+      minW = nMinW;
+      maxW = nMaxW;
+      minH = nMinH;
+      maxH = nMaxH;
+      end++;
+    }
+    for (var i = start; i < end; i++) {
+      out[i * 5 + 3] = maxW;
+      out[i * 5 + 4] = maxH;
+    }
+    start = end;
+  }
+  return out;
+}
+
 /// 照片上的一塊馬賽克：
 /// - 區域：中心座標（0~1）＋寬（短邊比例）＋高寬比 [aspect]；
 ///   [oval] 時是橢圓（臉用）
