@@ -1203,8 +1203,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         );
       }
       if (m.off) {
-        // 點掉的臉：只留一圈虛線，點一下就回來（點擊由上面的判定層
-        // 統一處理，見 _phTapAt）
+        // 點掉的臉：照片上什麼都不畫（以前留一圈虛線，使用者：取消之後
+        // 邊框不要留著）。位置照樣登記給判定層——點同一個地方、或點
+        // 下面那排它的縮圖，就碼回來（點擊統一由判定層處理，見 _phTapAt）
         _phBox[hitId] = rect;
         children.add(
           Positioned.fromRect(
@@ -1212,16 +1213,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: () => _toggleFace(i),
-              child: IgnorePointer(
-                child: CustomPaint(
-                  painter: MosaicOutlinePainter(
-                    oval: m.oval,
-                    dashed: true,
-                    color: Colors.white,
-                    width: 1.5,
-                  ),
-                ),
-              ),
+              child: const SizedBox.expand(),
             ),
           ),
         );
@@ -1970,19 +1962,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         oval: m.oval,
       );
     }
+    // 點掉的臉就是原圖，不加圈（使用者：取消之後邊框不要留著）
     Widget art = SizedBox.fromSize(
       size: size,
-      child: CustomPaint(
-        painter: painter,
-        foregroundPainter: m.off
-            ? MosaicOutlinePainter(
-                oval: m.oval,
-                dashed: true,
-                color: Colors.white,
-                width: 1.2,
-              )
-            : null,
-      ),
+      child: CustomPaint(painter: painter),
     );
     // 超出照片的那一截照片上看不到（畫布裁掉了），小圖也切掉，
     // 不然會多畫一塊黑的

@@ -422,7 +422,7 @@ void main() {
       expect(t.takeException(), isNull);
     });
 
-    testWidgets('照片上不畫框：碼著的臉、剛加的方框都沒有；點掉的臉才有虛線', (t) async {
+    testWidgets('照片上不畫框：碼著的臉、剛加的方框、點掉的臉都沒有；點掉的照樣點得回來', (t) async {
       await _open(t);
       expect(_outlines(t), isEmpty, reason: '碼著的臉不該有框（使用者：馬賽克不要有邊框）');
 
@@ -440,11 +440,30 @@ void main() {
         findsNothing,
       );
 
-      await t.tapAt(_at(t, _live(t).mosaics.first));
+      final face = _live(t).mosaics.first;
+      await t.tapAt(_at(t, face));
       await _settle(t, 4);
-      final lines = _outlines(t).toList();
-      expect(lines.length, 1, reason: '點掉的臉要留一圈虛線（找得回來）');
-      expect(lines.single.dashed, isTrue);
+      expect(face.off, isTrue);
+      // 以前點掉的臉留一圈虛線；使用者：取消之後邊框不要留著（縮圖上也不加圈）
+      expect(
+        find.byWidgetPredicate(
+          (w) =>
+              w is CustomPaint &&
+              (w.painter is MosaicOutlinePainter ||
+                  w.foregroundPainter is MosaicOutlinePainter),
+        ),
+        findsNothing,
+        reason: '點掉的臉不該留框',
+      );
+      // 沒有框也找得回來：點同一個地方碼回來、點縮圖也行
+      await t.tapAt(_at(t, face));
+      await _settle(t, 4);
+      expect(face.off, isFalse, reason: '點同一個地方要碼回來');
+      await t.tapAt(_at(t, face));
+      await _settle(t, 4);
+      await t.tap(_thumb('沒碼的臉'));
+      await _settle(t, 4);
+      expect(face.off, isFalse, reason: '點縮圖要碼回來');
       // 亮一下的光暈要收得掉（計時器走完，測試才收得乾淨）
       await t.pump(const Duration(seconds: 1));
       expect(t.takeException(), isNull);
