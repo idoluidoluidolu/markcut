@@ -287,9 +287,10 @@ void main() {
         expect(find.text(x), findsNothing, reason: '馬賽克模式不該有「$x」');
       }
       expect(_thumb('臉'), findsNWidgets(2), reason: '縮圖要一塊一格');
-      // 形狀是另一顆兩段切換鈕（只有圖示），不跟效果磚排成同一排選項
-      expect(_thumb('圓形'), findsOneWidget);
-      expect(_thumb('方形'), findsOneWidget);
+      // 形狀一律圓圈（使用者：圓圈和方框不用了），沒有形狀切換鈕
+      expect(_thumb('圓形'), findsNothing);
+      expect(_thumb('方形'), findsNothing);
+      expect(find.byIcon(Icons.crop_square), findsNothing);
       // 效果磚是白色單色圖示（同 App 其他地方），不是彩色小樣本
       for (final i in const [Icons.grid_on, Icons.blur_on]) {
         expect(find.byIcon(i), findsOneWidget);
@@ -319,23 +320,18 @@ void main() {
       expect(t.takeException(), isNull);
     });
 
-    testWidgets('下面那排：樣式、形狀一起改每一塊；方框照選的形狀加', (t) async {
+    testWidgets('下面那排：樣式一起改每一塊；新加的圓圈照選的樣式、一律圓的', (t) async {
       await _open(t);
       await t.tap(find.text('模糊'));
       await _settle(t, 4);
       expect(_live(t).mosaics.every((m) => m.style.type == 1), isTrue);
 
-      await _add(t, '方框');
+      await _add(t, '圓圈');
       final ms = _live(t).mosaics;
       expect(ms.length, 3);
       expect(ms.last.face, isFalse);
-      expect(ms.last.oval, isTrue, reason: '方框要照目前選的形狀（橢圓）');
-      expect(ms.last.style.type, 1, reason: '方框要照目前選的樣式');
-
-      // 形狀切成方的：每一塊都跟著變
-      await t.tap(_thumb('方形'));
-      await _settle(t, 4);
-      expect(_live(t).mosaics.every((m) => !m.oval), isTrue);
+      expect(ms.every((m) => m.oval), isTrue, reason: '一律圓圈');
+      expect(ms.last.style.type, 1, reason: '新加的要照目前選的樣式');
       expect(t.takeException(), isNull);
     });
 
@@ -345,6 +341,11 @@ void main() {
       await t.tap(find.text('模糊'));
       await _settle(t, 6);
       expect(find.text('柔邊'), findsOneWidget, reason: '模糊要有柔邊（使用者問的）');
+      expect(
+        _live(t).mosaics.every((m) => (m.style.feather - 0.3).abs() < 1e-9),
+        isTrue,
+        reason: '柔邊先給一點預設（使用者指定）',
+      );
       final slider = find.descendant(
         of: find
             .ancestor(of: find.text('柔邊'), matching: find.byType(Row))
@@ -354,7 +355,7 @@ void main() {
       await t.drag(slider, const Offset(80, 0));
       await _settle(t, 4);
       final f = _live(t).mosaics.first.style.feather;
-      expect(f, greaterThan(0.2));
+      expect(f, greaterThan(0.4), reason: '柔邊拉不動');
       expect(
         _live(t).mosaics.every((m) => (m.style.feather - f).abs() < 1e-9),
         isTrue,
@@ -422,26 +423,31 @@ void main() {
       expect(t.takeException(), isNull);
     });
 
-    testWidgets('純色拿掉了：舊草稿存的純色開起來變像素化；筆刷也沒有純色', (t) async {
+    testWidgets('純色、方形拿掉了：舊草稿開起來變像素化、圓的；筆刷也沒有純色', (t) async {
       final st = MosaicStyle(type: 2, color: 0xFFFF0000);
       final s = WatermarkSettings()..text.enabled = false;
-      s.mosaics.add(
-        faceMosaic(const FaceBox(0.3, 0.3, 0.2, 0.2), 1000, 800, style: st),
-      );
+      s.mosaics
+        ..add(
+          faceMosaic(const FaceBox(0.3, 0.3, 0.2, 0.2), 1000, 800, style: st),
+        )
+        // 舊版存的方形
+        ..add(PhotoMosaic(x: 0.7, y: 0.7, scale: 0.3, style: st.copy()));
       final draft = jsonEncode({
         ...s.toJson(),
         'color': ColorGrade().toJson(),
         'extraWms': const [],
         'mosaicMode': true,
         'mzStyle': st.toJson(),
-        'mzOval': true,
+        'mzOval': false,
       });
       await _open(t, draft: draft);
+      final ms = _live(t).mosaics;
       expect(
-        _live(t).mosaics.single.style.type,
-        0,
+        ms.every((m) => m.style.type == 0),
+        isTrue,
         reason: '舊草稿的純色要改成像素化（面板已經沒有純色）',
       );
+      expect(ms.every((m) => m.oval), isTrue, reason: '舊草稿的方形要改成圓的');
       expect(find.text('純色'), findsNothing);
 
       await _add(t, '筆刷');
@@ -455,7 +461,7 @@ void main() {
       await _open(t);
       expect(_outlines(t), isEmpty, reason: '碼著的臉不該有框（使用者：馬賽克不要有邊框）');
 
-      await _add(t, '方框');
+      await _add(t, '圓圈');
       expect(_outlines(t), isEmpty, reason: '剛加的方框也不該有框');
       // 琥珀選取框（方形版是 Container 的邊框）也不能有
       expect(
@@ -500,8 +506,8 @@ void main() {
 
     testWidgets('新增方框：放在空的地方，連加兩塊不會疊在一起', (t) async {
       await _open(t);
-      await _add(t, '方框');
-      await _add(t, '方框');
+      await _add(t, '圓圈');
+      await _add(t, '圓圈');
       final ms = _live(t).mosaics;
       expect(ms.length, 4);
       const w = 1000.0, h = 800.0;
@@ -528,7 +534,7 @@ void main() {
 
     testWidgets('大小：每一塊一起放大縮小；上一步退得回來', (t) async {
       await _open(t);
-      await _add(t, '方框');
+      await _add(t, '圓圈');
       final ms = _live(t).mosaics;
       final before = [for (final m in ms) m.scale];
       await t.drag(_sizeSlider(), const Offset(160, 0));
@@ -632,14 +638,14 @@ void main() {
       await _settle(t, 14);
       expect(_live(t).mosaics.length, 2);
       expect(find.text('新增馬賽克'), findsOneWidget);
-      await _add(t, '方框');
+      await _add(t, '圓圈');
       await t.pump(const Duration(seconds: 1));
       expect(t.takeException(), isNull, reason: '小螢幕大字爆版了');
     });
 
     testWidgets('拖完一塊方框，再在別處拖不會拖到它（沒有隱形的選取）', (t) async {
       await _open(t);
-      await _add(t, '方框');
+      await _add(t, '圓圈');
       await t.pump(const Duration(seconds: 1));
       final box = _live(t).mosaics.last;
       final x0 = box.x;

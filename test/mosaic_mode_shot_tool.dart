@@ -321,11 +321,11 @@ void main() {
     await settle(t, 6);
     await snap(t, 'mz_photo_off.png');
 
-    // 10-25 改版：新增馬賽克 → 選單 → 方框（放在空的地方、亮一下）
+    // 10-25 改版：新增馬賽克 → 選單 → 圓圈（放在空的地方、亮一下）
     await t.tap(find.text('新增馬賽克').last);
     await settle(t, 8);
     await snap(t, 'mz_add_sheet.png');
-    await t.tap(find.text('方框'));
+    await t.tap(find.text('圓圈'));
     // 選單收起來、光暈還在亮的那一刻
     for (var i = 0; i < 6; i++) {
       await t.pump(const Duration(milliseconds: 40));
@@ -419,7 +419,7 @@ void main() {
     await snap(t, 'mz_portrait.png');
     await t.tap(find.text('新增馬賽克').last);
     await settle(t, 8);
-    await t.tap(find.text('方框'));
+    await t.tap(find.text('圓圈'));
     await settle(t, 20);
     await snap(t, 'mz_portrait_box.png');
     await t.pump(const Duration(seconds: 4));

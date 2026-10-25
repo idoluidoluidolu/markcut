@@ -76,16 +76,16 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 見 [PhotoEditorScreen.mosaicMode]。草稿還原時從狀態 JSON 讀回來
   late bool _mosaicMode = widget.mosaicMode;
 
-  /// 馬賽克模式下面那排選的樣式與形狀：改了就套到每一塊
-  ///（臉、方框、筆畫），之後新加的也照這個。
+  /// 馬賽克模式下面那排選的樣式：改了就套到每一塊（臉、圓圈、筆畫），
+  /// 之後新加的也照這個。形狀一律圓圈（使用者：圓圈和方框不用了，
+  /// 一律用圓圈），沒有形狀可選。
   /// 濃度預設 0.85（一張臉橫向約 9 格）：一般區塊用的 0.5 是 16 格，
   /// 蓋在臉上眼睛鼻子還認得出來（截圖實測）
   final MosaicStyle _mzStyle = MosaicStyle(strength: 0.85);
-  bool _mzOval = true;
 
-  /// 模糊的柔邊：換成像素化／純色時柔邊歸零（它們沒有柔邊），這裡記著，
-  /// 換回模糊再拿出來
-  double _mzBlurFeather = 0;
+  /// 模糊的柔邊：換成像素化時柔邊歸零（像素化沒有柔邊），這裡記著，換回
+  /// 模糊再拿出來。第一次選模糊就先給一點（使用者：柔邊先給一點預設）
+  double _mzBlurFeather = 0.3;
 
   /// 下面那排的「大小」（全部一起）：1＝找臉／新加當下的大小。拉動＝每一塊
   /// 照自己現在的大小一起放大縮小（筆畫是粗細）；要單獨調哪一塊就兩指捏它
@@ -432,12 +432,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   }
 
   /// 馬賽克模式自己的狀態：模式本身（草稿還原要開回同一種畫面）＋
-  /// 下面那排選的樣式／形狀（上一步要連它一起退，不然按鈕亮的是
+  /// 下面那排選的樣式／大小（上一步要連它一起退，不然按鈕亮的是
   /// 新樣式、照片上卻是舊的）
   Map<String, dynamic> get _mosaicModeJson => {
     if (_mosaicMode) 'mosaicMode': true,
     if (_mosaicMode) 'mzStyle': _mzStyle.toJson(),
-    if (_mosaicMode) 'mzOval': _mzOval,
     if (_mosaicMode) 'mzSize': _mzSize,
   };
 
@@ -570,16 +569,16 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         ..color = st.color
         ..feather = st.feather;
     }
-    if (j['mzOval'] is bool) _mzOval = j['mzOval'] as bool;
     if (j['mzSize'] is num) {
       _mzSize = (j['mzSize'] as num).toDouble().clamp(0.5, 2.0);
     }
-    // 馬賽克模式拿掉了純色（使用者：把純色刪除）：舊草稿存的純色改成
-    // 像素化，不然面板一個效果都沒亮、也調不回來
+    // 馬賽克模式拿掉了純色（使用者：把純色刪除）、形狀一律圓圈：舊草稿存的
+    // 純色改成像素化、方的改成圓的，不然面板對不上、也調不回來
     if (_mosaicMode) {
       if (_mzStyle.type == 2) _mzStyle.type = 0;
       for (final m in wm.mosaics) {
         if (m.style.type == 2) m.style.type = 0;
+        if (!m.isStroke) m.oval = true;
       }
     }
     setState(() {
@@ -1371,7 +1370,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   void _addMosaic() {
     _pushUndo();
     if (_mosaicMode) {
-      // 馬賽克模式：照下面那排選的樣式、形狀、大小；放在空的地方、
+      // 馬賽克模式：一律圓圈，照下面那排選的樣式、大小；放在空的地方、
       // 亮一下，不選取（照片上沒有框，選了也看不出來）
       final scale = (_kMzNewScale * _mzSize).clamp(0.05, 3.0);
       final at = _freeSpot(scale);
@@ -1382,7 +1381,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             y: at.dy,
             scale: scale,
             style: _mzStyle.copy(),
-            oval: _mzOval,
+            oval: true,
           ),
         );
         _selMosaic = -1;
@@ -1400,12 +1399,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     });
   }
 
-  /// 馬賽克模式新加一塊方框的大小（短邊比例）：要蓋的通常是招牌、車牌、
+  /// 馬賽克模式新加一個圓圈的大小（短邊比例）：要蓋的通常是招牌、車牌、
   /// 包包上的標誌這種小東西；一般模式的 0.72 一放下去就蓋掉半張照片
   static const double _kMzNewScale = 0.4;
 
   /// 新的一塊放哪（0~1）：照片上挑跟現有馬賽克重疊最少的位置，一樣少就挑
-  /// 離正中央近的。以前一律放正中央，連按兩次方框第二塊剛好疊在第一塊上，
+  /// 離正中央近的。以前一律放正中央，連加兩塊第二塊剛好疊在第一塊上，
   /// 看起來像「只能加一塊」（使用者回報）
   Offset _freeSpot(double scale) {
     final img = _photoImg;
@@ -1421,7 +1420,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     const steps = [0.2, 0.35, 0.5, 0.65, 0.8];
     for (final cy in steps) {
       for (final cx in steps) {
-        // 出界太多的不要：方形會被裁小、橢圓會缺一大角
+        // 出界太多的不要：圓圈會缺一大角
         if (cx * w < side * 0.35 ||
             (1 - cx) * w < side * 0.35 ||
             cy * h < side * 0.35 ||
@@ -1429,7 +1428,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
           continue;
         }
         final r = photoMosaicRect(
-          PhotoMosaic(x: cx, y: cy, scale: scale, oval: _mzOval),
+          PhotoMosaic(x: cx, y: cy, scale: scale, oval: true),
           w,
           h,
         );
@@ -1500,7 +1499,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     final w = img.width.toDouble(), h = img.height.toDouble();
     final add = <PhotoMosaic>[];
     for (final f in found) {
-      final m = faceMosaic(f, w, h, style: _mzStyle, oval: _mzOval);
+      final m = faceMosaic(f, w, h, style: _mzStyle);
       // 大小滑桿拉過：新找到的臉也照同一個大小，跟其他塊一致
       m.scale = (m.scale * _mzSize).clamp(0.02, 3.0);
       final r = photoMosaicRect(m, w, h);
@@ -1616,46 +1615,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       );
     }
 
-    void setOval(bool oval) {
-      _pushUndo();
-      setState(() {
-        _mzOval = oval;
-        for (final m in _mosaics) {
-          if (!m.isStroke) m.oval = oval;
-        }
-      });
-    }
-
     // 效果磚的圖示跟 App 其他地方同一套：白色單色的 Material 圖示
     //（以前畫成彩色的小樣本，使用者說不符合整體風格）
     Widget effIcon(IconData icon, bool on) =>
         Icon(icon, size: 24, color: on ? kText : kIcon);
-
-    // 形狀是另一組設定（不是第四種效果）：做成一顆兩段的切換鈕，長得跟左邊
-    // 的效果磚不一樣、中間空開（使用者：圓形方形要跟前面有區隔，不然像同一排選項）
-    Widget shapeSeg(bool oval) {
-      final on = _mzOval == oval;
-      return Semantics(
-        button: true,
-        selected: on,
-        label: oval ? '圓形' : '方形',
-        excludeSemantics: true,
-        child: InkWell(
-          onTap: on ? null : () => setOval(oval),
-          child: Container(
-            width: 46,
-            height: 40,
-            alignment: Alignment.center,
-            color: on ? kPanelHi : Colors.transparent,
-            child: Icon(
-              oval ? Icons.circle_outlined : Icons.crop_square,
-              size: 20,
-              color: on ? kText : kTextDim,
-            ),
-          ),
-        ),
-      );
-    }
 
     return SingleChildScrollView(
       // 底下讓出浮動鈕列（字級放大塞不下時捲得到最後一排）
@@ -1665,45 +1628,26 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         children: [
           _mosaicStrip(),
           const SizedBox(height: 14),
-          Row(
-            children: [
-              Expanded(
-                child: IntrinsicHeight(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      tile(
-                        on: _mzStyle.type == 0,
-                        label: '像素化',
-                        art: effIcon(Icons.grid_on, _mzStyle.type == 0),
-                        onTap: () => setType(0),
-                      ),
-                      const SizedBox(width: 8),
-                      tile(
-                        on: _mzStyle.type == 1,
-                        label: '模糊',
-                        art: effIcon(Icons.blur_on, _mzStyle.type == 1),
-                        onTap: () => setType(1),
-                      ),
-                    ],
-                  ),
+          // 形狀一律圓圈（使用者：圓圈和方框不用了），這一排只剩效果
+          IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                tile(
+                  on: _mzStyle.type == 0,
+                  label: '像素化',
+                  art: effIcon(Icons.grid_on, _mzStyle.type == 0),
+                  onTap: () => setType(0),
                 ),
-              ),
-              const SizedBox(width: 18),
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  border: Border.all(color: kClipBorder),
-                  borderRadius: BorderRadius.circular(999),
+                const SizedBox(width: 8),
+                tile(
+                  on: _mzStyle.type == 1,
+                  label: '模糊',
+                  art: effIcon(Icons.blur_on, _mzStyle.type == 1),
+                  onTap: () => setType(1),
                 ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(999),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [shapeSeg(true), shapeSeg(false)],
-                  ),
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
           const SizedBox(height: 10),
           // 滑桿拖動中只重畫預覽（_liveRepaint），不整頁 setState；這兩條
@@ -1863,7 +1807,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     return Builder(
       builder: (tileCtx) => Semantics(
         button: true,
-        label: m.face ? (m.off ? '沒碼的臉' : '臉') : (m.isStroke ? '筆刷' : '方框'),
+        label: m.face ? (m.off ? '沒碼的臉' : '臉') : (m.isStroke ? '筆刷' : '圓圈'),
         excludeSemantics: true,
         child: GestureDetector(
           onTap: () => _thumbTap(i),
@@ -1998,7 +1942,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   }
 
   /// 「新增馬賽克」：跟影片剪輯那張馬賽克選單同一個樣子
-  ///（使用者在畫布選的）。自動碼人臉／方框／筆刷
+  ///（使用者在畫布選的）。自動碼人臉／圓圈／筆刷——影片那張叫「方框」，
+  /// 照片這邊一律圓圈（使用者：圓圈和方框不用了），叫方框會名不符實
   Future<void> _askAddMosaic() async {
     if (_brushMode || _findingFaces) return;
     Widget item(BuildContext context, IconData icon, String label, String v) =>
@@ -2032,7 +1977,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               ),
             ),
             item(context, Icons.face_retouching_natural, '自動碼人臉', 'face'),
-            item(context, Icons.crop_square, '方框', 'box'),
+            item(context, Icons.circle_outlined, '圓圈', 'box'),
             item(context, Icons.brush_outlined, '筆刷', 'brush'),
             const SizedBox(height: 10),
           ],
