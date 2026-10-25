@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:markcut/models/mosaic.dart';
 import 'package:markcut/models/watermark_settings.dart';
 import 'package:markcut/screens/photo_editor_screen.dart';
 import 'package:markcut/widgets/watermark_layer.dart';
@@ -57,21 +58,27 @@ WatermarkSettings _live(WidgetTester t) =>
 /// 預覽畫布（主浮水印圖層鋪滿它）
 Rect _canvas(WidgetTester t) => t.getRect(find.byType(WatermarkLayer).first);
 
-/// 照測試者的操作：上方導覽列切到「馬賽克」→ 按＋加一塊
-///（新的一塊會被選起來、畫琥珀框）
+/// 照測試者的操作：上方導覽列切到「馬賽克」→ 縮圖那排最後的虛線加號 →
+/// 選單「圓圈」（10-25 換成跟馬賽克模式同一套：不選取、不畫框，新的一塊
+/// 放在浮水印壓不到的地方）
 Future<void> _addMosaicViaPanel(WidgetTester t) async {
   await t.tap(find.text('馬賽克').first);
   await _settle(t);
-  final add = find.byTooltip('加一塊馬賽克');
-  expect(add, findsOneWidget, reason: '馬賽克分頁上要有那顆＋');
+  final add = find.byWidgetPredicate(
+    (w) => w is Semantics && w.properties.label == '新增馬賽克',
+  );
+  expect(add, findsOneWidget, reason: '馬賽克卡上要有那顆虛線加號');
   await t.tap(add);
   await _settle(t);
-  expect(_live(t).mosaics.length, 1);
-  // 清單上那一列（測試者截圖裡亮著的那一列），再點一次＝選取它
-  final tile = find.text('第 1 塊 · 像素化');
-  expect(tile, findsOneWidget);
-  await t.tap(tile);
+  await t.tap(find.text('圓圈'));
   await _settle(t);
+  expect(_live(t).mosaics.length, 1);
+}
+
+/// 一塊馬賽克的中心在畫面上的哪裡
+Offset _at(WidgetTester t, PhotoMosaic m) {
+  final r = _canvas(t);
+  return Offset(r.left + m.x * r.width, r.top + m.y * r.height);
 }
 
 /// 從 [from] 起手、往右下拖 12 步（每步 8px，共 96px）
@@ -92,17 +99,12 @@ Future<void> _drainHint(WidgetTester t) => t.pump(const Duration(seconds: 3));
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
-  // 迴歸守門（測試者回報「馬賽克無法移動」，iOS TestFlight）：
-  // 照片編輯器在馬賽克分頁加了一塊、清單上那一列亮著、畫面上有琥珀框，
-  // 在畫面上拖它卻一動也不動。
-  //
-  // 成因：新的一塊放在正中央，預設文字「@我的浮水印」也在正中央，
-  // 手指自然落在文字上。文字圖層畫在馬賽克層之上而且 HitTestBehavior
-  // .opaque——馬賽克被選取時它雖然不註冊拖曳（panAllowed 說「讓給選取
-  // 路由」），命中測試照樣停在它身上，指標根本到不了下面的馬賽克；
-  // 而能讓被選的東西在整個預覽上都拖得動的「選取路由」只在選了浮水印
-  // 部件時才掛，選了馬賽克時沒有人接手
-  testWidgets('照片：加了馬賽克（預設文字壓在上面），在畫面上拖得動它、文字不動', (t) async {
+  // 迴歸守門（測試者回報「馬賽克無法移動」，iOS TestFlight）：舊版新的一塊
+  // 放在正中央，預設文字「@我的浮水印」也在正中央，手指自然落在文字上——
+  // 文字圖層畫在馬賽克層之上，命中測試停在它身上，指標到不了下面的馬賽克。
+  // 舊版靠「選了馬賽克就整面拖它」的選取路由解；新版不選取，改成新的
+  // 一塊放在浮水印壓不到的地方（_freeSpot 把浮水印的框也算進去）
+  testWidgets('照片：新加的馬賽克不會被預設文字壓住，按在它身上拖得動、文字不動', (t) async {
     late Uint8List photo;
     await t.runAsync(() async {
       photo = await _png(const Color(0xFF888888), 900, 600);
@@ -110,19 +112,18 @@ void main() {
     await _open(t, photo);
     await _settle(t, 20);
 
-    // 真實情境：預設文字在正中央、新加的馬賽克也在正中央
+    // 真實情境：預設文字在正中央
     expect(_live(t).text.x, 0.5);
     expect(_live(t).text.y, 0.5);
     await _addMosaicViaPanel(t);
     final m = _live(t).mosaics.single;
-    expect((m.x, m.y), (0.5, 0.5));
+    expect(m.oval, isTrue, reason: '新版一律圓圈');
+    expect((m.x, m.y), isNot((0.5, 0.5)), reason: '放正中央會被預設文字壓住');
+    final (x0, y0) = (m.x, m.y);
 
-    // 從畫布正中央（馬賽克中心＝文字所在）往右下拖
-    final r = _canvas(t);
-    await _dragFrom(t, r.center);
-
-    expect(m.x, greaterThan(0.5 + 0.05), reason: '選取中的馬賽克要跟著手指走');
-    expect(m.y, greaterThan(0.5 + 0.05));
+    await _dragFrom(t, _at(t, m));
+    expect(m.x, greaterThan(x0 + 0.05), reason: '按在馬賽克身上要拖得動');
+    expect(m.y, greaterThan(y0 + 0.05));
     // 拖的是馬賽克，文字一動都不能動
     expect(_live(t).text.x, 0.5);
     expect(_live(t).text.y, 0.5);
@@ -130,33 +131,7 @@ void main() {
     expect(t.takeException(), isNull);
   });
 
-  // 對照組：手指落在馬賽克上「沒被文字蓋到」的地方，本來就拖得動——
-  // 壞的只有重疊那一塊，證明成因是命中測試被文字吃掉，不是拖曳本身
-  testWidgets('照片：手指落在馬賽克沒被文字蓋到的地方，一樣拖得動', (t) async {
-    late Uint8List photo;
-    await t.runAsync(() async {
-      photo = await _png(const Color(0xFF888888), 900, 600);
-    });
-    await _open(t, photo);
-    await _settle(t, 20);
-    await _addMosaicViaPanel(t);
-    final m = _live(t).mosaics.single;
-
-    // 馬賽克是短邊 72% 的正方形，上緣在畫布高的 14%；文字只佔中間
-    // 一條（字級短邊 12%）。畫布高 25% 處在馬賽克裡、離文字很遠
-    final r = _canvas(t);
-    await _dragFrom(t, Offset(r.center.dx, r.top + r.height * 0.25));
-
-    expect(m.x, greaterThan(0.5 + 0.05));
-    expect(m.y, greaterThan(0.5 + 0.05));
-    expect(_live(t).text.x, 0.5);
-    expect(_live(t).text.y, 0.5);
-    await _drainHint(t);
-    expect(t.takeException(), isNull);
-  });
-
-  // 修了馬賽克不能把浮水印弄壞：點文字把選取切回文字之後，
-  // 文字照樣拖得動、馬賽克不動
+  // 修了馬賽克不能把浮水印弄壞：點文字選起來之後，文字照樣拖得動、馬賽克不動
   testWidgets('照片：馬賽克在場時，選了文字還是拖得動文字', (t) async {
     late Uint8List photo;
     await t.runAsync(() async {
@@ -166,32 +141,54 @@ void main() {
     await _settle(t, 20);
     await _addMosaicViaPanel(t);
     final m = _live(t).mosaics.single;
+    final before = (m.x, m.y);
 
-    // 點正中央：最上層是文字，選取切到文字（馬賽克的選取跟著取消）
     final r = _canvas(t);
     await t.tapAt(r.center);
     await _settle(t);
-    // 文字有選取＝它的琥珀框在畫（框是外層 WmFrameOverlay 在畫）
-    expect(find.byType(WmFrameOverlay), findsOneWidget);
-
     await _dragFrom(t, r.center);
     expect(_live(t).text.x, greaterThan(0.5 + 0.05), reason: '選取中的文字要跟著手指走');
     expect(_live(t).text.y, greaterThan(0.5 + 0.05));
-    expect((m.x, m.y), (0.5, 0.5), reason: '拖的是文字，馬賽克不能動');
+    expect((m.x, m.y), before, reason: '拖的是文字，馬賽克不能動');
     await _drainHint(t);
     expect(t.takeException(), isNull);
   });
 
-  // 圖片那邊同一套規則：馬賽克選取中，整個預覽的拖曳都只動馬賽克
-  //（手指從圖片上起手也一樣，跟「選了文字拖圖片會動文字」一致）；
-  // 點了圖片把選取換過去之後，拖的就是圖片、馬賽克不動
-  testWidgets('照片：馬賽克選取中從圖片上起手拖的是馬賽克；選了圖片就拖得動圖片', (t) async {
+  // 選著文字時整個預覽的拖曳都歸文字（選取路由）。點一下馬賽克＝點的是
+  // 別的東西，文字的選取要取消——不然之後在馬賽克上拖，動的還是文字
+  testWidgets('照片：選著文字時點一下馬賽克，接著拖的就是馬賽克', (t) async {
+    late Uint8List photo;
+    await t.runAsync(() async {
+      photo = await _png(const Color(0xFF888888), 900, 600);
+    });
+    await _open(t, photo);
+    await _settle(t, 20);
+    await _addMosaicViaPanel(t);
+    final m = _live(t).mosaics.single;
+
+    await t.tapAt(_canvas(t).center); // 選文字
+    await _settle(t);
+    await t.tapAt(_at(t, m)); // 點馬賽克
+    await _settle(t);
+    final (x0, y0) = (m.x, m.y);
+    await _dragFrom(t, _at(t, m));
+    expect(m.x, greaterThan(x0 + 0.05), reason: '點過馬賽克，文字的選取要取消');
+    expect(m.y, greaterThan(y0 + 0.05));
+    expect(_live(t).text.x, 0.5, reason: '文字不能被拖走');
+    expect(_live(t).text.y, 0.5);
+    await _drainHint(t);
+    expect(t.takeException(), isNull);
+  });
+
+  // 圖片那邊同一套：沒選東西時按在馬賽克上拖的是馬賽克；點了圖片把選取
+  // 換過去之後，拖的就是圖片、馬賽克不動
+  testWidgets('照片：拖馬賽克不動圖片；選了圖片就拖得動圖片、馬賽克不動', (t) async {
     late Uint8List photo, logoPng;
     await t.runAsync(() async {
       photo = await _png(const Color(0xFF888888), 900, 600);
       logoPng = await _png(const Color(0xFFFF0000), 100, 100);
     });
-    // 圖片放左上角，離正中央的文字與馬賽克都遠
+    // 圖片放左上角，離正中央的文字遠
     final wm = WatermarkSettings();
     wm.logo
       ..enabled = true
@@ -208,13 +205,11 @@ void main() {
     final r = _canvas(t);
     Offset logoAt() => Offset(r.left + r.width * lg.x, r.top + r.height * lg.y);
 
-    // 馬賽克選取中：從圖片上起手，動的是馬賽克
-    await _dragFrom(t, logoAt());
-    expect(m.x, greaterThan(0.5 + 0.05), reason: '選取中的馬賽克要跟著手指走');
-    expect(m.y, greaterThan(0.5 + 0.05));
+    final (x0, y0) = (m.x, m.y);
+    await _dragFrom(t, _at(t, m));
+    expect(m.x, greaterThan(x0 + 0.05), reason: '按在馬賽克身上要拖得動');
     expect((lg.x, lg.y), (0.12, 0.12), reason: '圖片不能被拖走');
 
-    // 點圖片＝選取換到圖片（馬賽克取消選取）
     await t.tapAt(logoAt());
     await _settle(t);
     final mAfter = (m.x, m.y);

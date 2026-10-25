@@ -381,6 +381,47 @@ void main() {
     await t.pump(const Duration(seconds: 4));
   });
 
+  // 10-25：浮水印編輯（一般模式）的馬賽克卡換成同一套新版
+  testWidgets('浮水印編輯的馬賽克卡 → wm_*.png', (t) async {
+    SharedPreferences.setMockInitialValues({});
+    phone(t);
+    await t.pumpWidget(
+      RepaintBoundary(
+        key: _shotKey,
+        child: MaterialApp(
+          theme: buildStudioTheme(),
+          debugShowCheckedModeBanner: false,
+          home: PhotoEditorScreen(
+            photo: XFile(photoPath, name: 'mz_scene.png'),
+          ),
+        ),
+      ),
+    );
+    await settle(t, 25);
+    final add = find.byWidgetPredicate(
+      (w) => w is Semantics && w.properties.label == '新增馬賽克',
+    );
+    await t.tap(find.text('馬賽克').first);
+    await settle(t, 8);
+    await snap(t, 'wm_1_card.png');
+    await t.tap(add);
+    await settle(t, 8);
+    await snap(t, 'wm_2_menu.png');
+    await t.tap(find.text('自動碼人臉'));
+    await settle(t, 20);
+    await snap(t, 'wm_3_faces.png');
+    // 再加一個圓圈：放在浮水印文字壓不到的地方
+    await t.tap(add);
+    await settle(t, 8);
+    await t.tap(find.text('圓圈'));
+    await settle(t, 20);
+    await snap(t, 'wm_4_circle.png');
+    await t.tap(find.text('模糊'));
+    await settle(t, 6);
+    await snap(t, 'wm_5_blur.png');
+    await t.pump(const Duration(seconds: 4));
+  });
+
   testWidgets('直式照片：一個人 → mz_portrait.png', (t) async {
     SharedPreferences.setMockInitialValues({});
     phone(t);

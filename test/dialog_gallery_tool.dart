@@ -562,13 +562,17 @@ void main() {
     await _settle(t, 10);
     await t.tap(find.text('馬賽克'));
     await _settle(t, 15);
+    // 10-24 起「馬賽克」先跳選單（自動碼人臉／方框／筆刷）
+    await t.tap(find.text('方框'));
+    await _settle(t, 15);
     final mc = _newestClip(t);
     await t.longPressAt(t.getRect(mc).center);
     await _settle(t, 10);
     expect(find.text('調整馬賽克'), findsOneWidget, reason: '馬賽克片段選單沒開');
     await t.tap(find.text('調整馬賽克'));
     await _settle(t, 15);
-    expect(find.text('馬賽克樣式'), findsOneWidget);
+    // 10-25 起標題寫明是哪一種
+    expect(find.text('方框馬賽克'), findsOneWidget);
     await _shot(t, '27-ve-mosaic-style-sheet');
     await _close(t);
     await _drain(t);
@@ -862,16 +866,19 @@ void main() {
     await _shot(t, '40-recon-photo-export-progress');
     await _close(t);
 
-    // 馬賽克：面板是分頁的，先點導覽列「馬賽克」那格，
-    // 再按那一區的 ＋（加一塊）→ 那一塊的「調整樣式」
+    // 馬賽克：面板是分頁的，先點導覽列「馬賽克」那格，再按縮圖那排最後
+    // 的虛線加號 → 新增馬賽克選單（10-25 換成跟馬賽克模式同一套，沒有
+    // 一塊一張的樣式表了）
     await t.tap(find.text('馬賽克').first);
     await _settle(t, 8);
-    await t.tap(find.byTooltip('加一塊馬賽克').first, warnIfMissed: false);
-    await _settle(t, 10);
-    await t.tap(find.byTooltip('調整樣式').first, warnIfMissed: false);
+    await t.tap(
+      find.byWidgetPredicate(
+        (w) => w is Semantics && w.properties.label == '新增馬賽克',
+      ),
+    );
     await _settle(t, 12);
-    expect(find.text('馬賽克樣式'), findsOneWidget, reason: '照片的馬賽克樣式表沒開');
-    await _shot(t, '39-photo-mosaic-style-sheet');
+    expect(find.text('自動碼人臉'), findsOneWidget, reason: '照片的新增馬賽克選單沒開');
+    await _shot(t, '39-photo-mosaic-add-menu');
     await _close(t);
     await _drain(t);
   });

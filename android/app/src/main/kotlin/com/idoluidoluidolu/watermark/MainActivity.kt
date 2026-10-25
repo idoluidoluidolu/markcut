@@ -1,6 +1,9 @@
 package com.idoluidoluidolu.watermark
 
 import android.app.Activity
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -42,7 +45,10 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import org.json.JSONObject
 
 private class FrameSource(val retriever: MediaMetadataRetriever, val width: Int, val height: Int) {
     companion object {
@@ -95,6 +101,133 @@ private class PrepJob(
     var tick: Runnable? = null
 }
 
+/// 閃退紀錄（iOS 那邊是 MCExitRecorder）：沒接住的例外當場寫進
+/// filesDir/last_exception.json，下一趟開 App 由 nativePrepDiagnostic 交給
+/// Dart——首頁跳報告、可以直接複製。原本的處理照樣跑：只記、不攔。
+/// API 30 起另外問系統上一趟怎麼結束的：原生程式庫閃退、在前景被記憶體
+/// 不足砍掉，這兩種 Java 這邊什麼都來不及寫
+private object ExitRecorder {
+    private var started = false
+    private var previousException: Map<String, Any>? = null
+    private var previousExit: Map<String, Any>? = null
+
+    @Synchronized
+    fun start(context: Context) {
+        if (started) return
+        started = true
+        // 紀錄器自己出事也不能拖垮 App
+        try {
+            val file = File(context.filesDir, "last_exception.json")
+            if (file.exists()) {
+                try {
+                    val o = JSONObject(file.readText())
+                    val m = HashMap<String, Any>()
+                    val keys = o.keys()
+                    while (keys.hasNext()) {
+                        val k = keys.next()
+                        m[k] = o.optString(k)
+                    }
+                    previousException = m
+                } catch (_: Throwable) {}
+                file.delete()
+            }
+            previousExit = systemExit(context)
+            val chained = Thread.getDefaultUncaughtExceptionHandler()
+            Thread.setDefaultUncaughtExceptionHandler { thread, e ->
+                try {
+                    val stack = android.util.Log.getStackTraceString(e)
+                    val o = JSONObject()
+                    o.put("name", e.javaClass.name)
+                    o.put("reason", e.message ?: "")
+                    o.put("thread", thread.name)
+                    o.put("stack", if (stack.length > 8000) stack.substring(0, 8000) else stack)
+                    o.put("at", java.util.Date().toString())
+                    o.put("device", "${Build.MANUFACTURER} ${Build.MODEL} (API ${Build.VERSION.SDK_INT})")
+                    file.writeText(o.toString())
+                } catch (_: Throwable) {}
+                if (chained != null) {
+                    chained.uncaughtException(thread, e)
+                } else {
+                    android.os.Process.killProcess(android.os.Process.myPid())
+                    kotlin.system.exitProcess(10)
+                }
+            }
+        } catch (_: Throwable) {}
+    }
+
+    /// 交給 Dart 的快照（nativePrepDiagnostic 的 exit）。例外只交一次：同一個
+    /// 行程裡畫面重開（按返回離開、再點開）Dart 會再問，不能再跳一次報告。
+    /// 系統的結束原因每次都給，Dart 那邊自己記看過了沒（exit_seen）
+    @Synchronized
+    fun snapshot(): Map<String, Any> {
+        val out = HashMap<String, Any>()
+        previousException?.let { out["previousException"] = it }
+        previousException = null
+        previousExit?.let { out.putAll(it) }
+        return out
+    }
+
+    /// 系統記的上一趟結束原因，換成 Dart 端看得懂的 crashes／foregroundExits
+    /// （同 iOS MetricKit 的欄位）。正常離開、在背景被收掉（Android 天天在
+    /// 做）都不算；Java 例外自己已經記了的也不重複
+    private fun systemExit(context: Context): Map<String, Any>? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        return try {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val info = am.getHistoricalProcessExitReasons(null, 0, 1).firstOrNull()
+                ?: return null
+            val build = try {
+                context.packageManager.getPackageInfo(context.packageName, 0)
+                    .longVersionCode.toString()
+            } catch (_: Throwable) {
+                "?"
+            }
+            val window = info.timestamp.toString()
+            val detail = "${info.description ?: ""}（當時 ${info.pss / 1024}MB）"
+            val foreground = info.importance <=
+                ActivityManager.RunningAppProcessInfo.IMPORTANCE_PERCEPTIBLE
+            fun crash(what: String): Map<String, Any> = mapOf(
+                "crashes" to listOf(
+                    mapOf(
+                        "window" to window,
+                        "build" to build,
+                        "signal" to info.status,
+                        "terminationReason" to "$what $detail",
+                    ),
+                ),
+            )
+            when (info.reason) {
+                ApplicationExitInfo.REASON_CRASH_NATIVE -> crash("原生程式庫閃退")
+                ApplicationExitInfo.REASON_ANR -> crash("畫面卡死被系統關閉（ANR）")
+                ApplicationExitInfo.REASON_CRASH ->
+                    if (previousException == null) crash("Java 例外") else null
+                ApplicationExitInfo.REASON_LOW_MEMORY ->
+                    if (foreground) {
+                        mapOf(
+                            "foregroundExits" to listOf(
+                                mapOf(
+                                    "window" to window,
+                                    "build" to build,
+                                    "memoryLimit" to 1,
+                                    "watchdog" to 0,
+                                    "badAccess" to 0,
+                                    "illegalInstruction" to 0,
+                                    "abnormal" to 0,
+                                    "normal" to 0,
+                                ),
+                            ),
+                        )
+                    } else {
+                        null
+                    }
+                else -> null
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+}
+
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class MainActivity : FlutterActivity() {
     // 系統抽幀 API 的解碼成本與 codec 選擇依來源及裝置而異。
@@ -110,6 +243,8 @@ class MainActivity : FlutterActivity() {
     private val faceExec = Executors.newSingleThreadExecutor()
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        // 最先掛：後面任何一步沒接住的例外都要記得到
+        ExitRecorder.start(applicationContext)
         super.configureFlutterEngine(flutterEngine)
         val main = mainHandler
         registerPrepChannel(flutterEngine)
@@ -279,28 +414,38 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                     return@setMethodCallHandler
                 }
+                // 只回一次：回兩次 Flutter 會丟例外，一樣把 App 收掉
+                val replied = AtomicBoolean(false)
+                fun reply(send: () -> Unit) {
+                    if (replied.compareAndSet(false, true)) mainHandler.post { send() }
+                }
                 faceExec.execute {
-                    val bmp = try {
-                        decodeUpright(path, 2560)
-                    } catch (_: Throwable) {
-                        null
-                    }
-                    if (bmp == null) {
-                        mainHandler.post { result.success(null) }
-                        return@execute
-                    }
-                    val detector = FaceDetection.getClient(
-                        FaceDetectorOptions.Builder()
-                            .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
-                            // 合照裡的小臉也要抓：預設 0.1＝頭寬至少要有畫面寬的一成
-                            .setMinFaceSize(0.03f)
-                            .build(),
-                    )
-                    val w = bmp.width.toDouble()
-                    val h = bmp.height.toDouble()
-                    // 聽眾都在主執行緒上跑，result 直接回
-                    detector.process(InputImage.fromBitmap(bmp, 0))
-                        .addOnSuccessListener { faces ->
+                    // 10-25 Android 一匯入照片進馬賽克模式就閃退：以前 getClient／
+                    // process 沒包，丟出來的東西在這條工作緒上沒人接，整個 App 被
+                    // 收掉。現在任何一步出事（例外、原生程式庫載不到的 Error、記憶體
+                    // 不夠、等太久）都只回「這張找不了」，原因交給 Dart 記
+                    try {
+                        val bmp = decodeUpright(path, 2560)
+                        if (bmp == null) {
+                            reply { result.success(null) }
+                            return@execute
+                        }
+                        val w = bmp.width.toDouble()
+                        val h = bmp.height.toDouble()
+                        val detector = FaceDetection.getClient(
+                            FaceDetectorOptions.Builder()
+                                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
+                                // 合照裡的小臉也要抓：預設 0.1＝頭寬至少要有畫面寬的一成
+                                .setMinFaceSize(0.03f)
+                                .build(),
+                        )
+                        try {
+                            // 在工作緒上等結果（同影片那條），出事全在這個 try 裡
+                            val faces = Tasks.await(
+                                detector.process(InputImage.fromBitmap(bmp, 0)),
+                                30,
+                                TimeUnit.SECONDS,
+                            )
                             val out = ArrayList<Map<String, Double>>()
                             for (f in faces) {
                                 val b = f.boundingBox
@@ -313,10 +458,23 @@ class MainActivity : FlutterActivity() {
                                     ),
                                 )
                             }
-                            result.success(out)
+                            reply { result.success(out) }
+                        } finally {
+                            try {
+                                detector.close()
+                            } catch (_: Throwable) {}
                         }
-                        .addOnFailureListener { result.success(null) }
-                        .addOnCompleteListener { detector.close() }
+                    } catch (e: Throwable) {
+                        // Tasks.await 包了一層 ExecutionException：報真正的那個
+                        val cause = e.cause ?: e
+                        reply {
+                            result.error(
+                                "face_failed",
+                                "${cause.javaClass.simpleName}: ${cause.message ?: ""}",
+                                android.util.Log.getStackTraceString(e).take(4000),
+                            )
+                        }
+                    }
                 }
             }
     }
@@ -472,11 +630,18 @@ class MainActivity : FlutterActivity() {
         BitmapFactory.decodeFile(path, bounds)
         val longSide = maxOf(bounds.outWidth, bounds.outHeight)
         if (longSide <= 0) return null
+        // 先在解碼時粗縮（2 的次方），剩下的跟轉正同一步縮到 maxSide 以內。
+        // 以前只有粗縮：長邊最多到 maxSide 的快兩倍（5000 多），解出來的、
+        // 轉正複製的、ML Kit 吃的都是好幾倍大
         var sample = 1
         while (longSide / (sample * 2) >= maxSide) sample *= 2
         val raw = BitmapFactory.decodeFile(
             path,
-            BitmapFactory.Options().apply { inSampleSize = sample },
+            BitmapFactory.Options().apply {
+                inSampleSize = sample
+                // 16 位元、廣色域的圖也解成一般的 8 位元：ML Kit 只保證吃這種
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            },
         ) ?: return null
         val orientation = try {
             ExifInterface(path).getAttributeInt(
@@ -501,8 +666,11 @@ class MainActivity : FlutterActivity() {
                 m.postScale(-1f, 1f)
             }
             ExifInterface.ORIENTATION_ROTATE_270 -> m.setRotate(-90f)
-            else -> return raw
+            else -> {}
         }
+        val s = maxSide.toFloat() / maxOf(raw.width, raw.height)
+        if (s < 1f) m.postScale(s, s)
+        if (m.isIdentity) return raw
         val upright = Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, m, true)
         if (upright !== raw) raw.recycle()
         return upright
@@ -792,6 +960,20 @@ class MainActivity : FlutterActivity() {
                             "lowPower" to pm.isPowerSaveMode,
                         )
                     )
+                    return@setMethodCallHandler
+                }
+                if (call.method == "nativePrepDiagnostic") {
+                    // 上一趟怎麼結束的（見 ExitRecorder）。launch 是 Dart 端認
+                    // 這份回應的記號：iOS 那份帶著檢查點，這裡只有機型
+                    val value = HashMap<String, Any>()
+                    value["launch"] = mapOf(
+                        "platform" to "android",
+                        "device" to "${Build.MANUFACTURER} ${Build.MODEL}",
+                        "sdk" to Build.VERSION.SDK_INT,
+                    )
+                    val exit = ExitRecorder.snapshot()
+                    if (exit.isNotEmpty()) value["exit"] = exit
+                    result.success(value)
                     return@setMethodCallHandler
                 }
                 if (call.method != "memory") {

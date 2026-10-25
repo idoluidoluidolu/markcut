@@ -189,6 +189,10 @@ class Diag {
     if (report.contains('上次閃退：程式例外')) {
       return '上次 App 閃退了（程式例外），已保留報告。';
     }
+    final fuse = RegExp('上次 App 在「(.+?)」途中被關掉了').firstMatch(report);
+    if (fuse != null) {
+      return '上次 App 在${fuse.group(1)}途中被關掉了，已保留報告。';
+    }
     if (report.contains(systemExitReportTitle)) {
       return RegExp(r'記憶體上限 [1-9]').hasMatch(report)
           ? '系統回報：App 曾因記憶體不足被系統關閉，已保留報告。'
@@ -239,7 +243,9 @@ class Diag {
     final section = [
       systemExitReportTitle,
       summary,
-      '系統統計由 iOS 整理後才送，可能晚一天；次數是那一段期間的累計。',
+      Platform.isAndroid
+          ? '以上是 Android 系統記下的上一趟結束原因。'
+          : '系統統計由 iOS 整理後才送，可能晚一天；次數是那一段期間的累計。',
     ].join('\n');
     final current = recoveredReport.value;
     final report = current == null
@@ -411,6 +417,91 @@ class Diag {
     } catch (_) {}
   }
 
+  // ===== 保險絲：死在原生呼叫裡 =====
+  //
+  // 原生那邊包得再緊，ML Kit 自己的執行緒、原生程式庫炸了還是接不住
+  //（10-25：Android 一匯入照片進馬賽克模式就閃退）。可能把整個 App 帶走
+  // 的原生呼叫，呼叫前先寫下「正在做什麼」、回來就刪；開 App 時還在＝
+  // 上一趟死在那個呼叫裡：首頁跳報告，而且那件事先別自動做
+  //（[fusePaused]），使用者自己按、成功一次（[fuseReset]）才恢復。
+  // 跟黑盒子分開檔案：黑盒子記的是素材處理進度，會被那邊的
+  // mark／clearMark 改寫
+
+  /// 上一趟死在裡面、先別自動做的：代號 → 當時在做什麼（開 App 時讀）
+  static final Map<String, String> fusePaused = {};
+
+  static Future<File?> _fuseFile(String key, {bool paused = false}) async {
+    final marker = await _crumbFile();
+    if (marker == null) return null;
+    return File(
+      '${marker.parent.path}${Platform.pathSeparator}'
+      'fuse_$key${paused ? '_paused' : ''}.json',
+    );
+  }
+
+  /// 要開始做 [what] 了（[key] 分辨是哪一件事）。寫好才回來：呼叫端
+  /// await 完再進原生，原生一炸就來不及寫了
+  static Future<void> fuseOn(String key, String what) async {
+    if (kIsWeb) return;
+    try {
+      final f = await _fuseFile(key);
+      if (f == null) return;
+      f.parent.createSync(recursive: true);
+      f.writeAsStringSync(
+        jsonEncode({'what': what, 'at': DateTime.now().toIso8601String()}),
+        flush: true,
+      );
+    } catch (_) {}
+  }
+
+  /// 原生回來了（不管有沒有做成）
+  static Future<void> fuseOff(String key) async {
+    if (kIsWeb) return;
+    try {
+      final f = await _fuseFile(key);
+      if (f != null && f.existsSync()) f.deleteSync();
+    } catch (_) {}
+  }
+
+  /// 做成一次了：恢復自動
+  static Future<void> fuseReset(String key) async {
+    fusePaused.remove(key);
+    if (kIsWeb) return;
+    try {
+      final f = await _fuseFile(key, paused: true);
+      if (f != null && f.existsSync()) f.deleteSync();
+    } catch (_) {}
+  }
+
+  /// 開 App 時讀（[loadLastRun]）：還在的保險絲＝上一趟死在那個呼叫裡，
+  /// 回一行給報告、改成「暫停中」；本來就暫停中的照樣暫停
+  static Future<List<String>> _readFuses() async {
+    fusePaused.clear();
+    final lines = <String>[];
+    try {
+      final dir = (await _crumbFile())?.parent;
+      if (dir == null || !dir.existsSync()) return lines;
+      final re = RegExp(r'^fuse_(\w+?)(_paused)?\.json$');
+      for (final e in dir.listSync()) {
+        if (e is! File) continue;
+        final m = re.firstMatch(e.uri.pathSegments.last);
+        if (m == null) continue;
+        final key = m.group(1)!;
+        var what = key;
+        try {
+          final j = jsonDecode(e.readAsStringSync());
+          if (j is Map && j['what'] is String) what = j['what'] as String;
+        } catch (_) {}
+        fusePaused[key] = what;
+        if (m.group(2) != null) continue;
+        lines.add('上次 App 在「$what」途中被關掉了');
+        final paused = await _fuseFile(key, paused: true);
+        if (paused != null) e.renameSync(paused.path);
+      }
+    } catch (_) {}
+    return lines;
+  }
+
   /// 開 App 時讀一次：上次有沒有做到一半就消失
   static Future<void> loadLastRun() async {
     if (kIsWeb) return;
@@ -421,6 +512,7 @@ class Diag {
         savedReport = await recovery.readAsString();
       }
     } catch (_) {}
+    final fuses = await _readFuses();
     var nativeInterrupted = false;
     crumbFromLastRun = null;
     nativePrepDiagnostic = null;
@@ -477,9 +569,10 @@ class Diag {
         consumedMarker = f;
       }
     } catch (_) {}
-    if (nativeInterrupted || crumbFromLastRun != null) {
+    if (nativeInterrupted || crumbFromLastRun != null || fuses.isNotEmpty) {
       savedReport = [
         '=== 上次未完成的素材處理 ===',
+        ...fuses,
         ?crumbFromLastRun,
         ?nativePrepDiagnostic,
         '以上是最後保存的檢查點；強制關閉也可能留下紀錄，並非系統終止原因。',

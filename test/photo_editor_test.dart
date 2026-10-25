@@ -142,26 +142,31 @@ void main() {
     await t.ensureVisible(find.text('馬賽克').first);
     await _settle(t);
 
-    // 加三塊
+    // 切到馬賽克卡，用縮圖那排最後的虛線加號加三塊圓圈
+    await t.tap(find.text('馬賽克').first);
+    await _settle(t);
+    final add = find.byWidgetPredicate(
+      (w) => w is Semantics && w.properties.label == '新增馬賽克',
+    );
     for (var i = 0; i < 3; i++) {
-      final add = find.descendant(
-        of: find
-            .ancestor(of: find.text('馬賽克'), matching: find.byType(Row))
-            .first,
-        matching: find.byIcon(Icons.add),
-      );
-      if (add.evaluate().isEmpty) break;
-      await t.tap(add.first, warnIfMissed: false);
+      await t.tap(add);
+      await _settle(t);
+      await t.tap(find.text('圓圈'));
       await _settle(t);
     }
+    final thumbs = find.byWidgetPredicate(
+      (w) => w is Semantics && w.properties.label == '圓圈',
+    );
+    expect(thumbs, findsNWidgets(3));
 
-    // 全刪掉（由後往前）
-    for (var i = 0; i < 5; i++) {
-      final del = find.byIcon(Icons.delete_outline);
-      if (del.evaluate().isEmpty) break;
-      await t.tap(del.last, warnIfMissed: false);
+    // 全刪掉（長按縮圖 → 刪除，由後往前）
+    for (var i = 0; i < 3; i++) {
+      await t.longPress(thumbs.last);
+      await _settle(t);
+      await t.tap(find.text('刪除'));
       await _settle(t);
     }
+    expect(thumbs, findsNothing);
 
     // 讓 showHint 的 2.4 秒計時器跑完，不然測試框架會抱怨還有 timer
     await t.pump(const Duration(seconds: 3));

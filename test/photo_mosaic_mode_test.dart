@@ -29,6 +29,7 @@ import 'package:markcut/models/color_grade.dart';
 import 'package:markcut/models/mosaic.dart';
 import 'package:markcut/models/watermark_settings.dart';
 import 'package:markcut/screens/photo_editor_screen.dart';
+import 'package:markcut/services/diagnostics.dart';
 import 'package:markcut/services/face_detect.dart';
 import 'package:markcut/services/mosaic_patch_painter.dart'
     show photoMosaicRect;
@@ -386,6 +387,41 @@ void main() {
       expect(_faceCalls, 1);
       expect(_live(t).mosaics, isEmpty);
       // 提示條自己會收（計時器要走完，測試才收得乾淨）
+      await t.pump(const Duration(seconds: 4));
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('原生回了失敗原因：提示帶著原因、不炸', (t) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_face, (call) async {
+            _faceCalls++;
+            throw PlatformException(
+              code: 'face_failed',
+              message: 'IllegalStateException: MlKitContext boom',
+            );
+          });
+      await _open(t);
+      expect(_faceCalls, 1);
+      expect(_live(t).mosaics, isEmpty);
+      expect(
+        find.textContaining('IllegalStateException: MlKitContext boom'),
+        findsOneWidget,
+      );
+      await t.pump(const Duration(seconds: 4));
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('上一趟找臉找到 App 被關掉：這次不自動找；自己按找成功就恢復', (t) async {
+      Diag.fusePaused[FaceDetect.fuseKey] = '自動找臉';
+      addTearDown(Diag.fusePaused.clear);
+      await _open(t);
+      expect(_faceCalls, 0, reason: '暫停中還自動找＝每開一張照片就閃退一次');
+      expect(_live(t).mosaics, isEmpty);
+      expect(find.text('上次自動找臉時 App 被關掉了，這次先不自動找'), findsOneWidget);
+      await _add(t, '自動碼人臉');
+      expect(_faceCalls, 1);
+      expect(_live(t).mosaics.length, 2);
+      expect(Diag.fusePaused, isEmpty, reason: '自己按、找成功一次就恢復自動');
       await t.pump(const Duration(seconds: 4));
       expect(t.takeException(), isNull);
     });

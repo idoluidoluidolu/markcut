@@ -55,6 +55,32 @@ IconButton _btn(WidgetTester t, IconData icon) =>
 
 Future<void> _drainHint(WidgetTester t) => t.pump(const Duration(seconds: 3));
 
+/// 馬賽克卡縮圖那排最後的虛線加號 → 選單「圓圈」（10-25 換成跟馬賽克模式
+/// 同一套面板；以前是標題列的＋）。選單滑上來用假時間推完（不花壁鐘時間），
+/// 選完再等 [n] 格真時間
+Future<void> _addCircle(WidgetTester t, {int n = 8}) async {
+  await t.tap(
+    find.byWidgetPredicate(
+      (w) => w is Semantics && w.properties.label == '新增馬賽克',
+    ),
+  );
+  await t.pump();
+  await t.pump(const Duration(milliseconds: 400));
+  await t.tap(find.text('圓圈'));
+  await _settle(t, n);
+}
+
+/// 長按第一格縮圖 → 小選單「刪除」（以前是每一列的垃圾桶）
+Future<void> _deleteFirst(WidgetTester t, {int n = 8}) async {
+  await t.longPress(
+    find.byWidgetPredicate((w) => w is Semantics && w.properties.label == '圓圈'),
+  );
+  await t.pump();
+  await t.pump(const Duration(milliseconds: 400));
+  await t.tap(find.text('刪除'));
+  await _settle(t, n);
+}
+
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
@@ -72,14 +98,12 @@ void main() {
 
     await t.tap(find.text('馬賽克').first);
     await _settle(t);
-    await t.tap(find.byTooltip('加一塊馬賽克'));
-    // 只等兩格（遠小於 0.7 秒的真實時間），模擬「加了馬上按刪除」。
+    // 每一步只等兩格（遠小於 0.7 秒的真實時間），模擬「加了馬上刪」。
     // 節流比的是 DateTime.now()（FakeAsync 假不了），所以這裡的
     // 間隔是真的壁鐘時間
-    await _settle(t, 2);
+    await _addCircle(t, n: 2);
     expect(_live(t).mosaics.length, 1);
-    await t.tap(find.byTooltip('刪除'));
-    await _settle(t, 2);
+    await _deleteFirst(t, n: 2);
     expect(_live(t).mosaics.length, 0);
 
     await t.tap(find.byTooltip('上一步'));
@@ -106,16 +130,14 @@ void main() {
 
     await t.tap(find.text('馬賽克').first);
     await _settle(t);
-    await t.tap(find.byTooltip('加一塊馬賽克'));
-    await _settle(t);
+    await _addCircle(t);
     await t.tap(find.byTooltip('上一步'));
     await _settle(t, 2);
     expect(_live(t).mosaics.length, 0);
     expect(_btn(t, Icons.redo).onPressed, isNotNull, reason: '剛撤銷，重做要亮');
 
     // 0.7 秒內做一個新的離散編輯
-    await t.tap(find.byTooltip('加一塊馬賽克'));
-    await _settle(t, 2);
+    await _addCircle(t, n: 2);
     expect(_live(t).mosaics.length, 1);
     expect(_btn(t, Icons.redo).onPressed, isNull, reason: '有新編輯，分支掉的未來要作廢');
     expect(_btn(t, Icons.undo).onPressed, isNotNull);
@@ -123,8 +145,9 @@ void main() {
     expect(t.takeException(), isNull);
   });
 
-  // 馬賽克樣式表：每個離散改動各拍一次快照，不是整張表開著只拍一次
-  testWidgets('照片：馬賽克樣式表裡連換兩次樣式，上一步一次只退一次', (t) async {
+  // 馬賽克卡的效果磚：每換一次各拍一次快照（以前是一塊一張樣式表，整張表
+  // 開著只拍一次，連換兩次再按上一步會一次全退）
+  testWidgets('照片：馬賽克卡連換兩次效果，上一步一次只退一次', (t) async {
     late Uint8List photo;
     await t.runAsync(() async {
       photo = await _png(const Color(0xFF888888), 900, 600);
@@ -134,27 +157,20 @@ void main() {
 
     await t.tap(find.text('馬賽克').first);
     await _settle(t);
-    await t.tap(find.byTooltip('加一塊馬賽克'));
-    await _settle(t);
-    await t.tap(find.byTooltip('調整樣式'));
-    await _settle(t);
-    expect(find.text('馬賽克樣式'), findsOneWidget);
+    await _addCircle(t);
     final m = _live(t).mosaics.single;
     expect(m.style.type, 0);
 
-    await t.tap(find.text('模糊'));
+    await t.tap(find.text('模糊').last);
     await _settle(t, 2);
     expect(m.style.type, 1);
-    await t.tap(find.text('純色'));
+    await t.tap(find.text('像素化').last);
     await _settle(t, 2);
-    expect(m.style.type, 2);
+    expect(m.style.type, 0);
 
-    // 關掉樣式表再按上一步
-    await t.tapAt(const Offset(600, 100));
-    await _settle(t);
     await t.tap(find.byTooltip('上一步'));
     await _settle(t);
-    expect(_live(t).mosaics.single.style.type, 1, reason: '只退「純色」那一步');
+    expect(_live(t).mosaics.single.style.type, 1, reason: '只退「像素化」那一步');
     await t.tap(find.byTooltip('上一步'));
     await _settle(t);
     expect(_live(t).mosaics.single.style.type, 0, reason: '再退「模糊」那一步');

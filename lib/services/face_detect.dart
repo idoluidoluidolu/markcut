@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
 
 import '../models/mosaic.dart';
+import 'diagnostics.dart';
 
 /// 一張臉的框：轉正後的照片座標，0~1、左上原點
 class FaceBox {
@@ -123,10 +124,20 @@ class FaceDetect {
     }
   }
 
+  /// 照片找臉的保險絲代號（見 [Diag.fuseOn]）：在 [Diag.fusePaused] 裡＝
+  /// 上一趟找到一半 App 被關掉，先別自動找
+  static const fuseKey = 'face';
+
+  /// 最近一次照片找臉，原生那邊回的失敗原因（例外類別＋訊息）；
+  /// 檔案讀不到、成功都是 null
+  static String? lastError;
+
   /// 照片裡的臉。偵測不了（web、通道不在、檔案讀不到）回 null；
   /// 偵測成功但沒有臉回空清單——兩者呼叫端要分開講
   static Future<List<FaceBox>?> inPhoto(String path) async {
     if (kIsWeb || path.isEmpty) return null;
+    lastError = null;
+    await Diag.fuseOn(fuseKey, '自動找臉');
     try {
       final r = await _ch.invokeMethod<List<Object?>>('detectImage', {
         'path': path,
@@ -137,11 +148,18 @@ class FaceDetect {
         final f = e is Map ? FaceBox.fromMap(e) : null;
         if (f != null) out.add(f);
       }
+      if (Diag.fusePaused.containsKey(fuseKey)) {
+        await Diag.fuseReset(fuseKey);
+      }
       return out;
     } on MissingPluginException {
       return null;
-    } on PlatformException {
+    } on PlatformException catch (e) {
+      lastError = e.message ?? e.code;
+      Diag.ev('照片找臉失敗：$lastError');
       return null;
+    } finally {
+      await Diag.fuseOff(fuseKey);
     }
   }
 }
