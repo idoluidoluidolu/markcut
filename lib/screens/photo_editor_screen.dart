@@ -574,6 +574,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     if (j['mzSize'] is num) {
       _mzSize = (j['mzSize'] as num).toDouble().clamp(0.5, 2.0);
     }
+    // 馬賽克模式拿掉了純色（使用者：把純色刪除）：舊草稿存的純色改成
+    // 像素化，不然面板一個效果都沒亮、也調不回來
+    if (_mosaicMode) {
+      if (_mzStyle.type == 2) _mzStyle.type = 0;
+      for (final m in wm.mosaics) {
+        if (m.style.type == 2) m.style.type = 0;
+      }
+    }
     setState(() {
       _settings.copyMarksFrom(wm);
       _grade.copyFrom(
@@ -1545,9 +1553,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   }
 
   /// 馬賽克模式的面板（取代浮水印面板；使用者在畫布選的甲＋二）：
-  /// 最上面一排每一塊的縮圖＋虛線加號、效果＋形狀、大小（全部一起）、
-  /// 濃度（純色是顏色）。改樣式／大小＝每一塊一起改；新增在浮動列的
-  /// 「新增馬賽克」或縮圖那排最後的加號
+  /// 最上面一排每一塊的縮圖＋虛線加號、效果（像素化／模糊；純色使用者
+  /// 要拿掉）＋形狀、大小（全部一起）、濃度、模糊的柔邊。改樣式／大小＝
+  /// 每一塊一起改；新增在浮動列的「新增馬賽克」或縮圖那排最後的加號
   Widget _mosaicModePanel() {
     Widget tile({
       required bool on,
@@ -1595,8 +1603,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
     void setType(int type) {
       _pushUndo();
-      // 柔邊只給模糊（像素化的重點是硬邊的格子，使用者在筆刷那邊指定過；
-      // 純色這裡沒有柔邊）：離開模糊先記住它的柔邊，換回來再拿出來
+      // 柔邊只給模糊（像素化的重點是硬邊的格子，使用者在筆刷那邊指定過）：
+      // 離開模糊先記住它的柔邊，換回來再拿出來
       if (_mzStyle.type == 1) _mzBlurFeather = _mzStyle.feather;
       final feather = type == 1 ? _mzBlurFeather : 0.0;
       setState(
@@ -1619,8 +1627,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     }
 
     // 效果磚的圖示跟 App 其他地方同一套：白色單色的 Material 圖示
-    //（以前畫成彩色的小樣本，使用者說不符合整體風格）。純色用油漆桶，
-    // 實心方塊會跟旁邊的「方形」長得太像
+    //（以前畫成彩色的小樣本，使用者說不符合整體風格）
     Widget effIcon(IconData icon, bool on) =>
         Icon(icon, size: 24, color: on ? kText : kIcon);
 
@@ -1678,16 +1685,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                         art: effIcon(Icons.blur_on, _mzStyle.type == 1),
                         onTap: () => setType(1),
                       ),
-                      const SizedBox(width: 8),
-                      tile(
-                        on: _mzStyle.type == 2,
-                        label: '純色',
-                        art: effIcon(
-                          Icons.format_color_fill,
-                          _mzStyle.type == 2,
-                        ),
-                        onTap: () => setType(2),
-                      ),
                     ],
                   ),
                 ),
@@ -1727,21 +1724,20 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   onChanged: _mzSizeChange,
                   onChangeEnd: (_) => _liveEnd(),
                 ),
-                if (_mzStyle.type != 2)
-                  sliderRow(
-                    label: '濃度',
-                    value: _mzStyle.strength,
-                    min: 0,
-                    max: 1,
-                    readout: '${(_mzStyle.strength * 100).round()}',
-                    unit: '%',
-                    onChangeStart: (_) => _pushUndo(),
-                    onChanged: (v) {
-                      _mzApply((s) => s.strength = v);
-                      _liveRepaint();
-                    },
-                    onChangeEnd: (_) => _liveEnd(),
-                  ),
+                sliderRow(
+                  label: '濃度',
+                  value: _mzStyle.strength,
+                  min: 0,
+                  max: 1,
+                  readout: '${(_mzStyle.strength * 100).round()}',
+                  unit: '%',
+                  onChangeStart: (_) => _pushUndo(),
+                  onChanged: (v) {
+                    _mzApply((s) => s.strength = v);
+                    _liveRepaint();
+                  },
+                  onChangeEnd: (_) => _liveEnd(),
+                ),
                 // 模糊才有：邊緣淡化（使用者問「模糊有邊緣淡化的選項嗎」）
                 if (_mzStyle.type == 1)
                   sliderRow(
@@ -1757,42 +1753,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                       _liveRepaint();
                     },
                     onChangeEnd: (_) => _liveEnd(),
-                  ),
-                if (_mzStyle.type == 2)
-                  SizedBox(
-                    height: 40,
-                    child: Row(
-                      children: [
-                        const SizedBox(
-                          width: kSliderLabelW,
-                          child: Text(
-                            '顏色',
-                            style: TextStyle(fontSize: 12, color: kTextDim),
-                          ),
-                        ),
-                        InkWell(
-                          borderRadius: BorderRadius.circular(14),
-                          onTap: () async {
-                            final picked = await pickColor(
-                              context,
-                              Color(_mzStyle.color),
-                            );
-                            if (picked == null || !mounted) return;
-                            _pushUndo();
-                            setState(() => _mzApply((s) => s.color = picked));
-                          },
-                          child: Container(
-                            width: 26,
-                            height: 26,
-                            decoration: BoxDecoration(
-                              color: Color(_mzStyle.color),
-                              shape: BoxShape.circle,
-                              border: Border.all(color: kBorder, width: 1.5),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
                   ),
               ],
             ),
@@ -2353,7 +2313,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             ),
           ),
           const SizedBox(height: 12),
-          Row(children: [chip('像素化', 0), chip('模糊', 1), chip('純色遮蓋', 2)]),
+          // 馬賽克模式拿掉純色（使用者：把純色刪除），筆刷跟著面板只剩兩種
+          Row(
+            children: [
+              chip('像素化', 0),
+              chip('模糊', 1),
+              if (!_mosaicMode) chip('純色遮蓋', 2),
+            ],
+          ),
           const SizedBox(height: 12),
           row(
             '粗細',
@@ -3319,7 +3286,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               children: [
                 chip('像素化', 0),
                 chip('模糊', 1),
-                chip('純色', 2),
+                if (!_mosaicMode) chip('純色', 2),
                 const SizedBox(width: 6),
                 // 上一步／下一步：塗錯一筆馬上收回（跟影片版同款
                 // 分段膠囊：合成一顆、中間細分隔線，38px 高好按）

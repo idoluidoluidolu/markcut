@@ -267,7 +267,7 @@ void main() {
       final ms = _live(t).mosaics;
       expect(ms.length, 2);
       expect(ms.every((m) => m.face && m.oval && !m.off), isTrue);
-      for (final x in const ['像素化', '模糊', '純色', '大小', '濃度', '新增馬賽克', '匯出']) {
+      for (final x in const ['像素化', '模糊', '大小', '濃度', '新增馬賽克', '匯出']) {
         expect(find.text(x), findsWidgets, reason: '少了「$x」');
       }
       for (final x in const [
@@ -280,6 +280,9 @@ void main() {
         '找臉',
         '方框',
         '筆刷',
+        // 使用者：把純色刪除
+        '純色',
+        '顏色',
       ]) {
         expect(find.text(x), findsNothing, reason: '馬賽克模式不該有「$x」');
       }
@@ -288,13 +291,10 @@ void main() {
       expect(_thumb('圓形'), findsOneWidget);
       expect(_thumb('方形'), findsOneWidget);
       // 效果磚是白色單色圖示（同 App 其他地方），不是彩色小樣本
-      for (final i in const [
-        Icons.grid_on,
-        Icons.blur_on,
-        Icons.format_color_fill,
-      ]) {
+      for (final i in const [Icons.grid_on, Icons.blur_on]) {
         expect(find.byIcon(i), findsOneWidget);
       }
+      expect(find.byIcon(Icons.format_color_fill), findsNothing);
       expect(t.takeException(), isNull);
     });
 
@@ -321,16 +321,16 @@ void main() {
 
     testWidgets('下面那排：樣式、形狀一起改每一塊；方框照選的形狀加', (t) async {
       await _open(t);
-      await t.tap(find.text('純色'));
+      await t.tap(find.text('模糊'));
       await _settle(t, 4);
-      expect(_live(t).mosaics.every((m) => m.style.type == 2), isTrue);
+      expect(_live(t).mosaics.every((m) => m.style.type == 1), isTrue);
 
       await _add(t, '方框');
       final ms = _live(t).mosaics;
       expect(ms.length, 3);
       expect(ms.last.face, isFalse);
       expect(ms.last.oval, isTrue, reason: '方框要照目前選的形狀（橢圓）');
-      expect(ms.last.style.type, 2, reason: '方框要照目前選的樣式');
+      expect(ms.last.style.type, 1, reason: '方框要照目前選的樣式');
 
       // 形狀切成方的：每一塊都跟著變
       await t.tap(_thumb('方形'));
@@ -419,6 +419,35 @@ void main() {
       expect(find.text('新增馬賽克'), findsOneWidget, reason: '沒有開回馬賽克模式');
       expect(find.text('存成範本'), findsNothing);
       expect(_live(t).mosaics.single.face, isTrue);
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('純色拿掉了：舊草稿存的純色開起來變像素化；筆刷也沒有純色', (t) async {
+      final st = MosaicStyle(type: 2, color: 0xFFFF0000);
+      final s = WatermarkSettings()..text.enabled = false;
+      s.mosaics.add(
+        faceMosaic(const FaceBox(0.3, 0.3, 0.2, 0.2), 1000, 800, style: st),
+      );
+      final draft = jsonEncode({
+        ...s.toJson(),
+        'color': ColorGrade().toJson(),
+        'extraWms': const [],
+        'mosaicMode': true,
+        'mzStyle': st.toJson(),
+        'mzOval': true,
+      });
+      await _open(t, draft: draft);
+      expect(
+        _live(t).mosaics.single.style.type,
+        0,
+        reason: '舊草稿的純色要改成像素化（面板已經沒有純色）',
+      );
+      expect(find.text('純色'), findsNothing);
+
+      await _add(t, '筆刷');
+      expect(find.text('像素化'), findsWidgets);
+      expect(find.text('純色'), findsNothing, reason: '筆刷工具列也不該有純色');
+      expect(find.text('純色遮蓋'), findsNothing);
       expect(t.takeException(), isNull);
     });
 
