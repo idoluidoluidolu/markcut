@@ -26,6 +26,7 @@ import '../services/watermark_renderer.dart';
 import '../widgets/color_grade_panel.dart';
 import '../widgets/font_picker.dart';
 import '../widgets/library_tile_menu.dart';
+import '../widgets/mosaic_effect_tiles.dart';
 import '../widgets/mosaic_outline.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
@@ -85,7 +86,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   /// 模糊的柔邊：換成像素化時柔邊歸零（像素化沒有柔邊），這裡記著，換回
   /// 模糊再拿出來。第一次選模糊就先給一點（使用者：柔邊先給一點預設）
-  double _mzBlurFeather = 0.3;
+  double _mzBlurFeather = kMosaicFeatherDefault;
 
   /// 下面那排的「大小」（全部一起）：1＝找臉／新加當下的大小。拉動＝每一塊
   /// 照自己現在的大小一起放大縮小（筆畫是粗細）；要單獨調哪一塊就兩指捏它
@@ -1552,54 +1553,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   }
 
   /// 馬賽克模式的面板（取代浮水印面板；使用者在畫布選的甲＋二）：
-  /// 最上面一排每一塊的縮圖＋虛線加號、效果（像素化／模糊；純色使用者
-  /// 要拿掉）＋形狀、大小（全部一起）、濃度、模糊的柔邊。改樣式／大小＝
+  /// 最上面一排每一塊的縮圖＋虛線加號、效果（像素化／模糊；純色、形狀
+  /// 使用者要拿掉）、大小（全部一起）、濃度、模糊的柔邊。改樣式／大小＝
   /// 每一塊一起改；新增在浮動列的「新增馬賽克」或縮圖那排最後的加號
   Widget _mosaicModePanel() {
-    Widget tile({
-      required bool on,
-      required String label,
-      required Widget art,
-      required VoidCallback onTap,
-    }) => Expanded(
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: on ? null : onTap,
-        child: Container(
-          constraints: const BoxConstraints(minHeight: 62),
-          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 2),
-          // 設定面板裡的「選項」一律白框白字＋亮底（同樣式表的 chip）
-          decoration: BoxDecoration(
-            color: on ? kPanelHi : Colors.transparent,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: on ? kAmber : kClipBorder,
-              width: on ? 1.5 : 1,
-            ),
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              art,
-              const SizedBox(height: 6),
-              FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: on ? FontWeight.w700 : FontWeight.w400,
-                    color: kText,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-
     void setType(int type) {
       _pushUndo();
       // 柔邊只給模糊（像素化的重點是硬邊的格子，使用者在筆刷那邊指定過）：
@@ -1615,11 +1572,6 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       );
     }
 
-    // 效果磚的圖示跟 App 其他地方同一套：白色單色的 Material 圖示
-    //（以前畫成彩色的小樣本，使用者說不符合整體風格）
-    Widget effIcon(IconData icon, bool on) =>
-        Icon(icon, size: 24, color: on ? kText : kIcon);
-
     return SingleChildScrollView(
       // 底下讓出浮動鈕列（字級放大塞不下時捲得到最後一排）
       padding: EdgeInsets.fromLTRB(16, 10, 16, _mzBarHeight(context) + 6),
@@ -1628,27 +1580,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         children: [
           _mosaicStrip(),
           const SizedBox(height: 14),
-          // 形狀一律圓圈（使用者：圓圈和方框不用了），這一排只剩效果
-          IntrinsicHeight(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                tile(
-                  on: _mzStyle.type == 0,
-                  label: '像素化',
-                  art: effIcon(Icons.grid_on, _mzStyle.type == 0),
-                  onTap: () => setType(0),
-                ),
-                const SizedBox(width: 8),
-                tile(
-                  on: _mzStyle.type == 1,
-                  label: '模糊',
-                  art: effIcon(Icons.blur_on, _mzStyle.type == 1),
-                  onTap: () => setType(1),
-                ),
-              ],
-            ),
-          ),
+          // 形狀一律圓圈（使用者：圓圈和方框不用了），這一排只剩效果；
+          // 跟影片的馬賽克樣式表同一排磚
+          MosaicEffectTiles(type: _mzStyle.type, onPick: setType),
           const SizedBox(height: 10),
           // 滑桿拖動中只重畫預覽（_liveRepaint），不整頁 setState；這兩條
           // 自己跟著同一個訊號重畫，拇指才跟得上手指（以前放手才跳過去）
@@ -2159,7 +2093,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               // 柔邊各模式自己的：先把現在的存回去，再拿新模式的出來
               _brushFeatherByType[_brushStyle.type] = _brushStyle.feather;
               _brushStyle.type = type;
-              _brushStyle.feather = _brushFeatherByType[type] ?? 0.0;
+              // 沒調過先給一點（使用者：一律柔邊都給一點預設）；
+              // 像素化沒有柔邊
+              _brushStyle.feather =
+                  _brushFeatherByType[type] ??
+                  (type == 0 ? 0.0 : kMosaicFeatherDefault);
               _brushSel?.style.type = type;
               _brushSel?.style.feather = _brushStyle.feather;
             }),
@@ -3123,7 +3061,11 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               // 柔邊各模式各記各的（同 _brushPanel）
               _brushFeatherByType[_brushStyle.type] = _brushStyle.feather;
               _brushStyle.type = type;
-              _brushStyle.feather = _brushFeatherByType[type] ?? 0.0;
+              // 沒調過先給一點（使用者：一律柔邊都給一點預設）；
+              // 像素化沒有柔邊
+              _brushStyle.feather =
+                  _brushFeatherByType[type] ??
+                  (type == 0 ? 0.0 : kMosaicFeatherDefault);
               _brushSel?.style.type = type;
               _brushSel?.style.feather = _brushStyle.feather;
             }),

@@ -44,6 +44,7 @@ Finder _dashedRings() => find.byWidgetPredicate(
 void main() {
   late FakeComp comp;
   final analyzed = <String>[];
+  final detected = <String>[];
 
   setUpAll(() {
     final b = TestWidgetsFlutterBinding.ensureInitialized();
@@ -55,6 +56,7 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     Diag.playerLayer.value = false;
     analyzed.clear();
+    detected.clear();
     final b = TestWidgetsFlutterBinding.ensureInitialized();
     comp = FakeComp(b)
       ..duration = 5.0
@@ -63,6 +65,14 @@ void main() {
       if (call.method == 'analyzeVideo') {
         analyzed.add((call.arguments as Map)['path'] as String);
         return _samples();
+      }
+      // 圖片：兩張臉（轉正後的照片 0~1、左上原點）
+      if (call.method == 'detectImage') {
+        detected.add((call.arguments as Map)['path'] as String);
+        return [
+          {'x': 0.20, 'y': 0.20, 'w': 0.15, 'h': 0.20},
+          {'x': 0.60, 'y': 0.25, 'w': 0.12, 'h': 0.16},
+        ];
       }
       return null;
     });
@@ -242,6 +252,170 @@ void main() {
     await tick(t, 5);
     final w1 = t.getSize(_dashedRings()).width;
     expect(w2, closeTo(w1 * 2, 1.0), reason: '預覽的框也乘 scale');
+    await settle(t, 80);
+  });
+
+  // ── 10-25：三種馬賽克各開各的樣式表、標題寫明（使用者指定）；
+  //    圖片也能自動碼人臉 ──
+  Future<void> openSheet(WidgetTester t, TimelineClip c) async {
+    editorOf(t).onTapSelectedClip!(c.id);
+    await tick(t, 15);
+  }
+
+  testWidgets('點人臉馬賽克：標題寫自動人臉馬賽克，只有像素化／模糊；模糊柔邊先給一點', (t) async {
+    await openWithVideo(t);
+    await autoFace(t);
+    final a = faceClips(t).first;
+    await openSheet(t, a);
+    expect(find.text('自動人臉馬賽克'), findsOneWidget);
+    for (final x in const ['像素化', '模糊', '大小', '濃度']) {
+      expect(find.text(x), findsWidgets, reason: '少了「$x」');
+    }
+    // 使用者：純色、筆刷都不用；圓／方也不用（一律圓圈）；像素化沒有柔邊
+    for (final x in const ['純色', '筆刷', '圓', '方', '縮放', '柔邊']) {
+      expect(find.text(x), findsNothing, reason: '人臉馬賽克不該有「$x」');
+    }
+    await t.tap(find.text('模糊'));
+    await tick(t, 10);
+    final st = modelOf(t).sourceOf(a).mosaicStyle!;
+    expect(st.type, 1);
+    expect(
+      st.feather,
+      closeTo(kMosaicFeatherDefault, 1e-9),
+      reason: '柔邊先給一點預設',
+    );
+    expect(find.text('柔邊'), findsOneWidget);
+    await settle(t, 80);
+  });
+
+  testWidgets('人臉舊資料存成方的、純色的：打開樣式表就改成圓的、像素化', (t) async {
+    await openWithVideo(t);
+    await autoFace(t);
+    final a = faceClips(t).first;
+    final s = modelOf(t).sourceOf(a);
+    s.mosaicOval = false;
+    s.mosaicStyle!.type = 2;
+    await openSheet(t, a);
+    expect(s.mosaicOval, isTrue, reason: '人臉一律圓圈');
+    expect(s.mosaicStyle!.type, 0, reason: '人臉沒有純色了');
+    await settle(t, 80);
+  });
+
+  testWidgets('點方框馬賽克：標題寫方框馬賽克，只有像素化／模糊（沒有純色、筆刷）', (t) async {
+    await openWithVideo(t);
+    editorOf(t).onAddMedia(1);
+    await tick(t, 15);
+    await t.tap(find.text('馬賽克').last);
+    await tick(t, 15);
+    await t.tap(find.text('方框'));
+    await settle(t, 10);
+    final box = modelOf(t).clips.firstWhere((c) {
+      final s = modelOf(t).sourceOf(c);
+      return s.kind == ClipKind.mosaic &&
+          !s.mosaicFace &&
+          s.mosaicStroke == null;
+    });
+    await openSheet(t, box);
+    expect(find.text('方框馬賽克'), findsOneWidget);
+    expect(find.text('像素化'), findsOneWidget);
+    expect(find.text('模糊'), findsOneWidget);
+    for (final x in const ['純色', '筆刷', '圓', '方']) {
+      expect(find.text(x), findsNothing, reason: '方框馬賽克不該有「$x」');
+    }
+    await settle(t, 80);
+  });
+
+  testWidgets('點筆刷馬賽克：標題寫筆刷馬賽克，有像素化／模糊／純色／筆刷；柔邊先給一點', (t) async {
+    await openWithVideo(t);
+    late TimelineClip stroke;
+    VideoEditorScreen.debugTimeline!((tl) {
+      tl.sources.add(
+        MediaSource(
+          path: '',
+          name: '筆刷馬賽克',
+          kind: ClipKind.mosaic,
+          duration: 3600,
+          mosaicStyle: MosaicStyle(),
+          mosaicStroke: [0.2, 0.2, 0.5, 0.5],
+          mosaicBrush: 0.1,
+        ),
+      );
+      stroke = TimelineClip(
+        id: tl.nextId(),
+        sourceIndex: tl.sources.length - 1,
+        trimStart: 0,
+        trimEnd: 3,
+        offset: 0,
+        track: 1,
+      );
+      tl.clips.add(stroke);
+    });
+    await tick(t, 10);
+    await openSheet(t, stroke);
+    expect(find.text('筆刷馬賽克'), findsOneWidget);
+    for (final x in const ['像素化', '模糊', '純色', '筆刷', '粗細']) {
+      expect(find.text(x), findsWidgets, reason: '筆刷馬賽克少了「$x」');
+    }
+    final st = modelOf(t).sourceOf(stroke).mosaicStyle!;
+    await t.tap(find.text('模糊'));
+    await tick(t, 8);
+    expect(st.feather, closeTo(kMosaicFeatherDefault, 1e-9));
+    await t.tap(find.text('純色'));
+    await tick(t, 8);
+    expect(st.type, 2);
+    expect(
+      st.feather,
+      closeTo(kMosaicFeatherDefault, 1e-9),
+      reason: '純色的柔邊也先給一點',
+    );
+    expect(find.text('顏色'), findsOneWidget);
+    await settle(t, 80);
+  });
+
+  testWidgets('圖片也能自動碼人臉：每張臉一條軌、整段不動、蓋住圖片那段', (t) async {
+    await t.pumpWidget(editorApp(const VideoEditorScreen(blank: true)));
+    await tick(t, 5);
+    VideoEditorScreen.debugTimeline!((tl) {
+      tl.sources.add(
+        MediaSource(
+          path: '/p.jpg',
+          name: 'p',
+          kind: ClipKind.image,
+          duration: 3600,
+          w: 1000,
+          h: 800,
+        ),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: tl.nextId(),
+          sourceIndex: 0,
+          trimStart: 0,
+          trimEnd: 4,
+          offset: 0,
+          track: 0,
+        ),
+      );
+    });
+    await tick(t, 15);
+    await autoFace(t);
+    expect(detected, ['/p.jpg'], reason: '圖片要走照片的找臉');
+    expect(analyzed, isEmpty, reason: '圖片不該走影片的找臉');
+    final faces = faceClips(t);
+    expect(faces.length, 2, reason: '兩張臉兩條');
+    for (final c in faces) {
+      final s = modelOf(t).sourceOf(c);
+      expect(s.mosaicOval, isTrue);
+      expect(s.mosaicFaceAt?.first, 0, reason: '頭像從圖片（素材 0）裁');
+      expect(c.offset, closeTo(0, 1e-6));
+      expect(c.end, closeTo(4, 0.05), reason: '要蓋住圖片那 4 秒');
+      final keys = s.mosaicPath!;
+      expect(keys.length, greaterThanOrEqualTo(10));
+      for (var i = 5; i + 4 < keys.length; i += 5) {
+        expect(keys[i + 1], closeTo(keys[1], 1e-9), reason: '圖片的臉不會動');
+        expect(keys[i + 2], closeTo(keys[2], 1e-9));
+      }
+    }
     await settle(t, 80);
   });
 }

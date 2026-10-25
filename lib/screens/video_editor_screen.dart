@@ -81,6 +81,7 @@ import '../widgets/color_grade_panel.dart';
 import '../widgets/text_insert_bar.dart';
 import '../widgets/timeline_editor.dart';
 import '../widgets/face_avatar.dart';
+import '../widgets/mosaic_effect_tiles.dart';
 import '../widgets/mosaic_outline.dart';
 import '../widgets/editor_region.dart';
 import '../widgets/font_picker.dart';
@@ -8718,20 +8719,47 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   FaceVideoJob? _faceJob;
   double _faceProgress = 0;
 
+  /// 圖片找臉中（很快、不給膠囊；只擋連按）
+  bool _faceImageBusy = false;
+
   /// 自動碼人臉：找選取中（或播放頭下）那段影片裡的臉，每個人一條軌、
   /// 一塊跟著臉走的橢圓馬賽克。找的時候照樣可以滑、可以剪（進場即可
-  /// 滑動是硬約束）；膠囊上的 × 停
+  /// 滑動是硬約束）；膠囊上的 × 停。
+  /// 圖片也行（使用者：加入圖片也要能自動碼，以前只吃影片）：選著的、
+  /// 播放頭下最上面的那張，見 [_autoFaceImage]
   Future<void> _autoFaceMosaic() async {
-    if (_faceJob != null) return;
+    if (_faceJob != null || _faceImageBusy) return;
+    bool faceable(TimelineClip c) {
+      final s = _tl.sourceOf(c);
+      return s.isVideo || s.kind == ClipKind.image;
+    }
+
+    // 選著的影片／圖片優先；再來播放頭下最上面那一層（影片或圖片）；
+    // 都沒有就第一支影片、第一張圖片
     final sel = _selClip;
-    final video = (sel != null && _tl.sourceOf(sel).isVideo)
-        ? sel
-        : (_activeVideo ??
-              _tl.clips.where((c) => _tl.sourceOf(c).isVideo).firstOrNull);
-    if (video == null) {
-      showHint(context, '先加一段影片');
+    TimelineClip? top;
+    for (final c in _tl.clips) {
+      if (!faceable(c) ||
+          _hiddenTracks.contains(c.track) ||
+          !c.coversForDisplay(_position)) {
+        continue;
+      }
+      if (top == null || c.track < top.track) top = c;
+    }
+    final target =
+        (sel != null && faceable(sel) ? sel : null) ??
+        top ??
+        _tl.clips.where((c) => _tl.sourceOf(c).isVideo).firstOrNull ??
+        _tl.clips.where(faceable).firstOrNull;
+    if (target == null) {
+      showHint(context, '先加一段影片或一張圖片');
       return;
     }
+    if (!_tl.sourceOf(target).isVideo) {
+      await _autoFaceImage(target);
+      return;
+    }
+    final video = target;
     final src = _tl.sourceOf(video);
     // 工作檔（1080p SDR）比原檔小、好解，時間跟原檔一樣
     final path = src.workPath ?? src.path;
@@ -8770,13 +8798,48 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       aspect,
       ch > 0 ? cw / ch : _canvasAspectNow,
     );
+    _addFacePlans(plans, video);
+  }
+
+  /// 圖片的自動碼人臉：照片找臉一次，每張臉一條軌、整段不動的圓圈。
+  /// 換算跟影片同一套——當成「片段頭尾兩格、位置一樣」的軌跡丟進
+  /// buildFaceTracks／planFaceMosaics（放大倍率、等比塞進畫布、縮放、
+  /// 位置、鏡像、旋轉全部照抄），圖片換了位置也對得上
+  Future<void> _autoFaceImage(TimelineClip img) async {
+    final src = _tl.sourceOf(img);
+    setState(() => _faceImageBusy = true);
+    final found = await FaceDetect.inPhoto(src.path);
+    if (!mounted) return;
+    setState(() => _faceImageBusy = false);
+    if (found == null) {
+      showHint(context, '這張圖片沒辦法自動找臉，可以用方框或筆刷', error: true);
+      return;
+    }
+    if (!_tl.clips.contains(img)) return;
+    final (cw, ch) = computeCanvasSize(_tl, _resolution, _canvasRatio);
+    final plans = planFaceMosaics(
+      buildFaceTracks(
+        [FaceSample(img.trimStart, found), FaceSample(img.trimEnd, found)],
+        // 頭尾兩格之間沒有別的取樣：不能因為「太久沒出現」就斷掉
+        maxGap: double.infinity,
+        duration: src.duration,
+      ),
+      img,
+      src.aspect,
+      ch > 0 ? cw / ch : _canvasAspectNow,
+    );
+    _addFacePlans(plans, img);
+  }
+
+  /// 找臉的結果加進時間軸：一個人一條軌，疊在最上面（馬賽克只糊它下面的
+  /// 層）。[from]＝找的那段影片／那張圖（頭像從它抽）
+  void _addFacePlans(List<FaceMosaicPlan> plans, TimelineClip from) {
     if (plans.isEmpty) {
       showHint(context, '沒有找到臉，可以用方框或筆刷');
       return;
     }
     _pause();
     _pushUndo();
-    // 一個人一條軌，疊在最上面（馬賽克只糊它下面的層）
     final base = _tl.usedTracks;
     setState(() {
       for (var i = 0; i < plans.length; i++) {
@@ -8795,7 +8858,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             mosaicFace: true,
             // 頭像抽這一格（臉框換成左上角＋寬高）
             mosaicFaceAt: [
-              video.sourceIndex.toDouble(),
+              from.sourceIndex.toDouble(),
               p.best.t,
               p.best.cx - p.best.w / 2,
               p.best.cy - p.best.h / 2,
@@ -8862,16 +8925,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (!_faceThumbTried.add(key)) continue;
       final vi = at[0].round();
       if (vi < 0 || vi >= _tl.sources.length) continue;
-      final bytes = await nativeFrameAt(
-        _tl.sources[vi].previewPath,
-        at[1],
-        maxH: 360,
-        background: true,
-      );
+      // 圖片找到的臉：頭像直接從那張圖裁（抽幀通道只吃影片）
+      final image = _tl.sources[vi].kind == ClipKind.image;
+      final bytes = image
+          ? await readFileBytes(_tl.sources[vi].path)
+          : await nativeFrameAt(
+              _tl.sources[vi].previewPath,
+              at[1],
+              maxH: 360,
+              background: true,
+            );
       if (!mounted) return;
       if (bytes == null) continue;
       try {
-        final codec = await ui.instantiateImageCodec(bytes);
+        // 照片原檔動輒幾千萬像素：解小張就好（頭像只有一顆指頭大）
+        final codec = await ui.instantiateImageCodec(
+          bytes,
+          targetHeight: image ? 480 : null,
+        );
         final fr = await codec.getNextFrame();
         codec.dispose();
         if (!mounted) {
@@ -9077,7 +9148,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             borderRadius: BorderRadius.circular(9),
             onTap: () => setState(() {
               _vBrushFeatherByType[_vBrushStyle.type] = _vBrushStyle.feather;
-              final fea = _vBrushFeatherByType[type] ?? 0.0;
+              // 沒調過先給一點（使用者：一律柔邊都給一點預設）；
+              // 像素化沒有柔邊
+              final fea =
+                  _vBrushFeatherByType[type] ??
+                  (type == 0 ? 0.0 : kMosaicFeatherDefault);
               apply((st) {
                 st.type = type;
                 st.feather = fea;
@@ -9343,12 +9418,35 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
   }
 
-  /// 馬賽克樣式表：樣式（像素化/模糊/純色遮蓋）＋濃度/顏色
+  /// 馬賽克樣式表：點哪一種就開哪一種，標題寫明是哪一種（使用者：選擇哪個
+  /// 馬賽克，標題要註明）——
+  /// - 自動人臉馬賽克、方框馬賽克：跟照片馬賽克模式同一套（使用者：直接套用
+  ///   剛剛調整的那個模式；純色、筆刷都不用），效果只有像素化／模糊，人臉
+  ///   一律圓圈（圓／方拿掉），大小、濃度、模糊才有柔邊
+  /// - 筆刷馬賽克：像素化／模糊／純色＋「筆刷」（關掉這張、接著塗），粗細、
+  ///   濃度（像素化、模糊）、柔邊（模糊、純色，跟筆刷工具列同一套）、純色的顏色
+  /// 柔邊沒調過的一律先給一點（使用者：一律柔邊都給一點預設）
   void _editMosaicClip(TimelineClip clip) {
     final src = _tl.sourceOf(clip);
     if (src.kind != ClipKind.mosaic) return;
+    final stroke = src.mosaicStroke != null;
+    final face = !stroke && src.mosaicFace;
     src.mosaicStyle ??= MosaicStyle();
     final st = src.mosaicStyle!;
+    // 拿掉的選項：方框／人臉存著的純色改像素化、人臉方的改圓的；像素化
+    // 不帶柔邊（這張表看不到也調不掉）
+    if ((!stroke && st.type == 2) ||
+        (face && !src.mosaicOval) ||
+        (st.type == 0 && st.feather > 0)) {
+      _pushUndo();
+      setState(() {
+        if (!stroke && st.type == 2) st.type = 0;
+        if (st.type == 0) st.feather = 0;
+        if (face) src.mosaicOval = true;
+      });
+    }
+    // 柔邊各效果各記各的：離開時記住、換回來拿出來；沒調過的先給一點
+    final featherBy = <int, double>{if (st.type != 0) st.type: st.feather};
     var pushed = false;
     showModalBottomSheet(
       context: context,
@@ -9364,61 +9462,36 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             setSheet(() {});
           }
 
-          Widget option(String label, bool on, VoidCallback onTap) {
-            return Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(10),
-                  onTap: () => change(onTap),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    alignment: Alignment.center,
-                    // 設定面板裡的「選項」一律白框白字＋亮底。
-                    // 選取的粗框畫在前景：邊框寬度變了會被算進內距，
-                    // 裡面的字會位移半個像素
-                    decoration: BoxDecoration(
-                      color: on ? kPanelHi : Colors.transparent,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: kClipBorder, width: 1),
-                    ),
-                    foregroundDecoration: on
-                        ? BoxDecoration(
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: kAmber, width: 1.5),
-                          )
-                        : null,
-                    child: Text(
-                      label,
-                      style: TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: on ? FontWeight.w700 : FontWeight.w400,
-                        color: kText,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            );
-          }
+          void setType(int t) => change(() {
+            if (st.type != 0) featherBy[st.type] = st.feather;
+            st.type = t;
+            st.feather = t == 0 ? 0 : (featherBy[t] ?? kMosaicFeatherDefault);
+          });
 
-          Widget chip(String label, int type) =>
-              option(label, st.type == type, () => st.type = type);
+          String pct(double v) => '${(v * 100).round()}';
 
           return SafeArea(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Row(
+                  Row(
                     children: [
-                      Icon(Icons.blur_on, size: 18, color: kAmber),
-                      SizedBox(width: 8),
+                      Icon(
+                        face
+                            ? Icons.face_retouching_natural
+                            : (stroke
+                                  ? Icons.brush_outlined
+                                  : Icons.crop_square),
+                        size: 18,
+                        color: kAmber,
+                      ),
+                      const SizedBox(width: 8),
                       Text(
-                        '馬賽克樣式',
-                        style: TextStyle(
+                        face ? '自動人臉馬賽克' : (stroke ? '筆刷馬賽克' : '方框馬賽克'),
+                        style: const TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w700,
                         ),
@@ -9426,19 +9499,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     ],
                   ),
                   const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      chip('像素化', 0),
-                      chip('模糊', 1),
-                      chip('純色', 2),
-                      // 第四格是動作不是樣式：關掉樣式表、直接進
-                      // 筆刷模式（樣式沿用這一塊調好的；
-                      // 跟照片編輯器同一套入口）
-                      Expanded(
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 4),
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(10),
+                  MosaicEffectTiles(
+                    type: st.type,
+                    onPick: setType,
+                    withSolid: stroke,
+                    // 筆刷馬賽克的第四格是動作不是樣式：關掉樣式表、直接
+                    // 進筆刷模式（樣式沿用這一塊調好的）
+                    action: stroke
+                        ? (
+                            icon: Icons.brush_outlined,
+                            label: '筆刷',
                             onTap: () {
                               Navigator.pop(context);
                               _vBrushStyle
@@ -9448,168 +9518,78 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                 ..color = st.color;
                               _startVBrush(clip.track);
                             },
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                              alignment: Alignment.center,
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(
-                                  color: kClipBorder,
-                                  width: 1,
-                                ),
-                              ),
-                              child: const Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(
-                                    Icons.brush_outlined,
-                                    size: 14,
-                                    color: kText,
-                                  ),
-                                  SizedBox(width: 4),
-                                  Text(
-                                    '筆刷',
-                                    style: TextStyle(
-                                      fontSize: 12.5,
-                                      color: kText,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
+                          )
+                        : null,
                   ),
-                  const SizedBox(height: 14),
-                  if (src.mosaicStroke != null)
+                  const SizedBox(height: 12),
+                  if (stroke)
                     sliderRow(
                       label: '粗細',
                       value: src.mosaicBrush,
                       min: 0.02,
                       max: 0.6,
                       onChanged: (v) => change(() => src.mosaicBrush = v),
-                      readout: '${(src.mosaicBrush * 100).round()}',
+                      readout: pct(src.mosaicBrush),
                       unit: '%',
                     )
                   else
                     sliderRow(
-                      label: '縮放',
+                      label: '大小',
                       value: clip.scale,
                       // 找臉的：臉框乘這個倍率（見 mosaicPathOnTimeline）
-                      min: src.mosaicPath != null ? kFaceMosaicMinScale : 0.02,
-                      max: src.mosaicPath != null ? kFaceMosaicMaxScale : 3.0,
+                      min: face ? kFaceMosaicMinScale : 0.02,
+                      max: face ? kFaceMosaicMaxScale : 3.0,
                       onChanged: (v) => change(() => clip.scale = v),
-                      readout: '${(clip.scale * 100).round()}',
+                      readout: pct(clip.scale),
                       unit: '%',
                     ),
-                  // 找臉的：圓（貼臉形）／方。固定位置那種的匯出不吃橢圓
-                  if (src.mosaicPath != null) ...[
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        option(
-                          '圓',
-                          src.mosaicOval,
-                          () => src.mosaicOval = true,
-                        ),
-                        option(
-                          '方',
-                          !src.mosaicOval,
-                          () => src.mosaicOval = false,
-                        ),
-                      ],
+                  if (st.type != 2)
+                    sliderRow(
+                      label: '濃度',
+                      value: st.strength,
+                      min: 0,
+                      max: 1,
+                      onChanged: (v) => change(() => st.strength = v),
+                      readout: pct(st.strength),
+                      unit: '%',
                     ),
-                  ],
-                  if (st.type != 2) ...[
-                    const SizedBox(height: 14),
-                    Row(
-                      children: [
-                        const SizedBox(
-                          width: kSliderLabelW,
-                          child: Text(
-                            '濃度',
-                            style: TextStyle(fontSize: 12, color: kTextDim),
-                          ),
-                        ),
-                        Expanded(
-                          child: Slider(
-                            value: st.strength,
-                            onChanged: (v) => change(() => st.strength = v),
-                          ),
-                        ),
-                        SizedBox(
-                          width: kSliderLabelW,
-                          child: Text(
-                            '${(st.strength * 100).round()}%',
-                            textAlign: TextAlign.right,
-                            style: const TextStyle(
-                              fontSize: 11.5,
-                              color: kTextDim,
-                            ),
-                          ),
-                        ),
-                      ],
+                  // 像素化沒有柔邊（硬邊的格子才是重點）
+                  if (st.type != 0)
+                    sliderRow(
+                      label: '柔邊',
+                      value: st.feather,
+                      min: 0,
+                      max: 1,
+                      onChanged: (v) => change(() => st.feather = v),
+                      readout: pct(st.feather),
+                      unit: '%',
                     ),
-                    // 純色遮蓋是實心色塊，沒有邊可以柔；
-                    // 像素化跟模糊都吃得到
-                    if (st.type != 2)
-                      Row(
+                  if (st.type == 2)
+                    SizedBox(
+                      height: 40,
+                      child: Row(
                         children: [
                           const SizedBox(
                             width: kSliderLabelW,
                             child: Text(
-                              '柔邊',
+                              '顏色',
                               style: TextStyle(fontSize: 12, color: kTextDim),
                             ),
                           ),
-                          Expanded(
-                            child: Slider(
-                              value: st.feather,
-                              onChanged: (v) => change(() => st.feather = v),
-                            ),
-                          ),
-                          SizedBox(
-                            width: kSliderLabelW,
-                            child: Text(
-                              '${(st.feather * 100).round()}%',
-                              textAlign: TextAlign.right,
-                              style: const TextStyle(
-                                fontSize: 11.5,
-                                color: kTextDim,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                  ] else ...[
-                    const SizedBox(height: 14),
-                    SizedBox(
-                      height: 32,
-                      child: Row(
-                        children: [
-                          const Text(
-                            '顏色',
-                            style: TextStyle(fontSize: 12, color: kTextDim),
-                          ),
-                          const Spacer(),
                           InkWell(
-                            borderRadius: BorderRadius.circular(12),
+                            borderRadius: BorderRadius.circular(14),
                             onTap: () async {
                               final picked = await pickColor(
                                 context,
                                 Color(st.color),
                               );
-                              final ok = picked != null;
-                              final color = Color(picked ?? 0);
-                              if (ok == true) {
-                                change(() => st.color = color.toARGB32());
+                              if (picked != null) {
+                                change(() => st.color = picked);
                               }
                             },
                             child: Container(
-                              width: 24,
-                              height: 24,
+                              width: 26,
+                              height: 26,
                               decoration: BoxDecoration(
                                 color: Color(st.color),
                                 shape: BoxShape.circle,
@@ -9620,7 +9600,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                         ],
                       ),
                     ),
-                  ],
                 ],
               ),
             ),
@@ -11589,10 +11568,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           // 快取不會誤觸。mpv 起步比 ExoPlayer 慢幾百毫秒，門檻 1 秒的話整輪
           // 指針都超前畫面、片尾被提早切掉（實機 2235：時鐘落後 P95 400ms）
           final followsLead =
-              _android &&
-              leadId == clip.id &&
-              !clip.reverse &&
-              clip.speed > 0;
+              _android && leadId == clip.id && !clip.reverse && clip.speed > 0;
           final driftThr = followsLead
               ? 0.25 * math.max(1.0, _speed * clip.speed)
               : seekThr;
@@ -18798,11 +18774,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               // 來源是 HDR 才出現：SDR 匯出在 HDR 螢幕上永遠跟原片
               // 有落差（亮度被壓縮），要一樣只有輸出檔本身就是 HDR
               if (_hdrAvail == true)
-                exportSettingRow('HDR', _exportHdr ? '保留（跟原片一樣）' : '轉成 SDR', () {
-                  setState(() => _exportHdr = !_exportHdr);
-                  // 預覽跟著切換 HDR/SDR 管線
-                  _compRefreshIfChanged();
-                }, divider: false),
+                exportSettingRow(
+                  'HDR',
+                  _exportHdr ? '保留（跟原片一樣）' : '轉成 SDR',
+                  () {
+                    setState(() => _exportHdr = !_exportHdr);
+                    // 預覽跟著切換 HDR/SDR 管線
+                    _compRefreshIfChanged();
+                  },
+                  divider: false,
+                ),
               const SizedBox(height: 22),
               // 預估貼在匯出鈕正上方。它唯一的用途就是讓人在按下去之前
               // 決定要不要回頭改設定，放在最靠近手指的地方最有用。
@@ -18914,8 +18895,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               );
               // 素材本身就比這一級小的時候，縮不下去＝跟原片同尺寸，
               // 這種情況直接講白，不要讓人以為選了沒反應
-              final same =
-                  r != ExportResolution.original && w == ow && h == oh;
+              final same = r != ExportResolution.original && w == ow && h == oh;
               return optionRow(
                 context: context,
                 title: r.label,

@@ -130,6 +130,10 @@ List<double> quantizeMosaicPath(List<double> keys, {double tolerance = 0.15}) {
 const double kFaceMosaicMinScale = 0.3;
 const double kFaceMosaicMaxScale = 4.0;
 
+/// 柔邊的預設：有柔邊可調的效果（模糊、純色），沒調過就先給這麼多
+///（使用者：一律柔邊都給一點預設）。像素化沒有柔邊，一律 0
+const double kMosaicFeatherDefault = 0.3;
+
 /// 照片上的一塊馬賽克：
 /// - 區域：中心座標（0~1）＋寬（短邊比例）＋高寬比 [aspect]；
 ///   [oval] 時是橢圓（臉用）

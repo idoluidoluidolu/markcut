@@ -273,6 +273,65 @@ void main() {
     editorOf(t).onToggleHidden!(faces[1].track);
     await settle(t, 10);
     await snap(t, 'vf_3_off.png');
+    editorOf(t).onToggleHidden!(faces[1].track);
+    await settle(t, 10);
+
+    // 10-25：三種馬賽克各開各的樣式表、標題寫明
+    Future<void> closeSheet() async {
+      await t.tapAt(const Offset(20, 120));
+      await settle(t, 10);
+    }
+
+    editorOf(t).onTapSelectedClip!(faces[0].id);
+    await settle(t, 10);
+    await snap(t, 'vf_4_face_sheet.png');
+    await t.tap(find.text('模糊'));
+    await settle(t, 10);
+    await snap(t, 'vf_4b_face_blur.png');
+    await closeSheet();
+
+    editorOf(t).onAddMedia(1);
+    await settle(t, 10);
+    await t.tap(find.text('馬賽克').last);
+    await settle(t, 10);
+    await t.tap(find.text('方框'));
+    await settle(t, 15);
+    final box = modelOf(
+      t,
+    ).clips.lastWhere((c) => modelOf(t).sourceOf(c).kind == ClipKind.mosaic);
+    editorOf(t).onTapSelectedClip!(box.id);
+    await settle(t, 10);
+    await snap(t, 'vf_5_box_sheet.png');
+    await closeSheet();
+
+    late TimelineClip stroke;
+    VideoEditorScreen.debugTimeline!((tl) {
+      tl.sources.add(
+        MediaSource(
+          path: '',
+          name: '筆刷馬賽克',
+          kind: ClipKind.mosaic,
+          duration: 3600,
+          mosaicStyle: MosaicStyle(),
+          mosaicStroke: [0.2, 0.6, 0.5, 0.7, 0.7, 0.6],
+          mosaicBrush: 0.08,
+        ),
+      );
+      stroke = TimelineClip(
+        id: tl.nextId(),
+        sourceIndex: tl.sources.length - 1,
+        trimStart: 0,
+        trimEnd: 3,
+        offset: 0,
+        track: tl.usedTracks,
+      );
+      tl.clips.add(stroke);
+    });
+    await settle(t, 10);
+    editorOf(t).onTapSelectedClip!(stroke.id);
+    await settle(t, 10);
+    await snap(t, 'vf_6_brush_sheet.png');
+    await closeSheet();
     await settle(t, 80);
   });
 }
