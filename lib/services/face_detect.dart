@@ -128,9 +128,17 @@ class FaceDetect {
   /// 上一趟找到一半 App 被關掉，先別自動找
   static const fuseKey = 'face';
 
-  /// 最近一次照片找臉，原生那邊回的失敗原因（例外類別＋訊息）；
-  /// 檔案讀不到、成功都是 null
+  /// 最近一次照片找臉，原生那邊回的失敗原因（哪一步｜例外 @ 呼叫位置｜
+  /// 訊息）；檔案讀不到、成功都是 null
   static String? lastError;
+
+  /// [lastError] 截到提示放得下的長度（提示的第二行：實機上出事時，
+  /// 截圖就看得到是哪一步、哪個類別）
+  static String? get lastErrorBrief {
+    final e = lastError;
+    if (e == null) return null;
+    return e.length > 160 ? '${e.substring(0, 160)}…' : e;
+  }
 
   /// 照片裡的臉。偵測不了（web、通道不在、檔案讀不到）回 null；
   /// 偵測成功但沒有臉回空清單——兩者呼叫端要分開講

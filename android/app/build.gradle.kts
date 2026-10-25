@@ -79,6 +79,13 @@ android {
     buildTypes {
         release {
             signingConfig = if (releaseSigningReady) signingConfigs.getByName("release") else null
+            // 不做 R8 縮減（Flutter 外掛預設會打開，這裡在它之後跑、蓋掉它）：
+            // ML Kit 找臉在縮減過的正式版裡一跑就是 NullPointerException（10-25
+            // Android 實機：「getClass() on a null object reference」＝R8 內聯後
+            // 的空值檢查），它靠反射／JNI 依名字找的東西被縮掉了；iOS、除錯版
+            // 沒這個問題。代價是 APK 大幾 MB
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }

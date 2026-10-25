@@ -1457,11 +1457,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     setState(() => _findingFaces = false);
     if (found == null) {
       // 原生回了失敗原因就帶著（實機上出事時，截圖就看得到是哪一步）
-      final why = FaceDetect.lastError;
+      final why = FaceDetect.lastErrorBrief;
       showHint(
         context,
-        '這張照片沒辦法自動找臉，可以用圓圈或筆刷'
-        '${why == null ? '' : '\n${why.length > 80 ? why.substring(0, 80) : why}'}',
+        '這張照片沒辦法自動找臉，可以用圓圈或筆刷${why == null ? '' : '\n$why'}',
         error: !auto,
       );
       return;

@@ -70,6 +70,16 @@ void main() {
     expect(fuse().existsSync(), isFalse);
   });
 
+  test('失敗原因太長：提示只放前 160 字（哪一步、哪個類別在前面）', () async {
+    final long = '偵測｜NullPointerException @ zzab.zza ← zzcd.zzb｜${'x' * 300}';
+    messenger.setMockMethodCallHandler(faceCh, (call) async {
+      throw PlatformException(code: 'face_failed', message: long);
+    });
+    expect(await FaceDetect.inPhoto('/p.jpg'), isNull);
+    expect(FaceDetect.lastError, long);
+    expect(FaceDetect.lastErrorBrief, '${long.substring(0, 160)}…');
+  });
+
   test('上一趟死在找臉裡：跳報告、暫停自動找；暫停跨趟有效，找成功一次才恢復', () async {
     // 上一趟：記號寫了、原生還沒回來 App 就被收掉
     await Diag.fuseOn(FaceDetect.fuseKey, '自動找臉');

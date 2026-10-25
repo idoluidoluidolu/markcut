@@ -424,6 +424,8 @@ class MainActivity : FlutterActivity() {
                     // process 沒包，丟出來的東西在這條工作緒上沒人接，整個 App 被
                     // 收掉。現在任何一步出事（例外、原生程式庫載不到的 Error、記憶體
                     // 不夠、等太久）都只回「這張找不了」，原因交給 Dart 記
+                    // 做到哪一步（出事時跟著原因一起回，截圖就看得出是哪裡壞）
+                    var step = "解碼"
                     try {
                         val bmp = decodeUpright(path, 2560)
                         if (bmp == null) {
@@ -432,6 +434,7 @@ class MainActivity : FlutterActivity() {
                         }
                         val w = bmp.width.toDouble()
                         val h = bmp.height.toDouble()
+                        step = "建立偵測器"
                         val detector = FaceDetection.getClient(
                             FaceDetectorOptions.Builder()
                                 .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
@@ -440,6 +443,7 @@ class MainActivity : FlutterActivity() {
                                 .build(),
                         )
                         try {
+                            step = "偵測"
                             // 在工作緒上等結果（同影片那條），出事全在這個 try 裡
                             val faces = Tasks.await(
                                 detector.process(InputImage.fromBitmap(bmp, 0)),
@@ -467,13 +471,14 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Throwable) {
                         // Tasks.await 包了一層 ExecutionException：報真正的那個
                         val cause = e.cause ?: e
-                        reply {
-                            result.error(
-                                "face_failed",
-                                "${cause.javaClass.simpleName}: ${cause.message ?: ""}",
-                                android.util.Log.getStackTraceString(e).take(4000),
-                            )
+                        // 哪一步｜哪個例外 @ 最上面兩層呼叫｜訊息（10-25 只回例外＋
+                        // 訊息，NullPointerException 看不出是誰）
+                        val at = cause.stackTrace.take(2).joinToString(" ← ") {
+                            "${it.className.substringAfterLast('.')}.${it.methodName}"
                         }
+                        val msg = "${step}｜${cause.javaClass.simpleName} @ ${at}｜${cause.message ?: ""}"
+                        val stack = android.util.Log.getStackTraceString(e).take(4000)
+                        reply { result.error("face_failed", msg, stack) }
                     }
                 }
             }
